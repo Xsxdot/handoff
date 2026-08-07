@@ -26,9 +26,11 @@ import (
 	"github.com/xushixin/handoff/internal/proto"
 )
 
-// log 是本包日志入口，默认取 slog.Default()（与 config 包一致）。
-// agentd 初始化 logx.Setup 后可 slog.SetDefault(...) 让本包日志跟随统一格式与级别。
-var log = slog.Default()
+// log 是本包日志入口，运行时取 slog.Default()（与 config 包一致）。
+// agentd 在 bootstrap 时 logx.Setup + slog.SetDefault(...)，本包日志即跟随统一格式与级别。
+// 为什么不用包级 var 捕获：包级 var 在 package init 时求值，晚于其执行的 slog.SetDefault
+// 不会生效；运行时求值才能保证「agentd 先 Setup 后 SetDefault」的接线真正接管本包日志。
+func log() *slog.Logger { return slog.Default() }
 
 // ErrNotFound 表示按 id 查询的记录不存在。
 var ErrNotFound = errors.New("记录不存在")
@@ -84,7 +86,7 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("建表失败: %w", err)
 		}
 	}
-	log.Info("SQLite 存储已打开", "path", path)
+	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil
 }
 
@@ -196,7 +198,7 @@ func (s *Store) UpdateTaskState(id string, st proto.TaskState) error {
 		return err
 	}
 	if !proto.CanTransit(cur.State, st) {
-		log.Warn("非法状态迁移被拒绝", "task", id, "from", cur.State, "to", st)
+		log().Warn("非法状态迁移被拒绝", "task", id, "from", cur.State, "to", st)
 		return ErrBadTransit
 	}
 	// CAS 守卫：把读到的 cur.State 作为 WHERE 条件参与写回，使"读-校验-写"成为原子比较。
@@ -213,7 +215,7 @@ func (s *Store) UpdateTaskState(id string, st proto.TaskState) error {
 		return fmt.Errorf("读取更新任务 %s 状态影响行数: %w", id, err)
 	}
 	if affected == 0 {
-		log.Warn("状态迁移被并发变更拒绝", "task", id, "from", cur.State, "to", st)
+		log().Warn("状态迁移被并发变更拒绝", "task", id, "from", cur.State, "to", st)
 		return ErrBadTransit
 	}
 	return nil

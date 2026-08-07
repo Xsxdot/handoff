@@ -23,7 +23,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var log = slog.Default()
+// log 是本包日志入口，运行时取 slog.Default()（与 store 包一致）。
+// agentd 在 bootstrap 时 logx.Setup + slog.SetDefault(...)，本包日志即跟随统一格式与级别。
+// 为什么不用包级 var 捕获：包级 var 在 package init 时求值，晚于其执行的 slog.SetDefault
+// 不会生效；运行时求值才能保证「agentd 先 Setup 后 SetDefault」的接线真正接管本包日志。
+func log() *slog.Logger { return slog.Default() }
 
 // Config 是 handoff 的顶层配置。
 //
@@ -61,7 +65,7 @@ func Load(path string) (*Config, error) {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		cfg.Token = randToken() // 首次运行：生成 token 并写盘，配对时人工同步到本机 targets
-		log.Info("首次运行，已生成配置", "path", path)
+		log().Info("首次运行，已生成配置", "path", path)
 		if werr := save(path, cfg); werr != nil {
 			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
 		}

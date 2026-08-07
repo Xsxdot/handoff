@@ -1,0 +1,391 @@
+// 本文件实现 agentd 对外唯一的网络入口：HTTP API（任务列表/详情/reply）与 WS 事件流。
+//
+// 职责：
+//   - 对全部 /api 与 /ws 路由做 Bearer token 鉴权
+//   - 提供任务查询（attach 数据源：任务 + 待办工单 + 最近事件）
+//   - 实现 reply 唤醒闭环的回程：AnswerTicket → NotifyAnswer → 无其余待办工单时状态回迁 running
+//   - /ws/events 先补发 store 中 seq>n 的历史事件，再接 hub 实时流
+//
+// 边界：
+//   - 不创建 ticket：ticket 由 manager（Task 8）把 adapter 事件中介成 ticket 后落库，本层只回答
+//   - 不启动 executor、不执行任务；状态迁移仅限 reply 触发的 waiting_answer → running 回迁
+//   - 实时流不保证每条事件都送达：事件不丢不重由 store 的 seq + 客户端自存 cursor（无需 ack）承担，
+//     掉线期间产生的事件由客户端携带更大 from_seq 重连补拉
+package agentd
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/coder/websocket"
+	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/store"
+)
+
+// recentEventsLimit 是任务详情接口返回的最近事件条数上限。
+const recentEventsLimit = 100
+
+// eventReplayLimit 是 WS 连接一次性补发历史事件的上限：
+// 客户端 cursor 落后超过该值时说明断连过久，应由客户端重连分批补拉，避免单连接推流过多。
+const eventReplayLimit = 10000
+
+// Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
+//
+// 并发安全：所有字段只读（构造后不变），hub 自身线程安全，无需额外加锁。
+type Server struct {
+	cfg *config.Config
+	st  *store.Store
+	hub *Hub
+	log *slog.Logger
+}
+
+// NewServer 创建 agentd 服务端。
+//
+// 参数：
+//   - cfg: 配置，鉴权使用 cfg.Token
+//   - st: 持久化存储
+//   - log: 本服务日志入口
+//
+// 注意：
+//   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
+//     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
+func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
+	return &Server{
+		cfg: cfg,
+		st:  st,
+		hub: NewHub(),
+		log: log,
+	}
+}
+
+// Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
+func (s *Server) Hub() *Hub {
+	return s.hub
+}
+
+// Handler 返回带 Bearer 鉴权中间件的完整路由，便于 httptest 直接挂载。
+//
+// 路由（Go 1.22+ 方法路由）：
+//   - GET  /api/tasks           任务列表
+//   - GET  /api/tasks/{id}      任务详情（attach 数据源）
+//   - POST /api/tasks/{id}/reply 回答工单
+//   - GET  /ws/events           事件流（补发 + 实时）
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
+	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
+	mux.HandleFunc("GET /ws/events", s.handleEvents)
+	return s.auth(mux)
+}
+
+// auth 是 Bearer token 鉴权中间件，包住全部路由。
+//
+// 鉴权失败（无 token / token 不匹配）统一返回 401，并打 Warn 记录来源地址——
+// 这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
+func (s *Server) auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
+			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// bearerToken 从 Authorization 头解析 "Bearer <token>" 形式的令牌。
+//
+// 返回：
+//   - token: 解析出的令牌
+//   - ok: 头部存在且前缀为 "Bearer "（token 本身可为空，由调用方与配置比较）
+func bearerToken(r *http.Request) (string, bool) {
+	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// handleListTasks 返回全部任务（created_at 降序），供 tasks 命令展示。
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
+	tasks, err := s.st.ListTasks()
+	if err != nil {
+		s.log.Error("查询任务列表失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	if tasks == nil {
+		// 空列表序列化为 [] 而非 null，保证客户端解码出的始终是数组
+		tasks = []proto.Task{}
+	}
+	writeJSON(w, http.StatusOK, tasks)
+}
+
+// handleGetTask 返回任务详情（任务 + 待办工单 + 最近事件），是 attach 命令的数据源。
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("任务详情请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+
+	task, err := s.st.GetTask(taskID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("任务不存在", "task", taskID)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "任务不存在"})
+			return
+		}
+		s.log.Error("读取任务失败", "task", taskID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	pending, err := s.st.PendingTickets(taskID)
+	if err != nil {
+		s.log.Error("读取待办工单失败", "task", taskID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	events, err := s.st.EventsFrom(taskID, 0, recentEventsLimit)
+	if err != nil {
+		s.log.Error("读取最近事件失败", "task", taskID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	writeJSON(w, http.StatusOK, taskDetail{
+		Task:           *task,
+		PendingTickets: pending,
+		RecentEvents:   events,
+	})
+}
+
+// taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）。
+type taskDetail struct {
+	Task           proto.Task     `json:"task"`
+	PendingTickets []proto.Ticket `json:"pending_tickets"`
+	RecentEvents   []proto.Event  `json:"recent_events"`
+}
+
+// replyRequest 是 POST /api/tasks/{id}/reply 的请求体。
+type replyRequest struct {
+	TicketID string `json:"ticket_id"`
+	Answer   string `json:"answer"`
+}
+
+// handleReply 回答一个工单，完成唤醒闭环的回程。
+//
+// 流程：
+//  1. 校验 ticket 存在且属于路径中的任务（跨任务一律按不存在处理，不泄露信息）
+//  2. store.AnswerTicket 持久化应答（answer IS NULL 条件保证不可重复回答）
+//  3. hub.NotifyAnswer 唤醒阻塞在 WaitAnswer 上的 executor 侧
+//  4. 若任务处于 waiting_answer 且无其余未答工单，状态回迁 running（resumeIfIdle）
+func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("reply 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+
+	var req replyRequest
+	// LimitReader 限制请求体大小，防止恶意大 body 占满内存
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("reply 请求体解析失败", "task", taskID, "err", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {ticket_id, answer}"})
+		return
+	}
+	if req.TicketID == "" || req.Answer == "" {
+		s.log.Warn("reply 缺少 ticket_id 或 answer", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ticket_id 与 answer 不能为空"})
+		return
+	}
+
+	tk, err := s.st.GetTicket(req.TicketID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("reply 目标工单不存在", "task", taskID, "ticket", req.TicketID)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
+			return
+		}
+		s.log.Error("读取工单失败", "task", taskID, "ticket", req.TicketID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	if tk.TaskID != taskID {
+		s.log.Warn("reply 工单不属于该任务", "task", taskID, "ticket", req.TicketID, "ticket_task", tk.TaskID)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
+		return
+	}
+
+	if err := s.st.AnswerTicket(req.TicketID, req.Answer); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// 并发场景：另一请求已抢先回答（answer IS NULL 条件失效），按不存在处理
+			s.log.Warn("reply 工单已被回答", "task", taskID, "ticket", req.TicketID)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
+			return
+		}
+		s.log.Error("回答工单失败", "task", taskID, "ticket", req.TicketID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+
+	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）
+	s.hub.NotifyAnswer(req.TicketID, req.Answer)
+	s.log.Info("reply 完成", "task", taskID, "ticket", req.TicketID,
+		"answer", truncateRunes(req.Answer, 80))
+
+	// 回答已落库与唤醒完成，此时任务若无其余未答工单即可回迁 running；
+	// 回迁失败（如任务已被并发迁移）不影响 reply 本身的成功
+	s.resumeIfIdle(taskID)
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// resumeIfIdle 当任务处于 waiting_answer 且已无未答工单时，把状态回迁 running。
+//
+// 为什么用有界重试：两个工单被并发回答时，先回答的请求可能读到「仍有未答工单」而跳过，
+// 后回答的请求负责回迁；也可能两个请求都读到「已无工单」，此时先执行者成功，
+// 后执行者因 CAS（WHERE state = 旧值）收到 ErrBadTransit。重试让意图在最新快照上重新
+// 评估，而不是把并发迁移当作错误直接吞掉。
+func (s *Server) resumeIfIdle(taskID string) {
+	for attempt := 0; attempt < 3; attempt++ {
+		task, err := s.st.GetTask(taskID)
+		if err != nil {
+			s.log.Error("reply 后读取任务失败", "task", taskID, "cause", err)
+			return
+		}
+		if task.State != proto.TaskStateWaitingAnswer {
+			return // 任务已不在等待应答，无需回迁
+		}
+		pending, err := s.st.PendingTickets(taskID)
+		if err != nil {
+			s.log.Error("reply 后查询待办工单失败", "task", taskID, "cause", err)
+			return
+		}
+		if len(pending) > 0 {
+			return // 仍有未答工单，任务保持 waiting_answer
+		}
+		if err := s.st.UpdateTaskState(taskID, proto.TaskStateRunning); err == nil {
+			return
+		} else if !errors.Is(err, store.ErrBadTransit) {
+			s.log.Error("reply 后恢复任务运行失败", "task", taskID, "cause", err)
+			return
+		}
+		// ErrBadTransit：状态被并发变更（如另一 reply 已回迁），重读最新快照重试
+	}
+	s.log.Warn("reply 后恢复任务运行重试耗尽", "task", taskID)
+}
+
+// handleEvents 处理 /ws/events：先补发 store 中 seq>from_seq 的历史事件，再推送 hub 实时流。
+//
+// 参数：
+//   - task: 任务 ID（必填）
+//   - from_seq: 起始 seq（不含，默认 0）；客户端自存 cursor，重连时带最后收到的 seq 即可补齐断线事件
+//
+// 注意：
+//   - 客户端只读不写：CloseRead 接管读侧（响应 ping/pong/close 帧），其返回的 ctx 在
+//     连接关闭时取消，作为写循环的退出信号，避免空闲断连连接泄漏订阅
+//   - 补发与订阅之间的窗口期事件会丢失，客户端凭 seq 重连补拉，不靠本连接保证
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	taskID := r.URL.Query().Get("task")
+	if taskID == "" {
+		s.log.Warn("WS 连接缺少 task 参数", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 task 参数"})
+		return
+	}
+	fromSeq := int64(0)
+	if q := r.URL.Query().Get("from_seq"); q != "" {
+		var err error
+		fromSeq, err = strconv.ParseInt(q, 10, 64)
+		if err != nil || fromSeq < 0 {
+			s.log.Warn("WS from_seq 参数非法", "task", taskID, "from_seq", q, "remote_addr", r.RemoteAddr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from_seq 必须是大于等于 0 的整数"})
+			return
+		}
+	}
+
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		// Accept 失败时已自行写回响应（如非升级请求的 400），此处仅记录
+		s.log.Warn("WS 握手失败", "task", taskID, "remote_addr", r.RemoteAddr, "err", err)
+		return
+	}
+	defer conn.CloseNow()
+
+	sent := 0
+	defer func() {
+		s.log.Info("WS 连接断开", "task", taskID, "from_seq", fromSeq, "sent", sent)
+	}()
+
+	// 连接关闭（含对端断开）时该 ctx 取消，作为写循环退出信号
+	ctx := conn.CloseRead(r.Context())
+
+	// 阶段一：补发历史事件（from_seq 之后的全部，按 seq 升序）
+	replays, err := s.st.EventsFrom(taskID, fromSeq, eventReplayLimit)
+	if err != nil {
+		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
+		return
+	}
+	for _, ev := range replays {
+		if err := writeEvent(ctx, conn, ev); err != nil {
+			s.log.Warn("WS 补发写入失败", "task", taskID, "seq", ev.Seq, "err", err)
+			return
+		}
+		sent++
+	}
+	s.log.Info("WS 连接建立", "task", taskID, "from_seq", fromSeq, "replayed", len(replays))
+
+	// 阶段二：订阅 hub 实时流。补发与订阅之间的窗口期事件会被跳过，
+	// 客户端重连时凭 seq cursor 补拉（见本函数注意）
+	ch, cancel := s.hub.Subscribe(taskID)
+	defer cancel()
+
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				// 订阅被取消（defer cancel 触发，不会发生在循环中），防御性退出
+				return
+			}
+			if err := writeEvent(ctx, conn, ev); err != nil {
+				s.log.Warn("WS 实时写入失败", "task", taskID, "seq", ev.Seq, "err", err)
+				return
+			}
+			sent++
+		case <-ctx.Done():
+			return // 客户端已断开，退出并释放订阅
+		}
+	}
+}
+
+// writeEvent 将事件序列化为 JSON 文本帧写入 WS 连接。
+func writeEvent(ctx context.Context, conn *websocket.Conn, ev proto.Event) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("序列化事件 %d: %w", ev.Seq, err)
+	}
+	return conn.Write(ctx, websocket.MessageText, b)
+}
+
+// writeJSON 以指定状态码写出 JSON 响应。
+//
+// 编码失败（响应已开始后无法回退）仅打日志，不改变已写出的状态码。
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Default().Warn("JSON 编码失败", "err", err)
+	}
+}
+
+// truncateRunes 将字符串截断为最多 n 个字符（按 rune 截断，避免切断多字节 UTF-8 字符）。
+//
+// 用途：日志里记录用户应答时限制长度，防止超长自由文本刷爆日志。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
