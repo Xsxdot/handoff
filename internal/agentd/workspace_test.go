@@ -5,6 +5,7 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -192,12 +193,42 @@ func TestRunCmdTimeoutAndTruncate(t *testing.T) {
 	})
 
 	t.Run("truncate", func(t *testing.T) {
-		stdout, _, err := RunCmd(ctx, repo, "yes x | head -c 2000000")
+		// 输出 5MB（yes/head 毫秒级完成，远小于测试注入的 200ms 超时）：
+		// 断言返回串恰为上限且命令完整执行（code 0）——有界回收下
+		// agentd 驻留内存不随输出规模增长，排空在后台持续到子进程写完
+		stdout, code, err := RunCmd(ctx, repo, "yes x | head -c 5000000")
 		if err != nil {
 			t.Fatalf("RunCmd: %v", err)
+		}
+		if code != 0 {
+			t.Fatalf("exit code=%d, want 0（输出再大命令也应正常完成）", code)
 		}
 		if len(stdout) != maxRunOutput {
 			t.Fatalf("输出长度=%d, want 截断到 %d", len(stdout), maxRunOutput)
 		}
 	})
+}
+
+// TestRunOutputBufferBounded 直接验证有界回收器本体：
+// 持续写入远超上限的数据后，驻留字节恰为上限不再增长（超出部分排空丢弃），
+// 总计数继续累计，且每次 Write 都返回完整长度（不中断排空）。
+func TestRunOutputBufferBounded(t *testing.T) {
+	var b runOutputBuffer
+	b.limit = 1 << 10 // 1 KiB
+	chunk := bytes.Repeat([]byte("x"), 4096)
+	const writes = 1024
+	for i := 0; i < writes; i++ {
+		if n, err := b.Write(chunk); err != nil || n != len(chunk) {
+			t.Fatalf("第 %d 次 Write n=%d err=%v, want %d nil", i, n, err, len(chunk))
+		}
+	}
+	if b.buf.Len() != b.limit {
+		t.Fatalf("驻留字节=%d, want 恰为上限 %d（超出部分不得驻留内存）", b.buf.Len(), b.limit)
+	}
+	if want := int64(writes) * int64(len(chunk)); b.total != want {
+		t.Fatalf("total=%d, want %d（排空计数应含全部写入）", b.total, want)
+	}
+	if !b.capped {
+		t.Fatalf("发生过截断应标记 capped")
+	}
 }

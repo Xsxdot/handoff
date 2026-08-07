@@ -11,7 +11,8 @@
 //     executor 的改动必须经它自己的 commit 落进任务分支
 //   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由审核者决定
 //   - git 全部经 exec.Command("git","-C",repo,...) 执行，不拼接 shell
-//   - 每条命令都有超时/输出上限护栏（run 10min / 输出 1MB），防挂死与内存失控
+//   - 每条命令都有超时/输出护栏（run 10min / 输出有界回收：最多保留 1MB，
+//     超出部分只排空不驻留内存），防挂死与内存失控
 package agentd
 
 import (
@@ -186,7 +187,38 @@ func ReadFile(repo, rel string) (string, error) {
 	return string(b), nil
 }
 
-// RunCmd 在任务仓库内执行一条审阅命令（sh -c），合并 stdout+stderr 截断 1MB。
+// runOutputBuffer 是 RunCmd 的有界输出回收器：最多保留 limit 字节，
+// 超出部分继续排空但只计数不存储，保证命令输出再大 agentd 也不驻留内存。
+//
+// 为什么不能先完整缓存再截断：CombinedOutput 会把全部输出写进内存，
+// 高吞吐命令（如 dd 刷 10GB）在 10min 超时前就能撑爆进程内存——
+// 截断只保护响应体，不保护进程。本实现把「保留」与「排空」分开，
+// 排空必须持续到子进程写完，否则管道写满会反向阻塞子进程。
+type runOutputBuffer struct {
+	buf    bytes.Buffer // 至多保留 limit 字节
+	limit  int
+	total  int64 // 已写入的总字节数（含丢弃部分），供截断日志统计
+	capped bool  // 是否发生过截断
+}
+
+func (b *runOutputBuffer) Write(p []byte) (int, error) {
+	b.total += int64(len(p))
+	if room := b.limit - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			b.buf.Write(p[:room])
+			b.capped = true
+		} else {
+			b.buf.Write(p)
+		}
+	} else {
+		b.capped = true
+	}
+	// 必须返回 len(p)：丢弃的部分也要报告「已消费」，
+	// 否则 io.Copy 因 short write 提前结束排空，管道写满后子进程阻塞
+	return len(p), nil
+}
+
+// RunCmd 在任务仓库内执行一条审阅命令（sh -c），合并 stdout+stderr 有界回收 1MB。
 //
 // 这是审核者主动发起的只读审阅动作（跑测试/lint），不走审批门——
 // 命令语义（跑什么、看什么）由审核者决定，agentd 只负责执行与回收。
@@ -206,10 +238,14 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
 	cmd.Dir = repo
+	// stdout/stderr 指向同一个有界回收器：与 CombinedOutput 相同的合并语义
+	// （os/exec 对相同 writer 走单管道），但存储上限 maxRunOutput，超出排空
+	out := runOutputBuffer{limit: maxRunOutput}
+	cmd.Stdout = &out
+	cmd.Stderr = &out
 	log().Info("run 命令执行", "repo", repo, "cmd", truncateRunes(cmdline, 200))
 	start := time.Now()
-	out, err := cmd.CombinedOutput()
-	truncated := truncateBytes(out, maxRunOutput)
+	err = cmd.Run()
 	elapsed := time.Since(start)
 
 	switch {
@@ -229,25 +265,17 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 		} else {
 			exitCode = -1
 			log().Error("run 命令启动失败", "repo", repo, "cmd", truncateRunes(cmdline, 200),
-				"stderr", truncateRunes(string(truncated), 500), "cause", err)
+				"stderr", truncateRunes(out.buf.String(), 500), "cause", err)
 		}
 	default:
 		log().Info("run 命令执行完成", "repo", repo, "cmd", truncateRunes(cmdline, 200),
 			"exit_code", 0, "elapsed_ms", elapsed.Milliseconds())
 	}
-	if len(out) > maxRunOutput {
+	if out.capped {
 		log().Warn("run 输出超过上限已截断", "repo", repo, "cmd", truncateRunes(cmdline, 200),
-			"output_bytes", len(out), "limit", maxRunOutput)
+			"output_bytes", out.total, "limit", maxRunOutput)
 	}
-	return string(truncated), exitCode, err
-}
-
-// truncateBytes 把字节切片截断到 max 长度（超出部分丢弃）。
-func truncateBytes(b []byte, max int) []byte {
-	if len(b) <= max {
-		return b
-	}
-	return b[:max]
+	return out.buf.String(), exitCode, err
 }
 
 // firstLine 取多行文本的第一行（日志摘要用）。
