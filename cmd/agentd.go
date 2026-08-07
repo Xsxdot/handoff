@@ -6,7 +6,7 @@
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
 //
 // 边界：
-//   - 不创建任务/工单，不启动 executor（manager 由后续任务实现）
+//   - 不创建任务/工单：任务生命周期由 manager 驱动（executor 按 --executor 挂载）
 //   - 优雅关停（signal 处理）不在 MVP 范围，进程退出即断开全部连接
 package cmd
 
@@ -20,7 +20,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -61,14 +63,27 @@ var agentdCmd = &cobra.Command{
 		defer st.Close()
 
 		srv := agentd.NewServer(cfg, st, logger)
-		// TODO(handoff): Task 11 换成 opencode adapter（--executor 开关），当前仅 fake 可用
-		mgr := agentd.NewManager(st, srv.Hub(), fake.New(nil), cfg, logger)
+		var ad executor.Adapter
+		switch executorFlag {
+		case "opencode":
+			ad = opencode.New(logger)
+		case "fake":
+			ad = fake.New(nil)
+		default:
+			return fmt.Errorf("未知 executor %q（支持 opencode/fake）", executorFlag)
+		}
+		mgr := agentd.NewManager(st, srv.Hub(), ad, cfg, logger)
 		srv.SetManager(mgr)
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir)
 		return http.ListenAndServe(cfg.Listen, srv.Handler())
 	},
 }
 
+// executorFlag 选择 executor 实现：opencode（默认，真实执行）| fake（脚本演示）。
+var executorFlag string
+
 func init() {
 	rootCmd.AddCommand(agentdCmd)
+	agentdCmd.Flags().StringVar(&executorFlag, "executor", "opencode",
+		"executor 实现：opencode（默认）| fake")
 }
