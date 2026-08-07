@@ -183,13 +183,56 @@ func TestEventSeqMonotonic(t *testing.T) {
 	}
 
 	got, _ = s.EventsFrom("task-a", 0, 1)
-	if len(got) != 1 || got[0].Seq != e1.Seq {
-		t.Fatalf("EventsFrom limit 未生效: %+v", got)
+	if len(got) != 1 || got[0].Seq != e3.Seq {
+		t.Fatalf("EventsFrom limit 未生效或未取最新: %+v, want [e3]（截断取最新不取最旧）", got)
 	}
 
 	got, _ = s.EventsFrom("task-a", 0, 10)
 	if string(got[0].Payload) != string(e1.Payload) || string(got[1].Payload) != string(e3.Payload) {
 		t.Errorf("payload 回读不一致: %s/%s vs %s/%s", got[0].Payload, got[1].Payload, e1.Payload, e3.Payload)
+	}
+}
+
+// TestEventsFromLatestN 验证超 limit 截断语义：返回**最新** limit 条（seq 升序），
+// 截掉最旧而非最新——attach 的 recent_events 与 WS 补发依赖「最新窗口」，
+// >limit 积压时新事件（如 completed）不能被丢。
+func TestEventsFromLatestN(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	var seqs []int64
+	for i := 1; i <= 5; i++ {
+		ev, err := s.AppendEvent("t1", proto.EventTypeProgress, map[string]any{"n": i})
+		if err != nil {
+			t.Fatalf("AppendEvent %d: %v", i, err)
+		}
+		seqs = append(seqs, ev.Seq)
+	}
+
+	// 5 条取 3：必须是最新 3 条且按 seq 升序（seqs[2..4]）
+	got, err := s.EventsFrom("t1", 0, 3)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("EventsFrom(0,3) 条数=%d, want 3", len(got))
+	}
+	for i, want := range seqs[2:] {
+		if got[i].Seq != want {
+			t.Fatalf("第 %d 条 seq=%d, want %d（最新窗口内，截断最旧）", i, got[i].Seq, want)
+		}
+	}
+
+	// 与 fromSeq 组合：从 seqs[0] 之后取最新 2 条 = [seqs[3], seqs[4]]
+	got, err = s.EventsFrom("t1", seqs[0], 2)
+	if err != nil {
+		t.Fatalf("EventsFrom(fromSeq): %v", err)
+	}
+	if len(got) != 2 || got[0].Seq != seqs[3] || got[1].Seq != seqs[4] {
+		t.Fatalf("EventsFrom(seqs[0], 2) = %+v, want [seqs[3] seqs[4]]", got)
 	}
 }
 

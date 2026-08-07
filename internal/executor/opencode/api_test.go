@@ -116,6 +116,30 @@ func TestCreateSessionAndPrompt(t *testing.T) {
 	}
 }
 
+// TestCreateSessionAccepts2xx 验证建会话接受整个 2xx 区间：真实 opencode server
+// 对 POST /session 可能回 201/202 而非 200，只认 200 会把合法的创建成功误判为失败。
+func TestCreateSessionAccepts2xx(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/session" {
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"sess-201"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	sessionID, err := api.CreateSession(context.Background())
+	if err != nil {
+		t.Fatalf("CreateSession(201) 应成功: %v", err)
+	}
+	if sessionID != "sess-201" {
+		t.Fatalf("sessionID=%q, want sess-201", sessionID)
+	}
+}
+
 // TestRespondPermissionBody 验证 POST /session/{id}/permissions/{permID} 的
 // 路径与请求体 {"response":"once"}，并拒绝非法 response 值。
 func TestRespondPermissionBody(t *testing.T) {

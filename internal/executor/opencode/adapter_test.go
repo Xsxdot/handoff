@@ -446,9 +446,30 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 	}
 }
 
+// TestStopReclaimsRun 验证 Stop 后运行态被注销：runs 表不随任务累积无界增长；
+// 重复 Stop 幂等（返回「不在运行中」而不是 panic）。
+func TestStopReclaimsRun(t *testing.T) {
+	quietLog(t)
+	taskID := "task-reclaim-01"
+	fs := newFakeServer(t)
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	if ad.lookup(taskID) == nil {
+		t.Fatal("启动后运行态应已登记")
+	}
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if ad.lookup(taskID) != nil {
+		t.Fatal("Stop 后运行态应已注销（runs 表不泄漏）")
+	}
+	if err := ad.Stop(taskID); err == nil {
+		t.Fatal("重复 Stop 应返回「不在运行中」（幂等不 panic）")
+	}
+}
+
 // TestServeDeathEmitsFailed 验证 serve 死亡判定：
 // 探活失败 + SSE 断流后，产出 result !OK（FailReason 含 stderr 尾部），
-// 事件通道随后关闭（执行终结）。
+// 事件通道随后关闭（执行终结），运行态随订阅退出被注销。
 func TestServeDeathEmitsFailed(t *testing.T) {
 	quietLog(t)
 	taskID := "task-death-001"
@@ -492,5 +513,15 @@ func TestServeDeathEmitsFailed(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("死亡后事件通道未在 2s 内关闭")
+	}
+
+	// 运行态应被注销（subscribeLoop 退出时 drop）——轮询：close(evCh) 与 drop
+	// 在同一 defer 内，通道关闭先于 drop，需等 drop 执行完
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && ad.lookup(taskID) != nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ad.lookup(taskID) != nil {
+		t.Fatal("serve 死亡后运行态应被注销（runs 表不泄漏）")
 	}
 }

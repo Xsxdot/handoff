@@ -25,6 +25,10 @@
         会话必须保持存活（`tmux ls` 仍见会话 + attach 看 render.log 继续滚动）
       - 若 SPIKE-1b 证实 /event 重放历史 → 本条必须在「水位线应急方案」落地后通过，
         否则按数据丢失风险阻塞验收
+- [ ] agentd 重启挂起自愈：权限门（permission_request）pending 期间重启 agentd，
+      不依赖 /event 重放，直接 `handoff reply --ticket <id> --approve` →
+      断言 executor 收到 "once" 恢复执行（tmux 侧 `tail -f <taskDir>/render.log`
+      确认继续滚动，wait 收到后续事件）——验证 reply 无等待者时的 RelayAnswer 自愈中继
 - [ ] tmux attach 能看到 render.log 实况滚动
 - [ ] 远程演练（可选功能）：devbox 上起 agentd，本机 --target devbox 跑通上述主链路
 

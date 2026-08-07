@@ -85,7 +85,9 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 
 		// 等 WaitAnswer 完成注册后再通知，保证「先 Wait 后 Notify」的时序
 		time.Sleep(50 * time.Millisecond)
-		hub.NotifyAnswer("ticket-1", "yes")
+		if !hub.NotifyAnswer("ticket-1", "yes") {
+			t.Fatal("有等待者时 NotifyAnswer 应返回 true")
+		}
 
 		select {
 		case r := <-got:
@@ -97,10 +99,12 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 		}
 	})
 
-	t.Run("Notify 无人等待不 panic，且应答一次性", func(t *testing.T) {
+	t.Run("Notify 无人等待不 panic 且返回 false，应答一次性", func(t *testing.T) {
 		hub := agentd.NewHub()
-		// 无人等待时 Notify 不应 panic
-		hub.NotifyAnswer("ticket-ghost", "42")
+		// 无人等待时 Notify 不应 panic，且必须返回 false（供调用方走 RelayAnswer 自愈中继）
+		if hub.NotifyAnswer("ticket-ghost", "42") {
+			t.Fatal("无人等待时 NotifyAnswer 应返回 false")
+		}
 
 		// 先 Notify 的旧应答不会被后来的 Wait 拿到：等待应超时
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -131,8 +135,10 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 			t.Fatal("ctx 取消后 WaitAnswer 未返回")
 		}
 
-		// done 收到意味着等待者已从表里移除，此时 Notify 不应 panic
-		hub.NotifyAnswer("ticket-cancel", "late")
+		// done 收到意味着等待者已从表里移除，此时 Notify 应返回 false（无等待者）
+		if hub.NotifyAnswer("ticket-cancel", "late") {
+			t.Fatal("等待者已移除后 NotifyAnswer 应返回 false")
+		}
 	})
 }
 

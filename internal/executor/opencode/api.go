@@ -155,7 +155,9 @@ func (a *API) CreateSession(ctx context.Context) (sessionID string, err error) {
 		return "", fmt.Errorf("创建会话请求: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	// 接受整个 2xx 区间：真实 opencode server 对建会话可能回 201/202 而非 200，
+	// 只认 200 会让合法的创建成功被当成失败
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", a.httpError("创建会话", resp)
 	}
 	var out sessionResponse

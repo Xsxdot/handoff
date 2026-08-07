@@ -193,10 +193,15 @@ func (h *Hub) removeAnswerWaiter(ticketID string, ch chan string) {
 //   - ticketID: 工单 ID
 //   - answer: 应答内容
 //
+// 返回：
+//   - true: 至少有一个等待者收到了应答
+//   - false: 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）。
+//     应答已由 store 持久化，调用方应走 Manager.RelayAnswer 自愈中继直接回传
+//     executor，避免「回答已落库但 executor 永远阻塞」
+//
 // 注意：
-//   - 无人等待时不 panic，应答直接丢弃（应答已由 store 持久化，等待方超时后自行重查）
 //   - 投递后该 ticket 的等待表被清空，后续 WaitAnswer 不会拿到旧应答
-func (h *Hub) NotifyAnswer(ticketID, answer string) {
+func (h *Hub) NotifyAnswer(ticketID, answer string) bool {
 	h.mu.Lock()
 	waiters := h.answers[ticketID]
 	delete(h.answers, ticketID)
@@ -207,4 +212,5 @@ func (h *Hub) NotifyAnswer(ticketID, answer string) {
 		ch <- answer
 	}
 	h.log.Info("ticket 应答已投递", "ticketID", ticketID)
+	return len(waiters) > 0
 }

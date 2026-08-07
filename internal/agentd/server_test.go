@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -238,6 +239,60 @@ func TestReplyUnknownTicket404(t *testing.T) {
 		t.Fatalf("跨任务 ticket 返回 %d, want 404", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// TestReplySelfHealsWithoutWaiter 覆盖 reply 自愈中继（agentd 重启后等待 goroutine
+// 已消亡、/event 不重放历史的场景）：hub 无等待者时 handleReply 必须经
+// manager.RelayAnswer 把应答直接回传 executor——gate 收到 once、ask 收到原文，
+// 而不是把回答静默丢弃让 executor 永远阻塞。
+func TestReplySelfHealsWithoutWaiter(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-1"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo", State: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// 走合法状态链 pending → running → waiting_answer
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateRunning); err != nil {
+		t.Fatalf("→running: %v", err)
+	}
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateWaitingAnswer); err != nil {
+		t.Fatalf("→waiting_answer: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-gate", TaskID: taskID, Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate","permission":"Bash: go test ./..."}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket gate: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-ask", TaskID: taskID, Kind: "ask",
+		Request: json.RawMessage(`{"kind":"ask","question":"用哪个方案?"}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket ask: %v", err)
+	}
+
+	// 注入 manager（真实 hub + fake executor）：reply 路由的自愈中继落点
+	f := fake.New(nil)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), f, &config.Config{Token: testToken, DataDir: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	// 全程无任何 WaitAnswer 等待者（模拟重启后等待 goroutine 已消亡）
+	resp := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reply gate 返回 %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	eventually(t, 2*time.Second, "executor 收到 RespondPermission(once)", func() bool {
+		perms := f.Perms()
+		return len(perms) == 1 && perms[0].PermID == "tk-gate" && perms[0].Decision == "once"
+	})
+
+	resp = env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-ask","answer":"单数"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reply ask 返回 %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	eventually(t, 2*time.Second, "executor 收到 Send(原文)", func() bool {
+		sends := f.Sends()
+		return len(sends) == 1 && sends[0].Text == "单数"
+	})
 }
 
 // TestWSReplayThenLive 覆盖 WS 事件流：from_seq=0 先补发 store 中全部历史事件，随后 Publish 实时到达。

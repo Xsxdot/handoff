@@ -11,6 +11,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/config"
@@ -38,20 +39,19 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-// TargetEndpoint 根据 --target 换算实际请求的 agentd 端点。
+// TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。
 //
 // 参数（读取全局 flag）：
-//   - --target 为空：直接返回 --agentd 地址，token 为空
-//   - --target 非空：从配置 Targets 中查出 addr/token
+//   - --target 为空（本机模式）：token 一律取本地配置 cfg.Token（服务端无条件要求
+//     Bearer，无 token 的本机调用必然 401）；地址取 --agentd（显式指定时优先）或
+//     cfg.Listen（与 agentd 实际监听一致），cfg.Token 为空时返回错误
+//   - --target 非空：从配置 Targets 中查出 addr/token（远程配对）
 //
 // 返回：
 //   - addr: agentd 完整地址（含 http:// 前缀）
-//   - token: 访问令牌；未指定 --target 时为空串
-//   - err: 配置加载失败或 target 未定义时返回
+//   - token: 访问令牌
+//   - err: 配置加载失败、target 未定义或本机 token 为空时返回
 func TargetEndpoint() (addr, token string, err error) {
-	if targetName == "" {
-		return agentdURL, "", nil
-	}
 	p := configPath
 	if p == "" {
 		p = config.DefaultPath()
@@ -59,6 +59,24 @@ func TargetEndpoint() (addr, token string, err error) {
 	cfg, err := config.Load(p)
 	if err != nil {
 		return "", "", fmt.Errorf("加载配置 %s: %w", p, err)
+	}
+	if targetName == "" {
+		// 本机模式：token 必须来自本地配置——agentd 的 Bearer 鉴权无条件生效，
+		// 且 config.Load 保证配置文件存在时 token 一定已生成（首次运行即写盘）
+		if cfg.Token == "" {
+			return "", "", fmt.Errorf("配置 %s 未设置 token，无法认证本机 agentd", p)
+		}
+		// 地址优先级：显式 --agentd 优先（用户指明了别的端点）；未显式指定时
+		// 用配置 Listen，与 agentd 实际监听保持一致，避免默认值与配置漂移
+		if rootCmd.PersistentFlags().Changed("agentd") {
+			addr = agentdURL
+		} else {
+			addr = cfg.Listen
+			if !strings.Contains(addr, "://") {
+				addr = "http://" + addr
+			}
+		}
+		return addr, cfg.Token, nil
 	}
 	t, ok := cfg.Targets[targetName]
 	if !ok {

@@ -16,6 +16,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -31,16 +32,23 @@ import (
 )
 
 // chanAdapter 是测试用空操作 adapter：事件通道由测试直接控制（模拟 executor 侧事件流），
-// 并记录 RespondPermission 实参供断言（答案侧是否真正回传 executor）。
+// 并记录 RespondPermission/Send 实参供断言（答案侧是否真正回传 executor）。
 type chanAdapter struct {
 	mu    sync.Mutex
 	evCh  chan executor.AdapterEvent
 	perms []string
+	sends []string
 }
 
 func (a *chanAdapter) Start(context.Context, executor.StartReq) error { return nil }
 func (a *chanAdapter) Events(string) <-chan executor.AdapterEvent     { return a.evCh }
-func (a *chanAdapter) Send(context.Context, string, string) error     { return nil }
+
+func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sends = append(a.sends, text)
+	return nil
+}
 
 func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision string) error {
 	a.mu.Lock()
@@ -56,6 +64,13 @@ func (a *chanAdapter) permsRec() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.perms...)
+}
+
+// sendsRec 返回已记录的 Send 实参（副本）。
+func (a *chanAdapter) sendsRec() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.sends...)
 }
 
 // newTestManager 组装 manager 白盒测试环境：真实 store + hub + 可控事件通道 adapter。
@@ -311,5 +326,80 @@ func TestTransitToReviewTwoHopFromWaitingAnswer(t *testing.T) {
 		}
 		c, err := st.GetTask("t1")
 		return err == nil && c.State == proto.TaskStateRunning
+	})
+}
+
+// TestRelayAnswer 验证 reply 无等待者时的自愈中继（agentd 重启后等待 goroutine 已
+// 消亡、/event 不重放历史的场景）：RelayAnswer 直接读工单驱动 adapter，
+// gate 按 allow→once/其余→reject 翻译（与 waitPermission 同规则），ask 原文透传。
+func TestRelayAnswer(t *testing.T) {
+	// createTicket 建一张指定 kind 的工单并返回（request 与 manager 的 ticketRequest 同构）。
+	createTicket := func(st *store.Store, id, taskID, kind string) {
+		t.Helper()
+		req := json.RawMessage(`{"kind":"gate","permission":"Bash: rm -rf node_modules"}`)
+		if kind == "ask" {
+			req = json.RawMessage(`{"kind":"ask","question":"表结构用单数还是复数?"}`)
+		}
+		if _, err := st.CreateTicket(&proto.Ticket{
+			ID: id, TaskID: taskID, Kind: kind, Request: req, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("CreateTicket: %v", err)
+		}
+	}
+
+	t.Run("gate_allow_once", func(t *testing.T) {
+		mgr, st, _, ad := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		createTicket(st, "perm-1", "t1", "gate")
+		if err := mgr.RelayAnswer("t1", "perm-1", "allow"); err != nil {
+			t.Fatalf("RelayAnswer: %v", err)
+		}
+		if got := ad.permsRec(); len(got) != 1 || got[0] != "perm-1:once" {
+			t.Fatalf("executor 收到 %v, want [perm-1:once]", got)
+		}
+	})
+
+	t.Run("gate_deny_reject", func(t *testing.T) {
+		mgr, st, _, ad := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		createTicket(st, "perm-2", "t1", "gate")
+		if err := mgr.RelayAnswer("t1", "perm-2", "deny:太危险"); err != nil {
+			t.Fatalf("RelayAnswer: %v", err)
+		}
+		if got := ad.permsRec(); len(got) != 1 || got[0] != "perm-2:reject" {
+			t.Fatalf("executor 收到 %v, want [perm-2:reject]", got)
+		}
+	})
+
+	t.Run("ask_original_send", func(t *testing.T) {
+		mgr, st, _, ad := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		createTicket(st, "ask-1", "t1", "ask")
+		if err := mgr.RelayAnswer("t1", "ask-1", "复数"); err != nil {
+			t.Fatalf("RelayAnswer: %v", err)
+		}
+		if got := ad.sendsRec(); len(got) != 1 || got[0] != "复数" {
+			t.Fatalf("executor 收到 %v, want [复数]（原文透传）", got)
+		}
+	})
+
+	t.Run("ticket_not_found", func(t *testing.T) {
+		mgr, st, _, _ := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		if err := mgr.RelayAnswer("t1", "ghost", "x"); err == nil {
+			t.Fatal("工单不存在应报错")
+		}
+	})
+
+	t.Run("ticket_of_other_task", func(t *testing.T) {
+		mgr, st, _, ad := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		createTicket(st, "perm-3", "t2", "gate")
+		if err := mgr.RelayAnswer("t1", "perm-3", "allow"); err == nil {
+			t.Fatal("跨任务工单应报错")
+		}
+		if got := ad.permsRec(); len(got) != 0 {
+			t.Fatalf("跨任务工单不得触达 executor, got %v", got)
+		}
 	})
 }

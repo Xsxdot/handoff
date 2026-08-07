@@ -35,12 +35,17 @@ import (
 
 // 常量说明：
 //   - wsInitialBackoff/wsMaxBackoff：WS 断线重连的指数退避区间
-//   - dialTimeout：TCP 拨号超时，防止对端不可达时挂死（长连接本身由 ctx 控制）
 const (
 	wsInitialBackoff = 1 * time.Second
 	wsMaxBackoff     = 60 * time.Second
-	dialTimeout      = 10 * time.Second
 )
+
+// dialTimeout 是 WS 单次拨号（含 TCP 连接与握手）的超时上限。
+//
+// 为什么必须有它：websocket.Dial 默认用 http.DefaultClient（Transport 无拨号超时），
+// 对黑洞对端（SYN 无响应）会挂 ~2min 才失败——每次重连都白等两分钟，指数退避形同
+// 虚设。包级 var 而非 const，便于测试注入更短值（与 workspace.go runCmdTimeout 同款）。
+var dialTimeout = 10 * time.Second
 
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
@@ -394,7 +399,11 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
-	conn, resp, err := websocket.Dial(ctx, wsURL, opts)
+	// 拨号套独立超时：握手（含 TCP 连接）必须在 dialTimeout 内完成，否则按连接
+	// 失败交给外层退避重连——黑洞对端不再把每次重连拖到 ~2min 才失败
+	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
+	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
+	dialCancel()
 	if err != nil {
 		if resp != nil {
 			return nil, fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)

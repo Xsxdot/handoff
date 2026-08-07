@@ -297,6 +297,60 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	return nil
 }
 
+// RelayAnswer 在 reply 回程找不到等待者时，把已落库的审核者应答直接回传给
+// executor，自愈「agentd 重启后等待 goroutine 消亡 → 回答丢失 → executor 永远阻塞」。
+//
+// 场景：agentd 重启时 waitPermission/waitQuestion goroutine 随进程消亡，且 /event
+// 不重放历史的话，审核者的 reply 在 hub 里找不到等待者；若应答就此丢弃，任务状态
+// 被 resumeIfIdle 回迁 running，executor 却永远等不到权限裁决——工单已答、二次
+// reply 404、done 409，不可恢复。本方法读取工单把应答按既有翻译规则直接送达 executor。
+//
+// 参数：
+//   - taskID: 工单所属任务 ID（reply 路由的路径参数）
+//   - ticketID: 已回答的工单 ID（AnswerTicket 已落库，此处只负责回传）
+//   - answer: 审核者应答原文（与落库值一致）
+//
+// 返回：
+//   - 工单不存在/不属于该任务/类型不识别返回错误；adapter 回传失败返回错误
+//
+// 规则（与 waitPermission/waitQuestion 的翻译规则完全一致）：
+//   - kind=gate：answer trim 后为 "allow" → RespondPermission("once")，其余一律 "reject"
+//   - kind=ask：answer 原文原样经 Send 透传
+func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
+	tk, err := m.st.GetTicket(ticketID)
+	if err != nil {
+		return fmt.Errorf("读取工单 %s: %w", ticketID, err)
+	}
+	if tk.TaskID != taskID {
+		return fmt.Errorf("工单 %s 不属于任务 %s", ticketID, taskID)
+	}
+	var req ticketRequest
+	if err := json.Unmarshal(tk.Request, &req); err != nil {
+		return fmt.Errorf("解析工单 %s 请求体: %w", ticketID, err)
+	}
+	switch req.Kind {
+	case "gate":
+		decision := "reject"
+		if strings.TrimSpace(answer) == "allow" {
+			decision = "once"
+		}
+		m.log.Info("reply 无等待者，自愈中继权限应答", "task", taskID,
+			"ticket", ticketID, "decision", decision)
+		if err := m.ad.RespondPermission(context.Background(), taskID, ticketID, decision); err != nil {
+			return fmt.Errorf("中继权限应答: %w", err)
+		}
+		return nil
+	case "ask":
+		m.log.Info("reply 无等待者，自愈中继提问回答", "task", taskID, "ticket", ticketID)
+		if err := m.ad.Send(context.Background(), taskID, answer); err != nil {
+			return fmt.Errorf("中继提问回答: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("工单 %s 类型 %q 不支持中继", ticketID, req.Kind)
+	}
+}
+
 // mediate 是单任务的事件中介循环（每任务一个 goroutine，由 Dispatch 启动）：
 // 消费 Adapter.Events 直到通道关闭（Stop），每类事件交给对应 handler。
 func (m *Manager) mediate(taskID string) {

@@ -365,10 +365,12 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	return r.api.RespondPermission(ctx, r.session, permID, decision)
 }
 
-// Stop 终止任务执行：取消订阅 → kill serve（tmux 会话）→ 事件通道关闭。
+// Stop 终止任务执行：取消订阅 → kill serve（tmux 会话）→ 事件通道关闭 → 注销运行态。
 //
 // 注意：
 //   - 幂等：重复 Stop 不 panic；事件通道只关闭一次（由订阅 goroutine 持有关闭权）
+//   - 运行态注销（drop）与 subscribeLoop 退出时的 drop 是幂等的 map 删除，
+//     mu 保护下不会重复释放——runs 表因此不随任务累积无界增长
 func (a *Adapter) Stop(taskID string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
@@ -392,6 +394,9 @@ func (a *Adapter) Stop(taskID string) (err error) {
 			return fmt.Errorf("kill serve: %w", kerr)
 		}
 	}
+	// 清理完成后注销运行态：此后 lookup/Events 返回 nil，runs 表不残留已停任务。
+	// kill 失败时保留运行态（进程可能还活着，留待重试/人工兜底），不在此处 drop
+	a.drop(taskID)
 	return nil
 }
 
@@ -401,6 +406,9 @@ func (a *Adapter) Stop(taskID string) (err error) {
 func (r *runState) subscribeLoop(a *Adapter) {
 	defer func() {
 		r.closeOnce.Do(func() { close(r.evCh) })
+		// 注销运行态：订阅退出（正常 Stop 或 serve 死亡/意外中断）即从 runs 表移除，
+		// 与 Stop 的 drop 幂等共存（mu 保护的 map 删除）——runs 表不无界增长
+		a.drop(r.taskID)
 		a.log.Info("opencode 事件流订阅退出", "task", r.taskID)
 	}()
 	err := r.api.SubscribeEvents(r.runCtx, func(raw json.RawMessage) {

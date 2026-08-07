@@ -238,6 +238,8 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
 	cmd.Dir = repo
+	// 命令设为独立进程组组长：超时/取消时按组回收，孙进程不留孤儿（见 workspace_procgroup_unix.go）
+	setProcGroup(cmd)
 	// stdout/stderr 指向同一个有界回收器：与 CombinedOutput 相同的合并语义
 	// （os/exec 对相同 writer 走单管道），但存储上限 maxRunOutput，超出排空
 	out := runOutputBuffer{limit: maxRunOutput}
@@ -245,7 +247,27 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	cmd.Stderr = &out
 	log().Info("run 命令执行", "repo", repo, "cmd", truncateRunes(cmdline, 200))
 	start := time.Now()
-	err = cmd.Run()
+	if err := cmd.Start(); err != nil {
+		log().Error("run 命令启动失败", "repo", repo, "cmd", truncateRunes(cmdline, 200),
+			"cause", err)
+		return "", -1, err
+	}
+	// 进程组回收协程：ctx 取消（10min 超时或请求断开）时 kill 整个进程组——
+	// CommandContext 只杀 sh 本身，孙进程必须按组回收。cmdDone 双保险：
+	// Wait 正常返回但 ctx 恰已取消时同样补一次组回收（select 随机择路不会漏杀）。
+	cmdDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcGroup(cmd.Process.Pid)
+		case <-cmdDone:
+			if ctx.Err() != nil {
+				killProcGroup(cmd.Process.Pid)
+			}
+		}
+	}()
+	err = cmd.Wait()
+	close(cmdDone)
 	elapsed := time.Since(start)
 
 	switch {
@@ -264,7 +286,7 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 				"exit_code", exitCode, "elapsed_ms", elapsed.Milliseconds())
 		} else {
 			exitCode = -1
-			log().Error("run 命令启动失败", "repo", repo, "cmd", truncateRunes(cmdline, 200),
+			log().Error("run 命令运行异常", "repo", repo, "cmd", truncateRunes(cmdline, 200),
 				"stderr", truncateRunes(out.buf.String(), 500), "cause", err)
 		}
 	default:

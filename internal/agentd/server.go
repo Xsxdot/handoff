@@ -3,7 +3,8 @@
 // 职责：
 //   - 对全部 /api 与 /ws 路由做 Bearer token 鉴权
 //   - 提供任务查询（attach 数据源：任务 + 待办工单 + 最近事件）
-//   - 实现 reply 唤醒闭环的回程：AnswerTicket → NotifyAnswer → 无其余待办工单时状态回迁 running
+//   - 实现 reply 唤醒闭环的回程：AnswerTicket → NotifyAnswer（无等待者时经 manager
+//     RelayAnswer 自愈中继）→ 无其余待办工单时状态回迁 running
 //   - 提供三条审阅命令路由（diff/fetch/run）：调 workspace 包取任务仓库的
 //     审阅素材（git diff、文件内容、远程跑测试/lint），run 不走审批门
 //   - /ws/events 先补发 store 中 seq>n 的历史事件，再接 hub 实时流
@@ -256,8 +257,19 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）
-	s.hub.NotifyAnswer(req.TicketID, req.Answer)
+	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）；
+	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走
+	// RelayAnswer 自愈中继，把应答直接回传 executor——否则回答已落库但
+	// executor 永远阻塞（工单已答、二次 reply 404、done 409，不可恢复）
+	if !s.hub.NotifyAnswer(req.TicketID, req.Answer) {
+		if s.mgr == nil {
+			s.log.Warn("reply 无等待者且 manager 未注入，应答未回传 executor",
+				"task", taskID, "ticket", req.TicketID)
+		} else if err := s.mgr.RelayAnswer(taskID, req.TicketID, req.Answer); err != nil {
+			// 应答已落库不可回滚：仅告警，交由审核者/看门狗人工兜底
+			s.log.Error("reply 自愈中继失败", "task", taskID, "ticket", req.TicketID, "cause", err)
+		}
+	}
 	s.log.Info("reply 完成", "task", taskID, "ticket", req.TicketID,
 		"answer", truncateRunes(req.Answer, 80))
 
@@ -591,6 +603,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
 		return
+	}
+	// 截断告警：store 里还有比本次补发更新的事件（回放窗口被 eventReplayLimit 截断，
+	// 截掉的是最旧而非最新），客户端需凭 cursor 后续重连/续拉补齐缺口——这是
+	// 「事件为什么没收到」在重放维度的第一排查点
+	if len(replays) == eventReplayLimit && len(replays) > 0 {
+		if latest, lerr := s.st.LatestEvent(taskID); lerr == nil && latest.Seq > replays[len(replays)-1].Seq {
+			s.log.Warn("WS 补发窗口被截断", "task", taskID, "from_seq", fromSeq,
+				"replayed", len(replays), "oldest_replayed", replays[0].Seq,
+				"latest", latest.Seq)
+		}
 	}
 	for _, ev := range replays {
 		if err := writeEvent(ctx, conn, ev); err != nil {
