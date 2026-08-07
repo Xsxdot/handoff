@@ -1,0 +1,306 @@
+// client 包测试：对着 httptest 起的真 agentd Server 验证 ListTasks/Attach/Reply/WaitEvent。
+//
+// 关键约定：
+//   - 全部测试用 t.Setenv("HOME", t.TempDir()) 重定向用户主目录，cursor 文件落在
+//     $HOME/.handoff/cursor-<task>，断言与清理都在测试沙箱内完成，不污染真实主目录
+//   - WaitEvent 的断线重连测试需要「同地址重启」：用 net.Listen("tcp","127.0.0.1:0")
+//     先占一个固定端口，关闭后用同一地址重新 Listen
+package client_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/store"
+)
+
+const testToken = "test-token"
+
+// newTestEnv 构造测试环境：真实 SQLite store + httptest 起的真 agentd Server，
+// 并把 HOME 指向临时目录（cursor 落盘位置的依赖）。
+type newTestEnv struct {
+	srv   *agentd.Server
+	ts    *httptest.Server
+	st    *store.Store
+	home  string
+	token string
+}
+
+// newTestClientEnv 组装完整测试环境并注册清理。
+func newTestClientEnv(t *testing.T) *newTestEnv {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return &newTestEnv{srv: srv, ts: ts, st: st, home: home, token: testToken}
+}
+
+// createPendingTask 预置一个 pending 任务并返回其 ID。
+func (e *newTestEnv) createPendingTask(t *testing.T) string {
+	t.Helper()
+	now := time.Now().UTC()
+	id := "task-1"
+	if err := e.st.CreateTask(&proto.Task{ID: id, Target: "opencode", RepoPath: "/repo", State: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	return id
+}
+
+// cursorPath 返回测试期望的 cursor 文件路径（与 client 实现同规则：$HOME/.handoff/cursor-<task>）。
+func (e *newTestEnv) cursorPath(taskID string) string {
+	return filepath.Join(e.home, ".handoff", "cursor-"+taskID)
+}
+
+// readCursor 读取 cursor 文件内容；不存在时返回空串。
+func (e *newTestEnv) readCursor(t *testing.T, taskID string) string {
+	t.Helper()
+	b, err := os.ReadFile(e.cursorPath(taskID))
+	if err != nil {
+		t.Fatalf("读取 cursor 文件: %v", err)
+	}
+	return string(b)
+}
+
+// TestListTasksAndAttach 覆盖 ListTasks 与 Attach：创建任务与未答工单后，
+// tasks 列表能查到、attach 能取回 pending_tickets（恢复现场的数据源）。
+func TestListTasksAndAttach(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t)
+	now := time.Now().UTC()
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-1", TaskID: taskID, Kind: "gate", Request: json.RawMessage(`{"kind":"bash","command":"go test ./..."}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+	cl := client.New(env.ts.URL, env.token)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tasks, err := cl.ListTasks(ctx)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != taskID {
+		t.Fatalf("ListTasks 返回 %+v, want 1 条 %s", tasks, taskID)
+	}
+
+	info, err := cl.Attach(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if info.Task.ID != taskID {
+		t.Fatalf("Attach.Task.ID = %s, want %s", info.Task.ID, taskID)
+	}
+	if len(info.PendingTickets) != 1 || info.PendingTickets[0].ID != "tk-1" {
+		t.Fatalf("PendingTickets = %+v, want [tk-1]", info.PendingTickets)
+	}
+}
+
+// TestWaitEventSkipsProgress 覆盖 cursor 语义与 progress 不唤醒：
+// 预置 progress + question 两条事件，WaitEvent 应跳过 progress、返回 question，
+// 且 cursor 落盘为 question 的 seq（下次 wait 从该 seq 之后继续，不重不丢）。
+func TestWaitEventSkipsProgress(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := "t1"
+	pv, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": 1})
+	if err != nil {
+		t.Fatalf("AppendEvent progress: %v", err)
+	}
+	qv, err := env.st.AppendEvent(taskID, proto.EventTypeQuestion, map[string]any{"text": "用哪个方案?"})
+	if err != nil {
+		t.Fatalf("AppendEvent question: %v", err)
+	}
+	if pv.Seq >= qv.Seq {
+		t.Fatalf("事件 seq 异常: progress=%d question=%d", pv.Seq, qv.Seq)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ev, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, taskID, false)
+	if err != nil {
+		t.Fatalf("WaitEvent: %v", err)
+	}
+	if ev.Seq != qv.Seq {
+		t.Fatalf("WaitEvent 返回 seq=%d, want %d（question 的 seq）", ev.Seq, qv.Seq)
+	}
+	if ev.Type != proto.EventTypeQuestion {
+		t.Fatalf("WaitEvent 返回 type=%s, want question", ev.Type)
+	}
+
+	// cursor 落盘为 question 的 seq
+	if got := env.readCursor(t, taskID); got != strconv.FormatInt(qv.Seq, 10) {
+		t.Fatalf("cursor 内容 = %q, want %d", got, qv.Seq)
+	}
+}
+
+// trackListener 包装 net.Listener，记录每次 Accept 得到的连接，提供 closeAll 强杀全部连接。
+//
+// 为什么需要它：http.Server.Close 不关闭已 hijack 的 WS 连接（net/http 对 hijack 后的
+// 连接不再跟踪），而测试要模拟「agentd 崩溃」——必须从 TCP 层把已建立的连接全部断开，
+// 客户端才会感知断线并进入退避重连。
+type trackListener struct {
+	net.Listener
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+func newTrackListener(t *testing.T) *trackListener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	return &trackListener{Listener: ln, conns: make(map[net.Conn]struct{})}
+}
+
+func (l *trackListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	l.conns[c] = struct{}{}
+	l.mu.Unlock()
+	return c, nil
+}
+
+// closeAll 强制关闭本 listener 接受过的全部连接（含已被 http.Server hijack 的 WS 连接）。
+func (l *trackListener) closeAll() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for c := range l.conns {
+		c.Close()
+	}
+}
+
+// TestWaitEventReconnect 覆盖断线指数退避重连：
+// 先在固定地址起 server（store 预置 progress 事件），WaitEvent 连上并消费 progress 后，
+// 从 TCP 层强杀连接模拟 agentd 崩溃；同地址重启 server 并落库 + Publish 一条 question，
+// WaitEvent 应在退避重连后拿到它。
+//
+// 为什么 question 同时落库与广播：客户端可能仍在退避沉睡，实时广播会错过，
+// 但 store 落库保证重连后的 WS 补发（from_seq=cursor）一定把它送达——测试因此确定。
+func TestWaitEventReconnect(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskID := "t1"
+	if _, err := st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": 1}); err != nil {
+		t.Fatalf("AppendEvent progress: %v", err)
+	}
+
+	// 先占一个固定地址，起第一台 server
+	ln := newTrackListener(t)
+	addr := "http://" + ln.Addr().String()
+	srv1 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	hs1 := &http.Server{Handler: srv1.Handler()}
+	done1 := make(chan struct{})
+	go func() {
+		hs1.Serve(ln)
+		close(done1)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	type result struct {
+		ev  *proto.Event
+		err error
+	}
+	gotCh := make(chan result, 1)
+	go func() {
+		ev, err := client.New(addr, testToken).WaitEvent(ctx, taskID, false)
+		gotCh <- result{ev: ev, err: err}
+	}()
+
+	// 等首次连接建立并消费掉 progress（progress 被跳过，WaitEvent 保持阻塞等待可动作事件）
+	time.Sleep(300 * time.Millisecond)
+	// 模拟 agentd 崩溃：停 accept + 强杀全部已建立连接
+	hs1.Close()
+	ln.closeAll()
+	<-done1
+
+	// 同地址重启（客户端 1s 首退避，足够完成重启）
+	ln2, err := net.Listen("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("同地址重启 Listen: %v", err)
+	}
+	srv2 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	hs2 := &http.Server{Handler: srv2.Handler()}
+	go hs2.Serve(ln2)
+	t.Cleanup(func() { hs2.Close() })
+
+	// 落库 + 广播 question：无论客户端重连后走补发还是实时路径都能拿到
+	qev, err := st.AppendEvent(taskID, proto.EventTypeQuestion, map[string]any{"text": "重连后的问题"})
+	if err != nil {
+		t.Fatalf("AppendEvent question: %v", err)
+	}
+	srv2.Hub().Publish(qev)
+
+	select {
+	case g := <-gotCh:
+		if g.err != nil {
+			t.Fatalf("WaitEvent 重连后报错: %v", g.err)
+		}
+		if g.ev.Type != proto.EventTypeQuestion {
+			t.Fatalf("重连后拿到 type=%s, want question", g.ev.Type)
+		}
+		if g.ev.Seq != qev.Seq {
+			t.Fatalf("重连后拿到 seq=%d, want %d", g.ev.Seq, qev.Seq)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("断线重连后未拿到 question 事件")
+	}
+}
+
+// TestReplyRoundTrip 覆盖 reply → attach 闭环：
+// 回答工单后，attach 的 pending_tickets 应清空（恢复现场时不再出现已处理的工单）。
+func TestReplyRoundTrip(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t)
+	now := time.Now().UTC()
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-1", TaskID: taskID, Kind: "gate", Request: json.RawMessage(`{"kind":"bash","command":"go test ./..."}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+	cl := client.New(env.ts.URL, env.token)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := cl.Reply(ctx, taskID, "tk-1", "allow"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+
+	info, err := cl.Attach(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if len(info.PendingTickets) != 0 {
+		t.Fatalf("reply 后 pending_tickets 仍残留 %d 条", len(info.PendingTickets))
+	}
+}

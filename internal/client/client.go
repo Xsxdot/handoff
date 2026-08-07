@@ -1,0 +1,347 @@
+// Package client 是 handoff 审核者侧对 agentd 的唯一拨号方：任务列表、attach 现场恢复、
+// ticket 应答（reply）与 wait 事件等待（WS + cursor 断线续拉）。
+//
+// 职责：
+//   - 封装 agentd 的全部 HTTP API 与 WS 事件流的调用（Bearer token 鉴权）
+//   - WaitEvent 按 task 自存 cursor（~/.handoff/cursor-<task>）实现「事件不丢不重」：
+//     重连时携带最后交付事件的 seq，从服务端补拉断线期间产生的事件
+//   - 断线指数退避重连（1s→2s→…→60s），覆盖本机 agentd 重启、网络抖动等场景
+//
+// 边界：
+//   - 无业务判断：不解析事件 payload 语义、不做审批决策——「答什么」由审核者（人/上层）
+//     决定后经 Reply 原样透传，审批策略在审核者脑中，本包只保证传输可靠与语义透明
+//   - 不持久化除 cursor 外的任何状态：任务/事件/工单数据全部实时向 agentd 查询
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/xushixin/handoff/internal/proto"
+)
+
+// 常量说明：
+//   - wsInitialBackoff/wsMaxBackoff：WS 断线重连的指数退避区间
+//   - dialTimeout：TCP 拨号超时，防止对端不可达时挂死（长连接本身由 ctx 控制）
+const (
+	wsInitialBackoff = 1 * time.Second
+	wsMaxBackoff     = 60 * time.Second
+	dialTimeout      = 10 * time.Second
+)
+
+// AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
+// 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
+type AttachInfo struct {
+	Task           proto.Task     `json:"task"`
+	PendingTickets []proto.Ticket `json:"pending_tickets"`
+	RecentEvents   []proto.Event  `json:"recent_events"`
+}
+
+// Client 是 agentd 的 HTTP/WS 客户端，持有服务地址与 Bearer 令牌。
+//
+// 并发安全：字段构造后只读，可被多个 goroutine 同时使用。
+type Client struct {
+	baseURL string
+	token   string
+	hc      *http.Client
+}
+
+// New 创建 agentd 客户端。
+//
+// 参数：
+//   - addr: agentd 地址（如 http://127.0.0.1:7777）；缺少 scheme 时自动补 http://
+//   - token: Bearer 访问令牌；为空时请求不带 Authorization 头
+//
+// 注意：
+//   - 仅做地址归一化，不做任何网络请求，连接在首次调用时建立
+func New(addr, token string) *Client {
+	if !strings.Contains(addr, "://") {
+		addr = "http://" + addr
+	}
+	return &Client{
+		baseURL: strings.TrimRight(addr, "/"),
+		token:   token,
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+			},
+		},
+	}
+}
+
+// log 返回运行时 slog.Default()。
+//
+// 为什么不用包级 var：cli 命令在 RunE 里才 logx.Setup + slog.SetDefault，包级 var
+// 在 init 时求值会锁死默认 logger，导致本包日志绕开 logx 的 stderr 文本输出
+// （与 agentd 侧 store/config 的同款修正）。
+func (c *Client) log() *slog.Logger { return slog.Default() }
+
+// do 发送带 Bearer token 的请求，返回响应（调用方负责关闭 resp.Body）。
+func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("序列化请求体 %s: %w", path, err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rd)
+	if err != nil {
+		return nil, fmt.Errorf("构造请求 %s: %w", path, err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return c.hc.Do(req)
+}
+
+// httpError 把非 2xx 响应转为带状态码与响应体（截断）的错误——
+// 响应体是「服务端为什么拒绝」的第一手线索，直接并入错误信息返回给命令层展示。
+func (c *Client) httpError(op string, resp *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
+	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, strings.TrimSpace(string(b)))
+}
+
+// ListTasks 查询全部任务（created_at 降序）。
+//
+// 返回：
+//   - 任务列表；服务端保证空库时返回空切片而非 nil
+//   - 请求失败或响应非法时返回错误
+func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/tasks", nil)
+	if err != nil {
+		return nil, fmt.Errorf("任务列表请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("任务列表", resp)
+	}
+	var tasks []proto.Task
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		return nil, fmt.Errorf("解析任务列表响应: %w", err)
+	}
+	return tasks, nil
+}
+
+// Attach 获取任务的完整现场快照（任务 + 待办工单 + 最近事件），
+// 是审核者恢复会话现场（pending_tickets）的数据源。
+//
+// 参数：
+//   - taskID: 任务 ID；任务不存在时返回 404 错误
+func (c *Client) Attach(ctx context.Context, taskID string) (*AttachInfo, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/tasks/"+taskID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("任务详情请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("任务详情", resp)
+	}
+	var info AttachInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("解析任务详情响应: %w", err)
+	}
+	return &info, nil
+}
+
+// Reply 回答一个工单（权限门批准/拒绝、提问的答案）。
+//
+// 参数：
+//   - taskID: 工单所属任务 ID
+//   - ticketID: 待回答的工单 ID
+//   - answer: 应答原文，原样透传给 agentd（如 "allow" / "deny: 原因" / 任意文本），
+//     语义由上层（审核者/manager）决定，本包不做解释
+//
+// 注意：
+//   - 工单不存在、已回答（不可重复回答）或不属于该任务时返回错误
+func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reply",
+		map[string]string{"ticket_id": ticketID, "answer": answer})
+	if err != nil {
+		return fmt.Errorf("reply 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("reply", resp)
+	}
+	return nil
+}
+
+// WaitEvent 阻塞等待任务的下一个事件：跳过 progress（除非 all=true），
+// 拿到首个可动作事件即返回并把 cursor 写盘；断线指数退避 1s→2s→…→60s
+// 无限重连，ctx 取消才退出。
+//
+// cursor 语义（事件不丢不重的根基）：
+//   - 每次调用开始时从 ~/.handoff/cursor-<task> 读取上次交付事件的 seq，
+//     连接 WS 时以 from_seq=cursor 补拉断线期间产生的事件
+//   - 返回首个可动作事件时把 cursor 原子写盘为该事件的 seq；被跳过的 progress
+//     事件不推进 cursor（下次调用会重新收到并再次跳过，重复跳过无副作用）
+//   - 因此每条可动作事件恰好交付一次（不重），cursor 之后的事件断线后一条不丢（不丢）
+//
+// 为什么 progress 不唤醒：progress 是高频、无需人工动作的状态播报（如「正在运行」），
+// 若用它唤醒，wait 会在每次进度变化时把审核者叫醒做无意义的一次「看-忽略」；
+// 审核者只需在真正需要决策的事件（question/permission_request/completed/failed/stalled）
+// 到达时被唤醒。需要全量事件流时显式传 all=true。
+//
+// 参数：
+//   - taskID: 要等待的任务 ID
+//   - all: true 时不做类型过滤，第一个到达的事件即返回
+//
+// 返回：
+//   - 首个可动作事件；ctx 取消时返回 ctx.Err()（context.Canceled/DeadlineExceeded）
+func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error) {
+	fromSeq := c.readCursor(taskID)
+
+	backoff := wsInitialBackoff
+	for attempt := 1; ; attempt++ {
+		ev, err := c.waitOnce(ctx, taskID, fromSeq, all)
+		if err == nil {
+			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
+				// cursor 写失败不吞事件：先把事件交还用户（宁可下次重投，不可这次挂住）
+				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
+			}
+			return ev, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// 断网重连是「为什么没唤醒」的唯一线索点，必须带 addr、第 n 次与下次退避秒数
+		c.log().Info("WS 连接断开，等待后重连", "addr", c.baseURL, "task", taskID,
+			"attempt", attempt, "next_backoff_seconds", int(backoff.Seconds()), "cause", err)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > wsMaxBackoff {
+			backoff = wsMaxBackoff
+		}
+	}
+}
+
+// waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
+//
+// 返回：
+//   - 可动作事件；连接失败/断流时返回错误（由 WaitEvent 决定是否重连）
+//
+// 注意：
+//   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
+func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
+	// http→ws / https→wss 的 scheme 换算；本项目只用 http，https 分支为完整性防御
+	wsScheme := "ws"
+	if strings.HasPrefix(c.baseURL, "https://") {
+		wsScheme = "wss"
+	}
+	host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "http://"), "https://")
+	wsURL := wsScheme + "://" + host + "/ws/events?task=" + taskID +
+		"&from_seq=" + strconv.FormatInt(fromSeq, 10)
+	opts := &websocket.DialOptions{}
+	if c.token != "" {
+		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
+	}
+	conn, resp, err := websocket.Dial(ctx, wsURL, opts)
+	if err != nil {
+		if resp != nil {
+			return nil, fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
+		}
+		return nil, fmt.Errorf("WS 拨号失败: %w", err)
+	}
+	c.log().Info("WS 连接建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
+	defer func() {
+		conn.CloseNow()
+		c.log().Info("WS 连接关闭", "addr", c.baseURL, "task", taskID)
+	}()
+
+	for {
+		_, b, err := conn.Read(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("WS 读取: %w", err)
+		}
+		var ev proto.Event
+		if err := json.Unmarshal(b, &ev); err != nil {
+			// 服务端推了非事件 JSON：按连接异常处理，交给外层重连（数据已由 store 兜底）
+			return nil, fmt.Errorf("WS 事件反序列化: %w", err)
+		}
+		if !all && ev.Type == proto.EventTypeProgress {
+			continue // progress 不唤醒（why 见 WaitEvent doc 注释）
+		}
+		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
+		return &ev, nil
+	}
+}
+
+// cursorPath 返回任务 cursor 文件路径（~/.handoff/cursor-<task>）。
+//
+// 为什么放用户主目录而非配置 DataDir：cursor 是审核者侧的本地状态，
+// 与配置/数据库文件位置解耦；即使 DataDir 被移动，审核者已看过的进度也不重投。
+func cursorPath(taskID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("读取用户主目录: %w", err)
+	}
+	return filepath.Join(home, ".handoff", "cursor-"+taskID), nil
+}
+
+// readCursor 读取任务 cursor；文件不存在、内容非法或主目录不可用时返回 0（从头开始）。
+func (c *Client) readCursor(taskID string) int64 {
+	p, err := cursorPath(taskID)
+	if err != nil {
+		c.log().Debug("cursor 路径不可用，从头开始", "task", taskID, "cause", err)
+		return 0
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		c.log().Debug("cursor 文件不存在，从头开始", "task", taskID, "path", p)
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || n < 0 {
+		c.log().Debug("cursor 内容非法，从头开始", "task", taskID, "path", p, "content", string(b))
+		return 0
+	}
+	c.log().Debug("cursor 读取", "task", taskID, "path", p, "seq", n)
+	return n
+}
+
+// writeCursor 把 seq 原子写入 cursor 文件（临时文件 + rename）。
+//
+// 为什么先写临时文件再 rename：直接写目标文件在写盘中途崩溃会留下截断内容，
+// 下一次 wait 会把截断文本解析成 0（从头重投全部事件）；rename 保证读到的一定是
+// 完整内容——要么旧值要么新值，不存在中间态。
+func (c *Client) writeCursor(taskID string, seq int64) error {
+	p, err := cursorPath(taskID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return fmt.Errorf("创建 cursor 目录: %w", err)
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(seq, 10)), 0o600); err != nil {
+		return fmt.Errorf("写临时 cursor 文件: %w", err)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return fmt.Errorf("cursor 落盘: %w", err)
+	}
+	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)
+	return nil
+}
