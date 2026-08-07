@@ -39,37 +39,46 @@ const (
 )
 
 // Task 表示一个 handoff 任务。
+//
+// JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
+// key 必须小写——上层脚本按 {"id":..,"state":..,"created_at":..} 解析）。
 type Task struct {
-	ID              string
-	Target          string
-	RepoPath        string
-	Branch          string
-	PlanPath        string
-	PlanSummary     string
-	ExecutorSession string
-	State           TaskState
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID              string    `json:"id"`
+	Target          string    `json:"target"`
+	RepoPath        string    `json:"repo_path"`
+	Branch          string    `json:"branch"`
+	PlanPath        string    `json:"plan_path"`
+	PlanSummary     string    `json:"plan_summary"`
+	ExecutorSession string    `json:"executor_session"`
+	State           TaskState `json:"state"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Event 表示任务生命周期中产生的一条事件记录。
+//
+// JSON 线格式契约（wait 命令输出与 WS 推送共用此结构）：{"seq":..,"task_id":..,
+// "type":..,"payload":{..},"created_at":..}，key 必须小写（上层脚本按此解析）。
 type Event struct {
-	Seq       int64
-	TaskID    string
-	Type      EventType
-	Payload   json.RawMessage
-	CreatedAt time.Time
+	Seq       int64           `json:"seq"`
+	TaskID    string          `json:"task_id"`
+	Type      EventType       `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // Ticket 表示一次需人工介入的请求，Kind 取 "gate"（许可门）或 "ask"（提问）。
+//
+// JSON 线格式契约（attach 输出 pending_tickets 与 REST 响应共用此结构，
+// key 必须小写）：{"id":..,"task_id":..,"kind":..,"request":{..},"answer":..,..}。
 type Ticket struct {
-	ID         string
-	TaskID     string
-	Kind       string
-	Request    json.RawMessage
-	Answer     *string
-	CreatedAt  time.Time
-	AnsweredAt *time.Time
+	ID         string          `json:"id"`
+	TaskID     string          `json:"task_id"`
+	Kind       string          `json:"kind"`
+	Request    json.RawMessage `json:"request"`
+	Answer     *string         `json:"answer"`
+	CreatedAt  time.Time       `json:"created_at"`
+	AnsweredAt *time.Time      `json:"answered_at"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。

@@ -1,6 +1,11 @@
 package proto
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestCanTransit(t *testing.T) {
 	cases := []struct {
@@ -23,5 +28,84 @@ func TestCanTransit(t *testing.T) {
 				t.Errorf("CanTransit(%q, %q) = %v, want %v", c.from, c.to, got, c.want)
 			}
 		})
+	}
+}
+
+// TestJSONWireFormat 断言 CLI 输出与 WS/REST 共用结构体的 JSON 线格式 key 全部小写。
+//
+// 为什么断言序列化产物而非 Go 结构体字段：wait/tasks/attach 命令与 server
+// 直接 json.Marshal 这些结构体，上层脚本按小写 key（{"seq":..,"type":..}）解析；
+// 若字段未带 JSON tag，Go 会输出大写 key，脚本静默失效。此测试锁死序列化结果，
+// 防止未来有人给结构体改名字时顺手把契约改坏。
+func TestJSONWireFormat(t *testing.T) {
+	now := time.Now()
+	answer := "allow"
+	event := Event{
+		Seq:       7,
+		TaskID:    "t1",
+		Type:      EventTypeQuestion,
+		Payload:   json.RawMessage(`{"text":"继续吗"}`),
+		CreatedAt: now,
+	}
+	task := Task{
+		ID:          "t1",
+		Target:      "opencode",
+		RepoPath:    "/repo",
+		Branch:      "feat/x",
+		PlanPath:    "plan.md",
+		PlanSummary: "s",
+		State:       TaskStateWaitingAnswer,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	ticket := Ticket{
+		ID:         "tk1",
+		TaskID:     "t1",
+		Kind:       "gate",
+		Request:    json.RawMessage(`{"cmd":"rm -rf /tmp/x"}`),
+		Answer:     &answer,
+		CreatedAt:  now,
+		AnsweredAt: &now,
+	}
+
+	evJSON, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	taskJSON, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	ticketJSON, err := json.Marshal(ticket)
+	if err != nil {
+		t.Fatalf("marshal ticket: %v", err)
+	}
+
+	// 契约 key 必须小写（wait 输出 {"seq":..,"type":"question","payload":{..}}）。
+	eventWant := []string{`"seq":7`, `"task_id":"t1"`, `"type":"question"`, `"payload":{"text":"继续吗"}`}
+	for _, want := range eventWant {
+		if !strings.Contains(string(evJSON), want) {
+			t.Errorf("event JSON %s 缺少契约 key %s", evJSON, want)
+		}
+	}
+	taskWant := []string{`"id":"t1"`, `"repo_path":"/repo"`, `"state":"waiting_answer"`, `"created_at"`}
+	for _, want := range taskWant {
+		if !strings.Contains(string(taskJSON), want) {
+			t.Errorf("task JSON %s 缺少契约 key %s", taskJSON, want)
+		}
+	}
+	ticketWant := []string{`"id":"tk1"`, `"kind":"gate"`, `"request":{"cmd":"rm -rf /tmp/x"}`, `"answer":"allow"`}
+	for _, want := range ticketWant {
+		if !strings.Contains(string(ticketJSON), want) {
+			t.Errorf("ticket JSON %s 缺少契约 key %s", ticketJSON, want)
+		}
+	}
+
+	// 反向断言：不得出现大写 key（Go 默认输出即大写，一旦 JSON tag 丢失立即暴露）。
+	for name, b := range map[string][]byte{"event": evJSON, "task": taskJSON, "ticket": ticketJSON} {
+		if strings.Contains(string(b), `"Seq"`) || strings.Contains(string(b), `"ID"`) ||
+			strings.Contains(string(b), `"TaskID"`) || strings.Contains(string(b), `"CreatedAt"`) {
+			t.Errorf("%s JSON 包含大写 key，违反小写契约: %s", name, b)
+		}
 	}
 }
