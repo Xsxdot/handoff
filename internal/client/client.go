@@ -184,6 +184,67 @@ func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) err
 	return nil
 }
 
+// Dispatch 派发一个新任务到 agentd 执行。
+//
+// 参数：
+//   - repo: 任务仓库路径（executor 工作区）
+//   - planB64: plan 内容，base64 编码后上传（CLI 层读取本地 plan 文件编码）
+//   - planName: plan 文件名（归档展示用）
+//   - target: 目标主机名（归档展示用）
+//
+// 返回：
+//   - 创建后的任务（state=running）；服务端启动 executor 失败时返回错误
+func (c *Client) Dispatch(ctx context.Context, repo, planB64, planName, target string) (*proto.Task, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]string{
+		"repo": repo, "plan_b64": planB64, "plan_name": planName, "target": target,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dispatch 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("dispatch", resp)
+	}
+	var task proto.Task
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		return nil, fmt.Errorf("解析 dispatch 响应: %w", err)
+	}
+	return &task, nil
+}
+
+// Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。
+//
+// 注意：
+//   - 任务不存在返回 404 错误；状态不允许续接返回 409 错误
+func (c *Client) Continue(ctx context.Context, taskID, instructions string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/continue",
+		map[string]string{"instructions": instructions})
+	if err != nil {
+		return fmt.Errorf("continue 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("continue", resp)
+	}
+	return nil
+}
+
+// Done 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。
+//
+// 注意：
+//   - 任务不存在返回 404 错误；状态不允许归档返回 409 错误
+func (c *Client) Done(ctx context.Context, taskID string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/done", nil)
+	if err != nil {
+		return fmt.Errorf("done 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("done", resp)
+	}
+	return nil
+}
+
 // WaitEvent 阻塞等待任务的下一个事件：跳过 progress（除非 all=true），
 // 拿到首个可动作事件即返回并把 cursor 写盘；断线指数退避 1s→2s→…→60s
 // 无限重连，ctx 取消才退出。

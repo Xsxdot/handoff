@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -46,6 +48,12 @@ var agentdCmd = &cobra.Command{
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
 
+		// DataDir 首次运行可能不存在（config.Load 只保证配置目录），
+		// store.Open 与 taskDir 创建都依赖它，必须先建
+		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+			return fmt.Errorf("创建数据目录 %s: %w", cfg.DataDir, err)
+		}
+
 		st, err := store.Open(filepath.Join(cfg.DataDir, "handoff.db"))
 		if err != nil {
 			return fmt.Errorf("打开存储: %w", err)
@@ -53,6 +61,9 @@ var agentdCmd = &cobra.Command{
 		defer st.Close()
 
 		srv := agentd.NewServer(cfg, st, logger)
+		// TODO(handoff): Task 11 换成 opencode adapter（--executor 开关），当前仅 fake 可用
+		mgr := agentd.NewManager(st, srv.Hub(), fake.New(nil), cfg, logger)
+		srv.SetManager(mgr)
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir)
 		return http.ListenAndServe(cfg.Listen, srv.Handler())
 	},

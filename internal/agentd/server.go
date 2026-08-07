@@ -46,6 +46,7 @@ type Server struct {
 	st  *store.Store
 	hub *Hub
 	log *slog.Logger
+	mgr *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 }
 
 // NewServer 创建 agentd 服务端。
@@ -72,18 +73,33 @@ func (s *Server) Hub() *Hub {
 	return s.hub
 }
 
+// SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
+//
+// 注意：
+//   - manager 依赖本服务内部的 hub 与外部 adapter，必须在 NewServer 之后构造并注入
+//   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
+func (s *Server) SetManager(m *Manager) {
+	s.mgr = m
+}
+
 // Handler 返回带 Bearer 鉴权中间件的完整路由，便于 httptest 直接挂载。
 //
 // 路由（Go 1.22+ 方法路由）：
-//   - GET  /api/tasks           任务列表
-//   - GET  /api/tasks/{id}      任务详情（attach 数据源）
-//   - POST /api/tasks/{id}/reply 回答工单
-//   - GET  /ws/events           事件流（补发 + 实时）
+//   - GET  /api/tasks                   任务列表
+//   - POST /api/tasks                   派发新任务（dispatch）
+//   - GET  /api/tasks/{id}              任务详情（attach 数据源）
+//   - POST /api/tasks/{id}/reply        回答工单
+//   - POST /api/tasks/{id}/continue     续发修改指令
+//   - POST /api/tasks/{id}/done         归档任务
+//   - GET  /ws/events                   事件流（补发 + 实时）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
+	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
+	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
+	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	return s.auth(mux)
 }
@@ -275,6 +291,110 @@ func (s *Server) resumeIfIdle(taskID string) {
 		// ErrBadTransit：状态被并发变更（如另一 reply 已回迁），重读最新快照重试
 	}
 	s.log.Warn("reply 后恢复任务运行重试耗尽", "task", taskID)
+}
+
+// dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。
+type dispatchRequest struct {
+	Repo     string `json:"repo"`
+	PlanB64  string `json:"plan_b64"`
+	PlanName string `json:"plan_name"`
+	Target   string `json:"target"`
+}
+
+// handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
+//
+// 流程：解析请求体 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
+func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Warn("dispatch 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req dispatchRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
+		s.log.Warn("dispatch 请求体解析失败", "err", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {repo, plan_b64, plan_name, target}"})
+		return
+	}
+	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
+		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
+	})
+	if err != nil {
+		s.log.Error("派发任务失败", "repo", req.Repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
+		return
+	}
+	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
+	writeJSON(w, http.StatusOK, task)
+}
+
+// continueRequest 是 POST /api/tasks/{id}/continue 的请求体。
+type continueRequest struct {
+	Instructions string `json:"instructions"`
+}
+
+// handleContinue 向任务续发修改指令（要求任务处于 waiting_review）。
+//
+// 错误映射：任务不存在 404；状态不允许续接 409（manager 返回 store.ErrBadTransit）。
+func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("continue 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("continue 请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req continueRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("continue 请求体解析失败", "task", taskID, "err", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {instructions}"})
+		return
+	}
+	if req.Instructions == "" {
+		s.log.Warn("continue 指令为空", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "instructions 不能为空"})
+		return
+	}
+	if err := s.mgr.Continue(r.Context(), taskID, req.Instructions); err != nil {
+		s.writeManagerError(w, taskID, "续发指令", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleDone 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。
+func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("done 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("done 请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.Done(r.Context(), taskID); err != nil {
+		s.writeManagerError(w, taskID, "归档任务", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// writeManagerError 把 manager 返回的错误映射为 HTTP 状态码与提示。
+//
+// 映射规则：store.ErrNotFound → 404；store.ErrBadTransit → 409（状态不允许）；
+// 其余 → 500。
+func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.log.Warn("manager 操作目标任务不存在", "task", taskID, "op", op)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "任务不存在"})
+	case errors.Is(err, store.ErrBadTransit):
+		s.log.Warn("manager 操作状态不允许", "task", taskID, "op", op, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务当前状态不允许该操作"})
+	default:
+		s.log.Error("manager 操作失败", "task", taskID, "op", op, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+	}
 }
 
 // handleEvents 处理 /ws/events：先补发 store 中 seq>from_seq 的历史事件，再推送 hub 实时流。
