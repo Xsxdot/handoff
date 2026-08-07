@@ -468,21 +468,46 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	m.hub.Publish(evt)
 }
 
-// transitToReview 把任务迁入 waiting_review；若当前仍卡在 waiting_answer（回答-续跑
-// 链路因异常时序尚未回迁 running 的防御场景），先经 running 两跳进入。
+// transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑
+// 链路尚未回迁 running 的 waiting_answer 防御场景），按最新快照走兜底路径重试。
 //
-// 为什么两跳：waiting_answer→waiting_review 不在状态机迁移表里（必须先回到 running），
-// 单跳直接会被 ErrBadTransit 拒绝并丢事件；两跳保证结果事件不因时序问题丢失。
+// 为什么失败后必须重读重试而不是直接报错：result 事件已在 handleResult 中追加落库，
+// 一旦本方法返回错误，事件会连同 Publish 一起被丢弃，任务可能卡死在 running——
+// 竞态细节见 transitToReviewRetry。
 func (m *Manager) transitToReview(taskID string) error {
 	if err := m.transit(taskID, proto.TaskStateWaitingReview, "result"); err == nil {
 		return nil
 	}
-	cur, gerr := m.st.GetTask(taskID)
-	if gerr != nil || cur.State != proto.TaskStateWaitingAnswer {
-		return errors.New("任务不在 waiting_answer，无法两跳进入 waiting_review")
-	}
-	if err := m.transit(taskID, proto.TaskStateRunning, "result 到达前回迁"); err != nil {
+	return m.transitToReviewRetry(taskID)
+}
+
+// transitToReviewRetry 在首跳失败后按最新快照重试进入 waiting_review。
+//
+// 两种可收敛路径：
+//   - waiting_answer：回答-续跑链路尚未回迁 running 的防御场景，两跳经 running 进入
+//   - running：残留竞态——首跳失败后、重读前应答 goroutine 已把 waiting_answer 回迁
+//     running（running→waiting_review 合法），直接重试补跳即可，已追加的结果事件
+//     不因该时序丢失（否则任务卡死在 running 直到看门狗）
+//
+// 注意：
+//   - 两跳中的 running 迁移容忍 ErrBadTransit：该迁移与应答 goroutine 的回迁并发竞争
+//     同一 CAS，输家（本方法）说明 running 已达成（谁赢都是 running），继续补跳即收敛
+//   - 其余状态（如 done 已抢先归档的 completed/failed）返回错误：任务已终结，
+//     由 handleResult 决定不广播，避免唤醒审核者去操作一个已终结的任务
+func (m *Manager) transitToReviewRetry(taskID string) error {
+	cur, err := m.st.GetTask(taskID)
+	if err != nil {
 		return err
+	}
+	switch cur.State {
+	case proto.TaskStateWaitingAnswer:
+		if err := m.transit(taskID, proto.TaskStateRunning, "result 到达前回迁"); err != nil && !errors.Is(err, store.ErrBadTransit) {
+			return err
+		}
+	case proto.TaskStateRunning:
+		// 残留竞态窗口：首跳失败后、重读前应答 goroutine 已回迁 running，直接补跳
+	default:
+		return fmt.Errorf("任务不在 waiting_answer/running，无法进入 waiting_review: %s", cur.State)
 	}
 	return m.transit(taskID, proto.TaskStateWaitingReview, "result")
 }
