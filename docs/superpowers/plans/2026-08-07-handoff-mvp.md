@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 实现 handoff——审核者（交互式 Claude Code）把 plan 分发给 executor（本机/远程 Claude Code headless）执行，通过阻塞 CLI 完成唤醒、审批、提问、审核、回发修改的完整闭环。
+**Goal:** 实现 handoff——审核者（交互式 Claude Code）把 plan 分发给 executor（本机/远程 opencode）执行，通过阻塞 CLI 完成唤醒、审批、提问、审核、回发修改的完整闭环。
 
-**Architecture:** Go 单二进制 `handoff`，两端复用。executor 所在机跑 `handoff agentd`（HTTP API + WS 事件流 + SQLite 持久化）；本机 CLI 拨号消费。executor 挂载全走 CLI：PreToolUse hook → `handoff gate`（阻塞），提问 → Bash 调 `handoff ask`（阻塞，ticket 幂等）。executor 进程在 tmux 内跑 `claude -p --output-format stream-json`，adapter tail 解析。
+**Architecture:** Go 单二进制 `handoff`，两端复用。executor 所在机跑 `handoff agentd`（HTTP API + WS 事件流 + SQLite 持久化）；本机 CLI 拨号消费。executor = opencode server 模式：agentd 每任务在 tmux 内独立拉起 `opencode serve`，经 HTTP API 建会话发 prompt，经 SSE 消费权限请求与执行事件；权限用 opencode 原生 respond 端点应答，提问走回合制 trailer JSON 协议，等待全部发生在 opencode 会话内部（无 hook 超时、无 Bash 超时问题）。
 
 **Tech Stack:** Go 1.22+（stdlib `net/http` 路由模式）、`github.com/spf13/cobra`、`github.com/coder/websocket`、`modernc.org/sqlite`（纯 Go 无 cgo，跨平台交叉编译分发到远程机）、`gopkg.in/yaml.v3`、`github.com/google/uuid`、`log/slog`（结构化日志）。
 
@@ -13,15 +13,16 @@
 ## Global Constraints
 
 - Go ≥ 1.22；单二进制；SQLite 用 `modernc.org/sqlite`（禁止 cgo 依赖）。
-- 零 MCP：executor 挂载只允许 hooks + CLI（spec §6）。
+- 零 MCP、零 hooks：executor 挂载只走 opencode server HTTP API + SSE（spec §6）。
 - 日志一律 `log/slog`（`internal/logx` 统一初始化），**禁止 `fmt.Printf` 作日志**；CLI 面向用户的正常输出（JSON 结果等）走 `os.Stdout` 的 `fmt.Fprintln` 是允许的——那是程序输出不是日志。
 - 每个新文件顶部必须有中文「职责 + 边界」头注释；导出函数必须有 doc 注释（用户全局 CLAUDE.md §2）。
-- 事件不丢不重：events 表自增 seq + 客户端 cursor；tickets 幂等（INSERT OR IGNORE by id）。
+- 事件不丢不重：events 表自增 seq + 客户端 cursor；tickets 幂等（INSERT OR IGNORE by id；权限 ticket id = opencode permissionID）。
 - 任务状态机只有：`pending / running / waiting_answer / waiting_review / completed / failed`。
 - v1 单 target 串行执行任务，不做并发调度（spec §11）。
 - module path：`github.com/xushixin/handoff`。
 - agentd 数据目录 `~/.handoff/`：`agentd.db`、`agentd.log`、`config.yaml`、`tasks/<id>/`。
 - 危险操作升级、审批分级是**审核者（Claude）的行为策略**，不写死在代码里；代码只负责忠实转发。
+- opencode 事件流字段随版本演进：SSE 解析必须宽容（未知事件 Debug 后跳过，绝不 panic/报错中断）。
 
 ## File Structure
 
@@ -29,11 +30,10 @@
 handoff/
 ├── main.go                        # 入口，调 cmd.Execute()
 ├── cmd/                           # cobra 子命令（薄壳，逻辑在 internal）
-│   ├── root.go                    # 根命令 + --agentd/--token 全局 flag + logx 初始化
-│   ├── agentd.go                  # handoff agentd
+│   ├── root.go                    # 根命令 + --agentd/--target/--config 全局 flag + logx 初始化
+│   ├── agentd.go                  # handoff agentd（--executor=opencode|fake）
 │   ├── dispatch.go  wait.go  reply.go  tasks.go  attach.go
-│   ├── continue.go  done.go  diff.go  fetch.go  run.go
-│   └── gate.go  ask.go            # executor 侧挂载命令
+│   └── continue.go  done.go  diff.go  fetch.go  run.go
 ├── internal/
 │   ├── logx/logx.go               # slog 统一初始化（文件 + stderr）
 │   ├── config/config.go           # ~/.handoff/config.yaml（listen/token/targets）
@@ -41,15 +41,18 @@ handoff/
 │   ├── store/store.go             # SQLite 持久化
 │   ├── agentd/
 │   │   ├── hub.go                 # 事件订阅广播 + ticket 应答路由
-│   │   ├── server.go              # HTTP API + WS + 本地阻塞端点
-│   │   └── manager.go             # 任务生命周期：创建/启动 adapter/看门狗
+│   │   ├── server.go              # HTTP API + WS 事件流
+│   │   ├── manager.go             # 任务生命周期 + adapter 事件中介（ticket 化）
+│   │   ├── workspace.go           # git 分支准备 / diff / 文件读取 / 命令执行
+│   │   └── watchdog.go            # stalled 看门狗 + 启动恢复探测
 │   ├── executor/
-│   │   ├── executor.go            # Adapter 接口
+│   │   ├── executor.go            # Adapter 接口 + AdapterEvent
 │   │   ├── fake/fake.go           # 脚本化 fake adapter（集成测试用）
-│   │   └── claude/
-│   │       ├── claude.go          # Claude Code adapter：启动/续接/完成检测
-│   │       ├── settings.go        # hooks settings.json + prompt 生成
-│   │       └── stream.go          # stream-json tail 解析
+│   │   └── opencode/
+│   │       ├── api.go             # opencode server HTTP 客户端 + SSE 订阅
+│   │       ├── proc.go            # opencode serve 进程管理（tmux 内）+ 探活
+│   │       ├── taskenv.go         # 任务级 opencode 配置 + prompt 生成 + trailer 解析
+│   │       └── adapter.go         # 组装为 executor.Adapter 实现
 │   └── client/client.go           # 本机 CLI 侧 HTTP/WS 客户端（含重连）
 └── docs/superpowers/{specs,plans}/
 ```
@@ -274,15 +277,13 @@ func (h *Hub) WaitAnswer(ctx context.Context, ticketID string) (string, error) /
 
 **Interfaces:**
 - Consumes: store、hub、proto
-- Produces（HTTP API，Bearer token 鉴权，`/local/` 前缀路由仅接受回环地址连接）:
+- Produces（HTTP API，Bearer token 鉴权）:
 
 ```
 GET  /api/tasks                     → []proto.Task
 GET  /api/tasks/{id}                → {task, pending_tickets, recent_events}  // attach 数据源
-POST /api/tasks/{id}/reply          → body {ticket_id, answer}  // answer 为 JSON 字符串："allow"/"deny"/自由文本
+POST /api/tasks/{id}/reply          → body {ticket_id, answer}  // answer: "allow" / "deny[:原因]" / 自由文本
 GET  /ws/events?task={id}&from_seq={n}  → WS，先补发 store 中 seq>n 的事件，再接实时流；客户端无需 ack（cursor 客户端自存）
-POST /local/tickets                 → body {task_id, ticket_id, kind, request}；阻塞至 answer，返回 {answer}
-GET  /local/tickets/{id}            → 已答直接返回 {answer}，未答阻塞等待（gate/ask 断后重等入口）
 ```
 
 ```go
@@ -291,53 +292,62 @@ func (s *Server) Handler() http.Handler   // 便于 httptest
 func (s *Server) Hub() *Hub
 ```
 
-reply 处理流程（这是唤醒闭环的回程）：store.AnswerTicket → hub.NotifyAnswer → 若 task 处于 waiting_answer 且无其余 pending ticket，UpdateTaskState(running)。
-/local/tickets 处理流程（去程）：CreateTicket（幂等，已答的直接返回存量 answer）→ AppendEvent（kind=gate→permission_request，kind=ask→question，payload=request）→ hub.Publish → UpdateTaskState(waiting_answer)（忽略 ErrBadTransit——completed 任务的迟到 hook 调用不应改状态）→ hub.WaitAnswer 阻塞。
+reply 处理流程（唤醒闭环的回程）：store.AnswerTicket → hub.NotifyAnswer → 若 task 处于 waiting_answer 且无其余 pending ticket，UpdateTaskState(running)。ticket 的**创建**方在 manager（Task 8）——adapter 事件由 manager 中介转成 ticket，server 不直接创建。
 
 - [ ] **Step 1: 写失败测试**（`httptest.NewServer(srv.Handler())`）：
 
 ```go
 func TestAuthRequired(t *testing.T)        // 无 token 401；错 token 401；对 token 200
-func TestTicketBlockUntilReply(t *testing.T) {
-	// goroutine A: POST /local/tickets {kind:"ask"} 阻塞
-	// 主线程: 轮询 GET /api/tasks/{id} 直到 pending_tickets 出现且 task.state==waiting_answer
-	//         POST /api/tasks/{id}/reply {ticket_id, answer:"用 pgx 不用 gorm"}
-	// 断言: A 解除阻塞拿到 answer；task.state 回到 running；events 含一条 question
+func TestReplyAnswersTicketAndNotifies(t *testing.T) {
+	// 预置: task(waiting_answer) + 未答 ticket；goroutine 用 hub.WaitAnswer 阻塞等该 ticket
+	// POST /api/tasks/{id}/reply {ticket_id, answer:"用 pgx 不用 gorm"}
+	// 断言: WaitAnswer 解除并拿到原文；task.state 回到 running；attach 的 pending_tickets 清空
 }
-func TestTicketIdempotentReplay(t *testing.T) // 已答 ticket 再 POST /local/tickets → 立即返回存量 answer，不重复计入 events
+func TestReplyUnknownTicket404(t *testing.T)
 func TestWSReplayThenLive(t *testing.T)       // 先 Append 两条事件，WS from_seq=0 收到补发两条；再 Publish 一条实时收到
 ```
 
-- [ ] **Step 2: 确认失败** → **Step 3: 实现**（stdlib `http.NewServeMux` 方法路由；WS 用 `websocket.Accept`，写循环 select store 补发 + hub 订阅 chan；`/local/` 路由用中间件校验 `RemoteAddr` 属于 127.0.0.1/::1）→ **Step 4: 确认通过**
-- [ ] **Step 5: 加日志**（本任务是日志密度最高处，逐点覆盖）：每个 API 入口 Info（method、path、task_id）；鉴权失败 Warn（remote_addr）；ticket 创建 Info（task、ticket、kind）；WaitAnswer 解除 Info（ticket、等待时长）；WS 连接建立/断开 Info（task、from_seq、补发条数）；reply Info（ticket、answer 截断 80 字符）；所有错误分支 Error 带 task/ticket 上下文与 cause。
-- [ ] **Step 6: 加注释**：文件头（职责=对外唯一网络入口；边界=不启动 executor——那是 manager 的职责；/local 仅回环）；导出方法 doc 注释；「迟到 hook 调用忽略 ErrBadTransit」的 why 注释。
-- [ ] **Step 7: Commit** `git commit -m "feat: agentd HTTP/WS 服务与阻塞 ticket 端点"`
+- [ ] **Step 2: 确认失败** → **Step 3: 实现**（stdlib `http.NewServeMux` 方法路由；WS 用 `websocket.Accept`，写循环 select store 补发 + hub 订阅 chan）→ **Step 4: 确认通过**
+- [ ] **Step 5: 加日志**：每个 API 入口 Info（method、path、task_id）；鉴权失败 Warn（remote_addr）；WS 连接建立/断开 Info（task、from_seq、补发条数）；reply Info（ticket、answer 截断 80 字符）；所有错误分支 Error 带 task/ticket 上下文与 cause。
+- [ ] **Step 6: 加注释**：文件头（职责=对外唯一网络入口；边界=不创建 ticket、不启动 executor——那是 manager 的职责）；导出方法 doc 注释。
+- [ ] **Step 7: Commit** `git commit -m "feat: agentd HTTP/WS 服务与 reply 回程"`
 
 ---
 
-### Task 6: gate / ask——executor 侧挂载命令
+### Task 6: opencode API 客户端 + serve 进程管理
 
 **Files:**
-- Create: `cmd/gate.go`, `cmd/ask.go`
-- Test: `internal/agentd/mount_test.go`（gate/ask 的核心逻辑抽到可测函数，cmd 只做壳）
+- Create: `internal/executor/opencode/api.go`, `internal/executor/opencode/proc.go`
+- Test: `internal/executor/opencode/api_test.go`（httptest 起 fake opencode server 驱动，不依赖真实 opencode）
 
 **Interfaces:**
-- Consumes: `/local/tickets` 端点
 - Produces:
-  - `handoff gate --task <id>`：从 stdin 读 PreToolUse hook JSON（含 `session_id`,`tool_name`,`tool_input`），ticket_id = `sha256(session_id|tool_name|tool_input)` 前 16 hex（同一工具调用重试幂等），POST /local/tickets 阻塞；answer 为 `"allow"`/`"deny"`/`"deny:<原因>"`，stdout 输出 hook 决策 JSON 后退出 0：
 
-```json
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"handoff 审核者批准"}}
+```go
+// api.go —— opencode server 的最小 HTTP 客户端
+func NewAPI(baseURL, password string) *API   // basic auth: 用户名 opencode
+func (a *API) CreateSession(ctx context.Context) (sessionID string, err error)        // POST /session
+func (a *API) PromptAsync(ctx context.Context, sessionID, text string) error          // POST /session/{id}/prompt_async
+func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response string) error // POST /session/{id}/permissions/{permID}，response: "once"|"reject"
+// SubscribeEvents 连 GET /event（SSE），每条事件回调 onEvent(raw json.RawMessage)；
+// 断流指数退避 1s→2s→…→30s 自动重连，ctx 取消才返回。未知/解析失败的行 Debug 跳过。
+func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage)) error
+
+// proc.go —— opencode serve 进程管理
+type Proc struct{ Port int; Password string; TmuxSession string }
+// StartServe 在 tmux 内拉起 `opencode serve --port <随机空闲端口> --hostname 127.0.0.1`，
+// cwd=repoPath，env 注入 OPENCODE_SERVER_PASSWORD 与 OPENCODE_CONFIG（Task 10 生成的配置路径）；
+// 轮询 GET / 直至就绪（10s 超时）。tmux session 命名 handoff-<id8>。
+func StartServe(ctx context.Context, repoPath, taskID, configPath string, log *slog.Logger) (*Proc, error)
+func (p *Proc) Alive() bool        // tmux has-session && HTTP 探活
+func (p *Proc) Kill() error        // tmux kill-session
 ```
 
-  - `handoff ask --task <id> "<问题>"`：ticket_id 新生成 uuid 并**先写入** `~/.handoff/tasks/<id>/last_ask`（进程若被超时杀死，重试入口存在），阻塞，answer 原文打印 stdout；`handoff ask --task <id> --wait <ticket>` 走 `GET /local/tickets/{id}` 重等。
-  - agentd 侧不可达时：gate 输出 `permissionDecision:"deny"` + reason=agentd 不可达（**fail-closed**，绝不放行）；ask 打印错误到 stderr 退出 1。
-
-- [ ] **Step 1: 写失败测试**：`TestGateTicketID`（相同 stdin 两次算出相同 id；不同 tool_input 不同 id）；`TestGateOutputMapping`（answer "allow"→JSON permissionDecision allow；"deny:太危险"→deny 且 reason 含"太危险"）；`TestGateFailClosed`（指向不存在端口 → 输出 deny JSON、退出码 0——hook 要求 0 才能解析 stdout）。
-- [ ] **Step 2: 确认失败** → **Step 3: 实现**（核心函数 `RunGate(in io.Reader, out io.Writer, agentdURL, taskID string) error` 放 internal/agentd/mount.go，cmd/gate.go 调它）→ **Step 4: 确认通过**
-- [ ] **Step 5: 加日志**：gate/ask 的日志写 stderr（stdout 是协议通道，绝不能污染）：请求发出 Info（task、ticket、kind）、拿到 answer Info（等待时长）、fail-closed 触发 Error（cause）。
-- [ ] **Step 6: 加注释**：文件头；「为什么 fail-closed」「为什么 ticket 先落盘再阻塞」两处 why 注释。
-- [ ] **Step 7: Commit** `git commit -m "feat: gate/ask executor 挂载命令（fail-closed + ticket 幂等）"`
+- [ ] **Step 1: 写失败测试**：`TestCreateSessionAndPrompt`（fake server 校验路径/方法/basic auth 头/请求体，返回固定 session id）；`TestRespondPermissionBody`（断言 body 含 `{"response":"once"}`）；`TestSubscribeReconnect`（fake SSE 发两条后断开连接，客户端重连后收到第三条——onEvent 共被调 3 次）；`TestSubscribeTolerantGarbage`（夹杂非 JSON 行不中断）。
+- [ ] **Step 2: 确认失败** → **Step 3: 实现**（SSE 手写解析：按行读 `data: ` 前缀聚合，`bufio.Scanner` 加大 buffer 到 1MB——事件里可能带大段文本）→ **Step 4: 确认通过**
+- [ ] **Step 5: 加日志**：每个 API 调用前后 Info（session、path、耗时），失败 Error 带响应体截断 200 字符；SSE 连接建立/断流/重连尝试 Info（第 n 次、退避秒数）——断流重连是核心链路必须可观测；StartServe Info（port、tmux session、就绪耗时）、就绪超时 Error 带 stderr 尾部。
+- [ ] **Step 6: 加注释**：两文件头（api 职责=opencode HTTP/SSE 唯一出口，边界=不理解事件语义——语义归 adapter；proc 职责=进程生命周期，边界=不碰会话）；「为什么进程放 tmux 而不是 agentd 子进程」（agentd 重启不杀任务 + 用户可 attach 旁观）、「为什么 SSE 手写解析不引依赖」两处 why 注释。
+- [ ] **Step 7: Commit** `git commit -m "feat: opencode HTTP/SSE 客户端与 serve 进程管理"`
 
 ---
 
@@ -373,10 +383,11 @@ CLI 行为（审核者的使用界面，输出全是单行 JSON 便于我解析�
 
 ---
 
-### Task 8: executor adapter 接口 + fake adapter + manager + 核心闭环集成测试
+### Task 8: Adapter 接口 + fake adapter + manager 中介 + 核心闭环集成测试
 
 **Files:**
 - Create: `internal/executor/executor.go`, `internal/executor/fake/fake.go`, `internal/agentd/manager.go`
+- Modify: `internal/agentd/server.go`（挂 dispatch/continue/done 三条路由到 Manager）, `internal/client/client.go`（加 Dispatch/Continue/Done）, 新增 `cmd/dispatch.go`, `cmd/continue.go`, `cmd/done.go`
 - Test: `internal/agentd/integration_test.go`
 
 **Interfaces:**
@@ -384,51 +395,70 @@ CLI 行为（审核者的使用界面，输出全是单行 JSON 便于我解析�
 
 ```go
 // internal/executor/executor.go
-type StartReq struct{ Task proto.Task; PlanContent string; AgentdLocalURL string; TaskDir string }
-type Result struct{ Branch, CommitHash, SessionID, Summary string; ExitCode int }
+type StartReq struct{ Task proto.Task; PlanContent string; TaskDir string }
+type Result struct{ Branch, CommitHash, SessionID, Summary string; OK bool; FailReason string }
+type AdapterEvent struct {
+	Type string          // "permission" | "question" | "progress" | "result"
+	PermissionID string  // Type=permission 时有效（同时用作 ticket id，天然幂等）
+	Text string          // permission 描述 / question 原文 / progress 文本
+	Result *Result       // Type=result 时有效
+}
 type Adapter interface {
-	Start(ctx context.Context, req StartReq) error            // 异步启动，立即返回
-	Continue(ctx context.Context, task proto.Task, instructions string) error
-	Wait(taskID string) <-chan Result                          // 本轮执行结束（completed/failed 判定材料）
+	Start(ctx context.Context, req StartReq) error                 // 异步启动，立即返回
+	Events(taskID string) <-chan AdapterEvent                      // 该任务的事件流（Start 后可用）
+	Send(ctx context.Context, taskID, text string) error           // 回答提问 / 回发修改指令（同一会话续接）
+	RespondPermission(ctx context.Context, taskID, permID, decision string) error // decision: "once"|"reject"
 	Stop(taskID string) error
 }
-// internal/agentd/manager.go
+
+// internal/agentd/manager.go —— 状态机中枢 + adapter 事件中介
 func NewManager(st *store.Store, hub *Hub, ad executor.Adapter, cfg *config.Config, log *slog.Logger) *Manager
-func (m *Manager) Dispatch(ctx, DispatchReq) (*proto.Task, error) // 建 task(pending)→建 taskDir 写 plan→Adapter.Start→state=running→goroutine 等 Result
-func (m *Manager) Continue(ctx, taskID, instructions string) error // waiting_review→running→Adapter.Continue→等 Result
-func (m *Manager) Done(ctx, taskID string) error                   // waiting_review→completed
-// Result 到达: ExitCode==0 → AppendEvent(completed,{branch,commit,summary}) + state=waiting_review
-//             ExitCode!=0 → AppendEvent(failed,{summary,exit_code}) + state=waiting_review（失败也交审核者裁决）
+func (m *Manager) Dispatch(ctx, DispatchReq) (*proto.Task, error) // 建 task(pending)→建 taskDir 写 plan→Adapter.Start→state=running→goroutine 消费 Events
+func (m *Manager) Continue(ctx, taskID, instructions string) error // waiting_review→running→Adapter.Send
+func (m *Manager) Done(ctx, taskID string) error                   // waiting_review→completed→Adapter.Stop
 ```
 
-fake adapter：`fake.New(script []fake.Step)`，Step 类型：`{Gate: "工具描述"}`（模拟 hook：POST /local/tickets kind=gate，期望拿到 answer）、`{Ask: "问题"}`、`{Finish: Result{...}}`。每步顺序执行，供集成测试脚本化驱动。
+manager 的事件中介循环（每任务一个 goroutine，这是整个系统的心脏）：
 
-manager 同时把 Task 5 的 server 补全：`POST /api/tasks`（dispatch，body: repo/plan_b64/plan_name/target）、`POST /api/tasks/{id}/continue`、`POST /api/tasks/{id}/done` 三个路由接到 Manager；client 包加 `Dispatch/Continue/Done` 三个方法与 `cmd/dispatch.go`、`cmd/continue.go`、`cmd/done.go`（薄壳，dispatch 读本地 plan 文件 base64 上传）。
+```go
+// permission: CreateTicket(id=ev.PermissionID, kind="gate") → AppendEvent(permission_request)+Publish
+//             → state=waiting_answer → go { ans := hub.WaitAnswer(ticket)
+//               → ans=="allow" ? RespondPermission("once") : RespondPermission("reject") → state=running }
+// question:   CreateTicket(id=uuid, kind="ask") → AppendEvent(question)+Publish → state=waiting_answer
+//             → go { ans := hub.WaitAnswer(ticket) → Send(ans) → state=running }
+// progress:   AppendEvent(progress)+Publish（不改状态）
+// result:     OK → AppendEvent(completed,{branch,commit,summary}) ；!OK → AppendEvent(failed,{fail_reason})
+//             两者都 → state=waiting_review（失败也交审核者裁决，不自动重试烧 token）
+```
+
+fake adapter：`fake.New(script []fake.Step)`，Step：`{Permission: "Bash: go test ./..."}`（发 permission 事件后阻塞，直到 RespondPermission 被调，记录 decision）、`{Question: "..."}`（阻塞到 Send）、`{Finish: Result{...}}`。Send/RespondPermission 的实参全部记录供断言。
 
 - [ ] **Step 1: 写核心闭环集成测试（本计划最重要的测试）**：
 
 ```go
 func TestFullLoop(t *testing.T) {
-	// fake script: Gate("Bash: go test ./...") → Ask("表结构用单数还是复数?") → Finish(ok, branch=handoff/T1)
+	// fake script: Permission("Bash: go test ./...") → Question("表结构用单数还是复数?") → Finish(OK, branch=handoff/T1)
 	// 1. client.Dispatch(plan) → task running
 	// 2. client.WaitEvent → permission_request；client.Reply(ticket,"allow")
+	//    → 断言 fake 收到 RespondPermission("once")
 	// 3. client.WaitEvent → question；client.Reply(ticket,"复数")
+	//    → 断言 fake 收到 Send("复数")（回答原文无损透传）
 	// 4. client.WaitEvent → completed(payload 含 branch/commit)；task.state==waiting_review
-	// 5. client.Continue("把 users 表加索引") → fake 收到 instructions；再 Finish → 再收 completed
-	// 6. client.Done → task.state==completed
-	// 全程断言 fake 拿到的 answer 与 reply 一致（审批/回答内容无损透传）
+	// 5. client.Continue("把 users 表加索引") → 断言 fake 收到 Send(指令)；再 Finish → 再收 completed
+	// 6. client.Done → task.state==completed 且 fake 收到 Stop
 }
+func TestFullLoopDeny(t *testing.T)   // Reply "deny:太危险" → fake 收到 RespondPermission("reject")
 func TestRecoverMidTask(t *testing.T) {
-	// fake 停在 Ask 阻塞 → 新建 client（模拟全新审核者会话）→ ListTasks 看到 waiting_answer
+	// fake 停在 Question 阻塞 → 新建 client（模拟全新审核者会话）→ ListTasks 看到 waiting_answer
 	// → Attach 拿到 pending_tickets[0] 就是该问题 → Reply 后流程继续走完
 	// 这是 spec §7「会话恢复」的验收测试
 }
 ```
 
-- [ ] **Step 2: 确认失败** → **Step 3: 实现 fake + manager + 三条新路由/命令** → **Step 4: 确认通过**（`go test -race ./...`）
-- [ ] **Step 5: 加日志**：manager 是状态机中枢，每次状态迁移 Info（task、from→to、触发原因）；Dispatch/Continue/Done 入口出口 Info；Result 到达 Info（task、exit_code、branch、commit）；Adapter.Start 失败 Error 并 state=failed。fake 里 Debug 级步骤日志。
-- [ ] **Step 6: 加注释**：executor.go 文件头（Adapter 契约=五动作，实现方不得直接碰 store——所有状态由 manager 写，这条边界防止 adapter 与 manager 双写打架）；manager.go 文件头 + 状态迁移处 why 注释（失败也进 waiting_review 的原因：让审核者看到失败现场决定重试话术，而不是自动重试烧 token）。
-- [ ] **Step 7: Commit** `git commit -m "feat: adapter 接口、fake 实现、manager 生命周期与核心闭环集成测试"`
+- [ ] **Step 2: 确认失败** → **Step 3: 实现 fake + manager + 三条新路由/命令**（dispatch 读本地 plan 文件 base64 上传：body {repo, plan_b64, plan_name, target}）→ **Step 4: 确认通过**（`go test -race ./...`）
+- [ ] **Step 5: 加日志**：manager 是状态机中枢，每次状态迁移 Info（task、from→to、触发原因）；中介循环每类事件入口 Info（task、type、ticket/perm id）；WaitAnswer 解除 Info（ticket、等待时长、answer 截断 80 字符）；Dispatch/Continue/Done 出入口 Info；Adapter.Start 失败 Error 并 state=failed；Result 到达 Info（task、ok、branch、commit）。fake 里 Debug 级步骤日志。
+- [ ] **Step 6: 加注释**：executor.go 文件头（Adapter 契约=五动作，实现方不得直接碰 store——所有状态由 manager 写，这条边界防止 adapter 与 manager 双写打架；PermissionID 复用为 ticket id 的幂等含义）；manager.go 文件头 + 「失败也进 waiting_review」的 why 注释。
+- [ ] **Step 7: Commit** `git commit -m "feat: adapter 接口、fake 实现、manager 中介与核心闭环集成测试"`
 
 ---
 
@@ -460,146 +490,137 @@ HTTP：`GET /api/tasks/{id}/diff`、`GET /api/tasks/{id}/file?path=`、`POST /ap
 
 ---
 
-### Task 10: Claude adapter——settings/hooks/prompt 生成
+### Task 10: opencode 任务环境——配置、prompt 与 trailer 解析
 
 **Files:**
-- Create: `internal/executor/claude/settings.go`
-- Test: `internal/executor/claude/settings_test.go`
+- Create: `internal/executor/opencode/taskenv.go`
+- Test: `internal/executor/opencode/taskenv_test.go`
 
 **Interfaces:**
 - Produces:
 
 ```go
-// WriteTaskFiles 在 taskDir 生成 settings.json 与 prompt.md，返回二者路径。
-func WriteTaskFiles(taskDir, taskID, agentdLocalURL, planContent, selfBin string) (settingsPath, promptPath string, err error)
+// WriteTaskEnv 在 taskDir 生成 opencode 配置与任务 prompt，返回二者路径。
+func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath string, err error)
+// ParseTrailer 从回合末消息文本提取协议 JSON（取最后一个以 { 开头的行）。
+// 返回 kind: "ask"（附 Question）| "finish"（附 Branch/Commit/Summary）| "none"
+func ParseTrailer(text string) (kind string, t Trailer)
+type Trailer struct{ Question, Branch, Commit, Summary string }
 ```
 
-settings.json 内容（selfBin 为 handoff 自身绝对路径 `os.Executable()`）：
+配置文件 `opencode.json`（经 `OPENCODE_CONFIG` 注入，spec 风险 #2 的 spike 在 Task 12 清单验证；fallback=写 repo 内 + gitignore）：
 
 ```json
 {
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "*",
-      "hooks": [{
-        "type": "command",
-        "command": "<selfBin> gate --task <taskID> --agentd <agentdLocalURL>",
-        "timeout": 86400
-      }]
-    }]
-  },
-  "env": {
-    "BASH_DEFAULT_TIMEOUT_MS": "600000",
-    "BASH_MAX_TIMEOUT_MS": "86400000"
+  "permission": {
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "ask",
+    "external_directory": "ask"
   }
 }
 ```
 
-prompt.md 模板（executor 纪律，spec §6/§7 的落地）：
+prompt.md 模板（回合制纪律，spec §6 的落地，`text/template` 渲染）：
 
 ```markdown
-你是 handoff 任务 {{TaskID}} 的执行者，按下方实现计划执行。铁律：
-1. 提问纪律：任何需要人决策的问题，必须执行 Bash 命令
-   `{{SelfBin}} ask --task {{TaskID}} "<问题>"`，其 stdout 即回答。
-   禁止自行假设，禁止以其它方式提问。命令被超时中断时，
-   读 ~/.handoff/tasks/{{TaskID}}/last_ask 拿 ticket，
-   用 `{{SelfBin}} ask --task {{TaskID}} --wait <ticket>` 重新等待。
+你是 handoff 任务 {{.TaskID}} 的执行者，按下方实现计划执行。铁律：
+1. 提问纪律：任何需要人决策的问题，输出单行 JSON `{"ask":"<问题>"}`
+   然后结束本回合。审核者的回答会作为下一条消息发给你。
+   禁止自行假设，禁止用其它格式提问。
 2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），
-   最后一条输出为单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}。
-3. 只在当前分支工作，不切分支、不改 git 配置、不动 .handoff 目录。
+   然后输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}
+   作为本回合最后一行。
+3. 只在当前分支工作，不切分支、不改 git 配置。
 
 --- 实现计划 ---
-{{PlanContent}}
+{{.PlanContent}}
 ```
 
-- [ ] **Step 1: 写失败测试**：`TestWriteTaskFiles`——生成后 settings.json 能被 `json.Unmarshal` 且 hook command 含 `gate --task T1`、timeout==86400；prompt.md 含 plan 原文与 `ask --task T1`；重复调用幂等覆盖。
-- [ ] **Step 2: 确认失败** → **Step 3: 实现**（settings 用 Go 结构体 marshal 而非字符串拼接——防转义错误；prompt 用 `text/template`）→ **Step 4: 确认通过**
-- [ ] **Step 5: 加日志**：生成成功 Info（taskDir、两个路径）；写失败 Error 带 path。
-- [ ] **Step 6: 加注释**：文件头（职责=executor 环境物料生成；边界=不启动进程）；「为什么 matcher 用 * 而不是只拦 Bash」的 why 注释（写文件/编辑也要过审批门，权限策略在审核者侧收敛，代码不预设立场）。
-- [ ] **Step 7: Commit** `git commit -m "feat: claude adapter 的 hooks settings 与 prompt 生成"`
-
----### Task 11: Claude adapter——tmux 启动、stream-json 解析、完成检测
-
-**Files:**
-- Create: `internal/executor/claude/claude.go`, `internal/executor/claude/stream.go`
-- Modify: `cmd/agentd.go`（根据 flag `--executor=claude|fake` 选 adapter，默认 claude）
-- Test: `internal/executor/claude/stream_test.go`, `internal/executor/claude/claude_test.go`
-
-**Interfaces:**
-- Consumes: Task 8 的 `executor.Adapter` 接口、Task 10 的 `WriteTaskFiles`
-- Produces: `claude.New(log *slog.Logger) *Adapter`（实现 executor.Adapter）
-
-启动命令（Start 内组装，写成 taskDir/run.sh 再交给 tmux，便于人工复跑排障）：
-
-```bash
-#!/bin/sh
-cd <repoPath>
-claude -p "$(cat <taskDir>/prompt.md)" \
-  --settings <taskDir>/settings.json \
-  --output-format stream-json --verbose \
-  > <taskDir>/stream.jsonl 2> <taskDir>/stderr.log
-echo $? > <taskDir>/exit_code
-```
-
-```bash
-tmux new-session -d -s "handoff-<id8>" "sh <taskDir>/run.sh"
-# 可见性：再开一个窗口跑渲染视图（v1 就是 tail，人能看到 executor 在动）
-tmux new-window -t "handoff-<id8>" "tail -f <taskDir>/stream.jsonl"
-```
-
-stream.go——tail 解析器（500ms 轮询读增量行，不引 fsnotify 依赖）：
-
-```go
-type StreamInfo struct{ SessionID string; LastText string } // LastText: 最后一条 assistant 文本，作 progress/summary 素材
-// TailUntilExit 阻塞解析直至 exit_code 文件出现；每条 assistant 文本回调 onProgress（manager 转 progress 事件）。
-func TailUntilExit(ctx context.Context, taskDir string, onProgress func(text string)) (StreamInfo, int, error)
-// 关注的行: {"type":"system","subtype":"init","session_id":...} 与 {"type":"assistant","message":{"content":[{"type":"text",...}]}}
-// 与 {"type":"result",...}；未知行 Debug 后跳过（stream-json 字段随版本演进，解析必须宽容）
-```
-
-完成检测（Wait 返回 Result 前）：读 exit_code；解析 LastText 里的收尾 JSON（`{"branch":...,"commit":...,"summary":...}`，用正则提取最后一个 `{...}` 行再 Unmarshal）；解析不到则回退用 `git -C repo rev-parse --abbrev-ref HEAD` + `rev-parse HEAD` 兜底取 branch/commit，summary 取 LastText 截断——**executor 不守纪律不导致流程卡死，只降低摘要质量**。Continue 用 `--resume <SessionID>`，其余同 Start。Stop = `tmux kill-session`。
-
-- [ ] **Step 1: 写失败测试**（不依赖真实 claude，用预制 stream.jsonl 文件驱动）：`TestTailParsesSessionAndResult`（造 init/assistant/result 三行 + exit_code 文件，断言 SessionID、LastText、onProgress 调用次数）；`TestTailTolerantToUnknownLines`（夹杂垃圾行不 panic 不报错）；`TestResultFallbackWhenNoTrailerJSON`（LastText 无收尾 JSON 时走 git 兜底——git 部分用 Task 9 的测试仓库）。
-- [ ] **Step 2: 确认失败** → **Step 3: 实现** → **Step 4: 确认通过**
-- [ ] **Step 5: 加日志**：Start Info（task、tmux session、run.sh 路径）；tmux 命令失败 Error 带 stderr；解析到 session_id Info；exit_code 出现 Info（code、耗时）；收尾 JSON 解析失败走兜底时 **Warn**（task、LastText 尾部 120 字符）——这是「executor 不守纪律」的观测点，必须可见；Continue/Stop 入口 Info。
-- [ ] **Step 6: 加注释**：两文件头；「为什么进程放 tmux 而不是 agentd 直接子进程」（agentd 重启不杀任务 + 用户可 attach 旁观）、「为什么解析必须宽容」两处 why 注释。
-- [ ] **Step 7: Commit** `git commit -m "feat: claude adapter 启动/流解析/完成检测"`
+- [ ] **Step 1: 写失败测试**：`TestWriteTaskEnv`（生成后 opencode.json 可 Unmarshal 且 permission.bash=="ask"；prompt.md 含 plan 原文与 `{"ask":`；重复调用幂等覆盖）；`TestParseTrailer` 表驱动（末行 `{"ask":"用哪个库?"}` → kind=ask；末行 finish JSON → kind=finish 各字段正确；正文中间出现 JSON 但末行是普通文本 → 取最后一个 `{` 开头行；全文无 JSON → none；JSON 损坏 → none 不 panic）。
+- [ ] **Step 2: 确认失败** → **Step 3: 实现**（配置用 Go 结构体 marshal 而非字符串拼接——防转义错误）→ **Step 4: 确认通过**
+- [ ] **Step 5: 加日志**：生成成功 Info（taskDir、两个路径）；写失败 Error 带 path。ParseTrailer 是纯函数不打日志（调用方打）。
+- [ ] **Step 6: 加注释**：文件头（职责=executor 环境物料与回合协议解析；边界=不启动进程、不发请求）；「为什么 permission 只设四类为 ask」（read/grep/glob 等只读操作放行，审批噪音会淹没审核者——权限收敛策略的代码侧底线，细粒度判断在审核者侧）的 why 注释。
+- [ ] **Step 7: Commit** `git commit -m "feat: opencode 任务配置、回合制 prompt 与 trailer 解析"`
 
 ---
 
-### Task 12: 看门狗 + wait --notify + 端到端手动验证清单
+### Task 11: opencode adapter 组装
+
+**Files:**
+- Create: `internal/executor/opencode/adapter.go`
+- Modify: `cmd/agentd.go`（flag `--executor=opencode|fake`，默认 opencode）
+- Test: `internal/executor/opencode/adapter_test.go`（复用 Task 6 的 fake opencode server，全程不依赖真实 opencode）
+
+**Interfaces:**
+- Consumes: Task 6 的 `API`/`Proc`、Task 8 的 `executor.Adapter` 契约、Task 10 的 `WriteTaskEnv`/`ParseTrailer`
+- Produces: `opencode.New(log *slog.Logger) *Adapter`（实现 executor.Adapter）
+
+Start 流程：`WriteTaskEnv` → `StartServe`（tmux，cwd=repo，OPENCODE_CONFIG 注入）→ `CreateSession`（session id 经 manager 写入 task.ExecutorSession）→ `PromptAsync(prompt)` → 起 goroutine `SubscribeEvents` 做事件映射。可见性：tmux 第二窗口 `tail -f <taskDir>/render.log`，adapter 把 SSE 里的消息文本追加渲染进 render.log。
+
+SSE → AdapterEvent 映射（事件名以 spike 抓到的真实样本为准，解析必须宽容）：
+
+```go
+// permission 类事件（如 permission.updated，含 permissionID 与描述）
+//   → AdapterEvent{Type:"permission", PermissionID, Text: 工具与参数描述}
+// 消息文本增量事件 → 累积当前回合文本；追加 render.log；节流后发 progress（每 30s 至多 1 条）
+// 回合结束事件（session idle 类）→ ParseTrailer(当前回合全文):
+//   kind=ask    → AdapterEvent{Type:"question", Text: t.Question}
+//   kind=finish → AdapterEvent{Type:"result", Result:{OK:true, Branch,Commit,Summary, SessionID}}
+//   kind=none   → 兜底：git -C repo log 对比任务起点有新 commit？
+//                 有 → result OK（branch/commit 用 git 实况，summary=回合末 200 字符，Warn 记录不守纪律）
+//                 无 → AdapterEvent{Type:"question", Text: 回合全文}（交审核者裁决，流程不卡死）
+// serve 进程死亡（Alive()==false 且 SSE 断流重连 3 次失败）
+//   → AdapterEvent{Type:"result", Result:{OK:false, FailReason:"opencode serve 已退出", ...stderr 尾部}}
+```
+
+Send = `PromptAsync`（同一 session，原生续接）；RespondPermission = `API.RespondPermission`；Stop = `Proc.Kill`。
+
+- [ ] **Step 1: 写失败测试**（fake opencode server 按脚本推 SSE 事件）：`TestStartToPermissionFlow`（推 permission 事件 → Events 收到 Type=permission；RespondPermission 转发到 fake 收到 once）；`TestIdleClassifyAsk`（推文本 + idle → question 事件文本正确）；`TestIdleClassifyFinish`（trailer finish → result OK 字段正确）；`TestIdleFallbackNoTrailer`（无 trailer、测试 repo 无新 commit → question 兜底）；`TestServeDeathEmitsFailed`（杀 fake server 且探活失败 → result !OK）。
+- [ ] **Step 2: 确认失败** → **Step 3: 实现** → **Step 4: 确认通过**（`go test -race ./internal/executor/...`）
+- [ ] **Step 5: 加日志**：Start 各阶段 Info（taskDir、port、session id）；每个 AdapterEvent 产出 Info（task、type、关键字段截断）；trailer 走兜底 **Warn**（task、回合末 120 字符）——「executor 不守纪律」的观测点必须可见；serve 死亡 Error 带 stderr 尾部；Send/RespondPermission/Stop 出入口 Info。
+- [ ] **Step 6: 加注释**：文件头（职责=opencode 语义到 Adapter 契约的翻译层；边界=不写 store、不做审批判断）；「回合文本累积与节流 progress」「兜底分类规则」两处 why 注释。
+- [ ] **Step 7: Commit** `git commit -m "feat: opencode adapter 组装与事件映射"`
+
+---
+
+### Task 12: 看门狗 + 启动恢复 + wait --notify + e2e 手动验证清单
 
 **Files:**
 - Create: `internal/agentd/watchdog.go`, `docs/superpowers/e2e-checklist.md`
-- Modify: `cmd/agentd.go`（启动 watchdog goroutine）, `cmd/wait.go`（--notify）
+- Modify: `cmd/agentd.go`（启动 watchdog goroutine + RecoverOnStartup）, `cmd/wait.go`（--notify）
 - Test: `internal/agentd/watchdog_test.go`
 
 **Interfaces:**
 - Produces: `RunWatchdog(ctx, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger)`——每分钟扫 running/waiting_answer 任务，最新 event 时间早于 stallTimeout → AppendEvent(stalled,{last_seq,idle}) + Publish（只发一次：已有 stalled 且其后无新事件则不重发）。
-- Produces: `RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool, log *slog.Logger) error`——agentd 启动时对 running/waiting_answer 任务逐个探测执行器存活（claude adapter 的 probe = `tmux has-session -t handoff-<id8>` 退出码），不存活 → AppendEvent(failed,{reason:"agentd 重启后执行器已不在"}) + state=waiting_review（spec §8）。cmd/agentd.go 在起 HTTP 服务前调用。
+- Produces: `RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool, log *slog.Logger) error`——agentd 启动时对 running/waiting_answer 任务逐个探测执行器存活（opencode adapter 的 probe = `Proc.Alive()`：tmux has-session + HTTP 探活），不存活 → AppendEvent(failed,{reason:"agentd 重启后执行器已不在"}) + state=waiting_review；存活 → 重建 SSE 订阅继续消费（spec §8）。cmd/agentd.go 在起 HTTP 服务前调用。
 
 - [ ] **Step 1: 写失败测试**：`TestWatchdogFiresOnceOnStall`（造一个 last event 3h 前的 running 任务，tick 两轮只产生一条 stalled）；`TestWatchdogIgnoresFreshAndTerminal`（新鲜任务与 completed 任务不触发）；`TestRecoverOnStartup`（probe 恒 false 的 running 任务 → failed 事件 + waiting_review；probe 恒 true 的不动）。tick 间隔做成参数便于测试注入 10ms。
 - [ ] **Step 2: 确认失败** → **Step 3: 实现 + wait.go 加 --notify**（事件到达时 `exec.Command("osascript","-e", "display notification ... with title \"handoff\"")`，仅 darwin，失败仅 Warn 不影响主流程）→ **Step 4: 确认通过**
-- [ ] **Step 5: 加日志**：watchdog 扫描轮 Debug（扫了几个）、触发 stalled Warn（task、idle 时长）；notify 失败 Warn。
+- [ ] **Step 5: 加日志**：watchdog 扫描轮 Debug（扫了几个）、触发 stalled Warn（task、idle 时长）；RecoverOnStartup 每任务结论 Info（task、alive、动作）；notify 失败 Warn。
 - [ ] **Step 6: 加注释**：文件头 + 「只发一次」防事件风暴的 why。
-- [ ] **Step 7: 写 e2e 手动验证清单** `docs/superpowers/e2e-checklist.md`（真实 claude 环境逐项打勾）：
+- [ ] **Step 7: 写 e2e 手动验证清单** `docs/superpowers/e2e-checklist.md`（真实 opencode 环境逐项打勾）：
 
 ```markdown
-# E2E 手动验证清单（真实 Claude Code）
-前置：本机装 claude CLI 并已登录；`handoff agentd` 已起（--executor=claude）。
-- [ ] SPIKE-1（spec 风险#1）：dispatch 一个「跑 `sleep 1 && echo hi`」的迷你 plan，
-      不 reply 搁置 30min 后再 approve —— hook 长阻塞未被掐断，executor 继续执行
-- [ ] SPIKE-2（spec 风险#2）：plan 中埋一个需要决策的问题，观察 executor 是否用 ask 提问而非自行假设
-- [ ] dispatch → wait 被 permission_request 唤醒 → approve → completed → diff 有内容
-- [ ] ask 全链路：executor 提问 → wait 唤醒 → reply --answer → executor 拿到原文
-- [ ] continue：回发修改指令 → --resume 续会话 → 二轮 completed diff 含新改动
+# E2E 手动验证清单（真实 opencode）
+前置：executor 机装 opencode 并配好模型凭证；`handoff agentd --executor=opencode` 已起。
+- [ ] SPIKE-1（spec 风险#1）：手动 `opencode serve` + curl 建会话发 prompt，抓 /event SSE 原始样本：
+      确认 permission 事件类型名/字段、回合结束（idle）事件类型名 —— 对照调整 adapter 映射
+- [ ] SPIKE-2（spec 风险#2）：验证 OPENCODE_CONFIG 环境变量注入配置生效（permission.bash=ask 真的会问）；
+      不生效则切 fallback：写 repo 内 opencode.json + gitignore
+- [ ] dispatch → wait 被 permission_request 唤醒 → approve → 执行继续 → completed → diff 有内容
+- [ ] deny 链路：reply --deny 后 executor 收到 reject 并调整做法
+- [ ] 提问链路：executor 输出 {"ask":...} → wait 唤醒 → reply --answer → 下一回合收到原文
+- [ ] 审批挂起过夜：permission 不答搁置 8h 后 approve —— opencode 侧等待不超时、流程继续（替代原 hook 长阻塞 spike）
+- [ ] continue：回发修改指令 → 同一 session 续接 → 二轮 completed diff 含新改动
 - [ ] 断网演练：wait 期间关 Wi-Fi 3min 恢复 → 自动重连并收到期间积压事件
 - [ ] 恢复演练：杀掉审核者会话 → 新会话 tasks+attach 重建现场 → 处理 pending 后流程走通
-- [ ] tmux attach 能看到 executor 实况；agentd 重启后 running 任务仍在（tmux 存活探测）
+- [ ] agentd 重启：任务执行中重启 agentd → RecoverOnStartup 重连 SSE，流程不中断
+- [ ] tmux attach 能看到 render.log 实况滚动
 - [ ] 远程演练（可选功能）：devbox 上起 agentd，本机 --target devbox 跑通上述主链路
 ```
 
-- [ ] **Step 8: Commit** `git commit -m "feat: 看门狗、通知兜底与 e2e 验证清单"`
+- [ ] **Step 8: Commit** `git commit -m "feat: 看门狗、启动恢复、通知兜底与 e2e 验证清单"`
 
 ---
 
@@ -609,8 +630,8 @@ func TailUntilExit(ctx context.Context, taskDir string, onProgress func(text str
 - Create: `README.md`
 - Modify: 按自检结果修补
 
-- [ ] **Step 1: 写 README**：一段话定位、架构图（从 spec 复制）、快速开始（agentd 启动 / 配对 token / dispatch / 审核者侧典型循环）、命令速查表、审核者会话恢复两条命令、troubleshooting（去哪看日志：`~/.handoff/agentd.log`、taskDir 下 stream.jsonl / stderr.log）。
+- [ ] **Step 1: 写 README**：一段话定位、架构图（从 spec 复制）、快速开始（agentd 启动 / 配对 token / dispatch / 审核者侧典型循环）、命令速查表、审核者会话恢复两条命令、troubleshooting（去哪看日志：`~/.handoff/agentd.log`、taskDir 下 render.log / stderr.log；tmux session 命名规则）。
 - [ ] **Step 2: 全量回归** `go vet ./... && go test -race ./...`
-- [ ] **Step 3: instrumenting-code 终检**（逐项过，任一不过回去修）：每个错误分支带上下文日志；外部调用（git/tmux/HTTP/WS）前后有日志；成功路径不静默；无 fmt.Printf 充当日志；新文件全有头注释；导出函数全有 doc 注释。
+- [ ] **Step 3: instrumenting-code 终检**（逐项过，任一不过回去修）：每个错误分支带上下文日志；外部调用（git/tmux/HTTP/SSE/WS）前后有日志；成功路径不静默；无 fmt.Printf 充当日志；新文件全有头注释；导出函数全有 doc 注释。
 - [ ] **Step 4: 用户全局 CLAUDE.md §5 终审清单**逐项确认（完成目标/架构一致/注释/日志/无硬编码等）。
 - [ ] **Step 5: Commit** `git commit -m "docs: README 与收尾自检"`
