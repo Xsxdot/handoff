@@ -318,6 +318,35 @@ WHERE task_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, taskID, fromSeq, limit)
 	return events, nil
 }
 
+// LatestEvent 返回任务最新一条事件（seq 最大）。
+//
+// 返回：
+//   - 任务无任何事件时返回 ErrNotFound
+//
+// 注意：
+//   - 看门狗（stalled 判定）与启动恢复用「最新事件时刻」判断任务是否卡住，
+//     单条取最新即可，不必拉全量事件
+func (s *Store) LatestEvent(taskID string) (*proto.Event, error) {
+	var (
+		e         proto.Event
+		payload   string
+		createdAt string
+	)
+	err := s.db.QueryRowContext(context.Background(), `
+SELECT seq, task_id, type, payload, created_at FROM events
+WHERE task_id = ? ORDER BY seq DESC LIMIT 1`, taskID).
+		Scan(&e.Seq, &e.TaskID, &e.Type, &payload, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询任务 %s 最新事件: %w", taskID, err)
+	}
+	e.Payload = json.RawMessage(payload)
+	e.CreatedAt = parseTime(createdAt)
+	return &e, nil
+}
+
 // CreateTicket 幂等创建工单：同 id 重复调用不报错，第二次起 created 为 false。
 //
 // 参数：

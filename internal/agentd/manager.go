@@ -583,3 +583,54 @@ func (m *Manager) transitBestEffort(taskID string, to proto.TaskState, reason st
 		m.log.Error("状态迁移失败", "task", taskID, "to", to, "reason", reason, "cause", err)
 	}
 }
+
+// restorer 是「agentd 重启后重建执行」的可选 adapter 能力（opencode 实现）。
+//
+// 为什么不用类型断言外的方案：executor.Adapter 是 Task 3 定稿的五动作契约，
+// 为恢复能力加方法会污染 fake 等全部实现；且 fake 的运行态随进程消亡、本就不该
+// 支持恢复。把恢复作为可选能力（interface 断言）既保住核心契约，又让
+// 「不支持恢复的 adapter 重启后一律按不存活走 failed 恢复路径」成为自然语义。
+type restorer interface {
+	Resume(taskID, taskDir, repoPath, sessionID string) (bool, error)
+}
+
+// ResumeTask 恢复 agentd 重启前已在执行的任务：探测执行器存活；存活则经 adapter
+// 重建 SSE 订阅并重启本任务的中介循环（spec §8「存活则重连 SSE 继续」）。
+//
+// 返回：
+//   - true：执行器存活且事件流已重建，任务继续执行
+//   - false：执行器已不在（或 adapter 无恢复能力），供 RecoverOnStartup 把任务
+//     迁移 failed/waiting_review 交审核者裁决
+//
+// 注意：
+//   - 本方法作为 RecoverOnStartup 的探活闭包传入：存活的「重建订阅 + 重启中介
+//     循环」动作封装在闭包内部（见 watchdog.go RecoverOnStartup 的 seam 说明）
+//   - 重启前已挂起的权限/提问等待不需要在此重建：reply 回程的 resumeIfIdle
+//     自带「回答后无未答工单即回迁 running」的兜底（server.go），审核者回答
+//     挂起工单后任务自然恢复执行
+//   - 失败的恢复（adapter 报错）返回 false 而非错误：探活闭包契约只有 bool，
+//     具体原因已由 Error 日志留痕，恢复路径按不存活处理是保守且安全的选择
+//     （宁可交审核者裁决，不可静默吞掉仍在执行的任务事件）
+func (m *Manager) ResumeTask(taskID string) bool {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		m.log.Error("恢复读取任务失败", "task", taskID, "cause", err)
+		return false
+	}
+	r, ok := m.ad.(restorer)
+	if !ok {
+		m.log.Warn("adapter 不支持执行恢复，任务按不存活处理", "task", taskID)
+		return false
+	}
+	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
+	alive, err := r.Resume(taskID, taskDir, task.RepoPath, task.ExecutorSession)
+	if err != nil {
+		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)
+		return false
+	}
+	if alive {
+		m.log.Info("任务执行已重建，重启中介循环", "task", taskID)
+		go m.mediate(taskID)
+	}
+	return alive
+}

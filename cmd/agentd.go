@@ -3,6 +3,8 @@
 //
 // 职责：
 //   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault → store.Open → agentd.NewServer
+//   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
+//   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
 //
 // 边界：
@@ -11,6 +13,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -74,6 +77,18 @@ var agentdCmd = &cobra.Command{
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ad, cfg, logger)
 		srv.SetManager(mgr)
+
+		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
+		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
+		// 任务转 failed/waiting_review 交审核者裁决。探活与「重建订阅」封装在同一个
+		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
+		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, logger); err != nil {
+			return fmt.Errorf("启动恢复: %w", err)
+		}
+		// 任务卡住看门狗：周期扫描 running/waiting_answer 任务，长时间无事件产出
+		// 触发 stalled 事件唤醒审核者（独立 goroutine，不阻塞 HTTP 服务；
+		// MVP 无优雅关停，进程退出即随 ctx 结束）
+		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir)
 		return http.ListenAndServe(cfg.Listen, srv.Handler())
 	},

@@ -21,11 +21,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -171,6 +174,52 @@ func (p *Proc) capturePaneTail() string {
 		return ""
 	}
 	return tail(string(out), 500)
+}
+
+// serveInfoFileName 是 serve 连接凭据文件名（任务目录内，0600 权限）。
+const serveInfoFileName = "serve.json"
+
+// serveInfo 是 serve 进程连接凭据的持久化形态，agentd 重启后凭它重建订阅。
+type serveInfo struct {
+	Port        int    `json:"port"`
+	Password    string `json:"password"`
+	TmuxSession string `json:"tmux_session"`
+}
+
+// writeServeInfo 把 serve 连接凭据写入任务目录 serve.json。
+//
+// why（必须持久化）：agentd 重启后内存中的 Proc（端口/密码）丢失，而 tmux 内的
+// serve 进程独立存活（进程模型见文件头）；RecoverOnStartup 凭此文件探活并重建
+// SSE 订阅（spec §8）。写失败不阻断启动（adapter.Start 只 Warn），缺失时该任务
+// 重启后按「执行器已不在」转 failed 交审核者——保守胜于静默丢事件。
+func writeServeInfo(taskDir string, p *Proc) error {
+	b, err := json.Marshal(serveInfo{Port: p.Port, Password: p.Password, TmuxSession: p.TmuxSession})
+	if err != nil {
+		return fmt.Errorf("序列化 serve 凭据: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, serveInfoFileName), b, 0o600); err != nil {
+		return fmt.Errorf("写 serve 凭据 %s: %w", serveInfoFileName, err)
+	}
+	return nil
+}
+
+// readServeInfo 读取任务目录的 serve 连接凭据。
+//
+// 返回：
+//   - 文件缺失/损坏/字段不完整时返回错误（调用方据此判「无法重建订阅」）
+func readServeInfo(taskDir string) (*serveInfo, error) {
+	b, err := os.ReadFile(filepath.Join(taskDir, serveInfoFileName))
+	if err != nil {
+		return nil, fmt.Errorf("读 serve 凭据 %s: %w", serveInfoFileName, err)
+	}
+	var si serveInfo
+	if err := json.Unmarshal(b, &si); err != nil {
+		return nil, fmt.Errorf("解析 serve 凭据 %s: %w", serveInfoFileName, err)
+	}
+	if si.Port == 0 || si.Password == "" || si.TmuxSession == "" {
+		return nil, fmt.Errorf("serve 凭据 %s 字段不完整", serveInfoFileName)
+	}
+	return &si, nil
 }
 
 // freePort 找一个随机空闲端口。

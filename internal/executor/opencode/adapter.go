@@ -175,6 +175,11 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 	a.log.Info("opencode serve 已启动", "task", req.Task.ID,
 		"port", proc.Port, "tmux", proc.TmuxSession)
+	// serve 连接凭据落盘（serve.json）：agentd 重启后 RecoverOnStartup 凭它探活
+	// 与重建订阅；写失败不阻断启动（缺失时重启恢复按「执行器已不在」处理）
+	if err := writeServeInfo(req.TaskDir, proc); err != nil {
+		a.log.Warn("写 serve 连接凭据失败，重启恢复将不可用", "task", req.Task.ID, "cause", err)
+	}
 	api := NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)
 	if _, err := a.startRun(ctx, req, api, procHandle{p: proc}); err != nil {
 		if kerr := proc.Kill(); kerr != nil {
@@ -236,16 +241,79 @@ func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API,
 
 	// 记录任务起点 commit：兜底分类用 git 实况裁决「是否有新提交」的基线；
 	// 非 git 仓库或查询失败时留空，兜底一律按无新提交处理（转提问，不卡死）
+	r.captureStartCommit(a)
+
+	go r.subscribeLoop(a)
+	go a.watchdog(r)
+	return sessionID, nil
+}
+
+// captureStartCommit 记录任务起点 commit：git 兜底分类（fallbackClassify）用
+// 「是否有新提交」裁决的基线；非 git 仓库或查询失败时留空，兜底一律按无新提交处理。
+//
+// 由 startRun 与 Resume 复用：两者都需在订阅启动前定下本回合的 git 基线。
+func (r *runState) captureStartCommit(a *Adapter) {
 	if out, err := exec.Command("git", "-C", r.repoPath, "rev-parse", "HEAD").Output(); err != nil {
 		a.log.Warn("捕获任务起点 commit 失败，兜底按无新提交处理",
 			"task", r.taskID, "repo", r.repoPath, "cause", err)
 	} else {
 		r.startCommit = strings.TrimSpace(string(out))
 	}
+}
 
+// Resume 重建 agentd 重启前已在执行的任务（spec §8「存活则重连 SSE 继续」）：
+// 从任务目录的 serve.json 恢复 serve 连接凭据并探活（tmux 会话存在 + HTTP 应答）；
+// 存活则重建 SSE 订阅、看门狗与事件通道，返回 true。
+//
+// 参数：
+//   - taskID: 任务 ID（tmux 会话名按 handoff-<id8> 确定性推导，与 StartServe 同规则）
+//   - taskDir: 任务目录（serve.json 所在，即 DataDir/tasks/<id>）
+//   - repoPath: 任务仓库路径（重启后重新捕获 git 兜底分类的起点 commit 基线）
+//   - sessionID: 既有 opencode 会话 id（即 task.ExecutorSession）
+//
+// 返回：
+//   - alive: 执行器是否存活；false 时调用方（manager）应把任务迁移
+//     failed/waiting_review 交审核者裁决
+//   - err: 重建失败（serve.json 缺失/损坏、sessionID 为空），此时视为不可恢复
+//
+// 注意：
+//   - sessionID 为空时拒绝恢复：mapEvent 按会话 id 过滤事件，空 id 会把全部
+//     事件当「其他会话」丢弃，静默恢复等于无声断流，宁可交审核者裁决
+//   - 重启时正在进行的回合文本累积在内存里已丢失：重建后的回合从 SSE 重放的新
+//     快照重新累积（msgSeen 重新对账），idle 分类的 git 基线以重启时刻的 HEAD
+//     为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项实测观察
+//   - 与 Start 的对称性：Stop（done 归档）对恢复出来的运行态同样有效，
+//     会 kill 掉 tmux 会话回收资源
+func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive bool, err error) {
+	a.log.Info("adapter 恢复任务执行", "task", taskID, "session", sessionID)
+	defer func() {
+		if err != nil {
+			a.log.Error("adapter 恢复任务失败", "task", taskID, "cause", err)
+		} else if alive {
+			a.log.Info("adapter 任务已恢复", "task", taskID, "session", sessionID)
+		}
+	}()
+
+	if sessionID == "" {
+		return false, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", taskID)
+	}
+	si, err := readServeInfo(taskDir)
+	if err != nil {
+		return false, err
+	}
+	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession}
+	if !proc.Alive() {
+		a.log.Info("恢复探活失败：执行器已不在", "task", taskID, "tmux", proc.TmuxSession)
+		return false, nil
+	}
+	r := a.newRun(taskID, taskDir, repoPath)
+	r.session = sessionID
+	r.api = NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)
+	r.handle = procHandle{p: proc}
+	r.captureStartCommit(a)
 	go r.subscribeLoop(a)
 	go a.watchdog(r)
-	return sessionID, nil
+	return true, nil
 }
 
 // Events 返回任务的事件流通道（Start 后可用；Stop 或执行终结后关闭）。
