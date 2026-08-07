@@ -106,8 +106,8 @@ func TestParseTrailer(t *testing.T) {
 			want:     opencode.Trailer{Question: "用哪个库?"},
 		},
 		{
-			name: "末行 finish",
-			text: "完成。\n{\"branch\":\"feat/handoff-mvp\",\"commit\":\"abc123\",\"summary\":\"实现任务配置与协议解析\"}",
+			name:     "末行 finish",
+			text:     "完成。\n{\"branch\":\"feat/handoff-mvp\",\"commit\":\"abc123\",\"summary\":\"实现任务配置与协议解析\"}",
 			wantKind: "finish",
 			want: opencode.Trailer{
 				Branch:  "feat/handoff-mvp",
