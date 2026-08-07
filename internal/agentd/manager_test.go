@@ -114,6 +114,53 @@ func eventually(t *testing.T, timeout time.Duration, desc string, cond func() bo
 	t.Fatalf("等待超时: %s", desc)
 }
 
+// TestExecutorSessionPersisted 断言 session id 最终出现在 task.ExecutorSession
+// （store.GetTask 读回）——brief「session id 经 manager 写入 task.ExecutorSession」
+// 的闭环验证：
+//   - progress「会话就绪」信号：question 收尾主路径的唯一落库通道
+//   - result 携带 SessionID：双保险通道（progress 乱序/丢失时兜底）
+//   - 空 SessionID 不落库：向后兼容（老 adapter 事件不误写）
+func TestExecutorSessionPersisted(t *testing.T) {
+	t.Run("progress_signal", func(t *testing.T) {
+		mgr, st, _, _ := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		mgr.handleProgress("t1", executor.AdapterEvent{Type: "progress", SessionID: "sess-1", Text: "会话就绪"})
+		cur, err := st.GetTask("t1")
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if cur.ExecutorSession != "sess-1" {
+			t.Fatalf("ExecutorSession=%q，期望 sess-1（会话就绪信号落库）", cur.ExecutorSession)
+		}
+	})
+	t.Run("result_double_insurance", func(t *testing.T) {
+		mgr, st, _, _ := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		ev := resultEvent()
+		ev.Result.SessionID = "sess-2"
+		mgr.handleResult("t1", ev)
+		cur, err := st.GetTask("t1")
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if cur.ExecutorSession != "sess-2" {
+			t.Fatalf("ExecutorSession=%q，期望 sess-2（result 双保险落库）", cur.ExecutorSession)
+		}
+	})
+	t.Run("empty_session_ignored", func(t *testing.T) {
+		mgr, st, _, _ := newTestManager(t)
+		createRunningTask(t, st, "t1")
+		mgr.handleProgress("t1", executor.AdapterEvent{Type: "progress", Text: "心跳"})
+		cur, err := st.GetTask("t1")
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if cur.ExecutorSession != "" {
+			t.Fatalf("空 SessionID 不应落库，实际=%q", cur.ExecutorSession)
+		}
+	})
+}
+
 // TestTransitToReviewResidualRace 确定性覆盖修复的核心分支：首跳（waiting_answer→
 // waiting_review 非法）失败后、重读前应答 goroutine 已把状态回迁 running——
 // 重读兜底必须重试补跳 waiting_review，而不是报错吞掉已追加的 result 事件。

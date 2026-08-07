@@ -56,9 +56,15 @@ type Result struct {
 //   - question:   提问，Text 为问题原文；等待人工回答
 //   - progress:   进度播报（可选心跳），Text 为进度文本；只入库不阻塞
 //   - result:     回合终态，Result 有效；之后是否续接由审核者决定
+//
+// SessionID 可携带于任意事件（含 progress）：manager 收到非空 SessionID 时落
+// task.ExecutorSession（空则忽略，向后兼容）。progress 带它是「会话就绪」信号
+// ——审核主路径常以 question 收尾、result 永不出现，progress 是会话 id 到达
+// manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
 	Type         string  // "permission" | "question" | "progress" | "result"
 	PermissionID string  // Type=permission 时有效（同时用作 ticket id，天然幂等）
+	SessionID    string  // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
 	Text         string  // permission 描述 / question 原文 / progress 文本
 	Result       *Result // Type=result 时有效
 }

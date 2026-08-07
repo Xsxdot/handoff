@@ -13,10 +13,15 @@
 //
 // 边界：
 //   - 不写 store、不做审批判断（见 executor.go 包级边界）：会话 id 等一切持久化
-//     诉求经事件（Result.SessionID）或返回值交给 manager 落库
+//     诉求经事件（progress「会话就绪」/ Result.SessionID）或返回值交给 manager 落库
 //   - 不做任务状态机迁移：6 状态迁移完全由 manager 负责，本层只产事件、收指令
 //   - 不重试、不决策：SSE 解析宽容（未知事件 Debug 跳过、绝不 panic）；
 //     trailer 缺失时兜底只做「是否有新提交」的事实裁决，没有新提交就交审核者
+//   - 文本累积只依赖 message.updated 携带 role（可区分 user/assistant 归零回合）；
+//     message.part.updated 无 role 字段、当前整类 Debug 跳过。若真实冒烟证实
+//     文本流主要走 part.updated 且 message.updated 无 parts，回合文本会恒空
+//     （idle 空回合已 Warn 可见），届时扩展 part.updated 累积路径
+//     ——Task 12 e2e 的验证项
 package opencode
 
 import (
@@ -210,6 +215,12 @@ func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API,
 	}
 	r.session = sessionID
 	a.log.Info("opencode 会话已建", "task", r.taskID, "session", sessionID)
+
+	// 「会话就绪」信号：建会话成功立即带 SessionID 发一条 progress——manager 据此
+	// 落 task.ExecutorSession。为什么不用 result 做唯一通道：审核主路径常以
+	// question 收尾、result 永不出现；Task 12 重启恢复要拿会话 id 重建 SSE，
+	// 必须让它在首个事件就到 manager。progress 只入库不阻塞，零风险。
+	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: sessionID, Text: "会话就绪"})
 
 	// 初始 prompt 取 WriteTaskEnv 生成的 prompt.md（回合制纪律模板渲染产物）
 	promptPath := filepath.Join(r.taskDir, promptFileName)
@@ -436,7 +447,7 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 	case ev.Type == "message.updated":
 		a.mapMessageUpdated(r, ev.Properties)
 	case ev.Type == "session.idle":
-		a.mapIdle(r)
+		a.mapIdle(r, raw)
 	case ev.Type == "session.status":
 		a.mapSessionStatus(r, ev.Properties)
 	case ev.Type == "session.error":
@@ -549,15 +560,21 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 		return
 	}
 	if st.Status == "idle" {
-		a.mapIdle(r)
+		a.mapIdle(r, nil)
 	}
 }
 
 // mapIdle 回合结束（idle）时分类收尾：ParseTrailer 判定 ask/finish/none，
 // none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空回合缓冲。
-func (a *Adapter) mapIdle(r *runState) {
+//
+// 空回合（无累积文本）跳过分类并 Warn：idle 但无文本说明文本流可能没被本层
+// 接住（如真实流主要走 message.part.updated 而 message.updated 无 parts，
+// 见文件头边界注释）——这是「任务可能静默挂死」的观测点，必须可见而非 Debug
+// 静默。raw 为触发 idle 的 SSE 事件原文，仅用于日志上下文。
+func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	if strings.TrimSpace(r.turn) == "" {
-		a.log.Debug("idle 但回合无文本，跳过分类", "task", r.taskID)
+		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
+			"event", tailRunes(string(raw), 120))
 		return
 	}
 	text := r.turn

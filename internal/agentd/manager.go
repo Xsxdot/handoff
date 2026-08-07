@@ -443,7 +443,17 @@ func (m *Manager) waitQuestion(taskID, ticketID string) {
 }
 
 // handleProgress 中介进度事件：只入库广播，不改任务状态。
+//
+// SessionID 非空时先落 task.ExecutorSession：「会话就绪」信号（adapter 建会话
+// 成功后第一条 progress）是会话 id 到达 manager 的可靠通道——审核主路径常以
+// question 收尾、result 永不出现。落库失败仅 Warn，不影响主流程（会话 id 属
+// 可修复的辅助字段，进度广播照常）。
 func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
+	if ev.SessionID != "" {
+		if err := m.st.SetTaskField(taskID, "executor_session", ev.SessionID); err != nil {
+			m.log.Warn("落库 executor_session 失败", "task", taskID, "session", ev.SessionID, "cause", err)
+		}
+	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: ev.Text})
 	if err != nil {
 		m.log.Error("追加 progress 事件失败", "task", taskID, "cause", err)
@@ -476,6 +486,14 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	}
 
 	r := ev.Result
+	// result 落 executor_session 是「会话就绪」progress 的双保险：适配器在
+	// result 上也携带 SessionID，即使 progress 通道异常（如乱序丢失），会话 id
+	// 仍经此落库。失败仅 Warn，不影响回合结果中介主流程。
+	if r.SessionID != "" {
+		if err := m.st.SetTaskField(taskID, "executor_session", r.SessionID); err != nil {
+			m.log.Warn("落库 executor_session 失败", "task", taskID, "session", r.SessionID, "cause", err)
+		}
+	}
 	var evt proto.Event
 	if r.OK {
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeCompleted, completedPayload{

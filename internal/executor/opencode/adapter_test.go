@@ -398,6 +398,54 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 	})
 }
 
+// TestSessionReadyProgress 验证「会话就绪」信号：CreateSession 成功后立即产出
+// 一条带 SessionID 的 progress 事件（事件通道首条必为它，见 startRun 顺序）。
+// manager 据此落 task.ExecutorSession——question 收尾的审核主路径不经 result，
+// 这是会话 id 到达 manager 的可靠通道。
+func TestSessionReadyProgress(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	_, ch := startFakeRun(t, fs, "task-ready-001", t.TempDir(), t.TempDir())
+	select {
+	case ev := <-ch:
+		if ev.Type != "progress" {
+			t.Fatalf("首事件类型=%s，期望 progress（会话就绪信号）", ev.Type)
+		}
+		if ev.SessionID != "sess-1" {
+			t.Errorf("会话就绪事件 SessionID=%q，期望 sess-1（manager 落 ExecutorSession 用）", ev.SessionID)
+		}
+		if !strings.Contains(ev.Text, "会话就绪") {
+			t.Errorf("会话就绪事件文本=%q，应含 会话就绪", ev.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待会话就绪 progress 事件超时")
+	}
+}
+
+// TestIdleEmptyTurnSkips 验证空回合 idle 不产出分类事件（仅 Warn 可观测）：
+// 真实流若文本主要走 part.updated 而 message.updated 无 parts，回合文本恒空，
+// 该跳过路径是「任务可能静默挂死」的观测点，跳过本身不阻断流程。
+func TestIdleEmptyTurnSkips(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	_, ch := startFakeRun(t, fs, "task-empty-001", t.TempDir(), t.TempDir())
+	// 先消费会话就绪 progress，再注入空回合 idle
+	select {
+	case ev := <-ch:
+		if ev.Type != "progress" {
+			t.Fatalf("首事件类型=%s，期望 progress", ev.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待会话就绪 progress 事件超时")
+	}
+	fs.push(idleEvent())
+	select {
+	case ev := <-ch:
+		t.Fatalf("空回合 idle 不应产出分类事件，收到 %+v", ev)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestServeDeathEmitsFailed 验证 serve 死亡判定：
 // 探活失败 + SSE 断流后，产出 result !OK（FailReason 含 stderr 尾部），
 // 事件通道随后关闭（执行终结）。
