@@ -4,7 +4,9 @@ package store_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,6 +86,62 @@ func TestTaskLifecycle(t *testing.T) {
 
 	if err := s.SetTaskField(task.ID, "id", "hijack"); err == nil {
 		t.Fatalf("SetTaskField(id) 应被白名单拒绝")
+	}
+}
+
+// TestUpdateTaskStateCAS 验证 UpdateTaskState 的 CAS 守卫：两个迁移者并发从 pending 出发
+// 竞争迁到 running，恰好一个成功、另一个必须收到 ErrBadTransit（基于过期快照的写被拒），
+// 迁移不会被 last-writer-wins 静默丢失，最终状态必须为 running。
+func TestUpdateTaskStateCAS(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	// 多次迭代：CAS 语义在每次竞争中都应恰好一胜一败，而非偶发通过。
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("task-cas-%d", i)
+		now := time.Now().UTC()
+		task := &proto.Task{ID: id, Target: "codex", RepoPath: "/r", State: proto.TaskStatePending,
+			CreatedAt: now, UpdatedAt: now}
+		if err := s.CreateTask(task); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		for g := 0; g < 2; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs <- s.UpdateTaskState(id, proto.TaskStateRunning)
+			}()
+		}
+		close(start) // 同时放行两个迁移者，最大化快照重叠
+		wg.Wait()
+		close(errs)
+
+		var ok, rejected int
+		for err := range errs {
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, store.ErrBadTransit):
+				rejected++
+			default:
+				t.Fatalf("迭代 %d: UpdateTaskState 意外错误: %v", i, err)
+			}
+		}
+		if ok != 1 || rejected != 1 {
+			t.Fatalf("迭代 %d: 成功 %d 个、被拒 %d 个，want 恰好 1 个成功 1 个被拒", i, ok, rejected)
+		}
+		got, _ := s.GetTask(id)
+		if got.State != proto.TaskStateRunning {
+			t.Fatalf("迭代 %d: 最终状态 = %s, want running", i, got.State)
+		}
 	}
 }
 

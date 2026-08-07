@@ -188,6 +188,8 @@ FROM tasks ORDER BY created_at DESC`)
 //
 // 注意：
 //   - 非法迁移是本包唯一打 Warn 日志的点：排障时可直接定位谁想从哪迁到哪被拒
+//   - 写回采用 CAS（WHERE state = 读到的旧状态）：若并发写者先变更了状态，本方法返回
+//     ErrBadTransit，调用方应用最新快照重试意图；不会静默覆盖并发迁移
 func (s *Store) UpdateTaskState(id string, st proto.TaskState) error {
 	cur, err := s.GetTask(id)
 	if err != nil {
@@ -197,10 +199,22 @@ func (s *Store) UpdateTaskState(id string, st proto.TaskState) error {
 		log.Warn("非法状态迁移被拒绝", "task", id, "from", cur.State, "to", st)
 		return ErrBadTransit
 	}
-	if _, err := s.db.ExecContext(context.Background(),
-		"UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
-		st, fmtTime(time.Now()), id); err != nil {
+	// CAS 守卫：把读到的 cur.State 作为 WHERE 条件参与写回，使"读-校验-写"成为原子比较。
+	// 若并发写者已先行变更状态，本语句影响 0 行——说明本次迁移基于过期快照，
+	// 直接返回 ErrBadTransit 让调用方用最新快照重试意图，避免 last-writer-wins 静默丢失合法迁移。
+	res, err := s.db.ExecContext(context.Background(),
+		"UPDATE tasks SET state = ?, updated_at = ? WHERE id = ? AND state = ?",
+		st, fmtTime(time.Now()), id, cur.State)
+	if err != nil {
 		return fmt.Errorf("更新任务 %s 状态: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("读取更新任务 %s 状态影响行数: %w", id, err)
+	}
+	if affected == 0 {
+		log.Warn("状态迁移被并发变更拒绝", "task", id, "from", cur.State, "to", st)
+		return ErrBadTransit
 	}
 	return nil
 }
