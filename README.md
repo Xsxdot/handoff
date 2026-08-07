@@ -24,7 +24,7 @@
 
 ## 快速开始
 
-前置：Go 1.22+；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。
+前置：Go 1.26+（按 go.mod 声明；低版本可用 `GOTOOLCHAIN=auto` 自动下载）；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。
 
 ```bash
 go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
