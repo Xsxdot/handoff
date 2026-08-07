@@ -12,7 +12,9 @@
 //   - 不做审批判断：「allow 之外一律 reject」「回答原样透传」是仅有的两条翻译规则，
 //     批不批、答什么由审核者（人/上层）决定
 //   - 不直接接触 executor 进程/会话细节，一切经由 executor.Adapter 契约
-//   - 不负责 git 工作区（Task 9）、看门狗（Task 12）等横向能力
+//   - 不负责看门狗（Task 12）等横向能力；git 工作区操作委托 workspace 包（Task 9）
+//   - dispatch 前经 workspace.PrepareBranch 在任务仓库开任务分支（脏工作区拒绝），
+//     其余 git 操作（diff/fetch/run）由 server 路由直接调用 workspace 包
 //
 // 「失败也进 waiting_review」的 why：
 //
@@ -126,8 +128,8 @@ type failedPayload struct {
 	FailReason string `json:"fail_reason"`
 }
 
-// Dispatch 派发一个新任务：建任务 → 建 taskDir 写 plan → Adapter.Start → running →
-// 启动中介 goroutine 消费事件流。
+// Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
+// running → 启动中介 goroutine 消费事件流。
 //
 // 参数：
 //   - req: 仓库路径与 base64 计划（字段说明见 DispatchReq）
@@ -135,6 +137,13 @@ type failedPayload struct {
 // 返回：
 //   - 已入库的任务（state 为 running）；Adapter.Start 失败时返回错误，
 //     此时任务已落库并迁移为 failed（供审核者经 tasks 命令查看失败现场）
+//
+// 注意：
+//   - 任务分支（handoff/<id8>）的准备发生在建任务之前：分支准备是纯前置校验
+//     （工作区干净/可开分支），失败时不落任何任务记录，审核者修好仓库重新
+//     dispatch 即可——不会为每次被拒的派发留下 failed 噪音
+//   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
+//     带列写入，保持「创建期只写创建时已知的字段」的约定）
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
 	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target)
 	defer func() {
@@ -155,6 +164,14 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
+
+	// 派发前置：在任务仓库上准备任务分支（handoff/<id8>）。
+	// 为什么放在建任务之前：分支准备是纯前置校验（工作区干净/可开分支），失败时
+	// 不留孤儿任务记录，审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
+	branch, err := PrepareBranch(req.Repo, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("git 工作区准备: %w", err)
+	}
 
 	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
@@ -179,6 +196,16 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err
 	}
+
+	// 分支名经 SetTaskField 白名单写入（见 Dispatch doc 注意）
+	if err := m.st.SetTaskField(taskID, "branch", branch); err != nil {
+		m.log.Error("写入任务分支失败", "task", taskID, "branch", branch, "cause", err)
+		// 分支已在仓库建好但任务记录写不上：按派发失败处理，落 failed 供人工清理
+		m.transitBestEffort(taskID, proto.TaskStateFailed, "写分支名失败")
+		return nil, fmt.Errorf("记录任务分支: %w", err)
+	}
+	// 内存态同步补上 branch，保证传给 adapter 的 StartReq.Task 完整
+	task.Branch = branch
 
 	if err := m.ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)

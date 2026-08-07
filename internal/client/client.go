@@ -1,5 +1,5 @@
 // Package client 是 handoff 审核者侧对 agentd 的唯一拨号方：任务列表、attach 现场恢复、
-// ticket 应答（reply）与 wait 事件等待（WS + cursor 断线续拉）。
+// ticket 应答（reply）、wait 事件等待（WS + cursor 断线续拉）与审阅命令（diff/fetch/run）。
 //
 // 职责：
 //   - 封装 agentd 的全部 HTTP API 与 WS 事件流的调用（Bearer token 鉴权）
@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -243,6 +244,80 @@ func (c *Client) Done(ctx context.Context, taskID string) error {
 		return c.httpError("done", resp)
 	}
 	return nil
+}
+
+// Diff 获取任务分支相对基准分支的审阅素材（git diff + 提交列表）。
+//
+// 参数：
+//   - base: 基准分支名；传空串时由 agentd 按仓库默认分支推导（origin/HEAD → main → master）
+func (c *Client) Diff(ctx context.Context, taskID, base string) (string, error) {
+	path := "/api/tasks/" + taskID + "/diff"
+	if base != "" {
+		path += "?base=" + url.QueryEscape(base)
+	}
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", fmt.Errorf("diff 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", c.httpError("diff", resp)
+	}
+	var out struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("解析 diff 响应: %w", err)
+	}
+	return out.Diff, nil
+}
+
+// Fetch 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
+//
+// 注意：
+//   - 路径逃出仓库（如 ../ 前缀或绝对路径）返回错误；文件不存在返回 404 错误
+func (c *Client) Fetch(ctx context.Context, taskID, relPath string) (string, error) {
+	path := "/api/tasks/" + taskID + "/file?path=" + url.QueryEscape(relPath)
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", fmt.Errorf("fetch 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", c.httpError("fetch", resp)
+	}
+	var out struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("解析 fetch 响应: %w", err)
+	}
+	return out.Content, nil
+}
+
+// Run 在任务仓库执行一条审阅命令（sh -c，10min 超时），返回合并输出与退出码。
+//
+// 注意：
+//   - 命令非零退出不返回错误，退出码经 exitCode 表达；超时被杀时 exitCode=124
+//   - 只有执行未发生（启动失败/超时/请求失败）才返回错误
+func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, exitCode int, err error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/run",
+		map[string]string{"cmd": cmd})
+	if err != nil {
+		return "", 0, fmt.Errorf("run 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, c.httpError("run", resp)
+	}
+	var out struct {
+		Stdout   string `json:"stdout"`
+		ExitCode int    `json:"exit_code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", 0, fmt.Errorf("解析 run 响应: %w", err)
+	}
+	return out.Stdout, out.ExitCode, nil
 }
 
 // WaitEvent 阻塞等待任务的下一个事件：跳过 progress（除非 all=true），

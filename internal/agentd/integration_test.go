@@ -17,6 +17,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +40,7 @@ type integEnv struct {
 	st   *store.Store
 	fake *fake.Fake
 	cli  *client.Client
+	repo string // 任务仓库（沙箱里 git init 的干净仓库，Dispatch 的分支准备落在这里）
 }
 
 // newIntegEnv 组装完整测试环境并注册清理；fake 脚本为 nil 时用空脚本（后续 fake.Add 补）。
@@ -57,13 +60,40 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	f := fake.New(script)
 	mgr := agentd.NewManager(st, srv.Hub(), f, cfg, logger)
 	srv.SetManager(mgr)
-	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken)}
+	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
 }
 
-// dispatchPlan 用真实 client 派发一个任务并返回任务。
+// newTestRepo 在沙箱里造一个干净的 git 仓库（main 分支 + 初始提交），返回仓库路径。
+func newTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q")
+	runGit(t, repo, "checkout", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@handoff.dev")
+	runGit(t, repo, "config", "user.name", "handoff test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# repo\n"), 0o644); err != nil {
+		t.Fatalf("写 README: %v", err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-q", "-m", "init")
+	return repo
+}
+
+// runGit 在 dir 执行 git，失败即 Fatal。
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// dispatchPlan 用真实 client 派发一个任务并返回任务（仓库用沙箱里的干净 git 仓库）。
 func (e *integEnv) dispatchPlan(t *testing.T, plan string) *proto.Task {
 	t.Helper()
-	task, err := e.cli.Dispatch(context.Background(), "/tmp/repo", base64.StdEncoding.EncodeToString([]byte(plan)), "plan.md", "local")
+	task, err := e.cli.Dispatch(context.Background(), e.repo, base64.StdEncoding.EncodeToString([]byte(plan)), "plan.md", "local")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -308,5 +338,60 @@ func TestRecoverMidTask(t *testing.T) {
 	}
 	if info.Task.State != proto.TaskStateWaitingReview {
 		t.Fatalf("回复后 state=%s, want waiting_review", info.Task.State)
+	}
+}
+
+// TestReviewRoutes 覆盖审核者三条审阅命令的端到端链路（client → server → workspace → git）：
+// dispatch 已把仓库切到任务分支 → 模拟 executor 提交 → diff 可见新文件与提交主题；
+// fetch 可读文件内容且逃逸路径被拒；run 返回输出与退出码。
+func TestReviewRoutes(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	task := env.dispatchPlan(t, "加个文件")
+	if task.Branch == "" {
+		t.Fatalf("dispatch 后任务应带分支名（PrepareBranch 产物）")
+	}
+
+	// 在任务分支上提交一个文件，模拟 executor 产出
+	if err := os.WriteFile(filepath.Join(env.repo, "impl.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("写 impl.go: %v", err)
+	}
+	runGit(t, env.repo, "add", "impl.go")
+	runGit(t, env.repo, "commit", "-q", "-m", "feat: add impl")
+
+	// diff：包含新文件与提交主题
+	diff, err := env.cli.Diff(context.Background(), task.ID, "main")
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if !strings.Contains(diff, "impl.go") || !strings.Contains(diff, "feat: add impl") {
+		t.Fatalf("diff 内容缺失:\n%s", diff)
+	}
+
+	// fetch：读文件内容；逃逸路径被拒
+	content, err := env.cli.Fetch(context.Background(), task.ID, "impl.go")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if content != "package main\n" {
+		t.Fatalf("Fetch 内容=%q, want %q", content, "package main\n")
+	}
+	if _, err := env.cli.Fetch(context.Background(), task.ID, "../etc/passwd"); err == nil {
+		t.Fatalf("Fetch 逃逸路径应报错")
+	}
+
+	// run：正常输出 + 非零退出码（命令执行了就不算错误，退出码回传）
+	stdout, code, err := env.cli.Run(context.Background(), task.ID, "echo review-ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != 0 || !strings.Contains(stdout, "review-ok") {
+		t.Fatalf("Run 输出=%q code=%d, want 含 review-ok 且 0", stdout, code)
+	}
+	_, code, err = env.cli.Run(context.Background(), task.ID, "exit 3")
+	if err != nil {
+		t.Fatalf("Run exit 3: %v", err)
+	}
+	if code != 3 {
+		t.Fatalf("exit 3 的退出码=%d, want 3", code)
 	}
 }

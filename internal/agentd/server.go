@@ -1,14 +1,17 @@
-// 本文件实现 agentd 对外唯一的网络入口：HTTP API（任务列表/详情/reply）与 WS 事件流。
+// 本文件实现 agentd 对外唯一的网络入口：HTTP API（任务列表/详情/reply/审阅命令）与 WS 事件流。
 //
 // 职责：
 //   - 对全部 /api 与 /ws 路由做 Bearer token 鉴权
 //   - 提供任务查询（attach 数据源：任务 + 待办工单 + 最近事件）
 //   - 实现 reply 唤醒闭环的回程：AnswerTicket → NotifyAnswer → 无其余待办工单时状态回迁 running
+//   - 提供三条审阅命令路由（diff/fetch/run）：调 workspace 包取任务仓库的
+//     审阅素材（git diff、文件内容、远程跑测试/lint），run 不走审批门
 //   - /ws/events 先补发 store 中 seq>n 的历史事件，再接 hub 实时流
 //
 // 边界：
 //   - 不创建 ticket：ticket 由 manager（Task 8）把 adapter 事件中介成 ticket 后落库，本层只回答
 //   - 不启动 executor、不执行任务；状态迁移仅限 reply 触发的 waiting_answer → running 回迁
+//   - 审阅路由只读任务仓库（diff/fetch），run 的命令执行也限时回收，绝不经此写仓库
 //   - 实时流不保证每条事件都送达：事件不丢不重由 store 的 seq + 客户端自存 cursor（无需 ack）承担，
 //     掉线期间产生的事件由客户端携带更大 from_seq 重连补拉
 package agentd
@@ -20,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -91,6 +95,9 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/reply        回答工单
 //   - POST /api/tasks/{id}/continue     续发修改指令
 //   - POST /api/tasks/{id}/done         归档任务
+//   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
+//   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
+//   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -100,6 +107,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
+	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
+	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
+	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	return s.auth(mux)
 }
@@ -377,6 +387,141 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// taskRepoOrErr 读取路径中的任务并返回其仓库路径；任务不存在（404）或没有
+// 仓库路径（400）时已写响应并返回 ok=false。
+//
+// 供 diff/fetch/run 三条审阅路由共用——它们只关心任务指向的仓库，不依赖状态机。
+func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool) {
+	task, err := s.st.GetTask(taskID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("任务不存在", "task", taskID)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "任务不存在"})
+		} else {
+			s.log.Error("读取任务失败", "task", taskID, "cause", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		}
+		return "", false
+	}
+	if task.RepoPath == "" {
+		s.log.Warn("任务缺少仓库路径", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务没有仓库路径"})
+		return "", false
+	}
+	return task.RepoPath, true
+}
+
+// handleTaskDiff 返回任务分支相对基准分支的审阅素材（git diff + 提交列表）。
+//
+// 参数：
+//   - base: 查询参数，基准分支名；缺省时按仓库默认分支推导（resolveBaseBranch）
+//
+// 注意：
+//   - diff 是审核者主动发起的只读审阅，不做状态门禁——running 中即可看实时进度
+func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("diff 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	repo, ok := s.taskRepoOrErr(w, taskID)
+	if !ok {
+		return
+	}
+	base := r.URL.Query().Get("base")
+	if base == "" {
+		base = resolveBaseBranch(repo)
+	}
+	if base == "" {
+		s.log.Warn("无法确定基准分支", "task", taskID, "repo", repo)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无法确定基准分支，请用 base 参数指定"})
+		return
+	}
+	diff, err := Diff(repo, base)
+	if err != nil {
+		s.log.Error("取 diff 失败", "task", taskID, "repo", repo, "base", base, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
+}
+
+// handleTaskFile 返回任务仓库内指定文件的内容（审核者取上下文用）。
+//
+// 参数：
+//   - path: 查询参数，相对仓库根的路径（必须）；逃逸出仓库的路径返回 400
+func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	rel := r.URL.Query().Get("path")
+	s.log.Info("file 请求", "method", r.Method, "path", r.URL.Path, "task", taskID, "file", rel)
+	repo, ok := s.taskRepoOrErr(w, taskID)
+	if !ok {
+		return
+	}
+	if rel == "" {
+		s.log.Warn("file 请求缺 path 参数", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
+		return
+	}
+	content, err := ReadFile(repo, rel)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPathEscape):
+			s.log.Warn("file 路径逃逸被拒绝", "task", taskID, "path", rel)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出任务仓库）"})
+		case errors.Is(err, fs.ErrNotExist):
+			s.log.Warn("file 目标不存在", "task", taskID, "path", rel)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
+		default:
+			s.log.Error("读取文件失败", "task", taskID, "path", rel, "cause", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"content": content})
+}
+
+// runRequest 是 POST /api/tasks/{id}/run 的请求体。
+type runRequest struct {
+	Cmd string `json:"cmd"`
+}
+
+// runResponse 是 run 接口的响应体（合并输出 + 退出码）。
+type runResponse struct {
+	Stdout   string `json:"stdout"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// handleTaskRun 在任务仓库执行一条审阅命令（sh -c），返回合并输出与退出码。
+//
+// 注意：这是审核者主动发起的只读审阅动作（跑测试/lint），**不走审批门**——
+// 命令由审核者指定并经 sh 执行，agentd 只负责执行、限时（10min 超时被杀，退出码
+// 124）与回收。命令非零退出同样返回 200，退出码在响应体中表达。
+func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("run 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	repo, ok := s.taskRepoOrErr(w, taskID)
+	if !ok {
+		return
+	}
+	var req runRequest
+	// LimitReader 限制请求体大小，防止恶意大 body 占满内存
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("run 请求体解析失败", "task", taskID, "err", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {cmd}"})
+		return
+	}
+	if strings.TrimSpace(req.Cmd) == "" {
+		s.log.Warn("run 命令为空", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cmd 不能为空"})
+		return
+	}
+	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
+	if err != nil {
+		s.log.Error("run 执行失败", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	writeJSON(w, http.StatusOK, runResponse{Stdout: stdout, ExitCode: exitCode})
 }
 
 // writeManagerError 把 manager 返回的错误映射为 HTTP 状态码与提示。
