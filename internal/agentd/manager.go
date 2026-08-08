@@ -173,9 +173,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
 
-	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）
+	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）。
+	// why 0700：目录内存 serve 启动脚本 run_serve.sh（0600，含随机密码）与
+	// serve.json（0600，含密码）——目录对他人可读会让文件名的存在性可被
+	// 探知，且任何权限疏漏都直接暴露凭据；与 DataDir（agentd 启动时 0700）
+	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+	if err := os.MkdirAll(taskDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, req.PlanName)

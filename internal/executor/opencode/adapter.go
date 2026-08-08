@@ -66,15 +66,16 @@ const (
 type serveHandle interface {
 	Alive() bool
 	Kill() error
-	PaneTail() string
+	LogTail() string
 }
 
-// procHandle 把 *Proc 适配成 serveHandle（PaneTail 透传未导出的 capturePaneTail）。
+// procHandle 把 *Proc 适配成 serveHandle（LogTail 读 serve.log 尾部：
+// serve 死亡后 tmux 会话已销毁，capture-pane 必空，见 serveLogTail）。
 type procHandle struct{ p *Proc }
 
 func (h procHandle) Alive() bool      { return h.p.Alive() }
 func (h procHandle) Kill() error      { return h.p.Kill() }
-func (h procHandle) PaneTail() string { return h.p.capturePaneTail() }
+func (h procHandle) LogTail() string  { return serveLogTail(h.p.ServeLogPath) }
 
 // Adapter 是 opencode 的 executor.Adapter 实现（语义翻译层）。
 //
@@ -133,7 +134,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		repoPath:   repoPath,
 		evCh:       make(chan executor.AdapterEvent, 16),
 		stopCh:     make(chan struct{}),
-		renderPath: filepath.Join(taskDir, "render.log"),
+		renderPath: filepath.Join(taskDir, renderLogFileName),
 		partSeen:   make(map[string]string),
 		partSnap:   make(map[string]bool),
 		partTypes:  make(map[string]string),
@@ -187,7 +188,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		return err
 	}
-	proc, err := StartServe(ctx, req.Task.RepoPath, req.Task.ID, configPath, a.log)
+	proc, err := StartServe(ctx, req.Task.RepoPath, req.Task.ID, req.TaskDir, configPath, a.log)
 	if err != nil {
 		return err
 	}
@@ -320,7 +321,10 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive boo
 	if err != nil {
 		return false, err
 	}
-	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession}
+	// ServeLogPath 从 taskDir 推导（serve.json 不持久化它）：serve 死亡诊断的
+	// serve.log 尾部读取需要路径，重启恢复的任务同样要能用
+	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession,
+		ServeLogPath: filepath.Join(taskDir, serveLogFileName)}
 	if !proc.Alive() {
 		a.log.Info("恢复探活失败：执行器已不在", "task", taskID, "tmux", proc.TmuxSession)
 		return false, nil
@@ -440,13 +444,21 @@ func (r *runState) subscribeLoop(a *Adapter) {
 	}
 	if !r.handle.Alive() {
 		// 看门狗判定 serve 死亡后已取消 runCtx：订阅随连接断开而退出，
-		// 此处产出 failed 结果，让审核者看到死亡现场（含 stderr 尾部）
-		tail := tailRunes(r.handle.PaneTail(), 200)
+		// 此处产出 failed 结果，让审核者看到死亡现场（serve.log 尾部——
+		// serve 所在窗格已随命令退出关闭，capture-pane 读不到，P1-8）
+		tail := tailRunes(r.handle.LogTail(), 200)
 		a.log.Error("opencode serve 已退出", "task", r.taskID, "stderr_tail", tail)
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: false, SessionID: r.session,
 			FailReason: "opencode serve 已退出: " + tail,
 		}})
+		// 回收残留会话：serve 死后第二窗口（tail -f render.log）会一直吊着
+		// tmux 会话不销毁，不回收就成孤儿（占 tail -f 进程与会话名）；
+		// Kill 幂等，后续 Stop 再 kill 也安全。证据不丢——serve.log/render.log
+		// 在磁盘上，审核者照常读文件
+		if kerr := r.handle.Kill(); kerr != nil {
+			a.log.Warn("serve 死亡后回收 tmux 会话失败", "task", r.taskID, "cause", kerr)
+		}
 		return
 	}
 	a.log.Warn("opencode 事件流意外中断，按失败结束回合", "task", r.taskID, "cause", err)

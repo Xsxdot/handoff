@@ -68,7 +68,7 @@ func captureLog(t *testing.T) *bufWriter {
 }
 
 // fakeProbe 是 serveHandle 的测试替身：alive 可变（模拟 serve 死亡），
-// Kill/PaneTail 无操作。
+// Kill/LogTail 无操作。
 type fakeProbe struct {
 	mu    sync.Mutex
 	alive bool
@@ -82,7 +82,7 @@ func (p *fakeProbe) Alive() bool {
 
 func (p *fakeProbe) Kill() error { return nil }
 
-func (p *fakeProbe) PaneTail() string { return "fake stderr tail" }
+func (p *fakeProbe) LogTail() string { return "fake stderr tail" }
 
 func (p *fakeProbe) setAlive(v bool) {
 	p.mu.Lock()

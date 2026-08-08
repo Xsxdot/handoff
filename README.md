@@ -88,10 +88,10 @@ handoff attach <task>              # plan 摘要 + 事件历史 + 未处理挂�
 
 - agentd 日志：`~/.handoff/agentd.log`（JSON 双路输出，stderr 另有文本日志；级别用环境变量 `HANDOFF_LOG_LEVEL=debug` 调低）。
 - 任务目录 `~/.handoff/tasks/<task-id>/`：
-  - `render.log`：模型回合文本增量（执行实况）；`tmux attach` 也可旁观。
+  - `render.log`：模型回合文本增量（执行实况）；`tmux attach` 后第二窗口即 `tail -f` 该文件。
   - `prompt.md` / `opencode.json`：派发给模型的回合制 prompt 与权限配置（edit/bash/webfetch/external_directory 均为 ask）。
   - `serve.json`：serve 连接凭据（端口/密码/tmux 会话名），agentd 重启后凭它重建订阅。
-- opencode serve 自身的 stderr：落在 tmux 窗格里（见下），`tmux capture-pane -t handoff-<id8> -p` 可抓取尾部。
+- opencode serve 自身的输出：`tee` 落盘 `<taskDir>/serve.log`（tmux 窗格实时可见，但会话随 serve 退出销毁，以 serve.log 为准）。
 
 **tmux 会话命名规则**：`handoff-<task 前 8 字符>`。`tmux attach -t handoff-<id8>` 直接旁观（甚至介入）executor 实况，`tmux kill-session -t handoff-<id8>` 可人工兜底回收。
 
