@@ -1,7 +1,15 @@
 # E2E 手动验证清单（真实 opencode）
 前置：executor 机装 opencode 并配好模型凭证；`handoff agentd --executor=opencode` 已起。
-- [ ] SPIKE-1（spec 风险#1）：手动 `opencode serve` + curl 建会话发 prompt，抓 /event SSE 原始样本：
+- [x] SPIKE-1（spec 风险#1）：手动 `opencode serve` + curl 建会话发 prompt，抓 /event SSE 原始样本：
       确认 permission 事件类型名/字段、回合结束（idle）事件类型名 —— 对照调整 adapter 映射
+      **结论（样本 spike3/spike5-events.jsonl，opencode 1.18.15 serve）**：事件类型已对齐并
+      已调整 adapter 映射（fix-A）——权限=permission.asked（properties.id 即 PermissionID，
+      permission/patterns/metadata 拼描述；permission.replied 应答回显必须忽略）；回合结束
+      主信号=session.status 的 status.type=idle（同现 session.idle 冗余，须去重防重复触发）；
+      文本载体=message.part.updated（part.type=text 全量快照）+ message.part.delta
+      （field=text 增量），message.updated 仅带 properties.info.role，只用于探测新回合开始。
+      遗留验证项（SPIKE-1b 待做）：更长回合/多工具调用的 part 流（当前样本仅单工具单文本
+      part）、断线重连后的事件重放语义。
 - [ ] SPIKE-1b（spec 风险#1 续，/event 重放语义）：**重连时是否会收到断连前的历史事件？**
       实测：订阅 /event 收到若干事件后断开连接（或直接重启消费进程），重连后观察首条事件的
       messageID/seq —— 若事件带序号，顺带确认序号的单调性与断点衔接方式。**若证实会重放历史**，

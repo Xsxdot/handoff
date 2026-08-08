@@ -5,8 +5,9 @@
 //     五动作：Start（环境物料 → serve → 会话 → 初始 prompt → 订阅映射）、
 //     Send（同一会话续接）、RespondPermission（权限应答转发）、
 //     Stop（kill serve + 关事件流）、Events（事件通道）
-//   - SSE 事件 → AdapterEvent 映射：permission 类 → permission 事件；消息文本
-//     增量累积 → render.log 追加 + 节流 progress；session idle → ParseTrailer
+//   - SSE 事件 → AdapterEvent 映射：permission.asked → permission 事件；模型
+//     文本（message.part.updated / message.part.delta）增量累积 →
+//     render.log 追加 + 节流 progress；session.status idle → ParseTrailer
 //     分类（ask/finish/none 兜底 git 实况裁决）；serve 死亡 → failed result
 //   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 tmux 第二窗口
 //     `tail -f <taskDir>/render.log` 旁观模型执行
@@ -17,11 +18,19 @@
 //   - 不做任务状态机迁移：6 状态迁移完全由 manager 负责，本层只产事件、收指令
 //   - 不重试、不决策：SSE 解析宽容（未知事件 Debug 跳过、绝不 panic）；
 //     trailer 缺失时兜底只做「是否有新提交」的事实裁决，没有新提交就交审核者
-//   - 文本累积只依赖 message.updated 携带 role（可区分 user/assistant 归零回合）；
-//     message.part.updated 无 role 字段、当前整类 Debug 跳过。若真实冒烟证实
-//     文本流主要走 part.updated 且 message.updated 无 parts，回合文本会恒空
-//     （idle 空回合已 Warn 可见），届时扩展 part.updated 累积路径
-//     ——Task 12 e2e 的验证项
+//
+// 事件映射以真实 SSE 样本为准（spike3/spike5，opencode 1.18.15 serve 模式）：
+//   - 文本载体：模型文本走 message.part.updated（properties.part.type=text，
+//     带该 part 全量文本快照）与 message.part.delta（properties.field=text，
+//     properties.delta 增量）；message.updated 只有 properties.info
+//     （role/messageID），不带文本，仅用于探测新回合开始（role=user 清空累积）
+//   - 回合结束主信号：session.status 的 properties.status.type=idle；同现的
+//     session.idle 与顶层 idle/busy 事件全部忽略，防重复触发分类
+//   - 权限：permission.asked（properties.id 即 PermissionID，properties.permission/
+//     patterns/metadata 拼描述）；permission.replied 是应答回显，必须忽略
+//   - 其余类型（server.connected/heartbeat、session.updated/diff、catalog.updated、
+//     integration.updated、reference.updated、plugin.added、step-start/step-finish、
+//     tool/reasoning 等）宽容 Debug 跳过
 package opencode
 
 import (
@@ -42,8 +51,8 @@ import (
 // 看门狗与节流参数：
 //   - watchdogProbeInterval/watchdogFailThreshold：serve 存活探活节奏，连续
 //     3 次死亡（约 600ms 窗口）才判定死亡，吸收探活抖动，不误杀正常任务
-//   - progressThrottle：progress 事件节流，同一回合至多每 30s 一条，
-//     防止高频文本增量刷爆事件库
+//   - progressThrottle：progress 事件节流，每任务至多每 30s 一条，防止高频
+//     文本增量刷爆事件库（按回合粒度细化是 Task 12 e2e 的遗留项）
 const (
 	watchdogProbeInterval = 200 * time.Millisecond
 	watchdogFailThreshold = 3
@@ -88,8 +97,9 @@ func New(log *slog.Logger) *Adapter {
 
 // runState 是单任务运行的完整状态。
 //
-// turn/msgSeen/lastProgress 只被订阅 goroutine 读写（SSE 回调同步执行），
-// 无需加锁；stopCh/evCh 的关闭权有明确归属（见 subscribeLoop/Stop）。
+// turn/partSeen/partSnap/userMsgs/lastProgress 只被订阅 goroutine 读写
+// （SSE 回调同步执行），无需加锁；stopCh/evCh 的关闭权有明确归属
+// （见 subscribeLoop/Stop）。
 type runState struct {
 	taskID       string
 	taskDir      string
@@ -105,8 +115,10 @@ type runState struct {
 	closeOnce    sync.Once
 	renderPath   string
 	startCommit  string            // 任务起点 commit（兜底分类的基线）
-	turn         string            // 当前回合累积文本
-	msgSeen      map[string]string // messageID -> 已见文本（增量对账）
+	turn         string            // 当前回合累积文本（模型 text part 输出）
+	partSeen     map[string]string // messageID+partID -> 该 part 已计入回合的文本
+	partSnap     map[string]bool   // messageID+partID -> 是否收到过非空全量快照
+	userMsgs     map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
 	lastProgress time.Time         // 上次发 progress 的时刻（节流）
 }
 
@@ -119,7 +131,9 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		evCh:       make(chan executor.AdapterEvent, 16),
 		stopCh:     make(chan struct{}),
 		renderPath: filepath.Join(taskDir, "render.log"),
-		msgSeen:    make(map[string]string),
+		partSeen:   make(map[string]string),
+		partSnap:   make(map[string]bool),
+		userMsgs:   make(map[string]bool),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
@@ -280,8 +294,9 @@ func (r *runState) captureStartCommit(a *Adapter) {
 //   - sessionID 为空时拒绝恢复：mapEvent 按会话 id 过滤事件，空 id 会把全部
 //     事件当「其他会话」丢弃，静默恢复等于无声断流，宁可交审核者裁决
 //   - 重启时正在进行的回合文本累积在内存里已丢失：重建后的回合从 SSE 重放的新
-//     快照重新累积（msgSeen 重新对账），idle 分类的 git 基线以重启时刻的 HEAD
-//     为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项实测观察
+//     快照重新累积（partSeen/partSnap 重新对账），idle 分类的 git 基线以重启
+//     时刻的 HEAD 为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项
+//     实测观察
 //   - 与 Start 的对称性：Stop（done 归档）对恢复出来的运行态同样有效，
 //     会 kill 掉 tmux 会话回收资源
 func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive bool, err error) {
@@ -518,14 +533,26 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 		return
 	}
 	switch {
-	case strings.Contains(ev.Type, "permission"):
-		a.mapPermission(r, ev.Properties)
+	case ev.Type == "permission.asked":
+		a.mapPermissionAsked(r, ev.Properties)
+	case ev.Type == "permission.replied":
+		// 应答回显：approve/reject 后服务端回发 replied；若把它当新权限，
+		// 审核者的 respond 会被当成再次询问，权限流程死循环——必须忽略
+		a.log.Debug("permission.replied 应答回显，忽略", "task", r.taskID, "type", ev.Type)
 	case ev.Type == "message.updated":
 		a.mapMessageUpdated(r, ev.Properties)
-	case ev.Type == "session.idle":
-		a.mapIdle(r, raw)
+	case ev.Type == "message.part.updated":
+		a.mapPartUpdated(r, ev.Properties)
+	case ev.Type == "message.part.delta":
+		a.mapPartDelta(r, ev.Properties)
 	case ev.Type == "session.status":
 		a.mapSessionStatus(r, ev.Properties)
+	case ev.Type == "session.idle":
+		// idle 双信号去重：真实流在 session.status idle 后还会补发一条
+		// session.idle，两条都触发会重复分类（重复 question/result）——
+		// 主信号只有 session.status，这里 Debug 跳过
+		a.log.Debug("session.idle 与 session.status idle 同现，忽略防重复触发",
+			"task", r.taskID, "type", ev.Type)
 	case ev.Type == "session.error":
 		a.log.Warn("opencode 会话报错", "task", r.taskID,
 			"properties", truncateRunes(string(ev.Properties), 200))
@@ -534,119 +561,168 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 	}
 }
 
-// mapPermission 处理 permission 类事件（如 permission.updated）：
-// 提取 permissionID 与工具/参数描述，产出 permission 事件。
+// mapPermissionAsked 处理 permission.asked（真实事件）：properties.id 即
+// PermissionID（manager 的 ticket id，稳定幂等：SSE 重连重放同一权限请求时
+// 复用同一 id，CreateTicket 按 id 去重）。
 //
-// PermissionID 即 manager 的 ticket id（稳定幂等：SSE 重连重放同一权限请求
-// 时复用同一 id，CreateTicket 按 id 去重）。
-func (a *Adapter) mapPermission(r *runState, props json.RawMessage) {
-	var pr struct {
-		ID      string `json:"id"`
-		Request struct {
-			Description string `json:"description"`
-			Tool        string `json:"tool"`
-			Arguments   any    `json:"arguments"`
-		} `json:"request"`
+// 描述组合：permission 字段（如 bash） + metadata.command（如 echo spike-hi）；
+// 无 command 时退回 patterns 拼接——尽量贴近工具将要执行的表述。
+func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
+	var pa struct {
+		ID         string   `json:"id"`
+		Permission string   `json:"permission"`
+		Patterns   []string `json:"patterns"`
+		Metadata   struct {
+			Command string `json:"command"`
+		} `json:"metadata"`
 	}
-	if err := json.Unmarshal(props, &pr); err != nil {
-		a.log.Debug("permission 载荷解析失败，跳过", "task", r.taskID, "cause", err)
+	if err := json.Unmarshal(props, &pa); err != nil {
+		a.log.Debug("permission.asked 载荷解析失败，跳过", "task", r.taskID, "cause", err)
 		return
 	}
-	if pr.ID == "" {
-		a.log.Debug("permission 事件缺 id，跳过", "task", r.taskID)
+	if pa.ID == "" {
+		a.log.Debug("permission.asked 事件缺 id，跳过", "task", r.taskID)
 		return
 	}
-	// 描述优先；缺描述时退回「工具名 + 参数」拼凑，保证审核者至少能看到在请求什么
-	text := pr.Request.Description
-	if text == "" {
-		text = pr.Request.Tool
-		if args, err := json.Marshal(pr.Request.Arguments); err == nil && string(args) != "null" {
-			text += " " + string(args)
-		}
+	text := pa.Permission
+	if cmd := pa.Metadata.Command; cmd != "" {
+		text += ": " + cmd
+	} else if len(pa.Patterns) > 0 {
+		text += ": " + strings.Join(pa.Patterns, " ")
 	}
 	a.emit(r, executor.AdapterEvent{
-		Type: "permission", PermissionID: pr.ID, Text: truncateRunes(text, 200),
+		Type: "permission", PermissionID: pa.ID, Text: truncateRunes(text, 200),
 	})
 }
 
-// mapMessageUpdated 处理 message.updated：user 消息开启新回合（清空累积），
-// assistant 消息把文本增量追加进回合缓冲、写 render.log、节流发 progress。
-//
-// why（回合文本累积）：
-//   - 服务端可能对同一消息反复发 message.updated（快照逐次增长），直接 append
-//     全文会重复累积；按 messageID 记录已见文本，只追加「已见前缀之后」的
-//     增量（TrimPrefix），幂等且不丢字
-//   - user 消息（初始 prompt / Send 续接）到来即清空回合缓冲：模型的新一轮
-//     输出从零开始，上一回合的残留文本不会污染本轮 trailer 判定
+// mapMessageUpdated 处理 message.updated：真实事件只携带 properties.info
+// （role/messageID），不带文本——文本载体是 message.part.updated/delta。本层
+// 只把它当「回合边界探测器」：user 消息到来即开启新回合（清空累积），并登记
+// 该消息为 user 消息（其 text part 不进回合累积，回合只算模型输出）。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 	var msg struct {
-		ID    string `json:"id"`
-		Role  string `json:"role"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
+		Info struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+		} `json:"info"`
 	}
 	if err := json.Unmarshal(props, &msg); err != nil {
 		a.log.Debug("message.updated 载荷解析失败，跳过", "task", r.taskID, "cause", err)
 		return
 	}
-	if msg.Role == "user" {
-		r.clearTurn()
-		return
+	if msg.Info.Role != "user" {
+		return // assistant 消息不携带文本，无事可做
 	}
-	if msg.Role != "assistant" {
-		a.log.Debug("忽略非 assistant 消息", "task", r.taskID, "role", msg.Role, "msg", msg.ID)
-		return
+	if msg.Info.ID != "" {
+		r.userMsgs[msg.Info.ID] = true
 	}
-	var text string
-	for _, p := range msg.Parts {
-		if p.Type == "text" {
-			text += p.Text
-		}
-	}
-	if text == "" {
-		return
-	}
-	seen := r.msgSeen[msg.ID]
-	delta := strings.TrimPrefix(text, seen)
-	if delta == "" {
-		return // 同一条消息的重复快照，无新增
-	}
-	if seen != "" && !strings.HasPrefix(text, seen) {
-		// 快照被服务端改写（与已见不一致）：放弃增量对账，直接按全文累积
-		a.log.Debug("消息快照与已见文本不一致，按全文累积", "task", r.taskID, "msg", msg.ID)
-	}
-	r.msgSeen[msg.ID] = text
-	r.turn += delta
-	if err := r.appendRender(delta); err != nil {
-		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
-	}
-	a.maybeProgress(r)
+	r.clearTurn()
 }
 
-// mapSessionStatus 处理 session.status：status=idle 视为回合结束（与
-// session.idle 同语义，真实样本两种形态都存在，宽容对待）。
+// mapPartUpdated 处理 message.part.updated：text 类型 part 携带该 part 的
+// 全量文本快照（真实流：文本首帧可能是空串的「part 创建」事件，随后走
+// part.delta 增量，收尾再回发完整快照）。
+//
+// why（按 part 去重 + 与 delta 对账）：
+//   - 服务端对同一 part 可能多次回发快照，且增量流结束后会补发全量快照——
+//     直接 append 全文会重复累积；按 messageID+partID 记录已计入文本，只
+//     追加 TrimPrefix 增量，快照与已见一致即去重返回
+//   - 快照与已见前缀不一致（部分增量丢失/被改写）时放弃对账、按全文累积：
+//     宁可重复也不丢字（分类只看 trailer 尾部，头部重复不影响判定）
+//   - 空文本快照是 part 创建事件而非有效全量，不置 partSnap：后续 delta 仍
+//     要照常累积（spike5 实测顺序：空快照 → delta 流 → 全量快照）
+func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
+	var pu struct {
+		Part struct {
+			ID        string `json:"id"`
+			MessageID string `json:"messageID"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+		} `json:"part"`
+	}
+	if err := json.Unmarshal(props, &pu); err != nil {
+		a.log.Debug("message.part.updated 载荷解析失败，跳过", "task", r.taskID, "cause", err)
+		return
+	}
+	p := pu.Part
+	if p.Type != "text" || p.ID == "" || p.MessageID == "" {
+		return // reasoning/tool/step-start 等非文本 part 与缺 id 事件不参与累积
+	}
+	if r.userMsgs[p.MessageID] {
+		return // user 消息的文本 part（如初始 prompt）不进回合
+	}
+	key := partKey(p.MessageID, p.ID)
+	if p.Text != "" {
+		r.partSnap[key] = true
+	}
+	seen := r.partSeen[key]
+	delta := strings.TrimPrefix(p.Text, seen)
+	if delta == "" {
+		return // 快照与已累积一致：去重
+	}
+	if seen != "" && !strings.HasPrefix(p.Text, seen) {
+		a.log.Debug("part 快照与已累积文本不一致，按全文累积",
+			"task", r.taskID, "msg", p.MessageID, "part", p.ID)
+	}
+	r.partSeen[key] = p.Text
+	a.appendTurn(r, delta)
+}
+
+// mapPartDelta 处理 message.part.delta：field=text 的流式增量。
+//
+// why（与快照对账）：若该 part 已收到非空全量快照（part.updated），增量已被
+// 快照覆盖，跳过防重复；否则增量直接 append——真实流里「part 创建（空文本）→
+// 逐条 delta 增长」期间并无有效快照可对账（spike5 实测）。
+func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
+	var pd struct {
+		MessageID string `json:"messageID"`
+		PartID    string `json:"partID"`
+		Field     string `json:"field"`
+		Delta     string `json:"delta"`
+	}
+	if err := json.Unmarshal(props, &pd); err != nil {
+		a.log.Debug("message.part.delta 载荷解析失败，跳过", "task", r.taskID, "cause", err)
+		return
+	}
+	if pd.Field != "text" || pd.Delta == "" || pd.MessageID == "" || pd.PartID == "" {
+		return
+	}
+	if r.userMsgs[pd.MessageID] {
+		return
+	}
+	key := partKey(pd.MessageID, pd.PartID)
+	if r.partSnap[key] {
+		return // 全量快照已含该文本：增量冗余
+	}
+	r.partSeen[key] += pd.Delta
+	a.appendTurn(r, pd.Delta)
+}
+
+// mapSessionStatus 处理 session.status：status.type=idle 是回合结束的主信号
+// （真实样本：{"type":"session.status","properties":{"status":{"type":"idle"}}}；
+// busy 状态同结构，不触发）。同现的 session.idle 由 mapEvent 忽略防重复。
 func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 	var st struct {
-		Status string `json:"status"`
+		Status struct {
+			Type string `json:"type"`
+		} `json:"status"`
 	}
 	if err := json.Unmarshal(props, &st); err != nil {
 		a.log.Debug("session.status 载荷解析失败，跳过", "task", r.taskID, "cause", err)
 		return
 	}
-	if st.Status == "idle" {
-		a.mapIdle(r, nil)
+	if st.Status.Type == "idle" {
+		a.mapIdle(r, props)
 	}
 }
 
-// mapIdle 回合结束（idle）时分类收尾：ParseTrailer 判定 ask/finish/none，
-// none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空回合缓冲。
+// mapIdle 回合结束（session.status idle 主信号）时分类收尾：ParseTrailer 判定
+// ask/finish/none，none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空
+// 回合缓冲。
 //
-// 空回合（无累积文本）跳过分类并 Warn：idle 但无文本说明文本流可能没被本层
-// 接住（如真实流主要走 message.part.updated 而 message.updated 无 parts，
-// 见文件头边界注释）——这是「任务可能静默挂死」的观测点，必须可见而非 Debug
-// 静默。raw 为触发 idle 的 SSE 事件原文，仅用于日志上下文。
+// 空回合（无累积文本）跳过分类并 Warn：idle 但无文本说明文本流没被本层接住
+// （事件结构变化/增量对账失败）——这是「任务可能静默挂死」的观测点，必须可见
+// 而非 Debug 静默。props 为触发 idle 的 session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	if strings.TrimSpace(r.turn) == "" {
 		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
@@ -710,7 +786,8 @@ func (a *Adapter) gitTurnStatus(r *runState) (branch, commit string, hasNew bool
 	return branch, commit, hasNew, nil
 }
 
-// maybeProgress 节流发 progress：同一回合至多每 progressThrottle 一条。
+// maybeProgress 节流发 progress：每任务至多每 progressThrottle 一条
+// （Task 12 e2e 遗留：按回合粒度细化）。
 func (a *Adapter) maybeProgress(r *runState) {
 	now := time.Now()
 	if now.Sub(r.lastProgress) < progressThrottle {
@@ -720,10 +797,30 @@ func (a *Adapter) maybeProgress(r *runState) {
 	a.emit(r, executor.AdapterEvent{Type: "progress", Text: tailRunes(r.turn, 200)})
 }
 
+// appendTurn 把文本增量追加进回合缓冲、写 render.log（tmux 第二窗口
+// tail -f 可见）并节流发 progress——part.updated 与 part.delta 两个入口共用。
+func (a *Adapter) appendTurn(r *runState, delta string) {
+	r.turn += delta
+	if err := r.appendRender(delta); err != nil {
+		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
+	}
+	a.maybeProgress(r)
+}
+
 // clearTurn 清空回合累积（user 消息到来 / 回合分类终结时调用）。
+//
+// userMsgs 不清空：它是会话级知识（user 消息 id 全会话唯一），保留才能保证
+// 重放/重复的 user 文本 part 永不混入回合。
 func (r *runState) clearTurn() {
 	r.turn = ""
-	r.msgSeen = make(map[string]string)
+	r.partSeen = make(map[string]string)
+	r.partSnap = make(map[string]bool)
+}
+
+// partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part
+// （真实流中 part id 全局唯一，双 id 是为了对账键可读可查）。
+func partKey(msgID, partID string) string {
+	return msgID + "\x00" + partID
 }
 
 // appendRender 把消息文本增量追加进 render.log（tmux 第二窗口 tail -f 可见）。

@@ -144,40 +144,99 @@ func sseLine(v any) string {
 	return "data: " + string(b) + "\n\n"
 }
 
-// msgEvent 构造一条 message.updated 事件（role=user/assistant，单个文本 part）。
-func msgEvent(id, role, text string) string {
+// 事件构造器全部对齐 spike3/spike5 抓到的真实 opencode 1.18.15 样本：
+//   - message.updated 只有 properties.info（role/messageID），不带文本；
+//   - 文本载体是 message.part.updated（part.type=text 全量快照）与
+//     message.part.delta（properties.field=text 增量）；
+//   - 回合结束主信号是 session.status 的 status.type=idle，同现的 session.idle 冗余；
+//   - 权限是 permission.asked（properties.id 即 PermissionID），应答回显
+//     permission.replied 必须被忽略。
+
+// userMsgEvent 构造一条 message.updated（user 消息信息，仅 info 无文本）。
+func userMsgEvent(id string) string {
 	return sseLine(map[string]any{
 		"type":      "message.updated",
 		"sessionID": "sess-1",
 		"properties": map[string]any{
-			"id": id, "sessionID": "sess-1", "role": role,
-			"parts": []map[string]any{{"type": "text", "text": text}},
+			"sessionID": "sess-1",
+			"info":      map[string]any{"id": id, "role": "user"},
 		},
 	})
 }
 
-// idleEvent 构造一条 session.idle 事件（回合结束信号）。
-func idleEvent() string {
+// partUpdatedEvent 构造一条 message.part.updated（text 类型 part 的全量快照）。
+func partUpdatedEvent(msgID, partID, text string) string {
+	return sseLine(map[string]any{
+		"type":      "message.part.updated",
+		"sessionID": "sess-1",
+		"properties": map[string]any{
+			"sessionID": "sess-1",
+			"part": map[string]any{
+				"type": "text", "text": text, "messageID": msgID,
+				"sessionID": "sess-1", "id": partID,
+			},
+		},
+	})
+}
+
+// partDeltaEvent 构造一条 message.part.delta（text 字段流式增量）。
+func partDeltaEvent(msgID, partID, delta string) string {
+	return sseLine(map[string]any{
+		"type":      "message.part.delta",
+		"sessionID": "sess-1",
+		"properties": map[string]any{
+			"sessionID": "sess-1",
+			"messageID": msgID, "partID": partID, "field": "text", "delta": delta,
+		},
+	})
+}
+
+// statusIdleEvent 构造一条 session.status（status.type=idle，回合结束主信号）。
+func statusIdleEvent() string {
+	return sseLine(map[string]any{
+		"type":      "session.status",
+		"sessionID": "sess-1",
+		"properties": map[string]any{
+			"sessionID": "sess-1",
+			"status":    map[string]any{"type": "idle"},
+		},
+	})
+}
+
+// sessionIdleEvent 构造一条 session.idle（与 session.status idle 同现的冗余信号，
+// 用于验证去重：两个信号不得重复触发分类）。
+func sessionIdleEvent() string {
 	return sseLine(map[string]any{
 		"type":      "session.idle",
 		"sessionID": "sess-1",
 		"properties": map[string]any{
-			"sessionID": "sess-1", "status": "idle",
+			"sessionID": "sess-1",
 		},
 	})
 }
 
-// permissionEvent 构造一条 permission.updated 事件（含 permissionID 与描述）。
-func permissionEvent(id, desc string) string {
+// permissionAskedEvent 构造一条 permission.asked 事件（真实结构：id/
+// permission/patterns/metadata/tool）。
+func permissionAskedEvent(id, perm, command string) string {
 	return sseLine(map[string]any{
-		"type":      "permission.updated",
+		"type":      "permission.asked",
 		"sessionID": "sess-1",
 		"properties": map[string]any{
-			"id": id, "sessionID": "sess-1",
-			"request": map[string]any{
-				"description": desc, "tool": "Bash",
-				"arguments": map[string]any{"command": "rm -rf node_modules"},
-			},
+			"id": id, "sessionID": "sess-1", "permission": perm,
+			"patterns": []string{command},
+			"metadata": map[string]any{"command": command},
+			"tool":     map[string]any{"messageID": "msg-1", "callID": "call-1"},
+		},
+	})
+}
+
+// permissionRepliedEvent 构造一条 permission.replied 事件（应答回显，应被忽略）。
+func permissionRepliedEvent(id string) string {
+	return sseLine(map[string]any{
+		"type":      "permission.replied",
+		"sessionID": "sess-1",
+		"properties": map[string]any{
+			"sessionID": "sess-1", "requestID": id, "reply": "once",
 		},
 	})
 }
@@ -263,14 +322,14 @@ func TestStartToPermissionFlow(t *testing.T) {
 	quietLog(t)
 	taskID := "task-perm-0001"
 	fs := newFakeServer(t)
-	fs.push(permissionEvent("perm-1", "Bash: rm -rf node_modules"))
+	fs.push(permissionAskedEvent("perm-1", "bash", "echo spike-hi"))
 
 	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
 	ev := waitEventType(t, ch, "permission")
 	if ev.PermissionID != "perm-1" {
 		t.Errorf("PermissionID=%q，期望 perm-1", ev.PermissionID)
 	}
-	if !strings.Contains(ev.Text, "rm -rf node_modules") {
+	if !strings.Contains(ev.Text, "echo spike-hi") {
 		t.Errorf("权限描述=%q，应含命令文本", ev.Text)
 	}
 
@@ -301,9 +360,9 @@ func TestIdleClassifyAsk(t *testing.T) {
 	taskID := "task-ask-0001"
 	taskDir := t.TempDir()
 	fs := newFakeServer(t)
-	fs.push(msgEvent("m1", "user", "初始 prompt"))
-	fs.push(msgEvent("m2", "assistant", "分析完毕\n{\"ask\":\"用哪个实现？\"}"))
-	fs.push(idleEvent())
+	fs.push(userMsgEvent("msg-u1"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "分析完毕\n{\"ask\":\"用哪个实现？\"}"))
+	fs.push(statusIdleEvent())
 
 	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), taskDir)
 	ev := waitEventType(t, ch, "question")
@@ -325,9 +384,9 @@ func TestIdleClassifyAsk(t *testing.T) {
 func TestIdleClassifyFinish(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
-	fs.push(msgEvent("m1", "user", "初始 prompt"))
-	fs.push(msgEvent("m2", "assistant", "全部完成\n{\"branch\":\"handoff/T1\",\"commit\":\"abc12345\",\"summary\":\"完成功能\"}"))
-	fs.push(idleEvent())
+	fs.push(userMsgEvent("msg-u1"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "全部完成\n{\"branch\":\"handoff/T1\",\"commit\":\"abc12345\",\"summary\":\"完成功能\"}"))
+	fs.push(statusIdleEvent())
 
 	_, ch := startFakeRun(t, fs, "task-fin-0001", t.TempDir(), t.TempDir())
 	ev := waitEventType(t, ch, "result")
@@ -358,9 +417,9 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 		quietLog(t)
 		repo := initGit(t)
 		fs := newFakeServer(t)
-		fs.push(msgEvent("m1", "user", "初始 prompt"))
-		fs.push(msgEvent("m2", "assistant", assistantText))
-		fs.push(idleEvent())
+		fs.push(userMsgEvent("msg-u1"))
+		fs.push(partUpdatedEvent("msg-a1", "prt-a1", assistantText))
+		fs.push(statusIdleEvent())
 
 		_, ch := startFakeRun(t, fs, "task-fb1-0001", repo, t.TempDir())
 		ev := waitEventType(t, ch, "question")
@@ -378,9 +437,9 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 		// 再推送回合结束信号（先落库后推事件，保证兜底判定可见新提交）
 		gitCommit(t, repo, "impl.go", "package main\n", "feat: impl")
 		wantHead := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
-		fs.push(msgEvent("m1", "user", "初始 prompt"))
-		fs.push(msgEvent("m2", "assistant", assistantText))
-		fs.push(idleEvent())
+		fs.push(userMsgEvent("msg-u1"))
+		fs.push(partUpdatedEvent("msg-a1", "prt-a1", assistantText))
+		fs.push(statusIdleEvent())
 
 		ev := waitEventType(t, ch, "result")
 		if ev.Result == nil || !ev.Result.OK {
@@ -423,13 +482,13 @@ func TestSessionReadyProgress(t *testing.T) {
 }
 
 // TestIdleEmptyTurnSkips 验证空回合 idle 不产出分类事件（仅 Warn 可观测）：
-// 真实流若文本主要走 part.updated 而 message.updated 无 parts，回合文本恒空，
-// 该跳过路径是「任务可能静默挂死」的观测点，跳过本身不阻断流程。
+// 无任何文本 part 时回合文本为空，idle 跳过分类、不阻断流程；session.idle
+// 冗余信号同现也不得触发。
 func TestIdleEmptyTurnSkips(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-empty-001", t.TempDir(), t.TempDir())
-	// 先消费会话就绪 progress，再注入空回合 idle
+	// 先消费会话就绪 progress，再注入空回合 idle（两个冗余信号都推，验证都不触发）
 	select {
 	case ev := <-ch:
 		if ev.Type != "progress" {
@@ -438,10 +497,136 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("等待会话就绪 progress 事件超时")
 	}
-	fs.push(idleEvent())
+	fs.push(statusIdleEvent())
+	fs.push(sessionIdleEvent())
 	select {
 	case ev := <-ch:
 		t.Fatalf("空回合 idle 不应产出分类事件，收到 %+v", ev)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestPartDeltaAccumulation 验证 part 级文本累积（spike5 实测的两种流式顺序）：
+//   - part.updated(空串创建) → delta 流 → part.updated(全量快照)：快照与
+//     delta 已累积一致 → 去重，不重复追加；
+//   - 全量快照先行 → 后续 delta：快照已含该文本 → delta 必须被跳过，
+//     否则回合文本被污染（render.log 断言捕获该回归）。
+func TestPartDeltaAccumulation(t *testing.T) {
+	quietLog(t)
+	taskDir := t.TempDir()
+	fs := newFakeServer(t)
+	fs.push(userMsgEvent("msg-u1"))
+	// spike5 实测顺序：part 创建（空文本）→ 逐条 delta → 回发全量快照
+	fs.push(partUpdatedEvent("msg-a1", "prt-d1", ""))
+	fs.push(partDeltaEvent("msg-a1", "prt-d1", "sp"))
+	fs.push(partDeltaEvent("msg-a1", "prt-d1", "ike"))
+	fs.push(partDeltaEvent("msg-a1", "prt-d1", "-hi"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-d1", "spike-hi"))
+	// 另一 part：全量快照先行，随后的 delta 冗余必须被跳过
+	fs.push(partUpdatedEvent("msg-a1", "prt-d2", "完成\n{\"ask\":\"选 A 还是 B？\"}"))
+	fs.push(partDeltaEvent("msg-a1", "prt-d2", "!!"))
+	fs.push(statusIdleEvent())
+
+	_, ch := startFakeRun(t, fs, "task-part-0001", t.TempDir(), taskDir)
+	ev := waitEventType(t, ch, "question")
+	if ev.Text != "选 A 还是 B？" {
+		t.Errorf("question 文本=%q，期望 \"选 A 还是 B？\"", ev.Text)
+	}
+
+	render, err := os.ReadFile(filepath.Join(taskDir, "render.log"))
+	if err != nil {
+		t.Fatalf("读取 render.log: %v", err)
+	}
+	if strings.Count(string(render), "spike-hi") != 1 {
+		t.Errorf("render.log 中 spike-hi 应恰出现 1 次（快照去重失败会重复），实际:\n%s", render)
+	}
+	if strings.Contains(string(render), "!!") {
+		t.Errorf("render.log 不应含快照后的冗余 delta !!，实际:\n%s", render)
+	}
+}
+
+// TestPermissionAskedMapping 验证 permission.asked 映射：PermissionID 取
+// properties.id，Text 由 permission 字段 + metadata.command 组合（无 command
+// 时退回 patterns）。
+func TestPermissionAskedMapping(t *testing.T) {
+	t.Run("with_command_metadata", func(t *testing.T) {
+		quietLog(t)
+		fs := newFakeServer(t)
+		fs.push(permissionAskedEvent("per_abc123", "bash", "echo spike-hi"))
+
+		_, ch := startFakeRun(t, fs, "task-pmap-0001", t.TempDir(), t.TempDir())
+		ev := waitEventType(t, ch, "permission")
+		if ev.PermissionID != "per_abc123" {
+			t.Errorf("PermissionID=%q，期望 per_abc123（取 properties.id）", ev.PermissionID)
+		}
+		if ev.Text != "bash: echo spike-hi" {
+			t.Errorf("权限描述=%q，期望 \"bash: echo spike-hi\"", ev.Text)
+		}
+	})
+
+	t.Run("patterns_only", func(t *testing.T) {
+		quietLog(t)
+		fs := newFakeServer(t)
+		fs.push(sseLine(map[string]any{
+			"type":      "permission.asked",
+			"sessionID": "sess-1",
+			"properties": map[string]any{
+				"id": "per_pat1", "sessionID": "sess-1", "permission": "edit",
+				"patterns": []string{"src/a.ts", "src/b.ts"},
+			},
+		}))
+
+		_, ch := startFakeRun(t, fs, "task-pmap-0002", t.TempDir(), t.TempDir())
+		ev := waitEventType(t, ch, "permission")
+		if ev.Text != "edit: src/a.ts src/b.ts" {
+			t.Errorf("权限描述=%q，期望 \"edit: src/a.ts src/b.ts\"（退回 patterns）", ev.Text)
+		}
+	})
+}
+
+// TestPermissionRepliedIgnored 验证 permission.replied（应答回显）不产出事件：
+// 若把 replied 也当新权限，respond 会被当成再次询问，权限流程死循环。
+func TestPermissionRepliedIgnored(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(permissionAskedEvent("per-1", "bash", "echo spike-hi"))
+	fs.push(permissionRepliedEvent("per-1"))
+
+	_, ch := startFakeRun(t, fs, "task-prep-0001", t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "per-1" {
+		t.Fatalf("PermissionID=%q，期望 per-1", ev.PermissionID)
+	}
+	select {
+	case ev2 := <-ch:
+		if ev2.Type == "permission" {
+			t.Fatalf("permission.replied 不应再产出权限事件，收到 %+v", ev2)
+		}
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestIdleDedupe 验证 idle 双信号去重：真实流在 session.status idle 后同现
+// session.idle，两条都触发会重复分类（重复 question/result）——只认
+// session.status idle 主信号，session.idle 必须被忽略。
+func TestIdleDedupe(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(userMsgEvent("msg-u1"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "完成\n{\"ask\":\"选 A 还是 B？\"}"))
+	fs.push(statusIdleEvent())
+	fs.push(sessionIdleEvent())
+
+	_, ch := startFakeRun(t, fs, "task-dedupe-001", t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "question")
+	if ev.Text != "选 A 还是 B？" {
+		t.Errorf("question 文本=%q，期望 \"选 A 还是 B？\"", ev.Text)
+	}
+	select {
+	case ev2 := <-ch:
+		if ev2.Type == "question" || ev2.Type == "result" {
+			t.Fatalf("session.idle 冗余信号不应重复触发分类，收到 %+v", ev2)
+		}
 	case <-time.After(300 * time.Millisecond):
 	}
 }
