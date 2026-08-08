@@ -3,6 +3,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -210,10 +211,10 @@ func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview) // 直通完成，未经 waiting_answer 停留
 
-	// 断言 1：工单已建且已答已送达（审计闭环）
+	// 断言 1：工单已建且已答已送达（审计闭环）；answer 为精确 allow（P0-2）
 	tk := mustGetTicket(t, st, task.ID+":"+fk.PermID())
-	if tk.Answer == nil || !strings.Contains(*tk.Answer, "审批者批准") || tk.DeliveredAt == nil {
-		t.Fatalf("approve 应自动应答并标记送达: %+v", tk)
+	if tk.Answer == nil || *tk.Answer != "allow" || tk.DeliveredAt == nil {
+		t.Fatalf("approve 应自动应答精确 allow 并标记送达: %+v", tk)
 	}
 	// 断言 2：approver_decision 事件在，permission_request 事件不在（不唤醒审核者）
 	evs := mustEvents(t, st, task.ID)
@@ -301,6 +302,45 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	}
 	if countEvents(evs, proto.EventTypePermissionRequest) != 4 {
 		t.Fatalf("4 个权限请求都应升级审核者，得到 %d", countEvents(evs, proto.EventTypePermissionRequest))
+	}
+}
+
+// TestApproverApprovedTicketAnswerIsExactAllow 验证审批者批准写入的工单 answer
+// 是精确 "allow"（P0-2）：理由已落在 approver_decision 事件的 Reason 字段，
+// 不塞进 answer 串——否则 gate 翻译规则（answer 严格等于 "allow" 才放行）会把
+// 审批者的批准在 resume 重投时翻转成 reject。
+func TestApproverApprovedTicketAnswerIsExactAllow(t *testing.T) {
+	m, st, fk := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"approve","reason":"跑测试"}`, nil)
+	task := mustApproverDispatch(t, m)
+	waitCondition(t, "审批者已批准并答题", func() bool {
+		tk, err := st.GetTicket(task.ID + ":" + fk.PermID())
+		return err == nil && tk.Answer != nil
+	})
+	tk := mustGetTicket(t, st, task.ID+":"+fk.PermID())
+	if tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("审批者批准的 answer 应为精确 allow，得到 %q", *tk.Answer)
+	}
+}
+
+// TestRelayAnswerRelaysApproverAllowAsOnce 验证审批者批准的精确 "allow" answer
+// 经 RelayAnswer 重投时回传 executor "once" 而非 "reject"（P0-2 的翻转回归）。
+func TestRelayAnswerRelaysApproverAllowAsOnce(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: "x"})
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: "t1:perm-1", TaskID: "t1", Kind: "gate", Request: req, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AnswerTicket("t1:perm-1", "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RelayAnswer("t1", "t1:perm-1", "allow"); err != nil {
+		t.Fatalf("RelayAnswer: %v", err)
+	}
+	if got := ad.permsRec(); len(got) != 1 || got[0] != "perm-1:once" {
+		t.Fatalf("executor 应收到 perm-1:once，得到 %v", got)
 	}
 }
 

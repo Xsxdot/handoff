@@ -641,10 +641,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 	}
 	switch req.Kind {
 	case "gate":
-		decision := "reject"
-		if strings.TrimSpace(answer) == "allow" {
-			decision = "once"
-		}
+		decision := gateDecision(answer)
 		// ticket id 已按任务命名空间化（taskID:permID，见 handlePermission 的 why），
 		// 而 adapter 契约要求裸 PermissionID：剥掉 taskID 前缀还原。invariant：
 		// gate 工单 id 恒由 handlePermission 以 taskID+":"+permID 生成，
@@ -937,8 +934,11 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 		m.countApproverFail(taskID)
 		return
 	}
-	// AnswerTicket 以 answer IS NULL 为守卫：审批通过即答题，工单从待办移出
-	if err := m.st.AnswerTicket(ticketID, "allow（审批者批准："+reason+"）"); err != nil {
+	// 工单 answer 落**精确 "allow"**（P0-2）：gate 翻译规则是 answer 严格等于
+	// "allow" 才放行，塞理由进 answer 会让审批者的批准在 resume 重投
+	// （RelayAnswer）时被翻转成 reject；理由已完整落在 approver_decision 事件的
+	// Reason 字段，answer 只需表达「批准」这一动作。
+	if err := m.st.AnswerTicket(ticketID, "allow"); err != nil {
 		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "cause", err)
 		m.countApproverFail(taskID)
 		return
@@ -1000,6 +1000,23 @@ func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
 	return false
 }
 
+// gateDecision 把 gate 工单的应答翻译成 executor 的 decision，规则单一：
+// answer trim 后严格等于 "allow" → "once"（批准本次），其余一律 "reject"。
+//
+// 为什么严格相等（P0-2）：answer 是契约值，只有精确的 allow 才代表批准；
+// 审批者自动批准写入的也是精确 "allow"（理由在 approver_decision 事件的
+// Reason 字段）——若把理由塞进 answer，resume 重投（RelayAnswer）时这条长串
+// 会落在「其余一律 reject」上，审批者明确批准的操作被系统自己改判为拒绝。
+//
+// 两处调用（waitPermission 的应答回传、RelayAnswer 的自愈中继）必须走同一
+// 翻译，复制字面量就是漂移面。
+func gateDecision(answer string) string {
+	if strings.TrimSpace(answer) == "allow" {
+		return "once"
+	}
+	return "reject"
+}
+
 // waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
 //
 // 规则：应答 trim 后等于 "allow" → RespondPermission("once")，其余一律 "reject"
@@ -1024,10 +1041,7 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 
 	// 回迁失败（reply 回程的 resumeIfIdle 已抢先回迁）由 transitBestEffort 容忍
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "permission 已应答")
-	decision := "reject"
-	if strings.TrimSpace(ans) == "allow" {
-		decision = "once"
-	}
+	decision := gateDecision(ans)
 	// 派生子 ctx 只约束调用本身（unaryCtx 的 why）：等答案阶段早已结束，此处的
 	// parent 是任务级 ctx（取消无截止），不加超时的话半死 executor 会让本调用挂死
 	actx, acancel := unaryCtx(ctx)
