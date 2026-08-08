@@ -71,7 +71,11 @@ type permissionConfig struct {
 
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成
 // （而非字符串拼接），避免引号/转义错误。
+//
+// Model 可选：经 OPENCODE_CONFIG 注入时会覆盖用户全局配置，因此默认不写死模型，
+// 仅当环境变量 HANDOFF_OPENCODE_MODEL 非空时写入（远程免费模型 e2e 等场景用）。
 type opencodeConfig struct {
+	Model      string           `json:"model,omitempty"`
 	Permission permissionConfig `json:"permission"`
 }
 
@@ -114,14 +118,21 @@ func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath s
 		}
 	}()
 
-	cfgJSON, err := json.MarshalIndent(opencodeConfig{
+	// HANDOFF_OPENCODE_MODEL：任务级 OPENCODE_CONFIG 会替换全局配置，不写 model
+	// 时只能依赖 opencode 默认；远程无凭证场景显式注入免费模型更稳。
+	cfg := opencodeConfig{
+		Model: strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL")),
 		Permission: permissionConfig{
 			Edit:              "ask",
 			Bash:              "ask",
 			Webfetch:          "ask",
 			ExternalDirectory: "ask",
 		},
-	}, "", "  ")
+	}
+	if cfg.Model != "" {
+		logger.Info("任务环境注入模型", "model", cfg.Model)
+	}
+	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		// MarshalIndent 对本结构体不可能失败，保留错误返回以防未来字段变更引入
 		return configPath, promptPath, fmt.Errorf("序列化 opencode 配置: %w", err)
