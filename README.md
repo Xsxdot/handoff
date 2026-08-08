@@ -35,7 +35,9 @@ handoff agentd --executor=opencode          # 真实执行（默认）；fake �
 # 2. 本机配对（远程场景）：把 executor 机 ~/.handoff/config.yaml 里的 token 抄到
 #    本机同名文件 targets 段：
 #       targets:
-#         devbox: {addr: "192.168.x.x:7777", token: "<executor 机的 token>"}
+#         devbox: {addr: "192.168.x.x:7777", token: "<executor 机的 token>", user: "<远程 ssh 用户名>"}
+#    user 是远程 attach/pull 的 ssh 用户名：本机用户名与远程一致时可省略，不一致
+#    不配它会 Permission denied（attach/pull 无法建立 ssh 连接）。
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
 handoff dispatch --repo /path/to/repo plan.md
