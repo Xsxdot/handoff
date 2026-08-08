@@ -434,9 +434,13 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 //   - kill 失败但 serve 仍存活时**保留运行态**（P1-9）：serve 占着端口与模型
 //     会话，drop 掉就没有任何途径回收（重试 Stop 是唯一回收路径）；保留期间
 //     运行态是惰性的（订阅与看门狗都已退出、事件通道已关），Send/RespondPermission
-//     经 stopCh 守卫拒绝继续执行，重试 Stop 或 agentd 重启（Resume 以 newRun
-//     整表覆盖）都能清理它——已归档任务不会被 ResumeTask 复活（恢复只作用于
-//     运行中状态的任务）
+//     经 stopCh 守卫拒绝继续执行
+//   - 保留态的清理只靠重试 Stop，**agentd 重启不会接走它**：RecoverOnStartup 只
+//     探测 running/waiting_answer 任务（watchdog.go），而 Stop 只由 Done 在归档
+//     时调用（manager.go）——进程内保留态只可能属于已归档任务，重启后无人接管。
+//     因此已完成任务的保留态仅提供「可重试、可观察」的兜底，真正泄漏时交人工
+//     （杀 tmux 会话/进程）清理；「running 任务的残留 serve 经重启重接」只指
+//     RecoverOnStartup 对运行中任务的事件流重建（Resume），与归档任务的保留态无关
 //   - 运行态注销（drop）与 subscribeLoop 退出时的 drop 是幂等的 map 删除，
 //     mu 保护下不会重复释放——runs 表因此不随任务累积无界增长
 func (a *Adapter) Stop(taskID string) (err error) {

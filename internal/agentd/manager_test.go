@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -531,5 +532,26 @@ func TestPermissionReplaySkipsDuplicates(t *testing.T) {
 			t.Fatalf("已答后重放不得再次 RespondPermission, got %v", ad.permsRec())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestPlanSummaryFromContent（P1-12）：摘要规则——取首个非空行（markdown 计划的
+// 标题位），按 planSummaryLimit 截断；内容为空或全空行时返回空串。
+func TestPlanSummaryFromContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"标题行", "# 修复登录态丢失\n\n## 背景\n...", "# 修复登录态丢失"},
+		{"开头空行跳过后取标题", "\n\n   \n# 建表\nrest", "# 建表"},
+		{"超长首行按 rune 截断", strings.Repeat("长", 300), strings.Repeat("长", 200)},
+		{"空内容", "", ""},
+		{"全空行", "\n  \n\n", ""},
+	}
+	for _, c := range cases {
+		if got := planSummaryFromContent([]byte(c.content)); got != c.want {
+			t.Errorf("%s: planSummaryFromContent=%q, want %q", c.name, got, c.want)
+		}
 	}
 }

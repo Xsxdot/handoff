@@ -179,6 +179,121 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	}
 }
 
+// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在审核者回答后
+// 仍无新事件产出（executor 假死），下一轮 tick 必须二次触发 stalled——这是最需要
+// 二次告警的场景（旧实现「只发一次」裁决后永远不再告警）；而无活动时依旧只发一次
+// 不刷屏。
+func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingAnswerTask(t, st, "task-reply")
+	// 补一个挂起工单供 reply 回答，走真实 handleReply 的 AnswerTicket 路径
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "task-reply:t1", TaskID: "task-reply",
+		Kind: "gate", Request: []byte(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, discardLogger())
+
+	// 第一轮：stalled 触发一次
+	eventually(t, 2*time.Second, "首条 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-reply")) == 1
+	})
+
+	// 模拟审核者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
+	if err := st.AnswerTicket("task-reply:t1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	if err := st.UpdateTaskState("task-reply", proto.TaskStateRunning); err != nil {
+		t.Fatalf("回迁 running: %v", err)
+	}
+
+	// 第二轮：executor 仍无事件产出但 updated_at 已前进 → 必须二次 stalled
+	eventually(t, 2*time.Second, "二次 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-reply")) == 2
+	})
+
+	// 之后无活动不刷屏：再等若干 tick，仍只有 2 条（二次告警是活动驱动的，不是每轮重发）
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	if got := len(stalledEvents(t, st, "task-reply")); got != 2 {
+		t.Fatalf("无活动后 stalled 应保持 2 条，实际 %d（二次告警刷屏）", got)
+	}
+}
+
+// TestWatchdogCatchesZeroEventTask（P1-15b）：从未产出任何事件的任务（静默挂起）
+// 不再被跳过——以 task.UpdatedAt 兜底基线，超时后同样触发 stalled 且只触发一次，
+// 事件锚点 LastSeq 记 0（无事件可锚）。
+func TestWatchdogCatchesZeroEventTask(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	createRunningTask(t, st, "task-silent") // 无事件：只有任务行
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, discardLogger())
+
+	eventually(t, 2*time.Second, "零事件任务 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-silent")) == 1
+	})
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	if got := len(stalledEvents(t, st, "task-silent")); got != 1 {
+		t.Fatalf("零事件任务 stalled 应恰好 1 条，实际 %d（应只发一次）", got)
+	}
+	var pl stalledPayload
+	evs := stalledEvents(t, st, "task-silent")
+	if err := json.Unmarshal(evs[0].Payload, &pl); err != nil {
+		t.Fatalf("解析 stalled payload: %v", err)
+	}
+	if pl.LastSeq != 0 {
+		t.Fatalf("零事件任务 stalled LastSeq=%d, want 0（无事件可锚）", pl.LastSeq)
+	}
+	if pl.Idle == "" {
+		t.Fatal("零事件任务 stalled 缺 Idle 字段")
+	}
+}
+
+// TestRecoverOnStartupVoidsPendingTickets（P1-16）：探活失败的 dead 任务，其挂起
+// 工单被作废——attach 的 pending_tickets 不再出现无法操作的挂起项（executor 已不
+// 在，一操作就撞 P0-5）；answer 置为 VoidAnswer 留审计痕迹，且该任务仍迁移
+// waiting_review 交审核者裁决。
+func TestRecoverOnStartupVoidsPendingTickets(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingAnswerTask(t, st, "task-dead-tk")
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "task-dead-tk:p1", TaskID: "task-dead-tk",
+		Kind: "gate", Request: []byte(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	if err := RecoverOnStartup(st, hub, func(string) bool { return false }, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+
+	// 任务仍按既有恢复语义落 waiting_review
+	assertState(t, st, "task-dead-tk", proto.TaskStateWaitingReview)
+
+	// attach 数据源：pending_tickets 为空（作废后 answer 非空，天然不再返回）
+	pending, err := st.PendingTickets("task-dead-tk")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("dead 任务恢复后 pending_tickets=%d, want 0（挂起项必须作废）", len(pending))
+	}
+	// 审计痕迹：answer 置为 VoidAnswer
+	tk, err := st.GetTicket("task-dead-tk:p1")
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if tk.Answer == nil || *tk.Answer != store.VoidAnswer {
+		t.Fatalf("作废工单 answer=%v, want VoidAnswer(%q)", tk.Answer, store.VoidAnswer)
+	}
+}
+
 // TestRecoverOnStartup：探活失败 → failed 事件 + waiting_review；
 // 探活成功 → 任务保持 running 不动；终态任务不被探测。
 func TestRecoverOnStartup(t *testing.T) {

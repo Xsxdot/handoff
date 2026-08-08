@@ -103,6 +103,29 @@ type DispatchReq struct {
 	Target   string // 目标主机名（归档展示用，记入 task.Target）
 }
 
+// planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
+//
+// 为什么 200：plan_summary 是 attach/tasks 里「这个任务要干什么」的速览字段，
+// 完整计划已落 plan_path 文件；上限同时防超长单行 plan（如压缩过的 markdown）
+// 撑爆任务行与终端输出。
+const planSummaryLimit = 200
+
+// planSummaryFromContent 从 plan 内容生成任务摘要。
+//
+// 规则：取首个非空行（markdown 计划的标题位，如 `# 修复登录态丢失`），按
+// planSummaryLimit 截断；内容为空或全空行时返回空串。
+// 为什么用「首个非空行」而非「前 N 字符整体截断」：plan 开头常有空行/分隔线/
+// 注释行，前 N 字符的摘要可能全是空白与噪音；首行标题是 markdown 惯例的意图
+// 浓缩位，审核者一眼即知任务方向（P1-12）。
+func planSummaryFromContent(content []byte) string {
+	for _, line := range strings.Split(string(content), "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return truncateRunes(trimmed, planSummaryLimit)
+		}
+	}
+	return ""
+}
+
 // ticketRequest 是工单 request 列的通用载体，kind 区分 gate/ask。
 type ticketRequest struct {
 	Kind       string `json:"kind"`
@@ -174,6 +197,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
 	}
+	summary := planSummaryFromContent(planContent)
 
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
@@ -223,6 +247,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	// 内存态同步补上 branch，保证传给 adapter 的 StartReq.Task 完整
 	task.Branch = branch
+
+	// plan 摘要经 SetTaskField 白名单落库（P1-12）：PlanPath 是 agentd 侧文件路径，
+	// 审核者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
+	// plan_summary 就是 attach/tasks 里那一眼速览。失败与 branch 同款按派发失败处理
+	if err := m.st.SetTaskField(taskID, "plan_summary", summary); err != nil {
+		m.log.Error("写入任务 plan 摘要失败", "task", taskID, "cause", err)
+		m.transitBestEffort(taskID, proto.TaskStateFailed, "写 plan 摘要失败")
+		return nil, fmt.Errorf("记录任务 plan 摘要: %w", err)
+	}
+	task.PlanSummary = summary
+	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 
 	if err := m.ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)

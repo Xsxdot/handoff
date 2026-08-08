@@ -475,6 +475,9 @@ SELECT id, task_id, kind, request, answer, created_at, answered_at FROM tickets 
 //
 // 注意：
 //   - 以 answer IS NULL 为更新条件：工单不存在或已回答（不可重复回答）均返回 ErrNotFound
+//   - 回答成功后刷新所属任务的 updated_at（子查询取 task_id）：answer 落库是任务
+//     活动信号，看门狗以此判定「stalled 之后是否有回复」从而二次告警（P1-15a）；
+//     否则「已 stalled → 审核者回答 → executor 仍死」永远不再告警
 func (s *Store) AnswerTicket(id, answer string) error {
 	res, err := s.db.ExecContext(context.Background(),
 		"UPDATE tickets SET answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
@@ -489,7 +492,50 @@ func (s *Store) AnswerTicket(id, answer string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	// 刷新所属任务的活动时间。失败仅 Warn 不回滚回答：工单答案已持久化是审计
+	// 事实，回滚会让已答工单重新出现 pending 而裁决记录消失；刷新失败只影响
+	// 看门狗二次告警的时机，不影响回答本身的正确性
+	if _, err := s.db.ExecContext(context.Background(),
+		"UPDATE tasks SET updated_at = ? WHERE id = (SELECT task_id FROM tickets WHERE id = ?)",
+		fmtTime(time.Now()), id); err != nil {
+		log().Warn("回答工单后刷新任务活动时间失败", "ticket", id, "cause", err)
+	}
 	return nil
+}
+
+// VoidAnswer 是 VoidPendingTickets 写入的占位答案值。
+//
+// 语义：任务已终结（executor 已不存在）时挂起工单不再可能被回答，作废后
+// PendingTickets（answer IS NULL）天然不再返回它们——审核者看到的是「无挂起项」
+// 而非可操作的假象；作废原因由调用方（RecoverOnStartup 的 failed 事件）留痕。
+const VoidAnswer = "__void__"
+
+// VoidPendingTickets 把任务全部未回答工单作废（answer 置为 VoidAnswer）。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 被作废的工单数（本次更新行数）
+//
+// 注意：
+//   - 幂等：重复调用第二次起返回 0（已作废的工单不再更新）
+//   - 不删除工单：request/answered_at 等审计痕迹保留，回答语义上视为已终结；
+//     回答过的工单不受影响
+//   - 由 agentd 启动恢复（RecoverOnStartup）在判定任务 dead 后调用；hub 侧等待
+//     者随进程消亡不存在，无需清理
+func (s *Store) VoidPendingTickets(taskID string) (int, error) {
+	res, err := s.db.ExecContext(context.Background(),
+		"UPDATE tickets SET answer = ?, answered_at = ? WHERE task_id = ? AND answer IS NULL",
+		VoidAnswer, fmtTime(time.Now()), taskID)
+	if err != nil {
+		return 0, fmt.Errorf("作废任务 %s 挂起工单: %w", taskID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("读取作废工单影响行数: %w", err)
+	}
+	return int(n), nil
 }
 
 // PendingTickets 返回任务下所有未回答工单（answer IS NULL），按 created_at 升序。

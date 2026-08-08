@@ -35,7 +35,7 @@ const watchdogTick = time.Minute
 
 // stalledPayload 是 stalled 事件的 payload，供审核者快速判断卡了多久、卡在哪个事件后。
 type stalledPayload struct {
-	LastSeq int64  `json:"last_seq"` // 卡住判定时刻的最新事件 seq（事发锚点）
+	LastSeq int64  `json:"last_seq"` // 卡住判定时刻的最新事件 seq（事发锚点）；零事件任务无事件可锚，记 0
 	Idle    string `json:"idle"`     // 空闲时长（如 "3h2m5s"，秒粒度）
 }
 
@@ -53,7 +53,9 @@ type stalledPayload struct {
 //   - 扫描间隔固定为 watchdogTick（每分钟）；测试需要注入短间隔时直接调用
 //     同包的 runWatchdog 并传入 tick 参数
 //   - 每轮扫描对 running/waiting_answer 任务判定；同一任务在 stalled 之后若无
-//     新事件不会重复触发（「只发一次」防事件风暴，见 scanStalled 的 why 注释）
+//     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如审核者 reply）
+//     且 executor 仍无事件产出时下一轮会二次触发（「只发一次」按活动裁决，
+//     设计见 scanStalled 的函数头 P1-15a）
 func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
 	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, log)
 }
@@ -83,9 +85,22 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 // waiting_answer 卡住正是「审批挂起过夜」场景——executor 等审核者答复等太久，
 // 值得再发一条 stalled 把审核者拽回来。
 //
-// 每轮扫描独立执行，与其他轮之间无共享状态：stalled 的「只发一次」由
-// 「最新事件是否为 stalled」这条持久化事实裁决（见下），不依赖内存记忆，
-// 重启后语义依然正确。
+// 活动基线（P1-15 重新设计）：
+//   - 最新事件时间；零事件任务（建好后从未产出事件，即「静默挂起」）以
+//     task.UpdatedAt 兜底——没有任何事件可锚，任务行是仅有的活动痕迹
+//   - 每次触发后以「新 stalled 事件成为最新事件」自然重置基线，无内存记忆
+//
+// 「只发一次」裁决（P1-15a 重新设计）：最新事件已是 stalled 时，仅当任务在
+// 该 stalled 之后出现过活动（task.UpdatedAt 前进）才允许重发。为什么以
+// UpdatedAt 变化为二次触发的准绳：reply 回程的 AnswerTicket 会刷新任务的
+// updated_at（见 store.AnswerTicket），resumeIfIdle 回迁 running 也会刷新——
+// 正是「已 stalled → 审核者回答 → executor 仍然死着」这个最需要二次告警的
+// 场景（旧实现永远不再告警）；而普通无活动状态下 updated_at 停在 stalled
+// 事件之前，每轮扫描照旧跳过，不产生事件风暴。新 stalled 事件落库时间晚于
+// 当时 updated_at，下一轮自然回到「不重发」分支。
+//
+// 每轮扫描独立执行，与其他轮之间无共享状态：两种裁决都只依赖持久化事实
+// （最新事件 + task.UpdatedAt），重启后语义依然正确。
 func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
 	tasks, err := st.ListTasks()
 	if err != nil {
@@ -99,28 +114,37 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 		}
 		checked++
 		last, err := st.LatestEvent(t.ID)
-		if errors.Is(err, store.ErrNotFound) {
-			// 无事件的任务（理论上不存在：dispatch 后必有事件），防御性跳过
-			log.Debug("任务无事件，跳过卡住判定", "task", t.ID)
-			continue
-		}
-		if err != nil {
+		var (
+			lastEv   *proto.Event // 最新事件；零事件任务为 nil
+			baseline time.Time    // 空闲判定的活动基线
+		)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			// 零事件任务（P1-15b）：以 task.UpdatedAt 兜底，纳入卡住监控——
+			// 旧实现直接跳过，这类「静默挂起」根本不受监控
+			baseline = t.UpdatedAt
+		case err != nil:
 			log.Error("看门狗读取任务最新事件失败", "task", t.ID, "cause", err)
 			continue
+		default:
+			lastEv = last
+			baseline = last.CreatedAt
 		}
-		idle := time.Since(last.CreatedAt)
+		idle := time.Since(baseline)
 		if idle < stallTimeout {
-			continue // 新鲜任务：最近有事件产出，不判定卡住
+			continue // 新鲜任务：最近有活动（事件产出或状态/字段变更），不判定卡住
 		}
-		if last.Type == proto.EventTypeStalled {
-			// 「只发一次」防事件风暴：最新事件已是 stalled 说明上次触发后没有
-			// 新事件。若每分钟无条件重发，审核者会被 stalled 刷屏淹没；而新事件
-			// 一旦到来，最新事件就被顶成别的类型，任务重新具备触发条件——
-			// 用「最新事件类型」做裁决，天然只依赖持久化事实，重启也正确
+		if lastEv != nil && lastEv.Type == proto.EventTypeStalled && !t.UpdatedAt.After(lastEv.CreatedAt) {
+			// 「只发一次」防事件风暴：最新事件已是 stalled 且之后无活动
+			// （updated_at 未前进），不重发——why 见函数头 P1-15a
 			continue
 		}
+		lastSeq := int64(0)
+		if lastEv != nil {
+			lastSeq = lastEv.Seq
+		}
 		evt, err := st.AppendEvent(t.ID, proto.EventTypeStalled, stalledPayload{
-			LastSeq: last.Seq, Idle: idle.Round(time.Second).String(),
+			LastSeq: lastSeq, Idle: idle.Round(time.Second).String(),
 		})
 		if err != nil {
 			log.Error("追加 stalled 事件失败", "task", t.ID, "cause", err)
@@ -129,7 +153,7 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 		hub.Publish(evt)
 		fired++
 		log.Warn("任务卡住，触发 stalled 事件", "task", t.ID,
-			"idle", idle.Round(time.Second).String(), "last_seq", last.Seq)
+			"idle", idle.Round(time.Second).String(), "last_seq", lastSeq)
 	}
 	log.Debug("看门狗扫描完成", "checked", checked, "fired", fired)
 }
@@ -138,7 +162,8 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 // 对全部 running/waiting_answer 任务调用 probe 探测执行器存活——
 //   - 不存活：追加 failed 事件（原因固定为「agentd 重启后执行器已不在」）并迁移
 //     waiting_review，交审核者裁决（失败现场留在事件里，审核者凭 tasks/attach
-//     可见）；事件照常广播，启动期无人订阅则由客户端凭 seq cursor 补拉
+//     可见）；该任务的挂起工单一并作废（P1-16，见 VoidPendingTickets 的语义），
+//     事件照常广播，启动期无人订阅则由客户端凭 seq cursor 补拉
 //   - 存活：重建 SSE 订阅继续消费——重建动作由 probe 闭包内部完成（见 seam 说明），
 //     本函数只记录结论日志
 //
@@ -184,6 +209,18 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		if err := recoverTransit(st, t.ID, t.State); err != nil {
 			log.Error("恢复失败任务迁移 waiting_review 失败", "task", t.ID, "cause", err)
 			continue
+		}
+		// 作废该任务的挂起工单（P1-16）：executor 已不存在，attach 里的挂起项
+		// 「一操作就撞 P0-5」（reply 走 RelayAnswer 因无运行态失败返回 502）。
+		// answer 置 VoidAnswer 后 PendingTickets（answer IS NULL）天然不再返回，
+		// 审核者看到的是「无挂起项」而非可操作的假象；作废原因已由上方 failed
+		// 事件留痕，工单历史仍在事件时间线里。hub 侧等待者随进程消亡不存在，
+		// 无需清理
+		voided, err := st.VoidPendingTickets(t.ID)
+		if err != nil {
+			log.Error("作废恢复失败任务挂起工单失败", "task", t.ID, "cause", err)
+		} else if voided > 0 {
+			log.Info("作废任务挂起工单", "task", t.ID, "voided", voided)
 		}
 		hub.Publish(evt)
 	}

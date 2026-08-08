@@ -375,3 +375,110 @@ func TestTicketIdempotent(t *testing.T) {
 		t.Errorf("回答后 GetTicket: answer=%v answered_at=%v, want %q/非空", got2.Answer, got2.AnsweredAt, answer)
 	}
 }
+
+// TestAnswerTicketRefreshesTaskUpdatedAt 验证回答工单会刷新所属任务的 updated_at
+// （P1-15a 二次告警的活动信号）：看门狗凭 updated_at 前进判定「stalled 之后有
+// 回复」，回答必须推进它，否则「已 stalled → 审核者回答 → executor 仍死」永远
+// 不再告警。
+func TestAnswerTicketRefreshesTaskUpdatedAt(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	task := &proto.Task{ID: "task-1", RepoPath: "/r", State: proto.TaskStateRunning, CreatedAt: t0, UpdatedAt: t0}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := s.CreateTicket(&proto.Ticket{ID: "t1", TaskID: "task-1", Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: t0}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	time.Sleep(5 * time.Millisecond) // 保证 updated_at 严格前进（时间戳秒/纳秒粒度）
+	if err := s.AnswerTicket("t1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	got, err := s.GetTask("task-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !got.UpdatedAt.After(t0) {
+		t.Fatalf("回答后任务 updated_at=%v, want 晚于 %v（回答必须刷新活动时间）", got.UpdatedAt, t0)
+	}
+}
+
+// TestVoidPendingTickets 验证作废语义（P1-16）：仅作废未回答工单，回答过的不受
+// 影响；作废后不再出现在 PendingTickets；重复调用幂等返回 0。
+func TestVoidPendingTickets(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	for _, id := range []string{"task-1", "task-2"} {
+		if err := s.CreateTask(&proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStatePending, CreatedAt: t0, UpdatedAt: t0}); err != nil {
+			t.Fatalf("CreateTask(%s): %v", id, err)
+		}
+	}
+	// task-1 两个挂起 + 一个已回答
+	for _, id := range []string{"t1", "t2", "t3"} {
+		if _, err := s.CreateTicket(&proto.Ticket{ID: id, TaskID: "task-1", Kind: "gate",
+			Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: t0}); err != nil {
+			t.Fatalf("CreateTicket(%s): %v", id, err)
+		}
+	}
+	if err := s.AnswerTicket("t3", "allow"); err != nil {
+		t.Fatalf("AnswerTicket(t3): %v", err)
+	}
+	// task-2 一个挂起（不应被 task-1 的作废误伤）
+	if _, err := s.CreateTicket(&proto.Ticket{ID: "t4", TaskID: "task-2", Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: t0}); err != nil {
+		t.Fatalf("CreateTicket(t4): %v", err)
+	}
+
+	n, err := s.VoidPendingTickets("task-1")
+	if err != nil {
+		t.Fatalf("VoidPendingTickets: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("作废数=%d, want 2（t3 已回答不算）", n)
+	}
+	// 幂等：第二次作废 0 条
+	n2, _ := s.VoidPendingTickets("task-1")
+	if n2 != 0 {
+		t.Fatalf("重复作废数=%d, want 0", n2)
+	}
+
+	pend, err := s.PendingTickets("task-1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pend) != 0 {
+		t.Fatalf("作废后 task-1 PendingTickets=%d, want 0（answer 非空天然移出待办）", len(pend))
+	}
+	// 审计痕迹保留：answer 为 VoidAnswer
+	for _, id := range []string{"t1", "t2"} {
+		got, _ := s.GetTicket(id)
+		if got.Answer == nil || *got.Answer != store.VoidAnswer {
+			t.Fatalf("作废工单 %s answer=%v, want VoidAnswer(%q)", id, got.Answer, store.VoidAnswer)
+		}
+	}
+	// 其他任务的挂起不受影响
+	pend2, err := s.PendingTickets("task-2")
+	if err != nil {
+		t.Fatalf("PendingTickets(task-2): %v", err)
+	}
+	if len(pend2) != 1 || pend2[0].ID != "t4" {
+		t.Fatalf("task-2 PendingTickets=%+v, want [t4]（跨任务误伤）", pend2)
+	}
+	// 已回答工单保持原答案
+	got3, _ := s.GetTicket("t3")
+	if got3.Answer == nil || *got3.Answer != "allow" {
+		t.Fatalf("已回答工单 t3 answer=%v, want allow（不得被作废覆盖）", got3.Answer)
+	}
+}

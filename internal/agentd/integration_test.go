@@ -291,6 +291,10 @@ func TestRecoverMidTask(t *testing.T) {
 	})
 
 	task := env.dispatchPlan(t, "把 users 表建出来")
+	// P1-12：dispatch 响应即带 plan_summary（dispatch 时已从 plan 生成摘要落库）
+	if task.PlanSummary != "把 users 表建出来" {
+		t.Fatalf("dispatch 后 plan_summary=%q, want %q", task.PlanSummary, "把 users 表建出来")
+	}
 	ev := env.waitAction(t, task.ID)
 	if ev.Type != proto.EventTypeQuestion {
 		t.Fatalf("事件 type=%s, want question", ev.Type)
@@ -310,6 +314,10 @@ func TestRecoverMidTask(t *testing.T) {
 	}
 	if tasks[0].State != proto.TaskStateWaitingAnswer {
 		t.Fatalf("recover 时任务 state=%s, want waiting_answer", tasks[0].State)
+	}
+	// P1-12：全新会话凭 tasks 命令即可知道任务意图（plan_summary 由 Dispatch 落库）
+	if tasks[0].PlanSummary != "把 users 表建出来" {
+		t.Fatalf("tasks 里 plan_summary=%q, want %q", tasks[0].PlanSummary, "把 users 表建出来")
 	}
 
 	// attach：pending_tickets[0] 就是那个未答提问（现场恢复的关键数据源）
