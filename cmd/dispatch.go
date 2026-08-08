@@ -4,6 +4,7 @@
 // 职责：
 //   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target/执行者/模型/
 //     分支/worktree 等参数一并 POST 给 agentd（body {repo, plan_b64, prompt, ...}）
+//   - 远程派发时采集本地 HEAD 作基线随请求上送（--no-sync-check 可关）
 //   - 成功时单行输出任务 JSON（state=running，供上层脚本解析任务 id）
 //
 // 边界：
@@ -40,7 +41,21 @@ var (
 	dispatchWorktree    string
 	dispatchNewWorktree bool
 	dispatchNoTerminal  bool
+	dispatchNoSyncCheck bool
 )
+
+// localHeadCommit 取当前工作目录所在 git 仓库的 HEAD 提交号，作为远程基线校验的基准。
+//
+// 返回空串的三种情况（都按「不校验」处理，不报错）：cwd 不是 git 仓库、
+// 仓库还没有任何提交、git 不可用。为什么不报错：dispatch 完全可以在非仓库目录
+// 发起（如只用 --prompt 派发一次性任务），把它做成硬性前提会挡掉正常用法。
+func localHeadCommit() string {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
@@ -72,12 +87,23 @@ var dispatchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// 只对远程 target 采集基线：本机派发时 --repo 与 cwd 未必是同一个仓库，
+		// 拿 cwd 的 HEAD 去校验别的仓库会造成假拒绝
+		baseCommit := ""
+		if targetName != "" && !dispatchNoSyncCheck {
+			baseCommit = localHeadCommit()
+			if baseCommit == "" {
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"提示: 当前目录不是 git 仓库，已跳过远程基线校验（远程仓库可能落后于你的本地代码）")
+			}
+		}
 		task, err := client.New(addr, token).Dispatch(cmd.Context(), client.DispatchOpts{
 			Repo: dispatchRepo, PlanB64: planB64, PlanName: planName, Target: targetName,
 			Prompt: dispatchPrompt, Name: dispatchName,
 			Executor: dispatchExecutor, Model: dispatchModel,
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
+			BaseCommit: baseCommit,
 		})
 		if err != nil {
 			return err
@@ -105,6 +131,8 @@ func init() {
 	dispatchCmd.Flags().StringVar(&dispatchWorktree, "worktree", "", "用户自带 worktree 路径（与 --new-worktree 互斥）")
 	dispatchCmd.Flags().BoolVar(&dispatchNewWorktree, "new-worktree", false, "在 DataDir/worktrees 下新建 managed worktree（任务完成时自动删除）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
+	dispatchCmd.Flags().BoolVar(&dispatchNoSyncCheck, "no-sync-check", false,
+		"跳过远程仓库基线校验（cwd 与 --repo 不是同一个仓库时用）")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
 	dispatchCmd.MarkFlagsMutuallyExclusive("worktree", "new-worktree")
 	rootCmd.AddCommand(dispatchCmd)

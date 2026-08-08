@@ -281,6 +281,9 @@ type DispatchOpts struct {
 	Base        string
 	Worktree    string
 	NewWorktree bool
+	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
+	// 不落后于本地（空=不校验）。
+	BaseCommit string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -295,7 +298,7 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"repo": opts.Repo, "plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
-		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree,
+		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)

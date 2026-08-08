@@ -426,6 +426,8 @@ type dispatchRequest struct {
 	Base        string `json:"base"`
 	Worktree    string `json:"worktree"`
 	NewWorktree bool   `json:"new_worktree"`
+	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
+	BaseCommit string `json:"base_commit"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -448,7 +450,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
-		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
+		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.Repo, err)
@@ -464,6 +466,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
+//   - ErrBaseCommitMissing → 400：任务仓库落后于审核者本地基线，拒发并带 git push
+//     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
 //   - 其余（任务目录/落库/executor 启动等 agentd 侧故障）→ 500
@@ -472,6 +476,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 	case errors.Is(err, ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrBaseCommitMissing):
+		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable):
 		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

@@ -6,6 +6,7 @@
 //     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
+//   - 派发前的远程基线校验：EnsureBaseCommit 保证任务仓库不落后于审核者本地
 //
 // 边界：
 //   - 全部操作是「分支准备 + 只读审阅」：绝不代 executor 写代码/提交，
@@ -28,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,6 +54,10 @@ var (
 	ErrRepoUnusable    = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
+
+	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
+	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
+	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
 )
 
 // 执行护栏：
@@ -380,6 +386,67 @@ func RemoveManagedWorktree(ctx context.Context, repo, workdir string) error {
 	}
 	log().Info("managed worktree 已删除", "repo", repo, "workdir", workdir)
 	return nil
+}
+
+// FetchTimeout 是基线缺失时补拉远端的时长上限。
+// 独立于 WorkspaceGitTimeout：fetch 走网络，与本地 git 操作不是一个量级。
+var FetchTimeout = 2 * time.Minute
+
+// baseCommitRe 限定基线只能是 40 位小写十六进制（git rev-parse HEAD 的输出形态）。
+var baseCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// EnsureBaseCommit 校验审核者本地的基线提交在任务仓库中存在，缺失时补拉一次远端。
+//
+// 参数：
+//   - ctx: 上层上下文；fetch 阶段内部叠加 FetchTimeout
+//   - repo: 任务仓库路径
+//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=不校验（本地派发/cwd 非仓库）
+//
+// 返回：
+//   - nil: 基线存在（直接命中或 fetch 后命中）
+//   - ErrBadWorkspaceReq: sha 格式非法
+//   - ErrBaseCommitMissing: fetch 后仍缺失，错误文本含 sha、fetch stderr 与动作提示
+//
+// 注意：
+//   - 「命中才不 fetch」是刻意设计：常态下远程并不落后，cat-file 是纯本地对象库
+//     查询（微秒级），只有真落后时才付网络代价
+//   - fetch 失败（无凭证/网络不通）不单独成一类错误，一并归入 ErrBaseCommitMissing：
+//     对调用方而言结论都是「这次派不出去，先解决远程仓库」，stderr 原文已带出根因
+func EnsureBaseCommit(ctx context.Context, repo, sha string) error {
+	if sha == "" {
+		log().Info("未提供基线提交，跳过远程同步校验", "repo", repo)
+		return nil
+	}
+	if !baseCommitRe.MatchString(sha) {
+		log().Warn("基线提交格式非法，拒绝派发", "repo", repo, "base_commit", truncateRunes(sha, 80))
+		return fmt.Errorf("%w: 基线提交必须是 40 位十六进制，实得 %q", ErrBadWorkspaceReq, truncateRunes(sha, 80))
+	}
+	if hasCommit(ctx, repo, sha) {
+		log().Info("基线提交已在任务仓库，跳过 fetch", "repo", repo, "base_commit", sha)
+		return nil
+	}
+	log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
+	if ferr != nil {
+		log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
+			"stderr", truncateRunes(stderr, 500), "cause", ferr)
+	}
+	if hasCommit(ctx, repo, sha) {
+		log().Info("补拉远端后基线提交已就位", "repo", repo, "base_commit", sha)
+		return nil
+	}
+	log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha)
+	return fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
+		ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+}
+
+// hasCommit 判断 sha 是否已在 repo 的对象库中（^{commit} 保证它确实是提交对象，
+// 而不是同名的 tree/blob）。
+func hasCommit(ctx context.Context, repo, sha string) bool {
+	_, _, err := gitRun(ctx, repo, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
 
 // id8 截取任务 ID 前 8 字节，用于分支名与 worktree 目录名的稳定短标识。

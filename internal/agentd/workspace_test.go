@@ -627,6 +627,54 @@ func TestWorktreeAcceptsRealWorktree(t *testing.T) {
 	}
 }
 
+// TestEnsureBaseCommitPresentSkipsFetch 验证基线已在本地对象库时直接放行。
+// 仓库故意配一个不存在的 remote：一旦实现「无条件先 fetch」，git fetch --all
+// 会失败并让本用例挂掉——这就是「命中即零网络」的可执行证据。
+func TestEnsureBaseCommitPresentSkipsFetch(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "nonexistent.git"))
+	if err := EnsureBaseCommit(context.Background(), repo, head); err != nil {
+		t.Fatalf("基线已在仓库中必须直接放行（不触发 fetch），实得 %v", err)
+	}
+}
+
+// TestEnsureBaseCommitMissingRejects 验证基线缺失且 fetch 补不回来时拒发，
+// 且错误里带上基线 sha —— 审核者据此才知道该 push 哪个提交。
+func TestEnsureBaseCommitMissingRejects(t *testing.T) {
+	repo := initTestRepo(t)
+	const absent = "0123456789abcdef0123456789abcdef01234567"
+	err := EnsureBaseCommit(context.Background(), repo, absent)
+	if !errors.Is(err, ErrBaseCommitMissing) {
+		t.Fatalf("基线缺失必须返回 ErrBaseCommitMissing，实得 %v", err)
+	}
+	if !strings.Contains(err.Error(), absent) {
+		t.Errorf("错误文本必须含基线 sha，实得 %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "git push") {
+		t.Errorf("错误文本必须含 git push 的动作提示，实得 %q", err.Error())
+	}
+}
+
+// TestEnsureBaseCommitRejectsMalformedSHA 验证非 40 位十六进制一律拒绝：
+// 基线值最终会拼进 git 参数，不校验等于开一个注入面。
+func TestEnsureBaseCommitRejectsMalformedSHA(t *testing.T) {
+	repo := initTestRepo(t)
+	for _, bad := range []string{"--upload-pack=evil", "HEAD", "abc123", "0123456789abcdef0123456789abcdef0123456G"} {
+		if err := EnsureBaseCommit(context.Background(), repo, bad); !errors.Is(err, ErrBadWorkspaceReq) {
+			t.Errorf("基线 %q 必须按参数非法拒绝，实得 %v", bad, err)
+		}
+	}
+}
+
+// TestEnsureBaseCommitEmptySkips 验证空基线=不校验（本地 dispatch / cwd 非仓库）。
+func TestEnsureBaseCommitEmptySkips(t *testing.T) {
+	repo := initTestRepo(t)
+	if err := EnsureBaseCommit(context.Background(), repo, ""); err != nil {
+		t.Fatalf("空基线必须跳过校验，实得 %v", err)
+	}
+}
+
 // TestRemoveManagedWorktree 验证 managed worktree 清理：目录删除、任务分支保留。
 func TestRemoveManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)

@@ -193,6 +193,9 @@ type DispatchReq struct {
 	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
 	Worktree    string
 	NewWorktree bool
+	// BaseCommit 是审核者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
+	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
+	BaseCommit string
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -345,7 +348,8 @@ const maxApproverFails = 3
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
 	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target,
 		"executor", req.Executor, "model", req.Model, "name", req.Name,
-		"branch", req.Branch, "new_branch", req.NewBranch, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
+		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
+		"base_commit", req.BaseCommit, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败", "repo", req.Repo, "cause", err)
@@ -394,6 +398,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
+
+	// 远程基线校验（B4）：放在工作区准备之前——基准不对时后面建的分支全是错的，
+	// 且此刻还没有任何落库/建树副作用，拒发是干净的
+	if err := EnsureBaseCommit(ctx, req.Repo, req.BaseCommit); err != nil {
+		return nil, err
+	}
 
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
