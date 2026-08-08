@@ -189,11 +189,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	return c.hc.Do(req)
 }
 
-// httpError 把非 2xx 响应转为带状态码与响应体（截断）的错误——
-// 响应体是「服务端为什么拒绝」的第一手线索，直接并入错误信息返回给命令层展示。
+// httpError 把非 2xx 响应转成错误，并按状态码分级记录日志。
+//
+// 为什么按状态码分级：4xx 是预期内的客户端错误（任务不存在、状态不允许），
+// 在 attach 列表、pull 等常规路径上会正常出现——一律打 ERROR 会刷出假告警，
+// 把真正需要注意的服务端故障（5xx）淹没在噪音里。
 func (c *Client) httpError(op string, resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-	c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
+	if resp.StatusCode >= 500 {
+		c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
+	} else {
+		c.log().Warn("agentd 请求被拒", "op", op, "status", resp.StatusCode, "body", string(b))
+	}
 	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, strings.TrimSpace(string(b)))
 }
 

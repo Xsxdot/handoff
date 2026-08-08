@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 func TestAttachCommandForLocal(t *testing.T) {
@@ -153,4 +154,23 @@ func findRootCmd(use string) *cobra.Command {
 		}
 	}
 	return nil
+}
+
+// TestPickAttachTaskNonTTYIncludesTarget 验证非 TTY 建议命令带 --target。
+// why：远程任务照抄不带 --target 的命令会打到本机 agentd——先 404，
+// 再 attach 一个本机根本不存在的 tmux 会话，两条错都指不到真正的原因。
+func TestPickAttachTaskNonTTYIncludesTarget(t *testing.T) {
+	tasks := []proto.Task{
+		{ID: "aaaaaaaa-1111", Target: "devbox", State: proto.TaskStateRunning, Executor: "opencode"},
+		{ID: "bbbbbbbb-2222", Target: "", State: proto.TaskStateRunning, Executor: "opencode"},
+	}
+	var buf bytes.Buffer
+	printAttachSuggestions(&buf, tasks)
+	got := buf.String()
+	if !strings.Contains(got, "handoff attach aaaaaaaa-1111 --target devbox") {
+		t.Errorf("远程任务的建议命令必须带 --target，实得:\n%s", got)
+	}
+	if strings.Contains(got, "handoff attach bbbbbbbb-2222 --target") {
+		t.Errorf("本机任务不应带 --target，实得:\n%s", got)
+	}
 }

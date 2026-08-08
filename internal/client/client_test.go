@@ -8,6 +8,7 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -426,5 +427,33 @@ func TestWaitEventTimeout(t *testing.T) {
 	_, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, taskID, false)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("无事件 + deadline 应返回 DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestHTTPErrorLevelsByStatus 验证 4xx 打 Warn、5xx 打 Error。
+// why：任务不存在（404）是预期内的客户端错误，打 ERROR 会在 attach 无参列表等
+// 常规路径上刷出假告警，把真正的服务端故障淹掉。
+func TestHTTPErrorLevelsByStatus(t *testing.T) {
+	cases := []struct {
+		status    int
+		wantLevel string
+	}{{http.StatusNotFound, "WARN"}, {http.StatusInternalServerError, "ERROR"}}
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		old := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"error":"x"}`))
+		}))
+		_, err := client.New(srv.URL, "tok").Attach(context.Background(), "T1")
+		srv.Close()
+		slog.SetDefault(old)
+		if err == nil {
+			t.Fatalf("状态码 %d 必须返回错误", tc.status)
+		}
+		if !strings.Contains(buf.String(), "level="+tc.wantLevel) {
+			t.Errorf("状态码 %d 期望日志级别 %s，实得:\n%s", tc.status, tc.wantLevel, buf.String())
+		}
 	}
 }

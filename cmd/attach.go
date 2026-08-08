@@ -3,7 +3,8 @@
 // 职责：
 //   - attach <task>：组装并执行 attach 命令进入 executor 的 tmux 会话实况
 //     （本机 tmux attach -t handoff-<id8>；远程经 ssh -t <host> tmux attach）
-//   - attach（无参）：任务选择列表（交互）或非 TTY 下的建议命令打印
+//   - attach（无参）：任务选择列表（交互）或非 TTY 下的建议命令打印（远程任务
+//     的建议命令带 --target）
 //
 // 边界：
 //   - 终端实况是「看着执行者干活」的入口，不输出快照——快照恢复走 handoff show
@@ -15,6 +16,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -153,9 +155,7 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 
 	if !isTTY() {
 		// 非 TTY：打印建议命令即可，不阻塞读输入
-		for _, t := range tasks {
-			fmt.Fprintf(cmd.OutOrStdout(), "handoff attach %s\n", t.ID)
-		}
+		printAttachSuggestions(cmd.OutOrStdout(), tasks)
 		return nil
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "序号  name                              executor  状态            更新时间")
@@ -177,6 +177,20 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 		return fmt.Errorf("序号 %q 非法（范围 1-%d）", strings.TrimSpace(line), len(tasks))
 	}
 	return runAttach(cmd, cli, tasks[n-1].ID)
+}
+
+// printAttachSuggestions 打印每个任务的 attach 建议命令（非 TTY 降级路径）。
+//
+// 远程任务必须带 --target：不带的话命令会打到本机 agentd，先 404、再 attach
+// 一个本机不存在的 tmux 会话——两条错都指不到「你少了个 --target」这个真原因。
+func printAttachSuggestions(w io.Writer, tasks []proto.Task) {
+	for _, t := range tasks {
+		line := "handoff attach " + t.ID
+		if t.Target != "" {
+			line += " --target " + t.Target
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 // attachPriority 返回任务状态在列表中的优先级（越小越靠前）：
