@@ -415,10 +415,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
 
@@ -440,6 +442,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, err
 	}
 
@@ -482,6 +485,23 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	go m.mediate(taskID)
 	return task, nil
+}
+
+// compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
+// worktree（P2-2）。
+//
+// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后任务记录落库前
+// （MkdirAll/WriteFile/CreateTask）失败，没有任何任务持有该 worktree——done 的
+// 清理只认 WorktreeManaged 的任务记录，无记录则永不清理，worktree 成为孤儿
+// 永久占用磁盘。失败只记 Error，不覆盖/不替换原始派发错误。
+func (m *Manager) compensateManagedWorktree(repo string, ws Workspace) {
+	if !ws.Managed || ws.WorkDir == "" {
+		return
+	}
+	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
+	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
+	}
 }
 
 // Continue 向任务续发修改指令：要求任务处于 waiting_review，先回迁 running 再

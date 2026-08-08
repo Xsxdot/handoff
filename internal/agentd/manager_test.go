@@ -250,6 +250,45 @@ func mustDone(t *testing.T, m *Manager, taskID string) {
 	}
 }
 
+// TestDispatchFailedAfterWorkspaceCleansManagedWorktree 验证 dispatch 在
+// PrepareWorkspace 成功之后、任务记录落库之前失败时，补偿清理已建的 managed
+// worktree（P2-2）：否则该 worktree 无任务记录持有，done 永不清理成为孤儿。
+func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	// DataDir 下预置一个名为 tasks 的**文件**：PrepareWorkspace 的 worktrees
+	// 子目录照常可建、worktree 照常创建，但 Dispatch 的 MkdirAll(DataDir/tasks/<id>)
+	// 会因「tasks 不是目录」失败——精确命中「工作区已建、任务记录未落」的窗口
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "tasks"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fk := fake.New(nil)
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hub := NewHub()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, logger)
+
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	// 断言：worktrees 目录下已无残留 worktree
+	wtDir := filepath.Join(dataDir, "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		t.Fatalf("读 worktrees 目录: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("managed worktree 应被补偿清理，仍有: %v", entries)
+	}
+}
+
 // TestDoneRemovesManagedWorktree 验证 done 归档时自动删除 agentd 管理的 worktree
 // （目录消失、任务分支保留、任务 completed）。
 func TestDoneRemovesManagedWorktree(t *testing.T) {
