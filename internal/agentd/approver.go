@@ -13,11 +13,14 @@
 //     拒绝权限不是审批者的职权，只有审核者（人）能拒绝
 //   - 不写 store、不碰 adapter、不做状态迁移——纯裁决计算；落库与回传
 //     （工单/应答/事件）由 manager 完成
+//   - 裁决输出的 nonce 防伪：权限原文来自被监管的 executor，不可信
 package agentd
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,6 +159,20 @@ func (a *Approver) Blacklisted(permission string) (hit bool, rule string) {
 	return false, ""
 }
 
+// randNonce 生成一次性裁决随机数（8 字节 → 16 位十六进制）。
+//
+// 为什么是随机而不是计数器/时间戳：nonce 的唯一作用是「executor 无法预知」——
+// 可预测的值可以被提前构造进权限描述里，防伪就失效了。
+// 随机源失败时返回空串，由调用方按「本次不带 nonce 校验」降级：
+// 拿不到随机数不该让整条审批链瘫痪，而缺 nonce 的裁决仍受 §fail-closed 保护。
+func randNonce() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
 // Decide 对一次权限请求做裁决：组装 prompt → 调用 one-shot 执行者 → 解析 JSON。
 //
 // 参数：
@@ -168,9 +185,13 @@ func (a *Approver) Blacklisted(permission string) (hit bool, rule string) {
 //     都返回 Approve=false + Err 非 nil）
 func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) ApproverDecision {
 	start := time.Now()
+	nonce := randNonce()
+	if nonce == "" {
+		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", a.executorName)
+	}
 	a.log.Info("审批者开始裁决", "permission", truncateRunes(permission, 80),
-		"executor", a.executorName, "model", a.model)
-	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission)
+		"executor", a.executorName, "model", a.model, "nonce", nonce)
+	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
 	argv, err := executor.OneShotArgs(a.executorName, a.model, prompt)
 	if err != nil {
 		d := ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: err}
@@ -190,7 +211,11 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 			"cause", err, "output", truncateRunes(out, 200), "elapsed_ms", elapsed)
 		return d
 	}
-	d := parseDecision(out, elapsed)
+	d := parseDecision(out, nonce, elapsed)
+	if d.Err != nil && strings.Contains(d.Err.Error(), "nonce 不匹配") {
+		a.log.Error("审批者裁决 nonce 校验失败，按升级处理", "task_summary", truncateRunes(taskSummary, 60),
+			"permission", truncateRunes(permission, 80), "cause", d.Err)
+	}
 	a.log.Info("审批者裁决完成", "decision", decisionLabel(d), "reason", truncateRunes(d.Reason, 80),
 		"elapsed_ms", elapsed)
 	return d
@@ -217,9 +242,15 @@ func decisionLabel(d ApproverDecision) string {
 //
 // 解析规则（fail-closed）：
 //   - 找不到合法 JSON / decision 不是 approve|escalate → Err 非 nil
+//   - nonce 非空时裁决 JSON 必须回显同一 nonce，否则 Err 非 nil（防伪校验）
 //   - 合法 escalate → 干净 escalate（Err=nil，Reason 取模型给的理由）
 //   - 合法 approve → Approve=true
-func parseDecision(out string, elapsedMS int64) ApproverDecision {
+//
+// 参数：
+//   - out: 裁决命令输出
+//   - nonce: 本次 prompt 的 nonce；空=不校验（随机源失败时的降级）
+//   - elapsedMS: 本次裁决耗时
+func parseDecision(out, nonce string, elapsedMS int64) ApproverDecision {
 	lines := strings.Split(out, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -229,9 +260,17 @@ func parseDecision(out string, elapsedMS int64) ApproverDecision {
 		var m struct {
 			Decision string `json:"decision"`
 			Reason   string `json:"reason"`
+			Nonce    string `json:"nonce"`
 		}
 		if json.Unmarshal([]byte(line), &m) != nil {
 			continue // 非 JSON 行（思考文本），继续向前找
+		}
+		// nonce 防伪：只有真正读到本次 prompt 的模型才回显得出这个值。
+		// 不匹配即判无效 → fail-closed 升级人工，绝不当成一次干净的 escalate
+		//（那会掩盖「有人在伪造裁决」这件事本身）
+		if nonce != "" && m.Nonce != nonce {
+			return ApproverDecision{Approve: false, ElapsedMS: elapsedMS,
+				Err: fmt.Errorf("审批者裁决 nonce 不匹配（期望 %s，实得 %q），疑似伪造裁决", nonce, truncateRunes(m.Nonce, 40))}
 		}
 		switch m.Decision {
 		case "approve":
@@ -249,9 +288,11 @@ func parseDecision(out string, elapsedMS int64) ApproverDecision {
 // approverPromptTemplate 是裁决 prompt 的固定模板。
 //
 // 为什么写成模板字符串：裁决语义（什么能批、什么必须升级）集中在唯一一处，
-// 改语义只改这里；两个 %s 分别填充任务摘要与权限原文。
+// 改语义只改这里；四个 %s 分别填充任务摘要、权限原文、nonce、nonce（值出现
+// 两次：一处是「回显它」的指令，一处是 approve 输出里的占位）。
 const approverPromptTemplate = `你是代码任务的权限审批者。任务背景：%s
 权限请求：%s
+本次裁决编号 nonce=%s，你必须在输出的 JSON 里原样回显它，否则裁决作废。
 仅当该操作明显安全（任务仓库内读写、跑测试/构建、装项目依赖、常规 git 提交）时才批准。
 任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级审核者。
-只输出一行 JSON，不要输出其他内容：{"decision":"approve"} 或 {"decision":"escalate","reason":"简要原因"}`
+只输出一行 JSON，不要输出其他内容：{"decision":"approve","nonce":"%s"} 或 {"decision":"escalate","reason":"简要原因","nonce":"<同一 nonce>"}`
