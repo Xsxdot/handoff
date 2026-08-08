@@ -53,7 +53,7 @@ func TestIsPermanentStatus(t *testing.T) {
 		{http.StatusBadRequest, true},
 		{http.StatusUnauthorized, true},
 		{http.StatusForbidden, true},
-		{http.StatusNotFound, false},
+		{http.StatusNotFound, true},
 		{http.StatusInternalServerError, false},
 		{http.StatusServiceUnavailable, false},
 		{http.StatusOK, false},

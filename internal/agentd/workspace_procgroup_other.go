@@ -10,4 +10,4 @@ import "os/exec"
 func setProcGroup(cmd *exec.Cmd) {}
 
 // killProcGroup 非 unix 平台无进程组概念，空操作。
-func killProcGroup(pid int) {}
+var killProcGroup = func(pid int) {}

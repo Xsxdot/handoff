@@ -21,6 +21,8 @@ func setProcGroup(cmd *exec.Cmd) {
 // killProcGroup 杀掉 pid 所在进程组（组 id 即组长 pid，负数表示按组发送）。
 //
 // 幂等：组已不存在（全部成员已退出）时返回 ESRCH，调用方忽略即可。
-func killProcGroup(pid int) {
+// 包级 var 而非 func：便于测试替换为计数包装，断言回收协程的调用次数
+// （P0-3 回归：正常退出路径必须恰好 0 次，超时路径恰好 1 次）。
+var killProcGroup = func(pid int) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }

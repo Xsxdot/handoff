@@ -253,17 +253,29 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 		return "", -1, err
 	}
 	// 进程组回收协程：ctx 取消（10min 超时或请求断开）时 kill 整个进程组——
-	// CommandContext 只杀 sh 本身，孙进程必须按组回收。cmdDone 双保险：
-	// Wait 正常返回但 ctx 恰已取消时同样补一次组回收（select 随机择路不会漏杀）。
+	// CommandContext 只杀 sh 本身，孙进程必须按组回收。
+	//
+	// 为什么回收后不能再杀（P0-3）：cmdDone 关闭 = cmd.Wait() 已回收进程，
+	// 对已回收的 pid 发 SIGKILL 通常得到 ESRCH，但一旦 OS 把该 pid 复用作新
+	// 进程组组长，就会误杀 executor 机器上毫不相干的进程组（实测旧实现
+	// 300 条成功命令误杀 114 次）。而 Wait 能返回意味着进程组已空——仍持有
+	// 输出管道写端的孙进程会阻塞 Wait 的管道 EOF 排空——因此 Wait 返回后
+	// 不再需要、也绝不允许再补杀。
 	cmdDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			killProcGroup(cmd.Process.Pid)
-		case <-cmdDone:
-			if ctx.Err() != nil {
+			select {
+			case <-cmdDone:
+				// 进程已被 Wait 回收（组内成员同时全部退出），不杀
+				return
+			default:
+				// Wait 尚未返回：组内仍有成员持有输出管道，按组回收
 				killProcGroup(cmd.Process.Pid)
 			}
+		case <-cmdDone:
+			// 进程已回收：无论 ctx 是否取消都不再补杀（见上方 why）
+			return
 		}
 	}()
 	err = cmd.Wait()

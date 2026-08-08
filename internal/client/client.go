@@ -66,13 +66,15 @@ func (e *permanentError) Unwrap() error { return e.cause }
 
 // isPermanentStatus 判定握手状态码是否属于「重试无意义」的永久性失败。
 //
-// 为什么 400/401/403 永久：它们都表示请求本身非法——400 是参数错误、401/403 是
-// token 未同步/无权限。token 不同步正是文档写明的手工配对步骤（最常见的配置错误），
-// 退避重连只会无限循环，且与「还没有事件」的静默挂起无法区分（P0-2 根因）。
-// 其余状态（如 500、网关错误）可能是 agentd 瞬时故障，继续退避重连。
+// 为什么 400/401/403/404 永久：它们都表示请求本身非法——400 是参数错误、
+// 401/403 是 token 未同步/无权限、404 是路由不存在（handoff 路由改名后旧
+// agentd 会一直命中 404）。token 不同步正是文档写明的手工配对步骤（最常见的
+// 配置错误），退避重连只会无限循环，且与「还没有事件」的静默挂起无法区分
+// （P0-2 根因）。其余状态（如 500、网关错误）可能是 agentd 瞬时故障，继续退避重连。
 func isPermanentStatus(code int) bool {
 	switch code {
-	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound:
 		return true
 	}
 	return false
