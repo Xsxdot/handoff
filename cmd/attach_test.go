@@ -69,7 +69,7 @@ func TestSSHHostFromTarget(t *testing.T) {
 }
 
 // TestAttachCommandForRemoteUser 验证远程 attach 的 ssh 目标带配置的 user 前缀
-//（本机用户名与远程不一致时必须有地方写 ssh 用户名，否则 ssh host 直连 Permission denied）。
+// （本机用户名与远程不一致时必须有地方写 ssh 用户名，否则 ssh host 直连 Permission denied）。
 func TestAttachCommandForRemoteUser(t *testing.T) {
 	cfg := &config.Config{Targets: map[string]config.Target{"dev": {Addr: "devbox:7777", User: "sycm"}}}
 	argv, err := attachCommandFor("abcdefgh-1234", "dev", cfg)

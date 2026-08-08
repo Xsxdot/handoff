@@ -303,7 +303,7 @@ func (a *failStartAdapter) Events(string) <-chan executor.AdapterEvent {
 	return ch
 }
 
-func (a *failStartAdapter) Send(context.Context, string, string) error   { return nil }
+func (a *failStartAdapter) Send(context.Context, string, string) error { return nil }
 func (a *failStartAdapter) RespondPermission(context.Context, string, string, string) error {
 	return nil
 }
