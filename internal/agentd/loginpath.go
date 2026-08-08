@@ -2,8 +2,12 @@
 // 合并进当前进程环境。
 //
 // 职责：
-//   - 以登录 shell（$SHELL -l -c 'echo $PATH'）解析用户实际可用的 PATH
+//   - 以登录+交互 shell（$SHELL -l -i -c 'printf %s "$PATH"'）解析用户实际可用的 PATH
 //   - 把其中当前进程 PATH 尚未包含的目录追加到末尾
+//
+// 为什么必须带 -i（-l 不够）：-l 只 source .zshenv/.zprofile/.zlogin，而用户的 PATH
+// 追加常写在 .zshrc——那是交互式 shell 才会加载的文件。缺了 -i，拿到的 PATH 里恰好
+// 没有用户实际用的工具链目录，这条补全会在它要解决的那台机器上失效。
 //
 // 边界：
 //   - 只补 PATH，不动其他环境变量（补全其他变量的收益远小于误伤风险）
