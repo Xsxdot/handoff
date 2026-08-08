@@ -63,8 +63,8 @@ var attachCmd = &cobra.Command{
 // 注意：
 //   - id8 截断规则与 opencode adapter 的 tmux 会话命名（handoff-<id8>）耦合，
 //     改一处必改两处（proc.go StartServe 的 session 命名）
-//   - 远程 host 取 Targets[target].Addr 冒号前段（Addr 形如 devbox:7777，
-//     ssh 目标是主机名，不含 agentd 端口）
+//   - 远程 ssh 目标经 sshHostFromTarget 换算：取 Addr 冒号前段，user 非空时带
+//     user@ 前缀（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd 端口）
 func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string, err error) {
 	id8 := taskID
 	if len(id8) > 8 {
@@ -78,11 +78,27 @@ func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string,
 	if !ok {
 		return nil, fmt.Errorf("target %q 未在配置中定义", target)
 	}
+	return []string{"ssh", "-t", sshHostFromTarget(t), "tmux", "attach", "-t", session}, nil
+}
+
+// sshHostFromTarget 把配置 target 换算成 ssh 目标（attach/pull 共用的唯一换算点）。
+//
+// 规则：取 Addr 冒号前段（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd
+// 端口）；User 非空时返回 user@host，否则只返回 host（与历史行为一致）。
+//
+// 为什么必须抽共用函数：attach（远程实况）与 pull（远程分支同步）都需要把
+// Targets[target] 换算成 ssh 目标，各自实现会因只改一处而行为漂移。user 字段让
+// ssh 用户名可配置——本机用户名与远程不一致（如本机 xushixin 连远端 sycm）时，
+// 裸 host 的 ssh 会直接 Permission denied。
+func sshHostFromTarget(t config.Target) string {
 	host := t.Addr
 	if i := strings.IndexByte(host, ':'); i >= 0 {
 		host = host[:i]
 	}
-	return []string{"ssh", "-t", host, "tmux", "attach", "-t", session}, nil
+	if t.User != "" {
+		return t.User + "@" + host
+	}
+	return host
 }
 
 // execveFn 是 syscall.Exec 的测试缝：验证「execve 第一参必须是 LookPath 解析

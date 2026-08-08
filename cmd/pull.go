@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
@@ -52,8 +51,8 @@ var pullCmd = &cobra.Command{
 //   - 同步结果；任务不是远程任务、缺分支、target 未配置或 fetch 失败时返回错误
 //
 // 注意：
-//   - 远程地址由 Targets[task.Target].Addr 的冒号前段（主机名）与 task.RepoPath
-//     拼成 host:/path——与 attach 的 ssh 主机换算同源
+//   - 远程地址由 sshHostFromTarget(task.Target 的 Target 配置) 与 task.RepoPath
+//     拼成 host:/path（attach 与 pull 共用同一个换算点，user 可配置）
 //   - 用 RepoPath 而不是 Workdir()：worktree 是主仓的从属工作树，分支对象在主仓库里
 func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, error) {
 	if task.Target == "" {
@@ -67,16 +66,12 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 	if !ok {
 		return localsync.Result{}, fmt.Errorf("target %q 未在配置中定义，无法换算远程地址", task.Target)
 	}
-	host := t.Addr
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return localsync.Result{}, fmt.Errorf("取当前目录: %w", err)
 	}
 	return localsync.Fetch(ctx, localsync.Opts{
-		LocalRepo: cwd, RemoteURL: host + ":" + task.RepoPath, Branch: task.Branch,
+		LocalRepo: cwd, RemoteURL: sshHostFromTarget(t) + ":" + task.RepoPath, Branch: task.Branch,
 	})
 }
 

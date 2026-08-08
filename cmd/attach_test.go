@@ -48,6 +48,40 @@ func TestAttachCommandForUnknownTarget(t *testing.T) {
 	}
 }
 
+// TestSSHHostFromTarget 覆盖 target → ssh 目标的换算共用函数：user 非空 →
+// user@host；user 为空 → 只有 host（与历史行为一致）。
+func TestSSHHostFromTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		trg  config.Target
+		want string
+	}{
+		{"user 非空带端口", config.Target{Addr: "100.73.238.21:7777", User: "sycm"}, "sycm@100.73.238.21"},
+		{"user 为空带端口", config.Target{Addr: "devbox:7777"}, "devbox"},
+		{"user 非空无端口", config.Target{Addr: "devbox", User: "sycm"}, "sycm@devbox"},
+		{"user 为空无端口", config.Target{Addr: "devbox"}, "devbox"},
+	}
+	for _, c := range cases {
+		if got := sshHostFromTarget(c.trg); got != c.want {
+			t.Fatalf("%s: sshHostFromTarget=%q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestAttachCommandForRemoteUser 验证远程 attach 的 ssh 目标带配置的 user 前缀
+//（本机用户名与远程不一致时必须有地方写 ssh 用户名，否则 ssh host 直连 Permission denied）。
+func TestAttachCommandForRemoteUser(t *testing.T) {
+	cfg := &config.Config{Targets: map[string]config.Target{"dev": {Addr: "devbox:7777", User: "sycm"}}}
+	argv, err := attachCommandFor("abcdefgh-1234", "dev", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ssh", "-t", "sycm@devbox", "tmux", "attach", "-t", "handoff-abcdefgh"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("got %v want %v", argv, want)
+	}
+}
+
 // TestShowCommandRegistered 防止改名回归：rootCmd 下存在 "show"（快照）命令，
 // 且 attach 的 Short 已是终端实况语义。
 func TestShowCommandRegistered(t *testing.T) {
