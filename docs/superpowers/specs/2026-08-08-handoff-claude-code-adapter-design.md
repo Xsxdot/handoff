@@ -30,8 +30,9 @@
 | 配置继承 | `--setting-sources user,project` 继承 skills；任务级 `--settings` 用 `deny`/`ask` 收口 |
 | 进程宿主 | tmux（与 opencode 同构：agentd 重启/崩溃不带走执行中任务） |
 | 指令投递 | 命名管道 `in.fifo`，脚本内 `exec 3<>` 永久持有两端 |
-| 通用件 | 抽 `internal/executor/turn` 共享包，opencode adapter 同步改调 |
+| 通用件 | `internal/executor/turn` 共享包由 B3 会话前置抽取并合入 main，本 plan 直接 import（见 §6 协调注） |
 | tmux 会话名 | 沿用 `handoff-<id8>`，`handoff attach` 零改动 |
+| 降级路线 | 长驻进程若在真机上不稳，退到「每回合 one-shot `--resume`」（见 §3.4），只动 proc 层 |
 
 ## 3. 进程模型
 
@@ -46,6 +47,7 @@ exec 2>> <taskDir>/claude.log          # stderr 单独落盘，不污染 out.jso
 exec 3<> <taskDir>/in.fifo             # 永久持有读写两端（why 见下）
 claude -p \
   --input-format stream-json --output-format stream-json --verbose \
+  --include-partial-messages \
   --model <model> --session-id <uuid> \
   --setting-sources user,project --settings <taskDir>/settings.json \
   --mcp-config <taskDir>/mcp.json --permission-prompt-tool mcp__handoff__ask \
@@ -61,6 +63,9 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
   （与二期「model 可空 = 用执行者自身默认」的约定一致）。
 - **why `--session-id` 由 agentd 生成**：会话 id 在进程起来之前就已确定，写进 `claude.json`，
   agentd 重启后无需依赖已消费的事件即可恢复；同时它也是 `Result.SessionID` 的来源。
+- **why `--include-partial-messages`**：不加它 assistant 文本按整块到达（spike 实测），
+  `render.log` 的实况会一顿一顿地跳；加了才拿到增量 delta，tmux 窗口 1 的观感才真正对齐
+  opencode（opencode 走的就是 part delta）。代价只是多几种可忽略的事件类型。
 - **why 末行死亡哨兵**：`tmux has-session` 对本 adapter **不是**可用的存活判据——窗口 1 的
   `tail -f` 会一直活着，claude 早死了会话依然存在（opencode 靠 HTTP 探活兜住这一点，
   claude 没有这个面）。改由脚本在进程退出后往 `out.jsonl` 追加一行 `handoff_exit` 哨兵：
@@ -94,6 +99,24 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
 | `perm.sock` | 0600 | 权限裁决 unix socket | — |
 | `claude.json` | 0600 | 恢复凭据：tmux 会话名 / session_id / out.jsonl 已消费 offset | `serve.json` |
 
+### 3.4 降级路线：每回合 one-shot `--resume`（备选，本期不实现）
+
+设计期评估过的另一条可行架构：不长驻进程，每次 `Send` 用
+`tmux respawn-pane` 起一个 `claude -p --resume <session-id>`，回合结束进程自然退出，
+会话连续性由 claude 自身的会话持久化保证。
+
+它能一次性消灭本方案里最脆的三个件——fifo 的 `exec 3<>` 生命周期技巧、死亡哨兵、
+30s 就绪探测；每回合进程短命且退出码直接可观测，「挂着但其实死了」这类状态根本不存在。
+
+**不选它的原因是一条功能性硬伤**：回合间进程退出会带走执行者起的所有后台进程——
+「起 dev server → 下一回合去测它」「后台跑长测试」这类真实开发工作流会静默断掉，
+而 handoff 派发的正是真实开发任务。长驻进程（与 opencode serve 同构）天然保住这些。
+次要代价是每回合重付 settings/plugins/MCP 冷启动，且实况从流式退化为回合末一次性。
+
+**但它是本方案的天然降级路线**：`session-id`、`out.jsonl`、offset、`perm.sock`、
+事件映射全部原样复用，切换只动 proc 层。若长驻形态在真机上暴露不可控问题
+（fifo 行为异常、进程被环境回收等），照此退级，不需要重做 adapter。
+
 ## 4. 五动作映射
 
 ### 4.1 Start
@@ -115,7 +138,8 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
 | stream-json 消息 | 映射 |
 |-----------------|------|
 | `system` / `init` | `progress`，携带 `SessionID`；写 `claude.json` |
-| `assistant`，content 含 text 块 | 追加 `render.log`；触发 `maybeProgress`（心跳节流同 opencode） |
+| `stream_event`（`--include-partial-messages` 产出的 text delta） | 追加 `render.log` 增量（实况流式的来源）；不产生 AdapterEvent |
+| `assistant`，content 含 text 块 | 回合文本累积（供收尾分类）；`render.log` 已由 delta 写过则不重复追加；触发 `maybeProgress`（心跳节流同 opencode） |
 | `assistant`，content 含 `tool_use` | `render.log` 追加一行动作摘要（`→ Bash: <command 首行>`） |
 | `user`，content 含 `tool_result` | `render.log` 追加结果摘要（截断） |
 | `result`，`subtype=success` | 回合收尾：取 `result` 文本 → `turn` 包分类 → `question` 或 `result` |
@@ -123,9 +147,10 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
 | `handoff_exit`（脚本写的死亡哨兵） | 进程已退：`code=0` 且本回合已收尾则正常终结；否则 `result{OK:false, FailReason=退出码 + claude.log 尾部}` |
 | 其他（`rate_limit_event`、`system/thinking_tokens` 等） | 忽略（只在 debug 日志留痕） |
 
-- **回合分类**：`result` 文本经 `turn` 包判定「这是在提问」还是「这一轮干完了」——
-  与 opencode 的 `fallbackClassify` 是同一套阈值，判为 done 时补 git 取证
-  （branch / commit / 是否有新提交），构成 `executor.Result`。
+- **回合分类**：先按 `turn` 包的 trailer 协议解析（ask / finish，模型受同一套回合纪律
+  prompt 约束）；无 trailer 时退到 `fallbackClassify` 兜底。判为 done 时补 git 取证
+  （branch / commit / 是否有新提交），构成 `executor.Result`。两个 executor 共用同一份
+  纪律 prompt 与解析器，审核者看到的形态一致。
 - **不解析权限**：权限完全走 socket 旁路，`out.jsonl` 里那次 `mcp__handoff__ask` 的
   tool_use 只当普通工具调用渲染，不产生 permission 事件（避免同一请求出两次）。
 - **offset 续读**：每消费一行更新 `claude.json.offset`；agentd 重启后从 offset 起读，
@@ -301,5 +326,15 @@ executor 的审核者会看到不一样的东西。§4.1「拼装逻辑与 openc
 
 - 不自研 TUI（用户已确认对齐现状即可）
 - 不做 grok adapter（B3 单独立项）
+- 不抽 `internal/executor/turn` 共享包（移交 B3 会话前置完成，见 §6 协调注）
 - 不改 `handoff attach` 的任何行为
 - 不重新定义权限文本截断策略（归 B6）
+- 不实现进程死亡后的自动复活
+
+## 11. 未来选项（记录，不在本期）
+
+- **进程死亡后 `--resume` 原地复活**：claude 有自持久化会话，进程崩了理论上可以
+  `--resume <session-id>` 接着跑而不是转 failed。本期**故意保守**——复活会重放
+  未完成回合、可能产生重复副作用，且与 opencode 的「死了就交审核者裁决」行为不一致。
+  真机跑出足够多的崩溃样本、确认崩溃点集中且可判定后再考虑。
+- **降级到 one-shot `--resume` 形态**：见 §3.4，触发条件与代价已写明。
