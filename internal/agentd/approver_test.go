@@ -493,3 +493,19 @@ func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
 		t.Fatalf("approver=nil 时权限应直接走既有升级流程: %v", evs)
 	}
 }
+
+// TestBlacklistMatchesTailOfLongCommand 验证黑名单扫的是全文。
+// why：旧链路先截到 200 字再扫黑名单，一条 heredoc/复合命令前 200 字人畜无害、
+// 尾部藏着 rm -rf 时，黑名单、审批者、审核者三道门同时失效。
+func TestBlacklistMatchesTailOfLongCommand(t *testing.T) {
+	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("echo ok && ", 100) + "rm -rf /var/data"
+	hit, rule := ap.Blacklisted(long)
+	if !hit {
+		t.Fatalf("长命令尾部的 rm -rf 必须命中黑名单，实得 hit=false")
+	}
+	t.Logf("命中规则 %s", rule)
+}

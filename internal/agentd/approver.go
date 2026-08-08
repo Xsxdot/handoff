@@ -139,6 +139,9 @@ func defaultRunCmd(ctx context.Context, argv []string) (string, error) {
 
 // Blacklisted 判断权限描述是否命中黑名单（内置 + 自定义）。
 //
+// 入参必须是权限描述全文；扫截断版会漏掉命令尾部的危险片段（B6 根因）——
+// 调用方（manager）不得先截断再传入。
+//
 // 返回：
 //   - hit: 是否命中
 //   - rule: 命中的规则原文（仅 hit=true 时有效，用于日志/审计）

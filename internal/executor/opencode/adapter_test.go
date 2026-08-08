@@ -1220,3 +1220,19 @@ func TestSessionIsolationUsesPropertiesSessionID(t *testing.T) {
 		}
 	}
 }
+
+// TestPermissionEventCarriesFullText 验证 adapter 不再在 200 字处截断权限描述，
+// 只保留 64KB 的防失控硬上限。
+// 注：本文件是 package opencode（内部测试），直接断言内部截断规则，无需导出缝。
+func TestPermissionEventCarriesFullText(t *testing.T) {
+	long := strings.Repeat("a", 1000)
+	got := truncateMarked(long, permTextHardLimit)
+	if got != long {
+		t.Fatalf("1000 字的权限描述必须原样上传，实得 %d 字符", len([]rune(got)))
+	}
+	huge := strings.Repeat("b", 70000)
+	got = truncateMarked(huge, permTextHardLimit)
+	if !strings.HasSuffix(got, executor.TruncationMarker) {
+		t.Error("超 64KB 硬上限时仍必须带截断标记（审批链据此 fail-closed）")
+	}
+}

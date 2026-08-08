@@ -75,13 +75,15 @@ const (
 //     运行态的后台重试节奏与放弃上限（A-10）。保留是为了「还有机会回收孤儿
 //     serve」，不是为了永久驻留——不重试就只剩内存与 lookup 阴影，不设上限则
 //     runs 表只增不减。放弃时打 Error 交人工清理
-//   - permTextLimit：交给审核者的权限描述上限（超出加显式截断标记，见 A-2）
+//   - permTextHardLimit：权限描述的**防失控**硬上限（不是给审核者看的上限）。
+//     全文经工单交给审核者，事件 payload 由 manager 侧另行截断——两者是不同的
+//     关注点：工单要「看得全」，事件要「唤醒消息短」。64KB 只防失控输出。
 //   - pendingDeltaLimit：类型未知的 part 增量暂存上限（见 mapPartDelta）。
 //     超限即丢弃并 Warn，防止服务端只发 delta 不发 part.updated 时无界增长
 const (
 	reapIntervalDefault    = 30 * time.Second
 	reapMaxAttemptsDefault = 20
-	permTextLimit          = 200
+	permTextHardLimit      = 64 << 10
 	pendingDeltaLimit      = 64 << 10
 	// questionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文
 	// 当 question 发出，一个失控的长回合会直接灌进工单行与审核者终端；全文
@@ -1010,7 +1012,7 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
 	a.emit(r, executor.AdapterEvent{
-		Type: "permission", PermissionID: pa.ID, Text: truncateMarked(text, permTextLimit),
+		Type: "permission", PermissionID: pa.ID, Text: truncateMarked(text, permTextHardLimit),
 	})
 }
 

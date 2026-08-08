@@ -21,8 +21,9 @@ import (
 	"github.com/xushixin/handoff/internal/executor"
 )
 
-// bareLimit 是本文件里构造超长文本的长度（远超权限描述 200 字上限）。
-const bareLimit = 300
+// bareLimit 是本文件里构造超长文本的长度（远超权限描述 64KB 防失控硬上限，
+// 确保截断标记必现）。
+const bareLimit = 64<<10 + 100
 
 // permissionAskedRawEvent 构造一条只有 id 的 permission.asked——真实探针里
 // 三种形态都会让描述拼成空串（缺 permission、缺 metadata.command、缺 patterns）。
@@ -53,8 +54,8 @@ func TestPermissionTextNeverBlank(t *testing.T) {
 	}
 }
 
-// TestPermissionTextMarksTruncation 验证 A-2 的上限：超长命令被截断时必须
-// 带可见标记——否则审核者会以为自己看到的就是完整命令。
+// TestPermissionTextMarksTruncation 验证 A-2 的上限：超长命令（超过 64KB 防失控
+// 硬上限）被截断时必须带可见标记——否则审核者会以为自己看到的就是完整命令。
 func TestPermissionTextMarksTruncation(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-perm-long", t.TempDir(), t.TempDir())

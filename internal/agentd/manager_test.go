@@ -846,3 +846,46 @@ func TestPlanSummaryFromContent(t *testing.T) {
 		}
 	}
 }
+
+// TestPermissionTicketKeepsFullText 验证权限工单存全文、事件 payload 截断。
+// why：旧实现在 adapter 侧就把描述截到 200 字，工单里存的本身就是截断版——
+// 审核者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
+func TestPermissionTicketKeepsFullText(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-full", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	long := "bash: " + strings.Repeat("x", 500) + " && rm -rf /tmp/danger"
+	m.handleEvent(context.Background(), task.ID, executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: long,
+	})
+
+	tk, err := st.GetTicket(task.ID + ":p1")
+	if err != nil {
+		t.Fatalf("读取工单: %v", err)
+	}
+	if !strings.Contains(string(tk.Request), "rm -rf /tmp/danger") {
+		t.Errorf("工单必须存权限描述全文（尾部的危险片段不能丢），实得 %s", tk.Request)
+	}
+
+	evs, err := st.EventsFromAsc(task.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("读取事件: %v", err)
+	}
+	var payload string
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionRequest {
+			payload = string(e.Payload)
+		}
+	}
+	if payload == "" {
+		t.Fatal("未产出 permission_request 事件")
+	}
+	if len([]rune(payload)) > 600 {
+		t.Errorf("事件 payload 必须截断（唤醒消息保持短），实得 %d 字符", len([]rune(payload)))
+	}
+	if !strings.Contains(payload, executor.TruncationMarker) {
+		t.Errorf("截断的事件 payload 必须带截断标记，实得 %s", payload)
+	}
+}

@@ -329,6 +329,20 @@ type approverDisabledPayload struct {
 // 不是偶发抖动」的合理样本量。
 const maxApproverFails = 3
 
+// permEventTextLimit 是 permission_request / approver_decision 事件 payload 里
+// 权限描述的展示上限。事件是唤醒消息，短即可；全文在工单里，经 handoff show 取。
+const permEventTextLimit = 200
+
+// permEventText 把权限描述压成事件 payload 用的短文本，超限时带显式截断标记——
+// 无标记的截断会让审核者以为看到的就是全部（这正是 B6 的根因），有标记才知道
+// 要去 handoff show 看工单里的全文。
+func permEventText(s string) string {
+	if len([]rune(s)) <= permEventTextLimit {
+		return s
+	}
+	return truncateRunes(s, permEventTextLimit) + executor.TruncationMarker
+}
+
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
 // running → 启动中介 goroutine 消费事件流。
 //
@@ -822,6 +836,9 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 // waiter → Publish（一期 handlePermission 的完整既有行为，顺序契约见其 doc）。
 //
 // 本函数同时是审批者 escalate 路径的出口——两路共用保证行为一致。
+//
+// 工单存权限描述全文，事件 payload 另行截断——全文是审核者裁决的依据，不能只存
+// 唤醒用的摘要。
 func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
@@ -841,7 +858,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ticketID, Permission: ev.Text, Kind: "gate",
+		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate",
 	})
 	if err != nil {
 		// 工单在、事件缺：不回滚工单，留给下一次重放由 isPermissionReplay 的
@@ -849,6 +866,8 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		m.log.Error("追加 permission_request 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
+	m.log.Info("权限升级人工审核者", "task", taskID, "ticket", ticketID,
+		"perm_chars", len([]rune(ev.Text)), "event_truncated", len([]rune(ev.Text)) > permEventTextLimit)
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
 }
@@ -920,7 +939,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
 	// 审核者经 show 可见
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
-		TicketID: ticketID, Permission: ev.Text, Decision: decision,
+		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
 		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
 	}); err != nil {
 		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
