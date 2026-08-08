@@ -822,7 +822,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 }
 
 // shouldConsultApprover 判断该权限请求是否应走审批者裁决：
-// 审批者已启用、任务未被停用、权限文本未命中黑名单。
+// 审批者已启用、任务未被停用、权限文本未命中黑名单、权限描述完整（未被截断）。
 func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
 	if m.approver == nil {
 		return false
@@ -832,6 +832,14 @@ func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
 	m.apMu.Unlock()
 	if disabled {
 		m.log.Debug("审批链已停用，直接升级审核者", "task", taskID)
+		return false
+	}
+	// 权限描述含截断标记（P1-3）：看到的是不完整的命令，危险片段可能落在
+	// 截断之外——黑名单与廉价模型都不可信，直接升级人工是 fail-closed 的
+	// 自然延伸（executor 侧截断标记见 executor.TruncationMarker 契约）
+	if strings.Contains(permission, executor.TruncationMarker) {
+		m.log.Warn("权限描述含截断标记，跳过审批者直接升级", "task", taskID,
+			"permission", truncateRunes(permission, 120))
 		return false
 	}
 	hit, _ := m.approver.Blacklisted(permission)

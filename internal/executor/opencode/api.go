@@ -36,6 +36,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/xushixin/handoff/internal/executor"
 )
 
 // 常量说明：
@@ -489,11 +491,13 @@ func (a *API) dispatch(data []string, onEvent func(json.RawMessage)) {
 //
 // 为什么必须有标记：截断后的文本会直接呈给审核者做裁决（如权限描述里的 bash
 // 命令）。无标记的截断让人以为看到的就是全部，等于让他批准自己没看全的命令。
+// 标记用 executor.TruncationMarker 常量：manager 侧的黑名单/审批者据此 fail-closed
+// （含标记的权限请求不交廉价模型，直接升级人工）。
 func truncateMarked(s string, n int) string {
 	if len([]rune(s)) <= n {
 		return s
 	}
-	return truncateRunes(s, n) + "…（已截断）"
+	return truncateRunes(s, n) + executor.TruncationMarker
 }
 
 // truncateRunes 将字符串按 rune 截断为最多 n 个字符（避免切断多字节 UTF-8 字符）。

@@ -35,6 +35,15 @@ import (
 // 不同：前者应把任务交审核者裁决，后者应保持可重试。上层禁止靠错误文本判别。
 var ErrTaskNotRunning = errors.New("任务不在运行中")
 
+// TruncationMarker 是文本截断的显式标记，追加在截断文本末尾（如权限描述里的
+// bash 命令超限时）。
+//
+// 契约：executor 侧截断时必须以本常量收尾（opencode 的 truncateMarked），
+// manager 侧据此 fail-closed——权限文本含本标记说明「审核/裁决者看到的是截断
+// 后的不完整命令」，危险片段可能落在截断之外，黑名单与廉价模型都不可信，必须
+// 升级人工审核者。
+const TruncationMarker = "…（已截断）"
+
 // StartReq 是 Adapter.Start 的入参：任务上下文 + 计划内容 + 任务工作目录。
 //
 // 字段说明：

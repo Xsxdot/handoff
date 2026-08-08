@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -386,6 +387,28 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	}
 	if !hasEvent(evs, proto.EventTypeApproverDecision) {
 		t.Fatalf("应留 approver_decision 审计事件: %v", evs)
+	}
+}
+
+// TestApproverTruncatedPermissionEscalates 验证含截断标记的权限请求不交给廉价
+// 模型（P1-3）：截断说明「看到的命令不完整」，危险片段可能落在 200 字符之外，
+// 黑名单与模型都不可信——fail-closed 的直接延伸，升级人工审核者。
+func TestApproverTruncatedPermissionEscalates(t *testing.T) {
+	perm := "Bash: go test ./... " + executor.TruncationMarker
+	var calls atomic.Int64
+	m, st, _ := newTestManagerWithApproverFunc(t, approverStep(perm),
+		func(ctx context.Context, argv []string) (string, error) {
+			calls.Add(1)
+			return `{"decision":"approve"}`, nil
+		})
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
+	if calls.Load() != 0 {
+		t.Fatalf("含截断标记的权限不应调用审批者，被调 %d 次", calls.Load())
+	}
+	evs := mustEvents(t, st, task.ID)
+	if !hasEvent(evs, proto.EventTypePermissionRequest) {
+		t.Fatalf("含截断标记的权限应直接升级人工审核者（permission_request）: %v", evs)
 	}
 }
 
