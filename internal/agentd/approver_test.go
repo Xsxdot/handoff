@@ -47,6 +47,10 @@ func TestBlacklistBuiltinAndCustom(t *testing.T) {
 		"Bash: sudo systemctl restart nginx", "Bash: git reset --hard HEAD~3",
 		"Bash: psql -c 'DROP TABLE users'", "Bash: deploy to production",
 		"Bash: kubectl pods delete --all",
+		// P1-2：长选项与 git -C 绕过——脚本常规写法，黑名单必须拦住
+		"Bash: rm --recursive --force /",
+		"Bash: git -C /repo push --force origin main",
+		"Bash: rm --recursive /tmp/x --force",
 	} {
 		if hit, _ := a.Blacklisted(s); !hit {
 			t.Fatalf("应命中黑名单: %s", s)

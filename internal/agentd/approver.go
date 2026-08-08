@@ -34,22 +34,28 @@ import (
 // builtinBlacklist 是内置黑名单（(?i) 不区分大小写编译），全部命中即升级人工审核者。
 //
 // 拦截意图（逐条）：
-//   - rm -rf 类（连写/分写）：不可逆的递归删除，误删任务外目录代价极高
-//   - git push --force / -f / --force-with-lease：强推会重写远端历史，
-//     影响范围远超任务仓库，审核者应知道是谁在推什么
+//   - rm 破坏性删除：短连写（-rf/-fr）与分写（-r ... -f）之外，还要拦长选项
+//     （--recursive/--force）与长短混写——`rm --recursive --force /`、`rm -r --force`
+//     都是脚本常规写法，只认短连写会被绕过。两段式匹配：rm 后同时含「递归标志
+//     (--recursive|-r|-R)」与「强制标志 (--force|-f)」即命中（递归在前与强制在
+//     前各一条，覆盖任意顺序；RE2 不支持 lookahead，用顺序替换表达「两段都有」）
+//   - git push 强推：`git\b.*\bpush\b` 而非 `git\s+push`——`git -C /repo push
+//     --force origin main` 的 -C 会插在 git 与 push 之间，只认相邻拼写会被绕过；
+//     --force\b 同时覆盖 --force-with-lease 变体
 //   - sudo：提权命令影响整个主机，绝不能由廉价模型自动放行
 //   - git reset --hard：丢弃未提交改动，不可逆
 //   - drop table/database：删库删表不可恢复
 //   - production/prod：生产环境操作，默认升级
 var builtinBlacklist = []string{
-	`rm\s+-[a-z]*[rf][a-z]*[rf]`,      // rm -rf / -fr / -r -f 的常见连写
-	`rm\s+-[rf]\b.*\s-[rf]\b`,         // rm -r ... -f 分写
-	`git\s+push\s+.*(--force\b|-f\b)`, // force push
+	`rm\s+-[a-z]*[rf][a-z]*[rf]`,                                  // rm -rf / -fr 常见连写
+	`rm\s+-[rf]\b.*\s-[rf]\b`,                                     // rm -r ... -f 分写
+	`rm\b[^;&\n]*(--recursive|-r\b|-R\b)[^;&\n]*(--force\b|-f\b)`, // 递归段在前、强制段在后
+	`rm\b[^;&\n]*(--force\b|-f\b)[^;&\n]*(--recursive|-r\b|-R\b)`, // 强制段在前、递归段在后
+	`git\b.*\bpush\b.*(--force\b|-f\b)`,                           // force push（含 -C 与 lease 变体）
 	`\bsudo\b`,
 	`git\s+reset\s+--hard`,
 	`drop\s+(table|database)`,
 	`\bproduction\b|\bprod\b`,
-	`git\s+push\s+.*--force-with-lease`, // lease 变体同样升级
 }
 
 // maxDecideOutput 是裁决命令输出保留上限：模型在 JSON 后可能输出废话，
