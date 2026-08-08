@@ -564,6 +564,39 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	}
 }
 
+// TestContinueErrTaskNotRunningReturns409 覆盖 agentd 重启后 waiting_review 任务
+// 续接失败的映射：Continue 遇到 executor.ErrTaskNotRunning（executor 运行态已随
+// 进程消亡丢失，agentd 可能重启过）必须回带可行动文本的 409，而不是扁平 500——
+// 审核者据此得知「重新派发」，而不是被内部错误挡在外面。
+func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-continue-409"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStateWaitingReview, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Send 一律返回 ErrTaskNotRunning（模拟 adapter 无该任务运行态）
+	f := fake.New(nil)
+	f.SetSendError(fmt.Errorf("任务 %s 不在运行中: %w", taskID, executor.ErrTaskNotRunning))
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks/"+taskID+"/continue", `{"instructions":"改一下"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("ErrTaskNotRunning 应映射 409，实得 %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "重新派发") {
+		t.Fatalf("409 响应应带可行动提示（重新派发），实得 %s", string(b))
+	}
+}
+
 // TestWSReplayWindowLiveNoLoss 是 P0-1 的回归测试：重放写循环进行期间（客户端不读、
 // TCP 背压把重放写阻塞住）Publish 的事件必须被捕获并最终送达，不得丢失。
 //

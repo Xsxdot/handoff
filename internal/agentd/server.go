@@ -35,6 +35,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -509,7 +510,9 @@ type continueRequest struct {
 
 // handleContinue 向任务续发修改指令（要求任务处于 waiting_review）。
 //
-// 错误映射：任务不存在 404；状态不允许续接 409（manager 返回 store.ErrBadTransit）。
+// 错误映射：任务不存在 404；状态不允许续接 409（manager 返回 store.ErrBadTransit）；
+// executor 运行态已丢失 409（executor.ErrTaskNotRunning，agentd 可能重启过，提示
+// 重新派发）。
 func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("continue 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
@@ -766,7 +769,8 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 // writeManagerError 把 manager 返回的错误映射为 HTTP 状态码与提示。
 //
 // 映射规则：store.ErrNotFound → 404；store.ErrBadTransit → 409（状态不允许）；
-// 其余 → 500。
+// executor.ErrTaskNotRunning → 409（executor 运行态已丢失，agentd 可能重启过，
+// 需重新派发——可行动提示而非扁平 500）；其余 → 500。
 func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -775,6 +779,13 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 	case errors.Is(err, store.ErrBadTransit):
 		s.log.Warn("manager 操作状态不允许", "task", taskID, "op", op, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务当前状态不允许该操作"})
+	case errors.Is(err, executor.ErrTaskNotRunning):
+		// 为什么映射 409 而非 500：executor 运行态随 agentd 重启（或进程死亡）丢失，
+		// 是「可预期、可行动」的状态而非内部故障——审核者需要的是「重新派发」的
+		// 明确指引，而不是被扁平 500 挡在门外（resume 的 executor_gone=false 已表明
+		// 会话上下文还在，缺的只是恢复路径）
+		s.log.Warn("manager 操作遇执行器运行态已丢失", "task", taskID, "op", op, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务执行器运行态已丢失（agentd 可能重启过），请重新派发"})
 	default:
 		s.log.Error("manager 操作失败", "task", taskID, "op", op, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
