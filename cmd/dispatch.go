@@ -17,10 +17,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/shellq"
 )
 
 var (
@@ -107,9 +112,55 @@ func init() {
 
 // dispatchAfterTerminal 是 dispatch 成功后「弹终端实况」的钩子。
 //
-// Task 12 会替换其实现（osascript 弹 Terminal.app 或降级提示行）；本任务先以
-// 无操作占位，保证 --no-terminal flag 注册与命令结构就绪。
+// 行为契约：
+//   - --no-terminal 或 cfg.Terminal.Auto==false 或非 darwin → 打印提示行
+//     「实况: handoff attach <id>」（远程含 --target），不弹窗
+//   - darwin 且允许 → osascript 弹 Terminal.app 执行 attach 命令
+//
+// 为什么弹窗失败不影响退出码：派发已成功（任务 JSON 已输出），弹窗只是增强
+// 可见性——失败降级为同款提示行 + stderr 警告，绝不把已成功的派发变成失败。
 func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
-	_ = cmd
-	_ = taskID
+	hint := "实况: handoff attach " + taskID
+	if targetName != "" {
+		hint += " --target " + targetName
+	}
+	cfg := loadCLIConfig()
+	if dispatchNoTerminal || !cfg.Terminal.Auto || runtime.GOOS != "darwin" {
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		return
+	}
+	argv, err := attachCommandFor(taskID, targetName, cfg)
+	if err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		return
+	}
+	if err := openTerminal(argv); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "弹终端失败:", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "可手动执行:", strings.Join(argv, " "))
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+	}
+}
+
+// openTerminal 用 osascript 在 macOS 上弹 Terminal.app 执行 attach 命令。
+//
+// 测试缝：包级变量，测试替换记录调用。为什么用 do script 而非 tmux 直连：
+// dispatch 成功时审核者大概率不在本机终端前（在 agentd 所在机器的桌面前），
+// Terminal.app 弹窗把「executor 实况」直接送到桌面——do script 让 Terminal
+// 打开新窗口执行 attach，窗口内即实况；activate 把窗口置前。
+var openTerminal = func(attachArgv []string) error {
+	// do script 的参数是 shell 命令串：attach argv 逐元素 shellq.Quote 拼接，
+	// 保证含空白的路径/会话名不被拆错；AppleScript 字符串用 strconv.Quote
+	// 包裹（与 wait 命令的系统通知同约定）
+	quoted := make([]string, len(attachArgv))
+	for i, a := range attachArgv {
+		quoted[i] = shellq.Quote(a)
+	}
+	cmdline := strings.Join(quoted, " ")
+	doScript := "tell application \"Terminal\" to do script " + strconv.Quote(cmdline)
+	activate := "tell application \"Terminal\" to activate"
+	out, err := exec.Command("osascript", "-e", doScript, "-e", activate).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("osascript: %v: %s", err, truncateBytes(string(out), 200))
+	}
+	return nil
 }

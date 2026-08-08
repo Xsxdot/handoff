@@ -35,8 +35,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/xushixin/handoff/internal/shellq"
 )
 
 // serveReadyTimeout 是 StartServe 等待 serve 就绪的总超时。
@@ -228,8 +229,9 @@ exec opencode serve --port %d --hostname 127.0.0.1 2>&1 | tee -a %s
 // shellQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\”），
 // 供写进启动脚本与 tmux 命令串——密码/路径可能含引号或空白，不转义会改变
 // 脚本语义或让 tmux 把命令拆错。
+// 实现委托 internal/shellq（与 cmd 包弹终端的 shell 拼接同源，避免复制漂移）。
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return shellq.Quote(s)
 }
 
 // serveTmuxArgs 组装启动 serve 的 tmux new-session 参数。
