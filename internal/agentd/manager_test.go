@@ -225,8 +225,8 @@ func TestTransitToReviewAnswerRaceConverges(t *testing.T) {
 		mgr, st, hub, ad := newTestManager(t)
 		createRunningTask(t, st, taskID)
 		// 真实权限门路径：ticket + waiting_answer + waitPermission goroutine 挂起等应答
-		mgr.handlePermission(taskID, executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"})
-		waitAnswerRegistered(t, hub, "perm-1")
+		mgr.handlePermission(context.Background(), taskID, executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"})
+		waitAnswerRegistered(t, hub, "t1:perm-1")
 		// 订阅 Publish 通道，断言 completed 事件确实被广播（不被竞态吞掉）
 		subCh, _ := hub.Subscribe(taskID)
 
@@ -236,7 +236,7 @@ func TestTransitToReviewAnswerRaceConverges(t *testing.T) {
 		// 略延迟应答注入：让 result 处理先行进入「首跳失败→重读」危险窗口，
 		// 提高旧实现下竞态命中率；新实现无论先后都收敛，延迟不影响结论
 		time.Sleep(100 * time.Microsecond)
-		hub.NotifyAnswer("perm-1", "allow")
+		hub.NotifyAnswer("t1:perm-1", "allow")
 
 		// 收敛断言 1：completed 事件必须被 Publish（旧实现竞态命中时此处超时红）
 		eventually(t, 2*time.Second, "completed 事件已 Publish", func() bool {
@@ -285,8 +285,8 @@ func TestTransitToReviewAnswerRaceConverges(t *testing.T) {
 func TestTransitToReviewTwoHopFromWaitingAnswer(t *testing.T) {
 	mgr, st, hub, ad := newTestManager(t)
 	createRunningTask(t, st, "t1")
-	mgr.handlePermission("t1", executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"})
-	waitAnswerRegistered(t, hub, "perm-1")
+	mgr.handlePermission(context.Background(), "t1", executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"})
+	waitAnswerRegistered(t, hub, "t1:perm-1")
 	cur, err := st.GetTask("t1")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
@@ -319,7 +319,7 @@ func TestTransitToReviewTwoHopFromWaitingAnswer(t *testing.T) {
 	}
 	// 应答后到：waitPermission 回迁 running（waiting_review→running 合法），
 	// executor 收到 RespondPermission——续跑语义成立，事件不丢
-	hub.NotifyAnswer("perm-1", "allow")
+	hub.NotifyAnswer("t1:perm-1", "allow")
 	eventually(t, 2*time.Second, "executor 收到 RespondPermission 且任务回迁 running", func() bool {
 		if len(ad.permsRec()) != 1 {
 			return false
@@ -350,10 +350,11 @@ func TestRelayAnswer(t *testing.T) {
 	t.Run("gate_allow_once", func(t *testing.T) {
 		mgr, st, _, ad := newTestManager(t)
 		createRunningTask(t, st, "t1")
-		createTicket(st, "perm-1", "t1", "gate")
-		if err := mgr.RelayAnswer("t1", "perm-1", "allow"); err != nil {
+		createTicket(st, "t1:perm-1", "t1", "gate")
+		if err := mgr.RelayAnswer("t1", "t1:perm-1", "allow"); err != nil {
 			t.Fatalf("RelayAnswer: %v", err)
 		}
+		// adapter 收到的是裸 permID（剥离 taskID 前缀），而非命名空间化的工单 id
 		if got := ad.permsRec(); len(got) != 1 || got[0] != "perm-1:once" {
 			t.Fatalf("executor 收到 %v, want [perm-1:once]", got)
 		}
@@ -362,8 +363,8 @@ func TestRelayAnswer(t *testing.T) {
 	t.Run("gate_deny_reject", func(t *testing.T) {
 		mgr, st, _, ad := newTestManager(t)
 		createRunningTask(t, st, "t1")
-		createTicket(st, "perm-2", "t1", "gate")
-		if err := mgr.RelayAnswer("t1", "perm-2", "deny:太危险"); err != nil {
+		createTicket(st, "t1:perm-2", "t1", "gate")
+		if err := mgr.RelayAnswer("t1", "t1:perm-2", "deny:太危险"); err != nil {
 			t.Fatalf("RelayAnswer: %v", err)
 		}
 		if got := ad.permsRec(); len(got) != 1 || got[0] != "perm-2:reject" {
@@ -394,12 +395,141 @@ func TestRelayAnswer(t *testing.T) {
 	t.Run("ticket_of_other_task", func(t *testing.T) {
 		mgr, st, _, ad := newTestManager(t)
 		createRunningTask(t, st, "t1")
-		createTicket(st, "perm-3", "t2", "gate")
-		if err := mgr.RelayAnswer("t1", "perm-3", "allow"); err == nil {
+		createTicket(st, "t2:perm-3", "t2", "gate")
+		if err := mgr.RelayAnswer("t1", "t2:perm-3", "allow"); err == nil {
 			t.Fatal("跨任务工单应报错")
 		}
 		if got := ad.permsRec(); len(got) != 0 {
 			t.Fatalf("跨任务工单不得触达 executor, got %v", got)
 		}
 	})
+}
+
+// TestWaiterCanceledOnTaskEnd 覆盖 P1-2 的 ctx 取消半段：任务执行终结（adapter
+// 事件通道关闭）后，挂起的应答等待 goroutine 必须被取消并从 hub 等待表移除——
+// 旧实现 waitPermission 用 context.Background() 永久挂死（审核者不再回答即泄漏）。
+//
+// 为什么事件通道关闭是唯一取消时机：result → waiting_review 后任务仍活，回答
+// 晚于 result 到达是合法流程（见 mediate 的 why 注释），只有「执行终结」才
+// 取消在等应答的 waiter。
+func TestWaiterCanceledOnTaskEnd(t *testing.T) {
+	mgr, st, hub, ad := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	go mgr.mediate("t1")
+	ad.evCh <- executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"}
+	waitAnswerRegistered(t, hub, "t1:perm-1")
+
+	// 执行终结：关闭事件通道 → 中介循环退出 → defer cancel → waiter 被取消并移除
+	close(ad.evCh)
+	eventually(t, 2*time.Second, "waiter 已被取消并从 hub 等待表移除", func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		return len(hub.answers["t1:perm-1"]) == 0
+	})
+}
+
+// TestTicketNamespacePerTask 覆盖 P1-6：ticket id 按任务命名空间隔离
+// （taskID:permID）。两个任务收到相同 PermissionID 时，旧实现（裸 permID 作
+// ticket id）第二个任务的工单被 INSERT OR IGNORE 静默吞掉——attach 显示 0
+// 挂起项且永远无法应答；命名空间化后两个工单都存在且可分别应答。
+func TestTicketNamespacePerTask(t *testing.T) {
+	mgr, st, hub, ad := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	createRunningTask(t, st, "t2")
+	mgr.handlePermission(context.Background(), "t1", executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "x"})
+	mgr.handlePermission(context.Background(), "t2", executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "y"})
+	waitAnswerRegistered(t, hub, "t1:perm-1")
+	waitAnswerRegistered(t, hub, "t2:perm-1")
+
+	// 两个任务的工单都存在，id 均带任务前缀
+	p1, err := st.PendingTickets("t1")
+	if err != nil {
+		t.Fatalf("PendingTickets(t1): %v", err)
+	}
+	if len(p1) != 1 || p1[0].ID != "t1:perm-1" {
+		t.Fatalf("t1 pending=%+v, want [t1:perm-1]", p1)
+	}
+	p2, err := st.PendingTickets("t2")
+	if err != nil {
+		t.Fatalf("PendingTickets(t2): %v", err)
+	}
+	if len(p2) != 1 || p2[0].ID != "t2:perm-1" {
+		t.Fatalf("t2 pending=%+v, want [t2:perm-1]（旧实现此处为 0，工单被 t1 吞掉）", p2)
+	}
+
+	// 分别可应答（store 层断言：命名空间化后两个工单互不干扰）；
+	// 经 hub 唤醒各自 waiter 后，executor 各收到一次裸 permID 的 RespondPermission
+	if err := st.AnswerTicket("t1:perm-1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket(t1): %v", err)
+	}
+	if err := st.AnswerTicket("t2:perm-1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket(t2): %v", err)
+	}
+	hub.NotifyAnswer("t1:perm-1", "allow")
+	hub.NotifyAnswer("t2:perm-1", "allow")
+	eventually(t, 2*time.Second, "两个任务的 executor 各收到一次应答", func() bool {
+		return len(ad.permsRec()) == 2
+	})
+}
+
+// TestPermissionReplaySkipsDuplicates 覆盖 P1-7 的 manager 层：同任务同 permID
+// 的事件重放（SSE 断线重连/重启后订阅重建）必须跳过全部中介动作——
+// 只有一条 permission_request 事件、一次状态迁移、一个 waiter、一次
+// RespondPermission；已答后的重放不注册新 waiter、不重复唤醒。
+func TestPermissionReplaySkipsDuplicates(t *testing.T) {
+	mgr, st, hub, ad := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	ev := executor.AdapterEvent{Type: "permission", PermissionID: "perm-1", Text: "test"}
+	mgr.handlePermission(context.Background(), "t1", ev)
+	waitAnswerRegistered(t, hub, "t1:perm-1")
+	cur, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if cur.State != proto.TaskStateWaitingAnswer {
+		t.Fatalf("首次中介后 state=%s, want waiting_answer", cur.State)
+	}
+
+	// 重放：created=false → 跳过，不追加事件、不再起 waiter
+	mgr.handlePermission(context.Background(), "t1", ev)
+	events, err := st.EventsFrom("t1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	permReq := 0
+	for _, e := range events {
+		if e.Type == proto.EventTypePermissionRequest {
+			permReq++
+		}
+	}
+	if permReq != 1 {
+		t.Fatalf("permission_request 事件数=%d, want 1（重放不得重复追加）", permReq)
+	}
+	cur, err = st.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if cur.State != proto.TaskStateWaitingAnswer {
+		t.Fatalf("重放后 state=%s, want waiting_answer（不重复迁移）", cur.State)
+	}
+
+	// 一次应答 → 恰好一次 RespondPermission（不重复唤醒审核者/executor）
+	hub.NotifyAnswer("t1:perm-1", "allow")
+	eventually(t, 2*time.Second, "executor 收到恰一次应答", func() bool {
+		return len(ad.permsRec()) == 1
+	})
+
+	// 已答后重放：不注册新 waiter（NotifyAnswer 应无等待者可投递）、
+	// 不出现第二次 RespondPermission
+	mgr.handlePermission(context.Background(), "t1", ev)
+	if hub.NotifyAnswer("t1:perm-1", "allow") {
+		t.Fatal("已答后重放不应注册新 waiter")
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(ad.permsRec()) != 1 {
+			t.Fatalf("已答后重放不得再次 RespondPermission, got %v", ad.permsRec())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

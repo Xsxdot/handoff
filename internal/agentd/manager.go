@@ -8,6 +8,14 @@
 //     progress 只入库，result 落 completed/failed 事件进 waiting_review
 //   - 审核者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
 //
+// 中介时序与工单幂等的不变量（P1-2/P1-6/P1-7）：
+//   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
+//     question 工单 id 为 uuid。reply 路由整链（事件 payload / hub 等待键 / 应答回程）
+//     都用工单 id，只有回传 adapter 时还原裸 permID
+//   - 中介顺序恒为「落库 → 置 waiting_answer → 注册 waiter → Publish」：审核者收到
+//     事件时状态与等待者必已就位，reply 不会走错序的中继路径
+//   - CreateTicket 返回 created=false（重放）时跳过全部后续动作，幂等是完整的
+//
 // 边界：
 //   - 不做审批判断：「allow 之外一律 reject」「回答原样透传」是仅有的两条翻译规则，
 //     批不批、答什么由审核者（人/上层）决定
@@ -54,6 +62,9 @@ const (
 	adapterEventProgress   = "progress"
 	adapterEventResult     = "result"
 )
+
+// errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
+var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
@@ -155,11 +166,11 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}()
 
 	if req.Repo == "" || req.PlanB64 == "" {
-		return nil, fmt.Errorf("dispatch 参数不完整: repo=%q plan_b64 长度=%d", req.Repo, len(req.PlanB64))
+		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d", errBadDispatchRequest, req.Repo, len(req.PlanB64))
 	}
 	planContent, err := base64.StdEncoding.DecodeString(req.PlanB64)
 	if err != nil {
-		return nil, fmt.Errorf("解码 plan_b64: %w", err)
+		return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
 	}
 
 	now := time.Now().UTC()
@@ -338,9 +349,14 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if strings.TrimSpace(answer) == "allow" {
 			decision = "once"
 		}
+		// ticket id 已按任务命名空间化（taskID:permID，见 handlePermission 的 why），
+		// 而 adapter 契约要求裸 PermissionID：剥掉 taskID 前缀还原。invariant：
+		// gate 工单 id 恒由 handlePermission 以 taskID+":"+permID 生成，
+		// TrimPrefix 精确还原（permID 自身含 ":" 也不影响前缀剥离）
+		permID := strings.TrimPrefix(ticketID, taskID+":")
 		m.log.Info("reply 无等待者，自愈中继权限应答", "task", taskID,
-			"ticket", ticketID, "decision", decision)
-		if err := m.ad.RespondPermission(context.Background(), taskID, ticketID, decision); err != nil {
+			"ticket", ticketID, "perm", permID, "decision", decision)
+		if err := m.ad.RespondPermission(context.Background(), taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
 		return nil
@@ -357,25 +373,37 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 
 // mediate 是单任务的事件中介循环（每任务一个 goroutine，由 Dispatch 启动）：
 // 消费 Adapter.Events 直到通道关闭（Stop），每类事件交给对应 handler。
+//
+// 任务级 ctx 与取消时机（P1-2）：taskCtx 供 waitPermission/waitQuestion 的应答
+// 等待共用，中介循环退出（adapter 事件通道关闭 = 执行终结：Done/Stop/serve 死亡）
+// 时 defer cancel 取消全部在等应答的 waiter——否则「审核者永不回答 + 执行终结」
+// 的组合会让 wait goroutine 用 context.Background() 永久挂死。
+//
+// 为什么不在 result 到达时取消：result → waiting_review 后任务仍活（审核者可
+// continue/回答挂起工单），回答晚于 result 到达是合法流程（应答后 executor 被
+// 唤醒续跑，见 TestTransitToReviewTwoHopFromWaitingAnswer）——只有「事件通道
+// 关闭」这一执行终结信号才是取消时机。
 func (m *Manager) mediate(taskID string) {
 	m.log.Info("中介循环启动", "task", taskID)
+	taskCtx, cancelTask := context.WithCancel(context.Background())
+	defer cancelTask()
 	events := m.ad.Events(taskID)
 	for ev := range events {
-		m.handleEvent(taskID, ev)
+		m.handleEvent(taskCtx, taskID, ev)
 	}
 	m.log.Info("中介循环结束", "task", taskID)
 }
 
 // handleEvent 按事件类型分发中介处理，并打每类事件的入口日志。
-func (m *Manager) handleEvent(taskID string, ev executor.AdapterEvent) {
+func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	switch ev.Type {
 	case adapterEventPermission:
 		m.log.Info("权限请求事件", "task", taskID, "perm", ev.PermissionID,
 			"text", truncateRunes(ev.Text, 80))
-		m.handlePermission(taskID, ev)
+		m.handlePermission(ctx, taskID, ev)
 	case adapterEventQuestion:
 		m.log.Info("提问事件", "task", taskID, "text", truncateRunes(ev.Text, 80))
-		m.handleQuestion(taskID, ev)
+		m.handleQuestion(ctx, taskID, ev)
 	case adapterEventProgress:
 		m.log.Info("进度事件", "task", taskID, "text", truncateRunes(ev.Text, 80))
 		m.handleProgress(taskID, ev)
@@ -392,32 +420,55 @@ func (m *Manager) handleEvent(taskID string, ev executor.AdapterEvent) {
 	}
 }
 
-// handlePermission 中介权限请求：ticket(id=PermissionID, kind=gate) → 事件 →
+// handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
 // waiting_answer → goroutine 等审核者应答后回传 executor。
-func (m *Manager) handlePermission(taskID string, ev executor.AdapterEvent) {
+//
+// 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer、先注册
+// waiter，最后才 Publish**。审核者收到事件后可能立即 attach/reply，若状态还没迁、
+// 等待者还没注册，reply 会走「无等待者 → 自愈中继」，而 resumeIfIdle 此刻读到的
+// 状态若还是 running 会跳过回迁——应答已交付但任务随后落回 waiting_answer 且
+// 无人再答，永久卡死（探针 1/60 复现「waiting_answer 但 pending_tickets=0」）。
+// 状态与等待者先就位后，事件可见时一切已就绪：reply 必命中 waiter、resumeIfIdle
+// 必看到 waiting_answer。
+func (m *Manager) handlePermission(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	if ev.PermissionID == "" {
 		m.log.Error("权限事件缺 PermissionID", "task", taskID)
 		return
 	}
-	// ticket id 复用 PermissionID：SSE 重连重放同一权限请求时 CreateTicket 幂等，
-	// 不会产生重复工单（见 executor.go 包级幂等约定）
+	// ticket id 按任务命名空间隔离：taskID:permID（P1-6）。opencode 的权限 id
+	// 按会话生成、跨任务不保证唯一，裸 permID 作 ticket id 时第二个任务的工单
+	// 会被 INSERT OR IGNORE 静默吞掉——attach 显示 0 挂起项且任务永远无法应答。
+	// 命名空间化后各任务工单 id 全局唯一；回传 executor 仍用裸 permID
+	// （adapter 契约，见 waitPermission/RelayAnswer）
+	ticketID := taskID + ":" + ev.PermissionID
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
-	if _, err := m.st.CreateTicket(&proto.Ticket{
-		ID: ev.PermissionID, TaskID: taskID, Kind: "gate",
+	created, err := m.st.CreateTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "cause", err)
+	})
+	if err != nil {
+		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
+		return
+	}
+	if !created {
+		// 重放（SSE 断线重连/agentd 重启后订阅重建）：ticket 已存在，跳过全部
+		// 中介动作——不追加第二条事件、不重复迁移、不起第二个 waiter、不重复
+		// 广播（P1-7）。幂等只做一半（只去重工单）会让审核者被重复唤醒、
+		// RespondPermission 被调两次。已答的重放同样跳过：应答已落库并已被
+		// 既有等待者或自愈中继送达 executor，这里再动就是重复交付
+		m.log.Debug("权限请求重放，跳过中介", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID)
+		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ev.PermissionID, Permission: ev.Text, Kind: "gate",
+		TicketID: ticketID, Permission: ev.Text, Kind: "gate",
 	})
 	if err != nil {
 		m.log.Error("追加 permission_request 事件失败", "task", taskID, "cause", err)
 		return
 	}
-	m.hub.Publish(evt)
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "permission_request")
-	go m.waitPermission(taskID, ev.PermissionID)
+	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
+	m.hub.Publish(evt)
 }
 
 // waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
@@ -429,14 +480,17 @@ func (m *Manager) handlePermission(taskID string, ev executor.AdapterEvent) {
 // 立即产出下一个事件（如 result），若回迁在 respond 之后，result 可能先到而状态还
 // 卡在 waiting_answer，导致 waiting_answer→waiting_review 非法迁移被拒。先落状态
 // 保证「executor 恢复执行时状态必为 running」。
-func (m *Manager) waitPermission(taskID, permID string) {
+//
+// 参数：permID 是 executor 侧裸权限 id（adapter 契约），ticketID 是命名空间化的
+// 工单 id（hub 等待键与 reply 路由都用它）。
+func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID string) {
 	start := time.Now()
-	ans, err := m.hub.WaitAnswer(context.Background(), permID)
+	ans, err := m.hub.WaitAnswer(ctx, ticketID)
 	if err != nil {
-		m.log.Warn("权限应答等待被取消", "task", taskID, "perm", permID, "cause", err)
+		m.log.Warn("权限应答等待被取消", "task", taskID, "perm", permID, "ticket", ticketID, "cause", err)
 		return
 	}
-	m.log.Info("权限应答已收到", "task", taskID, "perm", permID,
+	m.log.Info("权限应答已收到", "task", taskID, "perm", permID, "ticket", ticketID,
 		"wait_ms", time.Since(start).Milliseconds(), "answer", truncateRunes(ans, 80))
 
 	// 回迁失败（reply 回程的 resumeIfIdle 已抢先回迁）由 transitBestEffort 容忍
@@ -445,7 +499,7 @@ func (m *Manager) waitPermission(taskID, permID string) {
 	if strings.TrimSpace(ans) == "allow" {
 		decision = "once"
 	}
-	if err := m.ad.RespondPermission(context.Background(), taskID, permID, decision); err != nil {
+	if err := m.ad.RespondPermission(ctx, taskID, permID, decision); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
 		return
@@ -454,15 +508,25 @@ func (m *Manager) waitPermission(taskID, permID string) {
 
 // handleQuestion 中介提问：ticket(uuid, kind=ask) → 事件 → waiting_answer →
 // goroutine 等审核者回答后原样透传 executor。
-func (m *Manager) handleQuestion(taskID string, ev executor.AdapterEvent) {
+//
+// 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer、先注册 waiter，
+// 最后才 Publish——reply 到达时状态与等待者必须已就位。
+func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	// 提问工单 id 用 uuid：问题没有天然稳定 id，回答一次即终结
 	ticketID := uuid.NewString()
 	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text})
-	if _, err := m.st.CreateTicket(&proto.Ticket{
+	created, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "ask",
 		Request: req, CreatedAt: time.Now().UTC(),
-	}); err != nil {
+	})
+	if err != nil {
 		m.log.Error("创建提问工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return
+	}
+	if !created {
+		// uuid 碰撞理论不可达，防御性保留与 handlePermission 相同的重放跳过语义
+		m.log.Debug("提问重放，跳过中介", "task", taskID, "ticket", ticketID)
+		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeQuestion, questionPayload{
 		TicketID: ticketID, Question: ev.Text, Kind: "ask",
@@ -471,9 +535,9 @@ func (m *Manager) handleQuestion(taskID string, ev executor.AdapterEvent) {
 		m.log.Error("追加 question 事件失败", "task", taskID, "cause", err)
 		return
 	}
-	m.hub.Publish(evt)
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
-	go m.waitQuestion(taskID, ticketID)
+	go m.waitQuestion(ctx, taskID, ticketID)
+	m.hub.Publish(evt)
 }
 
 // waitQuestion 阻塞等待提问工单的回答，把回答原文原样透传给 executor 并回迁 running。
@@ -483,9 +547,9 @@ func (m *Manager) handleQuestion(taskID string, ev executor.AdapterEvent) {
 //
 // 为什么先回迁 running 再 Send：同 waitPermission——Send 一发出 executor 立刻恢复
 // 执行并可能立即产出 result，先落状态保证 result 到达时状态必为 running。
-func (m *Manager) waitQuestion(taskID, ticketID string) {
+func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 	start := time.Now()
-	ans, err := m.hub.WaitAnswer(context.Background(), ticketID)
+	ans, err := m.hub.WaitAnswer(ctx, ticketID)
 	if err != nil {
 		m.log.Warn("提问应答等待被取消", "task", taskID, "ticket", ticketID, "cause", err)
 		return
@@ -494,7 +558,7 @@ func (m *Manager) waitQuestion(taskID, ticketID string) {
 		"wait_ms", time.Since(start).Milliseconds(), "answer", truncateRunes(ans, 80))
 
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "question 已应答")
-	if err := m.ad.Send(context.Background(), taskID, ans); err != nil {
+	if err := m.ad.Send(ctx, taskID, ans); err != nil {
 		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}

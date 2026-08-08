@@ -13,9 +13,10 @@
 //   - 本包为纯契约：无 I/O、无实现、无外部依赖（仅引用 proto 的数据结构）
 //
 // 幂等约定：
-//   - AdapterEvent.PermissionID 由实现方生成并保证稳定，manager 直接复用它作为
-//     ticket id：同一权限请求（如 SSE 断线重连后的重放）携带相同 PermissionID，
-//     CreateTicket 按 id 幂等，天然去重——这是「事件不丢不重」在权限维度上的根基
+//   - AdapterEvent.PermissionID 由实现方生成并保证稳定：同一权限请求（如 SSE
+//     断线重连后的重放）携带相同 PermissionID。manager 把它按任务命名空间化为
+//     ticket id（taskID:permID）——同任务重放时 CreateTicket 按 id 幂等，天然
+//     去重；跨任务 permID 碰撞也不会互相吞工单。回传 executor 时还原裸 permID
 package executor
 
 import (
@@ -51,8 +52,9 @@ type Result struct {
 // AdapterEvent 是 executor 侧产出的单向事件，由 manager 中介循环消费。
 //
 // Type 取值："permission" | "question" | "progress" | "result"，语义：
-//   - permission: 权限门请求，PermissionID 有效（同时用作 ticket id，见包级幂等约定），
-//     Text 为权限描述（如 "Bash: rm -rf node_modules"）；等待人工裁决
+//   - permission: 权限门请求，PermissionID 有效（manager 按其派生命名空间化的
+//     ticket id，见包级幂等约定），Text 为权限描述（如 "Bash: rm -rf node_modules"）；
+//     等待人工裁决
 //   - question:   提问，Text 为问题原文；等待人工回答
 //   - progress:   进度播报（可选心跳），Text 为进度文本；只入库不阻塞
 //   - result:     回合终态，Result 有效；之后是否续接由审核者决定
@@ -63,7 +65,7 @@ type Result struct {
 // manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
 	Type         string  // "permission" | "question" | "progress" | "result"
-	PermissionID string  // Type=permission 时有效（同时用作 ticket id，天然幂等）
+	PermissionID string  // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
 	SessionID    string  // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
 	Text         string  // permission 描述 / question 原文 / progress 文本
 	Result       *Result // Type=result 时有效

@@ -31,9 +31,13 @@ import (
 // 错误定义：
 //   - ErrDirtyWorktree：工作区有未提交/未跟踪的改动，拒绝派发
 //   - ErrPathEscape：请求的文件路径逃逸出任务仓库
+//   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
+//     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
+//     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
 var (
 	ErrDirtyWorktree = errors.New("工作区不干净（有未提交改动），拒绝派发")
 	ErrPathEscape    = errors.New("路径逃逸被拒绝")
+	ErrRepoUnusable  = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 )
 
 // 执行护栏：
@@ -85,7 +89,9 @@ func PrepareBranch(repo, taskID string) (branch string, err error) {
 	// 脏检测用 status --porcelain：任何输出（含 ?? 未跟踪）都算脏——
 	// 未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝
 	if status, _, err := gitRun(context.Background(), repo, "status", "--porcelain"); err != nil {
-		return "", fmt.Errorf("git status: %w", err)
+		// git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
+		// 用 ErrRepoUnusable 区分，server 层据此给调用方可读的 400 而非扁平 500
+		return "", fmt.Errorf("%w: git status: %v", ErrRepoUnusable, err)
 	} else if strings.TrimSpace(status) != "" {
 		first := firstLine(status)
 		log().Warn("工作区不干净，拒绝派发", "repo", repo, "status", truncateRunes(first, 200))

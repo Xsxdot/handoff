@@ -391,12 +391,37 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 	})
 	if err != nil {
-		s.log.Error("派发任务失败", "repo", req.Repo, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
+		s.writeDispatchError(w, req.Repo, err)
 		return
 	}
 	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
 	writeJSON(w, http.StatusOK, task)
+}
+
+// writeDispatchError 把 dispatch 失败映射为 HTTP 状态码与可读原因（P1-14）。
+//
+// 映射规则：
+//   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
+//     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
+//     而非扁平化的「派发任务失败」
+//   - ErrRepoUnusable / errBadDispatchRequest → 400：调用方先解决请求本身的问题
+//     （仓库路径不对、参数缺失、plan 编码错误）
+//   - 其余（任务目录/落库/executor 启动等 agentd 侧故障）→ 500
+func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
+	switch {
+	case errors.Is(err, ErrDirtyWorktree):
+		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRepoUnusable):
+		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errBadDispatchRequest):
+		s.log.Warn("dispatch 被拒：请求参数非法", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	default:
+		s.log.Error("派发任务失败", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
+	}
 }
 
 // continueRequest 是 POST /api/tasks/{id}/continue 的请求体。

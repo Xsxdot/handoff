@@ -340,11 +340,21 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive boo
 }
 
 // Events 返回任务的事件流通道（Start 后可用；Stop 或执行终结后关闭）。
+//
+// 注意（P1-11）：任务不在运行（未启动/已 Stop/运行态已随终结注销）时返回
+// **已关闭的通道**而非 nil——契约是「通道关闭 = 执行终结」，消费方（manager
+// 中介循环）靠 range 在关闭时退出；nil 通道会让 for-range 永久阻塞。Dispatch →
+// go mediate 的调度窗口内 serve 若死亡，运行态已注销而中介循环尚未开始：返回
+// 已关闭通道让中介循环立即退出、不泄漏 goroutine；该窗口内已产出的 failed
+// 结果随运行态注销而丢失，是「尚未开始消费」的必然缝隙，任务状态由看门狗与
+// 重启恢复兜底。
 func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 	if r := a.lookup(taskID); r != nil {
 		return r.evCh
 	}
-	return nil
+	ch := make(chan executor.AdapterEvent)
+	close(ch)
+	return ch
 }
 
 // Send 向同一会话续发指令（原生续接：上下文完整保留）。
@@ -578,8 +588,8 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 }
 
 // mapPermissionAsked 处理 permission.asked（真实事件）：properties.id 即
-// PermissionID（manager 的 ticket id，稳定幂等：SSE 重连重放同一权限请求时
-// 复用同一 id，CreateTicket 按 id 去重）。
+// PermissionID（manager 按其派生命名空间化的 ticket id，稳定幂等：SSE 重连
+// 重放同一权限请求时复用同一 id，CreateTicket 按派生 id 去重）。
 //
 // 描述组合：permission 字段（如 bash） + metadata.command（如 echo spike-hi）；
 // 无 command 时退回 patterns 拼接——尽量贴近工具将要执行的表述。

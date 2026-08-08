@@ -161,15 +161,20 @@ func TestFullLoop(t *testing.T) {
 	if permTicket == "" {
 		t.Fatalf("permission_request payload 缺 ticket_id: %v", pm)
 	}
+	// ticket id 按任务命名空间化（taskID:permID，P1-6）
+	if permTicket != task.ID+":perm-1" {
+		t.Fatalf("permission ticket_id=%q, want %q（命名空间化）", permTicket, task.ID+":perm-1")
+	}
 	if perm, _ := pm["permission"].(string); perm != "Bash: go test ./..." {
 		t.Fatalf("permission 描述=%q, want 原文", perm)
 	}
 	if err := env.cli.Reply(context.Background(), task.ID, permTicket, "allow"); err != nil {
 		t.Fatalf("Reply allow: %v", err)
 	}
+	// executor 收到的是裸 permID（adapter 契约），与命名空间化的 ticket id 解耦
 	eventually(t, 2*time.Second, "fake 收到 RespondPermission(once)", func() bool {
 		perms := env.fake.Perms()
-		return len(perms) == 1 && perms[0].PermID == permTicket && perms[0].Decision == "once"
+		return len(perms) == 1 && perms[0].PermID == "perm-1" && perms[0].Decision == "once"
 	})
 
 	// 2. 提问：wait 收到 question，回复「复数」→ fake 收到原文（无损透传）
@@ -258,12 +263,15 @@ func TestFullLoopDeny(t *testing.T) {
 		t.Fatalf("事件 type=%s, want permission_request", ev.Type)
 	}
 	permTicket := payloadMap(t, ev)["ticket_id"].(string)
+	if permTicket != task.ID+":perm-1" {
+		t.Fatalf("permission ticket_id=%q, want %q（命名空间化）", permTicket, task.ID+":perm-1")
+	}
 	if err := env.cli.Reply(context.Background(), task.ID, permTicket, "deny:太危险"); err != nil {
 		t.Fatalf("Reply deny: %v", err)
 	}
 	eventually(t, 2*time.Second, "fake 收到 RespondPermission(reject)", func() bool {
 		perms := env.fake.Perms()
-		return len(perms) == 1 && perms[0].PermID == permTicket && perms[0].Decision == "reject"
+		return len(perms) == 1 && perms[0].PermID == "perm-1" && perms[0].Decision == "reject"
 	})
 	// 拒绝后流程继续：completed 仍到达，任务进 waiting_review
 	ev = env.waitAction(t, task.ID)
@@ -393,5 +401,81 @@ func TestReviewRoutes(t *testing.T) {
 	}
 	if code != 3 {
 		t.Fatalf("exit 3 的退出码=%d, want 3", code)
+	}
+}
+
+// TestPermissionImmediateVisible 覆盖 P1-2 时序修复：审核者收到权限事件后
+// **立即** attach 与 reply（不 sleep），状态与挂起项必须已就位——
+// 旧实现「先 Publish 后置 waiting_answer/注册 waiter」，事件到达瞬间状态可能
+// 还是 running；reply 会走「无等待者 → 自愈中继」而 resumeIfIdle 看不到
+// waiting_answer 跳过回迁，任务随后落回 waiting_answer 且无人再答，永久卡死
+// （探针 1/60 复现「waiting_answer 但 pending_tickets=0」）。
+func TestPermissionImmediateVisible(t *testing.T) {
+	env := newIntegEnv(t, []fake.Step{{Permission: "Bash: go test ./..."}})
+	task := env.dispatchPlan(t, "把 users 表建出来")
+
+	// 事件到达（WS 收到 permission_request = Publish 已完成）后立即 attach
+	ev := env.waitAction(t, task.ID)
+	if ev.Type != proto.EventTypePermissionRequest {
+		t.Fatalf("事件 type=%s, want permission_request", ev.Type)
+	}
+	info, err := env.cli.Attach(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if info.Task.State != proto.TaskStateWaitingAnswer {
+		t.Fatalf("事件后立即 attach state=%s, want waiting_answer（时序修复后立即可见）", info.Task.State)
+	}
+	if len(info.PendingTickets) != 1 {
+		t.Fatalf("pending_tickets=%d, want 1（审核者必须立刻看到挂起项）", len(info.PendingTickets))
+	}
+
+	// 立即 reply：等待者已注册 → 走正常唤醒，任务回 running、executor 收到
+	// 一次裸 permID 应答；绝不出现「reply 走自愈中继 + 任务卡死 waiting_answer」
+	// 的错序竞态（P1-2 核心回归）
+	if err := env.cli.Reply(context.Background(), task.ID, info.PendingTickets[0].ID, "allow"); err != nil {
+		t.Fatalf("立即 Reply: %v", err)
+	}
+	eventually(t, 2*time.Second, "任务回迁 running 且 fake 收到 once", func() bool {
+		if perms := env.fake.Perms(); len(perms) != 1 || perms[0].PermID != "perm-1" || perms[0].Decision != "once" {
+			return false
+		}
+		cur, err := env.st.GetTask(task.ID)
+		return err == nil && cur.State == proto.TaskStateRunning
+	})
+}
+
+// TestDispatchDirtyWorktree409 覆盖 P1-14：脏工作区 dispatch 返回 409 + 可读
+// 原因（审核者一条 git 命令即可修复），不再扁平化为「派发任务失败」的 500；
+// 清理后恢复正常派发。
+func TestDispatchDirtyWorktree409(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	// 弄脏工作区（未跟踪文件）
+	dirtyPath := filepath.Join(env.repo, "dirty.txt")
+	if err := os.WriteFile(dirtyPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("写脏文件: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(dirtyPath) })
+
+	_, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	if err == nil {
+		t.Fatal("脏工作区派发应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "工作区不干净") {
+		t.Fatalf("脏工作区错误应含 409 与可读原因, got: %v", err)
+	}
+
+	// 清理后恢复正常派发
+	if err := os.Remove(dirtyPath); err != nil {
+		t.Fatalf("清理脏文件: %v", err)
+	}
+	task, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	if err != nil {
+		t.Fatalf("清理后 Dispatch: %v", err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("清理后 dispatch state=%s, want running", task.State)
 	}
 }

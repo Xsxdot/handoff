@@ -820,3 +820,31 @@ func TestServeDeathEmitsFailed(t *testing.T) {
 		t.Fatal("serve 死亡后运行态应被注销（runs 表不泄漏）")
 	}
 }
+
+// TestEventsClosedAfterStop 覆盖 P1-11：Stop 后（及从未启动的任务）Events
+// 立即返回**已关闭**通道——range 立即结束，而不是 nil 通道让消费方
+// （manager 中介循环）永久阻塞。「Dispatch → go mediate 调度窗口内 serve 死亡」
+// 的缝隙场景下，运行态已注销而中介循环尚未开始，已关闭通道保证中介循环
+// 立即退出、不泄漏 goroutine。
+func TestEventsClosedAfterStop(t *testing.T) {
+	quietLog(t)
+	taskID := "task-events-stop"
+	fs := newFakeServer(t)
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	assertClosed := func(desc string, ch <-chan executor.AdapterEvent) {
+		t.Helper()
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatalf("%s: 通道应已关闭（契约：通道关闭 = 执行终结）", desc)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: 通道未立即关闭", desc)
+		}
+	}
+	assertClosed("Stop 后", ad.Events(taskID))
+	assertClosed("从未启动的任务", ad.Events("task-never-started"))
+}
