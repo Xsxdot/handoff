@@ -554,6 +554,10 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 
 // handleStop 主动中止任务（停 executor、作废挂起工单、落 failed）。
 //
+// 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
+// worktree（true=agentd 建的 worktree 已删，false=用户自带 worktree / 原地模式，
+// 或 managed 清理失败）。CLI 据此打印提示文案，不猜。
+//
 // 错误映射：任务不存在 404；已是终态 409（manager 返回 store.ErrBadTransit）。
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
@@ -563,11 +567,12 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.Stop(r.Context(), taskID); err != nil {
+	removed, err := s.mgr.Stop(r.Context(), taskID)
+	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 
 // handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答。

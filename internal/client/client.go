@@ -360,17 +360,24 @@ func (c *Client) Done(ctx context.Context, taskID string) error {
 //   - taskID: 待中止的任务 ID
 //
 // 返回：
+//   - worktreeRemoved: 响应体 worktree_removed 如实回传——true=本次删除了
+//     managed worktree，false=用户自带 worktree / 原地模式（没删）；响应体缺字段
+//     （旧版 agentd）按 false 处理。CLI 据此打印与行为一致的提示，不猜
 //   - 任务不存在（404）或已是终态（409）时返回错误
-func (c *Client) Stop(ctx context.Context, taskID string) error {
+func (c *Client) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/stop", nil)
 	if err != nil {
-		return fmt.Errorf("中止任务请求: %w", err)
+		return false, fmt.Errorf("中止任务请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("中止任务", resp)
+		return false, c.httpError("中止任务", resp)
 	}
-	return nil
+	var body struct {
+		WorktreeRemoved bool `json:"worktree_removed"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return body.WorktreeRemoved, nil
 }
 
 // Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答。

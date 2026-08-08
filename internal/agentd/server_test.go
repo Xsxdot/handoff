@@ -525,6 +525,45 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	resp2.Body.Close()
 }
 
+// TestStopReturnsWorktreeRemovedInBody 验证 stop 响应体把「本次是否删了 managed
+// worktree」如实回传（worktree_removed），CLI 据此打印与行为一致的提示、不猜。
+// 用例取原地模式任务：WorktreeManaged=false，stop 不删 worktree → false。
+func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-stop-wt"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	f := fake.New(nil)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop 返回 %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Status          string `json:"status"`
+		WorktreeRemoved bool   `json:"worktree_removed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码 stop 响应: %v", err)
+	}
+	if body.Status != "stopped" {
+		t.Fatalf("stop 响应 status = %q, want stopped", body.Status)
+	}
+	if body.WorktreeRemoved {
+		t.Fatal("原地模式任务 stop 后 worktree_removed 应为 false")
+	}
+}
+
 // TestWSReplayWindowLiveNoLoss 是 P0-1 的回归测试：重放写循环进行期间（客户端不读、
 // TCP 背压把重放写阻塞住）Publish 的事件必须被捕获并最终送达，不得丢失。
 //

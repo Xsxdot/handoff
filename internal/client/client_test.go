@@ -457,3 +457,30 @@ func TestHTTPErrorLevelsByStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestStopParsesWorktreeRemoved 验证 Stop 的返回值如实来自响应体 worktree_removed：
+// true=本次删了 managed worktree，false=用户自带 worktree/原地模式没删。CLI 据此
+// 打印与行为一致的提示，不在客户端猜。响应体缺字段（旧版 agentd）时按 false 处理。
+func TestStopParsesWorktreeRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"status":"stopped","worktree_removed":true}`, true},
+		{`{"status":"stopped","worktree_removed":false}`, false},
+		{`{"status":"stopped"}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		removed, err := client.New(srv.URL, "tok").Stop(context.Background(), "T1")
+		srv.Close()
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if removed != tc.want {
+			t.Fatalf("body %q: worktree_removed=%v, want %v", tc.body, removed, tc.want)
+		}
+	}
+}

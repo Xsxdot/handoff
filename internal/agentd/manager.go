@@ -669,6 +669,9 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 //   - taskID: 待中止的任务
 //
 // 返回：
+//   - worktreeRemoved: 本次是否实际删除了 managed worktree。true=agentd 建的
+//     worktree 已删除；false=用户自带 worktree / 原地模式（没删），或 managed
+//     worktree 清理失败（工作树仍在）。CLI 据此打印与行为一致的提示，不猜
 //   - store.ErrNotFound: 任务不存在
 //   - store.ErrBadTransit: 任务已是终态（completed/failed），无可中止
 //   - 其余：落库失败
@@ -680,26 +683,26 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 //   - 不删任务分支：那是审核者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
 //   - 删除 agentd 管理的 worktree（Managed=true）：被 stop 的任务落 failed，没有
 //     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
-//     不阻断 stop
+//     不阻断 stop（此时 worktreeRemoved=false，提示如实反映工作树仍在）
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由 tmux 会话兜底，不能因为「停不掉进程」就让任务永远卡在 running
-func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
+func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
 	m.log.Info("stop 进入", "task", taskID)
 	defer func() {
 		if err != nil {
 			m.log.Error("stop 失败", "task", taskID, "cause", err)
 		} else {
-			m.log.Info("stop 完成", "task", taskID)
+			m.log.Info("stop 完成", "task", taskID, "worktree_removed", worktreeRemoved)
 		}
 	}()
 
 	cur, err := m.st.GetTask(taskID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur.State == proto.TaskStateCompleted || cur.State == proto.TaskStateFailed {
 		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
-		return fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
+		return false, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
 	}
 
 	ad, aerr := m.adapterFor(taskID)
@@ -719,10 +722,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
 		FailReason: "审核者主动中止（handoff stop）",
 	})
 	if err != nil {
-		return fmt.Errorf("追加中止事件: %w", err)
+		return false, fmt.Errorf("追加中止事件: %w", err)
 	}
 	if err := m.transit(taskID, proto.TaskStateFailed, "stop"); err != nil {
-		return err
+		return false, err
 	}
 	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
 	m.clearApproverState(taskID)
@@ -746,11 +749,12 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
 				m.hub.Publish(evt)
 			}
 		} else {
+			worktreeRemoved = true
 			m.log.Info("stop managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
 		}
 	}
 	m.hub.Publish(evt)
-	return nil
+	return worktreeRemoved, nil
 }
 
 // unaryAPITimeout 是 executor 侧一次一元调用（建会话/发 prompt/权限应答）的等待上限。

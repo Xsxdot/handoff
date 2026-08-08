@@ -359,8 +359,10 @@ func TestStopRemovesManagedWorktree(t *testing.T) {
 	if workDir == "" || !task.WorktreeManaged {
 		t.Fatalf("new-worktree 元数据缺失: %+v", task)
 	}
-	if err := m.Stop(context.Background(), task.ID); err != nil {
+	if removed, err := m.Stop(context.Background(), task.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
+	} else if !removed {
+		t.Fatalf("managed worktree 已删，stop 应报告 worktree_removed=true")
 	}
 	cur, _ := st.GetTask(task.ID)
 	if cur.State != proto.TaskStateFailed {
@@ -371,6 +373,51 @@ func TestStopRemovesManagedWorktree(t *testing.T) {
 	}
 	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
 		t.Fatalf("stop 不得删除任务分支")
+	}
+}
+
+// TestStopReportsWorktreeRemoved 验证 stop 的返回如实反映本次是否删除了 worktree：
+// managed worktree（agentd 建的）已删 → worktree_removed=true；原地模式（没有
+// worktree 概念）→ false。CLI 侧据此打印与行为一致的提示文案，不猜。
+func TestStopReportsWorktreeRemoved(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New(nil)
+	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+
+	// managed worktree：stop 真删了 worktree → worktree_removed=true
+	wtTask, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wtTask.WorkDir == "" || !wtTask.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", wtTask)
+	}
+	removed, err := m.Stop(context.Background(), wtTask.ID)
+	if err != nil {
+		t.Fatalf("Stop(managed): %v", err)
+	}
+	if !removed {
+		t.Fatal("managed worktree 已删，stop 应返回 worktree_removed=true")
+	}
+
+	// 原地模式：WorktreeManaged=false（WorkDir 回退为 RepoPath）→ 无 worktree 可删
+	plainTask, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "y", Executor: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainTask.WorktreeManaged {
+		t.Fatalf("原地模式不应有 managed worktree: %+v", plainTask)
+	}
+	removed, err = m.Stop(context.Background(), plainTask.ID)
+	if err != nil {
+		t.Fatalf("Stop(plain): %v", err)
+	}
+	if removed {
+		t.Fatal("原地模式没有 worktree，stop 应返回 worktree_removed=false")
 	}
 }
 
@@ -989,7 +1036,7 @@ func TestStopEndsRunningTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := m.Stop(context.Background(), task.ID); err != nil {
+	if _, err := m.Stop(context.Background(), task.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
@@ -1028,7 +1075,7 @@ func TestStopOnTerminalTaskRejected(t *testing.T) {
 	task := &proto.Task{ID: "T-stop2", RepoPath: t.TempDir(), Executor: "fake",
 		State: proto.TaskStateCompleted, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	mustCreateTask(t, st, task)
-	if err := m.Stop(context.Background(), task.ID); !errors.Is(err, store.ErrBadTransit) {
+	if _, err := m.Stop(context.Background(), task.ID); !errors.Is(err, store.ErrBadTransit) {
 		t.Fatalf("已终结任务 stop 必须返回 ErrBadTransit（映射 409），实得 %v", err)
 	}
 }
