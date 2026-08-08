@@ -530,7 +530,7 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 }
 
 // Done 归档任务：要求任务处于 waiting_review，迁移 completed 后调用 Adapter.Stop
-// 回收 executor 侧资源。
+// 回收 executor 侧资源，并清理 agentd 管理的 worktree。
 //
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许归档返回 store.ErrBadTransit
@@ -563,10 +563,29 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
-		return nil
-	}
-	if err := ad.Stop(taskID); err != nil {
+	} else if err := ad.Stop(taskID); err != nil {
 		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+	}
+	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
+	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
+	//
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// agentd 无权删别人的工作树；为什么失败只降级不阻塞归档：任务已审核通过，
+	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
+	if cur.WorktreeManaged && cur.WorkDir != "" {
+		m.log.Info("done 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
+		if werr := RemoveManagedWorktree(cur.RepoPath, cur.WorkDir); werr != nil {
+			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
+			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+			}); aerr != nil {
+				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
+			} else {
+				m.hub.Publish(evt)
+			}
+		} else {
+			m.log.Info("managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
+		}
 	}
 	return nil
 }

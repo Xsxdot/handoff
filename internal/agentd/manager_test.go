@@ -242,6 +242,105 @@ func TestDeriveName(t *testing.T) {
 	}
 }
 
+// mustDone 归档任务，失败即 Fatal。
+func mustDone(t *testing.T, m *Manager, taskID string) {
+	t.Helper()
+	if err := m.Done(context.Background(), taskID); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+}
+
+// TestDoneRemovesManagedWorktree 验证 done 归档时自动删除 agentd 管理的 worktree
+// （目录消失、任务分支保留、任务 completed）。
+func TestDoneRemovesManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	if workDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", task)
+	}
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	mustDone(t, m, task.ID)
+
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Fatalf("worktree 目录应已删除: %v", err)
+	}
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+		t.Fatalf("任务分支不应被删除")
+	}
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("任务应 completed，得到 %s", cur.State)
+	}
+}
+
+// TestDoneKeepsUserWorktree 验证用户自带 worktree（Managed=false）done 后不被删除。
+func TestDoneKeepsUserWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt1")
+	gitT(t, repo, "worktree", "add", "-b", "pre-branch", wt)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", Worktree: wt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.WorktreeManaged {
+		t.Fatalf("用户自带 worktree Managed 应为 false: %+v", task)
+	}
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	mustDone(t, m, task.ID)
+
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("用户自带 worktree 不应被删除: %v", err)
+	}
+}
+
+// TestDoneWorktreeRemoveFailureDoesNotBlockArchive 验证清理失败只降级为警告事件，
+// 不影响归档结果（任务仍 completed）。
+func TestDoneWorktreeRemoveFailureDoesNotBlockArchive(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	// Done 前往 worktree 塞未提交文件：git worktree remove 拒绝删除脏树
+	if err := os.WriteFile(filepath.Join(workDir, "stray.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustDone(t, m, task.ID)
+
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("清理失败不应阻塞归档，任务应 completed，得到 %s", cur.State)
+	}
+	evs := mustEvents(t, st, task.ID)
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "worktree 清理失败") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应有含「worktree 清理失败」的 progress 事件: %v", evs)
+	}
+}
+
 // createRunningTask 创建任务并迁移到 running（handlePermission 需要 running→waiting_answer 合法）。
 func createRunningTask(t *testing.T, st *store.Store, id string) {
 	t.Helper()
