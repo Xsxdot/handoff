@@ -2,6 +2,9 @@
 package cmd
 
 import (
+	"bytes"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -53,6 +56,45 @@ func TestShowCommandRegistered(t *testing.T) {
 	}
 	if !strings.Contains(attach.Short, "终端") {
 		t.Fatalf("attach 的 Short 应为终端实况语义，得到 %q", attach.Short)
+	}
+}
+
+// TestRunAttachExecvesResolvedPath 覆盖 runAttach 的 exec 调用（P0-1）：
+// syscall.Exec 是 execve(2) 直接封装、不做 PATH 查找，第一参必须是 LookPath
+// 解析出的可执行文件绝对路径；argv[0] 保持裸名（execve 约定）。
+func TestRunAttachExecvesResolvedPath(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux 未安装，无法验证")
+	}
+	var gotBin string
+	var gotArgv []string
+	oldExec := execveFn
+	execveFn = func(argv0 string, argv []string, env []string) error {
+		gotBin, gotArgv = argv0, argv
+		return nil
+	}
+	t.Cleanup(func() { execveFn = oldExec })
+
+	cfgPath := writeTestConfig(t, "listen: \"127.0.0.1:7777\"\ntoken: \"t\"\n")
+	resetFlags(t)
+	targetName = ""
+	configPath = cfgPath
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runAttach(cmd, nil, "abcdefgh-1234"); err != nil {
+		t.Fatalf("runAttach: %v", err)
+	}
+	if gotBin != tmuxBin {
+		t.Fatalf("execveFn 第一参应为 LookPath 解析路径，got %q want %q", gotBin, tmuxBin)
+	}
+	if !filepath.IsAbs(gotBin) {
+		t.Fatalf("execveFn 第一参应为绝对路径，got %q", gotBin)
+	}
+	if len(gotArgv) == 0 || gotArgv[0] != "tmux" {
+		t.Fatalf("argv[0] 应保持裸名 tmux，got %v", gotArgv)
 	}
 }
 

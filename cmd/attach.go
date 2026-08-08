@@ -82,25 +82,33 @@ func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string,
 	return []string{"ssh", "-t", host, "tmux", "attach", "-t", session}, nil
 }
 
+// execveFn 是 syscall.Exec 的测试缝：验证「execve 第一参必须是 LookPath 解析
+// 出的绝对路径」时替换它记录实参（P0-1 回归覆盖）。
+var execveFn = syscall.Exec
+
 // runAttach 执行 attach 命令进入终端实况。
 //
 // 为什么用 syscall.Exec：tmux attach 需要真正的 TTY，而 exec.Command 会维持
 // 本进程的 stdio 转发——对需要终端控制语义的 tmux 不充分；Exec 用 attach 命令
-// 替换当前进程，fd 原样继承，tmux 拿到完整终端控制。Exec 失败（如命令不存在）
-// 时报可读错误。
+// 替换当前进程，fd 原样继承，tmux 拿到完整终端控制。
+//
+// 为什么第一参必须是 LookPath 的解析结果：syscall.Exec 是 execve(2) 直接封装，
+// 不做 PATH 查找，传裸名 "tmux"/"ssh" 会得到 "no such file or directory"；
+// argv[0] 保持裸名（execve 约定：argv[0] 是程序名，路径由第一参指定）。
 func runAttach(cmd *cobra.Command, cli *client.Client, taskID string) error {
 	cfg := loadCLIConfig()
 	argv, err := attachCommandFor(taskID, targetName, cfg)
 	if err != nil {
 		return err
 	}
-	if _, err := exec.LookPath(argv[0]); err != nil {
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
 		return fmt.Errorf("%s 未安装（%v），无法进入终端实况", argv[0], err)
 	}
 	// exec 前打印将执行的完整命令（spec §7 错误处理项）：用户可复制重试，
 	// 且 exec 后进程被替换、任何输出都来自 tmux 本体
 	fmt.Fprintln(cmd.OutOrStdout(), strings.Join(argv, " "))
-	if err := syscall.Exec(argv[0], argv, os.Environ()); err != nil {
+	if err := execveFn(bin, argv, os.Environ()); err != nil {
 		return fmt.Errorf("执行 %s: %w", argv[0], err)
 	}
 	return nil
