@@ -42,6 +42,13 @@ const (
 	// 而工单已被消耗、不再出现在挂起项里——若只写日志，审核者这边完全无感，
 	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒审核者去执行 handoff resume。
 	EventTypeDeliveryFailed EventType = "delivery_failed"
+	// EventTypeApproverDecision 表示分级审批链中廉价模型审批者对权限请求的裁决
+	// 结果（approve/escalate/error）。只入库做审计（show 可见），不唤醒审核者——
+	// approve 路径已自动放行、escalate 路径由紧随其后的 permission_request 唤醒。
+	EventTypeApproverDecision EventType = "approver_decision"
+	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
+	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
+	EventTypeApproverDisabled EventType = "approver_disabled"
 )
 
 // Task 表示一个 handoff 任务。
@@ -59,6 +66,30 @@ type Task struct {
 	State           TaskState `json:"state"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// Name 是任务的展示名（dispatch --name 或从 plan/prompt 派生）。
+	Name string `json:"name"`
+	// Executor 是任务选择的执行者（dispatch --executor）；空=缺省执行者（老任务兼容）。
+	Executor string `json:"executor"`
+	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
+	Model string `json:"model"`
+	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
+	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
+	WorkDir string `json:"work_dir"`
+	// WorktreeManaged 表示 WorkDir 是 agentd 创建的 worktree，任务完成（done）时由
+	// agentd 负责删除；用户自带 worktree（Worktree=false）或原地模式均不受管理。
+	WorktreeManaged bool `json:"worktree_managed"`
+}
+
+// Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它
+// （worktree 模式），否则返回 RepoPath（原地模式）。
+//
+// 注意：所有需要「任务在哪个目录工作」的代码必须走本方法，直接读 RepoPath
+// 会在 worktree 模式下拿到错误的工作目录。
+func (t *Task) Workdir() string {
+	if t.WorkDir != "" {
+		return t.WorkDir
+	}
+	return t.RepoPath
 }
 
 // Event 表示任务生命周期中产生的一条事件记录。

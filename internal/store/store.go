@@ -73,7 +73,13 @@ func Open(path string) (*Store, error) {
   id TEXT PRIMARY KEY, target TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
   branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
   plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+  state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
+  -- 二期新增列：name=展示名；executor/model=执行者与任务级模型；
+  -- work_dir=工作区目录（空=原地模式，审阅与 executor cwd 由 proto.Task.Workdir() 统一回退）；
+  -- worktree_managed=工作区是否 agentd 创建的 worktree（done 时需删除）。
+  name TEXT NOT NULL DEFAULT '', executor TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '', work_dir TEXT NOT NULL DEFAULT '',
+  worktree_managed INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -100,6 +106,25 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("迁移 tickets.delivered_at: %w", err)
 	}
+	// 迁移：为旧库补二期 tasks 列（name/executor/model/work_dir/worktree_managed）。
+	//
+	// why（逐列 ALTER + 容忍 duplicate column）：SQLite 的 ADD COLUMN 不支持
+	// IF NOT EXISTS，且不支持一次加多列，只能逐条 ALTER；已存在时报 duplicate
+	// column 属预期，忽略即可（与 tickets.delivered_at 的迁移写法保持一致）。
+	for col, typ := range map[string]string{
+		"name":             "TEXT NOT NULL DEFAULT ''",
+		"executor":         "TEXT NOT NULL DEFAULT ''",
+		"model":            "TEXT NOT NULL DEFAULT ''",
+		"work_dir":         "TEXT NOT NULL DEFAULT ''",
+		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, err := db.ExecContext(context.Background(),
+			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移 tasks.%s: %w", col, err)
+		}
+	}
 	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil
 }
@@ -121,10 +146,12 @@ func (s *Store) Close() error {
 //   - 状态迁移合法性由 UpdateTaskState 校验，此处仅原样入库，不含业务规则
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
-INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+  name, executor, model, work_dir, worktree_managed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
-		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
+		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
+		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged))
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -140,15 +167,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 //   - 任务数据；不存在时返回 ErrNotFound
 func (s *Store) GetTask(id string) (*proto.Task, error) {
 	var (
-		task      proto.Task
-		createdAt string
-		updatedAt string
+		task            proto.Task
+		createdAt       string
+		updatedAt       string
+		worktreeManaged int
 	)
 	err := s.db.QueryRowContext(context.Background(), `
-SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at
+SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+  name, executor, model, work_dir, worktree_managed
 FROM tasks WHERE id = ?`, id).
 		Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
-			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt)
+			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -157,6 +187,7 @@ FROM tasks WHERE id = ?`, id).
 	}
 	task.CreatedAt = parseTime(createdAt)
 	task.UpdatedAt = parseTime(updatedAt)
+	task.WorktreeManaged = worktreeManaged != 0
 	return &task, nil
 }
 
@@ -166,7 +197,8 @@ FROM tasks WHERE id = ?`, id).
 //   - created_at 统一为 UTC RFC3339Nano 文本，字典序即时间序，可直接排序
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
-SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at
+SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+  name, executor, model, work_dir, worktree_managed
 FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务列表: %w", err)
@@ -175,16 +207,19 @@ FROM tasks ORDER BY created_at DESC`)
 	var tasks []proto.Task
 	for rows.Next() {
 		var (
-			task      proto.Task
-			createdAt string
-			updatedAt string
+			task            proto.Task
+			createdAt       string
+			updatedAt       string
+			worktreeManaged int
 		)
 		if err := rows.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
-			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt); err != nil {
+			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged); err != nil {
 			return nil, fmt.Errorf("读取任务行: %w", err)
 		}
 		task.CreatedAt = parseTime(createdAt)
 		task.UpdatedAt = parseTime(updatedAt)
+		task.WorktreeManaged = worktreeManaged != 0
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
@@ -738,6 +773,15 @@ WHERE task_id = ? AND answer IS NULL ORDER BY created_at ASC`, taskID)
 		return nil, fmt.Errorf("遍历待办工单: %w", err)
 	}
 	return tickets, nil
+}
+
+// boolToInt 将布尔转 0/1 整数以存入 SQLite 的 INTEGER 列。
+// 回读时再由调用方按「非 0 即 true」还原（见 GetTask/ListTasks 的 Scan 处）。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // fmtTime 将时间归一化为 UTC RFC3339Nano 文本存库。
