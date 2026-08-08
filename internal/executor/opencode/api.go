@@ -68,6 +68,11 @@ type API struct {
 	// Timeout=unaryTimeout：半死 server（TCP 通但不响应）在此上限内必然失败，
 	// 不会让调用方永久挂起
 	httpClient *http.Client
+	// sseInitialBackoff/sseMaxBackoff 是 SSE 断流重连的退避区间（P1-10a：
+	// 每次成功连接后复位到初始值，防止退避爬到 30s 封顶后终身不降；
+	// 测试经 NewAPIWithSSEBackoff 注入毫秒级退避）
+	sseInitialBackoff time.Duration
+	sseMaxBackoff     time.Duration
 }
 
 // NewAPI 创建 opencode server 客户端。
@@ -85,6 +90,21 @@ func NewAPI(baseURL, password string) *API {
 // 参数：
 //   - timeout: 一元调用（httpClient）的超时；SSE 长连接（sseClient）不受影响
 func NewAPIWithUnaryTimeout(baseURL, password string, timeout time.Duration) *API {
+	return newAPI(baseURL, password, timeout, sseInitialBackoff, sseMaxBackoff)
+}
+
+// NewAPIWithSSEBackoff 是 NewAPI 的 SSE 退避可注入变体：测试注入毫秒级退避，
+// 让「成功连接后复位」的时间敏感断言不依赖真实 1s..30s 节奏；生产代码一律走
+// NewAPI 的默认退避。
+//
+// 参数：
+//   - initial/max: SSE 断流重连的初始/封顶退避（见 SubscribeEvents）
+func NewAPIWithSSEBackoff(baseURL, password string, initial, max time.Duration) *API {
+	return newAPI(baseURL, password, unaryTimeout, initial, max)
+}
+
+// newAPI 是全部构造器的公共骨架。
+func newAPI(baseURL, password string, unaryTimeout, sseInitial, sseMax time.Duration) *API {
 	// 两个 client 各持一个 Transport：拨号超时统一 10s（对端不可达不挂死），
 	// 一元与 SSE 的差异只在 client 级 Timeout
 	dialer := (&net.Dialer{Timeout: 10 * time.Second}).DialContext
@@ -95,9 +115,11 @@ func NewAPIWithUnaryTimeout(baseURL, password string, timeout time.Duration) *AP
 			Transport: &http.Transport{DialContext: dialer},
 		},
 		httpClient: &http.Client{
-			Timeout:   timeout,
+			Timeout:   unaryTimeout,
 			Transport: &http.Transport{DialContext: dialer},
 		},
+		sseInitialBackoff: sseInitial,
+		sseMaxBackoff:     sseMax,
 	}
 }
 
@@ -286,24 +308,39 @@ func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response
 // 断流处理：连接意外断开（EOF/网络错误/服务端未就绪）后指数退避重连，
 // 1s→2s→4s→…→30s 封顶，无限重试；ctx 取消时立即返回 nil。
 //
+// 参数：
+//   - onEvent: 每条事件的回调（同步调用：顺序有保证，但回调阻塞会暂停消费）
+//   - onReconnect: 断连后成功重连的回调（首次建连不触发）；调用方借此把
+//     「断连间隙可能丢事件」的告警交到业务层（P1-10b，可为 nil）
+//
 // 返回：
 //   - ctx 取消（正常退出）时返回 nil
 //   - 解析器遇到无法恢复的流异常（如单行超过 1MB 上限）时返回错误
 //
 // 注意：
-//   - onEvent 同步调用：顺序有保证，但回调阻塞会暂停消费；阻塞行为由调用方承担
 //   - 未知/解析失败的行（event: 行、注释、非 JSON data）Debug 跳过，绝不中断订阅
-func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage)) error {
-	backoff := sseInitialBackoff
+func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage), onReconnect func()) error {
+	backoff := a.sseInitialBackoff
 	for attempt := 1; ; attempt++ {
-		if err := a.streamOnce(ctx, onEvent); err != nil {
-			if ctx.Err() != nil {
-				return nil // 正常退出：ctx 取消
+		// onEstablished：连接建立（HTTP 200）时回调，挂在「建立」而非「流结束」
+		// 的时点上——断连恢复信号要尽早送达（流可能长时间不结束），退避复位
+		// 也要在建立瞬间生效（P1-10a：每次成功连接回到初始值，防止退避爬到
+		// 30s 封顶后终身不降；断得越久退避越大、断连间隙越长）
+		onEstablished := func() {
+			backoff = a.sseInitialBackoff
+			if attempt > 1 && onReconnect != nil {
+				// 断连恢复：首次连接不是「重连」，只有断过再连上才算；
+				// 让业务层知道刚才发生过断连（间隙内的事件可能已丢失）
+				onReconnect()
 			}
+		}
+		err := a.streamOnce(ctx, onEvent, onEstablished)
+		if ctx.Err() != nil {
+			return nil // 正常退出：ctx 取消
+		}
+		if err != nil {
 			a.log().Info("SSE 连接失败，等待后重连", "attempt", attempt,
 				"backoff_seconds", int(backoff.Seconds()), "cause", err)
-		} else if ctx.Err() != nil {
-			return nil // 流自然结束后 ctx 恰好被取消
 		} else {
 			a.log().Info("SSE 流结束，等待后重连", "attempt", attempt,
 				"backoff_seconds", int(backoff.Seconds()))
@@ -315,8 +352,8 @@ func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage)
 		case <-time.After(backoff):
 		}
 		backoff *= 2
-		if backoff > sseMaxBackoff {
-			backoff = sseMaxBackoff
+		if backoff > a.sseMaxBackoff {
+			backoff = a.sseMaxBackoff
 		}
 	}
 }
@@ -326,7 +363,11 @@ func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage)
 // 返回：
 //   - 流正常结束（服务端关闭）时返回 nil
 //   - 连接失败、非 200、扫描器异常时返回对应错误
-func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage)) error {
+//
+// 参数：
+//   - onEstablished: 连接建立（HTTP 200）后立即回调（可为 nil）；供上层做
+//     「成功连接」的退避复位与断连恢复通知（见 SubscribeEvents）
+func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage), onEstablished func()) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/event", nil)
 	if err != nil {
 		return fmt.Errorf("构造 SSE 请求: %w", err)
@@ -341,6 +382,9 @@ func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage)) err
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return a.httpError("订阅事件流", resp)
+	}
+	if onEstablished != nil {
+		onEstablished()
 	}
 
 	a.log().Info("SSE 连接建立", "path", "/event")

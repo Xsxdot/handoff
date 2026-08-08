@@ -45,18 +45,26 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
 )
 
 // 看门狗与节流参数：
-//   - watchdogProbeInterval/watchdogFailThreshold：serve 存活探活节奏，连续
-//     3 次死亡（约 600ms 窗口）才判定死亡，吸收探活抖动，不误杀正常任务
+//   - watchdogFastInterval/watchdogSlowInterval/watchdogFastProbes：serve 存活
+//     探活节奏。活跃期（有新事件）200ms 高频；连续 fastProbes 次成功探活且无
+//     新事件（任务进 waiting_review 挂过夜）后降频到 2s——200ms 高频探活每天
+//     每任务约 43 万次 tmux fork + HTTP 请求（P1-17），降频后约 4.3 万次；
+//     任一失败立即回到高频，保证死亡判定不被降频拖慢太多（慢档最坏 ~6s）
+//   - watchdogFailThreshold：连续 3 次死亡（快档约 600ms 窗口）才判定死亡，
+//     吸收探活抖动，不误杀正常任务
 //   - progressThrottle：progress 事件节流，每任务至多每 30s 一条，防止高频
 //     文本增量刷爆事件库（按回合粒度细化是 Task 12 e2e 的遗留项）
 const (
-	watchdogProbeInterval = 200 * time.Millisecond
+	watchdogFastInterval  = 200 * time.Millisecond
+	watchdogSlowInterval  = 2 * time.Second
+	watchdogFastProbes    = 10
 	watchdogFailThreshold = 3
 	progressThrottle      = 30 * time.Second
 )
@@ -73,9 +81,9 @@ type serveHandle interface {
 // serve 死亡后 tmux 会话已销毁，capture-pane 必空，见 serveLogTail）。
 type procHandle struct{ p *Proc }
 
-func (h procHandle) Alive() bool      { return h.p.Alive() }
-func (h procHandle) Kill() error      { return h.p.Kill() }
-func (h procHandle) LogTail() string  { return serveLogTail(h.p.ServeLogPath) }
+func (h procHandle) Alive() bool     { return h.p.Alive() }
+func (h procHandle) Kill() error     { return h.p.Kill() }
+func (h procHandle) LogTail() string { return serveLogTail(h.p.ServeLogPath) }
 
 // Adapter 是 opencode 的 executor.Adapter 实现（语义翻译层）。
 //
@@ -102,7 +110,8 @@ func New(log *slog.Logger) *Adapter {
 //
 // turn/partSeen/partSnap/userMsgs/lastProgress 只被订阅 goroutine 读写
 // （SSE 回调同步执行），无需加锁；stopCh/evCh 的关闭权有明确归属
-// （见 subscribeLoop/Stop）。
+// （见 subscribeLoop/Stop）。lastEventAt 被 emit（订阅 goroutine）写、
+// 看门狗 goroutine 读，用 atomic 保证并发安全。
 type runState struct {
 	taskID       string
 	taskDir      string
@@ -124,6 +133,7 @@ type runState struct {
 	partTypes    map[string]string // messageID+partID -> part 类型（delta 无类型字段，靠它识别非 text 增量）
 	userMsgs     map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
 	lastProgress time.Time         // 上次发 progress 的时刻（节流）
+	lastEventAt  atomic.Int64      // 最近一次事件产出时刻（unixnano，emit 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -361,10 +371,20 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 //
 // 参数：
 //   - text: 审核者的回答/修改指令，原样透传，不得加工
+//
+// 注意：
+//   - stopCh 已关（Stop 已介入，运行态可能因 kill 失败被保留）时拒绝发送：
+//     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让审核者
+//     看到「任务不在运行」的明确错误
 func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s 不在运行中", taskID)
+	}
+	select {
+	case <-r.stopCh:
+		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能续接", taskID)
+	default:
 	}
 	a.log.Info("adapter 收到续接指令", "task", taskID, "text", truncateRunes(text, 80))
 	defer func() {
@@ -383,10 +403,18 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 的 ticket id
 //     经 taskID:permID 命名空间化，此处为裸 permID，由 manager 还原后传入）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//
+// 注意：
+//   - stopCh 已关时拒绝转发：与 Send 同因（见 Send 注释），保留态不接新裁决
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s 不在运行中", taskID)
+	}
+	select {
+	case <-r.stopCh:
+		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能应答权限", taskID)
+	default:
 	}
 	a.log.Info("adapter 收到权限应答", "task", taskID, "perm", permID, "decision", decision)
 	defer func() {
@@ -403,6 +431,12 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 //
 // 注意：
 //   - 幂等：重复 Stop 不 panic；事件通道只关闭一次（由订阅 goroutine 持有关闭权）
+//   - kill 失败但 serve 仍存活时**保留运行态**（P1-9）：serve 占着端口与模型
+//     会话，drop 掉就没有任何途径回收（重试 Stop 是唯一回收路径）；保留期间
+//     运行态是惰性的（订阅与看门狗都已退出、事件通道已关），Send/RespondPermission
+//     经 stopCh 守卫拒绝继续执行，重试 Stop 或 agentd 重启（Resume 以 newRun
+//     整表覆盖）都能清理它——已归档任务不会被 ResumeTask 复活（恢复只作用于
+//     运行中状态的任务）
 //   - 运行态注销（drop）与 subscribeLoop 退出时的 drop 是幂等的 map 删除，
 //     mu 保护下不会重复释放——runs 表因此不随任务累积无界增长
 func (a *Adapter) Stop(taskID string) (err error) {
@@ -425,11 +459,20 @@ func (a *Adapter) Stop(taskID string) (err error) {
 	})
 	if r.handle != nil {
 		if kerr := r.handle.Kill(); kerr != nil {
-			return fmt.Errorf("kill serve: %w", kerr)
+			if r.handle.Alive() {
+				// kill 失败但 serve 仍存活：保留运行态（P1-9）。为什么保留——
+				// 订阅 goroutine 已随 stopCh 退出（其 defer 见 stopCh 已关、
+				// 不争 drop），若此处也 drop，孤儿 serve 无人能再回收；
+				// 保留后重试 Stop 即可完成清理，或经 agentd 重启恢复接管
+				a.log.Error("kill serve 失败，保留运行态待重试", "task", taskID, "cause", kerr)
+				return fmt.Errorf("kill serve: %w", kerr)
+			}
+			// kill 失败但 serve 已自灭（进程死，tmux 会话也已消失）：无孤儿资源
+			// 可留，保留反而是无法回收的僵尸条目，照常注销
+			a.log.Warn("kill serve 失败但 serve 已死，照常注销运行态", "task", taskID, "cause", kerr)
 		}
 	}
-	// 清理完成后注销运行态：此后 lookup/Events 返回 nil，runs 表不残留已停任务。
-	// kill 失败时保留运行态（进程可能还活着，留待重试/人工兜底），不在此处 drop
+	// 清理完成后注销运行态：此后 lookup/Events 返回 nil（runs 表不残留已停任务）
 	a.drop(taskID)
 	return nil
 }
@@ -440,13 +483,31 @@ func (a *Adapter) Stop(taskID string) (err error) {
 func (r *runState) subscribeLoop(a *Adapter) {
 	defer func() {
 		r.closeOnce.Do(func() { close(r.evCh) })
-		// 注销运行态：订阅退出（正常 Stop 或 serve 死亡/意外中断）即从 runs 表移除，
-		// 与 Stop 的 drop 幂等共存（mu 保护的 map 删除）——runs 表不无界增长
-		a.drop(r.taskID)
+		// 注销运行态（P1-9）：仅当 Stop 未介入（stopCh 未关）时由本 defer 注销——
+		// 此时退出只可能是 serve 死亡/流异常，进程已死或已在上文 Kill 回收，无
+		// 孤儿可留。Stop 已介入时（stopCh 已关），drop 与否由 Stop 裁决：kill
+		// 成功才 drop、kill 失败保留运行态供重试回收；本 defer 不争抢，否则会
+		// 把「kill 失败保留」的承诺毁掉。Stop 的 stopOnce 先关 stopCh 再取消
+		// runCtx，订阅只在 runCancel 后退出，此处的时序判断无竞态
+		select {
+		case <-r.stopCh:
+		default:
+			a.drop(r.taskID)
+		}
 		a.log.Info("opencode 事件流订阅退出", "task", r.taskID)
 	}()
 	err := r.api.SubscribeEvents(r.runCtx, func(raw json.RawMessage) {
 		a.mapEvent(r, raw)
+	}, func() {
+		// P1-10b 降级方案：断连恢复时显式告警。为什么只能告警——/event 无重放
+		// 语义（spike 实测重连只收 server.connected/heartbeat），断连间隙内服务端
+		// 产出的 permission.asked 永久丢失；又无「按会话拉取未决权限」的可用端点
+		// （GET /session/{id}/message 的 tool part 只有 callID 无权限 id，应答端点
+		// 要求真实 id、伪造即 404）。opencode 若在等一个看不见的决策会一直挂到
+		// 看门狗判死，此处告警让运营者知道需要人工兜底（重启任务/tmux attach）
+		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），"+
+			"若任务卡在等待决策请重启任务或 tmux attach 查看",
+			"task", r.taskID, "session", r.session)
 	})
 	select {
 	case <-r.stopCh:
@@ -481,10 +542,39 @@ func (r *runState) subscribeLoop(a *Adapter) {
 
 // watchdog 是 serve 存活看门狗：周期探活，连续 3 次失败判定 serve 死亡，
 // 取消运行 ctx 让订阅退出——failed 结果由 subscribeLoop 统一产出（保持
-// 「事件通道只有一个写入者」的关闭权约定）。
+// 「事件通道只有一个写入者」的关闭权约定）。探活间隔自适应用默认配置
+// （见 watchdogConfig）。
 func (a *Adapter) watchdog(r *runState) {
+	a.watchdogWithConfig(r, watchdogConfig{
+		fastInterval: watchdogFastInterval,
+		slowInterval: watchdogSlowInterval,
+		fastProbes:   watchdogFastProbes,
+	})
+}
+
+// watchdogConfig 是探活节奏的可注入配置（测试注入毫秒级快慢间隔，
+// 让「降频/复位」的时间敏感断言不依赖真实 200ms/2s 节奏）。
+type watchdogConfig struct {
+	fastInterval time.Duration // 活跃期探活间隔
+	slowInterval time.Duration // 任务稳定（无事件且探活连续成功）后的降频间隔
+	fastProbes   int           // 连续 fastProbes 次成功探活且无新事件后降频
+}
+
+// watchdogWithConfig 是 watchdog 的配置注入骨架（探活节奏自适应逻辑）：
+//
+//   - 收到新事件（emit 打点 lastEventAt 有变化）→ 回到高频：任务活跃（模型在
+//     产出/权限在等裁决），serve 死亡要能被快速发现
+//   - 高频下连续 fastProbes 次成功探活且无新事件 → 降频到 slow：任务静默
+//     （waiting_review 挂过夜），200ms 高频探活是纯浪费——每天每任务约 43 万次
+//     tmux fork + HTTP 请求（P1-17）
+//   - 任一失败 → 立即回到高频：死亡判定是看门狗唯一职责，不能被降频拖慢
+//     （慢档最坏 3 次 × 2s ≈ 6s 才判死，MVP 可接受）
+func (a *Adapter) watchdogWithConfig(r *runState, cfg watchdogConfig) {
 	failures := 0
-	ticker := time.NewTicker(watchdogProbeInterval)
+	successes := 0
+	prevEvent := r.lastEventAt.Load()
+	interval := cfg.fastInterval
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -493,11 +583,39 @@ func (a *Adapter) watchdog(r *runState) {
 		case <-r.runCtx.Done():
 			return
 		case <-ticker.C:
+			evTs := r.lastEventAt.Load()
+			active := evTs != prevEvent
+			prevEvent = evTs
+			if active && interval != cfg.fastInterval {
+				a.log.Debug("探活回到高频：收到新事件，任务活跃", "task", r.taskID)
+				successes = 0
+				interval = cfg.fastInterval
+				ticker.Stop()
+				ticker = time.NewTicker(interval)
+			}
 			if r.handle.Alive() {
 				failures = 0
+				successes++
+				if interval == cfg.fastInterval && !active && successes >= cfg.fastProbes {
+					// 高频下连续成功且无事件：任务进入静默期（如 waiting_review），
+					// 降频省 tmux fork 与 HTTP 请求（P1-17）
+					a.log.Info("探活降频：任务静默，探活间隔升到慢档", "task", r.taskID,
+						"fast", cfg.fastInterval, "slow", cfg.slowInterval)
+					successes = 0
+					interval = cfg.slowInterval
+					ticker.Stop()
+					ticker = time.NewTicker(interval)
+				}
 				continue
 			}
 			failures++
+			successes = 0
+			if interval != cfg.fastInterval {
+				a.log.Debug("探活回到高频：出现失败，需快速判定死亡", "task", r.taskID)
+				interval = cfg.fastInterval
+				ticker.Stop()
+				ticker = time.NewTicker(interval)
+			}
 			if failures >= watchdogFailThreshold {
 				a.log.Error("opencode serve 探活失败达阈值，判定死亡",
 					"task", r.taskID, "failures", failures)
@@ -510,8 +628,12 @@ func (a *Adapter) watchdog(r *runState) {
 
 // emit 向事件通道投递一条 AdapterEvent 并打产出日志（所有事件统一的出口）。
 //
+// 同时为看门狗打活跃点（lastEventAt）：探活降频的「收到新事件回高频」信号
+// （P1-17，见 watchdogWithConfig）。
+//
 // 返回 false 表示 Stop 已关闭 stopCh，事件未被投递。
 func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
+	r.lastEventAt.Store(time.Now().UnixNano())
 	switch ev.Type {
 	case "permission":
 		a.log.Info("adapter 产出权限事件", "task", r.taskID, "type", ev.Type,

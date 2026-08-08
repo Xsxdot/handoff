@@ -222,7 +222,7 @@ func TestSubscribeReconnect(t *testing.T) {
 			mu2.Lock()
 			events = append(events, ev)
 			mu2.Unlock()
-		})
+		}, nil)
 	}()
 
 	deadline := time.After(15 * time.Second)
@@ -296,7 +296,7 @@ func TestSubscribeTolerantGarbage(t *testing.T) {
 			mu.Lock()
 			events = append(events, ev)
 			mu.Unlock()
-		})
+		}, nil)
 	}()
 
 	deadline := time.After(5 * time.Second)
@@ -359,7 +359,7 @@ func TestSubscribeCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- api.SubscribeEvents(ctx, func(json.RawMessage) {})
+		done <- api.SubscribeEvents(ctx, func(json.RawMessage) {}, nil)
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -435,7 +435,7 @@ func TestUnaryTimeoutNotAffectingSSE(t *testing.T) {
 			mu.Lock()
 			events = append(events, ev)
 			mu.Unlock()
-		})
+		}, nil)
 	}()
 
 	deadline := time.After(5 * time.Second)
@@ -460,5 +460,123 @@ func TestUnaryTimeoutNotAffectingSSE(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+}
+
+// TestSubscribeBackoffResetAfterSuccess 验证连接成功后退避复位（P1-10a）：
+// 连续两次连接失败把退避抬到 200ms，随后一次成功连接必须把退避复位回初始
+// 100ms——否则退避指数累积到 30s 封顶后终身不降，断连间隙越拉越长。
+// 同时验证 onReconnect 仅在「断连后的成功重连」时触发一次。
+//
+// 时间线（注入退避 100ms 起、1s 封顶）：
+//   - conn1 失败 → 等 100ms；conn2 失败 → 等 200ms
+//   - conn3 成功（收到事件后流结束）→ 退避复位 100ms
+//   - conn4 失败 → 应约等 100ms（未复位则等 400ms）；conn5 失败 → 约 200ms
+//     （未复位则 800ms）——两组间隔阈值都留了 2~3 倍余量，无需精确计时
+func TestSubscribeBackoffResetAfterSuccess(t *testing.T) {
+	quietLog(t)
+	var mu sync.Mutex
+	conns := 0
+	var connTimes []time.Time
+	reconnects := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		conns++
+		n := conns
+		connTimes = append(connTimes, time.Now())
+		mu.Unlock()
+		switch n {
+		case 1, 2, 4, 5:
+			w.WriteHeader(http.StatusInternalServerError) // 连接失败：退避加倍
+		case 3:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"type\":\"e1\"}\n\n") // 成功连接：收到事件后流结束
+		}
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPIWithSSEBackoff(ts.URL, testPassword, 100*time.Millisecond, time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- api.SubscribeEvents(ctx, func(json.RawMessage) {}, func() {
+			mu.Lock()
+			reconnects++
+			mu.Unlock()
+		})
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		mu.Lock()
+		n := conns
+		mu.Unlock()
+		if n >= 5 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("超时未等到 5 次连接，当前 %d 次", n)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ctx 取消后 SubscribeEvents 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// conn3（成功）结束后到 conn4 的间隔：复位后约 100ms；未复位则 ≥400ms
+	if gap := connTimes[3].Sub(connTimes[2]); gap > 300*time.Millisecond {
+		t.Errorf("成功连接后退避未复位：conn3→conn4 间隔 %v，期望约 100ms", gap)
+	}
+	// conn4 失败后按复位后的递增：约 200ms；未复位则 ≥800ms
+	if gap := connTimes[4].Sub(connTimes[3]); gap > 600*time.Millisecond {
+		t.Errorf("conn4→conn5 间隔 %v 异常（复位后应为 200ms 级）", gap)
+	}
+	if reconnects != 1 {
+		t.Errorf("onReconnect 应恰触发 1 次（仅 conn3 成功重连），实际 %d", reconnects)
+	}
+}
+
+// TestSubscribeNoReconnectOnFirstConnect 验证首次连接成功不触发 onReconnect：
+// 断连恢复语义要求「之前断过」才算重连，首次建连只是订阅起步。
+func TestSubscribeNoReconnectOnFirstConnect(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"type\":\"e1\"}\n\n")
+		fl.Flush()
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPIWithSSEBackoff(ts.URL, testPassword, 100*time.Millisecond, time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	reconnects := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- api.SubscribeEvents(ctx, func(json.RawMessage) {}, func() { reconnects++ })
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ctx 取消后 SubscribeEvents 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+	if reconnects != 0 {
+		t.Errorf("首次连接成功不应触发 onReconnect，实际 %d 次", reconnects)
 	}
 }

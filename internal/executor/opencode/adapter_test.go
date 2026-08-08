@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -68,19 +69,27 @@ func captureLog(t *testing.T) *bufWriter {
 }
 
 // fakeProbe 是 serveHandle 的测试替身：alive 可变（模拟 serve 死亡），
-// Kill/LogTail 无操作。
+// Kill 行为可注入（killErr 模拟 kill 失败，P1-9），并记录每次 Alive 调用
+// 时间（探活降频断言用，P1-17）。
 type fakeProbe struct {
-	mu    sync.Mutex
-	alive bool
+	mu        sync.Mutex
+	alive     bool
+	killErr   error
+	callTimes []time.Time
 }
 
 func (p *fakeProbe) Alive() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.callTimes = append(p.callTimes, time.Now())
 	return p.alive
 }
 
-func (p *fakeProbe) Kill() error { return nil }
+func (p *fakeProbe) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killErr
+}
 
 func (p *fakeProbe) LogTail() string { return "fake stderr tail" }
 
@@ -88,6 +97,19 @@ func (p *fakeProbe) setAlive(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.alive = v
+}
+
+func (p *fakeProbe) setKillErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killErr = err
+}
+
+// times 返回 Alive 的调用时间戳快照（探活间隔断言用）。
+func (p *fakeProbe) times() []time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]time.Time(nil), p.callTimes...)
 }
 
 // permCall 记录 fake server 收到的一次权限应答请求。
@@ -847,4 +869,263 @@ func TestEventsClosedAfterStop(t *testing.T) {
 	}
 	assertClosed("Stop 后", ad.Events(taskID))
 	assertClosed("从未启动的任务", ad.Events("task-never-started"))
+}
+
+// TestStopKillFailureRetainsRunState 覆盖 P1-9：Stop 的 kill 失败时运行态必须
+// 保留——serve 可能还活着（占着端口与模型会话），drop 掉就没有任何途径回收，
+// 保留后重试 Stop 是唯一回收路径。事件通道照常关闭（契约：通道关闭=执行终结，
+// 消费方不阻塞），但运行态仍可 lookup；kill 恢复后重试 Stop 完成注销。
+func TestStopKillFailureRetainsRunState(t *testing.T) {
+	quietLog(t)
+	taskID := "task-killfail-01"
+	fs := newFakeServer(t)
+	ad := New(slog.Default())
+	probe := &fakeProbe{alive: true, killErr: errors.New("tmux 挂死")}
+	req := executor.StartReq{
+		Task:    proto.Task{ID: taskID, RepoPath: t.TempDir()},
+		TaskDir: t.TempDir(),
+	}
+	if err := os.WriteFile(filepath.Join(req.TaskDir, promptFileName), []byte("执行计划"), 0o644); err != nil {
+		t.Fatalf("写 prompt.md: %v", err)
+	}
+	if _, err := ad.startRun(context.Background(), req, NewAPI(fs.ts.URL, adapterTestPassword), probe); err != nil {
+		t.Fatalf("startRun: %v", err)
+	}
+
+	if err := ad.Stop(taskID); err == nil {
+		t.Fatal("kill 失败时 Stop 应返回错误")
+	}
+	// 等订阅 goroutine 退出（事件通道关闭 = 订阅已终结），随后运行态必须仍在：
+	// 回归点——subscribeLoop 的 defer 若无条件 drop，这里 lookup 会变 nil
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ch := ad.Events(taskID)
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				goto subDone
+			}
+			time.Sleep(10 * time.Millisecond)
+		case <-time.After(deadline.Sub(time.Now())):
+			t.Fatal("事件通道未在 2s 内关闭")
+		}
+	}
+subDone:
+	if ad.lookup(taskID) == nil {
+		t.Fatal("kill 失败后运行态应保留（供重试 Stop 回收孤儿 serve，P1-9）")
+	}
+	// 保留期间 Events 返回的仍是已关闭通道（执行已终结），消费方不阻塞
+	assertClosed := func(desc string, ch <-chan executor.AdapterEvent) {
+		t.Helper()
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatalf("%s: 通道应已关闭（契约：通道关闭 = 执行终结）", desc)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: 通道未立即关闭", desc)
+		}
+	}
+	assertClosed("kill 失败保留期间", ad.Events(taskID))
+	// 保留态是惰性的：Send/RespondPermission 必须拒绝（订阅已退出，指令发出
+	// 也没有事件回程，会静默挂死——宁可让审核者看到明确错误）
+	if err := ad.Send(context.Background(), taskID, "继续"); err == nil {
+		t.Fatal("保留态不应接受 Send 续接指令")
+	}
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-x", "once"); err == nil {
+		t.Fatal("保留态不应接受权限应答")
+	}
+
+	// kill 恢复后重试 Stop：注销完成，孤儿 serve 可回收
+	probe.setKillErr(nil)
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("kill 恢复后重试 Stop 应成功: %v", err)
+	}
+	if ad.lookup(taskID) != nil {
+		t.Fatal("重试 Stop 成功后运行态应注销")
+	}
+}
+
+// TestStopKillFailureServeDeadDrops 覆盖 P1-9 的边界：kill 失败但 serve 已自灭
+// （探活为死）时 Stop 照常注销运行态——进程已死，无孤儿资源可留，保留反而是
+// 无法回收的僵尸条目。
+func TestStopKillFailureServeDeadDrops(t *testing.T) {
+	quietLog(t)
+	taskID := "task-killdead-01"
+	fs := newFakeServer(t)
+	ad := New(slog.Default())
+	probe := &fakeProbe{alive: false, killErr: errors.New("tmux 会话已消失")}
+	req := executor.StartReq{
+		Task:    proto.Task{ID: taskID, RepoPath: t.TempDir()},
+		TaskDir: t.TempDir(),
+	}
+	if err := os.WriteFile(filepath.Join(req.TaskDir, promptFileName), []byte("执行计划"), 0o644); err != nil {
+		t.Fatalf("写 prompt.md: %v", err)
+	}
+	if _, err := ad.startRun(context.Background(), req, NewAPI(fs.ts.URL, adapterTestPassword), probe); err != nil {
+		t.Fatalf("startRun: %v", err)
+	}
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("serve 已死时 kill 失败不应阻断 Stop: %v", err)
+	}
+	if ad.lookup(taskID) != nil {
+		t.Fatal("serve 已死时运行态应注销（无孤儿可留，保留即僵尸）")
+	}
+}
+
+// TestReconnectWarnsLostPermission 覆盖 P1-10b 降级方案：SSE 断连恢复时 adapter
+// 必须显式告警「断连间隙的权限请求可能丢失」——/event 无重放语义（fix-J spike
+// 实测重连只收 server.connected/heartbeat），间隙内服务端产出的 permission.asked
+// 永久丢失；又无「按会话拉取未决权限 id」的可用端点（GET /session/{id}/message
+// 的 tool part 无权限 id，应答端点要求真实 id），只能告警留痕、人工兜底。
+func TestReconnectWarnsLostPermission(t *testing.T) {
+	buf := captureLog(t)
+	taskID := "task-recon-0001"
+	var mu sync.Mutex
+	conns := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			fmt.Fprint(w, `{"id":"sess-1"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			mu.Lock()
+			conns++
+			n := conns
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			if n == 1 {
+				fmt.Fprint(w, "data: {\"type\":\"server.connected\",\"properties\":{}}\n\n")
+				fl.Flush()
+				return // 断流：连接 1 结束，触发重连
+			}
+			fl.Flush()           // 先送响应头：客户端收到 200 才认为连接建立（onReconnect 在此触发）
+			<-r.Context().Done() // 连接 2 起保持
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	ad := New(slog.Default())
+	// 清理顺序：先 Stop（runCancel 让订阅退出、客户端断开，handler 的
+	// r.Context().Done() 放行）再关 server——倒过来 Close 会死等被保持的 handler
+	t.Cleanup(func() {
+		_ = ad.Stop(taskID)
+		ts.CloseClientConnections()
+		ts.Close()
+	})
+	probe := &fakeProbe{alive: true}
+	req := executor.StartReq{
+		Task:    proto.Task{ID: taskID, RepoPath: t.TempDir()},
+		TaskDir: t.TempDir(),
+	}
+	if err := os.WriteFile(filepath.Join(req.TaskDir, promptFileName), []byte("执行计划"), 0o644); err != nil {
+		t.Fatalf("写 prompt.md: %v", err)
+	}
+	if _, err := ad.startRun(context.Background(), req,
+		NewAPIWithSSEBackoff(ts.URL, adapterTestPassword, 100*time.Millisecond, 500*time.Millisecond), probe); err != nil {
+		t.Fatalf("startRun: %v", err)
+	}
+	t.Cleanup(func() { _ = ad.Stop(taskID) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "断连间隙") {
+			if !strings.Contains(buf.String(), taskID) {
+				t.Fatal("断连间隙 Warn 应带任务上下文")
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("断连恢复后未出现「断连间隙权限可能丢失」Warn 日志（P1-10b 降级方案）")
+}
+
+// TestWatchdogBacksOffWhenStable 覆盖 P1-17 探活降频：任务稳定（探活连续成功且
+// 无新事件）后探活间隔从 fast 升到 slow——不再每 200ms 一次 tmux fork + HTTP
+// 请求（waiting_review 挂过夜 = 每天每任务约 43 万次 fork）；出现失败立即回到
+// 高频，连续失败达阈值即判死。时间敏感断言用注入间隔（fast=20ms/slow=300ms/
+// 阈值 3 次），避免依赖真实 200ms/2s 的慢节奏。
+func TestWatchdogBacksOffWhenStable(t *testing.T) {
+	quietLog(t)
+	a := New(slog.Default())
+	probe := &fakeProbe{alive: true}
+	r := &runState{taskID: "task-wd-0001", handle: probe}
+	r.runCtx, r.runCancel = context.WithCancel(context.Background())
+	r.stopCh = make(chan struct{})
+	cfg := watchdogConfig{fastInterval: 20 * time.Millisecond,
+		slowInterval: 300 * time.Millisecond, fastProbes: 3}
+	go a.watchdogWithConfig(r, cfg)
+
+	// 稳定期观察：前 fastProbes 次高频（~60ms）后应出现 ≥200ms 的慢间隔
+	deadline := time.Now().Add(1 * time.Second)
+	maxGap := time.Duration(0)
+	for time.Now().Before(deadline) {
+		ts := probe.times()
+		for i := 1; i < len(ts); i++ {
+			if g := ts[i].Sub(ts[i-1]); g > maxGap {
+				maxGap = g
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if maxGap < 200*time.Millisecond {
+		t.Errorf("稳定期应出现慢探活间隔（≥200ms），实测最大间隔 %v", maxGap)
+	}
+
+	// serve 死亡：回到高频，连续 3 次失败（~60ms）后取消运行 ctx
+	probe.setAlive(false)
+	select {
+	case <-r.runCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve 死亡后看门狗未在 2s 内取消运行 ctx（降频后必须能及时判死）")
+	}
+}
+
+// TestWatchdogEventResetsToFast 覆盖 P1-17 的事件复位：降频稳定后再产出事件
+// （任务重新活跃，emit 打点 lastEventAt），探活间隔应回落 fast 级——活跃任务
+// 保持快速死亡检测。
+func TestWatchdogEventResetsToFast(t *testing.T) {
+	quietLog(t)
+	a := New(slog.Default())
+	probe := &fakeProbe{alive: true}
+	r := &runState{taskID: "task-wd-0002", handle: probe}
+	r.runCtx, r.runCancel = context.WithCancel(context.Background())
+	r.stopCh = make(chan struct{})
+	t.Cleanup(func() { r.runCancel() })
+	cfg := watchdogConfig{fastInterval: 20 * time.Millisecond,
+		slowInterval: 300 * time.Millisecond, fastProbes: 3}
+	go a.watchdogWithConfig(r, cfg)
+
+	// 先确认已降频（出现慢间隔）
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		ts := probe.times()
+		for i := 1; i < len(ts); i++ {
+			if ts[i].Sub(ts[i-1]) >= 200*time.Millisecond {
+				goto slowed
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("未观察到慢探活间隔（降频未生效）")
+slowed:
+	// 模拟新事件（emit 的打点）：随后应出现 fast 级的间隔（≤100ms）
+	r.lastEventAt.Store(time.Now().UnixNano())
+	bumpAt := time.Now()
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		ts := probe.times()
+		for i := 1; i < len(ts); i++ {
+			if ts[i].Before(bumpAt) {
+				continue // 只统计打点之后的探活间隔
+			}
+			if g := ts[i].Sub(ts[i-1]); g <= 100*time.Millisecond {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("新事件后探活未回到高频间隔（≤100ms），事件复位未生效")
 }

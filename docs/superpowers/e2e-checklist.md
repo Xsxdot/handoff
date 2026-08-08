@@ -10,13 +10,12 @@
       （field=text 增量），message.updated 仅带 properties.info.role，只用于探测新回合开始。
       遗留验证项（SPIKE-1b 待做）：更长回合/多工具调用的 part 流（当前样本仅单工具单文本
       part）、断线重连后的事件重放语义。
-- [ ] SPIKE-1b（spec 风险#1 续，/event 重放语义）：**重连时是否会收到断连前的历史事件？**
-      实测：订阅 /event 收到若干事件后断开连接（或直接重启消费进程），重连后观察首条事件的
-      messageID/seq —— 若事件带序号，顺带确认序号的单调性与断点衔接方式。**若证实会重放历史**，
-      列出两类危害并启用「水位线应急方案」（见文件末尾注意事项）：
-      (a) 重复 permission_request / question 事件重复入库，审核者重复收到、重复应答；
-      (b) 重放的旧 result 事件重新驱动 handleResult → completed → Adapter.Stop，
-          杀死真实存活的 tmux 执行器会话 —— 数据丢失
+- [x] SPIKE-1b（spec 风险#1 续，/event 重放语义）：**重连时是否会收到断连前的历史事件？**
+      实测：订阅 /event 收到事件后断开，重连后观察首条事件（fix-J spike，opencode
+      1.18.15 serve）——**结论：不重放**。重连只收到 server.connected / heartbeat，
+      断连前已产出的 permission.asked 等历史事件不会补发；事件无 Last-Event-ID/序号
+      可续拉。因此「水位线应急方案」不启用（无历史可跳过），但断连间隙本身会丢事件
+      （见下方「断连间隙权限丢失」项）。
 - [ ] SPIKE-2（spec 风险#2）：验证 OPENCODE_CONFIG 环境变量注入配置生效（permission.bash=ask 真的会问）；
       不生效则切 fallback：写 repo 内 opencode.json + gitignore
 - [ ] dispatch → wait 被 permission_request 唤醒 → approve → 执行继续 → completed → diff 有内容
@@ -24,7 +23,18 @@
 - [ ] 提问链路：executor 输出 {"ask":...} → wait 唤醒 → reply --answer → 下一回合收到原文
 - [ ] 审批挂起过夜：permission 不答搁置 8h 后 approve —— opencode 侧等待不超时、流程继续（替代原 hook 长阻塞 spike）
 - [ ] continue：回发修改指令 → 同一 session 续接 → 二轮 completed diff 含新改动
-- [ ] 断网演练：wait 期间关 Wi-Fi 3min 恢复 → 自动重连并收到期间积压事件
+- [ ] 断网演练：wait 期间关 Wi-Fi 3min 恢复 → 自动重连（退避复位回 1s，见 P1-10a），
+      重连后事件流恢复；**断连期间产生的事件不会积压补发**（SPIKE-1b 结论：无重放），
+      若期间有权限请求产生，按下方「断连间隙权限丢失」项核对 Warn 日志
+- [ ] 断连间隙权限丢失（P1-10b 降级方案，SPIKE-1b 结论的必然推论）：权限 pending 期间
+      掐断 SSE（如 agentd 重启 / 网络抖动），重连后断言日志出现
+      `SSE 断连已恢复：断连间隙的权限请求可能丢失`（Warn，带任务上下文）。
+      该间隙内服务端产出的 permission.asked 无法自动补拉（fix-J spike 结论：
+      /event 无重放；GET /session/{id}/message 的 tool part 只有 callID/state，
+      无权限 id per_xxx；POST /session/{id}/permissions/{id} 要求真实 id，
+      伪造即 404 PermissionNotFoundError）——opencode 会一直等这个看不见的决策
+      直到看门狗判死。人工兜底：`tmux attach -t handoff-<id8>` 观察/介入，
+      或重启任务。
 - [ ] 恢复演练：杀掉审核者会话 → 新会话 tasks+attach 重建现场 → 处理 pending 后流程走通
 - [ ] agentd 重启：任务执行中重启 agentd → RecoverOnStartup 重连 SSE，流程不中断；
       断言（结合 SPIKE-1b 结论）：
