@@ -6,7 +6,7 @@
 //
 // 边界：
 //   - 不做持久化：事件落库在 store，可靠性由 events 表 seq + cursor 承担，
-//     本层只做实时扇出，不保证送达（慢订阅者直接丢弃），历史回放由 server 层用 store.EventsFrom 拼接
+//     本层只做实时扇出，不保证送达（慢订阅者直接丢弃），历史回放由 server 层用 store.EventsFromAsc 拼接
 //   - 不参与业务决策（状态迁移、审批），仅提供进程内路由原语
 package agentd
 

@@ -236,6 +236,81 @@ func TestEventsFromLatestN(t *testing.T) {
 	}
 }
 
+// TestEventsFromAsc 验证 WS 重放专用变体的语义：fromSeq 之后按 seq 升序、limit 生效、
+// 超 limit 时截断**尾部**保留最旧的 limit 条——与 EventsFrom（截最旧）相反，
+// 保证客户端 cursor 只前进到确实收到的位置，缺口可凭更大 from_seq 重连续拉。
+func TestEventsFromAsc(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	var seqs []int64
+	for i := 1; i <= 5; i++ {
+		ev, err := s.AppendEvent("t1", proto.EventTypeProgress, map[string]any{"n": i})
+		if err != nil {
+			t.Fatalf("AppendEvent %d: %v", i, err)
+		}
+		seqs = append(seqs, ev.Seq)
+	}
+
+	// 无 limit 截断：fromSeq 之后全部事件按 seq 升序
+	got, err := s.EventsFromAsc("t1", 0, 10)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("EventsFromAsc(0,10) 条数=%d, want 5", len(got))
+	}
+	for i, want := range seqs {
+		if got[i].Seq != want {
+			t.Fatalf("第 %d 条 seq=%d, want %d（升序）", i, got[i].Seq, want)
+		}
+	}
+
+	// fromSeq 起始（不含）
+	got, err = s.EventsFromAsc("t1", seqs[1], 10)
+	if err != nil {
+		t.Fatalf("EventsFromAsc(fromSeq): %v", err)
+	}
+	if len(got) != 3 || got[0].Seq != seqs[2] || got[2].Seq != seqs[4] {
+		t.Fatalf("EventsFromAsc(seqs[1],10) = %+v, want [seqs[2] seqs[3] seqs[4]]", got)
+	}
+
+	// limit 截断语义：截**尾部**、留最旧的 limit 条（与 EventsFrom 的「留最新」相反）
+	got, err = s.EventsFromAsc("t1", 0, 3)
+	if err != nil {
+		t.Fatalf("EventsFromAsc(0,3): %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("EventsFromAsc(0,3) 条数=%d, want 3", len(got))
+	}
+	for i, want := range seqs[:3] {
+		if got[i].Seq != want {
+			t.Fatalf("第 %d 条 seq=%d, want %d（截断尾部保留最旧）", i, got[i].Seq, want)
+		}
+	}
+
+	// 对照：EventsFrom 同参数返回最新 3 条（截断最旧）——WS 重放绝不能用它
+	gotLatest, err := s.EventsFrom("t1", 0, 3)
+	if err != nil {
+		t.Fatalf("EventsFrom(0,3): %v", err)
+	}
+	if len(gotLatest) != 3 || gotLatest[0].Seq != seqs[2] {
+		t.Fatalf("EventsFrom(0,3) = %+v, want 最新 3 条 [seqs[2]..seqs[4]]（与 Asc 截断方向相反）", gotLatest)
+	}
+
+	// fromSeq 之后无事件：返回空而非错误
+	got, err = s.EventsFromAsc("t1", seqs[4], 10)
+	if err != nil {
+		t.Fatalf("EventsFromAsc(seqs[4],10): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("EventsFromAsc(seqs[4],10) 条数=%d, want 0", len(got))
+	}
+}
+
 // TestTicketIdempotent 验证同 id 工单幂等创建、回答后移出待办、answer 可回读。
 func TestTicketIdempotent(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))

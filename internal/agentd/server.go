@@ -7,7 +7,8 @@
 //     RelayAnswer 自愈中继）→ 无其余待办工单时状态回迁 running
 //   - 提供三条审阅命令路由（diff/fetch/run）：调 workspace 包取任务仓库的
 //     审阅素材（git diff、文件内容、远程跑测试/lint），run 不走审批门
-//   - /ws/events 先补发 store 中 seq>n 的历史事件，再接 hub 实时流
+//   - /ws/events 先订阅 hub 实时流，再补发 store 中 seq>n 的历史事件（重放期间实时
+//     事件经排空器收集、按 seq 归并去重），窗口期事件不丢不重
 //
 // 边界：
 //   - 不创建 ticket：ticket 由 manager（Task 8）把 adapter 事件中介成 ticket 后落库，本层只回答
@@ -27,8 +28,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/config"
@@ -554,7 +557,8 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 	}
 }
 
-// handleEvents 处理 /ws/events：先补发 store 中 seq>from_seq 的历史事件，再推送 hub 实时流。
+// handleEvents 处理 /ws/events：先订阅 hub 实时流，再补发 store 中 seq>from_seq 的
+// 历史事件，重放期间实时事件经排空器收集、按 seq 与重放归并去重后写出。
 //
 // 参数：
 //   - task: 任务 ID（必填）
@@ -563,7 +567,14 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 // 注意：
 //   - 客户端只读不写：CloseRead 接管读侧（响应 ping/pong/close 帧），其返回的 ctx 在
 //     连接关闭时取消，作为写循环的退出信号，避免空闲断连连接泄漏订阅
-//   - 补发与订阅之间的窗口期事件会丢失，客户端凭 seq 重连补拉，不靠本连接保证
+//   - **为什么先订阅后补发**：重放写循环可能因 TCP 背压阻塞任意久，若先重放后订阅，
+//     窗口期内 Publish 的事件订阅者为零、被 hub 直接丢弃。丢的是 question/
+//     permission_request 这类一次性唤醒事件：任务随即进入 waiting_answer 不再产出
+//     事件，客户端连接健康不会重连（WaitEvent 只在连接出错时重连），审核者永远
+//     不被唤醒，executor 阻塞到看门狗兜底。先订阅 + 重放期间排空 + seq 归并去重后，
+//     窗口期事件既不丢也不重。
+//   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
+//     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {
@@ -598,21 +609,83 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 连接关闭（含对端断开）时该 ctx 取消，作为写循环退出信号
 	ctx := conn.CloseRead(r.Context())
 
-	// 阶段一：补发历史事件（from_seq 之后的全部，按 seq 升序）
-	replays, err := s.st.EventsFrom(taskID, fromSeq, eventReplayLimit)
+	// 先订阅再补发：见函数头的「为什么先订阅后补发」——重放期间的事件必须被捕获
+	ch, cancel := s.hub.Subscribe(taskID)
+	defer cancel()
+
+	// 重放期间实时事件排空器：独立 goroutine 持续阻塞消费订阅通道，把事件收集进
+	// live 切片（互斥锁保护），直到收到 drainStop 信号退出。
+	//
+	// 为什么必须用「阻塞消费的独立 goroutine」而非「重放写循环里每写一条排空一次」：
+	// 单条重放写可能因 TCP 背压阻塞任意久，阻塞期间订阅通道 16 的缓冲会被 Publish
+	// 写满，hub 的 select-default 慢订阅者丢弃逻辑开始丢事件——排空器与重放写并发，
+	// 缓冲永不写满，重放期间 Publish 的事件全部进入 live 等待归并写出。
+	var (
+		liveMu sync.Mutex
+		live   []proto.Event
+	)
+	drainStop := make(chan struct{})
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					// 订阅被取消（defer cancel 触发，不会发生在重放期间），防御性退出
+					return
+				}
+				liveMu.Lock()
+				live = append(live, ev)
+				liveMu.Unlock()
+			case <-drainStop:
+				// 收尾：把此刻通道里的残余事件也收走。select 非确定性，若 ch 同时
+				// 有事件，可能先被收走、也可能残留——残留的留在通道里由主循环接管，
+				// 不丢不重（每个事件恰好被一个消费者收走一次）
+				for {
+					select {
+					case ev, ok := <-ch:
+						if !ok {
+							return
+						}
+						liveMu.Lock()
+						live = append(live, ev)
+						liveMu.Unlock()
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+	// stopDrain 幂等：重放完成后显式调用一次（归并必须在排空器停止后进行），
+	// 其余错误路径由 defer 兜底，防重复 close(drainStop) panic
+	var stopOnce sync.Once
+	stopDrain := func() {
+		stopOnce.Do(func() { close(drainStop); <-drainDone })
+	}
+	defer stopDrain()
+
+	// 阶段一：补发历史事件（from_seq 之后按 seq 升序的最旧 limit 条，截断在尾部）
+	replays, err := s.st.EventsFromAsc(taskID, fromSeq, eventReplayLimit)
 	if err != nil {
 		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
 		return
 	}
-	// 截断告警：store 里还有比本次补发更新的事件（回放窗口被 eventReplayLimit 截断，
-	// 截掉的是最旧而非最新），客户端需凭 cursor 后续重连/续拉补齐缺口——这是
-	// 「事件为什么没收到」在重放维度的第一排查点
-	if len(replays) == eventReplayLimit && len(replays) > 0 {
-		if latest, lerr := s.st.LatestEvent(taskID); lerr == nil && latest.Seq > replays[len(replays)-1].Seq {
-			s.log.Warn("WS 补发窗口被截断", "task", taskID, "from_seq", fromSeq,
-				"replayed", len(replays), "oldest_replayed", replays[0].Seq,
-				"latest", latest.Seq)
-		}
+	// 重放覆盖 (fromSeq, maxReplayed]；maxReplayed 同时是「实时去重分界线」：
+	// 任务内 seq 随落库单调递增，任何 seq <= maxReplayed 的事件都已先于重放快照
+	// 落库，必然在重放结果中（已写出），订阅通道里同序号的拷贝可直接跳过
+	maxReplayed := int64(0)
+	if len(replays) > 0 {
+		maxReplayed = replays[len(replays)-1].Seq
+	}
+	// 截断告警（真实可触发）：store 里该任务的最新事件比本次补发最后一条还新，
+	// 说明补发窗口被 eventReplayLimit 截断——缺口在尾部（最旧侧已完整补出），
+	// 尾部缺口要么已被重放期间排空的实时流覆盖，要么需客户端凭更大 cursor 重连
+	// 补齐（见函数头注意），这是「事件为什么没到」在重放维度的第一排查点
+	if latest, lerr := s.st.LatestEvent(taskID); lerr == nil && latest.Seq > maxReplayed {
+		s.log.Warn("WS 补发窗口被截断", "task", taskID, "from_seq", fromSeq,
+			"replayed", len(replays), "max_replayed", maxReplayed, "store_max", latest.Seq)
 	}
 	for _, ev := range replays {
 		if err := writeEvent(ctx, conn, ev); err != nil {
@@ -623,11 +696,31 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("WS 连接建立", "task", taskID, "from_seq", fromSeq, "replayed", len(replays))
 
-	// 阶段二：订阅 hub 实时流。补发与订阅之间的窗口期事件会被跳过，
-	// 客户端重连时凭 seq cursor 补拉（见本函数注意）
-	ch, cancel := s.hub.Subscribe(taskID)
-	defer cancel()
+	// 阶段二：重放与实时归并。排空器已停止、live 冻结。
+	//
+	// 去重依据：重放写循环与排空并发，订阅后、重放快照前落库的事件会同时出现在
+	// 重放结果与 live 中；由上面 maxReplayed 的分界论证，live 中 seq <= maxReplayed
+	// 的事件必已被重放写出，跳过；seq > maxReplayed 的是订阅后新产生的事件，必须
+	// 补出，否则就是 P0-1 的窗口期丢失。
+	//
+	// 为什么排序：排空收集顺序是「Publish 到达通道的顺序」，与重放写交错后可能与
+	// seq 序不一致（两个生产 goroutine 并发 Publish 时尤其如此），而单连接 SSE
+	// 要求全局保序——按 seq 升序写出（归并）保证客户端按 seq 连续推进 cursor
+	stopDrain()
+	sort.Slice(live, func(i, j int) bool { return live[i].Seq < live[j].Seq })
+	for _, ev := range live {
+		if ev.Seq <= maxReplayed {
+			continue // 已被重放写出，跳过重复
+		}
+		if err := writeEvent(ctx, conn, ev); err != nil {
+			s.log.Warn("WS 实时写入失败", "task", taskID, "seq", ev.Seq, "err", err)
+			return
+		}
+		sent++
+	}
+	s.log.Debug("WS 重放归并完成", "task", taskID, "live_merged", len(live))
 
+	// 阶段三：正常写循环（select 订阅通道 + ctx），排空器已退出，本循环接管通道
 	for {
 		select {
 		case ev, ok := <-ch:

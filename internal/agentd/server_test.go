@@ -295,6 +295,92 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	})
 }
 
+// TestWSReplayWindowLiveNoLoss 是 P0-1 的回归测试：重放写循环进行期间（客户端不读、
+// TCP 背压把重放写阻塞住）Publish 的事件必须被捕获并最终送达，不得丢失。
+//
+// 覆盖场景（旧实现必失败）：旧代码「先重放后订阅」，重放被背压阻塞期间 Publish 的
+// question 无订阅者、被 hub 直接丢弃——任务随即进入 waiting_answer 不再产出事件，
+// 客户端连接健康不会重连，审核者永远不被唤醒。新实现「先订阅后重放」，重放期间的
+// 实时事件由排空器收集、按 seq 归并补出。
+//
+// 设计（确定性优先）：拨号后不读客户端 → 服务端订阅并开始重放写（5000 条积压，
+// TCP 缓冲填满后写循环阻塞）→ 短暂等待确保订阅已完成 → Publish 一条 question →
+// 恢复读取 → 断言 seq 1..5001 连续到达（无丢失、无重复、无乱序），question 必达。
+// 等待 50ms 足以保证「已订阅」（订阅发生在 Accept 之后、store 读与重放之前），
+// 且无论机器 TCP 缓冲多大、重放写是否真的阻塞，question 都落在重放阶段内。
+func TestWSReplayWindowLiveNoLoss(t *testing.T) {
+	env := newTestEnv(t)
+	taskID := "t1"
+	// 5000 条积压历史：让重放写循环「需时明显」——客户端不读时 TCP 缓冲填满、
+	// 服务端阻塞在重放写，为「重放期间 Publish」制造确定性的时间窗口
+	const backlog = 5000
+	for i := 1; i <= backlog; i++ {
+		if _, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": i}); err != nil {
+			t.Fatalf("AppendEvent %d: %v", i, err)
+		}
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(env.ts.URL, "http") + "/ws/events?task=" + taskID + "&from_seq=0"
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + env.token}},
+	})
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("WS 拨号失败 status=%d: %v", resp.StatusCode, err)
+		}
+		t.Fatalf("WS 拨号失败: %v", err)
+	}
+	defer conn.CloseNow()
+
+	// 拨号后不读客户端：服务端重放写被 TCP 背压阻塞，制造「重放期间」窗口。
+	// 50ms 等待保证服务端已完成订阅（订阅在 Accept 之后立刻发生，早于重放），
+	// 消除「Publish 早于订阅」的竞态
+	time.Sleep(50 * time.Millisecond)
+
+	// 重放期间 Publish 一条 question（seq 5001，未落库——只验证实时通道侧不丢）
+	env.srv.Hub().Publish(proto.Event{Seq: backlog + 1, TaskID: taskID,
+		Type: proto.EventTypeQuestion, Payload: json.RawMessage(`{"q":"重放期间的问题"}`)})
+
+	// 恢复读取：重放事件 + question 必须按 seq 1..5001 连续到达
+	var (
+		last   int64
+		count  int
+		qGot   bool
+		maxSeq = int64(backlog + 1)
+	)
+	for count < backlog+1 {
+		_, b, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("读到 %d 条后 Read 失败: %v", count, err)
+		}
+		var ev proto.Event
+		if err := json.Unmarshal(b, &ev); err != nil {
+			t.Fatalf("解码事件失败: %v", err)
+		}
+		// seq 连续性：与预期严格递增一致，无丢失、无重复、无乱序
+		if ev.Seq != last+1 {
+			t.Fatalf("seq 不连续: 收到 %d（第 %d 条）, want %d——重放/实时归并存在丢失或乱序", ev.Seq, count+1, last+1)
+		}
+		if ev.Seq == maxSeq {
+			if ev.Type != proto.EventTypeQuestion {
+				t.Fatalf("最后一条 seq=%d 类型=%s, want question", ev.Seq, ev.Type)
+			}
+			if string(ev.Payload) != `{"q":"重放期间的问题"}` {
+				t.Fatalf("question payload=%s, want {\"q\":\"重放期间的问题\"}", ev.Payload)
+			}
+			qGot = true
+		}
+		last = ev.Seq
+		count++
+	}
+	if !qGot {
+		t.Fatal("重放期间 Publish 的 question 未收到——窗口期事件被丢失")
+	}
+	t.Logf("全部 %d 条事件按 seq 1..%d 连续到达（含重放期间的 question）", count, maxSeq)
+}
+
 // TestWSReplayThenLive 覆盖 WS 事件流：from_seq=0 先补发 store 中全部历史事件，随后 Publish 实时到达。
 func TestWSReplayThenLive(t *testing.T) {
 	env := newTestEnv(t)

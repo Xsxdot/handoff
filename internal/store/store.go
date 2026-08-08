@@ -284,9 +284,12 @@ func (s *Store) AppendEvent(taskID string, typ proto.EventType, payload any) (pr
 // EventsFrom 返回任务 taskID 在 seq 之后的事件，按 seq 升序，最多 limit 条。
 //
 // 语义（重要）：事件数超过 limit 时返回**最新**的 limit 条（截断掉最旧的），
-// 保证读到的始终是「离 now 最近」的窗口——attach 的 recent_events 与 WS 补发
-// 都要求最新窗口，若返回最旧的 limit 条，>limit 的积压会让新事件（如 completed）
+// 保证读到的始终是「离 now 最近」的窗口——attach 的 recent_events 依赖
+// 「最新窗口」，若返回最旧的 limit 条，>limit 的积压会让新事件（如 completed）
 // 永远读不到，违反「不丢新事件」。
+//
+// 注意：**WS 重放不得使用本方法**——截断最旧会让客户端 cursor 越过缺口，缺口
+// 永不补齐；WS 重放请用 EventsFromAsc（截断尾部、可续拉）。
 //
 // 参数：
 //   - taskID: 任务 ID
@@ -323,6 +326,50 @@ WHERE task_id = ? AND seq > ? ORDER BY seq DESC LIMIT ?`, taskID, fromSeq, limit
 	}
 	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
 		events[i], events[j] = events[j], events[i]
+	}
+	return events, nil
+}
+
+// EventsFromAsc 返回任务 taskID 在 fromSeq 之后的事件，按 seq 升序，最多 limit 条。
+//
+// 与 EventsFrom（最新窗口）语义相反（重要）：事件数超过 limit 时截断**窗口尾部**、
+// 保留最旧的 limit 条——客户端 cursor 只前进到「确实收到」的最后一条，被截掉的
+// 尾部缺口可凭更大 from_seq 重连续拉，缺口永远可补齐；EventsFrom 截最旧会让
+// cursor 越过缺口，缺口永久丢失（见该方法的注意）。
+//
+// 用途：WS 重放（server.handleEvents）必须用本方法从头补起。
+//
+// 参数：
+//   - taskID: 任务 ID
+//   - fromSeq: 起始 seq（不含），传 0 表示从头
+//   - limit: 返回条数上限
+//
+// 注意：
+//   - 借助 idx_events_task(task_id, seq) 索引加速按任务的时间线扫描
+func (s *Store) EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+SELECT seq, task_id, type, payload, created_at FROM events
+WHERE task_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, taskID, fromSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询事件: %w", err)
+	}
+	defer rows.Close()
+	var events []proto.Event
+	for rows.Next() {
+		var (
+			e         proto.Event
+			payload   string
+			createdAt string
+		)
+		if err := rows.Scan(&e.Seq, &e.TaskID, &e.Type, &payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("读取事件行: %w", err)
+		}
+		e.Payload = json.RawMessage(payload)
+		e.CreatedAt = parseTime(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历事件: %w", err)
 	}
 	return events, nil
 }
