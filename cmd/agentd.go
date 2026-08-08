@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
@@ -90,8 +91,30 @@ var agentdCmd = &cobra.Command{
 		// MVP 无优雅关停，进程退出即随 ctx 结束）
 		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir)
-		return http.ListenAndServe(cfg.Listen, srv.Handler())
+		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
 	},
+}
+
+// newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
+//
+// 各超时值的 why：
+//   - ReadHeaderTimeout 10s：请求头读取上限——防 slowloris（慢速请求头占满连接
+//     goroutine）；配合 IdleTimeout 保证半死连接被回收
+//   - ReadTimeout 30s：请求体读取上限（reply/fetch 等请求体都很小，30s 充足）
+//   - WriteTimeout 60s：响应写入上限。对 hijacked 连接（WS 事件流）**不生效**：
+//     net/http 在 Hijack 时清除连接上的全部截止时间（server.go hijackLocked 里
+//     rwc.SetDeadline(time.Time{})，实测 Go 1.26 行为），coder/websocket 的
+//     Accept 走 hijack——长连接不受该值约束，60s 只作用于普通 HTTP 响应
+//   - IdleTimeout 120s：keep-alive 空闲连接回收，防连接池被死连接占满
+func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 // executorFlag 选择 executor 实现：opencode（默认，真实执行）| fake（脚本演示）。

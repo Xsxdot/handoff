@@ -7,6 +7,8 @@
 //     POST /session/{id}/permissions/{permID}、GET /event（SSE 事件流）
 //   - 统一的 basic auth（用户名固定 opencode，密码来自 OPENCODE_SERVER_PASSWORD）
 //   - SSE 断流自动指数退避重连（1s→2s→…→30s），直到 ctx 取消
+//   - 两个 http.Client 分工：sseClient 无 Timeout 供 SSE 长连接，httpClient 带
+//     Timeout=30s 供一元调用（半死 server 不永久挂起，why 见 NewAPI 注释）
 //
 // 边界：
 //   - 不理解事件语义：事件类型字段含义、回合结束判定等语义归 adapter（Task 9），
@@ -46,6 +48,11 @@ const (
 	sseInitialBackoff = 1 * time.Second
 	sseMaxBackoff     = 30 * time.Second
 	sseScanBuffer     = 1 << 20 // 1MB
+	// unaryTimeout 是一元调用（建会话/发 prompt/权限应答）的超时上限。
+	// 为什么 30s：这些调用对应「一次人工应答的最长合理等待」——opencode 若半死
+	// （TCP 通但不响应），30s 内拿不到响应就按失败处理，不让 handoff reply 回程
+	// 在审核者终端永久挂起。SSE 长连接不适用此值（见 NewAPI 的 sseClient 注释）。
+	unaryTimeout = 30 * time.Second
 )
 
 // API 是 opencode server 的最小 HTTP 客户端，持有 baseURL 与鉴权密码。
@@ -54,7 +61,13 @@ const (
 type API struct {
 	baseURL  string
 	password string
-	hc       *http.Client
+	// sseClient 服务 SSE 长连接（SubscribeEvents），不设 Timeout——连接生命周期
+	// 由 ctx 控制，设 Timeout 会把正常的长时间事件流误杀
+	sseClient *http.Client
+	// httpClient 服务一元调用（CreateSession/PromptAsync/RespondPermission），
+	// Timeout=unaryTimeout：半死 server（TCP 通但不响应）在此上限内必然失败，
+	// 不会让调用方永久挂起
+	httpClient *http.Client
 }
 
 // NewAPI 创建 opencode server 客户端。
@@ -63,15 +76,27 @@ type API struct {
 //   - baseURL: opencode serve 的地址（如 http://127.0.0.1:4345），尾斜杠会被剥掉
 //   - password: OPENCODE_SERVER_PASSWORD 的值，与用户名 opencode 拼成 basic auth
 func NewAPI(baseURL, password string) *API {
+	return NewAPIWithUnaryTimeout(baseURL, password, unaryTimeout)
+}
+
+// NewAPIWithUnaryTimeout 是 NewAPI 的超时可注入变体：测试注入毫秒级短超时验证
+// 「半死 server 不永久挂起」；生产代码一律走 NewAPI 的 30s 默认值。
+//
+// 参数：
+//   - timeout: 一元调用（httpClient）的超时；SSE 长连接（sseClient）不受影响
+func NewAPIWithUnaryTimeout(baseURL, password string, timeout time.Duration) *API {
+	// 两个 client 各持一个 Transport：拨号超时统一 10s（对端不可达不挂死），
+	// 一元与 SSE 的差异只在 client 级 Timeout
+	dialer := (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	return &API{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		password: password,
-		// 全局不设 Timeout：SSE 连接的生命周期由 ctx 控制（长连接）。
-		// 仅限制 TCP 拨号时间，避免对端不可达时挂死
-		hc: &http.Client{
-			Transport: &http.Transport{
-				DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			},
+		sseClient: &http.Client{
+			Transport: &http.Transport{DialContext: dialer},
+		},
+		httpClient: &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{DialContext: dialer},
 		},
 	}
 }
@@ -105,7 +130,7 @@ func (a *API) do(ctx context.Context, method, path string, body any) (*http.Resp
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return a.hc.Do(req)
+	return a.httpClient.Do(req)
 }
 
 // basicAuth 构造 HTTP basic auth 的 Base64 编码值（用户名:密码）。
@@ -307,7 +332,9 @@ func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage)) err
 		return fmt.Errorf("构造 SSE 请求: %w", err)
 	}
 	req.Header.Set("Authorization", "Basic "+basicAuth("opencode", a.password))
-	resp, err := a.hc.Do(req)
+	// 走 sseClient：不设 Timeout，长连接生命周期由 ctx 控制（与一元调用分离的 why
+	// 见 NewAPI 注释；若复用带 Timeout 的 httpClient，事件流空闲稍久就被误杀）
+	resp, err := a.sseClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("SSE 连接: %w", err)
 	}

@@ -373,3 +373,92 @@ func TestSubscribeCtxCancel(t *testing.T) {
 		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
 	}
 }
+
+// TestUnaryTimeoutHang 验证一元调用对「挂起不响应」的 server 在超时内返回错误：
+// 模拟半死的 opencode（TCP 通但不响应）——没有客户端超时的话 handoff reply 回程
+// 会在审核者终端永久挂起。超时经 NewAPIWithUnaryTimeout 注入 200ms，避免测试耗时。
+func TestUnaryTimeoutHang(t *testing.T) {
+	quietLog(t)
+	// unblock 放行 handler 供 ts.Close 收尾：半死 handler 挂起期间请求 ctx 不随
+	// 客户端断开而取消（带 body 的 POST 实测不会触发），必须显式放行，否则 Close 永久阻塞
+	unblock := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-unblock // 吞掉请求不响应：半死 server 形态
+	}))
+	defer ts.Close()
+	defer close(unblock)
+
+	api := opencode.NewAPIWithUnaryTimeout(ts.URL, testPassword, 200*time.Millisecond)
+	start := time.Now()
+	_, err := api.CreateSession(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("半死 server 上 CreateSession 应在超时后返回错误")
+	}
+	if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Errorf("错误应含 timeout/deadline exceeded 语义，实际: %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("超时返回过慢（应约 200ms），实际 %v", elapsed)
+	}
+}
+
+// TestUnaryTimeoutNotAffectingSSE 验证一元超时只作用于一元调用，SSE 长连接不受影响：
+// 客户端注入 200ms 一元超时，订阅持续 300ms 以上仍能收到全部事件——若两个 client
+// 被错误复用，长连接会在 200ms 时被 Timeout 掐断、第二条事件丢失。
+func TestUnaryTimeoutNotAffectingSSE(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/event" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"n\":1}\n\n")
+		fl.Flush()
+		time.Sleep(300 * time.Millisecond) // 超过一元超时 200ms 仍保持连接
+		fmt.Fprint(w, "data: {\"n\":2}\n\n")
+		fl.Flush()
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPIWithUnaryTimeout(ts.URL, testPassword, 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var events []json.RawMessage
+	done := make(chan error, 1)
+	go func() {
+		done <- api.SubscribeEvents(ctx, func(ev json.RawMessage) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		})
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("SSE 未收满 2 条事件（一元超时不应影响长连接），当前 %d 条", n)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ctx 取消后 SubscribeEvents 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+}

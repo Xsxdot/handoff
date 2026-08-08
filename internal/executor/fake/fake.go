@@ -143,8 +143,11 @@ func (f *Fake) Start(_ context.Context, req executor.StartReq) error {
 func (f *Fake) Events(taskID string) <-chan executor.AdapterEvent {
 	f.mu.Lock()
 	r, ok := f.runs[taskID]
+	// started 必须在锁内读取：Start 在 mu 保护下写它，锁外读与 Start 并发时会
+	// 触发 data race（-race 可检出）；evCh 构造后只读，锁内取引用即可
+	started := ok && r.started
 	f.mu.Unlock()
-	if !ok || !r.started {
+	if !started {
 		ch := make(chan executor.AdapterEvent)
 		close(ch)
 		return ch

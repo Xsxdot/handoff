@@ -314,6 +314,24 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	return nil
 }
 
+// unaryAPITimeout 是 executor 侧一次一元调用（建会话/发 prompt/权限应答）的等待上限。
+//
+// 为什么 30s：与 opencode 客户端的一元超时同值（客户端 Timeout 已兜底），这里再
+// 包一层 ctx 截止时间是双保险——未来 executor 若无客户端级超时，管理层的截止时间
+// 仍保证「审核者 reply 回程不会永久挂起」。与等待阶段（WaitAnswer，人工应答时长
+// 无上限）无关，见 unaryCtx。
+const unaryAPITimeout = 30 * time.Second
+
+// unaryCtx 为一次 executor 一元调用派生带截止时间的 ctx。
+//
+// 为什么派生子 ctx 而不直接把 parent 传下去：等待阶段（WaitAnswer 等人工应答）
+// 时长无上限，截止时间必须只包住调用本身、不能缩短等待窗口——parent 在等待期
+// 结束后可能已接近/超过 30s（审核者思考了 5 分钟才回复），直接复用会把本应成功
+// 的调用掐死在截止时间上。
+func unaryCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, unaryAPITimeout)
+}
+
 // RelayAnswer 在 reply 回程找不到等待者时，把已落库的审核者应答直接回传给
 // executor，自愈「agentd 重启后等待 goroutine 消亡 → 回答丢失 → executor 永远阻塞」。
 //
@@ -358,13 +376,19 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		permID := strings.TrimPrefix(ticketID, taskID+":")
 		m.log.Info("reply 无等待者，自愈中继权限应答", "task", taskID,
 			"ticket", ticketID, "perm", permID, "decision", decision)
-		if err := m.ad.RespondPermission(context.Background(), taskID, permID, decision); err != nil {
+		// 不用 context.Background() 直传：一元调用必须有界（unaryCtx 的 why），
+		// 半死的 executor 在 unaryAPITimeout 内必然失败，reply 回程不永久挂起
+		actx, acancel := unaryCtx(context.Background())
+		defer acancel()
+		if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
 		return nil
 	case "ask":
 		m.log.Info("reply 无等待者，自愈中继提问回答", "task", taskID, "ticket", ticketID)
-		if err := m.ad.Send(context.Background(), taskID, answer); err != nil {
+		actx, acancel := unaryCtx(context.Background())
+		defer acancel()
+		if err := m.ad.Send(actx, taskID, answer); err != nil {
 			return fmt.Errorf("中继提问回答: %w", err)
 		}
 		return nil
@@ -502,7 +526,11 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 	if strings.TrimSpace(ans) == "allow" {
 		decision = "once"
 	}
-	if err := m.ad.RespondPermission(ctx, taskID, permID, decision); err != nil {
+	// 派生子 ctx 只约束调用本身（unaryCtx 的 why）：等答案阶段早已结束，此处的
+	// parent 是任务级 ctx（取消无截止），不加超时的话半死 executor 会让本调用挂死
+	actx, acancel := unaryCtx(ctx)
+	defer acancel()
+	if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
 		return
@@ -561,7 +589,9 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 		"wait_ms", time.Since(start).Milliseconds(), "answer", truncateRunes(ans, 80))
 
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "question 已应答")
-	if err := m.ad.Send(ctx, taskID, ans); err != nil {
+	actx, acancel := unaryCtx(ctx)
+	defer acancel()
+	if err := m.ad.Send(actx, taskID, ans); err != nil {
 		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
