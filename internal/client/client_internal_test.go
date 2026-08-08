@@ -1,9 +1,11 @@
-// client 包内部单元测试：直接覆盖 isPermanent/isPermanentStatus 的错误分类逻辑。
+// client 包内部单元测试：直接覆盖 isPermanent/isPermanentStatus 的错误分类逻辑
+// 与 cursor 并发写盘（L-3）。
 //
-// 为什么单独立文件而非并入 client_test.go：分类函数是 P0-2 修复的核心判定，
-// 外部测试包（client_test）无法访问未导出标识符，用 package client 白盒测试
-// 直接验证「哪些错误永久、哪些瞬时」，与行为测试（TestWaitEvent*FailsFast）
-// 互为补充——行为测试证明「不重试」，本文件证明「分类本身正确」。
+// 为什么单独立文件而非并入 client_test.go：分类函数与 writeCursor 是 P0-2/L-3
+// 修复的核心判定，外部测试包（client_test）无法访问未导出标识符，用 package
+// client 白盒测试直接验证「哪些错误永久、哪些瞬时」与「并发写 cursor 无半写
+// 内容」，与行为测试（TestWaitEvent*FailsFast）互为补充——行为测试证明
+// 「不重试」，本文件证明「分类本身正确 / 写盘原子」。
 package client
 
 import (
@@ -11,6 +13,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -74,5 +81,97 @@ func TestPermanentErrorUnwrap(t *testing.T) {
 	pe := &permanentError{op: "WS 拨号", code: http.StatusUnauthorized, cause: root}
 	if !errors.Is(pe, root) {
 		t.Fatalf("permanentError 未透传 cause（errors.Is 失败）")
+	}
+}
+
+// TestWriteCursorConcurrent 覆盖 L-3：两个 goroutine 并发写同一任务的 cursor 时，
+// 任何时刻读到的内容都必须是「完整值」——旧实现固定 <path>.tmp 文件名，并发写
+// 会互相截断/rename 对方写到一半的临时文件，读方可能拿到半截或空内容。
+//
+// 为什么直接读文件原文而非 readCursor：readCursor 把解析失败归一化为 0（从头
+// 开始），会掩盖「读到半写内容」这一失败模式；直接 os.ReadFile + 逐字节校验，
+// 任何非空但不在合法值集合（两写者的写序区间）内的内容都算失败。
+//
+// 时序敏感：-race 下跑 200 次迭代/写者 + 高频读循环，穷举交错窗口。
+func TestWriteCursorConcurrent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c := &Client{}
+	taskID := "t-concurrent"
+	const iters = 200
+	// 两个写者各写一段互不相交的合法值区间，读方按「内容 ∈ 合法集合」校验
+	valid := func(n int64) bool { return (n >= 10001 && n <= 10000+iters) || (n >= 20001 && n <= 20000+iters) }
+
+	p, err := cursorPath(taskID)
+	if err != nil {
+		t.Fatalf("cursorPath: %v", err)
+	}
+	errCh := make(chan error, 4)
+	stop := make(chan struct{})
+
+	// 读协程：写盘期间持续读原文，空内容/半截内容/非法值即失败
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue // 首次写入前文件不存在，正常
+				}
+				errCh <- fmt.Errorf("读 cursor 失败: %w", err)
+				return
+			}
+			if len(b) == 0 {
+				errCh <- errors.New("读到空内容——目标文件被半写（rename 了未写完的临时文件）")
+				return
+			}
+			n, perr := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+			if perr != nil || !valid(n) {
+				errCh <- fmt.Errorf("读到半截/非法内容 %q（期望完整合法 seq）", string(b))
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for _, base := range []int64{10001, 20001} {
+		wg.Add(1)
+		go func(base int64) {
+			defer wg.Done()
+			for i := int64(0); i < iters; i++ {
+				if werr := c.writeCursor(taskID, base+i); werr != nil {
+					errCh <- werr
+					return
+				}
+			}
+		}(base)
+	}
+	wg.Wait()
+	close(stop)
+	select {
+	case err := <-errCh:
+		t.Fatalf("并发写读失败: %v", err)
+	default:
+	}
+
+	// 终值必须是某个写者的最大值（10200 或 20200）：并发下最后一次 rename
+	// 属于哪个写者是不确定的，但必须是「写完整」的终值——绝不能是中间态
+	final, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("读最终 cursor: %v", err)
+	}
+	if got := strings.TrimSpace(string(final)); got != "10200" && got != "20200" {
+		t.Fatalf("最终 cursor=%q, want 10200 或 20200（写者终值）", got)
+	}
+	// 临时文件全部被 rename/清理：目录不得残留 cursor-<task>-*.tmp
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(p), "cursor-"+taskID+"-*.tmp"))
+	if err != nil {
+		t.Fatalf("glob 残留临时文件: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("残留 %d 个临时文件: %v", len(leftovers), leftovers)
 	}
 }

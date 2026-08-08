@@ -129,6 +129,31 @@ func TestDiffShowsCommits(t *testing.T) {
 	}
 }
 
+// TestDiffRejectsDashPrefixedBase 覆盖 L-4：以 "-" 开头的 base 会被 git 解释为
+// 选项而非 rev（如 --output=... 让 git 把 diff 写到任意路径，git 参数注入），
+// Diff 必须拒绝（ErrBadBaseBranch）且不得让 git 真正执行到写文件——
+// 目标文件路径放 t.TempDir() 内，若 git 被注入执行则文件会被创建。
+func TestDiffRejectsDashPrefixedBase(t *testing.T) {
+	repo := initGitRepo(t)
+	evil := filepath.Join(t.TempDir(), "evil-output")
+	_, err := Diff(repo, "--output="+evil)
+	if !errors.Is(err, ErrBadBaseBranch) {
+		t.Fatalf("base 以 - 开头应拒绝（ErrBadBaseBranch）, got %v", err)
+	}
+	if _, statErr := os.Stat(evil); !os.IsNotExist(statErr) {
+		t.Fatalf("git 参数注入生效：--output 目标文件被创建（%v）——必须拒绝 - 前缀 base", statErr)
+	}
+}
+
+// TestDiffRejectsEmptyBase 验证空 base 直接拒绝：Diff 没有合法的空 rev 语义
+// （空 base 会退化成 "git diff ...HEAD" 的裸 diff，不是「相对基准分支」）。
+func TestDiffRejectsEmptyBase(t *testing.T) {
+	repo := initGitRepo(t)
+	if _, err := Diff(repo, ""); !errors.Is(err, ErrBadBaseBranch) {
+		t.Fatalf("空 base 应拒绝, got %v", err)
+	}
+}
+
 // TestReadFileEscapeRejected 验证正常路径可读，逃逸路径（../ 前缀、绝对路径、
 // 多层归一化后仍逃逸）一律返回 ErrPathEscape。
 func TestReadFileEscapeRejected(t *testing.T) {

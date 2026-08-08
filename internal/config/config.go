@@ -11,10 +11,12 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -72,11 +74,39 @@ func Load(path string) (*Config, error) {
 	case err != nil:
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	default:
-		if uerr := yaml.Unmarshal(b, cfg); uerr != nil {
+		if uerr := decodeStrict(b, cfg); uerr != nil {
+			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
 	}
 	return cfg, nil
+}
+
+// decodeStrict 用 yaml.Decoder + KnownFields(true) 严格解析配置。
+//
+// 为什么必须严格（L-1）：yaml.Unmarshal 对未知键静默忽略——旧配置里的
+// access_key/secret_key 等已废弃标量会被无声吞掉，而这类键在旧版本中承载
+// 鉴权语义：忽略它们会让 agentd 在用户不知情时以无 token 状态启动（安全
+// 静默降级）。严格解析让任何键名笔误/废弃键立即报错，错误文本自带未知键名
+// （yaml 的 "field <key> not found"）与已知键清单，运维升级时一眼可定位。
+// KnownFields 对 targets map 的 value（Target 结构）同样生效，目标条目内的
+// 未知键同样被拒绝。
+//
+// 注意：
+//   - 空文件按「无内容」处理（返回 nil、保持默认值），与 yaml.Unmarshal
+//     对空输入的 no-op 语义一致——Decode 对空输入返回 io.EOF，不能当错误
+func decodeStrict(b []byte, cfg *Config) error {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil // 空文件：没有可解析内容，保留默认值
+		}
+		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
+		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,token}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+	}
+	return nil
 }
 
 // DefaultPath 返回默认配置文件路径（~/.handoff/config.yaml）。

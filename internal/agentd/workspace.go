@@ -37,12 +37,15 @@ import (
 //   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
 //     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
 //     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
+//   - ErrBadBaseBranch：diff 的基准分支参数非法（以 "-" 开头，会被 git 解释为
+//     选项而非 rev——git 参数注入面）
 var (
 	ErrDirtyWorktree  = errors.New("工作区不干净（有未提交改动），拒绝派发")
 	ErrPathEscape     = errors.New("路径逃逸被拒绝")
 	ErrPathIsDir      = errors.New("路径是目录，不是文件")
 	ErrNotRegularFile = errors.New("路径不是普通文件（管道/设备等特殊文件不可读）")
 	ErrRepoUnusable   = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
+	ErrBadBaseBranch  = errors.New("非法的基准分支：不允许以 - 开头")
 )
 
 // 执行护栏：
@@ -130,8 +133,18 @@ func taskBranch(taskID string) string {
 //
 // 返回：
 //   - 拼接后的文本（diff 为空时只有提交列表，两边都空时为空串）
-//   - err: git 失败返回错误（如 baseBranch 不存在，stderr 已并入日志）
+//   - err: git 失败返回错误（如 baseBranch 不存在，stderr 已并入日志）；
+//     baseBranch 以 "-" 开头返回 ErrBadBaseBranch
 func Diff(repo, baseBranch string) (string, error) {
+	// 拒绝空串与 "-" 前缀的 base（L-4）：空 base 会拼出 "git diff ...HEAD" 的
+	// 裸 diff（不是相对基准分支的语义）；以 "-" 开头则会被 git 解释为选项而非
+	// rev——如 "--output=/tmp/x" 会让 git 把 diff 写到任意路径（git 参数注入）。
+	// handoff 的 base 只可能是分支名或 commit（合法 rev），不会以 "-" 开头
+	// （"-" rev 的用法如 "-" 表示 stdin 与本工具无关），一律拒绝是保守且正确的
+	if baseBranch == "" || strings.HasPrefix(baseBranch, "-") {
+		log().Warn("diff 基准分支非法（空或 - 前缀，疑似 git 参数注入）", "repo", repo, "base", baseBranch)
+		return "", fmt.Errorf("%w: %q", ErrBadBaseBranch, baseBranch)
+	}
 	diffText, _, err := gitRun(context.Background(), repo, "diff", baseBranch+"...HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git diff %s...HEAD: %w", baseBranch, err)

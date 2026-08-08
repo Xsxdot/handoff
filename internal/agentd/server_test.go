@@ -42,22 +42,28 @@ type testEnv struct {
 // newTestEnv 构造完整测试环境，并注册 t.Cleanup 关闭 store 与 server。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	return newTestEnvWithLogger(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // newTestEnvWithLogger 同 newTestEnv，但注入自定义 logger（供测试捕获服务端关键日志做
 // 确定性同步信号）。
 func newTestEnvWithLogger(t *testing.T, logger *slog.Logger) *testEnv {
 	t.Helper()
+	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, logger)
+}
+
+// newTestEnvWithCfg 同 newTestEnv，但注入自定义配置（覆盖 token 为空等边界场景）。
+func newTestEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *testEnv {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &testEnv{srv: srv, ts: ts, st: st, token: testToken}
+	return &testEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
 }
 
 // signalHandler 是测试专用 slog.Handler：全量放行（含 Debug），每条日志先触发 on 回调
@@ -163,6 +169,91 @@ func TestAuthRequired(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("无 token WS 返回 %v, want 401", resp)
+	}
+}
+
+// TestAuthEmptyTokenFailsClosed 覆盖 L-2：配置 token 为空时（手写配置漏掉 token），
+// 任何请求都必须 401——旧实现 ConstantTimeCompare("","")==1 会让空 token 请求
+// 通过鉴权（隐性 fail-open），且服务端必须打 Error 日志「token 未配置」提示
+// 运维修复配置，而不是静默放行。
+func TestAuthEmptyTokenFailsClosed(t *testing.T) {
+	// 捕获服务端 Error 日志：断言空 token 分支打了「token 未配置」错误
+	noTokenLogged := make(chan struct{}, 1)
+	env := newTestEnvWithCfg(t, &config.Config{Token: ""}, slog.New(&signalHandler{
+		h: slog.NewTextHandler(io.Discard, nil),
+		on: func(r slog.Record) {
+			if r.Message == "token 未配置，拒绝一切请求（fail-closed）：请在配置中设置 token 后重启 agentd" {
+				select {
+				case noTokenLogged <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}))
+
+	// 无 token 的请求 → 401
+	resp, err := http.Get(env.ts.URL + "/api/tasks")
+	if err != nil {
+		t.Fatalf("GET 无 token: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("空配置 token 下无 token 请求返回 %d, want 401（fail-closed）", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 带任意 token（含空串）的请求同样 → 401：空配置 token 下不存在合法请求
+	for _, tk := range []string{"anything", ""} {
+		req, _ := http.NewRequest(http.MethodGet, env.ts.URL+"/api/tasks", nil)
+		req.Header.Set("Authorization", "Bearer "+tk)
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET token=%q: %v", tk, err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("空配置 token 下 token=%q 请求返回 %d, want 401", tk, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// 服务端已打 Error 日志：运维有明确线索修复配置
+	select {
+	case <-noTokenLogged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("空 token 拒绝时未打「token 未配置」Error 日志")
+	}
+}
+
+// TestAttachEmptyListsAreArrays 覆盖 L-7：任务无工单无事件时，attach 数据源
+// （GET /api/tasks/{id}）的 pending_tickets/recent_events 必须序列化为 [] 而非
+// null——旧实现 nil slice 被 Go 序列化成 null，按数组解码迭代的客户端（attach
+// 命令）会踩到 nil。断言原始响应文本（契约是线格式，不是 Go 结构体）。
+func TestAttachEmptyListsAreArrays(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-empty"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	resp := env.get(t, "/api/tasks/"+taskID)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET detail 返回 %d, want 200", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `"pending_tickets":[]`) {
+		t.Fatalf("pending_tickets 应为 [], got %s", body)
+	}
+	if !strings.Contains(body, `"recent_events":[]`) {
+		t.Fatalf("recent_events 应为 [], got %s", body)
+	}
+	if strings.Contains(body, "null") {
+		t.Fatalf("响应不得含 null 序列化（空列表契约）, got %s", body)
 	}
 }
 

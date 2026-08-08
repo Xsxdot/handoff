@@ -1,3 +1,13 @@
+// proto 包测试：验证任务状态机迁移表（CanTransit）与 JSON 线格式契约。
+//
+// 职责：
+//   - 锁定任务状态迁移的合法性（pending → running → … → completed/failed）
+//   - 断言 wait/tasks/attach 命令与 server 共用结构体的 JSON key 全部小写，
+//     锁死 wait 输出与 HTTP/WS 线格式契约（上层脚本按小写 key 解析）
+//
+// 边界：
+//   - 不覆盖持久化（由 store 包测试负责）、不覆盖状态机的并发迁移
+//     （CanTransit 只回答「单步迁移是否合法」）
 package proto
 
 import (

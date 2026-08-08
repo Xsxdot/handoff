@@ -136,6 +136,59 @@ targets:
 	})
 }
 
+// TestErrorDoesNotPrintUsage 覆盖 L-5（SilenceUsage）：运行时/参数错误只打错误
+// 本身，不再向 stdout 打印整页 flag 帮助——stderr 保留 cobra 的 "Error:" 行
+// （SilenceErrors=false，错误不被吞、Execute 仍返回 err），stdout 不得出现
+// "Usage:" 段。旧实现任何错误都会先打 usage，把真正的问题淹没在帮助文本里。
+func TestErrorDoesNotPrintUsage(t *testing.T) {
+	runErr := func(args ...string) (stdout, stderr string, err error) {
+		t.Helper()
+		rootCmd.SetArgs(args)
+		t.Cleanup(func() { rootCmd.SetArgs(nil) })
+		var out, errBuf bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&errBuf)
+		t.Cleanup(func() {
+			rootCmd.SetOut(nil)
+			rootCmd.SetErr(nil)
+		})
+		err = rootCmd.Execute()
+		return out.String(), errBuf.String(), err
+	}
+
+	t.Run("参数错误不打印 usage", func(t *testing.T) {
+		out, errText, err := runErr("done")
+		if err == nil {
+			t.Fatal("done 缺任务参数应报错，实际为 nil")
+		}
+		if !strings.Contains(errText, "Error:") {
+			t.Fatalf("stderr 应含 cobra 错误行, got %q", errText)
+		}
+		if strings.Contains(out, "Usage:") {
+			t.Fatalf("参数错误不应打印 usage 段, got %q", out)
+		}
+	})
+
+	t.Run("RunE 运行错误不打印 usage", func(t *testing.T) {
+		// 配置指向不可达端口：TargetEndpoint 正常解析，client.Done 连接失败 → RunE 错误
+		cfgPath := writeTestConfig(t, "listen: \"127.0.0.1:1\"\ntoken: \"local-tok\"\n")
+		resetFlags(t)
+		targetName = ""
+		configPath = cfgPath
+		rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+		out, errText, err := runErr("done", "task-ghost")
+		if err == nil {
+			t.Fatal("连接不可达 agentd 应报错，实际为 nil")
+		}
+		if !strings.Contains(errText, "Error:") {
+			t.Fatalf("stderr 应含 cobra 错误行, got %q", errText)
+		}
+		if strings.Contains(out, "Usage:") {
+			t.Fatalf("运行错误不应打印 usage 段, got %q", out)
+		}
+	})
+}
+
 // TestWaitTimeout 覆盖 wait 的 --timeout：到点必须报错（RunE 返回 error，cobra
 // 以非 0 退出），与「事件到达退出 0」可区分——这是 P0-2 修复的最后一层防线
 // （配置错误/打错 task-id 已改为立即报错，--timeout 兜底剩余的无事件挂起场景）。

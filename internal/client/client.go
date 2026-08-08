@@ -540,6 +540,12 @@ func (c *Client) readCursor(taskID string) int64 {
 // 为什么先写临时文件再 rename：直接写目标文件在写盘中途崩溃会留下截断内容，
 // 下一次 wait 会把截断文本解析成 0（从头重投全部事件）；rename 保证读到的一定是
 // 完整内容——要么旧值要么新值，不存在中间态。
+//
+// 为什么临时文件必须唯一（L-3）：两个 wait 进程/goroutine 并发写同一
+// cursor-<task> 时，固定后缀的 <path>.tmp 会被两边同时打开/截断——先写完者
+// rename 掉的是对方可能还没写完的共享文件，目标文件会短暂出现半截内容，对端
+// 恰好读到即「读到一半的 tmp」。CreateTemp 同目录生成 O_EXCL 唯一名，rename
+// 的始终是「自己写完整并关闭的文件」，并发读保证只看到完整旧值或完整新值。
 func (c *Client) writeCursor(taskID string, seq int64) error {
 	p, err := cursorPath(taskID)
 	if err != nil {
@@ -548,11 +554,22 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return fmt.Errorf("创建 cursor 目录: %w", err)
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(seq, 10)), 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(p), "cursor-"+taskID+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("创建临时 cursor 文件: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.WriteString(strconv.FormatInt(seq, 10)); err != nil {
+		f.Close()
+		os.Remove(tmp) // 清理半写临时文件，避免残留
 		return fmt.Errorf("写临时 cursor 文件: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("关闭临时 cursor 文件: %w", err)
+	}
 	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
 		return fmt.Errorf("cursor 落盘: %w", err)
 	}
 	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)

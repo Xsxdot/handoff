@@ -122,8 +122,22 @@ func (s *Server) Handler() http.Handler {
 //
 // 鉴权失败（无 token / token 不匹配）统一返回 401，并打 Warn 记录来源地址——
 // 这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
+//
+// 为什么这里做空 token 拒绝（L-2）：subtle.ConstantTimeCompare("","")==1，
+// 配置 token 为空时空 token 请求会通过鉴权——今天只因 net/http 的
+// textproto 行解析会掐掉 "Bearer " 后的空格才 401，属于「碰巧被别的层拦住」
+// 的隐性 fail-open。config.Load 正常都会生成 token，但手写配置可能漏掉；
+// 在鉴权边界 fail-closed：cfg.Token 为空 → 拒绝一切请求并打 Error，提示
+// 配置问题。选在这里而非 NewServer/启动时：这是 fail-open 真正发生的边界，
+// 一个位置同时覆盖 HTTP 与 WS 全路由，任何嵌入方（含测试）都逃不掉。
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Token == "" {
+			s.log.Error("token 未配置，拒绝一切请求（fail-closed）：请在配置中设置 token 后重启 agentd",
+				"remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			return
+		}
 		token, ok := bearerToken(r)
 		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
 			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
@@ -186,6 +200,16 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("读取最近事件失败", "task", taskID, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		return
+	}
+	// 空值归一化为 [] 而非 null（L-7）：PendingTickets/RecentEvents 是数组契约，
+	// 客户端（attach）按数组解码迭代；store 返回 nil 时 Go 会把 nil slice 序列化
+	// 成 null，列表接口（如 /api/tasks）已归一化而此处遗漏。marshal 前显式
+	// 非 nil，保证字段始终存在且为数组
+	if pending == nil {
+		pending = []proto.Ticket{}
+	}
+	if events == nil {
+		events = []proto.Event{}
 	}
 	writeJSON(w, http.StatusOK, taskDetail{
 		Task:           *task,
@@ -523,6 +547,13 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	diff, err := Diff(repo, base)
 	if err != nil {
+		if errors.Is(err, ErrBadBaseBranch) {
+			// base 是审核者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
+			// 服务故障，400 明确告知（与 ErrPathEscape 同款映射）
+			s.log.Warn("diff 基准分支非法被拒绝", "task", taskID, "base", base)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
+			return
+		}
 		s.log.Error("取 diff 失败", "task", taskID, "repo", repo, "base", base, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return

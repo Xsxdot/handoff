@@ -26,6 +26,12 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "handoff",
 	Short: "handoff：把任务派发到本机/远程 agentd 执行并续接的 CLI",
+	// 运行时错误只打印错误本身，不打印整页 flag 帮助（L-5）：
+	// 运行期失败（配置加载失败、远端 401、任务不存在等）的根因是错误信息
+	// 而非用法，usage 段只会淹没 stderr 里真正的问题。注意 SilenceErrors
+	// 保持 false——cobra 默认把 RunE 返回的错误打到 stderr 且 Execute 原样
+	// 返回（main 据此 os.Exit(1)），错误绝不被静默吞掉；只消掉噪音 usage
+	SilenceUsage: true,
 }
 
 func init() {
