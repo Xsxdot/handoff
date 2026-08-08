@@ -534,6 +534,60 @@ func TestDispatchUnknownError500(t *testing.T) {
 	}
 }
 
+// startFailAdapter 是 Start 恒失败的 adapter：模拟 executor 起不来（如 tmux 不在
+// PATH）。用于断言 dispatch 失败时响应体携带可读真因而非扁平「派发任务失败」。
+type startFailAdapter struct{}
+
+func (startFailAdapter) Start(context.Context, executor.StartReq) error {
+	return errors.New(`exec: "tmux": executable file not found in $PATH`)
+}
+
+func (startFailAdapter) Events(string) <-chan executor.AdapterEvent {
+	ch := make(chan executor.AdapterEvent)
+	close(ch)
+	return ch
+}
+
+func (startFailAdapter) Send(context.Context, string, string) error { return nil }
+func (startFailAdapter) RespondPermission(context.Context, string, string, string) error {
+	return nil
+}
+
+func (startFailAdapter) Stop(string) error { return nil }
+
+// TestDispatchExecutorStartFailureReturnsReason 覆盖修复 3：executor 启动失败
+// （如 tmux 不在 PATH）时，dispatch 不能只回扁平「派发任务失败」的 500——executor
+// 依赖缺失是环境问题而非 agentd 内部故障，响应体必须带上真因（exec: "tmux":
+// executable file not found），否则审核者只能去 agentd.log 里翻一行 exec 错误，
+// 完全没有可行动信息。
+func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "opencode"}}
+	srv := agentd.NewServer(cfg, st, logger)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, logger)
+	srv.SetManager(mgr)
+
+	repo := newTestRepo(t)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	_, err = client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+		Repo: repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+	})
+	if err == nil {
+		t.Fatal("executor 启动失败应使 dispatch 失败")
+	}
+	if !strings.Contains(err.Error(), "tmux") || !strings.Contains(err.Error(), "executable file not found") {
+		t.Fatalf("dispatch 错误应带 executor 启动真因（而非扁平提示）, got: %v", err)
+	}
+}
+
 // TestResumeRoute 端到端验证「应答没送到 executor → delivery_failed 唤醒 →
 // resume 解开」的完整闭环：真实 HTTP 路由 + 真实 client，走审核者实际的动作序列。
 //

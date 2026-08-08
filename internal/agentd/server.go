@@ -471,7 +471,11 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - 其余（任务目录/落库/executor 启动等 agentd 侧故障）→ 500
+//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（tmux 不在 PATH、
+//     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
+//     err.Error()（含真因如 exec: "tmux": executable file not found），审核者拿到
+//     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
+//   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
 	switch {
 	case errors.Is(err, ErrDirtyWorktree):
@@ -489,6 +493,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errExecutorStartFailed):
+		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		s.log.Error("派发任务失败", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})

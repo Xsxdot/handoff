@@ -73,6 +73,15 @@ const (
 // errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
 var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
+// errExecutorStartFailed 是 Dispatch 启动 executor 失败（adapter.Start 返回错误）
+// 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
+//
+// 为什么单独成类：executor 依赖缺失（如 tmux 不在 PATH、opencode 未安装）是
+// **环境问题**而非 agentd 内部故障——审核者需要看到真因（exec: "tmux":
+// executable file not found）才能动手装依赖，扁平化的「派发任务失败」只会让
+// 审核者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
+var errExecutorStartFailed = errors.New("启动 executor 失败")
+
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
@@ -506,9 +515,10 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，审核者可见。
-		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）
+		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
+		// 包 errExecutorStartFailed 哨兵，让 server 层把真因回显给审核者（修复 3）
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
-		return nil, fmt.Errorf("启动 executor: %w", err)
+		return nil, fmt.Errorf("%w: %v", errExecutorStartFailed, err)
 	}
 	// executor 已接管工作区：此后的错误（transit 落库失败等 store 级故障）不再补偿
 	// 清理——worktree 正被运行中的 executor 使用，删了反而破坏运行中的任务
