@@ -101,15 +101,33 @@ handoff dispatch（--target 远程）
 
 ## 6. B7：agentd 的 PATH 继承
 
-- agentd bootstrap（config.Load 之后、store.Open 之前）执行 `$SHELL -l -c 'echo $PATH'`，
-  3 秒超时；
+- agentd bootstrap（config.Load 之后、store.Open 之前）执行
+  `$SHELL -l -i -c 'printf %s "$PATH"'`，3 秒超时，**stderr 丢弃**；
 - 把结果中**自身 PATH 尚未包含**的目录追加到 `PATH` 尾部（追加而非覆盖：不动
   systemd/launchd 显式注入的路径优先级）；
 - 日志记录追加了哪些目录；`$SHELL` 未设置 / 命令失败 / 超时 → 只 Warn，不拦启动。
 
 为什么修在这里：真实踩坑是「用户终端里能跑 `go`，agentd 拉起的 executor 找不到 `go`」，
-根因是 agentd 常由非登录 shell 拉起、拿不到 `.zprofile`/`.bash_profile` 里的 PATH。
-在 agentd 侧一次解析，executor 与审批者 CLI 全部受益，用户零配置。
+根因是 agentd 常由非登录 shell 拉起、拿不到用户 rc 文件里的 PATH。在 agentd 侧一次
+解析，executor 与审批者 CLI 全部受益，用户零配置。
+
+**为什么必须带 `-i`（2026-08-08 devbox 实测修正）**：本设计初稿写的是 `-l -c`，
+在真实开发机上实测**一无所获**——三条 PATH 实测对比：
+
+| 调用方式 | 实测 PATH 是否含 `/usr/local/go/bin` |
+|---------|--------------------------------|
+| 非登录非交互（agentd 现状） | 否 |
+| `$SHELL -l -c`（初稿方案） | **否** |
+| `$SHELL -l -i -c`（修正方案） | 是 |
+
+根因是 zsh 的 rc 加载规则：`-l` 只 source `.zshenv`/`.zprofile`/`.zlogin`，而用户的
+PATH 追加写在 `.zshrc`（实测该机 `.zshrc` 第 2 行 `export PATH=$PATH:/usr/local/go/bin`），
+那是**交互式**才加载的文件。少了 `-i`，这条修复在它要解决的那台机器上恰好无效。
+
+**`-i` 的代价与兜底**：交互式 shell 在非 TTY 下会向 stderr 输出作业控制告警，且
+退出码可能非零。因此实现必须 ①只取 stdout（stderr 丢弃，否则告警文本会污染 PATH）；
+②**不以退出码判定成败**——只要 stdout 拿到了非空内容就采信；③3 秒超时兜住
+「rc 脚本在交互模式下等输入」的挂死风险。
 
 ## 7. B8：worktree 归属校验收紧
 

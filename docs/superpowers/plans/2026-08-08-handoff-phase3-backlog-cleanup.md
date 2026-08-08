@@ -1294,6 +1294,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1323,6 +1324,26 @@ func TestMergeLoginShellPATHAppendsMissingDirs(t *testing.T) {
 	}
 	if strings.Count(got, "/usr/bin") != 1 {
 		t.Errorf("已存在的目录不应重复追加，实得 %q", got)
+	}
+}
+
+// TestLoginShellPATHToleratesNonZeroExit 验证默认实现「只取 stdout、不以退出码
+// 判定成败、stderr 不得混入」。
+// why：交互式 shell（-i）在非 TTY 下会输出作业控制告警并可能非零退出，但 PATH
+// 已经打出来了；按退出码判失败会让这条修复在真实机器上白做，而把 stderr 并进来
+// 会直接把告警文本拼进 PATH。
+func TestLoginShellPATHToleratesNonZeroExit(t *testing.T) {
+	fake := filepath.Join(t.TempDir(), "fakeshell")
+	script := "#!/bin/sh\nprintf %s /opt/x:/opt/y\necho 'warning: no job control' >&2\nexit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loginShellPATH(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("非零退出但 stdout 有内容时不应报错，实得 %v", err)
+	}
+	if got != "/opt/x:/opt/y" {
+		t.Errorf("PATH = %q，期望 /opt/x:/opt/y（stderr 的告警不得混入）", got)
 	}
 }
 
@@ -1368,7 +1389,10 @@ Expected: 编译失败 —— `undefined: MergeLoginShellPATH` / `undefined: log
 package agentd
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -1381,13 +1405,30 @@ import (
 // 这是启动路径，不能为了补 PATH 把 agentd 卡在启动中。
 const loginShellTimeout = 3 * time.Second
 
-// loginShellPATH 执行登录 shell 取其 PATH（包级 var 作为测试缝）。
+// loginShellPATH 执行登录+交互 shell 取其 PATH（包级 var 作为测试缝）。
+//
+// 为什么必须同时带 -l 和 -i（2026-08-08 devbox 实测）：-l 只 source
+// .zshenv/.zprofile/.zlogin，而用户的 PATH 追加常写在 .zshrc——那是交互式才
+// 加载的文件。实测该机 .zshrc 第 2 行才是 /usr/local/go/bin 的来源，只用 -l
+// 拿到的 PATH 里根本没有它，这条修复会在它要解决的那台机器上恰好无效。
+//
+// 为什么不看退出码、只看 stdout：交互式 shell 在非 TTY 下会输出作业控制告警
+// 并可能以非零码退出，但 PATH 本身是拿到了的。stderr 必须丢弃——告警文本混进
+// stdout 会直接污染 PATH。
 var loginShellPATH = func(ctx context.Context, shell string) (string, error) {
-	out, err := exec.CommandContext(ctx, shell, "-l", "-c", "echo $PATH").Output()
-	if err != nil {
-		return "", err
+	cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", `printf %s "$PATH"`)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+	runErr := cmd.Run()
+	got := strings.TrimSpace(out.String())
+	if got == "" {
+		if runErr != nil {
+			return "", runErr
+		}
+		return "", errors.New("登录 shell 未输出 PATH")
 	}
-	return strings.TrimSpace(string(out)), nil
+	return got, nil
 }
 
 // MergeLoginShellPATH 把登录 shell 的 PATH 合并进当前进程环境。
