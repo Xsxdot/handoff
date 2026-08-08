@@ -13,6 +13,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -97,7 +98,21 @@ var execveFn = syscall.Exec
 // argv[0] 保持裸名（execve 约定：argv[0] 是程序名，路径由第一参指定）。
 func runAttach(cmd *cobra.Command, cli *client.Client, taskID string) error {
 	cfg := loadCLIConfig()
-	argv, err := attachCommandFor(taskID, targetName, cfg)
+	target := targetName
+	if target == "" && cli != nil {
+		// 未显式 --target 时回退任务自身记录的 target（P2-7）：远程任务派发时
+		// 已把目标主机名写进 task.Target，用户忘带 --target 不该去连本机不存在的
+		// tmux 会话；取不到任务/无 target 时保持空（退回本机，tmux 报找不到会话
+		// 即提示用户补 --target）
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background() // 裸 cobra 命令（测试）Context() 返回 nil
+		}
+		if info, err := cli.Attach(ctx, taskID); err == nil && info.Task.Target != "" {
+			target = info.Task.Target
+		}
+	}
+	argv, err := attachCommandFor(taskID, target, cfg)
 	if err != nil {
 		return err
 	}

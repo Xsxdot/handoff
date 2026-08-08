@@ -3,6 +3,9 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -10,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
 )
 
@@ -95,6 +99,49 @@ func TestRunAttachExecvesResolvedPath(t *testing.T) {
 	}
 	if len(gotArgv) == 0 || gotArgv[0] != "tmux" {
 		t.Fatalf("argv[0] 应保持裸名 tmux，got %v", gotArgv)
+	}
+}
+
+// TestRunAttachFallsBackToTaskTarget 验证未显式 --target 时 attach 回退任务自身
+// 记录的 target（P2-7）：远程任务派发时已记下目标主机，用户忘带 --target 不该
+// 去连本机不存在的 tmux 会话——应组装出 ssh 命令而非 tmux 直连。
+func TestRunAttachFallsBackToTaskTarget(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh 未安装，无法验证")
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tasks/task-abc123" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"task":{"id":"task-abc123","target":"devbox","repo_path":"/r"},"pending_tickets":[],"recent_events":[]}`)
+	}))
+	t.Cleanup(ts.Close)
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	cfgPath := writeTestConfig(t, "listen: \""+addr+"\"\ntoken: \"t\"\ntargets:\n  devbox:\n    addr: \"devbox:7777\"\n    token: \"rt\"\n")
+	resetFlags(t)
+	targetName = "" // 未显式 --target
+	configPath = cfgPath
+
+	var gotArgv []string
+	oldExec := execveFn
+	execveFn = func(argv0 string, argv []string, env []string) error { gotArgv = argv; return nil }
+	t.Cleanup(func() { execveFn = oldExec })
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cli := client.New(ts.URL, "t")
+	if err := runAttach(cmd, cli, "task-abc123"); err != nil {
+		t.Fatalf("runAttach: %v", err)
+	}
+	if len(gotArgv) == 0 || gotArgv[0] != "ssh" {
+		t.Fatalf("未显式 --target 时应回退任务 target 走 ssh，got %v", gotArgv)
+	}
+	joined := strings.Join(gotArgv, " ")
+	if !strings.Contains(joined, "devbox") {
+		t.Fatalf("attach 命令应含任务记录的 target 主机，got %v", gotArgv)
 	}
 }
 
