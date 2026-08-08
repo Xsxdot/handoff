@@ -772,8 +772,11 @@ func (a *Adapter) watchdogWithConfig(r *runState, cfg watchdogConfig) {
 				successes++
 				if interval == cfg.fastInterval && !active && successes >= cfg.fastProbes {
 					// 高频下连续成功且无事件：任务进入静默期（如 waiting_review），
-					// 降频省 tmux fork 与 HTTP 请求（P1-17）
-					a.log.Info("探活降频：任务静默，探活间隔升到慢档", "task", r.taskID,
+					// 降频省 tmux fork 与 HTTP 请求（P1-17）。Debug 而非 Info（修复 6）：
+					// 与「回高频」对称，两档来回切时不刷 Info 噪音——任务正常干活时
+					// 每 ~4 秒就在两档间切一次，Info 级别的「降频」配 Debug 的
+					// 「回高频」会误导成「任务卡住」
+					a.log.Debug("探活降频：任务静默，探活间隔升到慢档", "task", r.taskID,
 						"fast", cfg.fastInterval, "slow", cfg.slowInterval)
 					successes = 0
 					interval = cfg.slowInterval
