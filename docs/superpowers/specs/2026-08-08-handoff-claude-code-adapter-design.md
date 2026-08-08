@@ -18,7 +18,13 @@
 | 每回合以 `result` 事件收尾 | ✅ | `{"type":"result","subtype":"success","result":"<回合文本>"}` |
 | `--setting-sources ''` 会丢失用户 skills | ✅ 会丢 | 空 sources 只剩内置 skill；`user` 才有 backend-go/superpowers 等 |
 
-未验证、留给实现首步的：**任务级 `--settings` 的 `ask`/`deny` 能否压过用户级 `allow`**（见 §5.2）。
+另补采样（`--include-partial-messages`）：文本增量走
+`stream_event.event.content_block_delta.delta`，其中 `text_delta.text` 是模型正文、
+`thinking_delta.thinking` 是思考过程——**只有前者进 render.log 与回合文本**，与 opencode
+「reasoning part 不进回合」的隔离一致。回合末 `result.result` 即最后一条 assistant 正文，
+正是 trailer 解析的输入。
+
+未验证、留给实现首步的：**任务级 `ask` 相对 `allow`（同文件内 / 跨来源）的优先级**（见 §5.4）。
 
 ## 2. 核心决策（已确认）
 
@@ -27,7 +33,7 @@
 | 可视化形态 | 对齐现状：tmux 两窗口（进程窗口 + `tail -f render.log`），不自研 TUI |
 | 权限门挂载 | `--permission-prompt-tool` + handoff 内置 stdio MCP server，经 unix socket 桥到 adapter |
 | PermissionID | 直接用 Claude 的 `tool_use_id`（天然稳定唯一，满足 executor 包幂等约定） |
-| 配置继承 | `--setting-sources user,project` 继承 skills；任务级 `--settings` 用 `deny`/`ask` 收口 |
+| 配置继承 | `--setting-sources user,project` 继承 skills；任务级 `--settings` 用 `ask`（危险模式）+ `allow`（其余放行）收口，`deny` 留空（why 见 §5.4） |
 | 进程宿主 | tmux（与 opencode 同构：agentd 重启/崩溃不带走执行中任务） |
 | 指令投递 | 命名管道 `in.fifo`，脚本内 `exec 3<>` 永久持有两端 |
 | 通用件 | `internal/executor/turn` 共享包由 B3 会话前置抽取并合入 main，本 plan 直接 import（见 §6 协调注） |
@@ -238,16 +244,30 @@ agentd HTTP，唯一的对外面就是 socket 路径——被监管的 executor 
 
 `--setting-sources user,project` 继承执行机的 skills 与项目约定；任务级 `--settings` 负责收口：
 
-- `permissions.deny`：黑名单硬拒（与 manager 侧黑名单同源，不另起一张表）
-- `permissions.ask`：危险 bash 模式表，与 `taskenv.bashPermissionRules` 同源
+- `permissions.allow`：其余工具放行（对应 opencode 的 `"*": "allow"`，避免 ls/grep 连环唤醒）
+- `permissions.ask`：危险模式表，与 `taskenv.bashPermissionRules` 的 ask 项同源
+- `permissions.deny`：**留空**
 
-**实现首步必须先验证「任务级 `ask`/`deny` 是否压得过用户级 `allow`」**（写一条回归测试打这个点）：
+**why deny 留空**（设计期修正）：claude 的 `deny` 是硬拒——命中即不执行，且**不问任何人**。
+而 manager 侧黑名单的语义是「命中即无条件**升级审核者**」，人仍有机会批准。把黑名单写进
+`deny` 会让 claude 任务的黑名单行为与 opencode 不一致（审核者连看都看不到），等于在
+executor 层偷偷改掉了二期定死的审批链语义。黑名单继续由 manager 侧处理，claude 侧只负责
+把请求送达。
 
-- 压得过：按本节走
-- 压不过：退到 `--setting-sources project`（丢用户级 skills，保住安全门），并把这个取舍
-  写进 README 的已知限制
+**实现首步必须先跑探针验证两条优先级**（两条都不能靠猜）：
 
-这个不能靠猜——spike 已实测到用户个人 allowlist 会静默放行本该进审批链的操作（`echo` 直接放行）。
+1. **同文件内**：任务级 `ask` 是否压得过任务级 `allow`——「allow 兜底放行 + ask 收窄危险面」
+   这个形状本身是否成立。不成立则整张表要改写成逐工具枚举。
+2. **跨来源**：任务级 `ask` 是否压得过**用户级** `allow`——spike 已实测用户个人 allowlist 会
+   静默放行本该进审批链的操作（`echo` 直接被放行）。
+
+处置：
+
+- 两条都压得过：按本节走
+- 仅第 1 条成立（跨来源压不过）：退到 `--setting-sources project`（丢用户级 skills，保住
+  安全门），并把取舍写进 README 已知限制
+- 第 1 条不成立：`allow` 改为不写，回到「默认全 ask」——安全但会退化成一期的连环唤醒，
+  此时必须靠 manager 侧审批者（廉价模型）吸收噪音，同样记入 README
 
 ## 6. 共享包重构（`internal/executor/turn`）——抽取已移交 B3 会话前置完成
 
