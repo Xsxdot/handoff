@@ -432,6 +432,19 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
+	// 补偿清理 defer（P2-2 修复）：PrepareWorkspace 成功之后、executor 真正接管
+	// 工作区之前（ad.Start 成功）的**任何**错误返回，都要把已建的 managed worktree
+	// 清掉。为什么必须覆盖全部错误返回而不能逐个调用点补：落 failed 的任务没有
+	// 任何清理路径（done 只认 waiting_review，见 Stop 修复），MkdirAll/WriteFile/
+	// CreateTask/SetTaskField/ad.Start 任一失败漏补，该 worktree 就永久残留。
+	// 为什么 executor 接管后不再补偿：ad.Start 成功后 executor 已在 worktree 里干活，
+	// 此时删工作树会把运行中的任务脚下抽空——泄漏与破坏之间宁可留待看门狗处置。
+	executorStarted := false
+	defer func() {
+		if err != nil && !executorStarted {
+			m.compensateManagedWorktree(ctx, req.Repo, ws)
+		}
+	}()
 
 	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）。
 	// why 0700：目录内存 serve 启动脚本 run_serve.sh（0600，含随机密码）与
@@ -440,12 +453,10 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
-		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
-		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
 
@@ -467,7 +478,6 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
-		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, err
 	}
 
@@ -495,10 +505,14 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
-		// pending→failed 合法；失败现场留在任务里，审核者可见
+		// pending→failed 合法；失败现场留在任务里，审核者可见。
+		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
 		return nil, fmt.Errorf("启动 executor: %w", err)
 	}
+	// executor 已接管工作区：此后的错误（transit 落库失败等 store 级故障）不再补偿
+	// 清理——worktree 正被运行中的 executor 使用，删了反而破坏运行中的任务
+	executorStarted = true
 	if err := m.transit(taskID, proto.TaskStateRunning, "dispatch"); err != nil {
 		return nil, err
 	}
@@ -515,10 +529,11 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 // compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
 // worktree（P2-2）。
 //
-// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后任务记录落库前
-// （MkdirAll/WriteFile/CreateTask）失败，没有任何任务持有该 worktree——done 的
-// 清理只认 WorktreeManaged 的任务记录，无记录则永不清理，worktree 成为孤儿
-// 永久占用磁盘。失败只记 Error，不覆盖/不替换原始派发错误。
+// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后 executor 接管前
+// 的任何步骤失败（MkdirAll/WriteFile/CreateTask/SetTaskField/adapter.Start），任务
+// 要么没落库、要么落 failed——两者都没有 done 清理路径（done 只认 waiting_review），
+// worktree 成为孤儿永久占用磁盘。本函数由 Dispatch 的 defer 统一调用（见 Dispatch
+// 的 executorStarted 注释），失败只记 Error，不覆盖/不替换原始派发错误。
 func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws Workspace) {
 	if !ws.Managed || ws.WorkDir == "" {
 		return
@@ -652,7 +667,10 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 //   - 复用 failed 终态而不新增 aborted：状态机零改动，且 failed→running 已允许，
 //     中止后仍可重新派发。「人为中止」与「真失败」的区分靠 failed 事件的
 //     fail_reason 文本，不靠状态
-//   - 不删分支、不删 worktree：那是 handoff done 归档时的职责，stop 只负责让它停下
+//   - 不删任务分支：那是审核者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
+//   - 删除 agentd 管理的 worktree（Managed=true）：被 stop 的任务落 failed，没有
+//     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
+//     不阻断 stop
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由 tmux 会话兜底，不能因为「停不掉进程」就让任务永远卡在 running
 func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
@@ -698,6 +716,29 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
 	}
 	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
 	m.clearApproverState(taskID)
+	// worktree 清理（P2-2 修复）：被 stop 的任务落 failed，而 failed 没有 done 的
+	// waiting_review 门禁清理路径——不在这里删，managed worktree 就永久残留、
+	// 任务永远归档不了。分支必须保留（stop 不丢工作，审核者可切回分支审阅/回滚）。
+	//
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// agentd 无权删别人的工作树；为什么失败只降级不阻断 stop：中止已经达成
+	// （任务落 failed、事件已追加），残树是运维问题不是任务问题——留一条带原因的
+	// progress 事件提示人工处理，与 Done 的清理失败降级同款
+	if cur.WorktreeManaged && cur.WorkDir != "" {
+		m.log.Info("stop 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
+		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
+			m.log.Error("stop 清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
+			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+			}); aerr != nil {
+				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
+			} else {
+				m.hub.Publish(evt)
+			}
+		} else {
+			m.log.Info("stop managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
+		}
+	}
 	m.hub.Publish(evt)
 	return nil
 }

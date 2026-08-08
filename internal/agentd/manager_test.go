@@ -289,6 +289,91 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	}
 }
 
+// failStartAdapter 是 Start 恒失败的 adapter：模拟 executor 起不来（如 tmux 不在
+// PATH），Dispatch 应把任务落 failed 并补偿清理已建的 managed worktree。
+type failStartAdapter struct{}
+
+func (a *failStartAdapter) Start(context.Context, executor.StartReq) error {
+	return errors.New(`exec: "tmux": executable file not found in $PATH`)
+}
+
+func (a *failStartAdapter) Events(string) <-chan executor.AdapterEvent {
+	ch := make(chan executor.AdapterEvent)
+	close(ch)
+	return ch
+}
+
+func (a *failStartAdapter) Send(context.Context, string, string) error   { return nil }
+func (a *failStartAdapter) RespondPermission(context.Context, string, string, string) error {
+	return nil
+}
+
+func (a *failStartAdapter) Stop(string) error { return nil }
+
+// TestDispatchStartFailureCleansManagedWorktree 覆盖 managed worktree 泄漏路径 (a)：
+// adapter.Start 失败（如 tmux 不在 PATH，executor 起不来）时任务落 failed，已建的
+// managed worktree 必须补偿删除——落 failed 的任务没有任何清理路径（done 只认
+// waiting_review），不清就是永久残留。
+func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &failStartAdapter{}}, "fake")
+
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	}); err == nil {
+		t.Fatal("adapter.Start 失败应使 dispatch 失败")
+	}
+
+	wtDir := filepath.Join(m.cfg.DataDir, "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		t.Fatalf("读 worktrees 目录: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("adapter.Start 失败后 managed worktree 应被补偿清理，仍有: %v", entries)
+	}
+	// 任务落 failed：审核者仍能经 tasks 看到失败现场（PlanPath 等已落库）
+	tasks, err := st.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
+		t.Fatalf("任务应落 failed 供审核者查看, got %+v", tasks)
+	}
+}
+
+// TestStopRemovesManagedWorktree 覆盖 managed worktree 泄漏路径 (b)：被 stop 的任务
+// 落 failed，managed worktree 必须随 stop 删除——否则 stop 过的任务永远归档不了、
+// worktree 永久残留。任务分支必须保留（stop 不丢工作）。
+func TestStopRemovesManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	if workDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", task)
+	}
+	if err := m.Stop(context.Background(), task.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateFailed {
+		t.Fatalf("stop 后 state=%s, want failed", cur.State)
+	}
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Fatalf("stop 后 managed worktree 应被删除: %v", err)
+	}
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+		t.Fatalf("stop 不得删除任务分支")
+	}
+}
+
 // TestDoneRemovesManagedWorktree 验证 done 归档时自动删除 agentd 管理的 worktree
 // （目录消失、任务分支保留、任务 completed）。
 func TestDoneRemovesManagedWorktree(t *testing.T) {
