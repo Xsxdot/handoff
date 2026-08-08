@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
@@ -403,7 +404,9 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 
 	// 注入 manager（真实 hub + fake executor）：reply 路由的自愈中继落点
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), f, &config.Config{Token: testToken, DataDir: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
 	// 全程无任何 WaitAnswer 等待者（模拟重启后等待 goroutine 已消亡）
@@ -478,8 +481,8 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	// 与 opencode adapter 的「任务不在运行中」错误同构，见 adapter.go lookup 判空）
 	f := fake.New(nil)
 	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), f,
-		&config.Config{Token: testToken, DataDir: t.TempDir()},
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 

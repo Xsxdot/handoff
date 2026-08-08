@@ -54,12 +54,12 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), f, cfg, logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, logger)
 	srv.SetManager(mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
 }

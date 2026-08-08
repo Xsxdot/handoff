@@ -47,6 +47,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,12 +71,14 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
-// 并发安全：无共享可变字段（st/hub/ad/cfg/log 构造后只读），
+// 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
 // 每个任务的中介 goroutine 与应答 goroutine 通过 store CAS + hub 路由协作。
 type Manager struct {
 	st  *store.Store
 	hub *Hub
-	ad  executor.Adapter
+	// ads 是 executor 注册表（name → Adapter），构造后只读 map，并发安全依旧。
+	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
+	ads map[string]executor.Adapter
 	cfg *config.Config
 	log *slog.Logger
 }
@@ -85,14 +88,63 @@ type Manager struct {
 // 参数：
 //   - st: 持久化存储（任务/事件/工单的唯一落库点）
 //   - hub: 进程内实时路由（事件广播 + ticket 应答等待）
-//   - ad: executor 挂载实现（opencode / fake）
-//   - cfg: 配置（DataDir 用于派生任务目录）
+//   - ads: executor 注册表（name → Adapter，如 {"opencode": ..., "fake": ...}）；
+//     任务按 executor 名路由，缺省名取 cfg.Executor.Default
+//   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
-func NewManager(st *store.Store, hub *Hub, ad executor.Adapter, cfg *config.Config, log *slog.Logger) *Manager {
-	return &Manager{st: st, hub: hub, ad: ad, cfg: cfg, log: log}
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, log *slog.Logger) *Manager {
+	return &Manager{st: st, hub: hub, ads: ads, cfg: cfg, log: log}
+}
+
+// adapterFor 按任务记录的执行者名解析其 adapter。
+//
+// 规则：task.Executor 非空时按该名查注册表；为空（老任务兼容）回退缺省执行者
+// （cfg.Executor.Default）。查不到时报错（错误带已注册名列表）。
+func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	name := task.Executor
+	if name == "" {
+		name = m.cfg.Executor.Default
+	}
+	ad, ok := m.ads[name]
+	if !ok {
+		m.log.Error("任务执行者未注册，无法路由", "task", taskID, "executor", name,
+			"registered", registeredNames(m.ads))
+		return nil, fmt.Errorf("任务 %s 执行者 %q 未注册", taskID, name)
+	}
+	return ad, nil
+}
+
+// resolveExecutor 在 dispatch 期把请求的执行者名解析为 adapter。
+//
+// 规则：name 空回退缺省（cfg.Executor.Default）；未注册返回 errBadDispatchRequest
+// 包装的错误（server 层映射 400）并列出已注册名。
+func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error) {
+	if name == "" {
+		name = m.cfg.Executor.Default
+	}
+	ad, ok := m.ads[name]
+	if !ok {
+		m.log.Warn("dispatch 指定未注册执行者", "executor", name, "registered", registeredNames(m.ads))
+		return "", nil, fmt.Errorf("%w: 执行者 %q 未注册（可用: %s）", errBadDispatchRequest, name, strings.Join(registeredNames(m.ads), ", "))
+	}
+	return name, ad, nil
+}
+
+// registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
+func registeredNames(ads map[string]executor.Adapter) []string {
+	names := make([]string, 0, len(ads))
+	for n := range ads {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // DispatchReq 是 Dispatch 的入参：任务仓库与 base64 编码的计划内容。
@@ -201,6 +253,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if req.Repo == "" || req.PlanB64 == "" {
 		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d", errBadDispatchRequest, req.Repo, len(req.PlanB64))
 	}
+	// dispatch 期解析执行者：Task 7 起按 req.Executor 选择（execName 落库 task.Executor），
+	// 本期先解析缺省执行者。未注册按参数错误拒绝（400）
+	execName, ad, err := m.resolveExecutor("")
+	if err != nil {
+		return nil, err
+	}
+	_ = execName // Task 7 落库 task.Executor 使用
 	planContent, err := base64.StdEncoding.DecodeString(req.PlanB64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
@@ -267,7 +326,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	task.PlanSummary = summary
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 
-	if err := m.ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
+	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，审核者可见
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
@@ -313,7 +372,16 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 	if err := m.transit(taskID, proto.TaskStateRunning, "continue"); err != nil {
 		return err
 	}
-	if err := m.ad.Send(ctx, taskID, instructions); err != nil {
+	// 只有 taskID：经 adapterFor 解析该任务实际使用的 adapter（executor 已不在
+	// 按 ErrTaskNotRunning 同语义处置——Send 由 executor 实现方自身包装该哨兵）
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		// 执行者无法路由（如任务记录损坏/缺省执行者未注册）：退回 waiting_review，
+		// 审核者可见原因后可处置，不让任务死在 running
+		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 路由执行者失败回迁")
+		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+	}
+	if err := ad.Send(ctx, taskID, instructions); err != nil {
 		m.log.Error("续发指令失败", "task", taskID, "cause", err)
 		// 回迁 waiting_review：指令没送达，回到审核者可重试的位置，不让任务死在 running
 		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
@@ -351,7 +419,14 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	if err := m.transit(taskID, proto.TaskStateCompleted, "done"); err != nil {
 		return err
 	}
-	if err := m.ad.Stop(taskID); err != nil {
+	// done 只持有 taskID：经 adapterFor 解析该任务实际使用的 adapter；解析失败
+	// 仅 Error 日志不影响归档（任务已完成，executor 残留交给人工兜底，见 doc 注意）
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+		return nil
+	}
+	if err := ad.Stop(taskID); err != nil {
 		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
 	}
 	return nil
@@ -423,7 +498,11 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		// 半死的 executor 在 unaryAPITimeout 内必然失败，reply 回程不永久挂起
 		actx, acancel := unaryCtx(context.Background())
 		defer acancel()
-		if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+		ad, err := m.adapterFor(taskID)
+		if err != nil {
+			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+		}
+		if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
 		m.markDelivered(taskID, ticketID)
@@ -432,7 +511,11 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		m.log.Info("reply 无等待者，自愈中继提问回答", "task", taskID, "ticket", ticketID)
 		actx, acancel := unaryCtx(context.Background())
 		defer acancel()
-		if err := m.ad.Send(actx, taskID, answer); err != nil {
+		ad, err := m.adapterFor(taskID)
+		if err != nil {
+			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+		}
+		if err := ad.Send(actx, taskID, answer); err != nil {
 			return fmt.Errorf("中继提问回答: %w", err)
 		}
 		m.markDelivered(taskID, ticketID)
@@ -458,7 +541,14 @@ func (m *Manager) mediate(taskID string) {
 	m.log.Info("中介循环启动", "task", taskID)
 	taskCtx, cancelTask := context.WithCancel(context.Background())
 	defer cancelTask()
-	events := m.ad.Events(taskID)
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		// 任务执行者无法路由（缺省执行者未注册/记录损坏）：中介循环无从消费
+		// 事件，按 executor 已不在处置——转交审核者裁决，不静默退出
+		m.log.Error("中介循环无法路由执行者", "task", taskID, "cause", err)
+		return
+	}
+	events := ad.Events(taskID)
 	for ev := range events {
 		m.handleEvent(taskCtx, taskID, ev)
 	}
@@ -619,7 +709,12 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 	// parent 是任务级 ctx（取消无截止），不加超时的话半死 executor 会让本调用挂死
 	actx, acancel := unaryCtx(ctx)
 	defer acancel()
-	if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决。
 		// 工单未标记送达，审核者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
@@ -685,7 +780,12 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "question 已应答")
 	actx, acancel := unaryCtx(ctx)
 	defer acancel()
-	if err := m.ad.Send(actx, taskID, ans); err != nil {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	if err := ad.Send(actx, taskID, ans); err != nil {
 		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -1035,7 +1135,12 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		m.log.Error("恢复读取任务失败", "task", taskID, "cause", err)
 		return false
 	}
-	r, ok := m.ad.(restorer)
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("恢复读取任务执行者失败", "task", taskID, "cause", err)
+		return false
+	}
+	r, ok := ad.(restorer)
 	if !ok {
 		m.log.Warn("adapter 不支持执行恢复，任务按不存活处理", "task", taskID)
 		return false

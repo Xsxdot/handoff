@@ -28,6 +28,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -93,16 +94,55 @@ func (a *chanAdapter) sendsRec() []string {
 // newTestManager 组装 manager 白盒测试环境：真实 store + hub + 可控事件通道 adapter。
 func newTestManager(t *testing.T) (*Manager, *store.Store, *Hub, *chanAdapter) {
 	t.Helper()
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	return m, st, hub, ad
+}
+
+// newTestManagerWithAds 组装带 adapter 注册表的 manager 白盒测试环境：
+// 真实 store + hub + 给定注册表（defaultName 为缺省执行者名，写进 cfg.Executor.Default）。
+func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*Manager, *store.Store, *Hub) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 	hub := NewHub()
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := &config.Config{Token: "test", DataDir: t.TempDir()}
-	return NewManager(st, hub, ad, cfg, logger), st, hub, ad
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
+	return NewManager(st, hub, ads, cfg, logger), st, hub
+}
+
+// mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
+func mustCreateTask(t *testing.T, st *store.Store, task *proto.Task) {
+	t.Helper()
+	if err := st.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+}
+
+// TestAdapterForRoutesByTaskExecutor 验证 adapterFor 按 task.Executor 路由：
+// 显式 executor 命中注册表对应 adapter；executor 为空回退缺省执行者（老任务兼容）。
+func TestAdapterForRoutesByTaskExecutor(t *testing.T) {
+	adA, adB := fake.New(nil), fake.New(nil)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"a": adA, "b": adB}, "a")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "b", State: proto.TaskStateRunning})
+	mustCreateTask(t, st, &proto.Task{ID: "t2", RepoPath: "/r", Executor: "", State: proto.TaskStateRunning})
+	if got, _ := m.adapterFor("t1"); got != adB {
+		t.Fatalf("t1 应路由到 b")
+	}
+	if got, _ := m.adapterFor("t2"); got != adA {
+		t.Fatalf("executor 为空应回退缺省 a")
+	}
+}
+
+// TestResolveExecutorRejectsUnknown 验证 dispatch 期未注册执行者被拒，错误列出可用项。
+func TestResolveExecutorRejectsUnknown(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"a": fake.New(nil)}, "a")
+	if _, _, err := m.resolveExecutor("nope"); err == nil || !strings.Contains(err.Error(), "a") {
+		t.Fatalf("未注册执行者应报错并列出可用项: %v", err)
+	}
 }
 
 // createRunningTask 创建任务并迁移到 running（handlePermission 需要 running→waiting_answer 合法）。
