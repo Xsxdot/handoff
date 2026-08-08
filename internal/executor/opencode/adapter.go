@@ -199,7 +199,14 @@ type runState struct {
 	// delta 到达只是抓包里的观测顺序，SSE 跨重连没有顺序保证；未知即当文本会
 	// 泄漏 reasoning，未知即丢弃会丢模型输出——暂存到类型揭晓再决定去留。
 	pendingDelta map[string]string
-	pendingBytes int          // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
+	// permText/turnRejected 支撑「被拒权限终止回合」的识别（2026-08-08 实测 P0）：
+	// opencode 收到 reject 会直接终结回合，最后一条消息只有 error 状态的 tool
+	// part、零文本，idle 时回合文本为空。仅凭「空回合」无法区分它与「会话瞬时
+	// 空闲」——前者必须唤醒审核者（否则任务挂死到看门狗），后者必须忽略（否则
+	// 每次批准都塞一条无意义提问）。故显式记录本回合发生过的拒绝。
+	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
+	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
+	pendingBytes int               // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
 	lastProgress time.Time    // 上次发 progress 的时刻（节流）
 	lastEventAt  atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
@@ -218,6 +225,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		partTypes:    make(map[string]string),
 		pendingDelta: make(map[string]string),
 		userMsgs:     make(map[string]bool),
+		permText:     make(map[string]string),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
@@ -502,7 +510,49 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 			a.log.Info("adapter 权限应答已转发", "task", taskID, "perm", permID)
 		}
 	}()
-	return r.api.RespondPermission(ctx, r.session, permID, decision)
+	if err := r.api.RespondPermission(ctx, r.session, permID, decision); err != nil {
+		return err
+	}
+	// 拒绝登记必须在转发成功之后：没送达的拒绝不会终止 executor 的回合，
+	// 提前登记会让下一次空回合 idle 谎报「因权限被拒终止」。
+	// 不在 turnMu 下调 api（网络 I/O），故登记单独短暂加锁。
+	if decision == "reject" {
+		r.noteRejected(permID)
+	}
+	return nil
+}
+
+// noteRejected 登记一次已送达的权限拒绝，供 mapIdle 识别「被拒终止的空回合」。
+//
+// 参数：
+//   - permID: 被拒的权限 id（描述从 permText 反查，查不到时退化为 id 本身）
+func (r *runState) noteRejected(permID string) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	desc := r.permText[permID]
+	if strings.TrimSpace(desc) == "" {
+		desc = "权限 " + permID
+	}
+	r.turnRejected = append(r.turnRejected, desc)
+}
+
+// takeTurnRejected 取出并清空本回合的拒绝记录（调用方须已持 turnMu）。
+func (r *runState) takeTurnRejected() []string {
+	rejected := r.turnRejected
+	r.turnRejected = nil
+	return rejected
+}
+
+// rejectedTurnQuestion 组装「回合因权限被拒而终止」交给审核者的提问文本。
+//
+// why（必须是 question 而不是 result/failed）：任务没失败也没完成，它只是停在
+// 半路等人指路。question 让任务进 waiting_answer，审核者可直接续发指令（换个
+// 方式做/跳过这步/收尾提交），会话上下文完整保留——这与 fallbackClassify
+// 「流程不卡死」的取向一致。
+func rejectedTurnQuestion(rejected []string) string {
+	return "上一步操作因权限被拒而终止了本回合（executor 未产出任何文本）：\n  - " +
+		strings.Join(rejected, "\n  - ") +
+		"\n\n请给出下一步指令：换用其他方式完成该步骤 / 跳过该步骤继续 / 直接收尾提交。"
 }
 
 // Stop 终止任务执行：取消订阅 → kill serve（tmux 会话）→ 事件通道关闭 → 注销运行态。
@@ -953,6 +1003,9 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 			"task", r.taskID, "perm", pa.ID)
 		text = "opencode 未提供权限描述（id " + pa.ID + "），请 tmux attach 查看现场"
 	}
+	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
+	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
+	r.permText[pa.ID] = text
 	a.emit(r, executor.AdapterEvent{
 		Type: "permission", PermissionID: pa.ID, Text: truncateMarked(text, permTextLimit),
 	})
@@ -1195,6 +1248,19 @@ func (r *runState) cancelPendingIdle() {
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	text := r.turnText()
 	if strings.TrimSpace(text) == "" {
+		// 被拒终止的回合：opencode 收到 reject 直接终结回合，只留 error 状态的
+		// tool part、零文本。旧实现在此静默 return，任务停在 running 直到 2h
+		// 看门狗（2026-08-08 真实派发实测的 P0）——必须转 question 唤醒审核者
+		if rejected := r.takeTurnRejected(); len(rejected) > 0 {
+			a.log.Warn("回合因权限被拒终止且无文本产出，转提问交审核者裁决",
+				"task", r.taskID, "rejected", rejected)
+			a.emit(r, executor.AdapterEvent{
+				Type: "question", Text: clampQuestion(rejectedTurnQuestion(rejected)),
+			})
+			r.clearTurn()
+			r.captureStartCommit(a)
+			return
+		}
 		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
 			"event", tailRunes(string(raw), 120))
 		return

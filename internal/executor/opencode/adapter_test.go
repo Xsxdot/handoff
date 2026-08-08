@@ -569,6 +569,62 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 	}
 }
 
+// TestRejectedPermissionEndsTurnWakesReviewer 验证「权限被拒 → 回合静默终止」
+// 不再让任务挂死（2026-08-08 真实派发实测的 P0）：
+//
+// opencode 收到 reject 后**直接终结整个回合**——最后一条 assistant 消息只有一个
+// error 状态的 tool part（"The user rejected permission to use this specific tool
+// call."），零文本 part。于是 idle 到来时回合文本为空，旧实现只打一条 Warn 就
+// return，不产出任何事件：manager 收不到东西、任务永远停在 running，直到 2 小时
+// 看门狗才报 stalled。修复后这种回合必须转 question 唤醒审核者，并在文本里点明
+// 是哪条权限被拒导致的终止，审核者据此续发指令（换方式/跳过/收尾）。
+func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(permissionAskedEvent("per-rej-1", "bash", "git push --dry-run origin main"))
+	ad, ch := startFakeRun(t, fs, "task-reject-01", t.TempDir(), t.TempDir())
+
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "per-rej-1" {
+		t.Fatalf("PermissionID=%q，期望 per-rej-1", ev.PermissionID)
+	}
+	// 审核者拒绝：adapter 回传 reject 后，opencode 侧回合随即终止（无文本产出）
+	if err := ad.RespondPermission(context.Background(), "task-reject-01", "per-rej-1", "reject"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	fs.push(statusIdleEvent())
+
+	got := waitEventType(t, ch, "question")
+	// 文本必须让审核者一眼看懂「为什么停了」：点明权限被拒 + 原始命令
+	if !strings.Contains(got.Text, "权限被拒") {
+		t.Errorf("question 文本应说明回合因权限被拒终止，实际=%q", got.Text)
+	}
+	if !strings.Contains(got.Text, "git push --dry-run origin main") {
+		t.Errorf("question 文本应含被拒的权限描述，实际=%q", got.Text)
+	}
+}
+
+// TestApprovedPermissionEmptyTurnStillSkips 验证修复的边界：只有**被拒**才唤醒。
+// 权限被批准后回合正常继续，此时的空回合 idle（会话瞬时空闲等）仍按原契约忽略，
+// 否则每次批准都会给审核者塞一条无意义的提问。
+func TestApprovedPermissionEmptyTurnStillSkips(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(permissionAskedEvent("per-ok-1", "bash", "go test ./..."))
+	ad, ch := startFakeRun(t, fs, "task-approve-01", t.TempDir(), t.TempDir())
+
+	waitEventType(t, ch, "permission")
+	if err := ad.RespondPermission(context.Background(), "task-approve-01", "per-ok-1", "once"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	fs.push(statusIdleEvent())
+	select {
+	case ev := <-ch:
+		t.Fatalf("批准后的空回合 idle 不应产出事件，收到 %+v", ev)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestPartDeltaAccumulation 验证 part 级文本累积（spike5 实测的两种流式顺序）：
 //   - part.updated(空串创建) → delta 流 → part.updated(全量快照)：快照与
 //     delta 已累积一致 → 去重，不重复追加；
