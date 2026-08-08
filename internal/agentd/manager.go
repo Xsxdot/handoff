@@ -978,7 +978,11 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 	}
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
+		// 工单已被 AnswerTicket 消耗（answer IS NULL 守卫失效），executor 仍原地
+		// 阻塞等待——必须产出 delivery_failed 事件让审核者知道该 resume（P1-4），
+		// 与紧邻的 RespondPermission 失败分支一致；只记 Error 会让审核者毫无感知
 		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
 	actx, acancel := unaryCtx(context.Background())

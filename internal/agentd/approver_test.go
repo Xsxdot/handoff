@@ -412,6 +412,22 @@ func TestApproverTruncatedPermissionEscalates(t *testing.T) {
 	}
 }
 
+// TestApprovePermissionAdapterForFailureNotesDeliveryFailed 验证 approvePermission
+// 的 adapterFor 失败分支产出 delivery_failed 事件（P1-4）：工单已被 AnswerTicket
+// 消耗（answer IS NULL 守卫失效），若不产出事件，executor 仍阻塞而审核者完全无感，
+// 只能等 2h 看门狗——必须与紧邻的 RespondPermission 失败分支一致走
+// NoteDeliveryFailed。
+func TestApprovePermissionAdapterForFailureNotesDeliveryFailed(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	// 任务 executor 用未注册名，让 approvePermission 的 adapterFor 解析失败
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "ghost", State: proto.TaskStateRunning})
+	m.approvePermission("t1", "t1:p1", "p1", "x", "reason")
+	evs := mustEvents(t, st, "t1")
+	if !hasEvent(evs, proto.EventTypeDeliveryFailed) {
+		t.Fatalf("adapterFor 失败应产出 delivery_failed 事件（P1-4）: %v", evs)
+	}
+}
+
 // TestNilApproverKeepsCurrentBehavior 验证 approver=nil 时现行为回归：
 // 权限请求直接产生 permission_request 事件（二期前语义）。
 func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
