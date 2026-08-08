@@ -409,12 +409,23 @@ func (s *Server) resumeIfIdle(taskID string) {
 	s.log.Warn("reply 后恢复任务运行重试耗尽", "task", taskID)
 }
 
-// dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。
+// dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，
+// prompt-only 派发时 prompt 非空、plan_b64 为空）。
 type dispatchRequest struct {
 	Repo     string `json:"repo"`
 	PlanB64  string `json:"plan_b64"`
 	PlanName string `json:"plan_name"`
 	Target   string `json:"target"`
+	Prompt   string `json:"prompt"`
+	Name     string `json:"name"`
+	Executor string `json:"executor"`
+	Model    string `json:"model"`
+	Branch   string `json:"branch"`
+	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
+	NewBranch   string `json:"new_branch"`
+	Base        string `json:"base"`
+	Worktree    string `json:"worktree"`
+	NewWorktree bool   `json:"new_worktree"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -430,11 +441,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	var req dispatchRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		s.log.Warn("dispatch 请求体解析失败", "err", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {repo, plan_b64, plan_name, target}"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {repo, plan_b64, ...}"})
 		return
 	}
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
+		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
+		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
+		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.Repo, err)
@@ -450,8 +464,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
-//   - ErrRepoUnusable / errBadDispatchRequest → 400：调用方先解决请求本身的问题
-//     （仓库路径不对、参数缺失、plan 编码错误）
+//   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
+//     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
 //   - 其余（任务目录/落库/executor 启动等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
 	switch {
@@ -463,6 +477,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errBadDispatchRequest):
 		s.log.Warn("dispatch 被拒：请求参数非法", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrBadWorkspaceReq):
+		s.log.Warn("dispatch 被拒：工作区参数非法", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
 		s.log.Error("派发任务失败", "repo", repo, "cause", err)
@@ -553,8 +570,13 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rep)
 }
 
-// taskRepoOrErr 读取路径中的任务并返回其仓库路径；任务不存在（404）或没有
-// 仓库路径（400）时已写响应并返回 ok=false。
+// taskRepoOrErr 读取路径中的任务并返回其工作区目录；任务不存在（404）或没有
+// 工作区（400）时已写响应并返回 ok=false。
+//
+// 返回的是 task.Workdir() 而非 task.RepoPath（为什么 diff/fetch/run 必须在
+// Workdir 而非主仓库：worktree 任务的 executor cwd 与分支 HEAD 都在 Workdir，
+// 主仓库的 HEAD 停在派发前的位置——diff 相对基准、fetch 看工作区文件、run 跑
+// 测试都必须落在 executor 真正干活的目录，否则审阅的是错误的代码状态）。
 //
 // 供 diff/fetch/run 三条审阅路由共用——它们只关心任务指向的仓库，不依赖状态机。
 func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool) {
@@ -569,12 +591,13 @@ func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo strin
 		}
 		return "", false
 	}
-	if task.RepoPath == "" {
-		s.log.Warn("任务缺少仓库路径", "task", taskID)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务没有仓库路径"})
+	workdir := task.Workdir()
+	if workdir == "" {
+		s.log.Warn("任务缺少工作区路径", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务没有工作区路径"})
 		return "", false
 	}
-	return task.RepoPath, true
+	return workdir, true
 }
 
 // handleTaskDiff 返回任务分支相对基准分支的审阅素材（git diff + 提交列表）。

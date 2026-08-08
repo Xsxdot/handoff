@@ -23,8 +23,8 @@
 //     批不批、答什么由审核者（人/上层）决定
 //   - 不直接接触 executor 进程/会话细节，一切经由 executor.Adapter 契约
 //   - 不负责看门狗（Task 12）等横向能力；git 工作区操作委托 workspace 包（Task 9）
-//   - dispatch 前经 workspace.PrepareBranch 在任务仓库开任务分支（脏工作区拒绝），
-//     其余 git 操作（diff/fetch/run）由 server 路由直接调用 workspace 包
+//   - dispatch 前经 workspace.PrepareWorkspace 准备任务工作区（分支×worktree，
+//     脏工作区/非法参数拒绝），其余 git 操作（diff/fetch/run）由 server 路由直接调用 workspace 包
 //
 // 「失败也进 waiting_review」的 why：
 //
@@ -47,8 +47,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/config"
@@ -70,14 +74,28 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
-// 并发安全：无共享可变字段（st/hub/ad/cfg/log 构造后只读），
+// 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
 // 每个任务的中介 goroutine 与应答 goroutine 通过 store CAS + hub 路由协作。
+// approver 相关的 in-flight/失败计数/停用表由 apMu 保护。
 type Manager struct {
 	st  *store.Store
 	hub *Hub
-	ad  executor.Adapter
+	// ads 是 executor 注册表（name → Adapter），构造后只读 map，并发安全依旧。
+	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
+	ads map[string]executor.Adapter
 	cfg *config.Config
 	log *slog.Logger
+	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
+	// 权限请求直接升级人工审核者）。构造后只读。
+	approver *Approver
+	// 审批链运行时状态（apMu 保护）：
+	//   - apInflight：正在裁决中的 ticket id 集合（防 SSE 重放双呼审批者）
+	//   - apFails：每任务连续裁决失败计数（Err 非 nil 才累计）
+	//   - apDisabled：已停用审批链的任务集合（连续失败 3 次）
+	apMu       sync.Mutex
+	apInflight map[string]bool
+	apFails    map[string]int
+	apDisabled map[string]bool
 }
 
 // NewManager 创建任务管理器。
@@ -85,22 +103,96 @@ type Manager struct {
 // 参数：
 //   - st: 持久化存储（任务/事件/工单的唯一落库点）
 //   - hub: 进程内实时路由（事件广播 + ticket 应答等待）
-//   - ad: executor 挂载实现（opencode / fake）
-//   - cfg: 配置（DataDir 用于派生任务目录）
+//   - ads: executor 注册表（name → Adapter，如 {"opencode": ..., "fake": ...}）；
+//     任务按 executor 名路由，缺省名取 cfg.Executor.Default
+//   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
+//   - approver: 审批链裁决器；nil=不启用
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
-func NewManager(st *store.Store, hub *Hub, ad executor.Adapter, cfg *config.Config, log *slog.Logger) *Manager {
-	return &Manager{st: st, hub: hub, ad: ad, cfg: cfg, log: log}
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, log *slog.Logger) *Manager {
+	return &Manager{
+		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, log: log,
+		apInflight: map[string]bool{},
+		apFails:    map[string]int{},
+		apDisabled: map[string]bool{},
+	}
 }
 
-// DispatchReq 是 Dispatch 的入参：任务仓库与 base64 编码的计划内容。
+// adapterFor 按任务记录的执行者名解析其 adapter。
+//
+// 规则：task.Executor 非空时按该名查注册表；为空（老任务兼容）回退缺省执行者
+// （cfg.Executor.Default）。查不到时报错（错误带已注册名列表）。
+func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	name := task.Executor
+	if name == "" {
+		name = m.cfg.Executor.Default
+	}
+	ad, ok := m.ads[name]
+	if !ok {
+		m.log.Error("任务执行者未注册，无法路由", "task", taskID, "executor", name,
+			"registered", registeredNames(m.ads))
+		return nil, fmt.Errorf("任务 %s 执行者 %q 未注册", taskID, name)
+	}
+	return ad, nil
+}
+
+// resolveExecutor 在 dispatch 期把请求的执行者名解析为 adapter。
+//
+// 规则：name 空回退缺省（cfg.Executor.Default）；未注册返回 errBadDispatchRequest
+// 包装的错误（server 层映射 400）并列出已注册名。
+func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error) {
+	if name == "" {
+		name = m.cfg.Executor.Default
+	}
+	ad, ok := m.ads[name]
+	if !ok {
+		m.log.Warn("dispatch 指定未注册执行者", "executor", name, "registered", registeredNames(m.ads))
+		return "", nil, fmt.Errorf("%w: 执行者 %q 未注册（可用: %s）", errBadDispatchRequest, name, strings.Join(registeredNames(m.ads), ", "))
+	}
+	return name, ad, nil
+}
+
+// registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
+func registeredNames(ads map[string]executor.Adapter) []string {
+	names := make([]string, 0, len(ads))
+	for n := range ads {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
 	Repo     string // 任务仓库路径（executor 工作区）
 	PlanB64  string // plan 内容，base64 编码（路由/CLI 层编码，此处解码）
 	PlanName string // plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）
 	Target   string // 目标主机名（归档展示用，记入 task.Target）
+	// Prompt 是无 plan 文件时的直接指令（prompt-only 派发）；与 PlanB64 至少其一
+	// 非空。plan 非空时作为「附加指令」拼接在计划之后。
+	Prompt string
+	// Name 是任务展示名（空时从 plan 名/prompt 派生，见 deriveName）。
+	Name string
+	// Executor 是任务选择的执行者名；空=缺省（cfg.Executor.Default）。
+	Executor string
+	// Model 是任务级模型覆盖；空=配置 executor.model，再空=executor 自身默认。
+	Model string
+	// Branch / NewBranch 分支二选一（与 PrepareWorkspace 的 WorkspaceReq 一致）：
+	// Branch=切到已存在分支；NewBranch=新建分支（空且 Branch 空=自动 handoff/<id8>）。
+	Branch    string
+	NewBranch string
+	// Base 是新分支起点（仅与 NewBranch/自动分支连用；空=HEAD）。
+	Base string
+	// Worktree / NewWorktree worktree 二选一：Worktree=用户自带 worktree；
+	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
+	Worktree    string
+	NewWorktree bool
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -124,6 +216,44 @@ func planSummaryFromContent(content []byte) string {
 		}
 	}
 	return ""
+}
+
+// deriveName 决定任务的展示名，优先级：显式 Name > plan 文件名（去日期前缀与
+// .md 后缀）> prompt 前 20 rune（不切断单词）。
+//
+// 为什么去日期前缀：约定 plan 文件常以 2026-08-08-<主题>.md 命名，日期前缀是
+// 归档排序用的噪音，做任务名会让列表里全是「2026-08-08-…」看不出主题。
+// 为什么 prompt 截断不切断单词：任务列表一行能展示的长度有限，直接取前 20 rune
+// 会把「…改成 br」这类半截英文留在列表里；截到下一个空白处（或末尾）让名字
+// 以完整单词收尾，可读性远好于硬切。
+func deriveName(name, planName, prompt string) string {
+	if name != "" {
+		return name
+	}
+	if planName != "" {
+		n := planName
+		n = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-`).ReplaceAllString(n, "")
+		n = strings.TrimSuffix(n, ".md")
+		if n != "" {
+			return n
+		}
+	}
+	r := []rune(prompt)
+	const limit = 20
+	if len(r) > limit {
+		cut := limit
+		// 截断处若切断单词（下一字符非空白），顺延过残缺单词到完整词尾；
+		// 再吞掉紧随的空白，保证名字以「完整单词 + 分隔空白」收尾而不是
+		// 半截英文（词尾恰好落在 limit 内时两循环都不触发，直接按 limit 切）
+		for cut < len(r) && !unicode.IsSpace(r[cut]) {
+			cut++
+		}
+		for cut < len(r) && unicode.IsSpace(r[cut]) {
+			cut++
+		}
+		return string(r[:cut])
+	}
+	return string(r)
 }
 
 // ticketRequest 是工单 request 列的通用载体，kind 区分 gate/ask。
@@ -172,6 +302,30 @@ type failedPayload struct {
 	FailReason string `json:"fail_reason"`
 }
 
+// approverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限
+// 请求的裁决结果。Decision 取 approve/escalate/error（error=裁决本身失败）。
+type approverDecisionPayload struct {
+	TicketID   string `json:"ticket_id"`
+	Permission string `json:"permission"`
+	Decision   string `json:"decision"`
+	Reason     string `json:"reason"`
+	ElapsedMS  int64  `json:"elapsed_ms"`
+}
+
+// approverDisabledPayload 是 approver_disabled 事件的 payload：任务级审批链
+// 因连续失败被停用的原因。
+type approverDisabledPayload struct {
+	Reason string `json:"reason"`
+}
+
+// maxApproverFails 是同任务审批者连续裁决失败（Err 非 nil）多少次后停用审批链。
+//
+// 为什么 3：对「已损坏的审批者命令」（如二进制被卸载、模型服务永久报错）的一次
+// 重试代价是整条权限请求被升级、审核者被叫醒一次——反复重试只会形成「每次权限都
+// 升级 + 每次审批都失败」的重试风暴，烧人工注意力的同时毫无收益；3 次是「确认
+// 不是偶发抖动」的合理样本量。
+const maxApproverFails = 3
+
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
 // running → 启动中介 goroutine 消费事件流。
 //
@@ -189,7 +343,9 @@ type failedPayload struct {
 //   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
 //     带列写入，保持「创建期只写创建时已知的字段」的约定）
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
-	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target)
+	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target,
+		"executor", req.Executor, "model", req.Model, "name", req.Name,
+		"branch", req.Branch, "new_branch", req.NewBranch, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败", "repo", req.Repo, "cause", err)
@@ -198,22 +354,56 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		}
 	}()
 
-	if req.Repo == "" || req.PlanB64 == "" {
-		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d", errBadDispatchRequest, req.Repo, len(req.PlanB64))
+	// 校验：repo 必填；plan 与 prompt 至少其一（prompt-only 派发）
+	if req.Repo == "" || (req.PlanB64 == "" && req.Prompt == "") {
+		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d prompt 长度=%d",
+			errBadDispatchRequest, req.Repo, len(req.PlanB64), len(req.Prompt))
 	}
-	planContent, err := base64.StdEncoding.DecodeString(req.PlanB64)
+	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
+	execName, ad, err := m.resolveExecutor(req.Executor)
 	if err != nil {
-		return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
+		return nil, err
+	}
+	model := req.Model
+	if model == "" {
+		model = m.cfg.Executor.Model // 配置级兜底；仍空则 executor 自身默认
+	}
+
+	// 内容合成：plan 解码后作为主体；prompt 非空时——
+	//   plan 非空：拼接为「附加指令」小节（为什么：prompt 是派发当刻的补充意图，
+	//   与 plan 是同一任务的两个信息面，放进同一文件让 executor 一次读全，避免
+	//   二次上下文丢失）；plan 空：prompt 即任务内容
+	var planContent []byte
+	if req.PlanB64 != "" {
+		planContent, err = base64.StdEncoding.DecodeString(req.PlanB64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
+		}
+		if req.Prompt != "" {
+			planContent = append(planContent, []byte("\n\n## 附加指令（派发时提供）\n\n"+req.Prompt)...)
+		}
+	} else {
+		planContent = []byte(req.Prompt)
+	}
+	planName := req.PlanName
+	if planName == "" {
+		planName = "prompt.md" // prompt-only 的 PlanName 兜底：无 plan 文件时固定名归档
 	}
 	summary := planSummaryFromContent(planContent)
+	name := deriveName(req.Name, req.PlanName, req.Prompt)
 
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
-	// 派发前置：在任务仓库上准备任务分支（handoff/<id8>）。
-	// 为什么放在建任务之前：分支准备是纯前置校验（工作区干净/可开分支），失败时
-	// 不留孤儿任务记录，审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
-	branch, err := PrepareBranch(req.Repo, taskID)
+	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
+	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
+	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
+	ws, err := PrepareWorkspace(WorkspaceReq{
+		Repo: req.Repo, TaskID: taskID,
+		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
+		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
+		WorktreesDir: filepath.Join(m.cfg.DataDir, "worktrees"),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
@@ -225,10 +415,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
-	planPath := filepath.Join(taskDir, req.PlanName)
+	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
 
@@ -241,20 +433,28 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		State:     proto.TaskStatePending,
 		CreatedAt: now,
 		UpdatedAt: now,
+		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 原地模式存空串，
+		// 由 proto.Task.Workdir() 回退到 RepoPath；worktree 模式存实际工作目录）
+		Name:            name,
+		Executor:        execName,
+		Model:           model,
+		WorkDir:         ws.WorkDir,
+		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
+		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, err
 	}
 
 	// 分支名经 SetTaskField 白名单写入（见 Dispatch doc 注意）
-	if err := m.st.SetTaskField(taskID, "branch", branch); err != nil {
-		m.log.Error("写入任务分支失败", "task", taskID, "branch", branch, "cause", err)
+	if err := m.st.SetTaskField(taskID, "branch", ws.Branch); err != nil {
+		m.log.Error("写入任务分支失败", "task", taskID, "branch", ws.Branch, "cause", err)
 		// 分支已在仓库建好但任务记录写不上：按派发失败处理，落 failed 供人工清理
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "写分支名失败")
 		return nil, fmt.Errorf("记录任务分支: %w", err)
 	}
 	// 内存态同步补上 branch，保证传给 adapter 的 StartReq.Task 完整
-	task.Branch = branch
+	task.Branch = ws.Branch
 
 	// plan 摘要经 SetTaskField 白名单落库（P1-12）：PlanPath 是 agentd 侧文件路径，
 	// 审核者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
@@ -266,8 +466,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	task.PlanSummary = summary
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
+	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
-	if err := m.ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
+	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，审核者可见
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
@@ -284,6 +485,23 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	go m.mediate(taskID)
 	return task, nil
+}
+
+// compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
+// worktree（P2-2）。
+//
+// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后任务记录落库前
+// （MkdirAll/WriteFile/CreateTask）失败，没有任何任务持有该 worktree——done 的
+// 清理只认 WorktreeManaged 的任务记录，无记录则永不清理，worktree 成为孤儿
+// 永久占用磁盘。失败只记 Error，不覆盖/不替换原始派发错误。
+func (m *Manager) compensateManagedWorktree(repo string, ws Workspace) {
+	if !ws.Managed || ws.WorkDir == "" {
+		return
+	}
+	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
+	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
+	}
 }
 
 // Continue 向任务续发修改指令：要求任务处于 waiting_review，先回迁 running 再
@@ -313,7 +531,16 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 	if err := m.transit(taskID, proto.TaskStateRunning, "continue"); err != nil {
 		return err
 	}
-	if err := m.ad.Send(ctx, taskID, instructions); err != nil {
+	// 只有 taskID：经 adapterFor 解析该任务实际使用的 adapter（executor 已不在
+	// 按 ErrTaskNotRunning 同语义处置——Send 由 executor 实现方自身包装该哨兵）
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		// 执行者无法路由（如任务记录损坏/缺省执行者未注册）：退回 waiting_review，
+		// 审核者可见原因后可处置，不让任务死在 running
+		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 路由执行者失败回迁")
+		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+	}
+	if err := ad.Send(ctx, taskID, instructions); err != nil {
 		m.log.Error("续发指令失败", "task", taskID, "cause", err)
 		// 回迁 waiting_review：指令没送达，回到审核者可重试的位置，不让任务死在 running
 		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
@@ -323,7 +550,7 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 }
 
 // Done 归档任务：要求任务处于 waiting_review，迁移 completed 后调用 Adapter.Stop
-// 回收 executor 侧资源。
+// 回收 executor 侧资源，并清理 agentd 管理的 worktree。
 //
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许归档返回 store.ErrBadTransit
@@ -351,8 +578,36 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	if err := m.transit(taskID, proto.TaskStateCompleted, "done"); err != nil {
 		return err
 	}
-	if err := m.ad.Stop(taskID); err != nil {
+	// 任务归档：清理审批链运行时状态，防内存 map 随归档任务无界增长（P2-5）
+	m.clearApproverState(taskID)
+	// done 只持有 taskID：经 adapterFor 解析该任务实际使用的 adapter；解析失败
+	// 仅 Error 日志不影响归档（任务已完成，executor 残留交给人工兜底，见 doc 注意）
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+	} else if err := ad.Stop(taskID); err != nil {
 		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+	}
+	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
+	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
+	//
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// agentd 无权删别人的工作树；为什么失败只降级不阻塞归档：任务已审核通过，
+	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
+	if cur.WorktreeManaged && cur.WorkDir != "" {
+		m.log.Info("done 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
+		if werr := RemoveManagedWorktree(cur.RepoPath, cur.WorkDir); werr != nil {
+			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
+			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+			}); aerr != nil {
+				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
+			} else {
+				m.hub.Publish(evt)
+			}
+		} else {
+			m.log.Info("managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
+		}
 	}
 	return nil
 }
@@ -408,10 +663,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 	}
 	switch req.Kind {
 	case "gate":
-		decision := "reject"
-		if strings.TrimSpace(answer) == "allow" {
-			decision = "once"
-		}
+		decision := gateDecision(answer)
 		// ticket id 已按任务命名空间化（taskID:permID，见 handlePermission 的 why），
 		// 而 adapter 契约要求裸 PermissionID：剥掉 taskID 前缀还原。invariant：
 		// gate 工单 id 恒由 handlePermission 以 taskID+":"+permID 生成，
@@ -423,7 +675,11 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		// 半死的 executor 在 unaryAPITimeout 内必然失败，reply 回程不永久挂起
 		actx, acancel := unaryCtx(context.Background())
 		defer acancel()
-		if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+		ad, err := m.adapterFor(taskID)
+		if err != nil {
+			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+		}
+		if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
 		m.markDelivered(taskID, ticketID)
@@ -432,7 +688,11 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		m.log.Info("reply 无等待者，自愈中继提问回答", "task", taskID, "ticket", ticketID)
 		actx, acancel := unaryCtx(context.Background())
 		defer acancel()
-		if err := m.ad.Send(actx, taskID, answer); err != nil {
+		ad, err := m.adapterFor(taskID)
+		if err != nil {
+			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
+		}
+		if err := ad.Send(actx, taskID, answer); err != nil {
 			return fmt.Errorf("中继提问回答: %w", err)
 		}
 		m.markDelivered(taskID, ticketID)
@@ -458,7 +718,14 @@ func (m *Manager) mediate(taskID string) {
 	m.log.Info("中介循环启动", "task", taskID)
 	taskCtx, cancelTask := context.WithCancel(context.Background())
 	defer cancelTask()
-	events := m.ad.Events(taskID)
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		// 任务执行者无法路由（缺省执行者未注册/记录损坏）：中介循环无从消费
+		// 事件，按 executor 已不在处置——转交审核者裁决，不静默退出
+		m.log.Error("中介循环无法路由执行者", "task", taskID, "cause", err)
+		return
+	}
+	events := ad.Events(taskID)
 	for ev := range events {
 		m.handleEvent(taskCtx, taskID, ev)
 	}
@@ -494,6 +761,19 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 // handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
 // waiting_answer → goroutine 等审核者应答后回传 executor。
 //
+// 审批链前置的时序说明（二期新增）：approver 启用且黑名单未命中时，请求先交
+// consultApprover 做廉价模型裁决——approve 全程不动状态机（任务保持 running，
+// executor 收 once 后继续跑），escalate 则完整走下方「落状态→建工单→waiter→
+// Publish」的原契约。因此本函数的中介主体被提取为 escalatePermission，供原路径
+// 与审批者 escalate 路径共用，保证两路行为完全一致。
+//
+// 审批链异步化对原契约的修正（P1-1）：一期 handlePermission 在 mediate 循环内
+// 同步执行，同任务的 permission/result 天然串行，「escalate 完整走原契约」的
+// 前提隐含了这一点；二期起 consultApprover 是独立 goroutine（最长 60s），裁决
+// 期间任务可能已被 handleResult/done 推进到终态。因此 escalatePermission 只能
+// 在任务仍处 running/waiting_answer 时被调用——consultApprover 在分流前重读
+// 任务快照，状态已终态则只留 approver_decision 审计事件。
+//
 // 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer，再启动
 // waiter goroutine，最后才 Publish**。严格说「先注册 waiter」不成立：waitPermission
 // 的 hub 注册在 goroutine 启动后才异步发生，Publish 后 reply 仍可能先于注册到达——
@@ -516,6 +796,23 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
 		return
 	}
+	// 审批链前置分流：需要咨询审批者（且未停用/未命中黑名单）时，异步裁决——
+	// 审批期间不阻塞 mediate 循环，同任务后续 progress 事件照常入库广播。
+	// 已在裁决中的重放（markApproverInflight 返回 false）直接吞掉，不重复咨询。
+	if m.shouldConsultApprover(taskID, ev.Text) {
+		if m.markApproverInflight(ticketID) {
+			go m.consultApprover(ctx, taskID, ev, ticketID)
+		}
+		return
+	}
+	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// escalatePermission 把权限请求升级人工审核者：落状态 → 建工单 → 追加事件 →
+// waiter → Publish（一期 handlePermission 的完整既有行为，顺序契约见其 doc）。
+//
+// 本函数同时是审批者 escalate 路径的出口——两路共用保证行为一致。
+func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
 	// resumeIfIdle 读到 running 直接返回，随后 manager 才盖上 waiting_answer——
@@ -544,6 +841,194 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	}
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
+}
+
+// shouldConsultApprover 判断该权限请求是否应走审批者裁决：
+// 审批者已启用、任务未被停用、权限文本未命中黑名单、权限描述完整（未被截断）。
+func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
+	if m.approver == nil {
+		return false
+	}
+	m.apMu.Lock()
+	disabled := m.apDisabled[taskID]
+	m.apMu.Unlock()
+	if disabled {
+		m.log.Debug("审批链已停用，直接升级审核者", "task", taskID)
+		return false
+	}
+	// 权限描述含截断标记（P1-3）：看到的是不完整的命令，危险片段可能落在
+	// 截断之外——黑名单与廉价模型都不可信，直接升级人工是 fail-closed 的
+	// 自然延伸（executor 侧截断标记见 executor.TruncationMarker 契约）
+	if strings.Contains(permission, executor.TruncationMarker) {
+		m.log.Warn("权限描述含截断标记，跳过审批者直接升级", "task", taskID,
+			"permission", truncateRunes(permission, 120))
+		return false
+	}
+	hit, _ := m.approver.Blacklisted(permission)
+	return !hit
+}
+
+// markApproverInflight 尝试登记 ticket 的审批中状态；返回 false 表示已有同
+// ticket 的裁决在途（SSE 重放），本次直接吞掉不重复咨询。
+func (m *Manager) markApproverInflight(ticketID string) bool {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	if m.apInflight[ticketID] {
+		return false
+	}
+	m.apInflight[ticketID] = true
+	return true
+}
+
+// consultApprover 在独立 goroutine 里完成一次权限请求的审批者裁决（不阻塞
+// mediate 循环）。流程：Decide → 落 approver_decision 审计事件（不 Publish）→
+// 按结果分流：approve 自动放行 / escalate 升级人工审核者 / Err 计数并 fail-closed。
+func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
+	defer func() {
+		m.apMu.Lock()
+		delete(m.apInflight, ticketID)
+		m.apMu.Unlock()
+	}()
+	m.log.Info("审批者开始裁决", "task", taskID, "ticket", ticketID,
+		"perm", ev.PermissionID, "text", truncateRunes(ev.Text, 80))
+	// 任务摘要取 PlanSummary；GetTask 失败用空串——摘要是上下文不是裁决前提，
+	// 不因读失败把整个裁决拖下水
+	summary := ""
+	if task, err := m.st.GetTask(taskID); err == nil {
+		summary = task.PlanSummary
+	}
+	d := m.approver.Decide(ctx, ev.Text, summary)
+
+	decision := "error"
+	switch {
+	case d.Approve:
+		decision = "approve"
+	case d.Err == nil:
+		decision = "escalate"
+	}
+	// 只入库不 Publish：approve 路径无人可唤醒（已自动放行），escalate 路径的
+	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
+	// 审核者经 show 可见
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
+		TicketID: ticketID, Permission: ev.Text, Decision: decision,
+		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
+	}); err != nil {
+		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+	}
+
+	// 重读任务状态后分流（P1-1）：审批链异步化打破了「permission 与 mediate 循环
+	// 串行」的一期前提——Decide 是最长 60s 的独立 goroutine，窗口内 executor 可能
+	// 死亡（handleResult 落 waiting_review）或被 done 归档（completed）。此时若
+	// 照旧建工单/唤醒/回传，会重现 U-1/U-3 专门修掉的那类矛盾形态：状态已终态却
+	// 带 pending 权限工单，reply 后答案守卫被消耗、RespondPermission 对已死
+	// executor 失败。因此只在任务仍在 running/waiting_answer（可继续中介）时才
+	// 分流；否则仅留 audit 事件 + Warn，不建工单、不 Publish、不回传。
+	cur, gerr := m.st.GetTask(taskID)
+	if gerr != nil {
+		m.log.Error("审批者裁决后重读任务失败，按已终结处理", "task", taskID, "cause", gerr)
+		return
+	}
+	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
+		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，仅留审计事件",
+			"task", taskID, "ticket", ticketID, "decision", decision, "state", cur.State)
+		return
+	}
+
+	if d.Err != nil {
+		// fail-closed：裁决失败升级审核者，并按连续失败计数决定是否停用
+		//（防对已损坏审批者命令的重试风暴，见 maxApproverFails 的 why）
+		m.countApproverFail(taskID)
+		m.escalatePermission(ctx, taskID, ev, ticketID)
+		return
+	}
+	// 干净裁决（approve 或 escalate）：失败计数清零
+	m.apMu.Lock()
+	delete(m.apFails, taskID)
+	m.apMu.Unlock()
+
+	if d.Approve {
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason)
+		return
+	}
+	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled）。
+//
+// 调用点：任务终结处——Done 归档（→completed）与 handleResult 的回合结束
+// （→waiting_review）。为什么必须清理（P2-5）：这两张是进程内内存 map，任务
+// 归档后若不清，条目随任务数无界增长；且任务被续接时旧的禁用标记/失败计数
+// 也不该残留（新回合从干净状态重新评估审批链）。
+func (m *Manager) clearApproverState(taskID string) {
+	m.apMu.Lock()
+	delete(m.apFails, taskID)
+	delete(m.apDisabled, taskID)
+	m.apMu.Unlock()
+}
+
+// countApproverFail 累计一次任务级裁决失败，达到 maxApproverFails 时停用该任务
+// 的审批链并留 approver_disabled 审计事件（一次）。
+func (m *Manager) countApproverFail(taskID string) {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	m.apFails[taskID]++
+	fails := m.apFails[taskID]
+	if fails >= maxApproverFails && !m.apDisabled[taskID] {
+		m.apDisabled[taskID] = true
+		if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDisabled, approverDisabledPayload{
+			Reason: fmt.Sprintf("连续 %d 次裁决失败，审批链已停用（后续权限直接升级人工审核者）", maxApproverFails),
+		}); err != nil {
+			m.log.Error("追加 approver_disabled 事件失败", "task", taskID, "cause", err)
+		}
+		m.log.Warn("审批者连续失败已停用", "task", taskID, "fails", fails)
+	}
+}
+
+// approvePermission 审批者批准路径：幂等建工单并自动答题 → RespondPermission(once)
+// → 标记送达。全程不动任务状态机——任务保持 running，executor 收 once 后继续跑。
+//
+// 为什么不动状态：批准不是「任务被挂起等人工」，executor 恢复执行即续跑，
+// 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason string) {
+	m.log.Info("审批者自动批准权限", "task", taskID, "ticket", ticketID,
+		"perm", permID, "reason", truncateRunes(reason, 80))
+	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
+	if _, err := m.st.CreateTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
+		Request: req, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
+		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.countApproverFail(taskID)
+		return
+	}
+	// 工单 answer 落**精确 "allow"**（P0-2）：gate 翻译规则是 answer 严格等于
+	// "allow" 才放行，塞理由进 answer 会让审批者的批准在 resume 重投
+	// （RelayAnswer）时被翻转成 reject；理由已完整落在 approver_decision 事件的
+	// Reason 字段，answer 只需表达「批准」这一动作。
+	if err := m.st.AnswerTicket(ticketID, "allow"); err != nil {
+		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.countApproverFail(taskID)
+		return
+	}
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		// 工单已被 AnswerTicket 消耗（answer IS NULL 守卫失效），executor 仍原地
+		// 阻塞等待——必须产出 delivery_failed 事件让审核者知道该 resume（P1-4），
+		// 与紧邻的 RespondPermission 失败分支一致；只记 Error 会让审核者毫无感知
+		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
+		return
+	}
+	actx, acancel := unaryCtx(context.Background())
+	defer acancel()
+	if err := ad.RespondPermission(actx, taskID, permID, "once"); err != nil {
+		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
+		return
+	}
+	m.markDelivered(taskID, ticketID)
+	m.log.Info("审批者批准已送达", "task", taskID, "ticket", ticketID)
 }
 
 // isPermissionReplay 判定一次 permission 事件是否为「已完整中介过」的重放
@@ -587,6 +1072,23 @@ func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
 	return false
 }
 
+// gateDecision 把 gate 工单的应答翻译成 executor 的 decision，规则单一：
+// answer trim 后严格等于 "allow" → "once"（批准本次），其余一律 "reject"。
+//
+// 为什么严格相等（P0-2）：answer 是契约值，只有精确的 allow 才代表批准；
+// 审批者自动批准写入的也是精确 "allow"（理由在 approver_decision 事件的
+// Reason 字段）——若把理由塞进 answer，resume 重投（RelayAnswer）时这条长串
+// 会落在「其余一律 reject」上，审批者明确批准的操作被系统自己改判为拒绝。
+//
+// 两处调用（waitPermission 的应答回传、RelayAnswer 的自愈中继）必须走同一
+// 翻译，复制字面量就是漂移面。
+func gateDecision(answer string) string {
+	if strings.TrimSpace(answer) == "allow" {
+		return "once"
+	}
+	return "reject"
+}
+
 // waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
 //
 // 规则：应答 trim 后等于 "allow" → RespondPermission("once")，其余一律 "reject"
@@ -611,15 +1113,17 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 
 	// 回迁失败（reply 回程的 resumeIfIdle 已抢先回迁）由 transitBestEffort 容忍
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "permission 已应答")
-	decision := "reject"
-	if strings.TrimSpace(ans) == "allow" {
-		decision = "once"
-	}
+	decision := gateDecision(ans)
 	// 派生子 ctx 只约束调用本身（unaryCtx 的 why）：等答案阶段早已结束，此处的
 	// parent 是任务级 ctx（取消无截止），不加超时的话半死 executor 会让本调用挂死
 	actx, acancel := unaryCtx(ctx)
 	defer acancel()
-	if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决。
 		// 工单未标记送达，审核者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
@@ -685,7 +1189,12 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "question 已应答")
 	actx, acancel := unaryCtx(ctx)
 	defer acancel()
-	if err := m.ad.Send(actx, taskID, ans); err != nil {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	if err := ad.Send(actx, taskID, ans); err != nil {
 		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -928,6 +1437,9 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		m.log.Error("回迁 waiting_review 失败，不广播事件", "task", taskID, "cause", err)
 		return
 	}
+	// 回合结束（任务进入 waiting_review）：清理审批链运行时状态，防内存 map
+	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
+	m.clearApproverState(taskID)
 	m.hub.Publish(evt)
 }
 
@@ -1035,13 +1547,20 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		m.log.Error("恢复读取任务失败", "task", taskID, "cause", err)
 		return false
 	}
-	r, ok := m.ad.(restorer)
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("恢复读取任务执行者失败", "task", taskID, "cause", err)
+		return false
+	}
+	r, ok := ad.(restorer)
 	if !ok {
 		m.log.Warn("adapter 不支持执行恢复，任务按不存活处理", "task", taskID)
 		return false
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	alive, err := r.Resume(taskID, taskDir, task.RepoPath, task.ExecutorSession)
+	// 恢复时 git 基线捕获与 serve 重建都在任务工作区（worktree 任务的 cwd 是
+	// Workdir 而非主仓库，git -C 在 worktree 上照常工作），统一取 task.Workdir()
+	alive, err := r.Resume(taskID, taskDir, task.Workdir(), task.ExecutorSession)
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)
 		return false

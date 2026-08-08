@@ -75,6 +75,8 @@ type Fake struct {
 	stops   []string
 	sendErr error // 非 nil 时 Send 一律返回该错误（测试注入）
 	permErr error // 非 nil 时 RespondPermission 一律返回该错误（测试注入）
+	// firstPermID 是首个权限请求的 PermissionID（PermID() 探查用，锁内读写）。
+	firstPermID string
 }
 
 // SetSendError 注入 Send 的错误返回值（默认 nil 不注入）。
@@ -233,6 +235,27 @@ func (f *Fake) Stops() []string {
 	return append([]string(nil), f.stops...)
 }
 
+// PermID 返回本 fake 发出的第一个权限请求的 PermissionID（测试探查用）。
+//
+// 为什么只需「第一个」：单任务测试里权限请求从 perm-1 递增，首个即对应
+// 任务的第一个权限工单 id（taskID:perm-1）。
+func (f *Fake) PermID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.firstPermID
+}
+
+// LastDecision 返回最后一次 RespondPermission 收到的 decision；未收到任何应答
+// 时返回空串（测试探查用，如断言审批者自动批准路径 executor 收到 once）。
+func (f *Fake) LastDecision() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n := len(f.perms); n > 0 {
+		return f.perms[n-1].Decision
+	}
+	return ""
+}
+
 // runner 返回任务运行态，不存在时惰性创建。
 func (f *Fake) runner(taskID string) *taskRun {
 	f.mu.Lock()
@@ -263,6 +286,11 @@ func (r *taskRun) run(f *Fake) {
 		case step.Permission != "":
 			permID := r.nextPermID()
 			f.log().Debug("fake 发 permission 事件", "task", r.taskID, "perm", permID)
+			f.mu.Lock()
+			if f.firstPermID == "" {
+				f.firstPermID = permID
+			}
+			f.mu.Unlock()
 			if !r.emit(f, executor.AdapterEvent{Type: "permission", PermissionID: permID, Text: step.Permission}) {
 				return
 			}

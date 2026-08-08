@@ -33,7 +33,7 @@ MVP 跑通后的四个优化方向（均已与用户逐条确认）：
 | 分支参数 | `--branch`（已存在，不存在拒发）/ `--new-branch [--base]`；缺省自动建 `handoff/<id8>`（现行为） |
 | worktree 参数 | `--worktree <已存在路径>` / `--new-worktree`（agentd 建在 `~/.handoff/worktrees/<id8>`）；缺省原地（现行为，本期不翻转缺省） |
 | worktree 清理 | `handoff done` 归档时自动 `git worktree remove`（分支保留） |
-| 任务命名 | `--name` 可选；缺省从 plan 文件名（去日期/扩展名）或 prompt 前 20 字符派生 |
+| 任务命名 | `--name` 可选；缺省从 plan 文件名（去日期/扩展名）或 prompt 前 20 字符（按 rune 截到单词边界）派生 |
 | attach 语义翻转 | `handoff attach` 改为进终端实况（人类直觉语义）；原快照命令改名 `handoff show`，会话恢复流程与文档同步更新 |
 | 默认弹终端 | dispatch 成功后 osascript 弹本机终端自动 attach；`--no-terminal` flag 与配置项可关 |
 
@@ -119,6 +119,7 @@ Claude Code adapter、grok adapter 的任务级实现（Start/Events/Send/Respon
 handoff dispatch [plan.md]
   --prompt <text>        附加提示词；与 plan 至少给一个，同给时拼在 plan 后
   --name <可读名>         缺省：plan 文件名去日期/扩展名，或 prompt 前 20 字符
+                        （实现按 rune 截到单词边界：不切断英文单词，见 deriveName）
   --executor <name>      见 §4
   --model <model>        见 §4
   --branch <name>        切到已存在分支（不存在拒发）

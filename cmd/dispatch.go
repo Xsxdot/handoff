@@ -1,12 +1,15 @@
-// 本文件实现 handoff dispatch 子命令：把本地 plan 文件派发到 agentd 执行。
+// 本文件实现 handoff dispatch 子命令：把本地 plan 文件（或 --prompt 直接指令）
+// 派发到 agentd 执行。
 //
 // 职责：
-//   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target 一并 POST
-//     给 agentd（body {repo, plan_b64, plan_name, target}）
+//   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target/执行者/模型/
+//     分支/worktree 等参数一并 POST 给 agentd（body {repo, plan_b64, prompt, ...}）
 //   - 成功时单行输出任务 JSON（state=running，供上层脚本解析任务 id）
 //
 // 边界：
 //   - 只做文件读取与上传，不校验计划内容语义（解析与执行由 executor 负责）
+//   - --no-terminal 在本文件只注册 flag 并参与「是否弹终端」的判定骨架；
+//     实际弹窗行为由 Task 12 的弹终端块驱动
 package cmd
 
 import (
@@ -14,35 +17,68 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/shellq"
 )
 
-var dispatchRepo string
+var (
+	dispatchRepo        string
+	dispatchPrompt      string
+	dispatchName        string
+	dispatchExecutor    string
+	dispatchModel       string
+	dispatchBranch      string
+	dispatchNewBranch   string
+	dispatchBase        string
+	dispatchWorktree    string
+	dispatchNewWorktree bool
+	dispatchNoTerminal  bool
+)
 
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
-// 使用方式：handoff dispatch --repo <仓库路径> [--target <name>] <plan 文件>
+// 使用方式：handoff dispatch [--repo <仓库>] [--prompt ...] [--executor x] [--model m]
+// [--branch b | --new-branch b [--base t]] [--worktree w | --new-worktree]
+// [--no-terminal] [plan 文件]
 var dispatchCmd = &cobra.Command{
-	Use:   "dispatch <plan 文件>",
+	Use:   "dispatch [plan 文件]",
 	Short: "派发一个计划任务到 agentd 执行",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if dispatchRepo == "" {
 			return fmt.Errorf("--repo 必须指定任务仓库路径")
 		}
-		content, err := os.ReadFile(args[0])
-		if err != nil {
-			return fmt.Errorf("读取计划文件 %s: %w", args[0], err)
+		var planB64, planName string
+		if len(args) == 1 {
+			content, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("读取计划文件 %s: %w", args[0], err)
+			}
+			planB64 = base64.StdEncoding.EncodeToString(content)
+			planName = filepath.Base(args[0])
+		}
+		// plan 文件与 --prompt 都缺：本地先报错，省一次网络往返（服务端也会拒）
+		if planB64 == "" && dispatchPrompt == "" {
+			return fmt.Errorf("必须提供 plan 文件或 --prompt（至少其一）")
 		}
 		addr, token, err := TargetEndpoint()
 		if err != nil {
 			return err
 		}
-		task, err := client.New(addr, token).Dispatch(cmd.Context(),
-			dispatchRepo, base64.StdEncoding.EncodeToString(content), filepath.Base(args[0]), targetName)
+		task, err := client.New(addr, token).Dispatch(cmd.Context(), client.DispatchOpts{
+			Repo: dispatchRepo, PlanB64: planB64, PlanName: planName, Target: targetName,
+			Prompt: dispatchPrompt, Name: dispatchName,
+			Executor: dispatchExecutor, Model: dispatchModel,
+			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
+			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
+		})
 		if err != nil {
 			return err
 		}
@@ -51,11 +87,80 @@ var dispatchCmd = &cobra.Command{
 			return fmt.Errorf("序列化任务: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		// 弹终端块的入口（Task 12 实现）：--no-terminal 在此使能判定
+		dispatchAfterTerminal(cmd, task.ID)
 		return nil
 	},
 }
 
 func init() {
 	dispatchCmd.Flags().StringVar(&dispatchRepo, "repo", "", "任务仓库路径（executor 工作区，必须）")
+	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
+	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
+	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/fake；空=agentd 缺省执行者）")
+	dispatchCmd.Flags().StringVar(&dispatchModel, "model", "", "任务级模型覆盖（空=执行者自身默认）")
+	dispatchCmd.Flags().StringVar(&dispatchBranch, "branch", "", "切到已存在分支（与 --new-branch 互斥）")
+	dispatchCmd.Flags().StringVar(&dispatchNewBranch, "new-branch", "", "新建分支名（空且 --branch 空=自动 handoff/<id8>）")
+	dispatchCmd.Flags().StringVar(&dispatchBase, "base", "", "新分支起点 commit/分支（仅与 --new-branch 连用；空=HEAD）")
+	dispatchCmd.Flags().StringVar(&dispatchWorktree, "worktree", "", "用户自带 worktree 路径（与 --new-worktree 互斥）")
+	dispatchCmd.Flags().BoolVar(&dispatchNewWorktree, "new-worktree", false, "在 DataDir/worktrees 下新建 managed worktree（任务完成时自动删除）")
+	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
+	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
+	dispatchCmd.MarkFlagsMutuallyExclusive("worktree", "new-worktree")
 	rootCmd.AddCommand(dispatchCmd)
+}
+
+// dispatchAfterTerminal 是 dispatch 成功后「弹终端实况」的钩子。
+//
+// 行为契约：
+//   - --no-terminal 或 cfg.Terminal.Auto==false 或非 darwin → 打印提示行
+//     「实况: handoff attach <id>」（远程含 --target），不弹窗
+//   - darwin 且允许 → osascript 弹 Terminal.app 执行 attach 命令
+//
+// 为什么弹窗失败不影响退出码：派发已成功（任务 JSON 已输出），弹窗只是增强
+// 可见性——失败降级为同款提示行 + stderr 警告，绝不把已成功的派发变成失败。
+func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
+	hint := "实况: handoff attach " + taskID
+	if targetName != "" {
+		hint += " --target " + targetName
+	}
+	cfg := loadCLIConfig()
+	if dispatchNoTerminal || !cfg.Terminal.Auto || runtime.GOOS != "darwin" {
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		return
+	}
+	argv, err := attachCommandFor(taskID, targetName, cfg)
+	if err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		return
+	}
+	if err := openTerminal(argv); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "弹终端失败:", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "可手动执行:", strings.Join(argv, " "))
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+	}
+}
+
+// openTerminal 用 osascript 在 macOS 上弹 Terminal.app 执行 attach 命令。
+//
+// 测试缝：包级变量，测试替换记录调用。为什么用 do script 而非 tmux 直连：
+// dispatch 成功时审核者大概率不在本机终端前（在 agentd 所在机器的桌面前），
+// Terminal.app 弹窗把「executor 实况」直接送到桌面——do script 让 Terminal
+// 打开新窗口执行 attach，窗口内即实况；activate 把窗口置前。
+var openTerminal = func(attachArgv []string) error {
+	// do script 的参数是 shell 命令串：attach argv 逐元素 shellq.Quote 拼接，
+	// 保证含空白的路径/会话名不被拆错；AppleScript 字符串用 strconv.Quote
+	// 包裹（与 wait 命令的系统通知同约定）
+	quoted := make([]string, len(attachArgv))
+	for i, a := range attachArgv {
+		quoted[i] = shellq.Quote(a)
+	}
+	cmdline := strings.Join(quoted, " ")
+	doScript := "tell application \"Terminal\" to do script " + strconv.Quote(cmdline)
+	activate := "tell application \"Terminal\" to activate"
+	out, err := exec.Command("osascript", "-e", doScript, "-e", activate).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("osascript: %v: %s", err, truncateBytes(string(out), 200))
+	}
+	return nil
 }

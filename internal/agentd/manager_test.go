@@ -16,10 +16,12 @@ package agentd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -93,16 +96,288 @@ func (a *chanAdapter) sendsRec() []string {
 // newTestManager 组装 manager 白盒测试环境：真实 store + hub + 可控事件通道 adapter。
 func newTestManager(t *testing.T) (*Manager, *store.Store, *Hub, *chanAdapter) {
 	t.Helper()
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	return m, st, hub, ad
+}
+
+// newTestManagerWithAds 组装带 adapter 注册表的 manager 白盒测试环境：
+// 真实 store + hub + 给定注册表（defaultName 为缺省执行者名，写进 cfg.Executor.Default）；
+// 不启用审批链（approver=nil）。
+func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*Manager, *store.Store, *Hub) {
+	return newTestManagerWithApprover(t, ads, defaultName, nil)
+}
+
+// newTestManagerWithApprover 组装带 adapter 注册表与可选审批者的 manager 白盒
+// 测试环境（approver 可为 nil）。
+func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *Hub) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 	hub := NewHub()
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := &config.Config{Token: "test", DataDir: t.TempDir()}
-	return NewManager(st, hub, ad, cfg, logger), st, hub, ad
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
+	return NewManager(st, hub, ads, cfg, approver, logger), st, hub
+}
+
+// mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
+func mustCreateTask(t *testing.T, st *store.Store, task *proto.Task) {
+	t.Helper()
+	if err := st.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+}
+
+// TestAdapterForRoutesByTaskExecutor 验证 adapterFor 按 task.Executor 路由：
+// 显式 executor 命中注册表对应 adapter；executor 为空回退缺省执行者（老任务兼容）。
+func TestAdapterForRoutesByTaskExecutor(t *testing.T) {
+	adA, adB := fake.New(nil), fake.New(nil)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"a": adA, "b": adB}, "a")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "b", State: proto.TaskStateRunning})
+	mustCreateTask(t, st, &proto.Task{ID: "t2", RepoPath: "/r", Executor: "", State: proto.TaskStateRunning})
+	if got, _ := m.adapterFor("t1"); got != adB {
+		t.Fatalf("t1 应路由到 b")
+	}
+	if got, _ := m.adapterFor("t2"); got != adA {
+		t.Fatalf("executor 为空应回退缺省 a")
+	}
+}
+
+// TestResolveExecutorRejectsUnknown 验证 dispatch 期未注册执行者被拒，错误列出可用项。
+func TestResolveExecutorRejectsUnknown(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"a": fake.New(nil)}, "a")
+	if _, _, err := m.resolveExecutor("nope"); err == nil || !strings.Contains(err.Error(), "a") {
+		t.Fatalf("未注册执行者应报错并列出可用项: %v", err)
+	}
+}
+
+// TestDispatchPromptOnly 验证 prompt-only 派发：无 plan 文件时以 prompt 生成摘要与
+// 展示名，任务正常进入 running。
+func TestDispatchPromptOnly(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "把 README 安装命令改成 brew", Target: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PlanSummary == "" || !strings.Contains(task.PlanSummary, "README") {
+		t.Fatalf("prompt-only 派发应以 prompt 生成摘要: %q", task.PlanSummary)
+	}
+	if task.Name == "" {
+		t.Fatalf("name 应从 prompt 派生: %q", task.Name)
+	}
+}
+
+// TestDispatchRequiresPlanOrPrompt 验证 plan 与 prompt 都缺时 400 拒绝。
+func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	if _, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r"}); !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("plan 与 prompt 都缺应 400: %v", err)
+	}
+}
+
+// TestDispatchPromptAppendedToPlan 验证 prompt 与 plan 同时存在时，prompt 作为
+// 附加指令拼接在 plan 之后（任务目录里的 plan 文件含两段）。
+func TestDispatchPromptAppendedToPlan(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	plan := base64.StdEncoding.EncodeToString([]byte("# 计划标题\n正文"))
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, PlanB64: plan, PlanName: "p.md", Prompt: "只改 X 模块",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(task.PlanPath)
+	if !strings.Contains(string(content), "附加指令") || !strings.Contains(string(content), "只改 X 模块") {
+		t.Fatalf("prompt 应拼接在 plan 之后: %s", content)
+	}
+}
+
+// TestDispatchUnknownExecutorRejected 验证未注册执行者 dispatch 被拒（400）。
+func TestDispatchUnknownExecutorRejected(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	_, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r", Prompt: "x", Executor: "nope"})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("未注册执行者应 400: %v", err)
+	}
+}
+
+// TestDispatchPersistsExecutorModelAndWorkspace 验证 executor/model/name 与新
+// worktree 元数据随派发落库。
+func TestDispatchPersistsExecutorModelAndWorkspace(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", Model: "m1",
+		Name: "自定义名", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Executor != "fake" || task.Model != "m1" || task.Name != "自定义名" {
+		t.Fatalf("executor/model/name 未落库: %+v", task)
+	}
+	if task.WorkDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据未落库: %+v", task)
+	}
+}
+
+// TestDeriveName 覆盖展示名派生规则：显式优先 > plan 名去日期前缀/去 .md >
+// prompt 前 20 rune。
+func TestDeriveName(t *testing.T) {
+	for _, c := range []struct{ name, planName, prompt, want string }{
+		{"显式优先", "p.md", "x", "显式优先"},
+		{"", "2026-08-08-fix-login.md", "", "fix-login"},
+		{"", "", "把 README 里的安装命令改成 brew 并验证一遍效果", "把 README 里的安装命令改成 brew "},
+	} {
+		if got := deriveName(c.name, c.planName, c.prompt); got != c.want {
+			t.Fatalf("deriveName(%q,%q,%q)=%q want %q", c.name, c.planName, c.prompt, got, c.want)
+		}
+	}
+}
+
+// mustDone 归档任务，失败即 Fatal。
+func mustDone(t *testing.T, m *Manager, taskID string) {
+	t.Helper()
+	if err := m.Done(context.Background(), taskID); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+}
+
+// TestDispatchFailedAfterWorkspaceCleansManagedWorktree 验证 dispatch 在
+// PrepareWorkspace 成功之后、任务记录落库之前失败时，补偿清理已建的 managed
+// worktree（P2-2）：否则该 worktree 无任务记录持有，done 永不清理成为孤儿。
+func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	// DataDir 下预置一个名为 tasks 的**文件**：PrepareWorkspace 的 worktrees
+	// 子目录照常可建、worktree 照常创建，但 Dispatch 的 MkdirAll(DataDir/tasks/<id>)
+	// 会因「tasks 不是目录」失败——精确命中「工作区已建、任务记录未落」的窗口
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "tasks"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fk := fake.New(nil)
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hub := NewHub()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, logger)
+
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	// 断言：worktrees 目录下已无残留 worktree
+	wtDir := filepath.Join(dataDir, "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		t.Fatalf("读 worktrees 目录: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("managed worktree 应被补偿清理，仍有: %v", entries)
+	}
+}
+
+// TestDoneRemovesManagedWorktree 验证 done 归档时自动删除 agentd 管理的 worktree
+// （目录消失、任务分支保留、任务 completed）。
+func TestDoneRemovesManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	if workDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", task)
+	}
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	mustDone(t, m, task.ID)
+
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Fatalf("worktree 目录应已删除: %v", err)
+	}
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+		t.Fatalf("任务分支不应被删除")
+	}
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("任务应 completed，得到 %s", cur.State)
+	}
+}
+
+// TestDoneKeepsUserWorktree 验证用户自带 worktree（Managed=false）done 后不被删除。
+func TestDoneKeepsUserWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt1")
+	gitT(t, repo, "worktree", "add", "-b", "pre-branch", wt)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", Worktree: wt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.WorktreeManaged {
+		t.Fatalf("用户自带 worktree Managed 应为 false: %+v", task)
+	}
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	mustDone(t, m, task.ID)
+
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("用户自带 worktree 不应被删除: %v", err)
+	}
+}
+
+// TestDoneWorktreeRemoveFailureDoesNotBlockArchive 验证清理失败只降级为警告事件，
+// 不影响归档结果（任务仍 completed）。
+func TestDoneWorktreeRemoveFailureDoesNotBlockArchive(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+	// Done 前往 worktree 塞未提交文件：git worktree remove 拒绝删除脏树
+	if err := os.WriteFile(filepath.Join(workDir, "stray.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustDone(t, m, task.ID)
+
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("清理失败不应阻塞归档，任务应 completed，得到 %s", cur.State)
+	}
+	evs := mustEvents(t, st, task.ID)
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "worktree 清理失败") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应有含「worktree 清理失败」的 progress 事件: %v", evs)
+	}
 }
 
 // createRunningTask 创建任务并迁移到 running（handlePermission 需要 running→waiting_answer 合法）。

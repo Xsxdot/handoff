@@ -66,17 +66,29 @@ var agentdCmd = &cobra.Command{
 		}
 		defer st.Close()
 
-		srv := agentd.NewServer(cfg, st, logger)
-		var ad executor.Adapter
-		switch executorFlag {
-		case "opencode":
-			ad = opencode.New(logger)
-		case "fake":
-			ad = fake.New(nil)
-		default:
-			return fmt.Errorf("未知 executor %q（支持 opencode/fake）", executorFlag)
+		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
+		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
+		ap, err := agentd.NewApprover(cfg.Approver, logger)
+		if err != nil {
+			return fmt.Errorf("初始化审批链: %w", err)
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ad, cfg, logger)
+
+		srv := agentd.NewServer(cfg, st, logger)
+		// 两个执行者都注册：dispatch --executor 可按名选择；opencode 是真实执行，
+		// fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		ads := map[string]executor.Adapter{
+			"opencode": opencode.New(logger),
+			"fake":     fake.New(nil),
+		}
+		if executorFlag != "" {
+			if _, ok := ads[executorFlag]; !ok {
+				return fmt.Errorf("未知 executor %q（支持 opencode/fake）", executorFlag)
+			}
+			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
+			// 两个都可用——老任务按各自 executor 名仍能路由到对应 adapter
+			cfg.Executor.Default = executorFlag
+		}
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, logger)
 		srv.SetManager(mgr)
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
@@ -90,7 +102,7 @@ var agentdCmd = &cobra.Command{
 		// 触发 stalled 事件唤醒审核者（独立 goroutine，不阻塞 HTTP 服务；
 		// MVP 无优雅关停，进程退出即随 ctx 结束）
 		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
-		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir)
+		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
 		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
 	},
 }
@@ -124,11 +136,11 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 选择 executor 实现：opencode（默认，真实执行）| fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| fake（脚本演示）。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
-	agentdCmd.Flags().StringVar(&executorFlag, "executor", "opencode",
-		"executor 实现：opencode（默认）| fake")
+	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
+		"覆盖缺省执行者：opencode（默认）| fake（注册表保留两者，--dispatch executor 仍可按名选择）")
 }

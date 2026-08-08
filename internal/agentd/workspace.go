@@ -1,8 +1,9 @@
 // 本文件是 agentd 侧 git 工作区操作与文件/命令读取的唯一出口。
 //
 // 职责：
-//   - 派发前的分支准备：PrepareBranch 在任务仓库里开 handoff/<id8> 分支，
-//     保证执行器的工作与审核者的 diff 有确定的分界（脏工作区一律拒绝）
+//   - 派发前的工作区准备：PrepareWorkspace 按分支×worktree 两个正交维度准备任务
+//     工作区（脏工作区一律拒绝；new-worktree 免脏检查）——PrepareBranch 是其
+//     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
 //
@@ -39,13 +40,16 @@ import (
 //     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
 //   - ErrBadBaseBranch：diff 的基准分支参数非法（以 "-" 开头，会被 git 解释为
 //     选项而非 rev——git 参数注入面）
+//   - ErrBadWorkspaceReq：PrepareWorkspace 的参数非法（互斥冲突/分支不存在/
+//     路径不是本仓库 worktree/rev 以 "-" 开头等），dispatch 期拒发
 var (
-	ErrDirtyWorktree  = errors.New("工作区不干净（有未提交改动），拒绝派发")
-	ErrPathEscape     = errors.New("路径逃逸被拒绝")
-	ErrPathIsDir      = errors.New("路径是目录，不是文件")
-	ErrNotRegularFile = errors.New("路径不是普通文件（管道/设备等特殊文件不可读）")
-	ErrRepoUnusable   = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
-	ErrBadBaseBranch  = errors.New("非法的基准分支：不允许以 - 开头")
+	ErrDirtyWorktree   = errors.New("工作区不干净（有未提交改动），拒绝派发")
+	ErrPathEscape      = errors.New("路径逃逸被拒绝")
+	ErrPathIsDir       = errors.New("路径是目录，不是文件")
+	ErrNotRegularFile  = errors.New("路径不是普通文件（管道/设备等特殊文件不可读）")
+	ErrRepoUnusable    = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
+	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
+	ErrBadWorkspaceReq = errors.New("工作区参数非法")
 )
 
 // 执行护栏：
@@ -82,46 +86,259 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 	return outBuf.String(), errBuf.String(), err
 }
 
-// PrepareBranch 在任务仓库上准备任务分支：工作区干净则 checkout -b handoff/<id8>。
+// PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
+// 与全部错误哨兵（ErrDirtyWorktree/ErrRepoUnusable），Dispatch 改走 PrepareWorkspace
+// 后本函数仅剩测试与本包内部引用（Task 7 会清理调用点）。
+func PrepareBranch(repo, taskID string) (branch string, err error) {
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: taskID})
+	if err != nil {
+		return "", err
+	}
+	return ws.Branch, nil
+}
+
+// WorkspaceReq 描述 dispatch 的工作区诉求（分支 × worktree 两个正交维度）。
 //
-// 为什么脏工作区必须拒绝：脏工作区上开分支会把无关改动带进任务分支，
-// 后续 git diff 基准分支...HEAD 会把与任务无关的改动混进审核素材，审核被污染；
-// 派发前强制 clean 是「任务 diff 只含本任务改动」承诺的实现保证。
+// 分支维度三态（互斥）：Branch=已存在分支 / NewBranch=新建分支 / 都空=自动
+// handoff/<id8>；Base 仅与 NewBranch 连用（空=HEAD）——自动分支不带 Base
+// （校验见 PrepareWorkspace 第 1 层，spec §5 与校验一致）。
+// worktree 维度三态（互斥）：Worktree=用户自带 worktree 路径 / NewWorktree=由
+// agentd 在 WorktreesDir 下新建 managed worktree / 都空=原地（主仓库）。
+type WorkspaceReq struct {
+	Repo         string // 主仓库路径
+	TaskID       string
+	Branch       string // 已存在分支（与 NewBranch 互斥）
+	NewBranch    string // 新建分支名（空且 Branch 空 = 自动 handoff/<id8>）
+	Base         string // 新分支起点，仅与 NewBranch 连用（空=HEAD；自动分支不带 Base）
+	Worktree     string // 已存在 worktree 路径（与 NewWorktree 互斥）
+	NewWorktree  bool
+	WorktreesDir string // agentd 管理的 worktree 根目录（DataDir/worktrees）
+}
+
+// Workspace 是准备完成的工作区结果。
+type Workspace struct {
+	Branch  string
+	WorkDir string // executor cwd 与审阅命令目录；原地模式 = Repo
+	Managed bool   // WorkDir 是 agentd 创建的 worktree（done 时代删）
+}
+
+// PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
+//
+// 3 分支模式 × 3 工作树模式的 9 种组合行为表（分支 B/新分支 N/自动 A × 新树 N/用户树 U/原地 I）：
+//
+//	      新树(NewWorktree)        用户树(Worktree)        原地(默认)
+//	B   worktree add <p> <b>     校验归属+脏，checkout b   脏检查，checkout b
+//	N   worktree add -b b <p> t  校验归属+脏，checkout -b  脏检查，checkout -b b [t]
+//	A   worktree add -b h <p>    校验归属+脏，checkout -b  脏检查，checkout -b h
+//
+// 其中 b=指定分支、h=handoff/<id8>、t=Base（仅 N 行有效，空=HEAD；自动分支 A
+// 不允许带 Base，见第 1 层校验）、p=WorktreesDir/<id8> 或用户路径。
+// 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对）；
+// 所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
+//
+// 为什么 NewWorktree 免脏检查：新 worktree 是从仓库新建的独立工作树，天然干净，
+// 与主仓库的脏状态无关——这是 worktree 并行派发的价值：主仓有人手动改动也不阻塞
+// 新任务开跑；只有原地/用户树模式（复用既有工作树）才需要脏检查防污染。
+//
+// 为什么用户树归属校验用 git-common-dir 比对：普通目录与 worktree 的差别就在
+// 「共享同一仓库 git 目录」；git-common-dir 对 main 仓库返回其 .git、对 worktree
+// 返回同一值，路径经 EvalSymlinks 归一后相等即归属成立——比「读 .git 文件内容」
+// 更稳（.git 可能缺失、可能被链到别处）。校验失败按 ErrBadWorkspaceReq 拒发。
+func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
+	log().Info("工作区准备进入", "repo", req.Repo, "task", req.TaskID, "branch", req.Branch,
+		"new_branch", req.NewBranch, "base", req.Base, "worktree", req.Worktree,
+		"new_worktree", req.NewWorktree, "worktrees_dir", req.WorktreesDir)
+	// 第 1 层：纯内存参数校验（互斥/依赖/注入面），全部包 ErrBadWorkspaceReq
+	if req.Repo == "" || req.TaskID == "" {
+		return Workspace{}, rejectWorkspace("repo 与 task_id 必填", req)
+	}
+	if req.Branch != "" && req.NewBranch != "" {
+		return Workspace{}, rejectWorkspace("branch 与 new-branch 互斥", req)
+	}
+	if req.Worktree != "" && req.NewWorktree {
+		return Workspace{}, rejectWorkspace("worktree 与 new-worktree 互斥", req)
+	}
+	if req.Base != "" && req.NewBranch == "" {
+		return Workspace{}, rejectWorkspace("base 仅允许与 new-branch 连用", req)
+	}
+	for _, name := range []struct{ what, v string }{
+		{"branch", req.Branch}, {"new-branch", req.NewBranch}, {"base", req.Base}, {"worktree", req.Worktree},
+	} {
+		if strings.HasPrefix(name.v, "-") {
+			return Workspace{}, rejectWorkspace(name.what+" 不允许以 - 开头（git 参数注入面）", req)
+		}
+	}
+
+	// 第 2 层：分支名决议（B/N/A 三态收敛为唯一分支名）
+	branch := req.Branch
+	if branch == "" {
+		branch = req.NewBranch
+	}
+	if branch == "" {
+		branch = taskBranch(req.TaskID)
+	}
+	isExisting := req.Branch != "" // 仅 Branch 模式要求分支已存在
+	if isExisting {
+		// 分支存在性：rev-parse --verify --quiet refs/heads/<name>，非零即不存在
+		if out, _, err := gitRun(context.Background(), req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
+			return Workspace{}, rejectWorkspace("分支 "+req.Branch+" 不存在", req)
+		}
+	}
+
+	var ws Workspace
+	// 第 3 层：按 worktree 维度分派
+	switch {
+	case req.NewWorktree:
+		// 新树：WorktreesDir/<id8>，MkdirAll 后 git worktree add（已存在分支不带 -b）
+		workDir := filepath.Join(req.WorktreesDir, id8(req.TaskID))
+		if err := os.MkdirAll(req.WorktreesDir, 0o700); err != nil {
+			return Workspace{}, fmt.Errorf("创建 worktrees 目录 %s: %w", req.WorktreesDir, err)
+		}
+		var args []string
+		if isExisting {
+			args = []string{"worktree", "add", workDir, branch}
+		} else {
+			args = []string{"worktree", "add", "-b", branch, workDir}
+			if req.Base != "" {
+				args = append(args, req.Base)
+			}
+		}
+		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
+		}
+		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
+	case req.Worktree != "":
+		// 用户树：归属校验 → 脏检查 → 在其中 checkout
+		if !worktreeBelongsToRepo(req.Repo, req.Worktree) {
+			return Workspace{}, rejectWorkspace("路径 "+req.Worktree+" 不是本仓库的 worktree", req)
+		}
+		if err := ensureCleanWorktree(req.Worktree); err != nil {
+			return Workspace{}, err
+		}
+		if err := checkoutInWorktree(req.Worktree, branch, req.Base, isExisting); err != nil {
+			return Workspace{}, err
+		}
+		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false}
+	default:
+		// 原地：脏检查主仓 → checkout / checkout -b
+		if err := ensureCleanWorktree(req.Repo); err != nil {
+			return Workspace{}, err
+		}
+		var args []string
+		if isExisting {
+			args = []string{"checkout", branch}
+		} else {
+			args = []string{"checkout", "-b", branch}
+			if req.Base != "" {
+				args = append(args, req.Base)
+			}
+		}
+		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
+		}
+		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false}
+	}
+	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
+	return ws, nil
+}
+
+// rejectWorkspace 打参数拒绝日志并包装 ErrBadWorkspaceReq（哪个规则、哪个值）。
+func rejectWorkspace(rule string, req WorkspaceReq) error {
+	log().Warn("工作区参数非法，拒绝准备", "task", req.TaskID, "rule", rule, "req", req)
+	return fmt.Errorf("%w: %s", ErrBadWorkspaceReq, rule)
+}
+
+// checkoutInWorktree 在用户自带 worktree 内切分支（已存在 → checkout；新建/自动
+// → checkout -b [base]），供 Worktree 模式复用。
+func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
+	var args []string
+	if isExisting {
+		args = []string{"checkout", branch}
+	} else {
+		args = []string{"checkout", "-b", branch}
+		if base != "" {
+			args = append(args, base)
+		}
+	}
+	if _, stderr, err := gitRun(context.Background(), workDir, args...); err != nil {
+		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
+	}
+	return nil
+}
+
+// ensureCleanWorktree 校验工作区干净（status --porcelain 无任何输出）。
+// 脏检测含未跟踪文件：未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝。
+// git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
+// 用 ErrRepoUnusable 区分（server 层据此给调用方可读的 400 而非扁平 500）。
+func ensureCleanWorktree(dir string) error {
+	status, _, err := gitRun(context.Background(), dir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("%w: git status: %v", ErrRepoUnusable, err)
+	}
+	if strings.TrimSpace(status) != "" {
+		first := firstLine(status)
+		log().Warn("工作区不干净，拒绝派发", "dir", dir, "status", truncateRunes(first, 200))
+		return fmt.Errorf("%w: %s", ErrDirtyWorktree, first)
+	}
+	return nil
+}
+
+// worktreeBelongsToRepo 校验 worktree 路径是否属于主仓库 repo。
+//
+// 原理见 PrepareWorkspace doc 的 why：git-common-dir 对 main 仓库与它的任一
+// worktree 返回同一 git 目录，路径经 EvalSymlinks 归一后相等即归属成立。
+// 任一步失败（路径不是 git 仓库/不是本仓 worktree）都返回 false（fail-closed）。
+func worktreeBelongsToRepo(repo, worktree string) bool {
+	repoDir, _, err := gitRun(context.Background(), repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	wtDir, _, err := gitRun(context.Background(), worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	rp, err1 := filepath.EvalSymlinks(strings.TrimSpace(repoDir))
+	wp, err2 := filepath.EvalSymlinks(strings.TrimSpace(wtDir))
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return rp == wp
+}
+
+// RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
 //
 // 参数：
-//   - repo: 任务仓库路径
-//   - taskID: 任务 ID（分支名取前 8 位，保证分支名可读且冲突概率可忽略）
+//   - repo: 主仓库路径
+//   - workdir: 待删除的 worktree 路径（必须为 Managed=true 的工作区）
 //
-// 返回：
-//   - branch: 创建的任务分支名（handoff/<id8>）
-//   - err: 工作区脏返回 ErrDirtyWorktree；git 失败返回带 stderr 的错误
-func PrepareBranch(repo, taskID string) (branch string, err error) {
-	// 脏检测用 status --porcelain：任何输出（含 ?? 未跟踪）都算脏——
-	// 未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝
-	if status, _, err := gitRun(context.Background(), repo, "status", "--porcelain"); err != nil {
-		// git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
-		// 用 ErrRepoUnusable 区分，server 层据此给调用方可读的 400 而非扁平 500
-		return "", fmt.Errorf("%w: git status: %v", ErrRepoUnusable, err)
-	} else if strings.TrimSpace(status) != "" {
-		first := firstLine(status)
-		log().Warn("工作区不干净，拒绝派发", "repo", repo, "status", truncateRunes(first, 200))
-		return "", fmt.Errorf("%w: %s", ErrDirtyWorktree, first)
+// 注意：
+//   - 只删工作树不删分支（spec：任务分支保留供审阅/回滚）
+//   - workdir 带未提交改动时 git 拒绝删除（错误带 stderr 原文返回）；是否降级
+//     由调用方（Done 归档）决定——本函数不做清理性降级
+func RemoveManagedWorktree(repo, workdir string) error {
+	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir)
+	if _, stderr, err := gitRun(context.Background(), repo, "worktree", "remove", workdir); err != nil {
+		log().Error("删除 managed worktree 失败", "repo", repo, "workdir", workdir,
+			"stderr", truncateRunes(stderr, 300), "cause", err)
+		return fmt.Errorf("git worktree remove %s: %s: %w", workdir, strings.TrimSpace(stderr), err)
 	}
-	branch = taskBranch(taskID)
-	if _, stderr, err := gitRun(context.Background(), repo, "checkout", "-b", branch); err != nil {
-		return "", fmt.Errorf("git checkout -b %s: %s: %w", branch, strings.TrimSpace(stderr), err)
+	log().Info("managed worktree 已删除", "repo", repo, "workdir", workdir)
+	return nil
+}
+
+// id8 截取任务 ID 前 8 字节，用于分支名与 worktree 目录名的稳定短标识。
+// 与 opencode adapter 的 tmux 会话命名（handoff-<id8>）共用同一截断规则，
+// 改动必须两侧同步（见 attach 命令的 id8 注释）。
+func id8(taskID string) string {
+	if len(taskID) > 8 {
+		return taskID[:8]
 	}
-	log().Info("任务分支已创建", "repo", repo, "branch", branch)
-	return branch, nil
+	return taskID
 }
 
 // taskBranch 由任务 ID 派生分支名 handoff/<id8>。
 func taskBranch(taskID string) string {
-	id8 := taskID
-	if len(id8) > 8 {
-		id8 = id8[:8]
-	}
-	return "handoff/" + id8
+	return "handoff/" + id8(taskID)
 }
 
 // Diff 取任务分支相对基准分支的完整审阅素材：git diff <base>...HEAD 的差异

@@ -54,12 +54,12 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), f, cfg, logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, logger)
 	srv.SetManager(mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
 }
@@ -94,7 +94,9 @@ func runGit(t *testing.T, dir string, args ...string) string {
 // dispatchPlan 用真实 client 派发一个任务并返回任务（仓库用沙箱里的干净 git 仓库）。
 func (e *integEnv) dispatchPlan(t *testing.T, plan string) *proto.Task {
 	t.Helper()
-	task, err := e.cli.Dispatch(context.Background(), e.repo, base64.StdEncoding.EncodeToString([]byte(plan)), "plan.md", "local")
+	task, err := e.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: e.repo, PlanB64: base64.StdEncoding.EncodeToString([]byte(plan)), PlanName: "plan.md", Target: "local",
+	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -475,7 +477,7 @@ func TestDispatchDirtyWorktree409(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(dirtyPath) })
 
-	_, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("脏工作区派发应被拒绝")
 	}
@@ -487,7 +489,7 @@ func TestDispatchDirtyWorktree409(t *testing.T) {
 	if err := os.Remove(dirtyPath); err != nil {
 		t.Fatalf("清理脏文件: %v", err)
 	}
-	task, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err != nil {
 		t.Fatalf("清理后 Dispatch: %v", err)
 	}
@@ -502,7 +504,7 @@ func TestDispatchRepoUnusable400(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
 
-	_, err := env.cli.Dispatch(context.Background(), filepath.Join(t.TempDir(), "no-such-repo"), plan, "plan.md", "local")
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: filepath.Join(t.TempDir(), "no-such-repo"), PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("仓库不可用应被拒绝")
 	}
@@ -523,7 +525,7 @@ func TestDispatchUnknownError500(t *testing.T) {
 	if err := env.st.Close(); err != nil {
 		t.Fatalf("关闭 store: %v", err)
 	}
-	_, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("store 关闭后派发应失败")
 	}

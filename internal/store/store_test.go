@@ -376,6 +376,45 @@ func TestTicketIdempotent(t *testing.T) {
 	}
 }
 
+// TestCreateTaskPersistsPhase2Fields 验证二期新增字段（name/executor/model/work_dir/worktree_managed）
+// 能随 CreateTask 落库并从 GetTask 完整回读。
+func TestCreateTaskPersistsPhase2Fields(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	task := &proto.Task{
+		ID: "t1", RepoPath: "/repo", State: proto.TaskStatePending,
+		Name: "重构支付", Executor: "opencode", Model: "gpt-5-mini",
+		WorkDir: "/wt/t1", WorktreeManaged: true,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "重构支付" || got.Executor != "opencode" || got.Model != "gpt-5-mini" ||
+		got.WorkDir != "/wt/t1" || !got.WorktreeManaged {
+		t.Fatalf("二期字段未持久化: %+v", got)
+	}
+	if got.Workdir() != "/wt/t1" {
+		t.Fatalf("Workdir() 应返回 WorkDir，得到 %s", got.Workdir())
+	}
+}
+
+// TestWorkdirFallsBackToRepoPath 验证 WorkDir 为空（原地模式）时 Workdir() 回退到 RepoPath。
+func TestWorkdirFallsBackToRepoPath(t *testing.T) {
+	tk := proto.Task{RepoPath: "/repo"}
+	if tk.Workdir() != "/repo" {
+		t.Fatalf("WorkDir 为空时 Workdir() 应回退 RepoPath")
+	}
+}
+
 // TestAnswerTicketRefreshesTaskUpdatedAt 验证回答工单会刷新所属任务的 updated_at
 // （P1-15a 二次告警的活动信号）：看门狗凭 updated_at 前进判定「stalled 之后有
 // 回复」，回答必须推进它，否则「已 stalled → 审核者回答 → executor 仍死」永远

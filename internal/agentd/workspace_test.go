@@ -30,6 +30,29 @@ func gitAt(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+// 以下别名让 PrepareWorkspace 测试的意图更贴近其工作区语义（plan 中命名）。
+// 与 gitAt/initGitRepo 完全同构：失败即 Fatal、返回命令输出。
+func initTestRepo(t *testing.T) string { t.Helper(); return initGitRepo(t) }
+func gitT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return gitAt(t, dir, args...)
+}
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(gitAt(t, dir, args...))
+}
+
+// writeAndCommit 在仓库里写文件并提交，返回提交后的 HEAD。
+func writeAndCommit(t *testing.T, repo, name, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("写 %s: %v", name, err)
+	}
+	gitAt(t, repo, "add", name)
+	gitAt(t, repo, "commit", "-q", "-m", "commit "+name)
+	return strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
+}
+
 // initGitRepo 在 t.TempDir() 里造一个带初始提交的干净仓库（main 分支 + README.md），
 // 返回仓库路径。
 func initGitRepo(t *testing.T) string {
@@ -422,5 +445,139 @@ func TestRunOutputBufferBounded(t *testing.T) {
 	}
 	if !b.capped {
 		t.Fatalf("发生过截断应标记 capped")
+	}
+}
+
+// TestPrepareWorkspaceDefaultKeepsCurrentBehavior 验证缺省请求（无分支/无 worktree
+// 参数）行为与一期 PrepareBranch 完全一致：自动开 handoff/<id8> 分支、原地工作。
+func TestPrepareWorkspaceDefaultKeepsCurrentBehavior(t *testing.T) {
+	repo := initTestRepo(t)
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-rest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Branch != "handoff/abcdefgh" || ws.WorkDir != repo || ws.Managed {
+		t.Fatalf("缺省行为应与一期一致: %+v", ws)
+	}
+}
+
+// TestPrepareWorkspaceExistingBranch 验证 Branch 模式：切到已存在分支并留在其上。
+func TestPrepareWorkspaceExistingBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "branch", "feat-x")
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "feat-x"})
+	if err != nil || ws.Branch != "feat-x" {
+		t.Fatalf("应切到已存在分支: %+v %v", ws, err)
+	}
+	if cur := gitOut(t, repo, "branch", "--show-current"); cur != "feat-x" {
+		t.Fatalf("HEAD 应在 feat-x，得到 %s", cur)
+	}
+}
+
+// TestPrepareWorkspaceBranchNotExist 验证 Branch 模式对不存在分支拒发（ErrBadWorkspaceReq）。
+func TestPrepareWorkspaceBranchNotExist(t *testing.T) {
+	repo := initTestRepo(t)
+	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "ghost"}); !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("不存在的分支应拒发: %v", err)
+	}
+}
+
+// TestPrepareWorkspaceNewBranchWithBase 验证 NewBranch+Base：新分支从 Base 起点而不是 HEAD。
+func TestPrepareWorkspaceNewBranchWithBase(t *testing.T) {
+	repo := initTestRepo(t)
+	base := gitOut(t, repo, "rev-parse", "HEAD")
+	writeAndCommit(t, repo, "f.txt", "x") // HEAD 前进一格
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", NewBranch: "feat-y", Base: base})
+	if err != nil || ws.Branch != "feat-y" {
+		t.Fatal(err)
+	}
+	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != base {
+		t.Fatalf("新分支应从 base 起点: head=%s base=%s", head, base)
+	}
+}
+
+// TestPrepareWorkspaceNewWorktree 验证 NewWorktree 模式：在 WorktreesDir/<id8> 建
+// managed worktree、内部自动开任务分支；且同 repo 第二个任务可并行派发（一期
+// 原地模式做不到的冲突点）。
+func TestPrepareWorkspaceNewWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "worktrees")
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ws.Managed || ws.WorkDir != filepath.Join(wtDir, "abcdefgh") {
+		t.Fatalf("managed worktree 路径错误: %+v", ws)
+	}
+	if cur := gitOut(t, ws.WorkDir, "branch", "--show-current"); cur != "handoff/abcdefgh" {
+		t.Fatalf("worktree 内应在任务分支: %s", cur)
+	}
+	// 同 repo 第二个任务并行派发不冲突（一期原地模式做不到）
+	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "second-t", NewWorktree: true, WorktreesDir: wtDir}); err != nil {
+		t.Fatalf("同 repo 并行派发应成功: %v", err)
+	}
+}
+
+// TestPrepareWorkspaceNewWorktreeAllowsDirtyMainRepo 验证 new-worktree 不受主仓脏
+// 工作区限制：新树天然干净（为什么免脏检查，见 PrepareWorkspace doc 的 why）。
+func TestPrepareWorkspaceNewWorktreeAllowsDirtyMainRepo(t *testing.T) {
+	repo := initTestRepo(t)
+	os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("x"), 0o644) // 主仓脏
+	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", NewWorktree: true,
+		WorktreesDir: filepath.Join(t.TempDir(), "w")}); err != nil {
+		t.Fatalf("new-worktree 不应受主仓脏工作区限制: %v", err)
+	}
+}
+
+// TestPrepareWorkspaceExistingWorktree 验证 Worktree 模式：用户自带 worktree（归属
+// 校验通过）在其中开任务分支、Managed=false；非本 repo 的目录拒发。
+func TestPrepareWorkspaceExistingWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt1")
+	gitT(t, repo, "worktree", "add", "-b", "pre-branch", wt)
+	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", Worktree: wt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Managed || ws.WorkDir != wt || ws.Branch != "handoff/abcdefgh" {
+		t.Fatalf("用户自带 worktree: Managed 应为 false 且在其中开任务分支: %+v", ws)
+	}
+	// 非 worktree 路径拒发
+	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t2", Worktree: t.TempDir()}); !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("非本 repo worktree 应拒发: %v", err)
+	}
+}
+
+// TestPrepareWorkspaceMutualExclusionAndInjection 覆盖全部参数非法组合：
+// 互斥参数、Base 依赖、- 前缀注入面，统一 ErrBadWorkspaceReq。
+func TestPrepareWorkspaceMutualExclusionAndInjection(t *testing.T) {
+	repo := initTestRepo(t)
+	for name, req := range map[string]WorkspaceReq{
+		"branch×new-branch":     {Repo: repo, TaskID: "t", Branch: "a", NewBranch: "b"},
+		"worktree×new-worktree": {Repo: repo, TaskID: "t", Worktree: "/x", NewWorktree: true},
+		"base 无 new-branch":     {Repo: repo, TaskID: "t", Base: "HEAD~1"},
+		"分支名 - 开头":              {Repo: repo, TaskID: "t", Branch: "-evil"},
+		"base - 开头":             {Repo: repo, TaskID: "t", NewBranch: "b", Base: "--evil"},
+	} {
+		if _, err := PrepareWorkspace(req); !errors.Is(err, ErrBadWorkspaceReq) {
+			t.Fatalf("%s 应拒发: %v", name, err)
+		}
+	}
+}
+
+// TestRemoveManagedWorktree 验证 managed worktree 清理：目录删除、任务分支保留。
+func TestRemoveManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "w")
+	ws, _ := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
+	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ws.WorkDir); !os.IsNotExist(err) {
+		t.Fatalf("worktree 目录应已删除")
+	}
+	// 分支保留（spec：只删工作树不删分支）
+	if out := gitOut(t, repo, "branch", "--list", "handoff/abcdefgh"); out == "" {
+		t.Fatalf("任务分支不应被删除")
 	}
 }

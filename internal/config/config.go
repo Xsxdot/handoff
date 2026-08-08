@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -42,6 +43,41 @@ type Config struct {
 	DataDir      string
 	StallTimeout time.Duration
 	Targets      map[string]Target
+	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
+	//（二期前的现行为：权限请求直接走人工审核者）。
+	Approver ApproverConfig
+	// Executor 是任务的缺省执行者选择配置。
+	Executor ExecutorConfig
+	// Terminal 是 dispatch 成功后是否默认弹终端实况的配置。
+	Terminal TerminalConfig
+}
+
+// ApproverConfig 描述审批链的廉价模型审批者。
+//
+// 参数语义：
+//   - Executor：审批者执行者名（如 opencode/claude）；空=不启用审批链
+//   - Model：审批者模型名；空=用执行者自身默认模型
+//   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
+//   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工审核者
+type ApproverConfig struct {
+	Executor  string
+	Model     string
+	Timeout   time.Duration
+	Blacklist []string
+}
+
+// ExecutorConfig 描述 dispatch 未显式指定执行者时的缺省选择。
+type ExecutorConfig struct {
+	Default string
+	Model   string
+}
+
+// TerminalConfig 描述 dispatch 成功后的终端弹窗行为。
+//
+// Auto 默认 true，仅 darwin 生效（osascript 弹 Terminal.app）；其余平台
+// 降级为打印「实况: handoff attach <id>」提示行。
+type TerminalConfig struct {
+	Auto bool
 }
 
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌。
@@ -62,7 +98,16 @@ type Target struct {
 // 注意：
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
 func Load(path string) (*Config, error) {
-	cfg := &Config{Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour}
+	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
+	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=true），
+	// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
+	cfg := &Config{
+		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
+		Approver: ApproverConfig{Timeout: 60 * time.Second},
+		Executor: ExecutorConfig{Default: "opencode"},
+		Terminal: TerminalConfig{Auto: true},
+		Targets:  map[string]Target{},
+	}
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -96,6 +141,20 @@ func (c *Config) validate() error {
 	if c.StallTimeout <= 0 {
 		return fmt.Errorf("stalltimeout 必须为正时长（当前 %s）；省略该键即用默认 2h", c.StallTimeout)
 	}
+	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
+	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
+	if c.Approver.Executor != "" {
+		if c.Approver.Timeout <= 0 {
+			return fmt.Errorf("approver.timeout 必须为正时长（当前 %s）", c.Approver.Timeout)
+		}
+		for i, r := range c.Approver.Blacklist {
+			// 黑名单是正则，必须在启动期编译校验：运行期才 panic 会让
+			// 任务权限处理在仲裁中途崩溃，而启动期报错只需改配置重启。
+			if _, err := regexp.Compile(r); err != nil {
+				return fmt.Errorf("approver.blacklist[%d] 非法正则 %q: %w", i, r, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -121,7 +180,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,token}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

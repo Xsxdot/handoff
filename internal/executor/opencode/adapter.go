@@ -264,18 +264,21 @@ func (a *Adapter) drop(taskID string) {
 //   - serve 已拉起但后续阶段失败时自动 Kill 清理 tmux 残留，避免半启动进程占端口
 func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) {
 	a.log.Info("adapter 开始启动任务", "task", req.Task.ID,
-		"task_dir", req.TaskDir, "repo", req.Task.RepoPath)
+		"task_dir", req.TaskDir, "workdir", req.Task.Workdir())
 	defer func() {
 		if err != nil {
 			a.log.Error("adapter 启动任务失败", "task", req.Task.ID, "cause", err)
 		}
 	}()
 
-	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent)
+	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent)
 	if err != nil {
 		return err
 	}
-	proc, err := StartServe(ctx, req.Task.RepoPath, req.Task.ID, req.TaskDir, configPath, a.log)
+	// serve 的工作目录（cwd）取 task.Workdir()：worktree 任务的 executor 必须在
+	// worktree 里跑（分支 HEAD 在那里），主仓库 HEAD 停在派发前位置；原地模式
+	// Workdir() 回退 RepoPath，行为与一期一致
+	proc, err := StartServe(ctx, req.Task.Workdir(), req.Task.ID, req.TaskDir, configPath, a.log)
 	if err != nil {
 		return err
 	}
@@ -306,10 +309,10 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 //     供 manager 落 task.ExecutorSession）
 //   - err: 建会话/发 prompt 失败；失败时运行态已注销
 func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API, handle serveHandle) (sessionID string, err error) {
-	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.RepoPath)
+	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
 	r.api = api
 	r.handle = handle
-	a.log.Info("adapter 启动运行", "task", r.taskID, "task_dir", r.taskDir, "repo", r.repoPath)
+	a.log.Info("adapter 启动运行", "task", r.taskID, "task_dir", r.taskDir, "workdir", r.repoPath)
 	defer func() {
 		if err != nil {
 			a.log.Error("adapter 启动运行失败", "task", r.taskID, "cause", err)
