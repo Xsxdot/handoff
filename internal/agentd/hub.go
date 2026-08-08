@@ -54,7 +54,7 @@ func NewHub() *Hub {
 //   - taskID: 要订阅的任务 ID
 //
 // 返回：
-//   - ch: 事件通道（带缓冲）；仅包含订阅后新产生的事件，历史回放由 server 层用 store.EventsFrom 拼接
+//   - ch: 事件通道（带缓冲）；仅包含订阅后新产生的事件，历史回放由 server 层用 store.EventsFromAsc 拼接
 //   - cancel: 取消订阅函数，可重复调用；取消后本通道不再接收新事件并被关闭，
 //     消费方可直接 range 到结束，Publish 也不会再向其发送
 //

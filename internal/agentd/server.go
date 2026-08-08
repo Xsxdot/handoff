@@ -558,7 +558,8 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 }
 
 // handleEvents 处理 /ws/events：先订阅 hub 实时流，再补发 store 中 seq>from_seq 的
-// 历史事件，重放期间实时事件经排空器收集、按 seq 与重放归并去重后写出。
+// 历史事件；排空器 goroutine 在整个连接生命周期内持续消费订阅通道，主循环按批次
+// 归并（按 seq 升序、去重）后写出。
 //
 // 参数：
 //   - task: 任务 ID（必填）
@@ -571,8 +572,11 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     窗口期内 Publish 的事件订阅者为零、被 hub 直接丢弃。丢的是 question/
 //     permission_request 这类一次性唤醒事件：任务随即进入 waiting_answer 不再产出
 //     事件，客户端连接健康不会重连（WaitEvent 只在连接出错时重连），审核者永远
-//     不被唤醒，executor 阻塞到看门狗兜底。先订阅 + 重放期间排空 + seq 归并去重后，
+//     不被唤醒，executor 阻塞到看门狗兜底。先订阅 + 排空器全程消费 + seq 归并去重后，
 //     窗口期事件既不丢也不重。
+//   - **为什么排空器覆盖整个连接生命周期**：任何一次事件写出都可能因背压阻塞任意久，
+//     阻塞期间若订阅通道无人消费，16 缓冲被 Publish 写满后 hub 即按慢订阅者契约丢
+//     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -613,58 +617,40 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch, cancel := s.hub.Subscribe(taskID)
 	defer cancel()
 
-	// 重放期间实时事件排空器：独立 goroutine 持续阻塞消费订阅通道，把事件收集进
-	// live 切片（互斥锁保护），直到收到 drainStop 信号退出。
+	// 实时事件排空器：整个连接生命周期内的唯一消费者 goroutine，持续阻塞消费订阅
+	// 通道并收集进 live 切片（互斥锁保护），每收集一条向 drainNotify 发送一次唤醒
+	// （缓冲 1；主循环总是整批快照 live，单个待处理唤醒足够，default 分支防堆积）。
 	//
-	// 为什么必须用「阻塞消费的独立 goroutine」而非「重放写循环里每写一条排空一次」：
-	// 单条重放写可能因 TCP 背压阻塞任意久，阻塞期间订阅通道 16 的缓冲会被 Publish
-	// 写满，hub 的 select-default 慢订阅者丢弃逻辑开始丢事件——排空器与重放写并发，
-	// 缓冲永不写满，重放期间 Publish 的事件全部进入 live 等待归并写出。
+	// 为什么必须覆盖「整个连接生命周期」而非只覆盖重放阶段：任何一次事件写出
+	// （重放写、归并写、实时写）都可能因 TCP 背压阻塞任意久，阻塞期间若无人消费
+	// 订阅通道，16 缓冲被 Publish 写满后 hub 的 select-default 慢订阅者丢弃逻辑
+	// 开始丢事件——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不
+	// 写满，Publish 的事件 100% 进入 live 等待写出，不存在「停止排空后再写归并」
+	// 的丢事件窗口。
 	var (
-		liveMu sync.Mutex
-		live   []proto.Event
+		liveMu      sync.Mutex
+		live        []proto.Event
+		drainNotify = make(chan struct{}, 1)
 	)
-	drainStop := make(chan struct{})
-	drainDone := make(chan struct{})
 	go func() {
-		defer close(drainDone)
 		for {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
-					// 订阅被取消（defer cancel 触发，不会发生在重放期间），防御性退出
-					return
+					return // 订阅被取消（连接结束，defer cancel 触发），排空器退出
 				}
 				liveMu.Lock()
 				live = append(live, ev)
 				liveMu.Unlock()
-			case <-drainStop:
-				// 收尾：把此刻通道里的残余事件也收走。select 非确定性，若 ch 同时
-				// 有事件，可能先被收走、也可能残留——残留的留在通道里由主循环接管，
-				// 不丢不重（每个事件恰好被一个消费者收走一次）
-				for {
-					select {
-					case ev, ok := <-ch:
-						if !ok {
-							return
-						}
-						liveMu.Lock()
-						live = append(live, ev)
-						liveMu.Unlock()
-					default:
-						return
-					}
+				select {
+				case drainNotify <- struct{}{}:
+				default: // 已有待消费唤醒；主循环整批快照时会一并取走全部 live
 				}
+			case <-ctx.Done():
+				return // 连接断开，排空器退出（防御；defer cancel 关闭通道同样触发退出）
 			}
 		}
 	}()
-	// stopDrain 幂等：重放完成后显式调用一次（归并必须在排空器停止后进行），
-	// 其余错误路径由 defer 兜底，防重复 close(drainStop) panic
-	var stopOnce sync.Once
-	stopDrain := func() {
-		stopOnce.Do(func() { close(drainStop); <-drainDone })
-	}
-	defer stopDrain()
 
 	// 阶段一：补发历史事件（from_seq 之后按 seq 升序的最旧 limit 条，截断在尾部）
 	replays, err := s.st.EventsFromAsc(taskID, fromSeq, eventReplayLimit)
@@ -679,14 +665,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if len(replays) > 0 {
 		maxReplayed = replays[len(replays)-1].Seq
 	}
-	// 截断告警（真实可触发）：store 里该任务的最新事件比本次补发最后一条还新，
-	// 说明补发窗口被 eventReplayLimit 截断——缺口在尾部（最旧侧已完整补出），
-	// 尾部缺口要么已被重放期间排空的实时流覆盖，要么需客户端凭更大 cursor 重连
-	// 补齐（见函数头注意），这是「事件为什么没到」在重放维度的第一排查点
-	if latest, lerr := s.st.LatestEvent(taskID); lerr == nil && latest.Seq > maxReplayed {
-		s.log.Warn("WS 补发窗口被截断", "task", taskID, "from_seq", fromSeq,
-			"replayed", len(replays), "max_replayed", maxReplayed, "store_max", latest.Seq)
+	// 截断基线：记录重放快照时刻 store 的最新 seq。若 > maxReplayed 说明补发窗口
+	// 被 eventReplayLimit 截断，缺口在尾部 (maxReplayed, storeMax]；缺口是否真的
+	// 丢失（真截断）在归并后核对（见阶段二后的截断诊断）
+	storeMax := int64(0)
+	if latest, lerr := s.st.LatestEvent(taskID); lerr == nil {
+		storeMax = latest.Seq
 	}
+	s.log.Debug("WS 重放开始", "task", taskID, "from_seq", fromSeq, "replays", len(replays), "store_max", storeMax)
 	for _, ev := range replays {
 		if err := writeEvent(ctx, conn, ev); err != nil {
 			s.log.Warn("WS 补发写入失败", "task", taskID, "seq", ev.Seq, "err", err)
@@ -696,45 +682,75 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("WS 连接建立", "task", taskID, "from_seq", fromSeq, "replayed", len(replays))
 
-	// 阶段二：重放与实时归并。排空器已停止、live 冻结。
-	//
-	// 去重依据：重放写循环与排空并发，订阅后、重放快照前落库的事件会同时出现在
-	// 重放结果与 live 中；由上面 maxReplayed 的分界论证，live 中 seq <= maxReplayed
-	// 的事件必已被重放写出，跳过；seq > maxReplayed 的是订阅后新产生的事件，必须
-	// 补出，否则就是 P0-1 的窗口期丢失。
-	//
-	// 为什么排序：排空收集顺序是「Publish 到达通道的顺序」，与重放写交错后可能与
-	// seq 序不一致（两个生产 goroutine 并发 Publish 时尤其如此），而单连接 SSE
-	// 要求全局保序——按 seq 升序写出（归并）保证客户端按 seq 连续推进 cursor
-	stopDrain()
-	sort.Slice(live, func(i, j int) bool { return live[i].Seq < live[j].Seq })
-	for _, ev := range live {
-		if ev.Seq <= maxReplayed {
-			continue // 已被重放写出，跳过重复
-		}
-		if err := writeEvent(ctx, conn, ev); err != nil {
-			s.log.Warn("WS 实时写入失败", "task", taskID, "seq", ev.Seq, "err", err)
-			return
-		}
-		sent++
-	}
-	s.log.Debug("WS 重放归并完成", "task", taskID, "live_merged", len(live))
+	// 已写出的最大 seq：重放写完全部 (fromSeq, maxReplayed]。此后实时事件按 seq
+	// 单调推进，seq <= lastWrittenSeq 的事件必已写出，作为去重/乱序判据
+	lastWrittenSeq := maxReplayed
 
-	// 阶段三：正常写循环（select 订阅通道 + ctx），排空器已退出，本循环接管通道
-	for {
-		select {
-		case ev, ok := <-ch:
-			if !ok {
-				// 订阅被取消（defer cancel 触发，不会发生在循环中），防御性退出
-				return
+	// writeLiveBatch 写出一个归并批次：按 seq 升序排序（排空收集顺序是「Publish
+	// 到达通道的顺序」，与重放写交错后可能与 seq 序不一致——并发 Publish 时尤其
+	// 如此——而单连接 SSE 要求全局保序，按 seq 升序写出保证客户端按 seq 连续推进
+	// cursor），跳过已写出的重复（seq <= lastWrittenSeq），推进最后写出 seq。
+	// 返回 false 表示写入失败（连接已不可用），调用方应立即退出。
+	writeLiveBatch := func(pending []proto.Event) bool {
+		sort.Slice(pending, func(i, j int) bool { return pending[i].Seq < pending[j].Seq })
+		for _, ev := range pending {
+			if ev.Seq <= lastWrittenSeq {
+				continue // 重复：seq <= maxReplayed 的已随重放写出；乱序迟到的已写出
 			}
 			if err := writeEvent(ctx, conn, ev); err != nil {
 				s.log.Warn("WS 实时写入失败", "task", taskID, "seq", ev.Seq, "err", err)
+				return false
+			}
+			lastWrittenSeq = ev.Seq
+			sent++
+		}
+		return true
+	}
+
+	// 阶段二：归并写出排空器在重放期间收集的实时事件。
+	//
+	// 去重依据：订阅后、重放快照前落库的事件会同时出现在重放结果与 live 中；由
+	// 上面 maxReplayed 的分界论证，live 中 seq <= maxReplayed 的事件必已被重放
+	// 写出，跳过；seq > maxReplayed 的是订阅后新产生的事件，必须补出，否则就是
+	// P0-1 的窗口期丢失。本阶段写循环可能因背压阻塞任意久，但排空器仍在运行，
+	// 阻塞期间新到事件继续进 live，由阶段三无缝接管——无丢事件窗口。
+	liveMu.Lock()
+	pending := live
+	live = nil
+	liveMu.Unlock()
+	if !writeLiveBatch(pending) {
+		return
+	}
+	s.log.Debug("WS 重放归并完成", "task", taskID, "live_merged", len(pending))
+
+	// 截断诊断（真实可触发）：重放快照时刻 store 的最新 seq 大于最后写出的 seq，
+	// 说明 (lastWrittenSeq, storeMax] 区间的事件既未随重放（被 eventReplayLimit
+	// 截断）也未进入实时流（订阅前已落库并发布、被 hub 无订阅者丢弃）——真缺口，
+	// 客户端需凭更大 cursor 重连续拉补齐；若归并已追平 store 最新，尾部缺口由
+	// 实时流补齐，属预期场景，仅 Debug
+	if storeMax > lastWrittenSeq {
+		s.log.Warn("WS 补发窗口截断且尾部缺口未由实时流补齐", "task", taskID, "from_seq", fromSeq,
+			"replayed", len(replays), "last_written", lastWrittenSeq, "store_max", storeMax)
+	} else if storeMax > maxReplayed {
+		s.log.Debug("WS 补发窗口截断但尾部缺口已由实时流补齐", "task", taskID,
+			"replayed", len(replays), "last_written", lastWrittenSeq, "store_max", storeMax)
+	}
+
+	// 阶段三：实时写循环。排空器始终是订阅通道的唯一消费者，主循环等唤醒后整批
+	// 快照 → 排序 → 写出；写循环阻塞期间新到事件继续被排空器收集进 live，
+	// 不产生「无人消费订阅通道」的丢事件窗口
+	for {
+		select {
+		case <-drainNotify:
+			liveMu.Lock()
+			pending := live
+			live = nil
+			liveMu.Unlock()
+			if !writeLiveBatch(pending) {
 				return
 			}
-			sent++
 		case <-ctx.Done():
-			return // 客户端已断开，退出并释放订阅
+			return // 客户端已断开，退出并释放订阅（defer cancel 关闭通道，排空器随之退出）
 		}
 	}
 }

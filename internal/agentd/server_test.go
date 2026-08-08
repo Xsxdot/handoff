@@ -41,16 +41,46 @@ type testEnv struct {
 // newTestEnv 构造完整测试环境，并注册 t.Cleanup 关闭 store 与 server。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvWithLogger(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// newTestEnvWithLogger 同 newTestEnv，但注入自定义 logger（供测试捕获服务端关键日志做
+// 确定性同步信号）。
+func newTestEnvWithLogger(t *testing.T, logger *slog.Logger) *testEnv {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &testEnv{srv: srv, ts: ts, st: st, token: testToken}
+}
+
+// signalHandler 是测试专用 slog.Handler：全量放行（含 Debug），每条日志先触发 on 回调
+// 再转发给内部 handler（通常为 Discard）。用于把服务端日志变成测试的确定性信号。
+type signalHandler struct {
+	h  slog.Handler
+	on func(slog.Record)
+}
+
+func (s *signalHandler) Enabled(ctx context.Context, level slog.Level) bool { return true }
+
+func (s *signalHandler) Handle(ctx context.Context, r slog.Record) error {
+	if s.on != nil {
+		s.on(r)
+	}
+	return s.h.Handle(ctx, r)
+}
+
+func (s *signalHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &signalHandler{h: s.h.WithAttrs(attrs), on: s.on}
+}
+
+func (s *signalHandler) WithGroup(name string) slog.Handler {
+	return &signalHandler{h: s.h.WithGroup(name), on: s.on}
 }
 
 // get 发起带正确 token 的 GET 请求。
@@ -303,17 +333,36 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 // 客户端连接健康不会重连，审核者永远不被唤醒。新实现「先订阅后重放」，重放期间的
 // 实时事件由排空器收集、按 seq 归并补出。
 //
-// 设计（确定性优先）：拨号后不读客户端 → 服务端订阅并开始重放写（5000 条积压，
-// TCP 缓冲填满后写循环阻塞）→ 短暂等待确保订阅已完成 → Publish 一条 question →
-// 恢复读取 → 断言 seq 1..5001 连续到达（无丢失、无重复、无乱序），question 必达。
-// 等待 50ms 足以保证「已订阅」（订阅发生在 Accept 之后、store 读与重放之前），
-// 且无论机器 TCP 缓冲多大、重放写是否真的阻塞，question 都落在重放阶段内。
+// 判定逻辑（确定性优先，不依赖机器 TCP 缓冲大小与调度速度）：
+//   - 确定性信号：服务端在开始写重放前打 Debug 日志「WS 重放开始」（发生在订阅与
+//     store 读之后、重放写之前）。测试通过 signalHandler 捕获该日志后立即 Publish，
+//     此时必然处于「已订阅 + 重放写进行中」，question 必走归并路径——旧代码没有
+//     该日志（且重放后才订阅），测试在信号等待处即失败，不依赖背压时序
+//   - 积压量 10000 条（约 1.5MB）：取 eventReplayLimit 上限——超过会被补发截断、
+//     破坏「seq 严格连续」断言；1.5MB 超过常见内核回环发送缓冲（Linux/macOS 默认
+//     均在 MB 级以下），客户端不读时重放写会被背压阻塞，忠实复现 P0-1 的「重放长
+//     时间阻塞」场景；即便内核缓冲异常超大（重放写不被阻塞），信号也保证 question
+//     落在重放阶段内，测试仍真实覆盖归并路径
+//   - 断言 seq 1..10001 严格连续到达（无丢失、无重复、无乱序），question 必达
 func TestWSReplayWindowLiveNoLoss(t *testing.T) {
-	env := newTestEnv(t)
+	// 捕获服务端「WS 重放开始」Debug 日志作为确定性信号
+	replayStarted := make(chan struct{}, 1)
+	env := newTestEnvWithLogger(t, slog.New(&signalHandler{
+		h: slog.NewTextHandler(io.Discard, nil),
+		on: func(r slog.Record) {
+			if r.Message == "WS 重放开始" {
+				select {
+				case replayStarted <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}))
 	taskID := "t1"
-	// 5000 条积压历史：让重放写循环「需时明显」——客户端不读时 TCP 缓冲填满、
-	// 服务端阻塞在重放写，为「重放期间 Publish」制造确定性的时间窗口
-	const backlog = 5000
+	// 10000 条积压历史（~1.5MB，= eventReplayLimit 上限）：让重放写循环「需时明显」——
+	// 客户端不读时 TCP 缓冲填满、服务端阻塞在重放写，为「重放期间 Publish」制造
+	// 确定性的时间窗口
+	const backlog = 10000
 	for i := 1; i <= backlog; i++ {
 		if _, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": i}); err != nil {
 			t.Fatalf("AppendEvent %d: %v", i, err)
@@ -321,7 +370,7 @@ func TestWSReplayWindowLiveNoLoss(t *testing.T) {
 	}
 
 	wsURL := "ws" + strings.TrimPrefix(env.ts.URL, "http") + "/ws/events?task=" + taskID + "&from_seq=0"
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + env.token}},
@@ -334,16 +383,19 @@ func TestWSReplayWindowLiveNoLoss(t *testing.T) {
 	}
 	defer conn.CloseNow()
 
-	// 拨号后不读客户端：服务端重放写被 TCP 背压阻塞，制造「重放期间」窗口。
-	// 50ms 等待保证服务端已完成订阅（订阅在 Accept 之后立刻发生，早于重放），
-	// 消除「Publish 早于订阅」的竞态
-	time.Sleep(50 * time.Millisecond)
+	// 等确定性信号：收到「WS 重放开始」= 订阅已完成 + 重放写循环已开始，此刻
+	// Publish 必落在重放/归并阶段（取代固定 sleep，不依赖机器速度）
+	select {
+	case <-replayStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("服务端未进入重放阶段（未收到 WS 重放开始日志）——重放路径未被覆盖")
+	}
 
-	// 重放期间 Publish 一条 question（seq 5001，未落库——只验证实时通道侧不丢）
+	// 重放期间 Publish 一条 question（seq 10001，未落库——只验证实时通道侧不丢）
 	env.srv.Hub().Publish(proto.Event{Seq: backlog + 1, TaskID: taskID,
 		Type: proto.EventTypeQuestion, Payload: json.RawMessage(`{"q":"重放期间的问题"}`)})
 
-	// 恢复读取：重放事件 + question 必须按 seq 1..5001 连续到达
+	// 恢复读取：重放事件 + question 必须按 seq 1..10001 连续到达
 	var (
 		last   int64
 		count  int
