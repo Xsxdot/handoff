@@ -5,7 +5,7 @@
 | ID | 标题 | 状态 | 优先级 | Spec | 原型/流程图 | 验收 | 变更痕迹 | 备注 |
 |----|------|------|--------|------|------------|------|---------|------|
 | B1 | 二期：审批链/executor 选择/dispatch 扩展/可观测性 | ✅ done(已验) | 高 | [spec](specs/2026-08-08-handoff-approver-dispatch-observability-design.md) | — | go build + gofmt + go vet + go test ./... 全绿（合并结果上重跑）、go test -race ./internal/agentd/ ./internal/executor/opencode/ 绿；attach 本机/远程 execve 路径真机实测通过；真实旧库迁移实测无损；无原型/流程图，自动免除对照 08-08 | — | 08-08 完成并合入 main（c89932a，25 提交）。由 handoff 自身派发 devbox/opencode 执行，三轮审核：外部审阅发现 2 P0 + 5 P1 + 4 P2 全部修复 |
-| B2 | Claude Code adapter（任务级五动作全链路） | 💡 idea | 高 | — | — | — | — | 来源：二期 spec §4.4 范围外单独立项；挂载走 headless + permission MCP/hooks，需 spike |
+| B2 | Claude Code adapter（任务级五动作全链路） | 📋 specced | 高 | [spec](specs/2026-08-08-handoff-claude-code-adapter-design.md) | — | — | 08-08 spike 实测定案：`--permission-prompt-tool` + 内置 stdio MCP server 挂权限门；stream-json 双向流跨回合存活；可视化对齐现状（tmux 两窗口，不自研 TUI）；继承 user/project settings 保 skills、任务级 deny/ask 收口 | 来源：二期 spec §4.4 范围外单独立项 |
 | B3 | grok adapter（预授权降级模式） | 💡 idea | 低 | — | — | — | — | 来源：二期 spec §4.4；缺程序化审批挂载点，与审批链不契合，优先级低 |
 | B4 | 远程 target 派发前代码同步保证 | 📋 specced | 中 | [spec §3](specs/2026-08-08-handoff-backlog-cleanup-design.md) | — | — | 08-08 定策略：自动 fetch（基线缺失才 fetch 再复查，仍缺失即拒发） | 来源：08-08 devbox 真实测试——远程仓库落后 2 提交需手动 push+pull |
 | B5 | 任务停止/取消命令（handoff stop） | 📋 specced | 中 | [spec §4](specs/2026-08-08-handoff-backlog-cleanup-design.md) | — | — | 08-08 定终态：复用 failed + 事件写明原因，不新增 aborted 状态 | 来源：08-08 真实测试——废弃 running 任务只能 ssh 杀 tmux 会话，缺 CLI 一等入口 |
