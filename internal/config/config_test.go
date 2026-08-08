@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/config"
 )
@@ -111,5 +112,77 @@ func TestLoadRejectsNonPositiveStallTimeout(t *testing.T) {
 		if !strings.Contains(err.Error(), "stalltimeout") {
 			t.Errorf("stalltimeout=%s 的错误未点名该配置项: %v", v, err)
 		}
+	}
+}
+
+// TestLoadPhase2Sections 验证二期新增三节配置（approver/executor/terminal）的解析。
+func TestLoadPhase2Sections(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte(`
+token: abc
+approver:
+  executor: claude
+  model: haiku
+  blacklist:
+    - "kubectl .*delete"
+executor:
+  default: opencode
+  model: cheap/model
+terminal:
+  auto: false
+`), 0o600)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Approver.Executor != "claude" || cfg.Approver.Model != "haiku" {
+		t.Fatalf("approver 解析错误: %+v", cfg.Approver)
+	}
+	if cfg.Approver.Timeout != 60*time.Second {
+		t.Fatalf("approver.timeout 缺省应为 60s，得到 %s", cfg.Approver.Timeout)
+	}
+	if len(cfg.Approver.Blacklist) != 1 {
+		t.Fatalf("blacklist 解析错误")
+	}
+	if cfg.Executor.Default != "opencode" || cfg.Executor.Model != "cheap/model" {
+		t.Fatalf("executor 解析错误: %+v", cfg.Executor)
+	}
+	if cfg.Terminal.Auto {
+		t.Fatalf("terminal.auto=false 未生效")
+	}
+}
+
+// TestLoadPhase2Defaults 验证二期各节缺省值：approver 默认关闭（Executor 空）、
+// timeout 默认 60s、executor 缺省 opencode、terminal.auto 默认 true。
+func TestLoadPhase2Defaults(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg, err := config.Load(p) // 首次运行生成默认配置
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Approver.Executor != "" || cfg.Approver.Timeout != 60*time.Second {
+		t.Fatalf("approver 默认值错误: %+v", cfg.Approver)
+	}
+	if cfg.Executor.Default != "opencode" || !cfg.Terminal.Auto {
+		t.Fatalf("executor/terminal 默认值错误")
+	}
+}
+
+// TestValidateRejectsBadApproverTimeout 验证 approver 已启用时 timeout 非正被拒绝。
+func TestValidateRejectsBadApproverTimeout(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte("token: a\napprover:\n  executor: claude\n  timeout: -1s\n"), 0o600)
+	if _, err := config.Load(p); err == nil {
+		t.Fatalf("approver.timeout 非正值应被拒绝")
+	}
+}
+
+// TestValidateRejectsBadBlacklistRegex 验证黑名单正则表达式在启动期预检，
+// 非法正则立即报错而不是运行期 panic。
+func TestValidateRejectsBadBlacklistRegex(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte("token: a\napprover:\n  executor: claude\n  blacklist:\n    - \"([\"\n"), 0o600)
+	if _, err := config.Load(p); err == nil {
+		t.Fatalf("非法正则应在启动期被拒绝，而不是运行期 panic")
 	}
 }
