@@ -556,6 +556,13 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, fs.ErrNotExist):
 			s.log.Warn("file 目标不存在", "task", taskID, "path", rel)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
+		case errors.Is(err, ErrPathIsDir):
+			// 目录是可确定的状态（不同于「读取失败」的环境性问题），400 明确告知
+			s.log.Warn("file 目标是目录", "task", taskID, "path", rel)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径是目录，不是文件"})
+		case errors.Is(err, ErrNotRegularFile):
+			s.log.Warn("file 目标不是普通文件", "task", taskID, "path", rel)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是普通文件"})
 		default:
 			s.log.Error("读取文件失败", "task", taskID, "path", rel, "cause", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})

@@ -386,6 +386,13 @@ func TestReviewRoutes(t *testing.T) {
 	if _, err := env.cli.Fetch(context.Background(), task.ID, "../etc/passwd"); err == nil {
 		t.Fatalf("Fetch 逃逸路径应报错")
 	}
+	// fetch 目录：明确错误（400 语义，而非 500「读取失败」）
+	if err := os.MkdirAll(filepath.Join(env.repo, "subdir"), 0o755); err != nil {
+		t.Fatalf("建 subdir: %v", err)
+	}
+	if _, err := env.cli.Fetch(context.Background(), task.ID, "subdir"); err == nil {
+		t.Fatalf("Fetch 目录应报错")
+	}
 
 	// run：正常输出 + 非零退出码（命令执行了就不算错误，退出码回传）
 	stdout, code, err := env.cli.Run(context.Background(), task.ID, "echo review-ok")

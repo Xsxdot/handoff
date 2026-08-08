@@ -30,10 +30,21 @@ func gitAt(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-// initGitRepo 造一个带初始提交的干净仓库（main 分支 + README.md），返回仓库路径。
+// initGitRepo 在 t.TempDir() 里造一个带初始提交的干净仓库（main 分支 + README.md），
+// 返回仓库路径。
 func initGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return initGitRepoIn(t, t.TempDir())
+}
+
+// initGitRepoIn 在指定目录 dir 里造一个带初始提交的干净仓库（main 分支 + README.md），
+// 返回仓库路径。symlink 逃逸用例需要控制仓库的父目录（在外侧放目标文件/链接），
+// 故不能只依赖 initGitRepo 的 t.TempDir。
+func initGitRepoIn(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("建仓库目录 %s: %v", dir, err)
+	}
 	gitAt(t, dir, "init", "-q")
 	gitAt(t, dir, "checkout", "-b", "main")
 	gitAt(t, dir, "config", "user.email", "test@handoff.dev")
@@ -135,6 +146,155 @@ func TestReadFileEscapeRejected(t *testing.T) {
 		if _, err := ReadFile(repo, p); !errors.Is(err, ErrPathEscape) {
 			t.Fatalf("ReadFile(%q) 应拒绝路径逃逸, got %v", p, err)
 		}
+	}
+}
+
+// TestReadFileSymlinkEscape 验证符号链接逃逸防御（P1-5）：
+// 指向仓库外的文件/目录链接一律 ErrPathEscape（读不到仓外内容，信息泄漏被阻断）；
+// 仓内相对目标的链接正常可读（os.OpenRoot 跟随仓内链接）；仓库根自身是符号链接时
+// 照常工作（OpenRoot 跟随根链接）；绝对目标的链接一律拒绝（os.Root 契约：
+// "Symbolic links must not be absolute"，即使目标在仓内）。
+func TestReadFileSymlinkEscape(t *testing.T) {
+	t.Run("symlink_to_outside_file", func(t *testing.T) {
+		base := t.TempDir()
+		repo := initGitRepoIn(t, filepath.Join(base, "repo"))
+		// 仓外敏感文件（如 ~/.ssh/id_rsa 的替身）：链接逃逸读它必须失败
+		if err := os.WriteFile(filepath.Join(base, "secret.txt"), []byte("secret"), 0o644); err != nil {
+			t.Fatalf("写仓外文件: %v", err)
+		}
+		// 相对目标：../../secret.txt 从 repo/evil 出发指向 base/secret.txt，逃出仓库
+		if err := os.Symlink("../../secret.txt", filepath.Join(repo, "evil")); err != nil {
+			t.Fatalf("建逃逸链接: %v", err)
+		}
+		if _, err := ReadFile(repo, "evil"); !errors.Is(err, ErrPathEscape) {
+			t.Fatalf("指向仓外的文件链接应拒绝, got %v", err)
+		}
+	})
+
+	t.Run("symlink_to_outside_dir", func(t *testing.T) {
+		base := t.TempDir()
+		repo := initGitRepoIn(t, filepath.Join(base, "repo"))
+		outdir := filepath.Join(base, "outdir")
+		if err := os.MkdirAll(outdir, 0o755); err != nil {
+			t.Fatalf("建仓外目录: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(outdir, "secret.txt"), []byte("secret"), 0o644); err != nil {
+			t.Fatalf("写仓外文件: %v", err)
+		}
+		if err := os.Symlink("../../outdir", filepath.Join(repo, "dirlink")); err != nil {
+			t.Fatalf("建目录逃逸链接: %v", err)
+		}
+		// 经链接读仓外目录里的文件：中间目录组件逃逸，OpenRoot 在打开时拒绝
+		if _, err := ReadFile(repo, "dirlink/secret.txt"); !errors.Is(err, ErrPathEscape) {
+			t.Fatalf("经目录链接逃逸应拒绝, got %v", err)
+		}
+	})
+
+	t.Run("symlink_internal_allowed", func(t *testing.T) {
+		repo := initGitRepo(t)
+		// 仓内相对目标：允许（开源仓库常见的文件链接，如 docs/README.md -> ../README.md）
+		if err := os.Symlink("README.md", filepath.Join(repo, "notes.md")); err != nil {
+			t.Fatalf("建仓内链接: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+			t.Fatalf("建 sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, "sub", "ok.txt"), []byte("sub\n"), 0o644); err != nil {
+			t.Fatalf("写 sub/ok.txt: %v", err)
+		}
+		// 中间目录组件是仓内链接：同样跟随
+		if err := os.Symlink("sub", filepath.Join(repo, "sublink")); err != nil {
+			t.Fatalf("建仓内目录链接: %v", err)
+		}
+		content, err := ReadFile(repo, "notes.md")
+		if err != nil {
+			t.Fatalf("仓内文件链接应可读, got %v", err)
+		}
+		if !strings.Contains(content, "# repo") {
+			t.Fatalf("仓内链接内容=%q, want 含 # repo", content)
+		}
+		content, err = ReadFile(repo, "sublink/ok.txt")
+		if err != nil {
+			t.Fatalf("仓内目录链接应可读, got %v", err)
+		}
+		if content != "sub\n" {
+			t.Fatalf("仓内目录链接内容=%q, want sub\\n", content)
+		}
+	})
+
+	t.Run("repo_root_is_symlink", func(t *testing.T) {
+		base := t.TempDir()
+		repo := initGitRepoIn(t, filepath.Join(base, "real"))
+		rootlink := filepath.Join(base, "rootlink")
+		if err := os.Symlink(repo, rootlink); err != nil {
+			t.Fatalf("建仓库根链接: %v", err)
+		}
+		// 仓库根自身是链接：OpenRoot 跟随之，读链接指向的真实仓库，正常可用
+		content, err := ReadFile(rootlink, "README.md")
+		if err != nil {
+			t.Fatalf("仓库根为链接时应可读, got %v", err)
+		}
+		if !strings.Contains(content, "# repo") {
+			t.Fatalf("内容=%q, want 含 # repo", content)
+		}
+	})
+
+	t.Run("absolute_target_rejected", func(t *testing.T) {
+		repo := initGitRepo(t)
+		// 绝对目标的链接：os.Root 契约明确 "Symbolic links must not be absolute"，
+		// 即使目标在仓内也拒绝——保守语义（多数平台无 openat2，逐段解析对绝对目标
+		// 无法保证不逃逸，stdlib 统一拒绝）
+		if err := os.Symlink(filepath.Join(repo, "README.md"), filepath.Join(repo, "abs.md")); err != nil {
+			t.Fatalf("建绝对目标链接: %v", err)
+		}
+		if _, err := ReadFile(repo, "abs.md"); !errors.Is(err, ErrPathEscape) {
+			t.Fatalf("绝对目标链接应拒绝, got %v", err)
+		}
+	})
+}
+
+// TestReadFileSizeCap 验证读取大小上限（P1-5）：超过 maxRunOutput 的文件只返回
+// 开头 maxRunOutput 字节（截断而非拒绝——与 RunCmd 输出截断语义一致），
+// 边界内的文件完整返回。
+func TestReadFileSizeCap(t *testing.T) {
+	repo := initGitRepo(t)
+	big := filepath.Join(repo, "big.bin")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxRunOutput+4096), 0o644); err != nil {
+		t.Fatalf("写大文件: %v", err)
+	}
+	content, err := ReadFile(repo, "big.bin")
+	if err != nil {
+		t.Fatalf("ReadFile 大文件: %v", err)
+	}
+	if len(content) != maxRunOutput {
+		t.Fatalf("大文件返回长度=%d, want 截断到 %d", len(content), maxRunOutput)
+	}
+
+	small, err := ReadFile(repo, "README.md")
+	if err != nil {
+		t.Fatalf("ReadFile 小文件: %v", err)
+	}
+	if !strings.Contains(small, "# repo") {
+		t.Fatalf("小文件内容=%q, want 含 # repo", small)
+	}
+}
+
+// TestReadFileDirectoryRejected 验证 fetch 目录返回明确错误（组 9 Minor #7 遗留）：
+// 目录（含经仓内目录链接指向的目录）返回 ErrPathIsDir 而非「读取失败」。
+func TestReadFileDirectoryRejected(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatalf("建 sub: %v", err)
+	}
+	if _, err := ReadFile(repo, "sub"); !errors.Is(err, ErrPathIsDir) {
+		t.Fatalf("读目录应返回 ErrPathIsDir, got %v", err)
+	}
+	if err := os.Symlink("sub", filepath.Join(repo, "dirlink")); err != nil {
+		t.Fatalf("建目录链接: %v", err)
+	}
+	// 经仓内目录链接指向的目录同样是目录（OpenRoot 跟随链接后按类型甄别）
+	if _, err := ReadFile(repo, "dirlink"); !errors.Is(err, ErrPathIsDir) {
+		t.Fatalf("经链接读目录应返回 ErrPathIsDir, got %v", err)
 	}
 }
 

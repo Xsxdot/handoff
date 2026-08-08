@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -30,14 +31,18 @@ import (
 
 // 错误定义：
 //   - ErrDirtyWorktree：工作区有未提交/未跟踪的改动，拒绝派发
-//   - ErrPathEscape：请求的文件路径逃逸出任务仓库
+//   - ErrPathEscape：请求的文件路径逃逸出任务仓库（含符号链接逃逸）
+//   - ErrPathIsDir：请求的文件路径指向目录（fetch 只服务普通文件）
+//   - ErrNotRegularFile：请求的文件路径指向管道/设备等特殊文件（不可读）
 //   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
 //     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
 //     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
 var (
-	ErrDirtyWorktree = errors.New("工作区不干净（有未提交改动），拒绝派发")
-	ErrPathEscape    = errors.New("路径逃逸被拒绝")
-	ErrRepoUnusable  = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
+	ErrDirtyWorktree  = errors.New("工作区不干净（有未提交改动），拒绝派发")
+	ErrPathEscape     = errors.New("路径逃逸被拒绝")
+	ErrPathIsDir      = errors.New("路径是目录，不是文件")
+	ErrNotRegularFile = errors.New("路径不是普通文件（管道/设备等特殊文件不可读）")
+	ErrRepoUnusable   = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 )
 
 // 执行护栏：
@@ -168,18 +173,35 @@ func resolveBaseBranch(repo string) string {
 
 // ReadFile 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
 //
-// 路径逃逸防御（安全红线）：filepath.Clean 归一化后，任何绝对路径或残留
-// .. 前缀（Clean 后为 ".." 或以 "../" 开头）的路径一律拒绝——防审阅接口被
-// 用来读取仓库外的任意文件（如 ~/.ssh/id_rsa）。符号链接逃逸不在本层处理
-// （仓库自身指向外部链接的文件由审核者自担风险），见 task-9-report 备注。
+// 路径逃逸防御（安全红线，两道）：
+//  1. filepath.Clean 归一化后，任何绝对路径或残留 .. 前缀的路径一律拒绝（ErrPathEscape）
+//  2. 实际打开经 os.OpenRoot（内核级 jail）：路径中任何符号链接指向仓库外时，
+//     打开直接失败。为什么不用 EvalSymlinks 前缀校验：那是「先校验、后打开」两步，
+//     校验与打开之间有 TOCTOU 竞态窗口——恶意 executor 经 run 命令完全能在这个
+//     窗口里把链接换成指向仓库外的版本；os.OpenRoot 的解析在单次打开内由内核完成，
+//     无窗口。
+//
+// os.OpenRoot 的边界（stdlib 契约，Go 1.24+）：符号链接目标必须是相对路径
+// （"Symbolic links must not be absolute"），故绝对目标链接一律拒绝（ErrPathEscape），
+// 即使目标在仓库内也拒绝——保守语义，见 TestReadFileSymlinkEscape；
+// 仓库根自身是符号链接时 OpenRoot 跟随之，读链接指向的真实仓库，正常可用。
+//
+// 大小上限：只读 maxRunOutput+1 字节（+1 仅用于判定是否超限），超限截断并 Warn——
+// 与 RunCmd 的输出截断语义一致：返回开头、不整读内存，64MiB 大文件不会把 agentd 读挂。
+// 截断而非拒绝：fetch 的用途是看文件开头（审阅上下文），1MiB 对源文件足够；
+// 大文件多为生成物/数据文件，拒绝会让审核者误以为路径有误。
+//
+// 非普通文件（目录/管道/设备等）一律拒绝：目录给 ErrPathIsDir（400 语义），
+// 其余特殊文件 read 语义不可控（可能无限输出或永久阻塞），给 ErrNotRegularFile。
 //
 // 参数：
 //   - repo: 任务仓库路径
 //   - rel: 相对仓库根的路径（如 cmd/foo.go）
 //
 // 返回：
-//   - 文件内容
-//   - err: 路径逃逸返回 ErrPathEscape；文件不存在返回 *fs.PathError（含 %w 链）
+//   - 文件内容（超过 1MiB 时截断为开头 1MiB）
+//   - err: 路径逃逸（含符号链接逃逸）返回 ErrPathEscape；目录返回 ErrPathIsDir；
+//     其他特殊文件返回 ErrNotRegularFile；文件不存在返回 *fs.PathError（含 %w 链）
 func ReadFile(repo, rel string) (string, error) {
 	cleaned := filepath.Clean(rel)
 	if rel == "" || cleaned == "." || filepath.IsAbs(cleaned) ||
@@ -187,12 +209,55 @@ func ReadFile(repo, rel string) (string, error) {
 		log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
 		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
 	}
-	p := filepath.Join(repo, cleaned)
-	b, err := os.ReadFile(p)
+	root, err := os.OpenRoot(repo)
 	if err != nil {
-		return "", fmt.Errorf("读取文件 %s: %w", p, err)
+		return "", fmt.Errorf("打开任务仓库 %s: %w", repo, err)
+	}
+	defer root.Close()
+	f, err := root.Open(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			// 符号链接逃逸在 OpenRoot 层被内核拒绝：与词汇层逃逸同一语义
+			log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
+			return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		}
+		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	if !fi.Mode().IsRegular() {
+		log().Warn("文件读取目标不是普通文件", "repo", repo, "path", rel, "mode", fi.Mode().String())
+		if fi.IsDir() {
+			return "", fmt.Errorf("%w: %q", ErrPathIsDir, rel)
+		}
+		return "", fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
+	}
+	// 只读 maxRunOutput+1 字节：多出的 1 字节用于判定「是否超限」，
+	// 不额外多一次 Stat 也能得到截断结论（真实大小取已打开的 f.Stat）
+	b, err := io.ReadAll(io.LimitReader(f, int64(maxRunOutput)+1))
+	if err != nil {
+		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	if len(b) > maxRunOutput {
+		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
+			"size", fi.Size(), "limit", maxRunOutput)
+		b = b[:maxRunOutput]
 	}
 	return string(b), nil
+}
+
+// rootErrIsEscape 判断 os.Root 返回的路径错误是否为「逃逸出根目录」。
+//
+// os.Root 对越界解析统一报内部私有错误（文本 "path escapes from parent"，见
+// go/src/os/root.go 的 errPathEscapes），stdlib 未导出哨兵，无法 errors.Is，只能
+// 按错误文本识别。该文本自 Go 1.24 引入 os.Root 以来未变，且 TestReadFileEscapeRejected
+// 与 TestReadFileSymlinkEscape 全量断言「逃逸 → ErrPathEscape」——文本一旦变化，
+// 测试立刻失败提示本函数需要同步。
+func rootErrIsEscape(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "path escapes from parent")
 }
 
 // runOutputBuffer 是 RunCmd 的有界输出回收器：最多保留 limit 字节，
