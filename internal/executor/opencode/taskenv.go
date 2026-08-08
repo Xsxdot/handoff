@@ -20,6 +20,7 @@
 //   - bash: 模式表 —— 危险模式（rm -rf/sudo/git push/reset --hard/--force/
 //     curl/wget 等，见 bashPermissionRules）ask，其余 allow；
 //   - webfetch/external_directory: ask —— 外访与越出工作区仍逐次确认。
+//
 // 这是三级审批链的第 0 层（静态规则）；第 1 层（廉价模型审批者）见二期 spec，
 // 第 2 层是审核者/用户本人。
 package opencode

@@ -207,8 +207,8 @@ type runState struct {
 	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
 	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
 	pendingBytes int               // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
-	lastProgress time.Time    // 上次发 progress 的时刻（节流）
-	lastEventAt  atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+	lastProgress time.Time         // 上次发 progress 的时刻（节流）
+	lastEventAt  atomic.Int64      // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
