@@ -17,7 +17,7 @@
      用户本人（危险操作/需求取舍升级）
 ```
 
-- **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `attach` / `done`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
+- **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
 - **handoff agentd**：任务状态机、事件持久化、executor 生命周期（tmux 内拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
 - **executor 挂载**：agentd 通过 opencode server 的 HTTP API + SSE 事件流对接（`POST /session`、`prompt_async`、`/event` SSE）；权限等待发生在 opencode 会话内部，与审核者是否在线解耦。
 - **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
@@ -39,6 +39,9 @@ handoff agentd --executor=opencode          # 真实执行（默认）；fake �
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
 handoff dispatch --repo /path/to/repo plan.md
+handoff dispatch --repo /path/to/repo --prompt "把 README 安装命令改成 brew"   # 无 plan 文件
+handoff dispatch --repo /path/to/repo --new-worktree --executor opencode --model cheap/model plan.md
+handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
 
 # 4. 审核者侧典型循环
 handoff wait <task-id> --notify             # 挂后台；事件到达输出单行 JSON 并退出
@@ -56,7 +59,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|fake`（默认 opencode） |
-| `handoff dispatch <plan.md>` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--target <name>` |
+| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况） |
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
@@ -71,7 +74,29 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 
 全局参数：`--agentd http://127.0.0.1:7777`（agentd 地址）、`--target <name>`（按配置 Targets 换算地址与 token）、`--config <path>`（配置文件，默认 `~/.handoff/config.yaml`）。
 
-事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）。
+事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
+
+## 配置（~/.handoff/config.yaml）
+
+二期新增三段（均可省略，用默认值）：
+
+```yaml
+approver:                     # 分级审批链的廉价模型审批者
+  executor: opencode          # 空=不启用审批链（权限请求直接升级人工审核者）
+  model: cheap/model          # 审批者模型；空=用执行者自身默认
+  timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
+  blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
+    - "kubectl .*delete"
+executor:                     # dispatch 未显式指定执行者时的缺省
+  default: opencode
+  model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
+terminal:                     # dispatch 成功后的终端弹窗
+  auto: true                  # darwin 下 osascript 弹 Terminal.app 进实况
+```
+
+## 分级审批链
+
+权限请求的三级分流（spec §3）：**第 0 层静态规则**（taskenv 的 bash 模式表，edit 放行/危险命令 ask）→ **第 1 层廉价模型审批者**（黑名单硬规则 + one-shot CLI 裁决，approve 自动放行 / escalate 升级人工）→ **第 2 层人工审核者**（`reply` 裁决）。第 1 层 fail-closed：裁决失败/超时一律升级；同任务连续失败 3 次停用审批链（`approver_disabled` 事件留痕），后续权限直接升级人工。
 
 ## 审核者会话恢复
 
