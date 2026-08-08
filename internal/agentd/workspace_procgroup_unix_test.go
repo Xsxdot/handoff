@@ -23,9 +23,9 @@ import (
 // 同时用计数包装断言 killProcGroup 恰好调用 1 次——既不能漏杀（孙进程
 // 存活），也不能多杀（对已回收 pid 重复发信号即 P0-3 的误杀形态）。
 func TestRunCmdKillsProcessGroupOnTimeout(t *testing.T) {
-	orig := runCmdTimeout
-	runCmdTimeout = 300 * time.Millisecond
-	defer func() { runCmdTimeout = orig }()
+	orig := RunCmdTimeout
+	RunCmdTimeout = 300 * time.Millisecond
+	defer func() { RunCmdTimeout = orig }()
 
 	var kills atomic.Int32
 	origKill := killProcGroup

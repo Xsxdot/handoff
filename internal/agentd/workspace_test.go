@@ -141,9 +141,9 @@ func TestReadFileEscapeRejected(t *testing.T) {
 // TestRunCmdTimeoutAndTruncate 验证 run 命令的护栏：
 // 正常输出、非零退出码、stderr 合并、超时被杀（124）、输出截断 1MB。
 func TestRunCmdTimeoutAndTruncate(t *testing.T) {
-	orig := runCmdTimeout
-	runCmdTimeout = 200 * time.Millisecond
-	defer func() { runCmdTimeout = orig }()
+	orig := RunCmdTimeout
+	RunCmdTimeout = 200 * time.Millisecond
+	defer func() { RunCmdTimeout = orig }()
 
 	repo := initGitRepo(t)
 	ctx := context.Background()

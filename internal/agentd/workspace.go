@@ -41,10 +41,12 @@ var (
 )
 
 // 执行护栏：
-//   - runCmdTimeout：单条审阅命令的执行上限。包级 var 而非 const，便于测试注入更短值
+//   - RunCmdTimeout：单条审阅命令的执行上限。包级 var 而非 const，便于测试注入更短值。
+//     导出供 cmd 包派生 agentd HTTP WriteTimeout（见 cmd/agentd.go）：响应写超时必须
+//     ≥ 该上限，否则长审阅命令会在 handler 执行途中被掐断连接、RunCmd 被提前取消
 //   - maxRunOutput：合并输出的截断上限，防止失控命令刷爆内存与响应体
 var (
-	runCmdTimeout = 10 * time.Minute
+	RunCmdTimeout = 10 * time.Minute
 	maxRunOutput  = 1 << 20 // 1 MiB
 )
 
@@ -240,7 +242,7 @@ func (b *runOutputBuffer) Write(p []byte) (int, error) {
 //   - err: 超时返回 context 相关错误；启动失败返回 exec 错误。
 //     命令非零退出**不**返回错误——exitCode 已表达结果，路由层据此返回 200
 func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode int, err error) {
-	ctx, cancel := context.WithTimeout(ctx, runCmdTimeout)
+	ctx, cancel := context.WithTimeout(ctx, RunCmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
 	cmd.Dir = repo
@@ -293,7 +295,7 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 		// 超时：CommandContext 已杀进程，err 是信号类错误；按 time 惯例记 124
 		exitCode = 124
 		log().Error("run 命令超时被终止", "repo", repo, "cmd", truncateRunes(cmdline, 200),
-			"timeout", runCmdTimeout, "elapsed_ms", elapsed.Milliseconds())
+			"timeout", RunCmdTimeout, "elapsed_ms", elapsed.Milliseconds())
 	case err != nil:
 		if ee, ok := err.(*exec.ExitError); ok {
 			// 命令正常执行完（非零退出）：结果经 exitCode 表达，不返回错误，

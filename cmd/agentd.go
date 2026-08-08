@@ -100,11 +100,18 @@ var agentdCmd = &cobra.Command{
 // 各超时值的 why：
 //   - ReadHeaderTimeout 10s：请求头读取上限——防 slowloris（慢速请求头占满连接
 //     goroutine）；配合 IdleTimeout 保证半死连接被回收
-//   - ReadTimeout 30s：请求体读取上限（reply/fetch 等请求体都很小，30s 充足）
-//   - WriteTimeout 60s：响应写入上限。对 hijacked 连接（WS 事件流）**不生效**：
-//     net/http 在 Hijack 时清除连接上的全部截止时间（server.go hijackLocked 里
-//     rwc.SetDeadline(time.Time{})，实测 Go 1.26 行为），coder/websocket 的
-//     Accept 走 hijack——长连接不受该值约束，60s 只作用于普通 HTTP 响应
+//   - ReadTimeout 30s：请求体读取上限（reply/fetch 等请求体都很小，30s 充足）。
+//     只作用于请求头/体的读取，不约束 handler 执行时长，无需随 run 上限放大
+//   - WriteTimeout 11min（= agentd.RunCmdTimeout + 1min 余量）：响应写入上限，
+//     **必须** ≥ run 路由的执行上限——handleTaskRun 在 handler 内同步执行 RunCmd
+//     （最长 RunCmdTimeout=10min），net/http 的 WriteTimeout 在 handler 执行前设下
+//     deadline、响应写完前不重置，若小于命令执行上限，跑测试/lint 的审阅命令
+//     （经常超 60s）会在 60s 时被掐断连接，RunCmd 随 r.Context() 取消被提前杀掉，
+//     退出码 124 的文档化契约永远无法兑现。dispatch 链路的病态时长（StartServe≤10s
+//     + CreateSession 30s + PromptAsync 30s ≈ 70s）也在该上限内。对 hijacked 连接
+//     （WS 事件流）**不生效**：net/http 在 Hijack 时清除连接上的全部截止时间
+//     （server.go hijackLocked 里 rwc.SetDeadline(time.Time{})，实测 Go 1.26 行为），
+//     coder/websocket 的 Accept 走 hijack——长连接不受该值约束
 //   - IdleTimeout 120s：keep-alive 空闲连接回收，防连接池被死连接占满
 func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	return &http.Server{
@@ -112,7 +119,7 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      agentd.RunCmdTimeout + time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 }

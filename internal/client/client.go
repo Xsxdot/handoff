@@ -45,7 +45,7 @@ const (
 //
 // 为什么必须有它：websocket.Dial 默认用 http.DefaultClient（Transport 无拨号超时），
 // 对黑洞对端（SYN 无响应）会挂 ~2min 才失败——每次重连都白等两分钟，指数退避形同
-// 虚设。包级 var 而非 const，便于测试注入更短值（与 workspace.go runCmdTimeout 同款）。
+// 虚设。包级 var 而非 const，便于测试注入更短值（与 workspace.go RunCmdTimeout 同款）。
 var dialTimeout = 10 * time.Second
 
 // permanentError 标记永久性失败：配置错误（握手 400/401/403）或任务不存在
