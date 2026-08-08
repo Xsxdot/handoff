@@ -224,16 +224,33 @@ agentd HTTP，唯一的对外面就是 socket 路径——被监管的 executor 
 
 这个不能靠猜——spike 已实测到用户个人 allowlist 会静默放行本该进审批链的操作（`echo` 直接放行）。
 
-## 6. 共享包重构（`internal/executor/turn`）
+## 6. 共享包重构（`internal/executor/turn`）——抽取已移交 B3 会话前置完成
 
-两个 adapter 同构的四件事搬进新包，opencode adapter 改调：
+> **协调注（2026-08-08，B2/B3 两会话对齐）**：本节抽取由 grok adapter（B3）会话作为
+> 前置任务先行完成，**单独 commit 合入 main**；本 plan **不包含**抽取任务，从该 commit
+> 起步、直接 import `internal/executor/turn`。实现排序（文书写作不受限，只约束实现落点）：
+>
+> ```
+> phase3 B6（改同一片截断代码，plan 已固定行引用）→ turn 抽取落 main → B2 / B3 并行实现
+> ```
+>
+> 并行后 B2/B3 的冲突面只剩 manager 注册表各一行、README 各一行、B3 在 oneshot.go
+> 加 case——琐碎合并。
+
+搬迁范围（B2/B3 两侧设计的**并集**，opencode adapter 同步改调）：
 
 | 搬迁项 | 现位置 |
 |--------|--------|
+| 回合纪律 prompt 模板与渲染 | `opencode/taskenv.go: promptTemplate / promptTmpl` |
+| trailer 协议解析（ask / finish） | `opencode/taskenv.go: ParseTrailer / Trailer` |
 | 回合文本分类（question vs done）+ `clampQuestion` | `opencode/adapter.go: fallbackClassify / clampQuestion` |
 | render.log 增量落盘 | `opencode/adapter.go: appendRender` |
 | git 回合取证（branch / commit / hasNew） | `opencode/adapter.go: gitTurnStatus` |
-| 截断标记（`TruncationMarker` 的使用面） | `opencode` 的 `truncateMarked` |
+| 截断工具（`TruncationMarker` 的使用面） | `opencode` 的 `truncateMarked` / `truncateRunes` / `tailRunes` |
+
+why（promptTemplate 与 ParseTrailer 必须同包，B2 原表未列全）：教模型协议的 prompt 与
+解析协议的代码是同一契约的两半，分居两处必然出现「改纪律只改一半」的漂移——两个
+executor 的审核者会看到不一样的东西。§4.1「拼装逻辑与 opencode 同源」已隐含依赖它。
 
 验收硬指标：opencode adapter 那 1200 行回归测试**全绿**。不绿就是抽错了边界，回退重来。
 
@@ -242,8 +259,8 @@ agentd HTTP，唯一的对外面就是 socket 路径——被监管的 executor 
 | 位置 | 改动 |
 |------|------|
 | `internal/executor/claudecode/` | 新包：adapter.go / proc.go / stream.go / perm.go / taskenv.go |
-| `internal/executor/turn/` | 新包：见 §6 |
-| `internal/executor/opencode/` | 改调 `turn` 包 |
+| `internal/executor/turn/` | **前置已落 main**（B3 会话完成，见 §6 协调注），本 plan 直接 import |
+| `internal/executor/opencode/` | 前置抽取中已改调 `turn` 包，本 plan 无需再动 |
 | `cmd/permission_mcp.go` | 新隐藏子命令 `handoff permission-mcp` |
 | `internal/agentd/manager.go` | adapter 注册表加 `"claude"` |
 | `internal/executor/oneshot.go` | 无需改动（claude 已登记） |
