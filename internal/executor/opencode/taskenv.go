@@ -12,11 +12,16 @@
 //   - 不校验模型是否遵守纪律：只做「取最后一个 { 开头行解析」的提取，
 //     解析失败一律按 none 处理，是否重试由调用方决定
 //
-// 为什么 permission 只把四类动作设为 ask：edit/bash/webfetch/external_directory
-// 是可改变状态的动作（写文件、执行命令、请求外部、访问工作区外），需要审核者
-// 逐次确认；read/grep/glob 等只读操作放行，否则审批噪音会淹没审核者、让审核
-// 流形同虚设。这是「权限收敛」策略在代码侧的底线：只拦破坏性动作，细粒度的
-// 每次判断留给审核者侧（human review 环节）完成。
+// 为什么 permission 是「静态分级」而非全 ask（2026-08-08 dogfooding 修正）：
+// 一期曾把 edit/bash 全部设为 ask，真实派发时审核者被 ls/grep/编辑测试文件
+// 这类初级请求连环唤醒，审批噪音让审核流形同虚设——这恰是用户交互式用
+// opencode 时不存在的问题（用户在场且全局配置宽松）。修正后的分层：
+//   - edit: allow —— 在任务分支上改代码是派发的目的本身，diff 审核兜底；
+//   - bash: 模式表 —— 危险模式（rm -rf/sudo/git push/reset --hard/--force/
+//     curl/wget 等，见 bashPermissionRules）ask，其余 allow；
+//   - webfetch/external_directory: ask —— 外访与越出工作区仍逐次确认。
+// 这是三级审批链的第 0 层（静态规则）；第 1 层（廉价模型审批者）见二期 spec，
+// 第 2 层是审核者/用户本人。
 package opencode
 
 import (
@@ -60,13 +65,34 @@ var promptTmpl = template.Must(template.New("prompt").Parse(promptTemplate))
 
 // permissionConfig 是 opencode.json 的 permission 段。
 //
-// 用结构体而非 map 是为了让字段顺序稳定且输出确定性，便于测试与人工核对；
-// 所有字段值统一为 "ask"，含义见文件头 why 注释。
+// 用结构体而非裸 map 是为了让字段顺序稳定且输出确定性，便于测试与人工核对；
+// Bash 是 opencode 支持的「命令模式 → allow/ask」对象形态（encoding/json 对
+// map 按键排序 marshal，输出同样确定）。分级取值的 why 见文件头注释。
 type permissionConfig struct {
-	Edit              string `json:"edit"`
-	Bash              string `json:"bash"`
-	Webfetch          string `json:"webfetch"`
-	ExternalDirectory string `json:"external_directory"`
+	Edit              string            `json:"edit"`
+	Bash              map[string]string `json:"bash"`
+	Webfetch          string            `json:"webfetch"`
+	ExternalDirectory string            `json:"external_directory"`
+}
+
+// bashPermissionRules 是 bash 命令的静态分级模式表（第 0 层审批链）。
+//
+// 模式语义：opencode 按 glob 对整条命令串匹配。前缀模式（"rm *"）拦直接调用，
+// 包含模式（"*rm -rf*"）拦复合命令里的嵌入（如 `go test && rm -rf x`）。
+// 取舍：curl/wget 只拦前缀直调（包含模式会误伤 `grep curl` 这类无害检索）；
+// "*--force*" 覆盖 push --force / --force-with-lease 等强制类变体。
+// 每次修改本表必须同步 taskenv_test 的逐条断言——少一条就是静默放行。
+var bashPermissionRules = map[string]string{
+	"*rm -rf*":           "ask", // 递归强删（含复合命令嵌入）
+	"*rm -fr*":           "ask", // 同上的换序写法
+	"rm *":               "ask", // 任何直接 rm（误拒成本低、误放成本高）
+	"*sudo*":             "ask", // 提权
+	"*git push*":         "ask", // 外推：收尾纪律要求不 push，出现即异常
+	"*git reset --hard*": "ask", // 丢弃提交
+	"*--force*":          "ask", // 各类强制开关（push --force / --force-with-lease 等）
+	"curl *":             "ask", // 外访直调
+	"wget *":             "ask", // 外访直调
+	"*":                  "allow",
 }
 
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成
@@ -123,8 +149,8 @@ func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath s
 	cfg := opencodeConfig{
 		Model: strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL")),
 		Permission: permissionConfig{
-			Edit:              "ask",
-			Bash:              "ask",
+			Edit:              "allow",
+			Bash:              bashPermissionRules,
 			Webfetch:          "ask",
 			ExternalDirectory: "ask",
 		},

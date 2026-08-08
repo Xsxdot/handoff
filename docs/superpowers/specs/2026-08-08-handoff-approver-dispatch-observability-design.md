@@ -39,6 +39,12 @@ MVP 跑通后的四个优化方向（均已与用户逐条确认）：
 
 ## 3. 功能 1：分级审批链
 
+> **第 0 层已提前落地（2026-08-08 dogfooding 修正）**：真实派发暴露「全 ask 配置导致
+> 初级权限连环唤醒审核者」，已在 opencode adapter 的任务级配置中实现静态分级
+> （edit 放行、bash 危险模式表 ask 其余 allow、webfetch/external_directory 仍 ask，
+> 见 taskenv.go bashPermissionRules）。本节审批者是其上的第 1 层：只处理静态规则
+> 放行之外、又不在黑名单内的中间地带。
+
 ### 3.1 流程
 
 ```

@@ -14,7 +14,8 @@ import (
 
 // TestWriteTaskEnv 验证：
 //   - 生成路径为 taskDir 下的 opencode.json 与 prompt.md
-//   - 配置文件是合法 JSON 且四类 permission 均为 "ask"
+//   - 配置文件是合法 JSON 且权限为静态分级：edit 放行、bash 模式表
+//     （危险模式 ask、其余 allow）、webfetch/external_directory 仍 ask
 //   - prompt.md 含任务 ID、计划原文与提问纪律 JSON 样例
 //   - 重复调用幂等覆盖：第二次调用以新内容覆盖旧文件，不报错
 func TestWriteTaskEnv(t *testing.T) {
@@ -40,21 +41,35 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 	var cfg struct {
 		Permission struct {
-			Edit              string `json:"edit"`
-			Bash              string `json:"bash"`
-			Webfetch          string `json:"webfetch"`
-			ExternalDirectory string `json:"external_directory"`
+			Edit              string            `json:"edit"`
+			Bash              map[string]string `json:"bash"`
+			Webfetch          string            `json:"webfetch"`
+			ExternalDirectory string            `json:"external_directory"`
 		} `json:"permission"`
 	}
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
 		t.Fatalf("opencode.json 不是合法 JSON: %v\n%s", err, cfgRaw)
 	}
-	for name, got := range map[string]string{
-		"edit": cfg.Permission.Edit, "bash": cfg.Permission.Bash,
-		"webfetch": cfg.Permission.Webfetch, "external_directory": cfg.Permission.ExternalDirectory,
+	// 静态分级底线：改代码/常规命令放行，危险模式与外访仍上审批门
+	if cfg.Permission.Edit != "allow" {
+		t.Errorf("permission.edit = %q，期望 allow（任务分支内改代码是派发目的本身）", cfg.Permission.Edit)
+	}
+	if cfg.Permission.Webfetch != "ask" {
+		t.Errorf("permission.webfetch = %q，期望 ask", cfg.Permission.Webfetch)
+	}
+	if cfg.Permission.ExternalDirectory != "ask" {
+		t.Errorf("permission.external_directory = %q，期望 ask", cfg.Permission.ExternalDirectory)
+	}
+	if cfg.Permission.Bash["*"] != "allow" {
+		t.Errorf("permission.bash[*] = %q，期望 allow（常规命令兜底放行）", cfg.Permission.Bash["*"])
+	}
+	// 危险模式必须逐条在场且为 ask——少一条就是静默放行破坏性操作
+	for _, pattern := range []string{
+		"*rm -rf*", "*rm -fr*", "rm *", "*sudo*",
+		"*git push*", "*git reset --hard*", "*--force*", "curl *", "wget *",
 	} {
-		if got != "ask" {
-			t.Errorf("permission.%s = %q，期望 ask", name, got)
+		if got := cfg.Permission.Bash[pattern]; got != "ask" {
+			t.Errorf("permission.bash[%q] = %q，期望 ask", pattern, got)
 		}
 	}
 
