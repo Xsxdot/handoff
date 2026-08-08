@@ -60,7 +60,8 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
-| `handoff attach <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
+| `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
+| `handoff attach [task]` | 进入任务 executor 的 tmux 终端实况（无参时任务选择列表，非 TTY 打印建议命令） | `--target <name>` 远程经 ssh 进入 |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达 executor 的应答 | — |
@@ -78,10 +79,12 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 
 ```bash
 handoff tasks                      # 列出全部任务及状态
-handoff attach <task>              # plan 摘要 + 事件历史 + 未处理挂起项（pending_tickets）
+handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂起项（pending_tickets）
 ```
 
 处理完挂起项（未答提问、未批权限、待审核的完成事件）后重新挂 `wait` 即恢复循环。
+
+> 快照查看是 `handoff show <task>`；`handoff attach [task]` 是进入 executor 终端实况（tmux），无参时在任务列表里选择。二期起两者分离——一期 attach 的语义更名给 show。
 
 ## Troubleshooting
 

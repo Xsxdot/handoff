@@ -90,6 +90,8 @@
 
 处理完挂起项后重新挂 `wait` 即恢复循环。此流程同时覆盖「本机会话崩溃」「用户主动关闭后重开」「换一台机器接管审核」三种场景。兜底：`wait --notify` 在事件到达时发 macOS 系统通知，提醒用户会话已不在时重新拉起。
 
+> **注记（二期 2026-08-08）**：二期起快照命令更名 `handoff show <task>`，`attach` 改为终端实况（`tmux attach -t handoff-<id8>` / 远程 `ssh -t`，无参时任务选择列表）；会话恢复改为 `tasks` + `show`。详见二期 spec `2026-08-08-handoff-approver-dispatch-observability-design.md`。
+
 ## 8. 错误处理
 
 - opencode serve 进程崩溃 → adapter 检测（进程退出 / SSE 断流且探活失败），`failed` 事件携带 stderr 尾部；
