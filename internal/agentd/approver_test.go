@@ -430,6 +430,57 @@ func TestApprovePermissionAdapterForFailureNotesDeliveryFailed(t *testing.T) {
 	}
 }
 
+// setApproverState 直接写入任务级审批链运行时状态（白盒构造前置状态用）。
+func setApproverState(m *Manager, taskID string) {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	m.apFails[taskID] = maxApproverFails
+	m.apDisabled[taskID] = true
+}
+
+// hasApproverState 判断任务是否仍持有审批链运行时状态。
+func hasApproverState(m *Manager, taskID string) bool {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	return m.apFails[taskID] > 0 || m.apDisabled[taskID]
+}
+
+// TestApproverStateClearedOnTaskEnd 验证审批链运行时状态（apFails/apDisabled）
+// 在任务终结处被清理（P2-5）：这两张内存 map 若随归档任务残留会无界增长。
+func TestApproverStateClearedOnTaskEnd(t *testing.T) {
+	t.Run("handleResult 回合结束清理", func(t *testing.T) {
+		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
+		task := mustApproverDispatch(t, m)
+		setApproverState(m, task.ID)
+		if !hasApproverState(m, task.ID) {
+			t.Fatal("前置审批者状态未设上")
+		}
+		m.handleResult(task.ID, resultEvent())
+		waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+		if hasApproverState(m, task.ID) {
+			t.Fatal("handleResult 回合结束应清理审批者状态")
+		}
+	})
+	t.Run("Done 归档清理", func(t *testing.T) {
+		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
+		task := mustApproverDispatch(t, m)
+		if err := m.transit(task.ID, proto.TaskStateWaitingReview, "test"); err != nil {
+			t.Fatal(err)
+		}
+		setApproverState(m, task.ID)
+		mustDone(t, m, task.ID)
+		cur, _ := st.GetTask(task.ID)
+		if cur.State != proto.TaskStateCompleted {
+			t.Fatalf("任务应 completed，得到 %s", cur.State)
+		}
+		if hasApproverState(m, task.ID) {
+			t.Fatal("Done 归档应清理审批者状态")
+		}
+	})
+}
+
 // TestNilApproverKeepsCurrentBehavior 验证 approver=nil 时现行为回归：
 // 权限请求直接产生 permission_request 事件（二期前语义）。
 func TestNilApproverKeepsCurrentBehavior(t *testing.T) {

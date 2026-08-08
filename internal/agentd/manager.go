@@ -558,6 +558,8 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	if err := m.transit(taskID, proto.TaskStateCompleted, "done"); err != nil {
 		return err
 	}
+	// 任务归档：清理审批链运行时状态，防内存 map 随归档任务无界增长（P2-5）
+	m.clearApproverState(taskID)
 	// done 只持有 taskID：经 adapterFor 解析该任务实际使用的 adapter；解析失败
 	// 仅 Error 日志不影响归档（任务已完成，executor 残留交给人工兜底，见 doc 注意）
 	ad, err := m.adapterFor(taskID)
@@ -929,6 +931,19 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled）。
+//
+// 调用点：任务终结处——Done 归档（→completed）与 handleResult 的回合结束
+// （→waiting_review）。为什么必须清理（P2-5）：这两张是进程内内存 map，任务
+// 归档后若不清，条目随任务数无界增长；且任务被续接时旧的禁用标记/失败计数
+// 也不该残留（新回合从干净状态重新评估审批链）。
+func (m *Manager) clearApproverState(taskID string) {
+	m.apMu.Lock()
+	delete(m.apFails, taskID)
+	delete(m.apDisabled, taskID)
+	m.apMu.Unlock()
 }
 
 // countApproverFail 累计一次任务级裁决失败，达到 maxApproverFails 时停用该任务
@@ -1402,6 +1417,9 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		m.log.Error("回迁 waiting_review 失败，不广播事件", "task", taskID, "cause", err)
 		return
 	}
+	// 回合结束（任务进入 waiting_review）：清理审批链运行时状态，防内存 map
+	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
+	m.clearApproverState(taskID)
 	m.hub.Publish(evt)
 }
 
