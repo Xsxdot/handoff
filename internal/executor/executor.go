@@ -113,7 +113,8 @@ type Adapter interface {
 	//
 	// 参数：
 	//   - taskID: 目标任务
-	//   - permID: 权限请求 id（与事件中的 PermissionID 一致，即 ticket id）
+	//   - permID: 权限请求 id（与事件中的 PermissionID 一致；manager 的 ticket id
+	//     经 taskID:permID 命名空间化，此处传裸 permID，不得传命名空间化 id）
 	//   - decision: "once"（批准本次）或 "reject"（拒绝）
 	RespondPermission(ctx context.Context, taskID, permID, decision string) error
 

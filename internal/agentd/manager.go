@@ -12,8 +12,10 @@
 //   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
 //     question 工单 id 为 uuid。reply 路由整链（事件 payload / hub 等待键 / 应答回程）
 //     都用工单 id，只有回传 adapter 时还原裸 permID
-//   - 中介顺序恒为「落库 → 置 waiting_answer → 注册 waiter → Publish」：审核者收到
-//     事件时状态与等待者必已就位，reply 不会走错序的中继路径
+//   - 中介顺序为「落库 → 置 waiting_answer → 启动 waiter goroutine → Publish」：
+//     状态先就位（reply 回程 resumeIfIdle 的回迁判定依赖它）；waiter 的 hub 注册
+//     是异步的，reply 先于注册到达时退化为「无等待者 → 自愈中继」路径兜底
+//     （详见 handlePermission 的顺序契约）
 //   - CreateTicket 返回 created=false（重放）时跳过全部后续动作，幂等是完整的
 //
 // 边界：
@@ -423,13 +425,14 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 // handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
 // waiting_answer → goroutine 等审核者应答后回传 executor。
 //
-// 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer、先注册
-// waiter，最后才 Publish**。审核者收到事件后可能立即 attach/reply，若状态还没迁、
-// 等待者还没注册，reply 会走「无等待者 → 自愈中继」，而 resumeIfIdle 此刻读到的
-// 状态若还是 running 会跳过回迁——应答已交付但任务随后落回 waiting_answer 且
-// 无人再答，永久卡死（探针 1/60 复现「waiting_answer 但 pending_tickets=0」）。
-// 状态与等待者先就位后，事件可见时一切已就绪：reply 必命中 waiter、resumeIfIdle
-// 必看到 waiting_answer。
+// 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer，再启动
+// waiter goroutine，最后才 Publish**。严格说「先注册 waiter」不成立：waitPermission
+// 的 hub 注册在 goroutine 启动后才异步发生，Publish 后 reply 仍可能先于注册到达——
+// 该情形退化为「无等待者 → 自愈中继」（RelayAnswer 直接回传 executor），任务不卡死。
+// 真正必须先就位的是**状态**：resumeIfIdle 读到 running 会跳过回迁，应答已交付但
+// 任务随后落回 waiting_answer 且无人再答，永久卡死（探针 1/60 复现「waiting_answer
+// 但 pending_tickets=0」）。状态先就位后，reply 无论命中 waiter 还是走中继，
+// resumeIfIdle 必看到 waiting_answer，回迁判定一致。
 func (m *Manager) handlePermission(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	if ev.PermissionID == "" {
 		m.log.Error("权限事件缺 PermissionID", "task", taskID)
@@ -509,8 +512,8 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 // handleQuestion 中介提问：ticket(uuid, kind=ask) → 事件 → waiting_answer →
 // goroutine 等审核者回答后原样透传 executor。
 //
-// 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer、先注册 waiter，
-// 最后才 Publish——reply 到达时状态与等待者必须已就位。
+// 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer 再 Publish；
+// waiter 注册异步，reply 先于注册到达时退化为自愈中继路径兜底。
 func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	// 提问工单 id 用 uuid：问题没有天然稳定 id，回答一次即终结
 	ticketID := uuid.NewString()

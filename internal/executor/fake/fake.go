@@ -14,6 +14,8 @@
 // 事件流语义：
 //   - 事件通道在 Stop 前保持打开：任务进入 waiting_review 后审核者可能继续续接，
 //     新步骤由 Add 注入；Stop 后通道关闭，manager 的中介循环随之退出
+//   - 未启动任务调 Events 返回已关闭通道（契约：通道关闭 = 执行终结），
+//     range 立即结束而非永久阻塞（P1-11，与 opencode adapter 语义一致）
 package fake
 
 import (
@@ -58,6 +60,7 @@ type taskRun struct {
 	stopCh   chan struct{} // Stop 信号
 	stopOnce sync.Once
 	permSeq  int
+	started  bool // Start 已调用（Events 据此区分「未启动」返回已关闭通道）
 }
 
 // Fake 是脚本化 Adapter，记录全部 Send/RespondPermission/Stop 实参供断言。
@@ -124,15 +127,29 @@ func (f *Fake) Start(_ context.Context, req executor.StartReq) error {
 	f.mu.Lock()
 	// 每个任务从初始脚本的一份拷贝开始，Add 只作用于该任务
 	r.steps = append([]Step(nil), f.script...)
+	r.started = true
 	f.mu.Unlock()
 	f.log().Debug("fake 任务启动", "task", req.Task.ID, "task_dir", req.TaskDir)
 	go r.run(f)
 	return nil
 }
 
-// Events 返回任务的事件流通道；Stop 后关闭。
+// Events 返回任务的事件流通道；任务未启动时返回**已关闭**通道。
+//
+// 契约（与 opencode adapter 一致，P1-11）：通道关闭 = 执行终结，消费方
+// （manager 中介循环）靠 range 在关闭时立即退出。未启动任务若返回惰性新建的
+// 打开通道，range 会永久阻塞——对未知任务等价于旧的 nil 通道。已启动任务的
+// 通道由 run 循环在 Stop/退出时关闭（defer close(evCh)）。
 func (f *Fake) Events(taskID string) <-chan executor.AdapterEvent {
-	return f.runner(taskID).evCh
+	f.mu.Lock()
+	r, ok := f.runs[taskID]
+	f.mu.Unlock()
+	if !ok || !r.started {
+		ch := make(chan executor.AdapterEvent)
+		close(ch)
+		return ch
+	}
+	return r.evCh
 }
 
 // Send 记录实参；若恰有 Question 步骤在阻塞则解除其阻塞，否则作为「续接指令」记录，

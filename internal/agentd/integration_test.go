@@ -479,3 +479,39 @@ func TestDispatchDirtyWorktree409(t *testing.T) {
 		t.Fatalf("清理后 dispatch state=%s, want running", task.State)
 	}
 }
+
+// TestDispatchRepoUnusable400 覆盖 P1-14 的 400 分支：仓库路径不存在（git 探活
+// 失败 → ErrRepoUnusable）时返回 400 + 可读原因，而不是扁平化的 500。
+func TestDispatchRepoUnusable400(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	_, err := env.cli.Dispatch(context.Background(), filepath.Join(t.TempDir(), "no-such-repo"), plan, "plan.md", "local")
+	if err == nil {
+		t.Fatal("仓库不可用应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "不可用") {
+		t.Fatalf("仓库不可用错误应含 400 与可读原因, got: %v", err)
+	}
+}
+
+// TestDispatchUnknownError500 覆盖 P1-14 的 500 兜底分支：agentd 侧故障（store
+// 已关闭）且错误不属于任何已知哨兵时返回 500「派发任务失败」，错误细节不外泄。
+func TestDispatchUnknownError500(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	// store 关闭后 CreateTask 失败：非 ErrDirtyWorktree/ErrRepoUnusable/
+	// errBadDispatchRequest 的未知错误 → 走 500 兜底（store.Close 幂等，
+	// Cleanup 二次关闭无害）
+	if err := env.st.Close(); err != nil {
+		t.Fatalf("关闭 store: %v", err)
+	}
+	_, err := env.cli.Dispatch(context.Background(), env.repo, plan, "plan.md", "local")
+	if err == nil {
+		t.Fatal("store 关闭后派发应失败")
+	}
+	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "派发任务失败") {
+		t.Fatalf("未知错误应映射为 500 统一提示, got: %v", err)
+	}
+}

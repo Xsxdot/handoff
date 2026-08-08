@@ -380,7 +380,8 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // RespondPermission 把审核者的权限裁决转发给 opencode server。
 //
 // 参数：
-//   - permID: 与 permission 事件中的 PermissionID 一致（manager 的 ticket id）
+//   - permID: 与 permission 事件中的 PermissionID 一致（manager 的 ticket id
+//     经 taskID:permID 命名空间化，此处为裸 permID，由 manager 还原后传入）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
 	r := a.lookup(taskID)
