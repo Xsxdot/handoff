@@ -262,19 +262,40 @@ func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) err
 	return nil
 }
 
+// DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应。
+//
+// PlanB64 与 Prompt 至少其一：PlanB64 是 base64 的 plan 文件内容（附 plan 名归档），
+// Prompt 是直接指令（prompt-only 派发）；两者都传时 Prompt 作为附加指令拼接在
+// plan 之后。Branch/NewBranch、Worktree/NewWorktree 各自二选一，空=自动分支/原地。
+type DispatchOpts struct {
+	Repo        string
+	PlanB64     string
+	PlanName    string
+	Target      string
+	Prompt      string
+	Name        string
+	Executor    string
+	Model       string
+	Branch      string
+	NewBranch   string
+	Base        string
+	Worktree    string
+	NewWorktree bool
+}
+
 // Dispatch 派发一个新任务到 agentd 执行。
 //
 // 参数：
-//   - repo: 任务仓库路径（executor 工作区）
-//   - planB64: plan 内容，base64 编码后上传（CLI 层读取本地 plan 文件编码）
-//   - planName: plan 文件名（归档展示用）
-//   - target: 目标主机名（归档展示用）
+//   - opts: 派发参数（仓库/计划/执行者/分支/工作区等，见 DispatchOpts）
 //
 // 返回：
 //   - 创建后的任务（state=running）；服务端启动 executor 失败时返回错误
-func (c *Client) Dispatch(ctx context.Context, repo, planB64, planName, target string) (*proto.Task, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]string{
-		"repo": repo, "plan_b64": planB64, "plan_name": planName, "target": target,
+func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]any{
+		"repo": opts.Repo, "plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
+		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
+		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
+		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)

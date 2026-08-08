@@ -23,8 +23,8 @@
 //     批不批、答什么由审核者（人/上层）决定
 //   - 不直接接触 executor 进程/会话细节，一切经由 executor.Adapter 契约
 //   - 不负责看门狗（Task 12）等横向能力；git 工作区操作委托 workspace 包（Task 9）
-//   - dispatch 前经 workspace.PrepareBranch 在任务仓库开任务分支（脏工作区拒绝），
-//     其余 git 操作（diff/fetch/run）由 server 路由直接调用 workspace 包
+//   - dispatch 前经 workspace.PrepareWorkspace 准备任务工作区（分支×worktree，
+//     脏工作区/非法参数拒绝），其余 git 操作（diff/fetch/run）由 server 路由直接调用 workspace 包
 //
 // 「失败也进 waiting_review」的 why：
 //
@@ -47,9 +47,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/config"
@@ -147,12 +149,31 @@ func registeredNames(ads map[string]executor.Adapter) []string {
 	return names
 }
 
-// DispatchReq 是 Dispatch 的入参：任务仓库与 base64 编码的计划内容。
+// DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
 	Repo     string // 任务仓库路径（executor 工作区）
 	PlanB64  string // plan 内容，base64 编码（路由/CLI 层编码，此处解码）
 	PlanName string // plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）
 	Target   string // 目标主机名（归档展示用，记入 task.Target）
+	// Prompt 是无 plan 文件时的直接指令（prompt-only 派发）；与 PlanB64 至少其一
+	// 非空。plan 非空时作为「附加指令」拼接在计划之后。
+	Prompt string
+	// Name 是任务展示名（空时从 plan 名/prompt 派生，见 deriveName）。
+	Name string
+	// Executor 是任务选择的执行者名；空=缺省（cfg.Executor.Default）。
+	Executor string
+	// Model 是任务级模型覆盖；空=配置 executor.model，再空=executor 自身默认。
+	Model string
+	// Branch / NewBranch 分支二选一（与 PrepareWorkspace 的 WorkspaceReq 一致）：
+	// Branch=切到已存在分支；NewBranch=新建分支（空且 Branch 空=自动 handoff/<id8>）。
+	Branch    string
+	NewBranch string
+	// Base 是新分支起点（仅与 NewBranch/自动分支连用；空=HEAD）。
+	Base string
+	// Worktree / NewWorktree worktree 二选一：Worktree=用户自带 worktree；
+	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
+	Worktree    string
+	NewWorktree bool
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -176,6 +197,44 @@ func planSummaryFromContent(content []byte) string {
 		}
 	}
 	return ""
+}
+
+// deriveName 决定任务的展示名，优先级：显式 Name > plan 文件名（去日期前缀与
+// .md 后缀）> prompt 前 20 rune（不切断单词）。
+//
+// 为什么去日期前缀：约定 plan 文件常以 2026-08-08-<主题>.md 命名，日期前缀是
+// 归档排序用的噪音，做任务名会让列表里全是「2026-08-08-…」看不出主题。
+// 为什么 prompt 截断不切断单词：任务列表一行能展示的长度有限，直接取前 20 rune
+// 会把「…改成 br」这类半截英文留在列表里；截到下一个空白处（或末尾）让名字
+// 以完整单词收尾，可读性远好于硬切。
+func deriveName(name, planName, prompt string) string {
+	if name != "" {
+		return name
+	}
+	if planName != "" {
+		n := planName
+		n = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-`).ReplaceAllString(n, "")
+		n = strings.TrimSuffix(n, ".md")
+		if n != "" {
+			return n
+		}
+	}
+	r := []rune(prompt)
+	const limit = 20
+	if len(r) > limit {
+		cut := limit
+		// 截断处若切断单词（下一字符非空白），顺延过残缺单词到完整词尾；
+		// 再吞掉紧随的空白，保证名字以「完整单词 + 分隔空白」收尾而不是
+		// 半截英文（词尾恰好落在 limit 内时两循环都不触发，直接按 limit 切）
+		for cut < len(r) && !unicode.IsSpace(r[cut]) {
+			cut++
+		}
+		for cut < len(r) && unicode.IsSpace(r[cut]) {
+			cut++
+		}
+		return string(r[:cut])
+	}
+	return string(r)
 }
 
 // ticketRequest 是工单 request 列的通用载体，kind 区分 gate/ask。
@@ -241,7 +300,9 @@ type failedPayload struct {
 //   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
 //     带列写入，保持「创建期只写创建时已知的字段」的约定）
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
-	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target)
+	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target,
+		"executor", req.Executor, "model", req.Model, "name", req.Name,
+		"branch", req.Branch, "new_branch", req.NewBranch, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败", "repo", req.Repo, "cause", err)
@@ -250,29 +311,56 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		}
 	}()
 
-	if req.Repo == "" || req.PlanB64 == "" {
-		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d", errBadDispatchRequest, req.Repo, len(req.PlanB64))
+	// 校验：repo 必填；plan 与 prompt 至少其一（prompt-only 派发）
+	if req.Repo == "" || (req.PlanB64 == "" && req.Prompt == "") {
+		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d prompt 长度=%d",
+			errBadDispatchRequest, req.Repo, len(req.PlanB64), len(req.Prompt))
 	}
-	// dispatch 期解析执行者：Task 7 起按 req.Executor 选择（execName 落库 task.Executor），
-	// 本期先解析缺省执行者。未注册按参数错误拒绝（400）
-	execName, ad, err := m.resolveExecutor("")
+	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
+	execName, ad, err := m.resolveExecutor(req.Executor)
 	if err != nil {
 		return nil, err
 	}
-	_ = execName // Task 7 落库 task.Executor 使用
-	planContent, err := base64.StdEncoding.DecodeString(req.PlanB64)
-	if err != nil {
-		return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
+	model := req.Model
+	if model == "" {
+		model = m.cfg.Executor.Model // 配置级兜底；仍空则 executor 自身默认
+	}
+
+	// 内容合成：plan 解码后作为主体；prompt 非空时——
+	//   plan 非空：拼接为「附加指令」小节（为什么：prompt 是派发当刻的补充意图，
+	//   与 plan 是同一任务的两个信息面，放进同一文件让 executor 一次读全，避免
+	//   二次上下文丢失）；plan 空：prompt 即任务内容
+	var planContent []byte
+	if req.PlanB64 != "" {
+		planContent, err = base64.StdEncoding.DecodeString(req.PlanB64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: 解码 plan_b64: %v", errBadDispatchRequest, err)
+		}
+		if req.Prompt != "" {
+			planContent = append(planContent, []byte("\n\n## 附加指令（派发时提供）\n\n"+req.Prompt)...)
+		}
+	} else {
+		planContent = []byte(req.Prompt)
+	}
+	planName := req.PlanName
+	if planName == "" {
+		planName = "prompt.md" // prompt-only 的 PlanName 兜底：无 plan 文件时固定名归档
 	}
 	summary := planSummaryFromContent(planContent)
+	name := deriveName(req.Name, req.PlanName, req.Prompt)
 
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
-	// 派发前置：在任务仓库上准备任务分支（handoff/<id8>）。
-	// 为什么放在建任务之前：分支准备是纯前置校验（工作区干净/可开分支），失败时
-	// 不留孤儿任务记录，审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
-	branch, err := PrepareBranch(req.Repo, taskID)
+	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
+	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
+	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
+	ws, err := PrepareWorkspace(WorkspaceReq{
+		Repo: req.Repo, TaskID: taskID,
+		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
+		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
+		WorktreesDir: filepath.Join(m.cfg.DataDir, "worktrees"),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
@@ -286,7 +374,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
-	planPath := filepath.Join(taskDir, req.PlanName)
+	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
@@ -300,20 +388,27 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		State:     proto.TaskStatePending,
 		CreatedAt: now,
 		UpdatedAt: now,
+		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 原地模式存空串，
+		// 由 proto.Task.Workdir() 回退到 RepoPath；worktree 模式存实际工作目录）
+		Name:            name,
+		Executor:        execName,
+		Model:           model,
+		WorkDir:         ws.WorkDir,
+		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err
 	}
 
 	// 分支名经 SetTaskField 白名单写入（见 Dispatch doc 注意）
-	if err := m.st.SetTaskField(taskID, "branch", branch); err != nil {
-		m.log.Error("写入任务分支失败", "task", taskID, "branch", branch, "cause", err)
+	if err := m.st.SetTaskField(taskID, "branch", ws.Branch); err != nil {
+		m.log.Error("写入任务分支失败", "task", taskID, "branch", ws.Branch, "cause", err)
 		// 分支已在仓库建好但任务记录写不上：按派发失败处理，落 failed 供人工清理
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "写分支名失败")
 		return nil, fmt.Errorf("记录任务分支: %w", err)
 	}
 	// 内存态同步补上 branch，保证传给 adapter 的 StartReq.Task 完整
-	task.Branch = branch
+	task.Branch = ws.Branch
 
 	// plan 摘要经 SetTaskField 白名单落库（P1-12）：PlanPath 是 agentd 侧文件路径，
 	// 审核者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
@@ -325,6 +420,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	task.PlanSummary = summary
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
+	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
@@ -1146,7 +1242,9 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		return false
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	alive, err := r.Resume(taskID, taskDir, task.RepoPath, task.ExecutorSession)
+	// 恢复时 git 基线捕获与 serve 重建都在任务工作区（worktree 任务的 cwd 是
+	// Workdir 而非主仓库，git -C 在 worktree 上照常工作），统一取 task.Workdir()
+	alive, err := r.Resume(taskID, taskDir, task.Workdir(), task.ExecutorSession)
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)
 		return false

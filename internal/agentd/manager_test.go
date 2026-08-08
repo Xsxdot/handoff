@@ -16,10 +16,12 @@ package agentd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -142,6 +144,94 @@ func TestResolveExecutorRejectsUnknown(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"a": fake.New(nil)}, "a")
 	if _, _, err := m.resolveExecutor("nope"); err == nil || !strings.Contains(err.Error(), "a") {
 		t.Fatalf("未注册执行者应报错并列出可用项: %v", err)
+	}
+}
+
+// TestDispatchPromptOnly 验证 prompt-only 派发：无 plan 文件时以 prompt 生成摘要与
+// 展示名，任务正常进入 running。
+func TestDispatchPromptOnly(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "把 README 安装命令改成 brew", Target: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PlanSummary == "" || !strings.Contains(task.PlanSummary, "README") {
+		t.Fatalf("prompt-only 派发应以 prompt 生成摘要: %q", task.PlanSummary)
+	}
+	if task.Name == "" {
+		t.Fatalf("name 应从 prompt 派生: %q", task.Name)
+	}
+}
+
+// TestDispatchRequiresPlanOrPrompt 验证 plan 与 prompt 都缺时 400 拒绝。
+func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	if _, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r"}); !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("plan 与 prompt 都缺应 400: %v", err)
+	}
+}
+
+// TestDispatchPromptAppendedToPlan 验证 prompt 与 plan 同时存在时，prompt 作为
+// 附加指令拼接在 plan 之后（任务目录里的 plan 文件含两段）。
+func TestDispatchPromptAppendedToPlan(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	plan := base64.StdEncoding.EncodeToString([]byte("# 计划标题\n正文"))
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, PlanB64: plan, PlanName: "p.md", Prompt: "只改 X 模块",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(task.PlanPath)
+	if !strings.Contains(string(content), "附加指令") || !strings.Contains(string(content), "只改 X 模块") {
+		t.Fatalf("prompt 应拼接在 plan 之后: %s", content)
+	}
+}
+
+// TestDispatchUnknownExecutorRejected 验证未注册执行者 dispatch 被拒（400）。
+func TestDispatchUnknownExecutorRejected(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	_, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r", Prompt: "x", Executor: "nope"})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("未注册执行者应 400: %v", err)
+	}
+}
+
+// TestDispatchPersistsExecutorModelAndWorkspace 验证 executor/model/name 与新
+// worktree 元数据随派发落库。
+func TestDispatchPersistsExecutorModelAndWorkspace(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", Model: "m1",
+		Name: "自定义名", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Executor != "fake" || task.Model != "m1" || task.Name != "自定义名" {
+		t.Fatalf("executor/model/name 未落库: %+v", task)
+	}
+	if task.WorkDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据未落库: %+v", task)
+	}
+}
+
+// TestDeriveName 覆盖展示名派生规则：显式优先 > plan 名去日期前缀/去 .md >
+// prompt 前 20 rune。
+func TestDeriveName(t *testing.T) {
+	for _, c := range []struct{ name, planName, prompt, want string }{
+		{"显式优先", "p.md", "x", "显式优先"},
+		{"", "2026-08-08-fix-login.md", "", "fix-login"},
+		{"", "", "把 README 里的安装命令改成 brew 并验证一遍效果", "把 README 里的安装命令改成 brew "},
+	} {
+		if got := deriveName(c.name, c.planName, c.prompt); got != c.want {
+			t.Fatalf("deriveName(%q,%q,%q)=%q want %q", c.name, c.planName, c.prompt, got, c.want)
+		}
 	}
 }
 

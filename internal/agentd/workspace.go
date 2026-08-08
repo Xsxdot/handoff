@@ -1,8 +1,9 @@
 // 本文件是 agentd 侧 git 工作区操作与文件/命令读取的唯一出口。
 //
 // 职责：
-//   - 派发前的分支准备：PrepareBranch 在任务仓库里开 handoff/<id8> 分支，
-//     保证执行器的工作与审核者的 diff 有确定的分界（脏工作区一律拒绝）
+//   - 派发前的工作区准备：PrepareWorkspace 按分支×worktree 两个正交维度准备任务
+//     工作区（脏工作区一律拒绝；new-worktree 免脏检查）——PrepareBranch 是其
+//     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
 //
