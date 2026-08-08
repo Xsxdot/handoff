@@ -605,6 +605,24 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 
+	// 任务存在性校验：打错 task-id 对订阅无意义——hub 按任务路由，不存在任务的事件
+	// 永远不会来，旧实现会让 wait 无限阻塞（与「还没有事件」无法区分，P0-2 根因）。
+	// 以 PolicyViolation（1008）close 码关闭连接：语义是「你的请求本身非法」而非
+	// 网络断连，客户端据此判定永久失败立即报错，而不是把它当瞬时故障无限退避重连
+	if _, err := s.st.GetTask(taskID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("WS 订阅任务不存在", "task", taskID, "remote_addr", r.RemoteAddr)
+			if cerr := conn.Close(websocket.StatusPolicyViolation, "task not found"); cerr != nil {
+				// 连接已断时 Close 失败不影响结论——客户端侧按断线走退避重连，
+				// 若再次拨号仍会走到本分支被关闭
+				s.log.Warn("WS 关闭任务不存在连接失败", "task", taskID, "err", cerr)
+			}
+			return
+		}
+		s.log.Error("WS 校验任务失败", "task", taskID, "cause", err)
+		return
+	}
+
 	sent := 0
 	defer func() {
 		s.log.Info("WS 连接断开", "task", taskID, "from_seq", fromSeq, "sent", sent)

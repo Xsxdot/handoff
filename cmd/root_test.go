@@ -4,11 +4,24 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"log/slog"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/store"
 )
+
+const testToken = "test-token"
 
 // writeTestConfig 写一份测试配置文件并返回路径。
 func writeTestConfig(t *testing.T, content string) string {
@@ -121,4 +134,71 @@ targets:
 			t.Fatalf("未定义 target 应报错, got %v", err)
 		}
 	})
+}
+
+// TestWaitTimeout 覆盖 wait 的 --timeout：到点必须报错（RunE 返回 error，cobra
+// 以非 0 退出），与「事件到达退出 0」可区分——这是 P0-2 修复的最后一层防线
+// （配置错误/打错 task-id 已改为立即报错，--timeout 兜底剩余的无事件挂起场景）。
+//
+// 环境：真实 agentd httptest server + 存在但无任何事件的任务 + --timeout 300ms。
+// 任务必须存在：若任务不存在，WaitEvent 会因 PolicyViolation 立即报错，测试将
+// 覆盖不到 timeout 路径。
+func TestWaitTimeout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	now := time.Now().UTC()
+	if err := st.CreateTask(&proto.Task{ID: "task-1", Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// 配置 listen 指向测试 server 端口（无 --agentd 时 TargetEndpoint 取 cfg.Listen）
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	cfgPath := writeTestConfig(t, "listen: \""+addr+"\"\ntoken: \""+testToken+"\"\n")
+	resetFlags(t)
+	targetName = ""
+	configPath = cfgPath
+	agentdURL = "http://127.0.0.1:7777" // 默认值，但必须显式标记为未 Changed
+	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+	t.Cleanup(func() { waitTimeout = 0 })
+
+	// cobra 的 ExecuteC 只认根命令：执行子命令必须经 rootCmd.SetArgs 传完整
+	// 路径（"wait <task> --timeout 300ms"），直接对 waitCmd.SetArgs 会被
+	// Root().ExecuteC() 忽略并退回根命令（打印 help 返回 nil）
+	rootCmd.SetArgs([]string{"wait", "task-1", "--timeout", "300ms"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = rootCmd.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatal("--timeout 到点应返回错误（cobra 非 0 退出），实际为 nil")
+	}
+	if !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("错误应说明超时, got %v", err)
+	}
+	// 超时不是事件到达：stdout 不得出现事件 JSON（cobra 会在错误时向 stdout
+	// 打印 usage，只断言「无事件 JSON」这一语义）
+	if strings.Contains(out.String(), `"seq"`) || strings.Contains(out.String(), `"type"`) {
+		t.Fatalf("超时退出不应输出事件 JSON, got %q", out.String())
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("--timeout 300ms 应约 300ms 返回, 实际 %v", elapsed)
+	}
 }

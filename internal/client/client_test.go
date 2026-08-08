@@ -10,6 +10,7 @@ package client_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +126,12 @@ func TestListTasksAndAttach(t *testing.T) {
 func TestWaitEventSkipsProgress(t *testing.T) {
 	env := newTestClientEnv(t)
 	taskID := "t1"
+	// 任务行必须先存在：P0-2 后服务端对不存在的任务直接 PolicyViolation 关闭
+	// WS（打错 task-id 的永久错误），本测试要覆盖的是 cursor 语义而非该分支
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
 	pv, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": 1})
 	if err != nil {
 		t.Fatalf("AppendEvent progress: %v", err)
@@ -211,6 +219,12 @@ func TestWaitEventReconnect(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	taskID := "t1"
+	// 任务行必须先存在（P0-2 后服务端对不存在的任务直接关闭 WS），
+	// 本测试要覆盖的是断线重连而非任务不存在分支
+	if err := st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
 	if _, err := st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": 1}); err != nil {
 		t.Fatalf("AppendEvent progress: %v", err)
 	}
@@ -302,5 +316,71 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 	if len(info.PendingTickets) != 0 {
 		t.Fatalf("reply 后 pending_tickets 仍残留 %d 条", len(info.PendingTickets))
+	}
+}
+
+// TestWaitEventWrongTokenFailsFast 覆盖 P0-2 的握手 401 快速失败：
+// token 未同步是文档写明的手工配对步骤（最常见的配置错误），旧实现会无限退避重连、
+// 与「还没有事件」无法区分；新实现握手 401 属永久性失败，WaitEvent 立即返回错误。
+//
+// 判定：错误必须在首轮退避（1s）内返回——若旧实现仍把 401 当瞬时错误，
+// 至少会先睡 1s 才第二次拨号，此断言即失败。
+func TestWaitEventWrongTokenFailsFast(t *testing.T) {
+	env := newTestClientEnv(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := client.New(env.ts.URL, "wrong-token").WaitEvent(ctx, "t1", false)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("错 token 的 WaitEvent 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Fatalf("错误应含 401 状态码, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("错 token 应在退避前立即返回, 实际耗时 %v（疑似仍在退避重连）", elapsed)
+	}
+}
+
+// TestWaitEventTaskNotFoundFailsFast 覆盖 P0-2 的「打错 task-id 永久阻塞」：
+// 服务端对不存在的任务以 PolicyViolation（1008）close 码关闭连接，客户端应
+// 把它识别为永久性失败立即返回（错误信息含 close reason），而非无限重连。
+//
+// 判定：错误必须含 1008 与 reason「task not found」，且在首轮退避（1s）内返回。
+func TestWaitEventTaskNotFoundFailsFast(t *testing.T) {
+	env := newTestClientEnv(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, "no-such-task", false)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("不存在的任务 WaitEvent 应返回错误")
+	}
+	// CloseError 的 Error() 用枚举名而非数字（StatusPolicyViolation），
+	// reason 带服务端写的「task not found」——两者都要在错误信息里
+	if !strings.Contains(err.Error(), "PolicyViolation") || !strings.Contains(err.Error(), "task not found") {
+		t.Fatalf("错误应含 PolicyViolation 与 reason, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("任务不存在应在退避前立即返回, 实际耗时 %v（疑似仍在退避重连）", elapsed)
+	}
+}
+
+// TestWaitEventTimeout 覆盖 --timeout 的底层语义：ctx 带 deadline 且任务无事件时，
+// WaitEvent 返回 ctx.Err()（DeadlineExceeded）——cmd 层据此转成非 0 退出，
+// 与「事件到达退出 0」可区分（区别于旧的无限挂起）。
+func TestWaitEventTimeout(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t) // 任务存在但没有任何事件
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, taskID, false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("无事件 + deadline 应返回 DeadlineExceeded, got %v", err)
 	}
 }

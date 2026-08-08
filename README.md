@@ -42,6 +42,7 @@ handoff dispatch --repo /path/to/repo plan.md
 
 # 4. 审核者侧典型循环
 handoff wait <task-id> --notify             # 挂后台；事件到达输出单行 JSON 并退出
+handoff wait <task-id> --timeout 1h         # 到点报错退出非 0（区别于事件到达的 0）
 handoff reply <task-id> --ticket <id> --approve                       # 批权限门
 handoff reply <task-id> --ticket <id> --deny --reason "不该装这个"     # 拒权限门
 handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答提问
@@ -56,7 +57,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|fake`（默认 opencode） |
 | `handoff dispatch <plan.md>` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--target <name>` |
-| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底） |
+| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff attach <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
@@ -96,7 +97,8 @@ handoff attach <task>              # plan 摘要 + 事件历史 + 未处理挂�
 
 **常见问题**
 
-- `wait` 一直不退出 → 看 stderr 日志的「WS 连接断开，等待后重连」：断线退避重连是 `wait` 的常态，重连日志带地址、重连次数与下次退避秒数。
+- `wait` 报错退出 → 先看报错内容：token 未同步（401，`~/.handoff/config.yaml` 与 agentd 的 token 需一致）或任务不存在（1008 policy violation，`handoff tasks` 核对 task-id）会**立即**报错退出、不会无限重试；确认 token 与 task-id 无误后再挂。
+- `wait` 一直不退出 → 大概率只是「还没有事件」（正常）：看 stderr 日志的「WS 连接断开，等待后重连」，断线退避重连是 `wait` 的常态，重连日志带地址、重连次数与下次退避秒数；无人值守时可加 `--timeout` 兜底。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
 - **SSE 重放风险**：opencode `/event` 在重连时是否重放历史事件尚未经真实样本证实（权限/提问靠 ticket id 幂等去重，但旧 result 重放可能误杀存活的执行器会话）。这是验收级风险，见 `docs/superpowers/e2e-checklist.md` 的 SPIKE-1b 与「水位线应急方案」，上线前必须按清单实测。

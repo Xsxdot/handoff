@@ -12,12 +12,15 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
@@ -28,10 +31,18 @@ import (
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。
 var notifyFlag bool
 
+// waitTimeout 为 0 表示不设上限；大于 0 时等待超过该时长返回错误退出非 0。
+//
+// 为什么需要它：wait 的正常形态是无限阻塞（断线自动退避重连），但无人值守时
+// 配置错误（token 未同步）或打错 task-id 曾表现为无限挂起（P0-2 已修复为立即
+// 报错）；--timeout 是最后一道防线，到点以非 0 退出，与「事件到达退出 0」可区分，
+// 脚本侧据此判断是继续等还是告警。
+var waitTimeout time.Duration
+
 // waitCmd 阻塞等待指定任务的下一个可动作事件。
 //
 // 使用方式：handoff wait <task> —— 事件到达打印 {"seq":..,"type":..,"payload":..} 退出 0；
-// 加 --notify 时同时发 macOS 系统通知。
+// 加 --notify 时同时发 macOS 系统通知；加 --timeout <时长>（如 1h）时到点报错退出非 0。
 var waitCmd = &cobra.Command{
 	Use:   "wait <task>",
 	Short: "阻塞等待任务的下一个可动作事件（question/permission_request 等）",
@@ -45,8 +56,21 @@ var waitCmd = &cobra.Command{
 		// 统一日志格式：wait 是长驻命令，stderr 日志是「为什么没唤醒」的唯一线索
 		slog.SetDefault(logx.Setup("cli", ""))
 
-		ev, err := client.New(addr, token).WaitEvent(cmd.Context(), taskID, false)
+		ctx := cmd.Context()
+		if waitTimeout > 0 {
+			// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
+			// 下方转成带时长的明确报错（区别于事件到达的正常返回）
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, waitTimeout)
+			defer cancel()
+		}
+
+		ev, err := client.New(addr, token).WaitEvent(ctx, taskID, false)
 		if err != nil {
+			if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+				slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
+				return fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)
+			}
 			return err
 		}
 		if notifyFlag {
@@ -102,5 +126,6 @@ func truncateBytes(s string, n int) string {
 
 func init() {
 	waitCmd.Flags().BoolVar(&notifyFlag, "notify", false, "事件到达时发 macOS 系统通知（spec §7 兜底）")
+	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0, "等待超时（如 1h）；到点报错退出非 0（默认不设上限）")
 	rootCmd.AddCommand(waitCmd)
 }

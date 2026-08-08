@@ -359,6 +359,12 @@ func TestWSReplayWindowLiveNoLoss(t *testing.T) {
 		},
 	}))
 	taskID := "t1"
+	// 任务行必须先存在（P0-2 后服务端对不存在的任务直接 PolicyViolation 关闭 WS），
+	// 本测试覆盖的是重放+实时归并，任务不存在分支由 TestWSTaskNotFoundClosesPolicyViolation 单独覆盖
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
 	// 10000 条积压历史（~1.5MB，= eventReplayLimit 上限）：让重放写循环「需时明显」——
 	// 客户端不读时 TCP 缓冲填满、服务端阻塞在重放写，为「重放期间 Publish」制造
 	// 确定性的时间窗口
@@ -433,10 +439,43 @@ func TestWSReplayWindowLiveNoLoss(t *testing.T) {
 	t.Logf("全部 %d 条事件按 seq 1..%d 连续到达（含重放期间的 question）", count, maxSeq)
 }
 
+// TestWSTaskNotFoundClosesPolicyViolation 覆盖 P0-2 的服务端半边：
+// 订阅不存在的任务（打错 task-id）时，服务端必须以 PolicyViolation（1008）
+// close 码关闭连接——语义是「请求本身非法」，客户端据此识别为永久性失败
+// 立即报错，而不是把「任务不存在」误当成瞬时断网无限退避重连。
+func TestWSTaskNotFoundClosesPolicyViolation(t *testing.T) {
+	env := newTestEnv(t)
+
+	wsURL := "ws" + strings.TrimPrefix(env.ts.URL, "http") + "/ws/events?task=no-such-task&from_seq=0"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + env.token}},
+	})
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("WS 拨号失败 status=%d: %v", resp.StatusCode, err)
+		}
+		t.Fatalf("WS 拨号失败: %v", err)
+	}
+	defer conn.CloseNow()
+
+	// 服务端应立即以 PolicyViolation close 关闭连接；Read 返回 CloseError
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("任务不存在应收到 PolicyViolation(1008) close, got %v", err)
+	}
+}
+
 // TestWSReplayThenLive 覆盖 WS 事件流：from_seq=0 先补发 store 中全部历史事件，随后 Publish 实时到达。
 func TestWSReplayThenLive(t *testing.T) {
 	env := newTestEnv(t)
 	taskID := "t1"
+	// 任务行必须先存在（P0-2 后服务端对不存在的任务直接关闭 WS，见
+	// TestWSTaskNotFoundClosesPolicyViolation——本测试覆盖的是补发+实时路径）
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
 	// 预置两条历史事件
 	for i := 1; i <= 2; i++ {
 		if _, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{"n": i}); err != nil {

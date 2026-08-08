@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,6 +47,54 @@ const (
 // 对黑洞对端（SYN 无响应）会挂 ~2min 才失败——每次重连都白等两分钟，指数退避形同
 // 虚设。包级 var 而非 const，便于测试注入更短值（与 workspace.go runCmdTimeout 同款）。
 var dialTimeout = 10 * time.Second
+
+// permanentError 标记永久性失败：配置错误（握手 400/401/403）或任务不存在
+// （服务端 PolicyViolation close）。这类失败重试只会得到相同结果，WaitEvent
+// 遇到它立即返回，不做指数退避——退避重连是为瞬时故障（断网/agentd 重启）设计的。
+type permanentError struct {
+	op    string
+	code  int // HTTP 握手状态码或 WS close code；0 表示未设置
+	cause error
+}
+
+func (e *permanentError) Error() string {
+	return fmt.Sprintf("%s: 永久失败 code=%d: %v", e.op, e.code, e.cause)
+}
+
+// Unwrap 暴露 cause，保证 errors.As/Is 能穿透 permanentError 找到原始错误。
+func (e *permanentError) Unwrap() error { return e.cause }
+
+// isPermanentStatus 判定握手状态码是否属于「重试无意义」的永久性失败。
+//
+// 为什么 400/401/403 永久：它们都表示请求本身非法——400 是参数错误、401/403 是
+// token 未同步/无权限。token 不同步正是文档写明的手工配对步骤（最常见的配置错误），
+// 退避重连只会无限循环，且与「还没有事件」的静默挂起无法区分（P0-2 根因）。
+// 其余状态（如 500、网关错误）可能是 agentd 瞬时故障，继续退避重连。
+func isPermanentStatus(code int) bool {
+	switch code {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	}
+	return false
+}
+
+// isPermanent 判定错误是否属于「重试无意义」的永久性失败。
+//
+// 判定来源：
+//   - waitOnce 显式构造的 permanentError（握手状态码 400/401/403 等配置类错误）
+//   - WS 对端以 StatusPolicyViolation（1008）关闭——服务端「任务不存在」的约定
+//     close code（打错 task-id 的永久配置错误，见 server.go handleEvents）
+//
+// 为什么正常关闭（1000）/GoingAway（1001）不在此列：agentd 重启、主动断开等
+// 瞬时场景都会先关连接，重连即可恢复；只有对端明示「你的请求本身非法」才该退出。
+func isPermanent(err error) bool {
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		return true
+	}
+	var ce websocket.CloseError
+	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
+}
 
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
@@ -341,12 +390,16 @@ func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, ex
 // 审核者只需在真正需要决策的事件（question/permission_request/completed/failed/stalled）
 // 到达时被唤醒。需要全量事件流时显式传 all=true。
 //
+// 永久性失败（不重试）：握手 400/401/403（配置错误）与任务不存在（PolicyViolation
+// close）立即返回错误——退避重连只为瞬时故障设计，见 isPermanent 的 why。
+//
 // 参数：
 //   - taskID: 要等待的任务 ID
 //   - all: true 时不做类型过滤，第一个到达的事件即返回
 //
 // 返回：
-//   - 首个可动作事件；ctx 取消时返回 ctx.Err()（context.Canceled/DeadlineExceeded）
+//   - 首个可动作事件；ctx 取消时返回 ctx.Err()（context.Canceled/DeadlineExceeded）；
+//     永久性失败时返回对应的错误（不做退避）
 func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error) {
 	fromSeq := c.readCursor(taskID)
 
@@ -362,6 +415,12 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		// 永久性失败立即退出：重试只会在相同结果上打转，且与「还没有事件」的
+		// 静默挂起不可区分（P0-2）——必须带 status/cause 让命令层直接展示
+		if isPermanent(err) {
+			c.log().Error("wait 永久失败，不再重试", "addr", c.baseURL, "task", taskID, "cause", err)
+			return nil, err
 		}
 		// 断网重连是「为什么没唤醒」的唯一线索点，必须带 addr、第 n 次与下次退避秒数
 		c.log().Info("WS 连接断开，等待后重连", "addr", c.baseURL, "task", taskID,
@@ -386,6 +445,8 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 //
 // 注意：
 //   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
+//   - 永久性失败以 permanentError 返回（握手 400/401/403），或原样透传对端的
+//     StatusPolicyViolation close（任务不存在）——两者均被 isPermanent 识别，不再重连
 func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
 	// http→ws / https→wss 的 scheme 换算；本项目只用 http，https 分支为完整性防御
 	wsScheme := "ws"
@@ -405,6 +466,11 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
 	if err != nil {
+		if resp != nil && isPermanentStatus(resp.StatusCode) {
+			// 配置类错误（400/401/403）以永久失败返回，由 WaitEvent 立即上报，
+			// 不做退避——见 isPermanentStatus 的 why
+			return nil, &permanentError{op: "WS 拨号", code: resp.StatusCode, cause: err}
+		}
 		if resp != nil {
 			return nil, fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
 		}
