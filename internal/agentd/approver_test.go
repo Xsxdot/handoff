@@ -344,6 +344,47 @@ func TestRelayAnswerRelaysApproverAllowAsOnce(t *testing.T) {
 	}
 }
 
+// TestApproverConcurrentTaskEndOnlyAudits 验证审批链异步化的窗口防护（P1-1）：
+// 裁决（最长 60s）期间 executor 死亡 → handleResult 已把任务落 waiting_review，
+// 随后审批者判 escalate 也不得重建工单/唤醒审核者——只留 approver_decision 审计
+// 事件，避免「状态 waiting_review 却带 pending 权限工单」的 U-1/U-3 矛盾形态回归。
+func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	fk := fake.New(nil) // 空脚本：不产权限事件，由测试直接驱动
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateRunning)
+
+	// 裁决窗口内 executor 死亡：runCmd 先触发 handleResult（落 waiting_review），
+	// 再返回 escalate——复现「Decide 期间任务已终结、裁决结果后到」的时序
+	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
+		m.handleResult(task.ID, resultEvent())
+		return `{"decision":"escalate","reason":"窗口内已终结"}`, nil
+	}
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x"})
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
+
+	// 断言：不产生 permission_request、不新建挂起工单、状态保持 waiting_review
+	evs := mustEvents(t, st, task.ID)
+	if hasEvent(evs, proto.EventTypePermissionRequest) {
+		t.Fatalf("任务已终结时审批者 escalate 不应产生 permission_request: %v", evs)
+	}
+	if pend, _ := st.PendingTickets(task.ID); len(pend) != 0 {
+		t.Fatalf("不应新建挂起工单: %v", pend)
+	}
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateWaitingReview {
+		t.Fatalf("状态应保持 waiting_review，得到 %s", cur.State)
+	}
+	if !hasEvent(evs, proto.EventTypeApproverDecision) {
+		t.Fatalf("应留 approver_decision 审计事件: %v", evs)
+	}
+}
+
 // TestNilApproverKeepsCurrentBehavior 验证 approver=nil 时现行为回归：
 // 权限请求直接产生 permission_request 事件（二期前语义）。
 func TestNilApproverKeepsCurrentBehavior(t *testing.T) {

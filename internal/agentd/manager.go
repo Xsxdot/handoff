@@ -745,6 +745,13 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 // Publish」的原契约。因此本函数的中介主体被提取为 escalatePermission，供原路径
 // 与审批者 escalate 路径共用，保证两路行为完全一致。
 //
+// 审批链异步化对原契约的修正（P1-1）：一期 handlePermission 在 mediate 循环内
+// 同步执行，同任务的 permission/result 天然串行，「escalate 完整走原契约」的
+// 前提隐含了这一点；二期起 consultApprover 是独立 goroutine（最长 60s），裁决
+// 期间任务可能已被 handleResult/done 推进到终态。因此 escalatePermission 只能
+// 在任务仍处 running/waiting_answer 时被调用——consultApprover 在分流前重读
+// 任务快照，状态已终态则只留 approver_decision 审计事件。
+//
 // 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer，再启动
 // waiter goroutine，最后才 Publish**。严格说「先注册 waiter」不成立：waitPermission
 // 的 hub 注册在 goroutine 启动后才异步发生，Publish 后 reply 仍可能先于注册到达——
@@ -877,6 +884,24 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
 	}); err != nil {
 		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+	}
+
+	// 重读任务状态后分流（P1-1）：审批链异步化打破了「permission 与 mediate 循环
+	// 串行」的一期前提——Decide 是最长 60s 的独立 goroutine，窗口内 executor 可能
+	// 死亡（handleResult 落 waiting_review）或被 done 归档（completed）。此时若
+	// 照旧建工单/唤醒/回传，会重现 U-1/U-3 专门修掉的那类矛盾形态：状态已终态却
+	// 带 pending 权限工单，reply 后答案守卫被消耗、RespondPermission 对已死
+	// executor 失败。因此只在任务仍在 running/waiting_answer（可继续中介）时才
+	// 分流；否则仅留 audit 事件 + Warn，不建工单、不 Publish、不回传。
+	cur, gerr := m.st.GetTask(taskID)
+	if gerr != nil {
+		m.log.Error("审批者裁决后重读任务失败，按已终结处理", "task", taskID, "cause", gerr)
+		return
+	}
+	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
+		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，仅留审计事件",
+			"task", taskID, "ticket", ticketID, "decision", decision, "state", cur.State)
+		return
 	}
 
 	if d.Err != nil {
