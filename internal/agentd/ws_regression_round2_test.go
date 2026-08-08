@@ -228,6 +228,13 @@ func TestWSTruncationWarnsOnRealGap(t *testing.T) {
 	fresh := env.appendAndPublish(t, taskID, "新事件")
 	waitEventSeq(t, ctx, conn, fresh.Seq)
 
+	// 轮询等告警日志：服务端在写出事件**之后**才跑截断诊断并打日志，客户端收到
+	// fresh 的时刻可能先于诊断日志落盘（负载下尤其明显）——直接断言会偶发读到
+	// 尚未写入的日志。轮询把「诊断确实未触发」与「日志还没写到」区分开。
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(env.logged(), "补发窗口截断且缺口未由实时流补齐") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !strings.Contains(env.logged(), "补发窗口截断且缺口未由实时流补齐") {
 		t.Errorf("重放截断留下真实缺口 (5, 20] 却未告警——诊断被高 seq 实时事件掩盖；日志尾部：%s",
 			tailStr(env.logged(), 600))
@@ -264,10 +271,22 @@ func TestWSTruncationGapCountedPerTask(t *testing.T) {
 	conn := env.dialWS(t, taskID, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// 等服务端补发出重放首条（seq=2：本任务第一个事件）：收到它即保证服务端已
+	// 越过 storeMax 捕获点（补发写入发生在捕获**之后**）。此后追加的 fresh 不会
+	// 混入缺口统计——否则负载下 fresh 先落库会让 storeMax=41、gap_total 变 16，
+	// 与「缺口=未重放的 15 条」的断言不稳（偶发红）。
+	waitEventSeq(t, ctx, conn, 2)
 	fresh := env.appendAndPublish(t, taskID, "新事件")
 	waitEventSeq(t, ctx, conn, fresh.Seq)
 
+	// 轮询等告警日志：why 同 TestWSTruncationWarnsOnRealGap——诊断日志在事件写出
+	// 之后才落盘，客户端先收到事件时直接断言会偶发读到未写入的日志
+	deadline := time.Now().Add(3 * time.Second)
 	logs := env.logged()
+	for !strings.Contains(logs, "补发窗口截断且缺口未由实时流补齐") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		logs = env.logged()
+	}
 	if !strings.Contains(logs, "补发窗口截断且缺口未由实时流补齐") {
 		t.Fatalf("重放被截断且缺口未补齐，应告警；日志尾部：%s", tailStr(logs, 600))
 	}
