@@ -1129,3 +1129,35 @@ slowed:
 	}
 	t.Fatal("新事件后探活未回到高频间隔（≤100ms），事件复位未生效")
 }
+
+// TestSessionIsolationUsesPropertiesSessionID 验证会话隔离从 properties.sessionID
+// 提取（真实事件 sessionID 在 properties 而非顶层，spike 实测）——其他会话的
+// 事件必须被跳过，不产生任何 AdapterEvent。
+func TestSessionIsolationUsesPropertiesSessionID(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	// 顶层无 sessionID（真实样本形态），properties.sessionID 指向其他会话
+	fs.push(sseLine(map[string]any{
+		"type": "permission.asked",
+		"properties": map[string]any{
+			"id": "per_other", "sessionID": "sess-OTHER",
+			"permission": "bash", "patterns": []string{"echo x"},
+			"metadata": map[string]any{"command": "echo x"},
+			"tool":     map[string]any{"messageID": "msg-9", "callID": "call-9"},
+		},
+	}))
+
+	_, ch := startFakeRun(t, fs, "task-iso-0001", t.TempDir(), t.TempDir())
+	// 跳过「会话就绪」progress 噪音，等待非 progress 事件
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == "progress" {
+				continue
+			}
+			t.Fatalf("其他会话的 permission 事件未被隔离: %+v", ev)
+		case <-time.After(300 * time.Millisecond):
+			return // 期望：无 permission 事件（隔离生效）
+		}
+	}
+}

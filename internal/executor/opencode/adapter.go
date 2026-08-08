@@ -679,10 +679,21 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 		return
 	}
 	// 会话隔离：真实 /event 广播全服务器事件，只处理本任务会话的事件；
-	// 无 sessionID 字段的事件（如 server.connected）不做过滤
-	if ev.SessionID != "" && ev.SessionID != r.session {
+	// 无 sessionID 字段的事件（如 server.connected）不做过滤。
+	// 注意：真实事件里 sessionID 位于 properties 而非顶层（spike 实测），
+	// 顶层字段是历史遗留，过滤必须从 properties 提取。
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		var prop struct {
+			SessionID string `json:"sessionID"`
+		}
+		if json.Unmarshal(ev.Properties, &prop) == nil {
+			sessionID = prop.SessionID
+		}
+	}
+	if sessionID != "" && sessionID != r.session {
 		a.log.Debug("收到其他会话事件，跳过", "task", r.taskID,
-			"type", ev.Type, "session", ev.SessionID)
+			"type", ev.Type, "session", sessionID)
 		return
 	}
 	switch {
