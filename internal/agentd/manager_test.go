@@ -889,3 +889,61 @@ func TestPermissionTicketKeepsFullText(t *testing.T) {
 		t.Errorf("截断的事件 payload 必须带截断标记，实得 %s", payload)
 	}
 }
+
+// TestStopEndsRunningTask 验证 stop 的完整效果：executor 停、挂起工单作废、
+// failed 事件写明中止原因、状态落 failed。
+func TestStopEndsRunningTask(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-stop", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	// 造一个挂起工单：stop 后它必须被作废，否则审核者仍会看到可操作项，
+	// 一 reply 就打进已死会话（与 handleResult 失败分支同一条理由）
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "T-stop:p1", TaskID: "T-stop", Kind: "gate",
+		Request: []byte(`{"kind":"gate","permission":"bash: ls"}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Stop(context.Background(), task.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	got, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != proto.TaskStateFailed {
+		t.Errorf("stop 后状态 = %s，期望 failed", got.State)
+	}
+	pending, err := st.PendingTickets(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("stop 后挂起工单必须清空，实得 %d 条", len(pending))
+	}
+	evs, err := st.EventsFromAsc(task.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed && strings.Contains(string(e.Payload), "中止") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("stop 必须产出写明中止原因的 failed 事件（否则与真失败无法区分）")
+	}
+}
+
+// TestStopOnTerminalTaskRejected 验证已终结任务重复 stop 返回状态冲突而不是崩掉。
+func TestStopOnTerminalTaskRejected(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-stop2", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateCompleted, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	if err := m.Stop(context.Background(), task.ID); !errors.Is(err, store.ErrBadTransit) {
+		t.Fatalf("已终结任务 stop 必须返回 ErrBadTransit（映射 409），实得 %v", err)
+	}
+}

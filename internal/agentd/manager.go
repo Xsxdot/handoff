@@ -7,6 +7,7 @@
 //     permission/question 落 ticket 并挂到 hub.WaitAnswer 等审核者应答，
 //     progress 只入库，result 落 completed/failed 事件进 waiting_review
 //   - 审核者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
+//   - stop：审核者主动中止任务（停 executor、作废工单、落 failed）
 //
 // 中介时序与工单幂等的不变量（P1-2/P1-6/P1-7）：
 //   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
@@ -633,6 +634,71 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 			m.log.Info("managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
 		}
 	}
+	return nil
+}
+
+// Stop 主动中止一个任务：停 executor、作废挂起工单、落 failed 并唤醒审核者。
+//
+// 参数：
+//   - ctx: 上层上下文（HTTP 请求）
+//   - taskID: 待中止的任务
+//
+// 返回：
+//   - store.ErrNotFound: 任务不存在
+//   - store.ErrBadTransit: 任务已是终态（completed/failed），无可中止
+//   - 其余：落库失败
+//
+// 注意：
+//   - 复用 failed 终态而不新增 aborted：状态机零改动，且 failed→running 已允许，
+//     中止后仍可重新派发。「人为中止」与「真失败」的区分靠 failed 事件的
+//     fail_reason 文本，不靠状态
+//   - 不删分支、不删 worktree：那是 handoff done 归档时的职责，stop 只负责让它停下
+//   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
+//     由 tmux 会话兜底，不能因为「停不掉进程」就让任务永远卡在 running
+func (m *Manager) Stop(ctx context.Context, taskID string) (err error) {
+	m.log.Info("stop 进入", "task", taskID)
+	defer func() {
+		if err != nil {
+			m.log.Error("stop 失败", "task", taskID, "cause", err)
+		} else {
+			m.log.Info("stop 完成", "task", taskID)
+		}
+	}()
+
+	cur, err := m.st.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if cur.State == proto.TaskStateCompleted || cur.State == proto.TaskStateFailed {
+		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
+		return fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
+	}
+
+	ad, aerr := m.adapterFor(taskID)
+	if aerr != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
+	} else if serr := ad.Stop(taskID); serr != nil {
+		m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
+	}
+
+	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
+		m.log.Error("作废挂起工单失败", "task", taskID, "cause", verr)
+	} else if voided > 0 {
+		m.log.Warn("任务被中止，挂起工单作废", "task", taskID, "voided", voided)
+	}
+
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
+		FailReason: "审核者主动中止（handoff stop）",
+	})
+	if err != nil {
+		return fmt.Errorf("追加中止事件: %w", err)
+	}
+	if err := m.transit(taskID, proto.TaskStateFailed, "stop"); err != nil {
+		return err
+	}
+	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
+	m.clearApproverState(taskID)
+	m.hub.Publish(evt)
 	return nil
 }
 

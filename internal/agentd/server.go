@@ -126,6 +126,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
+	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStop)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
@@ -542,6 +543,24 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleStop 主动中止任务（停 executor、作废挂起工单、落 failed）。
+//
+// 错误映射：任务不存在 404；已是终态 409（manager 返回 store.ErrBadTransit）。
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("stop 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("stop 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.Stop(r.Context(), taskID); err != nil {
+		s.writeManagerError(w, taskID, "stop", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
 // handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答。

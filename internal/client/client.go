@@ -347,6 +347,25 @@ func (c *Client) Done(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// Stop 主动中止任务：停 executor、作废挂起工单、任务落 failed。
+//
+// 参数：
+//   - taskID: 待中止的任务 ID
+//
+// 返回：
+//   - 任务不存在（404）或已是终态（409）时返回错误
+func (c *Client) Stop(ctx context.Context, taskID string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/stop", nil)
+	if err != nil {
+		return fmt.Errorf("中止任务请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("中止任务", resp)
+	}
+	return nil
+}
+
 // Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答。
 //
 // 参数：
