@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -177,6 +178,24 @@ func TestRunAttachFallsBackToTaskTarget(t *testing.T) {
 	joined := strings.Join(gotArgv, " ")
 	if !strings.Contains(joined, "devbox") {
 		t.Fatalf("attach 命令应含任务记录的 target 主机，got %v", gotArgv)
+	}
+}
+
+// TestIsTTYRejectsDevNull 覆盖修复 5：/dev/null 是字符设备但绝不是终端——旧实现只判
+// os.ModeCharDevice 会把 /dev/null 误判成 TTY，导致脚本按标准做法 handoff attach
+// < /dev/null 走进交互分支、打完表格再报「读取选择」错误（非 TTY 降级路径在最该
+// 生效的场景里失效）。go-isatty 判 ioctl 终端语义，/dev/null 无终端属性 → false。
+func TestIsTTYRejectsDevNull(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("打开 %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+	oldStdin := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = oldStdin }()
+	if isTTY() {
+		t.Fatalf("/dev/null 应被判为非终端（旧实现按 ModeCharDevice 误判）")
 	}
 }
 

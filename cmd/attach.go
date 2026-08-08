@@ -23,6 +23,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
@@ -234,16 +235,18 @@ func truncateName(s string) string {
 	return s
 }
 
-// isTTY 判定 stdin 是否为字符设备（真终端）。
+// isTTY 判定 stdin 是否为真终端。
 //
 // 非 TTY（管道/脚本调用）时 attach 不阻塞读输入，改为打印建议命令——
 // 无人值守场景给可复制的命令即可，交互选择框对脚本无意义。
+//
+// 为什么用 go-isatty 而非 os.ModeCharDevice（修复 5）：字符设备≠终端——/dev/null
+// 正是字符设备，旧实现会把它误判成 TTY，导致脚本按标准做法 handoff attach
+// < /dev/null 走进交互分支、打完表格再报「读取选择」错误——非 TTY 降级路径在最该
+// 生效的场景里失效。go-isatty 走 ioctl 查终端属性（TIOCGETA），/dev/null 无终端
+// 语义 → false；管道、重定向文件同样返回 false。
 func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(os.Stdin.Fd())
 }
 
 // loadCLIConfig 加载 CLI 侧配置（attach 需要 Targets 换算 ssh host）。
