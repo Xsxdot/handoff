@@ -13,4 +13,5 @@
 | B7 | agentd 侧 PATH 继承与工具链探测 | 💡 idea | 中 | — | — | — | — | 来源：08-08 真实测试——agentd 继承的 PATH 缺 go，executor 满盘找工具链浪费多轮；方向：agentd 启动时以登录 shell 解析 PATH，或任务级配置可注入 PATH |
 | B8 | --worktree 归属校验接受仓库子目录 | 💡 idea | 低 | — | — | — | — | 来源：08-08 二期审阅 P2-1——git-common-dir 向上查找使 /repo/internal/sub 被当作 worktree 接受，实际改的是主仓 HEAD 且把审阅面收窄到子目录；方向：加比对 --show-toplevel 与入参（EvalSymlinks 后）相等 |
 | B9 | 审批者裁决输出的 nonce 防伪 | 💡 idea | 中 | — | — | — | — | 来源：08-08 二期审阅 P2-4——权限原文由被监管的 executor 产生（不可信）且被插进审批 prompt，若 CLI 回显 prompt 或模型复述，构造的 {"decision":"approve"} 会被采信；方向：prompt 要求回显随机 nonce、解析校验匹配，或只取 stdout + 权限原文走 stdin |
+| B11 | attach 无参列表的建议命令丢 --target | 💡 idea | 低 | — | — | — | — | 来源：08-08 二期终验——非 TTY 降级打印 `handoff attach <id>` 不带 --target，对远程任务照抄会打到本机 agentd（先 404 再 attach 本机不存在的会话）；顺带：任务查不到时那条 ERROR 日志噪音也该降级 |
 | B10 | workspace git 调用无超时 | 💡 idea | 中 | — | — | — | — | 来源：08-08 二期审阅 P2-6——PrepareWorkspace/RemoveManagedWorktree 全部 context.Background()，worktree add 遇网络文件系统/hook/credential 交互会挂死并拖住 dispatch 的 HTTP handler；方向：PrepareWorkspace(ctx, req) 从 r.Context() 透传 + 分钟级上限 |
