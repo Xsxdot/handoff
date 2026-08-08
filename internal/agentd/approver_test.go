@@ -264,14 +264,16 @@ func TestApproverBlacklistSkipsApprover(t *testing.T) {
 // 为什么直接驱动 handlePermission 而非 fake 脚本：fake 的 Permission 步骤会阻塞
 // 等 RespondPermission，而 fail-closed 路径无人应答（升级审核者），脚本跑不完；
 // 白盒直驱四个权限事件精确复现「4 请求 / 3 次审批调用」。
+// callCount 用 atomic：裁决在 consultApprover goroutine 里递增、测试 goroutine
+// 读取，普通 int 是 data race（-race 稳定复现，P1-5）。
 func TestApproverFailClosedCountsAndDisables(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int64
 	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
 	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		callCount++
+		callCount.Add(1)
 		return "", errors.New("boom")
 	}
 	fk := fake.New(nil) // 空脚本：不产权限事件，由测试直接驱动 handlePermission
@@ -283,7 +285,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 		m.handlePermission(context.Background(), task.ID,
 			executor.AdapterEvent{Type: "permission", PermissionID: perm, Text: "something"})
 	}
-	waitCondition(t, "审批者被调 3 次", func() bool { return callCount == 3 })
+	waitCondition(t, "审批者被调 3 次", func() bool { return callCount.Load() == 3 })
 	// 等禁用标记落定（consultApprover goroutine 异步写）
 	waitCondition(t, "审批链已停用", func() bool {
 		m.apMu.Lock()
@@ -297,8 +299,8 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	waitCondition(t, "第 4 个权限也升级审核者", func() bool {
 		return countEvents(mustEvents(t, st, task.ID), proto.EventTypePermissionRequest) == 4
 	})
-	if callCount != 3 {
-		t.Fatalf("停用后审批者不应再被调用，callCount=%d", callCount)
+	if callCount.Load() != 3 {
+		t.Fatalf("停用后审批者不应再被调用，callCount=%d", callCount.Load())
 	}
 
 	evs := mustEvents(t, st, task.ID)
