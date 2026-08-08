@@ -398,7 +398,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
-	ws, err := PrepareWorkspace(WorkspaceReq{
+	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
 		Repo: req.Repo, TaskID: taskID,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
@@ -415,12 +415,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
+		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
+		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
 
@@ -442,7 +442,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
+		m.compensateManagedWorktree(ctx, req.Repo, ws)
 		return nil, err
 	}
 
@@ -494,12 +494,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 // （MkdirAll/WriteFile/CreateTask）失败，没有任何任务持有该 worktree——done 的
 // 清理只认 WorktreeManaged 的任务记录，无记录则永不清理，worktree 成为孤儿
 // 永久占用磁盘。失败只记 Error，不覆盖/不替换原始派发错误。
-func (m *Manager) compensateManagedWorktree(repo string, ws Workspace) {
+func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws Workspace) {
 	if !ws.Managed || ws.WorkDir == "" {
 		return
 	}
 	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
-	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+	if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
 		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
 	}
 }
@@ -596,7 +596,7 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
 	if cur.WorktreeManaged && cur.WorkDir != "" {
 		m.log.Info("done 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
-		if werr := RemoveManagedWorktree(cur.RepoPath, cur.WorkDir); werr != nil {
+		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
 			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
 				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),

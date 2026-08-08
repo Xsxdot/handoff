@@ -12,8 +12,10 @@
 //     executor 的改动必须经它自己的 commit 落进任务分支
 //   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由审核者决定
 //   - git 全部经 exec.Command("git","-C",repo,...) 执行，不拼接 shell
-//   - 每条命令都有超时/输出护栏（run 10min / 输出有界回收：最多保留 1MB，
-//     超出部分只排空不驻留内存），防挂死与内存失控
+//   - 每条命令都有超时/输出护栏：工作区准备/清理一组 git 调用上限
+//     WorkspaceGitTimeout=2min（pre-checkout hook / credential 交互提示会挂死 git，
+//     这些调用同步跑在 dispatch handler 里，必须有兜底上限）；审阅命令 run 10min；
+//     输出有界回收（最多保留 1MB，超出部分只排空不驻留内存），防挂死与内存失控
 package agentd
 
 import (
@@ -57,9 +59,18 @@ var (
 //     导出供 cmd 包派生 agentd HTTP WriteTimeout（见 cmd/agentd.go）：响应写超时必须
 //     ≥ 该上限，否则长审阅命令会在 handler 执行途中被掐断连接、RunCmd 被提前取消
 //   - maxRunOutput：合并输出的截断上限，防止失控命令刷爆内存与响应体
+//   - WorkspaceGitTimeout：工作区准备/清理这一整组 git 调用的时长上限（见其注释）
 var (
 	RunCmdTimeout = 10 * time.Minute
 	maxRunOutput  = 1 << 20 // 1 MiB
+
+	// WorkspaceGitTimeout 是工作区准备/清理这一整组 git 调用的时长上限。
+	//
+	// 为什么必须有：worktree add / checkout 在网络文件系统、pre-checkout hook 或
+	// credential 交互式提示下会永久挂住；这些调用同步跑在 dispatch 的 HTTP handler
+	// 里，一次挂死等于一个连接与一条 handler goroutine 永不释放。
+	// 包级 var 而非 const：测试可注入更短值。
+	WorkspaceGitTimeout = 2 * time.Minute
 )
 
 // log 返回 slog.Default()（与 store 同款约定：bootstrap 后统一 logger）。
@@ -89,8 +100,11 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 // PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
 // 与全部错误哨兵（ErrDirtyWorktree/ErrRepoUnusable），Dispatch 改走 PrepareWorkspace
 // 后本函数仅剩测试与本包内部引用（Task 7 会清理调用点）。
-func PrepareBranch(repo, taskID string) (branch string, err error) {
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: taskID})
+//
+// 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
+func PrepareBranch(ctx context.Context, repo, taskID string) (branch string, err error) {
+	ws, err := PrepareWorkspace(ctx, WorkspaceReq{Repo: repo, TaskID: taskID})
 	if err != nil {
 		return "", err
 	}
@@ -124,6 +138,9 @@ type Workspace struct {
 
 // PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
 //
+// 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
+//
 // 3 分支模式 × 3 工作树模式的 9 种组合行为表（分支 B/新分支 N/自动 A × 新树 N/用户树 U/原地 I）：
 //
 //	      新树(NewWorktree)        用户树(Worktree)        原地(默认)
@@ -144,10 +161,13 @@ type Workspace struct {
 // 「共享同一仓库 git 目录」；git-common-dir 对 main 仓库返回其 .git、对 worktree
 // 返回同一值，路径经 EvalSymlinks 归一后相等即归属成立——比「读 .git 文件内容」
 // 更稳（.git 可能缺失、可能被链到别处）。校验失败按 ErrBadWorkspaceReq 拒发。
-func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
+func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) {
+	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
 	log().Info("工作区准备进入", "repo", req.Repo, "task", req.TaskID, "branch", req.Branch,
 		"new_branch", req.NewBranch, "base", req.Base, "worktree", req.Worktree,
-		"new_worktree", req.NewWorktree, "worktrees_dir", req.WorktreesDir)
+		"new_worktree", req.NewWorktree, "worktrees_dir", req.WorktreesDir,
+		"timeout", WorkspaceGitTimeout)
 	// 第 1 层：纯内存参数校验（互斥/依赖/注入面），全部包 ErrBadWorkspaceReq
 	if req.Repo == "" || req.TaskID == "" {
 		return Workspace{}, rejectWorkspace("repo 与 task_id 必填", req)
@@ -180,7 +200,7 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 	isExisting := req.Branch != "" // 仅 Branch 模式要求分支已存在
 	if isExisting {
 		// 分支存在性：rev-parse --verify --quiet refs/heads/<name>，非零即不存在
-		if out, _, err := gitRun(context.Background(), req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
+		if out, _, err := gitRun(ctx, req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
 			return Workspace{}, rejectWorkspace("分支 "+req.Branch+" 不存在", req)
 		}
 	}
@@ -203,25 +223,25 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 				args = append(args, req.Base)
 			}
 		}
-		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
 		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
 	case req.Worktree != "":
 		// 用户树：归属校验 → 脏检查 → 在其中 checkout
-		if !worktreeBelongsToRepo(req.Repo, req.Worktree) {
+		if !worktreeBelongsToRepo(ctx, req.Repo, req.Worktree) {
 			return Workspace{}, rejectWorkspace("路径 "+req.Worktree+" 不是本仓库的 worktree", req)
 		}
-		if err := ensureCleanWorktree(req.Worktree); err != nil {
+		if err := ensureCleanWorktree(ctx, req.Worktree); err != nil {
 			return Workspace{}, err
 		}
-		if err := checkoutInWorktree(req.Worktree, branch, req.Base, isExisting); err != nil {
+		if err := checkoutInWorktree(ctx, req.Worktree, branch, req.Base, isExisting); err != nil {
 			return Workspace{}, err
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false}
 	default:
 		// 原地：脏检查主仓 → checkout / checkout -b
-		if err := ensureCleanWorktree(req.Repo); err != nil {
+		if err := ensureCleanWorktree(ctx, req.Repo); err != nil {
 			return Workspace{}, err
 		}
 		var args []string
@@ -233,12 +253,17 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 				args = append(args, req.Base)
 			}
 		}
-		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false}
 	}
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
+	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
+	// 不显式记录一条就无法在日志里区分「命令自己失败」与「被我们掐断」
+	if ctx.Err() != nil {
+		log().Error("工作区准备超时", "task", req.TaskID, "timeout", WorkspaceGitTimeout, "cause", ctx.Err())
+	}
 	return ws, nil
 }
 
@@ -249,8 +274,8 @@ func rejectWorkspace(rule string, req WorkspaceReq) error {
 }
 
 // checkoutInWorktree 在用户自带 worktree 内切分支（已存在 → checkout；新建/自动
-// → checkout -b [base]），供 Worktree 模式复用。
-func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
+// → checkout -b [base]），供 Worktree 模式复用。ctx 控制本次 git 调用的生命周期。
+func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExisting bool) error {
 	var args []string
 	if isExisting {
 		args = []string{"checkout", branch}
@@ -260,7 +285,7 @@ func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
 			args = append(args, base)
 		}
 	}
-	if _, stderr, err := gitRun(context.Background(), workDir, args...); err != nil {
+	if _, stderr, err := gitRun(ctx, workDir, args...); err != nil {
 		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
 	}
 	return nil
@@ -270,8 +295,9 @@ func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
 // 脏检测含未跟踪文件：未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝。
 // git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
 // 用 ErrRepoUnusable 区分（server 层据此给调用方可读的 400 而非扁平 500）。
-func ensureCleanWorktree(dir string) error {
-	status, _, err := gitRun(context.Background(), dir, "status", "--porcelain")
+// ctx 控制本次 git 调用的生命周期。
+func ensureCleanWorktree(ctx context.Context, dir string) error {
+	status, _, err := gitRun(ctx, dir, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("%w: git status: %v", ErrRepoUnusable, err)
 	}
@@ -288,12 +314,13 @@ func ensureCleanWorktree(dir string) error {
 // 原理见 PrepareWorkspace doc 的 why：git-common-dir 对 main 仓库与它的任一
 // worktree 返回同一 git 目录，路径经 EvalSymlinks 归一后相等即归属成立。
 // 任一步失败（路径不是 git 仓库/不是本仓 worktree）都返回 false（fail-closed）。
-func worktreeBelongsToRepo(repo, worktree string) bool {
-	repoDir, _, err := gitRun(context.Background(), repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+// ctx 控制本次 git 调用的生命周期。
+func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
+	repoDir, _, err := gitRun(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return false
 	}
-	wtDir, _, err := gitRun(context.Background(), worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	wtDir, _, err := gitRun(ctx, worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return false
 	}
@@ -308,6 +335,7 @@ func worktreeBelongsToRepo(repo, worktree string) bool {
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
 //
 // 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
 //   - repo: 主仓库路径
 //   - workdir: 待删除的 worktree 路径（必须为 Managed=true 的工作区）
 //
@@ -315,9 +343,11 @@ func worktreeBelongsToRepo(repo, worktree string) bool {
 //   - 只删工作树不删分支（spec：任务分支保留供审阅/回滚）
 //   - workdir 带未提交改动时 git 拒绝删除（错误带 stderr 原文返回）；是否降级
 //     由调用方（Done 归档）决定——本函数不做清理性降级
-func RemoveManagedWorktree(repo, workdir string) error {
-	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir)
-	if _, stderr, err := gitRun(context.Background(), repo, "worktree", "remove", workdir); err != nil {
+func RemoveManagedWorktree(ctx context.Context, repo, workdir string) error {
+	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
+	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir, "timeout", WorkspaceGitTimeout)
+	if _, stderr, err := gitRun(ctx, repo, "worktree", "remove", workdir); err != nil {
 		log().Error("删除 managed worktree 失败", "repo", repo, "workdir", workdir,
 			"stderr", truncateRunes(stderr, 300), "cause", err)
 		return fmt.Errorf("git worktree remove %s: %s: %w", workdir, strings.TrimSpace(stderr), err)

@@ -86,7 +86,7 @@ func initGitRepoIn(t *testing.T, dir string) string {
 func TestPrepareBranchCleanAndDirty(t *testing.T) {
 	t.Run("clean", func(t *testing.T) {
 		repo := initGitRepo(t)
-		branch, err := PrepareBranch(repo, testTaskID)
+		branch, err := PrepareBranch(context.Background(), repo, testTaskID)
 		if err != nil {
 			t.Fatalf("PrepareBranch(clean): %v", err)
 		}
@@ -107,7 +107,7 @@ func TestPrepareBranchCleanAndDirty(t *testing.T) {
 		f.WriteString("dirty\n")
 		f.Close()
 
-		_, err = PrepareBranch(repo, testTaskID)
+		_, err = PrepareBranch(context.Background(), repo, testTaskID)
 		if !errors.Is(err, ErrDirtyWorktree) {
 			t.Fatalf("脏工作区应拒绝派发, got %v", err)
 		}
@@ -121,7 +121,7 @@ func TestPrepareBranchCleanAndDirty(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("x"), 0o644); err != nil {
 			t.Fatalf("写未跟踪文件: %v", err)
 		}
-		_, err := PrepareBranch(repo, testTaskID)
+		_, err := PrepareBranch(context.Background(), repo, testTaskID)
 		if !errors.Is(err, ErrDirtyWorktree) {
 			t.Fatalf("未跟踪文件同样算脏, got %v", err)
 		}
@@ -131,7 +131,7 @@ func TestPrepareBranchCleanAndDirty(t *testing.T) {
 // TestDiffShowsCommits 验证在任务分支上提交后，Diff 相对基准分支能看到该文件与提交主题。
 func TestDiffShowsCommits(t *testing.T) {
 	repo := initGitRepo(t)
-	if _, err := PrepareBranch(repo, testTaskID); err != nil {
+	if _, err := PrepareBranch(context.Background(), repo, testTaskID); err != nil {
 		t.Fatalf("PrepareBranch: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "impl.go"), []byte("package main\n"), 0o644); err != nil {
@@ -452,7 +452,7 @@ func TestRunOutputBufferBounded(t *testing.T) {
 // 参数）行为与一期 PrepareBranch 完全一致：自动开 handoff/<id8> 分支、原地工作。
 func TestPrepareWorkspaceDefaultKeepsCurrentBehavior(t *testing.T) {
 	repo := initTestRepo(t)
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-rest"})
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "abcdefgh-rest"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestPrepareWorkspaceDefaultKeepsCurrentBehavior(t *testing.T) {
 func TestPrepareWorkspaceExistingBranch(t *testing.T) {
 	repo := initTestRepo(t)
 	gitT(t, repo, "branch", "feat-x")
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "feat-x"})
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "feat-x"})
 	if err != nil || ws.Branch != "feat-x" {
 		t.Fatalf("应切到已存在分支: %+v %v", ws, err)
 	}
@@ -477,7 +477,7 @@ func TestPrepareWorkspaceExistingBranch(t *testing.T) {
 // TestPrepareWorkspaceBranchNotExist 验证 Branch 模式对不存在分支拒发（ErrBadWorkspaceReq）。
 func TestPrepareWorkspaceBranchNotExist(t *testing.T) {
 	repo := initTestRepo(t)
-	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "ghost"}); !errors.Is(err, ErrBadWorkspaceReq) {
+	if _, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "t1", Branch: "ghost"}); !errors.Is(err, ErrBadWorkspaceReq) {
 		t.Fatalf("不存在的分支应拒发: %v", err)
 	}
 }
@@ -487,7 +487,7 @@ func TestPrepareWorkspaceNewBranchWithBase(t *testing.T) {
 	repo := initTestRepo(t)
 	base := gitOut(t, repo, "rev-parse", "HEAD")
 	writeAndCommit(t, repo, "f.txt", "x") // HEAD 前进一格
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", NewBranch: "feat-y", Base: base})
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "t1", NewBranch: "feat-y", Base: base})
 	if err != nil || ws.Branch != "feat-y" {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestPrepareWorkspaceNewBranchWithBase(t *testing.T) {
 func TestPrepareWorkspaceNewWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "worktrees")
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestPrepareWorkspaceNewWorktree(t *testing.T) {
 		t.Fatalf("worktree 内应在任务分支: %s", cur)
 	}
 	// 同 repo 第二个任务并行派发不冲突（一期原地模式做不到）
-	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "second-t", NewWorktree: true, WorktreesDir: wtDir}); err != nil {
+	if _, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "second-t", NewWorktree: true, WorktreesDir: wtDir}); err != nil {
 		t.Fatalf("同 repo 并行派发应成功: %v", err)
 	}
 }
@@ -523,7 +523,7 @@ func TestPrepareWorkspaceNewWorktree(t *testing.T) {
 func TestPrepareWorkspaceNewWorktreeAllowsDirtyMainRepo(t *testing.T) {
 	repo := initTestRepo(t)
 	os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("x"), 0o644) // 主仓脏
-	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t1", NewWorktree: true,
+	if _, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "t1", NewWorktree: true,
 		WorktreesDir: filepath.Join(t.TempDir(), "w")}); err != nil {
 		t.Fatalf("new-worktree 不应受主仓脏工作区限制: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestPrepareWorkspaceExistingWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt1")
 	gitT(t, repo, "worktree", "add", "-b", "pre-branch", wt)
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", Worktree: wt})
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", Worktree: wt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestPrepareWorkspaceExistingWorktree(t *testing.T) {
 		t.Fatalf("用户自带 worktree: Managed 应为 false 且在其中开任务分支: %+v", ws)
 	}
 	// 非 worktree 路径拒发
-	if _, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "t2", Worktree: t.TempDir()}); !errors.Is(err, ErrBadWorkspaceReq) {
+	if _, err := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "t2", Worktree: t.TempDir()}); !errors.Is(err, ErrBadWorkspaceReq) {
 		t.Fatalf("非本 repo worktree 应拒发: %v", err)
 	}
 }
@@ -559,9 +559,34 @@ func TestPrepareWorkspaceMutualExclusionAndInjection(t *testing.T) {
 		"分支名 - 开头":              {Repo: repo, TaskID: "t", Branch: "-evil"},
 		"base - 开头":             {Repo: repo, TaskID: "t", NewBranch: "b", Base: "--evil"},
 	} {
-		if _, err := PrepareWorkspace(req); !errors.Is(err, ErrBadWorkspaceReq) {
+		if _, err := PrepareWorkspace(context.Background(), req); !errors.Is(err, ErrBadWorkspaceReq) {
 			t.Fatalf("%s 应拒发: %v", name, err)
 		}
+	}
+}
+
+// TestPrepareWorkspaceCanceledContextFailsFast 验证工作区准备受 ctx 约束：
+// 已取消的 ctx 必须立即失败，而不是照常把 git 跑完。
+// why：现网根因是全部 git 调用写死 context.Background()，worktree add 遇网络
+// 文件系统/hook/credential 交互式提示会挂死，并拖住 dispatch 的 HTTP handler。
+func TestPrepareWorkspaceCanceledContextFailsFast(t *testing.T) {
+	repo := initTestRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := PrepareWorkspace(ctx, WorkspaceReq{Repo: repo, TaskID: testTaskID}); err == nil {
+		t.Fatal("已取消的 ctx 必须让工作区准备失败，实得 nil")
+	}
+}
+
+// TestRemoveManagedWorktreeCanceledContextFailsFast 同款验证 worktree 清理路径。
+func TestRemoveManagedWorktreeCanceledContextFailsFast(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitT(t, repo, "worktree", "add", "-b", "side-remove", wt)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RemoveManagedWorktree(ctx, repo, wt); err == nil {
+		t.Fatal("已取消的 ctx 必须让 worktree 清理失败，实得 nil")
 	}
 }
 
@@ -569,8 +594,8 @@ func TestPrepareWorkspaceMutualExclusionAndInjection(t *testing.T) {
 func TestRemoveManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "w")
-	ws, _ := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
-	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+	ws, _ := PrepareWorkspace(context.Background(), WorkspaceReq{Repo: repo, TaskID: "abcdefgh-x", NewWorktree: true, WorktreesDir: wtDir})
+	if err := RemoveManagedWorktree(context.Background(), repo, ws.WorkDir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(ws.WorkDir); !os.IsNotExist(err) {
