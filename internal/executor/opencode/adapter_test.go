@@ -7,6 +7,7 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,36 @@ func quietLog(t *testing.T) {
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
+}
+
+// bufWriter 是并发安全的日志缓冲（slog handler 的 io.Writer 目标）：
+// captureLog 用它收集日志，供「断言不应出现某类日志」的场景读回。
+type bufWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *bufWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *bufWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// captureLog 把 slog.Default 换成写入内存缓冲的 handler，返回缓冲：
+// 订阅 goroutine 与测试协程并发读写，bufWriter 的互斥保证 race 下安全。
+func captureLog(t *testing.T) *bufWriter {
+	t.Helper()
+	buf := &bufWriter{}
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return buf
 }
 
 // fakeProbe 是 serveHandle 的测试替身：alive 可变（模拟 serve 死亡），
@@ -166,13 +197,20 @@ func userMsgEvent(id string) string {
 
 // partUpdatedEvent 构造一条 message.part.updated（text 类型 part 的全量快照）。
 func partUpdatedEvent(msgID, partID, text string) string {
+	return partUpdatedTypedEvent(msgID, partID, "text", text)
+}
+
+// partUpdatedTypedEvent 构造一条 message.part.updated（可指定 part 类型：
+// text/reasoning/tool——非文本 part 隔离测试用，spike5 实测 reasoning 的
+// part.updated 先于其 delta 流到达且 text 为空）。
+func partUpdatedTypedEvent(msgID, partID, partType, text string) string {
 	return sseLine(map[string]any{
 		"type":      "message.part.updated",
 		"sessionID": "sess-1",
 		"properties": map[string]any{
 			"sessionID": "sess-1",
 			"part": map[string]any{
-				"type": "text", "text": text, "messageID": msgID,
+				"type": partType, "text": text, "messageID": msgID,
 				"sessionID": "sess-1", "id": partID,
 			},
 		},
@@ -545,6 +583,46 @@ func TestPartDeltaAccumulation(t *testing.T) {
 	}
 }
 
+// TestReasoningDeltaIsolated 验证 reasoning part 的流式增量不混入回合：
+// part.updated 先登记 part 类型（spike5 实测：reasoning part.updated 空文本
+// 创建先到，其后约 150 条 field=text 的 delta；delta 无 part 类型字段），
+// 已登记的 reasoning 类型必须让增量被跳过——否则推理文本会累积进回合与
+// render.log：兜底 question 变推理墙、reasoning-only 回合不再命中空回合 Warn、
+// reasoning 含 { 开头行还会被 ParseTrailer 误判 finish。text part 的 delta
+// 不受类型过滤影响，照常累积。
+func TestReasoningDeltaIsolated(t *testing.T) {
+	quietLog(t)
+	taskDir := t.TempDir()
+	fs := newFakeServer(t)
+	fs.push(userMsgEvent("msg-u1"))
+	// spike5:123→125 实测顺序：reasoning part.updated（空文本创建）先于其 delta 流
+	fs.push(partUpdatedTypedEvent("msg-a1", "prt-r1", "reasoning", ""))
+	fs.push(partDeltaEvent("msg-a1", "prt-r1", "让我思考一下这个需求："))
+	fs.push(partDeltaEvent("msg-a1", "prt-r1", "{"))
+	fs.push(partDeltaEvent("msg-a1", "prt-r1", "最快路径是直接问用户"))
+	// 文本 part：照 spike5 顺序走「创建（空）→ delta 流」，验证 text delta 仍累积
+	fs.push(partUpdatedEvent("msg-a1", "prt-t1", ""))
+	fs.push(partDeltaEvent("msg-a1", "prt-t1", "分析完毕\n{\"ask\":\"选 A 还是 B？\"}"))
+	fs.push(statusIdleEvent())
+
+	_, ch := startFakeRun(t, fs, "task-reason-001", t.TempDir(), taskDir)
+	ev := waitEventType(t, ch, "question")
+	if ev.Text != "选 A 还是 B？" {
+		t.Errorf("question 文本=%q，期望 \"选 A 还是 B？\"（reasoning 混入会污染回合）", ev.Text)
+	}
+
+	render, err := os.ReadFile(filepath.Join(taskDir, "render.log"))
+	if err != nil {
+		t.Fatalf("读取 render.log: %v", err)
+	}
+	if strings.Contains(string(render), "让我思考") || strings.Contains(string(render), "最快路径") {
+		t.Errorf("render.log 不应含 reasoning 增量，实际:\n%s", render)
+	}
+	if !strings.Contains(string(render), "分析完毕") {
+		t.Errorf("render.log 应含 text part 增量（text delta 不能被类型过滤误伤），实际:\n%s", render)
+	}
+}
+
 // TestPermissionAskedMapping 验证 permission.asked 映射：PermissionID 取
 // properties.id，Text 由 permission 字段 + metadata.command 组合（无 command
 // 时退回 patterns）。
@@ -606,11 +684,31 @@ func TestPermissionRepliedIgnored(t *testing.T) {
 	}
 }
 
+// TestUserMessageResendDoesNotClearTurn 验证同一 user 消息的 message.updated
+// 重发不清空回合：spike5 实测同一 user msg id 的 message.updated 出现 3 次
+// （每次紧跟 session.diff 广播）；重发若落在末段文本/trailer 之后、idle 之前
+// （executor 提交代码→session.diff→重发，正是 handoff 的典型节奏），无条件
+// 清空会让 idle 走空回合 Warn、任务永不分类。修复后仅 first-seen 归零。
+func TestUserMessageResendDoesNotClearTurn(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(userMsgEvent("msg-u1"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "完成\n{\"ask\":\"选 A 还是 B？\"}"))
+	fs.push(userMsgEvent("msg-u1")) // 同 id 重发：模拟 session.diff 广播后的服务端重发
+	fs.push(statusIdleEvent())
+
+	_, ch := startFakeRun(t, fs, "task-uresend-001", t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "question")
+	if ev.Text != "选 A 还是 B？" {
+		t.Errorf("question 文本=%q，期望 \"选 A 还是 B？\"（重发清空回合后 idle 走空回合 Warn）", ev.Text)
+	}
+}
+
 // TestIdleDedupe 验证 idle 双信号去重：真实流在 session.status idle 后同现
 // session.idle，两条都触发会重复分类（重复 question/result）——只认
 // session.status idle 主信号，session.idle 必须被忽略。
 func TestIdleDedupe(t *testing.T) {
-	quietLog(t)
+	buf := captureLog(t)
 	fs := newFakeServer(t)
 	fs.push(userMsgEvent("msg-u1"))
 	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "完成\n{\"ask\":\"选 A 还是 B？\"}"))
@@ -622,6 +720,18 @@ func TestIdleDedupe(t *testing.T) {
 	if ev.Text != "选 A 还是 B？" {
 		t.Errorf("question 文本=%q，期望 \"选 A 还是 B？\"", ev.Text)
 	}
+	// 结构性抓回归：mapIdle 分类后无条件 clearTurn，若 session.idle 被误映射
+	// 进 mapIdle，第二次触发只命中空回合 Warn、不产事件——事件通道断言在正确/
+	// 错误实现下都通过（300ms select 形同虚设）。改断言缓冲中不出现「idle 但
+	// 回合无文本」Warn：正确实现下 session.idle 走 Debug 跳过，永不进 mapIdle
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "idle 但回合无文本") {
+			t.Fatal("session.idle 冗余信号不应触发空回合 Warn（被误映射进 mapIdle）")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// 事件通道层断言保留：不重复产出分类事件
 	select {
 	case ev2 := <-ch:
 		if ev2.Type == "question" || ev2.Type == "result" {

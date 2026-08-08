@@ -22,8 +22,10 @@
 // 事件映射以真实 SSE 样本为准（spike3/spike5，opencode 1.18.15 serve 模式）：
 //   - 文本载体：模型文本走 message.part.updated（properties.part.type=text，
 //     带该 part 全量文本快照）与 message.part.delta（properties.field=text，
-//     properties.delta 增量）；message.updated 只有 properties.info
-//     （role/messageID），不带文本，仅用于探测新回合开始（role=user 清空累积）
+//     properties.delta 增量），reasoning/tool 等非 text part 的增量隔离不进
+//     回合；message.updated 只有 properties.info（role/messageID），不带文本，
+//     仅用于探测新回合开始（role=user 首次见到该消息 id 时清空累积，同 id
+//     重发忽略——session.diff 广播后服务端会重发同一 user 消息）
 //   - 回合结束主信号：session.status 的 properties.status.type=idle；同现的
 //     session.idle 与顶层 idle/busy 事件全部忽略，防重复触发分类
 //   - 权限：permission.asked（properties.id 即 PermissionID，properties.permission/
@@ -118,6 +120,7 @@ type runState struct {
 	turn         string            // 当前回合累积文本（模型 text part 输出）
 	partSeen     map[string]string // messageID+partID -> 该 part 已计入回合的文本
 	partSnap     map[string]bool   // messageID+partID -> 是否收到过非空全量快照
+	partTypes    map[string]string // messageID+partID -> part 类型（delta 无类型字段，靠它识别非 text 增量）
 	userMsgs     map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
 	lastProgress time.Time         // 上次发 progress 的时刻（节流）
 }
@@ -133,6 +136,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		renderPath: filepath.Join(taskDir, "render.log"),
 		partSeen:   make(map[string]string),
 		partSnap:   make(map[string]bool),
+		partTypes:  make(map[string]string),
 		userMsgs:   make(map[string]bool),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
@@ -597,8 +601,9 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 
 // mapMessageUpdated 处理 message.updated：真实事件只携带 properties.info
 // （role/messageID），不带文本——文本载体是 message.part.updated/delta。本层
-// 只把它当「回合边界探测器」：user 消息到来即开启新回合（清空累积），并登记
-// 该消息为 user 消息（其 text part 不进回合累积，回合只算模型输出）。
+// 只把它当「回合边界探测器」：user 消息首次出现即开启新回合（清空累积），并登记
+// 该消息为 user 消息（其 text part 不进回合累积，回合只算模型输出）；同一 id
+// 的重发不再清空（why 见 mapMessageUpdated 内部）。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 	var msg struct {
 		Info struct {
@@ -614,6 +619,14 @@ func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 		return // assistant 消息不携带文本，无事可做
 	}
 	if msg.Info.ID != "" {
+		if r.userMsgs[msg.Info.ID] {
+			// 同一 user 消息被服务端重发（session.diff 广播后紧跟重发，spike5
+			// 实测同一 msg id 出现 3 次）：重发若落在末段文本/trailer 之后、
+			// idle 之前（executor 提交代码→session.diff→重发，正是 handoff 的
+			// 典型节奏），无条件清空回合会让 idle 走空回合 Warn、永不分类——
+			// 只有 first-seen 才归零
+			return
+		}
 		r.userMsgs[msg.Info.ID] = true
 	}
 	r.clearTurn()
@@ -623,7 +636,12 @@ func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 // 全量文本快照（真实流：文本首帧可能是空串的「part 创建」事件，随后走
 // part.delta 增量，收尾再回发完整快照）。
 //
-// why（按 part 去重 + 与 delta 对账）：
+// why（类型登记先于过滤 + 按 part 去重 + 与 delta 对账）：
+//   - part 类型必须在 text 过滤前登记进 partTypes：message.part.delta 只有
+//     field 没有 part 类型字段（spike5 实测 reasoning 增量也是 field=text），
+//     part.updated 是唯一携带类型的事件，且真实流中它总是先于该 part 的
+//     delta 到达（spike5:123→125）——错过登记，reasoning/tool 增量会被当
+//     模型输出累积进回合与 render.log
 //   - 服务端对同一 part 可能多次回发快照，且增量流结束后会补发全量快照——
 //     直接 append 全文会重复累积；按 messageID+partID 记录已计入文本，只
 //     追加 TrimPrefix 增量，快照与已见一致即去重返回
@@ -645,6 +663,11 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 		return
 	}
 	p := pu.Part
+	// 类型登记先于 text 过滤（why 见函数注释）：delta 无类型字段，只有这里能
+	// 建立「part -> 非 text」的事实，mapPartDelta 据此跳过 reasoning/tool 增量
+	if p.ID != "" && p.MessageID != "" {
+		r.partTypes[partKey(p.MessageID, p.ID)] = p.Type
+	}
 	if p.Type != "text" || p.ID == "" || p.MessageID == "" {
 		return // reasoning/tool/step-start 等非文本 part 与缺 id 事件不参与累积
 	}
@@ -670,9 +693,13 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 
 // mapPartDelta 处理 message.part.delta：field=text 的流式增量。
 //
-// why（与快照对账）：若该 part 已收到非空全量快照（part.updated），增量已被
-// 快照覆盖，跳过防重复；否则增量直接 append——真实流里「part 创建（空文本）→
-// 逐条 delta 增长」期间并无有效快照可对账（spike5 实测）。
+// why（已知类型过滤 + 与快照对账）：
+//   - 已知非 text part（reasoning/tool）的 delta 直接跳过：partTypes 由
+//     part.updated 先行登记（delta 本身只有 field 无类型），不跳过会被当
+//     模型输出累积进回合与 render.log
+//   - 若该 part 已收到非空全量快照（part.updated），增量已被快照覆盖，
+//     跳过防重复；否则增量直接 append——真实流里「part 创建（空文本）→
+//     逐条 delta 增长」期间并无有效快照可对账（spike5 实测）
 func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 	var pd struct {
 		MessageID string `json:"messageID"`
@@ -691,6 +718,9 @@ func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 		return
 	}
 	key := partKey(pd.MessageID, pd.PartID)
+	if t := r.partTypes[key]; t != "" && t != "text" {
+		return // 已知非 text part（reasoning/tool）的增量：不累积、不进 render.log
+	}
 	if r.partSnap[key] {
 		return // 全量快照已含该文本：增量冗余
 	}
@@ -815,6 +845,7 @@ func (r *runState) clearTurn() {
 	r.turn = ""
 	r.partSeen = make(map[string]string)
 	r.partSnap = make(map[string]bool)
+	r.partTypes = make(map[string]string)
 }
 
 // partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part
