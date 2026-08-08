@@ -66,6 +66,13 @@ var agentdCmd = &cobra.Command{
 		}
 		defer st.Close()
 
+		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
+		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
+		ap, err := agentd.NewApprover(cfg.Approver, logger)
+		if err != nil {
+			return fmt.Errorf("初始化审批链: %w", err)
+		}
+
 		srv := agentd.NewServer(cfg, st, logger)
 		// 两个执行者都注册：dispatch --executor 可按名选择；opencode 是真实执行，
 		// fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -81,7 +88,7 @@ var agentdCmd = &cobra.Command{
 			// 两个都可用——老任务按各自 executor 名仍能路由到对应 adapter
 			cfg.Executor.Default = executorFlag
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, logger)
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, logger)
 		srv.SetManager(mgr)
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——

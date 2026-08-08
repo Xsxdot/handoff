@@ -308,6 +308,7 @@ func TestReplyRoundTrip(t *testing.T) {
 	// （回答落库但无中继落点），那是 TestReplyRelayFailureSurfacesReason 的覆盖面
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: env.token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 	cl := client.New(env.ts.URL, env.token)

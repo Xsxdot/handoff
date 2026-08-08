@@ -59,7 +59,7 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, logger)
 	srv.SetManager(mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
 }

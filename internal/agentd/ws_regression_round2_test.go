@@ -155,8 +155,22 @@ func TestWSOutOfOrderPublishNotDropped(t *testing.T) {
 	env.seedTask(t, taskID)
 
 	conn := env.dialWS(t, taskID, 0)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 30s 而非 10s：同一 ctx 要先后完成多次往返（探活/收 high/探测断开），
+	// 全量并行负载下首步就可能耗去大半预算，10s 会让探测在超时上误报
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// 探活往返：Append+Publish 一条 progress 并等它到客户端。为什么要这一步——
+	// websocket.Dial 在 Accept 后即返回，而服务端的 Subscribe 在其后异步执行；
+	// 若两步 Append+Publish 抢在订阅建立前，事件会被 hub 按「无订阅者」丢弃、
+	// 再由重放按序补出，此时 low 重放后成为「真重复」（seq<=maxReplayed）被跳过，
+	// 连接不会因乱序断开——测试将永久超时。探活往返保证订阅/排空/写循环全部就绪。
+	probe, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]string{"text": "探活"})
+	if err != nil {
+		t.Fatalf("AppendEvent probe: %v", err)
+	}
+	env.srv.hub.Publish(probe)
+	waitEventSeq(t, ctx, conn, probe.Seq)
 
 	// 先落库两条，再反序广播（复现并发发布的交错）
 	low, err := env.st.AppendEvent(taskID, proto.EventTypeStalled, map[string]string{"text": "低 seq"})

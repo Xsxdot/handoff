@@ -406,6 +406,7 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	f := fake.New(nil)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
@@ -483,6 +484,7 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 

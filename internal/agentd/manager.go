@@ -50,6 +50,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -75,6 +76,7 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
 // 每个任务的中介 goroutine 与应答 goroutine 通过 store CAS + hub 路由协作。
+// approver 相关的 in-flight/失败计数/停用表由 apMu 保护。
 type Manager struct {
 	st  *store.Store
 	hub *Hub
@@ -83,6 +85,17 @@ type Manager struct {
 	ads map[string]executor.Adapter
 	cfg *config.Config
 	log *slog.Logger
+	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
+	// 权限请求直接升级人工审核者）。构造后只读。
+	approver *Approver
+	// 审批链运行时状态（apMu 保护）：
+	//   - apInflight：正在裁决中的 ticket id 集合（防 SSE 重放双呼审批者）
+	//   - apFails：每任务连续裁决失败计数（Err 非 nil 才累计）
+	//   - apDisabled：已停用审批链的任务集合（连续失败 3 次）
+	apMu       sync.Mutex
+	apInflight map[string]bool
+	apFails    map[string]int
+	apDisabled map[string]bool
 }
 
 // NewManager 创建任务管理器。
@@ -93,12 +106,18 @@ type Manager struct {
 //   - ads: executor 注册表（name → Adapter，如 {"opencode": ..., "fake": ...}）；
 //     任务按 executor 名路由，缺省名取 cfg.Executor.Default
 //   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
+//   - approver: 审批链裁决器；nil=不启用
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
-func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, log *slog.Logger) *Manager {
-	return &Manager{st: st, hub: hub, ads: ads, cfg: cfg, log: log}
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, log *slog.Logger) *Manager {
+	return &Manager{
+		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, log: log,
+		apInflight: map[string]bool{},
+		apFails:    map[string]int{},
+		apDisabled: map[string]bool{},
+	}
 }
 
 // adapterFor 按任务记录的执行者名解析其 adapter。
@@ -282,6 +301,30 @@ type completedPayload struct {
 type failedPayload struct {
 	FailReason string `json:"fail_reason"`
 }
+
+// approverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限
+// 请求的裁决结果。Decision 取 approve/escalate/error（error=裁决本身失败）。
+type approverDecisionPayload struct {
+	TicketID   string `json:"ticket_id"`
+	Permission string `json:"permission"`
+	Decision   string `json:"decision"`
+	Reason     string `json:"reason"`
+	ElapsedMS  int64  `json:"elapsed_ms"`
+}
+
+// approverDisabledPayload 是 approver_disabled 事件的 payload：任务级审批链
+// 因连续失败被停用的原因。
+type approverDisabledPayload struct {
+	Reason string `json:"reason"`
+}
+
+// maxApproverFails 是同任务审批者连续裁决失败（Err 非 nil）多少次后停用审批链。
+//
+// 为什么 3：对「已损坏的审批者命令」（如二进制被卸载、模型服务永久报错）的一次
+// 重试代价是整条权限请求被升级、审核者被叫醒一次——反复重试只会形成「每次权限都
+// 升级 + 每次审批都失败」的重试风暴，烧人工注意力的同时毫无收益；3 次是「确认
+// 不是偶发抖动」的合理样本量。
+const maxApproverFails = 3
 
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
 // running → 启动中介 goroutine 消费事件流。
@@ -680,6 +723,12 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 // handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
 // waiting_answer → goroutine 等审核者应答后回传 executor。
 //
+// 审批链前置的时序说明（二期新增）：approver 启用且黑名单未命中时，请求先交
+// consultApprover 做廉价模型裁决——approve 全程不动状态机（任务保持 running，
+// executor 收 once 后继续跑），escalate 则完整走下方「落状态→建工单→waiter→
+// Publish」的原契约。因此本函数的中介主体被提取为 escalatePermission，供原路径
+// 与审批者 escalate 路径共用，保证两路行为完全一致。
+//
 // 顺序契约（P1-2 时序修复）：ticket/事件落库后，**先置 waiting_answer，再启动
 // waiter goroutine，最后才 Publish**。严格说「先注册 waiter」不成立：waitPermission
 // 的 hub 注册在 goroutine 启动后才异步发生，Publish 后 reply 仍可能先于注册到达——
@@ -702,6 +751,23 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
 		return
 	}
+	// 审批链前置分流：需要咨询审批者（且未停用/未命中黑名单）时，异步裁决——
+	// 审批期间不阻塞 mediate 循环，同任务后续 progress 事件照常入库广播。
+	// 已在裁决中的重放（markApproverInflight 返回 false）直接吞掉，不重复咨询。
+	if m.shouldConsultApprover(taskID, ev.Text) {
+		if m.markApproverInflight(ticketID) {
+			go m.consultApprover(ctx, taskID, ev, ticketID)
+		}
+		return
+	}
+	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// escalatePermission 把权限请求升级人工审核者：落状态 → 建工单 → 追加事件 →
+// waiter → Publish（一期 handlePermission 的完整既有行为，顺序契约见其 doc）。
+//
+// 本函数同时是审批者 escalate 路径的出口——两路共用保证行为一致。
+func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
 	// resumeIfIdle 读到 running 直接返回，随后 manager 才盖上 waiting_answer——
@@ -730,6 +796,148 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	}
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
+}
+
+// shouldConsultApprover 判断该权限请求是否应走审批者裁决：
+// 审批者已启用、任务未被停用、权限文本未命中黑名单。
+func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
+	if m.approver == nil {
+		return false
+	}
+	m.apMu.Lock()
+	disabled := m.apDisabled[taskID]
+	m.apMu.Unlock()
+	if disabled {
+		m.log.Debug("审批链已停用，直接升级审核者", "task", taskID)
+		return false
+	}
+	hit, _ := m.approver.Blacklisted(permission)
+	return !hit
+}
+
+// markApproverInflight 尝试登记 ticket 的审批中状态；返回 false 表示已有同
+// ticket 的裁决在途（SSE 重放），本次直接吞掉不重复咨询。
+func (m *Manager) markApproverInflight(ticketID string) bool {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	if m.apInflight[ticketID] {
+		return false
+	}
+	m.apInflight[ticketID] = true
+	return true
+}
+
+// consultApprover 在独立 goroutine 里完成一次权限请求的审批者裁决（不阻塞
+// mediate 循环）。流程：Decide → 落 approver_decision 审计事件（不 Publish）→
+// 按结果分流：approve 自动放行 / escalate 升级人工审核者 / Err 计数并 fail-closed。
+func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
+	defer func() {
+		m.apMu.Lock()
+		delete(m.apInflight, ticketID)
+		m.apMu.Unlock()
+	}()
+	m.log.Info("审批者开始裁决", "task", taskID, "ticket", ticketID,
+		"perm", ev.PermissionID, "text", truncateRunes(ev.Text, 80))
+	// 任务摘要取 PlanSummary；GetTask 失败用空串——摘要是上下文不是裁决前提，
+	// 不因读失败把整个裁决拖下水
+	summary := ""
+	if task, err := m.st.GetTask(taskID); err == nil {
+		summary = task.PlanSummary
+	}
+	d := m.approver.Decide(ctx, ev.Text, summary)
+
+	decision := "error"
+	switch {
+	case d.Approve:
+		decision = "approve"
+	case d.Err == nil:
+		decision = "escalate"
+	}
+	// 只入库不 Publish：approve 路径无人可唤醒（已自动放行），escalate 路径的
+	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
+	// 审核者经 show 可见
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
+		TicketID: ticketID, Permission: ev.Text, Decision: decision,
+		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
+	}); err != nil {
+		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+	}
+
+	if d.Err != nil {
+		// fail-closed：裁决失败升级审核者，并按连续失败计数决定是否停用
+		//（防对已损坏审批者命令的重试风暴，见 maxApproverFails 的 why）
+		m.countApproverFail(taskID)
+		m.escalatePermission(ctx, taskID, ev, ticketID)
+		return
+	}
+	// 干净裁决（approve 或 escalate）：失败计数清零
+	m.apMu.Lock()
+	delete(m.apFails, taskID)
+	m.apMu.Unlock()
+
+	if d.Approve {
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason)
+		return
+	}
+	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// countApproverFail 累计一次任务级裁决失败，达到 maxApproverFails 时停用该任务
+// 的审批链并留 approver_disabled 审计事件（一次）。
+func (m *Manager) countApproverFail(taskID string) {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	m.apFails[taskID]++
+	fails := m.apFails[taskID]
+	if fails >= maxApproverFails && !m.apDisabled[taskID] {
+		m.apDisabled[taskID] = true
+		if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDisabled, approverDisabledPayload{
+			Reason: fmt.Sprintf("连续 %d 次裁决失败，审批链已停用（后续权限直接升级人工审核者）", maxApproverFails),
+		}); err != nil {
+			m.log.Error("追加 approver_disabled 事件失败", "task", taskID, "cause", err)
+		}
+		m.log.Warn("审批者连续失败已停用", "task", taskID, "fails", fails)
+	}
+}
+
+// approvePermission 审批者批准路径：幂等建工单并自动答题 → RespondPermission(once)
+// → 标记送达。全程不动任务状态机——任务保持 running，executor 收 once 后继续跑。
+//
+// 为什么不动状态：批准不是「任务被挂起等人工」，executor 恢复执行即续跑，
+// 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason string) {
+	m.log.Info("审批者自动批准权限", "task", taskID, "ticket", ticketID,
+		"perm", permID, "reason", truncateRunes(reason, 80))
+	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
+	if _, err := m.st.CreateTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
+		Request: req, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
+		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.countApproverFail(taskID)
+		return
+	}
+	// AnswerTicket 以 answer IS NULL 为守卫：审批通过即答题，工单从待办移出
+	if err := m.st.AnswerTicket(ticketID, "allow（审批者批准："+reason+"）"); err != nil {
+		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.countApproverFail(taskID)
+		return
+	}
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	actx, acancel := unaryCtx(context.Background())
+	defer acancel()
+	if err := ad.RespondPermission(actx, taskID, permID, "once"); err != nil {
+		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
+		return
+	}
+	m.markDelivered(taskID, ticketID)
+	m.log.Info("审批者批准已送达", "task", taskID, "ticket", ticketID)
 }
 
 // isPermissionReplay 判定一次 permission 事件是否为「已完整中介过」的重放

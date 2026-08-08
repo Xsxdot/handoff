@@ -102,8 +102,15 @@ func newTestManager(t *testing.T) (*Manager, *store.Store, *Hub, *chanAdapter) {
 }
 
 // newTestManagerWithAds 组装带 adapter 注册表的 manager 白盒测试环境：
-// 真实 store + hub + 给定注册表（defaultName 为缺省执行者名，写进 cfg.Executor.Default）。
+// 真实 store + hub + 给定注册表（defaultName 为缺省执行者名，写进 cfg.Executor.Default）；
+// 不启用审批链（approver=nil）。
 func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*Manager, *store.Store, *Hub) {
+	return newTestManagerWithApprover(t, ads, defaultName, nil)
+}
+
+// newTestManagerWithApprover 组装带 adapter 注册表与可选审批者的 manager 白盒
+// 测试环境（approver 可为 nil）。
+func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *Hub) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -113,7 +120,7 @@ func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaul
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, logger), st, hub
+	return NewManager(st, hub, ads, cfg, approver, logger), st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。

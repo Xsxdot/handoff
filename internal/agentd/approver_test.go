@@ -1,4 +1,4 @@
-// approver 白盒测试：黑名单命中、CLI 裁决、fail-closed 三连与 fail-open 拒绝。
+// approver 白盒测试：黑名单命中、CLI 裁决、fail-closed 三连与审批链接入 handlePermission。
 package agentd
 
 import (
@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/store"
 )
 
 // newTestApprover 构造带注入 runCmd 的 Approver（裁决输出 out、错误 err）。
@@ -73,8 +77,8 @@ func TestDecideEscalate(t *testing.T) {
 func TestDecideFailClosed(t *testing.T) {
 	for name, a := range map[string]*Approver{
 		"命令失败":  newTestApprover(t, "", errors.New("exit 1")),
-		"无JSON":  newTestApprover(t, "我觉得可以批", nil),
-		"取值非法": newTestApprover(t, `{"decision":"deny"}`, nil),
+		"无JSON": newTestApprover(t, "我觉得可以批", nil),
+		"取值非法":  newTestApprover(t, `{"decision":"deny"}`, nil),
 	} {
 		if d := a.Decide(context.Background(), "x", ""); d.Approve || d.Err == nil {
 			t.Fatalf("%s: 应 fail-closed escalate: %+v", name, d)
@@ -85,10 +89,230 @@ func TestDecideFailClosed(t *testing.T) {
 func TestDecidePromptContainsContext(t *testing.T) {
 	var got []string
 	a := newTestApprover(t, `{"decision":"approve"}`, nil)
-	a.runCmd = func(ctx context.Context, argv []string) (string, error) { got = argv; return `{"decision":"approve"}`, nil }
+	a.runCmd = func(ctx context.Context, argv []string) (string, error) {
+		got = argv
+		return `{"decision":"approve"}`, nil
+	}
 	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY")
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "PERM-TEXT") || !strings.Contains(joined, "TASK-SUMMARY") {
 		t.Fatalf("裁决 prompt 应含权限原文与任务摘要: %v", got)
+	}
+}
+
+// ---- 审批链接入 handlePermission 的集成测试（fake 脚本驱动）----
+
+// approverStep 构造 fake 脚本：一个权限请求后跟一次 OK 的 finish。
+func approverStep(perm string) []fake.Step {
+	return []fake.Step{{Permission: perm}, {Finish: executor.Result{OK: true, Branch: "handoff/x"}}}
+}
+
+// newTestManagerWithApproverOut 构造带审批者（runCmd 注入固定输出/错误）的 manager，
+// fake 脚本由调用方提供。
+func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string, cmdErr error) (*Manager, *store.Store, *fake.Fake) {
+	t.Helper()
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	ap.runCmd = func(ctx context.Context, argv []string) (string, error) { return out, cmdErr }
+	fk := fake.New(script)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	return m, st, fk
+}
+
+// newTestManagerWithApproverFunc 构造带审批者（runCmd 注入自定义函数）的 manager，
+// fake 脚本由调用方提供。
+func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ctx context.Context, argv []string) (string, error)) (*Manager, *store.Store, *fake.Fake) {
+	t.Helper()
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	ap.runCmd = fn
+	fk := fake.New(script)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	return m, st, fk
+}
+
+// mustApproverDispatch 派发一个任务到 fake（真实工作区准备），返回任务。
+func mustApproverDispatch(t *testing.T, m *Manager) *proto.Task {
+	t.Helper()
+	repo := initTestRepo(t)
+	task, err := m.Dispatch(context.Background(), DispatchReq{Repo: repo, Prompt: "跑测试", Executor: "fake"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	return task
+}
+
+// waitTaskState 轮询等待任务到达指定状态。
+func waitTaskState(t *testing.T, st *store.Store, taskID string, want proto.TaskState) {
+	t.Helper()
+	eventually(t, 3*time.Second, "任务状态 "+string(want), func() bool {
+		cur, err := st.GetTask(taskID)
+		return err == nil && cur.State == want
+	})
+}
+
+// waitCondition 轮询等待条件成立。
+func waitCondition(t *testing.T, desc string, cond func() bool) {
+	t.Helper()
+	eventually(t, 3*time.Second, desc, cond)
+}
+
+// mustGetTicket 读取工单；不存在即失败。
+func mustGetTicket(t *testing.T, st *store.Store, id string) *proto.Ticket {
+	t.Helper()
+	tk, err := st.GetTicket(id)
+	if err != nil {
+		t.Fatalf("GetTicket(%s): %v", id, err)
+	}
+	return tk
+}
+
+// mustEvents 返回任务全部事件（seq 升序）。
+func mustEvents(t *testing.T, st *store.Store, taskID string) []proto.Event {
+	t.Helper()
+	evs, err := st.EventsFrom(taskID, 0, 1000)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	return evs
+}
+
+// hasEvent 判断事件列表是否含指定类型。
+func hasEvent(evs []proto.Event, typ proto.EventType) bool {
+	for _, e := range evs {
+		if e.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+// countEvents 统计事件列表中指定类型的条数。
+func countEvents(evs []proto.Event, typ proto.EventType) int {
+	n := 0
+	for _, e := range evs {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// TestApproverApprovesPermissionWithoutWaking 验证 approve 路径：
+// 工单自动应答+送达（审计闭环）、只留 approver_decision 审计事件（不产生
+// permission_request 唤醒审核者）、executor 真收到 once。
+func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
+	m, st, fk := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"approve","reason":"跑测试"}`, nil)
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview) // 直通完成，未经 waiting_answer 停留
+
+	// 断言 1：工单已建且已答已送达（审计闭环）
+	tk := mustGetTicket(t, st, task.ID+":"+fk.PermID())
+	if tk.Answer == nil || !strings.Contains(*tk.Answer, "审批者批准") || tk.DeliveredAt == nil {
+		t.Fatalf("approve 应自动应答并标记送达: %+v", tk)
+	}
+	// 断言 2：approver_decision 事件在，permission_request 事件不在（不唤醒审核者）
+	evs := mustEvents(t, st, task.ID)
+	if !hasEvent(evs, proto.EventTypeApproverDecision) || hasEvent(evs, proto.EventTypePermissionRequest) {
+		t.Fatalf("approve 只留审计事件，不发 permission_request: %v", evs)
+	}
+	// 断言 3：executor 真收到 once
+	if fk.LastDecision() != "once" {
+		t.Fatalf("executor 应收到 once，得到 %q", fk.LastDecision())
+	}
+}
+
+// TestApproverEscalateFallsThroughToReviewer 验证 escalate 路径：
+// 完整走既有中介流程（waiting_answer + permission_request 唤醒审核者），
+// approver_decision 审计事件同时保留。
+func TestApproverEscalateFallsThroughToReviewer(t *testing.T) {
+	m, st, _ := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"escalate","reason":"拿不准"}`, nil)
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
+	evs := mustEvents(t, st, task.ID)
+	if !hasEvent(evs, proto.EventTypeApproverDecision) || !hasEvent(evs, proto.EventTypePermissionRequest) {
+		t.Fatalf("escalate 应留审计事件并走既有唤醒流程")
+	}
+}
+
+// TestApproverBlacklistSkipsApprover 验证黑名单命中时直接升级人工审核者，
+// 审批者 runCmd 绝不被调用（fake 脚本权限文本命中内置 sudo 规则）。
+func TestApproverBlacklistSkipsApprover(t *testing.T) {
+	m, st, _ := newTestManagerWithApproverFunc(t, approverStep("Bash: sudo rm -rf /"),
+		func(ctx context.Context, argv []string) (string, error) {
+			t.Fatal("黑名单命中不应调用审批者")
+			return "", nil
+		})
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer) // 直接升级审核者
+}
+
+// TestApproverFailClosedCountsAndDisables 验证 fail-closed + 连续失败禁用：
+// 裁决恒错时每个权限都升级审核者（fail-closed），但审批者只被调 3 次即停用，
+// 第 4 个权限直接升级不再调用（防对已损坏审批者命令的重试风暴）。
+//
+// 为什么直接驱动 handlePermission 而非 fake 脚本：fake 的 Permission 步骤会阻塞
+// 等 RespondPermission，而 fail-closed 路径无人应答（升级审核者），脚本跑不完；
+// 白盒直驱四个权限事件精确复现「4 请求 / 3 次审批调用」。
+func TestApproverFailClosedCountsAndDisables(t *testing.T) {
+	callCount := 0
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
+		callCount++
+		return "", errors.New("boom")
+	}
+	fk := fake.New(nil) // 空脚本：不产权限事件，由测试直接驱动 handlePermission
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+
+	// 前 3 个权限请求：审批者各裁决一次且全部失败（fail-closed 升级审核者）
+	for _, perm := range []string{"p1", "p2", "p3"} {
+		m.handlePermission(context.Background(), task.ID,
+			executor.AdapterEvent{Type: "permission", PermissionID: perm, Text: "something"})
+	}
+	waitCondition(t, "审批者被调 3 次", func() bool { return callCount == 3 })
+	// 等禁用标记落定（consultApprover goroutine 异步写）
+	waitCondition(t, "审批链已停用", func() bool {
+		m.apMu.Lock()
+		defer m.apMu.Unlock()
+		return m.apDisabled[task.ID]
+	})
+
+	// 第 4 个权限：审批链已停用，直接升级不调用审批者（callCount 保持 3）
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p4", Text: "something"})
+	waitCondition(t, "第 4 个权限也升级审核者", func() bool {
+		return countEvents(mustEvents(t, st, task.ID), proto.EventTypePermissionRequest) == 4
+	})
+	if callCount != 3 {
+		t.Fatalf("停用后审批者不应再被调用，callCount=%d", callCount)
+	}
+
+	evs := mustEvents(t, st, task.ID)
+	if !hasEvent(evs, proto.EventTypeApproverDisabled) {
+		t.Fatalf("连续失败 3 次应记 approver_disabled")
+	}
+	if countEvents(evs, proto.EventTypePermissionRequest) != 4 {
+		t.Fatalf("4 个权限请求都应升级审核者，得到 %d", countEvents(evs, proto.EventTypePermissionRequest))
+	}
+}
+
+// TestNilApproverKeepsCurrentBehavior 验证 approver=nil 时现行为回归：
+// 权限请求直接产生 permission_request 事件（二期前语义）。
+func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
+	fk := fake.New(approverStep("run tests"))
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task := mustApproverDispatch(t, m)
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
+	evs := mustEvents(t, st, task.ID)
+	if !hasEvent(evs, proto.EventTypePermissionRequest) {
+		t.Fatalf("approver=nil 时权限应直接走既有升级流程: %v", evs)
 	}
 }
