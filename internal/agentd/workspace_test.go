@@ -590,6 +590,43 @@ func TestRemoveManagedWorktreeCanceledContextFailsFast(t *testing.T) {
 	}
 }
 
+// TestWorktreeRejectsRepoSubdir 验证仓库子目录不被当作 worktree 接受。
+// why：git-common-dir 会向上查找，/repo/internal/sub 与主仓返回同一 git 目录，
+// 旧校验据此判定「归属成立」——实际改的是主仓 HEAD，且把后续审阅面
+// （diff/run 的工作目录）收窄到了那个子目录。
+func TestWorktreeRejectsRepoSubdir(t *testing.T) {
+	repo := initTestRepo(t)
+	sub := filepath.Join(repo, "internal", "sub")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: testTaskID, Worktree: sub,
+	})
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("仓库子目录必须按参数非法拒绝，实得 %v", err)
+	}
+}
+
+// TestWorktreeAcceptsRealWorktree 守住收紧后不误伤真 worktree。
+func TestWorktreeAcceptsRealWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitT(t, repo, "worktree", "add", "-b", "side-accept", wt)
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: testTaskID, Worktree: wt,
+	})
+	if err != nil {
+		t.Fatalf("真 worktree 必须被接受，实得 %v", err)
+	}
+	if ws.WorkDir != wt {
+		t.Errorf("WorkDir = %q，期望 %q", ws.WorkDir, wt)
+	}
+	if ws.Managed {
+		t.Error("用户自带 worktree 不应标记 Managed（那会让 done 代删别人的工作树）")
+	}
+}
+
 // TestRemoveManagedWorktree 验证 managed worktree 清理：目录删除、任务分支保留。
 func TestRemoveManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)

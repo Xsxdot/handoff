@@ -150,8 +150,8 @@ type Workspace struct {
 //
 // 其中 b=指定分支、h=handoff/<id8>、t=Base（仅 N 行有效，空=HEAD；自动分支 A
 // 不允许带 Base，见第 1 层校验）、p=WorktreesDir/<id8> 或用户路径。
-// 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对）；
-// 所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
+// 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对
+// + show-toplevel 必须等于入参）；所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
 //
 // 为什么 NewWorktree 免脏检查：新 worktree 是从仓库新建的独立工作树，天然干净，
 // 与主仓库的脏状态无关——这是 worktree 并行派发的价值：主仓有人手动改动也不阻塞
@@ -311,10 +311,16 @@ func ensureCleanWorktree(ctx context.Context, dir string) error {
 
 // worktreeBelongsToRepo 校验 worktree 路径是否属于主仓库 repo。
 //
-// 原理见 PrepareWorkspace doc 的 why：git-common-dir 对 main 仓库与它的任一
-// worktree 返回同一 git 目录，路径经 EvalSymlinks 归一后相等即归属成立。
-// 任一步失败（路径不是 git 仓库/不是本仓 worktree）都返回 false（fail-closed）。
-// ctx 控制本次 git 调用的生命周期。
+// 两道校验：
+//  1. git-common-dir 比对：对 main 仓库与它的任一 worktree 返回同一 git 目录，
+//     路径经 EvalSymlinks 归一后相等即归属成立——证明入参「在同一个仓库里」
+//  2. show-toplevel 必须等于入参（经 EvalSymlinks 归一）：git-common-dir 会
+//     向上查找，/repo/internal/sub 与主仓返回同一 git 目录，只有第二道才证明
+//     「入参就是这棵工作树的根」——缺它，仓库子目录会被当成合法 worktree，
+//     实际改的是主仓 HEAD、审阅面也被收窄到那个子目录
+//
+// 任一步失败（路径不是 git 仓库/不是本仓 worktree/不是工作树根）都返回 false
+// （fail-closed）。ctx 控制本次 git 调用的生命周期。
 func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
 	repoDir, _, err := gitRun(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
@@ -329,7 +335,27 @@ func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	return rp == wp
+	if rp != wp {
+		return false
+	}
+	// 第二道：入参必须是工作树的根，不能是它下面的任意子目录。
+	// git-common-dir 只证明「在同一个仓库里」，--show-toplevel 才证明
+	// 「就是这棵树的根」——缺这道，/repo/internal/sub 会被当成合法 worktree。
+	top, _, err := gitRun(ctx, worktree, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false
+	}
+	tp, err3 := filepath.EvalSymlinks(strings.TrimSpace(top))
+	ap, err4 := filepath.EvalSymlinks(worktree)
+	if err3 != nil || err4 != nil {
+		return false
+	}
+	if tp != ap {
+		log().Warn("worktree 校验失败：路径不是工作树根（疑似传了仓库子目录）",
+			"repo", repo, "worktree", worktree, "toplevel", tp)
+		return false
+	}
+	return true
 }
 
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
