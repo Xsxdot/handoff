@@ -108,7 +108,7 @@ var agentdCmd = &cobra.Command{
 //     deadline、响应写完前不重置，若小于命令执行上限，跑测试/lint 的审阅命令
 //     （经常超 60s）会在 60s 时被掐断连接，RunCmd 随 r.Context() 取消被提前杀掉，
 //     退出码 124 的文档化契约永远无法兑现。dispatch 链路的病态时长（StartServe≤10s
-//     + CreateSession 30s + PromptAsync 30s ≈ 70s）也在该上限内。对 hijacked 连接
+//     叠加 CreateSession 30s 与 PromptAsync 30s ≈ 70s）也在该上限内。对 hijacked 连接
 //     （WS 事件流）**不生效**：net/http 在 Hijack 时清除连接上的全部截止时间
 //     （server.go hijackLocked 里 rwc.SetDeadline(time.Time{})，实测 Go 1.26 行为），
 //     coder/websocket 的 Accept 走 hijack——长连接不受该值约束
