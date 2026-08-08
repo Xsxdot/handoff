@@ -50,6 +50,14 @@ type Config struct {
 	Executor ExecutorConfig
 	// Terminal 是 dispatch 成功后是否默认弹终端实况的配置。
 	Terminal TerminalConfig
+	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
+	Sync SyncConfig
+}
+
+// SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
+// 同步到本地仓库。Auto 默认 true；关闭后仍可用 handoff pull 手动同步。
+type SyncConfig struct {
+	Auto bool
 }
 
 // ApproverConfig 描述审批链的廉价模型审批者。
@@ -106,6 +114,7 @@ func Load(path string) (*Config, error) {
 		Approver: ApproverConfig{Timeout: 60 * time.Second},
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: true},
+		Sync:     SyncConfig{Auto: true},
 		Targets:  map[string]Target{},
 	}
 	b, err := os.ReadFile(path)
@@ -180,7 +189,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

@@ -186,3 +186,18 @@ func TestValidateRejectsBadBlacklistRegex(t *testing.T) {
 		t.Fatalf("非法正则应在启动期被拒绝，而不是运行期 panic")
 	}
 }
+
+// TestSyncAutoDefaultsTrue 验证省略 sync 键时默认开启自动同步。
+func TestSyncAutoDefaultsTrue(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sync.Auto {
+		t.Error("sync.auto 省略时应默认 true")
+	}
+}
