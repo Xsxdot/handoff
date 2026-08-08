@@ -271,7 +271,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent)
+	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent)
 	if err != nil {
 		return err
 	}

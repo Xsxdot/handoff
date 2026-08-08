@@ -12,6 +12,62 @@ import (
 	"github.com/xushixin/handoff/internal/executor/opencode"
 )
 
+// TestTaskModelOverridesEnv 验证任务级 model 优先于 HANDOFF_OPENCODE_MODEL：
+// 两源都设置时写出 json 的 model 取任务值。
+func TestTaskModelOverridesEnv(t *testing.T) {
+	quietLog(t)
+	t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
+	taskDir := t.TempDir()
+	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Model string `json:"model"`
+	}
+	raw, _ := os.ReadFile(configPath)
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "task-model" {
+		t.Fatalf("任务级 model 应优先于 env：json.model=%q", cfg.Model)
+	}
+}
+
+// TestTaskModelFallsBackToEnvThenEmpty 验证 model 三级优先级：
+// 任务 model 空 → 回退 env；env 也空 → 不写 model 键（omitempty，executor 自身默认）。
+func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
+	quietLog(t)
+	t.Run("env 兜底", func(t *testing.T) {
+		t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Model string `json:"model"`
+		}
+		raw, _ := os.ReadFile(configPath)
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Model != "env-model" {
+			t.Fatalf("任务 model 空应回退 env：json.model=%q", cfg.Model)
+		}
+	})
+	t.Run("都空则不写", func(t *testing.T) {
+		t.Setenv("HANDOFF_OPENCODE_MODEL", "")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := os.ReadFile(configPath)
+		if strings.Contains(string(raw), `"model"`) {
+			t.Fatalf("model 空且 env 空时不应写 model 键（omitempty）：%s", raw)
+		}
+	})
+}
+
 // TestWriteTaskEnv 验证：
 //   - 生成路径为 taskDir 下的 opencode.json 与 prompt.md
 //   - 配置文件是合法 JSON 且权限为静态分级：edit 放行、bash 模式表
@@ -24,7 +80,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	const taskID = "T-2026-0001"
 	plan := "1. 实现 foo\n2. 修复 bar\n{\"ask\":\"要第三方库吗?\"}"
 
-	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, plan)
+	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan)
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -89,7 +145,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 
 	newPlan := "改版后的计划：只做一件事"
-	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, newPlan); err != nil {
+	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan); err != nil {
 		t.Fatalf("重复调用 WriteTaskEnv: %v", err)
 	}
 	again, err := os.ReadFile(promptPath)

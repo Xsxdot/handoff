@@ -99,8 +99,9 @@ var bashPermissionRules = map[string]string{
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成
 // （而非字符串拼接），避免引号/转义错误。
 //
-// Model 可选：经 OPENCODE_CONFIG 注入时会覆盖用户全局配置，因此默认不写死模型，
-// 仅当环境变量 HANDOFF_OPENCODE_MODEL 非空时写入（远程免费模型 e2e 等场景用）。
+// Model 可选：经 OPENCODE_CONFIG 注入时会覆盖用户全局配置，因此默认不写死模型。
+// 三级优先级（见 WriteTaskEnv）：任务级 model > 环境变量 HANDOFF_OPENCODE_MODEL
+// > 不写（executor 自身默认，omitempty）。
 type opencodeConfig struct {
 	Model      string           `json:"model,omitempty"`
 	Permission permissionConfig `json:"permission"`
@@ -117,6 +118,7 @@ type promptData struct {
 // 参数：
 //   - taskDir: 任务工作目录（须已存在，由调用方保证）
 //   - taskID: 任务 ID，写入 prompt 标题行
+//   - model: 任务级模型覆盖（dispatch --model 折算而来）；空则回退环境变量
 //   - planContent: 实现计划全文，原样嵌入 prompt 的「实现计划」段
 //
 // 返回：
@@ -127,7 +129,7 @@ type promptData struct {
 // 注意：
 //   - 重复调用幂等覆盖：同名文件会被新内容覆盖，调用方可安全重试
 //   - 配置经结构体 marshal、prompt 经 text/template 渲染，均非字符串拼接
-func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath string, err error) {
+func WriteTaskEnv(taskDir, taskID, model, planContent string) (configPath, promptPath string, err error) {
 	start := time.Now()
 	configPath = filepath.Join(taskDir, configFileName)
 	promptPath = filepath.Join(taskDir, promptFileName)
@@ -145,10 +147,21 @@ func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath s
 		}
 	}()
 
-	// HANDOFF_OPENCODE_MODEL：任务级 OPENCODE_CONFIG 会替换全局配置，不写 model
-	// 时只能依赖 opencode 默认；远程无凭证场景显式注入免费模型更稳。
+	// 任务级 OPENCODE_CONFIG 会替换全局配置，不写 model 时只能依赖 opencode
+	// 默认。model 三级优先级：任务级 > HANDOFF_OPENCODE_MODEL 环境变量 > 不写。
+	// 为什么任务级优先：dispatch --model 在派发期已折算进 task.Model（含配置
+	// executor.model 兜底），是「这个任务明确要用什么模型」的唯一权威；env 只是
+	// 机器级兜底（远程免费模型 e2e 等场景），任务有显式模型时不应被覆盖。
+	model = strings.TrimSpace(model)
+	source := "task"
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL"))
+		if model != "" {
+			source = "env"
+		}
+	}
 	cfg := opencodeConfig{
-		Model: strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL")),
+		Model: model,
 		Permission: permissionConfig{
 			Edit:              "allow",
 			Bash:              bashPermissionRules,
@@ -157,7 +170,7 @@ func WriteTaskEnv(taskDir, taskID, planContent string) (configPath, promptPath s
 		},
 	}
 	if cfg.Model != "" {
-		logger.Info("任务环境注入模型", "model", cfg.Model)
+		logger.Info("任务环境注入模型", "model", cfg.Model, "source", source)
 	}
 	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
