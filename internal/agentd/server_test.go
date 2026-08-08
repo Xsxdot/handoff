@@ -4,6 +4,7 @@ package agentd_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -205,7 +206,18 @@ func TestReplyAnswersTicketAndNotifies(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reply 返回 %d, want 200", resp.StatusCode)
 	}
+	// 有等待者命中：relayed=true（中继未走，唤醒即成功）
+	var rbody struct {
+		OK      bool `json:"ok"`
+		Relayed bool `json:"relayed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rbody); err != nil {
+		t.Fatalf("解码 reply 响应: %v", err)
+	}
 	resp.Body.Close()
+	if !rbody.OK || !rbody.Relayed {
+		t.Fatalf("reply 响应 = %+v, want ok=true relayed=true", rbody)
+	}
 
 	// WaitAnswer 解除并拿到原文
 	select {
@@ -308,7 +320,18 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reply gate 返回 %d, want 200", resp.StatusCode)
 	}
+	// 中继成功：relayed=true（P0-5 后响应体携带中继结果，200 表示已送达）
+	var rbody struct {
+		OK      bool `json:"ok"`
+		Relayed bool `json:"relayed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rbody); err != nil {
+		t.Fatalf("解码 reply 响应: %v", err)
+	}
 	resp.Body.Close()
+	if !rbody.OK || !rbody.Relayed {
+		t.Fatalf("reply gate 响应 = %+v, want ok=true relayed=true", rbody)
+	}
 	eventually(t, 2*time.Second, "executor 收到 RespondPermission(once)", func() bool {
 		perms := f.Perms()
 		return len(perms) == 1 && perms[0].PermID == "tk-gate" && perms[0].Decision == "once"
@@ -318,11 +341,92 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reply ask 返回 %d, want 200", resp.StatusCode)
 	}
+	if err := json.NewDecoder(resp.Body).Decode(&rbody); err != nil {
+		t.Fatalf("解码 reply 响应: %v", err)
+	}
 	resp.Body.Close()
+	if !rbody.OK || !rbody.Relayed {
+		t.Fatalf("reply ask 响应 = %+v, want ok=true relayed=true", rbody)
+	}
 	eventually(t, 2*time.Second, "executor 收到 Send(原文)", func() bool {
 		sends := f.Sends()
 		return len(sends) == 1 && sends[0].Text == "单数"
 	})
+}
+
+// TestReplyRelayFailureReturns502 覆盖 P0-5：中继失败必须进响应体而非只有日志。
+// 场景：无等待者（agentd 重启后等待 goroutine 已消亡）且 adapter 无该任务运行态
+// （executor 已不在）——回答落库后中继必失败。断言：
+//   - 502 + {"ok":true,"relayed":false,"reason":...}，reason 含失败原因，
+//     审核者在 CLI 立即看到 executor 没收到（而非只有 agentd.log 一行）
+//   - 任务保持 waiting_answer 不回迁 running：executor 未收到应答、未恢复执行，
+//     标 running 是虚假状态；waiting_answer 保留下次 agentd 重启时
+//     RecoverOnStartup 的探活恢复路径
+//   - 回答已落库不可回滚：二次 reply 404（与「回滚为未应答」方案的区别所在——
+//     应答是「审核者裁决过」的持久审计事实）
+func TestReplyRelayFailureReturns502(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-1"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "opencode", RepoPath: "/repo", State: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// 走合法状态链 pending → running → waiting_answer
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateRunning); err != nil {
+		t.Fatalf("→running: %v", err)
+	}
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateWaitingAnswer); err != nil {
+		t.Fatalf("→waiting_answer: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-gate", TaskID: taskID, Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate","permission":"Bash: go test ./..."}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	// 注入 manager：fake 中继必失败（SetPermError 模拟 adapter 无该任务运行态，
+	// 与 opencode adapter 的「任务不在运行中」错误同构，见 adapter.go lookup 判空）
+	f := fake.New(nil)
+	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), f,
+		&config.Config{Token: testToken, DataDir: t.TempDir()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("中继失败返回 %d, want 502", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OK      bool   `json:"ok"`
+		Relayed bool   `json:"relayed"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码 reply 响应: %v", err)
+	}
+	if !body.OK || body.Relayed {
+		t.Fatalf("响应 = %+v, want ok=true relayed=false", body)
+	}
+	if !strings.Contains(body.Reason, "不在运行中") {
+		t.Fatalf("reason 应含中继失败原因, got %q", body.Reason)
+	}
+
+	// 任务保持 waiting_answer：executor 未收到应答未恢复执行，不回迁 running
+	task, err := env.st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.State != proto.TaskStateWaitingAnswer {
+		t.Fatalf("中继失败后 state = %s, want waiting_answer（保留恢复路径）", task.State)
+	}
+
+	// 回答已落库不可回滚：二次 reply 404（answer IS NULL 守卫已消耗）
+	resp2 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("二次 reply 返回 %d, want 404（回答已落库）", resp2.StatusCode)
+	}
+	resp2.Body.Close()
 }
 
 // TestWSReplayWindowLiveNoLoss 是 P0-1 的回归测试：重放写循环进行期间（客户端不读、

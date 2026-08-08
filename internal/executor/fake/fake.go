@@ -64,12 +64,33 @@ type taskRun struct {
 //
 // 并发安全：所有记录与脚本队列的访问都在 mu 保护下；事件通道按任务隔离。
 type Fake struct {
-	mu     sync.Mutex
-	script []Step              // New 时传入的初始脚本（每个任务 Start 时拷贝一份）
-	runs   map[string]*taskRun // taskID -> 运行态
-	sends  []SendCall
-	perms  []PermCall
-	stops  []string
+	mu      sync.Mutex
+	script  []Step              // New 时传入的初始脚本（每个任务 Start 时拷贝一份）
+	runs    map[string]*taskRun // taskID -> 运行态
+	sends   []SendCall
+	perms   []PermCall
+	stops   []string
+	sendErr error // 非 nil 时 Send 一律返回该错误（测试注入）
+	permErr error // 非 nil 时 RespondPermission 一律返回该错误（测试注入）
+}
+
+// SetSendError 注入 Send 的错误返回值（默认 nil 不注入）。
+//
+// 用途：构造「executor 侧递送失败」的测试场景——如模拟 adapter 无该任务运行态
+// （opencode adapter 的「任务不在运行中」错误），用于 reply 中继失败路径的断言。
+func (f *Fake) SetSendError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendErr = err
+}
+
+// SetPermError 注入 RespondPermission 的错误返回值（默认 nil 不注入）。
+//
+// 用途：同 SetSendError，面向权限应答中继的失败场景。
+func (f *Fake) SetPermError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.permErr = err
 }
 
 // New 创建脚本化 fake adapter。
@@ -117,6 +138,13 @@ func (f *Fake) Events(taskID string) <-chan executor.AdapterEvent {
 // Send 记录实参；若恰有 Question 步骤在阻塞则解除其阻塞，否则作为「续接指令」记录，
 // 运行循环继续等待后续步骤（模拟 executor 收到修改指令后继续干活）。
 func (f *Fake) Send(_ context.Context, taskID, text string) error {
+	f.mu.Lock()
+	err := f.sendErr
+	f.mu.Unlock()
+	if err != nil {
+		f.log().Debug("fake 注入 Send 错误", "task", taskID, "cause", err)
+		return err
+	}
 	r := f.runner(taskID)
 	f.log().Debug("fake 收到 Send", "task", taskID, "text", truncateRunes(text, 80))
 	f.mu.Lock()
@@ -131,6 +159,13 @@ func (f *Fake) Send(_ context.Context, taskID, text string) error {
 
 // RespondPermission 记录实参并解除对应任务的 Permission 步骤阻塞。
 func (f *Fake) RespondPermission(_ context.Context, taskID, permID, decision string) error {
+	f.mu.Lock()
+	err := f.permErr
+	f.mu.Unlock()
+	if err != nil {
+		f.log().Debug("fake 注入 RespondPermission 错误", "task", taskID, "perm", permID, "cause", err)
+		return err
+	}
 	r := f.runner(taskID)
 	f.log().Debug("fake 收到 RespondPermission", "task", taskID, "perm", permID, "decision", decision)
 	f.mu.Lock()

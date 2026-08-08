@@ -207,6 +207,17 @@ type replyRequest struct {
 	Answer   string `json:"answer"`
 }
 
+// replyResult 是 reply 接口的响应体。
+//
+// Relayed=false 表示「回答已落库但 executor 侧递送失败」，此时 HTTP 状态码为
+// 502（语义与任务保持 waiting_answer 的原因见 handleReply 函数头）；OK 恒为
+// true——回答本身被接受且已持久化，失败只发生在 executor 侧递送环节。
+type replyResult struct {
+	OK      bool   `json:"ok"`
+	Relayed bool   `json:"relayed"`
+	Reason  string `json:"reason,omitempty"`
+}
+
 // handleReply 回答一个工单，完成唤醒闭环的回程。
 //
 // 流程：
@@ -214,6 +225,24 @@ type replyRequest struct {
 //  2. store.AnswerTicket 持久化应答（answer IS NULL 条件保证不可重复回答）
 //  3. hub.NotifyAnswer 唤醒阻塞在 WaitAnswer 上的 executor 侧
 //  4. 若任务处于 waiting_answer 且无其余未答工单，状态回迁 running（resumeIfIdle）
+//
+// 响应：正常（NotifyAnswer 命中等待者或 RelayAnswer 成功）返回 200
+// `{"ok":true,"relayed":true}`；回答已落库但 executor 侧递送失败（无等待者且
+// 中继失败）返回 502 `{"ok":true,"relayed":false,"reason":...}`。
+//
+// 为什么中继失败返回 502 而非回滚工单：
+//   - 502 的语义是「回答已被接受，但上游（executor）递送失败」，与 502 Bad
+//     Gateway 一致——agentd 是审核者与 executor 之间的网关。不用 409：
+//     409 表达「当前状态不允许该操作」（状态机语义），而这里回答本身已被接受
+//   - 不回滚工单：应答已落库是「审核者裁决过」的持久审计事实，回滚会让已答
+//     工单重新出现在 pending 而裁决记录消失；且中继失败的典型场景（executor
+//     不在运行）下回滚只是把问题推迟到下一次 reply，审核者拿到 502 + reason
+//     即可凭看门狗 stalled / 下次 agentd 重启的恢复路径处置
+//
+// 为什么中继失败时任务保持 waiting_answer 不回迁 running：executor 并未收到
+// 应答、没有恢复执行，标 running 是虚假状态；保持 waiting_answer 让下次
+// agentd 重启时 RecoverOnStartup 的探活恢复路径（waiting_answer 在探测范围）
+// 仍然生效。
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("reply 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
@@ -263,24 +292,40 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）；
 	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走
 	// RelayAnswer 自愈中继，把应答直接回传 executor——否则回答已落库但
-	// executor 永远阻塞（工单已答、二次 reply 404、done 409，不可恢复）
+	// executor 永远阻塞（工单已答、二次 reply 404、done 409，不可恢复）。
+	// relayed=false 即「回答已落库但 executor 侧递送失败」，交给审核者的是
+	// 502 + reason 而非只有一行 agentd.log（P0-5）
+	relayed := true
+	reason := ""
 	if !s.hub.NotifyAnswer(req.TicketID, req.Answer) {
 		if s.mgr == nil {
-			s.log.Warn("reply 无等待者且 manager 未注入，应答未回传 executor",
+			relayed = false
+			reason = "manager 未注入，应答未回传 executor"
+			s.log.Error("reply 无等待者且 manager 未注入，应答未回传 executor",
 				"task", taskID, "ticket", req.TicketID)
 		} else if err := s.mgr.RelayAnswer(taskID, req.TicketID, req.Answer); err != nil {
-			// 应答已落库不可回滚：仅告警，交由审核者/看门狗人工兜底
+			relayed = false
+			// 响应里的 reason 截断展示，完整错误留在日志
+			reason = truncateRunes(err.Error(), 200)
 			s.log.Error("reply 自愈中继失败", "task", taskID, "ticket", req.TicketID, "cause", err)
 		}
 	}
 	s.log.Info("reply 完成", "task", taskID, "ticket", req.TicketID,
-		"answer", truncateRunes(req.Answer, 80))
+		"answer", truncateRunes(req.Answer, 80), "relayed", relayed)
+
+	if !relayed {
+		// 中继失败：回答已落库但 executor 未收到（why 与状态处理见函数头）。
+		// 非 2xx 让 CLI 非零退出并展示 reason，审核者立即知道 executor 没拿到，
+		// 而不是只能去远端 agentd.log 里翻一行日志
+		writeJSON(w, http.StatusBadGateway, replyResult{OK: true, Relayed: false, Reason: reason})
+		return
+	}
 
 	// 回答已落库与唤醒完成，此时任务若无其余未答工单即可回迁 running；
 	// 回迁失败（如任务已被并发迁移）不影响 reply 本身的成功
 	s.resumeIfIdle(taskID)
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, replyResult{OK: true, Relayed: true})
 }
 
 // resumeIfIdle 当任务处于 waiting_answer 且已无未答工单时，把状态回迁 running。

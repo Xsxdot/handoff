@@ -27,6 +27,7 @@ import (
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -298,9 +299,16 @@ func TestReplyRoundTrip(t *testing.T) {
 	env := newTestClientEnv(t)
 	taskID := env.createPendingTask(t)
 	now := time.Now().UTC()
-	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-1", TaskID: taskID, Kind: "gate", Request: json.RawMessage(`{"kind":"bash","command":"go test ./..."}`), CreatedAt: now}); err != nil {
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-1", TaskID: taskID, Kind: "gate", Request: json.RawMessage(`{"kind":"gate","permission":"Bash: go test ./..."}`), CreatedAt: now}); err != nil {
 		t.Fatalf("CreateTicket: %v", err)
 	}
+	// 注入 manager（fake 中继必成功）：本测试要验证 reply 成功路径的闭环
+	// （pending_tickets 清空）；无 manager 时 reply 会按 P0-5 语义返回 502
+	// （回答落库但无中继落点），那是 TestReplyRelayFailureSurfacesReason 的覆盖面
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), fake.New(nil),
+		&config.Config{Token: env.token, DataDir: t.TempDir()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
 	cl := client.New(env.ts.URL, env.token)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -316,6 +324,40 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 	if len(info.PendingTickets) != 0 {
 		t.Fatalf("reply 后 pending_tickets 仍残留 %d 条", len(info.PendingTickets))
+	}
+}
+
+// TestReplyRelayFailureSurfacesReason 覆盖 P0-5 的客户端可见性：回答已落库但
+// executor 侧递送失败（无等待者且 manager 未注入，应答未回传 executor）时
+// agentd 返回 502，client.Reply 的错误信息必须携带状态码与 reason——审核者在
+// CLI 立即看到「executor 没收到」及原因，而不是只有远端 agentd.log 一行。
+func TestReplyRelayFailureSurfacesReason(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t)
+	now := time.Now().UTC()
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateRunning); err != nil {
+		t.Fatalf("→running: %v", err)
+	}
+	if err := env.st.UpdateTaskState(taskID, proto.TaskStateWaitingAnswer); err != nil {
+		t.Fatalf("→waiting_answer: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-1", TaskID: taskID, Kind: "gate", Request: json.RawMessage(`{"kind":"gate","permission":"Bash: rm -rf node_modules"}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	// 未注入 manager（agentd bootstrap 窗口语义）：回答落库后无等待者、
+	// 无中继落点 → 502 + reason
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := client.New(env.ts.URL, env.token).Reply(ctx, taskID, "tk-1", "allow")
+	if err == nil {
+		t.Fatal("Reply 对中继失败应返回错误（非 2xx）")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("错误应含 502 状态码（非 2xx 才让 CLI 非零退出）, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "manager 未注入") {
+		t.Fatalf("错误应含中继失败原因（响应体并入错误信息）, got: %v", err)
 	}
 }
 

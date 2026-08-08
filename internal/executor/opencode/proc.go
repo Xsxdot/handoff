@@ -202,14 +202,21 @@ func (p *Proc) probeHTTP() bool {
 // serve 所在窗格随其命令退出而关闭，capture-pane 读不到已关闭窗格（P1-8）；
 // serve.log 是 serve 死后仍可读的持久诊断副本——启动超时与 serve 死亡错误的
 // stderr 尾部都从它取。
+//
+// why（脚本首行 exec 2>> serve.log）：sh 自身的 stderr（如 exec 的 opencode
+// 不存在时报 "not found"、export 失败）同样落盘 serve.log，否则这类报错只进
+// tmux 窗格、随命令退出一起消失。opencode 侧 2>&1 仍走管道进 tee，不受此
+// 重定向影响——命令级重定向（2>&1）覆盖 shell 级（2>> 文件）；tee 自身继承
+// 文件 fd2，它的报错也落盘。
 func writeServeScript(taskDir string, port int, password, configPath string) (string, error) {
 	serveLogPath := filepath.Join(taskDir, serveLogFileName)
 	script := fmt.Sprintf(`#!/bin/sh
 # 由 agentd 生成：opencode serve 启动脚本（0600，含随机密码，勿外泄）。
+exec 2>> %s
 export OPENCODE_SERVER_PASSWORD=%s
 export OPENCODE_CONFIG=%s
 exec opencode serve --port %d --hostname 127.0.0.1 2>&1 | tee -a %s
-`, shellQuote(password), shellQuote(configPath), port, shellQuote(serveLogPath))
+`, shellQuote(serveLogPath), shellQuote(password), shellQuote(configPath), port, shellQuote(serveLogPath))
 	scriptPath := filepath.Join(taskDir, serveScriptFileName)
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		return "", fmt.Errorf("写 serve 启动脚本 %s: %w", scriptPath, err)
@@ -217,7 +224,7 @@ exec opencode serve --port %d --hostname 127.0.0.1 2>&1 | tee -a %s
 	return scriptPath, nil
 }
 
-// shellQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\''），
+// shellQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\”），
 // 供写进启动脚本与 tmux 命令串——密码/路径可能含引号或空白，不转义会改变
 // 脚本语义或让 tmux 把命令拆错。
 func shellQuote(s string) string {

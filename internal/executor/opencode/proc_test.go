@@ -39,6 +39,7 @@ func TestWriteServeScript(t *testing.T) {
 	content := string(b)
 	for _, want := range []string{
 		"#!/bin/sh",
+		"exec 2>> '" + filepath.Join(taskDir, serveLogFileName) + "'",
 		"export OPENCODE_SERVER_PASSWORD='" + password + "'",
 		"export OPENCODE_CONFIG='" + configPath + "'",
 		"exec opencode serve --port 35123 --hostname 127.0.0.1 2>&1 | tee -a '" +
@@ -51,7 +52,7 @@ func TestWriteServeScript(t *testing.T) {
 }
 
 // TestWriteServeScriptShellQuotes 验证路径/密码含单引号时正确转义
-// （'\'' 序列），不转义会改变脚本语义（提前截断 export 行）。
+// （'\” 序列），不转义会改变脚本语义（提前截断 export 行）。
 func TestWriteServeScriptShellQuotes(t *testing.T) {
 	taskDir := t.TempDir()
 	configPath := "weird'name/opencode.json"
