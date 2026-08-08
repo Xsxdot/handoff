@@ -49,6 +49,12 @@ var waitCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
+		// 负时长必须报错而不是当「不设上限」：--timeout 的用途正是无人值守时
+		// 的最后一道防线，把 -5s 静默当成「永远等下去」，等于在最需要兜底的
+		// 场景把兜底悄悄关掉
+		if waitTimeout < 0 {
+			return fmt.Errorf("--timeout 必须为正时长（当前 %s）；不设上限请省略该参数", waitTimeout)
+		}
 		addr, token, err := TargetEndpoint()
 		if err != nil {
 			return err
@@ -69,7 +75,10 @@ var waitCmd = &cobra.Command{
 		if err != nil {
 			if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
 				slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
-				return fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)
+				// 专属退出码：无人值守场景只看得到退出码，「等满了时限」必须
+				// 与「配置/鉴权失败」区分开（前者继续等，后者要立刻告警）
+				return &exitCodeError{code: ExitTimeout,
+					err: fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)}
 			}
 			return err
 		}

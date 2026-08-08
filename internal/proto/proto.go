@@ -36,6 +36,12 @@ const (
 	EventTypeCompleted         EventType = "completed"
 	EventTypeFailed            EventType = "failed"
 	EventTypeStalled           EventType = "stalled"
+	// EventTypeDeliveryFailed 表示审核者的应答已落库但没能送达 executor。
+	//
+	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，
+	// 而工单已被消耗、不再出现在挂起项里——若只写日志，审核者这边完全无感，
+	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒审核者去执行 handoff resume。
+	EventTypeDeliveryFailed EventType = "delivery_failed"
 )
 
 // Task 表示一个 handoff 任务。
@@ -79,6 +85,10 @@ type Ticket struct {
 	Answer     *string         `json:"answer"`
 	CreatedAt  time.Time       `json:"created_at"`
 	AnsweredAt *time.Time      `json:"answered_at"`
+	// DeliveredAt 是应答送达 executor 的时刻；非 nil 才代表 executor 真的收到了。
+	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
+	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
+	DeliveredAt *time.Time `json:"delivered_at"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -173,5 +174,49 @@ func TestWriteCursorConcurrent(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Fatalf("残留 %d 个临时文件: %v", len(leftovers), leftovers)
+	}
+}
+
+// TestWriteCursorSweepsStaleTemps 验证陈旧的 cursor 临时文件会被清掉。
+//
+// 缺陷形态：writeCursor 用 CreateTemp + Rename 保证原子写，但进程在两步之间
+// 被杀（Ctrl+C、机器重启、oom kill）就会留下一个 .tmp，而此后再没有任何代码
+// 碰它——~/.handoff 里的 .tmp 只增不减。
+//
+// 只清「足够旧」的：同一任务可能有并发的 wait 进程正在写自己的临时文件，
+// 按年龄设阈值才不会误删别人在途的写入。
+func TestWriteCursorSweepsStaleTemps(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	c := New("http://127.0.0.1:1", "")
+	p, err := cursorPath("task-sweep")
+	if err != nil {
+		t.Fatalf("cursorPath: %v", err)
+	}
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("建目录: %v", err)
+	}
+	stale := filepath.Join(dir, "cursor-task-sweep-999.tmp")
+	fresh := filepath.Join(dir, "cursor-task-sweep-111.tmp")
+	for _, p := range []string{stale, fresh} {
+		if err := os.WriteFile(p, []byte("7"), 0o600); err != nil {
+			t.Fatalf("造临时文件: %v", err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("改 mtime: %v", err)
+	}
+
+	if err := c.writeCursor("task-sweep", 42); err != nil {
+		t.Fatalf("writeCursor: %v", err)
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("陈旧的 .tmp 应被清理, stat err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("在途的新 .tmp 不应被误删（可能是并发进程的写入）: %v", err)
 	}
 }

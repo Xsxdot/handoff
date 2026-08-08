@@ -39,6 +39,9 @@ import (
 const (
 	wsInitialBackoff = 1 * time.Second
 	wsMaxBackoff     = 60 * time.Second
+	// wsStableAfter 是「这次 WS 连接算健康」的存活门槛：连接活够这么久，
+	// 下次断线才从初始退避重来（见 WaitEvent 的退避复位 why）
+	wsStableAfter = 5 * time.Second
 )
 
 // dialTimeout 是 WS 单次拨号（含 TCP 连接与握手）的超时上限。
@@ -113,6 +116,11 @@ type Client struct {
 	baseURL string
 	token   string
 	hc      *http.Client
+	// WS 断线重连的退避区间与「这次连接算健康」的存活门槛（见 WaitEvent）。
+	// 测试经 NewWithWSTiming 注入毫秒级值，生产一律用包级默认。
+	wsInitialBackoff time.Duration
+	wsMaxBackoff     time.Duration
+	wsStableAfter    time.Duration
 }
 
 // New 创建 agentd 客户端。
@@ -124,6 +132,16 @@ type Client struct {
 // 注意：
 //   - 仅做地址归一化，不做任何网络请求，连接在首次调用时建立
 func New(addr, token string) *Client {
+	return NewWithWSTiming(addr, token, wsInitialBackoff, wsMaxBackoff, wsStableAfter)
+}
+
+// NewWithWSTiming 是 New 的 WS 重连节奏可注入变体：测试注入毫秒级退避与
+// 健康门槛，让「连接活够了才复位退避」的断言不必真等 1s..60s；生产一律走 New。
+//
+// 参数：
+//   - initial/max: 断线重连的初始/封顶退避
+//   - stableAfter: 连接存活多久才算健康、才复位退避（见 WaitEvent）
+func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration) *Client {
 	if !strings.Contains(addr, "://") {
 		addr = "http://" + addr
 	}
@@ -135,6 +153,9 @@ func New(addr, token string) *Client {
 				DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
 			},
 		},
+		wsInitialBackoff: initial,
+		wsMaxBackoff:     max,
+		wsStableAfter:    stableAfter,
 	}
 }
 
@@ -302,6 +323,33 @@ func (c *Client) Done(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 恢复结果 JSON 原文（重投条数、executor 是否已不在、收尾状态与结论），
+//     原样输出给审核者
+//   - executor 仍不可用（502）或任务已终结（409）等情况返回错误；502 时响应体
+//     里仍带着本次已重投成功的条数，错误信息中包含它
+func (c *Client) Resume(ctx context.Context, taskID string) (string, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/resume", nil)
+	if err != nil {
+		return "", fmt.Errorf("resume 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", c.httpError("resume", resp)
+	}
+	// 报告是固定几个字段的小对象，1MiB 上限纯属防御（与其余读体路径一致）
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("读取 resume 响应: %w", err)
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
 // Diff 获取任务分支相对基准分支的审阅素材（git diff + 提交列表）。
 //
 // 参数：
@@ -405,9 +453,11 @@ func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, ex
 func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error) {
 	fromSeq := c.readCursor(taskID)
 
-	backoff := wsInitialBackoff
+	backoff := c.wsInitialBackoff
 	for attempt := 1; ; attempt++ {
+		start := time.Now()
 		ev, err := c.waitOnce(ctx, taskID, fromSeq, all)
+		lived := time.Since(start)
 		if err == nil {
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
 				// cursor 写失败不吞事件：先把事件交还用户（宁可下次重投，不可这次挂住）
@@ -428,14 +478,25 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 		c.log().Info("WS 连接断开，等待后重连", "addr", c.baseURL, "task", taskID,
 			"attempt", attempt, "next_backoff_seconds", int(backoff.Seconds()), "cause", err)
 
+		// 先按本次连接的寿命定下下一次退避，再去等（顺序反了，复位要到下下次才生效）。
+		//
+		// 复位判据是「连接活够了 wsStableAfter」而不是「连上过」：断网重连的
+		// 退避一路翻倍到 60s 封顶后，若不复位，即便对端早已恢复，余下整个 wait
+		// 期间每次断线都要再空等 60s（A-9）。而按「连上过」复位则走向另一个极端
+		// ——半死的对端（接受连接后立刻断）会被无限快速重连
+		if lived >= c.wsStableAfter {
+			backoff = c.wsInitialBackoff
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(backoff):
 		}
-		backoff *= 2
-		if backoff > wsMaxBackoff {
-			backoff = wsMaxBackoff
+		if lived < c.wsStableAfter {
+			backoff *= 2
+			if backoff > c.wsMaxBackoff {
+				backoff = c.wsMaxBackoff
+			}
 		}
 	}
 }
@@ -573,5 +634,39 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 		return fmt.Errorf("cursor 落盘: %w", err)
 	}
 	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)
+	c.sweepStaleCursorTemps(filepath.Dir(p), taskID)
 	return nil
+}
+
+// cursorTempTTL 是 cursor 临时文件被判定为「遗留垃圾」的年龄阈值。
+//
+// 为什么按年龄而不是一律清空：同一任务可能有并发的 wait 进程正在写各自的
+// 临时文件，无差别删除会掐掉别人在途的 Rename。而任何一次正常写入都在毫秒级
+// 完成，1 小时的阈值把「在途」与「遗留」分得足够开。
+const cursorTempTTL = time.Hour
+
+// sweepStaleCursorTemps 清理该任务遗留的 cursor 临时文件。
+//
+// 为什么需要它：writeCursor 用 CreateTemp + Rename 保证原子写，进程若在两步
+// 之间被杀（Ctrl+C、机器重启、oom kill）就会留下一个 .tmp，而此后没有任何
+// 代码会再碰它——~/.handoff 里的 .tmp 只增不减。
+//
+// 清理失败一律只记 Debug：这是顺带的卫生工作，绝不能影响 cursor 写入的成败。
+func (c *Client) sweepStaleCursorTemps(dir, taskID string) {
+	matches, err := filepath.Glob(filepath.Join(dir, "cursor-"+taskID+"-*.tmp"))
+	if err != nil {
+		c.log().Debug("扫描遗留 cursor 临时文件失败", "task", taskID, "cause", err)
+		return
+	}
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil || time.Since(fi.ModTime()) < cursorTempTTL {
+			continue // 取不到状态或还在途：交给下一次写入再看
+		}
+		if rerr := os.Remove(m); rerr != nil {
+			c.log().Debug("清理遗留 cursor 临时文件失败", "path", m, "cause", rerr)
+			continue
+		}
+		c.log().Debug("已清理遗留 cursor 临时文件", "task", taskID, "path", m)
+	}
 }

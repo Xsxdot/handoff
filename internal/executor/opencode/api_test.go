@@ -463,14 +463,18 @@ func TestUnaryTimeoutNotAffectingSSE(t *testing.T) {
 	}
 }
 
-// TestSubscribeBackoffResetAfterSuccess 验证连接成功后退避复位（P1-10a）：
-// 连续两次连接失败把退避抬到 200ms，随后一次成功连接必须把退避复位回初始
-// 100ms——否则退避指数累积到 30s 封顶后终身不降，断连间隙越拉越长。
-// 同时验证 onReconnect 仅在「断连后的成功重连」时触发一次。
+// TestSubscribeBackoffResetAfterSuccess 验证连接**活够健康门槛**后退避复位
+// （P1-10a，判据按 A-8 修正）：连续两次连接失败把退避抬到 200ms，随后一次
+// 活过门槛的连接必须把退避复位回初始 100ms——否则退避指数累积到封顶后终身不降，
+// 断连间隙越拉越长。同时验证 onReconnect 仅在「断连后的成功重连」时触发一次。
 //
-// 时间线（注入退避 100ms 起、1s 封顶）：
+// 为什么判据是「活够时长」而不是「拿到 200」：半死的 opencode 会接受连接、
+// 回 200、立刻关流。按 200 复位等于对它永不退避（见
+// TestSSEBackoffGrowsWhenServerAcceptsThenCloses）。
+//
+// 时间线（注入退避 100ms 起、1s 封顶，健康门槛 150ms）：
 //   - conn1 失败 → 等 100ms；conn2 失败 → 等 200ms
-//   - conn3 成功（收到事件后流结束）→ 退避复位 100ms
+//   - conn3 成功且流持续 250ms（> 门槛）→ 退避复位 100ms
 //   - conn4 失败 → 应约等 100ms（未复位则等 400ms）；conn5 失败 → 约 200ms
 //     （未复位则 800ms）——两组间隔阈值都留了 2~3 倍余量，无需精确计时
 func TestSubscribeBackoffResetAfterSuccess(t *testing.T) {
@@ -486,16 +490,24 @@ func TestSubscribeBackoffResetAfterSuccess(t *testing.T) {
 		connTimes = append(connTimes, time.Now())
 		mu.Unlock()
 		switch n {
-		case 1, 2, 4, 5:
+		case 1, 2, 4:
 			w.WriteHeader(http.StatusInternalServerError) // 连接失败：退避加倍
+		case 5:
+			// 末次连接挂住不返回：测试随后 cancel，走的是正常关停路径，
+			// SubscribeEvents 应返回 nil 而不是把「取消」当失败原因
+			<-r.Context().Done()
 		case 3:
+			// 成功连接：先送一条事件，再把流保持到健康门槛之上才结束
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"type\":\"e1\"}\n\n") // 成功连接：收到事件后流结束
+			fmt.Fprint(w, "data: {\"type\":\"e1\"}\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(250 * time.Millisecond)
 		}
 	}))
 	defer ts.Close()
 
-	api := opencode.NewAPIWithSSEBackoff(ts.URL, testPassword, 100*time.Millisecond, time.Second)
+	api := opencode.NewAPIWithSSETiming(ts.URL, testPassword,
+		100*time.Millisecond, time.Second, 150*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -532,9 +544,10 @@ func TestSubscribeBackoffResetAfterSuccess(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// conn3（成功）结束后到 conn4 的间隔：复位后约 100ms；未复位则 ≥400ms
-	if gap := connTimes[3].Sub(connTimes[2]); gap > 300*time.Millisecond {
-		t.Errorf("成功连接后退避未复位：conn3→conn4 间隔 %v，期望约 100ms", gap)
+	// conn3 起到 conn4 起的间隔 = conn3 的 250ms 寿命 + 退避：
+	// 复位后约 350ms；未复位则 ≥650ms
+	if gap := connTimes[3].Sub(connTimes[2]); gap > 500*time.Millisecond {
+		t.Errorf("成功连接后退避未复位：conn3→conn4 间隔 %v，期望约 350ms（250ms 流 + 100ms 退避）", gap)
 	}
 	// conn4 失败后按复位后的递增：约 200ms；未复位则 ≥800ms
 	if gap := connTimes[4].Sub(connTimes[3]); gap > 600*time.Millisecond {

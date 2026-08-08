@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,6 +49,11 @@ const (
 	sseInitialBackoff = 1 * time.Second
 	sseMaxBackoff     = 30 * time.Second
 	sseScanBuffer     = 1 << 20 // 1MB
+	// sseStableAfter 是「这次连接算健康」的存活时长门槛（退避复位条件，A-8）。
+	// 为什么 5s：正常的 /event 长连接一挂就是分钟到小时级，而半死 server 的
+	// 「200 后立刻关流」在毫秒级——5s 把两者分得很开，且不会因一次正常的
+	// 短暂网络抖动就误判为健康
+	sseStableAfter = 5 * time.Second
 	// unaryTimeout 是一元调用（建会话/发 prompt/权限应答）的超时上限。
 	// 为什么 30s：这些调用对应「一次人工应答的最长合理等待」——opencode 若半死
 	// （TCP 通但不响应），30s 内拿不到响应就按失败处理，不让 handoff reply 回程
@@ -73,6 +79,9 @@ type API struct {
 	// 测试经 NewAPIWithSSEBackoff 注入毫秒级退避）
 	sseInitialBackoff time.Duration
 	sseMaxBackoff     time.Duration
+	// sseStableAfter 是「这次连接算健康」的存活时长门槛：连接活够这么久才
+	// 复位退避（A-8）。半死 server 的连接寿命远低于它，因此照常退避
+	sseStableAfter time.Duration
 }
 
 // NewAPI 创建 opencode server 客户端。
@@ -90,7 +99,7 @@ func NewAPI(baseURL, password string) *API {
 // 参数：
 //   - timeout: 一元调用（httpClient）的超时；SSE 长连接（sseClient）不受影响
 func NewAPIWithUnaryTimeout(baseURL, password string, timeout time.Duration) *API {
-	return newAPI(baseURL, password, timeout, sseInitialBackoff, sseMaxBackoff)
+	return newAPI(baseURL, password, timeout, sseInitialBackoff, sseMaxBackoff, sseStableAfter)
 }
 
 // NewAPIWithSSEBackoff 是 NewAPI 的 SSE 退避可注入变体：测试注入毫秒级退避，
@@ -100,11 +109,20 @@ func NewAPIWithUnaryTimeout(baseURL, password string, timeout time.Duration) *AP
 // 参数：
 //   - initial/max: SSE 断流重连的初始/封顶退避（见 SubscribeEvents）
 func NewAPIWithSSEBackoff(baseURL, password string, initial, max time.Duration) *API {
-	return newAPI(baseURL, password, unaryTimeout, initial, max)
+	return NewAPIWithSSETiming(baseURL, password, initial, max, sseStableAfter)
+}
+
+// NewAPIWithSSETiming 在退避区间之外再注入「连接算健康」的存活门槛，
+// 供「退避复位按连接寿命而非按 200 响应」（A-8）的断言把门槛压到毫秒级。
+//
+// 参数：
+//   - stableAfter: 连接存活多久才算健康、才复位退避（生产默认 sseStableAfter）
+func NewAPIWithSSETiming(baseURL, password string, initial, max, stableAfter time.Duration) *API {
+	return newAPI(baseURL, password, unaryTimeout, initial, max, stableAfter)
 }
 
 // newAPI 是全部构造器的公共骨架。
-func newAPI(baseURL, password string, unaryTimeout, sseInitial, sseMax time.Duration) *API {
+func newAPI(baseURL, password string, unaryTimeout, sseInitial, sseMax, stableAfter time.Duration) *API {
 	// 两个 client 各持一个 Transport：拨号超时统一 10s（对端不可达不挂死），
 	// 一元与 SSE 的差异只在 client 级 Timeout
 	dialer := (&net.Dialer{Timeout: 10 * time.Second}).DialContext
@@ -120,6 +138,7 @@ func newAPI(baseURL, password string, unaryTimeout, sseInitial, sseMax time.Dura
 		},
 		sseInitialBackoff: sseInitial,
 		sseMaxBackoff:     sseMax,
+		sseStableAfter:    stableAfter,
 	}
 }
 
@@ -314,48 +333,78 @@ func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response
 //     「断连间隙可能丢事件」的告警交到业务层（P1-10b，可为 nil）
 //
 // 返回：
-//   - ctx 取消（正常退出）时返回 nil
+//   - ctx 取消时返回**最后一次连接的失败原因**（最后一次连接健康则返回 nil）：
+//     调用方拿它填 FailReason（A-7）。恒返回 nil 会让「看门狗判死 → 事件流退出」
+//     的失败现场只剩 "<nil>"，零信息
 //   - 解析器遇到无法恢复的流异常（如单行超过 1MB 上限）时返回错误
 //
 // 注意：
 //   - 未知/解析失败的行（event: 行、注释、非 JSON data）Debug 跳过，绝不中断订阅
 func (a *API) SubscribeEvents(ctx context.Context, onEvent func(json.RawMessage), onReconnect func()) error {
 	backoff := a.sseInitialBackoff
+	var lastErr error
 	for attempt := 1; ; attempt++ {
-		// onEstablished：连接建立（HTTP 200）时回调，挂在「建立」而非「流结束」
-		// 的时点上——断连恢复信号要尽早送达（流可能长时间不结束），退避复位
-		// 也要在建立瞬间生效（P1-10a：每次成功连接回到初始值，防止退避爬到
-		// 30s 封顶后终身不降；断得越久退避越大、断连间隙越长）
+		// onEstablished：连接建立（HTTP 200）时回调。断连恢复信号挂在「建立」
+		// 而非「流结束」的时点上——流可能长时间不结束，告警要尽早送达
 		onEstablished := func() {
-			backoff = a.sseInitialBackoff
 			if attempt > 1 && onReconnect != nil {
 				// 断连恢复：首次连接不是「重连」，只有断过再连上才算；
 				// 让业务层知道刚才发生过断连（间隙内的事件可能已丢失）
 				onReconnect()
 			}
 		}
+		start := time.Now()
 		err := a.streamOnce(ctx, onEvent, onEstablished)
+		lived := time.Since(start)
+		lastErr = err
 		if ctx.Err() != nil {
-			return nil // 正常退出：ctx 取消
+			// 退出：把最后一次连接的失败原因交给调用方（A-7）。
+			// 「因为 ctx 被取消而中断」不是失败原因，那是正常关停路径
+			return dropCtxCause(lastErr, ctx)
 		}
 		if err != nil {
 			a.log().Info("SSE 连接失败，等待后重连", "attempt", attempt,
-				"backoff_seconds", int(backoff.Seconds()), "cause", err)
+				"backoff_seconds", int(backoff.Seconds()), "lived_ms", lived.Milliseconds(),
+				"cause", err)
 		} else {
 			a.log().Info("SSE 流结束，等待后重连", "attempt", attempt,
-				"backoff_seconds", int(backoff.Seconds()))
+				"backoff_seconds", int(backoff.Seconds()), "lived_ms", lived.Milliseconds())
 		}
 
+		// 先按本次连接的寿命定下下一次的退避，再去等——顺序反了的话，
+		// 复位只会在「下下次」生效，本次仍按旧退避空等
+		//
+		// 退避复位挂在「连接活够了 sseStableAfter」上，而不是「拿到 200 响应头」
+		// 上（A-8）：半死的 opencode 会接受连接、回 200、立刻关流，按 200 复位
+		// 等于永不退避——每秒一次重连 + 每次一行 Info 日志，永远升不到上限。
+		// 连接真的活了一段时间才说明服务端恢复了，此时才该回到最快节奏（P1-10a）
+		if lived >= a.sseStableAfter {
+			backoff = a.sseInitialBackoff
+		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return dropCtxCause(lastErr, ctx)
 		case <-time.After(backoff):
 		}
-		backoff *= 2
-		if backoff > a.sseMaxBackoff {
-			backoff = a.sseMaxBackoff
+		if lived < a.sseStableAfter {
+			backoff *= 2
+			if backoff > a.sseMaxBackoff {
+				backoff = a.sseMaxBackoff
+			}
 		}
 	}
+}
+
+// dropCtxCause 在 ctx 已取消时滤掉「由取消本身派生」的错误。
+//
+// 为什么需要它：正常关停（Stop/看门狗判死）走的就是取消 ctx，此时在途的
+// 连接会返回 context canceled。把它当失败原因上报，FailReason 里就会出现
+// 一句与真实故障无关的噪音；而真正的失败原因（连不上、500）必须原样透出（A-7）。
+func dropCtxCause(err error, ctx context.Context) error {
+	if err == nil || errors.Is(err, ctx.Err()) {
+		return nil
+	}
+	return err
 }
 
 // streamOnce 建立一次 SSE 连接并消费到流结束，期间每条事件同步回调 onEvent。
@@ -434,6 +483,17 @@ func (a *API) dispatch(data []string, onEvent func(json.RawMessage)) {
 		return
 	}
 	onEvent(raw)
+}
+
+// truncateMarked 按 rune 截断并补上显式的截断标记。
+//
+// 为什么必须有标记：截断后的文本会直接呈给审核者做裁决（如权限描述里的 bash
+// 命令）。无标记的截断让人以为看到的就是全部，等于让他批准自己没看全的命令。
+func truncateMarked(s string, n int) string {
+	if len([]rune(s)) <= n {
+		return s
+	}
+	return truncateRunes(s, n) + "…（已截断）"
 }
 
 // truncateRunes 将字符串按 rune 截断为最多 n 个字符（避免切断多字节 UTF-8 字符）。

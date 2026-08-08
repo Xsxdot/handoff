@@ -39,6 +39,16 @@ type chanAdapter struct {
 	evCh  chan executor.AdapterEvent
 	perms []string
 	sends []string
+	// respondErr 非 nil 时 RespondPermission/Send 直接返回它（模拟 executor
+	// 已退出或调用失败），供恢复操作的失败分支断言
+	respondErr error
+}
+
+// setRespondErr 设置（或用 nil 清除）RespondPermission/Send 的注入错误。
+func (a *chanAdapter) setRespondErr(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.respondErr = err
 }
 
 func (a *chanAdapter) Start(context.Context, executor.StartReq) error { return nil }
@@ -47,6 +57,9 @@ func (a *chanAdapter) Events(string) <-chan executor.AdapterEvent     { return a
 func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.respondErr != nil {
+		return a.respondErr
+	}
 	a.sends = append(a.sends, text)
 	return nil
 }
@@ -54,6 +67,9 @@ func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
 func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.respondErr != nil {
+		return a.respondErr
+	}
 	a.perms = append(a.perms, permID+":"+decision)
 	return nil
 }

@@ -227,7 +227,12 @@ func ReadFile(repo, rel string) (string, error) {
 		return "", fmt.Errorf("打开任务仓库 %s: %w", repo, err)
 	}
 	defer root.Close()
-	f, err := root.Open(cleaned)
+	// 以 O_NONBLOCK 打开（why）：没有写端的 FIFO 会让 openat 本身一直挂住，
+	// 而 IsRegular 检查排在打开之后——ErrNotRegularFile 对 FIFO 根本不可达，
+	// handler goroutine 与 fd 就此永久泄漏，而 executor 可以随手 mkfifo。
+	// O_NONBLOCK 让特殊文件立即返回，交给下面的 IsRegular 正常拒绝；
+	// 对普通文件它没有任何语义影响
+	f, err := root.OpenFile(cleaned, os.O_RDONLY|openNonBlock, 0)
 	if err != nil {
 		if rootErrIsEscape(err) {
 			// 符号链接逃逸在 OpenRoot 层被内核拒绝：与词汇层逃逸同一语义
@@ -257,9 +262,17 @@ func ReadFile(repo, rel string) (string, error) {
 	if len(b) > maxRunOutput {
 		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
 			"size", fi.Size(), "limit", maxRunOutput)
-		b = b[:maxRunOutput]
+		// 截断必须带可见标记：无标记时审核者会把第 1MiB 处当成文件末尾去推理，
+		// 而那既不是末行、也没有任何提示说明后面还有内容
+		return string(b[:maxRunOutput]) + truncatedNotice(fi.Size()), nil
 	}
 	return string(b), nil
+}
+
+// truncatedNotice 生成附在截断内容末尾的醒目提示（含真实文件大小与上限）。
+func truncatedNotice(size int64) string {
+	return fmt.Sprintf("\n\n===== 内容已截断：文件共 %d 字节，以上仅为开头 %d 字节 =====\n",
+		size, maxRunOutput)
 }
 
 // rootErrIsEscape 判断 os.Root 返回的路径错误是否为「逃逸出根目录」。

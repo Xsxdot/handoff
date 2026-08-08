@@ -21,9 +21,19 @@ package executor
 
 import (
 	"context"
+	"errors"
 
 	"github.com/xushixin/handoff/internal/proto"
 )
+
+// ErrTaskNotRunning 表示任务在本 adapter 里没有运行态：executor 已终结、
+// 从未启动，或运行态已随 Stop 注销。
+//
+// 实现方在 Send / RespondPermission / Stop 遇到这种情况时必须包装本哨兵错误
+// （fmt.Errorf("...: %w", executor.ErrTaskNotRunning)），调用方据此区分
+// 「executor 已经不在」与「executor 还在但这次调用失败了」——两者的处置完全
+// 不同：前者应把任务交审核者裁决，后者应保持可重试。上层禁止靠错误文本判别。
+var ErrTaskNotRunning = errors.New("任务不在运行中")
 
 // StartReq 是 Adapter.Start 的入参：任务上下文 + 计划内容 + 任务工作目录。
 //

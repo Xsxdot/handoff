@@ -16,7 +16,7 @@
 - 零 MCP、零 hooks：executor 挂载只走 opencode server HTTP API + SSE（spec §6）。
 - 日志一律 `log/slog`（`internal/logx` 统一初始化），**禁止 `fmt.Printf` 作日志**；CLI 面向用户的正常输出（JSON 结果等）走 `os.Stdout` 的 `fmt.Fprintln` 是允许的——那是程序输出不是日志。
 - 每个新文件顶部必须有中文「职责 + 边界」头注释；导出函数必须有 doc 注释（用户全局 CLAUDE.md §2）。
-- 事件不丢不重：events 表自增 seq + 客户端 cursor；tickets 幂等（INSERT OR IGNORE by id；权限 ticket id = opencode permissionID）。
+- 事件不丢不重：events 表自增 seq + 客户端 cursor；tickets 幂等（INSERT OR IGNORE by id；权限 ticket id = `<taskID>:<permissionID>`——实现时按 P1-6 改为命名空间化，裸 permissionID 会跨任务碰撞）。
 - 任务状态机只有：`pending / running / waiting_answer / waiting_review / completed / failed`。
 - v1 单 target 串行执行任务，不做并发调度（spec §11）。
 - module path：`github.com/xushixin/handoff`。

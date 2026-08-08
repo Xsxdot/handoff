@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -79,12 +80,25 @@ func Open(path string) (*Store, error) {
 		`CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, seq)`,
 		`CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
-  answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP)`,
+  answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP,
+  delivered_at TIMESTAMP)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("建表失败: %w", err)
 		}
+	}
+	// 迁移：为旧库补 delivered_at 列。
+	//
+	// why（这一列必须独立于 answer）：「审核者已裁决」与「裁决已送达 executor」
+	// 是两件不同的事实，把它们压在 answer 一个字段上，正是「reply 中继失败后
+	// 工单已被消耗、却无从知道该不该重投」这个死局的根因。列已存在时 SQLite 报
+	// duplicate column，属预期，忽略即可（SQLite 无 ADD COLUMN IF NOT EXISTS）。
+	if _, err := db.ExecContext(context.Background(),
+		`ALTER TABLE tickets ADD COLUMN delivered_at TIMESTAMP`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("迁移 tickets.delivered_at: %w", err)
 	}
 	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil
@@ -430,6 +444,74 @@ VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
 	return n == 1, nil
 }
 
+// CountEvents 统计任务在 (afterSeq, throughSeq] 区间内的事件条数。
+//
+// 参数：
+//   - taskID: 任务 ID
+//   - afterSeq: 区间下界（不含）
+//   - throughSeq: 区间上界（含）
+//
+// 返回：
+//   - 区间内事件条数
+//   - 数据库错误
+//
+// 注意：
+//   - 用途是 WS 重放截断后的缺口核对：seq 由 AUTOINCREMENT 全局分配，跨任务
+//     交错，单任务的 seq **不连续**，因此无法靠「seq 是否逐格衔接」判断缺口，
+//     只能按区间实际条数核对
+func (s *Store) CountEvents(taskID string, afterSeq, throughSeq int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM events WHERE task_id = ? AND seq > ? AND seq <= ?",
+		taskID, afterSeq, throughSeq).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("统计任务 %s 事件区间 (%d, %d]: %w", taskID, afterSeq, throughSeq, err)
+	}
+	return n, nil
+}
+
+// TicketHasEvent 判定某工单的通知事件（permission_request / question）是否已落库。
+//
+// 参数：
+//   - taskID: 任务 ID（事件按任务分区存储）
+//   - ticketID: 工单 ID，与事件 payload 里的 ticket_id 精确比对
+//
+// 返回：
+//   - 是否已有对应通知事件
+//   - 数据库错误
+//
+// 注意：
+//   - 用途是「工单已创建但通知事件缺失」的自愈判定（崩溃恰好落在两次写之间）：
+//     仅凭工单存在就认定为重放，会把审核者的唤醒事件永久吞掉
+//   - payload 是 JSON 文本，这里取回后在 Go 侧精确解码比对，不用 LIKE 匹配
+//     （ticket_id 含 `_` 等 LIKE 通配符，字符串匹配会误判）
+//   - 单任务的问答类事件量级在几十条，全量扫描代价可忽略；且只在重放分支调用
+func (s *Store) TicketHasEvent(taskID, ticketID string) (bool, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+SELECT payload FROM events WHERE task_id = ? AND type IN (?, ?)`,
+		taskID, string(proto.EventTypePermissionRequest), string(proto.EventTypeQuestion))
+	if err != nil {
+		return false, fmt.Errorf("查询任务 %s 的问答事件: %w", taskID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return false, fmt.Errorf("扫描事件 payload: %w", err)
+		}
+		var p struct {
+			TicketID string `json:"ticket_id"`
+		}
+		if json.Unmarshal([]byte(payload), &p) == nil && p.TicketID == ticketID {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("遍历任务 %s 的问答事件: %w", taskID, err)
+	}
+	return false, nil
+}
+
 // GetTicket 按 id 读取工单；不存在返回 ErrNotFound。
 //
 // 参数：
@@ -439,15 +521,17 @@ VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
 //   - 工单数据；不存在时返回 ErrNotFound
 func (s *Store) GetTicket(id string) (*proto.Ticket, error) {
 	var (
-		tk         proto.Ticket
-		request    string
-		answer     sql.NullString
-		answeredAt sql.NullString
-		createdAt  string
+		tk          proto.Ticket
+		request     string
+		answer      sql.NullString
+		answeredAt  sql.NullString
+		deliveredAt sql.NullString
+		createdAt   string
 	)
 	err := s.db.QueryRowContext(context.Background(), `
-SELECT id, task_id, kind, request, answer, created_at, answered_at FROM tickets WHERE id = ?`, id).
-		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt)
+SELECT id, task_id, kind, request, answer, created_at, answered_at, delivered_at
+FROM tickets WHERE id = ?`, id).
+		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &deliveredAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -464,7 +548,81 @@ SELECT id, task_id, kind, request, answer, created_at, answered_at FROM tickets 
 		t := parseTime(answeredAt.String)
 		tk.AnsweredAt = &t
 	}
+	if deliveredAt.Valid {
+		t := parseTime(deliveredAt.String)
+		tk.DeliveredAt = &t
+	}
 	return &tk, nil
+}
+
+// MarkTicketDelivered 标记工单应答已送达 executor。
+//
+// 参数：
+//   - id: 工单 ID
+//
+// 注意：
+//   - 幂等：已标记的工单重复调用不报错（delivered_at IS NULL 条件不成立即无影响）
+//   - 只有真正把应答交到 executor 手上（RespondPermission/Send 返回成功）之后
+//     才可调用——这是 RecoverStuck 判断「该不该重投」的唯一依据
+func (s *Store) MarkTicketDelivered(id string) error {
+	if _, err := s.db.ExecContext(context.Background(),
+		"UPDATE tickets SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+		fmtTime(time.Now()), id); err != nil {
+		return fmt.Errorf("标记工单 %s 已送达: %w", id, err)
+	}
+	return nil
+}
+
+// UndeliveredAnswers 返回任务里「已应答但未送达 executor」的工单，按应答时间升序。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 待重投的工单列表（可能为空）
+//   - 数据库错误
+//
+// 注意：
+//   - 作废工单（answer = VoidAnswer）不在其中：它们是「任务已终结，不会再被回答」
+//     的墓碑，不是待送达的裁决
+//   - 这是「审核者 reply 得到 502 之后」的可恢复面：列表非空即说明有裁决卡在半路
+func (s *Store) UndeliveredAnswers(taskID string) ([]proto.Ticket, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+SELECT id, task_id, kind, request, answer, created_at, answered_at
+FROM tickets
+WHERE task_id = ? AND answer IS NOT NULL AND answer != ? AND delivered_at IS NULL
+ORDER BY answered_at ASC`, taskID, VoidAnswer)
+	if err != nil {
+		return nil, fmt.Errorf("查询任务 %s 未送达应答: %w", taskID, err)
+	}
+	defer rows.Close()
+	var out []proto.Ticket
+	for rows.Next() {
+		var (
+			tk         proto.Ticket
+			request    string
+			answer     sql.NullString
+			answeredAt sql.NullString
+			createdAt  string
+		)
+		if err := rows.Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt); err != nil {
+			return nil, fmt.Errorf("扫描未送达应答: %w", err)
+		}
+		tk.Request = json.RawMessage(request)
+		tk.CreatedAt = parseTime(createdAt)
+		if answer.Valid {
+			tk.Answer = &answer.String
+		}
+		if answeredAt.Valid {
+			t := parseTime(answeredAt.String)
+			tk.AnsweredAt = &t
+		}
+		out = append(out, tk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历任务 %s 未送达应答: %w", taskID, err)
+	}
+	return out, nil
 }
 
 // AnswerTicket 填写工单答案，工单随即从待办中移出。

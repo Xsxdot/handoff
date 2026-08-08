@@ -63,13 +63,14 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff attach <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
+| `handoff resume <task>` | 恢复卡死任务：重投未送达 executor 的应答 | — |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
 | `handoff fetch <task> <文件>` | 读取仓库内文件（审阅上下文） | — |
-| `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时） | 如 `handoff run T1 go test ./...` |
+| `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时） | 如 `handoff run T1 go test ./...`；**handoff 自有 flag 必须写在任务名之前**——任务名之后的一切（含 `-v`、`--race`）都原样透传给被执行命令，`handoff run T1 --agentd=... go test` 会把 `--agentd=...` 当成 `go test` 的参数 |
 
 全局参数：`--agentd http://127.0.0.1:7777`（agentd 地址）、`--target <name>`（按配置 Targets 换算地址与 token）、`--config <path>`（配置文件，默认 `~/.handoff/config.yaml`）。
 
-事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）。
+事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）。
 
 ## 审核者会话恢复
 
@@ -91,7 +92,8 @@ handoff attach <task>              # plan 摘要 + 事件历史 + 未处理挂�
   - `render.log`：模型回合文本增量（执行实况）；`tmux attach` 后第二窗口即 `tail -f` 该文件。
   - `prompt.md` / `opencode.json`：派发给模型的回合制 prompt 与权限配置（edit/bash/webfetch/external_directory 均为 ask）。
   - `serve.json`：serve 连接凭据（端口/密码/tmux 会话名），agentd 重启后凭它重建订阅。
-- opencode serve 自身的输出：`tee` 落盘 `<taskDir>/serve.log`（tmux 窗格实时可见，但会话随 serve 退出销毁，以 serve.log 为准）。
+  - `run_serve.sh`：拉起 serve 的启动脚本，**权限 0600 且含明文 serve 密码**（密码走脚本而非 argv，避免出现在 `ps` 输出里）；任务归档后随任务目录一并清理。
+- opencode serve 自身的输出：`tee` 落盘 `<taskDir>/serve.log`。tmux 第一窗格实时可见；serve 退出后该窗格关闭，但**会话不会随之销毁**——第二窗口的 `tail -f render.log` 仍吊着会话，adapter 检测到 serve 死亡时会主动 `kill-session` 回收（见 subscribeLoop）。事后取证一律以 `serve.log` 为准。
 
 **tmux 会话命名规则**：`handoff-<task 前 8 字符>`。`tmux attach -t handoff-<id8>` 直接旁观（甚至介入）executor 实况，`tmux kill-session -t handoff-<id8>` 可人工兜底回收。
 
@@ -99,6 +101,7 @@ handoff attach <task>              # plan 摘要 + 事件历史 + 未处理挂�
 
 - `wait` 报错退出 → 先看报错内容：token 未同步（401，`~/.handoff/config.yaml` 与 agentd 的 token 需一致）或任务不存在（1008 policy violation，`handoff tasks` 核对 task-id）会**立即**报错退出、不会无限重试；确认 token 与 task-id 无误后再挂。
 - `wait` 一直不退出 → 大概率只是「还没有事件」（正常）：看 stderr 日志的「WS 连接断开，等待后重连」，断线退避重连是 `wait` 的常态，重连日志带地址、重连次数与下次退避秒数；无人值守时可加 `--timeout` 兜底。
+- 收到 `delivery_failed` 事件，或 `reply` 返回 502 → 裁决已落库但没送到 executor（executor 半死、调用超时）。此时工单已被消耗、`attach` 看不到挂起项，`reply` 会 404、`continue`/`done` 会 409——执行 `handoff resume <task>` 重投：executor 还在就继续执行，确已不在则任务转交审核（之后可 `continue` 重派或 `done` 归档）。该命令幂等，已送达的应答不会重复投递。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
 - **SSE 重放风险**：opencode `/event` 在重连时是否重放历史事件尚未经真实样本证实（权限/提问靠 ticket id 幂等去重，但旧 result 重放可能误杀存活的执行器会话）。这是验收级风险，见 `docs/superpowers/e2e-checklist.md` 的 SPIKE-1b 与「水位线应急方案」，上线前必须按清单实测。

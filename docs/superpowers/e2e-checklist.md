@@ -2,7 +2,9 @@
 前置：executor 机装 opencode 并配好模型凭证；`handoff agentd --executor=opencode` 已起。
 - [x] SPIKE-1（spec 风险#1）：手动 `opencode serve` + curl 建会话发 prompt，抓 /event SSE 原始样本：
       确认 permission 事件类型名/字段、回合结束（idle）事件类型名 —— 对照调整 adapter 映射
-      **结论（样本 spike3/spike5-events.jsonl，opencode 1.18.15 serve）**：事件类型已对齐并
+      **结论（样本已入库：`internal/executor/opencode/testdata/spike3-events.jsonl`、
+      `spike5-events.jsonl`，opencode 1.18.15 serve；由 `replay_spike_test.go` 原样重放，
+      协议一变即变红）**：事件类型已对齐并
       已调整 adapter 映射（fix-A）——权限=permission.asked（properties.id 即 PermissionID，
       permission/patterns/metadata 拼描述；permission.replied 应答回显必须忽略）；回合结束
       主信号=session.status 的 status.type=idle（同现 session.idle 冗余，须去重防重复触发）；

@@ -279,8 +279,8 @@ func TestReadFileSymlinkEscape(t *testing.T) {
 }
 
 // TestReadFileSizeCap 验证读取大小上限（P1-5）：超过 maxRunOutput 的文件只返回
-// 开头 maxRunOutput 字节（截断而非拒绝——与 RunCmd 输出截断语义一致），
-// 边界内的文件完整返回。
+// 开头 maxRunOutput 字节 + 一行截断提示（截断而非拒绝——与 RunCmd 输出截断
+// 语义一致；提示不可省，否则审核者会把截断处当文件末尾），边界内的文件完整返回。
 func TestReadFileSizeCap(t *testing.T) {
 	repo := initGitRepo(t)
 	big := filepath.Join(repo, "big.bin")
@@ -291,8 +291,15 @@ func TestReadFileSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile 大文件: %v", err)
 	}
-	if len(content) != maxRunOutput {
-		t.Fatalf("大文件返回长度=%d, want 截断到 %d", len(content), maxRunOutput)
+	body, notice, found := strings.Cut(content, "\n\n=====")
+	if !found {
+		t.Fatalf("大文件返回未带截断提示（长度 %d）", len(content))
+	}
+	if len(body) != maxRunOutput {
+		t.Fatalf("大文件正文长度=%d, want 截断到 %d", len(body), maxRunOutput)
+	}
+	if !strings.Contains(notice, "已截断") {
+		t.Fatalf("截断提示文案不明确: %q", notice)
 	}
 
 	small, err := ReadFile(repo, "README.md")

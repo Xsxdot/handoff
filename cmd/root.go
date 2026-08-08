@@ -10,6 +10,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -30,8 +31,15 @@ var rootCmd = &cobra.Command{
 	// 运行期失败（配置加载失败、远端 401、任务不存在等）的根因是错误信息
 	// 而非用法，usage 段只会淹没 stderr 里真正的问题。注意 SilenceErrors
 	// 保持 false——cobra 默认把 RunE 返回的错误打到 stderr 且 Execute 原样
-	// 返回（main 据此 os.Exit(1)），错误绝不被静默吞掉；只消掉噪音 usage
-	SilenceUsage: true,
+	// 返回（main 据此按 ExitCode 退出），错误绝不被静默吞掉；只消掉噪音 usage。
+	//
+	// 但**参数/flag 错误例外**：那类失败的根因恰恰就是用法，此时 usage 是唯一
+	// 有用的信息（否则 `handoff wait` 缺参只得到一句 "accepts 1 arg(s)"，
+	// 不给任何语法提示）。cobra 的 Args 校验发生在 PreRun 之前，所以把消音
+	// 推迟到 PersistentPreRun：参数校验已通过 = 之后的失败都是运行期问题。
+	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		cmd.SilenceUsage = true
+	},
 }
 
 func init() {
@@ -42,7 +50,37 @@ func init() {
 
 // Execute 运行根命令，错误返回给 main。
 func Execute() error {
+	resetPerRunState(rootCmd)
 	return rootCmd.Execute()
+}
+
+// ExecuteContext 是带 ctx 的 Execute（同样先清理单次执行的残留状态）。
+//
+// 参数：
+//   - ctx: 传给命令 RunE 的上下文（取消即中断长驻命令，如 wait）
+func ExecuteContext(ctx context.Context) error {
+	resetPerRunState(rootCmd)
+	return rootCmd.ExecuteContext(ctx)
+}
+
+// resetPerRunState 清掉命令树上「属于上一次执行」的残留状态。
+//
+// 为什么必须清（进程内复用命令树时才暴露，如测试与未来的交互式复用）：
+//   - ctx：cobra 只在子命令 ctx 为 nil 时才把根的 ctx 传下去
+//     （ExecuteC 里的 `if cmd.ctx == nil`）。第二次执行时子命令还挂着上一次
+//     那个**已取消**的 ctx，新 ctx 传不进去——命令一进 RunE 就拿到
+//     context canceled，表现为「刚启动就被取消」的假故障
+//   - SilenceUsage：PersistentPreRun 会把它置为 true（见 rootCmd 的 why），
+//     不清零则第二次执行时连参数错误也不再打 usage
+func resetPerRunState(c *cobra.Command) {
+	// 这里必须置 nil（而不是 context.TODO 之类的占位）：cobra 正是靠
+	// `cmd.ctx == nil` 判断「这个子命令还没有自己的 ctx，把根的传下去」，
+	// 塞任何非 nil 值都会让新 ctx 传不进子命令
+	c.SetContext(nil)
+	c.SilenceUsage = false
+	for _, sub := range c.Commands() {
+		resetPerRunState(sub)
+	}
 }
 
 // TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。

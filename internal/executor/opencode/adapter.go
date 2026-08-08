@@ -67,6 +67,26 @@ const (
 	watchdogFastProbes    = 10
 	watchdogFailThreshold = 3
 	progressThrottle      = 30 * time.Second
+	idleGraceDefault      = 1500 * time.Millisecond
+)
+
+// 保留态回收与文本累积的边界参数：
+//   - reapIntervalDefault/reapMaxAttemptsDefault：Stop 时 kill 失败保留下来的
+//     运行态的后台重试节奏与放弃上限（A-10）。保留是为了「还有机会回收孤儿
+//     serve」，不是为了永久驻留——不重试就只剩内存与 lookup 阴影，不设上限则
+//     runs 表只增不减。放弃时打 Error 交人工清理
+//   - permTextLimit：交给审核者的权限描述上限（超出加显式截断标记，见 A-2）
+//   - pendingDeltaLimit：类型未知的 part 增量暂存上限（见 mapPartDelta）。
+//     超限即丢弃并 Warn，防止服务端只发 delta 不发 part.updated 时无界增长
+const (
+	reapIntervalDefault    = 30 * time.Second
+	reapMaxAttemptsDefault = 20
+	permTextLimit          = 200
+	pendingDeltaLimit      = 64 << 10
+	// questionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文
+	// 当 question 发出，一个失控的长回合会直接灌进工单行与审核者终端；全文
+	// 始终在任务目录的 render.log 里，截断不丢证据
+	questionTextLimit = 8000
 )
 
 // serveHandle 抽象 serve 进程的存活/销毁/诊断：真实实现是 *Proc（procHandle），
@@ -77,13 +97,29 @@ type serveHandle interface {
 	LogTail() string
 }
 
-// procHandle 把 *Proc 适配成 serveHandle（LogTail 读 serve.log 尾部：
-// serve 死亡后 tmux 会话已销毁，capture-pane 必空，见 serveLogTail）。
+// procHandle 把 *Proc 适配成 serveHandle。
+//
+// LogTail 读 serve.log 尾部而非 capture-pane：serve 死亡后它所在的窗格随命令
+// 退出而关闭，capture-pane 读不到已关闭窗格（P1-8）。注意会话本身此时**仍在**
+// ——第二窗口的 tail -f render.log 还吊着它，回收由 subscribeLoop 显式 Kill 完成。
 type procHandle struct{ p *Proc }
 
-func (h procHandle) Alive() bool     { return h.p.Alive() }
-func (h procHandle) Kill() error     { return h.p.Kill() }
-func (h procHandle) LogTail() string { return serveLogTail(h.p.ServeLogPath) }
+func (h procHandle) Alive() bool { return h.p.Alive() }
+func (h procHandle) Kill() error { return h.p.Kill() }
+
+// LogTail 返回脱敏后的 serve.log 尾部。
+//
+// 为什么必须脱敏（A-12）：这段尾部会进 Result.FailReason（落事件库）和
+// agentd.log，而它的内容完全由 opencode 决定——启动横幅、panic 时的环境转储、
+// 带认证的 URL 都可能回显 OPENCODE_SERVER_PASSWORD。密码就在手边，抹掉的成本
+// 为零，赌 opencode 每个版本都不打印才是不该冒的险。
+func (h procHandle) LogTail() string {
+	tail := serveLogTail(h.p.ServeLogPath)
+	if h.p.Password == "" {
+		return tail
+	}
+	return strings.ReplaceAll(tail, h.p.Password, "***")
+}
 
 // Adapter 是 opencode 的 executor.Adapter 实现（语义翻译层）。
 //
@@ -93,6 +129,13 @@ type Adapter struct {
 	log  *slog.Logger
 	mu   sync.Mutex
 	runs map[string]*runState // taskID -> 运行态
+	// idleGrace 是 idle 去抖宽限期（见 scheduleIdle）。测试注入毫秒级值，
+	// 让回合分类的断言不必真等 1.5s。
+	idleGrace time.Duration
+	// reapInterval/reapMaxAttempts 是 kill 失败保留态的后台重试节奏与放弃上限
+	// （见 reapRetained）。测试注入毫秒级值，避免真等 30s。
+	reapInterval    time.Duration
+	reapMaxAttempts int
 }
 
 // New 创建 opencode adapter。
@@ -103,52 +146,78 @@ func New(log *slog.Logger) *Adapter {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Adapter{log: log, runs: make(map[string]*runState)}
+	return &Adapter{
+		log:             log,
+		runs:            make(map[string]*runState),
+		idleGrace:       idleGraceDefault,
+		reapInterval:    reapIntervalDefault,
+		reapMaxAttempts: reapMaxAttemptsDefault,
+	}
 }
 
 // runState 是单任务运行的完整状态。
 //
-// turn/partSeen/partSnap/userMsgs/lastProgress 只被订阅 goroutine 读写
-// （SSE 回调同步执行），无需加锁；stopCh/evCh 的关闭权有明确归属
-// （见 subscribeLoop/Stop）。lastEventAt 被 emit（订阅 goroutine）写、
+// turnOrder/partSeen/partSnap/partTypes/pendingDelta/userMsgs/lastProgress/
+// startCommit/idleGen 由 turnMu 保护：它们原本只被订阅 goroutine 读写，idle
+// 去抖引入定时器 goroutine 后成为共享状态（见 scheduleIdle/resolveIdle）。
+// evCh 的写入由 emitMu + evClosed 保护，使定时器 goroutine 也能安全 emit；
+// 关闭权仍归 subscribeLoop（见 closeEvents）。lastEventAt 被事件映射写、
 // 看门狗 goroutine 读，用 atomic 保证并发安全。
 type runState struct {
-	taskID       string
-	taskDir      string
-	repoPath     string
-	session      string
-	api          *API
-	handle       serveHandle
-	runCtx       context.Context
-	runCancel    context.CancelFunc
-	evCh         chan executor.AdapterEvent
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	closeOnce    sync.Once
-	renderPath   string
-	startCommit  string            // 任务起点 commit（兜底分类的基线）
-	turn         string            // 当前回合累积文本（模型 text part 输出）
-	partSeen     map[string]string // messageID+partID -> 该 part 已计入回合的文本
-	partSnap     map[string]bool   // messageID+partID -> 是否收到过非空全量快照
-	partTypes    map[string]string // messageID+partID -> part 类型（delta 无类型字段，靠它识别非 text 增量）
-	userMsgs     map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
-	lastProgress time.Time         // 上次发 progress 的时刻（节流）
-	lastEventAt  atomic.Int64      // 最近一次事件产出时刻（unixnano，emit 打点）；看门狗据此判定任务活跃性
+	taskID      string
+	taskDir     string
+	repoPath    string
+	session     string
+	api         *API
+	handle      serveHandle
+	runCtx      context.Context
+	runCancel   context.CancelFunc
+	evCh        chan executor.AdapterEvent
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	closeOnce   sync.Once
+	renderPath  string
+	emitMu      sync.Mutex // 保护 evCh 的写入与关闭（订阅 goroutine 与 idle 定时器 goroutine 共写）
+	evClosed    bool       // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
+	turnMu      sync.Mutex // 保护以下回合累积状态（订阅 goroutine 与 idle 定时器 goroutine 共访）
+	idleGen     uint64     // idle 去抖代次：任何回合推进都自增，使在途的候选 idle 失效
+	idleTimer   *time.Timer
+	startCommit string // 本回合起点 commit（兜底分类的基线，每回合结束后刷新）
+	// 回合文本按 part 分段保存而非拼成一个字符串：服务端会修订同一个 part 的
+	// 快照（"Hello world" → "Hi world"），只有按 part 存当前值、按 turnOrder
+	// 顺序拼接，修订才能替换而不是叠加（A-6）。turnOrder 记录各 part 首次出现的
+	// 先后，保证拼出来的文本顺序与模型输出一致。
+	turnOrder []string          // 本回合已产出文本的 part key（首见顺序）
+	partSeen  map[string]string // messageID+partID -> 该 part 当前的文本
+	partSnap  map[string]bool   // messageID+partID -> 是否收到过非空全量快照
+	// partTypes/userMsgs 是「这个 part/消息是什么」的会话级事实，不随回合边界
+	// 失效（A-4）：第一回合登记的 reasoning part 若在回合结束时被遗忘，它后续的
+	// 增量会被当成模型输出，思维链直接变成面向审核者的提问。
+	partTypes map[string]string // messageID+partID -> part 类型（delta 无类型字段，靠它识别非 text 增量）
+	userMsgs  map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
+	// pendingDelta 暂存「类型尚未揭示」的 part 增量（A-5）：part.updated 先于
+	// delta 到达只是抓包里的观测顺序，SSE 跨重连没有顺序保证；未知即当文本会
+	// 泄漏 reasoning，未知即丢弃会丢模型输出——暂存到类型揭晓再决定去留。
+	pendingDelta map[string]string
+	pendingBytes int          // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
+	lastProgress time.Time    // 上次发 progress 的时刻（节流）
+	lastEventAt  atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
 func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 	r := &runState{
-		taskID:     taskID,
-		taskDir:    taskDir,
-		repoPath:   repoPath,
-		evCh:       make(chan executor.AdapterEvent, 16),
-		stopCh:     make(chan struct{}),
-		renderPath: filepath.Join(taskDir, renderLogFileName),
-		partSeen:   make(map[string]string),
-		partSnap:   make(map[string]bool),
-		partTypes:  make(map[string]string),
-		userMsgs:   make(map[string]bool),
+		taskID:       taskID,
+		taskDir:      taskDir,
+		repoPath:     repoPath,
+		evCh:         make(chan executor.AdapterEvent, 16),
+		stopCh:       make(chan struct{}),
+		renderPath:   filepath.Join(taskDir, renderLogFileName),
+		partSeen:     make(map[string]string),
+		partSnap:     make(map[string]bool),
+		partTypes:    make(map[string]string),
+		pendingDelta: make(map[string]string),
+		userMsgs:     make(map[string]bool),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
@@ -337,6 +406,15 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive boo
 		ServeLogPath: filepath.Join(taskDir, serveLogFileName)}
 	if !proc.Alive() {
 		a.log.Info("恢复探活失败：执行器已不在", "task", taskID, "tmux", proc.TmuxSession)
+		// 回收残留会话：Alive() 为假只说明 serve 进程没了，tmux 会话本身可能
+		// 还被第二窗口的 tail -f render.log 吊着。不回收，每个这类任务都会永久
+		// 遗留一个 tmux 会话 + 一个 tail 进程，而后续再无任何路径会碰它们
+		// （本任务的运行态没建起来，Stop 无从调用）。Kill 幂等，会话早已消失
+		// 时它返回错误也无妨——证据都在磁盘上的 serve.log/render.log 里
+		if kerr := proc.Kill(); kerr != nil {
+			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
+				"task", taskID, "tmux", proc.TmuxSession, "cause", kerr)
+		}
 		return false, nil
 	}
 	r := a.newRun(taskID, taskDir, repoPath)
@@ -379,7 +457,7 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
-		return fmt.Errorf("任务 %s 不在运行中", taskID)
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	select {
 	case <-r.stopCh:
@@ -409,7 +487,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
-		return fmt.Errorf("任务 %s 不在运行中", taskID)
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	select {
 	case <-r.stopCh:
@@ -432,21 +510,18 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 // 注意：
 //   - 幂等：重复 Stop 不 panic；事件通道只关闭一次（由订阅 goroutine 持有关闭权）
 //   - kill 失败但 serve 仍存活时**保留运行态**（P1-9）：serve 占着端口与模型
-//     会话，drop 掉就没有任何途径回收（重试 Stop 是唯一回收路径）；保留期间
-//     运行态是惰性的（订阅与看门狗都已退出、事件通道已关），Send/RespondPermission
-//     经 stopCh 守卫拒绝继续执行
-//   - 保留态的清理只靠重试 Stop，**agentd 重启不会接走它**：RecoverOnStartup 只
-//     探测 running/waiting_answer 任务（watchdog.go），而 Stop 只由 Done 在归档
-//     时调用（manager.go）——进程内保留态只可能属于已归档任务，重启后无人接管。
-//     因此已完成任务的保留态仅提供「可重试、可观察」的兜底，真正泄漏时交人工
-//     （杀 tmux 会话/进程）清理；「running 任务的残留 serve 经重启重接」只指
-//     RecoverOnStartup 对运行中任务的事件流重建（Resume），与归档任务的保留态无关
+//     会话，drop 掉就没有任何途径回收；保留期间运行态是惰性的（订阅与看门狗
+//     都已退出、事件通道已关），Send/RespondPermission 经 stopCh 守卫拒绝继续执行
+//   - 保留态由 reapRetained 后台重试回收（A-10），重试有上限、放弃时打 Error
+//     交人工（杀 tmux 会话/进程）：**agentd 重启不会接走它**——RecoverOnStartup
+//     只探测 running/waiting_answer 任务（watchdog.go），而 Stop 只由 Done 在
+//     归档时调用（manager.go），进程内保留态只可能属于已归档任务
 //   - 运行态注销（drop）与 subscribeLoop 退出时的 drop 是幂等的 map 删除，
 //     mu 保护下不会重复释放——runs 表因此不随任务累积无界增长
 func (a *Adapter) Stop(taskID string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
-		return fmt.Errorf("任务 %s 不在运行中", taskID)
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("adapter 停止任务", "task", taskID)
 	defer func() {
@@ -467,8 +542,9 @@ func (a *Adapter) Stop(taskID string) (err error) {
 				// kill 失败但 serve 仍存活：保留运行态（P1-9）。为什么保留——
 				// 订阅 goroutine 已随 stopCh 退出（其 defer 见 stopCh 已关、
 				// 不争 drop），若此处也 drop，孤儿 serve 无人能再回收；
-				// 保留后重试 Stop 即可完成清理，或经 agentd 重启恢复接管
-				a.log.Error("kill serve 失败，保留运行态待重试", "task", taskID, "cause", kerr)
+				// 保留后由 reapRetained 后台重试完成清理
+				a.log.Error("kill serve 失败，保留运行态并转入后台重试", "task", taskID, "cause", kerr)
+				go a.reapRetained(r)
 				return fmt.Errorf("kill serve: %w", kerr)
 			}
 			// kill 失败但 serve 已自灭（进程死，tmux 会话也已消失）：无孤儿资源
@@ -481,12 +557,51 @@ func (a *Adapter) Stop(taskID string) (err error) {
 	return nil
 }
 
+// reapRetained 回收 Stop 时因 kill 失败而保留的运行态（A-10）。
+//
+// 周期重试 Kill：成功（或 serve 已自灭）即注销运行态；连续失败达
+// reapMaxAttempts 后放弃并注销，打 Error 交人工清理 tmux 会话/进程。
+//
+// why（保留必须配重试与上限）：保留态是惰性的——没有 goroutine、事件通道已关，
+// 它唯一的价值就是「还留着 handle，还有机会回收孤儿 serve」。不重试，这个价值
+// 从不兑现（Stop 只由归档调用一次，重启也不接管），条目只是 runs 表里的内存与
+// lookup 阴影；不设上限，runs 表就只增不减。
+func (a *Adapter) reapRetained(r *runState) {
+	interval := a.reapInterval
+	if interval <= 0 {
+		interval = reapIntervalDefault
+	}
+	maxAttempts := a.reapMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = reapMaxAttemptsDefault
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		<-ticker.C
+		kerr := r.handle.Kill()
+		if kerr == nil || !r.handle.Alive() {
+			a.log.Info("保留态回收成功", "task", r.taskID, "attempt", attempt, "cause", kerr)
+			a.drop(r.taskID)
+			return
+		}
+		a.log.Warn("保留态回收重试失败", "task", r.taskID,
+			"attempt", attempt, "max_attempts", maxAttempts, "cause", kerr)
+	}
+	a.log.Error("保留态回收重试耗尽，注销条目并交人工清理（请手动杀掉 tmux 会话与 opencode 进程）",
+		"task", r.taskID, "attempts", maxAttempts)
+	a.drop(r.taskID)
+}
+
 // subscribeLoop 是单任务的事件流主循环（唯一持有 evCh 关闭权的 goroutine）：
 // 订阅 SSE → mapEvent 逐条映射产出 AdapterEvent；订阅退出后按退出原因
 // （serve 死亡 / 流不可恢复）产出 failed 结果，随后关闭事件通道。
 func (r *runState) subscribeLoop(a *Adapter) {
 	defer func() {
-		r.closeOnce.Do(func() { close(r.evCh) })
+		// 停掉在途的 idle 去抖定时器：订阅已结束，再触发一次回合分类只会产出
+		// 归属不明的事件（通道也即将关闭）
+		r.cancelPendingIdle()
+		r.closeOnce.Do(r.closeEvents)
 		// 注销运行态（P1-9）：仅当 Stop 未介入（stopCh 未关）时由本 defer 注销——
 		// 此时退出只可能是 serve 死亡/流异常，进程已死或已在上文 Kill 回收，无
 		// 孤儿可留。Stop 已介入时（stopCh 已关），drop 与否由 Stop 裁决：kill
@@ -635,7 +750,10 @@ func (a *Adapter) watchdogWithConfig(r *runState, cfg watchdogConfig) {
 // 同时为看门狗打活跃点（lastEventAt）：探活降频的「收到新事件回高频」信号
 // （P1-17，见 watchdogWithConfig）。
 //
-// 返回 false 表示 Stop 已关闭 stopCh，事件未被投递。
+// 并发：订阅 goroutine 与 idle 去抖定时器 goroutine 都会 emit，故写入与关闭
+// 统一由 emitMu 串行化，evClosed 使关闭后的迟到投递静默丢弃而非 panic。
+//
+// 返回 false 表示 Stop 已关闭 stopCh 或通道已关闭，事件未被投递。
 func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	r.lastEventAt.Store(time.Now().UnixNano())
 	switch ev.Type {
@@ -654,12 +772,31 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	default:
 		a.log.Info("adapter 产出未知事件", "task", r.taskID, "type", ev.Type)
 	}
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	if r.evClosed {
+		a.log.Debug("事件通道已关闭，丢弃迟到事件", "task", r.taskID, "type", ev.Type)
+		return false
+	}
 	select {
 	case r.evCh <- ev:
 		return true
 	case <-r.stopCh:
 		return false
 	}
+}
+
+// closeEvents 关闭事件通道（只由 subscribeLoop 的 defer 调用，关闭权唯一）。
+// 与 emit 共用 emitMu：置位 evClosed 后任何在途的 emit 都会静默丢弃，
+// 保证 idle 定时器 goroutine 的迟到投递不会写已关闭通道。
+func (r *runState) closeEvents() {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	if r.evClosed {
+		return
+	}
+	r.evClosed = true
+	close(r.evCh)
 }
 
 // sseEvent 是 SSE 事件的通用外壳：type 区分事件类别，properties 是各类载荷，
@@ -673,13 +810,16 @@ type sseEvent struct {
 // mapEvent 把一条 SSE 事件映射为 0~N 条 AdapterEvent（宽容解析：未知事件
 // Debug 跳过，绝不 panic、绝不中断订阅）。
 func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
+	// 活跃打点挂在「收到 SSE 事件」上而非「产出 AdapterEvent」上（A-11）：
+	// progress 有 30s 节流，挂在产出上会让正在流式输出的任务绝大部分时间
+	// 被看门狗当成静默期而降频探活
+	r.lastEventAt.Store(time.Now().UnixNano())
 	var ev sseEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		a.log.Debug("SSE 事件解析失败，跳过", "task", r.taskID, "cause", err)
 		return
 	}
-	// 会话隔离：真实 /event 广播全服务器事件，只处理本任务会话的事件；
-	// 无 sessionID 字段的事件（如 server.connected）不做过滤。
+	// 会话隔离：真实 /event 广播全服务器事件，只处理本任务会话的事件。
 	// 注意：真实事件里 sessionID 位于 properties 而非顶层（spike 实测），
 	// 顶层字段是历史遗留，过滤必须从 properties 提取。
 	sessionID := ev.SessionID
@@ -691,11 +831,14 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 			sessionID = prop.SessionID
 		}
 	}
-	if sessionID != "" && sessionID != r.session {
-		a.log.Debug("收到其他会话事件，跳过", "task", r.taskID,
-			"type", ev.Type, "session", sessionID)
+	if sessionID != r.session && !a.acceptForeign(r, ev, sessionID) {
 		return
 	}
+	// 回合累积状态自 idle 去抖起被订阅 goroutine 与定时器 goroutine 共访：
+	// 整个 switch 在 turnMu 下串行执行，与 resolveIdle 互斥。emit 只取 emitMu，
+	// 不回取 turnMu，故持锁 emit 不会死锁（背压表现与去抖前一致）。
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
 	switch {
 	case ev.Type == "permission.asked":
 		a.mapPermissionAsked(r, ev.Properties)
@@ -723,6 +866,54 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 	default:
 		a.log.Debug("未知 SSE 事件，跳过", "task", r.taskID, "type", ev.Type)
 	}
+}
+
+// taskScopedEvents 是「必须归属到某个会话才能处理」的事件类型集合：它们都会
+// 改变某个任务的回合状态或直接产出面向审核者的工单。其余类型（server.connected、
+// heartbeat、catalog.updated、plugin.added 等）是服务器级广播，本就不带 sessionID。
+var taskScopedEvents = map[string]bool{
+	"permission.asked":     true,
+	"permission.replied":   true,
+	"message.updated":      true,
+	"message.part.updated": true,
+	"message.part.delta":   true,
+	"session.status":       true,
+	"session.idle":         true,
+	"session.error":        true,
+}
+
+// acceptForeign 裁决一条「会话 id 与本任务不符」的事件是否仍要处理，
+// 并保证两个方向都不静默（A-1）。
+//
+// 参数：
+//   - sessionID: 从顶层或 properties 提取到的会话 id（"" 表示事件没带）
+//
+// 返回：
+//   - true 表示继续按本任务的事件处理，false 表示丢弃
+//
+// why（两个方向都不能想当然）：
+//   - 缺 sessionID 的任务级事件不能 fail-open：/event 是全服务器广播流，
+//     一条无归属的 permission.asked 会被每个并发任务都当成自己的审批门，
+//     审核者看到重复且归属错误的工单，批准动作也发到错误的会话
+//   - 会话不符的 permission.asked 不能静默 fail-closed：opencode 会为
+//     subagent/task 工具派生子会话，其权限请求带子会话 id。丢掉它 = opencode
+//     在等一个永远不会到来的决策，而 serve 活着、看门狗不触发，任务静默挂起。
+//     本层无法把子会话映射回任务（没有可用的父子关系端点），至少要 Warn 到
+//     日志，让运营者知道需要 tmux attach 人工兜底
+func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool {
+	if !taskScopedEvents[ev.Type] {
+		return true // 服务器级广播事件：本就不带会话，交给下游的 default 分支跳过
+	}
+	if ev.Type == "permission.asked" {
+		a.log.Warn("收到不属于本任务会话的审批请求，未产出工单（opencode 可能在等一个看不见的决策，"+
+			"任务若卡住请 tmux attach 查看）",
+			"task", r.taskID, "own_session", r.session, "event_session", sessionID,
+			"properties", truncateRunes(string(ev.Properties), 200))
+		return false
+	}
+	a.log.Debug("收到其他会话事件，跳过", "task", r.taskID,
+		"type", ev.Type, "session", sessionID)
+	return false
 }
 
 // mapPermissionAsked 处理 permission.asked（真实事件）：properties.id 即
@@ -754,16 +945,30 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	} else if len(pa.Patterns) > 0 {
 		text += ": " + strings.Join(pa.Patterns, " ")
 	}
+	// 描述下限（A-2）：三种真实形态（缺 permission / 缺 metadata.command /
+	// 缺 patterns）都会拼出空串。空描述意味着审核者被要求批准一个空白行——
+	// 宁可给出「未提供描述 + 权限 id」，让他知道要去 tmux 会话里看现场
+	if strings.TrimSpace(text) == "" {
+		a.log.Warn("permission.asked 无可读描述，按未说明权限交审核者",
+			"task", r.taskID, "perm", pa.ID)
+		text = "opencode 未提供权限描述（id " + pa.ID + "），请 tmux attach 查看现场"
+	}
 	a.emit(r, executor.AdapterEvent{
-		Type: "permission", PermissionID: pa.ID, Text: truncateRunes(text, 200),
+		Type: "permission", PermissionID: pa.ID, Text: truncateMarked(text, permTextLimit),
 	})
 }
 
 // mapMessageUpdated 处理 message.updated：真实事件只携带 properties.info
 // （role/messageID），不带文本——文本载体是 message.part.updated/delta。本层
-// 只把它当「回合边界探测器」：user 消息首次出现即开启新回合（清空累积），并登记
-// 该消息为 user 消息（其 text part 不进回合累积，回合只算模型输出）；同一 id
-// 的重发不再清空（why 见 mapMessageUpdated 内部）。
+// 只用它登记「哪些 messageID 属于 user」，这些消息的 text part 不进回合累积
+// （回合只算模型输出）。
+//
+// why（不拿它清空回合）：user 消息曾被当作「新回合开始」的清空信号，但服务端
+// 会重播同一条 user 消息（spike5 实测同一 msg id 出现 3 次，每次 session.diff
+// 后一次）。进程内的 userMsgs 只在本次运行有效——agentd 重启后 Resume 出来的
+// 运行态拿到的是空表，重播的老消息会被当「首见」而清空整个回合，恢复后累积的
+// 文本全部丢弃、idle 走空回合分支永不分类，任务静默挂死（A-3）。回合缓冲由
+// mapIdle 在分类后清空即可，不需要第二个清空信号。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 	var msg struct {
 		Info struct {
@@ -775,40 +980,29 @@ func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 		a.log.Debug("message.updated 载荷解析失败，跳过", "task", r.taskID, "cause", err)
 		return
 	}
-	if msg.Info.Role != "user" {
+	if msg.Info.Role != "user" || msg.Info.ID == "" {
 		return // assistant 消息不携带文本，无事可做
 	}
-	if msg.Info.ID != "" {
-		if r.userMsgs[msg.Info.ID] {
-			// 同一 user 消息被服务端重发（session.diff 广播后紧跟重发，spike5
-			// 实测同一 msg id 出现 3 次）：重发若落在末段文本/trailer 之后、
-			// idle 之前（executor 提交代码→session.diff→重发，正是 handoff 的
-			// 典型节奏），无条件清空回合会让 idle 走空回合 Warn、永不分类——
-			// 只有 first-seen 才归零
-			return
-		}
-		r.userMsgs[msg.Info.ID] = true
-	}
-	r.clearTurn()
+	r.userMsgs[msg.Info.ID] = true
 }
 
 // mapPartUpdated 处理 message.part.updated：text 类型 part 携带该 part 的
 // 全量文本快照（真实流：文本首帧可能是空串的「part 创建」事件，随后走
 // part.delta 增量，收尾再回发完整快照）。
 //
-// why（类型登记先于过滤 + 按 part 去重 + 与 delta 对账）：
+// why（类型登记先于过滤 + 按 part 存当前值 + 与 delta 对账）：
 //   - part 类型必须在 text 过滤前登记进 partTypes：message.part.delta 只有
 //     field 没有 part 类型字段（spike5 实测 reasoning 增量也是 field=text），
-//     part.updated 是唯一携带类型的事件，且真实流中它总是先于该 part 的
-//     delta 到达（spike5:123→125）——错过登记，reasoning/tool 增量会被当
-//     模型输出累积进回合与 render.log
+//     part.updated 是唯一携带类型的事件——错过登记，reasoning/tool 增量会被
+//     当模型输出累积进回合与 render.log。类型揭晓时还要处置该 part 在
+//     pendingDelta 里的暂存增量（见 mapPartDelta）
 //   - 服务端对同一 part 可能多次回发快照，且增量流结束后会补发全量快照——
-//     直接 append 全文会重复累积；按 messageID+partID 记录已计入文本，只
-//     追加 TrimPrefix 增量，快照与已见一致即去重返回
-//   - 快照与已见前缀不一致（部分增量丢失/被改写）时放弃对账、按全文累积：
-//     宁可重复也不丢字（分类只看 trailer 尾部，头部重复不影响判定）
-//   - 空文本快照是 part 创建事件而非有效全量，不置 partSnap：后续 delta 仍
-//     要照常累积（spike5 实测顺序：空快照 → delta 流 → 全量快照）
+//     按 messageID+partID 保存该 part 的当前文本，快照即覆盖，天然去重
+//   - 快照不是已见文本的延续时（服务端修订了这一段），覆盖而非叠加：回合文本
+//     与 render.log 都是给人读的，"Hello world" 改成 "Hi world" 不该读到
+//     "Hello worldHi world"
+//   - 空文本快照是 part 创建事件而非有效全量，不置 partSnap、也不清空已累积：
+//     后续 delta 仍要照常累积（spike5 实测顺序：空快照 → delta 流 → 全量快照）
 func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 	var pu struct {
 		Part struct {
@@ -823,42 +1017,61 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 		return
 	}
 	p := pu.Part
-	// 类型登记先于 text 过滤（why 见函数注释）：delta 无类型字段，只有这里能
-	// 建立「part -> 非 text」的事实，mapPartDelta 据此跳过 reasoning/tool 增量
-	if p.ID != "" && p.MessageID != "" {
-		r.partTypes[partKey(p.MessageID, p.ID)] = p.Type
-	}
-	if p.Type != "text" || p.ID == "" || p.MessageID == "" {
-		return // reasoning/tool/step-start 等非文本 part 与缺 id 事件不参与累积
-	}
-	if r.userMsgs[p.MessageID] {
-		return // user 消息的文本 part（如初始 prompt）不进回合
+	if p.ID == "" || p.MessageID == "" {
+		return // 缺 id 的事件无法对账，跳过
 	}
 	key := partKey(p.MessageID, p.ID)
-	if p.Text != "" {
-		r.partSnap[key] = true
+	// 类型登记先于 text 过滤（why 见函数注释）：delta 无类型字段，只有这里能
+	// 建立「part -> 非 text」的事实，mapPartDelta 据此跳过 reasoning/tool 增量
+	r.partTypes[key] = p.Type
+	isText := p.Type == "text" && !r.userMsgs[p.MessageID]
+	// 类型揭晓：把该 part 暂存的增量按真实类型落地或丢弃（A-5）
+	a.flushPending(r, key, isText)
+	if !isText {
+		return // reasoning/tool/step-start 等非文本 part 与 user 消息文本不参与累积
 	}
+	if p.Text == "" {
+		return // part 创建事件：无有效全量，等 delta
+	}
+	r.partSnap[key] = true
 	seen := r.partSeen[key]
-	delta := strings.TrimPrefix(p.Text, seen)
-	if delta == "" {
+	if p.Text == seen {
 		return // 快照与已累积一致：去重
 	}
 	if seen != "" && !strings.HasPrefix(p.Text, seen) {
-		a.log.Debug("part 快照与已累积文本不一致，按全文累积",
+		a.log.Debug("part 快照被服务端修订，按新快照覆盖",
 			"task", r.taskID, "msg", p.MessageID, "part", p.ID)
 	}
-	r.partSeen[key] = p.Text
-	a.appendTurn(r, delta)
+	a.setPartText(r, key, p.Text)
+}
+
+// flushPending 在 part 类型揭晓时处置它的暂存增量：是文本就落地进回合，
+// 不是就整段丢弃（reasoning/tool 的增量绝不能进回合与 render.log）。
+func (a *Adapter) flushPending(r *runState, key string, isText bool) {
+	buf, ok := r.pendingDelta[key]
+	if !ok {
+		return
+	}
+	delete(r.pendingDelta, key)
+	r.pendingBytes -= len(buf)
+	if !isText {
+		a.log.Debug("暂存增量所属 part 非文本，整段丢弃", "task", r.taskID, "bytes", len(buf))
+		return
+	}
+	a.setPartText(r, key, r.partSeen[key]+buf)
 }
 
 // mapPartDelta 处理 message.part.delta：field=text 的流式增量。
 //
-// why（已知类型过滤 + 与快照对账）：
-//   - 已知非 text part（reasoning/tool）的 delta 直接跳过：partTypes 由
-//     part.updated 先行登记（delta 本身只有 field 无类型），不跳过会被当
-//     模型输出累积进回合与 render.log
+// why（已知类型才落地 + 未知类型暂存 + 与快照对账）：
+//   - 只有**已登记为 text** 的 part 增量才进回合：partTypes 由 part.updated
+//     登记（delta 本身只有 field 无类型，spike5 实测 reasoning 增量同样是
+//     field=text），不加这道闸，reasoning/tool 增量会被当模型输出
+//   - 类型未知时不猜（A-5）：「part.updated 总是先于 delta 到达」只是抓包里的
+//     观测顺序，SSE 跨重连无顺序保证。猜 text 会泄漏思维链，直接丢弃会丢模型
+//     输出——暂存进 pendingDelta，等 part.updated 揭示类型再落地或丢弃
 //   - 若该 part 已收到非空全量快照（part.updated），增量已被快照覆盖，
-//     跳过防重复；否则增量直接 append——真实流里「part 创建（空文本）→
+//     跳过防重复；否则增量直接追加——真实流里「part 创建（空文本）→
 //     逐条 delta 增长」期间并无有效快照可对账（spike5 实测）
 func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 	var pd struct {
@@ -878,14 +1091,25 @@ func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 		return
 	}
 	key := partKey(pd.MessageID, pd.PartID)
-	if t := r.partTypes[key]; t != "" && t != "text" {
-		return // 已知非 text part（reasoning/tool）的增量：不累积、不进 render.log
+	switch r.partTypes[key] {
+	case "text":
+		if r.partSnap[key] {
+			return // 全量快照已含该文本：增量冗余
+		}
+		a.setPartText(r, key, r.partSeen[key]+pd.Delta)
+	case "":
+		// 类型未揭晓：暂存等待 part.updated 裁决（why 见函数注释）
+		if r.pendingBytes+len(pd.Delta) > pendingDeltaLimit {
+			a.log.Warn("类型未知的 part 增量超出暂存上限，丢弃",
+				"task", r.taskID, "msg", pd.MessageID, "part", pd.PartID,
+				"limit_bytes", pendingDeltaLimit)
+			return
+		}
+		r.pendingDelta[key] += pd.Delta
+		r.pendingBytes += len(pd.Delta)
+	default:
+		// 已知非 text part（reasoning/tool）的增量：不累积、不进 render.log
 	}
-	if r.partSnap[key] {
-		return // 全量快照已含该文本：增量冗余
-	}
-	r.partSeen[key] += pd.Delta
-	a.appendTurn(r, pd.Delta)
 }
 
 // mapSessionStatus 处理 session.status：status.type=idle 是回合结束的主信号
@@ -902,7 +1126,62 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 		return
 	}
 	if st.Status.Type == "idle" {
-		a.mapIdle(r, props)
+		a.scheduleIdle(r, props)
+		return
+	}
+	// 非 idle（busy 等）说明回合仍在推进：撤销在途的候选回合结束
+	r.idleGen++
+}
+
+// scheduleIdle 把一次 idle 登记为「候选回合结束」，静默满 idleGrace 后才真正分类。
+// 调用方须持有 turnMu。
+//
+// why（去抖而非见 idle 即分类）：idle 是 opencode 的会话状态信号，不等于「模型
+// 这一轮说完了」——工具调用间隙、权限等待期间都可能出现瞬时 idle。见 idle 即
+// 分类会把半截回合当成完整回合：命中 git 兜底时更会因「仓库里已有新提交」谎报
+// completed，审核者据此执行 done，Stop 就在 opencode 仍在干活时杀掉了 tmux 会话。
+//
+// 宽限期内任何回合推进（新增文本、非 idle 状态、下一条 idle）都会自增 idleGen，
+// 使在途的候选失效——真正的回合结束后不会再有事件，宽限期自然走完。代价是回合
+// 分类延迟 idleGrace，相对审核者分钟级的往返可忽略。
+func (a *Adapter) scheduleIdle(r *runState, raw json.RawMessage) {
+	r.idleGen++
+	gen := r.idleGen
+	if r.idleTimer != nil {
+		r.idleTimer.Stop()
+	}
+	grace := a.idleGrace
+	if grace <= 0 {
+		grace = idleGraceDefault
+	}
+	// raw 由 SSE 解析缓冲复用，定时器在回调返回后才读，必须拷贝
+	snapshot := append(json.RawMessage(nil), raw...)
+	a.log.Debug("登记候选回合结束，等待去抖", "task", r.taskID, "grace", grace)
+	r.idleTimer = time.AfterFunc(grace, func() { a.resolveIdle(r, gen, snapshot) })
+}
+
+// resolveIdle 是 idle 去抖到期后的回合分类入口（定时器 goroutine 执行）。
+// 代次不匹配说明宽限期内回合又推进了，本次候选作废。
+func (a *Adapter) resolveIdle(r *runState, gen uint64, raw json.RawMessage) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	if r.idleGen != gen {
+		a.log.Debug("候选回合结束已被新活动撤销", "task", r.taskID,
+			"scheduled_gen", gen, "current_gen", r.idleGen)
+		return
+	}
+	a.mapIdle(r, raw)
+}
+
+// cancelPendingIdle 停掉在途的 idle 去抖定时器并作废候选（自行加锁，
+// 供订阅结束等 turnMu 未持有的路径调用）。
+func (r *runState) cancelPendingIdle() {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	r.idleGen++
+	if r.idleTimer != nil {
+		r.idleTimer.Stop()
+		r.idleTimer = nil
 	}
 }
 
@@ -914,16 +1193,16 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 // （事件结构变化/增量对账失败）——这是「任务可能静默挂死」的观测点，必须可见
 // 而非 Debug 静默。props 为触发 idle 的 session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
-	if strings.TrimSpace(r.turn) == "" {
+	text := r.turnText()
+	if strings.TrimSpace(text) == "" {
 		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
 			"event", tailRunes(string(raw), 120))
 		return
 	}
-	text := r.turn
 	kind, t := ParseTrailer(text)
 	switch kind {
 	case "ask":
-		a.emit(r, executor.AdapterEvent{Type: "question", Text: t.Question})
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: clampQuestion(t.Question)})
 	case "finish":
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: true, Branch: t.Branch, CommitHash: t.Commit,
@@ -933,6 +1212,11 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		a.fallbackClassify(r, text)
 	}
 	r.clearTurn()
+	// 兜底分类的 git 基线按回合刷新（C-1）：基线若固定在 run 起点，第一回合
+	// 提交之后的每个无 trailer 回合都会「相对起点有新提交」，于是带着上一回合的
+	// commit hash 谎报 completed。多回合（提问 → reply → continue）是 handoff
+	// 的主路径，基线必须跟着回合走。
+	r.captureStartCommit(a)
 }
 
 // fallbackClassify 是「模型未按纪律输出协议 trailer」的兜底分类。
@@ -951,13 +1235,26 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
 		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
-		a.emit(r, executor.AdapterEvent{Type: "question", Text: text})
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: clampQuestion(text)})
 		return
 	}
 	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 		OK: true, Branch: branch, CommitHash: commit,
 		Summary: tailRunes(text, 200), SessionID: r.session,
 	}})
+}
+
+// clampQuestion 把交给审核者的提问文本压到可读上限，超出时指明全文去处。
+//
+// 为什么截断而不是原样交出：兜底分类会把整个回合原文当 question 发出，
+// 而它最终要进工单行、进审核者终端；模型跑飞的一个长回合能有几十万字符。
+// 证据不丢——全文一直在任务目录的 render.log 里。
+func clampQuestion(text string) string {
+	if len([]rune(text)) <= questionTextLimit {
+		return text
+	}
+	return truncateRunes(text, questionTextLimit) +
+		"\n\n…（回合文本过长已截断，完整内容见任务目录 render.log）"
 }
 
 // gitTurnStatus 查询仓库当前分支与 HEAD commit，并对比任务起点判定是否有新提交。
@@ -984,28 +1281,58 @@ func (a *Adapter) maybeProgress(r *runState) {
 		return
 	}
 	r.lastProgress = now
-	a.emit(r, executor.AdapterEvent{Type: "progress", Text: tailRunes(r.turn, 200)})
+	a.emit(r, executor.AdapterEvent{Type: "progress", Text: tailRunes(r.turnText(), 200)})
 }
 
-// appendTurn 把文本增量追加进回合缓冲、写 render.log（tmux 第二窗口
-// tail -f 可见）并节流发 progress——part.updated 与 part.delta 两个入口共用。
-func (a *Adapter) appendTurn(r *runState, delta string) {
-	r.turn += delta
-	if err := r.appendRender(delta); err != nil {
+// setPartText 把某个 part 的当前文本置为 text，并把变化反映到 render.log
+// 与 progress——part.updated 与 part.delta 两个入口共用。
+//
+// 追加（新文本是已见文本的延续）时 render.log 只写增量，保持 tail -f 的
+// 流式观感；服务端修订该段时写一条带标记的整段，让旁观者知道前面那段已作废
+// （render.log 是 append-only 文件，改不了历史）。
+func (a *Adapter) setPartText(r *runState, key, text string) {
+	old, existed := r.partSeen[key]
+	if !existed {
+		r.turnOrder = append(r.turnOrder, key)
+	}
+	if text == old {
+		return
+	}
+	// 新增/修订文本即回合仍在推进：撤销在途的候选回合结束（见 scheduleIdle）
+	r.idleGen++
+	r.partSeen[key] = text
+	render := strings.TrimPrefix(text, old)
+	if old != "" && !strings.HasPrefix(text, old) {
+		render = "\n[以上一段已被服务端修订为]\n" + text
+	}
+	if err := r.appendRender(render); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
 	}
 	a.maybeProgress(r)
 }
 
-// clearTurn 清空回合累积（user 消息到来 / 回合分类终结时调用）。
+// turnText 按 part 首见顺序拼出当前回合的完整文本。
 //
-// userMsgs 不清空：它是会话级知识（user 消息 id 全会话唯一），保留才能保证
-// 重放/重复的 user 文本 part 永不混入回合。
+// 为什么不维护一个累加字符串：服务端会修订同一 part 的快照，累加字符串没法
+// 撤销已写入的旧值（A-6）；按 part 存当前值再拼接，修订天然是覆盖。
+func (r *runState) turnText() string {
+	var b strings.Builder
+	for _, key := range r.turnOrder {
+		b.WriteString(r.partSeen[key])
+	}
+	return b.String()
+}
+
+// clearTurn 清空回合累积（回合分类终结时调用）。
+//
+// partTypes/userMsgs 不清空：它们是会话级事实（part 类型、user 消息 id 全会话
+// 唯一），保留才能保证回合边界之后到达的 reasoning 增量与重放的 user 文本 part
+// 永不混入下一回合（A-4）。pendingDelta 同样保留：类型未揭晓的暂存增量跨回合
+// 边界仍可能被 part.updated 认领。
 func (r *runState) clearTurn() {
-	r.turn = ""
+	r.turnOrder = nil
 	r.partSeen = make(map[string]string)
 	r.partSnap = make(map[string]bool)
-	r.partTypes = make(map[string]string)
 }
 
 // partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part

@@ -345,6 +345,9 @@ func startFakeRun(t *testing.T, fs *fakeServer, taskID, repo, taskDir string) (*
 		t.Fatalf("写 prompt.md: %v", err)
 	}
 	ad := New(slog.Default())
+	// idle 去抖宽限期压到毫秒级：回合分类的断言不必真等生产的 1.5s
+	// （去抖语义本身由 regression_round2_test.go 专门覆盖）
+	ad.idleGrace = 20 * time.Millisecond
 	probe := &fakeProbe{alive: true}
 	req := executor.StartReq{
 		Task:        proto.Task{ID: taskID, RepoPath: repo},

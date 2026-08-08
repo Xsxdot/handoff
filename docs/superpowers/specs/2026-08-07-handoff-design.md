@@ -77,7 +77,7 @@
 ## 6. Executor 挂载细节（opencode server API）
 
 - **进程模型**：每个任务由 agentd 在 tmux 内独立拉起 `opencode serve --port <随机>`（cwd=任务 repo、仅监听 127.0.0.1、`OPENCODE_SERVER_PASSWORD` 随机生成做 basic auth）。进程独立于 agentd 生命周期——agentd 重启不杀任务。
-- **权限门**：任务级 opencode 配置把 `bash / edit / webfetch` 等设为 `ask`；权限请求经 `GET /event` SSE 到达 adapter，转为 handoff ticket（ticket id = opencode permissionID，天然幂等）唤醒审核者；审核者 reply 后 adapter 调 `POST /session/{id}/permissions/{permissionID}`（approve→`once`，deny→`reject`）。等待发生在 opencode server 内部，支持任意时长——没有 hook 超时、没有 Bash 超时。
+- **权限门**：任务级 opencode 配置把 `bash / edit / webfetch` 等设为 `ask`；权限请求经 `GET /event` SSE 到达 adapter，转为 handoff ticket（ticket id = `<taskID>:<permissionID>` 命名空间化，天然幂等——P1-6 修正：裸 permissionID 在多任务下会跨任务碰撞）唤醒审核者；审核者 reply 后 adapter 调 `POST /session/{id}/permissions/{permissionID}`（approve→`once`，deny→`reject`）。等待发生在 opencode server 内部，支持任意时长——没有 hook 超时、没有 Bash 超时。
 - **提问（回合制协议）**：executor 被 prompt 约束——需要人决策时输出单行 `{"ask":"<问题>"}` 结束回合；完成时先 commit 再输出单行 `{"branch":"...","commit":"...","summary":"..."}`。adapter 在回合结束（会话空闲）时解析最后一条消息分类：含 ask → question 事件；含 branch → completed；两者皆无 → 兜底规则（repo 有新 commit 则按 git 实况补齐 completed，否则将全文作为 question 交审核者裁决）。审核者的回答/修改指令 = 对同一 session 续发 prompt。
 - **Adapter 接口**（为 Claude Code / grok 预留）：`Start(task, plan)` / `Events(taskID) <-chan AdapterEvent` / `Send(taskID, text)` / `RespondPermission(taskID, permID, decision)` / `Stop(taskID)`。grok 若缺程序化审批挂载点，降级为「预授权模式」（仅白名单自动放行，不支持中途审批）。
 

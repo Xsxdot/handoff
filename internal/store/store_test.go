@@ -482,3 +482,44 @@ func TestVoidPendingTickets(t *testing.T) {
 		t.Fatalf("已回答工单 t3 answer=%v, want allow（不得被作废覆盖）", got3.Answer)
 	}
 }
+
+// TestTicketHasEvent 验证工单通知事件的存在性判定（manager 自愈分支的依据）：
+// 只认精确匹配的 ticket_id，不受同任务其他工单事件干扰，也不跨任务误判。
+func TestTicketHasEvent(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	// 工单存在但尚未追加通知事件 —— 这正是「崩溃落在两次写之间」的半截状态
+	if has, err := s.TicketHasEvent("task-1", "task-1:perm-a"); err != nil || has {
+		t.Fatalf("无事件时应返回 false：has=%v err=%v", has, err)
+	}
+
+	if _, err := s.AppendEvent("task-1", proto.EventTypePermissionRequest,
+		map[string]string{"ticket_id": "task-1:perm-a", "permission": "bash"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if has, err := s.TicketHasEvent("task-1", "task-1:perm-a"); err != nil || !has {
+		t.Fatalf("事件已落库时应返回 true：has=%v err=%v", has, err)
+	}
+
+	// 同任务的另一工单不得被误判为已有事件
+	if has, err := s.TicketHasEvent("task-1", "task-1:perm-b"); err != nil || has {
+		t.Errorf("另一工单应返回 false：has=%v err=%v", has, err)
+	}
+	// 事件按任务分区，跨任务同 id 不得命中
+	if has, err := s.TicketHasEvent("task-2", "task-1:perm-a"); err != nil || has {
+		t.Errorf("跨任务查询应返回 false：has=%v err=%v", has, err)
+	}
+
+	// question 事件同样计入（提问工单走同一自愈判定）
+	if _, err := s.AppendEvent("task-1", proto.EventTypeQuestion,
+		map[string]string{"ticket_id": "ask-1", "question": "选 A 还是 B"}); err != nil {
+		t.Fatalf("AppendEvent question: %v", err)
+	}
+	if has, err := s.TicketHasEvent("task-1", "ask-1"); err != nil || !has {
+		t.Errorf("question 事件应计入：has=%v err=%v", has, err)
+	}
+}

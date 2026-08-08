@@ -79,7 +79,24 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
 	}
+	if verr := cfg.validate(); verr != nil {
+		log().Error("配置校验失败", "path", path, "cause", verr)
+		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+	}
 	return cfg, nil
+}
+
+// validate 校验取值域，把「能解析但必然误动作」的配置挡在启动之前。
+//
+// 为什么 stalltimeout 必须为正：它是「running 任务多久没动静就算卡住」的阈值。
+// 写成 0 或负数时，看门狗会在**每个** running 任务的首个 tick 上判定 stalled，
+// 审核者被一批凭空的 stalled 事件叫醒，而任务其实好好的。省略该键走默认值
+// （2h）是正常用法，只有显式写了非正值才是配置错误。
+func (c *Config) validate() error {
+	if c.StallTimeout <= 0 {
+		return fmt.Errorf("stalltimeout 必须为正时长（当前 %s）；省略该键即用默认 2h", c.StallTimeout)
+	}
+	return nil
 }
 
 // decodeStrict 用 yaml.Decoder + KnownFields(true) 严格解析配置。

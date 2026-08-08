@@ -6,6 +6,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -136,11 +137,13 @@ targets:
 	})
 }
 
-// TestErrorDoesNotPrintUsage 覆盖 L-5（SilenceUsage）：运行时/参数错误只打错误
-// 本身，不再向 stdout 打印整页 flag 帮助——stderr 保留 cobra 的 "Error:" 行
-// （SilenceErrors=false，错误不被吞、Execute 仍返回 err），stdout 不得出现
-// "Usage:" 段。旧实现任何错误都会先打 usage，把真正的问题淹没在帮助文本里。
-func TestErrorDoesNotPrintUsage(t *testing.T) {
+// TestUsagePrintedOnlyForArgErrors 覆盖 L-5（SilenceUsage）的两个方向：
+// 运行期错误（配置加载失败、连不上、任务不存在）只打错误本身，不向 stdout
+// 打印整页 flag 帮助——旧实现任何错误都先打 usage，把真正的问题淹没在帮助
+// 文本里；而参数/flag 错误必须照常打 usage，因为那类失败的根因就是用法。
+// 两种情况下 stderr 都保留 cobra 的 "Error:" 行（SilenceErrors=false，
+// 错误不被吞、Execute 仍返回 err）。
+func TestUsagePrintedOnlyForArgErrors(t *testing.T) {
 	runErr := func(args ...string) (stdout, stderr string, err error) {
 		t.Helper()
 		rootCmd.SetArgs(args)
@@ -152,11 +155,16 @@ func TestErrorDoesNotPrintUsage(t *testing.T) {
 			rootCmd.SetOut(nil)
 			rootCmd.SetErr(nil)
 		})
-		err = rootCmd.Execute()
+		// 走真实入口 Execute（而非 rootCmd.Execute）：单次执行的残留状态清理
+		// 在那里，绕过它测的就不是 main 实际跑的东西
+		err = Execute()
 		return out.String(), errBuf.String(), err
 	}
 
-	t.Run("参数错误不打印 usage", func(t *testing.T) {
+	// 参数错误是唯一该打 usage 的一类失败：根因就是用法。少了它，
+	// `handoff done` 缺参只得到一句 "accepts 1 arg(s), received 0"，
+	// 既不说该给什么参数，也不说有哪些 flag。
+	t.Run("参数错误打印 usage", func(t *testing.T) {
 		out, errText, err := runErr("done")
 		if err == nil {
 			t.Fatal("done 缺任务参数应报错，实际为 nil")
@@ -164,8 +172,8 @@ func TestErrorDoesNotPrintUsage(t *testing.T) {
 		if !strings.Contains(errText, "Error:") {
 			t.Fatalf("stderr 应含 cobra 错误行, got %q", errText)
 		}
-		if strings.Contains(out, "Usage:") {
-			t.Fatalf("参数错误不应打印 usage 段, got %q", out)
+		if !strings.Contains(out, "Usage:") {
+			t.Fatalf("参数错误应打印 usage 段（错误本身说的就是用法）, got %q", out)
 		}
 	})
 
@@ -239,12 +247,16 @@ func TestWaitTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	start := time.Now()
-	err = rootCmd.ExecuteContext(ctx)
+	err = ExecuteContext(ctx)
 	if err == nil {
 		t.Fatal("--timeout 到点应返回错误（cobra 非 0 退出），实际为 nil")
 	}
 	if !strings.Contains(err.Error(), "超时") {
 		t.Fatalf("错误应说明超时, got %v", err)
+	}
+	// 无人值守场景只看得到退出码：超时必须与鉴权/配置失败区分开
+	if got := ExitCode(err); got != ExitTimeout {
+		t.Fatalf("超时退出码 = %d, want %d", got, ExitTimeout)
 	}
 	// 超时不是事件到达：stdout 不得出现事件 JSON（cobra 会在错误时向 stdout
 	// 打印 usage，只断言「无事件 JSON」这一语义）
@@ -253,5 +265,60 @@ func TestWaitTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("--timeout 300ms 应约 300ms 返回, 实际 %v", elapsed)
+	}
+}
+
+// TestWaitRejectsNegativeTimeout 验证 --timeout 负值被拒绝而不是当「不设上限」。
+//
+// 缺陷形态：waitTimeout < 0 时 `if waitTimeout > 0` 不成立，超时保护被静默跳过，
+// wait 永远等下去——恰恰是在最需要兜底的无人值守场景里把兜底悄悄关掉了。
+func TestWaitRejectsNegativeTimeout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfgPath := writeTestConfig(t, "listen: \"127.0.0.1:1\"\ntoken: \"local-tok\"\n")
+	resetFlags(t)
+	targetName = ""
+	configPath = cfgPath
+	t.Cleanup(func() { waitTimeout = 0 })
+
+	rootCmd.SetArgs([]string{"wait", "task-1", "--timeout", "-5s"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := ExecuteContext(ctx)
+
+	if err == nil {
+		t.Fatal("--timeout -5s 应报错，实际为 nil（超时保护被静默跳过）")
+	}
+	if !strings.Contains(err.Error(), "--timeout") {
+		t.Errorf("错误应点名 --timeout, got %v", err)
+	}
+}
+
+// TestExitCodeDistinguishesTimeout 验证退出码能区分「等满了时限」与其他失败。
+//
+// 无人值守场景（cron/后台脚本）看不到 stderr，只看得到退出码：全是 1 的话，
+// 该继续等的超时和该立刻告警的鉴权失败无从区分。
+func TestExitCodeDistinguishesTimeout(t *testing.T) {
+	if got := ExitCode(nil); got != 0 {
+		t.Errorf("成功应退出 0, got %d", got)
+	}
+	if got := ExitCode(errors.New("连接失败")); got != ExitFailure {
+		t.Errorf("普通失败应退出 %d, got %d", ExitFailure, got)
+	}
+	timeoutErr := &exitCodeError{code: ExitTimeout, err: errors.New("wait 超时（1h）未等到事件")}
+	if got := ExitCode(timeoutErr); got != ExitTimeout {
+		t.Errorf("超时应退出 %d, got %d", ExitTimeout, got)
+	}
+	// 包装后错误文本与 errors.Is 链不受影响：cobra 照常把原文打到 stderr
+	if !strings.Contains(timeoutErr.Error(), "超时") {
+		t.Errorf("包装不应改写错误文本, got %q", timeoutErr.Error())
 	}
 }

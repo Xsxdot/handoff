@@ -90,3 +90,26 @@ func TestLoadEmptyFileKeepsDefaults(t *testing.T) {
 		t.Fatalf("listen=%s, want 默认 127.0.0.1:7777", cfg.Listen)
 	}
 }
+
+// TestLoadRejectsNonPositiveStallTimeout 验证 stalltimeout 显式写成 0 或负值时
+// 立即报错，而不是带着一个必然误判的值启动。
+//
+// 缺陷形态：无校验时 stalltimeout=0 会让看门狗在**每个** running 任务的首个
+// tick 上判定 stalled——审核者会被一批凭空的 stalled 事件叫醒，而任务其实好好的。
+func TestLoadRejectsNonPositiveStallTimeout(t *testing.T) {
+	for _, v := range []string{"0s", "-5m"} {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\nstalltimeout: "+v+"\n"), 0o600); err != nil {
+			t.Fatalf("写配置: %v", err)
+		}
+
+		_, err := config.Load(p)
+
+		if err == nil {
+			t.Fatalf("stalltimeout=%s 应被拒绝，实际加载成功", v)
+		}
+		if !strings.Contains(err.Error(), "stalltimeout") {
+			t.Errorf("stalltimeout=%s 的错误未点名该配置项: %v", v, err)
+		}
+	}
+}

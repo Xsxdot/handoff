@@ -46,6 +46,15 @@ const recentEventsLimit = 100
 // 客户端 cursor 落后超过该值时说明断连过久，应由客户端重连分批补拉，避免单连接推流过多。
 const eventReplayLimit = 10000
 
+// liveBufferLimit 是单个 WS 连接实时事件待写缓冲的条数上限。
+//
+// why（必须有上限）：排空器把订阅通道的事件收进内存切片以避免 hub 的慢订阅者
+// 丢弃，但对端「连着不读」（合盖的笔记本、黑洞路由）时写循环会阻塞任意久，
+// 无上限的缓冲会把「实时事件被丢弃」换成「agentd 内存无限增长」。
+// 越限即断开连接：所有广播事件都已落库，客户端凭 cursor 重连即可完整补拉，
+// 断开是无损的。
+const liveBufferLimit = 1000
+
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
 // 并发安全：所有字段只读（构造后不变），hub 自身线程安全，无需额外加锁。
@@ -55,6 +64,10 @@ type Server struct {
 	hub *Hub
 	log *slog.Logger
 	mgr *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	// replayLimit / liveLimit 是 eventReplayLimit / liveBufferLimit 的实例副本，
+	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
+	replayLimit int
+	liveLimit   int
 }
 
 // NewServer 创建 agentd 服务端。
@@ -69,10 +82,12 @@ type Server struct {
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	return &Server{
-		cfg: cfg,
-		st:  st,
-		hub: NewHub(),
-		log: log,
+		cfg:         cfg,
+		st:          st,
+		hub:         NewHub(),
+		log:         log,
+		replayLimit: eventReplayLimit,
+		liveLimit:   liveBufferLimit,
 	}
 }
 
@@ -111,6 +126,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
+	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
@@ -340,7 +356,13 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	if !relayed {
 		// 中继失败：回答已落库但 executor 未收到（why 与状态处理见函数头）。
 		// 非 2xx 让 CLI 非零退出并展示 reason，审核者立即知道 executor 没拿到，
-		// 而不是只能去远端 agentd.log 里翻一行日志
+		// 而不是只能去远端 agentd.log 里翻一行日志。
+		// 同时落一条 delivery_failed 事件：502 只回给「当前这次 reply」的调用方，
+		// 而事件是持久的——换个会话接管、或此刻根本没人盯着终端时，仍能从
+		// attach/wait 看到「有裁决卡在半路，该执行 handoff resume」
+		if s.mgr != nil {
+			s.mgr.NoteDeliveryFailed(taskID, req.TicketID, errors.New(reason))
+		}
 		writeJSON(w, http.StatusBadGateway, replyResult{OK: true, Relayed: false, Reason: reason})
 		return
 	}
@@ -496,6 +518,39 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答。
+//
+// 这是 reply 返回 502 之后审核者唯一的自助出口——在它之前，工单已被消耗、
+// 任务停在 waiting_answer，reply 得 404、continue/done 得 409，CLI 上无路可走
+// （详见 Manager.RecoverStuck 的 why）。
+//
+// 响应：
+//   - 200 + RecoverReport：包含重投条数、executor 是否已不在、收尾状态与结论
+//   - 502 + RecoverReport：executor 仍在但这次没打通，可稍后重试（报告一并回传，
+//     让审核者看到已经重投成功了几条）
+//   - 404 任务不存在；409 任务已终结
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("resume 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("resume 请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	rep, err := s.mgr.RecoverStuck(taskID)
+	if err != nil {
+		if rep != nil {
+			// 重投中途失败：报告仍有价值（已成功几条、任务停在哪），带 502 回传
+			s.log.Warn("resume 重投未完成", "task", taskID, "redelivered", rep.Redelivered, "cause", err)
+			writeJSON(w, http.StatusBadGateway, rep)
+			return
+		}
+		s.writeManagerError(w, taskID, "恢复任务", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // taskRepoOrErr 读取路径中的任务并返回其仓库路径；任务不存在（404）或没有
@@ -753,11 +808,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 开始丢事件——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不
 	// 写满，Publish 的事件 100% 进入 live 等待写出，不存在「停止排空后再写归并」
 	// 的丢事件窗口。
+	//
+	// 缓冲有上限（liveLimit）：对端「连着不读」时写循环会阻塞任意久，无上限的
+	// 收集会把 hub 的有界丢弃换成 agentd 的无界内存增长。越限即置 overflow 并
+	// 唤醒主循环断开连接——所有事件都已落库，客户端凭 cursor 重连可完整补拉。
 	var (
 		liveMu      sync.Mutex
 		live        []proto.Event
+		overflow    bool
 		drainNotify = make(chan struct{}, 1)
 	)
+	notifyDrain := func() {
+		select {
+		case drainNotify <- struct{}{}:
+		default: // 已有待消费唤醒；主循环整批快照时会一并取走全部 live
+		}
+	}
 	go func() {
 		for {
 			select {
@@ -766,12 +832,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return // 订阅被取消（连接结束，defer cancel 触发），排空器退出
 				}
 				liveMu.Lock()
+				if len(live) >= s.liveLimit {
+					overflow = true
+					liveMu.Unlock()
+					notifyDrain()
+					return // 排空器退出：主循环随即断开连接
+				}
 				live = append(live, ev)
 				liveMu.Unlock()
-				select {
-				case drainNotify <- struct{}{}:
-				default: // 已有待消费唤醒；主循环整批快照时会一并取走全部 live
-				}
+				notifyDrain()
 			case <-ctx.Done():
 				return // 连接断开，排空器退出（防御；defer cancel 关闭通道同样触发退出）
 			}
@@ -779,7 +848,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// 阶段一：补发历史事件（from_seq 之后按 seq 升序的最旧 limit 条，截断在尾部）
-	replays, err := s.st.EventsFromAsc(taskID, fromSeq, eventReplayLimit)
+	replays, err := s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
 	if err != nil {
 		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
 		return
@@ -812,22 +881,44 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 单调推进，seq <= lastWrittenSeq 的事件必已写出，作为去重/乱序判据
 	lastWrittenSeq := maxReplayed
 
+	// deliveredInGap 统计「落在截断缺口区间 (maxReplayed, storeMax] 内且确实由
+	// 实时流补出」的条数，供截断诊断核对。
+	//
+	// why 数条数而非看 seq 是否逐格衔接：seq 由 AUTOINCREMENT **全局**分配，
+	// 跨任务交错，单任务的 seq 本来就不连续，衔接判定会在多任务下恒定误报。
+	// 也不能像修复前那样比最大值（storeMax > lastWrittenSeq）——任何一条 seq
+	// 更大的实时事件都会把 lastWrittenSeq 顶过缺口，正是「告警恒不触发」的成因。
+	deliveredInGap := 0
+
 	// writeLiveBatch 写出一个归并批次：按 seq 升序排序（排空收集顺序是「Publish
 	// 到达通道的顺序」，与重放写交错后可能与 seq 序不一致——并发 Publish 时尤其
 	// 如此——而单连接 SSE 要求全局保序，按 seq 升序写出保证客户端按 seq 连续推进
-	// cursor），跳过已写出的重复（seq <= lastWrittenSeq），推进最后写出 seq。
-	// 返回 false 表示写入失败（连接已不可用），调用方应立即退出。
+	// cursor），跳过重放已覆盖的重复，推进最后写出 seq。
+	// 返回 false 表示本连接应立即结束（写失败或收到乱序迟到事件）。
 	writeLiveBatch := func(pending []proto.Event) bool {
 		sort.Slice(pending, func(i, j int) bool { return pending[i].Seq < pending[j].Seq })
 		for _, ev := range pending {
+			if ev.Seq <= maxReplayed {
+				continue // 真重复：订阅后、重放快照前落库的事件已随重放写出
+			}
 			if ev.Seq <= lastWrittenSeq {
-				continue // 重复：seq <= maxReplayed 的已随重放写出；乱序迟到的已写出
+				// 乱序迟到：seq 大于重放覆盖面却小于已写出的最大 seq，说明它从未
+				// 被写出（每条事件只广播一次，重复只可能来自重放交集）。
+				// 落库与广播是两步，watchdog 与 mediate 并发发布时可交错成这个次序。
+				// 直接跳过就是永久丢事件（客户端 cursor 已越过它），而单连接又无法
+				// 回头补写——断开连接让客户端凭 cursor 重连，重放会按 seq 序完整补齐
+				s.log.Warn("WS 收到乱序迟到事件，断开连接由客户端凭 cursor 重连补齐",
+					"task", taskID, "seq", ev.Seq, "last_written", lastWrittenSeq)
+				return false
 			}
 			if err := writeEvent(ctx, conn, ev); err != nil {
 				s.log.Warn("WS 实时写入失败", "task", taskID, "seq", ev.Seq, "err", err)
 				return false
 			}
 			lastWrittenSeq = ev.Seq
+			if ev.Seq <= storeMax {
+				deliveredInGap++
+			}
 			sent++
 		}
 		return true
@@ -854,12 +945,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 截断）也未进入实时流（订阅前已落库并发布、被 hub 无订阅者丢弃）——真缺口，
 	// 客户端需凭更大 cursor 重连续拉补齐；若归并已追平 store 最新，尾部缺口由
 	// 实时流补齐，属预期场景，仅 Debug
-	if storeMax > lastWrittenSeq {
-		s.log.Warn("WS 补发窗口截断且尾部缺口未由实时流补齐", "task", taskID, "from_seq", fromSeq,
-			"replayed", len(replays), "last_written", lastWrittenSeq, "store_max", storeMax)
-	} else if storeMax > maxReplayed {
-		s.log.Debug("WS 补发窗口截断但尾部缺口已由实时流补齐", "task", taskID,
-			"replayed", len(replays), "last_written", lastWrittenSeq, "store_max", storeMax)
+	if len(replays) == s.replayLimit && storeMax > maxReplayed {
+		gapTotal, cerr := s.st.CountEvents(taskID, maxReplayed, storeMax)
+		switch {
+		case cerr != nil:
+			s.log.Error("WS 截断缺口核对失败", "task", taskID, "cause", cerr)
+		case gapTotal > deliveredInGap:
+			s.log.Warn("WS 补发窗口截断且缺口未由实时流补齐", "task", taskID, "from_seq", fromSeq,
+				"replayed", len(replays), "gap_total", gapTotal, "gap_delivered", deliveredInGap,
+				"store_max", storeMax)
+		default:
+			s.log.Debug("WS 补发窗口截断但缺口已由实时流补齐", "task", taskID,
+				"replayed", len(replays), "gap_total", gapTotal, "store_max", storeMax)
+		}
 	}
 
 	// 阶段三：实时写循环。排空器始终是订阅通道的唯一消费者，主循环等唤醒后整批
@@ -871,8 +969,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			liveMu.Lock()
 			pending := live
 			live = nil
+			over := overflow
 			liveMu.Unlock()
 			if !writeLiveBatch(pending) {
+				return
+			}
+			if over {
+				s.log.Warn("WS 待写缓冲越限，断开连接（对端长时间不读）：客户端凭 cursor 重连补拉",
+					"task", taskID, "limit", s.liveLimit, "last_written", lastWrittenSeq)
 				return
 			}
 		case <-ctx.Done():

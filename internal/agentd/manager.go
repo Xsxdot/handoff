@@ -147,6 +147,14 @@ type questionPayload struct {
 	Kind     string `json:"kind"`
 }
 
+// deliveryFailedPayload 是 delivery_failed 事件的 payload：哪张工单没送到、
+// 为什么、以及审核者该做什么。
+type deliveryFailedPayload struct {
+	TicketID string `json:"ticket_id"`
+	Reason   string `json:"reason"`
+	Hint     string `json:"hint"`
+}
+
 // progressPayload 是 progress 事件的 payload。
 type progressPayload struct {
 	Text string `json:"text"`
@@ -418,6 +426,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
+		m.markDelivered(taskID, ticketID)
 		return nil
 	case "ask":
 		m.log.Info("reply 无等待者，自愈中继提问回答", "task", taskID, "ticket", ticketID)
@@ -426,6 +435,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err := m.ad.Send(actx, taskID, answer); err != nil {
 			return fmt.Errorf("中继提问回答: %w", err)
 		}
+		m.markDelivered(taskID, ticketID)
 		return nil
 	default:
 		return fmt.Errorf("工单 %s 类型 %q 不支持中继", ticketID, req.Kind)
@@ -503,34 +513,78 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	// 命名空间化后各任务工单 id 全局唯一；回传 executor 仍用裸 permID
 	// （adapter 契约，见 waitPermission/RelayAnswer）
 	ticketID := taskID + ":" + ev.PermissionID
-	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
-	created, err := m.st.CreateTicket(&proto.Ticket{
-		ID: ticketID, TaskID: taskID, Kind: "gate",
-		Request: req, CreatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
+	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
 		return
 	}
-	if !created {
-		// 重放（SSE 断线重连/agentd 重启后订阅重建）：ticket 已存在，跳过全部
-		// 中介动作——不追加第二条事件、不重复迁移、不起第二个 waiter、不重复
-		// 广播（P1-7）。幂等只做一半（只去重工单）会让审核者被重复唤醒、
-		// RespondPermission 被调两次。已答的重放同样跳过：应答已落库并已被
-		// 既有等待者或自愈中继送达 executor，这里再动就是重复交付
-		m.log.Debug("权限请求重放，跳过中介", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID)
+	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
+	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
+	// resumeIfIdle 读到 running 直接返回，随后 manager 才盖上 waiting_answer——
+	// 任务显示「等你回答」却零挂起工单，reply/continue/done 三条路全封死。
+	// 反过来「状态已落但工单还没建」是安全的：reply 找不到工单只会 404，
+	// 审核者重试即可，且工单随即出现。
+	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "permission_request")
+	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
+	if _, err := m.st.CreateTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
+		Request: req, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
+		// 工单没建成，waiting_answer 是虚假状态（无任何可答项），回迁 running
+		m.transitBestEffort(taskID, proto.TaskStateRunning, "权限工单创建失败回滚")
 		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypePermissionRequest, permissionPayload{
 		TicketID: ticketID, Permission: ev.Text, Kind: "gate",
 	})
 	if err != nil {
-		m.log.Error("追加 permission_request 事件失败", "task", taskID, "cause", err)
+		// 工单在、事件缺：不回滚工单，留给下一次重放由 isPermissionReplay 的
+		// 「有工单无事件」分支自愈补发（N-4）
+		m.log.Error("追加 permission_request 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
-	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "permission_request")
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
+}
+
+// isPermissionReplay 判定一次 permission 事件是否为「已完整中介过」的重放
+// （SSE 断线重连 / agentd 重启后订阅重建都会重放同一权限请求）。
+//
+// 参数：permID 是 executor 侧裸权限 id（仅用于日志），ticketID 是命名空间化的工单 id。
+//
+// 返回：true 表示应跳过全部中介动作。
+//
+// 判定规则（why 这里不能只看工单是否存在）：
+//   - 工单不存在 → 新请求，正常中介
+//   - 工单存在且已应答 → 真重放，跳过：再动一次就是重复交付
+//   - 工单存在但通知事件缺失 → **不是**重放，而是崩溃恰好落在「建工单」与
+//     「追加事件」之间留下的半截状态。仅凭工单存在就跳过，会让 permission_request
+//     永不产生、状态停在 running、无等待者，审核者的 wait 永远不触发（N-4）——
+//     此处放行以补发事件，CreateTicket 本身幂等，不会产生第二张工单
+//   - 工单存在且事件也在 → 真重放，跳过（P1-7 的幂等承诺）
+func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
+	tk, err := m.st.GetTicket(ticketID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		m.log.Error("读取权限工单失败", "task", taskID, "perm", permID, "ticket", ticketID, "cause", err)
+		return true // 读不到就不动，宁可少一次唤醒也不重复中介
+	}
+	if tk.Answer != nil {
+		m.log.Debug("权限请求重放且已应答，跳过中介", "task", taskID, "perm", permID, "ticket", ticketID)
+		return true
+	}
+	hasEvent, err := m.st.TicketHasEvent(taskID, ticketID)
+	if err != nil {
+		m.log.Error("查询权限工单通知事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return true
+	}
+	if hasEvent {
+		m.log.Debug("权限请求重放，跳过中介", "task", taskID, "perm", permID, "ticket", ticketID)
+		return true
+	}
+	m.log.Warn("权限工单存在但通知事件缺失，补发以自愈", "task", taskID, "perm", permID, "ticket", ticketID)
+	return false
 }
 
 // waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
@@ -566,10 +620,13 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 	actx, acancel := unaryCtx(ctx)
 	defer acancel()
 	if err := m.ad.RespondPermission(actx, taskID, permID, decision); err != nil {
-		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决
+		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决。
+		// 工单未标记送达，审核者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
+	m.markDelivered(taskID, ticketID)
 }
 
 // handleQuestion 中介提问：ticket(uuid, kind=ask) → 事件 → waiting_answer →
@@ -580,6 +637,8 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	// 提问工单 id 用 uuid：问题没有天然稳定 id，回答一次即终结
 	ticketID := uuid.NewString()
+	// 先落状态再建工单：why 同 handlePermission（U-1）
+	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
 	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text})
 	created, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "ask",
@@ -587,6 +646,7 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 	})
 	if err != nil {
 		m.log.Error("创建提问工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.transitBestEffort(taskID, proto.TaskStateRunning, "提问工单创建失败回滚")
 		return
 	}
 	if !created {
@@ -598,10 +658,9 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 		TicketID: ticketID, Question: ev.Text, Kind: "ask",
 	})
 	if err != nil {
-		m.log.Error("追加 question 事件失败", "task", taskID, "cause", err)
+		m.log.Error("追加 question 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
-	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
 	go m.waitQuestion(ctx, taskID, ticketID)
 	m.hub.Publish(evt)
 }
@@ -628,8 +687,169 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 	defer acancel()
 	if err := m.ad.Send(actx, taskID, ans); err != nil {
 		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
+	m.markDelivered(taskID, ticketID)
+}
+
+// RecoverReport 是显式恢复操作的结果快照，原样作为 HTTP 响应体回给 CLI。
+type RecoverReport struct {
+	Task string `json:"task"`
+	// Redelivered 是本次成功重投给 executor 的应答条数
+	Redelivered int `json:"redelivered"`
+	// ExecutorGone 为真表示 executor 已不在，任务已被交给审核者裁决
+	ExecutorGone bool `json:"executor_gone"`
+	// State 是操作完成后的任务状态
+	State proto.TaskState `json:"state"`
+	// Note 是给审核者看的一句话结论
+	Note string `json:"note"`
+}
+
+// RecoverStuck 是审核者的显式恢复操作（CLI: handoff resume <task>），
+// 用来解开「应答已落库但没送到 executor」这一类卡死。
+//
+// 为什么需要它：reply 的回程里，应答一旦落库就消耗掉了工单的 answer IS NULL
+// 守卫；若此时中继失败（executor 半死、调用超时），审核者会拿到 502，而工单
+// 已从 pending 里消失、任务停在 waiting_answer——reply 得 404、continue/done
+// 得 409，CLI 上再无一条可走的路。此前唯一的出口是运维重启 agentd 让
+// RecoverOnStartup 探活，而那条路只在 executor **已死**时有效：executor 还
+// 活着并仍阻塞在权限上时，重启探活成功、订阅重建、已答工单从不重放，是彻底的
+// 死锁。本方法把这条出口交到审核者自己手里。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 恢复结果快照（即使返回错误也可能非 nil，用于区分「executor 已死」与「这次没成功」）
+//   - 任务不存在、已终结，或重投过程中 executor 仍不可用时返回错误
+//
+// 行为：
+//  1. 无未送达应答 → 空操作，不碰状态、不调用 executor
+//  2. 有未送达应答 → 逐条重投；成功即标记送达，全部成功后任务回 running
+//  3. 重投遇到 executor.ErrTaskNotRunning（executor 确实不在）→ 追加 failed
+//     事件、作废挂起工单、任务转 waiting_review 交审核者，不再重试
+//  4. 重投遇到其他错误（executor 还在，只是这次调用失败）→ 保持 waiting_answer
+//     与未送达标记，返回错误；审核者稍后可再执行一次
+//
+// 注意：
+//   - 幂等：已标记送达的应答不会被重投，重复执行是安全的
+//   - 与 ResumeTask 的区别：ResumeTask 是 agentd 重启时的执行器存活探测与订阅
+//     重建（进程级），本方法是单任务的应答重投（工单级），两者互不替代
+func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("读取任务 %s: %w", taskID, err)
+	}
+	if task.State == proto.TaskStateCompleted || task.State == proto.TaskStateFailed {
+		return nil, fmt.Errorf("任务 %s 已终结（%s），无可恢复项: %w", taskID, task.State, store.ErrBadTransit)
+	}
+	rep := &RecoverReport{Task: taskID, State: task.State}
+
+	stuck, err := m.st.UndeliveredAnswers(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if len(stuck) == 0 {
+		rep.Note = "没有卡在半路的应答，无需恢复"
+		m.log.Info("恢复操作：无未送达应答", "task", taskID, "state", task.State)
+		return rep, nil
+	}
+	m.log.Info("恢复操作：开始重投未送达应答", "task", taskID, "count", len(stuck))
+
+	for _, tk := range stuck {
+		answer := ""
+		if tk.Answer != nil {
+			answer = *tk.Answer
+		}
+		if err := m.RelayAnswer(taskID, tk.ID, answer); err != nil {
+			if errors.Is(err, executor.ErrTaskNotRunning) {
+				// executor 确实不在：继续重投没有意义，转交审核者裁决
+				rep.ExecutorGone = true
+				rep.State = m.abandonToReview(taskID, tk.ID, err)
+				rep.Note = "executor 已不在，任务已转交审核（可 continue 重新派发或 done 归档）"
+				m.log.Warn("恢复操作：executor 已不在，任务转交审核",
+					"task", taskID, "ticket", tk.ID, "cause", err)
+				return rep, nil
+			}
+			// executor 还在，只是这次没打通：保持现状可重试
+			rep.Note = "重投失败，executor 仍在但未响应；稍后可再执行一次 resume"
+			m.log.Error("恢复操作：重投应答失败", "task", taskID, "ticket", tk.ID, "cause", err)
+			return rep, fmt.Errorf("重投应答 %s: %w", tk.ID, err)
+		}
+		rep.Redelivered++
+	}
+
+	// 全部送达：executor 已恢复执行，状态回 running（若已有其他挂起工单，
+	// transitBestEffort 的失败是良性的——状态本就该留在 waiting_answer）
+	if task.State == proto.TaskStateWaitingAnswer {
+		m.transitBestEffort(taskID, proto.TaskStateRunning, "恢复操作重投应答成功")
+	}
+	if cur, gerr := m.st.GetTask(taskID); gerr == nil {
+		rep.State = cur.State
+	}
+	rep.Note = "应答已重新送达 executor，执行继续"
+	m.log.Info("恢复操作完成", "task", taskID, "redelivered", rep.Redelivered, "state", rep.State)
+	return rep, nil
+}
+
+// abandonToReview 在确认 executor 已不在时收尾：留下 failed 事件说明原因、
+// 作废挂起工单（避免 attach 继续展示不可能被回答的项）、任务转 waiting_review。
+// 返回收尾后的任务状态。
+func (m *Manager) abandonToReview(taskID, ticketID string, cause error) proto.TaskState {
+	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
+		m.log.Error("恢复操作：作废挂起工单失败", "task", taskID, "cause", verr)
+	} else if voided > 0 {
+		m.log.Warn("恢复操作：挂起工单作废", "task", taskID, "voided", voided)
+	}
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
+		FailReason: fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause),
+	})
+	if err != nil {
+		m.log.Error("恢复操作：追加 failed 事件失败", "task", taskID, "cause", err)
+	}
+	if terr := m.transitToReview(taskID); terr != nil {
+		m.log.Error("恢复操作：回迁 waiting_review 失败", "task", taskID, "cause", terr)
+	} else if err == nil {
+		m.hub.Publish(evt)
+	}
+	cur, gerr := m.st.GetTask(taskID)
+	if gerr != nil {
+		return proto.TaskStateWaitingAnswer
+	}
+	return cur.State
+}
+
+// markDelivered 记录「应答已送达 executor」。失败仅 Warn：送达本身已经发生，
+// 标记丢失最坏只会让 RecoverStuck 多重投一次，不影响正确性。
+func (m *Manager) markDelivered(taskID, ticketID string) {
+	if err := m.st.MarkTicketDelivered(ticketID); err != nil {
+		m.log.Warn("标记应答已送达失败", "task", taskID, "ticket", ticketID, "cause", err)
+	}
+}
+
+// NoteDeliveryFailed 产出 delivery_failed 事件：应答已落库但没送到 executor。
+//
+// 参数：
+//   - taskID: 任务 ID
+//   - ticketID: 未送达的工单 ID
+//   - cause: 送达失败的原因（原样进 payload 供审核者诊断）
+//
+// why（必须是事件而不只是日志）：此时 executor 仍原地阻塞，而工单已被应答消耗、
+// 不再出现在 attach 的挂起项里——只写日志的话审核者这边完全无感，任务一路挂到
+// 看门狗超时。产出事件才能唤醒审核者（wait 不过滤该类型），提示执行 handoff resume。
+// 供 manager 内部的应答等待链路与 server 的 reply 回程共用。
+func (m *Manager) NoteDeliveryFailed(taskID, ticketID string, cause error) {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed, deliveryFailedPayload{
+		TicketID: ticketID,
+		Reason:   truncateRunes(fmt.Sprint(cause), 500),
+		Hint:     "应答已落库但未送达 executor，执行 handoff resume <task> 重投",
+	})
+	if err != nil {
+		m.log.Error("追加 delivery_failed 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return
+	}
+	m.hub.Publish(evt)
 }
 
 // handleProgress 中介进度事件：只入库广播，不改任务状态。
@@ -690,6 +910,14 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 			Branch: r.Branch, CommitHash: r.CommitHash, Summary: r.Summary,
 		})
 	} else {
+		// executor 已死，挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复
+		// 路径同语义。不作废的话 attach 仍向审核者展示可操作的挂起项，而 executor
+		// 已不在——一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态
+		if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
+			m.log.Error("作废挂起工单失败", "task", taskID, "cause", verr)
+		} else if voided > 0 {
+			m.log.Warn("executor 已终结，挂起工单作废", "task", taskID, "voided", voided)
+		}
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: r.FailReason})
 	}
 	if err != nil {

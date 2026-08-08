@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -528,5 +529,76 @@ func TestDispatchUnknownError500(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "派发任务失败") {
 		t.Fatalf("未知错误应映射为 500 统一提示, got: %v", err)
+	}
+}
+
+// TestResumeRoute 端到端验证「应答没送到 executor → delivery_failed 唤醒 →
+// resume 解开」的完整闭环：真实 HTTP 路由 + 真实 client，走审核者实际的动作序列。
+//
+// 这是 P0-5 的收口验收。注意这里复现的是**更隐蔽的那个变体**：等待者还在时
+// reply 返回 200（应答确实落库了、也确实唤醒了等待者），投递失败发生在
+// waitPermission 内部——审核者拿不到任何错误码，工单却已被消耗、attach 无挂起项、
+// executor 仍原地阻塞。所以恢复操作必须配一个可见信号，否则没人知道要去 resume。
+func TestResumeRoute(t *testing.T) {
+	env := newIntegEnv(t, []fake.Step{{Permission: "bash: go test ./..."}})
+	task := env.dispatchPlan(t, "跑测试")
+	ev := env.waitAction(t, task.ID)
+	ticketID := payloadMap(t, ev)["ticket_id"].(string)
+
+	// executor 半死：应答落库并唤醒等待者，但回传 executor 时失败
+	env.fake.SetPermError(errors.New("模拟半死 executor: i/o timeout"))
+	if err := env.cli.Reply(context.Background(), task.ID, ticketID, "allow"); err != nil {
+		t.Fatalf("有等待者时 reply 本身应成功（应答已落库）: %v", err)
+	}
+
+	// 可见信号：投递失败必须产出 delivery_failed 事件唤醒审核者
+	var failedEv *proto.Event
+	eventually(t, 2*time.Second, "产出 delivery_failed 事件", func() bool {
+		evs, err := env.st.EventsFromAsc(task.ID, 0, 100)
+		if err != nil {
+			return false
+		}
+		for i := range evs {
+			if evs[i].Type == proto.EventTypeDeliveryFailed {
+				failedEv = &evs[i]
+				return true
+			}
+		}
+		return false
+	})
+	if hint, _ := payloadMap(t, failedEv)["hint"].(string); !strings.Contains(hint, "resume") {
+		t.Errorf("delivery_failed 事件应告诉审核者该执行 resume，实际 hint=%q", hint)
+	}
+
+	// 卡死现场：工单已被消耗，attach 看不到挂起项
+	detail, err := env.cli.Attach(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if len(detail.PendingTickets) != 0 {
+		t.Fatalf("工单已被应答消耗，pending 应为空，实际 %d 条", len(detail.PendingTickets))
+	}
+
+	// executor 恢复后 resume：应答重投成功
+	env.fake.SetPermError(nil)
+	report, err := env.cli.Resume(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !strings.Contains(report, `"redelivered":1`) {
+		t.Errorf("恢复报告应显示重投 1 条，实际 %s", report)
+	}
+	perms := env.fake.Perms()
+	if len(perms) != 1 || perms[0].PermID != "perm-1" || perms[0].Decision != "once" {
+		t.Errorf("应以裸 permID + once 重投给 executor，实际 %+v", perms)
+	}
+
+	// 幂等：再执行一次不得重复投递
+	report2, err := env.cli.Resume(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("第二次 Resume: %v", err)
+	}
+	if !strings.Contains(report2, `"redelivered":0`) {
+		t.Errorf("已送达的应答不应重复投递，实际 %s", report2)
 	}
 }

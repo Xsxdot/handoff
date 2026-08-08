@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -266,14 +267,38 @@ func startRenderTailWindow(session, taskDir string, log *slog.Logger) {
 	}
 }
 
+// serveLogTailBytes 是 serve.log 尾部读取的字节上限（诊断信息取末尾 500 字节，
+// 多读一些余量以便 tail 按完整行截断）。
+const serveLogTailBytes = 4 << 10
+
 // serveLogTail 读 serve.log 尾部最多 500 字节，供就绪超时/死亡诊断；文件未
 // 创建（serve 根本没跑起来）或已被清理时返回空串。
 //
 // why（读文件而非 tmux capture-pane）：serve 所在窗格随命令退出而关闭，
 // capture-pane 读不到已关闭窗格（P1-8）——serve.log 是 tee 落盘的持久副本，
 // serve 死后仍可读。
+//
+// why（Seek 到尾部而非 os.ReadFile 整读）：serve.log 由 tee -a 写满任务全程且
+// 无轮转，而本函数的调用时机恰是 serve 死亡/就绪超时——最不该再分配几百 MB 的
+// 时刻。整读一份 100MiB 日志只为取末尾 500 字节，是把诊断动作变成第二次故障。
 func serveLogTail(serveLogPath string) string {
-	b, err := os.ReadFile(serveLogPath)
+	f, err := os.Open(serveLogPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := fi.Size() - serveLogTailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(f, serveLogTailBytes))
 	if err != nil {
 		return ""
 	}
