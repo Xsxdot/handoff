@@ -5,20 +5,22 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/xushixin/handoff/internal/executor"
 )
 
 // 凭据缺失 → 判死不存活（manager 按不存活走 failed 恢复路径）。
 func TestResumeMissingProcInfo(t *testing.T) {
 	a := New(nil)
 	dir := t.TempDir()
-	alive, err := a.Resume("T-1", dir, "/repo", "sess-1")
-	if alive {
-		t.Fatalf("凭据缺失应判死不存活，实际 alive=%v", alive)
+	out, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: "/repo", SessionID: "sess-1"})
+	if out.Alive {
+		t.Fatalf("凭据缺失应判死不存活，实际 alive=%v", out.Alive)
 	}
-	// err 由 readProcInfo 产生，manager 对 err!=nil 与 alive=false 同路处理（都转 failed）；
+	// err 由 readProcInfo 产生，manager 对 err!=nil 与 Alive=false 同路处理（都转 failed）；
 	// 这里只断言结局：不存活
 	if err == nil {
-		t.Log("凭据缺失返回 (false, nil) 也可（manager 同路）")
+		t.Log("凭据缺失返回 (不存活, nil) 也可（manager 同路）")
 	}
 }
 
@@ -39,11 +41,11 @@ func TestResumeSessionAliveButProcessExited(t *testing.T) {
 	tmuxHasSession = func(string) bool { return true }
 	defer func() { tmuxHasSession = old }()
 
-	alive, err := a.Resume("T-1", dir, "/repo", "sess-1")
+	out2, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: "/repo", SessionID: "sess-1"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if alive {
+	if out2.Alive {
 		t.Fatal("claude 已退（哨兵在）但 tmux 会话还在，必须判死")
 	}
 }
@@ -69,9 +71,9 @@ func TestResumeContinuesFromOffset(t *testing.T) {
 	tmuxHasSession = func(string) bool { return true }
 	defer func() { tmuxHasSession = old }()
 
-	alive, err := a.Resume("T-1", dir, "/repo", "sess-1")
-	if err != nil || !alive {
-		t.Fatalf("Resume 应判活并续读: alive=%v err=%v", alive, err)
+	out2, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: "/repo", SessionID: "sess-1"})
+	if err != nil || !out2.Alive {
+		t.Fatalf("Resume 应判活并续读: alive=%v err=%v", out2.Alive, err)
 	}
 	r := a.lookup("T-1")
 	if r == nil {

@@ -1690,8 +1690,11 @@ func (m *Manager) transitBestEffort(taskID string, to proto.TaskState, reason st
 // 为恢复能力加方法会污染 fake 等全部实现；且 fake 的运行态随进程消亡、本就不该
 // 支持恢复。把恢复作为可选能力（interface 断言）既保住核心契约，又让
 // 「不支持恢复的 adapter 重启后一律按不存活走 failed 恢复路径」成为自然语义。
+//
+// 恢复的数据类型（ResumeReq/ResumeOutcome/Mode 常量）已随本设计挪到
+// internal/executor 包，三个 adapter 与 manager 共用同一套契约。
 type restorer interface {
-	Resume(taskID, taskDir, repoPath, sessionID string) (bool, error)
+	Resume(executor.ResumeReq) (executor.ResumeOutcome, error)
 }
 
 // volatilePermitter 表示该 adapter 的权限请求随连接消亡：连接一断，executor 侧
@@ -1752,16 +1755,29 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		}
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	// 恢复时 git 基线捕获与 serve 重建都在任务工作区（worktree 任务的 cwd 是
-	// Workdir 而非主仓库，git -C 在 worktree 上照常工作），统一取 task.Workdir()
-	alive, err := r.Resume(taskID, taskDir, task.Workdir(), task.ExecutorSession)
+	execName := task.Executor
+	if execName == "" {
+		execName = m.cfg.Executor.Default
+	}
+	// env 与 Dispatch 同源：冷恢复重起进程要原样注入（B19），解析失败不阻断
+	// 恢复——热重连根本用不上它，冷恢复用不上时由 adapter 侧自行报错
+	envKVs, eerr := m.env.For(execName)
+	if eerr != nil {
+		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
+	}
+	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
+	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
+	out, err := r.Resume(executor.ResumeReq{
+		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
+		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model, Cold: false,
+	})
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)
 		return false
 	}
-	if alive {
-		m.log.Info("任务执行已重建，重启中介循环", "task", taskID)
+	if out.Alive {
+		m.log.Info("任务执行已重建，重启中介循环", "task", taskID, "mode", out.Mode)
 		go m.mediate(taskID)
 	}
-	return alive
+	return out.Alive
 }

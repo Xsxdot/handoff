@@ -33,28 +33,29 @@ const (
 // Resume 尝试恢复一个 agentd 重启前已在执行的任务。
 //
 // 参数：
-//   - taskID/taskDir/repoPath: 任务标识与目录
-//   - sessionID: 落库的 executor 会话 id（空则无法 session/load，判不可恢复）
+//   - req: 恢复请求（TaskDir 是 serve.json 与 grokhome 所在，即 DataDir/tasks/<id>；
+//     RepoPath 是 ACP session/load 的 cwd；SessionID 是落库的会话 id）
 //
 // 返回：
-//   - true：serve 存活、ACP 已重连、会话已载入、事件流已重建
-//   - false：serve 已不在或凭据缺失，调用方据此转 failed 交审核者
-func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, error) {
+//   - Alive=true：serve 存活、ACP 已重连、会话已载入、事件流已重建
+//   - Alive=false：serve 已不在或凭据缺失，调用方据此转 failed 交审核者
+func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, err error) {
+	taskID, taskDir, repoPath, sessionID := req.TaskID, req.TaskDir, req.RepoPath, req.SessionID
 	a.log.Info("grok 尝试恢复任务", "task", taskID, "task_dir", taskDir, "session", sessionID)
 
 	// 没有会话 id 就没法 session/load——恢复的前提不成立，这不是错误
 	if sessionID == "" {
 		a.log.Info("无 executor 会话 id，判不可恢复", "task", taskID)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 	proc, err := ReadServeInfo(taskDir)
 	if err != nil {
 		a.log.Info("恢复凭据缺失，判不可恢复", "task", taskID, "cause", err)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 	if !proc.Alive() {
 		a.log.Info("serve 已不在，判不可恢复", "task", taskID, "port", proc.Port)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 	// token 刷新期间软链可能已被干掉（spec §3.3 实测），重连前先修好
 	if err := EnsureAuthLink(filepath.Join(taskDir, homeDirName)); err != nil {
@@ -75,7 +76,7 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, err
 	cli, err := DialACP(ctx, proc.WSURL(), &acpHandler{a: a, r: r}, a.log)
 	if err != nil {
 		a.log.Warn("ACP 重连失败，判不可恢复", "task", taskID, "cause", err)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 	r.cli = cli
 	if _, err := cli.Call(ctx, "initialize", map[string]any{
@@ -87,14 +88,14 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, err
 	}); err != nil {
 		_ = cli.Close()
 		a.log.Warn("重连后 initialize 失败，判不可恢复", "task", taskID, "cause", err)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 	if _, err := cli.Call(ctx, "session/load", map[string]any{
 		"sessionId": sessionID, "cwd": repoPath, "mcpServers": []any{},
 	}); err != nil {
 		_ = cli.Close()
 		a.log.Warn("session/load 失败，判不可恢复", "task", taskID, "cause", err)
-		return false, nil
+		return executor.ResumeOutcome{}, nil
 	}
 
 	a.mu.Lock()
@@ -103,7 +104,10 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, err
 	go a.watchdog(r)
 
 	a.log.Info("grok 任务已恢复", "task", taskID, "session", sessionID, "port", proc.Port)
-	return true, nil
+	return executor.ResumeOutcome{
+		Alive: true, Mode: executor.ResumeModeReattach, SessionID: sessionID,
+		Note: "executor 仍存活，已重连事件流",
+	}, nil
 }
 
 // watchdog 周期探活 serve，连续 watchdogFailThreshold 次失败即判死。
