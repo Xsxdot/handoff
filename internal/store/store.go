@@ -59,7 +59,13 @@ func Open(path string) (*Store, error) {
 	// 为什么追加 pragma：agentd 是单进程多 goroutine 并发写，
 	// 若不加 WAL 与 busy_timeout，并发写会直接返回 SQLITE_BUSY；
 	// WAL 允许读写并行，busy_timeout(5000) 让冲突写等待 5s 再失败。
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	// 为什么 _txlock=immediate：控制面 write helper 使用「读→校验→写→commit」
+	// 的显式事务（如 UpdateTaskStateWithEvent 的状态 CAS）。SQLite 的 deferred
+	// 事务在并发写者之间会报 SQLITE_BUSY_SNAPSHOT（快照过期），该错误不受
+	// busy_timeout 覆盖，表现为偶发「database is locked」。BEGIN IMMEDIATE
+	// 在事务起点即取写锁，CAS 语义照旧（WHERE state=旧值），但不再有快照
+	// 过期失败窗口。纯读路径（Snapshot 等单条 SELECT）不受影响。
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite 数据库 %s: %w", path, err)

@@ -33,6 +33,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
+	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -130,6 +131,19 @@ var agentdCmd = &cobra.Command{
 		// 触发 stalled 事件唤醒审核者（独立 goroutine，不阻塞 HTTP 服务；
 		// MVP 无优雅关停，进程退出即随 ctx 结束）
 		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
+
+		// 本机资源权威（桌面 phase2）：启动先做一次完整 Reconcile，再挂 .git
+		// watcher 与周期兜底扫描。外部 branch/worktree/task 变化经 durable outbox
+		// 推送进桌面左栏。
+		reconciler := machineauthority.NewLocalReconciler(st, localMachine, logger)
+		if _, err := reconciler.ReconcileAll(cmd.Context(), "startup"); err != nil {
+			// 启动 Reconcile 失败不阻断 agentd：任务/API 主路径不依赖资源扫描，
+			// 周期兜底仍会重试；记录错误防止静默
+			logger.Error("启动 reconcile 失败（周期兜底会重试）", "cause", err)
+		}
+		stopWatch := reconciler.StartWatch(cmd.Context())
+		defer stopWatch()
+
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
 		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
 	},

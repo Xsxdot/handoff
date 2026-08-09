@@ -475,6 +475,28 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		}
 	}()
 
+	// 归属绑定（桌面 phase2）：解析/创建任务工作区，让 Task 引用稳定
+	// Workspace ID。登记路径命中已有 Workspace；项目外路径创建/复用 detached。
+	// 为什么用 canonical path：同一目录可能经 symlink/./ 变体访问，唯一键
+	// 必须规范化（spec §6.3）。
+	workdir := ws.WorkDir
+	if workdir == "" {
+		workdir = req.Repo
+	}
+	canonical, cerr := store.CanonicalPath(workdir)
+	if cerr != nil {
+		return nil, fmt.Errorf("规范化工作区路径 %s: %w", workdir, cerr)
+	}
+	localMachine, err := m.st.EnsureLocalMachine(ctx, "本机")
+	if err != nil {
+		return nil, fmt.Errorf("解析本机身份: %w", err)
+	}
+	cws, err := m.st.ResolveWorkspaceForPath(ctx, localMachine.ID, canonical, workdir)
+	if err != nil {
+		return nil, fmt.Errorf("解析任务工作区: %w", err)
+	}
+	m.log.Info("任务工作区已解析", "task", taskID, "workspace_id", cws.ID, "kind", cws.Kind)
+
 	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）。
 	// why 0700：目录内存 serve 启动脚本 run_serve.sh（0600，含随机密码）与
 	// serve.json（0600，含密码）——目录对他人可读会让文件名的存在性可被
@@ -505,32 +527,19 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Model:           model,
 		WorkDir:         ws.WorkDir,
 		WorktreeManaged: ws.Managed,
+		Branch:          ws.Branch,
+		PlanSummary:     summary,
+		MachineID:       localMachine.ID,
+		WorkspaceID:     cws.ID,
 	}
-	if err := m.st.CreateTask(task); err != nil {
+	// Task 创建与 task.upsert outbox 同事务（spec §8.1）：桌面在 adapter 启动
+	// 前就能看到 pending 任务。
+	if _, err := m.st.CreateTaskWithMachineEvent(context.Background(), task); err != nil {
 		return nil, err
 	}
 
-	// 分支名经 SetTaskField 白名单写入（见 Dispatch doc 注意）
-	if err := m.st.SetTaskField(taskID, "branch", ws.Branch); err != nil {
-		m.log.Error("写入任务分支失败", "task", taskID, "branch", ws.Branch, "cause", err)
-		// 分支已在仓库建好但任务记录写不上：按派发失败处理，落 failed 供人工清理
-		m.transitBestEffort(taskID, proto.TaskStateFailed, "写分支名失败")
-		return nil, fmt.Errorf("记录任务分支: %w", err)
-	}
-	// 内存态同步补上 branch，保证传给 adapter 的 StartReq.Task 完整
-	task.Branch = ws.Branch
-
-	// plan 摘要经 SetTaskField 白名单落库（P1-12）：PlanPath 是 agentd 侧文件路径，
-	// 审核者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
-	// plan_summary 就是 attach/tasks 里那一眼速览。失败与 branch 同款按派发失败处理
-	if err := m.st.SetTaskField(taskID, "plan_summary", summary); err != nil {
-		m.log.Error("写入任务 plan 摘要失败", "task", taskID, "cause", err)
-		m.transitBestEffort(taskID, proto.TaskStateFailed, "写 plan 摘要失败")
-		return nil, fmt.Errorf("记录任务 plan 摘要: %w", err)
-	}
-	task.PlanSummary = summary
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
-	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
+	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed, "workspace_id", cws.ID)
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir, Env: envKVs}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
@@ -1666,7 +1675,9 @@ func (m *Manager) transit(taskID string, to proto.TaskState, reason string) erro
 	if cur.State == to {
 		return nil
 	}
-	if err := m.st.UpdateTaskState(taskID, to); err != nil {
+	// 状态更新与 task.upsert outbox 同事务（spec §8.1）：桌面能从投影看到
+	// 每次状态变化，即使执行者侧已无实时事件。
+	if _, err := m.st.UpdateTaskStateWithEvent(context.Background(), taskID, to); err != nil {
 		return err
 	}
 	m.log.Info("任务状态迁移", "task", taskID, "from", cur.State, "to", to, "reason", reason)

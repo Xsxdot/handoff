@@ -205,3 +205,33 @@ func (s *Store) currentControlRevision(ctx context.Context) (int64, error) {
 	}
 	return rev, nil
 }
+
+// ListLocationsForMachine 返回某机器（通常是本机）的全部 ProjectLocation。
+func (s *Store) ListLocationsForMachine(ctx context.Context, machineID string) ([]controlplane.ProjectLocation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, project_id, machine_id, machine_kind, role, main_workspace_id, source, git_url, created_at, updated_at
+FROM project_locations WHERE machine_id = ? ORDER BY created_at`, machineID)
+	if err != nil {
+		return nil, fmt.Errorf("查询机器 %s 的 locations: %w", machineID, err)
+	}
+	defer rows.Close()
+	var out []controlplane.ProjectLocation
+	for rows.Next() {
+		var (
+			loc        controlplane.ProjectLocation
+			createdAt  string
+			updatedAt  string
+		)
+		if err := rows.Scan(&loc.ID, &loc.ProjectID, &loc.MachineID, &loc.MachineKind,
+			&loc.Role, &loc.MainWorkspaceID, &loc.Source, &loc.GitURL, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("读取 location 行: %w", err)
+		}
+		loc.CreatedAt = parseTime(createdAt)
+		loc.UpdatedAt = parseTime(updatedAt)
+		out = append(out, loc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 locations: %w", err)
+	}
+	return out, nil
+}

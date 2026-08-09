@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // nextMachineSeqTx 在事务内分配该机器的下一个 machine_seq（每机器单调递增）。
@@ -401,4 +402,145 @@ func (s *Store) AppendTaskSummaryEvent(ctx context.Context, summary controlplane
 		return controlplane.MachineEvent{}, fmt.Errorf("提交 task summary outbox 事务: %w", err)
 	}
 	return ev, nil
+}
+
+// CreateTaskWithMachineEvent 在同一事务内创建 Task、upsert TaskSummary 并追加
+// task.upsert outbox 事件（spec §8.1：Task 创建必须先落库再启动 adapter）。
+//
+// 返回完整 machine event（带 machine_seq）。
+func (s *Store) CreateTaskWithMachineEvent(ctx context.Context, task *proto.Task) (controlplane.MachineEvent, error) {
+	summary := taskToSummary(task)
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("序列化 task summary payload: %w", err)
+	}
+	ev := controlplane.MachineEvent{
+		MachineID: task.MachineID, EventID: newEventID(),
+		Kind:       controlplane.MachineEventTaskUpsert,
+		ResourceID: task.ID, Payload: payload,
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("开启任务创建 outbox 事务: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := createTaskTx(ctx, tx, task); err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	if err := upsertTaskSummaryTx(ctx, tx, summary.TaskID, summary.MachineID, summary.WorkspaceID); err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	ev, err = appendMachineEventTx(ctx, tx, ev)
+	if err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("提交任务创建 outbox 事务: %w", err)
+	}
+	return ev, nil
+}
+
+// UpdateTaskStateWithEvent 在同一事务内迁移任务状态、upsert TaskSummary 并追加
+// task.upsert outbox 事件。
+//
+// 状态迁移合法性仍由 proto.CanTransit + CAS 守卫（WHERE state=旧值）保证。
+func (s *Store) UpdateTaskStateWithEvent(ctx context.Context, id string, st proto.TaskState) (controlplane.MachineEvent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("开启状态更新 outbox 事务: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		curState  proto.TaskState
+		machineID string
+		wsID      string
+	)
+	err = tx.QueryRowContext(ctx,
+		"SELECT state, machine_id, workspace_id FROM tasks WHERE id = ?", id).
+		Scan(&curState, &machineID, &wsID)
+	if err == sql.ErrNoRows {
+		return controlplane.MachineEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("读取任务 %s: %w", id, err)
+	}
+	if !proto.CanTransit(curState, st) {
+		log().Warn("非法状态迁移被拒绝", "task", id, "from", curState, "to", st)
+		return controlplane.MachineEvent{}, ErrBadTransit
+	}
+	res, err := tx.ExecContext(ctx,
+		"UPDATE tasks SET state = ?, updated_at = ? WHERE id = ? AND state = ?",
+		st, fmtTime(time.Now()), id, curState)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("更新任务 %s 状态: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("读取更新任务 %s 状态影响行数: %w", id, err)
+	}
+	if affected == 0 {
+		log().Warn("状态迁移被并发变更拒绝", "task", id, "from", curState, "to", st)
+		return controlplane.MachineEvent{}, ErrBadTransit
+	}
+
+	// 状态更新与 task.upsert outbox 同事务。
+	ev, err := appendTaskUpsertTx(ctx, tx, id, machineID, wsID)
+	if err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("提交状态更新 outbox 事务: %w", err)
+	}
+	return ev, nil
+}
+
+// appendTaskUpsertTx 在事务内按当前任务行 upsert summary 并追加 task.upsert 事件。
+func appendTaskUpsertTx(ctx context.Context, tx *sql.Tx, taskID, machineID, wsID string) (controlplane.MachineEvent, error) {
+	if machineID == "" {
+		// 未绑定机器的任务不产生 outbox（旧任务迁移前）。
+		return controlplane.MachineEvent{}, nil
+	}
+	if err := upsertTaskSummaryTx(ctx, tx, taskID, machineID, wsID); err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	var summary controlplane.TaskSummary
+	summary.TaskID = taskID
+	summary.MachineID = machineID
+	summary.WorkspaceID = wsID
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("序列化 task summary payload: %w", err)
+	}
+	return appendMachineEventTx(ctx, tx, controlplane.MachineEvent{
+		MachineID: machineID, EventID: newEventID(),
+		Kind:       controlplane.MachineEventTaskUpsert,
+		ResourceID: taskID, Payload: payload,
+	})
+}
+
+// taskToSummary 把 proto.Task 投影为 TaskSummary。
+func taskToSummary(task *proto.Task) controlplane.TaskSummary {
+	return controlplane.TaskSummary{
+		TaskID: task.ID, MachineID: task.MachineID, WorkspaceID: task.WorkspaceID,
+		Name: task.Name, Executor: task.Executor, State: controlplane.TaskSummaryState(task.State),
+		UpdatedAt: task.UpdatedAt,
+	}
+}
+
+// createTaskTx 在事务内创建任务行。
+func createTaskTx(ctx context.Context, tx *sql.Tx, task *proto.Task) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+  name, executor, model, work_dir, worktree_managed, machine_id, workspace_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.Target, task.RepoPath, task.Branch, task.PlanPath, task.PlanSummary,
+		task.ExecutorSession, task.State, fmtTime(task.CreatedAt), fmtTime(task.UpdatedAt),
+		task.Name, task.Executor, task.Model, task.WorkDir, boolToInt(task.WorktreeManaged),
+		task.MachineID, task.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("写入任务 %s: %w", task.ID, err)
+	}
+	return nil
 }

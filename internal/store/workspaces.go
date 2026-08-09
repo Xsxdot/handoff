@@ -200,3 +200,123 @@ func fmtTimeNow() string {
 }
 
 // fmtTime 序列化时间为 UTC RFC3339Nano 文本（在 store.go 定义，此处引用）。
+
+// ResolveWorkspaceForPath 解析一个目录对应的工作区：登记路径命中已有
+// Workspace（main/worktree）直接复用；未登记路径创建/复用 detached Workspace。
+//
+// 为什么 dispatch 要同步 resolve：任务必须引用稳定 Workspace ID 而非路径；
+// 已有登记目录的任务自动归属，项目外路径的任务立即可见于「未登记工作区任务」
+// （spec §6.3）。
+func (s *Store) ResolveWorkspaceForPath(ctx context.Context, machineID, canonical, displayPath string) (controlplane.Workspace, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.Workspace{}, fmt.Errorf("开启 workspace 解析事务: %w", err)
+	}
+	defer tx.Rollback()
+
+	wsID, err := ensureWorkspaceForPathTx(ctx, tx, machineID, canonical, displayPath)
+	if err != nil {
+		return controlplane.Workspace{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.Workspace{}, fmt.Errorf("提交 workspace 解析事务: %w", err)
+	}
+	return s.GetWorkspace(wsID)
+}
+
+// ensureWorkspaceForPathTx 在同一事务里复用或创建 path 对应的工作区。
+//
+// 命中规则：同一机器同一 canonical path 已有任意 kind 的 Workspace 即复用
+// （登记路径命中已有 Workspace）；否则创建 detached。
+func ensureWorkspaceForPathTx(ctx context.Context, tx *sql.Tx, machineID, canonical, displayPath string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx,
+		"SELECT id FROM workspaces WHERE machine_id = ? AND canonical_path = ?",
+		machineID, canonical).Scan(&id)
+	if err == nil {
+		return id, nil // 复用已登记或已建 detached
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("查询工作区: %w", err)
+	}
+	// 新建 detached
+	id = uuid.NewString()
+	now := fmtTimeNow()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO workspaces (id, machine_id, location_id, kind, path, canonical_path,
+  repo_identity, git_common_dir, branch, head_oid, availability, last_scanned_at)
+VALUES (?, ?, NULL, 'detached', ?, ?, '', '', '', '', 'available', ?)`,
+		id, machineID, displayPath, canonical, now); err != nil {
+		return "", fmt.Errorf("创建 detached Workspace: %w", err)
+	}
+	return id, nil
+}
+
+// GetWorkspace 按 id 读取 Workspace；不存在返回 ErrNotFound。
+func (s *Store) GetWorkspace(id string) (controlplane.Workspace, error) {
+	var (
+		ws           controlplane.Workspace
+		locationID   sql.NullString
+		repoIdentity string
+		commonDir    string
+		branch       string
+		headOID      string
+		availability string
+		lastScanned  string
+	)
+	err := s.db.QueryRowContext(context.Background(), `
+SELECT id, machine_id, location_id, kind, path, canonical_path, repo_identity,
+  git_common_dir, branch, head_oid, availability, last_scanned_at
+FROM workspaces WHERE id = ?`, id).
+		Scan(&ws.ID, &ws.MachineID, &locationID, &ws.Kind, &ws.Path, &ws.CanonicalPath,
+			&repoIdentity, &commonDir, &branch, &headOID, &availability, &lastScanned)
+	if errors.Is(err, sql.ErrNoRows) {
+		return controlplane.Workspace{}, ErrNotFound
+	}
+	if err != nil {
+		return controlplane.Workspace{}, fmt.Errorf("读取 workspace %s: %w", id, err)
+	}
+	if locationID.Valid {
+		ws.LocationID = &locationID.String
+	}
+	ws.RepoIdentity = repoIdentity
+	ws.GitCommonDir = commonDir
+	ws.Branch = branch
+	ws.HeadOID = headOID
+	ws.Availability = controlplane.Availability(availability)
+	ws.LastScannedAt = parseTime(lastScanned)
+	return ws, nil
+}
+
+// ListWorkspacesForMachine 返回某机器的全部 Workspace。
+func (s *Store) ListWorkspacesForMachine(machineID string) ([]controlplane.Workspace, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+SELECT id, machine_id, location_id, kind, path, canonical_path, repo_identity,
+  git_common_dir, branch, head_oid, availability, last_scanned_at
+FROM workspaces WHERE machine_id = ? ORDER BY kind, canonical_path`, machineID)
+	if err != nil {
+		return nil, fmt.Errorf("查询机器 %s 的 workspaces: %w", machineID, err)
+	}
+	defer rows.Close()
+	var out []controlplane.Workspace
+	for rows.Next() {
+		var (
+			ws          controlplane.Workspace
+			locationID  sql.NullString
+			lastScanned string
+		)
+		if err := rows.Scan(&ws.ID, &ws.MachineID, &locationID, &ws.Kind, &ws.Path, &ws.CanonicalPath,
+			&ws.RepoIdentity, &ws.GitCommonDir, &ws.Branch, &ws.HeadOID, &ws.Availability, &lastScanned); err != nil {
+			return nil, fmt.Errorf("读取 workspace 行: %w", err)
+		}
+		if locationID.Valid {
+			ws.LocationID = &locationID.String
+		}
+		ws.LastScannedAt = parseTime(lastScanned)
+		out = append(out, ws)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 workspaces: %w", err)
+	}
+	return out, nil
+}

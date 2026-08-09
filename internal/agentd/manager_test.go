@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
@@ -1238,5 +1239,98 @@ func TestResumeUnaffectedForNonVolatileAdapter(t *testing.T) {
 
 	if alive := m.ResumeTask(taskID); !alive {
 		t.Error("无状态权限的 adapter 不应受未决工单影响")
+	}
+}
+
+// TestDispatchPublishesTaskOutbox 验证 Dispatch 先创建完整 pending Task
+// （含 branch/plan_summary/machine/workspace）与 task.upsert outbox 事件，
+// 再调用 adapter；adapter 启动失败仍有 failed 摘要；旧 CLI 返回结构不变。
+func TestDispatchPublishesTaskOutbox(t *testing.T) {
+	repo := initTestRepo(t)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "把 README 安装命令改成 brew", Target: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ID == "" {
+		t.Fatal("task id 为空")
+	}
+	// 旧 CLI 兼容字段仍在（repo_path/target/state 等）
+	if task.RepoPath != repo || task.State != proto.TaskStateRunning {
+		t.Fatalf("旧 CLI 字段回归失败: %+v", task)
+	}
+	// 桌面归属字段就位
+	if task.MachineID == "" {
+		t.Fatalf("machine_id 为空，dispatch 未绑定本机身份")
+	}
+	if task.WorkspaceID == "" {
+		t.Fatalf("workspace_id 为空，dispatch 未登记工作区")
+	}
+	// task outbox：至少一条 task.upsert（pending → running 各一条）
+	events, err := st.MachineEventsAfter(context.Background(), task.MachineID, 0, 100)
+	if err != nil {
+		t.Fatalf("MachineEventsAfter: %v", err)
+	}
+	var taskUpserts int
+	for _, ev := range events {
+		if ev.Kind == controlplane.MachineEventTaskUpsert {
+			taskUpserts++
+		}
+	}
+	if taskUpserts < 1 {
+		t.Fatalf("task outbox 应有 task.upsert 事件，实际 %+v", events)
+	}
+}
+
+// TestDispatchStartFailureStillPublishesFailedSummary 验证 adapter 启动失败时
+// 任务仍落 failed 并产生 failed 摘要（桌面能看到失败现场）。
+func TestDispatchStartFailureStillPublishesFailedSummary(t *testing.T) {
+	repo := initTestRepo(t)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &failStartAdapter{}}, "fake")
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	}); err == nil {
+		t.Fatal("adapter.Start 失败应使 dispatch 失败")
+	}
+	tasks, err := st.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
+		t.Fatalf("任务应落 failed 供桌面看到失败现场: %+v", tasks)
+	}
+	// task 摘要存在
+	summaries, err := st.ListTaskSummaries()
+	if err != nil {
+		t.Fatalf("ListTaskSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].State != "failed" {
+		t.Fatalf("task summary 应为 failed: %+v", summaries)
+	}
+}
+
+// TestUpdateTaskStateWritesOutbox 验证状态更新与 task outbox 同事务：
+// pending → running 后 outbox 出现 task.upsert。
+func TestUpdateTaskStateWritesOutbox(t *testing.T) {
+	repo := initTestRepo(t)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Target: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := st.MachineEventsAfter(context.Background(), task.MachineID, 0, 1000)
+	n := len(before)
+	// 状态迁移 waiting_review（running 合法迁移）
+	if err := m.transit(task.ID, proto.TaskStateWaitingReview, "test"); err != nil {
+		t.Fatalf("transit: %v", err)
+	}
+	after, _ := st.MachineEventsAfter(context.Background(), task.MachineID, 0, 1000)
+	if len(after) <= n {
+		t.Fatalf("状态更新后 outbox 未增长: before=%d after=%d", n, len(after))
 	}
 }
