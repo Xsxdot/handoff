@@ -40,3 +40,12 @@ export function readAgentdConfig(path: string): AgentdConfig {
 
 /** 默认 agentd 配置路径（~/.handoff/config.yaml）。 */
 export const DefaultAgentdConfigPath = `${process.env.HOME ?? ''}/.handoff/config.yaml`
+
+/**
+ * 解析 agentd 配置路径：优先 HANDOFF_AGENTD_CONFIG（测试注入），
+ * 否则用 ~/.handoff/config.yaml。
+ */
+export function resolveAgentdConfigPath(): string {
+  const overridden = process.env.HANDOFF_AGENTD_CONFIG
+  return overridden && overridden.length > 0 ? overridden : DefaultAgentdConfigPath
+}

@@ -36,7 +36,12 @@ export class HandoffLogger {
   constructor(options: HandoffLoggerOptions) {
     this.filePath = `${options.dir}/handoff-desktop.log`
     this.redactFields = new Set(options.redactFields)
-    mkdirSync(dirname(this.filePath), { recursive: true })
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true })
+    } catch {
+      // 日志目录不可建（如测试 mock 的非真实 userData 路径）时降级为只记内存：
+      // 日志写失败不应阻断应用/测试主流程。
+    }
   }
 
   /**

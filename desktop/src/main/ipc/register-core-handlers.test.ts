@@ -64,7 +64,8 @@ const {
   registerLocalhostWorktreeLabelHandlersMock,
   registerNativeChatHandlersMock,
   registerEmulatorFrameStreamHandlersMock,
-  registerEmulatorVideoStreamHandlersMock
+  registerEmulatorVideoStreamHandlersMock,
+  registerHandoffIpcFromConfigMock
 } = vi.hoisted(() => ({
   getPathMock: vi.fn(() => '/test/user-data'),
   listEnvironmentsMock: vi.fn(() => []),
@@ -123,6 +124,7 @@ const {
   registerDashboardPopoutHandlersMock: vi.fn(),
   registerTerminalPreviewHandlersMock: vi.fn(),
   registerSpeechHandlersMock: vi.fn(),
+  registerHandoffIpcFromConfigMock: vi.fn(),
   registerSkillsHandlersMock: vi.fn(),
   registerWorkspaceSpaceHandlersMock: vi.fn(),
   registerWorkspacePortHandlersMock: vi.fn(),
@@ -164,6 +166,10 @@ vi.mock('./terminal-preview', () => ({
 
 vi.mock('./speech', () => ({
   registerSpeechHandlers: registerSpeechHandlersMock
+}))
+
+vi.mock('../handoff/register-handoff-ipc', () => ({
+  registerHandoffIpcFromConfig: registerHandoffIpcFromConfigMock
 }))
 
 vi.mock('./cli', () => ({

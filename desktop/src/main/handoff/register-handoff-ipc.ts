@@ -12,7 +12,7 @@
  */
 import { app, dialog, ipcMain, BrowserWindow } from 'electron'
 import { AgentdClient } from './agentd-client'
-import { DefaultAgentdConfigPath, readAgentdConfig } from './agentd-config'
+import { resolveAgentdConfigPath, readAgentdConfig } from './agentd-config'
 import { defaultRedactFields, HandoffLogger, newSessionToken } from './logger'
 import type { HandoffLogger as HandoffLoggerType } from './logger'
 
@@ -30,7 +30,7 @@ export type RegisterHandoffIpcOptions = {
  * @returns 清理函数
  */
 export function registerHandoffIpcFromConfig(configPath?: string): () => void {
-  const path = configPath ?? DefaultAgentdConfigPath
+  const path = configPath ?? resolveAgentdConfigPath()
   const cfg = readAgentdConfig(path)
   const logger = new HandoffLogger({
     dir: `${app.getPath('userData')}/logs`,
@@ -109,7 +109,6 @@ export function registerHandoffIpc(options: RegisterHandoffIpcOptions): () => vo
       }
     }
   }
-
   const onConnectionStatus = (status: unknown): void => {
     for (const [winId] of unsubscribers) {
       const win = BrowserWindow.fromId(winId)
