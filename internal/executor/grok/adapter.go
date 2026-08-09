@@ -35,7 +35,16 @@ import (
 
 const (
 	progressThrottle = 30 * time.Second // 与 opencode 同值：防高频增量刷爆事件库
-	permTextLimit    = 200              // 交给审核者的权限描述上限
+	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给审核者看的上限）。
+	//
+	// adapter 发出的 AdapterEvent.Text 是权限描述的唯一真相源，manager 拿它做三件事：
+	//   - shouldConsultApprover 的黑名单正则扫描（命中即跳过审批者升级人工）
+	//   - 第 1 层模型审批者 Decide 的输入
+	//   - 权限工单里保存的全文（审核者裁决的依据）
+	// 展示用的短截断由 manager 的 permEventText() 单独负责，只作用于事件 payload，
+	// 且带显式截断标记。**在 adapter 层提前砍短会让黑名单只扫到截断前缀，危险片段
+	// 落在其后即静默放行**——这是 B6 修掉过的根因，不能在此复活。64KB 只防失控输出。
+	permTextHardLimit = 64 << 10
 )
 
 // Adapter 是 grok 的 executor.Adapter 实现。
@@ -517,13 +526,25 @@ func (t *turnAccumulator) feedRaw(raw []byte) {
 // toolLine 把工具调用渲染成一行人类可读摘要：优先用 rawInput.command，
 // 否则退回 title。
 func toolLine(title string, rawInput json.RawMessage) string {
+	if cmd := rawCommand(rawInput); cmd != "" {
+		return turn.TruncateMarked(cmd, 200)
+	}
+	return title
+}
+
+// rawCommand 提取工具调用的完整命令（不截断）。
+//
+// 权限描述里必须用它而不是 toolLine：toolLine 的 200 截断是 render.log 行摘要的
+// 设计（旁观者扫一眼即可），但权限描述是黑名单扫描/工单全文的真相源，命令尾部
+// 可能正藏着危险片段（B6 根因），截断即静默放行。
+func rawCommand(rawInput json.RawMessage) string {
 	var in struct {
 		Command string `json:"command"`
 	}
-	if len(rawInput) > 0 && json.Unmarshal(rawInput, &in) == nil && in.Command != "" {
-		return turn.TruncateMarked(in.Command, 200)
+	if len(rawInput) > 0 && json.Unmarshal(rawInput, &in) == nil {
+		return in.Command
 	}
-	return title
+	return ""
 }
 
 // acpHandler 把 ACP 回调接到 adapter 上。
@@ -560,10 +581,16 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 			"outcome": map[string]any{"outcome": "selected", "optionId": "reject-once"}})
 		return
 	}
-	// 挂起登记：RespondPermission 要靠 reqID 才能回发裁决，连接断开时
-	// onClosed 依据挂起表是否有项决定是否转 failed（见 perm.go）
+	// 权限描述是唯一真相源：全文进工单与黑名单扫描（见 permTextHardLimit 的注释），
+	// 展示截断由 manager 的 permEventText 负责。命令必须取完整原文（rawCommand 而非
+	// toolLine）——toolLine 的 200 截断是 render.log 行摘要，命令尾部可能正藏着
+	// 危险片段。
+	text := p.ToolCall.Title
+	if cmd := rawCommand(p.ToolCall.RawInput); cmd != "" {
+		text += " | " + cmd
+	}
+	text = turn.TruncateMarked(text, permTextHardLimit)
 	h.r.notePending(p.ToolCall.ToolCallID, reqID)
-	text := turn.TruncateMarked(p.ToolCall.Title+" | "+toolLine("", p.ToolCall.RawInput), permTextLimit)
 	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
 		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID, Text: text})

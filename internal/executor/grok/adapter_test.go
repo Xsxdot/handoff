@@ -99,6 +99,62 @@ func TestSessionNewAuthErrorGivesActionableMessage(t *testing.T) {
 	}
 }
 
+// TestPermissionEventTextNotTruncatedForSecurity 钉住 permTextHardLimit 的语义：
+// adapter 发出的 AdapterEvent.Text 是权限描述的唯一真相源，manager 的黑名单扫描、
+// 模型审批与工单全文都吃它。若在 adapter 层提前截短，危险片段落在截断点之后就会
+// 被静默放行——今天这台机器上已真实发生过（rm -rf 位于第 200 字符之后的请求）。
+func TestPermissionEventTextNotTruncatedForSecurity(t *testing.T) {
+	// 敏感串必须放在 200 字符之后（旧 permTextLimit=200 会把它截掉）。
+	// title 用通用名（run_terminal_command）不带命令——命令必须从 rawInput 全文取出，
+	// 这同时钉住 toolLine 的 200 截断不得用于权限描述（B6 根因）。
+	longCmd := strings.Repeat("a", 300) + " && rm -rf /important/dir"
+	params := `{"sessionId":"s","toolCall":{"toolCallId":"c1","title":"run_terminal_command",` +
+		`"rawInput":{"command":"` + longCmd + `"}},"options":[{"optionId":"allow-once","kind":"allow_once"}]}}`
+	permReqBody := `{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":` + params
+
+	srv := startFakeAgent(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		switch req.Method {
+		case "initialize":
+			return []string{`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{}}`}
+		case "trigger/perm":
+			return []string{permReqBody}
+		}
+		return nil
+	}, nil)
+	a, r := grok.NewAdapterWithRunForTest("t1")
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), grok.NewHandlerForTest(a, r), nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	r.AttachClientForTest(cli)
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Call(ctx, "initialize", map[string]any{}); err != nil {
+		t.Fatalf("initialize 失败: %v", err)
+	}
+	_ = cli.Notify("trigger/perm", map[string]any{})
+
+	select {
+	case ev := <-r.EventsForTest():
+		if ev.Type != "permission" {
+			t.Fatalf("事件类型 = %q，期望 permission", ev.Type)
+		}
+		// 断言内容而非长度：黑名单要扫到的是这个串本身
+		if !strings.Contains(ev.Text, "rm -rf /important/dir") {
+			t.Fatalf("权限描述被截断，黑名单将扫不到敏感串。Text:\n%s", ev.Text)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到权限事件")
+	}
+}
+
 // TestStopDoesNotEmitFailedResult 钉住 Stop 与 onClosed 的竞态：Stop 主动关连接
 // 会触发读循环退出→OnClosed→onClosed，后者不得产出「ACP 连接断开」的假失败结果
 // （真实原因是用户主动停了，不是执行失败）。

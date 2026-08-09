@@ -38,6 +38,10 @@ func (r *runState) AttachClientForTest(cli *ACPClient) { r.cli = cli }
 // EventsForTest 暴露事件通道（供断言 Stop 之后是否有假失败结果）。
 func (r *runState) EventsForTest() <-chan executor.AdapterEvent { return r.evCh }
 
+// NewHandlerForTest 构造一个挂到给定运行态的 ACP 回调面，供事件映射的集成断言
+// （把假 agent 的 WS 消息经真实读循环打到 OnPermission）。
+func NewHandlerForTest(a *Adapter, r *runState) ACPHandler { return &acpHandler{a: a, r: r} }
+
 // StartSessionForTest 只跑 Start 里「连接 → initialize → session/new」这一段，
 // 不起 serve 进程，供 auth 错误路径断言。
 func StartSessionForTest(wsURL, repoPath string) error {
