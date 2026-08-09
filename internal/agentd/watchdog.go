@@ -3,9 +3,11 @@
 // 职责：
 //   - RunWatchdog：周期扫描 running/waiting_answer 任务，最新事件早于 stallTimeout
 //     判定卡住，追加 stalled 事件并广播，唤醒审核者裁决（spec §8「任务级超时看门狗」）
-//   - RecoverOnStartup：agentd 启动时对 running/waiting_answer 任务逐个探测执行器
-//     存活（spec §8「agentd 崩溃后重启恢复」）；不存活 → failed 事件 + 迁移
-//     waiting_review 交审核者裁决；存活 → 重建 SSE 订阅继续消费
+//   - RecoverOnStartup：agentd 启动时对 running/waiting_answer/waiting_review 任务
+//     逐个探测执行器存活（spec §8「agentd 崩溃后重启恢复」）；running/waiting_answer
+//     不存活 → failed 事件 + 迁移 waiting_review 交审核者裁决；waiting_review 不存活
+//     → 保持现状（本就是待审核终态，不追加事件不迁状态）；存活（含 waiting_review）
+//     → 重建 SSE 订阅继续消费
 //
 // 边界：
 //   - 不做状态机之外的业务决策：stalled 只唤醒不改状态（executor 可能仍在干活，
@@ -159,13 +161,19 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
-// 对全部 running/waiting_answer 任务调用 probe 探测执行器存活——
-//   - 不存活：追加 failed 事件（原因固定为「agentd 重启后执行器已不在」）并迁移
-//     waiting_review，交审核者裁决（失败现场留在事件里，审核者凭 tasks/attach
-//     可见）；该任务的挂起工单一并作废（P1-16，见 VoidPendingTickets 的语义），
-//     事件照常广播，启动期无人订阅则由客户端凭 seq cursor 补拉
-//   - 存活：重建 SSE 订阅继续消费——重建动作由 probe 闭包内部完成（见 seam 说明），
-//     本函数只记录结论日志
+// 对全部 running/waiting_answer/waiting_review 任务调用 probe 探测执行器存活——
+//   - running/waiting_answer 不存活：追加 failed 事件（原因固定为「agentd 重启后
+//     执行器已不在」）并迁移 waiting_review，交审核者裁决（失败现场留在事件里，
+//     审核者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
+//     VoidPendingTickets 的语义），事件照常广播，启动期无人订阅则由客户端凭
+//     seq cursor 补拉
+//   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待审核者
+//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 failed 事件或再迁
+//     状态只会产生噪音，**不**复用 running/waiting_answer 的 failed 迁移路径
+//   - 存活（含 waiting_review）：重建 SSE 订阅继续消费——重建动作由 probe 闭包
+//     内部完成（见 seam 说明），本函数只记录结论日志；waiting_review 存活时
+//     同样重建，续接依赖的会话上下文（opencode serve 进程与 SSE 会话）才不至于
+//     随 agentd 进程消亡而丢失，但**不改任务状态**（它该留在 waiting_review 等人）
 //
 // 参数：
 //   - st: 持久化存储
@@ -184,19 +192,29 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 //   - 必须在 HTTP 服务开始前调用（cmd/agentd.go 的 bootstrap 顺序保证）
 //   - waiting_answer 任务迁移 waiting_review 需经 running 两跳（waiting_answer→
 //     waiting_review 直接迁移不在 6 状态迁移表中，见 recoverTransit）
+//   - 探活本身无副作用：waiting_review 任务无论 probe 结果如何都不改状态，
+//     状态由审核者动作（continue/done）驱动
 func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool, log *slog.Logger) error {
 	tasks, err := st.ListTasks()
 	if err != nil {
 		return fmt.Errorf("启动恢复读取任务列表: %w", err)
 	}
-	recovered, failed := 0, 0
+	recovered, failed, kept := 0, 0, 0
 	for _, t := range tasks {
-		if t.State != proto.TaskStateRunning && t.State != proto.TaskStateWaitingAnswer {
-			continue // 其余状态不需要恢复：pending 未启动、终态已结束、waiting_review 是人的节奏
+		if t.State != proto.TaskStateRunning && t.State != proto.TaskStateWaitingAnswer && t.State != proto.TaskStateWaitingReview {
+			continue // 其余状态不需要恢复：pending 未启动、终态已结束
 		}
 		if probe(t.ID) {
 			recovered++
 			log.Info("执行器存活，重建订阅继续消费", "task", t.ID, "alive", true, "state", t.State)
+			continue
+		}
+		if t.State == proto.TaskStateWaitingReview {
+			// waiting_review 本来就是待审核终态：executor 不在不追加事件、不迁移
+			// 状态——审核者裁决（continue 重派 / done 归档）才是它该走的路。
+			// 复用 running/waiting_answer 的 failed 迁移路径会在这里产生噪音事件
+			kept++
+			log.Info("waiting_review 任务 executor 已不在，保持现状等审核者裁决", "task", t.ID, "alive", false)
 			continue
 		}
 		failed++
@@ -224,7 +242,7 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		}
 		hub.Publish(evt)
 	}
-	log.Info("启动恢复完成", "recovered", recovered, "failed", failed)
+	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)
 	return nil
 }
 

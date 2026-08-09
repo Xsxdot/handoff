@@ -35,6 +35,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -126,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
+	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStop)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
@@ -426,6 +428,8 @@ type dispatchRequest struct {
 	Base        string `json:"base"`
 	Worktree    string `json:"worktree"`
 	NewWorktree bool   `json:"new_worktree"`
+	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
+	BaseCommit string `json:"base_commit"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -448,7 +452,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
-		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
+		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.Repo, err)
@@ -464,14 +468,23 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
+//   - ErrBaseCommitMissing → 400：任务仓库落后于审核者本地基线，拒发并带 git push
+//     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - 其余（任务目录/落库/executor 启动等 agentd 侧故障）→ 500
+//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（tmux 不在 PATH、
+//     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
+//     err.Error()（含真因如 exec: "tmux": executable file not found），审核者拿到
+//     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
+//   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
 	switch {
 	case errors.Is(err, ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrBaseCommitMissing):
+		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable):
 		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -481,6 +494,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errExecutorStartFailed):
+		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		s.log.Error("派发任务失败", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
@@ -494,7 +510,9 @@ type continueRequest struct {
 
 // handleContinue 向任务续发修改指令（要求任务处于 waiting_review）。
 //
-// 错误映射：任务不存在 404；状态不允许续接 409（manager 返回 store.ErrBadTransit）。
+// 错误映射：任务不存在 404；状态不允许续接 409（manager 返回 store.ErrBadTransit）；
+// executor 运行态已丢失 409（executor.ErrTaskNotRunning，agentd 可能重启过，提示
+// 重新派发）。
 func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("continue 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
@@ -535,6 +553,29 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleStop 主动中止任务（停 executor、作废挂起工单、落 failed）。
+//
+// 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
+// worktree（true=agentd 建的 worktree 已删，false=用户自带 worktree / 原地模式，
+// 或 managed 清理失败）。CLI 据此打印提示文案，不猜。
+//
+// 错误映射：任务不存在 404；已是终态 409（manager 返回 store.ErrBadTransit）。
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("stop 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("stop 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	removed, err := s.mgr.Stop(r.Context(), taskID)
+	if err != nil {
+		s.writeManagerError(w, taskID, "stop", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 
 // handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答。
@@ -728,7 +769,8 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 // writeManagerError 把 manager 返回的错误映射为 HTTP 状态码与提示。
 //
 // 映射规则：store.ErrNotFound → 404；store.ErrBadTransit → 409（状态不允许）；
-// 其余 → 500。
+// executor.ErrTaskNotRunning → 409（executor 运行态已丢失，agentd 可能重启过，
+// 需重新派发——可行动提示而非扁平 500）；其余 → 500。
 func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -737,6 +779,13 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 	case errors.Is(err, store.ErrBadTransit):
 		s.log.Warn("manager 操作状态不允许", "task", taskID, "op", op, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务当前状态不允许该操作"})
+	case errors.Is(err, executor.ErrTaskNotRunning):
+		// 为什么映射 409 而非 500：executor 运行态随 agentd 重启（或进程死亡）丢失，
+		// 是「可预期、可行动」的状态而非内部故障——审核者需要的是「重新派发」的
+		// 明确指引，而不是被扁平 500 挡在门外（resume 的 executor_gone=false 已表明
+		// 会话上下文还在，缺的只是恢复路径）
+		s.log.Warn("manager 操作遇执行器运行态已丢失", "task", taskID, "op", op, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务执行器运行态已丢失（agentd 可能重启过），请重新派发"})
 	default:
 		s.log.Error("manager 操作失败", "task", taskID, "op", op, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})

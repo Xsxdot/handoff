@@ -3,7 +3,8 @@
 // 职责：
 //   - attach <task>：组装并执行 attach 命令进入 executor 的 tmux 会话实况
 //     （本机 tmux attach -t handoff-<id8>；远程经 ssh -t <host> tmux attach）
-//   - attach（无参）：任务选择列表（交互）或非 TTY 下的建议命令打印
+//   - attach（无参）：任务选择列表（交互）或非 TTY 下的建议命令打印（远程任务
+//     的建议命令带 --target）
 //
 // 边界：
 //   - 终端实况是「看着执行者干活」的入口，不输出快照——快照恢复走 handoff show
@@ -15,12 +16,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
@@ -61,8 +64,8 @@ var attachCmd = &cobra.Command{
 // 注意：
 //   - id8 截断规则与 opencode adapter 的 tmux 会话命名（handoff-<id8>）耦合，
 //     改一处必改两处（proc.go StartServe 的 session 命名）
-//   - 远程 host 取 Targets[target].Addr 冒号前段（Addr 形如 devbox:7777，
-//     ssh 目标是主机名，不含 agentd 端口）
+//   - 远程 ssh 目标经 sshHostFromTarget 换算：取 Addr 冒号前段，user 非空时带
+//     user@ 前缀（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd 端口）
 func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string, err error) {
 	id8 := taskID
 	if len(id8) > 8 {
@@ -76,11 +79,27 @@ func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string,
 	if !ok {
 		return nil, fmt.Errorf("target %q 未在配置中定义", target)
 	}
+	return []string{"ssh", "-t", sshHostFromTarget(t), "tmux", "attach", "-t", session}, nil
+}
+
+// sshHostFromTarget 把配置 target 换算成 ssh 目标（attach/pull 共用的唯一换算点）。
+//
+// 规则：取 Addr 冒号前段（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd
+// 端口）；User 非空时返回 user@host，否则只返回 host（与历史行为一致）。
+//
+// 为什么必须抽共用函数：attach（远程实况）与 pull（远程分支同步）都需要把
+// Targets[target] 换算成 ssh 目标，各自实现会因只改一处而行为漂移。user 字段让
+// ssh 用户名可配置——本机用户名与远程不一致（如本机 xushixin 连远端 sycm）时，
+// 裸 host 的 ssh 会直接 Permission denied。
+func sshHostFromTarget(t config.Target) string {
 	host := t.Addr
 	if i := strings.IndexByte(host, ':'); i >= 0 {
 		host = host[:i]
 	}
-	return []string{"ssh", "-t", host, "tmux", "attach", "-t", session}, nil
+	if t.User != "" {
+		return t.User + "@" + host
+	}
+	return host
 }
 
 // execveFn 是 syscall.Exec 的测试缝：验证「execve 第一参必须是 LookPath 解析
@@ -153,9 +172,7 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 
 	if !isTTY() {
 		// 非 TTY：打印建议命令即可，不阻塞读输入
-		for _, t := range tasks {
-			fmt.Fprintf(cmd.OutOrStdout(), "handoff attach %s\n", t.ID)
-		}
+		printAttachSuggestions(cmd.OutOrStdout(), tasks)
 		return nil
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "序号  name                              executor  状态            更新时间")
@@ -177,6 +194,20 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 		return fmt.Errorf("序号 %q 非法（范围 1-%d）", strings.TrimSpace(line), len(tasks))
 	}
 	return runAttach(cmd, cli, tasks[n-1].ID)
+}
+
+// printAttachSuggestions 打印每个任务的 attach 建议命令（非 TTY 降级路径）。
+//
+// 远程任务必须带 --target：不带的话命令会打到本机 agentd，先 404、再 attach
+// 一个本机不存在的 tmux 会话——两条错都指不到「你少了个 --target」这个真原因。
+func printAttachSuggestions(w io.Writer, tasks []proto.Task) {
+	for _, t := range tasks {
+		line := "handoff attach " + t.ID
+		if t.Target != "" {
+			line += " --target " + t.Target
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 // attachPriority 返回任务状态在列表中的优先级（越小越靠前）：
@@ -204,16 +235,18 @@ func truncateName(s string) string {
 	return s
 }
 
-// isTTY 判定 stdin 是否为字符设备（真终端）。
+// isTTY 判定 stdin 是否为真终端。
 //
 // 非 TTY（管道/脚本调用）时 attach 不阻塞读输入，改为打印建议命令——
 // 无人值守场景给可复制的命令即可，交互选择框对脚本无意义。
+//
+// 为什么用 go-isatty 而非 os.ModeCharDevice（修复 5）：字符设备≠终端——/dev/null
+// 正是字符设备，旧实现会把它误判成 TTY，导致脚本按标准做法 handoff attach
+// < /dev/null 走进交互分支、打完表格再报「读取选择」错误——非 TTY 降级路径在最该
+// 生效的场景里失效。go-isatty 走 ioctl 查终端属性（TIOCGETA），/dev/null 无终端
+// 语义 → false；管道、重定向文件同样返回 false。
 func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(os.Stdin.Fd())
 }
 
 // loadCLIConfig 加载 CLI 侧配置（attach 需要 Targets 换算 ssh host）。

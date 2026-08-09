@@ -17,7 +17,7 @@
      用户本人（危险操作/需求取舍升级）
 ```
 
-- **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
+- **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done` / `stop` / `pull`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
 - **handoff agentd**：任务状态机、事件持久化、executor 生命周期（tmux 内拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
 - **executor 挂载**：agentd 通过 opencode server 的 HTTP API + SSE 事件流对接（`POST /session`、`prompt_async`、`/event` SSE）；权限等待发生在 opencode 会话内部，与审核者是否在线解耦。
 - **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
@@ -35,7 +35,9 @@ handoff agentd --executor=opencode          # 真实执行（默认）；fake �
 # 2. 本机配对（远程场景）：把 executor 机 ~/.handoff/config.yaml 里的 token 抄到
 #    本机同名文件 targets 段：
 #       targets:
-#         devbox: {addr: "192.168.x.x:7777", token: "<executor 机的 token>"}
+#         devbox: {addr: "192.168.x.x:7777", token: "<executor 机的 token>", user: "<远程 ssh 用户名>"}
+#    user 是远程 attach/pull 的 ssh 用户名：本机用户名与远程一致时可省略，不一致
+#    不配它会 Permission denied（attach/pull 无法建立 ssh 连接）。
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
 handoff dispatch --repo /path/to/repo plan.md
@@ -59,14 +61,16 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况） |
-| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等） |
+| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验） |
+| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
 | `handoff attach [task]` | 进入任务 executor 的 tmux 终端实况（无参时任务选择列表，非 TTY 打印建议命令） | `--target <name>` 远程经 ssh 进入 |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
+| `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
+| `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达 executor 的应答 | — |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
 | `handoff fetch <task> <文件>` | 读取仓库内文件（审阅上下文） | — |
@@ -92,6 +96,8 @@ executor:                     # dispatch 未显式指定执行者时的缺省
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
 terminal:                     # dispatch 成功后的终端弹窗
   auto: true                  # darwin 下 osascript 弹 Terminal.app 进实况
+sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
+  auto: true                  # 关闭后仍可用 handoff pull 手动同步
 ```
 
 ## 分级审批链

@@ -77,6 +77,20 @@ func TestLoadRejectsUnknownTargetKeys(t *testing.T) {
 	}
 }
 
+// TestLoadParsesTargetUser 验证 target 可配置 ssh 用户名（user 键）：
+// 解析后 Target.User 就位，供 attach/pull 换算 user@host。
+func TestLoadParsesTargetUser(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte("token: abc123abc123abc1\ntargets:\n  devbox:\n    addr: \"100.1.2.3:7777\"\n    user: \"sycm\"\n    token: \"tk\"\n"), 0o600)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Targets["devbox"].User != "sycm" {
+		t.Fatalf("target 的 user 字段未解析: %+v", cfg.Targets["devbox"])
+	}
+}
+
 // TestLoadEmptyFileKeepsDefaults 验证空配置文件按「无内容」处理：
 // 保持默认值且不报错（与 yaml.Unmarshal 对空输入的 no-op 语义一致），
 // 不能把空文件的 io.EOF 误当解析错误。
@@ -184,5 +198,20 @@ func TestValidateRejectsBadBlacklistRegex(t *testing.T) {
 	os.WriteFile(p, []byte("token: a\napprover:\n  executor: claude\n  blacklist:\n    - \"([\"\n"), 0o600)
 	if _, err := config.Load(p); err == nil {
 		t.Fatalf("非法正则应在启动期被拒绝，而不是运行期 panic")
+	}
+}
+
+// TestSyncAutoDefaultsTrue 验证省略 sync 键时默认开启自动同步。
+func TestSyncAutoDefaultsTrue(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sync.Auto {
+		t.Error("sync.auto 省略时应默认 true")
 	}
 }

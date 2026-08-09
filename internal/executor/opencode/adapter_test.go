@@ -1101,6 +1101,68 @@ func TestReconnectWarnsLostPermission(t *testing.T) {
 	t.Fatal("断连恢复后未出现「断连间隙权限可能丢失」Warn 日志（P1-10b 降级方案）")
 }
 
+// probeLevelRecorder 是测试用 slog.Handler：记录「探活降频/探活回到高频」两条探活
+// 档位切换日志的级别，供断言两条对称（修复 6）。
+type probeLevelRecorder struct {
+	mu     sync.Mutex
+	levels map[string]slog.Level
+}
+
+func (r *probeLevelRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *probeLevelRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == "探活降频：任务静默，探活间隔升到慢档" ||
+		rec.Message == "探活回到高频：收到新事件，任务活跃" {
+		r.mu.Lock()
+		r.levels[rec.Message] = rec.Level
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *probeLevelRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *probeLevelRecorder) WithGroup(string) slog.Handler      { return r }
+
+// TestWatchdogProbeLevelSwitchSymmetric 覆盖修复 6：探活档位切换的两条日志级别必须
+// 对称（都是 Debug）。降频打 Info、回高频打 Debug 时，任务正常干活两档来回切会在
+// 日志里刷出一串「探活降频」而看不到对应的回高频——既是噪音又误导成「任务卡住」。
+func TestWatchdogProbeLevelSwitchSymmetric(t *testing.T) {
+	rec := &probeLevelRecorder{levels: map[string]slog.Level{}}
+	a := New(slog.New(rec))
+	probe := &fakeProbe{alive: true}
+	r := &runState{taskID: "task-wd-0003", handle: probe}
+	r.runCtx, r.runCancel = context.WithCancel(context.Background())
+	r.stopCh = make(chan struct{})
+	t.Cleanup(func() { r.runCancel() })
+	cfg := watchdogConfig{fastInterval: 10 * time.Millisecond,
+		slowInterval: 50 * time.Millisecond, fastProbes: 1}
+	go a.watchdogWithConfig(r, cfg)
+
+	waitLevel := func(msg string) slog.Level {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			rec.mu.Lock()
+			lv, ok := rec.levels[msg]
+			rec.mu.Unlock()
+			if ok {
+				return lv
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("未出现探活日志 %q", msg)
+		return 0
+	}
+	if lv := waitLevel("探活降频：任务静默，探活间隔升到慢档"); lv != slog.LevelDebug {
+		t.Fatalf("探活降频日志级别 = %s, want Debug（与回高频对称）", lv)
+	}
+	// 打点模拟新事件，随后应出现回高频日志，级别同样必须是 Debug
+	r.lastEventAt.Store(time.Now().UnixNano())
+	if lv := waitLevel("探活回到高频：收到新事件，任务活跃"); lv != slog.LevelDebug {
+		t.Fatalf("探活回到高频日志级别 = %s, want Debug", lv)
+	}
+}
+
 // TestWatchdogBacksOffWhenStable 覆盖 P1-17 探活降频：任务稳定（探活连续成功且
 // 无新事件）后探活间隔从 fast 升到 slow——不再每 200ms 一次 tmux fork + HTTP
 // 请求（waiting_review 挂过夜 = 每天每任务约 43 万次 fork）；出现失败立即回到
@@ -1218,5 +1280,21 @@ func TestSessionIsolationUsesPropertiesSessionID(t *testing.T) {
 		case <-time.After(300 * time.Millisecond):
 			return // 期望：无 permission 事件（隔离生效）
 		}
+	}
+}
+
+// TestPermissionEventCarriesFullText 验证 adapter 不再在 200 字处截断权限描述，
+// 只保留 64KB 的防失控硬上限。
+// 注：本文件是 package opencode（内部测试），直接断言内部截断规则，无需导出缝。
+func TestPermissionEventCarriesFullText(t *testing.T) {
+	long := strings.Repeat("a", 1000)
+	got := truncateMarked(long, permTextHardLimit)
+	if got != long {
+		t.Fatalf("1000 字的权限描述必须原样上传，实得 %d 字符", len([]rune(got)))
+	}
+	huge := strings.Repeat("b", 70000)
+	got = truncateMarked(huge, permTextHardLimit)
+	if !strings.HasSuffix(got, executor.TruncationMarker) {
+		t.Error("超 64KB 硬上限时仍必须带截断标记（审批链据此 fail-closed）")
 	}
 }

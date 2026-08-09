@@ -2,7 +2,8 @@
 // 构建 HTTP/WS 服务并监听。agentd 是本机/配对主机上的长驻服务，是任务的执行入口。
 //
 // 职责：
-//   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault → store.Open → agentd.NewServer
+//   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault →
+//     agentd.MergeLoginShellPATH（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
@@ -53,6 +54,11 @@ var agentdCmd = &cobra.Command{
 		// hub 构造时取 slog.Default()，必须先于 NewServer 生效，才能让 hub/store/config
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
+
+		// PATH 补全（B7）：agentd 常由非登录 shell 拉起，拿不到 profile 里的
+		// PATH——真实踩坑是 executor 在远程机上找不到 go。必须早于任何 fork
+		// 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承
+		agentd.MergeLoginShellPATH(context.Background(), logger)
 
 		// DataDir 首次运行可能不存在（config.Load 只保证配置目录），
 		// store.Open 与 taskDir 创建都依赖它，必须先建

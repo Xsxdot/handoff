@@ -6,14 +6,17 @@
 //     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
+//   - 派发前的远程基线校验：EnsureBaseCommit 保证任务仓库不落后于审核者本地
 //
 // 边界：
 //   - 全部操作是「分支准备 + 只读审阅」：绝不代 executor 写代码/提交，
 //     executor 的改动必须经它自己的 commit 落进任务分支
 //   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由审核者决定
 //   - git 全部经 exec.Command("git","-C",repo,...) 执行，不拼接 shell
-//   - 每条命令都有超时/输出护栏（run 10min / 输出有界回收：最多保留 1MB，
-//     超出部分只排空不驻留内存），防挂死与内存失控
+//   - 每条命令都有超时/输出护栏：工作区准备/清理一组 git 调用上限
+//     WorkspaceGitTimeout=2min（pre-checkout hook / credential 交互提示会挂死 git，
+//     这些调用同步跑在 dispatch handler 里，必须有兜底上限）；审阅命令 run 10min；
+//     输出有界回收（最多保留 1MB，超出部分只排空不驻留内存），防挂死与内存失控
 package agentd
 
 import (
@@ -26,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -50,6 +54,10 @@ var (
 	ErrRepoUnusable    = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
+
+	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
+	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
+	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
 )
 
 // 执行护栏：
@@ -57,9 +65,18 @@ var (
 //     导出供 cmd 包派生 agentd HTTP WriteTimeout（见 cmd/agentd.go）：响应写超时必须
 //     ≥ 该上限，否则长审阅命令会在 handler 执行途中被掐断连接、RunCmd 被提前取消
 //   - maxRunOutput：合并输出的截断上限，防止失控命令刷爆内存与响应体
+//   - WorkspaceGitTimeout：工作区准备/清理这一整组 git 调用的时长上限（见其注释）
 var (
 	RunCmdTimeout = 10 * time.Minute
 	maxRunOutput  = 1 << 20 // 1 MiB
+
+	// WorkspaceGitTimeout 是工作区准备/清理这一整组 git 调用的时长上限。
+	//
+	// 为什么必须有：worktree add / checkout 在网络文件系统、pre-checkout hook 或
+	// credential 交互式提示下会永久挂住；这些调用同步跑在 dispatch 的 HTTP handler
+	// 里，一次挂死等于一个连接与一条 handler goroutine 永不释放。
+	// 包级 var 而非 const：测试可注入更短值。
+	WorkspaceGitTimeout = 2 * time.Minute
 )
 
 // log 返回 slog.Default()（与 store 同款约定：bootstrap 后统一 logger）。
@@ -89,8 +106,11 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 // PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
 // 与全部错误哨兵（ErrDirtyWorktree/ErrRepoUnusable），Dispatch 改走 PrepareWorkspace
 // 后本函数仅剩测试与本包内部引用（Task 7 会清理调用点）。
-func PrepareBranch(repo, taskID string) (branch string, err error) {
-	ws, err := PrepareWorkspace(WorkspaceReq{Repo: repo, TaskID: taskID})
+//
+// 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
+func PrepareBranch(ctx context.Context, repo, taskID string) (branch string, err error) {
+	ws, err := PrepareWorkspace(ctx, WorkspaceReq{Repo: repo, TaskID: taskID})
 	if err != nil {
 		return "", err
 	}
@@ -124,6 +144,9 @@ type Workspace struct {
 
 // PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
 //
+// 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
+//
 // 3 分支模式 × 3 工作树模式的 9 种组合行为表（分支 B/新分支 N/自动 A × 新树 N/用户树 U/原地 I）：
 //
 //	      新树(NewWorktree)        用户树(Worktree)        原地(默认)
@@ -133,8 +156,8 @@ type Workspace struct {
 //
 // 其中 b=指定分支、h=handoff/<id8>、t=Base（仅 N 行有效，空=HEAD；自动分支 A
 // 不允许带 Base，见第 1 层校验）、p=WorktreesDir/<id8> 或用户路径。
-// 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对）；
-// 所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
+// 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对
+// + show-toplevel 必须等于入参）；所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
 //
 // 为什么 NewWorktree 免脏检查：新 worktree 是从仓库新建的独立工作树，天然干净，
 // 与主仓库的脏状态无关——这是 worktree 并行派发的价值：主仓有人手动改动也不阻塞
@@ -144,10 +167,13 @@ type Workspace struct {
 // 「共享同一仓库 git 目录」；git-common-dir 对 main 仓库返回其 .git、对 worktree
 // 返回同一值，路径经 EvalSymlinks 归一后相等即归属成立——比「读 .git 文件内容」
 // 更稳（.git 可能缺失、可能被链到别处）。校验失败按 ErrBadWorkspaceReq 拒发。
-func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
+func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) {
+	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
 	log().Info("工作区准备进入", "repo", req.Repo, "task", req.TaskID, "branch", req.Branch,
 		"new_branch", req.NewBranch, "base", req.Base, "worktree", req.Worktree,
-		"new_worktree", req.NewWorktree, "worktrees_dir", req.WorktreesDir)
+		"new_worktree", req.NewWorktree, "worktrees_dir", req.WorktreesDir,
+		"timeout", WorkspaceGitTimeout)
 	// 第 1 层：纯内存参数校验（互斥/依赖/注入面），全部包 ErrBadWorkspaceReq
 	if req.Repo == "" || req.TaskID == "" {
 		return Workspace{}, rejectWorkspace("repo 与 task_id 必填", req)
@@ -180,7 +206,7 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 	isExisting := req.Branch != "" // 仅 Branch 模式要求分支已存在
 	if isExisting {
 		// 分支存在性：rev-parse --verify --quiet refs/heads/<name>，非零即不存在
-		if out, _, err := gitRun(context.Background(), req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
+		if out, _, err := gitRun(ctx, req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
 			return Workspace{}, rejectWorkspace("分支 "+req.Branch+" 不存在", req)
 		}
 	}
@@ -203,25 +229,25 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 				args = append(args, req.Base)
 			}
 		}
-		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
 		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
 	case req.Worktree != "":
 		// 用户树：归属校验 → 脏检查 → 在其中 checkout
-		if !worktreeBelongsToRepo(req.Repo, req.Worktree) {
+		if !worktreeBelongsToRepo(ctx, req.Repo, req.Worktree) {
 			return Workspace{}, rejectWorkspace("路径 "+req.Worktree+" 不是本仓库的 worktree", req)
 		}
-		if err := ensureCleanWorktree(req.Worktree); err != nil {
+		if err := ensureCleanWorktree(ctx, req.Worktree); err != nil {
 			return Workspace{}, err
 		}
-		if err := checkoutInWorktree(req.Worktree, branch, req.Base, isExisting); err != nil {
+		if err := checkoutInWorktree(ctx, req.Worktree, branch, req.Base, isExisting); err != nil {
 			return Workspace{}, err
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false}
 	default:
 		// 原地：脏检查主仓 → checkout / checkout -b
-		if err := ensureCleanWorktree(req.Repo); err != nil {
+		if err := ensureCleanWorktree(ctx, req.Repo); err != nil {
 			return Workspace{}, err
 		}
 		var args []string
@@ -233,12 +259,17 @@ func PrepareWorkspace(req WorkspaceReq) (Workspace, error) {
 				args = append(args, req.Base)
 			}
 		}
-		if _, stderr, err := gitRun(context.Background(), req.Repo, args...); err != nil {
+		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false}
 	}
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
+	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
+	// 不显式记录一条就无法在日志里区分「命令自己失败」与「被我们掐断」
+	if ctx.Err() != nil {
+		log().Error("工作区准备超时", "task", req.TaskID, "timeout", WorkspaceGitTimeout, "cause", ctx.Err())
+	}
 	return ws, nil
 }
 
@@ -249,8 +280,8 @@ func rejectWorkspace(rule string, req WorkspaceReq) error {
 }
 
 // checkoutInWorktree 在用户自带 worktree 内切分支（已存在 → checkout；新建/自动
-// → checkout -b [base]），供 Worktree 模式复用。
-func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
+// → checkout -b [base]），供 Worktree 模式复用。ctx 控制本次 git 调用的生命周期。
+func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExisting bool) error {
 	var args []string
 	if isExisting {
 		args = []string{"checkout", branch}
@@ -260,7 +291,7 @@ func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
 			args = append(args, base)
 		}
 	}
-	if _, stderr, err := gitRun(context.Background(), workDir, args...); err != nil {
+	if _, stderr, err := gitRun(ctx, workDir, args...); err != nil {
 		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
 	}
 	return nil
@@ -270,8 +301,9 @@ func checkoutInWorktree(workDir, branch, base string, isExisting bool) error {
 // 脏检测含未跟踪文件：未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝。
 // git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
 // 用 ErrRepoUnusable 区分（server 层据此给调用方可读的 400 而非扁平 500）。
-func ensureCleanWorktree(dir string) error {
-	status, _, err := gitRun(context.Background(), dir, "status", "--porcelain")
+// ctx 控制本次 git 调用的生命周期。
+func ensureCleanWorktree(ctx context.Context, dir string) error {
+	status, _, err := gitRun(ctx, dir, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("%w: git status: %v", ErrRepoUnusable, err)
 	}
@@ -285,15 +317,22 @@ func ensureCleanWorktree(dir string) error {
 
 // worktreeBelongsToRepo 校验 worktree 路径是否属于主仓库 repo。
 //
-// 原理见 PrepareWorkspace doc 的 why：git-common-dir 对 main 仓库与它的任一
-// worktree 返回同一 git 目录，路径经 EvalSymlinks 归一后相等即归属成立。
-// 任一步失败（路径不是 git 仓库/不是本仓 worktree）都返回 false（fail-closed）。
-func worktreeBelongsToRepo(repo, worktree string) bool {
-	repoDir, _, err := gitRun(context.Background(), repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+// 两道校验：
+//  1. git-common-dir 比对：对 main 仓库与它的任一 worktree 返回同一 git 目录，
+//     路径经 EvalSymlinks 归一后相等即归属成立——证明入参「在同一个仓库里」
+//  2. show-toplevel 必须等于入参（经 EvalSymlinks 归一）：git-common-dir 会
+//     向上查找，/repo/internal/sub 与主仓返回同一 git 目录，只有第二道才证明
+//     「入参就是这棵工作树的根」——缺它，仓库子目录会被当成合法 worktree，
+//     实际改的是主仓 HEAD、审阅面也被收窄到那个子目录
+//
+// 任一步失败（路径不是 git 仓库/不是本仓 worktree/不是工作树根）都返回 false
+// （fail-closed）。ctx 控制本次 git 调用的生命周期。
+func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
+	repoDir, _, err := gitRun(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return false
 	}
-	wtDir, _, err := gitRun(context.Background(), worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	wtDir, _, err := gitRun(ctx, worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return false
 	}
@@ -302,12 +341,33 @@ func worktreeBelongsToRepo(repo, worktree string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	return rp == wp
+	if rp != wp {
+		return false
+	}
+	// 第二道：入参必须是工作树的根，不能是它下面的任意子目录。
+	// git-common-dir 只证明「在同一个仓库里」，--show-toplevel 才证明
+	// 「就是这棵树的根」——缺这道，/repo/internal/sub 会被当成合法 worktree。
+	top, _, err := gitRun(ctx, worktree, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false
+	}
+	tp, err3 := filepath.EvalSymlinks(strings.TrimSpace(top))
+	ap, err4 := filepath.EvalSymlinks(worktree)
+	if err3 != nil || err4 != nil {
+		return false
+	}
+	if tp != ap {
+		log().Warn("worktree 校验失败：路径不是工作树根（疑似传了仓库子目录）",
+			"repo", repo, "worktree", worktree, "toplevel", tp)
+		return false
+	}
+	return true
 }
 
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
 //
 // 参数：
+//   - ctx: 控制整组 git 调用的生命周期，内部再叠加 WorkspaceGitTimeout 作为兜底上限
 //   - repo: 主仓库路径
 //   - workdir: 待删除的 worktree 路径（必须为 Managed=true 的工作区）
 //
@@ -315,15 +375,78 @@ func worktreeBelongsToRepo(repo, worktree string) bool {
 //   - 只删工作树不删分支（spec：任务分支保留供审阅/回滚）
 //   - workdir 带未提交改动时 git 拒绝删除（错误带 stderr 原文返回）；是否降级
 //     由调用方（Done 归档）决定——本函数不做清理性降级
-func RemoveManagedWorktree(repo, workdir string) error {
-	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir)
-	if _, stderr, err := gitRun(context.Background(), repo, "worktree", "remove", workdir); err != nil {
+func RemoveManagedWorktree(ctx context.Context, repo, workdir string) error {
+	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
+	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir, "timeout", WorkspaceGitTimeout)
+	if _, stderr, err := gitRun(ctx, repo, "worktree", "remove", workdir); err != nil {
 		log().Error("删除 managed worktree 失败", "repo", repo, "workdir", workdir,
 			"stderr", truncateRunes(stderr, 300), "cause", err)
 		return fmt.Errorf("git worktree remove %s: %s: %w", workdir, strings.TrimSpace(stderr), err)
 	}
 	log().Info("managed worktree 已删除", "repo", repo, "workdir", workdir)
 	return nil
+}
+
+// FetchTimeout 是基线缺失时补拉远端的时长上限。
+// 独立于 WorkspaceGitTimeout：fetch 走网络，与本地 git 操作不是一个量级。
+var FetchTimeout = 2 * time.Minute
+
+// baseCommitRe 限定基线只能是 40 位小写十六进制（git rev-parse HEAD 的输出形态）。
+var baseCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// EnsureBaseCommit 校验审核者本地的基线提交在任务仓库中存在，缺失时补拉一次远端。
+//
+// 参数：
+//   - ctx: 上层上下文；fetch 阶段内部叠加 FetchTimeout
+//   - repo: 任务仓库路径
+//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=不校验（本地派发/cwd 非仓库）
+//
+// 返回：
+//   - nil: 基线存在（直接命中或 fetch 后命中）
+//   - ErrBadWorkspaceReq: sha 格式非法
+//   - ErrBaseCommitMissing: fetch 后仍缺失，错误文本含 sha、fetch stderr 与动作提示
+//
+// 注意：
+//   - 「命中才不 fetch」是刻意设计：常态下远程并不落后，cat-file 是纯本地对象库
+//     查询（微秒级），只有真落后时才付网络代价
+//   - fetch 失败（无凭证/网络不通）不单独成一类错误，一并归入 ErrBaseCommitMissing：
+//     对调用方而言结论都是「这次派不出去，先解决远程仓库」，stderr 原文已带出根因
+func EnsureBaseCommit(ctx context.Context, repo, sha string) error {
+	if sha == "" {
+		log().Info("未提供基线提交，跳过远程同步校验", "repo", repo)
+		return nil
+	}
+	if !baseCommitRe.MatchString(sha) {
+		log().Warn("基线提交格式非法，拒绝派发", "repo", repo, "base_commit", truncateRunes(sha, 80))
+		return fmt.Errorf("%w: 基线提交必须是 40 位十六进制，实得 %q", ErrBadWorkspaceReq, truncateRunes(sha, 80))
+	}
+	if hasCommit(ctx, repo, sha) {
+		log().Info("基线提交已在任务仓库，跳过 fetch", "repo", repo, "base_commit", sha)
+		return nil
+	}
+	log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
+	if ferr != nil {
+		log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
+			"stderr", truncateRunes(stderr, 500), "cause", ferr)
+	}
+	if hasCommit(ctx, repo, sha) {
+		log().Info("补拉远端后基线提交已就位", "repo", repo, "base_commit", sha)
+		return nil
+	}
+	log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha)
+	return fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
+		ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+}
+
+// hasCommit 判断 sha 是否已在 repo 的对象库中（^{commit} 保证它确实是提交对象，
+// 而不是同名的 tree/blob）。
+func hasCommit(ctx context.Context, repo, sha string) bool {
+	_, _, err := gitRun(ctx, repo, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
 
 // id8 截取任务 ID 前 8 字节，用于分支名与 worktree 目录名的稳定短标识。

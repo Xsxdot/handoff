@@ -289,6 +289,138 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	}
 }
 
+// failStartAdapter 是 Start 恒失败的 adapter：模拟 executor 起不来（如 tmux 不在
+// PATH），Dispatch 应把任务落 failed 并补偿清理已建的 managed worktree。
+type failStartAdapter struct{}
+
+func (a *failStartAdapter) Start(context.Context, executor.StartReq) error {
+	return errors.New(`exec: "tmux": executable file not found in $PATH`)
+}
+
+func (a *failStartAdapter) Events(string) <-chan executor.AdapterEvent {
+	ch := make(chan executor.AdapterEvent)
+	close(ch)
+	return ch
+}
+
+func (a *failStartAdapter) Send(context.Context, string, string) error { return nil }
+func (a *failStartAdapter) RespondPermission(context.Context, string, string, string) error {
+	return nil
+}
+
+func (a *failStartAdapter) Stop(string) error { return nil }
+
+// TestDispatchStartFailureCleansManagedWorktree 覆盖 managed worktree 泄漏路径 (a)：
+// adapter.Start 失败（如 tmux 不在 PATH，executor 起不来）时任务落 failed，已建的
+// managed worktree 必须补偿删除——落 failed 的任务没有任何清理路径（done 只认
+// waiting_review），不清就是永久残留。
+func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &failStartAdapter{}}, "fake")
+
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	}); err == nil {
+		t.Fatal("adapter.Start 失败应使 dispatch 失败")
+	}
+
+	wtDir := filepath.Join(m.cfg.DataDir, "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		t.Fatalf("读 worktrees 目录: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("adapter.Start 失败后 managed worktree 应被补偿清理，仍有: %v", entries)
+	}
+	// 任务落 failed：审核者仍能经 tasks 看到失败现场（PlanPath 等已落库）
+	tasks, err := st.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
+		t.Fatalf("任务应落 failed 供审核者查看, got %+v", tasks)
+	}
+}
+
+// TestStopRemovesManagedWorktree 覆盖 managed worktree 泄漏路径 (b)：被 stop 的任务
+// 落 failed，managed worktree 必须随 stop 删除——否则 stop 过的任务永远归档不了、
+// worktree 永久残留。任务分支必须保留（stop 不丢工作）。
+func TestStopRemovesManagedWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := task.WorkDir
+	if workDir == "" || !task.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", task)
+	}
+	if removed, err := m.Stop(context.Background(), task.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	} else if !removed {
+		t.Fatalf("managed worktree 已删，stop 应报告 worktree_removed=true")
+	}
+	cur, _ := st.GetTask(task.ID)
+	if cur.State != proto.TaskStateFailed {
+		t.Fatalf("stop 后 state=%s, want failed", cur.State)
+	}
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Fatalf("stop 后 managed worktree 应被删除: %v", err)
+	}
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+		t.Fatalf("stop 不得删除任务分支")
+	}
+}
+
+// TestStopReportsWorktreeRemoved 验证 stop 的返回如实反映本次是否删除了 worktree：
+// managed worktree（agentd 建的）已删 → worktree_removed=true；原地模式（没有
+// worktree 概念）→ false。CLI 侧据此打印与行为一致的提示文案，不猜。
+func TestStopReportsWorktreeRemoved(t *testing.T) {
+	repo := initTestRepo(t)
+	fk := fake.New(nil)
+	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+
+	// managed worktree：stop 真删了 worktree → worktree_removed=true
+	wtTask, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wtTask.WorkDir == "" || !wtTask.WorktreeManaged {
+		t.Fatalf("new-worktree 元数据缺失: %+v", wtTask)
+	}
+	removed, err := m.Stop(context.Background(), wtTask.ID)
+	if err != nil {
+		t.Fatalf("Stop(managed): %v", err)
+	}
+	if !removed {
+		t.Fatal("managed worktree 已删，stop 应返回 worktree_removed=true")
+	}
+
+	// 原地模式：WorktreeManaged=false（WorkDir 回退为 RepoPath）→ 无 worktree 可删
+	plainTask, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "y", Executor: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainTask.WorktreeManaged {
+		t.Fatalf("原地模式不应有 managed worktree: %+v", plainTask)
+	}
+	removed, err = m.Stop(context.Background(), plainTask.ID)
+	if err != nil {
+		t.Fatalf("Stop(plain): %v", err)
+	}
+	if removed {
+		t.Fatal("原地模式没有 worktree，stop 应返回 worktree_removed=false")
+	}
+}
+
 // TestDoneRemovesManagedWorktree 验证 done 归档时自动删除 agentd 管理的 worktree
 // （目录消失、任务分支保留、任务 completed）。
 func TestDoneRemovesManagedWorktree(t *testing.T) {
@@ -844,5 +976,106 @@ func TestPlanSummaryFromContent(t *testing.T) {
 		if got := planSummaryFromContent([]byte(c.content)); got != c.want {
 			t.Errorf("%s: planSummaryFromContent=%q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// TestPermissionTicketKeepsFullText 验证权限工单存全文、事件 payload 截断。
+// why：旧实现在 adapter 侧就把描述截到 200 字，工单里存的本身就是截断版——
+// 审核者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
+func TestPermissionTicketKeepsFullText(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-full", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	long := "bash: " + strings.Repeat("x", 500) + " && rm -rf /tmp/danger"
+	m.handleEvent(context.Background(), task.ID, executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: long,
+	})
+
+	tk, err := st.GetTicket(task.ID + ":p1")
+	if err != nil {
+		t.Fatalf("读取工单: %v", err)
+	}
+	if !strings.Contains(string(tk.Request), "rm -rf /tmp/danger") {
+		t.Errorf("工单必须存权限描述全文（尾部的危险片段不能丢），实得 %s", tk.Request)
+	}
+
+	evs, err := st.EventsFromAsc(task.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("读取事件: %v", err)
+	}
+	var payload string
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionRequest {
+			payload = string(e.Payload)
+		}
+	}
+	if payload == "" {
+		t.Fatal("未产出 permission_request 事件")
+	}
+	if len([]rune(payload)) > 600 {
+		t.Errorf("事件 payload 必须截断（唤醒消息保持短），实得 %d 字符", len([]rune(payload)))
+	}
+	if !strings.Contains(payload, executor.TruncationMarker) {
+		t.Errorf("截断的事件 payload 必须带截断标记，实得 %s", payload)
+	}
+}
+
+// TestStopEndsRunningTask 验证 stop 的完整效果：executor 停、挂起工单作废、
+// failed 事件写明中止原因、状态落 failed。
+func TestStopEndsRunningTask(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-stop", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	// 造一个挂起工单：stop 后它必须被作废，否则审核者仍会看到可操作项，
+	// 一 reply 就打进已死会话（与 handleResult 失败分支同一条理由）
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "T-stop:p1", TaskID: "T-stop", Kind: "gate",
+		Request: []byte(`{"kind":"gate","permission":"bash: ls"}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Stop(context.Background(), task.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	got, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != proto.TaskStateFailed {
+		t.Errorf("stop 后状态 = %s，期望 failed", got.State)
+	}
+	pending, err := st.PendingTickets(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("stop 后挂起工单必须清空，实得 %d 条", len(pending))
+	}
+	evs, err := st.EventsFromAsc(task.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed && strings.Contains(string(e.Payload), "中止") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("stop 必须产出写明中止原因的 failed 事件（否则与真失败无法区分）")
+	}
+}
+
+// TestStopOnTerminalTaskRejected 验证已终结任务重复 stop 返回状态冲突而不是崩掉。
+func TestStopOnTerminalTaskRejected(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-stop2", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateCompleted, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	if _, err := m.Stop(context.Background(), task.ID); !errors.Is(err, store.ErrBadTransit) {
+		t.Fatalf("已终结任务 stop 必须返回 ErrBadTransit（映射 409），实得 %v", err)
 	}
 }

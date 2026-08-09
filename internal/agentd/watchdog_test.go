@@ -75,6 +75,16 @@ func seedCompletedTask(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+// seedWaitingReviewTask 创建任务并迁到 waiting_review（审核者审阅中，executor
+// 可能还活着等续接指令，也可能已不在）。
+func seedWaitingReviewTask(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	createRunningTask(t, st, id)
+	if err := st.UpdateTaskState(id, proto.TaskStateWaitingReview); err != nil {
+		t.Fatalf("置为 waiting_review: %v", id)
+	}
+}
+
 // stalledEvents 返回任务的全部 stalled 事件（断言用）。
 func stalledEvents(t *testing.T, st *store.Store, taskID string) []proto.Event {
 	t.Helper()
@@ -361,6 +371,74 @@ func TestRecoverOnStartup(t *testing.T) {
 	for _, ev := range evs {
 		if ev.Type == proto.EventTypeFailed {
 			t.Fatalf("存活任务不应产生 failed 事件: seq=%d", ev.Seq)
+		}
+	}
+}
+
+// TestRecoverOnStartupRebuildsWaitingReview 覆盖 agentd 重启后 waiting_review 任务
+// 的续接恢复：executor 存活（probe=true）时必须重建订阅与中介循环（即被探活），
+// 但**不改任务状态**——waiting_review 是审核者裁决的落点，就该留在原地等人；也不得
+// 追加任何事件。旧实现显式跳过 waiting_review（「是人的节奏」），续接上下文随
+// agentd 进程消亡而丢失，continue 永久失败。
+func TestRecoverOnStartupRebuildsWaitingReview(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-review-alive")
+
+	probed := map[string]int{}
+	probe := func(taskID string) bool {
+		probed[taskID]++
+		return true
+	}
+
+	if err := RecoverOnStartup(st, hub, probe, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+	if probed["task-review-alive"] != 1 {
+		t.Fatalf("waiting_review 存活任务应被探活重建，probed=%d, want 1", probed["task-review-alive"])
+	}
+	assertState(t, st, "task-review-alive", proto.TaskStateWaitingReview)
+
+	evs, err := st.EventsFrom("task-review-alive", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeFailed {
+			t.Fatalf("waiting_review 存活重建不得追加 failed 事件: seq=%d", ev.Seq)
+		}
+	}
+}
+
+// TestRecoverOnStartupKeepsDeadWaitingReview 覆盖 waiting_review 任务 executor 已不在
+// 的恢复：保持现状即可——不追加 failed 事件、不迁移状态（它本来就是待审核终态，
+// 追加事件只会产生噪音）。与 running/waiting_answer 的「failed 迁移」路径严格区分。
+func TestRecoverOnStartupKeepsDeadWaitingReview(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-review-dead")
+
+	probed := map[string]int{}
+	probe := func(taskID string) bool {
+		probed[taskID]++
+		return false
+	}
+
+	if err := RecoverOnStartup(st, hub, probe, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+	if probed["task-review-dead"] != 1 {
+		t.Fatalf("waiting_review 任务应被探活判断，probed=%d, want 1", probed["task-review-dead"])
+	}
+	assertState(t, st, "task-review-dead", proto.TaskStateWaitingReview)
+
+	evs, err := st.EventsFrom("task-review-dead", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeFailed {
+			t.Fatalf("waiting_review 任务 executor 不在也不得追加 failed 事件: seq=%d", ev.Seq)
 		}
 	}
 }

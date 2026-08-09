@@ -189,11 +189,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	return c.hc.Do(req)
 }
 
-// httpError 把非 2xx 响应转为带状态码与响应体（截断）的错误——
-// 响应体是「服务端为什么拒绝」的第一手线索，直接并入错误信息返回给命令层展示。
+// httpError 把非 2xx 响应转成错误，并按状态码分级记录日志。
+//
+// 为什么按状态码分级：4xx 是预期内的客户端错误（任务不存在、状态不允许），
+// 在 attach 列表、pull 等常规路径上会正常出现——一律打 ERROR 会刷出假告警，
+// 把真正需要注意的服务端故障（5xx）淹没在噪音里。
 func (c *Client) httpError(op string, resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-	c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
+	if resp.StatusCode >= 500 {
+		c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
+	} else {
+		c.log().Warn("agentd 请求被拒", "op", op, "status", resp.StatusCode, "body", string(b))
+	}
 	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, strings.TrimSpace(string(b)))
 }
 
@@ -281,6 +288,9 @@ type DispatchOpts struct {
 	Base        string
 	Worktree    string
 	NewWorktree bool
+	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
+	// 不落后于本地（空=不校验）。
+	BaseCommit string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -295,7 +305,7 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"repo": opts.Repo, "plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
-		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree,
+		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
@@ -342,6 +352,32 @@ func (c *Client) Done(ctx context.Context, taskID string) error {
 		return c.httpError("done", resp)
 	}
 	return nil
+}
+
+// Stop 主动中止任务：停 executor、作废挂起工单、任务落 failed。
+//
+// 参数：
+//   - taskID: 待中止的任务 ID
+//
+// 返回：
+//   - worktreeRemoved: 响应体 worktree_removed 如实回传——true=本次删除了
+//     managed worktree，false=用户自带 worktree / 原地模式（没删）；响应体缺字段
+//     （旧版 agentd）按 false 处理。CLI 据此打印与行为一致的提示，不猜
+//   - 任务不存在（404）或已是终态（409）时返回错误
+func (c *Client) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/stop", nil)
+	if err != nil {
+		return false, fmt.Errorf("中止任务请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, c.httpError("中止任务", resp)
+	}
+	var body struct {
+		WorktreeRemoved bool `json:"worktree_removed"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return body.WorktreeRemoved, nil
 }
 
 // Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答。

@@ -42,6 +42,10 @@ var ErrTaskNotRunning = errors.New("任务不在运行中")
 // manager 侧据此 fail-closed——权限文本含本标记说明「审核/裁决者看到的是截断
 // 后的不完整命令」，危险片段可能落在截断之外，黑名单与廉价模型都不可信，必须
 // 升级人工审核者。
+//
+// 注意（B6 起）：权限描述在 executor 侧只受 64KB 防失控硬上限约束，常规长度
+// 不再触发本标记——只有真的超了 64KB 才会出现它。事件 payload 的短展示由
+// manager 侧另行截断（同样以本常量收尾）。
 const TruncationMarker = "…（已截断）"
 
 // StartReq 是 Adapter.Start 的入参：任务上下文 + 计划内容 + 任务工作目录。

@@ -7,6 +7,7 @@
 //     permission/question 落 ticket 并挂到 hub.WaitAnswer 等审核者应答，
 //     progress 只入库，result 落 completed/failed 事件进 waiting_review
 //   - 审核者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
+//   - stop：审核者主动中止任务（停 executor、作废工单、落 failed）
 //
 // 中介时序与工单幂等的不变量（P1-2/P1-6/P1-7）：
 //   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
@@ -71,6 +72,15 @@ const (
 
 // errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
 var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
+
+// errExecutorStartFailed 是 Dispatch 启动 executor 失败（adapter.Start 返回错误）
+// 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
+//
+// 为什么单独成类：executor 依赖缺失（如 tmux 不在 PATH、opencode 未安装）是
+// **环境问题**而非 agentd 内部故障——审核者需要看到真因（exec: "tmux":
+// executable file not found）才能动手装依赖，扁平化的「派发任务失败」只会让
+// 审核者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
+var errExecutorStartFailed = errors.New("启动 executor 失败")
 
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
@@ -193,6 +203,9 @@ type DispatchReq struct {
 	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
 	Worktree    string
 	NewWorktree bool
+	// BaseCommit 是审核者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
+	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
+	BaseCommit string
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -326,6 +339,20 @@ type approverDisabledPayload struct {
 // 不是偶发抖动」的合理样本量。
 const maxApproverFails = 3
 
+// permEventTextLimit 是 permission_request / approver_decision 事件 payload 里
+// 权限描述的展示上限。事件是唤醒消息，短即可；全文在工单里，经 handoff show 取。
+const permEventTextLimit = 200
+
+// permEventText 把权限描述压成事件 payload 用的短文本，超限时带显式截断标记——
+// 无标记的截断会让审核者以为看到的就是全部（这正是 B6 的根因），有标记才知道
+// 要去 handoff show 看工单里的全文。
+func permEventText(s string) string {
+	if len([]rune(s)) <= permEventTextLimit {
+		return s
+	}
+	return truncateRunes(s, permEventTextLimit) + executor.TruncationMarker
+}
+
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
 // running → 启动中介 goroutine 消费事件流。
 //
@@ -345,7 +372,8 @@ const maxApproverFails = 3
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
 	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target,
 		"executor", req.Executor, "model", req.Model, "name", req.Name,
-		"branch", req.Branch, "new_branch", req.NewBranch, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
+		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
+		"base_commit", req.BaseCommit, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败", "repo", req.Repo, "cause", err)
@@ -395,10 +423,16 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
+	// 远程基线校验（B4）：放在工作区准备之前——基准不对时后面建的分支全是错的，
+	// 且此刻还没有任何落库/建树副作用，拒发是干净的
+	if err := EnsureBaseCommit(ctx, req.Repo, req.BaseCommit); err != nil {
+		return nil, err
+	}
+
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
-	ws, err := PrepareWorkspace(WorkspaceReq{
+	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
 		Repo: req.Repo, TaskID: taskID,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
@@ -407,6 +441,19 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
+	// 补偿清理 defer（P2-2 修复）：PrepareWorkspace 成功之后、executor 真正接管
+	// 工作区之前（ad.Start 成功）的**任何**错误返回，都要把已建的 managed worktree
+	// 清掉。为什么必须覆盖全部错误返回而不能逐个调用点补：落 failed 的任务没有
+	// 任何清理路径（done 只认 waiting_review，见 Stop 修复），MkdirAll/WriteFile/
+	// CreateTask/SetTaskField/ad.Start 任一失败漏补，该 worktree 就永久残留。
+	// 为什么 executor 接管后不再补偿：ad.Start 成功后 executor 已在 worktree 里干活，
+	// 此时删工作树会把运行中的任务脚下抽空——泄漏与破坏之间宁可留待看门狗处置。
+	executorStarted := false
+	defer func() {
+		if err != nil && !executorStarted {
+			m.compensateManagedWorktree(ctx, req.Repo, ws)
+		}
+	}()
 
 	// taskDir 是任务专属工作目录（计划文件与 executor 侧任务物料都放这里）。
 	// why 0700：目录内存 serve 启动脚本 run_serve.sh（0600，含随机密码）与
@@ -415,12 +462,10 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 保持一致
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, planName)
 	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
 	}
 
@@ -442,7 +487,6 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		WorktreeManaged: ws.Managed,
 	}
 	if err := m.st.CreateTask(task); err != nil {
-		m.compensateManagedWorktree(req.Repo, ws)
 		return nil, err
 	}
 
@@ -470,10 +514,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
-		// pending→failed 合法；失败现场留在任务里，审核者可见
+		// pending→failed 合法；失败现场留在任务里，审核者可见。
+		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
+		// 包 errExecutorStartFailed 哨兵，让 server 层把真因回显给审核者（修复 3）
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
-		return nil, fmt.Errorf("启动 executor: %w", err)
+		return nil, fmt.Errorf("%w: %v", errExecutorStartFailed, err)
 	}
+	// executor 已接管工作区：此后的错误（transit 落库失败等 store 级故障）不再补偿
+	// 清理——worktree 正被运行中的 executor 使用，删了反而破坏运行中的任务
+	executorStarted = true
 	if err := m.transit(taskID, proto.TaskStateRunning, "dispatch"); err != nil {
 		return nil, err
 	}
@@ -490,16 +539,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 // compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
 // worktree（P2-2）。
 //
-// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后任务记录落库前
-// （MkdirAll/WriteFile/CreateTask）失败，没有任何任务持有该 worktree——done 的
-// 清理只认 WorktreeManaged 的任务记录，无记录则永不清理，worktree 成为孤儿
-// 永久占用磁盘。失败只记 Error，不覆盖/不替换原始派发错误。
-func (m *Manager) compensateManagedWorktree(repo string, ws Workspace) {
+// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后 executor 接管前
+// 的任何步骤失败（MkdirAll/WriteFile/CreateTask/SetTaskField/adapter.Start），任务
+// 要么没落库、要么落 failed——两者都没有 done 清理路径（done 只认 waiting_review），
+// worktree 成为孤儿永久占用磁盘。本函数由 Dispatch 的 defer 统一调用（见 Dispatch
+// 的 executorStarted 注释），失败只记 Error，不覆盖/不替换原始派发错误。
+func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws Workspace) {
 	if !ws.Managed || ws.WorkDir == "" {
 		return
 	}
 	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
-	if err := RemoveManagedWorktree(repo, ws.WorkDir); err != nil {
+	if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
 		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
 	}
 }
@@ -596,7 +646,7 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
 	if cur.WorktreeManaged && cur.WorkDir != "" {
 		m.log.Info("done 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
-		if werr := RemoveManagedWorktree(cur.RepoPath, cur.WorkDir); werr != nil {
+		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
 			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
 				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
@@ -610,6 +660,101 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 		}
 	}
 	return nil
+}
+
+// Stop 主动中止一个任务：停 executor、作废挂起工单、落 failed 并唤醒审核者。
+//
+// 参数：
+//   - ctx: 上层上下文（HTTP 请求）
+//   - taskID: 待中止的任务
+//
+// 返回：
+//   - worktreeRemoved: 本次是否实际删除了 managed worktree。true=agentd 建的
+//     worktree 已删除；false=用户自带 worktree / 原地模式（没删），或 managed
+//     worktree 清理失败（工作树仍在）。CLI 据此打印与行为一致的提示，不猜
+//   - store.ErrNotFound: 任务不存在
+//   - store.ErrBadTransit: 任务已是终态（completed/failed），无可中止
+//   - 其余：落库失败
+//
+// 注意：
+//   - 复用 failed 终态而不新增 aborted：状态机零改动，且 failed→running 已允许，
+//     中止后仍可重新派发。「人为中止」与「真失败」的区分靠 failed 事件的
+//     fail_reason 文本，不靠状态
+//   - 不删任务分支：那是审核者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
+//   - 删除 agentd 管理的 worktree（Managed=true）：被 stop 的任务落 failed，没有
+//     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
+//     不阻断 stop（此时 worktreeRemoved=false，提示如实反映工作树仍在）
+//   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
+//     由 tmux 会话兜底，不能因为「停不掉进程」就让任务永远卡在 running
+func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
+	m.log.Info("stop 进入", "task", taskID)
+	defer func() {
+		if err != nil {
+			m.log.Error("stop 失败", "task", taskID, "cause", err)
+		} else {
+			m.log.Info("stop 完成", "task", taskID, "worktree_removed", worktreeRemoved)
+		}
+	}()
+
+	cur, err := m.st.GetTask(taskID)
+	if err != nil {
+		return false, err
+	}
+	if cur.State == proto.TaskStateCompleted || cur.State == proto.TaskStateFailed {
+		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
+		return false, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
+	}
+
+	ad, aerr := m.adapterFor(taskID)
+	if aerr != nil {
+		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
+	} else if serr := ad.Stop(taskID); serr != nil {
+		m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
+	}
+
+	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
+		m.log.Error("作废挂起工单失败", "task", taskID, "cause", verr)
+	} else if voided > 0 {
+		m.log.Warn("任务被中止，挂起工单作废", "task", taskID, "voided", voided)
+	}
+
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
+		FailReason: "审核者主动中止（handoff stop）",
+	})
+	if err != nil {
+		return false, fmt.Errorf("追加中止事件: %w", err)
+	}
+	if err := m.transit(taskID, proto.TaskStateFailed, "stop"); err != nil {
+		return false, err
+	}
+	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
+	m.clearApproverState(taskID)
+	// worktree 清理（P2-2 修复）：被 stop 的任务落 failed，而 failed 没有 done 的
+	// waiting_review 门禁清理路径——不在这里删，managed worktree 就永久残留、
+	// 任务永远归档不了。分支必须保留（stop 不丢工作，审核者可切回分支审阅/回滚）。
+	//
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// agentd 无权删别人的工作树；为什么失败只降级不阻断 stop：中止已经达成
+	// （任务落 failed、事件已追加），残树是运维问题不是任务问题——留一条带原因的
+	// progress 事件提示人工处理，与 Done 的清理失败降级同款
+	if cur.WorktreeManaged && cur.WorkDir != "" {
+		m.log.Info("stop 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
+		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
+			m.log.Error("stop 清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
+			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+			}); aerr != nil {
+				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
+			} else {
+				m.hub.Publish(evt)
+			}
+		} else {
+			worktreeRemoved = true
+			m.log.Info("stop managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
+		}
+	}
+	m.hub.Publish(evt)
+	return worktreeRemoved, nil
 }
 
 // unaryAPITimeout 是 executor 侧一次一元调用（建会话/发 prompt/权限应答）的等待上限。
@@ -812,6 +957,9 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 // waiter → Publish（一期 handlePermission 的完整既有行为，顺序契约见其 doc）。
 //
 // 本函数同时是审批者 escalate 路径的出口——两路共用保证行为一致。
+//
+// 工单存权限描述全文，事件 payload 另行截断——全文是审核者裁决的依据，不能只存
+// 唤醒用的摘要。
 func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
@@ -831,7 +979,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ticketID, Permission: ev.Text, Kind: "gate",
+		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate",
 	})
 	if err != nil {
 		// 工单在、事件缺：不回滚工单，留给下一次重放由 isPermissionReplay 的
@@ -839,6 +987,8 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		m.log.Error("追加 permission_request 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
+	m.log.Info("权限升级人工审核者", "task", taskID, "ticket", ticketID,
+		"perm_chars", len([]rune(ev.Text)), "event_truncated", len([]rune(ev.Text)) > permEventTextLimit)
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
 }
@@ -910,7 +1060,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
 	// 审核者经 show 可见
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
-		TicketID: ticketID, Permission: ev.Text, Decision: decision,
+		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
 		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
 	}); err != nil {
 		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)

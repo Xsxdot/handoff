@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 func TestAttachCommandForLocal(t *testing.T) {
@@ -44,6 +46,40 @@ func TestAttachCommandForRemote(t *testing.T) {
 func TestAttachCommandForUnknownTarget(t *testing.T) {
 	if _, err := attachCommandFor("t", "ghost", &config.Config{}); err == nil {
 		t.Fatalf("未配对 target 应报错")
+	}
+}
+
+// TestSSHHostFromTarget 覆盖 target → ssh 目标的换算共用函数：user 非空 →
+// user@host；user 为空 → 只有 host（与历史行为一致）。
+func TestSSHHostFromTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		trg  config.Target
+		want string
+	}{
+		{"user 非空带端口", config.Target{Addr: "100.73.238.21:7777", User: "sycm"}, "sycm@100.73.238.21"},
+		{"user 为空带端口", config.Target{Addr: "devbox:7777"}, "devbox"},
+		{"user 非空无端口", config.Target{Addr: "devbox", User: "sycm"}, "sycm@devbox"},
+		{"user 为空无端口", config.Target{Addr: "devbox"}, "devbox"},
+	}
+	for _, c := range cases {
+		if got := sshHostFromTarget(c.trg); got != c.want {
+			t.Fatalf("%s: sshHostFromTarget=%q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestAttachCommandForRemoteUser 验证远程 attach 的 ssh 目标带配置的 user 前缀
+// （本机用户名与远程不一致时必须有地方写 ssh 用户名，否则 ssh host 直连 Permission denied）。
+func TestAttachCommandForRemoteUser(t *testing.T) {
+	cfg := &config.Config{Targets: map[string]config.Target{"dev": {Addr: "devbox:7777", User: "sycm"}}}
+	argv, err := attachCommandFor("abcdefgh-1234", "dev", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ssh", "-t", "sycm@devbox", "tmux", "attach", "-t", "handoff-abcdefgh"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("got %v want %v", argv, want)
 	}
 }
 
@@ -145,6 +181,24 @@ func TestRunAttachFallsBackToTaskTarget(t *testing.T) {
 	}
 }
 
+// TestIsTTYRejectsDevNull 覆盖修复 5：/dev/null 是字符设备但绝不是终端——旧实现只判
+// os.ModeCharDevice 会把 /dev/null 误判成 TTY，导致脚本按标准做法 handoff attach
+// < /dev/null 走进交互分支、打完表格再报「读取选择」错误（非 TTY 降级路径在最该
+// 生效的场景里失效）。go-isatty 判 ioctl 终端语义，/dev/null 无终端属性 → false。
+func TestIsTTYRejectsDevNull(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("打开 %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+	oldStdin := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = oldStdin }()
+	if isTTY() {
+		t.Fatalf("/dev/null 应被判为非终端（旧实现按 ModeCharDevice 误判）")
+	}
+}
+
 // findRootCmd 在根命令下查找指定 Use 首词的子命令。
 func findRootCmd(use string) *cobra.Command {
 	for _, c := range rootCmd.Commands() {
@@ -153,4 +207,23 @@ func findRootCmd(use string) *cobra.Command {
 		}
 	}
 	return nil
+}
+
+// TestPickAttachTaskNonTTYIncludesTarget 验证非 TTY 建议命令带 --target。
+// why：远程任务照抄不带 --target 的命令会打到本机 agentd——先 404，
+// 再 attach 一个本机根本不存在的 tmux 会话，两条错都指不到真正的原因。
+func TestPickAttachTaskNonTTYIncludesTarget(t *testing.T) {
+	tasks := []proto.Task{
+		{ID: "aaaaaaaa-1111", Target: "devbox", State: proto.TaskStateRunning, Executor: "opencode"},
+		{ID: "bbbbbbbb-2222", Target: "", State: proto.TaskStateRunning, Executor: "opencode"},
+	}
+	var buf bytes.Buffer
+	printAttachSuggestions(&buf, tasks)
+	got := buf.String()
+	if !strings.Contains(got, "handoff attach aaaaaaaa-1111 --target devbox") {
+		t.Errorf("远程任务的建议命令必须带 --target，实得:\n%s", got)
+	}
+	if strings.Contains(got, "handoff attach bbbbbbbb-2222 --target") {
+		t.Errorf("本机任务不应带 --target，实得:\n%s", got)
+	}
 }

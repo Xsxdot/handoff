@@ -6,6 +6,8 @@
 //   - --notify：事件到达时发 macOS 系统通知（spec §7 风险#4 的兜底：审核者会话
 //     不在时提醒其重新拉起），失败仅 Warn 不影响主流程
 //   - 收到 SIGINT（Ctrl+C）时由进程默认行为终止，WaitEvent 随 ctx 取消退出
+//   - 任务结束事件到达时自动同步远程任务分支到本地（输出走 stderr，不污染
+//     stdout 的事件 JSON 契约）
 //
 // 边界：
 //   - 不做事件语义判断与审批（审批在审核者脑中），事件原样输出
@@ -30,6 +32,9 @@ import (
 
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。
 var notifyFlag bool
+
+// waitNoSync 关闭「任务结束后自动同步远程任务分支到本地」。
+var waitNoSync bool
 
 // waitTimeout 为 0 表示不设上限；大于 0 时等待超过该时长返回错误退出非 0。
 //
@@ -90,8 +95,47 @@ var waitCmd = &cobra.Command{
 			return fmt.Errorf("序列化事件: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		// 任务结束后把远程任务分支拉到本地（B12）。
+		// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
+		// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
+		autoSyncAfterWait(cmd, addr, token, ev)
 		return nil
 	},
+}
+
+// autoSyncAfterWait 在任务结束事件（completed/failed）到达后，把远程任务分支
+// 同步到本地仓库。
+//
+// 参数：
+//   - ev: 刚返回的事件；只有 completed/failed 触发（回合中途的 permission/
+//     question/progress 不触发——那时活还没干完）
+//
+// 注意：
+//   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
+//     唤醒审核者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
+//   - failed 也同步：失败恰恰是最需要把代码拉到本地翻的时候
+func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
+	if waitNoSync || ev == nil {
+		return
+	}
+	if ev.Type != proto.EventTypeCompleted && ev.Type != proto.EventTypeFailed {
+		return
+	}
+	if !loadCLIConfig().Sync.Auto {
+		slog.Debug("配置 sync.auto=false，跳过自动同步", "task", ev.TaskID)
+		return
+	}
+	info, err := client.New(addr, token).Attach(cmd.Context(), ev.TaskID)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过：读取任务失败:", err)
+		return
+	}
+	res, err := syncTaskBranch(cmd.Context(), &info.Task)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过:", err)
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), syncMessage(res))
 }
 
 // notifyEvent 发 macOS 系统通知提醒审核者事件已到达（--notify 的兜底实现）。
@@ -135,6 +179,8 @@ func truncateBytes(s string, n int) string {
 
 func init() {
 	waitCmd.Flags().BoolVar(&notifyFlag, "notify", false, "事件到达时发 macOS 系统通知（spec §7 兜底）")
+	waitCmd.Flags().BoolVar(&waitNoSync, "no-sync", false,
+		"任务结束（completed/failed）时不自动同步远程任务分支到本地")
 	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0, "等待超时（如 1h）；到点报错退出非 0（默认不设上限）")
 	rootCmd.AddCommand(waitCmd)
 }
