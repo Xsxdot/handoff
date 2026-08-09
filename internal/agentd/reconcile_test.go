@@ -2,6 +2,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,5 +240,117 @@ func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("回收失败应产出带会话名的 progress 事件，实际事件: %v", evs)
+	}
+}
+
+// ladderAdapter 是恢复阶梯的测试 adapter：首次 Send 返 ErrTaskNotRunning，
+// Resume 之后的 Send 成功。Resume 的返回值可注入。
+type ladderAdapter struct {
+	chanAdapter
+	mu       sync.Mutex
+	resumed  bool
+	gotReq   executor.ResumeReq
+	outcome  executor.ResumeOutcome
+	sendHits int
+}
+
+func (a *ladderAdapter) Send(ctx context.Context, taskID, text string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sendHits++
+	if !a.resumed {
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	return nil
+}
+
+func (a *ladderAdapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.gotReq = req
+	if a.outcome.Alive {
+		a.resumed = true
+	}
+	return a.outcome, nil
+}
+
+// TestContinueColdResumesAndRetriesSend Send 撞 ErrTaskNotRunning 时走恢复阶梯：
+// Cold=true 冷恢复 → 重试 Send 一次 → 任务留在 running。
+// 这是 B24「waiting_review 任务成孤儿、只能新开任务」的出口。
+func TestContinueColdResumesAndRetriesSend(t *testing.T) {
+	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		outcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeCold,
+			SessionID: "sess-1", Note: "已从磁盘载入原会话"}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview, ExecutorSession: "sess-1"})
+
+	if err := m.Continue(context.Background(), "t1", "继续干"); err != nil {
+		t.Fatalf("冷恢复成功后 continue 应成功: %v", err)
+	}
+	ad.mu.Lock()
+	req, hits := ad.gotReq, ad.sendHits
+	ad.mu.Unlock()
+	if !req.Cold {
+		t.Fatalf("continue 触发的恢复必须 Cold=true（按需冷恢复，spec §4）")
+	}
+	if hits != 2 {
+		t.Fatalf("Send 应被重试恰好一次（共 2 次），实际 %d", hits)
+	}
+	cur, _ := st.GetTask("t1")
+	if cur.State != proto.TaskStateRunning {
+		t.Fatalf("续接成功后应留在 running，实际 %s", cur.State)
+	}
+}
+
+// TestContinueColdResumeEmitsProgressEvent 冷恢复/降级必须产出事件而不只是日志。
+// fresh 尤其重要：上下文断了是审核者需要知道的事实——它直接决定下一条指令
+// 要不要重述背景。只写日志等于让审核者在不知情的前提下继续对话。
+func TestContinueColdResumeEmitsProgressEvent(t *testing.T) {
+	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		outcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeFresh,
+			SessionID: "sess-new"}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview, ExecutorSession: "sess-old"})
+
+	if err := m.Continue(context.Background(), "t1", "继续干"); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := st.GetTask("t1")
+	if cur.ExecutorSession != "sess-new" {
+		t.Fatalf("fresh 的新会话 id 必须落库，实际 %q", cur.ExecutorSession)
+	}
+	evs, _ := st.EventsFromAsc("t1", 0, 100)
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "sess-new") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("降级新会话必须产出带新会话 id 的 progress 事件，实际: %v", evs)
+	}
+}
+
+// TestContinueUnrecoverableFallsBackToReview 阶梯全走完仍不可恢复：
+// 回迁 waiting_review（不让任务死在 running），错误里带 Note 说明原因。
+func TestContinueUnrecoverableFallsBackToReview(t *testing.T) {
+	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		outcome: executor.ResumeOutcome{Alive: false, Note: "会话数据已不在磁盘上"}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview, ExecutorSession: "sess-1"})
+
+	err := m.Continue(context.Background(), "t1", "继续干")
+	if err == nil {
+		t.Fatalf("不可恢复应返回错误")
+	}
+	if !strings.Contains(err.Error(), "会话数据已不在磁盘上") {
+		t.Fatalf("错误应带 Outcome.Note 让审核者知道为什么: %v", err)
+	}
+	cur, _ := st.GetTask("t1")
+	if cur.State != proto.TaskStateWaitingReview {
+		t.Fatalf("不可恢复应回迁 waiting_review，实际 %s", cur.State)
 	}
 }

@@ -585,6 +585,11 @@ func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许续接返回 store.ErrBadTransit
 //   - Send 失败时任务回迁 waiting_review（审核者可重试指令），并返回该错误
+//
+// 注意：
+//   - Send 撞 ErrTaskNotRunning 时走恢复阶梯（resumeForContinue）：executor
+//     进程已死但会话数据在盘上，冷恢复续上原会话再重试 Send 一次；阶梯全走完
+//     仍不可恢复则回迁 waiting_review，错误带 Outcome.Note 说明原因
 func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (err error) {
 	m.log.Info("continue 进入", "task", taskID)
 	defer func() {
@@ -616,11 +621,99 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 	}
 	if err := ad.Send(ctx, taskID, instructions); err != nil {
-		m.log.Error("续发指令失败", "task", taskID, "cause", err)
-		// 回迁 waiting_review：指令没送达，回到审核者可重试的位置，不让任务死在 running
-		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
-		return fmt.Errorf("续发指令: %w", err)
+		if !errors.Is(err, executor.ErrTaskNotRunning) {
+			// executor 还在，只是这次没打通：保持原语义，回迁让审核者可重试
+			m.log.Error("续发指令失败", "task", taskID, "cause", err)
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
+			return fmt.Errorf("续发指令: %w", err)
+		}
+		m.log.Warn("续发指令时 executor 已不在，进入恢复阶梯", "task", taskID, "cause", err)
+		if rerr := m.resumeForContinue(ctx, taskID, ad); rerr != nil {
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 恢复失败回迁")
+			return rerr
+		}
+		// 重试只做一次：重试的前提是「刚刚成功建立了运行态」，这个前提一次就够
+		// 验证。循环重试只会在 executor 反复启动失败时放大伤害
+		if err := ad.Send(ctx, taskID, instructions); err != nil {
+			m.log.Error("恢复后重试续发仍失败", "task", taskID, "cause", err)
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 恢复后发送失败回迁")
+			return fmt.Errorf("恢复后续发指令: %w", err)
+		}
+		m.log.Info("恢复后续发指令成功，重启中介循环", "task", taskID)
+		go m.mediate(taskID)
 	}
+	return nil
+}
+
+// resumeForContinue 是 continue 撞上「executor 已不在」时的恢复阶梯（spec §5.4）。
+//
+// 与启动恢复的关键差别是 Cold=true：审核者手里正好有一条指令要送，把会话拉起来
+// 立刻有用；而 agentd 启动时冷恢复等于凭空拉起一堆没人跟它说话的 executor。
+//
+// 返回：
+//   - nil: 已拿到可用运行态，调用方可以重试 Send
+//   - 非 nil: 不可恢复，错误里带 Outcome.Note（server 映射 409 时回显给审核者）
+//
+// 注意：
+//   - Mode != reattach 时必须产出 progress 事件：冷恢复换了进程、fresh 断了
+//     上下文，都是审核者需要知道的事实（fresh 直接决定下一条指令要不要重述背景）
+func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad executor.Adapter) error {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	r, ok := ad.(restorer)
+	if !ok {
+		return fmt.Errorf("任务 %s 的执行者不支持恢复，请重新派发: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	execName := task.Executor
+	if execName == "" {
+		execName = m.cfg.Executor.Default
+	}
+	envKVs, eerr := m.env.For(execName)
+	if eerr != nil {
+		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
+	}
+	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
+	out, err := r.Resume(executor.ResumeReq{
+		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
+		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
+		Env: envKVs, Model: task.Model, Cold: true,
+	})
+	if err != nil {
+		m.log.Error("恢复失败", "task", taskID, "cause", err)
+		return fmt.Errorf("恢复任务 %s 执行: %w", taskID, err)
+	}
+	m.log.Info("恢复结果", "task", taskID, "alive", out.Alive, "mode", out.Mode,
+		"session", out.SessionID, "note", out.Note)
+	if !out.Alive {
+		note := out.Note
+		if note == "" {
+			note = "executor 运行态已丢失且无法重建"
+		}
+		return fmt.Errorf("任务 %s 无法恢复：%s", taskID, note)
+	}
+	if out.SessionID != "" && out.SessionID != task.ExecutorSession {
+		if serr := m.st.SetTaskField(taskID, "executor_session", out.SessionID); serr != nil {
+			m.log.Warn("落库新 executor_session 失败", "task", taskID,
+				"session", out.SessionID, "cause", serr)
+		}
+	}
+	// 重连（executor 一直活着）对审核者是无感事件，不打扰；换了进程或断了上下文才播报
+	if out.Mode == executor.ResumeModeReattach {
+		return nil
+	}
+	text := fmt.Sprintf("executor 进程已不在，已重启并从磁盘载入原会话 %s，上下文完整", out.SessionID)
+	if out.Mode == executor.ResumeModeFresh {
+		text = fmt.Sprintf("原会话 %s 已不可载入，已新开会话 %s；上下文从本条指令开始，必要时请在指令中重述背景",
+			task.ExecutorSession, out.SessionID)
+	}
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	if aerr != nil {
+		m.log.Error("追加恢复播报事件失败", "task", taskID, "cause", aerr)
+		return nil // 事件没落住不影响续接本身
+	}
+	m.hub.Publish(evt)
 	return nil
 }
 
