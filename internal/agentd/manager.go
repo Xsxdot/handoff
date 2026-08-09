@@ -1045,7 +1045,15 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 //     绝不让廉价模型去猜
 //   - 读任务失败时工作区范围不可知，同样升级人工：范围未知时判「路径在不在
 //     范围内」是没有意义的
+//   - gate 为 nil 是构造契约被违反（NewManager 文档已写明不得为 nil），
+//     但这里仍兜一手：不兜的话 Judge 会在权限处理 goroutine 里空指针 panic，
+//     把整个 agentd 带走——那比升级人工严重得多，也违背「fail-closed 无例外」
 func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permgate.Verdict {
+	if m.gate == nil {
+		m.log.Error("判据网关未装配，fail-closed 升级人工（NewManager 的 gate 不得为 nil）",
+			"task", taskID, "perm", ev.PermissionID)
+		return permgate.Verdict{Action: permgate.Escalate, Reason: "判据网关未装配"}
+	}
 	if ev.Perm == nil {
 		m.log.Warn("权限事件缺结构化载荷，fail-closed 升级人工",
 			"task", taskID, "perm", ev.PermissionID,

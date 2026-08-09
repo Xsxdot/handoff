@@ -105,3 +105,13 @@ func newWireTestManagerWithTask(t *testing.T) (*Manager, string, string) {
 		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
 	return m, taskID, work
 }
+
+// TestJudgePermissionNilGateEscalates 锁死 fail-closed 的最后一环：判据网关
+// 未装配时必须升级人工，而不是在权限处理 goroutine 里 panic 掉整个 agentd。
+func TestJudgePermissionNilGateEscalates(t *testing.T) {
+	m := &Manager{gate: nil, log: slog.Default()}
+	v := m.judgePermission("t1", executor.AdapterEvent{PermissionID: "p1"})
+	if v.Action != permgate.Escalate {
+		t.Fatalf("gate 为 nil 时必须 Escalate，实得 %v", v.Action)
+	}
+}
