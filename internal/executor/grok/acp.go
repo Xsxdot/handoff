@@ -54,10 +54,11 @@ type ACPClient struct {
 
 	writeMu sync.Mutex
 
-	mu      sync.Mutex
-	nextID  int
-	pending map[int]chan ACPResult
-	closed  bool
+	mu             sync.Mutex
+	nextID         int
+	pending        map[int]chan ACPResult
+	closed         bool
+	activelyClosed bool // Close() 置位：读循环据此以 nil 通知 OnClosed
 }
 
 // DialACP 连接 ACP 端点并启动读循环。
@@ -163,6 +164,7 @@ func (c *ACPClient) Close() error {
 		return nil
 	}
 	c.closed = true
+	c.activelyClosed = true
 	c.mu.Unlock()
 	c.cancel()
 	c.log.Info("ACP 连接关闭")
@@ -185,6 +187,7 @@ func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 	defer func() {
 		c.mu.Lock()
 		c.closed = true
+		active := c.activelyClosed
 		pend := c.pending
 		c.pending = map[int]chan ACPResult{}
 		c.mu.Unlock()
@@ -194,7 +197,14 @@ func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 			ch <- ACPResult{Err: fmt.Errorf("ACP 连接终止: %w", exitErr)}
 		}
 		c.log.Info("ACP 读循环退出", "cause", exitErr)
-		h.OnClosed(exitErr)
+		// 主动 Close（Close 置位 activelyClosed）时 OnClosed 传 nil：
+		// 此时「连接终止」是调用方主动行为而非故障，注释承诺「正常关闭时为 nil」
+		// 必须成为事实，adapter 的 onClosed 依此跳过失败处置
+		if active {
+			h.OnClosed(nil)
+		} else {
+			h.OnClosed(exitErr)
+		}
 	}()
 
 	for {
