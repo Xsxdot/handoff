@@ -136,17 +136,31 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
 30s 就绪超时）。先写不会阻塞：启动脚本 `exec 3<> in.fifo` 自持读写两端，数据先
 躺在管道缓冲里，claude 起来后自然读到（0.5s 早写实测正常）。
 
+**`tmux new-session -d` 的返回不代表脚本已执行（2026-08-09 真机 e2e 第二轮发现，
+上一条 init 时序是第一轮）**：`-d` 一创建会话就返回，不等会话内脚本执行到
+`exec 3<> in.fifo`；而投 prompt 的 `WriteInput` 以 `O_WRONLY|O_NONBLOCK` 打开
+fifo，按 POSIX 读端未就绪时 `open` 直接失败（errno `ENXIO`，macOS 文案
+"device not configured"）。prompt 提前到 tmux 返回之后，写入紧跟在返回之后，
+撞上读端未开的竞态（真机复现：`open in.fifo: device not configured`）。因此
+**投 prompt 前必须先确认 `in.fifo` 已有读者**——`StartProc` 在 `tmuxLaunch`
+返回后、返回前以 `O_WRONLY|O_NONBLOCK` 试开探测读端（只探测不写入），超时
+5s 报错并带 `claude.log` 尾部。等读端是「进程是否已就位」的语义，必须放在
+`tmuxLaunch`（「怎么把脚本跑起来」）之外，桩与生产走同一段等待代码，测试才能
+抓到这类竞态。
+
 Start 步骤：
 
 1. 生成 session uuid，建 `in.fifo`（`mkfifo`）、写 `settings.json` / `mcp.json` / `run_claude.sh`
 2. `tmux new-session -d -s handoff-<id8> -c <repoPath> "sh <taskDir>/run_claude.sh"`
-3. 开渲染窗口（窗口 1）
-4. 起 `perm.sock` 监听（见 §5.1）
-5. 起 `out.jsonl` tail 循环（此时只读不判就绪）+ 看门狗
-6. **往 fifo 投首条 user message**：plan 原文 + prompt 附加指令（拼装逻辑与 opencode 同源）
-7. **就绪判定 = 读到 `{"type":"system","subtype":"init"}`**（prompt 已投出的产物）；
+3. **确认 `in.fifo` 已有读者**（`StartProc` 内 `waitFIFOReader`，O_NONBLOCK 试开，
+   超时 5s 报错带 `claude.log` 尾部）——tmux 返回早于脚本执行，不等必 ENXIO
+4. 开渲染窗口（窗口 1）
+5. 起 `perm.sock` 监听（见 §5.1）
+6. 起 `out.jsonl` tail 循环（此时只读不判就绪）+ 看门狗
+7. **往 fifo 投首条 user message**：plan 原文 + prompt 附加指令（拼装逻辑与 opencode 同源）
+8. **就绪判定 = 读到 `{"type":"system","subtype":"init"}`**（prompt 已投出的产物）；
    超时 30s 读 `claude.log` 尾部带进错误并 kill 会话清理残留
-8. 写 `claude.json`；emit `progress{SessionID}` 作为「会话就绪」信号
+9. 写 `claude.json`；emit `progress{SessionID}` 作为「会话就绪」信号
 
 启动超时阈值取 30s（大于 opencode serve 的 10s）：claude 冷启动要加载 settings/plugins/MCP
 子进程，冷启动明显更慢，10s 会造成假阴性。超时语义是「prompt 已投出、claude 仍未进入
