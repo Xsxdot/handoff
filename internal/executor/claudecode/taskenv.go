@@ -8,8 +8,11 @@
 // 边界：
 //   - 不启动进程、不建 socket：进程在 proc.go，socket 服务端在 perm.go
 //   - 不做权限判断：本文件只生成静态策略，运行期裁决全部经 perm.sock 交 manager
-//   - settings.json 只放 permissions、**不含任何凭证**（鉴权走 B19 的 env 注入，
-//     2026-08-09 探针实测，见 spec §5.4）——因此它可以放心进日志/工单/diff
+//   - settings.json 只放 permissions、**不含任何凭证**——凭证由 claude 自己经
+//     `--setting-sources user` 从真实 `~/.claude/settings.json` 读取（2026-08-09
+//     真机 e2e 实测：不带凭证 env 即跑通，见 spec §5.4）；env 注入（B19）是给
+//     代理/自定义 base_url 这类额外环境用的，不是鉴权必要条件。因此 settings.json
+//     可以放心进日志/工单/diff
 package claudecode
 
 import (

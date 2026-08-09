@@ -124,10 +124,11 @@ PATH=${PATH}:/usr/local/go/bin
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
 > **claude 执行者的 env 耦合**（2026-08-09 实测）：claude adapter 的任务级 `settings.json`
-> 是纯策略文件、**不含任何凭证**——鉴权走上面的 env 注入（B19），与 opencode 一致。但 env
-> 文件里若设了 `HOME` 或 `CLAUDE_CONFIG_DIR`，会连带改变 claude 读哪份用户配置
-> （`--setting-sources user` 的落点）与凭据落盘位置——这是用户自己的显式配置，不拦，
-> 只是需要知道它会一并生效。
+> 是纯策略文件、**不含任何凭证**——**凭证由 claude 自己经 `--setting-sources user` 从真实
+> `~/.claude/settings.json` 读取**（真机派发不带任何凭证 env 即跑通），env 注入（B19）是给
+> 代理、自定义 `base_url` 这类**额外**环境用的，不是鉴权的必要条件。env 文件里若设了 `HOME`
+> 或 `CLAUDE_CONFIG_DIR`，会连带改变 claude 读哪份用户配置（`--setting-sources user` 的落点）
+> 与凭据落盘位置——这是用户自己的显式配置，不拦，只是需要知道它会一并生效。
 
 ## 分级审批链
 
@@ -162,7 +163,7 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 
 claude 与 grok 任务的 tmux 布局与 opencode 同构：窗口 0 是执行者进程的原始输出（claude 是 `claude -p` 的 stream-json，grok 是 `grok agent serve` 的日志），窗口 1 是 `tail -f render.log`（模型正文实况）；`handoff attach` 一套命令覆盖三个 executor。诊断文件按 executor 对应：claude 是 `claude.log`（stderr，对应 serve.log）与 `claude.json`（恢复凭据：tmux 会话 / session_id / out.jsonl 已消费 offset，对应 serve.json）；grok 是 `serve.log` 与 `serve.json`（tmux 会话 / 端口 / session_id）。
 
-> **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段——handoff 不复制这份配置，鉴权一律走 `env` 注入（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
+> **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段，由 claude 自己读取，handoff 不复制这份配置（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
 
 **常见问题**
 

@@ -40,8 +40,13 @@ const (
 	sockFileName      = "perm.sock"     // 权限裁决 socket
 )
 
-// startReadyTimeout 是等待 system/init 的上限。取 30s 而非 opencode 的 10s：
-// claude 冷启动要加载 settings/plugins/MCP 子进程，10s 会造成假阴性。
+// startReadyTimeout 是等待 system/init 的上限。
+//
+// 语义（2026-08-09 真机 e2e 实测修正）：claude 在**收到首条输入后**才会吐
+// system/init，因此 Start 先投 prompt 再等 init（顺序不可对调，见 adapter.go
+// Start 的 why）。本超时等的是「prompt 已投出、claude 仍未进入会话」——鉴权失效、
+// settings 非法、MCP 起不来都会卡在这一步。取 30s：claude 冷启动要加载
+// settings/plugins/MCP 子进程，opencode 的 10s 会造成假阴性。
 const startReadyTimeout = 30 * time.Second
 
 // StartProcReq 是一次 StartProc 的完整入参。
@@ -76,7 +81,8 @@ type Proc struct {
 // StartProc 备物料、起 tmux 会话与渲染窗口，返回进程句柄。
 //
 // 参数：
-//   - ctx: 仅用于 tmux 启动阶段的可取消；执行生命周期延续到 Kill
+//   - ctx: 保留以与 adapter 契约一致（当前未参与 tmux 拉起，启动是子秒级操作）；
+//     执行生命周期延续到 Kill
 //   - req: 进程完整入参（见 StartProcReq）
 //   - log: 本模块日志入口（进程启动点，日志需要显式传入而非走默认）
 //
@@ -111,11 +117,9 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 		return nil, err
 	}
 	log.Info("启动 claude 执行者", "session", session, "script", scriptPath, "repo", req.RepoPath)
-	out, err := exec.CommandContext(ctx, "tmux", tmuxArgs(session, req.RepoPath, scriptPath)...).CombinedOutput()
-	if err != nil {
-		log.Error("tmux 启动 claude 失败", "session", session,
-			"stderr_tail", tail(string(out), 500), "cause", err)
-		return nil, fmt.Errorf("tmux 启动 %s: %w", session, err)
+	if err := tmuxLaunch(session, req.RepoPath, scriptPath); err != nil {
+		log.Error("tmux 启动 claude 失败", "session", session, "cause", err)
+		return nil, err
 	}
 	// 第二窗口 tail -f render.log（模型文本实况）；失败只 Warn 不阻断，见该函数注释
 	startRenderTailWindow(session, req.TaskDir, log)
@@ -329,6 +333,17 @@ func (p *Proc) Kill() error {
 // 同手法）：测试替换它绕开真实 tmux，判定「会话存在」的语义不变。
 var tmuxHasSession = func(session string) bool {
 	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
+}
+
+// tmuxLaunch 是「在 tmux 会话内拉起启动脚本」的测试缝（与 tmuxHasSession 同手法）：
+// 测试替换它直接 `sh <script>` 后台执行，绕开真实 tmux server 依赖。
+// 默认实现走 tmux new-session（argv 只含脚本路径，见 tmuxArgs 的 why）。
+var tmuxLaunch = func(session, repoPath, scriptPath string) error {
+	out, err := exec.Command("tmux", tmuxArgs(session, repoPath, scriptPath)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux 启动 %s: %w（stderr: %s）", session, err, tail(string(out), 500))
+	}
+	return nil
 }
 
 // Alive 检查 claude 进程是否仍然存活：tmux 会话存在且 out.jsonl 不含死亡哨兵。
