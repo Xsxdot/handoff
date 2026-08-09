@@ -443,11 +443,15 @@ func readSSELine(r *bufio.Reader, maxBytes int) (line string, oversized bool, er
 		if err == bufio.ErrBufferFull {
 			continue // 缓冲区满但未到换行符：吞掉本段，继续读到行尾
 		}
+		// 剥掉行尾换行（含 \r\n 的 \r）：对齐旧 bufio.Scanner.ScanLines 的 dropCR
+		// 语义。SSE 规范允许 \r\n 作行分隔，若不剥 \r，CRLF 流的空行 \r\n 会残留
+		// 为 "\r" 而非 ""，空行判定失效、事件永不 dispatch
+		line = strings.TrimSuffix(strings.TrimSuffix(sb.String(), "\n"), "\r")
 		if err != nil {
 			// 真实 I/O 错误或 io.EOF（含 EOF 前未收尾的残行数据）原样上抛
-			return strings.TrimSuffix(sb.String(), "\n"), oversized, err
+			return line, oversized, err
 		}
-		return strings.TrimSuffix(sb.String(), "\n"), oversized, nil
+		return line, oversized, nil
 	}
 }
 

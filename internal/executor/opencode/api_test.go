@@ -675,3 +675,69 @@ func TestSubscribeSkipsOversizedDataLineAndKeepsConnection(t *testing.T) {
 		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
 	}
 }
+
+// TestSubscribeCRLFLineEndings 验证 CRLF（\r\n）行结尾的 SSE 流照常解析：
+// 标准 SSE 允许 \r\n 作行分隔，旧 bufio.Scanner.ScanLines 会剥掉 \n 前的 \r；
+// 读行替换后若只 TrimSuffix("\n")，空行 \r\n 会残留为 "\r" 而非 ""，
+// 空行判定失效、事件永不 dispatch。事件以 \r\n 分隔，必须收到合法 JSON
+// 且取消后订阅及时返回。
+func TestSubscribeCRLFLineEndings(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"type\":\"crlf\",\"n\":1}\r\n\r\n")
+		fl.Flush()
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var events []json.RawMessage
+	done := make(chan error, 1)
+	go func() {
+		done <- api.SubscribeEvents(ctx, func(ev json.RawMessage) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		}, nil)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		mu.Lock()
+		got := len(events)
+		mu.Unlock()
+		if got >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("超时未收到 CRLF 事件，当前 %d 条", got)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	var ev struct {
+		Type string `json:"type"`
+		N    int    `json:"n"`
+	}
+	if err := json.Unmarshal(events[0], &ev); err != nil {
+		t.Fatalf("解析 CRLF 事件失败: %v", err)
+	}
+	if ev.Type != "crlf" || ev.N != 1 {
+		t.Errorf("事件 %+v，期望 type=crlf n=1", ev)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ctx 取消后 SubscribeEvents 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+}
