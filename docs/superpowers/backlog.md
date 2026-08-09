@@ -27,6 +27,7 @@
 | B16 | dispatch 500 掩盖 executor 启动失败真因 | ✅ done(已验) | 中 | — | — | 真机验证：tmux 缺失时 dispatch 报 `启动 executor 失败: tmux 启动 handoff-e0075fc4: exec: "tmux": executable file not found in $PATH`（此前为扁平「派发任务失败」）08-09 | 08-09 三期压测中定位并直接修复，未单独出 spec；状态码保留 500（agentd 侧环境问题），关键是回显可行动真因 | 来源：08-09 三期压测实测 |
 | B17 | target 无法配置 ssh 用户名，远程 attach/pull 实际不可用 | ✅ done(已验) | 高 | — | — | 真机端到端：配置 `user: sycm` 后 `handoff pull` 换算出 `sycm@100.73.238.21:/Users/sycm/workspace/handoff` 并成功拉回分支（修复前报 Connection closed）08-09 | 08-09 三期压测中定位并直接修复，未单独出 spec；抽 `sshHostFromTarget` 为 attach/pull 唯一换算点，config.Target 加可选 `user`，README targets 示例同步补齐 | 来源：08-09 三期压测实测；连带修正 B1 的验收结论 |
 | B18 | agentd 重启后 waiting_review 任务无法续接 | ✅ done(已验) | 高 | — | — | 真机端到端（本缺陷的完整闭环）：重启 agentd → 启动恢复日志「执行器存活，重建订阅继续消费 task=0126bf0a alive=true state=waiting_review, recovered=1」→ `handoff continue` 返回 `{"ok":true}` 并真的产出了一个提交（修复前为永久 500）08-09 | 08-09 三期压测中**由审核者亲身撞上**并直接修复，未单独出 spec：换二进制重启 agentd 后 round2 审阅指令发不进去，只能重新派发。修法①启动恢复纳入 waiting_review 探活重建但**不改状态**（executor 不在时也不追加 failed 事件，避免噪音）；②ErrTaskNotRunning 映射为带重派提示的 409 | 来源：08-09 三期压测实测 |
+| B19 | agent 启动前注入环境变量 | 📋 specced | 中 | [spec](specs/2026-08-09-handoff-agent-env-injection-design.md) | — | — | 08-09 brainstorm 定案：格式选 dotenv + 单层展开而非「shell 片段 source 进去」——后者零解析代码但只对走 shell 脚本的 adapter 有效，而 backlog 上排队的 B2/B3 两个 adapter 进程模型完全不同，会让本功能两个月内退化成「只有 opencode 能用」；注入经 executor.StartReq 契约下发，审批者同享一份（否则代理只配半边，审批者连不出去会静默 fail-closed 升级） | 来源：08-09 用户需求。B7 是「自动猜用户环境」，本条是「显式声明该给什么环境」，两者互补 |
 
 ## 待验证的空白
 
