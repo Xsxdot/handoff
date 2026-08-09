@@ -270,6 +270,15 @@ executor 层偷偷改掉了二期定死的审批链语义。黑名单继续由 m
 - 第 1 条不成立：`allow` 改为不写，回到「默认全 ask」——安全但会退化成一期的连环唤醒，
   此时必须靠 manager 侧审批者（廉价模型）吸收噪音，同样记入 README
 
+**实测状态（2026-08-09，devbox）**：**结论未取得**，两条优先级均未验证。原因：本机 claude
+未登录——临时 HOME 与真实 HOME 均报 `Not logged in · Please run /login`
+（`system/init` 事件里 `apiKeySource=none`，`~/.claude/.credentials.json` 不存在，keychain
+无 `Claude Code-credentials`，环境无 `ANTHROPIC_*`）。`claude /login` 是交互式 OAuth，无法
+自动化。**在人工登录完成、探针跑出可信结论之前，不得按任何默认形态实现 settings.json 的
+静态分级**（`allow` 兜底 + `ask` 收窄的形态本身也未证实）——安全门形态建在猜测上，这类缺陷
+不报错，只在某天真删了东西时才发现。探针文件保留（`internal/executor/claudecode/probe_live_test.go`，
+默认 skip，`HANDOFF_LIVE_CLAUDE=1` 触发），登录后重跑即可。
+
 ## 6. 共享包重构（`internal/executor/turn`）——✅ 已由 B3 会话完成并合入 main
 
 > **状态（2026-08-09 核实）**：抽取已落 main（`09bc6df`，merge `282c932`），opencode
