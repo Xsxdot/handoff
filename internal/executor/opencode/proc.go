@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/xushixin/handoff/internal/shellq"
@@ -42,6 +43,15 @@ import (
 
 // serveReadyTimeout 是 StartServe 等待 serve 就绪的总超时。
 const serveReadyTimeout = 10 * time.Second
+
+// protectedEnvKeys 是 handoff 自身注入、不容 env 文件覆盖的变量。
+//
+// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的 export 排在后面因而胜出，
+// 同时打 WARN 让用户知道自己那行没生效。
+var protectedEnvKeys = map[string]bool{
+	"OPENCODE_SERVER_PASSWORD": true,
+	"OPENCODE_CONFIG":          true,
+}
 
 // serveProbeInterval 是就绪/存活探测的轮询间隔。
 const serveProbeInterval = 200 * time.Millisecond
@@ -76,6 +86,8 @@ type Proc struct {
 //   - taskID: 任务 id，用于生成 tmux 会话名（handoff-<id8>）
 //   - taskDir: 任务目录（0700），serve 启动脚本与 serve.log 都放这里
 //   - configPath: 任务级 opencode 配置路径（Task 10 生成），注入 OPENCODE_CONFIG
+//   - env: 额外注入的环境变量（形如 KEY=VALUE，来自 env 文件，已解析已展开）；
+//     覆盖顺序见 writeServeScript 的 why
 //   - log: 本模块日志入口（StartServe 是进程启动点，日志需要显式传入而非走默认）
 //
 // 返回：
@@ -87,7 +99,7 @@ type Proc struct {
 // 注意：
 //   - 端口选择存在 TOCTOU 竞态（见 freePort），MVP 接受
 //   - 就绪超时后自动 Kill 清理残留 session，避免半启动进程占着端口
-func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 	port, err := freePort()
 	if err != nil {
 		log.Error("获取随机空闲端口失败", "cause", err)
@@ -100,8 +112,24 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 	}
 
 	session := "handoff-" + id8(taskID)
+	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for _, kv := range env {
+			k, _, ok := strings.Cut(kv, "=")
+			if !ok {
+				continue
+			}
+			keys = append(keys, k)
+			if protectedEnvKeys[k] {
+				log.Warn("env 文件定义了 handoff 保留变量，将被 handoff 自身注入覆盖",
+					"key", k, "session", session)
+			}
+		}
+		log.Info("注入 env 变量到 serve 进程", "session", session, "keys", keys, "count", len(keys))
+	}
 	// 密码/配置经 0600 启动脚本注入，tmux argv 只含脚本路径（ps 不可见密码）
-	scriptPath, err := writeServeScript(taskDir, port, password, configPath)
+	scriptPath, err := writeServeScript(taskDir, port, password, configPath, env)
 	if err != nil {
 		log.Error("写 serve 启动脚本失败", "session", session, "cause", err)
 		return nil, err
@@ -210,15 +238,27 @@ func (p *Proc) probeHTTP() bool {
 // tmux 窗格、随命令退出一起消失。opencode 侧 2>&1 仍走管道进 tee，不受此
 // 重定向影响——命令级重定向（2>&1）覆盖 shell 级（2>> 文件）；tee 自身继承
 // 文件 fd2，它的报错也落盘。
-func writeServeScript(taskDir string, port int, password, configPath string) (string, error) {
+//
+// why（env 行排在 OPENCODE_* 之前且值用单引号）：排在前面才能让 handoff 自身的
+// 变量覆盖 env 文件里的同名键（见 protectedEnvKeys）；值必须单引号包裹，因为 Go 侧
+// 已经展开过一次，不加引号会被 shell 再展开第二次，含 $ 的值会变成别的东西。
+func writeServeScript(taskDir string, port int, password, configPath string, env []string) (string, error) {
 	serveLogPath := filepath.Join(taskDir, serveLogFileName)
+	var envLines strings.Builder
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue // 形如 KEY=VALUE 之外的条目直接跳过，不让它污染脚本语法
+		}
+		envLines.WriteString("export " + k + "=" + shellQuote(v) + "\n")
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 # 由 agentd 生成：opencode serve 启动脚本（0600，含随机密码，勿外泄）。
 exec 2>> %s
-export OPENCODE_SERVER_PASSWORD=%s
+%sexport OPENCODE_SERVER_PASSWORD=%s
 export OPENCODE_CONFIG=%s
 exec opencode serve --port %d --hostname 127.0.0.1 2>&1 | tee -a %s
-`, shellQuote(serveLogPath), shellQuote(password), shellQuote(configPath), port, shellQuote(serveLogPath))
+`, shellQuote(serveLogPath), envLines.String(), shellQuote(password), shellQuote(configPath), port, shellQuote(serveLogPath))
 	scriptPath := filepath.Join(taskDir, serveScriptFileName)
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		return "", fmt.Errorf("写 serve 启动脚本 %s: %w", scriptPath, err)

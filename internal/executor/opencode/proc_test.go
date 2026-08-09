@@ -17,7 +17,7 @@ func TestWriteServeScript(t *testing.T) {
 	taskDir := t.TempDir()
 	configPath := filepath.Join(taskDir, "opencode.json")
 	const password = "pw-secret-xyz"
-	path, err := writeServeScript(taskDir, 35123, password, configPath)
+	path, err := writeServeScript(taskDir, 35123, password, configPath, nil)
 	if err != nil {
 		t.Fatalf("writeServeScript: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestWriteServeScript(t *testing.T) {
 func TestWriteServeScriptShellQuotes(t *testing.T) {
 	taskDir := t.TempDir()
 	configPath := "weird'name/opencode.json"
-	path, err := writeServeScript(taskDir, 1, "p'w", configPath)
+	path, err := writeServeScript(taskDir, 1, "p'w", configPath, nil)
 	if err != nil {
 		t.Fatalf("writeServeScript: %v", err)
 	}
@@ -137,5 +137,72 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q)=%q，期望 %q", in, got, want)
 		}
+	}
+}
+
+func TestServeScriptInjectsEnvBeforeOpencodeVars(t *testing.T) {
+	taskDir := t.TempDir()
+	configPath := filepath.Join(taskDir, "opencode.json")
+	env := []string{"HTTPS_PROXY=http://127.0.0.1:7890", "PATH=/usr/bin:/bin:/usr/local/go/bin"}
+	path, err := writeServeScript(taskDir, 35123, "pw", configPath, env)
+	if err != nil {
+		t.Fatalf("writeServeScript: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(b)
+	proxyIdx := strings.Index(s, "export HTTPS_PROXY='http://127.0.0.1:7890'")
+	if proxyIdx < 0 {
+		t.Fatalf("脚本缺少注入的 HTTPS_PROXY export 行:\n%s", s)
+	}
+	if !strings.Contains(s, "export PATH='/usr/bin:/bin:/usr/local/go/bin'") {
+		t.Errorf("脚本缺少注入的 PATH export 行:\n%s", s)
+	}
+	pwIdx := strings.Index(s, "export OPENCODE_SERVER_PASSWORD=")
+	if pwIdx < 0 {
+		t.Fatalf("脚本缺少 OPENCODE_SERVER_PASSWORD:\n%s", s)
+	}
+	// 顺序是硬要求：handoff 自身注入的变量必须排在后面才能覆盖 env 文件里的同名键
+	if proxyIdx > pwIdx {
+		t.Errorf("env 注入行应排在 OPENCODE_* 之前，实际 proxy=%d pw=%d", proxyIdx, pwIdx)
+	}
+}
+
+// TestServeScriptQuotesEnvValues 钉住「Go 侧已展开过一次，shell 不得再展开第二次」：
+// 值里的 $ 必须被单引号保护，否则 shell 会把它替换成别的东西。
+func TestServeScriptQuotesEnvValues(t *testing.T) {
+	taskDir := t.TempDir()
+	path, err := writeServeScript(taskDir, 1, "pw", filepath.Join(taskDir, "opencode.json"),
+		[]string{"LITERAL=$NOT_EXPANDED", "WITHSPACE=a b"})
+	if err != nil {
+		t.Fatalf("writeServeScript: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "export LITERAL='$NOT_EXPANDED'") {
+		t.Errorf("含 $ 的值必须被单引号包裹:\n%s", s)
+	}
+	if !strings.Contains(s, "export WITHSPACE='a b'") {
+		t.Errorf("含空格的值必须被单引号包裹:\n%s", s)
+	}
+}
+
+func TestServeScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
+	taskDir := t.TempDir()
+	path, err := writeServeScript(taskDir, 1, "pw", filepath.Join(taskDir, "opencode.json"), nil)
+	if err != nil {
+		t.Fatalf("writeServeScript: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(b), "export OPENCODE_SERVER_PASSWORD='pw'") {
+		t.Errorf("无 env 时脚本形状不应改变:\n%s", string(b))
 	}
 }
