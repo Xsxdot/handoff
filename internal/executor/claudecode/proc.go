@@ -17,6 +17,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,6 +49,22 @@ const (
 // settings 非法、MCP 起不来都会卡在这一步。取 30s：claude 冷启动要加载
 // settings/plugins/MCP 子进程，opencode 的 10s 会造成假阴性。
 const startReadyTimeout = 30 * time.Second
+
+// fifoReaderTimeout 是等待启动脚本在 in.fifo 上建立读端（exec 3<>）的上限。
+//
+// why（2026-08-09 真机 e2e 次生缺陷）：`tmux new-session -d` 一创建会话就返回，
+// **不代表会话内脚本已执行到 `exec 3<> in.fifo` 那一行**；而 WriteInput 以
+// `O_WRONLY|O_NONBLOCK` 打开 fifo，POSIX 规定读端未就绪时 open 直接失败
+// （errno ENXIO，macOS 文案 "device not configured"）。8fca917 把「投 prompt」
+// 提前到 tmux 返回之后，写入紧跟在返回之后，撞上读端未开的竞态（真机复现：
+// `open in.fifo: device not configured`）。tmux 起 sh 是子秒级，但机器负载高时
+// 会抖动；取 5s 与 startReadyTimeout 同一量级思路：够覆盖抖动，又不掩盖
+// 「claude 根本没起来」的失败。
+//
+// 用 var 而非 const：测试需把它调到毫秒量级来快速演练超时路径（见
+// start_ordering_test 的 TestStartProcKillsSessionWhenFIFOReaderNeverReady），
+// 与 startReadyTimeout 保持 const 不加覆盖点不同——那条 30s 从不在单测里真等。
+var fifoReaderTimeout = 5 * time.Second
 
 // StartProcReq 是一次 StartProc 的完整入参。
 //
@@ -93,6 +110,10 @@ type Proc struct {
 //   - 就绪判定（等 system/init）由 adapter 在 stream 层完成，本函数只负责拉起
 //   - in.fifo 必须先于 tmux 存在：启动脚本第一件事是 exec 3<> in.fifo，
 //     fifo 缺失会让整条 claude 命令失败
+//   - tmuxLaunch 返回后必须等 in.fifo 出现读者（waitFIFOReader）才能返回：
+//     tmux new-session -d 不等脚本执行，写端不等到读端会 ENXIO（见其 why）
+//   - tmuxLaunch 成功之后的一切失败路径必须自行 Kill 回收会话：调用方 rollback
+//     依赖 r.proc，而 StartProc 失败时返回 nil（见 waitFIFOReader 失败处）
 func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error) {
 	session := "handoff-" + id8(req.TaskID)
 	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）
@@ -121,10 +142,28 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 		log.Error("tmux 启动 claude 失败", "session", session, "cause", err)
 		return nil, err
 	}
+	p := &Proc{TmuxSession: session, TaskDir: req.TaskDir, SessionID: req.SessionID}
+	// 等启动脚本在 in.fifo 上建立读端：tmux new-session -d 的返回不代表脚本已执行，
+	// 而 WriteInput 以 O_NONBLOCK 开 fifo，读端未就绪会 ENXIO（8fca917 次生缺陷，
+	// 见 waitFIFOReader 与 fifoReaderTimeout 的 why）。必须在这里等好，adapter
+	// 随后投 prompt 才不失败
+	elapsed, err := p.waitFIFOReader()
+	if err != nil {
+		log.Error("claude 启动脚本未在时限内打开 in.fifo",
+			"session", session, "task", req.TaskID, "cause", err)
+		// tmuxLaunch 已成功、会话已在跑，必须自行回收：调用方 rollback 依赖
+		// r.proc 判空，而这里返回 nil——r.proc 拿不到句柄，不回收就成了孤儿
+		// 会话（与 init 就绪超时的清理行为一致，见 spec §4.1）。Kill 失败是
+		// 次要信息，只 Warn 不盖掉 waitFIFOReader 这条真因错误
+		if kerr := p.Kill(); kerr != nil {
+			log.Warn("回收读端未就绪的 tmux 会话失败，可能需人工清理",
+				"session", session, "task", req.TaskID, "cause", kerr)
+		}
+		return nil, err
+	}
+	log.Debug("claude in.fifo 读端就绪", "session", session, "task", req.TaskID, "wait", elapsed)
 	// 第二窗口 tail -f render.log（模型文本实况）；失败只 Warn 不阻断，见该函数注释
 	startRenderTailWindow(session, req.TaskDir, log)
-
-	p := &Proc{TmuxSession: session, TaskDir: req.TaskDir, SessionID: req.SessionID}
 	// 恢复凭据落盘（claude.json）：agentd 重启后 Resume 凭它探活与续读
 	if err := writeProcInfo(req.TaskDir, &procInfo{TmuxSession: session, SessionID: req.SessionID}); err != nil {
 		log.Warn("写 claude 恢复凭据失败，重启恢复将不可用", "task", req.TaskID, "cause", err)
@@ -235,6 +274,44 @@ func (p *Proc) ensureFIFO() error {
 	return nil
 }
 
+// waitFIFOReader 等待启动脚本在 in.fifo 上建立读端（exec 3<> 完成）。
+//
+// why（位置在 StartProc、不在 tmuxLaunch）：tmux new-session -d 的返回只代表
+// 会话已创建，**不代表会话内脚本已执行**——exec 3<> in.fifo 可能还没跑到。而
+// WriteInput 以 O_WRONLY|O_NONBLOCK 打开 fifo，读端未就绪时 open 直接 ENXIO
+// （macOS 文案 "device not configured"）。因此投 prompt 前必须先确认读端在位；
+// 这是「进程是否已就位」的语义，tmuxLaunch 只是「怎么把脚本跑起来」的缝，两回事，
+// 所以等待放在外面——桩与生产走同一段代码，测试才可能抓到这类竞态。
+//
+// 只探测不写入：以 O_WRONLY|O_NONBLOCK 试开成功即证明读端存在，随即 Close。
+//
+// 返回：
+//   - elapsed: 等待成功耗时（调用方记日志）
+//   - err: 非「无读者」错误立即返回；fifoReaderTimeout 内读端仍未就绪时返回错误，
+//     带 claude.log 尾部指向真因（启动脚本未执行、claude 根本没起来）
+func (p *Proc) waitFIFOReader() (elapsed time.Duration, err error) {
+	path := filepath.Join(p.TaskDir, fifoFileName)
+	deadline := time.Now().Add(fifoReaderTimeout)
+	start := time.Now()
+	for {
+		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			f.Close()
+			return time.Since(start), nil
+		}
+		// 非「无读者」的错误（fifo 缺失、权限）重试无意义，立即失败
+		if !errors.Is(err, syscall.ENXIO) {
+			return time.Since(start), fmt.Errorf("探测 %s 读端: %w", path, err)
+		}
+		if time.Now().After(deadline) {
+			return time.Since(start), fmt.Errorf(
+				"启动脚本未在 %s 内打开 %s，claude 可能没起来: %s",
+				fifoReaderTimeout, path, claudeLogTail(p.TaskDir))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // WriteInput 往 in.fifo 投递一条 stream-json user message。
 //
 // 参数：
@@ -311,6 +388,12 @@ func procExited(outJSONLPath string) (exited bool, code int) {
 	return false, 0
 }
 
+// tmuxKill 是 tmux kill-session 的测试缝（与 tmuxHasSession/tmuxLaunch 同手法）：
+// 测试替换它断言「StartProc 失败时回收了会话」，绕开真实 tmux server。
+var tmuxKill = func(session string) error {
+	return exec.Command("tmux", "kill-session", "-t", session).Run()
+}
+
 // Kill 销毁 tmux 会话（连同其内的 claude）。
 //
 // 幂等：会话已不存在（已被外部清理）时返回 nil。
@@ -318,7 +401,7 @@ func (p *Proc) Kill() error {
 	if p == nil || p.TmuxSession == "" {
 		return nil
 	}
-	err := exec.Command("tmux", "kill-session", "-t", p.TmuxSession).Run()
+	err := tmuxKill(p.TmuxSession)
 	if err != nil {
 		// 会话不存在视为已清理，不报错；其余错误（权限、tmux 未运行）如实上报
 		if exec.Command("tmux", "has-session", "-t", p.TmuxSession).Run() != nil {
