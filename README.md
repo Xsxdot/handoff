@@ -154,7 +154,20 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 - 收到 `delivery_failed` 事件，或 `reply` 返回 502 → 裁决已落库但没送到 executor（executor 半死、调用超时）。此时工单已被消耗、`attach` 看不到挂起项，`reply` 会 404、`continue`/`done` 会 409——执行 `handoff resume <task>` 重投：executor 还在就继续执行，确已不在则任务转交审核（之后可 `continue` 重派或 `done` 归档）。该命令幂等，已送达的应答不会重复投递。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
+- **grok 执行者会读到你的 Claude Code 个人配置**：grok 无视 `GROK_HOME`，仍从真实 HOME 读 `~/.claude/settings.local.json` 的权限规则与 `~/.claude/skills`。handoff 写入任务级 `ask` 规则可以压过其中的 `allow`（grok 的求值是 `deny` > `ask` > `allow` 跨源生效），危险模式表仍然有效；但「handoff 没枚举、而你个人 allow 了」的操作会被静默放行。agentd 侧的硬黑名单是独立兜底。
+- **grok 任务断连即失败**：ACP 的权限是随连接存续的阻塞请求，连接断开后未决的授权请求不会被重发。handoff 选择立刻转 failed 交审核者（可 `continue` 重开一轮），而不是假装恢复成功留下一个静止的任务。
 - **SSE 重放风险**：opencode `/event` 在重连时是否重放历史事件尚未经真实样本证实（权限/提问靠 ticket id 幂等去重，但旧 result 重放可能误杀存活的执行器会话）。这是验收级风险，见 `docs/superpowers/e2e-checklist.md` 的 SPIKE-1b 与「水位线应急方案」，上线前必须按清单实测。
+
+## 执行者差异
+
+`--executor` 可选 `opencode`（默认）/ `grok` / `fake`。fake 为脚本演示，opencode 与 grok 都是真实执行，差异如下：
+
+- **grok 的传输形态是 ACP**：`grok agent serve` 在 tmux 里长驻，handoff 经 WebSocket 跑 Agent Client Protocol（JSON-RPC 双向）。opencode 走 HTTP + SSE。
+- **grok 的模型来源**：任务级模型（`dispatch --model`）写入任务级 `GROK_HOME` 的 `config.toml` 的 `[models].default`；为空则用 grok 自身默认。opencode 由 `~/.config/opencode/` 提供模型配置。
+- **grok 的回合边界**：是 `session/prompt` 的响应（`stopReason`），而非 opencode 从 idle 事件推断——handoff 不需要那套 idle 去抖与竞态处理。
+- **grok 的权限门**：`session/request_permission` 是阻塞式 JSON-RPC 请求，应答必须带原请求 id 回发（handoff 用挂起表暂存 toolCallId→id）。
+- **grok 的推理流**（`agent_thought_chunk`）与工具调用只进 `render.log`、不进回合正文——避免污染 `{"ask":…}` trailer 的解析。
+- **任务环境**：`<taskDir>/grokhome/` 里是任务级 `config.toml`（钉死 `permission_mode=default`，用户真实配置的 always-approve 不会带进来）；`auth.json` 软链指向真实 `~/.grok/auth.json`，token 刷新后会自动重建。
 
 ## 文档
 

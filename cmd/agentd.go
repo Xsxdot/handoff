@@ -28,6 +28,7 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/store"
@@ -88,18 +89,19 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		// 两个执行者都注册：dispatch --executor 可按名选择；opencode 是真实执行，
+		// 三个执行者都注册：dispatch --executor 可按名选择；opencode/grok 是真实执行，
 		// fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := map[string]executor.Adapter{
 			"opencode": opencode.New(logger),
+			"grok":     grok.New(logger),
 			"fake":     fake.New(nil),
 		}
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
-				return fmt.Errorf("未知 executor %q（支持 opencode/fake）", executorFlag)
+				return fmt.Errorf("未知 executor %q（支持 opencode/grok/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
-			// 两个都可用——老任务按各自 executor 名仍能路由到对应 adapter
+			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter
 			cfg.Executor.Default = executorFlag
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, logger)
@@ -150,11 +152,11 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| grok | fake（脚本演示）。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖缺省执行者：opencode（默认）| fake（注册表保留两者，--dispatch executor 仍可按名选择）")
+		"覆盖缺省执行者：opencode（默认）| grok | fake（注册表保留三者，--dispatch executor 仍可按名选择）")
 }
