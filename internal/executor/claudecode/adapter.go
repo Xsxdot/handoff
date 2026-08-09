@@ -224,11 +224,28 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 	r.proc = proc
 
-	// 4. 事件流主循环（内部从 offset 0 起读，遇 init 关闭 r.ready）+ 存活兜底看门狗
+	// 4. 事件流主循环（内部从 offset 0 起读，遇 init 关闭 r.ready）+ 存活兜底看门狗。
+	//    必须在写入 prompt **之前**起好：claude 的 init 在收到首条输入后才吐出，
+	//    若 goroutine 晚于写入启动，可能漏掉 init 之前的事件
 	go r.streamLoop(a)
 	go a.watchdog(r)
 
-	// 5. 等 init（claude 冷启动要加载 settings/plugins/MCP 子进程，30s 上限）
+	// 5. 投首回合 prompt（plan 全文 + 回合纪律，turn.RenderPrompt 产物）。
+	//
+	// 为什么 prompt 必须先于「等 init」：2026-08-09 真机 e2e 实测发现
+	// `claude -p --input-format stream-json` **不会在启动时主动吐 system/init**——
+	// 它要先收到第一条输入消息才吐（三步单变量实验：不喂输入 40s 无 init；3s 后写
+	// 一条最小 user 消息，2s 内即吐 init）。先等它说话、它等你说话，互为死锁，
+	// 旧顺序下执行者从未真正启动成功过。先写不会阻塞：启动脚本 exec 3<> in.fifo
+	// 自持读写两端，数据先躺在管道缓冲里，claude 起来后自然读到。
+	if err := proc.WriteInput(promptText); err != nil {
+		rollback()
+		return fmt.Errorf("投递首回合 prompt: %w", err)
+	}
+	a.log.Info("claude 初始 prompt 已投递", "task", req.Task.ID, "prompt_len", len(promptText))
+
+	// 6. 等 init（prompt 已投出，claude 仍未进入会话则超时——鉴权失效、settings
+	//    非法、MCP 起不来都会卡在这里，30s 上限见 startReadyTimeout 的注释）
 	select {
 	case <-r.ready:
 		a.log.Info("claude 就绪", "task", req.Task.ID, "session", r.session)
@@ -241,13 +258,6 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		rollback()
 		return fmt.Errorf("启动被取消: %w", ctx.Err())
 	}
-
-	// 6. 投首回合 prompt（plan 全文 + 回合纪律，turn.RenderPrompt 产物）
-	if err := proc.WriteInput(promptText); err != nil {
-		rollback()
-		return fmt.Errorf("投递首回合 prompt: %w", err)
-	}
-	a.log.Info("claude 初始 prompt 已投递", "task", req.Task.ID, "prompt_len", len(promptText))
 
 	// 7. 记录任务起点 commit（git 兜底分类的基线）并补发「会话就绪」信号
 	r.captureStartCommit(a)
