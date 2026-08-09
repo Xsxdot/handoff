@@ -2,6 +2,7 @@ package permgate
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +112,28 @@ func TestHasExecWrapper(t *testing.T) {
 		if HasExecWrapper(s) {
 			t.Errorf("不应识别为执行包装器: %q", s)
 		}
+	}
+}
+
+// TestCustomBlacklistStillEscalates 用户自定义黑名单照常生效（原 approver_test.go
+// TestBlacklistBuiltinAndCustom 的等价断言，随黑名单迁入 permgate）。
+func TestCustomBlacklistStillEscalates(t *testing.T) {
+	g, err := New([]string{`kubectl .*delete`}, slog.Default())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if v := g.judgeCommand(`Bash: kubectl pods delete --all`); v.Action != Escalate {
+		t.Fatalf("自定义规则应硬升级，实得 %s（%s）", v.Action, v.Reason)
+	}
+}
+
+// TestBlacklistScansFullCommand 黑名单扫的是命令全文（原 approver_test.go
+// TestBlacklistMatchesTailOfLongCommand 的等价断言）：复合命令尾部藏着 rm -rf
+// 时不得因只扫前缀而漏放。
+func TestBlacklistScansFullCommand(t *testing.T) {
+	g := newTestGate(t)
+	long := strings.Repeat("echo ok && ", 100) + "rm -rf /var/data"
+	if v := g.judgeCommand(`Bash: ` + long); v.Action != Escalate {
+		t.Fatalf("长命令尾部的 rm -rf 必须硬升级，实得 %s（%s）", v.Action, v.Reason)
 	}
 }

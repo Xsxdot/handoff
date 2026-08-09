@@ -30,6 +30,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -307,9 +308,14 @@ func TestReplyRoundTrip(t *testing.T) {
 	// 注入 manager（fake 中继必成功）：本测试要验证 reply 成功路径的闭环
 	// （pending_tickets 清空）；无 manager 时 reply 会按 P0-5 语义返回 502
 	// （回答落库但无中继落点），那是 TestReplyRelayFailureSurfacesReason 的覆盖面
+	gate, gerr := permgate.New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if gerr != nil {
+		t.Fatalf("permgate.New: %v", gerr)
+	}
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: env.token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil,
+		gate,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 	cl := client.New(env.ts.URL, env.token)
