@@ -465,6 +465,16 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 				"task", r.taskID)
 			return
 		}
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle
+		// 的空回合处置对称）
+		if strings.TrimSpace(text) == "" {
+			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+				Result: &executor.Result{OK: false, SessionID: r.sessionID,
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
+			return
+		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 	}
 }

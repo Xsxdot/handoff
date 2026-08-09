@@ -1179,9 +1179,11 @@ func (r *runState) cancelPendingIdle() {
 // ask/finish/none，none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空
 // 回合缓冲。
 //
-// 空回合（无累积文本）跳过分类并 Warn：idle 但无文本说明文本流没被本层接住
-// （事件结构变化/增量对账失败）——这是「任务可能静默挂死」的观测点，必须可见
-// 而非 Debug 静默。props 为触发 idle 的 session.status 载荷，仅用于日志上下文。
+// 空回合（无累积文本）不再静默跳过：零文本转失败结果交审核者（B21）——idle 但
+// 无文本说明文本流没被本层接住（事件结构变化/增量对账失败）或供应商流中断，
+// 这是「任务可能静默挂死」的观测点，必须产事件而非 Debug 静默。被拒终止的
+// 空回合例外，它走 question（有内容可问，见下文）。props 为触发 idle 的
+// session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	text := r.turnText()
 	if strings.TrimSpace(text) == "" {
@@ -1198,8 +1200,23 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			r.captureStartCommit(a)
 			return
 		}
-		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
+		// 零文本回合转失败结果交审核者（B21）：旧实现在此静默 return，任务停在
+		// running 直到 2h 看门狗。
+		//
+		// 为什么是 result{OK:false} 而不是 question：上面「被拒终止」那条走
+		// question，因为那个现场有内容可问；零文本回合没有任何东西可问，它是一份
+		// 故障报告——result{OK:false} 的语义才对得上，且 FailReason 能把现场
+		// 写清楚。manager 的 handleResult 对 OK=false 的既有处置（作废挂起工单 →
+		// failed 事件 → 落 waiting_review）正是我们要的，continue 立刻可用
+		a.log.Warn("idle 但回合无文本，转失败结果交审核者", "task", r.taskID,
 			"event", turn.TailRunes(string(raw), 120))
+		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
+			OK: false,
+			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
+				"可 continue 续接重试",
+		}})
+		r.clearTurn()
+		r.captureStartCommit(a)
 		return
 	}
 	kind, t := turn.ParseTrailer(text)

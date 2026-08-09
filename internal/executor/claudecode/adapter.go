@@ -661,6 +661,16 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
 		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle、
+		// grok finishTurn 的空回合处置对称）
+		if strings.TrimSpace(text) == "" {
+			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
+				Result: &executor.Result{OK: false, SessionID: r.session,
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
+			return
+		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
