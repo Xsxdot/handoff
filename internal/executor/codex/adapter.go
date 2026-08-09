@@ -218,8 +218,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err := a.startTurn(r, prompt); err != nil {
 		return err
 	}
-	// 看门狗在 Task 8 接上（`go a.watchdog(r)`）；本 task 不引用它，避免前向依赖
-	// 让包编译不过。
+	go a.watchdog(r)
 
 	a.log.Info("codex 任务已启动", "task", taskID, "thread", r.threadID,
 		"port", proc.Port, "elapsed_ms", time.Since(start).Milliseconds())
