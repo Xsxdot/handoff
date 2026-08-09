@@ -7,7 +7,7 @@
 //     Stop（kill serve + 关事件流）、Events（事件通道）
 //   - SSE 事件 → AdapterEvent 映射：permission.asked → permission 事件；模型
 //     文本（message.part.updated / message.part.delta）增量累积 →
-//     render.log 追加 + 节流 progress；session.status idle → ParseTrailer
+//     render.log 追加 + 节流 progress；session.status idle → turn.ParseTrailer
 //     分类（ask/finish/none 兜底 git 实况裁决）；serve 死亡 → failed result
 //   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 tmux 第二窗口
 //     `tail -f <taskDir>/render.log` 旁观模型执行
@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // 看门狗与节流参数：
@@ -85,10 +86,6 @@ const (
 	reapMaxAttemptsDefault = 20
 	permTextHardLimit      = 64 << 10
 	pendingDeltaLimit      = 64 << 10
-	// questionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文
-	// 当 question 发出，一个失控的长回合会直接灌进工单行与审核者终端；全文
-	// 始终在任务目录的 render.log 里，截断不丢证据
-	questionTextLimit = 8000
 )
 
 // serveHandle 抽象 serve 进程的存活/销毁/诊断：真实实现是 *Proc（procHandle），
@@ -477,7 +474,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能续接", taskID)
 	default:
 	}
-	a.log.Info("adapter 收到续接指令", "task", taskID, "text", truncateRunes(text, 80))
+	a.log.Info("adapter 收到续接指令", "task", taskID, "text", turn.TruncateRunes(text, 80))
 	defer func() {
 		if err != nil {
 			a.log.Error("adapter 续接指令发送失败", "task", taskID, "cause", err)
@@ -692,7 +689,7 @@ func (r *runState) subscribeLoop(a *Adapter) {
 		// 看门狗判定 serve 死亡后已取消 runCtx：订阅随连接断开而退出，
 		// 此处产出 failed 结果，让审核者看到死亡现场（serve.log 尾部——
 		// serve 所在窗格已随命令退出关闭，capture-pane 读不到，P1-8）
-		tail := tailRunes(r.handle.LogTail(), 200)
+		tail := turn.TailRunes(r.handle.LogTail(), 200)
 		a.log.Error("opencode serve 已退出", "task", r.taskID, "stderr_tail", tail)
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: false, SessionID: r.session,
@@ -710,7 +707,7 @@ func (r *runState) subscribeLoop(a *Adapter) {
 	a.log.Warn("opencode 事件流意外中断，按失败结束回合", "task", r.taskID, "cause", err)
 	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 		OK: false, SessionID: r.session,
-		FailReason: "opencode 事件流意外中断: " + tailRunes(fmt.Sprint(err), 200),
+		FailReason: "opencode 事件流意外中断: " + turn.TailRunes(fmt.Sprint(err), 200),
 	}})
 }
 
@@ -817,13 +814,13 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	switch ev.Type {
 	case "permission":
 		a.log.Info("adapter 产出权限事件", "task", r.taskID, "type", ev.Type,
-			"perm", ev.PermissionID, "text", truncateRunes(ev.Text, 80))
+			"perm", ev.PermissionID, "text", turn.TruncateRunes(ev.Text, 80))
 	case "question":
 		a.log.Info("adapter 产出提问事件", "task", r.taskID, "type", ev.Type,
-			"text", truncateRunes(ev.Text, 80))
+			"text", turn.TruncateRunes(ev.Text, 80))
 	case "progress":
 		a.log.Info("adapter 产出进度事件", "task", r.taskID, "type", ev.Type,
-			"text", truncateRunes(ev.Text, 80))
+			"text", turn.TruncateRunes(ev.Text, 80))
 	case "result":
 		ok := ev.Result != nil && ev.Result.OK
 		a.log.Info("adapter 产出结果事件", "task", r.taskID, "type", ev.Type, "ok", ok)
@@ -920,7 +917,7 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 			"task", r.taskID, "type", ev.Type)
 	case ev.Type == "session.error":
 		a.log.Warn("opencode 会话报错", "task", r.taskID,
-			"properties", truncateRunes(string(ev.Properties), 200))
+			"properties", turn.TruncateRunes(string(ev.Properties), 200))
 	default:
 		a.log.Debug("未知 SSE 事件，跳过", "task", r.taskID, "type", ev.Type)
 	}
@@ -966,7 +963,7 @@ func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool
 		a.log.Warn("收到不属于本任务会话的审批请求，未产出工单（opencode 可能在等一个看不见的决策，"+
 			"任务若卡住请 tmux attach 查看）",
 			"task", r.taskID, "own_session", r.session, "event_session", sessionID,
-			"properties", truncateRunes(string(ev.Properties), 200))
+			"properties", turn.TruncateRunes(string(ev.Properties), 200))
 		return false
 	}
 	a.log.Debug("收到其他会话事件，跳过", "task", r.taskID,
@@ -1015,7 +1012,7 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
 	a.emit(r, executor.AdapterEvent{
-		Type: "permission", PermissionID: pa.ID, Text: truncateMarked(text, permTextHardLimit),
+		Type: "permission", PermissionID: pa.ID, Text: turn.TruncateMarked(text, permTextHardLimit),
 	})
 }
 
@@ -1246,7 +1243,7 @@ func (r *runState) cancelPendingIdle() {
 	}
 }
 
-// mapIdle 回合结束（session.status idle 主信号）时分类收尾：ParseTrailer 判定
+// mapIdle 回合结束（session.status idle 主信号）时分类收尾：turn.ParseTrailer 判定
 // ask/finish/none，none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空
 // 回合缓冲。
 //
@@ -1263,20 +1260,20 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			a.log.Warn("回合因权限被拒终止且无文本产出，转提问交审核者裁决",
 				"task", r.taskID, "rejected", rejected)
 			a.emit(r, executor.AdapterEvent{
-				Type: "question", Text: clampQuestion(rejectedTurnQuestion(rejected)),
+				Type: "question", Text: turn.ClampQuestion(rejectedTurnQuestion(rejected)),
 			})
 			r.clearTurn()
 			r.captureStartCommit(a)
 			return
 		}
 		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
-			"event", tailRunes(string(raw), 120))
+			"event", turn.TailRunes(string(raw), 120))
 		return
 	}
-	kind, t := ParseTrailer(text)
+	kind, t := turn.ParseTrailer(text)
 	switch kind {
 	case "ask":
-		a.emit(r, executor.AdapterEvent{Type: "question", Text: clampQuestion(t.Question)})
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(t.Question)})
 	case "finish":
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: true, Branch: t.Branch, CommitHash: t.Commit,
@@ -1295,56 +1292,35 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 
 // fallbackClassify 是「模型未按纪律输出协议 trailer」的兜底分类。
 //
-// why（兜底分类规则）：回合结束但 ParseTrailer 判 none——模型可能干完活却
+// why（兜底分类规则）：回合结束但 turn.ParseTrailer 判 none——模型可能干完活却
 // 忘了写 {"branch":...} 协议。此时拿 git 实况裁决：相对任务起点有新 commit →
 // 认定干完了（result OK，branch/commit 用 git 实况，summary 取回合末 200
 // 字符，Warn 记录「executor 不守纪律」——这是审核者发现纪律问题的观测点）；
 // 没有新 commit → 把回合全文交给审核者裁决（question），流程不卡死。
 func (a *Adapter) fallbackClassify(r *runState, text string) {
 	a.log.Warn("回合未输出协议 trailer，走 git 兜底", "task", r.taskID,
-		"turn_tail", tailRunes(text, 120))
+		"turn_tail", turn.TailRunes(text, 120))
 	branch, commit, hasNew, err := a.gitTurnStatus(r)
 	if err != nil || !hasNew {
 		if err != nil {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
 		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
-		a.emit(r, executor.AdapterEvent{Type: "question", Text: clampQuestion(text)})
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
 	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 		OK: true, Branch: branch, CommitHash: commit,
-		Summary: tailRunes(text, 200), SessionID: r.session,
+		Summary: turn.TailRunes(text, 200), SessionID: r.session,
 	}})
 }
 
-// clampQuestion 把交给审核者的提问文本压到可读上限，超出时指明全文去处。
-//
-// 为什么截断而不是原样交出：兜底分类会把整个回合原文当 question 发出，
-// 而它最终要进工单行、进审核者终端；模型跑飞的一个长回合能有几十万字符。
-// 证据不丢——全文一直在任务目录的 render.log 里。
-func clampQuestion(text string) string {
-	if len([]rune(text)) <= questionTextLimit {
-		return text
-	}
-	return truncateRunes(text, questionTextLimit) +
-		"\n\n…（回合文本过长已截断，完整内容见任务目录 render.log）"
-}
-
 // gitTurnStatus 查询仓库当前分支与 HEAD commit，并对比任务起点判定是否有新提交。
+//
+// 薄封装：实现在 turn 共享包（B2/B3 两个 adapter 同构逻辑），本方法保留
+// 调用点已有的 r 上下文（repoPath/startCommit）。
 func (a *Adapter) gitTurnStatus(r *runState) (branch, commit string, hasNew bool, err error) {
-	b, err := exec.Command("git", "-C", r.repoPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err != nil {
-		return "", "", false, fmt.Errorf("查询当前分支: %w", err)
-	}
-	c, err := exec.Command("git", "-C", r.repoPath, "rev-parse", "HEAD").Output()
-	if err != nil {
-		return "", "", false, fmt.Errorf("查询 HEAD commit: %w", err)
-	}
-	branch = strings.TrimSpace(string(b))
-	commit = strings.TrimSpace(string(c))
-	hasNew = r.startCommit != "" && commit != "" && commit != r.startCommit
-	return branch, commit, hasNew, nil
+	return turn.GitTurnStatus(r.repoPath, r.startCommit)
 }
 
 // maybeProgress 节流发 progress：每任务至多每 progressThrottle 一条
@@ -1355,7 +1331,7 @@ func (a *Adapter) maybeProgress(r *runState) {
 		return
 	}
 	r.lastProgress = now
-	a.emit(r, executor.AdapterEvent{Type: "progress", Text: tailRunes(r.turnText(), 200)})
+	a.emit(r, executor.AdapterEvent{Type: "progress", Text: turn.TailRunes(r.turnText(), 200)})
 }
 
 // setPartText 把某个 part 的当前文本置为 text，并把变化反映到 render.log
@@ -1416,22 +1392,9 @@ func partKey(msgID, partID string) string {
 }
 
 // appendRender 把消息文本增量追加进 render.log（tmux 第二窗口 tail -f 可见）。
+//
+// 薄封装：实现在 turn 共享包（B2/B3 两个 adapter 同构逻辑），本方法保留
+// 调用点已有的 taskDir 上下文（renderPath 由 newRun 按 taskDir 推导）。
 func (r *runState) appendRender(delta string) error {
-	f, err := os.OpenFile(r.renderPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(delta)
-	return err
-}
-
-// tailRunes 取字符串末尾最多 n 个字符（按 rune 截断，日志/摘要用，
-// 不切断多字节 UTF-8 字符）。
-func tailRunes(s string, n int) string {
-	rs := []rune(s)
-	if len(rs) <= n {
-		return s
-	}
-	return string(rs[len(rs)-n:])
+	return turn.AppendRender(r.renderPath, delta)
 }

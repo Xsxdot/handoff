@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // bareLimit 是本文件里构造超长文本的长度（远超权限描述 64KB 防失控硬上限，
@@ -370,11 +371,11 @@ func TestQuestionTextIsBounded(t *testing.T) {
 	fs.push(statusIdleEvent())
 
 	ev := waitEventType(t, ch, "question")
-	if n := len([]rune(ev.Text)); n > questionTextLimit+200 {
-		t.Errorf("question 文本 %d 字符未受限（上限 %d）", n, questionTextLimit)
+	if n := len([]rune(ev.Text)); n > turn.QuestionTextLimit+200 {
+		t.Errorf("question 文本 %d 字符未受限（上限 %d）", n, turn.QuestionTextLimit)
 	}
 	if !strings.Contains(ev.Text, "render.log") {
-		t.Errorf("截断后应指明全文去处, got 尾部 %q", tailRunes(ev.Text, 80))
+		t.Errorf("截断后应指明全文去处, got 尾部 %q", turn.TailRunes(ev.Text, 80))
 	}
 }
 
