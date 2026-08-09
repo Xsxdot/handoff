@@ -117,6 +117,7 @@ const (
 // Request 是结构化后的权限请求。
 type Request struct {
     Tool      string   // 归一化工具名：bash | write | edit | webfetch | other
+    Text      string   // 权限描述全文（与工单同源）；非 bash 路由的黑名单扫描对象
     Command   string   // Tool=bash 时的完整命令串
     Paths     []string // Tool=write|edit 时的目标路径（可为相对路径）
     Truncated bool     // 描述含 executor.TruncationMarker
