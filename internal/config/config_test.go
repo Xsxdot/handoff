@@ -215,3 +215,46 @@ func TestSyncAutoDefaultsTrue(t *testing.T) {
 		t.Error("sync.auto 省略时应默认 true")
 	}
 }
+
+func TestEnvSectionParsed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "listen: \"127.0.0.1:7777\"\ntoken: \"t\"\nenv:\n  opencode: dev.env\n  claude: work.env\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env["opencode"] != "dev.env" || cfg.Env["claude"] != "work.env" {
+		t.Fatalf("env 段解析错误: %#v", cfg.Env)
+	}
+}
+
+func TestEnvDefaultsToEmptyMap(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("token: \"t\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env == nil {
+		t.Fatal("未配置 env 时应为空 map 而非 nil，避免调用方各自判空")
+	}
+}
+
+func TestUnknownKeyErrorMentionsEnv(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("bogus_key: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应报错")
+	}
+	if !strings.Contains(err.Error(), "env{") {
+		t.Errorf("已知键清单应含 env 段，实际 %q", err.Error())
+	}
+}
