@@ -74,7 +74,7 @@ var agentdCmd = &cobra.Command{
 
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
 		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
-		ap, err := agentd.NewApprover(cfg.Approver, logger)
+		ap, err := agentd.NewApprover(cfg.Approver, nil, logger)
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}

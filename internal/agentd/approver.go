@@ -25,12 +25,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 )
 
@@ -87,6 +89,10 @@ type Approver struct {
 	model        string // 审批者模型；空=执行者自身默认
 	timeout      time.Duration
 	blacklist    []*regexp.Regexp // 内置 + 自定义，编译后
+	// env 是本审批者所用 agent 的 env 文件解析器；nil=不注入（未配置或测试场景）。
+	// 审批者与任务执行者是同一个 agent 的两次启动，必须共用同一份 env——代理只配
+	// 半边会让审批者连不出去后静默 fail-closed 升级，是最难查的那类故障
+	env *envfile.Resolver
 	// runCmd 是执行 one-shot 裁决命令的测试缝（非导出字段，测试直接改注入）。
 	// 默认实现是 exec.CommandContext + CombinedOutput（输出上限 maxDecideOutput）。
 	runCmd func(ctx context.Context, argv []string) (string, error)
@@ -96,12 +102,13 @@ type Approver struct {
 //
 // 参数：
 //   - cfg: 审批者配置；cfg.Executor 为空表示不启用审批链，返回 (nil, nil)
+//   - env: 本 agent 的 env 文件解析器（B19）；nil=不注入
 //   - log: 包日志入口
 //
 // 返回：
 //   - 未启用时返回 (nil, nil)；启用时返回可用的审批者
 //   - 黑名单正则编译失败返回错误（配置错误，启动期即应暴露）
-func NewApprover(cfg config.ApproverConfig, log *slog.Logger) (*Approver, error) {
+func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Logger) (*Approver, error) {
 	if cfg.Executor == "" {
 		return nil, nil
 	}
@@ -115,20 +122,41 @@ func NewApprover(cfg config.ApproverConfig, log *slog.Logger) (*Approver, error)
 		}
 		rx = append(rx, r)
 	}
-	return &Approver{
+	a := &Approver{
 		log:          log,
 		executorName: cfg.Executor,
 		model:        cfg.Model,
 		timeout:      cfg.Timeout,
 		blacklist:    rx,
-		runCmd:       defaultRunCmd,
-	}, nil
+		env:          env,
+	}
+	// runCmd 绑到方法而不是包级函数：默认实现需要读 a.env 才能注入环境变量，
+	// 同时保持 runCmd 字段签名不变——既有 15 处测试注入点一行都不用改
+	a.runCmd = a.defaultRunCmd
+	return a, nil
 }
 
 // defaultRunCmd 是 runCmd 的默认实现：exec.CommandContext + CombinedOutput，
 // 输出上限 maxDecideOutput（截断而非报错——解析只关心输出开头的 JSON 行）。
-func defaultRunCmd(ctx context.Context, argv []string) (string, error) {
+//
+// 环境（B19）：继承 agentd 环境并**追加**本 agent 的 env 文件变量。
+//   - 为什么是追加而不是替换：替换会让审批者连 PATH 都没有，executor 根本起不来
+//   - 为什么解析失败直接返回错误而不是无环境硬跑：Decide 的既有失败分支会把它
+//     变成 escalate（升级人工审核者）。让它带病裁决更危险——没有代理时模型请求
+//     必然失败，而失败会被当成「审批者判不了」，与真正的判不了混为一谈
+func (a *Approver) defaultRunCmd(ctx context.Context, argv []string) (string, error) {
+	env := os.Environ()
+	if a.env != nil {
+		extra, err := a.env.For(a.executorName)
+		if err != nil {
+			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工审核者",
+				"executor", a.executorName, "cause", err)
+			return "", fmt.Errorf("解析审批者 env 文件: %w", err)
+		}
+		env = append(env, extra...)
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = env
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

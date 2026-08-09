@@ -24,7 +24,7 @@ import (
 // 固定输出会被判无效——这里把 argv 里的 nonce 自动注入 JSON 行，保持
 // 「approve/escalate 干净裁决」的既有用例原意。
 func newTestApprover(t *testing.T, out string, err error) *Approver {
-	a, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	a, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -54,7 +54,7 @@ func injectNonceForTest(out, nonce string) string {
 }
 
 func TestApproverNilWhenUnconfigured(t *testing.T) {
-	a, err := NewApprover(config.ApproverConfig{}, slog.Default())
+	a, err := NewApprover(config.ApproverConfig{}, nil, slog.Default())
 	if err != nil || a != nil {
 		t.Fatalf("未配置应返回 (nil,nil)，得到 %v %v", a, err)
 	}
@@ -64,7 +64,7 @@ func TestBlacklistBuiltinAndCustom(t *testing.T) {
 	a, err := NewApprover(config.ApproverConfig{
 		Executor: "opencode", Timeout: time.Second,
 		Blacklist: []string{`kubectl .*delete`},
-	}, slog.Default())
+	}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func approverStep(perm string) []fake.Step {
 // fake 脚本由调用方提供。
 func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string, cmdErr error) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -158,7 +158,7 @@ func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string,
 // fake 脚本由调用方提供。
 func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ctx context.Context, argv []string) (string, error)) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -295,7 +295,7 @@ func TestApproverBlacklistSkipsApprover(t *testing.T) {
 // 读取，普通 int 是 data race（-race 稳定复现，P1-5）。
 func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	var callCount atomic.Int64
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -383,7 +383,7 @@ func TestRelayAnswerRelaysApproverAllowAsOnce(t *testing.T) {
 // 随后审批者判 escalate 也不得重建工单/唤醒审核者——只留 approver_decision 审计
 // 事件，避免「状态 waiting_review 却带 pending 权限工单」的 U-1/U-3 矛盾形态回归。
 func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -476,7 +476,7 @@ func hasApproverState(m *Manager, taskID string) bool {
 // 在任务终结处被清理（P2-5）：这两张内存 map 若随归档任务残留会无界增长。
 func TestApproverStateClearedOnTaskEnd(t *testing.T) {
 	t.Run("handleResult 回合结束清理", func(t *testing.T) {
-		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
 		task := mustApproverDispatch(t, m)
 		setApproverState(m, task.ID)
@@ -490,7 +490,7 @@ func TestApproverStateClearedOnTaskEnd(t *testing.T) {
 		}
 	})
 	t.Run("Done 归档清理", func(t *testing.T) {
-		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
 		task := mustApproverDispatch(t, m)
 		if err := m.transit(task.ID, proto.TaskStateWaitingReview, "test"); err != nil {
@@ -525,7 +525,7 @@ func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
 // why：旧链路先截到 200 字再扫黑名单，一条 heredoc/复合命令前 200 字人畜无害、
 // 尾部藏着 rm -rf 时，黑名单、审批者、审核者三道门同时失效。
 func TestBlacklistMatchesTailOfLongCommand(t *testing.T) {
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +566,7 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, slog.Default())
+			ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 			if err != nil {
 				t.Fatal(err)
 			}
