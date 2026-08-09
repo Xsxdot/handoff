@@ -984,6 +984,13 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		Patterns   []string `json:"patterns"`
 		Metadata   struct {
 			Command string `json:"command"`
+			// filepath 是小写 p——真机样本如此（testdata/perm_edit.json）。
+			// 写成 filePath 会静默取到空串，然后整条请求退化成「提取不出
+			// 结构」被 fail-closed 升级，表现为每次编辑都唤醒人，很难查。
+			FilePath string `json:"filepath"`
+			// external_directory 的 bash 形态没有 filepath，越界目录在这里
+			ParentDir   string   `json:"parentDir"`
+			Directories []string `json:"directories"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(props, &pa); err != nil {
@@ -1011,8 +1018,43 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
+
+	// 结构化载荷（B23/B27）：permission 字段就是 opencode 的工具类别原文，
+	// 真机实测取值有 bash / edit / external_directory，直接作归一化来源。
+	//
+	// 为什么路径不取 patterns：patterns 里是相对路径与通配摘要（真机样本里
+	// edit 的 patterns 是 ["probe.md"]、external_directory 的是 ["/tmp/*"]），
+	// 拿它判归属会把通配符当成路径。绝对路径只在 metadata 里。
+	var req *executor.PermRequest
+	tool := executor.NormalizePermTool(pa.Permission)
+	paths := pa.Metadata.Directories
+	if pa.Metadata.FilePath != "" {
+		paths = append([]string{pa.Metadata.FilePath}, paths...)
+	}
+	switch {
+	case pa.Metadata.Command != "":
+		if tool == executor.PermToolOther {
+			tool = executor.PermToolBash
+		}
+		// bash 形态的 external_directory 同时带命令与越界目录，两个都要给
+		// permgate——命令走黑名单判据，目录走归属判据
+		req = &executor.PermRequest{Tool: tool, Command: pa.Metadata.Command, Paths: paths}
+	case len(paths) > 0:
+		if tool == executor.PermToolOther {
+			tool = executor.PermToolWrite
+		}
+		req = &executor.PermRequest{Tool: tool, Paths: paths}
+	}
+	if req == nil {
+		// 提取不出结构 → manager 会 fail-closed 升级人工。记一条，否则
+		// 「为什么这个请求没走审批者」在日志里无从查起
+		a.log.Warn("opencode 权限请求提取不出结构化载荷，将由 manager 升级人工",
+			"task", r.taskID, "perm", pa.ID, "permission", pa.Permission)
+	}
 	a.emit(r, executor.AdapterEvent{
-		Type: "permission", PermissionID: pa.ID, Text: turn.TruncateMarked(text, permTextHardLimit),
+		Type: "permission", PermissionID: pa.ID,
+		Text: turn.TruncateMarked(text, permTextHardLimit),
+		Perm: req,
 	})
 }
 

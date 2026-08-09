@@ -15,6 +15,10 @@
 // 这类初级请求连环唤醒，审批噪音让审核流形同虚设——这恰是用户交互式用
 // opencode 时不存在的问题（用户在场且全局配置宽松）。修正后的分层：
 //   - edit: allow —— 在任务分支上改代码是派发的目的本身，diff 审核兜底；
+//     edit 保持 allow（2026-08-09 真机探针复核）：越界写入由
+//     external_directory: "ask" 拦截并升级人工，范围内写入本就该直接放行。
+//     翻成 ask 等于给每次正常编辑加一道判完还是放行的空门（B27 复核结论，
+//     见 docs/superpowers/plans/2026-08-09-permission-payload-probe.md §3.1）。
 //   - bash: 模式表 —— 危险模式（rm -rf/sudo/git push/reset --hard/--force/
 //     curl/wget 等，见 bashPermissionRules）ask，其余 allow；
 //   - webfetch/external_directory: ask —— 外访与越出工作区仍逐次确认。

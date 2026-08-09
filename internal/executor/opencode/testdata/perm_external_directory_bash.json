@@ -1,0 +1,24 @@
+{
+  "id": "per_fe65991d30013KhbopVwZ25PSA",
+  "sessionID": "ses_019aab697ffeiGFrHBfxoVln7B",
+  "permission": "external_directory",
+  "patterns": [
+    "/tmp/spike-tool/*"
+  ],
+  "metadata": {
+    "command": "cd /tmp/spike-tool && ./grok_spike new 23191 spike-secret-1234 /tmp/spike-grok \"记住这个口令：ALPACA-7731。之后我会问你它是什么。\" 2>&1 | tail -30",
+    "directories": [
+      "/tmp/spike-tool"
+    ],
+    "patterns": [
+      "/tmp/spike-tool/*"
+    ]
+  },
+  "always": [
+    "/tmp/spike-tool/*"
+  ],
+  "tool": {
+    "messageID": "msg_fe65981bc001QHp62qPVPk3Npb",
+    "callID": "call_00_ET_0NTvFwKrAzrkADQcowng7414"
+  }
+}

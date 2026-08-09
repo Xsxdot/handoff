@@ -1,0 +1,45 @@
+{
+  "sessionId": "019fe659-8b12-7631-b308-73fec301994d",
+  "toolCall": {
+    "toolCallId": "call-652ddc62-90d5-4f5e-956c-b0c34812c54a-3",
+    "kind": "edit",
+    "title": "Edit `probe.md`",
+    "rawInput": {
+      "variant": "SearchReplace",
+      "file_path": "probe.md",
+      "old_string": "",
+      "new_string": "probe",
+      "replace_all": false
+    },
+    "_meta": {
+      "x.ai/tool": {
+        "version": 1,
+        "name": "search_replace",
+        "kind": "edit",
+        "namespace": "grok_build",
+        "label": "Edit",
+        "read_only": false,
+        "input": {
+          "path": "probe.md"
+        }
+      }
+    }
+  },
+  "options": [
+    {
+      "optionId": "allow-edits-session",
+      "name": "Yes, allow all edits during this session",
+      "kind": "allow_always"
+    },
+    {
+      "optionId": "allow-once",
+      "name": "Yes",
+      "kind": "allow_once"
+    },
+    {
+      "optionId": "reject-once",
+      "name": "No, and tell Grok what to do differently",
+      "kind": "reject_once"
+    }
+  ]
+}

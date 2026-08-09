@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/xushixin/handoff/internal/executor"
 )
 
 // dialAsk 模拟 MCP 进程：连 socket、发一条 ask、返回连接供读裁决。
@@ -114,5 +117,81 @@ func TestPermServerReRegisterSameID(t *testing.T) {
 	}
 	if got.Behavior != "deny" || got.Message != "不批" {
 		t.Errorf("裁决未回到新连接: %+v", got)
+	}
+}
+
+// TestPermTextAndRequest 用 Task 1 真机取样的载荷断言结构提取。
+func TestPermTextAndRequest(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		input    string
+		wantText string
+		wantTool string
+		wantCmd  string
+		wantPath []string
+	}{
+		{"Bash", "Bash", `{"command":"go build ./..."}`,
+			"Bash: go build ./...", executor.PermToolBash, "go build ./...", nil},
+		{"Write", "Write", `{"file_path":"/repo/main.go","content":"x"}`,
+			"Write: /repo/main.go", executor.PermToolWrite, "", []string{"/repo/main.go"}},
+		{"Edit", "Edit", `{"file_path":"/repo/a.go","old_string":"a","new_string":"b"}`,
+			"Edit: /repo/a.go", executor.PermToolEdit, "", []string{"/repo/a.go"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			text, req := permTextAndRequest(c.tool, json.RawMessage(c.input))
+			if text != c.wantText {
+				t.Errorf("text = %q，期望 %q", text, c.wantText)
+			}
+			if req == nil {
+				t.Fatal("必须产出结构化载荷")
+			}
+			if req.Tool != c.wantTool {
+				t.Errorf("tool = %q，期望 %q", req.Tool, c.wantTool)
+			}
+			if req.Command != c.wantCmd {
+				t.Errorf("command = %q，期望 %q", req.Command, c.wantCmd)
+			}
+			if len(req.Paths) != len(c.wantPath) {
+				t.Fatalf("paths = %v，期望 %v", req.Paths, c.wantPath)
+			}
+			for i := range c.wantPath {
+				if req.Paths[i] != c.wantPath[i] {
+					t.Errorf("paths[%d] = %q，期望 %q", i, req.Paths[i], c.wantPath[i])
+				}
+			}
+		})
+	}
+}
+
+// TestPermRequestNilWhenUnparsable 提取不出结构时必须返回 nil，
+// 不得伪造空壳——空壳会让判据误以为拿到了结构。
+func TestPermRequestNilWhenUnparsable(t *testing.T) {
+	if _, req := permTextAndRequest("Bash", json.RawMessage(`{"nope":1}`)); req != nil {
+		t.Fatalf("命令缺失时必须返回 nil，实得 %+v", req)
+	}
+	if _, req := permTextAndRequest("Write", json.RawMessage(`{"nope":1}`)); req != nil {
+		t.Fatalf("路径缺失时必须返回 nil，实得 %+v", req)
+	}
+}
+
+// TestRealProbePayload 用 Task 1 取回的真实载荷跑一遍，防止手写样本与
+// 真机形态漂移。
+func TestRealProbePayload(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "perm_write.json"))
+	if err != nil {
+		t.Fatalf("读真机载荷样本: %v", err)
+	}
+	var ask struct {
+		ToolName string          `json:"tool_name"`
+		Input    json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(raw, &ask); err != nil {
+		t.Fatalf("解析真机载荷样本: %v", err)
+	}
+	_, req := permTextAndRequest(ask.ToolName, ask.Input)
+	if req == nil || len(req.Paths) == 0 {
+		t.Fatalf("真机 Write 载荷必须能提取出路径，实得 %+v", req)
 	}
 }

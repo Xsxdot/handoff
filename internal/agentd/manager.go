@@ -59,6 +59,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -108,6 +109,14 @@ type Manager struct {
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
 	// 权限请求直接升级人工审核者）。构造后只读。
 	approver *Approver
+	// gate 是权限判据网关（B23/B27）：把权限请求判成 AutoAllow/Consult/Escalate。
+	// **与 approver 解耦**——approver 为 nil 时 gate 依然工作，否则未配置审批者的
+	// 部署会被工作区内的每一次写入淹没（spec §5.3）。构造后只读。
+	gate *permgate.Gate
+	// aaMu 保护 aaCount：每任务累计的自动放行次数，回合终结时汇总打一条 Info。
+	// 不能完全静默——出问题时要有第一现场。
+	aaMu    sync.Mutex
+	aaCount map[string]int
 	// 审批链运行时状态（apMu 保护）：
 	//   - apInflight：正在裁决中的 ticket id 集合（防 SSE 重放双呼审批者）
 	//   - apFails：每任务连续裁决失败计数（Err 非 nil 才累计）
@@ -127,17 +136,19 @@ type Manager struct {
 //     任务按 executor 名路由，缺省名取 cfg.Executor.Default
 //   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
 //   - approver: 审批链裁决器；nil=不启用
+//   - gate: 权限判据网关；**不得为 nil**，它与 approver 是否启用无关
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
-func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, log *slog.Logger) *Manager {
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
 	return &Manager{
-		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, log: log,
+		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,
 		env:        envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
 		apInflight: map[string]bool{},
 		apFails:    map[string]int{},
 		apDisabled: map[string]bool{},
+		aaCount:    map[string]int{},
 	}
 }
 
@@ -961,14 +972,22 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
 		return
 	}
-	// 审批链前置分流：需要咨询审批者（且未停用/未命中黑名单）时，异步裁决——
-	// 审批期间不阻塞 mediate 循环，同任务后续 progress 事件照常入库广播。
-	// 已在裁决中的重放（markApproverInflight 返回 false）直接吞掉，不重复咨询。
-	if m.shouldConsultApprover(taskID, ev.Text) {
-		if m.markApproverInflight(ticketID) {
-			go m.consultApprover(ctx, taskID, ev, ticketID)
-		}
+	// 判据前置分流（B23/B27）：结构化判据先判，三个出口对应三条既有路径。
+	// AutoAllow 不建工单、不发事件、不改状态——工作区内的写入是派发的目的
+	// 本身，为它唤醒任何人都是噪音。
+	switch m.judgePermission(taskID, ev).Action {
+	case permgate.AutoAllow:
+		m.autoAllowPermission(taskID, ev)
 		return
+	case permgate.Consult:
+		// 审批者可用且本任务未停用时才咨询；否则退化为升级人工（原行为）。
+		// 已在裁决中的重放（markApproverInflight 返回 false）直接吞掉。
+		if m.shouldConsultApprover(taskID) {
+			if m.markApproverInflight(ticketID) {
+				go m.consultApprover(ctx, taskID, ev, ticketID)
+			}
+			return
+		}
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
 }
@@ -1013,9 +1032,126 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	m.hub.Publish(evt)
 }
 
-// shouldConsultApprover 判断该权限请求是否应走审批者裁决：
-// 审批者已启用、任务未被停用、权限文本未命中黑名单、权限描述完整（未被截断）。
-func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
+// judgePermission 把一次权限事件交给判据网关，返回裁决。
+//
+// 参数：
+//   - taskID: 任务 id（用于取工作区范围）
+//   - ev: 权限事件
+//
+// 返回：permgate.Verdict；一切无法判定的情形都返回 Escalate（fail-closed）
+//
+// 注意：
+//   - ev.Perm 为 nil 表示 adapter 提取不出结构——看不懂的请求交给人，
+//     绝不让廉价模型去猜
+//   - 读任务失败时工作区范围不可知，同样升级人工：范围未知时判「路径在不在
+//     范围内」是没有意义的
+//   - gate 为 nil 是构造契约被违反（NewManager 文档已写明不得为 nil），
+//     但这里仍兜一手：不兜的话 Judge 会在权限处理 goroutine 里空指针 panic，
+//     把整个 agentd 带走——那比升级人工严重得多，也违背「fail-closed 无例外」
+func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permgate.Verdict {
+	if m.gate == nil {
+		m.log.Error("判据网关未装配，fail-closed 升级人工（NewManager 的 gate 不得为 nil）",
+			"task", taskID, "perm", ev.PermissionID)
+		return permgate.Verdict{Action: permgate.Escalate, Reason: "判据网关未装配"}
+	}
+	if ev.Perm == nil {
+		m.log.Warn("权限事件缺结构化载荷，fail-closed 升级人工",
+			"task", taskID, "perm", ev.PermissionID,
+			"text", truncateRunes(ev.Text, 120))
+		return permgate.Verdict{Action: permgate.Escalate,
+			Reason: "adapter 未提供结构化权限载荷"}
+	}
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		m.log.Warn("读任务失败，工作区范围不可知，fail-closed 升级人工",
+			"task", taskID, "perm", ev.PermissionID, "cause", err)
+		return permgate.Verdict{Action: permgate.Escalate,
+			Reason: "读任务失败，工作区范围不可知"}
+	}
+	scope := permgate.Scope{
+		Workdir: task.Workdir(),
+		TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
+	}
+	v := m.gate.Judge(permgate.Request{
+		Tool:      ev.Perm.Tool,
+		Text:      ev.Text,
+		Command:   ev.Perm.Command,
+		Paths:     ev.Perm.Paths,
+		Truncated: strings.Contains(ev.Text, executor.TruncationMarker),
+	}, scope)
+	switch v.Action {
+	case permgate.AutoAllow:
+		m.log.Debug("权限判定：自动放行", "task", taskID, "perm", ev.PermissionID,
+			"tool", ev.Perm.Tool, "paths", ev.Perm.Paths, "reason", v.Reason)
+	case permgate.Consult:
+		m.log.Info("权限判定：交审批者", "task", taskID, "perm", ev.PermissionID,
+			"tool", ev.Perm.Tool, "reason", v.Reason, "rule", v.Rule)
+	default:
+		// 越界写与结构缺失用 Warn 而非 Info：这两类正是「本该被静默通过、
+		// 现在被拦下」的事件，是本次改动的全部价值，必须在日志里一眼可见
+		lvl := slog.LevelInfo
+		if v.Rule == "" {
+			lvl = slog.LevelWarn
+		}
+		m.log.Log(context.Background(), lvl, "权限判定：升级人工",
+			"task", taskID, "perm", ev.PermissionID, "tool", ev.Perm.Tool,
+			"paths", ev.Perm.Paths, "workdir", scope.Workdir, "task_dir", scope.TaskDir,
+			"reason", v.Reason, "rule", v.Rule)
+	}
+	return v
+}
+
+// autoAllowPermission 自动放行一次权限请求：不建工单、不发事件、不改状态，
+// 直接把 once 回传 executor。
+//
+// 注意：
+//   - 没有工单可失败，因此回传失败**不产 delivery_failed 事件**；最常见的
+//     失败成因是订阅重放（同一权限请求被再次投递，而 executor 侧那次请求
+//     早已应答完毕），按 Warn 记录即可
+//   - adapterFor 失败意味着任务的运行态已经没了，executor 侧那次请求将无人
+//     应答——这是 Error 级，但同样无工单可失败
+func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("自动放行：解析执行者失败，该权限请求将无人应答",
+			"task", taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	actx, acancel := unaryCtx(context.Background())
+	defer acancel()
+	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once"); err != nil {
+		m.log.Warn("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
+			"task", taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	m.noteAutoAllowed(taskID)
+}
+
+// noteAutoAllowed 累计一次自动放行。
+func (m *Manager) noteAutoAllowed(taskID string) {
+	m.aaMu.Lock()
+	defer m.aaMu.Unlock()
+	m.aaCount[taskID]++
+}
+
+// takeAutoAllowed 取走并清空某任务的自动放行计数。
+//
+// 取走式而非只读：计数的意义是「这一段执行里静默放行了多少次」，汇总打完
+// 就该归零，否则下一段的汇总会把上一段的数字算进去。
+func (m *Manager) takeAutoAllowed(taskID string) int {
+	m.aaMu.Lock()
+	defer m.aaMu.Unlock()
+	n := m.aaCount[taskID]
+	delete(m.aaCount, taskID)
+	return n
+}
+
+// shouldConsultApprover 判断本任务此刻能否走审批者裁决：审批者已启用
+// 且该任务的审批链未被连续失败停用。
+//
+// 权限内容层面的判定（黑名单、截断标记）已迁入 internal/permgate，
+// 本函数只管「审批者这条路通不通」。
+func (m *Manager) shouldConsultApprover(taskID string) bool {
 	if m.approver == nil {
 		return false
 	}
@@ -1026,16 +1162,7 @@ func (m *Manager) shouldConsultApprover(taskID, permission string) bool {
 		m.log.Debug("审批链已停用，直接升级审核者", "task", taskID)
 		return false
 	}
-	// 权限描述含截断标记（P1-3）：看到的是不完整的命令，危险片段可能落在
-	// 截断之外——黑名单与廉价模型都不可信，直接升级人工是 fail-closed 的
-	// 自然延伸（executor 侧截断标记见 executor.TruncationMarker 契约）
-	if strings.Contains(permission, executor.TruncationMarker) {
-		m.log.Warn("权限描述含截断标记，跳过审批者直接升级", "task", taskID,
-			"permission", truncateRunes(permission, 120))
-		return false
-	}
-	hit, _ := m.approver.Blacklisted(permission)
-	return !hit
+	return true
 }
 
 // markApproverInflight 尝试登记 ticket 的审批中状态；返回 false 表示已有同
@@ -1562,6 +1689,11 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	if ev.Result == nil {
 		m.log.Error("result 事件缺 Result", "task", taskID)
 		return
+	}
+	// 自动放行汇总：AutoAllow 路径逐次只打 Debug，这里给出一条 Info 级总量。
+	// 完全静默会让「出问题时没有第一现场」，而逐次 Info 会淹没日志。
+	if n := m.takeAutoAllowed(taskID); n > 0 {
+		m.log.Info("本段执行自动放行工作区内写入", "task", taskID, "n", n)
 	}
 	// 已归档（done 后）的杂散 result 直接丢弃，不重复追加事件
 	cur, err := m.st.GetTask(taskID)

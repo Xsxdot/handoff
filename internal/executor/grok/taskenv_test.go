@@ -31,12 +31,18 @@ func TestWriteTaskEnvGeneratesPinnedPermissionConfig(t *testing.T) {
 	}
 	// 危险模式表逐条断言——少一条就是静默放行
 	for _, rule := range []string{
-		`"Bash(rm *)"`, `"Bash(*sudo*)"`, `"Bash(*git push*)"`,
+		`"Write(*)"`, `"Edit(*)"`, `"Bash(rm *)"`, `"Bash(*sudo*)"`, `"Bash(*git push*)"`,
 		`"Bash(*git reset --hard*)"`, `"Bash(*--force*)"`,
 		`"Bash(curl *)"`, `"Bash(wget *)"`, `"WebFetch(*)"`,
 	} {
 		if !strings.Contains(cfg, rule) {
 			t.Errorf("ask 规则缺 %s，实际:\n%s", rule, cfg)
+		}
+	}
+	// Write/Edit 不得回到 allow 表：留在 allow 里等于写仓库外路径不经任何人（B27）
+	for _, rule := range []string{`"Write(*)"`, `"Edit(*)"`} {
+		if strings.Contains(allowSection(cfg), rule) {
+			t.Errorf("allow 不得再放行 %s——那等于写仓库外路径不经任何人（B27）", rule)
 		}
 	}
 	// auto_update 必须显式钉死为 false：grok 首次启动会用默认 true 把 config.toml
@@ -183,4 +189,18 @@ func TestWriteServeScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
 	if strings.Contains(string(b), "\n\nexport GROK_HOME=") {
 		t.Errorf("env 为空时不应留下空行:\n%s", b)
 	}
+}
+
+// allowSection 从 config.toml 提取 allow 数组的文本块（写文件类工具不得回到
+// allow 表的断言用；config.toml 不是合法 JSON，按文本截取）。
+func allowSection(cfg string) string {
+	i := strings.Index(cfg, "allow = [")
+	if i < 0 {
+		return ""
+	}
+	rest := cfg[i+len("allow = ["):]
+	if j := strings.Index(rest, "]"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }

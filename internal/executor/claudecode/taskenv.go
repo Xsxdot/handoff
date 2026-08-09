@@ -43,6 +43,8 @@ const (
 //
 // 每次修改本表必须同步 taskenv_test 的逐条断言——少一条就是静默放行。
 var askRules = []string{
+	"Write",             // 写文件：路径是否越出任务范围由 handoff 的 permgate 判（B27）
+	"Edit",              // 同上
 	"Bash(rm:*)",        // 删除（含 rm -rf）
 	"Bash(sudo:*)",      // 提权
 	"Bash(git push:*)",  // 外推：收尾纪律要求不 push，出现即异常
@@ -57,7 +59,12 @@ var askRules = []string{
 // diff 审核兜底。不写它会退回「默认全 ask」，造成一期那种连环唤醒审核者的噪音
 // （见 opencode/taskenv.go 文件头的 dogfooding 修正记录；ask 压过 allow 的形态
 // 已由 2026-08-09 探针证实，spec §5.4）。
-var allowRules = []string{"Bash", "Edit", "Write", "Read", "Glob", "Grep"}
+//
+// 2026-08-09 起 Edit/Write 移出本表进 askRules：它们经权限门后由 handoff
+// 判目标路径是否落在任务范围内，范围内的写入在 manager 侧微秒级自动放行、
+// 不建工单不发事件，越界的才升级人工（spec §5.2）。留在 allow 里等于
+// 「写 ~/.ssh/authorized_keys 连事件都不留」。
+var allowRules = []string{"Bash", "Read", "Glob", "Grep"}
 
 // settingsFile 是任务级 settings.json 的结构（只写 permissions 段）。
 //

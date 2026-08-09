@@ -32,9 +32,20 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
+
+// newTestGate 造一个只带内置黑名单的判据网关（manager 测试环境的统一装配）。
+func newTestGate(t *testing.T) *permgate.Gate {
+	t.Helper()
+	g, err := permgate.New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("permgate.New: %v", err)
+	}
+	return g
+}
 
 // chanAdapter 是测试用空操作 adapter：事件通道由测试直接控制（模拟 executor 侧事件流），
 // 并记录 RespondPermission/Send 实参供断言（答案侧是否真正回传 executor）。
@@ -121,7 +132,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, approver, logger), st, hub
+	return NewManager(st, hub, ads, cfg, approver, newTestGate(t), logger), st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
@@ -272,7 +283,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, logger)
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, newTestGate(t), logger)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
@@ -1095,7 +1106,7 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake"},
 		Env:      map[string]string{"fake": "missing.env"},
 	}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
 
 	// Repo 随便给一个不存在的路径即可：env 解析发生在任何 git 动作之前，
 	// 这条断言同时证明了「解析确实排在最前段」
@@ -1144,7 +1155,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 		Env:      map[string]string{"fake": "dev.env"},
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, newTestGate(t), logger)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{Repo: repo, Prompt: "任意指令"}); derr != nil {
 		t.Fatalf("Dispatch: %v", derr)

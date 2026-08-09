@@ -778,37 +778,71 @@ func (a *Adapter) mapExit(r *runState, m streamMsg) {
 // 其余取 input 的紧凑 JSON。**不在本层做展示级截断**（黑名单扫描/模型审批/工单
 // 全文都以 Text 为真相源），只有 64KB 防失控硬上限；空描述给兜底文本。
 func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
-	text := permText(ask.ToolName, ask.Input)
+	text, req := permTextAndRequest(ask.ToolName, ask.Input)
 	if strings.TrimSpace(text) == "" {
 		a.log.Warn("claude 权限请求无可读描述，按未说明权限交审核者",
 			"task", r.taskID, "perm", ask.ToolUseID)
 		text = "claude 未提供可读描述（tool_use_id " + ask.ToolUseID + "），请 tmux attach 查看现场"
 	}
+	if req == nil {
+		// 提取不出结构 → manager 会 fail-closed 升级人工。记一条，否则
+		// 「为什么这个请求没走审批者」在日志里无从查起
+		a.log.Warn("claude 权限请求提取不出结构化载荷，将由 manager 升级人工",
+			"task", r.taskID, "perm", ask.ToolUseID, "tool", ask.ToolName)
+	}
 	a.emit(r, executor.AdapterEvent{
 		Type: "permission", PermissionID: ask.ToolUseID,
 		Text: turn.TruncateMarked(text, permTextHardLimit),
+		Perm: req,
 	})
 }
 
-// permText 组装权限描述文本（spec §5.3）。
-func permText(toolName string, input json.RawMessage) string {
+// permTextAndRequest 从工具名与入参同时组装展示文本与结构化载荷。
+//
+// 参数：
+//   - toolName: claude 的原始工具名（Bash / Write / Edit / …）
+//   - input: 该次工具调用的原始入参 JSON
+//
+// 返回：
+//   - text: 展示文本，形如 "Bash: <命令>" / "Write: <路径>"；提取不出关键
+//     入参时退回工具名 + 紧凑 JSON
+//   - req: 结构化载荷；**关键字段缺失时返回 nil**——伪造空壳会让判据误以为
+//     拿到了结构，从而跳过 fail-closed 升级
+//
+// 两者共用一次解析：它们必须描述同一件事，分两处解析迟早漂移。
+func permTextAndRequest(toolName string, input json.RawMessage) (string, *executor.PermRequest) {
 	switch toolName {
 	case "Bash":
 		var in struct {
 			Command string `json:"command"`
 		}
 		if json.Unmarshal(input, &in) == nil && in.Command != "" {
-			return "Bash: " + in.Command
+			return "Bash: " + in.Command,
+				&executor.PermRequest{Tool: executor.PermToolBash, Command: in.Command}
 		}
 	case "Edit", "Write":
 		var in struct {
 			FilePath string `json:"file_path"`
 		}
 		if json.Unmarshal(input, &in) == nil && in.FilePath != "" {
-			return toolName + ": " + in.FilePath
+			return toolName + ": " + in.FilePath,
+				&executor.PermRequest{Tool: executor.NormalizePermTool(toolName),
+					Paths: []string{in.FilePath}}
 		}
 	}
+	// 其余工具与解析失败：给出可读文本，但不伪造结构
+	return permFallbackText(toolName, input), nil
+}
+
+// permFallbackText 组装展示文本的兜底分支：工具名 + 入参的紧凑 JSON。
+func permFallbackText(toolName string, input json.RawMessage) string {
 	return toolName + ": " + compactJSON(input)
+}
+
+// permText 保留原签名，只取展示文本（结构化载荷见 permTextAndRequest）。
+func permText(toolName string, input json.RawMessage) string {
+	text, _ := permTextAndRequest(toolName, input)
+	return text
 }
 
 // maybeProgress 节流发 progress：每任务至多每 progressThrottle 一条（与 opencode 同款）。

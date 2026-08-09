@@ -30,9 +30,20 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
+
+// newTestGate 造一个只带内置黑名单的判据网关（agentd_test 包的统一装配）。
+func newTestGate(t *testing.T) *permgate.Gate {
+	t.Helper()
+	g, err := permgate.New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("permgate.New: %v", err)
+	}
+	return g
+}
 
 // integEnv 聚合闭环集成测试环境：真实 store + httptest server + manager(fake adapter) + client。
 type integEnv struct {
@@ -59,7 +70,7 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
 }
@@ -572,7 +583,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 
 	repo := newTestRepo(t)

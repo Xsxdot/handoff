@@ -1299,3 +1299,96 @@ func TestPermissionEventCarriesFullText(t *testing.T) {
 		t.Error("超 64KB 硬上限时仍必须带截断标记（审批链据此 fail-closed）")
 	}
 }
+
+// newAdapterWithRunForTest 造一个带空运行态的 adapter，供权限结构化提取的
+// 纯映射断言（不起 serve、不连网络）。
+func newAdapterWithRunForTest(t *testing.T) (*Adapter, *runState) {
+	t.Helper()
+	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := &runState{
+		taskID:   "t1",
+		evCh:     make(chan executor.AdapterEvent, 8),
+		stopCh:   make(chan struct{}),
+		permText: make(map[string]string),
+	}
+	r.runCtx, r.runCancel = context.WithCancel(context.Background())
+	t.Cleanup(r.runCancel)
+	a.runs["t1"] = r
+	return a, r
+}
+
+// EventsForTest 暴露事件通道（供断言 mapPermissionAsked 的产出）。
+func (r *runState) EventsForTest() <-chan executor.AdapterEvent { return r.evCh }
+
+// TestPermissionAskedCarriesStructure 用真机取样的 permission.asked 载荷
+// 断言结构提取。
+//
+// 主用例是 perm_external_directory_file.json 而不是 perm_edit.json：生产配置
+// 下 edit 是 allow，工作树内的编辑根本不产生事件，真正会到达 handoff 的文件
+// 类事件就是这个 external_directory（Task 1 探针 §3.1 实测）。perm_edit.json
+// 作为次要用例保留，防止将来有人把 edit 翻成 ask 时提取路径的代码不在位。
+func TestPermissionAskedCarriesStructure(t *testing.T) {
+	for _, f := range []string{"perm_external_directory_file.json", "perm_edit.json"} {
+		t.Run(f, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", f))
+			if err != nil {
+				t.Fatalf("读真机载荷样本: %v", err)
+			}
+			a, r := newAdapterWithRunForTest(t)
+			a.mapPermissionAsked(r, raw)
+			ev := <-r.EventsForTest()
+			if ev.Type != "permission" {
+				t.Fatalf("应产出 permission 事件，实得 %q", ev.Type)
+			}
+			if ev.Perm == nil {
+				t.Fatal("真机文件类载荷必须能提取出结构")
+			}
+			if len(ev.Perm.Paths) != 1 || !filepath.IsAbs(ev.Perm.Paths[0]) {
+				t.Fatalf("路径 = %v，期望恰好一个绝对路径（取自 metadata.filepath，"+
+					"不是 patterns——后者是相对/通配摘要）", ev.Perm.Paths)
+			}
+		})
+	}
+}
+
+// TestPermissionAskedExternalDirBash external_directory 的 bash 形态没有
+// filepath，路径在 metadata.directories，可能多项。
+func TestPermissionAskedExternalDirBash(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "perm_external_directory_bash.json"))
+	if err != nil {
+		t.Fatalf("读真机载荷样本: %v", err)
+	}
+	a, r := newAdapterWithRunForTest(t)
+	a.mapPermissionAsked(r, raw)
+	ev := <-r.EventsForTest()
+	if ev.Perm == nil || ev.Perm.Command == "" {
+		t.Fatalf("bash 形态必须带命令原文，实得 %+v", ev.Perm)
+	}
+	if len(ev.Perm.Paths) == 0 {
+		t.Fatal("bash 形态的越界目录必须进 Paths，否则 permgate 判不出越界")
+	}
+}
+
+// TestPermissionAskedBashCarriesCommand bash 请求带完整命令。
+func TestPermissionAskedBashCarriesCommand(t *testing.T) {
+	a, r := newAdapterWithRunForTest(t)
+	props := []byte(`{"id":"p1","permission":"bash","metadata":{"command":"go build ./..."}}`)
+	a.mapPermissionAsked(r, props)
+	ev := <-r.EventsForTest()
+	if ev.Perm == nil || ev.Perm.Tool != executor.PermToolBash {
+		t.Fatalf("bash 请求应归一化为 bash，实得 %+v", ev.Perm)
+	}
+	if ev.Perm.Command != "go build ./..." {
+		t.Fatalf("command = %q，期望完整原文", ev.Perm.Command)
+	}
+}
+
+// TestPermissionAskedNilPermWhenNoStructure 无可用字段时 Perm 为 nil。
+func TestPermissionAskedNilPermWhenNoStructure(t *testing.T) {
+	a, r := newAdapterWithRunForTest(t)
+	a.mapPermissionAsked(r, []byte(`{"id":"p1"}`))
+	ev := <-r.EventsForTest()
+	if ev.Perm != nil {
+		t.Fatalf("无可用字段时必须为 nil，实得 %+v", ev.Perm)
+	}
+}

@@ -22,6 +22,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/xushixin/handoff/internal/proto"
 )
@@ -78,6 +79,55 @@ type Result struct {
 	FailReason string // OK=false 时的失败原因/日志尾部
 }
 
+// 归一化工具名：各 adapter 的原始工具名折算到这一组常量，permgate 只认它们。
+//
+// 为什么要归一化：三个 executor 对同一件事的叫法不同（claude 的 "Write"、
+// opencode 的 "edit"、grok 的工具名见 Task 1 探针），而判据只有一份。
+const (
+	PermToolBash     = "bash"
+	PermToolWrite    = "write"
+	PermToolEdit     = "edit"
+	PermToolWebFetch = "webfetch"
+	PermToolOther    = "other" // 未识别的工具：判据退回按描述全文处理
+)
+
+// PermRequest 是权限请求的结构化形态。
+//
+// 它与 AdapterEvent.Text 不是重复：Text 是给人看的全文（工单与展示的唯一
+// 真相源），PermRequest 是给判据看的字段。拍平成字符串会丢掉工具名与路径，
+// 那正是黑名单只能对整串做正则、于是既误判又漏判的根因。
+//
+// 边界：
+//   - adapter 提取不出结构时**不要伪造**：整个 Perm 置 nil，manager 会
+//     fail-closed 升级人工。填一个空壳会让判据误以为拿到了结构
+type PermRequest struct {
+	Tool    string   // 归一化工具名，取上面的 PermTool* 常量
+	Command string   // Tool=bash 时的完整命令串（不截断）
+	Paths   []string // Tool=write|edit 时的目标路径（可为相对路径）
+}
+
+// NormalizePermTool 把 executor 的原始工具名折算为归一化名。
+//
+// 参数：raw 为 executor 侧的原始工具名，允许带空白、大小写任意
+// 返回：PermTool* 之一；未识别时返回 PermToolOther
+//
+// 注意：本表只收本项目**实测见过**的名字。新增 executor 时先取真实样本再
+// 补表，不要按想象加别名——猜错的代价是判据静默走错路由。
+func NormalizePermTool(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "bash":
+		return PermToolBash
+	case "write":
+		return PermToolWrite
+	case "edit":
+		return PermToolEdit
+	case "webfetch":
+		return PermToolWebFetch
+	default:
+		return PermToolOther
+	}
+}
+
 // AdapterEvent 是 executor 侧产出的单向事件，由 manager 中介循环消费。
 //
 // Type 取值："permission" | "question" | "progress" | "result"，语义：
@@ -93,11 +143,14 @@ type Result struct {
 // ——审核主路径常以 question 收尾、result 永不出现，progress 是会话 id 到达
 // manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
-	Type         string  // "permission" | "question" | "progress" | "result"
-	PermissionID string  // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
-	SessionID    string  // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
-	Text         string  // permission 描述 / question 原文 / progress 文本
-	Result       *Result // Type=result 时有效
+	Type         string // "permission" | "question" | "progress" | "result"
+	PermissionID string // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
+	SessionID    string // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
+	Text         string // permission 描述 / question 原文 / progress 文本
+	// Perm 是 Type=permission 时的结构化载荷；nil 表示 adapter 提取不出结构，
+	// manager 据此 fail-closed 升级人工（看不懂的请求交给人）。
+	Perm   *PermRequest
+	Result *Result // Type=result 时有效
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。

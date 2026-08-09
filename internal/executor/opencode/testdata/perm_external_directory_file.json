@@ -1,0 +1,19 @@
+{
+  "id": "per_fe65a7abe0010GXka9GrYws5sf",
+  "sessionID": "ses_019a66f11ffe7VGcAHNK6Pka96",
+  "permission": "external_directory",
+  "patterns": [
+    "/tmp/*"
+  ],
+  "metadata": {
+    "filepath": "/tmp/e2e-outside.md",
+    "parentDir": "/tmp"
+  },
+  "always": [
+    "/tmp/*"
+  ],
+  "tool": {
+    "messageID": "msg_fe65a6d63001IMuf4ENbZvPoyb",
+    "callID": "call_00_ET_xmw7Som8nRxXPDnSZVxR8712"
+  }
+}

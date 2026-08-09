@@ -47,6 +47,8 @@ const (
 //
 // 每次修改本表必须同步 taskenv_test 的逐条断言——少一条就是静默放行。
 var askRules = []string{
+	"Write(*)",                 // 写文件：路径是否越出任务范围由 handoff 的 permgate 判（B27）
+	"Edit(*)",                  // 同上
 	"Bash(rm *)",               // 任何直接 rm（误拒成本低、误放成本高）
 	"Bash(*sudo*)",             // 提权
 	"Bash(*git push*)",         // 外推：收尾纪律要求不 push，出现即异常
@@ -57,8 +59,14 @@ var askRules = []string{
 	"WebFetch(*)",              // 外访
 }
 
-// allowRules 是放行表：在任务分支上改代码是派发的目的本身，diff 审核兜底。
-var allowRules = []string{"Edit", "Write"}
+// allowRules 2026-08-09 起为空：Edit/Write 已移入 askRules，由 handoff 判
+// 目标路径是否落在任务范围内，范围内的写入在 manager 侧自动放行、不建工单。
+// 留在 allow 里等于「写 ~/.ssh/authorized_keys 连事件都不留」（B27）。
+//
+// 探针实测依据（Task 1 结论文档 §2）：allowRules 置空期间 grok 任务正常跑完
+// 并逐次产出权限事件，未出现「默认全 ask」的连环唤醒——grok 内建对只读命令
+// （ls/cat/git status/grep/rg 等）自动放行，无需手工补白名单。
+var allowRules = []string{}
 
 // WriteTaskEnv 建任务级 GROK_HOME 并写入权限配置，返回该 home 目录路径。
 //
