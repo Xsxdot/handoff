@@ -135,7 +135,7 @@ handoff 权限门，命令只是直接失败。设计含义见 §2.2。
 | 配置下发 | 全部协议级（`thread/start` / `turn/start` 参数），**不碰任何 config 文件** | §1.1 实证协议压过 config |
 | 沙箱 | `workspace-write`，且每回合显式传 `sandboxPolicy` 钉死 | 不让开发机 config 影响安全判据 |
 | 审批档 | `approvalPolicy: "on-request"` + `approvalsReviewer: "user"` | §2.1 |
-| 网络 | `networkAccess: false`（显式钉死） | §2.2 |
+| 网络 | `networkAccess: true`（显式钉死） | §2.2 |
 | `/tmp` | `excludeSlashTmp: true` + `excludeTmpdirEnvVar: true`（显式钉死） | §2.1 第二条差异随之消失 |
 | 会话标识 | `threadId`（== sessionId）落 `task.ExecutorSession` | |
 
@@ -153,22 +153,27 @@ opencode 的 `external_directory: "ask"` 早就在承担这件事，而工作树
 
 - **工作区内的 `rm -rf` 不再进黑名单**。可承受：工作区是本任务分支的 worktree，删掉的是本任务
   自己的成果，git 可救；而黑名单真正要防的「把宿主机改坏」正是沙箱拦的那一类。
+- **联网操作全程不经过任何人**（见 §2.2）。`curl … | sh`、`npm install`、`pip install` 在 codex
+  上零工单直接执行；同样的命令在 claude/grok 上会走 Bash 的黑名单与三级审批链。
 
 （原本还有一条「`/tmp` 写入不叫人」，已由 §2 的 `excludeSlashTmp: true` 显式关掉，不再是差异。）
 
-### 2.2 网络：拒掉，并且接受审核者看不到
+### 2.2 网络：放开
 
-`networkAccess: false` 钉死后，模型生成的 `curl` / `npm install` / `go mod download` 会被沙箱
-拒掉。**但 §1.4(c) 实证拒网不产工单**——审核者不会被叫醒，只有 executor 自己看到命令失败。
+`networkAccess: true`（显式传，不继承开发机 config），模型生成的 `curl` / `npm install` /
+`go mod download` 直接执行。
 
-这是本设计里最不舒服的一条，明确记下取舍：
+**这是 2026-08-09 用户的明确决定**，理由是 executor 跑在专用开发机上，网络面本来就敞着，
+沙箱内多这一条不构成实质增量风险；而反方向的代价是实的——`networkAccess: false` 时装依赖
+会失败，且 §1.4(c) 实证**拒网不产工单**，审核者不会被叫醒、只有模型自己看到命令失败并可能
+反复试错绕路，属于「哑失败」。
 
-- 选 `false`：装依赖会失败，模型可能反复试错甚至绕路；审核者事后才从 render.log 看到。
-- 选 `true`：`curl | sh` 这类操作全程无人知晓，且与「沙箱当筛子」的整个论证冲突。
+记下这条决定的完整含义，不含糊：
 
-选 `false`，理由是失败是响的、放行是哑的——前者审核者迟早会在 diff 或 render.log 里看到并
-`continue` 指示，后者是静默的安全洞。**若真机跑一段时间后发现装依赖失败频繁**，正确的补法不是
-翻成 `true`，而是给「网络访问失败」加一条 progress 事件让审核者当场知道（登记在 §9，不在本期）。
+- 「逃逸沙箱就升级 handoff」这条论证（§2.1）**只覆盖文件系统越界**，不覆盖网络。网络维度上
+  codex 与另三个 adapter 的安全形态不同，已列入 §2.1 的明确差异。
+- 于是 §6 的 V-3（文件系统越界是否真产工单）成为 §2.1 论证**唯一的实证支点**，权重比原计划更高，
+  不许沿用网络那条的结论。
 
 ## 3. 任务环境
 
@@ -195,7 +200,7 @@ exec codex app-server --listen 'ws://127.0.0.1:<port>' >> '<taskDir>/serve.log' 
 - 窗口 1：`tail -f <taskDir>/render.log`（adapter 把事件流渲染成人读文本）
 
 `render.log` 至少要落：模型推理摘要、工具动作（命令 + cwd）、`【模型提问】` 段、权限升级与裁决
-结果、**被沙箱拒掉的命令**（§2.2 的补偿：审核者事后至少能查到）、回合收尾。与 grok 的
+结果、**被沙箱拒掉的命令**（这类拒绝不产工单——§1.4c，render.log 是审核者事后唯一能查到的地方）、回合收尾。与 grok 的
 render.log 对齐，审核者跨 executor 看到同一种东西。
 
 ### 3.3 部署前置条件
@@ -232,7 +237,7 @@ render.log 对齐，审核者跨 executor 看到同一种东西。
    `developerInstructions`=handoff 的收尾协议（产 commit + summary 的约定）
 5. 拿到 `threadId` 立即 emit 一条带 `SessionID` 的 progress 事件（会话就绪信号，见 executor 契约）
 6. `turn/start`：plan 正文作为 `input: [{type:"text", text: …}]`，**并显式传 `sandboxPolicy`**：
-   `{"type":"workspaceWrite","networkAccess":false,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true,"writableRoots":[]}`
+   `{"type":"workspaceWrite","networkAccess":true,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true,"writableRoots":[]}`
    ——每个回合都要传（`turn/start` 级参数，不是 thread 级）
 
 ### 5.2 Events
@@ -318,7 +323,8 @@ sessions rollout 落在 `~/.codex/sessions/**`，归档时**不删**——它是
 
 - **不改 B23/B27 的权限判据**：`commandActions` 的结构化路径是更可靠的输入，但改判据是跨三个
   adapter 的事，单独立项
-- **不给「沙箱拒网」补 progress 事件**：§2.2 记了这个补法，但要等真机跑一段时间确认频率再做
+- **不给联网操作加任何门**：§2.2 已定放开；若将来要收，正确的做法是给 `commandActions` 加网络
+  维度判据（与 B23/B27 的判据改造同批），不是把 `networkAccess` 翻回 false 制造哑失败
 - **不做 codex 的 execpolicy `.rules` / granular 审批档**：`on-request` 已满足本期目标
 - **不把 codex 登记为审批者执行者**（分级审批链第 1 层）：与本期目标无关
 - **不做任务级 `CODEX_HOME`**：§1.3 已定，若将来要在共享机器上跑，再单独立项
