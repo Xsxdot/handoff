@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,4 +192,46 @@ func TestResumeColdStartsResumeProcess(t *testing.T) {
 		t.Fatalf("冷恢复后 offset 应归零，实际 %d", r.startOffset)
 	}
 	r.runCancel()
+}
+
+// TestResumeColdMutualExclusion 并发两次冷恢复只允许一次真的去拉进程——
+// 两个 claude 进程抢同一个会话是数据损坏级别的后果（spec §6 约束 1）。
+func TestResumeColdMutualExclusion(t *testing.T) {
+	a := New(nil)
+	dir := t.TempDir()
+	repo := t.TempDir()
+	if err := writeProcInfo(dir, &procInfo{TmuxSession: "handoff-abcdef01", SessionID: "sess-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, outFileName), []byte(`{"type":"handoff_exit","code":0}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var starts int32
+	old := startProc
+	startProc = func(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error) {
+		atomic.AddInt32(&starts, 1)
+		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
+		return &Proc{TmuxSession: "handoff-abcdef01", TaskDir: dir, SessionID: "sess-1"}, nil
+	}
+	defer func() { startProc = old }()
+	oldHas := tmuxHasSession
+	tmuxHasSession = func(string) bool { return false }
+	defer func() { tmuxHasSession = oldHas }()
+	oldPerm := newPermServerFn
+	newPermServerFn = func(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
+		return &permServer{}, nil
+	}
+	defer func() { newPermServerFn = oldPerm }()
+
+	req := executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: repo,
+		SessionID: "sess-1", Model: "sonnet", Cold: true}
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); a.Resume(req) }()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(&starts); n != 1 {
+		t.Fatalf("并发冷恢复应只拉起一次进程，实际 %d 次", n)
+	}
 }

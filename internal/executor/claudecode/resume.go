@@ -53,6 +53,25 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	if req.SessionID == "" {
 		return executor.ResumeOutcome{}, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", req.TaskID)
 	}
+	// 冷恢复互斥（spec §6）：先在 runs 上占位再拉进程，后到者直接返回
+	// 「恢复进行中」。两个 claude 进程抢同一个会话是数据损坏级别的后果
+	a.mu.Lock()
+	if _, busy := a.runs[req.TaskID]; busy {
+		a.mu.Unlock()
+		a.log.Info("该任务已有运行态或恢复进行中，跳过本次恢复", "task", req.TaskID)
+		return executor.ResumeOutcome{Alive: false, Note: "该任务的恢复正在进行中"}, nil
+	}
+	a.runs[req.TaskID] = &runState{taskID: req.TaskID} // 占位
+	a.mu.Unlock()
+	defer func() {
+		// 失败路径清掉占位，否则这个任务永远恢复不了
+		a.mu.Lock()
+		if cur, ok := a.runs[req.TaskID]; ok && cur.evCh == nil {
+			delete(a.runs, req.TaskID)
+		}
+		a.mu.Unlock()
+	}()
+
 	pi, err := readProcInfo(req.TaskDir)
 	if err != nil {
 		return executor.ResumeOutcome{}, err

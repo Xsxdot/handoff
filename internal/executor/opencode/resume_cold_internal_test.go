@@ -7,7 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
 )
@@ -111,5 +114,36 @@ func TestResumeColdKeepsSessionWhenPresent(t *testing.T) {
 	}
 	if out.SessionID != "sess-1" {
 		t.Fatalf("cold 会话 id 应保持不变，实际 %q", out.SessionID)
+	}
+}
+
+// TestResumeColdMutualExclusion 并发两次冷恢复只允许一次真的去拉进程——
+// 两个 serve 抢同一个会话是数据损坏级别的后果（spec §6 约束 1）。
+func TestResumeColdMutualExclusion(t *testing.T) {
+	quietLog(t)
+	var starts int32
+	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+		atomic.AddInt32(&starts, 1)
+		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
+		return &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}, nil
+	})
+	defer restore()
+
+	dir := t.TempDir()
+	repo := t.TempDir()
+	if err := writeServeInfo(dir, &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}); err != nil {
+		t.Fatal(err)
+	}
+	a := New(quietLogger())
+	req := executor.ResumeReq{TaskID: "t1", TaskDir: dir, RepoPath: repo,
+		SessionID: "sess-1", Cold: true}
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); a.Resume(req) }()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(&starts); n != 1 {
+		t.Fatalf("并发冷恢复应只拉起一次进程，实际 %d 次", n)
 	}
 }
