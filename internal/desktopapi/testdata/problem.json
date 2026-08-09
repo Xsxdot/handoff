@@ -1,0 +1,7 @@
+{
+  "code": "PATH_OUTSIDE_WORKSPACE",
+  "message": "路径逃逸出工作区根目录",
+  "retryable": false,
+  "machine_id": "m-local",
+  "workspace_id": "ws-main"
+}

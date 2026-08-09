@@ -79,7 +79,10 @@ func Open(path string) (*Store, error) {
   -- worktree_managed=工作区是否 agentd 创建的 worktree（done 时需删除）。
   name TEXT NOT NULL DEFAULT '', executor TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '', work_dir TEXT NOT NULL DEFAULT '',
-  worktree_managed INTEGER NOT NULL DEFAULT 0)`,
+  worktree_managed INTEGER NOT NULL DEFAULT 0,
+  -- 桌面控制面二期新增列：machine_id/workspace_id=任务归属（空=旧任务未迁移，
+  -- 由 BootstrapService 迁移时绑定本机 Machine 与 detached Workspace）。
+  machine_id TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -117,6 +120,8 @@ func Open(path string) (*Store, error) {
 		"model":            "TEXT NOT NULL DEFAULT ''",
 		"work_dir":         "TEXT NOT NULL DEFAULT ''",
 		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
+		"machine_id":       "TEXT NOT NULL DEFAULT ''",
+		"workspace_id":     "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -125,7 +130,13 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("迁移 tasks.%s: %w", col, err)
 		}
 	}
-	log().Info("SQLite 存储已打开", "path", path)
+	// 迁移：桌面控制面 schema（v1）。失败必须让 Open 返回错误——
+	// 半迁移的库不能提供写服务（spec §15）。
+	if err := migrateDesktopV1(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移桌面控制面 schema: %w", err)
+	}
+	log().Info("SQLite 存储已打开", "path", path, "desktop_schema_version", desktopSchemaVersion)
 	return &Store{db: db}, nil
 }
 
@@ -147,11 +158,12 @@ func (s *Store) Close() error {
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, machine_id, workspace_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
-		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged))
+		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
+		t.MachineID, t.WorkspaceID)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -174,11 +186,12 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 	)
 	err := s.db.QueryRowContext(context.Background(), `
 SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed
+  name, executor, model, work_dir, worktree_managed, machine_id, workspace_id
 FROM tasks WHERE id = ?`, id).
 		Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged)
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
+			&task.MachineID, &task.WorkspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -198,7 +211,7 @@ FROM tasks WHERE id = ?`, id).
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
 SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed
+  name, executor, model, work_dir, worktree_managed, machine_id, workspace_id
 FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务列表: %w", err)
@@ -214,7 +227,8 @@ FROM tasks ORDER BY created_at DESC`)
 		)
 		if err := rows.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged); err != nil {
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
+			&task.MachineID, &task.WorkspaceID); err != nil {
 			return nil, fmt.Errorf("读取任务行: %w", err)
 		}
 		task.CreatedAt = parseTime(createdAt)

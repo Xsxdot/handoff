@@ -119,3 +119,62 @@ func TestJSONWireFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestTaskJSONDesktopIDs 断言 Task JSON 线格式包含 machine_id 与 workspace_id，
+// 且旧 JSON（缺这两个键）仍可解码为空值——桌面归属字段对旧 CLI/历史库兼容。
+func TestTaskJSONDesktopIDs(t *testing.T) {
+	task := Task{
+		ID:          "t1",
+		MachineID:   "m-local",
+		WorkspaceID: "ws-1",
+	}
+	b, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	for _, want := range []string{`"machine_id":"m-local"`, `"workspace_id":"ws-1"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("task JSON %s 缺少契约 key %s", b, want)
+		}
+	}
+
+	// 旧 JSON 缺字段仍可解码（默认空串），不破坏历史库/旧 CLI 输出解析
+	old := []byte(`{"id":"t1","repo_path":"/repo","state":"pending"}`)
+	var decoded Task
+	if err := json.Unmarshal(old, &decoded); err != nil {
+		t.Fatalf("unmarshal 旧 JSON: %v", err)
+	}
+	if decoded.MachineID != "" || decoded.WorkspaceID != "" {
+		t.Errorf("旧 JSON 解码后 machine_id=%q workspace_id=%q, want 空串", decoded.MachineID, decoded.WorkspaceID)
+	}
+}
+
+// TestTaskStateStalledTransitions 覆盖 TaskStateStalled 的合法/非法迁移。
+func TestTaskStateStalledTransitions(t *testing.T) {
+	valid := [][2]TaskState{
+		{TaskStateRunning, TaskStateStalled},
+		{TaskStateWaitingAnswer, TaskStateStalled},
+		{TaskStateWaitingReview, TaskStateStalled},
+		{TaskStateStalled, TaskStateRunning},
+		{TaskStateStalled, TaskStateFailed},
+	}
+	for _, c := range valid {
+		if !CanTransit(c[0], c[1]) {
+			t.Errorf("CanTransit(%q, %q) = false, want true", c[0], c[1])
+		}
+	}
+	invalid := [][2]TaskState{
+		{TaskStatePending, TaskStateStalled},
+		{TaskStateCompleted, TaskStateStalled},
+		{TaskStateFailed, TaskStateStalled},
+		{TaskStateStalled, TaskStatePending},
+		{TaskStateStalled, TaskStateCompleted},
+		{TaskStateStalled, TaskStateWaitingAnswer},
+		{TaskStateStalled, TaskStateWaitingReview},
+	}
+	for _, c := range invalid {
+		if CanTransit(c[0], c[1]) {
+			t.Errorf("CanTransit(%q, %q) = true, want false", c[0], c[1])
+		}
+	}
+}

@@ -24,6 +24,10 @@ const (
 	TaskStateWaitingReview TaskState = "waiting_review"
 	TaskStateCompleted     TaskState = "completed"
 	TaskStateFailed        TaskState = "failed"
+	// TaskStateStalled 表示机器仍可达，但 executor 失联、无心跳或恢复凭据不足，
+	// 需要用户选择 resume/stop（spec §6.5）。机器整体断开只改变 Machine
+	// availability，不把 Task 迁移到 stalled。
+	TaskStateStalled TaskState = "stalled"
 )
 
 // EventType 表示任务产生的事件类型。
@@ -78,6 +82,10 @@ type Task struct {
 	// WorktreeManaged 表示 WorkDir 是 agentd 创建的 worktree，任务完成（done）时由
 	// agentd 负责删除；用户自带 worktree（Worktree=false）或原地模式均不受管理。
 	WorktreeManaged bool `json:"worktree_managed"`
+	// MachineID 是任务归属的机器（桌面控制面的跨层身份）。空=旧任务未迁移。
+	MachineID string `json:"machine_id"`
+	// WorkspaceID 是任务归属的工作区（桌面控制面的跨层身份）。空=旧任务未迁移。
+	WorkspaceID string `json:"workspace_id"`
 }
 
 // Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它
@@ -125,12 +133,16 @@ type Ticket struct {
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。
 var transitTable = map[TaskState][]TaskState{
 	TaskStatePending: {TaskStateRunning, TaskStateFailed},
-	TaskStateRunning: {TaskStateWaitingAnswer, TaskStateWaitingReview, TaskStateCompleted, TaskStateFailed},
+	TaskStateRunning: {TaskStateWaitingAnswer, TaskStateWaitingReview, TaskStateCompleted, TaskStateFailed, TaskStateStalled},
 	// failed 允许回到 running：任务失败后可人工重试，状态机应支持重新开始而非死锁。
-	TaskStateWaitingAnswer: {TaskStateRunning, TaskStateFailed},
-	TaskStateWaitingReview: {TaskStateRunning, TaskStateCompleted, TaskStateFailed},
+	TaskStateWaitingAnswer: {TaskStateRunning, TaskStateFailed, TaskStateStalled},
+	TaskStateWaitingReview: {TaskStateRunning, TaskStateCompleted, TaskStateFailed, TaskStateStalled},
 	TaskStateCompleted:     {},
 	TaskStateFailed:        {TaskStateRunning},
+	// stalled 是运行中失联态：可 resume 回 running，或 stop 落 failed。
+	// 为什么 stalled 不可直接回 waiting_answer/waiting_review：失联恢复后任务
+	// 状态由所属机器权威事件决定，控制面不猜测它该回到哪个等待态。
+	TaskStateStalled: {TaskStateRunning, TaskStateFailed},
 }
 
 // CanTransit 校验状态迁移是否合法（如 completed 不可回 running）。

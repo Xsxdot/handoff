@@ -1,0 +1,20 @@
+{
+  "revision": 4,
+  "kind": "workspace.upsert",
+  "resource_id": "ws-main",
+  "payload": {
+    "id": "ws-main",
+    "machine_id": "m-local",
+    "location_id": "loc1",
+    "kind": "worktree",
+    "path": "/Users/me/handoff/.handoff/worktrees/t1",
+    "canonical_path": "/Users/me/handoff/.handoff/worktrees/t1",
+    "repo_identity": "github.com/example/handoff",
+    "git_common_dir": "/Users/me/handoff/.git",
+    "branch": "handoff/t1",
+    "head_oid": "ef567890",
+    "availability": "available",
+    "last_scanned_at": "2026-08-09T00:00:01Z"
+  },
+  "created_at": "2026-08-09T00:00:01Z"
+}
