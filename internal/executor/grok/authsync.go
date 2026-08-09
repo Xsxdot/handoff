@@ -21,7 +21,11 @@ package grok
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -105,4 +109,177 @@ func mergeNewerEntries(authority, task authFile) (authFile, []string) {
 	}
 	sort.Strings(adopted)
 	return merged, adopted
+}
+
+// authFileName 是权威副本与任务副本共用的文件名。
+const authFileName = "auth.json"
+
+// authorityMu 串行化本进程内所有任务对权威副本的写回。
+//
+// 为什么用包级锁而不是文件锁：grok 自己的 ~/.grok/auth.json.lock 协议无文档
+// （实测 15 字节、疑似 PID），跟着猜不如不猜。跨进程的安全性由「原子 rename」
+// 与「重读 + 严格更晚才写」共同保证：并发读者永远读到完整文件，丢更新窗口被
+// 压到 rename 前的几微秒且方向安全（只会少写一次，不会写旧覆盖新）。
+var authorityMu sync.Mutex
+
+// authorityAuthPath 返回权威副本路径 ~/.grok/auth.json。
+//
+// 抽出来是为了让 EnsureAuthLink 与本文件共用同一个真相来源——两处各拼一遍
+// 路径，将来改动时漏掉一处就会让软链指向和写回目标错开。
+func authorityAuthPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("解析用户主目录: %w", err)
+	}
+	return filepath.Join(home, ".grok", authFileName), nil
+}
+
+// SyncAuthToAuthority 跑一轮凭据巡检：把任务 home 里 grok 自行刷新出的新凭据
+// 收编进权威副本，并把任务侧恢复成软链。
+//
+// 参数：
+//   - homeDir: 任务级 GROK_HOME，即 <taskDir>/grokhome
+//   - log: 日志入口；nil 时退回 slog.Default()。调用方应传入已带 task 字段的
+//     logger（本函数不认识 task id）
+//
+// 返回：**仅在「本轮确实该写回却写失败」时返回错误**。其余情况（无事可做、
+// 任务侧损坏、权威侧缺失或损坏）都返回 nil——它们是可接受的稳态，不该让调用方
+// 的看门狗把它当异常。
+//
+// 注意：
+//   - 绝大多数轮次在第一个 lstat 就返回，成本是一次系统调用，可以放心高频调用；
+//   - 「复位软链」与「收编」是两件独立的事：只要发现任务侧不是软链就该复位，
+//     哪怕本轮没收编到任何东西（陈旧拷贝留着会让任务下次临期必死）。两处例外
+//     写在下面的分支注释里。
+func SyncAuthToAuthority(homeDir string, log *slog.Logger) error {
+	if log == nil {
+		log = slog.Default()
+	}
+	link := filepath.Join(homeDir, authFileName)
+	fi, err := os.Lstat(link)
+	if err != nil {
+		// 还没建链，或任务目录已被清理——都不是本函数该管的事，静默返回
+		return nil
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil // 仍是软链：grok 没在这里刷新过，零动作（绝大多数轮次走这里）
+	}
+
+	authorityMu.Lock()
+	defer authorityMu.Unlock()
+
+	authPath, err := authorityAuthPath()
+	if err != nil {
+		log.Error("grok 凭据巡检无法定位权威副本", "cause", err)
+		return nil
+	}
+	authority, err := readAuthFile(authPath)
+	if err != nil {
+		// 例外一：权威侧缺失或损坏时**不复位软链**。用户可能刚 grok logout，
+		// 不替他凭空造回来；更要紧的是复位等于把任务手里那份可能仍有效的凭据
+		// 换成一个指向坏文件的链接。
+		log.Warn("grok 权威凭据不可读，跳过收编且不复位软链",
+			"path", authPath, "cause", err)
+		return nil
+	}
+	taskAuth, err := readAuthFile(link)
+	if err != nil {
+		// 任务侧那份已经读不动了，留着毫无价值：不写权威文件，但接回软链，
+		// 反而可能让这个任务下一轮活过来
+		log.Error("grok 任务侧凭据副本损坏，不写权威副本", "path", link, "cause", err)
+		resetAuthLink(link, authPath, log)
+		return nil
+	}
+
+	merged, adopted := mergeNewerEntries(authority, taskAuth)
+	if len(adopted) == 0 {
+		log.Debug("grok 任务侧凭据不更新，跳过收编", "path", link)
+		resetAuthLink(link, authPath, log)
+		return nil
+	}
+	if err := writeAuthFileAtomic(authPath, merged); err != nil {
+		// 例外二：写回失败时**保留任务侧副本、不复位软链**——那份副本可能是
+		// 唯一一份有效的新凭据，复位等于把它丢掉。下轮重试
+		log.Error("grok 凭据写回权威副本失败，保留任务侧副本待下轮重试",
+			"path", authPath, "accounts", adopted, "cause", err)
+		return err
+	}
+	for _, k := range adopted {
+		oldAt, _ := entryExpiresAt(authority[k])
+		newAt, _ := entryExpiresAt(merged[k])
+		// 只打账号键与 expires_at，绝不打 token 值（spec §5 日志纪律）
+		log.Info("grok 凭据已收编写回权威副本", "account", k,
+			"old_expires_at", oldAt, "new_expires_at", newAt)
+	}
+	resetAuthLink(link, authPath, log)
+	return nil
+}
+
+// resetAuthLink 把任务侧的普通文件换回指向权威副本的软链，复位不变量。
+//
+// 失败不向上传播：写回若已成功就不该因为复位失败而回滚，下一轮巡检会再试。
+func resetAuthLink(link, target string, log *slog.Logger) {
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		log.Error("grok 清理任务侧凭据副本失败，软链未复位", "path", link, "cause", err)
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		log.Error("grok auth 软链复位失败，下轮重试",
+			"link", link, "target", target, "cause", err)
+		return
+	}
+	log.Info("grok auth 软链已复位", "link", link)
+}
+
+// readAuthFile 读取并解析一份 auth.json。
+func readAuthFile(path string) (authFile, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读 %s: %w", path, err)
+	}
+	var af authFile
+	if err := json.Unmarshal(b, &af); err != nil {
+		return nil, fmt.Errorf("解析 %s: %w", path, err)
+	}
+	return af, nil
+}
+
+// writeAuthFileAtomic 用「同目录临时文件 + fsync + rename」原子替换权威副本。
+//
+// 临时文件必须建在**目标同目录**：rename 只在同一文件系统内保证原子，写到 /tmp
+// 再搬过去会退化成非原子的跨设备拷贝，用户的 grok CLI 可能读到半截文件。
+//
+// 权限固定 0600：里面是凭据。
+func writeAuthFileAtomic(path string, af authFile) error {
+	b, err := json.Marshal(af)
+	if err != nil {
+		return fmt.Errorf("序列化凭据: %w", err)
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), authFileName+".handoff-")
+	if err != nil {
+		return fmt.Errorf("建临时文件: %w", err)
+	}
+	tmp := f.Name()
+	// rename 成功后这行是 no-op（路径已不存在）；失败时负责不留垃圾
+	defer func() { _ = os.Remove(tmp) }()
+
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("设置临时文件权限: %w", err)
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("写临时文件: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("fsync 临时文件: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("原子替换 %s: %w", path, err)
+	}
+	return nil
 }
