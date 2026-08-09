@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"思考中"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"我要改 foo.go"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"call-1-0","title":"run_terminal_command","rawInput":{"command":"echo hi","description":"say hi"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1-0","status":"completed","title":"Execute `echo hi`"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n{\"ask\":\"用哪个库？\"}"}}}}
+{"jsonrpc":"2.0","method":"_x.ai/queue/changed","params":{"sessionId":"s","entries":[]}}

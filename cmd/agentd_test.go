@@ -16,15 +16,21 @@ import (
 	"github.com/xushixin/handoff/internal/agentd"
 )
 
-// 注册表必须认识 claude：dispatch --executor claude 的路由前提
-func TestAdapterRegistryHasClaude(t *testing.T) {
+// 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
+//
+// 为什么每个名字都要断言而不是只断言数量：B2（claude）与 B3（grok）是并行开发的
+// 两条分支，各自往注册表里加了一行，合并时 cmd/agentd.go 这一处必然冲突——手工
+// 解冲突时漏掉任一行都不会编译报错，症状要拖到「派发时报未注册」才暴露。
+func TestAdapterRegistryHasAllExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	if _, ok := ads["claude"]; !ok {
-		names := make([]string, 0, len(ads))
-		for n := range ads {
-			names = append(names, n)
+	for _, want := range []string{"opencode", "claude", "grok", "fake"} {
+		if _, ok := ads[want]; !ok {
+			names := make([]string, 0, len(ads))
+			for n := range ads {
+				names = append(names, n)
+			}
+			t.Fatalf("adapter 注册表缺 %s，实际注册: %v", want, names)
 		}
-		t.Fatalf("adapter 注册表缺 claude，实际注册: %v", names)
 	}
 }
 

@@ -1,0 +1,685 @@
+// adapter.go —— ACP 语义到 executor.Adapter 契约的翻译层。
+//
+// 职责：
+//   - 把 StartServe / DialACP / initialize / session.new / session.prompt 编排成
+//     Adapter 的五动作
+//   - ACP 消息 → AdapterEvent 映射：session/request_permission → permission 事件；
+//     agent_message_chunk 累积成回合正文（thought 与 tool_call 只进 render.log）；
+//     session/prompt 的响应（stopReason）作回合边界 → turn.ParseTrailer 分类
+//   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 tmux 第二窗口旁观
+//
+// 边界：
+//   - 不写 store、不做审批判断（见 executor.go 包级边界）：会话 id 等持久化诉求
+//     经事件（progress「会话就绪」/ Result.SessionID）交 manager 落库
+//   - 不做任务状态机迁移：6 状态迁移完全由 manager 负责
+//
+// 与 opencode adapter 的两处结构性差异：
+//   - 回合边界是 session/prompt 的**响应**而非从 idle 事件推断，因此不需要
+//     opencode 的 idleGrace 去抖与 scheduleIdle/resolveIdle/cancelPendingIdle 竞态处理
+//   - 权限是阻塞式 JSON-RPC 请求，需维护 permID → 请求 id 的挂起表（见 perm.go）
+package grok
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/turn"
+)
+
+const (
+	progressThrottle = 30 * time.Second // 与 opencode 同值：防高频增量刷爆事件库
+	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给审核者看的上限）。
+	//
+	// adapter 发出的 AdapterEvent.Text 是权限描述的唯一真相源，manager 拿它做三件事：
+	//   - shouldConsultApprover 的黑名单正则扫描（命中即跳过审批者升级人工）
+	//   - 第 1 层模型审批者 Decide 的输入
+	//   - 权限工单里保存的全文（审核者裁决的依据）
+	// 展示用的短截断由 manager 的 permEventText() 单独负责，只作用于事件 payload，
+	// 且带显式截断标记。**在 adapter 层提前砍短会让黑名单只扫到截断前缀，危险片段
+	// 落在其后即静默放行**——这是 B6 修掉过的根因，不能在此复活。64KB 只防失控输出。
+	permTextHardLimit = 64 << 10
+)
+
+// Adapter 是 grok 的 executor.Adapter 实现。
+//
+// 并发安全：runs 表由 mu 保护；每个任务的运行态只被该任务自己的回调路径访问。
+type Adapter struct {
+	log  *slog.Logger
+	mu   sync.Mutex
+	runs map[string]*runState
+}
+
+// New 创建 grok adapter。
+//
+// 参数：
+//   - log: 本模块日志入口（nil 时退回 slog.Default()）
+func New(log *slog.Logger) *Adapter {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Adapter{log: log, runs: make(map[string]*runState)}
+}
+
+// runState 是单任务运行的完整状态。
+type runState struct {
+	taskID      string
+	taskDir     string
+	repoPath    string
+	sessionID   string
+	startCommit string
+
+	proc *Proc
+	cli  *ACPClient
+
+	// stopping 是主动停止标记：Stop 先置位再关连接，onClosed 据此知道这是用户
+	// 主动停止而非执行失败，不产出「ACP 连接断开」的假失败结果
+	stopping bool
+
+	evCh     chan executor.AdapterEvent
+	emitMu   sync.Mutex
+	evClosed bool
+
+	turnMu       sync.Mutex
+	acc          *turnAccumulator
+	lastProgress time.Time
+	rejected     []string // 本回合被拒的权限描述（perm.go 写入，回合收尾交代）
+
+	pendMu  sync.Mutex
+	pending map[string]pendingPerm // toolCallId -> 待裁决权限（perm.go 使用）
+}
+
+// pendingPerm 是挂起表中一条待裁决的权限请求。
+//
+// reqID 是应答回发必需的 ACP 请求 id；desc 是给人看的权限描述——RespondPermission
+// 拒绝时用它记入被拒清单（用 toolCallId 会让审核者看到一串不透明 id，等于没说清
+// 模型刚才想干什么）。
+type pendingPerm struct {
+	reqID json.RawMessage
+	desc  string
+}
+
+// Start 异步启动执行并立即返回。
+//
+// 步骤：物料与 serve（StartServe）→ ACP 连接 → initialize → session/new →
+// 不等待地发 session/prompt → emit progress{SessionID}「会话就绪」。
+//
+// 注意：session/prompt 要跑完一整个回合才响应，因此用 CallAsync 并由独立
+// goroutine 等待其终局作回合边界。
+func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) {
+	taskID := req.Task.ID
+	start := time.Now()
+	a.log.Info("grok 启动任务", "task", taskID, "repo", req.Task.Workdir(),
+		"task_dir", req.TaskDir, "model", req.Task.Model)
+	defer func() {
+		if err != nil {
+			a.log.Error("grok 启动任务失败", "task", taskID, "cause", err)
+		}
+	}()
+
+	proc, err := StartServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
+	if err != nil {
+		return err
+	}
+	// 之后任一步失败都要回收 serve，否则留下一个没人管的 tmux 会话
+	defer func() {
+		if err != nil {
+			_ = proc.Kill()
+		}
+	}()
+
+	r := &runState{
+		taskID: taskID, taskDir: req.TaskDir, repoPath: req.Task.Workdir(),
+		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
+		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
+	}
+	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
+	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
+		r.startCommit = c
+	} else {
+		a.log.Warn("读取回合起点 commit 失败，兜底裁决将退化", "task", taskID, "cause", gerr)
+	}
+
+	cli, err := DialACP(ctx, proc.WSURL(), &acpHandler{a: a, r: r}, a.log)
+	if err != nil {
+		return err
+	}
+	r.cli = cli
+	defer func() {
+		if err != nil {
+			_ = cli.Close()
+		}
+	}()
+
+	if err := a.openSession(ctx, r, req.Task.Workdir()); err != nil {
+		return err
+	}
+
+	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	if err != nil {
+		return err
+	}
+	// 不等待：session/prompt 要跑完一整个回合才响应，Start 必须立即返回
+	resCh, err := cli.CallAsync("session/prompt", map[string]any{
+		"sessionId": r.sessionID,
+		"prompt":    []any{map[string]any{"type": "text", "text": prompt}},
+	})
+	if err != nil {
+		return fmt.Errorf("ACP session/prompt: %w", err)
+	}
+
+	a.mu.Lock()
+	a.runs[taskID] = r
+	a.mu.Unlock()
+
+	go a.awaitTurn(r, resCh)
+	go a.watchdog(r)
+
+	// 「会话就绪」信号：审核主路径常以 question 收尾、result 永不出现，
+	// progress 是会话 id 到达 manager 的可靠通道
+	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.sessionID,
+		Text: "grok 会话已就绪"})
+	a.log.Info("grok 任务已启动", "task", taskID, "session", r.sessionID,
+		"port", proc.Port, "elapsed_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
+// openSession 完成 ACP 握手与会话建立：initialize + session/new。
+//
+// 单独抽出：TestSessionNewAuthErrorGivesActionableMessage 需要不起 serve 进程
+// 地打到「凭据错误 → 可操作指引」这条路径。
+func (a *Adapter) openSession(ctx context.Context, r *runState, cwd string) error {
+	a.log.Info("grok ACP 会话建立中", "task", r.taskID, "cwd", cwd)
+	if _, err := r.cli.Call(ctx, "initialize", map[string]any{
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{
+			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
+			"terminal": false,
+		},
+	}); err != nil {
+		return fmt.Errorf("ACP initialize: %w", err)
+	}
+	newRes, err := r.cli.Call(ctx, "session/new", map[string]any{
+		"cwd": cwd, "mcpServers": []any{},
+	})
+	if err != nil {
+		// 凭据问题重试一万次也不会好，给出可操作的指引（spec §8）
+		if strings.Contains(err.Error(), "Authentication required") {
+			return fmt.Errorf("grok 未登录或凭据已失效，请在本机执行 `grok login` 后重试: %w", err)
+		}
+		return fmt.Errorf("ACP session/new: %w", err)
+	}
+	var sess struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(newRes, &sess); err != nil || sess.SessionID == "" {
+		return fmt.Errorf("ACP session/new 未返回 sessionId: %s", newRes)
+	}
+	r.sessionID = sess.SessionID
+	a.log.Info("grok ACP 会话已建立", "task", r.taskID, "session", r.sessionID)
+	return nil
+}
+
+// Events 返回该任务的事件流通道（Start 后可用）。通道关闭表示执行终结。
+func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
+	r := a.lookup(taskID)
+	if r == nil {
+		return nil
+	}
+	return r.evCh
+}
+
+// Send 回答提问 / 回发修改指令，对同一会话续接执行。text 原样透传不加工。
+func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
+	r := a.lookup(taskID)
+	if r == nil {
+		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
+	// 续接即发新的 session/prompt，回合边界由它的响应（stopReason）标记
+	resCh, err := r.cli.CallAsync("session/prompt", map[string]any{
+		"sessionId": r.sessionID,
+		"prompt":    []any{map[string]any{"type": "text", "text": text}},
+	})
+	if err != nil {
+		return fmt.Errorf("ACP session/prompt: %w", err)
+	}
+	go a.awaitTurn(r, resCh)
+	return nil
+}
+
+// Stop 终止执行并回收资源：置 stopping → 关 ACP → kill tmux → 关事件通道。
+func (a *Adapter) Stop(taskID string) error {
+	r := a.lookup(taskID)
+	if r == nil {
+		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	a.log.Info("grok 停止任务", "task", taskID)
+	// 先置 stopping 再关连接：让 onClosed 知道这是主动停止，不要产出假的失败结果
+	r.emitMu.Lock()
+	r.stopping = true
+	r.emitMu.Unlock()
+	if r.cli != nil {
+		_ = r.cli.Close()
+	}
+	if r.proc != nil {
+		_ = r.proc.Kill()
+	}
+	r.closeEvents()
+	a.drop(taskID)
+	a.log.Info("grok 任务已停止", "task", taskID)
+	return nil
+}
+
+// lookup 取任务运行态；不存在返回 nil。
+func (a *Adapter) lookup(taskID string) *runState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.runs[taskID]
+}
+
+// drop 注销任务运行态。
+func (a *Adapter) drop(taskID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.runs, taskID)
+}
+
+// emit 向事件通道投递一个事件；通道已关闭时静默丢弃并返回 false。
+//
+// 为什么要 emitMu + evClosed 而不是裸 send：事件可能来自读循环、看门狗、
+// 回合终局三个 goroutine，而关闭权只有一处——没有这把锁会 send on closed channel。
+func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	if r.evClosed {
+		a.log.Debug("事件通道已关闭，丢弃事件", "task", r.taskID, "type", ev.Type)
+		return false
+	}
+	select {
+	case r.evCh <- ev:
+		return true
+	default:
+		a.log.Warn("事件通道满，丢弃事件", "task", r.taskID, "type", ev.Type)
+		return false
+	}
+}
+
+// emitFailed 产出失败终局并关闭事件通道。
+//
+// 一次性语义：断开处置、看门狗判死、回合异常三条路径都可能同时到达，
+// closeEvents 保证只有先到者生效，后到者被丢弃，不会双重终结。
+func (a *Adapter) emitFailed(r *runState, reason string) {
+	a.log.Error("grok 任务失败", "task", r.taskID, "reason", reason)
+	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+		Result: &executor.Result{OK: false, SessionID: r.sessionID, FailReason: reason}})
+	r.closeEvents()
+}
+
+// closeEvents 关闭事件通道（幂等）。
+func (r *runState) closeEvents() {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	if r.evClosed {
+		return
+	}
+	r.evClosed = true
+	close(r.evCh)
+}
+
+// turnTextAndReset 取走本回合正文并清空累积器，为下一回合做准备。
+func (r *runState) turnTextAndReset() string {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	s := r.acc.turnText()
+	r.acc.reset()
+	return s
+}
+
+// flushRender 把累积的可见性增量落进 render.log，并按节流产出 progress。
+//
+// 失败只 Warn 不中断：可见性是增强能力，不值得为它挂掉回合。
+func (a *Adapter) flushRender(r *runState) {
+	r.turnMu.Lock()
+	delta := r.acc.takeRender()
+	due := time.Since(r.lastProgress) >= progressThrottle
+	if due {
+		r.lastProgress = time.Now()
+	}
+	r.turnMu.Unlock()
+
+	if delta == "" {
+		return
+	}
+	if err := turn.AppendRender(filepath.Join(r.taskDir, renderLogName), delta); err != nil {
+		a.log.Warn("追加 render.log 失败，不影响回合", "task", r.taskID, "cause", err)
+	}
+	if due {
+		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.sessionID,
+			Text: turn.TruncateMarked(strings.TrimSpace(delta), 500)})
+	}
+}
+
+// firstNonEmpty 返回第一个非空串（trailer 值优先于 git 实测值）。
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// awaitTurn 等一个回合的终局并交 finishTurn 分类；同时把最后的可见性增量落盘。
+func (a *Adapter) awaitTurn(r *runState, ch <-chan ACPResult) {
+	res := <-ch
+	a.flushRender(r)
+	a.finishTurn(r, res)
+}
+
+// finishTurn 处理一个回合的终局：按 stopReason 与 trailer 分类产出事件。
+//
+// 为什么 stopReason != end_turn 一律判失败：那意味着回合没跑完（拒答、达到
+// 上限、被取消），此时模型的产出不可信，交审核者比替它猜测安全。
+func (a *Adapter) finishTurn(r *runState, res ACPResult) {
+	if res.Err != nil {
+		a.emitFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
+		return
+	}
+	var out struct {
+		StopReason string `json:"stopReason"`
+	}
+	_ = json.Unmarshal(res.Result, &out)
+	if out.StopReason != "end_turn" {
+		a.emitFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
+		return
+	}
+	// 本回合有被拒权限时优先交代：模型被拒后可能悄悄绕路，人不知情
+	if rej := r.takeRejected(); len(rej) > 0 {
+		a.emit(r, executor.AdapterEvent{Type: "question",
+			Text: turn.ClampQuestion(rejectedTurnQuestion(rej))})
+		return
+	}
+
+	text := r.turnTextAndReset()
+	kind, tr := turn.ParseTrailer(text)
+	branch, commit, hasNew, gerr := turn.GitTurnStatus(r.repoPath, r.startCommit)
+	if gerr != nil {
+		a.log.Warn("git 回合取证失败，降级只用 trailer", "task", r.taskID, "cause", gerr)
+	}
+	a.log.Info("grok 回合收尾", "task", r.taskID, "kind", kind,
+		"has_new_commit", hasNew, "branch", branch)
+
+	switch kind {
+	case "ask":
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(tr.Question)})
+	case "finish":
+		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+			Result: &executor.Result{OK: true, Branch: firstNonEmpty(tr.Branch, branch),
+				CommitHash: firstNonEmpty(tr.Commit, commit), SessionID: r.sessionID,
+				Summary: tr.Summary}})
+	default:
+		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——有新提交才可能是
+		// 「干完了」，没有就把整段回合文本当提问交审核者，绝不替模型宣布完成。
+		if hasNew {
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+				Result: &executor.Result{OK: true, Branch: branch, CommitHash: commit,
+					SessionID: r.sessionID, Summary: "（模型未输出收尾协议，按 git 新提交判定完成）"}})
+			return
+		}
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
+	}
+}
+
+// onClosed 是 ACP 连接终止的唯一处置入口。
+//
+// 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
+// 此时必须**不**产出失败结果——审核者看到的失败原因是假的（真实是用户主动停）。
+//
+// 为什么挂起表非空就直接终结、不再尝试重连：实测重连后 grok 不会重发未决的
+// 权限请求，那次工具调用已永久卡死。重连成功反而更危险——adapter 会以为一切
+// 正常，而任务再也不会前进。宁可立刻转 failed 让审核者 continue 重开一轮。
+func (a *Adapter) onClosed(r *runState, cause error) {
+	r.emitMu.Lock()
+	stopping := r.stopping
+	r.emitMu.Unlock()
+	if stopping {
+		a.log.Info("ACP 连接已主动关闭，跳过失败处置", "task", r.taskID)
+		return
+	}
+	if n := r.voidAllPending(); n > 0 {
+		a.log.Error("ACP 连接断开且有未决权限，任务无法继续",
+			"task", r.taskID, "voided", n, "cause", cause)
+		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		return
+	}
+	a.log.Warn("ACP 连接断开，无未决权限", "task", r.taskID, "cause", cause)
+	var logTail string
+	if r.proc != nil {
+		logTail = r.proc.LogTail()
+	}
+	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
+}
+
+// turnAccumulator 是单回合的文本累积器：把 session/update 分流成
+// 「回合正文」与「render.log 可见性文本」两股。
+//
+// 为什么要分两股：ParseTrailer 取最后一个 { 开头的行，推理流里模型复述协议
+// 样例会污染判定；但推理与工具动作对旁观者有价值，故只进 render.log。
+type turnAccumulator struct {
+	bodyBuf   strings.Builder // 回合正文（仅 agent_message_chunk）
+	renderBuf strings.Builder // 可见性文本（正文 + 推理 + 工具动作）
+}
+
+func newTurnAccumulator() *turnAccumulator { return &turnAccumulator{} }
+
+func (t *turnAccumulator) turnText() string { return t.bodyBuf.String() }
+
+func (t *turnAccumulator) reset() {
+	t.bodyBuf.Reset()
+	t.renderBuf.Reset()
+}
+
+// takeRender 取走并清空待落盘的可见性增量。
+func (t *turnAccumulator) takeRender() string {
+	s := t.renderBuf.String()
+	t.renderBuf.Reset()
+	return s
+}
+
+// feedRaw 消费一条原始 ACP 消息，按 sessionUpdate 类型分流。
+//
+// 宽容语义：无法解析或未知类型一律跳过，绝不 panic——executor 侧输出不可信。
+func (t *turnAccumulator) feedRaw(raw []byte) {
+	var msg struct {
+		Method string `json:"method"`
+		Params struct {
+			Update struct {
+				Kind    string `json:"sessionUpdate"`
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				Title    string          `json:"title"`
+				Status   string          `json:"status"`
+				RawInput json.RawMessage `json:"rawInput"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return
+	}
+	if msg.Method != "session/update" {
+		return // _x.ai/* 等私有通知一概忽略
+	}
+	u := msg.Params.Update
+	switch u.Kind {
+	case "agent_message_chunk":
+		t.bodyBuf.WriteString(u.Content.Text)
+		t.renderBuf.WriteString(u.Content.Text)
+	case "agent_thought_chunk":
+		t.renderBuf.WriteString(u.Content.Text)
+	case "tool_call":
+		t.renderBuf.WriteString("\n▸ " + toolLine(u.Title, u.RawInput) + "\n")
+	case "tool_call_update":
+		if u.Status != "" {
+			t.renderBuf.WriteString("  └ " + u.Status + "\n")
+		}
+	}
+}
+
+// toolLine 把工具调用渲染成一行人类可读摘要：优先用 rawInput.command，
+// 否则退回 title。
+func toolLine(title string, rawInput json.RawMessage) string {
+	if cmd := rawCommand(rawInput); cmd != "" {
+		return turn.TruncateMarked(cmd, 200)
+	}
+	return title
+}
+
+// rawCommand 提取工具调用的完整命令（不截断）。
+//
+// 权限描述里必须用它而不是 toolLine：toolLine 的 200 截断是 render.log 行摘要的
+// 设计（旁观者扫一眼即可），但权限描述是黑名单扫描/工单全文的真相源，命令尾部
+// 可能正藏着危险片段（B6 根因），截断即静默放行。
+func rawCommand(rawInput json.RawMessage) string {
+	var in struct {
+		Command string `json:"command"`
+	}
+	if len(rawInput) > 0 && json.Unmarshal(rawInput, &in) == nil {
+		return in.Command
+	}
+	return ""
+}
+
+// acpHandler 把 ACP 回调接到 adapter 上。
+//
+// 纪律：回调运行在 ACP 读循环 goroutine 上，**不得阻塞**——所有耗时动作
+// （落盘、git）要么很快，要么另起 goroutine，否则会卡住整条连接的消息消费。
+type acpHandler struct {
+	a *Adapter
+	r *runState
+}
+
+func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
+	if method != "session/update" {
+		return
+	}
+	h.r.turnMu.Lock()
+	h.r.acc.feedRaw(append([]byte(`{"method":"session/update","params":`), append(params, '}')...))
+	h.r.turnMu.Unlock()
+	h.a.flushRender(h.r)
+}
+
+func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
+	var p struct {
+		ToolCall struct {
+			ToolCallID string          `json:"toolCallId"`
+			Title      string          `json:"title"`
+			RawInput   json.RawMessage `json:"rawInput"`
+		} `json:"toolCall"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.ToolCall.ToolCallID == "" {
+		h.a.log.Error("权限请求解析失败，按拒绝处理（fail-closed）",
+			"task", h.r.taskID, "cause", err)
+		_ = h.r.cli.Reply(reqID, map[string]any{
+			"outcome": map[string]any{"outcome": "selected", "optionId": "reject-once"}})
+		return
+	}
+	// 权限描述是唯一真相源：全文进工单与黑名单扫描（见 permTextHardLimit 的注释），
+	// 展示截断由 manager 的 permEventText 负责。命令必须取完整原文（rawCommand 而非
+	// toolLine）——toolLine 的 200 截断是 render.log 行摘要，命令尾部可能正藏着
+	// 危险片段。
+	text := p.ToolCall.Title
+	if cmd := rawCommand(p.ToolCall.RawInput); cmd != "" {
+		text += " | " + cmd
+	}
+	text = turn.TruncateMarked(text, permTextHardLimit)
+	// 挂起登记同时存 desc：RespondPermission 拒绝时把它记入被拒清单，而不是让
+	// 审核者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
+	h.r.notePending(p.ToolCall.ToolCallID, reqID, text)
+	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
+	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
+		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID, Text: text})
+}
+
+// OnAskQuestion 处置 grok 的交互提问（spec §4.2.3）。
+//
+// 纪律：**先解阻塞再做别的**。不应答会让 session/prompt 永不返回、serve 进程健在、
+// 看门狗探活通过——任务表面在跑实则永久静止，是最坏的一种故障形态（§5.3(c) 实测）。
+// 因此即使参数解析失败也必须回包。
+//
+// 应答形态见 askQuestionReply：回 `{}` 会被 grok 判为「缺 outcome 字段」的工具错误
+// 报回模型、模型随即重问（2026-08-09 真机实测，审核者收到两张重复 question 工单）。
+func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
+	// 先解阻塞：任何解析失败都不能挡住这一步
+	if err := h.r.cli.Reply(reqID, askQuestionReply()); err != nil {
+		h.a.log.Error("提问请求应答失败，该回合可能已挂死",
+			"task", h.r.taskID, "cause", err)
+	}
+
+	text := askQuestionText(params)
+	if text == "" {
+		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报审核者",
+			"task", h.r.taskID)
+		return
+	}
+	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交审核者",
+		"task", h.r.taskID)
+	if err := turn.AppendRender(filepath.Join(h.r.taskDir, renderLogName),
+		"\n【模型提问】"+text+"\n"); err != nil {
+		h.a.log.Warn("提问文本写 render.log 失败，不影响上报", "task", h.r.taskID, "cause", err)
+	}
+	h.a.emit(h.r, executor.AdapterEvent{Type: "question",
+		SessionID: h.r.sessionID, Text: turn.ClampQuestion(text)})
+}
+
+// askQuestionReply 是 _x.ai/ask_user_question 的应答体。
+//
+// 形态对齐 session/request_permission 的应答结构 {"outcome":{...}}：带 outcome 字段，
+// 取值 "cancelled" 表示「用户没有通过这个通道作答」——handoff 的提问真相源是回合
+// trailer 的 {"ask":…}，不能有两个来源，设计意图不变。
+//
+// 2026-08-09 真机验收修正：此前回裸 `{}`，grok 判为「缺 outcome 字段的工具错误」
+// 报回模型，模型随即重问一遍，审核者收到两张重复的 question 工单。本形态尚未在
+// 真机确认，若 grok 仍报 schema 错，改动点集中在本函数，便于按真机结果迭代。
+func askQuestionReply() map[string]any {
+	return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+}
+
+// askQuestionText 把 _x.ai/ask_user_question 的 params 渲染成人读的一段文本。
+// 解析失败返回空串（调用方据此跳过上报，但阻塞已在调用方解除）。
+func askQuestionText(params json.RawMessage) string {
+	var p struct {
+		Questions []struct {
+			Question string `json:"question"`
+			Options  []struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || len(p.Questions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, q := range p.Questions {
+		b.WriteString(q.Question)
+		b.WriteString("\n")
+		for i, o := range q.Options {
+			b.WriteString(fmt.Sprintf("  %d) %s", i+1, o.Label))
+			if o.Description != "" {
+				b.WriteString(" —— " + o.Description)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (h *acpHandler) OnClosed(err error) { h.a.onClosed(h.r, err) }

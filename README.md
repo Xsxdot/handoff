@@ -11,20 +11,22 @@
 │  （审核者）          │   WebSocket    │  ├─ 任务/事件存储（SQLite）    │
 │         │           │ ◄────直连────► │  ├─ executor adapter          │
 │  handoff wait（后台） │   本机主动拨号  │  │   ├─ opencode serve（tmux）  │
-│  handoff reply/...   │                │  │   └─ claude -p（tmux）       │
-└─────────────────────┘                │  │       ↑ SSE 事件 / HTTP API │
+│  handoff reply/...   │                │  │   ├─ claude -p（tmux）       │
+└─────────────────────┘                │  │   └─ grok agent serve（tmux）│
+        │                              │  │       ↑ SSE / stream-json /  │
+        │                              │  │         ACP over WebSocket   │
         │                              │  桌面终端窗口 tmux attach ↑    │
      用户本人（危险操作/需求取舍升级）      └──────────────────────────────┘
 ```
 
 - **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done` / `stop` / `pull`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
 - **handoff agentd**：任务状态机、事件持久化、executor 生命周期（tmux 内拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
-- **executor 挂载**：agentd 通过 opencode server 的 HTTP API + SSE 事件流对接（`POST /session`、`prompt_async`、`/event` SSE），或经 `claude -p --input-format stream-json` 的进程流对接（权限门经 handoff 内置 stdio MCP server + unix socket）；权限等待发生在 executor 会话内部，与审核者是否在线解耦。
+- **executor 挂载**：三种真实执行者各有传输形态——opencode 走 HTTP API + SSE 事件流（`POST /session`、`prompt_async`、`/event` SSE），claude 走 `claude -p --input-format stream-json` 的进程流（权限门经 handoff 内置 stdio MCP server + unix socket），grok 走 `grok agent serve` 的 ACP（JSON-RPC over WebSocket）。权限等待一律发生在 executor 会话内部，与审核者是否在线解耦。
 - **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
 
 ## 快速开始
 
-前置：Go 1.26+（按 go.mod 声明；低版本可用 `GOTOOLCHAIN=auto` 自动下载）；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。`--executor=claude` 需要本机装 `claude` 且已登录（`claude -p "hi"` 能出结果即视为就绪）。
+前置：Go 1.26+（按 go.mod 声明；低版本可用 `GOTOOLCHAIN=auto` 自动下载）；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。`--executor=claude` 需要本机装 `claude` 且已登录（`claude -p "hi"` 能出结果即视为就绪）；`--executor=grok` 需要本机装 `grok` 且已登录（`~/.grok/auth.json` 存在，`grok -p "hi"` 能出结果即视为就绪）。
 
 ```bash
 go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
@@ -32,6 +34,7 @@ go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . 
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
 handoff agentd --executor=claude            # 用 Claude Code 执行（需本机已登录 claude）
+handoff agentd --executor=grok              # 用 grok 执行（需本机已登录 grok）
 
 # 2. 本机配对（远程场景）：把 executor 机 ~/.handoff/config.yaml 里的 token 抄到
 #    本机同名文件 targets 段：
@@ -45,6 +48,7 @@ handoff dispatch --repo /path/to/repo plan.md
 handoff dispatch --repo /path/to/repo --prompt "把 README 安装命令改成 brew"   # 无 plan 文件
 handoff dispatch --repo /path/to/repo --new-worktree --executor opencode --model cheap/model plan.md
 handoff dispatch --repo /path/to/repo --new-worktree --executor claude plan.md              # 用 Claude Code 执行
+handoff dispatch --repo /path/to/repo --new-worktree --executor grok plan.md                # 用 grok 执行
 handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
 
 # 4. 审核者侧典型循环
@@ -62,7 +66,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
-| `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|fake`（默认 opencode） |
+| `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|grok\|fake`（默认 opencode） |
 | `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验） |
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
@@ -156,7 +160,7 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 
 **tmux 会话命名规则**：`handoff-<task 前 8 字符>`。`tmux attach -t handoff-<id8>` 直接旁观（甚至介入）executor 实况，`tmux kill-session -t handoff-<id8>` 可人工兜底回收。
 
-claude 任务的 tmux 布局与 opencode 同构：窗口 0 是 `claude -p` 的 stream-json 原始输出，窗口 1 是 `tail -f render.log`（模型正文实况）；`handoff attach` 一套命令覆盖两个 executor。claude 任务的诊断文件对应 `claude.log`（stderr，对应 serve.log）与 `claude.json`（恢复凭据：tmux 会话 / session_id / out.jsonl 已消费 offset，对应 serve.json）。
+claude 与 grok 任务的 tmux 布局与 opencode 同构：窗口 0 是执行者进程的原始输出（claude 是 `claude -p` 的 stream-json，grok 是 `grok agent serve` 的日志），窗口 1 是 `tail -f render.log`（模型正文实况）；`handoff attach` 一套命令覆盖三个 executor。诊断文件按 executor 对应：claude 是 `claude.log`（stderr，对应 serve.log）与 `claude.json`（恢复凭据：tmux 会话 / session_id / out.jsonl 已消费 offset，对应 serve.json）；grok 是 `serve.log` 与 `serve.json`（tmux 会话 / 端口 / session_id）。
 
 > **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段——handoff 不复制这份配置，鉴权一律走 `env` 注入（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
 
@@ -167,7 +171,29 @@ claude 任务的 tmux 布局与 opencode 同构：窗口 0 是 `claude -p` 的 s
 - 收到 `delivery_failed` 事件，或 `reply` 返回 502 → 裁决已落库但没送到 executor（executor 半死、调用超时）。此时工单已被消耗、`attach` 看不到挂起项，`reply` 会 404、`continue`/`done` 会 409——执行 `handoff resume <task>` 重投：executor 还在就继续执行，确已不在则任务转交审核（之后可 `continue` 重派或 `done` 归档）。该命令幂等，已送达的应答不会重复投递。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
+- **grok 执行者会读到你的 Claude Code 个人配置**：grok 无视 `GROK_HOME`，仍从真实 HOME 读 `~/.claude/settings.local.json` 的权限规则与 `~/.claude/skills`。handoff 写入任务级 `ask` 规则可以压过其中的 `allow`（grok 的求值是 `deny` > `ask` > `allow` 跨源生效），危险模式表仍然有效；但「handoff 没枚举、而你个人 allow 了」的操作会被静默放行。agentd 侧的硬黑名单是独立兜底。
+- **grok 任务断连即失败**：ACP 的权限是随连接存续的阻塞请求，连接断开后未决的授权请求不会被重发。handoff 选择立刻转 failed 交审核者（可 `continue` 重开一轮），而不是假装恢复成功留下一个静止的任务。
 - **SSE 重放风险**：opencode `/event` 在重连时是否重放历史事件尚未经真实样本证实（权限/提问靠 ticket id 幂等去重，但旧 result 重放可能误杀存活的执行器会话）。这是验收级风险，见 `docs/superpowers/e2e-checklist.md` 的 SPIKE-1b 与「水位线应急方案」，上线前必须按清单实测。
+
+## 执行者差异
+
+`--executor` 可选 `opencode`（默认）/ `claude` / `grok` / `fake`。fake 为脚本演示，其余三个都是真实执行。
+
+**claude 与 opencode 的差异**
+
+- **传输形态是进程流**：`claude -p --input-format stream-json --output-format stream-json` 在 tmux 里长驻，指令经 `in.fifo` 写入、事件按 offset 增量读 `out.jsonl`。opencode 走 HTTP + SSE。
+- **权限门经 MCP 桥接**：claude 的 `--permission-prompt-tool` 指向 handoff 内置的 stdio MCP server（`handoff permission-mcp` 子命令），它再经 unix socket 把裁决请求转给 agentd。opencode 的权限直接来自 SSE 事件。
+- **任务级策略是静态分级**：`<taskDir>/settings.json` 用「`allow` 兜底 + `ask` 收窄」，是**纯策略文件、不含任何凭证**（鉴权走 env 注入）；详见下方已知限制。
+- **模型来源**：`dispatch --model` 经 `claude --model <名>` 透传（为空则用 claude 自身默认）；鉴权则完全由执行机的登录态提供，handoff 只经 env 注入传递，不复制凭证。
+
+**grok 与 opencode 的差异**
+
+- **grok 的传输形态是 ACP**：`grok agent serve` 在 tmux 里长驻，handoff 经 WebSocket 跑 Agent Client Protocol（JSON-RPC 双向）。opencode 走 HTTP + SSE。
+- **grok 的模型来源**：任务级模型（`dispatch --model`）写入任务级 `GROK_HOME` 的 `config.toml` 的 `[models].default`；为空则用 grok 自身默认。opencode 由 `~/.config/opencode/` 提供模型配置。
+- **grok 的回合边界**：是 `session/prompt` 的响应（`stopReason`），而非 opencode 从 idle 事件推断——handoff 不需要那套 idle 去抖与竞态处理。
+- **grok 的权限门**：`session/request_permission` 是阻塞式 JSON-RPC 请求，应答必须带原请求 id 回发（handoff 用挂起表暂存 toolCallId→id）。
+- **grok 的推理流**（`agent_thought_chunk`）与工具调用只进 `render.log`、不进回合正文——避免污染 `{"ask":…}` trailer 的解析。
+- **任务环境**：`<taskDir>/grokhome/` 里是任务级 `config.toml`（钉死 `permission_mode=default`，用户真实配置的 always-approve 不会带进来）；`auth.json` 软链指向真实 `~/.grok/auth.json`，token 刷新后会自动重建。
 
 ## 文档
 
