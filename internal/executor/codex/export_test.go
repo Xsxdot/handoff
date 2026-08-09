@@ -15,3 +15,38 @@ func SwapTmuxKillForTest(fn func(session string) error) func() {
 	tmuxHasSession = func(string) bool { return false } // 配套：让「会话不存在」成立
 	return func() { tmuxKill = old; tmuxHasSession = oldHas }
 }
+
+// ParseItemNotificationForTest 暴露 item 通知解析。
+func ParseItemNotificationForTest(raw []byte) (*ThreadItemView, bool) {
+	it, ok := parseItemNotification(raw)
+	if !ok {
+		return nil, false
+	}
+	return &ThreadItemView{it}, true
+}
+
+// ThreadItemView 是 threadItem 的只读测试视图。
+type ThreadItemView struct{ it *threadItem }
+
+func (v *ThreadItemView) Type() string                { return v.it.Type }
+func (v *ThreadItemView) ID() string                  { return v.it.ID }
+func (v *ThreadItemView) Changes() []fileUpdateChange { return v.it.Changes }
+func (v *ThreadItemView) RenderLine() string          { return v.it.renderLine() }
+
+// ItemIndexHandle 是 itemIndex 的测试封装。
+type ItemIndexHandle struct{ x *itemIndex }
+
+// NewItemIndexForTest 建一个指定容量的索引。
+func NewItemIndexForTest(n int) *ItemIndexHandle { return &ItemIndexHandle{newItemIndex(n)} }
+
+func (h *ItemIndexHandle) PutForTest(id, typ string) {
+	h.x.put(&threadItem{ID: id, Type: typ})
+}
+
+func (h *ItemIndexHandle) GetForTest(id string) (*ThreadItemView, bool) {
+	it, ok := h.x.get(id)
+	if !ok {
+		return nil, false
+	}
+	return &ThreadItemView{it}, true
+}
