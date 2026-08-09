@@ -3,10 +3,15 @@ package agentd
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 )
 
@@ -171,5 +176,68 @@ func TestStoppingMarkerIsTakeStyle(t *testing.T) {
 	}
 	if m.takeStopping("t1") {
 		t.Fatalf("标记必须取走即失效，第二次应为 false")
+	}
+}
+
+// reapAdapter 是实现 reaper 的测试 adapter：Stop 一律返 ErrTaskNotRunning
+// （模拟 agentd 重启后内存运行态已丢），Reap 的结果可注入。
+type reapAdapter struct {
+	chanAdapter
+	mu       sync.Mutex
+	reapErr  error
+	reapHits int
+}
+
+func (a *reapAdapter) Stop(taskID string) error {
+	return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
+}
+
+func (a *reapAdapter) Reap(taskID, taskDir string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reapHits++
+	return a.reapErr
+}
+
+// TestStopExecutorFallsBackToReap Stop 报 ErrTaskNotRunning 时必须走确定性兜底回收。
+// B20 现场：不兜底，孤儿 tmux 会话 + serve 存活了 11.5 小时。
+func TestStopExecutorFallsBackToReap(t *testing.T) {
+	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview})
+	m.stopExecutor("t1", ad)
+
+	ad.mu.Lock()
+	hits := ad.reapHits
+	ad.mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("Reap 应被调用 1 次，实际 %d", hits)
+	}
+}
+
+// TestStopExecutorEmitsEventWhenReapFails 信号对称：回收不掉必须留事件。
+// worktree 清理失败会发 progress 提示人工，executor 停不掉却完全静默——
+// 审核者根本无从知道有残留（B20 的第二个可改点）。
+func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
+	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		reapErr: errors.New("tmux 不可用")}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "abcdef12-3456-7890-abcd-ef1234567890",
+		RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingReview})
+	m.stopExecutor("abcdef12-3456-7890-abcd-ef1234567890", ad)
+
+	evs, err := st.EventsFromAsc("abcdef12-3456-7890-abcd-ef1234567890", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "handoff-abcdef12") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("回收失败应产出带会话名的 progress 事件，实际事件: %v", evs)
 	}
 }

@@ -661,10 +661,7 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	if err != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
 	} else {
-		m.noteStopping(taskID) // 必须在 Stop 之前：Stop 会关掉事件通道
-		if err := ad.Stop(taskID); err != nil {
-			m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
-		}
+		m.stopExecutor(taskID, ad)
 	}
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
@@ -737,10 +734,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
 	} else {
-		m.noteStopping(taskID) // 必须在 Stop 之前：Stop 会关掉事件通道
-		if serr := ad.Stop(taskID); serr != nil {
-			m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
-		}
+		m.stopExecutor(taskID, ad)
 	}
 
 	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
@@ -1697,6 +1691,15 @@ func (m *Manager) transitBestEffort(taskID string, to proto.TaskState, reason st
 // internal/executor 包，三个 adapter 与 manager 共用同一套契约。
 type restorer interface {
 	Resume(executor.ResumeReq) (executor.ResumeOutcome, error)
+}
+
+// reaper 是「无内存运行态时按确定性命名兜底回收」的可选 adapter 能力
+// （三个真实 adapter 均实现，fake 不实现）。
+//
+// 为什么单开一个方法而不是让 Stop 自己兜底：Stop 只拿得到 taskID，拿不到 taskDir
+// （proc 信息文件在里面）；给 Stop 加参数会改动五动作核心契约、波及 fake 等全部实现。
+type reaper interface {
+	Reap(taskID, taskDir string) error
 }
 
 // volatilePermitter 表示该 adapter 的权限请求随连接消亡：连接一断，executor 侧

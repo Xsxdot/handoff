@@ -11,8 +11,12 @@
 package agentd
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -51,6 +55,63 @@ func (m *Manager) takeStopping(taskID string) bool {
 // reconcileExecutorGone 是包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
 func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
 	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log)
+}
+
+// stopExecutor 停 executor，并在「没有内存运行态」时按确定性命名兜底回收。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - ad: 已解析的 adapter（调用方已做 adapterFor）
+//
+// 注意：
+//   - 调用前必须已 noteStopping（本函数会关掉事件通道，mediate 随之退出）
+//   - 任何失败都不中断调用方（归档/中止本身已经达成）；回收不掉时留 progress
+//     事件提示人工——与 worktree 清理失败的信号对称。B20 现场的孤儿存活 11.5
+//     小时，正是因为完全静默、没人知道它在
+func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
+	m.noteStopping(taskID)
+	err := ad.Stop(taskID)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, executor.ErrTaskNotRunning) {
+		// executor 还在，只是这次没停掉：保持既有语义（只记日志），
+		// 兜底回收对它无意义——真去 kill 会话反而可能杀掉正在收尾的进程
+		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+		return
+	}
+	rp, ok := ad.(reaper)
+	if !ok {
+		m.log.Warn("executor 无内存运行态且 adapter 不支持兜底回收", "task", taskID, "cause", err)
+		return
+	}
+	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
+	session := "handoff-" + shortID(taskID)
+	m.log.Info("executor 无内存运行态，按确定性命名兜底回收", "task", taskID, "tmux", session)
+	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
+		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "tmux", session, "cause", rerr)
+		evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+			Text: fmt.Sprintf("executor 资源可能残留：tmux 会话 %s，请手动 tmux kill-session -t %s（原因：%v）",
+				session, session, rerr),
+		})
+		if aerr != nil {
+			m.log.Error("追加兜底回收失败事件失败", "task", taskID, "cause", aerr)
+			return
+		}
+		m.hub.Publish(evt)
+		return
+	}
+	m.log.Info("按确定性命名兜底回收成功", "task", taskID, "tmux", session)
+}
+
+// shortID 取 id 前 8 字符，与三个 adapter 的 tmux 会话命名规则
+// （"handoff-" + id8(taskID)）一致。manager 只用它拼给人看的提示文本，
+// 真正的回收由 adapter 自己按同一规则完成。
+func shortID(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
 }
 
 // reconcileExecutorGone 收尾一个 executor 已不在的任务：

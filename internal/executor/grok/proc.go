@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -70,19 +71,39 @@ func (p *Proc) Alive() bool {
 	return true
 }
 
+// tmuxKill 是 tmux kill-session 的测试缝（与 claudecode 同手法）：测试替换它
+// 断言 Reap 回收的会话名，绕开真实 tmux server。
+var tmuxKill = func(session string) error {
+	return exec.Command("tmux", "kill-session", "-t", session).Run()
+}
+
 // Kill 杀掉 tmux 会话回收 serve；会话已不存在视为已清理，不报错。
 func (p *Proc) Kill() error {
-	out, err := exec.Command("tmux", "kill-session", "-t", p.Session).CombinedOutput()
+	err := tmuxKill(p.Session)
 	if err != nil {
-		if strings.Contains(string(out), "can't find session") ||
-			strings.Contains(string(out), "no server running") {
+		if !tmuxHasSession(p.Session) {
 			slog.Default().Info("grok tmux 会话已不存在，视为已清理", "session", p.Session)
 			return nil
 		}
-		return fmt.Errorf("kill tmux 会话 %s: %w (%s)", p.Session, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("kill tmux 会话 %s: %w (%s)", p.Session, err, tmuxKillErrTail(err))
 	}
 	slog.Default().Info("grok tmux 会话已回收", "session", p.Session)
 	return nil
+}
+
+// tmuxHasSession 是 tmux has-session 探活的测试缝（与 claudecode 同手法）：测试
+// 替换它绕开真实 tmux，判定「会话存在」的语义不变。
+var tmuxHasSession = func(session string) bool {
+	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
+}
+
+// tmuxKillErrTail 提取 kill 错误的 stderr 尾部（原实现用 CombinedOutput 拼进错误）。
+func tmuxKillErrTail(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return strings.TrimSpace(string(exitErr.Stderr))
+	}
+	return err.Error()
 }
 
 // LogTail 返回脱敏后的 serve.log 尾部，供启动超时与死亡诊断。
