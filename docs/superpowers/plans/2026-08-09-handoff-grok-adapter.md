@@ -568,7 +568,10 @@ func GitTurnStatus(repoPath, startCommit string) (branch, commit string, hasNew 
 	if commit, err = run("rev-parse", "HEAD"); err != nil {
 		return branch, "", false, err
 	}
-	return branch, commit, startCommit != "" && commit != startCommit, nil
+	// commit != "" 这一条不能省：rev-parse 成功却返回空串时，省掉它会让 hasNew
+	// 变成 true，等于替模型宣布完成——方向恰好与本函数存在的理由相反。
+	// 逐字保留 opencode 原判据，纯重构不许顺手简化防御条件。
+	return branch, commit, startCommit != "" && commit != "" && commit != startCommit, nil
 }
 ```
 
