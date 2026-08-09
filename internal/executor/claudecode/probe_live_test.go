@@ -25,10 +25,12 @@ import (
 //
 // 注意：
 //   - 会真实调用 claude（haiku）产生费用，故默认跳过
+//   - 鉴权走进程环境注入（probeAuthEnv 从真实 settings.json 提取，不落盘不打日志），
+//     settings.json 因此能完全由本测试控制——已由 spec §5.4 2026-08-09 实测确认
 //   - 用临时 HOME 构造可控的「用户级 settings」，不依赖执行者本机的个人配置
 func TestProbePermissionPrecedence(t *testing.T) {
 	if os.Getenv("HANDOFF_LIVE_CLAUDE") != "1" {
-		t.Skip("live 探针：设 HANDOFF_LIVE_CLAUDE=1 手动运行。2026-08-09 在 devbox 实测：临时 HOME 与真实 HOME 均报 Not logged in（apiKeySource=none），探针待人工 `claude /login` 后重跑")
+		t.Skip("live 探针：设 HANDOFF_LIVE_CLAUDE=1 手动运行（2026-08-09 已跑通，结论见 spec §5.4）")
 	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude 未安装")
@@ -83,6 +85,7 @@ func TestProbePermissionPrecedence(t *testing.T) {
 			cmd := exec.Command("claude", args...)
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(), "HOME="+home)
+			cmd.Env = append(cmd.Env, probeAuthEnv(t)...)
 			cmd.Stdin = strings.NewReader(
 				`{"type":"user","message":{"role":"user","content":` +
 					`"Use the Bash tool to run exactly: rm -rf /tmp/handoff-probe-victim"}}` + "\n")
@@ -122,6 +125,39 @@ func writeSettings(t *testing.T, path string, allow, ask []string) {
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// probeAuthEnv 从真实 ~/.claude/settings.json 提取 env 段（ANTHROPIC_*/CLAUDE_*）
+// 注入子进程环境，让受控的临时 HOME（没有凭证）也能完成鉴权。
+//
+// 为什么走进程环境而非把凭证写进 settings.json：任务级 settings.json 会长期躺在
+// 任务目录里，把真实 API key 写进去等于给每个任务复制一份凭证；注入环境后
+// settings.json 成为纯策略文件，可放心打日志/贴工单（spec §5.4 2026-08-09 实测）。
+//
+// 凭证不落盘、不打日志：返回的 KEY=VALUE 只进 exec.Cmd.Env（Go 对重复键取末尾值，
+// 追加在 os.Environ() 之后即覆盖同名项）。读不到鉴权 env 时 skip——探针依赖登录态。
+func probeAuthEnv(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"))
+	if err != nil {
+		t.Skipf("无法读取真实 claude 配置（%v），探针需登录态", err)
+	}
+	var s struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Skipf("解析真实 claude 配置失败（%v），探针需登录态", err)
+	}
+	var out []string
+	for k, v := range s.Env {
+		if strings.HasPrefix(k, "ANTHROPIC_") || strings.HasPrefix(k, "CLAUDE_") {
+			out = append(out, k+"="+v)
+		}
+	}
+	if len(out) == 0 {
+		t.Skip("真实 claude 配置无鉴权 env（需人工 /login）")
+	}
+	return out
 }
 
 // writeProbeMCP 生成探针用的极简 stdio MCP server（命中即 touch markerLog 并放行）。
