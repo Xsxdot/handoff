@@ -141,10 +141,14 @@ exec opencode serve --port <p> --hostname 127.0.0.1 2>&1 | tee -a '<taskDir>/ser
 ### 5.2 审批者
 
 `internal/agentd/approver.go` 的 `defaultRunCmd` 当前 `cmd.Env` 为 nil（继承 agentd 环境）。
-改为 `cmd.Env = append(os.Environ(), injected...)`。`runCmd` 测试注入点的签名随之变为
-`func(ctx context.Context, argv []string, env []string) (string, error)`。
+改为 `cmd.Env = append(os.Environ(), injected...)`。
 
-`NewApprover` 增加一个 resolver 入参；nil 表示不注入（测试与未启用场景）。
+`runCmd` 测试缝的**签名保持不变**（`func(ctx context.Context, argv []string) (string, error)`），
+把 `defaultRunCmd` 改成 `Approver` 的方法、在 `NewApprover` 里以 `a.runCmd = a.defaultRunCmd` 绑定：
+env 从 `a` 上取。这样 15 处既有 `runCmd` 注入测试一行都不用改，而针对注入的新测试直接调
+`a.defaultRunCmd` 断言**子进程真的看到了变量**（比断言「切片被传下去了」更接近事实）。
+
+解析失败时不执行裁决命令，直接返回 `Approve=false` + `Err` 非空（走既有 escalate 路径）。
 
 ### 5.3 加载时机
 
@@ -159,7 +163,7 @@ exec opencode serve --port <p> --hostname 127.0.0.1 2>&1 | tee -a '<taskDir>/ser
 
 | 时机 | 失败情形 | 处置 |
 |---|---|---|
-| 派发（manager 解析 env） | 文件不存在 / 语法错 / 超 64KiB / 文件名含 `/` | **拒发**，任务不创建，HTTP 500 携带可行动真因（文件路径 + 行号 + 原因） |
+| 派发（manager 解析 env） | 文件不存在 / 语法错 / 超 64KiB / 文件名含 `/` | **拒发**，任务不创建，HTTP 500 携带可行动真因（文件路径 + 行号 + 原因）。需新增哨兵 `errEnvResolveFailed` 并在 `writeDispatchError` 中映射 —— 落到 `default` 分支只会回扁平的「派发任务失败」，真因被吞（B16 根因同款） |
 | 审批者裁决 | 同上 | 走现有 escalate 路径升级人工审核者 + ERROR 日志 |
 | agentd 启动预检 | 同上 | 逐个文件 WARN，**不阻断启动** |
 
@@ -218,8 +222,21 @@ exec opencode serve --port <p> --hostname 127.0.0.1 2>&1 | tee -a '<taskDir>/ser
 放独立包而不是塞进 `internal/config`：config 包的职责是「解析 config.yaml」，env 文件是另一类文件、
 另一套语法，混进去这个包就有两个理由改动了。
 
-接线：`cmd/agentd.go` 构造 `res := envfile.NewResolver(filepath.Join(cfg.DataDir, "env"), cfg.Env)`，
-调用 `res.Preflight(logger)`，再把 `res` 分别传给 `NewApprover` 与 `NewManager`。
+目录布局知识只放一处，由 envfile 导出：
+
+```go
+// Dir 返回 env 文件目录（<dataDir>/env）。布局知识只此一处，避免调用方各自拼路径后漂移。
+func Dir(dataDir string) string
+```
+
+接线：
+
+- `NewManager` **签名不变**，在函数体内自建 `envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env)`
+  —— Manager 已持有完整 `*config.Config`，而加参数会波及 10 个测试调用点却换不来任何收益；
+  Resolver 无状态（每次 `For` 都读盘），多实例不会发散。
+- `NewApprover` **增加一个 `*envfile.Resolver` 参数**（nil = 不注入）：它只拿得到 `cfg.Approver`，
+  没有 DataDir，无法自建。
+- `cmd/agentd.go` 构造一个 resolver 传给 `NewApprover`，并调 `res.Preflight(logger)`。
 
 ## 9. 测试
 
