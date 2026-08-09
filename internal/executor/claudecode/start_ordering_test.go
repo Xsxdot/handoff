@@ -67,8 +67,11 @@ func TestStartWritesPromptBeforeWaitingReady(t *testing.T) {
 		if ev.Type != "progress" || ev.SessionID != "sess-fake" {
 			t.Fatalf("init 事件应先到且带假执行者的 session_id，实际 %+v", ev)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("2s 内未收到 init progress 事件")
+	// 死线放到 10s（仍在外层 15s ctx 之内）：本用例要等一个真的子进程被拉起、
+	// 写 fifo、事件穿过 streamLoop。2s 在多包并发 -race 把 CPU 吃满时不够用，
+	// 已实测偶发失败。放宽不削弱断言——顺序错了照样失败，只是容得下慢机器。
+	case <-time.After(10 * time.Second):
+		t.Fatal("10s 内未收到 init progress 事件")
 	}
 
 	// 收摊：Stop 幂等，运行态可能已被 streamLoop 随哨兵终结而注销
