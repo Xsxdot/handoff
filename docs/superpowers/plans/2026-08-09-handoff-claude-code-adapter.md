@@ -13,6 +13,10 @@
 ## Global Constraints
 
 - **前置依赖**：`internal/executor/turn` 共享包由 B3 会话前置抽取并已合入 main。本计划**不包含**抽取任务，从该 commit 起步直接 import。若开工时该包尚未落 main，**停下来等**，不要自己抽（会与 B3 会话产生大面积冲突）。
+- **依赖 B19 的 `StartReq.Env`**（[env 注入计划](2026-08-09-handoff-agent-env-injection.md) Task 4）：`Start` 必须把 `req.Env` 透传进 `StartProcReq.Env`，由 `writeRunScript` 生成 `export K='V'` 行，**排在脚本其余内容之前**，值必须单引号包裹（Go 侧已展开过一次，不加引号会被 shell 二次展开）。与 opencode 的 `writeServeScript`、grok 的 `WriteServeScript` 三处同构。
+  - **为什么这条必须写进铁律**：`Env` 是加在 `StartReq` 上的契约字段，不读它照样编译通过——用户在 `~/.handoff/env/claude.env` 里写的 `HTTPS_PROXY` 会**静默不生效、无任何报错**。这类缺口最难发现。
+  - **若开工时 B19 Task 4 尚未落 main**：`StartProcReq.Env` 字段照加，`Start` 里先传 `nil` 并留 `// TODO(B19): 改为 req.Env` 单行标记，等 B19 合入后替换。**不要把字段删掉**——删了就会忘。
+  - claude 侧**没有** `protectedEnvKeys`（不像 grok 的 `GROK_HOME`/`GROK_AGENT_SECRET`、opencode 的 `OPENCODE_*`）：本 adapter 的策略与凭据全部走 `--settings` / `--mcp-config` **命令行参数**，不经环境变量，因此 env 文件覆盖不到。若将来改用环境变量传任何策略，必须同步补一张保留表。
 - **日志**：一律 `log/slog`（`*slog.Logger` 注入或 `slog.Default()`，与 opencode adapter 同款）。**禁止 `fmt.Printf` / `println` 作为日志机制**。
 - **注释**：每个新文件顶部写「职责 + 边界」；每个导出函数写参数/返回/注意；非显然分支写「为什么」。
 - **adapter 不得写 store、不得做审批判断**（`internal/executor/executor.go` 包级边界）。
@@ -1283,7 +1287,7 @@ git commit -m "feat: handoff permission-mcp 裁决 MCP server 子命令（B2 Tas
 - Produces:
   - `type Proc struct { TmuxSession, TaskDir, SessionID string }`
   - `func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error)`
-  - `type StartProcReq struct { RepoPath, TaskID, TaskDir, SessionID, Model, SettingsPath, MCPPath string }`
+  - `type StartProcReq struct { RepoPath, TaskID, TaskDir, SessionID, Model, SettingsPath, MCPPath string; Env []string }`（`Env` 见下方 B19 耦合说明）
   - `func (p *Proc) WriteInput(text string) error`
   - `func (p *Proc) Kill() error`
   - `func writeRunScript(taskDir string, req StartProcReq) (string, error)`
@@ -1469,12 +1473,16 @@ const (
 // why（claude 一行不用 exec）：exec 会让 sh 被 claude 替换掉，末行的 handoff_exit
 // 哨兵永远不会执行——而它是本 adapter 唯一可靠的死亡信号（tmux has-session 不可用，
 // 因为窗口 1 的 tail -f 会一直撑着会话）。
+// why（env 行排在最前、值单引号包裹）：见下方 B19 耦合说明。
 func writeRunScript(taskDir string, req StartProcReq) (string, error) {
 	// 组装 argv：model 为空则省略 --model（用 claude 自身默认）
 	// 用 shellq.Quote 包裹每个路径与模型名
+	// req.Env 的每一项（形如 KEY=VALUE，用 strings.Cut 切分，切不开的跳过）
+	//   生成一行 `export K=<shellq.Quote(V)>`，整体排在脚本其余内容之前
 	// 脚本内容：
 	//   #!/bin/sh
 	//   exec 2>> <claude.log>
+	//   export HTTPS_PROXY='...'        ← req.Env 注入行，排在最前
 	//   exec 3<> <in.fifo>
 	//   claude -p --input-format stream-json --output-format stream-json --verbose \
 	//     --include-partial-messages [--model M] --session-id S \

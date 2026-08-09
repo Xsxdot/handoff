@@ -18,6 +18,7 @@
 - **展开查找顺序**：本文件前面已解析的键 → 外部 `lookup`（生产传 `os.LookupEnv`）→ 空串。
 - **配置里的文件名必须是纯文件名**：含 `/`、等于 `.`、等于 `..` 一律报错。
 - **失败一律 fail-closed**：派发拒发（HTTP 500 带真因）、审批者 escalate、启动预检只 WARN。
+- **`StartReq.Env` 是全体 adapter 的契约，本计划只接 opencode**：`fake` 不需要；`grok`（B3）与 `claude-code`（B2）的落地写在**它们各自的计划里**（[grok plan](2026-08-09-handoff-grok-adapter.md) Task 3/4/5 的 `WriteServeScript`/`StartServe`/`Start`；[claude plan](2026-08-09-handoff-claude-code-adapter.md) 的 `StartProcReq.Env` + `writeRunScript`），三处生成 export 行的形态同构。**本计划完成 ≠ env 注入对所有执行者生效**——不读 `req.Env` 的 adapter 照样编译通过，缺口是静默的。Task 4 收尾时确认这两处已在各自计划里登记（现已登记），不必在本计划里实现。
 - **中文注释**：新文件写文件头（职责 + 边界），导出函数写 doc 注释，非显然分支写「为什么」。日志用 `slog`，禁止 `fmt.Printf`。
 - **每个 task 结束前**跑 `gofmt -l .`（有输出即不合格）与 `go build ./...`。
 

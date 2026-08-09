@@ -497,6 +497,7 @@ phase3 B6（改同一片截断代码，其 plan 带固定行引用）
 | `internal/config/config.go` | 注释里的执行者示例补 grok（无校验逻辑改动） |
 | `README.md` | 执行者一节补 grok；已知限制补 §3.3 的 `~/.claude` 泄漏 |
 | `cmd/attach.go` | **无需改动**（会话命名与窗口布局一致） |
+| **B19 耦合**：`StartReq.Env` | `WriteServeScript`/`StartServe` 带 `env []string`，`Start` 透传 `req.Env`，生成的 export 行排在 `GROK_*` **之前**（后写的覆盖先写的）。`protectedEnvKeys = {GROK_HOME, GROK_AGENT_SECRET}`：被 env 文件覆盖则任务级权限隔离（§3.3）失效或连不上自己的 serve，命中打 WARN。见下 |
 
 `oneshot.go` 的 grok 分支：
 
@@ -513,6 +514,22 @@ case "grok":
   的职责就是「一次性调用形态的唯一登记点」，把「一次性 = 廉价快速」编码进该分支符合定位。
 - **why flag 顺序不能动**：`-p <PROMPT>` 是取值参数不是开关，`--effort` 必须在 `-p` 之前，
   否则 grok 报 `a value is required for '--single'`。prompt 仍是末位参数，契约不变。
+
+**关于 `StartReq.Env`（B19）**：`Env` 是加在 `StartReq` 上的**契约字段**，不读它照样编译
+通过——这正是危险所在。B19 只给 opencode 接了线，grok 若不接，结果是用户在
+`~/.handoff/env/grok.env` 里写的 `HTTPS_PROXY` 对 `--executor grok` **静默不生效、无任何
+报错**。因此本 adapter 必须与 opencode 的 `writeServeScript` **同构**落地：注入行排在
+handoff 自身变量之前、值单引号包裹（Go 侧已展开过一次，不加引号会被 shell 二次展开）。
+`run_grok.sh` 由此变成：
+
+```sh
+#!/bin/sh
+exec 2>> <serve.log>
+export HTTPS_PROXY='http://127.0.0.1:7890'    # ← env 文件注入，排在前面
+export GROK_HOME=<taskDir>/grokhome            # ← handoff 独占，覆盖同名键
+export GROK_AGENT_SECRET=<random>
+exec grok agent serve --bind 127.0.0.1:<port> 2>&1 | tee -a <serve.log>
+```
 
 ## 8. 错误处理
 

@@ -12,6 +12,7 @@
 
 - **设计依据**：[grok adapter 设计（B3）](../specs/2026-08-08-handoff-grok-adapter-design.md)。本计划每个决定都能回指该 spec 的小节。
 - **前置排序**：Task 1（抽取 `turn`）必须在 **phase3 B6 落 main 之后**开工——B6 改的正是 `opencode/adapter.go` 的截断代码区且其 plan 带固定行引用。Task 1 完成后**单独合入 main**，Claude Code adapter（B2）会话从该 commit 起步。
+- **依赖 B19 的 `StartReq.Env`**（[env 注入计划](2026-08-09-handoff-agent-env-injection.md) Task 4）：Task 3/4 的 `WriteServeScript`/`StartServe` 带 `env []string` 参数，Task 5 的 `Start` 透传 `req.Env`。**若开工时 B19 的 Task 4 尚未落 main**，`executor.StartReq` 还没有 `Env` 字段——此时按本计划签名照写（参数留着），Task 5 的 `Start` 里先传 `nil` 并留 `// TODO(B19): 改为 req.Env` 单行标记，等 B19 合入后一次性替换。**不要反过来把参数删掉**：删了就会忘，最后变成「env 注入对 opencode 生效、对 grok 静默不生效」——这类缺口不报错、极难发现。
 - **adapter 边界铁律**（`internal/executor/executor.go` 包级注释）：adapter **不写 store、不做审批判断、不做任务状态机迁移**。任何持久化诉求经事件或返回值交 manager。
 - **日志**：一律 `*slog.Logger`（`a.log`），**禁止 `fmt.Printf`**。关键节点（进入/退出、外部调用前后、错误分支、状态变更）必须有日志且带上下文。
 - **注释**：新文件必须有文件头注释（职责 + 边界）；导出方法必须有 doc 注释（参数/返回/注意）；非显然分支必须有中文「为什么」注释。
@@ -1363,7 +1364,8 @@ git commit -m "feat(grok): ACP WebSocket 双向 JSON-RPC 客户端
 - Produces:
   - `grok.WriteTaskEnv(taskDir, model string) (homeDir string, err error)`
   - `grok.EnsureAuthLink(homeDir string) error`
-  - `grok.WriteServeScript(taskDir, homeDir string, port int, secret string) (scriptPath string, err error)`
+  - `grok.WriteServeScript(taskDir, homeDir string, port int, secret string, env []string) (scriptPath string, err error)`
+  - `grok.protectedEnvKeys`（非导出）：`GROK_HOME` / `GROK_AGENT_SECRET`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1461,7 +1463,7 @@ func TestWriteServeScriptKeepsSecretOutOfArgv(t *testing.T) {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t")
+	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", nil)
 	if err != nil {
 		t.Fatalf("WriteServeScript 出错: %v", err)
 	}
@@ -1487,6 +1489,67 @@ func TestWriteServeScriptKeepsSecretOutOfArgv(t *testing.T) {
 	}
 	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
 		t.Errorf("启动脚本权限 = %v，期望 0600（含 secret）", fi.Mode().Perm())
+	}
+}
+
+// TestWriteServeScriptInjectsEnvBeforeGrokVars 钉住 B19 的 env 注入契约：
+// 注入行必须排在 handoff 自身的 GROK_* 之前，值必须单引号包裹。
+// 与 opencode 的 TestServeScriptInjectsEnvBeforeOpencodeVars 同构。
+func TestWriteServeScriptInjectsEnvBeforeGrokVars(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "grokhome")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"HTTPS_PROXY=http://127.0.0.1:7890",
+		"LITERAL=$NOT_EXPANDED",
+		"WITHSPACE=a b",
+	}
+	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", env)
+	if err != nil {
+		t.Fatalf("WriteServeScript 出错: %v", err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+
+	proxyIdx := strings.Index(s, "export HTTPS_PROXY='http://127.0.0.1:7890'")
+	if proxyIdx < 0 {
+		t.Fatalf("脚本缺少注入的 HTTPS_PROXY export 行:\n%s", s)
+	}
+	// 值必须单引号包裹：Go 侧已展开过一次，不加引号 shell 会再展开一次
+	if !strings.Contains(s, "export LITERAL='$NOT_EXPANDED'") {
+		t.Errorf("含 $ 的值必须单引号包裹防二次展开:\n%s", s)
+	}
+	if !strings.Contains(s, "export WITHSPACE='a b'") {
+		t.Errorf("含空格的值必须单引号包裹:\n%s", s)
+	}
+	// 顺序是硬要求：handoff 自身注入的变量必须排在后面才能覆盖 env 文件的同名键
+	homeIdx := strings.Index(s, "export GROK_HOME=")
+	if homeIdx < 0 || proxyIdx > homeIdx {
+		t.Errorf("注入的 env 行必须排在 GROK_HOME 之前（proxy=%d home=%d）:\n%s",
+			proxyIdx, homeIdx, s)
+	}
+}
+
+// TestWriteServeScriptWithoutEnvIsUnchangedInShape 保证 env 为空时脚本形态不变，
+// 免得 B19 之前生成的脚本与之后的产生无谓差异。
+func TestWriteServeScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "grokhome")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", nil)
+	if err != nil {
+		t.Fatalf("WriteServeScript 出错: %v", err)
+	}
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), "\n\nexport GROK_HOME=") {
+		t.Errorf("env 为空时不应留下空行:\n%s", b)
 	}
 }
 ```
@@ -1649,15 +1712,28 @@ func EnsureAuthLink(homeDir string) error {
 //
 // 为什么这里可以用 exec（与 claude adapter 相反）：grok 有 HTTP 探活面，不需要
 // 脚本在进程退出后补写死亡哨兵，因此 sh 可以被替换掉。
-func WriteServeScript(taskDir, homeDir string, port int, secret string) (string, error) {
+//
+// why env 行排在 GROK_* 之前且值用单引号（与 opencode 的 writeServeScript 同构，
+// B19）：排在前面才能让 handoff 自身注入的变量覆盖 env 文件里的同名键（见
+// protectedEnvKeys）；值必须单引号包裹，因为 Go 侧已经展开过一次，不加引号会被
+// shell 再展开第二次，含 $ 的值会变成别的东西。
+func WriteServeScript(taskDir, homeDir string, port int, secret string, env []string) (string, error) {
 	serveLog := filepath.Join(taskDir, serveLogName)
+	var envLines strings.Builder
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue // 形如 KEY=VALUE 之外的条目直接跳过，不让它污染脚本语法
+		}
+		envLines.WriteString("export " + k + "=" + shellQuote(v) + "\n")
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 # 由 agentd 生成：grok agent serve 启动脚本（0600，含随机 secret，勿外泄）。
 exec 2>> %s
-export GROK_HOME=%s
+%sexport GROK_HOME=%s
 export GROK_AGENT_SECRET=%s
 exec grok agent serve --bind 127.0.0.1:%d 2>&1 | tee -a %s
-`, shellQuote(serveLog), shellQuote(homeDir), shellQuote(secret), port, shellQuote(serveLog))
+`, shellQuote(serveLog), envLines.String(), shellQuote(homeDir), shellQuote(secret), port, shellQuote(serveLog))
 
 	p := filepath.Join(taskDir, serveScriptName)
 	if err := os.WriteFile(p, []byte(script), 0o600); err != nil {
@@ -1704,7 +1780,7 @@ config.toml 钉死 permission_mode=default（用户真实配置是 always-approv
 - Consumes: `grok.WriteTaskEnv` / `EnsureAuthLink` / `WriteServeScript`（Task 3）
 - Produces:
   - `type Proc struct { Session, TaskDir string; Port int; Secret string }`
-  - `grok.StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, log *slog.Logger) (*Proc, error)`
+  - `grok.StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error)`
   - `(*Proc) Alive() bool`、`(*Proc) Kill() error`、`(*Proc) LogTail() string`、`(*Proc) WSURL() string`
   - `grok.ReadServeInfo(taskDir string) (*Proc, error)`
 
@@ -1889,6 +1965,19 @@ func (p *Proc) LogTail() string {
 	return strings.ReplaceAll(tail, p.Secret, "***")
 }
 
+// protectedEnvKeys 是 handoff 自身注入、不容 env 文件覆盖的变量（B19）。
+//
+// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的 export 排在后面因而胜出，
+// 同时打 WARN 让用户知道自己那行没生效。
+//
+// 为什么 GROK_AGENT_SECRET 在列：它被 env 文件覆盖会让 adapter 拿着旧 secret 连
+// 不上自己起的 serve；GROK_HOME 被覆盖则整个任务级权限隔离（spec §3.3）失效——
+// 那是审批门存在的前提，必须由 handoff 独占。
+var protectedEnvKeys = map[string]bool{
+	"GROK_HOME":         true,
+	"GROK_AGENT_SECRET": true,
+}
+
 // StartServe 起一个任务专属的 grok serve 并等其就绪。
 //
 // 参数：
@@ -1897,9 +1986,11 @@ func (p *Proc) LogTail() string {
 //   - taskID: 任务 ID（取前 8 字符作会话名后缀）
 //   - taskDir: 任务物料目录
 //   - model: 任务级模型（空=用 grok 默认）
+//   - env: 注入到 serve 进程的环境变量（形如 KEY=VALUE，已由 manager 解析展开）；
+//     命中 protectedEnvKeys 的条目会被 handoff 自身注入覆盖并打 WARN
 //
 // 返回：就绪的 Proc；任一步失败返回错误（错误携带脱敏后的 serve.log 尾部）
-func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -1921,7 +2012,26 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, lo
 	if err != nil {
 		return nil, err
 	}
-	scriptPath, err := WriteServeScript(taskDir, homeDir, port, secret)
+
+	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）。
+	// 与 opencode 的 StartServe 同构。
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for _, kv := range env {
+			k, _, ok := strings.Cut(kv, "=")
+			if !ok {
+				continue
+			}
+			keys = append(keys, k)
+			if protectedEnvKeys[k] {
+				log.Warn("env 文件定义了 handoff 保留变量，将被 handoff 自身注入覆盖",
+					"key", k, "task", taskID)
+			}
+		}
+		log.Info("注入 env 变量到 grok serve 进程", "task", taskID, "keys", keys, "count", len(keys))
+	}
+
+	scriptPath, err := WriteServeScript(taskDir, homeDir, port, secret, env)
 	if err != nil {
 		return nil, err
 	}
@@ -2535,7 +2645,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := StartServe(ctx, req.Task.RepoPath, taskID, req.TaskDir, req.Task.Model, a.log)
+	proc, err := StartServe(ctx, req.Task.RepoPath, taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
 	if err != nil {
 		return err
 	}
