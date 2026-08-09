@@ -54,3 +54,8 @@ func StartSessionForTest(wsURL, repoPath string) error {
 	r.cli = cli
 	return a.openSession(ctx, r, repoPath)
 }
+
+func OptionIDForTest(decision string) string { return optionIDFor(decision) }
+
+func NotePendingForTest(r *runState, id string, reqID []byte) { r.notePending(id, reqID) }
+func VoidAllPendingForTest(r *runState) int                   { return r.voidAllPending() }

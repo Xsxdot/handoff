@@ -381,7 +381,12 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		a.emitFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
 		return
 	}
-	// 本回合被拒权限的交代在 perm.go（Task 6）接入 noteRejected
+	// 本回合有被拒权限时优先交代：模型被拒后可能悄悄绕路，人不知情
+	if rej := r.takeRejected(); len(rej) > 0 {
+		a.emit(r, executor.AdapterEvent{Type: "question",
+			Text: turn.ClampQuestion(rejectedTurnQuestion(rej))})
+		return
+	}
 
 	text := r.turnTextAndReset()
 	kind, tr := turn.ParseTrailer(text)
@@ -431,7 +436,10 @@ func (a *Adapter) watchdog(r *runState) {
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
 // 此时必须**不**产出失败结果——审核者看到的失败原因是假的（真实是用户主动停）。
-// 断开处置的完整版（未决权限作废 → 转 failed）在 perm.go（Task 6）。
+//
+// 为什么挂起表非空就直接终结、不再尝试重连：实测重连后 grok 不会重发未决的
+// 权限请求，那次工具调用已永久卡死。重连成功反而更危险——adapter 会以为一切
+// 正常，而任务再也不会前进。宁可立刻转 failed 让审核者 continue 重开一轮。
 func (a *Adapter) onClosed(r *runState, cause error) {
 	r.emitMu.Lock()
 	stopping := r.stopping
@@ -440,7 +448,18 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 		a.log.Info("ACP 连接已主动关闭，跳过失败处置", "task", r.taskID)
 		return
 	}
-	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v", cause))
+	if n := r.voidAllPending(); n > 0 {
+		a.log.Error("ACP 连接断开且有未决权限，任务无法继续",
+			"task", r.taskID, "voided", n, "cause", cause)
+		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		return
+	}
+	a.log.Warn("ACP 连接断开，无未决权限", "task", r.taskID, "cause", cause)
+	var logTail string
+	if r.proc != nil {
+		logTail = r.proc.LogTail()
+	}
+	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
 // turnAccumulator 是单回合的文本累积器：把 session/update 分流成
@@ -555,8 +574,9 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 			"outcome": map[string]any{"outcome": "selected", "optionId": "reject-once"}})
 		return
 	}
-	// 挂起登记（notePending）在 perm.go（Task 6）接入——RespondPermission
-	// 需要 reqID 才能回发裁决
+	// 挂起登记：RespondPermission 要靠 reqID 才能回发裁决，连接断开时
+	// onClosed 依据挂起表是否有项决定是否转 failed（见 perm.go）
+	h.r.notePending(p.ToolCall.ToolCallID, reqID)
 	text := turn.TruncateMarked(p.ToolCall.Title+" | "+toolLine("", p.ToolCall.RawInput), permTextLimit)
 	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
