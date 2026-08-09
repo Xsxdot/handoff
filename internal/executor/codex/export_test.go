@@ -4,6 +4,8 @@
 // 边界：仅测试构建时编译（_test.go 后缀），不进生产二进制。
 package codex
 
+import "github.com/xushixin/handoff/internal/executor"
+
 // WriteServeInfoForTest 暴露 writeServeInfo，供 serve.json 回环测试。
 func WriteServeInfoForTest(p *Proc) error { return writeServeInfo(p) }
 
@@ -50,3 +52,56 @@ func (h *ItemIndexHandle) GetForTest(id string) (*ThreadItemView, bool) {
 	}
 	return &ThreadItemView{it}, true
 }
+
+// DecisionForTest 暴露裁决映射。
+func DecisionForTest(d string) string { return decisionFor(d) }
+
+// ParseCommandApprovalForTest 暴露命令审批报文解析。
+func ParseCommandApprovalForTest(raw []byte) (commandApproval, bool) {
+	return parseCommandApproval(raw)
+}
+
+// PermRequestFromCommandForTest 暴露命令类权限判据。
+func PermRequestFromCommandForTest(a commandApproval) *executor.PermRequest {
+	return permRequestFromCommand(a)
+}
+
+// PermRequestFromFileChangeForTest 暴露文件变更类权限判据。
+func PermRequestFromFileChangeForTest(v *ThreadItemView) *executor.PermRequest {
+	if v == nil {
+		return permRequestFromFileChange(nil)
+	}
+	return permRequestFromFileChange(v.it)
+}
+
+// CommandPermTextForTest 暴露命令审批的人读描述。
+func CommandPermTextForTest(a commandApproval) string { return commandPermText(a) }
+
+// ThreadItemForTest 造一个带 changes 的 fileChange item（每项形如 {path, kind}）。
+func ThreadItemForTest(id, typ string, changes [][2]string) *ThreadItemView {
+	it := &threadItem{ID: id, Type: typ}
+	for _, c := range changes {
+		it.Changes = append(it.Changes, fileUpdateChange{Path: c[0], Kind: changeKind{Type: c[1]}})
+	}
+	return &ThreadItemView{it}
+}
+
+// PermTableHandle 是 permTable 的测试封装。
+type PermTableHandle struct{ t *permTable }
+
+// NewPermTableForTest 建一张空的挂起表。
+func NewPermTableForTest() *PermTableHandle { return &PermTableHandle{newPermTable()} }
+
+func (h *PermTableHandle) NoteForTest(id string, reqID []byte, desc string) {
+	h.t.note(id, reqID, desc)
+}
+func (h *PermTableHandle) TakeForTest(id string) (string, bool) {
+	pp, ok := h.t.take(id)
+	return pp.desc, ok
+}
+func (h *PermTableHandle) VoidAllForTest() int           { return h.t.voidAll() }
+func (h *PermTableHandle) NoteRejectedForTest(desc string) { h.t.noteRejected(desc) }
+func (h *PermTableHandle) TakeRejectedForTest() []string { return h.t.takeRejected() }
+
+// RejectedTurnQuestionForTest 暴露被拒清单的问题渲染。
+func RejectedTurnQuestionForTest(r []string) string { return rejectedTurnQuestion(r) }
