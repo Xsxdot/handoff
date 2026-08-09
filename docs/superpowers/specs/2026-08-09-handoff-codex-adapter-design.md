@@ -359,7 +359,7 @@ sessions rollout 落在 `~/.codex/sessions/**`，归档时**不删**——它是
 | V-3 | **两半都已验，§2.1 的论证成立**。①越界写**真的产工单**：`tee /Users/sycm/handoff-e2e-probe.txt` 触发 `requestApproval`，`once → accept` 后文件**真的被创建**（17 字节，内容正确）；②拒绝后**文件真的没被动**：`rm -rf /Users/sycm/handoff-e2e-deny.txt` 命中黑名单升级人工，`reply --deny` 后 serve.log 留下 `exec_command failed … Rejected("rejected by user")`，文件原样健在。顺带实证了被拒清单优先的兜底——adapter 产出「本回合有权限请求被拒。被拒清单：…」的 ask 工单 |
 | V-4 | **已验，无锁竞争**。三个 codex 任务并发跑完（各自 managed worktree + 各自 app-server，共用同一份 `~/.codex`），全部 `completed`，四个任务的 serve.log 里 `database is locked` / `SQLITE_BUSY` 命中**均为 0** |
 | V-5 | **已验**。`ws://127.0.0.1:<port>` 的 URL 形态与 spec 一致，启动横幅另暴露 `/readyz` 与 `/healthz`（`Proc.Alive()` 用 TCP 探活保守可行，日后要更强判据这两个 HTTP 面是现成的）；app-server **209ms** 就绪；断线行为也已验——杀掉进程后读循环以 `failed to get reader: failed to read frame header: EOF` 终结，`onClosed` 把真因连同 serve.log 尾部一起报出，随后的 `continue` 正常触发冷恢复 |
-| V-6 | **未验**。要验「清理过 `AGENTS.md`/`hooks.json`/`mcp_servers` 的 home 上 executor 是否干净」就得动用户本人的 `~/.codex`（且该目录有 `config.toml.superdev-bak`，疑似被 superdev 管理），审核者不擅自改。**但污染本身已被实证**：serve.log 持续报 `rmcp::transport::worker … chatgpt.com/backend-api/ps/mcp`，说明用户 `config.toml` 里的 `[mcp_servers.superdev]` 确实被 executor 继承了，Preflight 那三条 WARN 是有的放矢的 |
+| V-6 | **未验**。要验「清理过 `AGENTS.md`/`hooks.json`/`mcp_servers` 的 home 上 executor 是否干净」就得动用户本人的 `~/.codex`（且该目录有 `config.toml.superdev-bak`，疑似被 superdev 管理），审核者不擅自改。**但污染本身已被实证，两条都直接**：①MCP——serve.log 持续报 `rmcp::transport::worker … chatgpt.com/backend-api/ps/mcp`，说明用户 `config.toml` 里的 `[mcp_servers.superdev]` 确实被 executor 继承；②hooks——同机对照实验（直接 `codex exec`，非 app-server 路径）的输出头两行就是 `hook: SessionStart` / `hook: SessionStart Failed`，`~/.codex/hooks.json` 真的在跑。Preflight 那三条 WARN 是有的放矢的。**仍未验的是「清理之后是否真的干净」**，那需要动用户的 home |
 
 同轮验到的其它事实：
 
