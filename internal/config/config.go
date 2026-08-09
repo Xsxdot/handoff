@@ -95,10 +95,22 @@ type TerminalConfig struct {
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，
 // User 为可选的 ssh 用户名（非空时 attach/pull 的 ssh 目标换算为 user@host，
 // 空=保持历史行为只用 host）。
+//
+// 桌面控制面扩展字段（均可选，缺省值见下）：
+//   - DisplayName：机器展示名；空=用 targets map key 回退
+//   - Transport：peer 传输协议（http）；空=回退 http
+//   - AllowInsecurePrivate：允许非 loopback 明文 HTTP（仅限受保护的私有网络
+//     开发模式）；默认 false 即 fail-closed（spec §13）
 type Target struct {
-	Addr  string
-	Token string
-	User  string
+	Addr  string `yaml:"addr"`
+	Token string `yaml:"token"`
+	User  string `yaml:"user"`
+	// DisplayName 是远端机器的桌面展示名；空=回退 targets map key。
+	DisplayName string `yaml:"displayname"`
+	// Transport 是 peer 传输协议；空=回退 http。
+	Transport string `yaml:"transport"`
+	// AllowInsecurePrivate 显式门控非 loopback 明文 HTTP；默认 fail-closed。
+	AllowInsecurePrivate bool `yaml:"allow_insecure_private"`
 }
 
 // Load 加载配置：文件不存在时返回带默认值的 Config 并自动生成随机 Token 写盘。
@@ -197,7 +209,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,user,token,displayname,transport,allow_insecure_private}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

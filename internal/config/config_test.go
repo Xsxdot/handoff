@@ -258,3 +258,42 @@ func TestUnknownKeyErrorMentionsEnv(t *testing.T) {
 		t.Errorf("已知键清单应含 env 段，实际 %q", err.Error())
 	}
 }
+
+// TestLoadParsesTargetDesktopFields 验证 target 可配置桌面控制面扩展字段：
+// displayname（展示名）、transport（peer 传输协议）、allow_insecure_private
+// （非 loopback 明文 HTTP 门控，默认 fail-closed）。Addr/Token/User 保持旧 CLI 兼容。
+func TestLoadParsesTargetDesktopFields(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "token: abc123abc123abc1\ntargets:\n  devbox:\n    addr: \"100.1.2.3:7777\"\n    token: \"tk\"\n    displayname: \"开发机-1\"\n    transport: http\n    allow_insecure_private: true\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tg := cfg.Targets["devbox"]
+	if tg.Addr != "100.1.2.3:7777" || tg.Token != "tk" || tg.User != "" {
+		t.Fatalf("旧字段解析回归失败: %+v", tg)
+	}
+	if tg.DisplayName != "开发机-1" || tg.Transport != "http" || !tg.AllowInsecurePrivate {
+		t.Fatalf("桌面扩展字段未解析: %+v", tg)
+	}
+}
+
+// TestLoadTargetDesktopFieldsDefaults 验证桌面扩展字段缺省值：
+// displayname 空（回退 map key）、transport 空（回退 http）、allow_insecure_private 默认 false（fail-closed）。
+func TestLoadTargetDesktopFieldsDefaults(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("token: abc123abc123abc1\ntargets:\n  devbox:\n    addr: \"1.2.3.4:5\"\n    token: \"tk\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tg := cfg.Targets["devbox"]
+	if tg.DisplayName != "" || tg.Transport != "" || tg.AllowInsecurePrivate {
+		t.Fatalf("缺省值错误: %+v", tg)
+	}
+}

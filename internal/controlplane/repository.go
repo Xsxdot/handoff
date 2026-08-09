@@ -62,4 +62,9 @@ type Repository interface {
 
 	// ControlEventsAfter 返回 revision 之后的 control events，升序，最多 limit 条。
 	ControlEventsAfter(ctx context.Context, afterRevision int64, limit int) ([]ControlEvent, error)
+
+	// MigrateLegacyTasks 把全部 machine_id 为空的旧任务绑定 local Machine 与
+	// detached Workspace，并在同一事务 upsert task_summaries；返回迁移的任务数。
+	// 这是 BootstrapService 的第三步，必须原子完成（两 ID 同写同灭）。
+	MigrateLegacyTasks(ctx context.Context, localMachineID string) (int, error)
 }

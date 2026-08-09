@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/controlplane"
 )
 
 // 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
@@ -54,5 +56,30 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// TestConfiguredMachinesFromConfigSecretRefOnly 验证 targets 投影为 ConfiguredMachine
+// 时只带 secret_ref 引用（config.targets.<name>.token），不落 token 值。
+func TestConfiguredMachinesFromConfigSecretRefOnly(t *testing.T) {
+	cfg := &config.Config{Targets: map[string]config.Target{
+		"devbox": {Addr: "http://10.0.0.5:7777", Token: "super-secret-token", DisplayName: "开发机"},
+	}}
+	configured, err := configuredMachinesFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("configuredMachinesFromConfig: %v", err)
+	}
+	if len(configured) != 1 {
+		t.Fatalf("configured = %d, want 1", len(configured))
+	}
+	cm := configured[0]
+	if cm.ConfigKey != "devbox" || cm.Endpoint != "http://10.0.0.5:7777" || cm.DisplayName != "开发机" {
+		t.Fatalf("configured = %+v", cm)
+	}
+	if cm.Kind != controlplane.MachineKindRemote {
+		t.Fatalf("kind = %s, want remote", cm.Kind)
+	}
+	if cm.SecretRef != "config.targets.devbox.token" {
+		t.Fatalf("secret_ref = %q, want config.targets.devbox.token", cm.SecretRef)
 	}
 }

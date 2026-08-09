@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/claudecode"
@@ -74,6 +75,20 @@ var agentdCmd = &cobra.Command{
 			return fmt.Errorf("打开存储: %w", err)
 		}
 		defer st.Close()
+
+		// 控制面初始化（桌面 phase2）：确保本机身份、投影配置机器、迁移旧任务、
+		// 补投影本机事件。必须在 NewServer 之前完成——任一步失败即拒绝以未就绪
+		// 状态提供 desktop /v1 写服务。
+		bootstrapStart := time.Now()
+		bs := controlplane.NewBootstrapService(st, logger)
+		localMachine, err := bs.Initialize(cmd.Context(), cfg)
+		if err != nil {
+			return fmt.Errorf("控制面初始化: %w", err)
+		}
+		logger.Info("控制面初始化完成",
+			"local_machine_id", localMachine.ID,
+			"target_count", len(cfg.Targets),
+			"elapsed_ms", time.Since(bootstrapStart).Milliseconds())
 
 		// env 注入（B19）：agent 启动时注入 <DataDir>/env/ 下配置的环境变量文件。
 		// 启动预检只 WARN 不阻断——env 文件是数据文件，可能在 agentd 启动后才创建；
@@ -132,6 +147,31 @@ func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
 		"grok":     grok.New(logger),
 		"fake":     fake.New(nil),
 	}
+}
+
+// configuredMachinesFromConfig 把 config.Targets 投影为控制面 ConfiguredMachine。
+//
+// 为什么只传 secret_ref 引用不传 token：token 值只由运行时 credential resolver
+// 按 config.targets.<name>.token 从 config 读取，领域层与 DB 永不接触 token。
+func configuredMachinesFromConfig(cfg *config.Config) ([]controlplane.ConfiguredMachine, error) {
+	var out []controlplane.ConfiguredMachine
+	for name, t := range cfg.Targets {
+		if t.Addr == "" {
+			continue
+		}
+		displayName := t.DisplayName
+		if displayName == "" {
+			displayName = name
+		}
+		out = append(out, controlplane.ConfiguredMachine{
+			ConfigKey:   name,
+			DisplayName: displayName,
+			Kind:        controlplane.MachineKindRemote,
+			Endpoint:    t.Addr,
+			SecretRef:   "config.targets." + name + ".token",
+		})
+	}
+	return out, nil
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
