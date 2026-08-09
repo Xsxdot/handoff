@@ -614,8 +614,9 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 // 看门狗探活通过——任务表面在跑实则永久静止，是最坏的一种故障形态（§5.3(c) 实测）。
 // 因此即使参数解析失败也必须回包。
 //
-// 应答形态见 askQuestionReply：回 `{}` 会被 grok 判为「缺 outcome 字段」的工具错误
-// 报回模型、模型随即重问（2026-08-09 真机实测，审核者收到两张重复 question 工单）。
+// 应答形态见 askQuestionReply：形状错了不会挂死，但会被 grok 判为工具执行失败报回
+// 模型（2026-08-09 真机两轮实测），模型要么重问一遍、要么把「工具报错了」写进回合
+// 文本——两种都会脏掉审核者看到的工单。
 func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 	// 先解阻塞：任何解析失败都不能挡住这一步
 	if err := h.r.cli.Reply(reqID, askQuestionReply()); err != nil {
@@ -641,15 +642,29 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 
 // askQuestionReply 是 _x.ai/ask_user_question 的应答体。
 //
-// 形态对齐 session/request_permission 的应答结构 {"outcome":{...}}：带 outcome 字段，
-// 取值 "cancelled" 表示「用户没有通过这个通道作答」——handoff 的提问真相源是回合
-// trailer 的 {"ask":…}，不能有两个来源，设计意图不变。
+// 形态不是猜的，是 grok 自己的 serve.log 给的（2026-08-09 真机，第二轮）：
 //
-// 2026-08-09 真机验收修正：此前回裸 `{}`，grok 判为「缺 outcome 字段的工具错误」
-// 报回模型，模型随即重问一遍，审核者收到两张重复的 question 工单。本形态尚未在
-// 真机确认，若 grok 仍报 schema 错，改动点集中在本函数，便于按真机结果迭代。
+//	tool_error: execution_failure tool_name="ask_user_question"
+//	error_message=Client returned an invalid response to user question:
+//	  invalid type: map, expected variant identifier at line 1 column 11
+//
+// 这是 serde 对内部标签枚举 AskUserQuestionExtResponse 的报错：它按名字取到了标签
+// 字段 `outcome`，却发现值是 map 而不是变体名——所以 outcome 必须是**字符串**。
+// 合法变体从 grok 二进制符号表读出，只有三个：accepted（需带 answers）、
+// skip_interview、chat_about_this。
+//
+// 为什么选 skip_interview：它对应「用户跳过这轮问答」，grok 收到后给模型的提示是
+// 「用户没有作答，按你自己的判断继续，或换个问题问」——正是 handoff 想要的语义。
+// handoff 的提问真相源是回合 trailer 的 {"ask":…}，本通道只负责**立刻解阻塞**，
+// 不承担作答（作答走审核者工单，答案在下一回合以 prompt 送进来）。选 accepted 就
+// 得在这里同步憋出一份 answers，会让 ACP 请求阻塞到人回话为止——那正是 §4.2.3
+// 要避免的挂死形态。
+//
+// 踩过的两个坑，都留在这当反面教材：回裸 `{}`（缺 outcome 字段），以及照抄
+// session/request_permission 的内嵌形态 {"outcome":{"outcome":"cancelled"}}
+// ——两者都被 grok 判为工具执行失败报回模型。两个协议长得像，但不是同一个枚举。
 func askQuestionReply() map[string]any {
-	return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+	return map[string]any{"outcome": "skip_interview"}
 }
 
 // askQuestionText 把 _x.ai/ask_user_question 的 params 渲染成人读的一段文本。

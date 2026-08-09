@@ -209,10 +209,21 @@ func TestRejectedListShowsDescriptionNotID(t *testing.T) {
 	}
 }
 
-// TestAskQuestionReplyContainsOutcome 钉住 OnAskQuestion 的应答形态：回裸 `{}`
-// 会被 grok 判为「缺 outcome 字段的工具错误」报回模型、模型随即重问，审核者收到
-// 两张重复 question 工单（2026-08-09 真机实测）。应答 result 必须含 outcome 字段
-// 且不是空对象。
+// TestAskQuestionReplyContainsOutcome 钉住 OnAskQuestion 的应答形态。
+//
+// 真相取自 grok 自己的 serve.log（2026-08-09 真机实测）：
+//
+//	tool_error: execution_failure tool_name="ask_user_question"
+//	error_message=Client returned an invalid response to user question:
+//	  invalid type: map, expected variant identifier at line 1 column 11
+//
+// 那是 serde 对**内部标签枚举** AskUserQuestionExtResponse 的报错——它按名字取到了
+// 标签字段 `outcome`，却发现值是 map 而非变体名。所以 outcome 必须是**字符串**，
+// 合法取值只有 accepted / skip_interview / chat_about_this（从 grok 二进制符号表读出）。
+//
+// 这条断言因此钉两件事：outcome 存在，且它是字符串而不是嵌套对象。曾经回过
+// `{}`（缺字段）和 `{"outcome":{"outcome":"cancelled"}}`（照抄 request_permission
+// 的内嵌形态），两次都被 grok 判为工具执行失败报回模型。
 func TestAskQuestionReplyContainsOutcome(t *testing.T) {
 	const askReq = `{"jsonrpc":"2.0","id":0,"method":"_x.ai/ask_user_question","params":` +
 		`{"sessionId":"s","toolCallId":"c9","questions":[{"question":"用哪种语言？",` +
@@ -268,8 +279,21 @@ func TestAskQuestionReplyContainsOutcome(t *testing.T) {
 			if len(result) == 0 {
 				t.Fatalf("应答 result 不得是空对象（回 {} 会被 grok 判为缺 outcome 字段）: %s", m.Result)
 			}
-			if _, ok := result["outcome"]; !ok {
+			outcomeRaw, ok := result["outcome"]
+			if !ok {
 				t.Fatalf("应答 result 必须含 outcome 字段，实得: %s", m.Result)
+			}
+			var outcome string
+			if err := json.Unmarshal(outcomeRaw, &outcome); err != nil {
+				t.Fatalf("outcome 必须是变体名字符串，不能是嵌套对象"+
+					"（grok 会报 invalid type: map, expected variant identifier），实得: %s", outcomeRaw)
+			}
+			// 只认 grok 二进制里存在的变体名，防止拼错后又要走一轮真机才发现
+			switch outcome {
+			case "skip_interview", "chat_about_this", "accepted":
+			default:
+				t.Fatalf("outcome 取值不在 grok 合法变体内"+
+					"（accepted/skip_interview/chat_about_this），实得: %q", outcome)
 			}
 			return
 		case <-deadline:
