@@ -28,6 +28,7 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/claudecode"
+	"github.com/xushixin/handoff/internal/executor/codex"
 	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
@@ -97,16 +98,26 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
-		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
-				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/fake）", executorFlag)
+				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
 			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter
 			cfg.Executor.Default = executorFlag
+		}
+
+		// 缺省执行者是 codex 时做硬预检：codex 复用用户级 ~/.codex（spec §1.3），
+		// 未装/未登录会让每个任务都在回合中途失败，诊断成本远高于启动时挡一下。
+		// 非缺省时不阻断——注册表保留全部 adapter，一台只跑 opencode 的机器不该
+		// 因为没装 codex 就起不来。
+		if cfg.Executor.Default == "codex" {
+			if err := codex.Preflight("", logger); err != nil {
+				return fmt.Errorf("codex 环境预检未通过: %w", err)
+			}
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
 		srv.SetManager(mgr)
@@ -137,6 +148,7 @@ func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
 		"opencode": opencode.New(logger),
 		"claude":   claudecode.New(logger),
 		"grok":     grok.New(logger),
+		"codex":    codex.New(logger),
 		"fake":     fake.New(nil),
 	}
 }
@@ -170,11 +182,11 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | codex | fake（脚本演示）。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖缺省执行者：opencode（默认）| claude | grok | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+		"覆盖缺省执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }

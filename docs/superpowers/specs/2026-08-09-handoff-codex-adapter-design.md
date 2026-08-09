@@ -346,6 +346,27 @@ sessions rollout 落在 `~/.codex/sessions/**`，归档时**不删**——它是
 | V-5 | `ws://` 传输的握手与断线行为 | spike 走的是 stdio；grok 的「WS 断开的单一处置路径」教训要对照 |
 | V-6 | 清理过 `AGENTS.md`/`hooks.json`/`mcp_servers` 的 home 上，executor 行为是否干净（不再绕路读 skill） | §1.3 的部署前置条件是否真的够，要在开发机上实测一次 |
 
+### 6.1 真机验收结果（2026-08-10，审核者在 devbox 执行）
+
+真机环境：devbox，**codex-cli 0.146.0**（spec 与实现计划都是照 0.144.1 写的），handoff b28 二进制，任务 `da2f1906`（主链路 + V-2 + V-1）与 `a6a84d65`/`93db5460`/`0f9de0c1`（V-4）。
+
+**先记一个部署前提，它差点让整轮验收得出错误结论**：devbox 连 OpenAI 端点要走本机 sing-box HTTP 代理（`api.openai.com` 直连会解析到 `69.63.176.59` 然后 TCP 握手超时，`chatgpt.com/backend-api` 同为 `http_code=000`；同一时刻 `github.com` 返回 200）。grok / claude 早就靠 `~/.handoff/env/*.env` 注入代理，而 **`config.yaml` 的 `env:` 段里没有 codex 条目**，于是首轮 e2e（任务 `5d6c6a3d`）表现为「会话建得起来、回合发得出去、模型一个 token 都不产」，serve.log 只刷 `failed to refresh available models`。补上 `codex: codex.env`（同一份代理变量）并重启 agentd 后，同一个 plan **90 秒跑完**。**结论：codex 的部署前置条件必须包含「按需配 `env/codex.env`」，这条要写进 README。**
+
+| id | 结论 |
+|----|------|
+| V-1 | **触发不了，且原因明确**：显式要求模型调用原生提问工具后，它回「`request_user_input` 工具在当前 Default mode 不可用」。所以 `item/tool/requestUserInput` 在当前协议档位下**根本不会到达 handoff**，Task 7 那段代码是防御性的、暂时走不到。**提问通道本身不受影响**——handoff 侧的问题中继全程由 trailer / 兜底路径承担，本轮实测产出 5 张 ask 工单，`reply --answer` 每次都被模型正确续接 |
+| V-2 | **已验，上下文完整**。先让模型记住口令 `pineapple-4417` 并收尾，再 `tmux kill-session` 杀掉 app-server 进程，然后 `continue`：日志走完整条冷恢复阶梯（`app-server 已不在，进入冷恢复 old_port=55863` → `冷恢复新 app-server 就绪 new_port=58150` → `codex 任务已恢复 mode=cold`），`thread/resume` 载回原 thread `019fe749-…`，模型**准确答出 `pineapple-4417`** |
+| V-3 | **两半都已验，§2.1 的论证成立**。①越界写**真的产工单**：`tee /Users/sycm/handoff-e2e-probe.txt` 触发 `requestApproval`，`once → accept` 后文件**真的被创建**（17 字节，内容正确）；②拒绝后**文件真的没被动**：`rm -rf /Users/sycm/handoff-e2e-deny.txt` 命中黑名单升级人工，`reply --deny` 后 serve.log 留下 `exec_command failed … Rejected("rejected by user")`，文件原样健在。顺带实证了被拒清单优先的兜底——adapter 产出「本回合有权限请求被拒。被拒清单：…」的 ask 工单 |
+| V-4 | **已验，无锁竞争**。三个 codex 任务并发跑完（各自 managed worktree + 各自 app-server，共用同一份 `~/.codex`），全部 `completed`，四个任务的 serve.log 里 `database is locked` / `SQLITE_BUSY` 命中**均为 0** |
+| V-5 | **已验**。`ws://127.0.0.1:<port>` 的 URL 形态与 spec 一致，启动横幅另暴露 `/readyz` 与 `/healthz`（`Proc.Alive()` 用 TCP 探活保守可行，日后要更强判据这两个 HTTP 面是现成的）；app-server **209ms** 就绪；断线行为也已验——杀掉进程后读循环以 `failed to get reader: failed to read frame header: EOF` 终结，`onClosed` 把真因连同 serve.log 尾部一起报出，随后的 `continue` 正常触发冷恢复 |
+| V-6 | **未验**。要验「清理过 `AGENTS.md`/`hooks.json`/`mcp_servers` 的 home 上 executor 是否干净」就得动用户本人的 `~/.codex`（且该目录有 `config.toml.superdev-bak`，疑似被 superdev 管理），审核者不擅自改。**但污染本身已被实证**：serve.log 持续报 `rmcp::transport::worker … chatgpt.com/backend-api/ps/mcp`，说明用户 `config.toml` 里的 `[mcp_servers.superdev]` 确实被 executor 继承了，Preflight 那三条 WARN 是有的放矢的 |
+
+同轮验到的其它事实：
+
+- **五动作全链路通**：`dispatch --executor codex` → `running` → 权限门（审批链自动裁决 + 黑名单升级人工）→ `completed` → `diff`（`probe.txt` 一行，提交 `dd26207`）→ `continue` 同会话续接（thread id 全程不变）→ `done`（app-server 进程、tmux 会话、managed worktree 三样都清干净，实测零残留）。
+- **`Stop` 有一次没杀死 app-server**：任务 `5d6c6a3d`（当时卡在连不上网的状态）`handoff stop` 返回成功、agentd 也打了 `codex tmux 会话已回收`，但 `codex app-server` 进程存活下来、26 分钟后仍 LISTEN 在原端口 64038，只能手工 `kill`。后续四个任务走 `done` 全部干净，所以复现条件疑似与「codex 正卡在子进程/网络超时」有关。`Proc.Kill` 只做 `tmux kill-session`（与 grok 同形），杀完不复核进程是否真的死了——已记入 backlog。
+- **兜底提问会在空转回合上打转**：模型做完事会正常输出 HANDOFF_STATUS（本轮多次产出 `completed`），但纯对话回合（如只回一句「已收尾。」）没有 trailer、也没有新提交，就被兜底当成提问上报，需要审核者再答一轮。行为安全（不会静默结束），但 UX 上会多绕一圈。
+
 ## 7. 接入面（改动清单）
 
 - **新增 `internal/executor/codex/`**：`adapter.go` / `proc.go`（tmux + 端口就绪）/ `appserver.go`
