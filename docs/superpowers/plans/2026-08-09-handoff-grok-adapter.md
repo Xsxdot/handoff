@@ -36,6 +36,9 @@
 - Modify: `internal/executor/opencode/taskenv.go`（删 `promptTemplate`/`promptTmpl`/`promptData`/`Trailer`/`ParseTrailer`，改调 turn）
 - Modify: `internal/executor/opencode/adapter.go`（删 `clampQuestion`/`tailRunes`/`gitTurnStatus`/`appendRender`，改调 turn）
 - Modify: `internal/executor/opencode/api.go`（删 `truncateMarked`/`truncateRunes`，改调 turn）
+- Modify: `internal/executor/opencode/adapter_test.go`（`truncateMarked` 引用改 turn，仅标识符）
+- Modify: `internal/executor/opencode/regression_group_a_test.go`（`questionTextLimit`/`tailRunes` 引用改 turn，仅标识符；断言不动）
+- Modify: `internal/executor/opencode/taskenv_test.go`（删除 trailer 相关用例，已由 `turn/protocol_test.go` 承接）
 
 **Interfaces:**
 - Consumes: `executor.TruncationMarker`（`internal/executor/executor.go:45`）
@@ -292,7 +295,33 @@ func TestTailRunesKeepsSuffix(t *testing.T) {
 		t.Errorf("不足 n 时应原样返回，得到 %q", got)
 	}
 }
+
+// TestClampQuestionPointsAtRenderLog 钉住 ClampQuestion 与 TruncateMarked 的
+// **语义差异**：question 的全文只在 render.log 里，截断后必须指路。
+// opencode 的 regression_group_a_test.go 断言同一件事，这里是搬包后的同源钉子。
+func TestClampQuestionPointsAtRenderLog(t *testing.T) {
+	short := "很短的问题"
+	if got := turn.ClampQuestion(short); got != short {
+		t.Errorf("未超限不应改写，得到 %q", got)
+	}
+
+	long := strings.Repeat("长", turn.QuestionTextLimit+1000)
+	got := turn.ClampQuestion(long)
+	if n := len([]rune(got)); n > turn.QuestionTextLimit+200 {
+		t.Errorf("截断后 %d 字符仍超限（上限 %d）", n, turn.QuestionTextLimit)
+	}
+	if !strings.Contains(got, "render.log") {
+		t.Errorf("截断后必须指明全文去处，尾部为 %q", turn.TailRunes(got, 80))
+	}
+	// 反向断言：不得退化成 TruncateMarked 的通用尾缀——那会丢掉 render.log 指路，
+	// 而 question 的全文不在工单里，审核者将无处可查（见 ClampQuestion 的注释）。
+	if strings.HasSuffix(got, executor.TruncationMarker) {
+		t.Error("ClampQuestion 不得复用 TruncateMarked 的尾缀")
+	}
+}
 ```
+
+> 该文件需 `import ("strings"; "testing"; "github.com/xushixin/handoff/internal/executor"; "github.com/xushixin/handoff/internal/executor/turn")`。
 
 `internal/executor/turn/render_test.go`：
 
@@ -409,10 +438,13 @@ package turn
 
 import "github.com/xushixin/handoff/internal/executor"
 
-// questionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文当
+// QuestionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文当
 // question 发出，一个失控的长回合会直接灌进工单行与审核者终端；全文始终在
 // 任务目录的 render.log 里，截断不丢证据。
-const questionTextLimit = 8000
+//
+// 为什么导出：opencode 的 regression_group_a_test.go 直接断言这个上限，
+// 搬包后它得能从 turn 引到同一个值——两处各写一个 8000 就会悄悄漂移。
+const QuestionTextLimit = 8000
 
 // TruncateMarked 按 rune 截断到 n，确实截断时追加 executor.TruncationMarker。
 //
@@ -444,9 +476,24 @@ func TailRunes(s string, n int) string {
 	return string(r[len(r)-n:])
 }
 
-// ClampQuestion 把兜底分类产出的整段回合文本收敛到 questionTextLimit。
+// ClampQuestion 把兜底分类产出的整段回合文本收敛到 QuestionTextLimit，
+// 超出时追加尾缀指明全文去处。
+//
+// 为什么**不能**复用 TruncateMarked：两者的「全文在哪」不同，尾缀因此必须不同。
+//   - TruncateMarked 用于 permission 文本，全文在工单里（B6 契约：工单存全文、
+//     事件截断），审核者 `handoff show` 就能拿到，`…（已截断）` 足够；
+//   - 本函数用于 question 文本，全文**不在工单里**，只在任务目录的 render.log。
+//     不指路 = 审核者拿到半截文本且不知道去哪找全文，证据链断掉。
+//
+// 这段尾缀是逐字从 opencode 现有实现搬来的，opencode 的
+// regression_group_a_test.go 断言 `strings.Contains(ev.Text, "render.log")`，
+// 改字面量即回归。
 func ClampQuestion(text string) string {
-	return TruncateMarked(text, questionTextLimit)
+	if len([]rune(text)) <= QuestionTextLimit {
+		return text
+	}
+	return TruncateRunes(text, QuestionTextLimit) +
+		"\n\n…（回合文本过长已截断，完整内容见任务目录 render.log）"
 }
 ```
 
@@ -542,16 +589,42 @@ Expected: PASS（全部用例）
 | `adapter.go` 的 `gitTurnStatus`（方法体） | 方法保留为薄封装，内部调 `turn.GitTurnStatus(r.repoPath, r.startCommit)`，保留原有日志 |
 | `adapter.go` 的 `appendRender`（方法体） | 方法保留为薄封装，内部调 `turn.AppendRender(filepath.Join(r.taskDir, renderLogFileName), delta)` |
 | `api.go` 的 `truncateMarked`/`truncateRunes` | `turn.TruncateMarked` / `turn.TruncateRunes` |
-| `adapter.go` 的 `questionTextLimit` 常量 | 删除（已随 `ClampQuestion` 进 turn） |
+| `adapter.go` 的 `questionTextLimit` 常量 | 删除，引用改 `turn.QuestionTextLimit` |
 
 保留 `gitTurnStatus`/`appendRender` 作方法薄封装的**理由**：它们的调用点带 `r` 的上下文（repoPath/startCommit/taskDir）与既有日志，改成全局函数会让每个调用点重复拼参数，且丢掉日志。
 
-> 若 `opencode` 包内仍有 `ParseTrailer` 的外部引用（如 `adapter.go` 的 idle 分类），一并改为 `turn.ParseTrailer`。`export_test.go`（B6 引入的测试缝）若暴露了被搬走的函数，同步改为转调 turn。
+**测试文件同步（本 Task 必须一并处理，否则编译不过）**。这些符号在测试里也有引用，
+符号搬家后测试文件**必然要改**——但改的性质分两类，只有第一类被允许：
+
+| 文件 | 引用的符号 | 处置 |
+|---|---|---|
+| `opencode/adapter_test.go`（`package opencode`） | `truncateMarked` | **只换标识符** → `turn.TruncateMarked`，加 import。断言一字不动 |
+| `opencode/regression_group_a_test.go`（`package opencode`） | `questionTextLimit`、`tailRunes` | **只换标识符** → `turn.QuestionTextLimit` / `turn.TailRunes`。`strings.Contains(ev.Text, "render.log")` 这条断言**保持原样**——它正是 `ClampQuestion` 语义的锚点 |
+| `opencode/taskenv_test.go`（`package opencode_test`） | `opencode.ParseTrailer`、`opencode.Trailer` | **删除这些用例**：同一批用例 Step 2 已在 `turn/protocol_test.go` 原文重建，留着就是两份同样的测试。删除前逐条比对，确认 turn 侧覆盖了每一条，缺哪条补哪条 |
+
+> 开工前先自己核一遍引用，别只信上表：
+> `grep -rn '\bParseTrailer\|\bTrailer\|truncateMarked\|truncateRunes\|tailRunes\|questionTextLimit\|clampQuestion\b' internal/executor/opencode/`
+> 本计划撰写时不存在 `export_test.go`，若届时已有，同样按上表分类处置。
 
 - [ ] **Step 11: 跑 opencode 全量回归——这是本 Task 的验收硬指标**
 
 Run: `go test ./internal/executor/... ./internal/agentd/ -count=1`
-Expected: **全绿**。任一失败即说明抽取改了语义，回退重做，**不允许改测试来迁就实现**。
+Expected: **全绿**。任一失败即说明抽取改了语义，回退重做。
+
+**关于「不许改测试」的确切边界**（Step 10 已列出必须改的文件，此处定验收口径）：
+
+- ✅ **允许**：import 行、标识符替换（`truncateMarked` → `turn.TruncateMarked` 这类）、
+  以及 Step 10 表里点名的用例删除。这是符号搬家的机械后果，不削弱任何断言。
+- ❌ **禁止**：改任何断言、期望值、数字或字符串字面量。测试红了就去改实现，不许改期望。
+
+验收方式（自己先跑一遍再交）：
+
+```bash
+git diff -- '*_test.go' | grep '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^\+.*turn\.|^-.*\b(truncateMarked|truncateRunes|tailRunes|questionTextLimit|clampQuestion)\b|^[+-]\s*"github.com/xushixin/handoff/internal/executor/turn"'
+```
+
+除 `taskenv_test.go` 的整段删除外，上面这条命令**不应输出任何带字面量的行**。
+出现任何数字或字符串字面量的增删，即为不合格。
 
 - [ ] **Step 12: 全仓构建与静态检查**
 
@@ -569,6 +642,12 @@ git commit -m "refactor: 抽取 internal/executor/turn 共享包，opencode 改�
 
 why prompt 模板与 ParseTrailer 必须同包：教模型协议的 prompt 与解析协议的
 代码是同一契约的两半，分居两处必然出现改一半的漂移。
+
+why ClampQuestion 不复用 TruncateMarked：question 的全文只在 render.log
+（permission 的全文在工单里），尾缀必须指路，逐字保留 opencode 原实现。
+
+测试改动仅为符号搬家的机械后果（import + 标识符）；taskenv_test.go 的
+trailer 用例整段删除，已由 turn/protocol_test.go 原文承接。无断言变更。
 
 纯重构，opencode 全量回归绿。"
 ```
