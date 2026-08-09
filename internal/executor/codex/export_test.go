@@ -164,3 +164,10 @@ func UserInputTextForTest(qs []userInputQuestion) string { return userInputText(
 
 // UserInputReplyForTest 暴露应答体构造。
 func UserInputReplyForTest(qs []userInputQuestion) map[string]any { return userInputReply(qs) }
+
+// SwapLookPathForTest 替换 preflight 的 PATH 探测，返回还原函数。
+func SwapLookPathForTest(fn func(string) (string, error)) func() {
+	old := lookPath
+	lookPath = fn
+	return func() { lookPath = old }
+}

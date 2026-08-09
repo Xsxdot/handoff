@@ -23,7 +23,7 @@ import (
 // 解冲突时漏掉任一行都不会编译报错，症状要拖到「派发时报未注册」才暴露。
 func TestAdapterRegistryHasAllExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	for _, want := range []string{"opencode", "claude", "grok", "fake"} {
+	for _, want := range []string{"opencode", "claude", "grok", "codex", "fake"} {
 		if _, ok := ads[want]; !ok {
 			names := make([]string, 0, len(ads))
 			for n := range ads {
