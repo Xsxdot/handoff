@@ -14,6 +14,7 @@ import { shouldEnableReactGrab } from './lib/react-grab-dev-gate'
 import { I18nProvider } from './i18n/I18nProvider'
 import { translate } from './i18n/i18n'
 import { getOrCreateRendererRoot } from './lib/react-renderer-root'
+import { HandoffApp } from './features/handoff/HandoffApp'
 
 recordRendererCrashBreadcrumb('renderer_bootstrap_started', { dev: import.meta.env.DEV })
 installRendererCrashDiagnostics()
@@ -50,7 +51,10 @@ function RendererRoot(): React.JSX.Element {
         'The app shell could not finish rendering. Retry to remount it, or relaunch Orca if the error persists.'
       )}
     >
-      <App />
+      {/* Handoff 桌面控制面作为默认 renderer root；上游 Orca App 保留为显式
+          DEV 开发 fallback（VITE_HANDOFF_ORCA_APP=1 时启用），Handoff feature
+          自身不导入 Orca App。 */}
+      {import.meta.env.DEV && import.meta.env.VITE_HANDOFF_ORCA_APP ? <App /> : <HandoffApp />}
     </RecoverableRenderErrorBoundary>
   )
 }

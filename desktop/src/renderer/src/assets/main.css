@@ -3583,3 +3583,156 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
     inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent),
     0 10px 24px rgba(0, 0, 0, 0.18);
 }
+
+/* ---- Handoff Workbench（独立于 Orca 旧业务 UI） ---- */
+
+.handoff-workbench {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.handoff-connection-bar {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+
+.handoff-connection-bar[data-connection='unavailable'] {
+  color: var(--destructive);
+}
+
+.handoff-panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.handoff-pane-left {
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 8px;
+}
+
+.handoff-pane-center {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.handoff-pane-right {
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  padding: 8px;
+}
+
+.handoff-project-tree {
+  font-size: 13px;
+}
+
+.handoff-tree-project-header,
+.handoff-tree-machine-header,
+.handoff-tree-workspace-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.handoff-tree-label {
+  font-weight: 500;
+}
+
+.handoff-tree-counts {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.handoff-tree-status {
+  font-size: 11px;
+}
+
+.handoff-tree-status-connected {
+  color: var(--success, #22c55e);
+}
+
+.handoff-tree-status-unavailable {
+  color: var(--destructive);
+}
+
+.handoff-tree-workspace {
+  margin-left: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.handoff-tree-workspace:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.handoff-tree-workspace-path {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.handoff-tree-task {
+  margin-left: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.handoff-tree-task:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.handoff-tree-task-meta {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.handoff-center-empty,
+.handoff-right-empty {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+}
+
+.handoff-breadcrumb {
+  font-size: 13px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.handoff-create-name,
+.handoff-create-location {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.handoff-create-path-row {
+  display: flex;
+  gap: 6px;
+}
+
+.handoff-create-clone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.handoff-create-result {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
