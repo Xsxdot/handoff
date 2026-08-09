@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
@@ -1078,4 +1079,88 @@ func TestStopOnTerminalTaskRejected(t *testing.T) {
 	if _, err := m.Stop(context.Background(), task.ID); !errors.Is(err, store.ErrBadTransit) {
 		t.Fatalf("已终结任务 stop 必须返回 ErrBadTransit（映射 409），实得 %v", err)
 	}
+}
+
+// TestDispatchRejectsWhenEnvFileMissing 钉住 spec §6：env 解析失败必须在
+// 建任务与工作区准备之前拒发，不能留下一个注定 failed 的任务。
+func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{
+		Token: "test", DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake"},
+		Env:      map[string]string{"fake": "missing.env"},
+	}
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, logger)
+
+	// Repo 随便给一个不存在的路径即可：env 解析发生在任何 git 动作之前，
+	// 这条断言同时证明了「解析确实排在最前段」
+	_, derr := m.Dispatch(context.Background(), DispatchReq{
+		Repo: "/nonexistent/repo", Prompt: "任意指令",
+	})
+	if derr == nil {
+		t.Fatal("env 文件缺失时应拒发")
+	}
+	if !errors.Is(derr, errEnvResolveFailed) {
+		t.Fatalf("应为 errEnvResolveFailed，实际 %v", derr)
+	}
+	if !strings.Contains(derr.Error(), "missing.env") {
+		t.Errorf("错误应带文件名，实际 %q", derr.Error())
+	}
+	tasks, lerr := st.ListTasks()
+	if lerr != nil {
+		t.Fatalf("ListTasks: %v", lerr)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("拒发时不应创建任务，实际创建了 %d 个", len(tasks))
+	}
+}
+
+// TestDispatchPassesEnvToAdapter 钉住解析结果确实到达了 adapter。
+func TestDispatchPassesEnvToAdapter(t *testing.T) {
+	dataDir := t.TempDir()
+	envDir := envfile.Dir(dataDir)
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "dev.env"), []byte("HTTPS_PROXY=http://p:1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	repo := initTestRepo(t)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{
+		Token: "test", DataDir: dataDir,
+		Executor: config.ExecutorConfig{Default: "fake"},
+		Env:      map[string]string{"fake": "dev.env"},
+	}
+	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, logger)
+
+	if _, derr := m.Dispatch(context.Background(), DispatchReq{Repo: repo, Prompt: "任意指令"}); derr != nil {
+		t.Fatalf("Dispatch: %v", derr)
+	}
+	if len(rec.gotEnv) != 1 || rec.gotEnv[0] != "HTTPS_PROXY=http://p:1" {
+		t.Fatalf("adapter 收到的 Env 不对: %v", rec.gotEnv)
+	}
+}
+
+// envRecordingAdapter 包一层 fake adapter，只为记录 Start 收到的 Env。
+type envRecordingAdapter struct {
+	executor.Adapter
+	gotEnv []string
+}
+
+func (a *envRecordingAdapter) Start(ctx context.Context, req executor.StartReq) error {
+	a.gotEnv = req.Env
+	return a.Adapter.Start(ctx, req)
 }

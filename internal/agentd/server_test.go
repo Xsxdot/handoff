@@ -817,3 +817,31 @@ func TestWSReplayThenLive(t *testing.T) {
 		t.Fatal("未收到实时事件")
 	}
 }
+
+// TestDispatchEnvFailureReturns500WithCause 钉住 spec §6：env 解析失败必须回显真因，
+// 不能落进 writeDispatchError 的 default 分支变成扁平的「派发任务失败」（B16 根因同款）。
+func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake"},
+		Env:      map[string]string{"fake": "missing.env"}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := newTestEnvWithCfg(t, cfg, logger)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, logger)
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks", `{"repo":"/nonexistent/repo","prompt":"任意指令"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("返回 %d, want 500", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码响应: %v", err)
+	}
+	if !strings.Contains(body.Error, "missing.env") {
+		t.Errorf("响应体应带真因（含文件名），实际 %q", body.Error)
+	}
+}

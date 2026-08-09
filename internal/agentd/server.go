@@ -476,6 +476,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
 //     err.Error()（含真因如 exec: "tmux": executable file not found），审核者拿到
 //     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
+//   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
+//     问题，响应体带完整路径与行号，派发者改完文件重派即可
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
 	switch {
@@ -496,6 +498,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errExecutorStartFailed):
 		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	case errors.Is(err, errEnvResolveFailed):
+		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		s.log.Error("派发任务失败", "repo", repo, "cause", err)
