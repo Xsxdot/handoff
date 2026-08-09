@@ -142,10 +142,6 @@ func EnsureAuthLink(homeDir string) error {
 	return nil
 }
 
-// shellQuote 把字符串包成单引号 shell 字面量，委托 internal/shellq
-// （与 cmd 包弹终端的 shell 拼接同源，避免复制漂移）。
-func shellQuote(s string) string { return shellq.Quote(s) }
-
 // WriteServeScript 生成 serve 启动脚本，返回脚本路径。
 //
 // 为什么 secret 走环境变量而非 --secret：tmux 客户端进程的 argv 本机全局可读，
@@ -167,7 +163,7 @@ func WriteServeScript(taskDir, homeDir string, port int, secret string, env []st
 		if !ok {
 			continue // 形如 KEY=VALUE 之外的条目直接跳过，不让它污染脚本语法
 		}
-		envLines.WriteString("export " + k + "=" + shellQuote(v) + "\n")
+		envLines.WriteString("export " + k + "=" + shellq.Quote(v) + "\n")
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 # 由 agentd 生成：grok agent serve 启动脚本（0600，含随机 secret，勿外泄）。
@@ -175,7 +171,7 @@ exec 2>> %s
 %sexport GROK_HOME=%s
 export GROK_AGENT_SECRET=%s
 exec grok agent serve --bind 127.0.0.1:%d 2>&1 | tee -a %s
-`, shellQuote(serveLog), envLines.String(), shellQuote(homeDir), shellQuote(secret), port, shellQuote(serveLog))
+`, shellq.Quote(serveLog), envLines.String(), shellq.Quote(homeDir), shellq.Quote(secret), port, shellq.Quote(serveLog))
 
 	p := filepath.Join(taskDir, serveScriptName)
 	if err := os.WriteFile(p, []byte(script), 0o600); err != nil {
