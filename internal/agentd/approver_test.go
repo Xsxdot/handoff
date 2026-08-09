@@ -161,6 +161,22 @@ func waitTaskState(t *testing.T, st *store.Store, taskID string, want proto.Task
 	})
 }
 
+// waitEvent 轮询等待某类事件落库。
+//
+// 为什么断言事件不能拿 waitTaskState 当就绪信号：escalatePermission 是
+// **先落 waiting_answer 状态、再建工单、最后才追加 permission_request 事件**
+// （见该函数的 U-1 注释，那个顺序是必需的）。所以「状态已是 waiting_answer」
+// 早于「事件已可读」，中间那段窗口在机器吃满时（如多包并发 -race）足以让
+// 紧随其后的 mustEvents 读到空列表——曾以 TestNilApproverKeepsCurrentBehavior
+// 偶发失败的形式暴露过。等事件本身才是正确的就绪信号。
+func waitEvent(t *testing.T, st *store.Store, taskID string, typ proto.EventType) {
+	t.Helper()
+	eventually(t, 3*time.Second, "事件 "+string(typ), func() bool {
+		evs, err := st.EventsFrom(taskID, 0, 1000)
+		return err == nil && hasEvent(evs, typ)
+	})
+}
+
 // waitCondition 轮询等待条件成立。
 func waitCondition(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
@@ -239,6 +255,7 @@ func TestApproverEscalateFallsThroughToReviewer(t *testing.T) {
 	m, st, _ := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"escalate","reason":"拿不准"}`, nil)
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
+	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
 	evs := mustEvents(t, st, task.ID)
 	if !hasEvent(evs, proto.EventTypeApproverDecision) || !hasEvent(evs, proto.EventTypePermissionRequest) {
 		t.Fatalf("escalate 应留审计事件并走既有唤醒流程")
@@ -411,6 +428,7 @@ func TestApproverTruncatedPermissionEscalates(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("含截断标记的权限不应调用审批者，被调 %d 次", calls.Load())
 	}
+	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
 	evs := mustEvents(t, st, task.ID)
 	if !hasEvent(evs, proto.EventTypePermissionRequest) {
 		t.Fatalf("含截断标记的权限应直接升级人工审核者（permission_request）: %v", evs)
@@ -491,6 +509,7 @@ func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
+	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
 	evs := mustEvents(t, st, task.ID)
 	if !hasEvent(evs, proto.EventTypePermissionRequest) {
 		t.Fatalf("approver=nil 时权限应直接走既有升级流程: %v", evs)
