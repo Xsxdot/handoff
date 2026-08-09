@@ -10,27 +10,28 @@
 │ 交互式 Claude Code   │                │ handoff agentd（WS listener） │
 │  （审核者）          │   WebSocket    │  ├─ 任务/事件存储（SQLite）    │
 │         │           │ ◄────直连────► │  ├─ executor adapter          │
-│  handoff wait（后台） │   本机主动拨号  │  │   └─ opencode serve（tmux）  │
-│  handoff reply/...   │                │  │       ↑ SSE 事件 / HTTP API │
-└─────────────────────┘                │  桌面终端窗口 tmux attach ↑    │
-        │                              └──────────────────────────────┘
-     用户本人（危险操作/需求取舍升级）
+│  handoff wait（后台） │   本机主动拨号  │  │   ├─ opencode serve（tmux）  │
+│  handoff reply/...   │                │  │   └─ claude -p（tmux）       │
+└─────────────────────┘                │  │       ↑ SSE 事件 / HTTP API │
+        │                              │  桌面终端窗口 tmux attach ↑    │
+     用户本人（危险操作/需求取舍升级）      └──────────────────────────────┘
 ```
 
 - **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done` / `stop` / `pull`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
 - **handoff agentd**：任务状态机、事件持久化、executor 生命周期（tmux 内拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
-- **executor 挂载**：agentd 通过 opencode server 的 HTTP API + SSE 事件流对接（`POST /session`、`prompt_async`、`/event` SSE）；权限等待发生在 opencode 会话内部，与审核者是否在线解耦。
+- **executor 挂载**：agentd 通过 opencode server 的 HTTP API + SSE 事件流对接（`POST /session`、`prompt_async`、`/event` SSE），或经 `claude -p --input-format stream-json` 的进程流对接（权限门经 handoff 内置 stdio MCP server + unix socket）；权限等待发生在 executor 会话内部，与审核者是否在线解耦。
 - **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
 
 ## 快速开始
 
-前置：Go 1.26+（按 go.mod 声明；低版本可用 `GOTOOLCHAIN=auto` 自动下载）；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。
+前置：Go 1.26+（按 go.mod 声明；低版本可用 `GOTOOLCHAIN=auto` 自动下载）；executor 机安装 `opencode` 并配好模型凭证（`--executor=fake` 可无需任何依赖演示流程）。`--executor=claude` 需要本机装 `claude` 且已登录（`claude -p "hi"` 能出结果即视为就绪）。
 
 ```bash
 go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
 
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
+handoff agentd --executor=claude            # 用 Claude Code 执行（需本机已登录 claude）
 
 # 2. 本机配对（远程场景）：把 executor 机 ~/.handoff/config.yaml 里的 token 抄到
 #    本机同名文件 targets 段：
@@ -43,6 +44,7 @@ handoff agentd --executor=opencode          # 真实执行（默认）；fake �
 handoff dispatch --repo /path/to/repo plan.md
 handoff dispatch --repo /path/to/repo --prompt "把 README 安装命令改成 brew"   # 无 plan 文件
 handoff dispatch --repo /path/to/repo --new-worktree --executor opencode --model cheap/model plan.md
+handoff dispatch --repo /path/to/repo --new-worktree --executor claude plan.md              # 用 Claude Code 执行
 handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
 
 # 4. 审核者侧典型循环
@@ -60,7 +62,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
-| `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|fake`（默认 opencode） |
+| `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|fake`（默认 opencode） |
 | `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验） |
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
@@ -100,6 +102,7 @@ sync:                         # 任务结束（completed/failed）后自动同�
   auto: true                  # 关闭后仍可用 handoff pull 手动同步
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
+  claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -115,6 +118,12 @@ PATH=${PATH}:/usr/local/go/bin
 同一份 env 也会注入审批者（`approver.executor`）—— 否则代理只配半边，审批者连不出去会
 静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
+
+> **claude 执行者的 env 耦合**（2026-08-09 实测）：claude adapter 的任务级 `settings.json`
+> 是纯策略文件、**不含任何凭证**——鉴权走上面的 env 注入（B19），与 opencode 一致。但 env
+> 文件里若设了 `HOME` 或 `CLAUDE_CONFIG_DIR`，会连带改变 claude 读哪份用户配置
+> （`--setting-sources user` 的落点）与凭据落盘位置——这是用户自己的显式配置，不拦，
+> 只是需要知道它会一并生效。
 
 ## 分级审批链
 
@@ -146,6 +155,10 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 - opencode serve 自身的输出：`tee` 落盘 `<taskDir>/serve.log`。tmux 第一窗格实时可见；serve 退出后该窗格关闭，但**会话不会随之销毁**——第二窗口的 `tail -f render.log` 仍吊着会话，adapter 检测到 serve 死亡时会主动 `kill-session` 回收（见 subscribeLoop）。事后取证一律以 `serve.log` 为准。
 
 **tmux 会话命名规则**：`handoff-<task 前 8 字符>`。`tmux attach -t handoff-<id8>` 直接旁观（甚至介入）executor 实况，`tmux kill-session -t handoff-<id8>` 可人工兜底回收。
+
+claude 任务的 tmux 布局与 opencode 同构：窗口 0 是 `claude -p` 的 stream-json 原始输出，窗口 1 是 `tail -f render.log`（模型正文实况）；`handoff attach` 一套命令覆盖两个 executor。claude 任务的诊断文件对应 `claude.log`（stderr，对应 serve.log）与 `claude.json`（恢复凭据：tmux 会话 / session_id / out.jsonl 已消费 offset，对应 serve.json）。
+
+> **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段——handoff 不复制这份配置，鉴权一律走 `env` 注入（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
 
 **常见问题**
 
