@@ -116,6 +116,10 @@ type Manager struct {
 	apInflight map[string]bool
 	apFails    map[string]int
 	apDisabled map[string]bool
+	// stopping 是「接下来这次事件通道关闭是我们自己发起的」的意图标记
+	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
+	mu       sync.Mutex
+	stopping map[string]struct{}
 }
 
 // NewManager 创建任务管理器。
@@ -138,6 +142,7 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 		apInflight: map[string]bool{},
 		apFails:    map[string]int{},
 		apDisabled: map[string]bool{},
+		stopping:   map[string]struct{}{},
 	}
 }
 
@@ -655,8 +660,11 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
-	} else if err := ad.Stop(taskID); err != nil {
-		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+	} else {
+		m.noteStopping(taskID) // 必须在 Stop 之前：Stop 会关掉事件通道
+		if err := ad.Stop(taskID); err != nil {
+			m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+		}
 	}
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
@@ -728,8 +736,11 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	ad, aerr := m.adapterFor(taskID)
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
-	} else if serr := ad.Stop(taskID); serr != nil {
-		m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
+	} else {
+		m.noteStopping(taskID) // 必须在 Stop 之前：Stop 会关掉事件通道
+		if serr := ad.Stop(taskID); serr != nil {
+			m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
+		}
 	}
 
 	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
@@ -894,7 +905,15 @@ func (m *Manager) mediate(taskID string) {
 	for ev := range events {
 		m.handleEvent(taskCtx, taskID, ev)
 	}
-	m.log.Info("中介循环结束", "task", taskID)
+	// 事件通道关闭 = executor 终结。这是「executor 已不在」最常见的到达口——
+	// 三个 adapter 在进程/连接死亡时都会 closeEvents()。不在这里对账，任务会
+	// 一直停在 running 直到 2h 看门狗（B21 实测：静止 1 小时无任何信号）
+	if m.takeStopping(taskID) {
+		m.log.Info("中介循环结束（主动停止，跳过对账）", "task", taskID)
+		return
+	}
+	m.log.Info("中介循环结束，开始对账", "task", taskID)
+	m.reconcileExecutorGone(taskID, "executor 事件流已终结（进程退出或连接断开）")
 }
 
 // handleEvent 按事件类型分发中介处理，并打每类事件的入口日志。

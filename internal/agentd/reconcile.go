@@ -17,6 +17,42 @@ import (
 	"github.com/xushixin/handoff/internal/store"
 )
 
+// noteStopping 标记「接下来这次事件通道关闭是我们自己发起的」。
+//
+// 必须在 ad.Stop() **之前**调用。
+//
+// why（为什么需要这个标记）：Manager.Stop 先调 ad.Stop() 再落 failed，两步之间
+// adapter 已经关掉了事件通道，mediate 随之退出并对账——此时任务状态还是 running，
+// 于是补一条它不该有的 failed 事件，并造成 running→waiting_review→failed 的
+// 状态抖动（末跳合法，所以不硬失败，但事件是噪音）。
+//
+// why（为什么不改 Stop 的顺序）：先落 failed 再 ad.Stop() 会让 executor 在状态
+// 已定型后仍可能产出事件，各 handler 的「已终结则丢弃」判断要散在更多路径上，
+// 风险大于收益。显式标记说的正是「这次关闭是我们自己关的」，诚实且局部。
+func (m *Manager) noteStopping(taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopping[taskID] = struct{}{}
+}
+
+// takeStopping 取走并清空标记，返回本次关闭是否为主动停止。
+//
+// why（取走式而非常驻）：标记的生命周期就是一次主动停止。若它长期驻留，下一次
+// executor 猝死会被上一次的主动停止误抑制——真出事时反而没人对账。与 grok
+// adapter 的 takeAskedViaTool、opencode 的 takeTurnRejected 同源。
+func (m *Manager) takeStopping(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.stopping[taskID]
+	delete(m.stopping, taskID)
+	return ok
+}
+
+// reconcileExecutorGone 是包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
+func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
+	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log)
+}
+
 // reconcileExecutorGone 收尾一个 executor 已不在的任务：
 // 作废挂起工单 → 追加 failed 事件 → 迁 waiting_review → 广播。
 //

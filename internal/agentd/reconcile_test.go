@@ -98,3 +98,78 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 		t.Fatalf("挂起工单应被作废，实际剩 %d", len(pend))
 	}
 }
+
+// TestMediateReconcilesOnEventsClosed 到达口②：adapter 关闭事件通道 = executor 终结，
+// mediate 退出后必须对账——否则任务停在 running 直到 2h 看门狗（B21 实测静止 1 小时）。
+func TestMediateReconcilesOnEventsClosed(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateRunning})
+	done := make(chan struct{})
+	go func() { m.mediate("t1"); close(done) }()
+	close(ad.evCh) // executor 终结
+	<-done
+
+	cur, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateWaitingReview {
+		t.Fatalf("事件通道关闭后应对账落 waiting_review，实际 %s", cur.State)
+	}
+	evs, err := st.EventsFromAsc("t1", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应产出 failed 事件说明 executor 终结")
+	}
+}
+
+// TestStoppingMarkerSuppressesReconcile 主动停止不该被当成异常终结：
+// Manager.Stop 先调 ad.Stop() 再落 failed，中间的窗口里对账会看到 running，
+// 补一条噪音 failed 事件并造成 running→waiting_review→failed 的状态抖动。
+func TestStoppingMarkerSuppressesReconcile(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateRunning})
+	m.noteStopping("t1")
+	done := make(chan struct{})
+	go func() { m.mediate("t1"); close(done) }()
+	close(ad.evCh)
+	<-done
+
+	cur, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateRunning {
+		t.Fatalf("主动停止期间不应对账，状态应留在 running，实际 %s", cur.State)
+	}
+	evs, err := st.EventsFromAsc("t1", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("主动停止期间不应产出对账事件，实际 %d 条", len(evs))
+	}
+}
+
+// TestStoppingMarkerIsTakeStyle 取走式：标记的生命周期就是一次主动停止。
+// 若标记长期驻留，下一次 executor 猝死会被上一次的主动停止误抑制，就再没人对账了。
+func TestStoppingMarkerIsTakeStyle(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	m.noteStopping("t1")
+	if !m.takeStopping("t1") {
+		t.Fatalf("首次取走应为 true")
+	}
+	if m.takeStopping("t1") {
+		t.Fatalf("标记必须取走即失效，第二次应为 false")
+	}
+}
