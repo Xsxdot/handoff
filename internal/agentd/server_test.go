@@ -407,6 +407,7 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil,
+		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
@@ -485,6 +486,7 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil,
+		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
@@ -541,6 +543,7 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil,
+		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
@@ -583,6 +586,7 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil,
+		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 
@@ -827,7 +831,7 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, logger)
+		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks", `{"repo":"/nonexistent/repo","prompt":"任意指令"}`)

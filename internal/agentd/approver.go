@@ -1,10 +1,9 @@
-// approver.go：权限请求的前置裁决——黑名单硬规则 + 廉价模型 CLI 裁决。
+// approver.go：权限请求的前置裁决——廉价模型 CLI 裁决。
 //
 // 职责：
-//   - 在权限请求升级人工审核者之前，先做两级廉价分流：
-//     1. 内置 + 自定义黑名单硬规则：命中即直接升级（无需浪费一次模型调用）
-//     2. 黑名单未命中时，调用配置的廉价模型执行者（opencode/claude 的
-//     one-shot 模式）对权限请求做一次裁决，approve 则自动放行
+//   - 在权限请求升级人工审核者之前，先做一级廉价分流：调用配置的廉价模型
+//     执行者（opencode/claude 的 one-shot 模式）对权限请求做一次裁决，
+//     approve 则自动放行
 //   - fail-closed：裁决命令失败 / 输出解析失败 / 超时 / decision 取值非法
 //     一律按 escalate（升级人工审核者），绝不静默放行
 //
@@ -14,6 +13,9 @@
 //   - 不写 store、不碰 adapter、不做状态迁移——纯裁决计算；落库与回传
 //     （工单/应答/事件）由 manager 完成
 //   - 裁决输出的 nonce 防伪：权限原文来自被监管的 executor，不可信
+//
+// 2026-08-09（B23/B27）黑名单与截断判定已迁往 internal/permgate，本文件
+// 不再持有规则表；Approver 退化为只做「调模型 + 解析裁决」。
 package agentd
 
 import (
@@ -27,7 +29,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 
@@ -35,33 +36,6 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 )
-
-// builtinBlacklist 是内置黑名单（(?i) 不区分大小写编译），全部命中即升级人工审核者。
-//
-// 拦截意图（逐条）：
-//   - rm 破坏性删除：短连写（-rf/-fr）与分写（-r ... -f）之外，还要拦长选项
-//     （--recursive/--force）与长短混写——`rm --recursive --force /`、`rm -r --force`
-//     都是脚本常规写法，只认短连写会被绕过。两段式匹配：rm 后同时含「递归标志
-//     (--recursive|-r|-R)」与「强制标志 (--force|-f)」即命中（递归在前与强制在
-//     前各一条，覆盖任意顺序；RE2 不支持 lookahead，用顺序替换表达「两段都有」）
-//   - git push 强推：`git\b.*\bpush\b` 而非 `git\s+push`——`git -C /repo push
-//     --force origin main` 的 -C 会插在 git 与 push 之间，只认相邻拼写会被绕过；
-//     --force\b 同时覆盖 --force-with-lease 变体
-//   - sudo：提权命令影响整个主机，绝不能由廉价模型自动放行
-//   - git reset --hard：丢弃未提交改动，不可逆
-//   - drop table/database：删库删表不可恢复
-//   - production/prod：生产环境操作，默认升级
-var builtinBlacklist = []string{
-	`rm\s+-[a-z]*[rf][a-z]*[rf]`,                                  // rm -rf / -fr 常见连写
-	`rm\s+-[rf]\b.*\s-[rf]\b`,                                     // rm -r ... -f 分写
-	`rm\b[^;&\n]*(--recursive|-r\b|-R\b)[^;&\n]*(--force\b|-f\b)`, // 递归段在前、强制段在后
-	`rm\b[^;&\n]*(--force\b|-f\b)[^;&\n]*(--recursive|-r\b|-R\b)`, // 强制段在前、递归段在后
-	`git\b.*\bpush\b.*(--force\b|-f\b)`,                           // force push（含 -C 与 lease 变体）
-	`\bsudo\b`,
-	`git\s+reset\s+--hard`,
-	`drop\s+(table|database)`,
-	`\bproduction\b|\bprod\b`,
-}
 
 // maxDecideOutput 是裁决命令输出保留上限：模型在 JSON 后可能输出废话，
 // 只保留开头 64KiB 足够解析，防止失控输出驻留内存。
@@ -88,7 +62,6 @@ type Approver struct {
 	executorName string // one-shot 执行者名（如 opencode/claude）
 	model        string // 审批者模型；空=执行者自身默认
 	timeout      time.Duration
-	blacklist    []*regexp.Regexp // 内置 + 自定义，编译后
 	// env 是本审批者所用 agent 的 env 文件解析器；nil=不注入（未配置或测试场景）。
 	// 审批者与任务执行者是同一个 agent 的两次启动，必须共用同一份 env——代理只配
 	// 半边会让审批者连不出去后静默 fail-closed 升级，是最难查的那类故障
@@ -107,27 +80,15 @@ type Approver struct {
 //
 // 返回：
 //   - 未启用时返回 (nil, nil)；启用时返回可用的审批者
-//   - 黑名单正则编译失败返回错误（配置错误，启动期即应暴露）
 func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Logger) (*Approver, error) {
 	if cfg.Executor == "" {
 		return nil, nil
-	}
-	patterns := append([]string(nil), builtinBlacklist...)
-	patterns = append(patterns, cfg.Blacklist...)
-	rx := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		r, err := regexp.Compile("(?i)" + p)
-		if err != nil {
-			return nil, fmt.Errorf("编译黑名单正则 %q: %w", p, err)
-		}
-		rx = append(rx, r)
 	}
 	a := &Approver{
 		log:          log,
 		executorName: cfg.Executor,
 		model:        cfg.Model,
 		timeout:      cfg.Timeout,
-		blacklist:    rx,
 		env:          env,
 	}
 	// runCmd 绑到方法而不是包级函数：默认实现需要读 a.env 才能注入环境变量，
@@ -166,25 +127,6 @@ func (a *Approver) defaultRunCmd(ctx context.Context, argv []string) (string, er
 		b = b[:maxDecideOutput]
 	}
 	return string(b), err
-}
-
-// Blacklisted 判断权限描述是否命中黑名单（内置 + 自定义）。
-//
-// 入参必须是权限描述全文；扫截断版会漏掉命令尾部的危险片段（B6 根因）——
-// 调用方（manager）不得先截断再传入。
-//
-// 返回：
-//   - hit: 是否命中
-//   - rule: 命中的规则原文（仅 hit=true 时有效，用于日志/审计）
-func (a *Approver) Blacklisted(permission string) (hit bool, rule string) {
-	for _, r := range a.blacklist {
-		if r.MatchString(permission) {
-			a.log.Info("权限命中黑名单，跳过审批者直接升级",
-				"rule", r.String(), "permission", truncateRunes(permission, 80))
-			return true, r.String()
-		}
-	}
-	return false, ""
 }
 
 // randNonce 生成一次性裁决随机数（8 字节 → 16 位十六进制）。
@@ -318,9 +260,15 @@ func parseDecision(out, nonce string, elapsedMS int64) ApproverDecision {
 // 为什么写成模板字符串：裁决语义（什么能批、什么必须升级）集中在唯一一处，
 // 改语义只改这里；四个 %s 分别填充任务摘要、权限原文、nonce、nonce（值出现
 // 两次：一处是「回显它」的指令，一处是 approve 输出里的占位）。
+//
+// 2026-08-09 增补生产环境一行：内置黑名单原有 `\bproduction\b|\bprod\b` 一条，
+// 实测 9 条误命中里 4 条出自它（`go test ./internal/prod/...` 这类），已删除；
+// 该语义改由模型承担——正则分不出 `go test ./internal/prod/...` 与
+// `kubectl -n prod delete deploy/api`，模型分得出。
 const approverPromptTemplate = `你是代码任务的权限审批者。任务背景：%s
 权限请求：%s
 本次裁决编号 nonce=%s，你必须在输出的 JSON 里原样回显它，否则裁决作废。
 仅当该操作明显安全（任务仓库内读写、跑测试/构建、装项目依赖、常规 git 提交）时才批准。
 任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级审核者。
+涉及生产环境、部署动作、运维目标机（如 kubectl -n prod、ssh 到生产主机、terraform apply）的操作，一律升级给上级审核者。
 只输出一行 JSON，不要输出其他内容：{"decision":"approve","nonce":"%s"} 或 {"decision":"escalate","reason":"简要原因","nonce":"<同一 nonce>"}`

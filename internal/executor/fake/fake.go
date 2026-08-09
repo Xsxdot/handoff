@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/xushixin/handoff/internal/executor"
@@ -291,7 +292,8 @@ func (r *taskRun) run(f *Fake) {
 				f.firstPermID = permID
 			}
 			f.mu.Unlock()
-			if !r.emit(f, executor.AdapterEvent{Type: "permission", PermissionID: permID, Text: step.Permission}) {
+			if !r.emit(f, executor.AdapterEvent{Type: "permission", PermissionID: permID,
+				Text: step.Permission, Perm: permRequestFromText(step.Permission)}) {
 				return
 			}
 			f.log().Debug("fake 等待权限应答", "task", r.taskID, "perm", permID)
@@ -375,6 +377,27 @@ func (r *taskRun) nextPermID() string {
 
 // log 返回运行时 slog.Default()（与 store/config 同款修正，见 client.go 的说明）。
 func (f *Fake) log() *slog.Logger { return slog.Default() }
+
+// permRequestFromText 从权限描述文本派生出结构化载荷（测试替身专用）。
+//
+// 真实 adapter（claude/grok/opencode）从各自的协议载荷提取结构；fake 没有
+// 协议，只能从描述文本推导，供审批链集成测试把请求路由进 Consult 出口——
+// 不带 Perm 的事件会被 manager 按 fail-closed 升级人工，审批链集成就测不到了。
+//
+// 规则与真实 adapter 的展示文本同构：带 "Bash: " 前缀取命令，带 "Write: " /
+// "Edit: " 前缀取路径，其余按未识别工具退回判 Text。
+func permRequestFromText(text string) *executor.PermRequest {
+	switch {
+	case strings.HasPrefix(text, "Bash: "):
+		return &executor.PermRequest{Tool: executor.PermToolBash, Command: text[len("Bash: "):]}
+	case strings.HasPrefix(text, "Write: "):
+		return &executor.PermRequest{Tool: executor.PermToolWrite, Paths: []string{text[len("Write: "):]}}
+	case strings.HasPrefix(text, "Edit: "):
+		return &executor.PermRequest{Tool: executor.PermToolEdit, Paths: []string{text[len("Edit: "):]}}
+	default:
+		return &executor.PermRequest{Tool: executor.PermToolOther}
+	}
+}
 
 // truncateRunes 将字符串按 rune 截断为最多 n 个字符（日志防刷屏）。
 func truncateRunes(s string, n int) string {

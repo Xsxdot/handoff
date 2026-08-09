@@ -32,6 +32,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
+	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -88,6 +89,12 @@ var agentdCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}
+		// 判据网关必须构造，且与审批者是否启用无关：AutoAllow 是第 0 层静态
+		// 判据，漏了它，未配置审批者的部署会被工作区内的每次写入淹没
+		gate, err := permgate.New(cfg.Approver.Blacklist, logger)
+		if err != nil {
+			return fmt.Errorf("构造权限判据网关: %w", err)
+		}
 
 		srv := agentd.NewServer(cfg, st, logger)
 		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
@@ -101,7 +108,7 @@ var agentdCmd = &cobra.Command{
 			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter
 			cfg.Executor.Default = executorFlag
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, logger)
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
 		srv.SetManager(mgr)
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——

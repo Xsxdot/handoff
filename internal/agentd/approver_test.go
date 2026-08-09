@@ -60,33 +60,6 @@ func TestApproverNilWhenUnconfigured(t *testing.T) {
 	}
 }
 
-func TestBlacklistBuiltinAndCustom(t *testing.T) {
-	a, err := NewApprover(config.ApproverConfig{
-		Executor: "opencode", Timeout: time.Second,
-		Blacklist: []string{`kubectl .*delete`},
-	}, nil, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range []string{
-		"Bash: rm -rf node_modules", "Bash: git push --force origin main",
-		"Bash: sudo systemctl restart nginx", "Bash: git reset --hard HEAD~3",
-		"Bash: psql -c 'DROP TABLE users'", "Bash: deploy to production",
-		"Bash: kubectl pods delete --all",
-		// P1-2：长选项与 git -C 绕过——脚本常规写法，黑名单必须拦住
-		"Bash: rm --recursive --force /",
-		"Bash: git -C /repo push --force origin main",
-		"Bash: rm --recursive /tmp/x --force",
-	} {
-		if hit, _ := a.Blacklisted(s); !hit {
-			t.Fatalf("应命中黑名单: %s", s)
-		}
-	}
-	if hit, _ := a.Blacklisted("Bash: go test ./..."); hit {
-		t.Fatalf("go test 不应命中黑名单")
-	}
-}
-
 func TestDecideApprove(t *testing.T) {
 	a := newTestApprover(t, "思考过程...\n{\"decision\":\"approve\",\"reason\":\"项目内读写\"}\n", nil)
 	d := a.Decide(context.Background(), "Edit: main.go", "修 bug")
@@ -310,7 +283,8 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	// 前 3 个权限请求：审批者各裁决一次且全部失败（fail-closed 升级审核者）
 	for _, perm := range []string{"p1", "p2", "p3"} {
 		m.handlePermission(context.Background(), task.ID,
-			executor.AdapterEvent{Type: "permission", PermissionID: perm, Text: "something"})
+			executor.AdapterEvent{Type: "permission", PermissionID: perm, Text: "something",
+				Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
 	}
 	waitCondition(t, "审批者被调 3 次", func() bool { return callCount.Load() == 3 })
 	// 等禁用标记落定（consultApprover goroutine 异步写）
@@ -322,7 +296,8 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 
 	// 第 4 个权限：审批链已停用，直接升级不调用审批者（callCount 保持 3）
 	m.handlePermission(context.Background(), task.ID,
-		executor.AdapterEvent{Type: "permission", PermissionID: "p4", Text: "something"})
+		executor.AdapterEvent{Type: "permission", PermissionID: "p4", Text: "something",
+			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
 	waitCondition(t, "第 4 个权限也升级审核者", func() bool {
 		return countEvents(mustEvents(t, st, task.ID), proto.EventTypePermissionRequest) == 4
 	})
@@ -399,7 +374,8 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 		return `{"decision":"escalate","reason":"窗口内已终结"}`, nil
 	}
 	m.handlePermission(context.Background(), task.ID,
-		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x"})
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x",
+			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
 
 	// 断言：不产生 permission_request、不新建挂起工单、状态保持 waiting_review
@@ -519,22 +495,6 @@ func TestNilApproverKeepsCurrentBehavior(t *testing.T) {
 	if !hasEvent(evs, proto.EventTypePermissionRequest) {
 		t.Fatalf("approver=nil 时权限应直接走既有升级流程: %v", evs)
 	}
-}
-
-// TestBlacklistMatchesTailOfLongCommand 验证黑名单扫的是全文。
-// why：旧链路先截到 200 字再扫黑名单，一条 heredoc/复合命令前 200 字人畜无害、
-// 尾部藏着 rm -rf 时，黑名单、审批者、审核者三道门同时失效。
-func TestBlacklistMatchesTailOfLongCommand(t *testing.T) {
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	long := strings.Repeat("echo ok && ", 100) + "rm -rf /var/data"
-	hit, rule := ap.Blacklisted(long)
-	if !hit {
-		t.Fatalf("长命令尾部的 rm -rf 必须命中黑名单，实得 hit=false")
-	}
-	t.Logf("命中规则 %s", rule)
 }
 
 // TestDecideRequiresMatchingNonce 验证裁决输出必须回显本次 prompt 里的 nonce。
