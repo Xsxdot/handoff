@@ -287,10 +287,27 @@ opencode 的 `reapRetained` 节奏与放弃上限。
 
 ### 4.6 Resume（agentd 重启恢复）
 
-读 `serve.json` → **该任务有未决权限工单？有则直接 `alive=false`**（§5.2：重连救不回，
-`session/load` 只恢复历史不恢复授权请求）→ 否则 **HTTP 端口探活**判存活 → 确保 auth 软链
-就位（§3.3）→ WS 重连 → `session/load{sessionId, cwd}` → 重建事件循环，返回 `alive=true`；
-探活失败或凭据缺失返回 `alive=false`，manager 按现有逻辑转 failed 交审核者裁决。
+adapter 侧：读 `serve.json` → **HTTP 端口探活**判存活 → 确保 auth 软链就位（§3.3）→
+WS 重连 → `session/load{sessionId, cwd}` → 重建事件循环，返回 `alive=true`；探活失败或
+凭据缺失返回 `alive=false`，manager 按现有逻辑转 failed 交审核者裁决。
+
+**「有未决权限工单则不恢复」这条判定不在 adapter 里**——`executor.go` 的包级边界规定
+adapter 不碰 store，工单知识只在 manager 手里。且这条**不能无条件套给所有 executor**：
+opencode 的权限应答是无状态 HTTP POST，permID 由 serve 端持有，agentd 重启后仍可应答，
+强加这条反而是回归。故按 adapter 能力区分，在 `manager.go` 加一个可选能力接口：
+
+```go
+// volatilePermitter 表示该 adapter 的权限请求随连接消亡：连接一断，
+// executor 侧那次授权请求就永久卡死，重连也救不回（ACP 类适配器，见 grok spec §5.2）。
+// 不实现本接口的 adapter（如 opencode，权限应答是无状态 HTTP）行为不变。
+type volatilePermitter interface {
+    PermissionsVolatile() bool
+}
+```
+
+`ResumeTask` 在调用 `ad.Resume(...)` **之前**判定：adapter 实现该接口且返回 true、且
+`st.PendingTickets(taskID)` 非空 → 直接返回 false（不恢复），交由 `RecoverOnStartup`
+转 failed。grok adapter 实现该接口返回 true；opencode 不实现。
 
 **存活判据必须是端口探活，不能用 `tmux has-session`**：窗口 1 的 `tail -f` 会一直活着，
 serve 早死了会话依然存在。这正是 claude adapter 需要自造死亡哨兵的原因；grok 有 HTTP 面
@@ -327,11 +344,13 @@ Resume 与 §4.2.2 的断开处置是独立兜底，即便某天 grok 加了超�
 - 挂起权限一旦随连接失效，**grok 侧那次工具调用就永久卡死了**，`session/load` 恢复的只是
   会话历史，不恢复未决的授权请求；
 - 因此 **§4.2.2 的「grok 会重发」分支不存在**，重连成功也救不回该回合；
-- **Resume 时若该任务有未决权限工单，直接判 `alive=false`**，manager 按现有逻辑转 failed
-  交审核者裁决（审核者可 `continue` 重新发起一轮）。保守，但不会留下一个假装在跑、
-  实则永久静止的任务。
+- **agentd 重启后若该任务有未决权限工单，不予恢复**，转 failed 交审核者裁决（审核者可
+  `continue` 重新发起一轮）。保守，但不会留下一个假装在跑、实则永久静止的任务。该判定
+  落在 manager（adapter 不碰 store），经 `volatilePermitter` 能力接口按 executor 区分，
+  详见 §4.6。
 
-回归测试固定这条结论（挂起表非空 + 连接重建 ⇒ 必须 emit failed，不得静默重连了事）。
+回归测试固定这条结论（挂起表非空 + 连接断开 ⇒ 必须 emit failed，不得静默重连了事；
+grok 任务有 pending 工单 ⇒ `ResumeTask` 必须返回 false，且 opencode 不受影响）。
 
 ## 6. 前置依赖：`internal/executor/turn`
 
@@ -357,6 +376,7 @@ phase3 B6（改同一片截断代码，其 plan 带固定行引用）
 | `internal/executor/turn/` | **Task 1**：抽取（并集范围），opencode 改调，1200 行回归全绿 |
 | `internal/executor/grok/` | 新包：`adapter.go` / `acp.go` / `proc.go` / `taskenv.go` |
 | `cmd/agentd.go` | 注册表加 `"grok": grok.New(logger)`；未知 executor 错误文本同步 |
+| `internal/agentd/manager.go` | 加 `volatilePermitter` 能力接口；`ResumeTask` 在 `ad.Resume` 前判 pending 工单（见 §4.6）。opencode 不实现该接口，行为不变 |
 | `internal/executor/oneshot.go` | 加 grok 分支（见下）；错误文本同步 |
 | `cmd/dispatch.go` | `--executor` 帮助文本补 grok |
 | `internal/config/config.go` | 注释里的执行者示例补 grok（无校验逻辑改动） |
