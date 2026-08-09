@@ -116,10 +116,19 @@ handoff 权限门，命令只是直接失败。设计含义见 §2.2。
 
 ### 1.5 尚未实证的项
 
-以下未在 spike 中触发过，列入 §6 实现首步必验项，**不得按推断实现后直接声明可用**：
+以下未在 spike 中触发过，列入 §6 实现首步必验项，**不得按推断实现后直接声明可用**。
 
-- `item/fileChange/requestApproval` 与 `item/permissions/requestApproval` 的触发条件与报文
-- `item/tool/requestUserInput`（提问通道，schema 标 EXPERIMENTAL，需 `capabilities.experimentalApi: true`）
+先划清一条界：`codex app-server generate-json-schema` 导出的 **报文形状是权威的**
+（§5.4 的枚举纠错即来自它），未实证的是**触发条件与真实取值**——schema 说得清
+「字段叫什么、必填哪些」，说不清「什么情况下会发、发出来的 `questions` 长什么样」。
+
+- `item/fileChange/requestApproval` 与 `item/permissions/requestApproval` 的**触发条件**
+  （形状已由 schema 定死，见 §5.4）
+- `item/tool/requestUserInput`（提问通道，schema 标 EXPERIMENTAL，需 `capabilities.experimentalApi: true`）；
+  形状已知：params 必填 `itemId`/`threadId`/`turnId`/`questions[]`（每项 `id`/`header`/`question`，
+  可选 `options[]{label,description}`/`isOther`/`isSecret`），应答体
+  `{"answers":{"<question id>":{"answers":["…"]}}}`。**待验的是能否触发、以及不带真实
+  答案的应答会不会被判工具失败**（grok 那边翻车的正是这一点）
 - `thread/resume` 跨进程重启续接
 - `turn/interrupt` 的实际语义与回收行为
 - `ws://` 传输（spike 用的是 stdio；协议语义与传输无关，但握手与断线行为要单独验）
@@ -236,9 +245,20 @@ render.log 对齐，审核者跨 executor 看到同一种东西。
    `approvalsReviewer`=user、`model`=dispatch 的 `--model`（未指定则不传）、
    `developerInstructions`=handoff 的收尾协议（产 commit + summary 的约定）
 5. 拿到 `threadId` 立即 emit 一条带 `SessionID` 的 progress 事件（会话就绪信号，见 executor 契约）
-6. `turn/start`：plan 正文作为 `input: [{type:"text", text: …}]`，**并显式传 `sandboxPolicy`**：
-   `{"type":"workspaceWrite","networkAccess":true,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true,"writableRoots":[]}`
-   ——每个回合都要传（`turn/start` 级参数，不是 thread 级）
+6. `turn/start`：plan 正文作为 `input: [{type:"text", text: …}]`，**并把四个安全参数每回合
+   显式钉一遍**——schema 实证 `turn/start` 同时接受 `sandboxPolicy` / `approvalPolicy` /
+   `approvalsReviewer` / `cwd` 的 turn 级覆盖：
+
+   ```json
+   {"sandboxPolicy":{"type":"workspaceWrite","networkAccess":true,
+                     "excludeSlashTmp":true,"excludeTmpdirEnvVar":true,"writableRoots":[]},
+    "approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"<worktree>"}
+   ```
+
+   为什么四个都钉而不只钉 `sandboxPolicy`：安全姿态因此**与 thread 的历史状态和恢复
+   路径无关**。`thread/start` 时钉过的值会被 `thread/resume` 或任何一次带覆盖的
+   `turn/start` 改掉，而恢复路径是最容易漏钉的地方（B18 的教训）；每回合重钉是
+   一次固定成本的幂等操作，换来「任何一个回合都不可能跑在开发机 config 的档位上」。
 
 ### 5.2 Events
 
@@ -253,6 +273,8 @@ render.log 对齐，审核者跨 executor 看到同一种东西。
 | ServerRequest `item/*/requestApproval` | permission（`PermissionID` = `itemId`） |
 | ServerRequest `item/tool/requestUserInput` | question（**必须应答**，否则回合挂死——grok 的教训） |
 | ServerRequest `account/chatgptAuthTokens/refresh` | 回错误，不实现（§4） |
+| `serverRequest/resolved`（带 `requestId`） | 该 ServerRequest 已被别处了结 → 从挂起表摘掉对应项，不再等裁决 |
+| `item/started` / `item/completed` 的 item 本体 | 同时写入 `itemId → item` 索引（§5.4：fileChange 的权限报文没有路径，只能从索引取） |
 
 delta 类通知（`item/agentMessage/delta`、`item/reasoning/*Delta`、`item/commandExecution/outputDelta`）
 只喂 render.log，不产 handoff 事件——否则事件表会被刷爆。
@@ -263,9 +285,35 @@ delta 类通知（`item/agentMessage/delta`、`item/reasoning/*Delta`、`item/co
 
 ### 5.4 RespondPermission
 
-应答对应的 ServerRequest：`once → {"decision":"accept"}`，`reject → {"decision":"cancel"}`。
-**不使用** `acceptForSession` 与 `acceptWithExecpolicyAmendment`——两者都是「以后同类不再问」，
-等价于 B23 明确否掉的「批准一次后同样命令自动放行」，是实打实的安全削弱。
+`codex app-server generate-json-schema` 导出的枚举定死了三条映射（2026-08-09 补查，
+纠正了本 spec 初稿的一处错误）：
+
+| handoff | commandExecution / fileChange | 依据 |
+|---------|------------------------------|------|
+| `once` | `{"decision":"accept"}` | |
+| `reject` | `{"decision":"decline"}` | schema：`decline` = "The agent will continue the turn"；`cancel` = "The turn will also be immediately interrupted" |
+
+**初稿写的 `cancel` 是错的**，必须是 `decline`。handoff 的 reject 语义来自 grok 的
+`reject-once`：拒掉这一次、回合继续跑，被拒清单在回合收尾时一并交代给审核者
+（`finishTurn` 的 `takeRejected`）。用 `cancel` 会把整个回合掐掉，adapter 随即把它
+判成失败——审核者点一次「拒绝」等于杀掉任务，与另三个 adapter 的行为不对等。
+
+**不使用** `acceptForSession` / `acceptWithExecpolicyAmendment` / `applyNetworkPolicyAmendment`
+——三者都是「以后同类不再问」，等价于 B23 明确否掉的「批准一次后同样命令自动放行」，
+是实打实的安全削弱。
+
+**`item/permissions/requestApproval` 一律 fail-closed。** 它的应答体不是 decision 枚举，
+而是一份 `GrantedPermissionProfile` + `scope`（默认 `turn`）——语义是「模型申请把沙箱
+放宽一截」，与 `acceptForSession` 同类。handoff 固定回一份空 profile（不授予任何额外
+权限），同时把这次申请写进 render.log 并产一条 progress 让审核者知情。**不做成可批准的
+权限门**：能被批准的「放宽沙箱」正是 §2.1 安全论证赖以成立的那道边界。
+
+**`item/fileChange/requestApproval` 的报文里没有路径。** schema 的必填字段只有
+`itemId`/`threadId`/`turnId`/`startedAtMs`（另有可选 `grantRoot`/`reason`），
+路径在同 `itemId` 的 `item/started` 通知的 `item.changes[].path` 里。因此 adapter
+必须维护 `itemId → 最近一次 ThreadItem` 的索引，权限事件的 `PermRequest.Paths`
+从索引里取；索引里查不到就**不伪造结构**（`Perm` 置 nil），交 manager fail-closed
+升级人工——这是 `executor.PermRequest` 的既定边界。
 
 ### 5.5 Stop
 
@@ -278,8 +326,11 @@ sessions rollout 落在 `~/.codex/sessions/**`，归档时**不删**——它是
 
 ### 5.6 Resume（agentd 重启恢复）
 
-按 B18：启动恢复时按 tmux 会话名探活，活着就重连 WS 并 `thread/resume{threadId, cwd}`，
-状态不改。`threadId` 来自 `task.ExecutorSession`。因为 rollout 在用户级 home，agentd 重启、
+按 B18：启动恢复时按 tmux 会话名探活，活着就重连 WS 并 `thread/resume`，状态不改。
+`threadId` 来自 `task.ExecutorSession`。`thread/resume` 的参数**必须把 `cwd` /
+`approvalPolicy` / `approvalsReviewer` 一起重传**（schema 实证它接受这三个覆盖）——
+恢复后的第一个 `turn/start` 也会再钉一遍（§5.1 步骤 6），两层都钉是因为恢复路径正是
+最容易让安全档位悄悄退回开发机 config 的地方。因为 rollout 在用户级 home，agentd 重启、
 甚至 app-server 进程重启后 thread 都还在盘上——这比任务级 home 的方案更结实。
 
 ## 6. 实现首步必验项
