@@ -104,6 +104,24 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 		fmt.Fprintf(&b, "  %q,\n", r)
 	}
 	b.WriteString("]\n")
+	// [cli] auto_update = false 是硬要求，缺它 grok 会补默认值并可能无限期挂起。
+	//
+	// 三层原因：
+	//  1. 这个键不是我们写不写的问题：grok 首次启动会把 config.toml 整个重写、
+	//     补进全套默认值（含 [cli] auto_update = true），连我们的注释都抹掉。
+	//     不写这一段，就等于接受默认 true。
+	//  2. 默认 true 在**全新任务级 GROK_HOME** 下会让 `grok agent serve` 启动时
+	//     联网查更新并无限期阻塞——表现为 serve.log 只有版本横幅、进程健在、
+	//     端口不监听、15s 探活超时（2026-08-09 真机实测，见
+	//     docs/superpowers/specs/2026-08-08-handoff-grok-adapter-design.md）。
+	//     真实 ~/.grok 有 version.json 等缓存所以从不触发。
+	//  3. 即便不挂起也不该开：任务执行到一半把 CLI 自更新掉，等于在任务中途
+	//     换掉执行器版本——后台静默变基，审核者的结论可能因此失准。
+	//
+	// 实测：任务级 home 里我们自己写 [cli] auto_update = false 后，grok 不再重写
+	// config（注释保住），serve 正常监听。
+	b.WriteString("\n[cli]\n")
+	b.WriteString("auto_update = false\n")
 
 	cfgPath := filepath.Join(homeDir, configFileName)
 	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {

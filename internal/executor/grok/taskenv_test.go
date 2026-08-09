@@ -39,6 +39,12 @@ func TestWriteTaskEnvGeneratesPinnedPermissionConfig(t *testing.T) {
 			t.Errorf("ask 规则缺 %s，实际:\n%s", rule, cfg)
 		}
 	}
+	// auto_update 必须显式钉死为 false：grok 首次启动会用默认 true 把 config.toml
+	// 整个重写补全，全新任务级 GROK_HOME 下默认 true 会让 serve 启动时联网查更新
+	// 并无限期挂起（2026-08-09 真机实测，见 spec），必须写死不交给 grok 补
+	if !strings.Contains(cfg, "auto_update = false") {
+		t.Errorf("config.toml 必须钉死 auto_update=false，实际:\n%s", cfg)
+	}
 	if fi, err := os.Stat(filepath.Join(home, "config.toml")); err != nil {
 		t.Fatal(err)
 	} else if fi.Mode().Perm() != 0o600 {

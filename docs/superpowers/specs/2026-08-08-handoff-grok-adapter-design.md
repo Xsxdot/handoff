@@ -147,6 +147,9 @@ default = "<model>"                # 空则整节省略，用 grok 自身默认
 ask = ["Bash(rm *)", "Bash(*sudo*)", "Bash(*git push*)", "Bash(*git reset --hard*)",
        "Bash(*--force*)", "Bash(curl *)", "Bash(wget *)", "WebFetch(*)"]
 allow = ["Edit", "Write"]
+
+[cli]
+auto_update = false            # 必须显式写死，见下「auto_update 真机实测」
 ```
 
 - **why `permission_mode = "default"` 是必需项而非可选项**：用户真实配置是
@@ -158,6 +161,29 @@ allow = ["Edit", "Write"]
   更准。handoff 只需补 `ask` 危险模式与 `allow` 编辑放行。
 - **model 三级优先级**（与 opencode `WriteTaskEnv` 同规则）：任务级 `task.Model` >
   环境变量 `HANDOFF_GROK_MODEL` > 不写（grok 自身默认）。
+- **`auto_update` 真机实测（2026-08-09，单变量隔离，结论确定）**：`grok agent serve`
+  在**全新的任务级 GROK_HOME** 下启动时会联网查更新并无限期阻塞——表现为 `serve.log`
+  只有版本横幅、进程健在、端口不监听、15s 探活超时。触发它的 `[cli] auto_update = true`
+  不是我们写的：grok 首次启动会把 config.toml **整个重写**、补进全套默认值（`[ui]`
+  多出 `max_thoughts_width` / `fork_secondary_model` / `yolo` / `compact_mode`，新增
+  `[cli] auto_update = true`），连「勿手工编辑」的注释都被抹掉。真实 `~/.grok` 因有
+  `version.json` 等缓存而跳过这次检查。逐项验证（每次只改一个变量、全新 home）：
+
+  | home 内容 | 结果 |
+  |---|---|
+  | 任务级 home（config.toml + auth.json 软链） | 挂起，不监听 |
+  | 同上 + `agent_id` + `.metadata_version` | 挂起，不监听 |
+  | 同上 + 整个 `bundled/` | 挂起，不监听 |
+  | 真实 `~/.grok` 全量拷贝 + 我们的 config | **正常监听** |
+  | 任务级 home，仅把 `auto_update` 改 `false` | **正常监听** |
+  | 全新 home + 我们自己写 `[cli] auto_update = false` | **正常监听，且 grok 不再重写 config（注释保住）** |
+
+  结论与纪律：
+  1. config.toml **必须显式写** `[cli] auto_update = false`——不写等于接受 grok 补的
+     `true`；
+  2. 即便不挂起也不该开：任务执行到一半把 CLI 自更新掉，等于在任务中途换掉执行器版本；
+  3. **grok 会重写任务级 config.toml 并补默认值**这个事实本身值得记住：以后往这个
+     config 里加任何键都要考虑它会不会被 grok 改掉（本段就是实测证据）。
 
 **已知泄漏（关不掉，写进 README 已知限制）**：grok 无视 `GROK_HOME`，仍从**真实 HOME**
 读取 Claude Code 兼容源——`~/.claude/settings.local.json`（本机实测 48 条权限规则）、
