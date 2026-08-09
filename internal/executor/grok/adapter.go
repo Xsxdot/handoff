@@ -257,7 +257,12 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		"prompt":    []any{map[string]any{"type": "text", "text": text}},
 	})
 	if err != nil {
-		return fmt.Errorf("ACP session/prompt: %w", err)
+		// CallAsync 只会因两件事失败：连接已关闭、写 stdio 失败。两者都等于
+		// 「指令送不进 executor」——而 runs 表里那条运行态是陈的（进程死了没人摘，
+		// lookup 照样返回它），所以这里必须补上哨兵，否则 manager 的四级恢复阶梯
+		// （触发条件 errors.Is(err, ErrTaskNotRunning)，见 manager.go continue 的 doc）
+		// 整个不启动，continue 直接 500——2026-08-09 grok 端到端验收撞的就是这个。
+		return fmt.Errorf("任务 %s 的 ACP 连接不可用（%v）: %w", taskID, err, executor.ErrTaskNotRunning)
 	}
 	go a.awaitTurn(r, resCh)
 	return nil
@@ -298,6 +303,19 @@ func (a *Adapter) drop(taskID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.runs, taskID)
+}
+
+// dropIf 仅当 runs 表里那条仍是 r 时才摘除。
+//
+// 为什么不能用 drop：冷恢复会把新运行态换进 runs 表，而旧连接的 OnClosed
+// 回调可能在那之后才到（读循环退出有延迟）。无条件删就会把刚恢复好的运行态
+// 删掉，任务凭空失去运行态——比不摘更坏。
+func (a *Adapter) dropIf(taskID string, r *runState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if cur, ok := a.runs[taskID]; ok && cur == r {
+		delete(a.runs, taskID)
+	}
 }
 
 // emit 向事件通道投递一个事件；通道已关闭时静默丢弃并返回 false。
@@ -498,9 +516,16 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	stopping := r.stopping
 	r.emitMu.Unlock()
 	if stopping {
+		// 主动停止：Stop 自己会 drop，这里不插手
 		a.log.Info("ACP 连接已主动关闭，跳过失败处置", "task", r.taskID)
 		return
 	}
+	// 连接断了这条运行态就永远不可用了（事件通道随 emitFailed 一起关掉），
+	// 必须摘掉它——否则它以「陈运行态」的身份继续占着 runs 表：Send 会 lookup
+	// 到它、拿一条死连接去发指令；Resume 的冷恢复互斥以「runs 表里有条目」为
+	// 判据，会把这具僵尸当成「恢复进行中」而拒绝恢复。两条路都被挡死，
+	// continue 直接 500（2026-08-09 grok 端到端实测）
+	defer a.dropIf(r.taskID, r)
 	if n := r.voidAllPending(); n > 0 {
 		a.log.Error("ACP 连接断开且有未决权限，任务无法继续",
 			"task", r.taskID, "voided", n, "cause", cause)
