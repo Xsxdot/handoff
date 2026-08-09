@@ -157,3 +157,31 @@ func TestWriteTaskEnv(t *testing.T) {
 		t.Errorf("重复调用应以新计划覆盖 prompt.md，实际不含 %q", newPlan)
 	}
 }
+
+// TestExternalDirectoryIsAsk 锁死 B27 对 opencode 的真实拦截点。
+//
+// opencode 的越界写入不是靠 edit 的 ask 拦的（edit 是 allow、范围内写入
+// 无事件），而是靠 external_directory。这条一旦被改成 allow，写
+// ~/.ssh/authorized_keys 就会连事件都不留。
+func TestExternalDirectoryIsAsk(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			ExternalDirectory string `json:"external_directory"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	if got := cfg.Permission.ExternalDirectory; got != "ask" {
+		t.Fatalf("external_directory 必须是 ask，实得 %q——这是 opencode 侧唯一的越界写入拦截点（B27）", got)
+	}
+}
