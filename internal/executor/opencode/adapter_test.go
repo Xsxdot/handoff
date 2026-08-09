@@ -823,6 +823,28 @@ func TestIdleDedupe(t *testing.T) {
 	}
 }
 
+// TestOversizedSSEEventDoesNotHideFollowingPermission 验证超长 SSE 事件不得吞掉
+// 紧随其后的权限请求：超大 message.part.updated 之后紧跟的 permission.asked 必须
+// 照常产出 PermissionID=perm-after-large 的权限事件（对应 api 层的「超长行丢弃、
+// 连接保持」修复，见 readSSELine）。若超长行触发断流重连，/event 无重放语义，
+// 该权限请求永久丢失、任务挂死等审核者兜底。
+func TestOversizedSSEEventDoesNotHideFollowingPermission(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	huge := strings.Repeat("x", 2<<20)
+	fs.push(fmt.Sprintf("data: {\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"sess-1\",\"part\":{\"id\":\"large\",\"type\":\"text\",\"text\":\"%s\"}}}\n\n", huge))
+	fs.push(permissionAskedEvent("perm-after-large", "bash", "git clone example"))
+
+	_, ch := startFakeRun(t, fs, "task-large-0001", t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "perm-after-large" {
+		t.Errorf("PermissionID=%q，期望 perm-after-large（超长事件不得吞掉后续权限请求）", ev.PermissionID)
+	}
+	if ev.Text != "bash: git clone example" {
+		t.Errorf("权限描述=%q，期望 \"bash: git clone example\"", ev.Text)
+	}
+}
+
 // TestStopReclaimsRun 验证 Stop 后运行态被注销：runs 表不随任务累积无界增长；
 // 重复 Stop 幂等（返回「不在运行中」而不是 panic）。
 func TestStopReclaimsRun(t *testing.T) {
