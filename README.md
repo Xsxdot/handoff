@@ -98,7 +98,23 @@ terminal:                     # dispatch 成功后的终端弹窗
   auto: true                  # darwin 下 osascript 弹 Terminal.app 进实况
 sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
   auto: true                  # 关闭后仍可用 handoff pull 手动同步
+env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
+  opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
 ```
+
+`env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
+`~/.handoff/env/` 下，格式是 dotenv（`KEY=VALUE`，`#` 开头整行注释，`export` 前缀可选，
+值支持 `${VAR}` 单层展开，单引号内不展开）：
+
+```sh
+export HTTPS_PROXY=http://127.0.0.1:7890
+GOPROXY=https://goproxy.cn,direct
+PATH=${PATH}:/usr/local/go/bin
+```
+
+同一份 env 也会注入审批者（`approver.executor`）—— 否则代理只配半边，审批者连不出去会
+静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
+不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
 ## 分级审批链
 

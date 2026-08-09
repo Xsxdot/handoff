@@ -52,6 +52,10 @@ type Config struct {
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
+	// Env 是 agent（executor）名 → env 文件名的映射：该 agent 启动时注入该文件里的
+	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
+	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
+	Env map[string]string
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
@@ -119,6 +123,7 @@ func Load(path string) (*Config, error) {
 		Terminal: TerminalConfig{Auto: true},
 		Sync:     SyncConfig{Auto: true},
 		Targets:  map[string]Target{},
+		Env:      map[string]string{},
 	}
 	b, err := os.ReadFile(path)
 	switch {
@@ -192,7 +197,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

@@ -71,7 +71,7 @@ func TestServeScriptServeStderrStillThroughPipe(t *testing.T) {
 		t.Fatalf("写 opencode 桩: %v", err)
 	}
 
-	path, err := writeServeScript(taskDir, 35123, "pw", filepath.Join(taskDir, "opencode.json"))
+	path, err := writeServeScript(taskDir, 35123, "pw", filepath.Join(taskDir, "opencode.json"), nil)
 	if err != nil {
 		t.Fatalf("writeServeScript: %v", err)
 	}

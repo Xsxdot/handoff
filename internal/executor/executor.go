@@ -56,10 +56,16 @@ const TruncationMarker = "…（已截断）"
 //     把它加工成 executor 的启动 prompt
 //   - TaskDir: 任务专属目录（agentd 在 DataDir/tasks/<id> 下创建），adapter 可把
 //     配置、日志、渲染文件等任务物料写在这里
+//   - Env: 启动 executor 进程时额外注入的环境变量（形如 KEY=VALUE，已解析已展开）。
+//     由 manager 按 task.Executor 从 env 文件解析后填入；nil/空表示不注入。
+//     实现方必须把它注入到自己拉起的进程环境中——这是 B19 对所有 adapter 的统一要求，
+//     放在契约上而非各 adapter 的构造参数上，是为了让后续 adapter（Claude Code、grok）
+//     不必各写一份注入逻辑
 type StartReq struct {
 	Task        proto.Task
 	PlanContent string
 	TaskDir     string
+	Env         []string
 }
 
 // Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。

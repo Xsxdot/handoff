@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/executor/opencode"
@@ -72,9 +73,16 @@ var agentdCmd = &cobra.Command{
 		}
 		defer st.Close()
 
+		// env 注入（B19）：agent 启动时注入 <DataDir>/env/ 下配置的环境变量文件。
+		// 启动预检只 WARN 不阻断——env 文件是数据文件，可能在 agentd 启动后才创建；
+		// 但完全不检查会把问题拖到第一次派发才暴露，预检让它在启动日志里就可见。
+		// manager 侧自建同款 resolver（NewManager 内），两者无状态、不会发散。
+		envRes := envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, logger)
+		envRes.Preflight()
+
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
 		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
-		ap, err := agentd.NewApprover(cfg.Approver, logger)
+		ap, err := agentd.NewApprover(cfg.Approver, envRes, logger)
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}

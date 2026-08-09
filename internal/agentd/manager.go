@@ -57,6 +57,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
@@ -82,6 +83,12 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 // 审核者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
 var errExecutorStartFailed = errors.New("启动 executor 失败")
 
+// errEnvResolveFailed 表示 env 文件解析失败（文件缺失/语法错/文件名非法）。
+//
+// server 层据此回 500 并回显真因：落到 writeDispatchError 的 default 分支只会回
+// 扁平的「派发任务失败」，真因被吞——这正是 B16 的根因，不能再犯一次。
+var errEnvResolveFailed = errors.New("解析 env 文件失败")
+
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
@@ -95,6 +102,9 @@ type Manager struct {
 	ads map[string]executor.Adapter
 	cfg *config.Config
 	log *slog.Logger
+	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
+	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
+	env *envfile.Resolver
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
 	// 权限请求直接升级人工审核者）。构造后只读。
 	approver *Approver
@@ -124,6 +134,7 @@ type Manager struct {
 func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, log *slog.Logger) *Manager {
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, log: log,
+		env:        envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
 		apInflight: map[string]bool{},
 		apFails:    map[string]int{},
 		apDisabled: map[string]bool{},
@@ -397,6 +408,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		model = m.cfg.Executor.Model // 配置级兜底；仍空则 executor 自身默认
 	}
 
+	// env 注入（B19）：按 executor 名解析 env 文件。位置刻意排在最前段——早于建任务、
+	// 早于 EnsureBaseCommit 与 PrepareWorkspace。解析失败是配置问题，此刻还没有任何
+	// 落库/建树副作用，拒发是干净的；若放到 ad.Start 前才解析，任务已落库、worktree
+	// 已建，就变成「创建了一个注定 failed 的任务」，与 spec §6「任务不创建」矛盾
+	envKVs, err := m.env.For(execName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errEnvResolveFailed, err)
+	}
+
 	// 内容合成：plan 解码后作为主体；prompt 非空时——
 	//   plan 非空：拼接为「附加指令」小节（为什么：prompt 是派发当刻的补充意图，
 	//   与 plan 是同一任务的两个信息面，放进同一文件让 executor 一次读全，避免
@@ -512,7 +532,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
-	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir}); err != nil {
+	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir, Env: envKVs}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，审核者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
