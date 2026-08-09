@@ -1,8 +1,11 @@
 package claudecode
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +95,99 @@ func TestResumeContinuesFromOffset(t *testing.T) {
 	case ev := <-r.evCh:
 		t.Fatalf("offset 前的行被重放了，得到 %+v", ev)
 	case <-time.After(300 * time.Millisecond):
+	}
+	r.runCancel()
+}
+
+// TestWriteRunScriptUsesResumeFlag 冷恢复的启动脚本必须用 --resume 而不是
+// --session-id：后者是「建一个这个 id 的新会话」，语义完全相反，写错的表现是
+// 「日志说恢复成功、模型却什么都不记得」——最难查的一类 bug。
+func TestWriteRunScriptUsesResumeFlag(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeRunScript(dir, StartProcReq{TaskID: "t1", TaskDir: dir,
+		SessionID: "sess-1", SettingsPath: "/s.json", MCPPath: "/m.json", Resume: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "--resume sess-1") {
+		t.Fatalf("冷恢复脚本应含 --resume，实际:\n%s", b)
+	}
+	if strings.Contains(string(b), "--session-id") {
+		t.Fatalf("冷恢复脚本不应含 --session-id（语义相反）")
+	}
+}
+
+// TestResumeColdRotatesOutJSONL 冷恢复后是全新的输出流，旧 offset 无意义——
+// 不轮转的话 tailer 从旧 offset 续读新文件，会把新会话的开头当成旧内容跳过。
+func TestResumeColdRotatesOutJSONL(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, outFileName), []byte(`{"type":"system","subtype":"init","session_id":"old"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateOutJSONL(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out.1.jsonl")); err != nil {
+		t.Fatalf("旧 out.jsonl 应轮转为 out.1.jsonl，实际: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, outFileName)); !os.IsNotExist(err) {
+		t.Fatalf("轮转后新 out.jsonl 尚不应存在（由冷恢复启动脚本创建），实际: %v", err)
+	}
+}
+
+// TestResumeColdStartsResumeProcess 冷恢复必须用 --resume 起新进程（StartProcReq
+// 带 Resume=true），且轮转 out.jsonl 后 offset 归零。
+func TestResumeColdStartsResumeProcess(t *testing.T) {
+	a := New(nil)
+	dir := t.TempDir()
+	repo := t.TempDir() // 工作区须真实存在（§6 约束 5：冷恢复不重建 worktree）
+	// 哨兵在 → 判死；claude.json 提供 tmux 会话名
+	if err := writeProcInfo(dir, &procInfo{TmuxSession: "handoff-abcdef01", SessionID: "sess-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, outFileName), []byte(`{"type":"handoff_exit","code":0}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := startProc
+	startProc = func(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error) {
+		if !req.Resume {
+			t.Fatal("冷恢复必须 Resume=true（--resume 语义）")
+		}
+		if req.SessionID != "sess-1" || req.Model != "sonnet" || req.RepoPath != repo {
+			t.Fatalf("冷恢复入参不对: %+v", req)
+		}
+		return &Proc{TmuxSession: "handoff-abcdef01", TaskDir: dir, SessionID: "sess-1"}, nil
+	}
+	defer func() { startProc = old }()
+	// 桩掉 tmux 探活（会话已不在，判死）
+	oldHas := tmuxHasSession
+	tmuxHasSession = func(string) bool { return false }
+	defer func() { tmuxHasSession = oldHas }()
+	// 桩掉 perm.sock（长临时路径超 unix sun_path 上限）
+	oldPerm := newPermServerFn
+	newPermServerFn = func(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
+		return &permServer{}, nil
+	}
+	defer func() { newPermServerFn = oldPerm }()
+
+	out, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir,
+		RepoPath: repo, SessionID: "sess-1", Model: "sonnet", Cold: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Alive {
+		t.Fatalf("冷恢复应成功: %+v", out)
+	}
+	if out.Mode != executor.ResumeModeCold {
+		t.Fatalf("冷恢复应 Mode=cold，实际 %s", out.Mode)
+	}
+	r := a.lookup("T-1")
+	if r == nil {
+		t.Fatal("恢复后运行态缺失")
+	}
+	if r.startOffset != 0 {
+		t.Fatalf("冷恢复后 offset 应归零，实际 %d", r.startOffset)
 	}
 	r.runCancel()
 }

@@ -49,6 +49,10 @@ type permServer struct {
 	closed  bool
 }
 
+// newPermServerFn 是 newPermServer 的测试缝（与 startProc/tmuxKill 同手法）：
+// 测试替换它绕开真实 unix socket 绑定（长路径会超 sun_path 上限），语义不变。
+var newPermServerFn = newPermServer
+
 // newPermServer 建立并开始受理裁决请求。
 //
 // 参数：

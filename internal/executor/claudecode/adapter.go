@@ -189,7 +189,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 
 	// 1. 裁决 socket：必须先于 claude 进程存在——claude 加载 mcp.json 会立刻拉起
 	// permission-mcp 子进程连它，socket 未就绪会让子进程一直重试（fail-closed）
-	perm, err := newPermServer(sockPath, a.log, func(ask permAsk) { a.onPermissionAsk(r, ask) })
+	perm, err := newPermServerFn(sockPath, a.log, func(ask permAsk) { a.onPermissionAsk(r, ask) })
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 
 	// 3. 进程：Env 必须原样透传（见 StartProcReq.Env 的注意）
-	proc, err := StartProc(ctx, StartProcReq{
+	proc, err := startProc(ctx, StartProcReq{
 		RepoPath:     req.Task.Workdir(),
 		TaskID:       req.Task.ID,
 		TaskDir:      req.TaskDir,
