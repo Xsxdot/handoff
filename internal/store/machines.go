@@ -268,6 +268,15 @@ FROM machines WHERE id = ?`, id).
 	return m, nil
 }
 
+// SetMachineStatus 更新机器状态（peer 同步状态投影用）。
+func (s *Store) SetMachineStatus(ctx context.Context, machineID string, status controlplane.MachineStatus) error {
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE machines SET status = ? WHERE id = ?", string(status), machineID); err != nil {
+		return fmt.Errorf("更新机器 %s 状态: %w", machineID, err)
+	}
+	return nil
+}
+
 // ListLocationsForMachine 返回某机器（通常是本机）的全部 ProjectLocation。
 func (s *Store) ListLocationsForMachine(ctx context.Context, machineID string) ([]controlplane.ProjectLocation, error) {
 	rows, err := s.db.QueryContext(ctx, `

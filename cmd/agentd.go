@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,6 +35,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/machineauthority"
+	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -144,6 +146,30 @@ var agentdCmd = &cobra.Command{
 		stopWatch := reconciler.StartWatch(cmd.Context())
 		defer stopWatch()
 
+		// 远端机器同步（桌面 phase2）：为每台配置的远端 agentd 启动 peer 同步
+		// worker，把远端 machine events 经 Projector 投影进本机控制面。
+		// 机器状态变化投影到 Machine 表；一台坏机器不阻塞其他。
+		syncManager := peer.NewSyncManager(peer.SyncManagerConfig{
+			Machines: syncMachinesFromConfig(cfg),
+			CredentialResolver: func(secretRef string) string {
+				// secret_ref 形如 config.targets.<name>.token，取 <name> 后查 cfg
+				name := strings.TrimPrefix(strings.TrimSuffix(secretRef, ".token"), "config.targets.")
+				if t, ok := cfg.Targets[name]; ok {
+					return t.Token
+				}
+				return ""
+			},
+			Projector: controlplane.NewProjector(st),
+			OnMachineState: func(machineID string, state peer.SupervisorState) {
+				st.SetMachineStatus(context.Background(), machineID,
+					controlplane.MachineStatus(string(state)))
+			},
+			Interval: 30 * time.Second,
+			Log:      logger,
+		})
+		syncManager.Start(context.Background())
+		defer syncManager.Stop()
+
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
 		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
 	},
@@ -186,6 +212,22 @@ func configuredMachinesFromConfig(cfg *config.Config) ([]controlplane.Configured
 		})
 	}
 	return out, nil
+}
+
+// syncMachinesFromConfig 把 config.Targets 投影为 peer 同步机器列表。
+func syncMachinesFromConfig(cfg *config.Config) []peer.SyncMachine {
+	var out []peer.SyncMachine
+	for name, t := range cfg.Targets {
+		if t.Addr == "" {
+			continue
+		}
+		out = append(out, peer.SyncMachine{
+			MachineID: name,
+			Endpoint:  t.Addr,
+			SecretRef: "config.targets." + name + ".token",
+		})
+	}
+	return out
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。

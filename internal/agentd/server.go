@@ -133,6 +133,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
+	// peer v1（桌面 phase2）：机器同步路由，与现有 /api、/ws 并存。
+	mux.HandleFunc("GET /v1/peer/hello", s.handlePeerHello)
+	mux.HandleFunc("GET /v1/machine/snapshot", s.handlePeerMachineSnapshot)
+	mux.HandleFunc("GET /v1/machine/events", s.handlePeerMachineEvents)
 	return s.auth(mux)
 }
 
