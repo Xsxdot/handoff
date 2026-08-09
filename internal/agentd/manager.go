@@ -1475,28 +1475,11 @@ func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
 // abandonToReview 在确认 executor 已不在时收尾：留下 failed 事件说明原因、
 // 作废挂起工单（避免 attach 继续展示不可能被回答的项）、任务转 waiting_review。
 // 返回收尾后的任务状态。
+//
+// 收尾实现已统一到 reconcileExecutorGone，本函数只负责拼这一句 reason。
 func (m *Manager) abandonToReview(taskID, ticketID string, cause error) proto.TaskState {
-	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
-		m.log.Error("恢复操作：作废挂起工单失败", "task", taskID, "cause", verr)
-	} else if voided > 0 {
-		m.log.Warn("恢复操作：挂起工单作废", "task", taskID, "voided", voided)
-	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
-		FailReason: fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause),
-	})
-	if err != nil {
-		m.log.Error("恢复操作：追加 failed 事件失败", "task", taskID, "cause", err)
-	}
-	if terr := m.transitToReview(taskID); terr != nil {
-		m.log.Error("恢复操作：回迁 waiting_review 失败", "task", taskID, "cause", terr)
-	} else if err == nil {
-		m.hub.Publish(evt)
-	}
-	cur, gerr := m.st.GetTask(taskID)
-	if gerr != nil {
-		return proto.TaskStateWaitingAnswer
-	}
-	return cur.State
+	return reconcileExecutorGone(m.st, m.hub, taskID,
+		fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause), m.log)
 }
 
 // markDelivered 记录「应答已送达 executor」。失败仅 Warn：送达本身已经发生，
