@@ -146,7 +146,9 @@ fifo，按 POSIX 读端未就绪时 `open` 直接失败（errno `ENXIO`，macOS 
 返回后、返回前以 `O_WRONLY|O_NONBLOCK` 试开探测读端（只探测不写入），超时
 5s 报错并带 `claude.log` 尾部。等读端是「进程是否已就位」的语义，必须放在
 `tmuxLaunch`（「怎么把脚本跑起来」）之外，桩与生产走同一段等待代码，测试才能
-抓到这类竞态。
+抓到这类竞态。**等读端超时属于「tmuxLaunch 已成功」之后的失败**：此时会话已在
+跑而调用方 rollback 依赖 `r.proc`（StartProc 失败返回 nil，拿不到句柄），
+`StartProc` 必须自行 `kill-session` 回收，与 init 就绪超时的清理行为保持一致。
 
 Start 步骤：
 

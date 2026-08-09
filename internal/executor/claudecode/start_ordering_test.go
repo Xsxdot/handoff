@@ -146,6 +146,74 @@ func TestStartWaitsForFIFOReader(t *testing.T) {
 	_ = a.Stop("T-race")
 }
 
+// TestStartProcKillsSessionWhenFIFOReaderNeverReady 钉住 StartProc 对「等读端
+// 超时」这条失败路径的资源回收：tmuxLaunch 已成功、会话已在跑，waitFIFOReader
+// 超时返回错误时，StartProc 必须自行 Kill 回收会话——调用方 rollback 依赖
+// r.proc 判空，而 StartProc 失败时返回 nil，r.proc 拿不到句柄，不回收就成了
+// 孤儿会话（与 init 就绪超时的清理行为一致，见 spec §4.1）。Kill 失败只 Warn，
+// 不盖掉 waitFIFOReader 那条真因错误。
+//
+// 自检：把 waitFIFOReader 失败处那行 p.Kill() 临时去掉，本测试必然失败
+// （tmuxKill 未被调用）——红，说明钉子有效。
+func TestStartProcKillsSessionWhenFIFOReaderNeverReady(t *testing.T) {
+	taskDir := shortTestDir(t)
+	repoPath := shortTestDir(t)
+
+	// 桩 tmux 启动：拉一个只 sleep 的进程，**永远不开 in.fifo 读端**，
+	// 让 waitFIFOReader 一路撞 ENXIO 直到超时
+	var launched *exec.Cmd
+	oldHas := tmuxHasSession
+	tmuxHasSession = func(string) bool { return true }
+	oldLaunch := tmuxLaunch
+	tmuxLaunch = func(session, repo, script string) error {
+		cmd := exec.Command("/bin/sh", "-c", "sleep 1000")
+		cmd.Dir = repo
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		launched = cmd
+		return nil
+	}
+	// 记录 Kill 调用：断言超时路径真的回收了会话（tmuxKill 是给 Kill 开的缝）
+	var killed []string
+	oldKill := tmuxKill
+	tmuxKill = func(session string) error {
+		killed = append(killed, session)
+		return nil
+	}
+	// 把超时压到毫秒量级，别让测试真等满 5s
+	oldTimeout := fifoReaderTimeout
+	fifoReaderTimeout = 200 * time.Millisecond
+	t.Cleanup(func() {
+		fifoReaderTimeout = oldTimeout
+		tmuxKill = oldKill
+		tmuxLaunch = oldLaunch
+		tmuxHasSession = oldHas
+		if launched != nil && launched.Process != nil {
+			launched.Process.Kill()
+			launched.Wait()
+		}
+	})
+
+	a := New(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := a.Start(ctx, executor.StartReq{
+		Task:        proto.Task{ID: "T-kill", RepoPath: repoPath},
+		PlanContent: "测试计划",
+		TaskDir:     taskDir,
+	})
+	if err == nil {
+		t.Fatal("读端永远不就绪，Start 应失败")
+	}
+	if len(killed) == 0 {
+		t.Fatal("waitFIFOReader 超时后应自行 Kill 回收 tmux 会话（调用方 rollback 拿不到 r.proc）")
+	}
+	if killed[0] != "handoff-T-kill" {
+		t.Fatalf("Kill 应作用于会话 handoff-T-kill，实际 %q", killed)
+	}
+}
+
 // installFakeClaude 把假 claude 放进 PATH 首位：run_claude.sh 以裸名 `claude`
 // 调用，PATH 里先放假执行者。假执行者模拟真实契约——收到首条输入前不吐任何
 // 东西；读到输入后吐 system/init，然后像真实 claude 一样保持进程存活（cat 持续

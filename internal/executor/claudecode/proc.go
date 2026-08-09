@@ -60,7 +60,11 @@ const startReadyTimeout = 30 * time.Second
 // `open in.fifo: device not configured`）。tmux 起 sh 是子秒级，但机器负载高时
 // 会抖动；取 5s 与 startReadyTimeout 同一量级思路：够覆盖抖动，又不掩盖
 // 「claude 根本没起来」的失败。
-const fifoReaderTimeout = 5 * time.Second
+//
+// 用 var 而非 const：测试需把它调到毫秒量级来快速演练超时路径（见
+// start_ordering_test 的 TestStartProcKillsSessionWhenFIFOReaderNeverReady），
+// 与 startReadyTimeout 保持 const 不加覆盖点不同——那条 30s 从不在单测里真等。
+var fifoReaderTimeout = 5 * time.Second
 
 // StartProcReq 是一次 StartProc 的完整入参。
 //
@@ -108,6 +112,8 @@ type Proc struct {
 //     fifo 缺失会让整条 claude 命令失败
 //   - tmuxLaunch 返回后必须等 in.fifo 出现读者（waitFIFOReader）才能返回：
 //     tmux new-session -d 不等脚本执行，写端不等到读端会 ENXIO（见其 why）
+//   - tmuxLaunch 成功之后的一切失败路径必须自行 Kill 回收会话：调用方 rollback
+//     依赖 r.proc，而 StartProc 失败时返回 nil（见 waitFIFOReader 失败处）
 func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error) {
 	session := "handoff-" + id8(req.TaskID)
 	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）
@@ -145,6 +151,14 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 	if err != nil {
 		log.Error("claude 启动脚本未在时限内打开 in.fifo",
 			"session", session, "task", req.TaskID, "cause", err)
+		// tmuxLaunch 已成功、会话已在跑，必须自行回收：调用方 rollback 依赖
+		// r.proc 判空，而这里返回 nil——r.proc 拿不到句柄，不回收就成了孤儿
+		// 会话（与 init 就绪超时的清理行为一致，见 spec §4.1）。Kill 失败是
+		// 次要信息，只 Warn 不盖掉 waitFIFOReader 这条真因错误
+		if kerr := p.Kill(); kerr != nil {
+			log.Warn("回收读端未就绪的 tmux 会话失败，可能需人工清理",
+				"session", session, "task", req.TaskID, "cause", kerr)
+		}
 		return nil, err
 	}
 	log.Debug("claude in.fifo 读端就绪", "session", session, "task", req.TaskID, "wait", elapsed)
@@ -374,6 +388,12 @@ func procExited(outJSONLPath string) (exited bool, code int) {
 	return false, 0
 }
 
+// tmuxKill 是 tmux kill-session 的测试缝（与 tmuxHasSession/tmuxLaunch 同手法）：
+// 测试替换它断言「StartProc 失败时回收了会话」，绕开真实 tmux server。
+var tmuxKill = func(session string) error {
+	return exec.Command("tmux", "kill-session", "-t", session).Run()
+}
+
 // Kill 销毁 tmux 会话（连同其内的 claude）。
 //
 // 幂等：会话已不存在（已被外部清理）时返回 nil。
@@ -381,7 +401,7 @@ func (p *Proc) Kill() error {
 	if p == nil || p.TmuxSession == "" {
 		return nil
 	}
-	err := exec.Command("tmux", "kill-session", "-t", p.TmuxSession).Run()
+	err := tmuxKill(p.TmuxSession)
 	if err != nil {
 		// 会话不存在视为已清理，不报错；其余错误（权限、tmux 未运行）如实上报
 		if exec.Command("tmux", "has-session", "-t", p.TmuxSession).Run() != nil {
