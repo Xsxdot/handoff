@@ -35,6 +35,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
@@ -69,6 +70,11 @@ type Server struct {
 	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
 	replayLimit int
 	liveLimit   int
+	// projects 是桌面项目创建服务（POST /v1/projects/operations 的落点）；
+	// SetProjectService 注入，未注入时桌面写路由返回 503。
+	projects *controlplane.ProjectService
+	// controlHub 是桌面控制流的独立实时路由（不复用 task Hub）。
+	controlHub *ControlHub
 }
 
 // NewServer 创建 agentd 服务端。
@@ -89,12 +95,26 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		log:         log,
 		replayLimit: eventReplayLimit,
 		liveLimit:   liveBufferLimit,
+		controlHub:  NewControlHub(),
 	}
+}
+
+// SetProjectService 注入桌面项目创建服务，激活 desktop /v1 写路由。
+//
+// 为什么注入而非构造参数：desktop /v1 是附加能力，CLI 测试与旧 server 测试
+// 不注入也能运行（写路由返回 503）；bootstrap/control 只读路由不依赖它。
+func (s *Server) SetProjectService(p *controlplane.ProjectService) {
+	s.projects = p
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
 func (s *Server) Hub() *Hub {
 	return s.hub
+}
+
+// ControlHub 返回桌面控制流的独立 hub，供控制事件广播。
+func (s *Server) ControlHub() *ControlHub {
+	return s.controlHub
 }
 
 // SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
@@ -137,6 +157,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peer/hello", s.handlePeerHello)
 	mux.HandleFunc("GET /v1/machine/snapshot", s.handlePeerMachineSnapshot)
 	mux.HandleFunc("GET /v1/machine/events", s.handlePeerMachineEvents)
+	// desktop v1（桌面 phase2）：控制面 bootstrap/control/operation 路由。
+	mux.HandleFunc("GET /v1/bootstrap", s.handleDesktopBootstrap)
+	mux.HandleFunc("GET /v1/control/events", s.handleDesktopControlEvents)
+	mux.HandleFunc("GET /v1/control/stream", s.handleDesktopControlStream)
+	mux.HandleFunc("POST /v1/projects/operations", s.handleDesktopCreateProject)
+	mux.HandleFunc("GET /v1/operations/{operation_id}", s.handleDesktopGetOperation)
 	return s.auth(mux)
 }
 

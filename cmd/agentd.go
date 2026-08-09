@@ -27,6 +27,7 @@ import (
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/desktopapi"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/claudecode"
@@ -149,6 +150,16 @@ var agentdCmd = &cobra.Command{
 		// 远端机器同步（桌面 phase2）：为每台配置的远端 agentd 启动 peer 同步
 		// worker，把远端 machine events 经 Projector 投影进本机控制面。
 		// 机器状态变化投影到 Machine 表；一台坏机器不阻塞其他。
+		projector := controlplane.NewProjector(st)
+		// 广播进桌面控制流 hub：远端事件投影后桌面 stream 实时收到
+		projector.OnApplied = func(ce controlplane.ControlEvent) {
+			env, err := (&desktopapi.CatalogAssembler{}).ToControlEvent(ce)
+			if err != nil {
+				logger.Warn("控制事件广播转换失败", "revision", ce.ControlRevision, "cause", err)
+				return
+			}
+			srv.ControlHub().Publish(env)
+		}
 		syncManager := peer.NewSyncManager(peer.SyncManagerConfig{
 			Machines: syncMachinesFromConfig(cfg),
 			CredentialResolver: func(secretRef string) string {
@@ -159,7 +170,7 @@ var agentdCmd = &cobra.Command{
 				}
 				return ""
 			},
-			Projector: controlplane.NewProjector(st),
+			Projector: projector,
 			OnMachineState: func(machineID string, state peer.SupervisorState) {
 				st.SetMachineStatus(context.Background(), machineID,
 					controlplane.MachineStatus(string(state)))

@@ -20,6 +20,9 @@ import (
 // Projector 把机器事件投影为控制面全局状态。
 type Projector struct {
 	repo Repository
+	// OnApplied 在事件成功投影（applied=true）后回调产生的 ControlEvent。
+	// 供上层（agentd）把事件广播进 control stream hub；nil=不广播。
+	OnApplied func(ControlEvent)
 }
 
 // NewProjector 创建投影器。
@@ -47,6 +50,9 @@ func (p *Projector) Apply(ctx context.Context, ev MachineEvent) (ControlEvent, b
 	ce, applied, err := p.repo.ApplyMachineEvent(ctx, ev)
 	if err != nil {
 		return ControlEvent{}, false, fmt.Errorf("投影 machine event %s/%s: %w", ev.MachineID, ev.EventID, err)
+	}
+	if applied && p.OnApplied != nil {
+		p.OnApplied(ce)
 	}
 	return ce, applied, nil
 }
