@@ -257,7 +257,12 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		"prompt":    []any{map[string]any{"type": "text", "text": text}},
 	})
 	if err != nil {
-		return fmt.Errorf("ACP session/prompt: %w", err)
+		// CallAsync 只会因两件事失败：连接已关闭、写 stdio 失败。两者都等于
+		// 「指令送不进 executor」——而 runs 表里那条运行态是陈的（进程死了没人摘，
+		// lookup 照样返回它），所以这里必须补上哨兵，否则 manager 的四级恢复阶梯
+		// （触发条件 errors.Is(err, ErrTaskNotRunning)，见 manager.go continue 的 doc）
+		// 整个不启动，continue 直接 500——2026-08-09 grok 端到端验收撞的就是这个。
+		return fmt.Errorf("任务 %s 的 ACP 连接不可用（%v）: %w", taskID, err, executor.ErrTaskNotRunning)
 	}
 	go a.awaitTurn(r, resCh)
 	return nil
