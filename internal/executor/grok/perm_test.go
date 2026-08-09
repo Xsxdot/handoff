@@ -40,8 +40,8 @@ func TestDecisionMapsToACPOptionIDs(t *testing.T) {
 
 func TestVoidAllPendingCountsAndClears(t *testing.T) {
 	_, r := grok.NewAdapterWithRunForTest("t1")
-	grok.NotePendingForTest(r, "c1", []byte("1"))
-	grok.NotePendingForTest(r, "c2", []byte("2"))
+	grok.NotePendingForTest(r, "c1", []byte("1"), "desc-1")
+	grok.NotePendingForTest(r, "c2", []byte("2"), "desc-2")
 	if n := grok.VoidAllPendingForTest(r); n != 2 {
 		t.Errorf("作废数 = %d，期望 2", n)
 	}

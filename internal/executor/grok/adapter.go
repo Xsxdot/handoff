@@ -92,7 +92,17 @@ type runState struct {
 	rejected     []string // 本回合被拒的权限描述（perm.go 写入，回合收尾交代）
 
 	pendMu  sync.Mutex
-	pending map[string]json.RawMessage // toolCallId -> ACP 请求 id（perm.go 使用）
+	pending map[string]pendingPerm // toolCallId -> 待裁决权限（perm.go 使用）
+}
+
+// pendingPerm 是挂起表中一条待裁决的权限请求。
+//
+// reqID 是应答回发必需的 ACP 请求 id；desc 是给人看的权限描述——RespondPermission
+// 拒绝时用它记入被拒清单（用 toolCallId 会让审核者看到一串不透明 id，等于没说清
+// 模型刚才想干什么）。
+type pendingPerm struct {
+	reqID json.RawMessage
+	desc  string
 }
 
 // Start 异步启动执行并立即返回。
@@ -127,7 +137,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	r := &runState{
 		taskID: taskID, taskDir: req.TaskDir, repoPath: req.Task.Workdir(),
 		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
-		acc: newTurnAccumulator(), pending: map[string]json.RawMessage{},
+		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
 	}
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
@@ -590,7 +600,9 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 		text += " | " + cmd
 	}
 	text = turn.TruncateMarked(text, permTextHardLimit)
-	h.r.notePending(p.ToolCall.ToolCallID, reqID)
+	// 挂起登记同时存 desc：RespondPermission 拒绝时把它记入被拒清单，而不是让
+	// 审核者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
+	h.r.notePending(p.ToolCall.ToolCallID, reqID, text)
 	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
 		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID, Text: text})

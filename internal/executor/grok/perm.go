@@ -39,19 +39,24 @@ func optionIDFor(decision string) string {
 }
 
 // notePending 登记一个待裁决的权限请求。
-func (r *runState) notePending(toolCallID string, reqID json.RawMessage) {
+//
+// 参数：
+//   - toolCallID: ACP 的 toolCallId，manager 经它应答（PermissionID 与之同名）
+//   - reqID: ACP 请求 id，应答回发必需
+//   - desc: 人类可读的权限描述；拒绝时记入被拒清单，不用 toolCallId
+func (r *runState) notePending(toolCallID string, reqID json.RawMessage, desc string) {
 	r.pendMu.Lock()
 	defer r.pendMu.Unlock()
-	r.pending[toolCallID] = reqID
+	r.pending[toolCallID] = pendingPerm{reqID: reqID, desc: desc}
 }
 
 // takePending 取出并移除挂起项。
-func (r *runState) takePending(toolCallID string) (json.RawMessage, bool) {
+func (r *runState) takePending(toolCallID string) (pendingPerm, bool) {
 	r.pendMu.Lock()
 	defer r.pendMu.Unlock()
-	id, ok := r.pending[toolCallID]
+	pp, ok := r.pending[toolCallID]
 	delete(r.pending, toolCallID)
-	return id, ok
+	return pp, ok
 }
 
 // voidAllPending 作废全部挂起项，返回作废数量。
@@ -59,7 +64,7 @@ func (r *runState) voidAllPending() int {
 	r.pendMu.Lock()
 	defer r.pendMu.Unlock()
 	n := len(r.pending)
-	r.pending = map[string]json.RawMessage{}
+	r.pending = map[string]pendingPerm{}
 	return n
 }
 
@@ -113,7 +118,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		a.log.Warn("权限应答时任务不在运行中", "task", taskID, "perm", permID)
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
-	reqID, ok := r.takePending(permID)
+	pp, ok := r.takePending(permID)
 	if !ok {
 		a.log.Warn("权限应答找不到挂起请求（连接已重建或已作废）",
 			"task", taskID, "perm", permID)
@@ -122,14 +127,18 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 
 	opt := optionIDFor(decision)
 	a.log.Info("回发权限裁决", "task", taskID, "perm", permID, "decision", decision, "option", opt)
-	if err := r.cli.Reply(reqID, map[string]any{
+	if err := r.cli.Reply(pp.reqID, map[string]any{
 		"outcome": map[string]any{"outcome": "selected", "optionId": opt},
 	}); err != nil {
 		a.log.Error("回发权限裁决失败", "task", taskID, "perm", permID, "cause", err)
 		return fmt.Errorf("回发权限裁决: %w", err)
 	}
 	if opt == "reject-once" {
-		r.noteRejected(permID)
+		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让审核者知道
+		// 「模型刚才想干什么、被挡了」，一串不透明 toolCallId 等于没说（见
+		// rejectedTurnQuestion）。desc 用完整文本，长度收口由回合收尾处的
+		// turn.ClampQuestion 负责，不在本处截短。
+		r.noteRejected(pp.desc)
 	}
 	a.log.Info("权限裁决已送达 executor", "task", taskID, "perm", permID)
 	return nil

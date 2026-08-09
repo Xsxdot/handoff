@@ -2,7 +2,6 @@ package grok
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
@@ -26,7 +25,7 @@ func (t *turnAccumulator) ClassifyForTest() (string, turn.Trailer) {
 // NewAdapterWithRunForTest 造一个带空运行态的 adapter，供权限表与 Stop 竞态断言。
 func NewAdapterWithRunForTest(taskID string) (*Adapter, *runState) {
 	a := New(nil)
-	r := &runState{taskID: taskID, pending: map[string]json.RawMessage{},
+	r := &runState{taskID: taskID, pending: map[string]pendingPerm{},
 		evCh: make(chan executor.AdapterEvent, 8), acc: newTurnAccumulator()}
 	a.runs[taskID] = r
 	return a, r
@@ -46,7 +45,7 @@ func NewHandlerForTest(a *Adapter, r *runState) ACPHandler { return &acpHandler{
 // 不起 serve 进程，供 auth 错误路径断言。
 func StartSessionForTest(wsURL, repoPath string) error {
 	a := New(nil)
-	r := &runState{taskID: "t", repoPath: repoPath, pending: map[string]json.RawMessage{},
+	r := &runState{taskID: "t", repoPath: repoPath, pending: map[string]pendingPerm{},
 		evCh: make(chan executor.AdapterEvent, 8), acc: newTurnAccumulator()}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -61,5 +60,10 @@ func StartSessionForTest(wsURL, repoPath string) error {
 
 func OptionIDForTest(decision string) string { return optionIDFor(decision) }
 
-func NotePendingForTest(r *runState, id string, reqID []byte) { r.notePending(id, reqID) }
-func VoidAllPendingForTest(r *runState) int                   { return r.voidAllPending() }
+func NotePendingForTest(r *runState, id string, reqID []byte, desc string) {
+	r.notePending(id, reqID, desc)
+}
+func VoidAllPendingForTest(r *runState) int { return r.voidAllPending() }
+
+// RejectedForTest 暴露本回合被拒清单（供断言清单里是描述而非 id）。
+func (r *runState) RejectedForTest() []string { return r.takeRejected() }

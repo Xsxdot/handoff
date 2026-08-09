@@ -155,6 +155,60 @@ func TestPermissionEventTextNotTruncatedForSecurity(t *testing.T) {
 	}
 }
 
+// TestRejectedListShowsDescriptionNotID 钉住 perm.go 的 noteRejected 语义：
+// 被拒清单必须给出人类可读的描述（模型刚才想干什么），而不是一串 toolCallId。
+func TestRejectedListShowsDescriptionNotID(t *testing.T) {
+	srv := startFakeAgent(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		switch req.Method {
+		case "initialize":
+			return []string{`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{}}`}
+		case "trigger/perm":
+			return []string{permReq("0", "c1", "ls -la /tmp")}
+		}
+		return nil
+	}, nil)
+	a, r := grok.NewAdapterWithRunForTest("t1")
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), grok.NewHandlerForTest(a, r), nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	r.AttachClientForTest(cli)
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Call(ctx, "initialize", map[string]any{}); err != nil {
+		t.Fatalf("initialize 失败: %v", err)
+	}
+	_ = cli.Notify("trigger/perm", map[string]any{})
+
+	// 等权限事件落地（OnPermission 已 notePending）
+	select {
+	case <-r.EventsForTest():
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到权限事件")
+	}
+
+	if err := a.RespondPermission(ctx, "t1", "c1", "reject"); err != nil {
+		t.Fatalf("RespondPermission 失败: %v", err)
+	}
+	rej := r.RejectedForTest()
+	if len(rej) != 1 {
+		t.Fatalf("被拒清单长度 = %d，期望 1", len(rej))
+	}
+	if !strings.Contains(rej[0], "ls -la /tmp") {
+		t.Errorf("被拒清单应含权限描述，实际: %q", rej[0])
+	}
+	if strings.Contains(rej[0], "c1") {
+		t.Errorf("被拒清单不得是 toolCallId，实际: %q", rej[0])
+	}
+}
+
 // TestStopDoesNotEmitFailedResult 钉住 Stop 与 onClosed 的竞态：Stop 主动关连接
 // 会触发读循环退出→OnClosed→onClosed，后者不得产出「ACP 连接断开」的假失败结果
 // （真实原因是用户主动停了，不是执行失败）。

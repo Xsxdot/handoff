@@ -16,7 +16,6 @@ package grok
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"time"
 
@@ -65,7 +64,7 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, err
 	r := &runState{
 		taskID: taskID, taskDir: taskDir, repoPath: repoPath, sessionID: sessionID,
 		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
-		acc: newTurnAccumulator(), pending: map[string]json.RawMessage{},
+		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
 	}
 	if _, c, _, gerr := turn.GitTurnStatus(repoPath, ""); gerr == nil {
 		r.startCommit = c
