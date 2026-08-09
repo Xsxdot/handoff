@@ -595,6 +595,102 @@ func rawCommand(rawInput json.RawMessage) string {
 	return ""
 }
 
+// permToolCall 是 ACP session/request_permission 里 toolCall 的可用子集。
+//
+// 字段取舍全部来自 Task 1 的真机取样（testdata/perm_*.json），逐条理由：
+//   - Kind 是 toolCall.kind：**不能**用来分辨工具，真机实测 Write 与 Edit
+//     都是 "edit"。留着只是为了给命令类（"execute")做兜底归一化。
+//   - RawInput.Variant 才是可分辨的工具名（"Write" / "SearchReplace"）。
+//   - Meta 是 rawInput 缺 variant 时的回落来源（_meta["x.ai/tool"].kind
+//     给 "write" / "edit"）。
+type permToolCall struct {
+	ToolCallID string          `json:"toolCallId"`
+	Kind       string          `json:"kind"`
+	Title      string          `json:"title"`
+	RawInput   json.RawMessage `json:"rawInput"`
+	Meta       struct {
+		XAI struct {
+			Kind string `json:"kind"`
+		} `json:"x.ai/tool"`
+	} `json:"_meta"`
+}
+
+// permRequestFromToolCall 从 ACP toolCall 提取结构化权限载荷。
+//
+// 参数：
+//   - tc: 一次 session/request_permission 的 toolCall 本体
+//
+// 返回：结构化载荷；关键字段缺失时返回 nil（不伪造空壳，manager 会
+// fail-closed 升级人工）
+//
+// 注意：
+//   - 命令取 rawInput.command 的完整原文，不取 toolCall.title——title 是
+//     render.log 的行摘要、带 200 截断，命令尾部可能正藏着危险片段。
+//   - 路径**原样透传**，不在这里展开相对路径。真机样本里 Edit 给过相对
+//     路径 "probe.md"，展开成绝对路径是 permgate 的 InScope 的职责（它
+//     知道任务工作目录，adapter 不知道）。
+func permRequestFromToolCall(tc permToolCall) *executor.PermRequest {
+	// 命令类：取 command 全文
+	if cmd := rawCommand(tc.RawInput); cmd != "" {
+		tool := executor.NormalizePermTool(tc.Kind)
+		if tool == executor.PermToolOther {
+			tool = executor.PermToolBash
+		}
+		return &executor.PermRequest{Tool: tool, Command: cmd}
+	}
+	// 文件类：先定工具名，再取路径
+	if paths := rawPaths(tc.RawInput); len(paths) > 0 {
+		tool := fileToolOf(tc)
+		return &executor.PermRequest{Tool: tool, Paths: paths}
+	}
+	return nil
+}
+
+// fileToolOf 判定文件类工具究竟是 write 还是 edit。
+//
+// 为什么不能读 toolCall.kind：2026-08-09 真机实测，Write 与 Edit 的
+// toolCall.kind 都是 "edit"（见 testdata/perm_write.json）。用它做判据会把
+// 每一次整文件覆写误报成局部编辑。可分辨的来源只有两处，按可靠性排序：
+//  1. rawInput.variant —— "Write" / "SearchReplace"
+//  2. _meta["x.ai/tool"].kind —— "write" / "edit"
+//
+// 两处都缺时保守取 write：write 的破坏面更大，宁可按更严的那个判。
+func fileToolOf(tc permToolCall) string {
+	var in struct {
+		Variant string `json:"variant"`
+	}
+	if len(tc.RawInput) > 0 && json.Unmarshal(tc.RawInput, &in) == nil {
+		switch in.Variant {
+		case "Write":
+			return executor.PermToolWrite
+		case "SearchReplace", "Edit":
+			return executor.PermToolEdit
+		}
+	}
+	if t := executor.NormalizePermTool(tc.Meta.XAI.Kind); t != executor.PermToolOther {
+		return t
+	}
+	return executor.PermToolWrite
+}
+
+// rawPaths 从 rawInput 提取文件类工具的目标路径。
+//
+// 字段名 file_path 来自 Task 1 的真机探针（testdata/perm_write.json 与
+// perm_edit_*.json 三份样本一致），**不是推断**。真机每次只带一个路径，
+// 这里仍返回切片是为了对齐 executor.PermRequest.Paths 的形状。
+func rawPaths(rawInput json.RawMessage) []string {
+	var in struct {
+		FilePath string `json:"file_path"`
+	}
+	if len(rawInput) == 0 || json.Unmarshal(rawInput, &in) != nil {
+		return nil
+	}
+	if in.FilePath == "" {
+		return nil
+	}
+	return []string{in.FilePath}
+}
+
 // acpHandler 把 ACP 回调接到 adapter 上。
 //
 // 纪律：回调运行在 ACP 读循环 goroutine 上，**不得阻塞**——所有耗时动作
@@ -616,11 +712,7 @@ func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
 
 func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 	var p struct {
-		ToolCall struct {
-			ToolCallID string          `json:"toolCallId"`
-			Title      string          `json:"title"`
-			RawInput   json.RawMessage `json:"rawInput"`
-		} `json:"toolCall"`
+		ToolCall permToolCall `json:"toolCall"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil || p.ToolCall.ToolCallID == "" {
 		h.a.log.Error("权限请求解析失败，按拒绝处理（fail-closed）",
@@ -641,9 +733,17 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 	// 挂起登记同时存 desc：RespondPermission 拒绝时把它记入被拒清单，而不是让
 	// 审核者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
 	h.r.notePending(p.ToolCall.ToolCallID, reqID, text)
-	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
+	req := permRequestFromToolCall(p.ToolCall)
+	if req == nil {
+		h.a.log.Warn("grok 权限请求提取不出结构化载荷，将由 manager 升级人工",
+			"task", h.r.taskID, "perm", p.ToolCall.ToolCallID, "kind", p.ToolCall.Kind)
+	} else {
+		h.a.log.Info("grok 权限请求已结构化", "task", h.r.taskID,
+			"perm", p.ToolCall.ToolCallID, "tool", req.Tool, "paths", len(req.Paths))
+	}
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
-		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID, Text: text})
+		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID,
+		Text: text, Perm: req})
 }
 
 // OnAskQuestion 处置 grok 的交互提问（spec §4.2.3）。
