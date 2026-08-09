@@ -125,6 +125,10 @@ type Manager struct {
 	apInflight map[string]bool
 	apFails    map[string]int
 	apDisabled map[string]bool
+	// stopping 是「接下来这次事件通道关闭是我们自己发起的」的意图标记
+	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
+	mu       sync.Mutex
+	stopping map[string]struct{}
 }
 
 // NewManager 创建任务管理器。
@@ -149,6 +153,7 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 		apFails:    map[string]int{},
 		apDisabled: map[string]bool{},
 		aaCount:    map[string]int{},
+		stopping:   map[string]struct{}{},
 	}
 }
 
@@ -591,6 +596,11 @@ func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许续接返回 store.ErrBadTransit
 //   - Send 失败时任务回迁 waiting_review（审核者可重试指令），并返回该错误
+//
+// 注意：
+//   - Send 撞 ErrTaskNotRunning 时走恢复阶梯（resumeForContinue）：executor
+//     进程已死但会话数据在盘上，冷恢复续上原会话再重试 Send 一次；阶梯全走完
+//     仍不可恢复则回迁 waiting_review，错误带 Outcome.Note 说明原因
 func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (err error) {
 	m.log.Info("continue 进入", "task", taskID)
 	defer func() {
@@ -622,11 +632,99 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 	}
 	if err := ad.Send(ctx, taskID, instructions); err != nil {
-		m.log.Error("续发指令失败", "task", taskID, "cause", err)
-		// 回迁 waiting_review：指令没送达，回到审核者可重试的位置，不让任务死在 running
-		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
-		return fmt.Errorf("续发指令: %w", err)
+		if !errors.Is(err, executor.ErrTaskNotRunning) {
+			// executor 还在，只是这次没打通：保持原语义，回迁让审核者可重试
+			m.log.Error("续发指令失败", "task", taskID, "cause", err)
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
+			return fmt.Errorf("续发指令: %w", err)
+		}
+		m.log.Warn("续发指令时 executor 已不在，进入恢复阶梯", "task", taskID, "cause", err)
+		if rerr := m.resumeForContinue(ctx, taskID, ad); rerr != nil {
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 恢复失败回迁")
+			return rerr
+		}
+		// 重试只做一次：重试的前提是「刚刚成功建立了运行态」，这个前提一次就够
+		// 验证。循环重试只会在 executor 反复启动失败时放大伤害
+		if err := ad.Send(ctx, taskID, instructions); err != nil {
+			m.log.Error("恢复后重试续发仍失败", "task", taskID, "cause", err)
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 恢复后发送失败回迁")
+			return fmt.Errorf("恢复后续发指令: %w", err)
+		}
+		m.log.Info("恢复后续发指令成功，重启中介循环", "task", taskID)
+		go m.mediate(taskID)
 	}
+	return nil
+}
+
+// resumeForContinue 是 continue 撞上「executor 已不在」时的恢复阶梯（spec §5.4）。
+//
+// 与启动恢复的关键差别是 Cold=true：审核者手里正好有一条指令要送，把会话拉起来
+// 立刻有用；而 agentd 启动时冷恢复等于凭空拉起一堆没人跟它说话的 executor。
+//
+// 返回：
+//   - nil: 已拿到可用运行态，调用方可以重试 Send
+//   - 非 nil: 不可恢复，错误里带 Outcome.Note（server 映射 409 时回显给审核者）
+//
+// 注意：
+//   - Mode != reattach 时必须产出 progress 事件：冷恢复换了进程、fresh 断了
+//     上下文，都是审核者需要知道的事实（fresh 直接决定下一条指令要不要重述背景）
+func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad executor.Adapter) error {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	r, ok := ad.(restorer)
+	if !ok {
+		return fmt.Errorf("任务 %s 的执行者不支持恢复，请重新派发: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	execName := task.Executor
+	if execName == "" {
+		execName = m.cfg.Executor.Default
+	}
+	envKVs, eerr := m.env.For(execName)
+	if eerr != nil {
+		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
+	}
+	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
+	out, err := r.Resume(executor.ResumeReq{
+		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
+		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
+		Env: envKVs, Model: task.Model, Cold: true,
+	})
+	if err != nil {
+		m.log.Error("恢复失败", "task", taskID, "cause", err)
+		return fmt.Errorf("恢复任务 %s 执行: %w", taskID, err)
+	}
+	m.log.Info("恢复结果", "task", taskID, "alive", out.Alive, "mode", out.Mode,
+		"session", out.SessionID, "note", out.Note)
+	if !out.Alive {
+		note := out.Note
+		if note == "" {
+			note = "executor 运行态已丢失且无法重建"
+		}
+		return fmt.Errorf("任务 %s 无法恢复：%s", taskID, note)
+	}
+	if out.SessionID != "" && out.SessionID != task.ExecutorSession {
+		if serr := m.st.SetTaskField(taskID, "executor_session", out.SessionID); serr != nil {
+			m.log.Warn("落库新 executor_session 失败", "task", taskID,
+				"session", out.SessionID, "cause", serr)
+		}
+	}
+	// 重连（executor 一直活着）对审核者是无感事件，不打扰；换了进程或断了上下文才播报
+	if out.Mode == executor.ResumeModeReattach {
+		return nil
+	}
+	text := fmt.Sprintf("executor 进程已不在，已重启并从磁盘载入原会话 %s，上下文完整", out.SessionID)
+	if out.Mode == executor.ResumeModeFresh {
+		text = fmt.Sprintf("原会话 %s 已不可载入，已新开会话 %s；上下文从本条指令开始，必要时请在指令中重述背景",
+			task.ExecutorSession, out.SessionID)
+	}
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	if aerr != nil {
+		m.log.Error("追加恢复播报事件失败", "task", taskID, "cause", aerr)
+		return nil // 事件没落住不影响续接本身
+	}
+	m.hub.Publish(evt)
 	return nil
 }
 
@@ -666,8 +764,8 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
-	} else if err := ad.Stop(taskID); err != nil {
-		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+	} else {
+		m.stopExecutor(taskID, ad)
 	}
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
@@ -739,8 +837,8 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	ad, aerr := m.adapterFor(taskID)
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
-	} else if serr := ad.Stop(taskID); serr != nil {
-		m.log.Warn("停止 executor 失败，继续落 failed", "task", taskID, "cause", serr)
+	} else {
+		m.stopExecutor(taskID, ad)
 	}
 
 	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
@@ -905,7 +1003,15 @@ func (m *Manager) mediate(taskID string) {
 	for ev := range events {
 		m.handleEvent(taskCtx, taskID, ev)
 	}
-	m.log.Info("中介循环结束", "task", taskID)
+	// 事件通道关闭 = executor 终结。这是「executor 已不在」最常见的到达口——
+	// 三个 adapter 在进程/连接死亡时都会 closeEvents()。不在这里对账，任务会
+	// 一直停在 running 直到 2h 看门狗（B21 实测：静止 1 小时无任何信号）
+	if m.takeStopping(taskID) {
+		m.log.Info("中介循环结束（主动停止，跳过对账）", "task", taskID)
+		return
+	}
+	m.log.Info("中介循环结束，开始对账", "task", taskID)
+	m.reconcileExecutorGone(taskID, "executor 事件流已终结（进程退出或连接断开）")
 }
 
 // handleEvent 按事件类型分发中介处理，并打每类事件的入口日志。
@@ -1602,28 +1708,11 @@ func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
 // abandonToReview 在确认 executor 已不在时收尾：留下 failed 事件说明原因、
 // 作废挂起工单（避免 attach 继续展示不可能被回答的项）、任务转 waiting_review。
 // 返回收尾后的任务状态。
+//
+// 收尾实现已统一到 reconcileExecutorGone，本函数只负责拼这一句 reason。
 func (m *Manager) abandonToReview(taskID, ticketID string, cause error) proto.TaskState {
-	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
-		m.log.Error("恢复操作：作废挂起工单失败", "task", taskID, "cause", verr)
-	} else if voided > 0 {
-		m.log.Warn("恢复操作：挂起工单作废", "task", taskID, "voided", voided)
-	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
-		FailReason: fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause),
-	})
-	if err != nil {
-		m.log.Error("恢复操作：追加 failed 事件失败", "task", taskID, "cause", err)
-	}
-	if terr := m.transitToReview(taskID); terr != nil {
-		m.log.Error("恢复操作：回迁 waiting_review 失败", "task", taskID, "cause", terr)
-	} else if err == nil {
-		m.hub.Publish(evt)
-	}
-	cur, gerr := m.st.GetTask(taskID)
-	if gerr != nil {
-		return proto.TaskStateWaitingAnswer
-	}
-	return cur.State
+	return reconcileExecutorGone(m.st, m.hub, taskID,
+		fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause), m.log)
 }
 
 // markDelivered 记录「应答已送达 executor」。失败仅 Warn：送达本身已经发生，
@@ -1822,8 +1911,20 @@ func (m *Manager) transitBestEffort(taskID string, to proto.TaskState, reason st
 // 为恢复能力加方法会污染 fake 等全部实现；且 fake 的运行态随进程消亡、本就不该
 // 支持恢复。把恢复作为可选能力（interface 断言）既保住核心契约，又让
 // 「不支持恢复的 adapter 重启后一律按不存活走 failed 恢复路径」成为自然语义。
+//
+// 恢复的数据类型（ResumeReq/ResumeOutcome/Mode 常量）已随本设计挪到
+// internal/executor 包，三个 adapter 与 manager 共用同一套契约。
 type restorer interface {
-	Resume(taskID, taskDir, repoPath, sessionID string) (bool, error)
+	Resume(executor.ResumeReq) (executor.ResumeOutcome, error)
+}
+
+// reaper 是「无内存运行态时按确定性命名兜底回收」的可选 adapter 能力
+// （三个真实 adapter 均实现，fake 不实现）。
+//
+// 为什么单开一个方法而不是让 Stop 自己兜底：Stop 只拿得到 taskID，拿不到 taskDir
+// （proc 信息文件在里面）；给 Stop 加参数会改动五动作核心契约、波及 fake 等全部实现。
+type reaper interface {
+	Reap(taskID, taskDir string) error
 }
 
 // volatilePermitter 表示该 adapter 的权限请求随连接消亡：连接一断，executor 侧
@@ -1884,16 +1985,29 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		}
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	// 恢复时 git 基线捕获与 serve 重建都在任务工作区（worktree 任务的 cwd 是
-	// Workdir 而非主仓库，git -C 在 worktree 上照常工作），统一取 task.Workdir()
-	alive, err := r.Resume(taskID, taskDir, task.Workdir(), task.ExecutorSession)
+	execName := task.Executor
+	if execName == "" {
+		execName = m.cfg.Executor.Default
+	}
+	// env 与 Dispatch 同源：冷恢复重起进程要原样注入（B19），解析失败不阻断
+	// 恢复——热重连根本用不上它，冷恢复用不上时由 adapter 侧自行报错
+	envKVs, eerr := m.env.For(execName)
+	if eerr != nil {
+		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
+	}
+	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
+	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
+	out, err := r.Resume(executor.ResumeReq{
+		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
+		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model, Cold: false,
+	})
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)
 		return false
 	}
-	if alive {
-		m.log.Info("任务执行已重建，重启中介循环", "task", taskID)
+	if out.Alive {
+		m.log.Info("任务执行已重建，重启中介循环", "task", taskID, "mode", out.Mode)
 		go m.mediate(taskID)
 	}
-	return alive
+	return out.Alive
 }

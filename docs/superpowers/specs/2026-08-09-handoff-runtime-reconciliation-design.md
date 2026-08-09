@@ -576,4 +576,23 @@ spike 结论写进本 spec 的实测附录（§11）。claude 若不通过，其
 
 ## 11. 实测附录
 
-（spike 完成后回填：三个 executor 的冷恢复实测结论、命令、模型复述证据。）
+（2026-08-09 真机 spike 回填。环境：devbox 本机，`claude` 2.1.226 /
+`grok` v1.0.0 / `opencode` 1.18.15。三路均「起会话记口令 → 杀进程 → 冷恢复 → 问口令」，
+**通过判据只有一条：模型复述出口令**，日志里的 load/init 成功不算数。）
+
+| executor | 通过 | 会话形态 | 冷恢复命令（要点） | 模型复述证据（原样） | 踩到的坑 |
+|---|---|---|---|---|---|
+| grok | ✅ | `<taskDir>/grokhome/sessions/<urlencode(cwd)>/<session-id>/` 落盘，进程死了目录还在 | 杀 serve 后换新端口重起 serve（`GROK_HOME` 不变），ACP `session/load` 原会话 id | 「ALPACA-7731」（23192 新起进程经 load 承接后回答） | 缺代理：serve 起来但 `https://cli-chat-proxy.grok.com/v1/responses` 请求失败，模型根本不回话。serve.sh 必须注入本机 HTTP 代理（`/Users/sycm/.handoff/env/grok.env`） |
+| opencode | ✅ | 会话在全局 `~/.local/share/opencode/opencode.db`（**不在 per-task 目录**），serve 只是 HTTP 层 | 杀 serve 后换新端口重起 serve（同一全局 db），对同一 session id 直接 `POST /session/{id}/prompt_async` | 「OPOSSUM-4419」（23194 新起进程回答） | 读消息要打 `/session/{id}/message`（单数），`/messages` 不存在会回落到 SPA 首页拿 HTML，误以为只能靠 SSE |
+| claude | ✅ | 会话文件 `~/.claude/projects/<slug(cwd)>/<session-id>.jsonl` 落盘 | 杀 tmux 会话后重起，启动命令 `--session-id <uuid>` 换成 `--resume <uuid>`（`-p --input-format stream-json --output-format stream-json` 与 fifo 喂 stdin 组合成立） | 「CARIBOU-2856」（`--resume` 新进程回答） | 无。`--resume` 与 `--print`/stream-json/fifo 完全兼容；resume 后照常吐 `system/init`（Start 的就绪判据） |
+
+三个结论的共同含义：**executor 的会话上下文全部独立于进程存活而持久化在磁盘上**，
+「进程死了」从来不代表「会话没了」——冷恢复路径完全成立，Task 8/9/10 按计划实现。
+
+**附：Env 不注入的实证（对 spec §3.1 补字段的直接证据）。** grok spike 第一轮（重跑前）
+serve.sh 只导出 `GROK_HOME`/`GROK_AGENT_SECRET`、没带代理，serve 日志出现
+`Settings fetch failed` 与 `error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)`，
+`session/new` 之后模型零回复。注入 `/Users/sycm/.handoff/env/grok.env`（仅 key 名：
+`https_proxy`/`http_proxy`/`NO_PROXY`/`no_proxy`）后同一套流程立刻跑通。这正是「冷恢复
+重起进程不注入 Env，进程能起来、一调模型才失败，且失败得很安静」的真机演示——manager
+侧必须把 `Env` 原样传进 `ResumeReq`（Task 2 落实，值不进日志只打 key 名）。

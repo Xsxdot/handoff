@@ -14,9 +14,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
@@ -217,4 +223,54 @@ func TestNormalDeliveryMarksTicketDelivered(t *testing.T) {
 		undelivered, err := st.UndeliveredAnswers(taskID)
 		return err == nil && len(undelivered) == 0
 	})
+}
+
+// recordingRestorer 记录 Resume 收到的实参，供断言 manager 侧的请求装配。
+type recordingRestorer struct {
+	chanAdapter
+	mu  sync.Mutex
+	got executor.ResumeReq
+}
+
+func (r *recordingRestorer) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = req
+	return executor.ResumeOutcome{}, nil // 不存活：本用例只验请求装配
+}
+
+// TestResumeTaskAssemblesRequest 钉住 ResumeTask 的请求装配：
+// 启动恢复必须 Cold=false（不冷恢复，why 见 spec §4），且 Env/Model 必须传下去
+// ——漏传 Env 会让冷恢复起出一个没有用户密钥的进程，编译照过、只在真机静默失败。
+func TestResumeTaskAssemblesRequest(t *testing.T) {
+	ad := &recordingRestorer{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	// env 文件：<DataDir>/env/dev.env，配置里把 fake 指向它
+	envDir := filepath.Join(m.cfg.DataDir, "env")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "dev.env"), []byte("FOO=bar\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Env = map[string]string{"fake": "dev.env"}
+	m.env = envfile.NewResolver(envfile.Dir(m.cfg.DataDir), m.cfg.Env, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+		Model: "sonnet", State: proto.TaskStateRunning, ExecutorSession: "sess-1"})
+	if alive := m.ResumeTask("t1"); alive {
+		t.Fatalf("Resume 返回不存活时 ResumeTask 应为 false")
+	}
+	ad.mu.Lock()
+	got := ad.got
+	ad.mu.Unlock()
+	if got.Cold {
+		t.Fatalf("启动恢复必须 Cold=false，实际 true")
+	}
+	if got.SessionID != "sess-1" || got.Model != "sonnet" {
+		t.Fatalf("会话/模型未透传: %+v", got)
+	}
+	if len(got.Env) != 1 || got.Env[0] != "FOO=bar" {
+		t.Fatalf("env 未透传（漏传会让冷恢复丢掉用户密钥）: %v", got.Env)
+	}
 }

@@ -277,7 +277,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	// serve 的工作目录（cwd）取 task.Workdir()：worktree 任务的 executor 必须在
 	// worktree 里跑（分支 HEAD 在那里），主仓库 HEAD 停在派发前位置；原地模式
 	// Workdir() 回退 RepoPath，行为与一期一致
-	proc, err := StartServe(ctx, req.Task.Workdir(), req.Task.ID, req.TaskDir, configPath, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), req.Task.ID, req.TaskDir, configPath, req.Env, a.log)
 	if err != nil {
 		return err
 	}
@@ -367,74 +367,6 @@ func (r *runState) captureStartCommit(a *Adapter) {
 	} else {
 		r.startCommit = strings.TrimSpace(string(out))
 	}
-}
-
-// Resume 重建 agentd 重启前已在执行的任务（spec §8「存活则重连 SSE 继续」）：
-// 从任务目录的 serve.json 恢复 serve 连接凭据并探活（tmux 会话存在 + HTTP 应答）；
-// 存活则重建 SSE 订阅、看门狗与事件通道，返回 true。
-//
-// 参数：
-//   - taskID: 任务 ID（tmux 会话名按 handoff-<id8> 确定性推导，与 StartServe 同规则）
-//   - taskDir: 任务目录（serve.json 所在，即 DataDir/tasks/<id>）
-//   - repoPath: 任务仓库路径（重启后重新捕获 git 兜底分类的起点 commit 基线）
-//   - sessionID: 既有 opencode 会话 id（即 task.ExecutorSession）
-//
-// 返回：
-//   - alive: 执行器是否存活；false 时调用方（manager）应把任务迁移
-//     failed/waiting_review 交审核者裁决
-//   - err: 重建失败（serve.json 缺失/损坏、sessionID 为空），此时视为不可恢复
-//
-// 注意：
-//   - sessionID 为空时拒绝恢复：mapEvent 按会话 id 过滤事件，空 id 会把全部
-//     事件当「其他会话」丢弃，静默恢复等于无声断流，宁可交审核者裁决
-//   - 重启时正在进行的回合文本累积在内存里已丢失：重建后的回合从 SSE 重放的新
-//     快照重新累积（partSeen/partSnap 重新对账），idle 分类的 git 基线以重启
-//     时刻的 HEAD 为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项
-//     实测观察
-//   - 与 Start 的对称性：Stop（done 归档）对恢复出来的运行态同样有效，
-//     会 kill 掉 tmux 会话回收资源
-func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive bool, err error) {
-	a.log.Info("adapter 恢复任务执行", "task", taskID, "session", sessionID)
-	defer func() {
-		if err != nil {
-			a.log.Error("adapter 恢复任务失败", "task", taskID, "cause", err)
-		} else if alive {
-			a.log.Info("adapter 任务已恢复", "task", taskID, "session", sessionID)
-		}
-	}()
-
-	if sessionID == "" {
-		return false, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", taskID)
-	}
-	si, err := readServeInfo(taskDir)
-	if err != nil {
-		return false, err
-	}
-	// ServeLogPath 从 taskDir 推导（serve.json 不持久化它）：serve 死亡诊断的
-	// serve.log 尾部读取需要路径，重启恢复的任务同样要能用
-	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession,
-		ServeLogPath: filepath.Join(taskDir, serveLogFileName)}
-	if !proc.Alive() {
-		a.log.Info("恢复探活失败：执行器已不在", "task", taskID, "tmux", proc.TmuxSession)
-		// 回收残留会话：Alive() 为假只说明 serve 进程没了，tmux 会话本身可能
-		// 还被第二窗口的 tail -f render.log 吊着。不回收，每个这类任务都会永久
-		// 遗留一个 tmux 会话 + 一个 tail 进程，而后续再无任何路径会碰它们
-		// （本任务的运行态没建起来，Stop 无从调用）。Kill 幂等，会话早已消失
-		// 时它返回错误也无妨——证据都在磁盘上的 serve.log/render.log 里
-		if kerr := proc.Kill(); kerr != nil {
-			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
-				"task", taskID, "tmux", proc.TmuxSession, "cause", kerr)
-		}
-		return false, nil
-	}
-	r := a.newRun(taskID, taskDir, repoPath)
-	r.session = sessionID
-	r.api = NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)
-	r.handle = procHandle{p: proc}
-	r.captureStartCommit(a)
-	go r.subscribeLoop(a)
-	go a.watchdog(r)
-	return true, nil
 }
 
 // Events 返回任务的事件流通道（Start 后可用；Stop 或执行终结后关闭）。
@@ -1289,9 +1221,11 @@ func (r *runState) cancelPendingIdle() {
 // ask/finish/none，none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空
 // 回合缓冲。
 //
-// 空回合（无累积文本）跳过分类并 Warn：idle 但无文本说明文本流没被本层接住
-// （事件结构变化/增量对账失败）——这是「任务可能静默挂死」的观测点，必须可见
-// 而非 Debug 静默。props 为触发 idle 的 session.status 载荷，仅用于日志上下文。
+// 空回合（无累积文本）不再静默跳过：零文本转失败结果交审核者（B21）——idle 但
+// 无文本说明文本流没被本层接住（事件结构变化/增量对账失败）或供应商流中断，
+// 这是「任务可能静默挂死」的观测点，必须产事件而非 Debug 静默。被拒终止的
+// 空回合例外，它走 question（有内容可问，见下文）。props 为触发 idle 的
+// session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	text := r.turnText()
 	if strings.TrimSpace(text) == "" {
@@ -1308,8 +1242,23 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			r.captureStartCommit(a)
 			return
 		}
-		a.log.Warn("idle 但回合无文本，跳过分类", "task", r.taskID,
+		// 零文本回合转失败结果交审核者（B21）：旧实现在此静默 return，任务停在
+		// running 直到 2h 看门狗。
+		//
+		// 为什么是 result{OK:false} 而不是 question：上面「被拒终止」那条走
+		// question，因为那个现场有内容可问；零文本回合没有任何东西可问，它是一份
+		// 故障报告——result{OK:false} 的语义才对得上，且 FailReason 能把现场
+		// 写清楚。manager 的 handleResult 对 OK=false 的既有处置（作废挂起工单 →
+		// failed 事件 → 落 waiting_review）正是我们要的，continue 立刻可用
+		a.log.Warn("idle 但回合无文本，转失败结果交审核者", "task", r.taskID,
 			"event", turn.TailRunes(string(raw), 120))
+		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
+			OK: false,
+			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
+				"可 continue 续接重试",
+		}})
+		r.clearTurn()
+		r.captureStartCommit(a)
 		return
 	}
 	kind, t := turn.ParseTrailer(text)

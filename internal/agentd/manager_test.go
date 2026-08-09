@@ -1183,9 +1183,10 @@ type fakeVolatileAdapter struct {
 }
 
 func (f *fakeVolatileAdapter) PermissionsVolatile() bool { return true }
-func (f *fakeVolatileAdapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, error) {
+func (f *fakeVolatileAdapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error) {
 	f.resumeCalled = true
-	return true, nil
+	return executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeReattach,
+		SessionID: req.SessionID}, nil
 }
 
 // resumableChanAdapter 是支持 Resume 且权限无状态的假 adapter（模拟 opencode，
@@ -1194,8 +1195,9 @@ type resumableChanAdapter struct {
 	*chanAdapter
 }
 
-func (a *resumableChanAdapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, error) {
-	return true, nil
+func (a *resumableChanAdapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error) {
+	return executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeReattach,
+		SessionID: req.SessionID}, nil
 }
 
 func newResumableChanAdapter() *resumableChanAdapter {

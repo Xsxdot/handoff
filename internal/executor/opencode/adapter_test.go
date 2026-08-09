@@ -545,14 +545,14 @@ func TestSessionReadyProgress(t *testing.T) {
 	}
 }
 
-// TestIdleEmptyTurnSkips 验证空回合 idle 不产出分类事件（仅 Warn 可观测）：
-// 无任何文本 part 时回合文本为空，idle 跳过分类、不阻断流程；session.idle
-// 冗余信号同现也不得触发。
+// TestIdleEmptyTurnSkips 验证空回合 idle 的收尾行为（B21 修复后）：
+// 无任何文本 part 时回合文本为空，idle 必须产出失败结果（交审核者，不再静默
+// 挂到 2h 看门狗）；冗余的 session.idle 信号同现时不得重复产出第二条事件。
 func TestIdleEmptyTurnSkips(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-empty-001", t.TempDir(), t.TempDir())
-	// 先消费会话就绪 progress，再注入空回合 idle（两个冗余信号都推，验证都不触发）
+	// 先消费会话就绪 progress，再注入空回合 idle（两个冗余信号都推，验证只产一条）
 	select {
 	case ev := <-ch:
 		if ev.Type != "progress" {
@@ -565,7 +565,15 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 	fs.push(sessionIdleEvent())
 	select {
 	case ev := <-ch:
-		t.Fatalf("空回合 idle 不应产出分类事件，收到 %+v", ev)
+		if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+			t.Fatalf("空回合 idle 应产出失败结果（B21），实际 %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待空回合失败结果超时")
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("冗余 session.idle 不应再产出第二条事件，收到 %+v", ev)
 	case <-time.After(300 * time.Millisecond):
 	}
 }
@@ -605,10 +613,11 @@ func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 	}
 }
 
-// TestApprovedPermissionEmptyTurnStillSkips 验证修复的边界：只有**被拒**才唤醒。
-// 权限被批准后回合正常继续，此时的空回合 idle（会话瞬时空闲等）仍按原契约忽略，
-// 否则每次批准都会给审核者塞一条无意义的提问。
-func TestApprovedPermissionEmptyTurnStillSkips(t *testing.T) {
+// TestApprovedPermissionEmptyTurnEmitsFailedResult 验证 B21 修复后的边界：
+// 权限被批准后回合正常继续，但若回合最终零文本（供应商流中断/文本流没被接住），
+// idle 产出的是一份故障报告 result{OK:false}，而不是 question——被拒终止才有内容
+// 可问（走 question），零文本回合没有任何可问的，只能按故障报交审核者。
+func TestApprovedPermissionEmptyTurnEmitsFailedResult(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	fs.push(permissionAskedEvent("per-ok-1", "bash", "go test ./..."))
@@ -621,8 +630,11 @@ func TestApprovedPermissionEmptyTurnStillSkips(t *testing.T) {
 	fs.push(statusIdleEvent())
 	select {
 	case ev := <-ch:
-		t.Fatalf("批准后的空回合 idle 不应产出事件，收到 %+v", ev)
-	case <-time.After(300 * time.Millisecond):
+		if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+			t.Fatalf("批准后的零文本回合应产出失败结果（B21），实际 %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待零文本回合失败结果超时")
 	}
 }
 
@@ -1390,5 +1402,53 @@ func TestPermissionAskedNilPermWhenNoStructure(t *testing.T) {
 	ev := <-r.EventsForTest()
 	if ev.Perm != nil {
 		t.Fatalf("无可用字段时必须为 nil，实得 %+v", ev.Perm)
+	}
+}
+
+// quietLogger 返回丢弃所有输出的 logger（与包内 quietLog(t) 同目的，
+// 供不依赖 t 的纯函数级用例直接构造）。
+func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestMapIdleEmptyTurnEmitsFailedResult 空回合必须产出失败结果而不是静默。
+//
+// 现场（B21）：opencode 连做 7 个回合工具调用后，最后一步 step-finish 的
+// reason=unknown、tokens 全 0（供应商流中断），会话随即 idle、零文本。旧实现
+// 只打一条 WARN 就 return，任务停在 running 静止 1 小时，审核者要等 2h 看门狗。
+func TestMapIdleEmptyTurnEmitsFailedResult(t *testing.T) {
+	a := New(quietLogger())
+	r := a.newRun("t1", t.TempDir(), t.TempDir())
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	select {
+	case ev := <-r.evCh:
+		if ev.Type != "result" {
+			t.Fatalf("空回合应产出 result，实际 %s", ev.Type)
+		}
+		if ev.Result == nil || ev.Result.OK {
+			t.Fatalf("空回合应是失败结果: %+v", ev.Result)
+		}
+		if ev.Result.FailReason == "" {
+			t.Fatalf("FailReason 必须写清现场，否则审核者不知道发生了什么")
+		}
+	default:
+		t.Fatalf("空回合静默（无事件产出）——这正是 B21 的缺陷")
+	}
+}
+
+// TestMapIdleRejectedTurnStillAsks 回归：被拒终止的空回合仍走 question，不受本改动影响。
+// 那个现场有内容可问（「我拒了这些权限，接下来怎么办」），零文本回合没有。
+func TestMapIdleRejectedTurnStillAsks(t *testing.T) {
+	a := New(quietLogger())
+	r := a.newRun("t1", t.TempDir(), t.TempDir())
+	r.noteRejected("perm-1")
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	select {
+	case ev := <-r.evCh:
+		if ev.Type != "question" {
+			t.Fatalf("被拒终止的空回合应仍走 question，实际 %s", ev.Type)
+		}
+	default:
+		t.Fatalf("被拒终止的空回合应产出事件")
 	}
 }

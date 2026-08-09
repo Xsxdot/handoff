@@ -78,6 +78,10 @@ type Proc struct {
 	ServeLogPath string
 }
 
+// startServe 是 StartServe 的测试缝（与 tmuxKill 同手法）：冷恢复测试替换它
+// 断言「起 serve」是否被调用，绕开真实 tmux + opencode 二进制。
+var startServe = StartServe
+
 // StartServe 在 tmux 内启动 opencode serve 并等待就绪。
 //
 // 参数：
@@ -178,20 +182,32 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 // 注意：探测是全副「tmux session + HTTP」，两者缺一即视为死亡——tmux 会话在但
 // serve 进程已退出（如崩溃）时 HTTP 探活会失败，反之亦然。
 func (p *Proc) Alive() bool {
-	if exec.Command("tmux", "has-session", "-t", p.TmuxSession).Run() != nil {
+	if !tmuxHasSession(p.TmuxSession) {
 		return false
 	}
 	return p.probeHTTP()
+}
+
+// tmuxKill 是 tmux kill-session 的测试缝（与 claudecode 同手法）：测试替换它
+// 断言 Reap 回收的会话名，绕开真实 tmux server。
+var tmuxKill = func(session string) error {
+	return exec.Command("tmux", "kill-session", "-t", session).Run()
+}
+
+// tmuxHasSession 是 tmux has-session 探活的测试缝（与 claudecode 同手法）：测试
+// 替换它绕开真实 tmux，判定「会话存在」的语义不变。
+var tmuxHasSession = func(session string) bool {
+	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
 }
 
 // Kill 销毁 tmux 会话（连同其内的 opencode serve）。
 //
 // 幂等：会话已不存在（已被外部清理）时返回 nil。
 func (p *Proc) Kill() error {
-	err := exec.Command("tmux", "kill-session", "-t", p.TmuxSession).Run()
+	err := tmuxKill(p.TmuxSession)
 	if err != nil {
 		// 会话不存在视为已清理，不报错；其余错误（权限、tmux 未运行）如实上报
-		if exec.Command("tmux", "has-session", "-t", p.TmuxSession).Run() != nil {
+		if !tmuxHasSession(p.TmuxSession) {
 			return nil
 		}
 		return fmt.Errorf("kill tmux session %s: %w", p.TmuxSession, err)

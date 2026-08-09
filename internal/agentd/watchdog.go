@@ -219,28 +219,7 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		}
 		failed++
 		log.Info("执行器已不在，任务转 waiting_review 交审核者", "task", t.ID, "alive", false, "state", t.State)
-		evt, err := st.AppendEvent(t.ID, proto.EventTypeFailed, failedPayload{FailReason: "agentd 重启后执行器已不在"})
-		if err != nil {
-			log.Error("追加恢复失败事件失败", "task", t.ID, "cause", err)
-			continue
-		}
-		if err := recoverTransit(st, t.ID, t.State); err != nil {
-			log.Error("恢复失败任务迁移 waiting_review 失败", "task", t.ID, "cause", err)
-			continue
-		}
-		// 作废该任务的挂起工单（P1-16）：executor 已不存在，attach 里的挂起项
-		// 「一操作就撞 P0-5」（reply 走 RelayAnswer 因无运行态失败返回 502）。
-		// answer 置 VoidAnswer 后 PendingTickets（answer IS NULL）天然不再返回，
-		// 审核者看到的是「无挂起项」而非可操作的假象；作废原因已由上方 failed
-		// 事件留痕，工单历史仍在事件时间线里。hub 侧等待者随进程消亡不存在，
-		// 无需清理
-		voided, err := st.VoidPendingTickets(t.ID)
-		if err != nil {
-			log.Error("作废恢复失败任务挂起工单失败", "task", t.ID, "cause", err)
-		} else if voided > 0 {
-			log.Info("作废任务挂起工单", "task", t.ID, "voided", voided)
-		}
-		hub.Publish(evt)
+		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log)
 	}
 	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)
 	return nil

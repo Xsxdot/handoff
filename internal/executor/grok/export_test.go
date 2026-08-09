@@ -86,6 +86,14 @@ func FinishTurnForTest(a *Adapter, r *runState, stopReason, turnText string) {
 // NoteAskedViaToolForTest 模拟 OnAskQuestion 已在本回合转交过一个提问。
 func NoteAskedViaToolForTest(r *runState) { r.noteAskedViaTool() }
 
+// SwapTmuxKillForTest 替换包级 tmux kill 执行点并返回恢复函数（供 Reap 测试
+// 断言回收的会话名，绕开真实 tmux server）。
+func SwapTmuxKillForTest(fn func(session string) error) func() {
+	old := tmuxKill
+	tmuxKill = fn
+	return func() { tmuxKill = old }
+}
+
 func mustJSONString(s string) string {
 	b, err := json.Marshal(s)
 	if err != nil { // 测试辅助：入参是自己写的字面量，编不出来就是写错了

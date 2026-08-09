@@ -121,3 +121,22 @@ func mustRecv(t *testing.T, r *runState) executor.AdapterEvent {
 		return executor.AdapterEvent{}
 	}
 }
+
+// TestFallbackClassifyEmptyTextEmitsFailedResult 兜底分支的空文本守卫。
+//
+// 旧实现在无新提交时 emit question 携带回合文本，文本为空时产出的是一张**空工单**
+// ——审核者收到一个没有内容的问题，除了瞎猜什么也做不了。零文本是故障，按故障报。
+func TestFallbackClassifyEmptyTextEmitsFailedResult(t *testing.T) {
+	a, r := newTestRun(t)
+	r.session = "sess-1"
+	// repoPath=/repo 不是 git 仓库，GitTurnStatus 失败 → hasNew=false，走进兜底
+	a.fallbackClassify(r, "")
+
+	ev := mustRecv(t, r)
+	if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+		t.Fatalf("零文本且无新提交应产出失败结果，实际 %s %+v", ev.Type, ev.Result)
+	}
+	if ev.Result.FailReason == "" {
+		t.Fatalf("FailReason 必须写清现场，否则审核者不知道发生了什么")
+	}
+}

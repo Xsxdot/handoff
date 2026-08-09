@@ -132,7 +132,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := StartServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
 	if err != nil {
 		return err
 	}
@@ -469,6 +469,16 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		if askedViaTool {
 			a.log.Info("回合无收尾协议，但本回合已走工具提问，兜底不再补工单",
 				"task", r.taskID)
+			return
+		}
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle
+		// 的空回合处置对称）
+		if strings.TrimSpace(text) == "" {
+			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+				Result: &executor.Result{OK: false, SessionID: r.sessionID,
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
 			return
 		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})

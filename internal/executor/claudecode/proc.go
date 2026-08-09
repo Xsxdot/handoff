@@ -72,6 +72,9 @@ var fifoReaderTimeout = 5 * time.Second
 //   - Env 来自 executor.StartReq.Env（manager 按任务执行者从 env 文件解析），
 //     已解析已展开。**不读它会静默失效**：漏传编译照过、用户配的代理/密钥在
 //     脚本里根本不出现——见 Global Constraints 与 proc_test 的钉子测试
+//   - Resume=true 时启动命令用 --resume（载入既有会话）而非 --session-id
+//     （建一个这个 id 的新会话）。两者语义相反，写错的表现是「日志说恢复成功、
+//     模型却什么都不记得」
 type StartProcReq struct {
 	RepoPath     string
 	TaskID       string
@@ -81,6 +84,7 @@ type StartProcReq struct {
 	SettingsPath string
 	MCPPath      string
 	Env          []string
+	Resume       bool
 }
 
 // Proc 描述一个运行中的 claude 进程句柄。
@@ -94,6 +98,10 @@ type Proc struct {
 	TaskDir     string
 	SessionID   string
 }
+
+// startProc 是 StartProc 的测试缝（与 tmuxKill/tmuxHasSession 同手法）：冷恢复
+// 测试替换它断言「起进程」是否被调用、注入错误，绕开真实 tmux + claude 二进制。
+var startProc = StartProc
 
 // StartProc 备物料、起 tmux 会话与渲染窗口，返回进程句柄。
 //
@@ -192,7 +200,11 @@ func writeRunScript(taskDir string, req StartProcReq) (string, error) {
 	if req.Model != "" {
 		args.WriteString(" --model " + req.Model)
 	}
-	args.WriteString(" --session-id " + req.SessionID)
+	if req.Resume {
+		args.WriteString(" --resume " + req.SessionID)
+	} else {
+		args.WriteString(" --session-id " + req.SessionID)
+	}
 	args.WriteString(" --setting-sources user,project")
 	args.WriteString(" --settings " + shellq.Quote(req.SettingsPath))
 	args.WriteString(" --mcp-config " + shellq.Quote(req.MCPPath))

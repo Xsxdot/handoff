@@ -189,7 +189,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 
 	// 1. 裁决 socket：必须先于 claude 进程存在——claude 加载 mcp.json 会立刻拉起
 	// permission-mcp 子进程连它，socket 未就绪会让子进程一直重试（fail-closed）
-	perm, err := newPermServer(sockPath, a.log, func(ask permAsk) { a.onPermissionAsk(r, ask) })
+	perm, err := newPermServerFn(sockPath, a.log, func(ask permAsk) { a.onPermissionAsk(r, ask) })
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 
 	// 3. 进程：Env 必须原样透传（见 StartProcReq.Env 的注意）
-	proc, err := StartProc(ctx, StartProcReq{
+	proc, err := startProc(ctx, StartProcReq{
 		RepoPath:     req.Task.Workdir(),
 		TaskID:       req.Task.ID,
 		TaskDir:      req.TaskDir,
@@ -395,84 +395,6 @@ func (a *Adapter) Stop(taskID string) (err error) {
 	}
 	a.drop(taskID)
 	return nil
-}
-
-// Resume 恢复 agentd 重启前已在执行的任务（manager 的 restorer 可选接口）。
-//
-// 存活判据（本 adapter 与 opencode 的关键差异）：tmux has-session **不可用**
-// ——窗口 1 的 tail -f render.log 会一直活着，claude 早死了会话依然存在
-// （opencode 靠 HTTP 探活兜住这一点，claude 没有这个面）。判据是两条，缺一
-// 即视为死亡：
-//  1. out.jsonl 中不含 handoff_exit 哨兵（含则进程已退，带退出码）
-//  2. tmux 会话存在（会话都没了，进程一定没了）
-//
-// 参数：
-//   - taskID: 任务 ID（tmux 会话名按 handoff-<id8> 确定性推导，与 StartProc 同规则）
-//   - taskDir: 任务目录（claude.json 所在，即 DataDir/tasks/<id>）
-//   - repoPath: 任务仓库路径（重启后重新捕获 git 兜底分类的起点 commit 基线）
-//   - sessionID: 既有 claude 会话 id（即 task.ExecutorSession）
-//
-// 返回：
-//   - alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
-//   - err: 重建失败（claude.json 缺失/损坏、sessionID 为空），视为不可恢复
-//
-// 注意：
-//   - 恢复出的运行态与 Start 对称：Stop（done 归档）对其同样有效
-//   - 挂起权限不需要在此重建应答：MCP 子进程（claude 拉起的）会自行重连
-//     perm.sock 重登记同一 tool_use_id，manager 侧 ticket 按 id 幂等去重
-func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive bool, err error) {
-	a.log.Info("claude adapter 恢复任务执行", "task", taskID, "session", sessionID)
-	defer func() {
-		if err != nil {
-			a.log.Error("claude adapter 恢复任务失败", "task", taskID, "cause", err)
-		} else if alive {
-			a.log.Info("claude adapter 任务已恢复", "task", taskID, "session", sessionID)
-		}
-	}()
-
-	if sessionID == "" {
-		return false, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", taskID)
-	}
-	pi, err := readProcInfo(taskDir)
-	if err != nil {
-		return false, err
-	}
-	proc := &Proc{TmuxSession: pi.TmuxSession, TaskDir: taskDir, SessionID: sessionID}
-
-	// 判据 1：哨兵在 → 进程已退（带退出码），交审核者裁决
-	if exited, code := procExited(filepath.Join(taskDir, outFileName)); exited {
-		a.log.Info("恢复探活失败：claude 已退出（哨兵）", "task", taskID,
-			"tmux", pi.TmuxSession, "code", code)
-		// 回收残留会话：窗口 1 的 tail -f 会一直吊着 tmux 会话，不回收即成孤儿
-		if kerr := proc.Kill(); kerr != nil {
-			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
-				"task", taskID, "tmux", pi.TmuxSession, "cause", kerr)
-		}
-		return false, nil
-	}
-	// 判据 2：tmux 会话都没了，进程一定没了
-	if !tmuxHasSession(pi.TmuxSession) {
-		a.log.Info("恢复探活失败：tmux 会话已不存在", "task", taskID, "tmux", pi.TmuxSession)
-		return false, nil
-	}
-
-	// 存活：重建运行态——tailer 从已消费 offset 续读（已消费回合不重放），
-	// 重开 perm.sock（MCP 子进程会重连重登记），重启看门狗
-	r := a.newRun(taskID, taskDir, repoPath)
-	r.session = sessionID
-	r.proc = proc
-	r.startOffset = pi.Offset
-	perm, err := newPermServer(filepath.Join(taskDir, sockFileName), a.log,
-		func(ask permAsk) { a.onPermissionAsk(r, ask) })
-	if err != nil {
-		a.drop(taskID)
-		return false, err
-	}
-	r.perm = perm
-	r.captureStartCommit(a)
-	go r.streamLoop(a)
-	go a.watchdog(r)
-	return true, nil
 }
 
 // 看门狗参数：
@@ -739,6 +661,16 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
 		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle、
+		// grok finishTurn 的空回合处置对称）
+		if strings.TrimSpace(text) == "" {
+			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
+				Result: &executor.Result{OK: false, SessionID: r.session,
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
+			return
+		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
