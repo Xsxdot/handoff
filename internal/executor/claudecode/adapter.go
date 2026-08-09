@@ -105,8 +105,10 @@ type runState struct {
 	lastProgress time.Time
 	startCommit  string // 本回合起点 commit（git 兜底分类的基线，每回合结束后刷新）
 	turnEnded    bool   // 本回合是否已收尾（handoff_exit code=0 判断用）
+	exitHandled  bool   // 哨兵已处理（mapExit）：streamLoop 退出时不得再补一条失败 result
 	ready        chan struct{}
 	readyOnce    sync.Once
+	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=claude.json 持久化的 offset）
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -222,8 +224,9 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 	r.proc = proc
 
-	// 4. 事件流主循环（内部从 offset 0 起读，遇 init 关闭 r.ready）
+	// 4. 事件流主循环（内部从 offset 0 起读，遇 init 关闭 r.ready）+ 存活兜底看门狗
 	go r.streamLoop(a)
+	go a.watchdog(r)
 
 	// 5. 等 init（claude 冷启动要加载 settings/plugins/MCP 子进程，30s 上限）
 	select {
@@ -384,6 +387,122 @@ func (a *Adapter) Stop(taskID string) (err error) {
 	return nil
 }
 
+// Resume 恢复 agentd 重启前已在执行的任务（manager 的 restorer 可选接口）。
+//
+// 存活判据（本 adapter 与 opencode 的关键差异）：tmux has-session **不可用**
+// ——窗口 1 的 tail -f render.log 会一直活着，claude 早死了会话依然存在
+// （opencode 靠 HTTP 探活兜住这一点，claude 没有这个面）。判据是两条，缺一
+// 即视为死亡：
+//  1. out.jsonl 中不含 handoff_exit 哨兵（含则进程已退，带退出码）
+//  2. tmux 会话存在（会话都没了，进程一定没了）
+//
+// 参数：
+//   - taskID: 任务 ID（tmux 会话名按 handoff-<id8> 确定性推导，与 StartProc 同规则）
+//   - taskDir: 任务目录（claude.json 所在，即 DataDir/tasks/<id>）
+//   - repoPath: 任务仓库路径（重启后重新捕获 git 兜底分类的起点 commit 基线）
+//   - sessionID: 既有 claude 会话 id（即 task.ExecutorSession）
+//
+// 返回：
+//   - alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
+//   - err: 重建失败（claude.json 缺失/损坏、sessionID 为空），视为不可恢复
+//
+// 注意：
+//   - 恢复出的运行态与 Start 对称：Stop（done 归档）对其同样有效
+//   - 挂起权限不需要在此重建应答：MCP 子进程（claude 拉起的）会自行重连
+//     perm.sock 重登记同一 tool_use_id，manager 侧 ticket 按 id 幂等去重
+func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (alive bool, err error) {
+	a.log.Info("claude adapter 恢复任务执行", "task", taskID, "session", sessionID)
+	defer func() {
+		if err != nil {
+			a.log.Error("claude adapter 恢复任务失败", "task", taskID, "cause", err)
+		} else if alive {
+			a.log.Info("claude adapter 任务已恢复", "task", taskID, "session", sessionID)
+		}
+	}()
+
+	if sessionID == "" {
+		return false, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", taskID)
+	}
+	pi, err := readProcInfo(taskDir)
+	if err != nil {
+		return false, err
+	}
+	proc := &Proc{TmuxSession: pi.TmuxSession, TaskDir: taskDir, SessionID: sessionID}
+
+	// 判据 1：哨兵在 → 进程已退（带退出码），交审核者裁决
+	if exited, code := procExited(filepath.Join(taskDir, outFileName)); exited {
+		a.log.Info("恢复探活失败：claude 已退出（哨兵）", "task", taskID,
+			"tmux", pi.TmuxSession, "code", code)
+		// 回收残留会话：窗口 1 的 tail -f 会一直吊着 tmux 会话，不回收即成孤儿
+		if kerr := proc.Kill(); kerr != nil {
+			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
+				"task", taskID, "tmux", pi.TmuxSession, "cause", kerr)
+		}
+		return false, nil
+	}
+	// 判据 2：tmux 会话都没了，进程一定没了
+	if !tmuxHasSession(pi.TmuxSession) {
+		a.log.Info("恢复探活失败：tmux 会话已不存在", "task", taskID, "tmux", pi.TmuxSession)
+		return false, nil
+	}
+
+	// 存活：重建运行态——tailer 从已消费 offset 续读（已消费回合不重放），
+	// 重开 perm.sock（MCP 子进程会重连重登记），重启看门狗
+	r := a.newRun(taskID, taskDir, repoPath)
+	r.session = sessionID
+	r.proc = proc
+	r.startOffset = pi.Offset
+	perm, err := newPermServer(filepath.Join(taskDir, sockFileName), a.log,
+		func(ask permAsk) { a.onPermissionAsk(r, ask) })
+	if err != nil {
+		a.drop(taskID)
+		return false, err
+	}
+	r.perm = perm
+	r.captureStartCommit(a)
+	go r.streamLoop(a)
+	go a.watchdog(r)
+	return true, nil
+}
+
+// 看门狗参数：
+//   - watchdogInterval：兜底探活周期。主信号是哨兵（随事件流到达，无需轮询）；
+//     这一路只防「会话被外部 kill、哨兵也没写成」的情况
+//   - watchdogFailThreshold：连续 3 次探活失败才判死，吸收抖动不误杀正常任务
+const (
+	watchdogInterval      = 2 * time.Second
+	watchdogFailThreshold = 3
+)
+
+// watchdog 是 claude 存活兜底看门狗：周期探活（tmux 会话 + 无哨兵），连续
+// watchdogFailThreshold 次失败判定死亡，取消运行 ctx 让 streamLoop 退出——
+// failed 结果由 streamLoop 统一产出（哨兵路径则由 mapExit 产出），保持
+// 「事件通道只有一个写入者」的关闭权约定。
+func (a *Adapter) watchdog(r *runState) {
+	failures := 0
+	ticker := time.NewTicker(watchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-r.runCtx.Done():
+			return
+		case <-ticker.C:
+			if r.proc != nil && r.proc.Alive() {
+				failures = 0
+				continue
+			}
+			failures++
+			if failures >= watchdogFailThreshold {
+				a.log.Error("claude 探活失败达阈值，判定死亡", "task", r.taskID, "failures", failures)
+				r.runCancel()
+				return
+			}
+		}
+	}
+}
+
 // streamLoop 是单任务的事件流主循环（唯一持有 evCh 关闭权的 goroutine）：
 // 从 offset 0 起读 out.jsonl → mapMessage 逐条映射产出 AdapterEvent；顺带每
 // persistOffsetEvery 持久化一次 claude.json 的 offset（agentd 重启后续读的依据）。
@@ -397,7 +516,7 @@ func (r *runState) streamLoop(a *Adapter) {
 		}
 		a.log.Info("claude 事件流退出", "task", r.taskID)
 	}()
-	tl := newTailer(filepath.Join(r.taskDir, outFileName), 0, a.log)
+	tl := newTailer(filepath.Join(r.taskDir, outFileName), r.startOffset, a.log)
 	var lastPersist time.Time
 	err := tl.Run(r.runCtx, func(m streamMsg) {
 		// offset 持久化节流：高频文本增量下不每行都写盘
@@ -417,6 +536,10 @@ func (r *runState) streamLoop(a *Adapter) {
 	case <-r.stopCh:
 		return // 正常 Stop 关停：静默退出，不产事件
 	default:
+	}
+	// 哨兵已由 mapExit 处理并产出终态：退出不再补事件（否则双重 result）
+	if r.exitHandled {
+		return
 	}
 	tail := claudeLogTail(r.taskDir)
 	if err != nil {
@@ -629,7 +752,8 @@ func (a *Adapter) mapExit(r *runState, m streamMsg) {
 		}})
 	}
 	// 无论正常与否，进程都已不在：回收 tmux 会话（窗口 1 的 tail 会一直吊着会话）
-	// 并结束事件流
+	// 并结束事件流。exitHandled 让 streamLoop 退出时不再补一条失败 result。
+	r.exitHandled = true
 	if r.proc != nil {
 		if kerr := r.proc.Kill(); kerr != nil {
 			a.log.Warn("哨兵后回收 tmux 会话失败", "task", r.taskID, "cause", kerr)

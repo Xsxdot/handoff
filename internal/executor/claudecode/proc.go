@@ -325,6 +325,28 @@ func (p *Proc) Kill() error {
 	return nil
 }
 
+// tmuxHasSession 是 tmux has-session 探活的测试缝（与 cmd/attach.go 的 execveFn
+// 同手法）：测试替换它绕开真实 tmux，判定「会话存在」的语义不变。
+var tmuxHasSession = func(session string) bool {
+	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
+}
+
+// Alive 检查 claude 进程是否仍然存活：tmux 会话存在且 out.jsonl 不含死亡哨兵。
+//
+// 注意：探测是全副「tmux 会话 + 无哨兵」，两者缺一即视为死亡——**tmux 会话在
+// 但 claude 已退**是本 adapter 最易误判为存活的场景（窗口 1 的 tail -f 会一直
+// 吊着会话），靠哨兵兜住（opencode 用 HTTP 探活，claude 没有这个面）。
+func (p *Proc) Alive() bool {
+	if p == nil || p.TmuxSession == "" {
+		return false
+	}
+	if !tmuxHasSession(p.TmuxSession) {
+		return false
+	}
+	exited, _ := procExited(filepath.Join(p.TaskDir, outFileName))
+	return !exited
+}
+
 // procInfo 是 claude 进程恢复凭据的持久化形态，agentd 重启后凭它探活与续读。
 type procInfo struct {
 	TmuxSession string `json:"tmux_session"`
