@@ -32,13 +32,18 @@ func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 	if len(settings.Permissions.Deny) != 0 {
 		t.Errorf("deny 必须留空（黑名单归 manager 升级审核者），实际 %v", settings.Permissions.Deny)
 	}
-	for _, want := range []string{"Bash(rm:*)", "Bash(sudo:*)", "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)"} {
+	for _, want := range []string{"Write", "Edit", "Bash(rm:*)", "Bash(sudo:*)", "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)"} {
 		if !contains(settings.Permissions.Ask, want) {
 			t.Errorf("ask 缺少危险模式 %q（少一条就是静默放行）", want)
 		}
 	}
 	if !contains(settings.Permissions.Allow, "Bash") {
 		t.Errorf("allow 应兜底放行 Bash，实际 %v", settings.Permissions.Allow)
+	}
+	for _, want := range []string{"Write", "Edit"} {
+		if contains(settings.Permissions.Allow, want) {
+			t.Errorf("allow 不得再放行 %q——那等于写仓库外路径不经任何人（B27）", want)
+		}
 	}
 
 	// mcp.json：裁决工具指向 handoff 二进制 + 本任务 socket
@@ -101,4 +106,13 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestWriteEditNotInAllow 锁死 B27：写文件类工具不得回到 allow 表。
+func TestWriteEditNotInAllow(t *testing.T) {
+	for _, r := range allowRules {
+		if r == "Write" || r == "Edit" {
+			t.Fatalf("%s 不得出现在 allowRules——那等于写仓库外路径不经任何人（B27）", r)
+		}
+	}
 }
