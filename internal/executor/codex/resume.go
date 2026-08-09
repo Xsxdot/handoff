@@ -10,9 +10,9 @@
 //   - 不改任务状态：Resume 只如实返回结论，状态迁移归 manager
 //
 // codex 的两个结构性优势（相对 grok）：
-//   1. rollout 落在用户级 ~/.codex/sessions/**，agentd 重启、甚至 app-server
-//      进程重启后 thread 都还在盘上，冷恢复不依赖任务目录里的会话数据
-//   2. 没有凭据软链要修（复用用户级 home，凭据零副本），冷恢复路径短一截
+//  1. rollout 落在用户级 ~/.codex/sessions/**，agentd 重启、甚至 app-server
+//     进程重启后 thread 都还在盘上，冷恢复不依赖任务目录里的会话数据
+//  2. 没有凭据软链要修（复用用户级 home，凭据零副本），冷恢复路径短一截
 package codex
 
 import (

@@ -105,9 +105,9 @@ func (h *PermTableHandle) TakeForTest(id string) (string, bool) {
 	pp, ok := h.t.take(id)
 	return pp.desc, ok
 }
-func (h *PermTableHandle) VoidAllForTest() int           { return h.t.voidAll() }
+func (h *PermTableHandle) VoidAllForTest() int             { return h.t.voidAll() }
 func (h *PermTableHandle) NoteRejectedForTest(desc string) { h.t.noteRejected(desc) }
-func (h *PermTableHandle) TakeRejectedForTest() []string { return h.t.takeRejected() }
+func (h *PermTableHandle) TakeRejectedForTest() []string   { return h.t.takeRejected() }
 
 // RejectedTurnQuestionForTest 暴露被拒清单的问题渲染。
 func RejectedTurnQuestionForTest(r []string) string { return rejectedTurnQuestion(r) }

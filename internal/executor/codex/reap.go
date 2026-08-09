@@ -2,8 +2,9 @@
 //
 // 职责：按 serve.json 或确定性会话名回收 tmux 会话，不留孤儿进程。
 // 边界：不删任务目录、不碰 worktree（那是归档与 B15 的职责）；
-//       **不删 ~/.codex/sessions**——那是 codex 自己的会话历史，删了会破坏
-//       用户本人的 `codex resume`（spec §5.5）。
+//
+//	**不删 ~/.codex/sessions**——那是 codex 自己的会话历史，删了会破坏
+//	用户本人的 `codex resume`（spec §5.5）。
 package codex
 
 import "log/slog"
