@@ -77,6 +77,8 @@ declare global {
     }
     __monacoEditorE2E?: MonacoE2EProbe
     __e2ePtyAppliedSizeReadDelayMs?: number
+    // Handoff 桌面控制面窄 IPC（由 preload/handoff.ts 暴露）。
+    handoff?: import('../preload/handoff-api-types').HandoffRendererAPI
   }
 }
 

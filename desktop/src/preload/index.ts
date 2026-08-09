@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { preloadE2EConfig } from './e2e-config'
 import { glApi } from './gitlab'
+import { exposeHandoffApi } from './handoff'
 import type { AppIdentity } from '../shared/app-identity'
 import type {
   DashboardRevealAgentArgs,
@@ -4926,3 +4927,6 @@ if (process.contextIsolated) {
   // @ts-ignore (define in dts)
   window.api = api
 }
+
+// Handoff 桌面控制面窄 IPC：window.handoff（独立于 Orca 全局 API）。
+exposeHandoffApi()

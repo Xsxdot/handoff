@@ -27,6 +27,7 @@ import { registerRuntimeEnvironmentHandlers } from './runtime-environments'
 import { registerEphemeralVmHandlers } from './ephemeral-vm'
 import { registerAiVaultHandlers } from './ai-vault'
 import { registerNativeChatHandlers } from './native-chat'
+import { registerHandoffIpcFromConfig } from '../handoff/register-handoff-ipc'
 import { registerNotificationHandlers } from './notifications'
 import { registerNotebookHandlers } from './notebook'
 import { registerOnboardingHandlers } from './onboarding'
@@ -229,4 +230,6 @@ export function registerCoreHandlers(
   registerClipboardHandlers(store)
   registerUpdaterHandlers(store)
   registerSpeechHandlers(store)
+  // Handoff 桌面控制面窄 IPC（独立于 Orca 全局 store）。
+  registerHandoffIpcFromConfig()
 }
