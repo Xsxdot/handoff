@@ -1164,3 +1164,79 @@ func (a *envRecordingAdapter) Start(ctx context.Context, req executor.StartReq) 
 	a.gotEnv = req.Env
 	return a.Adapter.Start(ctx, req)
 }
+
+// fakeVolatileAdapter 是权限随连接消亡的假 adapter（模拟 grok）。
+type fakeVolatileAdapter struct {
+	*chanAdapter
+	resumeCalled bool
+}
+
+func (f *fakeVolatileAdapter) PermissionsVolatile() bool { return true }
+func (f *fakeVolatileAdapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, error) {
+	f.resumeCalled = true
+	return true, nil
+}
+
+// resumableChanAdapter 是支持 Resume 且权限无状态的假 adapter（模拟 opencode，
+// 不实现 PermissionsVolatile）。
+type resumableChanAdapter struct {
+	*chanAdapter
+}
+
+func (a *resumableChanAdapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, error) {
+	return true, nil
+}
+
+func newResumableChanAdapter() *resumableChanAdapter {
+	return &resumableChanAdapter{chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+}
+
+// seedTaskWithPendingPermissionTicket 建一个 running 任务并挂一张未应答的权限工单。
+func seedTaskWithPendingPermissionTicket(t *testing.T, st *store.Store, taskID, executorName string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: executorName,
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: taskID + ":perm-1", TaskID: taskID, Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate","permission":"Bash: ls"}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+}
+
+// TestResumeRefusedWhenVolatilePermitterHasPendingTicket 固定 spec §5.2：
+// grok 类 adapter 若任务尚有未决权限工单，agentd 重启后不得恢复——实测
+// session/load 只恢复会话历史，不恢复未决授权请求，恢复了也永远不会前进。
+func TestResumeRefusedWhenVolatilePermitterHasPendingTicket(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	taskID := "t-volatile"
+	seedTaskWithPendingPermissionTicket(t, st, taskID, "grok")
+
+	ad := &fakeVolatileAdapter{chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m.ads["grok"] = ad
+
+	if alive := m.ResumeTask(taskID); alive {
+		t.Error("有未决权限工单时必须拒绝恢复")
+	}
+	if ad.resumeCalled {
+		t.Error("必须在调用 adapter.Resume 之前就拒绝，避免建立一条永远不会前进的连接")
+	}
+}
+
+// TestResumeUnaffectedForNonVolatileAdapter 保证 opencode 不被这条规则波及：
+// 它的权限应答是无状态 HTTP，agentd 重启后仍可应答。
+func TestResumeUnaffectedForNonVolatileAdapter(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	taskID := "t-stateless"
+	seedTaskWithPendingPermissionTicket(t, st, taskID, "opencode")
+
+	ad := newResumableChanAdapter()
+	m.ads["opencode"] = ad
+
+	if alive := m.ResumeTask(taskID); !alive {
+		t.Error("无状态权限的 adapter 不应受未决工单影响")
+	}
+}

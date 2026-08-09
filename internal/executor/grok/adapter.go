@@ -418,20 +418,6 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	}
 }
 
-// watchdog 是 serve 存活看门狗。占位实现：只等事件通道关闭即退出；
-// 完整的探活节奏（快慢双档 + 连续失败判死）由 resume.go（Task 7）替换。
-func (a *Adapter) watchdog(r *runState) {
-	for {
-		r.emitMu.Lock()
-		closed := r.evClosed
-		r.emitMu.Unlock()
-		if closed {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
 // onClosed 是 ACP 连接终止的唯一处置入口。
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
