@@ -43,11 +43,11 @@
              {"optionId":"reject-once","name":"No, and tell Grok what to do differently","kind":"reject_once"}]}}
 ```
 
-| 权限请求会被 grok 超时掉 | ❌ 悬挂 1194s 无任何超时/取消消息，连接与进程存活 | §5.1 实验一 |
-| 延迟应答仍被接受 | ✅ 悬挂 90s 后补发 `allow-once`，工具执行、文件生成、`end_turn` 收尾 | §5.1 实验二 |
+| 权限请求会被 grok 超时掉 | ❌ 悬挂 1200s 后补应答仍被接受、工具执行、`end_turn` 收尾 | §5.1 |
+| 重连后未决权限会被重发 | ❌ **不会**，`session/load` 成功但权限不重发、工具永不执行 | §5.2 |
+| 任务级 home 的 `auth.json` 软链稳定 | ❌ 会在 token 刷新前后消失，随后 `session/new` 报 `Authentication required` | §3.3 |
 
-未验证、留给实现首步的：**WS 断开重连 + `session/load` 后，断线前未决的权限请求是否
-会被重发**（见 §5.2）。
+前置 spike 已全部收口，**无遗留未验证项**。
 
 ## 2. 核心决策（已确认）
 
@@ -115,8 +115,21 @@ exec grok agent serve --bind 127.0.0.1:<freePort> 2>&1 | tee -a <taskDir>/serve.
 
 ### 3.3 任务级 GROK_HOME 与第 0 层分级
 
-`GROK_HOME = <taskDir>/grokhome`，纯净：只软链真实 `~/.grok/auth.json`（否则无法登录），
+`GROK_HOME = <taskDir>/grokhome`，纯净：只引入真实 `~/.grok/auth.json`（否则无法登录），
 其余全部由 handoff 生成。
+
+**auth.json 的引入方式与已实测的坑**：spike 中任务级 home 的 `auth.json` **软链在一次
+token 刷新前后消失了**（只剩 `auth.json.lock`），随后 `session/new` 直接返回
+`{"code":-32000,"message":"Authentication required","data":"no auth method id provided"}`；
+重建软链即恢复，单次会话不会再破坏它。因此纪律是：
+
+- **仍用软链而非拷贝**：拷贝会让每个任务 home 各自持有一份凭据并**独立刷新**，而刷新令牌
+  轮换可能反噬用户本人的登录态——凭据只应有一个权威副本；
+- **Start 与 Resume 都必须先确保软链就位**（缺失/断链则重建，指向 `~/.grok/auth.json`），
+  这一步是幂等的，成本为零；
+- **auth 失败必须是可操作的 Start 错误**：`session/new` 返回 `Authentication required` 时，
+  Start 以「grok 未登录或凭据已失效，请在本机跑 `grok login` 后重试」失败，不做静默重试
+  ——凭据问题重试一万次也不会好。
 
 `<taskDir>/grokhome/config.toml`（0600）：
 
@@ -167,7 +180,8 @@ allow = ["Edit", "Write"]
 
 ### 4.1 Start
 
-1. 建 `grokhome`、软链 `auth.json`、写 `config.toml` 与 `run_grok.sh`
+1. 建 `grokhome`、**确保 `auth.json` 软链就位**（缺失/断链则重建，见 §3.3）、写
+   `config.toml` 与 `run_grok.sh`
 2. `tmux new-session -d -s handoff-<id8> -c <repoPath> "sh <taskDir>/run_grok.sh"`
 3. 开渲染窗口（窗口 1）
 4. **就绪判定 = HTTP 端口可连**（阈值 15s，超时读 `serve.log` 尾部带进错误并 kill 会话
@@ -222,13 +236,18 @@ opencode 的 `idleGraceDefault` / `scheduleIdle` / `resolveIdle` / `cancelPendin
 
 ```
 WS 断开
-  → 作废挂起表（此时不 emit，任务未必已死）
-  → 按退避重连
-     ├─ 重连成功 → session/load → 未决权限能否复原取决于 §5.2 的结论
-     │              ├─ grok 会重发 → 新 id 重新登记，CreateTicket 按 id 幂等，审核者无感
-     │              └─ 不重发     → 该任务已卡死等应答 → emit result{OK:false}（唯一出口）
-     └─ 重连耗尽 → emit result{OK:false}（唯一出口）
+  → 挂起表非空？
+     ├─ 是 → 该回合已永久卡死（§5.2 实测：重连不会重发权限）
+     │        → 作废挂起表 → emit result{OK:false, FailReason:"权限应答通道中断"}（唯一出口）
+     └─ 否 → 按退避重连
+              ├─ 重连成功 → session/load → 继续消费事件（无损恢复）
+              └─ 重连耗尽 → emit result{OK:false}（唯一出口）
 ```
+
+**why 挂起表非空就直接终结、不再尝试重连**：§5.2 实测证明 `session/load` 恢复的只是会话
+历史，不恢复未决授权请求——grok 侧那次工具调用已经永久卡在等应答。此时重连成功反而更
+危险：adapter 会以为一切正常，而任务实际上再也不会前进。宁可立刻转 failed 让审核者
+`continue` 重开一轮。
 
 看门狗的探活判死是**独立**通道：它判死时同样 emit `result{OK:false}`，与上面的出口靠
 `closeEvents` 的一次性语义互斥（先到者终结，后到者被丢弃），不会双重终结。
@@ -268,9 +287,10 @@ opencode 的 `reapRetained` 节奏与放弃上限。
 
 ### 4.6 Resume（agentd 重启恢复）
 
-读 `serve.json` → **HTTP 端口探活**判存活 → WS 重连 → `session/load{sessionId, cwd}` →
-重建事件循环，返回 `alive=true`；探活失败或凭据缺失返回 `alive=false`，manager 按现有
-逻辑转 failed 交审核者裁决。
+读 `serve.json` → **该任务有未决权限工单？有则直接 `alive=false`**（§5.2：重连救不回，
+`session/load` 只恢复历史不恢复授权请求）→ 否则 **HTTP 端口探活**判存活 → 确保 auth 软链
+就位（§3.3）→ WS 重连 → `session/load{sessionId, cwd}` → 重建事件循环，返回 `alive=true`；
+探活失败或凭据缺失返回 `alive=false`，manager 按现有逻辑转 failed 交审核者裁决。
 
 **存活判据必须是端口探活，不能用 `tmux has-session`**：窗口 1 的 `tail -f` 会一直活着，
 serve 早死了会话依然存在。这正是 claude adapter 需要自造死亡哨兵的原因；grok 有 HTTP 面
@@ -285,33 +305,33 @@ serve 早死了会话依然存在。这正是 claude adapter 需要自造死亡�
 ACP 权限是 agent→client 的**阻塞式**请求，而 handoff 的审核者可能过夜才裁决——若 grok
 侧对未应答请求有超时，该工具调用会失败，「人工慢裁决」模型在 grok 上就不成立。
 
-两次实验，结论**分开陈述**（未合并为单次端到端跑通，措辞不越过证据）：
-
-| 实验 | 做法 | 结果 |
-|------|------|------|
-| 一：超时探测 | 收到权限请求后悬挂 **1194s（≈20min）** 不应答 | grok **未发送任何超时/取消消息**，WS 连接与 serve 进程全程存活 |
-| 二：延迟应答 | 悬挂 **90s** 后补发 `allow-once` | **被接受**：工具执行 `exit_code:0`、目标文件真的生成、回合 `stopReason:end_turn` 正常收尾 |
-
-> 实验一原本也带补应答验证，但脚本自身缺陷（两个协程同时 `recv` 触发 `ConcurrencyError`，
-> 异常退出把连接关了）使那一半结论作废——补应答虽已发出，grok 没机会处理。故拆成实验二
-> 单独验证，并另跑一次干净的 20 分钟复核。
+实测（单次端到端）：收到权限请求后**悬挂 1200s（20min）不应答**，期间 grok 未发送任何
+超时/取消消息、WS 与 serve 全程存活；到点补发 `allow-once` → **被接受**，工具执行
+`exit_code:0`、目标文件真的生成、回合 `stopReason:end_turn` 正常收尾。
 
 **对设计的影响**：主路径不需要任何超时降级机制（不需要「临近超时先回 `reject-once`、
 裁决回来再 `continue` 重新触发」那套）。
 
 **仍不能推断为无限期**：20 分钟不等于 8 小时。跨天场景不依赖单条连接长活——§4.6 的
-Resume（端口探活 + `session/load`）与 §4.2.2 的断开处置是独立兜底，即便某天 grok 加了
-超时或连接被网络层掐断，任务也不会静默卡死。
+Resume 与 §4.2.2 的断开处置是独立兜底，即便某天 grok 加了超时或连接被网络层掐断，任务
+也不会静默卡死（会走 failed 交审核者，不会假装在跑）。
 
-### 5.2 重连后未决权限是否重发（未验）
+### 5.2 重连后未决权限不会被重发（已验，结论：保守路径是唯一实现）
 
-WS 断开重连 + `session/load` 后，断线前未决的 `session/request_permission` 会不会被重发？
+实测：收到 `session/request_permission` 后**不应答直接断开 WS** → 重连 → `initialize` →
+`session/load{sessionId,cwd}` **返回成功** → 观察 90s，**未收到任何重发的权限请求**，
+目标文件始终未生成（工具永远卡在等应答）。
 
-- **会重发**：挂起表自然重建，`CreateTicket` 按 id 幂等去重，审核者不被重复唤醒；
-- **不重发**：模型会永久卡在等应答。退路是 **Resume 时若发现该任务有未决权限工单，
-  直接判 `alive=false` 转 failed 交审核者**——保守，但不会留下永久静止的任务。
+**这一条把设计从二选一收敛成单一路径**：
 
-写一条回归测试打这个点。不能靠猜（与 claude spec §5.4 同一处理方式）。
+- 挂起权限一旦随连接失效，**grok 侧那次工具调用就永久卡死了**，`session/load` 恢复的只是
+  会话历史，不恢复未决的授权请求；
+- 因此 **§4.2.2 的「grok 会重发」分支不存在**，重连成功也救不回该回合；
+- **Resume 时若该任务有未决权限工单，直接判 `alive=false`**，manager 按现有逻辑转 failed
+  交审核者裁决（审核者可 `continue` 重新发起一轮）。保守，但不会留下一个假装在跑、
+  实则永久静止的任务。
+
+回归测试固定这条结论（挂起表非空 + 连接重建 ⇒ 必须 emit failed，不得静默重连了事）。
 
 ## 6. 前置依赖：`internal/executor/turn`
 
@@ -370,7 +390,8 @@ case "grok":
 | 挂起权限遇 WS 断开 | 全体作废；是否终结取决于重连结果，`result{OK:false}` 至多一次（§4.2.2） |
 | `session/prompt` 返回非 `end_turn` | failed，`FailReason` 带 `stopReason` |
 | 未知 `session/update` 类型 | Debug 跳过，绝不 panic（executor 侧输出不可信） |
-| `auth.json` 软链目标不存在 | Start 失败并明示「grok 未登录，先跑 `grok login`」 |
+| `auth.json` 软链缺失/断链 | Start 与 Resume 均先重建软链（幂等，见 §3.3），不报错 |
+| `session/new` 返回 `Authentication required` | Start 失败并明示「grok 未登录或凭据失效，先跑 `grok login`」；**不重试** |
 | tmux 未安装 | Start 失败并明示（与 opencode 同） |
 
 ## 9. 测试策略
@@ -388,7 +409,8 @@ case "grok":
     （顺序错会让 grok 报 `a value is required for '--single'`，见 §7）
 - **集成**：假 ACP server（Go 起 WebSocket 服务按脚本回报文）跑完整五动作，不烧 token。
   手法对齐 opencode 的 `proc_script_unix_test`。
-- **策略验证**（实现首步）：§5.2 的重连后未决权限是否重发，写回归测试固定结论。
+- **回归钉子**：§5.2 的结论必须被测试固定——挂起表非空 + 连接断开 ⇒ **必须** emit
+  `result{OK:false}`，不得静默重连了事；Resume 见未决权限工单 ⇒ **必须** `alive=false`。
 - **真机验收**：本机 dispatch 真任务，走通「权限升级 → 审核者批 → `continue` 改一轮 →
   `done`」，`attach` 确认两窗口都活。
 
