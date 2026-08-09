@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -167,8 +168,8 @@ func TestMergeNewerEntriesFailsClosed(t *testing.T) {
 }
 
 // TestResetAuthLinkNoWindowOnFailure 钉住 resetAuthLink 的原子复位契约：
-// 复位失败（构造 home 目录不可写，MkdirTemp 建不出临时名字）时，任务侧原文件
-// 必须仍在、内容未变——证明不存在「先删后建」的破链窗口。
+// 复位失败（Symlink 建不出软链）时，任务侧原文件必须仍在、内容未变——证明
+// 不存在「先删后建」的破链窗口。
 //
 // 旧实现是「先 Remove(link) 再 Symlink(link)」两步：Symlink 一旦失败，home 里的
 // auth.json 就消失了，下一轮巡检 os.Lstat 报错直接 return、永不重试，任务从此
@@ -180,13 +181,12 @@ func TestResetAuthLinkNoWindowOnFailure(t *testing.T) {
 	if err := os.WriteFile(link, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(home, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	// 必须还原，否则 t.TempDir 的清理会失败
-	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	// 注入点必须让 Symlink 失败而 Remove 仍能成功——否则旧的两步实现在第一步
+	// 就被挡住，窗口根本不会被走到，用例形同虚设。超长 target 触发
+	// ENAMETOOLONG，而目录保持可写。
+	tooLong := "/" + strings.Repeat("a", 2000)
 
-	resetAuthLink(link, "authority-target", slog.Default())
+	resetAuthLink(link, tooLong, slog.Default())
 
 	got, err := os.ReadFile(link)
 	if err != nil {
@@ -195,9 +195,11 @@ func TestResetAuthLinkNoWindowOnFailure(t *testing.T) {
 	if string(got) != string(original) {
 		t.Errorf("复位失败后原文件内容被改了：%s", got)
 	}
-	if fi, err := os.Lstat(link); err != nil {
-		t.Fatal(err)
-	} else if fi.Mode()&os.ModeSymlink != 0 {
-		t.Errorf("复位失败后不应产生软链")
+	// 临时软链不许残留
+	ents, _ := os.ReadDir(home)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), "handoff-link-") {
+			t.Errorf("残留临时软链: %s", e.Name())
+		}
 	}
 }
