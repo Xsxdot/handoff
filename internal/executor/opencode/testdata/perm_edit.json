@@ -1,0 +1,19 @@
+{
+  "id": "per_fe659a5d600133LAw4KJte24Nc",
+  "sessionID": "ses_019a66f11ffe7VGcAHNK6Pka96",
+  "permission": "edit",
+  "patterns": [
+    "probe.md"
+  ],
+  "metadata": {
+    "filepath": "/Users/sycm/.handoff/worktrees/4030564e/probe.md",
+    "diff": "Index: /Users/sycm/.handoff/worktrees/4030564e/probe.md\n===================================================================\n--- /Users/sycm/.handoff/worktrees/4030564e/probe.md\n+++ /Users/sycm/.handoff/worktrees/4030564e/probe.md\n@@ -0,0 +1,1 @@\n+probe\n\\ No newline at end of file\n"
+  },
+  "always": [
+    "*"
+  ],
+  "tool": {
+    "messageID": "msg_fe659918c0018aagCsvjIR5eH8",
+    "callID": "call_00_v2EiYy0H6HBVOnS5bH8U0347"
+  }
+}

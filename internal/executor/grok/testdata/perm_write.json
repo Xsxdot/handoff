@@ -1,0 +1,43 @@
+{
+  "sessionId": "019fe659-8b12-7631-b308-73fec301994d",
+  "toolCall": {
+    "toolCallId": "call-c37c9cdc-06d5-4616-96ae-4753030315e6-0",
+    "kind": "edit",
+    "title": "Write `/Users/sycm/.handoff/worktrees/a2e10493/probe.md`",
+    "rawInput": {
+      "variant": "Write",
+      "file_path": "/Users/sycm/.handoff/worktrees/a2e10493/probe.md",
+      "content": "probe\n"
+    },
+    "_meta": {
+      "x.ai/tool": {
+        "version": 1,
+        "name": "write",
+        "kind": "write",
+        "namespace": "opencode",
+        "label": "Write",
+        "read_only": false,
+        "input": {
+          "path": "/Users/sycm/.handoff/worktrees/a2e10493/probe.md"
+        }
+      }
+    }
+  },
+  "options": [
+    {
+      "optionId": "allow-edits-session",
+      "name": "Yes, allow all edits during this session",
+      "kind": "allow_always"
+    },
+    {
+      "optionId": "allow-once",
+      "name": "Yes",
+      "kind": "allow_once"
+    },
+    {
+      "optionId": "reject-once",
+      "name": "No, and tell Grok what to do differently",
+      "kind": "reject_once"
+    }
+  ]
+}

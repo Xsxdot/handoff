@@ -1,0 +1,24 @@
+{
+  "id": "per_fe659643f001fkQKvCRHH5oz61",
+  "sessionID": "ses_019aab697ffeiGFrHBfxoVln7B",
+  "permission": "bash",
+  "patterns": [
+    "sleep 2",
+    "tail -5 /tmp/spike-grok/serve.log 2>/dev/null",
+    "echo \"---probe---\"",
+    "curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:23191/ 2>&1"
+  ],
+  "metadata": {
+    "command": "sleep 2; tail -5 /tmp/spike-grok/serve.log 2>/dev/null; echo \"---probe---\"; curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:23191/ 2>&1"
+  },
+  "always": [
+    "sleep *",
+    "tail *",
+    "echo *",
+    "curl *"
+  ],
+  "tool": {
+    "messageID": "msg_fe659526a001cy4RiPDJhAwKe9",
+    "callID": "call_00_ET_E8NfHsx3LIOfbQ5pevdt6789"
+  }
+}

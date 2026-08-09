@@ -1,0 +1,10 @@
+{
+  "tool_use_id": "tool_JRfpU36dUqoODLyOnNfc0fWl",
+  "tool_name": "Edit",
+  "input": {
+    "file_path": "/Users/sycm/.handoff/worktrees/9fce125c/probe.md",
+    "old_string": "probe\n",
+    "new_string": "probe\nsecond line\n",
+    "replace_all": false
+  }
+}

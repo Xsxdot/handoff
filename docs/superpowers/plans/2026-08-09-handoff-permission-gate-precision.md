@@ -54,7 +54,12 @@
 
 ---
 
-## Task 1: 真机载荷探针取样
+## Task 1: 真机载荷探针取样 ✅ 已完成（2026-08-09）
+
+> **本 task 已在 devbox 真机跑完，结论文档：`docs/superpowers/plans/2026-08-09-permission-payload-probe.md`。**
+> 九份 testdata 已落盘并提交，Task 7/8/9 的字段名已按结论改写完毕，派发时**跳过本 task**。
+> 探针结论推翻了两条计划假设：grok 的 `toolCall.kind` 分不出 Write/Edit（改用 `rawInput.variant`），
+> opencode 的 `edit` 不该翻成 `ask`（越界写入已由 `external_directory` 拦住）。
 
 **为什么必须先做**：grok 与 opencode 的文件类权限载荷形态**未知**（opencode 的 `edit` 现为 allow，从未产生过 edit 的 `permission.asked`，连样本都不存在）。本项目已经在 grok 的 `_x.ai/ask_user_question` 应答形态上猜错过两次，两次都靠真机才发现。本 task 只取样，**不改任何产品代码**。
 
@@ -70,7 +75,7 @@
 
 **远端约定**（与本项目既有做法一致）：devbox `100.73.238.21`，用户 `sycm`，免密 ssh，项目目录 `/Users/sycm/workspace/handoff`；agentd 跑在 tmux 会话 `agentd`，日志 tee 到 `~/.handoff/agentd.log`；本地 CLI 用 `--target devbox`。**homebrew 在 `/Users/sycm/.homebrew`，非交互 ssh 拿不到它**——要用 tmux 请写全路径，或直接 grep `~/.handoff/agentd.log`。
 
-- [ ] **Step 1: 在本地临时把三个 adapter 的写文件工具改成 ask（不提交）**
+- [x] **Step 1: 在本地临时把三个 adapter 的写文件工具改成 ask（不提交）**
 
 ```bash
 cd /Users/xushixin/workspace/handoff
@@ -86,7 +91,7 @@ git diff --stat
 
 Expected: 三个文件都有改动。**这些改动稍后要还原，不要提交。**
 
-- [ ] **Step 2: 构建并部署到 devbox**
+- [x] **Step 2: 构建并部署到 devbox**
 
 ```bash
 cd /Users/xushixin/workspace/handoff && go build -o /tmp/handoff-probe . && \
@@ -96,7 +101,7 @@ cd /Users/xushixin/workspace/handoff && go build -o /tmp/handoff-probe . && \
 
 注意：**不要用 `pkill -f "handoff agentd"` 之外的更宽模式**——本项目实证过 `pkill -f` 会匹配到 tmux server 自身保留的 argv，把整个 tmux server 连同所有 executor 会话一起杀掉（backlog B24）。
 
-- [ ] **Step 3: 重启 agentd 并确认起来了**
+- [x] **Step 3: 重启 agentd 并确认起来了**
 
 ```bash
 ssh sycm@100.73.238.21 '/Users/sycm/.homebrew/bin/tmux kill-session -t agentd 2>/dev/null; \
@@ -107,7 +112,7 @@ ssh sycm@100.73.238.21 '/Users/sycm/.homebrew/bin/tmux kill-session -t agentd 2>
 
 Expected: 日志出现 agentd 启动行。
 
-- [ ] **Step 4: 对每个 executor 各派发一个「只写一个文件」的任务**
+- [x] **Step 4: 对每个 executor 各派发一个「只写一个文件」的任务**
 
 计划正文（三个任务共用，写进本地临时文件后 dispatch）：
 
@@ -127,7 +132,7 @@ done
 
 Expected: 三个任务 id，各自随后进入 `waiting_answer`（写文件触发了权限门）。
 
-- [ ] **Step 5: 抓三份原始载荷**
+- [x] **Step 5: 抓三份原始载荷**
 
 各 adapter 记录载荷的位置不同，三条都要看：
 
@@ -147,7 +152,7 @@ ssh sycm@100.73.238.21 'grep "adapter 产出权限事件" ~/.handoff/agentd.log 
 - `internal/executor/grok/testdata/perm_write.json`
 - `internal/executor/opencode/testdata/perm_edit.json`
 
-- [ ] **Step 6: 顺带验证 opencode 的 `external_directory: "ask"` 是否真的拦得住绝对路径写入**
+- [x] **Step 6: 顺带验证 opencode 的 `external_directory: "ask"` 是否真的拦得住绝对路径写入**
 
 对 opencode 那个任务追加一轮指令（spec §1.3 的待验项）：
 
@@ -159,7 +164,7 @@ handoff continue <opencode-task-id> --target devbox --message '用 Write 工具�
 
 Expected（二选一，都要如实记录）：任务再次进 `waiting_answer`（说明 `external_directory` 生效），或直接写成功无工单（说明它拦不住绝对路径写入）。
 
-- [ ] **Step 7: 归档三个探针任务并还原临时改动**
+- [x] **Step 7: 归档三个探针任务并还原临时改动**
 
 ```bash
 for id in <三个任务 id>; do handoff done "$id" --target devbox; done
@@ -172,7 +177,7 @@ git status --short
 
 Expected: 三个 taskenv.go 干净，只剩三份 testdata 是新增。
 
-- [ ] **Step 8: 写结论文档**
+- [x] **Step 8: 写结论文档**
 
 `docs/superpowers/plans/2026-08-09-permission-payload-probe.md` 必须逐 adapter 回答四个问题：
 
@@ -183,7 +188,7 @@ Expected: 三个 taskenv.go 干净，只剩三份 testdata 是新增。
 
 外加一条：opencode 的 `external_directory: "ask"` 对绝对路径写入是否生效（Step 6 的结论）。
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 cd /Users/xushixin/workspace/handoff
@@ -1892,7 +1897,11 @@ Write/Edit 移出 allowRules 进 askRules：留在 allow 里等于写
 
 ## Task 8: grok adapter 结构提取与规则表
 
-> **前置**：Task 1 的探针结论文档给出 grok 载荷里工具名与路径的**确切字段名**。本 task 的字段名一律以该文档为准，不得沿用本计划的示例名。若结论是「无法可靠提取路径」，跳过 Step 4–5，并在 Task 10 记 backlog。
+> **Task 1 已完成，结论见 `docs/superpowers/plans/2026-08-09-permission-payload-probe.md` §2。字段名以下面正文为准（已按真机样本改写完毕），不必再去猜：**
+>
+> - 工具名取 `toolCall.rawInput.variant`（`"Write"` / `"SearchReplace"`），缺失时回落 `toolCall._meta["x.ai/tool"].kind`（`"write"` / `"edit"`）。**不要用 `toolCall.kind`**——它对 Write 和 Edit 一律是 `"edit"`，区分不出来。
+> - 路径取 `toolCall.rawInput.file_path`。**绝对与相对都真实出现过**（见 `testdata/perm_edit_relative.json`），相对路径的解析在 Task 3 的 `InScope` 里已经实现，本 task 只需把原样的路径串传过去，不要在这里自作主张拼接。
+> - Step 4 的规则表改动**保留**：grok 的 `allowRules` 里留着 `Edit`/`Write` 等于这些事件根本不产生。探针期间置空 `allowRules` 实测未出现「默认全 ask」的连环唤醒。
 
 **Files:**
 - Modify: `internal/executor/grok/adapter.go`（`OnPermission`、新增提取函数）
@@ -1905,39 +1914,75 @@ Write/Edit 移出 allowRules 进 askRules：留在 allow 里等于写
 
 - [ ] **Step 1: 写失败测试**
 
-在 `internal/executor/grok/perm_test.go` 追加（**字段名按 Task 1 结论替换**）：
+在 `internal/executor/grok/perm_test.go` 追加。注意 testdata 是 `session/request_permission`
+的 **params 本体**（顶层就是 `sessionId` / `toolCall` / `options`，没有 `params` 外层）：
 
 ```go
-// TestPermRequestFromToolCall 用 Task 1 真机取样的载荷断言结构提取。
+// TestPermRequestFromToolCall 用 Task 1 真机取样的三份载荷断言结构提取。
 //
-// 本用例的字段名全部来自 testdata/perm_write.json 这份真机样本——
-// grok 的载荷形态在本项目已经猜错过两次，不再手写想象中的形状。
+// 字段名全部来自真机样本（testdata/perm_*.json）——grok 的载荷形态在本项目
+// 已经猜错过两次，不再手写想象中的形状。三份样本各锁一件事：
+//   - perm_write.json          Write，绝对路径
+//   - perm_edit_absolute.json  Edit，绝对路径
+//   - perm_edit_relative.json  Edit，**相对路径**（真机确实会给相对路径）
 func TestPermRequestFromToolCall(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "perm_write.json"))
-	if err != nil {
-		t.Fatalf("读真机载荷样本: %v", err)
+	cases := []struct {
+		file     string
+		wantTool executor.PermTool
+		wantPath string
+	}{
+		{"perm_write.json", executor.PermToolWrite, "/Users/sycm/.handoff/worktrees/a2e10493/probe.md"},
+		{"perm_edit_absolute.json", executor.PermToolEdit, "/Users/sycm/.handoff/worktrees/a2e10493/probe.md"},
+		{"perm_edit_relative.json", executor.PermToolEdit, "probe.md"},
 	}
-	var p struct {
-		Params struct {
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", c.file))
+			if err != nil {
+				t.Fatalf("读真机载荷样本: %v", err)
+			}
+			var p struct {
+				ToolCall permToolCall `json:"toolCall"`
+			}
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("解析真机载荷样本: %v", err)
+			}
+			req := permRequestFromToolCall(p.ToolCall)
+			if req == nil {
+				t.Fatal("真机写文件载荷必须能提取出结构")
+			}
+			if req.Tool != c.wantTool {
+				t.Fatalf("工具名 = %q，期望 %q", req.Tool, c.wantTool)
+			}
+			if len(req.Paths) != 1 || req.Paths[0] != c.wantPath {
+				t.Fatalf("路径 = %v，期望 [%s]（相对路径必须原样透传，解析交给 permgate）",
+					req.Paths, c.wantPath)
+			}
+		})
+	}
+}
+
+// TestPermRequestToolCallKindIsUseless 锁死一条真机教训：toolCall.kind 对
+// Write 和 Edit 一律是 "edit"，不能拿它当工具名来源。这条用例存在的意义是
+// 让任何一个想「简化成读 kind」的后来者立刻红。
+func TestPermRequestToolCallKindIsUseless(t *testing.T) {
+	for _, f := range []string{"perm_write.json", "perm_edit_absolute.json"} {
+		raw, err := os.ReadFile(filepath.Join("testdata", f))
+		if err != nil {
+			t.Fatalf("读真机载荷样本: %v", err)
+		}
+		var p struct {
 			ToolCall struct {
-				Title    string          `json:"title"`
-				RawInput json.RawMessage `json:"rawInput"`
-				Kind     string          `json:"kind"`
+				Kind string `json:"kind"`
 			} `json:"toolCall"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(raw, &p); err != nil {
-		t.Fatalf("解析真机载荷样本: %v", err)
-	}
-	req := permRequestFromToolCall(p.Params.ToolCall.Kind, p.Params.ToolCall.RawInput)
-	if req == nil {
-		t.Fatal("真机写文件载荷必须能提取出结构")
-	}
-	if req.Tool != executor.PermToolWrite && req.Tool != executor.PermToolEdit {
-		t.Fatalf("写文件载荷的工具名应归一化为 write/edit，实得 %q", req.Tool)
-	}
-	if len(req.Paths) == 0 {
-		t.Fatal("写文件载荷必须能提取出目标路径")
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("解析: %v", err)
+		}
+		if p.ToolCall.Kind != "edit" {
+			t.Fatalf("%s 的 toolCall.kind = %q，真机实测两者都是 \"edit\"；"+
+				"若 grok 改了形态，本用例与 permRequestFromToolCall 都要复核", f, p.ToolCall.Kind)
+		}
 	}
 }
 
@@ -1949,7 +1994,7 @@ func TestPermRequestBashKeepsFullCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造入参: %v", err)
 	}
-	req := permRequestFromToolCall("execute", in)
+	req := permRequestFromToolCall(permToolCall{Kind: "execute", RawInput: in})
 	if req == nil || req.Command != long {
 		t.Fatalf("命令必须取完整原文，实得 %+v", req)
 	}
@@ -1957,7 +2002,7 @@ func TestPermRequestBashKeepsFullCommand(t *testing.T) {
 
 // TestPermRequestNilWhenNoStructure 提取不出结构时返回 nil，不伪造空壳。
 func TestPermRequestNilWhenNoStructure(t *testing.T) {
-	if req := permRequestFromToolCall("", json.RawMessage(`{}`)); req != nil {
+	if req := permRequestFromToolCall(permToolCall{RawInput: json.RawMessage(`{}`)}); req != nil {
 		t.Fatalf("无可用字段时必须返回 nil，实得 %+v", req)
 	}
 }
@@ -1970,77 +2015,121 @@ Expected: 编译失败 `undefined: permRequestFromToolCall`。
 
 - [ ] **Step 3: 实现提取并接进 OnPermission**
 
+先把 `OnPermission` 里那个匿名的 toolCall 结构体提成具名类型（测试要复用它）：
+
 ```go
+// permToolCall 是 ACP session/request_permission 里 toolCall 的可用子集。
+//
+// 字段取舍全部来自 Task 1 的真机取样（testdata/perm_*.json），逐条理由：
+//   - Kind 是 toolCall.kind：**不能**用来分辨工具，真机实测 Write 与 Edit
+//     都是 "edit"。留着只是为了给命令类（"execute")做兜底归一化。
+//   - RawInput.Variant 才是可分辨的工具名（"Write" / "SearchReplace"）。
+//   - Meta 是 rawInput 缺 variant 时的回落来源（_meta["x.ai/tool"].kind
+//     给 "write" / "edit"）。
+type permToolCall struct {
+	ToolCallID string          `json:"toolCallId"`
+	Kind       string          `json:"kind"`
+	Title      string          `json:"title"`
+	RawInput   json.RawMessage `json:"rawInput"`
+	Meta       struct {
+		XAI struct {
+			Kind string `json:"kind"`
+		} `json:"x.ai/tool"`
+	} `json:"_meta"`
+}
+
 // permRequestFromToolCall 从 ACP toolCall 提取结构化权限载荷。
 //
 // 参数：
-//   - kind: toolCall 的工具类别原文（字段名与取值见 Task 1 探针结论文档）
-//   - rawInput: 该次工具调用的原始入参
+//   - tc: 一次 session/request_permission 的 toolCall 本体
 //
 // 返回：结构化载荷；关键字段缺失时返回 nil（不伪造空壳，manager 会
 // fail-closed 升级人工）
 //
-// 注意：命令取 rawInput 的完整原文，不取 toolCall.title——title 是
-// render.log 的行摘要、带 200 截断，命令尾部可能正藏着危险片段。
-func permRequestFromToolCall(kind string, rawInput json.RawMessage) *executor.PermRequest {
-	tool := executor.NormalizePermTool(kind)
+// 注意：
+//   - 命令取 rawInput.command 的完整原文，不取 toolCall.title——title 是
+//     render.log 的行摘要、带 200 截断，命令尾部可能正藏着危险片段。
+//   - 路径**原样透传**，不在这里展开相对路径。真机样本里 Edit 给过相对
+//     路径 "probe.md"，展开成绝对路径是 permgate 的 InScope 的职责（它
+//     知道任务工作目录，adapter 不知道）。
+func permRequestFromToolCall(tc permToolCall) *executor.PermRequest {
 	// 命令类：取 command 全文
-	if cmd := rawCommand(rawInput); cmd != "" {
+	if cmd := rawCommand(tc.RawInput); cmd != "" {
+		tool := executor.NormalizePermTool(tc.Kind)
 		if tool == executor.PermToolOther {
 			tool = executor.PermToolBash
 		}
 		return &executor.PermRequest{Tool: tool, Command: cmd}
 	}
-	// 文件类：取目标路径（字段名以 Task 1 探针结论为准）
-	if paths := rawPaths(rawInput); len(paths) > 0 {
-		if tool == executor.PermToolOther {
-			tool = executor.PermToolWrite
-		}
+	// 文件类：先定工具名，再取路径
+	if paths := rawPaths(tc.RawInput); len(paths) > 0 {
+		tool := fileToolOf(tc)
 		return &executor.PermRequest{Tool: tool, Paths: paths}
 	}
 	return nil
 }
 
+// fileToolOf 判定文件类工具究竟是 write 还是 edit。
+//
+// 为什么不能读 toolCall.kind：2026-08-09 真机实测，Write 与 Edit 的
+// toolCall.kind 都是 "edit"（见 testdata/perm_write.json）。用它做判据会把
+// 每一次整文件覆写误报成局部编辑。可分辨的来源只有两处，按可靠性排序：
+//  1. rawInput.variant —— "Write" / "SearchReplace"
+//  2. _meta["x.ai/tool"].kind —— "write" / "edit"
+//
+// 两处都缺时保守取 write：write 的破坏面更大，宁可按更严的那个判。
+func fileToolOf(tc permToolCall) executor.PermTool {
+	var in struct {
+		Variant string `json:"variant"`
+	}
+	if len(tc.RawInput) > 0 && json.Unmarshal(tc.RawInput, &in) == nil {
+		switch in.Variant {
+		case "Write":
+			return executor.PermToolWrite
+		case "SearchReplace", "Edit":
+			return executor.PermToolEdit
+		}
+	}
+	if t := executor.NormalizePermTool(tc.Meta.XAI.Kind); t != executor.PermToolOther {
+		return t
+	}
+	return executor.PermToolWrite
+}
+
 // rawPaths 从 rawInput 提取文件类工具的目标路径。
 //
-// 字段名来自 Task 1 的真机探针（testdata/perm_write.json），**不是推断**。
-// 多个候选字段名依次尝试，是因为 grok 对不同文件类工具可能用不同键名——
-// 探针结论文档里列出的每一个都要在此覆盖。
+// 字段名 file_path 来自 Task 1 的真机探针（testdata/perm_write.json 与
+// perm_edit_*.json 三份样本一致），**不是推断**。真机每次只带一个路径，
+// 这里仍返回切片是为了对齐 executor.PermRequest.Paths 的形状。
 func rawPaths(rawInput json.RawMessage) []string {
 	var in struct {
-		FilePath string   `json:"file_path"`
-		Path     string   `json:"path"`
-		Paths    []string `json:"paths"`
+		FilePath string `json:"file_path"`
 	}
 	if len(rawInput) == 0 || json.Unmarshal(rawInput, &in) != nil {
 		return nil
 	}
-	var out []string
-	for _, p := range append([]string{in.FilePath, in.Path}, in.Paths...) {
-		if p != "" {
-			out = append(out, p)
-		}
+	if in.FilePath == "" {
+		return nil
 	}
-	return out
+	return []string{in.FilePath}
 }
 ```
 
-> 实现者注意：`rawPaths` 里的字段名列表**必须**换成 Task 1 探针结论文档里记录的真实键名。上面三个是占位候选，探针若显示 grok 用的是别的名字（例如 `filePath` 或 `locations[].path`），就照真实形态写，并把 doc 注释里的字段来源改成实际那份样本的行号。
-
-`OnPermission` 里的 emit 改为：
+`OnPermission` 里的 emit 改为（`p.ToolCall` 的类型换成上面的 `permToolCall`）：
 
 ```go
-	req := permRequestFromToolCall(toolKindOf(p), p.ToolCall.RawInput)
+	req := permRequestFromToolCall(p.ToolCall)
 	if req == nil {
 		a.log.Warn("grok 权限请求提取不出结构化载荷，将由 manager 升级人工",
-			"task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
+			"task", h.r.taskID, "perm", p.ToolCall.ToolCallID, "kind", p.ToolCall.Kind)
+	} else {
+		a.log.Info("grok 权限请求已结构化", "task", h.r.taskID,
+			"perm", p.ToolCall.ToolCallID, "tool", req.Tool, "paths", len(req.Paths))
 	}
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
 		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID,
 		Text: text, Perm: req})
 ```
-
-其中 `toolKindOf(p)` 取 Task 1 确认的那个字段（若结论是「工具类别在 `toolCall.kind`」，则把 `Kind string \`json:"kind"\`` 加进 `OnPermission` 现有的匿名结构体并直接传 `p.ToolCall.Kind`，不必单独造函数）。
 
 - [ ] **Step 4: 改规则表**
 
@@ -2099,12 +2188,14 @@ git commit -m "feat(grok): 权限事件带结构化载荷，Write/Edit 移入 as
 
 ## Task 9: opencode adapter 结构提取与规则表
 
-> **前置**：同 Task 8——字段名以 Task 1 探针结论文档为准。若 opencode 的 `permission.asked` 载荷里根本没有路径，跳过 Step 4–5，并在 Task 10 记 backlog。
+> **Task 1 已完成，结论见 `docs/superpowers/plans/2026-08-09-permission-payload-probe.md` §3。两条硬性修正，正文已按它改写：**
+>
+> - 路径字段是 `metadata.filepath`（**小写 p，不是 `filePath`**），绝对路径。`patterns` 里是相对/通配摘要，**不可**作判据。
+> - **原 Step 4 / Step 5（把 `edit` 由 `allow` 翻成 `ask`）已删除。** 真机实测：生产配置下工作树内的 Write 根本不产生权限事件（正是 B27 想要的 AutoAllow），工作树外的绝对路径 Write 触发 `external_directory` 且文件未被创建（正是 B27 想要的升级）。opencode 的越界写入**已经**被 `external_directory: "ask"` 拦住了，翻成 `ask` 只会给每一次范围内的正常编辑加一道判完还是 AutoAllow 的空门——噪音为正、收益为零。
 
 **Files:**
 - Modify: `internal/executor/opencode/adapter.go`（`mapPermissionAsked`）
-- Modify: `internal/executor/opencode/taskenv.go`（`permissionConfig.Edit`）
-- Test: `internal/executor/opencode/adapter_test.go`、`internal/executor/opencode/taskenv_test.go`
+- Test: `internal/executor/opencode/adapter_test.go`
 
 **Interfaces:**
 - Consumes: `executor.PermRequest`、`executor.PermTool*`（Task 5）
@@ -2117,25 +2208,50 @@ git commit -m "feat(grok): 权限事件带结构化载荷，Write/Edit 移入 as
 ```go
 // TestPermissionAskedCarriesStructure 用真机取样的 permission.asked 载荷
 // 断言结构提取。
+//
+// 主用例是 perm_external_directory_file.json 而不是 perm_edit.json：生产配置
+// 下 edit 是 allow，工作树内的编辑根本不产生事件，真正会到达 handoff 的文件
+// 类事件就是这个 external_directory（Task 1 探针 §3.1 实测）。perm_edit.json
+// 作为次要用例保留，防止将来有人把 edit 翻成 ask 时提取路径的代码不在位。
 func TestPermissionAskedCarriesStructure(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "perm_edit.json"))
+	for _, f := range []string{"perm_external_directory_file.json", "perm_edit.json"} {
+		t.Run(f, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", f))
+			if err != nil {
+				t.Fatalf("读真机载荷样本: %v", err)
+			}
+			a, r := newAdapterWithRunForTest(t) // 按本包既有测试辅助的写法构造
+			a.mapPermissionAsked(r, raw)
+			ev := <-r.EventsForTest()
+			if ev.Type != "permission" {
+				t.Fatalf("应产出 permission 事件，实得 %q", ev.Type)
+			}
+			if ev.Perm == nil {
+				t.Fatal("真机文件类载荷必须能提取出结构")
+			}
+			if len(ev.Perm.Paths) != 1 || !filepath.IsAbs(ev.Perm.Paths[0]) {
+				t.Fatalf("路径 = %v，期望恰好一个绝对路径（取自 metadata.filepath，"+
+					"不是 patterns——后者是相对/通配摘要）", ev.Perm.Paths)
+			}
+		})
+	}
+}
+
+// TestPermissionAskedExternalDirBash external_directory 的 bash 形态没有
+// filepath，路径在 metadata.directories，可能多项。
+func TestPermissionAskedExternalDirBash(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "perm_external_directory_bash.json"))
 	if err != nil {
 		t.Fatalf("读真机载荷样本: %v", err)
 	}
-	a, r := newAdapterWithRunForTest(t) // 按本包既有测试辅助的写法构造
+	a, r := newAdapterWithRunForTest(t)
 	a.mapPermissionAsked(r, raw)
 	ev := <-r.EventsForTest()
-	if ev.Type != "permission" {
-		t.Fatalf("应产出 permission 事件，实得 %q", ev.Type)
-	}
-	if ev.Perm == nil {
-		t.Fatal("真机 edit 载荷必须能提取出结构")
-	}
-	if ev.Perm.Tool != executor.PermToolEdit && ev.Perm.Tool != executor.PermToolWrite {
-		t.Fatalf("edit 载荷的工具名应归一化为 edit/write，实得 %q", ev.Perm.Tool)
+	if ev.Perm == nil || ev.Perm.Command == "" {
+		t.Fatalf("bash 形态必须带命令原文，实得 %+v", ev.Perm)
 	}
 	if len(ev.Perm.Paths) == 0 {
-		t.Fatal("edit 载荷必须能提取出目标路径")
+		t.Fatal("bash 形态的越界目录必须进 Paths，否则 permgate 判不出越界")
 	}
 }
 
@@ -2173,7 +2289,7 @@ Expected: FAIL——`ev.Perm` 为 nil（字段还没填）。
 
 - [ ] **Step 3: 在 mapPermissionAsked 里提取结构**
 
-扩展现有的匿名结构体并在 emit 前组装（**字段名以 Task 1 探针结论为准**）：
+扩展现有的匿名结构体（字段名逐条来自 Task 1 真机样本）：
 
 ```go
 	var pa struct {
@@ -2181,9 +2297,14 @@ Expected: FAIL——`ev.Perm` 为 nil（字段还没填）。
 		Permission string   `json:"permission"`
 		Patterns   []string `json:"patterns"`
 		Metadata   struct {
-			Command  string `json:"command"`
-			FilePath string `json:"filePath"`
-			Path     string `json:"path"`
+			Command string `json:"command"`
+			// filepath 是小写 p——真机样本如此（testdata/perm_edit.json）。
+			// 写成 filePath 会静默取到空串，然后整条请求退化成「提取不出
+			// 结构」被 fail-closed 升级，表现为每次编辑都唤醒人，很难查。
+			FilePath string `json:"filepath"`
+			// external_directory 的 bash 形态没有 filepath，越界目录在这里
+			ParentDir   string   `json:"parentDir"`
+			Directories []string `json:"directories"`
 		} `json:"metadata"`
 	}
 ```
@@ -2191,25 +2312,31 @@ Expected: FAIL——`ev.Perm` 为 nil（字段还没填）。
 emit 之前：
 
 ```go
-	// 结构化载荷（B23/B27）：permission 字段就是 opencode 的工具类别原文
-	// （bash / edit / webfetch …），直接作归一化来源。
+	// 结构化载荷（B23/B27）：permission 字段就是 opencode 的工具类别原文，
+	// 真机实测取值有 bash / edit / external_directory，直接作归一化来源。
+	//
+	// 为什么路径不取 patterns：patterns 里是相对路径与通配摘要（真机样本里
+	// edit 的 patterns 是 ["probe.md"]、external_directory 的是 ["/tmp/*"]），
+	// 拿它判归属会把通配符当成路径。绝对路径只在 metadata 里。
 	var req *executor.PermRequest
 	tool := executor.NormalizePermTool(pa.Permission)
+	paths := pa.Metadata.Directories
+	if pa.Metadata.FilePath != "" {
+		paths = append([]string{pa.Metadata.FilePath}, paths...)
+	}
 	switch {
 	case pa.Metadata.Command != "":
 		if tool == executor.PermToolOther {
 			tool = executor.PermToolBash
 		}
-		req = &executor.PermRequest{Tool: tool, Command: pa.Metadata.Command}
-	case pa.Metadata.FilePath != "" || pa.Metadata.Path != "":
-		p := pa.Metadata.FilePath
-		if p == "" {
-			p = pa.Metadata.Path
-		}
+		// bash 形态的 external_directory 同时带命令与越界目录，两个都要给
+		// permgate——命令走黑名单判据，目录走归属判据
+		req = &executor.PermRequest{Tool: tool, Command: pa.Metadata.Command, Paths: paths}
+	case len(paths) > 0:
 		if tool == executor.PermToolOther {
 			tool = executor.PermToolWrite
 		}
-		req = &executor.PermRequest{Tool: tool, Paths: []string{p}}
+		req = &executor.PermRequest{Tool: tool, Paths: paths}
 	}
 	if req == nil {
 		// 提取不出结构 → manager 会 fail-closed 升级人工。记一条，否则
@@ -2224,37 +2351,40 @@ emit 之前：
 	})
 ```
 
-> 实现者注意：`Metadata` 里的路径字段名必须换成 Task 1 探针结论文档里的真实键名。若探针显示路径只在 `patterns` 里出现，改从 `pa.Patterns` 取，并在注释里写明实测依据。
+> 实现者注意：`Metadata` 的键名已按 Task 1 真机样本定死（`filepath` / `parentDir` / `directories`），不要再改成驼峰。四份 opencode testdata 覆盖了全部三种 `permission` 取值，跑测试即可验证。
 
-- [ ] **Step 4: 改规则表**
+- [ ] **Step 4: 保持规则表不变（原改动已按探针结论撤销）**
 
-`internal/executor/opencode/taskenv.go` 的 `WriteTaskEnv` 内：
+`internal/executor/opencode/taskenv.go` **不改**。原计划要把 `Edit: "allow"` 翻成 `"ask"`，Task 1 探针推翻了这个前提（详见探针结论 §3.1）：
+
+- 工作树内 `Write`：生产配置下**不产生任何权限事件**，文件直接写成——这已经是 B27 要的 AutoAllow。
+- 工作树外绝对路径 `Write`：触发 `permission: "external_directory"`，**文件未被创建**，任务停在待答复——这已经是 B27 要的 Escalate。
+
+翻成 `ask` 只会给每一次范围内的正常编辑加一道「permgate 判完还是 AutoAllow」的空门，噪音为正、安全收益为零。
+
+只在 `taskenv.go` 文件头注释里 `edit: allow` 那一段补一句实测依据：
 
 ```go
-		Permission: permissionConfig{
-			// 2026-08-09 起 edit 由 allow 改 ask：经权限门后由 handoff 判目标
-			// 路径是否落在任务范围内，范围内的写入在 manager 侧自动放行、
-			// 不建工单不发事件，越界的才升级人工（B27）。原来的 allow 等于
-			// 「写 ~/.ssh/authorized_keys 连事件都不留」。
-			Edit:              "ask",
-			Bash:              bashPermissionRules,
-			Webfetch:          "ask",
-			ExternalDirectory: "ask",
-		},
+//   - edit 保持 allow（2026-08-09 真机探针复核）：越界写入由
+//     external_directory: "ask" 拦截并升级人工，范围内写入本就该直接放行。
+//     翻成 ask 等于给每次正常编辑加一道判完还是放行的空门（B27 复核结论，
+//     见 docs/superpowers/plans/2026-08-09-permission-payload-probe.md §3.1）。
 ```
 
-同时更新文件头注释里「edit: allow —— 在任务分支上改代码是派发的目的本身，diff 审核兜底」那一句，改为说明现在的分层（ask + handoff 侧路径判据自动放行）。
+- [ ] **Step 5: 加一条锁死这个结论的守卫用例**
 
-- [ ] **Step 5: 同步 taskenv_test 断言**
-
-把断言 `Edit == "allow"` 的用例改为 `"ask"`，并加守卫：
+在 `internal/executor/opencode/taskenv_test.go`：
 
 ```go
-// TestEditIsAskNotAllow 锁死 B27：edit 回到 allow 等于写仓库外路径不经任何人。
-func TestEditIsAskNotAllow(t *testing.T) {
+// TestExternalDirectoryIsAsk 锁死 B27 对 opencode 的真实拦截点。
+//
+// opencode 的越界写入不是靠 edit 的 ask 拦的（edit 是 allow、范围内写入
+// 无事件），而是靠 external_directory。这条一旦被改成 allow，写
+// ~/.ssh/authorized_keys 就会连事件都不留。
+func TestExternalDirectoryIsAsk(t *testing.T) {
 	// …按本文件既有做法解析生成的 opencode.json…
-	if got := cfg.Permission.Edit; got != "ask" {
-		t.Fatalf("edit 必须是 ask，实得 %q——allow 等于越界写连事件都不留（B27）", got)
+	if got := cfg.Permission.ExternalDirectory; got != "ask" {
+		t.Fatalf("external_directory 必须是 ask，实得 %q——这是 opencode 侧唯一的越界写入拦截点（B27）", got)
 	}
 }
 ```
@@ -2270,11 +2400,12 @@ Expected: 全部 PASS。
 cd /Users/xushixin/workspace/handoff
 gofmt -l . && go vet ./internal/executor/opencode/
 git add internal/executor/opencode/
-git commit -m "feat(opencode): 权限事件带结构化载荷，edit 由 allow 改 ask
+git commit -m "feat(opencode): 权限事件带结构化载荷
 
-permission 字段（bash/edit/webfetch）直接作归一化工具名来源。路径字段名
-取自真机探针样本 testdata/perm_edit.json——opencode 的 edit 此前是 allow，
-从未产生过 edit 的 permission.asked，此前连样本都不存在。"
+permission 字段（bash/edit/external_directory）直接作归一化工具名来源，
+路径取 metadata.filepath（小写 p，真机样本如此）。edit 保持 allow：探针
+实测越界写入由 external_directory 拦截并升级人工，范围内写入本就无事件，
+翻成 ask 只会加一道判完还是放行的空门。"
 ```
 
 ---
@@ -2371,8 +2502,8 @@ handoff done <每个 e2e 任务 id> --target devbox
 
 - B23 行：状态 `📋 specced` → `✅ done(已验)`，`验收` 列写入 Step 1 的测试命令与结果、Step 5 的真机证据（含日志原文片段）、以及「无原型/流程图，自动免除对照 08-09」。
 - B27 行：同样转 `✅ done(已验)`，`验收` 列写入 Step 1 结果、Step 3 与 Step 4 的真机证据（含「越界文件确实没被创建」这一条），以及自动免除对照。
-- 若 Task 1 的探针结论对某个 adapter 是「无法可靠提取路径」：新增一行 `💡 idea` 条目，标题形如「<adapter> 权限载荷不含目标路径，写文件类工具无法设门」，备注里写明探针结论文档路径与该 adapter 保持 `allow` 的原因，并在 B27 的 `变更痕迹` 里注明本次覆盖范围不含该 adapter。
-- 「待验证的空白」小节：把 spec §1.3 关于 opencode `external_directory: "ask"` 的待验项按 Task 1 Step 6 的实测结论改写为已验或已证伪。
+- 载荷缺口条目**不需要新增**：Task 1 探针实测三个 adapter 都能可靠提取路径（结论文档 §4），spec §6.1 的条件性回退未触发。
+- 「待验证的空白」小节：spec §1.3 关于 opencode `external_directory: "ask"` 的待验项已由 Task 1 探针证实**生效**（越界写入被拦且文件未创建，结论文档 §3.1），据此改写为已验，并注明因此 opencode 的 `edit` 保持 `allow`、B27 对 opencode 的覆盖由 `external_directory` 承担。
 
 - [ ] **Step 7: 提交**
 
