@@ -9,11 +9,24 @@
 package cmd
 
 import (
+	"log/slog"
 	"net/http"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/agentd"
 )
+
+// 注册表必须认识 claude：dispatch --executor claude 的路由前提
+func TestAdapterRegistryHasClaude(t *testing.T) {
+	ads := defaultAdapters(slog.Default())
+	if _, ok := ads["claude"]; !ok {
+		names := make([]string, 0, len(ads))
+		for n := range ads {
+			names = append(names, n)
+		}
+		t.Fatalf("adapter 注册表缺 claude，实际注册: %v", names)
+	}
+}
 
 func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	s := newAgentdHTTPServer("127.0.0.1:0", http.NewServeMux())

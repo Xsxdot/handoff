@@ -270,6 +270,27 @@ executor 层偷偷改掉了二期定死的审批链语义。黑名单继续由 m
 - 第 1 条不成立：`allow` 改为不写，回到「默认全 ask」——安全但会退化成一期的连环唤醒，
   此时必须靠 manager 侧审批者（廉价模型）吸收噪音，同样记入 README
 
+**实测状态（2026-08-09，devbox，claude 2.1.226）**：两条优先级**均成立**，按本节走：
+
+1. **同文件内**：任务级 `ask` 压得过任务级 `allow`——settings.json 里
+   `allow: ["Bash"]` 与 `ask: ["Bash(rm:*)"]` 并存时，`rm` 请求仍触发裁决工具（探针 ASK
+   FIRED）。「allow 兜底 + ask 收窄」的形状成立，不需要逐工具枚举。
+2. **跨来源**：任务级 `ask` 压得过用户级 `allow`——用户级 settings 的 `allow: ["Bash"]`
+   不会静默放行任务级 `ask: ["Bash(rm:*)"]` 命中的请求（ASK FIRED）。个人 allowlist
+   无法绕过任务级收窄。
+
+**探针与方法**：`internal/executor/claudecode/probe_live_test.go`
+（`HANDOFF_LIVE_CLAUDE=1 go test ./internal/executor/claudecode/ -run Probe -v`）。
+探针把鉴权从真实 `~/.claude/settings.json` 的 `env` 段提取后**经进程环境注入**（`ANTHROPIC_*`/
+`CLAUDE_*`，凭证不落盘、不打日志），settings.json 因此完全由探针控制——任务级 settings
+因此是**纯策略文件，不含任何凭证**。这也定死了 adapter 的鉴权形态：与 opencode 一致走
+B19 的 `StartReq.Env` 透传，任务目录的 `settings.json` 只放 permissions（见 Task 2）。
+
+**两个附带的机制观察**（同为 2026-08-09 实测）：本机 claude 的登录态就存在
+`~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` 里（非
+keychain、非 `~/.claude.json`）；`--setting-sources ""` 会连 settings 的 env 一起忽略，
+所以离线环境想完全脱敏执行时，鉴权 env 必须走进程注入而不是靠 settings 继承。
+
 ## 6. 共享包重构（`internal/executor/turn`）——✅ 已由 B3 会话完成并合入 main
 
 > **状态（2026-08-09 核实）**：抽取已落 main（`09bc6df`，merge `282c932`），opencode
