@@ -137,7 +137,7 @@ func (r *LocalReconciler) ReconcileAll(ctx context.Context, reason string) (*Rec
 		if loc.MainWorkspaceID == "" {
 			continue
 		}
-		main, err := r.st.GetWorkspace(loc.MainWorkspaceID)
+		main, err := r.st.GetWorkspace(ctx, loc.MainWorkspaceID)
 		if err != nil {
 			r.log.Warn("reconcile 跳过 location（读取 main workspace 失败）",
 				"reason", reason, "location_id", loc.ID, "cause", err)
@@ -208,7 +208,7 @@ func (r *LocalReconciler) StartWatch(ctx context.Context) (cancel func()) {
 		if loc.MainWorkspaceID == "" {
 			continue
 		}
-		main, err := r.st.GetWorkspace(loc.MainWorkspaceID)
+		main, err := r.st.GetWorkspace(ctx, loc.MainWorkspaceID)
 		if err != nil {
 			continue
 		}

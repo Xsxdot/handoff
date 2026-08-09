@@ -19,15 +19,10 @@ import (
 )
 
 // PathInspection 描述对某个路径的检查结果（InspectPath/Clone 的返回）。
-type PathInspection struct {
-	Path          string
-	CanonicalPath string
-	IsRepo        bool
-	RepoIdentity  string
-	GitCommonDir  string
-	Branch        string
-	HeadOID       string
-}
+//
+// 类型定义在 controlplane（领域层 MachineCommander 端口引用它），
+// 此处为 machineauthority 侧的类型别名，保持 API 面一致。
+type PathInspection = controlplane.PathInspection
 
 // CloneCommand 是一次 git clone 的具名命令（避免 machine/Git/path 位置错乱）。
 type CloneCommand struct {
