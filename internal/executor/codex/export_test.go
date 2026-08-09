@@ -153,3 +153,14 @@ func AttachFakeClientForTest(r *runState) {
 }
 
 func quietTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// ParseUserInputForTest 暴露提问报文解析。
+func ParseUserInputForTest(raw []byte) (string, []userInputQuestion, bool) {
+	return parseUserInput(raw)
+}
+
+// UserInputTextForTest 暴露问题正文渲染。
+func UserInputTextForTest(qs []userInputQuestion) string { return userInputText(qs) }
+
+// UserInputReplyForTest 暴露应答体构造。
+func UserInputReplyForTest(qs []userInputQuestion) map[string]any { return userInputReply(qs) }

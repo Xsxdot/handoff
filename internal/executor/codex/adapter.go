@@ -829,9 +829,30 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 		_ = r.cli.ReplyError(reqID, -32601, "handoff 不代管 codex 登录态")
 		a.emitFailed(r, "codex 登录态失效，请在 executor 机重新 `codex login`")
 		return true
+
+	case reqUserInput:
+		itemID, qs, ok := parseUserInput(params)
+		if !ok {
+			// 报文读不懂也必须应答——不应答等于让回合永久挂起
+			a.log.Warn("codex 提问报文非法，回空应答", "task", r.taskID, "params_len", len(params))
+			_ = r.cli.Reply(reqID, map[string]any{"answers": map[string]any{}})
+			return true
+		}
+		text := userInputText(qs)
+		a.log.Info("codex 提问已转交审核者", "task", r.taskID, "item", itemID,
+			"question_count", len(qs))
+		// 立即应答：回调在读循环上，等审核者会卡死整条连接
+		if err := r.cli.Reply(reqID, userInputReply(qs)); err != nil {
+			a.log.Error("回发提问应答失败", "task", r.taskID, "item", itemID, "cause", err)
+		}
+		// 置位后回合收尾的兜底会闭嘴，避免一次提问出两张工单
+		r.noteAskedViaTool()
+		r.appendRenderDelta(text)
+		a.flushRender(r)
+		a.emit(r, executor.AdapterEvent{Type: "question", SessionID: r.threadID,
+			Text: turn.ClampQuestion(text)})
+		return true
 	}
-	// item/tool/requestUserInput 在 Task 7 实现；在此之前回 -32601 让那次工具调用
-	// 失败——明确的「不支持」远好于永久挂起（grok 的教训）。
 	a.log.Debug("codex 未识别的服务端请求，交传输层回 -32601", "task", r.taskID, "method", method)
 	return false
 }
