@@ -36,7 +36,8 @@
 | 配置继承 | `--setting-sources user,project` 继承 skills；任务级 `--settings` 用 `ask`（危险模式）+ `allow`（其余放行）收口，`deny` 留空（why 见 §5.4） |
 | 进程宿主 | tmux（与 opencode 同构：agentd 重启/崩溃不带走执行中任务） |
 | 指令投递 | 命名管道 `in.fifo`，脚本内 `exec 3<>` 永久持有两端 |
-| 通用件 | `internal/executor/turn` 共享包由 B3 会话前置抽取并合入 main，本 plan 直接 import（见 §6 协调注） |
+| 通用件 | `internal/executor/turn` 共享包**已由 B3 会话抽取并合入 main**（`09bc6df`），本 plan 直接 import（见 §6） |
+| env 注入 | 透传 `StartReq.Env`（B19，已在 main）到启动脚本的 `export` 行；claude 侧无保留键（策略与凭据走命令行参数，不经环境变量） |
 | tmux 会话名 | 沿用 `handoff-<id8>`，`handoff attach` 零改动 |
 | 降级路线 | 长驻进程若在真机上不稳，退到「每回合 one-shot `--resume`」（见 §3.4），只动 proc 层 |
 
@@ -269,16 +270,16 @@ executor 层偷偷改掉了二期定死的审批链语义。黑名单继续由 m
 - 第 1 条不成立：`allow` 改为不写，回到「默认全 ask」——安全但会退化成一期的连环唤醒，
   此时必须靠 manager 侧审批者（廉价模型）吸收噪音，同样记入 README
 
-## 6. 共享包重构（`internal/executor/turn`）——抽取已移交 B3 会话前置完成
+## 6. 共享包重构（`internal/executor/turn`）——✅ 已由 B3 会话完成并合入 main
 
-> **协调注（2026-08-08，B2/B3 两会话对齐）**：本节抽取由 grok adapter（B3）会话作为
-> 前置任务先行完成，**单独 commit 合入 main**；本 plan **不包含**抽取任务，从该 commit
-> 起步、直接 import `internal/executor/turn`。实现排序（文书写作不受限，只约束实现落点）：
+> **状态（2026-08-09 核实）**：抽取已落 main（`09bc6df`，merge `282c932`），opencode
+> 已改调，本 plan 直接 import。实际导出面：`RenderPrompt` / `ParseTrailer` / `Trailer` /
+> `AppendRender` / `GitTurnStatus` / `TruncateMarked` / `TruncateRunes` / `TailRunes` /
+> `ClampQuestion` / `QuestionTextLimit`（**注意后两个命名与下表原计划不同**，plan Task 2
+> Step 1 已按实际改写）。
 >
-> ```
-> phase3 B6（改同一片截断代码，plan 已固定行引用）→ turn 抽取落 main → B2 / B3 并行实现
-> ```
->
+> 原协调注（2026-08-08，B2/B3 两会话对齐）：抽取由 grok adapter（B3）会话作为前置任务
+> 先行完成、单独 commit 合入 main；实现排序 `phase3 B6 → turn 抽取落 main → B2 / B3 并行`。
 > 并行后 B2/B3 的冲突面只剩 manager 注册表各一行、README 各一行、B3 在 oneshot.go
 > 加 case——琐碎合并。
 
@@ -310,7 +311,8 @@ executor 的审核者会看到不一样的东西。§4.1「拼装逻辑与 openc
 | `internal/agentd/manager.go` | adapter 注册表加 `"claude"` |
 | `internal/executor/oneshot.go` | 无需改动（claude 已登记） |
 | `cmd/attach.go` | 无需改动（会话命名一致） |
-| `README.md` | 执行者一节补 claude；已知限制补 §5.4 的结论 |
+| `README.md` | 执行者一节补 claude；已知限制补 §5.4 的结论；配置 `env` 段注明对 claude 同样生效 |
+| env 注入（B19） | **无新增接线**：resolver 按 executor 名查 `config.Env["claude"]`，注册表加 `"claude"` 即生效；adapter 侧只需把 `StartReq.Env` 透传进启动脚本的 `export` 行（排在 claude 命令前、值单引号包裹），与 opencode `writeServeScript` 同构 |
 
 ## 8. 错误处理
 

@@ -12,11 +12,12 @@
 
 ## Global Constraints
 
-- **前置依赖**：`internal/executor/turn` 共享包由 B3 会话前置抽取并已合入 main。本计划**不包含**抽取任务，从该 commit 起步直接 import。若开工时该包尚未落 main，**停下来等**，不要自己抽（会与 B3 会话产生大面积冲突）。
-- **依赖 B19 的 `StartReq.Env`**（[env 注入计划](2026-08-09-handoff-agent-env-injection.md) Task 4）：`Start` 必须把 `req.Env` 透传进 `StartProcReq.Env`，由 `writeRunScript` 生成 `export K='V'` 行，**排在脚本其余内容之前**，值必须单引号包裹（Go 侧已展开过一次，不加引号会被 shell 二次展开）。与 opencode 的 `writeServeScript`、grok 的 `WriteServeScript` 三处同构。
-  - **为什么这条必须写进铁律**：`Env` 是加在 `StartReq` 上的契约字段，不读它照样编译通过——用户在 `~/.handoff/env/claude.env` 里写的 `HTTPS_PROXY` 会**静默不生效、无任何报错**。这类缺口最难发现。
-  - **若开工时 B19 Task 4 尚未落 main**：`StartProcReq.Env` 字段照加，`Start` 里先传 `nil` 并留 `// TODO(B19): 改为 req.Env` 单行标记，等 B19 合入后替换。**不要把字段删掉**——删了就会忘。
+- **前置依赖已就绪（2026-08-09 核对）**：`internal/executor/turn` 共享包已由 B3 会话抽取并合入 main（`09bc6df`，merge `282c932`），opencode 已改调。本计划**不含**抽取任务，直接 import。**实际导出面与本计划初稿的预期名有两处不同**（`GitTurnStatus` / `TruncateMarked`），已按实际改写，签名表见 Task 2 Step 1。
+- **必须透传 `StartReq.Env`**（B19 已合入 main：`1fe3a75` 契约字段、`b8399e1` agentd 接线）：`Start` 把 `req.Env` 原样交给 `StartProcReq.Env`，由 `writeRunScript` 生成 `export K='V'` 行，**排在脚本其余内容之前**，值必须经 `shellq.Quote` 单引号包裹（Go 侧已展开过一次，不加引号会被 shell 二次展开）。参照实现 [opencode/proc.go:245](../../../internal/executor/opencode/proc.go:245) `writeServeScript` 与它的三个钉子测试 [proc_test.go:143](../../../internal/executor/opencode/proc_test.go:143)。
+  - **为什么这条必须写进铁律**：`Env` 是加在 `StartReq` 上的契约字段，不读它照样编译通过——用户在 `~/.handoff/env/claude.env` 里写的 `HTTPS_PROXY` 会**静默不生效、无任何报错**。这类缺口最难发现，因此 Task 5 有专门的三个钉子测试、Task 9 真机验收有专门一项。
+  - **manager 侧无需额外接线**：resolver 按 `task.Executor` 名查 `config.Env["claude"]` → `<DataDir>/env/<文件名>`（[manager.go:137](../../../internal/agentd/manager.go:137) 构造、[manager.go:535](../../../internal/agentd/manager.go:535) 下发），Task 9 注册 `"claude"` 后自动生效。
   - claude 侧**没有** `protectedEnvKeys`（不像 grok 的 `GROK_HOME`/`GROK_AGENT_SECRET`、opencode 的 `OPENCODE_*`）：本 adapter 的策略与凭据全部走 `--settings` / `--mcp-config` **命令行参数**，不经环境变量，因此 env 文件覆盖不到。若将来改用环境变量传任何策略，必须同步补一张保留表。
+  - 唯一需要在 README 提一句的耦合：env 文件里若设了 `HOME` / `CLAUDE_CONFIG_DIR`，会连带改变 `--setting-sources user` 读哪份用户配置与凭据落在哪——这是用户自己的显式配置，不拦，但要让人知道。
 - **日志**：一律 `log/slog`（`*slog.Logger` 注入或 `slog.Default()`，与 opencode adapter 同款）。**禁止 `fmt.Printf` / `println` 作为日志机制**。
 - **注释**：每个新文件顶部写「职责 + 边界」；每个导出函数写参数/返回/注意；非显然分支写「为什么」。
 - **adapter 不得写 store、不得做审批判断**（`internal/executor/executor.go` 包级边界）。
@@ -258,23 +259,30 @@ git commit -m "test: Claude Code 权限策略优先级 live 探针（B2 Task 1�
 - Test: `internal/executor/claudecode/taskenv_test.go`
 
 **Interfaces:**
-- Consumes: `turn` 包的 prompt 渲染（B3 前置产出）
+- Consumes: `turn` 包的 prompt 渲染（已在 main）
 - Produces:
   - `func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (settingsPath, mcpPath, promptText string, err error)`
   - `var askRules []string`（危险模式表，供测试逐条断言）
 
-- [ ] **Step 1: 对齐共享包实际 API**
-
-读 `internal/executor/turn/` 的导出符号，把本任务及后续任务里用到的调用名对齐实际签名：
+- [ ] **Step 1: 确认共享包 API（已核对，仅需一次复核）**
 
 Run: `go doc ./internal/executor/turn`
 
-本计划按以下预期名书写，**若实际不同以实际为准，语义保持一致**：
-- `turn.RenderPrompt(taskID, planContent string) (string, error)` —— 回合纪律 prompt 渲染
-- `turn.ParseTrailer(text string) (kind string, t turn.Trailer)`，`turn.Trailer{Question, Branch, Commit, Summary}`
-- `turn.AppendRender(renderLogPath, delta string) error`
-- `turn.GitStatus(repoPath, startCommit string) (branch, commit string, hasNew bool, err error)`
-- `turn.Truncate(s string, limit int) string` —— 超限追加 `executor.TruncationMarker`
+下表是 2026-08-09 从 `internal/executor/turn/` 实际读出的导出面，本计划全文按它书写；跑一次 `go doc` 确认无漂移即可，**不要再按初稿的预期名写**：
+
+| 符号 | 签名 | 用在 |
+|------|------|------|
+| `turn.RenderPrompt` | `(taskID, planContent string) (string, error)` | Task 2 首回合 prompt |
+| `turn.ParseTrailer` | `(text string) (kind string, t turn.Trailer)` | Task 7 回合分类 |
+| `turn.Trailer` | `struct{ Question, Branch, Commit, Summary string }` | Task 7 |
+| `turn.AppendRender` | `(renderLogPath, delta string) error` | Task 7 实况落盘 |
+| `turn.GitTurnStatus` | `(repoPath, startCommit string) (branch, commit string, hasNew bool, err error)` | Task 7 兜底裁决 |
+| `turn.TruncateMarked` | `(s string, n int) string` —— 超限追加 `executor.TruncationMarker` | Task 7 权限描述 |
+| `turn.TruncateRunes` / `turn.TailRunes` | `(s string, n int) string` —— 无标记截断 / 取末尾 | 日志尾部、错误摘要 |
+| `turn.ClampQuestion` | `(text string) string` —— 收敛到 `QuestionTextLimit` 并指路 render.log | Task 7 兜底 question |
+| `turn.QuestionTextLimit` | `const = 8000` | 同上 |
+
+**两处与初稿不同**（初稿写的是 `turn.GitStatus` / `turn.Truncate`，已在正文改掉）。另外注意 `ClampQuestion` **不是** `TruncateMarked` 的别名：前者用于 question（全文只在 render.log，尾缀必须指路），后者用于 permission（全文在工单里，`…（已截断）` 足够）——用错会让审核者拿到半截文本且不知去哪找全文。
 
 - [ ] **Step 2: 写失败测试**
 
@@ -1287,7 +1295,7 @@ git commit -m "feat: handoff permission-mcp 裁决 MCP server 子命令（B2 Tas
 - Produces:
   - `type Proc struct { TmuxSession, TaskDir, SessionID string }`
   - `func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error)`
-  - `type StartProcReq struct { RepoPath, TaskID, TaskDir, SessionID, Model, SettingsPath, MCPPath string; Env []string }`（`Env` 见下方 B19 耦合说明）
+  - `type StartProcReq struct { RepoPath, TaskID, TaskDir, SessionID, Model, SettingsPath, MCPPath string; Env []string }`（`Env` 见 Global Constraints 的透传铁律）
   - `func (p *Proc) WriteInput(text string) error`
   - `func (p *Proc) Kill() error`
   - `func writeRunScript(taskDir string, req StartProcReq) (string, error)`
@@ -1372,6 +1380,85 @@ func TestWriteRunScriptOmitsEmptyModel(t *testing.T) {
 	}
 }
 
+// 以下三个 env 用例与 opencode proc_test.go:143/175/195 同构：Env 不读也能编译通过，
+// 症状是用户配的代理/密钥静默失效，只有钉子测试能拦住。
+func TestRunScriptInjectsEnvFirst(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeRunScript(dir, StartProcReq{
+		TaskDir: dir, SessionID: "s",
+		Env: []string{"HTTPS_PROXY=http://127.0.0.1:7890", "PATH=/usr/bin:/bin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	s := string(b)
+
+	proxyIdx := strings.Index(s, "export HTTPS_PROXY='http://127.0.0.1:7890'")
+	if proxyIdx < 0 {
+		t.Fatalf("脚本缺少注入的 HTTPS_PROXY export 行:\n%s", s)
+	}
+	if !strings.Contains(s, "export PATH='/usr/bin:/bin'") {
+		t.Errorf("脚本缺少注入的 PATH export 行:\n%s", s)
+	}
+	// 顺序是硬要求：export 必须在 claude 那一行之前，否则进程拿不到
+	claudeIdx := strings.Index(s, "claude -p")
+	if claudeIdx < 0 || proxyIdx > claudeIdx {
+		t.Errorf("env 注入行应排在 claude 命令之前，实际 proxy=%d claude=%d", proxyIdx, claudeIdx)
+	}
+	// fifo 的 exec 3<> 同样要在 claude 之前，env 插入不得把它挤到后面去
+	if fifoIdx := strings.Index(s, "exec 3<>"); fifoIdx < 0 || fifoIdx > claudeIdx {
+		t.Errorf("exec 3<> 应仍在 claude 之前，实际 fifo=%d claude=%d", fifoIdx, claudeIdx)
+	}
+}
+
+// 钉住「Go 侧已展开过一次，shell 不得再展开第二次」
+func TestRunScriptQuotesEnvValues(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeRunScript(dir, StartProcReq{
+		TaskDir: dir, SessionID: "s",
+		Env: []string{"LITERAL=$NOT_EXPANDED", "WITHSPACE=a b", "BROKEN_NO_EQUALS"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRead(t, path))
+	if !strings.Contains(s, "export LITERAL='$NOT_EXPANDED'") {
+		t.Errorf("含 $ 的值必须被单引号包裹:\n%s", s)
+	}
+	if !strings.Contains(s, "export WITHSPACE='a b'") {
+		t.Errorf("含空格的值必须被单引号包裹:\n%s", s)
+	}
+	// 不含 = 的畸形条目直接跳过，绝不能拼出语法错误的行把整个脚本毁掉
+	if strings.Contains(s, "BROKEN_NO_EQUALS") {
+		t.Errorf("形如 KEY=VALUE 之外的条目应跳过:\n%s", s)
+	}
+}
+
+func TestRunScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeRunScript(dir, StartProcReq{TaskDir: dir, SessionID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRead(t, path))
+	if strings.Contains(s, "export ") {
+		t.Errorf("无 env 时不应出现任何 export 行:\n%s", s)
+	}
+	if !strings.Contains(s, "exec 3<>") || !strings.Contains(s, "handoff_exit") {
+		t.Errorf("无 env 时脚本形状不应改变:\n%s", s)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestProcExitedDetectsSentinel(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, outFileName)
@@ -1426,7 +1513,7 @@ func TestWriteInputRoundTrip(t *testing.T) {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `go test ./internal/executor/claudecode/ -run 'TestWriteRunScript|TestProcExited|TestWriteInput' -v`
+Run: `go test ./internal/executor/claudecode/ -run 'TestWriteRunScript|TestRunScript|TestProcExited|TestWriteInput' -v`
 Expected: 编译失败 `undefined: writeRunScript`
 
 - [ ] **Step 3: 实现 proc.go**
@@ -1473,7 +1560,9 @@ const (
 // why（claude 一行不用 exec）：exec 会让 sh 被 claude 替换掉，末行的 handoff_exit
 // 哨兵永远不会执行——而它是本 adapter 唯一可靠的死亡信号（tmux has-session 不可用，
 // 因为窗口 1 的 tail -f 会一直撑着会话）。
-// why（env 行排在最前、值单引号包裹）：见下方 B19 耦合说明。
+// why（env 行排在最前、值单引号包裹）：排在 claude 命令之前进程才拿得到；
+// 值必须单引号——Go 侧已展开过一次，不加引号会被 shell 二次展开，含 $ 的值
+// 会悄悄变成别的东西。与 opencode writeServeScript 同构，见 Global Constraints。
 func writeRunScript(taskDir string, req StartProcReq) (string, error) {
 	// 组装 argv：model 为空则省略 --model（用 claude 自身默认）
 	// 用 shellq.Quote 包裹每个路径与模型名
@@ -1527,12 +1616,13 @@ func (p *Proc) Kill() error { /* 与 opencode Proc.Kill 同规则 */ }
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `go test ./internal/executor/claudecode/ -run 'TestWriteRunScript|TestProcExited|TestWriteInput' -v`
-Expected: 四个用例 PASS
+Run: `go test ./internal/executor/claudecode/ -run 'TestWriteRunScript|TestRunScript|TestProcExited|TestWriteInput' -v`
+Expected: 七个用例 PASS
 
 - [ ] **Step 5: 加关键节点日志**
 
 - `StartProc` 进入：Info，带 task/session/tmux 会话名/repo
+- **env 注入：Info，只打 key 列表与条数，绝不打 value**（env 文件里常是密钥；与 opencode `proc.go:129` 同款）。`len(req.Env)==0` 时不打，避免噪音
 - tmux 启动失败：Error，带 stderr 尾部 + cause
 - 渲染窗口启动失败：Warn（不阻断，与 opencode 同）
 - `WriteInput`：Debug 带字节数（高频，不用 Info）；失败 Error 带 cause
@@ -1541,7 +1631,7 @@ Expected: 四个用例 PASS
 
 - [ ] **Step 6: 加意图注释**
 
-文件头职责+边界（含「为什么放 tmux」）；`writeRunScript` 的两条 why（脚本化、不用 exec）；`WriteInput` 的 fifo 阻塞语义 why；`procExited` 的「为什么从文件读」；`startReadyTimeout` 取 30s 的理由。
+文件头职责+边界（含「为什么放 tmux」）；`writeRunScript` 的三条 why（脚本化、不用 exec、env 行位置与引号）；`WriteInput` 的 fifo 阻塞语义 why；`procExited` 的「为什么从文件读」；`startReadyTimeout` 取 30s 的理由；`StartProcReq.Env` 字段注释注明「来自 `executor.StartReq.Env`，已解析已展开，不读它会静默失效」。
 
 - [ ] **Step 7: Commit**
 
@@ -1916,7 +2006,8 @@ package claudecode
 //   1. 生成 session uuid 与 sockPath
 //   2. newPermServer(sockPath, log, onAsk)
 //   3. WriteTaskEnv(...) → settings/mcp/prompt
-//   4. StartProc(...) → tmux 会话
+//   4. StartProc(StartProcReq{..., Env: req.Env}) → tmux 会话
+//      （Env 必须原样透传；漏传编译照过、用户 env 静默失效，见 Global Constraints）
 //   5. 起 tailer；等 system/init（startReadyTimeout=30s），超时读 claude.log 尾部报错 + Kill
 //   6. WriteInput(promptText) 投首回合
 //   7. writeProcInfo(claude.json)；emit progress{SessionID}（会话就绪信号）
@@ -1927,7 +2018,8 @@ package claudecode
 
 // onPermissionAsk 把 permAsk 转成 permission 事件：
 //   Text = "<ToolName>: <关键入参>"（Bash 取 command，Edit/Write 取 file_path，
-//   其余取 input 紧凑 JSON），经 turn.Truncate 截断。
+//   其余取 input 紧凑 JSON），经 turn.TruncateMarked 截断（permission 用带标记的
+//   那个；question 的兜底走 turn.ClampQuestion，两者尾缀不同，见 Task 2 Step 1）。
 
 // RespondPermission：decision "once"→allow、"reject"→deny（理由取 manager 传入文本）；
 // 其他取值报错——不认识的裁决绝不当成放行。
@@ -2122,6 +2214,7 @@ Expected: 全绿
 - 快速开始的 `--executor` 说明补 `claude`（并注明需本机装 `claude` 且已登录）
 - 已知限制补 Task 1 探针的实际结论（配置继承与权限优先级）
 - attach 一节注明：claude 任务的 tmux 两窗口与 opencode 同构
+- 配置段的 `env` 说明补一行：`env: {claude: work.env}` 对 claude 执行者同样生效；并注明 env 文件里若设 `HOME` / `CLAUDE_CONFIG_DIR` 会连带改变 `--setting-sources user` 读哪份用户配置与凭据落点（见 Global Constraints 末条）
 
 - [ ] **Step 6: 真机 e2e 验收**
 
@@ -2139,6 +2232,10 @@ handoff dispatch --repo /path/to/clean-repo --prompt "在 README 末尾加一行
 4. `handoff continue <task> "再加一行 world"` 能续接同一会话（检查 `session_id` 未变）
 5. `handoff diff` 看到改动，`handoff done` 归档正常
 6. 重启 agentd（`kill` 后重跑），`handoff show` 显示任务仍 running 且事件继续
+7. **env 注入真的到位**：配置 `env: {claude: probe.env}`，`<DataDir>/env/probe.env` 里写一行
+   `HANDOFF_ENV_PROBE=ok`，派发一个「运行 `echo $HANDOFF_ENV_PROBE` 并把输出写进 README」的任务，
+   确认输出是 `ok`。**这一项不能只看生成的 `run_claude.sh` 里有 export 行**——脚本对了但
+   `Start` 漏传 `req.Env` 时脚本里根本不会有那行，而漏传是编译期无感的（见 Global Constraints）。
 
 任一项不通过，回到对应 Task 修复，不得跳过。
 
@@ -2150,7 +2247,7 @@ handoff dispatch --repo /path/to/clean-repo --prompt "在 README 末尾加一行
 
 ```bash
 gofmt -l . && go vet ./... && go test ./... && go test -race ./internal/agentd/ ./internal/executor/claudecode/
-git add cmd/agentd.go README.md docs/superpowers/backlog.md internal/agentd/manager_test.go
+git add cmd/agentd.go cmd/agentd_test.go README.md docs/superpowers/backlog.md
 git commit -m "feat: 注册 claude adapter 并补文档（B2 Task 9）"
 ```
 
@@ -2158,6 +2255,13 @@ git commit -m "feat: 注册 claude adapter 并补文档（B2 Task 9）"
 
 ## 自检记录
 
-**Spec 覆盖**：§3.1 启动脚本 → Task 5；§3.2 tmux 布局 → Task 5；§3.3 文件契约 → Task 2/5；§3.4 降级路线 → 无需实现（备选记录）；§4.1 Start → Task 7；§4.2 事件映射 → Task 6/7；§4.3 Send → Task 5/7；§4.4 RespondPermission → Task 3/7；§4.5 Stop → Task 7；§4.6 Resume/看门狗 → Task 8；§5.1 权限链路 → Task 3/4/7；§5.2 三条纪律 → Task 3/4；§5.3 权限描述 → Task 7；§5.4 任务级策略 → Task 1/2；§6 共享包 → 前置（B3 会话）；§7 接入面 → Task 9；§8 错误处理 → 分散在各 Task 的错误分支；§9 测试策略 → 各 Task 的测试步骤 + Task 9 真机验收。
+**Spec 覆盖**：§3.1 启动脚本 → Task 5；§3.2 tmux 布局 → Task 5；§3.3 文件契约 → Task 2/5；§3.4 降级路线 → 无需实现（备选记录）；§4.1 Start → Task 7；§4.2 事件映射 → Task 6/7；§4.3 Send → Task 5/7；§4.4 RespondPermission → Task 3/7；§4.5 Stop → Task 7；§4.6 Resume/看门狗 → Task 8；§5.1 权限链路 → Task 3/4/7；§5.2 三条纪律 → Task 3/4；§5.3 权限描述 → Task 7；§5.4 任务级策略 → Task 1/2；§6 共享包 → **已落 main**（`09bc6df`，无需实现）；§7 接入面 → Task 9；§8 错误处理 → 分散在各 Task 的错误分支；§9 测试策略 → 各 Task 的测试步骤 + Task 9 真机验收。
+
+**2026-08-09 修订**（两个前置从「等」变成「已在 main」，据此改写）：
+1. `internal/executor/turn` 已合入（`09bc6df`/`282c932`）——删掉「若未落 main 停下来等」的分支；Task 2 Step 1 从「按预期名写、以实际为准」换成**实际签名表**，并改掉正文两处错名（`turn.GitStatus`→`GitTurnStatus`、`turn.Truncate`→`TruncateMarked`），同时点明 `ClampQuestion` 与 `TruncateMarked` 不可互换（尾缀语义不同，用错会让审核者拿到半截 question 且不知全文在 render.log）。
+2. B19 `StartReq.Env` 已合入（`1fe3a75`/`b8399e1`）——删掉「先传 nil 留 TODO」的降级路线，改为**从第一版就必须透传**；补 Task 5 三个钉子测试（注入顺序 / 单引号保护 / 无 env 时形状不变，含畸形条目跳过）、env 注入日志（只打 key 不打 value）、Task 9 真机验收第 7 项。
+   - **为什么额外加真机项而不是只靠单测**：Task 5 的测试只钉住 `writeRunScript` 的行为；`Start` 漏传 `req.Env` 时脚本里压根不会出现 export 行，单测全绿而用户 env 静默失效——这条缺口只有端到端能拦。
+
+**顺带修掉的两处存量不一致**：Task 5 两处「见下方 B19 耦合说明」指向一个不存在的段落（真正的说明在 Global Constraints），已改成就地写明 why；Task 9 Step 8 的 `git add` 还写着 `internal/agentd/manager_test.go`（自检时已把注册断言移到 `cmd/agentd_test.go`），已改。
 
 **已知取舍**：Task 5/6/7/8 的实现步骤给的是带完整注释与 why 的骨架而非逐行代码——这三个文件与 opencode 对应实现同构，逐行抄写会掩盖「照着 opencode 的形状写」这个真正的指令。测试是完整可运行的，它们定义了行为边界。
