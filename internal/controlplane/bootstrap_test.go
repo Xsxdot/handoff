@@ -91,6 +91,39 @@ func (f *fakeRepo) ControlEventsAfter(context.Context, int64, int) ([]ControlEve
 	return nil, nil
 }
 
+func (f *fakeRepo) CreateProject(context.Context, Project, []ProjectLocation, []Workspace) (ControlEvent, error) {
+	return ControlEvent{}, nil
+}
+
+func (f *fakeRepo) CreateOperation(context.Context, Operation) error { return nil }
+
+func (f *fakeRepo) UpdateOperation(context.Context, Operation) error { return nil }
+
+func (f *fakeRepo) GetOperation(context.Context, string) (Operation, error) {
+	return Operation{}, ErrNotFound
+}
+
+func (f *fakeRepo) ListOperations(context.Context) ([]Operation, error) { return nil, nil }
+
+func (f *fakeRepo) GetWorkspace(context.Context, string) (Workspace, error) {
+	return Workspace{}, ErrNotFound
+}
+
+func (f *fakeRepo) ResolveWorkspaceForPath(context.Context, string, string, string) (Workspace, error) {
+	return Workspace{}, nil
+}
+
+func (f *fakeRepo) AdoptWorkspace(context.Context, string, string) error { return nil }
+
+func (f *fakeRepo) GetMachine(_ context.Context, id string) (Machine, error) {
+	for _, m := range f.machines {
+		if m.ID == id {
+			return m, nil
+		}
+	}
+	return Machine{}, ErrNotFound
+}
+
 var _ Repository = (*fakeRepo)(nil)
 
 func newFakeBootstrap(t *testing.T) (*BootstrapService, *fakeRepo) {

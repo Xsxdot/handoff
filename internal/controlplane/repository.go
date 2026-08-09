@@ -9,7 +9,13 @@
 //   - 返回的 bool 表示重复 machine event 被幂等忽略，实现不得依赖错误文本判断重复
 package controlplane
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotFound 表示按 id 查询的资源不存在。
+var ErrNotFound = errors.New("资源不存在")
 
 // ConfiguredMachine 描述一条配置的远端机器（来自 config.Targets）。
 //
@@ -67,4 +73,33 @@ type Repository interface {
 	// detached Workspace，并在同一事务 upsert task_summaries；返回迁移的任务数。
 	// 这是 BootstrapService 的第三步，必须原子完成（两 ID 同写同灭）。
 	MigrateLegacyTasks(ctx context.Context, localMachineID string) (int, error)
+
+	// CreateProject 在同一事务内创建 Project、ProjectLocation 与 main Workspace，
+	// 并追加 control event；返回产生的 ControlEvent。
+	CreateProject(ctx context.Context, p Project, locations []ProjectLocation, workspaces []Workspace) (ControlEvent, error)
+
+	// CreateOperation 持久化一个 pending Operation（operation_id 幂等）。
+	CreateOperation(ctx context.Context, op Operation) error
+
+	// UpdateOperation 更新 Operation 状态/目标结果。
+	UpdateOperation(ctx context.Context, op Operation) error
+
+	// GetOperation 按 operation_id 读取 Operation；不存在返回 ErrNotFound。
+	GetOperation(ctx context.Context, operationID string) (Operation, error)
+
+	// ListOperations 返回全部 Operation（bootstrap 快照用）。
+	ListOperations(ctx context.Context) ([]Operation, error)
+
+	// GetWorkspace 按 id 读取 Workspace。
+	GetWorkspace(ctx context.Context, id string) (Workspace, error)
+
+	// GetMachine 按 id 读取 Machine。
+	GetMachine(ctx context.Context, id string) (Machine, error)
+
+	// ResolveWorkspaceForPath 解析一个目录对应的工作区（命中已有或创建 detached）。
+	ResolveWorkspaceForPath(ctx context.Context, machineID, canonical, displayPath string) (Workspace, error)
+
+	// AdoptWorkspace 把 detached Workspace 归并为主目录（只更新 location_id/kind，
+	// 保留 Workspace ID 与全部 Task 引用）。
+	AdoptWorkspace(ctx context.Context, wsID, locationID string) error
 }

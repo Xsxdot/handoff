@@ -47,7 +47,7 @@ func TestUpsertWorkspaceWithMachineEventAtomic(t *testing.T) {
 		t.Fatalf("machine_seq 不应为 0: %+v", ev)
 	}
 	// 回读：workspace 与 outbox 都在
-	got, err := s.GetWorkspace("ws1")
+	got, err := s.GetWorkspace(context.Background(), "ws1")
 	if err != nil || got.ID != "ws1" {
 		t.Fatalf("GetWorkspace: %+v err=%v", got, err)
 	}

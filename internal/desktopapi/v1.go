@@ -147,3 +147,20 @@ type ControlEventEnvelope struct {
 	Payload    json.RawMessage `json:"payload"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
+
+// CreateProjectRequest 是 POST /v1/projects/operations 的请求体。
+type CreateProjectRequest struct {
+	OperationID string                     `json:"operation_id"`
+	Name        string                     `json:"name"`
+	Locations   []CreateProjectLocationReq `json:"locations"`
+}
+
+// CreateProjectLocationReq 是 CreateProjectRequest 的一个 Location。
+type CreateProjectLocationReq struct {
+	MachineID string `json:"machine_id"`
+	Role      string `json:"role"`
+	Source    string `json:"source"`
+	Path      string `json:"path,omitempty"`
+	GitURL    string `json:"git_url,omitempty"`
+	ClonePath string `json:"clone_path,omitempty"`
+}

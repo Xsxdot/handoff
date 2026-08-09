@@ -152,11 +152,44 @@ func (s *Store) Snapshot(ctx context.Context) (controlplane.Snapshot, error) {
 	if err != nil {
 		return controlplane.Snapshot{}, err
 	}
+	projects, err := s.ListProjects(ctx)
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
+	locations, err := s.ListLocations(ctx)
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
+	workspaces, err := s.ListAllWorkspaces(ctx)
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
+	gitRefs, err := s.ListAllGitRefs(ctx)
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
+	taskSummaries, err := s.ListTaskSummaries()
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
+	operations, err := s.ListOperations(ctx)
+	if err != nil {
+		return controlplane.Snapshot{}, err
+	}
 	revision, err := s.currentControlRevision(ctx)
 	if err != nil {
 		return controlplane.Snapshot{}, err
 	}
-	return controlplane.Snapshot{ControlRevision: revision, Machines: machines}, nil
+	return controlplane.Snapshot{
+		ControlRevision:     revision,
+		Machines:            machines,
+		Projects:            projects,
+		Locations:           locations,
+		Workspaces:          workspaces,
+		GitRefs:             gitRefs,
+		ActiveTaskSummaries: taskSummaries,
+		Operations:          operations,
+	}, nil
 }
 
 // SnapshotMachines 返回全部 Machine 行。
@@ -206,6 +239,35 @@ func (s *Store) currentControlRevision(ctx context.Context) (int64, error) {
 	return rev, nil
 }
 
+// GetMachine 按 id 读取 Machine；不存在返回 ErrNotFound。
+func (s *Store) GetMachine(ctx context.Context, id string) (controlplane.Machine, error) {
+	var (
+		m            controlplane.Machine
+		capabilities string
+		lastSeenAt   sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, display_name, kind, endpoint, secret_ref, protocol_version, capabilities, status, last_seen_at
+FROM machines WHERE id = ?`, id).
+		Scan(&m.ID, &m.DisplayName, &m.Kind, &m.Endpoint, &m.SecretRef,
+			&m.ProtocolVersion, &capabilities, &m.Status, &lastSeenAt)
+	if err == sql.ErrNoRows {
+		return controlplane.Machine{}, ErrNotFound
+	}
+	if err != nil {
+		return controlplane.Machine{}, fmt.Errorf("读取机器 %s: %w", id, err)
+	}
+	if lastSeenAt.Valid {
+		t := parseTime(lastSeenAt.String)
+		m.LastSeenAt = &t
+	}
+	_ = json.Unmarshal([]byte(capabilities), &m.Capabilities)
+	if m.Capabilities == nil {
+		m.Capabilities = map[string]int{}
+	}
+	return m, nil
+}
+
 // ListLocationsForMachine 返回某机器（通常是本机）的全部 ProjectLocation。
 func (s *Store) ListLocationsForMachine(ctx context.Context, machineID string) ([]controlplane.ProjectLocation, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -218,9 +280,9 @@ FROM project_locations WHERE machine_id = ? ORDER BY created_at`, machineID)
 	var out []controlplane.ProjectLocation
 	for rows.Next() {
 		var (
-			loc        controlplane.ProjectLocation
-			createdAt  string
-			updatedAt  string
+			loc       controlplane.ProjectLocation
+			createdAt string
+			updatedAt string
 		)
 		if err := rows.Scan(&loc.ID, &loc.ProjectID, &loc.MachineID, &loc.MachineKind,
 			&loc.Role, &loc.MainWorkspaceID, &loc.Source, &loc.GitURL, &createdAt, &updatedAt); err != nil {

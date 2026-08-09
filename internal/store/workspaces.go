@@ -14,6 +14,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -221,7 +222,7 @@ func (s *Store) ResolveWorkspaceForPath(ctx context.Context, machineID, canonica
 	if err := tx.Commit(); err != nil {
 		return controlplane.Workspace{}, fmt.Errorf("提交 workspace 解析事务: %w", err)
 	}
-	return s.GetWorkspace(wsID)
+	return s.GetWorkspace(ctx, wsID)
 }
 
 // ensureWorkspaceForPathTx 在同一事务里复用或创建 path 对应的工作区。
@@ -253,7 +254,7 @@ VALUES (?, ?, NULL, 'detached', ?, ?, '', '', '', '', 'available', ?)`,
 }
 
 // GetWorkspace 按 id 读取 Workspace；不存在返回 ErrNotFound。
-func (s *Store) GetWorkspace(id string) (controlplane.Workspace, error) {
+func (s *Store) GetWorkspace(ctx context.Context, id string) (controlplane.Workspace, error) {
 	var (
 		ws           controlplane.Workspace
 		locationID   sql.NullString
@@ -286,6 +287,66 @@ FROM workspaces WHERE id = ?`, id).
 	ws.Availability = controlplane.Availability(availability)
 	ws.LastScannedAt = parseTime(lastScanned)
 	return ws, nil
+}
+
+// ListAllWorkspaces 返回全部机器的全部 Workspace（bootstrap 快照用）。
+func (s *Store) ListAllWorkspaces(ctx context.Context) ([]controlplane.Workspace, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, machine_id, location_id, kind, path, canonical_path, repo_identity,
+  git_common_dir, branch, head_oid, availability, last_scanned_at
+FROM workspaces ORDER BY machine_id, canonical_path`)
+	if err != nil {
+		return nil, fmt.Errorf("查询全部 workspaces: %w", err)
+	}
+	defer rows.Close()
+	var out []controlplane.Workspace
+	for rows.Next() {
+		var (
+			ws          controlplane.Workspace
+			locationID  sql.NullString
+			lastScanned string
+		)
+		if err := rows.Scan(&ws.ID, &ws.MachineID, &locationID, &ws.Kind, &ws.Path, &ws.CanonicalPath,
+			&ws.RepoIdentity, &ws.GitCommonDir, &ws.Branch, &ws.HeadOID, &ws.Availability, &lastScanned); err != nil {
+			return nil, fmt.Errorf("读取 workspace 行: %w", err)
+		}
+		if locationID.Valid {
+			ws.LocationID = &locationID.String
+		}
+		ws.LastScannedAt = parseTime(lastScanned)
+		out = append(out, ws)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历全部 workspaces: %w", err)
+	}
+	return out, nil
+}
+
+// ListAllGitRefs 返回全部 GitRef（bootstrap 快照用）。
+func (s *Store) ListAllGitRefs(ctx context.Context) ([]controlplane.GitRef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT location_id, name, head_oid, checked_out_workspace_ids
+FROM git_refs ORDER BY location_id, name`)
+	if err != nil {
+		return nil, fmt.Errorf("查询全部 git refs: %w", err)
+	}
+	defer rows.Close()
+	var out []controlplane.GitRef
+	for rows.Next() {
+		var (
+			ref controlplane.GitRef
+			ids string
+		)
+		if err := rows.Scan(&ref.LocationID, &ref.Name, &ref.HeadOID, &ids); err != nil {
+			return nil, fmt.Errorf("读取 git_ref 行: %w", err)
+		}
+		_ = json.Unmarshal([]byte(ids), &ref.CheckedOutWorkspaceIDs)
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历全部 git refs: %w", err)
+	}
+	return out, nil
 }
 
 // ListWorkspacesForMachine 返回某机器的全部 Workspace。

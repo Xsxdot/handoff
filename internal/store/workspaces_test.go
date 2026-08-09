@@ -32,6 +32,12 @@ func osSymlink(oldname, newname string) error { return os.Symlink(oldname, newna
 // now 返回当前 UTC 时间。
 func now() time.Time { return time.Now().UTC() }
 
+// protoTask 构造一个绑定到指定 machine/workspace 的 Task。
+func protoTask(id, workspaceID, machineID string) *proto.Task {
+	return &proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStatePending,
+		MachineID: machineID, WorkspaceID: workspaceID, CreatedAt: now(), UpdatedAt: now()}
+}
+
 // TestCanonicalPathNormalization 验证 macOS 路径规范化：
 // 绝对路径 clean、symlink 解析为真实路径。
 func TestCanonicalPathNormalization(t *testing.T) {

@@ -311,6 +311,21 @@ type Snapshot struct {
 	Operations          []Operation
 }
 
+// PathInspection 描述对某个路径的检查结果（InspectPath/Clone 的返回）。
+//
+// 为什么放在 controlplane 而非 machineauthority：MachineCommander 端口在
+// 领域层（project_service 依赖它），而 machineauthority 已 import controlplane，
+// 反向 import 会成环——领域层定义类型、实现方引用它。
+type PathInspection struct {
+	Path          string
+	CanonicalPath string
+	IsRepo        bool
+	RepoIdentity  string
+	GitCommonDir  string
+	Branch        string
+	HeadOID       string
+}
+
 // ValidateProjectLocations 校验项目 Location 约束：
 //
 //   - 合计必须为 1–2 个

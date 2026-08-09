@@ -187,3 +187,64 @@ func controlEventKindString(k controlplane.ControlEventKind) (string, error) {
 	}
 	return "", fmt.Errorf("未知 ControlEventKind %q", k)
 }
+
+// ToCreateProjectCommand 把 CreateProjectRequest 转换为领域 CreateProjectCommand。
+//
+// 只做字段/枚举转换；Location 数量、role/Machine 匹配、Git identity 等业务
+// 规则仍由 ProjectService 校验（spec §5.2：assembler 不承载业务规则）。
+func (a *CatalogAssembler) ToCreateProjectCommand(req CreateProjectRequest) (controlplane.CreateProjectCommand, error) {
+	cmd := controlplane.CreateProjectCommand{OperationID: req.OperationID, Name: req.Name}
+	if cmd.OperationID == "" {
+		return cmd, fmt.Errorf("operation_id 不能为空")
+	}
+	for _, l := range req.Locations {
+		role, err := parseLocationRole(l.Role)
+		if err != nil {
+			return cmd, err
+		}
+		source, err := parseLocationSource(l.Source)
+		if err != nil {
+			return cmd, err
+		}
+		cmd.Locations = append(cmd.Locations, controlplane.CreateLocationCommand{
+			TargetID:  targetIDFrom(l),
+			MachineID: l.MachineID,
+			Role:      role,
+			Source:    source,
+			Path:      l.Path,
+			GitURL:    l.GitURL,
+			ClonePath: l.ClonePath,
+		})
+	}
+	return cmd, nil
+}
+
+// targetIDFrom 为 Location 派生稳定目标 ID（wire 无显式 target_id 时用 machine+role 派生）。
+func targetIDFrom(l CreateProjectLocationReq) string {
+	if l.MachineID != "" {
+		return l.MachineID + "-" + l.Role
+	}
+	return l.Role
+}
+
+// parseLocationRole 解析 wire role 字符串。
+func parseLocationRole(s string) (controlplane.LocationRole, error) {
+	switch s {
+	case "local":
+		return controlplane.LocationRoleLocal, nil
+	case "remote":
+		return controlplane.LocationRoleRemote, nil
+	}
+	return "", fmt.Errorf("未知 Location role %q", s)
+}
+
+// parseLocationSource 解析 wire source 字符串。
+func parseLocationSource(s string) (controlplane.LocationSource, error) {
+	switch s {
+	case "existing_path":
+		return controlplane.LocationSourceExistingPath, nil
+	case "git_clone":
+		return controlplane.LocationSourceGitClone, nil
+	}
+	return "", fmt.Errorf("未知 Location source %q", s)
+}

@@ -160,3 +160,73 @@ func TestToOperation(t *testing.T) {
 		t.Errorf("operation dto JSON 缺少 operation_id: %s", re)
 	}
 }
+
+// TestToCreateProjectCommand 锁定 CreateProjectRequest → CreateProjectCommand
+// 的字段/枚举转换（table test 覆盖 local-only、remote-only、双 Location、clone）。
+func TestToCreateProjectCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		req  CreateProjectRequest
+		want []controlplane.CreateLocationCommand
+	}{
+		{"local-only existing",
+			CreateProjectRequest{OperationID: "op1", Name: "p", Locations: []CreateProjectLocationReq{
+				{MachineID: "m-local", Role: "local", Source: "existing_path", Path: "/repo"},
+			}},
+			[]controlplane.CreateLocationCommand{{TargetID: "m-local-local", MachineID: "m-local",
+				Role: controlplane.LocationRoleLocal, Source: controlplane.LocationSourceExistingPath, Path: "/repo"}}},
+		{"remote-only git_clone with default clone path",
+			CreateProjectRequest{OperationID: "op2", Name: "p", Locations: []CreateProjectLocationReq{
+				{MachineID: "m-remote", Role: "remote", Source: "git_clone", GitURL: "git@github.com:o/r.git", ClonePath: ""},
+			}},
+			[]controlplane.CreateLocationCommand{{TargetID: "m-remote-remote", MachineID: "m-remote",
+				Role: controlplane.LocationRoleRemote, Source: controlplane.LocationSourceGitClone,
+				GitURL: "git@github.com:o/r.git", ClonePath: ""}}},
+		{"local+remote dual",
+			CreateProjectRequest{OperationID: "op3", Name: "p", Locations: []CreateProjectLocationReq{
+				{MachineID: "m-local", Role: "local", Source: "existing_path", Path: "/a"},
+				{MachineID: "m-remote", Role: "remote", Source: "existing_path", Path: "/b"},
+			}},
+			[]controlplane.CreateLocationCommand{
+				{TargetID: "m-local-local", MachineID: "m-local", Role: controlplane.LocationRoleLocal,
+					Source: controlplane.LocationSourceExistingPath, Path: "/a"},
+				{TargetID: "m-remote-remote", MachineID: "m-remote", Role: controlplane.LocationRoleRemote,
+					Source: controlplane.LocationSourceExistingPath, Path: "/b"},
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := (&CatalogAssembler{}).ToCreateProjectCommand(c.req)
+			if err != nil {
+				t.Fatalf("ToCreateProjectCommand: %v", err)
+			}
+			if got.OperationID != c.req.OperationID {
+				t.Fatalf("operation_id = %q", got.OperationID)
+			}
+			if len(got.Locations) != len(c.want) {
+				t.Fatalf("locations = %d, want %d", len(got.Locations), len(c.want))
+			}
+			for i := range c.want {
+				if got.Locations[i] != c.want[i] {
+					t.Errorf("locations[%d] = %+v, want %+v", i, got.Locations[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestToCreateProjectCommandErrors 覆盖非法枚举与缺 operation_id 报错。
+func TestToCreateProjectCommandErrors(t *testing.T) {
+	a := &CatalogAssembler{}
+	if _, err := a.ToCreateProjectCommand(CreateProjectRequest{Name: "p"}); err == nil {
+		t.Fatal("缺 operation_id 应报错")
+	}
+	if _, err := a.ToCreateProjectCommand(CreateProjectRequest{OperationID: "op1", Name: "p",
+		Locations: []CreateProjectLocationReq{{MachineID: "m1", Role: "bogus", Source: "existing_path"}}}); err == nil {
+		t.Fatal("非法 role 应报错")
+	}
+	if _, err := a.ToCreateProjectCommand(CreateProjectRequest{OperationID: "op1", Name: "p",
+		Locations: []CreateProjectLocationReq{{MachineID: "m1", Role: "local", Source: "bogus"}}}); err == nil {
+		t.Fatal("非法 source 应报错")
+	}
+}
