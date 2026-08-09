@@ -46,6 +46,9 @@
 | 权限请求会被 grok 超时掉 | ❌ 悬挂 1200s 后补应答仍被接受、工具执行、`end_turn` 收尾 | §5.1 |
 | 重连后未决权限会被重发 | ❌ **不会**，`session/load` 成功但权限不重发、工具永不执行 | §5.2 |
 | 任务级 home 的 `auth.json` 软链稳定 | ❌ 会在 token 刷新前后消失，随后 `session/new` 报 `Authentication required` | §3.3 |
+| hooks 可替代 ACP 承担审批（能放行） | ❌ **只能否决不能放行**：`deny` 生效，`allow` 只是「不否决」，权限请求照常到达 | §5.3 |
+| 提问走 `session/request_permission` | ❌ **另有专用双向方法** `_x.ai/ask_user_question`，不应答则回合**永久挂死** | §5.3 |
+| ACP 请求 id 可按数值分发 | ❌ **不行**，agent 侧请求 id 从 0 自增，与客户端 id 空间重叠 | §5.3 |
 
 前置 spike 已全部收口，**无遗留未验证项**。
 
@@ -176,6 +179,31 @@ allow = ["Edit", "Write"]
 | `render.log` | 0644 | 渲染文本，tmux 窗口 1 的 tail 目标 | 同名同义 |
 | `serve.json` | 0600 | 恢复凭据：tmux 会话名 / port / secret / sessionId | 同名同义 |
 
+### 3.5 可选增强：hooks 作为任务级独立观测面（**非本期**，仅登记）
+
+grok 从 `$GROK_HOME/hooks/*.json` 加载 hook 配置，因此 hooks 是**少数几个真正被任务级
+`GROK_HOME` 管住**的面——与 §3.3 那个「`~/.claude` 关不掉」的泄漏正好互补：泄漏的是权限
+**规则**，hooks 提供的是独立于规则的**事件观测**，两者不同源，可互为佐证。
+
+**能力边界（§5.3 实测，先说死）**：
+
+| 想用它做 | 行不行 |
+|---------|-------|
+| 承担审批放行 | ❌ **不行**。`{"decision":"allow"}` 只是「不否决」，权限请求照常走 ACP |
+| 承担审批否决 | ✅ 可以。`{"decision":"deny"}` 生效，工具直接 failed 且 ACP 侧零权限请求 |
+| 观测工具调用入参 | ✅ `pre_tool_use` 带完整 `toolInput` / `toolUseId` / `permissionMode` |
+| 观测命令退出码 | ✅ `post_tool_use.toolResult` 带 `exit_code` / `output` / `timed_out` / `signal` |
+| 观测回合收尾 | ✅ `stop` 带 `reason` 与 `lastAssistantMessage` 全文 |
+
+**因此它是「兜底黑名单的第二道闸」，不是审批链的替代品**——审批链仍然只能建立在 ACP
+`session/request_permission` 上（这是 §2 选型不变的根本原因）。
+
+本期不实现，登记为后续可选项。真要做时的形态：`WriteTaskEnv` 额外生成
+`grokhome/hooks/handoff.json` + 一个 `deny` 脚本，把 manager 侧硬黑名单**下沉一份**到
+executor 侧，使「handoff 没枚举、而用户 `~/.claude` 里 allow 了」的残余面（§3.3 末段）多
+一层不依赖 ACP 通道的拦截。**收益有限、口子明确**：它只能加严不能放松，所以不会与审批链
+冲突；但它同样管不住 §3.3 的规则泄漏本身，别指望它补上那个洞。
+
 ## 4. 五动作映射
 
 ### 4.1 Start
@@ -200,10 +228,12 @@ allow = ["Edit", "Write"]
 | `session/update` `agent_message_chunk` | 累积回合正文 → 追加 `render.log` → 触发 `maybeProgress`（节流同 opencode） |
 | `session/update` `agent_thought_chunk` | **只进 `render.log`**，不进回合正文 |
 | `session/update` `tool_call` / `tool_call_update` | **只进 `render.log`**（`▸ <title>` / 状态变更） |
+| `_x.ai/ask_user_question`（agent→client **请求**） | **必须应答**，否则回合永久挂死；见 §4.2.3 |
 | `session/prompt` 的**响应**（含 `stopReason`） | 回合收尾，见 §4.2.1 |
 | WS 断开 | **不直接终结**：先作废挂起权限、按退避重连，见 §4.2.2 |
 | serve 探活判死 / 重连耗尽 | `result{OK:false, FailReason = 原因 + serve.log 尾部（脱敏 secret）}` |
-| 其他（`_x.ai/*` 私有通知、`available_commands_update` 等） | 忽略（Debug 留痕，绝不 panic） |
+| 其他**通知**（无 `id` 的 `_x.ai/session_notification`、`available_commands_update` 等） | 忽略（Debug 留痕，绝不 panic） |
+| 其他**请求**（有 `id` 的未知 method） | **回 JSON-RPC 错误 `-32601 Method not found`，不得静默丢弃**；见 §4.2.3 |
 
 - **why thought 不进回合正文**：`ParseTrailer` 取「最后一个 `{` 开头的行」，推理流里模型
   复述协议样例会污染判定；但它对旁观者有价值，故进 `render.log`。
@@ -251,6 +281,43 @@ WS 断开
 
 看门狗的探活判死是**独立**通道：它判死时同样 emit `result{OK:false}`，与上面的出口靠
 `closeEvents` 的一次性语义互斥（先到者终结，后到者被丢弃），不会双重终结。
+
+#### 4.2.3 提问通道：`_x.ai/ask_user_question` 必须应答
+
+grok 的交互提问**不走** `session/request_permission`，而是一个独立的 agent→client 阻塞式
+请求（§5.3 实测报文）：
+
+```json
+{"jsonrpc":"2.0","id":0,"method":"_x.ai/ask_user_question","params":{
+  "sessionId":"019fe480-...",
+  "toolCallId":"call-58043e4e-33a2-40e2-8672-8de92449e77a-0",
+  "questions":[{"question":"这个功能用哪种语言实现？",
+                "options":[{"label":"Go","description":"用 Go 实现该功能"},
+                           {"label":"Rust","description":"用 Rust 实现该功能"}],
+                "multiSelect":null}],
+  "mode":"default"}}
+```
+
+**处置：收到即回 `{}`，同时 emit 一条 question 事件。**
+
+```
+_x.ai/ask_user_question 到达
+  → 立刻回 {"jsonrpc":"2.0","id":<原 id>,"result":{}}   （grok 视为「用户拒答」，继续自行判断）
+  → 把 params.questions 渲染成文本，emit question 事件交审核者
+  → 同一份文本追加 render.log（旁观者可见）
+```
+
+- **why 必须回而不是忽略**：实测不应答会让回合**永久挂死**——`session/prompt` 不返回、
+  serve 进程健在、看门狗探活通过，任务表面在跑实则永久静止，是最坏的一种故障形态。
+  grok 侧默认**没有超时**（`GROK_ASK_USER_QUESTION_TIMEOUT_ENABLED` 是选择性开启的）。
+- **why 回 `{}` 而不是把审核者的答复灌回去**：handoff 的提问通道是回合协议的 trailer
+  `{"ask":…}`，不是这个工具。`{}` 已实测可解开阻塞且被 grok 当作拒答，模型会带着「用户
+  没答」继续走到回合结束，正文里的 trailer 仍然是权威裁决入口——**提问语义只有一个来源**。
+  把两条提问通道都做成可应答，等于同一个回合有两个真相源。
+- **why 仍要 emit question 事件**：模型绕开纪律用了工具，这件事本身审核者必须知情；
+  丢掉它就等于人不知道模型问过什么。
+- **未知请求一律回 `-32601`**：静默丢弃有 `id` 的请求 = 制造同款挂死。这是通用防线，
+  比逐个方法枚举更可靠。
 
 ### 4.3 Send
 
@@ -352,6 +419,54 @@ Resume 与 §4.2.2 的断开处置是独立兜底，即便某天 grok 加了超�
 回归测试固定这条结论（挂起表非空 + 连接断开 ⇒ 必须 emit failed，不得静默重连了事；
 grok 任务有 pending 工单 ⇒ `ResumeTask` 必须返回 false，且 opencode 不受影响）。
 
+### 5.3 hooks 能力边界与提问通道（已验，2026-08-09）
+
+起因：另一个项目（orca）用「把托管 hook 脚本装进 agent 自己的配置」这一套对接了 17 个
+agent，需要判断它能否替代或简化本 spec 的 ACP 方案。**结论：不能，本 spec 的选型不变。**
+
+实验环境：隔离 `GROK_HOME`（`auth.json` 软链真实凭据）+ 注册全部 14 个事件的录像机脚本
++ `grok agent serve` + ACP WS 客户端，`permission_mode = "default"`。
+
+**(a) hooks 是只能否决、不能放行的单向闸门**
+
+| PreToolUse 返回 | 工具状态 | ACP 权限请求次数 | 目标文件 |
+|----------------|---------|----------------|---------|
+| `{"decision":"deny"}` | `failed` | **0**（hook 在权限系统之前评估） | 未生成 |
+| `{"decision":"allow"}` | `completed` | **1**（照常到达） | 生成 |
+
+与官方文档一致：「hook deny 停止调用，**hook allow 落回正常权限检查**」。
+handoff 的审批链需要「批准」这个动作，hooks 给不了 ⇒ **ACP 是唯一可行的审批通道**。
+
+**(b) 实际落地的事件序列**（事件名是 **snake_case**，非文档表头的 PascalCase）
+
+```
+session_start → user_prompt_submit → pre_tool_use → notification → post_tool_use → stop
+```
+
+`notification` 用 `notificationType` 区分 `permission_prompt` 与 `elicitation_dialog`。
+一个反直觉点：`cat /nonexistent`（退出码 1）触发的是 `post_tool_use` 而**非**
+`post_tool_use_failure`——`*_failure` 指工具框架自身失败，命令失败要读
+`toolResult.exit_code`。
+
+**(c) 提问是独立的双向方法，不应答则永久挂死**
+
+`ask_user_question` 工具不产生 `session/request_permission`，而是发出
+`_x.ai/ask_user_question` 请求（带 `id`）。首次实验客户端把它当通知丢弃 ⇒ 回合**挂死到
+180s 观察窗结束**，`session/prompt` 始终不返回。实测回 `{}` 可解开阻塞，grok 记为「用户
+拒答」并继续。处置见 §4.2.3。
+
+**(d) ACP 请求 id 不能作为分发依据**
+
+grok 侧发起的请求 id 从 **0 自增**，与客户端自己的 id 空间重叠。探针脚本按 `id == 2`
+分发时，把 grok 的第 3 个请求误判成 `session/new` 的响应，直接 `KeyError`。
+**正确判据：有 `method` 字段 ⇒ 入站请求/通知（再看有无 `id` 区分二者）；有 `result` /
+`error` ⇒ 自己请求的响应。** 这是 `acp.go` 的硬性实现约束，不是风格问题。
+
+**(e) 另有 `_x.ai/session_notification` 扩展通知通道**，携带
+`pending_interaction{kind: permission|question}` / `interaction_resolved` /
+`hook_execution` 执行结果 / `response_completed` 用量。本期不消费（看门狗用探活已足够），
+登记备查——将来若要精确回答「到底卡在哪一步」，它是现成信号。
+
 ## 6. 前置依赖：`internal/executor/turn`
 
 本 spec 的 plan 以**抽取 `turn` 共享包**为 Task 1，单独 commit 合入 main 后再开工 adapter
@@ -410,6 +525,8 @@ case "grok":
 | 挂起权限遇 WS 断开 | 全体作废；是否终结取决于重连结果，`result{OK:false}` 至多一次（§4.2.2） |
 | `session/prompt` 返回非 `end_turn` | failed，`FailReason` 带 `stopReason` |
 | 未知 `session/update` 类型 | Debug 跳过，绝不 panic（executor 侧输出不可信） |
+| `_x.ai/ask_user_question` 到达 | 立即回 `{}` 解阻塞 + emit question 事件（§4.2.3）；**绝不静默丢弃** |
+| 未知的**有 id** 入站方法 | 回 `-32601 Method not found`（§4.2.3）；丢弃 = 制造永久挂死 |
 | `auth.json` 软链缺失/断链 | Start 与 Resume 均先重建软链（幂等，见 §3.3），不报错 |
 | `session/new` 返回 `Authentication required` | Start 失败并明示「grok 未登录或凭据失效，先跑 `grok login`」；**不重试** |
 | tmux 未安装 | Start 失败并明示（与 opencode 同） |
@@ -422,6 +539,11 @@ case "grok":
   - 权限挂起表：登记 → 裁决 → 回包；查不到时 `ErrTaskNotRunning`；WS 断开时全体作废
   - 终结唯一性：断开→重连耗尽、断开→重连成功但卡死、看门狗判死三条路径**各自只 emit
     一次** `result{OK:false}`，且三者并发到达时只有先到者生效（§4.2.2）
+  - **入站分发判据**：agent 侧请求 id 与客户端 id **重叠**时不得误判——同一连接上
+    「客户端发 id=2 的请求」与「agent 发 id=2 的请求」并存，必须各归各路（§5.3(d)）
+  - **提问不挂死**：收到 `_x.ai/ask_user_question` ⇒ 必须回包 + 必须 emit question 事件；
+    未知的有 id 方法 ⇒ 必须回 `-32601`。两条都要有「不回包则 `session/prompt` 永不返回」
+    的反向断言（§4.2.3）
   - 物料生成：`config.toml` / `run_grok.sh` 内容（含 0600 权限、引号转义、**secret 不在 argv**）
   - 回合分类各分支（ask / finish / none 兜底 / 非 end_turn）
   - Resume：探活成功走 `session/load`；探活失败判 `alive=false`
@@ -445,3 +567,8 @@ case "grok":
 - 不改 `handoff attach` 任何行为
 - 不重定义权限文本截断策略（归 B6）
 - 不试图封堵 §3.3 的 `~/.claude` 泄漏（grok 侧无此开关，manager 硬黑名单兜底）
+- **不实现 §3.5 的 hooks 观测面**（本期只登记形态与实测过的能力边界；它只能加严不能放松，
+  补不上 §3.3 的规则泄漏，也替代不了 ACP 审批通道——§5.3(a) 已实测证明）
+- 不消费 `_x.ai/session_notification` 扩展通道（§5.3(e)；看门狗用探活已足够）
+- 不把审核者答复灌回 `_x.ai/ask_user_question`（§4.2.3：提问语义只能有一个真相源，
+  即回合协议的 trailer）

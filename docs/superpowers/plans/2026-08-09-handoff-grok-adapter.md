@@ -17,6 +17,7 @@
 - **注释**：新文件必须有文件头注释（职责 + 边界）；导出方法必须有 doc 注释（参数/返回/注意）；非显然分支必须有中文「为什么」注释。
 - **秘密脱敏**：`GROK_AGENT_SECRET` 绝不进 argv、绝不进日志、绝不进 `FailReason`。凡输出 `serve.log` 尾部处一律先脱敏。
 - **零新增依赖**：不得引入 ACP SDK 或其他第三方包。
+- **入站请求必须有出口**（spec §4.2.3 / §5.3）：连接上任何**带 `id`** 的对方消息都必须得到应答——识别的按语义处理，未识别的回 `-32601`。静默丢弃会让 `session/prompt` 永不返回、serve 进程健在、看门狗探活通过，任务表面在跑实则永久静止。这是本 adapter 最坏的一类故障，实测已复现。同理：**分发依据是有没有 `method` 字段，不是 id 数值**——agent 侧请求 id 从 0 自增，与本端 id 空间重叠。
 - **测试不烧 token**：所有自动化测试用假 WS server / 假脚本；真机验收单列 Task 9。
 - **提交粒度**：每个 Task 末尾一次提交，commit message 用中文，遵循仓库现有风格。
 
@@ -587,7 +588,7 @@ why prompt 模板与 ParseTrailer 必须同包：教模型协议的 prompt 与�
 - Produces:
   - `type ACPClient struct{ ... }`
   - `grok.DialACP(ctx context.Context, wsURL string, h ACPHandler, log *slog.Logger) (*ACPClient, error)`
-  - `type ACPHandler interface { OnNotify(method string, params json.RawMessage); OnPermission(reqID json.RawMessage, params json.RawMessage); OnClosed(err error) }`
+  - `type ACPHandler interface { OnNotify(method string, params json.RawMessage); OnPermission(reqID json.RawMessage, params json.RawMessage); OnAskQuestion(reqID json.RawMessage, params json.RawMessage); OnClosed(err error) }`
   - `(*ACPClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error)`（阻塞等响应）
   - `(*ACPClient) CallAsync(method string, params any) (<-chan ACPResult, error)`（用于 `session/prompt`：一整个回合才响应）
   - `(*ACPClient) Reply(reqID json.RawMessage, result any) error`（应答对方请求，用于权限）
@@ -618,6 +619,7 @@ import (
 type fakeHandler struct {
 	notifies chan [2]string // method, params
 	perms    chan json.RawMessage
+	asks     chan json.RawMessage
 	closed   chan error
 }
 
@@ -625,6 +627,7 @@ func newFakeHandler() *fakeHandler {
 	return &fakeHandler{
 		notifies: make(chan [2]string, 16),
 		perms:    make(chan json.RawMessage, 4),
+		asks:     make(chan json.RawMessage, 4),
 		closed:   make(chan error, 4),
 	}
 }
@@ -632,8 +635,9 @@ func newFakeHandler() *fakeHandler {
 func (f *fakeHandler) OnNotify(method string, params json.RawMessage) {
 	f.notifies <- [2]string{method, string(params)}
 }
-func (f *fakeHandler) OnPermission(reqID, params json.RawMessage) { f.perms <- params }
-func (f *fakeHandler) OnClosed(err error)                         { f.closed <- err }
+func (f *fakeHandler) OnPermission(reqID, params json.RawMessage)  { f.perms <- params }
+func (f *fakeHandler) OnAskQuestion(reqID, params json.RawMessage) { f.asks <- params }
+func (f *fakeHandler) OnClosed(err error)                          { f.closed <- err }
 
 // startFakeAgent 起一个假 ACP agent：按脚本回消息。
 // script 收到客户端每条消息后返回要发回的若干条消息（原样字符串）。
@@ -768,9 +772,179 @@ func TestPermissionRequestCallbackAndDeferredReply(t *testing.T) {
 > `{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c1","title":"Execute ` + "`ls`" + `","rawInput":{"command":"ls"}},"options":[{"optionId":"allow-once","kind":"allow_once"},{"optionId":"reject-once","kind":"reject_once"}]}}`。
 > 补齐 script 分支后再跑。
 
+- [ ] **Step 2b: 写失败测试——提问请求、未知请求、id 空间重叠**
+
+这三条各自钉住 spec §5.3 的一条实测结论，缺一条就会在真机上复现一次挂死。同文件追加：
+
+```go
+// TestAskQuestionRequestIsSurfacedNotDropped 钉住 spec §4.2.3：
+// _x.ai/ask_user_question 是带 id 的请求，丢弃会让 session/prompt 永不返回。
+func TestAskQuestionRequestIsSurfacedNotDropped(t *testing.T) {
+	const askReq = `{"jsonrpc":"2.0","id":0,"method":"_x.ai/ask_user_question","params":` +
+		`{"sessionId":"s","toolCallId":"c9","questions":[{"question":"用哪种语言？",` +
+		`"options":[{"label":"Go","description":"用 Go"},{"label":"Rust","description":"用 Rust"}],` +
+		`"multiSelect":null}],"mode":"default"}}`
+	replies := make(chan string, 4)
+	srv := startFakeAgentRecording(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		switch req.Method {
+		case "initialize":
+			return []string{`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{}}`}
+		case "trigger/ask":
+			return []string{askReq}
+		}
+		return nil
+	}, replies)
+
+	h := newFakeHandler()
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), h, nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Call(ctx, "initialize", map[string]any{}); err != nil {
+		t.Fatalf("initialize 失败: %v", err)
+	}
+	_ = cli.Notify("trigger/ask", map[string]any{})
+
+	select {
+	case p := <-h.asks:
+		var got struct {
+			ToolCallID string `json:"toolCallId"`
+			Questions  []struct {
+				Question string `json:"question"`
+				Options  []struct {
+					Label string `json:"label"`
+				} `json:"options"`
+			} `json:"questions"`
+		}
+		if err := json.Unmarshal(p, &got); err != nil {
+			t.Fatalf("提问参数解析失败: %v", err)
+		}
+		if got.ToolCallID != "c9" || len(got.Questions) != 1 ||
+			got.Questions[0].Question != "用哪种语言？" || len(got.Questions[0].Options) != 2 {
+			t.Fatalf("提问参数未原样上抛: %s", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("提问请求被丢弃 —— 真机上这会让回合永久挂死（spec §5.3(c)）")
+	}
+}
+
+// TestUnknownAgentRequestGetsMethodNotFound 钉住：未识别的**有 id** 请求必须回错误，
+// 不得静默丢弃——丢弃等于制造同款永久挂死。
+func TestUnknownAgentRequestGetsMethodNotFound(t *testing.T) {
+	replies := make(chan string, 4)
+	srv := startFakeAgentRecording(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		switch req.Method {
+		case "initialize":
+			return []string{`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{}}`}
+		case "trigger/unknown":
+			return []string{`{"jsonrpc":"2.0","id":7,"method":"_x.ai/brand_new_thing","params":{}}`}
+		}
+		return nil
+	}, replies)
+
+	h := newFakeHandler()
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), h, nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Call(ctx, "initialize", map[string]any{}); err != nil {
+		t.Fatalf("initialize 失败: %v", err)
+	}
+	_ = cli.Notify("trigger/unknown", map[string]any{})
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case raw := <-replies:
+			var m struct {
+				ID    json.RawMessage `json:"id"`
+				Error *struct {
+					Code int `json:"code"`
+				} `json:"error"`
+			}
+			if json.Unmarshal([]byte(raw), &m) == nil && string(m.ID) == "7" {
+				if m.Error == nil || m.Error.Code != -32601 {
+					t.Fatalf("未知请求应回 -32601，实得: %s", raw)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("未知请求未收到任何应答 —— 对方会永久等待")
+		}
+	}
+}
+
+// TestOverlappingRequestIDsDoNotCollide 钉住 spec §5.3(d)：
+// agent 侧请求 id 从 0 自增，与本端 id 空间重叠。此处让 agent 主动发一个
+// id=1 的请求，而本端第一个请求的 id 也是 1——两者必须各归各路。
+func TestOverlappingRequestIDsDoNotCollide(t *testing.T) {
+	srv := startFakeAgent(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		if req.Method != "initialize" {
+			return nil
+		}
+		// 先发一个与本端 id 撞号的 agent 请求，再回真正的响应
+		return []string{
+			`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"method":"session/request_permission",` +
+				`"params":{"sessionId":"s","toolCall":{"toolCallId":"cx","title":"Execute ` + "`ls`" + `",` +
+				`"rawInput":{"command":"ls"}},"options":[{"optionId":"allow-once","kind":"allow_once"}]}}`,
+			`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{"protocolVersion":1}}`,
+		}
+	})
+	h := newFakeHandler()
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), h, nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := cli.Call(ctx, "initialize", map[string]any{})
+	if err != nil {
+		t.Fatalf("撞号的 agent 请求污染了响应匹配: %v", err)
+	}
+	var got struct {
+		ProtocolVersion int `json:"protocolVersion"`
+	}
+	if json.Unmarshal(res, &got) != nil || got.ProtocolVersion != 1 {
+		t.Fatalf("响应内容错误（可能拿到了 agent 请求）: %s", res)
+	}
+	select {
+	case <-h.perms:
+	case <-time.After(2 * time.Second):
+		t.Fatal("撞号的 agent 请求被当成响应吃掉了")
+	}
+}
+```
+
+> `startFakeAgentRecording` 是 `startFakeAgent` 的变体：额外把**客户端发出的每条消息**
+> 原样投递到 `replies` 通道，供断言应答内容。实现时把它和 `startFakeAgent` 收敛成同一个
+> 函数（`startFakeAgent` 传 nil 通道即可），不要写两份 WS 样板。
+
 - [ ] **Step 3: 运行确认失败**
 
-Run: `go test ./internal/executor/grok/ -run 'TestCallMatches|TestPermissionRequest' -v`
+Run: `go test ./internal/executor/grok/ -run 'TestCallMatches|TestPermissionRequest|TestAskQuestion|TestUnknownAgentRequest|TestOverlappingRequestIDs' -v`
 Expected: 编译失败 —— `undefined: grok.DialACP`
 
 - [ ] **Step 4: 实现 acp.go**
@@ -813,6 +987,9 @@ type ACPResult struct {
 type ACPHandler interface {
 	// OnNotify 收到对方通知（无 id 的消息）
 	OnNotify(method string, params json.RawMessage)
+	// OnAskQuestion 收到 _x.ai/ask_user_question（对方请求，**必须应答**）。
+	// 不应答会让 session/prompt 永不返回、任务永久静止（spec §4.2.3 / §5.3(c) 实测）。
+	OnAskQuestion(reqID json.RawMessage, params json.RawMessage)
 	// OnPermission 收到 session/request_permission（对方请求，需应答）。
 	// reqID 原样保存，裁决回来后经 Reply 回发。
 	OnPermission(reqID json.RawMessage, params json.RawMessage)
@@ -997,10 +1174,18 @@ func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 
 		switch {
 		case msg.Method != "" && len(msg.ID) > 0:
-			// 对方请求：目前只关心权限，其余回 method not found 让对方别等
-			if msg.Method == "session/request_permission" {
+			// 对方请求。注意先判 Method 再判 ID：agent 侧请求 id 从 0 自增，与本端
+			// 请求 id 空间**重叠**（spec §5.3(d) 实测），只看 id 会把对方的请求
+			// 误认成自己请求的响应。
+			// 未识别的请求一律回 -32601——静默丢弃有 id 的请求 = 让对方永久等待。
+			switch msg.Method {
+			case "session/request_permission":
 				c.log.Info("ACP 收到权限请求", "req_id", string(msg.ID))
 				h.OnPermission(append(json.RawMessage(nil), msg.ID...), msg.Params)
+				continue
+			case "_x.ai/ask_user_question":
+				c.log.Info("ACP 收到提问请求", "req_id", string(msg.ID))
+				h.OnAskQuestion(append(json.RawMessage(nil), msg.ID...), msg.Params)
 				continue
 			}
 			c.log.Debug("ACP 未处理的对方请求，回 -32601", "method", msg.Method)
@@ -1038,7 +1223,7 @@ func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 
 在 `TestPermissionRequestCallbackAndDeferredReply` 的 script 里补 `trigger/perm` 分支（返回 Step 2 注释里给出的权限请求报文）。
 
-Run: `go test ./internal/executor/grok/ -run 'TestCallMatches|TestPermissionRequest' -race -v`
+Run: `go test ./internal/executor/grok/ -run 'TestCallMatches|TestPermissionRequest|TestAskQuestion|TestUnknownAgentRequest|TestOverlappingRequestIDs' -race -v`
 Expected: PASS
 
 - [ ] **Step 6: 加连接终止时挂起请求作废的测试**
@@ -1917,10 +2102,55 @@ func (t *turnAccumulator) ClassifyForTest() (string, turn.Trailer) {
 
 （`export_test.go` 需 import `"github.com/xushixin/handoff/internal/executor/turn"`。）
 
+- [ ] **Step 2b: 写失败测试——提问文本渲染（内部测试）**
+
+`askQuestionText` 是未导出函数，测试放**内部**测试文件
+`internal/executor/grok/askquestion_internal_test.go`：
+
+```go
+package grok
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestAskQuestionTextRendersQuestionsAndOptions(t *testing.T) {
+	// 来自本机 grok 1.0.0 实测报文（spec §4.2.3）
+	params := json.RawMessage(`{"sessionId":"s","toolCallId":"c9",` +
+		`"questions":[{"question":"这个功能用哪种语言实现？","options":[` +
+		`{"label":"Go","description":"用 Go 实现该功能"},` +
+		`{"label":"Rust","description":"用 Rust 实现该功能"}],"multiSelect":null}],"mode":"default"}`)
+
+	got := askQuestionText(params)
+	for _, want := range []string{"这个功能用哪种语言实现？", "1) Go", "2) Rust", "用 Rust 实现该功能"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("渲染文本缺少 %q，实得:\n%s", want, got)
+		}
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Errorf("尾部换行未清理: %q", got)
+	}
+}
+
+func TestAskQuestionTextEmptyOnGarbage(t *testing.T) {
+	for name, in := range map[string]string{
+		"非 JSON":   `not json`,
+		"缺 questions": `{"sessionId":"s"}`,
+		"空 questions": `{"questions":[]}`,
+	} {
+		if got := askQuestionText(json.RawMessage(in)); got != "" {
+			t.Errorf("%s: 应返回空串，实得 %q", name, got)
+		}
+	}
+}
+```
+
 - [ ] **Step 3: 运行确认失败**
 
-Run: `go test ./internal/executor/grok/ -run 'TestMapUpdate|TestTurnText' -v`
-Expected: 编译失败 —— `undefined: newTurnAccumulator`
+Run: `go test ./internal/executor/grok/ -run 'TestMapUpdate|TestTurnText|TestAskQuestionText' -v`
+Expected: 编译失败 —— `undefined: newTurnAccumulator`、`undefined: askQuestionText`
 
 - [ ] **Step 4: 实现 adapter.go 的累积器与事件映射**
 
@@ -2008,7 +2238,7 @@ func toolLine(title string, rawInput json.RawMessage) string {
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `go test ./internal/executor/grok/ -run 'TestMapUpdate|TestTurnText' -v`
+Run: `go test ./internal/executor/grok/ -run 'TestMapUpdate|TestTurnText|TestAskQuestionText' -v`
 Expected: PASS
 
 - [ ] **Step 6: 实现 Adapter 主体（Start/Events/Send/Stop）与文件头注释**
@@ -2363,6 +2593,67 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 	h.a.log.Info("grok 权限门触发", "task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
 		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID, Text: text})
+}
+
+// OnAskQuestion 处置 grok 的交互提问（spec §4.2.3）。
+//
+// 纪律：**先解阻塞再做别的**。不应答会让 session/prompt 永不返回、serve 进程健在、
+// 看门狗探活通过——任务表面在跑实则永久静止，是最坏的一种故障形态（§5.3(c) 实测）。
+// 因此即使参数解析失败也必须回包。
+//
+// 回 `{}` 而非把审核者答复灌回去：handoff 的提问通道是回合协议的 trailer `{"ask":…}`，
+// 只能有一个真相源；grok 收到 `{}` 记为「用户拒答」并带着这个事实继续走到回合结束。
+func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
+	// 先解阻塞：任何解析失败都不能挡住这一步
+	if err := h.r.cli.Reply(reqID, map[string]any{}); err != nil {
+		h.a.log.Error("提问请求应答失败，该回合可能已挂死",
+			"task", h.r.taskID, "cause", err)
+	}
+
+	text := askQuestionText(params)
+	if text == "" {
+		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报审核者",
+			"task", h.r.taskID)
+		return
+	}
+	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交审核者",
+		"task", h.r.taskID)
+	if err := turn.AppendRender(filepath.Join(h.r.taskDir, renderLogName),
+		"\n【模型提问】"+text+"\n"); err != nil {
+		h.a.log.Warn("提问文本写 render.log 失败，不影响上报", "task", h.r.taskID, "cause", err)
+	}
+	h.a.emit(h.r, executor.AdapterEvent{Type: "question",
+		SessionID: h.r.sessionID, Text: turn.ClampQuestion(text)})
+}
+
+// askQuestionText 把 _x.ai/ask_user_question 的 params 渲染成人读的一段文本。
+// 解析失败返回空串（调用方据此跳过上报，但阻塞已在调用方解除）。
+func askQuestionText(params json.RawMessage) string {
+	var p struct {
+		Questions []struct {
+			Question string `json:"question"`
+			Options  []struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || len(p.Questions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, q := range p.Questions {
+		b.WriteString(q.Question)
+		b.WriteString("\n")
+		for i, o := range q.Options {
+			b.WriteString(fmt.Sprintf("  %d) %s", i+1, o.Label))
+			if o.Description != "" {
+				b.WriteString(" —— " + o.Description)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (h *acpHandler) OnClosed(err error) { h.a.onClosed(h.r, err) }
@@ -3246,6 +3537,21 @@ Expected: 窗口 0 是 serve 进程输出，窗口 1 是 `tail -f render.log` �
 
 Run: `handoff list` 观察工单；`handoff answer <ticket-id> allow`
 Expected: 权限事件入库、审核者批准后 executor 继续执行（`render.log` 可见工具真的跑了）。
+
+- [ ] **Step 4b: 验证提问工具不会挂死回合（spec §4.2.3 的真机钉子）**
+
+这条必须真机验——单测里的假 agent 只能证明「回了包」，证明不了「grok 认这个包」。
+
+Run: `handoff continue <task-id> "先别写代码。用 ask_user_question 工具问我：这个功能用 Go 还是 Rust？给两个选项。"`
+
+Expected（三条同时成立才算过）：
+1. `handoff show <task-id>` 出现一条 **question** 事件，文本含问题与 `1) Go` / `2) Rust`；
+2. 该回合在 **2 分钟内收口**（出现 question 或 result），**不是**永久停在 running
+   ——挂死的表现恰恰是进程健在、看门狗探活通过、什么都不发生；
+3. `<taskDir>/render.log` 里能看到 `【模型提问】` 段落。
+
+若模型没调该工具（它可能直接用文本提问），换更强的措辞重试一次；两次都没调到就记入
+验收备注，不阻塞——但**不得**把这条标记为通过。
 
 - [ ] **Step 5: 走通续接与归档**
 
