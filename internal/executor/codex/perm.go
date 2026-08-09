@@ -20,7 +20,9 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -231,4 +233,78 @@ func rejectedTurnQuestion(rejected []string) string {
 	}
 	b.WriteString("请确认下一步该怎么做。")
 	return b.String()
+}
+
+// noteReqID 记下 JSON-RPC 请求 id 到 itemId 的反查关系。
+//
+// 为什么需要：serverRequest/resolved 通知带的是 **requestId**（JSON-RPC id），
+// 而挂起表按 itemId 索引。没有这张反查表，「该请求已被别处了结」这个通知就无法
+// 落到具体挂起项上，那张工单会一直挂着，审核者裁决时才发现回发失败。
+func (t *permTable) noteReqID(reqID, itemID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.byReq == nil {
+		t.byReq = map[string]string{}
+	}
+	t.byReq[reqID] = itemID
+}
+
+// dropByReqID 按 JSON-RPC 请求 id 摘掉挂起项，返回对应 itemId。
+func (t *permTable) dropByReqID(reqID string) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	itemID, ok := t.byReq[reqID]
+	if !ok {
+		return "", false
+	}
+	delete(t.byReq, reqID)
+	delete(t.pending, itemID)
+	return itemID, true
+}
+
+// PermissionsVolatile 表明本 adapter 的权限请求随连接消亡。
+//
+// manager 据此在 agentd 重启后拒绝恢复「尚有未决权限工单」的任务：按最保守路径
+// 假设 thread/resume 不会重发未决授权请求（spec §8）。
+func (a *Adapter) PermissionsVolatile() bool { return true }
+
+// RespondPermission 应答 codex 的权限请求。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - permID: 权限请求 id（即 codex 的 itemId，裸值不带命名空间前缀）
+//   - decision: "once"（批准本次）或 "reject"（拒绝）
+//
+// 返回：
+//   - 任务不在运行中、或挂起表查不到该 permID 时，包装 executor.ErrTaskNotRunning
+//     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交审核者，
+//     而不是当作可重试的瞬时错误
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) error {
+	r := a.lookup(taskID)
+	if r == nil {
+		a.log.Warn("权限应答时任务不在运行中", "task", taskID, "perm", permID)
+		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	pp, ok := r.take(permID)
+	if !ok {
+		a.log.Warn("权限应答找不到挂起请求（连接已重建或已作废）", "task", taskID, "perm", permID)
+		return fmt.Errorf("权限请求 %s 已不在挂起表: %w", permID, executor.ErrTaskNotRunning)
+	}
+
+	d := decisionFor(decision)
+	a.log.Info("回发权限裁决", "task", taskID, "perm", permID, "decision", decision, "mapped", d)
+	if err := r.cli.Reply(pp.reqID, map[string]any{"decision": d}); err != nil {
+		a.log.Error("回发权限裁决失败", "task", taskID, "perm", permID, "cause", err)
+		return fmt.Errorf("回发权限裁决: %w", err)
+	}
+	if d == "decline" {
+		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让审核者知道
+		// 「模型刚才想干什么、被挡了」，一串不透明 id 等于没说。长度收口在回合
+		// 收尾的 turn.ClampQuestion 里做，不在本处截短。
+		r.noteRejected(pp.desc)
+	}
+	r.appendRenderDelta("【裁决】" + decision + " → " + d + "：" + pp.desc)
+	a.flushRender(r)
+	a.log.Info("权限裁决已送达 executor", "task", taskID, "perm", permID)
+	return nil
 }

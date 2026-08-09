@@ -4,7 +4,13 @@
 // 边界：仅测试构建时编译（_test.go 后缀），不进生产二进制。
 package codex
 
-import "github.com/xushixin/handoff/internal/executor"
+import (
+	"encoding/json"
+	"io"
+	"log/slog"
+
+	"github.com/xushixin/handoff/internal/executor"
+)
 
 // WriteServeInfoForTest 暴露 writeServeInfo，供 serve.json 回环测试。
 func WriteServeInfoForTest(p *Proc) error { return writeServeInfo(p) }
@@ -105,3 +111,45 @@ func (h *PermTableHandle) TakeRejectedForTest() []string { return h.t.takeReject
 
 // RejectedTurnQuestionForTest 暴露被拒清单的问题渲染。
 func RejectedTurnQuestionForTest(r []string) string { return rejectedTurnQuestion(r) }
+
+// NewAdapterWithRunForTest 造一个带运行态的 adapter（不起进程、不连 WS）。
+func NewAdapterWithRunForTest(taskID string) (*Adapter, *runState) {
+	a := New(quietTestLogger())
+	r := newRunState(taskID, "", "")
+	a.mu.Lock()
+	a.runs[taskID] = r
+	a.mu.Unlock()
+	return a, r
+}
+
+// EventsForTest 返回运行态的事件通道。
+func EventsForTest(r *runState) <-chan executor.AdapterEvent { return r.evCh }
+
+// FinishTurnForTest 直接驱动回合收尾分类。
+func FinishTurnForTest(a *Adapter, r *runState, status, errMsg, text string) {
+	a.finishTurn(r, status, errMsg, text)
+}
+
+// NoteRejectedOnRunForTest 往运行态里塞一条被拒记录。
+func NoteRejectedOnRunForTest(r *runState, desc string) { r.noteRejected(desc) }
+
+// MarkStoppingForTest 置位主动停止标记。
+func MarkStoppingForTest(r *runState) {
+	r.emitMu.Lock()
+	r.stopping = true
+	r.emitMu.Unlock()
+}
+
+// NewHandlerForTest 造一个绑定到该运行态的通知/请求处理器。
+func NewHandlerForTest(a *Adapter, r *runState) Handler { return &handler{a: a, r: r} }
+
+// AttachFakeClientForTest 给运行态挂一条把应答吞掉的假连接。
+//
+// 为什么不给实现里的 r.cli.* 加 nil 守卫：那会把「连接已经没了却还在发裁决」
+// 这种真 bug 一起吞掉。测试用假连接，实现里保持裸调用。
+func AttachFakeClientForTest(r *runState) {
+	r.cli = &Client{log: quietTestLogger(),
+		replyHook: func(json.RawMessage, any) error { return nil }}
+}
+
+func quietTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
