@@ -217,13 +217,38 @@ func SyncAuthToAuthority(homeDir string, log *slog.Logger) error {
 
 // resetAuthLink 把任务侧的普通文件换回指向权威副本的软链，复位不变量。
 //
-// 失败不向上传播：写回若已成功就不该因为复位失败而回滚，下一轮巡检会再试。
+// 原子性：先在同目录建一个随机名字的临时软链，再 rename 覆盖到 link。rename 对
+// 已存在的普通文件是原子的，中间不存在「文件已删、链接未建」的瞬间。
+//
+// 旧实现是「先 Remove 再 Symlink」两步：Symlink 一旦失败，任务 home 里的 auth.json
+// 就消失了，而下一轮巡检开头 os.Lstat 报错会直接 return、永不重试——这个任务从此
+// 没有凭据。这与 spec §5「恢复软链失败…下轮再试恢复」的承诺相悖，这里修正。
+//
+// 失败不向上传播：写回若已成功就不该因为复位失败而回滚，任务侧原文件保持不动，
+// 下一轮巡检会再试。
 func resetAuthLink(link, target string, log *slog.Logger) {
-	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
-		log.Error("grok 清理任务侧凭据副本失败，软链未复位", "path", link, "cause", err)
+	dir := filepath.Dir(link)
+	tmp, err := os.MkdirTemp(dir, authFileName+".handoff-link-")
+	if err != nil {
+		log.Error("grok auth 软链复位失败，下轮重试",
+			"link", link, "target", target, "cause", err)
 		return
 	}
-	if err := os.Symlink(target, link); err != nil {
+	// MkdirTemp 只是借它拿一个同目录的随机唯一名字；Symlink 要求目标不存在，
+	// 先删掉这个占位目录
+	if err := os.Remove(tmp); err != nil {
+		log.Error("grok auth 软链复位失败，下轮重试",
+			"link", link, "target", target, "cause", err)
+		return
+	}
+	if err := os.Symlink(target, tmp); err != nil {
+		_ = os.Remove(tmp) // 清理可能已建成的临时软链，不留垃圾
+		log.Error("grok auth 软链复位失败，下轮重试",
+			"link", link, "target", target, "cause", err)
+		return
+	}
+	if err := os.Rename(tmp, link); err != nil {
+		_ = os.Remove(tmp) // rename 失败：任务侧原文件仍在，清掉临时软链下轮再试
 		log.Error("grok auth 软链复位失败，下轮重试",
 			"link", link, "target", target, "cause", err)
 		return

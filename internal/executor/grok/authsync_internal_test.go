@@ -2,6 +2,9 @@ package grok
 
 import (
 	"encoding/json"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -160,5 +163,41 @@ func TestMergeNewerEntriesFailsClosed(t *testing.T) {
 				t.Errorf("adopted = %v，期望空（fail-closed）", adopted)
 			}
 		})
+	}
+}
+
+// TestResetAuthLinkNoWindowOnFailure 钉住 resetAuthLink 的原子复位契约：
+// 复位失败（构造 home 目录不可写，MkdirTemp 建不出临时名字）时，任务侧原文件
+// 必须仍在、内容未变——证明不存在「先删后建」的破链窗口。
+//
+// 旧实现是「先 Remove(link) 再 Symlink(link)」两步：Symlink 一旦失败，home 里的
+// auth.json 就消失了，下一轮巡检 os.Lstat 报错直接 return、永不重试，任务从此
+// 没有凭据（与 spec §5「下轮再试恢复」的承诺相悖）。
+func TestResetAuthLinkNoWindowOnFailure(t *testing.T) {
+	home := t.TempDir()
+	link := filepath.Join(home, authFileName)
+	original := []byte(`{"acct":{"expires_at":"2026-08-09T21:55:11Z","key":"task"}}`)
+	if err := os.WriteFile(link, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// 必须还原，否则 t.TempDir 的清理会失败
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+
+	resetAuthLink(link, "authority-target", slog.Default())
+
+	got, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatalf("复位失败后任务侧原文件应仍在: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("复位失败后原文件内容被改了：%s", got)
+	}
+	if fi, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("复位失败后不应产生软链")
 	}
 }
