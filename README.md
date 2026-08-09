@@ -35,6 +35,11 @@
   这是**约定而非代码保证**：`hooks.json` 没有协议级开关可以关掉。
   `config.toml` 里的 `model` / `sandbox_mode` / `approvals_reviewer` /
   `[sandbox_workspace_write]` **不需要清理**——handoff 全部协议级钉死，压得过它们。
+  **executor 机需要代理才能连 OpenAI 时，必须给 codex 单独配 `env` 文件**（`config.yaml`
+  的 `env:` 段加 `codex: codex.env`，内容为 `https_proxy` / `http_proxy` / `no_proxy`）：
+  agentd 从非交互上下文启动，继承不到 shell 里的代理变量。**漏配的症状极具迷惑性**——
+  会话建得起来、回合发得出去、`handoff show` 显示 `running`，但模型一个 token 都不产，
+  只有 `serve.log` 里刷 `failed to refresh available models`。
 
 ```bash
 go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
