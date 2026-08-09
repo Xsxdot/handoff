@@ -1,16 +1,14 @@
-// taskenv.go —— opencode 任务环境物料生成与回合协议 trailer 解析。
+// taskenv.go —— opencode 任务环境物料生成。
 //
 // 职责：
 //   - WriteTaskEnv：在任务目录生成 opencode.json（权限收敛配置）与 prompt.md
-//     （回合制纪律 prompt，text/template 渲染），供 serve 进程经
+//     （回合制纪律 prompt，经 turn.RenderPrompt 渲染），供 serve 进程经
 //     OPENCODE_CONFIG 注入（proc.go）与任务首回合 prompt 使用
-//   - ParseTrailer：从模型回合末消息文本中宽容提取协议 JSON（ask/finish），
-//     供 adapter 判定「该停下来提问还是该收尾」
 //
 // 边界：
 //   - 不启动进程、不发请求：serve 进程生命周期在 proc.go，HTTP 会话在 api.go
-//   - 不校验模型是否遵守纪律：只做「取最后一个 { 开头行解析」的提取，
-//     解析失败一律按 none 处理，是否重试由调用方决定
+//   - 回合协议（prompt 模板渲染 / trailer 解析 / git 取证 / 文本截断）在
+//     internal/executor/turn 共享包，本文件不再持有
 //
 // 为什么 permission 是「静态分级」而非全 ask（2026-08-08 dogfooding 修正）：
 // 一期曾把 edit/bash 全部设为 ask，真实派发时审核者被 ls/grep/编辑测试文件
@@ -26,15 +24,15 @@
 package opencode
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
+
+	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // 文件名常量：任务目录内生成的物料文件名，路径由 WriteTaskEnv 拼接。
@@ -42,27 +40,6 @@ const (
 	configFileName = "opencode.json"
 	promptFileName = "prompt.md"
 )
-
-// promptTemplate 是任务 prompt 的回合制纪律模板，逐字来自 spec §6 的落地。
-//
-// 注意：模板内嵌的 {"ask":...}/{"branch":...} 是给模型看的协议样例，
-// 与 text/template 语法不冲突（不含 {{ ），可直接放在字面文本中。
-const promptTemplate = `你是 handoff 任务 {{.TaskID}} 的执行者，按下方实现计划执行。铁律：
-1. 提问纪律：任何需要人决策的问题，输出单行 JSON {"ask":"<问题>"}
-   然后结束本回合。审核者的回答会作为下一条消息发给你。
-   禁止自行假设，禁止用其它格式提问。
-2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），
-   然后输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}
-   作为本回合最后一行。
-3. 只在当前分支工作，不切分支、不改 git 配置。
-
---- 实现计划 ---
-{{.PlanContent}}
-`
-
-// promptTmpl 是 promptTemplate 的编译结果。Must 保证拼写错误的模板在包加载
-// 时立刻暴露（编程错误），而不是在任务运行时才崩——模板不依赖运行时状态。
-var promptTmpl = template.Must(template.New("prompt").Parse(promptTemplate))
 
 // permissionConfig 是 opencode.json 的 permission 段。
 //
@@ -105,12 +82,6 @@ var bashPermissionRules = map[string]string{
 type opencodeConfig struct {
 	Model      string           `json:"model,omitempty"`
 	Permission permissionConfig `json:"permission"`
-}
-
-// promptData 是 prompt 模板的渲染数据。
-type promptData struct {
-	TaskID      string
-	PlanContent string
 }
 
 // WriteTaskEnv 在 taskDir 生成 opencode 配置与任务 prompt，返回二者路径。
@@ -178,73 +149,16 @@ func WriteTaskEnv(taskDir, taskID, model, planContent string) (configPath, promp
 		return configPath, promptPath, fmt.Errorf("序列化 opencode 配置: %w", err)
 	}
 
-	var buf bytes.Buffer
-	if err := promptTmpl.Execute(&buf, promptData{TaskID: taskID, PlanContent: planContent}); err != nil {
-		return configPath, promptPath, fmt.Errorf("渲染 prompt 模板: %w", err)
+	promptContent, err := turn.RenderPrompt(taskID, planContent)
+	if err != nil {
+		return configPath, promptPath, err
 	}
 
 	if err := os.WriteFile(configPath, cfgJSON, 0o644); err != nil {
 		return configPath, promptPath, fmt.Errorf("写 %s: %w", configPath, err)
 	}
-	if err := os.WriteFile(promptPath, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(promptPath, []byte(promptContent), 0o644); err != nil {
 		return configPath, promptPath, fmt.Errorf("写 %s: %w", promptPath, err)
 	}
 	return configPath, promptPath, nil
-}
-
-// Trailer 是从回合末消息文本提取出的协议数据。
-type Trailer struct {
-	Question string // ask 类型：需要人决策的问题
-	Branch   string // finish 类型：提交所在分支
-	Commit   string // finish 类型：提交 hash
-	Summary  string // finish 类型：50 字内摘要
-}
-
-// ParseTrailer 从回合末消息文本提取协议 JSON（取最后一个以 { 开头的行）。
-//
-// 返回：
-//   - kind: "ask"（附 Question）| "finish"（附 Branch/Commit/Summary）| "none"
-//   - t: 解析出的协议数据；kind 为 "none" 时为零值
-//
-// 注意：
-//   - 宽容语义：末行是普通文本时回退到更早的 { 开头行；找不到或 JSON 损坏
-//     时返回 "none"，绝不 panic（模型输出不可信，防御在边界上做）
-//   - 纯函数：不打日志，由调用方记录提取结果
-func ParseTrailer(text string) (kind string, t Trailer) {
-	// 取最后一个以 { 开头的行：模型可能在正文中间输出过协议 JSON 后又追加
-	// 说明文字，只有最后一个才有「本回合结论」的语义
-	var last string
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "{") {
-			last = line
-		}
-	}
-	if last == "" {
-		return "none", t
-	}
-
-	// 宽容解码：不设 DisallowUnknownFields，模型多带字段时仍能提取已知协议
-	// 字段；损坏 JSON 一律按 none 处理
-	var payload struct {
-		Question string `json:"ask"`
-		Branch   string `json:"branch"`
-		Commit   string `json:"commit"`
-		Summary  string `json:"summary"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(last)), &payload); err != nil {
-		return "none", t
-	}
-	t = Trailer{Question: payload.Question, Branch: payload.Branch,
-		Commit: payload.Commit, Summary: payload.Summary}
-
-	// ask 与 finish 协议互斥（模型按纪律一次只输出一种），问号优先判定：
-	// 有 ask 即提问回合；否则任一收尾字段非空即收尾回合；都没有则非协议输出
-	switch {
-	case t.Question != "":
-		return "ask", t
-	case t.Branch != "" || t.Commit != "" || t.Summary != "":
-		return "finish", t
-	default:
-		return "none", t
-	}
 }

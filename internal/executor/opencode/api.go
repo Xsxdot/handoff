@@ -37,7 +37,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // 常量说明：
@@ -185,7 +185,7 @@ func basicAuth(user, pass string) string {
 // 并打 Error 日志——响应体是「服务端为什么拒绝」的第一手线索。
 func (a *API) httpError(op string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-	trunc := truncateRunes(string(body), 200)
+	trunc := turn.TruncateRunes(string(body), 200)
 	a.log().Error("opencode 请求失败", "op", op, "status", resp.StatusCode, "body", trunc)
 	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, trunc)
 }
@@ -457,7 +457,7 @@ func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage), onE
 			a.dispatch(data, onEvent)
 			data = nil
 		default:
-			a.log().Debug("SSE 忽略未知行", "line", truncateRunes(line, 80))
+			a.log().Debug("SSE 忽略未知行", "line", turn.TruncateRunes(line, 80))
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -481,30 +481,8 @@ func (a *API) dispatch(data []string, onEvent func(json.RawMessage)) {
 	}
 	raw := json.RawMessage(strings.Join(data, "\n"))
 	if !json.Valid(raw) {
-		a.log().Debug("SSE 事件非合法 JSON，跳过", "data", truncateRunes(string(raw), 120))
+		a.log().Debug("SSE 事件非合法 JSON，跳过", "data", turn.TruncateRunes(string(raw), 120))
 		return
 	}
 	onEvent(raw)
-}
-
-// truncateMarked 按 rune 截断并补上显式的截断标记。
-//
-// 为什么必须有标记：截断后的文本会直接呈给审核者做裁决（如权限描述里的 bash
-// 命令）。无标记的截断让人以为看到的就是全部，等于让他批准自己没看全的命令。
-// 标记用 executor.TruncationMarker 常量：manager 侧的黑名单/审批者据此 fail-closed
-// （含标记的权限请求不交廉价模型，直接升级人工）。
-func truncateMarked(s string, n int) string {
-	if len([]rune(s)) <= n {
-		return s
-	}
-	return truncateRunes(s, n) + executor.TruncationMarker
-}
-
-// truncateRunes 将字符串按 rune 截断为最多 n 个字符（避免切断多字节 UTF-8 字符）。
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
 }
