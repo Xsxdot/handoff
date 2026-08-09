@@ -138,6 +138,10 @@ var protectedEnvKeys = map[string]bool{
 	"GROK_AGENT_SECRET": true,
 }
 
+// startServe 是 StartServe 的测试缝（与 tmuxKill 同手法）：冷恢复测试替换它
+// 断言「起 serve」是否被调用、注入错误，绕开真实 tmux + grok 二进制。
+var startServe = StartServe
+
 // StartServe 起一个任务专属的 grok serve 并等其就绪。
 //
 // 参数：

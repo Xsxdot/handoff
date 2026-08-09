@@ -126,7 +126,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := StartServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
 	if err != nil {
 		return err
 	}
