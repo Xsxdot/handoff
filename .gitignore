@@ -1,1 +1,3 @@
 .worktrees/
+# 单测在 taskDir="" 时会把 render.log 落到包目录（可见性落盘的测试副作用）
+render.log
