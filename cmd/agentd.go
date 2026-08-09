@@ -27,7 +27,9 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/claudecode"
 	"github.com/xushixin/handoff/internal/executor/fake"
+	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/store"
@@ -88,18 +90,15 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		// 两个执行者都注册：dispatch --executor 可按名选择；opencode 是真实执行，
-		// fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
-		ads := map[string]executor.Adapter{
-			"opencode": opencode.New(logger),
-			"fake":     fake.New(nil),
-		}
+		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
+		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
-				return fmt.Errorf("未知 executor %q（支持 opencode/fake）", executorFlag)
+				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
-			// 两个都可用——老任务按各自 executor 名仍能路由到对应 adapter
+			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter
 			cfg.Executor.Default = executorFlag
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, logger)
@@ -119,6 +118,20 @@ var agentdCmd = &cobra.Command{
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
 		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
 	},
+}
+
+// defaultAdapters 返回 agentd 的 executor 注册表（name → Adapter）。
+//
+// 抽成函数而非内联字面量：注册表是 dispatch --executor 路由的唯一真相，
+// 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
+// （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
+func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
+	return map[string]executor.Adapter{
+		"opencode": opencode.New(logger),
+		"claude":   claudecode.New(logger),
+		"grok":     grok.New(logger),
+		"fake":     fake.New(nil),
+	}
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
@@ -150,11 +163,11 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | fake（脚本演示）。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖缺省执行者：opencode（默认）| fake（注册表保留两者，--dispatch executor 仍可按名选择）")
+		"覆盖缺省执行者：opencode（默认）| claude | grok | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }

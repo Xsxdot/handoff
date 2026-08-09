@@ -147,6 +147,9 @@ default = "<model>"                # 空则整节省略，用 grok 自身默认
 ask = ["Bash(rm *)", "Bash(*sudo*)", "Bash(*git push*)", "Bash(*git reset --hard*)",
        "Bash(*--force*)", "Bash(curl *)", "Bash(wget *)", "WebFetch(*)"]
 allow = ["Edit", "Write"]
+
+[cli]
+auto_update = false            # 必须显式写死，见下「auto_update 真机实测」
 ```
 
 - **why `permission_mode = "default"` 是必需项而非可选项**：用户真实配置是
@@ -158,6 +161,29 @@ allow = ["Edit", "Write"]
   更准。handoff 只需补 `ask` 危险模式与 `allow` 编辑放行。
 - **model 三级优先级**（与 opencode `WriteTaskEnv` 同规则）：任务级 `task.Model` >
   环境变量 `HANDOFF_GROK_MODEL` > 不写（grok 自身默认）。
+- **`auto_update` 真机实测（2026-08-09，单变量隔离，结论确定）**：`grok agent serve`
+  在**全新的任务级 GROK_HOME** 下启动时会联网查更新并无限期阻塞——表现为 `serve.log`
+  只有版本横幅、进程健在、端口不监听、15s 探活超时。触发它的 `[cli] auto_update = true`
+  不是我们写的：grok 首次启动会把 config.toml **整个重写**、补进全套默认值（`[ui]`
+  多出 `max_thoughts_width` / `fork_secondary_model` / `yolo` / `compact_mode`，新增
+  `[cli] auto_update = true`），连「勿手工编辑」的注释都被抹掉。真实 `~/.grok` 因有
+  `version.json` 等缓存而跳过这次检查。逐项验证（每次只改一个变量、全新 home）：
+
+  | home 内容 | 结果 |
+  |---|---|
+  | 任务级 home（config.toml + auth.json 软链） | 挂起，不监听 |
+  | 同上 + `agent_id` + `.metadata_version` | 挂起，不监听 |
+  | 同上 + 整个 `bundled/` | 挂起，不监听 |
+  | 真实 `~/.grok` 全量拷贝 + 我们的 config | **正常监听** |
+  | 任务级 home，仅把 `auto_update` 改 `false` | **正常监听** |
+  | 全新 home + 我们自己写 `[cli] auto_update = false` | **正常监听，且 grok 不再重写 config（注释保住）** |
+
+  结论与纪律：
+  1. config.toml **必须显式写** `[cli] auto_update = false`——不写等于接受 grok 补的
+     `true`；
+  2. 即便不挂起也不该开：任务执行到一半把 CLI 自更新掉，等于在任务中途换掉执行器版本；
+  3. **grok 会重写任务级 config.toml 并补默认值**这个事实本身值得记住：以后往这个
+     config 里加任何键都要考虑它会不会被 grok 改掉（本段就是实测证据）。
 
 **已知泄漏（关不掉，写进 README 已知限制）**：grok 无视 `GROK_HOME`，仍从**真实 HOME**
 读取 Claude Code 兼容源——`~/.claude/settings.local.json`（本机实测 48 条权限规则）、
@@ -298,11 +324,12 @@ grok 的交互提问**不走** `session/request_permission`，而是一个独立
   "mode":"default"}}
 ```
 
-**处置：收到即回 `{}`，同时 emit 一条 question 事件。**
+**处置：收到即回带 `outcome` 的应答，同时 emit 一条 question 事件。**
 
 ```
 _x.ai/ask_user_question 到达
-  → 立刻回 {"jsonrpc":"2.0","id":<原 id>,"result":{}}   （grok 视为「用户拒答」，继续自行判断）
+  → 立刻回 {"jsonrpc":"2.0","id":<原 id>,"result":{"outcome":{"outcome":"cancelled"}}}
+    （告诉 grok「用户没有通过这个通道作答」，见下方 2026-08-09 实测修正）
   → 把 params.questions 渲染成文本，emit question 事件交审核者
   → 同一份文本追加 render.log（旁观者可见）
 ```
@@ -310,10 +337,31 @@ _x.ai/ask_user_question 到达
 - **why 必须回而不是忽略**：实测不应答会让回合**永久挂死**——`session/prompt` 不返回、
   serve 进程健在、看门狗探活通过，任务表面在跑实则永久静止，是最坏的一种故障形态。
   grok 侧默认**没有超时**（`GROK_ASK_USER_QUESTION_TIMEOUT_ENABLED` 是选择性开启的）。
-- **why 回 `{}` 而不是把审核者的答复灌回去**：handoff 的提问通道是回合协议的 trailer
-  `{"ask":…}`，不是这个工具。`{}` 已实测可解开阻塞且被 grok 当作拒答，模型会带着「用户
-  没答」继续走到回合结束，正文里的 trailer 仍然是权威裁决入口——**提问语义只有一个来源**。
-  把两条提问通道都做成可应答，等于同一个回合有两个真相源。
+- **why 回 `outcome` 而不是 `{}`（2026-08-09 真机验收修正，推翻此前的错误假设）**：
+  handoff 的提问通道是回合协议的 trailer `{"ask":…}`，不是这个工具，设计意图仍是
+  「告诉 grok 用户没在这个通道作答、模型带着这个事实继续走到回合结束，正文里的
+  trailer 仍然是权威裁决入口」——**提问语义只有一个来源**。但此前回裸 `{}` 是**错的**：
+  真机里 grok 把 `{}` 判为「缺 `outcome` 字段的工具错误」报回模型，模型随即重问一遍。
+  render.log 实测证据：
+
+  ```
+  【模型提问】这个功能用 Go 还是 Rust 实现？
+    1) Go —— 用 Go 实现该功能
+    2) Rust —— 用 Rust 实现该功能
+  The ask_user_question tool failed with an error about missing field `outcome`.
+  Let me try again - maybe there's a schema issue. Looking at the tool definition again:
+  【模型提问】这个功能用 Go 还是 Rust 实现？
+    1) Go (Recommended) —— 用 Go 实现该功能
+    2) Rust —— 用 Rust 实现该功能
+  ```
+
+  审核者因此收到**两张重复的 question 工单**（第二次多了 "(Recommended)"）。修正后的
+  应答形态对齐已实测可用的 `session/request_permission` 结构
+  `{"outcome":{"outcome":"cancelled"}}`；**形态尚未在真机确认**，改动点集中在对
+  `_x.ai/ask_user_question` 的应答体上，若 grok 仍报 schema 错按实际报错迭代即可。
+- **真机观察：grok 会对同一个提问重试**——工具调用被报错时模型会重问一遍，审核者
+  可能收到重复 question 工单。修好 schema 后应当消失，但「工具报错 → 模型重试」这个
+  行为本身成立，写在这里以防将来在其他工具上再遇到同类现象。
 - **why 仍要 emit question 事件**：模型绕开纪律用了工具，这件事本身审核者必须知情；
   丢掉它就等于人不知道模型问过什么。
 - **未知请求一律回 `-32601`**：静默丢弃有 `id` 的请求 = 制造同款挂死。这是通用防线，
@@ -452,8 +500,9 @@ session_start → user_prompt_submit → pre_tool_use → notification → post_
 
 `ask_user_question` 工具不产生 `session/request_permission`，而是发出
 `_x.ai/ask_user_question` 请求（带 `id`）。首次实验客户端把它当通知丢弃 ⇒ 回合**挂死到
-180s 观察窗结束**，`session/prompt` 始终不返回。实测回 `{}` 可解开阻塞，grok 记为「用户
-拒答」并继续。处置见 §4.2.3。
+180s 观察窗结束**，`session/prompt` 始终不返回。必须应答才能解开阻塞（处置见 §4.2.3）；
+应答形态注意**不能回裸 `{}`**——真机里 grok 判为缺 `outcome` 字段的工具错误并让模型重问
+（2026-08-09 验收修正，详见 §4.2.3 的实测证据与对照）。
 
 **(d) ACP 请求 id 不能作为分发依据**
 
@@ -542,7 +591,7 @@ exec grok agent serve --bind 127.0.0.1:<port> 2>&1 | tee -a <serve.log>
 | 挂起权限遇 WS 断开 | 全体作废；是否终结取决于重连结果，`result{OK:false}` 至多一次（§4.2.2） |
 | `session/prompt` 返回非 `end_turn` | failed，`FailReason` 带 `stopReason` |
 | 未知 `session/update` 类型 | Debug 跳过，绝不 panic（executor 侧输出不可信） |
-| `_x.ai/ask_user_question` 到达 | 立即回 `{}` 解阻塞 + emit question 事件（§4.2.3）；**绝不静默丢弃** |
+| `_x.ai/ask_user_question` 到达 | 立即回带 `outcome` 的应答解阻塞（§4.2.3，不得回裸 `{}`）+ emit question 事件；**绝不静默丢弃** |
 | 未知的**有 id** 入站方法 | 回 `-32601 Method not found`（§4.2.3）；丢弃 = 制造永久挂死 |
 | `auth.json` 软链缺失/断链 | Start 与 Resume 均先重建软链（幂等，见 §3.3），不报错 |
 | `session/new` 返回 `Authentication required` | Start 失败并明示「grok 未登录或凭据失效，先跑 `grok login`」；**不重试** |

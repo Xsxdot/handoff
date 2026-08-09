@@ -128,17 +128,45 @@ printf '{"type":"handoff_exit","code":%d}\n' "$?" >> <taskDir>/out.jsonl   # 死
 
 ### 4.1 Start
 
+**进程流形态的前置契约（2026-08-09 真机 e2e 实测，三步单变量实验坐实）**：
+`claude -p --input-format stream-json` **不会在启动时主动吐 `system/init`**——
+它要先收到第一条输入消息才吐 init。因此**必须先投首回合 prompt、再等 init**：
+先等它说话、它等你说话，互为死锁（旧顺序下执行者从未真正启动成功过，Step 6
+首轮派发即复现：`claude.log` 全空、`out.jsonl` 只有两条 SessionStart hook 事件、
+30s 就绪超时）。先写不会阻塞：启动脚本 `exec 3<> in.fifo` 自持读写两端，数据先
+躺在管道缓冲里，claude 起来后自然读到（0.5s 早写实测正常）。
+
+**`tmux new-session -d` 的返回不代表脚本已执行（2026-08-09 真机 e2e 第二轮发现，
+上一条 init 时序是第一轮）**：`-d` 一创建会话就返回，不等会话内脚本执行到
+`exec 3<> in.fifo`；而投 prompt 的 `WriteInput` 以 `O_WRONLY|O_NONBLOCK` 打开
+fifo，按 POSIX 读端未就绪时 `open` 直接失败（errno `ENXIO`，macOS 文案
+"device not configured"）。prompt 提前到 tmux 返回之后，写入紧跟在返回之后，
+撞上读端未开的竞态（真机复现：`open in.fifo: device not configured`）。因此
+**投 prompt 前必须先确认 `in.fifo` 已有读者**——`StartProc` 在 `tmuxLaunch`
+返回后、返回前以 `O_WRONLY|O_NONBLOCK` 试开探测读端（只探测不写入），超时
+5s 报错并带 `claude.log` 尾部。等读端是「进程是否已就位」的语义，必须放在
+`tmuxLaunch`（「怎么把脚本跑起来」）之外，桩与生产走同一段等待代码，测试才能
+抓到这类竞态。**等读端超时属于「tmuxLaunch 已成功」之后的失败**：此时会话已在
+跑而调用方 rollback 依赖 `r.proc`（StartProc 失败返回 nil，拿不到句柄），
+`StartProc` 必须自行 `kill-session` 回收，与 init 就绪超时的清理行为保持一致。
+
+Start 步骤：
+
 1. 生成 session uuid，建 `in.fifo`（`mkfifo`）、写 `settings.json` / `mcp.json` / `run_claude.sh`
 2. `tmux new-session -d -s handoff-<id8> -c <repoPath> "sh <taskDir>/run_claude.sh"`
-3. 开渲染窗口（窗口 1）
-4. 起 `perm.sock` 监听（见 §5.1）
-5. 起 `out.jsonl` tail 循环；**就绪判定 = 读到 `{"type":"system","subtype":"init"}`**
-   （超时 30s，超时读 `claude.log` 尾部带进错误并 kill 会话清理残留）
-6. 就绪后往 fifo 投首条 user message：plan 原文 + prompt 附加指令（拼装逻辑与 opencode 同源）
-7. 写 `claude.json`；emit `progress{SessionID}` 作为「会话就绪」信号
+3. **确认 `in.fifo` 已有读者**（`StartProc` 内 `waitFIFOReader`，O_NONBLOCK 试开，
+   超时 5s 报错带 `claude.log` 尾部）——tmux 返回早于脚本执行，不等必 ENXIO
+4. 开渲染窗口（窗口 1）
+5. 起 `perm.sock` 监听（见 §5.1）
+6. 起 `out.jsonl` tail 循环（此时只读不判就绪）+ 看门狗
+7. **往 fifo 投首条 user message**：plan 原文 + prompt 附加指令（拼装逻辑与 opencode 同源）
+8. **就绪判定 = 读到 `{"type":"system","subtype":"init"}`**（prompt 已投出的产物）；
+   超时 30s 读 `claude.log` 尾部带进错误并 kill 会话清理残留
+9. 写 `claude.json`；emit `progress{SessionID}` 作为「会话就绪」信号
 
-启动超时阈值取 30s（大于 opencode serve 的 10s）：claude 启动要加载 settings/plugins/MCP
-子进程，冷启动明显更慢，10s 会造成假阴性。
+启动超时阈值取 30s（大于 opencode serve 的 10s）：claude 冷启动要加载 settings/plugins/MCP
+子进程，冷启动明显更慢，10s 会造成假阴性。超时语义是「prompt 已投出、claude 仍未进入
+会话」——鉴权失效、settings 非法、MCP 起不来都会卡在这一步。
 
 ### 4.2 Events（out.jsonl → AdapterEvent）
 
@@ -269,6 +297,33 @@ executor 层偷偷改掉了二期定死的审批链语义。黑名单继续由 m
   安全门），并把取舍写进 README 已知限制
 - 第 1 条不成立：`allow` 改为不写，回到「默认全 ask」——安全但会退化成一期的连环唤醒，
   此时必须靠 manager 侧审批者（廉价模型）吸收噪音，同样记入 README
+
+**实测状态（2026-08-09，devbox，claude 2.1.226）**：两条优先级**均成立**，按本节走：
+
+1. **同文件内**：任务级 `ask` 压得过任务级 `allow`——settings.json 里
+   `allow: ["Bash"]` 与 `ask: ["Bash(rm:*)"]` 并存时，`rm` 请求仍触发裁决工具（探针 ASK
+   FIRED）。「allow 兜底 + ask 收窄」的形状成立，不需要逐工具枚举。
+2. **跨来源**：任务级 `ask` 压得过用户级 `allow`——用户级 settings 的 `allow: ["Bash"]`
+   不会静默放行任务级 `ask: ["Bash(rm:*)"]` 命中的请求（ASK FIRED）。个人 allowlist
+   无法绕过任务级收窄。
+
+**探针与方法**：`internal/executor/claudecode/probe_live_test.go`
+（`HANDOFF_LIVE_CLAUDE=1 go test ./internal/executor/claudecode/ -run Probe -v`）。
+探针把鉴权从真实 `~/.claude/settings.json` 的 `env` 段提取后**经进程环境注入**（`ANTHROPIC_*`/
+`CLAUDE_*`，凭证不落盘、不打日志），settings.json 因此完全由探针控制——任务级 settings
+因此是**纯策略文件，不含任何凭证**。
+
+**鉴权表述（2026-08-09 真机 e2e 二次实测修正）**：**凭证由 claude 自己经
+`--setting-sources user` 从真实 `~/.claude/settings.json` 读取，不需要 handoff 的 env 注入
+做鉴权**——Step 6 真机派发不带任何凭证 env（env 文件只有 `HANDOFF_ENV_PROBE=ok`），claude
+照样跑完整回合。env 注入（B19）是给代理、自定义 `base_url` 这类**额外**环境用的，不是
+鉴权的必要条件。探针走 env 注入只是为了构造受控的临时 HOME（探针要把 user settings 换成
+测试值，只能把真实 settings 的 env 搬进进程环境再换掉 settings.json），不代表生产路径需要
+它。（未单独隔离验证 `--setting-sources ""` 的行为，不写超出证据的断言。）
+
+**两个附带的机制观察**（同为 2026-08-09 实测）：本机 claude 的登录态就存在
+`~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` 里（非
+keychain、非 `~/.claude.json`）。
 
 ## 6. 共享包重构（`internal/executor/turn`）——✅ 已由 B3 会话完成并合入 main
 

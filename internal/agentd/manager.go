@@ -1694,6 +1694,15 @@ type restorer interface {
 	Resume(taskID, taskDir, repoPath, sessionID string) (bool, error)
 }
 
+// volatilePermitter 表示该 adapter 的权限请求随连接消亡：连接一断，executor 侧
+// 那次授权请求就永久卡死，重连也救不回（ACP 类适配器，见 grok spec §5.2）。
+//
+// 不实现本接口的 adapter（如 opencode——权限应答是无状态 HTTP POST，permID 由
+// serve 端持有）行为不变。
+type volatilePermitter interface {
+	PermissionsVolatile() bool
+}
+
 // ResumeTask 恢复 agentd 重启前已在执行的任务：探测执行器存活；存活则经 adapter
 // 重建 SSE 订阅并重启本任务的中介循环（spec §8「存活则重连 SSE 继续」）。
 //
@@ -1726,6 +1735,21 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	if !ok {
 		m.log.Warn("adapter 不支持执行恢复，任务按不存活处理", "task", taskID)
 		return false
+	}
+	// 权限随连接消亡的 adapter：任务若还挂着未决权限工单，恢复了也永远不会前进
+	// （executor 侧那次授权请求已随旧连接卡死，session/load 不会重发），直接判
+	// 不可恢复交审核者裁决，而不是建立一条永远不会前进的连接。
+	if vp, ok := ad.(volatilePermitter); ok && vp.PermissionsVolatile() {
+		pending, err := m.st.PendingTickets(taskID)
+		if err != nil {
+			m.log.Error("读取未决工单失败，保守判定不可恢复", "task", taskID, "cause", err)
+			return false
+		}
+		if len(pending) > 0 {
+			m.log.Warn("任务有未决权限工单且执行者权限随连接消亡，不予恢复",
+				"task", taskID, "pending", len(pending))
+			return false
+		}
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	// 恢复时 git 基线捕获与 serve 重建都在任务工作区（worktree 任务的 cwd 是

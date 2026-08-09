@@ -1,0 +1,11 @@
+{"type":"system","subtype":"init","session_id":"sess-1","tools":["Bash"],"permissionMode":"default"}
+{"type":"stream_event","session_id":"sess-1","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}
+{"type":"stream_event","session_id":"sess-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"我先看看仓库"}}}
+{"type":"stream_event","session_id":"sess-1","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"开始执行计划"}}}
+{"type":"assistant","session_id":"sess-1","message":{"role":"assistant","content":[{"type":"text","text":"开始执行计划"}]}}
+{"type":"assistant","session_id":"sess-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"go test ./...","description":"跑测试"}}]}}
+{"type":"user","session_id":"sess-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok","is_error":false}]}}
+{"type":"rate_limit_event","session_id":"sess-1"}
+{"type":"system","subtype":"thinking_tokens","session_id":"sess-1"}
+{"type":"stream_event","session_id":"sess-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"branch\":\"handoff/ab12\",\"commit\":\"deadbeef\",\"summary\":\"完成\"}"}}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"sess-1","result":"{\"branch\":\"handoff/ab12\",\"commit\":\"deadbeef\",\"summary\":\"完成\"}"}
