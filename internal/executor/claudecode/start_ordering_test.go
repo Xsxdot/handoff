@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -29,29 +30,19 @@ func TestStartWritesPromptBeforeWaitingReady(t *testing.T) {
 	taskDir := shortTestDir(t)
 	repoPath := shortTestDir(t)
 
-	// 桩 tmux 启动：直接 `sh <script>` 后台执行，绕开真实 tmux server。
+	// 桩 tmux 启动：后台拉起 run_claude.sh，绕开真实 tmux server。
 	// 桩只做「把脚本跑起来」这一件事——**不再替生产代码等 fifo 读端**：
 	// 等读端是 StartProc 的职责（waitFIFOReader），桩越俎代庖只会把竞态藏进测试
-	var launched *exec.Cmd
 	oldHas := tmuxHasSession
 	tmuxHasSession = func(string) bool { return true }
 	oldLaunch := tmuxLaunch
 	tmuxLaunch = func(session, repo, script string) error {
-		cmd := exec.Command("/bin/sh", script)
-		cmd.Dir = repo
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		launched = cmd
+		launchDetached(t, repo, "/bin/sh", script)
 		return nil
 	}
 	t.Cleanup(func() {
 		tmuxLaunch = oldLaunch
 		tmuxHasSession = oldHas
-		if launched != nil && launched.Process != nil {
-			launched.Process.Kill()
-			launched.Wait()
-		}
 	})
 
 	a := New(nil)
@@ -102,7 +93,6 @@ func TestStartWaitsForFIFOReader(t *testing.T) {
 	repoPath := shortTestDir(t)
 
 	const launchDelay = 300 * time.Millisecond
-	var launched *exec.Cmd
 	oldHas := tmuxHasSession
 	tmuxHasSession = func(string) bool { return true }
 	oldLaunch := tmuxLaunch
@@ -113,21 +103,12 @@ func TestStartWaitsForFIFOReader(t *testing.T) {
 		// startRenderTailWindow 的 tmux 调用会白送几十毫秒让脚本跑到 exec 3<>，
 		// 测试就测不到竞态了（这正是初版桩的坑）
 		wrapped := "sleep " + fmt.Sprint(launchDelay.Seconds()) + "; exec /bin/sh " + shellq.Quote(script)
-		cmd := exec.Command("/bin/sh", "-c", wrapped)
-		cmd.Dir = repo
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		launched = cmd
+		launchDetached(t, repo, "/bin/sh", "-c", wrapped)
 		return nil
 	}
 	t.Cleanup(func() {
 		tmuxLaunch = oldLaunch
 		tmuxHasSession = oldHas
-		if launched != nil && launched.Process != nil {
-			launched.Process.Kill()
-			launched.Wait()
-		}
 	})
 
 	a := New(nil)
@@ -161,17 +142,11 @@ func TestStartProcKillsSessionWhenFIFOReaderNeverReady(t *testing.T) {
 
 	// 桩 tmux 启动：拉一个只 sleep 的进程，**永远不开 in.fifo 读端**，
 	// 让 waitFIFOReader 一路撞 ENXIO 直到超时
-	var launched *exec.Cmd
 	oldHas := tmuxHasSession
 	tmuxHasSession = func(string) bool { return true }
 	oldLaunch := tmuxLaunch
 	tmuxLaunch = func(session, repo, script string) error {
-		cmd := exec.Command("/bin/sh", "-c", "sleep 1000")
-		cmd.Dir = repo
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		launched = cmd
+		launchDetached(t, repo, "/bin/sh", "-c", "sleep 1000")
 		return nil
 	}
 	// 记录 Kill 调用：断言超时路径真的回收了会话（tmuxKill 是给 Kill 开的缝）
@@ -189,10 +164,6 @@ func TestStartProcKillsSessionWhenFIFOReaderNeverReady(t *testing.T) {
 		tmuxKill = oldKill
 		tmuxLaunch = oldLaunch
 		tmuxHasSession = oldHas
-		if launched != nil && launched.Process != nil {
-			launched.Process.Kill()
-			launched.Wait()
-		}
 	})
 
 	a := New(nil)
@@ -212,6 +183,41 @@ func TestStartProcKillsSessionWhenFIFOReaderNeverReady(t *testing.T) {
 	if killed[0] != "handoff-T-kill" {
 		t.Fatalf("Kill 应作用于会话 handoff-T-kill，实际 %q", killed)
 	}
+}
+
+// launchDetached 后台拉起一条命令（dir 为工作目录），并在 Cleanup 里杀掉
+// **整个进程组**收尸（Setpgid 使被拉起的进程成为独立进程组组长，SIGKILL 发到
+// 负 PID 即连坐全组），随后 Wait() 回收。
+//
+// why（必须杀进程组而不是只杀 sh）：run_claude.sh 的形态是
+//
+//	exec 3<> <taskDir>/in.fifo
+//	claude ... <&3 | tee -a out.jsonl
+//
+// `exec 3<>` 让 fd 3 **同时持有读写两端**，claude 的 stdin 是它的副本——所以
+// claude 永远等不到 EOF，只会一直阻塞在 read 上。生产环境不受影响：Proc.Kill
+// 走 `tmux kill-session`，连坐整个会话的进程组，claude 和 tee 一起走。但测试把
+// tmuxLaunch 换成了裸进程启动，若只杀 sh（测试进程的直接子进程），假 claude 与
+// tee 作为 sh 的子进程就成了孤儿，又各自持有 fd 3 副本永不 EOF，永久存活——
+// 每跑一次 `go test ./internal/executor/claudecode/` 就漏一批（真机 e2e 后执行机
+// 上攒出 36 个孤儿）。Stop 也救不了：它走 tmux kill-session，测试里没有真实
+// tmux 会话，那一步是空操作。本函数用进程组连坐对齐生产语义。
+func launchDetached(t *testing.T, dir, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("拉起 %s 失败: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			// 负 PID = 进程组组长，SIGKILL 连坐全组；进程已自退时 ESRCH 忽略
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			cmd.Wait()
+		}
+	})
+	return cmd
 }
 
 // installFakeClaude 把假 claude 放进 PATH 首位：run_claude.sh 以裸名 `claude`
