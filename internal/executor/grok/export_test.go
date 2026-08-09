@@ -41,6 +41,9 @@ func (r *runState) EventsForTest() <-chan executor.AdapterEvent { return r.evCh 
 // （把假 agent 的 WS 消息经真实读循环打到 OnPermission）。
 func NewHandlerForTest(a *Adapter, r *runState) ACPHandler { return &acpHandler{a: a, r: r} }
 
+// SetTaskDirForTest 设定运行态的任务目录（OnAskQuestion 要写 render.log）。
+func (r *runState) SetTaskDirForTest(dir string) { r.taskDir = dir }
+
 // StartSessionForTest 只跑 Start 里「连接 → initialize → session/new」这一段，
 // 不起 serve 进程，供 auth 错误路径断言。
 func StartSessionForTest(wsURL, repoPath string) error {

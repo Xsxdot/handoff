@@ -209,6 +209,75 @@ func TestRejectedListShowsDescriptionNotID(t *testing.T) {
 	}
 }
 
+// TestAskQuestionReplyContainsOutcome 钉住 OnAskQuestion 的应答形态：回裸 `{}`
+// 会被 grok 判为「缺 outcome 字段的工具错误」报回模型、模型随即重问，审核者收到
+// 两张重复 question 工单（2026-08-09 真机实测）。应答 result 必须含 outcome 字段
+// 且不是空对象。
+func TestAskQuestionReplyContainsOutcome(t *testing.T) {
+	const askReq = `{"jsonrpc":"2.0","id":0,"method":"_x.ai/ask_user_question","params":` +
+		`{"sessionId":"s","toolCallId":"c9","questions":[{"question":"用哪种语言？",` +
+		`"options":[{"label":"Go","description":"用 Go"}],"multiSelect":null}],"mode":"default"}}`
+	replies := make(chan string, 4)
+	srv := startFakeAgent(t, func(in string) []string {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal([]byte(in), &req)
+		switch req.Method {
+		case "initialize":
+			return []string{`{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":{}}`}
+		case "trigger/ask":
+			return []string{askReq}
+		}
+		return nil
+	}, replies)
+
+	a, r := grok.NewAdapterWithRunForTest("t1")
+	r.SetTaskDirForTest(t.TempDir())
+	cli, err := grok.DialACP(context.Background(), wsURL(srv), grok.NewHandlerForTest(a, r), nil)
+	if err != nil {
+		t.Fatalf("DialACP 失败: %v", err)
+	}
+	r.AttachClientForTest(cli)
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Call(ctx, "initialize", map[string]any{}); err != nil {
+		t.Fatalf("initialize 失败: %v", err)
+	}
+	_ = cli.Notify("trigger/ask", map[string]any{})
+
+	// 在 replies 里找到对 id=0（ask_user_question 请求）的应答，断言 result 含 outcome
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case raw := <-replies:
+			var m struct {
+				ID     json.RawMessage `json:"id"`
+				Result json.RawMessage `json:"result"`
+			}
+			if json.Unmarshal([]byte(raw), &m) != nil || string(m.ID) != "0" {
+				continue
+			}
+			var result map[string]json.RawMessage
+			if json.Unmarshal(m.Result, &result) != nil {
+				t.Fatalf("应答 result 非法 JSON: %s", m.Result)
+			}
+			if len(result) == 0 {
+				t.Fatalf("应答 result 不得是空对象（回 {} 会被 grok 判为缺 outcome 字段）: %s", m.Result)
+			}
+			if _, ok := result["outcome"]; !ok {
+				t.Fatalf("应答 result 必须含 outcome 字段，实得: %s", m.Result)
+			}
+			return
+		case <-deadline:
+			t.Fatal("未收到对 ask_user_question 的应答")
+		}
+	}
+}
+
 // TestStopDoesNotEmitFailedResult 钉住 Stop 与 onClosed 的竞态：Stop 主动关连接
 // 会触发读循环退出→OnClosed→onClosed，后者不得产出「ACP 连接断开」的假失败结果
 // （真实原因是用户主动停了，不是执行失败）。
