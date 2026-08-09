@@ -1,0 +1,532 @@
+import type * as FsPromises from 'node:fs/promises'
+import { sep } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const {
+  existsSyncMock,
+  mkdirSyncMock,
+  writeFileSyncMock,
+  readFileSyncMock,
+  rmSyncMock,
+  renameSyncMock,
+  readdirSyncMock,
+  statSyncMock,
+  getPathMock,
+  rmAsyncMock
+} = vi.hoisted(() => ({
+  existsSyncMock: vi.fn(),
+  mkdirSyncMock: vi.fn(),
+  writeFileSyncMock: vi.fn(),
+  readFileSyncMock: vi.fn(),
+  rmSyncMock: vi.fn(),
+  renameSyncMock: vi.fn(),
+  readdirSyncMock: vi.fn(),
+  statSyncMock: vi.fn(),
+  getPathMock: vi.fn(),
+  rmAsyncMock: vi.fn(async () => undefined)
+}))
+
+vi.mock('fs', () => ({
+  existsSync: existsSyncMock,
+  mkdirSync: mkdirSyncMock,
+  writeFileSync: writeFileSyncMock,
+  readFileSync: readFileSyncMock,
+  rmSync: rmSyncMock,
+  renameSync: renameSyncMock,
+  readdirSync: readdirSyncMock,
+  statSync: statSyncMock
+}))
+
+// Spread the real module: this factory replaces node:fs/promises for the whole import graph, so a
+// transitive readFile/mkdir would otherwise resolve to undefined.
+vi.mock('node:fs/promises', async () => ({
+  ...(await vi.importActual<typeof FsPromises>('node:fs/promises')),
+  rm: rmAsyncMock
+}))
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: getPathMock
+  }
+}))
+
+const { parseWslPathMock, toLinuxPathMock } = vi.hoisted(() => ({
+  parseWslPathMock: vi.fn((_path: string) => null as { distro: string; linuxPath: string } | null),
+  toLinuxPathMock: vi.fn((p: string) => p)
+}))
+
+vi.mock('./wsl', () => ({
+  parseWslPath: parseWslPathMock,
+  toLinuxPath: toLinuxPathMock
+}))
+
+import {
+  resolveShellKind,
+  ensureHistoryDir,
+  injectHistoryEnv,
+  updateHistFileForFallback
+} from './terminal-history'
+import { hashWorktreeId } from './terminal-history-paths'
+import {
+  deleteWorktreeHistoryDir,
+  flushPendingWorktreeHistoryDeletions
+} from './terminal-history-deletion'
+import { runHistoryGc, scheduleHistoryGc } from './terminal-history-gc'
+
+describe('terminal-history', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Why: clearAllMocks keeps implementations, so a throwing rename from one test would leak forward.
+    renameSyncMock.mockReset()
+    getPathMock.mockReturnValue('/fake/userData')
+    existsSyncMock.mockReturnValue(true)
+    statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+  })
+
+  describe('resolveShellKind', () => {
+    it('detects zsh', () => {
+      expect(resolveShellKind('/bin/zsh')).toBe('zsh')
+    })
+
+    it('detects bash', () => {
+      expect(resolveShellKind('/bin/bash')).toBe('bash')
+    })
+
+    it('detects versioned bash (bash-5.2)', () => {
+      expect(resolveShellKind('/usr/local/bin/bash-5.2')).toBe('bash')
+    })
+
+    it('detects versioned zsh (zsh-5.9)', () => {
+      expect(resolveShellKind('/usr/local/bin/zsh-5.9')).toBe('zsh')
+    })
+
+    it('detects nix-store zsh path', () => {
+      expect(resolveShellKind('/nix/store/abc123/bin/zsh')).toBe('zsh')
+    })
+
+    it('detects fish', () => {
+      expect(resolveShellKind('/usr/bin/fish')).toBe('fish')
+    })
+
+    it('detects pwsh', () => {
+      expect(resolveShellKind('pwsh')).toBe('pwsh')
+      expect(resolveShellKind('pwsh.exe')).toBe('pwsh')
+    })
+
+    it('detects cmd.exe', () => {
+      expect(resolveShellKind('cmd.exe')).toBe('cmd')
+    })
+
+    it('returns unknown for unrecognized shells', () => {
+      expect(resolveShellKind('/bin/tcsh')).toBe('unknown')
+      expect(resolveShellKind('/bin/dash')).toBe('unknown')
+      expect(resolveShellKind('/bin/elvish')).toBe('unknown')
+    })
+  })
+
+  describe('hashWorktreeId', () => {
+    it('produces deterministic output for the same input', () => {
+      const a = hashWorktreeId('repo-1::/Users/foo/worktree-a')
+      const b = hashWorktreeId('repo-1::/Users/foo/worktree-a')
+      expect(a).toBe(b)
+    })
+
+    it('produces different output for different inputs', () => {
+      const a = hashWorktreeId('repo-1::/Users/foo/worktree-a')
+      const b = hashWorktreeId('repo-1::/Users/foo/worktree-b')
+      expect(a).not.toBe(b)
+    })
+
+    it('produces a 16-character hex string', () => {
+      const hash = hashWorktreeId('repo-1::/Users/foo/worktree-a')
+      expect(hash).toMatch(/^[0-9a-f]{16}$/)
+    })
+  })
+
+  describe('ensureHistoryDir', () => {
+    it('creates directory with mode 0o700', () => {
+      ensureHistoryDir('abcdef0123456789')
+      expect(mkdirSyncMock).toHaveBeenCalledWith(
+        expect.stringMatching(/[\\/]fake[\\/]userData[\\/]terminal-history[\\/]abcdef0123456789$/),
+        { recursive: true, mode: 0o700 }
+      )
+    })
+
+    it('returns null on mkdir failure', () => {
+      mkdirSyncMock.mockImplementation(() => {
+        throw new Error('permission denied')
+      })
+      const result = ensureHistoryDir('abcdef0123456789')
+      expect(result).toBeNull()
+    })
+  })
+
+  describe('injectHistoryEnv', () => {
+    it('injects HISTFILE for zsh', () => {
+      mkdirSyncMock.mockReturnValue(undefined)
+
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/bin/zsh', '/path/wt')
+
+      expect(result.shell).toBe('zsh')
+      expect(result.histFile).toContain('terminal-history')
+      expect(result.histFile).toContain('zsh_history')
+      expect(env.HISTFILE).toBe(result.histFile)
+    })
+
+    it('injects HISTFILE for bash', () => {
+      mkdirSyncMock.mockReturnValue(undefined)
+
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/bin/bash', '/path/wt')
+
+      expect(result.shell).toBe('bash')
+      expect(result.histFile).toContain('bash_history')
+      expect(env.HISTFILE).toBe(result.histFile)
+    })
+
+    it('produces different HISTFILE for different worktreeIds', () => {
+      mkdirSyncMock.mockReturnValue(undefined)
+      existsSyncMock.mockReturnValue(true)
+
+      const envA: Record<string, string> = {}
+      injectHistoryEnv(envA, 'repo-1::/path/wt-a', '/bin/zsh', '/path/wt-a')
+
+      const envB: Record<string, string> = {}
+      injectHistoryEnv(envB, 'repo-1::/path/wt-b', '/bin/zsh', '/path/wt-b')
+
+      expect(envA.HISTFILE).not.toBe(envB.HISTFILE)
+    })
+
+    it('preserves caller-provided HISTFILE (check-before-set)', () => {
+      const env: Record<string, string> = { HISTFILE: '/my/custom/histfile' }
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/bin/zsh', '/path/wt')
+
+      expect(env.HISTFILE).toBe('/my/custom/histfile')
+      expect(result.histFile).toBeNull()
+    })
+
+    it('does not inject HISTFILE for unknown shells', () => {
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/bin/tcsh', '/path/wt')
+
+      expect(env.HISTFILE).toBeUndefined()
+      expect(result.shell).toBe('unknown')
+      expect(result.histFile).toBeNull()
+    })
+
+    it('does not inject HISTFILE for cmd.exe', () => {
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', 'cmd.exe', '/path/wt')
+
+      expect(env.HISTFILE).toBeUndefined()
+      expect(result.shell).toBe('cmd')
+      expect(result.histFile).toBeNull()
+    })
+
+    it('does not inject HISTFILE for fish (Phase 2)', () => {
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/usr/bin/fish', '/path/wt')
+
+      expect(env.HISTFILE).toBeUndefined()
+      expect(result.shell).toBe('fish')
+    })
+
+    it('degrades gracefully when directory creation fails', () => {
+      mkdirSyncMock.mockImplementation(() => {
+        throw new Error('disk full')
+      })
+
+      const env: Record<string, string> = {}
+      const result = injectHistoryEnv(env, 'repo-1::/path/wt', '/bin/zsh', '/path/wt')
+
+      expect(env.HISTFILE).toBeUndefined()
+      expect(result.histFile).toBeNull()
+    })
+  })
+
+  describe('updateHistFileForFallback', () => {
+    it('updates HISTFILE to match fallback shell', () => {
+      const env: Record<string, string> = {
+        HISTFILE: '/fake/userData/terminal-history/abc123/zsh_history'
+      }
+      updateHistFileForFallback(env, '/bin/bash')
+      expect(env.HISTFILE).toBe('/fake/userData/terminal-history/abc123/bash_history')
+    })
+
+    it('removes HISTFILE for unknown fallback shell', () => {
+      const env: Record<string, string> = {
+        HISTFILE: '/fake/userData/terminal-history/abc123/zsh_history'
+      }
+      updateHistFileForFallback(env, '/bin/sh')
+      expect(env.HISTFILE).toBeUndefined()
+    })
+
+    it('is a no-op when HISTFILE is not set', () => {
+      const env: Record<string, string> = {}
+      updateHistFileForFallback(env, '/bin/bash')
+      expect(env.HISTFILE).toBeUndefined()
+    })
+  })
+
+  describe('deleteWorktreeHistoryDir', () => {
+    it('tombstones then async-removes the history directory without recursive rmSync', async () => {
+      existsSyncMock.mockReturnValue(true)
+      deleteWorktreeHistoryDir('repo-1::/path/wt')
+      expect(renameSyncMock).toHaveBeenCalled()
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      expect(rmAsyncMock).toHaveBeenCalledWith(
+        expect.stringContaining('.pending-delete'),
+        expect.objectContaining({ recursive: true, force: true })
+      )
+      await flushPendingWorktreeHistoryDeletions()
+    })
+
+    it('leaves the live directory alone when the tombstone rename fails', async () => {
+      existsSyncMock.mockReturnValue(true)
+      renameSyncMock.mockImplementation(() => {
+        throw new Error('permission denied')
+      })
+
+      expect(() => deleteWorktreeHistoryDir('repo-1::/path/wt')).not.toThrow()
+
+      // Why: a path-derived worktree ID can be recreated at the same path, so an async rm aimed at the
+      // live directory could delete a freshly recreated worktree's history. GC reclaims it instead.
+      expect(rmAsyncMock).not.toHaveBeenCalled()
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      await flushPendingWorktreeHistoryDeletions()
+    })
+
+    it('does not throw when the async removal itself fails', async () => {
+      existsSyncMock.mockReturnValue(true)
+      rmAsyncMock.mockRejectedValueOnce(new Error('async fail'))
+      expect(() => deleteWorktreeHistoryDir('repo-1::/path/wt')).not.toThrow()
+      await expect(flushPendingWorktreeHistoryDeletions()).resolves.toBeUndefined()
+    })
+
+    it('retries pending tombstones on flush after a failed async rm (app-quit durability)', async () => {
+      existsSyncMock.mockImplementation((p: string) => {
+        const path = String(p)
+        if (path.includes('.pending-delete') && !path.endsWith('.pending-delete')) {
+          return true
+        }
+        if (path.endsWith('terminal-history') || path.endsWith('.pending-delete')) {
+          return true
+        }
+        return path.includes(hashWorktreeId('repo-1::/path/wt'))
+      })
+      readdirSyncMock.mockImplementation((p: string) => {
+        if (String(p).endsWith('.pending-delete')) {
+          return ['leftover-tombstone']
+        }
+        return []
+      })
+      rmAsyncMock.mockResolvedValue(undefined)
+      await flushPendingWorktreeHistoryDeletions()
+      expect(rmAsyncMock).toHaveBeenCalledWith(
+        expect.stringContaining('leftover-tombstone'),
+        expect.objectContaining({ recursive: true, force: true })
+      )
+    })
+  })
+
+  describe('runHistoryGc', () => {
+    it('coalesces duplicate scheduled startup GC calls', async () => {
+      vi.useFakeTimers()
+      existsSyncMock.mockReturnValue(false)
+      const getLiveWorktreeIds = vi.fn().mockResolvedValue(new Set<string>())
+
+      scheduleHistoryGc(getLiveWorktreeIds)
+      scheduleHistoryGc(getLiveWorktreeIds)
+
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      expect(getLiveWorktreeIds).toHaveBeenCalledTimes(1)
+    })
+
+    it('prunes orphaned directories', () => {
+      existsSyncMock.mockImplementation((p: string) => {
+        // WSL root doesn't exist, so GC skips it
+        if (p.includes('terminal-history-wsl')) {
+          return false
+        }
+        return true
+      })
+      readdirSyncMock.mockImplementation((dir: string) => {
+        if (dir.endsWith('terminal-history')) {
+          return ['dir1', 'dir2']
+        }
+        return ['meta.json']
+      })
+      statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+      readFileSyncMock.mockImplementation((p: string) => {
+        // Use a createdAt old enough to pass the GC age threshold
+        const oldDate = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+        if (p.includes('dir1')) {
+          return JSON.stringify({ worktreeId: 'live-wt', createdAt: oldDate })
+        }
+        return JSON.stringify({ worktreeId: 'dead-wt', createdAt: oldDate })
+      })
+
+      const liveIds = new Set(['live-wt'])
+      runHistoryGc(liveIds)
+
+      // Should only prune dir2 (dead-wt), not dir1 (live-wt), and never recursive-rm on the main thread.
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      expect(renameSyncMock).toHaveBeenCalledTimes(1)
+      expect(renameSyncMock).toHaveBeenCalledWith(
+        expect.stringContaining('dir2'),
+        expect.stringContaining(`.pending-delete${sep}dir2.`)
+      )
+      expect(rmAsyncMock).toHaveBeenCalledWith(
+        expect.stringContaining(`.pending-delete${sep}dir2.`),
+        expect.objectContaining({ recursive: true, force: true })
+      )
+    })
+
+    it('skips recently-created directories to avoid TOCTOU race', () => {
+      existsSyncMock.mockImplementation((p: string) => {
+        if (p.includes('terminal-history-wsl')) {
+          return false
+        }
+        return true
+      })
+      readdirSyncMock.mockImplementation((dir: string) => {
+        if (dir.endsWith('terminal-history')) {
+          return ['fresh-dir']
+        }
+        return ['meta.json']
+      })
+      statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+      // createdAt is just now — younger than the 5-minute GC threshold
+      readFileSyncMock.mockReturnValue(
+        JSON.stringify({ worktreeId: 'unknown-wt', createdAt: new Date().toISOString() })
+      )
+
+      runHistoryGc(new Set())
+
+      // Should NOT prune because the directory is too young
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      expect(renameSyncMock).not.toHaveBeenCalled()
+    })
+
+    it('does not throw when history root does not exist', () => {
+      existsSyncMock.mockReturnValue(false)
+      expect(() => runHistoryGc(new Set())).not.toThrow()
+      expect(readdirSyncMock).not.toHaveBeenCalled()
+    })
+
+    it('drains delete tombstones asynchronously instead of scanning them as worktrees', async () => {
+      existsSyncMock.mockImplementation((p: string) => !String(p).includes('terminal-history-wsl'))
+      readdirSyncMock.mockImplementation((dir: string) => {
+        if (String(dir).endsWith('.pending-delete')) {
+          return ['abc123.1700000000000.deadbeef']
+        }
+        if (String(dir).endsWith('terminal-history')) {
+          return ['.pending-delete']
+        }
+        return ['meta.json']
+      })
+      statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+
+      runHistoryGc(new Set())
+
+      // The tombstone queue is drained off-thread; GC must never rmSync it or count it as a worktree.
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      expect(rmAsyncMock).toHaveBeenCalledWith(
+        expect.stringContaining('abc123.1700000000000.deadbeef'),
+        expect.objectContaining({ recursive: true, force: true })
+      )
+      await flushPendingWorktreeHistoryDeletions()
+    })
+  })
+
+  describe('WSL path conversion', () => {
+    it('converts HISTFILE to Linux path for WSL cwd', () => {
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+      try {
+        parseWslPathMock.mockReturnValue({ distro: 'Ubuntu', linuxPath: '/home/user/project' })
+        toLinuxPathMock.mockReturnValue(
+          '/mnt/c/Users/user/AppData/Roaming/Orca/terminal-history-wsl/Ubuntu/abc123/bash_history'
+        )
+        mkdirSyncMock.mockReturnValue(undefined)
+        existsSyncMock.mockReturnValue(true)
+
+        const env: Record<string, string> = {}
+        const result = injectHistoryEnv(
+          env,
+          'repo-1::/wsl/path',
+          '/bin/bash',
+          '\\\\wsl.localhost\\Ubuntu\\home\\user\\project'
+        )
+
+        expect(toLinuxPathMock).toHaveBeenCalled()
+        expect(result.histFile).toContain('/mnt/')
+        expect(env.HISTFILE).toBe(result.histFile)
+      } finally {
+        Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
+      }
+    })
+
+    it('stores WSL history under terminal-history-wsl/<distro>/', () => {
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+      try {
+        parseWslPathMock.mockReturnValue({ distro: 'Ubuntu', linuxPath: '/home/user' })
+        toLinuxPathMock.mockImplementation((p: string) => p)
+        mkdirSyncMock.mockReturnValue(undefined)
+        existsSyncMock.mockReturnValue(true)
+
+        const env: Record<string, string> = {}
+        injectHistoryEnv(
+          env,
+          'repo-1::/wsl/path',
+          '/bin/bash',
+          '\\\\wsl.localhost\\Ubuntu\\home\\user'
+        )
+
+        expect(mkdirSyncMock).toHaveBeenCalledWith(
+          expect.stringMatching(/[\\/]terminal-history-wsl[\\/]Ubuntu[\\/]/),
+          expect.any(Object)
+        )
+      } finally {
+        Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
+      }
+    })
+
+    it('uses the project WSL distro hint when cwd is a Windows path', () => {
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+      try {
+        parseWslPathMock.mockReturnValue(null)
+        toLinuxPathMock.mockImplementation((p: string) => p.replace(/^C:\\/i, '/mnt/c/'))
+        mkdirSyncMock.mockReturnValue(undefined)
+        existsSyncMock.mockReturnValue(true)
+        getPathMock.mockReturnValue('C:\\Users\\alice\\AppData\\Roaming\\Orca')
+
+        const env: Record<string, string> = {}
+        const result = injectHistoryEnv(env, 'repo-1::C:\\repo', '/bin/bash', 'C:\\repo', {
+          wslDistro: 'Ubuntu'
+        })
+
+        expect(mkdirSyncMock).toHaveBeenCalledWith(
+          expect.stringMatching(/[\\/]terminal-history-wsl[\\/]Ubuntu[\\/]/),
+          expect.any(Object)
+        )
+        expect(toLinuxPathMock).toHaveBeenCalled()
+        expect(result.histFile).toMatch(/^\/mnt\/c\//)
+        expect(env.HISTFILE).toBe(result.histFile)
+      } finally {
+        Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
+      }
+    })
+  })
+})

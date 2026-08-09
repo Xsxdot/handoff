@@ -1,0 +1,255 @@
+// ─── SSH Connection Types ───────────────────────────────────────────
+
+export const MIN_SSH_RELAY_GRACE_PERIOD_SECONDS = 60
+export const MAX_SSH_RELAY_GRACE_PERIOD_SECONDS = 7 * 24 * 60 * 60
+export const LEGACY_DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS = 3 * 60 * 60
+export const DEFAULT_BOUNDED_SSH_RELAY_GRACE_PERIOD_SECONDS = 24 * 60 * 60
+export const DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS = 0
+export const SSH_RELAY_CONFIGURE_GRACE_TIME_METHOD = 'relay.configureGraceTime'
+
+export type SshTarget = {
+  id: string
+  label: string
+  /** Internal owner for targets that Orca creates as implementation details.
+   *  Owned targets are hidden from normal SSH-host management surfaces. */
+  owner?: { type: 'on-demand-runtime'; runtimeId: string }
+  /** Host alias to resolve through OpenSSH config (ssh -G). */
+  configHost?: string
+  host: string
+  port: number
+  username: string
+  /** Path to private key file, if using key-based auth. */
+  identityFile?: string
+  /** SSH agent socket path from IdentityAgent, if configured. */
+  identityAgent?: string
+  /** Whether OpenSSH IdentitiesOnly should limit public-key auth attempts. */
+  identitiesOnly?: boolean
+  /** Whether the host's SSH config explicitly requests GSSAPIAuthentication
+   *  (Kerberos). ssh2 has no gssapi-with-mic support, so these targets try the
+   *  system OpenSSH transport first. */
+  gssapiAuthentication?: boolean
+  /** ProxyCommand from SSH config, if any. */
+  proxyCommand?: string
+  /** Jump host (ProxyJump), if any. */
+  jumpHost?: string
+  /** Where this target came from. `ssh-config` targets are kept in sync with
+   *  `~/.ssh/config` on import — their config-derived fields (host, port,
+   *  username, jump host, identity, proxy) are refreshed on each import.
+   *  `manual` targets are never overwritten by import. Legacy persisted targets
+   *  predate this field (undefined) and are adopted into config-sync on next
+   *  import. */
+  source?: 'ssh-config' | 'manual'
+  /** Grace period in seconds before relay shuts down after disconnect.
+   *  0 disables expiry. Default: 0 (until reset). Max: 604800 (7 days). */
+  relayGracePeriodSeconds?: number
+  /** Set to true after a successful connection that triggered a credential
+   *  prompt (passphrase or password). Persisted so startup reconnect can
+   *  partition targets into eager (no passphrase) vs deferred (passphrase)
+   *  without attempting a connection first. */
+  lastRequiredPassphrase?: boolean
+  /** Port forwards to auto-restore on connect/reconnect. Persisted so
+   *  forwards survive app restarts. */
+  portForwards?: SavedPortForward[]
+  /** Reuse a system OpenSSH connection across setup commands. Undefined means
+   *  enabled; false is an explicit per-target compatibility opt-out. */
+  systemSshConnectionReuse?: boolean
+}
+
+/** Public target identity safe to mirror to a paired client. */
+export type SshTargetSummary = Pick<SshTarget, 'id' | 'label'>
+
+/** Identity of a removed SSH target, recorded so that re-adding the same host
+ *  can re-point orphaned repos/worktrees from the old (deleted) target id to
+ *  the new one. Repos store only the target id, so without this record the old
+ *  workspaces are stranded on a dead id when the target is removed. */
+export type RemovedSshTargetTombstone = {
+  /** The id the removed target had — what orphaned repos/worktrees still point at. */
+  oldTargetId: string
+  /** ssh-config alias, if any — the most stable re-adoption key. */
+  configHost?: string
+  host: string
+  port: number
+  username: string
+  label: string
+  /** ms epoch when the target was removed, for pruning old tombstones. */
+  removedAt: number
+}
+
+/** Exact repo ownership changes made while re-adopting a removed SSH host. */
+export type SshRepoReadoption = {
+  oldTargetId: string
+  newTargetId: string
+  repoIds: string[]
+}
+
+export type SshTargetAddResult = {
+  target: SshTarget
+  repoReadoptions: SshRepoReadoption[]
+}
+
+export type SshConfigImportResult = {
+  targets: SshTarget[]
+  repoReadoptions: SshRepoReadoption[]
+}
+
+/** Concrete Host entry from ~/.ssh/config, for pickers that prefill the add-host form. */
+export type SshConfigHostSummary = {
+  alias: string
+  hostname: string
+  port: number
+  username: string
+  identityFile?: string
+  proxyCommand?: string
+  jumpHost?: string
+  /** True when an Orca SSH target already uses this config alias. */
+  alreadyInOrca: boolean
+  /**
+   * True when the user deleted this alias from Orca (tombstone). Still listed so they
+   * can re-pick it; passive import and "Add all" keep it out until re-adopt / save.
+   */
+  previouslyRemoved?: boolean
+}
+
+/** Max hosts one picker query returns; shared so the renderer's copy cannot drift. */
+export const SSH_CONFIG_HOST_RESULT_LIMIT = 100
+
+export type SshConfigHostListResult = {
+  hosts: SshConfigHostSummary[]
+  totalHostCount: number
+  newHostCount: number
+  matchCount: number
+  hasMore: boolean
+}
+
+/** `refresh` re-reads ~/.ssh/config; filter keystrokes reuse the cached parse. */
+export type SshConfigHostListArgs = { query?: string; refresh?: boolean }
+
+/** Effective OpenSSH values used to prefill one manually managed target. */
+export type SshConfigHostResolution = {
+  alias: string
+  hostname: string
+  port: number
+  username: string
+  identityFiles: string[]
+  identityAgent?: string
+  identitiesOnly: boolean
+  forwardAgent: boolean
+  gssapiAuthentication?: boolean
+  proxyCommand?: string
+  proxyUseFdpass: boolean
+  jumpHost?: string
+}
+
+export type SavedPortForward = {
+  localPort: number
+  remoteHost: string
+  remotePort: number
+  label?: string
+}
+
+export type SshConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'auth-failed'
+  | 'deploying-relay'
+  | 'connected'
+  | 'reconnecting'
+  | 'reconnection-failed'
+  | 'error'
+
+export type SshRemotePlatform = 'linux' | 'darwin' | 'win32'
+
+export type SshProviderEpoch = string & { readonly __sshProviderEpoch: unique symbol }
+
+export type DirectSshAuthority = {
+  targetId: string
+  providerEpoch: SshProviderEpoch
+  connectionGeneration: number
+}
+
+export type SshConnectionState = {
+  targetId: string
+  status: SshConnectionStatus
+  error: string | null
+  /** Number of reconnection attempts since last disconnect. */
+  reconnectAttempt: number
+  /** Opaque provider-incarnation token issued by main. */
+  providerEpoch?: SshProviderEpoch | null
+  /** Non-secret owner token used to reject mutations captured for an obsolete SSH session. */
+  connectionGeneration?: number
+  /** Folder downloads require ssh2 SFTP and are unavailable on system SSH. */
+  supportsFolderDownload?: boolean
+  /** Remote OS detected by the SSH relay once available. */
+  remotePlatform?: SshRemotePlatform
+}
+
+/** Non-secret mutation provenance. Both fields are required when an SSH provider is selected. */
+export type SshMutationExpectation = {
+  expectedExecutionHostId?: 'local' | `ssh:${string}`
+  expectedSshTargetId?: string
+  expectedSshConnectionGeneration?: number
+}
+
+export type SshRemotePtyLeaseState = 'attached' | 'detached' | 'terminated' | 'expired'
+
+export type SshRemotePtyLease = {
+  targetId: string
+  ptyId: string
+  worktreeId?: string
+  tabId?: string
+  leafId?: string
+  state: SshRemotePtyLeaseState
+  createdAt: number
+  updatedAt: number
+  lastAttachedAt?: number
+  lastDetachedAt?: number
+}
+
+/** Main-owned relay lease needed to reclaim PTY delivery after a desktop restart. */
+export type SshPtyConsumerRecovery = {
+  targetId: string
+  clientInstanceId: string
+  serverBuildId: string
+  clientGeneration: number
+  ownerGeneration: number
+  ownerLease: string
+  outputFlowControl?: {
+    version: 1
+    windowSu: number
+  }
+}
+
+// ─── Port Forwarding Types ─────────────────────────────────────────
+
+export type PortForwardEntry = {
+  id: string
+  connectionId: string
+  localPort: number
+  remoteHost: string
+  remotePort: number
+  label?: string
+  /** Origin captured from terminal output for this remote port (e.g. a Vite
+   *  banner printed inside an SSH-hosted PTY). The renderer rewrites the port
+   *  to the local forward and trusts the user has DNS for the custom host. */
+  advertisedUrl?: string
+  /** Protocol parsed from the advertised URL — used to upgrade HTTP guesses
+   *  to HTTPS even when the advertised host can't be reused locally. */
+  advertisedProtocol?: 'http' | 'https'
+}
+
+/** A listening port detected on the remote host by the relay.
+ *  Keep in sync with src/relay/port-scan-handler.ts — DetectedPort.
+ *  The relay is deployed as a standalone bundle and cannot import from shared. */
+export type DetectedPort = {
+  port: number
+  host: string
+  pid?: number
+  processName?: string
+}
+
+/** A detected SSH port after the main process has mapped terminal-advertised
+ *  URLs onto the raw relay scan row for IPC/UI consumption. */
+export type EnrichedDetectedPort = DetectedPort & {
+  advertisedUrl?: string
+  advertisedProtocol?: 'http' | 'https'
+}

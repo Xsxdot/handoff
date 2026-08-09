@@ -1,0 +1,300 @@
+import { randomUUID } from 'node:crypto'
+import type { CliStatusResult, RuntimeStatus } from '../../shared/runtime-types'
+import type { RuntimeOrchestrationEnvelope } from '../../shared/runtime-rpc-envelope'
+import {
+  isOrchestrationMutation,
+  orchestrationMigrationData
+} from '../../shared/orchestration-rpc-contract'
+import { parsePairingCode, type PairingOffer } from '../../shared/pairing'
+import { launchOrcaApp } from './launch'
+import { getDefaultUserDataPath, readMetadata } from './metadata'
+import { getCliStatus, resolveDesktopWindowStatus } from './status'
+import { sendRequest } from './transport'
+import { RuntimeClientError, RuntimeRpcFailureError, type RuntimeRpcSuccess } from './types'
+import { markEnvironmentUsed, resolveEnvironmentPairingOffer } from './environments'
+import {
+  ORCHESTRATION_CONTRACT_RUNTIME_CAPABILITY,
+  ORCHESTRATION_CONTRACT_VERSION
+} from '../../shared/protocol-version'
+import { RemoteRuntimeCompatGate } from './remote-runtime-compat-gate'
+import { createOrchestrationCompatibilityEnvelope } from './orchestration-compatibility-envelope'
+import { getTimeoutMsParam, isWaitingCheck } from './runtime-request-timeout'
+
+// Why: for long-poll methods the caller's method-level
+// `params.timeoutMs` is the inner waiter budget; we extend the client-side
+// socket timeout to `timeoutMs + GRACE_MS` so the client's own idle timer
+// never fires before the server-side waiter has had a chance to resolve and
+// emit its terminal frame. The 10 s grace absorbs round-trip + one final
+// keepalive window. See design doc §3.1.
+const LONG_POLL_CLIENT_GRACE_MS = 10_000
+
+// Why: ws + tweetnacl + the remote-runtime frame stack only matter once a
+// request actually goes over a pairing offer, which local CLI calls never do.
+// Both call sites already await this, so deferring the load changes no ordering.
+async function loadWebSocketTransport() {
+  return await import('./websocket-transport.js')
+}
+
+export class RuntimeClient {
+  private readonly userDataPath: string
+  private readonly requestTimeoutMs: number
+  private readonly remotePairing: PairingOffer | null
+  private readonly environmentSelector: string | null
+  private readonly remoteCompat: RemoteRuntimeCompatGate
+  private orchestrationContractCheck: Promise<void> | null = null
+  private readonly orchestrationCompatibility = createOrchestrationCompatibilityEnvelope(
+    process.env
+  )
+
+  // Why: browser commands trigger first-time session init (agent-browser connect +
+  // CDP proxy setup) which can take 15-30s. 60s accommodates cold start without
+  // being so large that genuine hangs go unnoticed.
+  constructor(
+    userDataPath = getDefaultUserDataPath(),
+    requestTimeoutMs = 60_000,
+    remotePairingCode = process.env.ORCA_PAIRING_CODE ?? process.env.ORCA_REMOTE_PAIRING ?? null,
+    environmentSelector = process.env.ORCA_ENVIRONMENT ?? null
+  ) {
+    this.userDataPath = userDataPath
+    this.requestTimeoutMs = requestTimeoutMs
+    this.environmentSelector = environmentSelector
+    this.remotePairing = resolveRemotePairing(userDataPath, remotePairingCode, environmentSelector)
+    this.remoteCompat = new RemoteRuntimeCompatGate(userDataPath, environmentSelector)
+  }
+
+  get isRemote(): boolean {
+    return this.remotePairing !== null
+  }
+
+  async call<TResult>(
+    method: string,
+    params?: unknown,
+    options?: { timeoutMs?: number } & RuntimeOrchestrationEnvelope
+  ): Promise<RuntimeRpcSuccess<TResult>> {
+    const effectiveTimeoutMs = options?.timeoutMs ?? this.resolveMethodTimeoutMs(method, params)
+    const orchestrationMutation = isOrchestrationMutation(method, params)
+    if (orchestrationMutation) {
+      await this.ensureOrchestrationContractCompatible(effectiveTimeoutMs)
+    }
+    const orchestrationRequestId = orchestrationMutation
+      ? (options?.orchestrationRequestId ?? randomUUID())
+      : undefined
+    const compatibilityEnvelope = method.startsWith('orchestration.')
+      ? {
+          ...this.orchestrationCompatibility,
+          compatibilityInvocationId:
+            orchestrationRequestId ?? this.orchestrationCompatibility.compatibilityInvocationId
+        }
+      : {}
+    const envelope = {
+      orchestrationCapability: options?.orchestrationCapability,
+      orchestrationContractVersion: method.startsWith('orchestration.')
+        ? ORCHESTRATION_CONTRACT_VERSION
+        : undefined,
+      orchestrationRequestId,
+      ...compatibilityEnvelope
+    }
+    if (this.remotePairing) {
+      const transport = await loadWebSocketTransport()
+      let response
+      try {
+        response = await this.remoteCompat.send<TResult>({
+          transport,
+          pairing: this.remotePairing,
+          method,
+          params,
+          timeoutMs: effectiveTimeoutMs,
+          envelope
+        })
+      } catch (error) {
+        throw attachMutationRecovery(error, orchestrationRequestId)
+      }
+      if (response.ok === false) {
+        throw new RuntimeRpcFailureError(response)
+      }
+      if (this.environmentSelector) {
+        markEnvironmentUsed(this.userDataPath, this.environmentSelector, {
+          runtimeId: response._meta.runtimeId
+        })
+      }
+      return response
+    }
+    const metadata = readMetadata(this.userDataPath)
+    let response
+    try {
+      response = await sendRequest<TResult>(metadata, method, params, effectiveTimeoutMs, envelope)
+    } catch (error) {
+      throw attachMutationRecovery(error, orchestrationRequestId)
+    }
+    if (response.ok === false) {
+      throw new RuntimeRpcFailureError(response)
+    }
+    return response
+  }
+
+  // Why: centralises the per-method timeout policy. Long-poll inner waiter
+  // budgets live in `params.timeoutMs`; widen the client-side socket timeout
+  // to `timeoutMs + grace` so it doesn't fire before the server has a chance
+  // to resolve. Without this, a 5 min wait would still die at the 60 s default.
+  // See design doc §3.1.
+  private resolveMethodTimeoutMs(method: string, params?: unknown): number {
+    if (
+      (method === 'orchestration.check' && isWaitingCheck(params)) ||
+      method === 'terminal.wait'
+    ) {
+      const inner = Number(getTimeoutMsParam(params))
+      if (Number.isFinite(inner) && inner > 0) {
+        return Math.max(inner + LONG_POLL_CLIENT_GRACE_MS, this.requestTimeoutMs)
+      }
+    }
+    return this.requestTimeoutMs
+  }
+
+  async getCliStatus(): Promise<RuntimeRpcSuccess<CliStatusResult>> {
+    if (this.remotePairing) {
+      const response = await this.call<RuntimeStatus>('status.get')
+      this.remoteCompat.noteVerifiedStatus(response.result)
+      const graphState = response.result.graphStatus
+      return {
+        id: response.id,
+        ok: true,
+        result: {
+          // Why: remote status proves the paired runtime is reachable, not
+          // that this client machine has a local Orca desktop process.
+          app: {
+            running: false,
+            pid: null,
+            // Why: reuse the shared resolver so remote status honors the same
+            // authoritativeWindowId fallback as local status for old runtimes.
+            ...(() => {
+              const desktopWindowStatus = resolveDesktopWindowStatus(response.result)
+              return desktopWindowStatus ? { desktopWindowStatus } : {}
+            })()
+          },
+          runtime: {
+            state: graphState === 'ready' ? 'ready' : 'graph_not_ready',
+            reachable: true,
+            runtimeId: response.result.runtimeId,
+            ...(response.result.appVersion ? { appVersion: response.result.appVersion } : {}),
+            ...(response.result.remoteUpdateSupport
+              ? { remoteUpdateSupport: response.result.remoteUpdateSupport }
+              : {}),
+            ...(response.result.capabilities ? { capabilities: response.result.capabilities } : {})
+          },
+          graph: {
+            state: graphState
+          }
+        },
+        _meta: response._meta
+      }
+    }
+    return getCliStatus(this.userDataPath)
+  }
+
+  private async ensureOrchestrationContractCompatible(timeoutMs: number): Promise<void> {
+    if (!this.orchestrationContractCheck) {
+      this.orchestrationContractCheck = this.checkOrchestrationContractCompatibility(timeoutMs)
+    }
+    await this.orchestrationContractCheck
+  }
+
+  private async checkOrchestrationContractCompatibility(timeoutMs: number): Promise<void> {
+    const response = await this.call<RuntimeStatus>('status.get', undefined, { timeoutMs })
+    if (this.remotePairing) {
+      this.remoteCompat.noteVerifiedStatus(response.result)
+    }
+    if (!response.result.capabilities?.includes(ORCHESTRATION_CONTRACT_RUNTIME_CAPABILITY)) {
+      throw new RuntimeClientError(
+        'orchestration_migration_required',
+        'The connected Orca runtime does not support the current orchestration contract. No effects were applied.',
+        orchestrationMigrationData('runtime_capability_missing')
+      )
+    }
+  }
+
+  async openOrca(timeoutMs = 15_000): Promise<RuntimeRpcSuccess<CliStatusResult>> {
+    const initial = await this.getCliStatus()
+    if (this.remotePairing) {
+      return initial
+    }
+
+    // Why: a blocked runtime can't open a window, so spawning the app would
+    // only hit the single-instance lock and exit — bail before launching.
+    if (initial.result.app.desktopWindowStatus === 'blocked') {
+      throwDesktopActivationBlocked()
+    }
+    launchOrcaApp()
+    if (initial.result.app.desktopWindowStatus === 'available') {
+      return initial
+    }
+
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = await this.getCliStatus()
+      if (status.result.app.desktopWindowStatus === 'blocked') {
+        throwDesktopActivationBlocked()
+      }
+      if (status.result.app.desktopWindowStatus === 'available') {
+        return status
+      }
+      await delay(250)
+    }
+
+    throw new RuntimeClientError(
+      'runtime_open_timeout',
+      'Timed out waiting for an Orca desktop window. The runtime may still be running headlessly.'
+    )
+  }
+}
+
+function attachMutationRecovery(error: unknown, requestId: string | undefined): unknown {
+  if (!requestId || !(error instanceof RuntimeClientError)) {
+    return error
+  }
+  return new RuntimeClientError(
+    error.code,
+    `${error.message} Orchestration mutation request ID: ${requestId}.`,
+    {
+      ...(error.data && typeof error.data === 'object' ? error.data : {}),
+      orchestrationRequestId: requestId
+    }
+  )
+}
+
+function throwDesktopActivationBlocked(): never {
+  throw new RuntimeClientError(
+    'desktop_activation_blocked',
+    'Orca is running headlessly, but it cannot open a desktop window safely because the persistent terminal provider is unavailable. Quit Orca normally and start the app again; do not use open -n.'
+  )
+}
+
+function resolveRemotePairing(
+  userDataPath: string,
+  pairingCode: string | null,
+  environmentSelector: string | null
+): PairingOffer | null {
+  if (pairingCode && environmentSelector) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Use either --pairing-code or --environment, not both.'
+    )
+  }
+  if (environmentSelector) {
+    return resolveEnvironmentPairingOffer(userDataPath, environmentSelector)
+  }
+  if (!pairingCode) {
+    return null
+  }
+  const pairing = parsePairingCode(pairingCode)
+  if (!pairing) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Invalid remote pairing code. Expected an orca://pair?... URL or bare pairing payload.'
+    )
+  }
+  return pairing
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

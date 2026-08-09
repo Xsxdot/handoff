@@ -1,1 +1,5 @@
 .worktrees/
+desktop/node_modules/
+desktop/out/
+desktop/dist/
+desktop/release/
