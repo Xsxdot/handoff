@@ -200,3 +200,4 @@ claude 与 grok 任务的 tmux 布局与 opencode 同构：窗口 0 是执行者
 
 - 设计文档（架构、协议、错误处理）：`docs/superpowers/specs/2026-08-07-handoff-design.md`
 - 真实 opencode e2e 手动验证清单：`docs/superpowers/e2e-checklist.md`
+- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。`bash skills/install.sh` 装到本机 Claude Code（基准副本）并软链给 codex / opencode / grok。
