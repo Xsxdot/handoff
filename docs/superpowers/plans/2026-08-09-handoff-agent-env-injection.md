@@ -1507,10 +1507,20 @@ Expected: 均无输出
 
 ```bash
 mkdir -p /tmp/b19check/env && printf 'listen: "127.0.0.1:7799"\ntoken: "t"\ndatadir: "/tmp/b19check"\nenv:\n  opencode: nope.env\n' > /tmp/b19check/config.yaml
-go run . agentd --config /tmp/b19check/config.yaml 2>&1 | head -5
+# 后台起、记 PID、给它 3 秒写完启动日志，然后只按 PID 精确回收
+go run . agentd --config /tmp/b19check/config.yaml > /tmp/b19check/out.log 2>&1 &
+echo $! > /tmp/b19check/agentd.pid
+sleep 3
+grep -E "env 文件预检失败|agentd 服务启动" /tmp/b19check/out.log
+kill "$(cat /tmp/b19check/agentd.pid)" 2>/dev/null
+rm -rf /tmp/b19check
 ```
 
-Expected: 启动日志里出现 `env 文件预检失败（不阻断启动，派发时会拒发）` 且 agentd **仍然启动**（能看到「agentd 服务启动」）。看到后 Ctrl-C 退出，并 `rm -rf /tmp/b19check`。
+Expected: grep 同时打出 `env 文件预检失败（不阻断启动，派发时会拒发）` 与 `agentd 服务启动` 两行——前者证明预检生效，后者证明它没阻断启动。
+
+**注意端口 7799 是刻意避开生产 agentd 的 7777 的，不要改。回收只按上面记下的 PID 来：
+绝不要用 `pkill -f agentd` / `killall` 这类宽泛模式，它会匹配到本机正在跑的生产
+agentd——那正是承载你这个任务的进程，一执行你自己就没了。**
 
 - [ ] **Step 3: 补 README**
 
