@@ -86,6 +86,45 @@ handoff wait <task> --notify --timeout 1h
 
 `progress` / `approver_decision` / `approver_disabled` 三类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
 
+## 远程派发：代码怎么过去，改动怎么回来
+
+用 `--target <name>` 派发到远程执行机时，两台机器上是**两个独立的 git 仓库**。handoff 不传代码，只做校验和同步——所以「本地写的改动」要靠 git 自己走过去。
+
+### 去程：先 push，再 dispatch
+
+`dispatch --target` 会在**当前工作目录**跑 `git rev-parse HEAD`，把这个 sha 作为「基线」上送。agentd 收到后：查这个 commit 在不在任务仓库的对象库里 → 不在就 `git fetch --all --prune` 一次再查 → 还不在就 **400 拒发**，报文是「基线提交在任务仓库中不存在 …… 请先在本地 git push，或用 --no-sync-check 跳过校验」。
+
+这条机制有三个必须记住的边界：
+
+- **只 commit 不够，必须 push。** 校验的是「远端能不能 fetch 到这个 commit」。没推上去的提交，远程永远拿不到；未提交的改动更是完全不可见——校验会拿你的 HEAD 去比，而 HEAD 不含工作区的脏改动，所以它会**静默通过**，然后 executor 基于一份没有你最新改动的代码开工。
+- **基线取自 cwd，不是 `--repo`。** 必须在本地那份同仓库的 checkout 里发 `dispatch`。cwd 不是 git 仓库时只打一行提示就跳过校验（「远程仓库可能落后于你的本地代码」），不报错——这是最容易悄悄踩空的一格。
+- **fetch ≠ 分支到位。** agentd 那次 fetch 只把对象拉进对象库，不 checkout、不快进任何分支。所以 `--new-branch` 不带 `--base` 时，新分支的起点是**远程仓库当前的 HEAD**，很可能还是旧的——哪怕你刚推的 commit 已经躺在对象库里。
+
+稳妥的远程派发姿势，把起点钉死：
+
+```bash
+git push                                                  # 缺这步必被拒
+handoff dispatch --target devbox --repo /remote/path \
+  --new-worktree --new-branch feat/x \
+  --base "$(git rev-parse HEAD)" plan.md                  # 起点 = 你刚推的那个 commit
+```
+
+`--no-sync-check` 只在一种情况下用：cwd 和 `--repo` 根本不是同一个仓库（比如你在 A 仓库里指挥远程跑 B 仓库）。那时基线校验必然误判，跳过它——代价是远程代码新不新由你自己负责。
+
+### 回程：wait 自动 fetch，合并是你的决定
+
+任务结束（`completed` / `failed`）时 `wait` 会自动把远程任务分支同步回来（配置 `sync.auto`，`--no-sync` 可关）；也可以随时手动：
+
+```bash
+handoff pull <task> --target devbox
+```
+
+`pull` 经 ssh 从执行机 fetch 任务分支到**当前工作目录**的仓库。**只 fetch，不 checkout、不合并**——合并进你的主线是审核决定，handoff 不替你做。
+
+去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 的机器还需要在配置里配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。
+
+本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。
+
 ## 事件分诊表
 
 `wait` 返回的 JSON 形如 `{"seq":N,"task_id":"...","type":"...","payload":{...}}`。按 `type` 分诊：
@@ -169,7 +208,9 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 | `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重挂**，它不会自己好 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
-| `dispatch` 报「工作区不干净」 | 任务仓库有未提交/未跟踪改动 | 提交或 stash 后重试 |
+| `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
+| `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
+| 远程派发成功，但 executor 基于旧代码开工 | 两种：改动只 commit 没 push（校验静默通过）；或 `--new-branch` 没给 `--base`，从远程旧 HEAD 起 | `--base "$(git rev-parse HEAD)"` 钉死起点，派发前先 `git push` |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复结果」看四级恢复阶梯走到哪一级 |
 | 任务归档后 tmux 会话还在 | executor 回收失败（事件里会带残留提示） | 按提示 `tmux kill-session -t handoff-<id8>` 手工兜底 |
 
@@ -178,18 +219,6 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 - `~/.handoff/agentd.log`：agentd 主日志。`HANDOFF_LOG_LEVEL=debug` 可调低级别。
 - `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 的第二个窗口就是 `tail -f` 它。
 - 同目录下按 executor 分：opencode 是 `serve.log` / `serve.json`，claude 是 `claude.log` / `claude.json`，grok 是 `serve.log` / `serve.json`。
-
-## 远程用法
-
-远程 executor 机全程加 `--target <name>`（地址与 token 从 `~/.handoff/config.yaml` 的 `targets` 段换算）：
-
-```bash
-handoff dispatch --target devbox --repo /remote/path --new-worktree plan.md
-handoff wait <task> --target devbox --timeout 1h
-handoff pull <task> --target devbox      # 把远程任务分支 fetch 到本地（不 checkout）
-```
-
-任务结束（`completed` / `failed`）时 `wait` 会自动 `pull`（配置 `sync.auto`，`--no-sync` 可关）。`--target` 的机器需要配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。
 
 ## 红旗——想到这些说明你在偷懒
 
@@ -204,6 +233,10 @@ handoff pull <task> --target devbox      # 把远程任务分支 fetch 到本地
 | 「wait 没动静，是不是挂了？」 | 没有事件就是没有事件。看退出码和 stderr，别瞎重启。 |
 | 「这个权限请求看起来问题不大」 | 破坏性、不可逆、外部可见的操作一律升级给用户。 |
 | 「任务好像不见了，重新 dispatch 一个」 | 先 `handoff tasks`。重复派发会开出第二个 executor 抢同一个仓库。 |
+| 「代码 commit 完了，可以远程派发了」 | 校验的是远端能否 fetch 到这个 commit。没 `git push` 等于没有。 |
+| 「工作区里改了几行还没提交，先派了再说」 | 校验拿 HEAD 比对，看不见脏改动，会**静默放行**——executor 拿到的是没有你改动的代码。 |
+| 「agentd 已经 fetch 过了，远程分支就是最新的」 | fetch 只落对象，不动分支。不带 `--base` 的新分支照样从远程旧 HEAD 起。 |
+| 「`pull` 完了改动就在我本地分支上了」 | `pull` 只 fetch，不 checkout 不合并。合并是你自己要做的事。 |
 
 ## 延伸阅读
 
