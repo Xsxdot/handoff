@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+
+	"github.com/xushixin/handoff/internal/executor"
 )
 
 // Action 是一次权限裁决的出口。
@@ -126,4 +128,65 @@ func (g *Gate) match(s string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+// Judge 判定一次权限请求（spec §3.4 的路由 + §7 的 fail-closed 表）。
+//
+// 参数：
+//   - req: 结构化后的权限请求
+//   - scope: 本任务的合法作用范围
+//
+// 返回：Verdict，调用方据 Action 决定后续动作
+//
+// 路由：
+//   - write / edit → 路径归属判定，**并且**对 Text 跑一次黑名单（路径本身
+//     可能命中，如 Write: /etc/sudoers）；两项是与关系
+//   - bash        → 对 Command 做命令类判定
+//   - 其余        → 对 Text 做命令类判定
+//
+// 注意：
+//   - Truncated 一律直接 Escalate 且不再往下判：看到的是不完整的描述，
+//     危险片段可能落在截断之外，黑名单与模型都不可信
+//   - 本方法**永不因失败而返回 AutoAllow**（spec §7）
+func (g *Gate) Judge(req Request, scope Scope) Verdict {
+	if req.Truncated {
+		return Verdict{Action: Escalate,
+			Reason: "权限描述含截断标记，危险片段可能落在截断之外"}
+	}
+	switch req.Tool {
+	case executor.PermToolWrite, executor.PermToolEdit:
+		return g.judgeFileWrite(req, scope)
+	case executor.PermToolBash:
+		return g.judgeCommand(req.Command)
+	default:
+		return g.judgeCommand(req.Text)
+	}
+}
+
+// judgeFileWrite 判定写文件类请求：黑名单与路径归属都通过才自动放行。
+//
+// 返回：AutoAllow 或 Escalate；本函数**永不返回 Consult**——写文件的危险
+// 判定是确定性的（路径在不在范围内），不需要模型介入。
+func (g *Gate) judgeFileWrite(req Request, scope Scope) Verdict {
+	if len(req.Paths) == 0 {
+		return Verdict{Action: Escalate,
+			Reason: "写文件请求未能提取出目标路径，无法判定范围"}
+	}
+	if hit, rule := g.match(req.Text); hit {
+		return Verdict{Action: Escalate,
+			Reason: "写文件描述命中黑名单", Rule: rule}
+	}
+	for _, p := range req.Paths {
+		in, base, err := InScope(p, scope)
+		if err != nil {
+			return Verdict{Action: Escalate,
+				Reason: fmt.Sprintf("目标路径归一化失败 %q: %v", p, err)}
+		}
+		if !in {
+			return Verdict{Action: Escalate,
+				Reason: fmt.Sprintf("目标路径越出任务范围: %s", p)}
+		}
+		g.log.Debug("写入路径在任务范围内", "path", p, "base", base)
+	}
+	return Verdict{Action: AutoAllow, Reason: "全部目标路径落在任务范围内"}
 }
