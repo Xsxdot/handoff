@@ -90,6 +90,9 @@ type runState struct {
 	acc          *turnAccumulator
 	lastProgress time.Time
 	rejected     []string // 本回合被拒的权限描述（perm.go 写入，回合收尾交代）
+	// askedViaTool 记「本回合已经通过原生 ask_user_question 给审核者递过问题」。
+	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
+	askedViaTool bool
 
 	pendMu  sync.Mutex
 	pending map[string]pendingPerm // toolCallId -> 待裁决权限（perm.go 使用）
@@ -333,6 +336,25 @@ func (r *runState) closeEvents() {
 	close(r.evCh)
 }
 
+// noteAskedViaTool 标记本回合已通过原生提问工具向审核者递过问题。
+func (r *runState) noteAskedViaTool() {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	r.askedViaTool = true
+}
+
+// takeAskedViaTool 取走并清空本回合的「已走工具提问」标记。
+//
+// 取走式（而非只读）是刻意的：标记的生命周期就是一个回合，收尾读一次即失效，
+// 否则下一回合的兜底会被上一回合的提问误抑制，真出现静默结束就没人兜了。
+func (r *runState) takeAskedViaTool() bool {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	asked := r.askedViaTool
+	r.askedViaTool = false
+	return asked
+}
+
 // turnTextAndReset 取走本回合正文并清空累积器，为下一回合做准备。
 func (r *runState) turnTextAndReset() string {
 	r.turnMu.Lock()
@@ -408,13 +430,14 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	}
 
 	text := r.turnTextAndReset()
+	askedViaTool := r.takeAskedViaTool()
 	kind, tr := turn.ParseTrailer(text)
 	branch, commit, hasNew, gerr := turn.GitTurnStatus(r.repoPath, r.startCommit)
 	if gerr != nil {
 		a.log.Warn("git 回合取证失败，降级只用 trailer", "task", r.taskID, "cause", gerr)
 	}
 	a.log.Info("grok 回合收尾", "task", r.taskID, "kind", kind,
-		"has_new_commit", hasNew, "branch", branch)
+		"has_new_commit", hasNew, "branch", branch, "asked_via_tool", askedViaTool)
 
 	switch kind {
 	case "ask":
@@ -431,6 +454,15 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: &executor.Result{OK: true, Branch: branch, CommitHash: commit,
 					SessionID: r.sessionID, Summary: "（模型未输出收尾协议，按 git 新提交判定完成）"}})
+			return
+		}
+		// 本回合已经通过原生提问工具给过审核者一个问题时，兜底闭嘴：兜底的职责是
+		// 「别让回合静默结束」，那个诉求已经满足了。真机 47c36ab9 实测，此处补的
+		// 第二张工单内容是「已调用一次提问工具；本回合结束。」——不是问题，回答它
+		// 等于把废话灌回模型。
+		if askedViaTool {
+			a.log.Info("回合无收尾协议，但本回合已走工具提问，兜底不再补工单",
+				"task", r.taskID)
 			return
 		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
@@ -632,6 +664,8 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 	}
 	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交审核者",
 		"task", h.r.taskID)
+	// 记在回合上：收尾兜底据此不再把回合叙述补成第二张工单
+	h.r.noteAskedViaTool()
 	if err := turn.AppendRender(filepath.Join(h.r.taskDir, renderLogName),
 		"\n【模型提问】"+text+"\n"); err != nil {
 		h.a.log.Warn("提问文本写 render.log 失败，不影响上报", "task", h.r.taskID, "cause", err)

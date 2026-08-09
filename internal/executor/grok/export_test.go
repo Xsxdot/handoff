@@ -2,6 +2,7 @@ package grok
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
@@ -70,3 +71,25 @@ func VoidAllPendingForTest(r *runState) int { return r.voidAllPending() }
 
 // RejectedForTest 暴露本回合被拒清单（供断言清单里是描述而非 id）。
 func (r *runState) RejectedForTest() []string { return r.takeRejected() }
+
+// FinishTurnForTest 直接驱动回合收尾分类，供断言「工具已提过问时兜底不再补一张
+// 工单」——真机走一遍要 30 秒且依赖模型发挥，单测直接喂终局更稳。
+func FinishTurnForTest(a *Adapter, r *runState, stopReason, turnText string) {
+	r.turnMu.Lock()
+	r.acc.feedRaw([]byte(`{"jsonrpc":"2.0","method":"session/update","params":` +
+		`{"update":{"sessionUpdate":"agent_message_chunk","content":` +
+		`{"type":"text","text":` + mustJSONString(turnText) + `}}}}`))
+	r.turnMu.Unlock()
+	a.finishTurn(r, ACPResult{Result: []byte(`{"stopReason":"` + stopReason + `"}`)})
+}
+
+// NoteAskedViaToolForTest 模拟 OnAskQuestion 已在本回合转交过一个提问。
+func NoteAskedViaToolForTest(r *runState) { r.noteAskedViaTool() }
+
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil { // 测试辅助：入参是自己写的字面量，编不出来就是写错了
+		panic(err)
+	}
+	return string(b)
+}
