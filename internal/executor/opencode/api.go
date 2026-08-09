@@ -17,9 +17,10 @@
 //
 // 为什么 SSE 手写解析而不引第三方依赖：SSE 协议只有 data:/event:/空行三种形态，
 // 手写按行解析约 40 行即可完全掌控。事件 payload 可能携带大段文本（plan、diff、
-// 用户问答），必须能按需配置 scanner buffer（本实现 1MB）并按行处理超长 token；
-// 第三方库的 buffer 上限与截断行为不可控，且我们需要的「未知行 Debug 跳过、绝不
-// 中断」宽容语义由自己实现最精确，不依赖库的严格/宽松差异。
+// 用户问答），用 bufio.Reader 定界读取：单行上限 sseDataLineLimit（1MB）之内按行
+// 解析，超限行只消费到换行符、丢弃该事件并保持连接（见 readSSELine）——第三方库
+// 的 buffer 上限与截断行为不可控，且我们需要的「未知行 Debug 跳过、超长行丢弃但
+// 绝不中断订阅」宽容语义由自己实现最精确，不依赖库的严格/宽松差异。
 package opencode
 
 import (
@@ -44,13 +45,17 @@ import (
 //   - sessionTitle：建会话时写入的标题，便于用户在 tmux attach 后从 opencode TUI
 //     里区分会话归属
 //   - sseInitialBackoff/sseMaxBackoff：断流重连的指数退避区间
-//   - sseScanBuffer：scanner 单行上限。事件可能携带大段文本，必须给足空间；
-//     超过该上限的行按流异常处理（走重连），而不是崩掉订阅
+//   - sseDataLineLimit：单条 SSE data 行的安全上限（1MB）。事件可能携带大段文本，
+//     必须给足空间；超过该上限的行**只丢弃该事件、不重连**（/event 无重放语义，
+//     重连会让后续合法事件永久丢失，见 readSSELine）
+//   - sseReaderBuffer：读取缓冲区大小。只决定单次 Read 的读取粒度，不构成行上限；
+//     行上限由 readSSELine 的 maxBytes 单独把关
 const (
 	sessionTitle      = "handoff"
 	sseInitialBackoff = 1 * time.Second
 	sseMaxBackoff     = 30 * time.Second
-	sseScanBuffer     = 1 << 20 // 1MB
+	sseDataLineLimit  = 1 << 20 // 1MB：单条 SSE data 行的安全上限
+	sseReaderBuffer   = 64 << 10
 	// sseStableAfter 是「这次连接算健康」的存活时长门槛（退避复位条件，A-8）。
 	// 为什么 5s：正常的 /event 长连接一挂就是分钟到小时级，而半死 server 的
 	// 「200 后立刻关流」在毫秒级——5s 把两者分得很开，且不会因一次正常的
@@ -338,7 +343,8 @@ func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response
 //   - ctx 取消时返回**最后一次连接的失败原因**（最后一次连接健康则返回 nil）：
 //     调用方拿它填 FailReason（A-7）。恒返回 nil 会让「看门狗判死 → 事件流退出」
 //     的失败现场只剩 "<nil>"，零信息
-//   - 解析器遇到无法恢复的流异常（如单行超过 1MB 上限）时返回错误
+//   - 解析器遇到无法恢复的流异常（如底层 I/O 错误）时返回错误
+//   - 单行超过 sseDataLineLimit 不视为流异常：该事件被丢弃、连接保持（见 readSSELine）
 //
 // 注意：
 //   - 未知/解析失败的行（event: 行、注释、非 JSON data）Debug 跳过，绝不中断订阅
@@ -409,6 +415,42 @@ func dropCtxCause(err error, ctx context.Context) error {
 	return err
 }
 
+// readSSELine 读取并消费一条 SSE 物理行。
+//
+// 当行超过 maxBytes 时，它仍读取至换行符以恢复边界，返回 oversized=true；
+// 调用方必须丢弃该完整 SSE 事件而不是断开整条订阅。
+//
+// 为什么必须消费到换行符：连接是共享的、流式的，不把超长行读完就继续，后续
+// 所有字节都会被当成该超长行的残留，后续合法事件全部错位——只有完整读到
+// 换行符，下一个 ReadSlice 才会落在下一条物理行的行首。
+func readSSELine(r *bufio.Reader, maxBytes int) (line string, oversized bool, err error) {
+	var sb strings.Builder
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(frag) > 0 {
+			// 只记录「是否超限」；内容最多暂存到 maxBytes，不把超长行整体搬进内存
+			if sb.Len()+len(frag) > maxBytes {
+				oversized = true
+			}
+			if rem := maxBytes - sb.Len(); rem > 0 {
+				if len(frag) > rem {
+					sb.Write(frag[:rem])
+				} else {
+					sb.Write(frag)
+				}
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue // 缓冲区满但未到换行符：吞掉本段，继续读到行尾
+		}
+		if err != nil {
+			// 真实 I/O 错误或 io.EOF（含 EOF 前未收尾的残行数据）原样上抛
+			return strings.TrimSuffix(sb.String(), "\n"), oversized, err
+		}
+		return strings.TrimSuffix(sb.String(), "\n"), oversized, nil
+	}
+}
+
 // streamOnce 建立一次 SSE 连接并消费到流结束，期间每条事件同步回调 onEvent。
 //
 // 返回：
@@ -442,32 +484,50 @@ func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage), onE
 	defer a.log().Info("SSE 连接关闭", "path", "/event")
 
 	// 按行读：SSE 事件以空行分隔；data: 行聚合为事件体，其余行（event:/id:/注释）
-	// 一律 Debug 跳过。Buffer 上限 1MB，见文件头 why 注释
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 64*1024), sseScanBuffer)
+	// 一律 Debug 跳过。行上限 sseDataLineLimit（1MB），见文件头 why 注释
+	r := bufio.NewReaderSize(resp.Body, sseReaderBuffer)
 	var data []string
-	for sc.Scan() {
-		line := sc.Text()
+	// discardEvent：本事件已被超长行污染，后续 data 行一律不聚合，直到空行重置。
+	// 为什么整事件丢弃：超长行说明该事件体在行上就被截断了，多行 data: 拼不回
+	// 合法 JSON；且超长行里可能就是 prompt/命令输出/凭据，不该进内存、不该上抛
+	discardEvent := false
+	for {
+		line, oversized, err := readSSELine(r, sseDataLineLimit)
+		if oversized {
+			// 只留配置的上限值做上下文，绝不携带 payload：超长行里可能是提示词、
+			// 命令输出、diff 或凭据
+			discardEvent = true
+			a.log().Warn("SSE data 行超限，丢弃当前事件但保持连接", "limit_bytes", sseDataLineLimit)
+		}
+		if err != nil {
+			// io.EOF 是正常断流（服务端关流），不是异常，交给上层走重连
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			// 其余为真实读取异常；ctx 取消导致的读取中断属正常关停路径，静默
+			// 交给上层退出
+			if ctx.Err() == nil {
+				a.log().Warn("SSE 流读取异常", "cause", err)
+				return fmt.Errorf("SSE 流读取: %w", err)
+			}
+			return err
+		}
 		switch {
 		case strings.HasPrefix(line, "data:"):
 			// 对齐官方 SDK 语义：剥掉 "data:" 前缀并去掉紧随的空格
-			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if !discardEvent {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
 		case line == "":
 			// 空行 = 事件结束；只有 data 内容非空且是合法 JSON 才回调
-			a.dispatch(data, onEvent)
+			if !discardEvent {
+				a.dispatch(data, onEvent)
+			}
 			data = nil
+			discardEvent = false
 		default:
 			a.log().Debug("SSE 忽略未知行", "line", turn.TruncateRunes(line, 80))
 		}
-	}
-	if err := sc.Err(); err != nil {
-		// EOF 不是错误（bufio 对 EOF 返回 nil）；此处只剩真实异常（如超长行）。
-		// ctx 取消导致的读取中断属正常关停路径，不按异常告警，静默交给上层退出
-		if ctx.Err() == nil {
-			a.log().Warn("SSE 流读取异常", "cause", err)
-			return fmt.Errorf("SSE 流读取: %w", err)
-		}
-		return err
 	}
 	return nil
 }

@@ -593,3 +593,85 @@ func TestSubscribeNoReconnectOnFirstConnect(t *testing.T) {
 		t.Errorf("首次连接成功不应触发 onReconnect，实际 %d 次", reconnects)
 	}
 }
+
+// TestSubscribeSkipsOversizedDataLineAndKeepsConnection 验证单条 SSE data 行超过
+// 1MB 安全上限时不重连（修：scanner 的 token too long 会触发断流重连，而 /event
+// 无重放语义，重连后的流里那条合法事件永久丢失）：
+// 超长行被丢弃、连接保持，随后同一条连接上的合法事件照常送达；
+// 取消前恰好只有一次 /event 连接，取消后订阅及时返回。
+func TestSubscribeSkipsOversizedDataLineAndKeepsConnection(t *testing.T) {
+	quietLog(t)
+	var mu sync.Mutex
+	conns := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		conns++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		huge := strings.Repeat("x", 2<<20)
+		fmt.Fprintf(w, "data: {\"type\":\"oversized\",\"payload\":\"%s\"}\n\n", huge)
+		fmt.Fprint(w, "data: {\"type\":\"permission.asked\",\"properties\":{\"id\":\"perm-1\"}}\n\n")
+		fl.Flush()
+		<-r.Context().Done() // 保持连接，直到客户端取消
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu2 sync.Mutex
+	var events []json.RawMessage
+	done := make(chan error, 1)
+	go func() {
+		done <- api.SubscribeEvents(ctx, func(ev json.RawMessage) {
+			mu2.Lock()
+			events = append(events, ev)
+			mu2.Unlock()
+		}, nil)
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		mu2.Lock()
+		got := len(events)
+		mu2.Unlock()
+		if got >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("超时未收到超长行之后的合法事件，当前 %d 条", got)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if len(events) != 1 {
+		t.Fatalf("应恰好收到 1 条合法事件（超长事件不得送达），实际 %d 条", len(events))
+	}
+	var ev struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(events[0], &ev); err != nil {
+		t.Fatalf("解析事件失败: %v", err)
+	}
+	if ev.Type != "permission.asked" {
+		t.Errorf("事件 type=%q，期望 permission.asked（超长行后的合法事件）", ev.Type)
+	}
+
+	// 取消前断言：恰好只有一次 /event 连接（超长行不得触发重连）
+	mu.Lock()
+	if conns != 1 {
+		t.Errorf("应恰好 1 个 /event 连接（超长行不得触发重连），实际 %d", conns)
+	}
+	mu.Unlock()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("ctx 取消后 SubscribeEvents 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctx 取消后 SubscribeEvents 未在 3s 内返回")
+	}
+}
