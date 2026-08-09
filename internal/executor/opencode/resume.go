@@ -10,7 +10,9 @@
 package opencode
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/xushixin/handoff/internal/executor"
@@ -44,7 +46,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		if err != nil {
 			a.log.Error("adapter 恢复任务失败", "task", req.TaskID, "cause", err)
 		} else if out.Alive {
-			a.log.Info("adapter 任务已恢复", "task", req.TaskID, "session", req.SessionID)
+			a.log.Info("adapter 任务已恢复", "task", req.TaskID, "session", out.SessionID)
 		}
 	}()
 
@@ -59,28 +61,98 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	// serve.log 尾部读取需要路径，重启恢复的任务同样要能用
 	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession,
 		ServeLogPath: filepath.Join(req.TaskDir, serveLogFileName)}
+
+	mode := executor.ResumeModeReattach
 	if !proc.Alive() {
-		a.log.Info("恢复探活失败：执行器已不在", "task", req.TaskID, "tmux", proc.TmuxSession)
 		// 回收残留会话：Alive() 为假只说明 serve 进程没了，tmux 会话本身可能
-		// 还被第二窗口的 tail -f render.log 吊着。不回收，每个这类任务都会永久
-		// 遗留一个 tmux 会话 + 一个 tail 进程，而后续再无任何路径会碰它们
-		// （本任务的运行态没建起来，Stop 无从调用）。Kill 幂等，会话早已消失
-		// 时它返回错误也无妨——证据都在磁盘上的 serve.log/render.log 里
+		// 还被第二窗口的 tail -f render.log 吊着。冷恢复要新建同名会话，
+		// 不先回收会直接撞名（这条在原实现里就有，冷恢复路径更需要它）
 		if kerr := proc.Kill(); kerr != nil {
 			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
 				"task", req.TaskID, "tmux", proc.TmuxSession, "cause", kerr)
 		}
-		return executor.ResumeOutcome{}, nil
+		if !req.Cold {
+			a.log.Info("serve 已不在且不允许冷恢复，判不可恢复",
+				"task", req.TaskID, "tmux", proc.TmuxSession)
+			return executor.ResumeOutcome{Alive: false,
+				Note: "serve 进程已不在（本次只允许热重连）"}, nil
+		}
+		// §6 约束 5（冷恢复不重建 worktree）：任务工作区可能已随归档清理，
+		// 重建是 Dispatch 的职责，越界重建会让归档过的任务诈尸
+		if _, serr := os.Stat(req.TaskDir); serr != nil {
+			a.log.Info("任务目录已不存在，判不可恢复", "task", req.TaskID, "cause", serr)
+			return executor.ResumeOutcome{Alive: false,
+				Note: "任务目录已不存在（可能已归档清理），无法恢复"}, nil
+		}
+		if _, rerr := os.Stat(req.RepoPath); rerr != nil {
+			a.log.Info("任务工作区已不存在，判不可恢复", "task", req.TaskID, "cause", rerr)
+			return executor.ResumeOutcome{Alive: false,
+				Note: "任务工作区已不存在（可能已归档清理），无法恢复"}, nil
+		}
+		a.log.Info("serve 已不在，进入冷恢复", "task", req.TaskID, "session", req.SessionID)
+		// 任务物料在 taskDir 里是持久的，路径确定性推导；重写一次保证内容与
+		// 当前 model 一致（PlanContent 只在首轮 prompt 用得上，冷恢复不需要）
+		configPath := filepath.Join(req.TaskDir, configFileName)
+		newProc, err := startServe(context.Background(), req.RepoPath, req.TaskID,
+			req.TaskDir, configPath, req.Env, a.log)
+		if err != nil {
+			a.log.Warn("冷恢复重起 serve 失败，判不可恢复", "task", req.TaskID, "cause", err)
+			return executor.ResumeOutcome{Alive: false,
+				Note: fmt.Sprintf("重起 opencode serve 失败：%v", err)}, nil
+		}
+		if werr := writeServeInfo(req.TaskDir, newProc); werr != nil {
+			a.log.Warn("冷恢复写 serve.json 失败，下次重启恢复将不可用",
+				"task", req.TaskID, "cause", werr)
+		}
+		proc = newProc
+		mode = executor.ResumeModeCold
+		a.log.Info("冷恢复新 serve 就绪", "task", req.TaskID, "port", proc.Port)
 	}
 	r := a.newRun(req.TaskID, req.TaskDir, req.RepoPath)
-	r.session = req.SessionID
+	sessionID := req.SessionID
+	r.session = sessionID
 	r.api = NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)
 	r.handle = procHandle{p: proc}
+
+	if mode == executor.ResumeModeCold {
+		// 会话在全局 sqlite 里，进程重起不影响它——但要确认它真的还在，
+		// 不能默认。不在就降级新会话并如实播报（上下文断了是审核者需要知道的）
+		has, err := r.api.HasSession(context.Background(), sessionID)
+		if err != nil {
+			a.log.Warn("查询会话列表失败，保守降级新会话", "task", req.TaskID, "cause", err)
+			has = false
+		}
+		if !has {
+			newID, nerr := r.api.CreateSession(context.Background())
+			if nerr != nil {
+				a.log.Warn("降级新建会话失败，判不可恢复", "task", req.TaskID, "cause", nerr)
+				return executor.ResumeOutcome{Alive: false,
+					Note: fmt.Sprintf("原会话已不在且新建失败：%v", nerr)}, nil
+			}
+			a.log.Warn("原会话已不在，已新开会话", "task", req.TaskID,
+				"old", sessionID, "new", newID)
+			sessionID, mode = newID, executor.ResumeModeFresh
+		}
+		r.session = sessionID
+	}
 	r.captureStartCommit(a)
 	go r.subscribeLoop(a)
 	go a.watchdog(r)
 	return executor.ResumeOutcome{
-		Alive: true, Mode: executor.ResumeModeReattach, SessionID: req.SessionID,
-		Note: "executor 仍存活，已重连事件流",
+		Alive: true, Mode: mode, SessionID: sessionID,
+		Note: resumeNote(mode, sessionID),
 	}, nil
+}
+
+// resumeNote 拼恢复结果的一句话结论（进 ResumeOutcome.Note 供 manager 转播）。
+func resumeNote(mode, sessionID string) string {
+	switch mode {
+	case executor.ResumeModeReattach:
+		return "executor 仍存活，已重连事件流"
+	case executor.ResumeModeCold:
+		return "已从磁盘载入原会话 " + sessionID + "，上下文完整"
+	case executor.ResumeModeFresh:
+		return "原会话已不可载入，已新开会话 " + sessionID + "，上下文从下一条指令开始"
+	}
+	return "已恢复"
 }

@@ -593,3 +593,28 @@ func TestSubscribeNoReconnectOnFirstConnect(t *testing.T) {
 		t.Errorf("首次连接成功不应触发 onReconnect，实际 %d 次", reconnects)
 	}
 }
+
+// TestHasSession 验证会话在场校验：GET /session 列表里含目标 id 返回 true，
+// 不含返回 false。
+func TestHasSession(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/session" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"id":"sess-a"},{"id":"sess-b"}]`))
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	ctx := context.Background()
+	if ok, err := api.HasSession(ctx, "sess-b"); err != nil || !ok {
+		t.Fatalf("含目标 id 应 ok=true, got ok=%v err=%v", ok, err)
+	}
+	if ok, err := api.HasSession(ctx, "sess-missing"); err != nil || ok {
+		t.Fatalf("不含目标 id 应 ok=false, got ok=%v err=%v", ok, err)
+	}
+}

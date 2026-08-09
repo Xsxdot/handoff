@@ -200,6 +200,52 @@ type sessionResponse struct {
 	ID string `json:"id"`
 }
 
+// sessionListItem 是 GET /session 列表里每个会话的最小形状（冷恢复在场校验只用 id）。
+type sessionListItem struct {
+	ID string `json:"id"`
+}
+
+// HasSession 检查指定会话 id 是否仍存在于 serve 的会话列表里。
+//
+// 返回：
+//   - ok: 会话是否在场；GET /session 失败或列表解析失败时返回 (false, err)
+//
+// 注意：
+//   - 本方法只用于冷恢复的会话在场校验（spec §5.5.2）：会话存在全局 sqlite，
+//     进程重起不影响它，但要确认它真的还在——不能默认。不在就降级新会话
+func (a *API) HasSession(ctx context.Context, sessionID string) (ok bool, err error) {
+	start := time.Now()
+	const path = "/session"
+	a.log().Info("opencode 查询会话列表", "path", path)
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 查询会话列表失败", "path", path, "cause", err)
+		} else {
+			a.log().Info("opencode 会话在场校验完成", "path", path, "session", sessionID,
+				"ok", ok, "elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return false, fmt.Errorf("查询会话列表请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, a.httpError("查询会话列表", resp)
+	}
+	var list []sessionListItem
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return false, fmt.Errorf("解析会话列表: %w", err)
+	}
+	for _, s := range list {
+		if s.ID == sessionID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // CreateSession 在 opencode server 上创建会话。
 //
 // 返回：

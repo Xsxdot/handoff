@@ -78,6 +78,10 @@ type Proc struct {
 	ServeLogPath string
 }
 
+// startServe 是 StartServe 的测试缝（与 tmuxKill 同手法）：冷恢复测试替换它
+// 断言「起 serve」是否被调用，绕开真实 tmux + opencode 二进制。
+var startServe = StartServe
+
 // StartServe 在 tmux 内启动 opencode serve 并等待就绪。
 //
 // 参数：
