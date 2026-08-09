@@ -876,7 +876,9 @@ spec §8 点名这两条必须先跑 RED。Step 2 的 RED 是**编译失败**，
 		}
 ```
 
-临时改成 `if false { continue }`，然后跑：
+临时改成 `if false && !tt.After(at) {`，然后跑：
+
+> **不要写成 `if false { continue }`**：那样 `at` 与 `tt` 变成未使用变量，Go 直接编译失败，你拿到的是 build error 而不是测试失败——什么都证明不了。`false &&` 保住了两个变量的引用，短路后守卫失效，这才是要的变异。
 
 Run: `go test ./internal/executor/grok/ -run 'TestSyncAuthRefusesStaleCopy|TestMergeNewerEntriesAdoptsOnlyStrictlyNewer' -v`
 Expected: **FAIL**，报「权威副本被倒灌成 task」与「胜出方 = task，期望保留 authority 原值」。看到 FAIL 后把代码改回去。
@@ -887,6 +889,8 @@ Run: `go test ./internal/executor/grok/ -run TestSyncAuthKeepsTaskCopyWhenWriteF
 Expected: **FAIL**，报「写回失败时不应复位软链」。看到 FAIL 后把代码改回去。
 
 若某条变异后仍然 PASS，说明用例没咬住，先修用例再继续——例如变异二仍绿多半是 `chmod 0500` 没生效（以 root 跑测试会绕过权限位）。
+
+**选注入点的通用教训**（本计划实施时真踩到过）：故障注入必须卡在**被测的那一步**上，不能卡在它之前。为 `resetAuthLink` 补的「无破链窗口」用例，最初用 `chmod(home, 0500)` 注入——但删文件需要的是目录写权限，旧的「先删后建」实现在第一步 `os.Remove` 就被 EACCES 挡住直接返回了，那个「文件已删、链接未建」的窗口根本没被走到，用例对新旧两种实现一律绿。要暴露该窗口，注入点必须让 `Symlink` 失败而 `Remove` 仍能成功：用超长 target（`"/" + strings.Repeat("a", 2000)`）触发 `ENAMETOOLONG`，目录保持可写。**任何「验证防线存在」的用例，都要用变异检查确认它对缺了防线的实现真的变红**，否则它只是看起来在测。
 
 改回后重跑确认全绿：
 

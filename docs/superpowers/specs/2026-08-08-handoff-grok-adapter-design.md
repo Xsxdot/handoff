@@ -134,6 +134,15 @@ token 刷新前后消失了**（只剩 `auth.json.lock`），随后 `session/new
   Start 以「grok 未登录或凭据已失效，请在本机跑 `grok login` 后重试」失败，不做静默重试
   ——凭据问题重试一万次也不会好。
 
+> **B26 之后（2026-08-09）：软链会被 grok 刷新时替换成普通文件，单靠重建救不回来。**
+> grok 刷新令牌是替换目录项（rename 或 unlink+create），软链拦不住：任务 home 里会
+> 出现一份**新的**普通文件凭据，而权威副本 `~/.grok/auth.json` 仍是旧的。因此现在除了
+> 上面「软链优先」外，另有**周期巡检收编**（见
+> `2026-08-09-handoff-grok-credential-ownership-design.md`）：看门狗每 30 秒
+> lstat 一次任务 home 的 `auth.json`，一旦发现它不再是软链，就按账号键比 `expires_at`、
+> 把严格更新的条目收编回 `~/.grok/auth.json`（原子 rename），并复位软链。不变量从
+> 「禁止出现第二份副本」修正为「允许出现、但必须及时收编」。
+
 `<taskDir>/grokhome/config.toml`（0600）：
 
 ```toml

@@ -139,12 +139,11 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 // 为什么用软链而非拷贝：拷贝会让每个任务 home 各自持有凭据并独立刷新，而刷新
 // 令牌轮换可能反噬用户本人的登录态——凭据只应有一个权威副本。
 func EnsureAuthLink(homeDir string) error {
-	home, err := os.UserHomeDir()
+	target, err := authorityAuthPath()
 	if err != nil {
-		return fmt.Errorf("解析用户主目录: %w", err)
+		return err
 	}
-	target := filepath.Join(home, ".grok", "auth.json")
-	link := filepath.Join(homeDir, "auth.json")
+	link := filepath.Join(homeDir, authFileName)
 
 	if cur, err := os.Readlink(link); err == nil && cur == target {
 		return nil // 已就位

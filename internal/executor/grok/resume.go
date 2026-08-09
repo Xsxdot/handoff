@@ -28,6 +28,11 @@ const (
 	watchdogSlowInterval  = 2 * time.Second
 	watchdogFastProbes    = 10
 	watchdogFailThreshold = 3
+
+	// authSyncInterval 是凭据巡检的节流间隔。lstat 是微秒级，节流不是为了性能，
+	// 是为了别让日志和写盘跟着 200ms 的探活节拍变吵。30 秒也是权威副本可能
+	// 陈旧的时间上界。
+	authSyncInterval = 30 * time.Second
 )
 
 // Resume 尝试恢复一个 agentd 重启前已在执行的任务。
@@ -116,6 +121,11 @@ func (a *Adapter) Resume(taskID, taskDir, repoPath, sessionID string) (bool, err
 // 不是重开一轮。若恢复时该回合早已结束（事件已错过），任务会停在 waiting_review
 // 由审核者处置——这比擅自重发一轮安全。
 func (a *Adapter) watchdog(r *runState) {
+	// 退场前一律补最后一次巡检：看门狗有两个出口（evClosed 正常退场、探活判死
+	// 退场），用 defer 才能结构性地同时覆盖，而不是在两个 return 前各抄一遍——
+	// 抄漏一个就等于漏掉"任务跑挂了但刚刷新过"这一整类。
+	defer a.syncAuthOnce(r)
+
 	interval, okStreak, failStreak := watchdogFastInterval, 0, 0
 	for {
 		time.Sleep(interval)
@@ -125,6 +135,7 @@ func (a *Adapter) watchdog(r *runState) {
 		if closed {
 			return // 任务已终结，看门狗退场
 		}
+		a.syncAuthThrottled(r)
 		if r.proc.Alive() {
 			failStreak = 0
 			okStreak++
@@ -142,5 +153,30 @@ func (a *Adapter) watchdog(r *runState) {
 		a.log.Error("grok serve 判定死亡", "task", r.taskID, "port", r.proc.Port)
 		a.emitFailed(r, "grok serve 进程已死亡；serve 日志尾部: "+r.proc.LogTail())
 		return
+	}
+}
+
+// syncAuthThrottled 按 authSyncInterval 节流地跑一轮凭据巡检。
+//
+// 注意：只被看门狗 goroutine 调用，因此读写 r.lastAuthSync 无需加锁。
+func (a *Adapter) syncAuthThrottled(r *runState) {
+	if time.Since(r.lastAuthSync) < authSyncInterval {
+		return
+	}
+	a.syncAuthOnce(r)
+}
+
+// syncAuthOnce 无条件跑一轮凭据巡检（退场路径与节流路径共用）。
+//
+// 错误已在 SyncAuthToAuthority 内部记过日志，这里只做兜底记录：巡检失败不该
+// 影响看门狗判死这件正事。
+func (a *Adapter) syncAuthOnce(r *runState) {
+	r.lastAuthSync = time.Now()
+	if r.taskDir == "" {
+		return // 没有任务目录就没有任务级 home，无从巡检
+	}
+	if err := SyncAuthToAuthority(filepath.Join(r.taskDir, homeDirName),
+		a.log.With("task", r.taskID)); err != nil {
+		a.log.Warn("grok 凭据巡检未完成，下轮重试", "task", r.taskID, "cause", err)
 	}
 }

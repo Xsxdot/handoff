@@ -78,6 +78,12 @@ type runState struct {
 	proc *Proc
 	cli  *ACPClient
 
+	// lastAuthSync 是上一次凭据巡检的时刻，用于把巡检节流到 authSyncInterval。
+	//
+	// **刻意不加锁**：只被该任务自己的看门狗 goroutine 读写，无竞争。别顺手把它
+	// 塞进 turnMu 的保护范围——那会把一个无竞争的字段绑到高频回合锁上。
+	lastAuthSync time.Time
+
 	// stopping 是主动停止标记：Stop 先置位再关连接，onClosed 据此知道这是用户
 	// 主动停止而非执行失败，不产出「ACP 连接断开」的假失败结果
 	stopping bool

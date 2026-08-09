@@ -194,7 +194,7 @@ claude 与 grok 任务的 tmux 布局与 opencode 同构：窗口 0 是执行者
 - **grok 的回合边界**：是 `session/prompt` 的响应（`stopReason`），而非 opencode 从 idle 事件推断——handoff 不需要那套 idle 去抖与竞态处理。
 - **grok 的权限门**：`session/request_permission` 是阻塞式 JSON-RPC 请求，应答必须带原请求 id 回发（handoff 用挂起表暂存 toolCallId→id）。
 - **grok 的推理流**（`agent_thought_chunk`）与工具调用只进 `render.log`、不进回合正文——避免污染 `{"ask":…}` trailer 的解析。
-- **任务环境**：`<taskDir>/grokhome/` 里是任务级 `config.toml`（钉死 `permission_mode=default`，用户真实配置的 always-approve 不会带进来）；`auth.json` 软链指向真实 `~/.grok/auth.json`，token 刷新后会自动重建。
+- **任务环境**：`<taskDir>/grokhome/` 里是任务级 `config.toml`（钉死 `permission_mode=default`，用户真实配置的 always-approve 不会带进来）；`auth.json` 软链指向真实 `~/.grok/auth.json`——grok 刷新时会把软链替换成普通文件，看门狗每 30 秒巡检一次，按账号键比 `expires_at` 把严格更新的条目原子写回权威副本并复位软链。
 
 ## 文档
 
