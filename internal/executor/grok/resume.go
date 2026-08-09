@@ -86,6 +86,13 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 
 	mode := executor.ResumeModeReattach
 	if !proc.Alive() {
+		// 先回收旧会话，否则冷恢复重起时撞名报 "duplicate session"：grok 的 tmux
+		// 会话由窗口 1 的 `tail -f render.log` 吊着，serve 进程死了会话仍在，而
+		// 冷恢复用的是同一个确定性会话名 handoff-<id8>（与 claudecode 同病同治）
+		if kerr := proc.Kill(); kerr != nil {
+			a.log.Warn("回收已死 serve 的 tmux 会话失败", "task", taskID,
+				"session", proc.Session, "cause", kerr)
+		}
 		if !req.Cold {
 			a.log.Info("serve 已不在且不允许冷恢复，判不可恢复",
 				"task", taskID, "port", proc.Port)
