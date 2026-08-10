@@ -9,8 +9,8 @@ B35 在 backlog 里被记成「`--base` 默认取 HEAD，不提示落后」。**
 
 1. [`cmd/dispatch.go:50`](../../../cmd/dispatch.go) `localHeadCommit()` 取**审核者本机**的 HEAD，作为 `BaseCommit` 随请求上送。
 2. [`internal/agentd/workspace.go:415`](../../../internal/agentd/workspace.go) `EnsureBaseCommit` 只校验一件事：**这个 commit 在任务仓库里存不存在**。不在就 fetch 一次再看。
-3. [`internal/agentd/workspace.go:224`](../../../internal/agentd/workspace.go) 建分支时执行 `git worktree add -b handoff/<id8> <path>`，**不带起点**——起点是任务仓库的 HEAD。
-4. [`internal/agentd/workspace.go:123`](../../../internal/agentd/workspace.go) 的注释白纸黑字写着「自动分支不带 Base」，第 187 行还有硬校验 `base 仅允许与 new-branch 连用` 挡着。
+3. [`internal/agentd/workspace.go:227`](../../../internal/agentd/workspace.go) 建分支时执行 `git worktree add -b handoff/<id8> <path>`，**不带起点**——起点是任务仓库的 HEAD。
+4. [`internal/agentd/workspace.go:123`](../../../internal/agentd/workspace.go) 的注释白纸黑字写着「自动分支不带 Base」，第 188 行还有硬校验 `base 仅允许与 new-branch 连用` 挡着。
 
 **校验的是 A（你的基线存在吗），使用的是 B（仓库 HEAD）。两者之间没有任何连接。**
 
@@ -32,7 +32,7 @@ B4 的同步校验全程显示「通过」，因为**它从来没承诺过基线
 
 ## 2. 一条顺带的规则订正
 
-[`workspace.go:187`](../../../internal/agentd/workspace.go) 现在的规则是：
+[`workspace.go:188`](../../../internal/agentd/workspace.go) 现在的规则是：
 
 ```
 base 仅允许与 new-branch 连用
@@ -70,12 +70,15 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error)
 
 | 入参 `sha` | 结果 |
 |---|---|
-| 空（`--no-sync-check`、cwd 非 git 仓库、仓库无提交） | `Start` = 任务仓库当前 HEAD 的 sha，`Ahead=0`，Info 日志说明起点退回仓库 HEAD |
+| 空（`--no-sync-check`、cwd 非 git 仓库） | `Start` = 任务仓库当前 HEAD 的 sha，`Ahead=0`，Info 日志说明起点退回仓库 HEAD |
+| 空，且任务仓库一个提交都没有 | `Start=""`，`Ahead=0`，无错误——交给 git 默认行为（空仓库上 `-b` 本来就不能带起点） |
 | 非 40 位十六进制 | `ErrBadWorkspaceReq`（与今天一致） |
 | 合法但仓库里没有 | fetch 一次；仍没有 → `ErrBaseCommitMissing`（与今天一致） |
 | 在仓库里 | `Start = sha`，`Ahead = git rev-list --count <sha>..HEAD` |
 
-**`Start` 永远是个具体 sha**（除非仓库一个提交都没有）。这条是刻意设计：它让「这个任务建在哪个提交上」在任何情况下都答得出来，包括 `--no-sync-check` 那条路——今天那条路上基线是纯粹的空白。
+**`Start` 永远是个具体 sha**，除非任务仓库一个提交都没有（表里第二行，只在空仓库上出现）。这条是刻意设计：它让「这个任务建在哪个提交上」在任何情况下都答得出来，包括 `--no-sync-check` 那条路——今天那条路上基线是纯粹的空白。
+
+`Fetched` 只用于日志：补拉过远端时 Info 一行「为定位基线补拉了远端」。它不进 `Task`，也不影响起点选择——记它是为了排障时能分清「基线本来就在」和「补拉才拿到」。
 
 **起点优先级**：显式 `--base` > `Baseline.Start` > 空（交给 git 默认）。
 
@@ -85,7 +88,7 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error)
 
 三层，各有各的用途：
 
-**入库**。`proto.Task` 加 `BaseCommit string \`json:"base_commit"\``，`tasks` 表加 `base_commit TEXT`，走 [`store.go:122`](../../../internal/store/store.go) 已有的 `ALTER TABLE ... ADD COLUMN` 增量迁移循环（不是新机制）。存的是**实际用的起点**（决议后的 `Start` 或显式 `--base`），不是请求里上送的那个原始 `BaseCommit`。
+**入库**。`proto.Task` 加一个 ``BaseCommit string`` 字段（json 标签 `base_commit`），`tasks` 表加 `base_commit TEXT`，走 [`store.go:122`](../../../internal/store/store.go) 已有的 `ALTER TABLE ... ADD COLUMN` 增量迁移循环（不是新机制）。存的是**实际用的起点**（决议后的 `Start` 或显式 `--base`），不是请求里上送的那个原始 `BaseCommit`。
 
 **dispatch stdout**。不动。多一个 JSON 字段是增量改动。`handoff show` 打印的就是任务 JSON，因此它自动能回答「这任务建在哪个提交上」——不需要单独改 show。
 
@@ -121,7 +124,7 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error)
 7. 显式 `--base` 压过基线起点，且不发分叉警告
 8. `Task.BaseCommit` 写得进、读得回
 
-**第 6 条是这份 spec 的锚**：它在今天的代码上**必然失败**——自动分支被第 187 行挡着，根本带不了起点。实现前先让它红，是唯一能证明「洞真的堵上了」的证据。不要跳过这一步直接写实现。
+**第 6 条是这份 spec 的锚**：它在今天的代码上**必然失败**——自动分支被 `workspace.go:188` 挡着，根本带不了起点。实现前先让它红，是唯一能证明「洞真的堵上了」的证据。不要跳过这一步直接写实现。
 
 ## 7. 落地后的连带动作
 
