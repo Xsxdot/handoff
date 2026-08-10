@@ -283,7 +283,12 @@ func (a *Adapter) Stop(taskID string) error {
 		_ = r.cli.Close()
 	}
 	if r.proc != nil {
-		_ = r.proc.Kill()
+		if kerr := r.proc.Kill(); kerr != nil {
+			// 不能丢弃：Kill 现在会在「已发 SIGKILL 但复核仍存活」时返回
+			// prochost.ErrStillAlive，丢掉它等于让孤儿进程无声无息（B47）
+			a.log.Error("grok 进程回收失败", "task", taskID, "cause", kerr)
+			return fmt.Errorf("kill grok: %w", kerr)
+		}
 	}
 	r.closeEvents()
 	a.drop(taskID)

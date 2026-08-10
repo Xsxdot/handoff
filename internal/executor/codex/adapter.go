@@ -375,10 +375,13 @@ func (a *Adapter) Stop(taskID string) error {
 	}
 	if r.proc != nil {
 		if err := r.proc.Kill(); err != nil {
-			// B20：回收失败要发事件而非静默
+			// 回收失败要上抛而不是就地发事件（B47 修正 B20 的做法）：
+			// stopExecutor 在调用本方法**之前**已经 noteStopping，事件通道随时会关，
+			// 这里 a.emit 能不能落库是个竞态；而 stopExecutor 侧的
+			// AppendEvent + Publish 是确定落库的。用可靠的那条替换不可靠的那条。
+			// 提前返回也意味着不 drop 运行态——保留才有机会再回收（与 claudecode 同形）。
 			a.log.Error("codex 进程回收失败", "task", taskID, "cause", err)
-			a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.threadID,
-				Text: "警告：codex 执行者进程回收失败，可能残留进程: " + err.Error()})
+			return fmt.Errorf("kill codex: %w", err)
 		}
 	}
 	r.closeEvents()

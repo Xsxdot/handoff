@@ -104,6 +104,10 @@ var startProcHost = prochost.Start
 // 注入错误，绕开真实 shim + claude 二进制。
 var startProc = StartProc
 
+// killProcHost 是 prochost.Kill 的测试缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「杀不死」的形态，回收失败路径只能靠替换它来驱动。
+var killProcHost = prochost.Kill
+
 // StartProc 备物料、经 prochost 拉起 shim 承载 claude，返回进程句柄。
 //
 // 参数：
@@ -306,7 +310,7 @@ func (p *Proc) Kill() error {
 	if p == nil {
 		return nil
 	}
-	return prochost.Kill(p.Handle)
+	return killProcHost(p.Handle)
 }
 
 // Alive 检查 claude 是否仍然存活：存活锁被持有 且 out.jsonl 无死亡哨兵。
