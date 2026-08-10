@@ -26,6 +26,15 @@ const (
 	TaskStateFailed        TaskState = "failed"
 )
 
+// TerminalStates 是任务的两个终态：到此不再有 executor 持有工作区。
+// 存储层按它生成「非终态」查询条件，避免与状态机定义漂移。
+var TerminalStates = []TaskState{TaskStateCompleted, TaskStateFailed}
+
+// IsTerminal 报告该状态是否为终态（completed / failed）。
+func (s TaskState) IsTerminal() bool {
+	return s == TaskStateCompleted || s == TaskStateFailed
+}
+
 // EventType 表示任务产生的事件类型。
 type EventType string
 

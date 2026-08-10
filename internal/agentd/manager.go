@@ -928,7 +928,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if err != nil {
 		return false, err
 	}
-	if cur.State == proto.TaskStateCompleted || cur.State == proto.TaskStateFailed {
+	if cur.State.IsTerminal() {
 		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
 		return false, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
 	}

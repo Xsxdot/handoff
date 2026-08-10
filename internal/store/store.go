@@ -75,7 +75,8 @@ func Open(path string) (*Store, error) {
   plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
   -- 二期新增列：name=展示名；executor/model=执行者与任务级模型；
-  -- work_dir=工作区目录（空=原地模式，审阅与 executor cwd 由 proto.Task.Workdir() 统一回退）；
+  -- work_dir=工作区目录（原地模式=仓库路径，worktree 模式=工作树路径；
+  --   旧库里原地模式曾存空串，读取时由 proto.Task.Workdir() 回退到 repo_path）；
   -- worktree_managed=工作区是否 agentd 创建的 worktree（done 时需删除）。
   name TEXT NOT NULL DEFAULT '', executor TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '', work_dir TEXT NOT NULL DEFAULT '',
@@ -164,6 +165,41 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
+// taskColumns 是 tasks 表的完整读取列清单：GetTask / ListTasks /
+// ActiveTasksByWorkDir 共用同一份。为什么要共用：这份清单原先在两处各抄一遍，
+// 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
+// Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
+const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead`
+
+// rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
+// 共用同一个扫描函数。
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanTaskRow 按 taskColumns 的顺序把一行扫成 proto.Task（时间与 bool 就地还原）。
+//
+// 返回：扫描失败时原样返回错误（含 sql.ErrNoRows，由调用方翻译成 ErrNotFound）
+func scanTaskRow(sc rowScanner) (proto.Task, error) {
+	var (
+		task            proto.Task
+		createdAt       string
+		updatedAt       string
+		worktreeManaged int
+	)
+	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
+		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
+		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
+		&task.BaseCommit, &task.BaseAhead); err != nil {
+		return proto.Task{}, err
+	}
+	task.CreatedAt = parseTime(createdAt)
+	task.UpdatedAt = parseTime(updatedAt)
+	task.WorktreeManaged = worktreeManaged != 0
+	return task, nil
+}
+
 // GetTask 按 id 读取任务；不存在返回 ErrNotFound。
 //
 // 参数：
@@ -172,29 +208,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // 返回：
 //   - 任务数据；不存在时返回 ErrNotFound
 func (s *Store) GetTask(id string) (*proto.Task, error) {
-	var (
-		task            proto.Task
-		createdAt       string
-		updatedAt       string
-		worktreeManaged int
-	)
-	err := s.db.QueryRowContext(context.Background(), `
-SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead
-FROM tasks WHERE id = ?`, id).
-		Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
-			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
-			&task.BaseCommit, &task.BaseAhead)
+	row := s.db.QueryRowContext(context.Background(),
+		`SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
+	task, err := scanTaskRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("读取任务 %s: %w", id, err)
 	}
-	task.CreatedAt = parseTime(createdAt)
-	task.UpdatedAt = parseTime(updatedAt)
-	task.WorktreeManaged = worktreeManaged != 0
 	return &task, nil
 }
 
@@ -203,35 +225,74 @@ FROM tasks WHERE id = ?`, id).
 // 注意：
 //   - created_at 统一为 UTC RFC3339Nano 文本，字典序即时间序，可直接排序
 func (s *Store) ListTasks() ([]proto.Task, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
-SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead
-FROM tasks ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT `+taskColumns+` FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务列表: %w", err)
 	}
 	defer rows.Close()
 	var tasks []proto.Task
 	for rows.Next() {
-		var (
-			task            proto.Task
-			createdAt       string
-			updatedAt       string
-			worktreeManaged int
-		)
-		if err := rows.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
-			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
-			&task.BaseCommit, &task.BaseAhead); err != nil {
+		task, err := scanTaskRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("读取任务行: %w", err)
 		}
-		task.CreatedAt = parseTime(createdAt)
-		task.UpdatedAt = parseTime(updatedAt)
-		task.WorktreeManaged = worktreeManaged != 0
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("遍历任务列表: %w", err)
+	}
+	return tasks, nil
+}
+
+// ActiveTasksByWorkDir 返回工作目录为 workDir 的全部非终态任务。
+//
+// 参数：
+//   - workDir: 工作目录绝对路径（原地模式即仓库路径）；空串返回空切片
+//
+// 返回：
+//   - 非终态任务切片（可能为空），按创建时间倒序
+//   - 查询失败返回错误（调用方按「查不出来就保守拒发」处置）
+//
+// 注意：
+//   - 终态清单取自 proto.TerminalStates，避免与状态机定义漂移
+//   - 空 workDir 直接返回空切片：不查是刻意的，managed 模式每任务一棵新树，
+//     天然不冲突，不需要这个判据
+//   - WHERE 里对空 work_dir 的兜底是给**旧库历史行**的：早期原地模式的
+//     work_dir 存空串（proto.Task.Workdir() 的回退就是为它们写的），那些任务
+//     同样占着仓库。新派发的任务 work_dir 一定是满的
+func (s *Store) ActiveTasksByWorkDir(workDir string) ([]proto.Task, error) {
+	if workDir == "" {
+		return nil, nil
+	}
+	placeholders := make([]string, len(proto.TerminalStates))
+	args := []any{workDir, workDir}
+	for i, st := range proto.TerminalStates {
+		placeholders[i] = "?"
+		args = append(args, string(st))
+	}
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT `+taskColumns+` FROM tasks
+WHERE (work_dir = ? OR (work_dir = '' AND repo_path = ?))
+  AND state NOT IN (`+strings.Join(placeholders, ", ")+`)
+ORDER BY created_at DESC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询工作目录 %s 的活跃任务: %w", workDir, err)
+	}
+	defer rows.Close()
+	var tasks []proto.Task
+	for rows.Next() {
+		task, err := scanTaskRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("读取活跃任务行: %w", err)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活跃任务: %w", err)
+	}
+	if len(tasks) > 0 {
+		log().Info("工作目录上存在活跃任务", "workdir", workDir, "count", len(tasks))
 	}
 	return tasks, nil
 }
