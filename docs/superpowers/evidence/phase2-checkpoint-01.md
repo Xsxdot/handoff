@@ -89,7 +89,7 @@ a7c7ce7 feat: create projects with durable location operations
 2646ecd feat: connect Electron main to local handoff agentd
 02fb1df feat: add handoff project tree and workbench shell
 020aa36 test: prove handoff control plane desktop checkpoint
-<commit> fix: cover reconnect gap repair and operation idempotency in e2e
+3aadbaf fix: cover reconnect gap repair and operation idempotency in e2e
 ```
 
 ## 3. Fake agentd E2E 纵切场景
