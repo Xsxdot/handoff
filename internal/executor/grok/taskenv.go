@@ -5,6 +5,7 @@
 //     与第 0 层分级规则、注入任务级模型）
 //   - EnsureAuthLink：幂等地把 grokhome/auth.json 指向真实 ~/.grok/auth.json
 //     （serve 启动脚本与 secret 注入已随 tmux 拆除，改由 proc.go 的 Spec.Env 承担）
+//
 // 边界：
 //   - 不起进程、不连网络：进程在 proc.go，协议在 acp.go
 //   - 不读用户的真实 grok 配置（除 auth.json 软链外一律纯净）
@@ -32,11 +33,11 @@ import (
 )
 
 const (
-	homeDirName     = "grokhome"
-	configFileName  = "config.toml"
-	serveLogName    = "serve.log"
-	renderLogName   = "render.log"
-	serveInfoName   = "serve.json" // 保留旧文件名常量以兼容既有测试读法；实际落盘已改 proc.json
+	homeDirName    = "grokhome"
+	configFileName = "config.toml"
+	serveLogName   = "serve.log"
+	renderLogName  = "render.log"
+	serveInfoName  = "serve.json" // 保留旧文件名常量以兼容既有测试读法；实际落盘已改 proc.json
 )
 
 // askRules 是第 0 层静态分级的危险模式表。

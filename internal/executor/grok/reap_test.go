@@ -34,7 +34,7 @@ func TestReapNoOpWhenLockFree(t *testing.T) {
 	lock := filepath.Join(dir, "proc.lock")
 
 	grok.WriteServeInfoForTest(&grok.Proc{
-		Handle: prochost.Handle{PID: victim.Pid, LockPath: lock},
+		Handle:  prochost.Handle{PID: victim.Pid, LockPath: lock},
 		TaskDir: dir, Port: 1, Secret: "s",
 	})
 
@@ -60,7 +60,7 @@ func TestReapKillsWhenLockHeld(t *testing.T) {
 	victim := newGrokSleepProc(t)
 
 	grok.WriteServeInfoForTest(&grok.Proc{
-		Handle: prochost.Handle{PID: victim.Pid, LockPath: lock},
+		Handle:  prochost.Handle{PID: victim.Pid, LockPath: lock},
 		TaskDir: dir, Port: 1, Secret: "s",
 	})
 
