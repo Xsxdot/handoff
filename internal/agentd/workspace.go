@@ -155,6 +155,11 @@ type Workspace struct {
 	// detached 时为 commit sha，两者都能直接喂给 git checkout 复原。managed 模式
 	// 恒为空（新工作树没有「之前」）。空串表示采集失败，补偿据此放弃复原而非乱切。
 	PrevRef string
+	// RepoDirtyCount / RepoDirtyFiles 是 managed 模式下派发当时**主仓库**的脏快照
+	// （语义见 proto.Task 同名字段）；非 managed 模式恒为零值——那两条路径的脏
+	// 工作区已被 ensureCleanWorktree 拒发，不存在「有改动却看不见」的情形。
+	RepoDirtyCount int
+	RepoDirtyFiles string
 }
 
 // PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
@@ -234,6 +239,9 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 	switch {
 	case req.NewWorktree:
 		// 新树：WorktreesDir/<id8>，MkdirAll 后 git worktree add（已存在分支不带 -b）
+		// B43：新树免脏检查是对的（新树天然干净），但主仓的未提交改动不在基线里，
+		// executor 在新树里看不到它们。建树之前采一次快照，供 dispatch 回显
+		dirtyCount, dirtyFiles := repoDirtySnapshot(ctx, req.Repo)
 		workDir := filepath.Join(req.WorktreesDir, id8(req.TaskID))
 		if err := os.MkdirAll(req.WorktreesDir, 0o700); err != nil {
 			return Workspace{}, fmt.Errorf("创建 worktrees 目录 %s: %w", req.WorktreesDir, err)
@@ -250,7 +258,8 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
-		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
+		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true,
+			RepoDirtyCount: dirtyCount, RepoDirtyFiles: dirtyFiles}
 		if !isExisting {
 			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
 		}
@@ -372,6 +381,64 @@ func ensureCleanWorktree(ctx context.Context, dir string) error {
 		return fmt.Errorf("%w: %s", ErrDirtyWorktree, first)
 	}
 	return nil
+}
+
+// maxDirtyFilesListed 是脏快照展示串里最多列出的文件数。
+// 封顶而不是全列：这是给人读的一行提示，几十个文件名会把它撑成一屏；
+// 真实条数由 RepoDirtyCount 单独承载，不会因为封顶而丢失。
+const maxDirtyFilesListed = 5
+
+// repoDirtySnapshot 采集仓库未提交改动的快照（条数 + 文件名展示串）。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径（managed 模式下即主仓库）
+//
+// 返回：
+//   - count: 未提交改动总数（含未跟踪文件）；干净或采集失败时为 0
+//   - files: 逗号分隔的文件名串，最多 maxDirtyFilesListed 个，超出补「等 N 处」
+//
+// 注意：
+//   - 采集失败不返回错误：这是诊断信息，不该挡住主流程（与 currentRef 同款约定），
+//     失败只打 Warn 并返回零值
+//   - 不区分已跟踪/未跟踪：B29 分它们是因为处置不同（拒发 vs 警告），这里两者
+//     对新工作树同样不可见、处置完全一样，分了只是噪音
+func repoDirtySnapshot(ctx context.Context, repo string) (count int, files string) {
+	out, _, err := gitRun(ctx, repo, "status", "--porcelain")
+	if err != nil {
+		log().Warn("采集任务仓库脏快照失败，提示留空（不阻断派发）", "repo", repo, "cause", err)
+		return 0, ""
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// porcelain v1 行格式为 XY<空格>路径；重命名是 "R  旧名 -> 新名"，取新名
+		name := strings.TrimSpace(line)
+		if len(line) > 3 {
+			name = strings.TrimSpace(line[3:])
+		}
+		if i := strings.LastIndex(name, " -> "); i >= 0 {
+			name = name[i+4:]
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return 0, ""
+	}
+	shown := names
+	if len(names) > maxDirtyFilesListed {
+		shown = names[:maxDirtyFilesListed]
+	}
+	files = strings.Join(shown, ", ")
+	if len(names) > len(shown) {
+		files += fmt.Sprintf(" 等 %d 处", len(names))
+	}
+	// 服务端日志带完整未截断列表：展示串封顶 5 个是给人读的，排障要看全的
+	log().Warn("任务仓库有未提交改动，新工作树不含它们",
+		"repo", repo, "count", len(names), "files", strings.Join(names, ", "))
+	return len(names), files
 }
 
 // worktreeBelongsToRepo 校验 worktree 路径是否属于主仓库 repo。

@@ -83,7 +83,10 @@ func Open(path string) (*Store, error) {
   worktree_managed INTEGER NOT NULL DEFAULT 0,
   -- 基线两列（B35）：base_commit=任务新分支的实际起点；base_ahead=派发当时
   -- 任务仓库 HEAD 领先该起点的提交数（这些提交不在任务分支里）。
-  base_commit TEXT NOT NULL DEFAULT '', base_ahead INTEGER NOT NULL DEFAULT 0)`,
+  base_commit TEXT NOT NULL DEFAULT '', base_ahead INTEGER NOT NULL DEFAULT 0,
+  -- B43 两列：repo_dirty_count=派发当时任务仓库未提交改动总数（仅 managed 模式采集）；
+  -- repo_dirty_files=其文件名展示串（封顶 5 个）。这些改动不在新工作树里。
+  repo_dirty_count INTEGER NOT NULL DEFAULT 0, repo_dirty_files TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -123,6 +126,8 @@ func Open(path string) (*Store, error) {
 		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
 		"base_commit":      "TEXT NOT NULL DEFAULT ''",
 		"base_ahead":       "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_count": "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_files": "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -153,12 +158,12 @@ func (s *Store) Close() error {
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
-		t.BaseCommit, t.BaseAhead)
+		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -170,7 +175,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
 // Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
 const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead`
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -191,7 +196,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
-		&task.BaseCommit, &task.BaseAhead); err != nil {
+		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)

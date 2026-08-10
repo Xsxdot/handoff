@@ -564,6 +564,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		// 不走 SetTaskField——那个白名单只服务「创建时还不知道」的字段
 		BaseCommit: start,
 		BaseAhead:  ahead,
+		// B43：新树不含主仓这些未提交改动，随任务落库供 CLI 回显（不阻断派发）
+		RepoDirtyCount: ws.RepoDirtyCount,
+		RepoDirtyFiles: ws.RepoDirtyFiles,
 	}
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err

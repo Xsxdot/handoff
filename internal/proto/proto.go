@@ -94,6 +94,14 @@ type Task struct {
 	// BaseAhead 是派发当时任务仓库 HEAD 领先 BaseCommit 的提交数：这些提交
 	// 不在任务分支里。0 表示起点就是仓库 HEAD，或该数字当时没能算出来。
 	BaseAhead int `json:"base_ahead"`
+	// RepoDirtyCount 是派发当时任务仓库未提交改动的**总数**（含未跟踪文件）；
+	// 0=干净，或本次不是 managed（--new-worktree）模式。这些改动不在新工作树
+	// 里，executor 看不到它们。
+	RepoDirtyCount int `json:"repo_dirty_count"`
+	// RepoDirtyFiles 是上述改动的文件名展示串（逗号分隔，封顶 5 个，超出补
+	// 「等 N 处」）；服务端截断后的展示用字段，与 PlanSummary 同形，不供程序消费
+	//（要精确条数请读 RepoDirtyCount）。
+	RepoDirtyFiles string `json:"repo_dirty_files"`
 }
 
 // Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它

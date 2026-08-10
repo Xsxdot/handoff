@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -824,5 +825,55 @@ func TestDispatchUserWorktreeBusy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), first.ID) {
 		t.Fatalf("应为 409 且点名占用者 %s, got: %v", first.ID, err)
+	}
+}
+
+// TestDispatchNewWorktreeCarriesDirtySnapshot 覆盖 B43：--new-worktree 免脏检查是
+// 对的（新树天然干净），但主仓的未提交改动不在基线里、executor 在新树里看不到
+// 它们——派发照常成功，但任务必须带上快照，否则这件事在任何输出里都不留痕迹。
+// 造 9 个脏文件验证封顶：只列 5 个，条数仍是 9。
+func TestDispatchNewWorktreeCarriesDirtySnapshot(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	for i := 0; i < 9; i++ {
+		name := fmt.Sprintf("dirty-%d.txt", i)
+		if err := os.WriteFile(filepath.Join(env.repo, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("写脏文件 %s: %v", name, err)
+		}
+	}
+
+	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+		Target: "local", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("主仓脏不该阻塞 --new-worktree 派发: %v", err)
+	}
+	if task.RepoDirtyCount != 9 {
+		t.Fatalf("RepoDirtyCount = %d, want 9", task.RepoDirtyCount)
+	}
+	if strings.Count(task.RepoDirtyFiles, "dirty-") != 5 {
+		t.Fatalf("文件串应封顶 5 个, got %q", task.RepoDirtyFiles)
+	}
+	if !strings.Contains(task.RepoDirtyFiles, "等 9 处") {
+		t.Fatalf("截断后必须仍说得出总数, got %q", task.RepoDirtyFiles)
+	}
+}
+
+// TestDispatchNewWorktreeCleanRepoNoSnapshot 主仓干净时两个字段为零值——
+// 不能打一条「有 0 处未提交改动」的空提示。
+func TestDispatchNewWorktreeCleanRepoNoSnapshot(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+		Target: "local", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if task.RepoDirtyCount != 0 || task.RepoDirtyFiles != "" {
+		t.Fatalf("干净仓库不该有快照: count=%d files=%q", task.RepoDirtyCount, task.RepoDirtyFiles)
 	}
 }

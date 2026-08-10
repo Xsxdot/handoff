@@ -678,3 +678,29 @@ func TestActiveTasksByWorkDirLegacyEmptyWorkDir(t *testing.T) {
 		t.Fatalf("历史空 work_dir 行应被查到, got %+v", got)
 	}
 }
+
+// TestTaskDirtySnapshotRoundTrip 钉住两个新列的读写：条数与文件串各存各的，
+// 封顶截断发生在服务端，条数不能因为封顶而丢失。
+func TestTaskDirtySnapshotRoundTrip(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{
+		ID: "dirty-1", RepoPath: "/repo", State: proto.TaskStatePending,
+		CreatedAt: now, UpdatedAt: now,
+		RepoDirtyCount: 9, RepoDirtyFiles: "a.go, b.go 等 9 处",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := s.GetTask("dirty-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.RepoDirtyCount != 9 || got.RepoDirtyFiles != "a.go, b.go 等 9 处" {
+		t.Fatalf("脏快照回读不一致: count=%d files=%q", got.RepoDirtyCount, got.RepoDirtyFiles)
+	}
+}
