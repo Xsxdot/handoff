@@ -153,12 +153,25 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			a.log.Warn("原会话已不在，已新开会话", "task", req.TaskID,
 				"old", sessionID, "new", newID)
 			sessionID, mode = newID, executor.ResumeModeFresh
+			// 新会话让旧水位失去意义：不清零的话下次对账会拿旧会话的消息 id
+			// 去比新会话的尾部，必然判「有未消费的回合」而补出一条假终态
+			if werr := writeProcInfo(req.TaskDir, &procInfo{
+				Handle: proc.Handle, Port: proc.Port, Password: proc.Password,
+			}); werr != nil {
+				a.log.Warn("新会话清零对账水位失败", "task", req.TaskID, "cause", werr)
+			}
 		}
 		r.session = sessionID
 	}
 	r.captureStartCommit(a)
 	go r.subscribeLoop(a)
 	go a.watchdog(r)
+	// 对账（B38）：断连窗口内完成的回合，其终态事件在 /event 上永久丢失
+	// （无重放语义），不对账就会冻死在 running。fresh 模式不对账——那是新会话，
+	// 没有「错过的进展」，且水位已随新会话失去意义
+	if mode != executor.ResumeModeFresh {
+		go a.reconcileAfterRecovery(context.Background(), req.TaskID, "startup")
+	}
 	return executor.ResumeOutcome{
 		Alive: true, Mode: mode, SessionID: sessionID,
 		Note: resumeNote(mode, sessionID),

@@ -608,15 +608,14 @@ func (r *runState) subscribeLoop(a *Adapter) {
 	err := r.api.SubscribeEvents(r.runCtx, func(raw json.RawMessage) {
 		a.mapEvent(r, raw)
 	}, func() {
-		// P1-10b 降级方案：断连恢复时显式告警。为什么只能告警——/event 无重放
-		// 语义（spike 实测重连只收 server.connected/heartbeat），断连间隙内服务端
-		// 产出的 permission.asked 永久丢失；又无「按会话拉取未决权限」的可用端点
-		// （GET /session/{id}/message 的 tool part 只有 callID 无权限 id，应答端点
-		// 要求真实 id、伪造即 404）。opencode 若在等一个看不见的决策会一直挂到
-		// 看门狗判死，此处告警让运营者知道需要人工兜底（重启任务/handoff attach）
+		// P1-10b：/event 无重放语义，断连间隙服务端产出的事件永久丢失。
+		// B38 起，回合终态那半边由对账补回；权限请求那半边补不回来——消息流的
+		// tool part 只有 callID 没有权限 id，应答端点要求真实 id、伪造即 404，
+		// 故仍保留本告警，它是审核者知道「可能需要 attach 人工兜底」的唯一信号
 		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），"+
-			"若任务卡在等待决策请重启任务或 handoff attach 查看",
+			"若任务卡在等待决策请 handoff attach 查看或 handoff resume --force 收口",
 			"task", r.taskID, "session", r.session)
+		go a.reconcileAfterRecovery(context.Background(), r.taskID, "reconnect")
 	})
 	select {
 	case <-r.stopCh:

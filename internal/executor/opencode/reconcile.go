@@ -143,3 +143,25 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 		Text: turn.ClampQuestion("agentd 断连期间该回合已结束，但未输出协议结论。" +
 			"回合原文：\n" + turn.TailRunes(msg.Text, 1000))}, "补回了一条断连期间丢失的回合，需人工裁决"
 }
+
+// reconcileAfterRecovery 是两个自动触发点共用的对账入口。
+//
+// 参数：
+//   - ctx: 控制查询超时
+//   - taskID: 目标任务
+//   - trigger: 触发来源，只用于日志（"startup" = agentd 启动恢复，
+//     "reconnect" = 连接断开重连）
+//
+// 注意：
+//   - **不返回错误，且绝不 panic**：spec §6.3 的硬要求——对账失败不能阻断恢复。
+//     一次网络抖动若能让 Resume 判不可恢复，比 B38 本身还糟
+func (a *Adapter) reconcileAfterRecovery(ctx context.Context, taskID, trigger string) {
+	out, err := a.Reconcile(ctx, taskID)
+	if err != nil {
+		a.log.Warn("恢复后对账失败，恢复本身不受影响",
+			"task", taskID, "trigger", trigger, "cause", err)
+		return
+	}
+	a.log.Info("恢复后对账完成", "task", taskID, "trigger", trigger,
+		"turn_ended", out.TurnEnded, "emitted", out.Emitted, "note", out.Note)
+}
