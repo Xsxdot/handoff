@@ -712,3 +712,117 @@ func TestDispatchRepoUnusableNotMisdiagnosed(t *testing.T) {
 		t.Fatalf("应归入仓库不可用, got: %v", err)
 	}
 }
+
+// TestDispatchWorkdirBusyWhileRunning409 覆盖 B42 的主场景：任务 A 原地占着仓库，
+// 同仓库再派 B 必须被 409 拒绝且点名 A。旧行为是放行——A 一提交完
+// git status 就干净了，脏检查这道「保护」恰好在最危险的时刻消失，B 的
+// checkout -b 直接把共享 HEAD 切走，A 的下一次提交落到 B 的分支上。
+func TestDispatchWorkdirBusyWhileRunning409(t *testing.T) {
+	env := newIntegEnv(t, nil) // 空脚本：A 起来后停在 running
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	a := env.dispatchPlan(t, "第一个任务")
+
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+	})
+	if err == nil {
+		t.Fatal("同一仓库的第二个原地任务应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Fatalf("占用冲突应为 409, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), a.ID) {
+		t.Fatalf("报文必须点名占用者 %s, got: %v", a.ID, err)
+	}
+	if !strings.Contains(err.Error(), "--new-worktree") {
+		t.Fatalf("报文必须给出出路, got: %v", err)
+	}
+
+	// stop 让 A 落 failed（终态）→ 目录释放
+	if _, err := env.cli.Stop(context.Background(), a.ID); err != nil {
+		t.Fatalf("Stop(A): %v", err)
+	}
+	b := env.dispatchPlan(t, "第二个任务")
+	if b.State != proto.TaskStateRunning {
+		t.Fatalf("释放后 dispatch state=%s, want running", b.State)
+	}
+}
+
+// TestDispatchWorkdirBusyWhileWaitingReview 钉住 spec §3.3 里最容易被质疑的一条：
+// waiting_review 也算占用。审核期间要跑 diff/fetch/run/continue，HEAD 被切走这些
+// 全会看错东西，continue 回去更是在别人的分支上干活。代价是必须先 done 掉。
+func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
+	env := newIntegEnv(t, []fake.Step{{Finish: executor.Result{OK: true, Summary: "干完了"}}})
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	a := env.dispatchPlan(t, "第一个任务")
+
+	if ev := env.waitAction(t, a.ID); ev.Type != proto.EventTypeCompleted {
+		t.Fatalf("首个事件 type=%s, want completed", ev.Type)
+	}
+	eventually(t, 2*time.Second, "A 进入 waiting_review", func() bool {
+		cur, err := env.st.GetTask(a.ID)
+		return err == nil && cur.State == proto.TaskStateWaitingReview
+	})
+
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+	})
+	if err == nil {
+		t.Fatal("waiting_review 的任务仍占着工作树，第二个任务应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "waiting_review") {
+		t.Fatalf("报文应为 409 并说明占用者状态, got: %v", err)
+	}
+
+	if err := env.cli.Done(context.Background(), a.ID); err != nil {
+		t.Fatalf("Done(A): %v", err)
+	}
+	b := env.dispatchPlan(t, "第二个任务")
+	if b.State != proto.TaskStateRunning {
+		t.Fatalf("done 后 dispatch state=%s, want running", b.State)
+	}
+}
+
+// TestDispatchTwoNewWorktreesNotBlocked 防误伤：managed 树每任务一棵，天然不冲突，
+// 守卫不该挡住本来就安全的路径——挡住了等于把并行派发这个核心能力废掉。
+func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	for i := 0; i < 2; i++ {
+		task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+			Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+			Target: "local", NewWorktree: true,
+		})
+		if err != nil {
+			t.Fatalf("第 %d 个 --new-worktree 派发失败: %v", i+1, err)
+		}
+		if task.State != proto.TaskStateRunning {
+			t.Fatalf("第 %d 个任务 state=%s, want running", i+1, task.State)
+		}
+	}
+}
+
+// TestDispatchUserWorktreeBusy 覆盖第三种模式：两个任务指同一棵用户自带
+// worktree，第二个被拒。判定键是 WorkDir，一条规则覆盖三种模式。
+func TestDispatchUserWorktreeBusy(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, env.repo, "worktree", "add", "-b", "wt-branch", wt)
+
+	first, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
+	})
+	if err != nil {
+		t.Fatalf("首个用户树派发: %v", err)
+	}
+	_, err = env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
+	})
+	if err == nil {
+		t.Fatal("同一棵用户 worktree 的第二个任务应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), first.ID) {
+		t.Fatalf("应为 409 且点名占用者 %s, got: %v", first.ID, err)
+	}
+}

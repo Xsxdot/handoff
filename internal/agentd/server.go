@@ -501,6 +501,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
+//   - ErrWorkdirBusy → 409：目标工作目录已被一个非终态任务占用（含 waiting_review），
+//     与 ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
+//     两条出路（done/stop 它，或改用 --new-worktree）
 //   - ErrBaseCommitMissing → 400：任务仓库落后于审核者本地基线，拒发并带 git push
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
@@ -516,6 +519,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 	switch {
 	case errors.Is(err, ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkdirBusy):
+		s.log.Warn("dispatch 被拒：目标工作目录被占用", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBaseCommitMissing):
 		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "repo", repo, "cause", err)

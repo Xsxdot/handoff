@@ -467,6 +467,21 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, err
 	}
 
+	// 派发前置 2（B42）：工作目录占用守卫。managed 树每任务一棵，天然不冲突，
+	// 不必查；另两种模式的目标目录在派发前就已知，Dispatch 自己算得出来。
+	// 排在 ResolveBaseline 之前：后者在基线缺失时会做一次 git fetch（网络代价），
+	// 一个注定要被拒的派发不该先付这笔钱
+	occupied := ""
+	if !req.NewWorktree {
+		occupied = req.Repo
+		if req.Worktree != "" {
+			occupied = req.Worktree
+		}
+	}
+	if err := m.guardWorkdirBusy(occupied); err != nil {
+		return nil, err
+	}
+
 	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
 	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
 	baseline, err := ResolveBaseline(ctx, req.Repo, req.BaseCommit)
@@ -537,8 +552,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		State:     proto.TaskStatePending,
 		CreatedAt: now,
 		UpdatedAt: now,
-		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 原地模式存空串，
-		// 由 proto.Task.Workdir() 回退到 RepoPath；worktree 模式存实际工作目录）
+		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 三种模式都是满的：
+		// 原地=仓库路径、用户树/managed=工作树路径；proto.Task.Workdir() 的
+		// 空串回退只服务旧库历史行）
 		Name:            name,
 		Executor:        execName,
 		Model:           model,
@@ -597,6 +613,45 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	go m.mediate(taskID)
 	return task, nil
+}
+
+// guardWorkdirBusy 拒绝把任务派到已被活跃任务占用的工作目录（B42）。
+//
+// 参数：
+//   - workDir: 目标工作目录；空串=managed 模式（每任务一棵新树），直接放行
+//
+// 返回：
+//   - nil：无人占用，或本次是 managed 模式
+//   - ErrWorkdirBusy：已有非终态任务占着这个目录，错误文本点名占用者与两条出路
+//     （server 层据此给 409，与「工作区不干净」同为状态冲突）
+//   - 其他错误：查询任务表失败
+//
+// 注意：
+//   - 查询失败按拒发处理：放行的代价是两个 executor 抢同一棵工作树、互相切走
+//     HEAD 且全程无报错，比多拒一次派发严重得多
+//   - 只报第一个占用者：报文是给人看的行动指引，列出全部只会让它更难读；
+//     日志里带了 holders 总数
+//   - git 自己已经挡住了分支级冲突（worktree add 遇到已被检出的分支会失败），
+//     这道守卫补的是唯一的洞：被共享的主工作树
+func (m *Manager) guardWorkdirBusy(workDir string) error {
+	if workDir == "" {
+		m.log.Info("工作目录占用检查跳过（managed 模式，每任务一棵新树）")
+		return nil
+	}
+	busy, err := m.st.ActiveTasksByWorkDir(workDir)
+	if err != nil {
+		m.log.Error("查询工作目录占用失败，保守拒发", "workdir", workDir, "cause", err)
+		return fmt.Errorf("查询工作目录占用: %w", err)
+	}
+	if len(busy) == 0 {
+		m.log.Info("工作目录占用检查通过", "workdir", workDir)
+		return nil
+	}
+	holder := busy[0]
+	m.log.Warn("dispatch 被拒：目标工作目录已被活跃任务占用", "workdir", workDir,
+		"holder", holder.ID, "holder_state", holder.State, "holders", len(busy))
+	return fmt.Errorf("%w: %s 正被任务 %s（%s, %s）占用；先 handoff done/stop 它，或改用 --new-worktree 在独立工作树上开工",
+		ErrWorkdirBusy, workDir, holder.ID, holder.Name, holder.State)
 }
 
 // compensateWorkspace 在 dispatch 后续步骤失败时复原已准备好的工作区。
