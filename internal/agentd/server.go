@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/xushixin/handoff/internal/config"
@@ -65,6 +66,10 @@ type Server struct {
 	hub *Hub
 	log *slog.Logger
 	mgr *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
+	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
+	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
+	startedAt time.Time
 	// replayLimit / liveLimit 是 eventReplayLimit / liveBufferLimit 的实例副本，
 	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
 	replayLimit int
@@ -87,6 +92,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		st:          st,
 		hub:         NewHub(),
 		log:         log,
+		startedAt:   time.Now(),
 		replayLimit: eventReplayLimit,
 		liveLimit:   liveBufferLimit,
 	}
@@ -109,6 +115,7 @@ func (s *Server) SetManager(m *Manager) {
 // Handler 返回带 Bearer 鉴权中间件的完整路由，便于 httptest 直接挂载。
 //
 // 路由（Go 1.22+ 方法路由）：
+//   - GET  /api/status                    agentd 可用性与身份
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
@@ -121,6 +128,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /ws/events                   事件流（补发 + 实时）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
@@ -173,6 +181,29 @@ func (s *Server) auth(next http.Handler) http.Handler {
 //   - ok: 头部存在且前缀为 "Bearer "（token 本身可为空，由调用方与配置比较）
 func bearerToken(r *http.Request) (string, bool) {
 	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// handleStatus 返回本 agentd 的可用性与身份信息（handoff status 的数据源）。
+//
+// 注意：
+//   - manager 未就绪时返回 503：任务计数与探活都要经 manager，此时没有能给的
+//     真实答案，宁可明确报「未就绪」也不返回一个半真的响应
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("状态查询请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Error("manager 未就绪，无法回答状态查询")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	resp, err := s.mgr.Status()
+	if err != nil {
+		s.log.Error("聚合状态失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	resp.StartedAt = s.startedAt
+	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleListTasks 返回全部任务（created_at 降序），供 tasks 命令展示。
