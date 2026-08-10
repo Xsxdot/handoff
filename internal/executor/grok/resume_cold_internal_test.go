@@ -5,21 +5,26 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
 // quietLogger 返回丢弃所有输出的 logger（供不依赖 t 的纯函数级用例直接构造）。
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// writeDeadServeInfo 写一个指向必然探不活端口的 serve.json。
+// writeDeadServeInfo 写一个指向必然探不活端口的恢复凭据（proc.json）。
 func writeDeadServeInfo(t *testing.T, dir string) {
 	t.Helper()
-	if err := writeServeInfo(&Proc{Session: "handoff-t1", TaskDir: dir, Port: 1, Secret: "x"}); err != nil {
+	if err := writeProcInfo(dir, &procInfo{
+		Handle: prochost.Handle{LockPath: filepath.Join(dir, lockFileName)},
+		Port:   1, Secret: "x",
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

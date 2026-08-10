@@ -95,99 +95,69 @@ func TestEnsureAuthLinkIsIdempotentAndRepairs(t *testing.T) {
 	}
 }
 
-func TestWriteServeScriptKeepsSecretOutOfArgv(t *testing.T) {
-	dir := t.TempDir()
-	home := filepath.Join(dir, "grokhome")
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		t.Fatal(err)
+// TestServeSpecKeepsSecretInEnvAndBindsLoopback 钉住 serveSpec 的安全与命令形态：
+// secret 走 env 不进 argv（spec §3.1）、绑定回环端口、argv 是 grok agent serve 原样。
+func TestServeSpecKeepsSecretInEnvAndBindsLoopback(t *testing.T) {
+	spec := grok.ServeSpecForTest("/repo", "/task", "grok-4", 24199, "s3cr3t", nil)
+	for _, a := range spec.Argv {
+		if strings.Contains(a, "s3cr3t") {
+			t.Fatalf("secret 绝不能进 argv: %v", spec.Argv)
+		}
 	}
-	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", nil)
-	if err != nil {
-		t.Fatalf("WriteServeScript 出错: %v", err)
+	joined := strings.Join(spec.Argv, " ")
+	if !strings.Contains(joined, "--bind 127.0.0.1:24199") {
+		t.Fatalf("必须绑定回环端口，实际: %v", spec.Argv)
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
+	var gotSecret, gotHome bool
+	for _, kv := range spec.Env {
+		switch kv {
+		case "GROK_AGENT_SECRET=s3cr3t":
+			gotSecret = true
+		case "GROK_HOME=/task/grokhome":
+			gotHome = true
+		}
 	}
-	s := string(b)
-
-	// secret 必须走环境变量，绝不能出现在 grok 的命令行参数里
-	// （tmux 客户端 argv 本机全局可读，spec §3.1）
-	if !strings.Contains(s, "export GROK_AGENT_SECRET=") {
-		t.Errorf("secret 必须经环境变量注入，实际:\n%s", s)
+	if !gotSecret {
+		t.Fatalf("secret 必须经 env 传入，实得 %v", spec.Env)
 	}
-	if strings.Contains(s, "--secret") {
-		t.Errorf("secret 绝不能进 argv，实际:\n%s", s)
+	if !gotHome {
+		t.Fatalf("必须注入任务级 GROK_HOME，实得 %v", spec.Env)
 	}
-	if !strings.Contains(s, "export GROK_HOME=") {
-		t.Errorf("必须注入任务级 GROK_HOME，实际:\n%s", s)
-	}
-	if !strings.Contains(s, "--bind 127.0.0.1:24199") {
-		t.Errorf("必须绑定回环端口，实际:\n%s", s)
-	}
-	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
-		t.Errorf("启动脚本权限 = %v，期望 0600（含 secret）", fi.Mode().Perm())
+	if spec.LockPath == "" || spec.InfoPath == "" || !spec.Sentinel {
+		t.Fatalf("LockPath/InfoPath/Sentinel 必填: %+v", spec)
 	}
 }
 
-// TestWriteServeScriptInjectsEnvBeforeGrokVars 钉住 B19 的 env 注入契约：
-// 注入行必须排在 handoff 自身的 GROK_* 之前，值必须单引号包裹。
-// 与 opencode 的 TestServeScriptInjectsEnvBeforeOpencodeVars 同构。
-func TestWriteServeScriptInjectsEnvBeforeGrokVars(t *testing.T) {
-	dir := t.TempDir()
-	home := filepath.Join(dir, "grokhome")
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
+// TestServeSpecInjectsEnvBeforeGrokVars 钉住 B19 的 env 注入契约：
+// handoff 自身注入的变量必须排在 env 文件之后，才能覆盖同名键。
+func TestServeSpecInjectsEnvBeforeGrokVars(t *testing.T) {
 	env := []string{
 		"HTTPS_PROXY=http://127.0.0.1:7890",
-		"LITERAL=$NOT_EXPANDED",
-		"WITHSPACE=a b",
+		"GROK_AGENT_SECRET=user_tries_override",
+		"GROK_HOME=/user/override",
 	}
-	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", env)
-	if err != nil {
-		t.Fatalf("WriteServeScript 出错: %v", err)
+	spec := grok.ServeSpecForTest("/repo", "/task", "grok-4", 24199, "s3cr3t", env)
+	secretIdx, homeIdx := -1, -1
+	for i, kv := range spec.Env {
+		if kv == "GROK_AGENT_SECRET=s3cr3t" {
+			secretIdx = i
+		}
+		if kv == "GROK_HOME=/task/grokhome" {
+			homeIdx = i
+		}
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
+	if secretIdx < 0 || homeIdx < 0 {
+		t.Fatalf("handoff 注入的 GROK_* 变量缺失: %v", spec.Env)
 	}
-	s := string(b)
-
-	proxyIdx := strings.Index(s, "export HTTPS_PROXY='http://127.0.0.1:7890'")
-	if proxyIdx < 0 {
-		t.Fatalf("脚本缺少注入的 HTTPS_PROXY export 行:\n%s", s)
+	// 用户写的覆盖行必须在 handoff 自身行之前，否则覆盖不到
+	userSecret := -1
+	for i, kv := range spec.Env {
+		if kv == "GROK_AGENT_SECRET=user_tries_override" {
+			userSecret = i
+		}
 	}
-	// 值必须单引号包裹：Go 侧已展开过一次，不加引号 shell 会再展开一次
-	if !strings.Contains(s, "export LITERAL='$NOT_EXPANDED'") {
-		t.Errorf("含 $ 的值必须单引号包裹防二次展开:\n%s", s)
-	}
-	if !strings.Contains(s, "export WITHSPACE='a b'") {
-		t.Errorf("含空格的值必须单引号包裹:\n%s", s)
-	}
-	// 顺序是硬要求：handoff 自身注入的变量必须排在后面才能覆盖 env 文件的同名键
-	homeIdx := strings.Index(s, "export GROK_HOME=")
-	if homeIdx < 0 || proxyIdx > homeIdx {
-		t.Errorf("注入的 env 行必须排在 GROK_HOME 之前（proxy=%d home=%d）:\n%s",
-			proxyIdx, homeIdx, s)
-	}
-}
-
-// TestWriteServeScriptWithoutEnvIsUnchangedInShape 保证 env 为空时脚本形态不变，
-// 免得 B19 之前生成的脚本与之后的产生无谓差异。
-func TestWriteServeScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
-	dir := t.TempDir()
-	home := filepath.Join(dir, "grokhome")
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	p, err := grok.WriteServeScript(dir, home, 24199, "s3cr3t", nil)
-	if err != nil {
-		t.Fatalf("WriteServeScript 出错: %v", err)
-	}
-	b, _ := os.ReadFile(p)
-	if strings.Contains(string(b), "\n\nexport GROK_HOME=") {
-		t.Errorf("env 为空时不应留下空行:\n%s", b)
+	if userSecret > secretIdx {
+		t.Fatalf("handoff 注入变量必须排在 env 文件之后以取得覆盖优先级，user=%d handoff=%d", userSecret, secretIdx)
 	}
 }
 

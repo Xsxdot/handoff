@@ -1,18 +1,19 @@
-// proc.go —— grok agent serve 的进程生命周期：tmux 托管、探活、恢复凭据落盘。
+// proc.go —— grok agent serve 的进程生命周期：prochost 托管、探活、恢复凭据落盘。
 //
 // 职责：
-//   - StartServe：选空闲端口、生成随机 secret、写物料与启动脚本、tmux 起 serve、
-//     开 render tail 窗口、HTTP 探活等就绪、落 serve.json
+//   - StartServe：选空闲端口、生成随机 secret、写任务物料、经 prochost 拉起 serve、
+//     HTTP 探活等就绪、落 proc.json
 //   - Alive/Kill/LogTail：存活探测、回收、脱敏后的诊断尾部
-//   - ReadServeInfo：从 serve.json 重建 Proc，供 agentd 重启后 Resume
+//   - ReadServeInfo：从 proc.json 重建 Proc，供 agentd 重启后 Resume
 //
 // 边界：
 //   - 不说 ACP、不解析事件：协议在 acp.go，语义在 adapter.go
 //   - 不做重试决策：探活失败只如实返回，重试与判死节奏归 adapter 的看门狗
 //
-// 为什么存活判据是 HTTP 端口探活而不是 tmux has-session：会话里第二个窗口的
-// tail -f 会一直活着，serve 早死了会话依然存在。grok serve 的根路径返回 404
-// ——能收到任何 HTTP 响应就说明进程还在监听。
+// 为什么存活判据是「存活锁 + HTTP 端口探活」：锁证明 shim 还在，HTTP 证明 serve
+// 本身还在应答。serve 崩了但 shim 尚未收尸的窗口由 HTTP 这条兜住；反过来锁没了
+// 也就没有进程可探。grok serve 的根路径返回 404——能收到任何 HTTP 响应就说明
+// 进程还在监听。
 package grok
 
 import (
@@ -20,7 +21,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -28,11 +28,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor/turn"
-	"github.com/xushixin/handoff/internal/shellq"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
 const (
@@ -40,17 +41,23 @@ const (
 	serveProbeInterval = 200 * time.Millisecond
 	serveLogTailBytes  = 4 << 10
 	serveLogTailRunes  = 500
+
+	// grokSecretEnvKey 是 serve 认证 secret 的环境变量名（沿用既有常量，不得改动）。
+	grokSecretEnvKey = "GROK_AGENT_SECRET"
+	// lockFileName / procInfoFileName 统一为四 adapter 共用的命名（Global Constraints）。
+	lockFileName     = "proc.lock"
+	procInfoFileName = "proc.json"
 )
 
 // Proc 是一个 grok serve 实例的句柄与恢复凭据。
 //
-// 注意：Secret 字段是明文 secret，序列化后的 serve.json 必须 0600，
+// 注意：Secret 字段是明文 secret，序列化后的 proc.json 必须 0600，
 // 且任何日志/错误文本输出前都要经 LogTail 之类的脱敏路径。
 type Proc struct {
-	Session string `json:"session"`  // tmux 会话名 handoff-<id8>
-	TaskDir string `json:"task_dir"` // 任务目录
-	Port    int    `json:"port"`
-	Secret  string `json:"secret"`
+	Handle  prochost.Handle `json:"handle"`
+	TaskDir string          `json:"task_dir"` // 任务目录
+	Port    int             `json:"port"`
+	Secret  string          `json:"secret"`
 }
 
 // WSURL 返回 ACP 的 WebSocket 端点。
@@ -60,8 +67,24 @@ func (p *Proc) WSURL() string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/ws?server-key=%s", p.Port, p.Secret)
 }
 
-// Alive 探测 serve 是否仍在监听（收到任何 HTTP 响应即算活，含 404）。
+// Alive 检查 grok serve 是否仍然存活：存活锁被持有 且 HTTP 端口有应答。
+//
+// 为什么第一条是锁而不是端口：锁是本地文件操作、微秒级，端口探测要走网络栈
+// 且失败时要等超时。锁判死就没必要再探端口了。
+// （旧实现第一条是 tmux has-session，而会话里第二窗口的 tail -f 会一直活着、
+// serve 早死了会话依然存在——那个假存活来源已随 tmux 一起消失。）
 func (p *Proc) Alive() bool {
+	if !prochost.Alive(p.Handle) {
+		return false
+	}
+	return p.probeHTTP()
+}
+
+// Kill 终止 grok serve 及其后代（按进程组），幂等。
+func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
+
+// probeHTTP 探活 serve 的 HTTP 端口（收到任何响应即算活，含 404）。
+func (p *Proc) probeHTTP() bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/", p.Port))
 	if err != nil {
@@ -69,41 +92,6 @@ func (p *Proc) Alive() bool {
 	}
 	resp.Body.Close()
 	return true
-}
-
-// tmuxKill 是 tmux kill-session 的测试缝（与 claudecode 同手法）：测试替换它
-// 断言 Reap 回收的会话名，绕开真实 tmux server。
-var tmuxKill = func(session string) error {
-	return exec.Command("tmux", "kill-session", "-t", session).Run()
-}
-
-// Kill 杀掉 tmux 会话回收 serve；会话已不存在视为已清理，不报错。
-func (p *Proc) Kill() error {
-	err := tmuxKill(p.Session)
-	if err != nil {
-		if !tmuxHasSession(p.Session) {
-			slog.Default().Info("grok tmux 会话已不存在，视为已清理", "session", p.Session)
-			return nil
-		}
-		return fmt.Errorf("kill tmux 会话 %s: %w (%s)", p.Session, err, tmuxKillErrTail(err))
-	}
-	slog.Default().Info("grok tmux 会话已回收", "session", p.Session)
-	return nil
-}
-
-// tmuxHasSession 是 tmux has-session 探活的测试缝（与 claudecode 同手法）：测试
-// 替换它绕开真实 tmux，判定「会话存在」的语义不变。
-var tmuxHasSession = func(session string) bool {
-	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
-}
-
-// tmuxKillErrTail 提取 kill 错误的 stderr 尾部（原实现用 CombinedOutput 拼进错误）。
-func tmuxKillErrTail(err error) string {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return strings.TrimSpace(string(exitErr.Stderr))
-	}
-	return err.Error()
 }
 
 // LogTail 返回脱敏后的 serve.log 尾部，供启动超时与死亡诊断。
@@ -127,7 +115,7 @@ func (p *Proc) LogTail() string {
 
 // protectedEnvKeys 是 handoff 自身注入、不容 env 文件覆盖的变量（B19）。
 //
-// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的 export 排在后面因而胜出，
+// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的变量排在后面因而胜出，
 // 同时打 WARN 让用户知道自己那行没生效。
 //
 // 为什么 GROK_AGENT_SECRET 在列：它被 env 文件覆盖会让 adapter 拿着旧 secret 连
@@ -138,16 +126,19 @@ var protectedEnvKeys = map[string]bool{
 	"GROK_AGENT_SECRET": true,
 }
 
-// startServe 是 StartServe 的测试缝（与 tmuxKill 同手法）：冷恢复测试替换它
-// 断言「起 serve」是否被调用、注入错误，绕开真实 tmux + grok 二进制。
+// startServe 是 StartServe 的测试缝：冷恢复测试替换它断言「起 serve」是否被调用、
+// 注入错误，绕开真实 shim + grok 二进制。
 var startServe = StartServe
 
-// StartServe 起一个任务专属的 grok serve 并等其就绪。
+// startProcHost 是 prochost.Start 的测试缝：测试替换它断言 spec 内容，绕开真实 shim。
+var startProcHost = prochost.Start
+
+// StartServe 经 prochost 拉起一个任务专属的 grok serve 并等其就绪。
 //
 // 参数：
 //   - ctx: 控制启动阶段的超时/取消
-//   - repoPath: 任务工作目录（tmux 会话的 cwd）
-//   - taskID: 任务 ID（取前 8 字符作会话名后缀）
+//   - repoPath: 任务工作目录（serve 的 cwd）
+//   - taskID: 任务 ID（日志与 proc.json 定位）
 //   - taskDir: 任务物料目录
 //   - model: 任务级模型（空=用 grok 默认）
 //   - env: 注入到 serve 进程的环境变量（形如 KEY=VALUE，已由 manager 解析展开）；
@@ -178,7 +169,6 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, en
 	}
 
 	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）。
-	// 与 opencode 的 StartServe 同构。
 	if len(env) > 0 {
 		keys := make([]string, 0, len(env))
 		for _, kv := range env {
@@ -194,28 +184,42 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, en
 		}
 		log.Info("注入 env 变量到 grok serve 进程", "task", taskID, "keys", keys, "count", len(keys))
 	}
-
-	scriptPath, err := WriteServeScript(taskDir, homeDir, port, secret, env)
+	bin, err := exec.LookPath("grok")
 	if err != nil {
+		log.Error("grok 未安装", "task", taskID, "cause", err)
+		return nil, fmt.Errorf("grok 未安装: %w", err)
+	}
+	selfExe, err := os.Executable()
+	if err != nil {
+		log.Error("取 handoff 自身路径失败（shim 无法拉起）", "task", taskID, "cause", err)
+		return nil, fmt.Errorf("取自身可执行路径: %w", err)
+	}
+	spec := serveSpec(repoPath, taskDir, model, port, secret, env)
+	spec.Argv[0] = bin
+	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
+	if err := writeProcInfo(taskDir, &procInfo{
+		Handle: prochost.Handle{LockPath: spec.LockPath}, Port: port, Secret: secret,
+	}); err != nil {
+		log.Error("写恢复凭据失败", "task", taskID, "cause", err)
 		return nil, err
 	}
-
-	p := &Proc{Session: "handoff-" + id8(taskID), TaskDir: taskDir, Port: port, Secret: secret}
-	args := []string{"new-session", "-d", "-s", p.Session, "-c", repoPath,
-		"sh " + shellq.Quote(scriptPath)}
-	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
-		log.Error("grok tmux 启动失败", "task", taskID, "cause", err, "out", strings.TrimSpace(string(out)))
-		return nil, fmt.Errorf("tmux 启动 grok serve: %w (%s)", err, strings.TrimSpace(string(out)))
+	log.Info("启动 grok serve", "task", taskID, "port", port, "bin", bin, "repo", repoPath, "model", model)
+	handle, err := startProcHost(spec, selfExe)
+	if err != nil {
+		log.Error("拉起 grok serve 失败", "task", taskID, "port", port, "cause", err)
+		return nil, err
 	}
-	startRenderTailWindow(p.Session, taskDir, log)
+	p := &Proc{Handle: handle, TaskDir: taskDir, Port: port, Secret: secret}
+	if err := writeProcInfo(taskDir, &procInfo{
+		Handle: handle, Port: port, Secret: secret,
+	}); err != nil {
+		log.Warn("回写恢复凭据失败，重启恢复将不可用", "task", taskID, "cause", err)
+	}
 
 	// 探活等就绪
 	deadline := time.Now().Add(serveReadyTimeout)
 	for time.Now().Before(deadline) {
-		if p.Alive() {
-			if err := writeServeInfo(p); err != nil {
-				log.Warn("写 serve.json 失败，Resume 将不可用", "task", taskID, "cause", err)
-			}
+		if p.probeHTTP() {
 			log.Info("grok serve 就绪", "task", taskID, "port", port,
 				"elapsed_ms", time.Since(start).Milliseconds())
 			return p, nil
@@ -233,50 +237,74 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, en
 	return nil, fmt.Errorf("grok serve %s 内未就绪: %s", serveReadyTimeout, tail)
 }
 
-// startRenderTailWindow 在会话内开第二窗口 tail -f render.log（模型回合文本实况）。
+// serveSpec 组 grok agent serve 的启动描述。
 //
-// 稳健做法：先 touch render.log 再开窗口——tail -f 对不存在的文件会立即报错退出。
-// 窗口启动失败只 Warn 不阻断：这是增强型可见性，不值得为它挂掉任务启动。
-func startRenderTailWindow(session, taskDir string, log *slog.Logger) {
-	p := filepath.Join(taskDir, renderLogName)
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		log.Warn("创建 render.log 失败，tmux 第二窗口不可用", "session", session, "cause", err)
-		return
-	}
-	f.Close()
-	if err := exec.Command("tmux", "new-window", "-t", session,
-		"tail -f "+shellq.Quote(p)).Run(); err != nil {
-		log.Warn("tmux 第二窗口启动失败（tail render.log 不可用），不影响主流程",
-			"session", session, "cause", err)
+// 为什么 secret 走 Env 而不是 --secret：进程 argv 本机全局可读
+// （/proc/<pid>/cmdline），这是 opencode 侧 P0-4 划定的安全边界，本 adapter 原样继承。
+// （旧实现另需排除 tmux -e——show-environment 会把它暴露给任何能连上 tmux server
+// 的本机用户；tmux 拆掉后这条威胁消失，但「不进 argv」依然成立。）
+func serveSpec(repoPath, taskDir, model string, port int, secret string, env []string) prochost.Spec {
+	serveLog := filepath.Join(taskDir, serveLogName)
+	full := append(os.Environ(), env...)
+	full = append(full,
+		grokSecretEnvKey+"="+secret, // 变量名沿用既有常量，不得改动
+		"GROK_HOME="+filepath.Join(taskDir, homeDirName),
+	)
+	return prochost.Spec{
+		Argv:     grokServeArgv(model, port), // 沿用既有命令形态，原样搬运
+		Dir:      repoPath,
+		Env:      full,
+		Stdout:   serveLog,
+		Stderr:   serveLog,
+		LockPath: filepath.Join(taskDir, lockFileName),
+		InfoPath: filepath.Join(taskDir, procInfoFileName),
+		Sentinel: true,
 	}
 }
 
-// writeServeInfo 落恢复凭据（0600：含 secret）。
-func writeServeInfo(p *Proc) error {
-	b, err := json.MarshalIndent(p, "", "  ")
+// grokServeArgv 组 grok agent serve 的 argv（命令形态沿用旧启动脚本，原样搬运）。
+func grokServeArgv(model string, port int) []string {
+	argv := []string{"grok", "agent", "serve", "--bind", "127.0.0.1:" + strconv.Itoa(port)}
+	return argv
+}
+
+// writeProcInfo 落恢复凭据（0600：含 secret）。
+func writeProcInfo(taskDir string, pi *procInfo) error {
+	b, err := json.Marshal(pi)
 	if err != nil {
-		return fmt.Errorf("序列化 serve.json: %w", err)
+		return fmt.Errorf("序列化恢复凭据: %w", err)
 	}
-	path := filepath.Join(p.TaskDir, serveInfoName)
+	path := filepath.Join(taskDir, procInfoFileName)
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return fmt.Errorf("写 %s: %w", path, err)
 	}
 	return nil
 }
 
+// procInfo 是 serve 连接凭据的持久化形态，agentd 重启后凭它重建订阅。
+type procInfo struct {
+	Handle   prochost.Handle `json:"handle"`
+	ChildPID int             `json:"child_pid,omitempty"`
+	Port     int             `json:"port"`
+	Secret   string          `json:"secret"`
+}
+
 // ReadServeInfo 从任务目录读回 Proc，供 agentd 重启后 Resume。
 func ReadServeInfo(taskDir string) (*Proc, error) {
-	b, err := os.ReadFile(filepath.Join(taskDir, serveInfoName))
+	b, err := os.ReadFile(filepath.Join(taskDir, procInfoFileName))
 	if err != nil {
-		return nil, fmt.Errorf("读 serve.json: %w", err)
+		return nil, fmt.Errorf("读恢复凭据: %w", err)
 	}
-	var p Proc
-	if err := json.Unmarshal(b, &p); err != nil {
-		return nil, fmt.Errorf("解析 serve.json: %w", err)
+	var pi procInfo
+	if err := json.Unmarshal(b, &pi); err != nil {
+		return nil, fmt.Errorf("解析恢复凭据: %w", err)
 	}
+	if pi.Handle.LockPath == "" || pi.Port == 0 || pi.Secret == "" {
+		return nil, fmt.Errorf("恢复凭据字段不完整")
+	}
+	p := &Proc{Handle: pi.Handle, Port: pi.Port, Secret: pi.Secret}
 	p.TaskDir = taskDir // 目录可能被整体搬动，以实参为准
-	return &p, nil
+	return p, nil
 }
 
 // freePort 让内核分配一个空闲回环端口。
@@ -296,12 +324,4 @@ func randomSecret() (string, error) {
 		return "", fmt.Errorf("生成 serve secret: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// id8 取字符串前 8 字符作 tmux 会话名后缀（与 opencode 同规则，attach 零改动）。
-func id8(s string) string {
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:8]
 }

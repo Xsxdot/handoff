@@ -1,11 +1,10 @@
-// taskenv.go —— grok 任务环境物料生成：任务级 GROK_HOME、权限配置与启动脚本。
+// taskenv.go —— grok 任务环境物料生成：任务级 GROK_HOME 与权限配置。
 //
 // 职责：
 //   - WriteTaskEnv：建 <taskDir>/grokhome 并写 config.toml（钉死 permission_mode
 //     与第 0 层分级规则、注入任务级模型）
 //   - EnsureAuthLink：幂等地把 grokhome/auth.json 指向真实 ~/.grok/auth.json
-//   - WriteServeScript：生成 tmux 里跑的 serve 启动脚本（secret 走环境变量）
-//
+//     （serve 启动脚本与 secret 注入已随 tmux 拆除，改由 proc.go 的 Spec.Env 承担）
 // 边界：
 //   - 不起进程、不连网络：进程在 proc.go，协议在 acp.go
 //   - 不读用户的真实 grok 配置（除 auth.json 软链外一律纯净）
@@ -30,17 +29,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/xushixin/handoff/internal/shellq"
 )
 
 const (
 	homeDirName     = "grokhome"
 	configFileName  = "config.toml"
-	serveScriptName = "run_grok.sh"
 	serveLogName    = "serve.log"
 	renderLogName   = "render.log"
-	serveInfoName   = "serve.json"
+	serveInfoName   = "serve.json" // 保留旧文件名常量以兼容既有测试读法；实际落盘已改 proc.json
 )
 
 // askRules 是第 0 层静态分级的危险模式表。
@@ -165,43 +161,4 @@ func EnsureAuthLink(homeDir string) error {
 	}
 	slog.Default().Info("grok auth 软链已就位", "link", link)
 	return nil
-}
-
-// WriteServeScript 生成 serve 启动脚本，返回脚本路径。
-//
-// 为什么 secret 走环境变量而非 --secret：tmux 客户端进程的 argv 本机全局可读，
-// 这是 opencode 侧 P0-4 划定的安全边界，本 adapter 原样继承。同理不用 tmux -e：
-// show-environment 会把它暴露给任何能连上 tmux server 的本机用户。
-//
-// 为什么这里可以用 exec（与 claude adapter 相反）：grok 有 HTTP 探活面，不需要
-// 脚本在进程退出后补写死亡哨兵，因此 sh 可以被替换掉。
-//
-// why env 行排在 GROK_* 之前且值用单引号（与 opencode 的 writeServeScript 同构，
-// B19）：排在前面才能让 handoff 自身注入的变量覆盖 env 文件里的同名键（见
-// protectedEnvKeys）；值必须单引号包裹，因为 Go 侧已经展开过一次，不加引号会被
-// shell 再展开第二次，含 $ 的值会变成别的东西。
-func WriteServeScript(taskDir, homeDir string, port int, secret string, env []string) (string, error) {
-	serveLog := filepath.Join(taskDir, serveLogName)
-	var envLines strings.Builder
-	for _, kv := range env {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue // 形如 KEY=VALUE 之外的条目直接跳过，不让它污染脚本语法
-		}
-		envLines.WriteString("export " + k + "=" + shellq.Quote(v) + "\n")
-	}
-	script := fmt.Sprintf(`#!/bin/sh
-# 由 agentd 生成：grok agent serve 启动脚本（0600，含随机 secret，勿外泄）。
-exec 2>> %s
-%sexport GROK_HOME=%s
-export GROK_AGENT_SECRET=%s
-exec grok agent serve --bind 127.0.0.1:%d 2>&1 | tee -a %s
-`, shellq.Quote(serveLog), envLines.String(), shellq.Quote(homeDir), shellq.Quote(secret), port, shellq.Quote(serveLog))
-
-	p := filepath.Join(taskDir, serveScriptName)
-	if err := os.WriteFile(p, []byte(script), 0o600); err != nil {
-		return "", fmt.Errorf("写 serve 启动脚本 %s: %w", p, err)
-	}
-	slog.Default().Info("grok serve 启动脚本已生成", "path", p, "port", port)
-	return p, nil
 }
