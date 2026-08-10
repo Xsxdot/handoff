@@ -38,9 +38,17 @@ func log() *slog.Logger { return slog.Default() }
 // DataDir 为数据目录；StallTimeout 为卡住会话的判定超时；
 // Targets 为可配对远端主机的地址与令牌表（供 --target 换算）。
 type Config struct {
-	Listen       string
-	Token        string
-	DataDir      string
+	Listen  string
+	Token   string
+	DataDir string
+	// RepoRoot 是 repo add --clone 未显式指定路径时的默认落点根目录，
+	// 实际落点为 RepoRoot/<登记名>。空=未配置，此时 --clone 必须显式给路径。
+	//
+	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
+	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
+	// 变成审核者的本地状态，换一台审核机接管就得重配。放顶层的语义是
+	// 「每台执行机自己决定它的仓库放在哪」。
+	RepoRoot     string
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
