@@ -31,11 +31,11 @@ const (
 )
 
 // prober 是「只读探测 executor 是否存活」的可选 adapter 能力
-//（四个真实 adapter 均实现，fake 不实现）。
+// （四个真实 adapter 均实现，fake 不实现）。
 //
 // 为什么是可选接口而不是加进 executor.Adapter：不支持探活的 adapter 一律按
 // unknown 处理是自然语义，五动作核心契约不该为一个诊断功能扩面
-//（与 restorer / reaper / volatilePermitter 同一套路数）。
+// （与 restorer / reaper / volatilePermitter 同一套路数）。
 type prober interface {
 	Probe(executor.ProbeReq) (executor.ProbeOutcome, error)
 }
