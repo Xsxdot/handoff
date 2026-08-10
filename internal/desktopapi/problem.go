@@ -12,6 +12,7 @@ package desktopapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -48,6 +49,22 @@ type Problem struct {
 	OperationID string      `json:"operation_id,omitempty"`
 	Details     string      `json:"details,omitempty"`
 }
+
+// ProblemError 在 application/adapter 层携带稳定 HTTP 状态与公开 Problem，
+// 同时通过 Cause 保留仅供日志与 errors.Is/As 使用的内部原因。
+type ProblemError struct {
+	Status  int
+	Problem Problem
+	Cause   error
+}
+
+// Error 返回安全错误摘要，不拼接内部 Cause，避免调用方误把敏感底层错误写回 HTTP。
+func (e *ProblemError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Problem.Code, e.Problem.Message)
+}
+
+// Unwrap 暴露内部原因给服务端日志与 errors.Is/As；公开响应仍只编码 Problem。
+func (e *ProblemError) Unwrap() error { return e.Cause }
 
 // WriteProblem 把 Problem 写回响应，统一 Content-Type 与 JSON 编码。
 //

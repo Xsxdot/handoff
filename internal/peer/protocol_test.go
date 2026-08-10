@@ -45,12 +45,34 @@ func TestNegotiateIgnoresUnknownCapability(t *testing.T) {
 	if negotiated["catalog"] != 1 || negotiated["machine_events"] != 1 {
 		t.Fatalf("核心 capability 未保留: %+v", negotiated)
 	}
+	if _, ok := negotiated["unknown_future"]; ok {
+		t.Fatalf("未知 capability 不应进入协商结果: %+v", negotiated)
+	}
 	// 缺核心 capability → incompatible
 	if _, incompatible := Negotiate(map[string]int{"catalog": 1}); !incompatible {
 		t.Fatal("缺 machine_events 应 incompatible")
 	}
 	if _, incompatible := Negotiate(map[string]int{"machine_events": 1}); !incompatible {
 		t.Fatal("缺 catalog 应 incompatible")
+	}
+}
+
+// TestWorkspaceResourceCapabilitiesNegotiated 锁定资源能力只有远端明确宣告后
+// 才进入协商结果；缺少资源 capability 不影响 catalog 核心连接，但对应资源
+// Router 必须拒绝调用。
+func TestWorkspaceResourceCapabilitiesNegotiated(t *testing.T) {
+	caps := map[string]int{
+		"catalog": 1, "machine_events": 1,
+		"files": 1, "git": 1, "pty": 1, "preview": 1,
+	}
+	negotiated, incompatible := Negotiate(caps)
+	if incompatible {
+		t.Fatal("完整资源 capability 不应 incompatible")
+	}
+	for _, capability := range []string{"files", "git", "pty", "preview"} {
+		if negotiated[capability] != 1 {
+			t.Errorf("capability %s = %d, want 1", capability, negotiated[capability])
+		}
 	}
 }
 

@@ -1,0 +1,14 @@
+{
+  "workspace_id": "ws-main",
+  "matches": [
+    {
+      "path": "README.md",
+      "line": 1,
+      "column": 1,
+      "preview": "hello"
+    }
+  ],
+  "truncated": false,
+  "scanned_files": 1,
+  "scanned_bytes": 5
+}

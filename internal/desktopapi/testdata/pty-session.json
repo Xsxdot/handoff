@@ -1,0 +1,9 @@
+{
+  "terminal_session_id": "terminal-1",
+  "incarnation": "inc-1",
+  "workspace_id": "ws-main",
+  "state": "active",
+  "shell": "/bin/zsh",
+  "through_seq": 7,
+  "exit_code": null
+}

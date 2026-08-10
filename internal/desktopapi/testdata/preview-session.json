@@ -1,0 +1,9 @@
+{
+  "preview_session_id": "preview-1",
+  "workspace_id": "ws-main",
+  "machine_id": "m-local",
+  "state": "active",
+  "url": "http://127.0.0.1:7777/v1/preview-proxy/redacted/",
+  "port": 3000,
+  "expires_at": "2026-08-10T02:02:03Z"
+}

@@ -18,9 +18,29 @@ import (
 // ProtocolVersion 是 peer v1 协议版本。
 const ProtocolVersion = 1
 
+// Workspace 资源 capability keys。缺少某项时 catalog 连接仍可成立，但对应
+// resource gateway 必须返回 CAPABILITY_UNSUPPORTED，不能猜测旧 peer 支持。
+const (
+	CapabilityFiles   = "files"
+	CapabilityGit     = "git"
+	CapabilityPty     = "pty"
+	CapabilityPreview = "preview"
+)
+
 // requiredCapabilities 是 peer 连接成立的核心 capability。
 // 缺任一即标记 incompatible（升级 agentd），不走猜测。
 var requiredCapabilities = []string{"catalog", "machine_events"}
+
+// supportedCapabilities 是本版本理解的完整 capability 白名单。协商结果只包含
+// 白名单项，避免未来或拼写错误的 capability 被本端误认为已经实现。
+var supportedCapabilities = []string{
+	"catalog",
+	"machine_events",
+	CapabilityFiles,
+	CapabilityGit,
+	CapabilityPty,
+	CapabilityPreview,
+}
 
 // Hello 是 /v1/peer/hello 的响应体。
 type Hello struct {
@@ -44,8 +64,10 @@ func Negotiate(peerCaps map[string]int) (map[string]int, bool) {
 			return nil, true
 		}
 	}
-	for k, v := range peerCaps {
-		negotiated[k] = v
+	for _, capability := range supportedCapabilities {
+		if v := peerCaps[capability]; v >= 1 {
+			negotiated[capability] = v
+		}
 	}
 	return negotiated, false
 }

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "kind": "data",
+  "terminal_session_id": "terminal-1",
+  "incarnation": "inc-1",
+  "seq": 7,
+  "through_seq": 7,
+  "data_base64": "b2sK"
+}

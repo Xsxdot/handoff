@@ -184,6 +184,108 @@ export const problemSchema = z.object({
 })
 export type Problem = z.infer<typeof problemSchema>
 
+// ---- Workspace resources ----
+
+export const fileKindSchema = z.enum(['file', 'directory', 'symlink'])
+export const fileEntrySchema = z.object({
+  workspace_id: z.string(),
+  path: z.string(),
+  name: z.string(),
+  kind: fileKindSchema,
+  size: z.number().int(),
+  modified_at: z.string().datetime(),
+  version: z.string().optional()
+})
+export type FileEntry = z.infer<typeof fileEntrySchema>
+
+export const fileDocumentSchema = z.object({
+  workspace_id: z.string(),
+  path: z.string(),
+  version: z.string(),
+  content_base64: z.string(),
+  size: z.number().int(),
+  modified_at: z.string().datetime()
+})
+export type FileDocument = z.infer<typeof fileDocumentSchema>
+
+export const fileSearchMatchSchema = z.object({
+  path: z.string(),
+  line: z.number().int(),
+  column: z.number().int(),
+  preview: z.string()
+})
+export const fileSearchResultSchema = z.object({
+  workspace_id: z.string(),
+  matches: z.array(fileSearchMatchSchema),
+  truncated: z.boolean(),
+  scanned_files: z.number().int(),
+  scanned_bytes: z.number().int()
+})
+export type FileSearchResult = z.infer<typeof fileSearchResultSchema>
+
+export const gitStatusEntrySchema = z.object({
+  path: z.string(),
+  original_path: z.string().optional(),
+  index_status: z.string(),
+  worktree_status: z.string()
+})
+export const gitStatusSnapshotSchema = z.object({
+  workspace_id: z.string(),
+  branch: z.string().optional(),
+  head_oid: z.string().optional(),
+  upstream: z.string().optional(),
+  ahead: z.number().int(),
+  behind: z.number().int(),
+  entries: z.array(gitStatusEntrySchema)
+})
+export type GitStatusSnapshot = z.infer<typeof gitStatusSnapshotSchema>
+
+export const ptyStateSchema = z.enum(['starting', 'active', 'ended'])
+export const ptySessionSchema = z.object({
+  terminal_session_id: z.string(),
+  incarnation: z.string(),
+  workspace_id: z.string(),
+  state: ptyStateSchema,
+  shell: z.string(),
+  through_seq: z.number().int(),
+  exit_code: z.number().int().nullable().optional()
+})
+export type PtySession = z.infer<typeof ptySessionSchema>
+
+export const ptyFrameKindSchema = z.enum([
+  'subscribed',
+  'snapshot',
+  'data',
+  'status',
+  'exit',
+  'problem'
+])
+export const ptyServerFrameSchema = z.object({
+  version: z.number().int(),
+  kind: ptyFrameKindSchema,
+  terminal_session_id: z.string(),
+  incarnation: z.string(),
+  seq: z.number().int(),
+  through_seq: z.number().int(),
+  data_base64: z.string().optional(),
+  state: ptyStateSchema.optional(),
+  exit_code: z.number().int().optional(),
+  problem: problemSchema.optional()
+})
+export type PtyServerFrame = z.infer<typeof ptyServerFrameSchema>
+
+export const previewStateSchema = z.enum(['pending', 'active', 'closed', 'expired'])
+export const previewSessionSchema = z.object({
+  preview_session_id: z.string(),
+  workspace_id: z.string(),
+  machine_id: z.string(),
+  state: previewStateSchema,
+  url: z.string().url(),
+  port: z.number().int(),
+  expires_at: z.string().datetime()
+})
+export type PreviewSession = z.infer<typeof previewSessionSchema>
+
 // ---- 项目创建请求 ----
 
 export const createProjectLocationReqSchema = z.object({

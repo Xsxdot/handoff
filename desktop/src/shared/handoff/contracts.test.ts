@@ -16,7 +16,14 @@ import { describe, expect, it } from 'vitest'
 import {
   bootstrapResponseSchema,
   controlEventEnvelopeSchema,
-  problemSchema
+  fileDocumentSchema,
+  fileEntrySchema,
+  fileSearchResultSchema,
+  gitStatusSnapshotSchema,
+  previewSessionSchema,
+  problemSchema,
+  ptyServerFrameSchema,
+  ptySessionSchema
 } from './contracts'
 
 const testdata = (name: string): string =>
@@ -82,5 +89,38 @@ describe('handoff contracts vs Go golden', () => {
         created_at: '2026-08-09T00:00:00Z'
       })
     ).toThrow()
+  })
+
+  it('parses workspace resource goldens', () => {
+    expect(fileEntrySchema.parse(JSON.parse(testdata('file-entry.json'))).kind).toBe('directory')
+    expect(fileDocumentSchema.parse(JSON.parse(testdata('file-document.json'))).version).toBe(
+      'sha256:2cf24dba'
+    )
+    expect(
+      fileSearchResultSchema.parse(JSON.parse(testdata('file-search-result.json'))).matches
+    ).toHaveLength(1)
+    expect(gitStatusSnapshotSchema.parse(JSON.parse(testdata('git-status.json'))).branch).toBe(
+      'main'
+    )
+    expect(ptySessionSchema.parse(JSON.parse(testdata('pty-session.json'))).incarnation).toBe(
+      'inc-1'
+    )
+    expect(ptyServerFrameSchema.parse(JSON.parse(testdata('pty-frame.json'))).seq).toBe(7)
+    expect(
+      previewSessionSchema.parse(JSON.parse(testdata('preview-session.json'))).preview_session_id
+    ).toBe('preview-1')
+  })
+
+  it('rejects resource payloads missing concurrency identity', () => {
+    const file = JSON.parse(testdata('file-document.json')) as Record<string, unknown>
+    delete file.version
+    expect(() => fileDocumentSchema.parse(file)).toThrow()
+
+    const frame = JSON.parse(testdata('pty-frame.json')) as Record<string, unknown>
+    delete frame.incarnation
+    expect(() => ptyServerFrameSchema.parse(frame)).toThrow()
+    frame.incarnation = 'inc-1'
+    delete frame.seq
+    expect(() => ptyServerFrameSchema.parse(frame)).toThrow()
   })
 })

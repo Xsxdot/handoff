@@ -1,0 +1,15 @@
+{
+  "workspace_id": "ws-main",
+  "branch": "main",
+  "head_oid": "abc123",
+  "upstream": "origin/main",
+  "ahead": 1,
+  "behind": 0,
+  "entries": [
+    {
+      "path": "README.md",
+      "index_status": ".",
+      "worktree_status": "M"
+    }
+  ]
+}
