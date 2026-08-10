@@ -1,6 +1,6 @@
 # handoff
 
-把实现计划派发给独立 executor 执行、由交互式审核者（Claude Code 会话）通过 `wait`/`reply` 被唤醒并审核修改的两人协作工具：审核者写 plan → `handoff dispatch` 派发给 agentd（本机或远程，Tailscale 内网直连）→ executor 在 tmux 内跑 `opencode serve` 执行（权限门/提问经 SSE 转成工单唤醒审核者）→ 审核通过 `handoff done` 归档。全程无中心 server、无 hooks、无 MCP：断网不丢事件，审核者会话崩溃可凭两条命令完整恢复现场。
+把实现计划派发给独立 executor 执行、由交互式审核者（Claude Code 会话）通过 `wait`/`reply` 被唤醒并审核修改的两人协作工具：审核者写 plan → `handoff dispatch` 派发给 agentd（本机或远程，Tailscale 内网直连）→ executor 以独立会话跑 `opencode serve` 执行（权限门/提问经 SSE 转成工单唤醒审核者）→ 审核通过 `handoff done` 归档。全程无中心 server、无 hooks、无 MCP：断网不丢事件，审核者会话崩溃可凭两条命令完整恢复现场。
 
 ## 架构
 
@@ -10,18 +10,18 @@
 │ 交互式 Claude Code   │                │ handoff agentd（WS listener） │
 │  （审核者）          │   WebSocket    │  ├─ 任务/事件存储（SQLite）    │
 │         │           │ ◄────直连────► │  ├─ executor adapter          │
-│  handoff wait（后台） │   本机主动拨号  │  │   ├─ opencode serve（tmux）  │
-│  handoff reply/...   │                │  │   ├─ claude -p（tmux）       │
-└─────────────────────┘                │  │   ├─ grok agent serve（tmux）│
-                                        │  │   └─ codex app-server（tmux）│
+│  handoff wait（后台） │   本机主动拨号  │  │   ├─ opencode serve（shim）  │
+│  handoff reply/...   │                │  │   ├─ claude -p（shim）       │
+└─────────────────────┘                │  │   ├─ grok agent serve（shim）│
+                                        │  │   └─ codex app-server（shim）│
         │                              │  │       ↑ SSE / stream-json /  │
         │                              │  │         ACP / WS JSON-RPC    │
-        │                              │  桌面终端窗口 tmux attach ↑    │
+        │                              │   handoff attach（render 流）↑  │
      用户本人（危险操作/需求取舍升级）      └──────────────────────────────┘
 ```
 
 - **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done` / `stop` / `pull`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
-- **handoff agentd**：任务状态机、事件持久化、executor 生命周期（tmux 内拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
+- **handoff agentd**：任务状态机、事件持久化、executor 生命周期（经 shim 以独立会话拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
 - **executor 挂载**：四种真实执行者各有传输形态——opencode 走 HTTP API + SSE 事件流（`POST /session`、`prompt_async`、`/event` SSE），claude 走 `claude -p --input-format stream-json` 的进程流（权限门经 handoff 内置 stdio MCP server + unix socket），grok 走 `grok agent serve` 的 ACP（JSON-RPC over WebSocket），codex 走 `codex app-server --listen ws://` 的 WS JSON-RPC 2.0（双向）。权限等待一律发生在 executor 会话内部，与审核者是否在线解耦。
 - **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
 
@@ -54,8 +54,8 @@ handoff agentd --executor=codex             # 用 codex 执行（需本机已登
 #    本机同名文件 targets 段：
 #       targets:
 #         devbox: {addr: "192.168.x.x:7777", token: "<executor 机的 token>", user: "<远程 ssh 用户名>"}
-#    user 是远程 attach/pull 的 ssh 用户名：本机用户名与远程一致时可省略，不一致
-#    不配它会 Permission denied（attach/pull 无法建立 ssh 连接）。
+#    user 是 pull 用的远程 ssh 用户名：本机用户名与远程一致时可省略，不一致
+#    不配它会 Permission denied（pull 无法建立 ssh 连接）。
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
 handoff dispatch --repo /path/to/repo plan.md
@@ -87,7 +87,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
-| `handoff attach [task]` | 进入任务 executor 的 tmux 终端实况（无参时任务选择列表，非 TTY 打印建议命令） | `--target <name>` 远程经 ssh 进入 |
+| `handoff attach [task]` | 在终端跟随任务实况（render 流；无参时任务选择列表，非 TTY 打印建议命令） | `--all`（从头播放全部实况）；`--no-follow`（放完当前内容即退出） |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
@@ -161,7 +161,22 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 
 处理完挂起项（未答提问、未批权限、待审核的完成事件）后重新挂 `wait` 即恢复循环。
 
-> 快照查看是 `handoff show <task>`；`handoff attach [task]` 是进入 executor 终端实况（tmux），无参时在任务列表里选择。二期起两者分离——一期 attach 的语义更名给 show。
+> 快照查看是 `handoff show <task>`；`handoff attach [task]` 是在终端跟随任务实况（render 流），无参时在任务列表里选择。二期起两者分离——一期 attach 的语义更名给 show。
+
+## 部署到 systemd
+
+unit 模板见 `deploy/handoff-agentd.service`。安装：
+
+```bash
+sudo cp deploy/handoff-agentd.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
+```
+
+模板里的 `User` 与 `ExecStart` 路径请改成你自己的。
+
+**`KillMode=process` 是硬要求，不是可选优化**。执行者进程由 agentd 经 shim 以独立会话（setsid）拉起，目的是让它活过 agentd 的重启与升级；但 setsid **改不了 cgroup 归属**——cgroup 由 fork 继承。systemd 默认的 `KillMode=control-group` 会在 `systemctl restart` 时向整个 cgroup 发信号，shim 与执行者一并被杀，正在跑的任务全部中断。设为 `process` 后 systemd 只终止 agentd 主进程，执行者继续跑；agentd 重启后靠存活锁探测重新接管。
+
+**没有设 `KillMode=process` 时，agentd 会在启动日志里 WARN**（只提示不阻断，因为用户可能有意让重启即清场）。
 
 ## Troubleshooting
 
@@ -169,15 +184,16 @@ handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂�
 
 - agentd 日志：`~/.handoff/agentd.log`（JSON 双路输出，stderr 另有文本日志；级别用环境变量 `HANDOFF_LOG_LEVEL=debug` 调低）。
 - 任务目录 `~/.handoff/tasks/<task-id>/`：
-  - `render.log`：模型回合文本增量（执行实况）；`tmux attach` 后第二窗口即 `tail -f` 该文件。
+  - `render.log`：模型回合文本增量（执行实况）；`handoff attach` 从它流式读取。
   - `prompt.md` / `opencode.json`：派发给模型的回合制 prompt 与权限配置（edit/bash/webfetch/external_directory 均为 ask）。
-  - `serve.json`：serve 连接凭据（端口/密码/tmux 会话名），agentd 重启后凭它重建订阅。
-  - `run_serve.sh`：拉起 serve 的启动脚本，**权限 0600 且含明文 serve 密码**（密码走脚本而非 argv，避免出现在 `ps` 输出里）；任务归档后随任务目录一并清理。
-- opencode serve 自身的输出：`tee` 落盘 `<taskDir>/serve.log`。tmux 第一窗格实时可见；serve 退出后该窗格关闭，但**会话不会随之销毁**——第二窗口的 `tail -f render.log` 仍吊着会话，adapter 检测到 serve 死亡时会主动 `kill-session` 回收（见 subscribeLoop）。事后取证一律以 `serve.log` 为准。
+  - `proc.json`：执行者连接凭据（shim Handle / 端口 / session_id），agentd 重启后凭它探活与重建订阅。
+  - `spec.json`：拉起 shim 的启动描述，**权限 0600 且含完整 env**（可能含凭据，走 env 而非 argv，避免出现在 `ps` 输出里）；任务归档后随任务目录一并清理。
+  - `proc.lock`：shim 的存活锁（`prochost.Alive` 的唯一判据；内核在进程死亡时自动释放）。
+- 执行者输出落盘 `<taskDir>/serve.log`（或 claude 的 `out.jsonl`/`claude.log`）：serve 退出后仍可读，事后取证一律以落盘文件为准。
 
-**tmux 会话命名规则**：`handoff-<task 前 8 字符>`。`tmux attach -t handoff-<id8>` 直接旁观（甚至介入）executor 实况，`tmux kill-session -t handoff-<id8>` 可人工兜底回收。
+**执行者进程的承载与回收**：每个任务由 agentd 经 `prochost.Start` 拉起一个极轻的 shim 进程（`handoff _shim`），shim 持有 `proc.lock`、承载真正执行者并负责收尸（补写退出哨兵）。agentd 重启/崩溃不影响执行者——恢复后凭 `proc.json` 探活重连。回收统一走 `handoff stop`（按进程组 Kill）或任务自然结束；人工兜底可 `kill -9 <shim pid>`（pid 见 `proc.json` 的 `handle.pid`）。
 
-claude 与 grok 与 codex 任务的 tmux 布局与 opencode 同构：窗口 0 是执行者进程的原始输出（claude 是 `claude -p` 的 stream-json，grok 是 `grok agent serve` 的日志，codex 是 `codex app-server` 的日志），窗口 1 是 `tail -f render.log`（模型正文实况）；`handoff attach` 一套命令覆盖四个 executor。诊断文件按 executor 对应：claude 是 `claude.log`（stderr，对应 serve.log）与 `claude.json`（恢复凭据：tmux 会话 / session_id / out.jsonl 已消费 offset，对应 serve.json）；grok 是 `serve.log` 与 `serve.json`（tmux 会话 / 端口 / session_id）；codex 是 `serve.log` 与 `serve.json`（tmux 会话 / 端口 / threadId）。
+claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程由各自 adapter 经 prochost 拉起，实况统一经 `handoff attach` 观看。诊断文件按 executor 对应：claude 是 `out.jsonl`（stdout 事件流）与 `claude.log`（stderr）与 `proc.json`（Handle / session_id / 已消费 offset）；grok 是 `serve.log` 与 `proc.json`（Handle / 端口 / session_id）；codex 是 `serve.log` 与 `proc.json`（Handle / 端口 / threadId）。
 
 > **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段，由 claude 自己读取，handoff 不复制这份配置（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
 
