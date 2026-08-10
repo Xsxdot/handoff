@@ -287,10 +287,22 @@ func serveLogTail(serveLogPath string) string {
 }
 
 // procInfo 是 serve 进程连接凭据的持久化形态，agentd 重启后凭它重建订阅。
+//
+// LastTurnMsgID 是对账水位（B38）：最后一条**已被翻译成终态事件**的 assistant
+// 消息 id。断连恢复后拿它与会话尾部比对——不同即说明有一个已完结的回合没被
+// 消费，需要补发。
+//
+// 为什么用消息 id 而不是时间戳：一个断连窗口内至多跨越一个回合边界（spec §2.2，
+// 因为新回合只能由经过 agentd 的 Start/Send 发起），因此「id 不同」就无歧义地
+// 等于「有新的已完结回合」，不需要任何时间序假设。
+//
+// 空串是合法值：老任务的 proc.json 没有这个字段，读出空串即「从未对过账」，
+// 首次对账会把当前尾部认作已消费（见 reconcile.go 的首次对账语义）。
 type procInfo struct {
-	Handle   prochost.Handle `json:"handle"`
-	Port     int             `json:"port"`
-	Password string          `json:"password"`
+	Handle        prochost.Handle `json:"handle"`
+	Port          int             `json:"port"`
+	Password      string          `json:"password"`
+	LastTurnMsgID string          `json:"last_turn_msg_id,omitempty"`
 }
 
 // writeProcInfo 把 serve 连接凭据写入任务目录 proc.json（0600）。
@@ -323,6 +335,8 @@ func readProcInfo(taskDir string) (*procInfo, error) {
 	if err := json.Unmarshal(b, &pi); err != nil {
 		return nil, fmt.Errorf("解析恢复凭据 %s: %w", procInfoFileName, err)
 	}
+	// 水位不进完整性校验：它是 B38 新加的字段，存量 proc.json 里没有。
+	// 若把它算进「字段不完整」，agentd 升级后所有在跑的任务会一起被判死
 	if pi.Handle.LockPath == "" || pi.Port == 0 || pi.Password == "" {
 		return nil, fmt.Errorf("恢复凭据 %s 字段不完整", procInfoFileName)
 	}
