@@ -126,6 +126,9 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
+//   - POST /api/repos                    登记仓库（必要时先克隆）
+//   - GET  /api/repos                    列出仓库登记（含现场实际状态）
+//   - DELETE /api/repos/{name}           注销仓库登记（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -142,6 +145,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
+	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
+	mux.HandleFunc("GET /api/repos", s.handleRepoList)
+	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	return s.auth(mux)
 }
@@ -544,6 +550,107 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 	default:
 		s.log.Error("派发任务失败", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
+	}
+}
+
+// repoAddRequest 是 POST /api/repos 的请求体。
+//
+// 两种形态：clone=false 时 path 必填（登记已有克隆）；clone=true 时 url 必填
+// （先克隆再登记），path 为落点、可省（省时用 agentd 配置的 repo_root）。
+type repoAddRequest struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	URL   string `json:"url"`
+	Clone bool   `json:"clone"`
+}
+
+// handleRepoAdd 登记一个仓库（必要时先克隆）。
+func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("repo add 请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Warn("repo add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req repoAddRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("repo add 请求体解析失败", "err", err)
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "请求体必须是 JSON {name, path, url, clone}"})
+		return
+	}
+	repo, err := s.mgr.RegisterRepo(r.Context(), RegisterRepoReq{
+		Name: req.Name, Path: req.Path, URL: req.URL, Clone: req.Clone})
+	if err != nil {
+		s.writeRepoError(w, req.Name, err)
+		return
+	}
+	s.log.Info("repo add 完成", "name", repo.Name, "path", repo.Path)
+	writeJSON(w, http.StatusOK, repo)
+}
+
+// handleRepoList 列出全部仓库登记（含现场探得的实际状态）。
+func (s *Server) handleRepoList(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("repo list 请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	repos, err := s.mgr.ListRepos(r.Context())
+	if err != nil {
+		s.writeRepoError(w, "", err)
+		return
+	}
+	if repos == nil {
+		repos = []proto.Repo{} // 空列表要序列化成 []，不是 null
+	}
+	s.log.Info("repo list 完成", "count", len(repos))
+	writeJSON(w, http.StatusOK, repos)
+}
+
+// handleRepoRemove 注销一条仓库登记（只删登记，不动磁盘）。
+func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	s.log.Info("repo remove 请求", "name", name)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.UnregisterRepo(r.Context(), name); err != nil {
+		s.writeRepoError(w, name, err)
+		return
+	}
+	s.log.Info("repo remove 完成", "name", name)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// writeRepoError 把仓库登记操作的失败映射为 HTTP 状态码与可读原因。
+//
+// 映射规则（与 writeDispatchError 同一套哲学：调用方拿到就能行动）：
+//   - store.ErrNotFound → 404：登记名不存在
+//   - ErrRepoAlreadyExists → 409：名字/路径已被占用，或克隆落点已存在——
+//     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
+//   - ErrWorkdirBusy → 409：注销时仓库仍被活跃任务占用
+//   - ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
+//     （路径不是仓库、没有 origin、clone 失败、参数缺失）
+//   - 其余 → 500
+func (s *Server) writeRepoError(w http.ResponseWriter, name string, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.log.Warn("仓库登记操作被拒：登记不存在", "name", name, "cause", err)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRepoAlreadyExists):
+		s.log.Warn("仓库登记操作被拒：已存在", "name", name, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkdirBusy):
+		s.log.Warn("仓库登记操作被拒：被活跃任务占用", "name", name, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
+		s.log.Warn("仓库登记操作被拒：请求非法", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	default:
+		s.log.Error("仓库登记操作失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "仓库登记操作失败"})
 	}
 }
 

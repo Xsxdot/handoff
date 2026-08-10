@@ -11,6 +11,7 @@
 package agentd_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -876,4 +878,181 @@ func TestDispatchNewWorktreeCleanRepoNoSnapshot(t *testing.T) {
 	if task.RepoDirtyCount != 0 || task.RepoDirtyFiles != "" {
 		t.Fatalf("干净仓库不该有快照: count=%d files=%q", task.RepoDirtyCount, task.RepoDirtyFiles)
 	}
+}
+
+// initBareOrigin 建一个可 clone 的裸仓库，返回其路径。
+//
+// 注意：本文件是 package agentd_test（外部测试包），看不见 repoadmin_test.go
+// 里的白盒同名 helper，这里按相同实现放一份外部包副本（包内不冲突）。
+func initBareOrigin(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+	return dir
+}
+
+// initWorkRepo 建一个带 origin 且有一个提交的工作仓库，返回其路径。
+//
+// 注意：package agentd_test 的副本，与 repoadmin_test.go 里的白盒 helper 同实现。
+func initWorkRepo(t *testing.T, origin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init")
+	run("remote", "add", "origin", origin)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-m", "init")
+	return dir
+}
+
+// newTestServer 是 repo API 用例的测试服务器构造：复用 newIntegEnv 组装完整环境，
+// 返回 httptest.Server（供 postJSON/getJSON/deleteReq/postRaw 使用）。
+func newTestServer(t *testing.T) (*httptest.Server, *integEnv) {
+	t.Helper()
+	env := newIntegEnv(t, nil)
+	return env.ts, env
+}
+
+// repoReq 发起一个带 Bearer token 的 HTTP 请求并返回响应（调用方负责关闭 Body）。
+func repoReq(t *testing.T, srv *httptest.Server, method, path string, body any) *http.Response {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("序列化请求体: %v", err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, srv.URL+path, rd)
+	if err != nil {
+		t.Fatalf("构造请求: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("发送请求: %v", err)
+	}
+	return resp
+}
+
+// postJSON 发送 POST JSON 并断言状态码；out 非 nil 时解码响应体到 out。
+func postJSON(t *testing.T, srv *httptest.Server, path string, body any, wantStatus int, out any) {
+	t.Helper()
+	resp := repoReq(t, srv, http.MethodPost, path, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST %s 状态码 %d, want %d: %s", path, resp.StatusCode, wantStatus, rb)
+	}
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("解码 %s 响应: %v", path, err)
+		}
+	}
+}
+
+// getJSON 发送 GET 并断言状态码，解码响应体到 out。
+func getJSON(t *testing.T, srv *httptest.Server, path string, wantStatus int, out any) {
+	t.Helper()
+	resp := repoReq(t, srv, http.MethodGet, path, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET %s 状态码 %d, want %d: %s", path, resp.StatusCode, wantStatus, rb)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatalf("解码 %s 响应: %v", path, err)
+	}
+}
+
+// deleteReq 发送 DELETE 并断言状态码。
+func deleteReq(t *testing.T, srv *httptest.Server, path string, wantStatus int) {
+	t.Helper()
+	resp := repoReq(t, srv, http.MethodDelete, path, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("DELETE %s 状态码 %d, want %d: %s", path, resp.StatusCode, wantStatus, rb)
+	}
+}
+
+// postRaw 发送 POST JSON 并返回响应体原文（供报文内容断言）。
+func postRaw(t *testing.T, srv *httptest.Server, path string, body any, wantStatus int) string {
+	t.Helper()
+	resp := repoReq(t, srv, http.MethodPost, path, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST %s 状态码 %d, want %d: %s", path, resp.StatusCode, wantStatus, rb)
+	}
+	rb, _ := io.ReadAll(resp.Body)
+	return string(rb)
+}
+
+// TestRepoAPIAddListRemove 走完整 HTTP 面：登记 → 列出 → 注销。
+func TestRepoAPIAddListRemove(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	repo := initWorkRepo(t, origin)
+
+	var added proto.Repo
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo}, http.StatusOK, &added)
+	if added.OriginURL != origin {
+		t.Fatalf("OriginURL = %q, want %q", added.OriginURL, origin)
+	}
+
+	var list []proto.Repo
+	getJSON(t, srv, "/api/repos", http.StatusOK, &list)
+	if len(list) != 1 || list[0].Name != "r1" || list[0].Status != "有效" {
+		t.Fatalf("列表不符: %+v", list)
+	}
+
+	deleteReq(t, srv, "/api/repos/r1", http.StatusOK)
+	getJSON(t, srv, "/api/repos", http.StatusOK, &list)
+	if len(list) != 0 {
+		t.Fatalf("注销后仍有 %d 条", len(list))
+	}
+}
+
+// TestRepoAPIRejectsNonRepoWithReadableReason 验证非 git 路径 → 400 且带 git 原文，
+// 不被扁平化成「操作失败」（B45 立下的规矩）。
+func TestRepoAPIRejectsNonRepoWithReadableReason(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body := postRaw(t, srv, "/api/repos",
+		map[string]any{"name": "x", "path": t.TempDir()}, http.StatusBadRequest)
+	if !strings.Contains(body, "not a git repository") {
+		t.Fatalf("响应体未带 git 原文: %s", body)
+	}
+}
+
+// TestRepoAPICloneIntoExistingPathConflicts 验证落点已存在 → 409。
+func TestRepoAPICloneIntoExistingPathConflicts(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	postRaw(t, srv, "/api/repos",
+		map[string]any{"name": "x", "path": t.TempDir(), "url": origin, "clone": true},
+		http.StatusConflict)
+}
+
+// TestRepoAPIRemoveMissing 验证注销不存在的登记 → 404。
+func TestRepoAPIRemoveMissing(t *testing.T) {
+	srv, _ := newTestServer(t)
+	deleteReq(t, srv, "/api/repos/nope", http.StatusNotFound)
 }
