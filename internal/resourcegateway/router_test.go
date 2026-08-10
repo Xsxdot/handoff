@@ -12,8 +12,10 @@ package resourcegateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/controlplane"
@@ -43,9 +45,12 @@ func (f *routerCatalogFake) GetMachine(_ context.Context, id string) (controlpla
 }
 
 type authorityFake struct {
-	listCalls []workspaceapi.WorkspaceRef
-	readCalls []workspaceapi.WorkspaceRef
-	listErr   error
+	listCalls       []workspaceapi.WorkspaceRef
+	readCalls       []workspaceapi.WorkspaceRef
+	connectCalls    []string
+	closeCalls      []string
+	terminalSession workspaceapi.PtySession
+	listErr         error
 }
 
 func (f *authorityFake) ListDirectory(_ context.Context, ws workspaceapi.WorkspaceRef, _ string) ([]workspaceapi.FileEntry, error) {
@@ -79,6 +84,43 @@ func (f *authorityFake) CreateTerminal(context.Context, workspaceapi.WorkspaceRe
 
 func (f *authorityFake) GetTerminal(context.Context, string) (workspaceapi.PtySession, error) {
 	return workspaceapi.PtySession{}, nil
+}
+
+func (f *authorityFake) ConnectTerminal(_ context.Context, sessionID, incarnation string, after int64) (*workspaceapi.PtySubscription, error) {
+	f.connectCalls = append(f.connectCalls, sessionID+":"+incarnation+":"+fmt.Sprint(after))
+	return workspaceapi.NewPtySubscription(f.terminalSession, nil, nil, nil, false, nil, nil, nil), nil
+}
+
+func (f *authorityFake) CloseTerminal(_ context.Context, sessionID, incarnation string) (workspaceapi.PtySession, error) {
+	f.closeCalls = append(f.closeCalls, sessionID+":"+incarnation)
+	return f.terminalSession, nil
+}
+
+func TestRouterRoutesPtyConnectAndCloseToWorkspaceOwner(t *testing.T) {
+	terminal := workspaceapi.PtySession{TerminalSessionID: "term-1", Incarnation: "inc-1", WorkspaceID: "ws-remote"}
+	remote := &authorityFake{terminalSession: terminal}
+	repo := &routerCatalogFake{
+		workspaces: map[string]controlplane.Workspace{
+			"ws-remote": {ID: "ws-remote", MachineID: "m-remote", Path: "/remote", Availability: controlplane.AvailabilityAvailable},
+		},
+		machines: map[string]controlplane.Machine{
+			"m-remote": {ID: "m-remote", Kind: controlplane.MachineKindRemote, Status: controlplane.MachineStatusConnected,
+				Capabilities: map[string]int{"pty": 1}},
+		},
+	}
+	router := NewRouter(repo, &authorityFake{}, &peerResolverFake{authority: remote}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	subscription, err := router.ConnectTerminal(context.Background(), "ws-remote", "term-1", "inc-1", 7)
+	if err != nil || subscription.Session.WorkspaceID != "ws-remote" {
+		t.Fatalf("ConnectTerminal = %+v, %v", subscription, err)
+	}
+	closed, err := router.CloseTerminal(context.Background(), "ws-remote", "term-1", "inc-1")
+	if err != nil || closed.TerminalSessionID != "term-1" {
+		t.Fatalf("CloseTerminal = %+v, %v", closed, err)
+	}
+	if !reflect.DeepEqual(remote.connectCalls, []string{"term-1:inc-1:7"}) ||
+		!reflect.DeepEqual(remote.closeCalls, []string{"term-1:inc-1"}) {
+		t.Fatalf("PTY owner calls = connect %v close %v", remote.connectCalls, remote.closeCalls)
+	}
 }
 
 func (f *authorityFake) CreatePreview(context.Context, workspaceapi.WorkspaceRef, workspaceapi.CreatePreviewCommand) (workspaceapi.PreviewSession, error) {

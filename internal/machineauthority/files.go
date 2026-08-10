@@ -3,11 +3,12 @@
 // 职责：
 //   - 列出目录、读取 base64 内容并计算内容 SHA-256 version
 //   - 校验 if_match/create_only，使用同目录临时文件 + fsync + rename 保存
+//   - 把 PTY 生命周期委托给同机 ptyservice
 //   - 返回只含 Workspace-relative path 的 workspaceapi 结果
 //
 // 边界：
 //   - 每次操作都重新从 WorkspaceRef.RootPath 打开 os.Root 做 owner 端最终授权
-//   - 不实现 HTTP/peer 路由；不记录 content_base64
+//   - 不实现 HTTP/peer 路由；不记录 content_base64 或 terminal bytes
 package machineauthority
 
 import (
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xushixin/handoff/internal/ptyservice"
 	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
@@ -42,8 +44,21 @@ type ResourceAuthority struct {
 	searchLimits    searchLimits
 	fileStream      *FileStream
 	gitStatusRunner gitStatusRunner
+	terminal        *ptyservice.Service
 	// beforeRename 是原子边界故障注入 seam；生产保持 nil，仅测试清理语义。
 	beforeRename func() error
+}
+
+// SetTerminalService 注入 owner PTY 会话服务；nil 时明确 capability unsupported。
+func (a *ResourceAuthority) SetTerminalService(service *ptyservice.Service) {
+	a.terminal = service
+}
+
+// SetTerminalOutboxNotifier 注入 PTY 状态事件的本机 outbox 快速唤醒器。
+func (a *ResourceAuthority) SetTerminalOutboxNotifier(notify func()) {
+	if a.terminal != nil {
+		a.terminal.SetOutboxNotifier(notify)
+	}
 }
 
 // NewResourceAuthority 创建本机文件资源权威。
@@ -281,14 +296,38 @@ func isResourceCode(err error, code workspaceapi.ErrorCode) bool {
 	return errors.As(err, &resourceErr) && resourceErr.Code == code
 }
 
-// CreateTerminal 在 Task 4 接入。
-func (a *ResourceAuthority) CreateTerminal(context.Context, workspaceapi.WorkspaceRef, workspaceapi.CreateTerminalCommand) (workspaceapi.PtySession, error) {
-	return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+// CreateTerminal 在 owner Workspace 下创建幂等登录 shell。
+func (a *ResourceAuthority) CreateTerminal(ctx context.Context, ws workspaceapi.WorkspaceRef,
+	command workspaceapi.CreateTerminalCommand) (workspaceapi.PtySession, error) {
+	if a.terminal == nil {
+		return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+	}
+	return a.terminal.Create(ctx, ws, command)
 }
 
-// GetTerminal 在 Task 4 接入。
-func (a *ResourceAuthority) GetTerminal(context.Context, string) (workspaceapi.PtySession, error) {
-	return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+// GetTerminal 读取 owner PTY session 元数据，不创建新 shell。
+func (a *ResourceAuthority) GetTerminal(ctx context.Context, sessionID string) (workspaceapi.PtySession, error) {
+	if a.terminal == nil {
+		return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+	}
+	return a.terminal.Get(ctx, sessionID)
+}
+
+// ConnectTerminal 连接 owner PTY 的 replay + live 双向流。
+func (a *ResourceAuthority) ConnectTerminal(ctx context.Context, sessionID, incarnation string,
+	after int64) (*workspaceapi.PtySubscription, error) {
+	if a.terminal == nil {
+		return nil, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+	}
+	return a.terminal.Connect(ctx, sessionID, incarnation, after)
+}
+
+// CloseTerminal 显式终止 owner PTY，保留 metadata。
+func (a *ResourceAuthority) CloseTerminal(ctx context.Context, sessionID, incarnation string) (workspaceapi.PtySession, error) {
+	if a.terminal == nil {
+		return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "PTY 资源能力尚未接入"}
+	}
+	return a.terminal.CloseTerminal(ctx, sessionID, incarnation)
 }
 
 // CreatePreview 在 Task 5 接入。

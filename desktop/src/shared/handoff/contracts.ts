@@ -296,6 +296,8 @@ export const ptyServerFrameSchema = z.object({
   kind: ptyFrameKindSchema,
   terminal_session_id: z.string(),
   incarnation: z.string(),
+  workspace_id: z.string(),
+  capabilities: z.record(z.string(), z.number().int()).optional(),
   seq: z.number().int(),
   through_seq: z.number().int(),
   data_base64: z.string().optional(),

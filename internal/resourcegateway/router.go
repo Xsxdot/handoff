@@ -232,6 +232,10 @@ func (r *Router) CreateTerminal(ctx context.Context, workspaceID string, command
 		r.log.Error("PTY 创建失败", "workspace_id", workspaceID, "command_id", command.CommandID, "cause", err)
 		return workspaceapi.PtySession{}, r.operationError(route, workspaceID, err)
 	}
+	if session.WorkspaceID != workspaceID {
+		return workspaceapi.PtySession{}, r.reject(http.StatusNotFound, desktopapi.ProblemResourceNotFound,
+			"终端会话不属于该工作区", route.workspace.MachineID, workspaceID, errors.New("terminal workspace mismatch"))
+	}
 	r.log.Info("PTY 创建完成", "workspace_id", workspaceID, "terminal_session_id", session.TerminalSessionID, "incarnation", session.Incarnation)
 	return session, nil
 }
@@ -247,10 +251,54 @@ func (r *Router) GetTerminal(ctx context.Context, workspaceID, terminalSessionID
 		r.log.Error("PTY 读取失败", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID, "cause", err)
 		return workspaceapi.PtySession{}, r.operationError(route, workspaceID, err)
 	}
-	if session.WorkspaceID != "" && session.WorkspaceID != workspaceID {
+	if session.WorkspaceID != workspaceID {
 		return workspaceapi.PtySession{}, r.reject(http.StatusNotFound, desktopapi.ProblemResourceNotFound, "终端会话不属于该工作区", route.workspace.MachineID, workspaceID, errors.New("terminal workspace mismatch"))
 	}
 	r.log.Info("PTY 读取完成", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID, "incarnation", session.Incarnation, "state", session.State)
+	return session, nil
+}
+
+// ConnectTerminal 按 Workspace owner 路由 PTY replay、live 与控制帧。
+func (r *Router) ConnectTerminal(ctx context.Context, workspaceID, terminalSessionID, incarnation string,
+	after int64) (*workspaceapi.PtySubscription, error) {
+	route, err := r.resolve(ctx, "pty.connect", workspaceID, peer.CapabilityPty)
+	if err != nil {
+		return nil, err
+	}
+	subscription, err := route.authority.ConnectTerminal(ctx, terminalSessionID, incarnation, after)
+	if err != nil {
+		r.log.Error("PTY 连接失败", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID, "cause", err)
+		return nil, r.operationError(route, workspaceID, err)
+	}
+	if subscription == nil || subscription.Session.WorkspaceID != workspaceID {
+		if subscription != nil {
+			subscription.Cancel()
+		}
+		return nil, r.reject(http.StatusNotFound, desktopapi.ProblemResourceNotFound,
+			"终端会话不属于该工作区", route.workspace.MachineID, workspaceID, errors.New("terminal workspace mismatch"))
+	}
+	r.log.Info("PTY 连接完成", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID,
+		"incarnation", incarnation, "after_seq", after, "replay_count", len(subscription.Replay))
+	return subscription, nil
+}
+
+// CloseTerminal 按 Workspace owner 路由显式 PTY 终止。
+func (r *Router) CloseTerminal(ctx context.Context, workspaceID, terminalSessionID, incarnation string) (workspaceapi.PtySession, error) {
+	route, err := r.resolve(ctx, "pty.close", workspaceID, peer.CapabilityPty)
+	if err != nil {
+		return workspaceapi.PtySession{}, err
+	}
+	session, err := route.authority.CloseTerminal(ctx, terminalSessionID, incarnation)
+	if err != nil {
+		r.log.Error("PTY 终止失败", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID, "cause", err)
+		return workspaceapi.PtySession{}, r.operationError(route, workspaceID, err)
+	}
+	if session.WorkspaceID != workspaceID {
+		return workspaceapi.PtySession{}, r.reject(http.StatusNotFound, desktopapi.ProblemResourceNotFound,
+			"终端会话不属于该工作区", route.workspace.MachineID, workspaceID, errors.New("terminal workspace mismatch"))
+	}
+	r.log.Info("PTY 终止完成", "workspace_id", workspaceID, "terminal_session_id", terminalSessionID,
+		"incarnation", incarnation, "state", session.State)
 	return session, nil
 }
 

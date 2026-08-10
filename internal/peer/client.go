@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - Hello/MachineSnapshot/EventsAfter 控制同步
-//   - 文件 list/read/write/search 与 replay+live stream 资源代理
+//   - 文件 list/read/write/search 与 PTY replay+live 双向资源代理
 //   - 项目目录 InspectPath/Clone 命令代理
 //   - 区分资源 Problem、协议不兼容、认证失败与网络不可达
 //
@@ -35,6 +35,15 @@ var (
 	ErrAuthFailed   = errors.New("peer 认证失败")
 	ErrIncompatible = errors.New("peer 协议不兼容")
 	ErrUnavailable  = errors.New("peer 不可达")
+)
+
+const (
+	maxPtyReplayFrames       = 4096
+	maxPtyReplayEncodedBytes = 6 << 20
+	maxPtyReplayWireBytes    = 8 << 20
+	maxPtyLiveEncodedBytes   = 128 << 10
+	maxPtyLiveWireBytes      = maxPtyLiveEncodedBytes + (64 << 10)
+	maxPtyWireFrameBytes     = maxPtyReplayEncodedBytes + (64 << 10)
 )
 
 // ClientConfig 是 peer client 的构造参数。
@@ -293,14 +302,356 @@ func (c *Client) GitStatus(ctx context.Context, ws workspaceapi.WorkspaceRef) (w
 	return (&desktopapi.ResourceAssembler{}).FromGitStatus(out), nil
 }
 
-// CreateTerminal 在 Task 4 接入远端 wire route。
-func (c *Client) CreateTerminal(context.Context, workspaceapi.WorkspaceRef, workspaceapi.CreateTerminalCommand) (workspaceapi.PtySession, error) {
-	return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "远端 PTY 资源能力尚未接入"}
+// CreateTerminal 通过远端 owner agentd 幂等创建普通 PTY。
+func (c *Client) CreateTerminal(ctx context.Context, ws workspaceapi.WorkspaceRef,
+	command workspaceapi.CreateTerminalCommand) (workspaceapi.PtySession, error) {
+	path := "/v1/workspaces/" + url.PathEscape(ws.WorkspaceID) + "/terminals"
+	request := desktopapi.CreateTerminalRequest{CommandID: command.CommandID, Cols: command.Cols, Rows: command.Rows}
+	var response desktopapi.PtySessionDTO
+	if err := c.doResource(ctx, http.MethodPost, path, request, &response); err != nil {
+		return workspaceapi.PtySession{}, err
+	}
+	return (&desktopapi.ResourceAssembler{}).FromPtySession(response), nil
 }
 
-// GetTerminal 在 Task 4 接入远端 wire route。
-func (c *Client) GetTerminal(context.Context, string) (workspaceapi.PtySession, error) {
-	return workspaceapi.PtySession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "远端 PTY 资源能力尚未接入"}
+// GetTerminal 读取远端 owner 的 PTY 元数据，不创建新进程。
+func (c *Client) GetTerminal(ctx context.Context, terminalSessionID string) (workspaceapi.PtySession, error) {
+	path := "/v1/terminals/" + url.PathEscape(terminalSessionID)
+	var response desktopapi.PtySessionDTO
+	if err := c.doResource(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return workspaceapi.PtySession{}, err
+	}
+	return (&desktopapi.ResourceAssembler{}).FromPtySession(response), nil
+}
+
+// ConnectTerminal 连接远端 owner PTY，并在返回前原子收完握手时声明的 replay。
+func (c *Client) ConnectTerminal(ctx context.Context, terminalSessionID, incarnation string,
+	after int64) (*workspaceapi.PtySubscription, error) {
+	endpoint, err := c.terminalStreamURL(terminalSessionID, incarnation, after)
+	if err != nil {
+		return nil, err
+	}
+	header := http.Header{"Authorization": []string{"Bearer " + c.token}}
+	conn, response, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPClient: c.hc, HTTPHeader: header})
+	if err != nil {
+		if response != nil {
+			defer response.Body.Close()
+			var problem desktopapi.Problem
+			if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&problem); decodeErr == nil && problem.Code != "" {
+				return nil, &workspaceapi.Error{Code: workspaceapi.ErrorCode(problem.Code), Message: problem.Message, Retryable: problem.Retryable}
+			}
+		}
+		return nil, fmt.Errorf("%w: PTY WebSocket 连接失败: %v", ErrUnavailable, err)
+	}
+	// 4 MiB 原始 ring 经 base64 会膨胀到约 5.33 MiB；wire 上限必须覆盖
+	// 合法 snapshot，同时仍由 replay 聚合上限约束总恢复体积。
+	conn.SetReadLimit(maxPtyWireFrameBytes)
+	first, firstWireBytes, err := readPtyStreamFrame(ctx, conn)
+	if err != nil {
+		conn.CloseNow()
+		return nil, err
+	}
+	if err := validatePtyServerFrame(first, terminalSessionID, incarnation, ""); err != nil {
+		conn.CloseNow()
+		return nil, err
+	}
+	if first.Kind != string(workspaceapi.PtyFrameSubscribed) {
+		conn.CloseNow()
+		return nil, fmt.Errorf("peer PTY 首帧必须是 subscribed: kind=%s", first.Kind)
+	}
+	if err := validateSubscribedPtyFrame(first, after, firstWireBytes); err != nil {
+		conn.CloseNow()
+		return nil, err
+	}
+	if first.Capabilities["input"] < 1 || first.Capabilities["resize"] < 1 {
+		conn.CloseNow()
+		return nil, fmt.Errorf("peer PTY 首帧缺基础 capability: %+v", first.Capabilities)
+	}
+
+	assembler := &desktopapi.ResourceAssembler{}
+	replay := make([]workspaceapi.PtyServerFrame, 0)
+	var snapshot *workspaceapi.PtyServerFrame
+	cursorExpired := false
+	lastReplaySeq := after
+	replayEncodedBytes := 0
+	replayWireBytes := 0
+	for first.ThroughSeq > after && (snapshot == nil || snapshot.ThroughSeq < first.ThroughSeq) &&
+		(len(replay) == 0 || replay[len(replay)-1].Seq < first.ThroughSeq) {
+		frame, wireBytes, readErr := readPtyStreamFrame(ctx, conn)
+		if readErr != nil {
+			conn.CloseNow()
+			return nil, fmt.Errorf("%w: 读取 PTY replay 失败: %v", ErrUnavailable, readErr)
+		}
+		if validateErr := validatePtyServerFrame(frame, terminalSessionID, incarnation, first.WorkspaceID); validateErr != nil {
+			conn.CloseNow()
+			return nil, validateErr
+		}
+		if frame.Kind == string(workspaceapi.PtyFrameSubscribed) {
+			conn.CloseNow()
+			return nil, fmt.Errorf("%w: peer PTY replay 重复 subscribed", ErrIncompatible)
+		}
+		replayWireBytes += wireBytes
+		if replayWireBytes > maxPtyReplayWireBytes {
+			conn.CloseNow()
+			return nil, fmt.Errorf("%w: peer PTY replay wire bytes 超过上限", ErrIncompatible)
+		}
+		ownerFrame := assembler.FromPtyServerFrame(frame)
+		switch ownerFrame.Kind {
+		case workspaceapi.PtyFrameProblem:
+			if wireBytes > maxPtyLiveWireBytes || ownerFrame.Problem == nil || ownerFrame.Seq != 0 ||
+				ownerFrame.DataBase64 != "" || len(ownerFrame.Capabilities) != 0 ||
+				ownerFrame.State != "" || ownerFrame.ExitCode != nil {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay problem frame 字段非法", ErrIncompatible)
+			}
+			if ownerFrame.Problem.Code != string(workspaceapi.ErrorCursorExpired) {
+				conn.CloseNow()
+				return nil, &workspaceapi.Error{Code: workspaceapi.ErrorCode(ownerFrame.Problem.Code),
+					Message: ownerFrame.Problem.Message, Retryable: ownerFrame.Problem.Retryable}
+			}
+			if cursorExpired {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay 重复 cursor problem", ErrIncompatible)
+			}
+			cursorExpired = true
+		case workspaceapi.PtyFrameSnapshot:
+			if !cursorExpired || snapshot != nil || ownerFrame.Seq != first.ThroughSeq ||
+				ownerFrame.ThroughSeq != first.ThroughSeq || len(ownerFrame.Capabilities) != 0 ||
+				ownerFrame.State != "" || ownerFrame.ExitCode != nil || ownerFrame.Problem != nil {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY snapshot 游标非法", ErrIncompatible)
+			}
+			replayEncodedBytes += len(ownerFrame.DataBase64)
+			if replayEncodedBytes > maxPtyReplayEncodedBytes {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY snapshot 超过恢复上限", ErrIncompatible)
+			}
+			copyFrame := ownerFrame
+			snapshot = &copyFrame
+		case workspaceapi.PtyFrameData:
+			if cursorExpired || ownerFrame.Seq != lastReplaySeq+1 ||
+				ownerFrame.ThroughSeq != ownerFrame.Seq || ownerFrame.Seq > first.ThroughSeq {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay seq 非严格单调: previous=%d current=%d through=%d",
+					ErrIncompatible, lastReplaySeq, ownerFrame.Seq, first.ThroughSeq)
+			}
+			if len(replay) >= maxPtyReplayFrames {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay frame 超过上限", ErrIncompatible)
+			}
+			if wireBytes > maxPtyLiveWireBytes || len(ownerFrame.DataBase64) > maxPtyLiveEncodedBytes ||
+				len(ownerFrame.Capabilities) != 0 || ownerFrame.State != "" ||
+				ownerFrame.ExitCode != nil || ownerFrame.Problem != nil {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay data frame 字段非法", ErrIncompatible)
+			}
+			replayEncodedBytes += len(ownerFrame.DataBase64)
+			if replayEncodedBytes > maxPtyReplayEncodedBytes {
+				conn.CloseNow()
+				return nil, fmt.Errorf("%w: peer PTY replay bytes 超过上限", ErrIncompatible)
+			}
+			replay = append(replay, ownerFrame)
+			lastReplaySeq = ownerFrame.Seq
+		default:
+			conn.CloseNow()
+			return nil, fmt.Errorf("%w: peer PTY replay 不允许 kind=%s", ErrIncompatible, ownerFrame.Kind)
+		}
+	}
+
+	events := make(chan workspaceapi.PtyServerFrame, 64)
+	done := make(chan error, 1)
+	streamCtx, cancel := context.WithCancel(ctx)
+	var closeOnce sync.Once
+	var writeMu sync.Mutex
+	liveLastSeq := first.ThroughSeq
+	liveState := workspaceapi.PtyState(first.State)
+	finish := func(reason error) {
+		closeOnce.Do(func() {
+			if reason != nil {
+				done <- reason
+			}
+			close(events)
+			close(done)
+			conn.CloseNow()
+		})
+	}
+	go func() {
+		defer finish(nil)
+		for {
+			frame, wireBytes, readErr := readPtyStreamFrame(streamCtx, conn)
+			if readErr != nil {
+				if streamCtx.Err() == nil && websocket.CloseStatus(readErr) != websocket.StatusNormalClosure {
+					finish(fmt.Errorf("%w: 远端 PTY 流中断: %v", ErrUnavailable, readErr))
+				}
+				return
+			}
+			if validateErr := validatePtyServerFrame(frame, terminalSessionID, incarnation, first.WorkspaceID); validateErr != nil {
+				finish(validateErr)
+				return
+			}
+			if wireBytes > maxPtyLiveWireBytes {
+				finish(fmt.Errorf("%w: peer PTY live frame 超过上限", ErrIncompatible))
+				return
+			}
+			ownerFrame := assembler.FromPtyServerFrame(frame)
+			if ownerFrame.Kind == workspaceapi.PtyFrameProblem {
+				if ownerFrame.DataBase64 != "" || len(ownerFrame.Capabilities) != 0 ||
+					ownerFrame.State != "" || ownerFrame.ExitCode != nil {
+					finish(fmt.Errorf("%w: peer PTY problem frame 字段非法", ErrIncompatible))
+					return
+				}
+				if ownerFrame.Problem != nil {
+					finish(&workspaceapi.Error{Code: workspaceapi.ErrorCode(ownerFrame.Problem.Code),
+						Message: ownerFrame.Problem.Message, Retryable: ownerFrame.Problem.Retryable})
+				} else {
+					finish(fmt.Errorf("peer PTY problem frame 缺 problem"))
+				}
+				return
+			}
+			terminal, nextSeq, nextState, validateErr := validateLivePtyFrame(ownerFrame, liveLastSeq, liveState)
+			if validateErr != nil {
+				finish(validateErr)
+				return
+			}
+			liveLastSeq = nextSeq
+			liveState = nextState
+			select {
+			case events <- ownerFrame:
+			case <-streamCtx.Done():
+				return
+			}
+			if terminal {
+				return
+			}
+		}
+	}()
+	session := workspaceapi.PtySession{TerminalSessionID: terminalSessionID, Incarnation: incarnation,
+		WorkspaceID: first.WorkspaceID, State: workspaceapi.PtyState(first.State),
+		ThroughSeq: first.ThroughSeq, ExitCode: first.ExitCode}
+	send := func(sendCtx context.Context, frame workspaceapi.PtyClientFrame) error {
+		raw, marshalErr := json.Marshal(assembler.ToPtyClientFrame(frame))
+		if marshalErr != nil {
+			return fmt.Errorf("编码 PTY 客户端 frame: %w", marshalErr)
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if writeErr := conn.Write(sendCtx, websocket.MessageText, raw); writeErr != nil {
+			return fmt.Errorf("%w: 写远端 PTY 控制帧: %v", ErrUnavailable, writeErr)
+		}
+		return nil
+	}
+	subscription := workspaceapi.NewPtySubscription(session, replay, events, done, cursorExpired, snapshot, send, func() {
+		cancel()
+		conn.CloseNow()
+	})
+	subscription.Capabilities = first.Capabilities
+	return subscription, nil
+}
+
+func validateSubscribedPtyFrame(frame desktopapi.PtyServerFrameDTO, after int64, wireBytes int) error {
+	state := workspaceapi.PtyState(frame.State)
+	if wireBytes > maxPtyLiveWireBytes || after < 0 || frame.Seq != 0 || frame.ThroughSeq < after ||
+		frame.DataBase64 != "" || frame.Problem != nil ||
+		(state != workspaceapi.PtyStateActive && state != workspaceapi.PtyStateEnded) ||
+		(state == workspaceapi.PtyStateActive && frame.ExitCode != nil) {
+		return fmt.Errorf("%w: peer PTY subscribed frame 字段非法", ErrIncompatible)
+	}
+	return nil
+}
+
+func validateLivePtyFrame(frame workspaceapi.PtyServerFrame, lastSeq int64,
+	currentState workspaceapi.PtyState) (bool, int64, workspaceapi.PtyState, error) {
+	switch frame.Kind {
+	case workspaceapi.PtyFrameData:
+		if currentState == workspaceapi.PtyStateEnded || frame.Seq != lastSeq+1 || frame.ThroughSeq != frame.Seq {
+			return false, lastSeq, currentState, fmt.Errorf("%w: peer PTY live seq 非连续: previous=%d current=%d through=%d",
+				ErrIncompatible, lastSeq, frame.Seq, frame.ThroughSeq)
+		}
+		if len(frame.DataBase64) > maxPtyLiveEncodedBytes || len(frame.Capabilities) != 0 ||
+			frame.State != "" || frame.ExitCode != nil || frame.Problem != nil {
+			return false, lastSeq, currentState, fmt.Errorf("%w: peer PTY data frame 字段非法", ErrIncompatible)
+		}
+		return false, frame.Seq, currentState, nil
+	case workspaceapi.PtyFrameStatus:
+		if frame.Seq != lastSeq || frame.ThroughSeq != lastSeq || frame.DataBase64 != "" ||
+			len(frame.Capabilities) != 0 || frame.ExitCode != nil || frame.Problem != nil ||
+			currentState != workspaceapi.PtyStateActive || frame.State != currentState {
+			return false, lastSeq, currentState, fmt.Errorf("%w: peer PTY status frame 字段非法", ErrIncompatible)
+		}
+		return false, lastSeq, currentState, nil
+	case workspaceapi.PtyFrameExit:
+		if frame.Seq != lastSeq || frame.ThroughSeq != lastSeq || frame.DataBase64 != "" ||
+			len(frame.Capabilities) != 0 || frame.Problem != nil || frame.State != workspaceapi.PtyStateEnded {
+			return false, lastSeq, currentState, fmt.Errorf("%w: peer PTY exit frame 字段非法", ErrIncompatible)
+		}
+		return true, lastSeq, workspaceapi.PtyStateEnded, nil
+	default:
+		return false, lastSeq, currentState, fmt.Errorf("%w: peer PTY live 不允许 kind=%s", ErrIncompatible, frame.Kind)
+	}
+}
+
+func validatePtyServerFrame(frame desktopapi.PtyServerFrameDTO, terminalSessionID,
+	incarnation, workspaceID string) error {
+	if frame.Version != 1 {
+		return fmt.Errorf("%w: peer PTY frame version=%d", ErrIncompatible, frame.Version)
+	}
+	if frame.TerminalSessionID != terminalSessionID || frame.Incarnation != incarnation || frame.WorkspaceID == "" {
+		return fmt.Errorf("peer PTY frame 身份非法: kind=%s terminal_session_id=%s incarnation=%s workspace_id=%s",
+			frame.Kind, frame.TerminalSessionID, frame.Incarnation, frame.WorkspaceID)
+	}
+	if workspaceID != "" && frame.WorkspaceID != workspaceID {
+		return fmt.Errorf("peer PTY frame workspace 漂移: expected=%s actual=%s", workspaceID, frame.WorkspaceID)
+	}
+	switch workspaceapi.PtyFrameKind(frame.Kind) {
+	case workspaceapi.PtyFrameSubscribed, workspaceapi.PtyFrameSnapshot, workspaceapi.PtyFrameData,
+		workspaceapi.PtyFrameStatus, workspaceapi.PtyFrameExit, workspaceapi.PtyFrameProblem:
+		return nil
+	default:
+		return fmt.Errorf("%w: peer PTY frame kind=%s", ErrIncompatible, frame.Kind)
+	}
+}
+
+func (c *Client) terminalStreamURL(terminalSessionID, incarnation string, after int64) (string, error) {
+	endpoint, err := url.Parse(c.endpoint)
+	if err != nil {
+		return "", fmt.Errorf("解析 peer endpoint: %w", err)
+	}
+	switch endpoint.Scheme {
+	case "http":
+		endpoint.Scheme = "ws"
+	case "https":
+		endpoint.Scheme = "wss"
+	default:
+		return "", fmt.Errorf("peer endpoint scheme 不支持 WebSocket: %s", endpoint.Scheme)
+	}
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/") + "/v1/terminals/" + url.PathEscape(terminalSessionID) + "/stream"
+	query := endpoint.Query()
+	query.Set("incarnation", incarnation)
+	query.Set("after", fmt.Sprintf("%d", after))
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
+}
+
+func readPtyStreamFrame(ctx context.Context, conn *websocket.Conn) (desktopapi.PtyServerFrameDTO, int, error) {
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		return desktopapi.PtyServerFrameDTO{}, 0, err
+	}
+	var frame desktopapi.PtyServerFrameDTO
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		return desktopapi.PtyServerFrameDTO{}, 0, fmt.Errorf("解码 peer PTY frame: %w", err)
+	}
+	return frame, len(raw), nil
+}
+
+// CloseTerminal 显式终止远端 owner PTY，保留会话元数据。
+func (c *Client) CloseTerminal(ctx context.Context, terminalSessionID, incarnation string) (workspaceapi.PtySession, error) {
+	path := "/v1/terminals/" + url.PathEscape(terminalSessionID) + "?incarnation=" + url.QueryEscape(incarnation)
+	var response desktopapi.PtySessionDTO
+	if err := c.doResource(ctx, http.MethodDelete, path, nil, &response); err != nil {
+		return workspaceapi.PtySession{}, err
+	}
+	return (&desktopapi.ResourceAssembler{}).FromPtySession(response), nil
 }
 
 // CreatePreview 在 Task 5 接入远端 wire route。

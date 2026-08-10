@@ -11,6 +11,7 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
+	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
 // marshalWorkspace 把 Workspace 序列化为 payload JSON。
@@ -147,6 +149,164 @@ func TestApplyMachineEventUpdatesCursor(t *testing.T) {
 	}
 	if cursor != 1 {
 		t.Fatalf("cursor = %d, want 1", cursor)
+	}
+}
+
+func TestApplyRemotePtyEventProjectsSummaryWithoutTerminalBytes(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	session := workspaceapi.PtySession{TerminalSessionID: "remote-term", Incarnation: "remote-inc",
+		WorkspaceID: "ws-remote", State: workspaceapi.PtyStateActive, Shell: "/bin/zsh", ThroughSeq: 4}
+	payload, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlEvent, applied, err := s.ApplyMachineEvent(context.Background(), controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "remote-pty-upsert", Kind: controlplane.MachineEventPtyUpsert,
+		ResourceID: session.TerminalSessionID, Payload: payload,
+	})
+	if err != nil || !applied || controlEvent.Kind != controlplane.ControlEventKindPtyUpsert {
+		t.Fatalf("ApplyMachineEvent = event:%+v applied:%t err:%v", controlEvent, applied, err)
+	}
+	projected, err := s.GetPtySession(context.Background(), session.TerminalSessionID)
+	if err != nil || projected != session {
+		t.Fatalf("projected PTY = %+v err=%v", projected, err)
+	}
+	if bytes.Contains(controlEvent.Payload, []byte("data_base64")) {
+		t.Fatalf("terminal bytes 不得进入控制事件: %s", controlEvent.Payload)
+	}
+}
+
+func TestApplyRemotePtyEventRejectsTerminalBytesBeforePersistence(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	payload := json.RawMessage(`{
+  "terminal_session_id":"remote-term",
+  "incarnation":"remote-inc",
+  "workspace_id":"ws-remote",
+  "state":"active",
+  "shell":"/bin/zsh",
+  "through_seq":4,
+  "exit_code":null,
+  "data_base64":"c2VjcmV0"
+}`)
+	_, applied, err := s.ApplyMachineEvent(context.Background(), controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "remote-pty-bytes", Kind: controlplane.MachineEventPtyUpsert,
+		ResourceID: "remote-term", Payload: payload,
+	})
+	if err == nil || applied {
+		t.Fatalf("PTY bytes payload must be rejected before persistence: applied=%t err=%v", applied, err)
+	}
+	events, listErr := s.MachineEventsAfter(context.Background(), "remote-machine", 0, 10)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(events) != 0 {
+		t.Fatalf("rejected PTY payload leaked into machine_events: %+v", events)
+	}
+	controlEvents, listErr := s.ControlEventsAfter(context.Background(), 0, 10)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(controlEvents) != 0 {
+		t.Fatalf("rejected PTY payload leaked into control_events: %+v", controlEvents)
+	}
+}
+
+func TestApplyRemotePtyEventRejectsInvalidStateAndTerminalRegression(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	invalid := workspaceapi.PtySession{TerminalSessionID: "invalid-term", Incarnation: "invalid-inc",
+		WorkspaceID: "ws-remote", State: workspaceapi.PtyState("mystery"), Shell: "/bin/zsh", ThroughSeq: -1}
+	invalidPayload, _ := json.Marshal(invalid)
+	if _, applied, applyErr := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "invalid-state", Kind: controlplane.MachineEventPtyUpsert,
+		ResourceID: invalid.TerminalSessionID, Payload: invalidPayload,
+	}); applyErr == nil || applied {
+		t.Fatalf("invalid PTY state accepted: applied=%t err=%v", applied, applyErr)
+	}
+
+	ended := workspaceapi.PtySession{TerminalSessionID: "ended-term", Incarnation: "ended-inc",
+		WorkspaceID: "ws-remote", State: workspaceapi.PtyStateEnded, Shell: "/bin/zsh", ThroughSeq: 5}
+	endedPayload, _ := json.Marshal(ended)
+	if _, applied, applyErr := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "ended-event", Kind: controlplane.MachineEventPtyExit,
+		ResourceID: ended.TerminalSessionID, Payload: endedPayload,
+	}); applyErr != nil || !applied {
+		t.Fatalf("valid PTY exit rejected: applied=%t err=%v", applied, applyErr)
+	}
+	regressed := ended
+	regressed.State = workspaceapi.PtyStateActive
+	regressed.ThroughSeq = 6
+	regressedPayload, _ := json.Marshal(regressed)
+	if _, applied, applyErr := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "regression-event", MachineSeq: 2,
+		Kind: controlplane.MachineEventPtyUpsert, ResourceID: regressed.TerminalSessionID, Payload: regressedPayload,
+	}); applyErr == nil || applied {
+		t.Fatalf("ended PTY regression accepted: applied=%t err=%v", applied, applyErr)
+	}
+	projected, getErr := s.GetPtySession(ctx, ended.TerminalSessionID)
+	if getErr != nil || projected.State != workspaceapi.PtyStateEnded || projected.ThroughSeq != 5 {
+		t.Fatalf("PTY terminal state changed after rejection: %+v err=%v", projected, getErr)
+	}
+	changedExit := ended
+	changedExit.ThroughSeq = 6
+	changedExit.Shell = "/bin/bash"
+	exitCode := 1
+	changedExit.ExitCode = &exitCode
+	changedPayload, _ := json.Marshal(changedExit)
+	if _, applied, applyErr := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+		MachineID: "remote-machine", EventID: "changed-exit", MachineSeq: 2,
+		Kind: controlplane.MachineEventPtyExit, ResourceID: changedExit.TerminalSessionID, Payload: changedPayload,
+	}); applyErr == nil || applied {
+		t.Fatalf("PTY final state rewrite accepted: applied=%t err=%v", applied, applyErr)
+	}
+}
+
+func TestApplyLocalPtyOutboxDoesNotRegressOwnerState(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	session := workspaceapi.PtySession{TerminalSessionID: "local-term", Incarnation: "local-inc",
+		WorkspaceID: "ws-local", State: workspaceapi.PtyStateStarting, Shell: "/bin/zsh"}
+	if _, _, _, err := s.CreatePtySessionWithMachineEvent(ctx, "local-machine", "local-command", session); err != nil {
+		t.Fatal(err)
+	}
+	session.State = workspaceapi.PtyStateActive
+	session.ThroughSeq = 3
+	if _, err := s.UpdatePtySessionWithMachineEvent(ctx, "local-machine", session, controlplane.MachineEventPtyUpsert); err != nil {
+		t.Fatal(err)
+	}
+	session.State = workspaceapi.PtyStateEnded
+	session.ThroughSeq = 5
+	if _, err := s.UpdatePtySessionWithMachineEvent(ctx, "local-machine", session, controlplane.MachineEventPtyExit); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.MachineEventsAfter(ctx, "local-machine", 0, 10)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("local PTY outbox = %+v err=%v", events, err)
+	}
+	for _, event := range events {
+		if _, applied, applyErr := s.ApplyMachineEvent(ctx, event); applyErr != nil || !applied {
+			t.Fatalf("apply local PTY event seq=%d: applied=%t err=%v", event.MachineSeq, applied, applyErr)
+		}
+	}
+	projected, err := s.GetPtySession(ctx, session.TerminalSessionID)
+	if err != nil || projected.State != workspaceapi.PtyStateEnded || projected.ThroughSeq != 5 {
+		t.Fatalf("local PTY owner state regressed: %+v err=%v", projected, err)
 	}
 }
 

@@ -38,16 +38,31 @@ func TestResourceAssemblerMapsFileCommandsAndResults(t *testing.T) {
 
 func TestResourceAssemblerMapsPtyIdentityAndProblem(t *testing.T) {
 	a := &ResourceAssembler{}
-	frame := a.ToPtyServerFrame(workspaceapi.PtyServerFrame{
+	session := workspaceapi.PtySession{TerminalSessionID: "term1", Incarnation: "inc1", WorkspaceID: "ws1",
+		State: workspaceapi.PtyStateActive, Shell: "/bin/zsh", ThroughSeq: 9}
+	if roundTrip := a.FromPtySession(a.ToPtySession(session)); roundTrip != session {
+		t.Fatalf("pty session round trip = %+v", roundTrip)
+	}
+	ownerFrame := workspaceapi.PtyServerFrame{
 		Version: 1, Kind: workspaceapi.PtyFrameProblem,
-		TerminalSessionID: "term1", Incarnation: "inc1", Seq: 9, ThroughSeq: 9,
+		TerminalSessionID: "term1", Incarnation: "inc1", WorkspaceID: "ws1", Seq: 9, ThroughSeq: 9,
 		Problem: &workspaceapi.ResourceProblem{Code: "CURSOR_EXPIRED", Message: "游标已过期", Retryable: true},
-	})
-	if frame.Version != 1 || frame.Incarnation != "inc1" || frame.Seq != 9 || frame.Problem == nil {
+	}
+	frame := a.ToPtyServerFrame(ownerFrame)
+	if frame.Version != 1 || frame.Incarnation != "inc1" || frame.WorkspaceID != "ws1" || frame.Seq != 9 || frame.Problem == nil {
 		t.Fatalf("pty frame dto = %+v", frame)
 	}
 	if frame.Problem.Code != ProblemCursorExpired || !frame.Problem.Retryable {
 		t.Fatalf("problem dto = %+v", frame.Problem)
+	}
+	if roundTrip := a.FromPtyServerFrame(frame); roundTrip.Kind != ownerFrame.Kind ||
+		roundTrip.Problem == nil || roundTrip.Problem.Code != "CURSOR_EXPIRED" {
+		t.Fatalf("pty server frame round trip = %+v", roundTrip)
+	}
+	client := workspaceapi.PtyClientFrame{Version: 1, Kind: workspaceapi.PtyClientFrameResize,
+		TerminalSessionID: "term1", Incarnation: "inc1", Cols: 120, Rows: 40, AckSeq: 8}
+	if roundTrip := a.FromPtyClientFrame(a.ToPtyClientFrame(client)); roundTrip != client {
+		t.Fatalf("pty client frame round trip = %+v", roundTrip)
 	}
 }
 

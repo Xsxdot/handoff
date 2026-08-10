@@ -129,12 +129,28 @@ type PtyServerFrameDTO struct {
 	Kind              string   `json:"kind"`
 	TerminalSessionID string   `json:"terminal_session_id"`
 	Incarnation       string   `json:"incarnation"`
+	WorkspaceID       string   `json:"workspace_id"`
+	Capabilities      map[string]int `json:"capabilities,omitempty"`
 	Seq               int64    `json:"seq"`
 	ThroughSeq        int64    `json:"through_seq"`
 	DataBase64        string   `json:"data_base64,omitempty"`
 	State             string   `json:"state,omitempty"`
 	ExitCode          *int     `json:"exit_code,omitempty"`
 	Problem           *Problem `json:"problem,omitempty"`
+}
+
+// PtyClientFrameDTO 是公开版本化 PTY 客户端控制帧。
+//
+// 终端 input 只使用 base64，避免 JSON/UTF-8 处理改变原始字节。
+type PtyClientFrameDTO struct {
+	Version           int    `json:"version"`
+	Kind              string `json:"kind"`
+	TerminalSessionID string `json:"terminal_session_id"`
+	Incarnation       string `json:"incarnation"`
+	DataBase64        string `json:"data_base64,omitempty"`
+	Cols              uint16 `json:"cols,omitempty"`
+	Rows              uint16 `json:"rows,omitempty"`
+	AckSeq            int64  `json:"ack_seq,omitempty"`
 }
 
 // CreatePreviewRequest 是 owner-loopback Preview 创建请求。

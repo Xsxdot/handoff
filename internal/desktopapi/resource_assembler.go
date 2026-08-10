@@ -150,15 +150,51 @@ func (a *ResourceAssembler) ToPtySession(session workspaceapi.PtySession) PtySes
 		ThroughSeq: session.ThroughSeq, ExitCode: session.ExitCode}
 }
 
+// FromPtySession 把 peer wire PTY session 转换回 owner contract。
+func (a *ResourceAssembler) FromPtySession(session PtySessionDTO) workspaceapi.PtySession {
+	return workspaceapi.PtySession{TerminalSessionID: session.TerminalSessionID, Incarnation: session.Incarnation,
+		WorkspaceID: session.WorkspaceID, State: workspaceapi.PtyState(session.State), Shell: session.Shell,
+		ThroughSeq: session.ThroughSeq, ExitCode: session.ExitCode}
+}
+
 // ToPtyServerFrame 把 owner PTY frame 转换为公开 DTO，并保留稳定并发身份。
 func (a *ResourceAssembler) ToPtyServerFrame(frame workspaceapi.PtyServerFrame) PtyServerFrameDTO {
 	dto := PtyServerFrameDTO{Version: frame.Version, Kind: string(frame.Kind), TerminalSessionID: frame.TerminalSessionID,
-		Incarnation: frame.Incarnation, Seq: frame.Seq, ThroughSeq: frame.ThroughSeq,
+		Incarnation: frame.Incarnation, WorkspaceID: frame.WorkspaceID, Capabilities: frame.Capabilities,
+		Seq: frame.Seq, ThroughSeq: frame.ThroughSeq,
 		DataBase64: frame.DataBase64, State: string(frame.State), ExitCode: frame.ExitCode}
 	if frame.Problem != nil {
 		dto.Problem = &Problem{Code: ProblemCode(frame.Problem.Code), Message: frame.Problem.Message, Retryable: frame.Problem.Retryable}
 	}
 	return dto
+}
+
+// FromPtyServerFrame 把 peer wire PTY 服务端帧转换回 owner contract。
+func (a *ResourceAssembler) FromPtyServerFrame(frame PtyServerFrameDTO) workspaceapi.PtyServerFrame {
+	result := workspaceapi.PtyServerFrame{Version: frame.Version, Kind: workspaceapi.PtyFrameKind(frame.Kind),
+		TerminalSessionID: frame.TerminalSessionID, Incarnation: frame.Incarnation, WorkspaceID: frame.WorkspaceID,
+		Capabilities: frame.Capabilities,
+		Seq: frame.Seq, ThroughSeq: frame.ThroughSeq, DataBase64: frame.DataBase64,
+		State: workspaceapi.PtyState(frame.State), ExitCode: frame.ExitCode}
+	if frame.Problem != nil {
+		result.Problem = &workspaceapi.ResourceProblem{Code: string(frame.Problem.Code),
+			Message: frame.Problem.Message, Retryable: frame.Problem.Retryable}
+	}
+	return result
+}
+
+// ToPtyClientFrame 把 owner PTY 客户端帧转换为公开 DTO。
+func (a *ResourceAssembler) ToPtyClientFrame(frame workspaceapi.PtyClientFrame) PtyClientFrameDTO {
+	return PtyClientFrameDTO{Version: frame.Version, Kind: string(frame.Kind),
+		TerminalSessionID: frame.TerminalSessionID, Incarnation: frame.Incarnation,
+		DataBase64: frame.DataBase64, Cols: frame.Cols, Rows: frame.Rows, AckSeq: frame.AckSeq}
+}
+
+// FromPtyClientFrame 把公开 PTY 客户端 DTO 转换回 owner contract。
+func (a *ResourceAssembler) FromPtyClientFrame(frame PtyClientFrameDTO) workspaceapi.PtyClientFrame {
+	return workspaceapi.PtyClientFrame{Version: frame.Version, Kind: workspaceapi.PtyClientFrameKind(frame.Kind),
+		TerminalSessionID: frame.TerminalSessionID, Incarnation: frame.Incarnation,
+		DataBase64: frame.DataBase64, Cols: frame.Cols, Rows: frame.Rows, AckSeq: frame.AckSeq}
 }
 
 // ToCreateTerminalCommand 把公开请求绑定到 Workspace ID。

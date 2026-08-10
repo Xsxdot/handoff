@@ -13,15 +13,18 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
 // nextMachineSeqTx 在事务内分配该机器的下一个 machine_seq（每机器单调递增）。
@@ -151,6 +154,10 @@ FROM machine_events WHERE machine_id = ? AND event_id = ?`, ev.MachineID, ev.Eve
 		return controlplane.ControlEvent{}, false, fmt.Errorf(
 			"机器 %s 事件序号不连续: cursor=%d event=%d", ev.MachineID, cursor, ev.MachineSeq)
 	}
+	ev, err = normalizeMachineEventPayload(ev)
+	if err != nil {
+		return controlplane.ControlEvent{}, false, err
+	}
 	seq := ev.MachineSeq
 	now := time.Now().UTC()
 	if !existing {
@@ -197,6 +204,50 @@ ON CONFLICT(machine_id) DO UPDATE SET last_machine_seq = excluded.last_machine_s
 		ControlRevision: rev, Kind: kind, ResourceID: ev.ResourceID,
 		Payload: ev.Payload, CreatedAt: now,
 	}, true, nil
+}
+
+// normalizeMachineEventPayload 在事件进入 durable machine/control 表之前净化
+// 安全敏感 payload。PTY outbox 只能携带会话摘要；任何终端字节或未知字段都
+// 必须在 INSERT 前拒绝，避免控制面成为隐式终端日志。
+func normalizeMachineEventPayload(ev controlplane.MachineEvent) (controlplane.MachineEvent, error) {
+	if ev.Kind != controlplane.MachineEventPtyUpsert && ev.Kind != controlplane.MachineEventPtyExit {
+		return ev, nil
+	}
+	var session workspaceapi.PtySession
+	decoder := json.NewDecoder(bytes.NewReader(ev.Payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&session); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("解析 %s 安全 payload: %w", ev.Kind, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return controlplane.MachineEvent{}, fmt.Errorf("解析 %s 安全 payload: 存在额外 JSON 内容", ev.Kind)
+	}
+	if session.TerminalSessionID == "" || session.TerminalSessionID != ev.ResourceID ||
+		session.WorkspaceID == "" || session.Incarnation == "" || session.Shell == "" {
+		return controlplane.MachineEvent{}, fmt.Errorf("%s payload 身份不完整或与 resource_id 不一致", ev.Kind)
+	}
+	if session.ThroughSeq < 0 {
+		return controlplane.MachineEvent{}, fmt.Errorf("%s payload through_seq 不能为负数", ev.Kind)
+	}
+	switch ev.Kind {
+	case controlplane.MachineEventPtyUpsert:
+		if session.State != workspaceapi.PtyStateStarting && session.State != workspaceapi.PtyStateActive {
+			return controlplane.MachineEvent{}, fmt.Errorf("%s payload state 必须是 starting/active", ev.Kind)
+		}
+		if session.ExitCode != nil {
+			return controlplane.MachineEvent{}, fmt.Errorf("%s payload 非 ended 状态不能有 exit_code", ev.Kind)
+		}
+	case controlplane.MachineEventPtyExit:
+		if session.State != workspaceapi.PtyStateEnded {
+			return controlplane.MachineEvent{}, fmt.Errorf("%s payload state 必须是 ended", ev.Kind)
+		}
+	}
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("规范化 %s payload: %w", ev.Kind, err)
+	}
+	ev.Payload = payload
+	return ev, nil
 }
 
 // projectMachineEventTx 按 kind 更新投影表并返回对应 ControlEventKind。
@@ -263,8 +314,131 @@ func projectMachineEventTx(ctx context.Context, tx *sql.Tx, ev controlplane.Mach
 		return controlplane.ControlEventKindTaskSummaryRemove, nil
 	case controlplane.MachineEventOperationUpsert:
 		return controlplane.ControlEventKindOperationUpsert, nil
+	case controlplane.MachineEventPtyUpsert, controlplane.MachineEventPtyExit:
+		var session workspaceapi.PtySession
+		if err := json.Unmarshal(ev.Payload, &session); err != nil {
+			return "", fmt.Errorf("解析 %s payload: %w", ev.Kind, err)
+		}
+		if err := validatePtyProjectionTransitionTx(ctx, tx, ev.MachineID, session); err != nil {
+			return "", err
+		}
+		if err := upsertPtyProjectionTx(ctx, tx, ev.MachineID, session); err != nil {
+			return "", err
+		}
+		if ev.Kind == controlplane.MachineEventPtyExit {
+			return controlplane.ControlEventKindPtyExit, nil
+		}
+		return controlplane.ControlEventKindPtyUpsert, nil
 	default:
 		return "", fmt.Errorf("未知 machine event kind %q", ev.Kind)
+	}
+}
+
+func validatePtyProjectionTransitionTx(ctx context.Context, tx *sql.Tx, machineID string,
+	session workspaceapi.PtySession) error {
+	var existingMachineID, workspaceID, incarnation, shell string
+	err := tx.QueryRowContext(ctx, `
+SELECT machine_id, workspace_id, incarnation, shell
+FROM pty_sessions WHERE terminal_session_id = ?`, session.TerminalSessionID).
+		Scan(&existingMachineID, &workspaceID, &incarnation, &shell)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("读取 PTY %s 当前投影状态: %w", session.TerminalSessionID, err)
+	}
+	if err == nil && (existingMachineID != machineID || workspaceID != session.WorkspaceID ||
+		incarnation != session.Incarnation || shell != session.Shell) {
+		return fmt.Errorf("PTY %s 稳定身份不可跨 machine/workspace/incarnation/shell 改写", session.TerminalSessionID)
+	}
+	// owner 和本机控制投影共用 pty_sessions 表，owner 状态可能领先于尚未投影的
+	// outbox。状态机单向性因此必须与“最后已投影事件”比较，不能误把 owner
+	// 当前状态当作上一事件，否则 starting -> active -> ended 会在 catch-up 时假失败。
+	var previousPayload string
+	err = tx.QueryRowContext(ctx, `
+SELECT payload FROM control_events
+WHERE resource_id = ? AND kind IN (?, ?)
+ORDER BY control_revision DESC LIMIT 1`, session.TerminalSessionID,
+		string(controlplane.ControlEventKindPtyUpsert), string(controlplane.ControlEventKindPtyExit)).
+		Scan(&previousPayload)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取 PTY %s 上次控制投影: %w", session.TerminalSessionID, err)
+	}
+	var previous workspaceapi.PtySession
+	if err := json.Unmarshal([]byte(previousPayload), &previous); err != nil {
+		return fmt.Errorf("解析 PTY %s 上次控制投影: %w", session.TerminalSessionID, err)
+	}
+	if previous.WorkspaceID != session.WorkspaceID || previous.Incarnation != session.Incarnation {
+		return fmt.Errorf("PTY %s 已投影身份不可改写", session.TerminalSessionID)
+	}
+	// ended 是外部可见的最终事实；重试只能逐字段重复同一份摘要，不能借由
+	// 更大的 through_seq 或不同 exit code 把已经发布的终态改写成另一段历史。
+	if previous.State == workspaceapi.PtyStateEnded {
+		if !samePtySession(previous, session) {
+			return fmt.Errorf("PTY %s ended 终态不可改写", session.TerminalSessionID)
+		}
+		return nil
+	}
+	if session.ThroughSeq < previous.ThroughSeq {
+		return fmt.Errorf("PTY %s through_seq 不可回退: current=%d incoming=%d",
+			session.TerminalSessionID, previous.ThroughSeq, session.ThroughSeq)
+	}
+	currentRank := ptyStateRank(previous.State)
+	incomingRank := ptyStateRank(session.State)
+	if currentRank == 0 || incomingRank == 0 || incomingRank < currentRank {
+		return fmt.Errorf("PTY %s state 不可回退: current=%s incoming=%s",
+			session.TerminalSessionID, previous.State, session.State)
+	}
+	return nil
+}
+
+func samePtySession(left, right workspaceapi.PtySession) bool {
+	if left.TerminalSessionID != right.TerminalSessionID || left.Incarnation != right.Incarnation ||
+		left.WorkspaceID != right.WorkspaceID || left.State != right.State || left.Shell != right.Shell ||
+		left.ThroughSeq != right.ThroughSeq {
+		return false
+	}
+	if left.ExitCode == nil || right.ExitCode == nil {
+		return left.ExitCode == nil && right.ExitCode == nil
+	}
+	return *left.ExitCode == *right.ExitCode
+}
+
+func upsertPtyProjectionTx(ctx context.Context, tx *sql.Tx, machineID string,
+	session workspaceapi.PtySession) error {
+	var currentState string
+	var currentThrough int64
+	err := tx.QueryRowContext(ctx, `
+SELECT state, through_seq FROM pty_sessions WHERE terminal_session_id = ?`, session.TerminalSessionID).
+		Scan(&currentState, &currentThrough)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("读取 PTY %s owner 摘要: %w", session.TerminalSessionID, err)
+	}
+	if err == nil {
+		currentRank := ptyStateRank(workspaceapi.PtyState(currentState))
+		incomingRank := ptyStateRank(session.State)
+		if currentRank == 0 || incomingRank == 0 {
+			return fmt.Errorf("PTY %s 包含未知状态", session.TerminalSessionID)
+		}
+		// 本机 owner 状态可以领先于待投影 outbox；旧事件仍生成控制事件，但
+		// 不能把 owner 的 durable 最新摘要倒写回旧 state/seq。
+		if incomingRank < currentRank || session.ThroughSeq < currentThrough {
+			return nil
+		}
+	}
+	return upsertPtySessionTx(ctx, tx, machineID, nil, session)
+}
+
+func ptyStateRank(state workspaceapi.PtyState) int {
+	switch state {
+	case workspaceapi.PtyStateStarting:
+		return 1
+	case workspaceapi.PtyStateActive:
+		return 2
+	case workspaceapi.PtyStateEnded:
+		return 3
+	default:
+		return 0
 	}
 }
 

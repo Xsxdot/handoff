@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
 // CatalogAssembler 是无状态纯转换器，可安全地并发使用。
@@ -222,6 +223,12 @@ func (a *CatalogAssembler) toControlEventPayload(ev controlplane.ControlEvent) (
 			return nil, fmt.Errorf("解析 operation.upsert payload: %w", err)
 		}
 		dto = a.ToOperation(value)
+	case controlplane.ControlEventKindPtyUpsert, controlplane.ControlEventKindPtyExit:
+		var value workspaceapi.PtySession
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 %s payload: %w", ev.Kind, err)
+		}
+		dto = (&ResourceAssembler{}).ToPtySession(value)
 	case controlplane.ControlEventKindWorkspaceRemove, controlplane.ControlEventKindTaskSummaryRemove:
 		// 这两类 remove 仅以 resource_id 定位，payload 无领域字段。
 		return ev.Payload, nil
@@ -258,6 +265,10 @@ func controlEventKindString(k controlplane.ControlEventKind) (string, error) {
 		return "task_summary.remove", nil
 	case controlplane.ControlEventKindOperationUpsert:
 		return "operation.upsert", nil
+	case controlplane.ControlEventKindPtyUpsert:
+		return "pty.upsert", nil
+	case controlplane.ControlEventKindPtyExit:
+		return "pty.exit", nil
 	}
 	return "", fmt.Errorf("未知 ControlEventKind %q", k)
 }

@@ -121,6 +121,8 @@ const (
 	MachineEventTaskUpsert      MachineEventKind = "task.upsert"
 	MachineEventTaskRemove      MachineEventKind = "task.remove"
 	MachineEventOperationUpsert MachineEventKind = "operation.upsert"
+	MachineEventPtyUpsert       MachineEventKind = "pty.upsert"
+	MachineEventPtyExit         MachineEventKind = "pty.exit"
 )
 
 // ControlEventKind 表示控制面投影事件类型（全局单调 revision）。
@@ -137,6 +139,8 @@ const (
 	ControlEventKindTaskSummaryUpsert ControlEventKind = "task_summary.upsert"
 	ControlEventKindTaskSummaryRemove ControlEventKind = "task_summary.remove"
 	ControlEventKindOperationUpsert   ControlEventKind = "operation.upsert"
+	ControlEventKindPtyUpsert         ControlEventKind = "pty.upsert"
+	ControlEventKindPtyExit           ControlEventKind = "pty.exit"
 )
 
 // TaskSummaryState 表示任务摘要的展示状态（与 proto.TaskState 兼容的超集，

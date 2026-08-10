@@ -23,6 +23,7 @@ import (
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/desktopapi"
 	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/store"
@@ -115,7 +116,10 @@ func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
 	server := agentd.NewServer(cfg, st, logger)
-	_, closeResources := wireWorkspaceResources(server, st, cfg, logger, nil)
+	_, closeResources, err := wireWorkspaceResources(server, st, cfg, local.ID, logger, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer closeResources()
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -128,6 +132,25 @@ func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("resource route status = %d", resp.StatusCode)
+	}
+	terminalBody, err := json.Marshal(desktopapi.CreateTerminalRequest{CommandID: "production-pty-1", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/workspaces/"+workspace.ID+"/terminals", bytes.NewReader(terminalBody))
+	terminalReq.Header.Set("Authorization", "Bearer token")
+	terminalReq.Header.Set("Content-Type", "application/json")
+	terminalResp, err := http.DefaultClient.Do(terminalReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminalResp.Body.Close()
+	var session desktopapi.PtySessionDTO
+	if err := json.NewDecoder(terminalResp.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	if terminalResp.StatusCode != http.StatusCreated || session.State != "active" {
+		t.Fatalf("production PTY route = status:%d session:%+v", terminalResp.StatusCode, session)
 	}
 }
 
@@ -149,9 +172,12 @@ func TestWireWorkspaceResourcesActivatesProjectCreation(t *testing.T) {
 	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
 	server := agentd.NewServer(cfg, st, logger)
 	var published []controlplane.ControlEventKind
-	_, closeResources := wireWorkspaceResources(server, st, cfg, logger, func(event controlplane.ControlEvent) {
+	_, closeResources, err := wireWorkspaceResources(server, st, cfg, local.ID, logger, func(event controlplane.ControlEvent) {
 		published = append(published, event.Kind)
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer closeResources()
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -244,7 +270,8 @@ func TestRemoteProjectCreationUsesPeerAgentd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer localStore.Close()
-	if _, err := localStore.EnsureLocalMachine(context.Background(), "本机"); err != nil {
+	localMachine, err := localStore.EnsureLocalMachine(context.Background(), "本机")
+	if err != nil {
 		t.Fatal(err)
 	}
 	configured := []controlplane.ConfiguredMachine{{
@@ -267,7 +294,10 @@ func TestRemoteProjectCreationUsesPeerAgentd(t *testing.T) {
 		"devbox": {Addr: remoteHTTP.URL, Token: "remote-token", DisplayName: "开发机"},
 	}}
 	localServer := agentd.NewServer(cfg, localStore, remoteLogger)
-	_, closeResources := wireWorkspaceResources(localServer, localStore, cfg, remoteLogger, nil)
+	_, closeResources, err := wireWorkspaceResources(localServer, localStore, cfg, localMachine.ID, remoteLogger, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer closeResources()
 	localHTTP := httptest.NewServer(localServer.Handler())
 	defer localHTTP.Close()

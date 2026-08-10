@@ -38,6 +38,7 @@ import (
 	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/machinegateway"
 	"github.com/xushixin/handoff/internal/peer"
+	"github.com/xushixin/handoff/internal/ptyservice"
 	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -119,7 +120,10 @@ var agentdCmd = &cobra.Command{
 			}
 			srv.ControlHub().Publish(env)
 		}
-		resourceAuthority, closeResources := wireWorkspaceResources(srv, st, cfg, logger, publishControlEvent)
+		resourceAuthority, closeResources, err := wireWorkspaceResources(srv, st, cfg, localMachine.ID, logger, publishControlEvent)
+		if err != nil {
+			return fmt.Errorf("初始化 Workspace 资源服务: %w", err)
+		}
 		defer closeResources()
 		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
 		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -155,6 +159,7 @@ var agentdCmd = &cobra.Command{
 		defer stopOutbox()
 		localOutbox := controlplane.NewLocalOutboxPump(st, localMachine.ID, projector, logger)
 		go localOutbox.Run(outboxCtx)
+		resourceAuthority.SetTerminalOutboxNotifier(localOutbox.Notify)
 
 		// 本机资源权威（桌面 phase2）：启动先做一次完整 Reconcile，再挂 .git
 		// watcher 与周期兜底扫描。外部 branch/worktree/task 变化经 durable outbox
@@ -274,9 +279,14 @@ func targetCredentialResolver(cfg *config.Config) func(string) string {
 
 // wireWorkspaceResources 把本机 owner authority、远端 peer registry 与统一
 // resource gateway 注入生产 Server，并返回关闭 peer clients 的函数。
-func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger,
-	publishControlEvent func(controlplane.ControlEvent)) (*machineauthority.ResourceAuthority, func()) {
+func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, localMachineID string,
+	logger *slog.Logger, publishControlEvent func(controlplane.ControlEvent)) (*machineauthority.ResourceAuthority, func(), error) {
 	localAuthority := machineauthority.NewResourceAuthority(logger)
+	terminal, err := ptyservice.NewService(st, localMachineID, logger)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	localAuthority.SetTerminalService(terminal)
 	projectAuthority := &machineauthority.Inventory{}
 	peers := peer.NewAuthorityRegistry(syncMachinesFromConfig(cfg), targetCredentialResolver(cfg))
 	router := resourcegateway.NewRouter(st, localAuthority, peers, logger)
@@ -290,7 +300,10 @@ func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Con
 	projectService.SetControlEventPublisher(publishControlEvent)
 	srv.SetProjectService(projectService)
 	logger.Info("Workspace 资源路由已接线", "remote_machine_count", len(syncMachinesFromConfig(cfg)))
-	return localAuthority, peers.Close
+	return localAuthority, func() {
+		_ = terminal.Close()
+		peers.Close()
+	}, nil
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。

@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 定义控制面全部表（machines/projects/project_locations/workspaces/
-//     git_refs/task_summaries/operations/machine_events/machine_cursors/
+//     git_refs/task_summaries/operations/pty_sessions/machine_events/machine_cursors/
 //     control_events/control_metadata）与唯一索引
 //   - 全部 DDL 在事务内执行：失败 rollback 并让 Open 返回错误，不能半迁移
 //
@@ -76,6 +76,15 @@ func migrateDesktopV1(ctx context.Context, db *sql.DB) error {
   operation_id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
   project_id TEXT NOT NULL DEFAULT '', targets TEXT NOT NULL DEFAULT '[]',
   progress TEXT NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+		// pty_sessions：只持久化会话身份与状态；terminal bytes 只在 owner 内存 ring。
+		`CREATE TABLE IF NOT EXISTS pty_sessions (
+  terminal_session_id TEXT PRIMARY KEY, command_id TEXT UNIQUE,
+  machine_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+  incarnation TEXT NOT NULL, state TEXT NOT NULL, shell TEXT NOT NULL DEFAULT '',
+  through_seq INTEGER NOT NULL DEFAULT 0, exit_code INTEGER,
+  created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pty_sessions_command ON pty_sessions(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pty_sessions_machine_state ON pty_sessions(machine_id, state)`,
 		// machine_events：所属机器 durable outbox；(machine_id, machine_seq) 唯一，
 		// 让 peer catch-up 与 ApplyMachineEvent 幂等去重。
 		`CREATE TABLE IF NOT EXISTS machine_events (

@@ -32,6 +32,7 @@ var desktopTables = []string{
 	"machine_events",
 	"machine_cursors",
 	"control_events",
+	"pty_sessions",
 }
 
 // TestDesktopSchemaTablesExist 打开全新库，断言控制面全部表存在。
@@ -87,6 +88,7 @@ func TestDesktopSchemaUniqueIndexes(t *testing.T) {
 	assertUniqueIndex(t, s.db, "workspaces", "idx_workspaces_machine_canonical", "machine_id,canonical_path")
 	assertUniqueIndex(t, s.db, "machine_events", "idx_machine_events_machine_seq", "machine_id,machine_seq")
 	assertUniqueIndex(t, s.db, "control_events", "idx_control_events_revision", "control_revision")
+	assertUniqueIndex(t, s.db, "pty_sessions", "idx_pty_sessions_command", "command_id")
 }
 
 // tableExists 检查 SQLite 元数据表 sqlite_master 中是否存在指定表。

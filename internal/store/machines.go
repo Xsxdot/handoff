@@ -27,11 +27,17 @@ import (
 // localMachineMetaKey 是 control_metadata 里本机 Machine ID 的键。
 const localMachineMetaKey = "local_machine_id"
 
-// localMachineCapabilities 是当前二阶段真正已接线的本机能力。后续 Git/PTY/
-// Preview 只能在各自服务落地时加入，避免 UI 看到 capability 后调用空实现。
-var localMachineCapabilities = map[string]int{
-	"catalog": 1, "machine_events": 1, "files": 1, "git": 1, "project_commands": 1,
-}
+// localMachineCapabilities 是当前二阶段真正已接线的本机能力。PTY 只在
+// 有真实平台 adapter 时声明；Preview 必须等服务落地后再加入。
+var localMachineCapabilities = func() map[string]int {
+	capabilities := map[string]int{
+		"catalog": 1, "machine_events": 1, "files": 1, "git": 1, "project_commands": 1,
+	}
+	if localPtySupported {
+		capabilities["pty"] = 1
+	}
+	return capabilities
+}()
 
 // EnsureLocalMachine 确保存在稳定的本机 Machine（创建或复用）并返回它。
 //

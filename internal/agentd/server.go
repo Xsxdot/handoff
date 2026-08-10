@@ -190,6 +190,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{workspace_id}/files/search", s.handleResourceSearchFiles)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files/stream", s.handleResourceFileStream)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/git/status", s.handleResourceGitStatus)
+	mux.HandleFunc("POST /v1/workspaces/{workspace_id}/terminals", s.handleCreateTerminal)
+	mux.HandleFunc("GET /v1/terminals/{terminal_session_id}", s.handleGetTerminal)
+	mux.HandleFunc("DELETE /v1/terminals/{terminal_session_id}", s.handleCloseTerminal)
+	mux.HandleFunc("GET /v1/terminals/{terminal_session_id}/stream", s.handleTerminalStream)
 	return s.auth(mux)
 }
 

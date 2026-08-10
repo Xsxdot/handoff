@@ -19,15 +19,22 @@ import (
 
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/peer"
+	"github.com/xushixin/handoff/internal/ptyservice"
 )
 
 // peerCapabilities 是本机 agentd 声明的 peer capability。
-var peerCapabilities = map[string]int{
-	"catalog": 1, "machine_events": 1,
-	peer.CapabilityFiles:           1,
-	peer.CapabilityGit:             1,
-	peer.CapabilityProjectCommands: 1,
-}
+var peerCapabilities = func() map[string]int {
+	capabilities := map[string]int{
+		"catalog": 1, "machine_events": 1,
+		peer.CapabilityFiles:           1,
+		peer.CapabilityGit:             1,
+		peer.CapabilityProjectCommands: 1,
+	}
+	if ptyservice.Supported() {
+		capabilities[peer.CapabilityPty] = 1
+	}
+	return capabilities
+}()
 
 // handlePeerHello 返回协议版本与 capability。
 func (s *Server) handlePeerHello(w http.ResponseWriter, r *http.Request) {
