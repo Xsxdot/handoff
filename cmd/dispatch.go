@@ -4,7 +4,8 @@
 // 职责：
 //   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target/执行者/模型/
 //     分支/worktree 等参数一并 POST 给 agentd（body {repo, plan_b64, prompt, ...}）
-//   - 远程派发时采集本地 HEAD 作基线随请求上送（--no-sync-check 可关）
+//   - 远程派发时采集本地 HEAD 作基线随请求上送，并校验本地工作区完整性
+//     （已跟踪改动拒发、未跟踪警告；--no-sync-check 关掉整块，--allow-dirty 只关拒发）
 //   - 派发成功后在 stderr 打一行基线摘要（起点短号 + 任务仓库领先的提交数）
 //   - 成功时单行输出任务 JSON（state=running，供上层脚本解析任务 id）
 //
@@ -42,6 +43,7 @@ var (
 	dispatchNewWorktree bool
 	dispatchNoTerminal  bool
 	dispatchNoSyncCheck bool
+	dispatchAllowDirty  bool
 )
 
 // localHeadCommit 取当前工作目录所在 git 仓库的 HEAD 提交号，作为远程基线校验的基准。
@@ -105,6 +107,10 @@ var dispatchCmd = &cobra.Command{
 			if baseCommit == "" {
 				fmt.Fprintln(cmd.ErrOrStderr(),
 					"提示: 当前目录不是 git 仓库，已跳过远程基线校验（远程仓库可能落后于你的本地代码）")
+			} else if err := checkLocalWorktree(cmd.ErrOrStderr(), dispatchAllowDirty); err != nil {
+				// B29：基线只带得走已提交的东西。这里拒发是为了不在远端留下
+				// 任何副作用（分支、worktree、任务记录），所以必须在发请求之前
+				return err
 			}
 		}
 		task, err := client.New(addr, token).Dispatch(cmd.Context(), client.DispatchOpts{
@@ -154,6 +160,8 @@ func init() {
 	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoSyncCheck, "no-sync-check", false,
 		"跳过远程仓库基线校验（cwd 与 --repo 不是同一个仓库时用）")
+	dispatchCmd.Flags().BoolVar(&dispatchAllowDirty, "allow-dirty", false,
+		"本地工作区有未提交的已跟踪改动时仍照常派发（executor 看不到这些改动）")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
 	dispatchCmd.MarkFlagsMutuallyExclusive("worktree", "new-worktree")
 	rootCmd.AddCommand(dispatchCmd)

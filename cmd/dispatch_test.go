@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -183,5 +187,141 @@ func TestDispatchNoBaselineNoLine(t *testing.T) {
 	}
 	if strings.Contains(errOut, "基线") {
 		t.Fatalf("无基线时不应打基线行，得到 %q", errOut)
+	}
+}
+
+// dirtyCwd 在 t.TempDir() 里造一个「已跟踪文件被改过」的仓库并 chdir 进去，
+// 返回仓库路径。t.Chdir 在用例结束时自动切回。
+func dirtyCwd(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+	// 改一个已跟踪文件且不提交——这就是 B29 会静默丢掉的那类改动
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	return repo
+}
+
+// runRemoteDispatch 以远程模式（--target e2e）执行 dispatch，返回 stdout、
+// 假 agentd 收到的请求数与错误。
+//
+// 不复用 runDispatch：那个 helper 恒置 targetName = ""（本机模式），走不进
+// 远程派发的门；这里必须自己搭一份带 targets 的配置。
+func runRemoteDispatch(t *testing.T, repo string, extraArgs ...string) (string, int32, error) {
+	t.Helper()
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, dispatchTestTaskJSON)
+	}))
+	t.Cleanup(ts.Close)
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	cfgPath := writeTestConfig(t, "listen: \"127.0.0.1:7777\"\ntoken: \""+testToken+"\"\n"+
+		"targets:\n  e2e:\n    addr: \""+addr+"\"\n    token: \""+testToken+"\"\n")
+
+	// resetFlags 已负责在用例结束时复原 agentdURL/targetName/configPath 与
+	// --agentd 的 Changed 标记
+	resetFlags(t)
+	configPath = cfgPath
+	targetName = "e2e"
+	agentdURL = "http://127.0.0.1:7777"
+	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+	t.Cleanup(func() {
+		dispatchNoTerminal = false
+		dispatchAllowDirty = false
+		dispatchNoSyncCheck = false
+	})
+
+	args := append([]string{"dispatch", "--repo", repo, "--prompt", "x", "--no-terminal"}, extraArgs...)
+	rootCmd.SetArgs(args)
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	err := Execute()
+	return out.String(), hits.Load(), err
+}
+
+// TestDispatchRemoteDirtyDoesNotSendRequest 验证远程派发在本地已跟踪脏时
+// **一个 HTTP 请求都不发**就返回错误。
+//
+// 判别力：请求计数。只断言 err != nil 的话，「先发请求再报错」的实现照样绿，
+// 而那会在远端建出分支和 worktree——正是 B39 现场的成因。
+func TestDispatchRemoteDirtyDoesNotSendRequest(t *testing.T) {
+	repo := dirtyCwd(t)
+	_, hits, err := runRemoteDispatch(t, repo)
+	if err == nil {
+		t.Fatal("本地已跟踪脏时远程派发应被拒")
+	}
+	if !strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("错误应列出脏文件，得到: %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("拒发时不该发起任何 HTTP 请求，实际 %d 次", hits)
+	}
+}
+
+// TestDispatchRemoteDirtyAllowDirty 验证 --allow-dirty 让同一场景放行到底。
+func TestDispatchRemoteDirtyAllowDirty(t *testing.T) {
+	repo := dirtyCwd(t)
+	out, hits, err := runRemoteDispatch(t, repo, "--allow-dirty")
+	if err != nil {
+		t.Fatalf("--allow-dirty 应放行: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("放行后应正常发起一次派发请求，实际 %d 次", hits)
+	}
+	if !strings.Contains(out, "task-abc123") {
+		t.Fatalf("stdout 应仍是单行任务 JSON，得到: %q", out)
+	}
+}
+
+// TestDispatchNoSyncCheckSkipsDirty 验证 --no-sync-check 把整块基线逻辑
+// （含本地工作区校验）一并关掉——它关的是「根本不看 cwd」，语义上必须覆盖新检查。
+func TestDispatchNoSyncCheckSkipsDirty(t *testing.T) {
+	repo := dirtyCwd(t)
+	_, hits, err := runRemoteDispatch(t, repo, "--no-sync-check")
+	if err != nil {
+		t.Fatalf("--no-sync-check 应跳过本地校验: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("应正常发起一次派发请求，实际 %d 次", hits)
+	}
+}
+
+// TestDispatchLocalDirtyNotChecked 验证**本机派发**（无 --target）完全不查本地工作区。
+//
+// 为什么本机模式必须豁免：cwd 与 --repo 可以是两个毫不相干的仓库，查 cwd 是查错了
+// 对象。这也正是既有代码不在本机模式采基线的原因，新检查必须共用同一道门。
+func TestDispatchLocalDirtyNotChecked(t *testing.T) {
+	dirtyCwd(t)
+	out, _, err := runDispatch(t, "--no-terminal")
+	if err != nil {
+		t.Fatalf("本机派发不该因 cwd 脏而失败: %v", err)
+	}
+	if !strings.Contains(out, "task-abc123") {
+		t.Fatalf("本机派发应正常返回任务 JSON，得到: %q", out)
 	}
 }
