@@ -6,7 +6,7 @@
 
 **Architecture:** 新建 `internal/prochost` 包提供三组平台原语（detached spawn / 文件锁存活判定 / 进程组回收）与 shim 主体逻辑；shim 由 `handoff _shim` 隐藏子命令承载，负责持锁、开落盘文件、持 FIFO 读端、spawn executor、wait 后补写退出哨兵。四个 adapter 的 `proc.go` 从「写 sh 脚本 + tmux new-session」改为「组 argv + prochost.Start」。观测侧新增 `GET /api/tasks/{id}/render` 流式 endpoint，CLI `attach` 从 execve 进 tmux 改为消费该流。
 
-**Tech Stack:** Go 1.26.1、`golang.org/x/sys`（flock/进程组，升为直接依赖）、stdlib `net/http`、cobra、slog。
+**Tech Stack:** Go 1.26.1、stdlib `syscall`（配 `//go:build unix` / `!unix`，沿用仓库既有三处平台切分套路：`opennonblock_*`、`workspace_procgroup_*`、`flock_*`）、stdlib `net/http`、cobra、slog。**不引入 `golang.org/x/sys`**——已实测 `Setsid`/`Mkfifo`/`Flock`/`Kill`/`ENXIO`/`EWOULDBLOCK`/`ESRCH` 在 darwin 与 linux 的 stdlib `syscall` 里全部可用。
 
 **Spec:** `docs/superpowers/specs/2026-08-10-handoff-detmux-prochost-design.md`
 
@@ -20,17 +20,24 @@
 - 每个任务遵循 red → green → refactor → 聚焦验证 → 回归验证（`go test ./...`）→ commit；不得合并多个任务后一次性补测试或日志。
 - 保持现有 CLI REST/WS 线格式不变（除新增 render endpoint）；不改任务状态机语义。
 - 归一化命名统一：`Handle`、`Spec`、`RunShim`、`proc.json`、`proc.lock`。四个 adapter 的持久化文件一律改名 `proc.json`（现为 `claude.json` / `serve.json`）。
+- **面向审核者的文本一并改**：`Probe` 的 `Note`、adapter 追加的 progress 事件文本、
+  `reconcile.go` 的残留提示，现在都写着「tmux 会话 X」「请手动 tmux kill-session」
+  「请 tmux attach 查看现场」。这些是**人会读到的字**，留着就是错的指引。
+  统一改成「执行者进程（pid N）」「handoff stop 回收」「handoff attach 查看现场」。
+  实测非测试 Go 代码里共 111 处 tmux 代码/字符串引用，Task 7 的 grep 门禁兜底。
+- **不重复造文件锁**：`internal/agentd/flock_unix.go` / `flock_other.go`（B34，commit `0411df9c`）已有一份 flock 原语。本计划把它上移进 `internal/prochost` 并让 agentd 的 `AcquireDataDirLock` 复用（Task 1），全项目只保留一份 flock 实现。`AcquireDataDirLock` 的公开签名与错误文案语义不变，`lock_test.go` 六条用例必须原样通过。
 
 ---
 
-### Task 1: prochost 平台原语（Unix 实现 + Windows 骨架）
+### Task 1: prochost 平台原语（Unix 实现 + Windows 骨架 + agentd flock 归并）
 
 **Files:**
 - Create: `internal/prochost/prochost.go`
 - Create: `internal/prochost/platform_unix.go`
-- Create: `internal/prochost/platform_windows.go`
+- Create: `internal/prochost/platform_other.go`
 - Test: `internal/prochost/platform_test.go`
-- Modify: `go.mod`（`golang.org/x/sys` 从 indirect 升为直接依赖）
+- Modify: `internal/agentd/lock.go`（改为复用 prochost 的锁，并清掉文案里的 tmux 表述）
+- Delete: `internal/agentd/flock_unix.go`、`internal/agentd/flock_other.go`
 
 **Interfaces:**
 - Produces:
@@ -40,8 +47,13 @@
   - `func Kill(h Handle) error`
   - `func CreateInputChannel(path string) error`
   - `func WaitInputReader(path string, timeout time.Duration) (time.Duration, error)`
-  - 包内平台缝：`func spawnDetached(argv []string, dir string) (int, error)`、`func acquireLock(path string) (io.Closer, error)`、`func isLocked(path string) (bool, error)`、`func killGroup(pid int) error`
-- Consumes: 无（本包是最底层）
+  - 锁 API（供 prochost 自身与 `internal/agentd` 共用）：
+    `func AcquireLock(path string) (*Lock, error)`、`func (*Lock) Release() error`、
+    `var ErrLockHeld = errors.New("锁已被其他进程持有")`、
+    `func IsLocked(path string) (bool, error)`、`func LockSupported() bool`
+  - 包内平台缝：`func spawnDetached(argv []string, dir string) (int, error)`、`func killGroup(pid int) error`、`func createInputChannel(path string) error`、`func waitInputReader(path string, timeout time.Duration) (time.Duration, error)`、`func flockExclusiveNB(f *os.File) error`、`func isLockContended(err error) bool`、`const lockSupported bool`
+- Consumes: 无（本包是最底层，不 import 任何 internal 包）
+- 被改造方：`internal/agentd.AcquireDataDirLock` 的**公开签名与返回错误的语义不变**（`lock_test.go` 六条用例必须原样通过），只把内部的 flock 换成 `prochost.AcquireLock`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -87,11 +99,11 @@ func TestHelperLocker(t *testing.T) {
 	if os.Getenv(helperEnv) != "locker" {
 		t.Skip("非 helper 调用")
 	}
-	c, err := acquireLock(os.Getenv("PROCHOST_TEST_LOCK"))
+	c, err := AcquireLock(os.Getenv("PROCHOST_TEST_LOCK"))
 	if err != nil {
 		os.Exit(2)
 	}
-	defer c.Close()
+	defer c.Release()
 	os.Stdout.WriteString("locked")
 	os.Stdout.Close()
 	time.Sleep(30 * time.Second)
@@ -306,7 +318,7 @@ func Alive(h Handle) bool {
 	if h.LockPath == "" {
 		return false
 	}
-	locked, err := isLocked(h.LockPath)
+	locked, err := IsLocked(h.LockPath)
 	if err != nil {
 		log().Debug("探测存活锁失败，按已死处理", "lock", h.LockPath, "cause", err)
 		return false
@@ -374,21 +386,43 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 
 // platform_unix.go —— prochost 的 unix 平台原语。
 //
-// 职责：detached spawn（新会话 + 新进程组）、flock 存活锁、进程组回收、FIFO 输入通道。
+// 职责：detached spawn（新会话 + 新进程组）、flock 加锁与撞锁判定、进程组回收、
+// FIFO 输入通道。
 //
-// 边界：只提供系统调用级能力，不含任何 handoff 业务语义；被 prochost.go 与 shim.go 调用。
+// 边界：
+//   - 只提供系统调用级能力，不含任何 handoff 业务语义；被 prochost.go / lock.go /
+//     shim.go 调用
+//   - 只用 stdlib syscall，不引 golang.org/x/sys——本仓库既有的三处平台切分
+//     （opennonblock_*、workspace_procgroup_*、原 agentd/flock_*）都是这个套路，
+//     且实测所需常量与函数在 darwin/linux 的 syscall 里齐备，多一个直接依赖不划算
 package prochost
 
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
+
+// lockSupported 标记本平台是否真的能加锁。
+const lockSupported = true
+
+// flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。
+//
+// 注意：锁挂在「打开的文件描述」上而不是路径上。两个后果——同一进程内两次
+// OpenFile 同一路径同样互斥（测试据此免起子进程）；`rm` 掉锁文件并不能解锁。
+// （本函数由 internal/agentd/flock_unix.go 原样上移，行为不变。）
+func flockExclusiveNB(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+// isLockContended 判定错误是否为「锁已被他人持有」（LOCK_NB 下的 EWOULDBLOCK），
+// 用于把撞锁与真正的 IO 故障分开——两者该给的错误信息完全不同。
+func isLockContended(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK)
+}
 
 // spawnDetached 拉起 argv 并让它脱离当前进程的会话与进程组，返回其 pid。
 //
@@ -410,7 +444,7 @@ func spawnDetached(argv []string, dir string) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
-	cmd.SysProcAttr = &unix.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
 	}
@@ -423,56 +457,14 @@ func spawnDetached(argv []string, dir string) (int, error) {
 	return pid, nil
 }
 
-// acquireLock 以排他方式抢占 path 上的文件锁，返回持锁句柄（Close 即释放）。
-//
-// 语义：锁随持有进程死亡由内核自动释放，无需也不应依赖任何清理代码。
-// 锁 fd 不会被子进程继承——Go 的 exec 只传 ExtraFiles，因此锁精确代表本进程。
-//
-// 返回：锁已被他人持有时返回错误（调用方据此判断「已有 shim 在跑」）。
-func acquireLock(path string) (io.Closer, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("打开锁文件 %s: %w", path, err)
-	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("抢占锁 %s（可能已有进程持有）: %w", path, err)
-	}
-	return f, nil
-}
-
-// isLocked 报告 path 上的排他锁当前是否被某个进程持有。
-//
-// 实现：试着非阻塞抢锁——抢到说明没人持有（随即释放），抢不到说明有人持有。
-// 文件不存在视为无人持有（返回 false，不建文件：探测不应有副作用）。
-func isLocked(path string) (bool, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("打开锁文件 %s: %w", path, err)
-	}
-	defer f.Close()
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return true, nil
-		}
-		return false, fmt.Errorf("试锁 %s: %w", path, err)
-	}
-	// 抢到了说明本来没人持有；显式解锁后 Close（defer 的 Close 也会解，这里求明确）
-	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
-	return false, nil
-}
-
 // killGroup 向 pid 所在进程组发送 SIGKILL（负 pid 表示按组发送）。
 //
 // 幂等：组已不存在时内核返回 ESRCH，视为已回收成功。
 // 调用方（prochost.Kill）必须先确认存活锁仍被持有才可调用本函数——
 // 对已回收的 pid 发信号有误杀被复用 pid 的风险。
 func killGroup(pid int) error {
-	if err := unix.Kill(-pid, unix.SIGKILL); err != nil {
-		if errors.Is(err, unix.ESRCH) {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
 		return fmt.Errorf("kill -9 -%d: %w", pid, err)
@@ -482,11 +474,11 @@ func killGroup(pid int) error {
 
 // createInputChannel 幂等创建 0600 命名管道（见 CreateInputChannel 的文档）。
 func createInputChannel(path string) error {
-	err := unix.Mkfifo(path, 0o600)
+	err := syscall.Mkfifo(path, 0o600)
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, unix.EEXIST) {
+	if !errors.Is(err, syscall.EEXIST) {
 		return fmt.Errorf("mkfifo %s: %w", path, err)
 	}
 	fi, serr := os.Stat(path)
@@ -506,13 +498,13 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 	deadline := time.Now().Add(timeout)
 	start := time.Now()
 	for {
-		f, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK, 0)
+		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		if err == nil {
 			f.Close()
 			return time.Since(start), nil
 		}
 		// ENXIO 之外的错误（管道缺失、权限）重试无意义，立即失败
-		if !errors.Is(err, unix.ENXIO) {
+		if !errors.Is(err, syscall.ENXIO) {
 			return time.Since(start), fmt.Errorf("探测 %s 读端: %w", path, err)
 		}
 		if time.Now().After(deadline) {
@@ -523,22 +515,36 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 }
 ```
 
-- [ ] **Step 5: 实现 Windows 骨架**
+- [ ] **Step 5: 实现非 unix 平台骨架**
 
-创建 `internal/prochost/platform_windows.go`：
+创建 `internal/prochost/platform_other.go`：
 
 ```go
-//go:build windows
+//go:build !unix
 
-// platform_windows.go —— prochost 的 Windows 平台原语（A 期骨架）。
+// platform_other.go —— prochost 的非 unix 平台原语（A 期骨架）。
 //
-// 职责：让 prochost 在 GOOS=windows 下编译通过，所有原语返回 errNotImplemented。
+// 文件名用 _other 而非 _windows：Go 会把 _windows 后缀当成隐式 GOOS 约束，
+// 与 //go:build !unix 相与后只覆盖 windows，plan9/js 等非 unix 平台会编译失败。
+// 仓库既有的 flock_other.go / opennonblock_other.go 也是这个命名。
 //
-// 边界：本文件不含任何可用实现。B 期（独立立项）补齐：
+// 职责：让 prochost 在 GOOS=windows 下编译通过。
+//
+// 边界与两类退化（**两类语义不同，别混为一谈**）：
+//   - **进程类原语**（spawnDetached / killGroup / createInputChannel /
+//     waitInputReader）返回 errNotImplemented：拉不起来就是拉不起来，
+//     绝不能静默假装成功
+//   - **锁原语**（flockExclusiveNB / isLockContended / lockSupported）退化为
+//     「加锁恒成功、永不撞锁、lockSupported=false」：这是从
+//     internal/agentd/flock_other.go 原样上移的既有决定（B34），调用方据
+//     LockSupported() 打 Warn 明说保护未生效，而不是假装锁住了。改成报错会让
+//     agentd 的 DataDir 单实例锁在 Windows 上直接启动失败，那是行为退化不是改进
+//
+// B 期（独立立项）补齐：
 //   - spawnDetached → CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS + Job Object
-//   - acquireLock/isLocked → LockFileEx（语义与 flock 一致：进程死亡内核释放）
 //   - killGroup → Job Object 的 TerminateJobObject
 //   - createInputChannel → \\.\pipe\ 命名管道（go-winio）
+//   - 锁原语 → LockFileEx（语义与 flock 一致：进程死亡内核释放）
 //
 // 为什么 A 期只留骨架：Windows 上四个 executor CLI 的可用性尚未验证，
 // 进程层写完也无法端到端验收，违背本项目「每个 adapter 都真机端到端」的纪律。
@@ -546,18 +552,23 @@ package prochost
 
 import (
 	"errors"
-	"io"
+	"os"
 	"time"
 )
 
-// errNotImplemented 是 A 期 Windows 平台的统一返回。
-var errNotImplemented = errors.New("prochost: Windows 平台支持尚未实现（A 期只提供骨架，见 B 期计划）")
+// errNotImplemented 是 A 期非 unix 平台进程类原语的统一返回。
+var errNotImplemented = errors.New("prochost: 本平台的进程承载尚未实现（A 期只提供骨架，见 B 期计划）")
+
+// lockSupported 标记本平台是否真的能加锁。
+const lockSupported = false
+
+// flockExclusiveNB 非 unix 平台无 flock，空操作（见文件头「两类退化」）。
+func flockExclusiveNB(*os.File) error { return nil }
+
+// isLockContended 非 unix 平台永远撞不上锁——因为根本没加锁。
+func isLockContended(error) bool { return false }
 
 func spawnDetached(argv []string, dir string) (int, error) { return 0, errNotImplemented }
-
-func acquireLock(path string) (io.Closer, error) { return nil, errNotImplemented }
-
-func isLocked(path string) (bool, error) { return false, errNotImplemented }
 
 func killGroup(pid int) error { return errNotImplemented }
 
@@ -568,48 +579,193 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 }
 ```
 
-- [ ] **Step 6: 把 golang.org/x/sys 升为直接依赖**
+- [ ] **Step 6: 实现平台无关的锁门面**
+
+创建 `internal/prochost/lock.go`：
+
+```go
+// lock.go —— 基于文件锁的进程存活凭据。
+//
+// 职责：
+//   - AcquireLock：抢占一个路径上的排他锁，返回持锁句柄（持有到 Release 或进程退出）
+//   - IsLocked：探测某个路径上的锁是否被人持有（prochost.Alive 的判据）
+//   - LockSupported：报告本平台是否真的能加锁
+//
+// 边界：
+//   - 平台原语在 platform_unix.go / platform_other.go，本文件只做逻辑与错误语义
+//   - 不写 PID、不做进程探活、不提供 --force：flock 由内核在进程终止时释放
+//     （正常退出/panic/SIGKILL/掉电皆然），不存在陈旧锁
+//   - 不跨机器：flock 是本机语义
+//
+// 本文件由 internal/agentd/flock_unix.go / flock_other.go（B34）上移而来，
+// 因为拆 tmux 后「文件锁」同时是 agentd 单实例保护与 executor 存活判定的基础，
+// 两处各写一份是重复造轮子。agentd 侧的 AcquireDataDirLock 现在是本 API 的调用方。
+package prochost
+
+import (
+	"errors"
+	"fmt"
+	"os"
+)
+
+// ErrLockHeld 表示锁已被其他进程持有（与真正的 IO 故障区分开：两者该给用户的
+// 信息完全不同，调用方靠 errors.Is 判别，禁止按错误文本判）。
+var ErrLockHeld = errors.New("锁已被其他进程持有")
+
+// Lock 是一个已持有的文件锁，直到 Release 或进程退出。
+type Lock struct{ f *os.File }
+
+// LockSupported 报告本平台是否真的能加锁。
+//
+// 为什么要暴露：非 unix 平台上加锁是空操作，调用方需要据此打 Warn 明说
+// 「保护未生效」，而不是让人误以为锁住了。
+func LockSupported() bool { return lockSupported }
+
+// AcquireLock 对 path 取非阻塞排他锁（文件不存在则以 0600 创建）。
+//
+// 返回：
+//   - 持锁句柄；调用方须持有到不再需要为止
+//   - 锁已被他人持有时返回包装了 ErrLockHeld 的错误
+//   - 其他失败（打不开、文件系统不支持 flock）返回普通错误
+//
+// 注意：锁挂在「打开的文件描述」上，不在路径上——`rm` 掉锁文件不能解锁；
+// 锁 fd 也不会被子进程继承（Go 的 exec 只传 ExtraFiles），因此锁精确代表本进程。
+func AcquireLock(path string) (*Lock, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("打开锁文件 %s: %w", path, err)
+	}
+	if err := flockExclusiveNB(f); err != nil {
+		f.Close()
+		if isLockContended(err) {
+			return nil, fmt.Errorf("抢占锁 %s: %w", path, ErrLockHeld)
+		}
+		return nil, fmt.Errorf("给 %s 加锁: %w", path, err)
+	}
+	return &Lock{f: f}, nil
+}
+
+// Release 释放锁。重复调用安全（第二次直接返回 nil）。
+//
+// 生产侧可有可无——进程退出内核即释放；保留它是为了 defer 的习惯写法，
+// 以及让测试能验证「释放后可重新获取」。
+func (l *Lock) Release() error {
+	if l == nil || l.f == nil {
+		return nil
+	}
+	err := l.f.Close() // 关闭 fd 即释放 flock，无需显式 LOCK_UN
+	l.f = nil
+	if err != nil {
+		return fmt.Errorf("释放锁 %s: %w", l.f.Name(), err)
+	}
+	return nil
+}
+
+// IsLocked 报告 path 上的排他锁当前是否被某个进程持有。
+//
+// 实现：试着非阻塞抢锁——抢到说明没人持有（随即释放），撞锁说明有人持有。
+// 文件不存在视为无人持有（返回 false，且**不建文件**：探测不应有副作用）。
+func IsLocked(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("打开锁文件 %s: %w", path, err)
+	}
+	defer f.Close()
+	if err := flockExclusiveNB(f); err != nil {
+		if isLockContended(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("试锁 %s: %w", path, err)
+	}
+	return false, nil // 抢到了说明本来没人持有；defer 的 Close 会解锁
+}
+```
+
+> `Release` 里 `l.f = nil` 之后又在错误分支引用 `l.f.Name()` 会 panic——实现时
+> 先把 `path := l.f.Name()` 存下来再置 nil（`internal/agentd/lock.go` 的既有实现
+> 正是这么写的，照它的顺序来）。
+
+- [ ] **Step 7: 让 agentd 的 DataDir 锁复用 prochost，删掉重复实现**
 
 Run:
 ```bash
-go get golang.org/x/sys@v0.47.0 && go mod tidy
+rm internal/agentd/flock_unix.go internal/agentd/flock_other.go
 ```
-Expected: `go.mod` 的 require 块里 `golang.org/x/sys v0.47.0` 不再带 `// indirect`
 
-- [ ] **Step 7: 运行测试确认通过**
+改写 `internal/agentd/lock.go`：
+- import 加 `"errors"` 与 `"github.com/xushixin/handoff/internal/prochost"`
+- `DataDirLock` 的字段 `f *os.File` 换成 `l *prochost.Lock`
+- `flockSupported` 的引用换成 `prochost.LockSupported()`
+- 加锁段换成：
+```go
+	l, err := prochost.AcquireLock(path)
+	if err != nil {
+		if errors.Is(err, prochost.ErrLockHeld) {
+			log.Error("数据目录已被另一个 agentd 占用，拒绝启动",
+				"data_dir", dataDir, "path", path)
+			return nil, fmt.Errorf(lockHeldMsg, dataDir)
+		}
+		// 非撞锁的加锁失败（如打不开文件、文件系统不支持 flock）：这是环境问题，
+		// 与「已被占用」是两码事，不能套用那段指引文案误导用户
+		log.Error("获取单实例锁失败", "path", path, "cause", err)
+		return nil, err
+	}
+```
+- `Release` 委托给 `l.l.Release()`，日志保持原样
+- **把 `lockHeldMsg` 里的 tmux 表述改掉**：现文案含「同一批 worktree 与 tmux 会话」，
+  拆掉 tmux 后这句话就是错的。改为「同一批 worktree 与执行者进程」
+
+Run: `go test ./internal/agentd/ -run 'Lock' -v`
+Expected: PASS —— `lock_test.go` 的六条用例（含 `TestAcquireDataDirLockErrorIsActionable`）
+原样通过，说明公开行为没变
+
+- [ ] **Step 8: 运行测试确认通过**
 
 Run: `go test ./internal/prochost/ -run 'TestSpawnDetached|TestAlive|TestKillIsNoOp|TestCreateInputChannel' -v`
 Expected: PASS（4 条全过）
 
-- [ ] **Step 8: 加关键节点日志**
+- [ ] **Step 9: 加关键节点日志**
 
 确认 `prochost.go` 已包含（Step 3 的代码里已写，此步是核对）：
 - `Alive`：探测出错时 Debug（带 lock 路径 + cause）——高频调用，不用 Info 免刷屏
 - `Kill`：锁已释放走「无需回收」Info（带 pid/lock）；确认存活后 Info「回收执行者进程组」；`killGroup` 失败 Error（带 pid + cause）
 
+`lock.go` **有意不打日志**：它是被 agentd 与 prochost 两处调用的纯原语，
+日志由各自调用方带着自己的上下文打（agentd 打 data_dir，prochost.Kill 打 pid）——
+在原语层打会变成没有上下文的重复行。`internal/agentd/lock.go` 归并后的四条日志
+（不支持锁 Warn / 打开失败 Error / 撞锁 Error / 取得锁 Info）必须一条不少地保留。
+
 补充：`spawnDetached` 成功后不在本层打日志（调用方 `Start` 打，带任务上下文更有用）。
 用 `slog`，**禁止 `fmt.Printf`**。
 
-- [ ] **Step 9: 加注释自检**
+- [ ] **Step 10: 加注释自检**
 
-逐项确认（Step 3–5 的代码已写全，此步是核对）：
-- 三个新文件都有文件头注释（职责 + 边界）
+逐项确认（Step 3–7 的代码已写全，此步是核对）：
+- 四个新文件（prochost.go / platform_unix.go / platform_other.go / lock.go）都有文件头注释（职责 + 边界）
+- `lock.go` 文件头写明「由 agentd 上移而来、为什么要归并」
+- `platform_other.go` 文件头写明「两类退化语义不同」与 `_other` 命名的 why
+- `internal/agentd/lock.go` 的 `lockHeldMsg` 已无 tmux 表述
 - 包注释含「为什么存活判定用文件锁而不是 pid」
 - `spawnDetached` 含「为什么用 Setsid」「为什么 stdio 置 nil」「不脱离 cgroup」三条 why
 - `createInputChannel` 含「残留普通文件为何必须显式失败」的症状描述
 - `waitInputReader` 含 ENXIO 竞态的 why
 - Windows 骨架含「为什么 A 期只留骨架」
 
-- [ ] **Step 10: 回归验证**
+- [ ] **Step 11: 回归验证**
 
 Run: `go test ./... && GOOS=windows GOARCH=amd64 go build ./internal/prochost/`
-Expected: 全绿（Windows 侧只需 prochost 包能编译，其余包本任务不涉及）
+Expected: `go test ./...` 全绿（**含 `internal/agentd` 的 lock 用例**——它们验证归并后
+公开行为没变）；Windows 侧本任务只要求 prochost 包能编译，其余包在 Task 3 收口
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add internal/prochost go.mod go.sum
-git commit -m "feat(prochost): 跨平台进程承载原语（detach/文件锁存活/进程组回收/FIFO）"
+git add internal/prochost internal/agentd/lock.go
+git rm internal/agentd/flock_unix.go internal/agentd/flock_other.go
+git commit -m "feat(prochost): 跨平台进程承载原语（detach/文件锁存活/进程组回收/FIFO），agentd 单实例锁归并复用"
 ```
 
 ---
@@ -623,7 +779,7 @@ git commit -m "feat(prochost): 跨平台进程承载原语（detach/文件锁存
 - Modify: `internal/prochost/prochost.go`（追加 `Start`）
 
 **Interfaces:**
-- Consumes: Task 1 的 `Spec`、`Handle`、`spawnDetached`、`acquireLock`、`waitInputReader`
+- Consumes: Task 1 的 `Spec`、`Handle`、`spawnDetached`、`AcquireLock`、`waitInputReader`
 - Produces:
   - `func Start(spec Spec, selfExe string) (Handle, error)` —— 写 spec.json（0600）后 detached 拉起 `selfExe _shim --spec <path>`，返回 Handle
   - `func RunShim(specPath string) error` —— shim 主体，由 `handoff _shim` 调用
@@ -785,11 +941,11 @@ func TestRunShimRefusesWhenLockAlreadyHeld(t *testing.T) {
 	specPath := writeSpec(t, dir, spec)
 	// 先占住锁，模拟「同一任务已有 shim 在跑」——绝不能起第二个
 	// （两个 executor 抢同一会话是数据损坏级后果，见 claudecode Resume 的冷恢复互斥）
-	held, err := acquireLock(spec.LockPath)
+	held, err := AcquireLock(spec.LockPath)
 	if err != nil {
 		t.Fatalf("预占锁失败: %v", err)
 	}
-	defer held.Close()
+	defer held.Release()
 
 	if err := RunShim(specPath); err == nil {
 		t.Fatal("锁已被持有时 RunShim 必须失败，实得 nil")
@@ -865,7 +1021,7 @@ func TestSentinelWrittenAfterParentDeath(t *testing.T) {
 
 > 实现提示：上面 `TestHelperShimStarter` 里引用的 `strconv` 与 `startWith` 是本测试文件
 > 需要补的两处——`strconv` 加进 import；`startWith(cmd, spec)` 是测试专用小helper，
-> 直接 `cmd.SysProcAttr = &unix.SysProcAttr{Setsid: true}; cmd.Start()` 后返回
+> 直接 `cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}; cmd.Start()` 后返回
 > `Handle{PID: cmd.Process.Pid, LockPath: spec.LockPath}` 并 `cmd.Process.Release()`。
 > 之所以测试不直接用 `Start`，是因为生产的 `Start` 固定拼 `_shim --spec`，而测试
 > 二进制的入口是 `-test.run`；`Start` 自身的 argv 拼装由 Step 3 的单测覆盖。
@@ -931,12 +1087,12 @@ func RunShim(specPath string) error {
 
 	// 存活锁必须最先拿：拿不到说明同任务已有 shim 在跑，起第二个会让两个 executor
 	// 抢同一会话（数据损坏级后果，与 claudecode 冷恢复互斥同一道理）
-	lock, err := acquireLock(spec.LockPath)
+	lock, err := AcquireLock(spec.LockPath)
 	if err != nil {
 		l.Error("抢占存活锁失败，同任务可能已有 shim 在跑", "cause", err)
 		return fmt.Errorf("shim 抢锁: %w", err)
 	}
-	defer lock.Close()
+	defer lock.Release()
 
 	stdout, err := openAppend(spec.Stdout)
 	if err != nil {
@@ -1228,7 +1384,8 @@ git commit -m "feat(prochost): shim 主体与 Start 门面，agentd 离线期间
 - Modify: `internal/executor/claudecode/proc.go`（整体重写：删 sh 脚本/tmux，改 prochost）
 - Modify: `internal/executor/claudecode/reap.go`
 - Modify: `internal/executor/claudecode/resume.go`（存活判据换 prochost.Alive）
-- Modify: `internal/executor/claudecode/adapter.go`（Proc 字段变化的适配点）
+- Modify: `internal/executor/claudecode/probe.go`（重建 Proc 的字段 + 审核者可见的 Note 文本）
+- Modify: `internal/executor/claudecode/adapter.go`（Proc 字段适配 + 两处「tmux attach」文案）
 - Test: `internal/executor/claudecode/proc_test.go`、`internal/executor/claudecode/reap_test.go`、`internal/executor/claudecode/start_ordering_test.go`（缝替换）
 
 **Interfaces:**
@@ -1574,11 +1731,19 @@ func (a *Adapter) Reap(taskID, taskDir string) error {
 同步更新 `reap_test.go`：把 `tmuxKill` 缝的断言改为「proc.json 缺失时报错」+
 「Handle 锁空闲时返回 nil 且不发信号」两条。
 
-- [ ] **Step 5: 改 resume.go 与 adapter.go 的适配点**
+- [ ] **Step 5: 改 resume.go / probe.go / adapter.go 的适配点**
 
-Run: `grep -rn 'TmuxSession\|tmuxHasSession\|tmuxKill\|tmuxLaunch\|shellq' internal/executor/claudecode/`
-把每一处改成 `Handle` / `prochost.Alive` / `prochost.Kill`。`resume.go` 里
-「进程是否还活着」的判定统一走 `(&Proc{Handle: pi.Handle, TaskDir: taskDir}).Alive()`。
+Run: `grep -rn 'TmuxSession\|tmuxHasSession\|tmuxKill\|tmuxLaunch\|shellq\|tmux' internal/executor/claudecode/ | grep -v _test`
+把每一处改成 `Handle` / `prochost.Alive` / `prochost.Kill`。逐文件：
+
+- `resume.go`：「进程是否还活着」的判定统一走
+  `(&Proc{Handle: pi.Handle, TaskDir: taskDir}).Alive()`；三条日志里的
+  `"tmux", pi.TmuxSession` 改成 `"shim_pid", pi.Handle.PID`。
+- `probe.go`：重建 `Proc` 的字段换成 `Handle`；`ProbeOutcome.Note` 从
+  「claude 执行器已不在（tmux 会话 %s）」改成「claude 执行器已不在（进程 pid %d）」。
+  Note 是判死后直接呈给审核者的一句话理由，写着一个已不存在的概念等于误导。
+- `adapter.go`：「哨兵后回收 tmux 会话失败」改为「哨兵后回收执行者进程失败」；
+  权限描述缺失时的兜底文案「请 tmux attach 查看现场」改成「请 handoff attach 查看现场」。
 
 - [ ] **Step 6: 运行测试确认通过**
 
@@ -1621,6 +1786,9 @@ git commit -m "refactor(claudecode): 迁移到 prochost，删除 tmux 与 sh 启
 **Files:**
 - Modify: `internal/executor/opencode/proc.go`
 - Modify: `internal/executor/opencode/resume.go`
+- Modify: `internal/executor/opencode/probe.go`（重建 Proc 的字段 + 审核者可见的 Note 文本）
+- Modify: `internal/executor/opencode/reap.go`（去掉确定性命名兜底）
+- Modify: `internal/executor/opencode/adapter.go`（Proc 字段适配 + 三处「tmux attach」文案）
 - Test: `internal/executor/opencode/proc_test.go`、删除 `internal/executor/opencode/proc_script_unix_test.go`
 
 **Interfaces:**
@@ -1799,6 +1967,19 @@ func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
 
 删除 `internal/executor/opencode/proc_script_unix_test.go`（它测的是已删除的 sh 脚本）。
 
+**同任务内一并改掉 probe / reap / adapter 三处**（它们读同一份 procInfo，留在原地会编译不过，
+而且其中两处的文本是审核者会读到的）：
+
+1. `probe.go`：重建 `Proc` 的字段从 `TmuxSession` 换成 `Handle`；`ProbeOutcome.Note`
+   与两条 Info 日志里的「tmux 会话 %s」改成「执行者进程 pid %d」（取 `pi.Handle.PID`）。
+   Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导。
+2. `reap.go`：删掉「确定性命名兜底」分支——tmux 会话名可由 taskID 推导，锁路径与 pid
+   不能，proc.json 缺失就是真的无据可查，如实报错。回收改为 `prochost.Kill(pi.Handle)`。
+3. `adapter.go`：`Proc` 字段引用适配；把追加进事件流的文案里的
+   「tmux attach 查看现场」改成「handoff attach 查看现场」、
+   「手动杀掉 tmux 会话」改成「handoff stop 回收」。
+
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `go test ./internal/executor/opencode/ -v`
@@ -1838,6 +2019,9 @@ git commit -m "refactor(opencode): 迁移到 prochost，密码改由 Spec.Env �
 - Modify: `internal/executor/grok/proc.go`
 - Modify: `internal/executor/grok/taskenv.go`（如其中含 serve 脚本生成则一并删除）
 - Modify: `internal/executor/grok/resume.go`
+- Modify: `internal/executor/grok/probe.go`
+- Modify: `internal/executor/grok/reap.go`
+- Modify: `internal/executor/grok/adapter.go`
 - Test: `internal/executor/grok/proc_test.go`
 
 **Interfaces:**
@@ -1951,6 +2135,19 @@ func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
 
 `procInfo` 加 `Handle`、去 tmux 字段、文件名改 `proc.json`。
 
+**同任务内一并改掉 probe / reap / adapter 三处**（它们读同一份 procInfo，留在原地会编译不过，
+而且其中两处的文本是审核者会读到的）：
+
+1. `probe.go`：重建 `Proc` 的字段从 `TmuxSession` 换成 `Handle`；`ProbeOutcome.Note`
+   与两条 Info 日志里的「tmux 会话 %s」改成「执行者进程 pid %d」（取 `pi.Handle.PID`）。
+   Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导。
+2. `reap.go`：删掉「确定性命名兜底」分支——tmux 会话名可由 taskID 推导，锁路径与 pid
+   不能，proc.json 缺失就是真的无据可查，如实报错。回收改为 `prochost.Kill(pi.Handle)`。
+3. `adapter.go`：`Proc` 字段引用适配；把追加进事件流的文案里的
+   「tmux attach 查看现场」改成「handoff attach 查看现场」、
+   「手动杀掉 tmux 会话」改成「handoff stop 回收」。
+
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `go test ./internal/executor/grok/ -v`
@@ -1988,6 +2185,9 @@ git commit -m "refactor(grok): 迁移到 prochost，secret 改由 Spec.Env 承�
 - Modify: `internal/executor/codex/proc.go`
 - Modify: `internal/executor/codex/taskenv.go`（删除其中的 sh 脚本生成）
 - Modify: `internal/executor/codex/resume.go`
+- Modify: `internal/executor/codex/probe.go`
+- Modify: `internal/executor/codex/reap.go`
+- Modify: `internal/executor/codex/adapter.go`（含「codex tmux 会话回收失败」事件文案）
 - Test: `internal/executor/codex/proc_test.go`
 
 **Interfaces:**
@@ -2097,6 +2297,19 @@ func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
 
 `procInfo` 加 `Handle`、去 tmux 字段、文件名改 `proc.json`。
 
+**同任务内一并改掉 probe / reap / adapter 三处**（它们读同一份 procInfo，留在原地会编译不过，
+而且其中两处的文本是审核者会读到的）：
+
+1. `probe.go`：重建 `Proc` 的字段从 `TmuxSession` 换成 `Handle`；`ProbeOutcome.Note`
+   与两条 Info 日志里的「tmux 会话 %s」改成「执行者进程 pid %d」（取 `pi.Handle.PID`）。
+   Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导。
+2. `reap.go`：删掉「确定性命名兜底」分支——tmux 会话名可由 taskID 推导，锁路径与 pid
+   不能，proc.json 缺失就是真的无据可查，如实报错。回收改为 `prochost.Kill(pi.Handle)`。
+3. `adapter.go`：`Proc` 字段引用适配；把追加进事件流的文案里的
+   「tmux attach 查看现场」改成「handoff attach 查看现场」、
+   「手动杀掉 tmux 会话」改成「handoff stop 回收」。
+
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `go test ./internal/executor/codex/ -v`
@@ -2128,12 +2341,13 @@ git commit -m "refactor(codex): 迁移到 prochost，删除 tmux 与 sh 启动�
 
 ---
 
-### Task 7: 删除 shellq、清理 tmux 残留、加 Windows 编译门禁
+### Task 7: 删除 shellq、改 reconcile 兜底提示、清理 tmux 残留、加 Windows 编译门禁
 
 **Files:**
 - Delete: `internal/shellq/shellq.go`、`internal/shellq/`（整包）
 - Modify: `cmd/dispatch.go`（osascript 弹终端的 shell 拼接改为本地私有函数）
-- Test: `cmd/dispatch_test.go`
+- Modify: `internal/agentd/reconcile.go`（删掉确定性会话名兜底 + 残留提示事件文案）
+- Test: `cmd/dispatch_test.go`、`internal/agentd/reconcile_test.go`
 - Create: `internal/prochost/windows_build_test.go`（编译门禁的说明性测试）
 
 **Interfaces:**
@@ -2200,7 +2414,36 @@ grep -rn "shellq" --include="*.go" .
 ```
 Expected: 第二条命令无输出
 
-- [ ] **Step 5: 清理 tmux 残留**
+- [ ] **Step 5: 改 reconcile.go 的兜底回收提示**
+
+`stopExecutor` 现在自己算一个 `session := "handoff-" + shortID(taskID)`，只为了写日志
+与残留提示。会话名没了，这段必须改：
+
+```go
+	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
+	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
+	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
+		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "cause", rerr)
+		evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
+			// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
+			// tmux kill-session，那个命令现在不存在了，照做只会更困惑
+			Text: fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
+				"再 handoff stop %s 回收（原因：%v）", taskID, rerr),
+		})
+		...
+	}
+	m.log.Info("按恢复凭据兜底回收成功", "task", taskID)
+```
+
+`shortID` 若在本文件已无其他调用方，一并删除；仍被别处使用则保留但改掉它的
+doc comment（现写着「与三个 adapter 的 tmux 会话命名规则一致」）。
+
+Run: `grep -n "shortID" internal/agentd/*.go` 先确认调用方再决定删留。
+Run: `go test ./internal/agentd/ -v`
+Expected: PASS。若 `reconcile_test.go` 断言了旧的事件文案，同步改断言——
+**改断言的同时要确认新文案确实更可行动**，不要为了让测试过而把文案改回去。
+
+- [ ] **Step 6: 清理 tmux 残留**
 
 Run:
 ```bash
@@ -2215,7 +2458,7 @@ grep -rn "tmux" --include="*_test.go" .
 ```
 把仍在断言 tmux 行为的测试删除或改写；测试文件里作为历史背景的注释可保留。
 
-- [ ] **Step 6: 加 Windows 编译门禁测试**
+- [ ] **Step 7: 加 Windows 编译门禁测试**
 
 创建 `internal/prochost/windows_build_test.go`：
 
@@ -2251,28 +2494,28 @@ func TestWindowsCrossCompiles(t *testing.T) {
 }
 ```
 
-- [ ] **Step 7: 运行测试确认通过**
+- [ ] **Step 8: 运行测试确认通过**
 
 Run: `go test ./cmd/ -run TestAppleScriptQuote -v && go test ./internal/prochost/ -run TestWindowsCrossCompiles -v`
 Expected: PASS（两条）
 
-- [ ] **Step 8: 加注释自检**
+- [ ] **Step 9: 加注释自检**
 
 - `appleScriptQuote` 含「为什么留在 cmd 包」的 why
 - `windows_build_test.go` 有文件头（职责 + 边界）与「为什么这条测试值得存在」
 
 （本任务不新增运行时代码路径，无新日志点。）
 
-- [ ] **Step 9: 回归验证**
+- [ ] **Step 10: 回归验证**
 
 Run: `go test ./... && GOOS=windows GOARCH=amd64 go build ./...`
 Expected: 全绿
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add -A internal cmd
-git commit -m "refactor: 删除 shellq 与全部 tmux 残留，加 Windows 交叉编译门禁"
+git commit -m "refactor: 删除 shellq 与全部 tmux 残留，兜底回收提示改指向 handoff stop"
 ```
 
 ---
@@ -3310,30 +3553,44 @@ git commit -m "feat(deploy): systemd unit 模板与 KillMode 自检，README/bac
 | §3.3 systemd KillMode | Task 10 |
 | §4.1 proc.json 写前置 | Task 3–6 各自的 Step 3 |
 | §4.2 两层存活判定 | Task 3–6 的 Alive |
-| §4.3 Reap | Task 3 的 Step 4（claude），Task 4–6 沿用各自 Reap 同款改写 |
+| §4.3 Reap | Task 3 Step 4（claude）+ Task 4/5/6 Step 3 的 probe/reap/adapter 小节 + Task 7 Step 5（reconcile 侧的确定性命名兜底） |
 | §5.1 render endpoint | Task 8 |
 | §5.2 CLI attach 重写 | Task 9 |
 | §5.3 桌面端衔接 | Task 8 的 endpoint 即交付物；桌面端消费属其自身 plan |
 | §6 测试与验收 | 各任务的 Step + 末尾真机清单 |
 | §7 范围外（B 期） | Task 10 Step 7 写进 backlog |
-| 范围决策：不做升级兼容 | Task 3 Step 4 的 Reap 无遗留路径 |
-| 范围决策：Windows 骨架 + 编译门禁 | Task 1 Step 5 + Task 7 Step 6 |
+| 范围决策：不做升级兼容 | Task 3 Step 4 / Task 7 Step 5 均无遗留路径 |
+| 范围决策：Windows 骨架 + 编译门禁 | Task 1 Step 5 + Task 7 Step 7 |
 
 无遗漏。
 
-**2. Placeholder 扫描**：无 TBD/TODO；每个代码步骤都给了可直接落地的代码块；
-「照搬 Task N 那段」只出现在 Task 5/6 引用 Task 4 的启动段——那段代码在 Task 4
-Step 3 完整写出且结构完全同形，同时本任务自身给出了 `serveSpec` 的完整实现与
-差异点（secret/端口/argv 各不相同），不构成信息缺失。
+**2. Placeholder 扫描**：无 TBD/TODO；每个代码步骤都给了可直接落地的代码块。
+两处「照搬」是有意的且不构成信息缺失：
+- Task 5/6 的启动段引用 Task 4 Step 3——那段代码在 Task 4 完整写出且结构完全同形，
+  同时 Task 5/6 各自给出了 `serveSpec` 的完整实现与差异点（secret / 端口 / argv 全不同）
+- Task 4/5/6 的 probe/reap/adapter 小节内容一致——因为四个 adapter 这三处的改法确实
+  逐字相同，各自的差异（字段名、文案）在小节里点名了
 
-**3. 类型一致性**：`prochost.Handle{PID, LockPath}`、`prochost.Spec` 的字段名在
-Task 1 定义后于 Task 2–6 一致使用；`startProcHost` 缝名四个 adapter 统一；
-`procInfoFileName = "proc.json"` / `lockFileName = "proc.lock"` 四包统一；
+**3. 类型一致性**：`prochost.Handle{PID, LockPath}`、`prochost.Spec` 的字段名在 Task 1
+定义后于 Task 2–6 一致使用；锁 API 统一为 `AcquireLock` / `(*Lock).Release` /
+`IsLocked` / `LockSupported` / `ErrLockHeld`（Task 1 定义，Task 2 的 shim 与
+`internal/agentd/lock.go` 消费）；`startProcHost` 缝名四个 adapter 统一；
+`procInfoFileName = "proc.json"` / `lockFileName = "proc.lock"` 四个 adapter 包统一
+（与 `internal/agentd` 里既有的 `lockFileName = "agentd.lock"` 不同包，无冲突）；
 `prochost.SentinelPrefix` 在 Task 2 定义、Task 3 消费；`RenderStream` 的签名在
 Task 9 Step 3 定义、Step 4 消费，参数顺序一致。
 
-**4. 已知的实现期待补项**（不是 placeholder，是留给实现者的明确动作）：
-- Task 2 Step 1 的测试文件需补 `strconv` import 与 `startWith` 小 helper（已在提示里写明做法）
+**4. 写计划期间对代码做的两处实测校正**（写进这里以免实现者重走弯路）：
+- **不引 `golang.org/x/sys`**：初稿打算把它升为直接依赖，实测 stdlib `syscall` 在
+  darwin/linux 下已提供全部所需（`Setsid`/`Mkfifo`/`Flock`/`Kill`/`ENXIO`/
+  `EWOULDBLOCK`/`ESRCH`），且仓库既有三处平台切分都用 stdlib。少一个直接依赖。
+- **flock 不重写**：B34（commit `0411df9c`，三个提交前）刚落地一份 flock 原语在
+  `internal/agentd`。初稿在 prochost 里另写一份，是重复造轮子。改为上移进 prochost
+  并让 `AcquireDataDirLock` 复用（Task 1 Step 6/7）。
+
+**5. 已知的实现期待补项**（不是 placeholder，是留给实现者的明确动作）：
+- Task 2 Step 1 的测试文件需补 `strconv` import 与 `startWith` 小 helper（已写明做法）
 - Task 5/6 的 `grokServeArgv` / `codexServeArgv` / `grokSecretEnvKey` 需从现有代码
-  原样搬运（已在 Step 3 首行写明用 grep 定位，且明确「命令形态与变量名不得改动」）
+  原样搬运（Step 3 首行写明用 grep 定位，且明确「命令形态与变量名不得改动」）
 - Task 8 的 `newTestServerWithDataDir` 若本包无此辅助，按 `server_test.go` 既有建法照搬
+- Task 7 Step 5 的 `shortID` 删留取决于是否还有别的调用方（步骤里写了先 grep 再决定）
