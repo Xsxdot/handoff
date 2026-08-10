@@ -712,6 +712,48 @@ func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Works
 	m.deleteCreatedBranch(ctx, repo, ws)
 }
 
+// branchAction 是补偿路径对「本次分支」的处置决定。
+// 每个取值对应一条独立规则，便于表驱动测试逐条钉住——这正是把判断从
+// deleteCreatedBranch 里拆出来的目的。
+type branchAction int
+
+const (
+	branchDelete         branchAction = iota // 确认是本次新建且自创建以来零提交，可删
+	branchKeepNotOurs                        // 不是本次新建的，是用户自己的分支
+	branchKeepTipUnknown                     // 尖端取不到，无从复核
+	branchKeepTipMoved                       // 尖端与创建时不符，疑似已有提交
+)
+
+// decideBranchAction 判定补偿路径是否可以删除该分支。纯函数：不调 git、不打日志、
+// 不碰任何状态，故可以被表驱动测试穷举。
+//
+// 参数：
+//   - recordedTip: PrepareWorkspace 建分支时记下的尖端；空串 = 分支不是本次新建的
+//   - currentTip:  当前尖端；tipErr 非 nil 时其值无意义
+//   - tipErr:      取当前尖端时的错误
+//
+// 返回：四种处置之一；只有 branchDelete 允许调用方执行删除。
+//
+// 注意：
+//   - 判定顺序是本函数的全部要点。`recordedTip == ""` 必须排在任何拿 currentTip
+//     做的比较之前。旧实现里这条规则靠「碰巧写在前面」生效，一旦有人认为两道闸
+//     重复而删掉它，悬空 symref 场景下 branchTip 失败塌缩出的空串会与 recordedTip
+//     的空串相等，从而放行删除，毁掉用户自己的分支（该场景已实测可达，见
+//     docs/superpowers/specs/2026-08-10-compensation-branch-decision-design.md §2.1）
+//   - 取不到尖端一律保留而非删除：删分支不可逆，宁可留残留也不能删错
+func decideBranchAction(recordedTip, currentTip string, tipErr error) branchAction {
+	if recordedTip == "" {
+		return branchKeepNotOurs
+	}
+	if tipErr != nil {
+		return branchKeepTipUnknown
+	}
+	if currentTip != recordedTip {
+		return branchKeepTipMoved
+	}
+	return branchDelete
+}
+
 // deleteCreatedBranch 删除本次 dispatch 新建的分支（补偿路径专用）。
 //
 // why 这件事不放进 RemoveManagedWorktree：那个函数服务的是 Done/Stop 归档场景，

@@ -1382,6 +1382,52 @@ func branchExists(t *testing.T, repo, branch string) bool {
 	return c.Run() == nil
 }
 
+// actionName 让断言失败时打出可读的枚举名，而不是 0/1/2/3。
+// 只服务测试可读性，故不做成生产侧的 String() 方法。
+var actionName = map[branchAction]string{
+	branchDelete:         "branchDelete",
+	branchKeepNotOurs:    "branchKeepNotOurs",
+	branchKeepTipUnknown: "branchKeepTipUnknown",
+	branchKeepTipMoved:   "branchKeepTipMoved",
+}
+
+// TestDecideBranchAction 逐条钉住补偿路径的分支处置规则。
+//
+// 第二行（recordedTip 空 + tipErr 非 nil）是本用例存在的全部理由：它是
+// 「不是本次新建的」这道闸的独占角落——旧结构里 branchTip 失败塌缩成空串，
+// 与 recordedTip 的空串撞车，闸2 的 cur != recordedTip 会变成「放行删除」，
+// 而该状态在真实仓库里可由悬空 symref 达成（已实测，见 spec §2.1）。
+func TestDecideBranchAction(t *testing.T) {
+	const (
+		shaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	errTip := errors.New("rev-parse 失败")
+
+	cases := []struct {
+		name        string
+		recordedTip string
+		currentTip  string
+		tipErr      error
+		want        branchAction
+	}{
+		{"用户自带分支：尖端取得到", "", shaA, nil, branchKeepNotOurs},
+		{"用户自带分支：尖端取不到（悬空 symref）", "", "", errTip, branchKeepNotOurs},
+		{"本次新建且自创建以来零提交", shaA, shaA, nil, branchDelete},
+		{"本次新建但尖端已移动", shaA, shaB, nil, branchKeepTipMoved},
+		{"本次新建但尖端取不到", shaA, "", errTip, branchKeepTipUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideBranchAction(tc.recordedTip, tc.currentTip, tc.tipErr)
+			if got != tc.want {
+				t.Fatalf("decideBranchAction(%q, %q, %v) = %s，期望 %s",
+					tc.recordedTip, tc.currentTip, tc.tipErr, actionName[got], actionName[tc.want])
+			}
+		})
+	}
+}
+
 // TestCompensateDeletesCreatedBranch 验证 managed 模式补偿把**本次新建的**分支
 // 一并删掉——这正是 B39 的原始诉求：修好环境后用同一分支名重试必须能成功。
 func TestCompensateDeletesCreatedBranch(t *testing.T) {
