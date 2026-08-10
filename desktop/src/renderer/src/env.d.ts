@@ -5,6 +5,7 @@ import type { OnboardingFeatureSetupDeps } from '@/components/onboarding/onboard
 import type { languages } from 'monaco-editor'
 import type { MonacoE2EProbe } from './components/editor/monaco-e2e-probe'
 import type { TerminalWorktreeParkingDebugVerdict } from './components/terminal-pane/terminal-parking-e2e-overrides'
+import type { HandoffRendererAPI } from '../preload/handoff-api-types'
 
 declare module 'monaco-editor/esm/vs/basic-languages/python/python.js' {
   export const conf: languages.LanguageConfiguration
@@ -78,7 +79,7 @@ declare global {
     __monacoEditorE2E?: MonacoE2EProbe
     __e2ePtyAppliedSizeReadDelayMs?: number
     // Handoff 桌面控制面窄 IPC（由 preload/handoff.ts 暴露）。
-    handoff?: import('../preload/handoff-api-types').HandoffRendererAPI
+    handoff?: HandoffRendererAPI
   }
 }
 

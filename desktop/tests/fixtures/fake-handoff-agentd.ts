@@ -34,14 +34,20 @@ export type FakeAgentdHandle = {
     createProject: () => number
     getOperation: () => number
   }
-  /** 推送一条控制事件到全部订阅者。 */
+  /**
+   * 推送一条控制事件：入 durable buffer 并向全部在线订阅者实时发送。
+   * 断线期间 push 的事件会留在 buffer，重连后按客户端 after cursor 重放——
+   * 与真实 control_events 的补发语义一致（bootstrap/stream 无窗口竞态）。
+   */
   push(event: ControlEventEnvelope): void
   /** 已建立的 WS 连接数（订阅就绪判定用）。 */
   wsCount: () => number
   /** 已推送的 WS 消息条数（供断言 push 确实发送）。 */
   wsMessagesSent: () => number
-  /** 断开全部 WS 订阅（模拟断线）。 */
+  /** 断开全部 WS 订阅并进入 down 状态（模拟断线；WS/HTTP 均拒绝）。 */
   disconnectAll(): void
+  /** 恢复 up 状态，允许客户端重连（重连时按 after cursor 重放 buffer）。 */
+  setDown(down: boolean): void
   /** 记录收到的 createProject 请求体。 */
   createdProjects: () => unknown[]
   close(): Promise<void>
@@ -54,11 +60,14 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
   let createProjectCount = 0
   let getOperationCount = 0
   const createdProjects: unknown[] = []
+  const createdOperationById = new Map<string, Operation>()
   const clients = new Set<WebSocket>()
   let nextRevision = options.bootstrap.control_revision
   let down = false
   let wsCount = 0
   let wsMessagesSent = 0
+  // durable 事件 buffer：断线期间 push 的事件先入 buffer，重连后按 after cursor 重放。
+  const eventBuffer: ControlEventEnvelope[] = []
 
   const server: Server = createServer((req, res) => {
     const authOk = req.headers.authorization === `Bearer ${token}`
@@ -67,14 +76,14 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
       res.end('{"code":"AUTH_FAILED","message":"未授权","retryable":false}')
       return
     }
+    if (down) {
+      res.statusCode = 503
+      res.end('{"code":"LOCAL_AGENTD_UNAVAILABLE","message":"down","retryable":true}')
+      return
+    }
     const url = new URL(req.url ?? '/', 'http://localhost')
     switch (url.pathname) {
       case '/v1/bootstrap': {
-        if (down) {
-          res.statusCode = 503
-          res.end('{"code":"LOCAL_AGENTD_UNAVAILABLE","message":"down","retryable":true}')
-          return
-        }
         bootstrapCount++
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify(options.bootstrap))
@@ -82,15 +91,23 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
       }
       case '/v1/control/events': {
         res.setHeader('content-type', 'application/json')
-        res.end('[]')
+        res.end(JSON.stringify(eventBuffer))
         return
       }
       case '/v1/projects/operations': {
-        createProjectCount++
         let body = ''
         req.on('data', (c) => (body += c))
         req.on('end', () => {
           const parsed = JSON.parse(body)
+          // 幂等：同 operation_id 返回已有权威 Operation，不重复执行（计数不增）。
+          const existing = createdOperationById.get(parsed.operation_id)
+          if (existing) {
+            res.statusCode = 202
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify(existing))
+            return
+          }
+          createProjectCount++
           createdProjects.push(parsed)
           const op: Operation = {
             operation_id: parsed.operation_id,
@@ -100,6 +117,7 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           }
+          createdOperationById.set(op.operation_id, op)
           res.statusCode = 202
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify(op))
@@ -137,6 +155,13 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
       socket.destroy()
       return
     }
+    if (down) {
+      // 断线语义：WS 升级也拒绝，客户端进入不可用并退避重连。
+      socket.destroy()
+      return
+    }
+    // 解析客户端 after cursor：重连时只重放比该 revision 新的事件。
+    const after = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after') ?? 0)
     wss.handleUpgrade(req, socket, head, (ws) => {
       clients.add(ws)
       wsCount++
@@ -146,6 +171,13 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
       ws.on('error', () => {
         clients.delete(ws)
       })
+      // 连接建立后重放 durable buffer 中 after 之后的事件（无窗口竞态补发）。
+      for (const ev of eventBuffer) {
+        if (ev.revision > after) {
+          ws.send(JSON.stringify(ev))
+          wsMessagesSent++
+        }
+      }
     })
   })
 
@@ -166,6 +198,7 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
     wsMessagesSent: () => wsMessagesSent,
     push: (event) => {
       nextRevision = Math.max(nextRevision, event.revision)
+      eventBuffer.push(event)
       const payload = JSON.stringify(event)
       for (const ws of clients) {
         if (ws.readyState === ws.OPEN) {
@@ -180,6 +213,9 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
         ws.close()
       }
       clients.clear()
+    },
+    setDown: (value) => {
+      down = value
     },
     createdProjects: () => createdProjects,
     close: async () => {

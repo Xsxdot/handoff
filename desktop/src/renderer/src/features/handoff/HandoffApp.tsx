@@ -89,7 +89,6 @@ export function HandoffApp(): React.JSX.Element {
       offControl()
       offStatus()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api])
 
   const onWorkspaceSelect = (workspaceId: string): void => {
