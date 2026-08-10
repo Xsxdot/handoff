@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -75,9 +76,18 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		return
 	}
 	if !errors.Is(err, executor.ErrTaskNotRunning) {
-		// executor 还在，只是这次没停掉：保持既有语义（只记日志），
-		// 兜底回收对它无意义——真去 kill 进程反而可能杀掉正在收尾的进程
+		// executor 还在，只是这次没停掉：兜底回收对它无意义——
+		// 真去 kill 进程反而可能杀掉正在收尾的进程
 		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
+		// 唯独「已发 SIGKILL 但复核仍存活」要惊动人：这是唯一一种不提示就会
+		// 留下长期孤儿的失败（B20 现场存活了 11.5 小时，正是因为完全静默）。
+		// 其余 Stop 失败五花八门（ctx 取消、内部状态不一致），全发事件等于
+		// 把审核者淹了，那样这条提示就没人看了。
+		if errors.Is(err, prochost.ErrStillAlive) {
+			m.notifyOrphanRisk(taskID, fmt.Sprintf(
+				"executor 进程可能残留（已发 SIGKILL 但复核仍存活），"+
+					"请先 handoff status 确认，再 handoff stop %s 回收（原因：%v）", taskID, err))
+		}
 		return
 	}
 	rp, ok := ad.(reaper)
@@ -89,20 +99,32 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
 	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
 		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "cause", rerr)
-		evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
-			// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
-			// tmux kill-session，那个命令现在不存在了，照做只会更困惑
-			Text: fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
-				"再 handoff stop %s 回收（原因：%v）", taskID, rerr),
-		})
-		if aerr != nil {
-			m.log.Error("追加兜底回收失败事件失败", "task", taskID, "cause", aerr)
-			return
-		}
-		m.hub.Publish(evt)
+		// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
+		// tmux kill-session，那个命令现在不存在了，照做只会更困惑
+		m.notifyOrphanRisk(taskID, fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
+			"再 handoff stop %s 回收（原因：%v）", taskID, rerr))
 		return
 	}
 	m.log.Info("按恢复凭据兜底回收成功", "task", taskID)
+}
+
+// notifyOrphanRisk 追加一条「executor 可能残留」的 progress 事件并广播。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - text: 面向审核者的正文；给的必须是「下一步做什么」而不是「出了什么错」
+//
+// 注意：
+//   - 追加失败只记日志、不返回错误：调用方全都处在归档/中止的收尾路径上，
+//     那件事本身已经达成，不该因为发不出提示而中断
+func (m *Manager) notifyOrphanRisk(taskID, text string) {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	if err != nil {
+		m.log.Error("追加 executor 残留提示事件失败", "task", taskID, "cause", err)
+		return
+	}
+	m.hub.Publish(evt)
+	m.log.Info("已向审核者发出 executor 残留提示", "task", taskID)
 }
 
 // reconcileExecutorGone 收尾一个 executor 已不在的任务：

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 )
 
@@ -200,6 +201,16 @@ func (a *reapAdapter) Reap(taskID, taskDir string) error {
 	return a.reapErr
 }
 
+// stopErrAdapter 是 Stop 错误可注入的测试 adapter。
+// 刻意**不实现** reaper：本组两条用例走的是「Stop 失败且非 ErrTaskNotRunning」
+// 这条分支，兜底回收压根不该被触及。
+type stopErrAdapter struct {
+	chanAdapter
+	stopErr error
+}
+
+func (a *stopErrAdapter) Stop(string) error { return a.stopErr }
+
 // TestStopExecutorFallsBackToReap Stop 报 ErrTaskNotRunning 时必须走兜底回收。
 // B20 现场：不兜底，孤儿执行者进程存活了 11.5 小时。
 func TestStopExecutorFallsBackToReap(t *testing.T) {
@@ -240,6 +251,59 @@ func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("回收失败应产出指向 handoff stop 的 progress 事件，实际事件: %v", evs)
+	}
+}
+
+// TestStopExecutorNotifiesOnStillAlive 验证 Stop 报「进程仍存活」时，审核者
+// 能在事件流里看到人工提示——B47 的全部意义就在这一条。改动前这里只有一行
+// Error 日志进 agentd.log，审核者的终端上什么都不会出现。
+func TestStopExecutorNotifiesOnStillAlive(t *testing.T) {
+	ad := &stopErrAdapter{
+		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		stopErr:     fmt.Errorf("kill codex: %w", prochost.ErrStillAlive),
+	}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	const taskID = "abcdef12-3456-7890-abcd-ef1234567890"
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview})
+	m.stopExecutor(taskID, ad)
+
+	evs, err := st.EventsFromAsc(taskID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "handoff stop") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("进程仍存活应产出指向 handoff stop 的 progress 事件，实际事件: %v", evs)
+	}
+}
+
+// TestStopExecutorStaysQuietOnOtherErrors 验证其它 Stop 失败**不**发事件：
+// 全发等于把审核者淹了，那样这条提示就没人看了。
+func TestStopExecutorStaysQuietOnOtherErrors(t *testing.T) {
+	ad := &stopErrAdapter{
+		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		stopErr:     errors.New("上下文已取消"),
+	}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	const taskID = "abcdef12-3456-7890-abcd-ef1234567891"
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateWaitingReview})
+	m.stopExecutor(taskID, ad)
+
+	evs, err := st.EventsFromAsc(taskID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress {
+			t.Fatalf("非 ErrStillAlive 的失败不应发提示事件，got %s", string(e.Payload))
+		}
 	}
 }
 
