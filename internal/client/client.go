@@ -204,6 +204,41 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, strings.TrimSpace(string(b)))
 }
 
+// ErrStatusUnsupported 表示对端 agentd 不认识 /api/status（版本早于该端点引入）。
+//
+// why（必须是可判别的哨兵）：这是唯一一个「HTTP 失败但结论是成功」的分支——
+// 能收到 404 说明 TCP 通、HTTP 正常、Bearer 已经通过，三件事都被证明了。
+// CLI 据此输出降级结论并退 0，而不是把一台完全能用的机器判成失败。
+var ErrStatusUnsupported = errors.New("对端 agentd 不支持 /api/status")
+
+// Status 查询 agentd 的可用性与身份信息（handoff status 的数据源）。
+//
+// 返回：
+//   - StatusResp：版本、监听地址、DataDir、执行者清单、任务计数、活跃任务
+//   - ErrStatusUnsupported：对端是老 agentd（404），调用方应走降级输出
+//   - 其余错误：连不上、401、5xx 等真失败
+func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("状态查询请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// 不走 httpError：它会打 Warn 日志并造出一个普通错误，而这里的 404
+		// 是一条有用的结论，不是异常
+		c.log().Info("对端 agentd 不支持 /api/status，按版本过旧处理")
+		return nil, ErrStatusUnsupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("状态查询", resp)
+	}
+	var out proto.StatusResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析状态响应: %w", err)
+	}
+	return &out, nil
+}
+
 // ListTasks 查询全部任务（created_at 降序）。
 //
 // 返回：
