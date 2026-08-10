@@ -189,6 +189,10 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, en
 		log.Error("grok 未安装", "task", taskID, "cause", err)
 		return nil, fmt.Errorf("grok 未安装: %w", err)
 	}
+	// 记绝对路径而不是只记「grok」：PATH 上同时装着多份 CLI 是常态
+	// （nvm / homebrew / npm global 各一份），版本行为不一致时，只有这一行
+	// 能回答「当时到底跑的是哪一个」。
+	log.Info("解析 grok 可执行文件", "task", taskID, "bin", bin)
 	selfExe, err := os.Executable()
 	if err != nil {
 		log.Error("取 handoff 自身路径失败（shim 无法拉起）", "task", taskID, "cause", err)
