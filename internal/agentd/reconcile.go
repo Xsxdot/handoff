@@ -126,6 +126,15 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 //   - 作废工单排在事件之前，且作废失败只记日志不中断：事件是审核者的主要信息
 //     来源，必须落
 //   - 追加事件失败则不迁移状态：迁了却没事件 = 审核者看到状态变化却不知原因
+//
+// 「executor 已不在 ⇒ failed」与「会话被 abort ⇒ question」的异同（B38 Task9 订正）：
+//   - 本函数把「executor 已不在」一律落 failed——serve 意外退出（崩溃/OOM/被杀）
+//     是异常，判 failed 是对的：那是执行器确实死了，任务无法继续，交审核者裁决
+//   - 对比：opencode 会话被**人工 abort** 解开时（error.name=MessageAbortedError），
+//     adapter 的会话对账把它补发成 **question** 而非 failed——abort 在真实使用里
+//     几乎总是救援动作（解开冻结/卡死会话），释放出来的是完整内容，不是任务失败。
+//     两者本质区别：serve 崩溃是「执行器无征兆死亡」（异常，failed 正确）；abort
+//     是「有人主动打断了回合」（救援，question 正确）。别把两者合并成一种落点
 func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string, log *slog.Logger) proto.TaskState {
 	cur, err := st.GetTask(taskID)
 	if err != nil {
