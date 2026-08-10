@@ -532,3 +532,37 @@ func TestRenderStreamSurfacesHTTPError(t *testing.T) {
 		t.Fatal("404 时必须返回错误")
 	}
 }
+
+// TestDispatchErrorBodyNotTruncated 是错误体读取上限（4096）的守门人（B42）：
+// 服务端返回一个 >256 字节的中文错误体（长路径 + UUID + 中文出路提示），
+// 断言 Dispatch 返回的 error 文本包含**体尾部**的标记串。为什么尾部：B42 的
+// 409 报文把「点名占用者 + 两条出路」放在后半句，旧上限 256 字节（~85 个汉字）
+// 恰好把它们截掉——这个功能的价值就在那最后几行。把上限调回去，本测试立刻转红。
+func TestDispatchErrorBodyNotTruncated(t *testing.T) {
+	trailer := "或改用 --new-worktree 在独立工作树上开工"
+	// 路径加长：保证 trailer 起点落在 256 之后——旧上限 256 字节会把它整体截没，
+	// 新上限 4096 才放得下。仅 len(body)>256 不够（trailer 可能恰好嵌在前 256 内）。
+	repo := "/Users/very/long/path/to/repo/with/a/considerably/longer/prefix/so/the/trailing/message/tail/gets/cut/by/the/old/256/byte/limit"
+	body := `{"error":"目标工作目录已被活跃任务占用: ` + repo + ` 正被任务 8fd0b7d8-86d2-46f7-97c8-421cae47a954（重构登录, waiting_review）占用；先 handoff done/stop 它，` + trailer + `"}`
+	if i := strings.Index(body, trailer); i <= 256 {
+		t.Fatalf("trailer 起点 %d 必须在 256 之后才能测截断（body 共 %d 字节）", i, len(body))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	_, err := client.New(srv.URL, "tok").Dispatch(context.Background(), client.DispatchOpts{
+		Repo: "/repo", PlanB64: "eGluZw==", PlanName: "plan.md",
+	})
+	if err == nil {
+		t.Fatal("409 必须返回错误")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Fatalf("错误应含 409 状态码, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), trailer) {
+		t.Fatalf("错误文本必须包含报文尾部标记串（被 256 上限截断）: %v", err)
+	}
+}
