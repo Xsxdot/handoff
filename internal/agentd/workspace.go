@@ -325,6 +325,36 @@ func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExi
 	return nil
 }
 
+// EnsureRepoUsable 校验 repo 确实是一个可用的 git 仓库。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径
+//
+// 返回：
+//   - nil：是可用的 git 仓库
+//   - ErrRepoUnusable：路径不存在 / 不是 git 仓库 / git 不在 PATH / 权限不足，
+//     错误文本带 git stderr 原文（server 层据此给 400，见 writeDispatchError）
+//
+// 注意：
+//   - 由 Dispatch 在 ResolveBaseline 之前调用。放在那里而不是建树前，是因为
+//     ResolveBaseline 对非 git 仓库会误报成 ErrBaseCommitMissing（「落后于本地，
+//     请先 push」），那是个比沉默更糟的答案
+//   - 判据用 rev-parse --git-dir 而不是 grep worktree add 的错误串：前者是显式
+//     判据，后者依赖 git 的文案不变
+//   - ensureCleanWorktree 里原有的 ErrRepoUnusable 包装保留——它仍是 git status
+//     因其他原因失败时的兜底
+func EnsureRepoUsable(ctx context.Context, repo string) error {
+	_, stderr, err := gitRun(ctx, repo, "rev-parse", "--git-dir")
+	if err != nil {
+		log().Warn("dispatch 前置：任务仓库不可用，拒绝派发", "repo", repo,
+			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		return fmt.Errorf("%w: %s: %v", ErrRepoUnusable, strings.TrimSpace(stderr), err)
+	}
+	log().Info("dispatch 前置：仓库有效性校验通过", "repo", repo)
+	return nil
+}
+
 // ensureCleanWorktree 校验工作区干净（status --porcelain 无任何输出）。
 // 脏检测含未跟踪文件：未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝。
 // git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
@@ -535,9 +565,9 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 
 // headCommit 取仓库当前 HEAD 的完整 sha。
 //
-// 仓库一个提交都没有（或路径不是 git 仓库）时返回空串——空起点交给 git 默认
-// 行为，不是错误：真正的仓库问题会在 PrepareWorkspace 的脏检查/建树阶段暴露，
-// 在这里把它变成拒发只会给出一个更难懂的报错。
+// 返回空串只对应「仓库一个提交都没有」：仓库有效性已由 Dispatch 前置的
+// EnsureRepoUsable 保证（B45），走到这里时路径一定是可用的 git 仓库。
+// 空起点交给 git 默认行为，不是错误。
 func headCommit(ctx context.Context, repo string) string {
 	out, _, err := gitRun(ctx, repo, "rev-parse", "HEAD")
 	if err != nil {

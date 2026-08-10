@@ -669,3 +669,46 @@ func TestResumeRoute(t *testing.T) {
 		t.Errorf("已送达的应答不应重复投递，实际 %s", report2)
 	}
 }
+
+// TestDispatchNewWorktreeRepoUnusable400 覆盖 B45 报告里的那半：managed 路径
+// （--new-worktree）上仓库不可用，旧行为一路走到 worktree add 失败、落 500
+// 「派发任务失败」，真因只在 agentd.log 里。现在必须是 400 + 可读原因。
+func TestDispatchNewWorktreeRepoUnusable400(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: t.TempDir(), PlanB64: plan, PlanName: "plan.md",
+		Target: "local", NewWorktree: true,
+	})
+	if err == nil {
+		t.Fatal("非 git 路径 + --new-worktree 应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "不可用") {
+		t.Fatalf("应为 400 + 可读原因, got: %v", err)
+	}
+}
+
+// TestDispatchRepoUnusableNotMisdiagnosed 是 B45 动机场景（远程派发）的守门人：
+// 带 base_commit 时，非 git 路径旧行为会被 ResolveBaseline 误诊成
+// ErrBaseCommitMissing 的 400「任务仓库落后于本地；请先在本地 git push」——
+// 一个自信的错答案，比沉默更糟。
+func TestDispatchRepoUnusableNotMisdiagnosed(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		Repo: t.TempDir(), PlanB64: plan, PlanName: "plan.md",
+		Target: "local", NewWorktree: true,
+		BaseCommit: strings.Repeat("a", 40),
+	})
+	if err == nil {
+		t.Fatal("非 git 路径应被拒绝")
+	}
+	if strings.Contains(err.Error(), "git push") || strings.Contains(err.Error(), "落后") {
+		t.Fatalf("非 git 仓库不该被误诊为基线缺失: %v", err)
+	}
+	if !strings.Contains(err.Error(), "不可用") {
+		t.Fatalf("应归入仓库不可用, got: %v", err)
+	}
+}

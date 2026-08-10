@@ -459,6 +459,14 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
+	// 派发前置 1（B45）：仓库有效性。必须排在 ResolveBaseline 之前——对一个非
+	// git 路径，ResolveBaseline 会把它误诊成 ErrBaseCommitMissing（「任务仓库落后
+	// 于本地，请先 git push」），那是个比沉默更糟的答案；managed 路径上则一路
+	// 走到 worktree add 才失败，扁平成 500
+	if err := EnsureRepoUsable(ctx, req.Repo); err != nil {
+		return nil, err
+	}
+
 	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
 	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
 	baseline, err := ResolveBaseline(ctx, req.Repo, req.BaseCommit)
