@@ -1,7 +1,7 @@
 // Package store 是 handoff 的唯一持久化入口，基于 SQLite（modernc.org/sqlite，纯 Go 无 cgo）。
 //
 // 职责：
-//   - 提供任务（tasks）、事件（events）、工单（tickets）三张表的建表与增删改查
+//   - 提供任务（tasks）、事件（events）、工单（tickets）、仓库登记（repos）四张表的建表与增删改查
 //   - 通过 database/sql 连接池支撑单进程多 goroutine 并发访问（WAL + busy_timeout 防 SQLITE_BUSY）
 //   - CreateTicket 用 INSERT OR IGNORE 实现按 id 幂等创建
 //
@@ -95,6 +95,9 @@ func Open(path string) (*Store, error) {
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
   answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP,
   delivered_at TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS repos (
+  name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+  origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
