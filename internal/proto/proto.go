@@ -78,6 +78,13 @@ type Task struct {
 	// WorktreeManaged 表示 WorkDir 是 agentd 创建的 worktree，任务完成（done）时由
 	// agentd 负责删除；用户自带 worktree（Worktree=false）或原地模式均不受管理。
 	WorktreeManaged bool `json:"worktree_managed"`
+	// BaseCommit 是本任务新分支的**实际起点**（40 位 sha）；空=切已存在分支
+	// （没有起点这回事）或老任务（该列后加，不回填、不编造）。
+	// 它回答的是「这个任务建在哪个提交上」——B35 之前这个问题无处可问。
+	BaseCommit string `json:"base_commit"`
+	// BaseAhead 是派发当时任务仓库 HEAD 领先 BaseCommit 的提交数：这些提交
+	// 不在任务分支里。0 表示起点就是仓库 HEAD，或该数字当时没能算出来。
+	BaseAhead int `json:"base_ahead"`
 }
 
 // Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它

@@ -536,6 +536,10 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Model:           model,
 		WorkDir:         ws.WorkDir,
 		WorktreeManaged: ws.Managed,
+		// 基线随创建期一并入库（此刻已由 ResolveBaseline 决议完毕），
+		// 不走 SetTaskField——那个白名单只服务「创建时还不知道」的字段
+		BaseCommit: start,
+		BaseAhead:  ahead,
 	}
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err

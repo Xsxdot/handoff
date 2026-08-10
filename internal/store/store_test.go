@@ -562,3 +562,38 @@ func TestTicketHasEvent(t *testing.T) {
 		t.Errorf("question 事件应计入：has=%v err=%v", has, err)
 	}
 }
+
+// TestCreateTaskPersistsBaseline 验证基线两字段能落库并回读——「这个任务建在
+// 哪个提交上、当时仓库比它多几个提交」必须是事后查得到的事实，而不是只在
+// 派发那一刻的日志里闪过。
+func TestCreateTaskPersistsBaseline(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	const sha = "d64bac4d64bac4d64bac4d64bac4d64bac4d64ba"
+	task := &proto.Task{
+		ID: "t-base", RepoPath: "/repo", State: proto.TaskStatePending,
+		BaseCommit: sha, BaseAhead: 3,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask("t-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseCommit != sha || got.BaseAhead != 3 {
+		t.Fatalf("基线字段未持久化: base_commit=%q base_ahead=%d", got.BaseCommit, got.BaseAhead)
+	}
+	list, err := s.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].BaseCommit != sha || list[0].BaseAhead != 3 {
+		t.Fatalf("ListTasks 未带出基线字段: %+v", list)
+	}
+}
