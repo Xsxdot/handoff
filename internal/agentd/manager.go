@@ -1631,14 +1631,36 @@ type RecoverReport struct {
 	Redelivered int `json:"redelivered"`
 	// ExecutorGone 为真表示 executor 已不在，任务已被交给审核者裁决
 	ExecutorGone bool `json:"executor_gone"`
+	// Reconciled 为真表示本次真的执行了会话对账（adapter 支持且任务状态合适）；
+	// 为假时 TurnEnded/Emitted 无意义
+	Reconciled bool `json:"reconciled"`
+	// TurnEnded 表示对账查到的回合是否已完结
+	TurnEnded bool `json:"turn_ended"`
+	// Emitted 是对账补发的终态事件数（0 或 1）
+	Emitted int `json:"emitted"`
+	// Forced 为真表示本次走了 --force 强制收口（状态由人工推动，未经 executor 确认）
+	Forced bool `json:"forced"`
 	// State 是操作完成后的任务状态
 	State proto.TaskState `json:"state"`
 	// Note 是给审核者看的一句话结论
 	Note string `json:"note"`
 }
 
+// reconciler 是 adapter 的可选对账能力（B38）。
+//
+// 为什么定义在 manager 而不是 executor 包：沿用 internal/executor/resume.go
+// 明写的既有约定——能力接口由消费方定义并做类型断言，这样「不支持对账的
+// adapter」是自然语义，executor.Adapter 的五动作核心契约也不被污染。
+// restorer / volatilePermitter 都是这个形状。
+type reconciler interface {
+	Reconcile(ctx context.Context, taskID string) (executor.ReconcileOutcome, error)
+}
+
 // RecoverStuck 是审核者的显式恢复操作（CLI: handoff resume <task>），
-// 用来解开「应答已落库但没送到 executor」这一类卡死。
+// 用来解开两类卡死：
+//   - 「应答已落库但没送到 executor」：重投未送达的应答
+//   - 「agentd 与 executor 断连期间回合已完结、终态事件丢失」（B38）：
+//     会话对账补发丢失的终态
 //
 // 为什么需要它：reply 的回程里，应答一旦落库就消耗掉了工单的 answer IS NULL
 // 守卫；若此时中继失败（executor 半死、调用超时），审核者会拿到 502，而工单
@@ -1646,17 +1668,21 @@ type RecoverReport struct {
 // 得 409，CLI 上再无一条可走的路。此前唯一的出口是运维重启 agentd 让
 // RecoverOnStartup 探活，而那条路只在 executor **已死**时有效：executor 还
 // 活着并仍阻塞在权限上时，重启探活成功、订阅重建、已答工单从不重放，是彻底的
-// 死锁。本方法把这条出口交到审核者自己手里。
+// 死锁。B38 又补上第二类：断连窗口内完成的回合，终态事件在 /event 上永久丢失，
+// 任务冻死在 running。本方法把出口交到审核者自己手里。
 //
 // 参数：
 //   - taskID: 任务 ID
+//   - force: 为真时即使对账判不出（executor 不支持对账 / 回合确实还在忙 /
+//     查询失败），仍把任务强制收口到 waiting_review，使 continue/done 可用；
+//     收口会留下写明「人工强制、未经 executor 确认」的事件
 //
 // 返回：
 //   - 恢复结果快照（即使返回错误也可能非 nil，用于区分「executor 已死」与「这次没成功」）
 //   - 任务不存在、已终结，或重投过程中 executor 仍不可用时返回错误
 //
 // 行为：
-//  1. 无未送达应答 → 空操作，不碰状态、不调用 executor
+//  1. 无未送达应答 → 转入会话对账（adapter 支持且状态合适时）；force 时再收口
 //  2. 有未送达应答 → 逐条重投；成功即标记送达，全部成功后任务回 running
 //  3. 重投遇到 executor.ErrTaskNotRunning（executor 确实不在）→ 追加 failed
 //     事件、作废挂起工单、任务转 waiting_review 交审核者，不再重试
@@ -1664,10 +1690,11 @@ type RecoverReport struct {
 //     与未送达标记，返回错误；审核者稍后可再执行一次
 //
 // 注意：
-//   - 幂等：已标记送达的应答不会被重投，重复执行是安全的
+//   - 幂等：已标记送达的应答不会被重投，重复执行是安全的；对账也幂等（水位已
+//     过的回合不会二次补发）
 //   - 与 ResumeTask 的区别：ResumeTask 是 agentd 重启时的执行器存活探测与订阅
-//     重建（进程级），本方法是单任务的应答重投（工单级），两者互不替代
-func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
+//     重建（进程级），本方法是单任务的应答重投与会话对账（工单级），两者互不替代
+func (m *Manager) RecoverStuck(taskID string, force bool) (*RecoverReport, error) {
 	task, err := m.st.GetTask(taskID)
 	if err != nil {
 		return nil, fmt.Errorf("读取任务 %s: %w", taskID, err)
@@ -1682,8 +1709,11 @@ func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
 		return nil, err
 	}
 	if len(stuck) == 0 {
-		rep.Note = "没有卡在半路的应答，无需恢复"
-		m.log.Info("恢复操作：无未送达应答", "task", taskID, "state", task.State)
+		m.log.Info("恢复操作：无未送达应答，转入会话对账", "task", taskID, "state", task.State)
+		m.reconcileInto(rep, taskID, task.State)
+		if force {
+			m.forceToReview(rep, taskID, task.State)
+		}
 		return rep, nil
 	}
 	m.log.Info("恢复操作：开始重投未送达应答", "task", taskID, "count", len(stuck))
@@ -1722,6 +1752,98 @@ func (m *Manager) RecoverStuck(taskID string) (*RecoverReport, error) {
 	rep.Note = "应答已重新送达 executor，执行继续"
 	m.log.Info("恢复操作完成", "task", taskID, "redelivered", rep.Redelivered, "state", rep.State)
 	return rep, nil
+}
+
+// reconcileInto 执行一次会话对账并把结论写进报告（B38）。
+//
+// 参数：
+//   - rep: 待填充的报告；本函数只写 Reconciled/TurnEnded/Emitted/State/Note
+//   - taskID / state: 目标任务与其当前状态
+//
+// 注意：
+//   - 只对 running / waiting_answer 生效。其余状态如实说明而不是静默成功：
+//     pending 尚未启动、waiting_review 本就该走 continue/done、终态已结束
+//   - adapter 未实现 reconciler 时不改状态、不伪装成「对账过了」
+//   - 对账失败只记 WARN 并把原因写进 Note，**不返回错误**——审核者要的是
+//     「现在怎么办」，不是一个让 CLI 退非零的堆栈
+func (m *Manager) reconcileInto(rep *RecoverReport, taskID string, state proto.TaskState) {
+	if state != proto.TaskStateRunning && state != proto.TaskStateWaitingAnswer {
+		rep.Note = fmt.Sprintf("没有卡在半路的应答；任务处于 %s，不在对账范围"+
+			"（pending 尚未启动、waiting_review 请用 continue/done）", state)
+		m.log.Info("恢复操作：状态不在对账范围", "task", taskID, "state", state)
+		return
+	}
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		rep.Note = "没有卡在半路的应答；解析任务执行者失败（" + err.Error() +
+			"），可 handoff attach 查看现场，或 handoff resume --force 强制收口交审核"
+		m.log.Warn("恢复操作：解析任务执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	rc, ok := ad.(reconciler)
+	if !ok {
+		rep.Note = "没有卡在半路的应答；当前 executor 不支持会话对账，" +
+			"可 handoff attach 查看现场，或 handoff resume --force 强制收口交审核"
+		m.log.Info("恢复操作：adapter 不支持对账", "task", taskID)
+		return
+	}
+	out, err := rc.Reconcile(context.Background(), taskID)
+	if err != nil {
+		rep.Note = "没有卡在半路的应答；会话对账失败（" + err.Error() +
+			"），未改动任何状态，可稍后重试或 --force 强制收口"
+		m.log.Warn("恢复操作：会话对账失败", "task", taskID, "cause", err)
+		return
+	}
+	rep.Reconciled = true
+	rep.TurnEnded = out.TurnEnded
+	rep.Emitted = out.Emitted
+	rep.Note = out.Note
+	if out.Emitted > 0 {
+		// 补发的事件已走 evCh 进中介循环，状态由它推动；此处重读一次让报告
+		// 里的 State 是对账之后的真实值而不是进函数时的快照
+		if t, gerr := m.st.GetTask(taskID); gerr == nil {
+			rep.State = t.State
+		}
+	}
+	m.log.Info("恢复操作：会话对账完成", "task", taskID,
+		"turn_ended", out.TurnEnded, "emitted", out.Emitted, "note", out.Note)
+}
+
+// forceToReview 把任务强制收口到 waiting_review（handoff resume --force）。
+//
+// 为什么需要它：对账判不出来（adapter 不支持 / 会话确实还在忙 / 查询失败）时，
+// 审核者此前只剩 handoff stop——而 stop 会把一个其实成功了的任务落成 failed，
+// 并杀掉 executor。本操作**保住会话**，只把状态推到可 continue/done 的位置。
+//
+// 风险与护栏：executor 可能真的还在跑，收口后 continue 会往忙碌会话里塞指令。
+// 护栏只有事件文本与报告文案——不加更硬的拦截，因为更硬的拦截就是 stop，
+// 而这个场景的全部意义恰恰是不杀会话。
+func (m *Manager) forceToReview(rep *RecoverReport, taskID string, state proto.TaskState) {
+	rep.Forced = true
+	text := "审核者人工强制收口（handoff resume --force）：未经 executor 确认。" +
+		"对账当时的结论是：" + rep.Note + "。若 executor 其实仍在执行，" +
+		"后续 continue 的指令会进入一个忙碌会话，请先 handoff attach 确认现场。"
+	m.log.Warn("恢复操作：人工强制收口", "task", taskID, "from", state, "note", rep.Note)
+	m.appendProgress(taskID, text)
+	if err := recoverTransit(m.st, taskID, state); err != nil {
+		rep.Note = "强制收口失败：" + err.Error()
+		m.log.Error("恢复操作：强制收口迁移失败", "task", taskID, "cause", err)
+		return
+	}
+	rep.State = proto.TaskStateWaitingReview
+	rep.Note = "已人工强制收口到待审核（未经 executor 确认）；" +
+		"可 continue 续接或 done 归档。对账当时的结论：" + rep.Note
+}
+
+// appendProgress 追加一条 progress 事件并广播（恢复/强制收口等人工提示用）。
+// 落库失败只 Error 不回滚——状态迁移已经发生，事件缺失最坏是审核者少看一条提示。
+func (m *Manager) appendProgress(taskID, text string) {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	if err != nil {
+		m.log.Error("追加 progress 事件失败", "task", taskID, "cause", err)
+		return
+	}
+	m.hub.Publish(evt)
 }
 
 // abandonToReview 在确认 executor 已不在时收尾：留下 failed 事件说明原因、

@@ -635,7 +635,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	rep, err := s.mgr.RecoverStuck(taskID)
+	rep, err := s.mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		if rep != nil {
 			// 重投中途失败：报告仍有价值（已成功几条、任务停在哪），带 502 回传

@@ -57,7 +57,7 @@ func TestResumeRedeliversUndeliveredAnswer(t *testing.T) {
 	createRunningTask(t, st, taskID)
 	stuckTicket(t, st, taskID, taskID+":perm-1", "gate", "allow")
 
-	rep, err := mgr.RecoverStuck(taskID)
+	rep, err := mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		t.Fatalf("RecoverStuck: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestResumeRedeliversUndeliveredAnswer(t *testing.T) {
 	}
 
 	// 幂等：已送达的应答不得再投一次（避免重复 respond / 重复 prompt）
-	rep2, err := mgr.RecoverStuck(taskID)
+	rep2, err := mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		t.Fatalf("第二次 RecoverStuck: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestResumeWhenExecutorGone(t *testing.T) {
 		t.Fatalf("CreateTicket perm-2: %v", err)
 	}
 
-	rep, err := mgr.RecoverStuck(taskID)
+	rep, err := mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		t.Fatalf("RecoverStuck: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestResumeTransientFailureKeepsRetryable(t *testing.T) {
 	createRunningTask(t, st, taskID)
 	stuckTicket(t, st, taskID, taskID+":perm-1", "gate", "allow")
 
-	rep, err := mgr.RecoverStuck(taskID)
+	rep, err := mgr.RecoverStuck(taskID, false)
 	if err == nil {
 		t.Fatal("瞬时失败应返回错误，让审核者知道这次没成功")
 	}
@@ -167,7 +167,7 @@ func TestResumeTransientFailureKeepsRetryable(t *testing.T) {
 
 	// executor 恢复后再 resume 一次应当成功
 	ad.setRespondErr(nil)
-	rep2, err := mgr.RecoverStuck(taskID)
+	rep2, err := mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		t.Fatalf("恢复后重试 RecoverStuck: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestResumeNoopWhenNotStuck(t *testing.T) {
 	const taskID = "task-resume-noop"
 	createRunningTask(t, st, taskID)
 
-	rep, err := mgr.RecoverStuck(taskID)
+	rep, err := mgr.RecoverStuck(taskID, false)
 	if err != nil {
 		t.Fatalf("RecoverStuck: %v", err)
 	}
