@@ -7,6 +7,7 @@
 //   - 远程派发时采集本地 HEAD 作基线随请求上送，并校验本地工作区完整性
 //     （已跟踪改动拒发、未跟踪警告；--no-sync-check 关掉整块，--allow-dirty 只关拒发）
 //   - 派发成功后在 stderr 打一行基线摘要（起点短号 + 任务仓库领先的提交数）
+//   - 派发成功后在 stderr 提示执行机仓库的未提交改动（managed 工作树不含它们）
 //   - 成功时单行输出任务 JSON（state=running，供上层脚本解析任务 id）
 //
 // 边界：
@@ -134,6 +135,14 @@ var dispatchCmd = &cobra.Command{
 				line += fmt.Sprintf("（任务仓库 HEAD 领先 %d 个提交，新分支不含它们）", task.BaseAhead)
 			}
 			fmt.Fprintln(cmd.ErrOrStderr(), line)
+		}
+		// B43：新工作树不含执行机仓库里未提交的改动，而审核者看不到那台机器的
+		// 工作区——不说，executor 就会在一份没有那些改动的代码上开工而无人知晓。
+		// 与基线行同走 stderr（stdout 的单行任务 JSON 契约不能破，见上方注释）
+		if task.RepoDirtyCount > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"提示: 执行机仓库有 %d 处未提交改动，新工作树不含它们：%s\n",
+				task.RepoDirtyCount, task.RepoDirtyFiles)
 		}
 		b, err := json.Marshal(task)
 		if err != nil {
