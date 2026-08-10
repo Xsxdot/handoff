@@ -627,24 +627,76 @@ func TestWorktreeAcceptsRealWorktree(t *testing.T) {
 	}
 }
 
-// TestEnsureBaseCommitPresentSkipsFetch 验证基线已在本地对象库时直接放行。
+// TestResolveBaselinePresentSkipsFetch 验证基线已在本地对象库时直接放行且不 fetch。
 // 仓库故意配一个不存在的 remote：一旦实现「无条件先 fetch」，git fetch --all
 // 会失败并让本用例挂掉——这就是「命中即零网络」的可执行证据。
-func TestEnsureBaseCommitPresentSkipsFetch(t *testing.T) {
+func TestResolveBaselinePresentSkipsFetch(t *testing.T) {
 	repo := initTestRepo(t)
 	head := gitOut(t, repo, "rev-parse", "HEAD")
 	gitT(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "nonexistent.git"))
-	if err := EnsureBaseCommit(context.Background(), repo, head); err != nil {
+	bl, err := ResolveBaseline(context.Background(), repo, head)
+	if err != nil {
 		t.Fatalf("基线已在仓库中必须直接放行（不触发 fetch），实得 %v", err)
+	}
+	if bl.Start != head || bl.Ahead != 0 || bl.Fetched {
+		t.Fatalf("基线即 HEAD 时应 Start=HEAD/Ahead=0/未 fetch，实得 %+v", bl)
 	}
 }
 
-// TestEnsureBaseCommitMissingRejects 验证基线缺失且 fetch 补不回来时拒发，
+// TestResolveBaselineAheadCount 验证任务仓库领先基线时数得出提交数——
+// 这个数字就是「新分支会丢掉哪些提交」的规模，B35 现场缺的正是它。
+func TestResolveBaselineAheadCount(t *testing.T) {
+	repo := initTestRepo(t)
+	base := gitOut(t, repo, "rev-parse", "HEAD")
+	writeAndCommit(t, repo, "a.txt", "1")
+	writeAndCommit(t, repo, "b.txt", "2")
+	bl, err := ResolveBaseline(context.Background(), repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bl.Start != base {
+		t.Fatalf("Start 必须是入参基线，实得 %s", bl.Start)
+	}
+	if bl.Ahead != 2 {
+		t.Fatalf("任务仓库领先 2 个提交，实得 Ahead=%d", bl.Ahead)
+	}
+}
+
+// TestResolveBaselineEmptyFallsBackToHead 验证空基线（--no-sync-check / cwd 非仓库）
+// 不是「没有起点」而是「起点退回任务仓库 HEAD」：这条路上也必须答得出
+// 「这个任务建在哪个提交上」。
+func TestResolveBaselineEmptyFallsBackToHead(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	bl, err := ResolveBaseline(context.Background(), repo, "")
+	if err != nil {
+		t.Fatalf("空基线必须跳过校验，实得 %v", err)
+	}
+	if bl.Start != head || bl.Ahead != 0 {
+		t.Fatalf("空基线应退回仓库 HEAD 且 Ahead=0，实得 %+v（HEAD=%s）", bl, head)
+	}
+}
+
+// TestResolveBaselineEmptyRepoHasNoStart 验证一个提交都没有的仓库返回空 Start
+// 而不是报错：空仓库上 checkout -b 本来就不能带起点，交给 git 默认行为。
+func TestResolveBaselineEmptyRepoHasNoStart(t *testing.T) {
+	repo := t.TempDir()
+	gitAt(t, repo, "init", "-q")
+	bl, err := ResolveBaseline(context.Background(), repo, "")
+	if err != nil {
+		t.Fatalf("空仓库不应报错，实得 %v", err)
+	}
+	if bl.Start != "" {
+		t.Fatalf("空仓库应无起点，实得 %q", bl.Start)
+	}
+}
+
+// TestResolveBaselineMissingRejects 验证基线缺失且 fetch 补不回来时拒发，
 // 且错误里带上基线 sha —— 审核者据此才知道该 push 哪个提交。
-func TestEnsureBaseCommitMissingRejects(t *testing.T) {
+func TestResolveBaselineMissingRejects(t *testing.T) {
 	repo := initTestRepo(t)
 	const absent = "0123456789abcdef0123456789abcdef01234567"
-	err := EnsureBaseCommit(context.Background(), repo, absent)
+	_, err := ResolveBaseline(context.Background(), repo, absent)
 	if !errors.Is(err, ErrBaseCommitMissing) {
 		t.Fatalf("基线缺失必须返回 ErrBaseCommitMissing，实得 %v", err)
 	}
@@ -656,22 +708,37 @@ func TestEnsureBaseCommitMissingRejects(t *testing.T) {
 	}
 }
 
-// TestEnsureBaseCommitRejectsMalformedSHA 验证非 40 位十六进制一律拒绝：
+// TestResolveBaselineRejectsMalformedSHA 验证非 40 位十六进制一律拒绝：
 // 基线值最终会拼进 git 参数，不校验等于开一个注入面。
-func TestEnsureBaseCommitRejectsMalformedSHA(t *testing.T) {
+func TestResolveBaselineRejectsMalformedSHA(t *testing.T) {
 	repo := initTestRepo(t)
 	for _, bad := range []string{"--upload-pack=evil", "HEAD", "abc123", "0123456789abcdef0123456789abcdef0123456G"} {
-		if err := EnsureBaseCommit(context.Background(), repo, bad); !errors.Is(err, ErrBadWorkspaceReq) {
+		if _, err := ResolveBaseline(context.Background(), repo, bad); !errors.Is(err, ErrBadWorkspaceReq) {
 			t.Errorf("基线 %q 必须按参数非法拒绝，实得 %v", bad, err)
 		}
 	}
 }
 
-// TestEnsureBaseCommitEmptySkips 验证空基线=不校验（本地 dispatch / cwd 非仓库）。
-func TestEnsureBaseCommitEmptySkips(t *testing.T) {
+// TestResolveBaselineStartIsUsableAsBranchStart 是「决议结论真的能当起点用」的
+// 闭环断言：ResolveBaseline 给出的 Start 直接喂给 PrepareWorkspace，新 worktree
+// 的 HEAD 必须落在它上面。校验与使用之间的连接就是这条测试守着的东西。
+func TestResolveBaselineStartIsUsableAsBranchStart(t *testing.T) {
 	repo := initTestRepo(t)
-	if err := EnsureBaseCommit(context.Background(), repo, ""); err != nil {
-		t.Fatalf("空基线必须跳过校验，实得 %v", err)
+	base := gitOut(t, repo, "rev-parse", "HEAD")
+	writeAndCommit(t, repo, "drift.txt", "x")
+	bl, err := ResolveBaseline(context.Background(), repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: testTaskID, Base: bl.Start,
+		NewWorktree: true, WorktreesDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head := gitOut(t, ws.WorkDir, "rev-parse", "HEAD"); head != bl.Start {
+		t.Fatalf("决议起点未被用上：worktree head=%s baseline start=%s", head, bl.Start)
 	}
 }
 

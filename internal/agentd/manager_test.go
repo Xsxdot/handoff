@@ -1253,3 +1253,23 @@ func TestResumeUnaffectedForNonVolatileAdapter(t *testing.T) {
 		t.Error("无状态权限的 adapter 不应受未决工单影响")
 	}
 }
+
+// TestDispatchAutoBranchStartsAtBaseCommit 是 B35 在 dispatch 全链路上的回归：
+// 任务仓库 HEAD 已经前进，但派发时上送的基线是更早那个提交——新 worktree
+// 必须落在基线上，不能落在仓库 HEAD 上。
+func TestDispatchAutoBranchStartsAtBaseCommit(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
+	writeAndCommit(t, repo, "drift.txt", "x") // 仓库 HEAD 前进，模拟执行机落后/超前
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(gitAt(t, task.Workdir(), "rev-parse", "HEAD"))
+	if head != base {
+		t.Fatalf("新 worktree 应开在基线 %s 上，实得 %s（B35：校验了基线却从仓库 HEAD 开分支）", base, head)
+	}
+}

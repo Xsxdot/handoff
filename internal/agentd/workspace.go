@@ -6,7 +6,8 @@
 //     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
-//   - 派发前的远程基线校验：EnsureBaseCommit 保证任务仓库不落后于审核者本地
+//   - 派发前的基线决议：ResolveBaseline 一次算出「校验结论 + 新分支起点 +
+//     任务仓库领先多少提交」，保证校验的东西和用的东西是同一个
 //
 // 边界：
 //   - 全部操作是「分支准备 + 只读审阅」：绝不代 executor 写代码/提交，
@@ -30,6 +31,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -398,51 +400,107 @@ var FetchTimeout = 2 * time.Minute
 // baseCommitRe 限定基线只能是 40 位小写十六进制（git rev-parse HEAD 的输出形态）。
 var baseCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// EnsureBaseCommit 校验审核者本地的基线提交在任务仓库中存在，缺失时补拉一次远端。
+// Baseline 是一次基线决议的结果：校验结论与新分支起点出自同一次计算。
+//
+// 为什么必须是同一个结构而不是分两次算：B35 的根因就是「校验这个 sha 存不存在」
+// 与「新分支从哪起」由两段代码各自决定，中间没有任何连接——校验通过了，分支却
+// 从任务仓库 HEAD 开出去，两者可以静默地差出几十个提交而不留任何痕迹。
+type Baseline struct {
+	// Start 是新分支起点（40 位 sha）。任务仓库一个提交都没有时为空，
+	// 退回 git 默认行为（空仓库上 checkout -b 本来就不能带起点）。
+	Start string
+	// Ahead 是任务仓库 HEAD 上有、而 Start 上没有的提交数——这些提交不会进新分支。
+	Ahead int
+	// Fetched 表示是否为定位 Start 补拉过远端。只用于日志：排障时要能分清
+	// 「基线本来就在」与「补拉才拿到」，前者说明两边同步，后者说明执行机落后过。
+	Fetched bool
+}
+
+// ResolveBaseline 决议任务的基线：校验审核者本地基线在任务仓库中可用，并给出
+// 新分支应当使用的起点与「任务仓库比它多出多少提交」。
 //
 // 参数：
 //   - ctx: 上层上下文；fetch 阶段内部叠加 FetchTimeout
 //   - repo: 任务仓库路径
-//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=不校验（本地派发/cwd 非仓库）
+//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=未提供（--no-sync-check
+//     或调用方 cwd 不是 git 仓库），此时起点退回任务仓库当前 HEAD
 //
 // 返回：
-//   - nil: 基线存在（直接命中或 fetch 后命中）
-//   - ErrBadWorkspaceReq: sha 格式非法
+//   - Baseline: Start=新分支起点；Ahead=任务仓库 HEAD 领先 Start 的提交数
+//   - ErrBadWorkspaceReq: sha 格式非法（会拼进 git 参数，不校验等于开注入面）
 //   - ErrBaseCommitMissing: fetch 后仍缺失，错误文本含 sha、fetch stderr 与动作提示
 //
 // 注意：
+//   - 空 sha 也返回一个具体的 Start：让「这个任务建在哪个提交上」在任何路径下
+//     都答得出来，包括 --no-sync-check 那条——今天那条路上基线是纯粹的空白
 //   - 「命中才不 fetch」是刻意设计：常态下远程并不落后，cat-file 是纯本地对象库
 //     查询（微秒级），只有真落后时才付网络代价
 //   - fetch 失败（无凭证/网络不通）不单独成一类错误，一并归入 ErrBaseCommitMissing：
 //     对调用方而言结论都是「这次派不出去，先解决远程仓库」，stderr 原文已带出根因
-func EnsureBaseCommit(ctx context.Context, repo, sha string) error {
+func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 	if sha == "" {
-		log().Info("未提供基线提交，跳过远程同步校验", "repo", repo)
-		return nil
+		head := headCommit(ctx, repo)
+		log().Info("未提供基线提交，起点退回任务仓库 HEAD", "repo", repo, "start", head)
+		return Baseline{Start: head}, nil
 	}
 	if !baseCommitRe.MatchString(sha) {
 		log().Warn("基线提交格式非法，拒绝派发", "repo", repo, "base_commit", truncateRunes(sha, 80))
-		return fmt.Errorf("%w: 基线提交必须是 40 位十六进制，实得 %q", ErrBadWorkspaceReq, truncateRunes(sha, 80))
+		return Baseline{}, fmt.Errorf("%w: 基线提交必须是 40 位十六进制，实得 %q", ErrBadWorkspaceReq, truncateRunes(sha, 80))
 	}
-	if hasCommit(ctx, repo, sha) {
-		log().Info("基线提交已在任务仓库，跳过 fetch", "repo", repo, "base_commit", sha)
-		return nil
-	}
-	log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
-	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
-	defer cancel()
-	_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
-	if ferr != nil {
-		log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
-			"stderr", truncateRunes(stderr, 500), "cause", ferr)
-	}
-	if hasCommit(ctx, repo, sha) {
+	fetched := false
+	if !hasCommit(ctx, repo, sha) {
+		log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
+		fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+		defer cancel()
+		_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
+		if ferr != nil {
+			log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
+				"stderr", truncateRunes(stderr, 500), "cause", ferr)
+		}
+		fetched = true
+		if !hasCommit(ctx, repo, sha) {
+			log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha)
+			return Baseline{}, fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
+				ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+		}
 		log().Info("补拉远端后基线提交已就位", "repo", repo, "base_commit", sha)
-		return nil
 	}
-	log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha)
-	return fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
-		ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+	bl := Baseline{Start: sha, Ahead: countAhead(ctx, repo, sha), Fetched: fetched}
+	log().Info("基线决议完成", "repo", repo, "start", bl.Start, "ahead", bl.Ahead, "fetched", bl.Fetched)
+	return bl, nil
+}
+
+// headCommit 取仓库当前 HEAD 的完整 sha。
+//
+// 仓库一个提交都没有（或路径不是 git 仓库）时返回空串——空起点交给 git 默认
+// 行为，不是错误：真正的仓库问题会在 PrepareWorkspace 的脏检查/建树阶段暴露，
+// 在这里把它变成拒发只会给出一个更难懂的报错。
+func headCommit(ctx context.Context, repo string) string {
+	out, _, err := gitRun(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		log().Info("任务仓库没有 HEAD（空仓库或非 git 仓库），起点留空", "repo", repo)
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// countAhead 数任务仓库 HEAD 上有、而 start 上没有的提交数。
+//
+// 数不出来时返回 0 并打 Warn：这是给人看的提示数字，不该因为数不出来就把
+// 整次派发拒掉——起点本身已经校验过了，提示缺失不影响正确性。
+func countAhead(ctx context.Context, repo, start string) int {
+	out, _, err := gitRun(ctx, repo, "rev-list", "--count", start+"..HEAD")
+	if err != nil {
+		log().Warn("统计任务仓库领先提交数失败，按 0 处理", "repo", repo, "start", start, "cause", err)
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		log().Warn("领先提交数解析失败，按 0 处理", "repo", repo,
+			"out", truncateRunes(out, 80), "cause", err)
+		return 0
+	}
+	return n
 }
 
 // hasCommit 判断 sha 是否已在 repo 的对象库中（^{commit} 保证它确实是提交对象，

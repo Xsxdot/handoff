@@ -425,7 +425,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 
 	// env 注入（B19）：按 executor 名解析 env 文件。位置刻意排在最前段——早于建任务、
-	// 早于 EnsureBaseCommit 与 PrepareWorkspace。解析失败是配置问题，此刻还没有任何
+	// 早于 ResolveBaseline 与 PrepareWorkspace。解析失败是配置问题，此刻还没有任何
 	// 落库/建树副作用，拒发是干净的；若放到 ad.Start 前才解析，任务已落库、worktree
 	// 已建，就变成「创建了一个注定 failed 的任务」，与 spec §6「任务不创建」矛盾
 	envKVs, err := m.env.For(execName)
@@ -459,18 +459,33 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
-	// 远程基线校验（B4）：放在工作区准备之前——基准不对时后面建的分支全是错的，
-	// 且此刻还没有任何落库/建树副作用，拒发是干净的
-	if err := EnsureBaseCommit(ctx, req.Repo, req.BaseCommit); err != nil {
+	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
+	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
+	baseline, err := ResolveBaseline(ctx, req.Repo, req.BaseCommit)
+	if err != nil {
 		return nil, err
 	}
+	// 起点优先级：显式 --base > 决议出的基线 > 空（交给 git 默认）。
+	// 为什么 Branch 模式要排除：切一个已存在的分支没有「起点」这回事，把基线
+	// 硬塞进去会被 PrepareWorkspace 的 base×branch 互斥直接拒掉。
+	// 为什么显式 --base 时不报分叉：用户已经明确指定了起点，再警告是噪音。
+	start, ahead := req.Base, 0
+	if start == "" && req.Branch == "" {
+		start, ahead = baseline.Start, baseline.Ahead
+		if ahead > 0 {
+			m.log.Warn("任务仓库 HEAD 领先基线，新分支不含这些提交",
+				"repo", req.Repo, "start", start, "ahead", ahead)
+		}
+	}
+	m.log.Info("基线起点已确定", "repo", req.Repo, "start", start, "ahead", ahead,
+		"explicit_base", req.Base != "")
 
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
 	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
 		Repo: req.Repo, TaskID: taskID,
-		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
+		Branch: req.Branch, NewBranch: req.NewBranch, Base: start,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
 		WorktreesDir: filepath.Join(m.cfg.DataDir, "worktrees"),
 	})
