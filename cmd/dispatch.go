@@ -168,7 +168,7 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 	}
 }
 
-// appleScriptQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\''）。
+// appleScriptQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\”）。
 //
 // 为什么留在 cmd 包而不是抽公共包：拆掉 tmux 后全项目只剩这一处需要 shell 引号
 // ——osascript 的 do script 参数。为一个调用点维护一个包不划算，且抽出去容易
