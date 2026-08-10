@@ -123,6 +123,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/continue     续发修改指令
 //   - POST /api/tasks/{id}/done         归档任务
 //   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
+//   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - GET  /ws/events                   事件流（补发 + 实时）
@@ -138,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStop)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
+	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
