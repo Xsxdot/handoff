@@ -41,10 +41,28 @@ spec §7 把 grok/codex 的协议能力列为实现前置探针，而**探针结
 | `internal/executor/opencode/adapter.go` | 修改 | 记录当前回合的 assistant 消息 id；正常路径分类后前进水位；`onReconnect` 触发对账 |
 | `internal/executor/opencode/resume.go` | 修改 | `Resume` 末尾触发对账（`fresh` 不触发且清零水位） |
 | `internal/agentd/manager.go` | 修改 | 私有 `reconciler` 接口；`RecoverStuck` 接入对账与 `--force` 收口；`RecoverReport` 加字段 |
+| `internal/agentd/session_reconcile_test.go` | 新建 | 上一行的测试。**不要**叫 `reconcile_test.go` —— 见下方「两种对账」 |
 | `internal/agentd/server.go` | 修改 | `handleResume` 接受 `force` 查询参数 |
 | `internal/client/client.go` | 修改 | `Resume` 传递 `force` |
 | `cmd/resume.go` | 修改 | `--force` flag 与帮助文案 |
 | `docs/superpowers/plans/2026-08-10-b38-grok-codex-probe.md` | 新建 | 探针文档（Task 8 产出） |
+
+### agentd 里有两种「对账」，别搞混
+
+`internal/agentd/reconcile.go` **已经存在**，它是**另一件事**：「任务运行态与 executor **实际存活性**的对账」（`reconcileExecutorGone`——已经知道 executor 没了之后怎么收尾）。
+
+本计划做的是**会话内容对账**：executor **还活着**，丢的是事件。两者互不替代：
+
+| | 既有 `reconcile.go` | 本计划 |
+|---|---|---|
+| 前提 | executor 已经死了 | executor 还活着 |
+| 缺的东西 | 无（任务该收尾了） | 断连窗口里的事件 |
+| 出口 | 转 `waiting_review` 交裁决 | 补发终态，任务自然迁移 |
+
+因此：
+- **不要**把本计划的代码写进 `internal/agentd/reconcile.go`——它归 `manager.go`
+- 测试文件叫 `session_reconcile_test.go`，不叫 `reconcile_test.go`
+- `internal/executor/reconcile.go`（Task 3 新建）在**另一个包**，与它不冲突
 
 ---
 
@@ -1158,7 +1176,7 @@ git commit -m "feat(opencode): 恢复与重连后自动对账，fresh 模式清�
 
 **Files:**
 - Modify: `internal/agentd/manager.go:1627-1638`（`RecoverReport` 加字段）、`manager.go:1670`（`RecoverStuck` 改签名与逻辑）
-- Test: `internal/agentd/reconcile_test.go`（新建）
+- Test: `internal/agentd/session_reconcile_test.go`（新建，**不叫 reconcile_test.go**——同包已有另一种对账）
 
 **Interfaces:**
 - Consumes: `executor.ReconcileOutcome`（Task 3）、`(*Adapter).Reconcile`（Task 3，经类型断言）
@@ -1175,7 +1193,7 @@ git commit -m "feat(opencode): 恢复与重连后自动对账，fresh 模式清�
 
 - [ ] **Step 1: 写失败的测试**
 
-在 `internal/agentd/reconcile_test.go` 新建。执行者先 `grep -rn "func newTestManager\|mgrWithAdapter" internal/agentd/*_test.go` 找本包既有的 Manager 测试搭建方式并复用；下面用 `newTestManager` 指代它：
+在 `internal/agentd/session_reconcile_test.go` 新建。执行者先 `grep -rn "func newTestManager\|mgrWithAdapter" internal/agentd/*_test.go` 找本包既有的 Manager 测试搭建方式并复用；下面用 `newTestManager` 指代它：
 
 ```go
 package agentd
@@ -1438,7 +1456,7 @@ Step 3/4 已含 `RecoverReport` 每个新字段的说明、`reconciler` 接口�
 - [ ] **Step 9: 提交**
 
 ```bash
-git add internal/agentd/manager.go internal/agentd/reconcile_test.go
+git add internal/agentd/manager.go internal/agentd/session_reconcile_test.go
 git commit -m "feat(agentd): resume 接入会话对账，新增 --force 强制收口"
 ```
 
