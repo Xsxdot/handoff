@@ -37,8 +37,10 @@ var (
 //
 // 为什么不止 '/'：类 Unix 执行机上只判 '/' 已经够用，但 Windows 绝对路径
 // C:\repos\x 既不含 '/' 也会被误判成登记名。多这两个字符可以让规则不依赖
-// B37（prochost Windows 实现）的搁置状态。反向误判不成立：登记名由 origin
-// 末段派生或人工指定，不会含这三个字符。
+// B37（prochost Windows 实现）的搁置状态。
+//
+// 反向误判（登记名含这三个字符）由 repoadmin.go 的 validateRepoName 在登记
+// 入口强制拦下——本包注释不得再假设「登记名天然不含」，那是无人保证的假设。
 const pathRunes = `/\:`
 
 // looksLikePath 报告 s 是否应被当作路径处理。

@@ -214,3 +214,71 @@ func newRepoTestManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 	return &Manager{st: st, cfg: &config.Config{}, log: slog.Default()}
 }
+
+// TestValidateRepoName 覆盖登记名的合法性校验：合法名通过，含路径特征字符 /
+// . 或 .. 路径段 / 空名 / 纯空白各自被拒且可被 errors.Is 命中哨兵。
+func TestValidateRepoName(t *testing.T) {
+	valid := []string{"handoff", "my-repo", "a-b", "x.y", "origin"}
+	for _, name := range valid {
+		if err := validateRepoName(name); err != nil {
+			t.Errorf("validateRepoName(%q) = %v, want nil", name, err)
+		}
+	}
+	invalid := []string{
+		"a/b",            // / 会让它被当成路径
+		`C:\x`,           // \ 会让它被当成路径
+		"a:b",            // : 会让它被当成路径
+		"..",             // 逃出 repo_root
+		"../../tmp/evil", // 含 .. 路径段
+		"",               // 空名
+		"   ",            // 纯空白
+	}
+	for _, name := range invalid {
+		if err := validateRepoName(name); !errors.Is(err, errBadDispatchRequest) {
+			t.Errorf("validateRepoName(%q) err = %v, want errors.Is(errBadDispatchRequest)", name, err)
+		}
+	}
+}
+
+// TestRepoNameFromURLAlwaysPassesValidation 验证派生名同样过得了校验——派生名
+// 与人工指定名走同一条 validateRepoName，不因来源不同而豁免。
+func TestRepoNameFromURLAlwaysPassesValidation(t *testing.T) {
+	// 正常 URL 派生出的名字必须能通过校验（否则合法的 --clone 会被误拒）
+	for _, url := range []string{
+		"git@github.com:xushixin/handoff.git",
+		"https://github.com/xushixin/handoff",
+		"/tmp/whatever/origin.git",
+	} {
+		if err := validateRepoName(repoNameFromURL(url)); err != nil {
+			t.Errorf("repoNameFromURL(%q)=%q 应通过校验，got %v", url, repoNameFromURL(url), err)
+		}
+	}
+	// 末段为空或诡异的 URL 派生出的名字同样被拒，而不是放行
+	for _, url := range []string{
+		"git@github.com:",         // 末段为空
+		"https://github.com/..",   // 派生为 ..
+		"https://github.com/.",    // 派生为 .
+		"https://github.com/a\\b", // 派生名含 \（looksLikePath 特征字符）
+	} {
+		if err := validateRepoName(repoNameFromURL(url)); !errors.Is(err, errBadDispatchRequest) {
+			t.Errorf("repoNameFromURL(%q)=%q 应被拒，got %v", url, repoNameFromURL(url), err)
+		}
+	}
+}
+
+// TestCloneAndRegisterRejectsPathTraversalName 验证形态二派生名非法时在 clone
+// 之前就被拒，绝不落地任何东西（安全边界 2/3 的组合：不建目录、不落库）。
+func TestCloneAndRegisterRejectsPathTraversalName(t *testing.T) {
+	origin := initBareOrigin(t)
+	m := newRepoTestManager(t)
+	// name 由 URL 末段派生；让派生名 = ".."，dest 会算成 repo_root/.. 逃出目录
+	url := origin + "/.."
+	_, err := m.RegisterRepo(context.Background(), RegisterRepoReq{URL: url, Clone: true})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+	list, _ := m.ListRepos(context.Background())
+	if len(list) != 0 {
+		t.Fatalf("拒绝后不应留下登记，got %+v", list)
+	}
+}

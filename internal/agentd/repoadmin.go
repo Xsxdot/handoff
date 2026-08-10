@@ -90,6 +90,35 @@ func repoNameFromURL(url string) string {
 	return s
 }
 
+// validateRepoName 校验登记名的合法性，返回包装 errBadDispatchRequest 的错误。
+//
+// 规则：
+//   - 空名或纯空白 → 拒
+//   - 名字含路径特征字符（/ \ :）→ 拒：这三个字符会让 resolveRepoInput 的
+//     looksLikePath 分支把它当路径，dispatch 永远引用不到这条登记
+//   - 名字为 . / .. 或含 .. 路径段 → 拒：会让 repo_root/<名字> 的 clone 落点
+//     逃出 repo_root
+//
+// 为什么必须入口拦：pathRunes 的「反向误判不成立」只是注释里的假设，登记名
+// 由 origin 末段派生或人工指定，没人保证不含这三个字符。登记进来用不了，
+// 比登记时被拒更难发现（落库成功、dispatch 却永远直通路径分支）。
+func validateRepoName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%w: 登记名不能为空", errBadDispatchRequest)
+	}
+	if strings.ContainsAny(name, pathRunes) {
+		return fmt.Errorf("%w: 登记名 %q 含路径特征字符（/ \\ :），会被当成路径，登记了也引用不到",
+			errBadDispatchRequest, name)
+	}
+	for _, seg := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("%w: 登记名 %q 含 . 或 .. 路径段，会让克隆落点逃出 repo_root",
+				errBadDispatchRequest, name)
+		}
+	}
+	return nil
+}
+
 // RegisterRepo 登记一个仓库（两种形态见 RegisterRepoReq）。
 //
 // 参数：
@@ -152,6 +181,12 @@ func (m *Manager) cloneAndRegister(ctx context.Context, req RegisterRepoReq) (pr
 	if name == "" {
 		return proto.Repo{}, fmt.Errorf("%w: 无法从 URL %q 派生登记名，请显式指定", errBadDispatchRequest, req.URL)
 	}
+	// 校验必须早于 dest 计算：名字含 .. 时 dest=repo_root/<名字> 会逃出 repo_root，
+	// 等 persistRepo 再拦就晚了（落点已建/克隆已跑）。派生名同样走这道校验。
+	if err := validateRepoName(name); err != nil {
+		m.log.Warn("克隆登记被拒：登记名非法", "name", name, "cause", err)
+		return proto.Repo{}, err
+	}
 	dest := req.Path
 	if dest == "" {
 		if m.cfg.RepoRoot == "" {
@@ -191,8 +226,11 @@ func (m *Manager) persistRepo(name, path, origin string) (proto.Repo, error) {
 	if name == "" {
 		name = repoNameFromURL(origin)
 	}
-	if name == "" {
-		return proto.Repo{}, fmt.Errorf("%w: 无法派生登记名，请显式指定", errBadDispatchRequest)
+	// 收口校验：registerExisting 与 cloneAndRegister（含派生名）最终都汇到这里，
+	// 名字合法性在这里再兜一道，保证任何登记路径都过不了非法名的漏网。
+	if err := validateRepoName(name); err != nil {
+		m.log.Warn("登记落库被拒：登记名非法", "name", name, "cause", err)
+		return proto.Repo{}, err
 	}
 	r := proto.Repo{Name: name, Path: path, OriginURL: origin, CreatedAt: time.Now()}
 	if err := m.st.CreateRepo(&r); err != nil {
