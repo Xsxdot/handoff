@@ -13,8 +13,38 @@ package workspaceapi
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
+
+// ErrorCode 是 owner authority 返回给 gateway 的稳定资源错误类别。
+type ErrorCode string
+
+const (
+	ErrorResourceNotFound      ErrorCode = "RESOURCE_NOT_FOUND"
+	ErrorPathOutsideWorkspace  ErrorCode = "PATH_OUTSIDE_WORKSPACE"
+	ErrorVersionConflict       ErrorCode = "VERSION_CONFLICT"
+	ErrorCommandConflict       ErrorCode = "COMMAND_CONFLICT"
+	ErrorCursorExpired         ErrorCode = "CURSOR_EXPIRED"
+	ErrorCapabilityUnsupported ErrorCode = "CAPABILITY_UNSUPPORTED"
+	ErrorUnavailable           ErrorCode = "MACHINE_OFFLINE"
+)
+
+// Error 是 owner-side 可安全跨 gateway/peer 映射的 typed error。
+//
+// Message 只能包含可公开摘要；Cause 保留底层原因，仅供结构化服务日志使用。
+type Error struct {
+	Code      ErrorCode
+	Message   string
+	Retryable bool
+	Cause     error
+}
+
+// Error 返回稳定错误码与安全摘要，不拼接 Cause。
+func (e *Error) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
+
+// Unwrap 暴露底层原因给 errors.Is/As，wire adapter 不应直接编码它。
+func (e *Error) Unwrap() error { return e.Cause }
 
 // FileKind 表示目录项类型。
 type FileKind string
@@ -120,6 +150,49 @@ type FileSearchResult struct {
 	Truncated    bool              `json:"truncated"`
 	ScannedFiles int               `json:"scanned_files"`
 	ScannedBytes int64             `json:"scanned_bytes"`
+}
+
+// FileEventKind 表示文件树失效提示类型；事件不携带文件内容。
+type FileEventKind string
+
+const (
+	FileEventCreate FileEventKind = "create"
+	FileEventModify FileEventKind = "modify"
+	FileEventRemove FileEventKind = "remove"
+)
+
+// FileEvent 是单个 Workspace 内按 Seq 单调递增的文件失效提示。
+type FileEvent struct {
+	WorkspaceID string        `json:"workspace_id"`
+	Seq         int64         `json:"seq"`
+	Kind        FileEventKind `json:"kind"`
+	Path        string        `json:"path"`
+	ObservedAt  time.Time     `json:"observed_at"`
+}
+
+// FileSubscription 是文件事件流的 replay + live 订阅。
+type FileSubscription struct {
+	Replay []FileEvent
+	Events <-chan FileEvent
+	Done   <-chan error
+	cancel func()
+}
+
+// NewFileSubscription 创建 provider 实现可返回的 replay + live 订阅。
+func NewFileSubscription(replay []FileEvent, events <-chan FileEvent, done <-chan error, cancel func()) *FileSubscription {
+	return &FileSubscription{Replay: replay, Events: events, Done: done, cancel: cancel}
+}
+
+// Cancel 释放订阅；可重复调用。
+func (s *FileSubscription) Cancel() {
+	if s != nil && s.cancel != nil {
+		s.cancel()
+	}
+}
+
+// FileStreamer 是 owner authority 的文件失效提示端口。
+type FileStreamer interface {
+	SubscribeFiles(context.Context, WorkspaceRef, int64) (*FileSubscription, error)
 }
 
 // GitStatusEntry 表示 porcelain v2 中一条文件状态。

@@ -19,6 +19,7 @@ import {
   fileDocumentSchema,
   fileEntrySchema,
   fileSearchResultSchema,
+  fileStreamFrameSchema,
   gitStatusSnapshotSchema,
   previewSessionSchema,
   problemSchema,
@@ -99,6 +100,9 @@ describe('handoff contracts vs Go golden', () => {
     expect(
       fileSearchResultSchema.parse(JSON.parse(testdata('file-search-result.json'))).matches
     ).toHaveLength(1)
+    expect(
+      fileStreamFrameSchema.parse(JSON.parse(testdata('file-stream-frame.json'))).replay
+    ).toHaveLength(1)
     expect(gitStatusSnapshotSchema.parse(JSON.parse(testdata('git-status.json'))).branch).toBe(
       'main'
     )
@@ -122,5 +126,9 @@ describe('handoff contracts vs Go golden', () => {
     frame.incarnation = 'inc-1'
     delete frame.seq
     expect(() => ptyServerFrameSchema.parse(frame)).toThrow()
+
+    const fileStream = JSON.parse(testdata('file-stream-frame.json')) as Record<string, unknown>
+    delete fileStream.through_seq
+    expect(() => fileStreamFrameSchema.parse(fileStream)).toThrow()
   })
 })

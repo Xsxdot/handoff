@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -63,6 +64,9 @@ func TestPeerHelloRoute(t *testing.T) {
 	}
 	if hello.Capabilities["catalog"] != 1 || hello.Capabilities["machine_events"] != 1 {
 		t.Fatalf("capabilities 缺核心项: %+v", hello.Capabilities)
+	}
+	if hello.Capabilities[peer.CapabilityFiles] != 1 {
+		t.Fatalf("files capability 缺失: %+v", hello.Capabilities)
 	}
 }
 

@@ -223,6 +223,36 @@ export const fileSearchResultSchema = z.object({
 })
 export type FileSearchResult = z.infer<typeof fileSearchResultSchema>
 
+export const fileEventKindSchema = z.enum(['create', 'modify', 'remove'])
+export const fileEventSchema = z.object({
+  workspace_id: z.string(),
+  seq: z.number().int(),
+  kind: fileEventKindSchema,
+  path: z.string(),
+  observed_at: z.string().datetime()
+})
+export type FileEvent = z.infer<typeof fileEventSchema>
+
+export const fileStreamFrameSchema = z
+  .object({
+    version: z.number().int(),
+    kind: z.enum(['subscribed', 'event', 'problem']),
+    workspace_id: z.string(),
+    through_seq: z.number().int(),
+    replay: z.array(fileEventSchema).default([]),
+    event: fileEventSchema.optional(),
+    problem: problemSchema.optional()
+  })
+  .superRefine((frame, context) => {
+    if (frame.kind === 'event' && frame.event === undefined) {
+      context.addIssue({ code: 'custom', message: 'event frame requires event', path: ['event'] })
+    }
+    if (frame.kind === 'problem' && frame.problem === undefined) {
+      context.addIssue({ code: 'custom', message: 'problem frame requires problem', path: ['problem'] })
+    }
+  })
+export type FileStreamFrame = z.infer<typeof fileStreamFrameSchema>
+
 export const gitStatusEntrySchema = z.object({
   path: z.string(),
   original_path: z.string().optional(),

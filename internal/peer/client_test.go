@@ -10,15 +10,20 @@
 package peer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/xushixin/handoff/internal/desktopapi"
+	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
 // TestClientHelloSuccess 验证 Hello 请求成功并解码。
@@ -89,5 +94,42 @@ func TestClientEventsAfterWire(t *testing.T) {
 	}
 	if len(evs) != 1 || evs[0].MachineSeq != 6 {
 		t.Fatalf("events = %+v", evs)
+	}
+}
+
+func TestClientProxiesWorkspaceFileWithoutLeakingTokenInPayload(t *testing.T) {
+	var gotBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspaces/ws-1/file" || r.Header.Get("Authorization") != "Bearer remote-secret" {
+			t.Fatalf("request path/auth = %s / %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		write := desktopapi.FileDocumentDTO{WorkspaceID: "ws-1", Path: "README.md", Version: "sha256:new", ContentBase64: "bmV3", Size: 3, ModifiedAt: time.Now().UTC()}
+		_ = json.NewEncoder(w).Encode(write)
+	}))
+	defer ts.Close()
+	client := NewClient(ClientConfig{Endpoint: ts.URL, Token: "remote-secret"})
+	doc, err := client.WriteFile(context.Background(), workspaceapi.WorkspaceRef{WorkspaceID: "ws-1"}, workspaceapi.WriteFileCommand{
+		CommandID: "cmd-1", Path: "README.md", IfMatch: "sha256:old", ContentBase64: "bmV3",
+	})
+	if err != nil || doc.Version != "sha256:new" {
+		t.Fatalf("WriteFile = %+v, %v", doc, err)
+	}
+	if bytes.Contains(gotBody, []byte("remote-secret")) {
+		t.Fatalf("remote token 泄漏进请求体: %s", gotBody)
+	}
+}
+
+func TestClientMapsRemoteResourceProblem(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(desktopapi.Problem{Code: desktopapi.ProblemVersionConflict, Message: "版本冲突"})
+	}))
+	defer ts.Close()
+	client := NewClient(ClientConfig{Endpoint: ts.URL, Token: "token"})
+	_, err := client.ReadFile(context.Background(), workspaceapi.WorkspaceRef{WorkspaceID: "ws"}, "README.md")
+	var resourceErr *workspaceapi.Error
+	if !errors.As(err, &resourceErr) || resourceErr.Code != workspaceapi.ErrorVersionConflict {
+		t.Fatalf("error = %T %v", err, err)
 	}
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/peer"
+	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -109,6 +110,8 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
+		closeResources := wireWorkspaceResources(srv, st, cfg, logger)
+		defer closeResources()
 		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
 		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
@@ -160,20 +163,22 @@ var agentdCmd = &cobra.Command{
 			}
 			srv.ControlHub().Publish(env)
 		}
+		credentialResolver := targetCredentialResolver(cfg)
 		syncManager := peer.NewSyncManager(peer.SyncManagerConfig{
-			Machines: syncMachinesFromConfig(cfg),
-			CredentialResolver: func(secretRef string) string {
-				// secret_ref 形如 config.targets.<name>.token，取 <name> 后查 cfg
-				name := strings.TrimPrefix(strings.TrimSuffix(secretRef, ".token"), "config.targets.")
-				if t, ok := cfg.Targets[name]; ok {
-					return t.Token
-				}
-				return ""
-			},
-			Projector: projector,
+			Machines:           syncMachinesFromConfig(cfg),
+			CredentialResolver: credentialResolver,
+			Projector:          projector,
 			OnMachineState: func(machineID string, state peer.SupervisorState) {
-				st.SetMachineStatus(context.Background(), machineID,
-					controlplane.MachineStatus(string(state)))
+				if err := st.SetMachineStatus(context.Background(), machineID,
+					controlplane.MachineStatus(string(state))); err != nil {
+					logger.Error("peer 状态持久化失败", "machine_id", machineID, "state", state, "cause", err)
+				}
+			},
+			OnNegotiated: func(machineID string, protocolVersion int, capabilities map[string]int) {
+				if err := st.SetMachineProtocolCapabilities(context.Background(), machineID, protocolVersion, capabilities); err != nil {
+					logger.Error("peer capability 持久化失败", "machine_id", machineID,
+						"protocol_version", protocolVersion, "cause", err)
+				}
 			},
 			Interval: 30 * time.Second,
 			Log:      logger,
@@ -239,6 +244,30 @@ func syncMachinesFromConfig(cfg *config.Config) []peer.SyncMachine {
 		})
 	}
 	return out
+}
+
+// targetCredentialResolver 按 secret_ref 从本进程配置读取远端 token。
+//
+// token 只进入 peer Client 的 Authorization header；调用方不得把返回值写日志。
+func targetCredentialResolver(cfg *config.Config) func(string) string {
+	return func(secretRef string) string {
+		name := strings.TrimPrefix(strings.TrimSuffix(secretRef, ".token"), "config.targets.")
+		if target, ok := cfg.Targets[name]; ok {
+			return target.Token
+		}
+		return ""
+	}
+}
+
+// wireWorkspaceResources 把本机 owner authority、远端 peer registry 与统一
+// resource gateway 注入生产 Server，并返回关闭 peer clients 的函数。
+func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) func() {
+	localAuthority := machineauthority.NewResourceAuthority(logger)
+	peers := peer.NewAuthorityRegistry(syncMachinesFromConfig(cfg), targetCredentialResolver(cfg))
+	router := resourcegateway.NewRouter(st, localAuthority, peers, logger)
+	srv.SetResourceRouter(router)
+	logger.Info("Workspace 资源路由已接线", "remote_machine_count", len(syncMachinesFromConfig(cfg)))
+	return peers.Close
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。

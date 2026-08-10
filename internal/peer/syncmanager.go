@@ -27,6 +27,8 @@ type SyncManagerConfig struct {
 	Projector ProjectorPort
 	// OnMachineState 回调机器状态变化（machine_id, state）。
 	OnMachineState func(machineID string, state SupervisorState)
+	// OnNegotiated 持久化白名单过滤后的协议/capability。
+	OnNegotiated func(machineID string, protocolVersion int, capabilities map[string]int)
 	// Interval 是重连间隔；0=默认 30s。
 	Interval time.Duration
 	Log      *slog.Logger
@@ -120,6 +122,11 @@ func (m *SyncManager) runMachine(ctx context.Context, mach SyncMachine) {
 			OnState: func(st SupervisorState) {
 				if m.cfg.OnMachineState != nil {
 					m.cfg.OnMachineState(mach.MachineID, st)
+				}
+			},
+			OnNegotiated: func(protocolVersion int, capabilities map[string]int) {
+				if m.cfg.OnNegotiated != nil {
+					m.cfg.OnNegotiated(mach.MachineID, protocolVersion, capabilities)
 				}
 			},
 			Log: m.log,

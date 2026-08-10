@@ -23,6 +23,7 @@ import (
 type fakePeerClient struct {
 	mu        sync.Mutex
 	helloErr  error
+	helloCaps map[string]int
 	allEvents []MachineEvent // 全部事件（按序切批）
 	called    int
 }
@@ -33,7 +34,11 @@ func (f *fakePeerClient) Hello(ctx context.Context) (Hello, error) {
 	if f.helloErr != nil {
 		return Hello{}, f.helloErr
 	}
-	return Hello{ProtocolVersion: 1, Capabilities: map[string]int{"catalog": 1, "machine_events": 1}}, nil
+	caps := f.helloCaps
+	if caps == nil {
+		caps = map[string]int{"catalog": 1, "machine_events": 1}
+	}
+	return Hello{ProtocolVersion: 1, Capabilities: caps}, nil
 }
 
 func (f *fakePeerClient) EventsAfter(ctx context.Context, machineID string, afterSeq int64, limit int) ([]MachineEvent, error) {
@@ -129,6 +134,27 @@ func TestSupervisorClientErrorSetsUnavailable(t *testing.T) {
 		case <-deadline:
 			t.Fatal("客户端错误应进入 unavailable")
 		}
+	}
+}
+
+func TestSupervisorReportsNegotiatedCapabilities(t *testing.T) {
+	client := &fakePeerClient{helloCaps: map[string]int{
+		"catalog": 1, "machine_events": 1, CapabilityFiles: 1, "unknown": 1,
+	}}
+	var gotProtocol int
+	var gotCapabilities map[string]int
+	supervisor := NewSupervisor(SupervisorConfig{
+		MachineID: "devbox", Client: client, Projector: &recordingProjector{},
+		OnNegotiated: func(protocol int, capabilities map[string]int) {
+			gotProtocol, gotCapabilities = protocol, capabilities
+		},
+	})
+	supervisor.Run(context.Background())
+	if gotProtocol != 1 || gotCapabilities[CapabilityFiles] != 1 {
+		t.Fatalf("negotiated = protocol:%d capabilities:%+v", gotProtocol, gotCapabilities)
+	}
+	if _, ok := gotCapabilities["unknown"]; ok {
+		t.Fatalf("未知 capability 不应上报: %+v", gotCapabilities)
 	}
 }
 

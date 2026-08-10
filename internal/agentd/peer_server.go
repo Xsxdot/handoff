@@ -21,7 +21,10 @@ import (
 )
 
 // peerCapabilities 是本机 agentd 声明的 peer capability。
-var peerCapabilities = map[string]int{"catalog": 1, "machine_events": 1}
+var peerCapabilities = map[string]int{
+	"catalog": 1, "machine_events": 1,
+	peer.CapabilityFiles: 1,
+}
 
 // handlePeerHello 返回协议版本与 capability。
 func (s *Server) handlePeerHello(w http.ResponseWriter, r *http.Request) {

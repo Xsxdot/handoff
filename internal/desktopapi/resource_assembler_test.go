@@ -65,3 +65,18 @@ func TestResourceAssemblerMapsEmptyCollectionsAndPreview(t *testing.T) {
 		t.Fatalf("preview dto = %+v", preview)
 	}
 }
+
+func TestResourceAssemblerMapsFileEventReplay(t *testing.T) {
+	a := &ResourceAssembler{}
+	now := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
+	dto := a.ToFileEvents([]workspaceapi.FileEvent{{
+		WorkspaceID: "ws", Seq: 7, Kind: workspaceapi.FileEventModify, Path: "README.md", ObservedAt: now,
+	}})
+	if len(dto) != 1 || dto[0].Seq != 7 || dto[0].Kind != "modify" {
+		t.Fatalf("file event dto = %+v", dto)
+	}
+	roundTrip := a.FromFileEvents(dto)
+	if len(roundTrip) != 1 || roundTrip[0].Path != "README.md" || !roundTrip[0].ObservedAt.Equal(now) {
+		t.Fatalf("file event round trip = %+v", roundTrip)
+	}
+}

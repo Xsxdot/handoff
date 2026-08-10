@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 
 	"github.com/xushixin/handoff/internal/controlplane"
 )
@@ -52,16 +53,19 @@ type SupervisorConfig struct {
 	Client    PeerClient
 	Projector ProjectorPort
 	OnState   func(SupervisorState) // 状态变化回调（机器表状态投影）
-	Log       *slog.Logger
+	// OnNegotiated 只接收本端白名单过滤后的 capability，不接收原始 hello map。
+	OnNegotiated func(protocolVersion int, capabilities map[string]int)
+	Log          *slog.Logger
 }
 
 // Supervisor 管理单台远端机器的同步生命周期。
 type Supervisor struct {
-	machineID string
-	client    PeerClient
-	projector ProjectorPort
-	onState   func(SupervisorState)
-	log       *slog.Logger
+	machineID    string
+	client       PeerClient
+	projector    ProjectorPort
+	onState      func(SupervisorState)
+	onNegotiated func(int, map[string]int)
+	log          *slog.Logger
 	// cursor 是已消费到的 machine_seq（按机器隔离）。
 	cursor int64
 }
@@ -74,7 +78,7 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	}
 	return &Supervisor{
 		machineID: cfg.MachineID, client: cfg.Client, projector: cfg.Projector,
-		onState: cfg.OnState, log: log,
+		onState: cfg.OnState, onNegotiated: cfg.OnNegotiated, log: log,
 	}
 }
 
@@ -95,11 +99,14 @@ func (s *Supervisor) Run(ctx context.Context) {
 	s.log.Info("peer hello 成功", "machine_id", s.machineID, "protocol_version", hello.ProtocolVersion)
 
 	// 2. negotiate：capability 交集；缺核心项 → incompatible。
-	_, incompatible := Negotiate(hello.Capabilities)
+	negotiated, incompatible := Negotiate(hello.Capabilities)
 	if incompatible {
 		s.log.Warn("peer 协议不兼容（缺核心 capability）", "machine_id", s.machineID, "caps", hello.Capabilities)
 		s.setState(SupervisorStateIncompatible)
 		return
+	}
+	if s.onNegotiated != nil {
+		s.onNegotiated(hello.ProtocolVersion, maps.Clone(negotiated))
 	}
 	s.setState(SupervisorStateReconciling)
 

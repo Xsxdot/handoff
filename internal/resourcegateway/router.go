@@ -119,6 +119,22 @@ func (r *Router) operationError(route route, workspaceID string, cause error) er
 	if errors.As(cause, &problemErr) {
 		return cause
 	}
+	var resourceErr *workspaceapi.Error
+	if errors.As(cause, &resourceErr) {
+		status := http.StatusConflict
+		switch resourceErr.Code {
+		case workspaceapi.ErrorResourceNotFound:
+			status = http.StatusNotFound
+		case workspaceapi.ErrorPathOutsideWorkspace:
+			status = http.StatusBadRequest
+		case workspaceapi.ErrorVersionConflict, workspaceapi.ErrorCommandConflict, workspaceapi.ErrorCursorExpired, workspaceapi.ErrorCapabilityUnsupported:
+			status = http.StatusConflict
+		case workspaceapi.ErrorUnavailable:
+			status = http.StatusServiceUnavailable
+		}
+		return r.reject(status, desktopapi.ProblemCode(resourceErr.Code), resourceErr.Message,
+			route.workspace.MachineID, workspaceID, cause)
+	}
 	if route.owner == "peer" {
 		return r.reject(http.StatusServiceUnavailable, desktopapi.ProblemMachineOffline,
 			"远端资源服务暂不可用", route.workspace.MachineID, workspaceID, cause)
@@ -252,4 +268,24 @@ func (r *Router) CreatePreview(ctx context.Context, workspaceID string, command 
 	}
 	r.log.Info("Preview 创建完成", "workspace_id", workspaceID, "preview_session_id", session.PreviewSessionID, "port", session.Port, "state", session.State)
 	return session, nil
+}
+
+// SubscribeFiles 路由文件失效提示流；local/peer 必须实现同一 FileStreamer 端口。
+func (r *Router) SubscribeFiles(ctx context.Context, workspaceID string, after int64) (*workspaceapi.FileSubscription, error) {
+	route, err := r.resolve(ctx, "files.stream", workspaceID, peer.CapabilityFiles)
+	if err != nil {
+		return nil, err
+	}
+	streamer, ok := route.authority.(workspaceapi.FileStreamer)
+	if !ok {
+		return nil, r.reject(http.StatusConflict, desktopapi.ProblemCapabilityUnsupported,
+			"资源执行者未提供文件事件流", route.workspace.MachineID, workspaceID, nil)
+	}
+	subscription, err := streamer.SubscribeFiles(ctx, route.workspace, after)
+	if err != nil {
+		return nil, r.operationError(route, workspaceID, err)
+	}
+	r.log.Info("文件事件流路由完成", "workspace_id", workspaceID, "machine_id", route.workspace.MachineID,
+		"owner", route.owner, "after_seq", after, "replay_count", len(subscription.Replay))
+	return subscription, nil
 }

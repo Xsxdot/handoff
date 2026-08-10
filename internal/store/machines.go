@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,12 @@ import (
 
 // localMachineMetaKey 是 control_metadata 里本机 Machine ID 的键。
 const localMachineMetaKey = "local_machine_id"
+
+// localMachineCapabilities 是当前二阶段真正已接线的本机能力。后续 Git/PTY/
+// Preview 只能在各自服务落地时加入，避免 UI 看到 capability 后调用空实现。
+var localMachineCapabilities = map[string]int{
+	"catalog": 1, "machine_events": 1, "files": 1,
+}
 
 // EnsureLocalMachine 确保存在稳定的本机 Machine（创建或复用）并返回它。
 //
@@ -56,12 +63,17 @@ func (s *Store) EnsureLocalMachine(ctx context.Context, displayName string) (con
 	}
 
 	now := fmtTime(time.Now())
+	capabilities, err := json.Marshal(localMachineCapabilities)
+	if err != nil {
+		return controlplane.Machine{}, fmt.Errorf("序列化本机 capabilities: %w", err)
+	}
 	// UPSERT：同库重复调用保持 ID，display name 就地更新。
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO machines (id, display_name, kind, endpoint, secret_ref, protocol_version, capabilities, status, last_seen_at)
-VALUES (?, ?, 'local', '', '', 0, '', 'connected', ?)
-ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, status = 'connected', last_seen_at = excluded.last_seen_at`,
-		id, displayName, now); err != nil {
+VALUES (?, ?, 'local', '', '', 1, ?, 'connected', ?)
+ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, protocol_version = excluded.protocol_version,
+  capabilities = excluded.capabilities, status = 'connected', last_seen_at = excluded.last_seen_at`,
+		id, displayName, string(capabilities), now); err != nil {
 		return controlplane.Machine{}, fmt.Errorf("写入本机机器: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -69,7 +81,7 @@ ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, status = 'co
 	}
 	return controlplane.Machine{
 		ID: id, DisplayName: displayName, Kind: controlplane.MachineKindLocal,
-		Status: controlplane.MachineStatusConnected,
+		ProtocolVersion: 1, Capabilities: maps.Clone(localMachineCapabilities), Status: controlplane.MachineStatusConnected,
 	}, nil
 }
 
@@ -273,6 +285,31 @@ func (s *Store) SetMachineStatus(ctx context.Context, machineID string, status c
 	if _, err := s.db.ExecContext(ctx,
 		"UPDATE machines SET status = ? WHERE id = ?", string(status), machineID); err != nil {
 		return fmt.Errorf("更新机器 %s 状态: %w", machineID, err)
+	}
+	return nil
+}
+
+// SetMachineProtocolCapabilities 持久化 peer hello 的协议与已协商 capability。
+//
+// 为什么与 status 分开：只有 hello+白名单协商成功后 capability 才可信；连接
+// 状态重连中频繁变化时不能清空 last-known capability，也不能把原始未知项落库。
+func (s *Store) SetMachineProtocolCapabilities(ctx context.Context, machineID string, protocolVersion int, capabilities map[string]int) error {
+	raw, err := json.Marshal(capabilities)
+	if err != nil {
+		return fmt.Errorf("序列化机器 %s capabilities: %w", machineID, err)
+	}
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE machines SET protocol_version = ?, capabilities = ? WHERE id = ?",
+		protocolVersion, string(raw), machineID)
+	if err != nil {
+		return fmt.Errorf("更新机器 %s 协议能力: %w", machineID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("读取机器 %s 协议更新结果: %w", machineID, err)
+	}
+	if affected == 0 {
+		return controlplane.ErrNotFound
 	}
 	return nil
 }

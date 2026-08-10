@@ -35,6 +35,12 @@ func TestResourceGoldenRoundTrips(t *testing.T) {
 				t.Fatalf("matches 丢失: %+v", value)
 			}
 		}},
+		{"file stream", "file-stream-frame.json", func() any { return &FileStreamFrameDTO{} }, func(t *testing.T, value any) {
+			frame := value.(*FileStreamFrameDTO)
+			if frame.ThroughSeq != 8 || len(frame.Replay) != 1 || frame.Replay[0].Seq != 8 {
+				t.Fatalf("file stream identity 丢失: %+v", value)
+			}
+		}},
 		{"git status", "git-status.json", func() any { return &GitStatusSnapshotDTO{} }, func(t *testing.T, value any) {
 			if value.(*GitStatusSnapshotDTO).Branch != "main" {
 				t.Fatalf("branch 丢失: %+v", value)

@@ -9,6 +9,7 @@
 //     审阅素材（git diff、文件内容、远程跑测试/lint），run 不走审批门
 //   - /ws/events 先订阅 hub 实时流，再补发 store 中 seq>n 的历史事件（重放期间实时
 //     事件经排空器收集、按 seq 归并去重），窗口期事件不丢不重
+//   - /v1/workspaces 通过 resourcegateway 提供文件/Git/PTY/Preview 统一入口
 //
 // 边界：
 //   - 不创建 ticket：ticket 由 manager（Task 8）把 adapter 事件中介成 ticket 后落库，本层只回答
@@ -16,6 +17,7 @@
 //   - 审阅路由只读任务仓库（diff/fetch），run 的命令执行也限时回收，绝不经此写仓库
 //   - 实时流不保证每条事件都送达：事件不丢不重由 store 的 seq + 客户端自存 cursor（无需 ack）承担，
 //     掉线期间产生的事件由客户端携带更大 from_seq 重连补拉
+//   - 不直接访问 Workspace 文件或远端 endpoint/token，资源执行由 owner authority 完成
 package agentd
 
 import (
@@ -38,6 +40,7 @@ import (
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -75,6 +78,8 @@ type Server struct {
 	projects *controlplane.ProjectService
 	// controlHub 是桌面控制流的独立实时路由（不复用 task Hub）。
 	controlHub *ControlHub
+	// resources 是 Desktop/peer 共用的 Workspace 资源路由；未注入时明确 503。
+	resources *resourcegateway.Router
 }
 
 // NewServer 创建 agentd 服务端。
@@ -105,6 +110,11 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 // 不注入也能运行（写路由返回 503）；bootstrap/control 只读路由不依赖它。
 func (s *Server) SetProjectService(p *controlplane.ProjectService) {
 	s.projects = p
+}
+
+// SetResourceRouter 注入 Workspace 文件/Git/PTY/Preview 统一路由。
+func (s *Server) SetResourceRouter(router *resourcegateway.Router) {
+	s.resources = router
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
@@ -163,6 +173,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/control/stream", s.handleDesktopControlStream)
 	mux.HandleFunc("POST /v1/projects/operations", s.handleDesktopCreateProject)
 	mux.HandleFunc("GET /v1/operations/{operation_id}", s.handleDesktopGetOperation)
+	// Workspace 资源路由：桌面与 peer client 使用同一 wire contract。
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/entries", s.handleResourceEntries)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/file", s.handleResourceFile)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace_id}/file", s.handleResourceWriteFile)
+	mux.HandleFunc("POST /v1/workspaces/{workspace_id}/files/search", s.handleResourceSearchFiles)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files/stream", s.handleResourceFileStream)
 	return s.auth(mux)
 }
 

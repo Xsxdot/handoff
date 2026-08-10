@@ -65,6 +65,26 @@ type FileSearchResultDTO struct {
 	ScannedBytes int64                `json:"scanned_bytes"`
 }
 
+// FileEventDTO 是不含内容的文件失效提示。
+type FileEventDTO struct {
+	WorkspaceID string    `json:"workspace_id"`
+	Seq         int64     `json:"seq"`
+	Kind        string    `json:"kind"`
+	Path        string    `json:"path"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
+// FileStreamFrameDTO 是文件事件 WebSocket 的版本化服务端 frame。
+type FileStreamFrameDTO struct {
+	Version     int            `json:"version"`
+	Kind        string         `json:"kind"`
+	WorkspaceID string         `json:"workspace_id"`
+	ThroughSeq  int64          `json:"through_seq"`
+	Replay      []FileEventDTO `json:"replay,omitempty"`
+	Event       *FileEventDTO  `json:"event,omitempty"`
+	Problem     *Problem       `json:"problem,omitempty"`
+}
+
 // GitStatusEntryDTO 是公开 Git 文件状态。
 type GitStatusEntryDTO struct {
 	Path           string `json:"path"`

@@ -1,14 +1,14 @@
 // Package machineauthority 定义本机资源权威与所属机器 agentd 的边界。
 //
 // 职责：
-//   - Authority：本机资源边界的唯一入口（InspectPath/Clone/ReconcileLocation/Snapshot）
+//   - Authority：本机目录清单边界（InspectPath/Clone/ReconcileLocation/Snapshot）
 //   - Inventory：用 Git 2.25 基线命令发现 worktree/branch/HEAD
 //   - Reconcile：把真实仓库状态与 store 投影对齐，变化经 durable outbox 上报
 //   - GitWatcher：文件系统变化只是「尽快扫描」的提示，不直接当事实
 //
 // 边界：
-//   - 本计划先实现 Inspect/Clone/Inventory；文件内容、PTY、Preview 方法留到
-//     计划 02，禁止用 Electron Node fs 作为临时替代
+//   - 文件内容由 workspaceapi.Authority 的 ResourceAuthority 提供；本接口只服务
+//     Project/Reconcile 控制面，禁止把两套职责混成大接口
 //   - 错误日志带 machine/location/path 摘要，不打完整 remote URL 凭据
 package machineauthority
 
@@ -49,8 +49,8 @@ type MachineSnapshot struct {
 
 // Authority 明确本机资源边界。
 //
-// 本计划先实现 Inspect/Clone/Inventory；文件内容、PTY、Preview 方法留到计划 02，
-// 禁止用 Electron Node fs 作为临时替代。
+// 文件内容/Git/PTY/Preview 走 workspaceapi.Authority；这里保持项目发现端口窄小，
+// 避免 ProjectService 被运行期终端和编辑器能力污染。
 type Authority interface {
 	InspectPath(ctx context.Context, path string) (PathInspection, error)
 	Clone(ctx context.Context, cmd CloneCommand) (PathInspection, error)

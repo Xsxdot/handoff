@@ -64,6 +64,61 @@ func (a *ResourceAssembler) ToFileSearchResult(result workspaceapi.FileSearchRes
 		ScannedFiles: result.ScannedFiles, ScannedBytes: result.ScannedBytes}
 }
 
+// ToFileEvent 把 owner 文件失效提示转换为公开 DTO。
+func (a *ResourceAssembler) ToFileEvent(event workspaceapi.FileEvent) FileEventDTO {
+	return FileEventDTO{WorkspaceID: event.WorkspaceID, Seq: event.Seq, Kind: string(event.Kind), Path: event.Path, ObservedAt: event.ObservedAt}
+}
+
+// ToFileEvents 把 replay 转换为非 nil DTO 数组。
+func (a *ResourceAssembler) ToFileEvents(events []workspaceapi.FileEvent) []FileEventDTO {
+	out := make([]FileEventDTO, 0, len(events))
+	for _, event := range events {
+		out = append(out, a.ToFileEvent(event))
+	}
+	return out
+}
+
+// FromFileEntries 把 peer wire 目录项转换回 owner contract。
+func (a *ResourceAssembler) FromFileEntries(entries []FileEntryDTO) []workspaceapi.FileEntry {
+	out := make([]workspaceapi.FileEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, workspaceapi.FileEntry{WorkspaceID: entry.WorkspaceID, Path: entry.Path, Name: entry.Name,
+			Kind: workspaceapi.FileKind(entry.Kind), Size: entry.Size, ModifiedAt: entry.ModifiedAt, Version: entry.Version})
+	}
+	return out
+}
+
+// FromFileDocument 把 peer wire 文件快照转换回 owner contract。
+func (a *ResourceAssembler) FromFileDocument(doc FileDocumentDTO) workspaceapi.FileDocument {
+	return workspaceapi.FileDocument{WorkspaceID: doc.WorkspaceID, Path: doc.Path, Version: doc.Version,
+		ContentBase64: doc.ContentBase64, Size: doc.Size, ModifiedAt: doc.ModifiedAt}
+}
+
+// FromFileSearchResult 把 peer wire 搜索结果转换回 owner contract。
+func (a *ResourceAssembler) FromFileSearchResult(result FileSearchResultDTO) workspaceapi.FileSearchResult {
+	matches := make([]workspaceapi.FileSearchMatch, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		matches = append(matches, workspaceapi.FileSearchMatch{Path: match.Path, Line: match.Line, Column: match.Column, Preview: match.Preview})
+	}
+	return workspaceapi.FileSearchResult{WorkspaceID: result.WorkspaceID, Matches: matches, Truncated: result.Truncated,
+		ScannedFiles: result.ScannedFiles, ScannedBytes: result.ScannedBytes}
+}
+
+// FromFileEvent 把 peer wire 文件失效提示转换回 owner contract。
+func (a *ResourceAssembler) FromFileEvent(event FileEventDTO) workspaceapi.FileEvent {
+	return workspaceapi.FileEvent{WorkspaceID: event.WorkspaceID, Seq: event.Seq,
+		Kind: workspaceapi.FileEventKind(event.Kind), Path: event.Path, ObservedAt: event.ObservedAt}
+}
+
+// FromFileEvents 把 peer replay 转换回 owner contract。
+func (a *ResourceAssembler) FromFileEvents(events []FileEventDTO) []workspaceapi.FileEvent {
+	out := make([]workspaceapi.FileEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, a.FromFileEvent(event))
+	}
+	return out
+}
+
 // ToGitStatus 把 owner Git 状态转换为公开 DTO。
 func (a *ResourceAssembler) ToGitStatus(status workspaceapi.GitStatusSnapshot) GitStatusSnapshotDTO {
 	entries := make([]GitStatusEntryDTO, 0, len(status.Entries))

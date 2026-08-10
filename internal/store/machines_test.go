@@ -38,6 +38,9 @@ func TestEnsureLocalMachineStableAcrossOpen(t *testing.T) {
 	if m1.Kind != controlplane.MachineKindLocal {
 		t.Fatalf("kind = %s, want local", m1.Kind)
 	}
+	if m1.Capabilities["files"] != 1 {
+		t.Fatalf("local files capability = %+v", m1.Capabilities)
+	}
 	s.Close()
 
 	s2, err := store.Open(path)
@@ -110,6 +113,31 @@ func TestSyncConfiguredMachinesSecretRefOnly(t *testing.T) {
 		if m.Endpoint == "http://10.0.0.5:7777" && m.SecretRef == "" {
 			t.Fatalf("远端机器缺少 secret_ref: %+v", m)
 		}
+	}
+}
+
+func TestSetMachineProtocolCapabilitiesPersistsNegotiation(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, err = s.SyncConfiguredMachines(context.Background(), []controlplane.ConfiguredMachine{{
+		ConfigKey: "devbox", DisplayName: "开发机", Kind: controlplane.MachineKindRemote,
+		Endpoint: "http://devbox:7777", SecretRef: "config.targets.devbox.token",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMachineProtocolCapabilities(context.Background(), "devbox", 1, map[string]int{"catalog": 1, "machine_events": 1, "files": 1}); err != nil {
+		t.Fatal(err)
+	}
+	machine, err := s.GetMachine(context.Background(), "devbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if machine.ProtocolVersion != 1 || machine.Capabilities["files"] != 1 {
+		t.Fatalf("machine negotiation = %+v", machine)
 	}
 }
 

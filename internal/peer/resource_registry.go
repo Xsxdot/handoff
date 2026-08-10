@@ -1,0 +1,57 @@
+// peer Workspace 资源 authority registry。
+//
+// 职责：
+//   - 按稳定 machine_id 持有远端 agentd Client
+//   - 从 SyncMachine endpoint + SecretRef resolver 构造 peer authority
+//
+// 边界：
+//   - token 只进入 Client Authorization header，不进入控制面 Machine 或返回值
+//   - registry 不判断机器在线状态；resourcegateway 先用控制面状态门禁
+package peer
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/xushixin/handoff/internal/workspaceapi"
+)
+
+// AuthorityRegistry 是 resourcegateway.PeerAuthorityResolver 的实现。
+type AuthorityRegistry struct {
+	mu      sync.RWMutex
+	clients map[string]*Client
+}
+
+// NewAuthorityRegistry 从配置机器构造资源 client registry。
+func NewAuthorityRegistry(machines []SyncMachine, credentialResolver func(string) string) *AuthorityRegistry {
+	registry := &AuthorityRegistry{clients: make(map[string]*Client, len(machines))}
+	for _, machine := range machines {
+		token := ""
+		if credentialResolver != nil {
+			token = credentialResolver(machine.SecretRef)
+		}
+		registry.clients[machine.MachineID] = NewClient(ClientConfig{Endpoint: machine.Endpoint, Token: token})
+	}
+	return registry
+}
+
+// AuthorityForMachine 返回指定机器的远端资源 authority。
+func (r *AuthorityRegistry) AuthorityForMachine(_ context.Context, machineID string) (workspaceapi.Authority, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	client := r.clients[machineID]
+	if client == nil {
+		return nil, fmt.Errorf("%w: 未配置 machine_id=%s 的 peer client", ErrUnavailable, machineID)
+	}
+	return client, nil
+}
+
+// Close 关闭全部 peer client。
+func (r *AuthorityRegistry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, client := range r.clients {
+		client.Close()
+	}
+}

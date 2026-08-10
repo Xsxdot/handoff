@@ -9,13 +9,19 @@
 package cmd
 
 import (
+	"context"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/store"
 )
 
 // 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
@@ -81,5 +87,42 @@ func TestConfiguredMachinesFromConfigSecretRefOnly(t *testing.T) {
 	}
 	if cm.SecretRef != "config.targets.devbox.token" {
 		t.Fatalf("secret_ref = %q, want config.targets.devbox.token", cm.SecretRef)
+	}
+}
+
+func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("wired"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	local, err := st.EnsureLocalMachine(context.Background(), "本机")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := st.ResolveWorkspaceForPath(context.Background(), local.ID, root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
+	server := agentd.NewServer(cfg, st, logger)
+	closeResources := wireWorkspaceResources(server, st, cfg, logger)
+	defer closeResources()
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/workspaces/"+workspace.ID+"/entries", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resource route status = %d", resp.StatusCode)
 	}
 }

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "kind": "subscribed",
+  "workspace_id": "ws-main",
+  "through_seq": 8,
+  "replay": [
+    {
+      "workspace_id": "ws-main",
+      "seq": 8,
+      "kind": "modify",
+      "path": "README.md",
+      "observed_at": "2026-08-10T01:02:03Z"
+    }
+  ]
+}
