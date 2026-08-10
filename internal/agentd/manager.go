@@ -712,6 +712,48 @@ func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Works
 	m.deleteCreatedBranch(ctx, repo, ws)
 }
 
+// branchAction 是补偿路径对「本次分支」的处置决定。
+// 每个取值对应一条独立规则，便于表驱动测试逐条钉住——这正是把判断从
+// deleteCreatedBranch 里拆出来的目的。
+type branchAction int
+
+const (
+	branchDelete         branchAction = iota // 确认是本次新建且自创建以来零提交，可删
+	branchKeepNotOurs                        // 不是本次新建的，是用户自己的分支
+	branchKeepTipUnknown                     // 尖端取不到，无从复核
+	branchKeepTipMoved                       // 尖端与创建时不符，疑似已有提交
+)
+
+// decideBranchAction 判定补偿路径是否可以删除该分支。纯函数：不调 git、不打日志、
+// 不碰任何状态，故可以被表驱动测试穷举。
+//
+// 参数：
+//   - recordedTip: PrepareWorkspace 建分支时记下的尖端；空串 = 分支不是本次新建的
+//   - currentTip:  当前尖端；tipErr 非 nil 时其值无意义
+//   - tipErr:      取当前尖端时的错误
+//
+// 返回：四种处置之一；只有 branchDelete 允许调用方执行删除。
+//
+// 注意：
+//   - 判定顺序是本函数的全部要点。`recordedTip == ""` 必须排在任何拿 currentTip
+//     做的比较之前。旧实现里这条规则靠「碰巧写在前面」生效，一旦有人认为两道闸
+//     重复而删掉它，悬空 symref 场景下 branchTip 失败塌缩出的空串会与 recordedTip
+//     的空串相等，从而放行删除，毁掉用户自己的分支（该场景已实测可达，见
+//     docs/superpowers/specs/2026-08-10-compensation-branch-decision-design.md §2.1）
+//   - 取不到尖端一律保留而非删除：删分支不可逆，宁可留残留也不能删错
+func decideBranchAction(recordedTip, currentTip string, tipErr error) branchAction {
+	if recordedTip == "" {
+		return branchKeepNotOurs
+	}
+	if tipErr != nil {
+		return branchKeepTipUnknown
+	}
+	if currentTip != recordedTip {
+		return branchKeepTipMoved
+	}
+	return branchDelete
+}
+
 // deleteCreatedBranch 删除本次 dispatch 新建的分支（补偿路径专用）。
 //
 // why 这件事不放进 RemoveManagedWorktree：那个函数服务的是 Done/Stop 归档场景，
@@ -724,21 +766,27 @@ func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Works
 // 注意：
 //   - 调用前必须已经确保分支不再被任何工作树 checkout（managed 已删树 /
 //     非 managed 已切回原 ref），否则 git 会拒绝
-//   - NewBranchTip 为空 = 分支不是本次新建的，是用户的东西，一律不动
+//   - 删不删的规则全部在 decideBranchAction 里（含「NewBranchTip 为空 = 不是
+//     本次新建的，一律不动」这一条），本函数只负责取数据、按决定打日志、执行 git
 func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Workspace) {
-	if ws.NewBranchTip == "" {
+	cur, tipErr := branchTip(ctx, repo, ws.Branch)
+	switch decideBranchAction(ws.NewBranchTip, cur, tipErr) {
+	case branchKeepNotOurs:
+		// 不是本次新建的，静默保留：每次 --branch <已存在分支> 的派发失败都会
+		// 走到这里，是正常出口，打 WARN 只会变成噪音
+		return
+	case branchKeepTipUnknown:
+		m.log.Warn("取分支尖端失败，无从复核，保留待查",
+			"repo", repo, "branch", ws.Branch, "expect", ws.NewBranchTip, "cause", tipErr)
+		return
+	case branchKeepTipMoved:
+		m.log.Warn("分支尖端与创建时不符，疑似已有提交，保留待查",
+			"repo", repo, "branch", ws.Branch, "expect", ws.NewBranchTip, "actual", cur)
 		return
 	}
 	m.log.Info("补偿删除本次新建的分支", "repo", repo, "branch", ws.Branch, "tip", ws.NewBranchTip)
-	// 复核尖端：executorStarted 守卫理论上保证零提交，但删分支不可逆，
-	// 宁可留个残留也不能删错。branchTip 取不到时返回空串，同样落进这一支
-	if cur := branchTip(ctx, repo, ws.Branch); cur != ws.NewBranchTip {
-		m.log.Warn("分支尖端与创建时不符，疑似已有提交，保留待查",
-			"branch", ws.Branch, "expect", ws.NewBranchTip, "actual", cur)
-		return
-	}
 	// 用 -D 而非 -d：分支起点可能领先仓库当前 HEAD，-d 会因「未合并」误拒；
-	// 而「自创建以来零提交」已由上一步实证，-D 在这里是确定性而非暴力
+	// 而「自创建以来零提交」已由上面的尖端复核实证，-D 在这里是确定性而非暴力
 	if _, stderr, err := gitRun(ctx, repo, "branch", "-D", ws.Branch); err != nil {
 		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
 			"stderr", truncateRunes(stderr, 300), "cause", err)
