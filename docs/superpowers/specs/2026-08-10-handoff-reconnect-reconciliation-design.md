@@ -63,7 +63,7 @@
 
 1. **自动对账**：断连恢复后，把窗口内错过的会话进展补回事件流，任务按补发的事件自然迁移
 2. **补发不新增语义**：补出来的事件与实时事件**同形**，下游（manager 中介循环、工单、状态机、`wait`）零改动
-3. **权限请求一并捧回**：断连期间丢失的权限请求重新上报
+3. **权限请求尽可能捧回**：断连期间丢失的权限请求重新上报——**能力按 adapter 而定**，opencode 已实证做不到（§7.1），做不到的 adapter 退为「检测到并如实播报」
 4. **人工出口兜底**：对账判不出来或 adapter 不支持时，审核者有一条不撒谎的手动出口，绝不把成功的任务落成 `failed`
 
 ### 1.6 非目标
@@ -104,6 +104,8 @@
 这条丢了的后果与终态丢失不同：executor 阻塞在等审批上，会话一直 busy，任务同样冻在 `running`，但对账去查会看到「回合还没结束」，如实报告「它还在忙」——而真相是它**永远不会不忙了**。
 
 不捧回权限请求，等于把一个可修的冻死包装成不可修的冻死。故列入目标（§1.5 第 3 条）。
+
+**但能不能捧回是 adapter 的协议能力，不是本设计能决定的。** opencode 已实证捧不回来（§7.1）：消息流里的 tool part 只有 `callID` 没有权限 id，而应答端点要求真实 id。对这类 adapter，退而求其次的诚实做法是**检测到并如实播报**，把审核者引向 `handoff attach` 或 `--force`，而**绝不建一张批了也送不回去的假工单**。
 
 ---
 
@@ -246,9 +248,13 @@ type ReconcileOutcome struct {
 
 ### 7.1 opencode
 
-- ✅ **已实证**：`GET /session/:id/message` 取得最后一条 assistant 消息，带 `completed` 时间戳与 `error`（B38 取证时直接查 HTTP API 拿到）
-- ❓ 悬而未决的权限请求断连后能否查到（是否有列 permission 的端点，或权限是否也落在消息流里）
-- ❓ 水位用消息 id 还是 `completed` 时间戳
+- ✅ **已实证（可行）**：`GET /session/:id/message` 取得最后一条 assistant 消息，带 `completed` 时间戳与 `error`（B38 取证时直接查 HTTP API 拿到）
+- ✅ **已实证（不可行）**：**悬而未决的权限请求捧不回来**。`internal/executor/opencode/adapter.go:604-613` 记着一次更早的 spike 结论——`GET /session/{id}/message` 的 tool part 只有 `callID` **没有权限 id**，而 `RespondPermission` 要求真实 id、**伪造即 404**。所以对 opencode 而言，工单就算建出来，审核者批了也送不回 executor
+
+  > **这条改变了 opencode 的对账形态**：`Pending` 恒为 0，权限那半边退为「检测 + 如实播报」——若消息尾部呈现「在等一个工具决策」的形态，报告里说明「断连窗口内可能有丢失的权限请求，opencode 无法查询重建，请 `handoff attach` 查看或 `--force` 收口」。**不建假工单**：一张批了也送不回去的工单，比没有工单更糟。
+  >
+  > 这条 spike 结论写在代码注释里而非 backlog 里，本 spec 的 brainstorm 阶段没读到，是在 writing-plans 核准签名时才撞见的。教训记在这里：**降级告警的注释里往往埋着已经做过的探针结论**。
+- ❓ 水位用消息 id 还是 `completed` 时间戳（唯一剩下的 opencode 待验项，可与实现同批验）
 
 ### 7.2 grok
 
