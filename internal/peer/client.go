@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -654,9 +656,100 @@ func (c *Client) CloseTerminal(ctx context.Context, terminalSessionID, incarnati
 	return (&desktopapi.ResourceAssembler{}).FromPtySession(response), nil
 }
 
-// CreatePreview 在 Task 5 接入远端 wire route。
-func (c *Client) CreatePreview(context.Context, workspaceapi.WorkspaceRef, workspaceapi.CreatePreviewCommand) (workspaceapi.PreviewSession, error) {
-	return workspaceapi.PreviewSession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "远端 Preview 资源能力尚未接入"}
+// CreatePreview 通过远端 owner agentd 幂等创建 owner-loopback Preview。
+func (c *Client) CreatePreview(ctx context.Context, ws workspaceapi.WorkspaceRef, command workspaceapi.CreatePreviewCommand) (workspaceapi.PreviewSession, error) {
+	path := "/v1/workspaces/" + url.PathEscape(ws.WorkspaceID) + "/previews"
+	req := desktopapi.CreatePreviewRequest{CommandID: command.CommandID, Port: command.Port}
+	var out desktopapi.PreviewSessionDTO
+	if err := c.doResource(ctx, http.MethodPost, path, req, &out); err != nil {
+		return workspaceapi.PreviewSession{}, err
+	}
+	return fromPreviewDTO(out), nil
+}
+
+// ClosePreview 显式关闭远端 owner 的 Preview 会话。
+func (c *Client) ClosePreview(ctx context.Context, previewSessionID string) error {
+	path := "/v1/previews/" + url.PathEscape(previewSessionID)
+	var out desktopapi.PreviewSessionDTO
+	return c.doResource(ctx, http.MethodDelete, path, nil, &out)
+}
+
+// PreviewProxy 把 desktop 的 Preview 流量转发到远端 owner agentd 自己的
+// /v1/preview-proxy/{nonce} 路由，并用内部 peer token 做远端鉴权。
+//
+// desktop 始终导航本机 nonce URL；本机 agentd 转发到远端 owner 的
+// preview-proxy 路由，携带 peer token，因此远端 endpoint/token 永不
+// 到达 desktop。入站 Authorization/Cookie 先被剥离，peer token 由
+// Director 统一重新注入，防止 desktop 凭证泄漏到远端 Preview 应用。
+func (c *Client) PreviewProxy(w http.ResponseWriter, r *http.Request, nonce string) {
+	r.Header.Del("Cookie")
+	r.Header.Del("Authorization")
+
+	target, err := url.Parse(c.endpoint + "/v1/preview-proxy/" + url.PathEscape(nonce))
+	if err != nil {
+		slog.Warn("peer_preview_proxy_error", "cause", err)
+		desktopapi.WriteProblem(w, http.StatusServiceUnavailable, desktopapi.Problem{
+			Code: desktopapi.ProblemMachineOffline, Message: "远端 Preview 服务暂不可用", Retryable: true,
+		})
+		return
+	}
+
+	// 无整体客户端超时，WebSocket 长连接因此得以存活；
+	// ResponseHeaderTimeout + MaxResponseHeaderBytes 约束上游响应头；
+	// ForceAttemptHTTP2=false 保持 WebSocket hijack 走 HTTP/1.1。
+	transport := &http.Transport{
+		ResponseHeaderTimeout:  15 * time.Second,
+		MaxResponseHeaderBytes: 64 << 10,
+		IdleConnTimeout:        60 * time.Second,
+		MaxIdleConns:           16,
+		MaxIdleConnsPerHost:    4,
+		ForceAttemptHTTP2:      false,
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			// 入站 r.URL.Path 已由本机 agentd 剥离 /v1/preview-proxy/{nonce}
+			// 前缀，这里把远端 preview-proxy 路由拼回上游路径并保留查询串。
+			req.URL.Path = singleJoiningSlash(target.Path, r.URL.Path)
+			req.URL.RawQuery = r.URL.RawQuery
+			req.Host = target.Host
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		},
+		Transport:     transport,
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			slog.Warn("peer_preview_proxy_error", "cause", err)
+			desktopapi.WriteProblem(w, http.StatusServiceUnavailable, desktopapi.Problem{
+				Code: desktopapi.ProblemMachineOffline, Message: "远端 Preview 服务暂不可用", Retryable: true,
+			})
+		},
+	}
+
+	// 上游请求在 r.Context() 完成时被释放（ReverseProxy 会取消 backend round-trip）；
+	// transport 的 IdleConnTimeout 约束池化连接的闲置寿命。
+	proxy.ServeHTTP(w, r)
+}
+
+func fromPreviewDTO(out desktopapi.PreviewSessionDTO) workspaceapi.PreviewSession {
+	return workspaceapi.PreviewSession{
+		PreviewSessionID: out.PreviewSessionID, WorkspaceID: out.WorkspaceID, MachineID: out.MachineID,
+		State: workspaceapi.PreviewState(out.State), URL: out.URL, Port: out.Port, ExpiresAt: out.ExpiresAt,
+	}
+}
+
+// singleJoiningSlash 拼接 a/b 使中间恰好只有一个斜杠（镜像 stdlib 内同名逻辑）。
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
 }
 
 // Close 释放资源（当前无持久连接，保留接口便于生命周期统一）。

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xushixin/handoff/internal/preview"
 	"github.com/xushixin/handoff/internal/ptyservice"
 	"github.com/xushixin/handoff/internal/workspaceapi"
 )
@@ -45,8 +46,14 @@ type ResourceAuthority struct {
 	fileStream      *FileStream
 	gitStatusRunner gitStatusRunner
 	terminal        *ptyservice.Service
+	preview         *preview.Service
 	// beforeRename 是原子边界故障注入 seam；生产保持 nil，仅测试清理语义。
 	beforeRename func() error
+}
+
+// SetPreviewService 注入 owner Preview 代理会话服务；nil 时明确 capability unsupported。
+func (a *ResourceAuthority) SetPreviewService(service *preview.Service) {
+	a.preview = service
 }
 
 // SetTerminalService 注入 owner PTY 会话服务；nil 时明确 capability unsupported。
@@ -330,7 +337,10 @@ func (a *ResourceAuthority) CloseTerminal(ctx context.Context, sessionID, incarn
 	return a.terminal.CloseTerminal(ctx, sessionID, incarnation)
 }
 
-// CreatePreview 在 Task 5 接入。
-func (a *ResourceAuthority) CreatePreview(context.Context, workspaceapi.WorkspaceRef, workspaceapi.CreatePreviewCommand) (workspaceapi.PreviewSession, error) {
-	return workspaceapi.PreviewSession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "Preview 资源能力尚未接入"}
+// CreatePreview 在 owner Workspace 下创建幂等 Preview 代理会话。
+func (a *ResourceAuthority) CreatePreview(ctx context.Context, ws workspaceapi.WorkspaceRef, command workspaceapi.CreatePreviewCommand) (workspaceapi.PreviewSession, error) {
+	if a.preview == nil {
+		return workspaceapi.PreviewSession{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "Preview 资源能力尚未接入"}
+	}
+	return a.preview.Create(ctx, ws, command)
 }

@@ -85,6 +85,14 @@ func migrateDesktopV1(ctx context.Context, db *sql.DB) error {
   created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pty_sessions_command ON pty_sessions(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pty_sessions_machine_state ON pty_sessions(machine_id, state)`,
+		// preview_sessions：只持久化 preview 代理会话身份与状态，代理本体在 owner 内存。
+		`CREATE TABLE IF NOT EXISTS preview_sessions (
+  preview_session_id TEXT PRIMARY KEY, command_id TEXT UNIQUE,
+  machine_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+  nonce TEXT NOT NULL UNIQUE, port INTEGER NOT NULL,
+  state TEXT NOT NULL, url TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_preview_sessions_machine_state ON preview_sessions(machine_id, state)`,
 		// machine_events：所属机器 durable outbox；(machine_id, machine_seq) 唯一，
 		// 让 peer catch-up 与 ApplyMachineEvent 幂等去重。
 		`CREATE TABLE IF NOT EXISTS machine_events (

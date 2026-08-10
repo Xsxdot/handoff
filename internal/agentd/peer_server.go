@@ -29,6 +29,9 @@ var peerCapabilities = func() map[string]int {
 		peer.CapabilityFiles:           1,
 		peer.CapabilityGit:             1,
 		peer.CapabilityProjectCommands: 1,
+		// Preview 与 PTY 不同：只依赖 owner 侧 platform-independent 的 loopback 代理，
+		// 不依赖真实平台 adapter，因此无条件声明（同 files/git）。
+		peer.CapabilityPreview: 1,
 	}
 	if ptyservice.Supported() {
 		capabilities[peer.CapabilityPty] = 1

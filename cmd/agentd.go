@@ -38,6 +38,7 @@ import (
 	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/machinegateway"
 	"github.com/xushixin/handoff/internal/peer"
+	"github.com/xushixin/handoff/internal/preview"
 	"github.com/xushixin/handoff/internal/ptyservice"
 	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
@@ -289,6 +290,13 @@ func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Con
 	localAuthority.SetTerminalService(terminal)
 	projectAuthority := &machineauthority.Inventory{}
 	peers := peer.NewAuthorityRegistry(syncMachinesFromConfig(cfg), targetCredentialResolver(cfg))
+	ps, err := preview.NewService(st, localMachineID, localPreviewURL(cfg.Listen), logger)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	localAuthority.SetPreviewService(ps)
+	srv.SetPreviewService(ps)
+	srv.SetPreviewPeerConnector(peers)
 	router := resourcegateway.NewRouter(st, localAuthority, peers, logger)
 	srv.SetResourceRouter(router)
 	srv.SetMachineAuthority(projectAuthority)
@@ -300,10 +308,24 @@ func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Con
 	projectService.SetControlEventPublisher(publishControlEvent)
 	srv.SetProjectService(projectService)
 	logger.Info("Workspace 资源路由已接线", "remote_machine_count", len(syncMachinesFromConfig(cfg)))
+	logger.Info("Preview 服务已接线", "local_preview_base", localPreviewURL(cfg.Listen))
 	return localAuthority, func() {
 		_ = terminal.Close()
+		_ = ps.Shutdown()
 		peers.Close()
 	}, nil
+}
+
+// localPreviewURL 从 agentd 监听地址提取端口并拼出 owner-loopback 基地址。
+//
+// 规则：取 Listen 最后一个冒号后的端口段，拼成 http://127.0.0.1:<port>；
+// Listen 为空或格式非法时返回空串（此时 desktop 拿到的 Preview URL 不回写）。
+func localPreviewURL(listen string) string {
+	idx := strings.LastIndex(listen, ":")
+	if idx < 0 || idx == len(listen)-1 {
+		return ""
+	}
+	return "http://127.0.0.1:" + listen[idx+1:]
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。

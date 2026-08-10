@@ -39,6 +39,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/preview"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
@@ -83,6 +84,12 @@ type Server struct {
 	// machineAuthority 是本机 owner 的项目目录检查/clone 端口。远端项目创建
 	// 通过 peer API 到这里执行，不借用 SSH。
 	machineAuthority projectMachineAuthority
+	// previewOwner 是本机 owner 的 Preview 会话服务（创建/关闭/代理命中）；
+	// 未注入时桌面 Preview 写路由与代理命中返回 503。
+	previewOwner *preview.Service
+	// previewPeers 是远端 owner 的 Preview 代理与关闭窄端口；未注入时远端
+	// Preview 会话的代理/关闭返回 503。
+	previewPeers previewPeerConnector
 }
 
 // NewServer 创建 agentd 服务端。
@@ -125,6 +132,16 @@ func (s *Server) SetMachineAuthority(authority projectMachineAuthority) {
 	s.machineAuthority = authority
 }
 
+// SetPreviewService 注入本机 owner 的 Preview 会话服务，激活 Preview 创建/关闭/代理。
+func (s *Server) SetPreviewService(ps *preview.Service) {
+	s.previewOwner = ps
+}
+
+// SetPreviewPeerConnector 注入远端 owner 的 Preview 代理与关闭连接器。
+func (s *Server) SetPreviewPeerConnector(c previewPeerConnector) {
+	s.previewPeers = c
+}
+
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
 func (s *Server) Hub() *Hub {
 	return s.hub
@@ -157,6 +174,10 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - GET  /ws/events                   事件流（补发 + 实时）
+//   - POST /v1/workspaces/{id}/previews 幂等创建 Preview 会话
+//   - GET  /v1/previews/{id}            读取 Preview 会话
+//   - DELETE /v1/previews/{id}          关闭 Preview 会话
+//   - /v1/preview-proxy/{nonce}/...     Preview 代理（无 Bearer 鉴权，见 handlePreviewProxy）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
@@ -194,6 +215,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/terminals/{terminal_session_id}", s.handleGetTerminal)
 	mux.HandleFunc("DELETE /v1/terminals/{terminal_session_id}", s.handleCloseTerminal)
 	mux.HandleFunc("GET /v1/terminals/{terminal_session_id}/stream", s.handleTerminalStream)
+	mux.HandleFunc("POST /v1/workspaces/{workspace_id}/previews", s.handleCreatePreview)
+	mux.HandleFunc("GET /v1/previews/{preview_session_id}", s.handleGetPreview)
+	mux.HandleFunc("DELETE /v1/previews/{preview_session_id}", s.handleClosePreview)
+	// Preview 代理路由不套 Bearer 鉴权：Electron <webview> 无法携带 Authorization 头，
+	// 访问控制由不可预测的短期 nonce + owner-loopback 约束承担（URL 用 nonce 而非 agent token）。
+	mux.HandleFunc("/v1/preview-proxy/{nonce}/{path...}", s.handlePreviewProxy)
 	return s.auth(mux)
 }
 

@@ -314,7 +314,11 @@ func (r *Router) CreatePreview(ctx context.Context, workspaceID string, command 
 		r.log.Error("Preview 创建失败", "workspace_id", workspaceID, "command_id", command.CommandID, "port", command.Port, "cause", err)
 		return workspaceapi.PreviewSession{}, r.operationError(route, workspaceID, err)
 	}
-	r.log.Info("Preview 创建完成", "workspace_id", workspaceID, "preview_session_id", session.PreviewSessionID, "port", session.Port, "state", session.State)
+	if session.WorkspaceID != workspaceID {
+		return workspaceapi.PreviewSession{}, r.reject(http.StatusNotFound, desktopapi.ProblemResourceNotFound,
+			"Preview 会话不属于该工作区", route.workspace.MachineID, workspaceID, errors.New("preview workspace mismatch"))
+	}
+	r.log.Info("Preview 创建完成", "workspace_id", workspaceID, "machine_id", route.workspace.MachineID, "preview_session_id", session.PreviewSessionID, "port", session.Port, "state", session.State)
 	return session, nil
 }
 

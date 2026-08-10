@@ -12,9 +12,11 @@ package peer
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/desktopapi"
 	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
@@ -66,4 +68,29 @@ func (r *AuthorityRegistry) Close() {
 	for _, client := range r.clients {
 		client.Close()
 	}
+}
+
+// ForwardPreviewProxy 把 desktop 的 Preview 流量转发到远端 owner agentd。
+func (r *AuthorityRegistry) ForwardPreviewProxy(w http.ResponseWriter, req *http.Request, machineID, nonce string) {
+	r.mu.RLock()
+	client := r.clients[machineID]
+	r.mu.RUnlock()
+	if client == nil {
+		desktopapi.WriteProblem(w, http.StatusServiceUnavailable, desktopapi.Problem{
+			Code: desktopapi.ProblemMachineOffline, Message: "远端开发机当前不可用", Retryable: true,
+		})
+		return
+	}
+	client.PreviewProxy(w, req, nonce)
+}
+
+// ClosePreviewSession 关闭远端 owner 的 Preview 会话。
+func (r *AuthorityRegistry) ClosePreviewSession(ctx context.Context, machineID, previewSessionID string) error {
+	r.mu.RLock()
+	client := r.clients[machineID]
+	r.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("%w: 未配置 machine_id=%s 的 peer client", ErrUnavailable, machineID)
+	}
+	return client.ClosePreview(ctx, previewSessionID)
 }

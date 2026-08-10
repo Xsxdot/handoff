@@ -539,3 +539,181 @@ func TestClientMapsRemoteResourceProblem(t *testing.T) {
 		t.Fatalf("error = %T %v", err, err)
 	}
 }
+
+func TestClientCreatePreview(t *testing.T) {
+	var gotBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/workspaces/ws1/previews" {
+			t.Fatalf("request method/path = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer remote-secret" {
+			t.Fatalf("auth = %q", r.Header.Get("Authorization"))
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		var req desktopapi.CreatePreviewRequest
+		if err := json.Unmarshal(gotBody, &req); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if req.CommandID != "cmd-1" || req.Port != 8080 {
+			t.Fatalf("create request = %+v", req)
+		}
+		writeTestJSON(w, desktopapi.PreviewSessionDTO{
+			PreviewSessionID: "preview-1", WorkspaceID: "ws1", MachineID: "machine-1",
+			State: "active", URL: "http://127.0.0.1:7777/v1/preview-proxy/redacted/", Port: 8080,
+			ExpiresAt: time.Now().UTC(),
+		})
+	}))
+	defer ts.Close()
+	client := NewClient(ClientConfig{Endpoint: ts.URL, Token: "remote-secret"})
+	session, err := client.CreatePreview(context.Background(), workspaceapi.WorkspaceRef{WorkspaceID: "ws1"},
+		workspaceapi.CreatePreviewCommand{CommandID: "cmd-1", Port: 8080})
+	if err != nil {
+		t.Fatalf("CreatePreview: %v", err)
+	}
+	if session.PreviewSessionID != "preview-1" || session.WorkspaceID != "ws1" || session.MachineID != "machine-1" ||
+		session.State != workspaceapi.PreviewStateActive || session.Port != 8080 || session.URL == "" {
+		t.Fatalf("session = %+v", session)
+	}
+	if bytes.Contains(gotBody, []byte("remote-secret")) {
+		t.Fatalf("remote token 泄漏进请求体: %s", gotBody)
+	}
+}
+
+func TestClientClosePreview(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/previews/sess1" {
+			t.Fatalf("request method/path = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer remote-secret" {
+			t.Fatalf("auth = %q", r.Header.Get("Authorization"))
+		}
+		writeTestJSON(w, desktopapi.PreviewSessionDTO{
+			PreviewSessionID: "sess1", WorkspaceID: "ws1", MachineID: "machine-1",
+			State: "closed", URL: "http://127.0.0.1:7777/v1/preview-proxy/redacted/", Port: 8080,
+			ExpiresAt: time.Now().UTC(),
+		})
+	}))
+	defer ts.Close()
+	client := NewClient(ClientConfig{Endpoint: ts.URL, Token: "remote-secret"})
+	if err := client.ClosePreview(context.Background(), "sess1"); err != nil {
+		t.Fatalf("ClosePreview: %v", err)
+	}
+}
+
+func TestClientPreviewProxyForwards(t *testing.T) {
+	var gotPath, gotQuery, gotAuth, gotCookie string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		gotCookie = r.Header.Get("Cookie")
+		w.Write([]byte("ok"))
+	}))
+	defer remote.Close()
+
+	client := NewClient(ClientConfig{Endpoint: remote.URL, Token: "remote-secret"})
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "desktop-auth")
+		r.Header.Set("Cookie", "desktop-cookie")
+		r.URL.Path = "/foo/bar"
+		r.URL.RawQuery = "x=1"
+		client.PreviewProxy(w, r, "nonce123")
+	}))
+	defer proxy.Close()
+
+	resp, err := proxy.Client().Get(proxy.URL + "/ignored/local/prefix")
+	if err != nil {
+		t.Fatalf("GET proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+	if gotPath != "/v1/preview-proxy/nonce123/foo/bar" {
+		t.Fatalf("upstream path = %q", gotPath)
+	}
+	if gotQuery != "x=1" {
+		t.Fatalf("upstream query = %q", gotQuery)
+	}
+	if gotAuth != "Bearer remote-secret" {
+		t.Fatalf("upstream auth = %q", gotAuth)
+	}
+	if gotCookie != "" {
+		t.Fatalf("upstream cookie = %q, want empty", gotCookie)
+	}
+}
+
+func TestClientPreviewProxyUpstreamUnavailable(t *testing.T) {
+	client := NewClient(ClientConfig{Endpoint: "http://127.0.0.1:1", Token: "remote-secret"})
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/foo/bar"
+		client.PreviewProxy(w, r, "nonce123")
+	}))
+	defer proxy.Close()
+
+	resp, err := proxy.Client().Get(proxy.URL + "/ignored")
+	if err != nil {
+		t.Fatalf("GET proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	var problem desktopapi.Problem
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Code != desktopapi.ProblemMachineOffline || !problem.Retryable {
+		t.Fatalf("problem = %+v", problem)
+	}
+}
+
+func TestRegistryForwardsPreviewProxyAndClosesSession(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/previews/sess1":
+			writeTestJSON(w, desktopapi.PreviewSessionDTO{PreviewSessionID: "sess1", State: "closed"})
+		default:
+			w.Write([]byte("ok"))
+		}
+	}))
+	defer remote.Close()
+	registry := &AuthorityRegistry{clients: map[string]*Client{
+		"machine-1": NewClient(ClientConfig{Endpoint: remote.URL, Token: "remote-secret"}),
+	}}
+
+	if err := registry.ClosePreviewSession(context.Background(), "machine-1", "sess1"); err != nil {
+		t.Fatalf("ClosePreviewSession: %v", err)
+	}
+	if err := registry.ClosePreviewSession(context.Background(), "machine-absent", "sess1"); err == nil {
+		t.Fatal("ClosePreviewSession(absent) 应返回错误")
+	}
+
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/foo/bar"
+		registry.ForwardPreviewProxy(w, r, "machine-1", "nonce123")
+	}))
+	defer local.Close()
+	resp, err := local.Client().Get(local.URL + "/ignored")
+	if err != nil {
+		t.Fatalf("GET proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if body, _ := io.ReadAll(resp.Body); string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+
+	unset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		registry.ForwardPreviewProxy(w, r, "machine-absent", "nonce123")
+	}))
+	defer unset.Close()
+	resp, err = unset.Client().Get(unset.URL + "/ignored")
+	if err != nil {
+		t.Fatalf("GET proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}

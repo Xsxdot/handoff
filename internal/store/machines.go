@@ -31,7 +31,7 @@ const localMachineMetaKey = "local_machine_id"
 // 有真实平台 adapter 时声明；Preview 必须等服务落地后再加入。
 var localMachineCapabilities = func() map[string]int {
 	capabilities := map[string]int{
-		"catalog": 1, "machine_events": 1, "files": 1, "git": 1, "project_commands": 1,
+		"catalog": 1, "machine_events": 1, "files": 1, "git": 1, "project_commands": 1, "preview": 1,
 	}
 	if localPtySupported {
 		capabilities["pty"] = 1
