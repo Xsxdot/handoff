@@ -449,11 +449,9 @@ func spawnDetached(argv []string, dir string) (int, error) {
 		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
 	}
 	pid := cmd.Process.Pid
-	// 立刻 Release：本进程不做它的父亲，让它 reparent 给 init。
-	// 不 Release 的话 Go 运行时会保留 wait 状态，agentd 退出时行为不确定。
-	if err := cmd.Process.Release(); err != nil {
-		return pid, fmt.Errorf("释放子进程 %d: %w", pid, err)
-	}
+	// 起 goroutine 收尸，而不是 Process.Release：Release 只释放 Go 侧句柄，
+	// 不改变内核父子关系，被拉起的进程死后会成僵尸占着 pid 槽位。
+	go func() { _ = cmd.Wait() }()
 	return pid, nil
 }
 

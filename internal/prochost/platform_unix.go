@@ -50,6 +50,13 @@ func isLockContended(err error) bool {
 // 为什么 stdio 全部置 nil：Go 会把它们接到 /dev/null。子进程不能持有本进程的
 // 任何 fd，否则 agentd 退出时管道破裂会波及它，detach 就名存实亡。
 //
+// 为什么起一个 goroutine 收尸而不是 Process.Release：Release 只释放 Go 侧的
+// 进程句柄，**不改变内核里的父子关系**——被拉起的进程仍是本进程的亲儿子，死后
+// 没人 waitpid 就变成僵尸，占着 pid 槽位直到本进程退出。agentd 是常驻服务，
+// 每停一个执行者漏一个僵尸，等于按任务数缓慢泄漏 pid（08-10 真机实测：stop 之后
+// `ps` 里留下 `[handoff] <defunct>`，父进程正是 agentd）。收尸不影响 detach：
+// 会话与进程组早在 Setsid 时就分开了，agentd 若先死，内核把它交给 init 接管。
+//
 // 边界：本函数不脱离 cgroup——cgroup 归属由 fork 继承，setsid 改不了它。
 // systemd 托管场景必须在 unit 里设 KillMode=process，否则 systemctl restart
 // 仍会连坐（见 spec §3.3 与 Task 10 的 unit 模板）。
@@ -65,11 +72,15 @@ func spawnDetached(argv []string, dir string) (int, error) {
 		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
 	}
 	pid := cmd.Process.Pid
-	// 立刻 Release：本进程不做它的父亲，让它 reparent 给 init。
-	// 不 Release 的话 Go 运行时会保留 wait 状态，agentd 退出时行为不确定。
-	if err := cmd.Process.Release(); err != nil {
-		return pid, fmt.Errorf("释放子进程 %d: %w", pid, err)
-	}
+	go func() {
+		// 只为收尸，退出码在这里没有意义（真正的退出语义由 shim 的哨兵承载）。
+		// 阻塞时长 = 执行者寿命，一个任务一个 goroutine，量级与任务数同阶。
+		if err := cmd.Wait(); err != nil {
+			log().Debug("shim 已退出", "pid", pid, "cause", err)
+			return
+		}
+		log().Debug("shim 已退出", "pid", pid, "cause", nil)
+	}()
 	return pid, nil
 }
 

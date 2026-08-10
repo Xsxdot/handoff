@@ -168,3 +168,29 @@ func TestCreateInputChannelIsIdempotent(t *testing.T) {
 		t.Fatal("同名普通文件已存在时必须报错")
 	}
 }
+
+// TestSpawnDetachedReapsChild 钉死「被拉起的进程死后不留僵尸」。
+//
+// 为什么需要这条：os.Process.Release 只释放 Go 侧的进程句柄，**不改变内核里的
+// 父子关系**——被拉起的进程仍是本进程的亲儿子，死后没人 waitpid 就变成僵尸，
+// 一直占着 pid 槽位直到父进程自己退出。agentd 是常驻服务，每停一个执行者漏一个
+// 僵尸，等于按任务数缓慢泄漏 pid。真机实测（08-10，47.80.243.95）：handoff stop
+// 之后 `ps` 里留下 `[handoff] <defunct>`，父进程正是 agentd。
+//
+// 判据：进程退出后 pid 必须在超时内彻底消失（僵尸对 signal 0 仍然可达）。
+func TestSpawnDetachedReapsChild(t *testing.T) {
+	pid, err := spawnDetached([]string{"/bin/sh", "-c", "exit 0"}, os.TempDir())
+	if err != nil {
+		t.Fatalf("spawnDetached 失败: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return // pid 已消失 = 已被回收
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("进程 %d 退出 5s 后仍可达，八成是没人 waitpid 的僵尸", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
