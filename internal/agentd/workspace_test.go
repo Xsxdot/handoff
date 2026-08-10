@@ -857,3 +857,36 @@ func TestPrepareWorkspaceRecordsPrevRefDetached(t *testing.T) {
 		t.Errorf("detached 起步应记下 commit sha %s，得到 %q", head, ws.PrevRef)
 	}
 }
+
+// TestEnsureRepoUsableAcceptsRepo 正常仓库必须放行——守卫不能把好路径也拦下来。
+func TestEnsureRepoUsableAcceptsRepo(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := EnsureRepoUsable(context.Background(), repo); err != nil {
+		t.Fatalf("正常仓库 EnsureRepoUsable: %v", err)
+	}
+}
+
+// TestEnsureRepoUsableRejectsNonGitPath 钉住 B45 的判据：路径存在但不是 git 仓库
+// 时必须归入 ErrRepoUnusable，而不是留给后面的 worktree add 扁平成 500。
+// 错误文本必须带 git 的原因，只有哨兵等于没说。
+func TestEnsureRepoUsableRejectsNonGitPath(t *testing.T) {
+	err := EnsureRepoUsable(context.Background(), t.TempDir())
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("非 git 目录 err = %v, want ErrRepoUnusable", err)
+	}
+	if err.Error() == ErrRepoUnusable.Error() {
+		t.Fatalf("错误文本必须带 git 原因，不能只有哨兵: %q", err.Error())
+	}
+}
+
+// TestEnsureRepoUsableGitMissing 覆盖 spec §3.2 的第二种形态：git 不在 PATH
+// （gitRun 返回 exec 错误、stderr 为空）同样归入 ErrRepoUnusable，不能因为
+// stderr 空就漏掉分类。
+func TestEnsureRepoUsableGitMissing(t *testing.T) {
+	repo := initGitRepo(t) // 必须在改 PATH 之前建仓库
+	t.Setenv("PATH", "")
+	err := EnsureRepoUsable(context.Background(), repo)
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("git 不在 PATH 时 err = %v, want ErrRepoUnusable", err)
+	}
+}

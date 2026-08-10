@@ -325,3 +325,35 @@ func TestDispatchLocalDirtyNotChecked(t *testing.T) {
 		t.Fatalf("本机派发应正常返回任务 JSON，得到: %q", out)
 	}
 }
+
+// TestDispatchPrintsDirtySnapshotToStderr 验证 B43 的回显：执行机仓库有未提交
+// 改动时 stderr 说出来（远程派发时审核者根本看不到那台机器的工作区），且
+// stdout 仍是单行任务 JSON——上层脚本按行解析，多一行就全乱。
+func TestDispatchPrintsDirtySnapshotToStderr(t *testing.T) {
+	old := dispatchTestTaskJSON
+	dispatchTestTaskJSON = `{"id":"task-abc123","state":"running","repo_dirty_count":3,"repo_dirty_files":"a.go, b.go, c.go"}`
+	t.Cleanup(func() { dispatchTestTaskJSON = old })
+
+	out, errOut, err := runDispatch(t, "--no-terminal")
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(errOut, "3 处未提交改动") || !strings.Contains(errOut, "a.go, b.go, c.go") {
+		t.Fatalf("stderr 应含脏改动条数与文件名，得到 %q", errOut)
+	}
+	if strings.Contains(out, "未提交改动") {
+		t.Fatalf("stdout 必须只有任务 JSON（脚本按行解析），得到 %q", out)
+	}
+}
+
+// TestDispatchNoDirtySnapshotNoLine 验证干净时不打空洞的一行：
+// 「有 0 处未提交改动」比不说更糟。
+func TestDispatchNoDirtySnapshotNoLine(t *testing.T) {
+	_, errOut, err := runDispatch(t, "--no-terminal")
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if strings.Contains(errOut, "未提交改动") {
+		t.Fatalf("干净时不应打提示行，得到 %q", errOut)
+	}
+}

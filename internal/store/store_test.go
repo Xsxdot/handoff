@@ -597,3 +597,110 @@ func TestCreateTaskPersistsBaseline(t *testing.T) {
 		t.Fatalf("ListTasks 未带出基线字段: %+v", list)
 	}
 }
+
+// newTaskAt 造一条指定状态与工作目录的任务（直插，不走状态机——本测试要的就是
+// 六个状态各来一条）。
+func newTaskAt(t *testing.T, s *store.Store, id, workDir, repoPath string, st proto.TaskState) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{
+		ID: id, RepoPath: repoPath, WorkDir: workDir, State: st,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask(%s): %v", id, err)
+	}
+}
+
+// TestActiveTasksByWorkDirOnlyNonTerminal 钉住占用判定的语义：四个非终态算占用，
+// completed/failed 不算。waiting_review 必须在内——审核期间 diff/fetch/run/continue
+// 都依赖那棵树的 HEAD，被切走就全看错东西（spec §3.3）。
+func TestActiveTasksByWorkDirOnlyNonTerminal(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	const wd = "/work/repo"
+	for i, st := range []proto.TaskState{
+		proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateWaitingAnswer,
+		proto.TaskStateWaitingReview, proto.TaskStateCompleted, proto.TaskStateFailed,
+	} {
+		newTaskAt(t, s, fmt.Sprintf("task-%d", i), wd, wd, st)
+	}
+	// 另一个目录上的活跃任务不该被捞进来
+	newTaskAt(t, s, "task-other", "/work/other", "/work/other", proto.TaskStateRunning)
+
+	got, err := s.ActiveTasksByWorkDir(wd)
+	if err != nil {
+		t.Fatalf("ActiveTasksByWorkDir: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("活跃任务数 = %d, want 4: %+v", len(got), got)
+	}
+	for _, task := range got {
+		if task.State.IsTerminal() {
+			t.Fatalf("终态任务不该算占用: %s(%s)", task.ID, task.State)
+		}
+		if task.WorkDir != wd {
+			t.Fatalf("捞到了别的目录的任务: %s(%s)", task.ID, task.WorkDir)
+		}
+	}
+
+	// 空 workDir 刻意不查：managed 模式每任务一棵新树，不需要这个判据
+	empty, err := s.ActiveTasksByWorkDir("")
+	if err != nil {
+		t.Fatalf("ActiveTasksByWorkDir(\"\"): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("空 workDir 应返回空切片, got %d 条", len(empty))
+	}
+}
+
+// TestActiveTasksByWorkDirLegacyEmptyWorkDir 是旧库兜底分支的守门人：早期原地
+// 模式的 work_dir 存空串（由 proto.Task.Workdir() 回退到 repo_path），这类历史行
+// 同样占着仓库，必须被查到。新派发的任务不会产生这种行，只能直插构造。
+func TestActiveTasksByWorkDirLegacyEmptyWorkDir(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	const repo = "/legacy/repo"
+	newTaskAt(t, s, "legacy-1", "", repo, proto.TaskStateRunning)
+
+	got, err := s.ActiveTasksByWorkDir(repo)
+	if err != nil {
+		t.Fatalf("ActiveTasksByWorkDir: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "legacy-1" {
+		t.Fatalf("历史空 work_dir 行应被查到, got %+v", got)
+	}
+}
+
+// TestTaskDirtySnapshotRoundTrip 钉住两个新列的读写：条数与文件串各存各的，
+// 封顶截断发生在服务端，条数不能因为封顶而丢失。
+func TestTaskDirtySnapshotRoundTrip(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{
+		ID: "dirty-1", RepoPath: "/repo", State: proto.TaskStatePending,
+		CreatedAt: now, UpdatedAt: now,
+		RepoDirtyCount: 9, RepoDirtyFiles: "a.go, b.go 等 9 处",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := s.GetTask("dirty-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.RepoDirtyCount != 9 || got.RepoDirtyFiles != "a.go, b.go 等 9 处" {
+		t.Fatalf("脏快照回读不一致: count=%d files=%q", got.RepoDirtyCount, got.RepoDirtyFiles)
+	}
+}

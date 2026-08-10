@@ -195,7 +195,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 // 在 attach 列表、pull 等常规路径上会正常出现——一律打 ERROR 会刷出假告警，
 // 把真正需要注意的服务端故障（5xx）淹没在噪音里。
 func (c *Client) httpError(op string, resp *http.Response) error {
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	// 上限 4096 而不是 256（B42 修）：这条上限截的是服务端错误体，而中文一个字
+	// 3 字节，256 字节只够 ~85 个汉字——B42 的 409 报文正是把「点名占用者 + 两条
+	// 出路」放在后半句，被截掉等于这个功能在最后一寸断了。可诊断性是 B42/B45
+	// 的目的本身，不是附带项。上限保留（防超大响应体），只是抬到一个中文报文
+	// 放得下的量级。
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 500 {
 		c.log().Error("agentd 请求失败", "op", op, "status", resp.StatusCode, "body", string(b))
 	} else {
