@@ -169,7 +169,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		return err
 	}
-	// 之后任一步失败都要回收进程，否则留下一个没人管的 tmux 会话
+	// 之后任一步失败都要回收进程，否则留下一个没人管的执行者进程
 	defer func() {
 		if err != nil {
 			_ = proc.Kill()
@@ -347,7 +347,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	return a.startTurn(r, text)
 }
 
-// Stop 终止执行并回收资源：置 stopping → turn/interrupt → 关连接 → kill tmux → 关事件通道。
+// Stop 终止执行并回收资源：置 stopping → turn/interrupt → 关连接 → kill 执行者进程组 → 关事件通道。
 func (a *Adapter) Stop(taskID string) error {
 	r := a.lookup(taskID)
 	if r == nil {
@@ -378,7 +378,7 @@ func (a *Adapter) Stop(taskID string) error {
 			// B20：回收失败要发事件而非静默
 			a.log.Error("codex 进程回收失败", "task", taskID, "cause", err)
 			a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.threadID,
-				Text: "警告：codex tmux 会话回收失败，可能残留进程: " + err.Error()})
+				Text: "警告：codex 执行者进程回收失败，可能残留进程: " + err.Error()})
 		}
 	}
 	r.closeEvents()
