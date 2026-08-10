@@ -20,6 +20,7 @@ package prochost
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,27 +87,83 @@ func Alive(h Handle) bool {
 	return locked
 }
 
-// Kill 终止 shim 及其全部后代（按进程组发送 SIGKILL）。
+// ErrStillAlive 表示已发出 SIGKILL 且复核窗口走完，进程组仍然存活。
+//
+// 与「信号发送失败」区分开：后者是系统调用出错（可能只是权限或参数问题），
+// 前者是进程**真的没死**——只有后一种意味着会留下长期孤儿，值得惊动人。
+// agentd 侧靠 errors.Is 认这个哨兵来决定要不要给审核者发提示事件。
+var ErrStillAlive = errors.New("进程组仍然存活")
+
+// killVerifyWindow 是复核存活的总时长上限，killVerifyBackoff 的各项之和。
+//
+// 为什么是 1s 而不是更久：Kill 处在归档/中止的同步路径上，它变慢等于
+// handoff done / handoff stop 变慢。1s 足以覆盖 SIGKILL 的正常生效窗口；
+// 超过 1s 还活着的本来就该交给人和后台重试，而不是让审核者对着终端干等。
+const killVerifyWindow = time.Second
+
+// killVerifyBackoff 是 killGroup 之后逐次复核的等待序列（累计 = killVerifyWindow）。
+//
+// 为什么要退避而不是固定间隔：SIGKILL 异步生效，绝大多数进程在头几十毫秒内
+// 就没了——前密后疏能让常见情况几乎不增加延迟，又不放弃慢死场景的覆盖。
+//
+// 是变量而非常量：测试要把它换成微秒级，否则每条复核用例都真等 1s。
+var killVerifyBackoff = []time.Duration{
+	10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond,
+	80 * time.Millisecond, 160 * time.Millisecond, 320 * time.Millisecond,
+	370 * time.Millisecond,
+}
+
+// aliveFn / killGroupFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「持锁但杀不死」的形态，只能靠替换这两个函数驱动复核失败路径。
+// **生产路径恒为下面这两个默认值**，任何非测试代码都不得赋值给它们。
+var (
+	aliveFn     = Alive
+	killGroupFn = killGroup
+)
+
+// Kill 终止 shim 及其全部后代（按进程组发送 SIGKILL），并**复核它是否真的死了**。
 //
 // 幂等：锁已空闲说明 shim 已死，直接返回 nil——**绝不对该 pid 发任何信号**，
 // 因为它可能已被操作系统复用给毫不相干的进程（workspace.go 的历史教训：
 // 旧实现 300 条成功命令误杀 114 次）。
 //
-// 返回：仅当「确认还活着但杀不掉」时返回错误。
+// 参数：
+//   - h: 目标 shim 的 Handle；PID <= 0 视为无进程可杀，直接 nil
+//
+// 返回：
+//   - nil: 已确认进程组退出（或本来就已经死了）
+//   - 包装 ErrStillAlive 的错误: 信号发出去了，但复核窗口（killVerifyWindow）
+//     走完进程仍存活——调用方应保留运行态、上抛给 agentd 提示人工
+//   - 其它错误: 信号发送本身失败
+//
+// 注意：
+//   - 复核判据用 Alive（文件锁）而非 kill(pid, 0)：锁由内核在进程死亡时释放，
+//     不存在 pid 复用误判，而 kill(pid,0) 会把「pid 被复用」误报成「还活着」
+//   - 本函数在确认死亡前不返回，因此调用方紧随其后的资源清理
+//     （如 RemoveManagedWorktree）天然排在进程真死之后，不需要额外同步
 func Kill(h Handle) error {
 	if h.PID <= 0 {
 		return nil
 	}
-	if !Alive(h) {
+	if !aliveFn(h) {
 		log().Info("存活锁已释放，无需回收", "pid", h.PID, "lock", h.LockPath)
 		return nil
 	}
 	log().Info("回收执行者进程组", "pid", h.PID)
-	if err := killGroup(h.PID); err != nil {
+	if err := killGroupFn(h.PID); err != nil {
 		log().Error("回收执行者进程组失败", "pid", h.PID, "cause", err)
 		return fmt.Errorf("回收进程组 %d: %w", h.PID, err)
 	}
-	return nil
+	for i, d := range killVerifyBackoff {
+		time.Sleep(d)
+		if !aliveFn(h) {
+			log().Info("回收完成，已确认进程组退出", "pid", h.PID, "probe", i+1)
+			return nil
+		}
+	}
+	log().Error("已发 SIGKILL 但复核窗口走完仍存活，可能有逃逸出进程组的后代",
+		"pid", h.PID, "lock", h.LockPath, "window", killVerifyWindow)
+	return fmt.Errorf("%w: pid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
 
 // CreateInputChannel 幂等创建输入通道（unix 为 0600 命名管道）。
