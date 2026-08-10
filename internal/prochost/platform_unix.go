@@ -1,0 +1,131 @@
+//go:build unix
+
+// platform_unix.go —— prochost 的 unix 平台原语。
+//
+// 职责：detached spawn（新会话 + 新进程组）、flock 加锁与撞锁判定、进程组回收、
+// FIFO 输入通道。
+//
+// 边界：
+//   - 只提供系统调用级能力，不含任何 handoff 业务语义；被 prochost.go / lock.go /
+//     shim.go 调用
+//   - 只用 stdlib syscall，不引 golang.org/x/sys——本仓库既有的三处平台切分
+//     （opennonblock_*、workspace_procgroup_*、原 agentd/flock_*）都是这个套路，
+//     且实测所需常量与函数在 darwin/linux 的 syscall 里齐备，多一个直接依赖不划算
+package prochost
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
+)
+
+// lockSupported 标记本平台是否真的能加锁。
+const lockSupported = true
+
+// flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。
+//
+// 注意：锁挂在「打开的文件描述」上而不是路径上。两个后果——同一进程内两次
+// OpenFile 同一路径同样互斥（测试据此免起子进程）；`rm` 掉锁文件并不能解锁。
+// （本函数由 internal/agentd/flock_unix.go 原样上移，行为不变。）
+func flockExclusiveNB(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+// isLockContended 判定错误是否为「锁已被他人持有」（LOCK_NB 下的 EWOULDBLOCK），
+// 用于把撞锁与真正的 IO 故障分开——两者该给的错误信息完全不同。
+func isLockContended(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK)
+}
+
+// spawnDetached 拉起 argv 并让它脱离当前进程的会话与进程组，返回其 pid。
+//
+// 为什么用 Setsid 而不是让子进程自己调 setsid(2)：子进程被 fork 出来时若已是
+// 进程组组长，setsid(2) 会返回 EPERM。由父进程在 SysProcAttr 里声明最干净，
+// 且一次系统调用同时拿到「新会话 + 新进程组（pgid == pid）」——后者是 Kill
+// 能按组连坐全部后代的前提。
+//
+// 为什么 stdio 全部置 nil：Go 会把它们接到 /dev/null。子进程不能持有本进程的
+// 任何 fd，否则 agentd 退出时管道破裂会波及它，detach 就名存实亡。
+//
+// 边界：本函数不脱离 cgroup——cgroup 归属由 fork 继承，setsid 改不了它。
+// systemd 托管场景必须在 unit 里设 KillMode=process，否则 systemctl restart
+// 仍会连坐（见 spec §3.3 与 Task 10 的 unit 模板）。
+func spawnDetached(argv []string, dir string) (int, error) {
+	if len(argv) == 0 {
+		return 0, errors.New("argv 为空")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
+	}
+	pid := cmd.Process.Pid
+	// 立刻 Release：本进程不做它的父亲，让它 reparent 给 init。
+	// 不 Release 的话 Go 运行时会保留 wait 状态，agentd 退出时行为不确定。
+	if err := cmd.Process.Release(); err != nil {
+		return pid, fmt.Errorf("释放子进程 %d: %w", pid, err)
+	}
+	return pid, nil
+}
+
+// killGroup 向 pid 所在进程组发送 SIGKILL（负 pid 表示按组发送）。
+//
+// 幂等：组已不存在时内核返回 ESRCH，视为已回收成功。
+// 调用方（prochost.Kill）必须先确认存活锁仍被持有才可调用本函数——
+// 对已回收的 pid 发信号有误杀被复用 pid 的风险。
+func killGroup(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("kill -9 -%d: %w", pid, err)
+	}
+	return nil
+}
+
+// createInputChannel 幂等创建 0600 命名管道（见 CreateInputChannel 的文档）。
+func createInputChannel(path string) error {
+	err := syscall.Mkfifo(path, 0o600)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EEXIST) {
+		return fmt.Errorf("mkfifo %s: %w", path, err)
+	}
+	fi, serr := os.Stat(path)
+	if serr != nil {
+		return fmt.Errorf("stat %s: %w", path, serr)
+	}
+	// 残留的普通文件会让 shim 的 O_RDWR 打开变成普通文件读写，子进程 stdin
+	// 立刻 EOF——症状是「executor 起来了但一句话都不回」，极难排查，必须显式失败
+	if fi.Mode()&os.ModeNamedPipe == 0 {
+		return fmt.Errorf("%s 已存在但不是命名管道", path)
+	}
+	return nil
+}
+
+// waitInputReader 轮询探测 FIFO 读端（见 WaitInputReader 的文档）。
+func waitInputReader(path string, timeout time.Duration) (time.Duration, error) {
+	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	for {
+		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			f.Close()
+			return time.Since(start), nil
+		}
+		// ENXIO 之外的错误（管道缺失、权限）重试无意义，立即失败
+		if !errors.Is(err, syscall.ENXIO) {
+			return time.Since(start), fmt.Errorf("探测 %s 读端: %w", path, err)
+		}
+		if time.Now().After(deadline) {
+			return time.Since(start), fmt.Errorf("%s 在 %s 内未出现读端", path, timeout)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
