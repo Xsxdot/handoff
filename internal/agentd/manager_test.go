@@ -37,6 +37,29 @@ import (
 	"github.com/xushixin/handoff/internal/store"
 )
 
+// looseTempDir 建一个测试用临时目录，收尾时尽力删除、删不掉也不判用例失败。
+//
+// 为什么不用 t.TempDir()：Dispatch/Continue 成功后会 `go m.mediate(taskID)`，
+// 中介循环起手就是一次 m.st.GetTask——一条 SQLite 查询。用例断言完就返回了，
+// 这次查询可能还在飞：database/sql 的 Close 不等待「在用」连接，SQLite 收尾时
+// 会把 -wal/-shm 落回库目录，而 t.TempDir() 注册的 RemoveAll 此刻正在删同一个
+// 目录，于是报 "directory not empty"——并且失败会算在当时恰好在跑的那个用例
+// 头上（08-10 实撞：误伤 TestContinueColdResumeEmitsProgressEvent，它自身的
+// 断言全部通过）。这种误报最坏的地方是把排查引向无辜的用例。
+//
+// 为什么不是去修 goroutine：生产里中介循环随任务生命周期存在、随 agentd 进程
+// 退出，本就没有需要回收的泄漏；需要放宽的只是「临时目录必须删干净」这条纯
+// 测试侧断言。库目录是一次性草稿，删剩一个 -wal 不说明任何问题。
+func looseTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "agentd-test-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // newTestGate 造一个只带内置黑名单的判据网关（manager 测试环境的统一装配）。
 func newTestGate(t *testing.T) *permgate.Gate {
 	t.Helper()
@@ -124,7 +147,7 @@ func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaul
 // 测试环境（approver 可为 nil）。
 func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *Hub) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -275,7 +298,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	fk := fake.New(nil)
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1095,7 +1118,7 @@ func TestStopOnTerminalTaskRejected(t *testing.T) {
 // TestDispatchRejectsWhenEnvFileMissing 钉住 spec §6：env 解析失败必须在
 // 建任务与工作区准备之前拒发，不能留下一个注定 failed 的任务。
 func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -1143,7 +1166,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	}
 	repo := initTestRepo(t)
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
