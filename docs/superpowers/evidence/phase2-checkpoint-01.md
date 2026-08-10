@@ -42,16 +42,19 @@ Test Files  5 failed | 4445 passed | 13 skipped (4463)
 
 - `check-root-directory-entries`：守卫断言仓库根目录清单；`desktop/` 是本计划按
   Task 1 要求新增的顶层目录，守卫把它当成「新增顶层目录」——这是 Orca 上游守卫
-  与单仓库导入 Orca 的固有冲突，计划层面确认保留 `desktop/`，不改上游测试。
-- `generate-skill-bundle-manifest`：用 `git ls-tree HEAD:skills` 计算树身份，
+  与单仓库导入 Orca 的固有冲突，计划层面确认保留 `desktop/`，不改上游测试。- `generate-skill-bundle-manifest`：用 `git ls-tree HEAD:skills` 计算树身份，
   依赖上游技能产物与提交基线；本次运行环境无该基线。
 - `node-pty-fd-leak` / `local-pty-shell-ready`：真实 PTY / zsh 子进程 / macOS
   文件描述符与登录 shell 探测，依赖本机 PTY 与 zsh 环境（含非 ASCII 路径场景）。
 - `cross-version-terminal-wire.unit.test.ts`：上游 wire 兼容 fixture，依赖完整
   上游历史产物。
 
+另有 `config/scripts/resolve-7za-path.test.mjs`（Windows signing gate 的 7za 路径
+探测）为**偶发失败**：它依赖冷 toolset cache 的时序，独立重跑通过（实测单跑 15
+passed），全量并行时偶发超时，非本仓库改动引入，同样未改上游测试。
+
 结论：这 7 个失败在导入前的上游基线上同样失败（Task 1 基线检查确认），与
-Handoff 控制面/桌面改动无关；本 checkpoint 以聚焦 Vitest（62 tests）与
+Handoff 控制面/桌面改动无关；本 checkpoint 以聚焦 Vitest（64 tests）与
 `test:e2e:handoff-catalog`（4/4）作为验收通过依据。
 
 ## 1.2 changed-code-quality 检查的空跑记录与 oxlint 直接结果
