@@ -93,7 +93,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
-| `handoff resume <task>` | 恢复卡死任务：重投未送达 executor 的应答 | — |
+| `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
 | `handoff fetch <task> <文件>` | 读取仓库内文件（审阅上下文） | — |
 | `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时） | 如 `handoff run T1 go test ./...`；**handoff 自有 flag 必须写在任务名之前**——任务名之后的一切（含 `-v`、`--race`）都原样透传给被执行命令，`handoff run T1 --agentd=... go test` 会把 `--agentd=...` 当成 `go test` 的参数 |
@@ -202,6 +202,7 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 - `wait` 报错退出 → 先看报错内容：token 未同步（401，`~/.handoff/config.yaml` 与 agentd 的 token 需一致）或任务不存在（1008 policy violation，`handoff tasks` 核对 task-id）会**立即**报错退出、不会无限重试；确认 token 与 task-id 无误后再挂。
 - `wait` 一直不退出 → 大概率只是「还没有事件」（正常）：看 stderr 日志的「WS 连接断开，等待后重连」，断线退避重连是 `wait` 的常态，重连日志带地址、重连次数与下次退避秒数；无人值守时可加 `--timeout` 兜底。
 - 收到 `delivery_failed` 事件，或 `reply` 返回 502 → 裁决已落库但没送到 executor（executor 半死、调用超时）。此时工单已被消耗、`attach` 看不到挂起项，`reply` 会 404、`continue`/`done` 会 409——执行 `handoff resume <task>` 重投：executor 还在就继续执行，确已不在则任务转交审核（之后可 `continue` 重派或 `done` 归档）。该命令幂等，已送达的应答不会重复投递。
+- 任务冻死在 `running`、`attach` 能看到模型已经干完 → **agentd 与 executor 断连窗口内回合已完结、终态事件永久丢失（B38）**。`handoff resume <task>` 会做会话对账，把丢失的回合终态补回事件流，任务按补回的事件自然迁移（`result`→`waiting_review`、`question`→`waiting_answer`），此后可正常 `continue`/`reply`。对账判不出（executor 不支持对账 / 回合确实还在忙 / 查询失败）时加 `--force`：把任务强制收口到 `waiting_review` 并留下「人工强制、未经 executor 确认」的事件——它**保住 executor 会话**，与 `handoff stop`（杀会话、落 failed）根本不同。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
 - **grok 执行者会读到你的 Claude Code 个人配置**：grok 无视 `GROK_HOME`，仍从真实 HOME 读 `~/.claude/settings.local.json` 的权限规则与 `~/.claude/skills`。handoff 写入任务级 `ask` 规则可以压过其中的 `allow`（grok 的求值是 `deny` > `ask` > `allow` 跨源生效），危险模式表仍然有效；但「handoff 没枚举、而你个人 allow 了」的操作会被静默放行。agentd 侧的硬黑名单是独立兜底。

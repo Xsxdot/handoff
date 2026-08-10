@@ -648,7 +648,7 @@ func TestResumeRoute(t *testing.T) {
 
 	// executor 恢复后 resume：应答重投成功
 	env.fake.SetPermError(nil)
-	report, err := env.cli.Resume(context.Background(), task.ID)
+	report, err := env.cli.Resume(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestResumeRoute(t *testing.T) {
 	}
 
 	// 幂等：再执行一次不得重复投递
-	report2, err := env.cli.Resume(context.Background(), task.ID)
+	report2, err := env.cli.Resume(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("第二次 Resume: %v", err)
 	}

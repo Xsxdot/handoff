@@ -420,18 +420,26 @@ func (c *Client) Stop(ctx context.Context, taskID string) (worktreeRemoved bool,
 	return body.WorktreeRemoved, nil
 }
 
-// Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答。
+// Resume 显式恢复卡死的任务：让 agentd 重投「已落库但未送达 executor」的应答，
+// 并（B38）对断连窗口内丢失的回合终态做会话对账。
 //
 // 参数：
 //   - taskID: 任务 ID
+//   - force: 为真时即使对账判不出（executor 不支持对账 / 回合确实还在忙 /
+//     查询失败）仍把任务强制收口到 waiting_review，使 continue/done 可用；
+//     收口保住 executor 会话，与 stop 不同（stop 会杀会话并落 failed）
 //
 // 返回：
-//   - 恢复结果 JSON 原文（重投条数、executor 是否已不在、收尾状态与结论），
+//   - 恢复结果 JSON 原文（重投条数、对账结果、executor 是否已不在、收尾状态与结论），
 //     原样输出给审核者
 //   - executor 仍不可用（502）或任务已终结（409）等情况返回错误；502 时响应体
 //     里仍带着本次已重投成功的条数，错误信息中包含它
-func (c *Client) Resume(ctx context.Context, taskID string) (string, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/resume", nil)
+func (c *Client) Resume(ctx context.Context, taskID string, force bool) (string, error) {
+	path := "/api/tasks/" + taskID + "/resume"
+	if force {
+		path += "?force=true"
+	}
+	resp, err := c.do(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return "", fmt.Errorf("resume 请求: %w", err)
 	}

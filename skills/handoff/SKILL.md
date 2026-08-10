@@ -164,7 +164,7 @@ handoff pull <task> --target devbox
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
 | `failed` | 任务失败落 `failed` | `diff` 看做到哪、`attach` 看现场；要接着干就重新 `dispatch` |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
-| `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑；死了就 `stop` |
+| `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
 
 `ticket_id` 在 payload 里，**一次性消耗**。同一个 ticket 回答两次，第二次 404。
 

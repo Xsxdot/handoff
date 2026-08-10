@@ -616,26 +616,47 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 
-// handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答。
+// parseForce 解析 resume 的 force 查询参数。
+//
+// 为什么自己解析而不用 strconv.ParseBool 的错误：非法值（如 force=yes）一律
+// 按 false 处理——强制收口是绕过正常流程的动作，看不懂的输入必须走保守的那边。
+func parseForce(r *http.Request) bool {
+	switch r.URL.Query().Get("force") {
+	case "true", "1":
+		return true
+	}
+	return false
+}
+
+// handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答，
+// 以及（B38）断连窗口内丢失的回合终态对账补发。
 //
 // 这是 reply 返回 502 之后审核者唯一的自助出口——在它之前，工单已被消耗、
 // 任务停在 waiting_answer，reply 得 404、continue/done 得 409，CLI 上无路可走
 // （详见 Manager.RecoverStuck 的 why）。
 //
+// 查询参数：
+//   - force=true：对账判不出（executor 不支持对账 / 回合确实还在忙 / 查询失败）
+//     时仍把任务强制收口到 waiting_review，使 continue/done 可用；收口会留下
+//     写明「人工强制、未经 executor 确认」的事件。**保住 executor 会话**——
+//     这是它与 stop 的根本区别（stop 会杀掉会话并把任务落成 failed）。
+//
 // 响应：
-//   - 200 + RecoverReport：包含重投条数、executor 是否已不在、收尾状态与结论
+//   - 200 + RecoverReport：包含重投条数、对账结果、executor 是否已不在、收尾状态与结论
 //   - 502 + RecoverReport：executor 仍在但这次没打通，可稍后重试（报告一并回传，
 //     让审核者看到已经重投成功了几条）
 //   - 404 任务不存在；409 任务已终结
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
-	s.log.Info("resume 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	force := parseForce(r)
+	s.log.Info("resume 请求", "method", r.Method, "path", r.URL.Path,
+		"task", taskID, "force", force)
 	if s.mgr == nil {
 		s.log.Warn("resume 请求到达但 manager 未注入", "task", taskID)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	rep, err := s.mgr.RecoverStuck(taskID, false)
+	rep, err := s.mgr.RecoverStuck(taskID, force)
 	if err != nil {
 		if rep != nil {
 			// 重投中途失败：报告仍有价值（已成功几条、任务停在哪），带 502 回传
