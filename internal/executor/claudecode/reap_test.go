@@ -20,6 +20,8 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 // 组组长身份是「连坐」生效的前提（与生产里 shim 经 Setsid 当组长对齐）。
 // 后台 goroutine Wait 负责收割僵尸：SIGKILL 之后进程变 zombie，若不 Wait
 // 回收，syscall.Kill(pid, 0) 对 zombie 恒返回 nil，轮询判死会永远等不到。
+// Wait 只能有一个调用方（os/exec 的 Wait 非并发安全），所以由 goroutine
+// 独占收割权，Cleanup 只 Kill + 等 goroutine 完成，不再二次 Wait。
 func sleepCmd(t *testing.T) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 10")
@@ -27,8 +29,9 @@ func sleepCmd(t *testing.T) *exec.Cmd {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("启动 victim 失败: %v", err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	go func() { _ = cmd.Wait() }() // 收割 zombie，让 alive() 探测可靠
+	reaped := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(reaped) }() // 收割 zombie，让 alive() 探测可靠
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-reaped })
 	return cmd
 }
 

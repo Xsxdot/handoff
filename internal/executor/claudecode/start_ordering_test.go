@@ -132,9 +132,12 @@ func TestStartProcKillsShimWhenFIFOReaderNeverReady(t *testing.T) {
 	if err := victim.Start(); err != nil {
 		t.Fatalf("拉起 victim 失败: %v", err)
 	}
-	t.Cleanup(func() { _ = victim.Process.Kill(); _ = victim.Wait() })
-	// 收割 zombie：SIGKILL 后进程变 zombie，不 Wait 回收则信号 0 探测恒为「存活」
-	go func() { _ = victim.Wait() }()
+	// 收割 zombie：SIGKILL 后进程变 zombie，不 Wait 回收则信号 0 探测恒为「存活」。
+	// Wait 只能有一个调用方（os/exec 的 Wait 非并发安全），由 goroutine 独占收割权，
+	// Cleanup 只 Kill + 等 goroutine 完成，不再二次 Wait。
+	reaped := make(chan struct{})
+	go func() { _ = victim.Wait(); close(reaped) }()
+	t.Cleanup(func() { _ = victim.Process.Kill(); <-reaped })
 
 	old := startProcHost
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {

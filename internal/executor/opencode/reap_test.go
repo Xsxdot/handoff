@@ -85,8 +85,9 @@ func newSleepProc(t *testing.T) *os.Process {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("启动 victim 失败: %v", err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	go func() { _ = cmd.Wait() }() // 收割 zombie，让 alive 探测可靠
+	reaped := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(reaped) }() // 收割 zombie，让 alive 探测可靠
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-reaped })
 	return cmd.Process
 }
 
