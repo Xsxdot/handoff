@@ -5,6 +5,7 @@
 //   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target/执行者/模型/
 //     分支/worktree 等参数一并 POST 给 agentd（body {repo, plan_b64, prompt, ...}）
 //   - 远程派发时采集本地 HEAD 作基线随请求上送（--no-sync-check 可关）
+//   - 派发成功后在 stderr 打一行基线摘要（起点短号 + 任务仓库领先的提交数）
 //   - 成功时单行输出任务 JSON（state=running，供上层脚本解析任务 id）
 //
 // 边界：
@@ -57,6 +58,16 @@ func localHeadCommit() string {
 	return strings.TrimSpace(string(out))
 }
 
+// shortSHA 取提交号前 7 位（git 惯例的短号）；不足 7 位原样返回。
+// 摘要行给人读，40 位全量 sha 会把有用信息挤出视线——完整值在任务 JSON 的
+// base_commit 里，需要精确比对时从那里取。
+func shortSHA(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
+}
+
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
 // 使用方式：handoff dispatch [--repo <仓库>] [--prompt ...] [--executor x] [--model m]
@@ -107,6 +118,17 @@ var dispatchCmd = &cobra.Command{
 		})
 		if err != nil {
 			return err
+		}
+		// 基线摘要走 stderr：stdout 是「单行任务 JSON」的既有契约，上层脚本
+		// 按行解析，多打一行就会把它们全部打断。为什么必须打：B35 的现场里
+		// 分支开在了三批改动之前，而这件事在任何输出里都不留痕迹——审核者
+		// 甚至反过来怀疑是执行者找错了目录
+		if task.BaseCommit != "" {
+			line := "基线 " + shortSHA(task.BaseCommit)
+			if task.BaseAhead > 0 {
+				line += fmt.Sprintf("（任务仓库 HEAD 领先 %d 个提交，新分支不含它们）", task.BaseAhead)
+			}
+			fmt.Fprintln(cmd.ErrOrStderr(), line)
 		}
 		b, err := json.Marshal(task)
 		if err != nil {
