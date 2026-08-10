@@ -10,18 +10,17 @@ import (
 	"log/slog"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
-// WriteServeInfoForTest 暴露 writeServeInfo，供 serve.json 回环测试。
-func WriteServeInfoForTest(p *Proc) error { return writeServeInfo(p) }
+// WriteServeInfoForTest 暴露 writeProcInfo，供 proc.json 回环测试。
+func WriteServeInfoForTest(p *Proc) error {
+	return writeProcInfo(p.TaskDir, &procInfo{Handle: p.Handle, Port: p.Port})
+}
 
-// SwapTmuxKillForTest 替换 tmux kill 测试缝，返回还原函数。
-func SwapTmuxKillForTest(fn func(session string) error) func() {
-	old := tmuxKill
-	oldHas := tmuxHasSession
-	tmuxKill = fn
-	tmuxHasSession = func(string) bool { return false } // 配套：让「会话不存在」成立
-	return func() { tmuxKill = old; tmuxHasSession = oldHas }
+// ServeSpecForTest 暴露 serveSpec，供 codex_test 包做 argv/env 断言。
+func ServeSpecForTest(repoPath, taskDir string, port int, env []string) prochost.Spec {
+	return serveSpec(repoPath, taskDir, port, env)
 }
 
 // ParseItemNotificationForTest 暴露 item 通知解析。

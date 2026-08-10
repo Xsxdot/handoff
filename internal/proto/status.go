@@ -38,7 +38,7 @@ const (
 
 // ActiveTask 是一个非终结任务及其 executor 存活结论。
 //
-// 注意：ID 始终是完整 UUID。文本渲染可以只显示前 8 位（与 tmux 会话命名
+// 注意：ID 始终是完整 UUID。文本渲染可以只显示前 8 位（与执行者进程的短 id 展示
 // handoff-<id8> 一致，便于人肉对照），但任何拿去当参数的地方都必须用完整 UUID
 // ——store.GetTask 是精确匹配，不做前缀查找。
 type ActiveTask struct {

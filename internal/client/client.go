@@ -521,6 +521,65 @@ func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, ex
 	return out.Stdout, out.ExitCode, nil
 }
 
+// doStream 发送带 Bearer token 的流式 GET 请求，返回不关闭 body 的响应。
+//
+// 为什么不能复用 do：do 不做任何读体/超时假设，但它没有专门的流式语义——
+// 而 RenderStream 需要保证响应体不被整体超时掐断（follow 长连接可能挂很久）。
+// c.hc 本就没有全局 Timeout（只有拨号超时），直接复用即可；本函数与 do 的
+// 区别只在明确「调用方负责消费并 Close body」。
+func (c *Client) doStream(ctx context.Context, method, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造请求 %s: %w", path, err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return c.hc.Do(req)
+}
+
+// RenderStream 打开任务实况（render.log）的流式读取。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - offset: 起始字节偏移；>0 时优先于 tail（用于断线续传）
+//   - tail:   从尾部回溯的字节数（offset<=0 时生效；两者都为 0 时由服务端取默认值）
+//   - follow: 是否在到达文件尾后继续等待增量
+//
+// 返回：
+//   - 流（调用方负责 Close）、响应开始时的文件字节数、错误
+//
+// 注意：
+//   - 本方法**不设读超时**：follow 模式下长时间无输出是正常的（模型在思考）。
+//     取消靠 ctx——CLI 把 Ctrl+C 接到 ctx 上
+//   - 非 200 一律转成错误并读走响应体，避免连接泄漏
+func (c *Client) RenderStream(ctx context.Context, taskID string,
+	offset, tail int64, follow bool) (io.ReadCloser, int64, error) {
+	q := url.Values{}
+	if offset > 0 {
+		q.Set("offset", strconv.FormatInt(offset, 10))
+	} else if tail > 0 {
+		q.Set("tail", strconv.FormatInt(tail, 10))
+	}
+	if follow {
+		q.Set("follow", "1")
+	}
+	path := "/api/tasks/" + taskID + "/render"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	resp, err := c.doStream(ctx, http.MethodGet, path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("render 流请求: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, 0, c.httpError("render 流", resp)
+	}
+	size, _ := strconv.ParseInt(resp.Header.Get("X-Handoff-Render-Size"), 10, 64)
+	return resp.Body, size, nil
+}
+
 // WaitEvent 阻塞等待任务的下一个事件：跳过 progress（除非 all=true），
 // 拿到首个可动作事件即返回并把 cursor 写盘；断线指数退避 1s→2s→…→60s
 // 无限重连，ctx 取消才退出。

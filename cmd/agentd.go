@@ -65,6 +65,11 @@ var agentdCmd = &cobra.Command{
 		// 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承
 		agentd.MergeLoginShellPATH(context.Background(), logger)
 
+		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
+		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
+		// 环境（macOS 开发机）完全静默。
+		agentd.WarnIfKillModeUnsafe(logger)
+
 		// DataDir 首次运行可能不存在（config.Load 只保证配置目录），
 		// store.Open 与 taskDir 创建都依赖它，必须先建
 		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {

@@ -78,8 +78,8 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 // errExecutorStartFailed 是 Dispatch 启动 executor 失败（adapter.Start 返回错误）
 // 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
 //
-// 为什么单独成类：executor 依赖缺失（如 tmux 不在 PATH、opencode 未安装）是
-// **环境问题**而非 agentd 内部故障——审核者需要看到真因（exec: "tmux":
+// 为什么单独成类：executor 依赖缺失（如执行者二进制不在 PATH）是
+// **环境问题**而非 agentd 内部故障——审核者需要看到真因（exec: "opencode":
 // executable file not found）才能动手装依赖，扁平化的「派发任务失败」只会让
 // 审核者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
 var errExecutorStartFailed = errors.New("启动 executor 失败")
@@ -833,7 +833,7 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 //     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
 //     不阻断 stop（此时 worktreeRemoved=false，提示如实反映工作树仍在）
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
-//     由 tmux 会话兜底，不能因为「停不掉进程」就让任务永远卡在 running
+//     由执行者进程兜底，不能因为「停不掉进程」就让任务永远卡在 running
 func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
 	m.log.Info("stop 进入", "task", taskID)
 	defer func() {

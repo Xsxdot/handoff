@@ -52,7 +52,7 @@ const TruncationMarker = "…（已截断）"
 // StartReq 是 Adapter.Start 的入参：任务上下文 + 计划内容 + 任务工作目录。
 //
 // 字段说明：
-//   - Task: 任务快照（ID/仓库/目标等），adapter 可据此命名 tmux 会话、写日志等
+//   - Task: 任务快照（ID/仓库/目标等），adapter 可据此写日志与恢复凭据
 //   - PlanContent: 解码后的计划原文（dispatch 时从 plan_b64 还原），adapter 负责
 //     把它加工成 executor 的启动 prompt
 //   - TaskDir: 任务专属目录（agentd 在 DataDir/tasks/<id> 下创建），adapter 可把

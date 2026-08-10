@@ -1,42 +1,39 @@
 // reap.go —— 无内存运行态时的确定性兜底回收。
 //
 // 职责：
-//   - Reap：按 claude.json 或确定性命名找到 tmux 会话并杀掉
+//   - Reap：按 proc.json 拿 prochost.Handle 并 Kill
 //
 // 边界：
 //   - 不碰任务状态（adapter 不写 store）；回收不掉只返回错误，留不留事件是 manager 的事
 package claudecode
 
-// Reap 在没有内存运行态时按确定性命名兜底回收 executor 侧资源。
+import (
+	"fmt"
+
+	"github.com/xushixin/handoff/internal/prochost"
+)
+
+// Reap 在没有内存运行态时按 proc.json 兜底回收 executor 侧资源。
 //
-// 回收顺序：
-//  1. 读 taskDir 下的 claude.json 拿 tmux 会话名（最准，session_id/offset 也在里面）
-//  2. 文件缺失/损坏时退到确定性命名 "handoff-" + id8(taskID)（与 StartProc 同规则）
-//  3. tmux kill-session
+// 回收顺序：读 proc.json 拿 Handle → prochost.Kill（内部先试锁，锁空闲直接成功）。
 //
-// 存活判据的特别之处：对 claude 而言 tmux has-session **不是**进程存活判据
-// （窗口 1 的 tail -f render.log 会一直吊着会话，claude 早死了会话依然存在，
-// 见 Resume 的 doc）——但对 Reap **正合适**：Reap 要确认的就是「tmux 会话没了」，
-// 不是「claude 进程没了」。所以「会话已不存在」判定用 tmuxHasSession。
+// 为什么不再有「确定性命名兜底」：旧实现在 proc.json 缺失时退到 tmux 会话名
+// handoff-<id8>，因为会话名可由 taskID 推导。锁+pid 无法从 taskID 推导，
+// proc.json 缺失就是真的无据可查——如实报错交审核者，不猜。
 //
-// 返回：
-//   - 会话本就不存在时返回 nil——目标是「确保它没了」，不是「确保我杀了它」
+// 返回：Handle 对应的进程本就不在时返回 nil——目标是「确保它没了」，
+// 不是「确保我杀了它」。
 func (a *Adapter) Reap(taskID, taskDir string) error {
-	session := "handoff-" + id8(taskID)
-	source := "确定性命名"
-	if pi, err := readProcInfo(taskDir); err == nil && pi.TmuxSession != "" {
-		session, source = pi.TmuxSession, "claude.json"
-	} else if err != nil {
-		a.log.Warn("读 claude.json 失败，退到确定性命名回收", "task", taskID, "cause", err)
+	pi, err := readProcInfo(taskDir)
+	if err != nil {
+		a.log.Error("读恢复凭据失败，无法兜底回收", "task", taskID, "cause", err)
+		return fmt.Errorf("兜底回收任务 %s: %w", taskID, err)
 	}
-	a.log.Info("兜底回收 executor 资源", "task", taskID, "tmux", session, "source", source)
-	if err := tmuxKill(session); err != nil {
-		// 会话已经不在时 tmux kill-session 也会报错——先确认它是不是真没了
-		if !tmuxHasSession(session) {
-			a.log.Info("兜底回收：会话已不存在，视为成功", "task", taskID, "tmux", session)
-			return nil
-		}
+	a.log.Info("兜底回收 executor 资源", "task", taskID, "shim_pid", pi.Handle.PID)
+	if err := prochost.Kill(pi.Handle); err != nil {
+		a.log.Error("兜底回收失败", "task", taskID, "shim_pid", pi.Handle.PID, "cause", err)
 		return err
 	}
+	a.log.Info("兜底回收完成", "task", taskID)
 	return nil
 }

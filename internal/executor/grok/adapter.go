@@ -6,7 +6,7 @@
 //   - ACP 消息 → AdapterEvent 映射：session/request_permission → permission 事件；
 //     agent_message_chunk 累积成回合正文（thought 与 tool_call 只进 render.log）；
 //     session/prompt 的响应（stopReason）作回合边界 → turn.ParseTrailer 分类
-//   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 tmux 第二窗口旁观
+//   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 handoff attach 旁观
 //
 // 边界：
 //   - 不写 store、不做审批判断（见 executor.go 包级边界）：会话 id 等持久化诉求
@@ -136,7 +136,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		return err
 	}
-	// 之后任一步失败都要回收 serve，否则留下一个没人管的 tmux 会话
+	// 之后任一步失败都要回收 serve，否则留下一个没人管的执行者进程
 	defer func() {
 		if err != nil {
 			_ = proc.Kill()
@@ -268,7 +268,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	return nil
 }
 
-// Stop 终止执行并回收资源：置 stopping → 关 ACP → kill tmux → 关事件通道。
+// Stop 终止执行并回收资源：置 stopping → 关 ACP → kill 执行者进程组 → 关事件通道。
 func (a *Adapter) Stop(taskID string) error {
 	r := a.lookup(taskID)
 	if r == nil {

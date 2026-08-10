@@ -212,7 +212,7 @@ func liveText(a proto.ActiveTask) string {
 	}
 }
 
-// short8 取 id 前 8 位用于展示（与 tmux 会话命名 handoff-<id8> 一致，便于人肉对照）。
+// short8 取 id 前 8 位用于展示。
 //
 // 注意：只用于展示。任何拿去当参数的地方都必须用完整 UUID——store.GetTask 是
 // 精确匹配，不做前缀查找。

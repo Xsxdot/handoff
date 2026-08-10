@@ -1,7 +1,7 @@
 // adapter.go —— Claude Code 语义到 executor.Adapter 契约的翻译层。
 //
 // 职责：
-//   - 五动作编排：Start（物料 → socket → tmux 进程 → 等 init → 投首回合 prompt）、
+//   - 五动作编排：Start（物料 → socket → prochost 进程 → 等 init → 投首回合 prompt）、
 //     Send（fifo 续接）、RespondPermission（裁决回发 socket）、Stop（kill + 收摊）、
 //     Events（事件通道）
 //   - stream 消息 → AdapterEvent 映射：init → progress(SessionID)；text_delta →
@@ -108,7 +108,7 @@ type runState struct {
 	exitHandled  bool   // 哨兵已处理（mapExit）：streamLoop 退出时不得再补一条失败 result
 	ready        chan struct{}
 	readyOnce    sync.Once
-	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=claude.json 持久化的 offset）
+	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -148,11 +148,11 @@ func (r *runState) markReady() {
 	r.readyOnce.Do(func() { close(r.ready) })
 }
 
-// Start 按「perm server → 任务物料 → tmux 进程 → 等 init → 投首回合 prompt →
+// Start 按「perm server → 任务物料 → prochost 进程 → 等 init → 投首回合 prompt →
 // 会话就绪」流程启动任务执行并立即返回。
 //
 // 参数：
-//   - ctx: 控制启动阶段的超时/取消（tmux 启动、等 init 受其约束）；
+//   - ctx: 控制启动阶段的超时/取消（prochost 拉起、等 init 受其约束）；
 //     不代表执行生命周期（执行延续到 Stop）
 //   - req: 任务快照、计划原文与任务工作目录
 //
@@ -160,7 +160,7 @@ func (r *runState) markReady() {
 //   - 任一启动阶段失败返回错误，调用方（manager）应把任务标记 failed
 //
 // 注意：
-//   - 已建资源（perm server / tmux 会话）在失败时逐级回滚，避免半启动残留
+//   - 已建资源（perm server / 执行者进程）在失败时逐级回滚，避免半启动残留
 //   - req.Env 必须原样透传进 StartProc（B19）：漏传编译照过、用户 env 静默失效
 func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) {
 	a.log.Info("claude adapter 开始启动任务", "task", req.Task.ID,
@@ -361,12 +361,12 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	return r.perm.Respond(permID, behavior, msg)
 }
 
-// Stop 终止任务执行：停 socket 受理 → kill tmux 会话 → 事件通道关闭 → 注销运行态。
+// Stop 终止任务执行：停 socket 受理 → 回收执行者进程组 → 事件通道关闭 → 注销运行态。
 //
 // 注意：
 //   - 幂等：重复 Stop 不 panic；事件通道只关闭一次（由 streamLoop 的 defer 持有关闭权）
 //   - kill 失败时仍注销运行态（claude 没有 opencode 那类必须保句柄的端口/凭据回收场景，
-//     tmux 会话残留由人工 attach/kill-session 兜底，与 opencode Kill 同规则）
+//     进程残留由 handoff stop 兜底，与 opencode Kill 同规则）
 func (a *Adapter) Stop(taskID string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
@@ -406,7 +406,7 @@ const (
 	watchdogFailThreshold = 3
 )
 
-// watchdog 是 claude 存活兜底看门狗：周期探活（tmux 会话 + 无哨兵），连续
+// watchdog 是 claude 存活兜底看门狗：周期探活（存活锁 + 无哨兵），连续
 // watchdogFailThreshold 次失败判定死亡，取消运行 ctx 让 streamLoop 退出——
 // failed 结果由 streamLoop 统一产出（哨兵路径则由 mapExit 产出），保持
 // 「事件通道只有一个写入者」的关闭权约定。
@@ -437,7 +437,7 @@ func (a *Adapter) watchdog(r *runState) {
 
 // streamLoop 是单任务的事件流主循环（唯一持有 evCh 关闭权的 goroutine）：
 // 从 offset 0 起读 out.jsonl → mapMessage 逐条映射产出 AdapterEvent；顺带每
-// persistOffsetEvery 持久化一次 claude.json 的 offset（agentd 重启后续读的依据）。
+// persistOffsetEvery 持久化一次 proc.json 的 offset（agentd 重启后续读的依据）。
 func (r *runState) streamLoop(a *Adapter) {
 	defer func() {
 		r.closeOnce.Do(r.closeEvents)
@@ -455,7 +455,7 @@ func (r *runState) streamLoop(a *Adapter) {
 		if now := time.Now(); now.Sub(lastPersist) >= persistOffsetEvery {
 			if r.session != "" && r.proc != nil {
 				if perr := writeProcInfo(r.taskDir, &procInfo{
-					TmuxSession: r.proc.TmuxSession, SessionID: r.session, Offset: tl.Offset(),
+					Handle: r.proc.Handle, SessionID: r.session, Offset: tl.Offset(),
 				}); perr != nil {
 					a.log.Warn("持久化 claude offset 失败", "task", r.taskID, "cause", perr)
 				}
@@ -563,7 +563,7 @@ func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
 	}
 }
 
-// appendActionSummary 往 render.log 追加一行工具动作摘要（tmux 窗口 1 的旁观内容）。
+// appendActionSummary 往 render.log 追加一行工具动作摘要（render 流的旁观内容）。
 func (a *Adapter) appendActionSummary(r *runState, toolName string, input json.RawMessage) {
 	line := "→ " + toolName
 	if toolName == "Bash" {
@@ -693,12 +693,12 @@ func (a *Adapter) mapExit(r *runState, m streamMsg) {
 			FailReason: fmt.Sprintf("claude 进程退出（code=%d）: %s", m.ExitCode, tail),
 		}})
 	}
-	// 无论正常与否，进程都已不在：回收 tmux 会话（窗口 1 的 tail 会一直吊着会话）
-	// 并结束事件流。exitHandled 让 streamLoop 退出时不再补一条失败 result。
+	// 无论正常与否，进程都已不在：回收执行者进程组并结束事件流。
+	// exitHandled 让 streamLoop 退出时不再补一条失败 result。
 	r.exitHandled = true
 	if r.proc != nil {
 		if kerr := r.proc.Kill(); kerr != nil {
-			a.log.Warn("哨兵后回收 tmux 会话失败", "task", r.taskID, "cause", kerr)
+			a.log.Warn("哨兵后回收执行者进程失败", "task", r.taskID, "cause", kerr)
 		}
 	}
 	r.runCancel()
@@ -714,7 +714,7 @@ func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
 	if strings.TrimSpace(text) == "" {
 		a.log.Warn("claude 权限请求无可读描述，按未说明权限交审核者",
 			"task", r.taskID, "perm", ask.ToolUseID)
-		text = "claude 未提供可读描述（tool_use_id " + ask.ToolUseID + "），请 tmux attach 查看现场"
+		text = "claude 未提供可读描述（tool_use_id " + ask.ToolUseID + "），请 handoff attach 查看现场"
 	}
 	if req == nil {
 		// 提取不出结构 → manager 会 fail-closed 升级人工。记一条，否则

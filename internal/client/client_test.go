@@ -490,3 +490,45 @@ func TestStopParsesWorktreeRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderStreamPassesParamsAndReturnsSize 钉死请求参数与响应头解析。
+func TestRenderStreamPassesParamsAndReturnsSize(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("X-Handoff-Render-Size", "4096")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("live"))
+	}))
+	defer ts.Close()
+
+	rc, size, err := client.New(ts.Listener.Addr().String(), "tok").
+		RenderStream(context.Background(), "T1", 0, 512, true)
+	if err != nil {
+		t.Fatalf("RenderStream 失败: %v", err)
+	}
+	defer rc.Close()
+	if size != 4096 {
+		t.Fatalf("size = %d, want 4096", size)
+	}
+	if !strings.Contains(gotQuery, "follow=1") || !strings.Contains(gotQuery, "tail=512") {
+		t.Fatalf("查询参数缺失: %q", gotQuery)
+	}
+	b, _ := io.ReadAll(rc)
+	if string(b) != "live" {
+		t.Fatalf("流内容 = %q", b)
+	}
+}
+
+// TestRenderStreamSurfacesHTTPError 钉死错误路径：404 必须变成明确错误而不是空流。
+func TestRenderStreamSurfacesHTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "任务不存在", http.StatusNotFound)
+	}))
+	defer ts.Close()
+	_, _, err := client.New(ts.Listener.Addr().String(), "tok").
+		RenderStream(context.Background(), "nope", 0, 0, false)
+	if err == nil {
+		t.Fatal("404 时必须返回错误")
+	}
+}

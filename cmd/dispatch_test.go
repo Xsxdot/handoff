@@ -51,6 +51,23 @@ func runDispatch(t *testing.T, extraArgs ...string) (string, string, error) {
 	return out.String(), errBuf.String(), err
 }
 
+// TestAppleScriptQuoteEscapes 钉死 osascript 命令串的引号转义。
+//
+// 这是 shellq 删除后 cmd 包唯一还需要的引号能力：do script 的参数是
+// AppleScript 字符串字面量，attach 命令里若含空格或引号，不转义会让整条
+// do script 语法错误、终端窗口弹不出来。
+func TestAppleScriptQuoteEscapes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`handoff attach T1`, `'handoff attach T1'`},
+		{`a'b`, `'a'\''b'`},
+	}
+	for _, c := range cases {
+		if got := appleScriptQuote(c.in); got != c.want {
+			t.Fatalf("appleScriptQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestDispatchOpensTerminalByDefault 验证 darwin 下派发成功后默认弹终端：
 // openTerminal 被调且 argv 含 attach 与任务 id。
 func TestDispatchOpensTerminalByDefault(t *testing.T) {
@@ -69,8 +86,11 @@ func TestDispatchOpensTerminalByDefault(t *testing.T) {
 		t.Fatalf("openTerminal 应被调 1 次，得到 %d 次", len(called))
 	}
 	joined := strings.Join(called[0], " ")
-	if !strings.Contains(joined, "attach") || !strings.Contains(joined, "handoff-task-abc") {
-		t.Fatalf("attach argv 应含 attach 与任务 id8 会话名: %v", called[0])
+	if !strings.Contains(joined, "attach") || !strings.Contains(joined, "task-abc123") {
+		t.Fatalf("attach argv 应含 attach 与任务 id: %v", called[0])
+	}
+	if called[0][0] != "handoff" {
+		t.Fatalf("弹窗命令应指向 handoff 自身（attach 走 render 流），实得 %v", called[0])
 	}
 }
 

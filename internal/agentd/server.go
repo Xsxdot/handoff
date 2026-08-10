@@ -123,6 +123,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/continue     续发修改指令
 //   - POST /api/tasks/{id}/done         归档任务
 //   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
+//   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - GET  /ws/events                   事件流（补发 + 实时）
@@ -138,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStop)
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
+	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
@@ -503,9 +505,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（tmux 不在 PATH、
+//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
-//     err.Error()（含真因如 exec: "tmux": executable file not found），审核者拿到
+//     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
 //     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
 //   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可

@@ -46,7 +46,7 @@ func TestFinishTurnEmptyTextEmitsFailedResult(t *testing.T) {
 	a := New(nil)
 	r := &runState{taskID: "t1", sessionID: "sess-1",
 		repoPath: t.TempDir(), // 非 git 目录：hasNew=false，走进兜底分支
-		evCh:    make(chan executor.AdapterEvent, 8), acc: newTurnAccumulator(),
+		evCh:     make(chan executor.AdapterEvent, 8), acc: newTurnAccumulator(),
 		pending: map[string]pendingPerm{}}
 	a.finishTurn(r, ACPResult{Result: json.RawMessage(`{"stopReason":"end_turn"}`)})
 

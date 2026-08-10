@@ -1,0 +1,39 @@
+# handoff agentd 的 systemd unit 模板。
+#
+# 安装：
+#   sudo cp deploy/handoff-agentd.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
+#
+# 把 User / ExecStart 的路径改成你自己的。
+#
+# 注意 User 必须填字面用户名，不要写 %i：%i 是**模板 unit**（形如
+# handoff-agentd@user.service，用 enable handoff-agentd@alice 实例化）的实例名占位符，
+# 在本文件这种非模板 unit 里它解析为空串，`User=` 空值会被重置为默认值 root
+# ——服务会以 root 静默跑起来，不报任何错。
+
+[Unit]
+Description=handoff agentd (executor host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGEME
+ExecStart=/usr/local/bin/handoff agentd --executor=opencode
+Restart=on-failure
+RestartSec=3
+
+# KillMode=process 是本项目的硬要求，不是可选优化。
+#
+# 为什么：执行者进程由 agentd 经 shim 以独立会话拉起，目的是让它活过 agentd 的
+# 重启与升级。setsid 让 shim 脱离了 agentd 的会话与进程组，但**改不了 cgroup 归属**
+# ——cgroup 由 fork 继承。systemd 默认的 KillMode=control-group 会在 stop/restart
+# 时向整个 cgroup 发信号，shim 与执行者一并被杀，正在跑的任务全部中断。
+#
+# 设为 process 后 systemd 只终止 agentd 主进程，执行者继续跑；agentd 重启后
+# 靠存活锁探测重新接管。代价是 agentd 异常退出时执行者不会被自动清理——
+# 这正是我们要的行为，回收由 handoff stop / done 显式完成。
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

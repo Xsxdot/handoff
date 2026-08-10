@@ -2,14 +2,14 @@
 //
 // 职责：
 //   - 从指定 offset 起持续读 out.jsonl 的新行，宽容解码为 streamMsg 交回调
-//   - 维护已消费 offset，供 claude.json 持久化与 agentd 重启后续读
+//   - 维护已消费 offset，供 proc.json 持久化与 agentd 重启后续读
 //   - 从 stream_event 中提取模型正文增量（只认 text_delta）
 //
 // 边界：
 //   - 不映射 AdapterEvent、不碰 render.log：那是 adapter.go 的职责
 //   - 不管进程死活：哨兵行原样交出，判定在 proc.go / adapter.go
 //
-// 为什么轮询文件而不是接管管道：进程活在 tmux 里、stdout 经 tee 落盘，
+// 为什么轮询文件而不是接管管道：进程由 shim 承载、stdout 落盘，
 // agentd 重启后没有任何管道可继承，文件 + offset 是唯一能跨重启接续的形态。
 package claudecode
 
@@ -27,7 +27,7 @@ import (
 
 // tailPollInterval 是文件无新内容时的轮询间隔。
 // 取 200ms：与 opencode 看门狗活跃档同量级，实况延迟人眼不可察，
-// 而每任务每天约 43 万次 read 系统调用的成本远低于 fork tmux 进程。
+// 而每任务每天约 43 万次 read 系统调用的成本远低于起一个 shim 进程。
 const tailPollInterval = 200 * time.Millisecond
 
 // garbageLimit 是连续非 JSON 行的上限。claude 偶发往 stdout 打非协议内容时可跳过，
@@ -60,8 +60,8 @@ type tailer struct {
 // newTailer 创建 out.jsonl 的增量读取器。
 //
 // 参数：
-//   - path: out.jsonl 路径（proc.go 的 tee 落盘目标）
-//   - offset: 起始读取位置（0 表示从头；agentd 重启时用 claude.json 持久化的值）
+//   - path: out.jsonl 路径（proc.go 的 stdout 落盘目标）
+//   - offset: 起始读取位置（0 表示从头；agentd 重启时用 proc.json 持久化的值）
 //   - log: 日志入口
 func newTailer(path string, offset int64, log *slog.Logger) *tailer {
 	t := &tailer{path: path, log: log}
@@ -69,7 +69,7 @@ func newTailer(path string, offset int64, log *slog.Logger) *tailer {
 	return t
 }
 
-// Offset 返回已消费的字节 offset（供持久化到 claude.json 供重启续读）。
+// Offset 返回已消费的字节 offset（供持久化到 proc.json 供重启续读）。
 func (t *tailer) Offset() int64 {
 	return t.offset.Load()
 }

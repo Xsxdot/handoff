@@ -79,11 +79,11 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 
 	mode := executor.ResumeModeReattach
 	if !proc.Alive() {
-		// 先回收旧会话：tmux 会话由窗口 1 的 tail -f 吊着，app-server 死了会话仍在，
-		// 而冷恢复用的是同一个确定性会话名 handoff-<id8>，不回收就会撞名
+		// 先回收旧执行者，否则冷恢复重起时撞锁：proc.lock 可能仍被旧 shim 持有，
+		// 不先回收新 shim 抢不到锁
 		if kerr := proc.Kill(); kerr != nil {
-			a.log.Warn("回收已死 app-server 的 tmux 会话失败", "task", taskID,
-				"session", proc.Session, "cause", kerr)
+			a.log.Warn("回收已死 app-server 的执行者进程失败", "task", taskID,
+				"shim_pid", proc.Handle.PID, "cause", kerr)
 		}
 		if !req.Cold {
 			a.log.Info("app-server 已不在且不允许冷恢复，判不可恢复", "task", taskID, "port", proc.Port)

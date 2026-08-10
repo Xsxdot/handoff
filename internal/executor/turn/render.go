@@ -1,6 +1,6 @@
 // render.go —— 回合文本增量落盘到 render.log。
 //
-// 职责：把模型文本增量追加到任务目录的 render.log，供 tmux 第二窗口 tail -f 旁观
+// 职责：把模型文本增量追加到任务目录的 render.log，供 handoff attach 实况读取
 // 边界：只做追加写；文件不存在时创建；不轮转、不清理（任务归档时随目录一起走）
 
 package turn

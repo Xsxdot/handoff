@@ -7,10 +7,20 @@ import (
 
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
-// WriteServeInfoForTest 暴露 serve.json 写入，供 grok_test 包做往返断言。
-func WriteServeInfoForTest(p *Proc) error { return writeServeInfo(p) }
+// WriteServeInfoForTest 暴露恢复凭据写入，供 grok_test 包做往返断言。
+func WriteServeInfoForTest(p *Proc) error {
+	return writeProcInfo(p.TaskDir, &procInfo{
+		Handle: p.Handle, Port: p.Port, Secret: p.Secret,
+	})
+}
+
+// ServeSpecForTest 暴露 serveSpec，供 grok_test 包做 argv/env 安全边界断言。
+func ServeSpecForTest(repoPath, taskDir, model string, port int, secret string, env []string) prochost.Spec {
+	return serveSpec(repoPath, taskDir, model, port, secret, env)
+}
 
 // NewTurnAccumulatorForTest 暴露回合累积器，供事件映射的纯逻辑断言
 // （不起进程、不连网络）。
@@ -85,14 +95,6 @@ func FinishTurnForTest(a *Adapter, r *runState, stopReason, turnText string) {
 
 // NoteAskedViaToolForTest 模拟 OnAskQuestion 已在本回合转交过一个提问。
 func NoteAskedViaToolForTest(r *runState) { r.noteAskedViaTool() }
-
-// SwapTmuxKillForTest 替换包级 tmux kill 执行点并返回恢复函数（供 Reap 测试
-// 断言回收的会话名，绕开真实 tmux server）。
-func SwapTmuxKillForTest(fn func(session string) error) func() {
-	old := tmuxKill
-	tmuxKill = fn
-	return func() { tmuxKill = old }
-}
 
 func mustJSONString(s string) string {
 	b, err := json.Marshal(s)

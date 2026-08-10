@@ -9,8 +9,8 @@
 //     文本（message.part.updated / message.part.delta）增量累积 →
 //     render.log 追加 + 节流 progress；session.status idle → turn.ParseTrailer
 //     分类（ask/finish/none 兜底 git 实况裁决）；serve 死亡 → failed result
-//   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 tmux 第二窗口
-//     `tail -f <taskDir>/render.log` 旁观模型执行
+//   - 可见性：回合文本增量追加到 <taskDir>/render.log，供 handoff attach
+//     （render 流式 endpoint）旁观模型执行
 //
 // 边界：
 //   - 不写 store、不做审批判断（见 executor.go 包级边界）：会话 id 等一切持久化
@@ -56,7 +56,7 @@ import (
 //   - watchdogFastInterval/watchdogSlowInterval/watchdogFastProbes：serve 存活
 //     探活节奏。活跃期（有新事件）200ms 高频；连续 fastProbes 次成功探活且无
 //     新事件（任务进 waiting_review 挂过夜）后降频到 2s——200ms 高频探活每天
-//     每任务约 43 万次 tmux fork + HTTP 请求（P1-17），降频后约 4.3 万次；
+//     每任务约 43 万次 HTTP 请求（P1-17），降频后约 4.3 万次；
 //     任一失败立即回到高频，保证死亡判定不被降频拖慢太多（慢档最坏 ~6s）
 //   - watchdogFailThreshold：连续 3 次死亡（快档约 600ms 窗口）才判定死亡，
 //     吸收探活抖动，不误杀正常任务
@@ -89,7 +89,7 @@ const (
 )
 
 // serveHandle 抽象 serve 进程的存活/销毁/诊断：真实实现是 *Proc（procHandle），
-// 测试注入假探活，绕开 tmux 依赖。
+// 测试注入假探活，绕开真实进程依赖。
 type serveHandle interface {
 	Alive() bool
 	Kill() error
@@ -260,7 +260,7 @@ func (a *Adapter) drop(taskID string) {
 //     调用方（manager）应把任务标记 failed
 //
 // 注意：
-//   - serve 已拉起但后续阶段失败时自动 Kill 清理 tmux 残留，避免半启动进程占端口
+//   - serve 已拉起但后续阶段失败时自动 Kill 清理进程残留，避免半启动进程占端口
 func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) {
 	a.log.Info("adapter 开始启动任务", "task", req.Task.ID,
 		"task_dir", req.TaskDir, "workdir", req.Task.Workdir())
@@ -282,10 +282,12 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		return err
 	}
 	a.log.Info("opencode serve 已启动", "task", req.Task.ID,
-		"port", proc.Port, "tmux", proc.TmuxSession)
-	// serve 连接凭据落盘（serve.json）：agentd 重启后 RecoverOnStartup 凭它探活
+		"port", proc.Port, "shim_pid", proc.Handle.PID)
+	// serve 连接凭据落盘（proc.json）：agentd 重启后 RecoverOnStartup 凭它探活
 	// 与重建订阅；写失败不阻断启动（缺失时重启恢复按「执行器已不在」处理）
-	if err := writeServeInfo(req.TaskDir, proc); err != nil {
+	if err := writeProcInfo(req.TaskDir, &procInfo{
+		Handle: proc.Handle, Port: proc.Port, Password: proc.Password,
+	}); err != nil {
 		a.log.Warn("写 serve 连接凭据失败，重启恢复将不可用", "task", req.Task.ID, "cause", err)
 	}
 	api := NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)
@@ -301,7 +303,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 // startRun 完成「建会话 → 发初始 prompt → 记录起点 commit → 启动订阅与看门狗」。
 //
 // 这是 Start 的内部骨架，单独成函数以便测试注入 httptest server 与假探活
-// （免真实 tmux/opencode 二进制）。
+// （免真实 opencode 二进制）。
 //
 // 返回：
 //   - sessionID: 新建的 opencode 会话 id（经 Result.SessionID 随结果事件上报，
@@ -489,7 +491,7 @@ func rejectedTurnQuestion(rejected []string) string {
 		"\n\n请给出下一步指令：换用其他方式完成该步骤 / 跳过该步骤继续 / 直接收尾提交。"
 }
 
-// Stop 终止任务执行：取消订阅 → kill serve（tmux 会话）→ 事件通道关闭 → 注销运行态。
+// Stop 终止任务执行：取消订阅 → kill serve（执行者进程组）→ 事件通道关闭 → 注销运行态。
 //
 // 注意：
 //   - 幂等：重复 Stop 不 panic；事件通道只关闭一次（由订阅 goroutine 持有关闭权）
@@ -497,7 +499,7 @@ func rejectedTurnQuestion(rejected []string) string {
 //     会话，drop 掉就没有任何途径回收；保留期间运行态是惰性的（订阅与看门狗
 //     都已退出、事件通道已关），Send/RespondPermission 经 stopCh 守卫拒绝继续执行
 //   - 保留态由 reapRetained 后台重试回收（A-10），重试有上限、放弃时打 Error
-//     交人工（杀 tmux 会话/进程）：**agentd 重启不会接走它**——RecoverOnStartup
+//     交人工（handoff stop 回收）：**agentd 重启不会接走它**——RecoverOnStartup
 //     只探测 running/waiting_answer 任务（watchdog.go），而 Stop 只由 Done 在
 //     归档时调用（manager.go），进程内保留态只可能属于已归档任务
 //   - 运行态注销（drop）与 subscribeLoop 退出时的 drop 是幂等的 map 删除，
@@ -531,7 +533,7 @@ func (a *Adapter) Stop(taskID string) (err error) {
 				go a.reapRetained(r)
 				return fmt.Errorf("kill serve: %w", kerr)
 			}
-			// kill 失败但 serve 已自灭（进程死，tmux 会话也已消失）：无孤儿资源
+			// kill 失败但 serve 已自灭（进程死）：无孤儿资源
 			// 可留，保留反而是无法回收的僵尸条目，照常注销
 			a.log.Warn("kill serve 失败但 serve 已死，照常注销运行态", "task", taskID, "cause", kerr)
 		}
@@ -544,7 +546,7 @@ func (a *Adapter) Stop(taskID string) (err error) {
 // reapRetained 回收 Stop 时因 kill 失败而保留的运行态（A-10）。
 //
 // 周期重试 Kill：成功（或 serve 已自灭）即注销运行态；连续失败达
-// reapMaxAttempts 后放弃并注销，打 Error 交人工清理 tmux 会话/进程。
+// reapMaxAttempts 后放弃并注销，打 Error 交人工清理执行者进程。
 //
 // why（保留必须配重试与上限）：保留态是惰性的——没有 goroutine、事件通道已关，
 // 它唯一的价值就是「还留着 handle，还有机会回收孤儿 serve」。不重试，这个价值
@@ -572,7 +574,7 @@ func (a *Adapter) reapRetained(r *runState) {
 		a.log.Warn("保留态回收重试失败", "task", r.taskID,
 			"attempt", attempt, "max_attempts", maxAttempts, "cause", kerr)
 	}
-	a.log.Error("保留态回收重试耗尽，注销条目并交人工清理（请手动杀掉 tmux 会话与 opencode 进程）",
+	a.log.Error("保留态回收重试耗尽，注销条目并交人工清理（请 handoff stop 回收）",
 		"task", r.taskID, "attempts", maxAttempts)
 	a.drop(r.taskID)
 }
@@ -607,9 +609,9 @@ func (r *runState) subscribeLoop(a *Adapter) {
 		// 产出的 permission.asked 永久丢失；又无「按会话拉取未决权限」的可用端点
 		// （GET /session/{id}/message 的 tool part 只有 callID 无权限 id，应答端点
 		// 要求真实 id、伪造即 404）。opencode 若在等一个看不见的决策会一直挂到
-		// 看门狗判死，此处告警让运营者知道需要人工兜底（重启任务/tmux attach）
+		// 看门狗判死，此处告警让运营者知道需要人工兜底（重启任务/handoff attach）
 		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），"+
-			"若任务卡在等待决策请重启任务或 tmux attach 查看",
+			"若任务卡在等待决策请重启任务或 handoff attach 查看",
 			"task", r.taskID, "session", r.session)
 	})
 	select {
@@ -628,11 +630,11 @@ func (r *runState) subscribeLoop(a *Adapter) {
 			FailReason: "opencode serve 已退出: " + tail,
 		}})
 		// 回收残留会话：serve 死后第二窗口（tail -f render.log）会一直吊着
-		// tmux 会话不销毁，不回收就成孤儿（占 tail -f 进程与会话名）；
+		// 执行者进程不回收就成孤儿（shim 的锁与子进程占资源）；
 		// Kill 幂等，后续 Stop 再 kill 也安全。证据不丢——serve.log/render.log
 		// 在磁盘上，审核者照常读文件
 		if kerr := r.handle.Kill(); kerr != nil {
-			a.log.Warn("serve 死亡后回收 tmux 会话失败", "task", r.taskID, "cause", kerr)
+			a.log.Warn("serve 死亡后回收执行者进程失败", "task", r.taskID, "cause", kerr)
 		}
 		return
 	}
@@ -669,7 +671,7 @@ type watchdogConfig struct {
 //     产出/权限在等裁决），serve 死亡要能被快速发现
 //   - 高频下连续 fastProbes 次成功探活且无新事件 → 降频到 slow：任务静默
 //     （waiting_review 挂过夜），200ms 高频探活是纯浪费——每天每任务约 43 万次
-//     tmux fork + HTTP 请求（P1-17）
+//     HTTP 请求（P1-17）
 //   - 任一失败 → 立即回到高频：死亡判定是看门狗唯一职责，不能被降频拖慢
 //     （慢档最坏 3 次 × 2s ≈ 6s 才判死，MVP 可接受）
 func (a *Adapter) watchdogWithConfig(r *runState, cfg watchdogConfig) {
@@ -701,7 +703,7 @@ func (a *Adapter) watchdogWithConfig(r *runState, cfg watchdogConfig) {
 				successes++
 				if interval == cfg.fastInterval && !active && successes >= cfg.fastProbes {
 					// 高频下连续成功且无事件：任务进入静默期（如 waiting_review），
-					// 降频省 tmux fork 与 HTTP 请求（P1-17）。Debug 而非 Info（修复 6）：
+					// 降频省 HTTP 请求（P1-17）。Debug 而非 Info（修复 6）：
 					// 与「回高频」对称，两档来回切时不刷 Info 噪音——任务正常干活时
 					// 每 ~4 秒就在两档间切一次，Info 级别的「降频」配 Debug 的
 					// 「回高频」会误导成「任务卡住」
@@ -886,14 +888,14 @@ var taskScopedEvents = map[string]bool{
 //     subagent/task 工具派生子会话，其权限请求带子会话 id。丢掉它 = opencode
 //     在等一个永远不会到来的决策，而 serve 活着、看门狗不触发，任务静默挂起。
 //     本层无法把子会话映射回任务（没有可用的父子关系端点），至少要 Warn 到
-//     日志，让运营者知道需要 tmux attach 人工兜底
+//     日志，让运营者知道需要 handoff attach 人工兜底
 func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool {
 	if !taskScopedEvents[ev.Type] {
 		return true // 服务器级广播事件：本就不带会话，交给下游的 default 分支跳过
 	}
 	if ev.Type == "permission.asked" {
 		a.log.Warn("收到不属于本任务会话的审批请求，未产出工单（opencode 可能在等一个看不见的决策，"+
-			"任务若卡住请 tmux attach 查看）",
+			"任务若卡住请 handoff attach 查看）",
 			"task", r.taskID, "own_session", r.session, "event_session", sessionID,
 			"properties", turn.TruncateRunes(string(ev.Properties), 200))
 		return false
@@ -941,11 +943,11 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	}
 	// 描述下限（A-2）：三种真实形态（缺 permission / 缺 metadata.command /
 	// 缺 patterns）都会拼出空串。空描述意味着审核者被要求批准一个空白行——
-	// 宁可给出「未提供描述 + 权限 id」，让他知道要去 tmux 会话里看现场
+	// 宁可给出「未提供描述 + 权限 id」，让他知道要去 handoff attach 里看现场
 	if strings.TrimSpace(text) == "" {
 		a.log.Warn("permission.asked 无可读描述，按未说明权限交审核者",
 			"task", r.taskID, "perm", pa.ID)
-		text = "opencode 未提供权限描述（id " + pa.ID + "），请 tmux attach 查看现场"
+		text = "opencode 未提供权限描述（id " + pa.ID + "），请 handoff attach 查看现场"
 	}
 	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
@@ -1171,7 +1173,7 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 // why（去抖而非见 idle 即分类）：idle 是 opencode 的会话状态信号，不等于「模型
 // 这一轮说完了」——工具调用间隙、权限等待期间都可能出现瞬时 idle。见 idle 即
 // 分类会把半截回合当成完整回合：命中 git 兜底时更会因「仓库里已有新提交」谎报
-// completed，审核者据此执行 done，Stop 就在 opencode 仍在干活时杀掉了 tmux 会话。
+// completed，审核者据此执行 done，Stop 就在 opencode 仍在干活时杀掉了执行者进程。
 //
 // 宽限期内任何回合推进（新增文本、非 idle 状态、下一条 idle）都会自增 idleGen，
 // 使在途的候选失效——真正的回合结束后不会再有事件，宽限期自然走完。代价是回合
@@ -1382,7 +1384,7 @@ func partKey(msgID, partID string) string {
 	return msgID + "\x00" + partID
 }
 
-// appendRender 把消息文本增量追加进 render.log（tmux 第二窗口 tail -f 可见）。
+// appendRender 把消息文本增量追加进 render.log（handoff attach 实况可见）。
 //
 // 薄封装：实现在 turn 共享包（B2/B3 两个 adapter 同构逻辑），本方法保留
 // 调用点已有的 taskDir 上下文（renderPath 由 newRun 按 taskDir 推导）。

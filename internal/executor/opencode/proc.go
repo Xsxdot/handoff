@@ -1,25 +1,22 @@
 // proc.go —— opencode serve 进程生命周期管理。
 //
 // 职责：
-//   - 在 tmux 会话内拉起 `opencode serve --port <随机空闲端口> --hostname 127.0.0.1`
-//   - 经 taskDir 下的 0600 启动脚本注入 OPENCODE_SERVER_PASSWORD（随机生成）与
-//     OPENCODE_CONFIG（Task 10 生成的配置路径）——argv 只留脚本路径，密码不进
-//     任何进程的命令行参数（why 见 writeServeScript）
-//   - serve 输出 tee 落盘 <taskDir>/serve.log：serve 所在窗格随其命令退出关闭、
-//     capture-pane 必空（P1-8），serve.log 是启动超时与死亡诊断的持久 stderr
-//   - 就绪探测（轮询 GET /）、存活检查（tmux has-session + HTTP 探活）、销毁（kill-session）
+//   - 组 `opencode serve --port <随机空闲端口> --hostname 127.0.0.1` 的 argv，
+//     经 prochost 以 detached 方式拉起（shim 承载，见 prochost 包）
+//   - 密码与配置经 Spec.Env 注入（OPENCODE_SERVER_PASSWORD / OPENCODE_CONFIG），
+//     argv 不含任何秘密（why 见 serveSpec）
+//   - serve 输出落盘 <taskDir>/serve.log：serve 死亡诊断的持久 stderr
+//   - 就绪探测（轮询 GET /）、存活检查（存活锁 + HTTP 探活）、销毁（按进程组 Kill）
 //
 // 边界：
 //   - 不触碰会话：会话的创建、prompt、权限应答由 api.go 完成，本文件只保证
 //     「serve 进程活着、端口可用」
 //   - 不生成任务级配置（OPENCODE_CONFIG 指向的文件由 Task 10 生成）
 //
-// 为什么进程放 tmux 而不是 agentd 子进程：agentd 重启或崩溃时子进程树会被一并
-// 回收，正在执行的任务会无辜中断；tmux server 是独立守护进程，session 及其子进程
-// 生命周期与 agentd 完全解耦——agentd 重启后靠 Alive() 探测发现存活并重连 SSE。
-// 额外收益：用户可 `tmux attach -t handoff-<id8>` 旁观甚至介入任务执行（第二窗口
-// tail -f render.log 展示模型文本实况，见 startRenderTailWindow），这是
-// 调试与人工兜底的关键通道。
+// 为什么进程经 prochost 而不是 agentd 直接 fork：agentd 重启或崩溃时子进程
+// 树会被一并回收，正在执行的任务会无辜中断；prochost 的 shim 以新会话拉起并
+// 持有存活锁，生命周期与 agentd 解耦——agentd 重启后靠 Alive() 探测发现存活
+// 并重连 SSE。实况观测走 agentd 的 render 流式 endpoint（handoff attach）。
 package opencode
 
 import (
@@ -35,10 +32,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/shellq"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
 // serveReadyTimeout 是 StartServe 等待 serve 就绪的总超时。
@@ -46,7 +44,7 @@ const serveReadyTimeout = 10 * time.Second
 
 // protectedEnvKeys 是 handoff 自身注入、不容 env 文件覆盖的变量。
 //
-// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的 export 排在后面因而胜出，
+// 命中时不静默忽略用户写的行——注入顺序保证 handoff 的变量排在后面因而胜出，
 // 同时打 WARN 让用户知道自己那行没生效。
 var protectedEnvKeys = map[string]bool{
 	"OPENCODE_SERVER_PASSWORD": true,
@@ -58,64 +56,68 @@ const serveProbeInterval = 200 * time.Millisecond
 
 // 任务目录内的执行器物料文件名（目录本身 0700，见 manager 创建处）。
 const (
-	serveScriptFileName = "run_serve.sh" // 0600 启动脚本（含随机密码，见 writeServeScript）
-	serveLogFileName    = "serve.log"    // serve 输出持久副本（tee 落盘，P1-8 诊断来源）
-	renderLogFileName   = "render.log"   // 模型回合文本增量（tmux 第二窗口 tail -f 目标）
+	serveLogFileName  = "serve.log"  // serve 输出持久副本（P1-8 诊断来源）
+	renderLogFileName = "render.log" // 模型回合文本增量（render 流式 endpoint 的数据源）
+	procInfoFileName  = "proc.json"  // 恢复凭据：prochost.Handle / port / password
+	lockFileName      = "proc.lock"  // shim 存活锁（prochost.Alive 的唯一判据）
 )
 
 // Proc 描述一个运行中的 opencode serve 进程。
 //
 // 字段说明：
+//   - Handle: prochost 句柄（shim pid + 存活锁路径），存活与回收都靠它
 //   - Port: serve 监听的端口（127.0.0.1 上）
 //   - Password: 随机生成的 OPENCODE_SERVER_PASSWORD，api.go 的 basic auth 用它
-//   - TmuxSession: tmux 会话名（handoff-<taskID 前 8 字符>），用户可 attach 旁观
-//   - ServeLogPath: serve 输出日志路径（<taskDir>/serve.log），serve 死后
-//     capture-pane 读不到已关闭窗格，诊断只能读它
+//   - ServeLogPath: serve 输出日志路径（<taskDir>/serve.log），serve 死后诊断只能读它
 type Proc struct {
+	Handle       prochost.Handle
 	Port         int
 	Password     string
-	TmuxSession  string
 	ServeLogPath string
 }
 
-// startServe 是 StartServe 的测试缝（与 tmuxKill 同手法）：冷恢复测试替换它
-// 断言「起 serve」是否被调用，绕开真实 tmux + opencode 二进制。
+// startServe 是 StartServe 的测试缝：冷恢复测试替换它断言「起 serve」是否被调用，
+// 绕开真实 shim + opencode 二进制。
 var startServe = StartServe
 
-// StartServe 在 tmux 内启动 opencode serve 并等待就绪。
+// startProcHost 是 prochost.Start 的测试缝：测试替换它断言 spec 内容，
+// 绕开真实 shim。
+var startProcHost = prochost.Start
+
+// StartServe 经 prochost 拉起 opencode serve 并等待就绪。
 //
 // 参数：
 //   - ctx: 上下文；就绪轮询同样受 ctx 取消影响
 //   - repoPath: 任务仓库路径，作为 serve 的工作目录（cwd）
-//   - taskID: 任务 id，用于生成 tmux 会话名（handoff-<id8>）
-//   - taskDir: 任务目录（0700），serve 启动脚本与 serve.log 都放这里
+//   - taskID: 任务 id，用于日志与任务目录定位
+//   - taskDir: 任务目录（0700），serve.log 与 proc.json 都放这里
 //   - configPath: 任务级 opencode 配置路径（Task 10 生成），注入 OPENCODE_CONFIG
 //   - env: 额外注入的环境变量（形如 KEY=VALUE，来自 env 文件，已解析已展开）；
-//     覆盖顺序见 writeServeScript 的 why
+//     覆盖顺序见 serveSpec 的 why
 //   - log: 本模块日志入口（StartServe 是进程启动点，日志需要显式传入而非走默认）
 //
 // 返回：
 //   - 就绪的 Proc；就绪 = 端口上已有 HTTP 服务响应（含 401：密码校验属后续请求的事，
 //     这里只关心「serve 进程起来且 HTTP 层可应答」）
-//   - 错误：启动脚本写失败、tmux 启动失败、10s 内未就绪（错误信息携带 serve.log
-//     尾部的 serve stderr）
+//   - 错误：取端口/密码失败、写 proc.json 失败、拉起 shim 失败、10s 内未就绪
+//     （错误信息携带 serve.log 尾部的 serve stderr）
 //
 // 注意：
 //   - 端口选择存在 TOCTOU 竞态（见 freePort），MVP 接受
-//   - 就绪超时后自动 Kill 清理残留 session，避免半启动进程占着端口
+//   - 就绪超时后自动 Kill 清理残留进程，避免半启动进程占着端口
 func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+	l := log.With("task", taskID)
 	port, err := freePort()
 	if err != nil {
-		log.Error("获取随机空闲端口失败", "cause", err)
+		l.Error("获取随机空闲端口失败", "cause", err)
 		return nil, fmt.Errorf("获取空闲端口: %w", err)
 	}
 	password, err := randomPassword()
 	if err != nil {
-		log.Error("生成 serve 密码失败", "cause", err)
+		l.Error("生成 serve 密码失败", "cause", err)
 		return nil, fmt.Errorf("生成 serve 密码: %w", err)
 	}
 
-	session := "handoff-" + id8(taskID)
 	// env 注入（B19）：只打 key 名不打值——值里可能带凭据（如 http://user:pass@host）
 	if len(env) > 0 {
 		keys := make([]string, 0, len(env))
@@ -126,38 +128,51 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 			}
 			keys = append(keys, k)
 			if protectedEnvKeys[k] {
-				log.Warn("env 文件定义了 handoff 保留变量，将被 handoff 自身注入覆盖",
-					"key", k, "session", session)
+				l.Warn("env 文件定义了 handoff 保留变量，将被 handoff 自身注入覆盖",
+					"key", k)
 			}
 		}
-		log.Info("注入 env 变量到 serve 进程", "session", session, "keys", keys, "count", len(keys))
+		l.Info("注入 env 变量到 serve 进程", "keys", keys, "count", len(keys))
 	}
-	// 密码/配置经 0600 启动脚本注入，tmux argv 只含脚本路径（ps 不可见密码）
-	scriptPath, err := writeServeScript(taskDir, port, password, configPath, env)
+	bin, err := exec.LookPath("opencode")
 	if err != nil {
-		log.Error("写 serve 启动脚本失败", "session", session, "cause", err)
+		l.Error("opencode 未安装", "cause", err)
+		return nil, fmt.Errorf("opencode 未安装: %w", err)
+	}
+	selfExe, err := os.Executable()
+	if err != nil {
+		l.Error("取 handoff 自身路径失败（shim 无法拉起）", "cause", err)
+		return nil, fmt.Errorf("取自身可执行路径: %w", err)
+	}
+	spec := serveSpec(repoPath, taskDir, configPath, port, password, env)
+	spec.Argv[0] = bin
+	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
+	if err := writeProcInfo(taskDir, &procInfo{
+		Handle: prochost.Handle{LockPath: spec.LockPath}, Port: port, Password: password,
+	}); err != nil {
+		l.Error("写恢复凭据失败", "cause", err)
 		return nil, err
 	}
-	log.Info("启动 opencode serve", "port", port, "session", session, "script", scriptPath, "repo", repoPath)
-
-	out, err := exec.Command("tmux", serveTmuxArgs(session, repoPath, scriptPath)...).CombinedOutput()
+	l.Info("启动 opencode serve", "port", port, "bin", bin, "repo", repoPath)
+	handle, err := startProcHost(spec, selfExe)
 	if err != nil {
-		log.Error("tmux 启动 opencode serve 失败", "session", session,
-			"stderr_tail", tail(string(out), 500), "cause", err)
-		return nil, fmt.Errorf("tmux 启动 %s: %w", session, err)
+		l.Error("拉起 opencode serve 失败", "port", port, "cause", err)
+		return nil, err
 	}
-	// 第二窗口 tail -f render.log（模型文本实况）；失败只 Warn 不阻断，见该函数注释
-	startRenderTailWindow(session, taskDir, log)
-
-	p := &Proc{Port: port, Password: password, TmuxSession: session,
+	p := &Proc{Handle: handle, Port: port, Password: password,
 		ServeLogPath: filepath.Join(taskDir, serveLogFileName)}
+	if err := writeProcInfo(taskDir, &procInfo{
+		Handle: handle, Port: port, Password: password,
+	}); err != nil {
+		l.Warn("回写恢复凭据失败，重启恢复将不可用", "cause", err)
+	}
 	readyCtx, cancel := context.WithTimeout(ctx, serveReadyTimeout)
 	defer cancel()
 
 	start := time.Now()
 	for {
 		if p.probeHTTP() {
-			log.Info("opencode serve 就绪", "port", port, "session", session,
+			l.Info("opencode serve 就绪", "port", port, "shim_pid", handle.PID,
 				"ready_ms", time.Since(start).Milliseconds())
 			return p, nil
 		}
@@ -165,10 +180,8 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 		case <-readyCtx.Done():
 			// 就绪超时：读 serve.log 尾部（serve 的 stderr）带进错误，这是
 			// 「为什么没起来」的第一手证据（如端口被占、config 解析失败）。
-			// 为什么读文件而不是 capture-pane：serve 没起来就谈不上窗格内容，
-			// 且窗格随命令退出关闭（P1-8），serve.log 是唯一可靠来源
 			stderrTail := serveLogTail(p.ServeLogPath)
-			log.Error("opencode serve 就绪超时", "port", port, "session", session,
+			l.Error("opencode serve 就绪超时", "port", port, "shim_pid", handle.PID,
 				"stderr_tail", stderrTail)
 			_ = p.Kill() // 清理残留，避免半启动进程占着端口
 			return nil, fmt.Errorf("opencode serve 就绪超时（10s）: %s", stderrTail)
@@ -177,43 +190,48 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 	}
 }
 
-// Alive 检查 serve 进程是否仍然存活：tmux 会话存在且端口有 HTTP 应答。
+// serveSpec 组 opencode serve 的启动描述。
 //
-// 注意：探测是全副「tmux session + HTTP」，两者缺一即视为死亡——tmux 会话在但
-// serve 进程已退出（如崩溃）时 HTTP 探活会失败，反之亦然。
+// 为什么密码走 Env 而不是 argv：进程 argv 本机全局可读（/proc/<pid>/cmdline），
+// 密码进 argv 等于对同机任何用户公开。旧实现靠「密码写进 0600 启动脚本、
+// 只把脚本路径给 tmux」达成同样效果；换成 prochost 后由 Spec.Env 承担
+// （spec.json 同样 0600）。TestServeSpecPutsPasswordInEnvNotArgv 钉死这条。
+//
+// 为什么 handoff 注入的变量排在 env 文件之后：切片靠后者覆盖前者，
+// 用户 env 文件里若定义了 OPENCODE_* 保留键，必须被 handoff 自己的值压过
+// （B19 protectedEnvKeys 纪律，调用方另有 Warn 提示）。
+func serveSpec(repoPath, taskDir, configPath string, port int, password string, env []string) prochost.Spec {
+	serveLog := filepath.Join(taskDir, serveLogFileName)
+	full := append(os.Environ(), env...)
+	full = append(full,
+		"OPENCODE_SERVER_PASSWORD="+password,
+		"OPENCODE_CONFIG="+configPath,
+	)
+	return prochost.Spec{
+		Argv:     []string{"opencode", "serve", "--port", strconv.Itoa(port), "--hostname", "127.0.0.1"},
+		Dir:      repoPath,
+		Env:      full,
+		Stdout:   serveLog,
+		Stderr:   serveLog, // serve 的 stdout/stderr 合并落一份，与旧 tee -a 行为一致
+		LockPath: filepath.Join(taskDir, lockFileName),
+		InfoPath: filepath.Join(taskDir, procInfoFileName),
+		Sentinel: true,
+	}
+}
+
+// Alive 检查 serve 是否仍然存活：存活锁被持有 且 端口有 HTTP 应答。
+//
+// 两者缺一即视为死亡。锁证明 shim 还在，HTTP 证明 serve 本身还在应答——
+// serve 崩了但 shim 尚未收尸的窗口由 HTTP 这条兜住。
 func (p *Proc) Alive() bool {
-	if !tmuxHasSession(p.TmuxSession) {
+	if !prochost.Alive(p.Handle) {
 		return false
 	}
 	return p.probeHTTP()
 }
 
-// tmuxKill 是 tmux kill-session 的测试缝（与 claudecode 同手法）：测试替换它
-// 断言 Reap 回收的会话名，绕开真实 tmux server。
-var tmuxKill = func(session string) error {
-	return exec.Command("tmux", "kill-session", "-t", session).Run()
-}
-
-// tmuxHasSession 是 tmux has-session 探活的测试缝（与 claudecode 同手法）：测试
-// 替换它绕开真实 tmux，判定「会话存在」的语义不变。
-var tmuxHasSession = func(session string) bool {
-	return exec.Command("tmux", "has-session", "-t", session).Run() == nil
-}
-
-// Kill 销毁 tmux 会话（连同其内的 opencode serve）。
-//
-// 幂等：会话已不存在（已被外部清理）时返回 nil。
-func (p *Proc) Kill() error {
-	err := tmuxKill(p.TmuxSession)
-	if err != nil {
-		// 会话不存在视为已清理，不报错；其余错误（权限、tmux 未运行）如实上报
-		if !tmuxHasSession(p.TmuxSession) {
-			return nil
-		}
-		return fmt.Errorf("kill tmux session %s: %w", p.TmuxSession, err)
-	}
-	return nil
-}
+// Kill 终止 serve 及其后代（按进程组），幂等。
+func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
 
 // probeHTTP 探活 serve 的 HTTP 端口。
 //
@@ -234,97 +252,6 @@ func (p *Proc) probeHTTP() bool {
 	return true
 }
 
-// writeServeScript 在 taskDir 生成 0600 权限的 serve 启动脚本并返回其路径。
-//
-// why（脚本化而不是 tmux -e / 命令行内联）：
-//   - tmux new-session 的 -e 参数是 tmux 客户端进程的字面 argv，Linux 上
-//     /proc/<pid>/cmdline 默认全局可读（ps 即可见），tmux show-environment
-//     也能读回会话环境——随机密码只保护到「本机任意用户可读」为止（P0-4）。
-//     密码与配置路径改为写进 taskDir 下的 0600 脚本（taskDir 本身 0700），
-//     tmux argv 只剩脚本路径，ps 只能看到 sh <taskDir>/run_serve.sh
-//   - 脚本没有可执行位、用 `sh <path>` 显式调用：少一个可执行文件面
-//
-// why（tee -a serve.log）：serve 的 stdout/stderr 同时落盘 taskDir/serve.log。
-// serve 所在窗格随其命令退出而关闭，capture-pane 读不到已关闭窗格（P1-8）；
-// serve.log 是 serve 死后仍可读的持久诊断副本——启动超时与 serve 死亡错误的
-// stderr 尾部都从它取。
-//
-// why（脚本首行 exec 2>> serve.log）：sh 自身的 stderr（如 exec 的 opencode
-// 不存在时报 "not found"、export 失败）同样落盘 serve.log，否则这类报错只进
-// tmux 窗格、随命令退出一起消失。opencode 侧 2>&1 仍走管道进 tee，不受此
-// 重定向影响——命令级重定向（2>&1）覆盖 shell 级（2>> 文件）；tee 自身继承
-// 文件 fd2，它的报错也落盘。
-//
-// why（env 行排在 OPENCODE_* 之前且值用单引号）：排在前面才能让 handoff 自身的
-// 变量覆盖 env 文件里的同名键（见 protectedEnvKeys）；值必须单引号包裹，因为 Go 侧
-// 已经展开过一次，不加引号会被 shell 再展开第二次，含 $ 的值会变成别的东西。
-func writeServeScript(taskDir string, port int, password, configPath string, env []string) (string, error) {
-	serveLogPath := filepath.Join(taskDir, serveLogFileName)
-	var envLines strings.Builder
-	for _, kv := range env {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue // 形如 KEY=VALUE 之外的条目直接跳过，不让它污染脚本语法
-		}
-		envLines.WriteString("export " + k + "=" + shellQuote(v) + "\n")
-	}
-	script := fmt.Sprintf(`#!/bin/sh
-# 由 agentd 生成：opencode serve 启动脚本（0600，含随机密码，勿外泄）。
-exec 2>> %s
-%sexport OPENCODE_SERVER_PASSWORD=%s
-export OPENCODE_CONFIG=%s
-exec opencode serve --port %d --hostname 127.0.0.1 2>&1 | tee -a %s
-`, shellQuote(serveLogPath), envLines.String(), shellQuote(password), shellQuote(configPath), port, shellQuote(serveLogPath))
-	scriptPath := filepath.Join(taskDir, serveScriptFileName)
-	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
-		return "", fmt.Errorf("写 serve 启动脚本 %s: %w", scriptPath, err)
-	}
-	return scriptPath, nil
-}
-
-// shellQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\”），
-// 供写进启动脚本与 tmux 命令串——密码/路径可能含引号或空白，不转义会改变
-// 脚本语义或让 tmux 把命令拆错。
-// 实现委托 internal/shellq（与 cmd 包弹终端的 shell 拼接同源，避免复制漂移）。
-func shellQuote(s string) string {
-	return shellq.Quote(s)
-}
-
-// serveTmuxArgs 组装启动 serve 的 tmux new-session 参数。
-//
-// why（argv 只含脚本路径）：密码/配置经启动脚本注入，命令行参数层面不出现
-// 任何秘密——tmux 客户端进程的 argv 全局可读（/proc/<pid>/cmdline），这是
-// P0-4 的安全边界所在。环境变量也不再走 -e：show-environment 会把密码
-// 暴露给任何能连上 tmux server 的本机用户。
-func serveTmuxArgs(session, repoPath, scriptPath string) []string {
-	return []string{
-		"new-session", "-d", "-s", session, "-c", repoPath,
-		"sh " + shellQuote(scriptPath),
-	}
-}
-
-// startRenderTailWindow 在会话内开第二窗口 `tail -f <taskDir>/render.log`：
-// 模型回合文本实况（spec 三大核心诉求之一，README 已宣称可用）。
-//
-// 稳健做法：先 touch render.log 再开窗口——tail -f 对不存在的文件会立即报错
-// 退出（GNU/BSD 只在 -F 下才等待文件出现），而 render.log 由 adapter 在首个
-// 文本增量时才创建。窗口启动失败只 Warn 不阻断主流程：这是增强型可见性
-// （attach 第一窗口仍能看到 serve 输出），不值得为它挂掉任务启动。
-func startRenderTailWindow(session, taskDir string, log *slog.Logger) {
-	renderLogPath := filepath.Join(taskDir, renderLogFileName)
-	f, err := os.OpenFile(renderLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		log.Warn("创建 render.log 失败，tmux 第二窗口不可用", "session", session, "cause", err)
-		return
-	}
-	f.Close()
-	if err := exec.Command("tmux", "new-window", "-t", session,
-		"tail -f "+shellQuote(renderLogPath)).Run(); err != nil {
-		log.Warn("tmux 第二窗口启动失败（tail render.log 不可用），不影响主流程",
-			"session", session, "cause", err)
-	}
-}
-
 // serveLogTailBytes 是 serve.log 尾部读取的字节上限（诊断信息取末尾 500 字节，
 // 多读一些余量以便 tail 按完整行截断）。
 const serveLogTailBytes = 4 << 10
@@ -332,11 +259,7 @@ const serveLogTailBytes = 4 << 10
 // serveLogTail 读 serve.log 尾部最多 500 字节，供就绪超时/死亡诊断；文件未
 // 创建（serve 根本没跑起来）或已被清理时返回空串。
 //
-// why（读文件而非 tmux capture-pane）：serve 所在窗格随命令退出而关闭，
-// capture-pane 读不到已关闭窗格（P1-8）——serve.log 是 tee 落盘的持久副本，
-// serve 死后仍可读。
-//
-// why（Seek 到尾部而非 os.ReadFile 整读）：serve.log 由 tee -a 写满任务全程且
+// why（Seek 到尾部而非 os.ReadFile 整读）：serve.log 由 serve 写满任务全程且
 // 无轮转，而本函数的调用时机恰是 serve 死亡/就绪超时——最不该再分配几百 MB 的
 // 时刻。整读一份 100MiB 日志只为取末尾 500 字节，是把诊断动作变成第二次故障。
 func serveLogTail(serveLogPath string) string {
@@ -363,50 +286,47 @@ func serveLogTail(serveLogPath string) string {
 	return tail(string(b), 500)
 }
 
-// serveInfoFileName 是 serve 连接凭据文件名（任务目录内，0600 权限）。
-const serveInfoFileName = "serve.json"
-
-// serveInfo 是 serve 进程连接凭据的持久化形态，agentd 重启后凭它重建订阅。
-type serveInfo struct {
-	Port        int    `json:"port"`
-	Password    string `json:"password"`
-	TmuxSession string `json:"tmux_session"`
+// procInfo 是 serve 进程连接凭据的持久化形态，agentd 重启后凭它重建订阅。
+type procInfo struct {
+	Handle   prochost.Handle `json:"handle"`
+	Port     int             `json:"port"`
+	Password string          `json:"password"`
 }
 
-// writeServeInfo 把 serve 连接凭据写入任务目录 serve.json。
+// writeProcInfo 把 serve 连接凭据写入任务目录 proc.json（0600）。
 //
-// why（必须持久化）：agentd 重启后内存中的 Proc（端口/密码）丢失，而 tmux 内的
-// serve 进程独立存活（进程模型见文件头）；RecoverOnStartup 凭此文件探活并重建
-// SSE 订阅（spec §8）。写失败不阻断启动（adapter.Start 只 Warn），缺失时该任务
-// 重启后按「执行器已不在」转 failed 交审核者——保守胜于静默丢事件。
-func writeServeInfo(taskDir string, p *Proc) error {
-	b, err := json.Marshal(serveInfo{Port: p.Port, Password: p.Password, TmuxSession: p.TmuxSession})
+// why（必须持久化）：agentd 重启后内存中的 Proc（端口/密码）丢失，而 shim 内的
+// serve 进程独立存活；RecoverOnStartup 凭此文件探活并重建 SSE 订阅（spec §8）。
+// 写失败不阻断启动（adapter.Start 只 Warn），缺失时该任务重启后按「执行器已不在」
+// 转 failed 交审核者——保守胜于静默丢事件。
+func writeProcInfo(taskDir string, pi *procInfo) error {
+	b, err := json.Marshal(pi)
 	if err != nil {
-		return fmt.Errorf("序列化 serve 凭据: %w", err)
+		return fmt.Errorf("序列化恢复凭据: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(taskDir, serveInfoFileName), b, 0o600); err != nil {
-		return fmt.Errorf("写 serve 凭据 %s: %w", serveInfoFileName, err)
+	if err := os.WriteFile(filepath.Join(taskDir, procInfoFileName), b, 0o600); err != nil {
+		return fmt.Errorf("写恢复凭据 %s: %w", procInfoFileName, err)
 	}
 	return nil
 }
 
-// readServeInfo 读取任务目录的 serve 连接凭据。
+// readProcInfo 读取任务目录的 serve 连接凭据。
 //
 // 返回：
 //   - 文件缺失/损坏/字段不完整时返回错误（调用方据此判「无法重建订阅」）
-func readServeInfo(taskDir string) (*serveInfo, error) {
-	b, err := os.ReadFile(filepath.Join(taskDir, serveInfoFileName))
+func readProcInfo(taskDir string) (*procInfo, error) {
+	b, err := os.ReadFile(filepath.Join(taskDir, procInfoFileName))
 	if err != nil {
-		return nil, fmt.Errorf("读 serve 凭据 %s: %w", serveInfoFileName, err)
+		return nil, fmt.Errorf("读恢复凭据 %s: %w", procInfoFileName, err)
 	}
-	var si serveInfo
-	if err := json.Unmarshal(b, &si); err != nil {
-		return nil, fmt.Errorf("解析 serve 凭据 %s: %w", serveInfoFileName, err)
+	var pi procInfo
+	if err := json.Unmarshal(b, &pi); err != nil {
+		return nil, fmt.Errorf("解析恢复凭据 %s: %w", procInfoFileName, err)
 	}
-	if si.Port == 0 || si.Password == "" || si.TmuxSession == "" {
-		return nil, fmt.Errorf("serve 凭据 %s 字段不完整", serveInfoFileName)
+	if pi.Handle.LockPath == "" || pi.Port == 0 || pi.Password == "" {
+		return nil, fmt.Errorf("恢复凭据 %s 字段不完整", procInfoFileName)
 	}
-	return &si, nil
+	return &pi, nil
 }
 
 // freePort 找一个随机空闲端口。
@@ -431,14 +351,6 @@ func randomPassword() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// id8 取字符串前 8 个字符（不足 8 个则原样返回），用于 tmux 会话名。
-func id8(s string) string {
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
 }
 
 // tail 返回字符串尾部最多 n 个字符（按字节截断，日志用，不追求多字节安全——
