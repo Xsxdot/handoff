@@ -91,7 +91,7 @@ a7c7ce7 feat: create projects with durable location operations
 020aa36 test: prove handoff control plane desktop checkpoint
 3aadbaf fix: cover reconnect gap repair and operation idempotency in e2e
 9e0e1ca docs: record upstream baseline failures and e2e fix commit in evidence
-<commit> fix: stabilize project dialog operation id and add retry error ui
+0f2c88c fix: stabilize project dialog operation id and add retry error ui
 ```
 
 ## 3. Fake agentd E2E 纵切场景
