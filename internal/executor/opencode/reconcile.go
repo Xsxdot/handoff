@@ -136,11 +136,16 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 //	5  ToolStatus == "completed"                → 未结束（真·回合中途冻结）
 //	6  兜底（无 tool、无 error、finish 缺席/其它）→ 已结束（窄兜底，见下）
 //
-// row2 为什么成立（工具 error ⇒ 回合结束）：本会话 14 条带 state.status=error
+// row2 为什么成立（Finish=="stop" ⇒ 回合结束）：stop 是 opencode 的自然结束标记——
+// 模型把话说完、本轮不再有工具调用，消息的 finish 就是 "stop"。实测该形态消息
+// 的 parts 为 step-start/text/step-finish（无 tool part），是「回合到此为止」的
+// 最直接信号。与实时路径 mapIdle 的判定口径一致（文本完整、无续接意图即分类收尾）。
+//
+// row4 为什么成立（工具 error ⇒ 回合结束）：本会话 14 条带 state.status=error
 // 工具 part 的消息 14/14 后面紧跟的都是 user 消息（或就是会话尾），零反例——
 // 「工具报错模型会自己重试、回合不结束」的担心被数据否掉。更重要的代码佐证：
 // 实时路径 adapter.go:1236-1241 早就把「回合因权限被拒而终止」当作回合结束并转成
-// question 唤醒审核者（rejectedTurnQuestion，adapter.go:482-488）——row2 不是
+// question 唤醒审核者（rejectedTurnQuestion，adapter.go:482-488）——row4 不是
 // 新发明，是让对账口径与实时路径对齐。
 //
 // row6 为什么是窄兜底且判已结束：真实 payload 里 completed 的消息几乎总带 finish

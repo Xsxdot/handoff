@@ -333,6 +333,11 @@ type ReconcileOutcome struct {
 - **冻结尾部不补假终态（8/11，B38 Task9 修正版）**：派发工具密集任务后**只杀 agentd、serve 不动**（执行者靠 Setsid 活过，任务 `19718807-7c47-4c71-b753-ecc7d2098288`）——这正是「回合中途重启」的常见形态。基线（serve 存活）尾部 `completed=None`（在飞），重启后热重连对账：`对账结论：回合仍在进行，不补发 ... reason=unfinalized` → `turn_ended=false emitted=0`，任务保持 `running`、无新终态事件。**六行判据确实在 agentd 全链路里被执行且落点正确**（reason= 行可见）。早期「同时杀 serve 与 agentd」的两轮（`dfa2e4c1`/`2fc17ee3`）未达新判据——运行时对账（executor 已不在）先接管把任务落 failed，属既有设计（启动恢复 `Cold=false` 不冷拉起），已弃用该验证方式。
 - **abort 而终补发成 question（8/11，B38 Task9）**：单测 `TestReconcileAbortedTurnEmitsQuestionNotResult`（真机夹具 `msg_fec00880…`，卡 2h 后 abort 解开的设计消息）钉死——abort 是人工救援而非任务失败，补发 question 带正文，`MessageAbortedError` 是本机唯一出现过的 error 形态。
 
+**真机覆盖范围（8/11，B38 Task9 六行判据，如实分侧记账）**：
+- **否定侧**（回合未结束不补发）：真机已验（任务 `19718807-7c47-4c71-b753-ecc7d2098288`，只杀 agentd、serve 靠 Setsid 活，热重连对账 `reason=unfinalized` → `emitted=0`、任务保持 running）。覆盖 row1/row5 的「不补发」行为。
+- **补发侧**（回合真结束补得回）：真机已验（任务 `1f097c18-9b56-47cb-8843-af5f5617844b`，kill agentd 后回合在窗口内自然完结，重启后对账 `对账完成：已补发断连期间丢失的终态 ... event=result armed=true emitted=1` → `waiting_review`）。该运行补发的消息 `msg_fed3d8b6…` 经 DB 核对为 `finish="stop"`、completed 非零、无 error——**命中 row2（stop）**。即补发侧最主流的 row2 已全链路真机验证。
+- **row3/row4（abort / 工具被拒 → question）**：仅单测覆盖（`TestReconcileAbortedTurnEmitsQuestionNotResult`、`TestReconcileEmitsRejectedToolEnd`），真机未造出「断连窗口内刚好落在 abort/被拒终态上」的现场。这两行的产出是 question 而非 result，语义错在测试里可被断言拦截。
+
 **未覆盖**（如实记录）：
 - **中途断连**（SSE 抖动而非 agentd 重启）：真机上未能稳定制造出「agentd 不动、SSE 断流」的现场（`onReconnect` 回调触发需掐断 serve 与 agentd 之间的连接，本机旁挂实例难以无副作用模拟）。该触发点已由单测覆盖（`TestResumeTriggersReconcile`/`TestReconcileAfterRecoverySwallowsError`），真机一格空缺。
 - **`--force` 收口**：造「对账判不出」的现场需让 executor 真的还在忙，本机复现成本过高，未做真机验收；该路径已由单测覆盖（`TestRecoverStuckForceTransitsToReview`）。
