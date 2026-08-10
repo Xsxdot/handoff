@@ -19,17 +19,17 @@ import (
 )
 
 // Resume 重建 agentd 重启前已在执行的任务（spec §8「存活则重连 SSE 继续」）：
-// 从任务目录的 serve.json 恢复 serve 连接凭据并探活（tmux 会话存在 + HTTP 应答）；
+// 从任务目录的 proc.json 恢复 serve 连接凭据并探活（存活锁 + HTTP 应答）；
 // 存活则重建 SSE 订阅、看门狗与事件通道，返回 Reattach。
 //
 // 参数：
-//   - req: 恢复请求（TaskDir 是 serve.json 所在，即 DataDir/tasks/<id>；
+//   - req: 恢复请求（TaskDir 是 proc.json 所在，即 DataDir/tasks/<id>；
 //     RepoPath 用于重启后重新捕获 git 兜底分类的起点 commit 基线；
 //     SessionID 是落库的 opencode 会话 id）
 //
 // 返回：
 //   - Alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
-//   - err: 重建失败（serve.json 缺失/损坏、SessionID 为空），此时视为不可恢复
+//   - err: 重建失败（proc.json 缺失/损坏、SessionID 为空），此时视为不可恢复
 //
 // 注意：
 //   - SessionID 为空时拒绝恢复：mapEvent 按会话 id 过滤事件，空 id 会把全部
@@ -39,7 +39,7 @@ import (
 //     时刻的 HEAD 为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项
 //     实测观察
 //   - 与 Start 的对称性：Stop（done 归档）对恢复出来的运行态同样有效，
-//     会 kill 掉 tmux 会话回收资源
+//     会按进程组 Kill 回收执行者资源
 func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, err error) {
 	a.log.Info("adapter 恢复任务执行", "task", req.TaskID, "session", req.SessionID)
 	defer func() {
@@ -72,27 +72,26 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	if req.SessionID == "" {
 		return executor.ResumeOutcome{}, fmt.Errorf("任务 %s 缺 executor_session，无法重建订阅", req.TaskID)
 	}
-	si, err := readServeInfo(req.TaskDir)
+	si, err := readProcInfo(req.TaskDir)
 	if err != nil {
 		return executor.ResumeOutcome{}, err
 	}
-	// ServeLogPath 从 taskDir 推导（serve.json 不持久化它）：serve 死亡诊断的
+	// ServeLogPath 从 taskDir 推导（proc.json 不持久化它）：serve 死亡诊断的
 	// serve.log 尾部读取需要路径，重启恢复的任务同样要能用
-	proc := &Proc{Port: si.Port, Password: si.Password, TmuxSession: si.TmuxSession,
+	proc := &Proc{Handle: si.Handle, Port: si.Port, Password: si.Password,
 		ServeLogPath: filepath.Join(req.TaskDir, serveLogFileName)}
 
 	mode := executor.ResumeModeReattach
 	if !proc.Alive() {
-		// 回收残留会话：Alive() 为假只说明 serve 进程没了，tmux 会话本身可能
-		// 还被第二窗口的 tail -f render.log 吊着。冷恢复要新建同名会话，
-		// 不先回收会直接撞名（这条在原实现里就有，冷恢复路径更需要它）
+		// 回收残留进程：Alive() 为假只说明 serve 进程没了，shim 可能还在收尸途中。
+		// 冷恢复要新建 shim，而 proc.lock 可能仍被旧的持有，不先回收会直接撞锁
 		if kerr := proc.Kill(); kerr != nil {
-			a.log.Warn("回收已死执行器的 tmux 会话失败，可能需人工清理",
-				"task", req.TaskID, "tmux", proc.TmuxSession, "cause", kerr)
+			a.log.Warn("回收已死执行者失败，可能需人工清理",
+				"task", req.TaskID, "shim_pid", proc.Handle.PID, "cause", kerr)
 		}
 		if !req.Cold {
 			a.log.Info("serve 已不在且不允许冷恢复，判不可恢复",
-				"task", req.TaskID, "tmux", proc.TmuxSession)
+				"task", req.TaskID, "shim_pid", proc.Handle.PID)
 			return executor.ResumeOutcome{Alive: false,
 				Note: "serve 进程已不在（本次只允许热重连）"}, nil
 		}
@@ -119,8 +118,10 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			return executor.ResumeOutcome{Alive: false,
 				Note: fmt.Sprintf("重起 opencode serve 失败：%v", err)}, nil
 		}
-		if werr := writeServeInfo(req.TaskDir, newProc); werr != nil {
-			a.log.Warn("冷恢复写 serve.json 失败，下次重启恢复将不可用",
+		if werr := writeProcInfo(req.TaskDir, &procInfo{
+			Handle: newProc.Handle, Port: newProc.Port, Password: newProc.Password,
+		}); werr != nil {
+			a.log.Warn("冷恢复写 proc.json 失败，下次重启恢复将不可用",
 				"task", req.TaskID, "cause", werr)
 		}
 		proc = newProc

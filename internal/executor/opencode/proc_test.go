@@ -1,6 +1,5 @@
-// proc 测试：writeServeScript/serveTmuxArgs/serveLogTail/shellQuote 的纯函数
-// 断言——密码不进 argv、脚本 0600、serve.log 尾部读取、shell 引号转义。
-// tmux + opencode 二进制的真机行为不在自动化覆盖（现状保持，e2e 清单兜底）。
+// proc 测试：serveSpec 的安全边界（密码走 env 不进 argv）、Alive 的两层判定、
+// serveLogTail 尾部读取。真实 opencode 二进制的行为不在自动化覆盖（e2e 清单兜底）。
 package opencode
 
 import (
@@ -8,201 +7,81 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
-// TestWriteServeScript 验证启动脚本生成：
-// 内容含 export 密码/配置行与 exec opencode serve + tee 落盘 serve.log，
-// 文件权限 0600、位于 taskDir 下。
-func TestWriteServeScript(t *testing.T) {
-	taskDir := t.TempDir()
-	configPath := filepath.Join(taskDir, "opencode.json")
-	const password = "pw-secret-xyz"
-	path, err := writeServeScript(taskDir, 35123, password, configPath, nil)
-	if err != nil {
-		t.Fatalf("writeServeScript: %v", err)
-	}
-	if path != filepath.Join(taskDir, serveScriptFileName) {
-		t.Errorf("脚本路径=%q，期望 %q", path, filepath.Join(taskDir, serveScriptFileName))
-	}
-	st, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat 脚本: %v", err)
-	}
-	if st.Mode().Perm() != 0o600 {
-		t.Errorf("脚本权限=%o，期望 600（含密码，防止本机其他用户读取）", st.Mode().Perm())
-	}
-
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读脚本: %v", err)
-	}
-	content := string(b)
-	for _, want := range []string{
-		"#!/bin/sh",
-		"exec 2>> '" + filepath.Join(taskDir, serveLogFileName) + "'",
-		"export OPENCODE_SERVER_PASSWORD='" + password + "'",
-		"export OPENCODE_CONFIG='" + configPath + "'",
-		"exec opencode serve --port 35123 --hostname 127.0.0.1 2>&1 | tee -a '" +
-			filepath.Join(taskDir, serveLogFileName) + "'",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("脚本应含 %q，实际:\n%s", want, content)
+// TestServeSpecPutsPasswordInEnvNotArgv 钉死安全边界：
+// 密码必须走 env，绝不能出现在 argv 里——argv 经 /proc/<pid>/cmdline 本机全局可读。
+// 旧实现靠「密码写进 0600 脚本、argv 只有脚本路径」达成，换成 prochost 后
+// 由 Spec.Env 承担，这条断言防止有人图省事把密码拼进 argv。
+func TestServeSpecPutsPasswordInEnvNotArgv(t *testing.T) {
+	spec := serveSpec("/repo", "/task", "/task/cfg.json", 12345, "s3cr3t",
+		[]string{"HTTPS_PROXY=http://u:p@h:8080"})
+	for _, a := range spec.Argv {
+		if strings.Contains(a, "s3cr3t") {
+			t.Fatalf("密码绝不能进 argv: %v", spec.Argv)
 		}
 	}
-}
-
-// TestWriteServeScriptShellQuotes 验证路径/密码含单引号时正确转义
-// （'\” 序列），不转义会改变脚本语义（提前截断 export 行）。
-func TestWriteServeScriptShellQuotes(t *testing.T) {
-	taskDir := t.TempDir()
-	configPath := "weird'name/opencode.json"
-	path, err := writeServeScript(taskDir, 1, "p'w", configPath, nil)
-	if err != nil {
-		t.Fatalf("writeServeScript: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读脚本: %v", err)
-	}
-	if !strings.Contains(string(b), `export OPENCODE_CONFIG='weird'\''name/opencode.json'`) {
-		t.Errorf("含引号路径未按 '\\'' 转义，脚本:\n%s", b)
-	}
-	if !strings.Contains(string(b), `export OPENCODE_SERVER_PASSWORD='p'\''w'`) {
-		t.Errorf("含引号密码未按 '\\'' 转义，脚本:\n%s", b)
-	}
-}
-
-// TestServeTmuxArgsNoSecrets 验证 tmux argv 不含任何秘密：
-// 密码/配置经启动脚本注入，argv 只剩脚本路径——Linux /proc/<pid>/cmdline
-// 默认全局可读，argv 泄漏 = P0-4 的修复目标本身被破坏。
-func TestServeTmuxArgsNoSecrets(t *testing.T) {
-	script := "/home/u/.handoff/tasks/abc/run_serve.sh"
-	args := serveTmuxArgs("handoff-abc12345", "/repo/path", script)
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "OPENCODE_SERVER_PASSWORD") || strings.Contains(joined, "PASSWORD") {
-		t.Errorf("tmux argv 不应含密码相关内容: %q", joined)
-	}
-	for _, a := range args {
-		if a == "-e" || strings.HasPrefix(a, "-e ") || strings.HasPrefix(a, "-e=") {
-			t.Errorf("tmux argv 不应再用 -e 注入环境（show-environment 可读回）: %q", a)
+	var gotPass, gotCfg, gotProxy bool
+	for _, kv := range spec.Env {
+		switch kv {
+		case "OPENCODE_SERVER_PASSWORD=s3cr3t":
+			gotPass = true
+		case "OPENCODE_CONFIG=/task/cfg.json":
+			gotCfg = true
+		case "HTTPS_PROXY=http://u:p@h:8080":
+			gotProxy = true
 		}
 	}
-	if !strings.Contains(joined, script) {
-		t.Errorf("argv 应含脚本路径 %q，实际: %q", script, joined)
+	if !gotPass || !gotCfg || !gotProxy {
+		t.Fatalf("env 缺项 pass=%v cfg=%v proxy=%v: %v", gotPass, gotCfg, gotProxy, spec.Env)
 	}
-	if !strings.HasPrefix(joined, "new-session -d -s handoff-abc12345 -c /repo/path") {
-		t.Errorf("argv 前缀不合预期: %q", joined)
+	// handoff 自身注入的变量必须排在 env 文件之后，才能覆盖同名键（B19 protectedEnvKeys 纪律）
+	passIdx, proxyIdx := -1, -1
+	for i, kv := range spec.Env {
+		if strings.HasPrefix(kv, "OPENCODE_SERVER_PASSWORD=") {
+			passIdx = i
+		}
+		if strings.HasPrefix(kv, "HTTPS_PROXY=") {
+			proxyIdx = i
+		}
+	}
+	if passIdx < proxyIdx {
+		t.Fatalf("handoff 注入变量必须排在 env 文件之后以取得覆盖优先级，pass=%d proxy=%d", passIdx, proxyIdx)
+	}
+	// argv 必须是 opencode serve 的原样形态
+	if strings.Join(spec.Argv, " ") != "opencode serve --port 12345 --hostname 127.0.0.1" {
+		t.Fatalf("argv 形态不对: %v", spec.Argv)
+	}
+	if !spec.Sentinel {
+		// opencode 有 HTTP 探活面，但哨兵能区分「崩了」与「端口暂时不通」，仍然要
+		t.Fatal("Sentinel 必须为 true")
 	}
 }
 
-// TestServeLogTail 验证 serve.log 尾部读取：文件缺失返回空串（serve 根本没
-// 跑起来时没有诊断内容可给）；短文件全文；长文件只取末尾 500 字节。
+// TestOpencodeAliveNeedsBothLockAndHTTP 钉死两层判定。
+func TestOpencodeAliveNeedsBothLockAndHTTP(t *testing.T) {
+	p := &Proc{Handle: prochost.Handle{PID: os.Getpid(),
+		LockPath: filepath.Join(t.TempDir(), "proc.lock")}, Port: 1}
+	if p.Alive() {
+		t.Fatal("锁无人持有时必须判死，不应再去探 HTTP")
+	}
+}
+
+// TestServeLogTail 验证 serve.log 尾部读取：文件未创建返回空串，
+// 大文件只取末尾 500 字节。
 func TestServeLogTail(t *testing.T) {
 	dir := t.TempDir()
-
-	if got := serveLogTail(filepath.Join(dir, serveLogFileName)); got != "" {
-		t.Errorf("文件缺失时应返回空串，实际 %q", got)
+	path := filepath.Join(dir, serveLogFileName)
+	if got := serveLogTail(path); got != "" {
+		t.Errorf("文件不存在时应返回空串，实得 %q", got)
 	}
-
-	short := "listen tcp: address already in use\n"
-	shortPath := filepath.Join(dir, "short.log")
-	if err := os.WriteFile(shortPath, []byte(short), 0o600); err != nil {
-		t.Fatalf("写 short.log: %v", err)
+	big := strings.Repeat("x", 10000) + "ENDMARK"
+	if err := os.WriteFile(path, []byte(big), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got := serveLogTail(shortPath); got != short {
-		t.Errorf("短文件应全文返回，实际 %q", got)
-	}
-
-	long := strings.Repeat("x", 600) + "TAIL-MARKER"
-	longPath := filepath.Join(dir, "long.log")
-	if err := os.WriteFile(longPath, []byte(long), 0o600); err != nil {
-		t.Fatalf("写 long.log: %v", err)
-	}
-	if got := serveLogTail(longPath); !strings.HasSuffix(got, "TAIL-MARKER") || len(got) != 500 {
-		t.Errorf("长文件应取末尾 500 字节（以 TAIL-MARKER 结尾），实际长度 %d", len(got))
-	}
-}
-
-// TestShellQuote 验证单引号 shell 字面量包装：普通串加引号、内含单引号转义、
-// 空串不 panic。
-func TestShellQuote(t *testing.T) {
-	cases := map[string]string{
-		"/plain/path":     "'/plain/path'",
-		"a'b":             `'a'\''b'`,
-		"it's here":       `'it'\''s here'`,
-		"":                "''",
-		"pw-!@#$%^&*()_+": "'pw-!@#$%^&*()_+'",
-	}
-	for in, want := range cases {
-		if got := shellQuote(in); got != want {
-			t.Errorf("shellQuote(%q)=%q，期望 %q", in, got, want)
-		}
-	}
-}
-
-func TestServeScriptInjectsEnvBeforeOpencodeVars(t *testing.T) {
-	taskDir := t.TempDir()
-	configPath := filepath.Join(taskDir, "opencode.json")
-	env := []string{"HTTPS_PROXY=http://127.0.0.1:7890", "PATH=/usr/bin:/bin:/usr/local/go/bin"}
-	path, err := writeServeScript(taskDir, 35123, "pw", configPath, env)
-	if err != nil {
-		t.Fatalf("writeServeScript: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	s := string(b)
-	proxyIdx := strings.Index(s, "export HTTPS_PROXY='http://127.0.0.1:7890'")
-	if proxyIdx < 0 {
-		t.Fatalf("脚本缺少注入的 HTTPS_PROXY export 行:\n%s", s)
-	}
-	if !strings.Contains(s, "export PATH='/usr/bin:/bin:/usr/local/go/bin'") {
-		t.Errorf("脚本缺少注入的 PATH export 行:\n%s", s)
-	}
-	pwIdx := strings.Index(s, "export OPENCODE_SERVER_PASSWORD=")
-	if pwIdx < 0 {
-		t.Fatalf("脚本缺少 OPENCODE_SERVER_PASSWORD:\n%s", s)
-	}
-	// 顺序是硬要求：handoff 自身注入的变量必须排在后面才能覆盖 env 文件里的同名键
-	if proxyIdx > pwIdx {
-		t.Errorf("env 注入行应排在 OPENCODE_* 之前，实际 proxy=%d pw=%d", proxyIdx, pwIdx)
-	}
-}
-
-// TestServeScriptQuotesEnvValues 钉住「Go 侧已展开过一次，shell 不得再展开第二次」：
-// 值里的 $ 必须被单引号保护，否则 shell 会把它替换成别的东西。
-func TestServeScriptQuotesEnvValues(t *testing.T) {
-	taskDir := t.TempDir()
-	path, err := writeServeScript(taskDir, 1, "pw", filepath.Join(taskDir, "opencode.json"),
-		[]string{"LITERAL=$NOT_EXPANDED", "WITHSPACE=a b"})
-	if err != nil {
-		t.Fatalf("writeServeScript: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	s := string(b)
-	if !strings.Contains(s, "export LITERAL='$NOT_EXPANDED'") {
-		t.Errorf("含 $ 的值必须被单引号包裹:\n%s", s)
-	}
-	if !strings.Contains(s, "export WITHSPACE='a b'") {
-		t.Errorf("含空格的值必须被单引号包裹:\n%s", s)
-	}
-}
-
-func TestServeScriptWithoutEnvIsUnchangedInShape(t *testing.T) {
-	taskDir := t.TempDir()
-	path, err := writeServeScript(taskDir, 1, "pw", filepath.Join(taskDir, "opencode.json"), nil)
-	if err != nil {
-		t.Fatalf("writeServeScript: %v", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.Contains(string(b), "export OPENCODE_SERVER_PASSWORD='pw'") {
-		t.Errorf("无 env 时脚本形状不应改变:\n%s", string(b))
+	if got := serveLogTail(path); !strings.HasSuffix(got, "ENDMARK") || strings.Contains(got, "xENDMARK") && len(got) > 501 {
+		t.Errorf("应只取末尾且含 ENDMARK，实得尾部 %d 字节", len(got))
 	}
 }

@@ -41,7 +41,7 @@ import (
 )
 
 // 常量说明：
-//   - sessionTitle：建会话时写入的标题，便于用户在 tmux attach 后从 opencode TUI
+//   - sessionTitle：建会话时写入的标题，便于用户在 opencode TUI
 //     里区分会话归属
 //   - sseInitialBackoff/sseMaxBackoff：断流重连的指数退避区间
 //   - sseScanBuffer：scanner 单行上限。事件可能携带大段文本，必须给足空间；

@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
 // swapStartServeForTest 替换包级 startServe 执行点，返回恢复函数。
@@ -64,12 +66,12 @@ func TestResumeColdVerifiesSessionStillExists(t *testing.T) {
 
 	dir := t.TempDir()
 	repo := t.TempDir()
-	// serve.json 指向一个必然探不活的旧端口（Alive=false），触发冷恢复
-	if err := writeServeInfo(dir, &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}); err != nil {
+	// proc.json 指向一个必然探不活的旧端口与空锁（Alive=false），触发冷恢复
+	if err := writeProcInfo(dir, &procInfo{Handle: prochost.Handle{LockPath: filepath.Join(dir, "proc.lock")}, Port: 1, Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
 	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
-		return &Proc{Port: port, Password: "p", TmuxSession: "handoff-t1"}, nil
+		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: port, Password: "p"}, nil
 	})
 	defer restore()
 	a := New(quietLogger())
@@ -95,11 +97,11 @@ func TestResumeColdKeepsSessionWhenPresent(t *testing.T) {
 
 	dir := t.TempDir()
 	repo := t.TempDir()
-	if err := writeServeInfo(dir, &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}); err != nil {
+	if err := writeProcInfo(dir, &procInfo{Handle: prochost.Handle{LockPath: filepath.Join(dir, "proc.lock")}, Port: 1, Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
 	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
-		return &Proc{Port: port, Password: "p", TmuxSession: "handoff-t1"}, nil
+		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: port, Password: "p"}, nil
 	})
 	defer restore()
 	a := New(quietLogger())
@@ -125,13 +127,13 @@ func TestResumeColdMutualExclusion(t *testing.T) {
 	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 		atomic.AddInt32(&starts, 1)
 		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
-		return &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}, nil
+		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: 1, Password: "p"}, nil
 	})
 	defer restore()
 
 	dir := t.TempDir()
 	repo := t.TempDir()
-	if err := writeServeInfo(dir, &Proc{Port: 1, Password: "p", TmuxSession: "handoff-t1"}); err != nil {
+	if err := writeProcInfo(dir, &procInfo{Handle: prochost.Handle{LockPath: filepath.Join(dir, "proc.lock")}, Port: 1, Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
 	a := New(quietLogger())
