@@ -68,11 +68,20 @@ type Spec struct {
     InputCh string   // 可选：输入通道路径（仅 claude 用；unix=FIFO）
 }
 
-Start(spec) (Handle, error) // detached 拉起 shim，返回 {PID, StartTime}
-Alive(h) bool               // PID 存在 且 启动时间吻合（防 PID 复用误判）
-Kill(h) error               // 杀整个进程组（shim 为组长），带启动时间防误杀
+Start(spec) (Handle, error) // detached 拉起 shim，返回 {PID, LockPath}
+Alive(h) bool               // 试锁：锁被占 = shim 活着（完全不依赖 pid）
+Kill(h) error               // 锁空闲即视为已死直接返回；否则杀进程组（shim 为组长）
 CreateInputChannel(path) error // unix: Mkfifo（幂等）；win: not implemented
 ```
+
+**存活判定用文件锁，不用「PID + 启动时间」**（对初稿的修正）：shim 全生命周期持有
+`taskDir/proc.lock` 的排他 flock，内核在进程死亡时无条件释放。试锁失败 = 活着。
+理由：①**根本不存在 PID 复用窗口**，而启动时间比对受时钟刻度粒度限制，仍有理论碰撞；
+②跨平台成本低——unix `flock`、Windows `LockFileEx` 语义一致，而读进程启动时间要
+Linux 读 `/proc/<pid>/stat` 第 22 字段、darwin 解 `kinfo_proc`，两套平台代码；
+③Kill 的防误杀纪律由此变成一行「锁空闲就别发信号」。
+Handle 仍保留 PID——Kill 要按进程组发信号，但**存活语义与 PID 解耦**。
+子进程不继承锁 fd（Go 的 exec 只传 ExtraFiles），锁精确代表 shim 自身。
 
 平台实现以 build tag 切分（`prochost_unix.go` / `prochost_windows.go`），
 Windows 全部返回 `not implemented`（A 期）。
@@ -81,8 +90,9 @@ Windows 全部返回 `not implemented`（A 期）。
 
 `Start` 实际拉起 `handoff _shim --spec <taskDir>/spec.json`（隐藏子命令）。shim 职责：
 
-1. `setsid` 成为新会话/进程组组长——脱离 agentd 的进程树与 cgroup
-   （systemd `KillMode=control-group` 场景下 agentd 重启不再连坐执行者）；
+1. 由 agentd 侧以 `SysProcAttr{Setsid: true}` 拉起，shim 直接成为新会话/新进程组组长
+   （不需要 shim 自己调 setsid——那时它已是组长，`setsid(2)` 会 EPERM）；
+   stdin/stdout/stderr 置 nil（走 /dev/null），不持有 agentd 的任何 fd；
 2. 打开 Stdout/Stderr 落盘文件；InputCh 非空时以 `O_RDWR` 打开 FIFO
    ——复刻 sh 脚本 `exec 3<>` 的「自持读端」手法，agentd 侧 WriteInput 的
    O_WRONLY|O_NONBLOCK + ENXIO 等待逻辑原样保留；
@@ -93,6 +103,24 @@ Windows 全部返回 `not implemented`（A 期）。
 写入；agentd 重启后，reparent 走的进程无法被 `waitpid`，若无常驻父进程，
 「agentd 离线期间 executor 退出」的退出码永远拿不到——这会降级现有语义。
 shim 是纯 Go，B 期天然成为 Windows Job Object 的持有者。
+
+### 3.3 systemd 部署要求（对初稿的修正：setsid 不脱离 cgroup）
+
+初稿称 setsid 可「脱离 agentd 的 cgroup」——**这是错的**。cgroup 归属由 fork 继承，
+`setsid(2)` 只改会话/进程组，不改 cgroup。systemd 默认 `KillMode=control-group`
+会在 `systemctl restart` 时向整个 cgroup 发信号，shim 与 executor 一并被杀。
+
+（顺带说明：这一条在 tmux 方案下同样成立——tmux server 若由 agentd 首次拉起，
+它也在同一 cgroup 里。今天 tmux 能活下来，靠的是开发机上早有一个从 ssh 登录会话
+起来的 tmux server，属于偶然而非保证。）
+
+因此目标①**必须由部署侧配合**：agentd 的 systemd unit 设 `KillMode=process`
+（只终止主进程，不动后代）。本项目提供 unit 模板并在 README 说明；
+不设此项时 agentd 启动期检测到自身在 systemd 下运行且 KillMode 非 process，
+打 WARN 提示（不阻断——用户可能有意如此）。
+
+setsid 本身仍是必要的：它保证终端 Ctrl+C、SIGHUP 与 agentd 崩溃时
+（子进程 reparent 给 init）执行者不受牵连，这些场景不涉及 cgroup。
 
 ### 3.3 四个 adapter 的落点
 
@@ -109,28 +137,32 @@ shim 是纯 Go，B 期天然成为 Windows Job Object 的持有者。
 现在的 `claude.json` 泛化为四 adapter 统一的 `taskDir/proc.json`：
 
 ```json
-{ "shim_pid": N, "shim_start": <unix纳秒>, "child_pid": M,
-  "port": 0, "session_id": "...", "out_offset": 0 }
+{ "handle": { "pid": N, "lock_path": "<taskDir>/proc.lock" },
+  "child_pid": M, "port": 0, "session_id": "...", "offset": 0 }
 ```
 
-**写前置（write-ahead）时序**：agentd 先写 proc.json（shim 信息占位）再 `Start`，
+**写前置（write-ahead）时序**：agentd 先写 proc.json（Handle 占位）再 `Start`，
 shim 起来后补写 child_pid。保证「凡可能存在的进程，proc.json 一定先于它存在」，
-Reap 永远有据可查。spawn 失败的残留占位由启动时间校验安全跳过。
+Reap 永远有据可查。spawn 失败的残留占位由「锁空闲 = 已死」安全跳过。
 
 ### 4.2 两层存活判定
 
 | 层 | 判据 | 消费者 |
 |---|---|---|
-| 进程层 | prochost.Alive（shim PID + 启动时间吻合）| 恢复时快速筛查、Reap |
+| 进程层 | prochost.Alive（试 proc.lock）| 恢复时快速筛查、Reap |
 | 协议层 | opencode/grok/codex: HTTP/WS 探活；claude: out.jsonl 哨兵 + 流活性 | 恢复后判「能否续用」|
 
 tmux has-session 判据整体消失；「tail -f 吊着会话导致的假存活」问题连根拔掉。
 
 ### 4.3 Reap
 
-读 proc.json → 校验 shim_start 与该 PID 当前实际启动时间吻合 → Kill（杀进程组）。
-不吻合 = PID 已复用，视为已死直接成功（继承 workspace.go 防误杀纪律：
-绝不向已回收的 PID 发 SIGKILL）。proc.json 缺失/无法解析 → 如实报错，不猜。
+读 proc.json → `Alive`（试锁）→ 锁空闲即视为已死、直接返回成功；否则 `Kill` 杀进程组。
+「锁空闲就不发信号」即防误杀纪律的完整表达，继承 workspace.go 的既有教训
+（绝不向已回收的 pid 发 SIGKILL，实测旧实现 300 条成功命令误杀 114 次）。
+proc.json 缺失/无法解析 → 如实报错，不猜。
+
+**已知边界**：外部单独 `kill -9 <shim>`（不杀组）会让锁释放而 executor 变孤儿。
+Kill 走进程组，正常路径不会制造这种状态；属用户手工误操作，不做防御。
 
 ## 5. attach 流式接口
 
