@@ -207,7 +207,11 @@ type runState struct {
 	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
 	pendingBytes int               // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
 	lastProgress time.Time         // 上次发 progress 的时刻（节流）
-	lastEventAt  atomic.Int64      // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+	// lastAssistantMsgID 是本回合最后一条 assistant 消息的 id（turnMu 保护）。
+	// 它是对账水位的来源：mapIdle 正常分类完一个回合后，把它写进 proc.json，
+	// 使断连恢复后的对账能判出「这个回合我已经消费过了」。不写就会重复补发。
+	lastAssistantMsgID string
+	lastEventAt        atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -1059,6 +1063,9 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 	// 建立「part -> 非 text」的事实，mapPartDelta 据此跳过 reasoning/tool 增量
 	r.partTypes[key] = p.Type
 	isText := p.Type == "text" && !r.userMsgs[p.MessageID]
+	if isText {
+		r.lastAssistantMsgID = p.MessageID
+	}
 	// 类型揭晓：把该 part 暂存的增量按真实类型落地或丢弃（A-5）
 	a.flushPending(r, key, isText)
 	if !isText {
@@ -1124,6 +1131,7 @@ func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 	if r.userMsgs[pd.MessageID] {
 		return
 	}
+	r.lastAssistantMsgID = pd.MessageID
 	key := partKey(pd.MessageID, pd.PartID)
 	switch r.partTypes[key] {
 	case "text":
@@ -1240,6 +1248,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			a.emit(r, executor.AdapterEvent{
 				Type: "question", Text: turn.ClampQuestion(rejectedTurnQuestion(rejected)),
 			})
+			a.advanceWatermark(r)
 			r.clearTurn()
 			r.captureStartCommit(a)
 			return
@@ -1259,6 +1268,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
 				"可 continue 续接重试",
 		}})
+		a.advanceWatermark(r)
 		r.clearTurn()
 		r.captureStartCommit(a)
 		return
@@ -1275,6 +1285,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	case "none":
 		a.fallbackClassify(r, text)
 	}
+	a.advanceWatermark(r)
 	r.clearTurn()
 	// 兜底分类的 git 基线按回合刷新（C-1）：基线若固定在 run 起点，第一回合
 	// 提交之后的每个无 trailer 回合都会「相对起点有新提交」，于是带着上一回合的
@@ -1390,4 +1401,38 @@ func partKey(msgID, partID string) string {
 // 调用点已有的 taskDir 上下文（renderPath 由 newRun 按 taskDir 推导）。
 func (r *runState) appendRender(delta string) error {
 	return turn.AppendRender(r.renderPath, delta)
+}
+
+// advanceWatermark 把本回合最后一条 assistant 消息 id 落进 proc.json，作为对账水位。
+//
+// why（正常路径也必须写）：对账靠「会话尾部消息 id != 水位」判定「有未消费的
+// 已完结回合」。若只在对账成功时写水位，一个正常送达的终态就不会推进水位，
+// 下一次对账会把它当成丢失事件**重复补发**一遍。
+//
+// 失败只 Warn 不中断：水位写不进去的后果是下次可能重复补发一条终态（事件表多
+// 一条、状态机 waiting_review→waiting_review 被 ErrBadTransit 挡掉），比中断
+// 回合分类轻得多。
+func (a *Adapter) advanceWatermark(r *runState) {
+	msgID := r.lastAssistantMsgID
+	if msgID == "" {
+		a.log.Debug("本回合无 assistant 消息 id，跳过水位前进", "task", r.taskID)
+		return
+	}
+	pi, err := readProcInfo(r.taskDir)
+	if err != nil {
+		a.log.Warn("前进对账水位失败：读凭据出错，下次对账可能重复补发",
+			"task", r.taskID, "msg", msgID, "cause", err)
+		return
+	}
+	if pi.LastTurnMsgID == msgID {
+		return // 已是当前值，不必写盘
+	}
+	old := pi.LastTurnMsgID
+	pi.LastTurnMsgID = msgID
+	if err := writeProcInfo(r.taskDir, pi); err != nil {
+		a.log.Warn("前进对账水位失败：写凭据出错，下次对账可能重复补发",
+			"task", r.taskID, "msg", msgID, "cause", err)
+		return
+	}
+	a.log.Info("对账水位已前进", "task", r.taskID, "from", old, "to", msgID)
 }
