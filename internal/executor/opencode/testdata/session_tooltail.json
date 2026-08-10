@@ -1,0 +1,454 @@
+[
+ {
+  "info": {
+   "id": "msg_febba6686001aHbmhcvN1tU5Fw",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "user",
+   "time": {
+    "created": 1786366289542
+   },
+   "summary": {
+    "diffs": []
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode-go",
+    "modelID": "deepseek-v4-flash"
+   }
+  },
+  "parts": [
+   {
+    "id": "prt_febba6689001pehElOZEow2Kuo",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba6686001aHbmhcvN1tU5Fw",
+    "type": "text",
+    "text": "你是 handoff 任务 a059b32a-0e25-486e-bec1-a5806056b4cd 的执行者，按下方实现计划执行。铁律：\n1. 提问纪律：任何需要人决策的问题，输出单行 JSON {\"ask\":\"<问题>\"}\n   然后结束本回合。审核者的回答会作为下一条消息发给你。\n   禁止自行假设，禁止用其它格式提问。\n2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），\n   然后输出单行 JSON：{\"branch\":\"<分支>\",\"commit\":\"<hash>\",\"summary\":\"<50字内摘要>\"}\n   作为本回合最后一行。\n3. 只在当前分支工作，不切分支、不改 git 配置。\n\n--- 实现计划 ---\n# B38 提问回合：两个只有审核者能定的具体值\n\n## 任务\n\n实现一个 `backup.go` 文件备份工具。有两个**具体值**只有审核者知道，模型不得推断、不得查库、不得自行假设——必须逐一向审核者确认后才会被提供。\n\n## 实现计划\n\n- [ ] Task 1: **必须先向审核者确认这两个具体值，缺一个都不得开工**：\n      (1) 备份保留份数（审核者才知道的整数，模型无法推断）\n      (2) 备份目标目录（审核者才知道的路径，模型无法推断）\n- [ ] Task 2: 两个值都得到审核者明确答复后，实现 `backup.go`（`func Backup(src string) error`，保留份数与目标目录按答复硬编码为常量）\n- [ ] Task 3: 建 `backup_test.go` 覆盖备份动作\n- [ ] Task 4: `git add` 并 commit，message `b38-backup`\n\n"
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febba6720001UqH5HwRL0KAOHe",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "assistant",
+   "time": {
+    "created": 1786366289696,
+    "completed": 1786366295305
+   },
+   "parentID": "msg_febba6686001aHbmhcvN1tU5Fw",
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/WORKTREE",
+    "root": "/WORKTREE"
+   },
+   "cost": 9.03588e-05,
+   "tokens": {
+    "total": 9003,
+    "input": 495,
+    "output": 44,
+    "reasoning": 272,
+    "cache": {
+     "read": 8192,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls"
+  },
+  "parts": [
+   {
+    "id": "prt_febba70d9001XQfN85Z5oLaMiy",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba6720001UqH5HwRL0KAOHe",
+    "type": "step-start",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186"
+   },
+   {
+    "id": "prt_febba738b001TZx2I907dlmJmY",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba6720001UqH5HwRL0KAOHe",
+    "type": "reasoning",
+    "text": "Let me understand the task. I'm the executor of a handoff task. The plan requires me to first ask the reviewer for two specific values:\n1. Backup retention count (integer)\n2. Backup target directory (path)\n\nI must NOT infer or assume these. I need to output single-line JSON {\"ask\":\"<question>\"} and end my turn.\n\nWait, but the plan says I need to ask two values. The discipline says \"any question requiring human decision, output single-line JSON {\"ask\":\"<question>\"}\". I can ask about both values. But the instruction says questions are answered as next message. Let me ask both in one ask? The format is a single-line JSON with \"ask\" field. I should ask about both values. Let me output one JSON line asking both.\n\nActually, let me check the skill \"handoff\" first since the task mentions handoff. The skill says whenever the task involves handoff, must read the skill first. Let me load it.\n\nActually, the task is clear: I need to ask for two values. But let me load the handoff skill to be sure about the discipline.\n\nActually the instructions embedded in the message are explicit. But the skill says I must read it first if the task involves handoff. This is a handoff executor task. Let me read the skill.",
+    "time": {
+     "start": 1786366292875,
+     "end": 1786366295108
+    }
+   },
+   {
+    "id": "prt_febba7c48001Y6aY5F11MR0fov",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba6720001UqH5HwRL0KAOHe",
+    "type": "tool",
+    "callID": "call_00_Ymnx7klIvZwVDEyXCrG76183",
+    "tool": "skill",
+    "state": {
+     "status": "completed",
+     "input": {
+      "name": "handoff"
+     },
+     "output": "<skill_content name=\"handoff\">\n# Skill: handoff\n\n<!--\n职责：\n  - 教会「审核者」角色如何用 handoff CLI 驱动一个派发任务的完整生命周期。\n  - 固化那些一旦搞错就会卡住任务的硬约束：ID 形态、状态机前置条件、事件分诊、失败出口。\n\n边界：\n  - 不讲 agentd 的部署与配置（config.yaml 各段、approver 审批链、env 注入）——见仓库 README。\n  - 不讲三个 executor 的内部差异与协议实现——见 README「执行者差异」与 docs/superpowers/specs/。\n  - 不替审核者做审批判断：批不批、改不改由审核者（必要时升级给人）决定。\n-->\n\n# handoff：以审核者身份驱动派发任务\n\n## 心智模型\n\nhandoff 把「写计划的人」和「干活的人」拆成两个进程：\n\n- **agentd** 跑在 executor 所在机器上，持有**全部**状态——任务、事件、工单、executor 生命周期，落 SQLite。\n- **你（审核者）**只是一个客户端。你不持有任何状态，随时可以崩溃、断网、换一台机器接管。\n- 你和 agentd 之间只有一条通道：`handoff` CLI。\n\n这条架构直接决定了三件事，后面所有纪律都是它的推论：\n\n1. **你的会话不是权威**。「我记得这个任务已经批过了」不作数，`handoff show` 说了算。\n2. **断网不丢事件**。事件在 agentd 侧持久化并带 cursor，`wait` 重连后从断点续拉。所以你没必要一直挂着。\n3. **绕过 CLI 就会失配**。ssh 到执行机去 `tmux kill-session`、手删任务目录、直接进工作区改代码——这些 agentd 全都不知道，它记的运行态和真实存活性会当场对不上，任务卡成孤儿。\n\n### 铁律：一切经 CLI\n\n需要看 executor 在干什么，用 `handoff attach`（它会替你 ssh + tmux attach）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`。\n\n**唯一例外**：任务已经彻底死了、CLI 三条路（`resume` / `continue` / `done`）全被拒，此时手工 `tmux kill-session -t handoff-<id8>` 是兜底。但那是排障，不是日常。\n\n## 任务 ID 必须是完整 UUID\n\n所有接受 `<task>` 的子命令都是**精确匹配**，没有前缀补全。传 8 位短 id 一律 404「任务不存在」。\n\n短 id（`id8`）只出现在两个地方：tmux 会话名 `handoff-<id8>`、`--notify` 的通知文案。它们不能当命令参数用。\n\n拿完整 id 的办法：`dispatch` 的输出 JSON 里的 `.id`，或者 `handoff tasks | jq -r 'select(.name==\"...\") | .id'`。\n\n## 状态机：先看状态，再敲命令\n\n六个状态。**`continue` 和 `done` 都硬要求 `waiting_review`**，状态不符返回 409 `ErrBadTransit`——这是最常撞的一堵墙。\n\n| 状态 | 含义 | 此时能做 | 此时会被拒 |\n|------|------|----------|-----------|\n| `pending` | 已建任务，executor 还没起来 | `show` / `stop` | `continue` / `done` |\n| `running` | executor 正在干活 | `wait` / `attach` / `show` / `stop` | `continue` / `done` |\n| `waiting_answer` | 有工单挂起，等你裁决 | `reply --ticket ...` / `attach` / `stop` | `continue` / `done` |\n| `waiting_review` | 一轮干完了，等你审 | `diff` / `fetch` / `run` / **`continue`** / **`done`** / `stop` | — |\n| `completed` | 已归档 | `show` / `diff`（只读） | 一切写操作，含 `stop` |\n| `failed` | 已失败 | `show` / `diff` / `pull`（只读取证） | `continue` / `done` / `stop` |\n\n> `failed` 是终态。想在失败后继续，路径是重新 `dispatch`，不是 `continue`。\n\n**动手前先确认状态**：`handoff show <task>` 输出一行 JSON，含任务体 + `pending_tickets` + 最近事件。不确定就先 show，比吃一个 409 便宜。\n\n## 主循环\n\n```bash\n# 1. 派发（仓库工作区必须干净，否则被拒——脏改动会被污染进任务分支）\nhandoff dispatch --repo /path/to/repo --new-worktree --executor opencode plan.md\n# stdout 第一行是任务 JSON，取 .id 作为后续所有命令的 <task>\n\n# 2. 挂等待（阻塞，一次只返回一个事件）\nhandoff wait <task> --notify --timeout 1h\n\n# 3. 按事件类型分诊、处置（见下表）\n\n# 4. 回到第 2 步重新挂 wait，直到进入审核\n```\n\n**`wait` 的三条契约**，记牢了省很多事：\n\n- **一次只吐一个事件**。stdout 单行 JSON，然后退出。处理完必须**重新挂**，否则后面的事件没人接。\n- **退出码有语义**。`0` = 事件到达；`124` = `--timeout` 到点（可以接着挂）；`1` = 真失败。\n- **失败会立刻退出，不会闷等**。token 没同步（401）、task-id 不存在（1008）都是立即报错。`wait` 长时间不返回**只**意味着「还没有事件」，那是正常态——stderr 里的「WS 连接断开，等待后重连」也是正常态。\n\n无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。\n\n`progress` / `approver_decision` / `approver_disabled` 三类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。\n\n## 远程派发：代码怎么过去，改动怎么回来\n\n用 `--target <name>` 派发到远程执行机时，两台机器上是**两个独立的 git 仓库**。handoff 不传代码，只做校验和同步——所以「本地写的改动」要靠 git 自己走过去。\n\n### 去程：先 push，再 dispatch\n\n`dispatch --target` 会在**当前工作目录**跑 `git rev-parse HEAD`，把这个 sha 作为「基线」上送。agentd 收到后：查这个 commit 在不在任务仓库的对象库里 → 不在就 `git fetch --all --prune` 一次再查 → 还不在就 **400 拒发**，报文是「基线提交在任务仓库中不存在 …… 请先在本地 git push，或用 --no-sync-check 跳过校验」。\n\n这条机制有三个必须记住的边界：\n\n- **只 commit 不够，必须 push。** 校验的是「远端能不能 fetch 到这个 commit」。没推上去的提交，远程永远拿不到；未提交的改动更是完全不可见——校验会拿你的 HEAD 去比，而 HEAD 不含工作区的脏改动，所以它会**静默通过**，然后 executor 基于一份没有你最新改动的代码开工。\n- **基线取自 cwd，不是 `--repo`。** 必须在本地那份同仓库的 checkout 里发 `dispatch`。cwd 不是 git 仓库时只打一行提示就跳过校验（「远程仓库可能落后于你的本地代码」），不报错——这是最容易悄悄踩空的一格。\n- **fetch ≠ 分支到位。** agentd 那次 fetch 只把对象拉进对象库，不 checkout、不快进任何分支。所以 `--new-branch` 不带 `--base` 时，新分支的起点是**远程仓库当前的 HEAD**，很可能还是旧的——哪怕你刚推的 commit 已经躺在对象库里。\n\n稳妥的远程派发姿势，把起点钉死：\n\n```bash\ngit push                                                  # 缺这步必被拒\nhandoff dispatch --target devbox --repo /remote/path \\\n  --new-worktree --new-branch feat/x \\\n  --base \"$(git rev-parse HEAD)\" plan.md                  # 起点 = 你刚推的那个 commit\n```\n\n`--no-sync-check` 只在一种情况下用：cwd 和 `--repo` 根本不是同一个仓库（比如你在 A 仓库里指挥远程跑 B 仓库）。那时基线校验必然误判，跳过它——代价是远程代码新不新由你自己负责。\n\n### 回程：wait 自动 fetch，合并是你的决定\n\n任务结束（`completed` / `failed`）时 `wait` 会自动把远程任务分支同步回来（配置 `sync.auto`，`--no-sync` 可关）；也可以随时手动：\n\n```bash\nhandoff pull <task> --target devbox\n```\n\n`pull` 经 ssh 从执行机 fetch 任务分支到**当前工作目录**的仓库。**只 fetch，不 checkout、不合并**——合并进你的主线是审核决定，handoff 不替你做。\n\n去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 的机器还需要在配置里配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。\n\n本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。\n\n## 事件分诊表\n\n`wait` 返回的 JSON 形如 `{\"seq\":N,\"task_id\":\"...\",\"type\":\"...\",\"payload\":{...}}`。按 `type` 分诊：\n\n| type | 含义 | 你要做的 |\n|------|------|---------|\n| `permission_request` | executor 要执行一个需授权的操作 | 判断后 `reply <task> --ticket <id> --approve` 或 `--deny --reason \"...\"` |\n| `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer \"...\"` |\n| `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |\n| `failed` | 任务失败落 `failed` | `diff` 看做到哪、`attach` 看现场；要接着干就重新 `dispatch` |\n| `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |\n| `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑；死了就 `stop` |\n\n`ticket_id` 在 payload 里，**一次性消耗**。同一个 ticket 回答两次，第二次 404。\n\n## 审批：批什么，不批什么\n\n`--approve` 批的是**这一次这一条**操作，不是一类操作的长期授权。\n\n**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。\n\n```bash\nhandoff reply <task> --ticket <id> --deny --reason \"别装全局包，加到 go.mod 里\"\n```\n\n**这些别自己批，升级给用户**：删除数据、`git push` / 改写历史、往外部服务写入或发布、装全局依赖、动 CI/密钥/生产配置。你是替用户看着这个 executor 的，不是替它签字的。判断不了就把 `permission_request` 的原文贴给用户问。\n\n## 审阅取证\n\n任务进 `waiting_review` 后，三条只读命令帮你判断改得对不对：\n\n```bash\nhandoff diff <task>                      # git diff + 提交列表（主要素材）\nhandoff diff <task> --base main          # 指定比较基线\nhandoff fetch <task> internal/foo/bar.go # 读任务仓库里的单个文件\nhandoff run <task> go test ./...         # 在任务仓库执行命令（sh -c，10min 超时）\n```\n\n**`handoff run` 的参数顺序有坑**：handoff 自己的 flag 必须写在 `<task>` **之前**，任务名之后的一切（含 `-v`、`--race`）都原样透传给被执行的命令。\n\n```bash\nhandoff run --target devbox T1 go test -race ./...   # ✅ --target 在任务名之前\nhandoff run T1 --target devbox go test ./...         # ❌ --target 会被当成 go test 的参数\n```\n\n## 改与收\n\n```bash\nhandoff continue <task> \"把重试次数改成 3，并给这个分支补一条失败用例\"\nhandoff done <task>\n```\n\n- `continue` 是**同一会话续接**，executor 的上下文完整保留——不需要在指令里重述前情。\n- `continue` 之后任务回到 `running`，要**重新挂 `wait`**。\n- `done` 归档任务并回收 executor（停进程、删 managed worktree、清任务目录）。\n\n**`done` 返回成功之前，什么都不要删。** `done` 会因状态不符被拒（409）；如果你已经先手删了任务目录或杀了 tmux，就会留下一个 agentd 记着、但资源已经被你拆掉的孤儿，只能手工补清。顺序永远是：先 `done`，看到 `{\"ok\":true}` 再谈清理。\n\n`handoff stop <task>` 是另一条出口：主动中止，停 executor、作废挂起工单、任务落 `failed`。任务跑偏了不想再等，用它。\n\n## 会话恢复：从零接管\n\n一个完全没有前文的新会话，两条命令重建现场：\n\n```bash\nhandoff tasks              # 每行一个任务 JSON：id / name / state / branch\nhandoff show <task>        # 任务体 + pending_tickets + 最近事件\n```\n\n`pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单 `reply` 掉，然后按当前 state 决定：`running` → 重新挂 `wait`；`waiting_review` → 进审核。\n\n会话崩溃、主动关掉重开、换一台机器接管，三种场景都是这一套。**不要**因为「我不记得这个任务了」就重新 dispatch 一个——先 `tasks` 看有没有。\n\n## 确认 agentd 在不在\n\n    handoff status --target <名字>\n\n**不要 ssh 上去查进程、查端口、查二进制。** 那是在验证零件，而问题是「这个服务\n现在能不能用」；零件检查有无数种失败方式（PATH、平台差异、引号嵌套），每一种都\n长得像「没有」。\n\n| 输出 | 结论 | 处置 |\n|---|---|---|\n| 正常一屏（版本/数据/任务） | 能用 | 直接派发 |\n| `可用（版本过旧）` | 能用，但远端 agentd 不支持 status | 想看详情就升级远端；不看也不影响派发 |\n| `target \"x\" 未在配置 … 中定义` | 你的本机配置问题，不是远端问题 | 补 target 配置 |\n| `dial tcp …: connect: connection refused` | 真的没有 agentd 在跑 | 见下面的红线 |\n| `状态码 401` | agentd 在，但 token 对不上 | 同步两边的 token |\n\n退出码：**0 = 能用**（含版本过旧）；**1 = 够不着**。\n\n**红线：查到有 agentd 在跑就复用它，绝不为同一个仓库起第二个 agentd。**\n两个 agentd 抢同一个仓库和 worktree，正是状态机最怕的失配——而代码层面目前\n没有单实例锁拦你。\n\n活跃任务行末尾的存活结论有三态：`executor 存活` / `executor 已不在（理由）` /\n`存活性未知（理由）`。**`未知` 不等于 `已不在`**——探不出结论时不要按「死了」\n处置，先看理由。\n\n## 排障\n\n| 症状 | 根因 | 处置 |\n|------|------|------|\n| 任何命令 404「任务不存在」 | 传了 8 位短 id | 用 `handoff tasks` 取完整 UUID |\n| `continue` / `done` 报 409 | 任务不在 `waiting_review` | `handoff show` 看真实状态，按状态机表办 |\n| `reply` 返回 502，或收到 `delivery_failed` | 裁决已落库但没送到 executor（executor 半死） | `handoff resume <task>`：幂等重投；executor 还在就继续跑，确已不在则转交审核 |\n| `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |\n| `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重挂**，它不会自己好 |\n| `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |\n| `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |\n| `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |\n| 远程派发成功，但 executor 基于旧代码开工 | 两种：改动只 commit 没 push（校验静默通过）；或 `--new-branch` 没给 `--base`，从远程旧 HEAD 起 | `--base \"$(git rev-parse HEAD)\"` 钉死起点，派发前先 `git push` |\n| `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复结果」看四级恢复阶梯走到哪一级 |\n| 任务归档后 tmux 会话还在 | executor 回收失败（事件里会带残留提示） | 按提示 `tmux kill-session -t handoff-<id8>` 手工兜底 |\n\n**日志在哪**（在 executor 所在机器上）：\n\n- `~/.handoff/agentd.log`：agentd 主日志。`HANDOFF_LOG_LEVEL=debug` 可调低级别。\n- `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 的第二个窗口就是 `tail -f` 它。\n- 同目录下按 executor 分：opencode 是 `serve.log` / `serve.json`，claude 是 `claude.log` / `claude.json`，grok 是 `serve.log` / `serve.json`。\n\n## 红旗——想到这些说明你在偷懒\n\n| 念头 | 事实 |\n|------|------|\n| 「我记得这个任务的状态是……」 | 你的会话不是权威。`handoff show` 是。 |\n| 「短 id 应该也能认吧」 | 精确匹配，没有前缀补全。一定 404。 |\n| 「先删掉任务目录再 done」 | 顺序反了。`done` 可能被拒，先删就留孤儿。 |\n| 「ssh 上去 tmux 里手动改一下更快」 | agentd 不知道你改了什么，运行态当场失配。走 CLI。 |\n| 「拒了就拒了，不用写理由」 | 理由是给模型看的。不给，它就原地重试同样的操作。 |\n| 「reply 报 502，我再 reply 一次」 | 工单已被消耗，第二次必 404。要的是 `resume`。 |\n| 「wait 没动静，是不是挂了？」 | 没有事件就是没有事件。看退出码和 stderr，别瞎重启。 |\n| 「这个权限请求看起来问题不大」 | 破坏性、不可逆、外部可见的操作一律升级给用户。 |\n| 「任务好像不见了，重新 dispatch 一个」 | 先 `handoff tasks`。重复派发会开出第二个 executor 抢同一个仓库。 |\n| 「代码 commit 完了，可以远程派发了」 | 校验的是远端能否 fetch 到这个 commit。没 `git push` 等于没有。 |\n| 「工作区里改了几行还没提交，先派了再说」 | 校验拿 HEAD 比对，看不见脏改动，会**静默放行**——executor 拿到的是没有你改动的代码。 |\n| 「agentd 已经 fetch 过了，远程分支就是最新的」 | fetch 只落对象，不动分支。不带 `--base` 的新分支照样从远程旧 HEAD 起。 |\n| 「`pull` 完了改动就在我本地分支上了」 | `pull` 只 fetch，不 checkout 不合并。合并是你自己要做的事。 |\n\n## 延伸阅读\n\n这份 skill 只覆盖审核者回路。以下不在范围内，需要时读仓库文档：\n\n- **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。\n- **三个 executor 的传输形态与差异（SSE / stream-json / ACP）**：`README.md` 的「执行者差异」。\n- **架构与协议设计**：`docs/superpowers/specs/2026-08-07-handoff-design.md`。\n\nBase directory for this skill: /Users/sycm/.config/opencode/skills/handoff\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skill_files>\n\n</skill_files>\n</skill_content>",
+     "title": "Loaded skill: handoff",
+     "metadata": {
+      "name": "handoff",
+      "dir": "/Users/sycm/.config/opencode/skills/handoff",
+      "truncated": false
+     },
+     "time": {
+      "start": 1786366295180,
+      "end": 1786366295195
+     }
+    }
+   },
+   {
+    "id": "prt_febba7cf0001jtgDG4weX2ehSM",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba6720001UqH5HwRL0KAOHe",
+    "type": "step-finish",
+    "reason": "tool-calls",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186",
+    "cost": 9.03588e-05,
+    "tokens": {
+     "total": 9003,
+     "input": 495,
+     "output": 44,
+     "reasoning": 272,
+     "cache": {
+      "read": 8192,
+      "write": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febba7d0a001GKyImXEpek5TTr",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "assistant",
+   "time": {
+    "created": 1786366295306,
+    "completed": 1786366315930
+   },
+   "parentID": "msg_febba6686001aHbmhcvN1tU5Fw",
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/WORKTREE",
+    "root": "/WORKTREE"
+   },
+   "cost": 0.000398244,
+   "tokens": {
+    "total": 14301,
+    "input": 5172,
+    "output": 41,
+    "reasoning": 128,
+    "cache": {
+     "read": 8960,
+     "write": 0
+    }
+   },
+   "finish": "stop"
+  },
+  "parts": [
+   {
+    "id": "prt_febbac6c1001WqrBPGJU737k3M",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba7d0a001GKyImXEpek5TTr",
+    "type": "step-start",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186"
+   },
+   {
+    "id": "prt_febbac7ed001LI6lDPDWXsDo7p",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba7d0a001GKyImXEpek5TTr",
+    "type": "reasoning",
+    "text": "I'm the executor in a handoff task. The task plan requires me to ask the reviewer for two specific values before starting. I should not infer. The discipline says to output single-line JSON {\"ask\":\"<question>\"} and end the turn.\n\nI need to ask for:\n1. Backup retention count (integer)\n2. Backup target directory (path)\n\nI can ask both in one question or two. The format allows one \"ask\" field. Let me ask both in one line? The format is {\"ask\":\"<question>\"}. I'll ask both in a single ask question.\n\nLet me output a single-line JSON.",
+    "time": {
+     "start": 1786366314477,
+     "end": 1786366315534
+    }
+   },
+   {
+    "id": "prt_febbacc13001zFenSl7fDYNkMs",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba7d0a001GKyImXEpek5TTr",
+    "type": "text",
+    "text": "{\"ask\":\"请提供这两个具体值：(1) 备份保留份数（整数）；(2) 备份目标目录（绝对路径）。两个都需明确答复后我才开工。\"}",
+    "time": {
+     "start": 1786366315539,
+     "end": 1786366315848
+    }
+   },
+   {
+    "id": "prt_febbacd7e001dC6dRLSA7a5dKt",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febba7d0a001GKyImXEpek5TTr",
+    "type": "step-finish",
+    "reason": "stop",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186",
+    "cost": 0.000398244,
+    "tokens": {
+     "total": 14301,
+     "input": 5172,
+     "output": 41,
+     "reasoning": 128,
+     "cache": {
+      "read": 8960,
+      "write": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febbb89bf001T4HDlxUCMRnFOU",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "user",
+   "time": {
+    "created": 1786366364095
+   },
+   "summary": {
+    "diffs": []
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode-go",
+    "modelID": "deepseek-v4-flash"
+   }
+  },
+  "parts": [
+   {
+    "id": "prt_febbb89bf002Q3RU6TbPC8r449",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febbb89bf001T4HDlxUCMRnFOU",
+    "type": "text",
+    "text": "保留份数按 7 份；备份目标目录的值我还需要确认，稍后给你"
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febbb89c4001NYS6yVv7mVyMlg",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "assistant",
+   "time": {
+    "created": 1786366364100,
+    "completed": 1786366380965
+   },
+   "parentID": "msg_febbb89bf001T4HDlxUCMRnFOU",
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/WORKTREE",
+    "root": "/WORKTREE"
+   },
+   "cost": 3.94212e-05,
+   "tokens": {
+    "total": 14406,
+    "input": 117,
+    "output": 22,
+    "reasoning": 59,
+    "cache": {
+     "read": 14208,
+     "write": 0
+    }
+   },
+   "finish": "stop"
+  },
+  "parts": [
+   {
+    "id": "prt_febbbc6ca001mYWOdaUOYO6WVT",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febbb89c4001NYS6yVv7mVyMlg",
+    "type": "step-start",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186"
+   },
+   {
+    "id": "prt_febbbc875001VGklQMg0MFgPM1",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febbb89c4001NYS6yVv7mVyMlg",
+    "type": "reasoning",
+    "text": "The reviewer gave me the retention count (7), but the target directory is not yet confirmed. I need to wait for the target directory value. I must not assume or infer it. So I should ask again for the target directory.\n\nLet me output single-line JSON asking for the target directory.",
+    "time": {
+     "start": 1786366380149,
+     "end": 1786366380729
+    }
+   },
+   {
+    "id": "prt_febbbcaba001j6fd1voDulQ9b5",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febbb89c4001NYS6yVv7mVyMlg",
+    "type": "text",
+    "text": "{\"ask\":\"收到，保留份数=7。请提供备份目标目录（绝对路径）。\"}",
+    "time": {
+     "start": 1786366380730,
+     "end": 1786366380897
+    }
+   },
+   {
+    "id": "prt_febbbcb8c001r5yi2s7MtS3jQs",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febbb89c4001NYS6yVv7mVyMlg",
+    "type": "step-finish",
+    "reason": "stop",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186",
+    "cost": 3.94212e-05,
+    "tokens": {
+     "total": 14406,
+     "input": 117,
+     "output": 22,
+     "reasoning": 59,
+     "cache": {
+      "read": 14208,
+      "write": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febc1e34b001CVtzO91r7iyepo",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "user",
+   "time": {
+    "created": 1786366780235
+   },
+   "summary": {
+    "diffs": [
+     {
+      "file": "backup.go",
+      "patch": "Index: backup.go\n===================================================================\n--- backup.go\t\n+++ backup.go\t\n@@ -0,0 +1,128 @@\n+package backup\n+\n+import (\n+\t\"fmt\"\n+\t\"io\"\n+\t\"os\"\n+\t\"path/filepath\"\n+\t\"sort\"\n+\t\"strings\"\n+\t\"time\"\n+)\n+\n+const (\n+\tbackupDir   = \"/var/handoff-backup\"\n+\tkeepCount   = 7\n+)\n+\n+func Backup(src string) error {\n+\tinfo, err := os.Stat(src)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"stat source %q: %w\", src, err)\n+\t}\n+\n+\tif err := os.MkdirAll(backupDir, 0o755); err != nil {\n+\t\treturn fmt.Errorf(\"create backup dir %q: %w\", backupDir, err)\n+\t}\n+\n+\tname := time.Now().Format(\"20060102-150405\") + \"-\" + filepath.Base(src)\n+\tif info.IsDir() {\n+\t\tname += \".dir\"\n+\t} else {\n+\t\tname += \".file\"\n+\t}\n+\tdest := filepath.Join(backupDir, name)\n+\n+\tif info.IsDir() {\n+\t\tif err := copyDir(src, dest); err != nil {\n+\t\t\treturn err\n+\t\t}\n+\t} else {\n+\t\tif err := copyFile(src, dest, info.Mode()); err != nil {\n+\t\t\treturn err\n+\t\t}\n+\t}\n+\n+\treturn prune()\n+}\n+\n+func prune() error {\n+\tentries, err := os.ReadDir(backupDir)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"read backup dir %q: %w\", backupDir, err)\n+\t}\n+\tnames := make([]string, 0, len(entries))\n+\tfor _, e := range entries {\n+\t\tnames = append(names, e.Name())\n+\t}\n+\tsort.Sort(sort.Reverse(sort.StringSlice(names)))\n+\n+\texcess := names[keepCount:]\n+\tfor _, n := range excess {\n+\t\tif err := os.RemoveAll(filepath.Join(backupDir, n)); err != nil {\n+\t\t\treturn fmt.Errorf(\"remove old backup %q: %w\", n, err)\n+\t\t}\n+\t}\n+\treturn nil\n+}\n+\n+func copyFile(src, dest string, mode os.FileMode) error {\n+\tin, err := os.Open(src)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"open source %q: %w\", src, err)\n+\t}\n+\tdefer in.Close()\n+\n+\tout, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"create dest %q: %w\", dest, err)\n+\t}\n+\tdefer out.Close()\n+\n+\tif _, err := io.Copy(out, in); err != nil {\n+\t\treturn fmt.Errorf(\"copy %q to %q: %w\", src, dest, err)\n+\t}\n+\treturn nil\n+}\n+\n+func copyDir(src, dest string) error {\n+\tif err := os.MkdirAll(dest, 0o755); err != nil {\n+\t\treturn fmt.Errorf(\"create dir %q: %w\", dest, err)\n+\t}\n+\tentries, err := os.ReadDir(src)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"read dir %q: %w\", src, err)\n+\t}\n+\tfor _, e := range entries {\n+\t\tsp := filepath.Join(src, e.Name())\n+\t\tdp := filepath.Join(dest, e.Name())\n+\t\tinfo, err := e.Info()\n+\t\tif err != nil {\n+\t\t\treturn fmt.Errorf(\"stat %q: %w\", sp, err)\n+\t\t}\n+\t\tif info.IsDir() {\n+\t\t\tif err := copyDir(sp, dp); err != nil {\n+\t\t\t\treturn err\n+\t\t\t}\n+\t\t} else if info.Mode()&os.ModeSymlink != 0 {\n+\t\t\tlink, err := os.Readlink(sp)\n+\t\t\tif err != nil {\n+\t\t\t\treturn fmt.Errorf(\"readlink %q: %w\", sp, err)\n+\t\t\t}\n+\t\t\tif err := os.Symlink(link, dp); err != nil {\n+\t\t\t\treturn fmt.Errorf(\"symlink %q: %w\", dp, err)\n+\t\t\t}\n+\t\t} else {\n+\t\t\tif err := copyFile(sp, dp, info.Mode()); err != nil {\n+\t\t\t\treturn err\n+\t\t\t}\n+\t\t}\n+\t}\n+\treturn nil\n+}\n+\n+func BackupDir() string   { return backupDir }\n+func KeepCount() int      { return keepCount }\n+func isBackupName(n string) bool {\n+\treturn strings.HasSuffix(n, \".file\") || strings.HasSuffix(n, \".dir\")\n+}\n",
+      "additions": 128,
+      "deletions": 0,
+      "status": "added"
+     },
+     {
+      "file": "go.mod",
+      "patch": "Index: go.mod\n===================================================================\n--- go.mod\t\n+++ go.mod\t\n@@ -0,0 +1,3 @@\n+module b38backup\n+\n+go 1.26.1\n",
+      "additions": 3,
+      "deletions": 0,
+      "status": "added"
+     }
+    ]
+   },
+   "agent": "build",
+   "model": {
+    "providerID": "opencode-go",
+    "modelID": "deepseek-v4-flash"
+   }
+  },
+  "parts": [
+   {
+    "id": "prt_febc1e34b002jiZc1ynj6s8Ei0",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febc1e34b001CVtzO91r7iyepo",
+    "type": "text",
+    "text": "备份目标目录是 /var/handoff-backup"
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_febc1e3520015VmfyBUrNQCxkL",
+   "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+   "role": "assistant",
+   "time": {
+    "created": 1786366780242,
+    "completed": 1786366796729
+   },
+   "parentID": "msg_febc1e34b001CVtzO91r7iyepo",
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/WORKTREE",
+    "root": "/WORKTREE"
+   },
+   "cost": 4.91204e-05,
+   "tokens": {
+    "total": 14586,
+    "input": 85,
+    "output": 59,
+    "reasoning": 106,
+    "cache": {
+     "read": 14336,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls"
+  },
+  "parts": [
+   {
+    "id": "prt_febc21cdb001k9XqqWUJnZfpLk",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febc1e3520015VmfyBUrNQCxkL",
+    "type": "step-start",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186"
+   },
+   {
+    "id": "prt_febc21ef6001W0wfGNCNAuckXW",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febc1e3520015VmfyBUrNQCxkL",
+    "type": "reasoning",
+    "text": "The reviewer confirmed both values:\n- Retention count: 7\n- Target directory: /var/handoff-backup\n\nNow I need to implement:\n- Task 2: `backup.go` with `func Backup(src string) error`, retention count and target dir hardcoded as constants\n- Task 3: `backup_test.go` covering backup action\n- Task 4: git add and commit with message `b38-backup`\n\nLet me first explore the repo to understand the codebase conventions.",
+    "time": {
+     "start": 1786366795510,
+     "end": 1786366796422
+    }
+   },
+   {
+    "id": "prt_febc2228c001PS4C7gjHHDnfg9",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febc1e3520015VmfyBUrNQCxkL",
+    "type": "tool",
+    "callID": "call_00_T3u94kcpGtNizCDk4HAp4326",
+    "tool": "bash",
+    "state": {
+     "status": "completed",
+     "input": {
+      "command": "ls -la && git log --oneline -5 && git status && git branch"
+     },
+     "output": "total 8\ndrwxr-xr-x   4 sycm  wheel   128 Aug 10 20:45 .\ndrwxr-xr-x  32 sycm  wheel  1024 Aug 10 20:59 ..\ndrwxr-xr-x  13 sycm  wheel   416 Aug 10 20:51 .git\n-rw-r--r--   1 sycm  wheel    15 Aug 10 20:17 README.md\nf1bd9db init\nOn branch b38-qu\nnothing to commit, working tree clean\n* b38-qu\n  b38-v185539\n  main\n",
+     "title": "ls -la && git log --oneline -5 && git status && git branch",
+     "metadata": {
+      "output": "total 8\ndrwxr-xr-x   4 sycm  wheel   128 Aug 10 20:45 .\ndrwxr-xr-x  32 sycm  wheel  1024 Aug 10 20:59 ..\ndrwxr-xr-x  13 sycm  wheel   416 Aug 10 20:51 .git\n-rw-r--r--   1 sycm  wheel    15 Aug 10 20:17 README.md\nf1bd9db init\nOn branch b38-qu\nnothing to commit, working tree clean\n* b38-qu\n  b38-v185539\n  main\n",
+      "exit": 0,
+      "truncated": false
+     },
+     "time": {
+      "start": 1786366796642,
+      "end": 1786366796644
+     }
+    }
+   },
+   {
+    "id": "prt_febc223a5001RCCVk5Y8E72OlM",
+    "sessionID": "ses_01445998affebGHCaHJiEG1NTi",
+    "messageID": "msg_febc1e3520015VmfyBUrNQCxkL",
+    "type": "step-finish",
+    "reason": "tool-calls",
+    "snapshot": "47bcb522943b7e568da942fd294f231b3c356186",
+    "cost": 4.91204e-05,
+    "tokens": {
+     "total": 14586,
+     "input": 85,
+     "output": 59,
+     "reasoning": 106,
+     "cache": {
+      "read": 14336,
+      "write": 0
+     }
+    }
+   }
+  ]
+ }
+]

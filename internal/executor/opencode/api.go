@@ -251,15 +251,28 @@ func (a *API) HasSession(ctx context.Context, sessionID string) (ok bool, err er
 // 字段说明：
 //   - ID: 消息 id，同时是对账水位的载体
 //   - Role: "assistant" | "user"
-//   - CompletedMS: 完结时刻（毫秒 epoch）；**0 表示尚未完结**，对账据此判「回合还在跑」
-//   - ErrorText: 非空表示该回合以错误告终
+//   - CompletedMS: 完结时刻（毫秒 epoch）；**0 表示尚未完结**（消息未 finalize，
+//     在飞或冻结），对账据此判「回合还在跑」
+//   - ErrorText: 非空表示该消息以错误告终（info.error 的原始 JSON）
 //   - Text: 该消息全部文本 part 的拼接结果，交给 turn.ParseTrailer 分类
+//   - Finish: 该消息的完结方式（info.finish），取值实测：""（缺席）/ "tool-calls" /
+//     "stop" / "unknown"。**只当正向结束标记用**：finish=="stop" 一定意味着回合
+//     结束，但 finish=="tool-calls" 既可能是「中间工具消息、回合继续」也可能是
+//     「被拒/工具报错而终」——不能反过来当「未结束」判据，须看 ToolStatus 消歧
+//   - ErrorName: 消息级错误的类型名（info.error.name）；实测 "MessageAbortedError"
+//     表示会话被 abort 而终（finish 缺席）
+//   - ToolStatus: 最后一条 tool part 的 state.status（取值实测 "running"/
+//     "completed"/"error"）。用于把「finish=tool-calls 的回合终态」与「真·回合
+//     中途冻结」区分开：error=被拒/报错而终（补发），completed=中途冻结（不补发）
 type SessionMessage struct {
 	ID          string
 	Role        string
 	CompletedMS int64
 	ErrorText   string
 	Text        string
+	Finish      string
+	ErrorName   string
+	ToolStatus  string
 }
 
 // sessionMessageEnvelope 是 GET /session/{id}/message 列表里每一项的形状。
@@ -273,11 +286,17 @@ type sessionMessageEnvelope struct {
 		Time struct {
 			Completed int64 `json:"completed"`
 		} `json:"time"`
-		Error json.RawMessage `json:"error"`
+		Finish string          `json:"finish"`
+		Error  json.RawMessage `json:"error"`
 	} `json:"info"`
 	Parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
+		// State 是 tool part 的运行时状态（state.status 区分 running/completed/error）；
+		// 非 tool part 无此字段
+		State struct {
+			Status string `json:"status"`
+		} `json:"state"`
 	} `json:"parts"`
 }
 
@@ -339,17 +358,28 @@ func (a *API) LastAssistantMessage(ctx context.Context, sessionID string) (msg *
 			ID:          e.Info.ID,
 			Role:        e.Info.Role,
 			CompletedMS: e.Info.Time.Completed,
+			Finish:      e.Info.Finish,
 		}
 		// error 字段的形态在不同版本里可能是 null / 字符串 / 对象（本次真机抓包
 		// 的会话里该字段完全缺席），统一按原始 JSON 处理：非 null 即视为出错，
-		// 原文进 ErrorText 供审核者看
+		// 原文进 ErrorText 供审核者看；对象形态时取 name 进 ErrorName（对账判
+		// "MessageAbortedError" 用）
 		if s := strings.TrimSpace(string(e.Info.Error)); s != "" && s != "null" {
 			out.ErrorText = s
+			var errObj struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(e.Info.Error, &errObj) == nil {
+				out.ErrorName = errObj.Name
+			}
 		}
 		var sb strings.Builder
 		for _, p := range e.Parts {
 			if p.Type == "text" && p.Text != "" {
 				sb.WriteString(p.Text)
+			}
+			if p.Type == "tool" && p.State.Status != "" {
+				out.ToolStatus = p.State.Status // 最后一条 tool part 的 status
 			}
 		}
 		out.Text = sb.String()

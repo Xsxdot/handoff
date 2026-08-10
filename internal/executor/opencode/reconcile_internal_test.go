@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -187,6 +188,47 @@ func TestReconcileSkipsWhenTurnStillRunning(t *testing.T) {
 	}
 }
 
+// TestReconcileSkipsFrozenToolTail —— B38 Task9：会话尾部冻结在「已完结的纯工具
+// 消息」上时（executor 死亡/崩溃/OOM，会话从此不再变化），对账不得判「回合已结束」。
+//
+// 为什么这条要存在：opencode 一个用户回合会产出多条 assistant 消息，工具调用各自
+// 成条、各自带 completed。若只凭「最后一条 assistant 的 CompletedMS != 0」判回合
+// 结束，就会把一条纯工具消息误判成回合终态，补出假的 question/result，把一个正常
+// 任务主动推进到 waiting_answer——比 B38 原始症状（冻死）更糟。
+//
+// 夹具：testdata/session_tooltail.json 截取自真机会话（a059b32a）的前 7 条消息，
+// 最后一条 assistant 是 finish=tool-calls 的纯工具消息（completed 非零、textlen=0、
+// tools=1）——这是「回合仍在进行、executor 却已死」的冻结尾部形态。
+//
+// 权威信号（真机 SSE 实测）：message.updated 的 info.finish 字段区分「还要继续」
+// （"tool-calls"）与「回合到此为止」（"stop"）；session.status idle 是会话级回合
+// 结束信号。判据必须用它，不能只看 completed。
+func TestReconcileSkipsFrozenToolTail(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_tooltail.json")
+	if err != nil {
+		t.Fatalf("读夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true) // armed + 空水位：若判「回合已结束」就会补发
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 0 {
+		t.Fatalf("尾部是纯工具消息（回合未完），不应补发，got Emitted=%d note=%s",
+			out.Emitted, out.Note)
+	}
+	if _, ok := drainOne(r); ok {
+		t.Fatal("尾部是纯工具消息（回合未完）却补发了事件")
+	}
+}
+
 // TestReconcileQueryFailureDoesNotEmit —— spec §8.1 断言 5：
 // 查询失败 → 补 0 条并返回 error（调用方据此只记 WARN，不改状态）。
 func TestReconcileQueryFailureDoesNotEmit(t *testing.T) {
@@ -241,4 +283,109 @@ func TestReconcileRestoresQuestionNotResult(t *testing.T) {
 		t.Fatal("提问文本不应为空")
 	}
 	_ = fmt.Sprint() // 保留 fmt 引用
+}
+
+// TestReconcileEmitsRejectedToolEnd —— B38 Task9 row4：尾部是「finish=tool-calls +
+// tool state.status=error」的被拒而终消息 → 必须补发成 question（对齐实时路径
+// rejectedTurnQuestion 的口径，adapter.go:1236-1241）。
+//
+// 夹具：testdata/session_rejectedend.json 取自真机会话（msg_febd7418…，权限被拒
+// 的回合终态），finish=tool-calls、completed 非零、tool part state.status=error。
+// 本会话 14 条带 tool error 的消息 14/14 后面都是 user 消息或会话尾——零反例。
+func TestReconcileEmitsRejectedToolEnd(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_rejectedend.json")
+	if err != nil {
+		t.Fatalf("读夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true) // armed + 空水位
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("被拒而终的回合必须补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
+	if ev.Type != "question" {
+		t.Fatalf("被拒而终应补发成 question（对齐实时路径），got %q", ev.Type)
+	}
+	if ev.Text == "" {
+		t.Fatal("提问文本不应为空")
+	}
+}
+
+// TestReconcileEmitsFinishUnknownTerminal —— B38 Task9 row6（窄兜底）：finish=
+// "unknown" 且无 tool part 的真实回合终态 → 必须补发。
+//
+// 夹具：testdata/session_finishunknown.json 取自真机会话（msg_feb5dcf45…），
+// finish=unknown、completed 非零、parts 为 step-start/reasoning/step-finish（无
+// tool）。本会话 finish=unknown 共 2 条，均为真实回合终态——row6 判「已结束」正确。
+func TestReconcileEmitsFinishUnknownTerminal(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_finishunknown.json")
+	if err != nil {
+		t.Fatalf("读夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true) // armed + 空水位
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("finish=unknown 的真实终态必须补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	if _, ok := drainOne(r); !ok {
+		t.Fatal("没有补发事件")
+	}
+}
+
+// TestReconcileEmitsStopTerminal —— B38 Task9 row2：finish="stop"（自然说完话
+// 结束，无 tool part）的真实回合终态 → 必须补发。这是最主流的终态形态。
+func TestReconcileEmitsStopTerminal(t *testing.T) {
+	srv := fakeSession(t, []map[string]any{{
+		"info": map[string]any{
+			"id": "msg_stop", "role": "assistant",
+			"finish": "stop",
+			"time":   map[string]any{"completed": 1786348485642},
+		},
+		"parts": []map[string]any{
+			{"type": "step-start"},
+			{"type": "text", "text": "活干完了\n" + `{"branch":"handoff/x","commit":"abc1234","summary":"改完了"}`},
+			{"type": "step-finish"},
+		},
+	}})
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true)
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("finish=stop 的终态必须补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
+	if ev.Type != "result" || ev.Result == nil || !ev.Result.OK {
+		t.Fatalf("finish=stop + finish trailer 应补发成功结果，got %+v", ev)
+	}
 }

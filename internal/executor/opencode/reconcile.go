@@ -61,8 +61,10 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 		a.log.Info("对账结论：会话尚无 assistant 消息", "task", taskID)
 		return executor.ReconcileOutcome{Note: "会话里还没有模型消息，无需对账"}, nil
 	}
-	if msg.CompletedMS == 0 {
-		a.log.Info("对账结论：回合仍在进行", "task", taskID, "msg", msg.ID)
+	ended, reason := reconcileTurnEnded(msg)
+	if !ended {
+		a.log.Info("对账结论：回合仍在进行，不补发",
+			"task", taskID, "msg", msg.ID, "reason", reason)
 		return executor.ReconcileOutcome{Note: "executor 的回合仍在进行中，没有丢失的终态"}, nil
 	}
 
@@ -117,6 +119,56 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 	return executor.ReconcileOutcome{TurnEnded: true, Emitted: 1, Note: note}, nil
 }
 
+// reconcileTurnEnded 判定取回的会话尾部消息是否真的意味着「回合已结束」。
+//
+// 为什么不能只靠 CompletedMS：opencode 一个用户回合会产多条 assistant 消息，
+// 工具调用各自成条、各自带 completed。只凭「最后一条 assistant 的 CompletedMS
+// != 0」会把一条纯工具消息误判成回合终态——executor 死亡/崩溃后会话冻结在
+// 工具消息上，补一条假终态会把正常任务主动推进到 waiting_answer，比 B38 原始
+// 症状（冻死）更糟。
+//
+// 判据按行逐条判定、命中即停（真机数据见各行的注释出处）：
+//
+//	1  CompletedMS == 0                         → 未结束（消息未 finalize：在飞或冻结）
+//	2  Finish == "stop"                         → 已结束（自然结束，无 tool part）
+//	3  ErrorName == "MessageAbortedError"       → 已结束（会话被 abort 而终）
+//	4  ToolStatus == "error"                    → 已结束（工具被拒/报错而终）
+//	5  ToolStatus == "completed"                → 未结束（真·回合中途冻结）
+//	6  兜底（无 tool、无 error、finish 缺席/其它）→ 已结束（窄兜底，见下）
+//
+// row2 为什么成立（工具 error ⇒ 回合结束）：本会话 14 条带 state.status=error
+// 工具 part 的消息 14/14 后面紧跟的都是 user 消息（或就是会话尾），零反例——
+// 「工具报错模型会自己重试、回合不结束」的担心被数据否掉。更重要的代码佐证：
+// 实时路径 adapter.go:1236-1241 早就把「回合因权限被拒而终止」当作回合结束并转成
+// question 唤醒审核者（rejectedTurnQuestion，adapter.go:482-488）——row2 不是
+// 新发明，是让对账口径与实时路径对齐。
+//
+// row6 为什么是窄兜底且判已结束：真实 payload 里 completed 的消息几乎总带 finish
+// （456 条：tool-calls 452 / unknown 2 / 缺席 2，缺席那两条一条是 abort、一条是
+// 在飞）。落进 row6 的是 finish="unknown"（本会话 2 条，均为真实回合终态、无 tool
+// part）与缺 finish 的经典终态——它们补发是对的。row6 不是主路径，但缺失它会让
+// 老版本/异常形态的终态永远补不上，故判已结束。
+//
+// 返回：回合是否已结束，以及命中的判据行（进日志，供线上判定回溯）。
+func reconcileTurnEnded(msg *SessionMessage) (bool, string) {
+	if msg.CompletedMS == 0 {
+		return false, "unfinalized" // row1：消息未 finalize（在飞或 completed=null 冻结）
+	}
+	if msg.Finish == "stop" {
+		return true, "stop" // row2：自然结束（step-start/text/step-finish，无 tool part）
+	}
+	if msg.ErrorName == "MessageAbortedError" {
+		return true, "aborted" // row3：会话被 abort 而终（finish 缺席）
+	}
+	if msg.ToolStatus == "error" {
+		return true, "tool_error" // row4：工具被拒/报错而终（finish=tool-calls）
+	}
+	if msg.ToolStatus == "completed" {
+		return false, "frozen_tool_tail" // row5：真·回合中途冻结（工具完成但回合未完）
+	}
+	return true, "fallback_terminal" // row6：窄兜底（finish=unknown 等）
+}
+
 // classifyReconciled 把取回的消息翻译成一条与实时路径同形的 AdapterEvent。
 //
 // 分类**复用** turn.ParseTrailer——与 mapIdle 走同一套判据，于是以提问收尾的
@@ -132,6 +184,21 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 					FailReason: "回合在 agentd 断连期间以错误告终：" +
 						turn.TruncateRunes(msg.ErrorText, 200)}},
 			"补回了一条断连期间丢失的失败结果"
+	}
+	// 工具被拒/报错而终（row4）：实时路径把「回合因权限被拒而终止」转成 question
+	// 唤醒审核者（rejectedTurnQuestion，adapter.go:1236-1241），对账补发必须同形——
+	// 这里没有实时路径的 turnRejected 清单，但工具 error 本身就是要告诉审核者的结论。
+	// 文本取消息文本（可能是空：纯工具消息无 text），有文本则带原文
+	if msg.ToolStatus == "error" {
+		text := "断连期间该回合以工具被拒或工具报错告终"
+		if msg.Text != "" {
+			text += "，回合原文：\n" + turn.TailRunes(msg.Text, 1000)
+		}
+		a.log.Warn("对账发现回合以工具错误告终，转提问交审核者裁决",
+			"task", r.taskID, "msg", msg.ID)
+		return executor.AdapterEvent{Type: "question", SessionID: r.session,
+				Text: turn.ClampQuestion(text)},
+			"补回了一条断连期间丢失的回合（工具被拒/报错而终），需人工裁决"
 	}
 	kind, t := turn.ParseTrailer(msg.Text)
 	switch kind {

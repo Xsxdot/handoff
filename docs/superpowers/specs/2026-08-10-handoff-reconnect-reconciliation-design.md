@@ -166,6 +166,19 @@ type ReconcileOutcome struct {
 
 **这一条是本设计的核心断言**：以提问收尾的回合，对账后必须变成一张**提问工单**，而不是一条假的「做完了」。若对账一律合成 `result`，审核者会以为任务完成，实际模型在等他回答——任务换个姿势继续冻死。
 
+**回合边界的判定（B38 Task9 订正）**：对账必须判清「取回的尾部消息是否真是回合终态」，不能只靠 `completed` 时间戳——opencode 一个用户回合会产多条 assistant 消息，工具调用各自成条、各自带 `completed`，executor 死亡后会话冻结在纯工具消息上，只凭 `completed != 0` 会把它误判成终态、补出假事件（比冻死更糟）。判据见代码 `reconcileTurnEnded`（六行顺序判定，命中即停）：
+
+| # | 判据 | 判定 | 依据 |
+|---|---|---|---|
+| 1 | `CompletedMS == 0` | 未结束 | 消息未 finalize（在飞或 completed=null 冻结） |
+| 2 | `Finish == "stop"` | 已结束 | 自然结束（无 tool part） |
+| 3 | `ErrorName == "MessageAbortedError"` | 已结束 | 会话被 abort 而终（finish 缺席） |
+| 4 | `ToolStatus == "error"` | 已结束 | 工具被拒/报错而终——14/14 实测零反例，且对齐实时路径 `rejectedTurnQuestion` |
+| 5 | `ToolStatus == "completed"` | 未结束 | 真·回合中途冻结 |
+| 6 | 兜底（无 tool、无 error、finish 缺席/其它） | 已结束 | 窄兜底：finish=unknown 实测为真实终态 |
+
+**`finish` 只当正向结束标记用**（`stop` ⇒ 结束），不能反过来当「未结束」判据（`tool-calls` 既可能是中间消息也可能是被拒而终）。
+
 ---
 
 ## 4. 触发点
@@ -288,10 +301,13 @@ type ReconcileOutcome struct {
 | 1 | **armed + 空水位 + 尾部已完结 → 补发 1 条，水位前进**（B38 头号场景：第一个回合死在断连窗口，水位天然为空） |
 | 2 | 未 armed（legacy）+ 空水位 + 尾部已完结 → 补 **0** 条，只认基线（升级保护） |
 | 3 | armed + 水位 == 尾部 msg.ID → 补 **0** 条（幂等，已送达过） |
-| 4 | 会话仍在忙 → 补 0 条，不改状态 |
+| 4 | 会话仍在忙（`completed==0` 未 finalize）→ 补 0 条，不改状态 |
 | 5 | 查询失败 → 补 0 条、返回 error，而 `Resume` 仍然成功 |
 | 6 | **以提问收尾的回合被还原成 `question` 而不是 `result`** ← §3.3 的核心断言 |
 | 7 | 悬而未决的权限被重新上报，manager 侧不出第二张工单 |
+| 8 | **冻结在纯工具消息尾部（`finish=tool-calls` + tool `completed`）→ 补 0 条**（B38 Task9：executor 死亡后会话冻结，不得补假终态） |
+| 9 | **被拒/工具报错而终（tool `status=error`）→ 补发成 `question`**（对齐实时路径 `rejectedTurnQuestion`） |
+| 10 | `finish=stop` / `finish=unknown` 的真实终态 → 补发（主流终态与窄兜底各一） |
 
 ### 8.2 agentd / CLI 层
 

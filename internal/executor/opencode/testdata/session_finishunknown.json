@@ -1,0 +1,34 @@
+[
+ {
+  "info": {
+   "parentID": "msg_feb56b583001zDdkV92GQjRmys",
+   "role": "assistant",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/Users/sycm/.handoff/worktrees/c9be6b8a",
+    "root": "/Users/sycm/.handoff/worktrees/c9be6b8a"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "write": 0,
+     "read": 0
+    }
+   },
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "time": {
+    "created": 1786360221509,
+    "completed": 1786360260659
+   },
+   "finish": "unknown",
+   "id": "msg_feb5dcf45001XpJg1fkZhlEgLb",
+   "sessionID": "ses_01510374fffefvgURWEWMxCPjy"
+  },
+  "parts": []
+ }
+]

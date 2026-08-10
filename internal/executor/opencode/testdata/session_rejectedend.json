@@ -1,0 +1,82 @@
+[
+ {
+  "info": {
+   "parentID": "msg_febd28409001xKTZiMslvi5fir",
+   "role": "assistant",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/Users/sycm/.handoff/worktrees/c9be6b8a",
+    "root": "/Users/sycm/.handoff/worktrees/c9be6b8a"
+   },
+   "cost": 0.0005703796,
+   "tokens": {
+    "total": 395418,
+    "input": 65,
+    "output": 89,
+    "reasoning": 0,
+    "cache": {
+     "write": 0,
+     "read": 395264
+    }
+   },
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "time": {
+    "created": 1786368180608,
+    "completed": 1786368301972
+   },
+   "finish": "tool-calls",
+   "id": "msg_febd74180001tZd6vwJDnsf9L9",
+   "sessionID": "ses_01510374fffefvgURWEWMxCPjy"
+  },
+  "parts": [
+   {
+    "snapshot": "fed7611c1e6b83a7c08e55ecea4684bcad4664b8",
+    "type": "step-start",
+    "id": "prt_step-start_0",
+    "messageID": "msg_febd74180001tZd6vwJDnsf9L9",
+    "sessionID": "ses_01510374fffefvgURWEWMxCPjy"
+   },
+   {
+    "type": "tool",
+    "tool": "bash",
+    "callID": "call_00_ET_k7huUvDf8pGsGcA1iOWS0745",
+    "state": {
+     "status": "error",
+     "input": {
+      "command": "chmod +x /TMP/repro_t9.sh && /TMP/repro_t9.sh",
+      "timeout": 280000
+     },
+     "error": "The user rejected permission to use this specific tool call.",
+     "time": {
+      "start": 1786368198910,
+      "end": 1786368301888
+     }
+    },
+    "id": "prt_tool_1",
+    "messageID": "msg_febd74180001tZd6vwJDnsf9L9",
+    "sessionID": "ses_01510374fffefvgURWEWMxCPjy"
+   },
+   {
+    "reason": "tool-calls",
+    "snapshot": "fed7611c1e6b83a7c08e55ecea4684bcad4664b8",
+    "type": "step-finish",
+    "tokens": {
+     "total": 395418,
+     "input": 65,
+     "output": 89,
+     "reasoning": 0,
+     "cache": {
+      "write": 0,
+      "read": 395264
+     }
+    },
+    "cost": 0.0005703796,
+    "id": "prt_step-finish_2",
+    "messageID": "msg_febd74180001tZd6vwJDnsf9L9",
+    "sessionID": "ses_01510374fffefvgURWEWMxCPjy"
+   }
+  ]
+ }
+]
