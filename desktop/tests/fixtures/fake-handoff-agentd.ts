@@ -31,9 +31,18 @@ export type FakeAgentdHandle = {
   /** 调用计数 */
   calls: {
     bootstrap: () => number
+    /** 服务端实际执行的 createProject 次数（同 operation_id 幂等去重，重复请求不增）。 */
     createProject: () => number
     getOperation: () => number
   }
+  /**
+   * 收到的 createProject **HTTP 请求**总数（每个请求都自增，与幂等去重无关）。
+   * 用途：区分「客户端发了几次请求」与「服务端执行了几次」——断言 UI 重试携带
+   * 相同 operation_id、且服务端只执行一次时，两个计数分别对应这两件事。
+   */
+  createProjectRequests: () => number
+  /** 使接下来 n 次 createProject 请求返回 500（模拟失败，供重试用例驱动）。 */
+  failCreateProjectNext: (n: number) => void
   /**
    * 推送一条控制事件：入 durable buffer 并向全部在线订阅者实时发送。
    * 断线期间 push 的事件会留在 buffer，重连后按客户端 after cursor 重放——
@@ -48,7 +57,7 @@ export type FakeAgentdHandle = {
   disconnectAll(): void
   /** 恢复 up 状态，允许客户端重连（重连时按 after cursor 重放 buffer）。 */
   setDown(down: boolean): void
-  /** 记录收到的 createProject 请求体。 */
+  /** 记录收到的 createProject 请求体（含被幂等去重的重复请求）。 */
   createdProjects: () => unknown[]
   close(): Promise<void>
 }
@@ -58,6 +67,8 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
   const token = options.token ?? 'test-token'
   let bootstrapCount = 0
   let createProjectCount = 0
+  let createProjectRequestCount = 0
+  let createProjectFailures = 0
   let getOperationCount = 0
   const createdProjects: unknown[] = []
   const createdOperationById = new Map<string, Operation>()
@@ -99,6 +110,18 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
         req.on('data', (c) => (body += c))
         req.on('end', () => {
           const parsed = JSON.parse(body)
+          // 收到的请求总数：每个 HTTP 请求都自增，与幂等去重无关。
+          createProjectRequestCount++
+          createdProjects.push(parsed)
+          // 模拟失败：返回 500，不落 operation（客户端重试时会用相同 operation_id
+          // 再次提交；服务端对同一 id 只执行一次）。
+          if (createProjectFailures > 0) {
+            createProjectFailures--
+            res.statusCode = 500
+            res.setHeader('content-type', 'application/json')
+            res.end('{"code":"LOCAL_AGENTD_UNAVAILABLE","message":"injected failure","retryable":true}')
+            return
+          }
           // 幂等：同 operation_id 返回已有权威 Operation，不重复执行（计数不增）。
           const existing = createdOperationById.get(parsed.operation_id)
           if (existing) {
@@ -108,7 +131,6 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
             return
           }
           createProjectCount++
-          createdProjects.push(parsed)
           const op: Operation = {
             operation_id: parsed.operation_id,
             kind: 'create_project',
@@ -193,6 +215,10 @@ export async function startFakeAgentd(options: FakeAgentdOptions): Promise<FakeA
       bootstrap: () => bootstrapCount,
       createProject: () => createProjectCount,
       getOperation: () => getOperationCount
+    },
+    createProjectRequests: () => createProjectRequestCount,
+    failCreateProjectNext: (n) => {
+      createProjectFailures = n
     },
     wsCount: () => wsCount,
     wsMessagesSent: () => wsMessagesSent,

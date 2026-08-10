@@ -3736,3 +3736,28 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   border-radius: 6px;
   font-size: 13px;
 }
+
+.handoff-create-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--destructive) 50%, var(--border));
+  border-radius: 6px;
+  color: var(--destructive);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--destructive) 6%, transparent);
+}
+
+.handoff-left-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.handoff-left-actions {
+  display: flex;
+  gap: 8px;
+}

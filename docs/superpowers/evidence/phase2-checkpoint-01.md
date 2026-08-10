@@ -13,7 +13,7 @@
 |---|---|---|
 | `go test ./...` | 全绿 | 通过（20 个包，含 agentd/store/controlplane/peer/machineauthority/gitidentity） |
 | `cd desktop && corepack pnpm typecheck` | 无类型错误 | 通过 |
-| `cd desktop && corepack pnpm exec vitest run --config config/vitest.config.ts src/shared/handoff src/main/handoff src/preload src/renderer/src/features/handoff` | 聚焦 Vitest 通过 | 19 files / 62 tests 通过 |
+| `cd desktop && corepack pnpm exec vitest run --config config/vitest.config.ts src/shared/handoff src/main/handoff src/preload src/renderer/src/features/handoff` | 聚焦 Vitest 通过 | 19 files / 64 tests 通过 |
 | `cd desktop && corepack pnpm test:e2e:handoff-catalog` | catalog E2E 纵切通过 | 4/4 通过（见 §3） |
 | `cd desktop && corepack pnpm run check:max-lines-ratchet` | 无新 bypass | 通过 |
 | `cd desktop && corepack pnpm exec oxlint` | 全量 lint 无告警 | 通过（0 finding） |
@@ -21,7 +21,7 @@
 ## 1.1 全量 Vitest 的上游基线失败（非本仓库改动引入）
 
 `cd desktop && corepack pnpm exec vitest run --config config/vitest.config.ts` 在
-当前 commit 上全量跑出 **7 个失败、47579+ 通过**。这 7 个失败均为 Orca 上游快照
+当前 commit 上全量跑出 **7 个失败、47582+ 通过**。这 7 个失败均为 Orca 上游快照
 （Task 1 导入）在**嵌套导入 + macOS 环境**下的既有基线失败，与本仓库 Handoff
 改动无依赖关系，已原样记录、未改动上游测试掩盖：
 
@@ -35,7 +35,7 @@ FAIL  src/main/daemon/node-pty-fd-leak.test.ts > node-pty macOS spawn fd handlin
 FAIL  src/main/daemon/node-pty-fd-leak.test.ts > node-pty macOS spawn fd handling > does not leak fds when native posix_spawn setup fails
 FAIL  src/main/providers/local-pty-shell-ready.test.ts > live zsh subprocess tests > ZDOTDIR discovery with real zsh > loads user .zshrc when the wrapper dir contains a non-ASCII (token-range) path
 Test Files  5 failed | 4445 passed | 13 skipped (4463)
-     Tests  7 failed | 47580 passed | 89 skipped (47676)
+     Tests  7 failed | 47582 passed | 89 skipped (47678)
 ```
 
 成因说明（均为上游/环境问题，本仓库未改这些测试）：
@@ -90,6 +90,8 @@ a7c7ce7 feat: create projects with durable location operations
 02fb1df feat: add handoff project tree and workbench shell
 020aa36 test: prove handoff control plane desktop checkpoint
 3aadbaf fix: cover reconnect gap repair and operation idempotency in e2e
+9e0e1ca docs: record upstream baseline failures and e2e fix commit in evidence
+<commit> fix: stabilize project dialog operation id and add retry error ui
 ```
 
 ## 3. Fake agentd E2E 纵切场景
@@ -107,9 +109,12 @@ a7c7ce7 feat: create projects with durable location operations
    恢复 up 后客户端 WS 重连携带 `after=<cursor>`，fake 重放 buffer 中
    `revision > after` 的事件，DOM 补出断线期间漏掉的新 worktree——验证
    bootstrap/stream 无窗口竞态与 durable 补发闭环。
-5. **operation 幂等**：经 `window.handoff.createProject` 提交**相同** operation_id
-   两次，fake 幂等返回已有权威 Operation，`calls.createProject()` 计数为 1、
-   `createdProjects()` 长度 1——验证项目创建以 operation_id 为幂等键、重试不重复执行。
+5. **operation 幂等（经真实对话框 UI）**：点击左栏「新建项目」打开 ProjectCreateDialog，
+   填表提交；fake 先注入一次 500 失败，对话框显示可行动错误与「重试」按钮；点重试后
+   第二次请求携带**相同** operation_id 成功。断言 `createProjectRequests()`=2（客户端
+   发了两次 HTTP 请求）、`calls.createProject()`=1（服务端按 operation_id 幂等只执行
+   一次）、`createdProjects()` 两条请求的 operation_id 相同——从 UI 到 wire 验证
+   「一次提交意图 = 一个稳定 operation_id，重试复用」的 durable operation 闭环。
 
 结构化日志筛选键：
 - `desktop/logs/handoff-desktop.log`：`handoff IPC 初始化`、`handoff IPC bootstrap 请求`、
@@ -132,17 +137,25 @@ a7c7ce7 feat: create projects with durable location operations
 | 无文件/PTY/TUI 临时代码 | Authority 只实现 Inspect/Clone/Inventory；PTY/Preview 留计划 02 |
 | 无 Orca SSH import | architecture-boundary.test 拒绝 ssh-/Ssh/ProjectHostSetup 等片段 |
 | bootstrap/stream 无窗口竞态 | E2E 场景 4：断线期间 durable buffer，重连后按 after cursor 重放修复差量 |
-| operation 幂等 | E2E 场景 5：相同 operation_id 提交两次仅执行一次（calls.createProject 计数 1） |
+| operation 幂等 | E2E 场景 5：对话框真实 UI 提交→失败→重试，两次请求 operation_id 相同、服务端仅执行一次（createProjectRequests=2 / calls.createProject=1） |
 
 ## 6. 结论
 
 Plan 01 Completion Gate 满足：`go test ./...`、desktop typecheck、聚焦 Vitest
-（62 tests）、catalog Playwright（`test:e2e:handoff-catalog` 4/4）、全量 oxlint
+（64 tests）、catalog Playwright（`test:e2e:handoff-catalog` 4/4）、全量 oxlint
 （0 finding）均以当前 commit 新跑通过。bootstrap/control stream 无窗口丢失
 （E2E 场景 4 证明断线差量可经 durable buffer 重放修复）；machine_seq/
 control_revision 单调且重复幂等；外部 Git worktree/branch 与 dispatch Task 均能经
 durable outbox 出现在左栏；项目创建满足 Location 约束并保留 partial 现场；
-operation 以 operation_id 幂等（E2E 场景 5）。结构化日志覆盖成功路径与错误上下文。
+operation 以 operation_id 幂等且经真实对话框 UI 验证（E2E 场景 5）。结构化日志
+覆盖成功路径与错误上下文。
+
+本轮三处修改：① ProjectCreateDialog 一次提交意图固定一个 operation_id（打开时
+重置、失败重试复用、成功关闭后换新），修复「失败重试产生全新 id 导致服务端对
+半建目录重来一遍」的真 bug；② submit 捕获异步失败并显示可行动错误 + 重试入口
+（复用同一 operation_id），补组件测试 3 个；③ E2E 幂等用例改为驱动真实对话框
+UI（打开→填表→注入 500 失败→重试），fixture 新增 createProjectRequests 计数
+区分「客户端发了几次请求」与「服务端执行了几次」，不再用硬编码 id 绕过对话框。
 
 注意：`check:code-quality:changed` 在当前 commit 为空跑（无未提交 JS/TS 变更可比，
 见 §1.2），不记为「通过」；handoff 目录的直接 oxlint 结果为 0 finding。全量 Vitest

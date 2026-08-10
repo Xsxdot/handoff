@@ -192,29 +192,40 @@ test.describe('handoff catalog vertical slice', () => {
     await expect(page.getByText('handoff/after')).toBeVisible()
   })
 
-  test('project create with same operation id executes once', async ({ electronApp }) => {
+  test('project create with same operation id executes once (via dialog retry)', async ({ electronApp }) => {
     const page = await electronApp.firstWindow()
     await page.waitForLoadState('domcontentloaded')
+    await expect(page.getByText('handoff', { exact: true })).toBeVisible()
 
-    // 直接经 window.handoff.createProject 提交相同 operation_id 两次
-    // （与 ProjectCreateDialog 提交路径一致：Main → agentd /v1/projects/operations）。
-    const command = {
-      operation_id: 'op-idempotent-1',
-      name: 'super-debug',
-      locations: [
-        {
-          machine_id: 'm-local',
-          role: 'local',
-          source: 'existing_path',
-          path: '/Users/me/repo'
-        }
-      ]
-    }
-    await page.evaluate((cmd) => window.handoff.createProject(cmd), command)
-    await page.evaluate((cmd) => window.handoff.createProject(cmd), command)
+    // 打开真实项目创建对话框（HandoffApp 左栏「新建项目」按钮）。
+    await page.getByRole('button', { name: '新建项目' }).click()
 
-    // 相同 operation_id 只执行一次：fake 幂等返回已有 Operation，计数不增。
+    // 填表：项目名 + 本机已有目录路径 + 选择本机。
+    await page.getByPlaceholder('super-debug').fill('super-debug')
+    await page.getByPlaceholder('/Users/me/repo').fill('/Users/me/handoff')
+    // local 段第一个 combobox 是 source 选择器、第二个是机器选择器（与组件测试一致）。
+    await page.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: '本机' }).click()
+
+    // 让 fake 第一次 createProject 请求失败，第二次成功。
+    fake!.failCreateProjectNext(1)
+
+    // 第一次提交：fake 返回 500 → 对话框显示可行动错误。
+    await page.getByRole('button', { name: '创建项目' }).click()
+    await expect(page.getByTestId('handoff-create-error')).toBeVisible()
+    expect(fake!.createProjectRequests()).toBe(1)
+
+    // 点重试：携带与第一次相同的 operation_id（对话框在一次提交意图内固定 id）。
+    await page.getByRole('button', { name: '重试' }).click()
+    await expect(page.getByTestId('handoff-operation-result')).toBeVisible()
+
+    // 两次请求都到达了服务端（收到的请求总数 = 2）。
+    expect(fake!.createProjectRequests()).toBe(2)
+    // 服务端只执行一次（calls.createProject 按 operation_id 幂等去重）。
     expect(fake!.calls.createProject()).toBe(1)
-    expect(fake!.createdProjects()).toHaveLength(1)
+    // 两次请求携带的 operation_id 相同。
+    const opIds = fake!.createdProjects().map((p) => (p as { operation_id: string }).operation_id)
+    expect(opIds).toHaveLength(2)
+    expect(opIds[0]).toBe(opIds[1])
   })
 })

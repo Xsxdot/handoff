@@ -10,10 +10,13 @@
  *   - 独立 Handoff Workbench，不导入 Orca 全局 store/Worktree
  *   - renderer 不做网络重试日志（Main 记录），UI 只显示可行动状态
  */
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { createCatalogStore } from './catalog/catalog-store'
 import { ProjectTree } from './components/ProjectTree'
 import { WorkbenchShell } from './components/WorkbenchShell'
+import { ProjectCreateDialog, type CreateDialogMachine } from './components/ProjectCreateDialog'
+import { Button } from '@/components/ui/button'
+import type { Operation } from '../../../../shared/handoff/contracts'
 
 // 模块级单例 CatalogStore（见 HandoffApp 的 why 注释）。
 const catalogStore = createCatalogStore()
@@ -41,6 +44,7 @@ export function HandoffApp(): React.JSX.Element {
   // 重渲染；getState() 只读一次快照，DOM 永不更新。
   const state = catalogStore()
   const api = useHandoffApi()
+  const [createOpen, setCreateOpen] = useState(false)
 
   useEffect(() => {
     if (!api) {
@@ -95,29 +99,63 @@ export function HandoffApp(): React.JSX.Element {
     catalogStore.getState().selectWorkspace(workspaceId)
   }
 
+  // 项目创建：对话框的 onSubmit 经 window.handoff.createProject 走 Main → agentd。
+  // 为什么直接委托 window.handoff：renderer 不直接持 token/endpoint，创建语义
+  // 由 Main 的 AgentdClient 承担；对话框自身负责稳定 operation_id 与失败重试。
+  const createProject = async (command: unknown): Promise<Operation> => {
+    const handoff = (window as unknown as { handoff?: { createProject: (c: unknown) => Promise<Operation> } }).handoff
+    if (!handoff) {
+      throw new Error('本机 agentd 连接未就绪')
+    }
+    return handoff.createProject(command)
+  }
+
+  const machines: CreateDialogMachine[] = state.machines.map((m) => ({
+    id: m.id,
+    display_name: m.display_name,
+    kind: m.kind
+  }))
+
   return (
-    <WorkbenchShell
-      state={state}
-      left={<ProjectTree state={state} onWorkspaceSelect={onWorkspaceSelect} />}
-      center={
-        <div className="handoff-center-placeholder">
-          {state.selectedWorkspaceId ? (
-            <div className="handoff-breadcrumb">工作区 {state.selectedWorkspaceId}</div>
-          ) : (
-            <div className="handoff-center-empty">选择左侧工作区开始</div>
-          )}
-        </div>
-      }
-      right={
-        <div className="handoff-right-placeholder">
-          {state.selectedWorkspaceId ? (
-            <div className="handoff-right-root">文件根: 未实现</div>
-          ) : (
-            <div className="handoff-right-empty">未选择工作区</div>
-          )}
-        </div>
-      }
-    />
+    <>
+      <WorkbenchShell
+        state={state}
+        left={
+          <div className="handoff-left-column">
+            <div className="handoff-left-actions">
+              <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
+                新建项目
+              </Button>
+            </div>
+            <ProjectTree state={state} onWorkspaceSelect={onWorkspaceSelect} />
+          </div>
+        }
+        center={
+          <div className="handoff-center-placeholder">
+            {state.selectedWorkspaceId ? (
+              <div className="handoff-breadcrumb">工作区 {state.selectedWorkspaceId}</div>
+            ) : (
+              <div className="handoff-center-empty">选择左侧工作区开始</div>
+            )}
+          </div>
+        }
+        right={
+          <div className="handoff-right-placeholder">
+            {state.selectedWorkspaceId ? (
+              <div className="handoff-right-root">文件根: 未实现</div>
+            ) : (
+              <div className="handoff-right-empty">未选择工作区</div>
+            )}
+          </div>
+        }
+      />
+      <ProjectCreateDialog
+        open={createOpen}
+        machines={machines}
+        onSubmit={createProject}
+        onOpenChange={setCreateOpen}
+      />
+    </>
   )
 }
 

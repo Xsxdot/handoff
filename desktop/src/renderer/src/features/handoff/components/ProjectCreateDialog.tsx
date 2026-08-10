@@ -6,12 +6,13 @@
  *   - Finder 按钮只在 local existing path 出现；remote existing path 只能粘贴
  *   - clone URL 必填；clone path 自动预填 ~/.handoff/<repo-name> 并可改
  *   - 提交后显示 Operation 状态而非伪造「已创建」
+ *   - 一次「提交意图」对应一个稳定 operation_id；失败可重试且复用同一 id
  *
  * 边界：
  *   - 使用 shadcn Dialog/Select/Input/Button
  *   - Finder 只返回选择结果，最终由 agentd InspectPath 校验
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -85,6 +86,31 @@ export function ProjectCreateDialog({
   const [name, setName] = useState('')
   const [submitted, setSubmitted] = useState<Operation | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // 稳定 operation_id：一次「提交意图」对应一个 id。
+  //
+  // 为什么必须存进 state 而非每次 submit 现生成（Task 5/7 的 durable operation
+  // 机制前提）：失败后重试若换新 id，服务端会当成全新 operation，对第一次可能
+  // 已建了一半的目录再来一遍——「同 ID 重试只补失败目标」永远走不到。因此
+  // operation_id 在首次 submit 时生成并固定，重试复用；只有成功提交后关闭
+  // 对话框（下次打开 = 新提交意图）才换新 id。
+  const [operationId, setOperationId] = useState<string | null>(null)
+
+  // 对话框每次打开 = 新的提交意图：重置表单/结果/错误/operation_id。
+  // 为什么用 ref 记录上一次 open：open 从 false→true 才重置；保持打开期间
+  // 的编辑与重试状态不受影响。
+  const prevOpen = useRef(open)
+  useEffect(() => {
+    if (open && !prevOpen.current) {
+      setLocalLoc(emptyLocal())
+      setRemoteLoc(emptyRemote())
+      setName('')
+      setSubmitted(null)
+      setError(null)
+      setOperationId(null)
+    }
+    prevOpen.current = open
+  }, [open])
 
   const canSubmit = useMemo(() => {
     const hasAny = useLocal || useRemote
@@ -110,7 +136,9 @@ export function ProjectCreateDialog({
   }, [useLocal, useRemote, localLoc, remoteLoc, name])
 
   const pickLocalDirectory = async (): Promise<void> => {
-    const api = (window as unknown as { handoff?: { pickLocalDirectory: () => Promise<{ canceled: boolean; path?: string }> } }).handoff
+    const api = (window as unknown as {
+      handoff?: { pickLocalDirectory: () => Promise<{ canceled: boolean; path?: string }> }
+    }).handoff
     if (!api) {
       return
     }
@@ -121,17 +149,36 @@ export function ProjectCreateDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (!canSubmit) {
+    if (!canSubmit || submitting) {
       return
     }
+    // 稳定 operation_id：首次 submit 生成并固定，重试复用（见字段 why 注释）。
+    const id = operationId ?? crypto.randomUUID()
+    if (operationId === null) {
+      setOperationId(id)
+    }
     setSubmitting(true)
+    setError(null)
     try {
-      const locations: { machine_id: string; role: string; source: string; path?: string; git_url?: string; clone_path?: string }[] = []
+      const locations: {
+        machine_id: string
+        role: string
+        source: string
+        path?: string
+        git_url?: string
+        clone_path?: string
+      }[] = []
       if (useLocal) {
         const l = localLoc
         locations.push(
           l.source === 'git_clone'
-            ? { machine_id: l.machineId, role: 'local', source: 'git_clone', git_url: l.gitUrl, clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}` }
+            ? {
+                machine_id: l.machineId,
+                role: 'local',
+                source: 'git_clone',
+                git_url: l.gitUrl,
+                clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}`
+              }
             : { machine_id: l.machineId, role: 'local', source: 'existing_path', path: l.path }
         )
       }
@@ -139,16 +186,25 @@ export function ProjectCreateDialog({
         const l = remoteLoc
         locations.push(
           l.source === 'git_clone'
-            ? { machine_id: l.machineId, role: 'remote', source: 'git_clone', git_url: l.gitUrl, clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}` }
+            ? {
+                machine_id: l.machineId,
+                role: 'remote',
+                source: 'git_clone',
+                git_url: l.gitUrl,
+                clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}`
+              }
             : { machine_id: l.machineId, role: 'remote', source: 'existing_path', path: l.path }
         )
       }
       const operation = await onSubmit({
-        operation_id: crypto.randomUUID(),
+        operation_id: id,
         name,
         locations
       })
       setSubmitted(operation)
+    } catch (e) {
+      // 异步失败：显示可行动错误信息，保留重试入口；重试复用同一 operation_id。
+      setError(e instanceof Error ? e.message : '项目创建失败，请重试')
     } finally {
       setSubmitting(false)
     }
@@ -284,6 +340,15 @@ export function ProjectCreateDialog({
           </div>
         )}
 
+        {error && (
+          <div className="handoff-create-error" data-testid="handoff-create-error" role="alert">
+            <span>{error}</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => void submit()}>
+              重试
+            </Button>
+          </div>
+        )}
+
         {submitted && (
           <div className="handoff-create-result" data-testid="handoff-operation-result">
             操作状态：{submitted.state}
@@ -292,7 +357,7 @@ export function ProjectCreateDialog({
 
         <DialogFooter>
           <Button type="button" onClick={() => void submit()} disabled={!canSubmit || submitting}>
-            创建项目
+            {submitting ? '提交中…' : submitted ? '再次创建' : '创建项目'}
           </Button>
         </DialogFooter>
       </DialogContent>
