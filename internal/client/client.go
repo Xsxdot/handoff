@@ -225,8 +225,13 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		// 不走 httpError：它会打 Warn 日志并造出一个普通错误，而这里的 404
-		// 是一条有用的结论，不是异常
-		c.log().Info("对端 agentd 不支持 /api/status，按版本过旧处理")
+		// 是一条有用的结论，不是异常。
+		//
+		// 为什么是 Debug（而不是 Info）：这是**预期结论**不是异常——调用方
+		// （cmd/status.go）已经把它渲染成人读输出（「可用（版本过旧）」四行），
+		// 库层再打 Info 就是重复，混进 stderr 看着像出了错。降级到 Debug
+		// 保留排障时的可观测性，但默认不污染诊断命令的输出。
+		c.log().Debug("对端 agentd 不支持 /api/status，按版本过旧处理")
 		return nil, ErrStatusUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
