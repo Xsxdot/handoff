@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: 用 handoff CLI 把实现计划派发给独立 executor（opencode / claude / grok）执行，并以审核者身份驱动 dispatch → wait → reply → diff → continue/done 的完整回路。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
+description: 用 handoff CLI 把实现计划派发给独立 executor（opencode / claude / grok）执行，并以审核者身份驱动 dispatch → wait → reply → diff → continue/done 的完整回路。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
 ---
 
 <!--
@@ -85,6 +85,34 @@ handoff wait <task> --notify --timeout 1h
 无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。
 
 `progress` / `approver_decision` / `approver_disabled` 三类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
+
+## 在 agent 会话里挂 wait（Claude Code 等）
+
+上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态只有一种：
+
+**每一轮 = 一条后台命令，内容就是一条裸的 wait。**
+
+```bash
+# run_in_background 挂上，然后结束你的回合
+handoff wait <task> --notify --timeout 1h
+```
+
+后台进程退出时 harness 会自动唤醒你——这就是循环的「下一圈」，不需要 sleep，不需要计数器。醒来后：
+
+1. 按退出码分诊：`0` → 有事件；`124` → 超时无事，直接重挂；`1` → 看 stderr，按排障表办（别重挂）。
+2. **退出码 0 时，事件只当唤醒信号用，先 `handoff show`，以它的 `state` + `pending_tickets` 为准**（为什么见下面的 cursor 语义）。
+3. 处置完（reply / continue / 进审核）再挂下一条 wait。
+
+循环体是「挂 → 醒 → show → 处置 → 重挂」，由多个回合天然构成，**不写任何 shell 循环**。
+
+### cursor 语义：为什么 wait 可能吐出旧事件
+
+`wait` 的「不重不丢」靠审核者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
+
+- `show` / `reply` 不推进 cursor。走「show → reply」恢复流程之后再挂 wait，第一批返回的可能是**你早已处理过的历史事件**（答过的 question、continue 过的 completed）。
+- 换一台机器接管时本机没有 cursor 文件，wait 从 seq 0 起把历史可动作事件重放一遍。
+
+这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：**醒来先 show**。历史 question 的 ticket 已被消耗，补 reply 会 404——正常，跳过即可；历史 completed 也不代表当前在 `waiting_review`，state 说了算。
 
 ## 远程派发：代码怎么过去，改动怎么回来
 
@@ -194,7 +222,7 @@ handoff tasks              # 每行一个任务 JSON：id / name / state / branc
 handoff show <task>        # 任务体 + pending_tickets + 最近事件
 ```
 
-`pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单 `reply` 掉，然后按当前 state 决定：`running` → 重新挂 `wait`；`waiting_review` → 进审核。
+`pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单 `reply` 掉，然后按当前 state 决定：`running` → 重新挂 `wait`；`waiting_review` → 进审核。接管后第一次 `wait` 可能重放历史事件（见「cursor 语义」）——照旧以 `show` 为准即可。
 
 会话崩溃、主动关掉重开、换一台机器接管，三种场景都是这一套。**不要**因为「我不记得这个任务了」就重新 dispatch 一个——先 `tasks` 看有没有。
 
@@ -239,6 +267,7 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 | `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重挂**，它不会自己好 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
+| 重挂 `wait` 后立刻吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「基线」行就是实际起点 |
@@ -262,6 +291,9 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 | 「拒了就拒了，不用写理由」 | 理由是给模型看的。不给，它就原地重试同样的操作。 |
 | 「reply 报 502，我再 reply 一次」 | 工单已被消耗，第二次必 404。要的是 `resume`。 |
 | 「wait 没动静，是不是挂了？」 | 没有事件就是没有事件。看退出码和 stderr，别瞎重启。 |
+| 「Bash 工具会超时，我写个 show+sleep 轮询循环」 | wait 本身就是轮询的替代品。一条后台 wait，退出即唤醒你。见「在 agent 会话里挂 wait」。 |
+| 「把几百轮 wait 包进一条 shell 大循环省事」 | 大循环吞掉事件 JSON，且循环期间你无法处置任何工单。每轮一条后台 wait。 |
+| 「wait 返回了 completed，直接 continue」 | 可能是 cursor 重放的历史事件。醒来先 `show`，state 说了算。 |
 | 「这个权限请求看起来问题不大」 | 破坏性、不可逆、外部可见的操作一律升级给用户。 |
 | 「任务好像不见了，重新 dispatch 一个」 | 先 `handoff tasks`。重复派发会开出第二个 executor 抢同一个仓库。 |
 | 「代码 commit 完了，可以远程派发了」 | 校验的是远端能否 fetch 到这个 commit。没 `git push` 等于没有。 |
