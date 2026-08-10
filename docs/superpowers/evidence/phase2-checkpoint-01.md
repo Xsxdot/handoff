@@ -53,9 +53,15 @@ Test Files  5 failed | 4445 passed | 13 skipped (4463)
 探测）为**偶发失败**：它依赖冷 toolset cache 的时序，独立重跑通过（实测单跑 15
 passed），全量并行时偶发超时，非本仓库改动引入，同样未改上游测试。
 
-结论：这 7 个失败在导入前的上游基线上同样失败（Task 1 基线检查确认），与
-Handoff 控制面/桌面改动无关；本 checkpoint 以聚焦 Vitest（64 tests）与
-`test:e2e:handoff-catalog`（4/4）作为验收通过依据。
+结论：这些失败由**嵌套导入的仓库布局**（check-root-directory-entries 把 `desktop/`
+顶层目录当成新增顶层目录，是「Orca 上游守卫与单仓库导入 Orca 的固有冲突」）与
+**macOS 本机环境**（PTY/zsh 子进程/冷 toolset cache/git 树身份）产生，不是 Handoff
+控制面/桌面改动引入的。依据：这 5 个失败测试文件在导入 commit `98580c8` 之后从未
+被修改，可用 `git log 98580c8..HEAD -- <这些路径>` 验证（无输出即未动过）。需要
+如实说明：本计划未在导入前跑过全量 vitest 基线（Task 1 基线检查只覆盖 typecheck
+与 `src/shared/app-version.test.ts`），因此**不宣称「导入前同样失败」**，只以上述
+仓库布局与环境成因 + 文件未被本计划改动为依据。本 checkpoint 以聚焦 Vitest
+（64 tests）与 `test:e2e:handoff-catalog`（4/4）作为验收通过依据。
 
 ## 1.2 changed-code-quality 检查的空跑记录与 oxlint 直接结果
 
