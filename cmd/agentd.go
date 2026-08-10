@@ -71,6 +71,25 @@ var agentdCmd = &cobra.Command{
 			return fmt.Errorf("创建数据目录 %s: %w", cfg.DataDir, err)
 		}
 
+		// 单实例锁（B34）：一个 DataDir 同时只接纳一个 agentd。位置被三个约束
+		// 同时定死，改动前务必读懂：
+		//   - 必须在 MkdirAll 之后：首次运行 DataDir 还不存在，锁文件没处放
+		//   - 必须在 store.Open 之前：那是「碰数据」的第一步，也是唯一能保证
+		//     撞锁时什么都没动过的位置
+		//   - 必须在 logx.Setup 之后：否则撞锁失败的日志无处可去
+		//
+		// 为什么不能指望端口冲突挡住第二个 agentd：ListenAndServe 是本函数
+		// **最后**一条语句，在它之前 RecoverOnStartup 已经对在役 agentd 的活
+		// 执行器重建了订阅并写入状态迁移；store.Open 开了 WAL 也不拦多进程
+		// 打开。破坏发生在撞端口之前，所以锁必须卡在这里。
+		lock, err := agentd.AcquireDataDirLock(cfg.DataDir, logger)
+		if err != nil {
+			// 不再包一层：撞锁时 err 本身就是一段完整的可行动指引，
+			// 前面再缀「启动 agentd 失败:」只会把重点冲淡
+			return err
+		}
+		defer lock.Release()
+
 		st, err := store.Open(filepath.Join(cfg.DataDir, "handoff.db"))
 		if err != nil {
 			return fmt.Errorf("打开存储: %w", err)
