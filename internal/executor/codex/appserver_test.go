@@ -105,12 +105,32 @@ func registerFakeConn(srv *httptest.Server, conn *websocket.Conn) {
 // 为什么不用 StatusNormalClosure：本辅助函数服务的测试验的是「连接意外死掉时
 // 挂起请求必须以错误终结、OnClosed 必须收到非 nil err」——正常关闭会把它退化
 // 成一个优雅停机测试，两条路径（主动 Close 传 nil / 被动断线传 err）就分不开了。
-func closeFakeConns(srv *httptest.Server) {
-	fakeConnsMu.Lock()
-	conns := append([]*websocket.Conn(nil), fakeConns[srv]...)
-	fakeConnsMu.Unlock()
-	for _, c := range conns {
-		_ = c.Close(websocket.StatusInternalError, "fake server died")
+//
+// 为什么要先等登记完成：codex.Dial 在**客户端**握手完成即返回，而
+// registerFakeConn 跑在**服务端 handler goroutine** 里、位于 websocket.Accept
+// 之后，两者没有任何同步。测试 goroutine 若先跑到这里，登记表还是空的——
+// 一条连接都关不掉，被测的挂起请求于是不会以错误终结，最后撞上用例自己的
+// 3s 超时，报成「挂起请求永久悬挂」。这正是 B41 那个偶发 flake 的成因。
+//
+// 为什么等不到要 t.Fatal 而不是静默返回：「一条连接都没建立」意味着测试前提
+// 已经被破坏，此时继续跑，后面的断言验的就不是它以为在验的东西。
+func closeFakeConns(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		fakeConnsMu.Lock()
+		conns := append([]*websocket.Conn(nil), fakeConns[srv]...)
+		fakeConnsMu.Unlock()
+		if len(conns) > 0 {
+			for _, c := range conns {
+				_ = c.Close(websocket.StatusInternalError, "fake server died")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("等待 2s 仍无已登记连接：服务端 handler 未执行到 registerFakeConn，测试前提被破坏")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -331,7 +351,7 @@ func TestPendingCallsFailWhenConnectionDies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call async: %v", err)
 	}
-	closeFakeConns(srv)
+	closeFakeConns(t, srv)
 
 	select {
 	case r := <-ch:
