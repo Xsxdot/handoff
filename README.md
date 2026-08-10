@@ -91,6 +91,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
+| `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达 executor 的应答 | — |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
