@@ -48,7 +48,9 @@ type Config struct {
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
 	// 变成审核者的本地状态，换一台审核机接管就得重配。放顶层的语义是
 	// 「每台执行机自己决定它的仓库放在哪」。
-	RepoRoot     string
+	// yaml:"repo_root"：strict 解码器（KnownFields）按 tag 匹配键名，不加 tag 时
+	// yaml.v3 会把 RepoRoot 映射成 reporoot，与 README/设计文档里的 repo_root 不符。
+	RepoRoot     string `yaml:"repo_root"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
