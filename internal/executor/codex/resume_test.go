@@ -133,7 +133,7 @@ func newSleepProc(t *testing.T) *os.Process {
 	return cmd.Process
 }
 
-func alivePID(pid int) bool          { return syscall.Kill(pid, 0) == nil }
-func deadlineLater() time.Time       { return time.Now().Add(2 * time.Second) }
-func timeNowAfter(t time.Time) bool  { return time.Now().After(t) }
-func sleepTiny()                     { time.Sleep(10 * time.Millisecond) }
+func alivePID(pid int) bool         { return syscall.Kill(pid, 0) == nil }
+func deadlineLater() time.Time      { return time.Now().Add(2 * time.Second) }
+func timeNowAfter(t time.Time) bool { return time.Now().After(t) }
+func sleepTiny()                    { time.Sleep(10 * time.Millisecond) }
