@@ -200,8 +200,8 @@ func (a *reapAdapter) Reap(taskID, taskDir string) error {
 	return a.reapErr
 }
 
-// TestStopExecutorFallsBackToReap Stop 报 ErrTaskNotRunning 时必须走确定性兜底回收。
-// B20 现场：不兜底，孤儿 tmux 会话 + serve 存活了 11.5 小时。
+// TestStopExecutorFallsBackToReap Stop 报 ErrTaskNotRunning 时必须走兜底回收。
+// B20 现场：不兜底，孤儿执行者进程存活了 11.5 小时。
 func TestStopExecutorFallsBackToReap(t *testing.T) {
 	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
@@ -222,7 +222,7 @@ func TestStopExecutorFallsBackToReap(t *testing.T) {
 // 审核者根本无从知道有残留（B20 的第二个可改点）。
 func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
-		reapErr: errors.New("tmux 不可用")}
+		reapErr: errors.New("进程组回收失败")}
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
 	mustCreateTask(t, st, &proto.Task{ID: "abcdef12-3456-7890-abcd-ef1234567890",
 		RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingReview})
@@ -234,12 +234,12 @@ func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	}
 	found := false
 	for _, e := range evs {
-		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "handoff-abcdef12") {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "handoff stop") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("回收失败应产出带会话名的 progress 事件，实际事件: %v", evs)
+		t.Fatalf("回收失败应产出指向 handoff stop 的 progress 事件，实际事件: %v", evs)
 	}
 }
 

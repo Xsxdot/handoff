@@ -450,7 +450,7 @@ func hasCommit(ctx context.Context, repo, sha string) bool {
 }
 
 // id8 截取任务 ID 前 8 字节，用于分支名与 worktree 目录名的稳定短标识。
-// 与 opencode adapter 的 tmux 会话命名（handoff-<id8>）共用同一截断规则，
+// 与执行者进程的短 id 展示共用同一截断规则，
 // 改动必须两侧同步（见 attach 命令的 id8 注释）。
 func id8(taskID string) string {
 	if len(taskID) > 8 {

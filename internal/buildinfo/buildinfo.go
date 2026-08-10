@@ -18,7 +18,7 @@ import (
 	"github.com/xushixin/handoff/internal/proto"
 )
 
-// readBuildInfo 是 debug.ReadBuildInfo 的测试缝（与各 adapter 的 tmuxHasSession
+// readBuildInfo 是 debug.ReadBuildInfo 的测试缝（与各 adapter 的进程启动缝
 // 同手法）。
 //
 // why（必须可注入）：go test 编出的测试二进制**不带 vcs 戳**——Settings 里只有

@@ -503,9 +503,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（tmux 不在 PATH、
+//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
-//     err.Error()（含真因如 exec: "tmux": executable file not found），审核者拿到
+//     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
 //     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
 //   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可

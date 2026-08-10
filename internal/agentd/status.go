@@ -124,7 +124,7 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 //     说谎的诊断命令比没有更糟，因为你会信它
 //   - 探测在 goroutine 里跑、用带缓冲的通道回收结果：超时后那个 goroutine 仍
 //     能把结果写进缓冲并正常退出，不会泄漏；底层探针本身也都是有界的
-//     （HTTP 客户端带超时、tmux has-session 秒回）
+//     （HTTP 客户端带超时、探活秒回）
 func (m *Manager) probeOne(t proto.Task, budget time.Duration) (live, note string) {
 	if budget <= 0 {
 		m.log.Warn("状态探活：总时限已用尽，该任务记为未知", "task", t.ID)

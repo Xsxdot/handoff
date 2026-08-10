@@ -26,7 +26,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/shellq"
 )
 
 var (
@@ -169,6 +168,15 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 	}
 }
 
+// appleScriptQuote 把字符串包成单引号 shell 字面量（内含单引号转义为 '\''）。
+//
+// 为什么留在 cmd 包而不是抽公共包：拆掉 tmux 后全项目只剩这一处需要 shell 引号
+// ——osascript 的 do script 参数。为一个调用点维护一个包不划算，且抽出去容易
+// 被误当成「通用 shell 拼接工具」重新用起来，那正是我们刚拆掉的东西。
+func appleScriptQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // openTerminal 用 osascript 在 macOS 上弹 Terminal.app 执行 attach 命令。
 //
 // 测试缝：包级变量，测试替换记录调用。为什么用 do script 而非 tmux 直连：
@@ -176,12 +184,12 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 // Terminal.app 弹窗把「executor 实况」直接送到桌面——do script 让 Terminal
 // 打开新窗口执行 attach，窗口内即实况；activate 把窗口置前。
 var openTerminal = func(attachArgv []string) error {
-	// do script 的参数是 shell 命令串：attach argv 逐元素 shellq.Quote 拼接，
+	// do script 的参数是 shell 命令串：attach argv 逐元素 appleScriptQuote 拼接，
 	// 保证含空白的路径/会话名不被拆错；AppleScript 字符串用 strconv.Quote
 	// 包裹（与 wait 命令的系统通知同约定）
 	quoted := make([]string, len(attachArgv))
 	for i, a := range attachArgv {
-		quoted[i] = shellq.Quote(a)
+		quoted[i] = appleScriptQuote(a)
 	}
 	cmdline := strings.Join(quoted, " ")
 	doScript := "tell application \"Terminal\" to do script " + strconv.Quote(cmdline)

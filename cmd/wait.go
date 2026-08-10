@@ -161,7 +161,7 @@ func notifyEvent(ev *proto.Event) {
 	}
 }
 
-// id8 取字符串前 8 个字符（通知文案用，与 tmux 会话名同规则）。
+// id8 取字符串前 8 个字符（通知文案用）。
 func id8(s string) string {
 	if len(s) > 8 {
 		return s[:8]

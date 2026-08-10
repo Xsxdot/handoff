@@ -57,7 +57,7 @@ func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
 	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log)
 }
 
-// stopExecutor 停 executor，并在「没有内存运行态」时按确定性命名兜底回收。
+// stopExecutor 停 executor，并在「没有内存运行态」时按恢复凭据兜底回收。
 //
 // 参数：
 //   - taskID: 目标任务
@@ -76,7 +76,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 	}
 	if !errors.Is(err, executor.ErrTaskNotRunning) {
 		// executor 还在，只是这次没停掉：保持既有语义（只记日志），
-		// 兜底回收对它无意义——真去 kill 会话反而可能杀掉正在收尾的进程
+		// 兜底回收对它无意义——真去 kill 进程反而可能杀掉正在收尾的进程
 		m.log.Error("停止 executor 失败", "task", taskID, "cause", err)
 		return
 	}
@@ -86,13 +86,14 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		return
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
-	session := "handoff-" + shortID(taskID)
-	m.log.Info("executor 无内存运行态，按确定性命名兜底回收", "task", taskID, "tmux", session)
+	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
 	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
-		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "tmux", session, "cause", rerr)
+		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "cause", rerr)
 		evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
-			Text: fmt.Sprintf("executor 资源可能残留：tmux 会话 %s，请手动 tmux kill-session -t %s（原因：%v）",
-				session, session, rerr),
+			// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
+			// tmux kill-session，那个命令现在不存在了，照做只会更困惑
+			Text: fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
+				"再 handoff stop %s 回收（原因：%v）", taskID, rerr),
 		})
 		if aerr != nil {
 			m.log.Error("追加兜底回收失败事件失败", "task", taskID, "cause", aerr)
@@ -101,17 +102,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		m.hub.Publish(evt)
 		return
 	}
-	m.log.Info("按确定性命名兜底回收成功", "task", taskID, "tmux", session)
-}
-
-// shortID 取 id 前 8 字符，与三个 adapter 的 tmux 会话命名规则
-// （"handoff-" + id8(taskID)）一致。manager 只用它拼给人看的提示文本，
-// 真正的回收由 adapter 自己按同一规则完成。
-func shortID(s string) string {
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:8]
+	m.log.Info("按恢复凭据兜底回收成功", "task", taskID)
 }
 
 // reconcileExecutorGone 收尾一个 executor 已不在的任务：
