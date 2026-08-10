@@ -246,6 +246,118 @@ func (a *API) HasSession(ctx context.Context, sessionID string) (ok bool, err er
 	return false, nil
 }
 
+// SessionMessage 是会话里一条消息的最小形状（对账只需要这几个字段）。
+//
+// 字段说明：
+//   - ID: 消息 id，同时是对账水位的载体
+//   - Role: "assistant" | "user"
+//   - CompletedMS: 完结时刻（毫秒 epoch）；**0 表示尚未完结**，对账据此判「回合还在跑」
+//   - ErrorText: 非空表示该回合以错误告终
+//   - Text: 该消息全部文本 part 的拼接结果，交给 turn.ParseTrailer 分类
+type SessionMessage struct {
+	ID          string
+	Role        string
+	CompletedMS int64
+	ErrorText   string
+	Text        string
+}
+
+// sessionMessageEnvelope 是 GET /session/{id}/message 列表里每一项的形状。
+//
+// 注意：字段路径按真实抓包确定（testdata/session_messages.json），不是按
+// schema 名字推断的。改动前请先重新抓包核对。
+type sessionMessageEnvelope struct {
+	Info struct {
+		ID   string `json:"id"`
+		Role string `json:"role"`
+		Time struct {
+			Completed int64 `json:"completed"`
+		} `json:"time"`
+		Error json.RawMessage `json:"error"`
+	} `json:"info"`
+	Parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"parts"`
+}
+
+// LastAssistantMessage 取会话里最后一条 assistant 消息（对账的数据源，B38）。
+//
+// 参数：
+//   - ctx: 控制单次请求超时
+//   - sessionID: 目标会话
+//
+// 返回：
+//   - (*SessionMessage, nil): 找到了。CompletedMS==0 表示该回合仍在进行
+//   - (nil, nil): 会话里还没有任何 assistant 消息——**合法状态，不是错误**
+//   - (nil, err): 请求或解析失败
+//
+// 注意：
+//   - 只看最后一条 assistant 消息就够，依据是「一个断连窗口内至多跨越一个回合
+//     边界」（spec §2.2）；不需要全量拉取比对
+//   - 权限请求**查不回来**：本端点的 tool part 只有 callID 没有权限 id，而
+//     RespondPermission 要求真实 id、伪造即 404（更早的 spike 结论，见
+//     adapter.go 的 onReconnect 降级告警）。故本方法不尝试提取权限
+func (a *API) LastAssistantMessage(ctx context.Context, sessionID string) (msg *SessionMessage, err error) {
+	start := time.Now()
+	path := "/session/" + sessionID + "/message"
+	a.log().Info("opencode 查会话尾部", "path", path, "session", sessionID)
+	defer func() {
+		switch {
+		case err != nil:
+			a.log().Error("opencode 查会话尾部失败", "path", path, "session", sessionID, "cause", err)
+		case msg == nil:
+			a.log().Info("opencode 会话尾部无 assistant 消息", "path", path,
+				"session", sessionID, "elapsed_ms", time.Since(start).Milliseconds())
+		default:
+			a.log().Info("opencode 会话尾部已取得", "path", path, "session", sessionID,
+				"msg", msg.ID, "completed_ms", msg.CompletedMS, "has_error", msg.ErrorText != "",
+				"text_runes", len([]rune(msg.Text)), "elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("查会话消息请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, a.httpError("查会话消息", resp)
+	}
+	var list []sessionMessageEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, fmt.Errorf("解析会话消息: %w", err)
+	}
+	// 从尾部往前找第一条 assistant：列表按时间正序，最后一条 assistant 才是
+	// 「当前回合」的载体；user 消息夹在中间（reply 的应答就是一条 user 消息）
+	for i := len(list) - 1; i >= 0; i-- {
+		e := list[i]
+		if e.Info.Role != "assistant" {
+			continue
+		}
+		out := &SessionMessage{
+			ID:          e.Info.ID,
+			Role:        e.Info.Role,
+			CompletedMS: e.Info.Time.Completed,
+		}
+		// error 字段的形态在不同版本里可能是 null / 字符串 / 对象（本次真机抓包
+		// 的会话里该字段完全缺席），统一按原始 JSON 处理：非 null 即视为出错，
+		// 原文进 ErrorText 供审核者看
+		if s := strings.TrimSpace(string(e.Info.Error)); s != "" && s != "null" {
+			out.ErrorText = s
+		}
+		var sb strings.Builder
+		for _, p := range e.Parts {
+			if p.Type == "text" && p.Text != "" {
+				sb.WriteString(p.Text)
+			}
+		}
+		out.Text = sb.String()
+		return out, nil
+	}
+	return nil, nil
+}
+
 // CreateSession 在 opencode server 上创建会话。
 //
 // 返回：

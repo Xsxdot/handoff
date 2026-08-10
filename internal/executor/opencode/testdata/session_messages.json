@@ -1,0 +1,119 @@
+[
+  {
+    "info": {
+      "id": "msg_feaef0ca4001P5kidAhaPEZBXr",
+      "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+      "role": "user",
+      "time": {
+        "created": 1786352962724
+      },
+      "summary": {
+        "diffs": [
+          {
+            "file": "cmd/placeholder.go",
+            "patch": "Index: cmd/placeholder.go\n===================================================================\n--- cmd/placeholder.go\t\n+++ cmd/placeholder.go\t\n@@ -0,0 +1,20 @@\n+// <脱敏：文件头注释>",
+            "additions": 20,
+            "deletions": 0,
+            "status": "added"
+          }
+        ],
+        "additions": 20,
+        "deletions": 0,
+        "files": 1
+      },
+      "tokens": {
+        "input": 67751,
+        "output": 6644,
+        "reasoning": 3285,
+        "cache": {
+          "read": 1045120,
+          "write": 0
+        }
+      },
+      "version": "1.18.15",
+      "time": {
+        "created": 1786352962724
+      },
+      "cost": 0.007595798
+    },
+    "parts": [
+      {
+        "id": "prt_feaef0ca6001JnKssTXnQG6F7U",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef0ca4001P5kidAhaPEZBXr",
+        "type": "text",
+        "text": "你是 handoff 任务 <脱敏：任务 id> 的执行者，按下方实现计划执行。"
+      }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg_feaef618bd0018D3VT20gjX3GTW",
+      "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+      "role": "assistant",
+      "time": {
+        "created": 1786353424573,
+        "completed": 1786353454577
+      },
+      "parentID": "msg_feaef3b81b001ST1F6i1V8V6CVO",
+      "modelID": "deepseek-v4-flash",
+      "providerID": "opencode-go",
+      "mode": "build",
+      "agent": "build",
+      "path": {
+        "cwd": "/Users/sycm/.handoff/worktrees/<脱敏：仓库路径>",
+        "root": "/Users/sycm/.handoff/worktrees/<脱敏：仓库路径>"
+      },
+      "cost": 0.001577478,
+      "tokens": {
+        "total": 24300,
+        "input": 22263,
+        "output": 54,
+        "reasoning": 63,
+        "cache": {
+          "read": 1920,
+          "write": 0
+        }
+      },
+      "finish": "tool-calls"
+    },
+    "parts": [
+      {
+        "id": "prt_feaef1ab3001723eCG8NlqiQwc",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef618bd0018D3VT20gjX3GTW",
+        "type": "step-start",
+        "snapshot": "f34e7b2472433f280aa8efdfffff1f140bf62b27"
+      },
+      {
+        "id": "prt_feaef1dc20019ADYxV3eRiFLgZ",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef618bd0018D3VT20gjX3GTW",
+        "type": "reasoning",
+        "text": "<脱敏：推理文本>"
+      },
+      {
+        "id": "prt_feaef1dd9001AV8mS7mQ2kKsNe",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef618bd0018D3VT20gjX3GTW",
+        "type": "text",
+        "text": "活干完了\n{\"branch\":\"handoff/<脱敏：分支>\",\"commit\":\"<脱敏：commit>\",\"summary\":\"<脱敏：摘要>\"}"
+      },
+      {
+        "id": "prt_feaef1de9001iAn5XfQhGmOqZ",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef618bd0018D3VT20gjX3GTW",
+        "type": "tool",
+        "tool": "bash",
+        "callID": "<脱敏：callID>"
+      },
+      {
+        "id": "prt_feaef1df3001Y8jvxOMiZPcWj",
+        "sessionID": "ses_01510f367ffeNnDj8g5GOVIqJR",
+        "messageID": "msg_feaef618bd0018D3VT20gjX3GTW",
+        "type": "step-finish",
+        "finish": "tool-calls"
+      }
+    ]
+  }
+]
