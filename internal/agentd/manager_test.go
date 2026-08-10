@@ -1253,3 +1253,81 @@ func TestResumeUnaffectedForNonVolatileAdapter(t *testing.T) {
 		t.Error("无状态权限的 adapter 不应受未决工单影响")
 	}
 }
+
+// TestDispatchAutoBranchStartsAtBaseCommit 是 B35 在 dispatch 全链路上的回归：
+// 任务仓库 HEAD 已经前进，但派发时上送的基线是更早那个提交——新 worktree
+// 必须落在基线上，不能落在仓库 HEAD 上。
+func TestDispatchAutoBranchStartsAtBaseCommit(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
+	writeAndCommit(t, repo, "drift.txt", "x") // 仓库 HEAD 前进，模拟执行机落后/超前
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(gitAt(t, task.Workdir(), "rev-parse", "HEAD"))
+	if head != base {
+		t.Fatalf("新 worktree 应开在基线 %s 上，实得 %s（B35：校验了基线却从仓库 HEAD 开分支）", base, head)
+	}
+}
+
+// TestDispatchRecordsBaseline 验证派发落库的基线就是实际用的起点，且领先数
+// 被如实记下——这正是 08-10 事故复盘时谁都答不上来的那个数字。
+func TestDispatchRecordsBaseline(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
+	writeAndCommit(t, repo, "one.txt", "1")
+	writeAndCommit(t, repo, "two.txt", "2")
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseCommit != base {
+		t.Fatalf("落库基线应是实际起点 %s，实得 %q", base, got.BaseCommit)
+	}
+	if got.BaseAhead != 2 {
+		t.Fatalf("任务仓库领先 2 个提交，落库实得 %d", got.BaseAhead)
+	}
+}
+
+// TestDispatchExplicitBaseWinsOverBaseline 验证起点优先级：显式 --base 压过
+// 决议出的基线，且此时不记领先数——用户已经明确指定了起点，「你丢了 N 个
+// 提交」这句话对他毫无意义，是噪音不是信息。
+func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	explicit := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
+	baseline := writeAndCommit(t, repo, "mid.txt", "m") // 基线比 explicit 新
+	writeAndCommit(t, repo, "tip.txt", "t")             // 仓库 HEAD 再前进一格
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		BaseCommit: baseline, Base: explicit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(gitAt(t, task.Workdir(), "rev-parse", "HEAD"))
+	if head != explicit {
+		t.Fatalf("显式 --base 应压过基线：worktree head=%s explicit=%s baseline=%s", head, explicit, baseline)
+	}
+	got, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseCommit != explicit {
+		t.Fatalf("落库基线应是实际用的起点 %s，实得 %q", explicit, got.BaseCommit)
+	}
+	if got.BaseAhead != 0 {
+		t.Fatalf("显式起点不该报领先数，实得 %d", got.BaseAhead)
+	}
+}

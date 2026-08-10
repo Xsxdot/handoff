@@ -79,7 +79,10 @@ func Open(path string) (*Store, error) {
   -- worktree_managed=工作区是否 agentd 创建的 worktree（done 时需删除）。
   name TEXT NOT NULL DEFAULT '', executor TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '', work_dir TEXT NOT NULL DEFAULT '',
-  worktree_managed INTEGER NOT NULL DEFAULT 0)`,
+  worktree_managed INTEGER NOT NULL DEFAULT 0,
+  -- 基线两列（B35）：base_commit=任务新分支的实际起点；base_ahead=派发当时
+  -- 任务仓库 HEAD 领先该起点的提交数（这些提交不在任务分支里）。
+  base_commit TEXT NOT NULL DEFAULT '', base_ahead INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -106,7 +109,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("迁移 tickets.delivered_at: %w", err)
 	}
-	// 迁移：为旧库补二期 tasks 列（name/executor/model/work_dir/worktree_managed）。
+	// 迁移：为旧库补 tasks 增量列（二期 name/executor/model/work_dir/worktree_managed + B35 base_commit/base_ahead）。
 	//
 	// why（逐列 ALTER + 容忍 duplicate column）：SQLite 的 ADD COLUMN 不支持
 	// IF NOT EXISTS，且不支持一次加多列，只能逐条 ALTER；已存在时报 duplicate
@@ -117,6 +120,8 @@ func Open(path string) (*Store, error) {
 		"model":            "TEXT NOT NULL DEFAULT ''",
 		"work_dir":         "TEXT NOT NULL DEFAULT ''",
 		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
+		"base_commit":      "TEXT NOT NULL DEFAULT ''",
+		"base_ahead":       "INTEGER NOT NULL DEFAULT 0",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -147,11 +152,12 @@ func (s *Store) Close() error {
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
-		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged))
+		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
+		t.BaseCommit, t.BaseAhead)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -174,11 +180,12 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 	)
 	err := s.db.QueryRowContext(context.Background(), `
 SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead
 FROM tasks WHERE id = ?`, id).
 		Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged)
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
+			&task.BaseCommit, &task.BaseAhead)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -198,7 +205,7 @@ FROM tasks WHERE id = ?`, id).
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
 SELECT id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead
 FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务列表: %w", err)
@@ -214,7 +221,8 @@ FROM tasks ORDER BY created_at DESC`)
 		)
 		if err := rows.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 			&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
-			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged); err != nil {
+			&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
+			&task.BaseCommit, &task.BaseAhead); err != nil {
 			return nil, fmt.Errorf("读取任务行: %w", err)
 		}
 		task.CreatedAt = parseTime(createdAt)

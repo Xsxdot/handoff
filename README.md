@@ -82,7 +82,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b> [--base <t>]`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验） |
+| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验） |
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
