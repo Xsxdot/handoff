@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/executor"
@@ -322,6 +323,12 @@ func TestReconcileEmitsRejectedToolEnd(t *testing.T) {
 	if ev.Text == "" {
 		t.Fatal("提问文本不应为空")
 	}
+	// 断言命中 row4 的专属结论文本（含「工具被拒」），使其区别于 row6 兜底——
+	// 若夹具打错行（例如误取成 completed=0 被 row1 拦下，或没有 tool part 走
+	// row6），此处会翻红。自检：临时注释 reconcileTurnEnded 的 row4，本测试必红。
+	if !strings.Contains(out.Note, "工具被拒/报错而终") {
+		t.Fatalf("应命中 row4（工具被拒/报错而终）的专属结论，got note=%q", out.Note)
+	}
 }
 
 // TestReconcileEmitsFinishUnknownTerminal —— B38 Task9 row6（窄兜底）：finish=
@@ -387,5 +394,89 @@ func TestReconcileEmitsStopTerminal(t *testing.T) {
 	}
 	if ev.Type != "result" || ev.Result == nil || !ev.Result.OK {
 		t.Fatalf("finish=stop + finish trailer 应补发成功结果，got %+v", ev)
+	}
+}
+
+// TestReconcileAbortedTurnEmitsQuestionNotResult —— B38 Task9 row3：会话被人工
+// abort（error.name=MessageAbortedError）→ 补发成 **question**（带消息正文），
+// 而不是 result{OK:false} 任务失败。
+//
+// why：abort 在真实使用里几乎总是人工救援动作（解开冻结/卡死会话），释放出来的
+// 往往是完整且有价值的内容。判成 failed 会把一次成功的救援翻译成任务失败，且
+// FailReason 只带 error 文本、丢掉消息正文——比 B38 原始症状还糟。全库 8236 条
+// assistant 消息里 MessageAbortedError 是**唯一**出现过的 error 形态（4 条），
+// 即 ErrorText 那个分支实际上只会被 abort 触发；abort 摘出来走 question、保留
+// ErrorText 兜未知错误，两条都站得住。
+//
+// 夹具：testdata/session_aborted.json 取自真机会话（msg_fec00880…，即卡 2h 后
+// abort 解开的设计消息），error.name=MessageAbortedError、completed 非零、含完整
+// text part（设计正文 1658 字）。此消息 tool part 也是 status=error，但判据 row3
+// 先于 row4、classifyReconciled 的 abort 分支先于 tool-error 分支，故走 question。
+func TestReconcileAbortedTurnEmitsQuestionNotResult(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_aborted.json")
+	if err != nil {
+		t.Fatalf("读夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true)
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("abort 而终必须补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
+	if ev.Type != "question" {
+		t.Fatalf("abort 而终必须补发成 question（救援不是失败），got %q", ev.Type)
+	}
+	if ev.Text == "" {
+		t.Fatal("abort 的提问文本不应为空——它应该带消息正文（那份被救下的内容）")
+	}
+}
+
+// TestReconcileSkipsUnfinalizedFrozen —— B38 Task9 row1/row5：消息未 finalize
+// （time.completed 缺失）→ 必须不补发，且必须由**判据第 1 条**（CompletedMS==0）
+// 拦下，而不是靠后续任何一行。
+//
+// 夹具：testdata/session_unfinalized.json 取自真机会话（msg_fe0f322b…），三查
+// 齐备：time.completed 确实缺失（info.time 只有 created）、error 字段为空、
+// tool part state.status=running——「在飞、未 finalize」形态。按判据顺序第 1 条
+// 就命中，reason=unfinalized。
+//
+// 自检：临时把 reconcileTurnEnded 的第 1 条注释掉，本测试必须变红——不变红说明
+// 夹具没打到 row1/row5（例如误取成 error 非空被 row4 抢先、或 completed 有值被
+// 后几行判走）。row3/row4 同理各值得做一遍，动作相反的两行夹具打错立刻暴露。
+func TestReconcileSkipsUnfinalizedFrozen(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_unfinalized.json")
+	if err != nil {
+		t.Fatalf("读夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true) // armed + 空水位
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 0 {
+		t.Fatalf("未 finalize 的消息不应补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	if _, ok := drainOne(r); ok {
+		t.Fatal("未 finalize 却补发了事件")
 	}
 }

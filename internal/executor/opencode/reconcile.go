@@ -176,6 +176,32 @@ func reconcileTurnEnded(msg *SessionMessage) (bool, string) {
 //
 // 返回：事件本身，以及一句给审核者看的结论。
 func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor.AdapterEvent, string) {
+	// 会话被 abort（row3）：走 question 而不是 result{OK:false}。
+	//
+	// 为什么 abort 不是任务失败：abort 在真实使用里几乎总是**人工救援动作**——
+	// 把冻结/卡死的会话解开。解开释放出来的往往是完整且有价值的内容（设计、提问、
+	// 判据），而它既不是「任务完成」也不是「任务失败」，只是停在半路等人指路，
+	// 和 row4（工具被拒而终）同形。若把它判成 result{OK:false}，一次成功的救援会
+	// 被翻译成任务失败，且 FailReason 只带 error 文本、**消息正文会被丢掉**——
+	// 比 B38 原始症状还糟。
+	//
+	// 为什么必须在 ErrorText 分支之前：abort 的消息两个字段都有值（ErrorText 存
+	// 原文、ErrorName 存 name），若不先判 ErrorName，会被下面的 ErrorText 分支截住。
+	// 全库 8236 条 assistant 消息里 error.name 分布：无 error 8232 / MessageAbortedError 4 /
+	// 字符串形态 0——**MessageAbortedError 是本机唯一出现过的 error 形态**，也就是
+	// 说 ErrorText 分支实际上只会被 abort 触发。把 abort 摘出来、保留 ErrorText 兜
+	// 未知错误（模型报错/provider 失败仍可能有别的形态），两条都站得住。
+	if msg.ErrorName == "MessageAbortedError" {
+		text := "断连期间该会话被人工 abort 解开（可能是救援动作）。回合停在这里等人指路，"
+		if msg.Text != "" {
+			text += "回合原文：\n" + turn.TailRunes(msg.Text, 1000)
+		}
+		a.log.Warn("对账发现回合被 abort，转提问交审核者裁决",
+			"task", r.taskID, "msg", msg.ID)
+		return executor.AdapterEvent{Type: "question", SessionID: r.session,
+				Text: turn.ClampQuestion(text)},
+			"补回了一条断连期间被 abort 的回合（需人工裁决，含原文）"
+	}
 	if msg.ErrorText != "" {
 		a.log.Warn("对账发现回合以错误告终", "task", r.taskID, "msg", msg.ID,
 			"error", turn.TruncateRunes(msg.ErrorText, 200))

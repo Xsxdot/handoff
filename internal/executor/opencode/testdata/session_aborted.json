@@ -1,0 +1,94 @@
+[
+ {
+  "info": {
+   "parentID": "msg_febf0701d001Ngqb3srPBtmBuy",
+   "role": "assistant",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/Users/sycm/.handoff/worktrees/c9be6b8a",
+    "root": "/Users/sycm/.handoff/worktrees/c9be6b8a"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "modelID": "deepseek-v4-flash",
+   "providerID": "opencode-go",
+   "time": {
+    "created": 1786370885640,
+    "completed": 1786378445776
+   },
+   "error": {
+    "name": "MessageAbortedError",
+    "data": {
+     "message": "Aborted"
+    }
+   },
+   "id": "msg_fec008808001chn7x2eKqOoJ57",
+   "sessionID": "ses_test"
+  },
+  "parts": [
+   {
+    "snapshot": "2a6a0f9298bc93b8db03dea9bc391897f0a0472e",
+    "type": "step-start"
+   },
+   {
+    "type": "reasoning",
+    "text": "Interesting — the SSE events here don't include `step-start`/`step-finish` at the top level in observe2/observe3 (they appeared in the earlier observe.txt from a different session). Actually in the first observe there were step-start/step-finish as part types, not event types. The `message.part.updated` has type=step-finish inside the part. Anyway, the key evidence is solid:\n\n- `message.updated` `",
+    "time": {
+     "start": 1786370891126,
+     "end": 1786370905299
+    }
+   },
+   {
+    "type": "text",
+    "text": "The bug is now deterministically reproduced (the new test fails: `Reconcile` emits a fake empty question for the pure-tool frozen tail). I've gathered the authoritative evidence from live serves. Per your instruction, I'll present the evidence and proposed fix before writing the implementation.\n\n## 证据：opencode 的权威回合边界信号\n\n真机实抓（任务 03437a1d，工具密集回合，SSE + `/session/{id}/message` 双源）：\n\n**1. `message.updated`（SSE）与 `GET /session/{id}/message` 的 `info` 都带 `finish` 字段**——同一 payload，`LastAssistantMessage` 已抓它，无需新 API：\n\n```\nfinish=tool-calls   completed=非零  textlen=0/小  tools=1  ← 中间工具消息，回合继续\nfinish=stop         completed=非零  textlen=96  tools=0  ← 回合终态\n```\n40 条中间消息全是 `tool-calls`，唯一条终态是 `stop`。**判别力干净**：`finish==\"tool-calls\"` 就无歧义地等于「回合还没完」。\n\n**2. `session.status` 的 `status.type`**：工作期 `busy`、回合结束 `idle`——这是实时路径 `mapIdle`（adapter.go:1166）已经在用的会话级回合结束信号。\n\n**3. `step-finish` part**：SSE 里存在但无独立 finish reason 字段，信息量被 `info.finish` 完全覆盖，不采用。\n\n**结论**：判据用 `info.finish`——它同时满足「不要用 text part 启发式」（报错终态也带 `finish=stop`）和「能在冻结尾部上工作」（该字段随消息持久化）。\n\n## 拟定方案\n\n1. `SessionMessage` 加 `Finish string`；`sessionMessageEnvelope.Info` 加 `Finish`（json `finish`，按真实抓包确认字段路径）。\n2. `LastAssistantMessage` 填充 `Finish`。\n3. `Reconcile` 的「回合未结束」判定从只查 `CompletedMS==0` 扩展为 `CompletedMS==0 || Finish==\"tool-calls\"`：后者是「已完结的中间工具消息」——冻结尾部现场，**不补发、不动水位**，Note 写明「回合仍在进行」。\n4. 其余值（`stop`/空/其它）保持原行为（视为回合结束），向后兼容（夹具里没 `finish` 字段的旧测试不受影响）。\n5. 夹具补 `testdata/session_tooltail.json`（真机报文截断，已就位），新测试 `TestReconcileSkipsFrozenToolTail` 当前红，修后转绿。\n\n一个待你拍板的点：`finish` 字段空值（老版本 serve 不发）时按「回合结束」处理（保持旧行为）——这保留了「finish 缺席的旧服务器上终态照常补发」的能力，代价是那种情况下冻结工具尾部仍会误判。鉴于本机 serve 每条消息都带 `finish`（已实测），我倾向接受这个向后兼容权衡。",
+    "time": {
+     "start": 1786370905303,
+     "end": 1786370912837
+    }
+   },
+   {
+    "type": "tool",
+    "tool": "question",
+    "callID": "call_00_niM7bWiQJhtClMpnJCLX7139",
+    "state": {
+     "status": "error",
+     "input": {
+      "questions": [
+       {
+        "question": "对账回合边界判据方案：用 info.finish（tool-calls=未完 / stop=结束）作为权威信号，空值按「结束」向后兼容。是否照此实现？",
+        "header": "回合边界判据",
+        "options": [
+         {
+          "label": "照此实现 (Recommended)",
+          "description": "加 Finish 字段，Reconcile 判 CompletedMS==0 || Finish==tool-calls 为「未结束」，空值向后兼容按结束处理"
+         },
+         {
+          "label": "空值按保守处理",
+          "description": "finish 为空时也不补发（宁可不补也不误判），但可能让不发 finish 的老服务器终态永远补不上"
+         }
+        ]
+       }
+      ]
+     },
+     "time": {
+      "start": 1786370912743,
+      "end": 1786378445773
+     },
+     "error": "Tool execution aborted",
+     "metadata": {
+      "interrupted": true
+     }
+    }
+   }
+  ]
+ }
+]
