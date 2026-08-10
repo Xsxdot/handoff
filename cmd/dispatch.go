@@ -71,7 +71,7 @@ func shortSHA(sha string) string {
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
 // 使用方式：handoff dispatch [--repo <仓库>] [--prompt ...] [--executor x] [--model m]
-// [--branch b | --new-branch b [--base t]] [--worktree w | --new-worktree]
+// [--branch b | --new-branch b] [--base t] [--worktree w | --new-worktree]
 // [--no-terminal] [plan 文件]
 var dispatchCmd = &cobra.Command{
 	Use:   "dispatch [plan 文件]",
@@ -149,7 +149,7 @@ func init() {
 	dispatchCmd.Flags().StringVar(&dispatchModel, "model", "", "任务级模型覆盖（空=执行者自身默认）")
 	dispatchCmd.Flags().StringVar(&dispatchBranch, "branch", "", "切到已存在分支（与 --new-branch 互斥）")
 	dispatchCmd.Flags().StringVar(&dispatchNewBranch, "new-branch", "", "新建分支名（空且 --branch 空=自动 handoff/<id8>）")
-	dispatchCmd.Flags().StringVar(&dispatchBase, "base", "", "新分支起点 commit/分支（仅与 --new-branch 连用；空=HEAD）")
+	dispatchCmd.Flags().StringVar(&dispatchBase, "base", "", "新分支起点 commit/分支（与 --branch 互斥；空=取派发时的基线起点）")
 	dispatchCmd.Flags().StringVar(&dispatchWorktree, "worktree", "", "用户自带 worktree 路径（与 --new-worktree 互斥）")
 	dispatchCmd.Flags().BoolVar(&dispatchNewWorktree, "new-worktree", false, "在 DataDir/worktrees 下新建 managed worktree（任务完成时自动删除）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
