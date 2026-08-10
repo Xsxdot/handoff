@@ -83,8 +83,11 @@ func TestDispatchOpensTerminalByDefault(t *testing.T) {
 		t.Fatalf("openTerminal 应被调 1 次，得到 %d 次", len(called))
 	}
 	joined := strings.Join(called[0], " ")
-	if !strings.Contains(joined, "attach") || !strings.Contains(joined, "handoff-task-abc") {
-		t.Fatalf("attach argv 应含 attach 与任务 id8 会话名: %v", called[0])
+	if !strings.Contains(joined, "attach") || !strings.Contains(joined, "task-abc123") {
+		t.Fatalf("attach argv 应含 attach 与任务 id: %v", called[0])
+	}
+	if called[0][0] != "handoff" {
+		t.Fatalf("弹窗命令应指向 handoff 自身（attach 走 render 流），实得 %v", called[0])
 	}
 }
 

@@ -1,15 +1,12 @@
-// attach/show 命令测试：attachCommandFor 的本机/远程组装、show 命令注册。
+// attach/show 命令测试：attach 的 render 流语义、show 命令注册。
 package cmd
 
 import (
 	"bytes"
-	"fmt"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -19,38 +16,8 @@ import (
 	"github.com/xushixin/handoff/internal/proto"
 )
 
-func TestAttachCommandForLocal(t *testing.T) {
-	cfg := &config.Config{}
-	argv, err := attachCommandFor("abcdefgh-1234", "", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"tmux", "attach", "-t", "handoff-abcdefgh"}
-	if !reflect.DeepEqual(argv, want) {
-		t.Fatalf("got %v want %v", argv, want)
-	}
-}
-
-func TestAttachCommandForRemote(t *testing.T) {
-	cfg := &config.Config{Targets: map[string]config.Target{"dev": {Addr: "devbox:7777"}}}
-	argv, err := attachCommandFor("abcdefgh-1234", "dev", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"ssh", "-t", "devbox", "tmux", "attach", "-t", "handoff-abcdefgh"}
-	if !reflect.DeepEqual(argv, want) {
-		t.Fatalf("got %v want %v", argv, want)
-	}
-}
-
-func TestAttachCommandForUnknownTarget(t *testing.T) {
-	if _, err := attachCommandFor("t", "ghost", &config.Config{}); err == nil {
-		t.Fatalf("未配对 target 应报错")
-	}
-}
-
-// TestSSHHostFromTarget 覆盖 target → ssh 目标的换算共用函数：user 非空 →
-// user@host；user 为空 → 只有 host（与历史行为一致）。
+// TestSSHHostFromTarget 覆盖 target → ssh 目标的换算共用函数（pull 专用）：
+// user 非空 → user@host；user 为空 → 只有 host（与历史行为一致）。
 func TestSSHHostFromTarget(t *testing.T) {
 	cases := []struct {
 		name string
@@ -69,22 +36,6 @@ func TestSSHHostFromTarget(t *testing.T) {
 	}
 }
 
-// TestAttachCommandForRemoteUser 验证远程 attach 的 ssh 目标带配置的 user 前缀
-// （本机用户名与远程不一致时必须有地方写 ssh 用户名，否则 ssh host 直连 Permission denied）。
-func TestAttachCommandForRemoteUser(t *testing.T) {
-	cfg := &config.Config{Targets: map[string]config.Target{"dev": {Addr: "devbox:7777", User: "sycm"}}}
-	argv, err := attachCommandFor("abcdefgh-1234", "dev", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"ssh", "-t", "sycm@devbox", "tmux", "attach", "-t", "handoff-abcdefgh"}
-	if !reflect.DeepEqual(argv, want) {
-		t.Fatalf("got %v want %v", argv, want)
-	}
-}
-
-// TestShowCommandRegistered 防止改名回归：rootCmd 下存在 "show"（快照）命令，
-// 且 attach 的 Short 已是终端实况语义。
 func TestShowCommandRegistered(t *testing.T) {
 	show := findRootCmd("show")
 	if show == nil {
@@ -99,85 +50,54 @@ func TestShowCommandRegistered(t *testing.T) {
 	}
 }
 
-// TestRunAttachExecvesResolvedPath 覆盖 runAttach 的 exec 调用（P0-1）：
-// syscall.Exec 是 execve(2) 直接封装、不做 PATH 查找，第一参必须是 LookPath
-// 解析出的可执行文件绝对路径；argv[0] 保持裸名（execve 约定）。
-func TestRunAttachExecvesResolvedPath(t *testing.T) {
-	tmuxBin, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux 未安装，无法验证")
-	}
-	var gotBin string
-	var gotArgv []string
-	oldExec := execveFn
-	execveFn = func(argv0 string, argv []string, env []string) error {
-		gotBin, gotArgv = argv0, argv
-		return nil
-	}
-	t.Cleanup(func() { execveFn = oldExec })
-
-	cfgPath := writeTestConfig(t, "listen: \"127.0.0.1:7777\"\ntoken: \"t\"\n")
-	resetFlags(t)
-	targetName = ""
-	configPath = cfgPath
+// TestRunAttachStreamsToStdout 钉死 attach 的新语义：
+// 从 agentd 的 render endpoint 取流并原样打印，不再 exec 任何外部命令。
+func TestRunAttachStreamsToStdout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/render") {
+			w.Header().Set("X-Handoff-Render-Size", "5")
+			w.Write([]byte("hello"))
+			return
+		}
+		w.Write([]byte(`{"task":{"id":"T1","target":""}}`))
+	}))
+	defer ts.Close()
 
 	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetOut(&out)
-	if err := runAttach(cmd, nil, "abcdefgh-1234"); err != nil {
-		t.Fatalf("runAttach: %v", err)
+	c := &cobra.Command{}
+	c.SetOut(&out)
+	c.SetContext(context.Background())
+	cli := client.New(ts.Listener.Addr().String(), "tok")
+	if err := runAttach(c, cli, "T1"); err != nil {
+		t.Fatalf("runAttach 失败: %v", err)
 	}
-	if gotBin != tmuxBin {
-		t.Fatalf("execveFn 第一参应为 LookPath 解析路径，got %q want %q", gotBin, tmuxBin)
-	}
-	if !filepath.IsAbs(gotBin) {
-		t.Fatalf("execveFn 第一参应为绝对路径，got %q", gotBin)
-	}
-	if len(gotArgv) == 0 || gotArgv[0] != "tmux" {
-		t.Fatalf("argv[0] 应保持裸名 tmux，got %v", gotArgv)
+	if !strings.Contains(out.String(), "hello") {
+		t.Fatalf("实况未打印到 stdout，实得 %q", out.String())
 	}
 }
 
-// TestRunAttachFallsBackToTaskTarget 验证未显式 --target 时 attach 回退任务自身
-// 记录的 target（P2-7）：远程任务派发时已记下目标主机，用户忘带 --target 不该
-// 去连本机不存在的 tmux 会话——应组装出 ssh 命令而非 tmux 直连。
-func TestRunAttachFallsBackToTaskTarget(t *testing.T) {
-	if _, err := exec.LookPath("ssh"); err != nil {
-		t.Skip("ssh 未安装，无法验证")
-	}
+// TestRunAttachRemoteNeedsNoSSH 钉死跨平台收益：
+// 远程 target 不再拼 ssh 命令——复用 agentd 连接即可，因此 Windows 审核者也能用。
+func TestRunAttachRemoteNeedsNoSSH(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tasks/task-abc123" {
-			http.NotFound(w, r)
+		if strings.HasSuffix(r.URL.Path, "/render") {
+			w.Header().Set("X-Handoff-Render-Size", "2")
+			w.Write([]byte("ok"))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"task":{"id":"task-abc123","target":"devbox","repo_path":"/r"},"pending_tickets":[],"recent_events":[]}`)
+		w.Write([]byte(`{"task":{"id":"T1","target":"devbox"}}`))
 	}))
-	t.Cleanup(ts.Close)
-	addr := strings.TrimPrefix(ts.URL, "http://")
-	cfgPath := writeTestConfig(t, "listen: \""+addr+"\"\ntoken: \"t\"\ntargets:\n  devbox:\n    addr: \"devbox:7777\"\n    token: \"rt\"\n")
-	resetFlags(t)
-	targetName = "" // 未显式 --target
-	configPath = cfgPath
-
-	var gotArgv []string
-	oldExec := execveFn
-	execveFn = func(argv0 string, argv []string, env []string) error { gotArgv = argv; return nil }
-	t.Cleanup(func() { execveFn = oldExec })
+	defer ts.Close()
 
 	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetOut(&out)
-	cli := client.New(ts.URL, "t")
-	if err := runAttach(cmd, cli, "task-abc123"); err != nil {
-		t.Fatalf("runAttach: %v", err)
+	c := &cobra.Command{}
+	c.SetOut(&out)
+	c.SetContext(context.Background())
+	if err := runAttach(c, client.New(ts.Listener.Addr().String(), "tok"), "T1"); err != nil {
+		t.Fatalf("远程 target 的 attach 失败: %v", err)
 	}
-	if len(gotArgv) == 0 || gotArgv[0] != "ssh" {
-		t.Fatalf("未显式 --target 时应回退任务 target 走 ssh，got %v", gotArgv)
-	}
-	joined := strings.Join(gotArgv, " ")
-	if !strings.Contains(joined, "devbox") {
-		t.Fatalf("attach 命令应含任务记录的 target 主机，got %v", gotArgv)
+	if !strings.Contains(out.String(), "ok") {
+		t.Fatalf("远程实况未打印，实得 %q", out.String())
 	}
 }
 
@@ -211,7 +131,7 @@ func findRootCmd(use string) *cobra.Command {
 
 // TestPickAttachTaskNonTTYIncludesTarget 验证非 TTY 建议命令带 --target。
 // why：远程任务照抄不带 --target 的命令会打到本机 agentd——先 404，
-// 再 attach 一个本机根本不存在的 tmux 会话，两条错都指不到真正的原因。
+// 再 attach 一个本机根本不存在的会话，两条错都指不到真正的原因。
 func TestPickAttachTaskNonTTYIncludesTarget(t *testing.T) {
 	tasks := []proto.Task{
 		{ID: "aaaaaaaa-1111", Target: "devbox", State: proto.TaskStateRunning, Executor: "opencode"},

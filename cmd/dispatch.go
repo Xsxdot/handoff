@@ -156,10 +156,11 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 		fmt.Fprintln(cmd.OutOrStdout(), hint)
 		return
 	}
-	argv, err := attachCommandFor(taskID, targetName, cfg)
-	if err != nil {
-		fmt.Fprintln(cmd.OutOrStdout(), hint)
-		return
+	// 弹的窗口跑 handoff attach <id> [--target <t>]：attach 已改走 agentd 的
+	// render 流（复用 agentd 连接与鉴权），弹窗命令只指向 CLI 自身，不再拼 ssh
+	argv := []string{"handoff", "attach", taskID}
+	if targetName != "" {
+		argv = append(argv, "--target", targetName)
 	}
 	if err := openTerminal(argv); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "弹终端失败:", err)
@@ -179,7 +180,7 @@ func appleScriptQuote(s string) string {
 
 // openTerminal 用 osascript 在 macOS 上弹 Terminal.app 执行 attach 命令。
 //
-// 测试缝：包级变量，测试替换记录调用。为什么用 do script 而非 tmux 直连：
+// 测试缝：包级变量，测试替换记录调用。为什么用 do script 而不是让 agentd 弹：
 // dispatch 成功时审核者大概率不在本机终端前（在 agentd 所在机器的桌面前），
 // Terminal.app 弹窗把「executor 实况」直接送到桌面——do script 让 Terminal
 // 打开新窗口执行 attach，窗口内即实况；activate 把窗口置前。

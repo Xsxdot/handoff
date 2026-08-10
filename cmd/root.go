@@ -128,3 +128,18 @@ func TargetEndpoint() (addr, token string, err error) {
 	}
 	return "http://" + t.Addr, t.Token, nil
 }
+
+// loadCLIConfig 加载 CLI 侧配置（wait/dispatch/pull 等子命令读同步/终端偏好）。
+// 配置加载失败时返回空配置：偏好项（Sync.Auto / Terminal.Auto）取默认值即可，
+// 真正的配置错误由 TargetEndpoint 在更早处暴露。
+func loadCLIConfig() *config.Config {
+	p := configPath
+	if p == "" {
+		p = config.DefaultPath()
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		return &config.Config{}
+	}
+	return cfg
+}

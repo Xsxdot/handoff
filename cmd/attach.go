@@ -1,27 +1,30 @@
-// 本文件实现 handoff attach 子命令：终端实况入口（人类命令）。
+// 本文件实现 handoff attach 子命令：在终端跟随任务实况。
 //
 // 职责：
-//   - attach <task>：组装并执行 attach 命令进入 executor 的 tmux 会话实况
-//     （本机 tmux attach -t handoff-<id8>；远程经 ssh -t <host> tmux attach）
-//   - attach（无参）：任务选择列表（交互）或非 TTY 下的建议命令打印（远程任务
-//     的建议命令带 --target）
+//   - 从 agentd 的 render 流式接口取任务实况，原样打印到 stdout，Ctrl+C 退出
 //
 // 边界：
-//   - 终端实况是「看着执行者干活」的入口，不输出快照——快照恢复走 handoff show
-//   - 不改任务状态：attach 只进入 tmux 会话，不触发任何状态机动作
-//   - fake executor 无 tmux 会话，attach 失败属预期（tmux 报找不到会话）
+//   - 不解析实况内容：render.log 是模型回合文本原样增量，这里只做搬运
+//   - 不连 executor、不碰任务目录：一切经 agentd 的 HTTP 接口
+//
+// 为什么不再 exec 外部命令：旧实现用 syscall.Exec 换进程进 tmux（本机），
+// 或 ssh -t <host> tmux attach（远程）。tmux 拆除后实况改由 agentd 落盘 +
+// 流式吐出，attach 退化成一个普通 HTTP 客户端——顺带拿到三个收益：
+// 远程不再需要 ssh（复用 agentd 连接与鉴权，配置里的 user 字段对 attach 不再必要）、
+// Windows 审核者可用（syscall.Exec 在 Windows 上直接返回 EWINDOWS）、
+// 断线可凭已收字节数续传。
 package cmd
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -29,6 +32,15 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/proto"
 )
+
+// attachAll 表示从头播放全部实况（--all）；默认只从尾部回溯 attachDefaultTail。
+var attachAll bool
+
+// attachNoFollow 表示放完当前内容即退出（--no-follow），不等待后续增量。
+var attachNoFollow bool
+
+// attachDefaultTail 是默认回溯字节数：跟上实况又不至于把历史全刷一遍。
+const attachDefaultTail = 4 << 10
 
 // attachCmd 进入任务 executor 的终端实况（有参）或展示任务选择列表（无参）。
 var attachCmd = &cobra.Command{
@@ -42,7 +54,7 @@ var attachCmd = &cobra.Command{
 		}
 		cli := client.New(addr, token)
 		if len(args) == 1 {
-			// 有 task：组装并执行 attach 命令（exec 替换进程，让 tmux 拿到真 TTY）
+			// 有 task：连上任务的 render 实况流
 			return runAttach(cmd, cli, args[0])
 		}
 		// 无 task：任务选择列表
@@ -50,47 +62,15 @@ var attachCmd = &cobra.Command{
 	},
 }
 
-// attachCommandFor 组装 attach 命令的 argv。
-//
-// 参数：
-//   - taskID: 任务 ID（tmux 会话名取前 8 位：handoff-<id8>）
-//   - target: --target 目标名；空=本机（tmux 直接 attach）
-//   - cfg: 配置（target 换算 ssh host）
-//
-// 返回：
-//   - argv: exec 可直接执行的参数列表
-//   - err: target 未在配置中定义时报错
-//
-// 注意：
-//   - id8 截断规则与 opencode adapter 的 tmux 会话命名（handoff-<id8>）耦合，
-//     改一处必改两处（proc.go StartServe 的 session 命名）
-//   - 远程 ssh 目标经 sshHostFromTarget 换算：取 Addr 冒号前段，user 非空时带
-//     user@ 前缀（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd 端口）
-func attachCommandFor(taskID, target string, cfg *config.Config) (argv []string, err error) {
-	id8 := taskID
-	if len(id8) > 8 {
-		id8 = id8[:8]
-	}
-	session := "handoff-" + id8
-	if target == "" {
-		return []string{"tmux", "attach", "-t", session}, nil
-	}
-	t, ok := cfg.Targets[target]
-	if !ok {
-		return nil, fmt.Errorf("target %q 未在配置中定义", target)
-	}
-	return []string{"ssh", "-t", sshHostFromTarget(t), "tmux", "attach", "-t", session}, nil
-}
-
-// sshHostFromTarget 把配置 target 换算成 ssh 目标（attach/pull 共用的唯一换算点）。
+// sshHostFromTarget 把配置 target 换算成 ssh 目标（pull 用的远程 git 地址换算点）。
 //
 // 规则：取 Addr 冒号前段（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd
 // 端口）；User 非空时返回 user@host，否则只返回 host（与历史行为一致）。
 //
-// 为什么必须抽共用函数：attach（远程实况）与 pull（远程分支同步）都需要把
-// Targets[target] 换算成 ssh 目标，各自实现会因只改一处而行为漂移。user 字段让
-// ssh 用户名可配置——本机用户名与远程不一致（如本机 xushixin 连远端 sycm）时，
-// 裸 host 的 ssh 会直接 Permission denied。
+// 为什么只服务 pull：attach 已改为走 agentd 的 render 流（复用 agentd 连接与
+// 鉴权），不再拼 ssh；只有 pull 仍需要把 Targets[target] 换算成 ssh 目标来做
+// git-over-ssh 同步。user 字段让 ssh 用户名可配置——本机用户名与远程不一致
+// （如本机 xushixin 连远端 sycm）时，裸 host 的 ssh 会直接 Permission denied。
 func sshHostFromTarget(t config.Target) string {
 	host := t.Addr
 	if i := strings.IndexByte(host, ':'); i >= 0 {
@@ -102,49 +82,41 @@ func sshHostFromTarget(t config.Target) string {
 	return host
 }
 
-// execveFn 是 syscall.Exec 的测试缝：验证「execve 第一参必须是 LookPath 解析
-// 出的绝对路径」时替换它记录实参（P0-1 回归覆盖）。
-var execveFn = syscall.Exec
-
-// runAttach 执行 attach 命令进入终端实况。
+// runAttach 连上任务的实况流并打印到 stdout，直到流结束或用户 Ctrl+C。
 //
-// 为什么用 syscall.Exec：tmux attach 需要真正的 TTY，而 exec.Command 会维持
-// 本进程的 stdio 转发——对需要终端控制语义的 tmux 不充分；Exec 用 attach 命令
-// 替换当前进程，fd 原样继承，tmux 拿到完整终端控制。
+// 参数：
+//   - cli: 已按 target 解析好 endpoint 的客户端
+//   - taskID: 目标任务
 //
-// 为什么第一参必须是 LookPath 的解析结果：syscall.Exec 是 execve(2) 直接封装，
-// 不做 PATH 查找，传裸名 "tmux"/"ssh" 会得到 "no such file or directory"；
-// argv[0] 保持裸名（execve 约定：argv[0] 是程序名，路径由第一参指定）。
+// 返回：
+//   - 连接失败（任务不存在、鉴权失败）时返回错误；用户主动中断（ctx 取消）返回 nil
+//
+// 注意：
+//   - target 解析沿用既有规则（显式 --target → 任务自身记录的 target → 本机），
+//     但换算结果只用于选 agentd endpoint，不再用于拼 ssh 命令
 func runAttach(cmd *cobra.Command, cli *client.Client, taskID string) error {
-	cfg := loadCLIConfig()
-	target := targetName
-	if target == "" && cli != nil {
-		// 未显式 --target 时回退任务自身记录的 target（P2-7）：远程任务派发时
-		// 已把目标主机名写进 task.Target，用户忘带 --target 不该去连本机不存在的
-		// tmux 会话；取不到任务/无 target 时保持空（退回本机，tmux 报找不到会话
-		// 即提示用户补 --target）
-		ctx := cmd.Context()
-		if ctx == nil {
-			ctx = context.Background() // 裸 cobra 命令（测试）Context() 返回 nil
-		}
-		if info, err := cli.Attach(ctx, taskID); err == nil && info.Task.Target != "" {
-			target = info.Task.Target
-		}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background() // 裸 cobra 命令（测试）Context() 返回 nil
 	}
-	argv, err := attachCommandFor(taskID, target, cfg)
+	tail := int64(attachDefaultTail)
+	if attachAll {
+		tail = 0
+	}
+	follow := !attachNoFollow
+	rc, size, err := cli.RenderStream(ctx, taskID, 0, tail, follow)
 	if err != nil {
 		return err
 	}
-	bin, err := exec.LookPath(argv[0])
-	if err != nil {
-		return fmt.Errorf("%s 未安装（%v），无法进入终端实况", argv[0], err)
+	defer rc.Close()
+	slog.Debug("attach 实况流已连接", "task", taskID, "size", size, "follow", follow)
+	// 原样搬运：实况是给人看的文本，不做任何加工
+	n, err := io.Copy(cmd.OutOrStdout(), rc)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("attach 实况流中断", "task", taskID, "printed", n, "cause", err)
+		return fmt.Errorf("读实况流: %w", err)
 	}
-	// exec 前打印将执行的完整命令（spec §7 错误处理项）：用户可复制重试，
-	// 且 exec 后进程被替换、任何输出都来自 tmux 本体
-	fmt.Fprintln(cmd.OutOrStdout(), strings.Join(argv, " "))
-	if err := execveFn(bin, argv, os.Environ()); err != nil {
-		return fmt.Errorf("执行 %s: %w", argv[0], err)
-	}
+	slog.Debug("attach 实况流结束", "task", taskID, "printed", n)
 	return nil
 }
 
@@ -199,7 +171,7 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 // printAttachSuggestions 打印每个任务的 attach 建议命令（非 TTY 降级路径）。
 //
 // 远程任务必须带 --target：不带的话命令会打到本机 agentd，先 404、再 attach
-// 一个本机不存在的 tmux 会话——两条错都指不到「你少了个 --target」这个真原因。
+// 一个本机不存在的实况——两条错都指不到「你少了个 --target」这个真原因。
 func printAttachSuggestions(w io.Writer, tasks []proto.Task) {
 	for _, t := range tasks {
 		line := "handoff attach " + t.ID
@@ -226,6 +198,9 @@ func attachPriority(st proto.TaskState) int {
 	}
 }
 
+// id8 取字符串前 8 个字符（不足 8 个则原样返回），用于展示。
+// 与 wait.go 的同名函数共用同一规则（都是「展示短 id」），实现留在 wait.go。
+
 // truncateName 按 rune 截断展示名到 32 字符（列宽内）。
 func truncateName(s string) string {
 	r := []rune(s)
@@ -249,21 +224,8 @@ func isTTY() bool {
 	return isatty.IsTerminal(os.Stdin.Fd())
 }
 
-// loadCLIConfig 加载 CLI 侧配置（attach 需要 Targets 换算 ssh host）。
-// 配置加载失败时返回空配置：attachCommandFor 对无 target 的本机路径不依赖
-// Targets，空配置即可工作；加载失败的错误由 TargetEndpoint 在更早处暴露。
-func loadCLIConfig() *config.Config {
-	p := configPath
-	if p == "" {
-		p = config.DefaultPath()
-	}
-	cfg, err := config.Load(p)
-	if err != nil {
-		return &config.Config{}
-	}
-	return cfg
-}
-
 func init() {
+	attachCmd.Flags().BoolVar(&attachAll, "all", false, "从头播放全部实况（默认只回溯末尾 4KB）")
+	attachCmd.Flags().BoolVar(&attachNoFollow, "no-follow", false, "放完当前内容即退出，不等待后续增量")
 	rootCmd.AddCommand(attachCmd)
 }
