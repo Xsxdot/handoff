@@ -36,18 +36,35 @@ _, _, _ = gitRun(ctx, repo, "branch", "-D", ws.Branch)
 
 闸2 的 `cur != ws.NewBranchTip` 在 `"" == ""` 时**放行删除**。闸1 的真实职责就是替这次撞车兜底——但这个保护关系是隐式的，代码里没有任何地方写着「闸1 独占的是哪种情形」，所以它也无法被单独测试。
 
-### 2.1 可触发的真实场景
+### 2.1 撞车是可达的：悬空符号引用（已实测）
 
-`refs/heads/<branch>` 是悬空引用时——ref 文件在、指向的对象没了（对象被 prune、ref 写了一半）：
+要触发撞车，需要一种「`rev-parse` 失败但 `branch -D` 成功」的状态。**悬空 symref** 就是：
 
-- `git rev-parse refs/heads/mine` **失败** → `branchTip` 返回 `""`
-- `git branch -D mine` **成功**（删 ref 不需要对象可达）
+```console
+$ git symbolic-ref refs/heads/mine refs/heads/nonexistent
+$ git rev-parse refs/heads/mine
+warning: ignoring dangling symref refs/heads/mine
+fatal: ambiguous argument 'refs/heads/mine': unknown revision or path not in the working tree.
+$ echo $?
+128
+$ git branch -D mine
+Deleted branch mine (was refs/heads/nonexistent).
+$ echo $?
+0
+```
 
-于是若闸1 缺席：用户拿 `--branch mine` 派发 → 派发中途失败触发补偿 → `"" == ""` → **用户自己的分支被删掉**，且日志只会说「补偿删除分支完成」。
+于是若闸1 缺席：用户拿 `--branch mine` 派发 → 派发中途失败触发补偿 → `branchTip` 返回 `""` → `"" == ""` → **用户自己的分支被删掉**，日志只会说「补偿删除分支完成」。
 
-### 2.2 一个已排除的猜想
+这种仓库状态很罕见（要靠 `git symbolic-ref` 手动造，或某个工具留下的残骸）。它的价值不在于「很可能发生」，而在于**证明这条撞车路径是可达的而非纯理论**——对一个不可逆操作来说，「我暂时想不出触发条件」不是安全论证。
 
-「rev-parse 超时返回空串、随后 branch -D 成功」**不成立**：`gitRun` 的 `WorkspaceGitTimeout`（2 分钟，`workspace.go:82`）是**整组共用一个 ctx**，前一条因 ctx 取消而失败时，后一条同样失败。记录在此以免后人重复推导。
+### 2.2 两个已排除的猜想（实测，勿重复推导）
+
+- **悬空对象引用不触发**：`refs/heads/x` 的 ref 文件在、指向的对象不存在时，`git rev-parse refs/heads/x` **成功**（exit 0，原样吐出那个 sha，不校验对象存在性）。所以这条路径下 `branchTip` 拿到的是 sha 而非空串，闸2 正常工作，不构成撞车。
+- **超时不触发**：「rev-parse 超时返回空串、随后 branch -D 成功」不成立——`gitRun` 的 `WorkspaceGitTimeout`（2 分钟，`workspace.go:82`）是**整组共用一个 ctx**，前一条因 ctx 取消而失败时，后一条同样失败。
+
+### 2.3 更根本的理由
+
+即便触发条件罕见，闸1 的正确性也不该**依赖闸2 碰巧覆盖它**。今天成立是因为「用户分支的尖端取得到」，这是一条没人写下来、也没人测试的隐含前提；任何一次对 `branchTip` 的改动（比如给 `rev-parse` 加上 `--verify`，让它对悬空对象引用也失败）都会在无人察觉的情况下把撞车变成活的删分支缺陷。本设计要消除的是这种「依赖巧合」的结构，而不只是堵住某一个已知触发点。
 
 ## 3. 设计
 
@@ -92,7 +109,8 @@ const (
 //
 // 判定顺序是本函数的全部要点：`recordedTip == ""` 必须排在任何拿 currentTip
 // 做的比较之前。旧实现里这条规则靠「碰巧写在前面」生效，一旦有人认为两道闸
-// 重复而删掉它，悬空引用场景下 ""=="" 会放行删除，毁掉用户自己的分支。
+// 重复而删掉它，悬空 symref 场景下 ""=="" 会放行删除，毁掉用户自己的分支
+// （该场景已实测可达，见 spec §2.1）。
 func decideBranchAction(recordedTip, currentTip string, tipErr error) branchAction {
 	if recordedTip == "" {
 		return branchKeepNotOurs
@@ -162,7 +180,7 @@ ws.NewBranchTip = tip
 | recordedTip | currentTip | tipErr | 期望 | 钉住的是 |
 |---|---|---|---|---|
 | `""` | 真实 sha | nil | `branchKeepNotOurs` | 闸1 常规路径 |
-| `""` | `""` | 非 nil | `branchKeepNotOurs` | **闸1 的独占角落（悬空引用）** |
+| `""` | `""` | 非 nil | `branchKeepNotOurs` | **闸1 的独占角落（悬空 symref，见 §2.1）** |
 | sha A | sha A | nil | `branchDelete` | 正常删除路径 |
 | sha A | sha B | nil | `branchKeepTipMoved` | 闸2 |
 | sha A | `""` | 非 nil | `branchKeepTipUnknown` | 取不到时的保守出口 |
