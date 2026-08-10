@@ -321,11 +321,11 @@ func (p *Proc) Alive() bool {
 
 // procInfo 是恢复凭据的持久化形态，agentd 重启后凭它探活与续读。
 //
-// 注意：ChildPID 由 shim 补写（本包只读不写），整份覆盖时会丢——
-// 因此 writeProcInfo 只在启动路径调用两次，之后一律由 stream 层按字段更新 Offset。
+// 注意：proc.json 只有本包一个写者——shim 记录的执行者 pid 落在同目录的
+// child.pid，不进这个文件（why 见 prochost/shim.go 的 recordChildPID：
+// 双写者之间会丢更新，代价是 Handle.PID 归零、Reap 假成功）。
 type procInfo struct {
 	Handle    prochost.Handle `json:"handle"`
-	ChildPID  int             `json:"child_pid,omitempty"`
 	SessionID string          `json:"session_id"`
 	Offset    int64           `json:"offset"`
 }

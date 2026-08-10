@@ -81,9 +81,6 @@ func TestRunShimRecordsChildPID(t *testing.T) {
 	dir := t.TempDir()
 	spec := baseSpec(dir, `exit 0`)
 	specPath := writeSpec(t, dir, spec)
-	if err := os.WriteFile(spec.InfoPath, []byte(`{"handle":{"pid":1,"lock_path":"x"}}`), 0o600); err != nil {
-		t.Fatalf("预写 proc.json 失败: %v", err)
-	}
 
 	if err := RunShim(specPath); err != nil {
 		t.Fatalf("RunShim 返回错误: %v", err)
@@ -93,12 +90,50 @@ func TestRunShimRecordsChildPID(t *testing.T) {
 		t.Fatalf("读 child_pid 失败: %v", err)
 	}
 	if pid <= 0 {
-		t.Fatalf("shim 必须补写真实 child_pid，实得 %d", pid)
+		t.Fatalf("shim 必须记下真实 child_pid，实得 %d", pid)
 	}
-	// 补写不能破坏 proc.json 里已有的字段（adapter 先写 handle，shim 后补 child_pid）
-	b, _ := os.ReadFile(spec.InfoPath)
-	if !strings.Contains(string(b), `"lock_path":"x"`) {
-		t.Fatalf("shim 补写 child_pid 时抹掉了已有字段，实得 %q", b)
+}
+
+// TestRunShimNeverTouchesProcInfo 钉死「proc.json 只有 adapter 一个写者」。
+//
+// 为什么这条测的是「文件字节没变」而不是「字段还在」：只要 shim 也对 proc.json
+// 做读-改-写，它与 adapter 在 Start 返回后的那次整份覆写之间就存在丢失更新窗口
+// ——shim 读到旧版、adapter 写入含 PID 的新版、shim 再写回旧版+child_pid，
+// Handle.PID 归零。PID 归零的后果不是少个诊断字段：prochost.Kill 在 PID<=0 时
+// 直接返回 nil，Reap 于是打出「兜底回收完成」而执行者还活着（假成功 + 孤儿进程）。
+// 断言字段还在挡不住这个（丢的恰好是 adapter 后写的那个字段），只有断言
+// shim 根本不写这个文件才是结构性保证。
+func TestRunShimNeverTouchesProcInfo(t *testing.T) {
+	dir := t.TempDir()
+	spec := baseSpec(dir, `exit 0`)
+	specPath := writeSpec(t, dir, spec)
+	const adapterWrote = `{"handle":{"pid":4242,"lock_path":"x"},"port":1}`
+	if err := os.WriteFile(spec.InfoPath, []byte(adapterWrote), 0o600); err != nil {
+		t.Fatalf("预写 proc.json 失败: %v", err)
+	}
+
+	if err := RunShim(specPath); err != nil {
+		t.Fatalf("RunShim 返回错误: %v", err)
+	}
+	b, err := os.ReadFile(spec.InfoPath)
+	if err != nil {
+		t.Fatalf("读 proc.json 失败: %v", err)
+	}
+	if string(b) != adapterWrote {
+		t.Fatalf("shim 改写了 proc.json（丢失更新竞态的来源）：\n预期 %s\n实得 %s", adapterWrote, b)
+	}
+	// child_pid 仍要拿得到——它只是换了个不共享的落点
+	if pid, err := ChildPID(spec.InfoPath); err != nil || pid <= 0 {
+		t.Fatalf("child_pid 应落在独立文件且可读，实得 pid=%d err=%v", pid, err)
+	}
+}
+
+// TestChildPIDMissingIsAnError 钉死「没起过 shim 时 ChildPID 如实报错」，
+// 不能返回 0 冒充成功——0 会被误读成「pid 为 0 的进程」。
+func TestChildPIDMissingIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := ChildPID(filepath.Join(dir, "proc.json")); err == nil {
+		t.Fatal("child.pid 不存在时 ChildPID 必须报错")
 	}
 }
 

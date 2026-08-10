@@ -289,7 +289,6 @@ func serveLogTail(serveLogPath string) string {
 // procInfo 是 serve 进程连接凭据的持久化形态，agentd 重启后凭它重建订阅。
 type procInfo struct {
 	Handle   prochost.Handle `json:"handle"`
-	ChildPID int             `json:"child_pid,omitempty"`
 	Port     int             `json:"port"`
 	Password string          `json:"password"`
 }

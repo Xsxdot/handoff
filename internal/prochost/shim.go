@@ -3,12 +3,13 @@
 // 职责：
 //   - 持有存活锁（整个生命周期），作为 prochost.Alive 的唯一判据
 //   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时以 O_RDWR 持有 FIFO 读端
-//   - spawn 真正的 executor，把 child_pid 补写进 proc.json
+//   - spawn 真正的 executor，把它的 pid 记进 child.pid
 //   - wait 子进程，退出后向 stdout 追加 handoff_exit 哨兵
 //
 // 边界：
 //   - 不认识 executor 协议、不解析输出：只做搬运与收尸
-//   - 不写任务状态、不连 agentd：shim 与 agentd 之间只有文件（锁、proc.json、日志）
+//   - 不写任务状态、不连 agentd：shim 与 agentd 之间只有文件（锁、child.pid、日志）
+//   - 不写 proc.json：那是 adapter 的独占文件，双写者会丢更新（见 recordChildPID）
 //
 // 为什么必须有 shim（而不是 agentd 直接 detach executor）：退出哨兵需要一个
 // 常驻父进程 waitpid 才能拿到。agentd 重启后，reparent 给 init 的 executor
@@ -26,6 +27,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // SentinelPrefix 是死亡哨兵行的类型标记，adapter 扫 stdout 判死时匹配它。
@@ -97,8 +101,8 @@ func RunShim(specPath string) error {
 	}
 	childPID := cmd.Process.Pid
 	if err := recordChildPID(spec.InfoPath, childPID); err != nil {
-		// 只是诊断信息，写不进去不值得杀掉已经起来的执行者
-		l.Warn("补写 child_pid 失败，不影响执行", "info", spec.InfoPath, "cause", err)
+		// 只是诊断信息（回收靠锁与进程组，不靠它），写不进去不值得杀掉已经起来的执行者
+		l.Warn("记录 child.pid 失败，不影响执行", "path", childPIDPath(spec.InfoPath), "cause", err)
 	}
 	l.Info("执行者进程已启动", "child_pid", childPID)
 
@@ -122,17 +126,31 @@ func RunShim(specPath string) error {
 	return nil
 }
 
-// ChildPID 读取 proc.json 里 shim 补写的 child_pid（诊断用）。
+// ChildPIDFileName 是 shim 记录执行者 pid 的文件名（与 proc.json 同目录）。
+const ChildPIDFileName = "child.pid"
+
+// ChildPID 读取 shim 记下的执行者 pid（诊断用）。
+//
+// 参数：infoPath 为 adapter 的 proc.json 路径，仅用于定位同目录的 child.pid
+//
+// 返回：文件缺失（shim 没起来过/还没 spawn 完）或内容非法时返回错误——
+// 绝不返回 0 冒充成功，0 会被误读成「pid 为 0 的进程」。
 func ChildPID(infoPath string) (int, error) {
-	m, err := readInfoMap(infoPath)
+	p := childPIDPath(infoPath)
+	b, err := os.ReadFile(p)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("读 %s: %w", p, err)
 	}
-	v, ok := m["child_pid"].(float64)
-	if !ok {
-		return 0, fmt.Errorf("%s 缺 child_pid 字段", infoPath)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, fmt.Errorf("解析 %s 内容 %q: %w", p, b, err)
 	}
-	return int(v), nil
+	return pid, nil
+}
+
+// childPIDPath 由 proc.json 路径推出 child.pid 路径（两者同目录）。
+func childPIDPath(infoPath string) string {
+	return filepath.Join(filepath.Dir(infoPath), ChildPIDFileName)
 }
 
 // readSpec 读取并校验 spec.json。
@@ -160,56 +178,30 @@ func openAppend(path string) (*os.File, error) {
 	return f, nil
 }
 
-// recordChildPID 把 child_pid 合并进已存在的 proc.json。
+// recordChildPID 把执行者 pid 写进 proc.json 同目录的 child.pid（0600，整份覆盖）。
 //
-// 为什么是「合并」而不是「覆盖」：proc.json 由 adapter 先写（Handle、session_id 等），
-// shim 只补一个字段。整份覆盖会把 adapter 写的恢复凭据抹掉，重启后无法恢复。
+// 为什么不写进 proc.json：那会让 proc.json 有两个写者。adapter 在 Start 返回后
+// 会整份覆写 proc.json 补上 Handle.PID，shim 这边若做读-改-写，就存在这样的交错：
+// shim 读到 adapter 的旧版 → adapter 写入含 PID 的新版 → shim 写回旧版+child_pid，
+// **Handle.PID 归零**。后果不是丢个诊断字段：prochost.Kill 在 PID<=0 时直接返回
+// nil，Reap 于是打出「兜底回收完成」而执行者还活着——假成功加孤儿进程，正是
+// 本设计要消灭的那类失配。给 shim 一个独占文件，这个窗口从结构上就不存在。
+// TestRunShimNeverTouchesProcInfo 钉死这条。
 func recordChildPID(infoPath string, pid int) error {
-	m, err := readInfoMap(infoPath)
-	if err != nil {
-		m = map[string]any{}
-	}
-	m["child_pid"] = pid
-	b, err := json.Marshal(m)
-	if err != nil {
-		return fmt.Errorf("序列化 proc.json: %w", err)
-	}
-	if err := os.WriteFile(infoPath, b, 0o600); err != nil {
-		return fmt.Errorf("写 %s: %w", infoPath, err)
+	p := childPIDPath(infoPath)
+	if err := os.WriteFile(p, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		return fmt.Errorf("写 %s: %w", p, err)
 	}
 	return nil
-}
-
-// readInfoMap 把 proc.json 读成松散 map（便于只改一个字段而不认识其余结构）。
-func readInfoMap(path string) (map[string]any, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读 %s: %w", path, err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, fmt.Errorf("解析 %s: %w", path, err)
-	}
-	return m, nil
 }
 
 // envKeys 提取 KEY=VALUE 列表里的 key（日志用；值绝不出现在日志里）。
 func envKeys(env []string) []string {
 	keys := make([]string, 0, len(env))
 	for _, kv := range env {
-		if i := indexByte(kv, '='); i > 0 {
+		if i := strings.IndexByte(kv, '='); i > 0 {
 			keys = append(keys, kv[:i])
 		}
 	}
 	return keys
-}
-
-// indexByte 是 strings.IndexByte 的本地别名，避免为一处调用引入 strings 依赖。
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }

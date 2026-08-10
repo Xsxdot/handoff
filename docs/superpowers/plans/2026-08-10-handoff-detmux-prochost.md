@@ -3423,7 +3423,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=%i
+User=CHANGEME  # 字面用户名；%i 只在模板 unit 里有值，非模板 unit 上为空 → 重置为 root
 ExecStart=/usr/local/bin/handoff agentd --executor=opencode
 Restart=on-failure
 RestartSec=3

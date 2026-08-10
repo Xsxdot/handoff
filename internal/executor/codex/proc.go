@@ -249,9 +249,8 @@ func writeProcInfo(taskDir string, pi *procInfo) error {
 
 // procInfo 是 app-server 连接凭据的持久化形态，agentd 重启后凭它重建订阅。
 type procInfo struct {
-	Handle   prochost.Handle `json:"handle"`
-	ChildPID int             `json:"child_pid,omitempty"`
-	Port     int             `json:"port"`
+	Handle prochost.Handle `json:"handle"`
+	Port   int             `json:"port"`
 }
 
 // ReadServeInfo 从任务目录读回 Proc，供 agentd 重启后 Resume（B18）。

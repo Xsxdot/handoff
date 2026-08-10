@@ -36,7 +36,8 @@ import (
 //   - Stdout/Stderr: 子进程输出的追加落盘路径；两者可指向同一文件
 //   - InputCh: 可选。非空时 shim 以 O_RDWR 持有该 FIFO 并作为子进程 stdin
 //   - LockPath: shim 的存活锁路径
-//   - InfoPath: shim 补写 child_pid 的 proc.json 路径
+//   - InfoPath: adapter 的 proc.json 路径。shim **不写它**（那是 adapter 的独占
+//     文件），只拿它的所在目录来放 spec.json 与 child.pid——见 shim.go recordChildPID
 //   - Sentinel: true 时子进程退出后向 Stdout 追加 handoff_exit 哨兵行
 //
 // 注意：
