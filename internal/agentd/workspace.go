@@ -120,8 +120,8 @@ func PrepareBranch(ctx context.Context, repo, taskID string) (branch string, err
 // WorkspaceReq 描述 dispatch 的工作区诉求（分支 × worktree 两个正交维度）。
 //
 // 分支维度三态（互斥）：Branch=已存在分支 / NewBranch=新建分支 / 都空=自动
-// handoff/<id8>；Base 仅与 NewBranch 连用（空=HEAD）——自动分支不带 Base
-// （校验见 PrepareWorkspace 第 1 层，spec §5 与校验一致）。
+// handoff/<id8>；Base 是新分支起点（空=HEAD），与 NewBranch 和自动分支都能
+// 连用，只与 Branch 互斥——切已存在分支时没有「起点」这回事。
 // worktree 维度三态（互斥）：Worktree=用户自带 worktree 路径 / NewWorktree=由
 // agentd 在 WorktreesDir 下新建 managed worktree / 都空=原地（主仓库）。
 type WorkspaceReq struct {
@@ -129,7 +129,7 @@ type WorkspaceReq struct {
 	TaskID       string
 	Branch       string // 已存在分支（与 NewBranch 互斥）
 	NewBranch    string // 新建分支名（空且 Branch 空 = 自动 handoff/<id8>）
-	Base         string // 新分支起点，仅与 NewBranch 连用（空=HEAD；自动分支不带 Base）
+	Base         string // 新分支起点（空=HEAD）；与 Branch 互斥，NewBranch/自动分支均可带
 	Worktree     string // 已存在 worktree 路径（与 NewWorktree 互斥）
 	NewWorktree  bool
 	WorktreesDir string // agentd 管理的 worktree 根目录（DataDir/worktrees）
@@ -152,10 +152,10 @@ type Workspace struct {
 //	      新树(NewWorktree)        用户树(Worktree)        原地(默认)
 //	B   worktree add <p> <b>     校验归属+脏，checkout b   脏检查，checkout b
 //	N   worktree add -b b <p> t  校验归属+脏，checkout -b  脏检查，checkout -b b [t]
-//	A   worktree add -b h <p>    校验归属+脏，checkout -b  脏检查，checkout -b h
+//	A   worktree add -b h <p> [t] 校验归属+脏，checkout -b  脏检查，checkout -b h [t]
 //
-// 其中 b=指定分支、h=handoff/<id8>、t=Base（仅 N 行有效，空=HEAD；自动分支 A
-// 不允许带 Base，见第 1 层校验）、p=WorktreesDir/<id8> 或用户路径。
+// 其中 b=指定分支、h=handoff/<id8>、t=Base（N 行与 A 行均有效，空=HEAD；B 行
+// 切已存在分支，不接受 Base，见第 1 层校验）、p=WorktreesDir/<id8> 或用户路径。
 // 校验规则：Branch 模式分支必须已存在；用户树模式必须归属本仓库（git-common-dir 比对
 // + show-toplevel 必须等于入参）；所有以 "-" 开头的分支名/路径一律拒绝（git 参数注入面）。
 //
@@ -184,8 +184,11 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 	if req.Worktree != "" && req.NewWorktree {
 		return Workspace{}, rejectWorkspace("worktree 与 new-worktree 互斥", req)
 	}
-	if req.Base != "" && req.NewBranch == "" {
-		return Workspace{}, rejectWorkspace("base 仅允许与 new-branch 连用", req)
+	// base 是「新分支的起点」，切一个已存在分支时谈起点没有意义——真正的禁忌
+	// 只有这一条。自动分支 handoff/<id8> 同样是新建分支，必须允许带起点：
+	// 缺了它，dispatch 校验的基线与新分支的实际起点就成了两码事（B35 根因）。
+	if req.Base != "" && req.Branch != "" {
+		return Workspace{}, rejectWorkspace("base 与 branch（已存在分支）互斥", req)
 	}
 	for _, name := range []struct{ what, v string }{
 		{"branch", req.Branch}, {"new-branch", req.NewBranch}, {"base", req.Base}, {"worktree", req.Worktree},

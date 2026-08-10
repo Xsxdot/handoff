@@ -549,13 +549,13 @@ func TestPrepareWorkspaceExistingWorktree(t *testing.T) {
 }
 
 // TestPrepareWorkspaceMutualExclusionAndInjection 覆盖全部参数非法组合：
-// 互斥参数、Base 依赖、- 前缀注入面，统一 ErrBadWorkspaceReq。
+// 互斥参数、Base 与已存在分支互斥、- 前缀注入面，统一 ErrBadWorkspaceReq。
 func TestPrepareWorkspaceMutualExclusionAndInjection(t *testing.T) {
 	repo := initTestRepo(t)
 	for name, req := range map[string]WorkspaceReq{
 		"branch×new-branch":     {Repo: repo, TaskID: "t", Branch: "a", NewBranch: "b"},
 		"worktree×new-worktree": {Repo: repo, TaskID: "t", Worktree: "/x", NewWorktree: true},
-		"base 无 new-branch":     {Repo: repo, TaskID: "t", Base: "HEAD~1"},
+		"base×branch":           {Repo: repo, TaskID: "t", Branch: "a", Base: "HEAD~1"},
 		"分支名 - 开头":              {Repo: repo, TaskID: "t", Branch: "-evil"},
 		"base - 开头":             {Repo: repo, TaskID: "t", NewBranch: "b", Base: "--evil"},
 	} {
@@ -689,5 +689,29 @@ func TestRemoveManagedWorktree(t *testing.T) {
 	// 分支保留（spec：只删工作树不删分支）
 	if out := gitOut(t, repo, "branch", "--list", "handoff/abcdefgh"); out == "" {
 		t.Fatalf("任务分支不应被删除")
+	}
+}
+
+// TestPrepareWorkspaceAutoBranchHonorsBase 是 B35 的回归锚点：自动分支
+// handoff/<id8> 必须能从指定起点开出，而不是任务仓库当时的 HEAD。
+//
+// 为什么这条必须存在：B35 的现场就是「校验的基线和分支实际起点两码事」——
+// 只有断言 worktree 的 HEAD 等于起点，才能证明校验结论真的被用上了。
+func TestPrepareWorkspaceAutoBranchHonorsBase(t *testing.T) {
+	repo := initTestRepo(t)
+	base := gitOut(t, repo, "rev-parse", "HEAD")
+	writeAndCommit(t, repo, "later.txt", "x") // 主仓 HEAD 前进一格，与 base 拉开距离
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: testTaskID, Base: base,
+		NewWorktree: true, WorktreesDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("自动分支带 Base 必须放行: %v", err)
+	}
+	if ws.Branch != "handoff/12345678" {
+		t.Fatalf("应是自动分支，得到 %s", ws.Branch)
+	}
+	if head := gitOut(t, ws.WorkDir, "rev-parse", "HEAD"); head != base {
+		t.Fatalf("自动分支起点必须是 Base：head=%s base=%s（B35 根因：起点被静默换成仓库 HEAD）", head, base)
 	}
 }
