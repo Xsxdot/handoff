@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 )
 
 // 凭据缺失 → 判死不存活（manager 按不存活走 failed 恢复路径）。
@@ -29,29 +30,33 @@ func TestResumeMissingProcInfo(t *testing.T) {
 	}
 }
 
-// 关键路径：tmux 会话还在（窗口 1 的 tail 撑着）但 claude 已退 → 必须判死。
+// 关键路径：存活锁还在但 claude 已退（哨兵在）→ 必须判死。
 // 这是本 adapter 最容易误判为存活的场景，opencode 靠 HTTP 探活兜住，我们靠哨兵。
 func TestResumeSessionAliveButProcessExited(t *testing.T) {
 	a := New(nil)
 	dir := t.TempDir()
-	if err := writeProcInfo(dir, &procInfo{TmuxSession: "handoff-abcdef01", SessionID: "sess-1"}); err != nil {
+	lock := filepath.Join(dir, "proc.lock")
+	held, err := prochost.AcquireLock(lock)
+	if err != nil {
+		t.Fatalf("预占锁失败: %v", err)
+	}
+	defer held.Release()
+	if err := writeProcInfo(dir, &procInfo{
+		Handle: prochost.Handle{PID: 4242, LockPath: lock}, SessionID: "sess-1",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, outFileName)
 	if err := os.WriteFile(out, []byte(`{"type":"handoff_exit","code":1}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 桩掉 tmux 探活让它返回 true（会话确实还活着，是 tail 吊着）
-	old := tmuxHasSession
-	tmuxHasSession = func(string) bool { return true }
-	defer func() { tmuxHasSession = old }()
 
 	out2, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: "/repo", SessionID: "sess-1"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	if out2.Alive {
-		t.Fatal("claude 已退（哨兵在）但 tmux 会话还在，必须判死")
+		t.Fatal("claude 已退（哨兵在）但锁还被持有，必须判死")
 	}
 }
 
@@ -59,6 +64,12 @@ func TestResumeSessionAliveButProcessExited(t *testing.T) {
 func TestResumeContinuesFromOffset(t *testing.T) {
 	a := New(nil)
 	dir := t.TempDir()
+	lock := filepath.Join(dir, "proc.lock")
+	held, err := prochost.AcquireLock(lock)
+	if err != nil {
+		t.Fatalf("预占锁失败: %v", err)
+	}
+	defer held.Release()
 	// 已消费的内容（offset 之前）：不得重放
 	consumed := `{"type":"system","subtype":"init","session_id":"sess-1"}` + "\n"
 	// 待续读的内容：一个 finish 回合
@@ -68,13 +79,10 @@ func TestResumeContinuesFromOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeProcInfo(dir, &procInfo{
-		TmuxSession: "handoff-abcdef01", SessionID: "sess-1", Offset: int64(len(consumed)),
+		Handle: prochost.Handle{PID: 4242, LockPath: lock}, SessionID: "sess-1", Offset: int64(len(consumed)),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	old := tmuxHasSession
-	tmuxHasSession = func(string) bool { return true }
-	defer func() { tmuxHasSession = old }()
 
 	out2, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir, RepoPath: "/repo", SessionID: "sess-1"})
 	if err != nil || !out2.Alive {
@@ -101,22 +109,17 @@ func TestResumeContinuesFromOffset(t *testing.T) {
 	r.runCancel()
 }
 
-// TestWriteRunScriptUsesResumeFlag 冷恢复的启动脚本必须用 --resume 而不是
+// TestClaudeArgvUsesResumeFlag 冷恢复的启动命令必须用 --resume 而不是
 // --session-id：后者是「建一个这个 id 的新会话」，语义完全相反，写错的表现是
 // 「日志说恢复成功、模型却什么都不记得」——最难查的一类 bug。
-func TestWriteRunScriptUsesResumeFlag(t *testing.T) {
-	dir := t.TempDir()
-	path, err := writeRunScript(dir, StartProcReq{TaskID: "t1", TaskDir: dir,
-		SessionID: "sess-1", SettingsPath: "/s.json", MCPPath: "/m.json", Resume: true})
-	if err != nil {
-		t.Fatal(err)
+func TestClaudeArgvUsesResumeFlag(t *testing.T) {
+	argv := claudeArgv(StartProcReq{SessionID: "sess-1", Resume: true})
+	joined := strings.Join(argv, "\x00")
+	if !strings.Contains(joined, "--resume\x00sess-1") {
+		t.Fatalf("冷恢复 argv 应含 --resume，实得 %v", argv)
 	}
-	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), "--resume sess-1") {
-		t.Fatalf("冷恢复脚本应含 --resume，实际:\n%s", b)
-	}
-	if strings.Contains(string(b), "--session-id") {
-		t.Fatalf("冷恢复脚本不应含 --session-id（语义相反）")
+	if strings.Contains(joined, "--session-id") {
+		t.Fatalf("冷恢复 argv 不应含 --session-id（语义相反）")
 	}
 }
 
@@ -134,7 +137,7 @@ func TestResumeColdRotatesOutJSONL(t *testing.T) {
 		t.Fatalf("旧 out.jsonl 应轮转为 out.1.jsonl，实际: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, outFileName)); !os.IsNotExist(err) {
-		t.Fatalf("轮转后新 out.jsonl 尚不应存在（由冷恢复启动脚本创建），实际: %v", err)
+		t.Fatalf("轮转后新 out.jsonl 尚不应存在（由冷恢复 shim 创建），实际: %v", err)
 	}
 }
 
@@ -144,8 +147,11 @@ func TestResumeColdStartsResumeProcess(t *testing.T) {
 	a := New(nil)
 	dir := t.TempDir()
 	repo := t.TempDir() // 工作区须真实存在（§6 约束 5：冷恢复不重建 worktree）
-	// 哨兵在 → 判死；claude.json 提供 tmux 会话名
-	if err := writeProcInfo(dir, &procInfo{TmuxSession: "handoff-abcdef01", SessionID: "sess-1"}); err != nil {
+	// 哨兵在 → 判死；proc.json 提供 Handle
+	lock := filepath.Join(dir, "proc.lock")
+	if err := writeProcInfo(dir, &procInfo{
+		Handle: prochost.Handle{PID: 4242, LockPath: lock}, SessionID: "sess-1",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, outFileName), []byte(`{"type":"handoff_exit","code":0}`+"\n"), 0o644); err != nil {
@@ -159,13 +165,9 @@ func TestResumeColdStartsResumeProcess(t *testing.T) {
 		if req.SessionID != "sess-1" || req.Model != "sonnet" || req.RepoPath != repo {
 			t.Fatalf("冷恢复入参不对: %+v", req)
 		}
-		return &Proc{TmuxSession: "handoff-abcdef01", TaskDir: dir, SessionID: "sess-1"}, nil
+		return &Proc{Handle: prochost.Handle{PID: 4242, LockPath: lock}, TaskDir: dir, SessionID: "sess-1"}, nil
 	}
 	defer func() { startProc = old }()
-	// 桩掉 tmux 探活（会话已不在，判死）
-	oldHas := tmuxHasSession
-	tmuxHasSession = func(string) bool { return false }
-	defer func() { tmuxHasSession = oldHas }()
 	// 桩掉 perm.sock（长临时路径超 unix sun_path 上限）
 	oldPerm := newPermServerFn
 	newPermServerFn = func(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
@@ -200,7 +202,10 @@ func TestResumeColdMutualExclusion(t *testing.T) {
 	a := New(nil)
 	dir := t.TempDir()
 	repo := t.TempDir()
-	if err := writeProcInfo(dir, &procInfo{TmuxSession: "handoff-abcdef01", SessionID: "sess-1"}); err != nil {
+	lock := filepath.Join(dir, "proc.lock")
+	if err := writeProcInfo(dir, &procInfo{
+		Handle: prochost.Handle{PID: 4242, LockPath: lock}, SessionID: "sess-1",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, outFileName), []byte(`{"type":"handoff_exit","code":0}`+"\n"), 0o644); err != nil {
@@ -211,12 +216,9 @@ func TestResumeColdMutualExclusion(t *testing.T) {
 	startProc = func(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, error) {
 		atomic.AddInt32(&starts, 1)
 		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
-		return &Proc{TmuxSession: "handoff-abcdef01", TaskDir: dir, SessionID: "sess-1"}, nil
+		return &Proc{Handle: prochost.Handle{PID: 4242, LockPath: lock}, TaskDir: dir, SessionID: "sess-1"}, nil
 	}
 	defer func() { startProc = old }()
-	oldHas := tmuxHasSession
-	tmuxHasSession = func(string) bool { return false }
-	defer func() { tmuxHasSession = oldHas }()
 	oldPerm := newPermServerFn
 	newPermServerFn = func(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
 		return &permServer{}, nil

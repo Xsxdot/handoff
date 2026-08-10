@@ -20,21 +20,19 @@ import (
 
 // Resume 恢复 agentd 重启前已在执行的任务（manager 的 restorer 可选接口）。
 //
-// 存活判据（本 adapter 与 opencode 的关键差异）：tmux has-session **不可用**
-// ——窗口 1 的 tail -f render.log 会一直活着，claude 早死了会话依然存在
-// （opencode 靠 HTTP 探活兜住这一点，claude 没有这个面）。判据是两条，缺一
-// 即视为死亡：
-//  1. out.jsonl 中不含 handoff_exit 哨兵（含则进程已退，带退出码）
-//  2. tmux 会话存在（会话都没了，进程一定没了）
+// 存活判据（本 adapter 与 opencode 的关键差异）：prochost 的存活锁**不够**——
+// claude 自己退出后 shim 会写哨兵再退出，锁与哨兵之间有一个极短窗口锁还在但
+// 进程已死（opencode 靠 HTTP 探活兜住这一点，claude 没有这个面）。统一走
+// Proc.Alive()：存活锁被持有 **且** out.jsonl 无 handoff_exit 哨兵，缺一即死。
 //
 // 参数：
-//   - req: 恢复请求（TaskDir 是 claude.json 所在，即 DataDir/tasks/<id>；
+//   - req: 恢复请求（TaskDir 是 proc.json 所在，即 DataDir/tasks/<id>；
 //     RepoPath 用于重启后重新捕获 git 兜底分类的起点 commit 基线；
 //     SessionID 是落库的 claude 会话 id）
 //
 // 返回：
 //   - Alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
-//   - err: 重建失败（claude.json 缺失/损坏、SessionID 为空），视为不可恢复
+//   - err: 重建失败（proc.json 缺失/损坏、SessionID 为空），视为不可恢复
 //
 // 注意：
 //   - 恢复出的运行态与 Start 对称：Stop（done 归档）对其同样有效
@@ -76,26 +74,20 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	if err != nil {
 		return executor.ResumeOutcome{}, err
 	}
-	proc := &Proc{TmuxSession: pi.TmuxSession, TaskDir: req.TaskDir, SessionID: req.SessionID}
+	proc := &Proc{Handle: pi.Handle, TaskDir: req.TaskDir, SessionID: req.SessionID}
 
 	mode := executor.ResumeModeReattach
-	dead := false
-	// 判据 1：哨兵在 → 进程已退（带退出码）
-	if exited, code := procExited(filepath.Join(req.TaskDir, outFileName)); exited {
-		a.log.Info("恢复探活失败：claude 已退出（哨兵）", "task", req.TaskID,
-			"tmux", pi.TmuxSession, "code", code)
-		dead = true
-	}
-	// 判据 2：tmux 会话都没了，进程一定没了
-	if !dead && !tmuxHasSession(pi.TmuxSession) {
-		a.log.Info("恢复探活失败：tmux 会话已不存在", "task", req.TaskID, "tmux", pi.TmuxSession)
-		dead = true
-	}
-
+	dead := !proc.Alive()
 	if dead {
-		// 先回收旧会话，否则冷恢复重起时撞名（窗口 1 的 tail -f 会吊着会话）
+		if exited, code := procExited(filepath.Join(req.TaskDir, outFileName)); exited {
+			a.log.Info("恢复探活失败：claude 已退出（哨兵）", "task", req.TaskID,
+				"shim_pid", pi.Handle.PID, "code", code)
+		} else {
+			a.log.Info("恢复探活失败：存活锁已释放", "task", req.TaskID, "shim_pid", pi.Handle.PID)
+		}
+		// 先回收旧执行者，否则冷恢复重起时撞锁（shim 持锁，不回收新 shim 起不来）
 		if kerr := proc.Kill(); kerr != nil {
-			a.log.Warn("回收已死执行器的 tmux 会话失败", "task", req.TaskID, "cause", kerr)
+			a.log.Warn("回收已死执行者失败", "task", req.TaskID, "cause", kerr)
 		}
 		if !req.Cold {
 			return executor.ResumeOutcome{Alive: false,
