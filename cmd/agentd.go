@@ -36,6 +36,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/machineauthority"
+	"github.com/xushixin/handoff/internal/machinegateway"
 	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/resourcegateway"
 	"github.com/xushixin/handoff/internal/store"
@@ -110,7 +111,15 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		resourceAuthority, closeResources := wireWorkspaceResources(srv, st, cfg, logger)
+		publishControlEvent := func(ce controlplane.ControlEvent) {
+			env, err := (&desktopapi.CatalogAssembler{}).ToControlEvent(ce)
+			if err != nil {
+				logger.Warn("控制事件广播转换失败", "revision", ce.ControlRevision, "cause", err)
+				return
+			}
+			srv.ControlHub().Publish(env)
+		}
+		resourceAuthority, closeResources := wireWorkspaceResources(srv, st, cfg, logger, publishControlEvent)
 		defer closeResources()
 		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
 		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -141,14 +150,6 @@ var agentdCmd = &cobra.Command{
 		// 本机与远端 machine event 共用同一 Projector；本机 owner 先写 durable
 		// outbox，再由 pump 顺序投影并广播，避免本地资源变更只落库不推桌面。
 		projector := controlplane.NewProjector(st)
-		publishControlEvent := func(ce controlplane.ControlEvent) {
-			env, err := (&desktopapi.CatalogAssembler{}).ToControlEvent(ce)
-			if err != nil {
-				logger.Warn("控制事件广播转换失败", "revision", ce.ControlRevision, "cause", err)
-				return
-			}
-			srv.ControlHub().Publish(env)
-		}
 		projector.OnApplied = publishControlEvent
 		outboxCtx, stopOutbox := context.WithCancel(context.Background())
 		defer stopOutbox()
@@ -273,11 +274,21 @@ func targetCredentialResolver(cfg *config.Config) func(string) string {
 
 // wireWorkspaceResources 把本机 owner authority、远端 peer registry 与统一
 // resource gateway 注入生产 Server，并返回关闭 peer clients 的函数。
-func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) (*machineauthority.ResourceAuthority, func()) {
+func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger,
+	publishControlEvent func(controlplane.ControlEvent)) (*machineauthority.ResourceAuthority, func()) {
 	localAuthority := machineauthority.NewResourceAuthority(logger)
+	projectAuthority := &machineauthority.Inventory{}
 	peers := peer.NewAuthorityRegistry(syncMachinesFromConfig(cfg), targetCredentialResolver(cfg))
 	router := resourcegateway.NewRouter(st, localAuthority, peers, logger)
 	srv.SetResourceRouter(router)
+	srv.SetMachineAuthority(projectAuthority)
+	projectService := controlplane.NewProjectService(
+		st,
+		machinegateway.NewCommander(st, projectAuthority, peers, logger),
+		logger,
+	)
+	projectService.SetControlEventPublisher(publishControlEvent)
+	srv.SetProjectService(projectService)
 	logger.Info("Workspace 资源路由已接线", "remote_machine_count", len(syncMachinesFromConfig(cfg)))
 	return localAuthority, peers.Close
 }

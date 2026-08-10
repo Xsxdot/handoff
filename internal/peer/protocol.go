@@ -3,6 +3,7 @@
 // 职责：
 //   - Hello：协商 protocol version 与 capability map
 //   - MachineSnapshot：带 through_machine_seq 的全量快照
+//   - 项目目录 Inspect/Clone 的 capability 与 wire DTO
 //   - Negotiate：capability 协商（未知 capability 忽略，缺核心项标 incompatible）
 //
 // 边界：
@@ -18,13 +19,14 @@ import (
 // ProtocolVersion 是 peer v1 协议版本。
 const ProtocolVersion = 1
 
-// Workspace 资源 capability keys。缺少某项时 catalog 连接仍可成立，但对应
-// resource gateway 必须返回 CAPABILITY_UNSUPPORTED，不能猜测旧 peer 支持。
+// Workspace/项目命令 capability keys。缺少某项时 catalog 连接仍可成立，但
+// 对应 gateway 必须返回 CAPABILITY_UNSUPPORTED，不能猜测旧 peer 支持。
 const (
-	CapabilityFiles   = "files"
-	CapabilityGit     = "git"
-	CapabilityPty     = "pty"
-	CapabilityPreview = "preview"
+	CapabilityFiles           = "files"
+	CapabilityGit             = "git"
+	CapabilityProjectCommands = "project_commands"
+	CapabilityPty             = "pty"
+	CapabilityPreview         = "preview"
 )
 
 // requiredCapabilities 是 peer 连接成立的核心 capability。
@@ -38,8 +40,35 @@ var supportedCapabilities = []string{
 	"machine_events",
 	CapabilityFiles,
 	CapabilityGit,
+	CapabilityProjectCommands,
 	CapabilityPty,
 	CapabilityPreview,
+}
+
+// ProjectInspectRequest 是远端 agentd 目录检查命令的 wire DTO。
+type ProjectInspectRequest struct {
+	OperationID string `json:"operation_id"`
+	TargetID    string `json:"target_id"`
+	Path        string `json:"path"`
+}
+
+// ProjectCloneRequest 是远端 agentd clone 命令的 wire DTO。
+type ProjectCloneRequest struct {
+	OperationID string `json:"operation_id"`
+	TargetID    string `json:"target_id"`
+	GitURL      string `json:"git_url"`
+	ClonePath   string `json:"clone_path"`
+}
+
+// ProjectPathInspection 是项目目录检查结果的 wire DTO。
+type ProjectPathInspection struct {
+	Path          string `json:"path"`
+	CanonicalPath string `json:"canonical_path"`
+	IsRepo        bool   `json:"is_repo"`
+	RepoIdentity  string `json:"repo_identity,omitempty"`
+	GitCommonDir  string `json:"git_common_dir,omitempty"`
+	Branch        string `json:"branch,omitempty"`
+	HeadOID       string `json:"head_oid,omitempty"`
 }
 
 // Hello 是 /v1/peer/hello 的响应体。

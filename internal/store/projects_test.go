@@ -37,15 +37,29 @@ func TestCreateProjectPersistsLocationsAndWorkspaces(t *testing.T) {
 	}
 	ws := controlplane.Workspace{ID: "ws1", MachineID: "m-local", Kind: controlplane.WorkspaceKindMain,
 		Path: "/repo", CanonicalPath: "/repo"}
-	ce, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{loc}, []controlplane.Workspace{ws})
+	operation := controlplane.Operation{OperationID: "op1", Kind: controlplane.OperationKindCreateProject,
+		State: controlplane.OperationStateSucceeded, ProjectID: project.ID, CreatedAt: now(), UpdatedAt: now()}
+	if _, err := s.CreateOperation(ctx, operation); err != nil {
+		t.Fatalf("CreateOperation: %v", err)
+	}
+	events, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{loc}, []controlplane.Workspace{ws}, &operation)
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if ce.ControlRevision != 1 {
-		t.Fatalf("control revision = %d, want 1", ce.ControlRevision)
+	if len(events) != 4 {
+		t.Fatalf("control events = %d, want project/location/workspace/operation 四条", len(events))
 	}
-	if ce.Kind != controlplane.ControlEventKindProjectUpsert {
-		t.Fatalf("kind = %s, want project.upsert", ce.Kind)
+	wantKinds := []controlplane.ControlEventKind{
+		controlplane.ControlEventKindProjectUpsert,
+		controlplane.ControlEventKindLocationUpsert,
+		controlplane.ControlEventKindWorkspaceUpsert,
+		controlplane.ControlEventKindOperationUpsert,
+	}
+	for index, event := range events {
+		if event.ControlRevision != int64(index+2) || event.Kind != wantKinds[index] {
+			t.Fatalf("event[%d] = revision %d kind %s, want %d/%s",
+				index, event.ControlRevision, event.Kind, index+2, wantKinds[index])
+		}
 	}
 
 	projects, err := s.ListProjects(ctx)
@@ -77,11 +91,13 @@ func TestCreateProjectRollsBackOnError(t *testing.T) {
 		Role: controlplane.LocationRoleLocal, Source: controlplane.LocationSourceExistingPath,
 		CreatedAt: now(), UpdatedAt: now(),
 	}
-	if _, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{loc}, nil); err != nil {
+	if _, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{loc}, nil, nil); err != nil {
 		t.Fatalf("首次 CreateProject: %v", err)
 	}
-	// 同 (project_id, role) 冲突：唯一索引应让整个事务回滚
-	if _, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{loc}, nil); err == nil {
+	// 不同 location ID 争用同 (project_id, role)：唯一索引应让整个事务回滚。
+	conflict := loc
+	conflict.ID = "loc2"
+	if _, err := s.CreateProject(ctx, project, []controlplane.ProjectLocation{conflict}, nil, nil); err == nil {
 		t.Fatal("重复 (project_id, role) 应被唯一索引拒绝")
 	}
 	// 回滚后不应出现重复 project/location
@@ -92,6 +108,27 @@ func TestCreateProjectRollsBackOnError(t *testing.T) {
 	locs, _ := s.ListLocations(ctx)
 	if len(locs) != 1 {
 		t.Fatalf("回滚后 locations = %d, want 1", len(locs))
+	}
+}
+
+func TestCreateProjectRollsBackAggregateWhenFinalOperationMissing(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	project := controlplane.Project{ID: "p-atomic", Name: "p", CreatedAt: now(), UpdatedAt: now()}
+	operation := controlplane.Operation{OperationID: "missing-operation", Kind: controlplane.OperationKindCreateProject,
+		State: controlplane.OperationStateSucceeded, ProjectID: project.ID, CreatedAt: now(), UpdatedAt: now()}
+	if _, err := s.CreateProject(context.Background(), project, nil, nil, &operation); err == nil {
+		t.Fatal("final operation 不存在时应回滚整个项目聚合")
+	}
+	projects, err := s.ListProjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("rollback 后 projects=%+v", projects)
 	}
 }
 

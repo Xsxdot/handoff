@@ -311,7 +311,7 @@ func TestWatchReconcileExplicitlyInvalidatesGitStatus(t *testing.T) {
 		MainWorkspaceID: workspace.ID, Source: controlplane.LocationSourceExistingPath,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}); err != nil {
+	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}, nil); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
@@ -351,7 +351,7 @@ func TestLocalReconcilerSerializesConcurrentScans(t *testing.T) {
 		MainWorkspaceID: workspace.ID, Source: controlplane.LocationSourceExistingPath,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}); err != nil {
+	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}, nil); err != nil {
 		t.Fatal(err)
 	}
 

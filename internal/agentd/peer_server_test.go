@@ -10,6 +10,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -19,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/machineauthority"
 	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -71,6 +74,9 @@ func TestPeerHelloRoute(t *testing.T) {
 	if hello.Capabilities[peer.CapabilityGit] != 1 {
 		t.Fatalf("git capability 缺失: %+v", hello.Capabilities)
 	}
+	if hello.Capabilities[peer.CapabilityProjectCommands] != 1 {
+		t.Fatalf("project_commands capability 缺失: %+v", hello.Capabilities)
+	}
 }
 
 // TestPeerHelloRequiresAuth 验证未授权 401。
@@ -98,5 +104,49 @@ func TestPeerEventsAfterRoute(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+type projectAuthorityFake struct {
+	inspectPath string
+	clone       machineauthority.CloneCommand
+}
+
+func (f *projectAuthorityFake) InspectPath(_ context.Context, path string) (controlplane.PathInspection, error) {
+	f.inspectPath = path
+	return controlplane.PathInspection{Path: path, CanonicalPath: path, IsRepo: true, RepoIdentity: "github.com/o/r"}, nil
+}
+
+func (f *projectAuthorityFake) Clone(_ context.Context, command machineauthority.CloneCommand) (controlplane.PathInspection, error) {
+	f.clone = command
+	return controlplane.PathInspection{Path: command.ClonePath, CanonicalPath: command.ClonePath, IsRepo: true}, nil
+}
+
+// TestPeerProjectCommandsUseAgentdProtocol 验证远端目录检查/clone 由 agentd peer
+// API 执行，不依赖 SSH、远端 shell PATH 或平台探针。
+func TestPeerProjectCommandsUseAgentdProtocol(t *testing.T) {
+	srv, ts := newPeerTestServer(t)
+	authority := &projectAuthorityFake{}
+	srv.SetMachineAuthority(authority)
+	client := peer.NewClient(peer.ClientConfig{Endpoint: ts.URL, Token: "test-token"})
+
+	inspection, err := client.InspectPath(context.Background(), controlplane.InspectPathCommand{
+		OperationID: "op", TargetID: "inspect", MachineID: "remote", Path: "/srv/repo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.inspectPath != "/srv/repo" || inspection.RepoIdentity != "github.com/o/r" {
+		t.Fatalf("inspect path=%q result=%+v", authority.inspectPath, inspection)
+	}
+	clone, err := client.Clone(context.Background(), controlplane.CloneLocationCommand{
+		OperationID: "op", TargetID: "clone", MachineID: "remote",
+		GitURL: "git@github.com:o/r.git", ClonePath: "/srv/clone",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.clone.GitURL != "git@github.com:o/r.git" || clone.Path != "/srv/clone" {
+		t.Fatalf("clone command=%+v result=%+v", authority.clone, clone)
 	}
 }

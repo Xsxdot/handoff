@@ -9,7 +9,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,6 +23,8 @@ import (
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/machineauthority"
+	"github.com/xushixin/handoff/internal/peer"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -111,7 +115,7 @@ func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
 	server := agentd.NewServer(cfg, st, logger)
-	_, closeResources := wireWorkspaceResources(server, st, cfg, logger)
+	_, closeResources := wireWorkspaceResources(server, st, cfg, logger, nil)
 	defer closeResources()
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -124,5 +128,191 @@ func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("resource route status = %d", resp.StatusCode)
+	}
+}
+
+// TestWireWorkspaceResourcesActivatesProjectCreation 防止生产 agentd 只接通
+// files/git，却漏注入 ProjectService。该缺口会让真实桌面创建项目恒定返回 503，
+// 而 handler 单测因手工注入 fake service 无法发现。
+func TestWireWorkspaceResourcesActivatesProjectCreation(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	local, err := st.EnsureLocalMachine(context.Background(), "本机")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
+	server := agentd.NewServer(cfg, st, logger)
+	var published []controlplane.ControlEventKind
+	_, closeResources := wireWorkspaceResources(server, st, cfg, logger, func(event controlplane.ControlEvent) {
+		published = append(published, event.Kind)
+	})
+	defer closeResources()
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"operation_id": "op-production-wire",
+		"name":         "wired-project",
+		"locations": []map[string]string{{
+			"machine_id": local.ID,
+			"role":       "local",
+			"source":     "existing_path",
+			"path":       root,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/operations", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("project route status = %d, want 202: %s", resp.StatusCode, payload)
+	}
+	var operation struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&operation); err != nil {
+		t.Fatal(err)
+	}
+	if operation.State != "succeeded" {
+		t.Fatalf("operation state = %q, want succeeded", operation.State)
+	}
+	snapshot, err := st.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Projects) != 1 || len(snapshot.Locations) != 1 || len(snapshot.Workspaces) != 1 {
+		t.Fatalf("catalog project/location/workspace = %d/%d/%d, want 1/1/1",
+			len(snapshot.Projects), len(snapshot.Locations), len(snapshot.Workspaces))
+	}
+	workspace := snapshot.Workspaces[0]
+	if workspace.Kind != controlplane.WorkspaceKindMain || workspace.LocationID == nil ||
+		*workspace.LocationID != snapshot.Locations[0].ID {
+		t.Fatalf("workspace 未归并为 main location: %+v", workspace)
+	}
+	wantKinds := []controlplane.ControlEventKind{
+		controlplane.ControlEventKindOperationUpsert,
+		controlplane.ControlEventKindOperationUpsert,
+		controlplane.ControlEventKindProjectUpsert,
+		controlplane.ControlEventKindLocationUpsert,
+		controlplane.ControlEventKindWorkspaceUpsert,
+		controlplane.ControlEventKindOperationUpsert,
+	}
+	if len(published) != len(wantKinds) {
+		t.Fatalf("published kinds = %v, want %v", published, wantKinds)
+	}
+	for index, want := range wantKinds {
+		if published[index] != want {
+			t.Fatalf("published[%d] = %s, want %s", index, published[index], want)
+		}
+	}
+}
+
+// TestRemoteProjectCreationUsesPeerAgentd 验证 remote-only 项目通过已配对 agentd
+// 协议检查目录；测试环境没有 SSH client，也不会执行远端 shell 探针。
+func TestRemoteProjectCreationUsesPeerAgentd(t *testing.T) {
+	remoteRoot := t.TempDir()
+	remoteStore, err := store.Open(filepath.Join(t.TempDir(), "remote.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remoteStore.Close()
+	remoteLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	remoteServer := agentd.NewServer(&config.Config{Token: "remote-token"}, remoteStore, remoteLogger)
+	remoteServer.SetMachineAuthority(&machineauthority.Inventory{})
+	remoteHTTP := httptest.NewServer(remoteServer.Handler())
+	defer remoteHTTP.Close()
+
+	localStore, err := store.Open(filepath.Join(t.TempDir(), "local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer localStore.Close()
+	if _, err := localStore.EnsureLocalMachine(context.Background(), "本机"); err != nil {
+		t.Fatal(err)
+	}
+	configured := []controlplane.ConfiguredMachine{{
+		ConfigKey: "devbox", DisplayName: "开发机", Kind: controlplane.MachineKindRemote,
+		Endpoint: remoteHTTP.URL, SecretRef: "config.targets.devbox.token",
+	}}
+	if _, err := localStore.SyncConfiguredMachines(context.Background(), configured); err != nil {
+		t.Fatal(err)
+	}
+	if err := localStore.SetMachineProtocolCapabilities(context.Background(), "devbox", 1,
+		map[string]int{peer.CapabilityProjectCommands: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := localStore.SetMachineStatusWithControlEvent(context.Background(), "devbox",
+		controlplane.MachineStatusConnected); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{Token: "local-token", Targets: map[string]config.Target{
+		"devbox": {Addr: remoteHTTP.URL, Token: "remote-token", DisplayName: "开发机"},
+	}}
+	localServer := agentd.NewServer(cfg, localStore, remoteLogger)
+	_, closeResources := wireWorkspaceResources(localServer, localStore, cfg, remoteLogger, nil)
+	defer closeResources()
+	localHTTP := httptest.NewServer(localServer.Handler())
+	defer localHTTP.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"operation_id": "op-remote-peer",
+		"name":         "remote-project",
+		"locations": []map[string]string{{
+			"machine_id": "devbox", "role": "remote", "source": "existing_path", "path": remoteRoot,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, localHTTP.URL+"/v1/projects/operations", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer local-token")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("remote project status=%d: %s", response.StatusCode, payload)
+	}
+	var operation struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&operation); err != nil {
+		t.Fatal(err)
+	}
+	if operation.State != "succeeded" {
+		t.Fatalf("remote operation state=%q, want succeeded", operation.State)
+	}
+	snapshot, err := localStore.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Locations) != 1 || snapshot.Locations[0].MachineID != "devbox" ||
+		len(snapshot.Workspaces) != 1 || snapshot.Workspaces[0].Path != remoteRoot {
+		t.Fatalf("remote catalog projection locations=%+v workspaces=%+v",
+			snapshot.Locations, snapshot.Workspaces)
 	}
 }

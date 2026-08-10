@@ -3,6 +3,7 @@
 // 职责：
 //   - CreateOperation/UpdateOperation/GetOperation/ListOperations：
 //     durable 长操作的生命周期存储（operation_id 即幂等键）
+//   - operation 行与 operation.upsert control event 同事务提交
 //
 // 边界：
 //   - 业务编排（逐目标执行、partial/failed 判定）由 ProjectService 承担，
@@ -21,38 +22,83 @@ import (
 )
 
 // CreateOperation 持久化一个 Operation（同 ID 重复调用幂等保留首个 pending）。
-func (s *Store) CreateOperation(ctx context.Context, op controlplane.Operation) error {
+func (s *Store) CreateOperation(ctx context.Context, op controlplane.Operation) (controlplane.ControlEvent, error) {
 	targets, err := json.Marshal(op.Targets)
 	if err != nil {
-		return fmt.Errorf("序列化 operation targets: %w", err)
+		return controlplane.ControlEvent{}, fmt.Errorf("序列化 operation targets: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("开启 operation 创建事务: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO operations (operation_id, kind, state, project_id, targets, progress, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(operation_id) DO NOTHING`,
 		op.OperationID, string(op.Kind), string(op.State), op.ProjectID,
 		string(targets), op.Progress, fmtTime(op.CreatedAt), fmtTime(op.UpdatedAt))
 	if err != nil {
-		return fmt.Errorf("写入 operation %s: %w", op.OperationID, err)
+		return controlplane.ControlEvent{}, fmt.Errorf("写入 operation %s: %w", op.OperationID, err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取 operation %s 创建结果: %w", op.OperationID, err)
+	}
+	if rows == 0 {
+		if err := tx.Commit(); err != nil {
+			return controlplane.ControlEvent{}, fmt.Errorf("提交 operation 幂等事务: %w", err)
+		}
+		return controlplane.ControlEvent{}, nil
+	}
+	event, err := appendControlEventTx(ctx, tx, controlplane.ControlEventKindOperationUpsert, op.OperationID, op)
+	if err != nil {
+		return controlplane.ControlEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("提交 operation 创建事务: %w", err)
+	}
+	return event, nil
 }
 
 // UpdateOperation 更新 Operation 状态/目标结果。
-func (s *Store) UpdateOperation(ctx context.Context, op controlplane.Operation) error {
+func (s *Store) UpdateOperation(ctx context.Context, op controlplane.Operation) (controlplane.ControlEvent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("开启 operation 更新事务: %w", err)
+	}
+	defer tx.Rollback()
+	event, err := updateOperationTx(ctx, tx, op)
+	if err != nil {
+		return controlplane.ControlEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("提交 operation 更新事务: %w", err)
+	}
+	return event, nil
+}
+
+func updateOperationTx(ctx context.Context, tx *sql.Tx, op controlplane.Operation) (controlplane.ControlEvent, error) {
 	targets, err := json.Marshal(op.Targets)
 	if err != nil {
-		return fmt.Errorf("序列化 operation targets: %w", err)
+		return controlplane.ControlEvent{}, fmt.Errorf("序列化 operation targets: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 UPDATE operations SET kind = ?, state = ?, project_id = ?, targets = ?, progress = ?, updated_at = ?
 WHERE operation_id = ?`,
 		string(op.Kind), string(op.State), op.ProjectID, string(targets),
 		op.Progress, fmtTime(op.UpdatedAt), op.OperationID)
 	if err != nil {
-		return fmt.Errorf("更新 operation %s: %w", op.OperationID, err)
+		return controlplane.ControlEvent{}, fmt.Errorf("更新 operation %s: %w", op.OperationID, err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取 operation %s 更新结果: %w", op.OperationID, err)
+	}
+	if rows == 0 {
+		return controlplane.ControlEvent{}, ErrNotFound
+	}
+	return appendControlEventTx(ctx, tx, controlplane.ControlEventKindOperationUpsert, op.OperationID, op)
 }
 
 // GetOperation 按 operation_id 读取；不存在返回 ErrNotFound。

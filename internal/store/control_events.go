@@ -2,10 +2,10 @@
 //
 // 职责：
 //   - ControlEventsAfter：按 revision 升序拉取控制事件（control stream 重放用）
+//   - appendControlEventTx：资源写事务内追加完整 upsert 事件
 //
 // 边界：
-//   - 控制事件的写入只在 ApplyMachineEvent 的单事务内发生（见 machine_events.go）
-//   - 本文件只提供读取侧；写入不开放给 handler 层
+//   - 写入只开放给 store 内部事务，不开放给 handler 层
 package store
 
 import (
@@ -13,9 +13,35 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/xushixin/handoff/internal/controlplane"
 )
+
+// appendControlEventTx 在调用方事务中分配下一 revision 并写入完整 upsert payload。
+// 所有资源写与事件写必须共用同一事务，避免桌面看到不存在的资源或漏掉已提交资源。
+func appendControlEventTx(ctx context.Context, tx *sql.Tx, kind controlplane.ControlEventKind,
+	resourceID string, value any) (controlplane.ControlEvent, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("序列化 %s control payload: %w", kind, err)
+	}
+	var revision int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(control_revision), 0) + 1 FROM control_events").Scan(&revision); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取下一控制面 revision: %w", err)
+	}
+	createdAt := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO control_events (control_revision, kind, resource_id, payload, created_at)
+VALUES (?, ?, ?, ?, ?)`, revision, string(kind), resourceID, string(payload), fmtTime(createdAt)); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("追加 %s control event: %w", kind, err)
+	}
+	return controlplane.ControlEvent{
+		ControlRevision: revision, Kind: kind, ResourceID: resourceID,
+		Payload: payload, CreatedAt: createdAt,
+	}, nil
+}
 
 // ControlEventsAfter 返回 revision 之后的 control events，升序，最多 limit 条。
 func (s *Store) ControlEventsAfter(_ context.Context, afterRevision int64, limit int) ([]controlplane.ControlEvent, error) {

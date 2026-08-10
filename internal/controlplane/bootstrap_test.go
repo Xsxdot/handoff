@@ -91,13 +91,17 @@ func (f *fakeRepo) ControlEventsAfter(context.Context, int64, int) ([]ControlEve
 	return nil, nil
 }
 
-func (f *fakeRepo) CreateProject(context.Context, Project, []ProjectLocation, []Workspace) (ControlEvent, error) {
+func (f *fakeRepo) CreateProject(context.Context, Project, []ProjectLocation, []Workspace, *Operation) ([]ControlEvent, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) CreateOperation(context.Context, Operation) (ControlEvent, error) {
 	return ControlEvent{}, nil
 }
 
-func (f *fakeRepo) CreateOperation(context.Context, Operation) error { return nil }
-
-func (f *fakeRepo) UpdateOperation(context.Context, Operation) error { return nil }
+func (f *fakeRepo) UpdateOperation(context.Context, Operation) (ControlEvent, error) {
+	return ControlEvent{}, nil
+}
 
 func (f *fakeRepo) GetOperation(context.Context, string) (Operation, error) {
 	return Operation{}, ErrNotFound
@@ -107,6 +111,9 @@ func (f *fakeRepo) ListOperations(context.Context) ([]Operation, error) { return
 
 func (f *fakeRepo) GetWorkspace(context.Context, string) (Workspace, error) {
 	return Workspace{}, ErrNotFound
+}
+func (f *fakeRepo) GetProject(context.Context, string) (Project, error) {
+	return Project{}, ErrNotFound
 }
 
 func (f *fakeRepo) ResolveWorkspaceForPath(context.Context, string, string, string) (Workspace, error) {

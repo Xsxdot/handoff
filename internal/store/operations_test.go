@@ -33,12 +33,20 @@ func TestOperationLifecycle(t *testing.T) {
 		State:     controlplane.OperationStatePending,
 		CreatedAt: now(), UpdatedAt: now(),
 	}
-	if err := s.CreateOperation(ctx, op); err != nil {
+	created, err := s.CreateOperation(ctx, op)
+	if err != nil {
 		t.Fatalf("CreateOperation: %v", err)
 	}
+	if created.ControlRevision != 1 || created.Kind != controlplane.ControlEventKindOperationUpsert {
+		t.Fatalf("create event = %+v", created)
+	}
 	// 同 ID 幂等：重复创建保留首个
-	if err := s.CreateOperation(ctx, op); err != nil {
+	duplicate, err := s.CreateOperation(ctx, op)
+	if err != nil {
 		t.Fatalf("重复 CreateOperation: %v", err)
+	}
+	if duplicate.ControlRevision != 0 {
+		t.Fatalf("重复 create 不应制造控制事件: %+v", duplicate)
 	}
 
 	// 更新为 succeeded + targets
@@ -48,8 +56,12 @@ func TestOperationLifecycle(t *testing.T) {
 		TargetID: "tg1", MachineID: "m1", State: controlplane.OperationStateSucceeded,
 		Result: &controlplane.OperationResult{WorkspaceID: "ws1", LocationID: "loc1", Path: "/r"},
 	}}
-	if err := s.UpdateOperation(ctx, op); err != nil {
+	updated, err := s.UpdateOperation(ctx, op)
+	if err != nil {
 		t.Fatalf("UpdateOperation: %v", err)
+	}
+	if updated.ControlRevision != 2 || updated.Kind != controlplane.ControlEventKindOperationUpsert {
+		t.Fatalf("update event = %+v", updated)
 	}
 
 	got, err := s.GetOperation(ctx, "op1")
@@ -78,7 +90,7 @@ func TestListOperations(t *testing.T) {
 
 	ctx := context.Background()
 	for _, id := range []string{"op1", "op2"} {
-		if err := s.CreateOperation(ctx, controlplane.Operation{
+		if _, err := s.CreateOperation(ctx, controlplane.Operation{
 			OperationID: id, Kind: controlplane.OperationKindCreateProject,
 			State: controlplane.OperationStatePending, CreatedAt: now(), UpdatedAt: now(),
 		}); err != nil {

@@ -78,17 +78,24 @@ func (f *fakeProjectorRepo) AppendTaskSummaryEvent(context.Context, TaskSummary)
 func (f *fakeProjectorRepo) ControlEventsAfter(context.Context, int64, int) ([]ControlEvent, error) {
 	return nil, nil
 }
-func (f *fakeProjectorRepo) CreateProject(context.Context, Project, []ProjectLocation, []Workspace) (ControlEvent, error) {
+func (f *fakeProjectorRepo) CreateProject(context.Context, Project, []ProjectLocation, []Workspace, *Operation) ([]ControlEvent, error) {
+	return nil, nil
+}
+func (f *fakeProjectorRepo) CreateOperation(context.Context, Operation) (ControlEvent, error) {
 	return ControlEvent{}, nil
 }
-func (f *fakeProjectorRepo) CreateOperation(context.Context, Operation) error { return nil }
-func (f *fakeProjectorRepo) UpdateOperation(context.Context, Operation) error { return nil }
+func (f *fakeProjectorRepo) UpdateOperation(context.Context, Operation) (ControlEvent, error) {
+	return ControlEvent{}, nil
+}
 func (f *fakeProjectorRepo) GetOperation(context.Context, string) (Operation, error) {
 	return Operation{}, ErrNotFound
 }
 func (f *fakeProjectorRepo) ListOperations(context.Context) ([]Operation, error) { return nil, nil }
 func (f *fakeProjectorRepo) GetWorkspace(context.Context, string) (Workspace, error) {
 	return Workspace{}, ErrNotFound
+}
+func (f *fakeProjectorRepo) GetProject(context.Context, string) (Project, error) {
+	return Project{}, ErrNotFound
 }
 func (f *fakeProjectorRepo) GetMachine(context.Context, string) (Machine, error) {
 	return Machine{}, ErrNotFound

@@ -14,6 +14,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -105,7 +106,10 @@ func (s *Server) handleDesktopCreateProject(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	op, err := s.projects.Create(r.Context(), command)
+	// Operation 是 durable 长操作：桌面关闭、刷新或 HTTP 连接中断都不能取消
+	// owner 机器上的 Inspect/Clone。WithoutCancel 仅脱离客户端取消信号；服务端
+	// 各 Git/peer 命令仍有自己的超时与断线门禁。
+	op, err := s.projects.Create(context.WithoutCancel(r.Context()), command)
 	if err != nil {
 		s.log.Error("desktop 项目创建失败", "operation_id", req.OperationID, "cause", err)
 		desktopapi.WriteProblem(w, http.StatusBadRequest, desktopapi.Problem{

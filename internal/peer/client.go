@@ -3,6 +3,7 @@
 // 职责：
 //   - Hello/MachineSnapshot/EventsAfter 控制同步
 //   - 文件 list/read/write/search 与 replay+live stream 资源代理
+//   - 项目目录 InspectPath/Clone 命令代理
 //   - 区分资源 Problem、协议不兼容、认证失败与网络不可达
 //
 // 边界：
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/desktopapi"
 	"github.com/xushixin/handoff/internal/workspaceapi"
 )
@@ -89,6 +91,39 @@ func (c *Client) EventsAfter(ctx context.Context, machineID string, afterSeq int
 		return nil, err
 	}
 	return out, nil
+}
+
+// InspectPath 通过远端 owner agentd 检查项目既有目录。
+func (c *Client) InspectPath(ctx context.Context, command controlplane.InspectPathCommand) (controlplane.PathInspection, error) {
+	request := ProjectInspectRequest{
+		OperationID: command.OperationID, TargetID: command.TargetID, Path: command.Path,
+	}
+	var response ProjectPathInspection
+	if err := c.doResource(ctx, http.MethodPost, "/v1/machine/project/inspect-path", request, &response); err != nil {
+		return controlplane.PathInspection{}, err
+	}
+	return fromPeerPathInspection(response), nil
+}
+
+// Clone 通过远端 owner agentd 克隆项目仓库。
+func (c *Client) Clone(ctx context.Context, command controlplane.CloneLocationCommand) (controlplane.PathInspection, error) {
+	request := ProjectCloneRequest{
+		OperationID: command.OperationID, TargetID: command.TargetID,
+		GitURL: command.GitURL, ClonePath: command.ClonePath,
+	}
+	var response ProjectPathInspection
+	if err := c.doResource(ctx, http.MethodPost, "/v1/machine/project/clone", request, &response); err != nil {
+		return controlplane.PathInspection{}, err
+	}
+	return fromPeerPathInspection(response), nil
+}
+
+func fromPeerPathInspection(value ProjectPathInspection) controlplane.PathInspection {
+	return controlplane.PathInspection{
+		Path: value.Path, CanonicalPath: value.CanonicalPath, IsRepo: value.IsRepo,
+		RepoIdentity: value.RepoIdentity, GitCommonDir: value.GitCommonDir,
+		Branch: value.Branch, HeadOID: value.HeadOID,
+	}
 }
 
 // ListDirectory 代理远端 owner 的目录浏览。

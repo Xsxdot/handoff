@@ -14,6 +14,7 @@ package machineauthority
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -153,6 +154,11 @@ func (inv *Inventory) checkedOutBranches(ctx context.Context) map[string][]strin
 
 // InspectPath 检查一个目录是否为 git 仓库并返回规范化信息。
 func (inv *Inventory) InspectPath(ctx context.Context, path string) (PathInspection, error) {
+	expanded, err := resolveOwnerPath(path)
+	if err != nil {
+		return PathInspection{}, err
+	}
+	path = expanded
 	canonical, cerr := store.CanonicalPath(path)
 	if cerr != nil {
 		return PathInspection{}, fmt.Errorf("规范化路径 %s: %w", path, cerr)
@@ -238,17 +244,51 @@ func (inv *Inventory) Clone(ctx context.Context, cmd CloneCommand) (PathInspecti
 	if cmd.GitURL == "" || cmd.ClonePath == "" {
 		return PathInspection{}, fmt.Errorf("clone 命令缺 git_url 或 clone_path")
 	}
-	if _, err := os.Stat(cmd.ClonePath); err == nil {
+	clonePath, err := resolveOwnerPath(cmd.ClonePath)
+	if err != nil {
+		return PathInspection{}, err
+	}
+	if _, err := os.Stat(clonePath); err == nil {
 		return PathInspection{}, fmt.Errorf("clone 目标已存在: %s（须由上层判定幂等复用或冲突）", cmd.ClonePath)
 	}
-	if err := os.MkdirAll(filepath.Dir(cmd.ClonePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		return PathInspection{}, fmt.Errorf("创建 clone 父目录: %w", err)
 	}
-	gitCmd := exec.CommandContext(ctx, "git", "clone", "--", cmd.GitURL, cmd.ClonePath)
-	if out, err := gitCmd.CombinedOutput(); err != nil {
-		return PathInspection{}, fmt.Errorf("git clone 失败: %w (%s)", err, truncate(out, 300))
+	gitCmd := exec.CommandContext(ctx, "git", "clone", "--", cmd.GitURL, clonePath)
+	if err := gitCmd.Run(); err != nil {
+		// clone stderr 常回显完整 remote URL；URL 可能带 userinfo/token，不能进入
+		// ProjectService 的结构化错误日志或 Operation.Error。
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return PathInspection{}, fmt.Errorf("git clone 失败 (exit=%d): %w", exitCode, err)
 	}
-	return inv.InspectPath(ctx, cmd.ClonePath)
+	return inv.InspectPath(ctx, clonePath)
+}
+
+// resolveOwnerPath 在实际执行命令的 owner agentd 上展开 `~`。
+// 桌面或控制 agentd 不得提前展开，否则远端 clone 会错误使用本机 home。
+func resolveOwnerPath(path string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("读取 owner home: %w", err)
+	}
+	return expandOwnerPath(path, home)
+}
+
+func expandOwnerPath(path, home string) (string, error) {
+	switch {
+	case path == "~":
+		return filepath.Clean(home), nil
+	case strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`):
+		return filepath.Join(home, path[2:]), nil
+	case strings.HasPrefix(path, "~"):
+		return "", fmt.Errorf("不支持其他用户 home 路径 %q", path)
+	default:
+		return path, nil
+	}
 }
 
 // splitBlocks 把 worktree list --porcelain 输出按空行切分为区块。

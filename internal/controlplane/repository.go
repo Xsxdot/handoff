@@ -76,13 +76,15 @@ type Repository interface {
 
 	// CreateProject 在同一事务内创建 Project、ProjectLocation 与 main Workspace，
 	// 并追加 control event；返回产生的 ControlEvent。
-	CreateProject(ctx context.Context, p Project, locations []ProjectLocation, workspaces []Workspace) (ControlEvent, error)
+	CreateProject(ctx context.Context, p Project, locations []ProjectLocation, workspaces []Workspace,
+		finalOperation *Operation) ([]ControlEvent, error)
 
-	// CreateOperation 持久化一个 pending Operation（operation_id 幂等）。
-	CreateOperation(ctx context.Context, op Operation) error
+	// CreateOperation 持久化一个 pending Operation（operation_id 幂等），并返回
+	// operation.upsert；重复 ID 未写入时返回零值事件。
+	CreateOperation(ctx context.Context, op Operation) (ControlEvent, error)
 
-	// UpdateOperation 更新 Operation 状态/目标结果。
-	UpdateOperation(ctx context.Context, op Operation) error
+	// UpdateOperation 更新 Operation 状态/目标结果并返回 operation.upsert。
+	UpdateOperation(ctx context.Context, op Operation) (ControlEvent, error)
 
 	// GetOperation 按 operation_id 读取 Operation；不存在返回 ErrNotFound。
 	GetOperation(ctx context.Context, operationID string) (Operation, error)
@@ -92,6 +94,9 @@ type Repository interface {
 
 	// GetWorkspace 按 id 读取 Workspace。
 	GetWorkspace(ctx context.Context, id string) (Workspace, error)
+
+	// GetProject 按 id 读取 Project。
+	GetProject(ctx context.Context, id string) (Project, error)
 
 	// GetMachine 按 id 读取 Machine。
 	GetMachine(ctx context.Context, id string) (Machine, error)

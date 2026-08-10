@@ -72,6 +72,25 @@ vi.mock('@/components/ui/label', () => ({
   Label: ({ children }: { children: ReactModule.ReactNode }) => <label>{children}</label>
 }))
 
+vi.mock('@/components/ui/checkbox', () => ({
+  Checkbox: ({
+    checked,
+    onCheckedChange,
+    'aria-label': ariaLabel
+  }: {
+    checked?: boolean
+    onCheckedChange?: (checked: boolean) => void
+    'aria-label'?: string
+  }) => (
+    <input
+      aria-label={ariaLabel}
+      type="checkbox"
+      checked={checked}
+      onChange={(event) => onCheckedChange?.(event.target.checked)}
+    />
+  )
+}))
+
 vi.mock('@/components/ui/select', () => ({
   Select: ({
     value,
@@ -95,7 +114,8 @@ vi.mock('@/components/ui/select', () => ({
 }))
 
 const machines: CreateDialogMachine[] = [
-  { id: 'm-local', display_name: '本机', kind: 'local' }
+  { id: 'm-local', display_name: '本机', kind: 'local' },
+  { id: 'm-remote', display_name: '开发机', kind: 'remote' }
 ]
 
 const operationResponse = {
@@ -161,6 +181,52 @@ describe('ProjectCreateDialog', () => {
     expect(btns.some((b) => b.textContent?.includes('选择目录'))).toBe(true)
   })
 
+  it('prefills clone path from the Git URL and preserves an explicit override', () => {
+    render(
+      <ProjectCreateDialog open machines={machines} onSubmit={vi.fn()} onOpenChange={vi.fn()} />
+    )
+
+    fireEvent.change(screen.getAllByRole('combobox')[0]!, { target: { value: 'git_clone' } })
+    const inputs = screen.getAllByRole('textbox') as HTMLInputElement[]
+    fireEvent.change(inputs[1]!, { target: { value: 'git@github.com:openai/handoff.git' } })
+    expect(inputs[2]!.value).toBe('~/.handoff/handoff')
+
+    fireEvent.change(inputs[2]!, { target: { value: '/workspace/custom-handoff' } })
+    fireEvent.change(inputs[1]!, { target: { value: 'git@github.com:openai/renamed.git' } })
+    expect(inputs[2]!.value).toBe('/workspace/custom-handoff')
+  })
+
+  it('supports a remote-only project while keeping Finder local-only', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(operationResponse)
+    render(
+      <ProjectCreateDialog open machines={machines} onSubmit={onSubmit} onOpenChange={vi.fn()} />
+    )
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '使用本机目录' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: '使用远端目录' }))
+    expect(screen.queryByRole('button', { name: /选择目录/ })).toBeNull()
+
+    const textboxes = screen.getAllByRole('textbox')
+    fireEvent.change(textboxes[0]!, { target: { value: 'remote-project' } })
+    fireEvent.change(textboxes[1]!, { target: { value: '/srv/remote-project' } })
+    const selects = screen.getAllByRole('combobox')
+    fireEvent.change(selects[1]!, { target: { value: 'm-remote' } })
+    clickSubmit()
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+      name: 'remote-project',
+      locations: [
+        {
+          machine_id: 'm-remote',
+          role: 'remote',
+          source: 'existing_path',
+          path: '/srv/remote-project'
+        }
+      ]
+    })
+  })
+
   it('submits once and keeps operation id stable across retries', async () => {
     const onSubmit = vi
       .fn()
@@ -217,7 +283,12 @@ describe('ProjectCreateDialog', () => {
 
     // 关闭再打开对话框 = 新的提交意图
     rerender(
-      <ProjectCreateDialog open={false} machines={machines} onSubmit={onSubmit} onOpenChange={vi.fn()} />
+      <ProjectCreateDialog
+        open={false}
+        machines={machines}
+        onSubmit={onSubmit}
+        onOpenChange={vi.fn()}
+      />
     )
     rerender(
       <ProjectCreateDialog open machines={machines} onSubmit={onSubmit} onOpenChange={vi.fn()} />

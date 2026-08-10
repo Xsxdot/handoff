@@ -4,6 +4,7 @@
 //   - GET /v1/peer/hello：协议版本 + capability map
 //   - GET /v1/machine/snapshot：本机全量快照
 //   - GET /v1/machine/events?machine_id=&after=&limit=：本机 outbox 事件
+//   - 声明项目目录命令 capability；具体 adapter 在 project_command_server.go
 //
 // 边界：
 //   - 与现有 /api、/ws 路由并存，互不影响
@@ -23,8 +24,9 @@ import (
 // peerCapabilities 是本机 agentd 声明的 peer capability。
 var peerCapabilities = map[string]int{
 	"catalog": 1, "machine_events": 1,
-	peer.CapabilityFiles: 1,
-	peer.CapabilityGit:   1,
+	peer.CapabilityFiles:           1,
+	peer.CapabilityGit:             1,
+	peer.CapabilityProjectCommands: 1,
 }
 
 // handlePeerHello 返回协议版本与 capability。

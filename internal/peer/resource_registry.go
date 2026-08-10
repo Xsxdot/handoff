@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/workspaceapi"
 )
 
@@ -21,6 +22,17 @@ import (
 type AuthorityRegistry struct {
 	mu      sync.RWMutex
 	clients map[string]*Client
+}
+
+// CommanderForMachine 返回指定机器的远端项目命令客户端。
+func (r *AuthorityRegistry) CommanderForMachine(_ context.Context, machineID string) (controlplane.MachineCommander, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	client := r.clients[machineID]
+	if client == nil {
+		return nil, fmt.Errorf("%w: 未配置 machine_id=%s 的 peer client", ErrUnavailable, machineID)
+	}
+	return client, nil
 }
 
 // NewAuthorityRegistry 从配置机器构造资源 client registry。

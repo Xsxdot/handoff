@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 )
 
@@ -77,9 +78,10 @@ func (f *fakeProjectRepo) GetMachine(_ context.Context, id string) (Machine, err
 	return m, nil
 }
 
-func (f *fakeProjectRepo) CreateProject(_ context.Context, p Project, locs []ProjectLocation, ws []Workspace) (ControlEvent, error) {
+func (f *fakeProjectRepo) CreateProject(_ context.Context, p Project, locs []ProjectLocation, ws []Workspace,
+	finalOperation *Operation) ([]ControlEvent, error) {
 	if f.createErr != nil {
-		return ControlEvent{}, f.createErr
+		return nil, f.createErr
 	}
 	f.projects[p.ID] = p
 	for _, l := range locs {
@@ -88,10 +90,37 @@ func (f *fakeProjectRepo) CreateProject(_ context.Context, p Project, locs []Pro
 	for _, w := range ws {
 		f.workspaces[w.ID] = w
 	}
-	f.lastRevision++
-	ev := ControlEvent{ControlRevision: f.lastRevision, Kind: ControlEventKindProjectUpsert, ResourceID: p.ID}
-	f.events = append(f.events, ev)
-	return ev, nil
+	values := []struct {
+		kind ControlEventKind
+		id   string
+	}{{ControlEventKindProjectUpsert, p.ID}}
+	for _, location := range locs {
+		values = append(values, struct {
+			kind ControlEventKind
+			id   string
+		}{ControlEventKindLocationUpsert, location.ID})
+	}
+	for _, workspace := range ws {
+		values = append(values, struct {
+			kind ControlEventKind
+			id   string
+		}{ControlEventKindWorkspaceUpsert, workspace.ID})
+	}
+	if finalOperation != nil {
+		f.operations[finalOperation.OperationID] = *finalOperation
+		values = append(values, struct {
+			kind ControlEventKind
+			id   string
+		}{ControlEventKindOperationUpsert, finalOperation.OperationID})
+	}
+	events := make([]ControlEvent, 0, len(values))
+	for _, value := range values {
+		f.lastRevision++
+		event := ControlEvent{ControlRevision: f.lastRevision, Kind: value.kind, ResourceID: value.id}
+		f.events = append(f.events, event)
+		events = append(events, event)
+	}
+	return events, nil
 }
 
 func (f *fakeProjectRepo) GetOperation(_ context.Context, id string) (Operation, error) {
@@ -102,14 +131,16 @@ func (f *fakeProjectRepo) GetOperation(_ context.Context, id string) (Operation,
 	return op, nil
 }
 
-func (f *fakeProjectRepo) CreateOperation(_ context.Context, op Operation) error {
+func (f *fakeProjectRepo) CreateOperation(_ context.Context, op Operation) (ControlEvent, error) {
 	f.operations[op.OperationID] = op
-	return nil
+	f.lastRevision++
+	return ControlEvent{ControlRevision: f.lastRevision, Kind: ControlEventKindOperationUpsert, ResourceID: op.OperationID}, nil
 }
 
-func (f *fakeProjectRepo) UpdateOperation(_ context.Context, op Operation) error {
+func (f *fakeProjectRepo) UpdateOperation(_ context.Context, op Operation) (ControlEvent, error) {
 	f.operations[op.OperationID] = op
-	return nil
+	f.lastRevision++
+	return ControlEvent{ControlRevision: f.lastRevision, Kind: ControlEventKindOperationUpsert, ResourceID: op.OperationID}, nil
 }
 
 func (f *fakeProjectRepo) ListOperations(_ context.Context) ([]Operation, error) {
@@ -168,6 +199,14 @@ func (f *fakeProjectRepo) GetWorkspace(_ context.Context, id string) (Workspace,
 	return ws, nil
 }
 
+func (f *fakeProjectRepo) GetProject(_ context.Context, id string) (Project, error) {
+	project, ok := f.projects[id]
+	if !ok {
+		return Project{}, ErrNotFound
+	}
+	return project, nil
+}
+
 func (f *fakeProjectRepo) ResolveWorkspaceForPath(_ context.Context, machineID, canonical, displayPath string) (Workspace, error) {
 	return Workspace{ID: "ws-resolved", MachineID: machineID, Kind: WorkspaceKindDetached,
 		CanonicalPath: canonical, Path: displayPath}, nil
@@ -215,10 +254,20 @@ var _ = mustDiscard{}
 
 // TestCreateProjectRejectsNoLocations 覆盖「无 Location 拒绝」。
 func TestCreateProjectRejectsNoLocations(t *testing.T) {
-	svc := newFakeProjectService(t, nil, nil)
-	_, err := svc.Create(context.Background(), CreateProjectCommand{OperationID: "op1", Name: "p", Locations: nil})
-	if err == nil {
-		t.Fatal("无 Location 应被拒绝")
+	repo := newFakeProjectRepo()
+	svc := newFakeProjectService(t, nil, repo)
+	var published []ControlEvent
+	svc.SetControlEventPublisher(func(event ControlEvent) { published = append(published, event) })
+	op, err := svc.Create(context.Background(), CreateProjectCommand{OperationID: "op1", Name: "p", Locations: nil})
+	if err != nil {
+		t.Fatalf("业务校验失败应返回可查询的 failed operation: %v", err)
+	}
+	if op.State != OperationStateFailed || repo.operations["op1"].State != OperationStateFailed {
+		t.Fatalf("operation=%+v persisted=%+v, want failed", op, repo.operations["op1"])
+	}
+	if len(published) != 2 || published[0].Kind != ControlEventKindOperationUpsert ||
+		published[1].Kind != ControlEventKindOperationUpsert {
+		t.Fatalf("校验失败应发布 pending + failed，events=%+v", published)
 	}
 }
 
@@ -229,15 +278,15 @@ func TestCreateProjectRejectsTwoLocalOrTwoRemote(t *testing.T) {
 		{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "/a"},
 		{TargetID: "t2", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "/b"},
 	}}
-	if _, err := svc.Create(context.Background(), twoLocal); err == nil {
-		t.Fatal("两个 local Location 应被拒绝")
+	if op, err := svc.Create(context.Background(), twoLocal); err != nil || op.State != OperationStateFailed {
+		t.Fatalf("两个 local Location 应产生 failed operation，op=%+v err=%v", op, err)
 	}
 	twoRemote := CreateProjectCommand{OperationID: "op2", Name: "p", Locations: []CreateLocationCommand{
 		{TargetID: "t1", MachineID: "m-remote", Role: LocationRoleRemote, Source: LocationSourceExistingPath, Path: "/a"},
 		{TargetID: "t2", MachineID: "m-remote", Role: LocationRoleRemote, Source: LocationSourceExistingPath, Path: "/b"},
 	}}
-	if _, err := svc.Create(context.Background(), twoRemote); err == nil {
-		t.Fatal("两个 remote Location 应被拒绝")
+	if op, err := svc.Create(context.Background(), twoRemote); err != nil || op.State != OperationStateFailed {
+		t.Fatalf("两个 remote Location 应产生 failed operation，op=%+v err=%v", op, err)
 	}
 }
 
@@ -247,8 +296,8 @@ func TestCreateProjectRejectsRoleMachineMismatch(t *testing.T) {
 	cmd := CreateProjectCommand{OperationID: "op1", Name: "p", Locations: []CreateLocationCommand{
 		{TargetID: "t1", MachineID: "m-remote", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "/a"},
 	}}
-	if _, err := svc.Create(context.Background(), cmd); err == nil {
-		t.Fatal("local role 配 remote machine 应被拒绝")
+	if op, err := svc.Create(context.Background(), cmd); err != nil || op.State != OperationStateFailed {
+		t.Fatalf("local role 配 remote machine 应产生 failed operation，op=%+v err=%v", op, err)
 	}
 }
 
@@ -258,8 +307,29 @@ func TestCreateProjectRejectsRemoteNonAbsolutePath(t *testing.T) {
 	cmd := CreateProjectCommand{OperationID: "op1", Name: "p", Locations: []CreateLocationCommand{
 		{TargetID: "t1", MachineID: "m-remote", Role: LocationRoleRemote, Source: LocationSourceExistingPath, Path: "relative/path"},
 	}}
-	if _, err := svc.Create(context.Background(), cmd); err == nil {
-		t.Fatal("远端已有路径必须绝对")
+	if op, err := svc.Create(context.Background(), cmd); err != nil || op.State != OperationStateFailed {
+		t.Fatalf("远端相对路径应产生 failed operation，op=%+v err=%v", op, err)
+	}
+}
+
+func TestCreateProjectRejectsBlankNameAndRelativeOwnerPaths(t *testing.T) {
+	service := newFakeProjectService(t, nil, nil)
+	cases := []CreateProjectCommand{
+		{OperationID: "blank-name", Name: "  ", Locations: []CreateLocationCommand{
+			{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "/repo"},
+		}},
+		{OperationID: "local-relative", Name: "p", Locations: []CreateLocationCommand{
+			{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "relative/repo"},
+		}},
+		{OperationID: "clone-relative", Name: "p", Locations: []CreateLocationCommand{
+			{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceGitClone,
+				GitURL: "https://github.com/o/r.git", ClonePath: "relative/repo"},
+		}},
+	}
+	for _, command := range cases {
+		if op, err := service.Create(context.Background(), command); err != nil || op.State != OperationStateFailed {
+			t.Errorf("command %s 应产生 failed operation，op=%+v err=%v", command.OperationID, op, err)
+		}
 	}
 }
 
@@ -269,8 +339,8 @@ func TestCreateProjectRejectsCloneWithoutURL(t *testing.T) {
 	cmd := CreateProjectCommand{OperationID: "op1", Name: "p", Locations: []CreateLocationCommand{
 		{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceGitClone, ClonePath: "/tmp/x"},
 	}}
-	if _, err := svc.Create(context.Background(), cmd); err == nil {
-		t.Fatal("clone 缺 Git URL 应被拒绝")
+	if op, err := svc.Create(context.Background(), cmd); err != nil || op.State != OperationStateFailed {
+		t.Fatalf("clone 缺 Git URL 应产生 failed operation，op=%+v err=%v", op, err)
 	}
 }
 
@@ -302,6 +372,62 @@ func TestCreateProjectDefaultClonePath(t *testing.T) {
 	// 这里断言 clone 确实被调用且 operation 成功
 	if len(repo.projects) != 1 {
 		t.Fatalf("projects = %d, want 1", len(repo.projects))
+	}
+}
+
+func TestCreateProjectDoesNotPersistGitURLCredentials(t *testing.T) {
+	commander := &fakeCommander{cloneResults: map[string]PathInspection{
+		"t1": {Path: "/repo", CanonicalPath: "/repo", IsRepo: true, RepoIdentity: "github.com/o/r"},
+	}}
+	repo := newFakeProjectRepo()
+	service := newFakeProjectService(t, commander, repo)
+	operation, err := service.Create(context.Background(), CreateProjectCommand{
+		OperationID: "op-secret-url", Name: "p", Locations: []CreateLocationCommand{{
+			TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal,
+			Source: LocationSourceGitClone, GitURL: "https://user:secret@github.com/o/r.git?token=hidden",
+			ClonePath: "/repo",
+		}},
+	})
+	if err != nil || operation.State != OperationStateSucceeded {
+		t.Fatalf("Create state=%s err=%v", operation.State, err)
+	}
+	for _, location := range repo.locations {
+		if location.GitURL != "https://github.com/o/r.git" {
+			t.Fatalf("persisted git_url=%q, want credentials/query removed", location.GitURL)
+		}
+	}
+}
+
+// TestSafeGitURLForStorage 覆盖 URL 与 SCP-like 地址中的 userinfo、query、
+// fragment 都不会进入控制面持久化。
+func TestSafeGitURLForStorage(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "https credentials and query",
+			raw:  "https://user:secret@github.com/o/r.git?token=hidden#fragment",
+			want: "https://github.com/o/r.git",
+		},
+		{
+			name: "scp userinfo",
+			raw:  "deploy-token@github.com:o/r.git",
+			want: "github.com:o/r.git",
+		},
+		{
+			name: "local path",
+			raw:  "/srv/git/r.git",
+			want: "/srv/git/r.git",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := safeGitURLForStorage(test.raw); got != test.want {
+				t.Fatalf("safeGitURLForStorage(%q)=%q, want %q", test.raw, got, test.want)
+			}
+		})
 	}
 }
 
@@ -364,6 +490,41 @@ func TestCreateProjectPartialSuccessKeepsSuccessTarget(t *testing.T) {
 	}
 }
 
+// TestCreateProjectPartialRetryOnlyRunsFailedTarget 覆盖 durable Operation 的核心
+// 重试语义：partial 不是终点；同 ID 重试保留已成功目标，只补失败目标。
+func TestCreateProjectPartialRetryOnlyRunsFailedTarget(t *testing.T) {
+	commander := &fakeCommander{
+		inspectResults: map[string]PathInspection{
+			"t1": {Path: "/local/r", CanonicalPath: "/local/r", IsRepo: true, RepoIdentity: "github.com/o/r"},
+			"t2": {Path: "/remote/r", CanonicalPath: "/remote/r", IsRepo: true, RepoIdentity: "github.com/o/r"},
+		},
+		inspectErrs: map[string]error{"t2": errors.New("远端暂时不可用")},
+	}
+	repo := newFakeProjectRepo()
+	service := newFakeProjectService(t, commander, repo)
+	command := CreateProjectCommand{OperationID: "op-partial-retry", Name: "p", Locations: []CreateLocationCommand{
+		{TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal, Source: LocationSourceExistingPath, Path: "/local/r"},
+		{TargetID: "t2", MachineID: "m-remote", Role: LocationRoleRemote, Source: LocationSourceExistingPath, Path: "/remote/r"},
+	}}
+
+	first, err := service.Create(context.Background(), command)
+	if err != nil || first.State != OperationStatePartial {
+		t.Fatalf("first state=%s err=%v", first.State, err)
+	}
+	delete(commander.inspectErrs, "t2")
+	second, err := service.Create(context.Background(), command)
+	if err != nil || second.State != OperationStateSucceeded {
+		t.Fatalf("retry state=%s err=%v", second.State, err)
+	}
+	if commander.inspectCalls["t1"] != 1 || commander.inspectCalls["t2"] != 2 {
+		t.Fatalf("retry calls local=%d remote=%d, want 1/2",
+			commander.inspectCalls["t1"], commander.inspectCalls["t2"])
+	}
+	if len(repo.locations) != 2 {
+		t.Fatalf("locations=%d, want 2", len(repo.locations))
+	}
+}
+
 // TestCreateProjectIdempotentRetry 覆盖同 ID 重试只补失败目标。
 func TestCreateProjectIdempotentRetry(t *testing.T) {
 	cmd := &fakeCommander{
@@ -393,6 +554,73 @@ func TestCreateProjectIdempotentRetry(t *testing.T) {
 	}
 }
 
+func TestCreateProjectConcurrentSameOperationExecutesTargetOnce(t *testing.T) {
+	commander := &fakeCommander{inspectResults: map[string]PathInspection{
+		"t1": {Path: "/repo", CanonicalPath: "/repo"},
+	}}
+	service := newFakeProjectService(t, commander, newFakeProjectRepo())
+	command := CreateProjectCommand{OperationID: "op-concurrent", Name: "p", Locations: []CreateLocationCommand{{
+		TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal,
+		Source: LocationSourceExistingPath, Path: "/repo",
+	}}}
+	var wait sync.WaitGroup
+	errorsSeen := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := service.Create(context.Background(), command)
+			errorsSeen <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if commander.inspectCalls["t1"] != 1 {
+		t.Fatalf("concurrent same operation inspect calls=%d, want 1", commander.inspectCalls["t1"])
+	}
+}
+
+func TestCreateProjectPublishesCommittedControlEvents(t *testing.T) {
+	commander := &fakeCommander{inspectResults: map[string]PathInspection{
+		"t1": {Path: "/repo", CanonicalPath: "/repo"},
+	}}
+	repo := newFakeProjectRepo()
+	service := newFakeProjectService(t, commander, repo)
+	var published []ControlEvent
+	service.SetControlEventPublisher(func(event ControlEvent) { published = append(published, event) })
+
+	operation, err := service.Create(context.Background(), CreateProjectCommand{
+		OperationID: "op-events", Name: "p", Locations: []CreateLocationCommand{{
+			TargetID: "t1", MachineID: "m-local", Role: LocationRoleLocal,
+			Source: LocationSourceExistingPath, Path: "/repo",
+		}},
+	})
+	if err != nil || operation.State != OperationStateSucceeded {
+		t.Fatalf("Create state=%s err=%v", operation.State, err)
+	}
+	want := []ControlEventKind{
+		ControlEventKindOperationUpsert,
+		ControlEventKindOperationUpsert,
+		ControlEventKindProjectUpsert,
+		ControlEventKindLocationUpsert,
+		ControlEventKindWorkspaceUpsert,
+		ControlEventKindOperationUpsert,
+	}
+	if len(published) != len(want) {
+		t.Fatalf("published=%d, want %d: %+v", len(published), len(want), published)
+	}
+	for index, kind := range want {
+		if published[index].Kind != kind {
+			t.Fatalf("published[%d]=%s, want %s", index, published[index].Kind, kind)
+		}
+	}
+}
+
 // TestDefaultClonePath 验证空 clone path 自动变成 ~/.handoff/<repo-name>。
 func TestDefaultClonePath(t *testing.T) {
 	cases := []struct {
@@ -403,6 +631,7 @@ func TestDefaultClonePath(t *testing.T) {
 		{"git@github.com:o/super-debug.git", "~/.handoff/super-debug"},
 		{"https://gitlab.com/group/sub/repo", "~/.handoff/repo"},
 		{"https://github.com/only.git", "~/.handoff/only"},
+		{"https://user:secret@github.com/o/r.git?token=hidden#fragment", "~/.handoff/r"},
 	}
 	for _, c := range cases {
 		if got := defaultClonePath(c.url); got != c.want {

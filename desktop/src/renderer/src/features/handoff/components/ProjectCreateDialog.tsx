@@ -14,6 +14,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -56,18 +57,37 @@ type LocationForm = {
 }
 
 function emptyLocal(): LocationForm {
-  return { machineId: '', role: 'local', source: 'existing_path', path: '', gitUrl: '', clonePath: '' }
+  return {
+    machineId: '',
+    role: 'local',
+    source: 'existing_path',
+    path: '',
+    gitUrl: '',
+    clonePath: ''
+  }
 }
 
 function emptyRemote(): LocationForm {
-  return { machineId: '', role: 'remote', source: 'existing_path', path: '', gitUrl: '', clonePath: '' }
+  return {
+    machineId: '',
+    role: 'remote',
+    source: 'existing_path',
+    path: '',
+    gitUrl: '',
+    clonePath: ''
+  }
 }
 
 /** 从 Git URL 提取仓库名（用于默认 clone path）。 */
 function repoNameFromUrl(url: string): string {
-  const cleaned = url.replace(/\.git$/, '').replace(/\/$/, '')
-  const parts = cleaned.split('/')
-  return parts.at(-1) ?? ''
+  const cleaned = (url.trim().split(/[?#]/, 1)[0] ?? '').replace(/\/$/, '')
+  const separator = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf(':'))
+  return cleaned.slice(separator + 1).replace(/\.git$/, '') || 'repo'
+}
+
+/** 默认 clone path 始终由当前 Git URL 派生，用户显式编辑后不再自动覆盖。 */
+function defaultClonePath(url: string): string {
+  return `~/.handoff/${repoNameFromUrl(url)}`
 }
 
 /** 项目创建对话框。 */
@@ -79,10 +99,14 @@ export function ProjectCreateDialog({
 }: ProjectCreateDialogProps): React.JSX.Element {
   const localMachines = machines.filter((m) => m.kind === 'local')
   const remoteMachines = machines.filter((m) => m.kind === 'remote')
+  const hasLocalMachine = localMachines.length > 0
+  const hasRemoteMachine = remoteMachines.length > 0
   const [localLoc, setLocalLoc] = useState<LocationForm>(emptyLocal)
   const [remoteLoc, setRemoteLoc] = useState<LocationForm>(emptyRemote)
-  const [useLocal] = useState(true)
-  const [useRemote] = useState(false)
+  const [localClonePathEdited, setLocalClonePathEdited] = useState(false)
+  const [remoteClonePathEdited, setRemoteClonePathEdited] = useState(false)
+  const [useLocal, setUseLocal] = useState(hasLocalMachine)
+  const [useRemote, setUseRemote] = useState(!hasLocalMachine && hasRemoteMachine)
   const [name, setName] = useState('')
   const [submitted, setSubmitted] = useState<Operation | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -104,13 +128,17 @@ export function ProjectCreateDialog({
     if (open && !prevOpen.current) {
       setLocalLoc(emptyLocal())
       setRemoteLoc(emptyRemote())
+      setLocalClonePathEdited(false)
+      setRemoteClonePathEdited(false)
       setName('')
       setSubmitted(null)
       setError(null)
       setOperationId(null)
+      setUseLocal(hasLocalMachine)
+      setUseRemote(!hasLocalMachine && hasRemoteMachine)
     }
     prevOpen.current = open
-  }, [open])
+  }, [hasLocalMachine, hasRemoteMachine, open])
 
   const canSubmit = useMemo(() => {
     const hasAny = useLocal || useRemote
@@ -136,9 +164,11 @@ export function ProjectCreateDialog({
   }, [useLocal, useRemote, localLoc, remoteLoc, name])
 
   const pickLocalDirectory = async (): Promise<void> => {
-    const api = (window as unknown as {
-      handoff?: { pickLocalDirectory: () => Promise<{ canceled: boolean; path?: string }> }
-    }).handoff
+    const api = (
+      window as unknown as {
+        handoff?: { pickLocalDirectory: () => Promise<{ canceled: boolean; path?: string }> }
+      }
+    ).handoff
     if (!api) {
       return
     }
@@ -177,7 +207,7 @@ export function ProjectCreateDialog({
                 role: 'local',
                 source: 'git_clone',
                 git_url: l.gitUrl,
-                clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}`
+                clone_path: l.clonePath || defaultClonePath(l.gitUrl)
               }
             : { machine_id: l.machineId, role: 'local', source: 'existing_path', path: l.path }
         )
@@ -191,7 +221,7 @@ export function ProjectCreateDialog({
                 role: 'remote',
                 source: 'git_clone',
                 git_url: l.gitUrl,
-                clone_path: l.clonePath || `~/.handoff/${repoNameFromUrl(l.gitUrl)}`
+                clone_path: l.clonePath || defaultClonePath(l.gitUrl)
               }
             : { machine_id: l.machineId, role: 'remote', source: 'existing_path', path: l.path }
         )
@@ -228,115 +258,163 @@ export function ProjectCreateDialog({
           />
         </div>
 
-        <div className="handoff-create-location">
-          <Label>本机目录</Label>
-          <Select
-            value={localLoc.source}
-            onValueChange={(v) => setLocalLoc((prev) => ({ ...prev, source: v as LocationForm['source'] }))}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="existing_path">已有目录</SelectItem>
-              <SelectItem value="git_clone">Git clone</SelectItem>
-            </SelectContent>
-          </Select>
-          {localLoc.source === 'existing_path' ? (
-            <div className="handoff-create-path-row">
-              <Input
-                value={localLoc.path}
-                onChange={(e) => setLocalLoc((prev) => ({ ...prev, path: e.target.value }))}
-                placeholder="/Users/me/repo"
-              />
-              <Button type="button" onClick={() => void pickLocalDirectory()}>
-                选择目录…
-              </Button>
-            </div>
-          ) : (
-            <div className="handoff-create-clone">
-              <Input
-                value={localLoc.gitUrl}
-                onChange={(e) => setLocalLoc((prev) => ({ ...prev, gitUrl: e.target.value }))}
-                placeholder="git@github.com:o/r.git"
-              />
-              <Input
-                value={localLoc.clonePath}
-                onChange={(e) => setLocalLoc((prev) => ({ ...prev, clonePath: e.target.value }))}
-                placeholder="~/.handoff/<repo-name>"
-              />
-            </div>
-          )}
-          {localMachines.length > 0 && (
-            <Select
-              value={localLoc.machineId}
-              onValueChange={(v) => setLocalLoc((prev) => ({ ...prev, machineId: v }))}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="选择本机" />
-              </SelectTrigger>
-              <SelectContent>
-                {localMachines.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.display_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-
-        {remoteMachines.length > 0 && (
+        {hasLocalMachine && (
           <div className="handoff-create-location">
-            <Label>远端目录</Label>
-            <Select
-              value={remoteLoc.source}
-              onValueChange={(v) => setRemoteLoc((prev) => ({ ...prev, source: v as LocationForm['source'] }))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="existing_path">已有目录</SelectItem>
-                <SelectItem value="git_clone">Git clone</SelectItem>
-              </SelectContent>
-            </Select>
-            {remoteLoc.source === 'existing_path' ? (
-              // 远端已有路径只收绝对 path，无 Finder
-              <Input
-                value={remoteLoc.path}
-                onChange={(e) => setRemoteLoc((prev) => ({ ...prev, path: e.target.value }))}
-                placeholder="/absolute/remote/path"
+            <div className="handoff-create-location-toggle">
+              <Checkbox
+                aria-label="使用本机目录"
+                checked={useLocal}
+                onCheckedChange={(checked) => setUseLocal(checked === true)}
               />
-            ) : (
-              <div className="handoff-create-clone">
-                <Input
-                  value={remoteLoc.gitUrl}
-                  onChange={(e) => setRemoteLoc((prev) => ({ ...prev, gitUrl: e.target.value }))}
-                  placeholder="git@github.com:o/r.git"
-                />
-                <Input
-                  value={remoteLoc.clonePath}
-                  onChange={(e) => setRemoteLoc((prev) => ({ ...prev, clonePath: e.target.value }))}
-                  placeholder="~/.handoff/<repo-name>"
-                />
-              </div>
+              <Label>本机目录</Label>
+            </div>
+            {useLocal && (
+              <>
+                <Select
+                  value={localLoc.source}
+                  onValueChange={(v) =>
+                    setLocalLoc((prev) => ({ ...prev, source: v as LocationForm['source'] }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="existing_path">已有目录</SelectItem>
+                    <SelectItem value="git_clone">Git clone</SelectItem>
+                  </SelectContent>
+                </Select>
+                {localLoc.source === 'existing_path' ? (
+                  <div className="handoff-create-path-row">
+                    <Input
+                      value={localLoc.path}
+                      onChange={(e) => setLocalLoc((prev) => ({ ...prev, path: e.target.value }))}
+                      placeholder="/Users/me/repo"
+                    />
+                    <Button type="button" onClick={() => void pickLocalDirectory()}>
+                      选择目录…
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="handoff-create-clone">
+                    <Input
+                      value={localLoc.gitUrl}
+                      onChange={(e) =>
+                        setLocalLoc((prev) => ({
+                          ...prev,
+                          gitUrl: e.target.value,
+                          clonePath: localClonePathEdited
+                            ? prev.clonePath
+                            : defaultClonePath(e.target.value)
+                        }))
+                      }
+                      placeholder="git@github.com:o/r.git"
+                    />
+                    <Input
+                      value={localLoc.clonePath}
+                      onChange={(e) => {
+                        setLocalClonePathEdited(true)
+                        setLocalLoc((prev) => ({ ...prev, clonePath: e.target.value }))
+                      }}
+                      placeholder="~/.handoff/<repo-name>"
+                    />
+                  </div>
+                )}
+                <Select
+                  value={localLoc.machineId}
+                  onValueChange={(v) => setLocalLoc((prev) => ({ ...prev, machineId: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择本机" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {localMachines.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.display_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
             )}
-            <Select
-              value={remoteLoc.machineId}
-              onValueChange={(v) => setRemoteLoc((prev) => ({ ...prev, machineId: v }))}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="选择远端开发机" />
-              </SelectTrigger>
-              <SelectContent>
-                {remoteMachines.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.display_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          </div>
+        )}
+
+        {hasRemoteMachine && (
+          <div className="handoff-create-location">
+            <div className="handoff-create-location-toggle">
+              <Checkbox
+                aria-label="使用远端目录"
+                checked={useRemote}
+                onCheckedChange={(checked) => setUseRemote(checked === true)}
+              />
+              <Label>远端目录</Label>
+            </div>
+            {useRemote && (
+              <>
+                <Select
+                  value={remoteLoc.source}
+                  onValueChange={(v) =>
+                    setRemoteLoc((prev) => ({ ...prev, source: v as LocationForm['source'] }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="existing_path">已有目录</SelectItem>
+                    <SelectItem value="git_clone">Git clone</SelectItem>
+                  </SelectContent>
+                </Select>
+                {remoteLoc.source === 'existing_path' ? (
+                  // 远端已有路径只收绝对 path，无 Finder
+                  <Input
+                    value={remoteLoc.path}
+                    onChange={(e) => setRemoteLoc((prev) => ({ ...prev, path: e.target.value }))}
+                    placeholder="/absolute/remote/path"
+                  />
+                ) : (
+                  <div className="handoff-create-clone">
+                    <Input
+                      value={remoteLoc.gitUrl}
+                      onChange={(e) =>
+                        setRemoteLoc((prev) => ({
+                          ...prev,
+                          gitUrl: e.target.value,
+                          clonePath: remoteClonePathEdited
+                            ? prev.clonePath
+                            : defaultClonePath(e.target.value)
+                        }))
+                      }
+                      placeholder="git@github.com:o/r.git"
+                    />
+                    <Input
+                      value={remoteLoc.clonePath}
+                      onChange={(e) => {
+                        setRemoteClonePathEdited(true)
+                        setRemoteLoc((prev) => ({ ...prev, clonePath: e.target.value }))
+                      }}
+                      placeholder="~/.handoff/<repo-name>"
+                    />
+                  </div>
+                )}
+                <Select
+                  value={remoteLoc.machineId}
+                  onValueChange={(v) => setRemoteLoc((prev) => ({ ...prev, machineId: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择远端开发机" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {remoteMachines.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.display_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
           </div>
         )}
 

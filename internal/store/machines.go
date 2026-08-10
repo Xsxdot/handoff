@@ -30,7 +30,7 @@ const localMachineMetaKey = "local_machine_id"
 // localMachineCapabilities 是当前二阶段真正已接线的本机能力。后续 Git/PTY/
 // Preview 只能在各自服务落地时加入，避免 UI 看到 capability 后调用空实现。
 var localMachineCapabilities = map[string]int{
-	"catalog": 1, "machine_events": 1, "files": 1, "git": 1,
+	"catalog": 1, "machine_events": 1, "files": 1, "git": 1, "project_commands": 1,
 }
 
 // EnsureLocalMachine 确保存在稳定的本机 Machine（创建或复用）并返回它。

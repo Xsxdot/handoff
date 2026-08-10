@@ -80,6 +80,9 @@ type Server struct {
 	controlHub *ControlHub
 	// resources 是 Desktop/peer 共用的 Workspace 资源路由；未注入时明确 503。
 	resources *resourcegateway.Router
+	// machineAuthority 是本机 owner 的项目目录检查/clone 端口。远端项目创建
+	// 通过 peer API 到这里执行，不借用 SSH。
+	machineAuthority projectMachineAuthority
 }
 
 // NewServer 创建 agentd 服务端。
@@ -115,6 +118,11 @@ func (s *Server) SetProjectService(p *controlplane.ProjectService) {
 // SetResourceRouter 注入 Workspace 文件/Git/PTY/Preview 统一路由。
 func (s *Server) SetResourceRouter(router *resourcegateway.Router) {
 	s.resources = router
+}
+
+// SetMachineAuthority 注入本机项目目录检查与 clone authority。
+func (s *Server) SetMachineAuthority(authority projectMachineAuthority) {
+	s.machineAuthority = authority
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
@@ -167,6 +175,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peer/hello", s.handlePeerHello)
 	mux.HandleFunc("GET /v1/machine/snapshot", s.handlePeerMachineSnapshot)
 	mux.HandleFunc("GET /v1/machine/events", s.handlePeerMachineEvents)
+	mux.HandleFunc("POST /v1/machine/project/inspect-path", s.handlePeerProjectInspectPath)
+	mux.HandleFunc("POST /v1/machine/project/clone", s.handlePeerProjectClone)
 	// desktop v1（桌面 phase2）：控制面 bootstrap/control/operation 路由。
 	mux.HandleFunc("GET /v1/bootstrap", s.handleDesktopBootstrap)
 	mux.HandleFunc("GET /v1/control/events", s.handleDesktopControlEvents)
