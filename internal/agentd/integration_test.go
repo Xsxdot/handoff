@@ -1056,3 +1056,84 @@ func TestRepoAPIRemoveMissing(t *testing.T) {
 	srv, _ := newTestServer(t)
 	deleteReq(t, srv, "/api/repos/nope", http.StatusNotFound)
 }
+
+// TestDispatchResolvesRegisteredShortName 验证短名派发落到登记的路径上。
+func TestDispatchResolvesRegisteredShortName(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	repo := initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo},
+		http.StatusOK, &proto.Repo{})
+
+	var task proto.Task
+	postJSON(t, srv, "/api/tasks",
+		map[string]any{"repo": "r1", "prompt": "干活", "new_worktree": true},
+		http.StatusOK, &task)
+	if task.RepoPath != repo {
+		t.Fatalf("RepoPath = %q, want 登记的 %q", task.RepoPath, repo)
+	}
+}
+
+// TestDispatchAutoSelectsByOrigin 验证省略 repo 时按 origin 唯一命中自动选中。
+func TestDispatchAutoSelectsByOrigin(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	repo := initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo},
+		http.StatusOK, &proto.Repo{})
+
+	var task proto.Task
+	postJSON(t, srv, "/api/tasks",
+		map[string]any{"repo": "", "origin_url": origin, "prompt": "干活", "new_worktree": true},
+		http.StatusOK, &task)
+	if task.RepoPath != repo {
+		t.Fatalf("RepoPath = %q, want %q", task.RepoPath, repo)
+	}
+}
+
+// TestDispatchAmbiguousOriginListsCandidates 验证多命中 → 400 且报文列出候选。
+func TestDispatchAmbiguousOriginListsCandidates(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	r1, r2 := initWorkRepo(t, origin), initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "a", "path": r1}, http.StatusOK, &proto.Repo{})
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "b", "path": r2}, http.StatusOK, &proto.Repo{})
+
+	body := postRaw(t, srv, "/api/tasks",
+		map[string]any{"origin_url": origin, "prompt": "干活", "new_worktree": true},
+		http.StatusBadRequest)
+	for _, want := range []string{"a", "b"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("报文 %q 未列出候选 %q", body, want)
+		}
+	}
+}
+
+// TestDispatchUnregisteredNameLists 验证短名查不到 → 400 且报文带已登记清单。
+func TestDispatchUnregisteredNameLists(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	repo := initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/repos", map[string]any{"name": "known", "path": repo},
+		http.StatusOK, &proto.Repo{})
+	body := postRaw(t, srv, "/api/tasks",
+		map[string]any{"repo": "unknown", "prompt": "干活", "new_worktree": true},
+		http.StatusBadRequest)
+	if !strings.Contains(body, "known") {
+		t.Fatalf("报文未列出已登记的仓库: %s", body)
+	}
+}
+
+// TestDispatchAbsolutePathStillWorks 验证老用法（完整路径）行为完全不变。
+func TestDispatchAbsolutePathStillWorks(t *testing.T) {
+	srv, _ := newTestServer(t)
+	origin := initBareOrigin(t)
+	repo := initWorkRepo(t, origin)
+	var task proto.Task
+	postJSON(t, srv, "/api/tasks",
+		map[string]any{"repo": repo, "prompt": "干活", "new_worktree": true},
+		http.StatusOK, &task)
+	if task.RepoPath != repo {
+		t.Fatalf("RepoPath = %q, want %q", task.RepoPath, repo)
+	}
+}

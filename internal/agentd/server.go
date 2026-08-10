@@ -469,6 +469,8 @@ type dispatchRequest struct {
 	NewWorktree bool   `json:"new_worktree"`
 	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
+	// OriginURL 是审核者 cwd 仓库的 origin，用于 repo 省略时自动匹配登记（B46）。
+	OriginURL string `json:"origin_url"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -492,6 +494,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
+		OriginURL: req.OriginURL,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.Repo, err)
@@ -514,6 +517,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
+//   - ErrRepoNotRegistered / ErrRepoAmbiguous → 400：--repo 给的登记名查不到，
+//     或省略 --repo 时 origin 匹配到多条/零条——报文自带本机已登记清单或候选
+//     清单，审核者拿到即可行动（换名字，或先 handoff repo add）
 //   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
 //     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
@@ -534,6 +540,12 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err erro
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable):
 		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRepoNotRegistered):
+		s.log.Warn("dispatch 被拒：仓库未登记", "repo", repo, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRepoAmbiguous):
+		s.log.Warn("dispatch 被拒：origin 匹配到多条登记", "repo", repo, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errBadDispatchRequest):
 		s.log.Warn("dispatch 被拒：请求参数非法", "repo", repo, "cause", err)

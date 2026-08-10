@@ -80,9 +80,9 @@ var dispatchCmd = &cobra.Command{
 	Short: "派发一个计划任务到 agentd 执行",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if dispatchRepo == "" {
-			return fmt.Errorf("--repo 必须指定任务仓库路径")
-		}
+		// B46：--repo 可以是路径、登记名，也可以省略（由 agentd 按 cwd 的 origin
+		// 匹配本机登记）。三态都要查登记表才能判，所以拦截点下沉到 agentd——
+		// 好处是拒绝报文能带上「这台机器上登记了什么」，本地拦只能说一句「必填」。
 		var planB64, planName string
 		if len(args) == 1 {
 			content, err := os.ReadFile(args[0])
@@ -121,6 +121,7 @@ var dispatchCmd = &cobra.Command{
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
+			OriginURL:  localOriginURL(),
 		})
 		if err != nil {
 			return err
@@ -156,7 +157,8 @@ var dispatchCmd = &cobra.Command{
 }
 
 func init() {
-	dispatchCmd.Flags().StringVar(&dispatchRepo, "repo", "", "任务仓库路径（executor 工作区，必须）")
+	dispatchCmd.Flags().StringVar(&dispatchRepo, "repo", "",
+		"任务仓库：执行机上的完整路径，或 handoff repo add 登记过的名字；省略则按当前目录的 origin 自动匹配登记")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
 	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
 	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/grok/fake；空=agentd 缺省执行者）")

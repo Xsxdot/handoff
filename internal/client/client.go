@@ -336,6 +336,9 @@ type DispatchOpts struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
+	// OriginURL 是审核者 cwd 仓库的 origin 地址，随请求上送；Repo 省略时 agentd
+	// 按它自动匹配本机登记（cwd 不是 git 仓库时为空）。
+	OriginURL string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -351,6 +354,7 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
+		"origin_url": opts.OriginURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
