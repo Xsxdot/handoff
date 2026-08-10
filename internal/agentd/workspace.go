@@ -142,6 +142,18 @@ type Workspace struct {
 	Branch  string
 	WorkDir string // executor cwd 与审阅命令目录；原地模式 = Repo
 	Managed bool   // WorkDir 是 agentd 创建的 worktree（done 时代删）
+
+	// NewBranchTip 是本次 dispatch 新建分支时的尖端 sha；空串表示分支不是本次
+	// 新建的（--branch <已存在分支> 模式）。补偿删分支前用它复核「自创建以来
+	// 没动过」。
+	//
+	// 为什么用 sha 而不是 BranchCreated bool：一个 bool 加一个 sha 能构造出
+	// 「声称建了分支却说不出它当时指向哪」这种非法状态，用单字段就构造不出来。
+	NewBranchTip string
+	// PrevRef 是非 managed 模式下 checkout 之前的 HEAD：正常在分支上时为分支名，
+	// detached 时为 commit sha，两者都能直接喂给 git checkout 复原。managed 模式
+	// 恒为空（新工作树没有「之前」）。空串表示采集失败，补偿据此放弃复原而非乱切。
+	PrevRef string
 }
 
 // PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
@@ -238,6 +250,9 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
 		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
+		if !isExisting {
+			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+		}
 	case req.Worktree != "":
 		// 用户树：归属校验 → 脏检查 → 在其中 checkout
 		if !worktreeBelongsToRepo(ctx, req.Repo, req.Worktree) {
@@ -246,15 +261,20 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if err := ensureCleanWorktree(ctx, req.Worktree); err != nil {
 			return Workspace{}, err
 		}
+		prev := currentRef(ctx, req.Worktree)
 		if err := checkoutInWorktree(ctx, req.Worktree, branch, req.Base, isExisting); err != nil {
 			return Workspace{}, err
 		}
-		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false}
+		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false, PrevRef: prev}
+		if !isExisting {
+			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+		}
 	default:
 		// 原地：脏检查主仓 → checkout / checkout -b
 		if err := ensureCleanWorktree(ctx, req.Repo); err != nil {
 			return Workspace{}, err
 		}
+		prev := currentRef(ctx, req.Repo)
 		var args []string
 		if isExisting {
 			args = []string{"checkout", branch}
@@ -267,7 +287,10 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
-		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false}
+		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false, PrevRef: prev}
+		if !isExisting {
+			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+		}
 	}
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
 	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
@@ -367,6 +390,46 @@ func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
 		return false
 	}
 	return true
+}
+
+// currentRef 取工作树当前 HEAD 的**可复原引用**：正常在分支上时返回分支名，
+// detached 时返回 commit sha。两种形态都能直接喂给 git checkout。
+//
+// 参数：dir 为工作树路径（原地模式即主仓库）
+//
+// 返回：引用字符串；取不到时返回空串
+//
+// 注意：
+//   - 返回空串**不是错误**，调用方按「不知道该切回哪儿」处置。采集失败不该
+//     挡住派发，但也绝不能拿一个猜测值去 checkout——乱切比不切更糟
+func currentRef(ctx context.Context, dir string) string {
+	// -q 让 detached 时安静地非零退出，而不是往 stderr 刷错误
+	if out, _, err := gitRun(ctx, dir, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		if ref := strings.TrimSpace(out); ref != "" {
+			return ref
+		}
+	}
+	out, _, err := gitRun(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		log().Warn("采集原 ref 失败，补偿将无法复原工作树", "dir", dir, "cause", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// branchTip 取分支当前尖端 sha。
+//
+// 参数：repo 为主仓库路径，branch 为分支名
+//
+// 返回：40 位 sha；取不到时返回空串（调用方据此保守处置——补偿侧「取不到」
+// 与「对不上」同样不删分支）
+func branchTip(ctx context.Context, repo, branch string) string {
+	out, _, err := gitRun(ctx, repo, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		log().Warn("取分支尖端失败", "repo", repo, "branch", branch, "cause", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
