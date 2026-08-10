@@ -110,7 +110,7 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		closeResources := wireWorkspaceResources(srv, st, cfg, logger)
+		resourceAuthority, closeResources := wireWorkspaceResources(srv, st, cfg, logger)
 		defer closeResources()
 		// 四个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok 是
 		// 真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -138,10 +138,29 @@ var agentdCmd = &cobra.Command{
 		// MVP 无优雅关停，进程退出即随 ctx 结束）
 		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
 
+		// 本机与远端 machine event 共用同一 Projector；本机 owner 先写 durable
+		// outbox，再由 pump 顺序投影并广播，避免本地资源变更只落库不推桌面。
+		projector := controlplane.NewProjector(st)
+		publishControlEvent := func(ce controlplane.ControlEvent) {
+			env, err := (&desktopapi.CatalogAssembler{}).ToControlEvent(ce)
+			if err != nil {
+				logger.Warn("控制事件广播转换失败", "revision", ce.ControlRevision, "cause", err)
+				return
+			}
+			srv.ControlHub().Publish(env)
+		}
+		projector.OnApplied = publishControlEvent
+		outboxCtx, stopOutbox := context.WithCancel(context.Background())
+		defer stopOutbox()
+		localOutbox := controlplane.NewLocalOutboxPump(st, localMachine.ID, projector, logger)
+		go localOutbox.Run(outboxCtx)
+
 		// 本机资源权威（桌面 phase2）：启动先做一次完整 Reconcile，再挂 .git
 		// watcher 与周期兜底扫描。外部 branch/worktree/task 变化经 durable outbox
 		// 推送进桌面左栏。
 		reconciler := machineauthority.NewLocalReconciler(st, localMachine, logger)
+		reconciler.SetGitStatusInvalidator(resourceAuthority.InvalidateGitStatus)
+		reconciler.SetOutboxNotifier(localOutbox.Notify)
 		if _, err := reconciler.ReconcileAll(cmd.Context(), "startup"); err != nil {
 			// 启动 Reconcile 失败不阻断 agentd：任务/API 主路径不依赖资源扫描，
 			// 周期兜底仍会重试；记录错误防止静默
@@ -153,26 +172,19 @@ var agentdCmd = &cobra.Command{
 		// 远端机器同步（桌面 phase2）：为每台配置的远端 agentd 启动 peer 同步
 		// worker，把远端 machine events 经 Projector 投影进本机控制面。
 		// 机器状态变化投影到 Machine 表；一台坏机器不阻塞其他。
-		projector := controlplane.NewProjector(st)
-		// 广播进桌面控制流 hub：远端事件投影后桌面 stream 实时收到
-		projector.OnApplied = func(ce controlplane.ControlEvent) {
-			env, err := (&desktopapi.CatalogAssembler{}).ToControlEvent(ce)
-			if err != nil {
-				logger.Warn("控制事件广播转换失败", "revision", ce.ControlRevision, "cause", err)
-				return
-			}
-			srv.ControlHub().Publish(env)
-		}
 		credentialResolver := targetCredentialResolver(cfg)
 		syncManager := peer.NewSyncManager(peer.SyncManagerConfig{
 			Machines:           syncMachinesFromConfig(cfg),
 			CredentialResolver: credentialResolver,
 			Projector:          projector,
 			OnMachineState: func(machineID string, state peer.SupervisorState) {
-				if err := st.SetMachineStatus(context.Background(), machineID,
-					controlplane.MachineStatus(string(state))); err != nil {
+				ce, err := st.SetMachineStatusWithControlEvent(context.Background(), machineID,
+					controlplane.MachineStatus(string(state)))
+				if err != nil {
 					logger.Error("peer 状态持久化失败", "machine_id", machineID, "state", state, "cause", err)
+					return
 				}
+				publishControlEvent(ce)
 			},
 			OnNegotiated: func(machineID string, protocolVersion int, capabilities map[string]int) {
 				if err := st.SetMachineProtocolCapabilities(context.Background(), machineID, protocolVersion, capabilities); err != nil {
@@ -261,13 +273,13 @@ func targetCredentialResolver(cfg *config.Config) func(string) string {
 
 // wireWorkspaceResources 把本机 owner authority、远端 peer registry 与统一
 // resource gateway 注入生产 Server，并返回关闭 peer clients 的函数。
-func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) func() {
+func wireWorkspaceResources(srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) (*machineauthority.ResourceAuthority, func()) {
 	localAuthority := machineauthority.NewResourceAuthority(logger)
 	peers := peer.NewAuthorityRegistry(syncMachinesFromConfig(cfg), targetCredentialResolver(cfg))
 	router := resourcegateway.NewRouter(st, localAuthority, peers, logger)
 	srv.SetResourceRouter(router)
 	logger.Info("Workspace 资源路由已接线", "remote_machine_count", len(syncMachinesFromConfig(cfg)))
-	return peers.Close
+	return localAuthority, peers.Close
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。

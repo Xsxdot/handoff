@@ -171,4 +171,99 @@ describe('CatalogStore', () => {
     store.selectWorkspace('ws-42')
     expect(store.getState().selectedWorkspaceId).toBe('ws-42')
   })
+
+  it('applies scoped git ref upsert and remove events', () => {
+    const store = createCatalogStore()
+    store.hydrate(
+      makeBootstrap({
+        control_revision: 0,
+        git_refs: [
+          { location_id: 'loc-1', name: 'main', head_oid: 'one', checked_out_workspace_ids: [] },
+          { location_id: 'loc-2', name: 'main', head_oid: 'two', checked_out_workspace_ids: [] }
+        ]
+      })
+    )
+    store.apply({
+      revision: 1,
+      kind: 'git_ref.upsert',
+      resource_id: 'main',
+      payload: {
+        location_id: 'loc-1',
+        name: 'main',
+        head_oid: 'updated',
+        checked_out_workspace_ids: ['ws-1']
+      },
+      created_at: '2026-08-10T00:00:00Z'
+    })
+    expect(store.getState().gitRefs.find((ref) => ref.location_id === 'loc-1')?.head_oid).toBe(
+      'updated'
+    )
+    store.apply({
+      revision: 2,
+      kind: 'git_ref.remove',
+      resource_id: 'main',
+      payload: { location_id: 'loc-1', name: 'main' },
+      created_at: '2026-08-10T00:00:01Z'
+    })
+    expect(store.getState().gitRefs).toEqual([
+      { location_id: 'loc-2', name: 'main', head_oid: 'two', checked_out_workspace_ids: [] }
+    ])
+  })
+
+  it('applies machine, project, location and operation authority events', () => {
+    const store = createCatalogStore()
+    store.hydrate(makeBootstrap({ control_revision: 0 }))
+    const events: ControlEventEnvelope[] = [
+      {
+        revision: 1,
+        kind: 'machine.upsert',
+        resource_id: 'm1',
+        payload: {
+          id: 'm1', display_name: '开发机', kind: 'remote', endpoint: 'http://devbox:7777',
+          protocol_version: 1, capabilities: { files: 1, git: 1 }, status: 'unavailable',
+          last_seen_at: null
+        },
+        created_at: '2026-08-10T00:00:00Z'
+      },
+      {
+        revision: 2,
+        kind: 'project.upsert',
+        resource_id: 'p1',
+        payload: {
+          id: 'p1', name: 'handoff', created_at: '2026-08-10T00:00:00Z',
+          updated_at: '2026-08-10T00:00:00Z'
+        },
+        created_at: '2026-08-10T00:00:01Z'
+      },
+      {
+        revision: 3,
+        kind: 'location.upsert',
+        resource_id: 'loc1',
+        payload: {
+          id: 'loc1', project_id: 'p1', machine_id: 'm1', role: 'remote',
+          main_workspace_id: 'ws1', source: 'existing_path',
+          created_at: '2026-08-10T00:00:00Z', updated_at: '2026-08-10T00:00:00Z'
+        },
+        created_at: '2026-08-10T00:00:02Z'
+      },
+      {
+        revision: 4,
+        kind: 'operation.upsert',
+        resource_id: 'op1',
+        payload: {
+          operation_id: 'op1', kind: 'create_project', state: 'running', targets: [],
+          created_at: '2026-08-10T00:00:00Z', updated_at: '2026-08-10T00:00:00Z'
+        },
+        created_at: '2026-08-10T00:00:03Z'
+      }
+    ]
+    events.forEach((event) => store.apply(event))
+    const state = store.getState()
+    expect(state.machines[0]?.status).toBe('unavailable')
+    expect(state.projects[0]?.name).toBe('handoff')
+    expect(state.locations[0]?.machine_id).toBe('m1')
+    expect(state.operations[0]?.operation_id).toBe('op1')
+    expect(state.machineCount).toBe(1)
+    expect(state.projectCount).toBe(1)
+  })
 })

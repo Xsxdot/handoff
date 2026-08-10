@@ -24,6 +24,7 @@ import (
 var peerCapabilities = map[string]int{
 	"catalog": 1, "machine_events": 1,
 	peer.CapabilityFiles: 1,
+	peer.CapabilityGit:   1,
 }
 
 // handlePeerHello 返回协议版本与 capability。

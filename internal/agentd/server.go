@@ -179,6 +179,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/workspaces/{workspace_id}/file", s.handleResourceWriteFile)
 	mux.HandleFunc("POST /v1/workspaces/{workspace_id}/files/search", s.handleResourceSearchFiles)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files/stream", s.handleResourceFileStream)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/git/status", s.handleResourceGitStatus)
 	return s.auth(mux)
 }
 

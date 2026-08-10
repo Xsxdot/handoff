@@ -103,9 +103,9 @@ describe('handoff contracts vs Go golden', () => {
     expect(
       fileStreamFrameSchema.parse(JSON.parse(testdata('file-stream-frame.json'))).replay
     ).toHaveLength(1)
-    expect(gitStatusSnapshotSchema.parse(JSON.parse(testdata('git-status.json'))).branch).toBe(
-      'main'
-    )
+    const gitStatus = gitStatusSnapshotSchema.parse(JSON.parse(testdata('git-status.json')))
+    expect(gitStatus.is_repository).toBe(true)
+    expect(gitStatus.branch).toBe('main')
     expect(ptySessionSchema.parse(JSON.parse(testdata('pty-session.json'))).incarnation).toBe(
       'inc-1'
     )

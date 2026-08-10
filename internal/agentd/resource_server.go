@@ -103,6 +103,22 @@ func (s *Server) handleResourceSearchFiles(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, dto)
 }
 
+func (s *Server) handleResourceGitStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.requireResources(w) {
+		return
+	}
+	workspaceID := r.PathValue("workspace_id")
+	status, err := s.resources.GitStatus(r.Context(), workspaceID)
+	if err != nil {
+		s.writeResourceError(w, workspaceID, err)
+		return
+	}
+	dto := (&desktopapi.ResourceAssembler{}).ToGitStatus(status)
+	s.log.Info("Git 状态 API 完成", "workspace_id", workspaceID, "branch", dto.Branch,
+		"head_oid", dto.HeadOID, "entry_count", len(dto.Entries), "is_repository", dto.IsRepository)
+	writeJSON(w, http.StatusOK, dto)
+}
+
 func (s *Server) handleResourceFileStream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireResources(w) {
 		return

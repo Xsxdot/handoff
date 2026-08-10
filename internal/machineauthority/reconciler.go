@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/xushixin/handoff/internal/controlplane"
@@ -58,27 +60,116 @@ func ReconcileLocation(ctx context.Context, st *store.Store, loc controlplane.Pr
 		return ReconcileResult{}, fmt.Errorf("扫描 location %s 的 refs: %w", loc.ID, err)
 	}
 
-	result := ReconcileResult{GitRefs: refs}
+	existing, err := st.ListWorkspacesForMachine(loc.MachineID)
+	if err != nil {
+		return ReconcileResult{}, fmt.Errorf("读取机器现有 workspaces: %w", err)
+	}
+	existingByCanonical := make(map[string]controlplane.Workspace, len(existing))
+	for _, workspace := range existing {
+		existingByCanonical[workspace.CanonicalPath] = workspace
+	}
+	result := ReconcileResult{}
+	discovered := make(map[string]struct{}, len(workspaces))
+	stableIDs := make(map[string]string, len(workspaces))
 	for _, ws := range workspaces {
 		// 归属本机
 		ws.MachineID = loc.MachineID
 		// main workspace 绑定 location；worktree 属于同 location
 		ws.LocationID = &loc.ID
+		discovered[ws.CanonicalPath] = struct{}{}
+		if current, ok := existingByCanonical[ws.CanonicalPath]; ok {
+			ws.ID = current.ID
+			if !workspaceChanged(current, ws) {
+				stableIDs[ws.CanonicalPath] = ws.ID
+				result.Workspaces = append(result.Workspaces, ws)
+				continue
+			}
+		}
 		if _, err := st.UpsertWorkspaceWithMachineEvent(ctx, ws, controlplane.MachineEventWorkspaceUpsert); err != nil {
 			return ReconcileResult{}, fmt.Errorf("upsert workspace %s: %w", ws.ID, err)
 		}
+		stableIDs[ws.CanonicalPath] = ws.ID
 		result.Workspaces = append(result.Workspaces, ws)
 		result.Upserted++
 	}
-	if len(refs) > 0 {
-		if _, err := st.UpsertGitRefsWithMachineEvents(ctx, loc.ID, refs); err != nil {
+	for _, current := range existing {
+		if current.LocationID == nil || *current.LocationID != loc.ID {
+			continue
+		}
+		if _, ok := discovered[current.CanonicalPath]; ok {
+			continue
+		}
+		if _, err := st.RemoveWorkspaceWithMachineEvent(ctx, loc.MachineID, current.ID); err != nil {
+			return ReconcileResult{}, fmt.Errorf("remove workspace %s: %w", current.ID, err)
+		}
+		result.Removed++
+	}
+
+	// Inventory 先用 canonical path 标记 branch checkout；在 workspace ID 稳定后
+	// 再转换，避免 GitRef 把易变路径当跨层资源身份。
+	for i := range refs {
+		ids := make([]string, 0, len(refs[i].CheckedOutWorkspaceIDs))
+		for _, canonical := range refs[i].CheckedOutWorkspaceIDs {
+			if id := stableIDs[canonical]; id != "" {
+				ids = append(ids, id)
+			}
+		}
+		slices.Sort(ids)
+		refs[i].CheckedOutWorkspaceIDs = ids
+	}
+	result.GitRefs = refs
+	existingRefs, err := st.ListAllGitRefs(ctx)
+	if err != nil {
+		return ReconcileResult{}, fmt.Errorf("读取现有 git refs: %w", err)
+	}
+	currentRefs := make(map[string]controlplane.GitRef)
+	for _, ref := range existingRefs {
+		if ref.LocationID == loc.ID {
+			currentRefs[ref.Name] = ref
+		}
+	}
+	changedRefs := make([]controlplane.GitRef, 0)
+	seenRefs := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		seenRefs[ref.Name] = struct{}{}
+		current, ok := currentRefs[ref.Name]
+		if !ok || current.HeadOID != ref.HeadOID || !slices.Equal(current.CheckedOutWorkspaceIDs, ref.CheckedOutWorkspaceIDs) {
+			changedRefs = append(changedRefs, ref)
+		}
+	}
+	if len(changedRefs) > 0 {
+		if _, err := st.UpsertGitRefsWithMachineEvents(ctx, loc.ID, changedRefs); err != nil {
 			return ReconcileResult{}, fmt.Errorf("upsert git refs: %w", err)
 		}
 	}
-	// remove 侧：已从磁盘消失的 worktree 由 store 侧按扫描集合清理。
-	// （本计划 Reconcile 以 upsert 为主，remove 由 worktree remove 场景的
-	// 显式扫描差异产生；简化实现先在 upsert 幂等基础上由上层触发 remove。）
+	removedRefNames := make([]string, 0)
+	for name := range currentRefs {
+		if _, ok := seenRefs[name]; ok {
+			continue
+		}
+		removedRefNames = append(removedRefNames, name)
+	}
+	slices.Sort(removedRefNames)
+	for _, name := range removedRefNames {
+		if _, err := st.RemoveGitRefWithMachineEvent(ctx, loc.MachineID, loc.ID, name); err != nil {
+			return ReconcileResult{}, fmt.Errorf("remove git ref %s: %w", name, err)
+		}
+	}
 	return result, nil
+}
+
+func workspaceChanged(current, discovered controlplane.Workspace) bool {
+	currentLocation := ""
+	if current.LocationID != nil {
+		currentLocation = *current.LocationID
+	}
+	discoveredLocation := ""
+	if discovered.LocationID != nil {
+		discoveredLocation = *discovered.LocationID
+	}
+	return currentLocation != discoveredLocation || current.Kind != discovered.Kind || current.Path != discovered.Path ||
+		current.RepoIdentity != discovered.RepoIdentity || current.GitCommonDir != discovered.GitCommonDir ||
+		current.Branch != discovered.Branch || current.HeadOID != discovered.HeadOID || current.Availability != discovered.Availability
 }
 
 // canonicalPath 是 store.CanonicalPath 的本地别名。
@@ -94,12 +185,15 @@ func canonicalPath(path string) (string, error) {
 //   - StartWatch：为每个登记 Location 挂 .git watcher（提示即可）
 //   - 周期兜底扫描（默认 30s，可注入）
 type LocalReconciler struct {
-	st       *store.Store
-	machine  controlplane.Machine
-	log      *slog.Logger
-	periodic time.Duration
+	st          *store.Store
+	machine     controlplane.Machine
+	log         *slog.Logger
+	periodic    time.Duration
+	reconcileMu sync.Mutex
 	// newInventory 为测试注入自定义 Inventory 提供接缝；nil=按 Root 构建
-	newInventory func(root string) *Inventory
+	newInventory         func(root string) *Inventory
+	gitStatusInvalidator func(workspaceID string)
+	outboxNotifier       func()
 }
 
 // NewLocalReconciler 创建本机 reconciler。
@@ -117,6 +211,16 @@ func NewLocalReconciler(st *store.Store, machine controlplane.Machine, log *slog
 // SetPeriodic 设置周期兜底扫描间隔（测试注入用）。
 func (r *LocalReconciler) SetPeriodic(d time.Duration) { r.periodic = d }
 
+// SetGitStatusInvalidator 注入 .git Reconcile 完成后的显式状态失效发布器。
+func (r *LocalReconciler) SetGitStatusInvalidator(invalidate func(workspaceID string)) {
+	r.gitStatusInvalidator = invalidate
+}
+
+// SetOutboxNotifier 注入 Reconcile 后的本机 durable outbox 唤醒器。
+func (r *LocalReconciler) SetOutboxNotifier(notify func()) {
+	r.outboxNotifier = notify
+}
+
 // ReconcileAll 扫描本机全部登记 Location，返回扫描摘要。
 //
 // 参数：
@@ -126,6 +230,10 @@ func (r *LocalReconciler) SetPeriodic(d time.Duration) { r.periodic = d }
 // 日志：包含原因、扫描数、upsert/remove 数、耗时、machine cursor；无变化也
 // 记录 Debug 摘要，变化成功记录 Info。
 func (r *LocalReconciler) ReconcileAll(ctx context.Context, reason string) (*ReconcileSummary, error) {
+	// 多个 .git watcher 与周期 ticker 可能同时触发。扫描必须串行，否则多个
+	// 调用会基于同一旧投影重复生成 durable machine events。
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
 	start := time.Now()
 	locations, err := r.st.ListLocationsForMachine(ctx, r.machine.ID)
 	if err != nil {
@@ -153,6 +261,9 @@ func (r *LocalReconciler) ReconcileAll(ctx context.Context, reason string) (*Rec
 		summary.Upserted += res.Upserted
 		summary.Removed += res.Removed
 		summary.Workspaces += len(res.Workspaces)
+		for _, workspace := range res.Workspaces {
+			summary.WorkspaceIDs = append(summary.WorkspaceIDs, workspace.ID)
+		}
 	}
 	cursor, err := r.st.CurrentCursor(ctx, r.machine.ID)
 	if err != nil {
@@ -172,6 +283,16 @@ func (r *LocalReconciler) ReconcileAll(ctx context.Context, reason string) (*Rec
 			"upserted", summary.Upserted, "removed", summary.Removed,
 			"cursor", summary.Cursor, "elapsed_ms", summary.ElapsedMS)
 	}
+	if reason == "watch" && r.gitStatusInvalidator != nil {
+		for _, workspaceID := range summary.WorkspaceIDs {
+			r.gitStatusInvalidator(workspaceID)
+		}
+		r.log.Info("Git 状态失效提示已发布", "machine_id", r.machine.ID,
+			"workspace_count", len(summary.WorkspaceIDs), "reason", reason)
+	}
+	if r.outboxNotifier != nil {
+		r.outboxNotifier()
+	}
 	return summary, nil
 }
 
@@ -185,13 +306,14 @@ func (r *LocalReconciler) inventoryFor(root string) *Inventory {
 
 // ReconcileSummary 是一次 Reconcile 的统计摘要。
 type ReconcileSummary struct {
-	Reason     string
-	Locations  int
-	Workspaces int
-	Upserted   int
-	Removed    int
-	Cursor     int64
-	ElapsedMS  int64
+	Reason       string
+	Locations    int
+	Workspaces   int
+	Upserted     int
+	Removed      int
+	Cursor       int64
+	ElapsedMS    int64
+	WorkspaceIDs []string
 }
 
 // StartWatch 为每个登记 Location 挂 .git watcher，并启动周期兜底扫描。

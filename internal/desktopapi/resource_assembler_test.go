@@ -80,3 +80,18 @@ func TestResourceAssemblerMapsFileEventReplay(t *testing.T) {
 		t.Fatalf("file event round trip = %+v", roundTrip)
 	}
 }
+
+func TestResourceAssemblerRoundTripsGitRepositoryMarker(t *testing.T) {
+	a := &ResourceAssembler{}
+	dto := a.ToGitStatus(workspaceapi.GitStatusSnapshot{
+		WorkspaceID: "ws", IsRepository: true, Branch: "main", HeadOID: "abc",
+		Entries: []workspaceapi.GitStatusEntry{{Path: "README.md", WorktreeStatus: "M"}},
+	})
+	if !dto.IsRepository || dto.Branch != "main" || len(dto.Entries) != 1 {
+		t.Fatalf("git dto = %+v", dto)
+	}
+	status := a.FromGitStatus(dto)
+	if !status.IsRepository || status.WorkspaceID != "ws" || status.Entries[0].Path != "README.md" {
+		t.Fatalf("git round trip = %+v", status)
+	}
+}

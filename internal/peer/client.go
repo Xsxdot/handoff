@@ -248,9 +248,14 @@ func readFileStreamFrame(ctx context.Context, conn *websocket.Conn) (desktopapi.
 	return frame, nil
 }
 
-// GitStatus 在 Task 3 接入远端 wire route。
-func (c *Client) GitStatus(context.Context, workspaceapi.WorkspaceRef) (workspaceapi.GitStatusSnapshot, error) {
-	return workspaceapi.GitStatusSnapshot{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "远端 Git 资源能力尚未接入"}
+// GitStatus 代理远端 owner 的只读 Git 基础状态。
+func (c *Client) GitStatus(ctx context.Context, ws workspaceapi.WorkspaceRef) (workspaceapi.GitStatusSnapshot, error) {
+	path := "/v1/workspaces/" + url.PathEscape(ws.WorkspaceID) + "/git/status"
+	var out desktopapi.GitStatusSnapshotDTO
+	if err := c.doResource(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return workspaceapi.GitStatusSnapshot{}, err
+	}
+	return (&desktopapi.ResourceAssembler{}).FromGitStatus(out), nil
 }
 
 // CreateTerminal 在 Task 4 接入远端 wire route。

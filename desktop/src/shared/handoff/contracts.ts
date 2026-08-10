@@ -223,7 +223,7 @@ export const fileSearchResultSchema = z.object({
 })
 export type FileSearchResult = z.infer<typeof fileSearchResultSchema>
 
-export const fileEventKindSchema = z.enum(['create', 'modify', 'remove'])
+export const fileEventKindSchema = z.enum(['create', 'modify', 'remove', 'git_status'])
 export const fileEventSchema = z.object({
   workspace_id: z.string(),
   seq: z.number().int(),
@@ -261,6 +261,7 @@ export const gitStatusEntrySchema = z.object({
 })
 export const gitStatusSnapshotSchema = z.object({
   workspace_id: z.string(),
+  is_repository: z.boolean(),
   branch: z.string().optional(),
   head_oid: z.string().optional(),
   upstream: z.string().optional(),

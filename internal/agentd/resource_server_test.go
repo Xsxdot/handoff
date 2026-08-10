@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -138,6 +139,27 @@ func TestWorkspaceFileHTTPRoutesAndVersionConflict(t *testing.T) {
 	}
 }
 
+func TestWorkspaceGitStatusHTTPRoute(t *testing.T) {
+	env := newResourceServerEnv(t)
+	runResourceGit(t, env.root, "init", "-q", "-b", "main")
+	runResourceGit(t, env.root, "config", "user.email", "test@example.com")
+	runResourceGit(t, env.root, "config", "user.name", "test")
+	runResourceGit(t, env.root, "add", "README.md")
+	runResourceGit(t, env.root, "commit", "-q", "-m", "init")
+	if err := os.WriteFile(filepath.Join(env.root, "README.md"), []byte("modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp := env.request(t, http.MethodGet, "/v1/workspaces/"+env.workspace+"/git/status", nil)
+	defer resp.Body.Close()
+	var status desktopapi.GitStatusSnapshotDTO
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !status.IsRepository || status.Branch != "main" || len(status.Entries) != 1 {
+		t.Fatalf("git status = %d %+v", resp.StatusCode, status)
+	}
+}
+
 func TestWorkspaceFileSearchAndStreamLiveEvent(t *testing.T) {
 	env := newResourceServerEnv(t)
 	base := "/v1/workspaces/" + env.workspace
@@ -194,7 +216,9 @@ func TestWorkspaceFileRoutesThroughRemoteOwnerAgentd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := localStore.SetMachineProtocolCapabilities(context.Background(), "devbox", 1, map[string]int{"catalog": 1, "machine_events": 1, "files": 1}); err != nil {
+	if err := localStore.SetMachineProtocolCapabilities(context.Background(), "devbox", 1, map[string]int{
+		"catalog": 1, "machine_events": 1, peer.CapabilityFiles: 1, peer.CapabilityGit: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := localStore.SetMachineStatus(context.Background(), "devbox", controlplane.MachineStatusConnected); err != nil {
@@ -258,6 +282,28 @@ func TestWorkspaceFileRoutesThroughRemoteOwnerAgentd(t *testing.T) {
 	if live.Event == nil || live.Event.Path != "remote-live.txt" {
 		t.Fatalf("remote live = %+v", live)
 	}
+
+	// Git 状态必须沿同一条 local agentd -> peer -> owner agentd 路径读取；
+	// 不能因为文件路由已成功就回退到本机目录或 SSH。
+	runResourceGit(t, remote.root, "init", "-q", "-b", "main")
+	runResourceGit(t, remote.root, "config", "user.email", "test@example.com")
+	runResourceGit(t, remote.root, "config", "user.name", "test")
+	runResourceGit(t, remote.root, "add", "README.md")
+	runResourceGit(t, remote.root, "commit", "-q", "-m", "init")
+	gitReq, _ := http.NewRequest(http.MethodGet, localHTTP.URL+"/v1/workspaces/"+remote.workspace+"/git/status", nil)
+	gitReq.Header.Set("Authorization", "Bearer local-token")
+	gitResp, err := http.DefaultClient.Do(gitReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gitResp.Body.Close()
+	var gitStatus desktopapi.GitStatusSnapshotDTO
+	if err := json.NewDecoder(gitResp.Body).Decode(&gitStatus); err != nil {
+		t.Fatal(err)
+	}
+	if gitResp.StatusCode != http.StatusOK || !gitStatus.IsRepository || gitStatus.Branch != "main" {
+		t.Fatalf("remote git = status:%d snapshot:%+v", gitResp.StatusCode, gitStatus)
+	}
 }
 
 func wsReadJSON(t *testing.T, conn *websocket.Conn, out any) error {
@@ -269,4 +315,12 @@ func wsReadJSON(t *testing.T, conn *websocket.Conn, out any) error {
 		return err
 	}
 	return json.Unmarshal(raw, out)
+}
+
+func runResourceGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
 }

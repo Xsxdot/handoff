@@ -156,9 +156,10 @@ type FileSearchResult struct {
 type FileEventKind string
 
 const (
-	FileEventCreate FileEventKind = "create"
-	FileEventModify FileEventKind = "modify"
-	FileEventRemove FileEventKind = "remove"
+	FileEventCreate    FileEventKind = "create"
+	FileEventModify    FileEventKind = "modify"
+	FileEventRemove    FileEventKind = "remove"
+	FileEventGitStatus FileEventKind = "git_status"
 )
 
 // FileEvent 是单个 Workspace 内按 Seq 单调递增的文件失效提示。
@@ -205,13 +206,14 @@ type GitStatusEntry struct {
 
 // GitStatusSnapshot 表示 Workspace 的只读 Git 基础状态。
 type GitStatusSnapshot struct {
-	WorkspaceID string           `json:"workspace_id"`
-	Branch      string           `json:"branch,omitempty"`
-	HeadOID     string           `json:"head_oid,omitempty"`
-	Upstream    string           `json:"upstream,omitempty"`
-	Ahead       int              `json:"ahead"`
-	Behind      int              `json:"behind"`
-	Entries     []GitStatusEntry `json:"entries"`
+	WorkspaceID  string           `json:"workspace_id"`
+	IsRepository bool             `json:"is_repository"`
+	Branch       string           `json:"branch,omitempty"`
+	HeadOID      string           `json:"head_oid,omitempty"`
+	Upstream     string           `json:"upstream,omitempty"`
+	Ahead        int              `json:"ahead"`
+	Behind       int              `json:"behind"`
+	Entries      []GitStatusEntry `json:"entries"`
 }
 
 // CreateTerminalCommand 表示幂等的普通 PTY 创建命令。

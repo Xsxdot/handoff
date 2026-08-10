@@ -38,9 +38,10 @@ var defaultSearchLimits = searchLimits{maxResults: 200, perFileBytes: 2 << 20, t
 
 // ResourceAuthority 是本机 Workspace 文件资源的 owner authority。
 type ResourceAuthority struct {
-	log          *slog.Logger
-	searchLimits searchLimits
-	fileStream   *FileStream
+	log             *slog.Logger
+	searchLimits    searchLimits
+	fileStream      *FileStream
+	gitStatusRunner gitStatusRunner
 	// beforeRename 是原子边界故障注入 seam；生产保持 nil，仅测试清理语义。
 	beforeRename func() error
 }
@@ -50,7 +51,7 @@ func NewResourceAuthority(log *slog.Logger) *ResourceAuthority {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &ResourceAuthority{log: log, searchLimits: defaultSearchLimits, fileStream: NewFileStream(log)}
+	return &ResourceAuthority{log: log, searchLimits: defaultSearchLimits, fileStream: NewFileStream(log), gitStatusRunner: runGitStatusCommand}
 }
 
 // ListDirectory 列出授权目录的一层内容。
@@ -278,11 +279,6 @@ func commandError(message string, cause error) error {
 func isResourceCode(err error, code workspaceapi.ErrorCode) bool {
 	var resourceErr *workspaceapi.Error
 	return errors.As(err, &resourceErr) && resourceErr.Code == code
-}
-
-// GitStatus 在 Task 3 接入；当前明确返回 capability 错误，不静默伪造空状态。
-func (a *ResourceAuthority) GitStatus(context.Context, workspaceapi.WorkspaceRef) (workspaceapi.GitStatusSnapshot, error) {
-	return workspaceapi.GitStatusSnapshot{}, &workspaceapi.Error{Code: workspaceapi.ErrorCapabilityUnsupported, Message: "Git 资源能力尚未接入"}
 }
 
 // CreateTerminal 在 Task 4 接入。

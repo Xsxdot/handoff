@@ -30,7 +30,7 @@ const localMachineMetaKey = "local_machine_id"
 // localMachineCapabilities 是当前二阶段真正已接线的本机能力。后续 Git/PTY/
 // Preview 只能在各自服务落地时加入，避免 UI 看到 capability 后调用空实现。
 var localMachineCapabilities = map[string]int{
-	"catalog": 1, "machine_events": 1, "files": 1,
+	"catalog": 1, "machine_events": 1, "files": 1, "git": 1,
 }
 
 // EnsureLocalMachine 确保存在稳定的本机 Machine（创建或复用）并返回它。
@@ -287,6 +287,80 @@ func (s *Store) SetMachineStatus(ctx context.Context, machineID string, status c
 		return fmt.Errorf("更新机器 %s 状态: %w", machineID, err)
 	}
 	return nil
+}
+
+// SetMachineStatusWithControlEvent 在同一事务更新远端机器状态并追加
+// machine.upsert 控制事件，供已打开的桌面实时更新可用性门禁。
+func (s *Store) SetMachineStatusWithControlEvent(ctx context.Context, machineID string, status controlplane.MachineStatus) (controlplane.ControlEvent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("开启机器状态事务: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `
+UPDATE machines SET status = ?,
+  last_seen_at = CASE WHEN ? = 'connected' THEN ? ELSE last_seen_at END
+WHERE id = ?`, string(status), string(status), fmtTime(now), machineID)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("更新机器 %s 状态: %w", machineID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取机器 %s 状态更新结果: %w", machineID, err)
+	}
+	if affected == 0 {
+		return controlplane.ControlEvent{}, controlplane.ErrNotFound
+	}
+
+	var (
+		machine      controlplane.Machine
+		capabilities string
+		lastSeenAt   sql.NullString
+	)
+	if err := tx.QueryRowContext(ctx, `
+SELECT id, display_name, kind, endpoint, secret_ref, protocol_version, capabilities, status, last_seen_at
+FROM machines WHERE id = ?`, machineID).Scan(
+		&machine.ID, &machine.DisplayName, &machine.Kind, &machine.Endpoint, &machine.SecretRef,
+		&machine.ProtocolVersion, &capabilities, &machine.Status, &lastSeenAt); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取机器 %s 状态投影: %w", machineID, err)
+	}
+	if capabilities != "" {
+		err = json.Unmarshal([]byte(capabilities), &machine.Capabilities)
+	}
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("解析机器 %s capabilities: %w", machineID, err)
+	}
+	if machine.Capabilities == nil {
+		machine.Capabilities = map[string]int{}
+	}
+	if lastSeenAt.Valid {
+		seen := parseTime(lastSeenAt.String)
+		machine.LastSeenAt = &seen
+	}
+	payload, err := json.Marshal(machine)
+	if err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("序列化机器 %s 控制事件: %w", machineID, err)
+	}
+	var revision int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(control_revision), 0) FROM control_events").Scan(&revision); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("读取控制面 revision: %w", err)
+	}
+	revision++
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO control_events (control_revision, kind, resource_id, payload, created_at)
+VALUES (?, ?, ?, ?, ?)`, revision, string(controlplane.ControlEventKindMachineUpsert),
+		machineID, string(payload), fmtTime(now)); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("追加机器 %s 控制事件: %w", machineID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.ControlEvent{}, fmt.Errorf("提交机器 %s 状态事务: %w", machineID, err)
+	}
+	return controlplane.ControlEvent{
+		ControlRevision: revision, Kind: controlplane.ControlEventKindMachineUpsert,
+		ResourceID: machineID, Payload: payload, CreatedAt: now,
+	}, nil
 }
 
 // SetMachineProtocolCapabilities 持久化 peer hello 的协议与已协商 capability。

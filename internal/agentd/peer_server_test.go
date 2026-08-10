@@ -68,6 +68,9 @@ func TestPeerHelloRoute(t *testing.T) {
 	if hello.Capabilities[peer.CapabilityFiles] != 1 {
 		t.Fatalf("files capability 缺失: %+v", hello.Capabilities)
 	}
+	if hello.Capabilities[peer.CapabilityGit] != 1 {
+		t.Fatalf("git capability 缺失: %+v", hello.Capabilities)
+	}
 }
 
 // TestPeerHelloRequiresAuth 验证未授权 401。

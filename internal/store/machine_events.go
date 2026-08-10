@@ -96,11 +96,12 @@ FROM machine_events WHERE machine_id = ? AND machine_seq > ? ORDER BY machine_se
 //
 // 返回：
 //   - ControlEvent：投影产生的控制事件（重复事件返回零值）
-//   - applied：true 表示本次新投影并分配了 revision；false 表示重复被幂等忽略
+//   - applied：true 表示本次新投影并分配了 revision；false 表示已投影重复被幂等忽略
 //   - err：数据库错误
 //
 // 语义（单事务）：
-//  1. 按 (machine_id, event_id) 幂等记录 machine event
+//  1. 按 (machine_id, event_id) 幂等记录 machine event；若本机 owner 已先写
+//     outbox，则复用该行并从 cursor 判断是否尚待投影
 //  2. 按 kind 解析 payload 并 upsert/remove 对应投影表
 //  3. 追加 ControlEvent（全局单调 revision）
 //  4. 更新 machine_cursors.last_machine_seq
@@ -114,28 +115,51 @@ func (s *Store) ApplyMachineEvent(ctx context.Context, ev controlplane.MachineEv
 	}
 	defer tx.Rollback()
 
-	// 幂等：event_id 已存在则忽略，不分配新 revision。
-	var existing int
-	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM machine_events WHERE machine_id = ? AND event_id = ?",
-		ev.MachineID, ev.EventID).Scan(&existing)
-	if err != nil {
-		return controlplane.ControlEvent{}, false, fmt.Errorf("检查重复事件: %w", err)
-	}
-	if existing > 0 {
-		return controlplane.ControlEvent{}, false, nil
+	var cursor int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE((SELECT last_machine_seq FROM machine_cursors WHERE machine_id = ?), 0)",
+		ev.MachineID).Scan(&cursor); err != nil {
+		return controlplane.ControlEvent{}, false, fmt.Errorf("读取机器 %s cursor: %w", ev.MachineID, err)
 	}
 
-	seq, err := nextMachineSeqTx(ctx, tx, ev.MachineID)
-	if err != nil {
-		return controlplane.ControlEvent{}, false, err
+	// 本机 owner 与控制面共用同一库：资源事务会先把事件写进 outbox，随后
+	// projector 再消费。已存在不等于已投影，只有 seq <= cursor 才是重复。
+	var (
+		storedKind      string
+		storedPayload   string
+		storedCreatedAt string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT machine_seq, kind, resource_id, payload, created_at
+FROM machine_events WHERE machine_id = ? AND event_id = ?`, ev.MachineID, ev.EventID).
+		Scan(&ev.MachineSeq, &storedKind, &ev.ResourceID, &storedPayload, &storedCreatedAt)
+	existing := err == nil
+	if err != nil && err != sql.ErrNoRows {
+		return controlplane.ControlEvent{}, false, fmt.Errorf("检查重复事件: %w", err)
 	}
+	if existing {
+		if ev.MachineSeq <= cursor {
+			return controlplane.ControlEvent{}, false, nil
+		}
+		ev.Kind = controlplane.MachineEventKind(storedKind)
+		ev.Payload = json.RawMessage(storedPayload)
+		ev.CreatedAt = parseTime(storedCreatedAt)
+	} else if ev.MachineSeq == 0 {
+		ev.MachineSeq = cursor + 1
+	}
+	if ev.MachineSeq != cursor+1 {
+		return controlplane.ControlEvent{}, false, fmt.Errorf(
+			"机器 %s 事件序号不连续: cursor=%d event=%d", ev.MachineID, cursor, ev.MachineSeq)
+	}
+	seq := ev.MachineSeq
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `
+	if !existing {
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO machine_events (machine_id, machine_seq, event_id, kind, resource_id, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		ev.MachineID, seq, ev.EventID, string(ev.Kind), ev.ResourceID, string(ev.Payload), fmtTime(now)); err != nil {
-		return controlplane.ControlEvent{}, false, fmt.Errorf("记录 machine event: %w", err)
+			ev.MachineID, seq, ev.EventID, string(ev.Kind), ev.ResourceID, string(ev.Payload), fmtTime(now)); err != nil {
+			return controlplane.ControlEvent{}, false, fmt.Errorf("记录 machine event: %w", err)
+		}
 	}
 
 	kind, err := projectMachineEventTx(ctx, tx, ev)
@@ -204,6 +228,22 @@ func projectMachineEventTx(ctx context.Context, tx *sql.Tx, ev controlplane.Mach
 		}
 		return controlplane.ControlEventKindGitRefUpsert, nil
 	case controlplane.MachineEventGitRefRemove:
+		var ref controlplane.GitRef
+		if err := json.Unmarshal(ev.Payload, &ref); err != nil {
+			return "", fmt.Errorf("解析 git_ref.remove payload: %w", err)
+		}
+		// 旧版事件的 payload 为 {}，没有足够身份安全删除同名分支；保留投影，
+		// 等下一次 owner snapshot/Reconcile 修复。新事件必须按 location+name 删除。
+		if ref.LocationID == "" || ref.Name == "" {
+			return controlplane.ControlEventKindGitRefRemove, nil
+		}
+		if ref.Name != ev.ResourceID {
+			return "", fmt.Errorf("git_ref.remove resource_id %q 与 payload name %q 不一致", ev.ResourceID, ref.Name)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM git_refs WHERE location_id = ? AND name = ?", ref.LocationID, ref.Name); err != nil {
+			return "", fmt.Errorf("移除 git ref %s/%s: %w", ref.LocationID, ref.Name, err)
+		}
 		return controlplane.ControlEventKindGitRefRemove, nil
 	case controlplane.MachineEventTaskUpsert:
 		var ts controlplane.TaskSummary
@@ -368,6 +408,32 @@ func (s *Store) UpsertGitRefsWithMachineEvents(ctx context.Context, locationID s
 	return events, nil
 }
 
+// RemoveGitRefWithMachineEvent 在同一事务删除 GitRef 并追加 remove outbox。
+func (s *Store) RemoveGitRefWithMachineEvent(ctx context.Context, machineID, locationID, name string) (controlplane.MachineEvent, error) {
+	payload, err := json.Marshal(controlplane.GitRef{LocationID: locationID, Name: name})
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("序列化 git ref remove payload: %w", err)
+	}
+	ev := controlplane.MachineEvent{MachineID: machineID, EventID: newEventID(),
+		Kind: controlplane.MachineEventGitRefRemove, ResourceID: name, Payload: payload}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("开启 git ref remove 事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM git_refs WHERE location_id = ? AND name = ?", locationID, name); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("删除 git ref %s/%s: %w", locationID, name, err)
+	}
+	ev, err = appendMachineEventTx(ctx, tx, ev)
+	if err != nil {
+		return controlplane.MachineEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("提交 git ref remove 事务: %w", err)
+	}
+	return ev, nil
+}
+
 // machineIDForLocation 从 project_locations 反查 location 所属机器。
 func machineIDForLocation(ctx context.Context, tx *sql.Tx, locationID string) string {
 	var machineID string
@@ -505,10 +571,20 @@ func appendTaskUpsertTx(ctx context.Context, tx *sql.Tx, taskID, machineID, wsID
 	if err := upsertTaskSummaryTx(ctx, tx, taskID, machineID, wsID); err != nil {
 		return controlplane.MachineEvent{}, err
 	}
-	var summary controlplane.TaskSummary
-	summary.TaskID = taskID
-	summary.MachineID = machineID
-	summary.WorkspaceID = wsID
+	var (
+		summary   controlplane.TaskSummary
+		state     string
+		updatedAt string
+	)
+	if err := tx.QueryRowContext(ctx, `
+SELECT task_id, machine_id, workspace_id, name, executor, state, attention, updated_at
+FROM task_summaries WHERE task_id = ?`, taskID).Scan(
+		&summary.TaskID, &summary.MachineID, &summary.WorkspaceID,
+		&summary.Name, &summary.Executor, &state, &summary.Attention, &updatedAt); err != nil {
+		return controlplane.MachineEvent{}, fmt.Errorf("读取任务 %s 完整事件摘要: %w", taskID, err)
+	}
+	summary.State = controlplane.TaskSummaryState(state)
+	summary.UpdatedAt = parseTime(updatedAt)
 	payload, err := json.Marshal(summary)
 	if err != nil {
 		return controlplane.MachineEvent{}, fmt.Errorf("序列化 task summary payload: %w", err)

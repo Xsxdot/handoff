@@ -42,7 +42,7 @@ func TestResourceGoldenRoundTrips(t *testing.T) {
 			}
 		}},
 		{"git status", "git-status.json", func() any { return &GitStatusSnapshotDTO{} }, func(t *testing.T, value any) {
-			if value.(*GitStatusSnapshotDTO).Branch != "main" {
+			if !value.(*GitStatusSnapshotDTO).IsRepository || value.(*GitStatusSnapshotDTO).Branch != "main" {
 				t.Fatalf("branch 丢失: %+v", value)
 			}
 		}},

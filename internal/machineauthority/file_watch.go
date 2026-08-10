@@ -77,6 +77,11 @@ func (a *ResourceAuthority) SetWorkspaceAvailable(workspaceID string, available 
 	a.fileStream.SetWorkspaceAvailable(workspaceID, available)
 }
 
+// InvalidateGitStatus 发布不含文件内容的显式 Git 状态失效提示。
+func (a *ResourceAuthority) InvalidateGitStatus(workspaceID string) {
+	a.fileStream.publish(workspaceID, workspaceapi.FileEventGitStatus, "", time.Now().UTC())
+}
+
 // Subscribe 创建单 Workspace 订阅。
 func (s *FileStream) Subscribe(ctx context.Context, ws workspaceapi.WorkspaceRef, after int64) (*workspaceapi.FileSubscription, error) {
 	if after < 0 {

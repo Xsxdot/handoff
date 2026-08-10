@@ -11,6 +11,7 @@
 package machineauthority
 
 import (
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -43,5 +44,58 @@ func TestWatchTriggersReconcileOnGitChange(t *testing.T) {
 		// 至少触发一次
 	case <-time.After(10 * time.Second):
 		t.Fatal("watcher 未在 .git 变化后触发 Reconcile")
+	}
+}
+
+// TestWatchTriggersOnNestedRefUpdate 验证既有的嵌套 refs 目录发生变化时也会触发。
+// 只监听 .git 顶层会漏掉 refs/heads/<group>/<branch> 的文件更新。
+func TestWatchTriggersOnNestedRefUpdate(t *testing.T) {
+	dir := gitInit(t)
+	runGit(t, dir, "branch", "nested/topic")
+	runGit(t, dir, "commit", "--allow-empty", "-q", "-m", "next")
+
+	done := make(chan struct{})
+	var once sync.Once
+	w := NewGitWatcher(dir, filepath.Join(dir, ".git"), func() {
+		once.Do(func() { close(done) })
+	})
+	if err := w.Start(); err != nil {
+		t.Fatalf("watcher Start: %v", err)
+	}
+	defer w.Close()
+
+	runGit(t, dir, "update-ref", "refs/heads/nested/topic", "HEAD")
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher 未感知嵌套 ref 更新")
+	}
+}
+
+// TestWatchTriggersForLinkedWorktree 验证 linked worktree 的 .git 文件能解析到
+// 独立 gitdir 与 common dir，而不是把 .git 文件本身误当监听目录。
+func TestWatchTriggersForLinkedWorktree(t *testing.T) {
+	mainDir := gitInit(t)
+	worktreeDir := filepath.Join(t.TempDir(), "linked")
+	runGit(t, mainDir, "worktree", "add", "-q", worktreeDir, "-b", "feat/linked")
+
+	done := make(chan struct{})
+	var once sync.Once
+	w := NewGitWatcher(worktreeDir, filepath.Join(worktreeDir, ".git"), func() {
+		once.Do(func() { close(done) })
+	})
+	if err := w.Start(); err != nil {
+		t.Fatalf("linked watcher Start: %v", err)
+	}
+	defer w.Close()
+
+	cmd := exec.Command("git", "-C", worktreeDir, "checkout", "-q", "-b", "feat/linked-next")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("linked checkout: %v\n%s", err, out)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher 未感知 linked worktree 的分支变化")
 	}
 }

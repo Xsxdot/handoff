@@ -13,10 +13,12 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/controlplane"
+	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -145,5 +147,96 @@ func TestApplyMachineEventUpdatesCursor(t *testing.T) {
 	}
 	if cursor != 1 {
 		t.Fatalf("cursor = %d, want 1", cursor)
+	}
+}
+
+// TestApplyGitRefRemoveDeletesOnlyScopedProjection 验证分支删除事件携带
+// location 身份；不同项目/宿主上的同名分支不能被一并删除。
+func TestApplyGitRefRemoveDeletesOnlyScopedProjection(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	for index, ref := range []controlplane.GitRef{
+		{LocationID: "loc-1", Name: "main", HeadOID: "one", CheckedOutWorkspaceIDs: []string{}},
+		{LocationID: "loc-2", Name: "main", HeadOID: "two", CheckedOutWorkspaceIDs: []string{}},
+	} {
+		payload, _ := json.Marshal(ref)
+		if _, applied, err := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+			MachineID: "remote", EventID: fmt.Sprintf("upsert-%d", index),
+			Kind: controlplane.MachineEventGitRefUpsert, ResourceID: ref.Name, Payload: payload,
+		}); err != nil || !applied {
+			t.Fatalf("apply upsert %d: applied=%t err=%v", index, applied, err)
+		}
+	}
+	removePayload, _ := json.Marshal(controlplane.GitRef{LocationID: "loc-1", Name: "main"})
+	if _, applied, err := s.ApplyMachineEvent(ctx, controlplane.MachineEvent{
+		MachineID: "remote", EventID: "remove-1", Kind: controlplane.MachineEventGitRefRemove,
+		ResourceID: "main", Payload: removePayload,
+	}); err != nil || !applied {
+		t.Fatalf("apply remove: applied=%t err=%v", applied, err)
+	}
+	refs, err := s.ListAllGitRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].LocationID != "loc-2" || refs[0].Name != "main" {
+		t.Fatalf("refs = %+v, want loc-2/main", refs)
+	}
+}
+
+// TestApplyExistingLocalOutboxEventProjectsOnce 验证 owner 与控制面共用同库时，
+// 已写入 machine_events 但 cursor 尚未推进的本机 outbox 仍能投影一次。
+func TestApplyExistingLocalOutboxEventProjectsOnce(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	machine, err := s.EnsureLocalMachine(context.Background(), "本机")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := s.UpsertWorkspaceWithMachineEvent(context.Background(), controlplane.Workspace{
+		ID: "ws-local", MachineID: machine.ID, Kind: controlplane.WorkspaceKindMain,
+		Path: "/repo", CanonicalPath: "/repo",
+	}, controlplane.MachineEventWorkspaceUpsert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ce, applied, err := s.ApplyMachineEvent(context.Background(), event)
+	if err != nil || !applied || ce.ControlRevision != 1 {
+		t.Fatalf("首次投影 existing outbox: applied=%t event=%+v err=%v", applied, ce, err)
+	}
+	if _, applied, err := s.ApplyMachineEvent(context.Background(), event); err != nil || applied {
+		t.Fatalf("重复投影 existing outbox: applied=%t err=%v", applied, err)
+	}
+}
+
+func TestUpdateTaskStateEventCarriesCompleteSummary(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	task := protoTask("task-1", "ws-1", "machine-1")
+	task.Name = "修复推送"
+	task.Executor = "opencode"
+	if _, err := s.CreateTaskWithMachineEvent(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	event, err := s.UpdateTaskStateWithEvent(context.Background(), task.ID, proto.TaskStateRunning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary controlplane.TaskSummary
+	if err := json.Unmarshal(event.Payload, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.TaskID != task.ID || summary.Name != task.Name || summary.Executor != task.Executor ||
+		summary.State != controlplane.TaskSummaryStateRunning || summary.UpdatedAt.IsZero() {
+		t.Fatalf("task event summary = %+v", summary)
 	}
 }

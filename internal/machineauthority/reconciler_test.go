@@ -16,7 +16,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/controlplane"
 	"github.com/xushixin/handoff/internal/store"
@@ -91,11 +93,25 @@ func TestReconcileIdempotentNoDuplicateEvents(t *testing.T) {
 	st, machine, inv := setupReconciler(t)
 	loc := controlplane.ProjectLocation{ID: "loc-main", MachineID: machine.ID, Role: controlplane.LocationRoleLocal}
 
-	if _, err := ReconcileLocation(context.Background(), st, loc, inv); err != nil {
+	first, err := ReconcileLocation(context.Background(), st, loc, inv)
+	if err != nil {
 		t.Fatalf("首次 Reconcile: %v", err)
 	}
-	if _, err := ReconcileLocation(context.Background(), st, loc, inv); err != nil {
+	events, err := st.MachineEventsAfter(context.Background(), machine.ID, 0, 100)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("首次 events = %+v, %v", events, err)
+	}
+	lastSeq := events[len(events)-1].MachineSeq
+	second, err := ReconcileLocation(context.Background(), st, loc, inv)
+	if err != nil {
 		t.Fatalf("二次 Reconcile: %v", err)
+	}
+	if first.Workspaces[0].ID != second.Workspaces[0].ID {
+		t.Fatalf("无变化扫描导致 Workspace ID 漂移: %s -> %s", first.Workspaces[0].ID, second.Workspaces[0].ID)
+	}
+	events, err = st.MachineEventsAfter(context.Background(), machine.ID, lastSeq, 100)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("无变化扫描不应新增事件: %+v, %v", events, err)
 	}
 
 	// 事件写入由 store 的 AppendEvent 或 task outbox 承担；
@@ -107,6 +123,29 @@ func TestReconcileIdempotentNoDuplicateEvents(t *testing.T) {
 	}
 	if len(ws) != 1 {
 		t.Fatalf("重复 Reconcile 后 workspaces = %d, want 1（不重复创建）", len(ws))
+	}
+}
+
+func TestExternalGitBranchChangeEmitsStableWorkspaceEvent(t *testing.T) {
+	st, machine, inv := setupReconciler(t)
+	loc := controlplane.ProjectLocation{ID: "loc-main", MachineID: machine.ID, Role: controlplane.LocationRoleLocal}
+	first, err := ReconcileLocation(context.Background(), st, loc, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := st.MachineEventsAfter(context.Background(), machine.ID, 0, 100)
+	lastSeq := events[len(events)-1].MachineSeq
+	runGit(t, inv.Root, "checkout", "-q", "-b", "feat/external")
+	second, err := ReconcileLocation(context.Background(), st, loc, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Workspaces[0].ID != first.Workspaces[0].ID || second.Workspaces[0].Branch != "feat/external" {
+		t.Fatalf("external branch workspace = %+v, original=%+v", second.Workspaces[0], first.Workspaces[0])
+	}
+	events, err = st.MachineEventsAfter(context.Background(), machine.ID, lastSeq, 100)
+	if err != nil || len(events) == 0 || events[0].ResourceID != first.Workspaces[0].ID {
+		t.Fatalf("external branch events = %+v, %v", events, err)
 	}
 }
 
@@ -129,6 +168,28 @@ func TestReconcileRemovedWorktree(t *testing.T) {
 		if w.Kind == controlplane.WorkspaceKindWorktree {
 			t.Fatalf("已删除的 worktree 仍被扫描到: %+v", w)
 		}
+	}
+	stored, err := st.ListWorkspacesForMachine(machine.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, workspace := range stored {
+		if workspace.CanonicalPath == wtPath {
+			t.Fatalf("已删除 worktree 仍在 store: %+v", workspace)
+		}
+	}
+	events, err := st.MachineEventsAfter(context.Background(), machine.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRemove := false
+	for _, event := range events {
+		if event.Kind == controlplane.MachineEventWorkspaceRemove {
+			foundRemove = true
+		}
+	}
+	if !foundRemove {
+		t.Fatalf("删除 worktree 未产生 workspace.remove: %+v", events)
 	}
 }
 
@@ -225,5 +286,93 @@ func TestLocalReconcilerReconcileAll(t *testing.T) {
 	// 未把 location 落库）——至少不报错
 	if summary.Upserted < 0 {
 		t.Fatalf("upserted 不能为负")
+	}
+}
+
+// TestWatchReconcileExplicitlyInvalidatesGitStatus 验证 watcher 完整扫描后即使
+// Workspace 投影没有变化，也会显式通知打开的 Git 状态视图重新读取。
+func TestWatchReconcileExplicitlyInvalidatesGitStatus(t *testing.T) {
+	st, machine, inv := setupReconciler(t)
+	canonical, err := store.CanonicalPath(inv.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	locationID := "loc-watch"
+	workspace := controlplane.Workspace{
+		ID: "ws-watch", MachineID: machine.ID, LocationID: &locationID,
+		Kind: controlplane.WorkspaceKindMain, Path: inv.Root, CanonicalPath: canonical,
+		Availability: controlplane.AvailabilityAvailable, LastScannedAt: now,
+	}
+	project := controlplane.Project{ID: "project-watch", Name: "watch", CreatedAt: now, UpdatedAt: now}
+	location := controlplane.ProjectLocation{
+		ID: locationID, ProjectID: project.ID, MachineID: machine.ID,
+		MachineKind: controlplane.MachineKindLocal, Role: controlplane.LocationRoleLocal,
+		MainWorkspaceID: workspace.ID, Source: controlplane.LocationSourceExistingPath,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	r := NewLocalReconciler(st, machine, slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if _, err := r.ReconcileAll(context.Background(), "startup"); err != nil {
+		t.Fatalf("startup reconcile: %v", err)
+	}
+	invalidated := make([]string, 0, 1)
+	r.SetGitStatusInvalidator(func(workspaceID string) { invalidated = append(invalidated, workspaceID) })
+	if _, err := r.ReconcileAll(context.Background(), "watch"); err != nil {
+		t.Fatalf("watch reconcile: %v", err)
+	}
+	if len(invalidated) != 1 || invalidated[0] != workspace.ID {
+		t.Fatalf("invalidated = %v, want [%s]", invalidated, workspace.ID)
+	}
+}
+
+// TestLocalReconcilerSerializesConcurrentScans 验证周期扫描与多个 watcher 同时
+// 触发时只会产生一组真实变化事件，不会因并发读到同一旧快照而重复 upsert。
+func TestLocalReconcilerSerializesConcurrentScans(t *testing.T) {
+	st, machine, inv := setupReconciler(t)
+	canonical, err := store.CanonicalPath(inv.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	locationID := "loc-concurrent"
+	workspace := controlplane.Workspace{
+		ID: "ws-concurrent", MachineID: machine.ID, LocationID: &locationID,
+		Kind: controlplane.WorkspaceKindMain, Path: inv.Root, CanonicalPath: canonical,
+		Availability: controlplane.AvailabilityAvailable, LastScannedAt: now,
+	}
+	project := controlplane.Project{ID: "project-concurrent", Name: "concurrent", CreatedAt: now, UpdatedAt: now}
+	location := controlplane.ProjectLocation{
+		ID: locationID, ProjectID: project.ID, MachineID: machine.ID,
+		MachineKind: controlplane.MachineKindLocal, Role: controlplane.LocationRoleLocal,
+		MainWorkspaceID: workspace.ID, Source: controlplane.LocationSourceExistingPath,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := st.CreateProject(context.Background(), project, []controlplane.ProjectLocation{location}, []controlplane.Workspace{workspace}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewLocalReconciler(st, machine, slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = r.ReconcileAll(context.Background(), "watch")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	events, err := st.MachineEventsAfter(context.Background(), machine.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("并发扫描 events = %d, want workspace+git_ref 各一条: %+v", len(events), events)
 	}
 }

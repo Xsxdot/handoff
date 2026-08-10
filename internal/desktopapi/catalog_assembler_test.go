@@ -111,10 +111,14 @@ func TestToBootstrapOptionalFields(t *testing.T) {
 // TestToControlEvent 断言 ControlEvent 到信封的转换与非法 kind 报错。
 func TestToControlEvent(t *testing.T) {
 	now := time.Now().UTC()
-	payload := json.RawMessage(`{"id":"ws1"}`)
+	domainPayload, _ := json.Marshal(controlplane.Workspace{
+		ID: "ws1", MachineID: "m1", Kind: controlplane.WorkspaceKindMain,
+		Path: "/repo", CanonicalPath: "/repo", Availability: controlplane.AvailabilityAvailable,
+		LastScannedAt: now,
+	})
 	ev := controlplane.ControlEvent{
 		ControlRevision: 7, Kind: controlplane.ControlEventKindWorkspaceUpsert,
-		ResourceID: "ws1", Payload: payload, CreatedAt: now,
+		ResourceID: "ws1", Payload: domainPayload, CreatedAt: now,
 	}
 	env, err := (&CatalogAssembler{}).ToControlEvent(ev)
 	if err != nil {
@@ -123,8 +127,12 @@ func TestToControlEvent(t *testing.T) {
 	if env.Revision != 7 || env.Kind != "workspace.upsert" || env.ResourceID != "ws1" {
 		t.Errorf("envelope = %+v", env)
 	}
-	if string(env.Payload) != string(payload) {
-		t.Errorf("payload 不一致: %s vs %s", env.Payload, payload)
+	var payload map[string]any
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["id"] != "ws1" || payload["machine_id"] != "m1" || payload["ID"] != nil {
+		t.Errorf("payload 未转换为 desktop snake_case DTO: %s", env.Payload)
 	}
 	if !env.CreatedAt.Equal(now) {
 		t.Errorf("created_at 不一致: %v", env.CreatedAt)

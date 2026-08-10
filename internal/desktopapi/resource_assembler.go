@@ -126,8 +126,21 @@ func (a *ResourceAssembler) ToGitStatus(status workspaceapi.GitStatusSnapshot) G
 		entries = append(entries, GitStatusEntryDTO{Path: entry.Path, OriginalPath: entry.OriginalPath,
 			IndexStatus: entry.IndexStatus, WorktreeStatus: entry.WorktreeStatus})
 	}
-	return GitStatusSnapshotDTO{WorkspaceID: status.WorkspaceID, Branch: status.Branch, HeadOID: status.HeadOID,
+	return GitStatusSnapshotDTO{WorkspaceID: status.WorkspaceID, IsRepository: status.IsRepository,
+		Branch: status.Branch, HeadOID: status.HeadOID,
 		Upstream: status.Upstream, Ahead: status.Ahead, Behind: status.Behind, Entries: entries}
+}
+
+// FromGitStatus 把 peer wire Git 状态转换回 owner contract。
+func (a *ResourceAssembler) FromGitStatus(status GitStatusSnapshotDTO) workspaceapi.GitStatusSnapshot {
+	entries := make([]workspaceapi.GitStatusEntry, 0, len(status.Entries))
+	for _, entry := range status.Entries {
+		entries = append(entries, workspaceapi.GitStatusEntry{Path: entry.Path, OriginalPath: entry.OriginalPath,
+			IndexStatus: entry.IndexStatus, WorktreeStatus: entry.WorktreeStatus})
+	}
+	return workspaceapi.GitStatusSnapshot{WorkspaceID: status.WorkspaceID, IsRepository: status.IsRepository,
+		Branch: status.Branch, HeadOID: status.HeadOID, Upstream: status.Upstream,
+		Ahead: status.Ahead, Behind: status.Behind, Entries: entries}
 }
 
 // ToPtySession 把 owner PTY session 转换为公开 DTO。

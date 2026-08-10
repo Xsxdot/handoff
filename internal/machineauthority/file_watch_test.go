@@ -121,6 +121,22 @@ func TestFileStreamDisconnectsSlowSubscriberAndUnavailableWorkspace(t *testing.T
 	assertResourceCode(t, err, workspaceapi.ErrorCursorExpired)
 }
 
+func TestGitStatusInvalidationIsExplicitFileStreamEvent(t *testing.T) {
+	dir := t.TempDir()
+	authority := NewResourceAuthority(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ws := workspaceapi.WorkspaceRef{WorkspaceID: "ws", MachineID: "m", RootPath: dir}
+	sub, err := authority.SubscribeFiles(context.Background(), ws, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Cancel()
+	authority.InvalidateGitStatus("ws")
+	event := waitFileEvent(t, sub.Events, "", workspaceapi.FileEventGitStatus)
+	if event.Seq == 0 {
+		t.Fatalf("git status invalidation = %+v", event)
+	}
+}
+
 func waitFileEvent(t *testing.T, events <-chan workspaceapi.FileEvent, path string, kind workspaceapi.FileEventKind) workspaceapi.FileEvent {
 	t.Helper()
 	deadline := time.After(3 * time.Second)

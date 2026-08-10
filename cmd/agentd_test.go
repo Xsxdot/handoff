@@ -111,7 +111,7 @@ func TestWireWorkspaceResourcesActivatesProductionServer(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "token", Targets: map[string]config.Target{}}
 	server := agentd.NewServer(cfg, st, logger)
-	closeResources := wireWorkspaceResources(server, st, cfg, logger)
+	_, closeResources := wireWorkspaceResources(server, st, cfg, logger)
 	defer closeResources()
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()

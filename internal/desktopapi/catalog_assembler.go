@@ -12,6 +12,7 @@
 package desktopapi
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/xushixin/handoff/internal/controlplane"
@@ -39,13 +40,17 @@ func (a *CatalogAssembler) ToBootstrap(s controlplane.Snapshot) BootstrapRespons
 func (a *CatalogAssembler) toMachines(ms []controlplane.Machine) []MachineDTO {
 	out := make([]MachineDTO, 0, len(ms))
 	for _, m := range ms {
+		capabilities := m.Capabilities
+		if capabilities == nil {
+			capabilities = map[string]int{}
+		}
 		out = append(out, MachineDTO{
 			ID:              m.ID,
 			DisplayName:     m.DisplayName,
 			Kind:            string(m.Kind),
 			Endpoint:        m.Endpoint,
 			ProtocolVersion: m.ProtocolVersion,
-			Capabilities:    m.Capabilities,
+			Capabilities:    capabilities,
 			Status:          string(m.Status),
 			LastSeenAt:      m.LastSeenAt,
 		})
@@ -94,9 +99,13 @@ func (a *CatalogAssembler) toWorkspaces(ws []controlplane.Workspace) []Workspace
 func (a *CatalogAssembler) toGitRefs(rs []controlplane.GitRef) []GitRefDTO {
 	out := make([]GitRefDTO, 0, len(rs))
 	for _, r := range rs {
+		workspaceIDs := r.CheckedOutWorkspaceIDs
+		if workspaceIDs == nil {
+			workspaceIDs = []string{}
+		}
 		out = append(out, GitRefDTO{
 			LocationID: r.LocationID, Name: r.Name, HeadOID: r.HeadOID,
-			CheckedOutWorkspaceIDs: r.CheckedOutWorkspaceIDs,
+			CheckedOutWorkspaceIDs: workspaceIDs,
 		})
 	}
 	return out
@@ -155,10 +164,75 @@ func (a *CatalogAssembler) ToControlEvent(ev controlplane.ControlEvent) (Control
 	if err != nil {
 		return ControlEventEnvelope{}, err
 	}
+	payload, err := a.toControlEventPayload(ev)
+	if err != nil {
+		return ControlEventEnvelope{}, err
+	}
 	return ControlEventEnvelope{
 		Revision: ev.ControlRevision, Kind: kind, ResourceID: ev.ResourceID,
-		Payload: ev.Payload, CreatedAt: ev.CreatedAt,
+		Payload: payload, CreatedAt: ev.CreatedAt,
 	}, nil
+}
+
+// toControlEventPayload 把 store 内部领域 payload 正规化为 desktop DTO。
+// 领域结构没有 JSON tag，直接透传会产生 MachineID/WorkspaceID 等 PascalCase，
+// renderer 虽收到 revision 却无法更新任何资源。
+func (a *CatalogAssembler) toControlEventPayload(ev controlplane.ControlEvent) (json.RawMessage, error) {
+	var dto any
+	switch ev.Kind {
+	case controlplane.ControlEventKindMachineUpsert:
+		var value controlplane.Machine
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 machine.upsert payload: %w", err)
+		}
+		dto = a.toMachines([]controlplane.Machine{value})[0]
+	case controlplane.ControlEventKindProjectUpsert:
+		var value controlplane.Project
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 project.upsert payload: %w", err)
+		}
+		dto = a.toProjects([]controlplane.Project{value})[0]
+	case controlplane.ControlEventKindLocationUpsert:
+		var value controlplane.ProjectLocation
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 location.upsert payload: %w", err)
+		}
+		dto = a.toLocations([]controlplane.ProjectLocation{value})[0]
+	case controlplane.ControlEventKindWorkspaceUpsert:
+		var value controlplane.Workspace
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 workspace.upsert payload: %w", err)
+		}
+		dto = a.toWorkspaces([]controlplane.Workspace{value})[0]
+	case controlplane.ControlEventKindGitRefUpsert, controlplane.ControlEventKindGitRefRemove:
+		var value controlplane.GitRef
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 git_ref payload: %w", err)
+		}
+		dto = a.toGitRefs([]controlplane.GitRef{value})[0]
+	case controlplane.ControlEventKindTaskSummaryUpsert:
+		var value controlplane.TaskSummary
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 task_summary.upsert payload: %w", err)
+		}
+		dto = a.toTaskSummaries([]controlplane.TaskSummary{value})[0]
+	case controlplane.ControlEventKindOperationUpsert:
+		var value controlplane.Operation
+		if err := json.Unmarshal(ev.Payload, &value); err != nil {
+			return nil, fmt.Errorf("解析 operation.upsert payload: %w", err)
+		}
+		dto = a.ToOperation(value)
+	case controlplane.ControlEventKindWorkspaceRemove, controlplane.ControlEventKindTaskSummaryRemove:
+		// 这两类 remove 仅以 resource_id 定位，payload 无领域字段。
+		return ev.Payload, nil
+	default:
+		return nil, fmt.Errorf("未知 ControlEventKind %q", ev.Kind)
+	}
+	payload, err := json.Marshal(dto)
+	if err != nil {
+		return nil, fmt.Errorf("编码 %s desktop payload: %w", ev.Kind, err)
+	}
+	return payload, nil
 }
 
 // controlEventKindString 把 ControlEventKind 映射为线格式字符串。

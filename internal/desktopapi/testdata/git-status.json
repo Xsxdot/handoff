@@ -1,5 +1,6 @@
 {
   "workspace_id": "ws-main",
+  "is_repository": true,
   "branch": "main",
   "head_oid": "abc123",
   "upstream": "origin/main",

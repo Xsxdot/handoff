@@ -13,6 +13,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -38,8 +39,8 @@ func TestEnsureLocalMachineStableAcrossOpen(t *testing.T) {
 	if m1.Kind != controlplane.MachineKindLocal {
 		t.Fatalf("kind = %s, want local", m1.Kind)
 	}
-	if m1.Capabilities["files"] != 1 {
-		t.Fatalf("local files capability = %+v", m1.Capabilities)
+	if m1.Capabilities["files"] != 1 || m1.Capabilities["git"] != 1 {
+		t.Fatalf("local resource capabilities = %+v", m1.Capabilities)
 	}
 	s.Close()
 
@@ -138,6 +139,39 @@ func TestSetMachineProtocolCapabilitiesPersistsNegotiation(t *testing.T) {
 	}
 	if machine.ProtocolVersion != 1 || machine.Capabilities["files"] != 1 {
 		t.Fatalf("machine negotiation = %+v", machine)
+	}
+}
+
+func TestSetMachineStatusWithControlEventPersistsAndPublishes(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if _, err := s.SyncConfiguredMachines(ctx, []controlplane.ConfiguredMachine{{
+		ConfigKey: "devbox", DisplayName: "开发机", Kind: controlplane.MachineKindRemote,
+		Endpoint: "http://devbox:7777", SecretRef: "config.targets.devbox.token",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	event, err := s.SetMachineStatusWithControlEvent(ctx, "devbox", controlplane.MachineStatusConnected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != controlplane.ControlEventKindMachineUpsert || event.ResourceID != "devbox" || event.ControlRevision != 1 {
+		t.Fatalf("event = %+v", event)
+	}
+	var machine controlplane.Machine
+	if err := json.Unmarshal(event.Payload, &machine); err != nil {
+		t.Fatal(err)
+	}
+	if machine.Status != controlplane.MachineStatusConnected || machine.LastSeenAt == nil {
+		t.Fatalf("machine payload = %+v", machine)
+	}
+	events, err := s.ControlEventsAfter(ctx, 0, 10)
+	if err != nil || len(events) != 1 || events[0].ResourceID != "devbox" {
+		t.Fatalf("control events = %+v err=%v", events, err)
 	}
 }
 

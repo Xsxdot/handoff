@@ -95,13 +95,14 @@ type GitStatusEntryDTO struct {
 
 // GitStatusSnapshotDTO 是公开 Workspace Git 基础状态。
 type GitStatusSnapshotDTO struct {
-	WorkspaceID string              `json:"workspace_id"`
-	Branch      string              `json:"branch,omitempty"`
-	HeadOID     string              `json:"head_oid,omitempty"`
-	Upstream    string              `json:"upstream,omitempty"`
-	Ahead       int                 `json:"ahead"`
-	Behind      int                 `json:"behind"`
-	Entries     []GitStatusEntryDTO `json:"entries"`
+	WorkspaceID  string              `json:"workspace_id"`
+	IsRepository bool                `json:"is_repository"`
+	Branch       string              `json:"branch,omitempty"`
+	HeadOID      string              `json:"head_oid,omitempty"`
+	Upstream     string              `json:"upstream,omitempty"`
+	Ahead        int                 `json:"ahead"`
+	Behind       int                 `json:"behind"`
+	Entries      []GitStatusEntryDTO `json:"entries"`
 }
 
 // CreateTerminalRequest 是普通 PTY 创建请求。

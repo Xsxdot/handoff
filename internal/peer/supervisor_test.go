@@ -139,7 +139,7 @@ func TestSupervisorClientErrorSetsUnavailable(t *testing.T) {
 
 func TestSupervisorReportsNegotiatedCapabilities(t *testing.T) {
 	client := &fakePeerClient{helloCaps: map[string]int{
-		"catalog": 1, "machine_events": 1, CapabilityFiles: 1, "unknown": 1,
+		"catalog": 1, "machine_events": 1, CapabilityFiles: 1, CapabilityGit: 1, "unknown": 1,
 	}}
 	var gotProtocol int
 	var gotCapabilities map[string]int
@@ -150,7 +150,7 @@ func TestSupervisorReportsNegotiatedCapabilities(t *testing.T) {
 		},
 	})
 	supervisor.Run(context.Background())
-	if gotProtocol != 1 || gotCapabilities[CapabilityFiles] != 1 {
+	if gotProtocol != 1 || gotCapabilities[CapabilityFiles] != 1 || gotCapabilities[CapabilityGit] != 1 {
 		t.Fatalf("negotiated = protocol:%d capabilities:%+v", gotProtocol, gotCapabilities)
 	}
 	if _, ok := gotCapabilities["unknown"]; ok {
