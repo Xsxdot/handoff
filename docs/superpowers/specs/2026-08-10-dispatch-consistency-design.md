@@ -110,15 +110,12 @@ func classifyLocalDirty(porcelain string) (tracked []string, untracked []string)
 **拒发**（退出码非零，不发起 HTTP 请求）：
 
 ```
-本地工作区有 3 处未提交的已跟踪改动，executor 看不到它们：
-  internal/agentd/workspace.go
-  cmd/dispatch.go
-  README.md
-远程派发会基于不含这些改动的基线开工。请先 git commit 或 git stash；
-确要照现状派发，加 --allow-dirty。
+本地工作区有 3 处未提交的已跟踪改动，executor 看不到它们：internal/agentd/workspace.go, cmd/dispatch.go, README.md
+远程派发会基于不含这些改动的基线开工。请先 git commit 或 git stash；确要照现状派发，加 --allow-dirty
 ```
 
-文件数超过 5 个时只列前 5 个，末行补 `... 另有 N 处`。
+文件数超过 5 个时只列前 5 个，末尾补 `... 另有 N 处`。文件名列表与下面的未跟踪警告
+共用同一个排版函数——两处格式必须一致，否则同一份信息在两条消息里长得不一样。
 
 **未跟踪警告**（stderr，照常派发）：
 
