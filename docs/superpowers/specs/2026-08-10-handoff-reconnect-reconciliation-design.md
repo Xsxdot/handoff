@@ -257,6 +257,8 @@ type ReconcileOutcome struct {
   > 这条 spike 结论写在代码注释里而非 backlog 里，本 spec 的 brainstorm 阶段没读到，是在 writing-plans 核准签名时才撞见的。教训记在这里：**降级告警的注释里往往埋着已经做过的探针结论**。
 - ❓ 水位用消息 id 还是 `completed` 时间戳（唯一剩下的 opencode 待验项，可与实现同批验）
 
+  > **已定（实现选型，8/10 真机验证通过）**：水位用**消息 id**。依据是 spec §2.2 的不变量——一个断连窗口内至多跨越一个回合边界，因此「最后一条 assistant 消息 id 与水位不同」无歧义地等于「有一个新的已完结回合没被消费」，不需要任何时间序假设，也不怕两条消息落在同一毫秒。`completed` 时间戳只用作「回合是否已完结」的判据（`CompletedMS==0` = 仍在进行），不进水位。
+
 ### 7.2 grok
 
 - ❓ **`session/load` 到底重不重放历史 `session/update`**。ACP 协议文档说会，但没实测过。若重放，**热重连路径现在就可能在产生重复事件**——这是独立于 B38 的既有正确性问题，探针要一并回答，结论若为「重放」则本设计对 grok 的形态要重新考虑（可能不需要主动查询，只需要去重）
@@ -304,6 +306,18 @@ type ReconcileOutcome struct {
 - **中途断连**：agentd 不动，掐掉 SSE/WS → 对账补回
 - **权限丢失**：断连期间产生权限请求 → 对账重新上报 → 工单只有**一张**
 - **`--force`**：造一个对账判不出来的现场 → 收口成功 → 事件写明人工强制
+
+**实测证据（8/10，devbox 旁挂实例 127.0.0.1:7779、独立 datadir `/tmp/b38-e2e/data`、独立 repo `/tmp/b38-e2e/repo`，与生产 7777 零交集；执行者 opencode，模型 opencode-go/deepseek-v4-flash）：**
+
+- **armed + 空水位**（B38 头号场景，spec §8.1 断言 1）：dispatch 任务 `60a9bbf5-791c-43c1-be74-5c85af336d0a`（plan2，13 个实现小步），20s 时 kill agentd，黑洞窗口内轮询 opencode HTTP API 直至回合真正完结（`completed=1786365242255` 非零、提交 `615919f` 已落地），重启后日志：`对账完成：已补发断连期间丢失的终态 ... event=result armed=true` → `恢复后对账完成 ... trigger=startup emitted=1`；任务离开 `running` → `waiting_review`，事件流出现补发的 `completed`（commit `615919ffa5b0c002294f74fdca17e4c964219799`）。随后 `continue` 产出第二个真实提交 `4d40079`（README 含 `B38-SECOND`），证明补发后会话仍可用。
+- **armed + 水位落后**（spec §8.1 断言 1 的另一形态）：任务 `9a9c28b5-95e8-4d25-b65f-07c7505b70ea` 回复第一问后 kill agentd，回合在窗口内完结（尾部 `msg_febac60000011aZCBXvgXeTsYz`、completed=1786365390806），盘上水位 `msg_feba122a2001Smu8LwcJu7zEA2`，两者不同；重启后 `对账完成：已补发断连期间丢失的终态 ... event=result armed=true` → `emitted=1` → `waiting_review`。
+- **幂等**（spec §8.1 断言 3）：同一次重启里，`c0888dd7`（前一轮场景、终态早已送达）`对账结论：终态已送达过，无需补发` → `emitted=0`；对已对过账的 `b2c0b8f1` 再跑 `handoff resume`，报告 `emitted=0`，事件流无重复 `completed`。
+- **以提问收尾的回合还原成 question**（spec §3.3 核心断言，§8.1 断言 6）：任务 `a059b32a-0e25-486e-bec1-a5806056b4cd`（planq2，两个只有审核者能定的具体值），模型提问后 reply 只回答一个值、故意留第二个，随即 kill agentd；模型的反问回合在窗口内完结（尾部 `{"ask":"收到，保留份数=7。请提供备份目标目录（绝对路径）。"}`、completed=1786366380965），重启后 `对账完成：已补发断连期间丢失的终态 ... event=question note="补回了一条断连期间丢失的提问" armed=true` → `emitted=1` → `任务状态迁移 from=running to=waiting_answer reason=question`；任务出现一张可回答的 pending question 工单（`8d7c43fb`），`reply --answer` 后模型真的续接（进入实现阶段并触达权限门）。
+
+**未覆盖**（如实记录）：
+- **中途断连**（SSE 抖动而非 agentd 重启）：真机上未能稳定制造出「agentd 不动、SSE 断流」的现场（`onReconnect` 回调触发需掐断 serve 与 agentd 之间的连接，本机旁挂实例难以无副作用模拟）。该触发点已由单测覆盖（`TestResumeTriggersReconcile`/`TestReconcileAfterRecoverySwallowsError`），真机一格空缺。
+- **`--force` 收口**：造「对账判不出」的现场需让 executor 真的还在忙，本机复现成本过高，未做真机验收；该路径已由单测覆盖（`TestRecoverStuckForceTransitsToReview`）。
+- **权限重新上报**：opencode 已实证捧不回来（spec §7.1），无真机可验。
 
 ### 8.4 回归锚
 
