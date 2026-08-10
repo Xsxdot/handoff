@@ -261,7 +261,7 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true,
 			RepoDirtyCount: dirtyCount, RepoDirtyFiles: dirtyFiles}
 		if !isExisting {
-			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	case req.Worktree != "":
 		// 用户树：归属校验 → 脏检查 → 在其中 checkout
@@ -277,7 +277,7 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false, PrevRef: prev}
 		if !isExisting {
-			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	default:
 		// 原地：脏检查主仓 → checkout / checkout -b
@@ -299,7 +299,7 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		}
 		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false, PrevRef: prev}
 		if !isExisting {
-			ws.NewBranchTip = branchTip(ctx, req.Repo, branch)
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	}
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
@@ -519,15 +519,40 @@ func currentRef(ctx context.Context, dir string) string {
 //
 // 参数：repo 为主仓库路径，branch 为分支名
 //
-// 返回：40 位 sha；取不到时返回空串（调用方据此保守处置——补偿侧「取不到」
-// 与「对不上」同样不删分支）
-func branchTip(ctx context.Context, repo, branch string) string {
-	out, _, err := gitRun(ctx, repo, "rev-parse", "refs/heads/"+branch)
+// 返回：
+//   - 成功时返回 40 位 sha 与 nil
+//   - 取不到时返回空串与非 nil 错误（分支不存在、悬空引用、git 调用失败）
+//
+// 注意：失败不再塌缩成空串，也不在此处打日志——两件事都交给调用方。补偿侧的
+// 决策必须能区分「尖端取不到」与「分支不是本次新建的」，旧签名让这两件事共用
+// 空串，正是那道闸无法被单独测试的根因（见
+// docs/superpowers/specs/2026-08-10-compensation-branch-decision-design.md §2）。
+func branchTip(ctx context.Context, repo, branch string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "refs/heads/"+branch)
 	if err != nil {
-		log().Warn("取分支尖端失败", "repo", repo, "branch", branch, "cause", err)
+		return "", fmt.Errorf("git rev-parse refs/heads/%s: %s: %w", branch, strings.TrimSpace(stderr), err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// recordNewBranchTip 记录刚新建分支的尖端，作为补偿路径复核「自创建以来零提交」
+// 的基线。PrepareWorkspace 的三条建分支路径（managed worktree / 用户树 / 原地）
+// 共用它，避免同一段告警逻辑抄三遍。
+//
+// 参数：repo 为主仓库路径，branch 为刚新建的分支名
+//
+// 返回：取到则为 40 位 sha；取不到返回空串。
+//
+// 注意：取不到时返回空串是刻意的保守选择——没记到基线意味着补偿届时无从复核，
+// 空串会让 decideBranchAction 判成 branchKeepNotOurs，即保留该分支不删。代价是
+// 补偿时日志说不清「为什么不删」，所以失败必须在**这里**留下 WARN。
+func recordNewBranchTip(ctx context.Context, repo, branch string) string {
+	tip, err := branchTip(ctx, repo, branch)
+	if err != nil {
+		log().Warn("新建分支后取尖端失败，补偿将保留该分支", "repo", repo, "branch", branch, "cause", err)
 		return ""
 	}
-	return strings.TrimSpace(out)
+	return tip
 }
 
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
