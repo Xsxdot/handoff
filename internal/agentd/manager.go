@@ -502,7 +502,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	executorStarted := false
 	defer func() {
 		if err != nil && !executorStarted {
-			m.compensateManagedWorktree(ctx, req.Repo, ws)
+			m.compensateWorkspace(ctx, req.Repo, ws)
 		}
 	}()
 
@@ -591,22 +591,94 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	return task, nil
 }
 
-// compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
-// worktree（P2-2）。
+// compensateWorkspace 在 dispatch 后续步骤失败时复原已准备好的工作区。
 //
-// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后 executor 接管前
-// 的任何步骤失败（MkdirAll/WriteFile/CreateTask/SetTaskField/adapter.Start），任务
-// 要么没落库、要么落 failed——两者都没有 done 清理路径（done 只认 waiting_review），
-// worktree 成为孤儿永久占用磁盘。本函数由 Dispatch 的 defer 统一调用（见 Dispatch
-// 的 executorStarted 注释），失败只记 Error，不覆盖/不替换原始派发错误。
-func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws Workspace) {
-	if !ws.Managed || ws.WorkDir == "" {
+// why：PrepareWorkspace 成功意味着磁盘上已经有了工作树、且分支已经建好/切好。
+// 若随后 executor 接管前的任何步骤失败（MkdirAll/WriteFile/CreateTask/
+// SetTaskField/adapter.Start），任务要么没落库、要么落 failed——两者都没有 done
+// 清理路径（done 只认 waiting_review），痕迹会永久留在用户的仓库里：managed
+// 模式留下孤儿 worktree 与挡路的空分支（同名重试直接撞 already exists，B39），
+// 非 managed 模式更直接——用户的工作树就停在那个空分支上。
+//
+// 参数：
+//   - ctx: 控制补偿期间的 git 调用
+//   - repo: 主仓库路径
+//   - ws: PrepareWorkspace 的产出
+//
+// 注意：
+//   - 由 Dispatch 的 defer 统一调用，且只在 executor 未接管时（见 executorStarted
+//     注释）；executor 接管后删工作树是把运行中的任务脚下抽空
+//   - 全程只记日志，**不覆盖也不替换原始派发错误**——审核者要看的是任务为什么
+//     没派出去，补偿成败是次要信息
+//   - 三条 fail-safe：worktree 删除失败 / 切回原 ref 失败 / 分支尖端对不上，
+//     任一命中都保留现场不再往下做。宁可留残留，不可误删
+func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Workspace) {
+	// 空值守卫：现有调用点把 defer 注册在 PrepareWorkspace 成功之后，理论上到不了
+	// 这里，但补偿函数本身不该依赖调用点的注册位置
+	if ws.WorkDir == "" {
 		return
 	}
-	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
-	if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
-		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
+	m.log.Warn("dispatch 后续失败，补偿复原工作区", "repo", repo, "workdir", ws.WorkDir,
+		"managed", ws.Managed, "branch", ws.Branch, "prev_ref", ws.PrevRef)
+
+	if ws.Managed {
+		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+			// 工作树还在，分支被它 checkout 着，git 也会拒绝删除；且失败现场要留给人排查
+			m.log.Error("补偿清理 managed worktree 失败，保留分支待查",
+				"repo", repo, "workdir", ws.WorkDir, "branch", ws.Branch, "cause", err)
+			return
+		}
+	} else {
+		if ws.PrevRef == "" {
+			m.log.Warn("补偿无法复原：未记录原 ref，工作树仍停在任务分支上",
+				"workdir", ws.WorkDir, "branch", ws.Branch,
+				"manual", "git -C "+ws.WorkDir+" checkout <你原来的分支>")
+			return
+		}
+		if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+			m.log.Error("补偿切回原 ref 失败，工作树仍停在任务分支上",
+				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef,
+				"stderr", truncateRunes(stderr, 300), "cause", err)
+			return
+		}
+		m.log.Info("补偿已切回原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
 	}
+	m.deleteCreatedBranch(ctx, repo, ws)
+}
+
+// deleteCreatedBranch 删除本次 dispatch 新建的分支（补偿路径专用）。
+//
+// why 这件事不放进 RemoveManagedWorktree：那个函数服务的是 Done/Stop 归档场景，
+// 「只删工作树不删分支」在那里完全正确——分支上是任务成果。补偿场景的要求正好
+// 相反：分支是几秒前刚建的，executorStarted 守卫保证零提交，留着只会挡路。
+// 同一个函数满足不了相反的两组要求，所以在补偿侧单独承担。
+//
+// 参数：ctx 控制 git 调用；repo 主仓库路径；ws 为 PrepareWorkspace 的产出
+//
+// 注意：
+//   - 调用前必须已经确保分支不再被任何工作树 checkout（managed 已删树 /
+//     非 managed 已切回原 ref），否则 git 会拒绝
+//   - NewBranchTip 为空 = 分支不是本次新建的，是用户的东西，一律不动
+func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Workspace) {
+	if ws.NewBranchTip == "" {
+		return
+	}
+	m.log.Info("补偿删除本次新建的分支", "repo", repo, "branch", ws.Branch, "tip", ws.NewBranchTip)
+	// 复核尖端：executorStarted 守卫理论上保证零提交，但删分支不可逆，
+	// 宁可留个残留也不能删错。branchTip 取不到时返回空串，同样落进这一支
+	if cur := branchTip(ctx, repo, ws.Branch); cur != ws.NewBranchTip {
+		m.log.Warn("分支尖端与创建时不符，疑似已有提交，保留待查",
+			"branch", ws.Branch, "expect", ws.NewBranchTip, "actual", cur)
+		return
+	}
+	// 用 -D 而非 -d：分支起点可能领先仓库当前 HEAD，-d 会因「未合并」误拒；
+	// 而「自创建以来零提交」已由上一步实证，-D 在这里是确定性而非暴力
+	if _, stderr, err := gitRun(ctx, repo, "branch", "-D", ws.Branch); err != nil {
+		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
+			"stderr", truncateRunes(stderr, 300), "cause", err)
+		return
+	}
+	m.log.Info("补偿删除分支完成", "repo", repo, "branch", ws.Branch)
 }
 
 // Continue 向任务续发修改指令：要求任务处于 waiting_review，先回迁 running 再
