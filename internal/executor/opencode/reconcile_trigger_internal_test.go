@@ -14,7 +14,7 @@ func TestResumeTriggersReconcile(t *testing.T) {
 	})
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_old")
+	r := newTestRun(t, a, srv.URL, "msg_old", true)
 
 	// 直接调对账触发点的那段逻辑：Resume 的完整路径需要真实 shim，
 	// 此处验的是「reattach 成功后确实调了 Reconcile」这一条接线

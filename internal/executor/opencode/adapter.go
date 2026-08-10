@@ -301,6 +301,16 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 		return err
 	}
+	// 会话已由 startRun 新建成功：此刻起水位可信（空水位 = 尚无回合结束，B38）。
+	// armed=true 只在这里置——它语义是「会话是本版本 agentd 亲手新建的」，不是
+	// 「serve 进程起来了」（冷恢复也会拉 serve，但那是老会话，armed 必须保持原值）
+	if werr := writeProcInfo(req.TaskDir, &procInfo{
+		Handle: proc.Handle, Port: proc.Port, Password: proc.Password,
+		WatermarkArmed: true,
+	}); werr != nil {
+		a.log.Warn("新建会话后写 armed 标记失败，对账可能误判水位可信度",
+			"task", req.Task.ID, "cause", werr)
+	}
 	return nil
 }
 

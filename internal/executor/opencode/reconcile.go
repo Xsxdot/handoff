@@ -34,8 +34,10 @@ import (
 //     抖动不该把能恢复的任务判成不可恢复
 //
 // 注意：
-//   - 首次对账（水位为空串）**不补发**，只把当前尾部认作已消费。否则升级到本
-//     版本的存量任务会在第一次恢复时集体重放最后一个回合
+//   - 是否补发由 WatermarkArmed 决定（见 proc.go 的 armed 语义）：未 armed 的
+//     legacy 会话**不补发**，只把当前尾部认作已消费基线——否则升级到本版本的
+//     存量任务会在第一次恢复时集体重放最后一个回合；armed 会话空水位即「第一个
+//     回合尚未消费」，必须补发（B38 头号场景）
 //   - 「补发 → 前进水位」在 turnMu 下串行完成，与实时路径的 mapIdle 互斥；
 //     拆成两步会让两条路同时判「未消费」而补出两条终态
 func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.ReconcileOutcome, error) {
@@ -80,17 +82,23 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 		return executor.ReconcileOutcome{TurnEnded: true,
 			Note: "回合已完结，且终态此前已送达，无需补发"}, nil
 	}
-	if pi.LastTurnMsgID == "" {
-		// 首次对账：把当前尾部认作已消费。存量任务升级到本版本后水位是空的，
-		// 不做这条保护会让它们在第一次恢复时集体重放最后一个回合
+	if !pi.WatermarkArmed {
+		// 未 armed：会话不是本版本 agentd 亲手新建的（legacy 任务），空水位不可信——
+		// 它分不清「从没消费过」和「上一回合终态已正常送达」。把当前尾部认作基线
+		// 不补发，防止升级后第一次恢复集体重放最后一个回合。
+		//
+		// 为什么 legacy 任务必须保持 unarmed（而不是这里顺手置 true）：多回合任务
+		// 的回合 1 终态已送达、任务进 waiting_review，用户 continue 后任务回 running、
+		// 回合 2 刚发 prompt 尚无 assistant 消息——会话尾部仍是回合 1 那条 completed。
+		// 若把这样会话判成 armed，就会把已审过的回合 1 终态再补发一遍
 		pi.LastTurnMsgID = msg.ID
 		if werr := writeProcInfo(r.taskDir, pi); werr != nil {
 			a.log.Warn("首次对账写水位失败", "task", taskID, "cause", werr)
 		}
-		a.log.Info("对账结论：首次对账，已把当前会话尾部认作基线，不补发",
-			"task", taskID, "msg", msg.ID)
+		a.log.Info("对账结论：未 armed 认基线，已把当前会话尾部记为基线，不补发",
+			"task", taskID, "msg", msg.ID, "armed", false)
 		return executor.ReconcileOutcome{TurnEnded: true,
-			Note: "首次对账，已记录当前进度为基线（不回溯此前的回合）"}, nil
+			Note: "会话非本版本新建（legacy），已把当前进度记为基线（不回溯此前的回合）"}, nil
 	}
 
 	ev, note := a.classifyReconciled(r, msg)
@@ -105,7 +113,7 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 			"task", taskID, "msg", msg.ID, "cause", werr)
 	}
 	a.log.Info("对账完成：已补发断连期间丢失的终态",
-		"task", taskID, "msg", msg.ID, "event", ev.Type, "note", note)
+		"task", taskID, "msg", msg.ID, "event", ev.Type, "note", note, "armed", true)
 	return executor.ReconcileOutcome{TurnEnded: true, Emitted: 1, Note: note}, nil
 }
 

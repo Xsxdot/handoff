@@ -292,17 +292,34 @@ func serveLogTail(serveLogPath string) string {
 // 消息 id。断连恢复后拿它与会话尾部比对——不同即说明有一个已完结的回合没被
 // 消费，需要补发。
 //
+// WatermarkArmed 是水位可信标记（B38 订正），语义：**这个会话是本版本 agentd
+// 亲手新建的**，因此「水位为空」可信地表示「尚无任何回合结束」——对账见到
+// armed + 空水位 + 尾部已完结就必须补发，这正是 B38 的头号现场（任务的第一
+// 个回合死在断连窗口里，水位天然为空，旧判定会把它误当「存量任务升级」吞掉）。
+//
+// 反例（为什么不能按「这个任务在被维护」理解）：多回合任务的回合 1 终态已正常
+// 送达、任务进 waiting_review，用户 continue 后任务回 running、回合 2 刚发出
+// prompt 尚未产出 assistant 消息——此时会话尾部仍是回合 1 那条 completed 消息。
+// armed 的任务不会踩到（水位 == 回合 1 的 msg.ID，走「已送达过」），但 legacy
+// 任务水位是空的、分辨不了，会把它当丢失补发一遍。故 legacy 任务必须保持 unarmed。
+//
+// 什么时候置 true：
+//   - 新建会话成功时（Start 的 startRun 建新会话那一刻）——会话全新，「空水位」
+//     无歧义
+//   - fresh 模式 Resume（新会话 + 水位清零）——同上
+//
+// 什么时候不动它：reattach / cold-recovery 沿用盘上已有的值。老任务因此保持
+// unarmed、升级保护完整；本版本起出生的任务一出生即 armed，不受影响。
+//
 // 为什么用消息 id 而不是时间戳：一个断连窗口内至多跨越一个回合边界（spec §2.2，
 // 因为新回合只能由经过 agentd 的 Start/Send 发起），因此「id 不同」就无歧义地
 // 等于「有新的已完结回合」，不需要任何时间序假设。
-//
-// 空串是合法值：老任务的 proc.json 没有这个字段，读出空串即「从未对过账」，
-// 首次对账会把当前尾部认作已消费（见 reconcile.go 的首次对账语义）。
 type procInfo struct {
-	Handle        prochost.Handle `json:"handle"`
-	Port          int             `json:"port"`
-	Password      string          `json:"password"`
-	LastTurnMsgID string          `json:"last_turn_msg_id,omitempty"`
+	Handle         prochost.Handle `json:"handle"`
+	Port           int             `json:"port"`
+	Password       string          `json:"password"`
+	LastTurnMsgID  string          `json:"last_turn_msg_id,omitempty"`
+	WatermarkArmed bool            `json:"watermark_armed,omitempty"`
 }
 
 // writeProcInfo 把 serve 连接凭据写入任务目录 proc.json（0600）。
@@ -335,8 +352,8 @@ func readProcInfo(taskDir string) (*procInfo, error) {
 	if err := json.Unmarshal(b, &pi); err != nil {
 		return nil, fmt.Errorf("解析恢复凭据 %s: %w", procInfoFileName, err)
 	}
-	// 水位不进完整性校验：它是 B38 新加的字段，存量 proc.json 里没有。
-	// 若把它算进「字段不完整」，agentd 升级后所有在跑的任务会一起被判死
+	// 水位与 armed 标记不进完整性校验：它们是 B38 新加的字段，存量 proc.json
+	// 里没有。若把它们算进「字段不完整」，agentd 升级后所有在跑的任务会一起被判死
 	if pi.Handle.LockPath == "" || pi.Port == 0 || pi.Password == "" {
 		return nil, fmt.Errorf("恢复凭据 %s 字段不完整", procInfoFileName)
 	}

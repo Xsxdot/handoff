@@ -118,8 +118,13 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			return executor.ResumeOutcome{Alive: false,
 				Note: fmt.Sprintf("重起 opencode serve 失败：%v", err)}, nil
 		}
+		// 冷恢复重写 proc.json：沿用盘上已有的水位与 armed 值，不在这里改动。
+		// why：armed 的语义是「会话是否本版本 agentd 亲手新建」。冷恢复只是重起
+		// serve 进程、会话本身还在（sqlite 持久）——它不是新会话，armed 必须保持
+		// 原值：legacy 任务保持 unarmed（升级保护完整），本版本出生的任务保持 armed
 		if werr := writeProcInfo(req.TaskDir, &procInfo{
 			Handle: newProc.Handle, Port: newProc.Port, Password: newProc.Password,
+			LastTurnMsgID: si.LastTurnMsgID, WatermarkArmed: si.WatermarkArmed,
 		}); werr != nil {
 			a.log.Warn("冷恢复写 proc.json 失败，下次重启恢复将不可用",
 				"task", req.TaskID, "cause", werr)
@@ -154,9 +159,12 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 				"old", sessionID, "new", newID)
 			sessionID, mode = newID, executor.ResumeModeFresh
 			// 新会话让旧水位失去意义：不清零的话下次对账会拿旧会话的消息 id
-			// 去比新会话的尾部，必然判「有未消费的回合」而补出一条假终态
+			// 去比新会话的尾部，必然判「有未消费的回合」而补出一条假终态。
+			// armed 保持 true：新会话同样处于 B38 持续水位维护之下，空水位
+			// 意味着「新会话的第一个回合还没被消费」，该补发时必须补发
 			if werr := writeProcInfo(req.TaskDir, &procInfo{
 				Handle: proc.Handle, Port: proc.Port, Password: proc.Password,
+				WatermarkArmed: true,
 			}); werr != nil {
 				a.log.Warn("新会话清零对账水位失败", "task", req.TaskID, "cause", werr)
 			}

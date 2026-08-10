@@ -13,10 +13,11 @@ import (
 func TestProcInfoWatermarkRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	in := &procInfo{
-		Handle:        prochost.Handle{PID: 4242, LockPath: filepath.Join(dir, "proc.lock")},
-		Port:          7788,
-		Password:      "deadbeef",
-		LastTurnMsgID: "msg_abc123",
+		Handle:         prochost.Handle{PID: 4242, LockPath: filepath.Join(dir, "proc.lock")},
+		Port:           7788,
+		Password:       "deadbeef",
+		LastTurnMsgID:  "msg_abc123",
+		WatermarkArmed: true,
 	}
 	if err := writeProcInfo(dir, in); err != nil {
 		t.Fatalf("写恢复凭据失败: %v", err)
@@ -27,6 +28,9 @@ func TestProcInfoWatermarkRoundTrip(t *testing.T) {
 	}
 	if out.LastTurnMsgID != "msg_abc123" {
 		t.Fatalf("水位未往返：want msg_abc123, got %q", out.LastTurnMsgID)
+	}
+	if !out.WatermarkArmed {
+		t.Fatal("armed 标记未往返：write true 却读回 false")
 	}
 }
 
@@ -52,6 +56,9 @@ func TestProcInfoOldFormatReadsAsEmptyWatermark(t *testing.T) {
 	}
 	if out.LastTurnMsgID != "" {
 		t.Fatalf("旧格式的水位应为空串，got %q", out.LastTurnMsgID)
+	}
+	if out.WatermarkArmed {
+		t.Fatal("旧格式的 armed 标记应为 false（legacy 任务，升级保护依赖它）")
 	}
 	if out.Port != 7788 {
 		t.Fatalf("旧格式其余字段应正常读出，port got %d", out.Port)

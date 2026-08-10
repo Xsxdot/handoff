@@ -45,18 +45,19 @@ func testHandle(dir string) prochost.Handle {
 	return prochost.Handle{PID: 4242, LockPath: filepath.Join(dir, "proc.lock")}
 }
 
-// newTestRun 建一个挂在假 serve 上的运行态，水位设为 watermark。
-func newTestRun(t *testing.T, a *Adapter, srvURL, watermark string) *runState {
+// newTestRun 建一个挂在假 serve 上的运行态，水位设为 watermark、armed 设为 armed。
+func newTestRun(t *testing.T, a *Adapter, srvURL, watermark string, armed bool) *runState {
 	t.Helper()
 	taskDir := t.TempDir()
 	r := a.newRun("task-1", taskDir, taskDir)
 	r.session = "ses_test"
 	r.api = NewAPI(srvURL, "pw")
 	if err := writeProcInfo(taskDir, &procInfo{
-		Handle:        testHandle(taskDir),
-		Port:          1,
-		Password:      "pw",
-		LastTurnMsgID: watermark,
+		Handle:         testHandle(taskDir),
+		Port:           1,
+		Password:       "pw",
+		LastTurnMsgID:  watermark,
+		WatermarkArmed: armed,
 	}); err != nil {
 		t.Fatalf("写凭据失败: %v", err)
 	}
@@ -73,23 +74,27 @@ func drainOne(r *runState) (executor.AdapterEvent, bool) {
 	}
 }
 
-// TestReconcileEmitsLostTerminalEvent —— spec §8.1 断言 1：
-// 回合已完结、水位落后 → 补发 1 条，水位前进。
-func TestReconcileEmitsLostTerminalEvent(t *testing.T) {
+// TestReconcileArmedEmptyWatermarkEmits —— spec §8.1 断言 1，**B38 头号场景**：
+// armed（本版本新建的会话）+ 空水位 + 尾部已完结 → 补发 1 条，水位前进。
+//
+// why 这条是 B38 的核心：任务的第一个回合死在断连窗口里，水位天然为空。armed
+// 语义保证「空水位 = 尚无任何回合结束」，故必须补发——这正是旧判定（空水位一律
+// 认基线）吞掉的那个现场。
+func TestReconcileArmedEmptyWatermarkEmits(t *testing.T) {
 	srv := fakeSession(t, []map[string]any{
 		assistantMsg("msg_new", 1786348485642,
 			"活干完了\n"+`{"branch":"handoff/x","commit":"abc1234","summary":"改完了"}`),
 	})
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_old")
+	r := newTestRun(t, a, srv.URL, "", true) // 空水位 + armed
 
 	out, err := a.Reconcile(context.Background(), r.taskID)
 	if err != nil {
 		t.Fatalf("对账失败: %v", err)
 	}
 	if !out.TurnEnded || out.Emitted != 1 {
-		t.Fatalf("应补发 1 条终态，got TurnEnded=%v Emitted=%d note=%s",
+		t.Fatalf("armed+空水位+已完结 应补发 1 条，got TurnEnded=%v Emitted=%d note=%s",
 			out.TurnEnded, out.Emitted, out.Note)
 	}
 	ev, ok := drainOne(r)
@@ -108,15 +113,44 @@ func TestReconcileEmitsLostTerminalEvent(t *testing.T) {
 	}
 }
 
-// TestReconcileIsIdempotent —— spec §8.1 断言 2（幂等的核心断言）：
-// 回合已完结但水位已过 → 补 0 条。
+// TestReconcileUnarmedBaselineDoesNotEmit —— spec §8.1 断言 2（升级保护）：
+// 未 armed（legacy 会话）+ 空水位 + 尾部已完结 → 补 0 条，只认基线。
+//
+// why：legacy 任务的空水位分辨不了「从没消费过」和「上一回合终态已正常送达」。
+// 若补发会把已审过的回合终态重放一遍（多回合任务的尾部是回合 1 那条 completed）。
+func TestReconcileUnarmedBaselineDoesNotEmit(t *testing.T) {
+	srv := fakeSession(t, []map[string]any{
+		assistantMsg("msg_legacy", 1786348485642, "活干完了"),
+	})
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", false) // 空水位 + 未 armed
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 0 {
+		t.Fatalf("未 armed 认基线，不应补发，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	if _, ok := drainOne(r); ok {
+		t.Fatal("未 armed 认基线却补发了事件")
+	}
+	pi, _ := readProcInfo(r.taskDir)
+	if pi.LastTurnMsgID != "msg_legacy" {
+		t.Fatalf("认基线应把水位记到尾部 msg_legacy，got %q", pi.LastTurnMsgID)
+	}
+}
+
+// TestReconcileIsIdempotent —— spec §8.1 断言 3（幂等）：armed + 水位 == 尾部
+// msg.ID（终态已送达过）→ 补 0 条。
 func TestReconcileIsIdempotent(t *testing.T) {
 	srv := fakeSession(t, []map[string]any{
 		assistantMsg("msg_same", 1786348485642, "活干完了"),
 	})
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_same") // 水位 == 尾部消息
+	r := newTestRun(t, a, srv.URL, "msg_same", true) // 水位 == 尾部消息
 
 	out, err := a.Reconcile(context.Background(), r.taskID)
 	if err != nil {
@@ -130,7 +164,7 @@ func TestReconcileIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestReconcileSkipsWhenTurnStillRunning —— spec §8.1 断言 3：
+// TestReconcileSkipsWhenTurnStillRunning —— spec §8.1 断言 4：
 // 会话仍在忙 → 补 0 条，不改水位。
 func TestReconcileSkipsWhenTurnStillRunning(t *testing.T) {
 	srv := fakeSession(t, []map[string]any{
@@ -138,7 +172,7 @@ func TestReconcileSkipsWhenTurnStillRunning(t *testing.T) {
 	})
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_old")
+	r := newTestRun(t, a, srv.URL, "msg_old", true)
 
 	out, err := a.Reconcile(context.Background(), r.taskID)
 	if err != nil {
@@ -153,7 +187,7 @@ func TestReconcileSkipsWhenTurnStillRunning(t *testing.T) {
 	}
 }
 
-// TestReconcileQueryFailureDoesNotEmit —— spec §8.1 断言 4：
+// TestReconcileQueryFailureDoesNotEmit —— spec §8.1 断言 5：
 // 查询失败 → 补 0 条并返回 error（调用方据此只记 WARN，不改状态）。
 func TestReconcileQueryFailureDoesNotEmit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +195,7 @@ func TestReconcileQueryFailureDoesNotEmit(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_old")
+	r := newTestRun(t, a, srv.URL, "msg_old", true)
 
 	out, err := a.Reconcile(context.Background(), r.taskID)
 	if err == nil {
@@ -175,7 +209,7 @@ func TestReconcileQueryFailureDoesNotEmit(t *testing.T) {
 	}
 }
 
-// TestReconcileRestoresQuestionNotResult —— spec §8.1 断言 5，**本设计的核心断言**：
+// TestReconcileRestoresQuestionNotResult —— spec §8.1 断言 6，**本设计的核心断言**：
 // 以提问收尾的回合必须还原成 question 工单，而不是一条假的「做完了」。
 //
 // why 这条最重要：若对账一律合成 result，审核者会以为任务完成，实际模型正在等
@@ -187,7 +221,7 @@ func TestReconcileRestoresQuestionNotResult(t *testing.T) {
 	})
 	defer srv.Close()
 	a := newTestAdapter(t)
-	r := newTestRun(t, a, srv.URL, "msg_old")
+	r := newTestRun(t, a, srv.URL, "msg_old", true)
 
 	out, err := a.Reconcile(context.Background(), r.taskID)
 	if err != nil {
