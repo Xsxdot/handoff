@@ -812,11 +812,18 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 			}
 		}
 		_, b, err := conn.Read(readCtx)
+		// 顺序要紧：先分辨「是我们自己设的空闲期限到了」（外层 ctx 仍活着），
+		// 再分辨归档，最后才当普通断线交给外层重连。
+		//
+		// 为什么必须在 cancelRead() 之前读取 readCtx.Err()：cancel 之后它的 Err()
+		// 恒为 context.Canceled。若先 cancel 再判，idle>0 下任何读错误（归档的
+		// StatusNormalClosure、普通断线、对端重启）都会被误判成 ErrIdleTimeout——
+		// errArchived 与重连分支永远到不了，124 会掩盖一切。判据必须收紧到
+		// DeadlineExceeded 本身，而不是「非 nil」。
+		idleExpired := ctx.Err() == nil && errors.Is(readCtx.Err(), context.DeadlineExceeded)
 		cancelRead()
 		if err != nil {
-			// 顺序要紧：先分辨「是我们自己设的空闲期限到了」（外层 ctx 仍活着），
-			// 再分辨归档，最后才当普通断线交给外层重连
-			if ctx.Err() == nil && readCtx.Err() != nil {
+			if idleExpired {
 				return ErrIdleTimeout
 			}
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {

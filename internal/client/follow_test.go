@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,5 +172,82 @@ func TestFollowExitsOnArchive(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("交付 %d 条, want 1", n)
+	}
+}
+
+// TestFollowArchiveWithIdleSetIsNormal 验证 idle>0 时归档关闭仍被识别为正常终结
+// （nil），而不是被 cancelRead() 污染成 ErrIdleTimeout。
+//
+// 缺陷形态（真机验收实测）：streamOnce 的读循环在错误分诊之前先 cancelRead()，
+// 于是 readCtx.Err() 恒为 context.Canceled；判据又只问「非 nil」——两个叠加后
+// idle>0 时任何读错误都被判成 ErrIdleTimeout。归档的 StatusNormalClosure、普通
+// 断线、对端重启全被一锅端，errArchived 与重连分支永远到不了。而 124 的语义是
+// 「到点了，正常」，无人值守时没人会去查，B56 要根除的无人订阅真空就此复活。
+func TestFollowArchiveWithIdleSetIsNormal(t *testing.T) {
+	evs := []proto.Event{{Seq: 1, TaskID: "t1", Type: proto.EventTypeQuestion}}
+	ts := pushEvents(t, evs, func(c *websocket.Conn) {
+		_ = c.Close(websocket.StatusNormalClosure, "task archived")
+	})
+	n := 0
+	err := client.New(ts.URL, "").FollowEvents(t.Context(), "t1", false, time.Hour,
+		func(*proto.Event) error { n++; return nil })
+	if err != nil {
+		t.Fatalf("FollowEvents = %v, want nil（归档是正常终结）", err)
+	}
+	if n != 1 {
+		t.Fatalf("交付 %d 条, want 1", n)
+	}
+}
+
+// TestFollowAbruptCloseReconnectsNotIdleTimeout 验证 idle>0 且连接被粗暴断开
+// （不发关闭帧，模拟对端重启/网络切断）时 follow 走重连而不是误判空闲超时。
+func TestFollowAbruptCloseReconnectsNotIdleTimeout(t *testing.T) {
+	var mu sync.Mutex
+	conns := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		conns++
+		first := conns == 1
+		mu.Unlock()
+		if first {
+			// 第一次连接：不打招呼直接掐断（模拟对端重启/网络切断）
+			c.CloseNow()
+			return
+		}
+		// 第二次连接：持续推 progress，验证 follow 确实重连上了
+		for i := 1; ; i++ {
+			b, _ := json.Marshal(proto.Event{
+				Seq: int64(i), TaskID: "t1", Type: proto.EventTypeProgress})
+			if err := c.Write(r.Context(), websocket.MessageText, b); err != nil {
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}))
+	defer func() { ts.CloseClientConnections(); ts.Close() }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	err := client.NewWithWSTiming(ts.URL, "", 10*time.Millisecond, 50*time.Millisecond, 5*time.Second).
+		FollowEvents(ctx, "t1", false, time.Hour, func(*proto.Event) error { return nil })
+	if errors.Is(err, client.ErrIdleTimeout) {
+		t.Fatal("断线被误判成空闲超时：重连分支到不了")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("FollowEvents = %v, want context.DeadlineExceeded（测试自己收尾，证明 follow 一直在重连）", err)
+	}
+	mu.Lock()
+	got := conns
+	mu.Unlock()
+	if got < 2 {
+		t.Fatalf("服务端收到连接 %d 次, want >= 2（follow 未重连）", got)
 	}
 }
