@@ -74,21 +74,46 @@ func RenderPrompt(taskID, planContent string) (string, error) {
 	return buf.String(), nil
 }
 
-// ParseTrailer 从回合末消息文本提取协议 JSON（取最后一个以 { 开头的行）。
+// ParseTrailer 从回合末文本宽容提取协议 JSON（ask/finish）。
+//
+// 提取分两级：
+//   - 主路径：最后一个非空行，从该行第一个 { 起解码一个 JSON 值（容忍前缀
+//     与后缀正文）
+//   - 回退：主路径无果时，取最后一个「以 { 开头」的行按整行解码（旧规则）
 //
 // 返回：
 //   - kind: "ask"（附 Question）| "finish"（附 Branch/Commit/Summary）| "none"
 //   - t: 解析出的协议数据；kind 为 "none" 时为零值
 //
 // 注意：
-//   - 宽容语义：末行是普通文本时回退到更早的 { 开头行；找不到或 JSON 损坏时
-//     返回 "none"，绝不 panic（模型输出不可信，防御在边界上做）
+//   - 放宽只作用于最后一个非空行：正文中间复述协议 JSON 不会被误当成结论
+//   - 找不到或 JSON 损坏时返回 "none"，绝不 panic（模型输出不可信，防御在边界上做）
 //   - 纯函数：不打日志，由调用方记录提取结果
 func ParseTrailer(text string) (kind string, t Trailer) {
-	// 取最后一个以 { 开头的行：模型可能在正文中间输出过协议 JSON 后又追加
-	// 说明文字，只有最后一个才有「本回合结论」的语义
+	lines := strings.Split(text, "\n")
+
+	// 主路径：只在最后一个非空行上宽容提取（B48）。模型会把正文和协议 JSON
+	// 写在同一行（真机现场 `g.{"branch":...}`），旧的「整行以 { 开头」判据
+	// 认不出，于是判 none 走 git 兜底、用 git 实况顶掉模型自己报的结论。
+	//
+	// 为什么只放宽最后一行：放宽必然扩大误吞面——正文里复述协议格式的 JSON
+	// 会被当成本回合结论，这是 grok adapter 已经踩过的坑。限制在末行与收尾
+	// 纪律「作为本回合最后一行」对齐，正文中间写什么都不受影响。
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue // 末尾空行不算「最后一行」
+		}
+		if k, tr, ok := decodeProtocolJSON(line); ok {
+			return k, tr
+		}
+		break // 只试最后一个非空行，不向前扫
+	}
+
+	// 回退：现有规则原样保留——取最后一个「以 { 开头」的行。模型写完 trailer
+	// 又追加了一整行正文时，末行没有 {，靠这条兜住。
 	var last string
-	for _, line := range strings.Split(text, "\n") {
+	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "{") {
 			last = line
 		}
@@ -96,27 +121,49 @@ func ParseTrailer(text string) (kind string, t Trailer) {
 	if last == "" {
 		return "none", t
 	}
+	if k, tr, ok := decodeProtocolJSON(strings.TrimSpace(last)); ok {
+		return k, tr
+	}
+	return "none", t
+}
 
-	// 宽容解码：不设 DisallowUnknownFields，模型多带字段时仍能提取已知协议字段
+// decodeProtocolJSON 从 line 中第一个 { 起解码一个 JSON 值，并按协议字段分类。
+//
+// 参数：line 为已 TrimSpace 的单行文本
+//
+// 返回：
+//   - kind: "ask" | "finish"
+//   - t: 解析出的协议数据
+//   - ok: 是否解出了带协议字段的 JSON；false 时前两个返回值无意义
+//
+// 注意：
+//   - 用 json.Decoder 而非 Unmarshal：Decode 读满第一个完整 JSON 值即停，
+//     因此该值之后的正文（`{"ask":"q"} 好的`）不会让解析失败
+//   - 宽容解码：不设 DisallowUnknownFields，模型多带字段时仍能提取已知字段
+//   - 解出的 JSON 不含任何协议字段时返回 ok=false，由调用方继续往下判
+func decodeProtocolJSON(line string) (kind string, t Trailer, ok bool) {
+	i := strings.Index(line, "{")
+	if i < 0 {
+		return "", t, false
+	}
 	var payload struct {
 		Question string `json:"ask"`
 		Branch   string `json:"branch"`
 		Commit   string `json:"commit"`
 		Summary  string `json:"summary"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(last)), &payload); err != nil {
-		return "none", t
+	if err := json.NewDecoder(strings.NewReader(line[i:])).Decode(&payload); err != nil {
+		return "", t, false
 	}
 	t = Trailer{Question: payload.Question, Branch: payload.Branch,
 		Commit: payload.Commit, Summary: payload.Summary}
-
 	// ask 与 finish 协议互斥（模型按纪律一次只输出一种），问号优先判定
 	switch {
 	case t.Question != "":
-		return "ask", t
+		return "ask", t, true
 	case t.Branch != "" || t.Commit != "" || t.Summary != "":
-		return "finish", t
+		return "finish", t, true
 	default:
-		return "none", t
+		return "", Trailer{}, false
 	}
 }
