@@ -104,7 +104,7 @@ func isPermanent(err error) bool {
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
 type AttachInfo struct {
-	Task           proto.Task     `json:"task"`
+	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
 	RecentEvents   []proto.Event  `json:"recent_events"`
 }
@@ -254,7 +254,7 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 // 返回：
 //   - 任务列表；服务端保证空库时返回空切片而非 nil
 //   - 请求失败或响应非法时返回错误
-func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
+func (c *Client) ListTasks(ctx context.Context) ([]proto.TaskView, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/api/tasks", nil)
 	if err != nil {
 		return nil, fmt.Errorf("任务列表请求: %w", err)
@@ -263,7 +263,7 @@ func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.httpError("任务列表", resp)
 	}
-	var tasks []proto.Task
+	var tasks []proto.TaskView
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
 		return nil, fmt.Errorf("解析任务列表响应: %w", err)
 	}

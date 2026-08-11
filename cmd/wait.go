@@ -130,7 +130,7 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过：读取任务失败:", err)
 		return
 	}
-	res, err := syncTaskBranch(cmd.Context(), &info.Task)
+	res, err := syncTaskBranch(cmd.Context(), &info.Task.Task)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过:", err)
 		return
