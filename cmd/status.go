@@ -107,8 +107,14 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	}
 	fmt.Fprintln(w, "活跃")
 	for _, a := range st.Active {
-		fmt.Fprintf(w, "  %s  %s  %s  %s  %s\n",
+		line := fmt.Sprintf("  %s  %s  %s  %s  %s",
 			short8(a.ID), a.Name, a.State, a.Executor, liveText(a))
+		if unattended(a) {
+			// 追加而不是替换：executor 活着但没人听，与 executor 死了是两个独立结论，
+			// 昨晚的现场正是「存活 + 无人值守」这一格
+			line += "  ⚠ 无人值守"
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 
@@ -242,6 +248,31 @@ func liveText(a proto.ActiveTask) string {
 		return fmt.Sprintf("executor 已不在（%s）", a.Note)
 	default:
 		return fmt.Sprintf("存活性未知（%s）", a.Note)
+	}
+}
+
+// unattended 判断一个活跃任务是否处于「该有人听却没人听」的异常状态。
+//
+// 参数：
+//   - a: status 响应里的一个活跃任务
+//
+// 返回：
+//   - true 仅当：对端给出了 watchers（非 nil）、其值为 0、且状态属于
+//     pending / running / waiting_answer 三者之一
+//
+// 为什么判据写死而不做成配置：这三个状态里事件随时会来，没人听等于事件掉地上；
+// 而 waiting_review 是在等审核者裁决，挂几天都正常，本就不需要有人盯着。把它
+// 也算进来，这条标记会天天亮，一周之内就没人再看它了——误报是诊断标记最贵的
+// 失败模式。终态同理。
+func unattended(a proto.ActiveTask) bool {
+	if a.Watchers == nil || *a.Watchers > 0 {
+		return false
+	}
+	switch proto.TaskState(a.State) {
+	case proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateWaitingAnswer:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/proto"
 )
@@ -84,4 +85,49 @@ func listWatchers(t *testing.T, srv *Server, taskID string) int {
 	}
 	t.Fatalf("任务列表里没有 %s", taskID)
 	return 0
+}
+
+// TestStatusCarriesStallTimeout 验证 /api/status 把 agentd 自己的 stalltimeout
+// 报出来——这是 wait --follow 判断「--timeout 会不会抢在 stalled 前面」的唯一依据。
+//
+// 刻意设成 90m 而不是默认的 2h：默认值恒等于零值之外的另一个常数，测不出
+// 「到底是读了配置还是写死了」。
+func TestStatusCarriesStallTimeout(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	m.cfg.StallTimeout = 90 * time.Minute
+	resp, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.StallTimeout != "1h30m0s" {
+		t.Errorf("StallTimeout = %q, want %q", resp.StallTimeout, "1h30m0s")
+	}
+}
+
+// TestStatusCarriesWatchers 验证活跃任务带上订阅数，且是指针（老 agentd 缺字段
+// 与「确实是 0」必须可区分）。
+func TestStatusCarriesWatchers(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	const id = "task-status-watch"
+	createRunningTask(t, st, id)
+
+	resp, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(resp.Active) != 1 {
+		t.Fatalf("活跃任务数 = %d, want 1", len(resp.Active))
+	}
+	if resp.Active[0].Watchers == nil || *resp.Active[0].Watchers != 0 {
+		t.Fatalf("无人订阅时 Watchers = %v, want 指向 0 的指针", resp.Active[0].Watchers)
+	}
+	_, cancel := hub.Subscribe(id)
+	defer cancel()
+	resp, err = m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.Active[0].Watchers == nil || *resp.Active[0].Watchers != 1 {
+		t.Fatalf("一个订阅者时 Watchers = %v, want 指向 1 的指针", resp.Active[0].Watchers)
+	}
 }
