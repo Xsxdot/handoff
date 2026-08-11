@@ -2,6 +2,7 @@
 //
 // 职责：
 //   - renderQuestionTicket：把 opencode 的 question 请求渲染成审核者可读的工单文本
+//   - parseQuestionAnswers：把审核者的自由文本答复折算回 opencode 要的 answers
 //
 // 边界：
 //   - 全部是纯函数：不碰 runState、不发 HTTP、不打日志、不读时钟
@@ -75,8 +76,8 @@ func renderQuestionTicket(qs []QuestionInfo) string {
 //     必须重发工单，**不得**猜一个最接近的选项
 //
 // 注意：
-//   - 分级匹配：编号 `问.选`（单问时允许裸选项号）→ label 原文（TrimSpace +
-//     大小写归一后精确匹配）→ 该问 Custom 时原文透传
+//   - 分级匹配：编号 `问.选`（每段也接受裸选项号——该段的第 N 个选项）→
+//     label 原文（TrimSpace + 大小写归一后精确匹配）→ 该问 Custom 时原文透传
 //   - 多问用分号分隔，多选用逗号分隔；两级分隔符不重叠，故可先分号后逗号
 //   - 猜错一个选项的代价是模型按错误前提继续干活，重问的代价只是审核者多按
 //     一次——错误方向必须选后者（与 B6「误升级好过漏放行」同一取舍）

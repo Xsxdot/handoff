@@ -1638,6 +1638,10 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		r.captureStartCommit(a)
 		return
 	}
+	// 回合级去重标记必须在回合终结时恰好取走一次，且与走哪条分支无关：
+	// 漏在 finish/none 分支上不清，标记就漏到下一回合，把那一回合的真提问
+	// 误抑制掉——任务停在 running 无人知晓，正是 B49 要消灭的形态
+	askedViaTool := r.takeAskedViaTool()
 	kind, t := turn.ParseTrailer(text)
 	switch kind {
 	case "ask":
@@ -1646,7 +1650,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		// 面对两份措辞不同的同一件事（grok 那次 askedViaTool 踩过的同一个坑）。
 		// 兜底通道存在的目的是「保证回合不静默结束」，工具已经问过时该诉求
 		// 已经满足
-		if r.takeAskedViaTool() {
+		if askedViaTool {
 			a.log.Debug("本回合已通过 question 工具提问，抑制 trailer 提问工单",
 				"task", r.taskID, "trailer_tail", turn.TailRunes(t.Question, 80))
 			break

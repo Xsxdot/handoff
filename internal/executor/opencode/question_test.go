@@ -378,6 +378,75 @@ func TestMapIdleEmitsTrailerAskWhenToolNotUsed(t *testing.T) {
 	}
 }
 
+func TestMapIdleClearsAskedViaToolOnFinish(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.askedViaTool = true // 本回合用过工具，随后以 finish 收尾
+	r.turnOrder = []string{"k1"}
+	r.partSeen = map[string]string{"k1": `干完了。
+{"branch":"handoff/x","commit":"abc123","summary":"改完"}`}
+
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	if ev, ok := drainOne(r); !ok || ev.Type != "result" || ev.Result == nil || !ev.Result.OK {
+		t.Fatalf("finish 收尾应产出成功结果，实际 %+v ok=%v", ev, ok)
+	}
+	if r.askedViaTool {
+		t.Fatal("finish 结束的回合没有清掉 askedViaTool，会漏到下一回合误抑制真提问")
+	}
+}
+
+func TestMapIdleClearsAskedViaToolOnNone(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.askedViaTool = true // 本回合用过工具，随后无 trailer 收尾（走 git 兜底）
+	r.turnOrder = []string{"k1"}
+	r.partSeen = map[string]string{"k1": "收尾说明没有协议 JSON"}
+
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	// none 走 git 兜底：非 git 目录判定无新提交，转提问交审核者——既有行为，drain 掉它
+	if ev, ok := drainOne(r); !ok || ev.Type != "question" {
+		t.Fatalf("none 兜底应产出 question，实际 %+v ok=%v", ev, ok)
+	}
+	if r.askedViaTool {
+		t.Fatal("none 结束的回合没有清掉 askedViaTool，会漏到下一回合误抑制真提问")
+	}
+}
+
+func TestAskedViaToolDoesNotLeakToNextTurnAsk(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+
+	// 回合 1：用过工具，随后以 finish 收尾
+	r.askedViaTool = true
+	r.turnOrder = []string{"k1"}
+	r.partSeen = map[string]string{"k1": `工具问过了，干完了。
+{"branch":"handoff/x","commit":"abc123","summary":"改完"}`}
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+	if _, ok := drainOne(r); !ok {
+		t.Fatal("回合 1 应产出 finish 结果")
+	}
+	if r.askedViaTool {
+		t.Fatal("回合 1 的 finish 没有清掉 askedViaTool")
+	}
+
+	// 回合 2：模型没用工具，正常输出 trailer ask——必须照常出单
+	r.turnOrder = []string{"k2"}
+	r.partSeen = map[string]string{"k2": `{"ask":"回合 2 的真提问"}`}
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" || !strings.Contains(ev.Text, "回合 2 的真提问") {
+		t.Fatalf("回合 2 的真 trailer 提问被误抑制，任务将停在 running 无人知晓；实际 %+v ok=%v", ev, ok)
+	}
+}
+
 func TestStopRejectsPendingQuestion(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
