@@ -258,3 +258,98 @@ func TestUnknownKeyErrorMentionsEnv(t *testing.T) {
 		t.Errorf("已知键清单应含 env 段，实际 %q", err.Error())
 	}
 }
+
+// 没写 update 段时必须落在出厂默认上。
+//
+// why 单独钉一例：Load 用的是「字面量预置默认 + yaml 覆盖式解码」，
+// 新加的段一旦忘了写进那个字面量，表现就是 Auto=false、Interval=0——
+// 自动更新静默不工作，且没有任何报错。
+func TestUpdateDefaults(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Update.Auto {
+		t.Error("update.auto 默认应为 true")
+	}
+	if cfg.Update.Interval != 6*time.Hour {
+		t.Errorf("update.interval 默认应为 6h，得到 %s", cfg.Update.Interval)
+	}
+}
+
+// 显式写了就以写的为准。
+func TestUpdateExplicit(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 30m\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Update.Auto {
+		t.Error("显式 auto: false 未生效")
+	}
+	if cfg.Update.Interval != 30*time.Minute {
+		t.Errorf("interval=%s，期望 30m", cfg.Update.Interval)
+	}
+}
+
+// 启用自动更新却给了非正 interval：必须在启动期拦下。
+//
+// why：0 会让更新循环退化成忙轮询，每个 tick 都立刻到期，把 GitHub API
+// 的匿名限流（60 次/小时）几秒钟打满，然后所有版本检查一起失败。
+// 这和 stalltimeout 必须为正是同一类问题，处置也保持一致：显式写错才拦，
+// 省略该键走默认值是正常用法。
+func TestUpdateIntervalMustBePositiveWhenAuto(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: true\n  interval: 0s\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("interval=0 且 auto=true 时应报错")
+	} else if !strings.Contains(err.Error(), "update.interval") {
+		t.Fatalf("报错应点名 update.interval，得到: %v", err)
+	}
+}
+
+// 关掉自动更新时不校验 interval——没启用的东西写错不该拦启动。
+func TestUpdateIntervalNotCheckedWhenAutoOff(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 0s\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("auto=false 时不应校验 interval，却报错: %v", err)
+	}
+}
+
+// 未知字段的报错必须把 update 列进已知键清单。
+//
+// why：那条消息是用户唯一能看到的「支持哪些键」的清单。漏了 update，
+// 用户配了正确的键、看到「不支持」的报错，会去删掉本来对的配置。
+func TestUnknownFieldMessageListsUpdate(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("nonsense_key: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应报错")
+	}
+	if !strings.Contains(err.Error(), "update{auto,interval}") {
+		t.Fatalf("已知键清单里缺 update{auto,interval}: %v", err)
+	}
+}
