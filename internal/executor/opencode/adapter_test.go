@@ -1392,10 +1392,12 @@ func newAdapterWithRunForTest(t *testing.T) (*Adapter, *runState) {
 	t.Helper()
 	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := &runState{
-		taskID:   "t1",
-		evCh:     make(chan executor.AdapterEvent, 8),
-		stopCh:   make(chan struct{}),
-		permText: make(map[string]string),
+		taskID:       "t1",
+		evCh:         make(chan executor.AdapterEvent, 8),
+		stopCh:       make(chan struct{}),
+		permText:     make(map[string]string),
+		childSessions: make(map[string]string),
+		permSession:   make(map[string]string),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	t.Cleanup(r.runCancel)
@@ -1609,5 +1611,49 @@ func TestOwnershipNegativeResultNotCached(t *testing.T) {
 	}
 	if n := fs.sessionGetCount("sess-child"); n != 2 {
 		t.Fatalf("GET /session/sess-child 调用 %d 次，期望 2 次（负结果不得缓存）", n)
+	}
+}
+
+// TestChildPermissionTextCarriesSubagentPrefix 工单文案必须让审核者一眼看出
+// 这条审批来自子 agent——子 agent 的越权和主 agent 的越权含义完全不同。
+func TestChildPermissionTextCarriesSubagentPrefix(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0005"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "Run probe curl command (@general subagent)")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-p", "bash", "curl https://example.com"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	want := "[子 agent: Run probe curl command (@general subagent)] "
+	if !strings.HasPrefix(ev.Text, want) {
+		t.Fatalf("权限描述=%q，应以 %q 开头", ev.Text, want)
+	}
+	if !strings.Contains(ev.Text, "curl https://example.com") {
+		t.Errorf("权限描述=%q，前缀之后应保留原描述", ev.Text)
+	}
+}
+
+// TestRespondPermissionRoutesToChildSession 应答必须发回请求所在的子会话。
+// 发给父会话 opencode 不认，审核者的批准落不了地，任务照样挂死。
+func TestRespondPermissionRoutesToChildSession(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0006"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "子任务")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-r", "bash", "echo r"))
+
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	waitEventType(t, ch, "permission")
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-r", "once"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	calls := fs.perms()
+	if len(calls) != 1 {
+		t.Fatalf("权限应答请求 %d 次，期望 1 次", len(calls))
+	}
+	want := "/session/sess-child/permissions/perm-r"
+	if calls[0].path != want {
+		t.Fatalf("应答 path=%q，期望 %q（必须发往子会话，不是父会话）", calls[0].path, want)
 	}
 }

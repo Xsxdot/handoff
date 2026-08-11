@@ -474,7 +474,24 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 			a.log.Info("adapter 权限应答已转发", "task", taskID, "perm", permID)
 		}
 	}()
-	if err := r.api.RespondPermission(ctx, r.session, permID, decision); err != nil {
+	// 应答必须发回权限请求所在的会话：子会话的权限发给父会话 opencode 不认，
+	// 审核者的批准落不了地，任务照样挂死（B52）
+	sess := r.session
+	r.sessMu.RLock()
+	mapped, known := r.permSession[permID]
+	r.sessMu.RUnlock()
+	if known {
+		sess = mapped
+	} else {
+		// 进程内表，agentd 重启后为空；此时只能退回父会话。若该权限来自子
+		// agent，这次应答会被 opencode 拒（4xx），错误会经 httpError 一路回到
+		// 审核者终端——是响的，不是静默的
+		a.log.Warn("权限应答未在会话映射表里找到该 permID，退回父会话应答",
+			"task", taskID, "perm", permID, "session", sess)
+	}
+	a.log.Info("权限应答选定会话", "task", taskID, "perm", permID,
+		"session", sess, "from_map", known)
+	if err := r.api.RespondPermission(ctx, sess, permID, decision); err != nil {
 		return err
 	}
 	// 拒绝登记必须在转发成功之后：没送达的拒绝不会终止 executor 的回合，
@@ -1035,6 +1052,7 @@ func (a *Adapter) emitOwnershipFailure(r *runState, sessionID, reason string) {
 func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	var pa struct {
 		ID         string   `json:"id"`
+		SessionID  string   `json:"sessionID"`
 		Permission string   `json:"permission"`
 		Patterns   []string `json:"patterns"`
 		Metadata   struct {
@@ -1070,6 +1088,33 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 			"task", r.taskID, "perm", pa.ID)
 		text = "opencode 未提供权限描述（id " + pa.ID + "），请 handoff attach 查看现场"
 	}
+	// 子会话归属与标注（B52）。permSession 决定应答发往哪个会话；前缀让审核者
+	// 一眼看出这条审批来自子 agent——子 agent 的越权与主 agent 的越权含义不同。
+	//
+	// why 前缀必须加在空描述兜底之后：前缀本身非空，先加前缀会让上面那段
+	// 「描述为空就给兜底文本」的判空永远为假，真正空描述的请求就变成一条只有
+	// 前缀的工单，审核者仍然看不到要批什么。
+	permSess := pa.SessionID
+	if permSess == "" {
+		permSess = r.session
+	}
+	if permSess != r.session {
+		r.sessMu.RLock()
+		title := r.childSessions[permSess]
+		r.sessMu.RUnlock()
+		if title != "" {
+			text = "[子 agent: " + title + "] " + text
+		} else {
+			// 认亲成功但标题为空（opencode 未给 title）：仍要标出来源，
+			// 只是标不出是哪个子 agent
+			text = "[子 agent] " + text
+		}
+	}
+	r.sessMu.Lock()
+	r.permSession[pa.ID] = permSess
+	r.sessMu.Unlock()
+	a.log.Info("权限请求已归属会话", "task", r.taskID, "perm", pa.ID,
+		"session", permSess, "is_child", permSess != r.session)
 	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
