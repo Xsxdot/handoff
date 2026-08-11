@@ -2,6 +2,8 @@
 package config_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,5 +353,45 @@ func TestUnknownFieldMessageListsUpdate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "update{auto,interval}") {
 		t.Fatalf("已知键清单里缺 update{auto,interval}: %v", err)
+	}
+}
+
+// TestLoadAcceptsDeprecatedUpdateKeys 是这次删除里唯一不能出错的一条。
+//
+// why：配置是 KnownFields(true) 严格解析的——未知键让 agentd **启动失败**。
+// v0.1.0 首次运行会把 update.auto / update.interval 写进 config.yaml，
+// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来，正是这个设计要
+// 消灭的那类失配的最狠形态。
+func TestLoadAcceptsDeprecatedUpdateKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte("token: tk\nupdate:\n  auto: false\n  interval: 12h\n"), 0o600)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("含 update 键的旧配置必须能正常加载: %v", err)
+	}
+	if cfg.Update.Auto {
+		t.Fatal("字段值仍应被解出来（只是不再有效果）")
+	}
+}
+
+// TestWarnDeprecatedFiresOnNonDefault：取值非默认时必须 Warn。
+// 用户把 auto 设成 false 是有意图的，悄悄让它失效等于骗人。
+func TestWarnDeprecatedFiresOnNonDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	(&config.Config{Update: config.UpdateConfig{Auto: false, Interval: 6 * time.Hour}}).WarnDeprecated(log)
+	if !strings.Contains(buf.String(), "update.auto") {
+		t.Fatalf("非默认值必须 Warn:\n%s", buf.String())
+	}
+}
+
+// TestWarnDeprecatedSilentOnDefault：默认值不打——绝大多数机器都是默认值，
+// 每次启动打一条无从处置的 Warn，只会让人学会忽略日志。
+func TestWarnDeprecatedSilentOnDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	(&config.Config{Update: config.UpdateConfig{Auto: true, Interval: 6 * time.Hour}}).WarnDeprecated(log)
+	if buf.Len() != 0 {
+		t.Fatalf("默认值不该打 Warn:\n%s", buf.String())
 	}
 }

@@ -1,11 +1,14 @@
-// managed.go —— 判断当前进程是不是被进程管理器拉起的。
+// Package selfupdate 提供「能不能安全换版 / 要不要提示更新」的判据。
 //
 // 职责：
-//   - IsManaged：systemd / launchd 托管判据，fail-closed
+//   - IsManaged：判断当前进程是不是被进程管理器（systemd / launchd）拉起的，
+//     换版接口（POST /api/update）的闸二用它做硬拒绝判据
+//   - CLI 侧版本检查提示（clicheck.go）：每条命令跑完后提示有没有新版本
 //
 // 边界：
-//   - 只读环境变量，不看进程树、不读 /proc、不执行任何命令
-//   - **绝不用 PPID**：理由见 IsManaged 的注释，这是整条防线最容易被打穿的地方
+//   - 不做下载、不做 rename、不做换版编排：那是 internal/release 与
+//     handoff upgrade 命令的职责
+//   - 不 import internal/agentd（会成环）
 package selfupdate
 
 // IsManaged 判断当前进程是不是被进程管理器（systemd / launchd）拉起的。

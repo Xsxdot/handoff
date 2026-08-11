@@ -24,7 +24,7 @@ func TestCLICheckRoundTrip(t *testing.T) {
 // 缓存损坏必须静默当成「没有」，**不能报错、不能崩**。
 //
 // why：这条路径挂在**每一条** handoff 命令上。一个坏掉的缓存文件让所有命令
-// 都吐错误，代价远大于少提示一次更新。这里的取舍与 LoadPending 相反，
+// 都吐错误，代价远大于少提示一次更新。这里的取舍与 IsManaged 的 fail-closed 相反，
 // 因为影响面完全不同。
 func TestLoadCLICheckCorruptIsSilent(t *testing.T) {
 	dir := t.TempDir()

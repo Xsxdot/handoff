@@ -76,17 +76,39 @@ type SyncConfig struct {
 	Auto bool
 }
 
-// UpdateConfig 描述 agentd 的自动更新行为。
+// UpdateConfig 是**已废弃**的自动更新配置。
 //
-// 参数语义：
-//   - Auto：是否启用后台自动更新循环。默认 true
-//   - Interval：两轮版本检查之间的间隔。默认 6h
+// B59 取消了 agentd 的定时自更新循环：升级改由操作者一条 handoff upgrade
+// 触发，二进制由本机下载后推送给远端。这两个字段因此不再有任何效果。
 //
-// 为什么默认 6h 而不是更勤：GitHub 匿名 API 限流 60 次/小时/IP，而版本
-// 发布本来就是天级事件——查得更勤不会更早拿到新版，只会更早撞限流。
+// **为什么保留字段而不是删掉**：配置是 KnownFields(true) 严格解析的，未知键
+// 让 agentd **启动失败**。v0.1.0 的首次运行会把这两个键写进 config.yaml，
+// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来——正是这个设计要消灭
+// 的那类失配的最狠形态（B59 spec D7）。
+//
+// 取值非默认时由 WarnDeprecated 打一条 Warn：用户把 auto 设成 false 是有
+// 意图的，悄悄让它失效等于骗人。
 type UpdateConfig struct {
 	Auto     bool
 	Interval time.Duration
+}
+
+// WarnDeprecated 对已废弃且被显式改过的配置打一条 Warn。
+//
+// 参数：
+//   - log: 日志器（agentd 启动时传自己的）
+//
+// 注意：
+//   - 默认值不打。绝大多数机器都是默认值，每次启动打一条无从处置的 Warn，
+//     只会让人学会忽略日志——而那是比不打更糟的结果
+func (c *Config) WarnDeprecated(log *slog.Logger) {
+	if !c.Update.Auto {
+		log.Warn("配置 update.auto 已废弃且不再有效果：agentd 不再自动更新，升级请在审核者机器上跑 handoff upgrade --now")
+	}
+	if c.Update.Interval != 6*time.Hour {
+		log.Warn("配置 update.interval 已废弃且不再有效果：agentd 不再定时检查版本",
+			"配置值", c.Update.Interval)
+	}
 }
 
 // ApproverConfig 描述审批链的廉价模型审批者。
