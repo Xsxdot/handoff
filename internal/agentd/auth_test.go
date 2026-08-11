@@ -426,3 +426,81 @@ func TestWSBearerNotWatched(t *testing.T) {
 		t.Fatal("Bearer 连接被会话复验误踢")
 	}
 }
+
+// TestLogoutClearsSession 钉死登出路由：吊销当前 cookie 会话，并下发与签发
+// 属性完全一致的删除 cookie；Bearer 调用没有会话可登，必须 400。
+//
+// 为什么专门断言删除 cookie 的属性：MaxAge=-1 必须与签发时 Name/Path/HttpOnly/
+// SameSite/Secure 逐项一致，否则浏览器会静默拒绝删 cookie，登出就形同虚设。
+func TestLogoutClearsSession(t *testing.T) {
+	t.Run("CookieHappyPath", func(t *testing.T) {
+		srv, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+		cookie := mustSession(t, srv.st, "sess-logout", time.Now().Add(24*time.Hour), false)
+
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/auth/logout", nil)
+		if err != nil {
+			t.Fatalf("构造请求: %v", err)
+		}
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookie})
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("发送请求: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("状态码 = %d，期望 200", resp.StatusCode)
+		}
+
+		// 库里会话被吊销
+		sess, err := srv.st.SessionByID("sess-logout")
+		if err != nil {
+			t.Fatalf("SessionByID: %v", err)
+		}
+		if sess.RevokedAt == nil {
+			t.Fatal("登出后会话未被吊销")
+		}
+
+		// 删除 cookie 的属性必须与签发一致
+		var got *http.Cookie
+		for _, c := range resp.Cookies() {
+			if c.Name == sessionCookieName {
+				got = c
+			}
+		}
+		if got == nil {
+			t.Fatal("没有下发删除 cookie")
+		}
+		if got.Path != "/" || !got.HttpOnly || got.SameSite != http.SameSiteStrictMode {
+			t.Errorf("删除 cookie 属性与签发不一致: %+v", got)
+		}
+		if got.Secure {
+			t.Error("明文 loopback 下不得设置 Secure")
+		}
+		// 删除信号：Go 把负 MaxAge 归一化成 Max-Age=0 上线（RFC 6265 视为立即删除），
+		// 客户端再解析回 MaxAge=-1。不带 Max-Age 的 cookie 会解析成 0，因此 <0 才能
+		// 区分「删除 cookie」与「未设有效期」。
+		if got.MaxAge >= 0 {
+			t.Errorf("删除 cookie 的 MaxAge = %d，期望 < 0", got.MaxAge)
+		}
+		if setCookie := resp.Header.Get("Set-Cookie"); !strings.Contains(setCookie, "Max-Age=0") {
+			t.Errorf("Set-Cookie 缺少删除标记 Max-Age=0: %s", setCookie)
+		}
+	})
+
+	t.Run("BearerRejected", func(t *testing.T) {
+		_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/auth/logout", nil)
+		if err != nil {
+			t.Fatalf("构造请求: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+hostTestToken)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("发送请求: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("状态码 = %d，期望 400", resp.StatusCode)
+		}
+	})
+}
