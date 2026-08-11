@@ -103,7 +103,7 @@ func isPermanent(err error) bool {
 
 // isDeliverable 判定一个事件类型是否该唤醒审核者。
 //
-// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled}。
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled, tickets_voided}。
 //
 // 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
 // approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
@@ -112,12 +112,17 @@ func isPermanent(err error) bool {
 // 重连时的唤醒风暴越大。handoff skill 早已写明这三类不唤醒 wait，这里是让
 // 代码追上契约。
 //
+// tickets_voided（B63）加入的理由与前两类略有不同：它同样只入库不 Publish，但它
+// 的产生时刻**恰好压在 completed/failed 上**——终态迁移的同一次调用里。可交付就
+// 意味着一次性 wait 有机会拿它收手，审核者看到的是「作废了 1 张单」而不是任务成败。
+//
 // 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
 func isDeliverable(t proto.EventType) bool {
 	switch t {
 	case proto.EventTypeProgress,
 		proto.EventTypeApproverDecision,
-		proto.EventTypeApproverDisabled:
+		proto.EventTypeApproverDisabled,
+		proto.EventTypeTicketsVoided:
 		return false
 	}
 	return true
