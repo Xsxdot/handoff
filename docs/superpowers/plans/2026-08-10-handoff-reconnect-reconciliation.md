@@ -234,11 +234,18 @@ git commit -m "feat(opencode): proc.json 增加对账水位字段，旧格式向
 
 **不要按想象写 JSON 结构体。** 本仓库对「按 schema 名字推断」有过教训——B28 的 spike 一次推翻四处。
 
-在 devbox 上取一个仍有 serve 存活的 opencode 任务，读它的凭据并抓真实响应：
+**你就跑在 devbox 上，所有命令在本机直接执行，不要 ssh、不要读 `~/.ssh`。**
+
+取一个仍有 serve 存活的 opencode 任务，读它的凭据并抓真实响应：
 
 ```bash
-ssh sycm@100.73.238.21 'TD=$(ls -td ~/.handoff/tasks/*/ | head -1); PORT=$(python3 -c "import json,sys;print(json.load(open(\"$TD/proc.json\"))[\"port\"])"); PASS=$(python3 -c "import json,sys;print(json.load(open(\"$TD/proc.json\"))[\"password\"])"); SID=$(python3 -c "import json,sys;print(json.load(open(\"$TD/serve.json\"))[\"session_id\"])" 2>/dev/null || echo ""); echo "task=$TD port=$PORT session=$SID"; curl -s -u "opencode:$PASS" "http://127.0.0.1:$PORT/session/$SID/message" | head -c 4000'
+TD=$(ls -td ~/.handoff/tasks/*/ | head -1)
+PORT=$(python3 -c "import json;print(json.load(open('$TD/proc.json'))['port'])")
+PASS=$(python3 -c "import json;print(json.load(open('$TD/proc.json'))['password'])")
+curl -s -u "opencode:$PASS" "http://127.0.0.1:$PORT/session/<SID>/message" | head -c 4000
 ```
+
+`<SID>` 从 `handoff show <task> --json` 的 `executor_session` 取，或从该任务目录里的会话记录取。
 
 若 `serve.json` 里没有 session id，改从 handoff 取：`handoff --target devbox show <task> --json` 里的 `executor_session`。
 
