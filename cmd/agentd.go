@@ -7,10 +7,12 @@
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
+//   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
+//     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
 //
 // 边界：
 //   - 不创建任务/工单：任务生命周期由 manager 驱动（executor 按 --executor 挂载）
-//   - 优雅关停（signal 处理）不在 MVP 范围，进程退出即断开全部连接
+//   - 不决定何时停机：信号与进程内触发都汇到 agentd.Shutdown，本文件只接线
 package cmd
 
 import (
@@ -153,12 +155,26 @@ var agentdCmd = &cobra.Command{
 		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
-		// 任务卡住看门狗：周期扫描 running/waiting_answer 任务，长时间无事件产出
-		// 触发 stalled 事件唤醒审核者（独立 goroutine，不阻塞 HTTP 服务；
-		// MVP 无优雅关停，进程退出即随 ctx 结束）
-		go agentd.RunWatchdog(context.Background(), st, srv.Hub(), cfg.StallTimeout, logger)
+		// 看门狗随停机一起收：以前挂在 context.Background() 上靠进程退出终止，
+		// 有了优雅关停之后必须显式取消，否则关停期间它还在扫任务、写事件，
+		// 而数据库正要被关掉
+		wdCtx, wdCancel := context.WithCancel(context.Background())
+		defer wdCancel()
+		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout, logger)
+
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
-		return newAgentdHTTPServer(cfg.Listen, srv.Handler()).ListenAndServe()
+
+		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
+		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /
+		// launchd KeepAlive 据此把新进程拉起来——这是自更新换版的交接点。
+		//
+		// cleanup 的顺序是有讲究的，不要调换：先停看门狗（它会写库），
+		// 再关库，最后放锁（放早了别的 agentd 会在库还开着时进来）。
+		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
+		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
+		// 正是我们要的。
+		sd := agentd.NewShutdown(logger)
+		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel)
 	},
 }
 
