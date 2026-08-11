@@ -179,6 +179,8 @@ var agentdCmd = &cobra.Command{
 		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
 		// 正是我们要的。
 		sd := agentd.NewShutdown(logger)
+		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
+		srv.SetRestart(sd.Trigger)
 		// 自动更新：Reconcile 先收上一轮换版的尾（pending 版本 == 自己就清掉
 		// 并打一条「更新完成」），然后按配置起循环。
 		//

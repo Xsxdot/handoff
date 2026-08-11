@@ -28,6 +28,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/release"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -57,6 +60,12 @@ const eventReplayLimit = 10000
 // 断开是无损的。
 const liveBufferLimit = 1000
 
+// maxUpdateBytes 是换版接口单个请求体的上限，与 release 侧 maxAssetBytes 同量级。
+//
+// 上限本身是防线：被劫持或出错的请求不该把内存吃光——换版 body 是整包
+// tar.gz 原文，失控请求直接进 io.ReadAll，无上限等于把内存消耗交给对端。
+const maxUpdateBytes = 100 << 20
+
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
 // 并发安全：所有字段只读（构造后不变），hub 自身线程安全，无需额外加锁。
@@ -74,6 +83,11 @@ type Server struct {
 	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
 	replayLimit int
 	liveLimit   int
+	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
+	upd UpdateDeps
+	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
+	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
+	restart func(reason string) bool
 }
 
 // NewServer 创建 agentd 服务端。
@@ -87,7 +101,8 @@ type Server struct {
 //   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
-	return &Server{
+	inst := release.NewInstaller(log)
+	s := &Server{
 		cfg:         cfg,
 		st:          st,
 		hub:         NewHub(),
@@ -96,12 +111,45 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		replayLimit: eventReplayLimit,
 		liveLimit:   liveBufferLimit,
 	}
+	s.upd = UpdateDeps{
+		Getenv:     os.Getenv,
+		Executable: resolvedExecutable,
+		Install:    inst.InstallArchive,
+		Activate:   release.Activate,
+	}
+	return s
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
 func (s *Server) Hub() *Hub {
 	return s.hub
 }
+
+// resolvedExecutable 返回当前二进制的真实路径。
+//
+// 必须 EvalSymlinks：装在 ~/.local/bin 的二进制常常是个 symlink，
+// 替换 symlink 本身只会把链接换成普通文件，链接目标仍是旧版。
+// 与 cmd/agentd.go 的同名函数分属两包，互不冲突。
+func resolvedExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved, nil
+	}
+	return exe, nil
+}
+
+// SetRestart 注入优雅关停的触发函数（Shutdown.Trigger）。
+//
+// 必须在监听之前注入：换版接口返回 200 之后就靠它退出进程交接给新二进制，
+// 没注入时换版会成功但永远不重启，而现场只剩一个「版本没变」的空结论。
+func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
+
+// SetUpdateDeps 替换换版接口的外部依赖。**仅供测试**：这些依赖会真的
+// 执行文件、rename 二进制、停进程。
+func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
 // SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
 //
@@ -148,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
 	mux.HandleFunc("GET /api/repos", s.handleRepoList)
 	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
+	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	return s.auth(mux)
 }
