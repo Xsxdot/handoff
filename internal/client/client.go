@@ -101,6 +101,28 @@ func isPermanent(err error) bool {
 	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
 }
 
+// isDeliverable 判定一个事件类型是否该唤醒审核者。
+//
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled}。
+//
+// 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
+// approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
+// 没有症状。但 WS 重放读的是 store（EventsFromAsc），会把它们一并推来，于是
+// 「重连交付的东西比实时流更多」，多出来的全是审计噪音；审批链裁决越密，
+// 重连时的唤醒风暴越大。handoff skill 早已写明这三类不唤醒 wait，这里是让
+// 代码追上契约。
+//
+// 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
+func isDeliverable(t proto.EventType) bool {
+	switch t {
+	case proto.EventTypeProgress,
+		proto.EventTypeApproverDecision,
+		proto.EventTypeApproverDisabled:
+		return false
+	}
+	return true
+}
+
 // ErrIdleTimeout 表示 follow 期间空闲超过约定时长——期间**一帧都没收到**
 // （含被过滤掉的 progress）。
 //
@@ -860,8 +882,8 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
 	var got *proto.Event
 	err := c.streamOnce(ctx, taskID, fromSeq, nil, func(ev proto.Event) error {
-		if !all && ev.Type == proto.EventTypeProgress {
-			return nil // progress 不唤醒（why 见 WaitEvent doc 注释）
+		if !all && !isDeliverable(ev.Type) {
+			return nil // 审计类与 progress 不唤醒；口径与 FollowEvents 共用 isDeliverable，避免两处漂移
 		}
 		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 		got = &ev
@@ -871,6 +893,63 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 		return nil, err
 	}
 	return got, nil
+}
+
+// reconcileBacklog 在建立 WS 连接前对账：拿一次权威快照，判断本机 cursor 之后
+// 是否积压了未读事件；有则吐一行摘要并把 cursor 直接推到当前水位。
+//
+// 参数：
+//   - taskID: 完整 UUID
+//   - fromSeq: 本机 cursor 当前停在哪
+//   - onBacklog: 摘要的消费者（cmd 层写 stdout）；返回非 nil 立即上抛
+//
+// 返回：
+//   - next: WS 应当使用的 from_seq——有积压时是当前水位，否则原样是 fromSeq
+//   - terminal: 快照显示任务已 failed，调用方应吐完摘要后正常收尾（返回 nil）
+//   - err: 仅当 onBacklog 报错；**网络/HTTP 失败一律不报错**（见下）
+//
+// 为什么积压事件不拉取而是直接跳过：摘要用的是权威快照，比逐条重放**信息更全**
+// ——重放里混着已被审批链答掉的历史工单（补 reply 会 404），而 PendingTickets
+// 只含真正还欠的，且每张带完整 Request 原文。
+//
+// 为什么 Attach 失败是降级而不是报错：摘要是优化不是正确性，对账失败就该退回
+// 改动前的逐条重放，绝不能因此中断 follow。永久性（401/404）也不在这里判——
+// Client.Attach 的错误是普通 fmt.Errorf 而非 permanentError，isPermanent 认不出
+// 它；紧随其后的 WS 握手会用既有的、已被测试覆盖的路径判出同一个结论。判定
+// 只留一处，不复制。
+func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq int64,
+	onBacklog func(*BacklogSummary) error) (int64, bool, error) {
+	c.log().Debug("follow 积压对账开始", "task", taskID, "from_seq", fromSeq)
+
+	snap, err := c.Attach(ctx, taskID)
+	if err != nil {
+		c.log().Warn("follow 积压对账失败，退回逐条重放", "task", taskID,
+			"from_seq", fromSeq, "cause", err)
+		return fromSeq, false, nil
+	}
+
+	sum := computeBacklog(taskID, fromSeq, snap)
+	if sum == nil {
+		c.log().Debug("follow 积压对账完成：无积压", "task", taskID, "from_seq", fromSeq)
+		return fromSeq, false, nil
+	}
+
+	// 有积压是「你离开期间发生了事」，是 Info 不是 Debug：它是排查「我错过了什么」
+	// 的唯一线索行，必须带齐全部计数
+	c.log().Info("follow 积压对账：有积压", "task", taskID,
+		"from_seq", sum.FromSeq, "to_seq", sum.ToSeq, "missed", sum.Missed,
+		"stale", sum.Stale, "actionable", len(sum.Actionable),
+		"truncated", sum.MissedTruncated, "state", string(sum.State))
+
+	if berr := onBacklog(sum); berr != nil {
+		return fromSeq, false, berr
+	}
+	if werr := c.writeCursor(taskID, sum.ToSeq); werr != nil {
+		// 不因写盘失败中止：下次对账会重新吐同一行摘要，重复一行无害；
+		// 吞掉才危险
+		c.log().Warn("对账后 cursor 写盘失败", "task", taskID, "seq", sum.ToSeq, "cause", werr)
+	}
+	return sum.ToSeq, sum.State == proto.TaskStateFailed, nil
 }
 
 // FollowEvents 持续订阅任务事件流，逐条交给 onEvent，直到任务终结或出错。
@@ -885,6 +964,8 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 //     progress**——一个健康的长跑任务可以数小时只有 progress，用可交付事件计时
 //     会让它周期性无故超时。这个计时跨重连累计
 //   - onEvent: 每条**可交付**事件调用一次；返回非 nil 立即终止跟随并原样返回该错误
+//   - onBacklog: 每次建连前对账出的积压摘要的消费者。**传 nil 表示完全跳过对账**，
+//     行为与改动前逐字一致——不能只是丢弃摘要却照样跳过积压，那会让事件无声消失
 //
 // 返回：
 //   - nil: 任务终结（收到 failed 事件，或对端归档关闭连接）
@@ -899,7 +980,8 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 //   - 断线续拉起点（fromSeq）则按**任何帧**推进：已经收到的帧没有再补发的必要，
 //     它与 cursor 的分叉是有意的，且分叉方向安全（cursor 永远更保守）
 func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
-	idle time.Duration, onEvent func(*proto.Event) error) error {
+	idle time.Duration, onEvent func(*proto.Event) error,
+	onBacklog func(*BacklogSummary) error) error {
 	fromSeq := c.readCursor(taskID)
 	lastFrame := time.Now()
 	// readDeadline 与 onFrame 都只在 streamOnce 的读循环里被同一个 goroutine 调用，
@@ -912,16 +994,29 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 	}
 
 	c.log().Info("follow 开始", "addr", c.baseURL, "task", taskID,
-		"from_seq", fromSeq, "idle", idle.String())
+		"from_seq", fromSeq, "idle", idle.String(), "all", all)
 
 	backoff := c.wsInitialBackoff
 	for attempt := 1; ; attempt++ {
+		// 每次建连前对账——首连与重连同一条路径。断网重连与「忘挂后补挂」是
+		// 同一个问题的两种入口，不该有两套代码
+		if onBacklog != nil {
+			next, terminal, rerr := c.reconcileBacklog(ctx, taskID, fromSeq, onBacklog)
+			if rerr != nil {
+				return rerr
+			}
+			fromSeq = next
+			if terminal {
+				c.log().Info("follow 结束：对账时快照已是 failed", "task", taskID, "from_seq", fromSeq)
+				return nil
+			}
+		}
 		start := time.Now()
 		err := c.streamOnce(ctx, taskID, fromSeq, readDeadline, func(ev proto.Event) error {
 			lastFrame = time.Now()
 			fromSeq = ev.Seq
-			if !all && ev.Type == proto.EventTypeProgress {
-				return nil
+			if !all && !isDeliverable(ev.Type) {
+				return nil // 审计类与 progress 不交付；口径与 waitOnce 共用 isDeliverable，避免两处漂移
 			}
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
 				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）

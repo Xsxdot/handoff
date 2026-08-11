@@ -11,6 +11,9 @@
 //   - --follow：持续订阅同一任务的事件流，每条事件单行输出，直到任务终结
 //     （failed 事件或被 done 归档）。此模式下 --timeout 的语义是**空闲**上限
 //     ——距上一次收到任何帧（含被过滤掉的 progress）的时长，且跨重连累计
+//   - --follow 每次建连前先对账：本机 cursor 之后有积压时吐**一行** backlog_summary
+//     （带 missed/stale/actionable），把 cursor 推到当前水位，积压事件不再逐条重放
+//     ——stdout 每行是一次会话唤醒，逐条重放会把一次重连变成 N 次唤醒
 //
 // 边界：
 //   - 不做事件语义判断与审批（审批在审核者脑中），事件原样输出
@@ -23,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"runtime"
@@ -150,6 +154,12 @@ func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
 			// 每次遇到回合结束都同步一次：--follow 下一个任务会有多个 completed
 			autoSyncAfterWait(cmd, addr, token, ev)
 			return nil
+		},
+		func(sum *client.BacklogSummary) error {
+			if notifyFlag {
+				notifyBacklog(sum)
+			}
+			return writeBacklogLine(cmd.OutOrStdout(), sum)
 		})
 	switch {
 	case err == nil:
@@ -268,6 +278,45 @@ func notifyEvent(ev *proto.Event) {
 	// strconv.Quote 把文本安全地转成 AppleScript 字符串字面量（转义引号/反斜杠）。
 	// 事件类型与任务 id 均为 ASCII，不存在 AppleScript 不认的转义序列
 	script := "display notification " + strconv.Quote(msg) + " with title " + strconv.Quote("handoff")
+	if out, err := exec.Command("osascript", "-e", script).CombinedOutput(); err != nil {
+		slog.Warn("发送系统通知失败", "cause", err, "output", truncateBytes(string(out), 200))
+	}
+}
+
+// writeBacklogLine 把积压摘要作为**一行** JSON 写出。
+//
+// 参数：
+//   - w: 目标（生产环境是 cmd.OutOrStdout()）
+//   - sum: 对账结果
+//
+// 返回：
+//   - 序列化失败时返回错误——写不出摘要就等于审核者不知道自己错过了什么，
+//     必须让 follow 停下而不是继续跑一个没人看得见的循环
+//
+// 注意：严格一行。stdout 是「每行一个 JSON 对象」的契约，上层（Monitor）按行
+// 解析，每一行都是一次会话唤醒——多打一行就多叫醒一次，这正是本功能要消灭的东西。
+func writeBacklogLine(w io.Writer, sum *client.BacklogSummary) error {
+	b, err := json.Marshal(sum)
+	if err != nil {
+		return fmt.Errorf("序列化积压摘要: %w", err)
+	}
+	_, err = fmt.Fprintln(w, string(b))
+	return err
+}
+
+// notifyBacklog 为积压摘要发一条系统通知（--notify）。
+//
+// 为什么摘要也要通知：它正是「你离开期间发生了事」的那一次唤醒信号。漏掉它
+// 等于把 --notify 在最需要它的场景（断网回来、补挂）悄悄关掉。
+func notifyBacklog(sum *client.BacklogSummary) {
+	if runtime.GOOS != "darwin" {
+		slog.Debug("非 macOS，--notify 忽略", "task", sum.TaskID, "type", sum.Type)
+		return
+	}
+	msg := fmt.Sprintf("任务 %s: 错过 %d 条，待处置 %d 张",
+		id8(sum.TaskID), sum.Missed, len(sum.Actionable))
+	script := "display notification " + strconv.Quote(msg) +
+		" with title " + strconv.Quote("handoff")
 	if out, err := exec.Command("osascript", "-e", script).CombinedOutput(); err != nil {
 		slog.Warn("发送系统通知失败", "cause", err, "output", truncateBytes(string(out), 200))
 	}

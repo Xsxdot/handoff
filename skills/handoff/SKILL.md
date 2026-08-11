@@ -122,7 +122,9 @@ handoff wait <task> --notify --timeout 1h
 `wait` 的「不重不丢」靠审核者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
 
 - `show` / `reply` 不推进 cursor。走「show → reply」恢复流程之后再挂 wait，第一批返回的可能是**你早已处理过的历史事件**（答过的 question、continue 过的 completed）。
-- 换一台机器接管时本机没有 cursor 文件，wait 从 seq 0 起把历史可动作事件重放一遍。
+- 换一台机器接管时本机没有 cursor 文件。**`wait --follow` 会在建连前先对账**，
+  把水位之前的一切折成一行 `backlog_summary`（带 `missed` / `stale` / `actionable`），
+  而不是逐条重放。一次性 `wait`（不带 `--follow`）没有这个机制，仍会从 seq 0 起逐条重放。
 
 这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：**醒来先 show**。历史 question 的 ticket 已被消耗，补 reply 会 404——正常，跳过即可；历史 completed 也不代表当前在 `waiting_review`，state 说了算。
 
@@ -164,6 +166,27 @@ handoff pull <task> --target devbox
 去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 的机器还需要在配置里配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。
 
 本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。
+
+### 重连/补挂后的第一行：`backlog_summary`
+
+`wait --follow` 每次建立连接前都会对账一次。本机 cursor 之后有积压时（断网重连、
+忘挂之后补挂、换机接管），它先吐**一行**摘要再转入实时流：
+
+    {"type":"backlog_summary","task_id":"…","from_seq":2489,"to_seq":2537,
+     "state":"waiting_answer","missed":14,"missed_truncated":false,"stale":11,
+     "actionable":[{"id":"…","kind":"gate","request":{…}}]}
+
+怎么读：
+
+- **`actionable` 是权威的「你还欠什么」**，每张带完整请求原文，可直接
+  `reply --ticket <id>`。它**不限于间隙内**——断网前你就看见过、一直没答的也在里面。
+- `stale` 是间隙里已被审批链答掉的工单数，补 `reply` 会 404，跳过即可。
+- `missed_truncated` 为 `true` 时，`missed` / `stale` 的语义是「**至少**这么多」
+  ——快照的事件窗口没覆盖到 cursor。此时 `actionable` 仍然精确。
+- 摘要行**不是**事件，`agentd` 不存这个类型；它只在客户端合成。
+
+积压事件不会再逐条推给你——那会让一次重连变成 N 次会话唤醒。要看被折叠掉的历史，
+用 `handoff show`。
 
 ## 事件分诊表
 
@@ -322,6 +345,7 @@ handoff done <task>
 | 「`pull` 完了改动就在我本地分支上了」 | `pull` 只 fetch，不 checkout 不合并。合并是你自己要做的事。 |
 | 「Monitor 退出了，再开一个就行」 | 先看退出码。401 / 404 重开一百次也是同样的结果 |
 | 「事件流进来了，直接按它处置」 | 事件是唤醒信号，`show` 是权威。`--follow` 下 cursor 会跑在「已读」前面，这条比以前更要紧 |
+| 「重连后没收到那 14 条 permission_request，是不是丢了？」 | 没丢。它们被折进了一行 `backlog_summary`，其中仍需处置的在 `actionable` 里，其余是已被审批链答掉的。 |
 
 ## 延伸阅读
 
