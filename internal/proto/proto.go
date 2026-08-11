@@ -160,6 +160,10 @@ type Ticket struct {
 	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
 	DeliveredAt *time.Time `json:"delivered_at"`
+	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
+	// 它让「审核者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
+	// ask 工单不参与复用，留空。
+	Fingerprint string `json:"fingerprint"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。
