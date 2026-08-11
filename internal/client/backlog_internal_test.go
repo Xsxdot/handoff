@@ -237,7 +237,7 @@ func TestReconcileBacklogTerminalOnFailed(t *testing.T) {
 }
 
 // TestReconcileBacklogPropagatesCallbackError 验证 onBacklog 的错误原样上抛
-//（stdout 写失败必须让 follow 停下，而不是继续跑一个没人看得见的循环）。
+// （stdout 写失败必须让 follow 停下，而不是继续跑一个没人看得见的循环）。
 func TestReconcileBacklogPropagatesCallbackError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ts := snapServer(t, http.StatusOK, &AttachInfo{

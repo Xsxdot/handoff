@@ -132,7 +132,7 @@ func computeBacklog(taskID string, fromSeq int64, snap *AttachInfo) *BacklogSumm
 //   - 工单 ID；非工单类事件、payload 非法或缺该字段时返回空串
 //
 // 注意：ticket_id 是 permission_request / question 事件 payload 的既有线格式契约
-//（服务端定义在 internal/agentd/manager.go 的 permissionPayload / questionPayload）。
+// （服务端定义在 internal/agentd/manager.go 的 permissionPayload / questionPayload）。
 // 此处只解这一个字段，不与服务端结构体耦合。
 func ticketIDOf(ev proto.Event) string {
 	switch ev.Type {

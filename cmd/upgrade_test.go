@@ -294,8 +294,8 @@ func TestUpgradeLocalGoesLast(t *testing.T) {
 	t.Cleanup(func() { recordOrder = func(string) {} })
 
 	runUpgradeNow(t, map[string]*fakeMachine{
-		"aaa":    {platform: "linux/amd64", version: "v0.1.0", managed: true},
-		"zzz":    {platform: "linux/amd64", version: "v0.1.0", managed: true},
+		"aaa":  {platform: "linux/amd64", version: "v0.1.0", managed: true},
+		"zzz":  {platform: "linux/amd64", version: "v0.1.0", managed: true},
 		"__本机": {platform: "darwin/arm64", version: "v0.1.0", managed: true},
 	})
 	if len(order) == 0 {
