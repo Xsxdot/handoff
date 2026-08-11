@@ -116,7 +116,9 @@ func Detect() []Result {
 		}
 		rel, ok := credRelPath[name]
 		if !ok || homeErr != nil {
-			r.State = StateNoCreds
+			// 没有凭证判据（工具不在表里）或连 HOME 都取不到——都属于「查不了」，
+			// 不是「没登录」。如实报未知，别猜。与 claude 那条同一个道理
+			r.State = StateAuthUnknown
 			out = append(out, r)
 			continue
 		}

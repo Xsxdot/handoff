@@ -126,15 +126,15 @@ func TestDetectClaudeMissing(t *testing.T) {
 	}
 }
 
-// 取不到 HOME 时不能崩，也不能把「查不到凭证」说成「没装」。
+// 取不到 HOME 时不能崩，也不能把「查不了」说成「没登录」或「没装」。
 func TestDetectHomeUnavailable(t *testing.T) {
 	oldHome := userHomeDir
 	userHomeDir = func() (string, error) { return "", errors.New("no home") }
 	t.Cleanup(func() { userHomeDir = oldHome })
 	withStubsKeepHome(t, map[string]bool{"opencode": true})
 	r := byName(t, Detect(), "opencode")
-	if r.State != StateNoCreds {
-		t.Fatalf("HOME 不可用时装了的执行者应为 StateNoCreds（凭证查不到≠没装），得到 %v", r.State)
+	if r.State != StateAuthUnknown {
+		t.Fatalf("HOME 不可用时装了的执行者应报 StateAuthUnknown（查不了≠没登录），得到 %v", r.State)
 	}
 }
 
