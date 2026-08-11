@@ -1,0 +1,3 @@
+# wrangler 的本地状态与构建缓存，属机器本地产物
+.wrangler/
+node_modules/
