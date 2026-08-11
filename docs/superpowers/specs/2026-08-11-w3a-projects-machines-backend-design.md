@@ -183,6 +183,9 @@ GET /api/machines
     "addr": "127.0.0.1:7777",
     "reachable": true,
     "version": "...",                  // 探活取自 GET /api/status
+    "executors": ["opencode", "claude"], // 该机可用执行者，同上
+    "default_executor": "opencode",      // 同上
+    "probe_ms": 34,                      // 本次探活实测往返毫秒；本机恒 0（进程内直查）
     "active_tasks": 3,
     "error": ""                        // 不可达时的原因原文，reachable=false 时必非空
   }]
@@ -190,6 +193,8 @@ GET /api/machines
 ```
 
 探活即向各机发 `GET /api/status`（本机走进程内直查，不自拨 HTTP）。**不可达是数据不是错误**：单台超时/拒连不影响整个响应 200，`error` 带原文——这与 `handoff status` 的分诊表一致。
+
+`executors` / `default_executor` / `probe_ms` 三项是 W3b 评审时补入的**只读**投影（无新端点、无写操作）：探活本来就打 `GET /api/status`，前两项已在响应里，丢掉纯属浪费；`probe_ms` 只有 agentd 测得出——`/api/machines` 一次返回全部机器，浏览器无从分离单台耗时。**注意这三项不构成"机器配置面"**：执行者开关、审批器配置、重启 agent 等写操作明确不在 W3a/W3b 范围内，见 W3b spec §0。
 
 ## 5. agentd→agentd：转发与汇总
 
@@ -335,5 +340,7 @@ W3a 完成的判据：§7 三条 CLI 在「本机 + devbox」真实两机上各�
 | §9 | 去掉 `projectID` 的表驱动用例 | 那是 B62 的交付物，重复测等于把它的实现细节焊进 W3a 的测试 |
 
 未受影响的部分：§2 工作区探测、§4 机器投影、§5 转发汇总、§6 事件镜像——它们不依赖登记表的形状，B62 的改动对其透明。
+
+**2026-08-11，W3b 评审带来的一处契约补充。** §4 的 `/api/machines` 增加 `executors` / `default_executor` / `probe_ms` 三个只读字段。触发原因：W3b 要还原原型开发机页的「可用执行者」与「延迟」两块，而前两项在探活的 `GET /api/status` 响应里本就存在、被投影丢掉了，`probe_ms` 则只有 agentd 测得出。无新端点、无写操作，故未视为扩范围。同一轮评审明确否掉的是**机器写操作**（执行者开关、审批器配置、重启 agent、配对开发机），它们不进 W3a。
 
 **合并时另有一件事**（不属 spec 内容，记在此处防遗漏）：B62 改了 `internal/proto/`（删 `Repo`、加 `ProjectLocation`），而本分支 W1 的前端契约 fixture 由 proto 生成。B62 并入本分支时必须重跑 fixture 生成，否则前后端测试一起红。
