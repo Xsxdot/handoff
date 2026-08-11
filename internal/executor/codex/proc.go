@@ -83,8 +83,12 @@ func (p *Proc) probePort() bool {
 	return true
 }
 
+// killProcHost 是 prochost.Kill 的测试缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「杀不死」的形态，回收失败路径只能靠替换它来驱动。
+var killProcHost = prochost.Kill
+
 // Kill 终止 codex app-server 及其后代（按进程组），幂等。
-func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
+func (p *Proc) Kill() error { return killProcHost(p.Handle) }
 
 // LogTail 返回 serve.log 尾部，供启动超时与死亡诊断（B16：失败要给可行动真因）。
 func (p *Proc) LogTail() string {

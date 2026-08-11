@@ -80,8 +80,12 @@ func (p *Proc) Alive() bool {
 	return p.probeHTTP()
 }
 
+// killProcHost 是 prochost.Kill 的测试缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「杀不死」的形态，回收失败路径只能靠替换它来驱动。
+var killProcHost = prochost.Kill
+
 // Kill 终止 grok serve 及其后代（按进程组），幂等。
-func (p *Proc) Kill() error { return prochost.Kill(p.Handle) }
+func (p *Proc) Kill() error { return killProcHost(p.Handle) }
 
 // probeHTTP 探活 serve 的 HTTP 端口（收到任何响应即算活，含 404）。
 func (p *Proc) probeHTTP() bool {

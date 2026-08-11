@@ -83,7 +83,13 @@ func Fetch(ctx context.Context, o Opts) (Result, error) {
 	log().Info("本地同步开始", "local", o.LocalRepo, "remote", o.RemoteURL, "branch", o.Branch, "created", created)
 	refspec := o.Branch + ":" + o.Branch
 	if _, stderr, ferr := run(ctx, o.LocalRepo, "fetch", o.RemoteURL, refspec); ferr != nil {
-		log().Error("本地同步失败", "local", o.LocalRepo, "remote", o.RemoteURL, "branch", o.Branch,
+		// 降级为 Debug（B48）：这段 git 原文已经原样进了下面的返回值，
+		// cmd/wait.go 会把它打给人看。库层再 Error 一遍，审核者就会在 stderr 上
+		// 紧挨着看到同一段报错的两份副本，真正的排障信息被自己的副本淹没。
+		// 与仓库既有纪律一致（internal/store 全层不打日志，靠 %w 带上下文、
+		// 由调用方带业务上下文记录）。降级而非删除：agentd 侧若将来复用本库，
+		// Debug 仍留得住线索。
+		log().Debug("本地同步失败", "local", o.LocalRepo, "remote", o.RemoteURL, "branch", o.Branch,
 			"stderr", strings.TrimSpace(stderr), "cause", ferr)
 		return Result{}, fmt.Errorf("git fetch %s %s: %s: %w", o.RemoteURL, refspec, strings.TrimSpace(stderr), ferr)
 	}
