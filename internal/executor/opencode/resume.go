@@ -229,7 +229,12 @@ func (a *Adapter) rediscoverPendingQuestions(ctx context.Context, taskID string)
 
 		a.log.Info("恢复后发现挂起提问，补发工单", "task", taskID,
 			"request", p.ID, "question_count", len(p.Questions))
-		a.emit(r, executor.AdapterEvent{Type: "question",
+		// 必须带原生 request id：这条补发与重启前那条实时 question.asked 指的是
+		// **同一个**挂起提问，manager 靠 QuestionID 折出同一个 ticket id
+		// （taskID:questionID）才认得出这是重放而非新提问。漏掉它就退回 uuid，
+		// 于是重启前后各留一张工单、旧的那张永不作废——正是 B58 的原始症状。
+		// seenQuestionIDs 兜不住：它是 runState 内存态，重启即清零。
+		a.emit(r, executor.AdapterEvent{Type: "question", QuestionID: p.ID,
 			Text: turn.ClampQuestion(renderQuestionTicket(p.Questions))})
 		return // 工具阻塞保证至多一个挂起请求，发现一个即可
 	}
