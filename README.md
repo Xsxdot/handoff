@@ -73,6 +73,44 @@ Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `hando
 macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的服务空窗——
 执行者不受影响（它们在独立会话里），但期间的 `dispatch` / `reply` 会失败。
 
+### 自动更新
+
+agentd 默认每 6 小时查一次 GitHub 上的最新 release。查到新版后它会先下载、校
+sha256、跑一次新二进制的 `handoff version` 自检，通过了才写入待命记录；**替换与
+重启要等到没有活跃任务的窗口**（`running` 与 `waiting_answer` 都为 0；
+`waiting_review` 不算忙——它可能挂几天）。
+
+换版的最后一步是 agentd 自己优雅退出（exit 0），由 launchd / systemd 把新二进制
+拉起来。**因此没有被托管的 agentd 不会自动换版**——换完没人拉起，机器上就此没有
+handoff 在跑。这种情况下它只把新版下好待命，并在日志和 `handoff status` 里说明
+原因。想用上就 `handoff service install`，或者手动 `handoff upgrade --now` 后自己
+把 agentd 重启。
+
+关掉自动更新：
+
+```yaml
+update:
+  auto: false
+  interval: 6h
+```
+
+手动升级与回滚：
+
+```bash
+handoff upgrade              # 只看有没有新版
+handoff upgrade --now        # 立即下载并替换二进制
+handoff upgrade --rollback   # 换回上一版（<二进制>.prev）
+```
+
+三条命令换的都是**磁盘上的二进制**；正在跑的 agentd 仍是旧进程，重启才生效。
+
+新版起来后如果有问题，**不会自动回滚**——旧二进制留在 `<路径>.prev`，用
+`handoff upgrade --rollback` 人工换回。自动回滚需要「新版启动后自证健康」的握手
+协议，而它挡不住的恰恰是「能起来但有逻辑回归」那一类。
+
+CLI 每天最多在后台查一次版本，有新版时在 **stderr** 打一行提示。它**不会**自动
+替换自己。
+
 ```bash
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
@@ -128,6 +166,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
 | `handoff init` | 探测本机 executor 并交互式生成/更新配置（幂等，可重跑） | — |
 | `handoff service install\|uninstall\|status` | 把 agentd 交给 launchd / systemd 托管 | — |
+| `handoff upgrade [--check\|--now\|--rollback]` | 检查、安装或回滚 handoff 版本 | — |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
