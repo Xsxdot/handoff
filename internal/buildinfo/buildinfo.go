@@ -2,7 +2,8 @@
 // 未提交改动）。
 //
 // 职责：
-//   - Read：把 runtime/debug.ReadBuildInfo 的结果归一成 proto.BuildInfo
+//   - Read：把 runtime/debug.ReadBuildInfo 的结果与 ldflags 注入的 release
+//     版本号归一成 proto.BuildInfo
 //
 // 边界：
 //   - 不做版本比较，也不做展示——那是 cmd/status.go 的事
@@ -26,6 +27,17 @@ import (
 // 空 revision，断言无从写起。
 var readBuildInfo = debug.ReadBuildInfo
 
+// releaseVersion 是构建时由 ldflags 注入的 release 版本号（形如 v0.1.0）。
+//
+// 注入方式（见 .github/workflows/release.yml，路径必须逐字一致）：
+//
+//	-ldflags "-X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=v0.1.0"
+//
+// why（注入而不是运行时读 tag）：二进制跑起来时身边没有 git 仓库可读；
+// vcs.revision 只有 commit 没有版本，而「哪个版本更新」是自动更新唯一
+// 能回答的问题。本地 go build 不注入，值为空——调用方据此判定非 release 构建。
+var releaseVersion string
+
 // Read 返回当前二进制的构建标识。
 //
 // 返回：
@@ -35,9 +47,11 @@ var readBuildInfo = debug.ReadBuildInfo
 func Read() (proto.BuildInfo, bool) {
 	bi, ok := readBuildInfo()
 	if !ok {
-		return proto.BuildInfo{}, false
+		// 即使读不到构建信息，注入的版本号仍然有效——它是编译期常量，
+		// 与 debug.ReadBuildInfo 能否读到无关
+		return proto.BuildInfo{Version: releaseVersion}, false
 	}
-	out := proto.BuildInfo{Go: bi.GoVersion}
+	out := proto.BuildInfo{Go: bi.GoVersion, Version: releaseVersion}
 	for _, s := range bi.Settings {
 		switch s.Key {
 		case "vcs.revision":

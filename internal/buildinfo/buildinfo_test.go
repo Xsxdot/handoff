@@ -74,3 +74,72 @@ func TestReadUnavailable(t *testing.T) {
 		t.Fatal("读不到构建信息时应返回 ok=false")
 	}
 }
+
+// 注入了 releaseVersion 时，Read 必须把它带进 Version。
+//
+// 这是 release 构建的形态：ldflags 写入包级变量，vcs 戳同时也在。
+func TestReadCarriesInjectedReleaseVersion(t *testing.T) {
+	oldVer := releaseVersion
+	releaseVersion = "v0.1.0"
+	t.Cleanup(func() { releaseVersion = oldVer })
+
+	oldRead := readBuildInfo
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			GoVersion: "go1.26.1",
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "8353ef68d711eaf63eeb1287f342f3238204aec8"},
+			},
+		}, true
+	}
+	t.Cleanup(func() { readBuildInfo = oldRead })
+
+	got, ok := Read()
+	if !ok {
+		t.Fatal("Read 应返回 ok=true")
+	}
+	if got.Version != "v0.1.0" {
+		t.Fatalf("Version=%q，期望注入的 v0.1.0", got.Version)
+	}
+	if got.Revision != "8353ef68d711eaf63eeb1287f342f3238204aec8" {
+		t.Fatalf("注入版本号不得影响 Revision 解析，得到 %q", got.Revision)
+	}
+}
+
+// 未注入时 Version 必须是空串——这是本地 go build / go run / 测试二进制的
+// 真实形态，调用方据此判定「非 release 构建」并退回 revision 展示。
+func TestReadWithoutInjectionHasEmptyVersion(t *testing.T) {
+	oldRead := readBuildInfo
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{GoVersion: "go1.26.1"}, true
+	}
+	t.Cleanup(func() { readBuildInfo = oldRead })
+
+	got, _ := Read()
+	if got.Version != "" {
+		t.Fatalf("非 release 构建的 Version 必须为空，得到 %q", got.Version)
+	}
+}
+
+// 读不到构建信息（ok=false）时，注入的版本号仍须返回。
+//
+// why：releaseVersion 是编译期常量，与 debug.ReadBuildInfo 能不能读到无关。
+// 丢掉它会让一个 release 二进制在这种边角情况下自称 unknown，而 B54.3 的
+// 自检正是拿这个值比对的——自检会误判失败并放弃一次本该成功的更新。
+func TestReadKeepsVersionWhenBuildInfoUnavailable(t *testing.T) {
+	oldVer := releaseVersion
+	releaseVersion = "v0.2.0"
+	t.Cleanup(func() { releaseVersion = oldVer })
+
+	oldRead := readBuildInfo
+	readBuildInfo = func() (*debug.BuildInfo, bool) { return nil, false }
+	t.Cleanup(func() { readBuildInfo = oldRead })
+
+	got, ok := Read()
+	if ok {
+		t.Fatal("读不到构建信息时 ok 仍应为 false")
+	}
+	if got.Version != "v0.2.0" {
+		t.Fatalf("ok=false 时也必须带回注入的版本号，得到 %q", got.Version)
+	}
+}

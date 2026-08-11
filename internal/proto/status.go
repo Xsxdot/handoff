@@ -10,16 +10,24 @@ package proto
 
 import "time"
 
-// BuildInfo 是一个 handoff 二进制的构建标识，取自 runtime/debug.ReadBuildInfo。
+// BuildInfo 是一个 handoff 二进制的构建标识。
 //
 // 字段说明：
+//   - Version: release 版本号（形如 v0.1.0），构建时由 ldflags 注入；
+//     **空串表示不是 release 构建**（本地 go build / go run / 测试二进制），
+//     此时调用方应退回 Revision 展示
 //   - Revision: vcs.revision；**空串表示不是 go build 产物**（go run / 测试
 //     二进制没有 vcs 戳），调用方应显示「版本未知」而不是空
 //   - Time: vcs.time
 //   - Modified: vcs.modified——true 表示这个二进制是带未提交改动编出来的，
 //     它对不上任何一个提交，排障时这是关键信息
 //   - Go: 编译所用 Go 版本
+//
+// 为什么 Version 与 Revision 并存而不是二选一：它们回答不同的问题。
+// Version 回答「该不该更新」（自动更新比的是它），Revision 回答「出问题的
+// 是哪个提交」（排障比的是它）。release 构建两者都有。
 type BuildInfo struct {
+	Version  string `json:"version,omitempty"`
 	Revision string `json:"revision"`
 	Time     string `json:"time"`
 	Modified bool   `json:"modified"`
