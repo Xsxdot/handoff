@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -328,5 +329,51 @@ func TestSendCustomRejectedByServerRepromptsAndKeepsPending(t *testing.T) {
 	}
 	if r.pendingQuestionID != "req_1" {
 		t.Error("挂起请求必须保留")
+	}
+}
+
+func TestTakeAskedViaToolIsOneShot(t *testing.T) {
+	r := &runState{askedViaTool: true}
+	if !r.takeAskedViaTool() {
+		t.Fatal("第一次取应当为 true")
+	}
+	if r.takeAskedViaTool() {
+		t.Fatal("取走式标记第二次必须为 false，否则下一回合的真提问会被误抑制")
+	}
+}
+
+func TestMapIdleSuppressesTrailerAskAfterToolQuestion(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.askedViaTool = true // 本回合已通过 question 工具问过
+	r.turnOrder = []string{"k1"}
+	r.partSeen = map[string]string{"k1": `我已经用工具问过了。
+{"ask":"同一个问题的复述"}`}
+
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	if ev, ok := drainOne(r); ok {
+		t.Fatalf("工具已问过，回合末的 trailer ask 不应再出单，却收到 %+v", ev)
+	}
+	if r.askedViaTool {
+		t.Error("标记必须在回合终结时被取走")
+	}
+}
+
+func TestMapIdleEmitsTrailerAskWhenToolNotUsed(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.turnOrder = []string{"k1"}
+	r.partSeen = map[string]string{"k1": `{"ask":"没用工具时的正常提问"}`}
+
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" || !strings.Contains(ev.Text, "没用工具时的正常提问") {
+		t.Fatalf("未用工具时 trailer ask 必须照常出单，实际: %+v ok=%v", ev, ok)
 	}
 }

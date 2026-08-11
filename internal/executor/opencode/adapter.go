@@ -614,6 +614,20 @@ func (r *runState) takeTurnRejected() []string {
 	return rejected
 }
 
+// takeAskedViaTool 取走「本回合已通过 question 工具提问」的标记（读后即清）。
+//
+// 返回：本回合是否已通过工具问过审核者
+//
+// 为什么必须取走式：标记的生命周期是一个回合。常驻会让下一回合的真 trailer
+// 提问被误抑制，任务停在 running 无人知晓——那正是 B49 要消灭的形态。
+//
+// 注意：调用方须已持 turnMu（mapIdle 的既有契约）
+func (r *runState) takeAskedViaTool() bool {
+	asked := r.askedViaTool
+	r.askedViaTool = false
+	return asked
+}
+
 // rejectedTurnQuestion 组装「回合因权限被拒而终止」交给审核者的提问文本。
 //
 // why（必须是 question 而不是 result/failed）：任务没失败也没完成，它只是停在
@@ -1585,6 +1599,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			})
 			a.advanceWatermark(r)
 			r.clearTurn()
+			r.takeAskedViaTool() // 回合结束（被拒终止空回合），标记必须随回合清掉，否则漏到下一回合
 			r.captureStartCommit(a)
 			return
 		}
@@ -1605,12 +1620,23 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		}})
 		a.advanceWatermark(r)
 		r.clearTurn()
+		r.takeAskedViaTool() // 回合结束（零文本回合），标记必须随回合清掉，否则漏到下一回合
 		r.captureStartCommit(a)
 		return
 	}
 	kind, t := turn.ParseTrailer(text)
 	switch kind {
 	case "ask":
+		// 回合级去重（B49 §4.4）：本回合已通过 question 工具问过审核者时，
+		// 回合末的 trailer ask 多半是同一个问题的复述——出第二张单会让审核者
+		// 面对两份措辞不同的同一件事（grok 那次 askedViaTool 踩过的同一个坑）。
+		// 兜底通道存在的目的是「保证回合不静默结束」，工具已经问过时该诉求
+		// 已经满足
+		if r.takeAskedViaTool() {
+			a.log.Debug("本回合已通过 question 工具提问，抑制 trailer 提问工单",
+				"task", r.taskID, "trailer_tail", turn.TailRunes(t.Question, 80))
+			break
+		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(t.Question)})
 	case "finish":
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
