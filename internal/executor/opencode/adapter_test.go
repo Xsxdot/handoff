@@ -1392,10 +1392,10 @@ func newAdapterWithRunForTest(t *testing.T) (*Adapter, *runState) {
 	t.Helper()
 	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := &runState{
-		taskID:       "t1",
-		evCh:         make(chan executor.AdapterEvent, 8),
-		stopCh:       make(chan struct{}),
-		permText:     make(map[string]string),
+		taskID:        "t1",
+		evCh:          make(chan executor.AdapterEvent, 8),
+		stopCh:        make(chan struct{}),
+		permText:      make(map[string]string),
 		childSessions: make(map[string]string),
 		permSession:   make(map[string]string),
 	}

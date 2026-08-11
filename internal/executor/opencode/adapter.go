@@ -223,24 +223,24 @@ type runState struct {
 	sessMu        sync.RWMutex
 	childSessions map[string]string
 	permSession   map[string]string
-	lastEventAt        atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+	lastEventAt   atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
 func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 	r := &runState{
-		taskID:       taskID,
-		taskDir:      taskDir,
-		repoPath:     repoPath,
-		evCh:         make(chan executor.AdapterEvent, 16),
-		stopCh:       make(chan struct{}),
-		renderPath:   filepath.Join(taskDir, renderLogFileName),
-		partSeen:     make(map[string]string),
-		partSnap:     make(map[string]bool),
-		partTypes:    make(map[string]string),
-		pendingDelta: make(map[string]string),
-		userMsgs:     make(map[string]bool),
-		permText:     make(map[string]string),
+		taskID:        taskID,
+		taskDir:       taskDir,
+		repoPath:      repoPath,
+		evCh:          make(chan executor.AdapterEvent, 16),
+		stopCh:        make(chan struct{}),
+		renderPath:    filepath.Join(taskDir, renderLogFileName),
+		partSeen:      make(map[string]string),
+		partSnap:      make(map[string]bool),
+		partTypes:     make(map[string]string),
+		pendingDelta:  make(map[string]string),
+		userMsgs:      make(map[string]bool),
+		permText:      make(map[string]string),
 		childSessions: map[string]string{},
 		permSession:   map[string]string{},
 	}
