@@ -114,8 +114,29 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 
 // describeBuild 把一个构建标识渲染成一行。
 //
-// Revision 为空表示不是 go build 产物（go run / 测试二进制），如实说明而不是留空。
+// 优先展示 release 版本号——那是「该不该更新」这个问题的答案，也是人最先想看的。
+// Version 为空表示不是 release 构建，退回 revision 展示（既有行为，一字不改）。
 func describeBuild(b proto.BuildInfo) string {
+	if b.Version == "" {
+		return describeByRevision(b)
+	}
+	s := b.Version
+	if b.Revision != "" {
+		// 版本号回答「是哪个 release」，revision 回答「是哪个提交」——排障要后者，
+		// 所以两个都留，不因为有了版本号就把 revision 丢掉
+		s += "  " + short12(b.Revision)
+	}
+	s += "  " + b.Go
+	if b.Modified {
+		s += "  带未提交改动"
+	}
+	return s
+}
+
+// describeByRevision 是没有 release 版本号时的展示（B54 之前的原样行为）。
+//
+// Revision 为空表示不是 go build 产物（go run / 测试二进制），如实说明而不是留空。
+func describeByRevision(b proto.BuildInfo) string {
 	if b.Revision == "" {
 		return fmt.Sprintf("未知（非 go build 产物）  %s", b.Go)
 	}
@@ -127,11 +148,23 @@ func describeBuild(b proto.BuildInfo) string {
 	return s
 }
 
-// compareBuild 渲染「本地」行：两边 revision 的对照结论。
+// compareBuild 渲染「本地」行：本机 CLI 与对端 agentd 的对照结论。
 //
-// 不一致**不阻断**：handoff 没有兼容矩阵，revision 不同不等于不兼容，
-// 该不该继续交给人判。
+// 优先比 release 版本号（自动更新真正关心的维度）；任一侧没有版本号时退回
+// revision 比较（既有行为）。不一致**不阻断**：handoff 没有兼容矩阵，
+// 版本不同不等于不兼容，并列报出交给人判。
 func compareBuild(cli, agentd proto.BuildInfo) string {
+	if cli.Version == "" || agentd.Version == "" {
+		return compareByRevision(cli, agentd)
+	}
+	if cli.Version == agentd.Version {
+		return cli.Version + "  一致"
+	}
+	return fmt.Sprintf("%s  与对端不一致（对端 %s，不一定不兼容，请自行判断）", cli.Version, agentd.Version)
+}
+
+// compareByRevision 是任一侧没有 release 版本号时的对照（B54 之前的原样行为）。
+func compareByRevision(cli, agentd proto.BuildInfo) string {
 	if cli.Revision == "" {
 		return "本地版本未知（非 go build 产物）"
 	}

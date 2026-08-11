@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // writeStatusConfig 写一份最小可用配置，返回路径。
@@ -133,5 +135,94 @@ func TestStatusJSONDegraded(t *testing.T) {
 	}
 	if !strings.Contains(out, `"degraded":true`) || !strings.Contains(out, `"reachable":true`) {
 		t.Fatalf("降级 JSON 应 reachable=true 且 degraded=true:\n%s", out)
+	}
+}
+
+// 对端是 release 构建时，「版本」行要显示版本号而不是光秃秃的 revision。
+func TestStatusPrefersReleaseVersion(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"listen":"0.0.0.0:7777","data_dir":"/data",
+			"started_at":"2026-08-10T00:00:00Z",
+			"version":{"version":"v0.1.0","revision":"8353ef68d711eaf63eeb1287f342f3238204aec8","go":"go1.26.1"},
+			"executors":["opencode"],"default_executor":"opencode",
+			"task_counts":{},"active":[]}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, err := runStatus(t, writeStatusConfig(t), ts.URL)
+	if err != nil {
+		t.Fatalf("status 不应报错: %v", err)
+	}
+	if !strings.Contains(out, "v0.1.0") {
+		t.Fatalf("release 构建的版本行应含 v0.1.0:\n%s", out)
+	}
+	if !strings.Contains(out, "8353ef68d711") {
+		t.Fatalf("版本行仍应带 revision（排障要用）:\n%s", out)
+	}
+}
+
+// 对端不是 release 构建（Version 为空）时，展示必须原样退回 revision 逻辑。
+//
+// why 单独钉一例：这是「新字段不许破坏既有形态」的回归闸。本机 go build 出来的
+// agentd 常年是这个形态，退化成显示空版本会让 status 变得毫无信息。
+func TestStatusFallsBackToRevisionWhenNoVersion(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"listen":"0.0.0.0:7777","data_dir":"/data",
+			"started_at":"2026-08-10T00:00:00Z",
+			"version":{"revision":"8353ef68d711eaf63eeb1287f342f3238204aec8","go":"go1.26.1"},
+			"executors":["opencode"],"default_executor":"opencode",
+			"task_counts":{},"active":[]}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, err := runStatus(t, writeStatusConfig(t), ts.URL)
+	if err != nil {
+		t.Fatalf("status 不应报错: %v", err)
+	}
+	if !strings.Contains(out, "8353ef68d711") {
+		t.Fatalf("无版本号时应退回 revision 展示:\n%s", out)
+	}
+}
+
+// compareBuild 的四种组合：两边都有版本号时比版本号，否则退回 revision 比较。
+func TestCompareBuildPrefersVersion(t *testing.T) {
+	cases := []struct {
+		name       string
+		cli, agent proto.BuildInfo
+		want       string // 期望出现在结果里的子串
+	}{
+		{
+			name:  "两边同版本",
+			cli:   proto.BuildInfo{Version: "v0.1.0", Revision: "aaaaaaaaaaaa1111"},
+			agent: proto.BuildInfo{Version: "v0.1.0", Revision: "bbbbbbbbbbbb2222"},
+			want:  "一致",
+		},
+		{
+			name:  "两边不同版本，要报出对端版本",
+			cli:   proto.BuildInfo{Version: "v0.1.0", Revision: "aaaaaaaaaaaa1111"},
+			agent: proto.BuildInfo{Version: "v0.2.0", Revision: "aaaaaaaaaaaa1111"},
+			want:  "v0.2.0",
+		},
+		{
+			name:  "对端无版本号，退回 revision 比较",
+			cli:   proto.BuildInfo{Version: "v0.1.0", Revision: "aaaaaaaaaaaa1111"},
+			agent: proto.BuildInfo{Revision: "aaaaaaaaaaaa1111"},
+			want:  "一致",
+		},
+		{
+			name:  "本地无版本号，退回 revision 比较且不一致",
+			cli:   proto.BuildInfo{Revision: "aaaaaaaaaaaa1111"},
+			agent: proto.BuildInfo{Version: "v0.2.0", Revision: "bbbbbbbbbbbb2222"},
+			want:  "不一致",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := compareBuild(c.cli, c.agent); !strings.Contains(got, c.want) {
+				t.Fatalf("compareBuild=%q，期望含 %q", got, c.want)
+			}
+		})
 	}
 }
