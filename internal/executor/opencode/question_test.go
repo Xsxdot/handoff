@@ -377,3 +377,56 @@ func TestMapIdleEmitsTrailerAskWhenToolNotUsed(t *testing.T) {
 		t.Fatalf("未用工具时 trailer ask 必须照常出单，实际: %+v ok=%v", ev, ok)
 	}
 }
+
+func TestStopRejectsPendingQuestion(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	// handle 留 nil：Stop 的 kill 分支有 `if r.handle != nil` 守卫，
+	// 本用例只关心「杀进程之前有没有先解阻塞」
+
+	if err := a.Stop("task-1"); err != nil {
+		t.Fatalf("Stop 返回错误: %v", err)
+	}
+	if gotPath != "/question/req_1/reject" {
+		t.Fatalf("path = %q，期望 Stop 前先 reject 解阻塞", gotPath)
+	}
+}
+
+func TestRediscoverPendingQuestionsFiltersBySession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"id":"req_other","sessionID":"ses_别人","questions":[{"question":"不是我的"}]},
+			{"id":"req_mine","sessionID":"ses_a","questions":[{"question":"是我的"}]}]`))
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+
+	a.rediscoverPendingQuestions(context.Background(), "task-1")
+
+	ev, ok := drainOne(r)
+	if !ok || !strings.Contains(ev.Text, "是我的") {
+		t.Fatalf("补发的工单不对: %+v ok=%v", ev, ok)
+	}
+	if r.pendingQuestionID != "req_mine" {
+		t.Errorf("pendingQuestionID = %q，期望 req_mine", r.pendingQuestionID)
+	}
+	if extra, ok := drainOne(r); ok {
+		t.Fatalf("别的会话的提问不应补发，却收到 %+v", extra)
+	}
+}

@@ -671,6 +671,20 @@ func (a *Adapter) Stop(taskID string) (err error) {
 		close(r.stopCh)
 		r.runCancel()
 	})
+	// 挂起的提问先解阻塞再杀进程（B49）：opencode 的 question 工具在等应答，
+	// 直接杀掉会留下一条永远挂起的请求。失败只 Warn 不阻断——进程马上就没了，
+	// 为一次解阻塞失败挡住 Stop 是本末倒置
+	if reqID, _ := r.takePendingQuestionSnapshot(); reqID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), unaryTimeout)
+		if rerr := r.api.RejectQuestion(ctx, reqID); rerr != nil {
+			a.log.Warn("停止前拒绝挂起提问失败，该请求可能仍挂在 opencode 侧",
+				"task", taskID, "request", reqID, "cause", rerr)
+		} else {
+			a.log.Info("停止前已拒绝挂起提问", "task", taskID, "request", reqID)
+		}
+		cancel()
+		r.clearPendingQuestion()
+	}
 	if r.handle != nil {
 		if kerr := r.handle.Kill(); kerr != nil {
 			if r.handle.Alive() {
