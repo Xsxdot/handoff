@@ -284,6 +284,7 @@ handoff done <task>
 | `reply` 返回 502，或收到 `delivery_failed` | 裁决已落库但没送到 executor（executor 半死） | `handoff resume <task>`：幂等重投；executor 还在就继续跑，确已不在则转交审核 |
 | `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重开**，它不会自己好 |
+| 远程任务的 `wait` / `show` / `reply` 报 `task not found`（1008 / StatusPolicyViolation），id 明明是刚 dispatch 出来的 | **漏了 `--target`**，命令打到了本机 agentd——任务在执行机上，本机当然没有 | 看 stderr 里的 `addr=`：是 `127.0.0.1` 就是漏了 `--target`。补上重发即可，任务本身没事 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
 | 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
