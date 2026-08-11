@@ -241,3 +241,49 @@ func TestWatchersConcurrent(t *testing.T) {
 		t.Fatalf("并发收尾后 Watchers = %d, want 0", n)
 	}
 }
+
+// TestCloseTaskClosesAllSubscribers 验证 CloseTask 关闭该任务全部订阅、
+// 返回关闭数、不误伤别的任务，且随后的 cancel 幂等不 panic（不得二次 close）。
+func TestCloseTaskClosesAllSubscribers(t *testing.T) {
+	hub := agentd.NewHub()
+	ch1, cancel1 := hub.Subscribe("t-done")
+	ch2, cancel2 := hub.Subscribe("t-done")
+	chOther, cancelOther := hub.Subscribe("t-live")
+	defer cancelOther()
+
+	if n := hub.CloseTask("t-done"); n != 2 {
+		t.Fatalf("CloseTask 返回 %d, want 2", n)
+	}
+	for name, ch := range map[string]<-chan proto.Event{"ch1": ch1, "ch2": ch2} {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatalf("%s 归档后仍收到事件", name)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s 未被关闭", name)
+		}
+	}
+	if n := hub.Watchers("t-done"); n != 0 {
+		t.Fatalf("归档后 Watchers = %d, want 0", n)
+	}
+	// 别的任务不受影响
+	hub.Publish(proto.Event{Seq: 9, TaskID: "t-live", Type: proto.EventTypeProgress})
+	select {
+	case ev := <-chOther:
+		if ev.Seq != 9 {
+			t.Fatalf("t-live 收到的事件不对: %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("t-live 的订阅被误伤")
+	}
+
+	// 连接收尾时的 defer cancel 必须是空操作：通道已不在表中，重复 close 会 panic
+	cancel1()
+	cancel2()
+	if n := hub.CloseTask("t-done"); n != 0 {
+		t.Fatalf("重复 CloseTask 返回 %d, want 0", n)
+	}
+	// Publish 到已归档任务不得 panic（向已关闭通道发送）
+	hub.Publish(proto.Event{Seq: 10, TaskID: "t-done", Type: proto.EventTypeProgress})
+}

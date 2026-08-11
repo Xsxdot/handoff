@@ -7,6 +7,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,35 @@ func TestStatusCarriesWatchers(t *testing.T) {
 	}
 	if resp.Active[0].Watchers == nil || *resp.Active[0].Watchers != 1 {
 		t.Fatalf("一个订阅者时 Watchers = %v, want 指向 1 的指针", resp.Active[0].Watchers)
+	}
+}
+
+// TestDoneClosesEventSubscriptions 验证 done 归档时关闭该任务的全部事件订阅。
+//
+// 为什么要单独验这条：WS 那侧只证明「订阅一关就正常收尾」，不证明 done 会去关。
+// 少了这根接线，归档仍然对跟随端无声。
+func TestDoneClosesEventSubscriptions(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	const id = "task-done-close"
+	createRunningTask(t, st, id)
+	if err := st.UpdateTaskState(id, proto.TaskStateWaitingReview); err != nil {
+		t.Fatalf("推到 waiting_review: %v", err)
+	}
+	ch, cancel := hub.Subscribe(id)
+	defer cancel()
+
+	if err := m.Done(context.Background(), id); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("归档后订阅通道仍在投递事件")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("归档未关闭订阅通道：跟随端拿不到「没有下文了」的信号")
+	}
+	if n := hub.Watchers(id); n != 0 {
+		t.Errorf("归档后 Watchers = %d, want 0", n)
 	}
 }

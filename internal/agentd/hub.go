@@ -121,6 +121,39 @@ func (h *Hub) Watchers(taskID string) int {
 	return len(h.subs[taskID])
 }
 
+// CloseTask 关闭该任务的全部事件订阅并从表中摘除。
+//
+// 参数：
+//   - taskID: 已终结（归档）的任务 ID
+//
+// 返回：
+//   - 被关闭的订阅数；无人订阅返回 0
+//
+// 为什么需要它：done 归档只改任务状态、不追加任何事件，事件流上完全无声。
+// 跟随中的客户端（wait --follow）因此拿不到「没有下文了」的信号，会一直挂到
+// 空闲超时——而那个超时的语义是「agentd 可能失联」，把一次正常归档报成了故障。
+// 关闭订阅让 WS 处理器以正常关闭码收尾，客户端据此正常退出。
+//
+// 注意：
+//   - 与 unsubscribe 共用同一把 mu，且 unsubscribe 以「通道是否还在表中」为准，
+//     连接随后 defer cancel 时找不到自己的通道即静默返回，不存在二次 close
+//   - 关闭后 Publish 该任务的事件是空操作（表里已无订阅者），不会向已关闭通道发送
+func (h *Hub) CloseTask(taskID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	subs := h.subs[taskID]
+	if len(subs) == 0 {
+		return 0
+	}
+	for _, ch := range subs {
+		close(ch)
+	}
+	delete(h.subs, taskID)
+	h.log.Info("任务归档，关闭其全部事件订阅", "taskID", taskID, "closed", len(subs))
+	return len(subs)
+}
+
 // Publish 将事件广播给该 task 的所有订阅者，永不阻塞。
 //
 // 参数：

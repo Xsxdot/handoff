@@ -1016,6 +1016,9 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
+//   - 任务归档（done）时 hub 会关闭本连接的订阅，此处以 StatusNormalClosure +
+//     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
+//     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {
@@ -1090,6 +1093,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		liveMu      sync.Mutex
 		live        []proto.Event
 		overflow    bool
+		archived    bool // 订阅被 hub 关闭（任务归档），与「本连接自己结束」区分
 		drainNotify = make(chan struct{}, 1)
 	)
 	notifyDrain := func() {
@@ -1103,7 +1107,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
-					return // 订阅被取消（连接结束，defer cancel 触发），排空器退出
+					// 通道被关闭有两种可能：连接结束时 defer cancel 关的（此时主循环
+					// 已在退出路上，下面这个标记没人读，无害），或 hub.CloseTask 关的
+					//（任务归档）。后者必须让主循环知道，好以正常关闭码收尾
+					liveMu.Lock()
+					archived = true
+					liveMu.Unlock()
+					notifyDrain()
+					return
 				}
 				liveMu.Lock()
 				if len(live) >= s.liveLimit {
@@ -1244,8 +1255,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			pending := live
 			live = nil
 			over := overflow
+			arch := archived
 			liveMu.Unlock()
 			if !writeLiveBatch(pending) {
+				return
+			}
+			if arch {
+				// 顺序硬约束：先写完归档前排队的事件，再关连接——反过来会在
+				// 归档瞬间吞掉最后一批事件
+				s.log.Info("任务已归档，以正常关闭码结束事件流", "task", taskID,
+					"sent", sent, "last_written", lastWrittenSeq)
+				if cerr := conn.Close(websocket.StatusNormalClosure, "task archived"); cerr != nil {
+					// 对端可能已经走了；关闭码送不到不改变结论，如实记一笔即可
+					s.log.Debug("WS 归档关闭失败", "task", taskID, "err", cerr)
+				}
 				return
 			}
 			if over {
