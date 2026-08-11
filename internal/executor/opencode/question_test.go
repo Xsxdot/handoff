@@ -499,3 +499,24 @@ func TestRediscoverPendingQuestionsFiltersBySession(t *testing.T) {
 		t.Fatalf("别的会话的提问不应补发，却收到 %+v", extra)
 	}
 }
+
+// TestMapQuestionAskedCarriesRequestID 验证 question.asked 转出的事件带上 opencode
+// 的原生请求 id——manager 靠它做工单幂等，缺了就会在 agentd 重启后出第二张单。
+func TestMapQuestionAskedCarriesRequestID(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+
+	props := []byte(`{"id":"que_ff048094","sessionID":"ses_a","questions":[
+		{"question":"选哪个超时","header":"超时","options":[{"label":"5000ms"}]}]}`)
+	a.mapQuestionAsked(r, props)
+
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" {
+		t.Fatalf("事件 = %+v ok=%v，期望一条 question", ev, ok)
+	}
+	if ev.QuestionID != "que_ff048094" {
+		t.Fatalf("QuestionID = %q，期望 que_ff048094", ev.QuestionID)
+	}
+}

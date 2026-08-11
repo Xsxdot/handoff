@@ -145,8 +145,16 @@ func NormalizePermTool(raw string) string {
 type AdapterEvent struct {
 	Type         string // "permission" | "question" | "progress" | "result"
 	PermissionID string // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
-	SessionID    string // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
-	Text         string // permission 描述 / question 原文 / progress 文本
+	// QuestionID 是 Type=question 时 executor 侧提问请求的**原生**稳定 id
+	// （如 opencode 的 que_xxx）。manager 按其派生 ticket id 使其幂等——
+	// 没有它，agentd 重启后 executor 重放同一个提问会产出第二张工单，
+	// 而旧工单永远答不掉（B58）。
+	//
+	// 留空表示该 executor 没有原生 id（claudecode/codex/grok 的 trailer ask
+	// 就是这种），manager 退回 uuid，行为与今天一致。
+	QuestionID string
+	SessionID  string // 可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略
+	Text       string // permission 描述 / question 原文 / progress 文本
 	// Perm 是 Type=permission 时的结构化载荷；nil 表示 adapter 提取不出结构，
 	// manager 据此 fail-closed 升级人工（看不懂的请求交给人）。
 	Perm   *PermRequest
