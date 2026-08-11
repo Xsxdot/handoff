@@ -6,6 +6,7 @@
 //   - 任何一步失败都清干净临时文件：留一份坏二进制在二进制目录里，
 //     下一轮可能被误当成已就绪的 pending
 //   - 不做自动回滚（D10）：只把旧二进制留成 .prev，回退是人工命令
+//   - 下载与安装是两件事，前者可跨平台、后者必须在目标平台执行
 package release
 
 import (
@@ -57,6 +58,108 @@ func NewInstaller(log *slog.Logger) *Installer {
 	return &Installer{HTTP: &http.Client{Timeout: 10 * time.Minute}, Log: log}
 }
 
+// FetchArchive 按指定平台下载资产并校验完整性，返回字节与期望哈希。
+//
+// 参数：
+//   - ctx: 上下文
+//   - rel: 目标发布
+//   - goos / goarch: **目标机器**的平台，不是本机——跨平台推送时远端可能
+//     是 linux/amd64 而本机是 darwin/arm64，必须知道该下哪份资产
+//
+// 返回：
+//   - tgz: 资产原文（tar.gz 字节，**未经解包**）
+//   - 期望的 sha256（十六进制小写），**来自 checksums.txt 的声明**——
+//     这是信任链的第一道校验，消费方把它原样传给 InstallArchive 让两端
+//     比同一个来自 release 的声明，不互相背书
+//   - 错误：缺资产、下载失败、校验不过
+//
+// 注意：
+//   - **不解包、不自检**。自检要 exec 执行新二进制，而本机执行别的平台的
+//     二进制必然失败——自检必须在目标平台上做（agentd 收到推送后）
+//   - 不重试：完整性失败重试只会重下同一份坏数据（spec §4.7）
+func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch string) ([]byte, string, error) {
+	asset, ok := rel.AssetFor(goos, goarch)
+	if !ok {
+		return nil, "", fmt.Errorf("发布 %s 没有 %s/%s 的资产（%s）", rel.Tag, goos, goarch, AssetName(rel.Tag, goos, goarch))
+	}
+	ck, ok := rel.Checksums()
+	if !ok {
+		// 没有校验和就没法验完整性。宁可不更新，也不装一个来路不明的二进制
+		return nil, "", fmt.Errorf("发布 %s 没有 %s，无法校验完整性", rel.Tag, ChecksumsName)
+	}
+
+	i.Log.Info("开始下载资产", "tag", rel.Tag, "platform", goos+"/"+goarch, "asset", asset.Name, "url", asset.URL)
+	tgz, err := i.get(ctx, asset.URL)
+	if err != nil {
+		return nil, "", fmt.Errorf("下载 %s: %w", asset.Name, err)
+	}
+	sums, err := i.get(ctx, ck.URL)
+	if err != nil {
+		return nil, "", fmt.Errorf("下载 %s: %w", ChecksumsName, err)
+	}
+
+	want, err := sumFor(string(sums), asset.Name)
+	if err != nil {
+		return nil, "", err
+	}
+	got := sha256.Sum256(tgz)
+	if hex.EncodeToString(got[:]) != want {
+		return nil, "", fmt.Errorf("sha256 校验不通过（期望 %s，实得 %s）", want, hex.EncodeToString(got[:]))
+	}
+	i.Log.Info("资产校验通过", "tag", rel.Tag, "asset", asset.Name, "sha256", want, "bytes", len(tgz))
+	return tgz, want, nil
+}
+
+// InstallArchive 校验、解包、自检一份已下载的资产，返回可供 Activate 的临时文件路径。
+//
+// 参数：
+//   - tgz: FetchArchive 返回的资产原文
+//   - wantSum: 期望的 sha256（十六进制小写），agentd 侧来自 CLI 推来的
+//     query 参数，是信任链的第二道校验（传输完整性）
+//   - wantTag: 目标版本，自检时拿新二进制 version 首行与它比对
+//   - destDir: 临时文件落点，**必须**与目标二进制同目录
+//
+// 返回：
+//   - 临时二进制的完整路径（已 chmod 0755 并通过自检）
+//   - 错误：校验不过、解包失败、置位失败、自检不过
+//
+// 注意：
+//   - 任何一步失败都会把临时文件删掉，不留残件
+func (i *Installer) InstallArchive(tgz []byte, wantSum, wantTag, destDir string) (string, error) {
+	got := sha256.Sum256(tgz)
+	if hex.EncodeToString(got[:]) != wantSum {
+		i.Log.Error("安装被拒：sha256 校验不通过", "tag", wantTag,
+			"want", wantSum, "got", hex.EncodeToString(got[:]))
+		return "", fmt.Errorf("sha256 校验不通过（期望 %s，实得 %s）", wantSum, hex.EncodeToString(got[:]))
+	}
+
+	i.Log.Info("开始安装资产", "tag", wantTag, "dest_dir", destDir, "bytes", len(tgz))
+	tmp := filepath.Join(destDir, TempName(wantTag))
+	// 从这里往后任何失败都要清干净
+	cleanup := func() {
+		if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+			i.Log.Warn("清理临时文件失败", "path", tmp, "cause", err)
+		}
+	}
+	if err := extractBinary(tgz, tmp); err != nil {
+		cleanup()
+		i.Log.Error("安装被拒：解包失败", "tag", wantTag, "path", tmp, "cause", err)
+		return "", fmt.Errorf("解包 %s: %w", wantTag, err)
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		cleanup()
+		i.Log.Error("安装被拒：置可执行位失败", "tag", wantTag, "path", tmp, "cause", err)
+		return "", fmt.Errorf("置可执行位 %s: %w", tmp, err)
+	}
+	if err := i.selfCheck(tmp, wantTag); err != nil {
+		cleanup()
+		i.Log.Error("安装被拒：自检失败", "tag", wantTag, "path", tmp, "cause", err)
+		return "", err
+	}
+	i.Log.Info("新版本已就绪", "tag", wantTag, "path", tmp)
+	return tmp, nil
+}
+
 // Fetch 下载本平台资产、校验、解包、自检，返回可供 Activate 的临时文件路径。
 //
 // 参数：
@@ -70,60 +173,14 @@ func NewInstaller(log *slog.Logger) *Installer {
 //
 // 注意：
 //   - 任何一步失败都会把临时文件删掉，不留残件
+//   - 本函数是 FetchArchive + InstallArchive 的本机组合，行为与拆分前一致
 func (i *Installer) Fetch(ctx context.Context, rel Release, destDir string) (string, error) {
 	goos, goarch := CurrentPlatform()
-	asset, ok := rel.AssetFor(goos, goarch)
-	if !ok {
-		return "", fmt.Errorf("发布 %s 没有 %s/%s 的资产（%s）", rel.Tag, goos, goarch, AssetName(rel.Tag, goos, goarch))
-	}
-	ck, ok := rel.Checksums()
-	if !ok {
-		// 没有校验和就没法验完整性。宁可不更新，也不装一个来路不明的二进制
-		return "", fmt.Errorf("发布 %s 没有 %s，无法校验完整性", rel.Tag, ChecksumsName)
-	}
-
-	i.Log.Info("开始下载新版本", "tag", rel.Tag, "asset", asset.Name, "url", asset.URL)
-	tgz, err := i.get(ctx, asset.URL)
-	if err != nil {
-		return "", fmt.Errorf("下载 %s: %w", asset.Name, err)
-	}
-	sums, err := i.get(ctx, ck.URL)
-	if err != nil {
-		return "", fmt.Errorf("下载 %s: %w", ChecksumsName, err)
-	}
-
-	want, err := sumFor(string(sums), asset.Name)
+	tgz, sum, err := i.FetchArchive(ctx, rel, goos, goarch)
 	if err != nil {
 		return "", err
 	}
-	got := sha256.Sum256(tgz)
-	if hex.EncodeToString(got[:]) != want {
-		// 不重试：完整性失败重试只会重下同一份坏数据（spec §4.7）
-		return "", fmt.Errorf("sha256 校验不通过（期望 %s，实得 %s）", want, hex.EncodeToString(got[:]))
-	}
-	i.Log.Info("校验通过", "tag", rel.Tag, "sha256", want)
-
-	tmp := filepath.Join(destDir, TempName(rel.Tag))
-	// 从这里往后任何失败都要清干净
-	cleanup := func() {
-		if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
-			i.Log.Warn("清理临时文件失败", "path", tmp, "cause", err)
-		}
-	}
-	if err := extractBinary(tgz, tmp); err != nil {
-		cleanup()
-		return "", fmt.Errorf("解包 %s: %w", asset.Name, err)
-	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		cleanup()
-		return "", fmt.Errorf("置可执行位 %s: %w", tmp, err)
-	}
-	if err := i.selfCheck(tmp, rel.Tag); err != nil {
-		cleanup()
-		return "", err
-	}
-	i.Log.Info("新版本已就绪", "tag", rel.Tag, "path", tmp)
-	return tmp, nil
+	return i.InstallArchive(tgz, sum, rel.Tag, destDir)
 }
 
 // get 取一个 URL 的全部内容，带大小上限。

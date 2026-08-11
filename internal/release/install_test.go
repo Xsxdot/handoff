@@ -69,6 +69,121 @@ func serveRelease(t *testing.T, tag, script string, badSum bool) Release {
 	}}
 }
 
+// newFakeRelease 起一个假的资产服务器，返回 (Release, 关闭函数)。
+//
+// 为什么要自带一个：跨平台断言必须能同时提供两个平台的资产，
+// 而「下错平台」的失败模式恰恰是两个资产都在时才暴露得出来。
+func newFakeRelease(t *testing.T, tag string, files map[string][]byte) (Release, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	for name, body := range files {
+		b := body
+		mux.HandleFunc("/"+name, func(w http.ResponseWriter, _ *http.Request) { w.Write(b) })
+	}
+	srv := httptest.NewServer(mux)
+	rel := Release{Tag: tag}
+	for name := range files {
+		rel.Assets = append(rel.Assets, Asset{Name: name, URL: srv.URL + "/" + name})
+	}
+	return rel, srv.Close
+}
+
+// tgzWith 造一个内含名为 handoff 的可执行文件的 tar.gz。
+func tgzWith(t *testing.T, script string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "handoff", Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write([]byte(script))
+	tw.Close()
+	gz.Close()
+	return buf.Bytes()
+}
+
+// TestFetchArchiveHonorsRequestedPlatform 是这次拆分的核心断言：
+// 请求 linux/amd64 时必须拿到 linux 那份，而不是本机平台那份。
+// 拆分前的 Fetch 写死 CurrentPlatform，这条在任何机器上都会翻红。
+func TestFetchArchiveHonorsRequestedPlatform(t *testing.T) {
+	linux := tgzWith(t, "#!/bin/sh\necho v9.9.9\n")
+	darwin := tgzWith(t, "#!/bin/sh\necho WRONG\n")
+	sum := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+	checks := fmt.Sprintf("%s  %s\n%s  %s\n",
+		sum(linux), AssetName("v9.9.9", "linux", "amd64"),
+		sum(darwin), AssetName("v9.9.9", "darwin", "arm64"))
+
+	rel, closeFn := newFakeRelease(t, "v9.9.9", map[string][]byte{
+		AssetName("v9.9.9", "linux", "amd64"):  linux,
+		AssetName("v9.9.9", "darwin", "arm64"): darwin,
+		ChecksumsName:                          []byte(checks),
+	})
+	defer closeFn()
+
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	got, gotSum, err := i.FetchArchive(context.Background(), rel, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("FetchArchive: %v", err)
+	}
+	if !bytes.Equal(got, linux) {
+		t.Fatalf("下到了别的平台的资产")
+	}
+	if gotSum != sum(linux) {
+		t.Fatalf("返回的 sha256 不是 checksums.txt 里声明的那个：得 %s 期望 %s", gotSum, sum(linux))
+	}
+}
+
+// TestFetchArchiveDoesNotSelfCheck 锁住「本机不执行远端平台的二进制」这条边界。
+// 包内放一个根本不可执行的文件，FetchArchive 仍必须成功——自检归 InstallArchive。
+func TestFetchArchiveDoesNotSelfCheck(t *testing.T) {
+	body := tgzWith(t, "这不是一个可执行文件")
+	s := sha256.Sum256(body)
+	checks := fmt.Sprintf("%s  %s\n", hex.EncodeToString(s[:]), AssetName("v9.9.9", "linux", "amd64"))
+	rel, closeFn := newFakeRelease(t, "v9.9.9", map[string][]byte{
+		AssetName("v9.9.9", "linux", "amd64"): body,
+		ChecksumsName:                         []byte(checks),
+	})
+	defer closeFn()
+
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, _, err := i.FetchArchive(context.Background(), rel, "linux", "amd64"); err != nil {
+		t.Fatalf("FetchArchive 不该自检，却失败了: %v", err)
+	}
+}
+
+// TestInstallArchiveRejectsBadSum 锁住 agentd 侧那道「传输完整性」校验。
+func TestInstallArchiveRejectsBadSum(t *testing.T) {
+	dir := t.TempDir()
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := i.InstallArchive(tgzWith(t, "#!/bin/sh\necho v1\n"), strings.Repeat("0", 64), "v1", dir)
+	if err == nil {
+		t.Fatal("sha256 不符必须拒绝")
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 0 {
+		t.Fatalf("拒绝后不该留残件，实得 %v", ents)
+	}
+}
+
+// TestInstallArchiveSelfChecks 锁住「自检失败即删临时文件」。
+func TestInstallArchiveSelfChecks(t *testing.T) {
+	dir := t.TempDir()
+	body := tgzWith(t, "#!/bin/sh\necho v-WRONG\n")
+	s := sha256.Sum256(body)
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := i.InstallArchive(body, hex.EncodeToString(s[:]), "v9.9.9", dir)
+	if err == nil {
+		t.Fatal("version 首行对不上目标 tag 必须拒绝")
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 0 {
+		t.Fatalf("自检失败后不该留残件，实得 %v", ents)
+	}
+}
+
 // 正常路径：下载 → 校验 → 解包 → 自检通过 → 返回临时文件路径。
 func TestFetchHappyPath(t *testing.T) {
 	tag := "v9.9.9"
