@@ -42,8 +42,21 @@
   只有 `serve.log` 里刷 `failed to refresh available models`。
 
 ```bash
-go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
+# 安装（macOS / Linux，amd64 / arm64）
+curl -fsSL https://handoff.gosuper.dev/install | bash
 
+# 从源码构建（开发时用）
+go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . <子命令>
+```
+
+安装脚本把二进制装到 `~/.local/bin/handoff`（免 sudo，可用 `HANDOFF_INSTALL_DIR` 换目录），
+校验 sha256 后才落盘，可以反复重跑。**不支持 Windows**——agentd 依赖的进程承载层
+Windows 实现尚未完成。
+
+装完用 `handoff version` 确认：首行是版本号（形如 `v0.1.0`）说明装的是 release 构建；
+显示 `unknown` 说明这是本地 `go build` 的产物，自动更新不会作用于它。
+
+```bash
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
 handoff agentd --executor=claude            # 用 Claude Code 执行（需本机已登录 claude）
@@ -95,6 +108,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
+| `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
