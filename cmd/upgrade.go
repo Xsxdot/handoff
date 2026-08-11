@@ -119,9 +119,15 @@ type machineState struct {
 	Bin      string
 	Agentd   string
 	Platform string // 对端上报的平台；空 = 对端过旧未上报
-	Managed  bool
-	Busy     int
-	Err      error
+	// Managed 是对端上报的「agentd 由进程管理器拉起」状态。
+	//
+	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd 不上报 Update），
+	// 与「对端说 false」是两回事。用 bool 零值把前者塌成后者，就会把「我不知道」
+	// 讲成「它非托管」，并据此给出一条注定白折腾的处置建议——B64 就是这么来的。
+	// 与同结构里 ActiveTask.Watchers *int 是同一条纪律。
+	Managed *bool
+	Busy    int
+	Err     error
 }
 
 // currentBinary 返回当前二进制的真实路径。
@@ -246,7 +252,8 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 		ms.Agentd = st.Version.Version
 		ms.Platform = st.Version.Platform
 		if st.Update != nil {
-			ms.Managed = st.Update.Managed
+			managed := st.Update.Managed
+			ms.Managed = &managed
 		}
 		// 活跃口径：running + waiting_answer（waiting_review 可能挂几天，不计入）
 		for _, a := range st.Active {
@@ -349,7 +356,7 @@ func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel rel
 
 	// 闸二：非托管（force 也不越过）。本机纯换文件路径不受闸二约束——敲命令
 	// 的人知道要自己把 agentd 起回来；但触发重启的路径受约束（spec §4.3）
-	if !ms.Managed {
+	if ms.Managed != nil && !*ms.Managed {
 		if ms.Ep.Local {
 			oc := ms.localSwap(ctx, out, rel)
 			if oc == outcomeOK {
