@@ -17,8 +17,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/xushixin/handoff/internal/projectid"
 	"github.com/xushixin/handoff/internal/proto"
 )
 
@@ -135,5 +137,134 @@ func (s *Store) DeleteProjectLocation(name string) error {
 	if n == 0 {
 		return fmt.Errorf("项目 %s: %w", name, ErrNotFound)
 	}
+	return nil
+}
+
+// ActiveTasksByRepoPath 返回仓库路径为 repoPath 的全部非终态任务。
+//
+// 参数：
+//   - repoPath: 仓库绝对路径；空串返回空切片
+//
+// 注意：
+//   - 与 ActiveTasksByWorkDir 的区别：那个按**工作目录**判定（managed worktree
+//     各不相同），本方法按**仓库**判定——注销一条位置会影响这个项目下的所有
+//     任务，包括从它长出来的 managed worktree
+//   - 原属 repos.go（B62 迁移后 repos 表删除），项目注销的占用校验仍在用它
+func (s *Store) ActiveTasksByRepoPath(repoPath string) ([]proto.Task, error) {
+	if repoPath == "" {
+		return nil, nil
+	}
+	placeholders := make([]string, len(proto.TerminalStates))
+	args := []any{repoPath}
+	for i, st := range proto.TerminalStates {
+		placeholders[i] = "?"
+		args = append(args, string(st))
+	}
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT `+taskColumns+` FROM tasks
+WHERE repo_path = ? AND state NOT IN (`+strings.Join(placeholders, ", ")+`)
+ORDER BY created_at DESC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询仓库 %s 的活跃任务: %w", repoPath, err)
+	}
+	defer rows.Close()
+	var tasks []proto.Task
+	for rows.Next() {
+		task, err := scanTaskRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("读取活跃任务行: %w", err)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活跃任务: %w", err)
+	}
+	return tasks, nil
+}
+
+// migrateReposToProjectLocations 把旧 repos 表逐行迁入 project_locations，随后 DROP 掉它。
+//
+// 参数：
+//   - db: 已打开的数据库句柄（Open 内部调用，此时新表已建好）
+//
+// 返回：
+//   - 错误：查/写/DROP 失败时返回；旧表不存在时直接返回 nil（新库与二次调用都走这条）
+//
+// 注意：
+//   - 按 created_at 升序遍历，**同一个 project_id 保留最早的一条**：ADR-0008
+//     只允许一个位置，多出来的（多半是同一仓库的 worktree 各登了一条）丢弃并
+//     Warn 出 name/path/origin 三项完整信息，人照着 handoff project add --path 自己补
+//   - 路径做 Abs+Clean：新表的 path UNIQUE 约束要靠绝对路径才有意义
+//   - 迁移不探测文件系统：目录已被移走的行照样迁入，下一次派发在 EnsureRepoUsable
+//     处报「路径不存在」，处置是 project rm 后重新 add（spec §14 风险一）
+//   - 幂等靠 DROP：跑完旧表就没了，第二次调用直接返回
+func migrateReposToProjectLocations(db *sql.DB) error {
+	ctx := context.Background()
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='repos'`).Scan(&n); err != nil {
+		return fmt.Errorf("探查旧 repos 表: %w", err)
+	}
+	if n == 0 {
+		return nil // 新库或已迁过，无操作
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT name, path, origin_url, created_at FROM repos ORDER BY created_at ASC`)
+	if err != nil {
+		return fmt.Errorf("读旧 repos 表: %w", err)
+	}
+	type oldRepo struct{ name, path, origin, createdAt string }
+	var olds []oldRepo
+	for rows.Next() {
+		var r oldRepo
+		if err := rows.Scan(&r.name, &r.path, &r.origin, &r.createdAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("读旧 repos 行: %w", err)
+		}
+		olds = append(olds, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历旧 repos 表: %w", err)
+	}
+	rows.Close()
+
+	seen := make(map[string]oldRepo, len(olds))
+	migrated, skipped := 0, 0
+	for _, r := range olds {
+		pid := projectid.FromOrigin(r.origin)
+		if pid == "" {
+			log().Warn("迁移跳过：origin 算不出 project_id（人工处置：handoff project add）",
+				"name", r.name, "path", r.path, "origin", r.origin)
+			skipped++
+			continue
+		}
+		if prev, dup := seen[pid]; dup {
+			log().Warn("迁移跳过：同一项目已有更早的登记，本条丢弃（人工处置：handoff project add --path <该路径>）",
+				"name", r.name, "path", r.path, "origin", r.origin,
+				"kept_name", prev.name, "kept_path", prev.path)
+			skipped++
+			continue
+		}
+		abs, err := filepath.Abs(r.path)
+		if err != nil {
+			log().Warn("迁移跳过：路径无法绝对化",
+				"name", r.name, "path", r.path, "origin", r.origin, "cause", err)
+			skipped++
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO project_locations (project_id, name, path, origin_url, created_at)
+VALUES (?, ?, ?, ?, ?)`,
+			pid, r.name, filepath.Clean(abs), r.origin, r.createdAt); err != nil {
+			return fmt.Errorf("迁移登记 %s 到 project_locations: %w", r.name, err)
+		}
+		seen[pid] = r
+		migrated++
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE repos`); err != nil {
+		return fmt.Errorf("迁移后删除旧 repos 表: %w", err)
+	}
+	log().Info("旧仓库登记已迁入项目位置表", "migrated", migrated, "skipped", skipped)
 	return nil
 }

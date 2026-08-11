@@ -834,7 +834,16 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
 	env.srv.SetManager(mgr)
 
-	resp := env.post(t, "/api/tasks", `{"repo":"/nonexistent/repo","prompt":"任意指令"}`)
+	// B62：派发必须先登记；env 解析发生在任何 git 动作之前，登记到真实项目即可
+	repo := newTestRepo(t)
+	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
+	runGit(t, repo, "remote", "add", "origin", origin)
+	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	if rerr != nil {
+		t.Fatalf("RegisterProject: %v", rerr)
+	}
+
+	resp := env.post(t, "/api/tasks", `{"project_id":"`+loc.ProjectID+`","prompt":"任意指令"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("返回 %d, want 500", resp.StatusCode)

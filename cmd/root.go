@@ -192,6 +192,23 @@ func TargetEndpoint() (addr, token string, err error) {
 	return "http://" + t.Addr, t.Token, nil
 }
 
+// LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。
+//
+// 返回：
+//   - addr: 本机 agentd 完整地址（含 http:// 前缀）
+//   - token: 本机令牌
+//   - err: 配置加载失败或本机 token 为空时返回
+//
+// 为什么需要它而不是复用 TargetEndpoint：登记是**两跳**（本机 + 目标机，
+// spec §6.1），而 TargetEndpoint 读的是包级 targetName，指定了 --target 时
+// 拿不到本机端点。两跳都要发，就必须有一个不受 --target 影响的取端点入口。
+func LocalEndpoint() (addr, token string, err error) {
+	saved := targetName
+	targetName = ""
+	defer func() { targetName = saved }()
+	return TargetEndpoint()
+}
+
 // loadCLIConfig 加载 CLI 侧配置（wait/dispatch/pull 等子命令读同步/终端偏好）。
 // 配置加载失败时返回空配置：偏好项（Sync.Auto / Terminal.Auto）取默认值即可，
 // 真正的配置错误由 TargetEndpoint 在更早处暴露。

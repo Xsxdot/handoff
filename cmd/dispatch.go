@@ -2,8 +2,10 @@
 // 派发到 agentd 执行。
 //
 // 职责：
-//   - 读取本地 plan 文件并 base64 编码，连同仓库路径/计划名/target/执行者/模型/
-//     分支/worktree 等参数一并 POST 给 agentd（body {repo, plan_b64, prompt, ...}）
+//   - 读取本地 plan 文件并 base64 编码，连同项目身份/计划名/target/执行者/模型/
+//     分支/worktree 等参数一并 POST 给 agentd（body {project_id, plan_b64, prompt, ...}）
+//   - 派发的项目由 cwd 识别：读当前目录 git 仓库的 origin 离线算出 project_id，
+//     cwd 不是目标项目时用 --project <名字> 显式指定
 //   - 远程派发时采集本地 HEAD 作基线随请求上送，并校验本地工作区完整性
 //     （已跟踪改动拒发、未跟踪警告；--no-sync-check 关掉整块，--allow-dirty 只关拒发）
 //   - 派发成功后在 stderr 打一行基线摘要（起点短号 + 任务仓库领先的提交数）
@@ -29,10 +31,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/projectid"
 )
 
 var (
-	dispatchRepo        string
+	dispatchProject     string
 	dispatchPrompt      string
 	dispatchName        string
 	dispatchExecutor    string
@@ -72,7 +75,7 @@ func shortSHA(sha string) string {
 
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
-// 使用方式：handoff dispatch [--repo <仓库>] [--prompt ...] [--executor x] [--model m]
+// 使用方式：handoff dispatch [--project <名字>] [--prompt ...] [--executor x] [--model m]
 // [--branch b | --new-branch b] [--base t] [--worktree w | --new-worktree]
 // [--no-terminal] [plan 文件]
 var dispatchCmd = &cobra.Command{
@@ -80,9 +83,8 @@ var dispatchCmd = &cobra.Command{
 	Short: "派发一个计划任务到 agentd 执行",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// B46：--repo 可以是路径、登记名，也可以省略（由 agentd 按 cwd 的 origin
-		// 匹配本机登记）。三态都要查登记表才能判，所以拦截点下沉到 agentd——
-		// 好处是拒绝报文能带上「这台机器上登记了什么」，本地拦只能说一句「必填」。
+		// B62：派发的项目由 cwd 识别，路径不再出现在命令上。只依赖本机信息，
+		// 多跑一次网络毫无意义——识别不了的，这里就直接说清楚怎么补。
 		var planB64, planName string
 		if len(args) == 1 {
 			content, err := os.ReadFile(args[0])
@@ -96,11 +98,21 @@ var dispatchCmd = &cobra.Command{
 		if planB64 == "" && dispatchPrompt == "" {
 			return fmt.Errorf("必须提供 plan 文件或 --prompt（至少其一）")
 		}
+		// B62：项目识别。这一条在 CLI 侧判是因为它只依赖本机信息，多跑一次网络毫无意义。
+		projectID := ""
+		if dispatchProject == "" {
+			origin := localOriginURL()
+			if origin == "" {
+				return fmt.Errorf("派发的项目由当前目录识别：当前目录不是 git 仓库（或没有 origin）；" +
+					"请在项目目录内执行，或用 --project <名字> 指定")
+			}
+			projectID = projectid.FromOrigin(origin)
+		}
 		addr, token, err := TargetEndpoint()
 		if err != nil {
 			return err
 		}
-		// 只对远程 target 采集基线：本机派发时 --repo 与 cwd 未必是同一个仓库，
+		// 只对远程 target 采集基线：本机派发时 cwd 与目标项目未必是同一个仓库，
 		// 拿 cwd 的 HEAD 去校验别的仓库会造成假拒绝
 		baseCommit := ""
 		if targetName != "" && !dispatchNoSyncCheck {
@@ -115,13 +127,13 @@ var dispatchCmd = &cobra.Command{
 			}
 		}
 		task, err := client.New(addr, token).Dispatch(cmd.Context(), client.DispatchOpts{
-			Repo: dispatchRepo, PlanB64: planB64, PlanName: planName, Target: targetName,
+			ProjectID: projectID, ProjectName: dispatchProject,
+			PlanB64: planB64, PlanName: planName, Target: targetName,
 			Prompt: dispatchPrompt, Name: dispatchName,
 			Executor: dispatchExecutor, Model: dispatchModel,
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
-			OriginURL:  localOriginURL(),
 		})
 		if err != nil {
 			return err
@@ -157,8 +169,8 @@ var dispatchCmd = &cobra.Command{
 }
 
 func init() {
-	dispatchCmd.Flags().StringVar(&dispatchRepo, "repo", "",
-		"任务仓库：执行机上的完整路径，或 handoff repo add 登记过的名字；省略则按当前目录的 origin 自动匹配登记")
+	dispatchCmd.Flags().StringVar(&dispatchProject, "project", "",
+		"跨项目派发时指定项目名（省略则由当前目录自动识别；用 handoff project ls 查看有哪些）")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
 	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
 	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/grok/fake；空=agentd 缺省执行者）")
@@ -170,7 +182,7 @@ func init() {
 	dispatchCmd.Flags().BoolVar(&dispatchNewWorktree, "new-worktree", false, "在 DataDir/worktrees 下新建 managed worktree（任务完成时自动删除）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoSyncCheck, "no-sync-check", false,
-		"跳过远程仓库基线校验（cwd 与 --repo 不是同一个仓库时用）")
+		"跳过远程仓库基线校验（cwd 与目标项目不是同一个仓库时用）")
 	dispatchCmd.Flags().BoolVar(&dispatchAllowDirty, "allow-dirty", false,
 		"本地工作区有未提交的已跟踪改动时仍照常派发（executor 看不到这些改动）")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")

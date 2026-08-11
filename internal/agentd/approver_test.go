@@ -145,7 +145,8 @@ func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ct
 func mustApproverDispatch(t *testing.T, m *Manager) *proto.Task {
 	t.Helper()
 	repo := initTestRepo(t)
-	task, err := m.Dispatch(context.Background(), DispatchReq{Repo: repo, Prompt: "跑测试", Executor: "fake"})
+	pid := registerTestProject(t, m, repo)
+	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "跑测试", Executor: "fake"})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}

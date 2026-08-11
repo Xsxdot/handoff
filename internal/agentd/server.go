@@ -174,9 +174,9 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
-//   - POST /api/repos                    登记仓库（必要时先克隆）
-//   - GET  /api/repos                    列出仓库登记（含现场实际状态）
-//   - DELETE /api/repos/{name}           注销仓库登记（只删登记，不动磁盘）
+//   - POST /api/projects               登记项目（必要时先克隆）
+//   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -193,9 +193,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
-	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
-	mux.HandleFunc("GET /api/repos", s.handleRepoList)
-	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
+	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)
+	mux.HandleFunc("GET /api/projects", s.handleProjectList)
+	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	return s.auth(mux)
@@ -520,15 +520,18 @@ func (s *Server) resumeIfIdle(taskID string) {
 // dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，
 // prompt-only 派发时 prompt 非空、plan_b64 为空）。
 type dispatchRequest struct {
-	Repo     string `json:"repo"`
-	PlanB64  string `json:"plan_b64"`
-	PlanName string `json:"plan_name"`
-	Target   string `json:"target"`
-	Prompt   string `json:"prompt"`
-	Name     string `json:"name"`
-	Executor string `json:"executor"`
-	Model    string `json:"model"`
-	Branch   string `json:"branch"`
+	// project_id 与 project_name 二选一。**请求体里没有任何路径字段**：
+	// 「代码在这台机器的哪个目录」是执行机自己的私事，调用方不该描述它（B62）。
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	PlanB64     string `json:"plan_b64"`
+	PlanName    string `json:"plan_name"`
+	Target      string `json:"target"`
+	Prompt      string `json:"prompt"`
+	Name        string `json:"name"`
+	Executor    string `json:"executor"`
+	Model       string `json:"model"`
+	Branch      string `json:"branch"`
 	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
 	NewBranch   string `json:"new_branch"`
 	Base        string `json:"base"`
@@ -536,8 +539,6 @@ type dispatchRequest struct {
 	NewWorktree bool   `json:"new_worktree"`
 	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
-	// OriginURL 是审核者 cwd 仓库的 origin，用于 repo 省略时自动匹配登记（B46）。
-	OriginURL string `json:"origin_url"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -553,18 +554,18 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	var req dispatchRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		s.log.Warn("dispatch 请求体解析失败", "err", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {repo, plan_b64, ...}"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
-		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
+		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
+		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
-		OriginURL: req.OriginURL,
 	})
 	if err != nil {
-		s.writeDispatchError(w, req.Repo, err)
+		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
 	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
@@ -584,9 +585,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - ErrRepoNotRegistered / ErrRepoAmbiguous → 400：--repo 给的登记名查不到，
-//     或省略 --repo 时 origin 匹配到多条/零条——报文自带本机已登记清单或候选
-//     清单，审核者拿到即可行动（换名字，或先 handoff repo add）
+//   - ErrProjectNotRegistered → 400：project_id / project_name 在本机位置表里查不到，
+//     报文自带本机已登记清单——审核者拿到即可行动（换名字，或先 handoff project add）；
+//     本机 CLI 收到这条会自动补登记后重发（B62）
 //   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
 //     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
@@ -594,142 +595,143 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
-func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
+func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
 	case errors.Is(err, ErrDirtyWorktree):
-		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
-		s.log.Warn("dispatch 被拒：目标工作目录被占用", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBaseCommitMissing):
-		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable):
-		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：仓库不可用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoNotRegistered):
-		s.log.Warn("dispatch 被拒：仓库未登记", "repo", repo, "cause", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoAmbiguous):
-		s.log.Warn("dispatch 被拒：origin 匹配到多条登记", "repo", repo, "cause", err)
+	case errors.Is(err, ErrProjectNotRegistered):
+		s.log.Warn("dispatch 被拒：项目未登记", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errBadDispatchRequest):
-		s.log.Warn("dispatch 被拒：请求参数非法", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：请求参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBadWorkspaceReq):
-		s.log.Warn("dispatch 被拒：工作区参数非法", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errExecutorStartFailed):
-		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "repo", repo, "cause", err)
+		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	case errors.Is(err, errEnvResolveFailed):
-		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "repo", repo, "cause", err)
+		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
-		s.log.Error("派发任务失败", "repo", repo, "cause", err)
+		s.log.Error("派发任务失败", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
 	}
 }
 
-// repoAddRequest 是 POST /api/repos 的请求体。
+// projectAddRequest 是 POST /api/projects 的请求体。
 //
-// 两种形态：clone=false 时 path 必填（登记已有克隆）；clone=true 时 url 必填
-// （先克隆再登记），path 为落点、可省（省时用 agentd 配置的 repo_root）。
-type repoAddRequest struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	URL   string `json:"url"`
-	Clone bool   `json:"clone"`
+// 两种形态由 path 是否为空决定：给了 path 就是「这台机器上已经有一份，用它」
+//（agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
+type projectAddRequest struct {
+	OriginURL string `json:"origin_url"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
 }
 
-// handleRepoAdd 登记一个仓库（必要时先克隆）。
-func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("repo add 请求", "method", r.Method, "path", r.URL.Path)
+// handleProjectAdd 登记一个项目（必要时先克隆）。
+func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("project add 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
-		s.log.Warn("repo add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		s.log.Warn("project add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	var req repoAddRequest
+	var req projectAddRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		s.log.Warn("repo add 请求体解析失败", "err", err)
+		s.log.Warn("project add 请求体解析失败", "err", err)
 		writeJSON(w, http.StatusBadRequest,
-			map[string]string{"error": "请求体必须是 JSON {name, path, url, clone}"})
+			map[string]string{"error": "请求体必须是 JSON {origin_url, name, path}"})
 		return
 	}
-	repo, err := s.mgr.RegisterRepo(r.Context(), RegisterRepoReq{
-		Name: req.Name, Path: req.Path, URL: req.URL, Clone: req.Clone})
+	loc, err := s.mgr.RegisterProject(r.Context(), RegisterProjectReq{
+		OriginURL: req.OriginURL, Name: req.Name, Path: req.Path})
 	if err != nil {
-		s.writeRepoError(w, req.Name, err)
+		s.writeProjectError(w, req.Name, err)
 		return
 	}
-	s.log.Info("repo add 完成", "name", repo.Name, "path", repo.Path)
-	writeJSON(w, http.StatusOK, repo)
+	s.log.Info("project add 完成", "project_id", loc.ProjectID, "name", loc.Name, "path", loc.Path)
+	writeJSON(w, http.StatusOK, loc)
 }
 
-// handleRepoList 列出全部仓库登记（含现场探得的实际状态）。
-func (s *Server) handleRepoList(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("repo list 请求", "method", r.Method, "path", r.URL.Path)
+// handleProjectList 列出全部项目位置（含现场探得的实际状态）。
+func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("project list 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	repos, err := s.mgr.ListRepos(r.Context())
+	locs, err := s.mgr.ListProjects(r.Context())
 	if err != nil {
-		s.writeRepoError(w, "", err)
+		s.writeProjectError(w, "", err)
 		return
 	}
-	if repos == nil {
-		repos = []proto.Repo{} // 空列表要序列化成 []，不是 null
+	if locs == nil {
+		locs = []proto.ProjectLocation{} // 空列表要序列化成 []，不是 null
 	}
-	s.log.Info("repo list 完成", "count", len(repos))
-	writeJSON(w, http.StatusOK, repos)
+	s.log.Info("project list 完成", "count", len(locs))
+	writeJSON(w, http.StatusOK, locs)
 }
 
-// handleRepoRemove 注销一条仓库登记（只删登记，不动磁盘）。
-func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
+// handleProjectRemove 注销一条项目位置（只删登记，不动磁盘）。
+func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	s.log.Info("repo remove 请求", "name", name)
+	s.log.Info("project remove 请求", "name", name)
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.UnregisterRepo(r.Context(), name); err != nil {
-		s.writeRepoError(w, name, err)
+	if err := s.mgr.UnregisterProject(r.Context(), name); err != nil {
+		s.writeProjectError(w, name, err)
 		return
 	}
-	s.log.Info("repo remove 完成", "name", name)
+	s.log.Info("project remove 完成", "name", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// writeRepoError 把仓库登记操作的失败映射为 HTTP 状态码与可读原因。
+// writeProjectError 把项目登记操作的失败映射为 HTTP 状态码与可读原因。
 //
 // 映射规则（与 writeDispatchError 同一套哲学：调用方拿到就能行动）：
 //   - store.ErrNotFound → 404：登记名不存在
-//   - ErrRepoAlreadyExists → 409：名字/路径已被占用，或克隆落点已存在——
+//   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
 //     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
-//   - ErrWorkdirBusy → 409：注销时仓库仍被活跃任务占用
+//   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
+//   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
+//     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
 //   - ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
 //     （路径不是仓库、没有 origin、clone 失败、参数缺失）
 //   - 其余 → 500
-func (s *Server) writeRepoError(w http.ResponseWriter, name string, err error) {
+func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		s.log.Warn("仓库登记操作被拒：登记不存在", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：登记不存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoAlreadyExists):
-		s.log.Warn("仓库登记操作被拒：已存在", "name", name, "cause", err)
+	case errors.Is(err, ErrProjectAlreadyExists):
+		s.log.Warn("项目登记操作被拒：已存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
-		s.log.Warn("仓库登记操作被拒：被活跃任务占用", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrProjectOriginMismatch):
+		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
-		s.log.Warn("仓库登记操作被拒：请求非法", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：请求非法", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
-		s.log.Error("仓库登记操作失败", "name", name, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "仓库登记操作失败"})
+		s.log.Error("项目登记操作失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "项目登记操作失败"})
 	}
 }
 
