@@ -119,20 +119,34 @@ type permCall struct {
 	body string
 }
 
+// childSession 是假服务端持有的子会话详情（GET /session/{id} 的应答素材）。
+type childSession struct {
+	parent string
+	title  string
+}
+
 // fakeServer 是可脚本化的 opencode 假服务端：按 push 顺序逐条推送 SSE 事件，
 // 记录建会话/发 prompt/应答权限的请求，全程不依赖真实 opencode。
 type fakeServer struct {
-	ts           *httptest.Server
-	mu           sync.Mutex
-	sessionID    string
-	promptBodies []string
-	permCalls    []permCall
-	lines        chan string
+	ts               *httptest.Server
+	mu               sync.Mutex
+	sessionID        string
+	promptBodies     []string
+	permCalls        []permCall
+	lines            chan string
+	children         map[string]childSession // 子会话 id -> 详情
+	sessionGets      []string                // 收到的 GET /session/{id} 顺序
+	sessionGetStatus map[string]int          // 一次性故障注入：子会话 id -> 要返回的状态码
 }
 
 // newFakeServer 启动假服务端；SSE 事件经 push 注入（可先入队、连接后送达）。
 func newFakeServer(t *testing.T) *fakeServer {
-	fs := &fakeServer{sessionID: "sess-1", lines: make(chan string, 64)}
+	fs := &fakeServer{
+		sessionID:        "sess-1",
+		lines:            make(chan string, 64),
+		children:         map[string]childSession{},
+		sessionGetStatus: map[string]int{},
+	}
 	fs.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
@@ -149,6 +163,25 @@ func newFakeServer(t *testing.T) *fakeServer {
 			fs.permCalls = append(fs.permCalls, permCall{path: r.URL.Path, body: string(body)})
 			fs.mu.Unlock()
 			w.Write([]byte("true"))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/session/") &&
+			!strings.Contains(strings.TrimPrefix(r.URL.Path, "/session/"), "/"):
+			child := strings.TrimPrefix(r.URL.Path, "/session/")
+			fs.mu.Lock()
+			fs.sessionGets = append(fs.sessionGets, child)
+			// 一次性故障注入：用完即清，供「负结果不缓存」用例对同一 child 先失败后成功
+			if code, bad := fs.sessionGetStatus[child]; bad {
+				delete(fs.sessionGetStatus, child)
+				fs.mu.Unlock()
+				w.WriteHeader(code)
+				return
+			}
+			d, ok := fs.children[child]
+			fs.mu.Unlock()
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			fmt.Fprintf(w, `{"id":%q,"parentID":%q,"title":%q}`, child, d.parent, d.title)
 		case r.Method == http.MethodGet && r.URL.Path == "/event":
 			// SSE 流：脚本行逐条 flush，脚本耗尽后保持连接直到客户端断开
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -190,6 +223,33 @@ func (fs *fakeServer) perms() []permCall {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return append([]permCall(nil), fs.permCalls...)
+}
+
+// addChild 登记一个子会话，供 GET /session/{id} 应答。
+func (fs *fakeServer) addChild(id, parent, title string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.children[id] = childSession{parent: parent, title: title}
+}
+
+// failNextSessionGet 让下一次 GET /session/{id} 返回指定状态码（一次性）。
+func (fs *fakeServer) failNextSessionGet(id string, code int) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.sessionGetStatus[id] = code
+}
+
+// sessionGetCount 返回针对某个子会话的 GET /session/{id} 次数。
+func (fs *fakeServer) sessionGetCount(id string) int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	n := 0
+	for _, got := range fs.sessionGets {
+		if got == id {
+			n++
+		}
+	}
+	return n
 }
 
 // sseLine 把任意事件 JSON 包装成单条 SSE data 行（data: <json> + 空行成帧）。
@@ -284,6 +344,20 @@ func permissionAskedEvent(id, perm, command string) string {
 		"sessionID": "sess-1",
 		"properties": map[string]any{
 			"id": id, "sessionID": "sess-1", "permission": perm,
+			"patterns": []string{command},
+			"metadata": map[string]any{"command": command},
+			"tool":     map[string]any{"messageID": "msg-1", "callID": "call-1"},
+		},
+	})
+}
+
+// permissionAskedEventFrom 构造一条来自指定会话的 permission.asked 事件。
+func permissionAskedEventFrom(sessionID, id, perm, command string) string {
+	return sseLine(map[string]any{
+		"type":      "permission.asked",
+		"sessionID": sessionID,
+		"properties": map[string]any{
+			"id": id, "sessionID": sessionID, "permission": perm,
 			"patterns": []string{command},
 			"metadata": map[string]any{"command": command},
 			"tool":     map[string]any{"messageID": "msg-1", "callID": "call-1"},
@@ -1318,10 +1392,12 @@ func newAdapterWithRunForTest(t *testing.T) (*Adapter, *runState) {
 	t.Helper()
 	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := &runState{
-		taskID:   "t1",
-		evCh:     make(chan executor.AdapterEvent, 8),
-		stopCh:   make(chan struct{}),
-		permText: make(map[string]string),
+		taskID:        "t1",
+		evCh:          make(chan executor.AdapterEvent, 8),
+		stopCh:        make(chan struct{}),
+		permText:      make(map[string]string),
+		childSessions: make(map[string]string),
+		permSession:   make(map[string]string),
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	t.Cleanup(r.runCancel)
@@ -1450,5 +1526,134 @@ func TestMapIdleRejectedTurnStillAsks(t *testing.T) {
 		}
 	default:
 		t.Fatalf("被拒终止的空回合应产出事件")
+	}
+}
+
+// TestChildSessionPermissionProducesTicket 覆盖 B52 的核心修复：子会话发来的
+// permission.asked 必须认亲成功并产出工单（修复前被 acceptForeign 丢弃，任务挂死）。
+func TestChildSessionPermissionProducesTicket(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0001"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "Run probe curl command (@general subagent)")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-child-1", "bash", "curl https://example.com"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "perm-child-1" {
+		t.Errorf("PermissionID=%q，期望 perm-child-1", ev.PermissionID)
+	}
+	if !strings.Contains(ev.Text, "curl https://example.com") {
+		t.Errorf("权限描述=%q，应含命令文本", ev.Text)
+	}
+}
+
+// TestChildSessionOwnershipCached 认亲结果必须缓存：同一子会话连发两条审批，
+// GET /session/{id} 只能被调一次，否则每条事件都在热路径上做一次网络 I/O。
+func TestChildSessionOwnershipCached(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0002"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "子任务")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-a", "bash", "echo a"))
+	fs.push(permissionAskedEventFrom("sess-child", "perm-b", "bash", "echo b"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	waitEventType(t, ch, "permission")
+	waitEventType(t, ch, "permission")
+	if n := fs.sessionGetCount("sess-child"); n != 1 {
+		t.Fatalf("GET /session/sess-child 调用 %d 次，期望 1 次（认亲结果应缓存）", n)
+	}
+}
+
+// TestOwnershipFailureEmitsProgress 认亲失败必须不静默：无工单，但要有一条
+// progress 事件让审核者在 handoff show 的事件历史里看得见。
+func TestOwnershipFailureEmitsProgress(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0003"
+	fs := newFakeServer(t)
+	// 不登记该子会话 → GET /session 返回 404
+	fs.push(permissionAskedEventFrom("sess-unknown", "perm-x", "bash", "echo x"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	deadline := time.After(5 * time.Second)
+	sawProgress := false
+	for !sawProgress {
+		select {
+		case ev := <-ch:
+			if ev.Type == "permission" {
+				t.Fatalf("认亲失败却产出了工单: %+v", ev)
+			}
+			if ev.Type == "progress" && strings.Contains(ev.Text, "sess-unknown") {
+				sawProgress = true
+			}
+		case <-deadline:
+			t.Fatal("等待认亲失败的 progress 事件超时")
+		}
+	}
+}
+
+// TestOwnershipNegativeResultNotCached 认亲失败不得入缓存：首次 500、二次正常，
+// 第二条审批必须能成功产出工单。缓存了负结果，一次网络抖动就把这个子会话永久拉黑。
+func TestOwnershipNegativeResultNotCached(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0004"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "子任务")
+	fs.failNextSessionGet("sess-child", http.StatusInternalServerError)
+	fs.push(permissionAskedEventFrom("sess-child", "perm-fail", "bash", "echo first"))
+	fs.push(permissionAskedEventFrom("sess-child", "perm-ok", "bash", "echo second"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "perm-ok" {
+		t.Fatalf("PermissionID=%q，期望 perm-ok（首条因 500 丢弃，第二条应重新认亲成功）", ev.PermissionID)
+	}
+	if n := fs.sessionGetCount("sess-child"); n != 2 {
+		t.Fatalf("GET /session/sess-child 调用 %d 次，期望 2 次（负结果不得缓存）", n)
+	}
+}
+
+// TestChildPermissionTextCarriesSubagentPrefix 工单文案必须让审核者一眼看出
+// 这条审批来自子 agent——子 agent 的越权和主 agent 的越权含义完全不同。
+func TestChildPermissionTextCarriesSubagentPrefix(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0005"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "Run probe curl command (@general subagent)")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-p", "bash", "curl https://example.com"))
+
+	_, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ev := waitEventType(t, ch, "permission")
+	want := "[子 agent: Run probe curl command (@general subagent)] "
+	if !strings.HasPrefix(ev.Text, want) {
+		t.Fatalf("权限描述=%q，应以 %q 开头", ev.Text, want)
+	}
+	if !strings.Contains(ev.Text, "curl https://example.com") {
+		t.Errorf("权限描述=%q，前缀之后应保留原描述", ev.Text)
+	}
+}
+
+// TestRespondPermissionRoutesToChildSession 应答必须发回请求所在的子会话。
+// 发给父会话 opencode 不认，审核者的批准落不了地，任务照样挂死。
+func TestRespondPermissionRoutesToChildSession(t *testing.T) {
+	quietLog(t)
+	taskID := "task-child-0006"
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "子任务")
+	fs.push(permissionAskedEventFrom("sess-child", "perm-r", "bash", "echo r"))
+
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	waitEventType(t, ch, "permission")
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-r", "once"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	calls := fs.perms()
+	if len(calls) != 1 {
+		t.Fatalf("权限应答请求 %d 次，期望 1 次", len(calls))
+	}
+	want := "/session/sess-child/permissions/perm-r"
+	if calls[0].path != want {
+		t.Fatalf("应答 path=%q，期望 %q（必须发往子会话，不是父会话）", calls[0].path, want)
 	}
 }

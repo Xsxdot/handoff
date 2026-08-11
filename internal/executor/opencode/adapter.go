@@ -211,24 +211,38 @@ type runState struct {
 	// 它是对账水位的来源：mapIdle 正常分类完一个回合后，把它写进 proc.json，
 	// 使断连恢复后的对账能判出「这个回合我已经消费过了」。不写就会重复补发。
 	lastAssistantMsgID string
-	lastEventAt        atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+	// childSessions / permSession 支撑子会话审批归属（B52）。
+	//
+	// childSessions: 已认亲成功的子会话 id → 会话标题。认亲一次即缓存——一个
+	// 回合里同一子会话会连发多条事件，每条都发 HTTP 会把网络 I/O 塞进事件热路径。
+	// permSession: permID → 该权限所属会话 id。应答必须发回请求所在的会话
+	// （子会话的权限发给父会话 opencode 不认），而 RespondPermission 的入参只有 permID。
+	//
+	// why 不复用 turnMu：acceptForeign 在 mapEvent 里刻意排在 turnMu.Lock() 之前，
+	// 就是为了不在持锁时做网络 I/O。锁序固定 turnMu → sessMu，不得反向。
+	sessMu        sync.RWMutex
+	childSessions map[string]string
+	permSession   map[string]string
+	lastEventAt   atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
 }
 
 // newRun 创建并登记一个任务的运行态。
 func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 	r := &runState{
-		taskID:       taskID,
-		taskDir:      taskDir,
-		repoPath:     repoPath,
-		evCh:         make(chan executor.AdapterEvent, 16),
-		stopCh:       make(chan struct{}),
-		renderPath:   filepath.Join(taskDir, renderLogFileName),
-		partSeen:     make(map[string]string),
-		partSnap:     make(map[string]bool),
-		partTypes:    make(map[string]string),
-		pendingDelta: make(map[string]string),
-		userMsgs:     make(map[string]bool),
-		permText:     make(map[string]string),
+		taskID:        taskID,
+		taskDir:       taskDir,
+		repoPath:      repoPath,
+		evCh:          make(chan executor.AdapterEvent, 16),
+		stopCh:        make(chan struct{}),
+		renderPath:    filepath.Join(taskDir, renderLogFileName),
+		partSeen:      make(map[string]string),
+		partSnap:      make(map[string]bool),
+		partTypes:     make(map[string]string),
+		pendingDelta:  make(map[string]string),
+		userMsgs:      make(map[string]bool),
+		permText:      make(map[string]string),
+		childSessions: map[string]string{},
+		permSession:   map[string]string{},
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
@@ -460,7 +474,24 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 			a.log.Info("adapter 权限应答已转发", "task", taskID, "perm", permID)
 		}
 	}()
-	if err := r.api.RespondPermission(ctx, r.session, permID, decision); err != nil {
+	// 应答必须发回权限请求所在的会话：子会话的权限发给父会话 opencode 不认，
+	// 审核者的批准落不了地，任务照样挂死（B52）
+	sess := r.session
+	r.sessMu.RLock()
+	mapped, known := r.permSession[permID]
+	r.sessMu.RUnlock()
+	if known {
+		sess = mapped
+	} else {
+		// 进程内表，agentd 重启后为空；此时只能退回父会话。若该权限来自子
+		// agent，这次应答会被 opencode 拒（4xx），错误会经 httpError 一路回到
+		// 审核者终端——是响的，不是静默的
+		a.log.Warn("权限应答未在会话映射表里找到该 permID，退回父会话应答",
+			"task", taskID, "perm", permID, "session", sess)
+	}
+	a.log.Info("权限应答选定会话", "task", taskID, "perm", permID,
+		"session", sess, "from_map", known)
+	if err := r.api.RespondPermission(ctx, sess, permID, decision); err != nil {
 		return err
 	}
 	// 拒绝登记必须在转发成功之后：没送达的拒绝不会终止 executor 的回合，
@@ -885,7 +916,7 @@ var taskScopedEvents = map[string]bool{
 }
 
 // acceptForeign 裁决一条「会话 id 与本任务不符」的事件是否仍要处理，
-// 并保证两个方向都不静默（A-1）。
+// 并保证两个方向都不静默。
 //
 // 参数：
 //   - sessionID: 从顶层或 properties 提取到的会话 id（"" 表示事件没带）
@@ -893,29 +924,123 @@ var taskScopedEvents = map[string]bool{
 // 返回：
 //   - true 表示继续按本任务的事件处理，false 表示丢弃
 //
-// why（两个方向都不能想当然）：
-//   - 缺 sessionID 的任务级事件不能 fail-open：/event 是全服务器广播流，
-//     一条无归属的 permission.asked 会被每个并发任务都当成自己的审批门，
-//     审核者看到重复且归属错误的工单，批准动作也发到错误的会话
-//   - 会话不符的 permission.asked 不能静默 fail-closed：opencode 会为
-//     subagent/task 工具派生子会话，其权限请求带子会话 id。丢掉它 = opencode
-//     在等一个永远不会到来的决策，而 serve 活着、看门狗不触发，任务静默挂起。
-//     本层无法把子会话映射回任务（没有可用的父子关系端点），至少要 Warn 到
-//     日志，让运营者知道需要 handoff attach 人工兜底
+// why（三条实测结论，改这里之前先读）：
+//   - opencode 会为 subagent/task 工具派生子会话，其权限请求带子会话 id。
+//     GET /session/{id} 返回 parentID，**父子关系端点是存在的**——本函数早期
+//     版本的注释断言「本层无法把子会话映射回任务」，那是错的，B52 已实测推翻：
+//     子会话的 parentID 就等于本任务的会话 id
+//   - 子会话被 opencode 自己下了 permission:[{task,*,deny}]，不能再派生 subagent，
+//     所以嵌套深度恒为 1，比一次 parentID 就够，不需要向上遍历
+//   - 每个任务起自己的 opencode serve（见 proc.go 的 freePort），所以 /event 的
+//     「全服务器广播」实际是「本任务这一个 serve 的广播」，流上出现的陌生会话
+//     本就只可能是本任务自己派生的子会话
+//
+// why 仍然保留校验（不能改成一律放行）：校验存在的理由是防止跨任务串台。
+// 缺 sessionID 的任务级事件更不能 fail-open——一条无归属的 permission.asked
+// 会被当成本任务的审批门，审核者的批准动作会发到错误的会话。
 func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool {
 	if !taskScopedEvents[ev.Type] {
 		return true // 服务器级广播事件：本就不带会话，交给下游的 default 分支跳过
 	}
 	if ev.Type == "permission.asked" {
-		a.log.Warn("收到不属于本任务会话的审批请求，未产出工单（opencode 可能在等一个看不见的决策，"+
-			"任务若卡住请 handoff attach 查看）",
-			"task", r.taskID, "own_session", r.session, "event_session", sessionID,
-			"properties", turn.TruncateRunes(string(ev.Properties), 200))
+		if sessionID == "" {
+			a.log.Warn("收到不带会话 id 的审批请求，无法归属，未产出工单",
+				"task", r.taskID, "own_session", r.session,
+				"properties", turn.TruncateRunes(string(ev.Properties), 200))
+			a.emitOwnershipFailure(r, sessionID, "事件未携带会话 id")
+			return false
+		}
+		if _, ok := a.resolveChildSession(r, sessionID); ok {
+			return true
+		}
+		a.emitOwnershipFailure(r, sessionID, "认亲失败")
 		return false
 	}
+	// 非审批事件即使来自已认亲的子会话也照旧丢弃：回合记账（lastAssistantMsgID
+	// 水位、pendingDelta、mapIdle 分类）整套围绕单一会话的消息序列构建，交错
+	// 第二个会话的消息会直接污染水位与空闲判定。子 agent 干了什么仍看得到——
+	// 主 agent 会在自己的收尾正文里转述（四家 executor 探针均已实测）。
 	a.log.Debug("收到其他会话事件，跳过", "task", r.taskID,
 		"type", ev.Type, "session", sessionID)
 	return false
+}
+
+// resolveChildSession 判定一个陌生会话是否是本任务派生的子会话。
+//
+// 参数：
+//   - sessionID: 事件携带的会话 id（调用方保证非空）
+//
+// 返回：
+//   - title: 子会话标题（供工单标注）；认亲失败时为空
+//   - ok:    是否认亲成功
+//
+// 注意：
+//   - 只缓存正结果。一次网络抖动导致的判定失败若被缓存，这个子会话就被永久
+//     拉黑，它后续每一条审批都会被丢弃——那正是本次要修的故障形态
+//   - 不持 sessMu 跨 HTTP 调用：查缓存与写缓存各自短暂加锁，网络 I/O 不在锁下。
+//     同一个新子会话的两条事件并发到达会各发一次 GET /session，幂等且无害，
+//     不值得为它加 singleflight
+//   - 不向上递归找祖先：opencode 自己给 subagent 下了 permission:[{task,*,deny}]
+//     （真机实测），嵌套深度恒为 1。真出现二级说明这条不变量被打破了，那是断言
+//     失败，该报警而不是在事件热路径上做无界遍历
+func (a *Adapter) resolveChildSession(r *runState, sessionID string) (title string, ok bool) {
+	r.sessMu.RLock()
+	title, cached := r.childSessions[sessionID]
+	r.sessMu.RUnlock()
+	if cached {
+		a.log.Debug("子会话认亲命中缓存", "task", r.taskID, "child", sessionID)
+		return title, true
+	}
+
+	a.log.Info("子会话认亲开始", "task", r.taskID, "event_session", sessionID, "own_session", r.session)
+	start := time.Now()
+	// ctx 不挂 run 的生命周期：超时已被 ownershipTimeout 收在 5s 内，
+	// 而 Stop 会关掉 SSE 流，最坏情况只是多等这一次往返
+	ctx, cancel := context.WithTimeout(context.Background(), ownershipTimeout)
+	defer cancel()
+	d, err := r.api.GetSession(ctx, sessionID)
+	if err != nil {
+		a.log.Warn("子会话认亲失败：查询会话详情出错，本条审批请求丢弃",
+			"task", r.taskID, "event_session", sessionID, "cause", err)
+		return "", false
+	}
+	switch {
+	case d.ParentID == r.session:
+		r.sessMu.Lock()
+		r.childSessions[sessionID] = d.Title
+		r.sessMu.Unlock()
+		a.log.Info("子会话认亲成功", "task", r.taskID, "child", sessionID,
+			"parent", d.ParentID, "title", d.Title, "elapsed_ms", time.Since(start).Milliseconds())
+		return d.Title, true
+	case d.ParentID == "":
+		a.log.Warn("子会话认亲失败：该会话没有父会话，是与本任务无关的顶层会话，本条审批请求丢弃",
+			"task", r.taskID, "event_session", sessionID, "own_session", r.session)
+	default:
+		a.log.Warn("子会话认亲失败：父会话不是本任务会话，opencode「subagent 不可再派生 subagent」"+
+			"（task:deny）的不变量可能已被打破，本条审批请求丢弃",
+			"task", r.taskID, "event_session", sessionID, "event_parent", d.ParentID, "own_session", r.session)
+	}
+	return "", false
+}
+
+// emitOwnershipFailure 把一次归属判定失败播报给审核者。
+//
+// 参数：
+//   - sessionID: 判定失败的会话 id（可能为空串）
+//   - reason:    失败原因短语，进 progress 文本
+//
+// why：丢弃一条审批请求意味着 opencode 在等一个永远不会到来的决策，而 serve
+// 活着、看门狗不触发——只写日志的话审核者在 handoff 里完全看不见。progress
+// 只入库不阻塞，是把这件事送到 handoff show 事件历史的最轻通道。
+func (a *Adapter) emitOwnershipFailure(r *runState, sessionID, reason string) {
+	if sessionID == "" {
+		sessionID = "(未携带)"
+	}
+	a.emit(r, executor.AdapterEvent{
+		Type: "progress",
+		Text: "丢弃了一条无法归属的审批请求（" + reason + "，会话 " + sessionID +
+			"）：opencode 可能在等一个看不见的决策，任务若卡住请 handoff attach 查看现场",
+	})
 }
 
 // mapPermissionAsked 处理 permission.asked（真实事件）：properties.id 即
@@ -927,6 +1052,7 @@ func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool
 func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	var pa struct {
 		ID         string   `json:"id"`
+		SessionID  string   `json:"sessionID"`
 		Permission string   `json:"permission"`
 		Patterns   []string `json:"patterns"`
 		Metadata   struct {
@@ -962,6 +1088,33 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 			"task", r.taskID, "perm", pa.ID)
 		text = "opencode 未提供权限描述（id " + pa.ID + "），请 handoff attach 查看现场"
 	}
+	// 子会话归属与标注（B52）。permSession 决定应答发往哪个会话；前缀让审核者
+	// 一眼看出这条审批来自子 agent——子 agent 的越权与主 agent 的越权含义不同。
+	//
+	// why 前缀必须加在空描述兜底之后：前缀本身非空，先加前缀会让上面那段
+	// 「描述为空就给兜底文本」的判空永远为假，真正空描述的请求就变成一条只有
+	// 前缀的工单，审核者仍然看不到要批什么。
+	permSess := pa.SessionID
+	if permSess == "" {
+		permSess = r.session
+	}
+	if permSess != r.session {
+		r.sessMu.RLock()
+		title := r.childSessions[permSess]
+		r.sessMu.RUnlock()
+		if title != "" {
+			text = "[子 agent: " + title + "] " + text
+		} else {
+			// 认亲成功但标题为空（opencode 未给 title）：仍要标出来源，
+			// 只是标不出是哪个子 agent
+			text = "[子 agent] " + text
+		}
+	}
+	r.sessMu.Lock()
+	r.permSession[pa.ID] = permSess
+	r.sessMu.Unlock()
+	a.log.Info("权限请求已归属会话", "task", r.taskID, "perm", pa.ID,
+		"session", permSess, "is_child", permSess != r.session)
 	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
