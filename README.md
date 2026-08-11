@@ -56,6 +56,23 @@ Windows 实现尚未完成。
 装完用 `handoff version` 确认：首行是版本号（形如 `v0.1.0`）说明装的是 release 构建；
 显示 `unknown` 说明这是本地 `go build` 的产物，自动更新不会作用于它。
 
+装完先配一次：
+
+```bash
+handoff init                    # 探测本机 executor，问答式写出 config.yaml
+handoff service install         # 把 agentd 交给 launchd / systemd 托管
+handoff service status          # 看托管状态
+```
+
+`handoff init` 可以随时重跑当改配置用——每一问的默认值取当前配置的实际值，
+一路回车即原样保持。stdin 不是终端时（例如经管道调起）它一问不问，只写默认配置。
+
+**托管之后 agentd 的形态会变**：它由进程管理器拉起，崩溃或退出都会被自动拉回。
+Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `handoff service uninstall`，
+或 `systemctl stop handoff-agentd` / `launchctl bootout gui/$(id -u)/dev.gosuper.handoff.agentd`。
+macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的服务空窗——
+执行者不受影响（它们在独立会话里），但期间的 `dispatch` / `reply` 会失败。
+
 ```bash
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
@@ -109,6 +126,8 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
+| `handoff init` | 探测本机 executor 并交互式生成/更新配置（幂等，可重跑） | — |
+| `handoff service install\|uninstall\|status` | 把 agentd 交给 launchd / systemd 托管 | — |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
