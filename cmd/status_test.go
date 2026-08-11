@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/proto"
 )
@@ -289,5 +290,58 @@ func TestCompareBuildPrefersVersion(t *testing.T) {
 				t.Fatalf("compareBuild=%q，期望含 %q", got, c.want)
 			}
 		})
+	}
+}
+
+// 有待命更新时 status 要多打一行，且说清楚为什么还没换。
+//
+// why：spec §4.7 要求「长期有活跃任务，一直不空闲」时 status 同步显示。
+// 没有这一行，用户只会看到 agentd 版本一直不变，无从知道更新其实已经下好了。
+func TestRenderStatusShowsPendingUpdate(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now().Add(-time.Hour),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+		Update: &proto.UpdateStatus{
+			Pending: "v0.3.0", DownloadedAt: time.Now().Add(-2 * time.Hour), Managed: true,
+		},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	out := buf.String()
+	if !strings.Contains(out, "v0.3.0") {
+		t.Fatalf("应显示待命版本:\n%s", out)
+	}
+	if !strings.Contains(out, "待命") {
+		t.Fatalf("应说明它在等窗口:\n%s", out)
+	}
+}
+
+// 非托管时那一行要把真因说出来，否则用户永远等不到自动换版还不知道为什么。
+func TestRenderStatusShowsUnmanagedReason(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+		Update:     &proto.UpdateStatus{Pending: "v0.3.0", Managed: false},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "非托管") {
+		t.Fatalf("非托管必须说明白:\n%s", buf.String())
+	}
+}
+
+// 没有待命更新时不多打任何一行——绝大多数时候都是这种情况。
+func TestRenderStatusNoUpdateLine(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(buf.String(), "待命") {
+		t.Fatalf("无待命更新时不该多打行:\n%s", buf.String())
 	}
 }

@@ -66,6 +66,19 @@ type ActiveTask struct {
 	Watchers *int `json:"watchers,omitempty"`
 }
 
+// UpdateStatus 是自动更新的当前状态。
+//
+// 字段说明：
+//   - Pending: 已下载待命的版本；空串表示没有待命更新
+//   - DownloadedAt: 下载完成时刻，用于展示「等了多久」
+//   - Managed: 当前 agentd 进程是不是被进程管理器拉起的。**false 时自动换版
+//     被拒绝**，这是用户唯一能看出「为什么更新一直不生效」的地方
+type UpdateStatus struct {
+	Pending      string    `json:"pending,omitempty"`
+	DownloadedAt time.Time `json:"downloaded_at,omitempty"`
+	Managed      bool      `json:"managed"`
+}
+
 // StatusResp 是 GET /api/status 的响应。
 //
 // 注意：TaskCounts 的六个状态键恒存在，计数为零也出现——缺键与零值对消费方
@@ -87,4 +100,8 @@ type StatusResp struct {
 	// 客户端的 124 会抢在 agentd 的 stalled 前面退出进程，把一次带 last_seq 和
 	// idle 时长的**诊断**降级成一句「我没收到东西」——审核者拿到的信息严格更少。
 	StallTimeout string `json:"stall_timeout,omitempty"`
+
+	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
+	// 消费方拿到 nil 就该什么都不显示，而不是显示一个「未托管、无待命」的假状态
+	Update *UpdateStatus `json:"update,omitempty"`
 }
