@@ -98,6 +98,20 @@ func Open(path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS repos (
   name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,           -- 会话 id，可公开，用于列出与吊销
+  token_hash   TEXT NOT NULL UNIQUE,       -- cookie 值的 SHA-256；明文不落库
+  device_name  TEXT NOT NULL DEFAULT '',
+  created_at   TIMESTAMP NOT NULL,
+  expires_at   TIMESTAMP NOT NULL,
+  last_seen_at TIMESTAMP NOT NULL,
+  revoked_at   TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS auth_tickets (
+  id          TEXT PRIMARY KEY,            -- ticket 明文的 SHA-256
+  device_name TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMP NOT NULL,
+  expires_at  TIMESTAMP NOT NULL,
+  consumed_at TIMESTAMP)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
