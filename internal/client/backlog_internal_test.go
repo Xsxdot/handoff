@@ -6,6 +6,12 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/proto"
@@ -121,5 +127,125 @@ func TestComputeBacklogShape(t *testing.T) {
 	}
 	if got.Actionable == nil {
 		t.Fatal("actionable 必须是数组而非 nil：JSON 里 null 与 [] 对消费方是两回事")
+	}
+}
+
+// snapServer 起一个只服务 GET /api/tasks/{id} 的假 agentd，返回给定快照。
+// status 非 200 时返回该状态码（用于降级路径）。
+func snapServer(t *testing.T, status int, snap *AttachInfo) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snap)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestReconcileBacklogEmitsAndAdvancesCursor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ts := snapServer(t, http.StatusOK, &AttachInfo{
+		Task:           proto.TaskView{Task: proto.Task{State: proto.TaskStateWaitingAnswer}},
+		PendingTickets: []proto.Ticket{{ID: "new1", Kind: "gate"}},
+		RecentEvents:   []proto.Event{permEv(104, "done1"), permEv(109, "new1")},
+	})
+
+	var got *BacklogSummary
+	next, terminal, err := New(ts.URL, "").reconcileBacklog(t.Context(), "tk", 100,
+		func(s *BacklogSummary) error { got = s; return nil })
+	if err != nil {
+		t.Fatalf("reconcileBacklog = %v, want nil", err)
+	}
+	if terminal {
+		t.Fatal("waiting_answer 不是终态，terminal 应为 false")
+	}
+	if next != 109 {
+		t.Fatalf("next = %d, want 109（推到水位）", next)
+	}
+	if got == nil || got.Missed != 2 || got.Stale != 1 {
+		t.Fatalf("摘要 = %+v, want missed=2 stale=1", got)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".handoff", "cursor-tk"))
+	if err != nil {
+		t.Fatalf("读 cursor: %v", err)
+	}
+	if strings.TrimSpace(string(b)) != "109" {
+		t.Fatalf("cursor = %q, want 109", strings.TrimSpace(string(b)))
+	}
+}
+
+func TestReconcileBacklogSilentWhenNoBacklog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ts := snapServer(t, http.StatusOK, &AttachInfo{
+		RecentEvents: []proto.Event{permEv(100, "a")},
+	})
+	called := false
+	next, terminal, err := New(ts.URL, "").reconcileBacklog(t.Context(), "tk", 100,
+		func(*BacklogSummary) error { called = true; return nil })
+	if err != nil || terminal {
+		t.Fatalf("err=%v terminal=%v, want nil/false", err, terminal)
+	}
+	if called {
+		t.Fatal("无积压时不该吐摘要——那会给正常运行加噪音")
+	}
+	if next != 100 {
+		t.Fatalf("next = %d, want 100（原样返回）", next)
+	}
+}
+
+// TestReconcileBacklogDegradesOnAttachFailure 钉住 spec §4：对账失败退回逐条重放，
+// 绝不因此中断 follow。404/401 的永久性由随后的 WS 握手判定，不在这里重复一套。
+func TestReconcileBacklogDegradesOnAttachFailure(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusInternalServerError} {
+		t.Setenv("HOME", t.TempDir())
+		ts := snapServer(t, status, nil)
+		called := false
+		next, terminal, err := New(ts.URL, "").reconcileBacklog(t.Context(), "tk", 100,
+			func(*BacklogSummary) error { called = true; return nil })
+		if err != nil {
+			t.Fatalf("status=%d: reconcileBacklog = %v, want nil（降级不报错）", status, err)
+		}
+		if called || terminal || next != 100 {
+			t.Fatalf("status=%d: 降级路径应原样返回 fromSeq 且不吐摘要，got next=%d called=%v terminal=%v",
+				status, next, called, terminal)
+		}
+	}
+}
+
+// TestReconcileBacklogTerminalOnFailed 钉住 spec §4：积压被跳过后，终结判据必须
+// 由 state 接上，否则 follow 会挂在一个死任务上。
+func TestReconcileBacklogTerminalOnFailed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ts := snapServer(t, http.StatusOK, &AttachInfo{
+		Task:         proto.TaskView{Task: proto.Task{State: proto.TaskStateFailed}},
+		RecentEvents: []proto.Event{permEv(104, "a")},
+	})
+	_, terminal, err := New(ts.URL, "").reconcileBacklog(t.Context(), "tk", 100,
+		func(*BacklogSummary) error { return nil })
+	if err != nil {
+		t.Fatalf("reconcileBacklog = %v, want nil", err)
+	}
+	if !terminal {
+		t.Fatal("快照 state=failed 时 terminal 必须为 true")
+	}
+}
+
+// TestReconcileBacklogPropagatesCallbackError 验证 onBacklog 的错误原样上抛
+//（stdout 写失败必须让 follow 停下，而不是继续跑一个没人看得见的循环）。
+func TestReconcileBacklogPropagatesCallbackError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ts := snapServer(t, http.StatusOK, &AttachInfo{
+		RecentEvents: []proto.Event{permEv(104, "a")},
+	})
+	boom := errors.New("写 stdout 失败")
+	if _, _, err := New(ts.URL, "").reconcileBacklog(t.Context(), "tk", 100,
+		func(*BacklogSummary) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
 	}
 }

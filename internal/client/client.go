@@ -895,6 +895,63 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	return got, nil
 }
 
+// reconcileBacklog 在建立 WS 连接前对账：拿一次权威快照，判断本机 cursor 之后
+// 是否积压了未读事件；有则吐一行摘要并把 cursor 直接推到当前水位。
+//
+// 参数：
+//   - taskID: 完整 UUID
+//   - fromSeq: 本机 cursor 当前停在哪
+//   - onBacklog: 摘要的消费者（cmd 层写 stdout）；返回非 nil 立即上抛
+//
+// 返回：
+//   - next: WS 应当使用的 from_seq——有积压时是当前水位，否则原样是 fromSeq
+//   - terminal: 快照显示任务已 failed，调用方应吐完摘要后正常收尾（返回 nil）
+//   - err: 仅当 onBacklog 报错；**网络/HTTP 失败一律不报错**（见下）
+//
+// 为什么积压事件不拉取而是直接跳过：摘要用的是权威快照，比逐条重放**信息更全**
+// ——重放里混着已被审批链答掉的历史工单（补 reply 会 404），而 PendingTickets
+// 只含真正还欠的，且每张带完整 Request 原文。
+//
+// 为什么 Attach 失败是降级而不是报错：摘要是优化不是正确性，对账失败就该退回
+// 改动前的逐条重放，绝不能因此中断 follow。永久性（401/404）也不在这里判——
+// Client.Attach 的错误是普通 fmt.Errorf 而非 permanentError，isPermanent 认不出
+// 它；紧随其后的 WS 握手会用既有的、已被测试覆盖的路径判出同一个结论。判定
+// 只留一处，不复制。
+func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq int64,
+	onBacklog func(*BacklogSummary) error) (int64, bool, error) {
+	c.log().Debug("follow 积压对账开始", "task", taskID, "from_seq", fromSeq)
+
+	snap, err := c.Attach(ctx, taskID)
+	if err != nil {
+		c.log().Warn("follow 积压对账失败，退回逐条重放", "task", taskID,
+			"from_seq", fromSeq, "cause", err)
+		return fromSeq, false, nil
+	}
+
+	sum := computeBacklog(taskID, fromSeq, snap)
+	if sum == nil {
+		c.log().Debug("follow 积压对账完成：无积压", "task", taskID, "from_seq", fromSeq)
+		return fromSeq, false, nil
+	}
+
+	// 有积压是「你离开期间发生了事」，是 Info 不是 Debug：它是排查「我错过了什么」
+	// 的唯一线索行，必须带齐全部计数
+	c.log().Info("follow 积压对账：有积压", "task", taskID,
+		"from_seq", sum.FromSeq, "to_seq", sum.ToSeq, "missed", sum.Missed,
+		"stale", sum.Stale, "actionable", len(sum.Actionable),
+		"truncated", sum.MissedTruncated, "state", string(sum.State))
+
+	if berr := onBacklog(sum); berr != nil {
+		return fromSeq, false, berr
+	}
+	if werr := c.writeCursor(taskID, sum.ToSeq); werr != nil {
+		// 不因写盘失败中止：下次对账会重新吐同一行摘要，重复一行无害；
+		// 吞掉才危险
+		c.log().Warn("对账后 cursor 写盘失败", "task", taskID, "seq", sum.ToSeq, "cause", werr)
+	}
+	return sum.ToSeq, sum.State == proto.TaskStateFailed, nil
+}
+
 // FollowEvents 持续订阅任务事件流，逐条交给 onEvent，直到任务终结或出错。
 //
 // 与 WaitEvent 的区别只有一条：不在首个事件后返回。这条区别是本设计的全部理由
