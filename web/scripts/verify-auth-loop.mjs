@@ -4,9 +4,10 @@
 // /console → Set-Cookie → 带 cookie 请求 /api 与 /ws 的完整链路。不用 mock：
 // mock 后端证明不了 ticket→302→Set-Cookie 这套 host-only cookie 行为。
 //
-// 前置（用一次性 agentd 实例，不要碰机器上正在跑的）：
-//   1. go build -o /tmp/agentd-smoke . && 用独立 datadir/端口起它
-//   2. /tmp/agentd-smoke console --config <临时配置> --print-url 拿 ticket URL
+// 前置（用一次性 agentd 实例，不要碰机器上正在跑的；最小配置见 web/README.md
+// 「开发流程」第 1 步，字段名是 datadir 不是 data_dir）：
+//   1. go build -o /tmp/agentd-smoke . && /tmp/agentd-smoke agentd --config /tmp/agentd-smoke.yaml
+//   2. /tmp/agentd-smoke console --config /tmp/agentd-smoke.yaml --print-url 拿 ticket URL
 //   3. 把 URL 端口从 agentd 的换成 vite dev server 的端口，作为本脚本参数
 //
 // 用法:
@@ -20,7 +21,6 @@
 //   - WS 无任务时显式输出「无任务，跳过 WS 验证」并照常验证 cookie 在 WS
 //     握手上真的被 agentd 接受（连一个不存在的 task，期望 close code 1008
 //     =「已通过鉴权、进了 WS 处理器」；401 会在握手阶段被拒）
-import { readFileSync } from 'node:fs'
 import { WebSocket } from 'ws'
 
 const VITE_URL = process.env.VITE_URL ?? 'http://localhost:5173'
@@ -34,6 +34,19 @@ function ok(msg) {
   console.log(`✓ ${msg}`)
 }
 
+// redactTicket 把 ticket URL 里的凭据明文脱敏后再打印。
+//
+// 为什么必须脱敏：ticket 是 60 秒有效的一次性凭据，打日志/输出等于把凭据写进
+// 排障记录与 CI 日志——与本文件头注释、全仓凭据纪律（「不在日志或代码里打印
+// token、ticket、cookie 明文」）直接冲突。与下面 Set-Cookie 那行一样只露前 4 位。
+function redactTicket(raw) {
+  const u = new URL(raw)
+  const ticket = u.searchParams.get('ticket')
+  u.searchParams.delete('ticket')
+  const suffix = ticket ? `?ticket=${ticket.slice(0, 4)}…` : ''
+  return `${u.origin}${u.pathname}${suffix}`
+}
+
 // 第 0 步：校验入参并拆出 ticket。
 const rawTicketUrl = process.argv[2]
 if (!rawTicketUrl) {
@@ -41,12 +54,12 @@ if (!rawTicketUrl) {
 }
 const u = new URL(rawTicketUrl)
 const ticket = u.searchParams.get('ticket')
-if (!ticket) fail(`ticket URL 缺少 ticket 参数: ${rawTicketUrl}`)
+if (!ticket) fail(`ticket URL 缺少 ticket 参数: ${redactTicket(rawTicketUrl)}`)
 
 // 反代后的兑换地址：浏览器实际打开的就是这个（host 换成 vite，路径/query 原样）。
 const proxied = new URL(u.pathname + u.search, VITE_URL)
-console.log(`[0] ticket URL=${rawTicketUrl}`)
-console.log(`[0] 经 vite 反代兑换地址=${proxied}`)
+console.log(`[0] ticket URL=${redactTicket(rawTicketUrl)}`)
+console.log(`[0] 经 vite 反代兑换地址=${redactTicket(proxied)}`)
 
 // 第 1 步：手动跟 302 抓 Set-Cookie（redirect: 'manual' 让 fetch 不自动跟随）。
 let resp = await fetch(proxied, { redirect: 'manual' })
@@ -55,7 +68,10 @@ const loc = resp.headers.get('location')
 if (loc !== '/') fail(`302 Location 应为 /，实际 ${JSON.stringify(loc)}`)
 const setCookie = resp.headers.getSetCookie?.() ?? []
 const session = setCookie.find((c) => c.startsWith('handoff_session='))
-if (!session) fail(`302 未带回 handoff_session Set-Cookie（实际: ${JSON.stringify(setCookie)}）`)
+if (!session) {
+  // 失败信息也只露 cookie 名不露值：值是会话凭据明文，打印它违反凭据纪律
+  fail(`302 未带回 handoff_session Set-Cookie（实际: ${setCookie.map((c) => `${c.split('=')[0]}=…`).join(', ') || '（空）'}）`)
+}
 const cookieValue = session.split(';')[0]
 ok(`/console 兑换：302 → /，Set-Cookie ${cookieValue.slice(0, 40)}…（HttpOnly 不读明文）`)
 
@@ -81,25 +97,56 @@ ok(`/api/tasks → 200；共 ${tasks.length} 个任务`)
 //   有任务：订阅第一个任务，等至少一条事件；
 //   无任务：显式输出跳过说明（不假装成功），并连一个不存在的 task 验证
 //   cookie 在 WS 握手上确实被 agentd 接受（1008=通过鉴权进了处理器）。
-function wsProbe(url, headers, onOpen, onClose) {
+// wsProbe 打开一条 WS 并等待「首条事件」或「连接关闭」，两者到点都没来就失败。
+//
+// 返回 {code, message}：
+//   code=0       已收到首条事件（onMessage 返回 true 时结束）
+//   code=1008    agentd 以 PolicyViolation 关闭（任务不存在/会话被吊销）
+//   code=-1      8s 内握手未完成
+//   code=-2      握手/连接出错
+//   code=-3      已连上，但 postOpenTimeoutMs 内既没收到事件也没被关闭
+//
+// 参数：
+//   - onMessage: 每收到一条数据帧调用一次；返回 true 视为成功收尾
+//
+// 为什么 open 之后还要一个独立超时：风险区在 open 之后。任务可能一直 running
+// 却零事件（fake 空脚本正是这样），服务器也可能连上后不按 1008 关闭。若没有
+// 这个超时，有任务分支会永久挂起、无人值守静默吊死——一个会挂死的验收脚本
+// 比没有还糟。
+//
+// 所有出口都走 settle：解绑全部回调并 terminate。不 terminate 会留下悬挂句柄
+// 让 node 进程不退出；不 resolve 会让脚本永久等待。两者都是必须堵死的死法。
+function wsProbe(url, headers, { onMessage, postOpenTimeoutMs = 10000 } = {}) {
   return new Promise((resolve) => {
     const ws = new WebSocket(url, { headers, handshakeTimeout: 5000 })
-    const timer = setTimeout(() => {
+    let settled = false
+    let postOpenTimer = null
+
+    const settle = (code, message) => {
+      if (settled) return
+      settled = true
+      if (postOpenTimer !== null) clearTimeout(postOpenTimer)
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
       ws.terminate()
-      resolve({ code: -1, message: '握手超时' })
-    }, 8000)
+      resolve({ code, message })
+    }
+
+    const handshakeTimer = setTimeout(() => settle(-1, '握手超时'), 8000)
     ws.on('open', () => {
-      clearTimeout(timer)
-      onOpen?.(ws, resolve)
+      clearTimeout(handshakeTimer)
+      postOpenTimer = setTimeout(
+        () => settle(-3, `已连上但 ${postOpenTimeoutMs / 1000}s 内既没收到事件也没被关闭`),
+        postOpenTimeoutMs,
+      )
     })
-    ws.on('close', (code, reason) => {
-      clearTimeout(timer)
-      resolve({ code, message: reason.toString() })
+    ws.on('message', (data) => {
+      if (onMessage?.(data)) settle(0, '已收到首条事件')
     })
-    ws.on('error', (err) => {
-      clearTimeout(timer)
-      resolve({ code: -2, message: err.message })
-    })
+    ws.on('close', (code, reason) => settle(code, reason.toString()))
+    ws.on('error', (err) => settle(-2, err.message))
   })
 }
 
@@ -117,15 +164,20 @@ if (tasks.length === 0) {
   const result = await wsProbe(
     `${VITE_URL.replace(/^http/, 'ws')}/ws/events?task=${encodeURIComponent(target.id)}&from_seq=0`,
     { Cookie: cookieValue },
-    (ws, resolve) => {
-      ws.on('message', (data) => {
-        events.push(JSON.parse(data.toString()))
-        if (events.length >= 1) resolve({ code: 0, message: `已收到 ${events.length} 条事件` })
-      })
+    {
+      onMessage: (data) => {
+        try {
+          events.push(JSON.parse(data.toString()))
+        } catch (err) {
+          // 帧解析失败不该当场抛崩脚本，记下错误按失败收尾
+          events.push({ seq: '?', type: `解析失败: ${err.message}` })
+        }
+        return events.length >= 1
+      },
     },
   )
-  if (events.length >= 1) ok(`/ws/events → 收到事件：${events.map((e) => `#${e.seq}:${e.type}`).join(', ')}`)
-  else fail(`/ws/events 未收到事件（close code ${result.code}: ${result.message}）`)
+  if (result.code === 0) ok(`/ws/events → 收到事件：${events.map((e) => `#${e.seq}:${e.type}`).join(', ')}`)
+  else fail(`/ws/events 未收到事件（${result.message}，code ${result.code}）`)
 }
 
 console.log('\n鉴权闭环冒烟通过：ticket → Set-Cookie → 带 cookie 的 /api 与 /ws 全链路打通。')

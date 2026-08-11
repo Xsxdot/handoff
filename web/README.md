@@ -21,14 +21,22 @@ agentd 托管的 Web 控制台的前端脚手架。本任务只做地基：用**
 
 ## 开发流程（鉴权闭环怎么走）
 
-1. **起 agentd**（独立实例也行，但数据目录/端口不冲突）：
+1. **起 agentd**。本任务一律用一次性实例（独立 datadir + 独立端口），别碰机器上
+   正在跑的那个（同一 DataDir 起第二个会被单实例文件锁挡下）。先给一份能直接
+   复制粘贴的最小配置——字段名是 `datadir`（**不是** `data_dir`，strict 解码器
+   会把后者当场拒掉）：
    ```
-   go build -o /tmp/agentd-smoke . && /tmp/agentd-smoke agentd --config <你的配置>
+   cat > /tmp/agentd-smoke.yaml <<'EOF'
+   listen: 127.0.0.1:7788
+   token: smoketest-token-00000000000000000000
+   datadir: /tmp/agentd-smoke-data
+   EOF
+   go build -o /tmp/agentd-smoke . && /tmp/agentd-smoke agentd --config /tmp/agentd-smoke.yaml
    ```
 2. **拿 ticket URL**：
    ```
-   /tmp/agentd-smoke console --config <你的配置> --print-url
-   # → http://127.0.0.1:7777/console?ticket=<t>
+   /tmp/agentd-smoke console --config /tmp/agentd-smoke.yaml --print-url
+   # → http://127.0.0.1:7788/console?ticket=<t>
    ```
 3. **把端口从 agentd 的换成 5173 打开**：
    ```
@@ -39,7 +47,8 @@ agentd 托管的 Web 控制台的前端脚手架。本任务只做地基：用**
    回到 5173 的 `/` 已是登录态，后续 `/api` 与 `/ws` 都带 cookie。
 4. **正常开发**：`npm run dev`，页面三个区块分别验证 status / tasks / WS。
 
-agentd 地址可配：`AGENTD_URL=http://127.0.0.1:7777 npm run dev`（默认就是 7777）。
+agentd 地址可配：`AGENTD_URL=http://127.0.0.1:7788 npm run dev`（默认就是 7777；
+上例一次性实例在 7788，就要带上这个环境变量）。
 
 ## 反代（`vite.config.ts`）
 
@@ -86,15 +95,20 @@ npm run lint       # eslint（shadcn 组件自身带 fast-refresh 告警，属�
 ### 鉴权闭环冒烟（真实 agentd，不用 mock）
 
 ```bash
-go build -o /tmp/agentd-smoke . && /tmp/agentd-smoke agentd --config <临时配置> &
-AGENTD_URL=http://127.0.0.1:<agentd端口> npm run dev &
+go build -o /tmp/agentd-smoke . && /tmp/agentd-smoke agentd --config /tmp/agentd-smoke.yaml &
+AGENTD_URL=http://127.0.0.1:7788 npm run dev &
 node scripts/verify-auth-loop.mjs \
-  "$(/tmp/agentd-smoke console --config <临时配置> --print-url | sed 's/:<agentd端口>/:5173/')"
+  "$(/tmp/agentd-smoke console --config /tmp/agentd-smoke.yaml --print-url | sed 's/:7788/:5173/')"
 ```
+
+`/tmp/agentd-smoke.yaml` 用上面「开发流程」第 1 步那份最小配置（listen /
+token / datadir 三行，字段名 `datadir`）。
 
 脚本证明：`/console` 兑换 → 302 + `Set-Cookie: handoff_session` → 无 cookie 401 →
 带 cookie 的 `/api/status`、`/api/tasks` 200 → WS 握手带 cookie 被接受。实例没有
-任务时显式输出「无任务，跳过 WS 验证」，不假装成功。
+任务时显式输出「无任务，跳过 WS 验证」，不假装成功；有任务但连接后 10s 内既无
+事件也不关闭时，明确以非零退出报「已连上但 10s 内既没收到事件也没被关闭」——
+验收脚本绝不静默挂死。
 
 ## 硬约束
 
