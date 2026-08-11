@@ -1,3 +1,6 @@
 .worktrees/
+# Claude Code 的会话级配置与产物，属个人工具状态，不进仓库
+# （不忽略的话每次本地构建都会被判成「带未提交改动」）
+.claude/
 # 单测在 taskDir="" 时会把 render.log 落到包目录（可见性落盘的测试副作用）
 render.log

@@ -7,6 +7,7 @@
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
+//   - 按 update.auto 起自动更新循环，并在启动期收尾上一轮换版（Reconcile）
 //   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
 //
@@ -26,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
@@ -36,6 +38,9 @@ import (
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/permgate"
+	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/release"
+	"github.com/xushixin/handoff/internal/selfupdate"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -174,6 +179,34 @@ var agentdCmd = &cobra.Command{
 		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
 		// 正是我们要的。
 		sd := agentd.NewShutdown(logger)
+		// 自动更新：Reconcile 先收上一轮换版的尾（pending 版本 == 自己就清掉
+		// 并打一条「更新完成」），然后按配置起循环。
+		//
+		// updater 拿到的 Shutdown 就是上面这个 sd 的 Trigger——换版完成后由它
+		// 触发优雅关停，Serve 返回 nil → exit 0 → 进程管理器拉起新二进制。
+		// 这是整条自更新链的交接点，不要改成别的退出方式。
+		bi, _ := buildinfo.Read()
+		up := selfupdate.New(selfupdate.Options{
+			DataDir:        cfg.DataDir,
+			CurrentVersion: bi.Version,
+			Interval:       cfg.Update.Interval,
+			BusyCount:      func() (int, error) { return activeTaskCount(st) },
+			Shutdown:       sd.Trigger,
+			Checker:        release.NewClient(),
+			Fetcher:        release.NewInstaller(logger),
+			Getenv:         os.Getenv,
+			Executable:     resolvedExecutable,
+			Activate:       release.Activate,
+			Log:            logger,
+		})
+		up.Reconcile()
+		if cfg.Update.Auto {
+			upCtx, upCancel := context.WithCancel(context.Background())
+			defer upCancel()
+			go up.Run(upCtx)
+		} else {
+			logger.Info("自动更新已关闭（update.auto=false）")
+		}
 		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel)
 	},
 }
@@ -229,4 +262,43 @@ func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
 		"覆盖缺省执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+}
+
+// activeTaskCount 返回活跃任务数——空闲窗口的判据（D12）。
+//
+// 返回：
+//   - running + waiting_answer 的计数
+//   - 错误：列任务失败
+//
+// 注意：
+//   - **pending 与 waiting_review 不算忙**。pending 是还没起 executor，重启后
+//     agentd 照常处理；waiting_review 是回合已结束、executor 在等审核者指令，
+//     重启安全（B18 已验），而它可能挂几小时几天——算进去等于让升级无限期阻塞
+func activeTaskCount(st *store.Store) (int, error) {
+	tasks, err := st.ListTasks()
+	if err != nil {
+		return 0, fmt.Errorf("列任务: %w", err)
+	}
+	n := 0
+	for _, t := range tasks {
+		if t.State == proto.TaskStateRunning || t.State == proto.TaskStateWaitingAnswer {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// resolvedExecutable 返回当前二进制的真实路径。
+//
+// 必须 EvalSymlinks：装在 ~/.local/bin 的二进制常常是个 symlink，
+// 替换 symlink 本身只会把链接换成普通文件，链接目标仍是旧版。
+func resolvedExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved, nil
+	}
+	return exe, nil
 }
