@@ -258,3 +258,19 @@ func TestUnknownKeyErrorMentionsEnv(t *testing.T) {
 		t.Errorf("已知键清单应含 env 段，实际 %q", err.Error())
 	}
 }
+
+// TestLoadParsesWebAllowedHosts 验证 web.allowed_hosts 在严格解码下按 tag 正确解析：
+// allowed_hosts（snake_case）能解出一个元素，而不是 yaml.v3 默认映射的 allowedhosts。
+func TestLoadParsesWebAllowedHosts(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("web:\n  allowed_hosts:\n    - foo.example.com\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Web.AllowedHosts) != 1 || cfg.Web.AllowedHosts[0] != "foo.example.com" {
+		t.Fatalf("web.allowed_hosts 解析错误: %#v", cfg.Web.AllowedHosts)
+	}
+}

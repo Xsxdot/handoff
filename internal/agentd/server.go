@@ -112,7 +112,7 @@ func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
 }
 
-// Handler 返回带 Bearer 鉴权中间件的完整路由，便于 httptest 直接挂载。
+// Handler 返回带 Host 白名单 + 鉴权两层中间件的完整路由，便于 httptest 直接挂载。
 //
 // 路由（Go 1.22+ 方法路由）：
 //   - GET  /api/status                    agentd 可用性与身份
@@ -149,7 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos", s.handleRepoList)
 	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
-	return s.auth(mux)
+	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
+	return s.hostGuard(s.auth(mux))
 }
 
 // auth 是 Bearer token 鉴权中间件，包住全部路由。

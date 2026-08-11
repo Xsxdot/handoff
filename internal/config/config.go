@@ -66,6 +66,8 @@ type Config struct {
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
 	Env map[string]string
+	// Web 是浏览器控制台相关配置。
+	Web WebConfig
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
@@ -100,6 +102,18 @@ type ExecutorConfig struct {
 // 降级为打印「实况: handoff attach <id>」提示行。
 type TerminalConfig struct {
 	Auto bool
+}
+
+// WebConfig 是浏览器控制台相关配置。
+//
+// AllowedHosts 是 Host 白名单的扩展项——回环地址（127.0.0.1 / localhost / ::1）
+// 与 Listen 的 host 恒在白名单内，无需重复配置。它为将来的域名/中转场景预留：
+// agentd 部署在 handoff.example.com 后面时，不配这一项所有请求都会被 403。
+//
+// yaml:"allowed_hosts"：strict 解码器（KnownFields）按 tag 匹配键名，
+// 不加 tag 时 yaml.v3 会把它映射成 allowedhosts（同 RepoRoot 的处理）。
+type WebConfig struct {
+	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，
