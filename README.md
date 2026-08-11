@@ -73,6 +73,44 @@ Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `hando
 macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的服务空窗——
 执行者不受影响（它们在独立会话里），但期间的 `dispatch` / `reply` 会失败。
 
+### 自动更新
+
+agentd 默认每 6 小时查一次 GitHub 上的最新 release。查到新版后它会先下载、校
+sha256、跑一次新二进制的 `handoff version` 自检，通过了才写入待命记录；**替换与
+重启要等到没有活跃任务的窗口**（`running` 与 `waiting_answer` 都为 0；
+`waiting_review` 不算忙——它可能挂几天）。
+
+换版的最后一步是 agentd 自己优雅退出（exit 0），由 launchd / systemd 把新二进制
+拉起来。**因此没有被托管的 agentd 不会自动换版**——换完没人拉起，机器上就此没有
+handoff 在跑。这种情况下它只把新版下好待命，并在日志和 `handoff status` 里说明
+原因。想用上就 `handoff service install`，或者手动 `handoff upgrade --now` 后自己
+把 agentd 重启。
+
+关掉自动更新：
+
+```yaml
+update:
+  auto: false
+  interval: 6h
+```
+
+手动升级与回滚：
+
+```bash
+handoff upgrade              # 只看有没有新版
+handoff upgrade --now        # 立即下载并替换二进制
+handoff upgrade --rollback   # 换回上一版（<二进制>.prev）
+```
+
+三条命令换的都是**磁盘上的二进制**；正在跑的 agentd 仍是旧进程，重启才生效。
+
+新版起来后如果有问题，**不会自动回滚**——旧二进制留在 `<路径>.prev`，用
+`handoff upgrade --rollback` 人工换回。自动回滚需要「新版启动后自证健康」的握手
+协议，而它挡不住的恰恰是「能起来但有逻辑回归」那一类。
+
+CLI 每天最多在后台查一次版本，有新版时在 **stderr** 打一行提示。它**不会**自动
+替换自己。
+
 ```bash
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
 handoff agentd --executor=opencode          # 真实执行（默认）；fake 为脚本演示
@@ -97,13 +135,23 @@ handoff dispatch --repo /path/to/repo --new-worktree --executor codex plan.md   
 handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
 
 # 4. 审核者侧典型循环
-handoff wait <task-id> --notify             # 挂后台；事件到达输出单行 JSON 并退出
-handoff wait <task-id> --timeout 1h         # 到点报错退出非 0（区别于事件到达的 0）
+handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
+handoff wait --follow <task-id> --timeout 3h  # 持续订阅：每条事件单行输出，任务终结（failed/归档）才退出
 handoff reply <task-id> --ticket <id> --approve                       # 批权限门
 handoff reply <task-id> --ticket <id> --deny --reason "不该装这个"     # 拒权限门
 handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答提问
-handoff wait <task-id>                       # 重新挂 wait，循环往复
 ```
+
+`--timeout` 在两种模式下语义不同：一次性模式是「等不到事件的总时长上限」，
+`--follow` 模式是「空闲上限」——距上一次收到任何帧（含不唤醒的 progress）的
+时长，跨重连累计。**`--follow` 下它必须大于 agentd 的 `stalltimeout`（默认 2h）**，
+否则客户端超时会抢在服务端的停滞诊断前面退出；设小了 handoff 会打一条 WARN。
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 一次性：等到事件；`--follow`：任务已终结（failed 或被归档） |
+| 124 | 超时（一次性：总时长；`--follow`：空闲） |
+| 其他非 0 | 鉴权失败 / 任务不存在 / 连接永久失败 |
 
 事件到达后：`completed`/`failed` 进审核 → `handoff diff <task>` 看改动、必要时 `fetch`/`run` 取证 → 要改就 `handoff continue <task> "<指令>"`（同一会话续接），审过就 `handoff done <task>`。
 
@@ -116,7 +164,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff repo add [名字]` | 登记一个仓库到执行机（可让 agentd 克隆一份） | `--path <执行机上的仓库路径>`，或 `--clone [--url <URL>] [--path <落点>]`（二选一；名字省略时按 origin 末段派生） |
 | `handoff repo ls` | 列出执行机上的仓库登记（含实际状态） | — |
 | `handoff repo rm <名字>` | 注销一条仓库登记（只删登记，不删磁盘） | — |
-| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
+| `handoff wait <task>` | 阻塞等待任务的下一个可动作事件（`--follow` 时持续订阅，任务终结才退出） | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（一次性=总时长上限，`--follow`=空闲上限，默认无限等）；`--follow`（持续订阅，事件单行输出）；`--no-sync` |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
@@ -128,6 +176,7 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
 | `handoff init` | 探测本机 executor 并交互式生成/更新配置（幂等，可重跑） | — |
 | `handoff service install\|uninstall\|status` | 把 agentd 交给 launchd / systemd 托管 | — |
+| `handoff upgrade [--check\|--now\|--rollback]` | 检查、安装或回滚 handoff 版本 | — |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
@@ -200,7 +249,7 @@ handoff tasks                      # 列出全部任务及状态
 handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂起项（pending_tickets）
 ```
 
-处理完挂起项（未答提问、未批权限、待审核的完成事件）后重新挂 `wait` 即恢复循环。
+处理完挂起项（未答提问、未批权限、待审核的完成事件）后按 state 决定：`running` → follow 订阅继续收新事件；`waiting_review` → 进审核。
 
 > 快照查看是 `handoff show <task>`；`handoff attach [task]` 是在终端跟随任务实况（render 流），无参时在任务列表里选择。二期起两者分离——一期 attach 的语义更名给 show。
 

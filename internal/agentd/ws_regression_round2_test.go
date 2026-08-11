@@ -322,3 +322,45 @@ func tailStr(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// TestWSClosesNormallyOnArchive 验证订阅被 hub 关闭（任务归档）时，
+// 服务端以 StatusNormalClosure 收尾，而不是把连接晾着。
+//
+// 缺陷形态：transit 只改状态不发事件，跟随端拿不到任何「没有下文了」的信号，
+// 会一直挂到空闲超时——那是一个会把审核者引向「agentd 失联」的假线索。
+func TestWSClosesNormallyOnArchive(t *testing.T) {
+	env := newWSTestEnv(t)
+	const id = "task-archive-ws"
+	env.seedTask(t, id)
+	conn := env.dialWS(t, id, 0)
+
+	// 等订阅真正建立：websocket.Dial 在 Accept 后即返回，服务端的 Subscribe
+	// 在其后异步执行（本文件 :164 已记过这条时序）
+	waitWatchers(t, env.srv.hub, id, 1)
+	env.srv.hub.CloseTask(id)
+
+	for {
+		_, _, err := conn.Read(context.Background())
+		if err == nil {
+			continue // 归档前排队的事件，读干净
+		}
+		if got := websocket.CloseStatus(err); got != websocket.StatusNormalClosure {
+			t.Fatalf("归档关闭码 = %v, want %v（err=%v）",
+				got, websocket.StatusNormalClosure, err)
+		}
+		return
+	}
+}
+
+// waitWatchers 轮询等待订阅数达到期望值（订阅是异步建立的）。
+func waitWatchers(t *testing.T, hub *Hub, taskID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.Watchers(taskID) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("等待 watchers=%d 超时，当前 %d", want, hub.Watchers(taskID))
+}

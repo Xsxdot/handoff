@@ -57,6 +57,26 @@ type ActiveTask struct {
 	RepoPath string `json:"repo_path"`
 	Live     string `json:"live"` // LiveAlive / LiveDead / LiveUnknown
 	Note     string `json:"note"` // 判死或判不出的一句话理由；alive 时为空
+
+	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	//
+	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd），与「确实是 0」
+	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
+	// 是同一条纪律：一条会说谎的诊断命令比没有更糟，因为你会信它。
+	Watchers *int `json:"watchers,omitempty"`
+}
+
+// UpdateStatus 是自动更新的当前状态。
+//
+// 字段说明：
+//   - Pending: 已下载待命的版本；空串表示没有待命更新
+//   - DownloadedAt: 下载完成时刻，用于展示「等了多久」
+//   - Managed: 当前 agentd 进程是不是被进程管理器拉起的。**false 时自动换版
+//     被拒绝**，这是用户唯一能看出「为什么更新一直不生效」的地方
+type UpdateStatus struct {
+	Pending      string    `json:"pending,omitempty"`
+	DownloadedAt time.Time `json:"downloaded_at,omitempty"`
+	Managed      bool      `json:"managed"`
 }
 
 // StatusResp 是 GET /api/status 的响应。
@@ -72,4 +92,16 @@ type StatusResp struct {
 	DefaultExecutor string         `json:"default_executor"`
 	TaskCounts      map[string]int `json:"task_counts"`
 	Active          []ActiveTask   `json:"active"`
+
+	// StallTimeout 是 agentd 看门狗判定「卡住」的空闲阈值，形如 "2h0m0s"
+	//（time.Duration.String()）。空串 = 对端未提供。
+	//
+	// 为什么要外露：wait --follow 的 --timeout 若不大于它，两个计时器同时到点时
+	// 客户端的 124 会抢在 agentd 的 stalled 前面退出进程，把一次带 last_seq 和
+	// idle 时长的**诊断**降级成一句「我没收到东西」——审核者拿到的信息严格更少。
+	StallTimeout string `json:"stall_timeout,omitempty"`
+
+	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
+	// 消费方拿到 nil 就该什么都不显示，而不是显示一个「未托管、无待命」的假状态
+	Update *UpdateStatus `json:"update,omitempty"`
 }

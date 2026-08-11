@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xushixin/handoff/internal/proto"
 )
@@ -186,6 +187,71 @@ func TestStatusFallsBackToRevisionWhenNoVersion(t *testing.T) {
 	}
 }
 
+// TestUnattendedJudgement 钉死 §3.3 的异常判据。
+//
+// 为什么必须写死而不是「watchers==0 就报警」：waiting_review 等审核者裁决，
+// 挂几天都正常，把它算进来这条标记就会天天亮，变成没人再看的狼来了。
+func TestUnattendedJudgement(t *testing.T) {
+	zero, one := 0, 1
+	cases := []struct {
+		name     string
+		state    string
+		watchers *int
+		want     bool
+	}{
+		{"running 无人听 = 异常", "running", &zero, true},
+		{"pending 无人听 = 异常", "pending", &zero, true},
+		{"waiting_answer 无人听 = 异常", "waiting_answer", &zero, true},
+		{"waiting_review 无人听 = 正常", "waiting_review", &zero, false},
+		{"running 有人听 = 正常", "running", &one, false},
+		{"对端没给 watchers = 不下结论", "running", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := unattended(proto.ActiveTask{State: c.state, Watchers: c.watchers})
+			if got != c.want {
+				t.Errorf("unattended(%s, %v) = %v, want %v", c.state, c.watchers, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRenderStatusMarksUnattended 验证活跃任务行在存活结论之后追加标记，
+// 且只对该标记的三个状态出现。
+func TestRenderStatusMarksUnattended(t *testing.T) {
+	zero := 0
+	var buf bytes.Buffer
+	renderStatus(&buf, "127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
+		TaskCounts: map[string]int{"running": 1, "waiting_review": 1},
+		Active: []proto.ActiveTask{
+			{ID: "aaaaaaaa-1", Name: "跑着的", State: "running",
+				Executor: "opencode", Live: proto.LiveAlive, Watchers: &zero},
+			{ID: "bbbbbbbb-1", Name: "等审的", State: "waiting_review",
+				Executor: "opencode", Live: proto.LiveAlive, Watchers: &zero},
+		},
+	})
+	out := buf.String()
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var running, review string
+	for _, l := range lines {
+		if strings.Contains(l, "跑着的") {
+			running = l
+		}
+		if strings.Contains(l, "等审的") {
+			review = l
+		}
+	}
+	if !strings.Contains(running, "⚠ 无人值守") {
+		t.Errorf("running + watchers=0 未标记无人值守: %q", running)
+	}
+	if strings.Contains(review, "⚠ 无人值守") {
+		t.Errorf("waiting_review 不该标记无人值守: %q", review)
+	}
+	if !strings.Contains(running, "executor 存活") {
+		t.Errorf("标记不得顶掉既有的存活结论: %q", running)
+	}
+}
+
 // compareBuild 的四种组合：两边都有版本号时比版本号，否则退回 revision 比较。
 func TestCompareBuildPrefersVersion(t *testing.T) {
 	cases := []struct {
@@ -224,5 +290,58 @@ func TestCompareBuildPrefersVersion(t *testing.T) {
 				t.Fatalf("compareBuild=%q，期望含 %q", got, c.want)
 			}
 		})
+	}
+}
+
+// 有待命更新时 status 要多打一行，且说清楚为什么还没换。
+//
+// why：spec §4.7 要求「长期有活跃任务，一直不空闲」时 status 同步显示。
+// 没有这一行，用户只会看到 agentd 版本一直不变，无从知道更新其实已经下好了。
+func TestRenderStatusShowsPendingUpdate(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now().Add(-time.Hour),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+		Update: &proto.UpdateStatus{
+			Pending: "v0.3.0", DownloadedAt: time.Now().Add(-2 * time.Hour), Managed: true,
+		},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	out := buf.String()
+	if !strings.Contains(out, "v0.3.0") {
+		t.Fatalf("应显示待命版本:\n%s", out)
+	}
+	if !strings.Contains(out, "待命") {
+		t.Fatalf("应说明它在等窗口:\n%s", out)
+	}
+}
+
+// 非托管时那一行要把真因说出来，否则用户永远等不到自动换版还不知道为什么。
+func TestRenderStatusShowsUnmanagedReason(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+		Update:     &proto.UpdateStatus{Pending: "v0.3.0", Managed: false},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "非托管") {
+		t.Fatalf("非托管必须说明白:\n%s", buf.String())
+	}
+}
+
+// 没有待命更新时不多打任何一行——绝大多数时候都是这种情况。
+func TestRenderStatusNoUpdateLine(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(buf.String(), "待命") {
+		t.Fatalf("无待命更新时不该多打行:\n%s", buf.String())
 	}
 }

@@ -8,9 +8,14 @@
 //   - 收到 SIGINT（Ctrl+C）时由进程默认行为终止，WaitEvent 随 ctx 取消退出
 //   - 任务结束事件到达时自动同步远程任务分支到本地（输出走 stderr，不污染
 //     stdout 的事件 JSON 契约）
+//   - --follow：持续订阅同一任务的事件流，每条事件单行输出，直到任务终结
+//     （failed 事件或被 done 归档）。此模式下 --timeout 的语义是**空闲**上限
+//     ——距上一次收到任何帧（含被过滤掉的 progress）的时长，且跨重连累计
 //
 // 边界：
 //   - 不做事件语义判断与审批（审批在审核者脑中），事件原样输出
+//   - 不覆盖「审核者会话被关闭」：Monitor 是会话级的，会话没了订阅就没了，
+//     本命令给不出任何补救（spec §7.2 明确接受的边界）
 package cmd
 
 import (
@@ -32,6 +37,13 @@ import (
 
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。
 var notifyFlag bool
+
+// followFlag 为 true 时持续订阅：事件逐行流出，不在首个事件后退出。
+//
+// 为什么需要它：一次性 wait 的「一事件一退出」让每两个事件之间必然存在一段
+// 无人订阅的真空，而「回合结束后记得重挂」是要每轮重做的人工动作——漏一次
+// 就是永久断链（08-11 实撞：f7d07ece 的 wait 退出后空转 7 小时 43 分）。
+var followFlag bool
 
 // waitNoSync 关闭「任务结束后自动同步远程任务分支到本地」。
 var waitNoSync bool
@@ -66,7 +78,10 @@ var waitCmd = &cobra.Command{
 		}
 		// 统一日志格式：wait 是长驻命令，stderr 日志是「为什么没唤醒」的唯一线索
 		slog.SetDefault(logx.Setup("cli", ""))
-
+		if followFlag {
+			return runFollow(cmd, taskID, addr, token)
+		}
+		// ——以下一次性路径与改动前完全一致——
 		ctx := cmd.Context()
 		if waitTimeout > 0 {
 			// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
@@ -103,6 +118,103 @@ var waitCmd = &cobra.Command{
 	},
 }
 
+// runFollow 持续订阅任务事件流，每条事件单行输出到 stdout，直到任务终结。
+//
+// 参数：
+//   - taskID: 完整 UUID（agentd 精确匹配，不做前缀补全）
+//
+// 返回：
+//   - nil: 任务终结（failed 或已归档），退出 0
+//   - ExitTimeout 的 exitCodeError: 空闲超过 --timeout
+//   - 其他错误: 鉴权失败 / 任务不存在 / 连接永久失败
+//
+// 注意：
+//   - stdout 严格是「每事件一行 JSON」，任何人读信息一律走 stderr——上层
+//     （Monitor）按行解析，多打一行说明就会打断它
+func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
+	cli := client.New(addr, token)
+	// 异步核对 --timeout 与对端 stalltimeout：status 要逐个探活，最坏 10 秒，
+	// 不能让一句告警把开始跟随这件事拖后
+	go warnIfTimeoutBelowStall(cmd.Context(), cli, waitTimeout)
+
+	err := cli.FollowEvents(cmd.Context(), taskID, false, waitTimeout,
+		func(ev *proto.Event) error {
+			if notifyFlag {
+				notifyEvent(ev)
+			}
+			b, merr := json.Marshal(ev)
+			if merr != nil {
+				return fmt.Errorf("序列化事件: %w", merr)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			// 每次遇到回合结束都同步一次：--follow 下一个任务会有多个 completed
+			autoSyncAfterWait(cmd, addr, token, ev)
+			return nil
+		})
+	switch {
+	case err == nil:
+		slog.Info("follow 正常结束：任务已终结", "task", taskID)
+		return nil
+	case errors.Is(err, client.ErrIdleTimeout):
+		slog.Error("follow 空闲超时：期间未收到任何帧（含 progress）",
+			"task", taskID, "timeout", waitTimeout.String())
+		return &exitCodeError{code: ExitTimeout, err: fmt.Errorf(
+			"follow 空闲超时（%s）：期间一帧都没收到。agentd 的 stalled 本应先到，"+
+				"先跑 handoff show 看任务状态，再怀疑 agentd 是否失联", waitTimeout)}
+	default:
+		return err
+	}
+}
+
+// warnIfTimeoutBelowStall 核对本次 --timeout 是否会抢在 agentd 的 stalled 前面，
+// 是则打一条 WARN。
+//
+// 注意：
+//   - 全部失败路径静默（Debug）：这是锦上添花的提醒，取不到对端状态不该影响跟随
+//   - 单独设 15 秒时限：status 端要逐个探活，不能挂在这里
+func warnIfTimeoutBelowStall(ctx context.Context, cli *client.Client, idle time.Duration) {
+	if idle <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	st, err := cli.Status(ctx)
+	if err != nil {
+		slog.Debug("取不到对端 stalltimeout，跳过 --timeout 核对", "cause", err)
+		return
+	}
+	stall, err := time.ParseDuration(st.StallTimeout)
+	if err != nil {
+		slog.Debug("对端 stalltimeout 无法解析，跳过核对", "raw", st.StallTimeout, "cause", err)
+		return
+	}
+	if msg := idleTimeoutWarning(idle, stall); msg != "" {
+		slog.Warn(msg)
+	}
+}
+
+// idleTimeoutWarning 判断 follow 的空闲超时是否会盖过 agentd 的停滞诊断。
+//
+// 参数：
+//   - idle: 本次 --timeout；<=0 表示不设上限
+//   - stall: 对端 agentd 的 stalltimeout；<=0 表示未知
+//
+// 返回：
+//   - 需要告警时返回完整告警文案，否则返回空串
+//
+// 为什么「相等」也要告警：两个计时器同时到点时，客户端的 124 会抢在 agentd 的
+// stalled 事件前面退出进程——而 stalled 是带着 last_seq 与 idle 时长的诊断，
+// 124 只是一句「我没收到东西」。让前者盖住后者，等于主动把信息量调低。
+func idleTimeoutWarning(idle, stall time.Duration) string {
+	if idle <= 0 || stall <= 0 || idle > stall {
+		return ""
+	}
+	return fmt.Sprintf(
+		"--timeout %s 不大于对端 stalltimeout %s：两者同时到点时空闲超时会抢在 "+
+			"agentd 的 stalled 诊断前面退出，把一次已诊断的任务停滞降级成一次连接超时。"+
+			"建议设为大于 %s（如 %s）", idle, stall, stall, stall+time.Hour)
+}
+
 // autoSyncAfterWait 在任务结束事件（completed/failed）到达后，把远程任务分支
 // 同步到本地仓库。
 //
@@ -130,7 +242,7 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过：读取任务失败:", err)
 		return
 	}
-	res, err := syncTaskBranch(cmd.Context(), &info.Task)
+	res, err := syncTaskBranch(cmd.Context(), &info.Task.Task)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过:", err)
 		return
@@ -181,6 +293,10 @@ func init() {
 	waitCmd.Flags().BoolVar(&notifyFlag, "notify", false, "事件到达时发 macOS 系统通知（spec §7 兜底）")
 	waitCmd.Flags().BoolVar(&waitNoSync, "no-sync", false,
 		"任务结束（completed/failed）时不自动同步远程任务分支到本地")
-	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0, "等待超时（如 1h）；到点报错退出非 0（默认不设上限）")
+	waitCmd.Flags().BoolVar(&followFlag, "follow", false,
+		"持续订阅：每条事件单行输出，任务终结（failed/归档）才退出")
+	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0,
+		"超时（如 3h）；默认不设上限。一次性模式=等不到事件的总时长上限，"+
+			"--follow 模式=空闲上限（期间一帧都没收到，含 progress），到点退出非 0")
 	rootCmd.AddCommand(waitCmd)
 }

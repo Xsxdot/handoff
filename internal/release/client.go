@@ -1,0 +1,180 @@
+// Package release 负责「把某个版本的 handoff 二进制正确落到某个路径」。
+//
+// 职责：
+//   - 查 GitHub 的 latest release，解出 tag 与本平台资产的下载 URL
+//   - 下载、校 sha256、解包、自检、原子替换，并把旧二进制留成 .prev
+//
+// 边界：
+//   - **不决定何时替换**：那是 internal/selfupdate 的事。本包是一个执行器，
+//     调用方说装就装
+//   - 不知道 agentd、不知道任务、不读 handoff 的配置
+//   - 不做自动回滚（D10）：留下 .prev 供人工 handoff upgrade --rollback
+package release
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"runtime"
+	"strings"
+	"time"
+)
+
+// DefaultRepo 是 Release 所在的 GitHub 仓库。
+//
+// 注意 owner 是 Xsxdot，与 go.mod 的 module path（github.com/xushixin/handoff）
+// 不一致——这是已知的 backlog B55，只影响 `go install`，不影响本条下载链。
+// **不要"顺手统一"**：改 module path 等于全仓 import 重写。
+const DefaultRepo = "Xsxdot/handoff"
+
+// DefaultAPIBase 是 GitHub REST API 的根。
+//
+// D11：自动更新链路一律打 GitHub 原生 URL，不走自有域名——域名过期、DNS 故障、
+// 重定向规则改错，任何一样都会让所有机器的自动更新一起哑掉。
+const DefaultAPIBase = "https://api.github.com"
+
+// ChecksumsName 是校验和文件名，与 .github/workflows/release.yml 产出一致。
+const ChecksumsName = "checksums.txt"
+
+// Asset 是一个 release 资产。
+type Asset struct {
+	Name string
+	URL  string
+}
+
+// Release 是一次发布。
+type Release struct {
+	Tag    string
+	Assets []Asset
+}
+
+// AssetName 拼装某平台的资产名。
+//
+// 参数：
+//   - tag: 版本号，形如 v0.1.0
+//   - goos / goarch: 目标平台
+//
+// 返回：
+//   - 资产文件名
+//
+// 注意：
+//   - 格式必须与 .github/workflows/release.yml 里的产出**逐字一致**。
+//     不一致的症状是查得到版本但下不到东西，且每轮重试
+func AssetName(tag, goos, goarch string) string {
+	return fmt.Sprintf("handoff_%s_%s_%s.tar.gz", tag, goos, goarch)
+}
+
+// AssetFor 取本平台的资产。
+//
+// 返回：
+//   - 资产与是否找到。找不到说明这次发布没出这个平台（例如 Windows，B37 未支持）
+func (r Release) AssetFor(goos, goarch string) (Asset, bool) {
+	want := AssetName(r.Tag, goos, goarch)
+	for _, a := range r.Assets {
+		if a.Name == want {
+			return a, true
+		}
+	}
+	return Asset{}, false
+}
+
+// Checksums 取校验和文件资产。
+func (r Release) Checksums() (Asset, bool) {
+	for _, a := range r.Assets {
+		if a.Name == ChecksumsName {
+			return a, true
+		}
+	}
+	return Asset{}, false
+}
+
+// Client 查 GitHub release。
+type Client struct {
+	HTTP    *http.Client
+	APIBase string
+	Repo    string
+}
+
+// NewClient 构造默认 client：30s 超时，打 GitHub 官方端点。
+//
+// 30s 而不是更长：查版本是一个可以失败的后台动作（失败就等下一个 interval），
+// 卡住一个 goroutine 几分钟没有任何好处。
+func NewClient() *Client {
+	return &Client{
+		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		APIBase: DefaultAPIBase,
+		Repo:    DefaultRepo,
+	}
+}
+
+// ghRelease 是 GitHub API 响应里我们关心的那部分。
+type ghRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+// Latest 查最新发布。
+//
+// 参数：
+//   - ctx: 上下文，用于超时与取消
+//
+// 返回：
+//   - 解析后的 Release
+//   - 错误：网络失败、非 200、响应畸形
+//
+// 注意：
+//   - 匿名调用有 60 次/小时/IP 的限流，被限流时返回带 403 的错误。
+//     **调用方不要重试**——interval 本身就是退避（spec §4.7）
+func (c *Client) Latest(ctx context.Context) (Release, error) {
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", strings.TrimSuffix(c.APIBase, "/"), c.Repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Release{}, fmt.Errorf("构造请求: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return Release{}, fmt.Errorf("查最新版本 %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	// 限制读取量：畸形/被劫持的响应不该把内存吃光
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return Release{}, fmt.Errorf("读响应: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// 状态码必须带出来：403 是限流、404 是仓库没有 release、5xx 是 GitHub 挂了，
+		// 三者的处置完全不同，只报「查版本失败」等于让人去猜
+		return Release{}, fmt.Errorf("查最新版本返回 %d: %s", resp.StatusCode, firstLine(string(body)))
+	}
+	var gr ghRelease
+	if err := json.Unmarshal(body, &gr); err != nil {
+		return Release{}, fmt.Errorf("解析响应: %w", err)
+	}
+	if gr.TagName == "" {
+		// 空 tag 会一路流到「tag != 当前版本」的比较里恒为真，于是每轮都去下载
+		// 一个名字里带空版本号的资产，永远失败且永远重试
+		return Release{}, fmt.Errorf("响应里没有 tag_name（仓库 %s 可能还没有任何 release）", c.Repo)
+	}
+	rel := Release{Tag: gr.TagName}
+	for _, a := range gr.Assets {
+		rel.Assets = append(rel.Assets, Asset{Name: a.Name, URL: a.URL})
+	}
+	return rel, nil
+}
+
+// CurrentPlatform 返回当前进程的 goos/goarch，便于调用方少写两个 runtime 引用。
+func CurrentPlatform() (string, string) { return runtime.GOOS, runtime.GOARCH }
+
+// firstLine 取多行文本的第一行，用作错误摘要。
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}

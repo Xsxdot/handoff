@@ -1,0 +1,10 @@
+name = "handoff-install-redirect"
+main = "worker.js"
+compatibility_date = "2026-08-11"
+
+# Custom Domain：由 Cloudflare 顺带建 DNS 记录并签证书。
+# 用 custom_domain 而不是普通 route，是因为 handoff.gosuper.dev 此前没有任何
+# DNS 记录——普通 route 需要先存在一条被代理的记录才会生效。
+[[routes]]
+pattern = "handoff.gosuper.dev"
+custom_domain = true

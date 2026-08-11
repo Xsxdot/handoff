@@ -13,6 +13,7 @@ package agentd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/selfupdate"
 )
 
 const (
@@ -66,6 +68,7 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		DataDir:         m.cfg.DataDir,
 		Executors:       names,
 		DefaultExecutor: m.cfg.Executor.Default,
+		StallTimeout:    m.cfg.StallTimeout.String(),
 		TaskCounts:      map[string]int{},
 		Active:          []proto.ActiveTask{},
 	}
@@ -85,8 +88,27 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		}
 	}
 	resp.Active = m.probeActive(active)
+	unattended := 0
+	for _, a := range resp.Active {
+		if a.Watchers != nil && *a.Watchers == 0 &&
+			a.State != string(proto.TaskStateWaitingReview) {
+			unattended++
+		}
+	}
 	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
-		"executors", len(names))
+		"executors", len(names), "unattended", unattended)
+
+	// 自动更新状态：读 pending.json + 判托管。两者都失败不影响 status 本身，
+	// 只是不展示这一段——status 是排障命令，它自己绝不能因为附加信息而失败
+	if p, err := selfupdate.LoadPending(m.cfg.DataDir); err == nil && p != nil {
+		resp.Update = &proto.UpdateStatus{
+			Pending:      p.Version,
+			DownloadedAt: p.DownloadedAt,
+			Managed:      selfupdate.IsManaged(os.Getenv),
+		}
+	} else if err != nil {
+		m.log.Warn("读待命更新失败，status 不展示更新状态", "cause", err)
+	}
 	return resp, nil
 }
 
@@ -108,6 +130,10 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 		if at.Executor == "" {
 			at.Executor = m.cfg.Executor.Default
 		}
+		// watchers 取自 hub 的瞬时订阅数：这是「有没有人在听这个任务」的唯一真相
+		// 来源，昨晚 f7d07ece 空转 7h43m 时它一直是 0，只是从没有人问过
+		w := m.hub.Watchers(t.ID)
+		at.Watchers = &w
 		at.Live, at.Note = m.probeOne(t, time.Until(deadline))
 		out = append(out, at)
 	}

@@ -1,7 +1,7 @@
 // Package agentd 是 handoff agentd 服务的进程内实时路由层。
 //
 // 职责：
-//   - 按 taskID 维度做事件实时扇出（Subscribe/Publish），供 HTTP/WS 层推送
+//   - 按 taskID 维度做事件实时扇出（Subscribe/Publish/Watchers），供 HTTP/WS 层推送
 //   - 提供 ticket 应答的一次性等待/通知路由（WaitAnswer/NotifyAnswer）
 //
 // 边界：
@@ -96,6 +96,62 @@ func (h *Hub) unsubscribe(taskID string, ch chan proto.Event) {
 		h.log.Debug("取消事件订阅", "taskID", taskID, "subscribers", len(subs))
 		return
 	}
+}
+
+// Watchers 返回当前订阅该任务事件流的连接数。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 订阅者数量；无人订阅或任务不存在均返回 0（两者对本层等价）
+//
+// 为什么这个数字可以直接当「有几个审核者在听」用：全仓 Subscribe 只有一个调用点
+// （/ws/events 的处理器），没有任何内部订阅者混在里面。若将来新增了内部订阅者，
+// 这条结论就不再成立，必须同步修改本注释与 status 的判据。
+//
+// 注意：
+//   - 走 Hub 现有的 mu，与 Subscribe/unsubscribe/Publish 互斥；返回的是调用瞬间
+//     的快照，调用方不得假设它在返回后仍然成立
+//   - 本方法刻意不打日志：它是高频纯读，订阅数变化已由 Subscribe/unsubscribe
+//     的 Debug 日志覆盖，这里再打一遍只会把真正的线索淹掉
+func (h *Hub) Watchers(taskID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.subs[taskID])
+}
+
+// CloseTask 关闭该任务的全部事件订阅并从表中摘除。
+//
+// 参数：
+//   - taskID: 已终结（归档）的任务 ID
+//
+// 返回：
+//   - 被关闭的订阅数；无人订阅返回 0
+//
+// 为什么需要它：done 归档只改任务状态、不追加任何事件，事件流上完全无声。
+// 跟随中的客户端（wait --follow）因此拿不到「没有下文了」的信号，会一直挂到
+// 空闲超时——而那个超时的语义是「agentd 可能失联」，把一次正常归档报成了故障。
+// 关闭订阅让 WS 处理器以正常关闭码收尾，客户端据此正常退出。
+//
+// 注意：
+//   - 与 unsubscribe 共用同一把 mu，且 unsubscribe 以「通道是否还在表中」为准，
+//     连接随后 defer cancel 时找不到自己的通道即静默返回，不存在二次 close
+//   - 关闭后 Publish 该任务的事件是空操作（表里已无订阅者），不会向已关闭通道发送
+func (h *Hub) CloseTask(taskID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	subs := h.subs[taskID]
+	if len(subs) == 0 {
+		return 0
+	}
+	for _, ch := range subs {
+		close(ch)
+	}
+	delete(h.subs, taskID)
+	h.log.Info("任务归档，关闭其全部事件订阅", "taskID", taskID, "closed", len(subs))
+	return len(subs)
 }
 
 // Publish 将事件广播给该 task 的所有订阅者，永不阻塞。

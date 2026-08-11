@@ -12,10 +12,16 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/release"
+	"github.com/xushixin/handoff/internal/selfupdate"
 )
 
 var (
@@ -40,12 +46,14 @@ var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 		cmd.SilenceUsage = true
 	},
+	PersistentPostRun: func(cmd *cobra.Command, _ []string) { maybeNotifyUpdate(cmd) },
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&agentdURL, "agentd", "http://127.0.0.1:7777", "agentd 服务地址")
 	rootCmd.PersistentFlags().StringVar(&targetName, "target", "", "目标主机名（从配置 Targets 中换算 addr/token）")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "配置文件路径（默认 ~/.handoff/config.yaml）")
+	rootCmd.AddCommand(updateCheckCmd)
 }
 
 // Execute 运行根命令，错误返回给 main。
@@ -142,4 +150,69 @@ func loadCLIConfig() *config.Config {
 		return &config.Config{}
 	}
 	return cfg
+}
+
+// updateCheckCmd 是被 CLI 自己以后台进程方式拉起的隐藏子命令：查一次版本、
+// 写缓存、退出。
+//
+// 为什么要一个独立进程而不是在当前命令里起 goroutine：CLI 进程通常在几十
+// 毫秒内就退出了，goroutine 会被一起带走，那个"异步检查"永远跑不完。
+// 独立子进程在父进程退出后被 init 收养，能安安静静地把检查做完。
+var updateCheckCmd = &cobra.Command{
+	Use:    "update-check",
+	Short:  "内部命令：后台检查最新版本并写缓存",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := config.Load(effectiveConfigPath())
+		if err != nil {
+			return err
+		}
+		rel, err := release.NewClient().Latest(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return selfupdate.SaveCLICheck(cfg.DataDir, &selfupdate.CLICheck{
+			CheckedAt: time.Now().UTC(), Latest: rel.Tag,
+		})
+	},
+}
+
+// maybeNotifyUpdate 在每条命令跑完后打一行更新提示，并在缓存过期时拉起一次
+// 后台检查。
+//
+// 注意：
+//   - 提示打在 **stderr**：stdout 是各命令的机器可读输出（dispatch 的 JSON、
+//     tasks 的每行 JSON），往里掺一行人话会让 jq 直接失败
+//   - 任何一步失败都静默跳过。这条路径挂在每一条命令上，它自己绝不能成为
+//     故障源——少提示一次更新，比让所有命令都报错好得多
+//   - 隐藏子命令自己不触发（否则每次后台检查又拉起一个后台检查）
+func maybeNotifyUpdate(cmd *cobra.Command) {
+	if cmd.Name() == updateCheckCmd.Name() || cmd.Name() == upgradeCmd.Name() {
+		return
+	}
+	cfg, err := config.Load(effectiveConfigPath())
+	if err != nil {
+		return
+	}
+	c := selfupdate.LoadCLICheck(cfg.DataDir)
+	bi, _ := buildinfo.Read()
+	if line := selfupdate.NotifyLine(c, bi.Version); line != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
+	}
+	if !selfupdate.CLICheckStale(c, time.Now().UTC()) {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// 不等它：Start 之后本进程照常退出，子进程被 init 收养后自己跑完
+	bg := exec.Command(exe, "update-check", "--config", effectiveConfigPath())
+	bg.Stdout, bg.Stderr, bg.Stdin = nil, nil, nil
+	if err := bg.Start(); err != nil {
+		return
+	}
+	// 必须 Release：不回收也不等待的子进程会变成僵尸，虽然本进程马上就退了，
+	// 但在 `handoff wait` 这种长命命令里会实实在在留一个
+	_ = bg.Process.Release()
 }
