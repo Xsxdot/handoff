@@ -150,7 +150,7 @@ func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
 			// 每次遇到回合结束都同步一次：--follow 下一个任务会有多个 completed
 			autoSyncAfterWait(cmd, addr, token, ev)
 			return nil
-		})
+		}, nil)
 	switch {
 	case err == nil:
 		slog.Info("follow 正常结束：任务已终结", "task", taskID)

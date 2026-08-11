@@ -964,6 +964,8 @@ func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq in
 //     progress**——一个健康的长跑任务可以数小时只有 progress，用可交付事件计时
 //     会让它周期性无故超时。这个计时跨重连累计
 //   - onEvent: 每条**可交付**事件调用一次；返回非 nil 立即终止跟随并原样返回该错误
+//   - onBacklog: 每次建连前对账出的积压摘要的消费者。**传 nil 表示完全跳过对账**，
+//     行为与改动前逐字一致——不能只是丢弃摘要却照样跳过积压，那会让事件无声消失
 //
 // 返回：
 //   - nil: 任务终结（收到 failed 事件，或对端归档关闭连接）
@@ -978,7 +980,8 @@ func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq in
 //   - 断线续拉起点（fromSeq）则按**任何帧**推进：已经收到的帧没有再补发的必要，
 //     它与 cursor 的分叉是有意的，且分叉方向安全（cursor 永远更保守）
 func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
-	idle time.Duration, onEvent func(*proto.Event) error) error {
+	idle time.Duration, onEvent func(*proto.Event) error,
+	onBacklog func(*BacklogSummary) error) error {
 	fromSeq := c.readCursor(taskID)
 	lastFrame := time.Now()
 	// readDeadline 与 onFrame 都只在 streamOnce 的读循环里被同一个 goroutine 调用，
@@ -995,6 +998,19 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 
 	backoff := c.wsInitialBackoff
 	for attempt := 1; ; attempt++ {
+		// 每次建连前对账——首连与重连同一条路径。断网重连与「忘挂后补挂」是
+		// 同一个问题的两种入口，不该有两套代码
+		if onBacklog != nil {
+			next, terminal, rerr := c.reconcileBacklog(ctx, taskID, fromSeq, onBacklog)
+			if rerr != nil {
+				return rerr
+			}
+			fromSeq = next
+			if terminal {
+				c.log().Info("follow 结束：对账时快照已是 failed", "task", taskID, "from_seq", fromSeq)
+				return nil
+			}
+		}
 		start := time.Now()
 		err := c.streamOnce(ctx, taskID, fromSeq, readDeadline, func(ev proto.Event) error {
 			lastFrame = time.Now()
