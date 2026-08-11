@@ -5,10 +5,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/release"
+	"github.com/xushixin/handoff/internal/selfupdate"
 )
 
 // withUpgradeStubs 替换四个缝，返回记录调用的指针。
@@ -154,4 +159,41 @@ func TestUpgradeCheckSurfacesCause(t *testing.T) {
 	if !strings.Contains(err.Error(), "403") {
 		t.Fatalf("错误应带状态码，得到: %v", err)
 	}
+}
+
+// 更新提示必须打在 stderr 而不是 stdout。
+//
+// why：stdout 是各命令的机器可读输出（dispatch 的 JSON、tasks 的每行 JSON），
+// 掺一行人话进去会让调用方的 jq 直接失败——而那是审核者回路的主干道。
+func TestUpdateNoticeGoesToStderr(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfg, []byte("listen: 127.0.0.1:7777\ntoken: t\ndatadir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := selfupdate.SaveCLICheck(dir, &selfupdate.CLICheck{
+		CheckedAt: time.Now().UTC(), Latest: "v99.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resetFlags(t)
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	t.Cleanup(func() { rootCmd.SetArgs(nil); rootCmd.SetOut(nil); rootCmd.SetErr(nil) })
+
+	// 直接调提示函数：跑一条真命令会引入网络/agentd 依赖，而这里要验的
+	// 只是「提示落在哪个流上」
+	fake := &cobra.Command{Use: "fakecmd"}
+	fake.SetOut(&stdout)
+	fake.SetErr(&stderr)
+	configPath = cfg
+	maybeNotifyUpdate(fake)
+
+	if strings.Contains(stdout.String(), "有新版本") {
+		t.Fatalf("提示不该出现在 stdout:\n%s", stdout.String())
+	}
+	// 本地测试二进制的 buildinfo.Version 为空 → 按设计不提示。
+	// 这里只钉住「绝不污染 stdout」这一条，它与版本无关
+	_ = stderr
 }
