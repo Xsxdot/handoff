@@ -208,24 +208,46 @@ func sameLocation(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// registerExistingProject 登记本机上已存在的一份代码。
-func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
-	if err := EnsureRepoUsable(ctx, req.Path); err != nil {
-		m.log.Warn("登记被拒：路径不是可用的 git 仓库", "path", req.Path, "cause", err)
-		return proto.ProjectLocation{}, err
+// inspectRepoDir 检查一个目录是否是一份可用的、带 origin 的 git 仓库，并归并到
+// 主工作树。
+//
+// 三步序列（EnsureRepoUsable → MainWorktreeRoot → 现读 origin）在「登记已有目录」
+// 与「克隆落点认领」两条路径共用，绝不能复制两份——校验逻辑一分开就会漂移。
+//
+// 参数：
+//   - ctx: 控制 git 调用生命周期
+//   - dir: 待检查的目录
+//
+// 返回：
+//   - root: 归并主工作树后的仓库根（绝对路径）
+//   - origin: 该仓库 origin 的现读值（非空；读不到即返回错误）
+//   - err: 任一步失败时的包装错误（ErrRepoUnusable 系列）
+func (m *Manager) inspectRepoDir(ctx context.Context, dir string) (root, origin string, err error) {
+	if err := EnsureRepoUsable(ctx, dir); err != nil {
+		m.log.Warn("登记被拒：路径不是可用的 git 仓库", "path", dir, "cause", err)
+		return "", "", err
 	}
 	// 归并主工作树：位置表一个项目只允许一行，而 linked worktree 与主仓
 	// origin 相同、project_id 相同（spec §5）。
-	root, err := MainWorktreeRoot(ctx, req.Path)
+	root, err = MainWorktreeRoot(ctx, dir)
 	if err != nil {
-		m.log.Warn("登记被拒：归并主工作树失败", "path", req.Path, "cause", err)
-		return proto.ProjectLocation{}, err
+		m.log.Warn("登记被拒：归并主工作树失败", "path", dir, "cause", err)
+		return "", "", err
 	}
 	// origin 由 agentd 在本机现读，而不是采信调用方上送的值：登记的是这个
 	// 路径上真实存在的仓库，它的 origin 才是权威。
-	actual, err := projectOriginURL(ctx, root)
+	origin, err = projectOriginURL(ctx, root)
 	if err != nil {
 		m.log.Warn("登记被拒：读不到 origin", "path", root, "cause", err)
+		return "", "", err
+	}
+	return root, origin, nil
+}
+
+// registerExistingProject 登记本机上已存在的一份代码。
+func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	root, actual, err := m.inspectRepoDir(ctx, req.Path)
+	if err != nil {
 		return proto.ProjectLocation{}, err
 	}
 	// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
@@ -298,12 +320,32 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 			"%w: 本机未配置 repo_root，无法决定克隆落点（在 config.yaml 里配它）", errBadDispatchRequest)
 	}
 	dest := filepath.Join(m.cfg.RepoRoot, name)
-	// 落点已存在就拒绝：往一个已有目录里 clone 要么失败要么污染它，两种都不该发生。
+	// 落点已存在时先尝试**认领**，而不是直接拒绝：`project rm` 只删登记不动磁盘，
+	// rm 之后磁盘上的克隆还在——若它本来就是本项目，直接登记它就能让「rm 后再派发
+	// → 自动重登记」成立（spec §12 的验收场景）。认领走与已有目录登记相同的三步
+	// 校验（共用 inspectRepoDir，绝不复制第二份）；认领失败（不是仓库 / 读不到
+	// origin / 属于另一个项目）才 409，绝不自动删目录、绝不改名——那是替用户做决定。
 	if _, err := os.Stat(dest); err == nil {
-		m.log.Warn("克隆被拒：落点已存在", "dest", dest)
-		return proto.ProjectLocation{}, fmt.Errorf(
-			"%w: 落点 %s 已存在；用 handoff project add --target <机器> --path %s 直接登记它",
-			ErrProjectAlreadyExists, dest, dest)
+		root, actual, ierr := m.inspectRepoDir(ctx, dest)
+		if ierr != nil {
+			m.log.Warn("克隆被拒：落点已存在但认领失败", "dest", dest, "cause", ierr)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 克隆落点 %s 已存在，但它不是本项目可认领的仓库（%v）；该目录不是 git 仓库或读不到 origin，请人工处置（agentd 不会自动删除或改名）",
+				ErrProjectAlreadyExists, dest, ierr)
+		}
+		if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+			m.log.Warn("克隆被拒：落点已存在且属于另一个项目",
+				"dest", dest, "actual_origin", actual, "want_origin", req.OriginURL)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 克隆落点 %s 已存在，其 origin 是 %s（另一个项目），请求的项目是 %s；请人工处置该目录（agentd 不会自动删除或改名）",
+				ErrProjectAlreadyExists, dest, actual, req.OriginURL)
+		}
+		// 落点就是本项目：认领登记，不 clone（origin 现读的就是权威，见
+		// inspectRepoDir）。认领后仓库可能落后于远端——这里不 fetch，派发时
+		// baseline 缺提交自然会去拉（既有机制）。
+		m.log.Info("落点已存在且就是本项目，直接登记，未重复 clone",
+			"dest", dest, "project_id", projectid.FromOrigin(actual))
+		return m.persistProject(name, root, actual)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", ErrRepoUnusable, dest, err)
 	}

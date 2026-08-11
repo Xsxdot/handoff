@@ -244,6 +244,88 @@ func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
 	}
 }
 
+// TestRegisterProjectClaimExistingDest 验证克隆落点已存在且就是本项目时**认领**
+// 成功：直接登记不 clone。origin 指向一个必然 clone 失败的位置（不存在的本地目录），
+// 成功本身即证明认领路径没去 clone（project rm 只删登记不动磁盘，这是「rm 后再派发
+// → 自动重登记」成立的机制）。
+func TestRegisterProjectClaimExistingDest(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "/nonexistent/handoff.git"
+	root := filepath.Join(t.TempDir(), "repos")
+	m.cfg.RepoRoot = root
+	dest := filepath.Join(root, "handoff")
+	repo := initGitRepoIn(t, dest)
+	gitAt(t, repo, "remote", "add", "origin", origin)
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
+	if err != nil {
+		t.Fatalf("落点已存在且是本项目时应认领成功，got %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(dest)
+	got, _ := filepath.EvalSymlinks(loc.Path)
+	if got != want {
+		t.Fatalf("认领后 Path = %q, want %q", loc.Path, dest)
+	}
+	if loc.ProjectID != projectid.FromOrigin(origin) {
+		t.Fatalf("project_id = %q, want %q", loc.ProjectID, projectid.FromOrigin(origin))
+	}
+	locs, err := st.ListProjectLocations()
+	if err != nil {
+		t.Fatalf("ListProjectLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("位置表应有且只有 1 行，got %d", len(locs))
+	}
+}
+
+// TestRegisterProjectClaimRejectsNonRepoDest 验证落点已存在但不是 git 仓库（普通目录）
+// 时认领失败，保持 409，报文带上落点路径。
+func TestRegisterProjectClaimRejectsNonRepoDest(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	root := filepath.Join(t.TempDir(), "repos")
+	m.cfg.RepoRoot = root
+	dest := filepath.Join(root, "handoff")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatalf("建占位目录: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "junk.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("写占位文件: %v", err)
+	}
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
+	if !errors.Is(err, ErrProjectAlreadyExists) {
+		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
+	}
+	if !strings.Contains(err.Error(), dest) {
+		t.Errorf("报文应含落点路径 %q: %q", dest, err.Error())
+	}
+}
+
+// TestRegisterProjectClaimRejectsForeignRepoDest 验证落点已存在且是**另一个项目**
+// 的仓库时认领失败，保持 409，报文同时给出两边的项目名。
+func TestRegisterProjectClaimRejectsForeignRepoDest(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	root := filepath.Join(t.TempDir(), "repos")
+	m.cfg.RepoRoot = root
+	// 落点是根目录名由请求 origin 派生出的 root/handoff，在那里放一份 origin
+	// 指向另一个项目（tk）的仓库。
+	dest := filepath.Join(root, "handoff")
+	repo := initGitRepoIn(t, dest)
+	gitAt(t, repo, "remote", "add", "origin", "git@github.com:xushixin/tk.git")
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: "git@github.com:xushixin/handoff.git"})
+	if !errors.Is(err, ErrProjectAlreadyExists) {
+		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
+	}
+	for _, want := range []string{"tk", "handoff"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("报文应同时给出落点项目与请求项目，%q 未含 %q", err.Error(), want)
+		}
+	}
+}
+
 // TestUnregisterProjectRejectsBusy 验证仓库仍被活跃任务占用时拒绝注销。
 func TestUnregisterProjectRejectsBusy(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
