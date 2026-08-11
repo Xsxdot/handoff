@@ -210,6 +210,22 @@ GET /api/machines
 
 `render` 是流式响应，转发用 `io.Copy` 直通、客户端断开即断上游（AbortController→context 取消链）。
 
+### 5.1.1 显式按机器路由（项目登记与注销）
+
+按任务 id 路由的前提是「有一个全网唯一的 id 可查」。**项目登记不是任务，没有 id**——浏览器要往 devbox 上登记一个项目时，本机 agentd 无从推断该发给谁。因此这两条走显式机器名：
+
+```
+POST   /api/projects?machine=<name>          往指定机器登记
+DELETE /api/projects/{name}?machine=<name>   注销指定机器上的位置
+GET    /api/projects/tree?scope=all          跨机汇总（§3）
+```
+
+`machine` 省略或为空串 = 本机（与 `Task.Machine` 的空串语义一致）。非空时按 `cfg.Targets` 查地址与令牌转发，**请求体原样透传、响应状态码与中文报错原文一律不改写**——B62 的登记契约（`{origin_url, name?, path?}`）由目标机器解释，本机只做搬运，不加解释也不加校验。`machine` 不在 `cfg.Targets` 里 → 400，报文点名这个机器名。
+
+防环同 §5.2：转发带 `X-Handoff-Forwarded: 1`，带此头的请求一律本机处理、不再转发。
+
+> 这一条是写 W3b 实现计划时发现的缺口：W3b 的登记向导按 ADR-0008 允许「本机 + 一台远程」两个位置各发一次 `POST /api/projects`，而 §5.1 的路由只覆盖 `/api/tasks/{id}/...`。缺了它，Web 上的远程登记会直接 404。
+
 ### 5.2 防环与超时预算
 
 - 转发请求一律带 `X-Handoff-Forwarded: 1`；收到带此头的请求**永不再向外扇出**（`scope=all` 降级为仅本机）。一跳封顶，A→B→A 不可能成环。
@@ -342,5 +358,7 @@ W3a 完成的判据：§7 三条 CLI 在「本机 + devbox」真实两机上各�
 未受影响的部分：§2 工作区探测、§4 机器投影、§5 转发汇总、§6 事件镜像——它们不依赖登记表的形状，B62 的改动对其透明。
 
 **2026-08-11，W3b 评审带来的一处契约补充。** §4 的 `/api/machines` 增加 `executors` / `default_executor` / `probe_ms` 三个只读字段。触发原因：W3b 要还原原型开发机页的「可用执行者」与「延迟」两块，而前两项在探活的 `GET /api/status` 响应里本就存在、被投影丢掉了，`probe_ms` 则只有 agentd 测得出。无新端点、无写操作，故未视为扩范围。同一轮评审明确否掉的是**机器写操作**（执行者开关、审批器配置、重启 agent、配对开发机），它们不进 W3a。
+
+**2026-08-11，写 W3b 实现计划时发现的路由缺口。** 新增 §5.1.1：`POST /api/projects?machine=<name>` 与 `DELETE /api/projects/{name}?machine=<name>` 的显式按机器路由。§5.1 的透明转发按任务 id 走，而项目登记不是任务、没有 id，本机 agentd 无从推断该发给哪台机器；W3b 的登记向导按 ADR-0008 允许「本机 + 一台远程」两个位置各发一次登记请求，缺这条路由则 Web 上的远程登记直接 404。这也说明 spec 层面的"契约已定"未必真的定完——把 spec 落成 plan 是一次有效的契约体检。
 
 **合并时另有一件事**（不属 spec 内容，记在此处防遗漏）：B62 改了 `internal/proto/`（删 `Repo`、加 `ProjectLocation`），而本分支 W1 的前端契约 fixture 由 proto 生成。B62 并入本分支时必须重跑 fixture 生成，否则前后端测试一起红。
