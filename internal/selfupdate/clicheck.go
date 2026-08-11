@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -81,9 +83,66 @@ func CLICheckStale(c *CLICheck, now time.Time) bool {
 // 注意：
 //   - current 为空时一律不提示。开发时每条命令都被劝「有新版」是纯噪音，
 //     而且本地构建本来就不该被劝去装 release
+//   - **只有缓存里的版本严格新于当前版本才提示**。缓存最长会陈 24h，
+//     刚升级完的机器读到的仍是升级前那次检查的结果；只判「不相等」就会
+//     反过来劝人降级。这不是假设：v0.1.1 发布当天实测被劝
+//     「有新版本 v0.1.0（当前 v0.1.1）」，且这条错误提示会挂满一整个刷新周期
 func NotifyLine(c *CLICheck, current string) string {
 	if c == nil || c.Latest == "" || current == "" || c.Latest == current {
 		return ""
 	}
+	if cmp, ok := cmpVersion(c.Latest, current); !ok || cmp <= 0 {
+		return ""
+	}
 	return fmt.Sprintf("有新版本 %s（当前 %s），运行 handoff upgrade --now 升级", c.Latest, current)
+}
+
+// cmpVersion 比较两个 vX.Y.Z 版本号。
+//
+// 参数：
+//   - a, b: 形如 v0.1.2 的标签，前缀 v 可有可无
+//
+// 返回：
+//   - a 小于/等于/大于 b 时分别为 -1/0/1
+//   - 任一侧不是 vX.Y.Z 形态时 ok 为 false，此时第一个返回值无意义
+//
+// 注意：
+//   - 三段都按整数比，不能用字典序——字典序会判定 v0.10.0 比 v0.9.0 旧
+//   - 只认 vX.Y.Z。release 工作流只产出这个形态，install.sh 的 latest_tag
+//     也明确拒绝其余形态；解析不了时由调用方决定怎么办，这里不猜
+func cmpVersion(a, b string) (int, bool) {
+	pa, ok := parseVersion(a)
+	if !ok {
+		return 0, false
+	}
+	pb, ok := parseVersion(b)
+	if !ok {
+		return 0, false
+	}
+	for i := range pa {
+		switch {
+		case pa[i] < pb[i]:
+			return -1, true
+		case pa[i] > pb[i]:
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
+// parseVersion 把 vX.Y.Z 拆成三个整数；形态不符时 ok 为 false。
+func parseVersion(v string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }

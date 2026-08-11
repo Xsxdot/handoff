@@ -87,6 +87,15 @@ func TestNotifyLineSilentCases(t *testing.T) {
 		{"没有缓存", nil, "v0.2.0"},
 		{"缓存里没版本", &CLICheck{}, "v0.2.0"},
 		{"本地构建", &CLICheck{Latest: "v0.3.0"}, ""},
+		// 缓存比当前版本旧：升级之后缓存最长会陈 24h，此时绝不能反过来劝人降级。
+		// 这不是假设：v0.1.1 发布当天，装完的机器被劝了「有新版本 v0.1.0（当前 v0.1.1）」
+		{"缓存比当前旧", &CLICheck{Latest: "v0.1.0"}, "v0.1.1"},
+		{"缓存旧一个次版本", &CLICheck{Latest: "v0.9.0"}, "v0.10.0"},
+		{"缓存旧一个主版本", &CLICheck{Latest: "v1.0.0"}, "v2.0.0"},
+		// 解析不了方向就不提示：一条方向错误的提示（劝人降级）比少提示一次更糟，
+		// 而 release 工作流只产出 vX.Y.Z，解析不了本就在正常路径之外
+		{"当前版本无法解析", &CLICheck{Latest: "v0.3.0"}, "dev-abc"},
+		{"缓存版本无法解析", &CLICheck{Latest: "nightly"}, "v0.3.0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,5 +103,13 @@ func TestNotifyLineSilentCases(t *testing.T) {
 				t.Fatalf("不该提示，却得到 %q", line)
 			}
 		})
+	}
+}
+
+// 版本号按数值而非字典序比较：v0.10.0 比 v0.9.0 新，字典序会判反。
+func TestNotifyLineNumericOrder(t *testing.T) {
+	c := &CLICheck{Latest: "v0.10.0"}
+	if line := NotifyLine(c, "v0.9.0"); line == "" {
+		t.Fatal("v0.10.0 比 v0.9.0 新，应当提示")
 	}
 }
