@@ -1,8 +1,8 @@
-# handoff Web 控制台（前端地基）
+# handoff Web 控制台（前端）
 
-agentd 托管的 Web 控制台的前端脚手架。本任务只做地基：用**真实的 cookie 会话**
-在 dev server 上证明三件事——`/api/status` 拿到版本与状态、`/api/tasks` 拿到任务
-列表、对任一任务开 `/ws/events` 收到至少一条事件。不做看板、不做任务详情。
+agentd 托管的 Web 控制台的前端。W1 用**真实的 cookie 会话**在 dev server 上证明
+鉴权闭环（status / tasks / WS 三连通）；W2 把冒烟页面替换成**任务看板**与
+**任务详情 / 审核台**两个真界面，数据全部来自 agentd 今天的路由，**后端零改动**。
 
 ## 版本（2026-08-11 实际选定）
 
@@ -14,7 +14,8 @@ agentd 托管的 Web 控制台的前端脚手架。本任务只做地基：用**
 | Tailwind | ^4.3.3 | v4，用 `@tailwindcss/vite` 插件，无需 postcss 配置 |
 | shadcn/ui | 用 registry 抄录（new-york / neutral） | 未用 `npx shadcn init`：手动写 `components.json` 与 `src/index.css` 主题变量，`components/ui/{button,card,badge}.tsx` 由 `ui.shadcn.com/r/styles/new-york/<名>.json` 抄入 |
 | lucide-react | ^1.31.0 | 图标 |
-| vitest | ^4.1.10 | 测试框架；`@testing-library/react`、`jsdom` 已装供后续组件测试 |
+| vitest | ^4.1.10 | 测试框架；`@testing-library/react`、`jsdom` 已装供组件测试 |
+| react-router-dom | ^7.18.2（W2 新增） | `BrowserRouter`：`/` 看板、`/tasks/:id` 详情 |
 | ws / @types/ws | ^8 | 仅验收脚本用（Node 侧 WS 客户端，devDependencies） |
 
 `package-lock.json` 已提交，重装用 `npm ci`。
@@ -76,20 +77,47 @@ Origin 校验都要求 Host 原样转发（`localhost:5173` 在两个白名单�
 src/
   api/          类型定义（types.ts）、fetch 客户端（client.ts）、WS 客户端（ws.ts）
     testdata/   Go 侧测试生成的契约 fixture（勿手改；改走 -update）
-  app/          页面区块：StatusSection / TaskSection / EventSection / ErrorBanner
+  app/
+    board/      看板页：BoardPage + 列/状态机映射（columns.ts，契约）
+    task/       详情页：TaskPage 编排 + 审批台（TicketsPanel）+ 事件流 + 实况流
+                + 审阅取证（diff/run/file）+ 推进动作（continue/done/stop/resume）
+    lib/        格式化、确认弹层、断线/会话失效横幅等共享件
   components/ui/ shadcn/ui 生成物（button / card / badge）
   lib/utils.ts  cn() 类名合并
 scripts/
   verify-auth-loop.mjs  真实 agentd 的鉴权闭环冒烟（见下）
 ```
 
+## 页面与路由
+
+- `/`：任务看板。四列（等待执行 / 进行中 / Review / 完成），列与状态机的映射是
+  硬契约（`app/board/columns.ts` + 测试钉死）：`pending`→等待执行；
+  `running`、`waiting_answer`→进行中（`waiting_answer` 加「等你答复」标记）；
+  `waiting_review`→Review；`completed`、`failed`→完成（`failed` 视觉区分）。
+  看板走轮询（`GET /api/tasks`，2.5s，页面隐藏时暂停）——`/ws/events` 是按单任务
+  订阅的，照搬就要开 N 条连接，低频视图用轮询足够（整机级订阅留 W3）。
+- `/tasks/:id`：任务详情 / 审核台。详情轮询 + 一条 `/ws/events` 实时事件流 +
+  一条 `/api/tasks/{id}/render` 实况流（`AbortController` 卸载中止，不泄漏常驻
+  连接）。审批台：权限/提问**全文完整展示**（读工单 request，不读事件摘要）；
+  批准 `answer="allow"`、拒绝 `"deny: <理由>"`（**理由必填**）、提问自由文本透传。
+  推进动作按状态机给可用性：`continue`/`done` 仅 `waiting_review`，`stop` 在终态
+  不可用，`resume` 在 `waiting_answer` 可用；`stop`/`done` 需二次确认。
+
+### 已知缺口（本轮不做）
+
+- **W5 打包时需要 history fallback**：现在用 `BrowserRouter`，vite dev server 自带
+  history fallback，开发期没问题；W5 把前端 `go:embed` 进 agentd 时，agentd 需要对
+  未知路径回落 `index.html`（否则深链 `/tasks/:id` 刷新即 404）。
+- 整机级事件订阅缺失，看板只能轮询（spec §9，记给 W3）。
+
 ## 脚本与测试
 
 ```bash
 npm run dev        # 起 dev server（默认反代 127.0.0.1:7777）
-npm test           # vitest（契约 fixture 断言）
+npm test           # vitest（契约 fixture + 看板映射 + 审批编码 + WS 生命周期）
 npm run typecheck  # tsc -b
 npm run lint       # eslint（shadcn 组件自身带 fast-refresh 告警，属预期）
+npm run build      # tsc -b && vite build（产物不进库，go:embed 是 W5）
 ```
 
 ### 鉴权闭环冒烟（真实 agentd，不用 mock）

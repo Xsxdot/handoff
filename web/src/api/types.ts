@@ -105,3 +105,76 @@ export interface StatusResp {
   task_counts: Record<string, number>
   active: ActiveTask[]
 }
+
+// taskDetail 是 GET /api/tasks/{id} 的响应体（任务 + 待办工单 + 最近事件）。
+// PendingTickets / RecentEvents 在 agentd 侧归一化为 [] 而非 null，这里仍标记
+// 为必填数组（契约测试锁死）。
+export interface TaskDetail {
+  task: Task
+  pending_tickets: Ticket[]
+  recent_events: Event[]
+}
+
+// TicketRequest 是工单 request 字段的**可读视图**。
+//
+// 注意：request 在 agentd 侧是 json.RawMessage（{"kind":"gate","permission":…}
+// 或 {"kind":"ask","question":…}），事件 payload 里的 permission 是截断过的
+// 摘要，全文只在工单里——展示必须解析本对象，不要读事件。
+export interface TicketRequest {
+  kind?: string
+  permission?: string
+  question?: string
+  [key: string]: unknown
+}
+
+// replyRequest 是 POST /api/tasks/{id}/reply 的请求体；answer 的编码契约见
+// app/task/review.ts 的 buildTicketAnswer（批准恒为 "allow"，拒绝必须带理由）。
+export interface ReplyRequest {
+  ticket_id: string
+  answer: string
+}
+
+// replyResult 是 reply 接口的响应体；Relayed=false 表示「已落库但 executor 侧
+// 递送失败」，此时 HTTP 状态码是 502，Reason 给出可行动的原因。
+export interface ReplyResult {
+  ok: boolean
+  relayed?: boolean
+  reason?: string
+}
+
+// stopResult 是 stop 接口的响应体；worktree_removed 如实反映 managed worktree
+// 是否被删除（false=用户自带 worktree / 原地模式或清理失败）。
+export interface StopResult {
+  status: string
+  worktree_removed: boolean
+}
+
+// runResult 是 run 接口的响应体；非零退出也是 200，退出码在响应体里
+// （10 分钟超时会被杀，退出码 124）。
+export interface RunResult {
+  stdout: string
+  exit_code: number
+}
+
+// diffResult 是 diff 接口的响应体。
+export interface DiffResult {
+  diff: string
+}
+
+// fileResult 是 file 接口的响应体。
+export interface FileResult {
+  content: string
+}
+
+// resumeResult 是 resume 接口的响应体（RecoverReport 的镜像）。
+export interface ResumeResult {
+  task: string
+  redelivered: number
+  executor_gone: boolean
+  reconciled: boolean
+  turn_ended: boolean
+  emitted: number
+  forced: boolean
+  state: string
+  note: string
+}
