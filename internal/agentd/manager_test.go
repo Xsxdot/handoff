@@ -1103,6 +1103,11 @@ func TestStopEndsRunningTask(t *testing.T) {
 	if !found {
 		t.Error("stop 必须产出写明中止原因的 failed 事件（否则与真失败无法区分）")
 	}
+	// stop 走的是终态 failed，作废由 transit 收口完成，并且必须留下审计痕迹——
+	// 否则 stop 与 done 两条终态路径的痕迹不一致，而痕迹不一致正是 B63 要修的东西
+	if evs := voidedEvents(t, st, task.ID); len(evs) != 1 {
+		t.Errorf("stop 后 tickets_voided = %d 条，期望 1 条", len(evs))
+	}
 }
 
 // TestStopOnTerminalTaskRejected 验证已终结任务重复 stop 返回状态冲突而不是崩掉。
