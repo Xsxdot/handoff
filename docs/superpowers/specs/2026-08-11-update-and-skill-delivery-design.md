@@ -109,8 +109,8 @@ aliyun   够不着（dial tcp 10.0.0.5:7777: connect: connection refused）
 
 1. **查远端 status**（`GET /api/status`）拿当前版本、平台、托管状态、活跃任务
 2. **预检两道闸**（见 4.3）——在下载那 15MB **之前**拒掉，不白费带宽
-3. **下载该机器平台的资产**并对 `checksums.txt` 校验（`internal/release` 现成能力）
-4. **POST `/api/update`**，body 为二进制，头部带目标 tag 与 sha256
+3. **下载该机器平台的资产**并对 `checksums.txt` 校验（复用 `internal/release`，但需拆分，见下）
+4. **POST `/api/update`**，body 为 **tar.gz 资产原文**，头部带目标 tag 与 sha256
 5. **agentd 侧**：复检两道闸 → 落盘到目标二进制**同目录**的临时文件 → 重算 sha256 →
    自检（跑 `<临时文件> version`，首行必须等于目标 tag）→ `release.Activate`
    原子换版并保留 `.prev` → 返回 200 → 触发优雅关停
@@ -128,6 +128,27 @@ agentd 非托管时，退回纯换文件并如实提示「正在跑的 agentd �
 
 **顺序：远端全部处理完，本机最后。** 本机换版会重启本机 agentd，而操作者很可能
 正用它盯着任务；把干扰最大的一步放最后，前面出问题时不至于白扰一次。
+
+#### `internal/release.Fetch` 必须拆开（订正）
+
+现有 `Fetch`（install.go:73）做了五件事：取本平台资产 → 下载 → 校验 sha256 →
+解包 → **执行新二进制自检**。跨平台推送时后两件都不成立：
+
+- `goos, goarch := CurrentPlatform()` 写死本平台，取不到远端要的那份资产；
+- `selfCheck` 靠 `exec` 跑 `<新二进制> version`——在 macOS 上执行 linux 产物必然失败。
+  这条自检本身是对的（4.5 的第三道校验），但它的执行地点是**远端 agentd**，不是本机。
+
+因此按职责拆成两半，`Fetch` 保留为二者的组合（本机升级路径行为一字不变）：
+
+| 函数 | 做什么 | 谁调 |
+|---|---|---|
+| `FetchArchive(ctx, rel, goos, goarch) ([]byte, string, error)` | 按指定平台下载 tar.gz，对 `checksums.txt` 校验，返回**字节与期望 sha256**。不解包、不自检 | CLI（跨平台推送）与 `Fetch` 自身 |
+| `InstallArchive(tgz []byte, wantSum, wantTag, destDir string) (string, error)` | 重算 sha256 比对 → 解包 → chmod → 自检 → 返回临时文件路径 | agentd（收到推送后）与 `Fetch` 自身 |
+
+**推送的 body 是 tar.gz 原文而非解包后的裸二进制**，正是为了让信任链不断节：
+`checksums.txt` 声明的是 tar.gz 的哈希，CLI 校验它、把它原样发出、agentd 再校验同一个
+值——三处比的是同一个来自 release 的声明。若本机先解包再传裸二进制，agentd 校验的就
+变成 CLI 自己算出来的哈希，等于让传输的两端互相背书。
 
 ### 4.3 两道闸
 
@@ -154,8 +175,9 @@ agentd 收到时再检一次，因为两次之间状态会变。
 因此给 `proto.BuildInfo` 增加：
 
 ```go
-// Platform 是构建目标平台，形如 "linux/amd64"，由 agentd 侧用
-// runtime.GOOS + "/" + runtime.GOARCH 现算填入。
+// Platform 是构建目标平台，形如 "linux/amd64"，在 buildinfo.Read() 里用
+// runtime.GOOS + "/" + runtime.GOARCH 现算填入（CLI 与 agentd 同一条路径，
+// 不会出现只有一端填的情况）。
 //
 // **空串表示对端没给这个字段**（老 agentd）。此时远程升级必须明确拒绝而不是
 // 猜一个默认值——猜错就是给一台 linux 机器推一个 darwin 二进制，自检会拦下，
@@ -262,7 +284,7 @@ handoff skill install    # 安装/重新同步
 | `internal/selfupdate/pending.go` 的 `Pending` / `LoadPending` / `SavePending` / `ClearPending` + 对应测试 | **删**（约 200 行）。没有「下载完等空闲再换」就没有待命状态 |
 | `internal/selfupdate/pending.go` 的 `IsManaged` | **保留**，移到 `internal/selfupdate/managed.go`。闸二要用它，连同「绝不能用 PPID」的注释与 `TestIsManagedIgnoresPPID` 反例一并搬走 |
 | `internal/selfupdate/clicheck.go` + 测试 | **原样保留**。它就是「改成提示」里的提示 |
-| `internal/release/*` | **原样保留**。下载、校验、自检、原子换版、回滚全部复用 |
+| `internal/release/install.go` | **拆 `Fetch`**：析出 `FetchArchive`（按指定平台下载+校验，不自检）与 `InstallArchive`（校验+解包+自检），`Fetch` 变成两者的组合。其余（`Activate` / `Rollback` / `PrevPath` / `TempName` / `client.go`）原样保留 |
 | `cmd/upgrade.go` | **扩展**：加机器范围维度与远程推送 |
 | `cmd/agentd.go` 的 updater 接线 | **删** |
 | `proto.UpdateStatus` | **改**：去掉 `Pending` / `DownloadedAt`（没有待命概念了），保留 `Managed`（闸二与巡检要用）。老 CLI 读不到已删字段就不显示，向后兼容 |
@@ -279,11 +301,13 @@ handoff skill install    # 安装/重新同步
 | `cmd/skill.go` | 新增：`handoff skill` / `handoff skill install` |
 | `internal/skill/install.go` | 新增：`Install(content, home) (Report, error)`，拷贝 + 软链 + 报告 |
 | `internal/skill/state.go` | 新增：读各落点内容算 sha256，与内嵌内容比对 |
+| `internal/release/install.go` | 改：`Fetch` 拆成 `FetchArchive` + `InstallArchive`（见 4.2 订正），`Fetch` 保留为组合 |
 | `internal/agentd/update.go` | 新增：`POST /api/update` 处理器——复检两道闸、落盘、校验、自检、换版、触发关停 |
 | `internal/client/update.go` | 新增：客户端侧的推送与轮询确认 |
 | `internal/selfupdate/managed.go` | 新增（从 `pending.go` 搬来）：`IsManaged` |
 | `internal/proto/status.go` | 改：`BuildInfo` 加 `Platform`；`UpdateStatus` 去掉 `Pending`/`DownloadedAt` |
-| `internal/agentd/status.go` | 改：填 `Platform`；不再读 `pending.json` |
+| `internal/buildinfo/buildinfo.go` | 改：`Read()` 填 `Platform`（两条返回路径都要填，含读不到 `debug.BuildInfo` 的降级分支） |
+| `internal/agentd/status.go` | 改：`Update` 恒返回（只带 `Managed`），不再读 `pending.json`——闸二与巡检需要每台机器都有这个字段 |
 | `cmd/status.go` | 改：skill 不一致时加提示行；更新状态段落随 `UpdateStatus` 简化 |
 | `install.sh` | 改：装完二进制后调 `"$INSTALL_DIR/handoff" skill install` |
 | `skills/install.sh` | **删**，由 `go run . skill install` 取代 |
