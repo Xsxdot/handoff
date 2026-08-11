@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -89,6 +90,60 @@ func resetPerRunState(c *cobra.Command) {
 	for _, sub := range c.Commands() {
 		resetPerRunState(sub)
 	}
+}
+
+// Endpoint 是一台可被升级的机器。
+//
+// Local 为 true 时 Name 恒为「本机」：它的二进制由 CLI 直接换（文件就在本地），
+// 与远端走的是两条不同的路径（spec §4.2）。
+type Endpoint struct {
+	Name  string
+	Addr  string
+	Token string
+	Local bool
+}
+
+// Endpoints 返回要处理的机器清单。
+//
+// 参数：
+//   - only: 为空时返回 [本机, 全部 target（按名字排序）]；非空时只返回该 target
+//
+// 返回：
+//   - 机器清单；only 指定的 target 不存在时返回错误
+//
+// 为什么本机也在清单里：版本一致本身就是要解决的问题，把本机排除在外，
+// 「本机新远端旧」就会成为常态。而操作者不必记住配置里有哪些 target——
+// 这正是「一条命令看清所有机器」的前提（spec D2）。
+func Endpoints(only string) ([]Endpoint, error) {
+	p := configPath
+	if p == "" {
+		p = config.DefaultPath()
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		return nil, fmt.Errorf("加载配置 %s: %w", p, err)
+	}
+	if only != "" {
+		t, ok := cfg.Targets[only]
+		if !ok {
+			return nil, fmt.Errorf("target %q 未在配置 %s 中定义", only, p)
+		}
+		return []Endpoint{{Name: only, Addr: "http://" + t.Addr, Token: t.Token}}, nil
+	}
+	local := cfg.Listen
+	if !strings.Contains(local, "://") {
+		local = "http://" + local
+	}
+	eps := []Endpoint{{Name: "本机", Addr: local, Token: cfg.Token, Local: true}}
+	names := make([]string, 0, len(cfg.Targets))
+	for n := range cfg.Targets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		eps = append(eps, Endpoint{Name: n, Addr: "http://" + cfg.Targets[n].Addr, Token: cfg.Targets[n].Token})
+	}
+	return eps, nil
 }
 
 // TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。
