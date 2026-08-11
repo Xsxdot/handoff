@@ -153,10 +153,10 @@ func (s *Server) Handler() http.Handler {
 	return s.hostGuard(s.auth(mux))
 }
 
-// auth 是 Bearer token 鉴权中间件，包住全部路由。
+// auth 是 Bearer token 或 cookie 会话鉴权中间件，包住全部路由。
 //
-// 鉴权失败（无 token / token 不匹配）统一返回 401，并打 Warn 记录来源地址——
-// 这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
+// 鉴权失败（无 token / token 不匹配 / cookie 会话无效）统一返回 401，并打 Warn
+// 记录来源地址——这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
 //
 // 为什么这里做空 token 拒绝（L-2）：subtle.ConstantTimeCompare("","")==1，
 // 配置 token 为空时空 token 请求会通过鉴权——今天只因 net/http 的
@@ -165,6 +165,10 @@ func (s *Server) Handler() http.Handler {
 // 在鉴权边界 fail-closed：cfg.Token 为空 → 拒绝一切请求并打 Error，提示
 // 配置问题。选在这里而非 NewServer/启动时：这是 fail-open 真正发生的边界，
 // 一个位置同时覆盖 HTTP 与 WS 全路由，任何嵌入方（含测试）都逃不掉。
+//
+// 为什么在 Bearer 之外加 cookie 分支：浏览器里 `new WebSocket()` 只能继承
+// 页面已有的 cookie，设不了 Authorization 请求头——CLI 的主令牌路径在浏览器
+// 里走不通，必须允许 cookie 会话鉴权。
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token == "" {
@@ -173,13 +177,22 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 			return
 		}
-		token, ok := bearerToken(r)
-		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
-			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+		// 先 Bearer：CLI 是最高频的调用方，且这条路径不碰库
+		if token, ok := bearerToken(r); ok &&
+			subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) == 1 {
+			next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{})))
+			return
+		}
+		// 后 cookie：浏览器 new WebSocket() 设不了请求头，只能走这条
+		sess, reason := s.sessionFromRequest(r)
+		if sess == nil {
+			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method,
+				"path", r.URL.Path, "reason", reason)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		s.refreshSession(sess)
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{session: sess.ID})))
 	})
 }
 
