@@ -179,3 +179,94 @@ func TestMigrateReposToProjectLocations(t *testing.T) {
 		t.Fatalf("第二次 Open 不应改变数据: locs=%d err=%v", len(locs2), err)
 	}
 }
+
+// TestMigrateReposToProjectLocationsRollsBackOnFailure 验证迁移**整体事务**：
+// 中途某行 INSERT 撞 project_id 主键失败时，已插入的行一并回滚、旧 repos 表保留，
+// 且清理冲突后可重跑成功——否则库会死在「半迁入 + 旧表还在」的中间态上，
+// 下一次 Open 重跑必然在第一批行的主键冲突上硬失败，库从此打不开。
+func TestMigrateReposToProjectLocationsRollsBackOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	// 手工造「旧库」：repos 里先放一行能成功的 tk（时间更早，升序时先插），
+	// 再放一行会撞主键的 handoff；project_locations 预置同 project_id 的行。
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE repos (
+  name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+  origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`); err != nil {
+		t.Fatalf("建旧表: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE project_locations (
+  project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  path TEXT NOT NULL UNIQUE, origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`); err != nil {
+		t.Fatalf("建新表: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO repos VALUES (?, ?, ?, ?)`,
+		"tk", "/w/tk", "git@github.com:xushixin/tk.git", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("塞 tk 行: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO repos VALUES (?, ?, ?, ?)`,
+		"handoff", "/w/handoff", "git@github.com:xushixin/handoff.git", "2026-01-15T00:00:00Z"); err != nil {
+		t.Fatalf("塞 handoff 行: %v", err)
+	}
+	// 预占 handoff 的 project_id：迁移插它必撞主键（错误出现在第二行，
+	// 第一行 tk 已经成功插入——正好验证「失败前的行被回滚」）。
+	if _, err := old.Exec(`INSERT INTO project_locations VALUES (?, ?, ?, ?, ?)`,
+		projectid.FromOrigin("git@github.com:xushixin/handoff.git"), "handoff-pre",
+		"/w/handoff-pre", "git@github.com:xushixin/handoff.git", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("预占 project_id: %v", err)
+	}
+	old.Close()
+
+	st, err := Open(path)
+	if err == nil {
+		st.Close()
+		t.Fatal("迁移中途失败时 Open 应返回错误")
+	}
+	// 中间态必须被回滚干净：旧表还在、project_locations 只剩预占的那一行。
+	probe, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	t.Cleanup(func() { probe.Close() })
+	var n int
+	if err := probe.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='repos'`).Scan(&n); err != nil {
+		t.Fatalf("查 sqlite_master: %v", err)
+	}
+	if n != 1 {
+		t.Fatal("迁移失败后 repos 表应仍在（DROP 未发生）")
+	}
+	if err := probe.QueryRow(`SELECT count(*) FROM project_locations`).Scan(&n); err != nil {
+		t.Fatalf("查 project_locations: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("回滚后 project_locations 应只剩预占的 1 行（tk 已插入却被回滚），got %d", n)
+	}
+
+	// 清掉冲突后重跑：迁移应可重试成功，不再把库锁死。
+	if _, err := probe.Exec(`DELETE FROM project_locations WHERE name = 'handoff-pre'`); err != nil {
+		t.Fatalf("清冲突行: %v", err)
+	}
+	probe.Close()
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("清冲突后重跑 Open 应成功: %v", err)
+	}
+	defer st2.Close()
+	locs, err := st2.ListProjectLocations()
+	if err != nil {
+		t.Fatalf("ListProjectLocations: %v", err)
+	}
+	if len(locs) != 2 {
+		t.Fatalf("重跑后应迁入 2 行，got %d: %+v", len(locs), locs)
+	}
+	if err := st2.db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='repos'`).Scan(&n); err != nil {
+		t.Fatalf("查 sqlite_master: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("重跑成功后 repos 表应被 DROP")
+	}
+}

@@ -191,6 +191,10 @@ ORDER BY created_at DESC`, args...)
 //   - 错误：查/写/DROP 失败时返回；旧表不存在时直接返回 nil（新库与二次调用都走这条）
 //
 // 注意：
+//   - **必须整体走一个事务**：中途任一失败（写库报错、DROP 失败）都要把已插入的
+//     行一并回滚。非事务化时，中途失败会留下「project_locations 里已有若干行 +
+//     旧 repos 表还在」的中间态，下一次 Open 重跑迁移必然在第一批行的 project_id
+//     主键冲突上硬失败，库从此打不开，只能人工手术——这就是本函数要防的死局
 //   - 按 created_at 升序遍历，**同一个 project_id 保留最早的一条**：ADR-0008
 //     只允许一个位置，多出来的（多半是同一仓库的 worktree 各登了一条）丢弃并
 //     Warn 出 name/path/origin 三项完整信息，人照着 handoff project add --path 自己补
@@ -198,6 +202,8 @@ ORDER BY created_at DESC`, args...)
 //   - 迁移不探测文件系统：目录已被移走的行照样迁入，下一次派发在 EnsureRepoUsable
 //     处报「路径不存在」，处置是 project rm 后重新 add（spec §14 风险一）
 //   - 幂等靠 DROP：跑完旧表就没了，第二次调用直接返回
+//   - 汇总 Info（migrated/skipped）在 Commit 成功之后才打：回滚过却报「已迁入」
+//     是假日志
 func migrateReposToProjectLocations(db *sql.DB) error {
 	ctx := context.Background()
 	var n int
@@ -229,6 +235,13 @@ func migrateReposToProjectLocations(db *sql.DB) error {
 	}
 	rows.Close()
 
+	// 写侧全部走事务：INSERT 与 DROP 必须同生共死（why 见函数头注意）。
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务: %w", err)
+	}
+	defer tx.Rollback()
+
 	seen := make(map[string]oldRepo, len(olds))
 	migrated, skipped := 0, 0
 	for _, r := range olds {
@@ -253,7 +266,7 @@ func migrateReposToProjectLocations(db *sql.DB) error {
 			skipped++
 			continue
 		}
-		if _, err := db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO project_locations (project_id, name, path, origin_url, created_at)
 VALUES (?, ?, ?, ?, ?)`,
 			pid, r.name, filepath.Clean(abs), r.origin, r.createdAt); err != nil {
@@ -262,8 +275,11 @@ VALUES (?, ?, ?, ?, ?)`,
 		seen[pid] = r
 		migrated++
 	}
-	if _, err := db.ExecContext(ctx, `DROP TABLE repos`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DROP TABLE repos`); err != nil {
 		return fmt.Errorf("迁移后删除旧 repos 表: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务: %w", err)
 	}
 	log().Info("旧仓库登记已迁入项目位置表", "migrated", migrated, "skipped", skipped)
 	return nil
