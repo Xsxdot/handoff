@@ -54,7 +54,8 @@ go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . 
 Windows 实现尚未完成。
 
 装完用 `handoff version` 确认：首行是版本号（形如 `v0.1.0`）说明装的是 release 构建；
-显示 `unknown` 说明这是本地 `go build` 的产物，自动更新不会作用于它。
+显示 `unknown` 说明这是本地 `go build` 的产物，`handoff upgrade` 不会把它当 release
+版本比对。
 
 装完先配一次：
 
@@ -73,36 +74,44 @@ Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `hando
 macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的服务空窗——
 执行者不受影响（它们在独立会话里），但期间的 `dispatch` / `reply` 会失败。
 
-### 自动更新
+### 升级与 skill 分发
 
-agentd 默认每 6 小时查一次 GitHub 上的最新 release。查到新版后它会先下载、校
-sha256、跑一次新二进制的 `handoff version` 自检，通过了才写入待命记录；**替换与
-重启要等到没有活跃任务的窗口**（`running` 与 `waiting_answer` 都为 0；
-`waiting_review` 不算忙——它可能挂几天）。
-
-换版的最后一步是 agentd 自己优雅退出（exit 0），由 launchd / systemd 把新二进制
-拉起来。**因此没有被托管的 agentd 不会自动换版**——换完没人拉起，机器上就此没有
-handoff 在跑。这种情况下它只把新版下好待命，并在日志和 `handoff status` 里说明
-原因。想用上就 `handoff service install`，或者手动 `handoff upgrade --now` 后自己
-把 agentd 重启。
-
-关掉自动更新：
-
-```yaml
-update:
-  auto: false
-  interval: 6h
-```
-
-手动升级与回滚：
+升级由**操作者触发**，不再有定时自动更新：一条命令看清本机与全部 target 的版本，
+一条命令把所有落后的机器升到同一版本。二进制由本机（审核者机器）下载后推送，
+**执行机无需出网**——内网机器、跳板机后面的机器也一样能升。
 
 ```bash
-handoff upgrade              # 只看有没有新版
-handoff upgrade --now        # 立即下载并替换二进制
-handoff upgrade --rollback   # 换回上一版（<二进制>.prev）
+handoff upgrade                       # 巡检：列出所有机器的版本与结论（默认行为）
+handoff upgrade --now                 # 升级所有落后的机器（含本机；本机排最后）
+handoff upgrade --now --target devbox # 只升 devbox 这一台
+handoff upgrade --now --force         # 越过「有活跃任务」那道闸
+handoff upgrade --rollback            # 本机回滚（<二进制>.prev；不支持 --target）
 ```
 
-三条命令换的都是**磁盘上的二进制**；正在跑的 agentd 仍是旧进程，重启才生效。
+巡检输出示例：
+
+```
+最新     v0.1.1
+本机     二进制 v0.1.0 · agentd v0.1.0   需要升级
+devbox   v0.1.0                          需要升级
+prod     v0.1.1                          已是最新
+aliyun   够不着（dial tcp 10.0.0.5:7777: connect: connection refused）
+```
+
+`--now` 会经接口触发 agentd 重启（远端全部处理完才轮到本机——本机重启会打断操作者
+正用着的 agentd）。换版后 CLI 轮询 status 确认新版本上线，超时则如实报「已换版但
+新进程未上线」并给出回滚命令，绝不报成「升级完成」。
+
+两道闸在下载前逐台预检，agentd 收到推送时再复检一次：
+
+- **活跃任务**：`running` 与 `waiting_answer` 不为 0 时默认拒绝（`waiting_review`
+  不计入——它可能挂几天）。`--force` 可越过，报告里会给可复制的 `--force` 命令行。
+- **非托管**：agentd 不是被 launchd / systemd 拉起的，换完没人拉起。**`--force`
+  也不越过**——处置是先在该机器上 `handoff service install`。
+
+`update.auto` / `update.interval` 两个配置键**已废弃、不再有任何效果**（agentd 不再
+定时查版本）。字段保留只是为了让 v0.1.0 写下的旧配置能继续加载；取非默认值时启动
+会打一条 Warn 说明。
 
 新版起来后如果有问题，**不会自动回滚**——旧二进制留在 `<路径>.prev`，用
 `handoff upgrade --rollback` 人工换回。自动回滚需要「新版启动后自证健康」的握手
@@ -176,7 +185,8 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
 | `handoff init` | 探测本机 executor 并交互式生成/更新配置（幂等，可重跑） | — |
 | `handoff service install\|uninstall\|status` | 把 agentd 交给 launchd / systemd 托管 | — |
-| `handoff upgrade [--check\|--now\|--rollback]` | 检查、安装或回滚 handoff 版本 | — |
+| `handoff upgrade [--check\|--now\|--force\|--target <名>\|--rollback]` | 巡检 / 升级本机与全部 target，或回滚本机 | `--now`（执行升级）；`--target <名>`（只升那一台）；`--force`（越过活跃任务闸，不越过非托管闸）；`--rollback`（本机回滚，不支持 `--target`） |
+| `handoff skill [install]` | 报告 / 重装内嵌 skill 在本机各 agent 的安装状态 | 安装与升级会自动调用，正常不需要手工跑 |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
@@ -334,4 +344,4 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 
 - 设计文档（架构、协议、错误处理）：`docs/superpowers/specs/2026-08-07-handoff-design.md`
 - 真实 opencode e2e 手动验证清单：`docs/superpowers/e2e-checklist.md`
-- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。`bash skills/install.sh` 装到本机 Claude Code（基准副本）并软链给 codex / opencode / grok。
+- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。skill **内嵌在二进制里**，版本与二进制一致、不可能漂移：一行安装装完自动同步，`handoff upgrade --now` 换版后也会自动同步，日常不需要手工管。要查状态或重装用 `handoff skill` / `handoff skill install`（开发时用 `go run . skill install`）。
