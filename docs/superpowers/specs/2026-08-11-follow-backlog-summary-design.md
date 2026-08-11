@@ -101,7 +101,23 @@ B22 原先记的是「本机没有 cursor 时从 seq 0 重放」，方向错了�
 - **`W - C` 不是条数**，它混着其他任务的事件。`missed` 只能靠遍历 `RecentEvents` 逐条判类型来数，不能算差值。
 - **不能用 seq 连续性判断窗口是否有缺口**（如 `oldest.Seq > C+1`），那个判据在全局 seq 下恒为真。
 
-### 3.4 截断判据
+### 3.4 「可交付」的口径，以及一处现存的不一致
+
+`missed` 数的是「审核者本该被唤醒的事件」，因此需要一个明确的可交付集合：
+
+```
+可交付 = 全部事件类型 − {progress, approver_decision, approver_disabled}
+```
+
+这正是 handoff skill 已经写明的契约（「这三类不会唤醒 wait」）。但**代码只挡了 `progress`**（`internal/client/client.go` 的两处过滤仅比对 `EventTypeProgress`）。另两类之所以看起来"没出现过"，是因为服务端对它们**只入库不 Publish**（`internal/agentd/manager.go` 的 `approver_decision` 追加处有明确注释）——实时流里确实见不到。
+
+**但重放路径读的是 store。** WS 补发走 `EventsFromAsc`，会把这两类一并推给客户端，客户端不过滤，于是交付。结果是：一次重连交付的东西比实时流更多，多出来的全是审计噪音；审批链裁决越多，重连时的唤醒风暴越大。
+
+处置：抽一个 `isDeliverable(proto.EventType) bool` 谓词，**同时**用于流过滤（`streamOnce` 的两处）与摘要计数，使二者口径一致，并让代码追上已写明的文档契约。`all=true` 时不做任何过滤，行为不变。
+
+这一条超出本 spec 的原始范围（它同时改变一次性 `wait` 在重放路径上的行为——严格更少），单独成 task，可独立取舍。
+
+### 3.5 截断判据
 
 `missed_truncated` 为 `true` 当且仅当 `RecentEvents` 非空且 `RecentEvents[0].Seq > C`——窗口里最旧的一条仍晚于 cursor，意味着**无法证明**窗口覆盖了整个间隙。此时 `missed`/`stale` 的语义降级为「至少」。
 
@@ -118,7 +134,7 @@ B22 原先记的是「本机没有 cursor 时从 seq 0 重放」，方向错了�
 | 快照 `state == completed`（已归档） | 照常连 WS，服务端以正常关闭码收尾，返回 nil | 复用 B56 已建好的归档路径 |
 | `RecentEvents` 为空（`W = 0`） | 无积压，静默 | 新任务的正常形态 |
 | cursor 推到 `W` 时写盘失败 | Warn，继续 | 下次对账会重新吐同一行摘要；重复一行摘要无害，比吞掉安全 |
-| `Attach` 返回 404 | 按既有 `isPermanent` 纪律立即报错 | 与现有永久失败处置一致 |
+| `Attach` 返回 404 / 401 | **同样降级**，不在对账里判永久性 | `Client.Attach` 的错误是普通 `fmt.Errorf`，不是 `permanentError`，`isPermanent` 认不出它。与其在对账里复制一套永久性判定，不如让紧随其后的 WS 握手去判——404 对应服务端的 `StatusPolicyViolation` 关闭、401 对应握手 `permanentError`，都走既有的、已被测试覆盖的路径。结果等价，判定只有一处 |
 
 ## 5. 测试
 
@@ -126,13 +142,14 @@ B22 原先记的是「本机没有 cursor 时从 seq 0 重放」，方向错了�
 
 1. 有积压 → 恰好一行摘要；cursor 被推到 `W`；WS 握手的 `from_seq` 等于 `W`
 2. 无积压（`W == C`）→ **一行摘要都不吐**，行为与改动前逐字一致
-3. `Attach` 失败 → 不报错、不吐摘要，逐条重放（降级路径）
+3. `Attach` 失败（含 404/401）→ 不报错、不吐摘要，逐条重放；永久性由随后的 WS 握手判定
 4. 积压含 3 条 `permission_request`、其中 1 张仍 pending → `missed=3`、`actionable=1`、`stale=2`
 5. `actionable` 含一张 `seq ≤ C` 的老工单 → 计数不受影响（验证不做减法）
 6. **seq 不连续的夹具**：积压事件的 seq 刻意跳号（如 `C=100`，事件为 `104/109/117`，模拟并发任务占号）→ `missed=3` 而非 `17`。这条专防实现时顺手写成 `W - C`
 7. 窗口未覆盖到 cursor（`RecentEvents[0].Seq > C`）→ `missed_truncated=true`，且 `actionable` 仍精确
 8. 快照 `state=failed` → 吐摘要后返回 nil
 9. **重连路径也对账**：两连接的 httptest，第一条连接断开、第二次连接前积压了事件 → 第二次连接前吐摘要
+10. `isDeliverable`：`approver_decision` / `approver_disabled` / `progress` 三类既不计入 `missed`，也不被流交付；`all=true` 时三类全部交付（行为不变）
 
 ## 6. 日志与注释
 
