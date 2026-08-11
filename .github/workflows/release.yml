@@ -1,0 +1,80 @@
+# 推 tag 时构建并发布 handoff。
+#
+# 触发：git push origin vX.Y.Z
+# 产出：四个平台的 handoff_<tag>_<os>_<arch>.tar.gz + 一个 checksums.txt
+#
+# 资产命名与 ldflags 注入路径是与 install.sh / 自更新的契约，
+# 由仓库根的 release_workflow_test.go 钉住，改这里必须同步改那边与消费方。
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # gh release create 要写 Releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 交叉编译并打包
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o handoff .
+          tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" handoff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: handoff_*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 算 checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
+          sha256sum handoff_*.tar.gz > checksums.txt
+          cat checksums.txt
+      - name: 建 Release 并上传资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/handoff_*.tar.gz dist/checksums.txt
