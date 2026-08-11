@@ -606,6 +606,64 @@ func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, ex
 	return out.Stdout, out.ExitCode, nil
 }
 
+// IssueAuthTicket 请求 agentd 签发一次性 ticket，返回可直接打开的兑换 URL。
+//
+// 参数：
+//   - deviceName: 设备展示名，纯展示，服务端会净化控制字符
+//
+// 返回：
+//   - 兑换 URL 与过期时刻
+//   - 连不上 agentd 时返回带诊断提示的错误（不退化成一句裸的 dial 失败）
+func (c *Client) IssueAuthTicket(ctx context.Context, deviceName string) (*proto.AuthTicketResp, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/auth/tickets",
+		map[string]string{"device_name": deviceName})
+	if err != nil {
+		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("签发 ticket", resp)
+	}
+	var out proto.AuthTicketResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析签发响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ListSessions 列出 agentd 上的全部浏览器会话（含已吊销）。
+func (c *Client) ListSessions(ctx context.Context) ([]proto.SessionInfo, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/auth/sessions", nil)
+	if err != nil {
+		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("列出会话", resp)
+	}
+	var out []proto.SessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析会话列表: %w", err)
+	}
+	return out, nil
+}
+
+// RevokeSession 吊销指定会话。
+//
+// 返回：
+//   - 404 时错误里含服务端原文「会话不存在或已吊销」
+func (c *Client) RevokeSession(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/auth/sessions/"+url.PathEscape(id), nil)
+	if err != nil {
+		return fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("吊销会话", resp)
+	}
+	return nil
+}
+
 // doStream 发送带 Bearer token 的流式 GET 请求，返回不关闭 body 的响应。
 //
 // 为什么不能复用 do：do 不做任何读体/超时假设，但它没有专门的流式语义——
