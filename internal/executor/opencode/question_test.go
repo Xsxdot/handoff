@@ -1,6 +1,10 @@
 package opencode
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -128,5 +132,201 @@ func TestMapQuestionAskedEmptyQuestionsStillWakesReviewer(t *testing.T) {
 func TestQuestionAskedIsTaskScoped(t *testing.T) {
 	if !taskScopedEvents["question.asked"] {
 		t.Error("question.asked 必须是任务级事件：它直接产出面向审核者的工单")
+	}
+}
+
+func TestParseQuestionAnswersByNumber(t *testing.T) {
+	qs := []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}}}
+	got, err := parseQuestionAnswers(qs, "1.2")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(got) != 1 || len(got[0]) != 1 || got[0][0] != "乙" {
+		t.Fatalf("got = %v，期望 [[乙]]", got)
+	}
+}
+
+func TestParseQuestionAnswersSingleQuestionBareNumber(t *testing.T) {
+	qs := []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}}}
+	got, err := parseQuestionAnswers(qs, "2")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got[0][0] != "乙" {
+		t.Fatalf("got = %v，期望 [[乙]]（单问允许省略问号）", got)
+	}
+}
+
+func TestParseQuestionAnswersByLabel(t *testing.T) {
+	qs := []QuestionInfo{{Options: []QuestionOption{{Label: "照此实现"}, {Label: "保守处理"}}}}
+	got, err := parseQuestionAnswers(qs, "  保守处理 ")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got[0][0] != "保守处理" {
+		t.Fatalf("got = %v，期望 [[保守处理]]", got)
+	}
+}
+
+func TestParseQuestionAnswersCustomPassthrough(t *testing.T) {
+	qs := []QuestionInfo{{Custom: true, Options: []QuestionOption{{Label: "甲"}}}}
+	got, err := parseQuestionAnswers(qs, "我要第三种做法")
+	if err != nil {
+		t.Fatalf("custom=true 应当透传自由文本: %v", err)
+	}
+	if got[0][0] != "我要第三种做法" {
+		t.Fatalf("got = %v，期望原文透传", got)
+	}
+}
+
+func TestParseQuestionAnswersRejectsUnmatchedWhenNoCustom(t *testing.T) {
+	qs := []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}}}}
+	if _, err := parseQuestionAnswers(qs, "不存在的答案"); err == nil {
+		t.Fatal("custom=false 且不匹配时必须报错重问，不许猜")
+	}
+}
+
+func TestParseQuestionAnswersMultiSelect(t *testing.T) {
+	qs := []QuestionInfo{{Multiple: true,
+		Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}, {Label: "丙"}}}}
+	got, err := parseQuestionAnswers(qs, "1.1, 1.3")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(got[0]) != 2 || got[0][0] != "甲" || got[0][1] != "丙" {
+		t.Fatalf("got = %v，期望 [[甲 丙]]", got)
+	}
+}
+
+func TestParseQuestionAnswersMultiQuestion(t *testing.T) {
+	qs := []QuestionInfo{
+		{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}},
+		{Options: []QuestionOption{{Label: "A"}, {Label: "B"}}},
+	}
+	got, err := parseQuestionAnswers(qs, "1.2; 2.1")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(got) != 2 || got[0][0] != "乙" || got[1][0] != "A" {
+		t.Fatalf("got = %v，期望 [[乙] [A]]", got)
+	}
+}
+
+func TestParseQuestionAnswersCountMismatchRejected(t *testing.T) {
+	qs := []QuestionInfo{
+		{Options: []QuestionOption{{Label: "甲"}}},
+		{Options: []QuestionOption{{Label: "A"}}},
+	}
+	if _, err := parseQuestionAnswers(qs, "1.1"); err == nil {
+		t.Fatal("两问只给一答必须报错重问")
+	}
+}
+
+func TestSendRoutesToQuestionReplyWhenPending(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}}}
+
+	if err := a.Send(context.Background(), "task-1", "1.2"); err != nil {
+		t.Fatalf("Send 返回错误: %v", err)
+	}
+	if gotPath != "/question/req_1/reply" {
+		t.Fatalf("path = %q，期望打到 reply 端点而不是 prompt", gotPath)
+	}
+	if !strings.Contains(gotBody, "乙") {
+		t.Errorf("body = %q，期望含折算后的 label 乙", gotBody)
+	}
+	if r.pendingQuestionID != "" {
+		t.Error("应答成功后必须清掉挂起请求")
+	}
+}
+
+func TestSendFallsBackToPromptWhenNoPendingQuestion(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+
+	if err := a.Send(context.Background(), "task-1", "继续干"); err != nil {
+		t.Fatalf("Send 返回错误: %v", err)
+	}
+	if !strings.Contains(gotPath, "/session/ses_a/") {
+		t.Fatalf("path = %q，期望走 session prompt 端点而非 question", gotPath)
+	}
+	if strings.Contains(gotPath, "/question/") {
+		t.Fatalf("无挂起提问时不得打到 question 端点，实际 %q", gotPath)
+	}
+}
+
+func TestSendUnparsableAnswerRepromptsAndKeepsPending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("答复折算不出来时不应触达服务端，却收到了 %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}}}}
+
+	if err := a.Send(context.Background(), "task-1", "驴唇不对马嘴"); err != nil {
+		t.Fatalf("重问路径不应返回错误（错误要以工单形式给审核者）: %v", err)
+	}
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" {
+		t.Fatalf("事件 = %+v ok=%v，期望重发 question 工单", ev, ok)
+	}
+	if r.pendingQuestionID != "req_1" {
+		t.Error("重问期间挂起请求必须保留，否则下一次答复就无处可投")
+	}
+}
+
+func TestSendCustomRejectedByServerRepromptsAndKeepsPending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	r.pendingQuestions = []QuestionInfo{{Custom: true, Options: []QuestionOption{{Label: "甲"}}}}
+
+	if err := a.Send(context.Background(), "task-1", "我自己想的答案"); err != nil {
+		t.Fatalf("服务端拒绝自定义答案应降级重问而不是报错: %v", err)
+	}
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" || !strings.Contains(ev.Text, "不接受自定义答案") {
+		t.Fatalf("期望重发工单并说明原因，实际: %+v ok=%v", ev, ok)
+	}
+	if r.pendingQuestionID != "req_1" {
+		t.Error("挂起请求必须保留")
 	}
 }

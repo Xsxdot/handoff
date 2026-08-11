@@ -38,6 +38,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -443,6 +444,8 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 //   - stopCh 已关（Stop 已介入，运行态可能因 kill 失败被保留）时拒绝发送：
 //     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让审核者
 //     看到「任务不在运行」的明确错误
+//   - 有挂起的 question 请求时不发 prompt，改把答复回填给该请求（B49）：
+//     question 工具阻塞时回合并未结束，发 prompt 会开出第二个回合
 func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
@@ -461,7 +464,77 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 			a.log.Info("adapter 续接指令已发送", "task", taskID, "session", r.session)
 		}
 	}()
+	// 提问分流（B49）：有挂起的 question 请求时，审核者的答复必须打到 reply
+	// 端点而不是发新 prompt——question 工具阻塞时回合还在跑，再发 prompt 会
+	// 开出第二个回合，而阻塞的工具依然等不到应答
+	if reqID, qs := r.takePendingQuestionSnapshot(); reqID != "" {
+		return a.replyPendingQuestion(ctx, r, reqID, qs, text)
+	}
 	return r.api.PromptAsync(ctx, r.session, text)
+}
+
+// takePendingQuestionSnapshot 读一份挂起提问的快照（不清除）。
+//
+// 返回：请求 id 与问题结构；无挂起请求时 id 为空串
+//
+// 为什么只读不清：答复可能折算失败或被服务端拒绝，那两条路都要重发工单并
+// **保留**挂起请求——提前清掉，审核者的下一次答复就无处可投，任务重新死锁。
+// 清除只发生在应答成功之后（见 replyPendingQuestion）。
+func (r *runState) takePendingQuestionSnapshot() (string, []QuestionInfo) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	return r.pendingQuestionID, r.pendingQuestions
+}
+
+// clearPendingQuestion 清除挂起提问（应答成功后调用）。
+func (r *runState) clearPendingQuestion() {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	r.pendingQuestionID = ""
+	r.pendingQuestions = nil
+}
+
+// replyPendingQuestion 把审核者的答复折算并回填给 opencode 的 question 工具。
+//
+// 参数：
+//   - reqID/qs: 挂起请求的 id 与问题结构
+//   - text: 审核者答复原文
+//
+// 返回：
+//   - nil: 应答成功，或答复折算不了/被服务端拒绝而已重发工单（两者对审核者
+//     都不是错误，是「再答一次」）
+//   - 非 nil: 网络/服务端故障等真错误，冒泡给审核者终端
+//
+// 注意：
+//   - 折算失败**不触达服务端**：猜一个最接近的选项会让模型按错误前提继续干活
+func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
+	reqID string, qs []QuestionInfo, text string) error {
+
+	answers, perr := parseQuestionAnswers(qs, text)
+	if perr != nil {
+		a.log.Warn("答复无法折算成选项，重发工单请审核者再答",
+			"task", r.taskID, "request", reqID, "cause", perr)
+		a.emit(r, executor.AdapterEvent{Type: "question",
+			Text: turn.ClampQuestion("上一次答复没能对上选项（" + perr.Error() + "）。\n\n" +
+				renderQuestionTicket(qs))})
+		return nil
+	}
+	a.log.Info("答复已折算，回填 executor 提问", "task", r.taskID,
+		"request", reqID, "answers", answers)
+	if err := r.api.ReplyQuestion(ctx, reqID, answers); err != nil {
+		if errors.Is(err, ErrCustomAnswerRejected) {
+			a.log.Warn("opencode 不接受该自定义答案，重发工单请审核者改填选项",
+				"task", r.taskID, "request", reqID, "cause", err)
+			a.emit(r, executor.AdapterEvent{Type: "question",
+				Text: turn.ClampQuestion("opencode 不接受自定义答案，请改填编号或选项原文。\n\n" +
+					renderQuestionTicket(qs))})
+			return nil
+		}
+		return err
+	}
+	r.clearPendingQuestion()
+	a.log.Info("提问已应答，回合继续", "task", r.taskID, "request", reqID)
+	return nil
 }
 
 // RespondPermission 把审核者的权限裁决转发给 opencode server。
