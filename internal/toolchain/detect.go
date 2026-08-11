@@ -94,8 +94,10 @@ var order = []string{"opencode", "claude", "grok", "codex"}
 //   - 固定四项，顺序恒为 opencode / claude / grok / codex
 //
 // 注意：
-//   - 取不到 HOME 时，装了的执行者一律报 StateNoCreds 而不是 StateMissing——
-//     「凭证查不到」和「没装」是两件事，混为一谈会让用户去重装一个已经装好的东西
+//   - 取不到 HOME 时，装了的执行者一律报 StateAuthUnknown。它既不是 StateMissing
+//     （「凭证查不到」和「没装」是两件事，混为一谈会让用户去重装一个已经装好的
+//     东西），也不是 StateNoCreds（那是一个「没登录」的断言，而此时凭证文件
+//     根本没查过，下这个断言是在猜）
 func Detect() []Result {
 	home, homeErr := userHomeDir()
 	out := make([]Result, 0, len(order))
