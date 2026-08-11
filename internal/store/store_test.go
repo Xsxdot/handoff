@@ -790,6 +790,21 @@ func TestFindReusableGrant(t *testing.T) {
 	if got, err := s.FindReusableGrant("t1", "FPUNDELIVERED"); err != nil || got != nil {
 		t.Fatalf("未送达不应命中，得到 %+v err=%v", got, err)
 	}
+
+	// 不命中之六：answer 以 "allow" 开头但**不等于** "allow"（如 "allowed for
+	// this session"）。answer 是 reply 原文直落库（server.go:379），这类形态真能
+	// 存在——doc 注释里「放宽成 LIKE 'allow%' 会让人工笔误变成长期通行证」这条
+	// 安全承诺，必须有测试守着
+	mk("t1:p4", "t1", "FPALLOWED")
+	if err := s.AnswerTicket("t1:p4", "allowed for this session"); err != nil {
+		t.Fatalf("AnswerTicket(prefix-allow): %v", err)
+	}
+	if err := s.MarkTicketDelivered("t1:p4"); err != nil {
+		t.Fatalf("MarkTicketDelivered(prefix-allow): %v", err)
+	}
+	if got, err := s.FindReusableGrant("t1", "FPALLOWED"); err != nil || got != nil {
+		t.Fatalf("前缀 allow 不应命中，得到 %+v err=%v", got, err)
+	}
 }
 
 // TestTaskDirtySnapshotRoundTrip 钉住两个新列的读写：条数与文件串各存各的，
