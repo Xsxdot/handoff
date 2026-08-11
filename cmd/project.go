@@ -129,7 +129,9 @@ func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remote
 		return err
 	}
 	if remotePath == "" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "正在让 %s 克隆 %s（首次可能较慢）…\n", targetName, origin)
+		// 服务端可能 clone 也可能认领已存在的落点（spec §12），CLI 事前无法分辨，
+		// 措辞必须两种结局都成立——写成「克隆」会在认领路径下成为假话。
+		fmt.Fprintf(cmd.ErrOrStderr(), "正在让 %s 落地项目 %s（首次需要 clone，可能较慢）…\n", targetName, origin)
 	}
 	remote, err := client.New(addr, token).ProjectAdd(cmd.Context(), client.ProjectAddOpts{
 		OriginURL: origin, Name: local.Name, Path: remotePath,
