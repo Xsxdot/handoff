@@ -119,6 +119,41 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 
 事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
 
+### 浏览器控制台
+
+```bash
+handoff console                 # 打开系统浏览器（自动换一次性 ticket）
+handoff console --print-url     # 只打印兑换 URL，不打开浏览器
+handoff sessions                # 列出已建立的浏览器会话
+handoff sessions revoke <id>    # 吊销一个会话（手机丢失时用它）
+```
+
+**机制**：`console` 用主令牌向 agentd 换一张 **60 秒、一次性**的 ticket，
+浏览器打开该 URL 后 agentd 原子消费它，下发一个 httpOnly cookie 会话（默认 30 天，
+滑动续期），此后 `/api` 与 `/ws` 全部路由都用这个 cookie。
+
+**长期凭据永远不进 URL**——URL 里只有那张一次性 ticket。
+
+**Host 白名单**：agentd 只接受 Host 为 `127.0.0.1` / `localhost` / `::1` /
+配置的 `listen` 地址的请求。放到域名后面时必须配：
+
+```yaml
+web:
+  allowed_hosts:
+    - handoff.example.com
+```
+
+不配的表现是**全部请求 403**，agentd 日志里有 `Host 不在白名单`。
+
+**桌面壳接线契约**（壳内零凭据逻辑）：
+
+1. 探测本机 agentd 是否在监听；
+2. 执行 `handoff console --print-url`，**stdout 恰好一行，就是 URL**；
+3. `loadURL(那一行)`。
+
+壳不读 `config.yaml`、不碰主令牌、不实现任何鉴权代码。会话过期时页面返回 401，
+壳重跑第 2、3 步即可，用户无感。
+
 ## 配置（~/.handoff/config.yaml）
 
 二期新增三段（均可省略，用默认值）：
@@ -141,6 +176,9 @@ env:                          # agent 启动时注入的环境变量文件（放
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
 repo_root: ""                 # repo add --clone 未显式给路径时的默认落点根目录（可选）
+web:                          # 浏览器控制台 Host 白名单
+  allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
+    - handoff.example.com
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
