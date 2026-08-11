@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/skill"
 )
 
 // statusJSONOut 对应 --json。
@@ -105,6 +107,15 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 		// 而且 --force 也不越过。不说，用户只会看到一条没头没脑的拒绝
 		fmt.Fprintf(w, "更新     agentd 非托管启动，换版会被拒绝（--force 也不越过）\n")
 		fmt.Fprintf(w, "         处置 在该机器上 handoff service install\n")
+	}
+	// 只在**本机**查 skill：skill 服务于审核者，审核者在本机；对着远端
+	// agentd 报本机的 skill 状态会让人以为那台机器上装了什么
+	if targetName == "" && skillContent != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			if sites, _ := skill.Status(skillContent, home); !skill.InSync(sites) {
+				fmt.Fprintf(w, "skill    有落点与当前二进制不一致，handoff skill install 重新同步\n")
+			}
+		}
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "任务     %s\n", renderCounts(st.TaskCounts))

@@ -136,6 +136,17 @@ main() {
 
   log "已安装 ${INSTALL_DIR}/handoff  ${tag}"
 
+  # 顺手把 skill 装给本机各家 agent。**必须调刚装好的那个文件**，不是别的
+  # handoff——skill 内嵌在二进制里，调旧的就装旧的。
+  #
+  # 失败不算安装失败：二进制已经装好了，skill 少一份不影响 CLI 可用，
+  # 而让整条安装因为一个附属动作退非零，用户会以为 handoff 没装上
+  if "${INSTALL_DIR}/handoff" skill install >&2; then
+    :
+  else
+    log "注意：skill 安装失败，可稍后手动跑 ${INSTALL_DIR}/handoff skill install"
+  fi
+
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
