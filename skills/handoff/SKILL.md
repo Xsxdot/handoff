@@ -73,12 +73,12 @@ handoff wait <task> --notify --timeout 1h
 
 # 3. 按事件类型分诊、处置（见下表）
 
-# 4. 回到第 2 步重新挂 wait，直到进入审核
+# 4. 回到第 2 步继续 wait，直到进入审核
 ```
 
 **`wait` 的三条契约**，记牢了省很多事：
 
-- **一次只吐一个事件**。stdout 单行 JSON，然后退出。处理完必须**重新挂**，否则后面的事件没人接。
+- **默认一次只吐一个事件**。stdout 单行 JSON，然后退出；`--follow` 持续订阅，事件逐条流入，退出即任务终结或超时。处理完**不用重挂**——follow 订阅活到会话结束。
 - **退出码有语义**。`0` = 事件到达；`124` = `--timeout` 到点（可以接着挂）；`1` = 真失败。
 - **失败会立刻退出，不会闷等**。token 没同步（401）、task-id 不存在（1008）都是立即报错。`wait` 长时间不返回**只**意味着「还没有事件」，那是正常态——stderr 里的「WS 连接断开，等待后重连」也是正常态。
 
@@ -90,20 +90,32 @@ handoff wait <task> --notify --timeout 1h
 
 上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态只有一种：
 
-**每一轮 = 一条后台命令，内容就是一条裸的 wait。**
+### 订阅：开一次，活到会话结束
 
-```bash
-# run_in_background 挂上，然后结束你的回合
-handoff wait <task> --notify --timeout 1h
-```
+    Monitor({
+      command: "handoff wait --follow <完整 task-id> --timeout 3h",
+      description: "handoff <任务名> 事件流",
+      persistent: true
+    })
 
-后台进程退出时 harness 会自动唤醒你——这就是循环的「下一圈」，不需要 sleep，不需要计数器。醒来后：
+事件作为通知逐条流入本会话，**没有「重挂」这个动作**。
 
-1. 按退出码分诊：`0` → 有事件；`124` → 超时无事，直接重挂；`1` → 看 stderr，按排障表办（别重挂）。
-2. **退出码 0 时，事件只当唤醒信号用，先 `handoff show`，以它的 `state` + `pending_tickets` 为准**（为什么见下面的 cursor 语义）。
-3. 处置完（reply / continue / 进审核）再挂下一条 wait。
+- `--timeout` 是**空闲**上限（距上一次收到任何帧，含不唤醒的 progress），
+  必须**大于**对端 agentd 的 stalltimeout（默认 2h），故取 3h。设小了，
+  客户端的超时会抢在 agentd 的 stalled 诊断前面退出——把一条带 last_seq 的
+  诊断换成一句「我没收到东西」。
+- **follow 进程退出本身就是信号**，必须看退出码：
+  - `0`：任务已终结（failed 事件或被 done 归档）→ 进入终态处置
+  - `124`：空闲 3 小时一帧都没收到 → **可疑**。正常情况下 agentd 的 stalled
+    会先到；先 `handoff show`，再怀疑 agentd 失联
+  - 其他非 0：鉴权失败 / 任务不存在 / 连接永久失败 → 看 stderr 按排障表办，
+    **不要盲目重开**（401、404 重开一百次还是同样的结果）
 
-循环体是「挂 → 醒 → show → 处置 → 重挂」，由多个回合天然构成，**不写任何 shell 循环**。
+醒来 → `handoff show <完整 task-id>` → 处置。**没有重挂这一步。**
+
+`show` 是权威，事件只是唤醒信号——`--follow` 下这条比以前更要紧：事件可能在
+你正忙时流入，cursor 已经推进而你还没看。**任何处置前先 show，以 `state` +
+`pending_tickets` 为准。**
 
 ### cursor 语义：为什么 wait 可能吐出旧事件
 
@@ -206,7 +218,7 @@ handoff done <task>
 ```
 
 - `continue` 是**同一会话续接**，executor 的上下文完整保留——不需要在指令里重述前情。
-- `continue` 之后任务回到 `running`，要**重新挂 `wait`**。
+- `continue` 之后任务回到 `running`；follow 订阅会继续收到新一轮事件，**不需要重挂**。
 - `done` 归档任务并回收 executor（停进程、删 managed worktree、清任务目录）。
 
 **`done` 返回成功之前，什么都不要删。** `done` 会因状态不符被拒（409）；如果你已经先手删了任务目录或杀了 tmux，就会留下一个 agentd 记着、但资源已经被你拆掉的孤儿，只能手工补清。顺序永远是：先 `done`，看到 `{"ok":true}` 再谈清理。
@@ -215,14 +227,20 @@ handoff done <task>
 
 ## 会话恢复：从零接管
 
-一个完全没有前文的新会话，两条命令重建现场：
+一个完全没有前文的新会话，先重建现场：
 
-```bash
-handoff tasks              # 每行一个任务 JSON：id / name / state / branch
-handoff show <task>        # 任务体 + pending_tickets + 最近事件
-```
+1. `handoff tasks` —— 每行任务 JSON 现在带 `watchers`（有几个连接在听）
+2. 给每个 `watchers == 0` 的**活跃**任务（`pending` / `running` /
+   `waiting_answer`）补开一条 follow Monitor。`waiting_review` 不用补：
+   它在等你裁决，挂几天都正常
+3. `handoff show` 逐个清 `pending_tickets`
 
-`pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单 `reply` 掉，然后按当前 state 决定：`running` → 重新挂 `wait`；`waiting_review` → 进审核。接管后第一次 `wait` 可能重放历史事件（见「cursor 语义」）——照旧以 `show` 为准即可。
+`handoff status` 会把同一结论直接标在活跃任务行上：`⚠ 无人值守`。
+
+`pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单
+`reply` 掉，然后按当前 state 决定：`running` → 订阅已在（follow 不需要重挂）；
+`waiting_review` → 进审核。接管后第一次 wait 可能重放历史事件（见「cursor
+语义」）——照旧以 `show` 为准即可。
 
 会话崩溃、主动关掉重开、换一台机器接管，三种场景都是这一套。**不要**因为「我不记得这个任务了」就重新 dispatch 一个——先 `tasks` 看有没有。
 
@@ -265,9 +283,9 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 | `continue` / `done` 报 409 | 任务不在 `waiting_review` | `handoff show` 看真实状态，按状态机表办 |
 | `reply` 返回 502，或收到 `delivery_failed` | 裁决已落库但没送到 executor（executor 半死） | `handoff resume <task>`：幂等重投；executor 还在就继续跑，确已不在则转交审核 |
 | `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |
-| `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重挂**，它不会自己好 |
+| `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重开**，它不会自己好 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
-| 重挂 `wait` 后立刻吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
+| 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
 | `dispatch` 报「本地工作区有 N 处未提交的已跟踪改动」 | **你本地**（不是执行机）有改动没提交，远程派发的基线不含它们，executor 会基于旧代码开工 | `git commit` 或 `git stash` 后重试；确认这些改动与本次任务无关时加 `--allow-dirty`（放行仍会打印被忽略的文件） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
@@ -301,6 +319,8 @@ handoff show <task>        # 任务体 + pending_tickets + 最近事件
 | 「工作区里改了几行还没提交，先派了再说」 | 校验拿 HEAD 比对，看不见脏改动，会**静默放行**——executor 拿到的是没有你改动的代码。 |
 | 「stderr 说领先 3 个提交，应该问题不大」 | 那 3 个提交不在任务分支里。执行者会找不到刚加的文件、目录、backlog 行——先想清楚它们是不是这次任务要用的东西。 |
 | 「`pull` 完了改动就在我本地分支上了」 | `pull` 只 fetch，不 checkout 不合并。合并是你自己要做的事。 |
+| 「Monitor 退出了，再开一个就行」 | 先看退出码。401 / 404 重开一百次也是同样的结果 |
+| 「事件流进来了，直接按它处置」 | 事件是唤醒信号，`show` 是权威。`--follow` 下 cursor 会跑在「已读」前面，这条比以前更要紧 |
 
 ## 延伸阅读
 
