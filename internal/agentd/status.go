@@ -95,20 +95,12 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 			unattended++
 		}
 	}
-	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
-		"executors", len(names), "unattended", unattended)
+	// 换版相关状态：**恒返回**。闸二（非托管则拒绝换版）与 upgrade 的巡检表
+	// 每台机器都要读它，只在特殊情况下才给的字段会让消费方拿 nil 去猜
+	resp.Update = &proto.UpdateStatus{Managed: selfupdate.IsManaged(os.Getenv)}
 
-	// 自动更新状态：读 pending.json + 判托管。两者都失败不影响 status 本身，
-	// 只是不展示这一段——status 是排障命令，它自己绝不能因为附加信息而失败
-	if p, err := selfupdate.LoadPending(m.cfg.DataDir); err == nil && p != nil {
-		resp.Update = &proto.UpdateStatus{
-			Pending:      p.Version,
-			DownloadedAt: p.DownloadedAt,
-			Managed:      selfupdate.IsManaged(os.Getenv),
-		}
-	} else if err != nil {
-		m.log.Warn("读待命更新失败，status 不展示更新状态", "cause", err)
-	}
+	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
+		"executors", len(names), "unattended", unattended, "managed", resp.Update.Managed)
 	return resp, nil
 }
 

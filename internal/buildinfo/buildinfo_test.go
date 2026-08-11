@@ -2,6 +2,7 @@
 package buildinfo
 
 import (
+	"runtime"
 	"runtime/debug"
 	"testing"
 )
@@ -141,5 +142,18 @@ func TestReadKeepsVersionWhenBuildInfoUnavailable(t *testing.T) {
 	}
 	if got.Version != "v0.2.0" {
 		t.Fatalf("ok=false 时也必须带回注入的版本号，得到 %q", got.Version)
+	}
+}
+
+// TestReadFillsPlatform 锁住「两条返回路径都填 Platform」。
+//
+// why：Read 有一条降级分支（读不到 debug.BuildInfo 时只返回 Version），
+// 只在主路径填就会让「非 go build 产物」的 agentd 报空平台，而空平台
+// 在远程升级里的语义是「对端过旧，拒绝升级」——一个填漏导致的假拒绝。
+func TestReadFillsPlatform(t *testing.T) {
+	bi, _ := Read()
+	want := runtime.GOOS + "/" + runtime.GOARCH
+	if bi.Platform != want {
+		t.Fatalf("Platform = %q，期望 %q", bi.Platform, want)
 	}
 }

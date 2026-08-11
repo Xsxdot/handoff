@@ -293,46 +293,50 @@ func TestCompareBuildPrefersVersion(t *testing.T) {
 	}
 }
 
-// 有待命更新时 status 要多打一行，且说清楚为什么还没换。
+// 托管时不打任何更新行——B59 取消了待命概念，托管本身无需提示。
 //
-// why：spec §4.7 要求「长期有活跃任务，一直不空闲」时 status 同步显示。
-// 没有这一行，用户只会看到 agentd 版本一直不变，无从知道更新其实已经下好了。
-func TestRenderStatusShowsPendingUpdate(t *testing.T) {
+// why：托管是正常态，绝大多数机器都该是这样；为正常态打一行只会让这条
+// 命令的常输出变脏，真正要人注意的「非托管」反而被淹掉。
+func TestRenderStatusManagedNoNotice(t *testing.T) {
 	var buf bytes.Buffer
 	st := &proto.StatusResp{
 		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now().Add(-time.Hour),
 		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
 		TaskCounts: map[string]int{},
-		Update: &proto.UpdateStatus{
-			Pending: "v0.3.0", DownloadedAt: time.Now().Add(-2 * time.Hour), Managed: true,
-		},
+		Update:     &proto.UpdateStatus{Managed: true},
 	}
 	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
-	out := buf.String()
-	if !strings.Contains(out, "v0.3.0") {
-		t.Fatalf("应显示待命版本:\n%s", out)
-	}
-	if !strings.Contains(out, "待命") {
-		t.Fatalf("应说明它在等窗口:\n%s", out)
+	if strings.Contains(buf.String(), "更新") {
+		t.Fatalf("托管时不该打更新行:\n%s", buf.String())
 	}
 }
 
-// 非托管时那一行要把真因说出来，否则用户永远等不到自动换版还不知道为什么。
+// 非托管时那一行要把后果说清楚：换版会被硬拒绝，且 --force 也不越过。
+//
+// why：不说，用户只会看到一条没头没脑的拒绝——handoff upgrade 说拒绝、
+// --force 也拒绝，而 status 从未解释过原因。
 func TestRenderStatusShowsUnmanagedReason(t *testing.T) {
 	var buf bytes.Buffer
 	st := &proto.StatusResp{
 		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
 		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
 		TaskCounts: map[string]int{},
-		Update:     &proto.UpdateStatus{Pending: "v0.3.0", Managed: false},
+		Update:     &proto.UpdateStatus{Managed: false},
 	}
 	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
-	if !strings.Contains(buf.String(), "非托管") {
-		t.Fatalf("非托管必须说明白:\n%s", buf.String())
+	out := buf.String()
+	if !strings.Contains(out, "非托管启动，换版会被拒绝") {
+		t.Fatalf("非托管必须说明换版会被拒绝:\n%s", out)
+	}
+	if !strings.Contains(out, "--force 也不越过") {
+		t.Fatalf("必须说明 force 也不越过:\n%s", out)
+	}
+	if !strings.Contains(out, "handoff service install") {
+		t.Fatalf("必须给出处置建议:\n%s", out)
 	}
 }
 
-// 没有待命更新时不多打任何一行——绝大多数时候都是这种情况。
+// Update 为 nil（老 agentd 不发这个字段）时不打任何更新行。
 func TestRenderStatusNoUpdateLine(t *testing.T) {
 	var buf bytes.Buffer
 	st := &proto.StatusResp{
@@ -341,7 +345,7 @@ func TestRenderStatusNoUpdateLine(t *testing.T) {
 		TaskCounts: map[string]int{},
 	}
 	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
-	if strings.Contains(buf.String(), "待命") {
-		t.Fatalf("无待命更新时不该多打行:\n%s", buf.String())
+	if strings.Contains(buf.String(), "更新") {
+		t.Fatalf("Update=nil 时不该打更新行:\n%s", buf.String())
 	}
 }

@@ -100,14 +100,11 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	fmt.Fprintf(w, "本地     %s\n", compareBuild(cli, st.Version))
 	fmt.Fprintf(w, "数据     %s   已运行 %s\n", st.DataDir, humanUptime(st.StartedAt))
 	fmt.Fprintf(w, "执行者   %s\n", strings.Join(markDefault(st.Executors, st.DefaultExecutor), "  "))
-	if u := st.Update; u != nil && u.Pending != "" {
-		if u.Managed {
-			fmt.Fprintf(w, "更新     %s 已下载待命，等空闲窗口自动换版\n", u.Pending)
-		} else {
-			// 非托管时永远等不到自动换版。不说清楚，用户会一直等下去
-			fmt.Fprintf(w, "更新     %s 已下载待命，但当前 agentd 非托管启动，不会自动换版\n", u.Pending)
-			fmt.Fprintf(w, "         处置 handoff service install，或 handoff upgrade --now 后手动重启\n")
-		}
+	if u := st.Update; u != nil && !u.Managed {
+		// 非托管的后果要在这里说清楚：handoff upgrade 会硬拒绝这台机器，
+		// 而且 --force 也不越过。不说，用户只会看到一条没头没脑的拒绝
+		fmt.Fprintf(w, "更新     agentd 非托管启动，换版会被拒绝（--force 也不越过）\n")
+		fmt.Fprintf(w, "         处置 在该机器上 handoff service install\n")
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "任务     %s\n", renderCounts(st.TaskCounts))

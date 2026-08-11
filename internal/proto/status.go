@@ -32,6 +32,15 @@ type BuildInfo struct {
 	Time     string `json:"time"`
 	Modified bool   `json:"modified"`
 	Go       string `json:"go"`
+
+	// Platform 是构建目标平台，形如 "linux/amd64"，在 buildinfo.Read() 里用
+	// runtime.GOOS + "/" + runtime.GOARCH 现算填入（CLI 与 agentd 同一条路径，
+	// 不会出现只有一端填的情况）。
+	//
+	// **空串表示对端没给这个字段**（老 agentd）。此时远程升级必须明确拒绝而不是
+	// 猜一个默认值——猜错就是给一台 linux 机器推一个 darwin 二进制，自检会拦下，
+	// 但那是白跑一次 15MB 上传换来的一条晦涩错误。
+	Platform string `json:"platform,omitempty"`
 }
 
 // ActiveTask.Live 的三个取值。
@@ -66,17 +75,17 @@ type ActiveTask struct {
 	Watchers *int `json:"watchers,omitempty"`
 }
 
-// UpdateStatus 是自动更新的当前状态。
+// UpdateStatus 是这台 agentd 与「换版」有关的状态。
 //
 // 字段说明：
-//   - Pending: 已下载待命的版本；空串表示没有待命更新
-//   - DownloadedAt: 下载完成时刻，用于展示「等了多久」
-//   - Managed: 当前 agentd 进程是不是被进程管理器拉起的。**false 时自动换版
-//     被拒绝**，这是用户唯一能看出「为什么更新一直不生效」的地方
+//   - Managed: 当前 agentd 进程是不是被进程管理器（systemd / launchd）拉起的。
+//     **false 时换版被硬拒绝**——换完 exit(0) 之后没人拉起，这台机器上就此
+//     没有 agentd 在跑，且没有任何信号告诉任何人。`--force` 也不越过这一条
+//
+// 为什么没有「待命版本」了：B59 取消了「下载完等空闲窗口再换」的自主决策，
+// 换版由操作者一条命令触发并当场完成，中间不存在待命态（见 B59 spec D1）。
 type UpdateStatus struct {
-	Pending      string    `json:"pending,omitempty"`
-	DownloadedAt time.Time `json:"downloaded_at,omitempty"`
-	Managed      bool      `json:"managed"`
+	Managed bool `json:"managed"`
 }
 
 // StatusResp 是 GET /api/status 的响应。
