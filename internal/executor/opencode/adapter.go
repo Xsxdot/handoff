@@ -205,8 +205,24 @@ type runState struct {
 	// 每次批准都塞一条无意义提问）。故显式记录本回合发生过的拒绝。
 	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
 	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
-	pendingBytes int               // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
-	lastProgress time.Time         // 上次发 progress 的时刻（节流）
+	// 提问通路状态（B49）。opencode 原生 question 工具会阻塞等人作答，而它的
+	// 应答通道（question.asked → /question/{id}/reply）handoff 此前从没订阅，
+	// 于是工具永远等不到应答、回合不结束、任务挂死到 stall 超时。
+	//
+	// pendingQuestionID / pendingQuestions: 当前挂起的请求及其问题结构。工具
+	// 阻塞保证同一任务至多一个挂起请求，故用单值而非 map。Send 据此分流：
+	// 有挂起请求就把审核者的答复打到 reply 端点，没有才发新 prompt。
+	// seenQuestionIDs: 已上报过的 requestID。question 事件不像 permission 那样
+	// 带幂等 id 给 manager 派生 ticket，SSE 重放的去重只能在本层做。
+	pendingQuestionID string
+	pendingQuestions  []QuestionInfo
+	seenQuestionIDs   map[string]bool
+	// askedViaTool 是回合级取走式标记（B49 §4.4）：本回合已通过 question 工具
+	// 问过审核者。mapIdle 判出 trailer ask 时取走它并抑制那张工单——否则同一
+	// 回合会给审核者两张单（grok 那次 askedViaTool 踩过的同一个坑）
+	askedViaTool bool
+	pendingBytes int       // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
+	lastProgress time.Time // 上次发 progress 的时刻（节流）
 	// lastAssistantMsgID 是本回合最后一条 assistant 消息的 id（turnMu 保护）。
 	// 它是对账水位的来源：mapIdle 正常分类完一个回合后，把它写进 proc.json，
 	// 使断连恢复后的对账能判出「这个回合我已经消费过了」。不写就会重复补发。
@@ -229,20 +245,21 @@ type runState struct {
 // newRun 创建并登记一个任务的运行态。
 func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 	r := &runState{
-		taskID:        taskID,
-		taskDir:       taskDir,
-		repoPath:      repoPath,
-		evCh:          make(chan executor.AdapterEvent, 16),
-		stopCh:        make(chan struct{}),
-		renderPath:    filepath.Join(taskDir, renderLogFileName),
-		partSeen:      make(map[string]string),
-		partSnap:      make(map[string]bool),
-		partTypes:     make(map[string]string),
-		pendingDelta:  make(map[string]string),
-		userMsgs:      make(map[string]bool),
-		permText:      make(map[string]string),
-		childSessions: map[string]string{},
-		permSession:   map[string]string{},
+		taskID:          taskID,
+		taskDir:         taskDir,
+		repoPath:        repoPath,
+		evCh:            make(chan executor.AdapterEvent, 16),
+		stopCh:          make(chan struct{}),
+		renderPath:      filepath.Join(taskDir, renderLogFileName),
+		partSeen:        make(map[string]string),
+		partSnap:        make(map[string]bool),
+		partTypes:       make(map[string]string),
+		pendingDelta:    make(map[string]string),
+		userMsgs:        make(map[string]bool),
+		permText:        make(map[string]string),
+		childSessions:   map[string]string{},
+		permSession:     map[string]string{},
+		seenQuestionIDs: map[string]bool{},
 	}
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
@@ -879,6 +896,12 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 		// 应答回显：approve/reject 后服务端回发 replied；若把它当新权限，
 		// 审核者的 respond 会被当成再次询问，权限流程死循环——必须忽略
 		a.log.Debug("permission.replied 应答回显，忽略", "task", r.taskID, "type", ev.Type)
+	case ev.Type == "question.asked":
+		a.mapQuestionAsked(r, ev.Properties)
+	case ev.Type == "question.replied", ev.Type == "question.rejected":
+		// 应答回显：与 permission.replied 同因——把回显当成新提问，审核者的
+		// 答复会被当作再次提问，流程死循环
+		a.log.Debug("question 应答回显，忽略", "task", r.taskID, "type", ev.Type)
 	case ev.Type == "message.updated":
 		a.mapMessageUpdated(r, ev.Properties)
 	case ev.Type == "message.part.updated":
@@ -907,6 +930,9 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 var taskScopedEvents = map[string]bool{
 	"permission.asked":     true,
 	"permission.replied":   true,
+	"question.asked":       true,
+	"question.replied":     true,
+	"question.rejected":    true,
 	"message.updated":      true,
 	"message.part.updated": true,
 	"message.part.delta":   true,
@@ -1156,6 +1182,80 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		Text: turn.TruncateMarked(text, permTextHardLimit),
 		Perm: req,
 	})
+}
+
+// mapQuestionAsked 处理 question.asked：opencode 原生 question 工具的提问请求。
+//
+// 与 permission.asked 同构（同一条 SSE 流上的并排事件），但有一处根本差别：
+// **提问不结束回合**。question 工具阻塞等应答，session 不会转 idle，答复之后
+// 是同一个回合继续——因此本函数**不得** clearTurn / advanceWatermark，
+// 清缓冲会丢掉该回合已累积的文本，推进水位会让后续对账错位。
+//
+// 参数：props 为事件的 properties 原文（{id, sessionID, questions[], tool{}}）
+//
+// 注意：
+//   - 本函数在 turnMu 下执行（见 mapEvent 的 switch 契约），可安全读写回合状态；
+//     不得在此做网络 I/O
+//   - 按 requestID 去重：question 事件不带幂等 id 给 manager，SSE 重放的去重
+//     只能在本层做
+func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
+	var qa struct {
+		ID        string         `json:"id"`
+		SessionID string         `json:"sessionID"`
+		Questions []QuestionInfo `json:"questions"`
+	}
+	if err := json.Unmarshal(props, &qa); err != nil {
+		a.log.Debug("question.asked 载荷解析失败，跳过", "task", r.taskID, "cause", err)
+		return
+	}
+	if qa.ID == "" {
+		a.log.Debug("question.asked 事件缺 id，跳过", "task", r.taskID)
+		return
+	}
+	if r.seenQuestionIDs[qa.ID] {
+		a.log.Debug("question.asked 重复到达（SSE 重放），已忽略",
+			"task", r.taskID, "request", qa.ID)
+		return
+	}
+	r.seenQuestionIDs[qa.ID] = true
+
+	text := renderQuestionTicket(qa.Questions)
+	// 描述下限：questions 为空或全无正文时，渲染结果对审核者没有信息量。
+	// 与 mapPermissionAsked 的空描述兜底同理——宁可给出「未提供内容 + 请求 id」，
+	// 让他知道要去 handoff attach 里看现场，也不能静默丢弃（丢了就是死锁）
+	if len(qa.Questions) == 0 {
+		a.log.Warn("question.asked 无问题内容，按未说明提问交审核者",
+			"task", r.taskID, "request", qa.ID)
+		text = "opencode 提出了一个空提问（id " + qa.ID + "），请 handoff attach 查看现场后作答"
+	}
+	// 子会话标注（B52 同款）：子 agent 的提问与主 agent 的提问含义不同
+	qSess := qa.SessionID
+	if qSess == "" {
+		qSess = r.session
+	}
+	if qSess != r.session {
+		r.sessMu.RLock()
+		title := r.childSessions[qSess]
+		r.sessMu.RUnlock()
+		if title != "" {
+			text = "[子 agent: " + title + "] " + text
+		} else {
+			text = "[子 agent] " + text
+		}
+	}
+
+	r.pendingQuestionID = qa.ID
+	r.pendingQuestions = qa.Questions
+	// 回合级去重标记（B49 §4.4）：本回合已通过工具问过，回合末的 trailer ask
+	// 不再重复出单。Task 5 消费它
+	r.askedViaTool = true
+
+	a.log.Info("收到 executor 提问，转工单交审核者", "task", r.taskID,
+		"request", qa.ID, "session", qSess, "is_child", qSess != r.session,
+		"question_count", len(qa.Questions))
+	a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
+	// 注意：此处刻意不调 clearTurn / advanceWatermark / captureStartCommit——
+	// 回合还在跑（见函数头注释）
 }
 
 // mapMessageUpdated 处理 message.updated：真实事件只携带 properties.info
