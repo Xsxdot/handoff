@@ -130,6 +130,11 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/repos                    列出仓库登记（含现场实际状态）
 //   - DELETE /api/repos/{name}           注销仓库登记（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
+//   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
+//   - GET  /api/auth/sessions           列出会话（含已吊销）
+//   - DELETE /api/auth/sessions/{id}    吊销指定会话
+//   - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie
+//   - GET  /console                     兑换 ticket → Set-Cookie → 302 到 /（无主令牌/cookie 凭据）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -149,8 +154,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos", s.handleRepoList)
 	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
+	mux.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
+	mux.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+
+	// /console 是唯一不经主令牌/cookie 的路由——ticket 本身就是它的凭据，
+	// 因此它挂在 auth 之外、hostGuard 之内。Go 1.22 的 mux 按精确度选择，
+	// "GET /console" 胜过 "/"
+	root := http.NewServeMux()
+	root.Handle("/", s.auth(mux))
+	root.HandleFunc("GET /console", s.handleConsole)
+
 	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
-	return s.hostGuard(s.auth(mux))
+	return s.hostGuard(root)
 }
 
 // auth 是 Bearer token 或 cookie 会话鉴权中间件，包住全部路由。
