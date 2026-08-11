@@ -2480,6 +2480,17 @@ func (m *Manager) transit(taskID string, to proto.TaskState, reason string) erro
 		return err
 	}
 	m.log.Info("任务状态迁移", "task", taskID, "from", cur.State, "to", to, "reason", reason)
+	// 终态收口（B63）：done / stop / 各处 transitBestEffort 全部经过本函数，作废挂
+	// 在这里才能覆盖**将来新增的**终态路径——B63 本身就是「新增一条路径时忘了补」
+	// 漏出来的。
+	//
+	// 必须排在 UpdateTaskState 成功之后：该迁移可能因并发 CAS 失败（ErrBadTransit），
+	// 那时任务仍然活着，先作废等于砸掉它的合法挂起工单。
+	//
+	// 幂等分支（cur.State == to）在上面已经 return，不会重复作废。
+	if to.IsTerminal() {
+		voidTicketsWithAudit(m.st, taskID, reason, m.log)
+	}
 	return nil
 }
 
