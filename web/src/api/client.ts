@@ -7,11 +7,24 @@
 // 边界：
 //   - 不带任何凭据逻辑：浏览器经 vite 反代访问同源 /api，cookie 由浏览器
 //     自动携带，本层不碰 cookie、不碰 token、不打印任何凭据明文
-//   - 本轮只有只读接口；写操作（dispatch/reply/…）是后续任务
 //
 // 错误处理约定：所有 fetch 失败（网络、非 2xx）都抛 ApiError 而不是静默吞掉，
 // 上层按「可观察的失败」渲染——鉴权失败（401）特别提示重新 handoff console。
-import type { StatusResp, Task } from './types'
+// agentd 的错误消息是中文且信息量大（「任务不存在」「任务当前状态不允许该操作」
+// 「基线提交在任务仓库中不存在……请先在本地 git push」），必须原文透传，不得
+// 吞成一句「操作失败」——那些消息里带着解法。
+import type {
+  DiffResult,
+  FileResult,
+  ReplyRequest,
+  ReplyResult,
+  ResumeResult,
+  RunResult,
+  StatusResp,
+  StopResult,
+  Task,
+  TaskDetail,
+} from './types'
 
 // ApiError 携带 HTTP 状态码与 agentd 返回的 error 字段（读不到时给兜底文案）。
 //
@@ -28,10 +41,36 @@ export class ApiError extends Error {
   }
 }
 
-// request 执行一次带鉴权上下文的 GET，统一处理非 2xx 与网络错误。
+// bodyOrError 从非 2xx 响应里提取 agentd 的 {"error": "…"} 原文；读不到时回退
+// 到「状态码 + 状态文本」兜底文案。
+async function bodyOrError(resp: Response): Promise<string> {
+  let detail = ''
+  try {
+    const body = (await resp.json()) as { error?: string }
+    detail = body.error ?? ''
+  } catch {
+    // 响应体不是 JSON 时保留空 detail，用兜底文案
+  }
+  return detail || `agentd 返回 ${resp.status} ${resp.statusText}`
+}
+
+// parseResponse 统一处理一次 fetch 的完成态：非 2xx 抛 ApiError（原文透传），
+// 2xx 返回解析后的 JSON。
+async function parseResponse<T>(resp: Response): Promise<T> {
+  if (resp.status === 401) {
+    throw new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie')
+  }
+  if (!resp.ok) {
+    throw new ApiError(resp.status, await bodyOrError(resp))
+  }
+  return (await resp.json()) as T
+}
+
+// request 执行一次带鉴权上下文的请求，统一处理非 2xx 与网络错误。
 //
 // 参数：
 //   - path: 以 /api 开头的路径（反代会把同源路径转给 agentd）
+//   - init: 传给 fetch 的额外选项（method / body / headers）
 //
 // 返回：
 //   - 解析后的 JSON；类型由调用方指定
@@ -39,27 +78,23 @@ export class ApiError extends Error {
 // 注意：
 //   - 401 的 message 特意写明「重跑 handoff console 换新 cookie」——这是
 //     浏览器会话过期/被吊销时唯一可行动的动作，静默失败会让人无从下手
-async function request<T>(path: string): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
   try {
-    resp = await fetch(path, { credentials: 'same-origin' })
+    resp = await fetch(path, { credentials: 'same-origin', ...init })
   } catch (err) {
     throw new ApiError(0, `无法连接 agentd（反代失败？）：${err instanceof Error ? err.message : String(err)}`)
   }
-  if (resp.status === 401) {
-    throw new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie')
-  }
-  if (!resp.ok) {
-    let detail = ''
-    try {
-      const body = (await resp.json()) as { error?: string }
-      detail = body.error ?? ''
-    } catch {
-      // 响应体不是 JSON 时保留空 detail，用兜底文案
-    }
-    throw new ApiError(resp.status, detail || `agentd 返回 ${resp.status} ${resp.statusText}`)
-  }
-  return (await resp.json()) as T
+  return parseResponse<T>(resp)
+}
+
+// postJSON 以 JSON body 发起 POST 请求。
+function postJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 
 // fetchStatus 取 agentd 的可用性与身份信息（GET /api/status）。
@@ -70,4 +105,59 @@ export function fetchStatus(): Promise<StatusResp> {
 // fetchTasks 取全部任务（GET /api/tasks；空列表返回 [] 而非 null）。
 export function fetchTasks(): Promise<Task[]> {
   return request<Task[]>('/api/tasks')
+}
+
+// fetchTaskDetail 取任务详情（GET /api/tasks/{id}）：任务 + 待办工单 + 最近事件，
+// 后两者空时也是 []。
+export function fetchTaskDetail(id: string): Promise<TaskDetail> {
+  return request<TaskDetail>(`/api/tasks/${encodeURIComponent(id)}`)
+}
+
+// fetchTaskDiff 取任务分支相对基准的改动（GET /api/tasks/{id}/diff，base 可省）。
+export function fetchTaskDiff(id: string, base?: string): Promise<DiffResult> {
+  const q = base ? `?base=${encodeURIComponent(base)}` : ''
+  return request<DiffResult>(`/api/tasks/${encodeURIComponent(id)}/diff${q}`)
+}
+
+// fetchTaskFile 读任务仓库内单个文件（GET /api/tasks/{id}/file?path=）。
+export function fetchTaskFile(id: string, path: string): Promise<FileResult> {
+  return request<FileResult>(
+    `/api/tasks/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+  )
+}
+
+// runTaskCommand 在任务仓库执行审阅命令（POST /api/tasks/{id}/run）：
+// 非零退出也是 200，退出码在响应体里；10 分钟超时退出码为 124。
+export function runTaskCommand(id: string, cmd: string): Promise<RunResult> {
+  return postJSON<RunResult>(`/api/tasks/${encodeURIComponent(id)}/run`, { cmd })
+}
+
+// replyTicket 回答一张工单（POST /api/tasks/{id}/reply）。
+// answer 的编码契约见 app/task/review.ts：批准恒为 "allow"，拒绝必带理由。
+export function replyTicket(id: string, req: ReplyRequest): Promise<ReplyResult> {
+  return postJSON<ReplyResult>(`/api/tasks/${encodeURIComponent(id)}/reply`, req)
+}
+
+// continueTask 向任务续发修改指令（POST /api/tasks/{id}/continue，仅
+// waiting_review 可用）。
+export function continueTask(id: string, instructions: string): Promise<{ ok: boolean }> {
+  return postJSON<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/continue`, { instructions })
+}
+
+// doneTask 归档任务（POST /api/tasks/{id}/done，仅 waiting_review 可用）。
+export function doneTask(id: string): Promise<{ ok: boolean }> {
+  return postJSON<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/done`, {})
+}
+
+// stopTask 主动中止任务（POST /api/tasks/{id}/stop）：停 executor、作废挂起
+// 工单、落 failed；worktree_removed 如实反映 managed worktree 是否被删除。
+export function stopTask(id: string): Promise<StopResult> {
+  return postJSON<StopResult>(`/api/tasks/${encodeURIComponent(id)}/stop`, {})
+}
+
+// resumeTask 显式恢复卡死的任务（POST /api/tasks/{id}/resume[?force=true]）：
+// 重投已落库但未送达的应答，force 时强制收口到 waiting_review。
+export function resumeTask(id: string, force = false): Promise<ResumeResult> {
+  const q = force ? '?force=true' : ''
+  return postJSON<ResumeResult>(`/api/tasks/${encodeURIComponent(id)}/resume${q}`, {})
 }
