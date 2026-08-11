@@ -395,3 +395,45 @@ func TestWarnDeprecatedSilentOnDefault(t *testing.T) {
 		t.Fatalf("默认值不该打 Warn:\n%s", buf.String())
 	}
 }
+
+// TestLoadFillsRepoRootDefault 验证 repo_root 未配置时补 <DataDir>/repos，
+// 且配置里写了的值不被覆盖。
+//
+// 为什么必须有默认值：自动登记（B62 §6）把 clone 变成首次派发的主路径，
+// repo_root 为空时 agentd 直接拒绝 clone，全新开发机上第一次派发必然失败。
+func TestLoadFillsRepoRootDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// 首次运行：文件不存在，生成默认配置并写盘。
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(cfg.DataDir, "repos")
+	if cfg.RepoRoot != want {
+		t.Fatalf("RepoRoot = %q, want %q", cfg.RepoRoot, want)
+	}
+	// 默认值必须**落盘**，让人看得见，而不是藏在使用点。
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读回配置: %v", err)
+	}
+	if !strings.Contains(string(b), "repo_root:") {
+		t.Fatalf("默认 repo_root 应随首次写盘落到 config.yaml，实际内容:\n%s", b)
+	}
+
+	// 显式配置不被覆盖。
+	explicit := filepath.Join(dir, "explicit.yaml")
+	if err := os.WriteFile(explicit,
+		[]byte("token: abc\nrepo_root: /srv/code\n"), 0o600); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	cfg2, err := config.Load(explicit)
+	if err != nil {
+		t.Fatalf("Load(explicit): %v", err)
+	}
+	if cfg2.RepoRoot != "/srv/code" {
+		t.Fatalf("显式 repo_root 被覆盖了: %q", cfg2.RepoRoot)
+	}
+}

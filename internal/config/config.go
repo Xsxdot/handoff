@@ -42,7 +42,8 @@ type Config struct {
 	Token   string
 	DataDir string
 	// RepoRoot 是 repo add --clone 未显式指定路径时的默认落点根目录，
-	// 实际落点为 RepoRoot/<登记名>。空=未配置，此时 --clone 必须显式给路径。
+	// 实际落点为 RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos；
+	// 自动登记的 clone 落点即此处。
 	//
 	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
@@ -173,14 +174,15 @@ func Load(path string) (*Config, error) {
 		Targets:  map[string]Target{},
 		Env:      map[string]string{},
 	}
+	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
+	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
+	firstRun := false
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		cfg.Token = randToken() // 首次运行：生成 token 并写盘，配对时人工同步到本机 targets
-		log().Info("首次运行，已生成配置", "path", path)
-		if werr := save(path, cfg); werr != nil {
-			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
-		}
+		firstRun = true
+		log().Info("首次运行，将生成配置", "path", path)
 	case err != nil:
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	default:
@@ -188,6 +190,22 @@ func Load(path string) (*Config, error) {
 			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
+	}
+	// repo_root 的默认值必须在解码之后补，不能预置在初始字面量里：
+	// 它派生自 DataDir，而 DataDir 本身可能被配置文件改写。
+	//
+	// 为什么必须有默认值：自动登记（B62）把 clone 变成首次派发的主路径，
+	// repo_root 为空时 agentd 会直接拒绝 clone，新开发机上第一次派发必然失败。
+	// 落盘之后就固定，此后改 datadir 不会静默改克隆落点。
+	if cfg.RepoRoot == "" {
+		cfg.RepoRoot = filepath.Join(cfg.DataDir, "repos")
+		log().Info("repo_root 未配置，采用默认落点", "repo_root", cfg.RepoRoot)
+	}
+	if firstRun {
+		if werr := save(path, cfg); werr != nil {
+			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
+		}
+		log().Info("首次运行，已生成配置", "path", path)
 	}
 	if verr := cfg.validate(); verr != nil {
 		log().Error("配置校验失败", "path", path, "cause", verr)

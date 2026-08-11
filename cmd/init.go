@@ -140,7 +140,7 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 		cfg.Listen = askString(w, r, "监听地址 listen", cfg.Listen)
 
 		// 5. 仓库落点
-		cfg.RepoRoot = askString(w, r, "仓库落点根目录 repo_root（空=repo add --clone 必须显式给路径）", cfg.RepoRoot)
+		cfg.RepoRoot = askString(w, r, "项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
 
 		// 6. 审批链
 		cfg.Approver.Executor = askString(w, r, "审批链执行者 approver.executor（空=不启用，权限请求直接找人）", cfg.Approver.Executor)
