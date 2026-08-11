@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -616,5 +617,68 @@ func TestHasSession(t *testing.T) {
 	}
 	if ok, err := api.HasSession(ctx, "sess-missing"); err != nil || ok {
 		t.Fatalf("不含目标 id 应 ok=false, got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestGetSessionParsesParentAndTitle 覆盖 B52 核心依据：GET /session/{id} 返回
+// parentID（子会话归属的唯一依据）与 title（工单标注素材）。本文件是外部测试
+// 包（package opencode_test），sessionDetail 未导出，只断言 GetSession 的可观察
+// 行为——用 := 接收即可使用未导出类型的值。
+func TestGetSessionParsesParentAndTitle(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/session/ses_child" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, `{"id":"ses_child","parentID":"ses_parent","title":"Run probe curl command (@general subagent)"}`)
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	d, err := api.GetSession(context.Background(), "ses_child")
+	if err != nil {
+		t.Fatalf("GetSession 失败: %v", err)
+	}
+	if d.ParentID != "ses_parent" {
+		t.Fatalf("parentID=%q，期望 ses_parent", d.ParentID)
+	}
+	if d.Title != "Run probe curl command (@general subagent)" {
+		t.Fatalf("title=%q，期望带 subagent 标记的标题", d.Title)
+	}
+}
+
+// TestGetSessionEmptyIDDoesNotHitServer 空会话 id 直接报错、不触达服务端：
+// 拿空 id 拼出的 "/session/" 只会换来 404，白白占掉一次超时预算。
+func TestGetSessionEmptyIDDoesNotHitServer(t *testing.T) {
+	quietLog(t)
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	if _, err := api.GetSession(context.Background(), ""); err == nil {
+		t.Fatal("空会话 id 应当直接报错")
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("空会话 id 不应触达服务端，实际请求 %d 次", n)
+	}
+}
+
+// TestGetSessionNon2xxReturnsError 非 2xx 响应必须返回错误（fail-closed：
+// 认亲拿不到可靠数据就当失败处理，不能当「没这个会话」静默放行）。
+func TestGetSessionNon2xxReturnsError(t *testing.T) {
+	quietLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "boom")
+	}))
+	defer ts.Close()
+
+	api := opencode.NewAPI(ts.URL, testPassword)
+	if _, err := api.GetSession(context.Background(), "ses_child"); err == nil {
+		t.Fatal("非 2xx 应当返回错误")
 	}
 }

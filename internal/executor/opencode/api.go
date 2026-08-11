@@ -61,6 +61,12 @@ const (
 	// （TCP 通但不响应），30s 内拿不到响应就按失败处理，不让 handoff reply 回程
 	// 在审核者终端永久挂起。SSE 长连接不适用此值（见 NewAPI 的 sseClient 注释）。
 	unaryTimeout = 30 * time.Second
+	// ownershipTimeout 是子会话归属判定（GetSession）的超时上限。
+	// 为什么不用 unaryTimeout（30s）：本调用在 SSE 事件回调里同步执行，会阻塞
+	// 本任务的事件流。30s 是按「一次人工应答的最长合理等待」定的，用在热路径上
+	// 太长；5s 足够一次本机 HTTP 往返（serve 就在 127.0.0.1 上），且此刻任务
+	// 本来就在等这个审批，短暂阻塞不额外损失什么。
+	ownershipTimeout = 5 * time.Second
 )
 
 // API 是 opencode server 的最小 HTTP 客户端，持有 baseURL 与鉴权密码。
@@ -203,6 +209,63 @@ type sessionResponse struct {
 // sessionListItem 是 GET /session 列表里每个会话的最小形状（冷恢复在场校验只用 id）。
 type sessionListItem struct {
 	ID string `json:"id"`
+}
+
+// sessionDetail 是 GET /session/{id} 的响应体形状。
+//
+// 只取三个字段：id 供自校验，parentID 是把子会话归属回父任务的唯一依据，
+// title 供工单标注「这条审批来自哪个子 agent」。响应体里还有 directory /
+// agent / permission 等字段，本层用不上就不入结构——多解析一个字段就多一处
+// 会随 opencode 版本漂移的耦合面。
+type sessionDetail struct {
+	ID       string `json:"id"`
+	ParentID string `json:"parentID"`
+	Title    string `json:"title"`
+}
+
+// GetSession 取单个会话的详情，用于把子会话归属回父任务。
+//
+// 参数：
+//   - ctx: 上下文；调用方负责叠加 ownershipTimeout
+//   - sessionID: 目标会话 id
+//
+// 返回：
+//   - sessionDetail: 会话详情
+//   - err: sessionID 为空、请求失败、非 2xx、响应解析失败时非 nil，此时详情为零值
+//
+// 注意：
+//   - sessionID 为空直接返回错误，不触达服务端：拿空 id 拼出的 "/session/" 只会
+//     换来一个 404，白白占掉一次超时预算
+//   - 本方法在 SSE 事件回调里同步调用（见 adapter.resolveChildSession），
+//     阻塞的是本任务的事件流——超时必须用 ownershipTimeout 而非 unaryTimeout
+func (a *API) GetSession(ctx context.Context, sessionID string) (d sessionDetail, err error) {
+	if sessionID == "" {
+		return sessionDetail{}, fmt.Errorf("查询会话详情：会话 id 为空")
+	}
+	start := time.Now()
+	path := "/session/" + sessionID
+	a.log().Info("opencode 查询会话详情", "path", path, "session", sessionID)
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 查询会话详情失败", "path", path, "session", sessionID, "cause", err)
+		} else {
+			a.log().Info("opencode 会话详情已取得", "path", path, "session", sessionID,
+				"parent", d.ParentID, "elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return sessionDetail{}, fmt.Errorf("查询会话详情请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return sessionDetail{}, a.httpError("查询会话详情", resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return sessionDetail{}, fmt.Errorf("解析会话详情: %w", err)
+	}
+	return d, nil
 }
 
 // HasSession 检查指定会话 id 是否仍存在于 serve 的会话列表里。
