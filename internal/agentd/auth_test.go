@@ -4,6 +4,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/proto"
@@ -367,4 +370,59 @@ func listSessions(t *testing.T, ts *httptest.Server) []proto.SessionInfo {
 		t.Fatalf("解析会话列表: %v", err)
 	}
 	return out
+}
+
+// TestWSKickedAfterRevoke 钉死断言 10：吊销后，已建立的 WS 在一个复验周期内被 1008 关闭。
+//
+// 注入毫秒级复验周期（同 replayLimit/liveLimit 的白盒注入手法），免等 30 秒。
+func TestWSKickedAfterRevoke(t *testing.T) {
+	srv, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+	srv.sessionRecheck = 20 * time.Millisecond
+	taskID := mustWSTask(t, srv.st)
+	cookie := mustSession(t, srv.st, "sess-ws", time.Now().Add(24*time.Hour), false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL(ts)+"/ws/events?task="+taskID, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Cookie": {sessionCookieName + "=" + cookie}},
+	})
+	if err != nil {
+		t.Fatalf("cookie 形态的 WS 连接被拒: %v", err)
+	}
+	defer conn.CloseNow()
+
+	if err := srv.st.RevokeSession("sess-ws", time.Now()); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+	// 读到错误即被踢；断言 close 码是 1008（PolicyViolation）
+	_, _, rerr := conn.Read(ctx)
+	if rerr == nil {
+		t.Fatal("吊销后连接仍可读，未被踢")
+	}
+	if websocket.CloseStatus(rerr) != websocket.StatusPolicyViolation {
+		t.Fatalf("close 码 = %v，期望 1008", websocket.CloseStatus(rerr))
+	}
+}
+
+// TestWSBearerNotWatched 钉死：Bearer（CLI）连接不做会话复验，不受任何吊销影响。
+func TestWSBearerNotWatched(t *testing.T) {
+	srv, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+	srv.sessionRecheck = 20 * time.Millisecond
+	taskID := mustWSTask(t, srv.st)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL(ts)+"/ws/events?task="+taskID, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + hostTestToken}},
+	})
+	if err != nil {
+		t.Fatalf("WS 连接被拒: %v", err)
+	}
+	defer conn.CloseNow()
+	// 等若干个复验周期后连接仍应健在
+	readCtx, readCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer readCancel()
+	_, _, rerr := conn.Read(readCtx)
+	if websocket.CloseStatus(rerr) == websocket.StatusPolicyViolation {
+		t.Fatal("Bearer 连接被会话复验误踢")
+	}
 }

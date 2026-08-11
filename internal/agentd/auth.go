@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -124,5 +126,46 @@ func (s *Server) refreshSession(sess *store.Session) {
 	}
 	if err := s.st.TouchSession(sess.ID, lastSeen, expires); err != nil {
 		s.log.Warn("会话续期写入失败（不影响本次请求放行）", "session", sess.ID, "cause", err)
+	}
+}
+
+// watchSession 周期性复验 WS 连接背后的会话，失效即以 close code 1008 关闭连接。
+//
+// 参数：
+//   - ctx: 连接生命周期上下文（conn.CloseRead 返回的那个），连接断开即取消
+//   - conn: 要看护的 WS 连接
+//   - sessionID / taskID: 仅用于日志定位
+//
+// 注意：
+//   - **为什么不建「会话 id → 连接 cancel 函数」的中心注册表**：注册表漏登记、
+//     漏清理都不会报错，只会表现为「吊销了但没断」或连接泄漏，两者都难以观察
+//     （封存清单缺陷 #4 的教训）。周期性复验是自愈的——查询失败就关连接，
+//     fail-closed，最坏情况只是一个周期的滞后
+//   - 只对会话身份的连接启动；Bearer（CLI）连接不受影响
+func (s *Server) watchSession(ctx context.Context, conn *websocket.Conn, sessionID, taskID string) {
+	t := time.NewTicker(s.sessionRecheck)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return // 连接已断开，复验随之结束
+		case <-t.C:
+			sess, err := s.st.SessionByID(sessionID)
+			switch {
+			case err == nil && sess.RevokedAt == nil && time.Now().Before(sess.ExpiresAt):
+				continue // 仍然有效
+			case err != nil && !errors.Is(err, store.ErrNotFound):
+				// 查询失败也断开：fail-closed。事件全部落库，客户端凭 cursor
+				// 重连即可完整补拉，断开是无损的
+				s.log.Error("WS 会话复验失败，断开连接（fail-closed）",
+					"session", sessionID, "task", taskID, "cause", err)
+			default:
+				s.log.Info("WS 会话已失效，断开在线连接", "session", sessionID, "task", taskID)
+			}
+			if cerr := conn.Close(websocket.StatusPolicyViolation, "session revoked"); cerr != nil {
+				s.log.Warn("WS 关闭失效会话连接失败", "session", sessionID, "task", taskID, "err", cerr)
+			}
+			return
+		}
 	}
 }

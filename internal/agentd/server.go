@@ -74,6 +74,9 @@ type Server struct {
 	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
 	replayLimit int
 	liveLimit   int
+	// sessionRecheck 是 WS 连接上会话复验的周期（defaultSessionRecheck 的实例副本），
+	// 供测试注入毫秒级值验证「吊销后被踢」（生产恒为默认值）。
+	sessionRecheck time.Duration
 }
 
 // NewServer 创建 agentd 服务端。
@@ -88,13 +91,14 @@ type Server struct {
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	return &Server{
-		cfg:         cfg,
-		st:          st,
-		hub:         NewHub(),
-		log:         log,
-		startedAt:   time.Now(),
-		replayLimit: eventReplayLimit,
-		liveLimit:   liveBufferLimit,
+		cfg:            cfg,
+		st:             st,
+		hub:            NewHub(),
+		log:            log,
+		startedAt:      time.Now(),
+		replayLimit:    eventReplayLimit,
+		liveLimit:      liveBufferLimit,
+		sessionRecheck: defaultSessionRecheck,
 	}
 }
 
@@ -1080,6 +1084,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// 连接关闭（含对端断开）时该 ctx 取消，作为写循环退出信号
 	ctx := conn.CloseRead(r.Context())
+
+	// 会话身份的连接必须周期性复验：Hub 只按 taskID 路由、不持有会话身份，
+	// 吊销一个会话不会自动断开它已经建立的 WS，而手机丢失场景下
+	// 「吊销了但还连着」不可接受。Bearer（CLI）连接不受影响
+	if id := identityFrom(r.Context()); id.session != "" {
+		go s.watchSession(ctx, conn, id.session, taskID)
+	}
 
 	// 先订阅再补发：见函数头的「为什么先订阅后补发」——重放期间的事件必须被捕获
 	ch, cancel := s.hub.Subscribe(taskID)
