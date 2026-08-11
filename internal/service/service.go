@@ -80,8 +80,3 @@ func New(log *slog.Logger) (Manager, error) {
 		return nil, fmt.Errorf("不支持的平台 %s（仅 darwin/linux）", runtime.GOOS)
 	}
 }
-
-// newSystemd 是 Linux 侧的工厂占位；完整实现由 Task 5 提供。
-func newSystemd(log *slog.Logger) Manager {
-	panic("newSystemd: 尚未实现（见 Task 5 systemd 实现）")
-}
