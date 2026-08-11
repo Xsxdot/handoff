@@ -514,7 +514,9 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 	if perr != nil {
 		a.log.Warn("答复无法折算成选项，重发工单请审核者再答",
 			"task", r.taskID, "request", reqID, "cause", perr)
-		a.emit(r, executor.AdapterEvent{Type: "question",
+		// 重发也填同一个 reqID：由 manager 统一判定「这是重放还是重发」，
+		// adapter 侧留空等于把判断拆到两个地方，manager 那份判据永不触发
+		a.emit(r, executor.AdapterEvent{Type: "question", QuestionID: reqID,
 			Text: turn.ClampQuestion("上一次答复没能对上选项（" + perr.Error() + "）。\n\n" +
 				renderQuestionTicket(qs))})
 		return nil
@@ -525,7 +527,7 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 		if errors.Is(err, ErrCustomAnswerRejected) {
 			a.log.Warn("opencode 不接受该自定义答案，重发工单请审核者改填选项",
 				"task", r.taskID, "request", reqID, "cause", err)
-			a.emit(r, executor.AdapterEvent{Type: "question",
+			a.emit(r, executor.AdapterEvent{Type: "question", QuestionID: reqID,
 				Text: turn.ClampQuestion("opencode 不接受自定义答案，请改填编号或选项原文。\n\n" +
 					renderQuestionTicket(qs))})
 			return nil
@@ -1297,8 +1299,8 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 // 注意：
 //   - 本函数在 turnMu 下执行（见 mapEvent 的 switch 契约），可安全读写回合状态；
 //     不得在此做网络 I/O
-//   - 按 requestID 去重：question 事件不带幂等 id 给 manager，SSE 重放的去重
-//     只能在本层做
+//   - 按 requestID 去重：seenQuestionIDs 只负责**进程内**的 SSE 重放去重；
+//     跨进程（agentd 重启）的幂等由 manager 按事件上的 QuestionID 承担
 func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 	var qa struct {
 		ID        string         `json:"id"`
@@ -1354,7 +1356,9 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 	a.log.Info("收到 executor 提问，转工单交审核者", "task", r.taskID,
 		"request", qa.ID, "session", qSess, "is_child", qSess != r.session,
 		"question_count", len(qa.Questions))
-	a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
+	a.emit(r, executor.AdapterEvent{
+		Type: "question", QuestionID: qa.ID, Text: turn.ClampQuestion(text),
+	})
 	// 注意：此处刻意不调 clearTurn / advanceWatermark / captureStartCommit——
 	// 回合还在跑（见函数头注释）
 }

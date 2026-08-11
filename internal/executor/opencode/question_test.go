@@ -492,10 +492,36 @@ func TestRediscoverPendingQuestionsFiltersBySession(t *testing.T) {
 	if !ok || !strings.Contains(ev.Text, "是我的") {
 		t.Fatalf("补发的工单不对: %+v ok=%v", ev, ok)
 	}
+	// 补发同样要带原生 id：重启重放走的正是这条路径，缺了它 manager 会退回
+	// uuid 再建一张单，B58 的症状原样复现（重启前后各一张、旧的永不作废）
+	if ev.QuestionID != "req_mine" {
+		t.Errorf("QuestionID = %q，期望 req_mine——缺失会让重启补发再建一张新工单", ev.QuestionID)
+	}
 	if r.pendingQuestionID != "req_mine" {
 		t.Errorf("pendingQuestionID = %q，期望 req_mine", r.pendingQuestionID)
 	}
 	if extra, ok := drainOne(r); ok {
 		t.Fatalf("别的会话的提问不应补发，却收到 %+v", extra)
+	}
+}
+
+// TestMapQuestionAskedCarriesRequestID 验证 question.asked 转出的事件带上 opencode
+// 的原生请求 id——manager 靠它做工单幂等，缺了就会在 agentd 重启后出第二张单。
+func TestMapQuestionAskedCarriesRequestID(t *testing.T) {
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+
+	props := []byte(`{"id":"que_ff048094","sessionID":"ses_a","questions":[
+		{"question":"选哪个超时","header":"超时","options":[{"label":"5000ms"}]}]}`)
+	a.mapQuestionAsked(r, props)
+
+	ev, ok := drainOne(r)
+	if !ok || ev.Type != "question" {
+		t.Fatalf("事件 = %+v ok=%v，期望一条 question", ev, ok)
+	}
+	if ev.QuestionID != "que_ff048094" {
+		t.Fatalf("QuestionID = %q，期望 que_ff048094", ev.QuestionID)
 	}
 }

@@ -94,7 +94,7 @@ func Open(path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
   answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP,
-  delivered_at TIMESTAMP)`,
+  delivered_at TIMESTAMP, fingerprint TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS repos (
   name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -115,6 +115,18 @@ func Open(path string) (*Store, error) {
 		!strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return nil, fmt.Errorf("迁移 tickets.delivered_at: %w", err)
+	}
+	// 迁移：为旧库补 tickets.fingerprint 列（B57②）。
+	//
+	// why 容忍 duplicate column：SQLite 无 ADD COLUMN IF NOT EXISTS，也不支持
+	// 一次加多列，只能逐条 ALTER；列已存在时报 duplicate column 属预期。
+	// 旧库里既有工单的 fingerprint 为默认空串——空指纹永不参与复用
+	// （FindReusableGrant 对空 fingerprint 直接返回无匹配），旧数据不会被误当先例。
+	if _, err := db.ExecContext(context.Background(),
+		`ALTER TABLE tickets ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("迁移 tickets.fingerprint: %w", err)
 	}
 	// 迁移：为旧库补 tasks 增量列（二期 name/executor/model/work_dir/worktree_managed + B35 base_commit/base_ahead）。
 	//
@@ -543,9 +555,9 @@ WHERE task_id = ? ORDER BY seq DESC LIMIT 1`, taskID).
 //   - answer/answered_at 一律由 AnswerTicket 写入，入参中的值被忽略
 func (s *Store) CreateTicket(tk *proto.Ticket) (bool, error) {
 	res, err := s.db.ExecContext(context.Background(), `
-INSERT OR IGNORE INTO tickets (id, task_id, kind, request, answer, created_at, answered_at)
-VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
-		tk.ID, tk.TaskID, tk.Kind, string(tk.Request), fmtTime(tk.CreatedAt))
+INSERT OR IGNORE INTO tickets (id, task_id, kind, request, answer, created_at, answered_at, fingerprint)
+VALUES (?, ?, ?, ?, NULL, ?, NULL, ?)`,
+		tk.ID, tk.TaskID, tk.Kind, string(tk.Request), fmtTime(tk.CreatedAt), tk.Fingerprint)
 	if err != nil {
 		return false, fmt.Errorf("写入工单 %s: %w", tk.ID, err)
 	}
@@ -639,11 +651,12 @@ func (s *Store) GetTicket(id string) (*proto.Ticket, error) {
 		answeredAt  sql.NullString
 		deliveredAt sql.NullString
 		createdAt   string
+		fingerprint string
 	)
 	err := s.db.QueryRowContext(context.Background(), `
-SELECT id, task_id, kind, request, answer, created_at, answered_at, delivered_at
+SELECT id, task_id, kind, request, answer, created_at, answered_at, delivered_at, fingerprint
 FROM tickets WHERE id = ?`, id).
-		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &deliveredAt)
+		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &deliveredAt, &fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -664,7 +677,42 @@ FROM tickets WHERE id = ?`, id).
 		t := parseTime(deliveredAt.String)
 		tk.DeliveredAt = &t
 	}
+	tk.Fingerprint = fingerprint
 	return &tk, nil
+}
+
+// FindReusableGrant 查同任务、同指纹、已被审核者批准且已送达的 gate 工单。
+//
+// 参数：
+//   - taskID: 任务 id（复用严格限制在任务内，见 spec §3.4）
+//   - fingerprint: 权限描述全文的 sha256；空串直接返回无匹配
+//
+// 返回：
+//   - 命中时返回该工单；无匹配返回 (nil, nil)；查询出错返回错误
+//
+// 注意：
+//   - answer 必须**严格等于** "allow"——gate 的翻译规则就是严格相等，
+//     这里放宽（如 LIKE 'allow%'）会让 "allowed once, then never" 之类的
+//     人工笔误变成一张长期通行证
+//   - delivered_at 必须非空：应答落库但中继失败的工单不构成有效先例，
+//     executor 侧那次请求根本没收到批准
+func (s *Store) FindReusableGrant(taskID, fingerprint string) (*proto.Ticket, error) {
+	if fingerprint == "" {
+		return nil, nil
+	}
+	var id string
+	err := s.db.QueryRowContext(context.Background(), `
+SELECT id FROM tickets
+WHERE task_id = ? AND fingerprint = ? AND kind = 'gate'
+  AND answer = 'allow' AND delivered_at IS NOT NULL
+ORDER BY created_at DESC LIMIT 1`, taskID, fingerprint).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询任务 %s 可复用裁决: %w", taskID, err)
+	}
+	return s.GetTicket(id)
 }
 
 // MarkTicketDelivered 标记工单应答已送达 executor。
@@ -817,7 +865,7 @@ func (s *Store) VoidPendingTickets(taskID string) (int, error) {
 //   - 用于 agent 阻塞等待人工答复的场景；回答过的工单不会出现在结果中
 func (s *Store) PendingTickets(taskID string) ([]proto.Ticket, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
-SELECT id, task_id, kind, request, answer, created_at, answered_at FROM tickets
+SELECT id, task_id, kind, request, answer, created_at, answered_at, fingerprint FROM tickets
 WHERE task_id = ? AND answer IS NULL ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("查询待办工单: %w", err)
@@ -826,17 +874,19 @@ WHERE task_id = ? AND answer IS NULL ORDER BY created_at ASC`, taskID)
 	var tickets []proto.Ticket
 	for rows.Next() {
 		var (
-			tk         proto.Ticket
-			request    string
-			answer     sql.NullString
-			answeredAt sql.NullString
-			createdAt  string
+			tk          proto.Ticket
+			request     string
+			answer      sql.NullString
+			answeredAt  sql.NullString
+			createdAt   string
+			fingerprint string
 		)
-		if err := rows.Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt); err != nil {
+		if err := rows.Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &fingerprint); err != nil {
 			return nil, fmt.Errorf("读取工单行: %w", err)
 		}
 		tk.Request = json.RawMessage(request)
 		tk.CreatedAt = parseTime(createdAt)
+		tk.Fingerprint = fingerprint
 		if answer.Valid {
 			tk.Answer = &answer.String
 		}

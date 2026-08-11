@@ -679,6 +679,134 @@ func TestActiveTasksByWorkDirLegacyEmptyWorkDir(t *testing.T) {
 	}
 }
 
+// TestTicketFingerprintRoundTrip 验证 gate 工单的 fingerprint 列落库并可回读，
+// 且未填该列的旧式工单回读为空串（旧库兼容）。
+func TestTicketFingerprintRoundTrip(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	withFP := &proto.Ticket{
+		ID: "t1:p1", TaskID: "t1", Kind: "gate",
+		Request:     json.RawMessage(`{"kind":"gate","permission":"bash: ls"}`),
+		Fingerprint: "abc123", CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.CreateTicket(withFP); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+	got, err := s.GetTicket("t1:p1")
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if got.Fingerprint != "abc123" {
+		t.Fatalf("Fingerprint = %q, 期望 abc123", got.Fingerprint)
+	}
+
+	noFP := &proto.Ticket{
+		ID: "t1:q1", TaskID: "t1", Kind: "ask",
+		Request:   json.RawMessage(`{"kind":"ask","question":"x"}`),
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.CreateTicket(noFP); err != nil {
+		t.Fatalf("CreateTicket(ask): %v", err)
+	}
+	got2, err := s.GetTicket("t1:q1")
+	if err != nil {
+		t.Fatalf("GetTicket(ask): %v", err)
+	}
+	if got2.Fingerprint != "" {
+		t.Fatalf("ask 工单 Fingerprint = %q, 期望空串", got2.Fingerprint)
+	}
+}
+
+// TestFindReusableGrant 钉住复用的四个条件：同任务、同指纹、answer 严格等于
+// "allow"、delivered_at 非空。任一不满足都必须查不到——查到就等于静默放行。
+func TestFindReusableGrant(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	mk := func(id, taskID, fp string) {
+		t.Helper()
+		if _, err := s.CreateTicket(&proto.Ticket{
+			ID: id, TaskID: taskID, Kind: "gate",
+			Request:     json.RawMessage(`{"kind":"gate","permission":"bash: go build"}`),
+			Fingerprint: fp, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("CreateTicket(%s): %v", id, err)
+		}
+	}
+
+	// 命中：同任务同指纹、已 allow、已送达
+	mk("t1:p1", "t1", "FP")
+	if err := s.AnswerTicket("t1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	if err := s.MarkTicketDelivered("t1:p1"); err != nil {
+		t.Fatalf("MarkTicketDelivered: %v", err)
+	}
+	got, err := s.FindReusableGrant("t1", "FP")
+	if err != nil {
+		t.Fatalf("FindReusableGrant: %v", err)
+	}
+	if got == nil || got.ID != "t1:p1" {
+		t.Fatalf("命中用例返回 %+v，期望 t1:p1", got)
+	}
+
+	// 不命中之一：跨任务
+	if got, err := s.FindReusableGrant("t2", "FP"); err != nil || got != nil {
+		t.Fatalf("跨任务不应命中，得到 %+v err=%v", got, err)
+	}
+	// 不命中之二：指纹不同
+	if got, err := s.FindReusableGrant("t1", "OTHER"); err != nil || got != nil {
+		t.Fatalf("异指纹不应命中，得到 %+v err=%v", got, err)
+	}
+	// 不命中之三：指纹为空（旧库工单）
+	if got, err := s.FindReusableGrant("t1", ""); err != nil || got != nil {
+		t.Fatalf("空指纹不应命中，得到 %+v err=%v", got, err)
+	}
+
+	// 不命中之四：answer 是 deny
+	mk("t1:p2", "t1", "FPDENY")
+	if err := s.AnswerTicket("t1:p2", "deny: 太危险"); err != nil {
+		t.Fatalf("AnswerTicket(deny): %v", err)
+	}
+	if err := s.MarkTicketDelivered("t1:p2"); err != nil {
+		t.Fatalf("MarkTicketDelivered(deny): %v", err)
+	}
+	if got, err := s.FindReusableGrant("t1", "FPDENY"); err != nil || got != nil {
+		t.Fatalf("deny 不应命中，得到 %+v err=%v", got, err)
+	}
+
+	// 不命中之五：已 allow 但未送达
+	mk("t1:p3", "t1", "FPUNDELIVERED")
+	if err := s.AnswerTicket("t1:p3", "allow"); err != nil {
+		t.Fatalf("AnswerTicket(undelivered): %v", err)
+	}
+	if got, err := s.FindReusableGrant("t1", "FPUNDELIVERED"); err != nil || got != nil {
+		t.Fatalf("未送达不应命中，得到 %+v err=%v", got, err)
+	}
+
+	// 不命中之六：answer 以 "allow" 开头但**不等于** "allow"（如 "allowed for
+	// this session"）。answer 是 reply 原文直落库（server.go:379），这类形态真能
+	// 存在——doc 注释里「放宽成 LIKE 'allow%' 会让人工笔误变成长期通行证」这条
+	// 安全承诺，必须有测试守着
+	mk("t1:p4", "t1", "FPALLOWED")
+	if err := s.AnswerTicket("t1:p4", "allowed for this session"); err != nil {
+		t.Fatalf("AnswerTicket(prefix-allow): %v", err)
+	}
+	if err := s.MarkTicketDelivered("t1:p4"); err != nil {
+		t.Fatalf("MarkTicketDelivered(prefix-allow): %v", err)
+	}
+	if got, err := s.FindReusableGrant("t1", "FPALLOWED"); err != nil || got != nil {
+		t.Fatalf("前缀 allow 不应命中，得到 %+v err=%v", got, err)
+	}
+}
+
 // TestTaskDirtySnapshotRoundTrip 钉住两个新列的读写：条数与文件串各存各的，
 // 封顶截断发生在服务端，条数不能因为封顶而丢失。
 func TestTaskDirtySnapshotRoundTrip(t *testing.T) {

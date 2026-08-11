@@ -1580,3 +1580,282 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 		t.Fatal("用户树模式下本次新建的分支同样应被删除")
 	}
 }
+
+// TestPermissionReuseSkipsSecondTicket 验证 B57②：同一任务内同一权限描述
+// 第二次到达时不再建工单、不再叫醒审核者，而是复用首次的人工批准自动放行。
+func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	permText := "external_directory: /Users/x/go/pkg/mod/github.com/coder/websocket@v1.8.15/*"
+
+	// 第一次：升级人工 → 审核者批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：同一文案、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	// 断言 1：没有新的挂起工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("复用后仍有 %d 张挂起工单，期望 0：%+v", len(pending), pending)
+	}
+
+	// 断言 2：落了 permission_reuse 审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var reuse int
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionReuse {
+			reuse++
+		}
+	}
+	if reuse != 1 {
+		t.Fatalf("permission_reuse 事件 %d 条，期望 1", reuse)
+	}
+
+	// 断言 3：批准真的回传给了 executor
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseIgnoresDeny 验证只复用 allow：首次被拒后，同文案的第二次
+// 仍然升级人工。自动重复拒绝会静默掐死回合，方向与 deny 原因下发正好相反。
+func TestPermissionReuseIgnoresDeny(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	permText := "bash: rm -rf /tmp/x"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "deny: 太危险"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != "T1:p2" {
+		t.Fatalf("deny 之后第二次应照常出单，得到 %+v", pending)
+	}
+}
+
+// TestQuestionTicketIdempotentOnReplay 验证 B58：带原生 id 的提问重放（agentd
+// 重启后 executor 重发同一个 request）不产生第二张工单。
+func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev) // 重放
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重放后有 %d 张挂起工单，期望 1：%+v", len(pending), pending)
+	}
+	if pending[0].ID != "T1:que_ff" {
+		t.Fatalf("工单 id = %q，期望 T1:que_ff", pending[0].ID)
+	}
+
+	// 事件也只该有一条 question——重放不该再唤醒审核者一次
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var qn int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeQuestion {
+			qn++
+		}
+	}
+	if qn != 1 {
+		t.Fatalf("question 事件 %d 条，期望 1", qn)
+	}
+}
+
+// TestQuestionReissueAfterAnswerCreatesNewTicket 钉住三岔的第三条：opencode 的
+// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，审核者答错一次
+// 之后就再也答不了，任务停在 waiting_answer 直到 stall 超时——比 B58 本身严重。
+func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	if err := st.AnswerTicket("T1:que_ff", "5000ms"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+
+	// 折算失败，adapter 用同一个 reqID 重发
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", QuestionID: "que_ff", Text: "上一次答复没能对上选项。选哪个？",
+	})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重发后挂起工单 %d 张，期望 1（新单）：%+v", len(pending), pending)
+	}
+	if pending[0].ID == "T1:que_ff" {
+		t.Fatal("重发复用了已答工单的 id，审核者将无法作答")
+	}
+}
+
+// TestQuestionWithoutIDFallsBackToUUID 验证无原生 id 的 executor（claudecode /
+// codex / grok 的 trailer ask）行为不变：每次提问都是一张新单。
+func TestQuestionWithoutIDFallsBackToUUID(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev)
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("无 id 的两次提问应出两张单，得到 %d 张", len(pending))
+	}
+}
+
+// TestGateDecisionParsesReason 表驱动钉住 gate 应答的翻译：只有严格 "allow"
+// 放行，其余一律 reject；reason 从 deny/deny: 前缀后取余文。
+func TestGateDecisionParsesReason(t *testing.T) {
+	cases := []struct {
+		name, answer, wantDecision, wantReason string
+	}{
+		{"批准", "allow", "once", ""},
+		{"批准带空白", "  allow  ", "once", ""},
+		{"裸拒绝", "deny", "reject", ""},
+		{"带原因", "deny: 改用 go build ./...", "reject", "改用 go build ./..."},
+		{"带原因无空格", "deny:改用 go build", "reject", "改用 go build"},
+		{"任意文本", "看着办", "reject", ""},
+		{"空串", "", "reject", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, r := gateDecision(c.answer)
+			if d != c.wantDecision || r != c.wantReason {
+				t.Fatalf("gateDecision(%q) = (%q,%q)，期望 (%q,%q)",
+					c.answer, d, r, c.wantDecision, c.wantReason)
+			}
+		})
+	}
+}
+
+// TestDenyGuidanceRelayedOnNextQuestion 验证 B50：带原因的拒绝，其原因在下一条
+// question 到达时被 Send 给 executor，且该分支不建工单、不落 waiting_answer。
+func TestDenyGuidanceRelayedOnNextQuestion(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用 go build ./...")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", Text: "上一步操作因权限被拒而终止了本回合",
+	})
+
+	// 不建工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("guidance 分支不应建工单，得到 %+v", pending)
+	}
+	// 不落 waiting_answer（否则就是「等你回答却零挂起工单」的死形态）
+	task, err := st.GetTask("T1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("状态 = %q，期望保持 running", task.State)
+	}
+	// 原因真的发给了 executor
+	sends := ad.sendsRec()
+	if len(sends) != 1 || !strings.Contains(sends[0], "改用 go build ./...") {
+		t.Fatalf("Send 记录 = %v，未包含拒绝原因", sends)
+	}
+	// 落了审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var relayed int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeDenyGuidanceRelayed {
+			relayed++
+		}
+	}
+	if relayed != 1 {
+		t.Fatalf("deny_guidance_relayed 事件 %d 条，期望 1", relayed)
+	}
+}
+
+// TestDenyGuidanceConsumedOnce 验证取走式：guidance 只抑制一条 question，
+// 第二条正常出单。常驻会让后续真提问被永久吞掉，任务停在 running 无人知晓。
+func TestDenyGuidanceConsumedOnce(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用别的办法")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题一"})
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题二"})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("第二条 question 应正常出单，挂起工单 %d 张", len(pending))
+	}
+}

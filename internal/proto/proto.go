@@ -58,6 +58,16 @@ const (
 	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
 	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
 	EventTypeApproverDisabled EventType = "approver_disabled"
+	// EventTypePermissionReuse 表示一次权限请求命中了本任务内**同一权限描述**的
+	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
+	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
+	EventTypePermissionReuse EventType = "permission_reuse"
+	// EventTypeDenyGuidanceRelayed 表示审核者拒绝时给出的原因已作为一条消息
+	// 下发给 executor（B50）。
+	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"
+	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
+	// 就终结了。审核者据此知道要用 continue 自己把话带上。
+	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
 )
 
 // Task 表示一个 handoff 任务。
@@ -160,6 +170,10 @@ type Ticket struct {
 	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
 	DeliveredAt *time.Time `json:"delivered_at"`
+	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
+	// 它让「审核者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
+	// ask 工单不参与复用，留空。
+	Fingerprint string `json:"fingerprint"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。
