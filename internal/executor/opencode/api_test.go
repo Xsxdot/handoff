@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -680,5 +681,96 @@ func TestGetSessionNon2xxReturnsError(t *testing.T) {
 	api := opencode.NewAPI(ts.URL, testPassword)
 	if _, err := api.GetSession(context.Background(), "ses_child"); err == nil {
 		t.Fatal("非 2xx 应当返回错误")
+	}
+}
+
+func TestReplyQuestionPostsAnswers(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	api := opencode.NewAPI(srv.URL, "pw")
+	if err := api.ReplyQuestion(context.Background(), "req_1", [][]string{{"照此实现"}}); err != nil {
+		t.Fatalf("ReplyQuestion 返回错误: %v", err)
+	}
+	if gotPath != "/question/req_1/reply" {
+		t.Errorf("path = %q，期望 /question/req_1/reply", gotPath)
+	}
+	if !strings.Contains(gotBody, `"answers":[["照此实现"]]`) {
+		t.Errorf("body = %q，期望含 \"answers\":[[\"照此实现\"]]", gotBody)
+	}
+}
+
+func TestReplyQuestion4xxMapsToCustomRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid answer"}`))
+	}))
+	defer srv.Close()
+
+	api := opencode.NewAPI(srv.URL, "pw")
+	err := api.ReplyQuestion(context.Background(), "req_1", [][]string{{"我自己写的答案"}})
+	if !errors.Is(err, opencode.ErrCustomAnswerRejected) {
+		t.Fatalf("err = %v，期望可 errors.Is 命中 ErrCustomAnswerRejected", err)
+	}
+}
+
+func TestReplyQuestion5xxIsNotCustomRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	api := opencode.NewAPI(srv.URL, "pw")
+	err := api.ReplyQuestion(context.Background(), "req_1", [][]string{{"x"}})
+	if err == nil {
+		t.Fatal("5xx 应当返回错误")
+	}
+	if errors.Is(err, opencode.ErrCustomAnswerRejected) {
+		t.Fatal("5xx 是服务端故障，不能被当成「自定义答案不被接受」")
+	}
+}
+
+func TestRejectQuestionPostsToRejectPath(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	api := opencode.NewAPI(srv.URL, "pw")
+	if err := api.RejectQuestion(context.Background(), "req_9"); err != nil {
+		t.Fatalf("RejectQuestion 返回错误: %v", err)
+	}
+	if gotPath != "/question/req_9/reject" {
+		t.Errorf("path = %q，期望 /question/req_9/reject", gotPath)
+	}
+}
+
+func TestListPendingQuestionsDecodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"req_1","sessionID":"ses_a","questions":[
+			{"question":"选哪个？","header":"选型","multiple":true,"custom":true,
+			 "options":[{"label":"A","description":"甲"},{"label":"B","description":"乙"}]}]}]`))
+	}))
+	defer srv.Close()
+
+	api := opencode.NewAPI(srv.URL, "pw")
+	got, err := api.ListPendingQuestions(context.Background())
+	if err != nil {
+		t.Fatalf("ListPendingQuestions 返回错误: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "req_1" || got[0].SessionID != "ses_a" {
+		t.Fatalf("got = %+v，期望一条 req_1/ses_a", got)
+	}
+	q := got[0].Questions[0]
+	if q.Header != "选型" || !q.Multiple || !q.Custom || len(q.Options) != 2 || q.Options[1].Label != "B" {
+		t.Errorf("question 解码不完整: %+v", q)
 	}
 }
