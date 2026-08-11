@@ -1666,3 +1666,98 @@ func TestPermissionReuseIgnoresDeny(t *testing.T) {
 		t.Fatalf("deny 之后第二次应照常出单，得到 %+v", pending)
 	}
 }
+
+// TestQuestionTicketIdempotentOnReplay 验证 B58：带原生 id 的提问重放（agentd
+// 重启后 executor 重发同一个 request）不产生第二张工单。
+func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev) // 重放
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重放后有 %d 张挂起工单，期望 1：%+v", len(pending), pending)
+	}
+	if pending[0].ID != "T1:que_ff" {
+		t.Fatalf("工单 id = %q，期望 T1:que_ff", pending[0].ID)
+	}
+
+	// 事件也只该有一条 question——重放不该再唤醒审核者一次
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var qn int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeQuestion {
+			qn++
+		}
+	}
+	if qn != 1 {
+		t.Fatalf("question 事件 %d 条，期望 1", qn)
+	}
+}
+
+// TestQuestionReissueAfterAnswerCreatesNewTicket 钉住三岔的第三条：opencode 的
+// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，审核者答错一次
+// 之后就再也答不了，任务停在 waiting_answer 直到 stall 超时——比 B58 本身严重。
+func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	if err := st.AnswerTicket("T1:que_ff", "5000ms"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+
+	// 折算失败，adapter 用同一个 reqID 重发
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", QuestionID: "que_ff", Text: "上一次答复没能对上选项。选哪个？",
+	})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重发后挂起工单 %d 张，期望 1（新单）：%+v", len(pending), pending)
+	}
+	if pending[0].ID == "T1:que_ff" {
+		t.Fatal("重发复用了已答工单的 id，审核者将无法作答")
+	}
+}
+
+// TestQuestionWithoutIDFallsBackToUUID 验证无原生 id 的 executor（claudecode /
+// codex / grok 的 trailer ask）行为不变：每次提问都是一张新单。
+func TestQuestionWithoutIDFallsBackToUUID(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev)
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("无 id 的两次提问应出两张单，得到 %d 张", len(pending))
+	}
+}

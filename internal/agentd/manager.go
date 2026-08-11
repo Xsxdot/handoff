@@ -1844,9 +1844,14 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 // 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer 再 Publish；
 // waiter 注册异步，reply 先于注册到达时退化为自愈中继路径兜底。
 func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
-	// 提问工单 id 用 uuid：问题没有天然稳定 id，回答一次即终结
+	// 工单 id 优先用 executor 的原生提问 id 派生（taskID:questionID），与 gate
+	// 工单同构、天然幂等：agentd 重启后 executor 重放同一个 request 时，
+	// CreateTicket 直接返回 created=false，不会产出第二张永远答不掉的单（B58）。
+	// executor 没有原生 id 时退回 uuid——问题没有天然稳定 id，回答一次即终结。
 	ticketID := uuid.NewString()
-	// 先落状态再建工单：why 同 handlePermission（U-1）
+	if ev.QuestionID != "" {
+		ticketID = taskID + ":" + ev.QuestionID
+	}
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
 	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text})
 	created, err := m.st.CreateTicket(&proto.Ticket{
@@ -1859,9 +1864,35 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 		return
 	}
 	if !created {
-		// uuid 碰撞理论不可达，防御性保留与 handlePermission 相同的重放跳过语义
-		m.log.Debug("提问重放，跳过中介", "task", taskID, "ticket", ticketID)
-		return
+		prior, gerr := m.st.GetTicket(ticketID)
+		switch {
+		case gerr != nil:
+			m.log.Error("提问工单已存在但读取失败，按重放跳过", "task", taskID,
+				"ticket", ticketID, "cause", gerr)
+			return
+		case prior.Answer == nil:
+			// 重放：agentd 重启后 executor 重发了同一个仍未作答的 request。
+			// 不建单、不发第二条事件（审核者已经被叫醒过一次），但必须重挂
+			// waiter——新 agentd 实例里没有任何 goroutine 在等这张单
+			m.log.Info("提问重放，复用既有工单并重挂等待", "task", taskID, "ticket", ticketID)
+			go m.waitQuestion(ctx, taskID, ticketID)
+			return
+		default:
+			// 重发：旧单已答，但 executor 又问了一次（opencode 的「答复没对上
+			// 选项」路径用的是同一个 reqID）。此时**必须**新开一张单——复用已答
+			// 工单的 id 会让审核者再也答不了，任务停在 waiting_answer 到 stall
+			m.log.Info("提问重发（旧单已答），另开新工单", "task", taskID,
+				"prior_ticket", ticketID)
+			ticketID = uuid.NewString()
+			if _, err := m.st.CreateTicket(&proto.Ticket{
+				ID: ticketID, TaskID: taskID, Kind: "ask",
+				Request: req, CreatedAt: time.Now().UTC(),
+			}); err != nil {
+				m.log.Error("创建重发提问工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+				m.transitBestEffort(taskID, proto.TaskStateRunning, "提问工单创建失败回滚")
+				return
+			}
+		}
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeQuestion, questionPayload{
 		TicketID: ticketID, Question: ev.Text, Kind: "ask",
