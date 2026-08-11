@@ -1,7 +1,7 @@
 // Package agentd 是 handoff agentd 服务的进程内实时路由层。
 //
 // 职责：
-//   - 按 taskID 维度做事件实时扇出（Subscribe/Publish），供 HTTP/WS 层推送
+//   - 按 taskID 维度做事件实时扇出（Subscribe/Publish/Watchers），供 HTTP/WS 层推送
 //   - 提供 ticket 应答的一次性等待/通知路由（WaitAnswer/NotifyAnswer）
 //
 // 边界：
@@ -96,6 +96,29 @@ func (h *Hub) unsubscribe(taskID string, ch chan proto.Event) {
 		h.log.Debug("取消事件订阅", "taskID", taskID, "subscribers", len(subs))
 		return
 	}
+}
+
+// Watchers 返回当前订阅该任务事件流的连接数。
+//
+// 参数：
+//   - taskID: 任务 ID
+//
+// 返回：
+//   - 订阅者数量；无人订阅或任务不存在均返回 0（两者对本层等价）
+//
+// 为什么这个数字可以直接当「有几个审核者在听」用：全仓 Subscribe 只有一个调用点
+// （/ws/events 的处理器），没有任何内部订阅者混在里面。若将来新增了内部订阅者，
+// 这条结论就不再成立，必须同步修改本注释与 status 的判据。
+//
+// 注意：
+//   - 走 Hub 现有的 mu，与 Subscribe/unsubscribe/Publish 互斥；返回的是调用瞬间
+//     的快照，调用方不得假设它在返回后仍然成立
+//   - 本方法刻意不打日志：它是高频纯读，订阅数变化已由 Subscribe/unsubscribe
+//     的 Debug 日志覆盖，这里再打一遍只会把真正的线索淹掉
+func (h *Hub) Watchers(taskID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.subs[taskID])
 }
 
 // Publish 将事件广播给该 task 的所有订阅者，永不阻塞。

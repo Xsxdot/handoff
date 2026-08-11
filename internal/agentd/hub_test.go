@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,5 +184,60 @@ func TestPublishDropsSlowSubscriber(t *testing.T) {
 	// 慢订阅者只残留缓冲内的部分事件（被丢弃），而不是全部
 	if got := len(slow); got <= 0 || got >= n {
 		t.Fatalf("慢订阅者残留 %d 条事件，期望 0 < n < %d", got, n)
+	}
+}
+
+// TestWatchersCountsSubscribers 验证 Watchers 精确反映当前订阅数：
+// 未订阅为 0、订阅后逐个累加、取消后逐个回落、全部取消后归零。
+//
+// 为什么这个数字必须干净：handoff status 的「⚠ 无人值守」直接以它为判据，
+// 多算一个（内部订阅者虚高）就是漏报，少算一个就是误报。
+func TestWatchersCountsSubscribers(t *testing.T) {
+	hub := agentd.NewHub()
+
+	if n := hub.Watchers("t-watch"); n != 0 {
+		t.Fatalf("未订阅时 Watchers = %d, want 0", n)
+	}
+	_, cancel1 := hub.Subscribe("t-watch")
+	if n := hub.Watchers("t-watch"); n != 1 {
+		t.Fatalf("一个订阅者时 Watchers = %d, want 1", n)
+	}
+	_, cancel2 := hub.Subscribe("t-watch")
+	if n := hub.Watchers("t-watch"); n != 2 {
+		t.Fatalf("两个订阅者时 Watchers = %d, want 2", n)
+	}
+	// 别的任务不受影响：hub 按 taskID 分表，串号会让整条判据失效
+	if n := hub.Watchers("t-other"); n != 0 {
+		t.Fatalf("其他任务的 Watchers = %d, want 0", n)
+	}
+
+	cancel1()
+	if n := hub.Watchers("t-watch"); n != 1 {
+		t.Fatalf("取消一个后 Watchers = %d, want 1", n)
+	}
+	cancel2()
+	cancel2() // 重复取消幂等，不得把计数减成负数
+	if n := hub.Watchers("t-watch"); n != 0 {
+		t.Fatalf("全部取消后 Watchers = %d, want 0", n)
+	}
+}
+
+// TestWatchersConcurrent 验证并发订阅/取消/读取下 Watchers 不数据竞争。
+// 单跑无意义，价值在 -race 下（见本 task 的 Step 4）。
+func TestWatchersConcurrent(t *testing.T) {
+	hub := agentd.NewHub()
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, cancel := hub.Subscribe("t-race")
+			_ = hub.Watchers("t-race")
+			cancel()
+		}()
+	}
+	wg.Wait()
+	if n := hub.Watchers("t-race"); n != 0 {
+		t.Fatalf("并发收尾后 Watchers = %d, want 0", n)
 	}
 }
