@@ -233,6 +233,10 @@ type DispatchReq struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
 	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
 	BaseCommit string
+	// OriginURL 是审核者 cwd 仓库的 origin 地址，用于 Repo 省略时按 origin
+	// 自动匹配本机登记；cwd 不是 git 仓库时为空。
+	OriginURL string
+	// Repo 的语义（B46 起）：路径 / 登记名 / 空三态，由 resolveRepoInput 解析。
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -408,6 +412,19 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 			m.log.Info("dispatch 完成", "task", task.ID)
 		}
 	}()
+
+	// B46：--repo 三态解析（路径 / 登记名 / 空）。放在最前面：后面所有前置校验
+	// （仓库可用性、工作目录占用、基线决议）都要拿到真实路径才有意义。
+	entries, err := m.st.ListRepos()
+	if err != nil {
+		m.log.Error("dispatch 前置：读取仓库登记失败", "cause", err)
+		return nil, err
+	}
+	resolvedRepo, err := resolveRepoInput(req.Repo, req.OriginURL, entries)
+	if err != nil {
+		return nil, err
+	}
+	req.Repo = resolvedRepo
 
 	// 校验：repo 必填；plan 与 prompt 至少其一（prompt-only 派发）
 	if req.Repo == "" || (req.PlanB64 == "" && req.Prompt == "") {

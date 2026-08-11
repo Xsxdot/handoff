@@ -336,6 +336,9 @@ type DispatchOpts struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
+	// OriginURL 是审核者 cwd 仓库的 origin 地址，随请求上送；Repo 省略时 agentd
+	// 按它自动匹配本机登记（cwd 不是 git 仓库时为空）。
+	OriginURL string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -351,6 +354,7 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
+		"origin_url": opts.OriginURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
@@ -364,6 +368,74 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		return nil, fmt.Errorf("解析 dispatch 响应: %w", err)
 	}
 	return &task, nil
+}
+
+// RepoAddOpts 是 RepoAdd 的参数。
+//
+// 两种形态：Clone=false 时 Path 必填（登记执行机上已有的克隆）；
+// Clone=true 时 URL 必填（让 agentd 克隆一份），Path 为落点、可省。
+type RepoAddOpts struct {
+	Name  string
+	Path  string
+	URL   string
+	Clone bool
+}
+
+// RepoAdd 在目标 agentd 上登记一个仓库（必要时先克隆）。
+//
+// 注意：
+//   - 路径不是 git 仓库/没有 origin/克隆失败返回 400 错误（报文含 git 原文）
+//   - 名字或路径已被登记、克隆落点已存在返回 409 错误
+func (c *Client) RepoAdd(ctx context.Context, opts RepoAddOpts) (*proto.Repo, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/repos", map[string]any{
+		"name": opts.Name, "path": opts.Path, "url": opts.URL, "clone": opts.Clone,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("repo add 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("repo add", resp)
+	}
+	var repo proto.Repo
+	if err := json.NewDecoder(resp.Body).Decode(&repo); err != nil {
+		return nil, fmt.Errorf("解析 repo add 响应: %w", err)
+	}
+	return &repo, nil
+}
+
+// RepoList 列出目标 agentd 上的全部仓库登记（含实际状态）。
+func (c *Client) RepoList(ctx context.Context) ([]proto.Repo, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/repos", nil)
+	if err != nil {
+		return nil, fmt.Errorf("repo list 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("repo list", resp)
+	}
+	var repos []proto.Repo
+	if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
+		return nil, fmt.Errorf("解析 repo list 响应: %w", err)
+	}
+	return repos, nil
+}
+
+// RepoRemove 注销一条仓库登记。
+//
+// 注意：
+//   - 只删登记，**不删磁盘上的仓库**
+//   - 登记不存在返回 404 错误；仓库仍被活跃任务占用返回 409 错误
+func (c *Client) RepoRemove(ctx context.Context, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/repos/"+name, nil)
+	if err != nil {
+		return fmt.Errorf("repo remove 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("repo remove", resp)
+	}
+	return nil
 }
 
 // Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。

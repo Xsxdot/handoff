@@ -177,3 +177,21 @@ func CanTransit(from, to TaskState) bool {
 	}
 	return false
 }
+
+// Repo 是一条「执行机 × 仓库」登记：把该执行机上一个已落地的 git 仓库
+// 与一个短名字绑定，使 dispatch 不必再写完整路径。
+//
+// 字段：
+//   - Name: 登记名（每台执行机内唯一），dispatch 时可用作 --repo 的取值
+//   - Path: 该执行机上仓库的绝对路径
+//   - OriginURL: 仓库的 origin 地址，dispatch 省略 --repo 时据此自动匹配
+//   - CreatedAt: 登记时间
+//   - Status: repo ls 时**现场探得**的实际状态（"有效"/"路径不存在"/"不是 git 仓库"），
+//     不落库，仅列表响应携带——它是登记与文件系统漂移的可见化手段
+type Repo struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	OriginURL string    `json:"origin_url"`
+	CreatedAt time.Time `json:"created_at"`
+	Status    string    `json:"status,omitempty"`
+}

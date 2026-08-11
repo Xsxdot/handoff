@@ -82,7 +82,10 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <仓库路径>`（必须）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验）；`--allow-dirty`（本地工作区有未提交的已跟踪改动时仍照常派发） |
+| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <路径\|登记名>`（可省略，省略时按当前目录 origin 自动匹配登记）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验）；`--allow-dirty`（本地工作区有未提交的已跟踪改动时仍照常派发） |
+| `handoff repo add [名字]` | 登记一个仓库到执行机（可让 agentd 克隆一份） | `--path <执行机上的仓库路径>`，或 `--clone [--url <URL>] [--path <落点>]`（二选一；名字省略时按 origin 末段派生） |
+| `handoff repo ls` | 列出执行机上的仓库登记（含实际状态） | — |
+| `handoff repo rm <名字>` | 注销一条仓库登记（只删登记，不删磁盘） | — |
 | `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
@@ -123,6 +126,7 @@ sync:                         # 任务结束（completed/failed）后自动同�
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
+repo_root: ""                 # repo add --clone 未显式给路径时的默认落点根目录（可选）
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -138,6 +142,10 @@ PATH=${PATH}:/usr/local/go/bin
 同一份 env 也会注入审批者（`approver.executor`）—— 否则代理只配半边，审批者连不出去会
 静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
+
+`repo_root` 是**执行机顶层配置**：仓库登记是「哪台执行机」的属性，放顶层的语义是「每台执行机
+自己决定仓库放在哪」。只有 `repo add --clone` 省略落点路径时才用到——落点为
+`repo_root/<登记名>`；未配置时必须显式给 `--path`。
 
 > **claude 执行者的 env 耦合**（2026-08-09 实测）：claude adapter 的任务级 `settings.json`
 > 是纯策略文件、**不含任何凭证**——**凭证由 claude 自己经 `--setting-sources user` 从真实
