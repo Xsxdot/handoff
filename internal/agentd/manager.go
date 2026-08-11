@@ -981,6 +981,11 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	}
 	// 任务归档：清理审批链运行时状态，防内存 map 随归档任务无界增长（P2-5）
 	m.clearApproverState(taskID)
+	// 归档对事件流是无声的（transit 只改状态、不追加事件），跟随中的 wait --follow
+	// 无从得知「没有下文了」。关掉订阅，让 WS 以正常关闭码收尾
+	if n := m.hub.CloseTask(taskID); n > 0 {
+		m.log.Info("done 关闭事件订阅", "task", taskID, "closed", n)
+	}
 	// done 只持有 taskID：经 adapterFor 解析该任务实际使用的 adapter；解析失败
 	// 仅 Error 日志不影响归档（任务已完成，executor 残留交给人工兜底，见 doc 注意）
 	ad, err := m.adapterFor(taskID)

@@ -116,6 +116,22 @@ func (t *Task) Workdir() string {
 	return t.RepoPath
 }
 
+// TaskView 是 Task 的 API 视图：任务本体 + 不落库的运行态。
+//
+// 为什么用嵌入而不是给 Task 加字段：Watchers 是 agentd 内 Hub 的瞬时状态，
+// 与任务的持久身份无关。加进 Task 会让存储层背一个它不该知道的概念，迟早有人
+// 把它写进 SQLite；嵌入则让存储结构保持纯粹，同时 JSON 字段提升后线格式与旧版
+// 逐字节兼容——只多一个 watchers 键，老客户端解码不受影响。
+//
+// 注意：Watchers 是服务端应答那一刻的快照，不做任何时效承诺。
+type TaskView struct {
+	Task
+	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// 0 不一定是异常：waiting_review 与终态本来就不需要有人盯，判据见
+	// handoff status 的 unattended。
+	Watchers int `json:"watchers"`
+}
+
 // Event 表示任务生命周期中产生的一条事件记录。
 //
 // JSON 线格式契约（wait 命令输出与 WS 推送共用此结构）：{"seq":..,"task_id":..,

@@ -133,9 +133,9 @@ func findRootCmd(use string) *cobra.Command {
 // why：远程任务照抄不带 --target 的命令会打到本机 agentd——先 404，
 // 再 attach 一个本机根本不存在的会话，两条错都指不到真正的原因。
 func TestPickAttachTaskNonTTYIncludesTarget(t *testing.T) {
-	tasks := []proto.Task{
-		{ID: "aaaaaaaa-1111", Target: "devbox", State: proto.TaskStateRunning, Executor: "opencode"},
-		{ID: "bbbbbbbb-2222", Target: "", State: proto.TaskStateRunning, Executor: "opencode"},
+	tasks := []proto.TaskView{
+		{Task: proto.Task{ID: "aaaaaaaa-1111", Target: "devbox", State: proto.TaskStateRunning, Executor: "opencode"}},
+		{Task: proto.Task{ID: "bbbbbbbb-2222", Target: "", State: proto.TaskStateRunning, Executor: "opencode"}},
 	}
 	var buf bytes.Buffer
 	printAttachSuggestions(&buf, tasks)
