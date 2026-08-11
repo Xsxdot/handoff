@@ -58,6 +58,10 @@ const (
 	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
 	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
 	EventTypeApproverDisabled EventType = "approver_disabled"
+	// EventTypePermissionReuse 表示一次权限请求命中了本任务内**同一权限描述**的
+	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
+	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
+	EventTypePermissionReuse EventType = "permission_reuse"
 )
 
 // Task 表示一个 handoff 任务。

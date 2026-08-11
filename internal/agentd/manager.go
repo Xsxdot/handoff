@@ -41,7 +41,9 @@ package agentd
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -360,6 +362,14 @@ type approverDecisionPayload struct {
 // 因连续失败被停用的原因。
 type approverDisabledPayload struct {
 	Reason string `json:"reason"`
+}
+
+// permissionReusePayload 是 permission_reuse 事件的 payload。
+type permissionReusePayload struct {
+	TicketID      string `json:"ticket_id"`
+	PriorTicketID string `json:"prior_ticket_id"`
+	Fingerprint   string `json:"fingerprint"`
+	Permission    string `json:"permission"`
 }
 
 // maxApproverFails 是同任务审批者连续裁决失败（Err 非 nil）多少次后停用审批链。
@@ -1333,6 +1343,11 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 // 工单存权限描述全文，事件 payload 另行截断——全文是审核者裁决的依据，不能只存
 // 唤醒用的摘要。
 func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
+	// 复用判定必须早于任何状态迁移（spec §3.2）：先落 waiting_answer 再放行回迁
+	// running，会让任务状态凭空抖动一次，resumeIfIdle 的判定面也跟着变复杂。
+	if m.reuseDecision(taskID, ev, ticketID) {
+		return
+	}
 	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
 	// resumeIfIdle 读到 running 直接返回，随后 manager 才盖上 waiting_answer——
@@ -1344,6 +1359,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
+		Fingerprint: permFingerprint(ev.Text),
 	}); err != nil {
 		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
 		// 工单没建成，waiting_answer 是虚假状态（无任何可答项），回迁 running
@@ -1577,7 +1593,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	m.apMu.Unlock()
 
 	if d.Approve {
-		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason)
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason, "approver")
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
@@ -1619,16 +1635,22 @@ func (m *Manager) countApproverFail(taskID string) {
 //
 // 为什么不动状态：批准不是「任务被挂起等人工」，executor 恢复执行即续跑，
 // 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
-func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason string) {
-	m.log.Info("审批者自动批准权限", "task", taskID, "ticket", ticketID,
-		"perm", permID, "reason", truncateRunes(reason, 80))
+//
+// 参数：
+//   - source: 这次批准的来源，取 "approver"（廉价模型审批者实时裁决）或
+//     "reuse"（命中本任务内既有人工批准自动复用，B57②）。日志里必须区分：
+//     复用路径若打「审批者自动批准」会把人引向一条根本没发生的裁决链去排查。
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason, source string) {
+	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
+		"perm", permID, "source", source, "reason", truncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
+		Fingerprint: permFingerprint(permission),
 	}); err != nil {
 		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
-		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
 		m.countApproverFail(taskID)
 		return
 	}
@@ -1637,7 +1659,7 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 	// （RelayAnswer）时被翻转成 reject；理由已完整落在 approver_decision 事件的
 	// Reason 字段，answer 只需表达「批准」这一动作。
 	if err := m.st.AnswerTicket(ticketID, "allow"); err != nil {
-		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "cause", err)
+		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
 		m.countApproverFail(taskID)
 		return
 	}
@@ -1646,19 +1668,19 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 		// 工单已被 AnswerTicket 消耗（answer IS NULL 守卫失效），executor 仍原地
 		// 阻塞等待——必须产出 delivery_failed 事件让审核者知道该 resume（P1-4），
 		// 与紧邻的 RespondPermission 失败分支一致；只记 Error 会让审核者毫无感知
-		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "cause", err)
+		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "source", source, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
 	if err := ad.RespondPermission(actx, taskID, permID, "once"); err != nil {
-		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "cause", err)
+		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "source", source, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
 	m.markDelivered(taskID, ticketID)
-	m.log.Info("审批者批准已送达", "task", taskID, "ticket", ticketID)
+	m.log.Info("审批者批准已送达", "task", taskID, "ticket", ticketID, "source", source)
 }
 
 // isPermissionReplay 判定一次 permission 事件是否为「已完整中介过」的重放
@@ -1700,6 +1722,59 @@ func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
 	}
 	m.log.Warn("权限工单存在但通知事件缺失，补发以自愈", "task", taskID, "perm", permID, "ticket", ticketID)
 	return false
+}
+
+// permFingerprint 计算权限描述全文的裁决指纹（sha256 十六进制串）。
+//
+// 为什么取哈希而不是原文：权限描述可长达 64KB，原文不适合做索引键；
+// 而复用要求的是「一字不差的同一件事」，哈希恰好表达这个语义。
+func permFingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+// reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
+// 放行并返回 true，调用方不得再走升级人工那套。
+//
+// 参数：
+//   - taskID/ev/ticketID: 与 escalatePermission 同源
+//
+// 返回：命中并已自动放行为 true；未命中（含查询失败）为 false
+//
+// 注意：
+//   - 查询失败按未命中处理（fail-closed 到「照常问人」）——多问一次是噪音，
+//     错误地复用是安全事故，两个方向的代价不对称
+//   - 只复用 allow、只在同任务内复用：见 spec §3.3/§3.4
+func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketID string) bool {
+	fp := permFingerprint(ev.Text)
+	prior, err := m.st.FindReusableGrant(taskID, fp)
+	if err != nil {
+		m.log.Warn("查询可复用裁决失败，照常升级人工", "task", taskID,
+			"ticket", ticketID, "fingerprint", fp[:8], "cause", err)
+		return false
+	}
+	if prior == nil {
+		m.log.Debug("无可复用裁决，升级人工", "task", taskID,
+			"ticket", ticketID, "fingerprint", fp[:8])
+		return false
+	}
+	m.log.Info("命中既有人工批准，自动放行不再叫醒审核者", "task", taskID,
+		"ticket", ticketID, "prior_ticket", prior.ID, "fingerprint", fp[:8],
+		"perm_chars", len([]rune(ev.Text)))
+	// 只入库不 Publish：照 approver_decision 的先例——自动放行没有人需要被唤醒，
+	// 但审核者经 show 必须能看到「这条是复用工单 X 的裁决放行的」
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypePermissionReuse, permissionReusePayload{
+		TicketID: ticketID, PriorTicketID: prior.ID,
+		Fingerprint: fp[:8], Permission: permEventText(ev.Text),
+	}); err != nil {
+		m.log.Error("追加 permission_reuse 事件失败", "task", taskID,
+			"ticket", ticketID, "cause", err)
+		// 审计事件失败不阻断放行：executor 正阻塞等应答，为一条审计把它挂死
+		// 是更坏的结果；Error 日志已留痕
+	}
+	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text,
+		"复用工单 "+prior.ID+" 的人工批准", "reuse")
+	return true
 }
 
 // gateDecision 把 gate 工单的应答翻译成 executor 的 decision，规则单一：

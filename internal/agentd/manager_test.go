@@ -1580,3 +1580,89 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 		t.Fatal("用户树模式下本次新建的分支同样应被删除")
 	}
 }
+
+// TestPermissionReuseSkipsSecondTicket 验证 B57②：同一任务内同一权限描述
+// 第二次到达时不再建工单、不再叫醒审核者，而是复用首次的人工批准自动放行。
+func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	permText := "external_directory: /Users/x/go/pkg/mod/github.com/coder/websocket@v1.8.15/*"
+
+	// 第一次：升级人工 → 审核者批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：同一文案、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	// 断言 1：没有新的挂起工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("复用后仍有 %d 张挂起工单，期望 0：%+v", len(pending), pending)
+	}
+
+	// 断言 2：落了 permission_reuse 审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var reuse int
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionReuse {
+			reuse++
+		}
+	}
+	if reuse != 1 {
+		t.Fatalf("permission_reuse 事件 %d 条，期望 1", reuse)
+	}
+
+	// 断言 3：批准真的回传给了 executor
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseIgnoresDeny 验证只复用 allow：首次被拒后，同文案的第二次
+// 仍然升级人工。自动重复拒绝会静默掐死回合，方向与 deny 原因下发正好相反。
+func TestPermissionReuseIgnoresDeny(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	permText := "bash: rm -rf /tmp/x"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "deny: 太危险"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != "T1:p2" {
+		t.Fatalf("deny 之后第二次应照常出单，得到 %+v", pending)
+	}
+}
