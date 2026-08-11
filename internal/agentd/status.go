@@ -66,6 +66,7 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		DataDir:         m.cfg.DataDir,
 		Executors:       names,
 		DefaultExecutor: m.cfg.Executor.Default,
+		StallTimeout:    m.cfg.StallTimeout.String(),
 		TaskCounts:      map[string]int{},
 		Active:          []proto.ActiveTask{},
 	}
@@ -85,8 +86,15 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		}
 	}
 	resp.Active = m.probeActive(active)
+	unattended := 0
+	for _, a := range resp.Active {
+		if a.Watchers != nil && *a.Watchers == 0 &&
+			a.State != string(proto.TaskStateWaitingReview) {
+			unattended++
+		}
+	}
 	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
-		"executors", len(names))
+		"executors", len(names), "unattended", unattended)
 	return resp, nil
 }
 
@@ -108,6 +116,10 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 		if at.Executor == "" {
 			at.Executor = m.cfg.Executor.Default
 		}
+		// watchers 取自 hub 的瞬时订阅数：这是「有没有人在听这个任务」的唯一真相
+		// 来源，昨晚 f7d07ece 空转 7h43m 时它一直是 0，只是从没有人问过
+		w := m.hub.Watchers(t.ID)
+		at.Watchers = &w
 		at.Live, at.Note = m.probeOne(t, time.Until(deadline))
 		out = append(out, at)
 	}

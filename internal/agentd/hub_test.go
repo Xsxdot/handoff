@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,4 +185,105 @@ func TestPublishDropsSlowSubscriber(t *testing.T) {
 	if got := len(slow); got <= 0 || got >= n {
 		t.Fatalf("慢订阅者残留 %d 条事件，期望 0 < n < %d", got, n)
 	}
+}
+
+// TestWatchersCountsSubscribers 验证 Watchers 精确反映当前订阅数：
+// 未订阅为 0、订阅后逐个累加、取消后逐个回落、全部取消后归零。
+//
+// 为什么这个数字必须干净：handoff status 的「⚠ 无人值守」直接以它为判据，
+// 多算一个（内部订阅者虚高）就是漏报，少算一个就是误报。
+func TestWatchersCountsSubscribers(t *testing.T) {
+	hub := agentd.NewHub()
+
+	if n := hub.Watchers("t-watch"); n != 0 {
+		t.Fatalf("未订阅时 Watchers = %d, want 0", n)
+	}
+	_, cancel1 := hub.Subscribe("t-watch")
+	if n := hub.Watchers("t-watch"); n != 1 {
+		t.Fatalf("一个订阅者时 Watchers = %d, want 1", n)
+	}
+	_, cancel2 := hub.Subscribe("t-watch")
+	if n := hub.Watchers("t-watch"); n != 2 {
+		t.Fatalf("两个订阅者时 Watchers = %d, want 2", n)
+	}
+	// 别的任务不受影响：hub 按 taskID 分表，串号会让整条判据失效
+	if n := hub.Watchers("t-other"); n != 0 {
+		t.Fatalf("其他任务的 Watchers = %d, want 0", n)
+	}
+
+	cancel1()
+	if n := hub.Watchers("t-watch"); n != 1 {
+		t.Fatalf("取消一个后 Watchers = %d, want 1", n)
+	}
+	cancel2()
+	cancel2() // 重复取消幂等，不得把计数减成负数
+	if n := hub.Watchers("t-watch"); n != 0 {
+		t.Fatalf("全部取消后 Watchers = %d, want 0", n)
+	}
+}
+
+// TestWatchersConcurrent 验证并发订阅/取消/读取下 Watchers 不数据竞争。
+// 单跑无意义，价值在 -race 下（见本 task 的 Step 4）。
+func TestWatchersConcurrent(t *testing.T) {
+	hub := agentd.NewHub()
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, cancel := hub.Subscribe("t-race")
+			_ = hub.Watchers("t-race")
+			cancel()
+		}()
+	}
+	wg.Wait()
+	if n := hub.Watchers("t-race"); n != 0 {
+		t.Fatalf("并发收尾后 Watchers = %d, want 0", n)
+	}
+}
+
+// TestCloseTaskClosesAllSubscribers 验证 CloseTask 关闭该任务全部订阅、
+// 返回关闭数、不误伤别的任务，且随后的 cancel 幂等不 panic（不得二次 close）。
+func TestCloseTaskClosesAllSubscribers(t *testing.T) {
+	hub := agentd.NewHub()
+	ch1, cancel1 := hub.Subscribe("t-done")
+	ch2, cancel2 := hub.Subscribe("t-done")
+	chOther, cancelOther := hub.Subscribe("t-live")
+	defer cancelOther()
+
+	if n := hub.CloseTask("t-done"); n != 2 {
+		t.Fatalf("CloseTask 返回 %d, want 2", n)
+	}
+	for name, ch := range map[string]<-chan proto.Event{"ch1": ch1, "ch2": ch2} {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatalf("%s 归档后仍收到事件", name)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s 未被关闭", name)
+		}
+	}
+	if n := hub.Watchers("t-done"); n != 0 {
+		t.Fatalf("归档后 Watchers = %d, want 0", n)
+	}
+	// 别的任务不受影响
+	hub.Publish(proto.Event{Seq: 9, TaskID: "t-live", Type: proto.EventTypeProgress})
+	select {
+	case ev := <-chOther:
+		if ev.Seq != 9 {
+			t.Fatalf("t-live 收到的事件不对: %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("t-live 的订阅被误伤")
+	}
+
+	// 连接收尾时的 defer cancel 必须是空操作：通道已不在表中，重复 close 会 panic
+	cancel1()
+	cancel2()
+	if n := hub.CloseTask("t-done"); n != 0 {
+		t.Fatalf("重复 CloseTask 返回 %d, want 0", n)
+	}
+	// Publish 到已归档任务不得 panic（向已关闭通道发送）
+	hub.Publish(proto.Event{Seq: 10, TaskID: "t-done", Type: proto.EventTypeProgress})
 }

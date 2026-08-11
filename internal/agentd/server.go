@@ -214,7 +214,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleListTasks 返回全部任务（created_at 降序），供 tasks 命令展示。
+// handleListTasks 返回全部任务（created_at 降序）及其实时订阅数，供 tasks 命令展示。
+//
+// 注意：watchers 取自 hub 的瞬时状态、不落库；它只回答「此刻有几个连接在听」，
+// 不回答「该不该有人听」——那条判据在 status 侧（unattended）。
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
 	tasks, err := s.st.ListTasks()
@@ -227,7 +230,18 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		// 空列表序列化为 [] 而非 null，保证客户端解码出的始终是数组
 		tasks = []proto.Task{}
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	// 拼装 API 视图：附上「有几个人在听」这条只有 hub 知道的运行态
+	views := make([]proto.TaskView, 0, len(tasks))
+	unattended := 0
+	for _, t := range tasks {
+		w := s.hub.Watchers(t.ID)
+		if w == 0 && !isTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
+			unattended++
+		}
+		views = append(views, proto.TaskView{Task: t, Watchers: w})
+	}
+	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended)
+	writeJSON(w, http.StatusOK, views)
 }
 
 // handleGetTask 返回任务详情（任务 + 待办工单 + 最近事件），是 attach 命令的数据源。
@@ -268,8 +282,11 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []proto.Event{}
 	}
+	watchers := s.hub.Watchers(taskID)
+	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
+		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
-		Task:           *task,
+		Task:           proto.TaskView{Task: *task, Watchers: watchers},
 		PendingTickets: pending,
 		RecentEvents:   events,
 	})
@@ -277,7 +294,8 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 
 // taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）。
 type taskDetail struct {
-	Task           proto.Task     `json:"task"`
+	// Task 用 TaskView 而非 Task：多带一个 watchers，且因字段提升线格式不变
+	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
 	RecentEvents   []proto.Event  `json:"recent_events"`
 }
@@ -998,6 +1016,9 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
+//   - 任务归档（done）时 hub 会关闭本连接的订阅，此处以 StatusNormalClosure +
+//     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
+//     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {
@@ -1072,6 +1093,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		liveMu      sync.Mutex
 		live        []proto.Event
 		overflow    bool
+		archived    bool // 订阅被 hub 关闭（任务归档），与「本连接自己结束」区分
 		drainNotify = make(chan struct{}, 1)
 	)
 	notifyDrain := func() {
@@ -1085,7 +1107,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
-					return // 订阅被取消（连接结束，defer cancel 触发），排空器退出
+					// 通道被关闭有两种可能：连接结束时 defer cancel 关的（此时主循环
+					// 已在退出路上，下面这个标记没人读，无害），或 hub.CloseTask 关的
+					//（任务归档）。后者必须让主循环知道，好以正常关闭码收尾
+					liveMu.Lock()
+					archived = true
+					liveMu.Unlock()
+					notifyDrain()
+					return
 				}
 				liveMu.Lock()
 				if len(live) >= s.liveLimit {
@@ -1226,8 +1255,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			pending := live
 			live = nil
 			over := overflow
+			arch := archived
 			liveMu.Unlock()
 			if !writeLiveBatch(pending) {
+				return
+			}
+			if arch {
+				// 顺序硬约束：先写完归档前排队的事件，再关连接——反过来会在
+				// 归档瞬间吞掉最后一批事件
+				s.log.Info("任务已归档，以正常关闭码结束事件流", "task", taskID,
+					"sent", sent, "last_written", lastWrittenSeq)
+				if cerr := conn.Close(websocket.StatusNormalClosure, "task archived"); cerr != nil {
+					// 对端可能已经走了；关闭码送不到不改变结论，如实记一笔即可
+					s.log.Debug("WS 归档关闭失败", "task", taskID, "err", cerr)
+				}
 				return
 			}
 			if over {

@@ -172,7 +172,7 @@ func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
 //
 // 远程任务必须带 --target：不带的话命令会打到本机 agentd，先 404、再 attach
 // 一个本机不存在的实况——两条错都指不到「你少了个 --target」这个真原因。
-func printAttachSuggestions(w io.Writer, tasks []proto.Task) {
+func printAttachSuggestions(w io.Writer, tasks []proto.TaskView) {
 	for _, t := range tasks {
 		line := "handoff attach " + t.ID
 		if t.Target != "" {

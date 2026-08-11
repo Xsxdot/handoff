@@ -101,10 +101,25 @@ func isPermanent(err error) bool {
 	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
 }
 
+// ErrIdleTimeout 表示 follow 期间空闲超过约定时长——期间**一帧都没收到**
+// （含被过滤掉的 progress）。
+//
+// 为什么它值得一个独立哨兵：它与「任务停滞」不是一回事。任务停滞由 agentd 的
+// 看门狗诊断并作为 stalled 事件送达（带 last_seq 与 idle 时长）；本错误只说明
+// 连接侧一片死寂，第一嫌疑是 agentd 失联而不是任务卡住。
+var ErrIdleTimeout = errors.New("空闲超时：期间未收到任何帧")
+
+// errStopStream 是 streamOnce 的内部哨兵：onFrame 返回它表示「本次连接的使命
+// 已完成」，按正常结束处理而非错误（一次性 wait 用它在首个可动作事件后收手）。
+var errStopStream = errors.New("stream stopped by callback")
+
+// errArchived 是内部哨兵：对端以 StatusNormalClosure 关闭，表示任务已归档。
+var errArchived = errors.New("任务已归档")
+
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
 type AttachInfo struct {
-	Task           proto.Task     `json:"task"`
+	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
 	RecentEvents   []proto.Event  `json:"recent_events"`
 }
@@ -254,7 +269,7 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 // 返回：
 //   - 任务列表；服务端保证空库时返回空切片而非 nil
 //   - 请求失败或响应非法时返回错误
-func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
+func (c *Client) ListTasks(ctx context.Context) ([]proto.TaskView, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/api/tasks", nil)
 	if err != nil {
 		return nil, fmt.Errorf("任务列表请求: %w", err)
@@ -263,7 +278,7 @@ func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.httpError("任务列表", resp)
 	}
-	var tasks []proto.Task
+	var tasks []proto.TaskView
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
 		return nil, fmt.Errorf("解析任务列表响应: %w", err)
 	}
@@ -742,17 +757,24 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 	}
 }
 
-// waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
+// streamOnce 建立一次 WS 连接并把收到的每一帧交给 onFrame，直到 onFrame 收手或连接结束。
+//
+// 参数：
+//   - fromSeq: 断线续拉起点（服务端据此补发历史事件）
+//   - readDeadline: 每次 Read 前调用一次，返回本次读取的**绝对**截止时刻；
+//     返回零值表示不设。为什么是绝对时刻而不是时长：空闲要跨重连累计，
+//     每次连接都从头计时等于让一个反复断连的对端永远超不了时
+//   - onFrame: 每收到一帧调用一次（**含 progress**，过滤由调用方做）
 //
 // 返回：
-//   - 可动作事件；连接失败/断流时返回错误（由 WaitEvent 决定是否重连）
-//
-// 注意：
-//   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
-//   - 永久性失败以 permanentError 返回（握手 400/401/403），或原样透传对端的
-//     StatusPolicyViolation close（任务不存在）——两者均被 isPermanent 识别，不再重连
-func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
-	// http→ws / https→wss 的 scheme 换算；本项目只用 http，https 分支为完整性防御
+//   - nil: onFrame 返回 errStopStream
+//   - errArchived: 对端以 StatusNormalClosure 关闭（任务已归档）
+//   - ErrIdleTimeout: 读取超过 readDeadline 且外层 ctx 未取消
+//   - permanentError / 其他: 拨号或读取失败，由调用方决定是否重连
+func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
+	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
+	// 拨号段：与原 waitOnce 完全一致（scheme 换算、Bearer 头、dialTimeout、
+	// 永久状态码判定、连接建立/关闭日志），照搬不改
 	wsScheme := "ws"
 	if strings.HasPrefix(c.baseURL, "https://") {
 		wsScheme = "wss"
@@ -764,21 +786,17 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
-	// 拨号套独立超时：握手（含 TCP 连接）必须在 dialTimeout 内完成，否则按连接
-	// 失败交给外层退避重连——黑洞对端不再把每次重连拖到 ~2min 才失败
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
 	if err != nil {
 		if resp != nil && isPermanentStatus(resp.StatusCode) {
-			// 配置类错误（400/401/403）以永久失败返回，由 WaitEvent 立即上报，
-			// 不做退避——见 isPermanentStatus 的 why
-			return nil, &permanentError{op: "WS 拨号", code: resp.StatusCode, cause: err}
+			return &permanentError{op: "WS 拨号", code: resp.StatusCode, cause: err}
 		}
 		if resp != nil {
-			return nil, fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
+			return fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("WS 拨号失败: %w", err)
+		return fmt.Errorf("WS 拨号失败: %w", err)
 	}
 	c.log().Info("WS 连接建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
 	defer func() {
@@ -787,20 +805,180 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	}()
 
 	for {
-		_, b, err := conn.Read(ctx)
+		readCtx, cancelRead := ctx, context.CancelFunc(func() {})
+		if readDeadline != nil {
+			if dl := readDeadline(); !dl.IsZero() {
+				readCtx, cancelRead = context.WithDeadline(ctx, dl)
+			}
+		}
+		_, b, err := conn.Read(readCtx)
+		// 顺序要紧：先分辨「是我们自己设的空闲期限到了」（外层 ctx 仍活着），
+		// 再分辨归档，最后才当普通断线交给外层重连。
+		//
+		// 为什么必须在 cancelRead() 之前读取 readCtx.Err()：cancel 之后它的 Err()
+		// 恒为 context.Canceled。若先 cancel 再判，idle>0 下任何读错误（归档的
+		// StatusNormalClosure、普通断线、对端重启）都会被误判成 ErrIdleTimeout——
+		// errArchived 与重连分支永远到不了，124 会掩盖一切。判据必须收紧到
+		// DeadlineExceeded 本身，而不是「非 nil」。
+		idleExpired := ctx.Err() == nil && errors.Is(readCtx.Err(), context.DeadlineExceeded)
+		cancelRead()
 		if err != nil {
-			return nil, fmt.Errorf("WS 读取: %w", err)
+			if idleExpired {
+				return ErrIdleTimeout
+			}
+			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				return errArchived
+			}
+			return fmt.Errorf("WS 读取: %w", err)
 		}
 		var ev proto.Event
 		if err := json.Unmarshal(b, &ev); err != nil {
 			// 服务端推了非事件 JSON：按连接异常处理，交给外层重连（数据已由 store 兜底）
-			return nil, fmt.Errorf("WS 事件反序列化: %w", err)
+			return fmt.Errorf("WS 事件反序列化: %w", err)
 		}
+		if err := onFrame(ev); err != nil {
+			if errors.Is(err, errStopStream) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
+//
+// 返回：
+//   - 可动作事件；连接失败/断流时返回错误（由 WaitEvent 决定是否重连）
+//
+// 注意：
+//   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
+//   - 永久性失败以 permanentError 返回（握手 400/401/403），或原样透传对端的
+//     StatusPolicyViolation close（任务不存在）——两者均被 isPermanent 识别，不再重连
+//   - 本函数现在是 streamOnce 的薄封装，外部行为与重构前逐字节一致；
+//     正常关闭码在 streamOnce 里被识别为 errArchived，它不是永久失败，
+//     WaitEvent 仍按断线重连处理（ws_backoff_test 钉住了这条等价性）
+func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
+	var got *proto.Event
+	err := c.streamOnce(ctx, taskID, fromSeq, nil, func(ev proto.Event) error {
 		if !all && ev.Type == proto.EventTypeProgress {
-			continue // progress 不唤醒（why 见 WaitEvent doc 注释）
+			return nil // progress 不唤醒（why 见 WaitEvent doc 注释）
 		}
 		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
-		return &ev, nil
+		got = &ev
+		return errStopStream
+	})
+	if err != nil {
+		return nil, err
+	}
+	return got, nil
+}
+
+// FollowEvents 持续订阅任务事件流，逐条交给 onEvent，直到任务终结或出错。
+//
+// 与 WaitEvent 的区别只有一条：不在首个事件后返回。这条区别是本设计的全部理由
+// ——一事件一退出意味着每两个事件之间必然有一段无人订阅的真空，而「回合结束后
+// 记得重挂」是需要每轮重做的人工动作，漏一次即永久断链。
+//
+// 参数：
+//   - all: false 时过滤 progress（与 WaitEvent 同义）
+//   - idle: 空闲上限，0 表示不设。**空闲以「收到任何帧」为准，包含被过滤掉的
+//     progress**——一个健康的长跑任务可以数小时只有 progress，用可交付事件计时
+//     会让它周期性无故超时。这个计时跨重连累计
+//   - onEvent: 每条**可交付**事件调用一次；返回非 nil 立即终止跟随并原样返回该错误
+//
+// 返回：
+//   - nil: 任务终结（收到 failed 事件，或对端归档关闭连接）
+//   - ErrIdleTimeout: 空闲超过 idle
+//   - ctx.Err() / 永久失败（401、任务不存在）: 原样返回
+//
+// cursor 语义（与 WaitEvent 的差别，取舍已在 spec §2.4 记录并接受）：
+//   - cursor 仍只在**交付**事件时推进，但「交付」不再等价于「审核者看过了」
+//     ——事件可能在审核者正忙时流入。此刻会话若崩溃，该事件不会再重放
+//   - 接受这个回退的理由：事件流本就不是权威，工单在 agentd 侧持久，
+//     pending_tickets 才是权威清单。醒来先 show 这条纪律因此从建议变成必须
+//   - 断线续拉起点（fromSeq）则按**任何帧**推进：已经收到的帧没有再补发的必要，
+//     它与 cursor 的分叉是有意的，且分叉方向安全（cursor 永远更保守）
+func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
+	idle time.Duration, onEvent func(*proto.Event) error) error {
+	fromSeq := c.readCursor(taskID)
+	lastFrame := time.Now()
+	// readDeadline 与 onFrame 都只在 streamOnce 的读循环里被同一个 goroutine 调用，
+	// lastFrame 无需加锁
+	readDeadline := func() time.Time {
+		if idle <= 0 {
+			return time.Time{}
+		}
+		return lastFrame.Add(idle)
+	}
+
+	c.log().Info("follow 开始", "addr", c.baseURL, "task", taskID,
+		"from_seq", fromSeq, "idle", idle.String())
+
+	backoff := c.wsInitialBackoff
+	for attempt := 1; ; attempt++ {
+		start := time.Now()
+		err := c.streamOnce(ctx, taskID, fromSeq, readDeadline, func(ev proto.Event) error {
+			lastFrame = time.Now()
+			fromSeq = ev.Seq
+			if !all && ev.Type == proto.EventTypeProgress {
+				return nil
+			}
+			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
+				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
+				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
+			}
+			c.log().Info("follow 事件交付", "task", taskID, "seq", ev.Seq, "type", ev.Type)
+			if err := onEvent(&ev); err != nil {
+				return err
+			}
+			if ev.Type == proto.EventTypeFailed {
+				// failed 是任务终态；completed 不是——那只是一轮结束，continue 之后还有事件
+				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
+				return errStopStream
+			}
+			return nil
+		})
+		lived := time.Since(start)
+
+		switch {
+		case err == nil:
+			return nil // onEvent 侧收手（failed）
+		case errors.Is(err, errArchived):
+			c.log().Info("follow 结束：任务已归档", "task", taskID)
+			return nil
+		case errors.Is(err, ErrIdleTimeout):
+			c.log().Error("follow 空闲超时", "addr", c.baseURL, "task", taskID,
+				"idle", idle.String(), "last_frame", lastFrame.Format(time.RFC3339))
+			return err
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case isPermanent(err):
+			c.log().Error("follow 永久失败，不再重试", "addr", c.baseURL, "task", taskID, "cause", err)
+			return err
+		}
+
+		// 断线：与 WaitEvent 同一套退避（复位判据是「连接活够 wsStableAfter」，why 见那里）
+		c.log().Info("follow 连接断开，等待后重连", "addr", c.baseURL, "task", taskID,
+			"attempt", attempt, "next_backoff_seconds", int(backoff.Seconds()), "cause", err)
+		if idle > 0 && time.Since(lastFrame) >= idle {
+			// 重连期间同样在空闲：不检查这里，一个反复拒连的对端会让 follow 永远超不了时
+			c.log().Error("follow 空闲超时（重连期间）", "task", taskID, "idle", idle.String())
+			return ErrIdleTimeout
+		}
+		if lived >= c.wsStableAfter {
+			backoff = c.wsInitialBackoff
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if lived < c.wsStableAfter {
+			backoff *= 2
+			if backoff > c.wsMaxBackoff {
+				backoff = c.wsMaxBackoff
+			}
+		}
 	}
 }
 

@@ -33,7 +33,7 @@ var pullCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		res, err := syncTaskBranch(cmd.Context(), &info.Task)
+		res, err := syncTaskBranch(cmd.Context(), &info.Task.Task)
 		if err != nil {
 			return err
 		}
