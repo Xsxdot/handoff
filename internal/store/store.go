@@ -98,6 +98,15 @@ func Open(path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS repos (
   name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS project_locations (
+  -- project_id 做主键：ADR-0008 的「一台机器上一个项目最多一个位置」由它
+  -- 直接强制，不需要额外唯一索引，也不需要在应用层再校验一遍。
+  project_id TEXT PRIMARY KEY,
+  -- name 唯一：--project <名字> 与 project rm <名字> 要靠它引用。
+  name TEXT NOT NULL UNIQUE,
+  -- path 唯一：两个不同项目不能声称在同一个目录。
+  path TEXT NOT NULL UNIQUE,
+  origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
