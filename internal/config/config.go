@@ -41,9 +41,9 @@ type Config struct {
 	Listen  string
 	Token   string
 	DataDir string
-	// RepoRoot 是 repo add --clone 未显式指定路径时的默认落点根目录，
-	// 实际落点为 RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos；
-	// 自动登记的 clone 落点即此处。
+	// RepoRoot 是自动登记（B62）的 clone 落点根目录：首次派发到某台机器、而
+	// 那台机器上还没有该项目时，agentd 会把仓库 clone 到这里，实际落点为
+	// RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos。
 	//
 	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」

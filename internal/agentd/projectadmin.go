@@ -245,6 +245,15 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 
 // persistProject 把一条位置落库：算 project_id、定引用名、翻译冲突哨兵。
 func (m *Manager) persistProject(name, path, origin string) (proto.ProjectLocation, error) {
+	// 落库路径必须归一化为绝对路径（spec §4.1：登记时 Abs+Clean）。clone 落点
+	// 来自 cfg.RepoRoot，配置写成相对路径（如 repos/）时 dest 也是相对的，
+	// 不处理就会落成一条指向相对路径的死位置。
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		m.log.Warn("登记落库被拒：路径无法归一化为绝对路径", "path", path, "cause", err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 归一化路径 %s: %v", errBadDispatchRequest, path, err)
+	}
+	path = absPath
 	pid := projectid.FromOrigin(origin)
 	if pid == "" {
 		m.log.Warn("登记落库被拒：origin 算不出 project_id", "origin", origin, "path", path)
@@ -280,7 +289,7 @@ func (m *Manager) persistProject(name, path, origin string) (proto.ProjectLocati
 		return proto.ProjectLocation{}, err
 	}
 	loc := proto.ProjectLocation{
-		ProjectID: pid, Name: name, Path: filepath.Clean(path),
+		ProjectID: pid, Name: name, Path: path,
 		OriginURL: origin, CreatedAt: time.Now(),
 	}
 	if err := m.st.CreateProjectLocation(&loc); err != nil {

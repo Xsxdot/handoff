@@ -106,6 +106,9 @@ var projectAddCmd = &cobra.Command{
 //   - --target 的语义是「本机与那台机器**一起**登记」，不是「只登记那台机器」：
 //     项目身份是从 cwd 算的，本机位置已知且免费，刻意不登它只会让本机项目树缺一行
 //   - 本机永远不 clone（它已经有 cwd 这份了）；远程不给 path 时由它自己 clone
+//   - 两跳的「成功」状态行走 cmd.ErrOrStderr()：dispatch 的自动登记路径调用本函数，
+//     stdout 必须保持「第一行是任务 JSON」的既有契约（上层脚本按行解析），
+//     任何额外输出都不能污染 stdout
 func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remotePath string) error {
 	localAddr, localToken, err := LocalEndpoint()
 	if err != nil {
@@ -117,7 +120,7 @@ func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remote
 	if err != nil {
 		return fmt.Errorf("登记到本机: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "本机 %s → %s\n", local.Name, local.Path)
+	fmt.Fprintf(cmd.ErrOrStderr(), "本机 %s → %s\n", local.Name, local.Path)
 	if targetName == "" {
 		return nil
 	}
@@ -134,7 +137,7 @@ func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remote
 	if err != nil {
 		return fmt.Errorf("登记到 %s: %w", targetName, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s %s → %s\n", targetName, remote.Name, remote.Path)
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s %s → %s\n", targetName, remote.Name, remote.Path)
 	return nil
 }
 
