@@ -32,6 +32,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/projectid"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 var (
@@ -49,6 +50,55 @@ var (
 	dispatchNoSyncCheck bool
 	dispatchAllowDirty  bool
 )
+
+// projectNotRegisteredMarker 是 agentd 侧 ErrProjectNotRegistered 的哨兵文案。
+//
+// 为什么用文本而不是 errors.Is：错误跨进程传递，到 CLI 这一侧只剩报文。
+// agentd 的报文一律形如 fmt.Errorf("%w: …", ErrProjectNotRegistered)，
+// 因此这四个字必然出现在报文里。**改动 agentd 侧那个哨兵的文案就必须同步改这里**
+//（internal/agentd/projectresolve.go 的 ErrProjectNotRegistered 上有对应提示）。
+const projectNotRegisteredMarker = "项目未登记"
+
+// isProjectNotRegistered 报告一个 dispatch 错误是不是「目标机上没有这个项目」。
+//
+// 参数：
+//   - err: Dispatch 返回的错误（可为 nil）
+//
+// 返回：
+//   - true 表示可以走自动补登记后重发的路径
+func isProjectNotRegistered(err error) bool {
+	return err != nil && strings.Contains(err.Error(), projectNotRegisteredMarker)
+}
+
+// dispatchWithAutoRegister 执行「派发 → 未登记则补登记 → 重发一次」的编排。
+//
+// 参数：
+//   - dispatch: 发一次派发请求
+//   - register: 补一次登记（两跳：本机 + 目标机）
+//
+// 返回：
+//   - 派发成功的任务；任一环节失败时返回错误
+//
+// 注意：
+//   - 为什么「先发再被拒再重发」而不是先预检：项目解析是 dispatch 的第一道闸，
+//     早于建任务目录、早于工作区准备、早于 executor 启动——被拒的全部代价就是
+//     一次 HTTP 400，没有任何残留要清理。而预检还多一次 TOCTOU（查完到派发之间
+//     可以 project rm），服务端照样得判（spec §6.4）
+//   - **最多重发一次**：登记成功后仍被拒说明另有原因（如刚被别人 rm 掉），
+//     无限重试只会把一个可诊断的失败变成一个死循环
+//   - 登记失败时**不重发、不降级**，原文透出：clone 失败或落点被占都需要人去
+//     那台机器上处置，替它猜只会掩盖真因
+//   - 两个副作用以闭包注入，编排本身因此可以零网络单测
+func dispatchWithAutoRegister(dispatch func() (*proto.Task, error), register func() error) (*proto.Task, error) {
+	task, err := dispatch()
+	if !isProjectNotRegistered(err) {
+		return task, err
+	}
+	if rerr := register(); rerr != nil {
+		return nil, fmt.Errorf("自动登记失败: %w", rerr)
+	}
+	return dispatch()
+}
 
 // localHeadCommit 取当前工作目录所在 git 仓库的 HEAD 提交号，作为远程基线校验的基准。
 //
@@ -126,7 +176,7 @@ var dispatchCmd = &cobra.Command{
 				return err
 			}
 		}
-		task, err := client.New(addr, token).Dispatch(cmd.Context(), client.DispatchOpts{
+		opts := client.DispatchOpts{
 			ProjectID: projectID, ProjectName: dispatchProject,
 			PlanB64: planB64, PlanName: planName, Target: targetName,
 			Prompt: dispatchPrompt, Name: dispatchName,
@@ -134,7 +184,28 @@ var dispatchCmd = &cobra.Command{
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
-		})
+		}
+		cli := client.New(addr, token)
+		task, err := dispatchWithAutoRegister(
+			func() (*proto.Task, error) { return cli.Dispatch(cmd.Context(), opts) },
+			func() error {
+				// 用 --project <名字> 指名的项目查不到时，自动登记帮不上忙：
+				// 名字不是身份，本机无从知道那个名字该指向哪个 origin。
+				if dispatchProject != "" {
+					return fmt.Errorf("--project 指定的 %q 在目标机上不存在；"+
+						"在该项目目录里执行 handoff project add 登记它", dispatchProject)
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), "目标机上还没有这个项目，正在自动登记…")
+				root, rerr := localProjectRoot(cmd.Context())
+				if rerr != nil {
+					return rerr
+				}
+				// 走的就是 project add 那条路：既补本机，也补目标机（spec §6.2）。
+				// 本机送主工作树路径、永不 clone；目标机不送 path，由它 clone 到
+				// 自己的 repo_root/<名字>——本机因此一个远程细节都不需要知道。
+				return registerProjectBothHops(cmd, localOriginURL(), "", root, "")
+			},
+		)
 		if err != nil {
 			return err
 		}
