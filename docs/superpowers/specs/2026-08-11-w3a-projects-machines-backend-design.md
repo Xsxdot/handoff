@@ -1,7 +1,7 @@
 # W3a：项目与机器控制面——后端设计
 
-> 状态：待评审
-> 前置：`handoff/b62-repo-registration`（登记归一化，[spec](2026-08-11-repo-registration-normalization-design.md)）**已合入本分支**后方可开工。
+> 状态：待评审（B62 定稿后已修订，见文末「修订记录」）
+> 前置：`handoff/b62-repo-registration`（**项目位置模型**，[spec](2026-08-11-repo-registration-normalization-design.md)）**已合入本分支**后方可开工。
 > 上游：[Web 控制台总方案](2026-08-11-web-console-master-design.md) §5；W3b（前端）另出 spec。
 
 ## 0. 范围与分工
@@ -22,58 +22,67 @@
 
 ### 0.2 对「新表成唯一真相」决定的实现层收窄
 
-早前定的方向是「`projects`+`workspaces` 新表成唯一真相，`repos` 降级为兼容投影」。落到实现，本 spec 把它收窄为：**概念模型是 project → location → workspace 三层，但物理存储仍是 `repos` 一张表**（B62 之后它已是可信的登记总账）。理由：
+早前定的方向是「`projects`+`workspaces` 新表成唯一真相，`repos` 降级为兼容投影」。B62 已经把这件事做完了一半——它删掉 `repos`，建 `project_locations`（`project_id` 主键、`name`/`path` 唯一），并把 `origin_url` 归一化后的 `project_id` 变成登记的身份。
 
-- `project_id` 是 `origin_url` 的纯函数（§1.2），workspace 是现场探测——**三层里两层是推导出来的，没有任何东西需要新表来存**；
-- 若真建 `projects`/`locations` 新表又保留 `repos`，两边就要同步，恰好制造了「两份真相」——与降级 `repos` 的初衷背道而驰。
+因此 W3a 对这条决定的收窄是：**W3a 自己零新表**。三层模型里，
 
-「降级为投影」发生在 **API/概念层**：`repos` 的 CLI 与 REST 原样保留，但语义上它登记的是「location」；项目视图由分组推导。物理表连名字都不改，零迁移。若未来项目需要自有属性（改显示名、置顶、归档），届时再加 `projects` 表不迟——那时它有真正要存的东西。
+- `project` 是 `origin_url` 的纯函数（§1.2），本来就没有可存的东西；
+- `location` 的真相已经在 B62 的 `project_locations` 里，W3a 只读不建；
+- `workspace` 是现场探测（§2），落表必然说谎。
+
+也就是说，W3a 唯一会写盘的新表是 §6 的事件镜像（`mirror_events` / `mirror_tasks`），那是缓存不是真相，权威始终在任务所在机器。若未来项目需要自有属性（改显示名、置顶、归档），届时再加 `projects` 表不迟——那时它有真正要存的东西。
 
 ## 1. 概念模型：三层，每层的真相在哪
 
 ```
-project  (跨机同一)   ←— project_id = sha256(normalizeGitURL(origin_url)) 前 16 hex
-  └─ location (机器×目录) ←— repos 表：name / path / origin_url（B62 后：登记必有 origin）
-       └─ workspace (工作树)  ←— 现场探测 git worktree list --porcelain
+project  (跨机同一)     ←— project_id = projectid.FromOrigin(origin_url)（B62 的包，§1.2）
+  └─ location (每机至多一个) ←— project_locations 表（B62）：project_id / name / path / origin_url
+       └─ workspace (工作树)   ←— 现场探测 git worktree list --porcelain
 ```
 
-| 层 | 含义 | 真相所在 | 持久化 |
+| 层 | 含义 | 真相所在 | 谁持久化 |
 |---|---|---|---|
 | project | 「handoff 这个项目」，跨机器同一 | 由 origin_url 推导 | 否（纯函数） |
-| location | 该项目在某台机器上的一份 checkout | `repos` 表 | **是**（唯一持久层） |
-| workspace | location 下的各工作树（含主工作区） | `git worktree list` | 否（现场探测） |
+| location | 该项目在**某一台**机器上的主工作树 | `project_locations` 表 | B62（W3a 只读） |
+| workspace | 该 location 下的各工作树（含主工作树自身） | `git worktree list` | 否（现场探测） |
 
-### 1.1 为什么 location 是独立一层
+### 1.1 location 这一层表达的是机器，不是目录
 
-同一个 origin 在同一台机器上可以被 clone 到两个目录（如 `~/workspace/handoff` 与 `~/.codex/worktrees/.../handoff`）。它们是同一个 project 的两个 location，各自有自己的 worktree 群。压掉这一层就无法表达这个真实存在的形态。
+B62 的 ADR 修订定死了：**一个项目在一台机器上最多一个 location**，由 `project_locations.project_id` 主键强制；同时 B62 把派发路径经 `git rev-parse --git-common-dir` 归并到主工作树，所以同一仓库的多个 worktree 不会各占一条登记。
+
+因此 location 的维度是**机器**：同一个 project 在本机有一个 location、在 devbox 有一个 location，仅此而已。同机的多份 checkout（`~/workspace/handoff` 与 `~/.codex/worktrees/.../handoff`）落在 **workspace 层**，由 §2 现场探测得到，不再是两条登记。
+
+这比早前设想的「location = 机器×目录」更干净：三层各自恰好对应一个维度（身份 / 机器 / 工作树），没有一层是两个维度的乘积。W3b 的项目树也因此是定深三层，不用处理"一台机器下还要再分组"。
+
+> 唯一被这条约束挡掉的形态是「同一 origin 在一台机器上刻意 clone 两份、且都要能派发」。B62 判定这不值得为它保留一个维度——真要用，第二份走 worktree。
 
 ### 1.2 project_id 推导（跨机归并的锚）
 
+**W3a 不实现这个函数**——B62 已经把它落成独立包 `internal/projectid`：
+
 ```go
-// projectID 由 origin_url 推导项目标识：跨机器、跨路径稳定。
-// 归一化复用 reporegistry.go 的 normalizeGitURL（剥 scheme/凭据/.git 后缀、host 小写），
-// 因此 git@github.com:x/handoff.git 与 https://github.com/x/handoff 得到同一个 id。
-func projectID(originURL string) string {
-    n := normalizeGitURL(originURL)
-    if n == "" {
-        return "" // B62 后登记必有 origin，空串只可能来自历史脏数据，调用方按「未归属」处理
-    }
-    sum := sha256.Sum256([]byte(n))
-    return hex.EncodeToString(sum[:])[:16]
-}
+projectid.NormalizeGitURL(originURL string) string  // 剥 scheme/凭据/.git 后缀、host 小写
+projectid.FromOrigin(originURL string) string       // sha256(归一化) 前 16 hex；算不出返回 ""
 ```
 
-两台机器各自对自己的登记算 `projectID`，汇总时按 id 归并——不需要任何跨机协商。
+因此 `git@github.com:x/handoff.git` 与 `https://github.com/x/handoff` 得到同一个 id。W3a 一律调这个包，**不得另写一份归一化**——两份实现哪怕只在一个边界上分歧（比如末尾斜杠），跨机归并就会静默裂成两个项目，而且这种裂开在 UI 上表现为「同一个项目出现两次」，极难归因。
+
+`project_id` 在 B62 里已是 `project_locations` 的主键，所以本机不需要现算；**跨机汇总时也不需要任何协商**——两台机器各自存的 id 由同一个纯函数从同一个 origin 算出，天然相等，按 id 分组即可。
+
+`FromOrigin` 返回空串的情况在 B62 之后只可能来自迁移时被跳过的脏行（B62 的迁移对算不出 id 的行会 Warn 并跳过，不会写进新表），调用方按「未归属」处理即可，见 §3 的 `unowned`。
 
 ### 1.3 任务的项目归属：join，不加列
 
-`tasks` 表**不加** `project_id` 列。列表/详情响应在读取时按 `task.repo_path` →（`filepath.Clean` 匹配 location 的 `path`，或其某个 workspace 的路径）→ `origin_url` → `projectID` 现算。理由：
+`tasks` 表**不加** `project_id` 列（B62 spec §8 独立得出同一结论，两边一致）。列表/详情响应在读取时按 `task.repo_path` → 匹配 `project_locations.path` → 该行的 `project_id`，读时现 join。理由：
 
-- B62 后新任务的 `repo_path` 必然对应一条登记，join 恒成立；
-- 历史任务或已注销仓库的任务诚实显示「未归属」（`project_id: ""`），而不是一列陈旧数据说谎;
+- 历史任务或已注销项目的任务诚实显示「未归属」（`project_id: ""`），而不是一列陈旧数据说谎；
 - 加列的代价（回填 + 注销后列失真）只换来微不足道的查询加速。
 
-注意 `--new-worktree` 任务的 `repo_path` 指向主仓库、`work_dir` 指向工作树——join 用 `repo_path` 即可命中 location。
+**B62 让这个 join 从模糊匹配退化成了等值匹配**：派发路径经 `MainWorktreeRoot` 归并，`tasks.repo_path` 落的就是主工作树根，与 `project_locations.path` 同源同形态。所以早前设想的「先比 location 路径、不中再逐个比 workspace 路径」两段式可以整个去掉，一次 `filepath.Clean` 后等值比即可。
+
+注意 `--new-worktree` 任务的 `repo_path` 指向主仓库、`work_dir` 指向任务工作树——join 用 `repo_path`，仍然直接命中 location。
+
+> 遗留边界：B62 之前派发的任务，`repo_path` 可能指向某个 linked worktree（当时不归并）。这类任务 join 不中，显示「未归属」。这是诚实的降级，不做回填——B62 spec §4.3 已同样理由地删掉了历史回填。
 
 ## 2. 工作区探测
 
@@ -97,12 +106,24 @@ type Workspace struct {
 
 ## 3. REST：项目与工作区
 
-新增（均要求会话/令牌鉴权，与现有 `/api/*` 同门禁）：
+**先说与 B62 的路由分工**。B62 已经把 `/api/repos` 整体改名为 `/api/projects`，占用了三条：
 
 ```
-GET /api/projects            本机项目树：项目 → locations → workspaces（含探测）
-GET /api/projects?scope=all  跨机汇总版（§5 转发合并；见 §5.3 响应形状）
+POST   /api/projects          登记一个项目位置
+GET    /api/projects          列出本机的项目位置（扁平 []proto.ProjectLocation）
+DELETE /api/projects/{name}   注销
 ```
+
+W3a **不动这三条**——它们语义本分，`/api/projects` 返回的就是 `project_locations` 那张表。项目树是另一种表示（嵌套、带现场探测、可跨机），塞进同一个 `GET` 会让一个端点有两种响应形状，因此另开一条子路径：
+
+```
+GET /api/projects/tree            本机项目树：项目 → locations → workspaces（含探测）
+GET /api/projects/tree?scope=all  跨机汇总版（§5 转发合并；见 §5.3 响应形状）
+```
+
+（`net/http` ServeMux 的字面段优先于通配段，`GET /api/projects/tree` 与 `DELETE /api/projects/{name}` 方法与形态都不冲突；即便将来补 `GET /api/projects/{name}`，字面段仍然优先。）
+
+以下均要求会话/令牌鉴权，与现有 `/api/*` 同门禁。
 
 响应（单机）：
 
@@ -113,17 +134,22 @@ GET /api/projects?scope=all  跨机汇总版（§5 转发合并；见 §5.3 响�
     "origin_url": "git@github.com:xushixin/handoff.git",
     "name": "handoff",                  // 取该项目下首条登记的 name
     "locations": [{
-      "name": "handoff",               // repos.name，即登记名
+      "machine": "",                   // ""=本机；跨机汇总时为 cfg.Targets 的键，同 §3 的 Machine 语义
+      "name": "handoff",               // project_locations.name，即登记名
       "path": "/Users/sycm/workspace/handoff",
       "workspaces": [ ... ],           // §2 的探测结果
       "probe_error": ""                // 探测失败时的人话说明，空=正常
     }]
   }],
-  "unowned": []                        // origin 为空的历史脏登记，诚实列出不吞
+  "unowned": []                        // 算不出 project_id 的脏行，诚实列出不吞
 }
 ```
 
-登记/注销**复用现有** `POST /api/repos`、`DELETE /api/repos/{name}`，不另开项目级写接口——项目树的「登记/注销」按钮打的就是这两个端点（W3a 已定作用域：导航/筛选 + 登记/注销，无创建/克隆）。
+单机响应里 `locations` 恒为 0 或 1 条（§1.1 的每机至多一个）；长度 >1 只可能出现在 `scope=all` 的汇总结果里，此时每条的 `machine` 互不相同。**W3b 可以依赖这条不变式**：一台机器在项目树下就是一个节点，不需要再分组。
+
+登记/注销**复用 B62 已有的** `POST /api/projects`、`DELETE /api/projects/{name}`，不另开写接口——项目树的「登记/注销」按钮打的就是这两个端点（W3a 已定作用域：导航/筛选 + 登记/注销，无创建/克隆）。
+
+> 注意 B62 的 `POST /api/projects` 有两种形态：带 `path` = 登记本机已有目录；不带 `path` = 让该机 clone 到自己的 `repo_root/<name>`。W3a 原样透传这个语义，不加解释也不加限制。
 
 `GET /api/tasks` 增加查询参数：
 
@@ -249,13 +275,17 @@ CLI `wait` **本期不动**：`--target` 直拨远端照旧。镜像跑稳后，
 
 ## 7. CLI（验收面）
 
+B62 已经交付了 `handoff project add/ls/rm`（扁平位置列表）。W3a **不新造子命令**，只做两件事：给已有的 `ls` 加视图与范围开关，另加两条只读命令。
+
 ```
-handoff project ls [--target <机器>|--all]   项目树：项目 → location → workspace（树形人类可读 + --json）
-handoff machines                             §4 的机器列表（表格 + --json）
-handoff tasks --all                          跨机任务汇总（复用现有 tasks 输出格式 + machine 列）
+handoff project ls --tree [--target <机器>|--all]   项目树：项目 → location → workspace（+ --json）
+handoff machines                                    §4 的机器列表（表格 + --json）
+handoff tasks --all                                 跨机任务汇总（复用现有 tasks 输出格式 + machine 列）
 ```
 
-登记/注销继续用现有 `handoff repo add/rm`（B62 已把它变成必经之路），不新增 project 级写命令。
+`handoff project ls` 不带 `--tree` 时输出**保持 B62 的扁平形态原样不变**——B62 的测试与文档都按那个形态写的，W3a 不许改它的默认输出。`--tree` 打的是 §3 的 `GET /api/projects/tree`，`--all` 对应 `?scope=all`。
+
+登记/注销继续用 B62 的 `handoff project add/rm`，不新增写命令。
 
 ## 8. 日志与观测（instrumenting-code 清单）
 
@@ -267,9 +297,10 @@ handoff tasks --all                          跨机任务汇总（复用现有 t
 
 ## 9. 测试清单
 
-- `projectID`:表驱动——ssh/https/大小写/.git 后缀折叠为同 id；空 origin 得空串;
+- `project_id` 归并**不重复测**——`internal/projectid` 的表驱动用例是 B62 的交付物，W3a 只需一条断言「跨机同 origin 分到同一组」;
 - 工作区探测:porcelain 解析（主工作区/分支/detached/managed 判定）；目录失效返回 probe_error 不炸树;
-- 任务归属 join：命中/未登记/已注销三态;
+- 任务归属 join：命中/未登记/已注销三态，外加 B62 之前的遗留任务（`repo_path` 指向 linked worktree）显示未归属;
+- 项目树不变式：单机响应 `locations` 长度 ≤1；`scope=all` 时同项目下 `machine` 互不重复;
 - 转发:防环头收敛（带头请求不再扇出）、超时计不可达、报错原文透传不改写;
 - 镜像:`INSERT OR IGNORE` 幂等（重连重放不重不丢）、水位续拉、终态收订阅;
 - 汇总形状:单台不可达时 `machines[].ok=false` 且 `error` 非空、条目不静默缺席;
@@ -289,3 +320,20 @@ handoff tasks --all                          跨机任务汇总（复用现有 t
 ## 11. 交付物与 W3b 交接
 
 W3a 完成的判据：§7 三条 CLI 在「本机 + devbox」真实两机上各自吐出正确结果；§9 测试全绿。交给 W3b 的契约：§3/§4/§5.3 的响应形状 + `/ws/events` 对镜像任务同形——W3b 只消费,不需要知道镜像的存在。
+
+## 12. 修订记录
+
+**2026-08-11，B62 定稿后的对齐修订。** B62 从「登记归一化」重划为「项目位置模型」，本 spec 相应改动六处：
+
+| 节 | 改了什么 | 因为 |
+|---|---|---|
+| §0.2 | 「物理存储仍是 `repos` 一张表、零迁移」→「W3a 自己零新表，location 的真相在 B62 的 `project_locations`」 | B62 删掉了 `repos`。原论证是为了回避迁移成本，而 B62 论证了此刻迁移成本为零（两台机器的 `repos` 表实测都是空的），那个回避没有意义了 |
+| §1 / §1.1 | 「location = 机器×目录，同机可有多个」→「location = 每机至多一个」 | B62 的 ADR 修订 + `project_id` 主键强制；同机多份 checkout 降到 workspace 层。三层模型因此各自对应一个干净维度 |
+| §1.2 | 内联 `projectID` 实现 → 引用 `internal/projectid` 包，并明令不得另写归一化 | B62 已落成独立包；两份归一化实现的分歧会让同一项目在 UI 上裂成两个，且极难归因 |
+| §1.3 | 两段式路径匹配 → 一次 `filepath.Clean` 等值匹配；补遗留任务的未归属说明 | B62 的 `MainWorktreeRoot` 归并让 `repo_path` 与 `project_locations.path` 同形态 |
+| §3 / §7 | 项目树从 `GET /api/projects` 挪到 `GET /api/projects/tree`；CLI 从新造 `project ls` 改为给 B62 的 `ls` 加 `--tree` | B62 把 `/api/projects` 和 `handoff project ls` 都占了。让一个端点/一个命令有两种输出形状是自找的麻烦 |
+| §9 | 去掉 `projectID` 的表驱动用例 | 那是 B62 的交付物，重复测等于把它的实现细节焊进 W3a 的测试 |
+
+未受影响的部分：§2 工作区探测、§4 机器投影、§5 转发汇总、§6 事件镜像——它们不依赖登记表的形状，B62 的改动对其透明。
+
+**合并时另有一件事**（不属 spec 内容，记在此处防遗漏）：B62 改了 `internal/proto/`（删 `Repo`、加 `ProjectLocation`），而本分支 W1 的前端契约 fixture 由 proto 生成。B62 并入本分支时必须重跑 fixture 生成，否则前后端测试一起红。
