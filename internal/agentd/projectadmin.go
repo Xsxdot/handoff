@@ -167,6 +167,47 @@ func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (
 	return m.cloneAndRegisterProject(ctx, req)
 }
 
+// registeredProjectByID 在位置表里按 project_id 查已登记的位置。
+//
+// 返回：
+//   - 命中条目的拷贝；未命中时零值
+//   - 是否命中
+//   - 查库失败时的错误
+//
+// 为什么单独抽一个助手：登记是**幂等**操作，clone 形态与已有目录形态都要在
+// 各自流程的合适节点查一次表（clone 形态要在 clone 之前，已有目录形态要在
+// 归并+读 origin+校验之后），两边共用同一条「查表 + 按 project_id 匹配」逻辑。
+func (m *Manager) registeredProjectByID(pid string) (proto.ProjectLocation, bool, error) {
+	entries, err := m.st.ListProjectLocations()
+	if err != nil {
+		m.log.Error("登记前读位置表失败", "cause", err)
+		return proto.ProjectLocation{}, false, err
+	}
+	for _, e := range entries {
+		if e.ProjectID == pid {
+			return e, true, nil
+		}
+	}
+	return proto.ProjectLocation{}, false, nil
+}
+
+// sameLocation 比较两个路径是否指向同一位置。
+//
+// 为什么不能直接比字符串：git 在 linked worktree 里返回的 common-dir 是
+// 主仓 .git 的**符号链接解析后**绝对路径（macOS 上 /var → /private/var），
+// 而首次登记存进表的路径来自调用方目录（未解析符号链接）。两个都解析再比，
+// 才能让「linked worktree 归并后幂等命中」在 macOS 上成立。
+//
+// 路径已不存在时（EvalSymlinks 失败）退回直接比较 Clean 后的串。
+func sameLocation(a, b string) bool {
+	if ra, errA := filepath.EvalSymlinks(a); errA == nil {
+		if rb, errB := filepath.EvalSymlinks(b); errB == nil {
+			return ra == rb
+		}
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 // registerExistingProject 登记本机上已存在的一份代码。
 func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	if err := EnsureRepoUsable(ctx, req.Path); err != nil {
@@ -195,11 +236,53 @@ func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProje
 			"%w: %s 上的 origin 是 %s，而请求的项目是 %s；换个路径，或去掉 --path 让本机自己 clone",
 			ErrProjectOriginMismatch, root, actual, req.OriginURL)
 	}
+	// 幂等短路：同一项目已经登记在**同一位置**时直接返回已有行。自动登记
+	// （cmd/project.go 的 registerProjectBothHops）的 hop-1 在第二次及以后的
+	// 每次派发都会把「本机自己」重复登记到这里——同一项目、同一位置，重复声明
+	// 同一个事实不是错误，不短路的话整条自动登记链会被 409 打断。
+	//
+	// 位置比较必须在归并**之后**：linked worktree 与主仓同 project_id，归并后
+	// 的 root 就是主仓路径，因此用 worktree 路径重复登记会幂等命中主仓那行。
+	pid := projectid.FromOrigin(actual)
+	if pid != "" {
+		if existing, ok, err := m.registeredProjectByID(pid); err != nil {
+			return proto.ProjectLocation{}, err
+		} else if ok {
+			if sameLocation(existing.Path, root) {
+				m.log.Info("项目位置已存在，幂等返回",
+					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
+				existing.Status = projectStatusOK
+				return existing, nil
+			}
+			// 同一项目已登记在别处：真正的冲突（ADR-0008：一台机器一个项目只能
+			// 有一个位置），报文指向已有位置。
+			m.log.Warn("登记被拒：该项目在本机已有位置",
+				"project_id", pid, "existing", existing.Path, "requested", root)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
+				ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
+		}
+	}
 	return m.persistProject(req.Name, root, actual)
 }
 
 // cloneAndRegisterProject 先 clone 再登记。
 func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	// 幂等短路：同一项目已经登记过就直接返回已有行，**必须发生在 clone 之前**——
+	// 自动登记（registerProjectBothHops）的 hop-1 在第二次及以后的每次派发都会
+	// 带着空 Path 打到本机，不短路的话每派发一次就重复 clone 一份，repo_root
+	// 会被同名落点塞满（而落点已存在还会反过来 409）。
+	pid := projectid.FromOrigin(req.OriginURL)
+	if pid != "" {
+		if existing, ok, err := m.registeredProjectByID(pid); err != nil {
+			return proto.ProjectLocation{}, err
+		} else if ok {
+			m.log.Info("项目位置已存在，幂等返回",
+				"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
+			existing.Status = projectStatusOK
+			return existing, nil
+		}
+	}
 	name := req.Name
 	if name == "" {
 		name = projectNameFromURL(req.OriginURL)

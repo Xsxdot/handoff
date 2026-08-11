@@ -199,7 +199,7 @@ func Load(path string) (*Config, error) {
 	// 落盘之后就固定，此后改 datadir 不会静默改克隆落点。
 	if cfg.RepoRoot == "" {
 		cfg.RepoRoot = filepath.Join(cfg.DataDir, "repos")
-		log().Info("repo_root 未配置，采用默认落点", "repo_root", cfg.RepoRoot)
+		log().Debug("repo_root 未配置，采用默认落点", "repo_root", cfg.RepoRoot)
 	}
 	if firstRun {
 		if werr := save(path, cfg); werr != nil {

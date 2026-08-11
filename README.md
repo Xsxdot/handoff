@@ -219,7 +219,7 @@ sync:                         # 任务结束（completed/failed）后自动同�
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
-repo_root: ""                 # 项目落点根目录；留空由 handoff 补 <datadir>/repos 并写回本文件
+repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -237,7 +237,7 @@ PATH=${PATH}:/usr/local/go/bin
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
 `repo_root` 是**执行机顶层配置**：它是**自动登记时 clone 的落点**——首次派发到一台新开发机，
-agentd 会在这里 clone 项目（config 里留空时默认 `<datadir>/repos`，由 handoff 补上并写回本文件）。
+agentd 会在这里 clone 项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
 项目登记是「哪台执行机」的属性，放顶层的语义是「每台执行机自己决定项目放在哪」。已登记过的项目
 不会再碰它；想改落点，直接在那一台机器上把登记删掉重加即可。
 

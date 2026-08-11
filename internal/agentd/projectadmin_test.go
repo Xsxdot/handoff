@@ -111,6 +111,99 @@ func TestRegisterProjectDuplicateProject(t *testing.T) {
 	}
 }
 
+// TestRegisterProjectIdempotentSamePath 验证同一项目同一路径重复登记是幂等的：
+// 第二次调用成功并返回与首次完全一致的行，位置表不新增行。
+func TestRegisterProjectIdempotentSamePath(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	if err != nil {
+		t.Fatalf("首次登记: %v", err)
+	}
+	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	if err != nil {
+		t.Fatalf("同一项目同一路径重复登记应幂等成功，got %v", err)
+	}
+	if second.ProjectID != first.ProjectID || second.Name != first.Name || second.Path != first.Path {
+		t.Fatalf("幂等返回应与首次登记一致:\n first=%+v\nsecond=%+v", first, second)
+	}
+	if second.Status != projectStatusOK {
+		t.Fatalf("幂等返回的 Status 应为 %q，got %q", projectStatusOK, second.Status)
+	}
+	locs, err := st.ListProjectLocations()
+	if err != nil {
+		t.Fatalf("ListProjectLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("位置表应有且只有 1 行，got %d", len(locs))
+	}
+}
+
+// TestRegisterProjectIdempotentLinkedWorktree 验证用 linked worktree 路径重复登记
+// 已登记的主仓会幂等成功：归并后路径等于主仓那行，返回主仓位置，表仍只有 1 行。
+func TestRegisterProjectIdempotentLinkedWorktree(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	main := initGitRepoWithOrigin(t, origin)
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: main})
+	if err != nil {
+		t.Fatalf("登记主仓: %v", err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitAt(t, main, "worktree", "add", "-b", "feat/x", wt)
+
+	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: wt})
+	if err != nil {
+		t.Fatalf("linked worktree 路径重复登记应幂等成功，got %v", err)
+	}
+	if second.ProjectID != first.ProjectID || second.Name != first.Name || second.Path != first.Path {
+		t.Fatalf("幂等返回应指向主仓登记:\n first=%+v\nsecond=%+v", first, second)
+	}
+	locs, err := st.ListProjectLocations()
+	if err != nil {
+		t.Fatalf("ListProjectLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("位置表应有且只有 1 行，got %d", len(locs))
+	}
+}
+
+// TestRegisterProjectIdempotentCloneForm 验证无 path（clone 形态）对已登记项目
+// 重复登记会幂等返回已有行，且**根本不触发 clone**：origin 指向一个必然 clone
+// 失败的位置（不存在的本地目录），若短路发生在 clone 之前就不会去碰它。
+func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "/nonexistent/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	if err != nil {
+		t.Fatalf("登记已有目录: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "repos")
+	m.cfg.RepoRoot = root
+
+	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
+	if err != nil {
+		t.Fatalf("无 path 的重复登记应幂等成功（不应触发 clone），got %v", err)
+	}
+	if second.ProjectID != first.ProjectID || second.Name != first.Name || second.Path != first.Path {
+		t.Fatalf("幂等返回应与首次登记一致:\n first=%+v\nsecond=%+v", first, second)
+	}
+	dest := filepath.Join(root, "handoff")
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("幂等短路不应创建克隆落点 %s（stat err=%v）", dest, err)
+	}
+	locs, err := st.ListProjectLocations()
+	if err != nil {
+		t.Fatalf("ListProjectLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("位置表应有且只有 1 行，got %d", len(locs))
+	}
+}
+
 // TestRegisterProjectNameCollisionFallsBack 验证不同项目撞名字时落到 name-2。
 func TestRegisterProjectNameCollisionFallsBack(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
