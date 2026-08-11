@@ -45,7 +45,7 @@
 
 **删除：** `internal/agentd/reporegistry.go`、`internal/agentd/reporegistry_test.go`、`internal/agentd/repoadmin.go`、`internal/agentd/repoadmin_test.go`、`internal/store/repos.go`、`internal/store/repos_test.go`、`cmd/repo.go`、`cmd/repo_test.go`。
 
-**修改：** `internal/proto/proto.go`、`internal/store/store.go`、`internal/agentd/manager.go`、`internal/agentd/server.go`、`internal/config/config.go`、`internal/client/client.go`、`cmd/dispatch.go`、`cmd/root.go`、`cmd/init.go`、`README.md`、`skills/handoff/SKILL.md`、`docs/adr/0008-project-has-local-and-at-most-one-remote-location.md`，以及 agentd 的既有测试（`manager_test.go` / `workspace_test.go` / `approver_test.go` / `integration_test.go`）。
+**修改：** `internal/proto/proto.go`、`internal/store/store.go`、`internal/agentd/manager.go`、`internal/agentd/server.go`、`internal/config/config.go`、`internal/client/client.go`、`cmd/dispatch.go`、`cmd/root.go`、`cmd/init.go`、`README.md`、`skills/handoff/SKILL.md`，以及 agentd 的既有测试（`manager_test.go` / `workspace_test.go` / `approver_test.go` / `integration_test.go`）。
 
 ---
 
@@ -2933,12 +2933,13 @@ git commit -m "feat(dispatch): 目标机缺项目时自动补登记并重发一�
 
 ---
 
-## Task 8: 文档、skill 与 ADR
+## Task 8: 文档与 skill
 
 **Files:**
 - Modify: `README.md`（第 138–144、172–175、221、239 行附近）
 - Modify: `skills/handoff/SKILL.md`（第 68、142、144、150 行附近）
-- Modify: `docs/adr/0008-project-has-local-and-at-most-one-remote-location.md`（追加修订记录）
+
+> **spec §9（ADR-0008 补一笔）本分支不做**：`docs/adr/` 不在这个分支上。ADR 的修订留到合并回主线后单独提交，本计划不涉及。
 
 **Interfaces:**
 - Consumes: Task 5–7 落定的最终命令形态
@@ -3002,41 +3003,16 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 那个 worktree。想接着某个分支干，用 `--base <分支>` 显式表达。
 ```
 
-- [ ] **Step 5: 在 ADR-0008 追加修订记录**
-
-在文件末尾追加：
-
-```markdown
-## 修订记录
-
-### 2026-08-11：远程位置的目录改为可选（B62）
-
-原文：「本机目录可以通过系统文件选择器指定，**远程目录只接受明确路径**。」
-
-修订为：
-
-> 远程位置的目录**可选**；省略时由该执行机 clone 到它自己的 `repo_root/<名字>`。
-
-**理由：** 要求调用方提供远程路径，等于要求它知道另一台机器的私事；而一台新开发机
-的第一次登记根本没有路径可给——目录还不存在。B62 把自动登记做成了首次派发的必经
-之路，这条限制会让它在新机器上必然失败。
-
-**本决策的核心不变**：一个项目在一台机器上最多一个位置，且最多绑定一台远程开发机。
-它现在由 `project_locations` 表的 `project_id` 主键直接强制，不再依赖应用层校验。
-
-实现见 [项目位置模型（B62）](../superpowers/specs/2026-08-11-repo-registration-normalization-design.md)。
-```
-
-- [ ] **Step 6: 校对——文档里不许再出现旧形态**
+- [ ] **Step 5: 校对——文档里不许再出现旧形态**
 
 ```bash
-grep -rn -- "--repo\b\|repo add\|repo ls\|repo rm\|/api/repos" README.md skills/ docs/adr/ \
+grep -rn -- "--repo\b\|repo add\|repo ls\|repo rm\|/api/repos" README.md skills/ \
   || echo "OK: 文档已无旧形态残留"
 ```
 
 Expected: 输出 `OK`。若有命中，逐条改掉（spec §10：不留别名，也不留会让旧心智繁殖的示例）。
 
-- [ ] **Step 7: 日志与注释自检（全计划收尾）**
+- [ ] **Step 6: 日志与注释自检（全计划收尾）**
 
 本任务不改代码，但这是整个计划的收尾闸。逐项确认：
 
@@ -3055,12 +3031,12 @@ grep -rn "fmt.Printf\|println(" internal/ | grep -v "_test.go" || echo "OK"
 
 任一项未过，回到对应 task 补完再继续。
 
-- [ ] **Step 8: 全量验证与提交**
+- [ ] **Step 7: 全量验证与提交**
 
 ```bash
 go build ./... && go vet ./... && go test ./...
-git add README.md skills/handoff/SKILL.md docs/adr/0008-project-has-local-and-at-most-one-remote-location.md
-git commit -m "docs: README/skill/ADR-0008 同步项目位置模型"
+git add README.md skills/handoff/SKILL.md
+git commit -m "docs: README/skill 同步项目位置模型"
 ```
 
 ---
