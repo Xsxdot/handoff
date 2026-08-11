@@ -670,8 +670,19 @@ Expected: PASS。
 单测没有覆盖信号那一支（给测试进程发信号会伤到 `go test` 本身），必须手工验一次。**用隔离实例，绝不碰 7777**：
 
 ```bash
-D=$(mktemp -d) && go build -o "$D/handoff" . && printf 'listen: 127.0.0.1:7911\ndatadir: %s/data\ntoken: probe-token\n' "$D" > "$D/config.yaml" && HOME="$D" "$D/handoff" agentd --config "$D/config.yaml" & sleep 3; PID=$!; kill -TERM $PID; wait $PID; echo "退出码=$?"; rm -rf "$D"
+D=$(mktemp -d)
+go build -o "$D/handoff" .
+printf 'listen: 127.0.0.1:7911\ndatadir: %s/data\ntoken: probe-token\n' "$D" > "$D/config.yaml"
+HOME="$D" "$D/handoff" agentd --config "$D/config.yaml" &
+PID=$!
+sleep 3
+kill -TERM $PID
+wait $PID; echo "退出码=$?"
+tail -20 "$D/.handoff/agentd.log" 2>/dev/null || true
+rm -rf "$D"
 ```
+
+**必须分行写，不要压成一条 `&&` 链再挂 `&`**：`&` 绑定的是整条 `&&` 链而不是最后那个 agentd，压成一行会让 `go build` 也跑到后台（`sleep 3` 可能在编译还没完成时就到点）、`$!` 拿到包住整条链的子 shell（`kill` 杀错对象、`wait` 报的是子 shell 的码）、`D` 只在子 shell 里有值（末尾 `rm -rf "$D"` 什么也没清）。三个错叠在一起会得出一个看起来失败、实则根本没测到东西的结论。
 
 Expected: 输出 `退出码=0`，且日志里能看到「收到停机请求 reason=signal:terminated」与「优雅关停完成」两行。若退出码非 0，说明 `Serve` 把 `ErrServerClosed` 当成了错误。
 
