@@ -1,235 +1,386 @@
-# 仓库登记归一化（B62）
+# 项目位置模型（B62）
 
+> **文件名说明**：本文原题「仓库登记归一化」，范围在 08-11 的设计讨论中被彻底重划。
+> 文件名保持不变，只为让 backlog B62 那行的 spec 链接不断。
+>
 > **定位**：W3a（项目与机器控制面）的**前置**。W3a 要在 Web 控制台里画一棵
-> 「这台机器上有哪些项目」的树，而这棵树的数据源今天是漏的——本文把漏堵上。
-> 本文**不**建 `projects` 表、**不**引入 `project_id`、**不**做 workspace 探测，
-> 那些都在 W3a 自己的 spec 里。
+> 「这台机器上有哪些项目」的树；本文把这棵树的数据源从「半真的目录清单」
+> 变成「可信的项目位置表」，并顺手把派发的入参收敛干净。
 >
 > **分支**：`handoff/b62-repo-registration`，基于 `main`。做完合进 `handoff/web-console`，
 > 且必须在 W3 开工前合并——W3a 的实现直接依赖本文确立的不变式。
+>
+> **上游决策**：ADR-0008「项目至少有一个位置且最多绑定一台远程开发机」（已接受）。
+> 本文实现它，并修订它的一处措辞（见 §9）。
+
+---
 
 ## 1. 病灶
 
-`resolveRepoInput`（[internal/agentd/reporegistry.go:150](../../../internal/agentd/reporegistry.go:150)）把 `--repo` 分三支解析：
+### 1.1 症状
 
-```go
-func resolveRepoInput(input, originURL string, entries []proto.Repo) (string, error) {
-	if looksLikePath(input) {
-		log().Info("仓库解析：按路径直通", "input", input)
-		return input, nil          // ← 病灶：完全不看 entries
-	}
-	...
-```
+`handoff repo ls` 在本机与 devbox 上**都返回空**，而两台机器加起来跑过几十个任务。
+登记表不是因为没干活才空，是因为**干活根本不经过它**。
 
-第一支叫「路径直通」：只要 `--repo` 里含 `/`、`\`、`:` 三个字符之一，就**完全绕开登记表**，
-原样返回该路径。注释写着「保持今天的行为不变」——这是 B46 引入登记表时刻意留的向后兼容口子。
-
-后果是：**agentd 不知道自己在哪些项目上干过活。**
-
-实测证据（08-11，devbox）：
-
-```
-$ handoff repo ls --target devbox
-（该执行机上还没有任何仓库登记，用 handoff repo add 落地一个）
-```
-
-而这台机器上已经跑过十几个 handoff 任务。每一次 dispatch 都写了绝对路径，每一次都走了直通分支，
-一条登记都没留下。登记表在这台机器上是空的，不是因为没干活，而是因为**干活根本不经过它**。
-
-这不只是「统计缺失」。它有三个具体代价：
-
-1. **W3a 的项目树直接卡在这里**。树要显示「这台机器上有哪些项目」，唯一的持久化数据源就是
-   `repos` 表；表是空的，树就是空的，而机器上明明有十几个任务在跑。
-2. **跨机对话没有共同名词**。多台执行机之间要互相引用同一个项目，需要一个各机都算得出的
-   稳定标识；标识只能从 origin 派生，而 origin 只有登记条目里有。直通派发的仓库连 origin 都没被读过。
-3. **登记表是半真的，比全假更坏**。`repo ls` 显示的是「登记过的」，不是「用过的」，
-   两者今天可以毫无交集。任何基于它做的判断都是错的。
-
-## 2. 目标与非目标
-
-**目标**
-
-- 让「agentd 在这个仓库上干过活」与「这个仓库在 `repos` 表里」成为同一件事，不留旁路。
-- 把已经发生过的历史（`tasks.repo_path`）尽可能地回填成登记，让存量机器不必从零重来。
-- 让新增的硬要求**不疼**：被拒时报文直接给出可复制粘贴的下一步命令。
-
-**非目标**
-
-- 不建 `projects` 表、不加 `project_id`、不改 `proto.Repo` 的字段——W3a 的事。
-- 不做 workspace / worktree 探测——W3a 的事（且已定为现场探测，不落库）。
-- 不动 `/api/repos` 三条路由的形状——它们今天就够 W3a 用。
-- 不碰 `repo rm` 的占用校验（`ActiveTasksByRepoPath` 已经在做）。
-
-## 3. 设计
-
-### 3.1 「路径直通」改为「路径查表」
-
-`looksLikePath` 分支不再原样返回，改为**拿这个路径去登记表里查**：
+直接原因在 `resolveRepoInput`（[internal/agentd/reporegistry.go:150](../../../internal/agentd/reporegistry.go:150)）：
 
 ```go
 if looksLikePath(input) {
-    want := filepath.Clean(input)
-    for _, e := range entries {
-        if filepath.Clean(e.Path) == want {
-            log().Info("仓库解析：路径命中登记", "input", input, "name", e.Name)
-            return e.Path, nil        // 返回登记里的 Path，不是用户输入
-        }
-    }
-    log().Warn("仓库解析被拒：路径未登记", "input", input, "registered", repoNames(entries))
-    return "", fmt.Errorf("%w: ...", ErrRepoNotRegistered)  // 报文见 3.2
+	log().Info("仓库解析：按路径直通", "input", input)
+	return input, nil          // 完全不看 entries
 }
 ```
 
-三点要交代清楚：
+只要 `--repo` 里含 `/`、`\`、`:` 之一，就绕开登记表原样返回。注释写着「保持今天的行为不变」——
+这是 B46 引入登记表时留的向后兼容口子，而它吞掉了登记表的全部实际流量。
 
-**为什么保留路径写法，而不是干脆只认登记名。** 目标是「登记表成为唯一真相」，不是
-「禁止路径语法」。`--repo <绝对路径>` 是肌肉记忆，也散落在 README 与既有脚本里；
-让它继续可用、只是改由登记表背书，破坏面最小而收益不变。路径此后是**登记表的一种查法**，
-不是绕过它的一条路。
+### 1.2 根因不是这个分支，是 `--repo` 本身
 
-**为什么返回 `e.Path` 而不是 `input`。** 登记条目里的路径是权威写法；用户写的可能是
-`/a/b/` 这种带尾斜杠的等价形式。统一取权威值，下游（worktree 落点、`ActiveTasksByRepoPath`
-的按路径反查）才不会出现两种写法指向同一仓库。
+把路径直通改成路径查表，能让表不再是空的，但会立刻长出一串新问题：路径要不要
+`filepath.Clean`、要不要绝对化、`/tmp` 与 `/private/tmp` 这类 symlink 别名认不认、
+路径敲错但恰好指到另一个真实仓库怎么办、拒绝报文要列名字还是列路径。
 
-**为什么只做 `filepath.Clean`，不解析 symlink。** 本文件的头注释写明「不碰 git、不碰文件系统……
-纯函数才能表驱动穷举 + 变异检验」。为了认出 `/tmp` 与 `/private/tmp` 这类别名而引入
-`filepath.EvalSymlinks`，等于把 dispatch 的必经之路从纯函数变成依赖文件系统状态的函数——
-代价远大于收益。别名不互认时报文会列出已登记的路径原文，人一眼就能看出差别（见 3.2）。
+这些问题有一个共同的源头：**`--repo <路径>` 让调用方去描述「代码在那台机器上的哪个目录」，
+而那是那台机器自己的私事。**
 
-其余三支（登记名命中 / 登记名查不到 / 省略 `--repo` 走 origin 匹配）**一个字不动**。
+派发在本质上只需要两个输入：
 
-### 3.2 拒绝报文必须自带下一步
+- **哪个项目**——由 git origin 唯一确定，与机器无关；
+- **哪台机器**——`--target`，省略即本机。
 
-被拒的人多半不在执行机上，读不到 `agentd.log`。报文是他唯一的线索，所以要一次给全：
-写了什么、本机有什么、下一步敲什么。
+「项目在这台机器上放在哪」是执行机的 agentd 才知道、也只有它需要知道的事。
+调用方一旦被要求提供它，就必然要么猜、要么记、要么在多台机器间维护一份影子清单——
+上面那一串问题全是从这个漏洞派生出来的。
 
-路径未登记：
+**因此本文的做法不是把路径查表做对，是让路径不再出现在派发命令上。**
 
-```
-仓库未登记: /Users/sycm/workspace/handoff
-本机已登记的仓库：（本机尚无任何登记）
-先落地它再派发：
-  handoff repo add --path /Users/sycm/workspace/handoff [--target <执行机>]
-```
+### 1.3 代价
 
-省略 `--repo` 且 origin 零命中（既有分支，只补最后两行）：
+在修好之前，这个漏洞有三个具体代价：
 
-```
-仓库未登记: 当前仓库 git@github.com:Xsxdot/handoff.git 尚未登记到本机
-本机已登记的仓库：nova, tk
-先落地它再派发：
-  handoff repo add --path <该仓库在执行机上的路径> [--target <执行机>]
-```
+1. **W3a 的项目树没有数据源。** 树要显示「这台机器上有哪些项目」，唯一的持久化来源是
+   登记表；表是空的，树就是空的。
+2. **跨机对话没有共同名词。** 多台执行机之间引用同一个项目需要一个各机都算得出的稳定标识；
+   标识只能从 origin 派生，而直通派发的仓库连 origin 都没被读过。
+3. **登记表是半真的，比全假更坏。** `repo ls` 显示的是「登记过的」，不是「用过的」，
+   两者今天可以毫无交集。任何基于它做的判断都是错的。
 
-`[--target <执行机>]` 写成字面量占位符：agentd 不知道调用方用的是哪个 target 名字，
-而 CLI **不应该**去改写服务端报文——那正是「把 agentd 的中文原文透出来」这条纪律
-（Web 控制台总方案 §4.8）要防的事。让人自己填一个他刚敲过的名字，成本是零。
+---
 
-### 3.3 历史回填：一次性，可跳过，不复活
+## 2. 模型
 
-新规则只管住未来。存量机器上已经跑过的任务留下了 `tasks.repo_path`——那是「这台机器
-在这个仓库上干过活」的直接证据，回填它就是把既成事实补登记。
+三个名词，边界清楚：
 
-**触发点**：agentd 启动时，`RecoverOnStartup`（[cmd/agentd.go:155](../../../cmd/agentd.go:155)）之后、对外服务之前。
-
-**一次性**：新增 `meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)` 表，回填完成后写
-`repo_backfill_v1 = <RFC3339 时间戳>`；键已存在则整个回填跳过。
-
-> **为什么必须一次性**：每次启动都跑，会让用户 `handoff repo rm` 掉的登记在下次重启时
-> 复活。那是个又隐蔽又气人的 bug——注销是明确的意图表达，任何自动化都不该推翻它。
-> 一次性还意味着这段代码将来可以安全删除（所有机器都跑过之后）。
-
-**算法**：
-
-```
-paths := SELECT DISTINCT repo_path FROM tasks WHERE repo_path <> ''
-for p in paths:
-    if 已有登记的 Clean(Path) == Clean(p): 跳过（已登记）
-    if EnsureRepoUsable(p) 失败:          跳过，Warn 记原因（路径不存在 / 不是 git 仓库）
-    origin, err := repoOriginURL(p)
-    if err != nil:                        跳过，Warn 记原因（没有 origin）
-    name := 唯一化(repoNameFromURL(origin))   // 冲突时依次尝试 name-2、name-3……
-    CreateRepo{Name: name, Path: p, OriginURL: origin}
-写 meta[repo_backfill_v1]
-最后打一行汇总：登记 N 条，跳过 M 条（每条跳过的路径与原因各一行 Warn）
-```
-
-**为什么探测失败的路径只跳过、不登记一条「坏」的**：`repoOriginURL` 的既有注释已经立过规矩——
-「没有 origin 的仓库拒绝登记：它永远参与不了 dispatch 省略 `--repo` 时的 origin 自动匹配，
-登记进来只会变成一条永远匹配不上的死记录」。回填不该给这条规矩开后门。跳过的路径都进
-Warn 日志，人看得见，需要的话手工 `repo add` 一条。
-
-**为什么用 `repo_path` 而不是 `work_dir`**：`work_dir` 在 worktree 模式下是工作树目录，
-不是仓库本身；`repo_path` 才是登记要指向的那个东西。
-
-### 3.4 削掉新硬要求带来的摩擦
-
-登记从此是 dispatch 的前置条件，所以登记本身不能麻烦。一处改动：
-
-`handoff repo add` 在**本机模式**（没有 `--target`）、没有 `--clone`、也没给 `--path` 时，
-`--path` 默认取 **cwd**。于是在仓库目录里敲一句 `handoff repo add` 就完成登记。
-
-远程模式不做这个默认——cwd 是审核者本机的路径，跟执行机上的路径没有任何关系，
-猜错了比不猜更坏。远程仍要求显式 `--path`，报文里已经写清楚了。
-
-### 3.5 本文交付给 W3a 的不变式
-
-做完之后，W3a 可以直接依赖这三条：
-
-1. **凡是 agentd 派发过的仓库，都在 `repos` 表里**——新任务由 3.1 保证，历史任务由 3.3 尽力回填，
-   回填不了的在启动日志里有明确原因。
-2. **每条登记都有非空 origin**（`repoOriginURL` 的既有规则，回填也遵守）。于是
-   `project_id = sha256(normalizeGitURL(origin_url))[:16]` 在任何一台机器上都算得出同一个值，
-   跨机对话不需要任何协调，也不需要派发前多跑一轮读 ID。
-3. **`repos` 表可以被 W3a 当作项目的投影源**，而不必再担心「表里有的只是全部的一小半」。
-
-## 4. 影响面
-
-**这是一个破坏性变更。** 明确列出来，不藏在实现里：
-
-| 影响 | 说明 | 缓解 |
+| 名词 | 是什么 | 标识 |
 |---|---|---|
-| 未登记的裸路径派发开始被拒 | 400 + `ErrRepoNotRegistered` | 报文自带 `repo add` 命令（3.2）；存量路径多半已被回填（3.3） |
-| **本机派发同样受影响** | 本机 dispatch 也经 agentd，规则一致 | `handoff repo add` 在仓库目录里零参数可用（3.4） |
-| 既有测试里用路径 dispatch 的用例会红 | 数量不小，但都是机械改动 | 加一个 `registerTestRepo(t, env, path)` 助手，在建任务前先登记；不要给测试开旁路 |
-| 文档里的 `--repo /path/to/repo` 示例过时 | `README.md`、`skills/handoff` | 同一次改掉：示例改用登记名，并在 dispatch 段落补一句「仓库需先 `repo add` 登记」 |
+| **项目（project）** | 一份代码的逻辑身份，与机器无关 | `project_id = sha256(normalizeGitURL(origin_url))[:16]` |
+| **位置（location）** | 项目在**某一台**机器上的工作副本 | 该机器上的绝对路径 |
+| **机器（machine）** | 本机，或 `--target` 指定的一台执行机 | target 名（本机无名） |
 
-`--no-sync-check`、`--allow-dirty`、`--base` 等既有 flag 与本文无关，行为不变。
+`project_id` 是**纯函数**：每台机器各算各的，同一个 origin 必然得到同一个值。
+跨机引用因此不需要任何协调，也不需要派发前多跑一轮读 ID。
+
+ADR-0008 定：一个项目在一台机器上**最多一个位置**（可以只有本机、只有远程、或两者各一）。
+于是每台机器的位置表是一张 `project_id → path` 的映射，一行一个项目。
+
+---
+
+## 3. 命令形态
+
+### 3.1 登记
+
+```
+handoff project add [名字]                                              # 把 cwd 登记为本机位置
+handoff project add [名字] --target devbox                              # 本机(cwd) 与 devbox 一起登记，devbox 自动 clone
+handoff project add [名字] --target devbox --path /root/work/handoff    # 同上，但 devbox 上已有一份，用它
+handoff project ls  [--target devbox]
+handoff project rm  <名字> [--target devbox]
+```
+
+规则：
+
+- **项目身份永远不用填**，从 cwd 的 origin 算（cwd 不是 git 仓库或没有 origin 则拒）。
+- **本机位置的路径永远不用填**，就是 cwd（归并到主工作树，见 §5）。
+- `[名字]` 可省，省略时由 origin 末段派生；它只是人可读引用，不参与身份判定。
+- **`--target` 表示「本机与那台机器一起登记」，不是「只登记那台机器」。** 一条命令发两跳请求
+  （本机 agentd + 目标机 agentd），任一跳失败都报出来、不回滚另一跳（登记是幂等的，重跑即可）。
+  之所以不提供「只登远程」的形态：项目身份是从 cwd 算的，cwd 既然是这个项目，本机位置就是已知且免费的，
+  刻意不登记它只会让本机的项目树缺一行。
+- **远程位置的路径可选**：
+  - 省略 → 让那台机器 clone 到它自己的 `repo_root/<名字>`；
+  - 给了 → 用那个已有目录，且 agentd **现读该目录的 origin 校验与请求一致**，不一致则拒。
+    这挡住「路径敲错但恰好指到另一个真实仓库」——自动化最容易造出的脏登记。
+- `--target` 只接受**一个**执行机名（ADR-0008：最多绑定一台远程）。
+
+`--path` 只在登记时出现，且只在「这台机器上已经有一份克隆」时才需要。
+
+### 3.2 派发
+
+```
+handoff dispatch --plan x.md                                  # 派到本机，项目 = cwd
+handoff dispatch --plan x.md --target devbox                  # 派到 devbox，项目 = cwd
+handoff dispatch --plan x.md --project nova --target devbox   # 跨项目
+```
+
+`--repo` **删除**。`--project <名字>` 是可选逃生口，只服务两种场景：cwd 不是目标项目，
+以及 Web 控制台（它没有 cwd，从项目树里选）。
+
+**cwd 不是 git 仓库、或没有 origin，且未给 `--project`** → CLI 在本地就拒，不发请求，
+报文说明「派发的项目由当前目录识别；请在项目目录内执行，或用 `--project <名字>` 指定」。
+这一条在 CLI 侧判是因为它只依赖本机信息，多跑一次网络毫无意义。
+
+其余 flag（`--base`、`--worktree`、`--new-branch`、`--allow-dirty`、`--no-sync-check` 等）行为不变。
+
+---
+
+## 4. 数据模型
+
+### 4.1 新表
+
+```sql
+CREATE TABLE project_locations (
+  project_id TEXT PRIMARY KEY,        -- sha256(normalizeGitURL(origin_url))[:16]
+  name       TEXT NOT NULL UNIQUE,    -- 人可读引用，由 origin 末段派生，冲突时 name-2
+  path       TEXT NOT NULL UNIQUE,    -- 本机绝对路径（登记时 Abs+Clean）
+  origin_url TEXT NOT NULL,           -- agentd 在本机现读的权威值
+  created_at TIMESTAMP NOT NULL)
+```
+
+**`project_id` 做主键，ADR-0008 的「一台机器上一个项目最多一个位置」由主键直接强制**——
+不需要额外的唯一索引，也不需要在应用层再校验一遍。
+
+`path` 保留 UNIQUE：两个不同项目不能声称在同一个目录。
+
+`name` 仍然唯一，因为 `--project <名字>` 与 `project rm <名字>` 要靠它引用。
+
+### 4.2 迁移
+
+旧 `repos` 表（`name` 主键 / `path` UNIQUE / `origin_url` 无约束）逐行迁入新表：
+
+```
+for r in SELECT * FROM repos ORDER BY created_at ASC:
+    pid := projectID(r.origin_url)
+    if 新表已有 pid:  跳过，Warn 记 name/path/origin 三项完整信息
+    else:             INSERT（path 做 Abs+Clean）
+DROP TABLE repos
+```
+
+**同 origin 多行时保留 `created_at` 最早的一条**，其余丢弃并在启动日志里打出完整信息，
+人照着 `handoff project add --path <那个路径>` 自己补。
+
+> **为什么敢直接 DROP**：本机与 devbox 的 `repos` 表**实测均为空**（§1.1）。
+> 这段迁移在现实中是空跑，写它只为让任意第三台机器上的旧库也能平滑升级。
+> 也正因为表是空的，改表名、换主键在此刻是零成本的——过了这次就不再便宜。
+
+### 4.3 不做历史回填
+
+原方案有一节「把 `tasks.repo_path` 回填成登记」。**删掉。**
+
+自动登记（§6）让它变成「下次派发时自愈」：目标机器上没有这个项目的位置，下一次派发就会补上。
+回填换来的只是「W3a 项目树在你下次派发之前就是全的」，而它的成本是一段一次性代码、一张 `meta` 标记表，
+外加「路径已移走」「同 origin 多条选哪条」「`rm` 掉的不能复活」一堆边角与对应测试。账算不过来。
+
+---
+
+## 5. 主工作树归并
+
+cwd 落在 git worktree 里（本仓库当前有 13 个）时，用
+`git rev-parse --git-common-dir` 找到主工作树，**项目位置永远登记主仓**。
+
+这是**行为变更**：今天在 worktree 里派发会拿那个 worktree 当仓库，此后不会了。
+想接着当前分支干，用 `--base <分支>` 显式表达——那本来就是它的用途，而
+「cwd 恰好在某个 worktree 里」是一种隐式表达，隐式表达在自动化面前不可靠。
+
+不归并的代价是直接的：worktree 与主仓 origin 相同，各登一条就撞 `project_id` 主键；
+若改为允许，同一个项目在本机会有十几个位置，项目树彻底没法看，ADR-0008 也就没了。
+
+---
+
+## 6. 自动登记
+
+### 6.1 两跳
+
+派发是两跳，两跳都可能缺位置：
+
+```
+agent ──①──> 本机 handoff CLI ──②──> 目标机 agentd
+```
+
+① 由 CLI 在本地解决（算 origin → 归并主工作树 → 算 project_id），不需要网络。
+② 是真正可能缺位置的一跳。
+
+### 6.2 编排在 CLI 侧
+
+```
+CLI: POST /api/tasks { project_id, ... }
+     ← 400 ErrProjectNotRegistered
+CLI: POST /api/projects { origin_url, path?: <仅本机，为 cwd 主工作树> }
+     ← 201 { project_id, name, path }
+CLI: POST /api/tasks { project_id, ... }        # 重发，成功
+```
+
+- **自动登记走的就是 `project add` 那条路，语义完全一致**（§3.1）：既补目标机，也补本机。
+  本机送 `path = cwd 的主工作树`、不 clone；远程**不送 path**，由那台机器 clone 到自己的
+  `repo_root/<名字>`——本机因此一个远程细节都不需要知道，这正是新执行机 bootstrap 的路径。
+- 之所以顺带补本机（哪怕派发目标是远程）：本机位置是免费且已知的，不补它 W3a 的项目树就会缺行；
+  而让自动登记与手动登记行为一致，能少掉一条需要记住的规则。
+- 自动登记本身失败（如 clone 失败、目录被占）→ **透出 agentd 原文，不重试、不降级**。
+
+> **为什么编排放 CLI 侧而不是 agentd 的 dispatch 里**：agentd 侧收编等于把
+> 「必须先登记才能派发」从服务端拿掉，W3a 之后就没有这条不变式可依赖了。
+> 放 CLI 侧则契约干净——agentd 永远只接受已登记的项目，CLI 只是把两条命令的编排自动化了。
+>
+> 代价是 Web 控制台（W2/W3）走 API 直连，享受不到这层编排。那一侧将来是一个
+> 「登记并重试」按钮，而 Web 上派发本来就是人在点，多一次确认不是负担。
+
+### 6.3 派发被拒时零副作用
+
+项目解析是 dispatch 的第一道闸（[manager.go:423](../../../internal/agentd/manager.go:423)），
+早于建任务目录、早于 `ResolveBaseline`、早于 `PrepareWorkspace`、早于 executor 启动。
+「先发再被拒再重发」的全部代价就是一次 HTTP 400，没有任何要清理的残留。
+
+这是「不预检、靠拒绝」成立的前提，也是不在 CLI 侧复制一份服务端规则的理由：
+预检还会有 TOCTOU（查完到派发之间可以 `project rm`），服务端照样得判。
+
+---
+
+## 7. `repo_root` 默认值
+
+`repo_root` 今天默认为空，空则 `--clone` 必须显式给路径（[config.go:44](../../../internal/config/config.go:44)、
+[init.go:143](../../../cmd/init.go:143)）。自动登记把 clone 变成了主路径，所以它必须有默认值：
+
+- 默认 `<DataDir>/repos`（即 `~/.handoff/repos`）；
+- 在配置**解码之后、`validate` 之前**补默认，并随首次写盘落到 `config.yaml` 里，
+  让人看得见，而不是藏在使用点。落盘之后就固定，此后改 `datadir` 不会静默改落点。
+
+---
+
+## 8. API 与类型变更
+
+| 今天 | 之后 |
+|---|---|
+| `POST /api/repos`、`GET /api/repos`、`DELETE /api/repos/{name}` | `/api/projects` 同三条 |
+| `proto.Repo{Name, Path, OriginURL, ...}` | `proto.ProjectLocation{ProjectID, Name, Path, OriginURL, ...}` |
+| dispatch 请求字段 `repo`（路径/名字/空三态）、`origin_url` | `project_id` 或 `project_name`（二选一，都空则 400）；`origin_url` 删除 |
+| `ErrRepoNotRegistered`、`ErrRepoAmbiguous` | `ErrProjectNotRegistered`（`Ambiguous` 随三态解析一并删除） |
+
+dispatch 不再接收 `origin_url`：agentd 拿 `project_id` 查表即可，不需要信任调用方送来的 URL 字符串。
+origin 只在**登记**请求里出现，且 agentd 会现读目标路径的 origin 覆盖/校验它。
+
+`tasks.repo_path` 保留不动（历史数据 + executor 的 cwd 来源）。**不给 tasks 加 `project_id`**——
+W3a 若要按项目筛任务再议。
+
+> **并行冲突提示**：本文改 `internal/proto/`，而它是 `handoff/web-console` 上
+> W1 契约 fixture 的来源（Web 控制台总方案 §6 定它由审核者独占）。
+> B62 合进 web-console 时必须重跑 fixture 更新开关并提交，否则两侧测试同时变红。
+
+---
+
+## 9. ADR-0008 补一笔
+
+ADR-0008 原文写「远程目录只接受明确路径」。本文修订为：
+
+> 远程位置的目录**可选**；省略时由该执行机 clone 到它自己的 `repo_root/<名字>`。
+
+修订理由：要求调用方提供远程路径，等于要求它知道另一台机器的私事，而新执行机的
+第一次登记根本没有路径可给。已接受的决策不能默默改，故在 ADR-0008 上追加一节修订记录。
+
+---
+
+## 10. 影响面
+
+**这是一次彻底的破坏性变更，不留兼容层。** 明确列出：
+
+| 影响 | 说明 | 处置 |
+|---|---|---|
+| `--repo` 删除 | 所有带 `--repo` 的派发命令报未知 flag | 报错文案直接指向新形态：「项目由当前目录自动识别；跨项目用 `--project <名字>`」 |
+| `repo` 子命令改名 `project` | `repo add/ls/rm` 不再存在 | 不留别名。留别名等于让旧心智继续繁殖，而这次的目的就是收敛 |
+| 在 worktree 里派发的语义变了 | 项目位置归并主仓，不再拿 worktree 当仓库 | §5；想接着分支干用 `--base` |
+| 首次派发到某机器会多一轮往返 | 自动登记 + 重发 | 对调用方透明；远程首次含一次全量 clone，日志里打出耗时 |
+| 既有测试大面积要改 | 4 个测试文件带路径派发（`manager_test`/`workspace_test`/`approver_test`/`integration_test`），共 56 处 `Repo:` 赋值 | 加 `registerTestProject(t, env, path)` 助手，在建任务前先登记。**不给测试开旁路** |
+| 文档与 skill 全部过时 | `README.md`、`skills/handoff` 里的 `--repo <路径>` 示例 | 同一次改掉。不改的话 agent 会照旧示例继续写路径 |
 
 **不提供 `--allow-unregistered` 之类的逃生口。** 那等于把刚堵上的洞重新开一个带名字的版本，
-半年后所有脚本都会带上它。逃生口就是 `repo add`（一条命令）与 `repo rm`（用完注销）。
+半年后所有脚本都会带上它。逃生口就是 `project add`（一条命令，多数情况下零参数）。
 
-## 5. 测试
+---
 
-**`resolveRepoInput` 表驱动穷举**（纯函数，是这次改动的核心，必须打满）：
+## 11. 交付给 W3a 的不变式
 
-| 输入 | entries | 期望 |
+做完之后，W3a 可以直接依赖这四条：
+
+1. **凡是 agentd 派发过的项目，都在 `project_locations` 表里**——由「未登记就 400」在服务端单方面保证，
+   没有任何旁路。
+2. **一台机器上一个项目最多一行**——由 `project_id` 主键强制，等价于 ADR-0008。
+   项目树可以直接 `SELECT`，不需要去重。
+3. **每条位置都有非空 origin**（沿用 `repoOriginURL` 的既有规矩：没有 origin 的仓库拒绝登记）。
+4. **`project_id` 跨机一致且可离线计算**，因此「同一个项目在本机和 devbox 上」这件事
+   不需要任何中心服务或协调协议就能判定——W3 的跨机汇总据此展开。
+
+---
+
+## 12. 测试
+
+**`projectID` 折叠**（纯函数，表驱动穷举）：`git@github.com:x/y.git`、`https://github.com/x/y`、
+`https://github.com/x/y.git`、带尾斜杠、大小写差异 → 必须折叠成同一个 ID；不同仓库 → 必须不同。
+
+**主工作树归并**：主仓 → 返回自身；linked worktree → 返回主仓；非 git 目录 → 报错且报文可读。
+
+**项目解析**（替代原 `resolveRepoInput` 的表驱动用例）：
+
+| 输入 | 表状态 | 期望 |
 |---|---|---|
-| 路径，与某条登记 Clean 后相等 | 有 | 返回该条的 `Path`（**不是**输入原文） |
-| 路径，带尾斜杠 / 含 `./` | 有等价登记 | 命中 |
-| 路径，无任何登记匹配 | 有若干 | `ErrRepoNotRegistered`，报文含输入路径、已登记名字、`handoff repo add` |
-| 路径，登记表为空 | 无 | 同上，报文含「（本机尚无任何登记）」 |
-| 登记名命中 / 查不到 | — | 行为不变（回归） |
-| 省略，origin 唯一命中 / 零命中 / 多命中 / cwd 非 git | — | 行为不变（回归） |
+| `project_id` 命中 | 有 | 返回该行 `path` |
+| `project_id` 未命中 | 有若干 | `ErrProjectNotRegistered`，报文列已登记的 `name → path` 两列 |
+| `project_id` 未命中 | 表为空 | 同上，报文含「本机尚无任何项目」 |
+| `project_name` 命中 / 未命中 | — | 同上两种 |
+| 两者都空 | — | 400 参数错误 |
 
-**回填**（每条一个用例）：
+**登记**：
+- 本机零参数 → 登记 cwd 主工作树；
+- 远程不给 path → clone 到 `repo_root/<名字>`，`repo_root` 未配时用默认值；
+- 远程给 path 且 origin 一致 → 登记；**origin 不一致 → 拒**；
+- 同一项目重复登记 → 主键冲突，报文指向已有位置；
+- 名字冲突 → 落到 `name-2`。
 
-- 路径已登记 → 不重复登记；
-- 路径不存在 / 不是 git 仓库 / 没有 origin → 跳过且各自 Warn 出可读原因；
-- 正常路径 → 登记成功，名字取自 origin 末段；
-- 名字冲突 → 落到 `name-2`；
-- **幂等**：连跑两次，第二次因 `meta` 标记整体跳过，不产生任何写；
-- **不复活**：回填 → `repo rm` 注销 → 重启 → 该条**不**回来。
+**自动登记编排**（CLI 层）：未登记 → 触发登记 → 重发成功；登记失败 → 透出原文、**不重试**、
+dispatch 整体失败。
 
-**端到端**：未登记路径 dispatch → 400，响应体 `error` 原文含 `handoff repo add`；
-`repo add` 之后同一条命令成功。
+**迁移**：旧表有行 → 迁入并算出 `project_id`；同 origin 多行 → 保留最早、其余 Warn 出完整信息；
+空表 → 空跑；跑第二次 → 旧表已 DROP，无操作。
+
+**端到端**：未登记项目 dispatch → CLI 自动登记 → 任务建成；`project rm` 后再派 → 再次自动登记。
 
 `go build ./...`、`go test ./...`、`go vet` 全绿是底线。
 
-## 6. 风险与回滚
+---
 
-**风险**：某台执行机上有历史任务，但仓库目录已被移走或改名——回填跳过它，下一次 dispatch 被拒。
-这是可接受的：报文会告诉他路径未登记以及怎么登记，而「仓库已经不在原处」本来就是他需要知道的事实。
+## 13. 明确不做
 
-**回滚**：改动面很窄——`resolveRepoInput` 的一个分支、一个启动期回填函数、一张 `meta` 表、
-`repo add` 的一个默认值。revert 即恢复旧行为；回填已写入的登记留在表里也无害（它们本来就该在）。
+- **不建 `projects` 表**。`project_locations` 的一行就是一个 location，项目身份是 `project_id`
+  这个派生值，没有需要独立持久化的项目属性。真需要了（项目别名、图标、归档标记）是 W3a 的事。
+- **不做 workspace / worktree 探测**——W3a 的事，且已定为现场探测、不落库。
+- **不给 `tasks` 加 `project_id`**——见 §8。
+- **不做机器范围维度**（`--target all` 之类）。与 `handoff upgrade` 不同，派发必须有唯一目标；
+  一个项目大概率只在一台开发机上做，要两台就显式一台一台登记。
+- **不保留任何 `--repo` / `repo` 子命令的别名**——见 §10。
+
+---
+
+## 14. 风险与回滚
+
+**风险一：某台执行机上的项目目录已被移走或改名。** 迁移时该行仍会迁入（迁移不探测文件系统），
+下一次派发在 `EnsureRepoUsable` 处报「路径不存在」。处置是 `project rm` 后重新 `project add`，
+报文会指出这条路。
+
+**风险二：自动 clone 在慢网络或大仓库上耗时长。** 首次派发会因此显著变慢。缓解是把
+clone 耗时打进日志与 CLI 输出，让人知道在等什么；不做超时中断——中断一个进行到一半的
+clone 只会留下半个目录。
+
+**风险三：`--repo` 删除后，未及更新的外部脚本全部失败。** 这是刻意的：失败是显式的
+未知 flag 报错，比静默走到错误仓库好。仓库内的调用点（README、`skills/handoff`、测试）在本轮一并改完。
+
+**回滚**：改动集中在 `internal/agentd/reporegistry.go`（重写）、`repoadmin.go`、
+`internal/store/`（新表 + 迁移）、`cmd/repo.go`→`cmd/project.go`、`cmd/dispatch.go`。
+revert 即恢复旧行为；已迁入 `project_locations` 的数据不会自动回到 `repos`，
+但那些行本来就该在，重新 `repo add` 一次即可。
