@@ -139,6 +139,10 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 		l.Error("opencode 未安装", "cause", err)
 		return nil, fmt.Errorf("opencode 未安装: %w", err)
 	}
+	// 记绝对路径而不是只记「opencode」：PATH 上同时装着多份 CLI 是常态
+	// （nvm / homebrew / npm global 各一份），版本行为不一致时，只有这一行
+	// 能回答「当时到底跑的是哪一个」。
+	l.Info("解析 opencode 可执行文件", "bin", bin)
 	selfExe, err := os.Executable()
 	if err != nil {
 		l.Error("取 handoff 自身路径失败（shim 无法拉起）", "cause", err)

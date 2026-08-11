@@ -459,6 +459,29 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 
+	// 派发前置 1（B45）：仓库有效性。必须排在 ResolveBaseline 之前——对一个非
+	// git 路径，ResolveBaseline 会把它误诊成 ErrBaseCommitMissing（「任务仓库落后
+	// 于本地，请先 git push」），那是个比沉默更糟的答案；managed 路径上则一路
+	// 走到 worktree add 才失败，扁平成 500
+	if err := EnsureRepoUsable(ctx, req.Repo); err != nil {
+		return nil, err
+	}
+
+	// 派发前置 2（B42）：工作目录占用守卫。managed 树每任务一棵，天然不冲突，
+	// 不必查；另两种模式的目标目录在派发前就已知，Dispatch 自己算得出来。
+	// 排在 ResolveBaseline 之前：后者在基线缺失时会做一次 git fetch（网络代价），
+	// 一个注定要被拒的派发不该先付这笔钱
+	occupied := ""
+	if !req.NewWorktree {
+		occupied = req.Repo
+		if req.Worktree != "" {
+			occupied = req.Worktree
+		}
+	}
+	if err := m.guardWorkdirBusy(occupied); err != nil {
+		return nil, err
+	}
+
 	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
 	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
 	baseline, err := ResolveBaseline(ctx, req.Repo, req.BaseCommit)
@@ -502,7 +525,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	executorStarted := false
 	defer func() {
 		if err != nil && !executorStarted {
-			m.compensateManagedWorktree(ctx, req.Repo, ws)
+			m.compensateWorkspace(ctx, req.Repo, ws)
 		}
 	}()
 
@@ -529,8 +552,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		State:     proto.TaskStatePending,
 		CreatedAt: now,
 		UpdatedAt: now,
-		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 原地模式存空串，
-		// 由 proto.Task.Workdir() 回退到 RepoPath；worktree 模式存实际工作目录）
+		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 三种模式都是满的：
+		// 原地=仓库路径、用户树/managed=工作树路径；proto.Task.Workdir() 的
+		// 空串回退只服务旧库历史行）
 		Name:            name,
 		Executor:        execName,
 		Model:           model,
@@ -540,6 +564,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		// 不走 SetTaskField——那个白名单只服务「创建时还不知道」的字段
 		BaseCommit: start,
 		BaseAhead:  ahead,
+		// B43：新树不含主仓这些未提交改动，随任务落库供 CLI 回显（不阻断派发）
+		RepoDirtyCount: ws.RepoDirtyCount,
+		RepoDirtyFiles: ws.RepoDirtyFiles,
 	}
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err
@@ -591,22 +618,181 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	return task, nil
 }
 
-// compensateManagedWorktree 在 dispatch 后续步骤失败时补偿清理已建的 managed
-// worktree（P2-2）。
+// guardWorkdirBusy 拒绝把任务派到已被活跃任务占用的工作目录（B42）。
 //
-// why：PrepareWorkspace 成功意味着 worktree 已在磁盘建好，若随后 executor 接管前
-// 的任何步骤失败（MkdirAll/WriteFile/CreateTask/SetTaskField/adapter.Start），任务
-// 要么没落库、要么落 failed——两者都没有 done 清理路径（done 只认 waiting_review），
-// worktree 成为孤儿永久占用磁盘。本函数由 Dispatch 的 defer 统一调用（见 Dispatch
-// 的 executorStarted 注释），失败只记 Error，不覆盖/不替换原始派发错误。
-func (m *Manager) compensateManagedWorktree(ctx context.Context, repo string, ws Workspace) {
-	if !ws.Managed || ws.WorkDir == "" {
+// 参数：
+//   - workDir: 目标工作目录；空串=managed 模式（每任务一棵新树），直接放行
+//
+// 返回：
+//   - nil：无人占用，或本次是 managed 模式
+//   - ErrWorkdirBusy：已有非终态任务占着这个目录，错误文本点名占用者与两条出路
+//     （server 层据此给 409，与「工作区不干净」同为状态冲突）
+//   - 其他错误：查询任务表失败
+//
+// 注意：
+//   - 查询失败按拒发处理：放行的代价是两个 executor 抢同一棵工作树、互相切走
+//     HEAD 且全程无报错，比多拒一次派发严重得多
+//   - 只报第一个占用者：报文是给人看的行动指引，列出全部只会让它更难读；
+//     日志里带了 holders 总数
+//   - git 自己已经挡住了分支级冲突（worktree add 遇到已被检出的分支会失败），
+//     这道守卫补的是唯一的洞：被共享的主工作树
+func (m *Manager) guardWorkdirBusy(workDir string) error {
+	if workDir == "" {
+		m.log.Info("工作目录占用检查跳过（managed 模式，每任务一棵新树）")
+		return nil
+	}
+	busy, err := m.st.ActiveTasksByWorkDir(workDir)
+	if err != nil {
+		m.log.Error("查询工作目录占用失败，保守拒发", "workdir", workDir, "cause", err)
+		return fmt.Errorf("查询工作目录占用: %w", err)
+	}
+	if len(busy) == 0 {
+		m.log.Info("工作目录占用检查通过", "workdir", workDir)
+		return nil
+	}
+	holder := busy[0]
+	m.log.Warn("dispatch 被拒：目标工作目录已被活跃任务占用", "workdir", workDir,
+		"holder", holder.ID, "holder_state", holder.State, "holders", len(busy))
+	return fmt.Errorf("%w: %s 正被任务 %s（%s, %s）占用；先 handoff done/stop 它，或改用 --new-worktree 在独立工作树上开工",
+		ErrWorkdirBusy, workDir, holder.ID, holder.Name, holder.State)
+}
+
+// compensateWorkspace 在 dispatch 后续步骤失败时复原已准备好的工作区。
+//
+// why：PrepareWorkspace 成功意味着磁盘上已经有了工作树、且分支已经建好/切好。
+// 若随后 executor 接管前的任何步骤失败（MkdirAll/WriteFile/CreateTask/
+// SetTaskField/adapter.Start），任务要么没落库、要么落 failed——两者都没有 done
+// 清理路径（done 只认 waiting_review），痕迹会永久留在用户的仓库里：managed
+// 模式留下孤儿 worktree 与挡路的空分支（同名重试直接撞 already exists，B39），
+// 非 managed 模式更直接——用户的工作树就停在那个空分支上。
+//
+// 参数：
+//   - ctx: 控制补偿期间的 git 调用
+//   - repo: 主仓库路径
+//   - ws: PrepareWorkspace 的产出
+//
+// 注意：
+//   - 由 Dispatch 的 defer 统一调用，且只在 executor 未接管时（见 executorStarted
+//     注释）；executor 接管后删工作树是把运行中的任务脚下抽空
+//   - 全程只记日志，**不覆盖也不替换原始派发错误**——审核者要看的是任务为什么
+//     没派出去，补偿成败是次要信息
+//   - 三条 fail-safe：worktree 删除失败 / 切回原 ref 失败 / 分支尖端对不上，
+//     任一命中都保留现场不再往下做。宁可留残留，不可误删
+func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Workspace) {
+	// 空值守卫：现有调用点把 defer 注册在 PrepareWorkspace 成功之后，理论上到不了
+	// 这里，但补偿函数本身不该依赖调用点的注册位置
+	if ws.WorkDir == "" {
 		return
 	}
-	m.log.Warn("dispatch 后续失败，补偿清理 managed worktree", "repo", repo, "workdir", ws.WorkDir)
-	if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
-		m.log.Error("补偿清理 managed worktree 失败", "repo", repo, "workdir", ws.WorkDir, "cause", err)
+	m.log.Warn("dispatch 后续失败，补偿复原工作区", "repo", repo, "workdir", ws.WorkDir,
+		"managed", ws.Managed, "branch", ws.Branch, "prev_ref", ws.PrevRef)
+
+	if ws.Managed {
+		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+			// 工作树还在，分支被它 checkout 着，git 也会拒绝删除；且失败现场要留给人排查
+			m.log.Error("补偿清理 managed worktree 失败，保留分支待查",
+				"repo", repo, "workdir", ws.WorkDir, "branch", ws.Branch, "cause", err)
+			return
+		}
+	} else {
+		if ws.PrevRef == "" {
+			m.log.Warn("补偿无法复原：未记录原 ref，工作树仍停在任务分支上",
+				"workdir", ws.WorkDir, "branch", ws.Branch,
+				"manual", "git -C "+ws.WorkDir+" checkout <你原来的分支>")
+			return
+		}
+		if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+			m.log.Error("补偿切回原 ref 失败，工作树仍停在任务分支上",
+				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef,
+				"stderr", truncateRunes(stderr, 300), "cause", err)
+			return
+		}
+		m.log.Info("补偿已切回原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
 	}
+	m.deleteCreatedBranch(ctx, repo, ws)
+}
+
+// branchAction 是补偿路径对「本次分支」的处置决定。
+// 每个取值对应一条独立规则，便于表驱动测试逐条钉住——这正是把判断从
+// deleteCreatedBranch 里拆出来的目的。
+type branchAction int
+
+const (
+	branchDelete         branchAction = iota // 确认是本次新建且自创建以来零提交，可删
+	branchKeepNotOurs                        // 不是本次新建的，是用户自己的分支
+	branchKeepTipUnknown                     // 尖端取不到，无从复核
+	branchKeepTipMoved                       // 尖端与创建时不符，疑似已有提交
+)
+
+// decideBranchAction 判定补偿路径是否可以删除该分支。纯函数：不调 git、不打日志、
+// 不碰任何状态，故可以被表驱动测试穷举。
+//
+// 参数：
+//   - recordedTip: PrepareWorkspace 建分支时记下的尖端；空串 = 分支不是本次新建的
+//   - currentTip:  当前尖端；tipErr 非 nil 时其值无意义
+//   - tipErr:      取当前尖端时的错误
+//
+// 返回：四种处置之一；只有 branchDelete 允许调用方执行删除。
+//
+// 注意：
+//   - 判定顺序是本函数的全部要点。`recordedTip == ""` 必须排在任何拿 currentTip
+//     做的比较之前。旧实现里这条规则靠「碰巧写在前面」生效，一旦有人认为两道闸
+//     重复而删掉它，悬空 symref 场景下 branchTip 失败塌缩出的空串会与 recordedTip
+//     的空串相等，从而放行删除，毁掉用户自己的分支（该场景已实测可达，见
+//     docs/superpowers/specs/2026-08-10-compensation-branch-decision-design.md §2.1）
+//   - 取不到尖端一律保留而非删除：删分支不可逆，宁可留残留也不能删错
+func decideBranchAction(recordedTip, currentTip string, tipErr error) branchAction {
+	if recordedTip == "" {
+		return branchKeepNotOurs
+	}
+	if tipErr != nil {
+		return branchKeepTipUnknown
+	}
+	if currentTip != recordedTip {
+		return branchKeepTipMoved
+	}
+	return branchDelete
+}
+
+// deleteCreatedBranch 删除本次 dispatch 新建的分支（补偿路径专用）。
+//
+// why 这件事不放进 RemoveManagedWorktree：那个函数服务的是 Done/Stop 归档场景，
+// 「只删工作树不删分支」在那里完全正确——分支上是任务成果。补偿场景的要求正好
+// 相反：分支是几秒前刚建的，executorStarted 守卫保证零提交，留着只会挡路。
+// 同一个函数满足不了相反的两组要求，所以在补偿侧单独承担。
+//
+// 参数：ctx 控制 git 调用；repo 主仓库路径；ws 为 PrepareWorkspace 的产出
+//
+// 注意：
+//   - 调用前必须已经确保分支不再被任何工作树 checkout（managed 已删树 /
+//     非 managed 已切回原 ref），否则 git 会拒绝
+//   - 删不删的规则全部在 decideBranchAction 里（含「NewBranchTip 为空 = 不是
+//     本次新建的，一律不动」这一条），本函数只负责取数据、按决定打日志、执行 git
+func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Workspace) {
+	cur, tipErr := branchTip(ctx, repo, ws.Branch)
+	switch decideBranchAction(ws.NewBranchTip, cur, tipErr) {
+	case branchKeepNotOurs:
+		// 不是本次新建的，静默保留：每次 --branch <已存在分支> 的派发失败都会
+		// 走到这里，是正常出口，打 WARN 只会变成噪音
+		return
+	case branchKeepTipUnknown:
+		m.log.Warn("取分支尖端失败，无从复核，保留待查",
+			"repo", repo, "branch", ws.Branch, "expect", ws.NewBranchTip, "cause", tipErr)
+		return
+	case branchKeepTipMoved:
+		m.log.Warn("分支尖端与创建时不符，疑似已有提交，保留待查",
+			"repo", repo, "branch", ws.Branch, "expect", ws.NewBranchTip, "actual", cur)
+		return
+	}
+	m.log.Info("补偿删除本次新建的分支", "repo", repo, "branch", ws.Branch, "tip", ws.NewBranchTip)
+	// 用 -D 而非 -d：分支起点可能领先仓库当前 HEAD，-d 会因「未合并」误拒；
+	// 而「自创建以来零提交」已由上面的尖端复核实证，-D 在这里是确定性而非暴力
+	if _, stderr, err := gitRun(ctx, repo, "branch", "-D", ws.Branch); err != nil {
+		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
+			"stderr", truncateRunes(stderr, 300), "cause", err)
+		return
+	}
+	m.log.Info("补偿删除分支完成", "repo", repo, "branch", ws.Branch)
 }
 
 // Continue 向任务续发修改指令：要求任务处于 waiting_review，先回迁 running 再
@@ -848,7 +1034,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if err != nil {
 		return false, err
 	}
-	if cur.State == proto.TaskStateCompleted || cur.State == proto.TaskStateFailed {
+	if cur.State.IsTerminal() {
 		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
 		return false, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
 	}

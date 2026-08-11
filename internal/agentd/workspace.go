@@ -56,6 +56,7 @@ var (
 	ErrRepoUnusable    = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
+	ErrWorkdirBusy     = errors.New("目标工作目录已被活跃任务占用")
 
 	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
@@ -142,6 +143,23 @@ type Workspace struct {
 	Branch  string
 	WorkDir string // executor cwd 与审阅命令目录；原地模式 = Repo
 	Managed bool   // WorkDir 是 agentd 创建的 worktree（done 时代删）
+
+	// NewBranchTip 是本次 dispatch 新建分支时的尖端 sha；空串表示分支不是本次
+	// 新建的（--branch <已存在分支> 模式）。补偿删分支前用它复核「自创建以来
+	// 没动过」。
+	//
+	// 为什么用 sha 而不是 BranchCreated bool：一个 bool 加一个 sha 能构造出
+	// 「声称建了分支却说不出它当时指向哪」这种非法状态，用单字段就构造不出来。
+	NewBranchTip string
+	// PrevRef 是非 managed 模式下 checkout 之前的 HEAD：正常在分支上时为分支名，
+	// detached 时为 commit sha，两者都能直接喂给 git checkout 复原。managed 模式
+	// 恒为空（新工作树没有「之前」）。空串表示采集失败，补偿据此放弃复原而非乱切。
+	PrevRef string
+	// RepoDirtyCount / RepoDirtyFiles 是 managed 模式下派发当时**主仓库**的脏快照
+	// （语义见 proto.Task 同名字段）；非 managed 模式恒为零值——那两条路径的脏
+	// 工作区已被 ensureCleanWorktree 拒发，不存在「有改动却看不见」的情形。
+	RepoDirtyCount int
+	RepoDirtyFiles string
 }
 
 // PrepareWorkspace 按 WorkspaceReq 准备任务工作区，返回结果。
@@ -221,6 +239,9 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 	switch {
 	case req.NewWorktree:
 		// 新树：WorktreesDir/<id8>，MkdirAll 后 git worktree add（已存在分支不带 -b）
+		// B43：新树免脏检查是对的（新树天然干净），但主仓的未提交改动不在基线里，
+		// executor 在新树里看不到它们。建树之前采一次快照，供 dispatch 回显
+		dirtyCount, dirtyFiles := repoDirtySnapshot(ctx, req.Repo)
 		workDir := filepath.Join(req.WorktreesDir, id8(req.TaskID))
 		if err := os.MkdirAll(req.WorktreesDir, 0o700); err != nil {
 			return Workspace{}, fmt.Errorf("创建 worktrees 目录 %s: %w", req.WorktreesDir, err)
@@ -237,7 +258,11 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
-		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true}
+		ws = Workspace{Branch: branch, WorkDir: workDir, Managed: true,
+			RepoDirtyCount: dirtyCount, RepoDirtyFiles: dirtyFiles}
+		if !isExisting {
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
+		}
 	case req.Worktree != "":
 		// 用户树：归属校验 → 脏检查 → 在其中 checkout
 		if !worktreeBelongsToRepo(ctx, req.Repo, req.Worktree) {
@@ -246,15 +271,20 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if err := ensureCleanWorktree(ctx, req.Worktree); err != nil {
 			return Workspace{}, err
 		}
+		prev := currentRef(ctx, req.Worktree)
 		if err := checkoutInWorktree(ctx, req.Worktree, branch, req.Base, isExisting); err != nil {
 			return Workspace{}, err
 		}
-		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false}
+		ws = Workspace{Branch: branch, WorkDir: req.Worktree, Managed: false, PrevRef: prev}
+		if !isExisting {
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
+		}
 	default:
 		// 原地：脏检查主仓 → checkout / checkout -b
 		if err := ensureCleanWorktree(ctx, req.Repo); err != nil {
 			return Workspace{}, err
 		}
+		prev := currentRef(ctx, req.Repo)
 		var args []string
 		if isExisting {
 			args = []string{"checkout", branch}
@@ -267,7 +297,10 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
 			return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
 		}
-		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false}
+		ws = Workspace{Branch: branch, WorkDir: req.Repo, Managed: false, PrevRef: prev}
+		if !isExisting {
+			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
+		}
 	}
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
 	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
@@ -302,6 +335,36 @@ func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExi
 	return nil
 }
 
+// EnsureRepoUsable 校验 repo 确实是一个可用的 git 仓库。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径
+//
+// 返回：
+//   - nil：是可用的 git 仓库
+//   - ErrRepoUnusable：路径不存在 / 不是 git 仓库 / git 不在 PATH / 权限不足，
+//     错误文本带 git stderr 原文（server 层据此给 400，见 writeDispatchError）
+//
+// 注意：
+//   - 由 Dispatch 在 ResolveBaseline 之前调用。放在那里而不是建树前，是因为
+//     ResolveBaseline 对非 git 仓库会误报成 ErrBaseCommitMissing（「落后于本地，
+//     请先 push」），那是个比沉默更糟的答案
+//   - 判据用 rev-parse --git-dir 而不是 grep worktree add 的错误串：前者是显式
+//     判据，后者依赖 git 的文案不变
+//   - ensureCleanWorktree 里原有的 ErrRepoUnusable 包装保留——它仍是 git status
+//     因其他原因失败时的兜底
+func EnsureRepoUsable(ctx context.Context, repo string) error {
+	_, stderr, err := gitRun(ctx, repo, "rev-parse", "--git-dir")
+	if err != nil {
+		log().Warn("dispatch 前置：任务仓库不可用，拒绝派发", "repo", repo,
+			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		return fmt.Errorf("%w: %s: %v", ErrRepoUnusable, strings.TrimSpace(stderr), err)
+	}
+	log().Info("dispatch 前置：仓库有效性校验通过", "repo", repo)
+	return nil
+}
+
 // ensureCleanWorktree 校验工作区干净（status --porcelain 无任何输出）。
 // 脏检测含未跟踪文件：未跟踪文件同样可能被执行器误 add 进任务提交，保守拒绝。
 // git status 失败（仓库不存在/不是 git 仓库）与「脏」是两种可修复场景，
@@ -318,6 +381,64 @@ func ensureCleanWorktree(ctx context.Context, dir string) error {
 		return fmt.Errorf("%w: %s", ErrDirtyWorktree, first)
 	}
 	return nil
+}
+
+// maxDirtyFilesListed 是脏快照展示串里最多列出的文件数。
+// 封顶而不是全列：这是给人读的一行提示，几十个文件名会把它撑成一屏；
+// 真实条数由 RepoDirtyCount 单独承载，不会因为封顶而丢失。
+const maxDirtyFilesListed = 5
+
+// repoDirtySnapshot 采集仓库未提交改动的快照（条数 + 文件名展示串）。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径（managed 模式下即主仓库）
+//
+// 返回：
+//   - count: 未提交改动总数（含未跟踪文件）；干净或采集失败时为 0
+//   - files: 逗号分隔的文件名串，最多 maxDirtyFilesListed 个，超出补「等 N 处」
+//
+// 注意：
+//   - 采集失败不返回错误：这是诊断信息，不该挡住主流程（与 currentRef 同款约定），
+//     失败只打 Warn 并返回零值
+//   - 不区分已跟踪/未跟踪：B29 分它们是因为处置不同（拒发 vs 警告），这里两者
+//     对新工作树同样不可见、处置完全一样，分了只是噪音
+func repoDirtySnapshot(ctx context.Context, repo string) (count int, files string) {
+	out, _, err := gitRun(ctx, repo, "status", "--porcelain")
+	if err != nil {
+		log().Warn("采集任务仓库脏快照失败，提示留空（不阻断派发）", "repo", repo, "cause", err)
+		return 0, ""
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// porcelain v1 行格式为 XY<空格>路径；重命名是 "R  旧名 -> 新名"，取新名
+		name := strings.TrimSpace(line)
+		if len(line) > 3 {
+			name = strings.TrimSpace(line[3:])
+		}
+		if i := strings.LastIndex(name, " -> "); i >= 0 {
+			name = name[i+4:]
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return 0, ""
+	}
+	shown := names
+	if len(names) > maxDirtyFilesListed {
+		shown = names[:maxDirtyFilesListed]
+	}
+	files = strings.Join(shown, ", ")
+	if len(names) > len(shown) {
+		files += fmt.Sprintf(" 等 %d 处", len(names))
+	}
+	// 服务端日志带完整未截断列表：展示串封顶 5 个是给人读的，排障要看全的
+	log().Warn("任务仓库有未提交改动，新工作树不含它们",
+		"repo", repo, "count", len(names), "files", strings.Join(names, ", "))
+	return len(names), files
 }
 
 // worktreeBelongsToRepo 校验 worktree 路径是否属于主仓库 repo。
@@ -367,6 +488,71 @@ func worktreeBelongsToRepo(ctx context.Context, repo, worktree string) bool {
 		return false
 	}
 	return true
+}
+
+// currentRef 取工作树当前 HEAD 的**可复原引用**：正常在分支上时返回分支名，
+// detached 时返回 commit sha。两种形态都能直接喂给 git checkout。
+//
+// 参数：dir 为工作树路径（原地模式即主仓库）
+//
+// 返回：引用字符串；取不到时返回空串
+//
+// 注意：
+//   - 返回空串**不是错误**，调用方按「不知道该切回哪儿」处置。采集失败不该
+//     挡住派发，但也绝不能拿一个猜测值去 checkout——乱切比不切更糟
+func currentRef(ctx context.Context, dir string) string {
+	// -q 让 detached 时安静地非零退出，而不是往 stderr 刷错误
+	if out, _, err := gitRun(ctx, dir, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		if ref := strings.TrimSpace(out); ref != "" {
+			return ref
+		}
+	}
+	out, _, err := gitRun(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		log().Warn("采集原 ref 失败，补偿将无法复原工作树", "dir", dir, "cause", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// branchTip 取分支当前尖端 sha。
+//
+// 参数：repo 为主仓库路径，branch 为分支名
+//
+// 返回：
+//   - 成功时返回 40 位 sha 与 nil
+//   - 取不到时返回空串与非 nil 错误（分支不存在、悬空引用、git 调用失败）
+//
+// 注意：失败不再塌缩成空串，也不在此处打日志——两件事都交给调用方。补偿侧的
+// 决策必须能区分「尖端取不到」与「分支不是本次新建的」，旧签名让这两件事共用
+// 空串，正是那道闸无法被单独测试的根因（见
+// docs/superpowers/specs/2026-08-10-compensation-branch-decision-design.md §2）。
+func branchTip(ctx context.Context, repo, branch string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse refs/heads/%s: %s: %w", branch, strings.TrimSpace(stderr), err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// recordNewBranchTip 记录刚新建分支的尖端，作为补偿路径复核「自创建以来零提交」
+// 的基线。PrepareWorkspace 的三条建分支路径（managed worktree / 用户树 / 原地）
+// 共用它，避免同一段告警逻辑抄三遍。
+//
+// 参数：repo 为主仓库路径，branch 为刚新建的分支名
+//
+// 返回：取到则为 40 位 sha；取不到返回空串。
+//
+// 注意：取不到时返回空串是刻意的保守选择——没记到基线意味着补偿届时无从复核，
+// 空串会让 decideBranchAction 判成 branchKeepNotOurs，即保留该分支不删。代价是
+// 补偿时日志说不清「为什么不删」，所以失败必须在**这里**留下 WARN。
+func recordNewBranchTip(ctx context.Context, repo, branch string) string {
+	tip, err := branchTip(ctx, repo, branch)
+	if err != nil {
+		log().Warn("新建分支后取尖端失败，补偿将保留该分支", "repo", repo, "branch", branch, "cause", err)
+		return ""
+	}
+	return tip
 }
 
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
@@ -472,9 +658,9 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 
 // headCommit 取仓库当前 HEAD 的完整 sha。
 //
-// 仓库一个提交都没有（或路径不是 git 仓库）时返回空串——空起点交给 git 默认
-// 行为，不是错误：真正的仓库问题会在 PrepareWorkspace 的脏检查/建树阶段暴露，
-// 在这里把它变成拒发只会给出一个更难懂的报错。
+// 返回空串只对应「仓库一个提交都没有」：仓库有效性已由 Dispatch 前置的
+// EnsureRepoUsable 保证（B45），走到这里时路径一定是可用的 git 仓库。
+// 空起点交给 git 默认行为，不是错误。
 func headCommit(ctx context.Context, repo string) string {
 	out, _, err := gitRun(ctx, repo, "rev-parse", "HEAD")
 	if err != nil {

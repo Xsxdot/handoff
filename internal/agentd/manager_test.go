@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1352,5 +1353,230 @@ func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
 	}
 	if got.BaseAhead != 0 {
 		t.Fatalf("显式起点不该报领先数，实得 %d", got.BaseAhead)
+	}
+}
+
+// compensateFixture 造一个「PrepareWorkspace 之后必失败」的 Manager：
+// DataDir 下预置名为 tasks 的普通文件，使 MkdirAll(DataDir/tasks/<id>) 失败。
+func compensateFixture(t *testing.T) (*Manager, string) {
+	t.Helper()
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "tasks"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+		nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return m, dataDir
+}
+
+// branchExists 报告 repo 里是否存在名为 branch 的本地分支。
+func branchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	c := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return c.Run() == nil
+}
+
+// actionName 让断言失败时打出可读的枚举名，而不是 0/1/2/3。
+// 只服务测试可读性，故不做成生产侧的 String() 方法。
+var actionName = map[branchAction]string{
+	branchDelete:         "branchDelete",
+	branchKeepNotOurs:    "branchKeepNotOurs",
+	branchKeepTipUnknown: "branchKeepTipUnknown",
+	branchKeepTipMoved:   "branchKeepTipMoved",
+}
+
+// TestDecideBranchAction 逐条钉住补偿路径的分支处置规则。
+//
+// 第二行（recordedTip 空 + tipErr 非 nil）是本用例存在的全部理由：它是
+// 「不是本次新建的」这道闸的独占角落——旧结构里 branchTip 失败塌缩成空串，
+// 与 recordedTip 的空串撞车，闸2 的 cur != recordedTip 会变成「放行删除」，
+// 而该状态在真实仓库里可由悬空 symref 达成（已实测，见 spec §2.1）。
+func TestDecideBranchAction(t *testing.T) {
+	const (
+		shaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	errTip := errors.New("rev-parse 失败")
+
+	cases := []struct {
+		name        string
+		recordedTip string
+		currentTip  string
+		tipErr      error
+		want        branchAction
+	}{
+		{"用户自带分支：尖端取得到", "", shaA, nil, branchKeepNotOurs},
+		{"用户自带分支：尖端取不到（悬空 symref）", "", "", errTip, branchKeepNotOurs},
+		{"本次新建且自创建以来零提交", shaA, shaA, nil, branchDelete},
+		{"本次新建但尖端已移动", shaA, shaB, nil, branchKeepTipMoved},
+		{"本次新建但尖端取不到", shaA, "", errTip, branchKeepTipUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideBranchAction(tc.recordedTip, tc.currentTip, tc.tipErr)
+			if got != tc.want {
+				t.Fatalf("decideBranchAction(%q, %q, %v) = %s，期望 %s",
+					tc.recordedTip, tc.currentTip, tc.tipErr, actionName[got], actionName[tc.want])
+			}
+		})
+	}
+}
+
+// TestCompensateDeletesCreatedBranch 验证 managed 模式补偿把**本次新建的**分支
+// 一并删掉——这正是 B39 的原始诉求：修好环境后用同一分支名重试必须能成功。
+func TestCompensateDeletesCreatedBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	m, _ := compensateFixture(t)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, NewBranch: "e2e/retry",
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	if branchExists(t, repo, "e2e/retry") {
+		t.Fatal("本次新建的分支应被补偿删除，否则同名重试会撞 already exists")
+	}
+}
+
+// TestCompensateKeepsExistingBranch 验证 --branch <已存在分支> 模式下补偿
+// **不删**分支。判别力：一个无脑删分支的实现会在这里删掉用户自己的分支。
+func TestCompensateKeepsExistingBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "branch", "mine")
+	m, _ := compensateFixture(t)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, Branch: "mine",
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	if !branchExists(t, repo, "mine") {
+		t.Fatal("已存在分支不是本次新建的，补偿绝不能删")
+	}
+}
+
+// TestCompensateInPlaceRestoresPrevRef 验证原地模式（当前缺省）补偿把主仓
+// 切回原分支并删掉新建分支。
+//
+// 判别力：这是 brainstorm 中扩大范围的那一半——旧实现 `if !ws.Managed { return }`
+// 在这里直接早退，主仓会停在空分支上。
+func TestCompensateInPlaceRestoresPrevRef(t *testing.T) {
+	repo := initTestRepo(t)
+	before := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	m, _ := compensateFixture(t)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewBranch: "e2e/inplace",
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	after := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if after != before {
+		t.Fatalf("原地模式补偿应把主仓切回 %s，实际停在 %s", before, after)
+	}
+	if branchExists(t, repo, "e2e/inplace") {
+		t.Fatal("原地模式下本次新建的分支同样应被删除")
+	}
+}
+
+// TestCompensateInPlaceRestoresDetached 验证 detached HEAD 起步时补偿切回原 commit。
+func TestCompensateInPlaceRestoresDetached(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "checkout", "--detach", "-q", head)
+	m, _ := compensateFixture(t)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
+		Repo: repo, Prompt: "x", Executor: "fake", NewBranch: "e2e/detached",
+	}); err == nil {
+		t.Fatal("taskDir 创建失败场景应派发失败")
+	}
+	if got := gitOut(t, repo, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("detached 起步应切回 %s，实际 %s", head, got)
+	}
+	if branchExists(t, repo, "e2e/detached") {
+		t.Fatal("新建分支应被删除")
+	}
+}
+
+// compensateOnlyManager 造一个只用来调 compensateWorkspace 的 Manager——
+// 这三条用例不经过 Dispatch，store/hub 只需能构造出来。
+func compensateOnlyManager(t *testing.T) *Manager {
+	t.Helper()
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	return NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+		nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// TestCompensateKeepsBranchWhenWorktreeRemoveFails 验证 worktree 删不掉时
+// **绝不删分支**：分支还被那棵树 checkout 着，且失败现场要留给人排查。
+//
+// 注入方式：给一个根本没在 git 里注册过的 WorkDir，worktree remove 必然失败。
+func TestCompensateKeepsBranchWhenWorktreeRemoveFails(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "branch", "e2e/stuck")
+	tip := gitOut(t, repo, "rev-parse", "refs/heads/e2e/stuck")
+	m := compensateOnlyManager(t)
+	m.compensateWorkspace(context.Background(), repo, Workspace{
+		Branch: "e2e/stuck", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
+		Managed: true, NewBranchTip: tip,
+	})
+	if !branchExists(t, repo, "e2e/stuck") {
+		t.Fatal("worktree 删除失败时分支必须保留")
+	}
+}
+
+// TestCompensateKeepsBranchWhenTipMoved 验证分支尖端与创建时不符（疑似已有
+// 提交）时保留分支。删分支不可逆，宁可留残留也不能删错。
+func TestCompensateKeepsBranchWhenTipMoved(t *testing.T) {
+	repo := initTestRepo(t)
+	orig := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	staleTip := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "checkout", "-q", "-b", "e2e/moved")
+	writeAndCommit(t, repo, "extra.txt", "x\n") // 尖端前移，与 staleTip 不再相等
+	gitT(t, repo, "checkout", "-q", orig)
+	m := compensateOnlyManager(t)
+	m.compensateWorkspace(context.Background(), repo, Workspace{
+		Branch: "e2e/moved", WorkDir: repo, Managed: false,
+		NewBranchTip: staleTip, PrevRef: orig,
+	})
+	if !branchExists(t, repo, "e2e/moved") {
+		t.Fatal("尖端与创建时不符的分支必须保留，日志记 WARN 即可")
+	}
+}
+
+// TestCompensateUserWorktreeRestores 验证用户自带 worktree 模式：树切回原分支、
+// 新建分支删掉。这是 spec §6 表里第六行，也是「非 managed 不止原地一种」的证据。
+func TestCompensateUserWorktreeRestores(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "userwt")
+	gitT(t, repo, "worktree", "add", "-q", "-b", "userbase", wt)
+
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "eeeeeeee-0000-0000-0000-000000000000",
+		NewBranch: "e2e/userwt", Worktree: wt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.PrevRef != "userbase" {
+		t.Fatalf("用户树的 PrevRef 应为 userbase，得到 %q", ws.PrevRef)
+	}
+
+	m := compensateOnlyManager(t)
+	m.compensateWorkspace(context.Background(), repo, ws)
+
+	if got := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD"); got != "userbase" {
+		t.Fatalf("用户树应被切回 userbase，实际停在 %s", got)
+	}
+	if branchExists(t, repo, "e2e/userwt") {
+		t.Fatal("用户树模式下本次新建的分支同样应被删除")
 	}
 }

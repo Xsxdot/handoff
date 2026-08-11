@@ -782,3 +782,111 @@ func TestPrepareWorkspaceAutoBranchHonorsBase(t *testing.T) {
 		t.Fatalf("自动分支起点必须是 Base：head=%s base=%s（B35 根因：起点被静默换成仓库 HEAD）", head, base)
 	}
 }
+
+// TestPrepareWorkspaceRecordsNewBranchTip 验证三种工作树模式下，新建分支时
+// 都记下了它的尖端 sha，而切已存在分支时该字段为空。
+//
+// 判别力：最后一条（--branch 已存在分支 → NewBranchTip 必须为空）。缺了它，
+// 一个「无条件记 tip」的实现会让补偿把用户自己的分支删掉。
+func TestPrepareWorkspaceRecordsNewBranchTip(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+
+	// 新工作树 + 自动分支
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "aaaaaaaa-0000-0000-0000-000000000000",
+		NewWorktree: true, WorktreesDir: filepath.Join(t.TempDir(), "wt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.NewBranchTip != head {
+		t.Errorf("新建分支应记下尖端 %s，得到 %q", head, ws.NewBranchTip)
+	}
+	if ws.PrevRef != "" {
+		t.Errorf("managed 模式 PrevRef 应为空，得到 %q", ws.PrevRef)
+	}
+
+	// 新工作树 + 已存在分支
+	gitT(t, repo, "branch", "mine")
+	ws2, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "bbbbbbbb-0000-0000-0000-000000000000",
+		Branch: "mine", NewWorktree: true, WorktreesDir: filepath.Join(t.TempDir(), "wt2"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws2.NewBranchTip != "" {
+		t.Errorf("切已存在分支时 NewBranchTip 必须为空，得到 %q", ws2.NewBranchTip)
+	}
+}
+
+// TestPrepareWorkspaceRecordsPrevRefInPlace 验证原地模式记下了切走之前的分支名。
+func TestPrepareWorkspaceRecordsPrevRefInPlace(t *testing.T) {
+	repo := initTestRepo(t)
+	before := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "cccccccc-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.PrevRef != before {
+		t.Errorf("原地模式应记下原分支 %s，得到 %q", before, ws.PrevRef)
+	}
+	if ws.NewBranchTip == "" {
+		t.Error("原地模式自动分支也是新建分支，NewBranchTip 不应为空")
+	}
+}
+
+// TestPrepareWorkspaceRecordsPrevRefDetached 验证 detached HEAD 起步时，
+// PrevRef 退回 commit sha——它同样能直接喂给 git checkout 复原。
+//
+// 判别力：一个只用 symbolic-ref 的实现在这里会记下空串，补偿就无从复原。
+func TestPrepareWorkspaceRecordsPrevRefDetached(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "checkout", "--detach", "-q", head)
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "dddddddd-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.PrevRef != head {
+		t.Errorf("detached 起步应记下 commit sha %s，得到 %q", head, ws.PrevRef)
+	}
+}
+
+// TestEnsureRepoUsableAcceptsRepo 正常仓库必须放行——守卫不能把好路径也拦下来。
+func TestEnsureRepoUsableAcceptsRepo(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := EnsureRepoUsable(context.Background(), repo); err != nil {
+		t.Fatalf("正常仓库 EnsureRepoUsable: %v", err)
+	}
+}
+
+// TestEnsureRepoUsableRejectsNonGitPath 钉住 B45 的判据：路径存在但不是 git 仓库
+// 时必须归入 ErrRepoUnusable，而不是留给后面的 worktree add 扁平成 500。
+// 错误文本必须带 git 的原因，只有哨兵等于没说。
+func TestEnsureRepoUsableRejectsNonGitPath(t *testing.T) {
+	err := EnsureRepoUsable(context.Background(), t.TempDir())
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("非 git 目录 err = %v, want ErrRepoUnusable", err)
+	}
+	if err.Error() == ErrRepoUnusable.Error() {
+		t.Fatalf("错误文本必须带 git 原因，不能只有哨兵: %q", err.Error())
+	}
+}
+
+// TestEnsureRepoUsableGitMissing 覆盖 spec §3.2 的第二种形态：git 不在 PATH
+// （gitRun 返回 exec 错误、stderr 为空）同样归入 ErrRepoUnusable，不能因为
+// stderr 空就漏掉分类。
+func TestEnsureRepoUsableGitMissing(t *testing.T) {
+	repo := initGitRepo(t) // 必须在改 PATH 之前建仓库
+	t.Setenv("PATH", "")
+	err := EnsureRepoUsable(context.Background(), repo)
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("git 不在 PATH 时 err = %v, want ErrRepoUnusable", err)
+	}
+}
