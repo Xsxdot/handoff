@@ -160,7 +160,7 @@ matrix: [darwin/arm64, darwin/amd64, linux/amd64, linux/arm64]
 
 `internal/service` 提供平台无关接口，`launchd.go` / `systemd.go` 两实现。
 
-- **macOS**：`~/Library/LaunchAgents/dev.gosuper.handoff.agentd.plist`，`KeepAlive: true`（对应 systemd 的 `Restart=always`），`AbandonProcessGroup: true`
+- **macOS**：`~/Library/LaunchAgents/dev.gosuper.handoff.agentd.plist`，`KeepAlive: true`（对应 systemd 的 `Restart=always`）。**不需要 `AbandonProcessGroup`**——P1 实测已排除，见下
 - **Linux**：`/etc/systemd/system/handoff-agentd.service`，需 sudo；**无权限时必须明确提示「需要 sudo」而不是扁平报 500/权限错误**（B45 的教训：真因只落在日志里等于没有）
 - 单元的 `ExecStart` 写 `<EvalSymlinks 解析后的绝对路径>/handoff agentd`，**不带 `--executor`**（D5）
 - `install` 的动作：生成单元 → 写盘 → 加载 → 启动 → **复核真的起来了**（探 `listen` 端口或查管理器状态），失败则回滚（卸载单元）并报真因
@@ -214,11 +214,24 @@ agentd 启动时若 `update.auto` 为 true，起一个 goroutine，每 `update.i
 正确判据是**进程管理器注入的环境变量**：
 
 - Linux / systemd：`INVOCATION_ID` 非空（systemd 为每个 unit 调用注入唯一 id）
-- macOS / launchd：`XPC_SERVICE_NAME` 非空且等于 job label
+- macOS / launchd：`XPC_SERVICE_NAME` 非空**且不等于 `"0"`**
+
+**P1 实测结果（08-11，devbox，macOS 15 / Darwin arm64）**：
+
+| 场景 | `XPC_SERVICE_NAME` | `INVOCATION_ID` |
+|---|---|---|
+| launchd job（`launchctl bootstrap gui/501`） | `"dev.handoff.probe"`（= job Label） | 空 |
+| ssh 会话里直接跑 | 空 | 空 |
+| tmux 会话里跑 | 空 | 空 |
+| 真实的 7777 agentd（tmux 托管，pid 82909） | 空 | 空 |
+
+判据成立：launchd 托管时非空且等于 Label，三种非托管形态全部为空。`INVOCATION_ID` 在 macOS 上恒空，它只是 systemd 侧的判据。
+
+`!= "0"` 这条额外防御的来由：从 Finder / Terminal.app 启动的进程会继承 `XPC_SERVICE_NAME=0`（launchd 给非 XPC 服务的占位值）。ssh 与 tmux 路径上探不到它，但 macOS 桌面上直接双击/在 Terminal 里跑 agentd 会命中，只判「非空」会把它误判成托管。这一条**未在 P1 实测**（无桌面会话可用），按防御性写入。
+
+**systemd 侧未实测**：两台可用机器都是 macOS，原定的 Linux 临时机（47.80.243.95）已回收。`INVOCATION_ID` 判据依据 systemd 文档写入，实现侧靠单测（注入环境变量的表驱动用例）覆盖，真机验证记为待补（见 §10）。
 
 判不出来时**按「非托管」处理**（fail-closed）。
-
-> **实现前必须验证**：这两个环境变量的实际存在性与取值，要在 devbox 的隔离实例上各起一次托管进程实测（`handoff service install` 后读进程自身的 environ），不得凭印象写死。这条并入 P1 探针一起做。
 
 ### 4.8 CLI 侧更新提示
 
@@ -319,10 +332,27 @@ type UpdateConfig struct {
 
 | 探针 | 内容 | 阻塞性 |
 |---|---|---|
-| **P1** | **launchd 重启 agentd 时执行者是否活下来**。macOS 没有 `KillMode=process` 的直接等价物；已知要设 `AbandonProcessGroup: true`，但是否足够未经验证 | **阻塞设计**：必须先于实现完成。不过则 macOS 托管方案要重想（可能退回「不托管 macOS，只在 Linux 上启用自动更新」） |
+| ~~**P1**~~ | ~~**launchd 重启 agentd 时执行者是否活下来**~~ | **✅ 08-11 已做，全部通过，详见 §7.1** |
 | P2 | `install.sh` 在干净环境跑通（至少 darwin/arm64 与 linux/amd64） | 阻塞发布 |
 | P3 | 完整自更新一轮：发 `v0.0.1-test` → 装上 → 发 `v0.0.2-test` → 观察走完 §4.6 全流程，日志链完整 | 阻塞发布 |
 | P4 | 有活跃任务时不换（观察 Info「等 N 个活跃任务」），任务结束后自动换 | 阻塞发布 |
+
+### 7.1 P1 探针结果（08-11 实测，devbox / Darwin arm64）
+
+方法：一个 Go 探针以 `SysProcAttr{Setsid: true}` 拉起 `sleep 3000`（与 [internal/prochost/platform_unix.go:70](../../../internal/prochost/platform_unix.go) 完全同一种拉起方式），自身注册为 LaunchAgent（`KeepAlive: true`，**未设** `AbandonProcessGroup`），全程只写 `/tmp/b542-probe/`，验完即 `bootout` + 删目录，未触碰 7777 与 `~/.handoff/`。
+
+| 判定 | 结果 |
+|---|---|
+| setsid 子进程能否活过 `launchctl kickstart -k` | **能**。父进程 8023 被 launchd 杀掉，子进程 8025 从 `ppid=8023` 改挂到 `ppid=1` 继续存活 |
+| setsid 子进程能否活过 `launchctl bootout` | **能**。父进程 8058 退出，子进程 8060 同样改挂 `ppid=1` 存活 |
+| `KeepAlive: true` 下进程 `exit 0` 会不会被重新拉起 | **会**。15 秒窗口内被拉起 2 次（launchd 对重生有约 10 秒节流） |
+| 需要 `AbandonProcessGroup: true` 吗 | **不需要**。上述两项都是在没设它的情况下通过的 |
+
+**结论**：§10 原来的空白关闭，macOS 托管方案照常做，`launchd.go` 可以开工，plist 里不写 `AbandonProcessGroup`。setsid 已经把执行者放进独立会话，launchd 的收割够不着它——与 systemd 侧 `KillMode=process` 的效果一致。
+
+**一个实现要点**：launchd 重生有约 10 秒节流，所以自更新的「exit 0 → 管理器拉起」不是瞬时的，新版起来前会有约 10 秒空窗。这不影响执行者（它们独立存活），但期间 `dispatch` / `reply` 之类的 HTTP 调用会失败。README 要写明这一点。
+
+**探针自身的一个坑，记下来免得重犯**：第一版探针用 `select{}` 挂起，Go 运行时判定「所有 goroutine 都在睡」直接 panic 退出，父进程启动即自杀、被 launchd 每 10 秒拉起一次。这让第一轮的「子进程活下来了」变成了假结论——被测的父进程当时早已死了，launchd 的收割根本没作用在它身上。改成 `for { time.Sleep(time.Minute) }` 后复测才是有效结论。**任何「进程活过了 X」的探针，都必须先确认被测进程在 X 发生的那一刻确实活着。**
 
 ## 8. 人工前置动作
 
@@ -336,11 +366,14 @@ type UpdateConfig struct {
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| P1 探针不过（launchd 杀执行者） | macOS 上自动更新会中断正在跑的任务 | 探针阻塞设计。不过则退回「macOS 不托管 / 不自动更新」，Linux 侧照做 |
+| ~~P1 探针不过（launchd 杀执行者）~~ | — | **已排除**：08-11 实测通过，见 §7.1 |
+| systemd 侧的 `INVOCATION_ID` 判据未经真机验证 | Linux 上「非托管则拒绝自动更新」这道防线可能失效——最坏情况是把托管进程误判为非托管，表现为「装了服务却永远不自动更新」（fail-closed 方向，不会造成服务消失） | 实现侧靠注入环境变量的表驱动单测覆盖；等有 Linux 机器时补 P1-linux 探针。**注意误判方向是安全的那一侧**，这是接受此风险的前提 |
 | 新版有逻辑回归但能正常启动 | 自动传播到所有机器 | 设计内无解（D10 已说明自动回滚也判断不出来）。缓解靠发版纪律：tag 前跑全量测试 |
 | GitHub API 匿名限流 | 版本检查失败 | 6h 一轮远低于 60 次/小时；失败即 Warn 跳过，下轮再来，不影响任何既有功能 |
 | 同一台机器上多个 agentd 实例（如验证实例）都开了自动更新 | 互相干扰 | 验证实例的配置一律 `update.auto: false`；且 §4.7 的「非托管则拒绝」已挡住绝大多数情况 |
 
 ## 10. 待验证的空白
 
-- **launchd 的 `AbandonProcessGroup: true` 是否足以让 setsid 的执行者活过 agentd 重启**——P1 探针要回答的正是这个。在它出结果之前，`internal/service/launchd.go` 的实现不应开工。
+- ~~**launchd 的 `AbandonProcessGroup: true` 是否足以让 setsid 的执行者活过 agentd 重启**~~——**08-11 已闭合**，见 §7.1：不设 `AbandonProcessGroup` 也能活，因此 plist 里不写它。
+- **systemd 的 `INVOCATION_ID` 判据未经真机验证**。两台可用机器都是 macOS，原定的 Linux 临时机（47.80.243.95）已回收连不上。按 systemd 文档实现，靠单测覆盖，真机验证待补。
+- **macOS 桌面会话里 `XPC_SERVICE_NAME=0` 的占位值未经实测**。ssh 与 tmux 路径上探不到它，`!= "0"` 这条防御按文献写入（见 §4.7）。若日后发现桌面启动的 agentd 被误判成托管，从这里查。
