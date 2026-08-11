@@ -65,7 +65,7 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 
 ```bash
 # 1. 派发（仓库工作区必须干净，否则被拒——脏改动会被污染进任务分支）
-handoff dispatch --repo /path/to/repo --new-worktree --executor opencode plan.md
+handoff dispatch --new-worktree --executor opencode plan.md
 # stdout 第一行是任务 JSON，取 .id 作为后续所有命令的 <task>
 
 # 2. 挂等待（阻塞，一次只返回一个事件）
@@ -139,15 +139,15 @@ handoff wait <task> --notify --timeout 1h
 这条机制有三个必须记住的边界：
 
 - **只 commit 不够，必须 push。** 校验的是「远端能不能 fetch 到这个 commit」。没推上去的提交，远程永远拿不到；未提交的改动更是完全不可见——校验会拿你的 HEAD 去比，而 HEAD 不含工作区的脏改动，所以它会**静默通过**，然后 executor 基于一份没有你最新改动的代码开工。
-- **基线取自 cwd，不是 `--repo`。** 必须在本地那份同仓库的 checkout 里发 `dispatch`。cwd 不是 git 仓库时只打一行提示就跳过校验（「远程仓库可能落后于你的本地代码」），不报错——这是最容易悄悄踩空的一格。
+- **项目本身就取自 cwd，所以必须在项目目录里发 `dispatch`。** 项目由当前工作目录的 origin 识别，基线同样取自 cwd。cwd 不是 git 仓库时**直接被拒**，不会像以前那样只打一行提示就放行。
 - **新分支的起点是你派发时的本地 HEAD，不是执行机仓库的 HEAD。** agentd 收到基线后，既拿它做存在性校验，也拿它做新分支的起点——两件事出自同一次决议，不会再分叉（B35 之前会：校验的是你的基线，开分支用的是执行机 HEAD，中间可以差出几十个提交而毫无痕迹）。派发成功后 stderr 会打一行 `基线 <短号>`；执行机仓库比这个起点新时还会补上「领先 N 个提交，新分支不含它们」。
-- **`--no-sync-check` 关掉的不止是校验。** 它同时关掉起点决议——没有基线可用时，新分支的起点退回执行机仓库当前的 HEAD（很可能是旧的）。只在 cwd 和 `--repo` 根本不是同一个仓库时用它。
+- **`--no-sync-check` 关掉的不止是校验。** 它同时关掉起点决议——没有基线可用时，新分支的起点退回执行机仓库当前的 HEAD（很可能是旧的）。只在 cwd 与 `--project` 指定的项目不是同一个仓库时用它。
 
 稳妥的远程派发姿势：
 
 ```bash
 git push                                                  # 缺这步必被拒
-handoff dispatch --target devbox --repo /remote/path \
+handoff dispatch --target devbox \
   --new-worktree --new-branch feat/x plan.md              # 起点自动取你当前的 HEAD
 ```
 
@@ -166,6 +166,13 @@ handoff pull <task> --target devbox
 去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 的机器还需要在配置里配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。
 
 本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。
+
+**项目由 cwd 识别，第一次派到某台开发机会自动登记。** 你不需要（也无法）告诉
+handoff「代码在那台机器的哪个目录」——那是它自己的事。首次派发会多一次往返，
+远程还含一次全量 clone，stderr 会打出「正在让 <机器> 克隆 …」。
+
+**在 worktree 里派发会归并到主仓。** 项目位置永远是主工作树，不是你当前所在的
+那个 worktree。想接着某个分支干，用 `--base <分支>` 显式表达。
 
 ### 重连/补挂后的第一行：`backlog_summary`
 
