@@ -62,6 +62,12 @@ const (
 	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
 	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
 	EventTypePermissionReuse EventType = "permission_reuse"
+	// EventTypeDenyGuidanceRelayed 表示审核者拒绝时给出的原因已作为一条消息
+	// 下发给 executor（B50）。
+	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"
+	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
+	// 就终结了。审核者据此知道要用 continue 自己把话带上。
+	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
 )
 
 // Task 表示一个 handoff 任务。

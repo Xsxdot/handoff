@@ -123,10 +123,13 @@ type Manager struct {
 	//   - apInflight：正在裁决中的 ticket id 集合（防 SSE 重放双呼审批者）
 	//   - apFails：每任务连续裁决失败计数（Err 非 nil 才累计）
 	//   - apDisabled：已停用审批链的任务集合（连续失败 3 次）
-	apMu       sync.Mutex
-	apInflight map[string]bool
-	apFails    map[string]int
-	apDisabled map[string]bool
+	//   - denyGuidance：审核者拒绝时给出的原因，等下一条 question 到达时下发
+	//     （取走式，见 takeDenyGuidance 的 why）
+	apMu         sync.Mutex
+	apInflight   map[string]bool
+	apFails      map[string]int
+	apDisabled   map[string]bool
+	denyGuidance map[string]string
 	// stopping 是「接下来这次事件通道关闭是我们自己发起的」的意图标记
 	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
 	mu       sync.Mutex
@@ -150,12 +153,13 @@ type Manager struct {
 func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,
-		env:        envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
-		apInflight: map[string]bool{},
-		apFails:    map[string]int{},
-		apDisabled: map[string]bool{},
-		aaCount:    map[string]int{},
-		stopping:   map[string]struct{}{},
+		env:          envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
+		apInflight:   map[string]bool{},
+		apFails:      map[string]int{},
+		apDisabled:   map[string]bool{},
+		denyGuidance: map[string]string{},
+		aaCount:      map[string]int{},
+		stopping:     map[string]struct{}{},
 	}
 }
 
@@ -370,6 +374,15 @@ type permissionReusePayload struct {
 	PriorTicketID string `json:"prior_ticket_id"`
 	Fingerprint   string `json:"fingerprint"`
 	Permission    string `json:"permission"`
+}
+
+// denyGuidancePayload 是 deny_guidance_relayed / deny_guidance_dropped 事件的
+// payload：审核者拒绝时给出的原因。Dropped 时 Cause 说明没能下发的缘由
+// （回合终结 / adapter 解析失败 / Send 失败），审核者据此知道要用 continue
+// 自己把话带上。
+type denyGuidancePayload struct {
+	Reason string `json:"reason"`
+	Cause  string `json:"cause,omitempty"`
 }
 
 // maxApproverFails 是同任务审批者连续裁决失败（Err 非 nil）多少次后停用审批链。
@@ -1174,7 +1187,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 	}
 	switch req.Kind {
 	case "gate":
-		decision := gateDecision(answer)
+		decision, reason := gateDecision(answer)
 		// ticket id 已按任务命名空间化（taskID:permID，见 handlePermission 的 why），
 		// 而 adapter 契约要求裸 PermissionID：剥掉 taskID 前缀还原。invariant：
 		// gate 工单 id 恒由 handlePermission 以 taskID+":"+permID 生成，
@@ -1193,6 +1206,9 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
+		// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
+		// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
+		m.noteDenyGuidance(taskID, reason)
 		m.markDelivered(taskID, ticketID)
 		return nil
 	case "ask":
@@ -1599,17 +1615,35 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	m.escalatePermission(ctx, taskID, ev, ticketID)
 }
 
-// clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled）。
+// clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled/denyGuidance）。
 //
-// 调用点：任务终结处——Done 归档（→completed）与 handleResult 的回合结束
-// （→waiting_review）。为什么必须清理（P2-5）：这两张是进程内内存 map，任务
-// 归档后若不清，条目随任务数无界增长；且任务被续接时旧的禁用标记/失败计数
-// 也不该残留（新回合从干净状态重新评估审批链）。
+// 调用点：任务终结处——Done 归档（→completed）、stop（→failed）与 handleResult
+// 的回合结束（→waiting_review）。为什么必须清理（P2-5）：这两张是进程内内存
+// map，任务归档后若不清，条目随任务数无界增长；且任务被续接时旧的禁用标记/
+// 失败计数也不该残留（新回合从干净状态重新评估审批链）。
+//
+// 为什么这里一并处理 denyGuidance：拒绝原因的生命周期是「从这次拒绝到下一条
+// 提问」；回合终结意味着那条提问永远不会来了。若删除时原因还挂着，说明审核者
+// 说的话没机会送达——必须落一条 deny_guidance_dropped 审计事件说明去向，
+// 「审核者说的话去哪了」在任何路径下都有答案（B50）。
 func (m *Manager) clearApproverState(taskID string) {
 	m.apMu.Lock()
 	delete(m.apFails, taskID)
 	delete(m.apDisabled, taskID)
+	guidance, had := m.denyGuidance[taskID]
+	delete(m.denyGuidance, taskID)
 	m.apMu.Unlock()
+	if had {
+		m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
+			"task", taskID, "reason", truncateRunes(guidance, 80))
+		if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+			denyGuidancePayload{
+				Reason: guidance,
+				Cause:  "回合在拒绝原因下发前终结（Done/stop/result），未送达 executor",
+			}); err != nil {
+			m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+		}
+	}
 }
 
 // countApproverFail 累计一次任务级裁决失败，达到 maxApproverFails 时停用该任务
@@ -1777,21 +1811,107 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 	return true
 }
 
-// gateDecision 把 gate 工单的应答翻译成 executor 的 decision，规则单一：
-// answer trim 后严格等于 "allow" → "once"（批准本次），其余一律 "reject"。
+// gateDecision 把审核者对 gate 工单的应答翻译成回传 executor 的裁决与可选原因。
 //
-// 为什么严格相等（P0-2）：answer 是契约值，只有精确的 allow 才代表批准；
-// 审批者自动批准写入的也是精确 "allow"（理由在 approver_decision 事件的
-// Reason 字段）——若把理由塞进 answer，resume 重投（RelayAnswer）时这条长串
-// 会落在「其余一律 reject」上，审批者明确批准的操作被系统自己改判为拒绝。
+// 参数：answer 为审核者应答原文（CLI 侧 --approve → "allow"、
+// --deny [--reason r] → "deny" 或 "deny: r"，见 cmd/reply.go）
 //
-// 两处调用（waitPermission 的应答回传、RelayAnswer 的自愈中继）必须走同一
-// 翻译，复制字面量就是漂移面。
-func gateDecision(answer string) string {
-	if strings.TrimSpace(answer) == "allow" {
-		return "once"
+// 返回：
+//   - decision: "once"（严格等于 "allow" 时）或 "reject"（其余一律）
+//   - reason: 拒绝原因；无原因或批准时为空串
+//
+// 注意：
+//   - 「非 allow 一律 reject」是安全语义，本函数新增 reason 返回值**不改变**它——
+//     原因是给模型看的旁路信息，不参与裁决
+func gateDecision(answer string) (decision, reason string) {
+	trimmed := strings.TrimSpace(answer)
+	if trimmed == "allow" {
+		return "once", ""
 	}
-	return "reject"
+	rest := strings.TrimPrefix(trimmed, "deny")
+	rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
+	if rest == trimmed {
+		// 前缀根本不是 deny（如审核者手工 POST 了任意文本）：照旧 reject，
+		// 但那段文本不是「拒绝原因」，不下发给模型
+		return "reject", ""
+	}
+	return "reject", rest
+}
+
+// noteDenyGuidance 登记一条待下发的拒绝原因。
+//
+// 参数：taskID 为任务 id；reason 为审核者给出的原因（空串直接忽略）
+//
+// 为什么不立刻 Send：executor 收到 reject 会当场终结回合（opencode 实测），
+// 此刻发消息会撞上正在终结的回合，而回合终结时 adapter 还会补一条兜底提问——
+// 审核者刚说完怎么改，又被问一遍「请给出下一步指令」。挂起到下一条 question
+// 到达时再下发，正好用那次机会开新回合。
+func (m *Manager) noteDenyGuidance(taskID, reason string) {
+	if strings.TrimSpace(reason) == "" {
+		return
+	}
+	m.apMu.Lock()
+	m.denyGuidance[taskID] = reason
+	m.apMu.Unlock()
+	m.log.Info("登记待下发的拒绝原因", "task", taskID,
+		"reason", truncateRunes(reason, 80))
+}
+
+// takeDenyGuidance 取走任务挂起的拒绝原因（读后即清）。
+//
+// 返回：挂起的原因；没有则为空串
+//
+// 为什么必须取走式：原因的生命周期是「从这次拒绝到下一条提问」。常驻会让后续
+// 的真提问被永久吞掉，任务停在 running 无人知晓——与 askedViaTool 同一个坑。
+func (m *Manager) takeDenyGuidance(taskID string) string {
+	m.apMu.Lock()
+	defer m.apMu.Unlock()
+	r := m.denyGuidance[taskID]
+	delete(m.denyGuidance, taskID)
+	return r
+}
+
+// relayDenyGuidance 把审核者的拒绝原因作为一条普通消息下发给 executor，开新回合。
+//
+// 注意：
+//   - **不得触碰状态机**：本分支不建工单，落 waiting_answer 会造出「等你回答却
+//     零挂起工单」的死形态（reply/continue/done 三条路全封死）。任务保持 running
+//   - Send 失败只记 Error + 审计事件：executor 此刻没有在等任何应答，
+//     发不出去不会让任何东西挂死，审核者可用 continue 自己把话带上
+func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string) {
+	text := "你请求的操作已被审核者拒绝。原因：" + guidance +
+		"\n请据此调整做法后继续，不要重复发起同一请求。"
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("下发拒绝原因：解析执行者失败", "task", taskID, "cause", err)
+		m.appendGuidanceDropped(taskID, guidance, err)
+		return
+	}
+	actx, acancel := unaryCtx(ctx)
+	defer acancel()
+	if err := ad.Send(actx, taskID, text); err != nil {
+		m.log.Error("下发拒绝原因失败", "task", taskID, "cause", err)
+		m.appendGuidanceDropped(taskID, guidance, err)
+		return
+	}
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceRelayed,
+		denyGuidancePayload{Reason: guidance}); err != nil {
+		m.log.Error("追加 deny_guidance_relayed 事件失败", "task", taskID, "cause", err)
+	}
+	m.log.Info("拒绝原因已下发，executor 将据此开新回合", "task", taskID,
+		"reason", truncateRunes(guidance, 80))
+}
+
+// appendGuidanceDropped 记录拒绝原因没能下发的审计事件与告警：回合在下一条
+// 提问到达前就终结了，审核者说的话无处送达，必须留痕让审核者知道用 continue
+// 自己把话带上（B50）。
+func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		denyGuidancePayload{Reason: guidance, Cause: cause.Error()}); err != nil {
+		m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+	}
+	m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
+		"task", taskID, "reason", truncateRunes(guidance, 80), "cause", cause)
 }
 
 // waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
@@ -1818,7 +1938,7 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 
 	// 回迁失败（reply 回程的 resumeIfIdle 已抢先回迁）由 transitBestEffort 容忍
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "permission 已应答")
-	decision := gateDecision(ans)
+	decision, reason := gateDecision(ans)
 	// 派生子 ctx 只约束调用本身（unaryCtx 的 why）：等答案阶段早已结束，此处的
 	// parent 是任务级 ctx（取消无截止），不加超时的话半死 executor 会让本调用挂死
 	actx, acancel := unaryCtx(ctx)
@@ -1835,6 +1955,9 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
+	// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
+	// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
+	m.noteDenyGuidance(taskID, reason)
 	m.markDelivered(taskID, ticketID)
 }
 
@@ -1844,6 +1967,17 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 // 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer 再 Publish；
 // waiter 注册异步，reply 先于注册到达时退化为自愈中继路径兜底。
 func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
+	// 拒绝原因优先下发（B50）：审核者刚说完该怎么改，此刻 executor 的任何提问
+	// 都应先收到那条指令。收到后若仍要问，它会再发一次 question——那时 guidance
+	// 已消费，正常出单。
+	//
+	// 这里刻意不区分「被拒终止的兜底提问」与「模型真的在问问题」：manager 没有
+	// 可靠判据（文本前缀匹配一改文案就失效）。吞错的代价是**模型**的一个回合，
+	// 漏抑制的代价是**审核者**的一个回合——后者正是本条要消灭的东西。
+	if guidance := m.takeDenyGuidance(taskID); guidance != "" {
+		m.relayDenyGuidance(ctx, taskID, guidance)
+		return
+	}
 	// 工单 id 优先用 executor 的原生提问 id 派生（taskID:questionID），与 gate
 	// 工单同构、天然幂等：agentd 重启后 executor 重放同一个 request 时，
 	// CreateTicket 直接返回 created=false，不会产出第二张永远答不掉的单（B58）。

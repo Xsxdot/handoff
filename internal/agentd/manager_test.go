@@ -1761,3 +1761,101 @@ func TestQuestionWithoutIDFallsBackToUUID(t *testing.T) {
 		t.Fatalf("无 id 的两次提问应出两张单，得到 %d 张", len(pending))
 	}
 }
+
+// TestGateDecisionParsesReason 表驱动钉住 gate 应答的翻译：只有严格 "allow"
+// 放行，其余一律 reject；reason 从 deny/deny: 前缀后取余文。
+func TestGateDecisionParsesReason(t *testing.T) {
+	cases := []struct {
+		name, answer, wantDecision, wantReason string
+	}{
+		{"批准", "allow", "once", ""},
+		{"批准带空白", "  allow  ", "once", ""},
+		{"裸拒绝", "deny", "reject", ""},
+		{"带原因", "deny: 改用 go build ./...", "reject", "改用 go build ./..."},
+		{"带原因无空格", "deny:改用 go build", "reject", "改用 go build"},
+		{"任意文本", "看着办", "reject", ""},
+		{"空串", "", "reject", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, r := gateDecision(c.answer)
+			if d != c.wantDecision || r != c.wantReason {
+				t.Fatalf("gateDecision(%q) = (%q,%q)，期望 (%q,%q)",
+					c.answer, d, r, c.wantDecision, c.wantReason)
+			}
+		})
+	}
+}
+
+// TestDenyGuidanceRelayedOnNextQuestion 验证 B50：带原因的拒绝，其原因在下一条
+// question 到达时被 Send 给 executor，且该分支不建工单、不落 waiting_answer。
+func TestDenyGuidanceRelayedOnNextQuestion(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用 go build ./...")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", Text: "上一步操作因权限被拒而终止了本回合",
+	})
+
+	// 不建工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("guidance 分支不应建工单，得到 %+v", pending)
+	}
+	// 不落 waiting_answer（否则就是「等你回答却零挂起工单」的死形态）
+	task, err := st.GetTask("T1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("状态 = %q，期望保持 running", task.State)
+	}
+	// 原因真的发给了 executor
+	sends := ad.sendsRec()
+	if len(sends) != 1 || !strings.Contains(sends[0], "改用 go build ./...") {
+		t.Fatalf("Send 记录 = %v，未包含拒绝原因", sends)
+	}
+	// 落了审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var relayed int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeDenyGuidanceRelayed {
+			relayed++
+		}
+	}
+	if relayed != 1 {
+		t.Fatalf("deny_guidance_relayed 事件 %d 条，期望 1", relayed)
+	}
+}
+
+// TestDenyGuidanceConsumedOnce 验证取走式：guidance 只抑制一条 question，
+// 第二条正常出单。常驻会让后续真提问被永久吞掉，任务停在 running 无人知晓。
+func TestDenyGuidanceConsumedOnce(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用别的办法")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题一"})
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题二"})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("第二条 question 应正常出单，挂起工单 %d 张", len(pending))
+	}
+}
