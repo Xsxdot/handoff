@@ -30,7 +30,7 @@ func TestConsolePrintURLOutputContract(t *testing.T) {
 	defer ts.Close()
 
 	var stdout bytes.Buffer
-	runConsoleForTest(t, &stdout, ts.URL, "测试令牌", []string{"--print-url"})
+	runSubcommandForTest(t, &stdout, ts.URL, "测试令牌", []string{"console", "--print-url"})
 
 	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
 	if len(lines) != 1 {
@@ -49,7 +49,7 @@ func TestConsoleAgentdNotRunning(t *testing.T) {
 	ts.Close()
 
 	var stdout bytes.Buffer
-	err := runConsoleForTest(t, &stdout, dead, "测试令牌", []string{"--print-url"})
+	err := runSubcommandForTest(t, &stdout, dead, "测试令牌", []string{"console", "--print-url"})
 	if err == nil {
 		t.Fatal("agentd 未运行时应报错")
 	}
@@ -61,10 +61,11 @@ func TestConsoleAgentdNotRunning(t *testing.T) {
 	}
 }
 
-// runConsoleForTest 以给定 flags 执行 console 子命令，把 stdout 写进 stdout 参数。
+// runSubcommandForTest 以给定 flags 执行一个子命令，把 stdout 写进 stdout 参数。
 //
+// args 的**第一个元素是子命令名**（如 "console"），其余是传给它的 flag/参数。
 // addr 是 fake agentd 的 http:// 地址；token 写进临时配置，让 TargetEndpoint 取到它。
-func runConsoleForTest(t *testing.T, stdout *bytes.Buffer, addr, token string, extraArgs []string) error {
+func runSubcommandForTest(t *testing.T, stdout *bytes.Buffer, addr, token string, args []string) error {
 	t.Helper()
 	cfgPath := writeTestConfig(t,
 		"listen: \""+strings.TrimPrefix(addr, "http://")+"\"\ntoken: \""+token+"\"\n")
@@ -77,7 +78,7 @@ func runConsoleForTest(t *testing.T, stdout *bytes.Buffer, addr, token string, e
 	// 本应失败的用例看似通过）；每次运行显式复位
 	consolePrintURL, consoleDevice, consoleNoOpen = false, "", false
 
-	rootCmd.SetArgs(append([]string{"console"}, extraArgs...))
+	rootCmd.SetArgs(args)
 	rootCmd.SetOut(stdout)
 	var errBuf bytes.Buffer
 	rootCmd.SetErr(&errBuf)
