@@ -268,33 +268,43 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 
 // renderCheckRow 渲染巡检表的一行（--check 默认行为）。
 //
-// 行内三段：名字（定宽）、信息、结论。本机必须分别显示二进制与 agentd 两个
-// 版本——换掉磁盘上的文件后正在跑的 agentd 仍是旧进程，这是正常且常见的
-// 中间态，合成一个数字就必然骗人（spec §4.1）。
+// 行内三段：名字（定宽）、信息、结论。结论一律来自 classify，本函数只负责把
+// verdict 翻译成一句话——判据不在这里，改判据请改 classify（B64）。
+//
+// 本机必须分别显示二进制与 agentd 两个版本——换掉磁盘上的文件后正在跑的 agentd
+// 仍是旧进程，这是正常且常见的中间态，合成一个数字就必然骗人（B59 spec §4.1）。
 func renderCheckRow(w io.Writer, s machineState, latest string) {
 	name := s.Ep.Name
-	switch {
-	case s.Ep.Local:
-		info := "二进制 " + dispVer(s.Bin)
+	v := classify(&s, latest)
+	if v == verdictUnreachable {
+		fmt.Fprintf(w, "%-8s 够不着（%s）\n", name, s.Err)
+		return
+	}
+	info := s.Agentd
+	if s.Ep.Local {
+		info = "二进制 " + dispVer(s.Bin)
 		if s.Agentd == "" {
 			info += " · agentd 未运行"
 		} else {
 			info += " · agentd " + s.Agentd
 		}
-		concl := "需要升级"
-		if s.Bin == latest && (s.Agentd == "" || s.Agentd == latest) {
-			concl = "已是最新"
-		}
-		fmt.Fprintf(w, "%-8s %s%s%s\n", name, info, checkPad(info), concl)
-	case s.Err != nil:
-		fmt.Fprintf(w, "%-8s 够不着（%s）\n", name, s.Err)
-	case s.Platform == "":
-		concl := "对端过旧（未上报平台）"
-		fmt.Fprintf(w, "%-8s %s%s%s\n", name, s.Agentd, checkPad(s.Agentd), concl)
-	case s.Agentd == latest:
-		fmt.Fprintf(w, "%-8s %s%s%s\n", name, s.Agentd, checkPad(s.Agentd), "已是最新")
+	}
+	fmt.Fprintf(w, "%-8s %s%s%s\n", name, info, checkPad(info), checkConclusion(v))
+}
+
+// checkConclusion 把结论翻译成巡检表里的一句话。
+//
+// 只有「已是最新」与「对端过旧」值得单独措辞：其余几格（非托管、未上报托管、
+// 该升级）在只读巡检下的行动含义相同——都是「这台机器落后了」，差别体现在
+// --now 的处置里，不该在巡检表上提前吓人。
+func checkConclusion(v verdict) string {
+	switch v {
+	case verdictLatest:
+		return "已是最新"
+	case verdictTooOld:
+		return "对端过旧（未上报平台）"
 	default:
-		fmt.Fprintf(w, "%-8s %s%s%s\n", name, s.Agentd, checkPad(s.Agentd), "需要升级")
+		return "需要升级"
 	}
 }
 
@@ -330,48 +340,62 @@ func (ms *machineState) isLatest(latest string) bool {
 }
 
 // process 对一台机器执行升级，返回结果分类。
+//
+// 结论来自 classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
+// busy 闸不在 classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
+// ——否则会对一台已是最新的忙机器建议 --force，而那条命令跑完只会说「已是最新」。
 func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel release.Release) outcome {
 	out := cmd.OutOrStdout()
 	name := ms.Ep.Name
-	slog.Default().Info("开始处理机器", "name", name, "addr", ms.Ep.Addr, "local", ms.Ep.Local)
 	peer := newAgentdClient(ms.Ep)
+	v := classify(ms, rel.Tag)
+	slog.Default().Info("开始处理机器", "name", name, "addr", ms.Ep.Addr, "local", ms.Ep.Local,
+		"verdict", v.String(), "platform", ms.Platform, "busy", ms.Busy)
 
-	// 本机 agentd 未运行：不是失败——敲命令的人知道自己要不要把 agentd 起
-	// 回来。退回纯换文件并如实提示需自己重启
-	if ms.Ep.Local && ms.Err != nil {
-		oc := ms.localSwap(ctx, out, rel)
-		if oc == outcomeOK {
-			fmt.Fprintf(out, "%-8s 成功   已换文件；agentd 未运行，请自行重启它\n", name)
-		}
-		return oc
-	}
-
-	// 远端够不着：只报原始错误原文，不编处置——编一条建议就是在猜，而猜出来
-	// 的建议会把人引到错误的方向
-	if ms.Err != nil {
+	switch v {
+	case verdictUnreachable:
+		// 只报原始错误原文，不编处置——编一条建议就是在猜，而猜出来的建议会把人
+		// 引到错误的方向
 		slog.Default().Warn("机器够不着", "name", name, "cause", ms.Err)
 		fmt.Fprintf(out, "%-8s 失败   %s\n", name, ms.Err)
 		return outcomeFail
-	}
 
-	// 闸二：非托管（force 也不越过）。本机纯换文件路径不受闸二约束——敲命令
-	// 的人知道要自己把 agentd 起回来；但触发重启的路径受约束（spec §4.3）
-	if ms.Managed != nil && !*ms.Managed {
+	case verdictLatest:
+		slog.Default().Info("跳过：已是最新", "name", name)
+		fmt.Fprintf(out, "%-8s 跳过   已是最新\n", name)
+		return outcomeSkip
+
+	case verdictTooOld:
+		// 明确拒绝而不是猜一个默认平台——猜错就是给一台 linux 机器推 darwin 二进制
+		slog.Default().Info("跳过：对端未上报平台", "name", name)
+		fmt.Fprintf(out, "%-8s 跳过   对端 agentd 过旧，未上报平台，需先手工升级到 ≥v0.1.1\n", name)
+		return outcomeSkip
+
+	case verdictAgentdDown:
+		return ms.swapAndTell(ctx, out, rel, "agentd 未运行，请自行重启它")
+
+	case verdictUnmanaged:
 		if ms.Ep.Local {
-			oc := ms.localSwap(ctx, out, rel)
-			if oc == outcomeOK {
-				fmt.Fprintf(out, "%-8s 成功   已换文件；agentd 非托管启动，请自行重启它\n", name)
-			}
-			return oc
+			return ms.swapAndTell(ctx, out, rel, "agentd 非托管启动，请自行重启它")
 		}
 		slog.Default().Info("跳过：agentd 非托管", "name", name)
 		fmt.Fprintf(out, "%-8s 跳过   agentd 非托管启动，重启后不会被拉起\n", name)
 		// 不给 --force：它不越过闸二，给了就是让用户跑一条注定失败的命令
 		fmt.Fprintf(out, "         先在该机器上 handoff service install\n")
 		return outcomeSkip
+
+	case verdictManagedUnknown:
+		if ms.Ep.Local {
+			return ms.swapAndTell(ctx, out, rel, "无法确认 agentd 是否托管启动，请自行重启它")
+		}
+		// 不猜托管（猜错=换完没人拉起，这台机器就此没有 agentd 且无人知晓），
+		// 也不猜非托管（猜错=把人引去装一个可能早已装好的 service，即 B64 原症状）
+		slog.Default().Info("跳过：对端未上报托管状态", "name", name)
+		fmt.Fprintf(out, "%-8s 跳过   对端未上报托管状态，无法确认换版后能否被拉起\n", name)
+		return outcomeSkip
 	}
 
-	// 闸一：活跃任务，--force 可越过
+	// verdictNeedsUpgrade：闸一（活跃任务，--force 可越过）
 	if ms.Busy > 0 && !upgradeForce {
 		slog.Default().Info("跳过：有活跃任务", "name", name, "busy", ms.Busy)
 		fmt.Fprintf(out, "%-8s 跳过   %d 个活跃任务\n", name, ms.Busy)
@@ -382,26 +406,22 @@ func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel rel
 		}
 		return outcomeSkip
 	}
-
-	// 对端过旧未上报平台：明确拒绝而不是猜一个默认值——猜错就是给一台
-	// linux 机器推 darwin 二进制（spec §4.4）
-	if !ms.Ep.Local && ms.Platform == "" {
-		slog.Default().Info("跳过：对端未上报平台", "name", name)
-		fmt.Fprintf(out, "%-8s 跳过   对端 agentd 过旧，未上报平台，需先手工升级一次\n", name)
-		return outcomeSkip
-	}
-
-	// 已是最新：跳过，不算失败
-	if ms.isLatest(rel.Tag) {
-		slog.Default().Info("跳过：已是最新", "name", name)
-		fmt.Fprintf(out, "%-8s 跳过   已是最新\n", name)
-		return outcomeSkip
-	}
-
 	if ms.Ep.Local {
 		return ms.localUpgrade(ctx, out, peer, rel)
 	}
 	return ms.remoteUpgrade(ctx, out, peer, rel)
+}
+
+// swapAndTell 只换本机文件、不触发重启，并如实说明「为什么要你自己重启」。
+//
+// 三种本机情形共用（agentd 未运行 / 非托管 / 托管状态未知）：都不能靠接口重启，
+// 差别只在给操作者的那句理由，所以理由由调用方传入。
+func (ms *machineState) swapAndTell(ctx context.Context, out io.Writer, rel release.Release, why string) outcome {
+	oc := ms.localSwap(ctx, out, rel)
+	if oc == outcomeOK {
+		fmt.Fprintf(out, "%-8s 成功   已换文件；%s\n", ms.Ep.Name, why)
+	}
+	return oc
 }
 
 // localSwap 只换本机文件（并同步 skill），不触发重启。
