@@ -21,7 +21,11 @@
 | `prototypes/desktop-console/` | 原型站源码与 26 张成品设计图，含 `implementation-task-board-final.png`（任务看板终稿）。已排除 `node_modules` 与 `dist`。 |
 
 桌面端的 spec 与 plan（`docs/superpowers/specs/2026-08-09-handoff-desktop-vertical-slice-design.md`、
-`docs/superpowers/plans/2026-08-09-handoff-desktop-*.md`）**本就已在 main 中**，不受影响。
+`docs/superpowers/plans/2026-08-09-handoff-desktop-*.md` 共 6 份）**此前只在
+`codex/plan02-workspace-resources-rest` 上，main 上一份都没有**——本文初版误记为
+「本就已在 main 中」，2026-08-11 订正。它们已随 Web UI 开工分支
+`handoff/web-console` 迁出，因为 spec §150 正是 ADR-0009 的承重理由，
+不能和被封存的代码绑在同一个分支上。
 
 ## 二、分支拓扑
 
