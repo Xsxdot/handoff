@@ -24,6 +24,9 @@ import (
 // pushEvents 起一个把给定事件依次推给客户端的 WS 端点，推完按 after 收尾。
 func pushEvents(t *testing.T, evs []proto.Event, after func(*websocket.Conn)) *httptest.Server {
 	t.Helper()
+	// cursor 落在 $HOME/.handoff/cursor-<task>：不重定向就会污染真实主目录，
+	// 且上一轮遗留的 cursor 会让本轮的 from_seq 起点不确定
+	t.Setenv("HOME", t.TempDir())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -249,5 +252,52 @@ func TestFollowAbruptCloseReconnectsNotIdleTimeout(t *testing.T) {
 	mu.Unlock()
 	if got < 2 {
 		t.Fatalf("服务端收到连接 %d 次, want >= 2（follow 未重连）", got)
+	}
+}
+
+// TestFollowFiltersAuditEvents 钉住可交付口径：approver_decision / approver_disabled
+// 与 progress 一样不唤醒审核者。
+//
+// 为什么这条会退化：这两类在服务端只入库不 Publish，实时流本就见不到，
+// 于是「客户端不过滤」长期没有症状——直到 WS 重放从 store 读出它们。
+func TestFollowFiltersAuditEvents(t *testing.T) {
+	evs := []proto.Event{
+		{Seq: 1, TaskID: "t-audit", Type: proto.EventTypeApproverDecision},
+		{Seq: 2, TaskID: "t-audit", Type: proto.EventTypeProgress},
+		{Seq: 3, TaskID: "t-audit", Type: proto.EventTypeApproverDisabled},
+		{Seq: 4, TaskID: "t-audit", Type: proto.EventTypeQuestion},
+		{Seq: 5, TaskID: "t-audit", Type: proto.EventTypeFailed},
+	}
+	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })
+
+	var got []int64
+	err := client.New(ts.URL, "").FollowEvents(t.Context(), "t-audit", false, 0,
+		func(ev *proto.Event) error { got = append(got, ev.Seq); return nil })
+	if err != nil {
+		t.Fatalf("FollowEvents = %v, want nil", err)
+	}
+	want := []int64{4, 5}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("交付 seq = %v, want %v（审计类事件不该唤醒审核者）", got, want)
+	}
+}
+
+// TestFollowAllDeliversAuditEvents 验证 all=true 不做任何过滤：排障时要看得到审计事件。
+func TestFollowAllDeliversAuditEvents(t *testing.T) {
+	evs := []proto.Event{
+		{Seq: 1, TaskID: "t-all", Type: proto.EventTypeApproverDecision},
+		{Seq: 2, TaskID: "t-all", Type: proto.EventTypeProgress},
+		{Seq: 3, TaskID: "t-all", Type: proto.EventTypeFailed},
+	}
+	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })
+
+	n := 0
+	err := client.New(ts.URL, "").FollowEvents(t.Context(), "t-all", true, 0,
+		func(*proto.Event) error { n++; return nil })
+	if err != nil {
+		t.Fatalf("FollowEvents = %v, want nil", err)
+	}
+	if n != 3 {
+		t.Fatalf("all=true 交付 %d 条, want 3（不过滤）", n)
 	}
 }

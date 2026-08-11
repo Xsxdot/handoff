@@ -101,6 +101,28 @@ func isPermanent(err error) bool {
 	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
 }
 
+// isDeliverable 判定一个事件类型是否该唤醒审核者。
+//
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled}。
+//
+// 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
+// approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
+// 没有症状。但 WS 重放读的是 store（EventsFromAsc），会把它们一并推来，于是
+// 「重连交付的东西比实时流更多」，多出来的全是审计噪音；审批链裁决越密，
+// 重连时的唤醒风暴越大。handoff skill 早已写明这三类不唤醒 wait，这里是让
+// 代码追上契约。
+//
+// 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
+func isDeliverable(t proto.EventType) bool {
+	switch t {
+	case proto.EventTypeProgress,
+		proto.EventTypeApproverDecision,
+		proto.EventTypeApproverDisabled:
+		return false
+	}
+	return true
+}
+
 // ErrIdleTimeout 表示 follow 期间空闲超过约定时长——期间**一帧都没收到**
 // （含被过滤掉的 progress）。
 //
@@ -860,8 +882,8 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
 	var got *proto.Event
 	err := c.streamOnce(ctx, taskID, fromSeq, nil, func(ev proto.Event) error {
-		if !all && ev.Type == proto.EventTypeProgress {
-			return nil // progress 不唤醒（why 见 WaitEvent doc 注释）
+		if !all && !isDeliverable(ev.Type) {
+			return nil // 审计类与 progress 不唤醒；口径与 FollowEvents 共用 isDeliverable，避免两处漂移
 		}
 		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 		got = &ev
@@ -912,7 +934,7 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 	}
 
 	c.log().Info("follow 开始", "addr", c.baseURL, "task", taskID,
-		"from_seq", fromSeq, "idle", idle.String())
+		"from_seq", fromSeq, "idle", idle.String(), "all", all)
 
 	backoff := c.wsInitialBackoff
 	for attempt := 1; ; attempt++ {
@@ -920,8 +942,8 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 		err := c.streamOnce(ctx, taskID, fromSeq, readDeadline, func(ev proto.Event) error {
 			lastFrame = time.Now()
 			fromSeq = ev.Seq
-			if !all && ev.Type == proto.EventTypeProgress {
-				return nil
+			if !all && !isDeliverable(ev.Type) {
+				return nil // 审计类与 progress 不交付；口径与 waitOnce 共用 isDeliverable，避免两处漂移
 			}
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
 				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
