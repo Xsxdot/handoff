@@ -226,6 +226,37 @@ CLI: POST /api/tasks { project_id, ... }        # 重发，成功
   而让自动登记与手动登记行为一致，能少掉一条需要记住的规则。
 - 自动登记本身失败（如 clone 失败、目录被占）→ **透出 agentd 原文，不重试、不降级**。
 
+### 6.3 线上契约
+
+第二跳走的是既有的 HTTP + Bearer 通道，**不是 ssh、也不在远端敲任何 handoff 命令**。
+远端 agentd 收到的就是下面两种请求体：
+
+**派发**（`POST /api/tasks`）：
+
+```json
+{ "project_id": "9f2a1c7d5e3b0a84", "plan_b64": "...", "executor": "opencode",
+  "base": "main", "worktree": true, "name": "B62 实现" }
+```
+
+`project_id` 与 `project_name` 二选一（后者仅服务 `--project <名字>` 与 Web 控制台）。
+**没有任何路径字段**——路径由远端自己查表得出。
+
+**登记**（`POST /api/projects`）：
+
+```json
+{ "origin_url": "git@github.com:Xsxdot/handoff.git", "name": "handoff" }
+```
+
+远端据此 clone 到自己的 `repo_root/handoff`。若该机器上已有一份，则本机改送
+`{"origin_url": "...", "name": "handoff", "path": "/root/work/handoff"}`，
+远端现读该路径的 origin 校验一致后直接登记，不 clone。
+
+本机那一跳请求体形状完全相同，只是发往本机 agentd，且登记时必带
+`path = cwd 的主工作树`（本机永远不 clone）。
+
+`origin_url` **只出现在登记请求里**。派发请求不带它：agentd 拿 `project_id` 查表即可，
+不需要信任调用方送来的 URL 字符串。
+
 > **为什么编排放 CLI 侧而不是 agentd 的 dispatch 里**：agentd 侧收编等于把
 > 「必须先登记才能派发」从服务端拿掉，W3a 之后就没有这条不变式可依赖了。
 > 放 CLI 侧则契约干净——agentd 永远只接受已登记的项目，CLI 只是把两条命令的编排自动化了。
@@ -233,7 +264,7 @@ CLI: POST /api/tasks { project_id, ... }        # 重发，成功
 > 代价是 Web 控制台（W2/W3）走 API 直连，享受不到这层编排。那一侧将来是一个
 > 「登记并重试」按钮，而 Web 上派发本来就是人在点，多一次确认不是负担。
 
-### 6.3 派发被拒时零副作用
+### 6.4 派发被拒时零副作用
 
 项目解析是 dispatch 的第一道闸（[manager.go:423](../../../internal/agentd/manager.go:423)），
 早于建任务目录、早于 `ResolveBaseline`、早于 `PrepareWorkspace`、早于 executor 启动。
@@ -373,11 +404,18 @@ dispatch 整体失败。
 下一次派发在 `EnsureRepoUsable` 处报「路径不存在」。处置是 `project rm` 后重新 `project add`，
 报文会指出这条路。
 
-**风险二：自动 clone 在慢网络或大仓库上耗时长。** 首次派发会因此显著变慢。缓解是把
+**风险二：远端 clone 用的是本机 cwd 的 origin URL，远端未必对它有凭据。**
+本机走 SSH（`git@github.com:...`）而执行机只配了 HTTPS token 时，自动 clone 会失败。
+这不是本文引入的（`repo add --clone` 今天就是这样），但自动登记把它从「偶尔手工用一次」
+变成了首次派发的必经之路。处置是把 git 的 stderr 原文透出来（既有 `cloneAndRegister`
+已经在截断转发），人照着在执行机上配好凭据，或改用
+`handoff project add --target <机器> --path <已有目录>` 绕开 clone。
+
+**风险三：自动 clone 在慢网络或大仓库上耗时长。** 首次派发会因此显著变慢。缓解是把
 clone 耗时打进日志与 CLI 输出，让人知道在等什么；不做超时中断——中断一个进行到一半的
 clone 只会留下半个目录。
 
-**风险三：`--repo` 删除后，未及更新的外部脚本全部失败。** 这是刻意的：失败是显式的
+**风险四：`--repo` 删除后，未及更新的外部脚本全部失败。** 这是刻意的：失败是显式的
 未知 flag 报错，比静默走到错误仓库好。仓库内的调用点（README、`skills/handoff`、测试）在本轮一并改完。
 
 **回滚**：改动集中在 `internal/agentd/reporegistry.go`（重写）、`repoadmin.go`、
