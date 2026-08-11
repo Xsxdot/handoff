@@ -34,6 +34,10 @@ var (
 var consoleCmd = &cobra.Command{
 	Use:   "console",
 	Short: "在浏览器中打开 agentd 控制台（换一次性 ticket 并兑换会话）",
+	// 位置参数没有意义：console 的输入全走 flag（--print-url/--device/--no-open），
+	// 多余的参数说明用法错误，静默忽略会让拼错的命令「看似成功」——尤其桌面壳
+	// 依赖 stdout 恰好一行的契约，多喂一个参数被吞掉会直接破坏那条契约
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		addr, token, err := TargetEndpoint()
 		if err != nil {

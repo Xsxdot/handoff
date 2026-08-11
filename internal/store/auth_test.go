@@ -103,8 +103,8 @@ func TestAuthTicketPlaintextNotStored(t *testing.T) {
 	if err := st.CreateAuthTicket(store.HashCredential(plain), "mbp", now, now.Add(time.Minute)); err != nil {
 		t.Fatalf("CreateAuthTicket: %v", err)
 	}
-	if got := dumpColumn(t, path, "SELECT id FROM auth_tickets"); got == plain {
-		t.Fatalf("库中出现 ticket 明文: %q", got)
+	if got := dumpColumn(t, path, "SELECT id FROM auth_tickets"); got != store.HashCredential(plain) {
+		t.Fatalf("库中落的是 %q，期望正是哈希 %q（强断言：证明存的就是哈希本身，而非只是不等于明文）", got, store.HashCredential(plain))
 	}
 }
 

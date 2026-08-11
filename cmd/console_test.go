@@ -61,6 +61,29 @@ func TestConsoleAgentdNotRunning(t *testing.T) {
 	}
 }
 
+// TestConsoleRejectsPositionalArgs 钉死：console 不接受位置参数——多余参数说明用法
+// 错误，静默忽略会让拼错的命令「看似成功」，尤其桌面壳依赖 stdout 恰好一行契约，
+// 多喂一个参数被吞掉会直接破坏那条契约。
+//
+// 与 TestUsagePrintedOnlyForArgErrors 的约定一致：参数/flag 错误会打印 usage（根因
+// 就是用法），stderr 保留 cobra 的 "Error:" 行——断言的是「报错且报了用法」，而非
+// 参数错误后的任何输出都不该有。
+func TestConsoleRejectsPositionalArgs(t *testing.T) {
+	// 配置不可达即可：Args 校验发生在 RunE 之前，多余参数会在触达任何网络调用前被拒
+	var stdout bytes.Buffer
+	err := runSubcommandForTest(t, &stdout, "http://127.0.0.1:1", "测试令牌",
+		[]string{"console", "--print-url", "多余的参数"})
+	if err == nil {
+		t.Fatal("多余位置参数应报错，实际为 nil")
+	}
+	if !strings.Contains(err.Error(), "unknown command") && !strings.Contains(err.Error(), "accepts 0 arg") {
+		t.Errorf("报错应点明不接受位置参数，实际: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Errorf("参数错误应打印 usage 段（根因就是用法）, got %q", stdout.String())
+	}
+}
+
 // runSubcommandForTest 以给定 flags 执行一个子命令，把 stdout 写进 stdout 参数。
 //
 // args 的**第一个元素是子命令名**（如 "console"），其余是传给它的 flag/参数。
