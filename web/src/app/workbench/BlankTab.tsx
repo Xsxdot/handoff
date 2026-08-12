@@ -33,6 +33,10 @@ export interface BlankTabProps {
   // 多一支就等于承认了第四种 tab，与 spec 的硬约束冲突
   hint?: string
   onBack?: () => void
+  // terminalUnavailable 非空 = 这台机器不能开终端，附带原因原文。
+  // 此时**不渲染**终端项，改在面板底部说一句实话——置灰控件承诺「以后能用」，
+  // 用户会反复点它（W3b §0 既有纪律）。
+  terminalUnavailable?: string
 }
 
 // hotkeyOf 把一次按键映射成一种 tab。返回 null = 与本面板无关，交给浏览器。
@@ -49,10 +53,11 @@ function hotkeyOf(e: React.KeyboardEvent): PickKind | null {
   return null
 }
 
-export function BlankTab({ base, onPick, hint, onBack }: BlankTabProps) {
-  // home 基准只留终端：以 $HOME 为根浏览文件是安全边界的实质放宽，本期不做
-  // （spec §2.6 —— ~/.handoff/config.yaml 里存着 agentd 主令牌）
-  const items = base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS
+export function BlankTab({ base, onPick, hint, onBack, terminalUnavailable }: BlankTabProps) {
+  // home 基准只留终端（spec §2.6）；终端不可用时把它摘掉，两条过滤叠加
+  const items = (base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS).filter(
+    (i) => i.kind !== 'terminal' || !terminalUnavailable,
+  )
 
   // 挂载即聚焦。**不能用 `autoFocus`**：React 只对表单元素实现它，写在普通 div 上
   // 只会落成一个 `autofocus` 属性，而该属性对动态插入的非表单元素不生效——走查里
@@ -116,6 +121,9 @@ export function BlankTab({ base, onPick, hint, onBack }: BlankTabProps) {
           </li>
         ))}
       </ul>
+      {terminalUnavailable && (
+        <p className="max-w-xs text-center text-xs text-muted-foreground">{terminalUnavailable}</p>
+      )}
     </div>
   )
 }

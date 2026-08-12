@@ -18,12 +18,15 @@
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
-import { deleteProject } from '../../api/client'
+import { deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
+import { usePtySupport } from '../data/usePtySupport'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
+import { ConfirmDialog } from '../lib/ConfirmDialog'
+import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { findBaseOfTask, ProjectTree } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
@@ -33,6 +36,7 @@ import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
 import { FloatingNewPane } from '../workbench/FloatingNewPane'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import type { TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -58,6 +62,61 @@ export function Shell() {
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
   // openTerminal：它不会把用户的选中目录拽走
   const ptyRestore = usePtyRestore(wb.restoreTerminal)
+  const ptySupport = usePtySupport()
+  // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
+  // 确认之后要先删会话、再关那个 tab
+  const [closingPty, setClosingPty] = useState<{ group: number; tabId: string; sessionId: string } | null>(null)
+  const [closeBusy, setCloseBusy] = useState(false)
+  const [closeError, setCloseError] = useState('')
+  // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
+  const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
+
+  // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
+  const ptyNote = (machine: string): string => {
+    if (ptySupport.supported(machine) === false) {
+      return machine === ''
+        ? '本机 agentd 运行在不支持 PTY 的平台上，终端不可用。'
+        : `机器 ${machine} 的 agentd 运行在不支持 PTY 的平台上，终端不可用。`
+    }
+    // null 一律放行：老 agentd 没上报能力位，很可能是支持的。真不支持时
+    // 建会话会返回 501，那句实话由 TerminalTab 显示
+    return ''
+  }
+
+  // beforeCloseTab 拦下带会话的终端 tab：关它等于终止会话，必须先确认。
+  //
+  // 与 spec §6.2 的一处收紧（有意为之）：spec 只要求「有前台进程」才确认，
+  // 这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台
+  // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
+  // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
+  const beforeCloseTab = (c: TabContent, group: number, tabId: string): boolean => {
+    if (c.kind !== 'terminal' || !c.sessionId) return true
+    setClosingPty({ group, tabId, sessionId: c.sessionId })
+    setCloseError('')
+    setClosingBusyProc(null)
+    // 问一句「它现在忙不忙」，只用于加重措辞，**不阻塞弹层出现**
+    fetchPtySessions('all')
+      .then((r) => setClosingBusyProc(r.sessions.some((s) => s.id === c.sessionId && s.foreground)))
+      .catch(() => setClosingBusyProc(null))
+    return false
+  }
+
+  const confirmClosePty = async () => {
+    if (!closingPty) return
+    setCloseBusy(true)
+    setCloseError('')
+    try {
+      await deletePtySession(closingPty.sessionId, wb.base?.machine || undefined)
+      wb.close(closingPty.group, closingPty.tabId)
+      setClosingPty(null)
+    } catch (err) {
+      // 删失败**不关 tab**：关掉就等于把一个还活着的会话从视野里抹掉，
+      // 而它仍在占着进程。原文照抄给用户
+      setCloseError(errorMessage(err))
+    } finally {
+      setCloseBusy(false)
+    }
+  }
 
   const onUnregister = async (name: string, machine: string) => {
     await deleteProject(name, machine)
@@ -129,9 +188,15 @@ export function Shell() {
                 <WorkbenchPage
                   api={wb}
                   onAddProject={() => setWizardOpen(true)}
+                  terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
+                  onBeforeClose={beforeCloseTab}
                   renderContent={(c, base, group, tabId) => {
                     switch (c.kind) {
-                      case 'terminal':
+                      case 'terminal': {
+                        const note = ptyNote(base.machine)
+                        if (note !== '') {
+                          return <p className="p-4 text-sm text-muted-foreground">{note}</p>
+                        }
                         return (
                           <TerminalTab
                             base={base}
@@ -142,6 +207,7 @@ export function Shell() {
                             onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
                           />
                         )
+                      }
                       case 'file':
                         return <FileTab base={base} rel={c.rel} />
                       case 'tui':
@@ -167,7 +233,8 @@ export function Shell() {
         </div>
       )}
 
-      <FloatingNewPane onNewTerminal={() => wb.openTerminal(HOME_BASE)} />
+      {/* 本机明确不支持时不渲染这个按钮：置灰控件承诺「以后能用」 */}
+      {ptySupport.supported('') !== false && <FloatingNewPane onNewTerminal={() => wb.openTerminal(HOME_BASE)} />}
 
       {overlay === 'board' && (
         <BoardOverlay
@@ -184,6 +251,22 @@ export function Shell() {
           onClose={() => setOverlay('none')}
         />
       )}
+
+      <ConfirmDialog
+        open={closingPty !== null}
+        title="关闭终端会话"
+        description={
+          '关闭会终止这个终端会话，里面正在运行的命令会被一并结束。\n' +
+          '只是想切走的话直接切到别的 tab——会话会继续在后台跑。' +
+          (closingBusyProc === true ? '\n\n⚠ 这个终端里现在还有命令在运行。' : '')
+        }
+        confirmLabel="关闭并终止"
+        destructive
+        busy={closeBusy}
+        error={closeError}
+        onConfirm={() => void confirmClosePty()}
+        onCancel={() => setClosingPty(null)}
+      />
 
       <AddProjectWizard
         open={wizardOpen}
