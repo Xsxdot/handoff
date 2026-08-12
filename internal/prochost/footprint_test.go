@@ -321,3 +321,116 @@ func TestHandleWithoutRosterPathDecodesEmpty(t *testing.T) {
 		t.Fatalf("老 proc.json 应解出空 RosterPath，实得 %q", h.RosterPath)
 	}
 }
+
+// stubKillProc 记录单 pid 信号的调用序列，供第二段清扫的用例断言「杀了谁」。
+func stubKillProc(t *testing.T) *[]int {
+	t.Helper()
+	var got []int
+	orig := killProcFn
+	killProcFn = func(pid int) error { got = append(got, pid); return nil }
+	t.Cleanup(func() { killProcFn = orig })
+	return &got
+}
+
+// 名册里的 pid 存活且出生时刻完全一致 —— 点名回收。
+func TestSweepKillsRosterMembers(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{{PID: 501, StartedAt: 5100}}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	shrinkBackoff(t)
+	stubAlive(t, false)
+	killed := stubKillProc(t)
+	// **必须同时 stub 组信号**：不 stub 就会对 pgid=100 发真 SIGKILL；而且这里
+	// 断言它调用 0 次本身就是判据——第二段绝不能退化成按组杀
+	groupN := stubKillGroup(t, nil)
+	// 第一段：组内只有 501 且它自成一组，shim 的组是空的 → 无成员；
+	// 第二段：501 在表里且出生时刻吻合 → 点名回收
+	stubEnum(t, []procEntry{{PID: 501, PPID: 1, PGID: 501, StartedAt: 5100}}, nil)
+	h := Handle{PID: 100, StartedAt: t0, RosterPath: roster}
+	n, v, err := Sweep(h)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 ok，实得 %s", v)
+	}
+	if n != 1 {
+		t.Fatalf("应回收 1 个名册成员，实得 %d", n)
+	}
+	if len(*killed) != 1 || (*killed)[0] != 501 {
+		t.Fatalf("应对 pid 501 单独发信号，实得 %v", *killed)
+	}
+	if *groupN != 0 {
+		t.Fatalf("点名回收必须逐个发信号，不得按组杀，实得组信号 %d 次", *groupN)
+	}
+}
+
+// **B47 红线**：pid 还在，但出生时刻对不上 —— pid 已易主，绝不发信号。
+// 这条用例是整个 Plan B 最重要的一条：判据松掉的代价是杀掉用户的无关进程。
+func TestSweepSkipsRosterMemberWithMismatchedBirth(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{{PID: 501, StartedAt: 5100}}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	shrinkBackoff(t)
+	stubAlive(t, false)
+	killed := stubKillProc(t)
+	// pid 501 还在，但它的出生时刻是 9999——这是内核把 501 分给了别的进程
+	stubEnum(t, []procEntry{{PID: 501, PPID: 1, PGID: 501, StartedAt: 9999}}, nil)
+	h := Handle{PID: 100, StartedAt: t0, RosterPath: roster}
+	n, v, err := Sweep(h)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 ok，实得 %s", v)
+	}
+	if n != 0 {
+		t.Fatalf("出生时刻不符不得回收，实得 killed=%d", n)
+	}
+	if len(*killed) != 0 {
+		t.Fatalf("出生时刻不符时绝不能发信号，实得 %v", *killed)
+	}
+}
+
+// 名册里的 pid 已经不在进程表里 —— 早就退了，无需动作，也不算失败。
+func TestSweepSkipsRosterMemberAlreadyGone(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{{PID: 501, StartedAt: 5100}}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	shrinkBackoff(t)
+	stubAlive(t, false)
+	killed := stubKillProc(t)
+	stubEnum(t, []procEntry{}, nil)
+	h := Handle{PID: 100, StartedAt: t0, RosterPath: roster}
+	n, _, err := Sweep(h)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if n != 0 || len(*killed) != 0 {
+		t.Fatalf("已退出的成员不该有任何动作，实得 killed=%d, signals=%v", n, *killed)
+	}
+}
+
+// 没有名册（老任务/刚起来）：第一段照常，第二段安静跳过，不报错。
+func TestSweepWithoutRosterStillDoesGroupPhase(t *testing.T) {
+	shrinkBackoff(t)
+	stubAlive(t, false)
+	stubKillGroup(t, nil) // 第一段会真的发组信号，必须 stub
+	stubEnum(t,
+		[]procEntry{{PID: 101, PPID: 100, PGID: 100, StartedAt: t0 + 1}}, nil,
+		[]procEntry{})
+	h := Handle{PID: 100, StartedAt: t0} // RosterPath 为空
+	n, v, err := Sweep(h)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if v != VerdictOK || n != 1 {
+		t.Fatalf("无名册时第一段仍应正常，实得 killed=%d verdict=%s", n, v)
+	}
+}

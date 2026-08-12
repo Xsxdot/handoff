@@ -146,12 +146,16 @@ var killVerifyBackoff = []time.Duration{
 	370 * time.Millisecond,
 }
 
-// aliveFn / killGroupFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
-// 真进程做不出「持锁但杀不死」的形态，只能靠替换这两个函数驱动复核失败路径。
-// **生产路径恒为下面这两个默认值**，任何非测试代码都不得赋值给它们。
+// aliveFn / killGroupFn / killProcFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「持锁但杀不死」或「出生时刻不符」的形态，只能靠替换这些函数驱动
+// 复核失败与点名安全路径。**生产路径恒为下面这些默认值**，任何非测试代码都不得
+// 赋值给它们。
 var (
 	aliveFn     = Alive
 	killGroupFn = killGroup
+	// killProcFn 是单 pid 发信号的测试接缝：名册点名的安全用例要断言
+	// 「哪些 pid 被发了信号」，真进程做不出「出生时刻不符」这种形态
+	killProcFn = killProc
 )
 
 // Kill 终止 shim 及其全部后代（按进程组发送 SIGKILL），并**复核它是否真的死了**。

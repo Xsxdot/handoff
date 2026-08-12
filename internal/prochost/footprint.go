@@ -166,10 +166,10 @@ var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 不适用")
 //   - 判定为放弃（leader_reuse / no_credential）**不是错误**，是正常结论：
 //     调用方据 v 决定是否上报人工，不该按 err != nil 判
 //   - 与 Kill 一致：发完 SIGKILL 必须复核，复核窗口走完仍存活返回 ErrStillAlive
-//   - **判据只覆盖与 shim 同进程组的成员**：executor 经 Bash 工具 setsid 拉起的进程
-//     自成会话，不在覆盖范围（why 见 classify 的「判据覆盖边界」）。本函数能可靠
-//     回收的是「shim + executor 本体这一层」的残留，**不是**「这个任务一共占了多少
-//     进程」——宣称的是前者，别把两者混着说
+//   - **两段判据**：第一段按 pgid 回收「shim + executor 本体」这一层；第二段按
+//     出生名册点名回收 executor 经 Bash 工具 setsid 逃逸出去的后代（B72）。
+//     第二段依赖 shim 生前落盘的 roster.json，缺失时自动降级为只做第一段——
+//     升级前建的任务、或 shim 还没来得及落第一次名册就死了的任务，都是这个形态
 func Sweep(h Handle) (killed int, v Verdict, err error) {
 	if aliveFn(h) {
 		log().Warn("执行者仍存活，拒绝清扫", "pid", h.PID, "lock", h.LockPath)
@@ -182,12 +182,15 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 	}
 	members, v := classify(h, procs, false)
 	if v != VerdictOK {
-		log().Warn("清扫放弃", "pid", h.PID, "verdict", string(v))
-		return 0, v, nil
+		// 第一段放弃 ≠ 第二段也得放弃：leader_reuse/no_credential 说的是 shim
+		// 自己的凭据出了问题，而名册里每条成员都自带 pid+出生时刻的凭据，
+		// 两者的信任来源是独立的
+		log().Warn("组清扫放弃，仍尝试点名回收", "pid", h.PID, "verdict", string(v))
+		return rosterKill(h, procs), v, nil
 	}
 	if len(members) == 0 {
-		log().Info("无残留可清扫", "pid", h.PID)
-		return 0, VerdictOK, nil
+		log().Info("组内无残留，转入点名回收", "pid", h.PID)
+		return rosterKill(h, procs), VerdictOK, nil
 	}
 	log().Info("回收残留进程组", "pid", h.PID, "members", len(members), "pids", members)
 	if kerr := killGroupFn(h.PID); kerr != nil {
@@ -204,15 +207,73 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 			break
 		}
 		if left, _ := classify(h, rest, false); len(left) == 0 {
+			n := rosterKill(h, rest)
 			log().Info("清扫完成，已确认残留退出", "pid", h.PID,
-				"killed", len(members), "probe", i+1)
-			return len(members), VerdictOK, nil
+				"group_killed", len(members), "roster_killed", n, "probe", i+1)
+			return len(members) + n, VerdictOK, nil
 		}
 	}
 	log().Error("已发 SIGKILL 但复核窗口走完仍有残留", "pid", h.PID,
 		"window", killVerifyWindow)
 	return len(members), VerdictOK,
 		fmt.Errorf("%w: pgid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
+}
+
+// rosterKill 执行第二段清扫：按出生名册点名回收 setsid 逃逸的后代。
+//
+// 参数：
+//   - h: 任务句柄，用 h.RosterPath 找名册
+//   - procs: 一次进程快照（与第一段共用，避免重复枚举）
+//
+// 返回：killed 为**实际发出信号**的成员数
+//
+// 判据（spec §4.2，一条都不能松）：名册里的一条只有在「pid 出现在当前进程表」
+// **且**「StartedAt 与表里那条完全相等」时才发信号。任一不符即视为 pid 已易主，
+// 绝不发信号——漏杀只是让残留多活一会儿（由 B73 的围栏兜住，只吃预算），
+// 误杀则可能打掉用户的登录 shell 或 agentd 自己（B47 误杀 114 次的教训）。
+//
+// 注意：
+//   - 名册缺失（RosterPath 为空、文件不在）是**正常形态**，安静返回 0
+//   - 名册损坏只打日志并返回 0，不影响已经完成的第一段
+//   - 逐条发信号而不是按组：逃逸者各自成组，按组会带走未经校验的兄弟进程
+func rosterKill(h Handle, procs []procEntry) (killed int) {
+	entries, err := readRoster(h.RosterPath)
+	if err != nil {
+		log().Warn("读后代名册失败，跳过点名回收", "pid", h.PID,
+			"roster", h.RosterPath, "cause", err)
+		return 0
+	}
+	if len(entries) == 0 {
+		log().Debug("无后代名册或名册为空，跳过点名回收", "pid", h.PID, "roster", h.RosterPath)
+		return 0
+	}
+	live := make(map[int]int64, len(procs))
+	for _, p := range procs {
+		live[p.PID] = p.StartedAt
+	}
+	var skipped int
+	for _, e := range entries {
+		started, ok := live[e.PID]
+		if !ok {
+			continue // 早就退了：常态，不是异常
+		}
+		if started != e.StartedAt {
+			// pid 已易主。这条日志必须是 Warn 并带两个时刻：它是「我们差点杀错」
+			// 的唯一现场记录，出现频率高本身就是个值得追的信号
+			log().Warn("名册成员 pid 已易主，拒绝发信号", "pid", e.PID,
+				"roster_started_at", e.StartedAt, "actual_started_at", started)
+			skipped++
+			continue
+		}
+		if kerr := killProcFn(e.PID); kerr != nil {
+			log().Error("回收名册成员失败", "pid", e.PID, "cause", kerr)
+			continue
+		}
+		killed++
+	}
+	log().Info("点名回收完成", "pid", h.PID, "roster_total", len(entries),
+		"killed", killed, "skipped_reused", skipped)
+	return killed
 }
 
 // UIDUsage 报告当前 uid 的进程占用与上限。

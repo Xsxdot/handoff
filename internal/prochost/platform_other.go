@@ -52,6 +52,10 @@ func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error) {
 
 func killGroup(pid int) error { return errNotImplemented }
 
+// killProc 非 unix 平台无 syscall.Kill（Windows 上它不存在），直接报未实现。
+// 第二段清扫（rosterKill）拿到该错误只记一条日志并跳过这一条，不影响第一段。
+func killProc(pid int) error { return errNotImplemented }
+
 func createInputChannel(path string) error { return errNotImplemented }
 
 func waitInputReader(path string, timeout time.Duration) (time.Duration, error) {

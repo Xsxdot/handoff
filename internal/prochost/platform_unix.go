@@ -114,6 +114,18 @@ func killGroup(pid int) error {
 	return nil
 }
 
+// killProc 对**单个 pid** 发 SIGKILL（不是进程组）。
+//
+// 为什么不能复用 killGroup：第二段清扫的对象是 setsid 逃逸出去的进程，它们
+// 各自成组，组里往往还有它们自己的无关兄弟；按组发信号会把没经过身份校验的
+// 进程一起带走——那正是 B47 误杀的形态。名册逐条校验、逐条发信号，一条一条来。
+func killProc(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("非法 pid %d", pid)
+	}
+	return syscall.Kill(pid, syscall.SIGKILL)
+}
+
 // createInputChannel 幂等创建 0600 命名管道（见 CreateInputChannel 的文档）。
 func createInputChannel(path string) error {
 	err := syscall.Mkfifo(path, 0o600)
