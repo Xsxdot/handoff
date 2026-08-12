@@ -6,12 +6,12 @@
 
 **Architecture:** 先建一个 env 门控的原始字节旁路 `internal/executor/rawtap`，在四个 adapter 各自唯一的上游读取点各接一行；再在专用沙箱仓库上串行跑 4 场景 × 4 executor（claudecode 无原生提问通道，S4 跳过，共 15 次）；最后把样本入库为 `testdata/*.jsonl` + 回放测试，并按 spec §3.5 的规则回填结论。
 
-**Tech Stack:** Go 1.26 标准库（`os` / `sync` / `path/filepath`），既有的 `handoff dispatch` / `handoff show` CLI，devbox 上的 agentd。
+**Tech Stack:** Go 1.26 标准库（`os` / `sync` / `path/filepath`），既有的 `handoff dispatch` / `handoff show` CLI，**本机 agentd**（落点见下）。
 
 ## Global Constraints
 
 - 依据 spec：`docs/superpowers/specs/2026-08-12-false-completion-and-cursor-durability-design.md` §5。
-- **串行，绝不并行**（spec §5.3）。B73 的整机 fork 瘫痪就是并行 executor 顶穿 `kern.maxprocperuid`。每次派发前查 devbox 进程余量，不足则停下来报告，不硬上。
+- **串行，绝不并行**（spec §5.3）。B73 的整机 fork 瘫痪就是并行 executor 顶穿 `kern.maxprocperuid`。每次派发前查本机进程余量，不足则停下来报告，不硬上。
 - **跑在专用沙箱仓库**，每次 `--new-branch --new-worktree`，不碰任何真实项目。
 - **探针只观测，不改判定逻辑**：本 plan 不动 `fallbackClassify`、不动 `ParseTrailer`、不动任何 adapter 的分类分支。Task 1/2 加的旁路在解析之前旁写一份字节，不参与任何判断。
 - **S3 诱不出来是允许的结果**，如实记「未复现」。spec §3.5 已为「未复现」规定了明确后果（不加证据层），它不是无信息。禁止为了让结论好看而改写场景或反复重试到出现想要的现象。
@@ -499,13 +499,11 @@ mkdir -p ~/workspace/handoff-probe-sandbox && cd ~/workspace/handoff-probe-sandb
 git init --bare ~/workspace/handoff-probe-sandbox.git && cd ~/workspace/handoff-probe-sandbox && git remote add origin ~/workspace/handoff-probe-sandbox.git && git push -u origin HEAD
 ```
 
-登记到本机与 devbox：
+登记到本机（探针跑本机 agentd，不需要 `--target`）：
 
 ```bash
-cd ~/workspace/handoff-probe-sandbox && handoff project add probe-sandbox --target devbox
+cd ~/workspace/handoff-probe-sandbox && handoff project add probe-sandbox
 ```
-
-**在 devbox 上也要有这份仓库**（agentd 在那边跑）。若 devbox 上没有，先在 devbox clone 一份再在 devbox 侧 `handoff project add`。
 
 - [ ] **Step 2: 写 S1 场景 plan**
 
@@ -596,27 +594,36 @@ cd ~/workspace/handoff-probe-sandbox && handoff project add probe-sandbox --targ
 
 ## 前置
 
-- devbox agentd 以 `HANDOFF_RAW_TAP_DIR=~/handoff-probe-raw` 启动（旁路见 `internal/executor/rawtap`）
-- 沙箱仓库 `probe-sandbox` 已在本机与 devbox 双侧登记
+- **本机** agentd 以 `HANDOFF_RAW_TAP_DIR=~/handoff-probe-raw` 启动（旁路见 `internal/executor/rawtap`），且二进制含 `feat/probe-rawtap`
+- 沙箱仓库 `probe-sandbox` 已在本机登记
+- `~/handoff-probe-raw/archived/` 已建好（改名归档的落点）
 - **串行**：任何时刻只有一个任务在跑
 
 ## 每次派发的动作
 
 ```bash
-cd ~/workspace/handoff-probe-sandbox && handoff dispatch docs/superpowers/probes/2026-08-12-turn-end/<Sn>.md --target devbox --project probe-sandbox --executor <x> --new-branch probe-<Sn>-<x> --new-worktree --name "probe <Sn> <x>"
+cd ~/workspace/handoff-probe-sandbox && handoff dispatch docs/superpowers/probes/2026-08-12-turn-end/<Sn>.md --project probe-sandbox --executor <x> --new-branch probe-<Sn>-<x> --new-worktree --name "probe <Sn> <x>"
 ```
 
-派发前查 devbox 进程余量（不足则停）：
+派发前查本机进程余量（不足则停）：
 
 ```bash
-ssh devbox 'echo "maxprocperuid=$(sysctl -n kern.maxprocperuid 2>/dev/null || echo n/a) current=$(ps -u $(id -u) | wc -l)"'
+echo "maxprocperuid=$(sysctl -n kern.maxprocperuid) 已用=$(ps -u $(id -u) | wc -l)"
 ```
 
 派发后：
 
 ```bash
-handoff show <task-id> --target devbox
+handoff show <task-id>
 ```
+
+**每次派发结束后必须立刻把样本改名归档，再发下一次**：
+
+```bash
+mv ~/handoff-probe-raw/<executor>-*.jsonl ~/handoff-probe-raw/archived/<Sn>-<executor>.jsonl
+```
+
+**为什么这一步不能省**：`rawtap` 以 `O_APPEND` 打开文件，而 opencode / grok / codex 三家的 taskID 传的是空串（`Dial` / `streamOnce` 不持有任务标识，D1 实现时按 plan 允许的退化处理），文件名因此是 `opencode-.jsonl` 这种不带任务区分的形式。opencode 一家要跑 S1/S2/S3/S4 四个场景——不改名就是四个场景全部追加进同一个文件，**样本混在一起，分不出哪段属于哪个场景，整轮探针作废**。claudecode 传了真 taskID（文件名带任务 ID）不会混，但改名步骤对四家一视同仁执行，不要按 executor 区别对待。
 
 ## 结果表（15 行，逐次填）
 
@@ -673,9 +680,9 @@ claudecode 无原生提问通道，S4 跳过，合计 15 次派发。"
 
 **这是本 plan 唯一的对照组。** S3 的信号「能不能与 S1 区分」，判据全在这 8 次跑出来的基线上。
 
-- [ ] **Step 1: 以旁路开启的方式重启 devbox agentd**
+- [ ] **Step 1: 确认本机 agentd 已带旁路启动**
 
-先按铁律确认服务托管方：`mcp__superdev__list_services` 查 devbox 上的 agentd 是否被 SuperDev 接管。
+本机 agentd 的换版与重启由审核者在派本 task 之前完成（方案的阶段 2），本 task 只**确认**，不自己重启任何 agentd。
 
 - **已接管**：用 `mcp__superdev__restart_service` 重启，并把 `HANDOFF_RAW_TAP_DIR` 加进服务的环境变量（走 `preview_config_change` → `apply_config_change`）。
 - **未接管**：按项目既有方式重启，环境变量随启动命令带上。
@@ -683,30 +690,33 @@ claudecode 无原生提问通道，S4 跳过，合计 15 次派发。"
 确认旁路真的开了（Task 1 的 Info 日志）：
 
 ```bash
-ssh devbox 'grep -c "原始字节旁路已开启" ~/.handoff/agentd.log'
+grep -c "原始字节旁路已开启" ~/.handoff/agentd.log
 ```
 
 - [ ] **Step 2: 逐次派发 S1（4 次，串行）**
 
 按 README 的命令模板，`<Sn>` = `S1-natural-finish`，`<x>` 依次取 `opencode` / `claudecode` / `grok` / `codex`。
 
-**每次派发前**必须先查 devbox 进程余量（README 里的 ssh 命令），余量不足则**停下来报告**，不硬上。
+**每次派发前**必须先查本机进程余量（README 里的命令），余量不足则**停下来报告**，不硬上。
+**每次派发结束后**必须立刻按 README 的改名归档步骤把样本移进 `archived/`，再发下一次——`rawtap` 是 `O_APPEND` 且三家文件名不带任务区分，不改名就会把多个场景混进同一个文件。
 **每次必须等上一次任务落到终态**（`handoff show` 显示 `waiting_review` / `waiting_answer`）**再发下一次**。
 
 每次跑完记录三样进结果表：
-- `handoff 判成`：question / result OK / result !OK —— 从 `handoff show <id> --target devbox` 的事件流读
+- `handoff 判成`：question / result OK / result !OK —— 从 `handoff show <id>` 的事件流读
 - `任务落到`：waiting_review / waiting_answer
-- `样本文件`：`ssh devbox 'ls -la ~/handoff-probe-raw/'` 里对应那个
+- `样本文件`：`ls -la ~/handoff-probe-raw/archived/` 里对应那个
 
 - [ ] **Step 3: 逐次派发 S2（4 次，串行）**
 
 同 Step 2，`<Sn>` = `S2-no-commit`。
 
-- [ ] **Step 4: 把 8 份样本拉回本机**
+- [ ] **Step 4: 清点 8 份样本**
 
 ```bash
-mkdir -p /tmp/probe-raw && rsync -av devbox:~/handoff-probe-raw/ /tmp/probe-raw/
+ls -la ~/handoff-probe-raw/archived/
 ```
+
+样本已在本机（探针跑本机 agentd），不需要搬运。**必须恰好 8 份**且文件名覆盖 S1/S2 × 四个 executor；少一份就是某次改名归档漏了，回去补不了——那次派发要重跑。
 
 - [ ] **Step 5: 逐份读样本，记录事件层信号**
 
@@ -798,10 +808,10 @@ git commit -m "docs(probe): S3 截断场景 4 次派发实测与逐 executor 判
 - handoff 判成了什么、任务落到哪个状态
 - 与同 executor 的 trailer 提问路径（历史行为）是否落到同一状态
 
-**已知的对照事实**（spec §2.3）：devbox agentd.log 里 `本回合已通过 question 工具提问` 出现 **0** 次，即 opencode 的原生 question 工具历史上从未被用过。S4 若在 opencode 上成功触发，这条日志应当首次出现——**用它作为「原生通道真的被走了」的判据**，不要只看模型自述：
+**已知的对照事实**（spec §2.3）：devbox agentd.log 里 `本回合已通过 question 工具提问` 出现 **0** 次（该实测在 devbox 上做的；本机 agentd 的历史更短，但结论是关于 opencode 行为的，同样适用），即 opencode 的原生 question 工具历史上从未被用过。S4 若在 opencode 上成功触发，这条日志应当首次出现——**用它作为「原生通道真的被走了」的判据**，不要只看模型自述：
 
 ```bash
-ssh devbox 'grep -c "本回合已通过 question 工具提问" ~/.handoff/agentd.log'
+grep -c "本回合已通过 question 工具提问" ~/.handoff/agentd.log
 ```
 
 - [ ] **Step 3: 填表并提交**
@@ -844,7 +854,7 @@ for line in src.read_text().split("\n"):
     out.append(line.replace("\\n", "\n").replace("\\r", "\r").replace("\\\\", "\\"))
 dst.write_text("\n".join(out) + "\n")
 PY
-python3 /tmp/unescape.py /tmp/probe-raw/opencode-<taskID>.jsonl internal/executor/opencode/testdata/probe-s1-opencode.jsonl
+python3 /tmp/unescape.py ~/handoff-probe-raw/archived/S1-opencode.jsonl internal/executor/opencode/testdata/probe-s1-opencode.jsonl
 ```
 
 15 份逐一处理，按 `probe-<场景小写>-<executor>.jsonl` 命名放进对应包的 `testdata/`。
@@ -918,7 +928,7 @@ Expected: 15 条子测试全部 PASS，且每条的断言值来自结果表
 
 - [ ] **Step 6: 关掉旁路**
 
-探针跑完把 devbox agentd 的 `HANDOFF_RAW_TAP_DIR` 撤掉并重启（走 SuperDev 或项目既有方式），确认日志里不再出现「原始字节旁路已开启」。旁路是诊断开关，不是常驻设施（`rawtap` 包头注释已声明这条边界）。
+探针跑完由**审核者**把本机 agentd 的 `HANDOFF_RAW_TAP_DIR` 撤掉并重启，确认日志里不再出现「原始字节旁路已开启」。本 task 不自己重启 agentd。旁路是诊断开关，不是常驻设施（`rawtap` 包头注释已声明这条边界）。
 
 - [ ] **Step 7: 提交**
 
