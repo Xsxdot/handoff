@@ -212,9 +212,13 @@ intervention: "border-transparent bg-state-intervention text-white shadow hover:
 
 ### 5.1 落点：`ProjectTree.tsx`，`Shell.tsx` 零改动
 
-搜索框、「项目 N」小标题、query 状态、过滤逻辑**全部落在 `ProjectTree.tsx` 内部**。
+搜索框、「项目 N」小标题、query 状态**落在 `ProjectTree.tsx` 内部**；**过滤逻辑抽成纯函数模块 `web/src/app/tree/search.ts`**。
 
 **为什么不放 `Shell.tsx`**：query 状态与过滤逻辑都属于树本身，上提到 `Shell` 只是无意义的 prop drilling。
+
+**为什么过滤逻辑单独成文件**：可见性是一条递归规则（§5.4），塞在组件里只能靠渲染断言间接测。抽成纯函数后可以直接对「给定树 + 查询 → 哪些节点可见 / 项目计数是几」建立契约测试。这与仓库既有模式一致——`app/board/filter.ts`（看板筛选）、`app/tree/counts.ts`（树计数）都是「纯函数 + 独立测试文件」，`ProjectTree.tsx` 已经在消费 `counts.ts`。
+
+`ProjectTree.tsx` 只保留 `useState` 与渲染，不承载过滤算法。**「不进 `Shell.tsx`」这条不受影响**，冲突面仍为零。
 
 **附带收益（重要）**：交接文档把 B74 与 PTY 那条线的冲突面标为「低但非零——`Shell.tsx` 横幅区（:87-95）相邻，预期一次手工合并」。按本设计我们根本不进 `Shell.tsx`，而 PTY 只改它的 `<aside>` 横幅段——**冲突面归零**。
 
@@ -291,7 +295,7 @@ N = **过滤后可见的 `tree.projects` 数量**；`q` 为空时即项目总数
 因此 `instrumenting-code` 的义务在前端由**意图注释 + 测试**兑现，这是本 spec 的显式立场（写在这里，免得实现计划被判 plan failure）。以下四处必须有解释「为什么」的中文注释：
 
 1. `columns.ts` —— 干预态口径为何必须与 `filter.ts` / `counts.ts` 三处一致（§1.3）
-2. `ProjectTree.tsx` 可见性递归 —— 「自身命中则整棵子树显示」的理由（§5.4）
+2. `search.ts` 可见性递归 —— 「自身命中则整棵子树显示」的理由（§5.4）
 3. `ProjectTree.tsx` 旁路 `collapsed` —— 旁路而非清空的理由（§5.5）
 4. `ProjectTree.tsx` `⌘K` 监听 —— 冒泡而非 capture 的让位次序（§6）
 
@@ -315,13 +319,19 @@ N = **过滤后可见的 `tree.projects` 数量**；`q` 为空时即项目总数
 - 干预态卡片带干预态样式、`failed` 卡片不带干预态样式
 - 每个状态的卡片文案与圆点基调对得上
 
-**`web/src/app/tree/ProjectTree.test.tsx` 追加**
+**`web/src/app/tree/search.test.ts` 新建**（纯函数契约）
 
 - 四类字段（项目名 / 机器名 / 目录名 / 任务名）各搜一次都能命中
-- 搜任务名时其祖先链展开、无关兄弟枝隐藏
-- 搜项目名时该项目整棵子树可见
-- 「项目 N」跟随过滤变化，`q` 为空时等于总数
+- 搜项目名时该项目整棵子树可见（自身命中 → 全子树）
+- 搜任务名时其祖先链上的项目、机器、目录均可见，无关兄弟枝不可见
+- 「项目 N」跟随过滤变化，`q` 为空时等于项目总数
 - 「未归属」分组参与过滤，且不计入 N
+- 大小写不敏感、首尾空白被 `trim` 掉
+
+**`web/src/app/tree/ProjectTree.test.tsx` 追加**（渲染与交互）
+
+- 搜索框与「项目 N」渲染出来，N 跟随输入变化
+- 搜任务名时该任务可见、无关目录不可见
 - 零结果时出空态文案
 - `⌘K` 聚焦输入框；输入框内 `Escape` 清空并失焦
 - `q` 清空后，此前手动折叠的节点仍是折叠的（钉住 §5.5 的「旁路而非清空」）
@@ -335,8 +345,10 @@ N = **过滤后可见的 `tree.projects` 数量**；`q` 为空时即项目总数
 | `web/src/app/board/columns.ts` | 新增 `StateTone` / `stateTone` / `needsIntervention`；`stateBadgeVariant` 干预态改档 |
 | `web/src/app/board/StateDot.tsx` | **新建**：`StateDot` / `TaskState` |
 | `web/src/app/board/BoardPage.tsx` | `TaskCard` 删重复徽章、换 `TaskState`、加干预态卡片样式 |
-| `web/src/app/tree/ProjectTree.tsx` | 搜索框 + 「项目 N」+ 过滤 + `⌘K`；任务行圆点上色；工单角标换 token |
+| `web/src/app/tree/search.ts` | **新建**：过滤纯函数（匹配口径 + 可见性递归 + 项目计数） |
+| `web/src/app/tree/ProjectTree.tsx` | 搜索框 + 「项目 N」+ 接入过滤 + `⌘K`；任务行圆点上色；工单角标换 token |
 | `web/src/app/board/columns.test.ts` | 追加用例 |
+| `web/src/app/tree/search.test.ts` | **新建**：过滤纯函数的契约测试 |
 | `web/src/app/tree/ProjectTree.test.tsx` | 追加用例 |
 | `web/src/app/board/BoardPage.test.tsx` | **新建**（已核实当前不存在：`app/board/` 下只有 `FilterBar.test.tsx` / `columns.test.ts` / `filter.test.ts`） |
 
