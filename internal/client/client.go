@@ -963,6 +963,29 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	}
 }
 
+// StreamEventsOnce 建立一次事件流连接，把收到的每一帧交给 onEvent，直到连接
+// 断开或 ctx 取消。**不读写任何 cursor 文件，不做重连**。
+//
+// 参数：
+//   - taskID: 任务 id（必须是完整 UUID）
+//   - fromSeq: 起始 seq（开区间）；调用方自己持有水位
+//   - onEvent: 每帧回调；返回错误即中止本次连接
+//
+// 为什么必须有这个「无 cursor」变体：FollowEvents / WaitEvent 把水位存在
+// ~/.handoff/cursor-<task>，那是**审核者本机**的状态。agentd 做事件镜像时
+// 跑在同一台机器上，若复用带 cursor 的路径，agentd 的镜像与人手敲的
+// handoff wait 会互相推进对方的水位——一方吃掉另一方的事件，且极难归因。
+// 镜像的水位属于 mirror_events 表，不属于文件系统。
+//
+// 注意：单次连接、不重连。退避与重连策略由调用方（镜像订阅循环）决定，
+// 它的节奏（300ms→×2→10s）与审核者 CLI 的（1s→60s）刻意不同。
+func (c *Client) StreamEventsOnce(ctx context.Context, taskID string, fromSeq int64,
+	onEvent func(proto.Event) error) error {
+	c.log().Debug("镜像事件流建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
+	// readDeadline 返回零值 = 不设读超时：镜像是常驻订阅，长时间无事件是正常态
+	return c.streamOnce(ctx, taskID, fromSeq, func() time.Time { return time.Time{} }, onEvent)
+}
+
 // waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
 //
 // 返回：
