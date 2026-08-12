@@ -205,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)
 	mux.HandleFunc("GET /api/projects", s.handleProjectList)
 	mux.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
+	mux.HandleFunc("GET /api/machines", s.handleMachines)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
