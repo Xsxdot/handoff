@@ -61,10 +61,16 @@ export function Shell() {
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
-  // 左栏任务行、看板卡片、/tasks/:id 深链三条路径都走它，避免三份各自漂移。
+  // 左栏任务行、看板卡片、/tasks/:id 深链、工单弹层的「跳到该任务」都走它。
+  // 首参为 null（工单弹层、未归属任务）时先用树解析任务自己的目录；解析不出
+  // （任务真的不在树上）才退回「当前选中目录」，一个都没选中则 wb.open 空操作。
   const openTaskTui = (base: BaseDir | null, taskId: string) => {
     setOverlay('none')
-    wb.open({ kind: 'tui', taskId }, base ?? undefined)
+    let target = base
+    if (target === null && treeState.data) {
+      target = findBaseOfTask(treeState.data, tasks, taskId)
+    }
+    wb.open({ kind: 'tui', taskId }, target ?? undefined)
   }
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。

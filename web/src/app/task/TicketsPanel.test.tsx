@@ -92,4 +92,10 @@ describe('TicketsPanel 审批交互', () => {
     expect(screen.getByRole('button', { name: /批准/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: '拒绝' })).toBeDisabled()
   })
+
+  it('bare 时不渲染卡片标题，仍渲染工单正文', () => {
+    render(<TicketsPanel tickets={[gateTicket]} disabled={false} bare onReply={vi.fn()} />)
+    expect(screen.queryByText('挂起工单')).not.toBeInTheDocument()
+    expect(screen.getByText(/go test \.\/\.\.\./)).toBeInTheDocument()
+  })
 })

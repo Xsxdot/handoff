@@ -54,6 +54,31 @@ const t1: Task = {
   project_id: 'p1',
 }
 
+// T2 与 T1 同目录，但卡在 waiting_answer：挂了一张工单，用于「跳到该任务」用例。
+const t2: Task = {
+  id: 'T2',
+  target: '',
+  repo_path: '/w/b2-b3',
+  branch: 'integration/b2-b3',
+  plan_path: '',
+  plan_summary: '等你批',
+  executor_session: '',
+  state: 'waiting_answer',
+  created_at: '2026-08-12T10:00:00+08:00',
+  updated_at: '2026-08-12T10:00:00+08:00',
+  name: '等你批',
+  executor: 'opencode',
+  model: '',
+  work_dir: '/w/b2-b3',
+  worktree_managed: true,
+  base_commit: '',
+  base_ahead: 0,
+  repo_dirty_count: 0,
+  repo_dirty_files: '',
+  machine: '',
+  project_id: 'p1',
+}
+
 // 树 fixture：一个项目 handoff（project_id 'p1'）、一台本机、两个目录。
 // 主目录的 branch 刻意设成「主目录」——dirLabel 优先取 branch，这样测试里
 // getByText('主目录') 能命中目录行。
@@ -172,5 +197,25 @@ describe('Shell 三栏外框', () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())
     expect(screen.queryByRole('navigation', { name: '主导航' })).not.toBeInTheDocument()
+  })
+
+  it('从工单弹层点「跳到该任务」切到该任务所在目录', async () => {
+    vi.mocked(fetchTasks).mockResolvedValue([t1, t2])
+    vi.mocked(fetchTaskDetail).mockImplementation(async (id: string) => {
+      if (id === 'T2') {
+        return {
+          task: t2,
+          pending_tickets: [{ id: 'K1', kind: 'question', question: '要不要' }],
+          recent_events: [],
+        } as never
+      }
+      return { task: t1, pending_tickets: [], recent_events: [] }
+    })
+    renderShell()
+    // 不点任务行（那会直接开 TUI tab），直接从左栏底部「工单」入口打开弹层
+    fireEvent.click(screen.getByRole('button', { name: /工单/ }))
+    const jump = await screen.findByRole('button', { name: '跳到该任务' })
+    fireEvent.click(jump)
+    await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3'))
   })
 })
