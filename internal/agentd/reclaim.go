@@ -17,6 +17,7 @@ package agentd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -201,4 +202,128 @@ func classifyWorktree(ctx context.Context, entries map[string]worktreeEntry, wor
 	}
 	log().Info("工作树判定：脏，默认拒绝回收", "workdir", workdir, "dirty", len(files))
 	return proto.WorktreeDirty, files, ""
+}
+
+var (
+	// ErrReclaimNotTerminal 表示任务还没到终态，不予回收——删运行中任务的
+	// 工作树等于抽它脚下。
+	ErrReclaimNotTerminal = errors.New("任务非终态，不回收工作树")
+	// ErrReclaimRepoUnreachable 表示仓库不可达或不是 git 仓库，判不出。
+	// 单任务回收必须据此拒绝，绝不能降级成「无残留」静默成功。
+	ErrReclaimRepoUnreachable = errors.New("仓库不可达，工作树状态判不出")
+	// ErrReclaimNotManaged 表示该任务用的是审核者自带的工作树，agentd 无权删。
+	ErrReclaimNotManaged = errors.New("工作区不是 agentd 管理的 worktree")
+)
+
+// DirtyWorktreeError 表示工作树有未提交改动或未跟踪文件，未带 force 时拒绝回收。
+//
+// 为什么是带清单的类型而不是裸哨兵：审核者要决定「这些改动能不能丢」，
+// 就必须看见改了什么。只给一句「树是脏的」等于把决定权交出去却不给依据。
+// 注意名字避开 workspace.go 里的 ErrDirtyWorktree 哨兵——那是 dispatch 拒发的
+// 错误，语义是「拒绝派发」，与这里的「回收被拒、带清单」是两回事。
+type DirtyWorktreeError struct {
+	Files []proto.DirtyFile
+}
+
+func (e *DirtyWorktreeError) Error() string {
+	return fmt.Sprintf("工作树有 %d 项未提交改动或未跟踪文件", len(e.Files))
+}
+
+// Reclaim 回收一个终态任务残留的 managed worktree。
+//
+// 参数：
+//   - ctx: 上层上下文（HTTP 请求）
+//   - taskID: 目标任务
+//   - force: 为真时对脏工作树也强删（丢弃未提交改动），并在响应里报出丢弃清单
+//
+// 返回：
+//   - 回收结果（removed / pruned / already_absent）
+//   - store.ErrNotFound: 任务不存在
+//   - ErrReclaimNotTerminal / ErrReclaimNotManaged / ErrReclaimRepoUnreachable
+//   - *DirtyWorktreeError: 脏树且未带 force
+//
+// 注意：
+//   - **纯资源动作**：不改任务状态、不追加事件、不删分支、不删任务目录
+//   - 幂等：树已不在则报 already_absent 并成功返回。一条重试第二次会报错的
+//     入口不是重试入口
+//   - 动手前重读任务快照：failed→running 是合法迁移，列表之后任务可能已被
+//     重新派发，终态判定不能停在列表那一刻
+func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp *proto.ReclaimResp, err error) {
+	m.log.Info("reclaim 进入", "task", taskID, "force", force)
+	defer func() {
+		if err != nil {
+			m.log.Warn("reclaim 未完成", "task", taskID, "cause", err)
+		}
+	}()
+
+	cur, err := m.st.GetTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !cur.State.IsTerminal() {
+		return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, ErrReclaimNotTerminal)
+	}
+	if !cur.WorktreeManaged || cur.WorkDir == "" {
+		return nil, fmt.Errorf("任务 %s：%w", taskID, ErrReclaimNotManaged)
+	}
+
+	entries, lerr := repoWorktrees(ctx, cur.RepoPath)
+	if lerr != nil {
+		return nil, fmt.Errorf("任务 %s 的仓库 %s：%v：%w",
+			taskID, cur.RepoPath, lerr, ErrReclaimRepoUnreachable)
+	}
+	state, dirty, note := classifyWorktree(ctx, entries, cur.WorkDir)
+	base := &proto.ReclaimResp{WorkDir: cur.WorkDir, Branch: cur.Branch}
+
+	switch state {
+	case proto.WorktreeAbsent:
+		m.log.Info("reclaim 完成：本就无残留", "task", taskID, "workdir", cur.WorkDir)
+		base.Action = proto.ReclaimAlreadyAbsent
+		return base, nil
+	case proto.WorktreeUnknown:
+		return nil, fmt.Errorf("任务 %s 工作树 %s：%s：%w",
+			taskID, cur.WorkDir, note, ErrReclaimRepoUnreachable)
+	case proto.WorktreeDirty:
+		if !force {
+			return nil, &DirtyWorktreeError{Files: dirty}
+		}
+		m.log.Warn("reclaim 强删脏工作树", "task", taskID,
+			"workdir", cur.WorkDir, "discard", len(dirty))
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
+	args := []string{"worktree", "remove", cur.WorkDir}
+	if force {
+		args = append(args, "--force")
+	}
+	if _, stderr, rerr := gitRun(rctx, cur.RepoPath, args...); rerr != nil {
+		// prunable 兜底：实证 git 2.50.1 上 remove 能直接处理在册但目录已失的
+		// 条目，这里只防旧版 git 行为不同。remove 成功是常路，本分支是保险
+		if state == proto.WorktreePrunable {
+			m.log.Warn("reclaim：prunable 条目 remove 失败，退回 prune",
+				"task", taskID, "stderr", truncateRunes(stderr, 200), "cause", rerr)
+			if _, pstderr, perr := gitRun(rctx, cur.RepoPath, "worktree", "prune"); perr != nil {
+				return nil, fmt.Errorf("git worktree prune %s: %s: %w",
+					cur.RepoPath, strings.TrimSpace(truncateRunes(pstderr, 200)), perr)
+			}
+			after, verr := repoWorktrees(rctx, cur.RepoPath)
+			if verr != nil {
+				return nil, fmt.Errorf("prune 后复查工作树册：%w", verr)
+			}
+			if _, still := findEntry(after, cur.WorkDir); still {
+				return nil, fmt.Errorf("prune 后条目 %s 仍在册", cur.WorkDir)
+			}
+			m.log.Info("reclaim 完成：prune 清掉在册条目", "task", taskID, "workdir", cur.WorkDir)
+			base.Removed, base.Action = true, proto.ReclaimPruned
+			return base, nil
+		}
+		return nil, fmt.Errorf("git worktree remove %s: %s: %w",
+			cur.WorkDir, strings.TrimSpace(truncateRunes(stderr, 200)), rerr)
+	}
+
+	m.log.Info("reclaim 完成：工作树已删除", "task", taskID,
+		"workdir", cur.WorkDir, "branch", cur.Branch, "discarded", len(dirty))
+	base.Removed, base.Action, base.Discarded = true, proto.ReclaimRemoved, dirty
+	return base, nil
 }

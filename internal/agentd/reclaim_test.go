@@ -7,11 +7,20 @@ package agentd
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/store"
 )
 
 func TestParseWorktreeListMarksPrunable(t *testing.T) {
@@ -192,5 +201,187 @@ func TestClassifyAbsentWhenNotRegistered(t *testing.T) {
 func TestRepoWorktreesFailsOnNonRepo(t *testing.T) {
 	if _, err := repoWorktrees(context.Background(), t.TempDir()); err == nil {
 		t.Fatalf("非 git 仓库应返回错误，实得 nil")
+	}
+}
+
+// newReclaimManager 造一个带真实 git 仓库的测试 Manager。
+// 构造方式照抄 manager_test.go 的 compensateOnlyManager：store.Open 到
+// looseTempDir、cfg.DataDir 用 t.TempDir、log 用 slog 写 io.Discard。
+func newReclaimManager(t *testing.T) (*Manager, string) {
+	t.Helper()
+	repo := initGitRepo(t)
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+		nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return m, repo
+}
+
+// seedTerminalTask 往库里塞一个指定状态的任务，返回任务 ID。
+// 用 mustCreateTask 直接落库（不走 Dispatch），状态任意指定（含 running 非终态）。
+func seedTerminalTask(t *testing.T, m *Manager, repo, workdir, branch string,
+	state proto.TaskState, managed bool) string {
+	t.Helper()
+	now := time.Now().UTC()
+	id := fmt.Sprintf("t-%d", time.Now().UnixNano())
+	task := &proto.Task{
+		ID: id, RepoPath: repo, WorkDir: workdir, Branch: branch,
+		State: state, WorktreeManaged: managed, Executor: "fake",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	mustCreateTask(t, m.st, task)
+	return id
+}
+
+func TestReclaimRemovesCleanWorktree(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r1", "f-r1")
+	id := seedTerminalTask(t, m, repo, wt, "f-r1", proto.TaskStateFailed, true)
+
+	resp, err := m.Reclaim(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("回收干净树应成功，实得 %v", err)
+	}
+	if resp.Action != proto.ReclaimRemoved || !resp.Removed {
+		t.Fatalf("期望 removed，实得 %+v", resp)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("工作树目录应已删除")
+	}
+}
+
+func TestReclaimRefusesDirtyWithoutForce(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r2", "f-r2")
+	if err := os.WriteFile(filepath.Join(wt, "probe.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("造脏：%v", err)
+	}
+	id := seedTerminalTask(t, m, repo, wt, "f-r2", proto.TaskStateFailed, true)
+
+	_, err := m.Reclaim(context.Background(), id, false)
+	var de *DirtyWorktreeError
+	if !errors.As(err, &de) {
+		t.Fatalf("脏树无 force 应返回 DirtyWorktreeError，实得 %v", err)
+	}
+	if len(de.Files) != 1 || de.Files[0].Path != "probe.log" {
+		t.Fatalf("拒绝时必须带脏清单，实得 %+v", de.Files)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("拒绝后工作树必须原样保留：%v", err)
+	}
+}
+
+func TestReclaimForceRemovesDirtyAndReportsDiscarded(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r3", "f-r3")
+	if err := os.WriteFile(filepath.Join(wt, "probe.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("造脏：%v", err)
+	}
+	id := seedTerminalTask(t, m, repo, wt, "f-r3", proto.TaskStateFailed, true)
+
+	resp, err := m.Reclaim(context.Background(), id, true)
+	if err != nil {
+		t.Fatalf("force 应删成功，实得 %v", err)
+	}
+	if resp.Action != proto.ReclaimRemoved {
+		t.Fatalf("期望 removed，实得 %s", resp.Action)
+	}
+	// 强删不能悄悄发生：丢了什么必须留痕
+	if len(resp.Discarded) != 1 || resp.Discarded[0].Path != "probe.log" {
+		t.Fatalf("强删必须报出被丢弃的条目，实得 %+v", resp.Discarded)
+	}
+}
+
+func TestReclaimHandlesPrunableEntry(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r4", "f-r4")
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("删目录：%v", err)
+	}
+	id := seedTerminalTask(t, m, repo, wt, "f-r4", proto.TaskStateFailed, true)
+
+	resp, err := m.Reclaim(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("prunable 条目应可回收，实得 %v", err)
+	}
+	if resp.Action != proto.ReclaimRemoved && resp.Action != proto.ReclaimPruned {
+		t.Fatalf("期望 removed 或 pruned，实得 %s", resp.Action)
+	}
+	entries, _ := repoWorktrees(context.Background(), repo)
+	if _, ok := findEntry(entries, wt); ok {
+		t.Fatalf("回收后条目必须从册中消失")
+	}
+}
+
+// 幂等是「重试入口」的定义：重试第二次会报错的入口，不是重试入口。
+func TestReclaimIsIdempotent(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r5", "f-r5")
+	id := seedTerminalTask(t, m, repo, wt, "f-r5", proto.TaskStateFailed, true)
+
+	if _, err := m.Reclaim(context.Background(), id, false); err != nil {
+		t.Fatalf("首次回收：%v", err)
+	}
+	resp, err := m.Reclaim(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("二次回收必须成功（幂等），实得 %v", err)
+	}
+	if resp.Action != proto.ReclaimAlreadyAbsent || resp.Removed {
+		t.Fatalf("二次回收应报 already_absent 且 removed=false，实得 %+v", resp)
+	}
+}
+
+func TestReclaimRefusesNonTerminal(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r6", "f-r6")
+	id := seedTerminalTask(t, m, repo, wt, "f-r6", proto.TaskStateRunning, true)
+
+	_, err := m.Reclaim(context.Background(), id, false)
+	if !errors.Is(err, ErrReclaimNotTerminal) {
+		t.Fatalf("非终态应拒绝，实得 %v", err)
+	}
+	if _, serr := os.Stat(wt); serr != nil {
+		t.Fatalf("拒绝后工作树必须保留：%v", serr)
+	}
+}
+
+func TestReclaimRefusesNotManaged(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r7", "f-r7")
+	id := seedTerminalTask(t, m, repo, wt, "f-r7", proto.TaskStateFailed, false)
+
+	_, err := m.Reclaim(context.Background(), id, false)
+	if !errors.Is(err, ErrReclaimNotManaged) {
+		t.Fatalf("非 managed 应拒绝，实得 %v", err)
+	}
+	if _, serr := os.Stat(wt); serr != nil {
+		t.Fatalf("拒绝后用户自带工作树必须保留：%v", serr)
+	}
+}
+
+// 仓库不可达时**绝不能**被当成 already_absent 静默退成功——
+// 那会让人以为已经清干净了（同 B64 的「把没上报当成没有」缺陷）。
+func TestReclaimRefusesWhenRepoUnreachable(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r8", "f-r8")
+	id := seedTerminalTask(t, m, repo, wt, "f-r8", proto.TaskStateFailed, true)
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatalf("删仓库：%v", err)
+	}
+
+	_, err := m.Reclaim(context.Background(), id, false)
+	if !errors.Is(err, ErrReclaimRepoUnreachable) {
+		t.Fatalf("仓库不可达应报 repo_unreachable，实得 %v", err)
+	}
+}
+
+func TestReclaimNotFound(t *testing.T) {
+	m, _ := newReclaimManager(t)
+	if _, err := m.Reclaim(context.Background(), "no-such-task", false); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("不存在的任务应返回 ErrNotFound，实得 %v", err)
 	}
 }
