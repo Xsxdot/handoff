@@ -218,3 +218,58 @@ func (m *Manager) probeOne(t proto.Task, budget time.Duration) (live, note strin
 		return proto.LiveUnknown, "探活超时"
 	}
 }
+
+// FootprintAll 体检全部任务（含已归档）的进程足迹。
+//
+// 返回：
+//   - 每个任务一行（含判定结论）与本机 uid 占用；查询任务列表失败才返回错误
+//
+// 注意：
+//   - **只读，绝不发信号**：本方法只数不杀。数出来之后要不要动手是人的决定
+//   - 与 status 分开的理由：本方法遍历全部历史任务目录，天然是慢命令；
+//     status 有「不能变成慢命令」的硬纪律，两者不能合并
+//   - 已归档任务同样体检：Done 只删 worktree、不删任务目录，凭据都还在
+func (m *Manager) FootprintAll() (*proto.FootprintResp, error) {
+	tasks, err := m.st.ListTasks()
+	if err != nil {
+		m.log.Error("足迹体检：查询任务列表失败", "cause", err)
+		return nil, fmt.Errorf("查询任务列表: %w", err)
+	}
+	m.log.Info("足迹体检开始", "tasks", len(tasks))
+	resp := &proto.FootprintResp{Rows: make([]proto.FootprintRow, 0, len(tasks))}
+	scanned, withProcs := 0, 0
+	for _, t := range tasks {
+		ad, aerr := m.adapterFor(t.ID)
+		if aerr != nil {
+			continue
+		}
+		fp, ok := ad.(footprinter)
+		if !ok {
+			continue
+		}
+		h, herr := fp.ProcHandle(t.ID, filepath.Join(m.cfg.DataDir, "tasks", t.ID))
+		if herr != nil {
+			continue // 无凭据（多为从未启动或已清理）：不是异常，不入表
+		}
+		scanned++
+		members, v, ferr := prochost.Footprint(h)
+		if ferr != nil {
+			m.log.Warn("足迹体检：枚举失败", "task", t.ID, "cause", ferr)
+			continue
+		}
+		if len(members) > 0 {
+			withProcs++
+		}
+		resp.Rows = append(resp.Rows, proto.FootprintRow{
+			TaskID: t.ID, Name: t.Name, State: string(t.State),
+			Procs: len(members), Verdict: string(v),
+		})
+	}
+	if used, limit, uerr := prochost.UIDUsage(); uerr == nil {
+		resp.Usage = &proto.ProcUsage{Used: used, Limit: limit}
+	} else {
+		m.log.Warn("足迹体检：读不到进程占用，该字段留空", "cause", uerr)
+	}
+	m.log.Info("足迹体检完成", "scanned", scanned, "with_procs", withProcs, "rows", len(resp.Rows))
+	return resp, nil
+}

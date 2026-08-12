@@ -67,6 +67,8 @@ type statusEnv struct {
 	st interface {
 		CreateTask(t *proto.Task) error
 	}
+	// mgr 是同一个 manager 的引用：FootprintAll 等直接调方法的测试不走 HTTP。
+	mgr *agentd.Manager
 }
 
 // newStatusEnv 构造 status 测试环境：manager 以单只 probeStub 注册为 "stub"，
@@ -84,7 +86,7 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": ad},
 		cfg, nil, nil, logger)
 	env.srv.SetManager(mgr)
-	return &statusEnv{ts: env.ts, st: env.st}
+	return &statusEnv{ts: env.ts, st: env.st, mgr: mgr}
 }
 
 // newTestManager 构造一个能直接调 Manager.Status() 的 manager。
@@ -302,5 +304,43 @@ func TestStatusProcsNilWhenUnsupported(t *testing.T) {
 		if a.Procs != nil {
 			t.Fatalf("不支持的 adapter 应留 nil，got %d", *a.Procs)
 		}
+	}
+}
+
+// TestFootprintAllCoversArchivedTasks 验证体检覆盖已归档任务。
+//
+// 这是这条命令存在的理由：Done 只删 worktree、不删任务目录，历史任务的
+// proc.json 都还在。若只扫活跃任务，它与 status 就没有区别了。
+func TestFootprintAllCoversArchivedTasks(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	archived := "T-archived"
+	env.seedTask(t, archived, proto.TaskStateCompleted)
+
+	resp, err := env.mgr.FootprintAll()
+	if err != nil {
+		t.Fatalf("FootprintAll 失败: %v", err)
+	}
+	for _, r := range resp.Rows {
+		if r.TaskID == archived {
+			return
+		}
+	}
+	t.Fatalf("体检结果里没有已归档任务 %s（共 %d 行）", archived, len(resp.Rows))
+}
+
+// TestFootprintAllReportsVerdict 验证判定结论如实带出，不被抹成 0。
+func TestFootprintAllReportsVerdict(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	env.seedTask(t, "T-verdict", proto.TaskStateCompleted)
+
+	resp, err := env.mgr.FootprintAll()
+	if err != nil {
+		t.Fatalf("FootprintAll 失败: %v", err)
+	}
+	if len(resp.Rows) == 0 {
+		t.Fatal("应至少有一行")
+	}
+	if resp.Rows[0].Verdict == "" {
+		t.Fatal("Verdict 不得为空——判不出结论也要如实说，不能只给一个 0")
 	}
 }

@@ -134,3 +134,22 @@ type StatusResp struct {
 	// 字段，消费方拿到 nil 应当什么都不显示，而不是显示一个「0/0」的假状态。
 	Proc *ProcUsage `json:"proc,omitempty"`
 }
+
+// FootprintRow 是一个任务的进程足迹体检结果。
+//
+// 注意：Verdict 恒非空。判不出结论时给 leader_reuse / no_credential，而不是
+// 把 Procs 抹成 0 了事——「没有残留」与「我们不敢下结论」是两回事，后者需要
+// 人工看一眼，前者不需要。
+type FootprintRow struct {
+	TaskID  string `json:"task_id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Procs   int    `json:"procs"`
+	Verdict string `json:"verdict"`
+}
+
+// FootprintResp 是 GET /api/footprint 的响应：全部任务（含已归档）的足迹体检。
+type FootprintResp struct {
+	Rows  []FootprintRow `json:"rows"`
+	Usage *ProcUsage     `json:"usage,omitempty"`
+}
