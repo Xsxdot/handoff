@@ -7,7 +7,10 @@
 //
 // 边界：
 //   - **不发起任何真实模型调用**：探测一律用轻量本地判据（见 internal/toolchain）
-//   - **不装服务**：托管走 handoff service install。init 只在最后提示一句
+//   - **不主动装服务，但会问**：角色含执行机且 stdin 是终端时，init 会追问一句
+//     是否托管，答 y 则调 installService（与 handoff service install 同一条路径）。
+//     托管是「重启后 agentd 还回得来」的唯一保障，只留一行提示的触达率不够（B71）。
+//     Linux 上非 root 时一律不代跑，只打印 sudo 命令
 //   - **不阻断任何选择**：探测结果只影响默认值与标注；没装任何 executor 也能配完
 //     （纯审核者机的正常情况），选了「未登录」的执行者只警告不拦
 //   - stdin 非 tty 时一问不问：init 会被 install.sh 经管道调起，问了没人答，
@@ -21,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +88,8 @@ var initCmd = &cobra.Command{
 		}
 
 		r := bufio.NewReader(cmd.InOrStdin())
-		if err := askAll(out, r, cfg, results); err != nil {
+		isExec, err := askAll(out, r, cfg, results)
+		if err != nil {
 			return err
 		}
 		if err := config.Save(p, cfg); err != nil {
@@ -92,7 +97,7 @@ var initCmd = &cobra.Command{
 		}
 		fmt.Fprintf(out, "\n已写入 %s\n", p)
 		printPairing(out, cfg)
-		fmt.Fprintln(out, "\n下一步   handoff service install   （把 agentd 交给本机进程管理器托管）")
+		maybeInstallService(out, r, isExec, p)
 		return nil
 	},
 }
@@ -153,7 +158,11 @@ func coveredBy(path string, added []string) string {
 }
 
 // askAll 按角色分支问完全部问题，就地改写 cfg。
-func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Result) error {
+//
+// 返回：
+//   - isExec: 本机角色是否包含执行机（决定 init 之后要不要追问托管）
+//   - 错误：问答或改写失败
+func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Result) (bool, error) {
 	fmt.Fprintln(w, "\n以下每一问直接回车即取方括号里的当前值。")
 
 	// 1. 角色。探到就绪 executor 则默认「执行机」
@@ -205,7 +214,48 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 		// 10. targets 配对，循环添加
 		askTargets(w, r, cfg)
 	}
-	return nil
+	return isExec, nil
+}
+
+// maybeInstallService 在执行机上追问是否现在把 agentd 交给进程管理器托管，
+// 答 y 则就地代跑。
+//
+// 参数：
+//   - w: 面向用户的输出
+//   - r: 问答输入
+//   - isExec: 本机角色是否包含执行机
+//   - cfgPath: 配置路径（传给服务单元）
+//
+// 注意：
+//   - 无返回值：托管失败**绝不**让 init 失败。配置此时已经写盘，为一个附属动作
+//     把整条 init 退非零，用户会以为配置没保存（与 install.sh 对 skill install
+//     的处置同一个道理）
+//   - Linux 上非 root 时不代跑：systemd 单元要写 /etc/systemd/system，需要 root，
+//     而 init 不 sudo。此时只打印命令
+//   - why 要追问而不是只提示：托管是「机器重启后 agentd 还回得来」的唯一保障，
+//     它此前只是最后一行提示——B71 现场那台就是这么变成手工拉起的，重启后
+//     PATH 全靠运气
+func maybeInstallService(w io.Writer, r *bufio.Reader, isExec bool, cfgPath string) {
+	if !isExec {
+		// 审核者机不跑 agentd，托管对它没有意义
+		return
+	}
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		fmt.Fprintln(w, "\n下一步   sudo handoff service install")
+		fmt.Fprintln(w, "         systemd 单元要写 /etc/systemd/system，需要 root，init 不替你 sudo。")
+		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
+		return
+	}
+	if !askBool(w, r, "\n现在把 agentd 交给本机进程管理器托管", true) {
+		fmt.Fprintln(w, "\n下一步   handoff service install")
+		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
+		return
+	}
+	fmt.Fprintln(w)
+	if err := installService(w, cfgPath); err != nil {
+		fmt.Fprintf(w, "托管失败：%v\n", err)
+		fmt.Fprintln(w, "配置已经写好了，稍后单独重跑 handoff service install 即可。")
+	}
 }
 
 // warnIfNotReady 在选了「没装」或「未登录」的执行者时警告一句——只警告，不拦。
