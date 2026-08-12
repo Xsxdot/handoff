@@ -98,7 +98,7 @@ type Frame struct {
 - Consumes: 无
 - Produces: `proto.Frame` 结构体；`proto.FrameType` 及六个常量 `FrameText` / `FrameReasoning` / `FrameToolCall` / `FrameToolResult` / `FrameEvent` / `FrameTurnStart`（全部见上方契约附录）
 
-- [ ] **Step 1: 建 `internal/proto/frames.go`**
+- [x] **Step 1: 建 `internal/proto/frames.go`**
 
 ```go
 // frames.go —— 结构化回合帧的线格式。
@@ -188,7 +188,7 @@ type Frame struct {
 }
 ```
 
-- [ ] **Step 2: 在 `contract_fixture_test.go` 的 `cases` 切片末尾加一条**
+- [x] **Step 2: 在 `contract_fixture_test.go` 的 `cases` 切片末尾加一条**
 
 在 `{"StatusResp", statusSample(now, taskID)},` 之后加：
 
@@ -196,7 +196,7 @@ type Frame struct {
 		{"Frame", frameSample(now)},
 ```
 
-- [ ] **Step 3: 在 `contract_fixture_test.go` 文件末尾加样本函数**
+- [x] **Step 3: 在 `contract_fixture_test.go` 文件末尾加样本函数**
 
 ```go
 // frameSample 返回 Frame 的代表性样本（被截断的 tool_result）。
@@ -219,7 +219,7 @@ func frameSample(now time.Time) Frame {
 }
 ```
 
-- [ ] **Step 4: 生成 fixture 并检查生成物**
+- [x] **Step 4: 生成 fixture 并检查生成物**
 
 ```bash
 go test ./internal/proto/ -run TestContractFixtures -update
@@ -244,12 +244,12 @@ Expected: 文件生成，内容形如（`ts` 用 fixture 固定时区 `+08:00`�
 
 关键是确认 `delta` / `tool` / `input` / `ref_seq` / `event` / `reason` 六个键**缺席**——这正是 omitempty 要钉住的。
 
-- [ ] **Step 5: 不带 -update 重跑，确认契约稳定**
+- [x] **Step 5: 不带 -update 重跑，确认契约稳定**
 
 Run: `go test ./internal/proto/ -run TestContractFixtures -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/proto/frames.go internal/proto/contract_fixture_test.go web/src/api/testdata/Frame.json
@@ -268,7 +268,7 @@ git commit -m "feat(proto): Frame 帧线格式契约 + fixture"
 - Consumes: `executor.TruncationMarker`（已存在，值为 `"…（已截断）"`）
 - Produces: `func turn.HeadTail(s string, head, tail int) (out string, truncated bool, orig int64)`；常量 `turn.FrameFieldHead = 4 << 10`、`turn.FrameFieldTail = 4 << 10`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/turn/headtail_test.go`:
 
@@ -331,12 +331,12 @@ func TestHeadTailNoTruncateWhenBudgetCovers(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/turn/ -run TestHeadTail -v`
 Expected: FAIL，`undefined: HeadTail`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 Create `internal/executor/turn/headtail.go`:
 
@@ -418,12 +418,12 @@ func tailToRuneBoundary(s string, n int) int {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/turn/ -run TestHeadTail -v`
 Expected: PASS（四个用例全过）
 
-- [ ] **Step 5: 加注释自检**
+- [x] **Step 5: 加注释自检**
 
 本任务的注释在 Step 3 的代码里已经写全，逐项确认：
 - 文件头有职责与边界（含「为什么头尾都留」）
@@ -433,7 +433,7 @@ Expected: PASS（四个用例全过）
 本任务是纯函数、无 I/O、无错误分支，按 `instrumenting-code` 的适用范围**不加日志**——
 调用方（Task 3）会在截断发生时打 Debug。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/executor/turn/headtail.go internal/executor/turn/headtail_test.go
@@ -462,7 +462,7 @@ git commit -m "feat(turn): 帧字段头尾截断，按 rune 边界收缩不切�
   - `func (*turn.FrameWriter) EventRef(refSeq int64, eventType string) error`
   - **全部方法对 nil 接收者安全**（返回 nil，什么都不做）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/turn/frames_test.go`:
 
@@ -683,12 +683,12 @@ func TestFrameWriterNextPartIsUniqueWithinTurn(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/turn/ -run TestFrameWriter -v`
 Expected: FAIL，`undefined: NewFrameWriter` / `undefined: FramesFileName`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 Create `internal/executor/turn/frames.go`:
 
@@ -961,7 +961,7 @@ func resumeFrameState(path string) (seq int64, turn int, err error) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/turn/ -v`
 Expected: PASS（Task 2 与 Task 3 的全部用例，含 `-race`）
@@ -974,7 +974,7 @@ go test ./internal/executor/turn/ -race -run TestFrameWriter
 
 Expected: PASS，无 race 报告
 
-- [ ] **Step 5: 加关键节点日志**
+- [x] **Step 5: 加关键节点日志**
 
 Step 3 的实现里已按 `instrumenting-code` 埋点，逐项确认：
 - `NewFrameWriter` 成功：Info，带 `path` + `resume_seq` + `resume_turn`（帧流断档的第一诊断信号）
@@ -983,11 +983,11 @@ Step 3 的实现里已按 `instrumenting-code` 埋点，逐项确认：
 - 单帧超限：Warn，带 `seq` + `type` + `line_bytes`
 - **帧内容本身绝不进日志**：确认没有任何一行日志带 `delta` / `input` / `output` 的值
 
-- [ ] **Step 6: 加注释**
+- [x] **Step 6: 加注释**
 
 确认：文件头有职责/边界，并解释了「为什么每次写都开关文件」；`FrameWriter` 结构体注释说明并发与 nil 语义；每个导出方法有注释；`append` 解释了「为什么 seq 分配与写入必须同锁」；`resumeFrameState` 解释了「为什么只回读尾部」与「第一行解析失败是预期」。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/executor/turn/frames.go internal/executor/turn/frames_test.go
@@ -1016,7 +1016,7 @@ git commit -m "feat(turn): FrameWriter——帧编码、seq/turn 恢复、并发
 
 **codex 没有这一条，是刻意的**：`internal/executor/codex/` 下**没有** testdata 目录，仓库里不存在任何 codex 的真实抓包。手写一份 JSON 冒充抓包比没有更糟——opencode 的 `TestSpikeFixturesAreRealCaptures` 就是专门为防这件事写的。codex 的 render.log 零回归由 Task 7 的既有用例全绿 + Task 12 Step 6 的 `git diff` 检查兜底，并在 Task 12 的自评里如实写明「codex 缺真实抓包，未建 golden」。**不要为了凑齐四个而伪造 fixture。**
 
-- [ ] **Step 1: 确认工作区干净、没有任何 adapter 改动**
+- [x] **Step 1: 确认工作区干净、没有任何 adapter 改动**
 
 ```bash
 git status --porcelain internal/executor/
@@ -1024,7 +1024,7 @@ git status --porcelain internal/executor/
 
 Expected: **无输出**。有输出说明已经改了东西，先处理干净再继续（见上面的顺序纪律）。
 
-- [ ] **Step 2: 写 grok 的 golden 用例（三个里最直接的，先做它）**
+- [x] **Step 2: 写 grok 的 golden 用例（三个里最直接的，先做它）**
 
 grok 的 `RenderTextForTest()` 直接返回 render 那一股的全文，不需要落盘。
 
@@ -1096,7 +1096,7 @@ func TestRenderGolden(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 录 grok 基线并确认它能挡住改动**
+- [x] **Step 3: 录 grok 基线并确认它能挡住改动**
 
 ```bash
 go test ./internal/executor/grok/ -run TestRenderGolden -update
@@ -1116,7 +1116,7 @@ git checkout internal/executor/grok/testdata/render_golden.txt
 
 Expected: 中间那条 **FAIL**。若它仍然 PASS，说明比对没生效（多半是 golden 为空），回到 Step 2 排查——**一个恒真的基线比没有基线更危险**。
 
-- [ ] **Step 4: 写 opencode 的 golden 用例**
+- [x] **Step 4: 写 opencode 的 golden 用例**
 
 opencode 的 `startReplay` 会把 render 真的写进 taskDir 里的文件，所以这里比对的是**真正的 render.log**。
 
@@ -1209,7 +1209,7 @@ func renderGoldenReplay(t *testing.T) (string, <-chan executor.AdapterEvent) {
 
 补上 `log/slog`、`github.com/xushixin/handoff/internal/executor`、`github.com/xushixin/handoff/internal/proto` 三个 import。`renderLogFileName` 是包内已有的常量（`newRun` 里用它拼 renderPath），用它的真名。
 
-- [ ] **Step 5: 录 opencode 基线并验证闸有效**
+- [x] **Step 5: 录 opencode 基线并验证闸有效**
 
 ```bash
 go test ./internal/executor/opencode/ -run TestRenderGolden -update
@@ -1227,7 +1227,7 @@ go test ./internal/executor/opencode/ -run TestRenderGolden -count=3
 
 Expected: 三次全 PASS。若出现偶发失败，说明 800ms 的静默窗口不够，把 `collectReplay` 的等待调大到 1.5s 再重录——**带随机失败的基线会被人当噪声忽略，等于没有**。
 
-- [ ] **Step 6: 写 claudecode 的 golden 用例**
+- [x] **Step 6: 写 claudecode 的 golden 用例**
 
 claude 现有的 `stream_test.go` 只走 tailer，**碰不到 render 那一层**，所以这里要建一个最小回放：把 `turn_success.jsonl` 的每条消息按生产路径喂进映射函数，让它们往真实 taskDir 写 render.log。
 
@@ -1327,7 +1327,7 @@ func TestRenderGolden(t *testing.T) {
 - `a.newRun(...)` 的真实签名与参数个数——以 `adapter.go` 为准。
 - `Run` 循环里对这三类消息的真实分派——照抄它的 `switch`，**本测试的分派必须与生产一致**，否则基线盖的是一条不存在的路径。
 
-- [ ] **Step 7: 录 claude 基线并验证闸有效**
+- [x] **Step 7: 录 claude 基线并验证闸有效**
 
 ```bash
 go test ./internal/executor/claudecode/ -run TestRenderGolden -update
@@ -1339,7 +1339,7 @@ Expected: PASS，且 golden **非空**。
 
 若 golden 为空或 `render.log` 不存在：说明 `turn_success.jsonl` 这份样本里没有任何会落到 render 的内容（比如只有 result 没有 text_delta）。**这时不要交一个空基线**——空基线恒真。改为在 Task 12 的自评里如实写明「claude 的现有样本不含 render 内容，未建 golden，零回归靠既有用例 + git diff 兜底」，并把本 Step 产生的文件删掉。
 
-- [ ] **Step 8: 三个包一起跑一遍**
+- [x] **Step 8: 三个包一起跑一遍**
 
 ```bash
 go test ./internal/executor/claudecode/ ./internal/executor/opencode/ ./internal/executor/grok/ 2>&1 | tail -20
@@ -1347,13 +1347,13 @@ go test ./internal/executor/claudecode/ ./internal/executor/opencode/ ./internal
 
 Expected: 全部 PASS（既有用例 + 三条新 golden）
 
-- [ ] **Step 9: 加注释自检**
+- [x] **Step 9: 加注释自检**
 
 三个文件的头注释都已写明职责、边界与「为什么是逐字节而不是关键字」。额外确认 grok 那份**明确写了**「不断言 render 里没有思维链」及其原因——这是本计划最容易被好心改错的一处。
 
 本任务是纯测试代码，无生产路径、无错误分支需要观测，按 `instrumenting-code` 的适用范围**不加生产日志**；断言失败时打印的基线/实得字节数与内容就是它的可观测性。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add internal/executor/claudecode/render_golden_test.go internal/executor/claudecode/testdata/ \
@@ -1384,7 +1384,7 @@ claude 的 stream-json 里，思维链是 `content_block_delta` + `delta.type ==
 
 工具调用与结果的 part 配对用 claude 自己的 id：assistant 的 `tool_use` 块带 `id`，user 的 `tool_result` 块带 `tool_use_id`，两者相等。**用它做 part，不要用 `NextPart()`**。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/claudecode/frames_test.go`:
 
@@ -1430,12 +1430,12 @@ func TestTextDeltaBehaviourUnchanged(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/claudecode/ -run "TestSplitDelta|TestTextDeltaBehaviour" -v`
 Expected: `TestSplitDeltaSeparatesThinkingFromText` FAIL（`undefined: splitDelta`）；`TestTextDeltaBehaviour` PASS（既有行为，本用例是防回归的护栏）
 
-- [ ] **Step 3: 在 `stream.go` 加 `splitDelta`，`textDelta` 保持不变**
+- [x] **Step 3: 在 `stream.go` 加 `splitDelta`，`textDelta` 保持不变**
 
 在 `stream.go` 的 `textDelta` 函数**之后**追加（不要改 `textDelta` 本身）：
 
@@ -1476,12 +1476,12 @@ func splitDelta(ev json.RawMessage) (text, reasoning string) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/claudecode/ -run "TestSplitDelta|TestTextDeltaBehaviour" -v`
 Expected: 两个都 PASS
 
-- [ ] **Step 5: 给 `runState` 加 frames 字段并在 `newRun` 构造**
+- [x] **Step 5: 给 `runState` 加 frames 字段并在 `newRun` 构造**
 
 在 `runState` 结构体里 `renderPath string` 那一行**之后**加：
 
@@ -1503,7 +1503,7 @@ Expected: 两个都 PASS
 
 （若 `newRun` 现在是单个复合字面量 `return &runState{...}` 的形式，改成先赋给局部变量 `r`，再补上面两句，最后 `return r`。）
 
-- [ ] **Step 6: 在 `mapStreamEvent` 里多写一路帧**
+- [x] **Step 6: 在 `mapStreamEvent` 里多写一路帧**
 
 把 `mapStreamEvent` 整个替换为：
 
@@ -1540,7 +1540,7 @@ func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
 	textPart     string // 本回合正文/思维链的 part 标识，BeginTurn 后由 NextPart 分配
 ```
 
-- [ ] **Step 7: 在 `appendActionSummary` 与 `mapUserMessage` 里带上 tool id**
+- [x] **Step 7: 在 `appendActionSummary` 与 `mapUserMessage` 里带上 tool id**
 
 `appendActionSummary` 现在的签名是 `(r *runState, toolName string, input json.RawMessage)`。改成带 id：
 
@@ -1638,7 +1638,7 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 }
 ```
 
-- [ ] **Step 8: 在 `Start` 与 `Send` 里各开一个回合**
+- [x] **Step 8: 在 `Start` 与 `Send` 里各开一个回合**
 
 在 `Start` 中 `r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())` 之后加：
 
@@ -1658,7 +1658,7 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 	r.textPart = r.frames.NextPart()
 ```
 
-- [ ] **Step 9: 跑全包测试，确认 render.log 零回归**
+- [x] **Step 9: 跑全包测试，确认 render.log 零回归**
 
 ```bash
 go build ./... && go test ./internal/executor/claudecode/ -v 2>&1 | tail -30
@@ -1674,7 +1674,7 @@ go test ./internal/executor/claudecode/ -run TestRenderGolden -v
 
 Expected: PASS。它变红 = render.log 产物变了。**绝对不要用 `-update` 把它重录过去**——那正是这道闸要拦的事。回去改实现。
 
-- [ ] **Step 10: 加关键节点日志自检**
+- [x] **Step 10: 加关键节点日志自检**
 
 Step 5-8 的代码里每一处写帧都带了错误分支的 Warn，逐项确认：
 
@@ -1689,11 +1689,11 @@ grep -n 'a\.log\.' internal/executor/claudecode/adapter.go | grep -i 'text\|reas
 
 Expected: 无输出（有输出说明帧内容或正文进了日志）
 
-- [ ] **Step 11: 加注释自检**
+- [x] **Step 11: 加注释自检**
 
 确认：`splitDelta` 有「为什么另开一个函数」的 why 注释；`mapStreamEvent` 的注释写明隔离不变式；`appendActionSummary` 说明了「帧存完整入参而非行摘要」的原因；`runState` 两个新字段都有行内说明。
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add internal/executor/claudecode/
@@ -1721,7 +1721,7 @@ opencode 的 part 类型由 `message.part.updated` 揭晓并记进 `r.partTypes[
 
 本任务只在 `default:` 分支与 `flushPending` 的丢弃路径上多写一路 reasoning 帧。`partKey(messageID, partID)` 天然就是稳定的 part 标识，**直接拿来当帧的 part，不要用 `NextPart()`**。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/opencode/frames_test.go`:
 
@@ -1755,12 +1755,12 @@ func TestReasoningPartRoutedAsReasoning(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/opencode/ -run TestReasoningPartRouted -v`
 Expected: FAIL，`undefined: frameKind`
 
-- [ ] **Step 3: 加 `frameKind` 分类函数**
+- [x] **Step 3: 加 `frameKind` 分类函数**
 
 在 `adapter.go` 里 `flushPending` 函数**之前**加：
 
@@ -1794,12 +1794,12 @@ func frameKind(partType string) partFrameKind {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/opencode/ -run TestReasoningPartRouted -v`
 Expected: PASS
 
-- [ ] **Step 5: 给 `runState` 加 frames 字段并在 `newRun` 构造**
+- [x] **Step 5: 给 `runState` 加 frames 字段并在 `newRun` 构造**
 
 在 `runState` 里 `renderPath  string` 之后加：
 
@@ -1818,7 +1818,7 @@ Expected: PASS
 	r.frames = fw
 ```
 
-- [ ] **Step 6: 在 `mapPartDelta` 的 `default:` 分支落 reasoning 帧**
+- [x] **Step 6: 在 `mapPartDelta` 的 `default:` 分支落 reasoning 帧**
 
 把该分支替换为：
 
@@ -1835,7 +1835,7 @@ Expected: PASS
 	}
 ```
 
-- [ ] **Step 7: 在 `flushPending` 的丢弃路径落 reasoning 帧**
+- [x] **Step 7: 在 `flushPending` 的丢弃路径落 reasoning 帧**
 
 `flushPending` 现在的签名是 `(r *runState, key string, isText bool)`。类型揭晓时它只拿到一个 bool，分不出 reasoning 与 tool——改成接收真实类型：
 
@@ -1881,7 +1881,7 @@ func (a *Adapter) flushPending(r *runState, key, partType string) {
 	a.flushPending(r, key, pendingType)
 ```
 
-- [ ] **Step 8: 在 `setPartText` 里落 text 帧**
+- [x] **Step 8: 在 `setPartText` 里落 text 帧**
 
 `setPartText` 已经在算「相对已见文本的增量」并写 render.log。在它写 render.log 成功的那一路后面追加：
 
@@ -1894,7 +1894,7 @@ func (a *Adapter) flushPending(r *runState, key, partType string) {
 
 （`delta` 是该函数里已算好的增量变量；若局部变量名不同，用它实际的名字。若该函数存在「快照被修订、非追加」的覆盖分支，那一路**不产帧**——帧流是只追加的，无法表达"改写历史"，与文件头注释里 render.log 的处置一致。）
 
-- [ ] **Step 9: 在 `Start` 与 `Send` 里各开一个回合**
+- [x] **Step 9: 在 `Start` 与 `Send` 里各开一个回合**
 
 `Start` 里取到 `r` 之后：
 
@@ -1914,7 +1914,7 @@ func (a *Adapter) flushPending(r *runState, key, partType string) {
 
 opencode **不调 `NextPart()`**：它的 `partKey` 就是稳定的 part 标识。
 
-- [ ] **Step 10: 跑全包测试**
+- [x] **Step 10: 跑全包测试**
 
 ```bash
 go build ./... && go test ./internal/executor/opencode/ 2>&1 | tail -30
@@ -1925,7 +1925,7 @@ Expected: 全部 PASS。特别关注两条：
 - `regression_group_a_test.go` 断言回合文本与截断行为，**变红即说明隔离被动了**
 - Task 4 录的 `TestRenderGolden` 断言 render.log 逐字节不变，**变红即说明 render.log 被动了**。不要用 `-update` 重录过去——那正是这道闸要拦的事
 
-- [ ] **Step 11: 加关键节点日志自检**
+- [x] **Step 11: 加关键节点日志自检**
 
 逐项确认：
 
@@ -1940,11 +1940,11 @@ grep -n 'a\.log\.' internal/executor/opencode/adapter.go | grep -i 'delta\|buf\|
 
 Expected: 只允许出现打**长度**（`len(buf)`）的那一条，不得有打内容的
 
-- [ ] **Step 12: 加注释自检**
+- [x] **Step 12: 加注释自检**
 
 确认：`frameKind` 有「为什么 tool 归 kindSkip」与「未知类型为什么不猜」的 why；`flushPending` 说明了「为什么参数从 bool 换成 string」；`mapPartUpdated` 的调用点说明了 `user-text` 这个哨兵值的由来；`default:` 分支保留了原注释并补上 W4a 的增量说明。
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add internal/executor/opencode/
@@ -1968,7 +1968,7 @@ codex **今天就把思维链写进 render.log**——`item/reasoning/textDelta`
 
 **这是既有行为，本任务一字不改。** 帧是**额外**的一路。回合正文的隔离在别处：`appendBody` 只在 `it.Type == "agentMessage"` 时调用——那条判定同样一字不改。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/codex/frames_test.go`:
 
@@ -2014,12 +2014,12 @@ func TestDeltaNotificationsMembershipUnchanged(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/codex/ -run "TestDeltaFrameKind|TestDeltaNotifications" -v`
 Expected: `TestDeltaFrameKind` FAIL（`undefined: deltaFrameKind`）；`TestDeltaNotificationsMembershipUnchanged` PASS
 
-- [ ] **Step 3: 加 `deltaFrameKind`**
+- [x] **Step 3: 加 `deltaFrameKind`**
 
 在 `adapter.go` 的 `deltaNotifications` 变量声明**之后**加：
 
@@ -2056,12 +2056,12 @@ func deltaFrameKind(method string) deltaKind {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/codex/ -run "TestDeltaFrameKind|TestDeltaNotifications" -v`
 Expected: 两个都 PASS
 
-- [ ] **Step 5: 给 `runState` 加 frames 与 part 字段，并在 `newRun` 构造**
+- [x] **Step 5: 给 `runState` 加 frames 与 part 字段，并在 `newRun` 构造**
 
 `runState` 加两个字段：
 
@@ -2081,7 +2081,7 @@ Expected: 两个都 PASS
 	r.frames = fw
 ```
 
-- [ ] **Step 6: 在 `OnNotify` 的两个分支里多写一路帧**
+- [x] **Step 6: 在 `OnNotify` 的两个分支里多写一路帧**
 
 `deltaNotifications` 分支改为（**`appendRenderDelta` 那一行原样保留**）：
 
@@ -2148,7 +2148,7 @@ func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
 
 （若 `threadItem` 没有 `ID` 字段，用 `parseItemNotification` 已经取出的那个 id 字段名——`items.go` 里 `itemIndex.get(id)` 按 id 查，说明该字段存在，用它实际的名字。）
 
-- [ ] **Step 7: 在 `Start` 与 `Send` 里各开一个回合**
+- [x] **Step 7: 在 `Start` 与 `Send` 里各开一个回合**
 
 `Start` 里取到 `r` 之后：
 
@@ -2168,7 +2168,7 @@ func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
 	r.textPart = r.frames.NextPart()
 ```
 
-- [ ] **Step 8: 跑全包测试**
+- [x] **Step 8: 跑全包测试**
 
 ```bash
 go build ./... && go test ./internal/executor/codex/ 2>&1 | tail -30
@@ -2178,7 +2178,7 @@ Expected: 全部 PASS。既有用例变红 = render.log 或回合正文被动了
 
 **codex 没有 golden 基线**（Task 4 说明了原因：仓库里没有 codex 的真实抓包，伪造一份比没有更糟）。所以这里的零回归只靠既有用例 + Task 12 Step 6 的 `git diff` 检查兜底，比另外三家弱。改 `OnNotify` 时格外小心 `r.appendRenderDelta(text)` 那一行——**它一个字都不能动**。
 
-- [ ] **Step 9: 加关键节点日志自检**
+- [x] **Step 9: 加关键节点日志自检**
 
 逐项确认：
 
@@ -2193,11 +2193,11 @@ grep -n 'a\.log\.\|r\.log\.' internal/executor/codex/adapter.go | grep -i 'text\
 
 Expected: 无输出
 
-- [ ] **Step 10: 加注释自检**
+- [x] **Step 10: 加注释自检**
 
 确认：`deltaFrameKind` 有「为什么 outputDelta 不产帧」与「未知方法不猜」的 why；`OnNotify` 的 `appendRenderDelta` 那一行带「既有行为：一字不改」的说明；`appendItemFrame` 说明了「为什么 part 取 it.ID」。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add internal/executor/codex/
@@ -2221,7 +2221,7 @@ grok 的 `turnAccumulator` 已经把 session/update 分成两股：`bodyBuf` 只
 
 `turnAccumulator` 是个纯累积器，不持有 adapter 也不持有 FrameWriter。**不要把 FrameWriter 塞进它**——那会让一个纯数据结构带上 I/O。改在 `feedRaw` 的调用方分流。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/executor/grok/frames_test.go`:
 
@@ -2262,12 +2262,12 @@ func TestThoughtNeverEntersTurnText(t *testing.T) {
 
 （`feedRaw` 的实参形态以该方法的真实签名为准：若它接的是已解析的结构体而非裸字节，按真实签名构造等价输入，断言不变。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/executor/grok/ -run "TestUpdateFrameKind|TestThoughtNever" -v`
 Expected: `TestUpdateFrameKind` FAIL（`undefined: updateFrameKind`）；`TestThoughtNeverEntersTurnText` PASS
 
-- [ ] **Step 3: 加 `updateFrameKind`**
+- [x] **Step 3: 加 `updateFrameKind`**
 
 在 `adapter.go` 的 `turnAccumulator` 类型声明**之前**加：
 
@@ -2301,12 +2301,12 @@ func updateFrameKind(sessionUpdate string) updateKind {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/executor/grok/ -run "TestUpdateFrameKind|TestThoughtNever" -v`
 Expected: 两个都 PASS
 
-- [ ] **Step 5: 给 `runState` 加 frames 与 part 字段并构造**
+- [x] **Step 5: 给 `runState` 加 frames 与 part 字段并构造**
 
 ```go
 	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
@@ -2324,7 +2324,7 @@ Expected: 两个都 PASS
 	r.frames = fw
 ```
 
-- [ ] **Step 6: 在 `feedRaw` 的调用方分流出帧**
+- [x] **Step 6: 在 `feedRaw` 的调用方分流出帧**
 
 找到 `feedRaw` 的调用点（adapter 处理 session/update 通知的那一处）。在调用 `feedRaw` **之后**加：
 
@@ -2345,7 +2345,7 @@ Expected: 两个都 PASS
 
 （`su` 与 `su.Content.Text` 用调用点已有的变量与字段名；若调用点只有裸字节，先按该文件既有的解析方式取出 `sessionUpdate` 与文本，再照上面分流。）
 
-- [ ] **Step 7: 在 `Start` 与 `Send` 里各开一个回合**
+- [x] **Step 7: 在 `Start` 与 `Send` 里各开一个回合**
 
 `Start` 里取到 `r` 之后：
 
@@ -2365,7 +2365,7 @@ Expected: 两个都 PASS
 	r.textPart = r.frames.NextPart()
 ```
 
-- [ ] **Step 8: 跑全包测试**
+- [x] **Step 8: 跑全包测试**
 
 ```bash
 go build ./... && go test ./internal/executor/grok/ 2>&1 | tail -30
@@ -2378,7 +2378,7 @@ Expected: 全部 PASS。其中两条是本任务的硬闸：
 
 后者变红时**不要 `-update` 重录**。grok 的 render 里本来就有思维链，那是既有行为——你要做的是让帧走另一路，不是把这一路改干净。
 
-- [ ] **Step 9: 加关键节点日志自检**
+- [x] **Step 9: 加关键节点日志自检**
 
 逐项确认：
 
@@ -2393,11 +2393,11 @@ grep -n 'a\.log\.' internal/executor/grok/adapter.go | grep -i 'text\|content\|t
 
 Expected: 无输出
 
-- [ ] **Step 10: 加注释自检**
+- [x] **Step 10: 加注释自检**
 
 确认：`updateFrameKind` 有「为什么 grok 不产工具帧」的 why（并引用 spec §3.5 的诚实缺席原则）；分流点注释说明了「为什么不把 FrameWriter 塞进 turnAccumulator」。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add internal/executor/grok/
@@ -2422,7 +2422,7 @@ git commit -m "feat(grok): 回合帧分流——thought 落 reasoning 帧，工�
 
 **为什么用钩子而不是改 20 个调用点：** `AppendEvent` 在 agentd 里有 20 个调用点（manager.go 17、reconcile.go 2、watchdog.go 1）。逐点补一行既啰嗦，又留下「以后新增调用点忘了补」的失效模式。钩子是一个注册点覆盖全部现有与未来的调用点。
 
-- [ ] **Step 1: 写失败的测试（store 侧）**
+- [x] **Step 1: 写失败的测试（store 侧）**
 
 Create `internal/store/eventhook_test.go`:
 
@@ -2493,12 +2493,12 @@ func TestAppendEventWithoutHook(t *testing.T) {
 
 （`Open` 的真实签名以 `store` 包为准；若它需要更多参数，按包内既有测试的建库方式构造。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/store/ -run TestEventHook -v`
 Expected: FAIL，`st.SetEventHook undefined`
 
-- [ ] **Step 3: 在 store 里加钩子**
+- [x] **Step 3: 在 store 里加钩子**
 
 `Store` 结构体加字段：
 
@@ -2563,12 +2563,12 @@ func (s *Store) fireEventHook(e proto.Event) {
 	return evt, nil
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/store/ -run "TestEventHook|TestAppendEventWithoutHook" -v`
 Expected: 三个用例全 PASS
 
-- [ ] **Step 5: 写 agentd 侧的失败测试**
+- [x] **Step 5: 写 agentd 侧的失败测试**
 
 Create `internal/agentd/eventframes_test.go`:
 
@@ -2631,12 +2631,12 @@ func TestEventFrameHookToleratesMissingTaskDir(t *testing.T) {
 
 （`testLogger(t)` 用 `agentd` 包内既有的测试日志构造方式；若没有，用 `slog.New(slog.NewTextHandler(io.Discard, nil))`。）
 
-- [ ] **Step 6: 跑测试确认失败**
+- [x] **Step 6: 跑测试确认失败**
 
 Run: `go test ./internal/agentd/ -run TestEventFrameHook -v`
 Expected: FAIL，`undefined: eventFrameHook`
 
-- [ ] **Step 7: 写 `internal/agentd/eventframes.go`**
+- [x] **Step 7: 写 `internal/agentd/eventframes.go`**
 
 ```go
 // eventframes.go —— 把控制面事件派生成 frames.jsonl 里的 event 引用帧。
@@ -2703,7 +2703,7 @@ func (s *Server) registerEventFrameHook() {
 }
 ```
 
-- [ ] **Step 8: 在 Server 装配期调用**
+- [x] **Step 8: 在 Server 装配期调用**
 
 在 `server.go` 里 `New`（或等价的 Server 构造函数）返回之前加：
 
@@ -2712,7 +2712,7 @@ func (s *Server) registerEventFrameHook() {
 	s.registerEventFrameHook()
 ```
 
-- [ ] **Step 9: 跑测试确认通过**
+- [x] **Step 9: 跑测试确认通过**
 
 ```bash
 go build ./... && go test ./internal/store/ ./internal/agentd/ 2>&1 | tail -20
@@ -2720,11 +2720,11 @@ go build ./... && go test ./internal/store/ ./internal/agentd/ 2>&1 | tail -20
 
 Expected: 全部 PASS
 
-- [ ] **Step 10: 加关键节点日志自检**
+- [x] **Step 10: 加关键节点日志自检**
 
 确认：钩子注册时 Info（带 datadir）；写帧失败 Warn（带 task + seq + type + cause）；写成功 Debug（高频，不能 Info）；`fireEventHook` 的 panic 走 Error。**确认没有任何一行日志带事件 payload**——payload 里可能有命令原文与仓库路径。
 
-- [ ] **Step 11: 加注释自检**
+- [x] **Step 11: 加注释自检**
 
 确认：
 
@@ -2734,7 +2734,7 @@ Expected: 全部 PASS
 - `SetEventHook` 的边界约定写全了三条（不得回调 Store、不得阻塞、panic 内部 recover），这是**会死锁**的约定，必须写在方法注释里而不是散在别处
 - `fireEventHook` 解释了「为什么 panic 只记账不升级成错误」
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add internal/store/ internal/agentd/eventframes.go internal/agentd/eventframes_test.go internal/agentd/server.go
@@ -2756,7 +2756,7 @@ git commit -m "feat(store,agentd): 事件落库钩子 + event 引用帧，一个
 
 **形态照抄 `render_stream.go`**：同样的 offset/tail/follow 语义、同样的 1s 轮询与 20s 心跳、同样的「文件不存在返回 200 空内容」。**唯一的实质差异是行边界**：ndjson 的消费方按行解析，服务端必须只在完整行边界切。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 Create `internal/agentd/frames_stream_test.go`:
 
@@ -2822,12 +2822,12 @@ func TestFramesOffsetParamsReuseRenderSemantics(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/agentd/ -run "TestAlignToLineStart|TestTrimIncompleteTail|TestFramesOffset" -v`
 Expected: FAIL，`undefined: alignToLineStart` 等
 
-- [ ] **Step 3: 写 `internal/agentd/frames_stream.go`**
+- [x] **Step 3: 写 `internal/agentd/frames_stream.go`**
 
 ```go
 // frames_stream.go —— 结构化回合帧（frames.jsonl）的流式读取接口。
@@ -3014,7 +3014,7 @@ func trimIncompleteTail(b []byte) (complete []byte, held int) {
 }
 ```
 
-- [ ] **Step 4: 挂路由**
+- [x] **Step 4: 挂路由**
 
 在 `server.go` 的路由表注释里，`GET /api/tasks/{id}/render` 那行之后加一行：
 
@@ -3030,7 +3030,7 @@ func trimIncompleteTail(b []byte) (complete []byte, held int) {
 
 **必须走 `byTask`**：跨机读远端任务的帧靠它转发，`forwardTo` 用 `io.Copy` 直通，天然支持流式。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 go build ./... && go test ./internal/agentd/ -run "TestAlignToLineStart|TestTrimIncompleteTail|TestFramesOffset" -v
@@ -3038,7 +3038,7 @@ go build ./... && go test ./internal/agentd/ -run "TestAlignToLineStart|TestTrim
 
 Expected: 全部 PASS
 
-- [ ] **Step 6: 加一个端到端的 handler 测试**
+- [x] **Step 6: 加一个端到端的 handler 测试**
 
 追加到 `frames_stream_test.go`：
 
@@ -3098,7 +3098,7 @@ func TestHandleTaskFramesAlignsHalfLineOffset(t *testing.T) {
 
 `newTestServerWithTask(t)` 用 `agentd` 包内既有的测试 Server 构造方式（W3a 的 `w3a_testhelpers_test.go` 里有同类 helper，优先复用；没有合适的就照它的写法新建一个，返回 `*Server` 与一个已入库任务的 id）。补上 `net/http/httptest`、`encoding/json`、`os`、`path/filepath`、`strings` 等 import。
 
-- [ ] **Step 7: 跑全包测试**
+- [x] **Step 7: 跑全包测试**
 
 ```bash
 go test ./internal/agentd/ 2>&1 | tail -20
@@ -3106,15 +3106,15 @@ go test ./internal/agentd/ 2>&1 | tail -20
 
 Expected: 全部 PASS
 
-- [ ] **Step 8: 加关键节点日志自检**
+- [x] **Step 8: 加关键节点日志自检**
 
 确认：流开始 Info（task + offset + size + follow）；流结束 Info（task + sent）；中断且非 `context.Canceled` 时 Error（带 cause）；参数非法 Warn。**确认没有任何一行日志打印帧内容**。
 
-- [ ] **Step 9: 加注释自检**
+- [x] **Step 9: 加注释自检**
 
 确认：文件头写清与 `render_stream.go` 的关系与唯一差异；`streamFrames` 解释了「与 streamRender 的差异只有一处」；`trimIncompleteTail` 解释了「为什么服务端保证了客户端还要再缓冲一层」；心跳那处解释了「为什么用空行而不是自造心跳帧」。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add internal/agentd/frames_stream.go internal/agentd/frames_stream_test.go internal/agentd/server.go
@@ -3134,7 +3134,7 @@ git commit -m "feat(agentd): GET /api/tasks/{id}/frames——照抄 render 流�
 - Consumes: `(*Server).handleTaskFrames` 的线契约（Task 10）；`client.New`、`c.doStream`、`c.httpError`（已存在）
 - Produces: `func (*client.Client) FramesStream(ctx context.Context, taskID string, offset, tail int64, follow bool) (io.ReadCloser, int64, error)`；`handoff frames` 子命令
 
-- [ ] **Step 1: 在 client 里加 `FramesStream`**
+- [x] **Step 1: 在 client 里加 `FramesStream`**
 
 在 `client.go` 的 `RenderStream` 方法**之后**加：
 
@@ -3183,7 +3183,7 @@ func (c *Client) FramesStream(ctx context.Context, taskID string,
 }
 ```
 
-- [ ] **Step 2: 写 CLI 的失败测试**
+- [x] **Step 2: 写 CLI 的失败测试**
 
 Create `cmd/frames_test.go`:
 
@@ -3251,12 +3251,12 @@ func TestFramesCmdSkipsHeartbeatBlankLines(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `go test ./cmd/ -run TestFramesCmd -v`
 Expected: FAIL，`undefined: runFrames`
 
-- [ ] **Step 4: 写 `cmd/frames.go`**
+- [x] **Step 4: 写 `cmd/frames.go`**
 
 ```go
 // 本文件实现 handoff frames 子命令：读任务的结构化回合帧。
@@ -3351,7 +3351,7 @@ func init() {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 go build ./... && go test ./cmd/ -run TestFramesCmd -v
@@ -3359,7 +3359,7 @@ go build ./... && go test ./cmd/ -run TestFramesCmd -v
 
 Expected: 两个用例都 PASS
 
-- [ ] **Step 6: 跑全量测试**
+- [x] **Step 6: 跑全量测试**
 
 ```bash
 go test ./internal/... ./cmd/... 2>&1 | tail -30
@@ -3367,15 +3367,15 @@ go test ./internal/... ./cmd/... 2>&1 | tail -30
 
 Expected: 全部 PASS
 
-- [ ] **Step 7: 加关键节点日志自检**
+- [x] **Step 7: 加关键节点日志自检**
 
 CLI 的「日志」就是它的输出与错误。确认：错误信息带上下文（`读帧流（文件当前 N 字节）: ...`）；`token` 不出现在任何输出或错误里；Ctrl+C 是正常收尾而不是报错。
 
-- [ ] **Step 8: 加注释自检**
+- [x] **Step 8: 加注释自检**
 
 确认：文件头有职责与边界（含「为什么不做人类友好格式化」）；`runFrames` 有参数说明与「为什么跳过空行」；`FramesStream` 有参数、返回与「为什么不设读超时」。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add internal/client/client.go cmd/frames.go cmd/frames_test.go
@@ -3389,7 +3389,7 @@ git commit -m "feat(cli): handoff frames——每行一个原始 JSON 帧，W4e 
 **Files:**
 - 无新增；只做验证与必要的修补
 
-- [ ] **Step 1: 全量构建与测试**
+- [x] **Step 1: 全量构建与测试**
 
 ```bash
 go build ./... && go vet ./... && go test ./internal/... ./cmd/... 2>&1 | tail -40
@@ -3397,7 +3397,7 @@ go build ./... && go vet ./... && go test ./internal/... ./cmd/... 2>&1 | tail -
 
 Expected: 构建干净、vet 无输出、测试全绿
 
-- [ ] **Step 2: 格式检查**
+- [x] **Step 2: 格式检查**
 
 ```bash
 gofmt -l internal cmd
@@ -3410,7 +3410,7 @@ Expected: 输出里**不得出现本计划新建或修改的任何文件**。
 
 若 `server.go` 之外还有别的文件出现，那就是本次引入的，格式化掉。
 
-- [ ] **Step 3: 竞态检测（帧写入是本期唯一的新并发点）**
+- [x] **Step 3: 竞态检测（帧写入是本期唯一的新并发点）**
 
 ```bash
 go test ./internal/executor/... -race 2>&1 | tail -20
@@ -3418,7 +3418,7 @@ go test ./internal/executor/... -race 2>&1 | tail -20
 
 Expected: PASS，无 race 报告
 
-- [ ] **Step 4: 契约核对**
+- [x] **Step 4: 契约核对**
 
 ```bash
 go test ./internal/proto/ -run TestContractFixtures -v
@@ -3426,7 +3426,7 @@ go test ./internal/proto/ -run TestContractFixtures -v
 
 Expected: PASS（不带 `-update`）。若变红说明有人动了 `proto.Frame` 却没同步 fixture——**停下来看差异，不要直接 `-update` 盖过去**。
 
-- [ ] **Step 5: 逐条核对 Global Constraints**
+- [x] **Step 5: 逐条核对 Global Constraints**
 
 ```bash
 # 1. 没有引入新依赖
@@ -3442,7 +3442,7 @@ grep -rn 'log\.\(Info\|Warn\|Error\|Debug\)' internal/executor/turn/frames.go in
 # 期望：无输出
 ```
 
-- [ ] **Step 6: 核对 render.log 零回归**
+- [x] **Step 6: 核对 render.log 零回归**
 
 先跑三条黄金基线（Task 4 在改动前录的，这是最强的那道证明）：
 
@@ -3462,7 +3462,7 @@ git diff main -- internal/executor/ | grep '^-' | grep 'AppendRender\|appendRend
 
 Expected: **无输出**。有输出即说明 render.log 或回合正文的既有写入被删改过——那是 Global Constraints 的红线，必须回滚该处改动。
 
-- [ ] **Step 7: 手工冒烟（本机，不派发）**
+- [x] **Step 7: 手工冒烟（本机，不派发）**
 
 ```bash
 go build -o /tmp/w4a-handoff . && /tmp/w4a-handoff frames --help
@@ -3470,7 +3470,7 @@ go build -o /tmp/w4a-handoff . && /tmp/w4a-handoff frames --help
 
 Expected: 打印用法，三个 flag（`--follow` / `--offset` / `--tail`）都在。
 
-- [ ] **Step 8: 写一份自评并提交**
+- [x] **Step 8: 写一份自评并提交**
 
 在最后一个提交的消息里写清：
 

@@ -85,20 +85,67 @@ func NewFrameWriter(taskDir string, log *slog.Logger) (*FrameWriter, error) {
 	return w, nil
 }
 
+// writerRegistry 是进程级共享 FrameWriter 的注册表：按解析后的任务目录去重。
+//
+// 为什么必须共享而不是每次新建：adapter 在 Start 时持有一个长命的 FrameWriter
+// （r.frames），而 agentd 的事件钩子（eventFrameHook）每收到一个事件也要往
+// 同一个 frames.jsonl 写 event 引用帧。若钩子每次自己 New 一个 writer，两个实例
+// 各持一份内存 seq，写同一文件就会互相覆盖帧号（落盘 1 2 3 3）。
+//
+// 不变式：**一个任务目录全进程只有一个 seq 分配者**——帧号顺序 == 文件字节顺序
+// 这条不变式（见 FrameWriter 注释）依赖它，按 offset 续读的客户端与按 seq 去重
+// 的前端都建立在它之上。agentd 与 adapter 同进程，注册表因此成立。
+//
+// 边界：
+//   - 进程重启后注册表自然清空，重新从文件尾部恢复 seq/turn（行为与单实例一致）
+//   - 注册表不主动清理：每条目只是一个小结构体（路径 + logger + 计数器），
+//     任务量级为数十到数百，agentd 重启即回收
+var (
+	writerRegistryMu sync.Mutex
+	writerRegistry   = map[string]*FrameWriter{}
+)
+
+// WriterFor 返回 taskDir 的**共享** FrameWriter（进程级按解析后路径去重）。
+//
+// 第一次为某个 taskDir 调用时构造并登记；之后同目录的所有调用（adapter 的
+// r.frames 与事件钩子）拿到同一个实例，保证「一个目录一个 seq 分配者」。
+//
+// 参数：taskDir（任务目录）、log（日志入口，可为 nil）。返回与 NewFrameWriter
+// 相同：可用的 writer；只有 taskDir 不可读时才返回错误。
+//
+// 注意：文件不存在是正常起点（seq=0, turn=0），不是错误。
+func WriterFor(taskDir string, log *slog.Logger) (*FrameWriter, error) {
+	key := filepath.Clean(taskDir)
+	writerRegistryMu.Lock()
+	defer writerRegistryMu.Unlock()
+	if w, ok := writerRegistry[key]; ok {
+		return w, nil
+	}
+	w, err := NewFrameWriter(taskDir, log)
+	if err != nil {
+		return nil, err
+	}
+	writerRegistry[key] = w
+	return w, nil
+}
+
 // BeginTurn 开启新回合：turn 自增、part 计数归零，并写一条 turn_start 帧。
 //
 // reason 只应是 "dispatch"（Adapter.Start）或 "send"（Adapter.Send）。
+//
+// 为什么 turn 自增与 turn_start 的写入必须在同一个临界区：SSE reader 是跨回合
+// 长命的，上一回合的尾包可能正与 Send 并发。若先放锁再写 turn_start，并发帧
+// 会带着新 turn 号排在 turn_start **之前**落盘，前端把正文画到回合分隔线上面。
 func (w *FrameWriter) BeginTurn(reason string) error {
 	if w == nil {
 		return nil
 	}
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.turn++
 	w.nextPart = 0
-	turn := w.turn
-	w.mu.Unlock()
-	w.log.Info("回合开始", "turn", turn, "reason", reason)
-	return w.append(proto.Frame{Type: proto.FrameTurnStart, Reason: reason})
+	w.log.Info("回合开始", "turn", w.turn, "reason", reason)
+	return w.appendLocked(proto.Frame{Type: proto.FrameTurnStart, Reason: reason})
 }
 
 // NextPart 分配一个回合内唯一的 part 标识（p01、p02…）。
@@ -193,7 +240,14 @@ func truncatedBytes(truncated bool, orig int64) int64 {
 func (w *FrameWriter) append(f proto.Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.appendLocked(f)
+}
 
+// appendLocked 是 append 的锁内实现：调用方必须已持有 w.mu。
+//
+// 为什么拆出来：BeginTurn 要在同一临界区里「turn 自增 + 写 turn_start」，
+// 需要复用这里的编码与落盘逻辑而又不重复加锁。
+func (w *FrameWriter) appendLocked(f proto.Frame) error {
 	w.seq++
 	f.Seq = w.seq
 	f.Turn = w.turn

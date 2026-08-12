@@ -212,3 +212,94 @@ func TestFrameWriterNextPartIsUniqueWithinTurn(t *testing.T) {
 		t.Fatalf("同回合内 NextPart 应互不相同，两次都是 %q", a)
 	}
 }
+
+// 一个任务目录只能有一个 seq 分配者。adapter 在 Start 时持有一个长命
+// FrameWriter，agentd 的事件钩子也会往同一个 frames.jsonl 写 event 引用帧。
+// 若各自 new 一个 writer，两个实例各持一份内存 seq，写同一文件就会互相
+// 覆盖帧号（落盘 1 2 3 3）——这个测试是那条不变式的护栏。
+func TestWriterForSharesSingleSeqAllocator(t *testing.T) {
+	dir := t.TempDir()
+
+	// adapter 侧：长命 writer
+	adapter, err := WriterFor(dir, nil)
+	if err != nil {
+		t.Fatalf("WriterFor(adapter): %v", err)
+	}
+	if err := adapter.BeginTurn("dispatch"); err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	if err := adapter.Text("p01", "a"); err != nil {
+		t.Fatalf("Text: %v", err)
+	}
+
+	// 事件钩子路径：同目录再取一次，必须是同一个实例
+	hook, err := WriterFor(dir, nil)
+	if err != nil {
+		t.Fatalf("WriterFor(hook): %v", err)
+	}
+	if adapter != hook {
+		t.Fatalf("同目录的 WriterFor 应返回同一实例（一个任务目录一个 seq 分配者），实得两个不同实例")
+	}
+	if err := hook.EventRef(88, "permission_request"); err != nil {
+		t.Fatalf("EventRef: %v", err)
+	}
+
+	// adapter 继续写：seq 必须从 3 接着走，而不是又写 3
+	if err := adapter.Text("p01", "b"); err != nil {
+		t.Fatalf("Text: %v", err)
+	}
+
+	frames := readFrames(t, dir)
+	if len(frames) != 4 {
+		t.Fatalf("应有 4 帧（turn_start/text/event/text），实得 %d", len(frames))
+	}
+	seen := map[int64]bool{}
+	for _, fr := range frames {
+		if seen[fr.Seq] {
+			t.Fatalf("seq %d 重复——两个 seq 分配者写同一文件了", fr.Seq)
+		}
+		seen[fr.Seq] = true
+	}
+	for i := int64(1); i <= 4; i++ {
+		if !seen[i] {
+			t.Fatalf("seq %d 缺失（应当连续无洞）", i)
+		}
+	}
+}
+
+// BeginTurn 的 turn 自增与 turn_start 帧必须原子落盘：并发写入的正文帧
+// 不能带着新 turn 号排在 turn_start 之前——否则前端把正文画到回合分隔线上面。
+func TestBeginTurnOrdersTurnStartBeforeConcurrentWrites(t *testing.T) {
+	dir := t.TempDir()
+	w, _ := WriterFor(dir, nil)
+	_ = w.BeginTurn("dispatch")
+
+	// 模拟 SSE 流的多 goroutine 写入撞上 Send 的 BeginTurn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			_ = w.Text("p01", "x")
+		}
+	}()
+	_ = w.BeginTurn("send")
+	<-done
+
+	frames := readFrames(t, dir)
+	// 找 turn_start(send) 的下标：它之后才允许出现 turn=2 的正文
+	startSend := -1
+	for i, fr := range frames {
+		if fr.Type == proto.FrameTurnStart && fr.Reason == "send" {
+			startSend = i
+			break
+		}
+	}
+	if startSend < 0 {
+		t.Fatal("缺少 turn_start(send) 帧")
+	}
+	for i, fr := range frames {
+		if fr.Turn == 2 && fr.Type == proto.FrameText && i < startSend {
+			t.Fatalf("turn=2 的正文帧出现在 turn_start(send) 之前（第 %d 帧）——turn 自增与帧写入未原子化", i)
+		}
+	}
+}

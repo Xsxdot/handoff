@@ -12,6 +12,11 @@
 // 为什么 event 帧要存在：帧流要能表达「模型说了这句 → 请求了权限 → 继续」的
 // **顺序**。事件与帧由同一进程写、走同一个 append 序，因此单流顺序即真实顺序；
 // 若让前端拿事件流和帧流按时间戳归并，两条不同写入路径的时间戳会真的乱序。
+//
+// 为什么用 turn.WriterFor 而不是 turn.NewFrameWriter：adapter 在 Start 时已持有
+// 该任务的 FrameWriter（r.frames）。若事件钩子每次自己 new 一个 writer，两个
+// 实例各持一份内存 seq 写同一个 frames.jsonl，帧号会互相覆盖（落盘 1 2 3 3）。
+// WriterFor 按任务目录去重返回**同一个**实例，保证「一个任务目录一个 seq 分配者」。
 package agentd
 
 import (
@@ -37,7 +42,7 @@ func eventFrameHook(dataDir string, log *slog.Logger) func(proto.Event) {
 		if _, err := os.Stat(taskDir); err != nil {
 			return // 目录不在：没有帧文件可写，不是错误
 		}
-		w, err := turn.NewFrameWriter(taskDir, log)
+		w, err := turn.WriterFor(taskDir, log)
 		if err != nil {
 			log.Warn("事件帧：创建帧写入器失败", "task", e.TaskID, "seq", e.Seq, "cause", err)
 			return

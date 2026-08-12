@@ -155,7 +155,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	// （放块里用局部 err：Start 的 err 是命名返回值，覆写它会让下面的
 	// defer 把「本任务无结构化帧」误判成「启动失败」而杀掉 serve 进程）
 	{
-		fw, err := turn.NewFrameWriter(req.TaskDir, a.log)
+		fw, err := turn.WriterFor(req.TaskDir, a.log)
 		if err != nil {
 			a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 		}

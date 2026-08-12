@@ -180,7 +180,7 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 		lastProgress: time.Now(),
 	}
 	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
-	fw, err := turn.NewFrameWriter(taskDir, a.log)
+	fw, err := turn.WriterFor(taskDir, a.log)
 	if err != nil {
 		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 	}

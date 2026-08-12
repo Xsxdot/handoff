@@ -126,7 +126,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 	}
 	// 帧写入器构造失败不该挡住任务：可见性是增强能力。持 nil 继续，
 	// FrameWriter 的方法对 nil 接收者是空操作，调用点不必判空。
-	fw, err := turn.NewFrameWriter(taskDir, a.log)
+	fw, err := turn.WriterFor(taskDir, a.log)
 	if err != nil {
 		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 	}
