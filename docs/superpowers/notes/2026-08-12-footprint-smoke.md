@@ -10,10 +10,12 @@
 - `handoff footprint` 的可见性验证通过：清扫前该任务显示 `1 进程`，清扫后 `0 进程`。
 - 全程无误杀：7777 默认实例的 agentd（pid 1859）与其 shim/serve 自始至终未被碰过；
   清扫只对目标进程组（SIGKILL -pgid）动手。
-- **附带发现（重要，已上报审核者）**：opencode 的 Bash 工具用 setsid 把每条命令放进
-  全新的会话+进程组，因此**经 Bash 工具拉起的进程不在 shim 的进程组里**（详 §4）。
-  按 pgid 匹配的 Sweep 数不到也杀不到它们。该发现是否推翻设计判据，由审核者裁决，
-  本次**未改动任何代码**。
+- **附带发现（重要，已上报审核者并裁决）**：opencode 的 Bash 工具用 setsid 把每条
+  命令放进全新的会话+进程组，因此**经 Bash 工具拉起的进程不在 shim 的进程组里**
+  （详 §4）。**裁决结果：判据维持 pgid（方案 A），一行未改**——「按祖先匹配」在
+  事后走不通（reparent 断链），补全口径的「树活着时记账」已另立 B72 走 brainstorm。
+  本盲区已写成代码内一等公民注释（`classify` 的「判据覆盖边界」与 `Sweep` 的 doc），
+  spec §3.2/§2.2 已按实证修正，本特性的宣称同步降级为「shim + executor 本体这一层」。
 
 ## 1. 隔离实例参数（不占 devbox）
 
@@ -115,8 +117,15 @@ pid    ppid  pgid  stat  command
 含义：经 opencode Bash 工具拉起的进程（含 subagent 扇出、并行 `go test`——如果它们
 走 Bash 工具）不在 shim 的进程组里，`Sweep` 按 pgid 匹配数不到也杀不到它们。
 对照组：spec §2.2 里 claude executor 的孙进程（handoff CLI）曾实测留在组内——不同
-executor 行为不同。**是否把判据从「按 pgid」改成「按进程树祖先」或两者并用，属
-设计层变更，已报告审核者等待裁决，本次未改动任何实现代码。**
+executor 行为不同。
+
+**裁决（审核者 08-12）：判据维持 pgid（方案 A），本任务不改判据。** 理由：setsid 改
+pgid/sid 但**不改 ppid**，树活着时沿 ppid 能从 shim 走到逃逸者；但 Sweep 工作的时刻
+恰恰是执行者已死、子进程被 reparent 给 launchd 之后——ppid 正好断在最需要它的地方，
+「按祖先匹配」会得到一个测试里好使、事故现场失效的结果。补全口径的方向（树活着时
+shim 记账）已另立 backlog B72 走 brainstorm，不由本任务承担。本判据的盲区已写入
+`classify`（「判据覆盖边界」段）与 `Sweep` 的 doc comment，spec §3.2 的「会话封闭性」
+改为「只封闭外侧」并按实证写明内侧不封闭。
 
 ## 5. 不误杀验证
 
