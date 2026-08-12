@@ -121,6 +121,8 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		Install:    inst.InstallArchive,
 		Activate:   release.Activate,
 	}
+	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
+	s.registerEventFrameHook()
 	return s
 }
 
@@ -176,6 +178,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/done         归档任务
 //   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
+//   - GET  /api/tasks/{id}/frames      结构化回合帧（frames.jsonl）流式读取（W4b/TUI 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
@@ -202,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
 	mux.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
+	mux.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.byTask(s.handleTaskRun))
 	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)

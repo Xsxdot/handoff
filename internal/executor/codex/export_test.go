@@ -114,7 +114,7 @@ func RejectedTurnQuestionForTest(r []string) string { return rejectedTurnQuestio
 // NewAdapterWithRunForTest 造一个带运行态的 adapter（不起进程、不连 WS）。
 func NewAdapterWithRunForTest(taskID string) (*Adapter, *runState) {
 	a := New(quietTestLogger())
-	r := newRunState(taskID, "", "")
+	r := a.newRunState(taskID, "", "")
 	a.mu.Lock()
 	a.runs[taskID] = r
 	a.mu.Unlock()

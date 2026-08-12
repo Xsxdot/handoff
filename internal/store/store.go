@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -44,6 +45,11 @@ var ErrBadTransit = errors.New("非法状态迁移")
 // Store 持有 SQLite 数据库连接池，是 store 包对外唯一入口。
 type Store struct {
 	db *sql.DB
+
+	// eventHook 在事件落库成功后被同步调用一次，用于派生只读副作用
+	// （目前是写 frames.jsonl 的 event 引用帧）。见 SetEventHook 的边界约定。
+	eventHookMu sync.RWMutex
+	eventHook   func(proto.Event)
 }
 
 // Open 打开（必要时创建）path 处的 SQLite 数据库并建表。
@@ -463,7 +469,47 @@ func (s *Store) AppendEvent(taskID string, typ proto.EventType, payload any) (pr
 	if err != nil {
 		return proto.Event{}, fmt.Errorf("获取事件 seq: %w", err)
 	}
-	return proto.Event{Seq: seq, TaskID: taskID, Type: typ, Payload: json.RawMessage(b), CreatedAt: parseTime(now)}, nil
+	evt := proto.Event{Seq: seq, TaskID: taskID, Type: typ,
+		Payload: json.RawMessage(b), CreatedAt: parseTime(now)}
+	// 同步触发钩子：保证「入库顺序 == 观察顺序」（见 SetEventHook）
+	s.fireEventHook(evt)
+	return evt, nil
+}
+
+// SetEventHook 注册「事件落库后」的回调。传 nil 可取消。
+//
+// 调用时机：INSERT 成功、proto.Event 组装完成之后，AppendEvent 返回之前，
+// **同步**调用。同步是刻意的——它保证「事件入库顺序 == 钩子观察顺序」，
+// 派生出的帧流才能与事件流对齐。
+//
+// 边界（违反会死锁或自我递归）：
+//   - **钩子内不得回调本 Store 的任何方法**。只允许做不回到数据库的动作，
+//     比如往文件追加一行。
+//   - 钩子不得长时间阻塞：它跑在 AppendEvent 的调用栈上，会拖慢事件落库。
+//   - 钩子 panic 由本方法内部 recover：一个可见性副作用不该让已经成功的
+//     事件落库变成失败。
+func (s *Store) SetEventHook(fn func(proto.Event)) {
+	s.eventHookMu.Lock()
+	defer s.eventHookMu.Unlock()
+	s.eventHook = fn
+}
+
+// fireEventHook 调用已注册的钩子，并把 panic 收在这里。
+func (s *Store) fireEventHook(e proto.Event) {
+	s.eventHookMu.RLock()
+	fn := s.eventHook
+	s.eventHookMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			// 事件已经落库了，这里只能记账——把它升级成错误会让
+			// 一个派生副作用回过头来否定一次成功的写入
+			log().Error("事件钩子 panic，已忽略", "seq", e.Seq, "type", e.Type, "panic", rec)
+		}
+	}()
+	fn(e)
 }
 
 // EventsFrom 返回任务 taskID 在 seq 之后的事件，按 seq 升序，最多 limit 条。

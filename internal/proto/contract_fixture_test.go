@@ -75,6 +75,7 @@ func TestContractFixtures(t *testing.T) {
 		{"BuildInfo", buildSample()},
 		{"ActiveTask", activeTaskSample(taskID)},
 		{"StatusResp", statusSample(now, taskID)},
+		{"Frame", frameSample(now)},
 	}
 
 	dir := fixtureDir(t)
@@ -333,5 +334,24 @@ func statusSample(now time.Time, taskID string) StatusResp {
 			"failed":         0,
 		},
 		Active: []ActiveTask{activeTaskSample(taskID)},
+	}
+}
+
+// frameSample 返回 Frame 的代表性样本（被截断的 tool_result）。
+//
+// 为什么选 tool_result 而不是 text：它是字段最多的一种帧，能同时钉住
+// Part/Status/Output/Truncated/Bytes 五个字段的序列化结果；text 帧只有
+// Part+Delta，钉不住 omitempty 的边界。
+func frameSample(now time.Time) Frame {
+	return Frame{
+		Seq:       42,
+		TS:        now,
+		Turn:      2,
+		Type:      FrameToolResult,
+		Part:      "toolu_01ABCdefGHIjklMNOpqrs",
+		Status:    "error",
+		Output:    "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
+		Truncated: true,
+		Bytes:     193422,
 	}
 }

@@ -1,0 +1,5 @@
+开始执行计划
+→ Bash: go test ./...
+
+↩ ok
+{"branch":"handoff/ab12","commit":"deadbeef","summary":"完成"}

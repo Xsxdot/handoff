@@ -62,6 +62,37 @@ var deltaNotifications = map[string]bool{
 	"item/commandExecution/outputDelta": true,
 }
 
+// deltaKind 是增量通知的帧归类。
+//
+// 常量带 Kind 中缀是被迫的：本包已有一个 deltaText **函数**
+// （adapter.go:727，从 params 里取增量文本），Go 不允许同名。
+type deltaKind int
+
+const (
+	deltaKindNone      deltaKind = iota // 不产帧
+	deltaKindText                       // 产 text 帧
+	deltaKindReasoning                  // 产 reasoning 帧
+)
+
+// deltaFrameKind 把增量通知的方法名归类成帧类型。
+//
+// 为什么 commandExecution/outputDelta 归 deltaNone：它是命令的流式输出，
+// 属于工具结果；完整结果由 commandExecution item 的 completed 通知以一条
+// tool_result 帧上报，在这里再产一路会把同一段输出写两遍。
+//
+// 未知方法一律 deltaNone：codex 上游加了新的 delta 通知时，宁可少一种帧，
+// 也不要把它猜成正文。
+func deltaFrameKind(method string) deltaKind {
+	switch method {
+	case "item/agentMessage/delta":
+		return deltaKindText
+	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
+		return deltaKindReasoning
+	default:
+		return deltaKindNone
+	}
+}
+
 // sandboxPolicy 是每回合显式钉死的沙箱策略（spec §2 / §2.2）。
 //
 // 为什么每回合都传而不是只在 thread/start 传一次：thread/start 钉过的值会被
@@ -116,6 +147,9 @@ type runState struct {
 	*permTable
 	items *itemIndex
 
+	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart string            // 本回合正文/思维链的 part 标识
+
 	// stopping 是主动停止标记：Stop 先置位再关连接，onClosed 与回合收尾据此
 	// 知道这是用户主动停止而非执行失败，不产出假的失败结果
 	stopping bool
@@ -134,8 +168,8 @@ type runState struct {
 }
 
 // newRunState 建一条运行态。
-func newRunState(taskID, taskDir, repoPath string) *runState {
-	return &runState{
+func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
+	r := &runState{
 		taskID: taskID, taskDir: taskDir, repoPath: repoPath,
 		evCh:      make(chan executor.AdapterEvent, 64),
 		permTable: newPermTable(),
@@ -145,6 +179,13 @@ func newRunState(taskID, taskDir, repoPath string) *runState {
 		// 权限工单旁边凭空多一张进度单（计划原稿漏了初始化）。
 		lastProgress: time.Now(),
 	}
+	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
+	fw, err := turn.WriterFor(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
+	return r
 }
 
 // Start 异步启动执行并立即返回。
@@ -176,7 +217,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	r := newRunState(taskID, req.TaskDir, req.Task.Workdir())
+	r := a.newRunState(taskID, req.TaskDir, req.Task.Workdir())
 	r.proc = proc
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
@@ -214,6 +255,11 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	// 回合可能在几秒内就产出权限工单，manager 那时必须已经知道 threadId。
 	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.threadID,
 		Text: "codex 会话已就绪"})
+
+	if err := r.frames.BeginTurn("dispatch"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 
 	if err := a.startTurn(r, prompt); err != nil {
 		return err
@@ -344,6 +390,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("codex 续接回合", "task", taskID, "thread", r.threadID)
+	if err := r.frames.BeginTurn("send"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	return a.startTurn(r, text)
 }
 
@@ -679,7 +729,18 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 	a, r := h.a, h.r
 	switch {
 	case deltaNotifications[method]:
-		r.appendRenderDelta(deltaText(params))
+		text := deltaText(params) // 既有函数：从 params 取增量文本
+		r.appendRenderDelta(text) // 既有行为：一字不改（codex 的 render.log 本来就含思维链）
+		switch deltaFrameKind(method) {
+		case deltaKindText:
+			if err := r.frames.Text(r.textPart, text); err != nil {
+				a.log.Warn("写 text 帧失败，不影响回合", "task", r.taskID, "cause", err)
+			}
+		case deltaKindReasoning:
+			if err := r.frames.Reasoning(r.textPart, text); err != nil {
+				a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+			}
+		}
 		return
 	case method == ntfItemStarted || method == ntfItemCompleted:
 		it, ok := parseItemNotification(params)
@@ -691,6 +752,9 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 		}
 		r.items.put(it)
 		r.appendRenderDelta(it.renderLine())
+		// 工具类 item 落一条 tool_call / tool_result 帧。part 取 item id：
+		// started 与 completed 两条通知带同一个 id，帧因此天然配对
+		a.appendItemFrame(r, method, it)
 		// 回合正文只从 agentMessage 的 completed 取：它带的是**完整正文**，
 		// 不必从 delta 拼，trailer 解析因此永远拿到完整文本
 		if method == ntfItemCompleted && it.Type == "agentMessage" &&
@@ -861,3 +925,35 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 
 // OnClosed 连接终止。
 func (h *handler) OnClosed(err error) { h.a.onClosed(h.r, err) }
+
+// appendItemFrame 把 item 通知落成 tool_call / tool_result 帧。
+//
+// 归类：
+//   - commandExecution / fileChange 的 started → tool_call
+//   - 同类 item 的 completed → tool_result（status 由 ExitCode 判定）
+//   - agentMessage / reasoning 不在此处产帧（它们走 delta 通知那一路）
+//
+// 为什么 part 取 it.ID：started 与 completed 是同一个 item 的两次通知，
+// id 相同，前端据此把结果挂回调用卡片，不需要本地维护映射表。
+func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
+	if it.Type != "commandExecution" && it.Type != "fileChange" {
+		return
+	}
+	if method == ntfItemStarted {
+		input := it.Command
+		if it.Type == "fileChange" {
+			input = it.renderLine() // 文件变更没有命令串，用路径清单当入参
+		}
+		if err := r.frames.ToolCall(it.ID, it.Type, input); err != nil {
+			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+		return
+	}
+	status := "ok"
+	if it.ExitCode != nil && *it.ExitCode != 0 {
+		status = "error"
+	}
+	if err := r.frames.ToolResult(it.ID, status, it.renderLine()); err != nil {
+		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
+}
