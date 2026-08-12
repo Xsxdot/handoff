@@ -1,9 +1,11 @@
 // Package store 是 handoff 的唯一持久化入口，基于 SQLite（modernc.org/sqlite，纯 Go 无 cgo）。
 //
 // 职责：
-//   - 提供任务（tasks）、事件（events）、工单（tickets）、仓库登记（repos）四张表的建表与增删改查
+//   - 提供任务（tasks）、事件（events）、工单（tickets）、项目位置（project_locations）
+//     四张表的建表与增删改查
 //   - 通过 database/sql 连接池支撑单进程多 goroutine 并发访问（WAL + busy_timeout 防 SQLITE_BUSY）
 //   - CreateTicket 用 INSERT OR IGNORE 实现按 id 幂等创建
+//   - Open 时顺带把旧 repos 表迁入 project_locations（B62 一次性迁移，见 projects.go）
 //
 // 边界：
 //   - 不含业务规则，仅保留 UpdateTaskState 对 proto.CanTransit 的一处防护性校验
@@ -95,8 +97,14 @@ func Open(path string) (*Store, error) {
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
   answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP,
   delivered_at TIMESTAMP, fingerprint TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE IF NOT EXISTS repos (
-  name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+		`CREATE TABLE IF NOT EXISTS project_locations (
+  -- project_id 做主键：ADR-0008 的「一台机器上一个项目最多一个位置」由它
+  -- 直接强制，不需要额外唯一索引，也不需要在应用层再校验一遍。
+  project_id TEXT PRIMARY KEY,
+  -- name 唯一：--project <名字> 与 project rm <名字> 要靠它引用。
+  name TEXT NOT NULL UNIQUE,
+  -- path 唯一：两个不同项目不能声称在同一个目录。
+  path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
@@ -150,6 +158,12 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("迁移 tasks.%s: %w", col, err)
 		}
+	}
+	// 迁移（B62）：旧 repos 表 → project_locations，随后 DROP 旧表。
+	// 放在建表之后：迁移要往新表里写。幂等由「旧表已 DROP 则无操作」保证。
+	if err := migrateReposToProjectLocations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移 repos → project_locations: %w", err)
 	}
 	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil

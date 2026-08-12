@@ -41,7 +41,7 @@ func runDispatch(t *testing.T, extraArgs ...string) (string, string, error) {
 	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
 	t.Cleanup(func() { dispatchNoTerminal = false })
 
-	args := append([]string{"dispatch", "--repo", t.TempDir(), "--prompt", "x"}, extraArgs...)
+	args := append([]string{"dispatch", "--project", "proj1", "--prompt", "x"}, extraArgs...)
 	rootCmd.SetArgs(args)
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })
 	var out, errBuf bytes.Buffer
@@ -250,7 +250,7 @@ func runRemoteDispatch(t *testing.T, repo string, extraArgs ...string) (string, 
 		dispatchNoSyncCheck = false
 	})
 
-	args := append([]string{"dispatch", "--repo", repo, "--prompt", "x", "--no-terminal"}, extraArgs...)
+	args := append([]string{"dispatch", "--project", "proj1", "--prompt", "x", "--no-terminal"}, extraArgs...)
 	rootCmd.SetArgs(args)
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })
 	var out, errBuf bytes.Buffer
@@ -313,7 +313,7 @@ func TestDispatchNoSyncCheckSkipsDirty(t *testing.T) {
 
 // TestDispatchLocalDirtyNotChecked 验证**本机派发**（无 --target）完全不查本地工作区。
 //
-// 为什么本机模式必须豁免：cwd 与 --repo 可以是两个毫不相干的仓库，查 cwd 是查错了
+// 为什么本机模式必须豁免：cwd 与目标项目可以是两个毫不相干的仓库，查 cwd 是查错了
 // 对象。这也正是既有代码不在本机模式采基线的原因，新检查必须共用同一道门。
 func TestDispatchLocalDirtyNotChecked(t *testing.T) {
 	dirtyCwd(t)

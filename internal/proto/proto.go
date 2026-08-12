@@ -208,17 +208,27 @@ func CanTransit(from, to TaskState) bool {
 	return false
 }
 
-// Repo 是一条「执行机 × 仓库」登记：把该执行机上一个已落地的 git 仓库
-// 与一个短名字绑定，使 dispatch 不必再写完整路径。
+// ProjectLocation 是一条「项目 × 机器」位置记录：项目在**这一台**机器上的
+// 那一个工作副本。
+//
+// 模型（B62）：
+//   - 项目（project）：一份代码的逻辑身份，与机器无关，由 ProjectID 标识
+//   - 位置（location）：项目在某一台机器上的工作副本，由 Path 标识
+//   - ADR-0008：一台机器上一个项目**最多一个位置**，由 ProjectID 做主键强制
 //
 // 字段：
-//   - Name: 登记名（每台执行机内唯一），dispatch 时可用作 --repo 的取值
-//   - Path: 该执行机上仓库的绝对路径
-//   - OriginURL: 仓库的 origin 地址，dispatch 省略 --repo 时据此自动匹配
+//   - ProjectID: sha256(归一化 origin) 前 16 位；**纯函数派生**，每台机器各算
+//     各的，同一个 origin 必然得到同一个值——跨机引用因此不需要任何协调
+//   - Name: 人可读引用（每台机器内唯一），由 origin 末段派生，冲突时补 -2；
+//     只用于 --project <名字> 与 project rm <名字>，**不参与身份判定**
+//   - Path: 该机器上的绝对路径（登记时 Abs+Clean，且已归并到主工作树）
+//   - OriginURL: agentd 在该机器上**现读**的权威值，不采信调用方上送的字符串
 //   - CreatedAt: 登记时间
-//   - Status: repo ls 时**现场探得**的实际状态（"有效"/"路径不存在"/"不是 git 仓库"），
-//     不落库，仅列表响应携带——它是登记与文件系统漂移的可见化手段
-type Repo struct {
+//   - Status: project ls 时**现场探得**的实际状态（"有效"/"路径不存在"/
+//     "不是 git 仓库"），不落库，仅列表响应携带——它是登记与文件系统漂移的
+//     可见化手段
+type ProjectLocation struct {
+	ProjectID string    `json:"project_id"`
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
 	OriginURL string    `json:"origin_url"`

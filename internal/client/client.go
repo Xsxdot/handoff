@@ -357,7 +357,10 @@ func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) err
 // Prompt 是直接指令（prompt-only 派发）；两者都传时 Prompt 作为附加指令拼接在
 // plan 之后。Branch/NewBranch、Worktree/NewWorktree 各自二选一，空=自动分支/原地。
 type DispatchOpts struct {
-	Repo        string
+	// ProjectID 是项目身份，由 CLI 从 cwd 的 origin 离线算出；与 ProjectName 二选一。
+	ProjectID string
+	// ProjectName 是 --project <名字> 的取值，仅在 cwd 不是目标项目时使用。
+	ProjectName string
 	PlanB64     string
 	PlanName    string
 	Target      string
@@ -373,9 +376,6 @@ type DispatchOpts struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
-	// OriginURL 是审核者 cwd 仓库的 origin 地址，随请求上送；Repo 省略时 agentd
-	// 按它自动匹配本机登记（cwd 不是 git 仓库时为空）。
-	OriginURL string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -387,11 +387,11 @@ type DispatchOpts struct {
 //   - 创建后的任务（state=running）；服务端启动 executor 失败时返回错误
 func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]any{
-		"repo": opts.Repo, "plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
+		"project_id": opts.ProjectID, "project_name": opts.ProjectName,
+		"plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
-		"origin_url": opts.OriginURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
@@ -407,70 +407,72 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	return &task, nil
 }
 
-// RepoAddOpts 是 RepoAdd 的参数。
+// ProjectAddOpts 是 ProjectAdd 的参数。
 //
-// 两种形态：Clone=false 时 Path 必填（登记执行机上已有的克隆）；
-// Clone=true 时 URL 必填（让 agentd 克隆一份），Path 为落点、可省。
-type RepoAddOpts struct {
-	Name  string
-	Path  string
-	URL   string
-	Clone bool
+// 两种形态由 Path 是否为空决定：
+//   - Path 非空：目标 agentd 所在机器上已经有一份代码，登记它（agentd 现读
+//     它的 origin 校验一致）
+//   - Path 为空：让 agentd 自己 clone 到 repo_root/<Name>
+type ProjectAddOpts struct {
+	OriginURL string
+	Name      string
+	Path      string
 }
 
-// RepoAdd 在目标 agentd 上登记一个仓库（必要时先克隆）。
+// ProjectAdd 在目标 agentd 上登记一个项目位置（必要时先克隆）。
 //
 // 注意：
 //   - 路径不是 git 仓库/没有 origin/克隆失败返回 400 错误（报文含 git 原文）
-//   - 名字或路径已被登记、克隆落点已存在返回 409 错误
-func (c *Client) RepoAdd(ctx context.Context, opts RepoAddOpts) (*proto.Repo, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/repos", map[string]any{
-		"name": opts.Name, "path": opts.Path, "url": opts.URL, "clone": opts.Clone,
+//   - 路径上是另一个项目返回 400 错误（报文同时给出两边的 origin）
+//   - 项目/名字/路径已被登记、克隆落点已存在返回 409 错误
+func (c *Client) ProjectAdd(ctx context.Context, opts ProjectAddOpts) (*proto.ProjectLocation, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
+		"origin_url": opts.OriginURL, "name": opts.Name, "path": opts.Path,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("repo add 请求: %w", err)
+		return nil, fmt.Errorf("project add 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("repo add", resp)
+		return nil, c.httpError("project add", resp)
 	}
-	var repo proto.Repo
-	if err := json.NewDecoder(resp.Body).Decode(&repo); err != nil {
-		return nil, fmt.Errorf("解析 repo add 响应: %w", err)
+	var loc proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&loc); err != nil {
+		return nil, fmt.Errorf("解析 project add 响应: %w", err)
 	}
-	return &repo, nil
+	return &loc, nil
 }
 
-// RepoList 列出目标 agentd 上的全部仓库登记（含实际状态）。
-func (c *Client) RepoList(ctx context.Context) ([]proto.Repo, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/api/repos", nil)
+// ProjectList 列出目标 agentd 上的全部项目位置（含实际状态）。
+func (c *Client) ProjectList(ctx context.Context) ([]proto.ProjectLocation, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects", nil)
 	if err != nil {
-		return nil, fmt.Errorf("repo list 请求: %w", err)
+		return nil, fmt.Errorf("project list 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("repo list", resp)
+		return nil, c.httpError("project list", resp)
 	}
-	var repos []proto.Repo
-	if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-		return nil, fmt.Errorf("解析 repo list 响应: %w", err)
+	var locs []proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&locs); err != nil {
+		return nil, fmt.Errorf("解析 project list 响应: %w", err)
 	}
-	return repos, nil
+	return locs, nil
 }
 
-// RepoRemove 注销一条仓库登记。
+// ProjectRemove 注销一条项目位置。
 //
 // 注意：
-//   - 只删登记，**不删磁盘上的仓库**
-//   - 登记不存在返回 404 错误；仓库仍被活跃任务占用返回 409 错误
-func (c *Client) RepoRemove(ctx context.Context, name string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/api/repos/"+name, nil)
+//   - 只删登记，**不删磁盘上的代码**
+//   - 登记不存在返回 404 错误；项目仓库仍被活跃任务占用返回 409 错误
+func (c *Client) ProjectRemove(ctx context.Context, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/projects/"+name, nil)
 	if err != nil {
-		return fmt.Errorf("repo remove 请求: %w", err)
+		return fmt.Errorf("project remove 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("repo remove", resp)
+		return c.httpError("project remove", resp)
 	}
 	return nil
 }

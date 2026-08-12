@@ -135,13 +135,14 @@ handoff agentd --executor=codex             # 用 codex 执行（需本机已登
 #    不配它会 Permission denied（pull 无法建立 ssh 连接）。
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
-handoff dispatch --repo /path/to/repo plan.md
-handoff dispatch --repo /path/to/repo --prompt "把 README 安装命令改成 brew"   # 无 plan 文件
-handoff dispatch --repo /path/to/repo --new-worktree --executor opencode --model cheap/model plan.md
-handoff dispatch --repo /path/to/repo --new-worktree --executor claude plan.md              # 用 Claude Code 执行
-handoff dispatch --repo /path/to/repo --new-worktree --executor grok plan.md                # 用 grok 执行
-handoff dispatch --repo /path/to/repo --new-worktree --executor codex plan.md               # 用 codex 执行
-handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
+# 派发的项目由当前目录识别，不需要写路径
+handoff dispatch plan.md
+handoff dispatch --prompt "把 README 安装命令改成 brew"                        # 无 plan 文件
+handoff dispatch --new-worktree --executor opencode --model cheap/model plan.md
+handoff dispatch --new-worktree --executor claude plan.md                      # 用 Claude Code 执行
+handoff dispatch --target devbox plan.md                                      # 派到开发机（未登记会自动登记）
+handoff dispatch --project nova --target devbox plan.md                       # 跨项目：cwd 不是目标项目时
+handoff dispatch --no-terminal plan.md                                        # 派发后不弹终端
 
 # 4. 审核者侧典型循环
 handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
@@ -169,10 +170,10 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <路径\|登记名>`（可省略，省略时按当前目录 origin 自动匹配登记）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验）；`--allow-dirty`（本地工作区有未提交的已跟踪改动时仍照常派发） |
-| `handoff repo add [名字]` | 登记一个仓库到执行机（可让 agentd 克隆一份） | `--path <执行机上的仓库路径>`，或 `--clone [--url <URL>] [--path <落点>]`（二选一；名字省略时按 origin 末段派生） |
-| `handoff repo ls` | 列出执行机上的仓库登记（含实际状态） | — |
-| `handoff repo rm <名字>` | 注销一条仓库登记（只删登记，不删磁盘） | — |
+| `handoff dispatch [plan.md]` | 派发计划任务（项目由当前目录自动识别） | `--project <名字>`（cwd 不是目标项目时指定）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`；`--no-sync-check`；`--allow-dirty` |
+| `handoff project add [名字]` | 把当前项目登记到本机（`--target` 时一并登记到那台开发机） | `--target <机器>`（一起登记；那台机器上没有时自动 clone）；`--path <该机器上已有的路径>`（仅与 `--target` 连用） |
+| `handoff project ls` | 列出机器上的项目位置（含实际状态） | `--target <机器>` |
+| `handoff project rm <名字>` | 注销一条项目位置（只删登记，不删磁盘上的代码） | `--target <机器>` |
 | `handoff wait <task>` | 阻塞等待任务的下一个可动作事件（`--follow` 时持续订阅，任务终结才退出） | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（一次性=总时长上限，`--follow`=空闲上限，默认无限等）；`--follow`（持续订阅，事件单行输出）；`--no-sync` |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
@@ -218,7 +219,7 @@ sync:                         # 任务结束（completed/failed）后自动同�
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
-repo_root: ""                 # repo add --clone 未显式给路径时的默认落点根目录（可选）
+repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -235,9 +236,17 @@ PATH=${PATH}:/usr/local/go/bin
 静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
-`repo_root` 是**执行机顶层配置**：仓库登记是「哪台执行机」的属性，放顶层的语义是「每台执行机
-自己决定仓库放在哪」。只有 `repo add --clone` 省略落点路径时才用到——落点为
-`repo_root/<登记名>`；未配置时必须显式给 `--path`。
+`repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
+agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
+项目登记是「哪台执行机」的属性，放顶层的语义是「每台执行机自己决定项目放在哪」。自动登记在目标机上的
+落点有三种结局：
+
+- 落点不存在 → agentd clone 一份再登记
+- 落点已存在且就是本项目 → **直接登记，不重复 clone**（project rm 之后再派发能自动恢复登记，靠的就是这条）
+- 落点已存在但不是 git 仓库、或属于另一个项目 → 拒绝并要求人工处置；**agentd 不会自动删除或改名**
+
+因此**想改落点，不能靠「删掉登记再派发」**：那会重新认领老目录（repo_root/名字 还在），落点根本没变。
+要换位置请显式 `handoff project add --target <机器> --path <新位置>`，或先把老目录挪走/删掉。
 
 > **claude 执行者的 env 耦合**（2026-08-09 实测）：claude adapter 的任务级 `settings.json`
 > 是纯策略文件、**不含任何凭证**——**凭证由 claude 自己经 `--setting-sources user` 从真实

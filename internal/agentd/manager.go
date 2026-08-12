@@ -213,10 +213,15 @@ func registeredNames(ads map[string]executor.Adapter) []string {
 
 // DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
-	Repo     string // 任务仓库路径（executor 工作区）
-	PlanB64  string // plan 内容，base64 编码（路由/CLI 层编码，此处解码）
-	PlanName string // plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）
-	Target   string // 目标主机名（归档展示用，记入 task.Target）
+	// ProjectID 是项目身份（sha256(归一化 origin) 前 16 位），由调用方离线算出。
+	// 与 ProjectName 二选一，都空时 400；同时给出时以 ProjectID 为准。
+	ProjectID string
+	// ProjectName 是项目的人可读引用，仅服务 --project <名字> 与 Web 控制台
+	//（它没有 cwd，从项目树里选）。
+	ProjectName string
+	PlanB64     string // plan 内容，base64 编码（路由/CLI 层编码，此处解码）
+	PlanName    string // plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）
+	Target      string // 目标主机名（归档展示用，记入 task.Target）
 	// Prompt 是无 plan 文件时的直接指令（prompt-only 派发）；与 PlanB64 至少其一
 	// 非空。plan 非空时作为「附加指令」拼接在计划之后。
 	Prompt string
@@ -239,10 +244,6 @@ type DispatchReq struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
 	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
 	BaseCommit string
-	// OriginURL 是审核者 cwd 仓库的 origin 地址，用于 Repo 省略时按 origin
-	// 自动匹配本机登记；cwd 不是 git 仓库时为空。
-	OriginURL string
-	// Repo 的语义（B46 起）：路径 / 登记名 / 空三态，由 resolveRepoInput 解析。
 }
 
 // planSummaryLimit 是 plan 摘要的截断上限（按 rune 计）。
@@ -424,35 +425,44 @@ func permEventText(s string) string {
 //   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
 //     带列写入，保持「创建期只写创建时已知的字段」的约定）
 func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
-	m.log.Info("dispatch 进入", "repo", req.Repo, "plan_name", req.PlanName, "target", req.Target,
+	m.log.Info("dispatch 进入",
+		"project_id", req.ProjectID, "project_name", req.ProjectName,
+		"plan_name", req.PlanName, "target", req.Target,
 		"executor", req.Executor, "model", req.Model, "name", req.Name,
 		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
 		"base_commit", req.BaseCommit, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
-			m.log.Error("dispatch 失败", "repo", req.Repo, "cause", err)
+			m.log.Error("dispatch 失败",
+				"project_id", req.ProjectID, "project_name", req.ProjectName, "cause", err)
 		} else {
 			m.log.Info("dispatch 完成", "task", task.ID)
 		}
 	}()
 
-	// B46：--repo 三态解析（路径 / 登记名 / 空）。放在最前面：后面所有前置校验
-	// （仓库可用性、工作目录占用、基线决议）都要拿到真实路径才有意义。
-	entries, err := m.st.ListRepos()
+	// B62：项目解析。放在最前面：后面所有前置校验（仓库可用性、工作目录占用、
+	// 基线决议）都要拿到本机路径才有意义。它同时是「必须先登记才能派发」这条
+	// 不变式的唯一执行点——本机 CLI 收到 ErrProjectNotRegistered 会自动补登记
+	// 后重发，服务端这边不做任何降级。
+	entries, err := m.st.ListProjectLocations()
 	if err != nil {
-		m.log.Error("dispatch 前置：读取仓库登记失败", "cause", err)
+		m.log.Error("dispatch 前置：读取项目位置失败", "cause", err)
 		return nil, err
 	}
-	resolvedRepo, err := resolveRepoInput(req.Repo, req.OriginURL, entries)
+	loc, err := resolveProject(req.ProjectID, req.ProjectName, entries)
 	if err != nil {
 		return nil, err
 	}
-	req.Repo = resolvedRepo
+	// repoPath 是本次派发的工作仓库，从此刻起全部前置校验都用它。
+	// 它由**本机查表**得出，调用方无从指定——这正是 B62 要立的规矩。
+	repoPath := loc.Path
+	m.log.Info("dispatch 项目已解析",
+		"project_id", loc.ProjectID, "name", loc.Name, "path", repoPath)
 
 	// 校验：repo 必填；plan 与 prompt 至少其一（prompt-only 派发）
-	if req.Repo == "" || (req.PlanB64 == "" && req.Prompt == "") {
-		return nil, fmt.Errorf("%w: repo=%q plan_b64 长度=%d prompt 长度=%d",
-			errBadDispatchRequest, req.Repo, len(req.PlanB64), len(req.Prompt))
+	if repoPath == "" || (req.PlanB64 == "" && req.Prompt == "") {
+		return nil, fmt.Errorf("%w: repo_path=%q plan_b64 长度=%d prompt 长度=%d",
+			errBadDispatchRequest, repoPath, len(req.PlanB64), len(req.Prompt))
 	}
 	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
 	execName, ad, err := m.resolveExecutor(req.Executor)
@@ -503,7 +513,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// git 路径，ResolveBaseline 会把它误诊成 ErrBaseCommitMissing（「任务仓库落后
 	// 于本地，请先 git push」），那是个比沉默更糟的答案；managed 路径上则一路
 	// 走到 worktree add 才失败，扁平成 500
-	if err := EnsureRepoUsable(ctx, req.Repo); err != nil {
+	if err := EnsureRepoUsable(ctx, repoPath); err != nil {
 		return nil, err
 	}
 
@@ -513,7 +523,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 一个注定要被拒的派发不该先付这笔钱
 	occupied := ""
 	if !req.NewWorktree {
-		occupied = req.Repo
+		occupied = repoPath
 		if req.Worktree != "" {
 			occupied = req.Worktree
 		}
@@ -524,7 +534,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
 	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
-	baseline, err := ResolveBaseline(ctx, req.Repo, req.BaseCommit)
+	baseline, err := ResolveBaseline(ctx, repoPath, req.BaseCommit)
 	if err != nil {
 		return nil, err
 	}
@@ -537,17 +547,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		start, ahead = baseline.Start, baseline.Ahead
 		if ahead > 0 {
 			m.log.Warn("任务仓库 HEAD 领先基线，新分支不含这些提交",
-				"repo", req.Repo, "start", start, "ahead", ahead)
+				"repo", repoPath, "start", start, "ahead", ahead)
 		}
 	}
-	m.log.Info("基线起点已确定", "repo", req.Repo, "start", start, "ahead", ahead,
+	m.log.Info("基线起点已确定", "repo", repoPath, "start", start, "ahead", ahead,
 		"explicit_base", req.Base != "")
 
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
 	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
-		Repo: req.Repo, TaskID: taskID,
+		Repo: repoPath, TaskID: taskID,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: start,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
 		WorktreesDir: filepath.Join(m.cfg.DataDir, "worktrees"),
@@ -565,7 +575,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	executorStarted := false
 	defer func() {
 		if err != nil && !executorStarted {
-			m.compensateWorkspace(ctx, req.Repo, ws)
+			m.compensateWorkspace(ctx, repoPath, ws)
 		}
 	}()
 
@@ -586,7 +596,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	task = &proto.Task{
 		ID:       taskID,
 		Target:   req.Target,
-		RepoPath: req.Repo,
+		RepoPath: repoPath,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,
