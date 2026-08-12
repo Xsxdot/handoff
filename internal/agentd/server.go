@@ -1119,6 +1119,10 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
+//   - **镜像任务同形**：本机 tasks 表没有、但 mirror_tasks 有的任务，从
+//     mirror_events 重放历史，活事件由镜像订阅经同一个 Hub 送来。对浏览器
+//     协议完全同形（帧就是带 seq 的 Event），ws.ts 无感——这正是「浏览器
+//     永远只连本机一条 WS」的兑现处
 //   - 任务归档（done）时 hub 会关闭本连接的订阅，此处以 StatusNormalClosure +
 //     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
 //     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
@@ -1152,18 +1156,27 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 永远不会来，旧实现会让 wait 无限阻塞（与「还没有事件」无法区分，P0-2 根因）。
 	// 以 PolicyViolation（1008）close 码关闭连接：语义是「你的请求本身非法」而非
 	// 网络断连，客户端据此判定永久失败立即报错，而不是把它当瞬时故障无限退避重连
+	mirrored := false
 	if _, err := s.st.GetTask(taskID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("WS 订阅任务不存在", "task", taskID, "remote_addr", r.RemoteAddr)
-			if cerr := conn.Close(websocket.StatusPolicyViolation, "task not found"); cerr != nil {
-				// 连接已断时 Close 失败不影响结论——客户端侧按断线走退避重连，
-				// 若再次拨号仍会走到本分支被关闭
-				s.log.Warn("WS 关闭任务不存在连接失败", "task", taskID, "err", cerr)
+			// 本机没有：可能是镜像任务（远端的活，本机订着它的事件）。命中则本
+			// 连接从 mirror_events 重放历史，活事件由镜像订阅经同一个 Hub 送来
+			if _, ok, mErr := s.st.MirrorTaskTarget(taskID); mErr == nil && ok {
+				mirrored = true
+				s.log.Info("WS 订阅镜像任务", "task", taskID, "from_seq", fromSeq)
+			} else {
+				s.log.Warn("WS 订阅任务不存在", "task", taskID, "remote_addr", r.RemoteAddr)
+				if cerr := conn.Close(websocket.StatusPolicyViolation, "task not found"); cerr != nil {
+					// 连接已断时 Close 失败不影响结论——客户端侧按断线走退避重连，
+					// 若再次拨号仍会走到本分支被关闭
+					s.log.Warn("WS 关闭任务不存在连接失败", "task", taskID, "err", cerr)
+				}
+				return
 			}
+		} else {
+			s.log.Error("WS 校验任务失败", "task", taskID, "cause", err)
 			return
 		}
-		s.log.Error("WS 校验任务失败", "task", taskID, "cause", err)
-		return
 	}
 
 	sent := 0
@@ -1243,9 +1256,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// 阶段一：补发历史事件（from_seq 之后按 seq 升序的最旧 limit 条，截断在尾部）
-	replays, err := s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
+	// 镜像任务（本机 tasks 表没有、mirror_tasks 有）从 mirror_events 重放，
+	// 语义与本机 EventsFromAsc 一致（开区间、截尾部、可凭更大 cursor 续拉）。
+	var replays []proto.Event
+	if mirrored {
+		replays, err = s.st.MirrorEventsFrom(taskID, fromSeq, s.replayLimit)
+	} else {
+		replays, err = s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
+	}
 	if err != nil {
-		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
+		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "mirrored", mirrored, "cause", err)
 		return
 	}
 	// 重放覆盖 (fromSeq, maxReplayed]；maxReplayed 同时是「实时去重分界线」：
