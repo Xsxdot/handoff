@@ -3,7 +3,7 @@
 //
 // 职责：
 //   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault →
-//     agentd.MergeLoginShellPATH（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
+//     pathenv.Apply（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
@@ -35,6 +35,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
+	"github.com/xushixin/handoff/internal/pathenv"
 	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -62,10 +63,11 @@ var agentdCmd = &cobra.Command{
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
 
-		// PATH 补全（B7）：agentd 常由非登录 shell 拉起，拿不到 profile 里的
-		// PATH——真实踩坑是 executor 在远程机上找不到 go。必须早于任何 fork
-		// 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承
-		agentd.MergeLoginShellPATH(context.Background(), logger)
+		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
+		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
+		// fork 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承。
+		// ExtraDirs 在 Task 2 接上 cfg.PathDirs
+		pathenv.Apply(context.Background(), pathenv.Options{IncludeLoginShell: true}, logger)
 
 		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
 		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
