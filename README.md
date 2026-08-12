@@ -226,7 +226,7 @@ env:                          # agent 启动时注入的环境变量文件（放
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
 repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
-path_dirs: []                 # 额外的可执行文件搜索目录；agentd 启动时追加到 PATH 末尾
+path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才加，不需要就别写这个键
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
