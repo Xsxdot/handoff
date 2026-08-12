@@ -153,6 +153,9 @@ type Client struct {
 	baseURL string
 	token   string
 	hc      *http.Client
+	// extraHeaders 是每个请求都要带的附加头（目前只有 agentd→agentd 的防环标记）。
+	// nil 表示没有附加头，生产上的审核者客户端恒为 nil。
+	extraHeaders map[string]string
 	// WS 断线重连的退避区间与「这次连接算健康」的存活门槛（见 WaitEvent）。
 	// 测试经 NewWithWSTiming 注入毫秒级值，生产一律用包级默认。
 	wsInitialBackoff time.Duration
@@ -196,6 +199,16 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 	}
 }
 
+// MarkForwarded 返回一个副本，其后续请求都带上 X-Handoff-Forwarded: 1。
+//
+// 用途：agentd 扇出到别的 agentd 时必须带这个标记，让对端不再向外扇出——
+// 一跳封顶，A→B→A 不可能成环。审核者 CLI **不要**用它。
+func (c *Client) MarkForwarded() *Client {
+	cp := *c
+	cp.extraHeaders = map[string]string{"X-Handoff-Forwarded": "1"}
+	return &cp
+}
+
 // log 返回运行时 slog.Default()。
 //
 // 为什么不用包级 var：cli 命令在 RunE 里才 logx.Setup + slog.SetDefault，包级 var
@@ -219,6 +232,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -458,6 +474,82 @@ func (c *Client) ProjectList(ctx context.Context) ([]proto.ProjectLocation, erro
 		return nil, fmt.Errorf("解析 project list 响应: %w", err)
 	}
 	return locs, nil
+}
+
+// ProjectTree 取项目树（GET /api/projects/tree）。
+//
+// 注意：本方法只取**单机**树。跨机汇总是 agentd 侧的事（它对每台取单机树再合并），
+// 客户端拿汇总请打 ?scope=all 的那条路径，由 agentd 负责扇出。
+func (c *Client) ProjectTree(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ProjectTreeAll 取跨机汇总的项目树（GET /api/projects/tree?scope=all）。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝扇出。
+func (c *Client) ProjectTreeAll(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树(全机器): %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树(全机器)", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树(全机器)响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Machines 列出本机视角的全部机器与探活结果（GET /api/machines）。
+func (c *Client) Machines(ctx context.Context) (*proto.MachinesResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/machines", nil)
+	if err != nil {
+		return nil, fmt.Errorf("机器列表请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("机器列表", resp)
+	}
+	var out proto.MachinesResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析机器列表响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ListTasksAll 取跨机汇总的任务列表（GET /api/tasks?scope=all），
+// 远端任务读镜像快照、带 machine 名，机器应答情况在信封的 machines 栏。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝汇总。
+func (c *Client) ListTasksAll(ctx context.Context) (*proto.TasksResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/tasks?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("任务汇总请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("任务汇总", resp)
+	}
+	var out proto.TasksResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析任务汇总响应: %w", err)
+	}
+	return &out, nil
 }
 
 // ProjectRemove 注销一条项目位置。
@@ -868,6 +960,14 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
+	// 附加头（agentd→agentd 的防环标记）同样带进 WS 握手：
+	// streamOnce 不走 do，这里补一遍，让 MarkForwarded 的镜像连接从拨号起就带标记
+	for k, v := range c.extraHeaders {
+		if opts.HTTPHeader == nil {
+			opts.HTTPHeader = http.Header{}
+		}
+		opts.HTTPHeader.Set(k, v)
+	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
@@ -925,6 +1025,29 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 			return err
 		}
 	}
+}
+
+// StreamEventsOnce 建立一次事件流连接，把收到的每一帧交给 onEvent，直到连接
+// 断开或 ctx 取消。**不读写任何 cursor 文件，不做重连**。
+//
+// 参数：
+//   - taskID: 任务 id（必须是完整 UUID）
+//   - fromSeq: 起始 seq（开区间）；调用方自己持有水位
+//   - onEvent: 每帧回调；返回错误即中止本次连接
+//
+// 为什么必须有这个「无 cursor」变体：FollowEvents / WaitEvent 把水位存在
+// ~/.handoff/cursor-<task>，那是**审核者本机**的状态。agentd 做事件镜像时
+// 跑在同一台机器上，若复用带 cursor 的路径，agentd 的镜像与人手敲的
+// handoff wait 会互相推进对方的水位——一方吃掉另一方的事件，且极难归因。
+// 镜像的水位属于 mirror_events 表，不属于文件系统。
+//
+// 注意：单次连接、不重连。退避与重连策略由调用方（镜像订阅循环）决定，
+// 它的节奏（300ms→×2→10s）与审核者 CLI 的（1s→60s）刻意不同。
+func (c *Client) StreamEventsOnce(ctx context.Context, taskID string, fromSeq int64,
+	onEvent func(proto.Event) error) error {
+	c.log().Debug("镜像事件流建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
+	// readDeadline 返回零值 = 不设读超时：镜像是常驻订阅，长时间无事件是正常态
+	return c.streamOnce(ctx, taskID, fromSeq, func() time.Time { return time.Time{} }, onEvent)
 }
 
 // waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。

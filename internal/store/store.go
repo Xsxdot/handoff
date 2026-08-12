@@ -120,6 +120,25 @@ func Open(path string) (*Store, error) {
   created_at  TIMESTAMP NOT NULL,
   expires_at  TIMESTAMP NOT NULL,
   consumed_at TIMESTAMP)`,
+		// 镜像两表（W3a §6.2）：远端权威日志的**副本**，不是第二份真相。
+		// 可随时整表删掉，从远端按 from_seq=0 重建。
+		//
+		// 为什么不混进本机 events 表：远端 events.seq 是**远端库的全局自增**，
+		// 本机 seq 也是全局自增主键，混表必撞。
+		`CREATE TABLE IF NOT EXISTS mirror_events (
+  task_id TEXT NOT NULL,
+  -- seq 保留远端原值：远端是权威，本机不重编号，重连凭它续拉
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL, payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL,
+  -- 复合主键即幂等键：重连补拉重复到达时 INSERT OR IGNORE 静默跳过
+  PRIMARY KEY (task_id, seq))`,
+		`CREATE TABLE IF NOT EXISTS mirror_tasks (
+  task_id TEXT PRIMARY KEY,
+  -- target 是 §5.1 透明路由的索引：这条任务该转发给谁
+  target TEXT NOT NULL,
+  -- snapshot 是最近一次拉到的任务体 JSON（§6.3 的事件触发刷新 + 慢对账）
+  snapshot TEXT NOT NULL,
+  fetched_at TIMESTAMP NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
