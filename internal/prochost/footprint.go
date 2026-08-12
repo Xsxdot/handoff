@@ -90,6 +90,9 @@ func lookupStartedAt(pid int) int64 {
 //     正是执行者已死、子进程被 reparent 给 init/launchd 之后——那一刻 ppid 恰好
 //     断在最需要它的地方。按 ppid 实现会得到一个「测试里好使、事故现场失效」的
 //     东西，比诚实的盲区更糟：盲区至少不会骗人
+//   - 逃逸后代由 rosterMembers 覆盖，见 B72 出生登记：classify 本身只管 pgid 层，
+//     逃逸那层的计数与回收走出生名册，两段判据各管一段、口径在 Footprint/Sweep
+//     边界上合并
 //
 // 规则三（时间下界，双保险）：成员启动时刻必须 ≥ h.StartedAt，否则排除。规则二只
 // 挡外侧混入、挡不住内侧逃逸，这条补的是「比 shim 更早的进程必然不可能是它的
@@ -133,6 +136,9 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 // 注意：
 //   - **只读，绝不发信号**——它是 Sweep 的孪生只读版本，两者共用 classify
 //   - 对**存活中**与**已死亡**的执行者均可调用：判据随存活锁状态自动切换
+//   - **members 是两段并集**：pgid 组 + 出生名册里仍存活且身份吻合的逃逸后代。
+//     Sweep 现在也是两段（B72），报的数和杀的范围必须一致，否则 handoff footprint
+//     就变成一句骗人的话（B70：宣称什么就得是什么）
 func Footprint(h Handle) (members []int, v Verdict, err error) {
 	procs, err := enumProcsFn()
 	if err != nil {
@@ -140,8 +146,55 @@ func Footprint(h Handle) (members []int, v Verdict, err error) {
 		return nil, VerdictNoCredential, err
 	}
 	members, v = classify(h, procs, aliveFn(h))
+	if v == VerdictOK {
+		// 第二段：名册里仍然存活且身份吻合的逃逸后代。判定放弃时不并入——
+		// 那时 members 必须为空是 classify 的契约，不能被这里破坏
+		seen := make(map[int]bool, len(members))
+		for _, p := range members {
+			seen[p] = true
+		}
+		for _, p := range rosterMembers(h, procs) {
+			if !seen[p] {
+				members = append(members, p)
+				seen[p] = true
+			}
+		}
+	}
 	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v), "members", len(members))
 	return members, v, nil
+}
+
+// rosterMembers 按出生名册筛出仍然存活且身份吻合的后代 pid（只读，不发信号）。
+//
+// 参数：h 为任务句柄（用 h.RosterPath）；procs 为一次进程快照
+//
+// 返回：通过「pid 在表 + StartedAt 完全相等」校验的 pid；名册缺失/损坏时为空
+//
+// 注意：它与 rosterKill 是同一条判据的只读孪生版，两者必须同时改——一个报数、
+// 一个动手，判据分叉就意味着「报的和杀的不是同一批」。
+//   - 成功路径刻意不打日志：Footprint 被 handoff status 按任务高频调用，
+//     每次记一行会把 agentd.log 淹掉。失败才记，且只记一次
+func rosterMembers(h Handle, procs []procEntry) []int {
+	entries, err := readRoster(h.RosterPath)
+	if err != nil {
+		log().Warn("读后代名册失败，足迹不含逃逸后代", "pid", h.PID,
+			"roster", h.RosterPath, "cause", err)
+		return nil
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	live := make(map[int]int64, len(procs))
+	for _, p := range procs {
+		live[p.PID] = p.StartedAt
+	}
+	var out []int
+	for _, e := range entries {
+		if started, ok := live[e.PID]; ok && started == e.StartedAt {
+			out = append(out, e.PID)
+		}
+	}
+	return out
 }
 
 // ErrExecutorAlive 表示执行者仍然活着，Sweep 不适用。

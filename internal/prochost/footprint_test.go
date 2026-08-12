@@ -434,3 +434,49 @@ func TestSweepWithoutRosterStillDoesGroupPhase(t *testing.T) {
 		t.Fatalf("无名册时第一段仍应正常，实得 killed=%d verdict=%s", n, v)
 	}
 }
+
+// Footprint 报的数必须和 Sweep 会动手的范围一致：只报 pgid 那层、却杀两层，
+// 等于让 handoff footprint 的输出骗人（B70：宣称什么就得是什么）。
+func TestFootprintIncludesRosterMembers(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{{PID: 501, StartedAt: 5100}}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	stubAlive(t, true) // executor 活着，Footprint 对活任务也要能用
+	stubEnum(t, []procEntry{
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: t0},       // shim
+		{PID: 101, PPID: 100, PGID: 100, StartedAt: t0 + 1}, // executor，同组
+		{PID: 501, PPID: 101, PGID: 501, StartedAt: 5100},   // 逃逸后代，在名册里
+	}, nil)
+	h := Handle{PID: 100, LockPath: filepath.Join(dir, "x.lock"), StartedAt: t0, RosterPath: roster}
+	members, v, err := Footprint(h)
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 ok，实得 %s", v)
+	}
+	assertMembers(t, members, []int{100, 101, 501})
+}
+
+// 与 Sweep 同一条红线：出生时刻对不上的名册成员**不计入**足迹。
+// 数字上多算一个只是难看，但它会让审核者以为残留还在、去追一个不存在的东西。
+func TestFootprintExcludesReusedRosterPID(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{{PID: 501, StartedAt: 5100}}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	stubAlive(t, true)
+	stubEnum(t, []procEntry{
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: t0},
+		{PID: 501, PPID: 1, PGID: 501, StartedAt: 9999}, // pid 易主
+	}, nil)
+	h := Handle{PID: 100, LockPath: filepath.Join(dir, "x.lock"), StartedAt: t0, RosterPath: roster}
+	members, _, err := Footprint(h)
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	assertMembers(t, members, []int{100})
+}
