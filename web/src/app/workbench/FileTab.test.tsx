@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { FileTab } from './FileTab'
-import { TerminalTab } from './TerminalTab'
 import type { BaseDir } from './useWorkbench'
 import { ApiError } from '../../api/client'
 
@@ -21,15 +20,6 @@ vi.mock('../../api/client', async () => {
 const { fetchWorkspaceFile } = await import('../../api/client')
 
 afterEach(() => vi.mocked(fetchWorkspaceFile).mockReset())
-
-describe('TerminalTab', () => {
-  it('明说 PTY 未实现并给出当前可用的替代路径，不置灰任何按钮', () => {
-    render(<TerminalTab base={base} seq={1} />)
-    expect(screen.getByText(/PTY 后端尚未实现/)).toBeInTheDocument()
-    expect(screen.getByText(/handoff attach/)).toBeInTheDocument()
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
-  })
-})
 
 describe('FileTab', () => {
   it('按基准目录 + 相对路径 + 机器名取文件并显示内容', async () => {

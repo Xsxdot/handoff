@@ -1,37 +1,160 @@
-// TerminalTab —— 终端 tab 的壳（spec §2.4）。
+// TerminalTab —— 中央区的真终端（W4 PTY spec §6）。
 //
-// 职责：把「终端」这一 tab 种类的外形做到位——能开、能命名、能关、能参与分屏，
-// 内容区诚实说明 PTY 后端尚未实现，并给出当前真正可用的替代路径。
+// 职责：
+//   - 挂 xterm，把一个服务端 PTY 会话的字节流画出来
+//   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
+//   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
+//   - shell 退出后在下方显示退出码，tab 留着等用户自己关
 //
 // 边界：
-//   - 不连 PTY、不渲染 xterm。本期的目标是形态校准，不是把终端跑通
-//   - **不渲染置灰按钮**（W3b §0 既有纪律）：置灰控件承诺「以后能用」，
-//     用户会反复点它。这里干脆不放控件，只放一句说明
+//   - **不删会话**。卸载只断 WS——切 tab、切基准目录、关页面都不该杀掉
+//     跑了一晚上的 build（spec §6.2）。删会话是 × 按钮的事，在 Shell 里
+//   - 不做重连退避、不认识 WS 帧格式：那都在 api/pty.ts
+//   - 不判断这台机器支不支持 PTY：那是 Shell 的降级门（Task 14）。
+//     这里只兜住「真发了请求才知道不支持」的那一路（501）
 //
-// 为什么要把一个空壳做出来：三种 tab 里少任何一种，「中央区是一个 tab 系统」
-// 这件事就没法在真实页面上验证——而这一期交付的正是那个判断。
+// 关于「切 tab 就重放整段回放」：WorkbenchPage 只渲染激活 tab，切走即卸载，
+// 游标随之丢失，切回来从 since=0 起重放整个环形缓冲。这是**有意**的——
+// 环形缓冲的存在就是为了让任何一次重新接入都能重建屏幕，256 KiB 的重放
+// 远比维护一份前端的「上次看到哪」更可靠。
+import { useEffect, useRef, useState } from 'react'
 import { TerminalSquare } from 'lucide-react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
+import '@xterm/xterm/css/xterm.css'
+import { createPtySession } from '../../api/client'
+import { connectPty, type PtyHandle } from '../../api/pty'
 import type { BaseDir } from './useWorkbench'
 
-export function TerminalTab({ base, seq }: { base: BaseDir; seq: number }) {
+export interface TerminalTabProps {
+  base: BaseDir
+  seq: number
+  // sessionId 缺席 = 这个 tab 还没有会话，挂载时建一个。
+  sessionId?: string
+  // onSession 把新建会话的 id 交回上层写进 TabContent。必须回报：
+  // 不回报的话切一次 tab 就会再建一个会话，用户每切一次多留一个 shell。
+  onSession: (id: string) => void
+}
+
+// ptyBase 把一个基准目录翻译成建会话请求的两个字段。
+//
+// home 基准的 path 是字面量 '~'，**不是**服务端认识的路径（useWorkbench 里
+// 早有这条纪律）。base_kind=home 时服务端用它自己的 $HOME，所以这里发空串，
+// 免得将来有人把 '~' 当路径去 stat。
+function ptyBase(base: BaseDir): { base_kind: string; base_path: string } {
+  return { base_kind: base.kind, base_path: base.kind === 'home' ? '' : base.path }
+}
+
+export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProps) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
+  const [exit, setExit] = useState<number | null | undefined>(undefined)
+  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    let disposed = false
+    let handle: PtyHandle | null = null
+
+    // 终端底色固定为深色：xterm 的 WebGL 渲染器不支持透明背景，跟着页面主题
+    // 走会在浅色主题下拿到一块透不过去的白底。终端惯例本就是深色，不折腾。
+    const term = new Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize: 12,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: { background: '#0b0b0c' },
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(host)
+    try {
+      term.loadAddon(new WebglAddon())
+    } catch (err) {
+      // WebGL 不可用（远程桌面、禁用了硬件加速、老显卡）时 xterm 自动回退到
+      // canvas/DOM 渲染：慢一点，但**不能白屏**（spec §6.3）。吞掉这个异常正是
+      // 为了让回退发生，所以它不是「静默失败」——功能完好，只是渲染路径不同。
+      console.warn('WebGL 渲染器不可用，已回退到 canvas 渲染', err)
+    }
+    fit.fit()
+
+    const start = async () => {
+      let id = sessionId
+      if (!id) {
+        const created = await createPtySession(
+          { ...ptyBase(base), cols: term.cols, rows: term.rows },
+          base.machine,
+        )
+        id = created.id
+        if (disposed) return
+        onSession(id)
+      }
+      if (disposed) return
+      handle = connectPty({
+        sessionId: id,
+        machine: base.machine,
+        onAttached: ({ truncated }) => {
+          // 服务端说中间丢了一段：屏幕上现有的内容与即将到来的回放接不上，
+          // 不清就会把同一段输出画两遍
+          if (truncated) term.clear()
+        },
+        onData: (bytes) => term.write(bytes),
+        onExit: (code) => {
+          setExit(code ?? null)
+          setStatus('closed')
+        },
+        onStatus: setStatus,
+        onError: (message) => setError(message),
+        onTerminal: ({ message }) => setError(message),
+      })
+      term.onData((d) => handle?.send(new TextEncoder().encode(d)))
+      term.onResize(({ cols, rows }) => handle?.resize(cols, rows))
+      term.focus()
+    }
+
+    start().catch((err: unknown) => {
+      if (disposed) return
+      setError(err instanceof Error ? err.message : String(err))
+    })
+
+    const ro = new ResizeObserver(() => fit.fit())
+    ro.observe(host)
+
+    return () => {
+      disposed = true
+      ro.disconnect()
+      // 只断连接，不发 DELETE：服务端会话继续跑
+      handle?.close()
+      term.dispose()
+    }
+    // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, base.key, base.machine])
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
         <TerminalSquare className="size-3.5" />
         <span className="font-mono">
-          bash · {base.label}
+          {base.label}
           {seq > 1 && ` (${seq})`}
         </span>
+        {status === 'connecting' && exit === undefined && <span>连接中…</span>}
         <span className="ml-auto font-mono">{base.path}</span>
       </div>
-      <div className="flex flex-1 items-center justify-center p-8">
-        <div className="max-w-md space-y-2 text-center">
-          <p className="text-sm">PTY 后端尚未实现。</p>
-          <p className="text-xs text-muted-foreground">
-            当前查看 executor 现场请用 <code className="font-mono">handoff attach &lt;task&gt;</code>。
-          </p>
+      <div ref={hostRef} className="min-h-0 flex-1 bg-[#0b0b0c]" />
+      {error !== null && (
+        <div className="border-t px-3 py-1.5 text-xs text-destructive">{error}</div>
+      )}
+      {exit !== undefined && (
+        <div className="border-t px-3 py-1.5 text-xs text-muted-foreground">
+          {exit === null ? 'shell 已退出（对端未给出退出码）' : `shell 已退出，退出码 ${exit}`}
+          ．关闭这个 tab 即可清理
         </div>
-      </div>
+      )}
     </div>
   )
 }

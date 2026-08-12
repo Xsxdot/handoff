@@ -241,6 +241,23 @@ describe('WorkbenchPage', () => {
     expect(screen.getAllByRole('tablist')).toHaveLength(2)
   })
 
+  it('renderContent 拿得到自己所在的组号与 tab id', () => {
+    const seen: Array<[number, string]> = []
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
+    const id = wb.groups[0].tabs[0].id
+    render(
+      <WorkbenchPage
+        api={api({ wb })}
+        onAddProject={vi.fn()}
+        renderContent={(_c, _b, group, tabId) => {
+          seen.push([group, tabId])
+          return <div>内容</div>
+        }}
+      />,
+    )
+    expect(seen[0]).toEqual([0, id])
+  })
+
   it('空白 tab 选了种类后调 setContent 而不是再开一个 tab', () => {
     const setContent = vi.fn()
     const open = vi.fn()

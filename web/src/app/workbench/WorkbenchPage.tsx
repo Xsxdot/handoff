@@ -25,7 +25,10 @@ import type { BaseDir, WorkbenchApi } from './useWorkbench'
 export interface WorkbenchPageProps {
   api: WorkbenchApi
   onAddProject: () => void
-  renderContent: (content: TabContent, base: BaseDir) => ReactNode
+  // renderContent 多收 group 与 tabId：终端 tab 建出会话之后要把 id 写回
+  // **它自己**（setContent(group, tabId, …)），而中央区是唯一知道自己在哪一组、
+  // 哪个 tab 的地方。
+  renderContent: (content: TabContent, base: BaseDir, group: number, tabId: string) => ReactNode
 }
 
 // PICK_HINT 是「种类选好了但还缺一个目标」时的指路文案。
@@ -112,7 +115,7 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
                   onBack={() => back(activeTab.id)}
                 />
               ) : (
-                renderContent(activeTab.content, base)
+                renderContent(activeTab.content, base, gi, activeTab.id)
               )}
             </div>
           </section>

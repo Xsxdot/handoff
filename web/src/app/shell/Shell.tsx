@@ -122,10 +122,19 @@ export function Shell() {
                 <WorkbenchPage
                   api={wb}
                   onAddProject={() => setWizardOpen(true)}
-                  renderContent={(c, base) => {
+                  renderContent={(c, base, group, tabId) => {
                     switch (c.kind) {
                       case 'terminal':
-                        return <TerminalTab base={base} seq={c.seq} />
+                        return (
+                          <TerminalTab
+                            base={base}
+                            seq={c.seq}
+                            sessionId={c.sessionId}
+                            // 会话 id 必须写回这个 tab：不写回的话切一次 tab
+                            // 就会再建一个会话，用户每切一次多留一个 shell
+                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
+                          />
+                        )
                       case 'file':
                         return <FileTab base={base} rel={c.rel} />
                       case 'tui':
