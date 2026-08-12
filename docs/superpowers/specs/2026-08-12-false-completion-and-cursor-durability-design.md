@@ -54,13 +54,21 @@ opencode 的回合终结与分类链路：
 | **差值 = 有新提交 → handoff 替模型宣布完成** | **59** |
 | `idle 但回合无文本` | 26 |
 | `回合因权限被拒终止` | 10 |
-| `本回合已通过 question 工具提问` | **0** |
+| `本回合已通过 question 工具提问` | **0**（⚠️ 这一格是**日志级别造成的假象**，见下方订正） |
 
 对照：同机 `handoff status` 快照为 completed 79 / failed 52。
 
 **读法与其边界**：112 与 59 是**回合**计数，一个任务可跨多回合触发多次；79 是当前快照而非同期累计。因此**不能**把 59/79 当作「74% 的完成是假的」——两者不同分母。可以断定的是量级：`fallbackClassify` 的宣布完成路径**不是罕见兜底，是常走的主路**（四天 59 次）。
 
-**第二个结论**：`本回合已通过 question 工具提问` 为 0，说明 B49 的 `askedViaTool` 去重从未触发，opencode 执行者的提问历史上全部走 trailer、原生 question 工具一次都没被用过。这直接影响探针 S4 的形状，也意味着「§2.1 那次截断的是 question 工具调用」这个还原**证据不足，本设计不采用**。
+~~**第二个结论**：`本回合已通过 question 工具提问` 为 0，说明 B49 的 `askedViaTool` 去重从未触发，opencode 执行者的提问历史上全部走 trailer、原生 question 工具一次都没被用过。~~ 这直接影响探针 S4 的形状，也意味着「§2.1 那次截断的是 question 工具调用」这个还原**证据不足，本设计不采用**。
+
+**订正（2026-08-12，探针 S4 实测推翻上面划掉的那句）**——原文保留不删，修订痕迹本身是证据：
+
+- **推翻的理由是这条判据本身不成立，不是计数错了。** `本回合已通过 question 工具提问` 这个字符串只出现在 `internal/executor/opencode/adapter.go:1658`，是一条 **`a.log.Debug`**，且只打在「因原生提问已发生而抑制 trailer 提问工单」这一条分支上。agentd 跑在 INFO 级别，这行**永远不会写进日志**。审核者本机 `agentd.log` 里 DEBUG 行数为 **0**（28734 INFO / 1605 WARN / 85 ERROR），devbox 同理。**0 次是日志级别的假象，不是行为证据。**
+- **反向事实**：同一次探针 S4 派发抓到的 opencode 原始样本里，原生提问工具**确实触发了**——`"tool":"question"` 出现 2 次、`question.asked` 事件 1 次（样本 `internal/executor/opencode/testdata/probe-s4-opencode.jsonl`，断言见同包 `replay_probe_test.go`：该场景产出的 question 带 `que_` 前缀的原生请求 id，其余三个场景为空）。
+- **可用的判据**是原始样本里的事件，不是这条 Debug 日志：opencode 看 `question.asked`，grok 看 `_x.ai/ask_user_question` 请求。
+- **未受影响的部分**：本节最后那半句（「§2.1 那次截断的是 question 工具调用」这个还原证据不足、本设计不采用）**继续成立**——它依据的是「§2.1 现场已丢」，与本条判据无关。
+- **顺带的教训**：拿「日志里某串出现 0 次」推「该行为从未发生」之前，必须先确认那条日志的级别打不打得出来。这是本 spec 唯一一处被自己的探针推翻的推论。
 
 ### 2.4 B75 的现状
 
@@ -138,6 +146,21 @@ opencode 的回合终结与分类链路：
 「不能区分」与「未复现」都归入不加，理由相同：**缺证据时不写推测性文案，那会制造虚假的确定性**——审核者读到「疑似截断」而系统其实并不知道，比读到「模型未按纪律宣布完成」更糟。这两种情况下，§3.1 的策略翻转就是全部防线，而它本身已经足够安全（不再有假完成）。
 
 证据层是**纯增量**：它只让故障报告更具体，不改变 §3.1 的判定结果。因此它不构成 §3.1 落地的前置。
+
+#### 实测结论（2026-08-12，探针已跑完）
+
+探针记录与全部原始数据见 `docs/superpowers/probes/2026-08-12-turn-end/README.md`（15 行结果表 + 样本入库清单）。按上表规则逐 executor 套用：
+
+| executor | S3 是否复现 | 信号能否与 S1 区分 | 处置（规则套出来的） |
+|---|---|---|---|
+| **opencode** | 复现：一次超长 `write` 调用在传输层被截断，JSON 解析失败 | **能**。两个取值：`step-finish` 的 `reason:"unknown"`（tokens/cost 全 0）与 tool part 被翻成 `tool:"invalid"`（`state.input.error` = `Invalid input for tool write: JSON parsing failed: ... Unterminated string`）。两者在 S1/S2/S4 三份基线样本里出现次数均为 **0**，已由 `internal/executor/opencode/replay_probe_test.go` 的反向断言固定 | **加证据层** |
+| **grok** | **未复现**（2 次尝试）：模型主动绕开超长调用，全程最大帧 101 KB 且是 `available_commands_update` 样板帧；bash 结果里的 `truncated` 字段全为 `false` | 不适用 | **不加** |
+| **codex** | **未复现，且原因不同——它没被截断**：20000 行 / 1.88 MB 的写入一次调用完整落盘，单帧最大 700 KB，收尾 `turn/completed` `status:"completed"`、`error:null` | 不适用 | **不加** |
+| **claudecode** | **未测：环境阻塞**。本机 OAuth 过期（`Failed to authenticate: OAuth session expired and could not be refreshed`），`assistant` 帧 model=`<synthetic>`、输出 token 全 0，**模型根本没运行**，重试 1 次结果相同 | 未测 | **待补测后再定**。注意：这一格**不是**「未复现」——按本节规则「未复现」会直接推出「不加」，而这一格没有任何行为证据可供推理，把它记成未复现就是用环境故障冒充实测结论 |
+
+**一句话**：只有 opencode 一家在事件层留下了可判别于 S1 的截断信号，因此**证据层只在 opencode 落地**，grok / codex 保持 §3.1 的策略翻转作为唯一防线（本节已说明这本身就足够安全），claudecode 待鉴权恢复后补测。
+
+**顺带得到、比 S3 更普遍的一条**：S2（不改不提交）在四家上全部被判成 `question`，而其事件层与 S1 **逐帧同形**——判定差异完全来自 git 状态而非事件流。这从正面印证了 §3.1 的判断：trailer 缺失时事件层给不出任何帮助，兜底只能靠仓库副作用，所以「有新提交」绝不足以支撑「宣布完成」。
 
 ---
 
