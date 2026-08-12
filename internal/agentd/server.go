@@ -708,7 +708,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 // projectAddRequest 是 POST /api/projects 的请求体。
 //
 // 两种形态由 path 是否为空决定：给了 path 就是「这台机器上已经有一份，用它」
-//（agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
+// （agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
 type projectAddRequest struct {
 	OriginURL string `json:"origin_url"`
 	Name      string `json:"name"`

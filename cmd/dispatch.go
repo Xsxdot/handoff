@@ -56,7 +56,7 @@ var (
 // 为什么用文本而不是 errors.Is：错误跨进程传递，到 CLI 这一侧只剩报文。
 // agentd 的报文一律形如 fmt.Errorf("%w: …", ErrProjectNotRegistered)，
 // 因此这四个字必然出现在报文里。**改动 agentd 侧那个哨兵的文案就必须同步改这里**
-//（internal/agentd/projectresolve.go 的 ErrProjectNotRegistered 上有对应提示）。
+// （internal/agentd/projectresolve.go 的 ErrProjectNotRegistered 上有对应提示）。
 const projectNotRegisteredMarker = "项目未登记"
 
 // isProjectNotRegistered 报告一个 dispatch 错误是不是「目标机上没有这个项目」。
