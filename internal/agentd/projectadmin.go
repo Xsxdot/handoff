@@ -57,14 +57,22 @@ const nameFallbackLimit = 50
 
 // RegisterProjectReq 是登记一个项目位置的请求。
 //
-// 两种形态由 Path 是否为空决定：
-//   - Path 非空：这台机器上已经有一份，用它（agentd 现读它的 origin 校验一致）
-//   - Path 为空：由本机 clone 到 cfg.RepoRoot/<Name>
+// 形态由 Path 是否给出 / 路径是否存在 / OriginURL 是否非空共同决定（三态决策表）：
+//   - Path 空 + OriginURL 空 → 400：既无身份也无落点
+//   - Path 空 + OriginURL 有 → 由本机 clone 到 cfg.RepoRoot/<Name>（或认领已有落点）
+//   - Path 非空且目录存在 → 登记已有仓（OriginURL 可省，省则现读 origin）
+//   - Path 非空且目录不存在 + OriginURL 空 → 400：无 URL 无法创建
+//   - Path 非空且目录不存在 + OriginURL 有 → clone 到该 Path 再登记
+//   - 其余非法组合 → 400
 //
-// 为什么没有 Clone 布尔位：形态已被 Path 完全决定，多一个布尔位只会多出
-// 一组无意义的非法组合。
+// Path 的形态约束：必须是**绝对路径**。相对路径与 ~ 一律 400——clone 落点与
+// 落库路径的解析基准不同，猜错的代价是一条指向不存在路径的死记录。
 //
-// Name 可省，此时由 OriginURL 末段派生；它只是人可读引用，不参与身份判定。
+// 为什么没有 Clone 布尔位：形态已被 Path + 文件系统状态 + OriginURL 是否为空
+// 完全决定，多一个布尔位只会多出一组无意义的非法组合。
+//
+// Name 可省，此时由 OriginURL（请求给出或现读的实际 origin）末段派生；
+// 它只是人可读引用，不参与身份判定。
 type RegisterProjectReq struct {
 	OriginURL string
 	Name      string
@@ -134,7 +142,7 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// RegisterProject 登记一个项目位置（两种形态见 RegisterProjectReq）。
+// RegisterProject 登记一个项目位置（各形态与分派见 RegisterProjectReq 的决策表）。
 //
 // 参数：
 //   - ctx: 控制整组 git 调用的生命周期
@@ -150,21 +158,179 @@ func validateProjectName(name string) error {
 // 注意：
 //   - **登记在 clone 成功之后才落库**：反过来会在 clone 失败时留下一条指向
 //     不存在路径的死记录
+//   - Path 非空时必须是绝对路径，否则 400（见 RegisterProjectReq）
 //   - clone 的落点若已存在则直接拒绝，绝不往里 clone、绝不覆盖
 func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	m.log.Info("登记项目请求", "origin", req.OriginURL, "name", req.Name, "path", req.Path)
-	if strings.TrimSpace(req.OriginURL) == "" {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 登记必须带 origin_url（项目身份由它派生）",
-			errBadDispatchRequest)
-	}
-	if strings.HasPrefix(req.OriginURL, "-") {
+	req.OriginURL = strings.TrimSpace(req.OriginURL)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Path = strings.TrimSpace(req.Path)
+	if req.OriginURL != "" && strings.HasPrefix(req.OriginURL, "-") {
 		// git 会把以 - 开头的参数解释为选项——参数注入面，与 ErrBadBaseBranch 同源。
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", errBadDispatchRequest)
 	}
 	if req.Path != "" {
-		return m.registerExistingProject(ctx, req)
+		// path 必须是绝对路径：clone 落点由 gitRun（cwd=父目录）解析，落库路径由
+		// persistProject（cwd=agentd 进程）解析，两边基准不同——相对路径会让仓库
+		// 克隆到一处、位置表记到另一处，留下一条指向不存在路径的死记录。
+		// ~ 同理：Go 不展开它，不拦就会在 agentd 的 cwd 里造出字面量 ~ 目录。
+		// 不用 filepath.Abs 兜底：调用方不知道 agentd 的 cwd 是哪儿，猜一个
+		// "能算出来的路径"不等于猜对了用户要的路径。
+		if !filepath.IsAbs(req.Path) {
+			m.log.Warn("登记被拒：path 不是绝对路径", "path", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: path 必须是绝对路径（不支持 ~ 展开与相对路径）：%s",
+				errBadDispatchRequest, req.Path)
+		}
+		req.Path = filepath.Clean(req.Path)
+		return m.registerAtPath(ctx, req)
+	}
+	// 无 path：只能 clone 到 repo_root，必须带 origin——否则既无落点也无项目身份。
+	if req.OriginURL == "" {
+		return proto.ProjectLocation{}, fmt.Errorf(
+			"%w: 不带 path 时必须提供 origin_url（否则既无落点也无项目身份）",
+			errBadDispatchRequest)
 	}
 	return m.cloneAndRegisterProject(ctx, req)
+}
+
+// registerAtPath 处理 Path 非空的请求：按目录是否存在在「登记已有仓」与
+// 「clone 到该 Path」间分派。
+//
+// 目录不存在时：无 OriginURL → 400（无 URL 无法创建）；有 OriginURL →
+// cloneToPathAndRegister。目录存在时一律走 registerExistingProject——
+// 绝不往已存在的目录里 clone（那里是不是仓库、是不是本项目，由 inspect 校验说）。
+func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	_, err := os.Stat(req.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		if req.OriginURL == "" {
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 路径 %s 不存在，且未提供 origin_url，无法 clone",
+				errBadDispatchRequest, req.Path)
+		}
+		return m.cloneToPathAndRegister(ctx, req)
+	}
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", ErrRepoUnusable, req.Path, err)
+	}
+	return m.registerExistingProject(ctx, req)
+}
+
+// firstMissingAncestor 返回从 dir 往上第一个「尚不存在」的祖先目录——也就是
+// os.MkdirAll(dir) 会从哪一层开始真正创建目录。
+//
+// 参数：
+//   - dir: 待创建的目录（绝对路径）
+//
+// 返回：
+//   - 第一个不存在的祖先的绝对路径；dir 本身已存在时返回空串
+//
+// 为什么需要它：clone 失败要回收「本次自己造的」目录，而 MkdirAll 可能一次造好
+// 几层。只删最后那一层会留下中间空目录；从根上 RemoveAll 又会删掉调用方原本就有
+// 的目录。这个函数给出的正是那条分界线。
+func firstMissingAncestor(dir string) string {
+	missing := ""
+	for p := dir; ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		}
+		missing = p
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return missing
+}
+
+// cleanupCreatedDir 回收 clone 失败后本次新建的目录树。
+//
+// 参数：
+//   - created: firstMissingAncestor 的返回值；空串表示本次没造过任何目录，直接返回
+//
+// 注意：回收失败**不改变**调用方看到的错误——clone 的失败原因才是人要看的那条，
+// 残留目录只是需要人工清理的次要事实，写进 Warn 日志即可。
+func (m *Manager) cleanupCreatedDir(created string) {
+	if created == "" {
+		return
+	}
+	if err := os.RemoveAll(created); err != nil {
+		m.log.Warn("克隆失败后回收目录失败，需人工清理", "dir", created, "cause", err)
+		return
+	}
+	m.log.Info("克隆失败，已回收本次新建的目录", "dir", created)
+}
+
+// cloneToPathAndRegister 把 origin clone 到调用方指定的 dest（req.Path）再登记。
+//
+// 与 cloneAndRegisterProject 的区别只在落点：这里落点是 req.Path 原样使用，
+// 那里落点是 repo_root/<name> 并带「落点已存在则尝试认领」的归并逻辑。这里
+// 不做认领——落点已存在的请求根本不会进入本函数（由 registerAtPath 分流到
+// registerExistingProject），任意 path 上也没有 repo_root 那种「rm 后磁盘残留」
+// 的自动登记场景。
+//
+// 幂等边界：同项目 + 同落点 → 返回已有行（磁盘被 rm 掉、位置表还在时，重复登记
+// 不该把自动登记链打断）；同项目 + 异落点 → ErrProjectAlreadyExists，报文指向
+// 已有位置。绝不静默返回一个与请求 path 不同的位置。
+func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	// 幂等短路：必须发生在 clone 之前——重复登记同一个项目不应再 clone 出第二份。
+	// 但只有**同落点**才算"重复声明同一个事实"：调用方明确指了一个新落点时，
+	// 静默返回旧位置等于把他填的 path 吞了。异落点报 409，与「路径已存在」分支
+	// （registerExistingProject）给出同一种答复（ADR-0008：一台机器一个项目一个位置）。
+	pid := projectid.FromOrigin(req.OriginURL)
+	if pid != "" {
+		existing, ok, err := m.registeredProjectByID(pid)
+		if err != nil {
+			return proto.ProjectLocation{}, err
+		}
+		if ok {
+			if sameLocation(existing.Path, req.Path) {
+				m.log.Info("项目位置已存在且落点相同，幂等返回",
+					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
+				existing.Status = projectStatusOK
+				return existing, nil
+			}
+			m.log.Warn("克隆登记被拒：该项目在本机已有位置",
+				"project_id", pid, "existing", existing.Path, "requested", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
+				ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
+		}
+	}
+	// 与 cloneAndRegisterProject 同款提前校验：name 派生（空名走 projectNameFromURL）
+	// 与 validateProjectName 都必须发生在 clone 之前——非法名等 clone 跑完
+	// persistProject 再拦就晚了，会留下已 clone 未登记的孤儿目录。
+	name := req.Name
+	if name == "" {
+		name = projectNameFromURL(req.OriginURL)
+	}
+	if err := validateProjectName(name); err != nil {
+		m.log.Warn("克隆登记被拒：项目名非法", "name", name, "cause", err)
+		return proto.ProjectLocation{}, err
+	}
+	dest := req.Path
+	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
+	}
+	m.log.Info("开始克隆项目到指定路径", "origin", req.OriginURL, "dest", dest)
+	start := time.Now()
+	// gitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
+	if _, stderr, err := gitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+		m.log.Error("克隆到指定路径失败", "origin", req.OriginURL, "dest", dest,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
+			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+	}
+	m.log.Info("克隆到指定路径完成", "origin", req.OriginURL, "dest", dest,
+		"elapsed_ms", time.Since(start).Milliseconds())
+	return m.persistProject(name, dest, req.OriginURL)
 }
 
 // registeredProjectByID 在位置表里按 project_id 查已登记的位置。
@@ -244,14 +410,21 @@ func (m *Manager) inspectRepoDir(ctx context.Context, dir string) (root, origin 
 	return root, origin, nil
 }
 
-// registerExistingProject 登记本机上已存在的一份代码。
+// registerExistingProject 登记本机上已存在的一份代码（Path 已确认存在）。
+//
+// OriginURL 可空：空时采用 inspectRepoDir 现读的 actual 作为项目身份与落库值
+// （Web「只填 path」主路径——磁盘上的仓库本身就是权威，不要求调用方复述）；
+// 非空时仅作一致性校验，不一致仍报 ErrProjectOriginMismatch。
+// 落库 origin 永远用 actual，不采信请求串里未校验的写法。
 func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	root, actual, err := m.inspectRepoDir(ctx, req.Path)
 	if err != nil {
 		return proto.ProjectLocation{}, err
 	}
-	// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
-	if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+	if req.OriginURL == "" {
+		m.log.Info("登记已有目录（origin 由磁盘现读）", "path", root, "origin", actual)
+	} else if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+		// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
 		m.log.Warn("登记被拒：路径上的仓库不是请求的项目",
 			"path", root, "actual_origin", actual, "want_origin", req.OriginURL)
 		return proto.ProjectLocation{}, fmt.Errorf(
@@ -350,6 +523,9 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", ErrRepoUnusable, dest, err)
 	}
 	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
 	}
@@ -360,6 +536,7 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
 			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}

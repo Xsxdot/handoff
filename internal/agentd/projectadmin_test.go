@@ -340,3 +340,228 @@ func TestUnregisterProjectRejectsBusy(t *testing.T) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrWorkdirBusy)", err)
 	}
 }
+
+// TestRegisterProjectExistingInfersOrigin 验证 path 指向已有仓且请求不带
+// origin_url 时，agentd 现读 origin 完成登记（Web「只填 path」主路径）。
+func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: repo})
+	if err != nil {
+		t.Fatalf("RegisterProject(无 origin): %v", err)
+	}
+	if loc.OriginURL != origin {
+		t.Errorf("OriginURL = %q, want 现读的 %q", loc.OriginURL, origin)
+	}
+	if loc.ProjectID != projectid.FromOrigin(origin) {
+		t.Errorf("project_id = %q, want %q", loc.ProjectID, projectid.FromOrigin(origin))
+	}
+	if loc.Name != "handoff" {
+		t.Errorf("name = %q, want handoff", loc.Name)
+	}
+}
+
+// TestRegisterProjectRejectsEmptyOriginAndEmptyPath 验证既无 path 也无 origin 时
+// 无法确定身份与落点。
+func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+}
+
+// TestRegisterProjectClonesToExplicitPath 验证 path 不存在且带 origin 时
+// clone 到调用方指定的 path（不是 repo_root/<name>）。
+// 造 clone 源的手法与 TestRegisterProjectClonesWhenNoPath 相同：本地目录当源，不依赖网络。
+func TestRegisterProjectClonesToExplicitPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+	// 父目录 workdir 也不存在，验证实现会 MkdirAll。
+	dest := filepath.Join(t.TempDir(), "workdir", "my-handoff")
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src,
+		Name:      "my-handoff",
+		Path:      dest,
+	})
+	if err != nil {
+		t.Fatalf("RegisterProject(clone-to-path): %v", err)
+	}
+	want, _ := filepath.Abs(dest)
+	if loc.Path != want {
+		t.Fatalf("落点 = %q, want %q", loc.Path, want)
+	}
+	if loc.Name != "my-handoff" {
+		t.Errorf("name = %q, want my-handoff", loc.Name)
+	}
+	if loc.ProjectID != projectid.FromOrigin(src) {
+		t.Errorf("project_id = %q, want %q", loc.ProjectID, projectid.FromOrigin(src))
+	}
+	if _, err := os.Stat(filepath.Join(want, ".git")); err != nil {
+		t.Fatalf("落点应是一个克隆好的仓库: %v", err)
+	}
+}
+
+// TestRegisterProjectMissingPathRequiresOrigin 验证 path 不存在且无 origin → 400。
+func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	dest := filepath.Join(t.TempDir(), "nope")
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: dest})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+}
+
+// TestRegisterProjectRejectsRelativePath 验证相对 path 被入口拦下。
+//
+// 为什么必须拦而不是 filepath.Abs 兜底：Abs 的基准是 agentd 进程的 cwd，
+// 调用方（尤其 Web 表单和跨机那一跳）根本不知道那是哪个目录；更要命的是
+// gitRun 以 dest 的父目录为 cwd，相对 dest 会被 git 再解析一次，克隆落点
+// 与落库路径就此分叉，留下一条指向不存在路径的死记录。
+func TestRegisterProjectRejectsRelativePath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "relproj", Path: "workdir/relproj",
+	})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+	if !strings.Contains(err.Error(), "绝对路径") {
+		t.Errorf("报文 = %q, want 含「绝对路径」（人要看得懂怎么改）", err.Error())
+	}
+}
+
+// TestRegisterProjectRejectsTildePath 验证 ~ 开头的 path 被拦下。
+// Go 不做 ~ 展开——不拦的话 MkdirAll 会造出一个字面量 ~ 目录。
+func TestRegisterProjectRejectsTildePath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "tildeproj", Path: "~/code/tildeproj",
+	})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+	if _, serr := os.Stat("~"); serr == nil {
+		t.Errorf("cwd 下出现了字面量 ~ 目录——说明请求走到了 MkdirAll")
+	}
+}
+
+// TestRegisterProjectNormalizesDirtyAbsPath 验证绝对路径里的冗余段被 Clean 掉，
+// 落库的是归一化后的路径（同一目录不会因为写法不同登记成两条）。
+func TestRegisterProjectNormalizesDirtyAbsPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		Path: filepath.Join(repo, "sub", ".."),
+	})
+	if err != nil {
+		t.Fatalf("RegisterProject(含 .. 的绝对路径): %v", err)
+	}
+	if loc.OriginURL != origin {
+		t.Errorf("OriginURL = %q, want %q", loc.OriginURL, origin)
+	}
+}
+
+// TestRegisterProjectCloneToPathRejectsDifferentLocation 验证同一项目已登记在
+// 别处时，clone-to-path 报 409 并指向已有位置——而不是静默返回别处那一行、
+// 让调用方以为自己填的落点生效了。
+func TestRegisterProjectCloneToPathRejectsDifferentLocation(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: filepath.Join(t.TempDir(), "first"),
+	})
+	if err != nil {
+		t.Fatalf("首次 clone-to-path: %v", err)
+	}
+
+	other := filepath.Join(t.TempDir(), "second")
+	_, err = m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: other,
+	})
+	if !errors.Is(err, ErrProjectAlreadyExists) {
+		t.Fatalf("err = %v, want ErrProjectAlreadyExists", err)
+	}
+	if !strings.Contains(err.Error(), first.Path) {
+		t.Errorf("报文 = %q, want 含已有位置 %q", err.Error(), first.Path)
+	}
+	if _, serr := os.Stat(other); serr == nil {
+		t.Errorf("被拒的请求不该在 %s 上留下任何东西", other)
+	}
+}
+
+// TestRegisterProjectCloneToPathIdempotentSameLocation 验证同项目 + 同落点仍幂等：
+// 落点被人手动 rm 掉、位置表还留着那一行时，重复登记不该被 409 打断
+//（自动登记链靠这条不断）。
+func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+	dest := filepath.Join(t.TempDir(), "proj")
+
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: dest,
+	})
+	if err != nil {
+		t.Fatalf("首次 clone-to-path: %v", err)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatalf("清掉磁盘上的克隆: %v", err)
+	}
+
+	again, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: dest,
+	})
+	if err != nil {
+		t.Fatalf("同落点重复登记应幂等: %v", err)
+	}
+	if again.Path != first.Path {
+		t.Errorf("Path = %q, want %q", again.Path, first.Path)
+	}
+}
+
+// TestFirstMissingAncestor 验证助手找的是「MkdirAll 会从哪一层开始造」。
+func TestFirstMissingAncestor(t *testing.T) {
+	base := t.TempDir()
+	if got := firstMissingAncestor(base); got != "" {
+		t.Errorf("已存在的目录应返回空串，got %q", got)
+	}
+	want := filepath.Join(base, "a")
+	if got := firstMissingAncestor(filepath.Join(base, "a", "b", "c")); got != want {
+		t.Errorf("firstMissingAncestor = %q, want %q", got, want)
+	}
+}
+
+// TestCloneToPathCleansUpOnFailure 验证 clone 失败时本次新建的目录被回收，
+// 而调用方原本就有的目录一根汗毛不动。
+func TestCloneToPathCleansUpOnFailure(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	base := t.TempDir()
+	// 不是仓库的目录当 origin：git clone 必失败，且不依赖网络。
+	bogus := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(bogus, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
+	})
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("err = %v, want ErrRepoUnusable", err)
+	}
+	if _, serr := os.Stat(filepath.Join(base, "a")); serr == nil {
+		t.Errorf("clone 失败后 %s 不该留下", filepath.Join(base, "a"))
+	}
+	if _, serr := os.Stat(base); serr != nil {
+		t.Errorf("调用方原本就有的 %s 被误删了: %v", base, serr)
+	}
+}
