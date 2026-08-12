@@ -2,11 +2,14 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // TestProbeMachinesLocalAndRemote 起两个真实 agentd：本机 + 一台可达的“远程”。
@@ -47,4 +50,60 @@ func TestProbeMachinesLocalAndRemote(t *testing.T) {
 	if nas.Executors == nil {
 		t.Error("不可达时 executors 也要是 []，不能是 null")
 	}
+}
+
+// TestMachinesCarriesPtyCapability 断言：探活拿到的 pty_supported 被投影进
+// Machine，而不是在 fillFromStatus 里丢掉。
+func TestMachinesCarriesPtyCapability(t *testing.T) {
+	remote := newTestAgentdEnv(t)
+	rm, _, _, _ := newTestManager(t)
+	remote.srv.SetManager(rm)
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lm, _, _, _ := newTestManager(t)
+	local.srv.SetManager(lm)
+
+	resp := getMachines(t, local)
+	for _, m := range resp.Machines {
+		if !m.Reachable {
+			continue
+		}
+		if m.PtySupported == nil {
+			t.Fatalf("机器 %q 可达却没带能力位：nil 是「对端没上报」，这里对端明明上报了", m.Name)
+		}
+	}
+}
+
+// TestMachinesUnreachableHasNilCapability 断言：够不着的机器能力位是 nil，
+// **不是 false**——「探不到」与「明确不支持」是两个结论。
+func TestMachinesUnreachableHasNilCapability(t *testing.T) {
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"ghost": {Addr: "http://127.0.0.1:1", Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for _, m := range getMachines(t, local).Machines {
+		if m.Name == "ghost" && m.PtySupported != nil {
+			t.Fatalf("够不着的机器能力位必须是 nil，实得 %v", *m.PtySupported)
+		}
+	}
+}
+
+// getMachines 带 Bearer 请求 /api/machines 并解出响应。
+func getMachines(t *testing.T, e *testAgentdEnv) proto.MachinesResp {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, e.ts.URL+"/api/machines", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	var out proto.MachinesResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("解响应失败: %v", err)
+	}
+	return out
 }

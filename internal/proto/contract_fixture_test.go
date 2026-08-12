@@ -239,6 +239,7 @@ func projectTreeSample() ProjectTreeResp {
 // 两台覆盖两种结局：本机（name 空串、probe_ms 恒 0）与不可达的远端
 // （reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见）。
 func machinesSample() MachinesResp {
+	ptyOK := true
 	return MachinesResp{
 		Machines: []Machine{
 			{
@@ -251,6 +252,7 @@ func machinesSample() MachinesResp {
 				ProbeMs:         0,
 				ActiveTasks:     1,
 				Error:           "",
+				PtySupported:    &ptyOK,
 			},
 			{
 				Name:            "devbox",

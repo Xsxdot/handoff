@@ -130,6 +130,9 @@ export interface Machine {
   probe_ms: number          // 本机恒 0（进程内直查）
   active_tasks: number
   error: string             // reachable=false 时必非空
+  // pty_supported 三态：缺席/null = 对端没上报（**不是**不支持），
+  // false = 平台明确不支持，true = 支持。
+  pty_supported?: boolean | null
 }
 
 export interface MachinesResp {
