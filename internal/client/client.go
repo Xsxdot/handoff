@@ -153,6 +153,9 @@ type Client struct {
 	baseURL string
 	token   string
 	hc      *http.Client
+	// extraHeaders 是每个请求都要带的附加头（目前只有 agentd→agentd 的防环标记）。
+	// nil 表示没有附加头，生产上的审核者客户端恒为 nil。
+	extraHeaders map[string]string
 	// WS 断线重连的退避区间与「这次连接算健康」的存活门槛（见 WaitEvent）。
 	// 测试经 NewWithWSTiming 注入毫秒级值，生产一律用包级默认。
 	wsInitialBackoff time.Duration
@@ -196,6 +199,16 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 	}
 }
 
+// MarkForwarded 返回一个副本，其后续请求都带上 X-Handoff-Forwarded: 1。
+//
+// 用途：agentd 扇出到别的 agentd 时必须带这个标记，让对端不再向外扇出——
+// 一跳封顶，A→B→A 不可能成环。审核者 CLI **不要**用它。
+func (c *Client) MarkForwarded() *Client {
+	cp := *c
+	cp.extraHeaders = map[string]string{"X-Handoff-Forwarded": "1"}
+	return &cp
+}
+
 // log 返回运行时 slog.Default()。
 //
 // 为什么不用包级 var：cli 命令在 RunE 里才 logx.Setup + slog.SetDefault，包级 var
@@ -219,6 +232,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -458,6 +474,26 @@ func (c *Client) ProjectList(ctx context.Context) ([]proto.ProjectLocation, erro
 		return nil, fmt.Errorf("解析 project list 响应: %w", err)
 	}
 	return locs, nil
+}
+
+// ProjectTree 取项目树（GET /api/projects/tree）。
+//
+// 注意：本方法只取**单机**树。跨机汇总是 agentd 侧的事（它对每台取单机树再合并），
+// 客户端拿汇总请打 ?scope=all 的那条路径，由 agentd 负责扇出。
+func (c *Client) ProjectTree(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树响应: %w", err)
+	}
+	return &out, nil
 }
 
 // ProjectRemove 注销一条项目位置。

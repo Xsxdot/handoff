@@ -88,6 +88,11 @@ func (s *Server) buildLocalTree(ctx context.Context) (proto.ProjectTreeResp, err
 func (s *Server) handleProjectTree(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	s.log.Info("项目树请求", "scope", scope, "remote_addr", r.RemoteAddr)
+	if scope == "all" && !isForwarded(r) {
+		// 带转发头时降级为仅本机（防环优先于范围）
+		writeJSON(w, http.StatusOK, s.buildTreeAll(r.Context()))
+		return
+	}
 	tree, err := s.buildLocalTree(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
