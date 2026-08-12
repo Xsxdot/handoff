@@ -133,7 +133,7 @@ describe('registerFromForm', () => {
     )
   })
 
-  it('本机失败时不请求远程，只回一条本机结果且透传 agentd 原文', async () => {
+  it('本机失败时不请求远程，但补一条 skipped 的远程行（让用户看到它没被漏掉）', async () => {
     const spy = vi.spyOn(client, 'createProject').mockRejectedValue(new ApiError(400, '路径不存在'))
     const out = await registerFromForm({
       name: '',
@@ -143,9 +143,24 @@ describe('registerFromForm', () => {
       remotePath: '',
     })
     expect(spy).toHaveBeenCalledTimes(1)
-    expect(out).toHaveLength(1)
-    expect(out[0].ok).toBe(false)
+    expect(out).toHaveLength(2)
+    expect(out[0]).toMatchObject({ machine: '', ok: false })
     expect(out[0].error).toContain('路径不存在')
+    // skipped 与 ok:false 是两回事：一个是没发起，一个是发起了但失败。
+    // 结果页要靠这个区分才能算出正确的文案。
+    expect(out[1]).toMatchObject({ machine: 'devbox', ok: false, skipped: true })
+  })
+
+  it('没勾远程时本机失败只回一条，不无中生有一行 skipped', async () => {
+    vi.spyOn(client, 'createProject').mockRejectedValue(new ApiError(400, '路径不存在'))
+    const out = await registerFromForm({
+      name: '',
+      localPath: '/nope',
+      gitUrl: '',
+      remoteMachine: null,
+      remotePath: '',
+    })
+    expect(out).toHaveLength(1)
   })
 
   it('本机请求带非空 name / gitUrl，空字段不进 body', async () => {

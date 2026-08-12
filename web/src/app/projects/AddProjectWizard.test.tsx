@@ -183,24 +183,48 @@ describe('AddProjectWizard', () => {
   it('本机失败时远程行标为未尝试；gitUrl 为空则远程重试禁用并提示', async () => {
     vi.mocked(register.registerFromForm).mockResolvedValue([
       { machine: '', ok: false, error: '路径不存在' },
+      { machine: 'devbox', ok: false, error: '', skipped: true },
     ])
     render(<AddProjectWizard open machines={[localMachine, devbox]} {...cb()} />)
     fillLocalPath('/nope')
     enableRemote('devbox')
     fireEvent.click(screen.getByRole('button', { name: '提交' }))
-    await waitFor(() => expect(screen.getByText(/未尝试/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/未尝试：本机登记失败/)).toBeInTheDocument())
     expect(screen.getByText(/先修好本机.*Git 地址/)).toBeInTheDocument()
     const retries = screen.getAllByRole('button', { name: '重试' })
-    // 本机行可重试；远程行在本机没成功且没填 Git 地址时禁用
     expect(retries).toHaveLength(2)
     expect(retries[0]).toBeEnabled()
     expect(retries[1]).toBeDisabled()
   })
 
-  it('本机失败但填了 gitUrl 时，远程可用表单 gitUrl + name 单独重试', async () => {
-    // 本 task 里编排还只回一条本机结果，「未尝试」那行仍由组件现编（Task 5 才下沉）
+  it('本机重试成功后，远程「未尝试」行的文案跟着变，不再说本机失败', async () => {
     vi.mocked(register.registerFromForm).mockResolvedValue([
       { machine: '', ok: false, error: '路径不存在' },
+      { machine: 'devbox', ok: false, error: '', skipped: true },
+    ])
+    vi.mocked(register.registerAll).mockResolvedValue([
+      { machine: '', ok: true, error: '', result: localOk() },
+    ])
+    render(<AddProjectWizard open machines={[localMachine, devbox]} {...cb()} />)
+    fillLocalPath('/Users/me/h')
+    enableRemote('devbox')
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() => expect(screen.getByText(/未尝试：本机登记失败/)).toBeInTheDocument())
+
+    // 重试本机并成功
+    fireEvent.click(screen.getAllByRole('button', { name: '重试' })[0])
+    await waitFor(() => expect(screen.getByText('已登记')).toBeInTheDocument())
+    // 远程那行的含义已经变了：本机好了，现在只差点一下远程
+    expect(screen.getByText(/未尝试：本机已登记/)).toBeInTheDocument()
+    expect(screen.queryByText(/未尝试：本机登记失败/)).toBeNull()
+    expect(screen.getByRole('button', { name: '重试' })).toBeEnabled()
+  })
+
+  it('本机失败但填了 gitUrl 时，远程可用表单 gitUrl + name 单独重试', async () => {
+    // 编排在「本机失败 + 勾了远程」时回两条：本机失败行 + 一条 skipped 的远程行
+    vi.mocked(register.registerFromForm).mockResolvedValue([
+      { machine: '', ok: false, error: '路径不存在' },
+      { machine: 'devbox', ok: false, error: '', skipped: true },
     ])
     vi.mocked(register.registerAll).mockResolvedValue([
       { machine: 'devbox', ok: true, error: '', result: localOk() },

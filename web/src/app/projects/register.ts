@@ -33,11 +33,14 @@ export interface RegisterFormInput {
 }
 
 // RegisterOutcome 是单个位置的登记结果；error 透传 agentd 原文（带解法）。
+// skipped=true 表示这个位置本次**根本没发起请求**（本机失败时编排不打远程），
+// 与 ok=false（发起了但被拒）是两回事——结果页要靠它算出正确的文案与可重试性。
 export interface RegisterOutcome {
   machine: string
   ok: boolean
   error: string
   result?: CreateProjectResp
+  skipped?: boolean
 }
 
 // registerFromForm 执行「本机优先」编排：先打本机；本机失败或没勾远程则只回
@@ -52,7 +55,14 @@ export async function registerFromForm(input: RegisterFormInput): Promise<Regist
     path: input.localPath,
   })
   const outcomes: RegisterOutcome[] = [local]
-  if (!local.ok || !input.remoteMachine) return outcomes
+  if (!input.remoteMachine) return outcomes
+  if (!local.ok) {
+    // 本机失败就不打远程（远程要用本机响应里的权威 origin/name）。但仍然回一行，
+    // 否则用户在结果页看不到远程，会以为自己勾的那台机器被漏掉了。文案由结果页
+    // 按当时的状态算——本机随后重试成功的话，这行的含义就变了。
+    outcomes.push({ machine: input.remoteMachine, ok: false, error: '', skipped: true })
+    return outcomes
+  }
 
   const remote = await settleOne({
     machine: input.remoteMachine,

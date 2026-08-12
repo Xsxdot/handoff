@@ -9,9 +9,10 @@
 //   - 不做浏览器侧 path 探测：path 是否存在、是不是仓，只有目标机的 agentd 知道；
 //     path 不存在且无 URL 的错误交给后端 400 原文透传
 //
-// 提交：registerFromForm（本机优先编排），任一成功即调 onDone 让父级 refresh 项目树；
-// 结果面板逐位置显示，失败的可「重试」。远程重试用本机成功结果的 origin/name；本机
-// 也失败时仅当表单填了 Git 地址才允许远程单独重试，否则禁用并提示先修本机。
+// 提交：registerFromForm（本机优先编排，含「本机失败 → 远程未尝试」那一行）；任一
+// 成功即调 onDone 让父级 refresh 项目树；结果面板逐位置显示，失败的可「重试」。远程
+// 重试用本机成功结果的 origin/name；本机也失败时仅当表单填了 Git 地址才允许远程单独
+// 重试，否则禁用并提示先修本机。
 import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 import type { Machine } from '../../api/types'
@@ -76,6 +77,7 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
 
   const submit = async () => {
     setSubmitting(true)
+    // 「本机失败 → 远程未尝试」那一行由 registerFromForm 产出（编排知识只有一份）。
     const result = await registerFromForm({
       name,
       localPath,
@@ -83,13 +85,7 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
       remoteMachine: remoteEnabled ? remoteMachine : null,
       remotePath,
     })
-    // 本机失败时编排不会打远程；勾了远程就补一条「未尝试」的远程行，让用户看到
-    // 远程没被漏掉，且（填了 Git 地址时）可跳过本机单独重试远程。
-    const rows =
-      !result[0].ok && remoteEnabled && remoteMachine
-        ? [...result, { machine: remoteMachine, ok: false, error: '本机登记失败，未尝试远程' }]
-        : result
-    setOutcomes(rows)
+    setOutcomes(result)
     setSubmitting(false)
     setView('results')
     if (result.some((o) => o.ok)) onDone()
@@ -235,6 +231,13 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
             <p className="text-sm text-muted-foreground">登记结果（逐位置）：</p>
             {outcomes.map((o) => {
               const retryDisabled = o.machine !== '' && !canRetryRemote
+              // skipped 行的文案按**当前**状态算，不用提交那一刻烤死的串：
+              // 本机随后重试成功时，"未尝试"的原因就从"本机失败"变成"只差点一下"。
+              const message = o.skipped
+                ? localSucceeded
+                  ? '未尝试：本机已登记，点重试即可登记远程'
+                  : '未尝试：本机登记失败'
+                : o.error
               return (
                 <div key={o.machine} className="flex items-center gap-2 rounded-md border p-3 text-sm">
                   <span className="font-medium">{machineLabel(o.machine)}</span>
@@ -243,7 +246,7 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
                   ) : (
                     <>
                       <span className="min-w-0 flex-1 break-words text-destructive">
-                        {o.error}
+                        {message}
                         {retryDisabled && (
                           <span className="block text-[11px] text-muted-foreground">
                             先修好本机，或在本机区块填 Git 地址后再重试远程
