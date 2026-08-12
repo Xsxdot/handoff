@@ -1123,7 +1123,7 @@ func TestProjectAPIRejectsNonRepoWithReadableReason(t *testing.T) {
 }
 
 // TestProjectAPICloneIntoExistingPathConflicts 验证克隆落点已存在 → 409
-//（不给 path 让 agentd 自己 clone，落点 repo_root/<名字> 已被占住）。
+// （不给 path 让 agentd 自己 clone，落点 repo_root/<名字> 已被占住）。
 func TestProjectAPICloneIntoExistingPathConflicts(t *testing.T) {
 	root := t.TempDir()
 	env := newIntegEnvCfg(t, nil, func(cfg *config.Config) { cfg.RepoRoot = root })
@@ -1161,7 +1161,7 @@ func TestDispatchResolvesRegisteredShortName(t *testing.T) {
 }
 
 // TestDispatchResolvesProjectID 验证按 project_id 派发落到登记的路径上
-//（B62 的主路径：CLI 从 cwd 的 origin 离线算出 project_id 上送）。
+// （B62 的主路径：CLI 从 cwd 的 origin 离线算出 project_id 上送）。
 func TestDispatchResolvesProjectID(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)

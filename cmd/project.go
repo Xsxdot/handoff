@@ -47,7 +47,7 @@ func localOriginURL() string {
 //   - 错误：cwd 不是 git 仓库时返回可读提示
 //
 // 为什么归并：位置表一个项目只允许一行，而本仓库有十几个 linked worktree
-//（spec §5）。归并算法与 agentd 侧共用同一个实现，绝不在这里复制一份。
+// （spec §5）。归并算法与 agentd 侧共用同一个实现，绝不在这里复制一份。
 func localProjectRoot(ctx context.Context) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {

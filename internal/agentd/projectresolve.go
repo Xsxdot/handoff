@@ -31,7 +31,7 @@ import (
 // 也要能被 CLI 用 errors 判别，两者都靠这个哨兵。
 //
 // 注意：本机 CLI 按报文里的「项目未登记」四字判别并触发自动补登记
-//（cmd/dispatch.go 的 projectNotRegisteredMarker）。**改这里的文案要同步改那边。**
+// （cmd/dispatch.go 的 projectNotRegisteredMarker）。**改这里的文案要同步改那边。**
 var ErrProjectNotRegistered = errors.New("项目未登记")
 
 // locationLines 把位置表压成「名字 → 路径」的一行串，供拒绝报文使用。
