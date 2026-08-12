@@ -1,0 +1,11 @@
+{
+  "seq": 42,
+  "ts": "2026-08-11T10:30:00+08:00",
+  "turn": 2,
+  "type": "tool_result",
+  "part": "toolu_01ABCdefGHIjklMNOpqrs",
+  "output": "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
+  "status": "error",
+  "truncated": true,
+  "bytes": 193422
+}
