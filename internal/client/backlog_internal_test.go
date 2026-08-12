@@ -171,7 +171,7 @@ func TestReconcileBacklogEmitsAndAdvancesCursor(t *testing.T) {
 	if got == nil || got.Missed != 2 || got.Stale != 1 {
 		t.Fatalf("摘要 = %+v, want missed=2 stale=1", got)
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".handoff", "cursor-tk"))
+	b, err := os.ReadFile(filepath.Join(home, ".handoff", "cursors", cursorNamespace(ts.URL), "tk"))
 	if err != nil {
 		t.Fatalf("读 cursor: %v", err)
 	}

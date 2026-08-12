@@ -24,7 +24,7 @@ import (
 // pushEvents 起一个把给定事件依次推给客户端的 WS 端点，推完按 after 收尾。
 func pushEvents(t *testing.T, evs []proto.Event, after func(*websocket.Conn)) *httptest.Server {
 	t.Helper()
-	// cursor 落在 $HOME/.handoff/cursor-<task>：不重定向就会污染真实主目录，
+	// cursor 落在 $HOME/.handoff/cursors/<agentd>/<task>：不重定向就会污染真实主目录，
 	// 且上一轮遗留的 cursor 会让本轮的 from_seq 起点不确定
 	t.Setenv("HOME", t.TempDir())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
