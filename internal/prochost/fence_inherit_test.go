@@ -98,3 +98,47 @@ func TestFenceSurvivesSetsid(t *testing.T) {
 		t.Fatalf("孙进程未真正脱离会话（pid=%d sid=%d），本用例不成立: %q", pid, sid, line)
 	}
 }
+
+// TestHelperFenceRaise 扮演被围住的 executor：装上围栏后试图把限值抬回装之前。
+func TestHelperFenceRaise(t *testing.T) {
+	if os.Getenv(fenceHelperEnv) != "raise" {
+		t.Skip("非 helper 调用")
+	}
+	want, _ := strconv.Atoi(os.Getenv("HANDOFF_FENCE_VALUE"))
+	orig, _ := strconv.Atoi(os.Getenv("HANDOFF_ORIG_LIMIT"))
+	if err := setNprocLimit(want); err != nil {
+		os.Stdout.WriteString("SETFAIL " + err.Error() + "\n")
+		os.Exit(0)
+	}
+	// 抬回装之前的软硬限：硬限只能降不能升（升需特权），正确实现下必然失败
+	if err := setNprocLimit(orig); err != nil {
+		os.Stdout.WriteString("RAISE_DENIED\n")
+	} else {
+		os.Stdout.WriteString("RAISE_OK\n")
+	}
+	os.Exit(0)
+}
+
+// 围栏必须是单向门：被围住的进程不能把限值抬回装之前。只压软限的话，
+// executor 一句 setrlimit 就能拆掉围栏，整个方案形同虚设。
+// 为什么抬回目标是原值 cur 而不是 2 倍：能不能回到「装之前」才是单向门要证的
+// 事，抬到一个随便的大数只是顺带。want 取 cur-1（与 TestFenceSurvivesSetsid
+// 同款），确保与环境值可区分、用例不恒真。
+func TestFenceCannotBeRaisedBack(t *testing.T) {
+	cur, err := getNprocLimit()
+	if err != nil || cur < 64 {
+		t.Skip("当前软限太小或读不到，无法构造可区分的围栏值")
+	}
+	want := cur - 1
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperFenceRaise")
+	cmd.Env = append(os.Environ(), fenceHelperEnv+"=raise",
+		"HANDOFF_FENCE_VALUE="+strconv.Itoa(want),
+		"HANDOFF_ORIG_LIMIT="+strconv.Itoa(cur))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("helper 执行失败: %v (输出 %q)", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "RAISE_DENIED" {
+		t.Fatalf("围栏应拆不掉，helper 报告 %q", got)
+	}
+}
