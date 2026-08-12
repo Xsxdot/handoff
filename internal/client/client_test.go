@@ -2,7 +2,7 @@
 //
 // 关键约定：
 //   - 全部测试用 t.Setenv("HOME", t.TempDir()) 重定向用户主目录，cursor 文件落在
-//     $HOME/.handoff/cursor-<task>，断言与清理都在测试沙箱内完成，不污染真实主目录
+//     $HOME/.handoff/cursors/<agentd>/<task>，断言与清理都在测试沙箱内完成，不污染真实主目录
 //   - WaitEvent 的断线重连测试需要「同地址重启」：用 net.Listen("tcp","127.0.0.1:0")
 //     先占一个固定端口，关闭后用同一地址重新 Listen
 package client_test
@@ -75,9 +75,26 @@ func (e *newTestEnv) createPendingTask(t *testing.T) string {
 	return id
 }
 
-// cursorPath 返回测试期望的 cursor 文件路径（与 client 实现同规则：$HOME/.handoff/cursor-<task>）。
+// cursorPath 返回测试期望的 cursor 文件路径（与 client 实现同规则：
+// $HOME/.handoff/cursors/<agentd>/<task>，<agentd> 是 host:port 折成的路径段）。
 func (e *newTestEnv) cursorPath(taskID string) string {
-	return filepath.Join(e.home, ".handoff", "cursor-"+taskID)
+	return filepath.Join(e.home, ".handoff", "cursors", cursorNS(e.ts.URL), taskID)
+}
+
+// cursorNS 把 agentd 地址折成路径段（与 client 内部 cursorNamespace 同规则，
+// 外部测试包无法访问未导出函数，故在此复刻一份）。
+func cursorNS(addr string) string {
+	u := strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
+	var b strings.Builder
+	for _, r := range u {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // readCursor 读取 cursor 文件内容；不存在时返回空串。

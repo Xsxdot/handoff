@@ -64,7 +64,7 @@ func TestResourcePressureRearmsAfterRecovery(t *testing.T) {
 func TestFailedPayloadCarriesUsageSnapshot(t *testing.T) {
 	restore := fakeAdmission(prochost.Admission{Used: 2390, Limit: 2400, Known: true})
 	defer restore()
-	p := newFailedPayload("executor 进程消失")
+	p := newFailedPayload("executor 进程消失", "", "")
 	if p.FailReason != "executor 进程消失" {
 		t.Fatalf("原因不该被改写，得到 %q", p.FailReason)
 	}
@@ -78,7 +78,7 @@ func TestFailedPayloadCarriesUsageSnapshot(t *testing.T) {
 func TestFailedPayloadOmitsUnknownUsage(t *testing.T) {
 	restore := fakeAdmission(prochost.Admission{})
 	defer restore()
-	if p := newFailedPayload("x"); p.ProcUsage != nil {
+	if p := newFailedPayload("x", "", ""); p.ProcUsage != nil {
 		t.Fatalf("读数未知时不该附快照，得到 %+v", p.ProcUsage)
 	}
 }

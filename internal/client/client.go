@@ -3,8 +3,8 @@
 //
 // 职责：
 //   - 封装 agentd 的全部 HTTP API 与 WS 事件流的调用（Bearer token 鉴权）
-//   - WaitEvent 按 task 自存 cursor（~/.handoff/cursor-<task>）实现「事件不丢不重」：
-//     重连时携带最后交付事件的 seq，从服务端补拉断线期间产生的事件
+//   - WaitEvent 按 task 自存 cursor（<游标根>/cursors/<agentd>/<task>，见 cursordir.go）
+//     实现「事件不丢不重」：重连时携带最后交付事件的 seq，从服务端补拉断线期间产生的事件
 //   - 断线指数退避重连（1s→2s→…→60s），覆盖本机 agentd 重启、网络抖动等场景
 //
 // 边界：
@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -153,7 +154,8 @@ type AttachInfo struct {
 
 // Client 是 agentd 的 HTTP/WS 客户端，持有服务地址与 Bearer 令牌。
 //
-// 并发安全：字段构造后只读，可被多个 goroutine 同时使用。
+// 并发安全：baseURL/token/hc 与 WS 节奏字段构造后只读；游标根由
+// cursorRootOnce 保护，首次调用解析、后续读缓存，可被多个 goroutine 同时使用。
 type Client struct {
 	baseURL string
 	token   string
@@ -163,6 +165,11 @@ type Client struct {
 	wsInitialBackoff time.Duration
 	wsMaxBackoff     time.Duration
 	wsStableAfter    time.Duration
+	// 游标根解析结果的缓存（见 cursordir.go）。缓存错误与缓存成功同等重要：
+	// 不缓存错误的话，两处都不可写时每写一次游标都要重跑两次文件系统探测。
+	cursorRootOnce sync.Once
+	cursorRoot     string
+	cursorRootErr  error
 }
 
 // New 创建 agentd 客户端。
@@ -765,7 +772,7 @@ func (c *Client) RenderStream(ctx context.Context, taskID string,
 // 无限重连，ctx 取消才退出。
 //
 // cursor 语义（事件不丢不重的根基）：
-//   - 每次调用开始时从 ~/.handoff/cursor-<task> 读取上次交付事件的 seq，
+//   - 每次调用开始时从 <游标根>/cursors/<agentd>/<task> 读取上次交付事件的 seq，
 //     连接 WS 时以 from_seq=cursor 补拉断线期间产生的事件
 //   - 返回首个可动作事件时把 cursor 原子写盘为该事件的 seq；被跳过的 progress
 //     事件不推进 cursor（下次调用会重新收到并再次跳过，重复跳过无副作用）
@@ -798,6 +805,11 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
 				// cursor 写失败不吞事件：先把事件交还用户（宁可下次重投，不可这次挂住）
 				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
+			}
+			// 任务归档后游标再无用处：立刻回收，不等 TTL。放在返回前而非
+			// 调用方，是因为两个消费端（wait / follow）都要这个行为
+			if ev.Type == proto.EventTypeArchived {
+				c.DropCursor(taskID)
 			}
 			return ev, nil
 		}
@@ -1080,6 +1092,11 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
 				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
 			}
+			// 任务归档后游标再无用处：立刻回收，不等 TTL。与 WaitEvent 同一条
+			// 规则，两个消费端的行为保持一致
+			if ev.Type == proto.EventTypeArchived {
+				c.DropCursor(taskID)
+			}
 			c.log().Info("follow 事件交付", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 			if err := onEvent(&ev); err != nil {
 				return err
@@ -1135,37 +1152,74 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 	}
 }
 
-// cursorPath 返回任务 cursor 文件路径（~/.handoff/cursor-<task>）。
+// cursorPath 返回任务 cursor 文件路径（<游标根>/<agentd 命名空间>/<taskID>）。
 //
 // 为什么放用户主目录而非配置 DataDir：cursor 是审核者侧的本地状态，
 // 与配置/数据库文件位置解耦；即使 DataDir 被移动，审核者已看过的进度也不重投。
-func cursorPath(taskID string) (string, error) {
-	home, err := os.UserHomeDir()
+// 该决策保留，cursordir.go 只是让这个根在不可写时可以降级。
+//
+// 为什么要 agentd 这一层：文件名只按 taskID 时，两台 agentd 上碰巧同 ID 的
+// 任务会共用一个游标文件，互相把对方的进度顶掉。
+func (c *Client) cursorPath(taskID string) (string, error) {
+	root, err := c.cursorRootDir()
 	if err != nil {
-		return "", fmt.Errorf("读取用户主目录: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".handoff", "cursor-"+taskID), nil
+	return filepath.Join(root, cursorNamespace(c.baseURL), taskID), nil
 }
 
-// readCursor 读取任务 cursor；文件不存在、内容非法或主目录不可用时返回 0（从头开始）。
+// readCursor 读取任务 cursor；任何读不出来的情形都返回 0（从头开始）。
 func (c *Client) readCursor(taskID string) int64 {
-	p, err := cursorPath(taskID)
+	seq, _ := c.readCursorWithDiag(taskID)
+	return seq
+}
+
+// readCursorWithDiag 是 readCursor 的可诊断变体。
+//
+// 返回：
+//   - seq: 游标值；读不出来时为 0
+//   - reported: 是否属于「游标存在但用不了」并已告警（供测试断言，生产不用）
+//
+// 为什么要把「文件不存在」与其它错误分开：文件不存在是每个任务第一次 wait 的
+// 常态，报它等于每次都喊狼来了；而权限被拒与内容损坏意味着游标存在却用不了，
+// 后果是静默从 0 重放全部历史事件——审核者会看到一串早就处理过的旧事件，
+// 却没有任何一条信息指向真正的原因。这是 B75 现场的成因。
+func (c *Client) readCursorWithDiag(taskID string) (seq int64, reported bool) {
+	p, err := c.cursorPath(taskID)
 	if err != nil {
-		c.log().Debug("cursor 路径不可用，从头开始", "task", taskID, "cause", err)
-		return 0
+		c.log().Warn("游标路径不可用，本次从头开始", "task", taskID, "cause", err)
+		return 0, true
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		c.log().Debug("cursor 文件不存在，从头开始", "task", taskID, "path", p)
-		return 0
+		if os.IsNotExist(err) {
+			c.log().Debug("cursor 文件不存在，从头开始", "task", taskID, "path", p)
+			return 0, false
+		}
+		c.log().Warn("cursor 存在但读不了，本次将从头重放事件",
+			"task", taskID, "path", p, "cause", err)
+		return 0, true
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 	if err != nil || n < 0 {
-		c.log().Debug("cursor 内容非法，从头开始", "task", taskID, "path", p, "content", string(b))
-		return 0
+		c.log().Warn("cursor 内容损坏，本次将从头重放事件",
+			"task", taskID, "path", p, "content", turnTailForLog(string(b)))
+		return 0, true
 	}
 	c.log().Debug("cursor 读取", "task", taskID, "path", p, "seq", n)
-	return n
+	return n, false
+}
+
+// turnTailForLog 把可能很长的损坏内容截到可入日志的长度。
+//
+// 为什么截断：损坏的 cursor 文件可能是任意内容（磁盘故障写进了别的东西），
+// 原样入日志会把一行日志撑成几 MB。
+func turnTailForLog(s string) string {
+	const max = 64
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // writeCursor 把 seq 原子写入 cursor 文件（临时文件 + rename）。
@@ -1180,14 +1234,14 @@ func (c *Client) readCursor(taskID string) int64 {
 // 恰好读到即「读到一半的 tmp」。CreateTemp 同目录生成 O_EXCL 唯一名，rename
 // 的始终是「自己写完整并关闭的文件」，并发读保证只看到完整旧值或完整新值。
 func (c *Client) writeCursor(taskID string, seq int64) error {
-	p, err := cursorPath(taskID)
+	p, err := c.cursorPath(taskID)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return fmt.Errorf("创建 cursor 目录: %w", err)
 	}
-	f, err := os.CreateTemp(filepath.Dir(p), "cursor-"+taskID+"-*.tmp")
+	f, err := os.CreateTemp(filepath.Dir(p), filepath.Base(p)+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("创建临时 cursor 文件: %w", err)
 	}
@@ -1208,37 +1262,4 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)
 	c.sweepStaleCursorTemps(filepath.Dir(p), taskID)
 	return nil
-}
-
-// cursorTempTTL 是 cursor 临时文件被判定为「遗留垃圾」的年龄阈值。
-//
-// 为什么按年龄而不是一律清空：同一任务可能有并发的 wait 进程正在写各自的
-// 临时文件，无差别删除会掐掉别人在途的 Rename。而任何一次正常写入都在毫秒级
-// 完成，1 小时的阈值把「在途」与「遗留」分得足够开。
-const cursorTempTTL = time.Hour
-
-// sweepStaleCursorTemps 清理该任务遗留的 cursor 临时文件。
-//
-// 为什么需要它：writeCursor 用 CreateTemp + Rename 保证原子写，进程若在两步
-// 之间被杀（Ctrl+C、机器重启、oom kill）就会留下一个 .tmp，而此后没有任何
-// 代码会再碰它——~/.handoff 里的 .tmp 只增不减。
-//
-// 清理失败一律只记 Debug：这是顺带的卫生工作，绝不能影响 cursor 写入的成败。
-func (c *Client) sweepStaleCursorTemps(dir, taskID string) {
-	matches, err := filepath.Glob(filepath.Join(dir, "cursor-"+taskID+"-*.tmp"))
-	if err != nil {
-		c.log().Debug("扫描遗留 cursor 临时文件失败", "task", taskID, "cause", err)
-		return
-	}
-	for _, m := range matches {
-		fi, err := os.Stat(m)
-		if err != nil || time.Since(fi.ModTime()) < cursorTempTTL {
-			continue // 取不到状态或还在途：交给下一次写入再看
-		}
-		if rerr := os.Remove(m); rerr != nil {
-			c.log().Debug("清理遗留 cursor 临时文件失败", "path", m, "cause", rerr)
-			continue
-		}
-		c.log().Debug("已清理遗留 cursor 临时文件", "task", taskID, "path", m)
-	}
 }

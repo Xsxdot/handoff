@@ -1,0 +1,748 @@
+data: {"id":"evt_ff6694bb7001kuEhi9EJt7WUli","type":"server.connected","properties":{}}
+
+data: {"id":"evt_ff6694ccf0015oHygrdA36zItL","type":"session.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"id":"ses_00996b4a1ffe0KsDSS9EahleNo","slug":"kind-harbor","projectID":"79b677ab66085c4abaa665216a1aebbaa9324397","directory":"/Users/xushixin/.handoff/worktrees/4226ed4d","path":"","title":"handoff","agent":"build","model":{"id":"deepseek-v4-flash","providerID":"opencode-go","variant":"default"},"version":"1.18.16","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1786545523550,"updated":1786545523918}}}}
+
+data: {"id":"evt_ff6694cd60019IlK7uhx3GpIZH","type":"message.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"id":"msg_ff6694ccd0011Hd7lhNcnehtrm","role":"user","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","time":{"created":1786545523918},"agent":"build","model":{"providerID":"opencode-go","modelID":"deepseek-v4-flash"}}}}
+
+data: {"id":"evt_ff6694cd7001xMHW4nc0kH2M21","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"type":"text","text":"你是 handoff 任务 4226ed4d-0e79-4d6d-ad17-bd8ad77ac8a4 的执行者，按下方实现计划执行。铁律：\n1. 提问纪律：任何需要人决策的问题，输出单行 JSON {\"ask\":\"<问题>\"}\n   然后结束本回合。审核者的回答会作为下一条消息发给你。\n   禁止自行假设，禁止用其它格式提问。\n2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），\n   然后输出单行 JSON：{\"branch\":\"<分支>\",\"commit\":\"<hash>\",\"summary\":\"<50字内摘要>\"}\n   作为本回合最后一行。\n3. 只在当前分支工作，不切分支、不改 git 配置。\n\n--- 实现计划 ---\n# 探针场景 S4：走原生提问通道\n\n这是一次协议行为观测，不是真实开发任务。请**严格**按下面做，不要发挥。\n\n1. **不要修改任何文件，不要提交。**\n2. 你需要人来裁决一个三选一。用你自己环境里的**提问工具/提问通道**\n   （不是输出 JSON，是调用工具）问出这个问题：\n\n   > 这个仓库的 hello world 应该放在 A) main.go B) 新建 hello.go C) 不加，三选一？\n\n3. 问完就结束本回合，等待回答。\n\n**硬性约束：不要用 `{\"ask\":...}` 这种 JSON 形式提问，必须走工具通道。\n如果你的环境没有提问工具，就直接说「本环境无原生提问通道」并结束回合。**\n\n","messageID":"msg_ff6694ccd0011Hd7lhNcnehtrm","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","id":"prt_ff6694cd50014Em7JHLT8Plqdu"},"time":1786545523927}}
+
+data: {"id":"evt_ff6694cd9001EvSyrNhi5FoOR7","type":"session.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"id":"ses_00996b4a1ffe0KsDSS9EahleNo","slug":"kind-harbor","projectID":"79b677ab66085c4abaa665216a1aebbaa9324397","directory":"/Users/xushixin/.handoff/worktrees/4226ed4d","path":"","title":"handoff","agent":"build","model":{"id":"deepseek-v4-flash","providerID":"opencode-go","variant":"default"},"version":"1.18.16","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1786545523550,"updated":1786545523929}}}}
+
+data: {"id":"evt_ff6694cdd001w7SPv4yM903oaQ","type":"session.status","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","status":{"type":"busy"}}}
+
+data: {"id":"evt_ff6694cdf001CikGCjXe2SCrJ2","type":"message.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"id":"msg_ff6694cdf001Ri5KzdWSEQkTp2","parentID":"msg_ff6694ccd0011Hd7lhNcnehtrm","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/Users/xushixin/.handoff/worktrees/4226ed4d","root":"/Users/xushixin/.handoff/worktrees/4226ed4d"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"deepseek-v4-flash","providerID":"opencode-go","time":{"created":1786545523935},"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo"}}}
+
+data: {"id":"evt_ff6694ea2001GO5fpDpP94173e","type":"session.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"id":"ses_00996b4a1ffe0KsDSS9EahleNo","slug":"kind-harbor","projectID":"79b677ab66085c4abaa665216a1aebbaa9324397","directory":"/Users/xushixin/.handoff/worktrees/4226ed4d","path":"","title":"handoff","agent":"build","model":{"id":"deepseek-v4-flash","providerID":"opencode-go","variant":"default"},"version":"1.18.16","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1786545523550,"updated":1786545524385}}}}
+
+data: {"id":"evt_ff6694ea30011b2fH6Yvgm2AaF","type":"session.diff","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","diff":[]}}
+
+data: {"id":"evt_ff6694ea5001lZOiiG4pnEpvwq","type":"message.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","info":{"role":"user","time":{"created":1786545523918},"agent":"build","model":{"providerID":"opencode-go","modelID":"deepseek-v4-flash"},"id":"msg_ff6694ccd0011Hd7lhNcnehtrm","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","summary":{"diffs":[]}}}}
+
+data: {"id":"evt_ff669519f0010rTfOzSNQ2FMOh","type":"plugin.added","properties":{"id":"core/config-reference"}}
+
+data: {"id":"evt_ff66951a0001DspWHd2ctfjDwH","type":"plugin.added","properties":{"id":"agent"}}
+
+data: {"id":"evt_ff66951a0002u1lpWU59Rtr4S8","type":"plugin.added","properties":{"id":"command"}}
+
+data: {"id":"evt_ff66951a0003fi9X37u1mzQexR","type":"plugin.added","properties":{"id":"skill"}}
+
+data: {"id":"evt_ff66951a1001lho67F9bUe717h","type":"plugin.added","properties":{"id":"models-dev"}}
+
+data: {"id":"evt_ff66951a10027AHTuhyzO0pdRS","type":"plugin.added","properties":{"id":"config-agent"}}
+
+data: {"id":"evt_ff66951a10030RnnrmlUcorC5r","type":"plugin.added","properties":{"id":"config-command"}}
+
+data: {"id":"evt_ff66951a2001ZyZFNKNqt83Rm5","type":"plugin.added","properties":{"id":"config-skill"}}
+
+data: {"id":"evt_ff66951a2002v7jjXeCQ8CcZ7q","type":"plugin.added","properties":{"id":"alibaba"}}
+
+data: {"id":"evt_ff66951a2003au4KEzUbwJHpqo","type":"plugin.added","properties":{"id":"amazon-bedrock"}}
+
+data: {"id":"evt_ff66951a3001My5KSI4LcU57GS","type":"plugin.added","properties":{"id":"anthropic"}}
+
+data: {"id":"evt_ff66951a3002GNE3a0woC03dm7","type":"plugin.added","properties":{"id":"azure-cognitive-services"}}
+
+data: {"id":"evt_ff669532d0015WShDxUs3X5qYv","type":"plugin.added","properties":{"id":"azure"}}
+
+data: {"id":"evt_ff669532e001YMXr2WbOKNRAo5","type":"plugin.added","properties":{"id":"cerebras"}}
+
+data: {"id":"evt_ff669532f001CS9TkExFsecPK1","type":"plugin.added","properties":{"id":"cloudflare-ai-gateway"}}
+
+data: {"id":"evt_ff66953300014L6ZHI0xel2lzT","type":"plugin.added","properties":{"id":"cloudflare-workers-ai"}}
+
+data: {"id":"evt_ff6695330002HeACFd0db4aV1A","type":"plugin.added","properties":{"id":"cohere"}}
+
+data: {"id":"evt_ff6695331001qg3CfU6eKfPmEn","type":"plugin.added","properties":{"id":"deepinfra"}}
+
+data: {"id":"evt_ff6695331002Pvl7Zs1HZflqfP","type":"plugin.added","properties":{"id":"gateway"}}
+
+data: {"id":"evt_ff6695331003YuovgwNs1Er1bA","type":"plugin.added","properties":{"id":"github-copilot"}}
+
+data: {"id":"evt_ff6695331004F0d5byYfdKiJj9","type":"plugin.added","properties":{"id":"gitlab"}}
+
+data: {"id":"evt_ff66953310058RbXiae20ee0u0","type":"plugin.added","properties":{"id":"google"}}
+
+data: {"id":"evt_ff6695332001RZtsXGCQ3HLgFk","type":"plugin.added","properties":{"id":"google-vertex-anthropic"}}
+
+data: {"id":"evt_ff6695332002IZ0D2xSw7fRFfc","type":"plugin.added","properties":{"id":"google-vertex"}}
+
+data: {"id":"evt_ff669534500129rHerHNEMII5B","type":"plugin.added","properties":{"id":"groq"}}
+
+data: {"id":"evt_ff6695346001gGXus7hyhgHXr4","type":"plugin.added","properties":{"id":"kilo"}}
+
+data: {"id":"evt_ff66953460021aiSJaD4EV9zUu","type":"plugin.added","properties":{"id":"llmgateway"}}
+
+data: {"id":"evt_ff6695346003sNanbCA2RghStL","type":"plugin.added","properties":{"id":"mistral"}}
+
+data: {"id":"evt_ff6695346004HuFfnios8iGL8U","type":"plugin.added","properties":{"id":"nvidia"}}
+
+data: {"id":"evt_ff6695348001Xf0v3Vxc9E2Z22","type":"plugin.added","properties":{"id":"opencode"}}
+
+data: {"id":"evt_ff6695349001BNiBJrx4XNhLTc","type":"plugin.added","properties":{"id":"snowflake-cortex"}}
+
+data: {"id":"evt_ff6695349002cQQwHp5fam5FqD","type":"plugin.added","properties":{"id":"openai-compatible"}}
+
+data: {"id":"evt_ff669534a001mJlwZtRfGVWOtj","type":"plugin.added","properties":{"id":"openai"}}
+
+data: {"id":"evt_ff669534a002HsX71GvfZFbGMi","type":"plugin.added","properties":{"id":"openrouter"}}
+
+data: {"id":"evt_ff669534a003B0bgPwIXVAiJrv","type":"plugin.added","properties":{"id":"perplexity"}}
+
+data: {"id":"evt_ff669534b001STKZ70a7q3Ylhf","type":"plugin.added","properties":{"id":"sap-ai-core"}}
+
+data: {"id":"evt_ff66953bb001c8FQYaY1epysPt","type":"catalog.updated","properties":{}}
+
+data: {"id":"evt_ff66953bb0028GpMJF6zWkBPTW","type":"plugin.added","properties":{"id":"togetherai"}}
+
+data: {"id":"evt_ff66953bc00138fb6KwbS0WeGO","type":"plugin.added","properties":{"id":"vercel"}}
+
+data: {"id":"evt_ff66953bc002uiqv8y4iytewCu","type":"plugin.added","properties":{"id":"venice"}}
+
+data: {"id":"evt_ff66953bc003rb5d8BlGzK0vCg","type":"plugin.added","properties":{"id":"xai"}}
+
+data: {"id":"evt_ff66953bc004Ul0F0ip5GpSQO7","type":"plugin.added","properties":{"id":"zenmux"}}
+
+data: {"id":"evt_ff66953bd001diL6uwPHfBRCdm","type":"plugin.added","properties":{"id":"dynamic-provider"}}
+
+data: {"id":"evt_ff66953be001qp5j4JYQ0iDWnu","type":"plugin.added","properties":{"id":"config-plugin"}}
+
+data: {"id":"evt_ff66953be002g5T3rtw7j5NGZZ","type":"plugin.added","properties":{"id":"config-provider"}}
+
+data: {"id":"evt_ff66953bf001BycTaS1oBi6Gsj","type":"plugin.added","properties":{"id":"variant"}}
+
+data: {"id":"evt_ff66953bf002D6LeTBSrjPYNk7","type":"reference.updated","properties":{}}
+
+data: {"id":"evt_ff66953d50013Ai5Ygxkt7nbb2","type":"integration.updated","properties":{}}
+
+data: {"id":"evt_ff6695415001K8AHLmnoAmd5jy","type":"catalog.updated","properties":{}}
+
+data: {"id":"evt_ff669543d001CFrprB2ovVV9Hv","type":"project.directories.updated","properties":{"projectID":"79b677ab66085c4abaa665216a1aebbaa9324397"}}
+
+data: {"id":"evt_ff6695474001N6keMo52jC0n2N","type":"session.status","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","status":{"type":"busy"}}}
+
+data: {"id":"evt_ff6695cf8001rgb2ejoXRvBars","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"id":"prt_ff6695cf8001kneQQVknUcs5g9","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","snapshot":"47d31966870f4709b45578b4b3aad56489c1fc70","type":"step-start"},"time":1786545528056}}
+
+data: {"id":"evt_ff6696169001OlFUvQbkPPXroW","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"id":"prt_ff6696167001AbYZNhsjwGoASG","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","type":"reasoning","text":"","time":{"start":1786545529191}},"time":1786545529193}}
+
+data: {"id":"evt_ff6696182001Ypvg3rkReicnuu","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Let"}}
+
+data: {"id":"evt_ff66961b90014HpdtmLzuCVvhg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" me"}}
+
+data: {"id":"evt_ff66961c6001hYQMPwlRFEIQFN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" understand"}}
+
+data: {"id":"evt_ff66961c8001m1dX6MaP6G5aKw","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66961c9001Z0ZVVoyrTWjaU7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" situation"}}
+
+data: {"id":"evt_ff66961cd001kqBmUxyzFQrTtC","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66961cd002rnPuIZfJ0D0OBQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" I"}}
+
+data: {"id":"evt_ff66961ea001N5rCiYxOh9avvE","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'m"}}
+
+data: {"id":"evt_ff66961ea002b7IrcGuaAtZVDx","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" dispatched"}}
+
+data: {"id":"evt_ff66961ea003w2lpbs45eD7U4c","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" as"}}
+
+data: {"id":"evt_ff66961ea004wUsrsgFb6JuRqN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" an"}}
+
+data: {"id":"evt_ff66961f3001xt1vscLNX2DnEj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" executor"}}
+
+data: {"id":"evt_ff66961f4001bCo9xLNhaZYF3D","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" for"}}
+
+data: {"id":"evt_ff669620f001eQmh6cz3mjUf6l","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff6696210001V7jVh06kG1WZDc","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" hand"}}
+
+data: {"id":"evt_ff6696211001Q4RRop7jDMnrBB","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"off"}}
+
+data: {"id":"evt_ff6696213001CPIt15W871hXj2","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" task"}}
+
+data: {"id":"evt_ff6696213002ZC8ajmuqJD43w6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696228001Kmma93jgvcGDo9","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" The"}}
+
+data: {"id":"evt_ff6696228002k7qxtq7Cety3F5","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" task"}}
+
+data: {"id":"evt_ff6696229001H6gw7NI8W3uDDI","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" is"}}
+
+data: {"id":"evt_ff66962290026SuAfFBJu3PO3z","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff6696238001s9r7j0bzpKSTag","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" protocol"}}
+
+data: {"id":"evt_ff6696239001Ih5tnMxrAlyVZW","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" behavior"}}
+
+data: {"id":"evt_ff6696251001b6VpF5ZIqt4yGQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" observation"}}
+
+data: {"id":"evt_ff6696251002M61ARHWRmZJcDE","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ("}}
+
+data: {"id":"evt_ff6696265001qgAbZxuBuhy6RB","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"探"}}
+
+data: {"id":"evt_ff6696280001kFH9Bzab4W6quv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"针"}}
+
+data: {"id":"evt_ff6696280002d9bfhvUh52NhZJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"场景"}}
+
+data: {"id":"evt_ff66962980014axn5YvOSDpNKN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" S"}}
+
+data: {"id":"evt_ff6696299001vkG1MJaeyjkjBg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"4"}}
+
+data: {"id":"evt_ff669629a0010WjmBhKu90JFmW","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")."}}
+
+data: {"id":"evt_ff669629a002iJkTS3x78sU3im","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" The"}}
+
+data: {"id":"evt_ff66962bd001kOU9k1B4qWk2vP","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" plan"}}
+
+data: {"id":"evt_ff66962dc001g66Cwb6aKw1Eyv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" says"}}
+
+data: {"id":"evt_ff66962dd001rHBNKqr4H37YzZ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":":\n\n"}}
+
+data: {"id":"evt_ff66962dd00237ByIjdPg9Z0Id","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"1"}}
+
+data: {"id":"evt_ff66962dd003tUTf96Fufh54DF","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66962dd004zp4fdELd4CKlbk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" Don"}}
+
+data: {"id":"evt_ff66962e30017Mt2IvnXuplCOo","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'t"}}
+
+data: {"id":"evt_ff66962e3002TDyoTy477HXsod","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" modify"}}
+
+data: {"id":"evt_ff66962e4001RhlaqoXdFqrr4x","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" any"}}
+
+data: {"id":"evt_ff66962e8001V1qxloS7spsNEf","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" files"}}
+
+data: {"id":"evt_ff66962e8002419zfLgAPFphxK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":","}}
+
+data: {"id":"evt_ff66962e8003Jae4cyiqChyrQJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" don"}}
+
+data: {"id":"evt_ff66962fb001wBGldPxNGPfa4s","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'t"}}
+
+data: {"id":"evt_ff66962ff0012ZDAWeAWgI9opr","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" commit"}}
+
+data: {"id":"evt_ff66963000016IQ6GoIv1kgcD6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n"}}
+
+data: {"id":"evt_ff6696300002zUtJGk9VZzijJH","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"2"}}
+
+data: {"id":"evt_ff6696301001IY68HStNEIvF4M","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696301002Jolqc1kK5Azdi1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" Use"}}
+
+data: {"id":"evt_ff6696324001vikRnV3jBlWeaC","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff6696325001gnb78S5lz43UIa","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" native"}}
+
+data: {"id":"evt_ff669633f001TZYzdw7ii9H5D1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff6696344001aNVa0u5G3o7Kli","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff6696344002g7ocoK2pU1Gp3d","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"/ch"}}
+
+data: {"id":"evt_ff669635b001Ho7nBTbmQGIrLN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"annel"}}
+
+data: {"id":"evt_ff669635b002Ma66gg9Y836si1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" in"}}
+
+data: {"id":"evt_ff6696369001kJt2VscXUa2YjK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" my"}}
+
+data: {"id":"evt_ff66963690020Pnll2QmfDgUmh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" environment"}}
+
+data: {"id":"evt_ff6696369003MI4W9qkwtMoWuD","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ("}}
+
+data: {"id":"evt_ff66964870012it0mxUXCRbkwp","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"not"}}
+
+data: {"id":"evt_ff6696487002jkrtSo5aT4i5Ml","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" JSON"}}
+
+data: {"id":"evt_ff66964870030MzLgABIIPB5gH","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" output"}}
+
+data: {"id":"evt_ff6696487004TllIRVL9tM9Cmj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff6696487005w3m7hZdl2rsLZL","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff6696488001uVwvKU2BDUC8G0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ask"}}
+
+data: {"id":"evt_ff6696488002orsEx3YIoJgi6v","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff6696488003XDqqCpmEZh97aJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" three"}}
+
+data: {"id":"evt_ff6696488004HsubY2saeykQ4a","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-choice"}}
+
+data: {"id":"evt_ff66964880051g8gOgzXuprOqo","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff6696488006EvFxCjIVc1T65b","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n"}}
+
+data: {"id":"evt_ff6696488007K56IscA3O5zNMx","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"3"}}
+
+data: {"id":"evt_ff6696489001UT8BTrhWRdYcKz","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696489002RcTBF2eWkeRPXN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" After"}}
+
+data: {"id":"evt_ff6696489003y1mVgmkL2j6llk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" asking"}}
+
+data: {"id":"evt_ff6696489004svZk4EH6YYOeT2","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":","}}
+
+data: {"id":"evt_ff66964bc0017Lnxn5ssmeKTW0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" end"}}
+
+data: {"id":"evt_ff66964bd001KKqsVz7YejSCnH","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" this"}}
+
+data: {"id":"evt_ff66964be001AwlTdoXfPSJ4iy","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" turn"}}
+
+data: {"id":"evt_ff66964be002F0BK9aASCbKQdY","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" and"}}
+
+data: {"id":"evt_ff66964be003Trej37CWGk6Ekx","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" wait"}}
+
+data: {"id":"evt_ff66964bf001EXijUEBntzeplX","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n\n"}}
+
+data: {"id":"evt_ff66964bf002KAJBBfSjdohUF5","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Hard"}}
+
+data: {"id":"evt_ff66964bf003yZAJHGBsEj6Pua","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" constraint"}}
+
+data: {"id":"evt_ff66964bf0042MCH6Wfr5wQ7KM","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":":"}}
+
+data: {"id":"evt_ff66964c00013vl3eXhwJDjM4Q","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" Don"}}
+
+data: {"id":"evt_ff66964c0002tkB7TTpBK2tssh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'t"}}
+
+data: {"id":"evt_ff66964c0003JwVsvkvAmZHokp","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" use"}}
+
+data: {"id":"evt_ff66964c1001looDHHoya2VEx4","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" `"}}
+
+data: {"id":"evt_ff66964c1002LojBN0kTxOk2n3","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"{\""}}
+
+data: {"id":"evt_ff66964c2001jfmIuiQccXwPzd","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"ask"}}
+
+data: {"id":"evt_ff66964c3001YxnSgkHvapt7gk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\":"}}
+
+data: {"id":"evt_ff66964c3002DAEp3FGh4RLj43","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"..."}}
+
+data: {"id":"evt_ff66964ca001pGJkonS387TQlk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"}`"}}
+
+data: {"id":"evt_ff66964ca002BPmibFfkKXfJf2","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" JSON"}}
+
+data: {"id":"evt_ff66964cd001vwpeWlH0eXQUZ6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" form"}}
+
+data: {"id":"evt_ff66964ce0015qqk4qB1qjGvGe","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff66964ce002vpRvNSOzey3ejt","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ask"}}
+
+data: {"id":"evt_ff66964ce003YN3inpezC4wLDb","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66964cf001b4K1bBG1lKp78H","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" Must"}}
+
+data: {"id":"evt_ff66964cf0022kI0UZjA8DzFzh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" use"}}
+
+data: {"id":"evt_ff66964cf003FuEAXHSX2grTP5","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66964d0001kjj6g6yaiCXfVG","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff66964d00024ym6UkXIUa6JXg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" channel"}}
+
+data: {"id":"evt_ff66964d0003USBC3Rp0f8BAkK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66964d0004v9PBNrVYXa1uep","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" If"}}
+
+data: {"id":"evt_ff66964db001TSqetYkF2xd4FM","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" my"}}
+
+data: {"id":"evt_ff66964db002VjkV7kKpYdYu7X","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" environment"}}
+
+data: {"id":"evt_ff66964db003XafHmpS0ki4l6M","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" has"}}
+
+data: {"id":"evt_ff66964dc001cvxaW5tPB27d3S","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" no"}}
+
+data: {"id":"evt_ff66964dc002AqE7JLROvVPvML","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" native"}}
+
+data: {"id":"evt_ff66964dc003s0lQuSXalUBP55","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff66964dc004GFIICQS2FURnMP","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff66964dc005KLPoJT5ec5kAIh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":","}}
+
+data: {"id":"evt_ff66964dc006lu6Yp9TygWTMw7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" just"}}
+
+data: {"id":"evt_ff66964dc007h91dzGU6GjSyXk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" say"}}
+
+data: {"id":"evt_ff66964dd001U6w2bJTQvowrPw","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" \""}}
+
+data: {"id":"evt_ff66964dd002YFFsoxYDkKyX5x","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"本"}}
+
+data: {"id":"evt_ff66964dd003pQBitJqG79K7c6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"环境"}}
+
+data: {"id":"evt_ff66964dd004okeuPQcNJ5uYeq","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"无"}}
+
+data: {"id":"evt_ff66964dd005gJGc9pVkKoTdYA","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"原生"}}
+
+data: {"id":"evt_ff66964dd006pwx9XVVZI3z6rB","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"提问"}}
+
+data: {"id":"evt_ff66964dd007WIIRFR3DBKfhJW","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"通道"}}
+
+data: {"id":"evt_ff66964ec001ojWaABkdasJ88I","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\""}}
+
+data: {"id":"evt_ff66964ec00224BEGQ2xnnpBAz","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" and"}}
+
+data: {"id":"evt_ff66964ed001PZy4BPA3bXwfUt","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" end"}}
+
+data: {"id":"evt_ff66964ed002YP5cleoGxHyTEj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66964ed003Jexu3s99UEZb9v","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" turn"}}
+
+data: {"id":"evt_ff66964ed004hVAi0VqIc02rjI","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n\n"}}
+
+data: {"id":"evt_ff66964ed005JmyJ7h9x1kviol","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"I"}}
+
+data: {"id":"evt_ff6696506001kasN7KFzX75cnb","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" do"}}
+
+data: {"id":"evt_ff6696518001Bg8Fy1YQM5W9Ux","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" have"}}
+
+data: {"id":"evt_ff6696519001OaDfXRFL2sKWR5","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff6696531001FSztiLdE9wMgzN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" `"}}
+
+data: {"id":"evt_ff6696531002JGsNoynN6jruSv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"question"}}
+
+data: {"id":"evt_ff6696531003PwjcmJfUyO65eg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"`"}}
+
+data: {"id":"evt_ff6696531004S2O8oMzcm4KkBh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff6696540001K2UuWrD6t53D4L","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" available"}}
+
+data: {"id":"evt_ff6696541001lc7aAN9qKOUeAj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" in"}}
+
+data: {"id":"evt_ff66965410021yLMRfRJZrSfds","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" my"}}
+
+data: {"id":"evt_ff6696541003NLniUmfitVzKa4","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" environment"}}
+
+data: {"id":"evt_ff6696558001Oghis6VXjHpFPX","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696559001egK74uesa44mKv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" So"}}
+
+data: {"id":"evt_ff669655a001suzIVYwxfzQNWe","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" I"}}
+
+data: {"id":"evt_ff669655b001c1EXs0I86Sbe7p","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" should"}}
+
+data: {"id":"evt_ff669655b002gOeO39JFX3Erqg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" use"}}
+
+data: {"id":"evt_ff669657d001o0JV1oKTCeKHpC","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" it"}}
+
+data: {"id":"evt_ff669657d002toz3JjGVll30zS","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff669657d003GTURW0OPreeOor","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ask"}}
+
+data: {"id":"evt_ff669657d004BQ3Rxh1LAfG7vE","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff669658b001giGE3b8jgnQbuC","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff669658b002MgNSO8JBMaozZG","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n\n"}}
+
+data: {"id":"evt_ff669658c001SGEAgw72PvxCo3","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Note"}}
+
+data: {"id":"evt_ff66965a90019t9S77zSzt50K7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":":"}}
+
+data: {"id":"evt_ff66965a9002Sk7qm7y6HiIzId","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66965aa001EU2o1qnesq2owf","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" SUB"}}
+
+data: {"id":"evt_ff6696600001D6YqtpyXsE2KxO","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"AG"}}
+
+data: {"id":"evt_ff6696602001Cr7au9cQhJgsb9","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"ENT"}}
+
+data: {"id":"evt_ff66966020023xeful7DPfQDkg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-ST"}}
+
+data: {"id":"evt_ff6696602003IAiI5OA9L0AF9b","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"OP"}}
+
+data: {"id":"evt_ff6696604001HFScjZ1Q3y1QCo","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" says"}}
+
+data: {"id":"evt_ff6696604002sfOr017Veget41","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" if"}}
+
+data: {"id":"evt_ff6696604003yCIx75JGRWKjOz","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" dispatched"}}
+
+data: {"id":"evt_ff6696604004dqSEmJvqrC1GhV","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" as"}}
+
+data: {"id":"evt_ff6696604005HDnmdE2k2sL7Zl","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff66966040061L1dxm4YErX0Kr","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" sub"}}
+
+data: {"id":"evt_ff66966040075vr6BMaweds45w","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"agent"}}
+
+data: {"id":"evt_ff6696604008ZU0SmOgltgM3gg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff6696604009RgFYeC0fTT0oJR","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" execute"}}
+
+data: {"id":"evt_ff669660400aUZGi5R1hvJy73n","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff669660400bhE7IAhU661xbes","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" specific"}}
+
+data: {"id":"evt_ff669660400cT9uqB8TdV7c14D","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" task"}}
+
+data: {"id":"evt_ff66966050013mZvfRjScqwgKf","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":","}}
+
+data: {"id":"evt_ff6696605002DRxytYoa5RijNz","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ignore"}}
+
+data: {"id":"evt_ff6696614001OufMiPkjWAxYCi","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff6696614002dHgeqHIfLgT4ov","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" using"}}
+
+data: {"id":"evt_ff66966140031W3su5wme59Kqc","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-s"}}
+
+data: {"id":"evt_ff6696614004MSg6REB38h4oPE","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"uper"}}
+
+data: {"id":"evt_ff6696614005XGG9YyGyISjYoD","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"powers"}}
+
+data: {"id":"evt_ff6696618001A8W4vdVsbzQOx1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" skill"}}
+
+data: {"id":"evt_ff6696643001b2DUL9JmTkm7YO","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696643002qHsvS3D6kw7Xc6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" This"}}
+
+data: {"id":"evt_ff6696644001rhtPJ7yDqfQSk4","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" is"}}
+
+data: {"id":"evt_ff66966440023pO8NWTfe1H3Sk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff66966440032IjSHDuISv4NNT","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" hand"}}
+
+data: {"id":"evt_ff6696644004rMXMqAdPxEce7l","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"off"}}
+
+data: {"id":"evt_ff6696644005RihNaEH9YI5ewo","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" executor"}}
+
+data: {"id":"evt_ff669665c001vVmY2hXcbYYxDh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" task"}}
+
+data: {"id":"evt_ff669665c0024pnHvbDuKLyxkD","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" with"}}
+
+data: {"id":"evt_ff669665c003MZlUqs4I8OjhWv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff669665c004Z0siK9j05w6uoB","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" very"}}
+
+data: {"id":"evt_ff6696690001nvla9QmObl0b2r","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" specific"}}
+
+data: {"id":"evt_ff6696690002oRU1SGsZqhxFL3","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" protocol"}}
+
+data: {"id":"evt_ff66966ac001qBJ39qOg4AAc5B","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66966ac002E3cXcybtScA07O","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" So"}}
+
+data: {"id":"evt_ff66966ad001NYhxZ8R3MbeHtw","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" I"}}
+
+data: {"id":"evt_ff66966ad002WtnMoRWI7iQtGE","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" should"}}
+
+data: {"id":"evt_ff66966ad003IPXQe4A1nbMB9p","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" follow"}}
+
+data: {"id":"evt_ff66966ad004NgiXyL5scCfgQ7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66966ad005A19Zq9nESvrdXS","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" plan"}}
+
+data: {"id":"evt_ff66966d9001595xTwPRoJGla7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" directly"}}
+
+data: {"id":"evt_ff66966da001xFEtUnDyEHA3qt","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n\n"}}
+
+data: {"id":"evt_ff66966da002EHpnNU8ugktz9T","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Let"}}
+
+data: {"id":"evt_ff66966da003iFoQnBXrHQRl2n","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" me"}}
+
+data: {"id":"evt_ff66966da004XcAp2PeW0wZ79y","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" use"}}
+
+data: {"id":"evt_ff66966da0055IpQ1hs5GszI3g","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff66966db001elM2tBGiCyGESc","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff66966db002a6F9aCApoREdIv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff66967a6001BJ3FCHhSSYO1Zv","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66967b2001XSmeIt0gc78FxQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" The"}}
+
+data: {"id":"evt_ff66967c1001e82VtG1xUbYBSO","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff66967c4001HFcjU4ML9DV83M","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff66967ea001XZbxN9JakPjclU","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" ask"}}
+
+data: {"id":"evt_ff66967eb001nFBy4Y4vq5mo3k","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":":"}}
+
+data: {"id":"evt_ff66967eb002lDKFT0H6YhHTkD","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" \""}}
+
+data: {"id":"evt_ff66967eb003WRE3fomVftnzGQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"这个"}}
+
+data: {"id":"evt_ff66967eb004yehsjd6GNDvkmY","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"仓库"}}
+
+data: {"id":"evt_ff66967eb005kKXZl9ALUkkBBK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"的"}}
+
+data: {"id":"evt_ff66967eb006xvc23FlM7ca5DI","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" hello"}}
+
+data: {"id":"evt_ff66967eb0077x1emV6h4Z8sio","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" world"}}
+
+data: {"id":"evt_ff66967eb0084xoyUV37Um5w2J","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" "}}
+
+data: {"id":"evt_ff66967eb009lgG4vHs6f9qfQz","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"应该"}}
+
+data: {"id":"evt_ff66967eb00aSMdLwuKrbFpXa0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"放在"}}
+
+data: {"id":"evt_ff66967ec001LLB0OsX6w6gcaY","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" A"}}
+
+data: {"id":"evt_ff66967ec002Ga6cKcrv04qdUH","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff66967ec003i17tcTc74yPHKJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" main"}}
+
+data: {"id":"evt_ff66967ec004i0TAPVd340M7Ad","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".go"}}
+
+data: {"id":"evt_ff66967ec005e33fJIlnzllDbG","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" B"}}
+
+data: {"id":"evt_ff66967ec006UMoVAcj1duW7t7","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff66967ec007zbsN56j5I9nsvm","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" "}}
+
+data: {"id":"evt_ff669685a001e9kQOYqHLBVD4W","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"新建"}}
+
+data: {"id":"evt_ff669685a002pLEZ56hBDPIuq6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" hello"}}
+
+data: {"id":"evt_ff669685a0037wTQIaVRfb2Fnp","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".go"}}
+
+data: {"id":"evt_ff669685a004sGsITbZTBelqzi","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" C"}}
+
+data: {"id":"evt_ff669685b001cSXtjmfRZetDfd","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff669685b002OiRIPzZEQuwlrd","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" "}}
+
+data: {"id":"evt_ff669685b003YGPXOzIZqQrNlr","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"不加"}}
+
+data: {"id":"evt_ff669685c001JkJH3Ljp1hvtD0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"，"}}
+
+data: {"id":"evt_ff669685c002vFobg1kRjRYB4T","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"三"}}
+
+data: {"id":"evt_ff669685c003Wy1fVycixLNVH9","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"选"}}
+
+data: {"id":"evt_ff669685c004QbqxGtpyecJgpT","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"一"}}
+
+data: {"id":"evt_ff669685c005T7oDZaSxq6xfpx","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"？"}}
+
+data: {"id":"evt_ff669685d0013C9YhymdB1H0YK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\"\n\n"}}
+
+data: {"id":"evt_ff669685d002N3gI7wd5B6kPTZ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Options"}}
+
+data: {"id":"evt_ff669685d003vHMwTL4V7a3HfJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":":\n"}}
+
+data: {"id":"evt_ff669685d004nsjOL6vRsriclm","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-"}}
+
+data: {"id":"evt_ff669685e001xB6YV2YZadPQZj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" A"}}
+
+data: {"id":"evt_ff669685e002fV7iFLa94CwAWl","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff669685e0030J41kvJvNnG3Vd","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" main"}}
+
+data: {"id":"evt_ff669685e004ZEUQYcxAsevo0V","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".go"}}
+
+data: {"id":"evt_ff669685e0056CXIj3MWDaiXzs","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\n"}}
+
+data: {"id":"evt_ff669685e006aVneVBn3jVVQk0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-"}}
+
+data: {"id":"evt_ff669685f001b2y1dqUQWtAtCm","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" B"}}
+
+data: {"id":"evt_ff669685f0023xq70AeAcU63tg","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff669685f003bpzLLMoKxrB968","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" "}}
+
+data: {"id":"evt_ff6696860001kgBDi6h2HN3YCh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"新建"}}
+
+data: {"id":"evt_ff6696860002u6ErhWP2STLkK2","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" hello"}}
+
+data: {"id":"evt_ff6696860003uQMScZ0It0cNHB","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".go"}}
+
+data: {"id":"evt_ff6696860004p0imAV6qKFbSvb","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\n"}}
+
+data: {"id":"evt_ff669686000543xXZ6chqfEsmb","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"-"}}
+
+data: {"id":"evt_ff6696860006FZPEedXHFDmwMh","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" C"}}
+
+data: {"id":"evt_ff6696860007i2P5aKpSjs8Ez0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":")"}}
+
+data: {"id":"evt_ff6696860008qLLChjov7Ygm7E","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" "}}
+
+data: {"id":"evt_ff669686000976BhSs3oaGnVwJ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"不加"}}
+
+data: {"id":"evt_ff6696861001x6Ok5a8tMB7BMS","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\n\n"}}
+
+data: {"id":"evt_ff6696861002mpgBU4lY3RBr5N","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Let"}}
+
+data: {"id":"evt_ff6696861003Oicnwb7Ls4yMj9","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" me"}}
+
+data: {"id":"evt_ff6696861004Lq1mHbWyy3HTlF","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" use"}}
+
+data: {"id":"evt_ff6696861005pc18bkINgaEPXy","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" the"}}
+
+data: {"id":"evt_ff6696861006BDEYFoFgsDCZnr","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff66968610078w5OXvOJTwn30K","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff66968610085TzHb3XkOCGwnN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" with"}}
+
+data: {"id":"evt_ff6696861009qm78g5oyCLYciA","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" these"}}
+
+data: {"id":"evt_ff669686100aQ6OMJA80p45Yn1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" three"}}
+
+data: {"id":"evt_ff6696862001yKR3S8zZmAIGSi","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" options"}}
+
+data: {"id":"evt_ff6696862002tuZlYrkYCrBhpX","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff66968620037DO9N7ATMJWyRq","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" I"}}
+
+data: {"id":"evt_ff6696862004UPLAtICzBcs5fa","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'ll"}}
+
+data: {"id":"evt_ff6696862005pjyOVoDbqSFhII","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" set"}}
+
+data: {"id":"evt_ff66968620061EteMlcq5zpkYw","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" multiple"}}
+
+data: {"id":"evt_ff669687e001ceqVHs7kGqoU4t","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" to"}}
+
+data: {"id":"evt_ff669687e00231K3vlzi7uiKJ0","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" false"}}
+
+data: {"id":"evt_ff669687e003dkerir4F31zAl1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":".\n\n"}}
+
+data: {"id":"evt_ff669687e004ZvLiMMNJNObv5y","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"The"}}
+
+data: {"id":"evt_ff669687e005PFrNPaAUd2Ina6","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" question"}}
+
+data: {"id":"evt_ff669687e006MLdSsqv6lSvyU1","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" tool"}}
+
+data: {"id":"evt_ff66968a7001SJOCUkwNrQizsk","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" with"}}
+
+data: {"id":"evt_ff66968a7002jwwsBhE4YAqxyQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" custom"}}
+
+data: {"id":"evt_ff66968a7003Wnk9MWjzYRlMNo","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" enabled"}}
+
+data: {"id":"evt_ff66968a8001bVn7qJc53mSdtQ","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" adds"}}
+
+data: {"id":"evt_ff66968e2001V4957h19mVzvlx","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" a"}}
+
+data: {"id":"evt_ff66968e2002y8pN5HPqNnx0tN","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" \""}}
+
+data: {"id":"evt_ff66968e7001qGjcLoMi5oxcrK","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"Type"}}
+
+data: {"id":"evt_ff66968e8001zlLRKYdrewsj60","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" your"}}
+
+data: {"id":"evt_ff66968e80027hw3d8nLZdzesm","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" own"}}
+
+data: {"id":"evt_ff66968e80037upmjAd6XyTyQe","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" answer"}}
+
+data: {"id":"evt_ff66968e8004A9Z5Y1kry2Ibc2","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"\""}}
+
+data: {"id":"evt_ff66968ea001wlwJNJoZ8yuj6B","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" option"}}
+
+data: {"id":"evt_ff66968ff001oF6CczW5l4qP7T","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" automatically"}}
+
+data: {"id":"evt_ff6696900001XTydvyqS9nt1bt","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":","}}
+
+data: {"id":"evt_ff6696900002wc7tlqwC5BasPj","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" but"}}
+
+data: {"id":"evt_ff6696929001EywgIOEauSWigO","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" that"}}
+
+data: {"id":"evt_ff66969290026keiFPPQ56eb7a","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"'s"}}
+
+data: {"id":"evt_ff669692a001iv22JdWHKoEiz5","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":" fine"}}
+
+data: {"id":"evt_ff669692a002UyoKWaKYk77GzF","type":"message.part.delta","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","partID":"prt_ff6696167001AbYZNhsjwGoASG","field":"text","delta":"."}}
+
+data: {"id":"evt_ff6696983001W5GBWv4iqvG3zv","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"id":"prt_ff6696167001AbYZNhsjwGoASG","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","type":"reasoning","text":"Let me understand the situation. I'm dispatched as an executor for a handoff task. The task is a protocol behavior observation (探针场景 S4). The plan says:\n\n1. Don't modify any files, don't commit.\n2. Use the native question tool/channel in my environment (not JSON output) to ask a three-choice question.\n3. After asking, end this turn and wait.\n\nHard constraint: Don't use `{\"ask\":...}` JSON form to ask. Must use the tool channel. If my environment has no native question tool, just say \"本环境无原生提问通道\" and end the turn.\n\nI do have a `question` tool available in my environment. So I should use it to ask the question.\n\nNote: the SUBAGENT-STOP says if dispatched as a subagent to execute a specific task, ignore the using-superpowers skill. This is a handoff executor task with a very specific protocol. So I should follow the plan directly.\n\nLet me use the question tool. The question to ask: \"这个仓库的 hello world 应该放在 A) main.go B) 新建 hello.go C) 不加，三选一？\"\n\nOptions:\n- A) main.go\n- B) 新建 hello.go\n- C) 不加\n\nLet me use the question tool with these three options. I'll set multiple to false.\n\nThe question tool with custom enabled adds a \"Type your own answer\" option automatically, but that's fine.","time":{"start":1786545529191,"end":1786545531267}},"time":1786545531267}}
+
+data: {"id":"evt_ff669698f001cZ7371hNSoNuuZ","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"id":"prt_ff669698f001d15ALpjzXRyW1w","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","type":"tool","tool":"question","callID":"call_00_IC9GcnIxWFKYH6g81N0q2635","state":{"status":"pending","input":{},"raw":""}},"time":1786545531279}}
+
+data: {"id":"evt_ff6696b6c001SsYwEA3xYlGo7U","type":"question.asked","properties":{"id":"que_ff6696b6b001cR6h6Y2ymGnLje","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","questions":[{"question":"这个仓库的 hello world 应该放在 A) main.go B) 新建 hello.go C) 不加，三选一？","header":"hello world 放置位置","options":[{"label":"A) main.go","description":"放在现有 main.go 中"},{"label":"B) 新建 hello.go","description":"新建一个 hello.go 文件"},{"label":"C) 不加","description":"不加 hello world"}]}],"tool":{"messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2","callID":"call_00_IC9GcnIxWFKYH6g81N0q2635"}}}
+
+data: {"id":"evt_ff6696b6d001H0ry9rI1O8VYrL","type":"message.part.updated","properties":{"sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","part":{"type":"tool","tool":"question","callID":"call_00_IC9GcnIxWFKYH6g81N0q2635","state":{"status":"running","input":{"questions":[{"question":"这个仓库的 hello world 应该放在 A) main.go B) 新建 hello.go C) 不加，三选一？","header":"hello world 放置位置","options":[{"label":"A) main.go","description":"放在现有 main.go 中"},{"label":"B) 新建 hello.go","description":"新建一个 hello.go 文件"},{"label":"C) 不加","description":"不加 hello world"}]}]},"time":{"start":1786545531757}},"id":"prt_ff669698f001d15ALpjzXRyW1w","sessionID":"ses_00996b4a1ffe0KsDSS9EahleNo","messageID":"msg_ff6694cdf001Ri5KzdWSEQkTp2"},"time":1786545531757}}
+
+data: {"id":"evt_ff66972cb00154nwpa6GgJPodD","type":"server.heartbeat","properties":{}}
+

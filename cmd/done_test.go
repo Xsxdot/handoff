@@ -18,6 +18,9 @@ import (
 // stderr」，合并到一个 buffer 就测不出这条契约了。
 func runDone(t *testing.T, cfgPath, agentdURL string, extra ...string) (string, string, error) {
 	t.Helper()
+	// done 成功后走 DropCursor 兜底回收，会解析并写游标根：必须把 HOME 指向
+	// 临时目录，否则会碰（甚至清掉）真实 ~/.handoff 下的旧平铺游标
+	t.Setenv("HOME", t.TempDir())
 	resetFlags(t)
 	var out, errBuf bytes.Buffer
 	rootCmd.SetOut(&out)
