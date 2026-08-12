@@ -50,6 +50,7 @@ const t1: Task = {
   base_ahead: 0,
   repo_dirty_count: 0,
   repo_dirty_files: '',
+  done_note: '',
   machine: '',
   project_id: 'p1',
 }
@@ -75,6 +76,7 @@ const t2: Task = {
   base_ahead: 0,
   repo_dirty_count: 0,
   repo_dirty_files: '',
+  done_note: '',
   machine: '',
   project_id: 'p1',
 }

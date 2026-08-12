@@ -32,6 +32,7 @@ export interface Task {
   base_ahead: number
   repo_dirty_count: number
   repo_dirty_files: string
+  done_note: string    // 归档时审核者留的完成说明（handoff done --note）；""=未留说明或归档于该功能之前
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
 }

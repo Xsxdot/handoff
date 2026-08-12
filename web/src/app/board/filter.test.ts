@@ -20,6 +20,7 @@ function t(over: Partial<Task>): Task {
     executor_session: '', state: 'running', created_at: '', updated_at: '', name: '',
     executor: 'opencode', model: '', work_dir: '', worktree_managed: false,
     base_commit: '', base_ahead: 0, repo_dirty_count: 0, repo_dirty_files: '',
+    done_note: '',
     machine: '', project_id: 'p1', ...over,
   }
 }
