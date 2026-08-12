@@ -475,3 +475,23 @@ func TestReclaimListSkipsNotManaged(t *testing.T) {
 		t.Fatalf("非 managed 不该入表，实得 %+v", resp)
 	}
 }
+
+// 变异 3 补丁（B77 Task 10 变异检验发现）：TestReclaimRefusesWhenRepoUnreachable
+// 删的是仓库，命中 repoWorktrees 失败路径，到不了 WorktreeUnknown 分支——那条
+// 变异（Unknown 改走 already_absent 静默成功）原来根本没有用例盯着。补这条：
+// 把工作树 gitdir 里的 index 弄坏，让 git status 读不出 → 判不出，回收必须拒绝，
+// 绝不能把「判不出」当成「无残留」退成功。
+func TestReclaimRefusesWhenWorktreeUnreadable(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-r9", "f-r9")
+	gd := filepath.Join(repo, ".git", "worktrees", filepath.Base(wt))
+	if err := os.WriteFile(filepath.Join(gd, "index"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatalf("弄坏 index：%v", err)
+	}
+	id := seedTerminalTask(t, m, repo, wt, "f-r9", proto.TaskStateFailed, true)
+
+	_, err := m.Reclaim(context.Background(), id, false)
+	if !errors.Is(err, ErrReclaimRepoUnreachable) {
+		t.Fatalf("工作树读不出状态应报 repo_unreachable（判不出绝不能静默成功），实得 %v", err)
+	}
+}
