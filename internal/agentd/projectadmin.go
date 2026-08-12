@@ -221,14 +221,16 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjec
 			return existing, nil
 		}
 	}
-	// 与 cloneAndRegisterProject 同款提前校验：显式给的 name 若不合法，等 clone
-	// 跑完 persistProject 再拦就晚了，会留下已 clone 未登记的孤儿目录。空名走
-	// projectNameFromURL 派生，由 persistProject 统一校验。
-	if req.Name != "" {
-		if err := validateProjectName(req.Name); err != nil {
-			m.log.Warn("克隆登记被拒：项目名非法", "name", req.Name, "cause", err)
-			return proto.ProjectLocation{}, err
-		}
+	// 与 cloneAndRegisterProject 同款提前校验：name 派生（空名走 projectNameFromURL）
+	// 与 validateProjectName 都必须发生在 clone 之前——非法名等 clone 跑完
+	// persistProject 再拦就晚了，会留下已 clone 未登记的孤儿目录。
+	name := req.Name
+	if name == "" {
+		name = projectNameFromURL(req.OriginURL)
+	}
+	if err := validateProjectName(name); err != nil {
+		m.log.Warn("克隆登记被拒：项目名非法", "name", name, "cause", err)
+		return proto.ProjectLocation{}, err
 	}
 	dest := req.Path
 	parent := filepath.Dir(dest)
@@ -247,10 +249,6 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjec
 	}
 	m.log.Info("克隆到指定路径完成", "origin", req.OriginURL, "dest", dest,
 		"elapsed_ms", time.Since(start).Milliseconds())
-	name := req.Name
-	if name == "" {
-		name = projectNameFromURL(req.OriginURL)
-	}
 	return m.persistProject(name, dest, req.OriginURL)
 }
 
