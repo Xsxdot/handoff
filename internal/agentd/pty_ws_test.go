@@ -126,9 +126,10 @@ func TestPtyWSResumeSince(t *testing.T) {
 	c1, _ := dialPty(t, env, s.ID, 0)
 	// macOS 的 PTY 行规程会先把按键回显发回主端，且逐片到达——waitFor 命中
 	// `echo ROUND1` 的**回显**就返回了，游标会停在回显处。为让「只补未读段」
-	// 的断言在 macOS 上也成立，命令文本用引号断开，使回显里没有连续的
+	// 的断言在 macOS 上也成立，命令文本用引号断开：shell 里 `echo ROUN"D1"`
+	// 输出 ROUND1（引号串与裸文本拼接），而回显 `echo ROUN"D1"` 不含连续的
 	// ROUND1 子串，waitFor 只能等到真正的命令输出。
-	_ = c1.Write(context.Background(), websocket.MessageBinary, []byte("echo ROUN\"D1\n"))
+	_ = c1.Write(context.Background(), websocket.MessageBinary, []byte("echo ROUN\"D1\"\n"))
 	readUntil(t, c1, "ROUND1")
 	cur, _ := env.srv.pty.Get(s.ID)
 	_ = c1.Close(websocket.StatusNormalClosure, "")
