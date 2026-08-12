@@ -119,3 +119,30 @@ func TestJSONWireFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestArchivedPayloadJSON 钉住 archived 事件 payload 的线上形态：
+// 键名必须是 note——B67 与任何解析事件流的脚本都按这个键取值。
+func TestArchivedPayloadJSON(t *testing.T) {
+	b, err := json.Marshal(ArchivedPayload{Note: "改完了登录页"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"note":"改完了登录页"}` {
+		t.Fatalf("payload 形态变了: %s", b)
+	}
+	if EventTypeArchived != "archived" {
+		t.Fatalf("事件类型字面量变了: %s", EventTypeArchived)
+	}
+}
+
+// TestTaskDoneNoteJSON 钉住 Task 上的字段名：handoff show 直接序列化 Task，
+// 键名一改，所有读 show 输出的脚本同时失效。
+func TestTaskDoneNoteJSON(t *testing.T) {
+	b, err := json.Marshal(Task{DoneNote: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"done_note":"x"`) {
+		t.Fatalf("done_note 字段缺失或改名: %s", b)
+	}
+}

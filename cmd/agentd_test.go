@@ -9,11 +9,14 @@
 package cmd
 
 import (
+	"bytes"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/xushixin/handoff/internal/toolchain"
 )
 
 // 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
@@ -54,5 +57,61 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// 缺省执行者没找到时必须 WARN，且处置里要指出 path_dirs 这条出路。
+//
+// why：B71 之前，「opencode 没装」这件事要等到第一次派发才暴露，报错落在
+// 任务事件流里，离「重启后 agentd 起来了」这个时间点最远。启动时报出来，
+// 重启完看一眼日志就知道。
+func TestLogExecutorDetectionWarnsOnMissingDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rs := []toolchain.Result{
+		{Name: "opencode", State: toolchain.StateMissing},
+		{Name: "claude", State: toolchain.StateAuthUnknown, Path: "/usr/local/bin/claude"},
+	}
+
+	logExecutorDetection(log, "opencode", rs)
+
+	out := buf.String()
+	if !strings.Contains(out, "executor 探测") {
+		t.Errorf("四家探测结果必须成表进启动日志，实得:\n%s", out)
+	}
+	if !strings.Contains(out, "/usr/local/bin/claude") {
+		t.Errorf("探测到的绝对路径必须进日志（排障要靠它），实得:\n%s", out)
+	}
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("缺省执行者缺失必须 WARN，实得:\n%s", out)
+	}
+	if !strings.Contains(out, "path_dirs") {
+		t.Errorf("WARN 必须给出处置（path_dirs），实得:\n%s", out)
+	}
+}
+
+// 缺省执行者在位时不 WARN——每次启动打一条无从处置的告警，只会让人学会忽略日志。
+func TestLogExecutorDetectionQuietWhenDefaultPresent(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rs := []toolchain.Result{{Name: "opencode", State: toolchain.StateReady, Path: "/x/opencode"}}
+
+	logExecutorDetection(log, "opencode", rs)
+
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("缺省执行者就绪时不该 WARN，实得:\n%s", buf.String())
+	}
+}
+
+// 缺省是 fake 时不 WARN：fake 是脚本演示执行者，本来就没有对应的二进制。
+func TestLogExecutorDetectionQuietForFake(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rs := []toolchain.Result{{Name: "opencode", State: toolchain.StateMissing}}
+
+	logExecutorDetection(log, "fake", rs)
+
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("缺省是 fake 时不该 WARN，实得:\n%s", buf.String())
 	}
 }

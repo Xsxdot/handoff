@@ -38,7 +38,7 @@ func TestReconcileExecutorGone(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			st := newTestStore(t)
 			mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: c.from})
-			got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog())
+			got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 			if got != c.wantState {
 				t.Fatalf("返回状态 = %s，期望 %s", got, c.wantState)
 			}
@@ -71,8 +71,8 @@ func TestReconcileExecutorGone(t *testing.T) {
 func TestReconcileExecutorGoneIdempotent(t *testing.T) {
 	st := newTestStore(t)
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
-	reconcileExecutorGone(st, NewHub(), "t1", "第一次", quietLog())
-	reconcileExecutorGone(st, NewHub(), "t1", "第二次", quietLog())
+	reconcileExecutorGone(st, NewHub(), "t1", "第一次", quietLog(), func(string) {})
+	reconcileExecutorGone(st, NewHub(), "t1", "第二次", quietLog(), func(string) {})
 	evs, err := st.EventsFromAsc("t1", 0, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 	if _, err := st.CreateTicket(&proto.Ticket{ID: "t1:p1", TaskID: "t1", Kind: "permission", Request: json.RawMessage(`{"permission":"Bash: ls"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog())
+	reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 	pend, err := st.PendingTickets("t1")
 	if err != nil {
 		t.Fatal(err)
@@ -416,5 +416,46 @@ func TestContinueUnrecoverableFallsBackToReview(t *testing.T) {
 	cur, _ := st.GetTask("t1")
 	if cur.State != proto.TaskStateWaitingReview {
 		t.Fatalf("不可恢复应回迁 waiting_review，实际 %s", cur.State)
+	}
+}
+
+// TestReconcileExecutorGoneSweepsUnconditionally 验证清扫是无条件后置动作：
+// 即使任务状态命中提前返回分支（非 running/waiting_answer），也必须清扫。
+//
+// 这条守的是事故现场的形态：2026-08-12 两个任务最终都停在 waiting_review，
+// 而那正是提前返回会跳过的状态。清扫若跟着提前返回一起被跳过，这个功能
+// 在它最该工作的场景里恰好不工作。
+func TestReconcileExecutorGoneSweepsUnconditionally(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateWaitingReview})
+
+	swept := 0
+	reconcileExecutorGone(st, NewHub(), "t1", "测试", quietLog(), func(string) { swept++ })
+
+	if swept != 1 {
+		t.Fatalf("提前返回分支也必须清扫一次，实际 %d 次", swept)
+	}
+	got, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatalf("读任务失败: %v", err)
+	}
+	if got.State != proto.TaskStateWaitingReview {
+		t.Fatalf("清扫不得改变状态，got %s", got.State)
+	}
+}
+
+// TestReconcileExecutorGoneSweepsAfterTransit 正常路径：先迁状态、再清扫。
+func TestReconcileExecutorGoneSweepsAfterTransit(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
+
+	var stateAtSweep proto.TaskState
+	reconcileExecutorGone(st, NewHub(), "t1", "测试", quietLog(), func(taskID string) {
+		cur, _ := st.GetTask(taskID)
+		stateAtSweep = cur.State
+	})
+
+	if stateAtSweep != proto.TaskStateWaitingReview {
+		t.Fatalf("清扫必须发生在状态迁移之后，清扫时状态为 %s", stateAtSweep)
 	}
 }

@@ -492,7 +492,7 @@ func TestApproverStateClearedOnTaskEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		setApproverState(m, task.ID)
-		mustDone(t, m, task.ID)
+		mustDone(t, m, task.ID, "")
 		cur, _ := st.GetTask(task.ID)
 		if cur.State != proto.TaskStateCompleted {
 			t.Fatalf("任务应 completed，得到 %s", cur.State)

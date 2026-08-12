@@ -3,7 +3,7 @@
 //
 // 职责：
 //   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault →
-//     agentd.MergeLoginShellPATH（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
+//     pathenv.Apply（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
@@ -35,8 +35,10 @@ import (
 	"github.com/xushixin/handoff/internal/executor/grok"
 	"github.com/xushixin/handoff/internal/executor/opencode"
 	"github.com/xushixin/handoff/internal/logx"
+	"github.com/xushixin/handoff/internal/pathenv"
 	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/store"
+	"github.com/xushixin/handoff/internal/toolchain"
 )
 
 // agentdCmd 启动本地 agentd 服务。
@@ -62,10 +64,15 @@ var agentdCmd = &cobra.Command{
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
 
-		// PATH 补全（B7）：agentd 常由非登录 shell 拉起，拿不到 profile 里的
-		// PATH——真实踩坑是 executor 在远程机上找不到 go。必须早于任何 fork
-		// 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承
-		agentd.MergeLoginShellPATH(context.Background(), logger)
+		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
+		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
+		// fork 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承。
+		pathenv.Apply(context.Background(),
+			pathenv.Options{IncludeLoginShell: true, ExtraDirs: cfg.PathDirs}, logger)
+
+		// 启动自检（B71）：补全之后立刻报一次四家的解析结果。不报的话，
+		// 「opencode 没找到」要等到第一次派发才暴露，那时离根因（PATH）已经很远
+		logExecutorDetection(logger, cfg.Executor.Default, toolchain.Detect())
 
 		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
 		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
@@ -152,7 +159,7 @@ var agentdCmd = &cobra.Command{
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交审核者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
-		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, logger); err != nil {
+		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
 		// 看门狗随停机一起收：以前挂在 context.Background() 上靠进程退出终止，
@@ -193,6 +200,44 @@ var agentdCmd = &cobra.Command{
 		srv.SetRestart(sd.Trigger)
 		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel)
 	},
+}
+
+// logExecutorDetection 把四家 executor 的探测结果成表写进启动日志，并对
+// 「缺省执行者没找到」打一条带处置的 WARN。
+//
+// 参数：
+//   - log: 日志入口
+//   - defaultExecutor: cfg.Executor.Default
+//   - rs: toolchain.Detect() 的结果
+//
+// 注意：
+//   - **不阻断启动**：一台机器不该因为少装一个 executor 就彻底起不来；托管形态下
+//     启动失败还会变成崩溃循环。codex 那条硬预检拦的是更窄的判据，两者不冲突
+//   - defaultExecutor 是 fake 时不会命中任何一条（fake 不在 Detect 的四家里），
+//     于是自然不告警——它是脚本演示执行者，本来就没有对应的二进制
+func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolchain.Result) {
+	attrs := make([]any, 0, len(rs)*2)
+	for _, r := range rs {
+		v := r.State.String()
+		if r.Path != "" {
+			// 路径是排障时唯一有用的信息：它直接回答「补全到底有没有生效」
+			v += "  " + r.Path
+		}
+		attrs = append(attrs, r.Name, v)
+	}
+	log.Info("executor 探测", attrs...)
+
+	for _, r := range rs {
+		if r.Name != defaultExecutor {
+			continue
+		}
+		if r.State == toolchain.StateMissing {
+			log.Warn("缺省执行者未找到，派发到本机的任务会失败",
+				"executor", r.Name,
+				"处置", "在本机装上它，或把它所在目录写进 config.yaml 的 path_dirs")
+		}
+		return
+	}
 }
 
 // defaultAdapters 返回 agentd 的 executor 注册表（name → Adapter）。

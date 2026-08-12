@@ -103,7 +103,7 @@ func isPermanent(err error) bool {
 
 // isDeliverable 判定一个事件类型是否该唤醒审核者。
 //
-// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled}。
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled, tickets_voided}。
 //
 // 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
 // approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
@@ -112,12 +112,17 @@ func isPermanent(err error) bool {
 // 重连时的唤醒风暴越大。handoff skill 早已写明这三类不唤醒 wait，这里是让
 // 代码追上契约。
 //
+// tickets_voided（B63）加入的理由与前两类略有不同：它同样只入库不 Publish，但它
+// 的产生时刻**恰好压在 completed/failed 上**——终态迁移的同一次调用里。可交付就
+// 意味着一次性 wait 有机会拿它收手，审核者看到的是「作废了 1 张单」而不是任务成败。
+//
 // 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
 func isDeliverable(t proto.EventType) bool {
 	switch t {
 	case proto.EventTypeProgress,
 		proto.EventTypeApproverDecision,
-		proto.EventTypeApproverDisabled:
+		proto.EventTypeApproverDisabled,
+		proto.EventTypeTicketsVoided:
 		return false
 	}
 	return true
@@ -269,6 +274,12 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 // CLI 据此输出降级结论并退 0，而不是把一台完全能用的机器判成失败。
 var ErrStatusUnsupported = errors.New("对端 agentd 不支持 /api/status")
 
+// ErrFootprintUnsupported 表示对端 agentd 太旧，没有 /api/footprint。
+//
+// 与 ErrStatusUnsupported 分开而不复用：调用方要给出的处置建议不同
+// （那条说「升级后才能看状态」，这条说「升级后才能看进程足迹，眼下只能上机器 ps」）
+var ErrFootprintUnsupported = errors.New("对端 agentd 不支持足迹体检")
+
 // Status 查询 agentd 的可用性与身份信息（handoff status 的数据源）。
 //
 // 返回：
@@ -298,6 +309,35 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 	var out proto.StatusResp
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("解析状态响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Footprint 拉取对端全部任务的进程足迹体检结果。
+//
+// 返回：
+//   - 体检结果；404（对端 agentd 过旧、没有这个端点）返回 ErrFootprintUnsupported
+//   - 请求失败或响应非法时返回错误
+//
+// 注意：这是慢命令——对端要遍历全部历史任务目录，调用方应给足超时。
+func (c *Client) Footprint(ctx context.Context) (*proto.FootprintResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/footprint", nil)
+	if err != nil {
+		return nil, fmt.Errorf("足迹体检请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// 与 Status 的 404 同款处理：这是**预期结论**不是异常，用 Debug 而非
+		// Info——调用方会把它渲染成人读的一句话，库层再打 Info 就是重复
+		c.log().Debug("对端 agentd 不支持 /api/footprint，按版本过旧处理")
+		return nil, ErrFootprintUnsupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("足迹体检", resp)
+	}
+	var out proto.FootprintResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析足迹体检响应: %w", err)
 	}
 	return &out, nil
 }
@@ -586,20 +626,36 @@ func (c *Client) Continue(ctx context.Context, taskID, instructions string) erro
 	return nil
 }
 
-// Done 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。
+// Done 归档任务，可携带一句完成说明。
 //
-// 注意：
-//   - 任务不存在返回 404 错误；状态不允许归档返回 409 错误
-func (c *Client) Done(ctx context.Context, taskID string) error {
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/done", nil)
+// 参数：
+//   - taskID: 待归档任务 ID
+//   - note: 完成说明；空串=不留说明（服务端照常归档并照常发 archived 事件）
+//
+// 返回：
+//   - noteSaved: 响应体 note_saved 如实回传——true=说明已落库；false=本次没带
+//     说明，**或对端是不支持该字段的旧版 agentd**。响应体缺字段按 false 处理，
+//     与 Stop 的 worktree_removed 同一模式：宁可多告警一次，也不让「说明悄悄
+//     丢了」变成哑失败。调用方据此决定是否提示，不猜
+func (c *Client) Done(ctx context.Context, taskID, note string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/done",
+		map[string]string{"note": note})
 	if err != nil {
-		return fmt.Errorf("done 请求: %w", err)
+		return false, fmt.Errorf("done 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("done", resp)
+		return false, c.httpError("done", resp)
 	}
-	return nil
+	// 缺字段按 false：旧 agentd 只回 {"ok":true}，零值恰好是保守的那一侧
+	var out struct {
+		NoteSaved bool `json:"note_saved"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		c.log().Debug("done 响应体解析失败，按说明未保存处理", "task", taskID, "cause", derr)
+		return false, nil
+	}
+	return out.NoteSaved, nil
 }
 
 // Stop 主动中止任务：停 executor、作废挂起工单、任务落 failed。

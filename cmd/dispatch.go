@@ -15,7 +15,8 @@
 // 边界：
 //   - 只做文件读取与上传，不校验计划内容语义（解析与执行由 executor 负责）
 //   - --no-terminal 在本文件只注册 flag 并参与「是否弹终端」的判定骨架；
-//     实际弹窗行为由 Task 12 的弹终端块驱动
+//     弹终端默认**不弹**（cfg.Terminal.Auto 默认 false），配置 auto: true 时
+//     才在 darwin 弹窗，--no-terminal 用于逐次关闭
 package cmd
 
 import (
@@ -233,7 +234,7 @@ var dispatchCmd = &cobra.Command{
 			return fmt.Errorf("序列化任务: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(b))
-		// 弹终端块的入口（Task 12 实现）：--no-terminal 在此使能判定
+		// 弹终端块的入口：--no-terminal 在此使能判定，默认不弹（auto: true 才弹）
 		dispatchAfterTerminal(cmd, task.ID)
 		return nil
 	},
@@ -251,7 +252,7 @@ func init() {
 	dispatchCmd.Flags().StringVar(&dispatchBase, "base", "", "新分支起点 commit/分支（与 --branch 互斥；空=取派发时的基线起点）")
 	dispatchCmd.Flags().StringVar(&dispatchWorktree, "worktree", "", "用户自带 worktree 路径（与 --new-worktree 互斥）")
 	dispatchCmd.Flags().BoolVar(&dispatchNewWorktree, "new-worktree", false, "在 DataDir/worktrees 下新建 managed worktree（任务完成时自动删除）")
-	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "派发成功后不弹终端实况（默认弹，受配置 terminal.auto 控制）")
+	dispatchCmd.Flags().BoolVar(&dispatchNoTerminal, "no-terminal", false, "不弹终端实况（默认不弹；配置 terminal.auto: true 时才弹，本标志用于逐次关闭）")
 	dispatchCmd.Flags().BoolVar(&dispatchNoSyncCheck, "no-sync-check", false,
 		"跳过远程仓库基线校验（cwd 与目标项目不是同一个仓库时用）")
 	dispatchCmd.Flags().BoolVar(&dispatchAllowDirty, "allow-dirty", false,
@@ -264,9 +265,15 @@ func init() {
 // dispatchAfterTerminal 是 dispatch 成功后「弹终端实况」的钩子。
 //
 // 行为契约：
-//   - --no-terminal 或 cfg.Terminal.Auto==false 或非 darwin → 打印提示行
-//     「实况: handoff attach <id>」（远程含 --target），不弹窗
-//   - darwin 且允许 → osascript 弹 Terminal.app 执行 attach 命令
+//   - 默认**不弹**：仅当 cfg.Terminal.Auto==true 且 darwin 时 osascript 弹
+//     Terminal.app 执行 attach 命令；--no-terminal 在 auto: true 时逐次关闭
+//     （保留不删：老脚本带着它不能报错，且 auto: true 时它仍是唯一逐次关闭入口）
+//   - 不弹（--no-terminal / Terminal.Auto==false / 非 darwin）→ 打印提示行
+//     「实况: handoff attach <id>」（远程含 --target）
+//
+// 为什么提示行走 stderr 而不是 stdout：stdout 是「单行任务 JSON」的既有契约
+// （见上方基线行、dirty 提示的注释），上层脚本按行解析，多一行就全乱。默认
+// 不弹之后这行提示**每次**派发都会出现，必须与基线行、dirty 提示同走 stderr。
 //
 // 为什么弹窗失败不影响退出码：派发已成功（任务 JSON 已输出），弹窗只是增强
 // 可见性——失败降级为同款提示行 + stderr 警告，绝不把已成功的派发变成失败。
@@ -277,7 +284,7 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 	}
 	cfg := loadCLIConfig()
 	if dispatchNoTerminal || !cfg.Terminal.Auto || runtime.GOOS != "darwin" {
-		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		fmt.Fprintln(cmd.ErrOrStderr(), hint)
 		return
 	}
 	// 弹的窗口跑 handoff attach <id> [--target <t>]：attach 已改走 agentd 的
@@ -289,7 +296,8 @@ func dispatchAfterTerminal(cmd *cobra.Command, taskID string) {
 	if err := openTerminal(argv); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "弹终端失败:", err)
 		fmt.Fprintln(cmd.ErrOrStderr(), "可手动执行:", strings.Join(argv, " "))
-		fmt.Fprintln(cmd.OutOrStdout(), hint)
+		// 降级提示行同样走 stderr：stdout 的单行任务 JSON 契约不能破（见函数头注释）
+		fmt.Fprintln(cmd.ErrOrStderr(), hint)
 	}
 }
 

@@ -169,7 +169,7 @@ terminal:
 }
 
 // TestLoadPhase2Defaults 验证二期各节缺省值：approver 默认关闭（Executor 空）、
-// timeout 默认 60s、executor 缺省 opencode、terminal.auto 默认 true。
+// timeout 默认 60s、executor 缺省 opencode、terminal.auto 默认 false（不弹）。
 func TestLoadPhase2Defaults(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	cfg, err := config.Load(p) // 首次运行生成默认配置
@@ -179,8 +179,8 @@ func TestLoadPhase2Defaults(t *testing.T) {
 	if cfg.Approver.Executor != "" || cfg.Approver.Timeout != 60*time.Second {
 		t.Fatalf("approver 默认值错误: %+v", cfg.Approver)
 	}
-	if cfg.Executor.Default != "opencode" || !cfg.Terminal.Auto {
-		t.Fatalf("executor/terminal 默认值错误")
+	if cfg.Executor.Default != "opencode" || cfg.Terminal.Auto {
+		t.Fatalf("executor/terminal 默认值错误（terminal.auto 默认应为 false）")
 	}
 }
 
@@ -409,6 +409,40 @@ func TestWarnDeprecatedSilentOnDefault(t *testing.T) {
 	(&config.Config{Update: config.UpdateConfig{Auto: true, Interval: 6 * time.Hour}}).WarnDeprecated(log)
 	if buf.Len() != 0 {
 		t.Fatalf("默认值不该打 Warn:\n%s", buf.String())
+	}
+}
+
+// path_dirs 能被读进来，且空值绝不落盘。
+//
+// why 空值不能落盘（硬要求）：配置是 KnownFields(true) 严格解析的。没配过这一项的
+// 机器上一旦被写进 path_dirs: []，一台还没换版的旧 agentd 读到这个未知键会**直接
+// 启动失败**——B59 spec D7 那个坑的反方向同款。
+func TestPathDirsRoundTripAndOmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+
+	cfg, err := config.Load(p) // 首次运行：生成默认配置并写盘
+	if err != nil {
+		t.Fatalf("首次加载: %v", err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("读回配置: %v", err)
+	}
+	if strings.Contains(string(b), "path_dirs") {
+		t.Errorf("未配置时 path_dirs 不得落盘，实得:\n%s", b)
+	}
+
+	cfg.PathDirs = []string{"/opt/tools/bin"}
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatalf("写盘: %v", err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("回读: %v", err)
+	}
+	if len(got.PathDirs) != 1 || got.PathDirs[0] != "/opt/tools/bin" {
+		t.Errorf("path_dirs = %v，期望 [/opt/tools/bin]", got.PathDirs)
 	}
 }
 

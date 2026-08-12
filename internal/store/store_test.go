@@ -832,3 +832,37 @@ func TestTaskDirtySnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("脏快照回读不一致: count=%d files=%q", got.RepoDirtyCount, got.RepoDirtyFiles)
 	}
 }
+
+// TestDoneNoteRoundTrip 覆盖归档说明的落列与读回，以及白名单放行。
+func TestDoneNoteRoundTrip(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{ID: "t-note", Target: "fake", RepoPath: "/repo",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// 未写过时必须是空串而不是报错——迁移给的是 NOT NULL DEFAULT ''
+	got, err := s.GetTask("t-note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DoneNote != "" {
+		t.Fatalf("未写过的 done_note 应为空串，得到 %q", got.DoneNote)
+	}
+
+	if err := s.SetTaskField("t-note", "done_note", "改完了登录页，两个用例补齐"); err != nil {
+		t.Fatalf("SetTaskField(done_note): %v", err)
+	}
+	got, err = s.GetTask("t-note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DoneNote != "改完了登录页，两个用例补齐" {
+		t.Fatalf("done_note 没读回来: %q", got.DoneNote)
+	}
+}

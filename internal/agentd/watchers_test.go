@@ -147,13 +147,27 @@ func TestDoneClosesEventSubscriptions(t *testing.T) {
 	ch, cancel := hub.Subscribe(id)
 	defer cancel()
 
-	if err := m.Done(context.Background(), id); err != nil {
+	if err := m.Done(context.Background(), id, ""); err != nil {
 		t.Fatalf("Done: %v", err)
+	}
+	// 为什么先收 archived 再收关闭：done 现在会先发归档事件、再关订阅（B68）。
+	// 订阅者先看到一条 archived（说明「归档了」，wait --follow 据此正常退出），
+	// 随后通道才被 CloseTask 关闭。
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("订阅在收到 archived 之前就被关闭了——Publish 跑到 CloseTask 后面了")
+		}
+		if ev.Type != proto.EventTypeArchived {
+			t.Fatalf("归档后首个事件应为 archived，得到 %s", ev.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("归档后 2 秒内未收到 archived 事件")
 	}
 	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("归档后订阅通道仍在投递事件")
+			t.Fatal("收到 archived 后订阅通道应已关闭，仍能读到投递")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("归档未关闭订阅通道：跟随端拿不到「没有下文了」的信号")

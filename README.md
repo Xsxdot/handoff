@@ -68,6 +68,12 @@ handoff service status          # 看托管状态
 `handoff init` 可以随时重跑当改配置用——每一问的默认值取当前配置的实际值，
 一路回车即原样保持。stdin 不是终端时（例如经管道调起）它一问不问，只写默认配置。
 
+角色选了执行机时，`handoff init` 会在最后**追问一句**是否现在就把 agentd 交给
+launchd / systemd 托管，答 y 即就地装好（Linux 上需要 root 写 `/etc/systemd/system`，
+非 root 时只打印 `sudo handoff service install` 不代跑）。**不托管的 agentd 在机器
+重启后不会自己回来**，而且它的 PATH 取决于当时那个 shell——这正是「重启后第一次派发
+报 executor 未安装」的成因。
+
 **托管之后 agentd 的形态会变**：它由进程管理器拉起，崩溃或退出都会被自动拉回。
 Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `handoff service uninstall`，
 或 `systemctl stop handoff-agentd` / `launchctl bootout gui/$(id -u)/dev.gosuper.handoff.agentd`。
@@ -142,7 +148,7 @@ handoff dispatch --new-worktree --executor opencode --model cheap/model plan.md
 handoff dispatch --new-worktree --executor claude plan.md                      # 用 Claude Code 执行
 handoff dispatch --target devbox plan.md                                      # 派到开发机（未登记会自动登记）
 handoff dispatch --project nova --target devbox plan.md                       # 跨项目：cwd 不是目标项目时
-handoff dispatch --no-terminal plan.md                                        # 派发后不弹终端
+handoff dispatch --no-terminal plan.md                                        # 配置开 terminal.auto: true 时，逐次关闭弹终端
 
 # 4. 审核者侧典型循环
 handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
@@ -180,7 +186,7 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
 | `handoff attach [task]` | 在终端跟随任务实况（render 流；无参时任务选择列表，非 TTY 打印建议命令） | `--all`（从头播放全部实况）；`--no-follow`（放完当前内容即退出） |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
-| `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
+| `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review）；说明会写进任务记录（`show` 可见）与 `archived` 事件 | `--note "<说明>"`（可选；会写进任务记录与 archived 事件） |
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
@@ -196,7 +202,7 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 
 全局参数：`--agentd http://127.0.0.1:7777`（agentd 地址）、`--target <name>`（按配置 Targets 换算地址与 token）、`--config <path>`（配置文件，默认 `~/.handoff/config.yaml`）。
 
-事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
+事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`archived`（任务被 done 归档，payload 带 `note`；唤醒 `wait`，等待方据此判断任务真正结束）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
 
 ### 浏览器控制台
 
@@ -247,14 +253,15 @@ approver:                     # 分级审批链的廉价模型审批者
 executor:                     # dispatch 未显式指定执行者时的缺省
   default: opencode
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
-terminal:                     # dispatch 成功后的终端弹窗
-  auto: true                  # darwin 下 osascript 弹 Terminal.app 进实况
+terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
+  auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
 sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
   auto: true                  # 关闭后仍可用 handoff pull 手动同步
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
 repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
+path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才加，不需要就别写这个键
 web:                          # 浏览器控制台 Host 白名单
   allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
     - handoff.example.com
@@ -273,6 +280,16 @@ PATH=${PATH}:/usr/local/go/bin
 同一份 env 也会注入审批者（`approver.executor`）—— 否则代理只配半边，审批者连不出去会
 静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
+
+`path_dirs` 是**执行机顶层配置**：agentd 启动时会把这些目录追加到 PATH 末尾，用来兜住
+「工具装了、但它的目录不在任何 shell rc 文件里」的机器。agentd 本身已经会做三件事——
+继承启动时的 PATH、合并登录 shell（`$SHELL -l -i`）的 PATH、扫描一批内置的已知安装目录
+（`~/.opencode/bin`、`~/.grok/bin`、`~/.claude/local`、`~/.local/bin`、`~/bin`、`~/.bun/bin`、
+`~/.npm-global/bin`、`~/.cargo/bin`、`~/go/bin`、`/opt/homebrew/{bin,sbin}`、
+`/usr/local/{bin,sbin}`、`/snap/bin`，**存在才追加**）——`path_dirs` 只用于这三层都没覆盖到的
+安装位置。**没配就别写这个键**（留空时不会落盘）。
+
+这不是给 executor 传环境变量的地方：代理、私有 registry 那些走 `env` 段。
 
 `repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
 agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
@@ -352,6 +369,7 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 - 任务冻死在 `running`、`attach` 能看到模型已经干完 → **agentd 与 executor 断连窗口内回合已完结、终态事件永久丢失（B38）**。`handoff resume <task>` 会做会话对账，把丢失的回合终态补回事件流，任务按补回的事件自然迁移（`result`→`waiting_review`、`question`→`waiting_answer`），此后可正常 `continue`/`reply`。对账判不出（executor 不支持对账 / 回合确实还在忙 / 查询失败）时加 `--force`：把任务强制收口到 `waiting_review` 并留下「人工强制、未经 executor 确认」的事件——它**保住 executor 会话**，与 `handoff stop`（杀会话、落 failed）根本不同。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
 - agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
+- 派发报 `xxx 未安装: executable file not found in $PATH`，但你在自己终端里明明能跑它 → agentd 拿到的 PATH 与你终端里的不是一回事（launchd 给的就是 `/usr/bin:/bin:/usr/sbin:/sbin`）。agentd 启动时会补全（登录 shell + 内置已知目录表），启动日志里搜 `已补全 PATH` 看它到底补了什么、搜 `executor 探测` 看四家各自解析到哪。都没覆盖到就把工具目录写进 `config.yaml` 的 `path_dirs` 后重启 agentd。
 - **grok 执行者会读到你的 Claude Code 个人配置**：grok 无视 `GROK_HOME`，仍从真实 HOME 读 `~/.claude/settings.local.json` 的权限规则与 `~/.claude/skills`。handoff 写入任务级 `ask` 规则可以压过其中的 `allow`（grok 的求值是 `deny` > `ask` > `allow` 跨源生效），危险模式表仍然有效；但「handoff 没枚举、而你个人 allow 了」的操作会被静默放行。agentd 侧的硬黑名单是独立兜底。
 - **grok 任务断连即失败**：ACP 的权限是随连接存续的阻塞请求，连接断开后未决的授权请求不会被重发。handoff 选择立刻转 failed 交审核者（可 `continue` 重开一轮），而不是假装恢复成功留下一个静止的任务。
 - **codex 复用你执行机的全局 codex 环境**：`~/.codex/AGENTS.md`、`~/.codex/hooks.json`、`config.toml` 的 `[mcp_servers]` 都会改变 executor 的干活方式（`hooks.json` 没有协议级开关能关掉，只能清理——agentd 以 codex 为缺省执行者启动时会对这三样打 WARN）。安全档位由 handoff 协议级钉死（`on-request` + OS 沙箱 + 每回合重钉），不依赖开发机干净；详见下方「codex 与其它 executor 的差异」。

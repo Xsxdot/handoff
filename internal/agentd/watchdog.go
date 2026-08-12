@@ -182,6 +182,10 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 //     的 adapter）事件流已重建。这是本函数保持「不带 adapter 引用」签名的接口
 //     缝隙（seam）：存活的「重建订阅 + 重启中介循环」动作必须封装在闭包内部，
 //     接线见 cmd/agentd.go（mgr.ResumeTask）与 Manager.ResumeTask 的 doc
+//   - sweep: 残留进程清扫闭包 func(taskID)；**无条件调用**——executor 已不在时
+//     残留进程该不该收与任务停在哪个状态无关（waiting_review 同样照收，见下）。
+//     与 probe 是同款注入缝（避免 watchdog 直接接触 adapter），并排放读起来才
+//     是一回事；接线见 cmd/agentd.go（mgr.SweepTaskProcs）
 //   - log: 本模块日志入口
 //
 // 返回：
@@ -194,7 +198,8 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 //     waiting_review 直接迁移不在 6 状态迁移表中，见 recoverTransit）
 //   - 探活本身无副作用：waiting_review 任务无论 probe 结果如何都不改状态，
 //     状态由审核者动作（continue/done）驱动
-func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool, log *slog.Logger) error {
+func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
+	sweep func(taskID string), log *slog.Logger) error {
 	tasks, err := st.ListTasks()
 	if err != nil {
 		return fmt.Errorf("启动恢复读取任务列表: %w", err)
@@ -212,14 +217,18 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		if t.State == proto.TaskStateWaitingReview {
 			// waiting_review 本来就是待审核终态：executor 不在不追加事件、不迁移
 			// 状态——审核者裁决（continue 重派 / done 归档）才是它该走的路。
-			// 复用 running/waiting_answer 的 failed 迁移路径会在这里产生噪音事件
+			//
+			// 但**残留进程照收**：那条理由说的是状态与事件噪音，不是资源。
+			// 2026-08-12 事故里两个任务最终正停在这个状态，若跟着一起跳过，
+			// 清扫会在最该工作的场景里恰好不工作
 			kept++
 			log.Info("waiting_review 任务 executor 已不在，保持现状等审核者裁决", "task", t.ID, "alive", false)
+			sweep(t.ID)
 			continue
 		}
 		failed++
 		log.Info("执行器已不在，任务转 waiting_review 交审核者", "task", t.ID, "alive", false, "state", t.State)
-		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log)
+		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log, sweep)
 	}
 	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)
 	return nil

@@ -170,6 +170,7 @@ func (s *Server) SetManager(m *Manager) {
 //
 // 路由（Go 1.22+ 方法路由）：
 //   - GET  /api/status                    agentd 可用性与身份
+//   - GET  /api/footprint                 全任务进程足迹体检
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
@@ -195,6 +196,7 @@ func (s *Server) SetManager(m *Manager) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/footprint", s.handleFootprint)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
@@ -307,6 +309,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.StartedAt = s.startedAt
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleFootprint 返回全部任务（含已归档）的进程足迹体检。
+//
+// 注意：这是慢接口——它遍历全部历史任务目录逐个枚举进程。与 /api/status
+// 分开正是为了不把那条「必须快」的诊断路径拖下水。
+func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("足迹体检请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Error("manager 未就绪，无法体检足迹")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	resp, err := s.mgr.FootprintAll()
+	if err != nil {
+		s.log.Error("足迹体检失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -852,6 +875,24 @@ func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// doneRequest 是归档请求的可选请求体。
+//
+// 为什么整个 body 可选、解析失败也不报错：旧版 CLI 根本不发 body，把「解析不出
+// 说明」升级成 400 会让新 agentd 拒收所有未升级的客户端——而归档本身与说明无关。
+type doneRequest struct {
+	Note string `json:"note"`
+}
+
+// doneResult 是归档响应。
+//
+// NoteSaved 恒等于「本次请求带了非空说明且已落库」。旧版 agentd 不返回该字段，
+// 客户端按 false 处理并告警——这与 stop 的 worktree_removed 是同一个模式，
+// 保证「说明丢了」不会变成哑失败（B30 的教训）。
+type doneResult struct {
+	OK        bool `json:"ok"`
+	NoteSaved bool `json:"note_saved"`
+}
+
 // handleDone 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。
 func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
@@ -861,14 +902,30 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.Done(r.Context(), taskID); err != nil {
+	// body 缺失或非法一律按「无说明」处理，不报错（见 doneRequest 注释）
+	var req doneRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		s.log.Debug("done 请求体解析失败，按无说明处理", "task", taskID, "cause", err)
+		req.Note = ""
+	}
+	if len(req.Note) > proto.MaxDoneNoteBytes {
+		s.log.Warn("归档说明超长被拒", "task", taskID,
+			"note_bytes", len(req.Note), "limit", proto.MaxDoneNoteBytes)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("归档说明超长（%d 字节，上限 %d）", len(req.Note), proto.MaxDoneNoteBytes)})
+		return
+	}
+	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
+	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
+	s.log.Info("done 请求完成", "task", taskID, "note_saved", req.Note != "")
+	writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 }
 
-// handleStop 主动中止任务（停 executor、作废挂起工单、落 failed）。
+// handleStop 主动中止任务（停 executor、落 failed；作废由终态迁移收口完成）。
 //
 // 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
 // worktree（true=agentd 建的 worktree 已删，false=用户自带 worktree / 原地模式，

@@ -279,7 +279,7 @@ func TestRecoverOnStartupVoidsPendingTickets(t *testing.T) {
 		t.Fatalf("CreateTicket: %v", err)
 	}
 
-	if err := RecoverOnStartup(st, hub, func(string) bool { return false }, discardLogger()); err != nil {
+	if err := RecoverOnStartup(st, hub, func(string) bool { return false }, func(string) {}, discardLogger()); err != nil {
 		t.Fatalf("RecoverOnStartup: %v", err)
 	}
 
@@ -324,7 +324,7 @@ func TestRecoverOnStartup(t *testing.T) {
 		return taskID == "task-alive"
 	}
 
-	if err := RecoverOnStartup(st, hub, probe, discardLogger()); err != nil {
+	if err := RecoverOnStartup(st, hub, probe, func(string) {}, discardLogger()); err != nil {
 		t.Fatalf("RecoverOnStartup: %v", err)
 	}
 
@@ -391,7 +391,7 @@ func TestRecoverOnStartupRebuildsWaitingReview(t *testing.T) {
 		return true
 	}
 
-	if err := RecoverOnStartup(st, hub, probe, discardLogger()); err != nil {
+	if err := RecoverOnStartup(st, hub, probe, func(string) {}, discardLogger()); err != nil {
 		t.Fatalf("RecoverOnStartup: %v", err)
 	}
 	if probed["task-review-alive"] != 1 {
@@ -423,14 +423,18 @@ func TestRecoverOnStartupKeepsDeadWaitingReview(t *testing.T) {
 		probed[taskID]++
 		return false
 	}
+	swept := 0
 
-	if err := RecoverOnStartup(st, hub, probe, discardLogger()); err != nil {
+	if err := RecoverOnStartup(st, hub, probe, func(string) { swept++ }, discardLogger()); err != nil {
 		t.Fatalf("RecoverOnStartup: %v", err)
 	}
 	if probed["task-review-dead"] != 1 {
 		t.Fatalf("waiting_review 任务应被探活判断，probed=%d, want 1", probed["task-review-dead"])
 	}
 	assertState(t, st, "task-review-dead", proto.TaskStateWaitingReview)
+	if swept != 1 {
+		t.Fatalf("waiting_review 保持分支也必须清扫一次残留，实际 %d 次", swept)
+	}
 
 	evs, err := st.EventsFrom("task-review-dead", 0, 100)
 	if err != nil {

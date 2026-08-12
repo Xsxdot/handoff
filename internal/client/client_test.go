@@ -566,3 +566,50 @@ func TestDispatchErrorBodyNotTruncated(t *testing.T) {
 		t.Fatalf("错误文本必须包含报文尾部标记串（被 256 上限截断）: %v", err)
 	}
 }
+
+// TestDoneNoteSavedTrue 断言新 agentd 回传 true 时如实返回。
+func TestDoneNoteSavedTrue(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true,"note_saved":true}`))
+	}))
+	defer ts.Close()
+	saved, err := client.New(ts.URL, testToken).Done(context.Background(), "t1", "改完了")
+	if err != nil || !saved {
+		t.Fatalf("期望 saved=true err=nil，得到 saved=%v err=%v", saved, err)
+	}
+}
+
+// TestDoneOldAgentdReportsNotSaved 是旧 agentd 兼容的钉子：响应里**没有**
+// note_saved 字段时必须按 false 处理，否则「说明丢了」会变成哑失败——
+// 审核者以为留了话，其实没留（与 stop 的 worktree_removed 同一模式）。
+func TestDoneOldAgentdReportsNotSaved(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+	saved, err := client.New(ts.URL, testToken).Done(context.Background(), "t1", "改完了")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("响应无 note_saved 字段时必须按 false 处理")
+	}
+}
+
+// TestDoneSendsNoteInBody 断言 note 真的进了请求体——签名对了但没发出去
+// 是最容易漏的一种「测试全绿但功能没有」。
+func TestDoneSendsNoteInBody(t *testing.T) {
+	var gotBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Write([]byte(`{"ok":true,"note_saved":true}`))
+	}))
+	defer ts.Close()
+	if _, err := client.New(ts.URL, testToken).Done(context.Background(), "t1", "改完了"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotBody, `"note":"改完了"`) {
+		t.Fatalf("note 没进请求体: %s", gotBody)
+	}
+}
