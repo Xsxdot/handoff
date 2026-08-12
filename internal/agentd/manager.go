@@ -607,7 +607,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	executorStarted := false
 	defer func() {
 		if err != nil && !executorStarted {
-			m.compensateWorkspace(ctx, repoPath, ws)
+			m.compensateWorkspace(ctx, taskID, repoPath, ws)
 		}
 	}()
 
@@ -750,6 +750,7 @@ func (m *Manager) guardWorkdirBusy(workDir string) error {
 //
 // 参数：
 //   - ctx: 控制补偿期间的 git 调用
+//   - taskID: 用于在清理失败时给出可重试的 handoff reclaim 命令
 //   - repo: 主仓库路径
 //   - ws: PrepareWorkspace 的产出
 //
@@ -760,7 +761,7 @@ func (m *Manager) guardWorkdirBusy(workDir string) error {
 //     没派出去，补偿成败是次要信息
 //   - 三条 fail-safe：worktree 删除失败 / 切回原 ref 失败 / 分支尖端对不上，
 //     任一命中都保留现场不再往下做。宁可留残留，不可误删
-func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Workspace) {
+func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo string, ws Workspace) {
 	// 空值守卫：现有调用点把 defer 注册在 PrepareWorkspace 成功之后，理论上到不了
 	// 这里，但补偿函数本身不该依赖调用点的注册位置
 	if ws.WorkDir == "" {
@@ -773,7 +774,8 @@ func (m *Manager) compensateWorkspace(ctx context.Context, repo string, ws Works
 		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
 			// 工作树还在，分支被它 checkout 着，git 也会拒绝删除；且失败现场要留给人排查
 			m.log.Error("补偿清理 managed worktree 失败，保留分支待查",
-				"repo", repo, "workdir", ws.WorkDir, "branch", ws.Branch, "cause", err)
+				"repo", repo, "workdir", ws.WorkDir, "branch", ws.Branch,
+				"retry", "handoff reclaim "+shortTaskID(taskID), "cause", err)
 			return
 		}
 	} else {
@@ -1099,7 +1101,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
 			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
-				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+				Text: worktreeCleanupHint(taskID, werr),
 			}); aerr != nil {
 				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
 			} else {
@@ -1188,7 +1190,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("stop 清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
 			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
-				Text: fmt.Sprintf("worktree 清理失败：%v，请手动 git worktree remove", werr),
+				Text: worktreeCleanupHint(taskID, werr),
 			}); aerr != nil {
 				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
 			} else {

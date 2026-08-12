@@ -386,3 +386,28 @@ func (m *Manager) ReclaimList() (*proto.ReclaimListResp, error) {
 		"bad_repos", len(failed))
 	return resp, nil
 }
+
+// worktreeCleanupHint 构造「清理失败」提示文案。
+//
+// 参数：
+//   - taskID: 任务 ID（提示里只取前 8 位，与 CLI 的接受形态一致）
+//   - cause: 清理失败的真因
+//
+// 返回：
+//   - 带真因与可执行出路的一句话
+//
+// 注意：刻意不再提「请手动 git worktree remove」。清理失败最常见的原因就是
+// 工作树脏而 remove 不带 --force，手工重跑同一条命令撞的是同一堵墙——
+// B77 的 2c58bbb7 正是这么无声漏掉的
+func worktreeCleanupHint(taskID string, cause error) string {
+	return fmt.Sprintf("worktree 清理失败：%v，可重试：handoff reclaim %s",
+		cause, shortTaskID(taskID))
+}
+
+// shortTaskID 取任务 ID 前 8 位（不足 8 位则原样返回）。
+func shortTaskID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
