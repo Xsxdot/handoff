@@ -4,7 +4,9 @@
 //   - GET /api/tasks/{id} 轮询详情（任务 + 挂起工单，4s 一次），页面隐藏时暂停
 //   - 首拉时以 recent_events 打底事件流，然后开**一条** /ws/events?task=<id>
 //     &from_seq=<最大 seq> 收实时增量（WS 层自己推进游标，重连不重放）
-//   - GET /api/tasks/{id}/render 实况流（RenderPanel 内自管 AbortController）
+//   - GET /api/tasks/{id}/frames 结构化回合流（TimelinePanel → useFramesStream
+//     内自管 AbortController）；切到原始视图时改用 /render（RenderPanel），
+//     两条流互斥，任一时刻只开一条
 //
 // 断线语义（硬契约）：
 //   - 断线保留最后拿到的数据继续显示，所有会改状态的按钮禁用，标注「已断开」；
@@ -26,7 +28,7 @@ import { errorMessage, shortID } from '../lib/format'
 import { TaskHeader } from './TaskHeader'
 import { TicketsPanel } from './TicketsPanel'
 import { EventsPanel } from './EventsPanel'
-import { RenderPanel } from './RenderPanel'
+import { TimelinePanel } from './TimelinePanel'
 import { ReviewPanel } from './ReviewPanel'
 import { AdvanceActions } from './AdvanceActions'
 
@@ -201,7 +203,7 @@ export function TaskPage() {
           <div className="grid flex-1 items-start gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             {/* 左列：实况正文 + 事件流 */}
             <div className="flex flex-col gap-4">
-              <RenderPanel taskId={id} />
+              <TimelinePanel taskId={id} taskState={detail.task.state} />
               <EventsPanel events={events} status={wsStatus} error={wsError} />
             </div>
 
