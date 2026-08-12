@@ -261,3 +261,38 @@ func startWith(cmd *exec.Cmd, spec Spec) (Handle, error) {
 	_ = cmd.Process.Release()
 	return Handle{PID: pid, LockPath: spec.LockPath}, nil
 }
+
+// TestShimLogsLandInTaskDirShimLog（8.1 回归）：spawnDetached 必须把 shim 的
+// stderr 接到调用方给的日志文件，否则 shim 的 slog（含撞墙归因那行）全落进
+// /dev/null，审核者在任务目录里什么都读不到。生产里该文件是 <taskDir>/shim.log，
+// 由 Start 打开后传入；这里直接用真实 shim 入口经 spawnDetached 拉起，断言
+// shim 自己必打的那行 slog 出现在日志文件里。
+func TestShimLogsLandInTaskDirShimLog(t *testing.T) {
+	dir := t.TempDir()
+	spec := baseSpec(dir, "exit 0")
+	specPath := writeSpec(t, dir, spec)
+	logPath := filepath.Join(dir, "shim.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("打开 shim.log: %v", err)
+	}
+	defer f.Close()
+
+	// spawnDetached 继承本进程环境，helper 开关经 t.Setenv 注入（t.Cleanup 还原）
+	t.Setenv(helperEnv, "shimentry")
+	t.Setenv("PROCHOST_TEST_SPEC", specPath)
+	pid, err := spawnDetached(
+		[]string{os.Args[0], "-test.run", "^TestHelperShimEntry$", "-test.v=false"},
+		dir, f)
+	if err != nil {
+		t.Fatalf("spawnDetached 拉起 shim 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+
+	// shim 每次必打的 slog 行；它能出现在 shim.log 里，就证明 stderr 接线没被
+	// 悄悄退回 /dev/null
+	got := waitFile(t, logPath, "shim 拉起执行者进程", 10*time.Second)
+	if !strings.Contains(got, "shim 拉起执行者进程") {
+		t.Fatalf("shim 日志应落入任务目录 shim.log，实得 %q", got)
+	}
+}

@@ -8,12 +8,16 @@
 
 - 准入闸拒发（400，文案带 used/limit 真实数字）、高水位 `resource_pressure` 事件、
   围栏真实生效（executor 树 `ulimit -u`/`-Hu` 均 = 2400）三条真机验证通过。
-- **两条计划偏差被真机照出，详见 §7**：①shim 自身的日志在真实 spawn 路径下被丢弃
-  （`spawnDetached` 把 shim 的 stdio 接进 `/dev/null`），计划的 4.2「agentd.log 里有
-  「拉起执行者进程失败（进程配额）」」预期无法成立——该行只可能出现在 shim 自己的
-  stderr（被丢弃）；②shim 进程从未收到 `SetFencePolicy`，其 `ExplainForkFailure` 的
-  参考上限恒为策略层默认 L=2400，与**实际安装的围栏值**（`spec.NprocLimit`）可能不符，
-  非默认 `reserve_ratio` 部署下归因文案会拿错数字。两条均已用直接 shim 启动实证。
+- **8.1/8.2 两个真实代码缺陷在烟测中被照出，且已修复**（见 §8）：①shim 自身日志在
+  真实 spawn 路径下被丢进 /dev/null，撞墙归因行没人看得到——已把 shim 的 stderr 接进
+  `<taskDir>/shim.log`（`Start`→`spawnDetached` 接线，含回归用例
+  `TestShimLogsLandInTaskDirShimLog`）；②shim 进程从不调 `SetFencePolicy`，归因参考
+  上限恒为策略默认 L=2400 而与实际围栏不符——已改为读**本进程实际生效的 RLIMIT_NPROC**
+  （`getNprocLimit` 地面真相），判据从「贴 0.9 阈值」收紧为「used ≥ 实际软限即确定归因」
+  （含 shim 上下文回归用例 `TestExplainForkFailureUsesActualLimitNotPolicyDefault`，
+  变异自检确认该用例在旧行为下 FAIL）。修复后同一构造（§4）从「363/2400 不像配额问题」
+  变成「进程配额耗尽（当前 uid 357/100）」，且落进任务目录 shim.log。
+- **8.3/8.4 属计划写错，未改码、留作已知偏差**（§8）。
 - 真机路径的「shim 撞墙」窗口是 `L = used+1` 的单整数窗口，在本机 ±6 的占用噪声下
   用真派发打不中（多轮实测），改为**宿主 shell 直接构造 shim**（B69 同款手法）做
   确定性复现，归因代码路径（`fork/exec …: resource temporarily unavailable` → EAGAIN
@@ -72,27 +76,35 @@ Error: dispatch: 状态码 400: {"error":"进程余量不足：当前 360/27，�
 用完即回收，不派发真任务）：
 
 ```bash
-# 构造 spec：围栏 100 远低于当前占用 363，shim 装上围栏后 fork /bin/sleep 必 EAGAIN
+# 构造 spec：围栏 100 远低于当前占用 357，shim 装上围栏后 fork /bin/sleep 必 EAGAIN
 $ cat shimwall/spec.json
-{"argv":["/bin/sleep","60"],"dir":"/tmp/opencode/handoff-fence-repo","env":[],
+{"argv":["/bin/sleep","60"],"dir":"/tmp","env":[],
  "stdout":"…/serve.log","stderr":"…/serve.log","lock_path":"…/proc.lock",
  "info_path":"…/proc.json","sentinel":false,"nproc_limit":100}
 
-$ handoff _shim --spec …/shimwall/spec.json 2> shim.stderr ; echo $?
+$ handoff _shim --spec …/shimwall/spec.json 2> shim.log ; echo $?
 1
 
-$ cat shim.stderr
-2026/08/12 20:09:44 INFO  进程围栏已安装 mod=prochost lock=…/proc.lock limit=100
-2026/08/12 20:09:44 INFO  shim 拉起执行者进程 mod=prochost bin=/bin/sleep dir=…
-2026/08/12 20:09:44 WARN  进程创建失败（EAGAIN），但占用不高，原因未知 mod=prochost used=363 limit=2400
-2026/08/12 20:09:44 ERROR 拉起执行者进程失败（进程配额） mod=prochost lock=… bin=/bin/sleep
-      note="进程创建失败（EAGAIN），但当前占用仅 363/2400，不像配额问题，原因未知"
+$ cat shim.log   # 生产里这是 Start 接的 <taskDir>/shim.log（8.1 修复后）
+2026/08/12 20:27:08 INFO  进程围栏已安装 mod=prochost lock=…/proc.lock limit=100
+2026/08/12 20:27:08 INFO  shim 拉起执行者进程 mod=prochost bin=/bin/sleep dir=/tmp
+2026/08/12 20:27:08 ERROR 进程配额耗尽 mod=prochost used=357 limit=100
+2026/08/12 20:27:08 ERROR 拉起执行者进程失败（进程配额） mod=prochost lock=… bin=/bin/sleep
+      note="进程配额耗尽（当前 uid 357/100），命令未执行；这不是代码问题，请降低并发后重试"
       fence=100 cause="fork/exec /bin/sleep: resource temporarily unavailable"
-Error: 进程创建失败（EAGAIN），但当前占用仅 363/2400，不像配额问题，原因未知: 拉起 /bin/sleep: fork/exec /bin/sleep: resource temporarily unavailable
+Error: 进程配额耗尽（当前 uid 357/100），命令未执行；这不是代码问题，请降低并发后重试: 拉起 /bin/sleep: fork/exec /bin/sleep: resource temporarily unavailable
 ```
 
-- EAGAIN 被 `ExplainForkFailure` 认领，Error 分支带 `note` 与 `fence` 字段。✓
-- **但归因数字是错的**（`363/2400`，实际围栏 100）——见 §7.2。这是本烟测照出的真实缺陷。
+- EAGAIN 被 `ExplainForkFailure` 认领，**确定**判为配额耗尽，Error 分支带 `note` 与
+  `fence` 字段，数字是**实际围栏 100**，且落到任务目录的 shim.log（审核者读得到）。✓
+- **修复前同一构造**（8.1/8.2 修复前的原始输出，两行都错了）：
+  ```
+  WARN  进程创建失败（EAGAIN），但占用不高，原因未知 mod=prochost used=363 limit=2400
+  ERROR 拉起执行者进程失败（进程配额） … note="进程创建失败（EAGAIN），但当前占用仅 363/2400，不像配额问题，原因未知" fence=100 …
+  ```
+  装了围栏 100、fork 必然被自己的围栏挡下，却报「363/2400 不像配额问题」——自信的错
+  结论，方向恰好相反。修复把参考上限从策略层默认 L 改为**本进程实际生效的软限**
+  （`getNprocLimit`），并把判据从「贴 0.9 阈值」收紧为「used ≥ 实际软限即确定归因」。
 
 ## 5. 验证三：高水位事件（Task 9 Step 4.3）
 
@@ -148,27 +160,45 @@ seq 14  question {ticket_id:…, question: "2400\n2400", kind: "ask"}
 
 ## 8. 计划偏差 / 缺陷（照实直说）
 
-- **8.1 计划的 4.2 与 4.4 的日志落点预期不成立**：`spawnDetached` 把 shim 的
-  stdout/stderr 接进 `/dev/null`（`platform_unix.go`），shim 进程的 slog 全量丢弃——
-  「进程围栏已安装」与「拉起执行者进程失败（进程配额）」这两行**永远不会进 agentd.log**
-  （真机 grep 命中 0）。计划 4.2/4.4 预期「agentd.log 里有……」无法兑现；归因行只能在
-  宿主 shell 直接构造 shim 时从它的 stderr 看到（§4）。生产里撞墙时唯一可见的痕迹是
-  任务 failed + 一个不含归因文案的失败原因，**归因文案被丢进了 /dev/null**——这削弱了
-  3.1「撞墙必须认得出是配额」的目标，建议后续把 shim 的 stderr 接进任务目录的日志文件。
-- **8.2 归因参考上限与实际围栏值可能不符**：shim 是独立进程，从不调用 `SetFencePolicy`，
-  其 `ExplainForkFailure → CheckAdmission → fenceReference → fenceLimit` 恒按**策略层
-  默认**（ratio 0.1 → L=2400）判读，而它实际安装的是 `spec.NprocLimit`。默认配置下两者
-  相等（都 2400），归因正确；非默认 `reserve_ratio` 下（如烟测的 0.99 配置）两者背离，
-  文案会拿 2400 冒充真实围栏（§4 实证：装了 100 却报 363/2400，且因此**不判**配额耗尽
-  而报「原因未知」——恰是设计要消灭的误导方向）。建议 `ExplainForkFailure` 接受实际
-  围栏值作参考（或 shim 侧把 `spec.NprocLimit` 传进去）。
-- **8.3 计划 Step 5 的验证机制读错上下文**：`handoff run` 在 agentd 上下文执行（未装
-  围栏，实测 2666/4000），读不到 executor 树限值。正确的 executor 树证明是让 executor
-  自己报告（§6：模型经 Bash 工具报 2400/2400）。
-- **8.4 真派发路径的 shim 撞墙窗口**：准入闸放行 ⟺ `used < L`，shim 起 executor 撞墙
-  ⟺ `used+1 ≥ L`，两条件同时成立只有 `L = used+1` 一个整数点，且 agentd 重启后 L 就
-  钉死、used 随机器活动漂移。本机 ±6 噪声下多轮打不中。计划 4.2 的「刚好」取值在真实
-  机器上不可行，需宿主 shell 构造（§4）或用别的手段制造确定性窗口。
+### 8.1 shim 日志落 /dev/null —— **已修**
+
+`spawnDetached` 原先把 shim 的 stdout/stderr 全接进 `/dev/null`，shim 进程的 slog 全量
+丢弃，「进程围栏已安装」与「拉起执行者进程失败（进程配额）」这两行永远不会进
+agentd.log（修复前真机 grep 命中 0），生产里撞墙时审核者只能看到一个不带归因的
+failed。**修复**：`Start` 打开 `<taskDir>/shim.log`（0600，追加），`spawnDetached` 的
+stderr 参数接到它（stdin/stdout 仍为 /dev/null）；shim 的 slog 与 cobra 错误输出全部
+落进任务目录。打开失败只降级（继续落 /dev/null），不阻断拉起（fail-open）。
+回归用例 `TestShimLogsLandInTaskDirShimLog`（真实 shim 入口经 spawnDetached 拉起，
+断言 shim 必打的 slog 行出现在日志文件）。
+
+### 8.2 归因参考上限与实际围栏不符 —— **已修**
+
+shim 是独立进程、从不调用 `SetFencePolicy`，其 `ExplainForkFailure` 原先经
+`CheckAdmission → fenceReference → fenceLimit` 恒按策略层默认 L 判读，而它实际安装
+的是 `spec.NprocLimit`。默认配置下两者相等（都 2400），归因正确；非默认
+`reserve_ratio` 下两者背离，文案拿 2400 冒充真实围栏（§4 实证：装了 100 却报
+363/2400，且因此**不判**配额耗尽而报「原因未知」——恰是设计要消灭的误导方向）。
+**修复**：`ExplainForkFailure` 改为直接读 `enumProcsFn()`（占用）+ `getNprocLimitFn()`
+（**本进程当前实际生效的软限**，`getNprocLimit` 读回来即地面真相，无需记账）；判据
+从「占用 ≥ 0.9×参考」收紧为「**占用 ≥ 实际软限即确定判配额耗尽**」，占用低于实际
+软限或读不出数才如实说未知。在 shim 里该软限就是刚装上的围栏，在 agentd 里是系统
+默认上限，两处上下文各自正确。回归用例
+`TestExplainForkFailureUsesActualLimitNotPolicyDefault`（shim 上下文：实际软限 100、
+占用 363，断言判配额耗尽、数字是 100、绝不出现 2400）；变异自检：把参考源改回
+`fenceLimit()` 后该用例 FAIL（note="…363/2400，不像配额问题"），还原后复绿。
+
+### 8.3 计划 Step 5 的验证机制读错上下文 —— **已知偏差，未改码**
+
+`handoff run` 在 agentd 上下文执行（未装围栏，实测 2666/4000），读不到 executor 树
+限值。正确的 executor 树证明是让 executor 自己报告（§6：模型经 Bash 工具报
+2400/2400）。
+
+### 8.4 真派发路径的 shim 撞墙窗口 —— **已知偏差，未改码**
+
+准入闸放行 ⟺ `used < L`，shim 起 executor 撞墙 ⟺ `used+1 ≥ L`，两条件同时成立只有
+`L = used+1` 一个整数点，且 agentd 重启后 L 就钉死、used 随机器活动漂移。本机 ±6
+噪声下多轮打不中。计划 4.2 的「刚好」取值在真实机器上不可行，需宿主 shell 构造
+（§4）或用别的手段制造确定性窗口。
 
 ## 9. 测试与变异检验摘要（详见计划 Task 8 与本分支提交）
 
@@ -176,4 +206,9 @@ seq 14  question {ticket_id:…, question: "2400\n2400", kind: "ask"}
   指定的动态取值方案）真机通过：setsid 逃逸后限值仍为 `cur-1`，抬回 `cur` 必被拒。
 - 六条变异逐条改码→指定用例 FAIL→还原→`git diff --exit-code` 干净（计划 Task 8 全记录，
   本分支提交 `1686335` 只加单向门用例）。
-- 生产全量六闸门 §2 全绿。
+- **8.1/8.2 修复的回归用例**（本修复提交）：`TestShimLogsLandInTaskDirShimLog`
+  （shim 日志落进任务目录文件）、`TestExplainForkFailureUsesActualLimitNotPolicyDefault`
+  （归因引用实际软限而非策略默认 L，变异自检确认有效）。原有
+  `TestExplainForkFailureQuotaExhausted` / `TestExplainForkFailureLowUsageStaysHonest`
+  按新判据（used ≥ 实际软限）同步更新。
+- 生产全量六闸门 §2 全绿（本修复后重跑一致）。

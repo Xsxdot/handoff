@@ -52,6 +52,16 @@ func withFakeProcs(t *testing.T, used int, limit int, limitErr error) {
 	t.Cleanup(func() { enumProcsFn, procLimitFn = oldEnum, oldLimit })
 }
 
+// withFakeLimit 把「本进程实际生效的软限」读缝换成固定值，恢复交给 t.Cleanup。
+// 归因（ExplainForkFailure）读的是这个值而不是 procLimitFn/策略 L——见
+// getNprocLimitFn 的 why。
+func withFakeLimit(t *testing.T, limit int, limitErr error) {
+	t.Helper()
+	old := getNprocLimitFn
+	getNprocLimitFn = func() (int, error) { return limit, limitErr }
+	t.Cleanup(func() { getNprocLimitFn = old })
+}
+
 // withPolicy 临时改策略，恢复交给 t.Cleanup。
 func withPolicy(t *testing.T, disabled bool, ratio float64) {
 	t.Helper()
@@ -145,24 +155,47 @@ func TestCheckAdmissionWatermarkUsesFenceLimit(t *testing.T) {
 	}
 }
 
-// EAGAIN + 高水位 = 确定归因；文案必须带真实数字（审核者要靠它一眼定性）。
+// EAGAIN + 占用 ≥ 实际生效软限 = 确定归因；文案必须带真实数字（审核者要靠它
+// 一眼定性）。参考上限是本进程实际软限（getNprocLimit），不是策略层重算的默认 L。
 func TestExplainForkFailureQuotaExhausted(t *testing.T) {
-	withPolicy(t, false, 0.1)
-	withFakeProcs(t, 2390, 2666, nil)
+	withFakeProcs(t, 2450, 2666, nil)
+	withFakeLimit(t, 2400, nil)
 	note, quota := ExplainForkFailure(fmt.Errorf("fork/exec /bin/sh: %w", syscall.EAGAIN))
 	if !quota {
-		t.Fatalf("高水位下的 EAGAIN 应判为配额耗尽，得到 quota=false note=%q", note)
+		t.Fatalf("占用贴住上限的 EAGAIN 应判为配额耗尽，得到 quota=false note=%q", note)
 	}
-	if !strings.Contains(note, "2390") || !strings.Contains(note, "2400") {
+	if !strings.Contains(note, "2450") || !strings.Contains(note, "2400") {
 		t.Fatalf("归因文案必须带 used/limit 真实数字，得到 %q", note)
 	}
 }
 
-// EAGAIN 但占用不高：**如实说不知道**。会说谎的诊断比没有诊断更糟——
+// 归因必须引用「真正在起作用的那个限值」：shim 是独立进程、从不调用
+// SetFencePolicy，策略层默认 L 与它实际装上的围栏可能完全不同——烟测实证
+// （装了围栏 100、占用 363，代码却按默认 2400 把确定的配额耗尽判成「不像配额
+// 问题」）。本例模拟 shim 上下文：实际软限 100、占用 363 ≥ 100，必须判配额
+// 耗尽、数字是 100 而不是策略默认 2400。
+func TestExplainForkFailureUsesActualLimitNotPolicyDefault(t *testing.T) {
+	withFakeProcs(t, 363, 2666, nil) // used=363；procLimitFn 仍返回系统上限 2666
+	withFakeLimit(t, 100, nil)       // 实际生效软限 = 围栏 100
+	// 不设 withPolicy：shim 进程从不 SetFencePolicy，策略层保持默认 0.1 → L=2400。
+	// 归因若落到默认 L 就会把 363 < 2160 判成「不像配额问题」——正是本用例要防的。
+	note, quota := ExplainForkFailure(fmt.Errorf("fork/exec /bin/sleep: %w", syscall.EAGAIN))
+	if !quota {
+		t.Fatalf("占用 363 ≥ 围栏 100，应确定判为配额耗尽，得到 quota=false note=%q", note)
+	}
+	if !strings.Contains(note, "363") || !strings.Contains(note, "100") {
+		t.Fatalf("归因文案必须带真实 used/limit（100），得到 %q", note)
+	}
+	if strings.Contains(note, "2400") {
+		t.Fatalf("归因不得引用策略默认 L=2400，得到 %q", note)
+	}
+}
+
+// EAGAIN 但占用低于实际软限：**如实说不知道**。会说谎的诊断比没有诊断更糟——
 // 这正是本次事故里「报错长得像 flaky 测试」把排障带偏 43 分钟的反面。
 func TestExplainForkFailureLowUsageStaysHonest(t *testing.T) {
-	withPolicy(t, false, 0.1)
 	withFakeProcs(t, 800, 2666, nil)
+	withFakeLimit(t, 2400, nil)
 	note, quota := ExplainForkFailure(fmt.Errorf("fork/exec /bin/sh: %w", syscall.EAGAIN))
 	if quota {
 		t.Fatalf("低占用不该判配额耗尽: %q", note)

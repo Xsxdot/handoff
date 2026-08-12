@@ -47,6 +47,17 @@ const fenceWatermarkRatio = 0.9
 // **生产路径恒为 procLimit**，非测试代码不得赋值。
 var procLimitFn = procLimit
 
+// getNprocLimitFn 是读「本进程当前实际生效的 RLIMIT_NPROC 软限」的测试缝。
+// **生产路径恒为 getNprocLimit**，非测试代码不得赋值。
+//
+// 为什么归因要用它而不是 procLimitFn：procLimitFn 读的是系统上限
+// （kern.maxprocperuid），而围栏把**当前进程**的软限压到 spec.NprocLimit——
+// shim 是独立进程、从不调用 SetFencePolicy，策略层默认 L 与它实际装上的围栏
+// 可能完全不同（2026-08-12 烟测实证：装了 100，归因却按 2400 算，把确定的
+// 配额耗尽判成「不像配额问题」）。fork 失败正是内核拿「调用者自己的软限」比
+// 「uid 进程总数」得出的，归因必须读软限本身，而不是按 ratio 重算。
+var getNprocLimitFn = getNprocLimit
+
 // SetFencePolicy 注入围栏策略，由 agentd 启动时按 config 调用一次。
 //
 // 参数：
@@ -162,31 +173,44 @@ func CheckAdmission() Admission {
 //   - note: 面向人的归因文案；空串表示这个错误与配额无关，调用方不必改写它
 //   - quota: 是否**确定**为配额耗尽
 //
+// 参考上限是**本进程当前实际生效的 RLIMIT_NPROC 软限**（getNprocLimit），不是
+// 按 reserve_ratio 重算的策略默认值：fork 失败正是内核拿「调用者自己的软限」
+// 比「uid 进程总数」得出的，归因必须引用它。在 shim 里它就是刚装上的围栏
+// （spec.NprocLimit）；在 agentd 里它是系统默认上限。两个都不用记账，读现成的。
+//
 // 三条分支，对应 2026-08-12 事故的教训——当时的
 // `fork/exec /bin/sh: resource temporarily unavailable` 埋在测试输出里，长得
 // 像 flaky 测试，把排障方向带偏了整整 43 分钟：
 //   - 非 EAGAIN：不认领，返回空串
-//   - EAGAIN 且占用贴着参考上限：确定归因，quota=true，文案带真实数字
-//   - EAGAIN 但占用不高、或读不出占用：**如实说不知道**，quota=false。
+//   - EAGAIN 且占用 ≥ 实际软限：**确定**归因，quota=true，文案带真实数字——
+//     内核正是在 used ≥ 软限这个阈值上拒绝 fork，占用不低于它就不可能别的原因
+//   - EAGAIN 但占用低于实际软限、或读不出数：**如实说不知道**，quota=false。
 //     宁可说「原因未知」也不能猜一个像模像样的结论
 func ExplainForkFailure(err error) (note string, quota bool) {
 	if err == nil || !errors.Is(err, syscall.EAGAIN) {
 		return "", false
 	}
-	a := CheckAdmission()
-	if !a.Known {
+	procs, perr := enumProcsFn()
+	if perr != nil {
 		log().Warn("进程创建失败（EAGAIN），但读不到当前占用，无法归因")
 		return "进程创建失败（EAGAIN），且读不到当前进程占用，原因未知", false
 	}
-	if a.NearFull() {
-		log().Error("进程配额耗尽", "used", a.Used, "limit", a.Limit)
-		return fmt.Sprintf("进程配额耗尽（当前 uid %d/%d），命令未执行；"+
-			"这不是代码问题，请降低并发后重试", a.Used, a.Limit), true
+	limit, lerr := getNprocLimitFn()
+	if lerr != nil || limit <= 0 {
+		log().Warn("进程创建失败（EAGAIN），但读不到本进程实际生效的进程数上限，无法归因",
+			"cause", lerr, "limit", limit)
+		return "进程创建失败（EAGAIN），且读不到本进程实际生效的进程数上限，原因未知", false
 	}
-	log().Warn("进程创建失败（EAGAIN），但占用不高，原因未知",
-		"used", a.Used, "limit", a.Limit)
+	used := len(procs)
+	if used >= limit {
+		log().Error("进程配额耗尽", "used", used, "limit", limit)
+		return fmt.Sprintf("进程配额耗尽（当前 uid %d/%d），命令未执行；"+
+			"这不是代码问题，请降低并发后重试", used, limit), true
+	}
+	log().Warn("进程创建失败（EAGAIN），但占用低于实际上限，原因未知",
+		"used", used, "limit", limit)
 	return fmt.Sprintf("进程创建失败（EAGAIN），但当前占用仅 %d/%d，"+
-		"不像配额问题，原因未知", a.Used, a.Limit), false
+		"不像配额问题，原因未知", used, limit), false
 }
 
 // applyFencePolicy 按当前策略把围栏值写进 spec。

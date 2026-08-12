@@ -242,7 +242,23 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	}
 	argv := append([]string{selfExe}, extraArgs...)
 	argv = append(argv, "_shim", "--spec", specPath)
-	pid, err := spawnDetached(argv, spec.Dir)
+
+	// shim 的 stderr 接进任务目录的 shim.log：shim 是独立进程，日志走 slog→stderr，
+	// 不接的话会落进 /dev/null（spawnDetached 的 stdio=nil），撞墙归因那一行谁
+	// 都看不到——2026-08-12 烟测实证「装了围栏却报 363/2400」的归因行确实被丢掉。
+	// 打开失败只降级（shim 输出继续落 /dev/null），绝不阻断拉起。
+	var shimLog *os.File
+	if spec.InfoPath != "" {
+		shimLogPath := filepath.Join(filepath.Dir(spec.InfoPath), "shim.log")
+		shimLog, err = os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			log().Warn("打开 shim 日志文件失败，shim 输出将落入 /dev/null",
+				"path", shimLogPath, "cause", err)
+		} else {
+			defer shimLog.Close()
+		}
+	}
+	pid, err := spawnDetached(argv, spec.Dir, shimLog)
 	if err != nil {
 		log().Error("拉起 shim 失败", "spec", specPath, "cause", err)
 		return Handle{}, err

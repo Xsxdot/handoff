@@ -46,7 +46,9 @@ func flockExclusiveNB(*os.File) error { return nil }
 // isLockContended 非 unix 平台永远撞不上锁——因为根本没加锁。
 func isLockContended(error) bool { return false }
 
-func spawnDetached(argv []string, dir string) (int, error) { return 0, errNotImplemented }
+func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error) {
+	return 0, errNotImplemented
+}
 
 func killGroup(pid int) error { return errNotImplemented }
 

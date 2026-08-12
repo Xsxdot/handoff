@@ -343,6 +343,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
   - `prompt.md` / `opencode.json`：派发给模型的回合制 prompt 与权限配置（edit/bash/webfetch/external_directory 均为 ask）。
   - `proc.json`：执行者连接凭据（shim Handle / 端口 / session_id），agentd 重启后凭它探活与重建订阅。
   - `spec.json`：拉起 shim 的启动描述，**权限 0600 且含完整 env**（可能含凭据，走 env 而非 argv，避免出现在 `ps` 输出里）；任务归档后随任务目录一并清理。
+  - `shim.log`：shim 自身的日志（围栏安装/撞墙归因等）。撞墙时报错只落在这里，不进 agentd.log——排障「fork 报 resource temporarily unavailable」时先看它。
   - `proc.lock`：shim 的存活锁（`prochost.Alive` 的唯一判据；内核在进程死亡时自动释放）。
 - 执行者输出落盘 `<taskDir>/serve.log`（或 claude 的 `out.jsonl`/`claude.log`）：serve 退出后仍可读，事后取证一律以落盘文件为准。
 
