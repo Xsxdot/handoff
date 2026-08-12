@@ -142,7 +142,7 @@ handoff dispatch --new-worktree --executor opencode --model cheap/model plan.md
 handoff dispatch --new-worktree --executor claude plan.md                      # 用 Claude Code 执行
 handoff dispatch --target devbox plan.md                                      # 派到开发机（未登记会自动登记）
 handoff dispatch --project nova --target devbox plan.md                       # 跨项目：cwd 不是目标项目时
-handoff dispatch --no-terminal plan.md                                        # 派发后不弹终端
+handoff dispatch --no-terminal plan.md                                        # 配置开 terminal.auto: true 时，逐次关闭弹终端
 
 # 4. 审核者侧典型循环
 handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
@@ -212,8 +212,8 @@ approver:                     # 分级审批链的廉价模型审批者
 executor:                     # dispatch 未显式指定执行者时的缺省
   default: opencode
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
-terminal:                     # dispatch 成功后的终端弹窗
-  auto: true                  # darwin 下 osascript 弹 Terminal.app 进实况
+terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
+  auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
 sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
   auto: true                  # 关闭后仍可用 handoff pull 手动同步
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）

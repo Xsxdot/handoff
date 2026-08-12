@@ -59,7 +59,7 @@ type Config struct {
 	Approver ApproverConfig
 	// Executor 是任务的缺省执行者选择配置。
 	Executor ExecutorConfig
-	// Terminal 是 dispatch 成功后是否默认弹终端实况的配置。
+	// Terminal 是 dispatch 成功后是否弹终端实况的配置（Auto 默认 false，见 TerminalConfig）。
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
@@ -134,8 +134,13 @@ type ExecutorConfig struct {
 
 // TerminalConfig 描述 dispatch 成功后的终端弹窗行为。
 //
-// Auto 默认 true，仅 darwin 生效（osascript 弹 Terminal.app）；其余平台
-// 降级为打印「实况: handoff attach <id>」提示行。
+// Auto 默认 **false**（不弹）；仅当置 true 时才在 darwin 下用 osascript 弹
+// Terminal.app 进实况；其余平台无论配置如何都降级为打印
+// 「实况: handoff attach <id>」提示行。
+//
+// 为什么默认不弹：dispatch 的 stdout 有「单行任务 JSON」契约，弹窗与提示行都
+// 不该干扰它；且逐次开关由 --no-terminal 承担，默认不弹才不会让老脚本因为
+// 多出一行提示而解析错乱。
 type TerminalConfig struct {
 	Auto bool
 }
@@ -162,13 +167,13 @@ type Target struct {
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
 func Load(path string) (*Config, error) {
 	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
-	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=true），
+	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
 	// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
 	cfg := &Config{
 		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
 		Approver: ApproverConfig{Timeout: 60 * time.Second},
 		Executor: ExecutorConfig{Default: "opencode"},
-		Terminal: TerminalConfig{Auto: true},
+		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
 		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
 		Targets:  map[string]Target{},

@@ -1,9 +1,11 @@
-// dispatch 默认弹终端测试：darwin 下 openTerminal 被调、--no-terminal 抑制、
-// 弹窗失败不影响退出码。
+// dispatch 终端弹窗测试：默认不弹（openTerminal 零调用）、配置 auto: true 时
+// darwin 下 openTerminal 被调、--no-terminal 抑制、弹窗失败不影响退出码、
+// stdout 严格单行任务 JSON。
 package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +23,15 @@ import (
 var dispatchTestTaskJSON = `{"id":"task-abc123","state":"running"}`
 
 // runDispatch 以给定 flags 执行 dispatch（指向 fake agentd），返回 stdout、stderr 与错误。
+// 测试配置只含 listen/token，不含 terminal 段——即「默认不弹」路径。
 func runDispatch(t *testing.T, extraArgs ...string) (string, string, error) {
+	return runDispatchWithConfig(t, "", extraArgs...)
+}
+
+// runDispatchWithConfig 与 runDispatch 同构，额外在测试配置里追加 cfgExtra 片段
+// （如 "terminal:\n  auto: true\n"）。用参数而不是全局变量：避免测试之间互相
+// 泄漏配置状态。
+func runDispatchWithConfig(t *testing.T, cfgExtra string, extraArgs ...string) (string, string, error) {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/tasks" {
@@ -33,7 +43,7 @@ func runDispatch(t *testing.T, extraArgs ...string) (string, string, error) {
 	}))
 	t.Cleanup(ts.Close)
 	addr := strings.TrimPrefix(ts.URL, "http://")
-	cfgPath := writeTestConfig(t, "listen: \""+addr+"\"\ntoken: \""+testToken+"\"\n")
+	cfgPath := writeTestConfig(t, "listen: \""+addr+"\"\ntoken: \""+testToken+"\"\n"+cfgExtra)
 	resetFlags(t)
 	targetName = ""
 	configPath = cfgPath
@@ -72,9 +82,11 @@ func TestAppleScriptQuoteEscapes(t *testing.T) {
 	}
 }
 
-// TestDispatchOpensTerminalByDefault 验证 darwin 下派发成功后默认弹终端：
-// openTerminal 被调且 argv 含 attach 与任务 id。
-func TestDispatchOpensTerminalByDefault(t *testing.T) {
+// TestDispatchOpensTerminalWhenConfigEnabled 验证配置显式 terminal.auto: true 时
+// darwin 下派发成功后弹终端：openTerminal 被调一次且 argv 含 attach 与任务 id。
+// 为什么必须显式配 auto: true：默认不弹之后，缺配置的路径已经走不到 openTerminal，
+// 不配这条测试就失去了判别力。
+func TestDispatchOpensTerminalWhenConfigEnabled(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("弹终端仅 darwin")
 	}
@@ -83,7 +95,7 @@ func TestDispatchOpensTerminalByDefault(t *testing.T) {
 	openTerminal = func(argv []string) error { called = append(called, argv); return nil }
 	t.Cleanup(func() { openTerminal = old })
 
-	if _, _, err := runDispatch(t); err != nil {
+	if _, _, err := runDispatchWithConfig(t, "terminal:\n  auto: true\n"); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if len(called) != 1 {
@@ -98,8 +110,8 @@ func TestDispatchOpensTerminalByDefault(t *testing.T) {
 	}
 }
 
-// TestDispatchNoTerminalFlagSuppresses 验证 --no-terminal 抑制弹窗：
-// openTerminal 不被调，stdout 打印提示行。
+// TestDispatchNoTerminalFlagSuppresses 验证配置 auto: true 时 --no-terminal 抑制弹窗：
+// openTerminal 不被调，提示行走 stderr，stdout 仍是单行任务 JSON。
 func TestDispatchNoTerminalFlagSuppresses(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("弹终端仅 darwin")
@@ -109,19 +121,22 @@ func TestDispatchNoTerminalFlagSuppresses(t *testing.T) {
 	openTerminal = func(argv []string) error { called++; return nil }
 	t.Cleanup(func() { openTerminal = old })
 
-	out, _, err := runDispatch(t, "--no-terminal")
+	out, errOut, err := runDispatchWithConfig(t, "terminal:\n  auto: true\n", "--no-terminal")
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if called != 0 {
 		t.Fatalf("--no-terminal 时 openTerminal 不应被调")
 	}
-	if !strings.Contains(out, "handoff attach task-abc123") {
-		t.Fatalf("stdout 应含提示行，得到 %q", out)
+	if !strings.Contains(errOut, "handoff attach task-abc123") {
+		t.Fatalf("提示行应在 stderr，得到 stderr=%q", errOut)
+	}
+	if strings.Contains(out, "handoff attach") {
+		t.Fatalf("stdout 必须只有任务 JSON（脚本按行解析），得到 %q", out)
 	}
 }
 
-// TestDispatchTerminalFailureDoesNotFailCommand 验证弹窗失败降级：
+// TestDispatchTerminalFailureDoesNotFailCommand 验证配置 auto: true 时弹窗失败降级：
 // openTerminal 返回错误时命令仍退出 0，任务 JSON 正常输出。
 func TestDispatchTerminalFailureDoesNotFailCommand(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -131,12 +146,58 @@ func TestDispatchTerminalFailureDoesNotFailCommand(t *testing.T) {
 	openTerminal = func(argv []string) error { return fmt.Errorf("Terminal 未安装") }
 	t.Cleanup(func() { openTerminal = old })
 
-	out, _, err := runDispatch(t)
+	out, _, err := runDispatchWithConfig(t, "terminal:\n  auto: true\n")
 	if err != nil {
 		t.Fatalf("弹窗失败不应让命令失败，得到 err=%v", err)
 	}
 	if !strings.Contains(out, `"task-abc123"`) {
 		t.Fatalf("任务 JSON 应正常输出，得到 %q", out)
+	}
+}
+
+// TestDispatchDefaultDoesNotOpenTerminal 验证默认路径（无 terminal 配置、无标志）
+// 不弹终端：openTerminal 零调用。这是本次「默认不弹」的核心回归锚——旧实现
+// 默认 auto: true，这条会在 darwin 上红。
+func TestDispatchDefaultDoesNotOpenTerminal(t *testing.T) {
+	called := 0
+	old := openTerminal
+	openTerminal = func(argv []string) error { called++; return nil }
+	t.Cleanup(func() { openTerminal = old })
+
+	if _, _, err := runDispatch(t); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if called != 0 {
+		t.Fatalf("默认路径 openTerminal 不应被调，实际 %d 次", called)
+	}
+}
+
+// TestDispatchStdoutStrictSingleLineJSON 验证默认路径下 stdout 严格单行任务 JSON：
+// 去掉尾部换行后不含任何换行符，且能 json.Unmarshal 出任务 id。这是本次真正
+// 的回归锚——防止以后有人再往 stdout 打提示行（上层脚本按行解析，多一行就全乱，
+// 默认不弹后「实况」提示行**每次**都出现，必须呆在 stderr）。
+func TestDispatchStdoutStrictSingleLineJSON(t *testing.T) {
+	// 防御性 stub 返回错误：默认路径下不会被调用；一旦未来有人把默认改成弹窗，
+	// 退化路径会把提示行打回 stdout，这条会在 darwin 上红，而不会被真实 osascript
+	// 拖到挂起。
+	old := openTerminal
+	openTerminal = func(argv []string) error { return fmt.Errorf("防御 stub：本测试不应触发弹窗") }
+	t.Cleanup(func() { openTerminal = old })
+
+	out, _, err := runDispatch(t)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	trimmed := strings.TrimSuffix(out, "\n")
+	if strings.Contains(trimmed, "\n") {
+		t.Fatalf("stdout 必须是单行（去尾部换行后不含换行），得到 %q", out)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &got); err != nil {
+		t.Fatalf("stdout 应能解析为任务 JSON，得到 %q: %v", out, err)
+	}
+	if got["id"] != "task-abc123" {
+		t.Fatalf("任务 JSON 应有 id=task-abc123，得到 %q", out)
 	}
 }
 
