@@ -848,7 +848,13 @@ git commit -m "docs(probe): S4 原生提问通道 3 次派发实测"
 
 **为什么必须入库**（既有规矩，`internal/executor/opencode/replay_spike_test.go` 头注释写死了理由）：样本留在本机等于结论无法从任何一个 clone 复核——上游一改协议，没有任何东西会变红。
 
-- [ ] **Step 1: 反转义并归位样本**
+> **执行记录（2026-08-12 完工）：本 task 对 Step 1/3/6 有偏离，理由与实际做法记在
+> `docs/superpowers/probes/2026-08-12-turn-end/README.md` 的「样本入库」与「计划偏离」两节。**
+> 摘要：入库范围收窄为 opencode 四份全量 + grok/codex 两份摘录（claudecode 两份鉴权失败样本不入库）；
+> 回放测试只写 opencode 一份——§3.5 判定 grok/codex 不加证据层，没有任何生产代码会读它们的样本，
+> 写出来的测试只能断言「回放不 panic」，不构成回归防线。Step 1 给的反转义脚本有 bug，实际用单趟扫描版。
+
+- [x] **Step 1: 反转义并归位样本**
 
 `rawtap` 写出的是转义过的行（`\n` / `\r` / `\\`）。入库前反转义回原始分帧，写一个一次性脚本：
 
@@ -870,7 +876,7 @@ python3 /tmp/unescape.py ~/handoff-probe-raw/archived/S1-opencode.jsonl internal
 
 **S3 未复现的 executor 仍然要入库它那次的样本**，文件名后缀改为 `-notreproduced`。未复现本身是结论，样本是它的证据。
 
-- [ ] **Step 2: 写 opencode 的回放测试**
+- [x] **Step 2: 写 opencode 的回放测试**
 
 `internal/executor/opencode/replay_probe_test.go`。照抄既有 `replay_spike_test.go` 的形状（样本按原始字节喂进 `streamOnce`，走生产解析路径），断言**当前生产代码对每份样本的分类结果**：
 
@@ -916,7 +922,7 @@ func TestReplayProbeSamples(t *testing.T) {
 
 **实现时**：把 `replay_spike_test.go` 里已有的「起 `httptest` SSE server 喂样本 → 收集 adapter 事件」骨架抽成一个可复用的 helper，两个测试共用。`cases` 逐条填**实测值**，不是期望值。
 
-- [ ] **Step 3: 写另外三个包的回放测试**
+- [x] **Step 3: 写另外三个包的回放测试** —— **未按原文执行，见上方执行记录**（三个包都没写：claudecode 那格是环境阻塞无协议行为可断言，grok/codex 不加证据层故无测试可依赖它们的样本）
 
 三个包各一个 `replay_probe_test.go`，同样的文件头注释结构（职责 / 边界 / 为什么必须入库），各自复用本包已有的回放骨架：
 
@@ -924,22 +930,22 @@ func TestReplayProbeSamples(t *testing.T) {
 - grok：`testdata/updates.jsonl` 已有的回放路径
 - codex：本包若无现成回放骨架，按 grok 的形状新写一个（喂 JSON-RPC 帧进 `readLoop` 的处理函数）
 
-- [ ] **Step 4: 运行测试，确认全绿**
+- [x] **Step 4: 运行测试，确认全绿**
 
 Run: `go test ./internal/executor/... -count=1 -v -run Probe`
 Expected: 15 条子测试全部 PASS，且每条的断言值来自结果表
 
-- [ ] **Step 5: 回填 spec §3.5**
+- [x] **Step 5: 回填 spec §3.5**
 
 把 spec §3.5 的决策规则表下方追加一节「实测结论（2026-08-12）」，逐 executor 写「S3 复现 / 未复现」「可区分 / 不可区分」「处置：加 / 不加证据层」，并链到 `docs/superpowers/probes/2026-08-12-turn-end/README.md`。
 
 若结论为「四个 executor 全部不加」，就明确写下这句话，并按 spec §9 把「截断在事件层长什么样」这个空白回填进 `docs/superpowers/backlog.md` 的备注。
 
-- [ ] **Step 6: 关掉旁路**
+- [ ] **Step 6: 关掉旁路** —— **由审核者执行，本 task 未动 launchd plist、未重启 agentd**
 
 探针跑完由**审核者**把本机 agentd 的 `HANDOFF_RAW_TAP_DIR` 撤掉并重启，确认日志里不再出现「原始字节旁路已开启」。本 task 不自己重启 agentd。旁路是诊断开关，不是常驻设施（`rawtap` 包头注释已声明这条边界）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 gofmt -l . && go vet ./... && go test ./... -count=1

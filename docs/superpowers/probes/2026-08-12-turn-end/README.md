@@ -89,3 +89,85 @@ plan Task 6 Step 2 建议用 `grep -c "本回合已通过 question 工具提问"
 **只有 opencode 一家在事件层留下了可判别于 S1 的截断信号**，且信号很硬（`reason:"unknown"` 与 `tool:"invalid"` 都是基线里零出现的取值）。grok 会主动绕开超长调用因而诱不出截断；codex 的传输层能扛住 1.88 MB 的单次工具调用，压根不截断。claudecode 本轮因鉴权失效未测。
 
 顺带测出的、与 S3 无关但更普遍的一条：**S2（不改不提交）在四家上全部被判成 `question`**，而其事件层与 S1 逐帧同形——判定差异完全来自 git 状态而非事件流。这说明 trailer 缺失时的分类目前只能靠仓库副作用兜底，事件层给不出任何帮助。
+
+---
+
+## 样本入库（Task 7，2026-08-12）
+
+15 份原始样本合计 13 MB（其中 `S3-codex.jsonl` 一份就 9.7 MB），而三个 executor 包现有 testdata 合计仅 176 KB、`.git` 已 846 MB。全量入库会把仓库体积翻一个数量级，而上面 §3.5 的处置结论天然给出了取舍依据：**只有会被证据层与回放测试用到的样本才需要在仓库里，其余的价值是「可追溯」而不是「可执行」**。
+
+### 入了 git 的
+
+| 文件 | 体积 | 用途 |
+|---|---|---|
+| `internal/executor/opencode/testdata/probe-s1-opencode.jsonl` | 219 KB | 反向断言基线 |
+| `internal/executor/opencode/testdata/probe-s2-opencode.jsonl` | 102 KB | 反向断言基线 |
+| `internal/executor/opencode/testdata/probe-s3-opencode.jsonl` | 946 KB | 正向断言（截断信号） |
+| `internal/executor/opencode/testdata/probe-s4-opencode.jsonl` | 90 KB | 反向断言基线 + 原生提问通道证据 |
+| `docs/superpowers/probes/2026-08-12-turn-end/probe-s3-grok-excerpt.jsonl` | 12 KB | grok「未复现」的摘录证据 |
+| `docs/superpowers/probes/2026-08-12-turn-end/probe-s3-codex-excerpt.jsonl` | 13 KB | codex「未复现」的摘录证据 |
+
+opencode 四份是**全量**入库（按下面的反转义还原成上游原始字节），因为 `internal/executor/opencode/replay_probe_test.go` 要把它们逐帧喂回生产解析路径。
+
+**反转义**：`rawtap` 写盘时按 `\` → `\\`、`\n` → `\n`、`\r` → `\r` 转义（`internal/executor/rawtap/rawtap.go`）。还原**必须是单趟左到右扫描**——plan Task 7 Step 1 给的那段脚本用三次 `str.replace` 依次替换，会先把 JSON 自身的换行转义 `\\n` 打成 `\` + 真换行，样本从此不可解析。实际入库用的是逐字符还原（见 `replay_probe_test.go` 头注释），入库后已逐帧校验：4 份共 4108 帧，全部以 `data: ` 开头且 JSON 可解析，0 帧损坏。
+
+### 没入 git 的，以及它们在哪
+
+全量样本留在审核者本机 `~/handoff-probe-raw/archived/`，不进版本库。sha256 记在这里，便于日后核对是不是同一份：
+
+| 样本 | 体积 | sha256 |
+|---|---|---|
+| `S1-opencode.jsonl` | 219 KB | `0c1ececf3bcf662360956d970f1d7e22106c5bba0e87305607daf32baa53b37f` |
+| `S2-opencode.jsonl` | 102 KB | `6ad385b18f2fb2216cb738d24b660207fa1c23ff7bba4d680a5933de5e3dd0df` |
+| `S3-opencode.jsonl` | 953 KB | `fb2c002a62c16dbffecd0c3d8803d3b52915acc2f52e496a471c1789ebe09d25` |
+| `S4-opencode.jsonl` | 90 KB | `de35797a71eb050ef343fa7c6fd5510919f6d8d08218961911fbe4fad445dd81` |
+| `S3-grok.jsonl` | 640 KB | `86922c5038cd4970037acbc691110d633f0157f869d7aa424e4516f4b9f36b38` |
+| `S3-grok-retry.jsonl` | 777 KB | `2983e0cb5e550fc13ab3dd41404efe1cead3687363fa40dad0dc95fa54be9e6e` |
+| `S3-codex.jsonl` | 9,715,482 字节 | `9fda84f9d1ca72fcf7422acab708caf54cbd894a7e2fbb9c6d592028558e1c6a` |
+| `S1-claudecode-authfail.jsonl` | 39 KB | `c82705697a8ba0c4340bc63f7c309f61c4135791d2f3e333529b0bc9e4f9fc60` |
+| `S1-claudecode-authfail-retry.jsonl` | 39 KB | `22d397886ebd56eb8a4a9414c0f6e1a3eb3b6f50c795c5f68ca088bc7b9a2271` |
+
+（其余 S1/S2/S4 的 grok / codex 基线样本同在该目录，未逐一列 sha256——它们不支撑任何单独结论。）
+
+**claudecode 的两份鉴权失败样本不入库**：它们是**环境证据**（本机 OAuth 过期，模型根本没运行），不是协议证据。入库它们会给人一种「claudecode 这一格已经测过」的错觉，而真实状态是这一格**没测**。
+
+### 摘录文件是什么
+
+`probe-s3-<executor>-excerpt.jsonl` 取的是**最大帧前后各若干行**（grok 取第 195–218 帧，codex 取第 66–106 帧，两者都覆盖到回合收尾帧）。两条约定：
+
+- **保持 `rawtap` 的转义形态**（未反转义）。这些摘录是给人读、给人与全量样本逐行 diff 用的，不喂给任何解析器；而反转义后 codex 的 `turn/diff/updated` 帧内含真换行，一帧会裂成上千行，一行一帧的对应关系就没了。
+- 单帧超过 6000 字符的用一行 `{"_handoff_excerpt_omitted":{...}}` 替代，记下该帧的序号、字节数、`method` 与 sha256、以及前 200 字符。带下划线前缀的 key 不可能来自上游，一眼可辨不是原始帧。
+
+### 支撑「未复现」的实测数字
+
+这两条结论（grok / codex 未复现）之所以不需要全量样本留在仓库里，是因为它可被这几个数字复核——数字从全量样本量出，摘录里能看到收尾帧：
+
+| 样本 | 帧数 | 最大帧（转义态字节） | 最大帧是什么 | 截断标记 | 收尾 |
+|---|---|---|---|---|---|
+| `S3-grok.jsonl` | 219 | 101615 | `session/update` 的 `available_commands_update` 样板帧 | 无：`Unterminated` / `JSON parsing failed` / `Invalid input for tool` / `"invalid"` / `"unknown"` 全为 0；bash 工具结果里的 `"truncated"` 字段 5 处**全是 `false`** | `stopReason:"end_turn"` |
+| `S3-grok-retry.jsonl` | 267 | 101614 | 同上 | 同上（`"truncated":false` 9 处） | `stopReason:"cancelled"`（第二次改用脚本生成被 `--deny` 驳回） |
+| `S3-codex.jsonl` | 107 | 700365 | `turn/diff/updated`（整份 diff 快照）；写文件那两帧是 `item/started` + `item/completed` 的 `fileChange:add`，各 680374 / 680377 字节 | 无：上述五个关键词全为 0（`truncat` 的 2 处命中都在模型自己复述的计划正文里，不是协议字段） | `turn/completed` `status:"completed"`、`error:null` |
+
+**codex 那格的精确化**：结果表第 12 行写「单帧 700 KB 的 `item/started+completed` `fileChange:add`」——按逐帧实测，700365 字节那一帧是 `turn/diff/updated`，`fileChange:add` 的两帧是 680 KB 级。结论不变（都是几百 KB 的单帧完整送达，没有任何截断），这里只是把数字对准。
+
+## 回放测试
+
+只写了 **opencode 一份**：`internal/executor/opencode/replay_probe_test.go`。三个断言：
+
+1. **正向**：`probe-s3-opencode.jsonl` 里 `step-finish` 的 `reason:"unknown"` 出现 1 次、tool part 的 `tool:"invalid"` 出现 2 次
+2. **反向**（判别性的证明）：S1/S2/S4 三份基线里这两个值各出现 **0** 次
+3. 四份样本原样回放进 `streamOnce` 生产解析路径，断言回合分类，且 S4 的 question 带 `que_` 前缀的**原生**提问 id（其余三份为空）
+
+反向断言做过变异锚点验证：把 S3 的期望值也改成 0 次，测试变红（`want 0` / 实际 1、2），改回后变绿——反向断言确实在起作用，不是恒真。
+
+## 计划偏离
+
+plan Task 7 写的是「15 份样本逐一入 testdata + 四个包各一份 `replay_probe_test.go`」，实际只做了 opencode 一份，样本入库范围也收窄到上面那张表。**这是探针结论导出的，不是省事**：
+
+- §3.5 的处置是「grok / codex **不加**证据层」。不加证据层就没有任何生产代码会去读它们的样本，也就没有任何测试可以依赖它们——写出来的 `replay_probe_test.go` 只会断言「样本回放不 panic」，那不是回归防线，是给覆盖率充数。
+- claudecode 那格是**环境阻塞**（模型没运行），没有可断言的协议行为。给它写回放测试等于把「OAuth 过期长什么样」固化成回归基线，与探针要回答的问题无关。
+- 因此入库的取舍标准变成：**样本要么被测试执行，要么被结论引用**。前者全量入（opencode 四份），后者入摘录 + sha256（grok / codex），既不被执行也不支撑协议结论的（claudecode 两份鉴权失败样本）只在文档里记明存在与路径。
+
+plan Task 7 Step 1 的反转义脚本有 bug（三次 `str.replace` 会破坏 JSON 自身的换行转义），实际用的是单趟扫描版，理由见上面「反转义」一段。
+
+plan Task 7 Step 6（关掉旁路）由**审核者**处理，本次未动 launchd plist、未重启 agentd。
