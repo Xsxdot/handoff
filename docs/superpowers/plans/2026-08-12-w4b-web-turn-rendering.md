@@ -1335,6 +1335,12 @@ const EVENT_LABEL: Record<string, string> = {
   stalled: '看门狗：长时间无产出',
 }
 
+// ADJUDICABLE 是「此刻真有一张工单等着人裁决」的事件类型。
+// 只有这两类才把人指向工单区：completed / failed / delivery_failed / stalled
+// 都没有可裁决物（它们的出口分别是审核、重新派发、resume、attach 判活），
+// 在它们旁边写「裁决入口在右侧工单区」是纯噪音，还会让人去工单区扑空。
+const ADJUDICABLE = new Set(['permission_request', 'question'])
+
 // EventMark 渲染一行事件标记。
 //
 // 参数：
@@ -1346,7 +1352,8 @@ export function EventMark({ event, ts }: { event: string; ts: string }) {
       <CircleDot className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
       <span>{EVENT_LABEL[event] ?? event}</span>
       <span className="text-[11px] text-muted-foreground">
-        {formatFull(ts)} · 裁决入口在右侧工单区
+        {formatFull(ts)}
+        {ADJUDICABLE.has(event) && ' · 裁决入口在右侧工单区'}
       </span>
     </div>
   )
@@ -2260,8 +2267,9 @@ cd web && npm run dev -- --host 127.0.0.1
 5. 找一个 executor 半路死掉的任务（或 `handoff stop` 造一个），确认未配对的
    工具卡显示「未返回」而不是「进行中」
 6. 「加载更早」能一路翻到回合 1，翻的过程中视线不被弹走
-7. 切到「原始正文」，内容与 `handoff frames <task>` 的输出对得上（帧的原文）；
-   再切回时间线，两边不互相污染
+7. 切到「原始正文」，看到的是 W3 既有的 `RenderPanel`——即 `render.log` 的
+   实况正文（**不是** `handoff frames` 的帧 JSON；帧的原文在时间线这一侧，
+   未知帧展开后能看到）；再切回时间线，两边不互相污染
 8. 开一个**正在跑**的任务，确认新帧实时追加、底部自动跟随，往上翻则停止跟随
 
 任一条对不上就记下来，不要「差不多就行」——这份原型就是为了让「差不多」无处可藏。

@@ -93,6 +93,19 @@ describe('EventMark', () => {
     expect(screen.getByText(/工单区/)).toBeInTheDocument()
   })
 
+  it('提问工单同样指向工单区', () => {
+    render(<EventMark event="question" ts="2026-08-12T10:31:02+08:00" />)
+    expect(screen.getByText(/工单区/)).toBeInTheDocument()
+  })
+
+  it.each(['completed', 'failed', 'delivery_failed', 'stalled', 'some_new_event'])(
+    '无可裁决物的事件（%s）不挂「裁决入口」指引',
+    (event) => {
+      render(<EventMark event={event} ts="2026-08-12T10:31:02+08:00" />)
+      expect(screen.queryByText(/工单区/)).not.toBeInTheDocument()
+    },
+  )
+
   it('未知事件名原样显示，不吞掉', () => {
     render(<EventMark event="some_new_event" ts="2026-08-12T10:31:02+08:00" />)
     expect(screen.getByText(/some_new_event/)).toBeInTheDocument()
