@@ -601,8 +601,17 @@ cd ~/workspace/handoff-probe-sandbox && handoff project add probe-sandbox
 
 ## 每次派发的动作
 
+`handoff dispatch` 用 `os.ReadFile` 按**当前目录**读 plan 文件（`cmd/dispatch.go:141`），
+而派发必须在沙箱仓库里执行（project_id 按 origin 算）——两者不在同一个仓库，
+所以 plan 路径**必须写绝对路径**。先固定一个变量，后面所有派发都用它：
+
 ```bash
-cd ~/workspace/handoff-probe-sandbox && handoff dispatch docs/superpowers/probes/2026-08-12-turn-end/<Sn>.md --project probe-sandbox --executor <x> --new-branch probe-<Sn>-<x> --new-worktree --name "probe <Sn> <x>"
+export PROBE_DIR="$(cd <handoff 仓库工作树> && pwd)/docs/superpowers/probes/2026-08-12-turn-end"
+ls "$PROBE_DIR"/S1-natural-finish.md   # 确认路径对，再往下发
+```
+
+```bash
+cd ~/workspace/handoff-probe-sandbox && handoff dispatch "$PROBE_DIR/<Sn>.md" --project probe-sandbox --executor <x> --new-branch probe-<Sn>-<x> --new-worktree --name "probe <Sn> <x>"
 ```
 
 派发前查本机进程余量（不足则停）：
