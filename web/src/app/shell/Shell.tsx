@@ -3,7 +3,9 @@
 // 职责：
 //   - 提供三条路由共用的外框，内容区用 <Outlet> 承载
 //   - 持有跨页共享的两条数据流（任务流 2.5s、项目树流 30s）与看板筛选 filter，
-//     一并下发——避免每页各拉一份、左栏与顶部下拉各存一套筛选（spec §6 / filter.ts）
+//     一并下发——避免每页各拉一份、左栏与顶部下拉各存一套筛选（spec §6 / filter.ts）。
+//     任务流以 tasksState（PollState）下发，子页面自己决定何时取 data、何时取
+//     disconnected/sessionExpired/errorText（如看板首载失败态用 errorText）
 //   - 左栏渲染 ProjectTree：树流断开时用 compact 横幅占位，不让左栏空白；
 //     会话失效落终止态横幅
 //
@@ -17,13 +19,15 @@ import type { ProjectTreeResp, Task } from '../../api/types'
 import { EMPTY_FILTER, type BoardFilter } from '../board/filter'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
+import type { PollState } from '../data/usePoll'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ProjectTree } from '../tree/ProjectTree'
 import { TopTabs } from './TopTabs'
 
-// ShellContext 是 Shell 通过 Outlet 下发到各子页面的共享上下文：任务流、树、
-// filter 及其写入入口。子页面用 useShellContext 取用，不自己再拉数据。
+// ShellContext 是 Shell 通过 Outlet 下发到各子页面的共享上下文：任务流状态、
+// 任务列表、树、filter 及其写入入口。子页面用 useShellContext 取用，不自己再拉数据。
 export interface ShellContext {
+  tasksState: PollState<Task[]>
   tasks: Task[]
   tree: ProjectTreeResp | null
   filter: BoardFilter
@@ -66,6 +70,7 @@ export function Shell() {
       <main className="min-h-0 overflow-y-auto bg-muted/40">
         <Outlet
           context={{
+            tasksState,
             tasks: tasksState.data ?? [],
             tree: treeState.data,
             filter,
