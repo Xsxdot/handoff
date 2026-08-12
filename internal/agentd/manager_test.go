@@ -313,9 +313,9 @@ func TestDeriveName(t *testing.T) {
 }
 
 // mustDone 归档任务，失败即 Fatal。
-func mustDone(t *testing.T, m *Manager, taskID string) {
+func mustDone(t *testing.T, m *Manager, taskID, note string) {
 	t.Helper()
-	if err := m.Done(context.Background(), taskID); err != nil {
+	if err := m.Done(context.Background(), taskID, note); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 }
@@ -513,7 +513,7 @@ func TestDoneRemovesManagedWorktree(t *testing.T) {
 		t.Fatalf("new-worktree 元数据缺失: %+v", task)
 	}
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
-	mustDone(t, m, task.ID)
+	mustDone(t, m, task.ID, "")
 
 	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
 		t.Fatalf("worktree 目录应已删除: %v", err)
@@ -545,7 +545,7 @@ func TestDoneKeepsUserWorktree(t *testing.T) {
 		t.Fatalf("用户自带 worktree Managed 应为 false: %+v", task)
 	}
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
-	mustDone(t, m, task.ID)
+	mustDone(t, m, task.ID, "")
 
 	if _, err := os.Stat(wt); err != nil {
 		t.Fatalf("用户自带 worktree 不应被删除: %v", err)
@@ -571,7 +571,7 @@ func TestDoneWorktreeRemoveFailureDoesNotBlockArchive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "stray.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	mustDone(t, m, task.ID)
+	mustDone(t, m, task.ID, "")
 
 	cur, _ := st.GetTask(task.ID)
 	if cur.State != proto.TaskStateCompleted {
@@ -1914,5 +1914,91 @@ func TestDenyGuidanceConsumedOnce(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("第二条 question 应正常出单，挂起工单 %d 张", len(pending))
+	}
+}
+
+// newDoneTestTask 组装一个处于 waiting_review 的任务，返回 manager、hub 与任务 id。
+// 沿用本文件既有的 newTestManagerWithAds + mustCreateTask，不新造建库写法。
+func newDoneTestTask(t *testing.T, id string) (*Manager, *Hub, string) {
+	t.Helper()
+	m, st, hub := newTestManagerWithAds(t,
+		map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: id, Target: "fake", RepoPath: t.TempDir(),
+		Executor: "fake", State: proto.TaskStateWaitingReview, CreatedAt: now, UpdatedAt: now})
+	return m, hub, id
+}
+
+// TestDoneEmitsArchivedBeforeClosingSubs 是本改动的顺序回归钉：archived 事件必须
+// 在 hub.CloseTask 之前发布。
+//
+// 为什么必须这样测：如果 Publish 跑在 CloseTask 之后，事件**照样入库**，任何只
+// 断言「库里有这条事件」的测试都会全绿——而真实的订阅者（wait --follow）一条都
+// 收不到，症状是 B67 永远等不到归档，离原因十万八千里。只有挂真实订阅者能测出来。
+func TestDoneEmitsArchivedBeforeClosingSubs(t *testing.T) {
+	m, hub, taskID := newDoneTestTask(t, "task-b68-order")
+
+	ch, cancel := hub.Subscribe(taskID)
+	defer cancel()
+
+	if err := m.Done(context.Background(), taskID, "改完了登录页"); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+
+	// 通道是带缓冲的：先发布再关闭时，关闭不会吃掉已入队的事件，这里能读到。
+	// 顺序反了则通道已从订阅表摘除，Publish 无处可投，这里读到的是零值+closed。
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("订阅在收到 archived 之前就被关闭了——Publish 跑到 CloseTask 后面了")
+		}
+		if ev.Type != proto.EventTypeArchived {
+			t.Fatalf("首个事件应为 archived，得到 %s", ev.Type)
+		}
+		var p proto.ArchivedPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("解析 archived payload: %v", err)
+		}
+		if p.Note != "改完了登录页" {
+			t.Fatalf("note 没带上: %q", p.Note)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("2 秒内没收到 archived 事件")
+	}
+}
+
+// TestDoneWithEmptyNoteStillEmitsArchived 断言空说明照发事件：等待方等的是
+// 「归档了」这个信号，不是「有没有说明」。把两者绑定等于让人忘写一句话就把
+// 下游会话永久冻住。
+func TestDoneWithEmptyNoteStillEmitsArchived(t *testing.T) {
+	m, hub, taskID := newDoneTestTask(t, "task-b68-empty")
+	ch, cancel := hub.Subscribe(taskID)
+	defer cancel()
+
+	if err := m.Done(context.Background(), taskID, ""); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	select {
+	case ev, ok := <-ch:
+		if !ok || ev.Type != proto.EventTypeArchived {
+			t.Fatalf("空 note 也必须发 archived，得到 ok=%v type=%v", ok, ev.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("2 秒内没收到 archived 事件")
+	}
+}
+
+// TestDonePersistsNote 断言说明落进了 tasks.done_note，handoff show 才看得到。
+func TestDonePersistsNote(t *testing.T) {
+	m, _, taskID := newDoneTestTask(t, "task-b68-persist")
+	if err := m.Done(context.Background(), taskID, "两个用例补齐"); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	got, err := m.st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DoneNote != "两个用例补齐" {
+		t.Fatalf("done_note 未落库: %q", got.DoneNote)
 	}
 }

@@ -989,9 +989,16 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许归档返回 store.ErrBadTransit
 //
+// 参数：
+//   - note: 归档说明（handoff done --note）；空串表示未留说明，此时仍照常归档
+//     并发布 archived 事件，只不落说明
+//
 // 注意：
 //   - Stop 失败仅打 Error 日志不影响归档：任务已完成，executor 残留交给人工兜底
-func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
+//   - 顺序是「先落说明、再迁移状态」：写失败时任务仍在 waiting_review，审核者可
+//     原样重试；反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done
+//     对已 completed 的任务返回 409，审核者补不回来
+func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	m.log.Info("done 进入", "task", taskID)
 	defer func() {
 		if err != nil {
@@ -1009,8 +1016,30 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 		m.log.Warn("done 状态不允许", "task", taskID, "state", cur.State)
 		return fmt.Errorf("任务 %s 状态 %s 不允许归档（需 waiting_review）: %w", taskID, cur.State, store.ErrBadTransit)
 	}
+	// 先落说明再迁移状态：写失败时任务仍在 waiting_review，审核者可原样重试；
+	// 反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done 对
+	// 已 completed 的任务返回 409，审核者补不回来
+	if note != "" {
+		if err := m.st.SetTaskField(taskID, "done_note", note); err != nil {
+			m.log.Error("写入归档说明失败", "task", taskID, "note_bytes", len(note), "cause", err)
+			return fmt.Errorf("写入归档说明: %w", err)
+		}
+		m.log.Info("归档说明已落库", "task", taskID, "note_bytes", len(note))
+	}
 	if err := m.transit(taskID, proto.TaskStateCompleted, "done"); err != nil {
 		return err
+	}
+	// 归档事件：必须在 hub.CloseTask 之前发布，否则订阅者（wait --follow）一条
+	// 都收不到——而事件仍会入库，症状是等待方永远等不到归档，极难归因（B68 §4.2）。
+	//
+	// 失败只打日志不阻塞：状态已经迁移完了，此时返回错误也回不去，与本函数里
+	// worktree 清理失败的处置保持一致
+	if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeArchived,
+		proto.ArchivedPayload{Note: note}); aerr != nil {
+		m.log.Error("追加归档事件失败", "task", taskID, "cause", aerr)
+	} else {
+		m.hub.Publish(evt)
+		m.log.Info("归档事件已发布", "task", taskID, "seq", evt.Seq, "has_note", note != "")
 	}
 	// 任务归档：清理审批链运行时状态，防内存 map 随归档任务无界增长（P2-5）
 	m.clearApproverState(taskID)

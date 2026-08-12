@@ -780,7 +780,7 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.Done(r.Context(), taskID); err != nil {
+	if err := s.mgr.Done(r.Context(), taskID, ""); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
 	}
