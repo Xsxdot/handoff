@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { Machine } from '../../api/types'
+import type { CreateProjectResp, Machine } from '../../api/types'
 import { AddProjectWizard } from './AddProjectWizard'
 import * as register from './register'
 
@@ -77,7 +77,9 @@ describe('AddProjectWizard', () => {
 
   it('一成一败时逐位置显示结果，成功的保留、失败的可重试', async () => {
     vi.mocked(register.registerAll).mockResolvedValue([
-      { machine: '', ok: true, error: '', result: { project_id: 'p', name: 'a', path: '/a' } },
+      // CreateProjectResp 是完整 ProjectLocation（origin_url/created_at 必填），
+      // 这里只给断言关心的最小形态
+      { machine: '', ok: true, error: '', result: { project_id: 'p', name: 'a', path: '/a' } as CreateProjectResp },
       { machine: 'devbox', ok: false, error: 'clone 失败：Permission denied (publickey)', result: undefined },
     ])
     renderAtStepTwo(['', 'devbox'])

@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../api/client'
 import * as client from '../../api/client'
+import type { CreateProjectResp } from '../../api/types'
 import { registerAll } from './register'
+
+// mockOk 是登记成功响应的最小 mock 形态。CreateProjectResp 是完整 ProjectLocation
+// （origin_url/created_at 必填），mock 只给断言关心的字段，故显式收窄。
+function mockOk(): CreateProjectResp {
+  return { project_id: 'p', name: 'a', path: '/a' } as CreateProjectResp
+}
 
 describe('registerAll', () => {
   it('按选中位置数发起对应次数的 POST，每次带正确的 machine', async () => {
-    const spy = vi.spyOn(client, 'createProject').mockResolvedValue({ project_id: 'p', name: 'a', path: '/a' })
+    const spy = vi.spyOn(client, 'createProject').mockResolvedValue(mockOk())
     await registerAll([
       { machine: '', gitUrl: 'git@x:/a.git', path: '/Users/me/a' },
       { machine: 'devbox', gitUrl: 'git@x:/a.git', path: '' },
@@ -18,7 +25,7 @@ describe('registerAll', () => {
 
   it('一成一败时逐位置返回结果，不整体抛错', async () => {
     vi.spyOn(client, 'createProject')
-      .mockResolvedValueOnce({ project_id: 'p', name: 'a', path: '/a' })
+      .mockResolvedValueOnce(mockOk())
       .mockRejectedValueOnce(new ApiError(500, 'clone 失败：Permission denied (publickey)'))
     const out = await registerAll([
       { machine: '', gitUrl: 'g', path: '/a' },
