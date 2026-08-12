@@ -29,7 +29,7 @@ var doneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := client.New(addr, token).Done(cmd.Context(), taskID); err != nil {
+		if _, err := client.New(addr, token).Done(cmd.Context(), taskID, ""); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)

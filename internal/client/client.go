@@ -499,20 +499,36 @@ func (c *Client) Continue(ctx context.Context, taskID, instructions string) erro
 	return nil
 }
 
-// Done 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。
+// Done 归档任务，可携带一句完成说明。
 //
-// 注意：
-//   - 任务不存在返回 404 错误；状态不允许归档返回 409 错误
-func (c *Client) Done(ctx context.Context, taskID string) error {
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/done", nil)
+// 参数：
+//   - taskID: 待归档任务 ID
+//   - note: 完成说明；空串=不留说明（服务端照常归档并照常发 archived 事件）
+//
+// 返回：
+//   - noteSaved: 响应体 note_saved 如实回传——true=说明已落库；false=本次没带
+//     说明，**或对端是不支持该字段的旧版 agentd**。响应体缺字段按 false 处理，
+//     与 Stop 的 worktree_removed 同一模式：宁可多告警一次，也不让「说明悄悄
+//     丢了」变成哑失败。调用方据此决定是否提示，不猜
+func (c *Client) Done(ctx context.Context, taskID, note string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/done",
+		map[string]string{"note": note})
 	if err != nil {
-		return fmt.Errorf("done 请求: %w", err)
+		return false, fmt.Errorf("done 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("done", resp)
+		return false, c.httpError("done", resp)
 	}
-	return nil
+	// 缺字段按 false：旧 agentd 只回 {"ok":true}，零值恰好是保守的那一侧
+	var out struct {
+		NoteSaved bool `json:"note_saved"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		c.log().Debug("done 响应体解析失败，按说明未保存处理", "task", taskID, "cause", derr)
+		return false, nil
+	}
+	return out.NoteSaved, nil
 }
 
 // Stop 主动中止任务：停 executor、作废挂起工单、任务落 failed。

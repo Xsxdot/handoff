@@ -287,7 +287,7 @@ func TestFullLoop(t *testing.T) {
 	}
 
 	// 5. 归档：done → 任务 completed 且 fake 收到 Stop
-	if err := env.cli.Done(context.Background(), task.ID); err != nil {
+	if _, err := env.cli.Done(context.Background(), task.ID, ""); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	info, err = env.cli.Attach(context.Background(), task.ID)
@@ -849,7 +849,7 @@ func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
 		t.Fatalf("报文应为 409 并说明占用者状态, got: %v", err)
 	}
 
-	if err := env.cli.Done(context.Background(), a.ID); err != nil {
+	if _, err := env.cli.Done(context.Background(), a.ID, ""); err != nil {
 		t.Fatalf("Done(A): %v", err)
 	}
 	b := env.dispatchPlan(t, "第二个任务")
