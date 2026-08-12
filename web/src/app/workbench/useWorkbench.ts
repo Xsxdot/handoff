@@ -59,8 +59,13 @@ export interface WorkbenchApi {
   base: BaseDir | null
   wb: Workbench
   select: (b: BaseDir) => void
-  open: (c: TabContent, b?: BaseDir) => void
-  openTerminal: (b?: BaseDir) => void
+  // open / openTerminal 的第三个参数是**开在哪一组**。省略 = 开在当前焦点组。
+  //
+  // 为什么必须能显式指定：分屏后两组各有自己的 `+`，点左边的 `+` 就该开在左边，
+  // 哪怕焦点在右边。不传组号时 openTab 会退回 `wb.active`，于是「点哪个 + 都开在
+  // 焦点组」——这是走查里真实撞到的偏差，不是理论问题。
+  open: (c: TabContent, b?: BaseDir, group?: number) => void
+  openTerminal: (b?: BaseDir, group?: number) => void
   close: (group: number, tabId: string) => void
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
@@ -96,12 +101,13 @@ export function useWorkbench(): WorkbenchApi {
   )
 
   const open = useCallback(
-    (c: TabContent, b?: BaseDir) => mutate((w) => openTab(w, c), b),
+    (c: TabContent, b?: BaseDir, group?: number) => mutate((w) => openTab(w, c, group), b),
     [mutate],
   )
 
   const openTerminal = useCallback(
-    (b?: BaseDir) => mutate((w) => openTab(w, { kind: 'terminal', seq: nextTerminalSeq(w) }), b),
+    (b?: BaseDir, group?: number) =>
+      mutate((w) => openTab(w, { kind: 'terminal', seq: nextTerminalSeq(w) }, group), b),
     [mutate],
   )
 

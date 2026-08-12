@@ -67,12 +67,16 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
   // startFromEmpty 处理「组里一个 tab 都没有」时直接在空态面板上选种类：
   // 此时没有可原地改内容的 tab，终端直接开一个，其余先开一个空白 tab
   // 承接（用户随即会在它上面看到指路）。
-  const startFromEmpty = (kind: PickKind) => {
+  //
+  // group 必须显式传：分屏后被清空的那一组仍然渲染这块空态面板，而焦点很可能
+  // 在另一组上。不传的话新 tab 会开到焦点组去，用户点的是这一侧却在那一侧长出
+  // 一个 tab。
+  const startFromEmpty = (group: number, kind: PickKind) => {
     if (kind === 'terminal') {
-      api.openTerminal(base)
+      api.openTerminal(base, group)
       return
     }
-    api.open({ kind: 'blank' })
+    api.open({ kind: 'blank' }, undefined, group)
   }
 
   return (
@@ -88,11 +92,11 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
               baseLabel={base.label}
               onActivate={api.activate}
               onClose={api.close}
-              onNew={() => api.open({ kind: 'blank' })}
+              onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
             />
             <div className="min-h-0 flex-1 overflow-auto">
               {activeTab === null ? (
-                <BlankTab base={base} onPick={startFromEmpty} />
+                <BlankTab base={base} onPick={(k) => startFromEmpty(gi, k)} />
               ) : activeTab.content.kind === 'blank' ? (
                 <BlankTab
                   base={base}
