@@ -14,6 +14,7 @@
 // 路径按模块相对解析、稳定且自带编译期类型。
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
+import dirListFixture from './testdata/DirListResult.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
@@ -29,6 +30,7 @@ import {
   type ActiveTask,
   type AuthTicketResp,
   type BuildInfo,
+  type DirListResult,
   type Event,
   type Frame,
   type MachinesResp,
@@ -171,5 +173,18 @@ describe('W4a 帧契约', () => {
   it('Frame：可选字段可以显式赋 undefined（指针语义镜像）', () => {
     const f: Frame = { ...frameFixture, part: undefined, status: undefined, bytes: undefined }
     expect(f.part).toBeUndefined()
+  })
+})
+
+describe('DirListResult 契约', () => {
+  it('目录项不带 size，普通文件带 size', () => {
+    const resp: DirListResult = dirListFixture
+    expect(resp.entries).toHaveLength(2)
+    const [dir, file] = resp.entries
+    expect(dir.is_dir).toBe(true)
+    // 目录的 size 被 omitempty 省略：缺键而不是 0
+    expect(dir.size).toBeUndefined()
+    expect(file.is_dir).toBe(false)
+    expect(file.size).toBe(1284)
   })
 })

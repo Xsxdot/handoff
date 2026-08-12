@@ -17,6 +17,7 @@ import type {
   CreateProjectReq,
   CreateProjectResp,
   DiffResult,
+  DirListResult,
   FileResult,
   MachinesResp,
   ProjectTreeResp,
@@ -188,6 +189,30 @@ export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
 // 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
 export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
+}
+
+// workspaceQuery 拼两个工作树接口共用的查询串。
+//
+// rel 省略表示工作树根；machine 省略或空串 = 本机（与 Task.machine 的空串语义一致）。
+function workspaceQuery(path: string, rel?: string, machine?: string): string {
+  const q = new URLSearchParams({ path })
+  if (rel) q.set('rel', rel)
+  if (machine) q.set('machine', machine)
+  return q.toString()
+}
+
+// fetchWorkspaceDir 列举工作树内一层目录（GET /api/workspaces/dir）。
+//
+// path 必须是 GET /api/projects/tree 给出的某个 Workspace.path 原样值——
+// agentd 侧按等值比对做白名单，任意路径返回 403（spec §7.1）。
+export function fetchWorkspaceDir(path: string, rel?: string, machine?: string): Promise<DirListResult> {
+  return request<DirListResult>(`/api/workspaces/dir?${workspaceQuery(path, rel, machine)}`)
+}
+
+// fetchWorkspaceFile 读工作树内单个文件（GET /api/workspaces/file）。
+// 语义与 fetchTaskFile 一致，只是寻址从任务改为工作树。
+export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileResult> {
+  return request<FileResult>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
 }
 
 // createProject 登记一个项目位置（POST /api/projects）。

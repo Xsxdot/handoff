@@ -300,3 +300,18 @@ export interface Frame {
   event?: string
   reason?: string
 }
+
+// DirEntry 是 GET /api/workspaces/dir 列举出的一项。
+//
+// size 只对普通文件存在（Go 侧 omitempty）：目录是**缺键**而不是 0，
+// 前端不要用 `entry.size ?? 0` 去掩盖这个区别——它是「这是目录」的第二个证据。
+export interface DirEntry {
+  name: string
+  is_dir: boolean
+  size?: number
+}
+
+// DirListResult 是 GET /api/workspaces/dir 的响应体；entries 永不为 null。
+export interface DirListResult {
+  entries: DirEntry[]
+}
