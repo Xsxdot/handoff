@@ -238,9 +238,15 @@ name='oldbox' reachable=True  pty_supported键存在=False 值=None
 
 ### 11 —— 默认值不落库 ✅
 
-旁路实例的 `config.yaml` 全程没有出现过 `env_forward` 键（`grep -c` 为 0），
-而 `SSH_AUTH_SOCK` 的转发照常工作（见第 4 条）。
-往返的两个方向由 `internal/config/config_test.go:449-489` 钉住：未配置时不落盘、解析时用内置默认清单。
+分两步验的：
+
+- **转发照常工作**：旁路实例的 `config.yaml` 里从头到尾没有 `env_forward` 键，
+  而 `SSH_AUTH_SOCK` 照样转发进了会话（见第 4 条）。
+- **Save 确实不落默认值**：另起一个干净实例（datadir `/tmp/w4-c11`，配置只有 `listen` / `datadir` / `token`），
+  起来再停掉 —— agentd 在关停时**确实重写了** `config.yaml`（`stalltimeout` 这种没配的键同样没被补进去），
+  重写后 `grep -c env_forward` 仍然是 0。所以走的是真 Save 路径，不是「文件没被碰过」的假通过。
+
+往返的两个方向另有单测钉住：`internal/config/config_test.go:449-489`——未配置时不落盘、解析时用内置默认清单。
 
 ### 12 —— W4 spec 的修正说明 ✅
 
