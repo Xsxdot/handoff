@@ -32,18 +32,38 @@
 | codex | `item/reasoning/textDelta`、`item/reasoning/summaryTextDelta` 等 | `internal/executor/codex/adapter.go:60-61`、`items.go:162` |
 | grok | ACP 流增量 | `internal/executor/grok/adapter.go:411,815` |
 
-这些解析结果**被用于权限闸与完成判定，然后丢弃**。思维链更是被**刻意隔离**：
+这些解析结果**被用于权限闸与完成判定，然后就没有结构化去处了**。
 
-- claude：「thinking_delta 是思考过程，隔离不进 render.log 与回合文本」（`adapter.go:19`、`stream.go:174`）
-- opencode：「reasoning/tool 等非 text part 的增量隔离不进」（`adapter.go:25`）
+### 1.2 真正的不变式：隔离的是「回合正文」，不是 render.log
 
-### 1.2 这个隔离必须保留
+四个 adapter 都严守同一条**唯一**的硬隔离：
 
-隔离本身是**对的**：思维链一旦回流进回合文本，`turn.ParseTrailer` 会把模型「我打算输出 `{"ask":...}`」
-这样的**思考**当成真的提问，权限闸也会被污染。
+> **思维链绝不进「回合正文」**——也就是 `turn.ParseTrailer` 的输入。
 
-因此 W4a 做的**不是拆掉隔离，而是把「隔离」从「丢弃」改成「分流」**：
-思维链照旧不进回合文本、不进 trailer 解析、不进权限闸，但落进结构化帧流。
+理由是具体的：`ParseTrailer` 取最后一个 `{` 开头的行，模型在思考里复述协议样例
+（「我打算输出 `{"ask":...}`」）会被当成真的提问；权限闸的判定同样会被污染。
+grok 的注释把这件事说得最直白（`adapter.go:549-552`）。
+
+**render.log 则各家不同，这一点必须说准**：
+
+| executor | 思维链进 render.log？ | 依据 |
+|---|---|---|
+| claude | **否** | `textDelta` 对 `thinking_delta` 返回 `("", false)`（`stream.go:174-187`） |
+| opencode | **否** | `mapPartDelta` 的 `default:` 分支明说「不累积、不进 render.log」（`adapter.go:1520`） |
+| codex | **是** | `item/reasoning/textDelta` 在 `deltaNotifications` 里直喂 render；`renderLine` 给 reasoning item 渲染 `【推理】`（`adapter.go:60-61`、`items.go:162`） |
+| grok | **是** | `turnAccumulator` 显式两股：`bodyBuf` 只收 `agent_message_chunk`，`renderBuf` 收「正文 + 推理 + 工具动作」（`adapter.go:549-556`） |
+
+所以「四个 adapter 都把思维链隔离在 render.log 之外」是**不成立**的，别照这个印象写代码。
+
+### 1.3 W4a 对隔离做什么
+
+**不拆隔离，只把已经解析出来的结构多送一份去处。** 两条硬约束：
+
+1. **回合正文的隔离一行不许放松**：现有的过滤判定（`textDelta` 的 `thinking_delta` 过滤、
+   opencode 的 `partTypes` 闸、grok 的 `bodyBuf`/`renderBuf` 分股、codex 的
+   「回合正文只从 agentMessage 取」）全部原样保留。
+2. **每个 adapter 的 render.log 行为逐字节不变**：本来写的照写，本来不写的照旧不写。
+   W4a 不借机「统一」四家的 render.log 行为——那是另一件事，会破坏 `attach` 的零回归。
 
 ### 1.3 为什么不是终端保真
 
@@ -236,17 +256,32 @@ adapter 在这两处各调一次 `BeginTurn`（`dispatch` / `send`）。不需�
 
 ### 4.3 那条硬隔离（本期最容易被顺手简化掉的东西）
 
-**`reasoning` 帧只进 frames.jsonl。绝不进 `render.log`，绝不进回合文本，绝不喂 `ParseTrailer`，绝不进权限闸。**
+两句话，措辞是精确的，别自行"加强"或"放宽"（依据见 §1.2）：
 
-现有的隔离判定（`claudecode/stream.go:174` 的 `thinking_delta` 过滤、opencode 的非 text part 隔离）
-**一行都不许放松**。改的只是「丢弃」变成「分流」：原本 `return "", false` 的地方，
-改成先调一次 `w.Reasoning(part, delta)` 再 `return "", false`。
+1. **`reasoning` 帧的内容绝不进回合正文**，因此绝不喂 `ParseTrailer`、绝不进权限闸。
+   现有的隔离判定（claude 的 `textDelta` 过滤、opencode 的 `partTypes` 闸、
+   grok 的 `bodyBuf`/`renderBuf` 分股、codex 的「回合正文只从 agentMessage 取」）**一行都不许放松**。
+2. **`render.log` 的现有内容一字节不改**。claude 与 opencode 今天不写思维链，改完照旧不写；
+   codex 与 grok 今天写，改完照旧写。**不要借写帧的机会去统一四家的 render.log** ——
+   那会打破 `attach` 与 W2 `RenderPanel` 的零回归，且不在本期范围。
 
-实现时若发现某个 adapter 的隔离与帧写入难以共存，**停下来上报，不要放松隔离**。
+改的只是**多一路输出**：原本 `return "", false`（丢弃）或已经 `AppendRender`（照写）的地方，
+额外调一次 `w.Reasoning(part, delta)`。既有分支的走向不变。
+
+实现时若发现某个 adapter 的隔离与帧写入难以共存，**停下来上报，不要动隔离**。
 
 ### 4.4 event 帧由 agentd 写
 
-agentd 在 `AppendEvent` 成功后同步调 `EventRef(seq, type)`。
+`AppendEvent` 在 agentd 里有 **20 个调用点**（manager.go 17、reconcile.go 2、watchdog.go 1），
+逐点补一行 `EventRef` 既啰嗦又会留下「以后新增调用点忘了补」的失效模式。
+
+改用**落库钩子**：`store.Store` 新增 `SetEventHook(func(proto.Event))`，在 INSERT 成功、
+`proto.Event` 组装完成后同步回调一次；agentd 在装配期注册一个写 `EventRef` 的钩子。
+一个注册点覆盖全部现有与未来的调用点。
+
+钩子的边界要钉死：**钩子内不得回调 store**（会自我递归 / 争锁），只允许做文件追加这类
+不回到数据库的动作；钩子 panic 要就地 recover 并 Error，不能把一次事件落库拖垮。
+
 与 adapter 同进程，写序可控，因此**单一 append 顺序即真实顺序**——
 这正是不做「双流按时间戳归并」的理由：adapter 与 agentd 虽同进程但写入路径不同，
 时间戳归并会真的乱序，而单流 append 永不会。
@@ -258,7 +293,8 @@ agentd 在 `AppendEvent` 成功后同步调 `EventRef(seq, type)`。
 
 ## 5. `render.log` 并存
 
-`render.log` 原样保留，`AppendRender` 一行不改。text 帧与 render.log 双写。
+`render.log` 原样保留，`AppendRender` 一行不改，**每个 adapter 往里写什么也一字不改**（§1.2 / §4.3）。
+帧流是**额外**的一路输出，不是 render.log 的替换或重整。
 
 理由是交付节奏：`render.log` 今天有两个消费者——`handoff attach` 的第二窗口
 （在执行机上直接 `tail -f` **文件**，不走 HTTP）和 W2 的 `web/src/app/task/RenderPanel.tsx`
@@ -372,8 +408,13 @@ token、cookie、ticket 明文一律不得进日志（既有纪律，此处重�
 **这是防上游漂移的唯一有效手段。** 喂一段真实抓下来的原生流（录制成 testdata），
 断言产出的帧序列逐帧相等。四个 adapter 各一组。
 
-同一组测试必须断言**思维链没有泄漏**：产出的 `text` 帧里不含任何 reasoning 内容，
-`render.log` 里也不含。这条是 §4.3 硬隔离的自动化守卫。
+同一组测试必须一并断言 §4.3 的两条硬隔离，各一个断言：
+
+1. **回合正文无思维链**：喂一段含思维链的录制流，断言 `ParseTrailer` 的输入
+   （各 adapter 的 `turnText()` / `takeBody()`）里不含任何 reasoning 字样
+2. **render.log 零回归**：同一段录制流跑改动前后，断言 render.log 产物**逐字节相等**。
+   这比「断言 render.log 不含思维链」更强也更对——codex 与 grok 今天本来就写思维链（§1.2），
+   拿「不含」去断言会把正确的现状判成失败
 
 ### 10.3 agentd
 
@@ -397,7 +438,7 @@ token、cookie、ticket 明文一律不得进日志（既有纪律，此处重�
 2. `handoff frames <task> --follow` 能实时跟上正在跑的任务
 3. `handoff frames <task> --target devbox` 能看远端任务的帧（走 W3a 转发）
 4. 四个 executor 各跑一次，各自的帧序列符合其能力（没有思维链的就是没有 reasoning 帧，不伪造）
-5. **`render.log` 与 `handoff attach` 行为逐字节不变**，W2 的 `RenderPanel` 零回归
+5. **四个 adapter 的 `render.log` 产物逐字节不变**，`handoff attach` 与 W2 的 `RenderPanel` 零回归
 6. `go build ./...` / `go test ./...` 全绿
 
 ---
