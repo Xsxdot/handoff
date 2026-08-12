@@ -314,4 +314,22 @@ describe('ProjectTree', () => {
     fireEvent.keyDown(window, { key: 'k' })
     expect(document.activeElement).not.toBe(input)
   })
+
+  it('左栏任务行的圆点跟随任务状态', () => {
+    const p = props()
+    p.tasks = [
+      task({ id: 'T1', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '跑测试', state: 'running' }),
+      task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
+    ]
+    const { container } = render(<ProjectTree {...p} />)
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
+  })
+
+  it('工单角标用状态 token，不用裸 amber', () => {
+    const { container } = render(<ProjectTree {...props({ ticketCount: 3 })} />)
+    const badge = screen.getByText('3')
+    expect(badge.className).toContain('bg-state-intervention')
+    expect(container.innerHTML).not.toContain('bg-amber-500')
+  })
 })

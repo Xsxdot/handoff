@@ -36,6 +36,8 @@ import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { countsForMachine, countsForProject } from './counts'
+import { stateTone } from '../board/columns'
+import { StateDot } from '../board/StateDot'
 import { cn } from '@/lib/utils'
 
 export interface ProjectTreeProps {
@@ -377,7 +379,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                                 style={{ paddingLeft: 8 + 48 }}
                               >
                                 <span className="size-4 shrink-0" />
-                                <span className="inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+                                {/* 圆点跟随任务状态：同一个任务在看板上标着琥珀、
+                                    在左栏是灰点的话，两个面自相矛盾 */}
+                                <StateDot tone={stateTone(t.state)} />
                                 <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
                               </button>
                             ))}
@@ -403,7 +407,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               style={{ paddingLeft: 8 + 48 }}
             >
               <span className="size-4 shrink-0" />
-              <span className="inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+              <StateDot tone={stateTone(t.state)} />
               <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
             </button>
           ))}
@@ -438,8 +442,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
           className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >
           <Ticket className="size-4" />
+          {/* 角标用状态 token 而非裸 bg-amber-500：同一个左栏里两种橙
+              （工单角标一种、干预态圆点另一种）看起来像 bug */}
           {ticketCount > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[10px] leading-4 text-white">
+            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-state-intervention px-1 text-center text-[10px] leading-4 text-white">
               {ticketCount}
             </span>
           )}
