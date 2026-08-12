@@ -16,11 +16,14 @@
 import type {
   CreateProjectReq,
   CreateProjectResp,
+  CreatePtySessionReq,
   DiffResult,
   DirListResult,
   FileResult,
   MachinesResp,
   ProjectTreeResp,
+  PtySession,
+  PtySessionsResp,
   ReplyRequest,
   ReplyResult,
   ResumeResult,
@@ -229,6 +232,33 @@ export function createProject(req: CreateProjectReq, machine?: string): Promise<
 export function deleteProject(name: string, machine?: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(
     `/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// fetchPtySessions 列终端会话（GET /api/pty/sessions）。
+//
+// scope='all' 取跨机汇总（多一个 machines 字段）。**这是会话恢复的唯一真相源**：
+// 前端不做任何本地持久化，列表里没有的会话就是不存在（spec §6.1）。
+export function fetchPtySessions(scope?: 'all'): Promise<PtySessionsResp> {
+  return request<PtySessionsResp>(`/api/pty/sessions${scope === 'all' ? '?scope=all' : ''}`)
+}
+
+// createPtySession 开一个终端会话（POST /api/pty/sessions）。
+//
+// base_kind='home' 时 base_path 被服务端忽略（它用自己的 $HOME）。
+// 501 = 那台机器的平台不支持 PTY；400 = base_path 不是已探测到的工作树。
+export function createPtySession(req: CreatePtySessionReq, machine?: string): Promise<PtySession> {
+  return postJSON<PtySession>(`/api/pty/sessions${machineQuery(machine)}`, req)
+}
+
+// deletePtySession 显式关闭一个终端会话（DELETE /api/pty/sessions/{id}）。
+//
+// **只有用户点 × 才该调它。** 组件卸载、切基准目录、关页面都只断 WS，
+// 不调这里——否则「跑一晚上的 build」会被一次切目录杀掉（spec §3.2）。
+export function deletePtySession(id: string, machine?: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/pty/sessions/${encodeURIComponent(id)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
 }
