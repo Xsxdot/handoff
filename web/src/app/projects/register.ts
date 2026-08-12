@@ -20,9 +20,6 @@ export interface LocationChoice {
   originUrl?: string
   name?: string
   path?: string
-  // gitUrl 是 originUrl 的兼容别名，仅供 Task 5 重写前的 AddProjectWizard 使用；
-  // 新代码一律用 originUrl。两者同时给时 originUrl 优先。
-  gitUrl?: string
 }
 
 // RegisterFormInput 是单页表单的一次提交：本机 path 必填（空串由后端 400 兜底），
@@ -89,7 +86,7 @@ async function settleOne(choice: LocationChoice): Promise<RegisterOutcome> {
 // repo_root，name 空 = 由后端从 origin 末段派生。
 async function registerOne(choice: LocationChoice): Promise<CreateProjectResp> {
   const req: CreateProjectReq = {}
-  const origin = (choice.originUrl ?? choice.gitUrl ?? '').trim()
+  const origin = (choice.originUrl ?? '').trim()
   if (origin) req.origin_url = origin
   const name = (choice.name ?? '').trim()
   if (name) req.name = name

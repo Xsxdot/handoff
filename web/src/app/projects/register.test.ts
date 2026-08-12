@@ -19,8 +19,8 @@ describe('registerAll', () => {
   it('按选中位置数发起对应次数的 POST，每次带正确的 machine', async () => {
     const spy = vi.spyOn(client, 'createProject').mockResolvedValue(mockOk())
     await registerAll([
-      { machine: '', gitUrl: 'git@x:/a.git', path: '/Users/me/a' },
-      { machine: 'devbox', gitUrl: 'git@x:/a.git', path: '' },
+      { machine: '', originUrl: 'git@x:/a.git', path: '/Users/me/a' },
+      { machine: 'devbox', originUrl: 'git@x:/a.git', path: '' },
     ])
     expect(spy).toHaveBeenCalledTimes(2)
     expect(spy).toHaveBeenNthCalledWith(1, { origin_url: 'git@x:/a.git', path: '/Users/me/a' }, '')
@@ -33,8 +33,8 @@ describe('registerAll', () => {
       .mockResolvedValueOnce(mockOk())
       .mockRejectedValueOnce(new ApiError(500, 'clone 失败：Permission denied (publickey)'))
     const out = await registerAll([
-      { machine: '', gitUrl: 'g', path: '/a' },
-      { machine: 'devbox', gitUrl: 'g', path: '' },
+      { machine: '', originUrl: 'g', path: '/a' },
+      { machine: 'devbox', originUrl: 'g', path: '' },
     ])
     expect(out).toHaveLength(2)
     expect(out[0]).toMatchObject({ machine: '', ok: true })
@@ -45,7 +45,7 @@ describe('registerAll', () => {
 
   it('全部失败也返回逐条结果而不是抛异常', async () => {
     vi.spyOn(client, 'createProject').mockRejectedValue(new ApiError(400, 'origin_url 不能为空'))
-    const out = await registerAll([{ machine: '', gitUrl: '', path: '' }])
+    const out = await registerAll([{ machine: '' }])
     expect(out[0].ok).toBe(false)
   })
 })
