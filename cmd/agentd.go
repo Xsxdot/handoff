@@ -66,8 +66,8 @@ var agentdCmd = &cobra.Command{
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
 		// fork 子进程的动作，合并结果才能被 executor/审批者/审阅命令继承。
-		// ExtraDirs 在 Task 2 接上 cfg.PathDirs
-		pathenv.Apply(context.Background(), pathenv.Options{IncludeLoginShell: true}, logger)
+		pathenv.Apply(context.Background(),
+			pathenv.Options{IncludeLoginShell: true, ExtraDirs: cfg.PathDirs}, logger)
 
 		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
 		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
