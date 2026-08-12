@@ -553,6 +553,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("基线起点已确定", "repo", repoPath, "start", start, "ahead", ahead,
 		"explicit_base", req.Base != "")
 
+	// 准入闸必须排在建任务行、建 worktree 之前：拒发要干干净净，
+	// 不能留下一个建了一半的任务等人收
+	if err := checkProcHeadroom("dispatch"); err != nil {
+		return nil, err
+	}
+
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）

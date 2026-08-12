@@ -936,6 +936,9 @@ func (b *runOutputBuffer) Write(p []byte) (int, error) {
 //   - err: 超时返回 context 相关错误；启动失败返回 exec 错误。
 //     命令非零退出**不**返回错误——exitCode 已表达结果，路由层据此返回 200
 func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode int, err error) {
+	if err := checkProcHeadroom("run"); err != nil {
+		return "", -1, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, RunCmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
