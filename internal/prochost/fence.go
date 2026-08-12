@@ -188,3 +188,22 @@ func ExplainForkFailure(err error) (note string, quota bool) {
 	return fmt.Sprintf("进程创建失败（EAGAIN），但当前占用仅 %d/%d，"+
 		"不像配额问题，原因未知", a.Used, a.Limit), false
 }
+
+// applyFencePolicy 按当前策略把围栏值写进 spec。
+//
+// 参数：spec 为待下发的进程规格，本函数**就地修改**其 NprocLimit 字段
+//
+// 为什么由 prochost 自己填而不是让 adapter 填：四个 adapter 各自构造 Spec，
+// 交给它们填等于四处都可能漏，而漏掉的后果是这个任务完全没有围栏保护、
+// 且日志里看不出任何异常——一个静默失效的防护装置。
+//
+// 注意：算不出围栏值时字段置 0（不设围栏）并打 Warn，**绝不阻断拉起**。
+func applyFencePolicy(spec *Spec) {
+	l, err := fenceLimit()
+	if err != nil {
+		log().Warn("算不出进程围栏值，本次不设围栏", "cause", err)
+		spec.NprocLimit = 0
+		return
+	}
+	spec.NprocLimit = l
+}

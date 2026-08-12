@@ -40,6 +40,7 @@ import (
 //   - InfoPath: adapter 的 proc.json 路径。shim **不写它**（那是 adapter 的独占
 //     文件），只拿它的所在目录来放 spec.json 与 child.pid——见 shim.go recordChildPID
 //   - Sentinel: true 时子进程退出后向 Stdout 追加 handoff_exit 哨兵行
+//   - NprocLimit: 执行者树的进程数围栏（0 = 不设）；由 Start 按策略算出，调用方不填
 //
 // 注意：
 //   - Env 的值可能含凭据，本结构会被序列化到 0600 的 spec.json；日志里只打 key 名
@@ -53,6 +54,16 @@ type Spec struct {
 	LockPath string   `json:"lock_path"`
 	InfoPath string   `json:"info_path"`
 	Sentinel bool     `json:"sentinel"`
+
+	// NprocLimit 是这棵执行者进程树的围栏值（RLIMIT_NPROC 软硬限）。
+	//
+	// 0 = 不设围栏。为什么用零值而不是指针：这个字段没有「对端没发」与
+	// 「对端发了 0」的区分需求——两者都表示不装，语义完全一致。
+	//
+	// omitempty + 零值语义同时保证了滚动升级安全：新版 agentd 写出的
+	// spec.json 被旧版 shim 读到时该字段被忽略（旧 shim 不认识），新版 shim
+	// 读到升级前的 spec.json 得到 0 则跳过安装——两个方向都不会出事。
+	NprocLimit int `json:"nproc_limit,omitempty"`
 }
 
 // Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc.json。
@@ -221,6 +232,7 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 //     权限不能放宽
 func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	specPath := filepath.Join(filepath.Dir(spec.InfoPath), "spec.json")
+	applyFencePolicy(&spec)
 	b, err := json.Marshal(spec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("序列化 spec: %w", err)

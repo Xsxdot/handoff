@@ -182,3 +182,26 @@ func TestExplainForkFailureIgnoresUnrelated(t *testing.T) {
 		t.Fatalf("nil 错误不该被认领，得到 %q", note)
 	}
 }
+
+// Start 必须自己把围栏值填进 Spec：四个 adapter 各自构造 Spec，交给它们填
+// 等于四处都可能漏，而漏掉的后果是这个任务完全没有保护、且没人看得出来。
+func TestApplyFencePolicyFillsSpec(t *testing.T) {
+	withFakeProcs(t, 0, 2666, nil) // 见 fence_test.go
+	withPolicy(t, false, 0.1)
+	var spec Spec
+	applyFencePolicy(&spec)
+	if spec.NprocLimit != 2400 {
+		t.Fatalf("Spec 应被填入围栏值 2400，得到 %d", spec.NprocLimit)
+	}
+}
+
+// 策略关闭时字段保持 0——0 是「不设围栏」的约定值，shim 据此跳过安装。
+func TestApplyFencePolicyDisabledLeavesZero(t *testing.T) {
+	withFakeProcs(t, 0, 2666, nil)
+	withPolicy(t, true, 0.1)
+	spec := Spec{NprocLimit: 999} // 故意预置脏值，确认会被覆盖成 0
+	applyFencePolicy(&spec)
+	if spec.NprocLimit != 0 {
+		t.Fatalf("策略关闭时围栏值应为 0，得到 %d", spec.NprocLimit)
+	}
+}
