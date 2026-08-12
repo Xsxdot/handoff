@@ -496,6 +496,62 @@ func (c *Client) ProjectTree(ctx context.Context) (*proto.ProjectTreeResp, error
 	return &out, nil
 }
 
+// ProjectTreeAll 取跨机汇总的项目树（GET /api/projects/tree?scope=all）。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝扇出。
+func (c *Client) ProjectTreeAll(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树(全机器): %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树(全机器)", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树(全机器)响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Machines 列出本机视角的全部机器与探活结果（GET /api/machines）。
+func (c *Client) Machines(ctx context.Context) (*proto.MachinesResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/machines", nil)
+	if err != nil {
+		return nil, fmt.Errorf("机器列表请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("机器列表", resp)
+	}
+	var out proto.MachinesResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析机器列表响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ListTasksAll 取跨机汇总的任务列表（GET /api/tasks?scope=all），
+// 远端任务读镜像快照、带 machine 名，机器应答情况在信封的 machines 栏。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝汇总。
+func (c *Client) ListTasksAll(ctx context.Context) (*proto.TasksResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/tasks?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("任务汇总请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("任务汇总", resp)
+	}
+	var out proto.TasksResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析任务汇总响应: %w", err)
+	}
+	return &out, nil
+}
+
 // ProjectRemove 注销一条项目位置。
 //
 // 注意：
