@@ -117,6 +117,16 @@ handoff wait <task> --notify --timeout 1h
 你正忙时流入，cursor 已经推进而你还没看。**任何处置前先 show，以 `state` +
 `pending_tickets` 为准。**
 
+### 另一个会话只等本任务归档
+
+后续会话依赖当前任务真正审核归档时，使用一条持久 monitor：
+
+    handoff wait <完整 task-id> --until-done --timeout 3h
+
+它不会消费审核者 cursor，也不会把 question/permission/completed 送进后续会话；
+只在 `handoff done` 产生 `archived` 后输出一次。退出 0 才能开后续工作，124 表示
+本轮等待到期，其他非零表示依赖失败或配置错误。它只负责唤醒，不自动 dispatch。
+
 ### cursor 语义：为什么 wait 可能吐出旧事件
 
 `wait` 的「不重不丢」靠审核者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
@@ -206,7 +216,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 | `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer "..."` |
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
 | `failed` | 任务失败落 `failed` | `diff` 看做到哪、`attach` 看现场；要接着干就重新 `dispatch` |
-| `archived` | 任务被 `done` 归档，`payload.note` 是审核者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是审核者时无需动作 |
+| `archived` | 任务被 `done` 归档，`payload.note` 是审核者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是审核者时无需动作。仅 `wait --until-done` 把它当作成功信号；普通 `wait --follow` 收到它后随连接正常结束 |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
 | `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
 

@@ -171,6 +171,19 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 
 事件到达后：`completed`/`failed` 进审核 → `handoff diff <task>` 看改动、必要时 `fetch`/`run` 取证 → 要改就 `handoff continue <task> "<指令>"`（同一会话续接），审过就 `handoff done <task>`。
 
+### 等待另一个任务归档
+
+`handoff wait <完整任务 ID> --until-done --timeout 3h` 是依赖门闩：等待期间
+不输出 question、permission_request、completed 等中间事件，也不推进审核者的
+cursor。只有审核者执行 `handoff done` 后，它才输出一行 `archived` 事件并退出 0。
+
+- `0`：已归档，stdout 是原始 archived JSON（payload.note 为归档说明）
+- `124`：总等待时间到，任务尚未归档
+- `1`：依赖任务 failed、鉴权/任务 ID/协议错误
+
+它不会自动派发后续任务。原任务仍必须由自己的审核者处理工单、审阅 completed，
+并显式 done；不要用本命令替代 `wait --follow` 的审核订阅。
+
 ## 命令速查
 
 | 命令 | 用途 | 关键参数 |
@@ -180,7 +193,7 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 | `handoff project add [名字]` | 把当前项目登记到本机（`--target` 时一并登记到那台开发机） | `--target <机器>`（一起登记；那台机器上没有时自动 clone）；`--path <该机器上已有的路径>`（仅与 `--target` 连用） |
 | `handoff project ls` | 列出机器上的项目位置（含实际状态） | `--target <机器>` |
 | `handoff project rm <名字>` | 注销一条项目位置（只删登记，不删磁盘上的代码） | `--target <机器>` |
-| `handoff wait <task>` | 阻塞等待任务的下一个可动作事件（`--follow` 时持续订阅，任务终结才退出） | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（一次性=总时长上限，`--follow`=空闲上限，默认无限等）；`--follow`（持续订阅，事件单行输出）；`--no-sync` |
+| `handoff wait <task>` | 阻塞等待任务的下一个可动作事件（`--follow` 时持续订阅，任务终结才退出；`--until-done` 时静默只等真实 archived） | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（一次性=总时长上限，`--follow`=空闲上限，`--until-done`=总时限，默认无限等）；`--follow`（持续订阅，事件单行输出）；`--until-done`（依赖门闩，成功只输出一行 archived，与 `--follow` 互斥）；`--no-sync` |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
