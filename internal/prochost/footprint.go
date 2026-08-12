@@ -27,6 +27,29 @@ const (
 	VerdictNoCredential Verdict = "no_credential"
 )
 
+// enumProcsFn 是进程枚举的测试缝（包级 var 而非直接调用）：判据测试要喂固定
+// 快照，与 aliveFn / killGroupFn 同款路数。
+var enumProcsFn = enumProcs
+
+// lookupStartedAt 读回某个 pid 的内核启动时刻（unix 纳秒）；读不到返回 0。
+//
+// 为什么容忍失败：这是诊断凭据不是运行必需品，取不到只降级为「不能自动清扫」，
+// 绝不能反过来影响已经拉起的执行者。
+func lookupStartedAt(pid int) int64 {
+	procs, err := enumProcsFn()
+	if err != nil {
+		log().Warn("枚举进程失败，无法读取启动时刻", "pid", pid, "cause", err)
+		return 0
+	}
+	for _, p := range procs {
+		if p.PID == pid {
+			return p.StartedAt
+		}
+	}
+	log().Warn("枚举结果中没有该 pid，无法读取启动时刻", "pid", pid)
+	return 0
+}
+
 // classify 判定进程快照中哪些成员属于 h 所代表的任务。
 //
 // 参数：
@@ -77,4 +100,27 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 		members = append(members, p.PID)
 	}
 	return members, VerdictOK
+}
+
+// Footprint 枚举 h 所代表任务当前占用的进程。
+//
+// 参数：h 为任务的进程句柄（来自 proc.json）
+//
+// 返回：
+//   - members: 通过身份校验的成员 pid
+//   - v: 判定结论；非 VerdictOK 时 members 必然为空
+//   - err: 进程枚举失败（平台不支持时为 errNotSupported）
+//
+// 注意：
+//   - **只读，绝不发信号**——它是 Sweep 的孪生只读版本，两者共用 classify
+//   - 对**存活中**与**已死亡**的执行者均可调用：判据随存活锁状态自动切换
+func Footprint(h Handle) (members []int, v Verdict, err error) {
+	procs, err := enumProcsFn()
+	if err != nil {
+		log().Error("足迹枚举失败", "pid", h.PID, "cause", err)
+		return nil, VerdictNoCredential, err
+	}
+	members, v = classify(h, procs, aliveFn(h))
+	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v), "members", len(members))
+	return members, v, nil
 }

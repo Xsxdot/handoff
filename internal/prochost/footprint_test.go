@@ -1,8 +1,10 @@
 package prochost
 
 import (
+	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 // 判据测试的固定基准：shim pid=100，启动于 t0。
@@ -96,5 +98,66 @@ func assertMembers(t *testing.T, got, want []int) {
 		if got[i] != want[i] {
 			t.Fatalf("成员不符：got %v, want %v", got, want)
 		}
+	}
+}
+
+// stubEnum 把进程枚举换成固定快照。
+func stubEnum(t *testing.T, procs []procEntry, err error) {
+	t.Helper()
+	orig := enumProcsFn
+	enumProcsFn = func() ([]procEntry, error) { return procs, err }
+	t.Cleanup(func() { enumProcsFn = orig })
+}
+
+// TestFootprintUsesLockState 验证 Footprint 把存活锁状态正确喂给 classify。
+func TestFootprintUsesLockState(t *testing.T) {
+	procs := []procEntry{
+		{PID: 100, PGID: 100, StartedAt: t0},
+		{PID: 101, PGID: 100, StartedAt: t0 + 1},
+	}
+	stubEnum(t, procs, nil)
+
+	stubAlive(t, true) // shim 活着
+	got, v, err := Footprint(h())
+	if err != nil || v != VerdictOK || len(got) != 2 {
+		t.Fatalf("锁被持有：want ok/2 成员，got v=%s members=%v err=%v", v, got, err)
+	}
+
+	stubAlive(t, false) // shim 死了，且组长位置有活进程 ⇒ 复用
+	_, v, err = Footprint(h())
+	if err != nil || v != VerdictLeaderReuse {
+		t.Fatalf("锁已释放：want leader_reuse，got v=%s err=%v", v, err)
+	}
+}
+
+// TestStartRecordsStartedAt 验证 Start 落下的 Handle 带得到启动时刻。
+//
+// 这条是整个时间下界判据的源头：StartedAt 恒为 0，规则三永远降级为 no_credential，
+// 清扫功能等于没上线。
+func TestStartRecordsStartedAt(t *testing.T) {
+	if !LockSupported() {
+		t.Skip("本平台不支持文件锁")
+	}
+	dir := t.TempDir()
+	spec := Spec{
+		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Dir:      dir,
+		Stdout:   filepath.Join(dir, "out.log"),
+		Stderr:   filepath.Join(dir, "err.log"),
+		LockPath: filepath.Join(dir, "shim.lock"),
+		InfoPath: filepath.Join(dir, "proc.json"),
+	}
+	// selfExe 直接用 /bin/sh 顶替真 shim：本用例只验 StartedAt 有没有被填上，
+	// 不验 shim 行为（拿锁、读 spec.json 那些由 shim 自己的用例覆盖）
+	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	if err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = killGroup(hd.PID) })
+	if hd.StartedAt <= 0 {
+		t.Fatalf("Start 未记录 StartedAt，got %d", hd.StartedAt)
+	}
+	if delta := time.Now().UnixNano() - hd.StartedAt; delta < 0 || delta > int64(30*time.Second) {
+		t.Fatalf("StartedAt 偏离现在过远：delta=%d ns", delta)
 	}
 }

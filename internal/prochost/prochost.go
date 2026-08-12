@@ -235,6 +235,15 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		log().Error("拉起 shim 失败", "spec", specPath, "cause", err)
 		return Handle{}, err
 	}
-	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath)
-	return Handle{PID: pid, LockPath: spec.LockPath}, nil
+	// 读回内核记录的启动时刻作为身份校验的时间下界（why 见 Handle.StartedAt）。
+	// 读不到不阻断拉起：shim 已经在跑了，为一个诊断字段把它杀掉是本末倒置——
+	// 代价是这个任务此后只能上报、不能自动清扫，如实降级即可
+	startedAt := lookupStartedAt(pid)
+	if startedAt <= 0 {
+		log().Warn("读不到 shim 启动时刻，该任务将只能上报残留、无法自动清扫",
+			"pid", pid, "spec", specPath)
+	}
+	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
+		"started_at", startedAt)
+	return Handle{PID: pid, LockPath: spec.LockPath, StartedAt: startedAt}, nil
 }
