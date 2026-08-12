@@ -92,4 +92,22 @@ func renderFootprint(w io.Writer, fp *proto.FootprintResp) {
 	if shown == 0 {
 		fmt.Fprintln(w, "足迹     无残留（共体检 "+strconv.Itoa(len(fp.Rows))+" 个任务）")
 	}
+
+	// 终端会话单列一段：它们不是任务，没有 task_id，也不参与 --all 的过滤规则
+	//（会话本来就只有活着的才在表里，没有「干净的历史行」需要折叠）
+	if len(fp.Pty) > 0 {
+		fmt.Fprintln(w, "终端会话")
+		for _, p := range fp.Pty {
+			procs := "未知进程数"
+			if p.Procs != nil {
+				procs = fmt.Sprintf("%d 进程", *p.Procs)
+			}
+			line := fmt.Sprintf("  %s  %s  pid %d  %s", short8(p.ID), p.BasePath, p.PID, procs)
+			if p.Foreground {
+				// 关掉它会打断正在跑的东西——这是「能不能顺手清掉」的关键信息
+				line += "  ⚠ 有前台命令"
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
 }

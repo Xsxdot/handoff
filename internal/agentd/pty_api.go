@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/ptyhost"
 )
@@ -226,4 +227,34 @@ func ptySessionView(s ptyhost.Session, machine string) proto.PtySession {
 		Shell: s.Shell, CreatedAt: s.CreatedAt, Cols: s.Cols, Rows: s.Rows,
 		Attached: s.Attached, Foreground: s.Foreground, PID: s.PID, ExitCode: s.ExitCode, BytesOut: s.BytesOut,
 	}
+}
+
+// ptyFootprint 体检当前全部终端会话的进程占用。
+//
+// 返回：每个活着的会话一行。会话已退出的不入表——它已经没有进程组可数了。
+//
+// 注意：数不出来（平台不支持进程枚举）时 Procs 留 nil 并记一条日志，不写 0。
+func (s *Server) ptyFootprint() []proto.PtyFootprintRow {
+	if s.pty == nil {
+		return nil
+	}
+	sessions := s.pty.List()
+	rows := make([]proto.PtyFootprintRow, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.ExitCode != nil {
+			continue
+		}
+		row := proto.PtyFootprintRow{
+			ID: sess.ID, BasePath: sess.BasePath, PID: sess.PID, Foreground: sess.Foreground,
+		}
+		if n, err := prochost.CountGroup(sess.PID); err == nil {
+			row.Procs = &n
+		} else {
+			s.log.Warn("终端会话足迹：进程组数不出来，该字段留空",
+				"session", sess.ID, "pid", sess.PID, "cause", err)
+		}
+		rows = append(rows, row)
+	}
+	s.log.Info("终端会话足迹完成", "sessions", len(rows))
+	return rows
 }

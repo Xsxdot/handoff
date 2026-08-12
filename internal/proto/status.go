@@ -142,6 +142,25 @@ type StatusResp struct {
 	//   true      = 支持
 	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
 	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// PtySessions 是当前活着的终端会话数。指针 + omitempty，与 Proc 同一纪律：
+	// nil = 对端没上报，渲染时整行不打印；0 = 确实一个都没有。
+	//
+	// 为什么 status 只给个数、不给每个会话占多少进程：数进程要枚举全机进程，
+	// 而 status 有「不能变成慢命令」的硬纪律。进程数在 /api/footprint 里给。
+	PtySessions *int `json:"pty_sessions,omitempty"`
+}
+
+// PtyFootprintRow 是一个终端会话的足迹体检结果。
+//
+// Procs 为指针：数不出来（平台不支持枚举）时是 nil，**不是 0**——与 ProcUsage
+// 同一条理由，0 看起来像结论。
+type PtyFootprintRow struct {
+	ID         string `json:"id"`
+	BasePath   string `json:"base_path"`
+	PID        int    `json:"pid"`
+	Procs      *int   `json:"procs,omitempty"`
+	Foreground bool   `json:"foreground"`
 }
 
 // FootprintRow 是一个任务的进程足迹体检结果。
@@ -161,4 +180,8 @@ type FootprintRow struct {
 type FootprintResp struct {
 	Rows  []FootprintRow `json:"rows"`
 	Usage *ProcUsage     `json:"usage,omitempty"`
+
+	// Pty 是终端会话的足迹。会话只在内存里，所以这一段与 Rows 不同——
+	// 它不含历史，列出的都是此刻活着的会话。
+	Pty []PtyFootprintRow `json:"pty,omitempty"`
 }

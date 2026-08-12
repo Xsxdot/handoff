@@ -320,6 +320,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.StartedAt = s.startedAt
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK
+	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
+	if s.pty != nil {
+		n := len(s.pty.List())
+		resp.PtySessions = &n
+	}
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -342,6 +347,7 @@ func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
+	resp.Pty = s.ptyFootprint()
 	writeJSON(w, http.StatusOK, resp)
 }
 

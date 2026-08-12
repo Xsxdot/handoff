@@ -99,3 +99,48 @@ func TestFootprintDegradesOn404(t *testing.T) {
 		t.Fatalf("应输出降级结论：\n%s", out)
 	}
 }
+
+// ptyFootprintBody 是带终端会话段的体检结果：一个有前台命令、一个空闲、
+// 一个数不出进程数。
+const ptyFootprintBody = `{"usage":{"used":346,"limit":2666},"rows":[],"pty":[
+	{"id":"2f0f6a3c-8f1e-4f2a-9a77-1c2d3e4f5a6b","base_path":"/home/dev/handoff","pid":48213,"procs":4,"foreground":true},
+	{"id":"9b8a7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d","base_path":"/home/dev","pid":48999,"procs":1,"foreground":false},
+	{"id":"3c3c3c3c-1111-2222-3333-444455556666","base_path":"/x","pid":50001,"foreground":false}]}`
+
+// TestFootprintShowsPtySessions 断言：终端会话进账本，且 procs 缺席时如实说
+// 「未知」而不是渲染成 0。
+//
+// **第三行是重点**：会话足迹的整个立论是「先让占用可见」，用一个 0 盖住
+// 「我们数不出来」正是它要防的事。
+func TestFootprintShowsPtySessions(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(ptyFootprintBody))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, err := runFootprint(t, writeStatusConfig(t), ts.URL, false)
+	if err != nil {
+		t.Fatalf("footprint 应成功，得到错误: %v", err)
+	}
+	for _, want := range []string{"终端", "2f0f6a3c", "4 进程", "前台", "50001", "未知"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("输出缺少 %q：\n%s", want, out)
+		}
+	}
+}
+
+// TestFootprintNoPtySectionWhenEmpty 断言：没有终端会话时不打这一段——
+// 空标题也是噪音。
+func TestFootprintNoPtySectionWhenEmpty(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(footprintBody))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, _ := runFootprint(t, writeStatusConfig(t), ts.URL, false)
+	if strings.Contains(out, "终端") {
+		t.Fatalf("没有会话时不该打终端段:\n%s", out)
+	}
+}
