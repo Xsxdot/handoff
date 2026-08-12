@@ -7,7 +7,7 @@
 //     permission/question 落 ticket 并挂到 hub.WaitAnswer 等审核者应答，
 //     progress 只入库，result 落 completed/failed 事件进 waiting_review
 //   - 审核者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
-//   - stop：审核者主动中止任务（停 executor、作废工单、落 failed）
+//   - stop：审核者主动中止任务（停 executor、作废工单（随终态迁移收口完成）、落 failed）
 //
 // 中介时序与工单幂等的不变量（P1-2/P1-6/P1-7）：
 //   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
@@ -1051,7 +1051,8 @@ func (m *Manager) Done(ctx context.Context, taskID string) (err error) {
 	return nil
 }
 
-// Stop 主动中止一个任务：停 executor、作废挂起工单、落 failed 并唤醒审核者。
+// Stop 主动中止一个任务：停 executor、落 failed 并唤醒审核者；挂起工单的作废
+// 交由终态迁移的收口完成（B63），不在此处单独做。
 //
 // 参数：
 //   - ctx: 上层上下文（HTTP 请求）
@@ -1101,11 +1102,8 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 		m.stopExecutor(taskID, ad)
 	}
 
-	if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
-		m.log.Error("作废挂起工单失败", "task", taskID, "cause", verr)
-	} else if voided > 0 {
-		m.log.Warn("任务被中止，挂起工单作废", "task", taskID, "voided", voided)
-	}
+	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
+	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
 
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
 		FailReason: "审核者主动中止（handoff stop）",
@@ -2412,11 +2410,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		// executor 已死，挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复
 		// 路径同语义。不作废的话 attach 仍向审核者展示可操作的挂起项，而 executor
 		// 已不在——一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态
-		if voided, verr := m.st.VoidPendingTickets(taskID); verr != nil {
-			m.log.Error("作废挂起工单失败", "task", taskID, "cause", verr)
-		} else if voided > 0 {
-			m.log.Warn("executor 已终结，挂起工单作废", "task", taskID, "voided", voided)
-		}
+		voidTicketsWithAudit(m.st, taskID, "executor 已终结", m.log)
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: r.FailReason})
 	}
 	if err != nil {
@@ -2490,6 +2484,17 @@ func (m *Manager) transit(taskID string, to proto.TaskState, reason string) erro
 		return err
 	}
 	m.log.Info("任务状态迁移", "task", taskID, "from", cur.State, "to", to, "reason", reason)
+	// 终态收口（B63）：done / stop / 各处 transitBestEffort 全部经过本函数，作废挂
+	// 在这里才能覆盖**将来新增的**终态路径——B63 本身就是「新增一条路径时忘了补」
+	// 漏出来的。
+	//
+	// 必须排在 UpdateTaskState 成功之后：该迁移可能因并发 CAS 失败（ErrBadTransit），
+	// 那时任务仍然活着，先作废等于砸掉它的合法挂起工单。
+	//
+	// 幂等分支（cur.State == to）在上面已经 return，不会重复作废。
+	if to.IsTerminal() {
+		voidTicketsWithAudit(m.st, taskID, reason, m.log)
+	}
 	return nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/release"
 )
@@ -25,6 +26,7 @@ type fakeMachine struct {
 	platform  string
 	version   string
 	managed   bool
+	noUpdate  bool // 不上报 Update 字段（模拟只报平台不报托管的对端）
 	busy      int
 	statusErr error
 	pushErr   error
@@ -46,7 +48,9 @@ func (p *fakePeer) Status(ctx context.Context) (*proto.StatusResp, error) {
 	}
 	resp := &proto.StatusResp{
 		Version: proto.BuildInfo{Version: p.m.version, Platform: p.m.platform},
-		Update:  &proto.UpdateStatus{Managed: p.m.managed},
+	}
+	if !p.m.noUpdate {
+		resp.Update = &proto.UpdateStatus{Managed: p.m.managed}
 	}
 	for i := 0; i < p.m.busy; i++ {
 		resp.Active = append(resp.Active, proto.ActiveTask{ID: "t", State: string(proto.TaskStateRunning)})
@@ -317,5 +321,83 @@ func TestUpgradeReportsUnconfirmedRestart(t *testing.T) {
 	}
 	if !strings.Contains(out, "--rollback") {
 		t.Fatalf("未上线时必须给回滚出路:\n%s", out)
+	}
+}
+
+// 两边一致性：同一台机器，handoff upgrade（只读）与 handoff upgrade --now 必须
+// 从同一个结论出发。B64 的病根就是两套分支表各活各的——这条测试是它的护栏，
+// 其余用例是它的分解。
+func TestCheckAndNowAgreeOnEveryMachine(t *testing.T) {
+	const plat = "linux/amd64"
+	cases := []struct {
+		name      string
+		m         fakeMachine
+		wantCheck string // 巡检行必须含
+		wantNow   string // --now 输出必须含
+		denyNow   string // --now 输出**不得**含；空串表示不检查
+	}{
+		{
+			name:      "过旧未上报平台（B64 原始症状：曾被报成非托管）",
+			m:         fakeMachine{statusErr: client.ErrStatusUnsupported},
+			wantCheck: "对端过旧",
+			wantNow:   "对端 agentd 过旧",
+			denyNow:   "service install",
+		},
+		{
+			name:      "上报平台但不上报托管：不知道就说不知道",
+			m:         fakeMachine{platform: plat, version: "v0.1.0", noUpdate: true},
+			wantCheck: "需要升级",
+			wantNow:   "未上报托管状态",
+			denyNow:   "service install",
+		},
+		{
+			name:      "非托管且落后：硬拒并给对症建议",
+			m:         fakeMachine{platform: plat, version: "v0.1.0", managed: false},
+			wantCheck: "需要升级",
+			wantNow:   "service install",
+		},
+		{
+			name:      "非托管但已是最新：没事可做，不催装 service",
+			m:         fakeMachine{platform: plat, version: "v0.1.1", managed: false},
+			wantCheck: "已是最新",
+			wantNow:   "已是最新",
+			denyNow:   "service install",
+		},
+		{
+			name:      "有活跃任务但已是最新：不建议一条注定白跑的 --force",
+			m:         fakeMachine{platform: plat, version: "v0.1.1", managed: true, busy: 2},
+			wantCheck: "已是最新",
+			wantNow:   "已是最新",
+			denyNow:   "--force",
+		},
+		{
+			name:      "托管且落后：正常升级",
+			m:         fakeMachine{platform: plat, version: "v0.1.0", managed: true},
+			wantCheck: "需要升级",
+			wantNow:   "成功",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			machines := map[string]*fakeMachine{
+				"__本机":   {platform: plat, version: "v0.1.1", managed: true},
+				"devbox": &c.m,
+			}
+			check := runUpgradeCheck(t, machines)
+			if !strings.Contains(check, c.wantCheck) {
+				t.Errorf("check 输出缺 %q：\n%s", c.wantCheck, check)
+			}
+			machines2 := map[string]*fakeMachine{
+				"__本机":   {platform: plat, version: "v0.1.1", managed: true},
+				"devbox": &c.m,
+			}
+			now := runUpgradeNow(t, machines2)
+			if !strings.Contains(now, c.wantNow) {
+				t.Errorf("--now 输出缺 %q：\n%s", c.wantNow, now)
+			}
+			if c.denyNow != "" && strings.Contains(now, c.denyNow) {
+				t.Errorf("--now 输出不该含 %q：\n%s", c.denyNow, now)
+			}
+		})
 	}
 }

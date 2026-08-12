@@ -787,7 +787,7 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleStop 主动中止任务（停 executor、作废挂起工单、落 failed）。
+// handleStop 主动中止任务（停 executor、落 failed；作废由终态迁移收口完成）。
 //
 // 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
 // worktree（true=agentd 建的 worktree 已删，false=用户自带 worktree / 原地模式，

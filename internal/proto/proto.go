@@ -68,6 +68,15 @@ const (
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
 	// 就终结了。审核者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
+	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
+	//
+	// 为什么必须留痕：pending_tickets 是审核者接管陌生会话时「我还欠哪些没答」
+	// 的权威清单，工单凭空消失与工单凭空挂着一样难排查——show 里要能回答
+	// 「那张单是何时、因为什么被作废的」。
+	//
+	// **只入库不 Publish**，且在客户端不可交付（见 client.isDeliverable）：它与
+	// completed/failed 同时刻产生，可交付就会抢走一次性 wait 的收手权。
+	EventTypeTicketsVoided EventType = "tickets_voided"
 )
 
 // Task 表示一个 handoff 任务。

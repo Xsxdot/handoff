@@ -170,11 +170,10 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string, log
 		return cur.State
 	}
 
-	if voided, verr := st.VoidPendingTickets(taskID); verr != nil {
-		log.Error("对账作废挂起工单失败，继续追加事件", "task", taskID, "cause", verr)
-	} else if voided > 0 {
-		log.Warn("对账作废挂起工单", "task", taskID, "voided", voided)
-	}
+	// 复用终态收口的同一个助手（B63）：这条路径迁的是 waiting_review（非终态），
+	// 走不到 transit 的终态分支，但「executor 已死 ⇒ 挂起工单不可能再被回答」的
+	// 语义与终态一致，审计痕迹也该一致
+	voidTicketsWithAudit(st, taskID, reason, log)
 	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: reason})
 	if err != nil {
 		log.Error("对账追加 failed 事件失败，不迁移状态", "task", taskID, "cause", err)
