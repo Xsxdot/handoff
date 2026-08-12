@@ -216,6 +216,52 @@ func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (p
 	return m.registerExistingProject(ctx, req)
 }
 
+// firstMissingAncestor 返回从 dir 往上第一个「尚不存在」的祖先目录——也就是
+// os.MkdirAll(dir) 会从哪一层开始真正创建目录。
+//
+// 参数：
+//   - dir: 待创建的目录（绝对路径）
+//
+// 返回：
+//   - 第一个不存在的祖先的绝对路径；dir 本身已存在时返回空串
+//
+// 为什么需要它：clone 失败要回收「本次自己造的」目录，而 MkdirAll 可能一次造好
+// 几层。只删最后那一层会留下中间空目录；从根上 RemoveAll 又会删掉调用方原本就有
+// 的目录。这个函数给出的正是那条分界线。
+func firstMissingAncestor(dir string) string {
+	missing := ""
+	for p := dir; ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		}
+		missing = p
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return missing
+}
+
+// cleanupCreatedDir 回收 clone 失败后本次新建的目录树。
+//
+// 参数：
+//   - created: firstMissingAncestor 的返回值；空串表示本次没造过任何目录，直接返回
+//
+// 注意：回收失败**不改变**调用方看到的错误——clone 的失败原因才是人要看的那条，
+// 残留目录只是需要人工清理的次要事实，写进 Warn 日志即可。
+func (m *Manager) cleanupCreatedDir(created string) {
+	if created == "" {
+		return
+	}
+	if err := os.RemoveAll(created); err != nil {
+		m.log.Warn("克隆失败后回收目录失败，需人工清理", "dir", created, "cause", err)
+		return
+	}
+	m.log.Info("克隆失败，已回收本次新建的目录", "dir", created)
+}
+
 // cloneToPathAndRegister 把 origin clone 到调用方指定的 dest（req.Path）再登记。
 //
 // 与 cloneAndRegisterProject 的区别只在落点：这里落点是 req.Path 原样使用，
@@ -265,6 +311,9 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjec
 	}
 	dest := req.Path
 	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
 	}
@@ -275,6 +324,7 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjec
 		m.log.Error("克隆到指定路径失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
 			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
@@ -473,6 +523,9 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", ErrRepoUnusable, dest, err)
 	}
 	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
 	}
@@ -483,6 +536,7 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
 			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}

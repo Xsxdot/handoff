@@ -528,3 +528,40 @@ func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
 		t.Errorf("Path = %q, want %q", again.Path, first.Path)
 	}
 }
+
+// TestFirstMissingAncestor 验证助手找的是「MkdirAll 会从哪一层开始造」。
+func TestFirstMissingAncestor(t *testing.T) {
+	base := t.TempDir()
+	if got := firstMissingAncestor(base); got != "" {
+		t.Errorf("已存在的目录应返回空串，got %q", got)
+	}
+	want := filepath.Join(base, "a")
+	if got := firstMissingAncestor(filepath.Join(base, "a", "b", "c")); got != want {
+		t.Errorf("firstMissingAncestor = %q, want %q", got, want)
+	}
+}
+
+// TestCloneToPathCleansUpOnFailure 验证 clone 失败时本次新建的目录被回收，
+// 而调用方原本就有的目录一根汗毛不动。
+func TestCloneToPathCleansUpOnFailure(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	base := t.TempDir()
+	// 不是仓库的目录当 origin：git clone 必失败，且不依赖网络。
+	bogus := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(bogus, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
+	})
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("err = %v, want ErrRepoUnusable", err)
+	}
+	if _, serr := os.Stat(filepath.Join(base, "a")); serr == nil {
+		t.Errorf("clone 失败后 %s 不该留下", filepath.Join(base, "a"))
+	}
+	if _, serr := os.Stat(base); serr != nil {
+		t.Errorf("调用方原本就有的 %s 被误删了: %v", base, serr)
+	}
+}
