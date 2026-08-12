@@ -229,4 +229,57 @@ describe('ProjectTree', () => {
     fireEvent.click(screen.getByText('游离任务'))
     expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
   })
+
+  it('渲染搜索框与「项目 N」，N 默认是项目总数', () => {
+    render(<ProjectTree {...props()} />)
+    expect(screen.getByPlaceholderText('搜索项目、机器或任务')).toBeInTheDocument()
+    expect(screen.getByText('项目')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+  })
+
+  it('搜任务名：该任务可见，无关目录不可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: '重构工单' },
+    })
+    expect(screen.getByText('重构工单通道')).toBeInTheDocument()
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('搜项目名：N 仍是 1，整棵子树可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'handoff' },
+    })
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+
+  it('零结果时出空态文案，N 归 0', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'zzzz-nothing' },
+    })
+    expect(screen.getByText('没有匹配的项目或任务')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('0')
+  })
+
+  // 钉住「旁路而非清空」：搜索期间强制展开，清空后手动折叠的状态原样回来
+  it('清空搜索后，此前手动折叠的节点仍是折叠的', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+
+    // 先手动折叠项目 handoff
+    fireEvent.click(screen.getByText('handoff'))
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+
+    // 搜索期间强制展开
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(screen.getByText('main')).toBeInTheDocument()
+
+    // 清空后折叠态原样回来
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
 })

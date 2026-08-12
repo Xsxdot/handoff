@@ -26,10 +26,11 @@
 // 任务 9：底部「添加项目」接 onAddProject 打开登记向导；机器（位置）行右侧悬浮
 // 注销按钮（仅当 onUnregister 提供时渲染），点按弹 ConfirmDialog 二次确认，
 // agentd 报错原文透出（spec §10）。
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
-  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Settings, Ticket, Trash2, WifiOff,
+  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, Trash2, WifiOff,
 } from 'lucide-react'
+import { filterTree } from './search'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
@@ -178,6 +179,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
+  const filtered = useMemo(() => filterTree(tree, tasks, query), [tree, tasks, query])
+  const searching = filtered.query !== ''
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
   const toggle = (key: string) =>
@@ -187,10 +194,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
       else next.add(key)
       return next
     })
-  const expanded = (key: string) => !collapsed.has(key)
+  // 搜索期间旁路 collapsed：搜到了却折叠着等于没搜到。
+  // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
+  // 折起来的布局立刻回来，搜索不破坏布局。
+  const expanded = (key: string) => searching || !collapsed.has(key)
 
-  const unassigned = tasks.filter((t) => t.project_id === '')
-  const hasUnowned = unassigned.length > 0 || tree.unowned.length > 0
+  const unassigned = filtered.unassignedTasks
+  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
 
   const taskName = (t: Task) => t.name || t.plan_summary || '（无名称）'
 
@@ -216,7 +226,29 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
         <span>任务看板</span>
       </button>
 
-      {tree.projects.map((project) => {
+      {/* 搜索框与「项目 N」——形态基准是原型左栏的 sidebar-search +
+          sidebar-section-title。N 跟随过滤，搜索时它就是「找到几个」的
+          即时反馈；「未归属」不计入——它不是项目，是收纳箱 */}
+      <div className="mb-1 px-2">
+        <label className="flex items-center gap-1.5 rounded-md border bg-background px-2 py-1">
+          <Search className="size-3.5 shrink-0 text-muted-foreground" />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索项目、机器或任务"
+            className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+          />
+          <kbd className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">⌘K</kbd>
+        </label>
+      </div>
+
+      <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span>项目</span>
+        <span data-testid="project-count">{filtered.projectCount}</span>
+      </div>
+
+      {filtered.projects.map((project) => {
         const pKey = `p:${project.project_id}`
         const pOpen = expanded(pKey)
         const pCounts = countsForProject(tasks, project)
@@ -351,12 +383,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
             </button>
           ))}
-          {tree.unowned.map((name) => (
+          {filtered.unownedNames.map((name) => (
             <p key={name} className="py-1 pr-2 text-[13px] text-muted-foreground" style={{ paddingLeft: 8 + 16 }}>
               {name}（未登记为项目）
             </p>
           ))}
         </div>
+      )}
+
+      {/* 左栏搜到全白会像加载失败，必须有话说 */}
+      {filtered.isEmpty && searching && (
+        <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
 
       {/* 底部三入口：添加项目占主位，工单与设置收在右侧图标区（spec §3.2）。
