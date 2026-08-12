@@ -165,6 +165,23 @@ case "$err" in
 esac
 rm -rf "$probe_dir"
 
+# 装完必须把下一步指向 handoff init，并说清不托管的后果。
+#
+# why 值得一条断言：这是本脚本唯一直接影响用户下一步动作的产物。B71 现场那台
+# 机器的 agentd 从来没被托管过——因为安装脚本从头到尾没提过 handoff init，
+# 而托管提示躺在 init 的最后一行，用户要先知道该跑 init 才看得到它。
+out="$(print_next_steps 2>&1)"
+case "$out" in
+  *"handoff init"*) ;;
+  *) printf 'FAIL  下一步提示必须点名 handoff init\n      实得 %s\n' "$out" >&2
+     fails=$((fails + 1)) ;;
+esac
+case "$out" in
+  *重启*) ;;
+  *) printf 'FAIL  下一步提示必须说清不托管的后果（重启后不会自己回来）\n      实得 %s\n' "$out" >&2
+     fails=$((fails + 1)) ;;
+esac
+
 if [ "$fails" -ne 0 ]; then
   printf '\n%d 项失败\n' "$fails" >&2
   exit 1
