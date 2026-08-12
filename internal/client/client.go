@@ -333,6 +333,103 @@ func (c *Client) Footprint(ctx context.Context) (*proto.FootprintResp, error) {
 	return &out, nil
 }
 
+// ErrReclaimUnsupported 表示对端 agentd 太旧，没有 worktree 回收端点。
+//
+// 与 ErrStatusUnsupported / ErrFootprintUnsupported 分开：处置建议不同
+// （这条说「升级后才能远程回收，眼下只能上机器 git worktree remove」）
+var ErrReclaimUnsupported = errors.New("对端 agentd 不支持 worktree 回收")
+
+// ReclaimRejected 是一次被拒的回收，带机器码与（脏树时的）改动清单。
+//
+// 为什么不做成一堆哨兵：四种拒绝共用 409，调用方要的是「哪一种 + 细节」，
+// 一个带 Reason 字段的类型比四个哨兵加一次类型断言更直白
+type ReclaimRejected struct {
+	Reason proto.ReclaimReason
+	Msg    string
+	Dirty  []proto.DirtyFile
+}
+
+func (e *ReclaimRejected) Error() string { return e.Msg }
+
+// ReclaimList 拉取对端全部终态任务的 worktree 残留体检结果。
+//
+// 返回：
+//   - 体检结果；404（对端过旧）返回 ErrReclaimUnsupported
+//   - 请求失败或响应非法时返回错误
+func (c *Client) ReclaimList(ctx context.Context) (*proto.ReclaimListResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/reclaim", nil)
+	if err != nil {
+		return nil, fmt.Errorf("残留体检请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// 与 Status/Footprint 的 404 同款：这是预期结论不是异常，用 Debug
+		c.log().Debug("对端 agentd 不支持 /api/reclaim，按版本过旧处理")
+		return nil, ErrReclaimUnsupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("残留体检", resp)
+	}
+	var out proto.ReclaimListResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析残留体检响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Reclaim 回收指定终态任务残留的 managed worktree。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - force: 对脏工作树强删（丢弃未提交改动）
+//
+// 返回：
+//   - 回收结果
+//   - ErrReclaimUnsupported: 对端过旧
+//   - *ReclaimRejected: 被拒（409），带机器码与改动清单
+//   - 其余错误：连不上、401、5xx、任务不存在
+//
+// 注意（404 消歧）：老 agentd 没有这条路由，POST 打过去也是 404——与「任务
+// 不存在」撞码。照直翻译会对着一台好机器报「任务不存在」，把人引向完全错误
+// 的方向。因此收到 404 时补打一次 GET /api/reclaim：它也 404 才是老 agentd，
+// 它 200 说明任务是真不存在。只在错误路径上多一次往返，换一个不靠猜的结论
+func (c *Client) Reclaim(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error) {
+	// 为什么传 map 而不是预编码的 bytes.NewReader：c.do 会对 body 再走一次
+	// json.Marshal——bytes.Reader 没有导出字段，会序列化成 {}，force 悄悄变 false。
+	// 真机烟测照出的缺陷：curl 直打 force=true 有效、CLI 的 --force 却永远被拒。
+	// 与 Reply 等既有方法保持一致，传可序列化的 map。
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reclaim",
+		map[string]bool{"force": force})
+	if err != nil {
+		return nil, fmt.Errorf("回收 worktree 请求: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		if _, lerr := c.ReclaimList(ctx); errors.Is(lerr, ErrReclaimUnsupported) {
+			c.log().Debug("对端两条 reclaim 路由皆 404，按版本过旧处理", "task", taskID)
+			return nil, ErrReclaimUnsupported
+		}
+		return nil, c.httpError("回收 worktree", resp)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		var re proto.ReclaimError
+		if derr := json.NewDecoder(resp.Body).Decode(&re); derr != nil {
+			return nil, c.httpError("回收 worktree", resp)
+		}
+		c.log().Warn("回收被拒", "task", taskID, "reason", re.Reason, "dirty", len(re.Dirty))
+		return nil, &ReclaimRejected{Reason: re.Reason, Msg: re.Error, Dirty: re.Dirty}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("回收 worktree", resp)
+	}
+	var out proto.ReclaimResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析回收响应: %w", err)
+	}
+	return &out, nil
+}
+
 // ListTasks 查询全部任务（created_at 降序）。
 //
 // 返回：
