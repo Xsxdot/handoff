@@ -98,9 +98,11 @@ type runState struct {
 	stopOnce     sync.Once
 	closeOnce    sync.Once
 	renderPath   string
-	emitMu       sync.Mutex // 保护 evCh 的写入与关闭
-	evClosed     bool       // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
-	turnMu       sync.Mutex // 保护 turnBuf/lastProgress（maybeProgress 在 mapAssistant 调用）
+	frames       *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart     string            // 本回合正文/思维链的 part 标识，BeginTurn 后由 NextPart 分配
+	emitMu       sync.Mutex        // 保护 evCh 的写入与关闭
+	evClosed     bool              // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
+	turnMu       sync.Mutex        // 保护 turnBuf/lastProgress（maybeProgress 在 mapAssistant 调用）
 	turnBuf      strings.Builder
 	lastProgress time.Time
 	startCommit  string // 本回合起点 commit（git 兜底分类的基线，每回合结束后刷新）
@@ -122,6 +124,13 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		renderPath: filepath.Join(taskDir, renderFileName),
 		ready:      make(chan struct{}),
 	}
+	// 帧写入器构造失败不该挡住任务：可见性是增强能力。持 nil 继续，
+	// FrameWriter 的方法对 nil 接收者是空操作，调用点不必判空。
+	fw, err := turn.NewFrameWriter(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.runs[taskID] = r
@@ -174,6 +183,10 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	sessionID := uuid.NewString()
 	sockPath := filepath.Join(req.TaskDir, sockFileName)
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
+	if err := r.frames.BeginTurn("dispatch"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	r.session = sessionID
 	// 回滚顺序与创建顺序相反：先停 socket 受理、再 kill 进程、最后注销运行态
 	rollback := func() {
@@ -317,6 +330,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	if r.proc == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	if err := r.frames.BeginTurn("send"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	if err := r.proc.WriteInput(text); err != nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
@@ -518,14 +535,27 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 }
 
 // mapStreamEvent 处理流式增量：text_delta 追加 render.log（实况流式来源），
-// 不产生 AdapterEvent（spec §4.2）；thinking_delta 被 textDelta 过滤掉。
+// 不产生 AdapterEvent（spec §4.2）；thinking_delta 被 textDelta 过滤掉，
+// 但会单独落一条 reasoning 帧（W4a：隔离从「丢弃」改成「分流」）。
+//
+// 隔离不变式：thinking 内容只走 r.frames，绝不进 render.log、绝不进 turnBuf，
+// 因此绝不喂 turn.ParseTrailer、绝不进权限闸。
 func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
-	text, ok := textDelta(ev)
-	if !ok {
+	text, reasoning := splitDelta(ev)
+	if reasoning != "" {
+		if err := r.frames.Reasoning(r.textPart, reasoning); err != nil {
+			a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+		return
+	}
+	if text == "" {
 		return
 	}
 	if err := turn.AppendRender(r.renderPath, text); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
+	}
+	if err := r.frames.Text(r.textPart, text); err != nil {
+		a.log.Warn("写 text 帧失败，不影响回合", "task", r.taskID, "cause", err)
 	}
 }
 
@@ -539,6 +569,7 @@ func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
 		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
+			ID    string          `json:"id"`
 			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
@@ -558,13 +589,17 @@ func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
 			r.turnMu.Unlock()
 			a.maybeProgress(r)
 		case "tool_use":
-			a.appendActionSummary(r, block.Name, block.Input)
+			a.appendActionSummary(r, block.ID, block.Name, block.Input)
 		}
 	}
 }
 
-// appendActionSummary 往 render.log 追加一行工具动作摘要（render 流的旁观内容）。
-func (a *Adapter) appendActionSummary(r *runState, toolName string, input json.RawMessage) {
+// appendActionSummary 往 render.log 追加一行工具动作摘要（render 流的旁观内容），
+// 并落一条 tool_call 帧。
+//
+// toolUseID 用作帧的 part：user 消息里的 tool_result 带同值的 tool_use_id，
+// 两条帧因此天然配对，不需要本地再维护一张映射表。
+func (a *Adapter) appendActionSummary(r *runState, toolUseID, toolName string, input json.RawMessage) {
 	line := "→ " + toolName
 	if toolName == "Bash" {
 		var in struct {
@@ -579,14 +614,22 @@ func (a *Adapter) appendActionSummary(r *runState, toolName string, input json.R
 	if err := turn.AppendRender(r.renderPath, "\n"+line+"\n"); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
 	}
+	// 帧里存**完整入参**（只受头尾截断约束），不是 render.log 的行摘要——
+	// 行摘要的 firstLine 会切掉多行命令的后续行，那正是审核者要看的
+	if err := r.frames.ToolCall(toolUseID, toolName, string(input)); err != nil {
+		a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
 }
 
-// mapUserMessage 处理 user 消息：tool_result 块往 render.log 追加结果摘要。
+// mapUserMessage 处理 user 消息：tool_result 块往 render.log 追加结果摘要，
+// 并落一条 tool_result 帧（part 取 tool_use_id，与 tool_call 帧配对）。
 func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 	var m struct {
 		Content []struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
+			Type      string          `json:"type"`
+			ToolUseID string          `json:"tool_use_id"`
+			IsError   bool            `json:"is_error"`
+			Content   json.RawMessage `json:"content"`
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(msg, &m); err != nil {
@@ -604,6 +647,18 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 		line := "↩ " + turn.TruncateRunes(summary, 200)
 		if err := turn.AppendRender(r.renderPath, "\n"+line+"\n"); err != nil {
 			a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
+		}
+		// 帧里存完整结果（只受头尾截断约束），不是 render.log 的 200 字行摘要
+		full := compactJSON(block.Content)
+		if s, ok := jsonString(block.Content); ok {
+			full = s
+		}
+		status := "ok"
+		if block.IsError {
+			status = "error"
+		}
+		if err := r.frames.ToolResult(block.ToolUseID, status, full); err != nil {
+			a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
 		}
 	}
 }

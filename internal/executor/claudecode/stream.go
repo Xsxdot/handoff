@@ -189,3 +189,38 @@ func textDelta(ev json.RawMessage) (string, bool) {
 	}
 	return e.Delta.Text, true
 }
+
+// splitDelta 从 stream_event 里同时取出正文增量与思维链增量。
+//
+// 返回：
+//   - text:      delta.type == "text_delta" 时的正文，否则空串
+//   - reasoning: delta.type == "thinking_delta" 时的思维链，否则空串
+//
+// 两者互斥，至多一个非空。
+//
+// 为什么另开一个函数而不是改 textDelta：textDelta 是既有隔离判定的入口
+// （mapStreamEvent 靠它把思维链挡在 render.log 与回合正文之外）。改它的返回
+// 语义等于动隔离，而本期的纪律是隔离一行不许放松——多一个函数是最便宜的守法方式。
+func splitDelta(ev json.RawMessage) (text, reasoning string) {
+	var e struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(ev, &e); err != nil {
+		return "", ""
+	}
+	if e.Type != "content_block_delta" {
+		return "", ""
+	}
+	switch e.Delta.Type {
+	case "text_delta":
+		return e.Delta.Text, ""
+	case "thinking_delta":
+		return "", e.Delta.Thinking
+	}
+	return "", ""
+}
