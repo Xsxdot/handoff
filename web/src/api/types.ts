@@ -136,10 +136,14 @@ export interface MachinesResp {
 }
 
 // CreateProjectReq 是 POST /api/projects 的请求体。B62 spec §6.3。
-//   带 path  = 登记该机器上已有目录（本机永远走这条）
-//   不带 path = 由该机器 clone 到自己的 repo_root/<name>
+// 形态由 path / 路径是否存在 / origin_url 是否非空共同决定：
+//   - path 有且目录已存在 → 登记已有仓（origin_url 可省，省则 agentd 现读 origin）
+//   - path 有且目录不存在 + origin_url 有 → clone 到该 path
+//   - path 空 + origin_url 有 → 由该机 clone 到自己的 repo_root/<name>
+//   - 其余组合（path 空且无 origin、path 不存在且无 origin）→ 400
+// 调用方只放非空字段——agentd 对空串与缺席一视同仁，但缺席更干净。
 export interface CreateProjectReq {
-  origin_url: string
+  origin_url?: string
   name?: string
   path?: string
 }
