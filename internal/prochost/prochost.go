@@ -63,6 +63,17 @@ type Spec struct {
 type Handle struct {
 	PID      int    `json:"pid"`
 	LockPath string `json:"lock_path"`
+
+	// StartedAt 是 shim 进程的启动时刻（unix 纳秒），足迹身份校验的时间下界。
+	//
+	// 为什么读内核而不是记墙钟：规则三要把**成员**的启动时刻与它直接比较，而成员
+	// 的时刻来自内核（darwin p_starttime / linux /proc starttime）。两边取自同一个
+	// 时钟源才可比——记 time.Now() 会引入毫秒级偏差，linux 的 jiffies 精度（10ms）
+	// 下足以让紧随其后 fork 的子进程「看起来比父进程还早」，从而被规则三误排除。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出 0 即判
+	// VerdictNoCredential 降级为只上报不清扫。老任务不会因为升级就被动手。
+	StartedAt int64 `json:"started_at,omitempty"`
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
