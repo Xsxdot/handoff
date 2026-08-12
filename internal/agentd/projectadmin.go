@@ -65,6 +65,9 @@ const nameFallbackLimit = 50
 //   - Path 非空且目录不存在 + OriginURL 有 → clone 到该 Path 再登记
 //   - 其余非法组合 → 400
 //
+// Path 的形态约束：必须是**绝对路径**。相对路径与 ~ 一律 400——clone 落点与
+// 落库路径的解析基准不同，猜错的代价是一条指向不存在路径的死记录。
+//
 // 为什么没有 Clone 布尔位：形态已被 Path + 文件系统状态 + OriginURL 是否为空
 // 完全决定，多一个布尔位只会多出一组无意义的非法组合。
 //
@@ -155,6 +158,7 @@ func validateProjectName(name string) error {
 // 注意：
 //   - **登记在 clone 成功之后才落库**：反过来会在 clone 失败时留下一条指向
 //     不存在路径的死记录
+//   - Path 非空时必须是绝对路径，否则 400（见 RegisterProjectReq）
 //   - clone 的落点若已存在则直接拒绝，绝不往里 clone、绝不覆盖
 func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	m.log.Info("登记项目请求", "origin", req.OriginURL, "name", req.Name, "path", req.Path)
@@ -166,6 +170,19 @@ func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", errBadDispatchRequest)
 	}
 	if req.Path != "" {
+		// path 必须是绝对路径：clone 落点由 gitRun（cwd=父目录）解析，落库路径由
+		// persistProject（cwd=agentd 进程）解析，两边基准不同——相对路径会让仓库
+		// 克隆到一处、位置表记到另一处，留下一条指向不存在路径的死记录。
+		// ~ 同理：Go 不展开它，不拦就会在 agentd 的 cwd 里造出字面量 ~ 目录。
+		// 不用 filepath.Abs 兜底：调用方不知道 agentd 的 cwd 是哪儿，猜一个
+		// "能算出来的路径"不等于猜对了用户要的路径。
+		if !filepath.IsAbs(req.Path) {
+			m.log.Warn("登记被拒：path 不是绝对路径", "path", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: path 必须是绝对路径（不支持 ~ 展开与相对路径）：%s",
+				errBadDispatchRequest, req.Path)
+		}
+		req.Path = filepath.Clean(req.Path)
 		return m.registerAtPath(ctx, req)
 	}
 	// 无 path：只能 clone 到 repo_root，必须带 origin——否则既无落点也无项目身份。

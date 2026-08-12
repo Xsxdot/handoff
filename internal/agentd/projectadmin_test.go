@@ -414,3 +414,59 @@ func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
 		t.Fatalf("err = %v, want errBadDispatchRequest", err)
 	}
 }
+
+// TestRegisterProjectRejectsRelativePath 验证相对 path 被入口拦下。
+//
+// 为什么必须拦而不是 filepath.Abs 兜底：Abs 的基准是 agentd 进程的 cwd，
+// 调用方（尤其 Web 表单和跨机那一跳）根本不知道那是哪个目录；更要命的是
+// gitRun 以 dest 的父目录为 cwd，相对 dest 会被 git 再解析一次，克隆落点
+// 与落库路径就此分叉，留下一条指向不存在路径的死记录。
+func TestRegisterProjectRejectsRelativePath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "relproj", Path: "workdir/relproj",
+	})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+	if !strings.Contains(err.Error(), "绝对路径") {
+		t.Errorf("报文 = %q, want 含「绝对路径」（人要看得懂怎么改）", err.Error())
+	}
+}
+
+// TestRegisterProjectRejectsTildePath 验证 ~ 开头的 path 被拦下。
+// Go 不做 ~ 展开——不拦的话 MkdirAll 会造出一个字面量 ~ 目录。
+func TestRegisterProjectRejectsTildePath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "tildeproj", Path: "~/code/tildeproj",
+	})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+	if _, serr := os.Stat("~"); serr == nil {
+		t.Errorf("cwd 下出现了字面量 ~ 目录——说明请求走到了 MkdirAll")
+	}
+}
+
+// TestRegisterProjectNormalizesDirtyAbsPath 验证绝对路径里的冗余段被 Clean 掉，
+// 落库的是归一化后的路径（同一目录不会因为写法不同登记成两条）。
+func TestRegisterProjectNormalizesDirtyAbsPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		Path: filepath.Join(repo, "sub", ".."),
+	})
+	if err != nil {
+		t.Fatalf("RegisterProject(含 .. 的绝对路径): %v", err)
+	}
+	if loc.OriginURL != origin {
+		t.Errorf("OriginURL = %q, want %q", loc.OriginURL, origin)
+	}
+}
