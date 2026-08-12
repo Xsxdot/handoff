@@ -77,7 +77,24 @@ type Result struct {
 	Summary    string // 执行摘要（给审核者看的完成说明）
 	OK         bool   // true=正常完成；false=失败（见 FailReason）
 	FailReason string // OK=false 时的失败原因/日志尾部
+	// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。
+	// 空表示沿用缺省 VoidReasonExecutorGone——绝大多数失败路径（进程退出、
+	// 看门狗判死）确实是 executor 没了，不必逐个填。
+	VoidReason string
 }
+
+// 挂起工单被作废时写进审计事件的理由。
+//
+// 为什么要区分：作废行为本身在两种情形下相同（回合已结束，挂起工单无论如何
+// 都该作废），但审计记录必须说真话。历史上零文本回合那条 FailReason 明写
+// 「executor 仍在线，可 continue 续接重试」，却被同一次调用标记成
+// 「executor 已终结」——审计与事实互相矛盾。
+const (
+	// VoidReasonExecutorGone 用于 executor 真的没了：进程退出、连接终止、看门狗判死。
+	VoidReasonExecutorGone = "executor 已终结"
+	// VoidReasonTurnDiscipline 用于 executor 活着但没守回合纪律：无 trailer、零文本。
+	VoidReasonTurnDiscipline = "回合未按纪律收尾，executor 仍在线"
+)
 
 // 归一化工具名：各 adapter 的原始工具名折算到这一组常量，permgate 只认它们。
 //
