@@ -2,8 +2,10 @@
 
 > 记录人：1aaacf5f 任务执行者。本机为 macOS（darwin）。**铁律遵守**：全程未触碰
 > 生产 agentd（127.0.0.1:7777，pid 22072 前后一致）与 `~/.handoff`；隔离实例独立
-> 端口 7897 + 独立 DataDir，devbox 不可达，原计划「对账 devbox 那 15 个 failed」改为
-> 在隔离实例上复刻等价场景对账（见 §5.2 的说明）。
+> 端口 7897 + 独立 DataDir。烟测当时 devbox 不可达，原计划「对账 devbox 那 15 个
+> failed」先以隔离实例等价场景完成机制验证（§5.2 上半）；随后审核者以**只读**方式对
+> 生产 agentd `100.73.238.21:7777` 完成本体对账（未做任何回收动作），正式结论见
+> §5.2 下半与 §7 第 4 条。
 
 ## 0. 结论速览
 
@@ -27,6 +29,12 @@
   到不了 `WorktreeUnknown` 分支）——按 B72 变异 4 先例当场补用例
   `TestReclaimRefusesWhenWorktreeUnreadable`（弄坏工作树 gitdir 的 index 逼出
   Unknown 态）后确认 FAIL，提交 `eaaef38`。
+- **生产数据把 spec 的两条推断坐实为实测结论**（审核者只读对账，见 §5.2 下半）：
+  spec §1.2「脏树撞上不带 `--force` 的 remove」在生产上 **6/6 命中**——6 个真残留全部
+  是脏树、没有一个净的；spec §1.3「`worktree_managed` 不代表有残留」实测过报约
+  **20 倍**（124 个 managed 候选里真残留只有 6 个）。B77 立项时「那 15 个 failed
+  到底漏没漏」的悬案至此有正式答案：**漏 6 个、全是脏树**（`2c58bbb7`/`f7d07ece`/
+  `c7db826a`/`58066fd3`/`c7a595f5`/`1733eef3`）。
 
 ## 1. 隔离实例参数（不占生产）
 
@@ -122,10 +130,28 @@ prunable gitdir file points to non-existent location   # T6 ✓
 
 逐条对账一致：入表 3 行 = git 在册的 T1/T3/T6；T2/T4（failed/completed 且
 worktree_managed=true）不在册也不入表；T5（非终态）在册但被排除。`scanned=5`（终态任务
-T1/T2/T3/T4/T6 共 5 个）。**这直接实证了 spec §1.3：`worktree_managed=true` 与「真残留」
-是两回事**——T2/T4 就是「字段没回写、实际已清干净」的活例子，那 15 个 failed 里有多少
-是真残留，只能用这套对账才能分辨。devbox 本体的对账因 devbox 不可达未能执行，改在
-隔离实例上以等价场景完成（本节即替代记录，非编造）。
+T1/T2/T3/T4/T6 共 5 个）。隔离实例验证的是命令行为：**`worktree_managed=true` 与「真残留」
+是两回事**——T2/T4 就是「字段没回写、实际已清干净」的活例子。
+
+**生产本体对账（审核者只读完成）**：烟测当时 devbox 不可达，本节先以隔离实例等价场景
+顶住机制验证；后续审核者以**只读**方式对生产 agentd `100.73.238.21:7777` 完成正式对账
+（未做任何回收动作），实测：
+
+- 终态任务总数 **136**，其中 `worktree_managed=true` 且 `work_dir` 非空的候选 **124** 个
+  （completed 76 / failed 48）。
+- `git -C /Users/sycm/workspace/handoff worktree list --porcelain` 对账：主仓 + 全部在册
+  工作树共 **10** 个，候选里**真正仍在册的只有 6 个**；其余 **118** 个是「字段没回写、
+  实际早已清干净」——`worktree_managed` 过报约 **20 倍**（124 → 6），spec §1.3 从推断
+  变为实测结论。
+- 6 个真残留：`2c58bbb7`、`f7d07ece`、`c7db826a`、`58066fd3`、`c7a595f5`、`1733eef3`，
+  prunable 0 个。
+- 逐个 `git status --porcelain` 计数：2 / 1 / 2 / 2 / 2 / 2——**6 个全部是脏树，没有
+  一个是净的**。这与 spec §1.2 的推断完全吻合（裸 `git worktree remove` 不带 `--force`
+  撞脏树被 git 拒绝 → 干净树删得掉、脏树全留下）：生产数据 **6/6 命中「脏树撞墙」**。
+
+B77 立项时「那 15 个 failed 到底漏没漏」的悬案至此有正式答案：**漏的是 6 个，全部是
+脏树；118 个「看起来还占着」的任务实际早已清干净**——`handoff reclaim` 的价值正好落在
+这 6 个上。
 
 ### 5.3 脏树拒绝 → force 强删 → 幂等（Step 3/4/6）
 
@@ -201,8 +227,11 @@ $ git push …/handoff-b77-devbox --delete handoff/a3ea6e1d
    `agentd_test` 外部包、够不到 `initGitRepo`/`mustCreateTask` 等内部助手——HTTP 端点
    用例改放白盒文件 `internal/agentd/reclaim_server_test.go`（package agentd）。
 3. **变异 3 用例缺陷**：见 §3 第 3 行，补 `TestReclaimRefusesWhenWorktreeUnreadable`。
-4. **真机对账对象**：devbox 不可达，「15 个 failed 到底漏没漏」改在隔离实例上以
-   T2/T4 两例实证机制（§5.2）；生产 7777 / `~/.handoff` / 真实 `2c58bbb7` 全程未动。
+4. **真机对账对象**：烟测当时 devbox 不可达，「15 个 failed 到底漏没漏」先以隔离实例
+   T2/T4 两例实证机制（§5.2 上半）；随后审核者以**只读**方式对生产 agentd
+   `100.73.238.21:7777` 完成本体对账，正式结论见 §5.2 下半：124 个 managed 候选里真残留
+   仅 6 个且**全部是脏树**（过报约 20 倍）。本机生产 7777（pid 22072）/ `~/.handoff`
+   全程未动；生产 agentd 的对账只读、未做任何回收动作。
 5. **completed 任务落库方式**：fake executor 无脚本时任务停在 running、到不了
    waiting_review，`done` 无法自然触发——completed 任务（T3/T4）在停机窗口直接写
    隔离实例的 store DB（`UPDATE tasks SET state='completed'`），模拟 done 清理后的终态。
