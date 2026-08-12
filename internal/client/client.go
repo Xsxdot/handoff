@@ -806,6 +806,11 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 				// cursor 写失败不吞事件：先把事件交还用户（宁可下次重投，不可这次挂住）
 				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
 			}
+			// 任务归档后游标再无用处：立刻回收，不等 TTL。放在返回前而非
+			// 调用方，是因为两个消费端（wait / follow）都要这个行为
+			if ev.Type == proto.EventTypeArchived {
+				c.DropCursor(taskID)
+			}
 			return ev, nil
 		}
 		if ctx.Err() != nil {
@@ -1087,6 +1092,11 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
 				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
 			}
+			// 任务归档后游标再无用处：立刻回收，不等 TTL。与 WaitEvent 同一条
+			// 规则，两个消费端的行为保持一致
+			if ev.Type == proto.EventTypeArchived {
+				c.DropCursor(taskID)
+			}
 			c.log().Info("follow 事件交付", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 			if err := onEvent(&ev); err != nil {
 				return err
@@ -1252,37 +1262,4 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)
 	c.sweepStaleCursorTemps(filepath.Dir(p), taskID)
 	return nil
-}
-
-// cursorTempTTL 是 cursor 临时文件被判定为「遗留垃圾」的年龄阈值。
-//
-// 为什么按年龄而不是一律清空：同一任务可能有并发的 wait 进程正在写各自的
-// 临时文件，无差别删除会掐掉别人在途的 Rename。而任何一次正常写入都在毫秒级
-// 完成，1 小时的阈值把「在途」与「遗留」分得足够开。
-const cursorTempTTL = time.Hour
-
-// sweepStaleCursorTemps 清理该任务遗留的 cursor 临时文件。
-//
-// 为什么需要它：writeCursor 用 CreateTemp + Rename 保证原子写，进程若在两步
-// 之间被杀（Ctrl+C、机器重启、oom kill）就会留下一个 .tmp，而此后没有任何
-// 代码会再碰它——~/.handoff 里的 .tmp 只增不减。
-//
-// 清理失败一律只记 Debug：这是顺带的卫生工作，绝不能影响 cursor 写入的成败。
-func (c *Client) sweepStaleCursorTemps(dir, taskID string) {
-	matches, err := filepath.Glob(filepath.Join(dir, taskID+"-*.tmp"))
-	if err != nil {
-		c.log().Debug("扫描遗留 cursor 临时文件失败", "task", taskID, "cause", err)
-		return
-	}
-	for _, m := range matches {
-		fi, err := os.Stat(m)
-		if err != nil || time.Since(fi.ModTime()) < cursorTempTTL {
-			continue // 取不到状态或还在途：交给下一次写入再看
-		}
-		if rerr := os.Remove(m); rerr != nil {
-			c.log().Debug("清理遗留 cursor 临时文件失败", "path", m, "cause", rerr)
-			continue
-		}
-		c.log().Debug("已清理遗留 cursor 临时文件", "task", taskID, "path", m)
-	}
 }

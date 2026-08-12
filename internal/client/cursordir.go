@@ -88,6 +88,13 @@ func probeCursorDirWritable(dir string) error {
 func (c *Client) cursorRootDir() (string, error) {
 	c.cursorRootOnce.Do(func() {
 		c.cursorRoot, c.cursorRootErr = c.resolveCursorRoot()
+		if c.cursorRootErr == nil {
+			// 旧平铺布局的一次性清除挂在这里：它必须只跑一次，而 once 已经
+			// 提供了这个保证；单独找一个「启动时」的挂载点反而要在每个命令里
+			// 各接一次，漏一个就永远不清
+			c.purgeLegacyFlatCursors()
+			c.sweepCursors()
+		}
 	})
 	return c.cursorRoot, c.cursorRootErr
 }
