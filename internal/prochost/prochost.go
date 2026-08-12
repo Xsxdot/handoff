@@ -85,6 +85,17 @@ type Handle struct {
 	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出 0 即判
 	// VerdictNoCredential 降级为只上报不清扫。老任务不会因为升级就被动手。
 	StartedAt int64 `json:"started_at,omitempty"`
+
+	// RosterPath 是后代名册（roster.json）的路径，第二段清扫的入口。
+	//
+	// 为什么要记在 Handle 里而不是让 Sweep 自己推：Sweep 跑在 agentd 进程里，
+	// 手上只有 proc.json 反序列化出来的 Handle——它没有 spec，也就没有
+	// InfoPath，推不出任务目录。这个字段是两个进程之间唯一的交接点。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出空串即
+	// 跳过第二段清扫（只做 pgid 那段），与 StartedAt 缺失时降级为只上报是
+	// 同一条纪律——老任务不会因为升级就被动手。
+	RosterPath string `json:"roster_path,omitempty"`
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -271,7 +282,13 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		log().Warn("读不到 shim 启动时刻，该任务将只能上报残留、无法自动清扫",
 			"pid", pid, "spec", specPath)
 	}
+	roster := rosterPath(spec.InfoPath)
 	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
-		"started_at", startedAt)
-	return Handle{PID: pid, LockPath: spec.LockPath, StartedAt: startedAt}, nil
+		"started_at", startedAt, "roster", roster)
+	return Handle{
+		PID:        pid,
+		LockPath:   spec.LockPath,
+		StartedAt:  startedAt,
+		RosterPath: roster,
+	}, nil
 }

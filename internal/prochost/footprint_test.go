@@ -1,6 +1,7 @@
 package prochost
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sort"
@@ -279,5 +280,44 @@ func TestSweepAndFootprintAgree(t *testing.T) {
 	}
 	if len(members) != killed {
 		t.Fatalf("孪生成员数不一致：Footprint=%d Sweep=%d", len(members), killed)
+	}
+}
+
+// Start 必须把名册路径记进 Handle：Sweep 在 agentd 进程里跑，它只有 proc.json
+// 反序列化出来的 Handle，没有 spec，推不出任务目录。这个字段是两个进程之间
+// 唯一的交接点，漏填的表现是「第二段清扫永远静默地不干活」。
+func TestStartRecordsRosterPath(t *testing.T) {
+	if !LockSupported() {
+		t.Skip("本平台不支持文件锁")
+	}
+	dir := t.TempDir()
+	spec := Spec{
+		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Dir:      dir,
+		Stdout:   filepath.Join(dir, "out.log"),
+		Stderr:   filepath.Join(dir, "err.log"),
+		LockPath: filepath.Join(dir, "shim.lock"),
+		InfoPath: filepath.Join(dir, "proc.json"),
+	}
+	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	if err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = killGroup(hd.PID) })
+	want := filepath.Join(dir, RosterFileName)
+	if hd.RosterPath != want {
+		t.Fatalf("Handle.RosterPath 应为 %s，实得 %q", want, hd.RosterPath)
+	}
+}
+
+// 升级前写下的 proc.json 没有 roster_path 字段，读出来是空串。这必须是一条
+// 安静的降级路径（只做第一段清扫），不是错误——老任务不该因为升级就被动手。
+func TestHandleWithoutRosterPathDecodesEmpty(t *testing.T) {
+	var h Handle
+	if err := json.Unmarshal([]byte(`{"pid":100,"lock_path":"/tmp/x.lock","started_at":1000}`), &h); err != nil {
+		t.Fatalf("解析老 proc.json: %v", err)
+	}
+	if h.RosterPath != "" {
+		t.Fatalf("老 proc.json 应解出空 RosterPath，实得 %q", h.RosterPath)
 	}
 }
