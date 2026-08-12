@@ -223,19 +223,33 @@ func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (p
 // 不做认领——落点已存在的请求根本不会进入本函数（由 registerAtPath 分流到
 // registerExistingProject），任意 path 上也没有 repo_root 那种「rm 后磁盘残留」
 // 的自动登记场景。
+//
+// 幂等边界：同项目 + 同落点 → 返回已有行（磁盘被 rm 掉、位置表还在时，重复登记
+// 不该把自动登记链打断）；同项目 + 异落点 → ErrProjectAlreadyExists，报文指向
+// 已有位置。绝不静默返回一个与请求 path 不同的位置。
 func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
-	// 幂等短路：同一项目已登记过就直接返回已有行，必须发生在 clone 之前——
-	// 与 clone 形态同一份理由（见 cloneAndRegisterProject），重复登记同一个
-	// 项目不应再 clone 出第二份。
+	// 幂等短路：必须发生在 clone 之前——重复登记同一个项目不应再 clone 出第二份。
+	// 但只有**同落点**才算"重复声明同一个事实"：调用方明确指了一个新落点时，
+	// 静默返回旧位置等于把他填的 path 吞了。异落点报 409，与「路径已存在」分支
+	// （registerExistingProject）给出同一种答复（ADR-0008：一台机器一个项目一个位置）。
 	pid := projectid.FromOrigin(req.OriginURL)
 	if pid != "" {
-		if existing, ok, err := m.registeredProjectByID(pid); err != nil {
+		existing, ok, err := m.registeredProjectByID(pid)
+		if err != nil {
 			return proto.ProjectLocation{}, err
-		} else if ok {
-			m.log.Info("项目位置已存在，幂等返回",
-				"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
-			existing.Status = projectStatusOK
-			return existing, nil
+		}
+		if ok {
+			if sameLocation(existing.Path, req.Path) {
+				m.log.Info("项目位置已存在且落点相同，幂等返回",
+					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
+				existing.Status = projectStatusOK
+				return existing, nil
+			}
+			m.log.Warn("克隆登记被拒：该项目在本机已有位置",
+				"project_id", pid, "existing", existing.Path, "requested", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
+				ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
 		}
 	}
 	// 与 cloneAndRegisterProject 同款提前校验：name 派生（空名走 projectNameFromURL）

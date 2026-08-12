@@ -470,3 +470,61 @@ func TestRegisterProjectNormalizesDirtyAbsPath(t *testing.T) {
 		t.Errorf("OriginURL = %q, want %q", loc.OriginURL, origin)
 	}
 }
+
+// TestRegisterProjectCloneToPathRejectsDifferentLocation 验证同一项目已登记在
+// 别处时，clone-to-path 报 409 并指向已有位置——而不是静默返回别处那一行、
+// 让调用方以为自己填的落点生效了。
+func TestRegisterProjectCloneToPathRejectsDifferentLocation(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: filepath.Join(t.TempDir(), "first"),
+	})
+	if err != nil {
+		t.Fatalf("首次 clone-to-path: %v", err)
+	}
+
+	other := filepath.Join(t.TempDir(), "second")
+	_, err = m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: other,
+	})
+	if !errors.Is(err, ErrProjectAlreadyExists) {
+		t.Fatalf("err = %v, want ErrProjectAlreadyExists", err)
+	}
+	if !strings.Contains(err.Error(), first.Path) {
+		t.Errorf("报文 = %q, want 含已有位置 %q", err.Error(), first.Path)
+	}
+	if _, serr := os.Stat(other); serr == nil {
+		t.Errorf("被拒的请求不该在 %s 上留下任何东西", other)
+	}
+}
+
+// TestRegisterProjectCloneToPathIdempotentSameLocation 验证同项目 + 同落点仍幂等：
+// 落点被人手动 rm 掉、位置表还留着那一行时，重复登记不该被 409 打断
+//（自动登记链靠这条不断）。
+func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+	dest := filepath.Join(t.TempDir(), "proj")
+
+	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: dest,
+	})
+	if err != nil {
+		t.Fatalf("首次 clone-to-path: %v", err)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatalf("清掉磁盘上的克隆: %v", err)
+	}
+
+	again, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src, Name: "proj-a", Path: dest,
+	})
+	if err != nil {
+		t.Fatalf("同落点重复登记应幂等: %v", err)
+	}
+	if again.Path != first.Path {
+		t.Errorf("Path = %q, want %q", again.Path, first.Path)
+	}
+}
