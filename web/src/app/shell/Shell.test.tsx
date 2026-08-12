@@ -212,8 +212,9 @@ describe('Shell 三栏外框', () => {
       return { task: t1, pending_tickets: [], recent_events: [] }
     })
     renderShell()
-    // 不点任务行（那会直接开 TUI tab），直接从左栏底部「工单」入口打开弹层
-    fireEvent.click(screen.getByRole('button', { name: /工单/ }))
+    // 不点任务行（那会直接开 TUI tab），直接从左栏底部「工单」入口打开弹层。
+    // 按钮在 ProjectTree 里，而树是异步拉取的——必须等它先出来再点（其余用例同款）
+    fireEvent.click(await screen.findByRole('button', { name: /^工单$/ }))
     const jump = await screen.findByRole('button', { name: '跳到该任务' })
     fireEvent.click(jump)
     await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3'))
