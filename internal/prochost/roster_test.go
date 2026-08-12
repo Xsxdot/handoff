@@ -1,6 +1,8 @@
 package prochost
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -81,5 +83,73 @@ func assertRoster(t *testing.T, got, want []rosterEntry) {
 		if got[i] != want[i] {
 			t.Fatalf("名册第 %d 条不符: got %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// 写—读往返：落盘的内容必须原样读回来。
+func TestWriteReadRosterRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), RosterFileName)
+	want := []rosterEntry{{PID: 101, StartedAt: 1100}, {PID: 102, StartedAt: 1200}}
+	if err := writeRoster(path, want); err != nil {
+		t.Fatalf("写名册: %v", err)
+	}
+	got, err := readRoster(path)
+	if err != nil {
+		t.Fatalf("读名册: %v", err)
+	}
+	assertRoster(t, got, want)
+}
+
+// 名册不存在**不是错误**：任务刚起来还没到第一次落盘、或这是升级前建的老任务，
+// 都是正常形态。Sweep 靠 (nil, nil) 安静跳过第二段，不能因此把清扫判成失败。
+func TestReadRosterMissingIsNotError(t *testing.T) {
+	got, err := readRoster(filepath.Join(t.TempDir(), RosterFileName))
+	if err != nil {
+		t.Fatalf("名册缺失不该报错，得到 %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("名册缺失应得空名册，得到 %+v", got)
+	}
+}
+
+// 名册损坏必须**报错**而不是当成空名册：空名册意味着「确实没有后代」，
+// 损坏意味着「有后代但我读不出来」，两者对调用方是不同的决定（后者要打日志
+// 让人看见），这与 errNotSupported 不能退化成空集是同一条纪律。
+func TestReadRosterCorruptReportsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), RosterFileName)
+	if err := os.WriteFile(path, []byte("{不是 json"), 0o600); err != nil {
+		t.Fatalf("造损坏文件: %v", err)
+	}
+	if _, err := readRoster(path); err == nil {
+		t.Fatal("损坏的名册必须报错，不得静默当成空名册")
+	}
+}
+
+// 落盘必须原子：读者任何时刻看到的要么是上一版完整名册，要么是新版完整名册，
+// 不存在读到半截的窗口。这里断言临时文件没有残留，且权限是 0600（名册暴露
+// 本机进程结构，与 spec.json 同级别对待）。
+func TestWriteRosterIsAtomicAndPrivate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(path, []rosterEntry{{PID: 101, StartedAt: 1100}}); err != nil {
+		t.Fatalf("写名册: %v", err)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读目录: %v", err)
+	}
+	if len(ents) != 1 || ents[0].Name() != RosterFileName {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("目录里应只剩名册本身（临时文件必须已 rename 掉），实得 %v", names)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("名册权限应为 0600，实得 %v", fi.Mode().Perm())
 	}
 }

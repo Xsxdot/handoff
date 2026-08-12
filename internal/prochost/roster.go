@@ -12,7 +12,12 @@
 //   - 不碰 proc.json（那是 adapter 独占的文件），名册是独立文件
 package prochost
 
-import "path/filepath"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 // RosterFileName 是后代名册的文件名（与 proc.json 同目录）。
 const RosterFileName = "roster.json"
@@ -88,4 +93,70 @@ func descendantsOf(root int, procs []procEntry) []rosterEntry {
 		}
 	}
 	return out
+}
+
+// writeRoster 把名册原子写到 path（临时文件 + rename）。
+//
+// 参数：
+//   - path: 名册路径（rosterPath 的结果）
+//   - entries: 本次快照的全部后代；空切片是合法输入（表示这一刻没有后代）
+//
+// 返回：临时文件写失败或 rename 失败时返回错误
+//
+// 为什么必须原子：读者是另一个进程（agentd 的 Sweep），它随时可能在 shim
+// 正在写的瞬间读。直接覆盖写会让读者拿到半截 JSON——而半截 JSON 解析失败会
+// 被当成「名册损坏」，于是一次正常的周期写入就变成了一条错误日志。
+//
+// 为什么临时文件放同目录：rename 只有在同一文件系统内才是原子的。
+//
+// 注意：本函数不打日志。它每 15s 被调用一次，成功路径打日志就是按周期刷屏；
+// 失败由调用方（shim 的周期落盘）统一记一条 Warn 并继续——名册写不出去只
+// 意味着这一轮没有第二段清扫，不值得中断任务。
+func writeRoster(path string, entries []rosterEntry) error {
+	if path == "" {
+		return fmt.Errorf("名册路径为空")
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return fmt.Errorf("序列化名册: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("写名册临时文件 %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // 尽力而为：留着它下次会被覆盖，删不掉也不影响正确性
+		return fmt.Errorf("落盘名册 %s: %w", path, err)
+	}
+	return nil
+}
+
+// readRoster 读回名册。
+//
+// 参数：path 为名册路径；空串等同于「没有名册」
+//
+// 返回：
+//   - entries: 名册内容；没有名册时为 nil
+//   - err: 文件存在但读不动或解析失败
+//
+// 注意：**文件不存在返回 (nil, nil) 而不是错误**。三种正常形态都会走到这里：
+// 任务刚起来还没到第一次落盘、升级前建的老任务、adapter 不带 InfoPath。
+// 把它们当错误会让 Sweep 每次都记一条假故障，真故障就淹没了。
+// 但**解析失败必须报错**：那是「有名册却读不出来」，与「没有名册」是两回事。
+func readRoster(path string) ([]rosterEntry, error) {
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读名册 %s: %w", path, err)
+	}
+	var entries []rosterEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		return nil, fmt.Errorf("解析名册 %s: %w", path, err)
+	}
+	return entries, nil
 }
