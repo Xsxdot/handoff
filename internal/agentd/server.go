@@ -192,9 +192,9 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
-	//   - GET  /ws/events                   事件流（补发 + 实时）
-	//   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
-	//   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
+//   - GET  /ws/events                   事件流（补发 + 实时）
+//   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
+//   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
 //   - GET  /api/auth/sessions           列出会话（含已吊销）
 //   - DELETE /api/auth/sessions/{id}    吊销指定会话
 //   - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie
