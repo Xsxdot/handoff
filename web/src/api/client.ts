@@ -14,8 +14,12 @@
 // 「基线提交在任务仓库中不存在……请先在本地 git push」），必须原文透传，不得
 // 吞成一句「操作失败」——那些消息里带着解法。
 import type {
+  CreateProjectReq,
+  CreateProjectResp,
   DiffResult,
   FileResult,
+  MachinesResp,
+  ProjectTreeResp,
   ReplyRequest,
   ReplyResult,
   ResumeResult,
@@ -160,4 +164,46 @@ export function stopTask(id: string): Promise<StopResult> {
 export function resumeTask(id: string, force = false): Promise<ResumeResult> {
   const q = force ? '?force=true' : ''
   return postJSON<ResumeResult>(`/api/tasks/${encodeURIComponent(id)}/resume${q}`, {})
+}
+
+// machineQuery 把机器名编码成查询串；空串（本机）不带参数。
+//
+// 为什么用查询参数而不是请求体字段：登记请求体是 B62 定的、由本机 agentd
+// 原样转发给目标机，往里塞路由字段会污染 B62 的契约。
+function machineQuery(machine?: string, sep: '?' | '&' = '?'): string {
+  return machine ? `${sep}machine=${encodeURIComponent(machine)}` : ''
+}
+
+// fetchProjectTree 取项目树（GET /api/projects/tree）。
+//
+// 参数：
+//   - scope: 传 'all' 取跨机汇总版（响应多一个 machines 字段，见 §5.3）
+//
+// 注意：本接口带 git worktree 现场探测，**不要放进 2.5s 热路径**。
+export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
+  return request<ProjectTreeResp>(`/api/projects/tree${scope === 'all' ? '?scope=all' : ''}`)
+}
+
+// fetchMachines 取机器投影与探活结果（GET /api/machines）。
+// 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
+export function fetchMachines(): Promise<MachinesResp> {
+  return request<MachinesResp>('/api/machines')
+}
+
+// createProject 登记一个项目位置（POST /api/projects）。
+//
+// 参数：
+//   - req: 带 path = 登记该机已有目录；不带 path = 由该机 clone 到自己的 repo_root
+//   - machine: 目标机器名；省略或空串 = 本机
+export function createProject(req: CreateProjectReq, machine?: string): Promise<CreateProjectResp> {
+  return postJSON<CreateProjectResp>(`/api/projects${machineQuery(machine)}`, req)
+}
+
+// deleteProject 注销一个项目位置（DELETE /api/projects/{name}）。
+// 只解除登记，不删除磁盘上的代码。
+export function deleteProject(name: string, machine?: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`,
+    { method: 'DELETE' },
+  )
 }

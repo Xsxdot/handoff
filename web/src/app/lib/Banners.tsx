@@ -13,7 +13,22 @@ import { Button } from '@/components/ui/button'
 //
 // 参数：
 //   - message: 断开原因原文（agentd 错误信息信息量大，必须透传）
-export function DisconnectedBanner({ message }: { message: string }) {
+//   - compact: 窄版布局（左侧栏等空间紧张处用）；非 compact 保持整页横幅原样。
+//     compact 只压缩排版与字号，不削减语义——「已断开」与原因原文都在。
+export function DisconnectedBanner({ message, compact = false }: { message: string; compact?: boolean }) {
+  if (compact) {
+    return (
+      <div
+        role="alert"
+        className="m-2 flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700"
+      >
+        <WifiOff className="size-3 shrink-0 text-amber-600" />
+        <p className="break-words">
+          <span className="font-medium">已断开</span> {message}
+        </p>
+      </div>
+    )
+  }
   return (
     <div role="alert" className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
       <WifiOff className="mt-0.5 size-4 shrink-0 text-amber-600" />

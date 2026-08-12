@@ -1,0 +1,98 @@
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import type { Machine, MachinesResp } from '../../api/types'
+import { EMPTY_FILTER } from '../board/filter'
+import { useMachines } from '../data/useMachines'
+import { useShellContext } from '../shell/Shell'
+import { MachinesPage } from './MachinesPage'
+
+vi.mock('../data/useMachines', () => ({ useMachines: vi.fn() }))
+vi.mock('../shell/Shell', () => ({ useShellContext: vi.fn() }))
+
+const localMachine: Machine = {
+  name: '', addr: '127.0.0.1:7777', reachable: true, version: 'v0.1.0',
+  executors: ['opencode', 'claude'], default_executor: 'opencode', probe_ms: 0, active_tasks: 2, error: '',
+}
+const devbox: Machine = {
+  name: 'devbox', addr: '10.0.0.8:7777', reachable: true, version: 'v0.2.0',
+  executors: ['opencode'], default_executor: 'opencode', probe_ms: 42, active_tasks: 1, error: '',
+}
+const nas: Machine = {
+  name: 'nas', addr: '10.0.1.5:7777', reachable: false, version: '',
+  executors: [], default_executor: '', probe_ms: 3000, active_tasks: 0,
+  error: 'dial tcp 10.0.1.5:7777: connect: connection refused',
+}
+
+function mockStream(machines: Machine[]) {
+  vi.mocked(useMachines).mockReturnValue({
+    data: { machines } as MachinesResp,
+    disconnected: false,
+    sessionExpired: false,
+    errorText: '',
+    refresh: vi.fn(),
+  })
+  vi.mocked(useShellContext).mockReturnValue({
+    tasks: [],
+    tasksState: { data: [], disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn() },
+    tree: { projects: [], unowned: [] },
+    filter: EMPTY_FILTER,
+    setFilter: vi.fn(),
+    onOpenTask: vi.fn(),
+  })
+}
+
+function renderMachines(machines: Machine[]) {
+  mockStream(machines)
+  return render(<MachinesPage />)
+}
+
+describe('MachinesPage', () => {
+  it('顶部三个统计：台数 / 在线数 / 运行任务数', () => {
+    renderMachines([localMachine, devbox, nas])
+    const stat = (label: string) => screen.getByText(label).parentElement!.querySelector('dd')!.textContent
+    expect(stat('开发机')).toBe('3') // 台数含不可达的那台——少一台就是静默丢机器（spec §8）
+    expect(stat('在线')).toBe('2')
+    expect(stat('运行任务')).toBe('3') // 2 + 1 + 0
+  })
+
+  it('不可达机器仍然渲染，标已断开并显示 error 原文', () => {
+    renderMachines([nas])
+    expect(screen.getAllByText('nas').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('已断开').length).toBeGreaterThan(0)
+    expect(screen.getByText(/connection refused/)).toBeInTheDocument()
+  })
+
+  it('本机（name:""）显示「本机」且不显示延迟格', () => {
+    renderMachines([localMachine])
+    expect(screen.getAllByText('本机').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/延迟/)).toBeNull()
+  })
+
+  it('可用执行者渲染为只读列表，默认执行者有标记，且没有任何开关', () => {
+    renderMachines([localMachine])
+    expect(screen.getByText('opencode')).toBeInTheDocument()
+    expect(screen.getByText('claude')).toBeInTheDocument()
+    expect(screen.getByText(/默认/)).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  it('不渲染未实现功能：配对开发机 / 重启 agent / 打开终端 / Env 文件', () => {
+    renderMachines([localMachine, devbox])
+    for (const name of [/配对/, /重启/, /终端/, /Env/]) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+  })
+
+  it('不渲染「操作系统」格（后端没有这个数据）', () => {
+    renderMachines([devbox])
+    expect(screen.queryByText(/操作系统/)).toBeNull()
+  })
+
+  it('离开 /machines 后停止探活', () => {
+    renderMachines([localMachine])
+    // 页面恒以 enabled=true 挂载机器流；路由切走时组件卸载，usePoll 的 effect
+    // 清理 interval（该清理已被 Task 2 的 usePoll 测试覆盖），探活即停。
+    expect(useMachines).toHaveBeenCalledWith(true)
+  })
+})

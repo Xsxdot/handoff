@@ -17,7 +17,9 @@ import activeTaskFixture from './testdata/ActiveTask.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
+import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
+import projectTreeFixture from './testdata/ProjectTreeResp.json'
 import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
@@ -27,7 +29,9 @@ import {
   type AuthTicketResp,
   type BuildInfo,
   type Event,
+  type MachinesResp,
   type ProjectLocation,
+  type ProjectTreeResp,
   type SessionInfo,
   type StatusResp,
   type Task,
@@ -108,5 +112,37 @@ describe('契约 fixture 与 TS 类型', () => {
       expect(status.task_counts).toHaveProperty(key)
     }
     expect(status.active).toHaveLength(1)
+  })
+})
+
+describe('W3a 契约', () => {
+  it('ProjectTreeResp 的字段与类型一致', () => {
+    const resp: ProjectTreeResp = projectTreeFixture
+    expect(Array.isArray(resp.projects)).toBe(true)
+    expect(Array.isArray(resp.unowned)).toBe(true)
+    const loc = resp.projects[0].locations[0]
+    // 单机响应的不变式：每个项目在每台机器上至多一个位置（W3a §1.1）
+    expect(resp.projects[0].locations.length).toBeLessThanOrEqual(1)
+    expect(typeof loc.machine).toBe('string')
+    expect(typeof loc.probe_error).toBe('string')
+    expect(Array.isArray(loc.workspaces)).toBe(true)
+    expect(typeof loc.workspaces[0].is_main).toBe('boolean')
+    expect(typeof loc.workspaces[0].managed).toBe('boolean')
+  })
+
+  it('MachinesResp 带 W3b 需要的三个只读投影', () => {
+    const resp: MachinesResp = machinesFixture
+    const m = resp.machines[0]
+    expect(Array.isArray(m.executors)).toBe(true)
+    expect(typeof m.default_executor).toBe('string')
+    expect(typeof m.probe_ms).toBe('number')
+    expect(typeof m.reachable).toBe('boolean')
+    expect(typeof m.error).toBe('string')
+  })
+
+  it('Task 带 machine 与 project_id 两个注解字段', () => {
+    const t: Task = taskFixture
+    expect(typeof t.machine).toBe('string')
+    expect(typeof t.project_id).toBe('string')
   })
 })

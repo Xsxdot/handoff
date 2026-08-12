@@ -169,7 +169,7 @@ export function TaskPage() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-muted/40">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-3 sm:px-6">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-2.5">
         <Link
           to="/"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -187,7 +187,7 @@ export function TaskPage() {
         </div>
       </header>
 
-      <main className="flex w-full flex-1 flex-col gap-4 p-4 sm:p-6">
+      <main className="flex w-full flex-1 flex-col gap-3 p-3">
         {sessionExpired && <SessionExpiredBanner />}
         {disconnected && !sessionExpired && <DisconnectedBanner message={disconnectReason} />}
 
@@ -198,7 +198,7 @@ export function TaskPage() {
             <p className="text-sm text-muted-foreground">正在加载任务…</p>
           )
         ) : (
-          <div className="grid flex-1 items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <div className="grid flex-1 items-start gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             {/* 左列：实况正文 + 事件流 */}
             <div className="flex flex-col gap-4">
               <RenderPanel taskId={id} />

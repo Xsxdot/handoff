@@ -3,6 +3,10 @@
 agentd 托管的 Web 控制台的前端。W1 用**真实的 cookie 会话**在 dev server 上证明
 鉴权闭环（status / tasks / WS 三连通）；W2 把冒烟页面替换成**任务看板**与
 **任务详情 / 审核台**两个真界面，数据全部来自 agentd 今天的路由，**后端零改动**。
+W3b 在 W2 基座上实现**项目与机器控制面**：app shell（顶部 tab + 常驻左栏）、左栏
+项目树（项目 → 机器 → 目录 → 任务）、看板筛选（左栏与顶部下拉共用一个
+`BoardFilter`）、开发机只读页、项目登记两步向导与注销。三条数据流各自独立轮询
+（任务 2.5s / 树 30s / 机器 15s），互不拖累。
 
 ## 版本（2026-08-11 实际选定）
 
@@ -78,10 +82,18 @@ src/
   api/          类型定义（types.ts）、fetch 客户端（client.ts）、WS 客户端（ws.ts）
     testdata/   Go 侧测试生成的契约 fixture（勿手改；改走 -update）
   app/
-    board/      看板页：BoardPage + 列/状态机映射（columns.ts，契约）
+    shell/      三段外框（Shell）：顶部 tab + 常驻左栏项目树 + Outlet 内容区；
+                持有跨页共享的任务流 / 项目树流 / 看板筛选 filter，经 context 下发
+    board/      看板页：BoardPage + 列/状态机映射（columns.ts，契约）+
+                筛选单一真相（filter.ts，左栏与顶部下拉共用）+ 筛选栏（FilterBar）
+    tree/       左栏项目树（ProjectTree，三层 + 任务层）+ 任务流聚合计数（counts）
+    machines/   开发机页（只读）：探活投影卡片 + 选中机器详情（MachineDetail）
+    projects/   项目登记两步向导（AddProjectWizard）+ 逐位置登记编排（register）
     task/       详情页：TaskPage 编排 + 审批台（TicketsPanel）+ 事件流 + 实况流
                 + 审阅取证（diff/run/file）+ 推进动作（continue/done/stop/resume）
-    lib/        格式化、确认弹层、断线/会话失效横幅等共享件
+    data/       三条数据流的轮询 hook：useTasks（2.5s）/ useProjectTree（30s）/
+                useMachines（15s，仅可见时开表），共用一个 usePoll 原语
+    lib/        格式化、确认弹层（ConfirmDialog）、手写下拉（Dropdown）、横幅等共享件
   components/ui/ shadcn/ui 生成物（button / card / badge）
   lib/utils.ts  cn() 类名合并
 scripts/
@@ -90,12 +102,25 @@ scripts/
 
 ## 页面与路由
 
+三条路由共用 `<Shell>`（`app/shell/Shell.tsx`）：顶部 tab 条 + 常驻左栏项目树 +
+`<Outlet>` 内容区。Shell 持有跨页共享的三条数据流中的两条（任务流 2.5s、项目树流
+30s）与看板筛选 filter，经 `useShellContext()` 下发；机器流只在 `/machines` 页或
+项目向导打开时开表（15s）。
+
 - `/`：任务看板。四列（等待执行 / 进行中 / Review / 完成），列与状态机的映射是
   硬契约（`app/board/columns.ts` + 测试钉死）：`pending`→等待执行；
   `running`、`waiting_answer`→进行中（`waiting_answer` 加「等你答复」标记）；
   `waiting_review`→Review；`completed`、`failed`→完成（`failed` 视觉区分）。
   看板走轮询（`GET /api/tasks`，2.5s，页面隐藏时暂停）——`/ws/events` 是按单任务
   订阅的，照搬就要开 N 条连接，低频视图用轮询足够（整机级订阅留 W3）。
+  筛选全部在客户端做（`app/board/filter.ts` 的 `applyFilter`）：左栏项目树与顶部
+  筛选栏（搜索 / 项目多选 / 开发机 / 只看待处理）共用同一个 `BoardFilter`，写入
+  规则由纯函数钉死，不会出现"左栏选了 A、顶部显示 B、看板按 C 筛"的第三种状态。
+  卡片带项目 / 工作树 / 机器三行元信息（机器 `""`=本机，未归属任务标「未归属」）。
+- `/machines`：开发机页（只读）。左侧机器卡片列表 + 右侧选中机器详情；顶部台数 /
+  在线数 / 运行任务数三统计。不可达机器照样渲染、标「已断开」并透出 `error` 原文；
+  可用执行者是只读列表（无开关）；「最后心跳」标注为本页打开以来的探活观测，不冒充
+  服务端心跳。未实现功能（配对/重启/终端/Env/操作系统格）整块不渲染。
 - `/tasks/:id`：任务详情 / 审核台。详情轮询 + 一条 `/ws/events` 实时事件流 +
   一条 `/api/tasks/{id}/render` 实况流（`AbortController` 卸载中止，不泄漏常驻
   连接）。审批台：权限/提问**全文完整展示**（读工单 request，不读事件摘要）；
@@ -103,12 +128,34 @@ scripts/
   推进动作按状态机给可用性：`continue`/`done` 仅 `waiting_review`，`stop` 在终态
   不可用，`resume` 在 `waiting_answer` 可用；`stop`/`done` 需二次确认。
 
+左栏底部「+ 添加项目」打开两步登记向导（本机 + 至多一台远程）：逐位置填 Git 地址
+与可选目录，提交后逐位置显示结果（`Promise.allSettled` 逐位置收口，一成一败不吞
+结果），失败的带「重试」；任一成功即刷新项目树。位置行悬浮可注销（二次确认，确认
+文案注明「只解除登记，不删除磁盘上的代码」）。
+
 ### 已知缺口（本轮不做）
 
 - **W5 打包时需要 history fallback**：现在用 `BrowserRouter`，vite dev server 自带
   history fallback，开发期没问题；W5 把前端 `go:embed` 进 agentd 时，agentd 需要对
   未知路径回落 `index.html`（否则深链 `/tasks/:id` 刷新即 404）。
 - 整机级事件订阅缺失，看板只能轮询（spec §9，记给 W3）。
+- **spec §9 的五条已知偏离**（W3b 验收时显式确认过的允许偏离）：
+  1. 无 Finder：浏览器里没有 Finder，本机位置用粘贴路径输入框；File System Access
+     API 故意不返回真实路径。
+  2. clone 路径不硬编码：不显示 `~/.handoff/<project-name>`——原型标的默认路径与
+     B62 实际的 `repo_root/<name>` 不一致，显示可能错的路径比不显示更糟，留空即由
+     该机器 clone 到它自己的 repo_root。
+  3. 无「操作系统」格：后端没有这个数据。
+  4. 未实现功能整块不渲染：执行者开关、审批器配置、重启 agent、打开终端、Env 文件、
+     设置页、配对开发机——不渲染不留置灰入口；「可用执行者」以只读列表呈现。
+  5. 左栏点击 = 筛看板：W4 引入 workbench 后，点目录应切换工作区而非筛看板，
+     `filter.ts` 届时须重写。
+- **W3b 未能在本环境验证的两项**（README 如实记录，不等同于已通过）：
+  - 逐屏视觉对照（1440×1024）：本执行环境无浏览器自动化工具、模型亦不支持读图，
+    未做像素级对照；组件行为由行为测试兜底，形态需后续人工对照
+    `prototypes/desktop-console/implementation-*.png`。
+  - 真机验收（本机 agentd + devbox）：本环境无正在运行的 agentd 与已配对远程机，
+    未验证「devbox 断开 → 树与机器卡标断开带原文、看板不空」的完整闭环。
 
 ## 脚本与测试
 
