@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xushixin/handoff/internal/executor/rawtap"
 	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
@@ -845,10 +846,19 @@ func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage), onE
 
 	// 按行读：SSE 事件以空行分隔；data: 行聚合为事件体，其余行（event:/id:/注释）
 	// 一律 Debug 跳过。Buffer 上限 1MB，见文件头 why 注释
+	//
+	// 原始字节旁路：必须在剥 data: 前缀与聚合之前写，空行也要写——空行就是
+	// SSE 的分帧信号，剥掉它样本就不能回放。taskID 传空串：API 是跨任务复用的
+	// 最小客户端，无任务标识；文件名因此退化为 opencode-.jsonl，探针一次只跑
+	// 一个任务，可接受
+	rawTap := rawtap.Open("opencode", "", a.log())
+	defer rawTap.Close()
+
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), sseScanBuffer)
 	var data []string
 	for sc.Scan() {
+		rawTap.Write(sc.Bytes())
 		line := sc.Text()
 		switch {
 		case strings.HasPrefix(line, "data:"):
