@@ -41,21 +41,24 @@ func TestDescendantsOfExcludesRoot(t *testing.T) {
 	}
 }
 
-// 自环/互指不能让闭包死循环——真实进程表里 pid 1 的 ppid 就是 0 或 1，
-// 而被 reparent 的进程在快照的两条记录之间也可能出现看起来成环的形态。
+// 环不能让闭包死循环——真实进程表里 pid 1 的 ppid 就是 0 或 1（自环），被
+// reparent 的进程在快照的两条记录之间也可能出现看起来成环的形态。
+//
+// fixture 必须是**从 root 可达**的互指 2-环：root 自环那种形态会被建索引时的
+// 自环跳过挡掉、根本走不进 BFS，删掉 visited 也不会死循环（2026-08-12 变异
+// 检验实证：原 fixture 的 101↔102 互指对 root 100 不可达，visited 有没有都在
+// 场不影响终止性，那条用例是空转的）。这里 100↔101 互相为父，有 visited 时
+// 回到 100 被挡住、正常终止；没有 visited 时无限互推——变异才抓得住。
 func TestDescendantsOfTerminatesOnCycle(t *testing.T) {
 	procs := []procEntry{
-		{PID: 100, PPID: 100, PGID: 100, StartedAt: 1000}, // 自环
-		{PID: 101, PPID: 102, PGID: 101, StartedAt: 1100}, // 与 102 互指
-		{PID: 102, PPID: 101, PGID: 102, StartedAt: 1200},
+		{PID: 100, PPID: 101, PGID: 100, StartedAt: 1000}, // root，与 101 互指
+		{PID: 101, PPID: 100, PGID: 101, StartedAt: 1100},
 	}
 	done := make(chan []rosterEntry, 1)
 	go func() { done <- descendantsOf(100, procs) }()
 	select {
 	case got := <-done:
-		if len(got) != 0 {
-			t.Fatalf("自环 root 不该有后代，得到 %+v", got)
-		}
+		assertRoster(t, got, []rosterEntry{{PID: 101, StartedAt: 1100}})
 	case <-time.After(2 * time.Second):
 		t.Fatal("descendantsOf 未终止，闭包缺少 visited 保护")
 	}
