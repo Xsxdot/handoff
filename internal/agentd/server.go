@@ -687,6 +687,9 @@ type projectAddRequest struct {
 // handleProjectAdd 登记一个项目（必要时先克隆）。
 func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("project add 请求", "method", r.Method, "path", r.URL.Path)
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
 	if s.mgr == nil {
 		s.log.Warn("project add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
@@ -732,6 +735,9 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.log.Info("project remove 请求", "name", name)
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
