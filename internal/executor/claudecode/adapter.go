@@ -648,10 +648,13 @@ func (a *Adapter) mapResult(r *runState, m streamMsg) {
 
 // fallbackClassify 是「模型未按纪律输出协议 trailer」的兜底分类。
 //
-// why（兜底分类规则）：回合结束但 turn.ParseTrailer 判 none——模型可能干完活却
-// 忘了写 {"branch":...} 协议。拿 git 实况裁决：相对任务起点有新 commit → 认定
-// 干完了（result OK，summary 取回合末 200 字符）；没有新 commit → 把回合全文交给
-// 审核者裁决（question），流程不卡死。
+// why（兜底分类规则）：回合结束但 turn.ParseTrailer 判 none。此时拿 git 实况裁决：
+//   - 相对回合起点有新 commit → 发 result{OK:false}（B74）。**不替模型宣布完成**：
+//     模型没说完成，handoff 就不说。翻转不给审核者加任何一次操作——OK 与 !OK
+//     都落 waiting_review，done 与 continue 在那里都合法；变的只是事件从
+//     「已完成，摘要如下」变成「有新提交，但模型未按纪律宣布完成」。
+//   - 没有新 commit / git 查询失败 → 把回合全文交审核者裁决（question），流程不卡死；
+//     其中零文本回合没有内容可问，是故障报告，转 result{OK:false}。
 func (a *Adapter) fallbackClassify(r *runState, text string) {
 	a.log.Warn("回合未输出协议 trailer，走 git 兜底", "task", r.taskID,
 		"turn_tail", turn.TailRunes(text, 120))
@@ -668,16 +671,19 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
 				Result: &executor.Result{OK: false, SessionID: r.session,
-					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
+					// 与上一行的 FailReason 保持一致：executor 还活着，
+					// 审计不得记它已终结（spec §3.3）
+					VoidReason: executor.VoidReasonTurnDiscipline}})
 			return
 		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
-	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
-		OK: true, Branch: branch, CommitHash: commit,
-		Summary: turn.TailRunes(text, 200), SessionID: r.session,
-	}})
+	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交审核者裁决",
+		"task", r.taskID, "branch", branch, "commit", commit)
+	a.emit(r, executor.AdapterEvent{Type: "result",
+		Result: turn.NoTrailerResult(r.session, branch, commit, text)})
 }
 
 // mapExit 处理死亡哨兵：code=0 且本回合已收尾视为正常终结（result 已产出，
