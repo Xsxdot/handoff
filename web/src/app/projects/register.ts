@@ -104,3 +104,18 @@ async function registerOne(choice: LocationChoice): Promise<CreateProjectResp> {
   if (path) req.path = path
   return createProject(req, choice.machine)
 }
+
+// absPathHint 检查一个目录路径的形态，返回给人看的提示（没问题时返回空串）。
+//
+// 为什么前端也要查一遍：agentd 才是权威（它会 400），但让用户为一个一眼可见的
+// 形态问题多走一次往返不值当。这里**只**查形态，不查存在性——路径存不存在、是不是
+// 仓库，只有目标机的 agentd 知道，浏览器侧不猜。
+//
+// 空串返回空串：「必填」是提交按钮的职责，在这里重复说一遍只会让两处文案打架。
+export function absPathHint(path: string): string {
+  const p = path.trim()
+  if (p === '') return ''
+  if (p.startsWith('~')) return '不支持 ~：请写完整的绝对路径，如 /Users/you/code/handoff'
+  if (!p.startsWith('/')) return '请填绝对路径（以 / 开头），如 /Users/you/code/handoff'
+  return ''
+}

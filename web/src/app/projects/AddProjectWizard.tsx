@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 import type { Machine } from '../../api/types'
 import { Button } from '@/components/ui/button'
-import { registerAll, registerFromForm, type LocationChoice, type RegisterOutcome } from './register'
+import { absPathHint, registerAll, registerFromForm, type LocationChoice, type RegisterOutcome } from './register'
 
 export interface AddProjectWizardProps {
   open: boolean
@@ -71,9 +71,17 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
 
   const remoteMachines = useMemo(() => machines.filter((m) => m.name !== ''), [machines])
 
-  // path 必填；gitUrl 不作要求（path 不存在且无 URL 的错误交给后端 400 原文）；
+  // 形态提示（不是权威校验——agentd 才是）：省用户一次「填了 ~ 才发现不行」的往返。
+  const localPathHint = absPathHint(localPath)
+  const remotePathHint = remoteEnabled ? absPathHint(remotePath) : ''
+
+  // path 必填且形态合法；gitUrl 不作要求（path 不存在且无 URL 的错误交给后端 400 原文）；
   // 勾了远程就必须选定一台机器。
-  const canSubmit = localPath.trim() !== '' && (!remoteEnabled || remoteMachine !== null)
+  const canSubmit =
+    localPath.trim() !== '' &&
+    localPathHint === '' &&
+    remotePathHint === '' &&
+    (!remoteEnabled || remoteMachine !== null)
 
   const submit = async () => {
     setSubmitting(true)
@@ -165,9 +173,10 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
               <input
                 value={localPath}
                 onChange={(e) => setLocalPath(e.target.value)}
-                placeholder="本机目录路径（必填）"
+                placeholder="本机目录路径（必填，绝对路径，如 /Users/you/code/handoff）"
                 className={inputClass}
               />
+              {localPathHint && <p className="text-[11px] text-destructive">{localPathHint}</p>}
               <input
                 value={gitUrl}
                 onChange={(e) => setGitUrl(e.target.value)}
@@ -208,6 +217,7 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
                     placeholder="远程目录路径（可选；留空由该机器 clone 到自己的 repo_root）"
                     className={inputClass}
                   />
+                  {remotePathHint && <p className="text-[11px] text-destructive">{remotePathHint}</p>}
                   <p className="text-[11px] text-muted-foreground">
                     远程复用本机登记到的仓库地址，无需再填 Git URL
                   </p>

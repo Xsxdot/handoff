@@ -4,7 +4,11 @@ import type { CreateProjectResp, Machine } from '../../api/types'
 import { AddProjectWizard } from './AddProjectWizard'
 import * as register from './register'
 
-vi.mock('./register', () => ({ registerFromForm: vi.fn(), registerAll: vi.fn() }))
+vi.mock('./register', async () => ({
+  registerFromForm: vi.fn(),
+  registerAll: vi.fn(),
+  absPathHint: (await import('./register')).absPathHint,
+}))
 
 const localMachine: Machine = {
   name: '', addr: '127.0.0.1:7777', reachable: true, version: 'v0.1.0',
@@ -245,5 +249,21 @@ describe('AddProjectWizard', () => {
         { machine: 'devbox', originUrl: 'git@x:h.git', name: 'demo', path: '' },
       ]),
     )
+  })
+
+  it('本机 path 写成 ~ 开头时提示并禁用提交', () => {
+    render(<AddProjectWizard open machines={[localMachine, devbox]} {...cb()} />)
+    fillLocalPath('~/code/h')
+    expect(screen.getByText(/不支持 ~/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '提交' })).toBeDisabled()
+  })
+
+  it('远程 path 写成相对路径时提示并禁用提交', () => {
+    render(<AddProjectWizard open machines={[localMachine, devbox]} {...cb()} />)
+    fillLocalPath()
+    enableRemote('devbox')
+    fireEvent.change(screen.getByPlaceholderText(/留空由该机器 clone/), { target: { value: 'srv/h' } })
+    expect(screen.getByText(/绝对路径/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '提交' })).toBeDisabled()
   })
 })

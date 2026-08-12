@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../api/client'
 import * as client from '../../api/client'
 import type { CreateProjectResp } from '../../api/types'
-import { registerAll, registerFromForm } from './register'
+import { absPathHint, registerAll, registerFromForm } from './register'
 
 // 每个用例都重建 createProject spy，调用次数断言不跨用例累计。
 beforeEach(() => {
@@ -182,5 +182,24 @@ describe('registerFromForm', () => {
       { name: 'my-handoff', origin_url: 'git@x:h.git', path: '/Users/me/h' },
       '',
     )
+  })
+})
+
+describe('absPathHint', () => {
+  it('绝对路径没有提示', () => {
+    expect(absPathHint('/Users/me/handoff')).toBe('')
+  })
+
+  it('空串没有提示——「必填」由提交按钮管，不在这里重复说一遍', () => {
+    expect(absPathHint('')).toBe('')
+    expect(absPathHint('   ')).toBe('')
+  })
+
+  it('~ 开头给出明确提示（agentd 不展开 ~）', () => {
+    expect(absPathHint('~/code/handoff')).toContain('~')
+  })
+
+  it('相对路径给出明确提示', () => {
+    expect(absPathHint('code/handoff')).toContain('绝对路径')
   })
 })
