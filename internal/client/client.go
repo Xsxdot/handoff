@@ -425,10 +425,13 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 
 // ProjectAddOpts 是 ProjectAdd 的参数。
 //
-// 两种形态由 Path 是否为空决定：
-//   - Path 非空：目标 agentd 所在机器上已经有一份代码，登记它（agentd 现读
-//     它的 origin 校验一致）
-//   - Path 为空：让 agentd 自己 clone 到 repo_root/<Name>
+// 形态由 Path / 路径是否存在 / OriginURL 是否非空共同决定：
+//   - Path 空 + OriginURL 有 → 让 agentd 自己 clone 到 repo_root/<Name>
+//   - Path 有且目录存在 → 登记已有仓（OriginURL 可省，省则 agentd 现读）
+//   - Path 有且目录不存在 + OriginURL 有 → clone 到该 Path
+//   - 其余非法组合 → 400
+//
+// OriginURL 是条件必填：仅当 Path 指向一个已存在的仓库时可省。
 type ProjectAddOpts struct {
 	OriginURL string
 	Name      string
@@ -441,10 +444,20 @@ type ProjectAddOpts struct {
 //   - 路径不是 git 仓库/没有 origin/克隆失败返回 400 错误（报文含 git 原文）
 //   - 路径上是另一个项目返回 400 错误（报文同时给出两边的 origin）
 //   - 项目/名字/路径已被登记、克隆落点已存在返回 409 错误
+//
+// 空字段不进请求体，远端看到的是缺省而非 ""。
 func (c *Client) ProjectAdd(ctx context.Context, opts ProjectAddOpts) (*proto.ProjectLocation, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
-		"origin_url": opts.OriginURL, "name": opts.Name, "path": opts.Path,
-	})
+	body := map[string]any{}
+	if opts.OriginURL != "" {
+		body["origin_url"] = opts.OriginURL
+	}
+	if opts.Name != "" {
+		body["name"] = opts.Name
+	}
+	if opts.Path != "" {
+		body["path"] = opts.Path
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/projects", body)
 	if err != nil {
 		return nil, fmt.Errorf("project add 请求: %w", err)
 	}
