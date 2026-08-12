@@ -10,11 +10,13 @@
 
 ```bash
 cd /Users/xushixin/workspace/handoff/.claude/worktrees/w4-delivery
-git log -1 --oneline        # 必须是 850ae61a docs(plan): W4 PTY 终端实现计划（17 个任务）
+git merge-base --is-ancestor 850ae61a HEAD && echo ok   # 必须打印 ok
 git switch -c feat/w4-console-polish   # 或按活分别开分支，名字自己定
 ```
 
-- **基线：`w4-delivery` @ `850ae61a`**（已推 origin）。
+- **基线：`w4-delivery`**（已推 origin）。分支尖端是这份交接文档本身
+  （`239f732e`）；PTY 那条线切在它前一个提交 `850ae61a` 上，两者只差一个
+  纯文档提交，合并时不构成冲突。
 - `w4-delivery` 是 W1–W4 的集成分支，**尚未合回 main**，129 个提交在它上面。
 - **不要 `git merge main`。** 它现在落后 main 26 个提交，但 PTY 那条线的
   merge-base 就是 `850ae61a`；你保持同一个 merge-base，两条线回来时才是两个
