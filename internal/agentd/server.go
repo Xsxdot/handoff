@@ -641,6 +641,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoProcHeadroom):
+		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errExecutorStartFailed):
 		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1069,6 +1072,11 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	}
 	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
+		if errors.Is(err, ErrNoProcHeadroom) {
+			s.log.Warn("run 被拒：进程余量不足", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
+			return
+		}
 		s.log.Error("run 执行失败", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return

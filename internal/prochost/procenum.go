@@ -25,8 +25,14 @@ var errNotSupported = errors.New("本平台不支持进程枚举")
 //
 // StartedAt 为 unix 纳秒，两个平台都归一到这个单位——身份校验要把成员的启动
 // 时刻与 shim 的启动时刻直接比较，单位不统一这条判据就是错的。
+//
+// PPID 是出生登记（roster）唯一的链接字段：setsid 改得了 pgid/sid，改不了
+// ppid。进程树活着时沿它能闭包出全部后代；树一死 ppid 就断（后代被 reparent
+// 给 init/launchd），所以它只在**记账时**可用，不能在清扫时才去追——这正是
+// 「出生登记」要在活着的时候落盘的原因。
 type procEntry struct {
 	PID       int
+	PPID      int
 	PGID      int
 	StartedAt int64
 }

@@ -29,6 +29,7 @@ func enumProcs() ([]procEntry, error) {
 		st := kps[i].Proc.P_starttime
 		out = append(out, procEntry{
 			PID:       int(kps[i].Proc.P_pid),
+			PPID:      int(kps[i].Eproc.Ppid),
 			PGID:      int(kps[i].Eproc.Pgid),
 			StartedAt: int64(st.Sec)*int64(time.Second) + int64(st.Usec)*int64(time.Microsecond),
 		})

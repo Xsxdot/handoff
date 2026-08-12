@@ -42,12 +42,23 @@ func isLockContended(err error) bool {
 
 // spawnDetached 拉起 argv 并让它脱离当前进程的会话与进程组，返回其 pid。
 //
+// 参数：
+//   - argv: 完整命令行，[0] 必须是绝对路径
+//   - dir: 子进程工作目录
+//   - shimLog: 非 nil 时把子进程的 **stderr** 接到这个文件（shim 的日志落点，
+//     生产里是 <taskDir>/shim.log）。nil 时 stderr 照旧接 /dev/null。stdin/stdout
+//     恒为 /dev/null——它们与「日志落点」是两回事
+//
+// 为什么 stderr 单独开一个通道而不是沿用「全 nil 即 detach」：shim 用 slog 记
+// 「围栏已安装 / 撞墙归因」等关键行，slog 默认写 stderr；全 nil 会把它们一并丢进
+// /dev/null，撞墙时审核者在任务目录里什么都读不到。
+//
 // 为什么用 Setsid 而不是让子进程自己调 setsid(2)：子进程被 fork 出来时若已是
 // 进程组组长，setsid(2) 会返回 EPERM。由父进程在 SysProcAttr 里声明最干净，
 // 且一次系统调用同时拿到「新会话 + 新进程组（pgid == pid）」——后者是 Kill
 // 能按组连坐全部后代的前提。
 //
-// 为什么 stdio 全部置 nil：Go 会把它们接到 /dev/null。子进程不能持有本进程的
+// 为什么 stdio 默认全部置 nil：Go 会把它们接到 /dev/null。子进程不能持有本进程的
 // 任何 fd，否则 agentd 退出时管道破裂会波及它，detach 就名存实亡。
 //
 // 为什么起一个 goroutine 收尸而不是 Process.Release：Release 只释放 Go 侧的
@@ -60,15 +71,19 @@ func isLockContended(err error) bool {
 // 边界：本函数不脱离 cgroup——cgroup 归属由 fork 继承，setsid 改不了它。
 // systemd 托管场景必须在 unit 里设 KillMode=process，否则 systemctl restart
 // 仍会连坐（见 spec §3.3 与 Task 10 的 unit 模板）。
-func spawnDetached(argv []string, dir string) (int, error) {
+func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error) {
 	if len(argv) == 0 {
 		return 0, errors.New("argv 为空")
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, shimLog
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		if note, _ := ExplainForkFailure(err); note != "" {
+			log().Error("拉起 shim 失败（进程配额）", "note", note, "cause", err)
+			return 0, fmt.Errorf("%s: %w", note, err)
+		}
 		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
 	}
 	pid := cmd.Process.Pid
@@ -97,6 +112,18 @@ func killGroup(pid int) error {
 		return fmt.Errorf("kill -9 -%d: %w", pid, err)
 	}
 	return nil
+}
+
+// killProc 对**单个 pid** 发 SIGKILL（不是进程组）。
+//
+// 为什么不能复用 killGroup：第二段清扫的对象是 setsid 逃逸出去的进程，它们
+// 各自成组，组里往往还有它们自己的无关兄弟；按组发信号会把没经过身份校验的
+// 进程一起带走——那正是 B47 误杀的形态。名册逐条校验、逐条发信号，一条一条来。
+func killProc(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("非法 pid %d", pid)
+	}
+	return syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // createInputChannel 幂等创建 0600 命名管道（见 CreateInputChannel 的文档）。

@@ -55,8 +55,13 @@ func TestFallbackBaselineRefreshedPerTurn(t *testing.T) {
 	fs.push(statusBusyEvent())
 	fs.push(statusIdleEvent())
 	first := waitEventType(t, ch, "result")
-	if first.Result == nil || !first.Result.OK {
-		t.Fatalf("回合一应判 result OK，实际 %+v", first.Result)
+	// B74 翻转：有新提交 ≠ 干完了，绝不宣布完成。基线刷新测试的本体是
+	// 「回合二必须判 question」，回合一只需证「判成 result 且 git 实况保留」。
+	if first.Result == nil || first.Result.OK {
+		t.Fatalf("回合一有新提交但无 trailer，应判 result !OK，实际 %+v", first.Result)
+	}
+	if first.Result.CommitHash == "" {
+		t.Fatal("git 实况应留在结构化字段里")
 	}
 	turn1Commit := first.Result.CommitHash
 

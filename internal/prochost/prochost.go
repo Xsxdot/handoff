@@ -40,6 +40,7 @@ import (
 //   - InfoPath: adapter 的 proc.json 路径。shim **不写它**（那是 adapter 的独占
 //     文件），只拿它的所在目录来放 spec.json 与 child.pid——见 shim.go recordChildPID
 //   - Sentinel: true 时子进程退出后向 Stdout 追加 handoff_exit 哨兵行
+//   - NprocLimit: 执行者树的进程数围栏（0 = 不设）；由 Start 按策略算出，调用方不填
 //
 // 注意：
 //   - Env 的值可能含凭据，本结构会被序列化到 0600 的 spec.json；日志里只打 key 名
@@ -53,6 +54,16 @@ type Spec struct {
 	LockPath string   `json:"lock_path"`
 	InfoPath string   `json:"info_path"`
 	Sentinel bool     `json:"sentinel"`
+
+	// NprocLimit 是这棵执行者进程树的围栏值（RLIMIT_NPROC 软硬限）。
+	//
+	// 0 = 不设围栏。为什么用零值而不是指针：这个字段没有「对端没发」与
+	// 「对端发了 0」的区分需求——两者都表示不装，语义完全一致。
+	//
+	// omitempty + 零值语义同时保证了滚动升级安全：新版 agentd 写出的
+	// spec.json 被旧版 shim 读到时该字段被忽略（旧 shim 不认识），新版 shim
+	// 读到升级前的 spec.json 得到 0 则跳过安装——两个方向都不会出事。
+	NprocLimit int `json:"nproc_limit,omitempty"`
 }
 
 // Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc.json。
@@ -74,6 +85,17 @@ type Handle struct {
 	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出 0 即判
 	// VerdictNoCredential 降级为只上报不清扫。老任务不会因为升级就被动手。
 	StartedAt int64 `json:"started_at,omitempty"`
+
+	// RosterPath 是后代名册（roster.json）的路径，第二段清扫的入口。
+	//
+	// 为什么要记在 Handle 里而不是让 Sweep 自己推：Sweep 跑在 agentd 进程里，
+	// 手上只有 proc.json 反序列化出来的 Handle——它没有 spec，也就没有
+	// InfoPath，推不出任务目录。这个字段是两个进程之间唯一的交接点。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出空串即
+	// 跳过第二段清扫（只做 pgid 那段），与 StartedAt 缺失时降级为只上报是
+	// 同一条纪律——老任务不会因为升级就被动手。
+	RosterPath string `json:"roster_path,omitempty"`
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -124,12 +146,16 @@ var killVerifyBackoff = []time.Duration{
 	370 * time.Millisecond,
 }
 
-// aliveFn / killGroupFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
-// 真进程做不出「持锁但杀不死」的形态，只能靠替换这两个函数驱动复核失败路径。
-// **生产路径恒为下面这两个默认值**，任何非测试代码都不得赋值给它们。
+// aliveFn / killGroupFn / killProcFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
+// 真进程做不出「持锁但杀不死」或「出生时刻不符」的形态，只能靠替换这些函数驱动
+// 复核失败与点名安全路径。**生产路径恒为下面这些默认值**，任何非测试代码都不得
+// 赋值给它们。
 var (
 	aliveFn     = Alive
 	killGroupFn = killGroup
+	// killProcFn 是单 pid 发信号的测试接缝：名册点名的安全用例要断言
+	// 「哪些 pid 被发了信号」，真进程做不出「出生时刻不符」这种形态
+	killProcFn = killProc
 )
 
 // Kill 终止 shim 及其全部后代（按进程组发送 SIGKILL），并**复核它是否真的死了**。
@@ -221,6 +247,7 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 //     权限不能放宽
 func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	specPath := filepath.Join(filepath.Dir(spec.InfoPath), "spec.json")
+	applyFencePolicy(&spec)
 	b, err := json.Marshal(spec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("序列化 spec: %w", err)
@@ -230,7 +257,23 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	}
 	argv := append([]string{selfExe}, extraArgs...)
 	argv = append(argv, "_shim", "--spec", specPath)
-	pid, err := spawnDetached(argv, spec.Dir)
+
+	// shim 的 stderr 接进任务目录的 shim.log：shim 是独立进程，日志走 slog→stderr，
+	// 不接的话会落进 /dev/null（spawnDetached 的 stdio=nil），撞墙归因那一行谁
+	// 都看不到——2026-08-12 烟测实证「装了围栏却报 363/2400」的归因行确实被丢掉。
+	// 打开失败只降级（shim 输出继续落 /dev/null），绝不阻断拉起。
+	var shimLog *os.File
+	if spec.InfoPath != "" {
+		shimLogPath := filepath.Join(filepath.Dir(spec.InfoPath), "shim.log")
+		shimLog, err = os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			log().Warn("打开 shim 日志文件失败，shim 输出将落入 /dev/null",
+				"path", shimLogPath, "cause", err)
+		} else {
+			defer shimLog.Close()
+		}
+	}
+	pid, err := spawnDetached(argv, spec.Dir, shimLog)
 	if err != nil {
 		log().Error("拉起 shim 失败", "spec", specPath, "cause", err)
 		return Handle{}, err
@@ -243,7 +286,13 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		log().Warn("读不到 shim 启动时刻，该任务将只能上报残留、无法自动清扫",
 			"pid", pid, "spec", specPath)
 	}
+	roster := rosterPath(spec.InfoPath)
 	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
-		"started_at", startedAt)
-	return Handle{PID: pid, LockPath: spec.LockPath, StartedAt: startedAt}, nil
+		"started_at", startedAt, "roster", roster)
+	return Handle{
+		PID:        pid,
+		LockPath:   spec.LockPath,
+		StartedAt:  startedAt,
+		RosterPath: roster,
+	}, nil
 }

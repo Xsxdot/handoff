@@ -62,6 +62,7 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/permgate"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -351,6 +352,40 @@ type completedPayload struct {
 // failedPayload 是 failed 事件的 payload。
 type failedPayload struct {
 	FailReason string `json:"fail_reason"`
+	// Branch/CommitHash 为 omitempty：绝大多数 failed（executor 崩溃、看门狗
+	// 判死）没有 git 实况，让空字段出现在 payload 里会让下游以为「查过 git 且
+	// 分支是空」。只有回合纪律类失败（无 trailer 但有新提交）才带这两个字段——
+	// 它们是审核者判断「这回合到底干到哪儿」的唯一结构化依据，降级成 FailReason
+	// 里的一段自由文本就没法再结构化取用了。
+	Branch     string `json:"branch,omitempty"`
+	CommitHash string `json:"commit,omitempty"`
+	// ProcUsage 是任务失败时刻的进程占用快照；读不出数时为 nil。
+	//
+	// 为什么用指针 + omitempty 而不是零值：一个「0/0」的快照会被读成
+	// 「死亡时机器很空闲」，那是彻头彻尾的谎话，比没有快照更糟。nil 表示
+	// 「没测到」，与「测到了，很空闲」是两件事，必须能区分
+	ProcUsage *prochost.Admission `json:"proc_usage,omitempty"`
+}
+
+// newFailedPayload 构造带占用快照的失败载荷。
+//
+// 参数：reason 为失败原因，原样保留不做改写；branch/commit 为可选的 git 实况，
+// 绝大多数失败路径没有（进程退出、对账），传空串即可
+//
+// 为什么所有 failed 事件都要走这里：三个发射点（Stop、executor 死亡对账、
+// reconcile）各自构造等于三处都可能漏挂快照，而漏掉的那次恰好可能就是
+// 配额事故那次。审核者拿到「死亡时 2390/2400」与「死亡时 300/2400」，
+// 一眼就能定性两个完全不同的排查方向。git 实况同样只此一处带上（B74）：
+// 另起一条不带 ProcUsage 的构造路径，就等于把 B73 的快照约定废了。
+//
+// 为什么这里不打日志：它只是构造载荷，失败本身在三个发射点各自已有日志；
+// 在这里再记一遍等于同一件事写四次。
+func newFailedPayload(reason, branch, commit string) failedPayload {
+	p := failedPayload{FailReason: reason, Branch: branch, CommitHash: commit}
+	if a := admissionFn(); a.Known {
+		p.ProcUsage = &a
+	}
+	return p
 }
 
 // approverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限
@@ -552,6 +587,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	m.log.Info("基线起点已确定", "repo", repoPath, "start", start, "ahead", ahead,
 		"explicit_base", req.Base != "")
+
+	// 准入闸必须排在建任务行、建 worktree 之前：拒发要干干净净，
+	// 不能留下一个建了一半的任务等人收
+	if err := checkProcHeadroom("dispatch"); err != nil {
+		return nil, err
+	}
 
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
@@ -1134,9 +1175,8 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
 
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
-		FailReason: "审核者主动中止（handoff stop）",
-	})
+	// Stop 是审核者主动中止：无 git 实况可带（不是回合收尾）
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload("审核者主动中止（handoff stop）", "", ""))
 	if err != nil {
 		return false, fmt.Errorf("追加中止事件: %w", err)
 	}
@@ -2436,11 +2476,24 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 			Branch: r.Branch, CommitHash: r.CommitHash, Summary: r.Summary,
 		})
 	} else {
-		// executor 已死，挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复
-		// 路径同语义。不作废的话 attach 仍向审核者展示可操作的挂起项，而 executor
-		// 已不在——一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态
-		voidTicketsWithAudit(m.st, taskID, "executor 已终结", m.log)
-		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: r.FailReason})
+		// 挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复路径同语义。
+		// 不作废的话 attach 仍向审核者展示可操作的挂起项，而工单已无人消费——
+		// 一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态。
+		//
+		// 理由由 result 侧提供而非硬编码：作废行为在两种情形下相同，但审计
+		// 必须说真话。executor 真死传 VoidReasonExecutorGone，回合纪律类失败
+		// （无 trailer、零文本）传 VoidReasonTurnDiscipline——后者 executor 还活着。
+		// 历史上零文本回合的 FailReason 明写「executor 仍在线，可 continue 续接
+		// 重试」，却被同一次调用记成「executor 已终结」，审计与事实互相矛盾。
+		voidReason := r.VoidReason
+		if voidReason == "" {
+			voidReason = executor.VoidReasonExecutorGone
+		}
+		voidTicketsWithAudit(m.st, taskID, voidReason, m.log)
+		m.log.Warn("回合以失败收尾", "task", taskID, "reason", r.FailReason,
+			"branch", r.Branch, "commit", r.CommitHash, "void_reason", voidReason)
+		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed,
+			newFailedPayload(r.FailReason, r.Branch, r.CommitHash))
 	}
 	if err != nil {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)

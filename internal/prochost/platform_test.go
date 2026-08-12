@@ -22,7 +22,7 @@ func TestHelperSpawner(t *testing.T) {
 	if os.Getenv(helperEnv) != "spawner" {
 		t.Skip("非 helper 调用")
 	}
-	pid, err := spawnDetached([]string{"/bin/sh", "-c", "sleep 30"}, os.TempDir())
+	pid, err := spawnDetached([]string{"/bin/sh", "-c", "sleep 30"}, os.TempDir(), nil)
 	if err != nil {
 		os.Stderr.WriteString("spawn 失败: " + err.Error())
 		os.Exit(2)
@@ -179,7 +179,7 @@ func TestCreateInputChannelIsIdempotent(t *testing.T) {
 //
 // 判据：进程退出后 pid 必须在超时内彻底消失（僵尸对 signal 0 仍然可达）。
 func TestSpawnDetachedReapsChild(t *testing.T) {
-	pid, err := spawnDetached([]string{"/bin/sh", "-c", "exit 0"}, os.TempDir())
+	pid, err := spawnDetached([]string{"/bin/sh", "-c", "exit 0"}, os.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("spawnDetached 失败: %v", err)
 	}
