@@ -14,7 +14,6 @@
 // waiting_review → Review；completed / failed → 完成（failed 视觉区分）。
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LayoutDashboard, WifiOff } from 'lucide-react'
 import { ApiError, fetchTasks } from '../../api/client'
 import type { Task } from '../../api/types'
 import { Badge } from '@/components/ui/badge'
@@ -99,45 +98,27 @@ export function BoardPage() {
   const openTask = useCallback((id: string) => navigate(`/tasks/${id}`), [navigate])
 
   return (
-    <div className="flex min-h-dvh flex-col bg-muted/40">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-2.5">
-        <h1 className="flex items-center gap-2 text-base font-semibold">
-          <LayoutDashboard className="size-4" />
-          handoff 控制台 · 任务看板
-        </h1>
-        {disconnected && (
-          <Badge variant="destructive">
-            <WifiOff className="size-3" />
-            已断开
-          </Badge>
-        )}
-        <p className="ml-auto text-xs text-muted-foreground">
-          {tasks === null ? '连接中…' : `共 ${tasks.length} 个任务，每 ${POLL_INTERVAL / 1000} 秒刷新`}
-        </p>
-      </header>
+    <main className="flex w-full flex-col gap-3 p-3">
+      {sessionExpired && <SessionExpiredBanner />}
+      {disconnected && !sessionExpired && <DisconnectedBanner message={errorText} />}
 
-      <main className="flex w-full flex-1 flex-col gap-3 p-3">
-        {sessionExpired && <SessionExpiredBanner />}
-        {disconnected && !sessionExpired && <DisconnectedBanner message={errorText} />}
-
-        {tasks === null ? (
-          sessionExpired ? null : (
-            <LoadFailed message={errorText || '正在连接 agentd…'} onRetry={() => window.location.reload()} />
-          )
-        ) : (
-          <div className="flex flex-1 items-stretch gap-3 overflow-x-auto pb-2">
-            {BOARD_COLUMNS.map((col) => (
-              <BoardColumn
-                key={col}
-                column={col}
-                tasks={tasks.filter((t) => stateToColumn(t.state) === col)}
-                onOpen={openTask}
-              />
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
+      {tasks === null ? (
+        sessionExpired ? null : (
+          <LoadFailed message={errorText || '正在连接 agentd…'} onRetry={() => window.location.reload()} />
+        )
+      ) : (
+        <div className="flex flex-1 items-stretch gap-3 overflow-x-auto pb-2">
+          {BOARD_COLUMNS.map((col) => (
+            <BoardColumn
+              key={col}
+              column={col}
+              tasks={tasks.filter((t) => stateToColumn(t.state) === col)}
+              onOpen={openTask}
+            />
+          ))}
+        </div>
+      )}
+    </main>
   )
 }
 
