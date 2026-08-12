@@ -55,7 +55,7 @@ func (m *Manager) takeStopping(taskID string) bool {
 
 // reconcileExecutorGone 是包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
 func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
-	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log)
+	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log, m.SweepTaskProcs)
 }
 
 // stopExecutor 停 executor，并在「没有内存运行态」时按恢复凭据兜底回收。
@@ -127,37 +127,22 @@ func (m *Manager) notifyOrphanRisk(taskID, text string) {
 	m.log.Info("已向审核者发出 executor 残留提示", "task", taskID)
 }
 
-// reconcileExecutorGone 收尾一个 executor 已不在的任务：
-// 作废挂起工单 → 追加 failed 事件 → 迁 waiting_review → 广播。
+// reconcileExecutorGone 收尾一个 executor 已不在的任务。
 //
 // 参数：
-//   - st/hub: 存储与实时路由
-//   - taskID: 待收尾任务
-//   - reason: 失配来源的人话说明，直接进 failed 事件的 fail_reason。审核者据此
-//     区分「agentd 重启后 executor 已不在」「executor 事件流终结」「恢复操作发现
-//     executor 已不在」三种现场——三者的后续处置不同，混成一句话等于丢信息
-//   - log: 日志入口
+//   - sweep: 残留进程清扫回调；**无条件调用**，与任务状态无关（why 见下）
 //
-// 返回：
-//   - 收尾后的任务状态（调用方要回给 CLI 时用）；读任务失败时返回空串
+// 为什么清扫是无条件后置动作：本函数对非 running/waiting_answer 的状态提前返回，
+// 那条分支的理由是「待审核终态与已终结态不需要状态收尾」——它说的是状态，不是
+// 资源。executor 已经不在了，残留进程该不该收与任务停在哪个状态无关；已经 done
+// 过的任务同样可能有残留（那次 Kill 正因锁已释放而空转）。2026-08-12 事故里两个
+// 任务最终都停在 waiting_review，恰好是提前返回会跳过的形态。
 //
-// 注意：
-//   - 对 waiting_review / completed / failed 是**空操作**：前者本就是待审核终态
-//     （追加事件只是噪音），后两者已终结。三个到达口可能对同一任务先后触发，
-//     幂等由这条保证
-//   - 作废工单排在事件之前，且作废失败只记日志不中断：事件是审核者的主要信息
-//     来源，必须落
-//   - 追加事件失败则不迁移状态：迁了却没事件 = 审核者看到状态变化却不知原因
-//
-// 「executor 已不在 ⇒ failed」与「会话被 abort ⇒ question」的异同（B38 Task9 订正）：
-//   - 本函数把「executor 已不在」一律落 failed——serve 意外退出（崩溃/OOM/被杀）
-//     是异常，判 failed 是对的：那是执行器确实死了，任务无法继续，交审核者裁决
-//   - 对比：opencode 会话被**人工 abort** 解开时（error.name=MessageAbortedError），
-//     adapter 的会话对账把它补发成 **question** 而非 failed——abort 在真实使用里
-//     几乎总是救援动作（解开冻结/卡死会话），释放出来的是完整内容，不是任务失败。
-//     两者本质区别：serve 崩溃是「执行器无征兆死亡」（异常，failed 正确）；abort
-//     是「有人主动打断了回合」（救援，question 正确）。别把两者合并成一种落点
-func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string, log *slog.Logger) proto.TaskState {
+// 顺序：状态收尾在前、清扫在后。审核者的工作流（任务进 waiting_review）不受
+// 清扫成败影响——清扫失败只上报，绝不回头改状态。
+func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
+	log *slog.Logger, sweep func(taskID string)) proto.TaskState {
+
 	cur, err := st.GetTask(taskID)
 	if err != nil {
 		log.Error("对账读取任务失败", "task", taskID, "reason", reason, "cause", err)
@@ -165,8 +150,8 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string, log
 	}
 	log.Info("executor 已不在，开始对账", "task", taskID, "state", cur.State, "reason", reason)
 	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
-		// 空操作：待审核终态与已终结态都不需要收尾（why 见 doc 注意）
-		log.Info("任务无需对账，跳过", "task", taskID, "state", cur.State)
+		log.Info("任务无需状态对账，仅清扫残留", "task", taskID, "state", cur.State)
+		sweep(taskID) // 无条件：见上方 why
 		return cur.State
 	}
 
@@ -177,13 +162,74 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string, log
 	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: reason})
 	if err != nil {
 		log.Error("对账追加 failed 事件失败，不迁移状态", "task", taskID, "cause", err)
+		sweep(taskID) // 状态没迁成不代表 executor 还活着，残留照收
 		return cur.State
 	}
 	if err := recoverTransit(st, taskID, cur.State); err != nil {
 		log.Error("对账迁移 waiting_review 失败", "task", taskID, "cause", err)
+		sweep(taskID)
 		return cur.State
 	}
 	hub.Publish(evt)
 	log.Info("对账完成", "task", taskID, "from", cur.State, "to", proto.TaskStateWaitingReview)
+	sweep(taskID)
 	return proto.TaskStateWaitingReview
+}
+
+// footprinter 是「交出任务进程句柄」的可选 adapter 能力（四个真实 adapter 均实现，
+// fake 不实现）。
+//
+// 为什么是可选接口而不是加进 executor.Adapter：不支持的 adapter 一律按「无凭据」
+// 降级是自然语义，五动作核心契约不该为一个诊断/回收功能扩面——与 reaper /
+// prober / restorer / volatilePermitter 同一套路数。
+type footprinter interface {
+	ProcHandle(taskID, taskDir string) (prochost.Handle, error)
+}
+
+// SweepTaskProcs 清扫一个任务的残留进程，best-effort。
+//
+// 参数：taskID 为目标任务
+//
+// 注意：
+//   - 无返回值：调用方全都处在收尾路径上，清扫成败不该反过来影响那件事
+//   - 只有「确实有残留但我们没敢动」才发事件提示人工；成功与无残留只进日志。
+//     这是尊重 stopExecutor 已经想清楚过的事——「其余失败五花八门，全发事件
+//     等于把审核者淹了，那样这条提示就没人看了」
+//   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
+//     不是给外部当通用 API 用
+func (m *Manager) SweepTaskProcs(taskID string) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("清扫解析执行者失败", "task", taskID, "cause", err)
+		return
+	}
+	fp, ok := ad.(footprinter)
+	if !ok {
+		m.log.Debug("adapter 不支持进程句柄，跳过清扫", "task", taskID)
+		return
+	}
+	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
+	h, err := fp.ProcHandle(taskID, taskDir)
+	if err != nil {
+		m.log.Error("清扫取进程句柄失败", "task", taskID, "dir", taskDir, "cause", err)
+		return
+	}
+	killed, verdict, err := prochost.Sweep(h)
+	switch {
+	case errors.Is(err, prochost.ErrExecutorAlive):
+		// 竞态：判死与清扫之间 executor 又被认为活着。不是错误，交给正常路径
+		m.log.Info("清扫时执行者仍存活，交由常规回收路径", "task", taskID, "pid", h.PID)
+	case err != nil:
+		m.log.Error("清扫失败", "task", taskID, "pid", h.PID, "cause", err)
+		m.notifyOrphanRisk(taskID, fmt.Sprintf(
+			"残留进程清扫失败（pid=%d，原因：%v），请先 handoff footprint 确认再人工处理", h.PID, err))
+	case verdict != prochost.VerdictOK:
+		m.log.Warn("清扫放弃", "task", taskID, "pid", h.PID, "verdict", string(verdict))
+		m.notifyOrphanRisk(taskID, fmt.Sprintf(
+			"残留进程未清扫（判定：%s），请先 handoff footprint 确认再人工处理", verdict))
+	case killed > 0:
+		m.log.Info("残留进程已清扫", "task", taskID, "pid", h.PID, "killed", killed)
+	default:
+		m.log.Info("无残留进程", "task", taskID, "pid", h.PID)
+	}
 }

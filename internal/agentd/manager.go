@@ -2338,7 +2338,7 @@ func (m *Manager) appendProgress(taskID, text string) {
 // 收尾实现已统一到 reconcileExecutorGone，本函数只负责拼这一句 reason。
 func (m *Manager) abandonToReview(taskID, ticketID string, cause error) proto.TaskState {
 	return reconcileExecutorGone(m.st, m.hub, taskID,
-		fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause), m.log)
+		fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause), m.log, m.SweepTaskProcs)
 }
 
 // markDelivered 记录「应答已送达 executor」。失败仅 Warn：送达本身已经发生，
