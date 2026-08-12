@@ -94,14 +94,15 @@ func streamFrames(ctx context.Context, w io.Writer, flusher http.Flusher,
 		if err != nil {
 			return sent, err
 		}
-		if first && len(chunk) > 0 {
-			// 首块的起点可能落在半行中间（offset 由 tail 回溯算出）：
-			// 跳到下一个完整行的开头，客户端第一行才解析得动
+		if first && len(chunk) > 0 && !startsAtLineStart(path, offset) {
+			// 起点不在行首（offset 由 tail 回溯算出，可能落在半行中间）：
+			// 跳到下一个完整行的开头，客户端第一行才解析得动。起点在行首时
+			// 首行本身完整，不做对齐——对齐反而会把这条完整行吞掉
 			aligned := alignToLineStart(chunk)
 			offset += int64(len(chunk) - len(aligned))
 			chunk = aligned
-			first = false
 		}
+		first = false
 		complete, held := trimIncompleteTail(chunk)
 		if len(complete) > 0 {
 			n, werr := w.Write(complete)
@@ -155,6 +156,39 @@ func readFrom(path string, offset int64) ([]byte, error) {
 		return nil, err
 	}
 	return io.ReadAll(f)
+}
+
+// startsAtLineStart 判断 path 在 offset 处的字节是否恰好位于行首。
+//
+// 行首 = 文件开头，或紧跟在换行符之后。streamFrames 用它决定首轮要不要走
+// alignToLineStart：起点在行首时首行完整，对齐反而会把这条完整行吞掉。
+//
+// 判据：
+//   - offset <= 0：文件开头，必是行首
+//   - offset > 0：读 offset-1 处的一个字节，是换行符即行首
+//
+// 读前一字节失败时返回 false，走对齐路径丢残缺头：该路径只在「readFrom 刚
+// 读过、文件紧接着被并发删除/替换」的极端窗口里出现，宁可丢半行，也不能让
+// 客户端把残缺首行当成完整帧解析——何况失败概率极低，正常路径读前一字节是
+// 可靠的（文件刚被 readFrom 打开读过）。
+func startsAtLineStart(path string, offset int64) bool {
+	if offset <= 0 {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset-1, io.SeekStart); err != nil {
+		return false
+	}
+	buf := make([]byte, 1)
+	n, err := f.Read(buf)
+	if err != nil || n != 1 {
+		return false
+	}
+	return buf[0] == '\n'
 }
 
 // alignToLineStart 丢掉开头那个不完整的行，返回从第一个完整行开始的切片。

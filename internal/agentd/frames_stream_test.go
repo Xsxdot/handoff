@@ -37,8 +37,6 @@ func newTestServerWithTask(t *testing.T) (*Server, string) {
 }
 
 // 服务端只发完整行：offset 落在半行中间时，把不完整的头部丢掉，
-
-// 服务端只发完整行：offset 落在半行中间时，把不完整的头部丢掉，
 // 从下一个完整行开始——否则客户端第一行永远解析失败。
 func TestAlignToLineStart(t *testing.T) {
 	buf := []byte(`{"seq":1}` + "\n" + `{"seq":2}` + "\n")
@@ -140,5 +138,57 @@ func TestHandleTaskFramesAlignsHalfLineOffset(t *testing.T) {
 	var fr proto.Frame
 	if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &fr); err != nil {
 		t.Fatalf("客户端应能直接解析第一行，实得解析失败: %v", err)
+	}
+}
+
+// startsAtLineStart 判据：文件开头必是行首；offset 前一字节是换行符才在行首。
+func TestStartsAtLineStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, turn.FramesFileName)
+	content := `{"seq":1}` + "\n" + `{"seq":2}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写帧文件: %v", err)
+	}
+
+	if !startsAtLineStart(path, 0) {
+		t.Error("offset=0（文件开头）必是行首")
+	}
+	if startsAtLineStart(path, 3) {
+		t.Error("offset 落在行中间（前一字节不是换行符）不应判为行首")
+	}
+	if !startsAtLineStart(path, int64(len(`{"seq":1}`)+1)) {
+		t.Error("offset 恰好在换行符之后应是行首")
+	}
+	if !startsAtLineStart(filepath.Join(dir, "不存在.jsonl"), 0) {
+		t.Error("路径不存在但 offset=0 时仍是行首（文件开头语义不变）")
+	}
+	if startsAtLineStart(filepath.Join(dir, "不存在.jsonl"), 5) {
+		t.Error("路径不存在时读前一字节失败，应返回 false（保守走对齐）")
+	}
+}
+
+// 从头读（offset=0，小文件等价请求不带 offset）时首帧必须完整保留：
+// renderStartOffset 对小于默认 tail 的文件返回 0，streamFrames 首轮若盲目
+// alignToLineStart 会把第一条完整行吞掉——本测试钉住这个真实场景。
+func TestHandleTaskFramesFreshReadKeepsFirstFrame(t *testing.T) {
+	srv, taskID := newTestServerWithTask(t)
+	dir := filepath.Join(srv.cfg.DataDir, "tasks", taskID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("建任务目录: %v", err)
+	}
+	content := `{"seq":1,"type":"text"}` + "\n" + `{"seq":2,"type":"text"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, turn.FramesFileName), []byte(content), 0o644); err != nil {
+		t.Fatalf("写帧文件: %v", err)
+	}
+
+	// 不带 offset：renderStartOffset 对 <framesDefaultTail 的文件返回 offset=0
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+taskID+"/frames", nil)
+	req.SetPathValue("id", taskID)
+	rec := httptest.NewRecorder()
+
+	srv.handleTaskFrames(rec, req)
+
+	if got := rec.Body.String(); got != content {
+		t.Fatalf("从头读应保留全部两帧（首帧不得丢），实得 %q", got)
 	}
 }
