@@ -183,6 +183,8 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
+//   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
@@ -212,6 +214,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/projects", s.handleProjectList)
 	mux.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	mux.HandleFunc("GET /api/machines", s.handleMachines)
+	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
+	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
