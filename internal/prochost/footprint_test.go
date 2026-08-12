@@ -1,6 +1,7 @@
 package prochost
 
 import (
+	"errors"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -101,11 +102,25 @@ func assertMembers(t *testing.T, got, want []int) {
 	}
 }
 
-// stubEnum 把进程枚举换成固定快照。
-func stubEnum(t *testing.T, procs []procEntry, err error) {
+// stubEnum 把进程枚举换成脚本化的快照序列（最后一个快照会被重复使用）。
+//
+// 为什么需要序列而不是固定快照：Sweep 发完 SIGKILL 后要**复核**——再枚举一次并
+// 确认组已空。固定快照会让复核永远看到同一批进程，正常路径的用例就只能走满复核
+// 窗口被报成 ErrStillAlive。与 stubAlive 同款路数：先给「杀之前的现场」，再给
+// 「杀之后的空现场」（more 里传 nil 即空快照）。只传 procs 时退化为固定快照，
+// 与既有调用完全兼容。
+func stubEnum(t *testing.T, procs []procEntry, err error, more ...[]procEntry) {
 	t.Helper()
 	orig := enumProcsFn
-	enumProcsFn = func() ([]procEntry, error) { return procs, err }
+	snaps := append([][]procEntry{procs}, more...)
+	i := 0
+	enumProcsFn = func() ([]procEntry, error) {
+		v := snaps[i]
+		if i < len(snaps)-1 {
+			i++
+		}
+		return v, err
+	}
 	t.Cleanup(func() { enumProcsFn = orig })
 }
 
@@ -159,5 +174,110 @@ func TestStartRecordsStartedAt(t *testing.T) {
 	}
 	if delta := time.Now().UnixNano() - hd.StartedAt; delta < 0 || delta > int64(30*time.Second) {
 		t.Fatalf("StartedAt 偏离现在过远：delta=%d ns", delta)
+	}
+}
+
+// TestSweepRefusesWhenExecutorAlive 锁仍被持有时 Sweep 必须拒绝执行且不发信号。
+//
+// 杀活着的执行者是 Kill 的职责。两者风险模型不同，互相代劳就会把 Kill 那条
+// 「不确认存活就绝不发信号」的纪律绕过去。
+func TestSweepRefusesWhenExecutorAlive(t *testing.T) {
+	stubEnum(t, []procEntry{{PID: 101, PGID: 100, StartedAt: t0 + 1}}, nil)
+	stubAlive(t, true)
+	n := stubKillGroup(t, nil)
+
+	_, _, err := Sweep(h())
+	if !errors.Is(err, ErrExecutorAlive) {
+		t.Fatalf("执行者存活时应返回 ErrExecutorAlive，got %v", err)
+	}
+	if *n != 0 {
+		t.Fatalf("执行者存活却发了 %d 次信号", *n)
+	}
+}
+
+// TestSweepAbortsOnLeaderReuse pgid 被复用时必须整组放弃且**绝不发信号**。
+//
+// 这是本次改动最重要的一条：误杀被复用 pgid 的代价是杀掉机器上毫不相干的
+// 进程组（B47 现场：旧实现 300 条成功命令误杀 114 次）。
+func TestSweepAbortsOnLeaderReuse(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: t0 + 9999}, // 冒名组长
+		{PID: 101, PGID: 100, StartedAt: t0 + 1},
+	}, nil)
+	stubAlive(t, false)
+	n := stubKillGroup(t, nil)
+
+	killed, v, err := Sweep(h())
+	if err != nil {
+		t.Fatalf("判定复用不该返回错误（那是正常结论），got %v", err)
+	}
+	if v != VerdictLeaderReuse {
+		t.Fatalf("want leader_reuse, got %s", v)
+	}
+	if killed != 0 || *n != 0 {
+		t.Fatalf("判定复用却动了手：killed=%d signals=%d", killed, *n)
+	}
+}
+
+// TestSweepNoCredentialAborts 凭据不全时放弃且不发信号。
+func TestSweepNoCredentialAborts(t *testing.T) {
+	stubEnum(t, []procEntry{{PID: 101, PGID: 100, StartedAt: t0 + 1}}, nil)
+	stubAlive(t, false)
+	n := stubKillGroup(t, nil)
+
+	killed, v, err := Sweep(Handle{PID: testShimPID, StartedAt: 0})
+	if err != nil || v != VerdictNoCredential || killed != 0 || *n != 0 {
+		t.Fatalf("凭据不全应放弃：v=%s killed=%d signals=%d err=%v", v, killed, *n, err)
+	}
+}
+
+// TestSweepKillsGroupOnce 正常路径：恰好一次组信号，返回成员数。
+func TestSweepKillsGroupOnce(t *testing.T) {
+	shrinkBackoff(t)
+	stubEnum(t, []procEntry{
+		{PID: 101, PGID: 100, StartedAt: t0 + 1},
+		{PID: 102, PGID: 100, StartedAt: t0 + 2},
+	}, nil, nil) // 第二个快照为空：复核时确认组已清
+	stubAlive(t, false)
+	n := stubKillGroup(t, nil)
+
+	killed, v, err := Sweep(h())
+	if err != nil {
+		t.Fatalf("正常路径不该报错: %v", err)
+	}
+	if v != VerdictOK || killed != 2 {
+		t.Fatalf("want ok/2, got %s/%d", v, killed)
+	}
+	if *n != 1 {
+		t.Fatalf("应恰好发一次组信号，实发 %d 次", *n)
+	}
+}
+
+// TestSweepAndFootprintAgree 孪生一致性：同一输入下，两者的成员集合必须完全相同。
+//
+// 这条钉住整个设计的核心不变式——「数出来的」与「会被杀的」是同一批。
+// 两者若各写一份枚举/过滤，status 报 3 个而 Sweep 杀 5 个这种事没人会发现。
+func TestSweepAndFootprintAgree(t *testing.T) {
+	shrinkBackoff(t)
+	procs := []procEntry{
+		{PID: 101, PGID: 100, StartedAt: t0 + 1},
+		{PID: 102, PGID: 100, StartedAt: t0 - 5}, // 规则三排除
+		{PID: 103, PGID: 100, StartedAt: t0 + 3},
+		{PID: 200, PGID: 200, StartedAt: t0 + 1}, // 别的组
+	}
+	stubEnum(t, procs, nil, procs, nil) // 顺序：Footprint 一次、Sweep 一次、复核一次空快照
+	stubAlive(t, false)
+	_ = stubKillGroup(t, nil)
+
+	members, v1, err1 := Footprint(h())
+	killed, v2, err2 := Sweep(h())
+	if err1 != nil || err2 != nil {
+		t.Fatalf("不该报错: %v / %v", err1, err2)
+	}
+	if v1 != v2 {
+		t.Fatalf("孪生判定不一致：Footprint=%s Sweep=%s", v1, v2)
+	}
+	if len(members) != killed {
+		t.Fatalf("孪生成员数不一致：Footprint=%d Sweep=%d", len(members), killed)
 	}
 }

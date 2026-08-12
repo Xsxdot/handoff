@@ -11,6 +11,12 @@
 //     的残留、前提是锁已释放。两者风险模型不同，不得互相代劳（见 Sweep 的文档）
 package prochost
 
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
 // Verdict 是一次足迹判定的结论。
 //
 // 为什么要三态而不是 bool：判不出结论时猜一个值就是制造假阳性，而一条会说谎的
@@ -123,4 +129,71 @@ func Footprint(h Handle) (members []int, v Verdict, err error) {
 	members, v = classify(h, procs, aliveFn(h))
 	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v), "members", len(members))
 	return members, v, nil
+}
+
+// ErrExecutorAlive 表示执行者仍然活着，Sweep 不适用。
+//
+// 调用方靠 errors.Is 判别，禁止按错误文本判——与 ErrLockHeld / ErrStillAlive 同款。
+var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 不适用")
+
+// Sweep 回收一个**已死**执行者留下的残留后代。
+//
+// 参数：h 为任务的进程句柄（来自 proc.json）
+//
+// 返回：
+//   - killed: 发信号时组内通过身份校验的成员数（0 表示没动手）
+//   - v: 判定结论；非 VerdictOK 时必然 killed == 0
+//   - err: 执行者仍存活（ErrExecutorAlive）、枚举失败、或已发信号但复核仍存活
+//     （ErrStillAlive）
+//
+// 注意：
+//   - **前提是执行者已死**。存活锁仍被持有时直接拒绝——杀活着的执行者是 Kill
+//     的职责，两者风险模型不同（Kill 以「锁在」为发信号的前提，Sweep 以「锁不在」
+//     为前提并逐个校验成员身份），互相代劳会把 Kill 那条纪律绕过去
+//   - 判定为放弃（leader_reuse / no_credential）**不是错误**，是正常结论：
+//     调用方据 v 决定是否上报人工，不该按 err != nil 判
+//   - 与 Kill 一致：发完 SIGKILL 必须复核，复核窗口走完仍存活返回 ErrStillAlive
+func Sweep(h Handle) (killed int, v Verdict, err error) {
+	if aliveFn(h) {
+		log().Warn("执行者仍存活，拒绝清扫", "pid", h.PID, "lock", h.LockPath)
+		return 0, VerdictOK, ErrExecutorAlive
+	}
+	procs, eerr := enumProcsFn()
+	if eerr != nil {
+		log().Error("清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+		return 0, VerdictNoCredential, eerr
+	}
+	members, v := classify(h, procs, false)
+	if v != VerdictOK {
+		log().Warn("清扫放弃", "pid", h.PID, "verdict", string(v))
+		return 0, v, nil
+	}
+	if len(members) == 0 {
+		log().Info("无残留可清扫", "pid", h.PID)
+		return 0, VerdictOK, nil
+	}
+	log().Info("回收残留进程组", "pid", h.PID, "members", len(members), "pids", members)
+	if kerr := killGroupFn(h.PID); kerr != nil {
+		log().Error("回收残留进程组失败", "pid", h.PID, "cause", kerr)
+		return 0, VerdictOK, fmt.Errorf("回收进程组 %d: %w", h.PID, kerr)
+	}
+	// 复核：与 Kill 同款窗口。SIGKILL 异步生效，不复核就是「杀没杀掉我们不知道，
+	// 而且假装知道」——B47 修的正是这个
+	for i, d := range killVerifyBackoff {
+		time.Sleep(d)
+		rest, rerr := enumProcsFn()
+		if rerr != nil {
+			log().Error("复核枚举失败", "pid", h.PID, "cause", rerr)
+			break
+		}
+		if left, _ := classify(h, rest, false); len(left) == 0 {
+			log().Info("清扫完成，已确认残留退出", "pid", h.PID,
+				"killed", len(members), "probe", i+1)
+			return len(members), VerdictOK, nil
+		}
+	}
+	log().Error("已发 SIGKILL 但复核窗口走完仍有残留", "pid", h.PID,
+		"window", killVerifyWindow)
+	return len(members), VerdictOK,
+		fmt.Errorf("%w: pgid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
