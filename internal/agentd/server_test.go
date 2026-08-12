@@ -858,3 +858,100 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 		t.Errorf("响应体应带真因（含文件名），实际 %q", body.Error)
 	}
 }
+
+// newDoneEnv 组装一个挂了 manager、且有一个 waiting_review 任务的测试环境。
+func newDoneEnv(t *testing.T, taskID string) *testEnv {
+	t.Helper()
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "fake", RepoPath: "/repo",
+		Executor: "fake", State: proto.TaskStateWaitingReview,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"fake": fake.New(nil)},
+		&config.Config{Token: testToken, DataDir: t.TempDir(),
+			Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+	return env
+}
+
+// decodeDone 解出归档响应的两个字段。
+func decodeDone(t *testing.T, resp *http.Response) (ok, noteSaved bool) {
+	t.Helper()
+	defer resp.Body.Close()
+	var body struct {
+		OK        bool `json:"ok"`
+		NoteSaved bool `json:"note_saved"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码 done 响应: %v", err)
+	}
+	return body.OK, body.NoteSaved
+}
+
+// TestDoneAcceptsNote 断言带说明归档返回 note_saved=true。
+func TestDoneAcceptsNote(t *testing.T) {
+	env := newDoneEnv(t, "task-done-note")
+	resp := env.post(t, "/api/tasks/task-done-note/done", `{"note":"改完了"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("done 返回 %d, want 200", resp.StatusCode)
+	}
+	ok, saved := decodeDone(t, resp)
+	if !ok || !saved {
+		t.Fatalf("期望 ok=true note_saved=true，得到 ok=%v saved=%v", ok, saved)
+	}
+}
+
+// TestDoneEmptyBodyStillArchives 是旧版 CLI 兼容的钉子：不发 body 必须照常归档。
+// 这条一旦红，等于新 agentd 拒收所有还没升级的客户端。
+func TestDoneEmptyBodyStillArchives(t *testing.T) {
+	env := newDoneEnv(t, "task-done-empty")
+	resp := env.post(t, "/api/tasks/task-done-empty/done", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("空 body 应归档成功，得到 %d", resp.StatusCode)
+	}
+	ok, saved := decodeDone(t, resp)
+	if !ok || saved {
+		t.Fatalf("期望 ok=true note_saved=false，得到 ok=%v saved=%v", ok, saved)
+	}
+}
+
+// TestDoneMalformedBodyStillArchives 断言非法 JSON 同样按「无说明」处理而不是 400：
+// body 是可选的，解析不出来不该把一次合法归档变成失败。
+func TestDoneMalformedBodyStillArchives(t *testing.T) {
+	env := newDoneEnv(t, "task-done-bad")
+	resp := env.post(t, "/api/tasks/task-done-bad/done", "{not json")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("非法 body 应归档成功，得到 %d", resp.StatusCode)
+	}
+	ok, saved := decodeDone(t, resp)
+	if !ok || saved {
+		t.Fatalf("期望 ok=true note_saved=false，得到 ok=%v saved=%v", ok, saved)
+	}
+}
+
+// TestDoneRejectsOversizeNote 断言超长说明 400——服务端不信任客户端的校验。
+func TestDoneRejectsOversizeNote(t *testing.T) {
+	env := newDoneEnv(t, "task-done-big")
+	big, err := json.Marshal(map[string]string{
+		"note": strings.Repeat("a", proto.MaxDoneNoteBytes+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := env.post(t, "/api/tasks/task-done-big/done", string(big))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("超长说明应 400，得到 %d", resp.StatusCode)
+	}
+	// 400 之后任务必须仍在 waiting_review：被拒的请求不该产生任何副作用
+	got, err := env.st.GetTask("task-done-big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != proto.TaskStateWaitingReview {
+		t.Fatalf("被拒的归档不该改状态，得到 %s", got.State)
+	}
+}
