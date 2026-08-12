@@ -21,7 +21,7 @@
   `bytes.Reader` 无导出字段，序列化成 `{}`，force 悄悄变 false，**CLI 的 `--force`
   永远不生效**（curl 直打 force=true 却有效，把缺陷锁定在客户端）。已改为传
   `map[string]bool{"force": force}`（与 Reply 一致），补回归用例
-  `TestReclaimForceCarriesIntoRequestBody`，提交 `c4ab8b6`。
+  `TestReclaimForceCarriesIntoRequestBody`，提交 `98e685d`。
 - 变异检验 6 条，其中**第 3 条预期 FAIL 未出现**（计划指定的
   `TestReclaimRefusesWhenRepoUnreachable` 删的是仓库、命中 `repoWorktrees` 失败路径，
   到不了 `WorktreeUnknown` 分支）——按 B72 变异 4 先例当场补用例
@@ -54,7 +54,7 @@ $ go test -race ./internal/agentd/ ./internal/client/ ./cmd/
 $ GOOS=windows go build ./...         # 无输出，退出 0
 ```
 
-修复 `c4ab8b6` 后六闸门**全量重跑一遍**（含 `-race` 三包与交叉编译），依旧全绿。
+修复 `98e685d` 后六闸门**全量重跑一遍**（含 `-race` 三包与交叉编译），依旧全绿。
 
 ## 3. 变异检验（Task 10 Step 2，六条）
 
@@ -68,7 +68,7 @@ $ GOOS=windows go build ./...         # 无输出，退出 0
 | 3 | `Reclaim` 的 `WorktreeUnknown` 分支改走 `already_absent` | `TestReclaimRefusesWhenRepoUnreachable` | **预期 FAIL 未出现（用例缺陷）**：该用例删的是仓库，在 `repoWorktrees` 就返回 `ErrReclaimRepoUnreachable`，到不了 Unknown 分支——这条变异原本没有用例盯着。当场补 `TestReclaimRefusesWhenWorktreeUnreadable`（把工作树 gitdir 里的 index 写坏 → git status 读不出 → Unknown），重跑变异 → FAIL ✓（`实得 <nil>`，即静默成功）。补丁提交 `eaaef38` |
 | 4 | `ReclaimList` 的 `entries == nil` 分支改 `continue` | `TestReclaimListDegradesPerRepo` | FAIL ✓（`不可达仓库的行必须标 unknown 而不是消失`） |
 | 5 | `canonPath` 删掉父目录退让段 | `TestCanonPathResolvesMissingLeafViaParent` | FAIL ✓（`实得 …/link/gone，期望 …/001/gone`） |
-| 6 | `client.Reclaim` 404 直接返回 `ErrReclaimUnsupported`（不补探测） | `TestReclaimUnknownTaskIsNotMistakenForUnsupported` | FAIL ✓（`列表可用时不得判成「不支持」`）；修复 `c4ab8b6` 后重验仍 FAIL ✓ |
+| 6 | `client.Reclaim` 404 直接返回 `ErrReclaimUnsupported`（不补探测） | `TestReclaimUnknownTaskIsNotMistakenForUnsupported` | FAIL ✓（`列表可用时不得判成「不支持」`）；修复 `98e685d` 后重验仍 FAIL ✓ |
 
 ## 4. 任务构造（隔离实例，6 个 managed worktree 任务）
 
@@ -138,7 +138,7 @@ WARN 回收被拒 task=… reason=dirty dirty=1
 处置     确认可丢弃后重跑：handoff reclaim 6e04109d --force
 $ echo $?   # 1；工作树目录仍存在 ✓
 
-$ handoff reclaim --force 6e04109d-…    # 修复 c4ab8b6 后
+$ handoff reclaim --force 6e04109d-…    # 修复 98e685d 后
 已回收   6e04109d 的 managed worktree
 工作树   …/worktrees/6e04109d（已删除）
 已丢弃   1 项未提交改动
@@ -187,7 +187,7 @@ $ git push …/handoff-b77-devbox --delete handoff/a3ea6e1d
   传给 `c.do`，而 `c.do` 会对传入的 body 再 `json.Marshal` 一次——`bytes.Reader` 没有
   导出字段，序列化结果是 `{}`，请求体里的 force 悄悄变 false。
 - 修复：与 `Reply` 等既有方法一致，直接传 `map[string]bool{"force": force}`
-  （commit `c4ab8b6`），注释写明「为什么传 map 而不传预编码字节」。回归用例
+  （commit `98e685d`），注释写明「为什么传 map 而不传预编码字节」。回归用例
   `TestReclaimForceCarriesIntoRequestBody` 断言请求体真实含 `"force":true`（修复前该用例
   FAIL——请求体是 `{}`）。变异 6 修复后重验仍被捕获。
 - 单元测试为何没拦住：既有 client 测试的 mock server 不检查请求体内容，只有真机
@@ -214,4 +214,4 @@ $ git push …/handoff-b77-devbox --delete handoff/a3ea6e1d
 - 相关提交（本分支）：`eaadebf` proto 契约 / `28d2c93` 解析原语 / `12414aa` 四态判定 /
   `4aa3a89` 单任务回收 / `0004186` 残留列表 / `926de27` HTTP 端点 / `f05b9c5` client 两方法 /
   `5c56a92` CLI 命令 / `264c218` 清理失败提示接线 / `eaaef38` 变异3补用例 /
-  `c4ab8b6` force 丢失修复 /（本文档与 backlog 回填）。
+  `98e685d` force 丢失修复 /（本文档与 backlog 回填）。
