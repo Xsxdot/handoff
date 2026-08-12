@@ -613,3 +613,93 @@ func TestDoneSendsNoteInBody(t *testing.T) {
 		t.Fatalf("note 没进请求体: %s", gotBody)
 	}
 }
+
+// 老 agentd：两个端点都 404 → 判定为不支持，调用方据此降级退 0。
+func TestReclaimOnOldAgentdReportsUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // 老 agentd：两条路由都不存在
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	if !errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("两端点皆 404 应判为不支持，实得 %v", err)
+	}
+}
+
+// 新 agentd + 不存在的任务：动作 404 但列表 200 → 任务是真不存在。
+// 这两条走同一个 HTTP 码，用例分不开就等于没修。
+func TestReclaimUnknownTaskIsNotMistakenForUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/reclaim" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"rows":[],"scanned":0}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"任务 abc 不存在"}`))
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	if err == nil {
+		t.Fatalf("应报错")
+	}
+	if errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("列表可用时不得判成「不支持」，实得 %v", err)
+	}
+	if !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("错误应透传服务端真因，实得 %v", err)
+	}
+}
+
+func TestReclaimDirtyRejectionCarriesStructuredList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"工作树有 2 项未提交改动或未跟踪文件",
+"reason":"dirty","dirty":[{"status":" M","path":"a.go"},{"status":"??","path":"b.log"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	var rej *client.ReclaimRejected
+	if !errors.As(err, &rej) {
+		t.Fatalf("409 应解成 ReclaimRejected，实得 %v", err)
+	}
+	if rej.Reason != proto.ReasonDirty || len(rej.Dirty) != 2 {
+		t.Fatalf("拒绝详情解析错：%+v", rej)
+	}
+}
+
+func TestReclaimListUnsupportedOn404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	if _, err := client.New(srv.URL, "tok").ReclaimList(context.Background()); !errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("列表 404 应判为不支持，实得 %v", err)
+	}
+}
+
+// 真机烟测照出的缺陷回归：Reclaim 的 force 必须真实进入请求体。修复前实现把
+// 预编码的 bytes.NewReader 传给 c.do，而 c.do 会对 body 再 json.Marshal 一次——
+// bytes.Reader 无导出字段，序列化成 {}，force 悄悄变 false，CLI 的 --force 永远被拒。
+func TestReclaimForceCarriesIntoRequestBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"removed":true,"action":"removed"}`))
+	}))
+	defer srv.Close()
+
+	if _, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", true); err != nil {
+		t.Fatalf("回收：%v", err)
+	}
+	if !strings.Contains(gotBody, `"force":true`) {
+		t.Fatalf("请求体必须带 force=true，实得：%s", gotBody)
+	}
+}
