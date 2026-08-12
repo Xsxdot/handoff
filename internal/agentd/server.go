@@ -308,6 +308,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // 不回答「该不该有人听」——那条判据在 status 侧（unattended）。
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
+	if r.URL.Query().Get("scope") == "all" && !isForwarded(r) {
+		// 跨机汇总信封（镜像快照，不现场扇出）；带转发头时降级为本机
+		writeJSON(w, http.StatusOK, s.tasksAll(r.Context()))
+		return
+	}
 	tasks, err := s.st.ListTasks()
 	if err != nil {
 		s.log.Error("查询任务列表失败", "cause", err)
@@ -334,7 +339,23 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, proto.TaskView{Task: t, Watchers: w})
 	}
-	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended, "owned", owned)
+	// ?project= 过滤：在盖注解之后、写响应之前做；过滤后可能为空，
+	// 空数组是正确答案，不是 404
+	pid := r.URL.Query().Get("project")
+	if pid != "" {
+		filtered := views[:0]
+		for _, v := range views {
+			if v.ProjectID == pid {
+				filtered = append(filtered, v)
+			}
+		}
+		views = filtered
+		if views == nil {
+			views = []proto.TaskView{}
+		}
+	}
+	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended,
+		"owned", owned, "project", pid, "filtered", len(views))
 	writeJSON(w, http.StatusOK, views)
 }
 
