@@ -169,7 +169,7 @@ terminal:
 }
 
 // TestLoadPhase2Defaults 验证二期各节缺省值：approver 默认关闭（Executor 空）、
-// timeout 默认 60s、executor 缺省 opencode、terminal.auto 默认 true。
+// timeout 默认 60s、executor 缺省 opencode、terminal.auto 默认 false（不弹）。
 func TestLoadPhase2Defaults(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	cfg, err := config.Load(p) // 首次运行生成默认配置
@@ -179,8 +179,8 @@ func TestLoadPhase2Defaults(t *testing.T) {
 	if cfg.Approver.Executor != "" || cfg.Approver.Timeout != 60*time.Second {
 		t.Fatalf("approver 默认值错误: %+v", cfg.Approver)
 	}
-	if cfg.Executor.Default != "opencode" || !cfg.Terminal.Auto {
-		t.Fatalf("executor/terminal 默认值错误")
+	if cfg.Executor.Default != "opencode" || cfg.Terminal.Auto {
+		t.Fatalf("executor/terminal 默认值错误（terminal.auto 默认应为 false）")
 	}
 }
 
