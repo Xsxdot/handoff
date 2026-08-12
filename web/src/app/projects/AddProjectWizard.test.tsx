@@ -197,7 +197,8 @@ describe('AddProjectWizard', () => {
     expect(retries[1]).toBeDisabled()
   })
 
-  it('本机失败但填了 gitUrl 时，远程可用表单 gitUrl 单独重试', async () => {
+  it('本机失败但填了 gitUrl 时，远程可用表单 gitUrl + name 单独重试', async () => {
+    // 本 task 里编排还只回一条本机结果，「未尝试」那行仍由组件现编（Task 5 才下沉）
     vi.mocked(register.registerFromForm).mockResolvedValue([
       { machine: '', ok: false, error: '路径不存在' },
     ])
@@ -205,6 +206,7 @@ describe('AddProjectWizard', () => {
       { machine: 'devbox', ok: true, error: '', result: localOk() },
     ])
     render(<AddProjectWizard open machines={[localMachine, devbox]} {...cb()} />)
+    fireEvent.change(screen.getByPlaceholderText(/可选.*仓库名/), { target: { value: 'demo' } })
     fillLocalPath('/nope')
     fireEvent.change(screen.getByPlaceholderText(/Git/), { target: { value: 'git@x:h.git' } })
     enableRemote('devbox')
@@ -214,7 +216,9 @@ describe('AddProjectWizard', () => {
     fireEvent.click(retries[1])
     await waitFor(() =>
       expect(register.registerAll).toHaveBeenCalledWith([
-        { machine: 'devbox', originUrl: 'git@x:h.git', path: '' },
+        // 表单里填了 name 就必须带上——否则远程会按 origin 末段自己派生一个，
+        // 与本机成功时用权威 name 的行为不一致
+        { machine: 'devbox', originUrl: 'git@x:h.git', name: 'demo', path: '' },
       ]),
     )
   })

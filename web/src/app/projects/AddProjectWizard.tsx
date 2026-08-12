@@ -111,7 +111,11 @@ export function AddProjectWizard({ open, machines, onClose, onDone }: AddProject
       if (local?.ok && local.result) {
         choice = { machine, originUrl: local.result.origin_url, name: local.result.name, path: remotePath }
       } else {
-        choice = { machine, originUrl: gitUrl, path: remotePath }
+        // 远程重试：优先本机成功结果里的权威 origin/name；本机也失败时退到表单
+        // gitUrl + name（调用方保证 canRetryRemote，即此时 gitUrl 非空）。
+        // name 必须一起退，否则远程会按 origin 末段自己派生一个，跟用户在表单里
+        // 填的名字对不上——两台机器上同一个项目叫两个名字是最难查的那类问题。
+        choice = { machine, originUrl: gitUrl, name, path: remotePath }
       }
     }
     const result = await registerAll([choice])
