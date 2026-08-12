@@ -17,7 +17,7 @@ const { useTaskSession } = await import('./useTaskSession')
 
 function detailOf(state: string): TaskDetail {
   return {
-    task: { id: 'T1', name: 'demo', state, branch: 'x', repo: '/r', executor: 'opencode' } as TaskDetail['task'],
+    task: { id: 'T1', name: 'demo', state, branch: 'x', repo: '/r', executor: 'opencode' },
     pending_tickets: [],
     recent_events: [{ seq: 7, task_id: 'T1', type: 'completed', ts: '2026-08-12T00:00:00Z', payload: {} }],
   } as unknown as TaskDetail
@@ -83,7 +83,7 @@ describe('useTaskSession', () => {
     vi.mocked(fetchTaskDetail).mockResolvedValue(detailOf('running'))
     const { result } = renderHook(() => useTaskSession('T1'))
     await waitFor(() => expect(connectEvents).toHaveBeenCalled())
-    act(() => vi.mocked(connectEvents).mock.calls[0][0].onTerminal?.())
+    act(() => vi.mocked(connectEvents).mock.calls[0][0].onTerminal?.({ message: '会话被吊销', closeCode: 1008 }))
     expect(result.current.sessionExpired).toBe(true)
   })
 
