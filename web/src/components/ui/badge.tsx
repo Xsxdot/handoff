@@ -15,6 +15,11 @@ const badgeVariants = cva(
         destructive:
           "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
         outline: "text-foreground",
+        // intervention（干预态）：等你答复 / 等待 Review。用实色胶囊而非
+        // destructive 的红——红色在这套界面里专属「失败」，把「等你处理」
+        // 也涂成红会让两种性质完全不同的事看起来一样急
+        intervention:
+          "border-transparent bg-state-intervention text-white shadow hover:bg-state-intervention/80",
       },
     },
     defaultVariants: {

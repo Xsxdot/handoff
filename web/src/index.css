@@ -45,6 +45,13 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* 状态色板：取自形态基准 prototypes/desktop-console/src/styles.css 的
+     --green / --amber / --red。intervention 单独给一个文字色，是因为
+     #e79b18 当 7px 圆点够醒目，当小字对白底只有约 2.4:1，读不清 */
+  --state-active: oklch(0.653 0.144 158.5);         /* ≈ #18a86b */
+  --state-intervention: oklch(0.735 0.153 68.5);    /* ≈ #e79b18 */
+  --state-intervention-text: oklch(0.565 0.117 65.8); /* ≈ #a66c09 */
+  --state-failed: oklch(0.638 0.163 24.8);          /* ≈ #df554f */
   --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei',
     sans-serif;
@@ -83,6 +90,12 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  /* 暗色档：同色相提亮。本轮不做主题切换（见文件顶部注释），但 shadcn 契约
+     要求 :root 与 .dark 成对，缺一档将来开主题切换时会静默塌成浅色值 */
+  --state-active: oklch(0.745 0.152 158.5);
+  --state-intervention: oklch(0.812 0.146 72.0);
+  --state-intervention-text: oklch(0.845 0.132 76.0);
+  --state-failed: oklch(0.715 0.165 22.0);
 }
 
 @theme inline {
@@ -118,6 +131,10 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-state-active: var(--state-active);
+  --color-state-intervention: var(--state-intervention);
+  --color-state-intervention-text: var(--state-intervention-text);
+  --color-state-failed: var(--state-failed);
   --font-sans: var(--font-sans);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
