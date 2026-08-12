@@ -349,6 +349,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
 
 **执行者进程的承载与回收**：每个任务由 agentd 经 `prochost.Start` 拉起一个极轻的 shim 进程（`handoff _shim`），shim 持有 `proc.lock`、承载真正执行者并负责收尸（补写退出哨兵）。agentd 重启/崩溃不影响执行者——恢复后凭 `proc.json` 探活重连。回收统一走 `handoff stop`（按进程组 Kill）或任务自然结束；人工兜底可 `kill -9 <shim pid>`（pid 见 `proc.json` 的 `handle.pid`）。
 
+**两段回收（B72）**：executor 经 Bash 工具拉起的子进程会 `setsid` 自成新会话与进程组（pgid 判据看不到它们），因此回收分两段——第一段按进程组收「shim + executor 本体」这一层；第二段按 shim 生前落盘的出生名册（`roster.json`，同目录）点名回收逃逸后代，判据是「pid 在进程表 **且** `started_at` 完全一致」，对不上即视为 pid 已易主、**绝不发信号**（宁漏勿错）。名册每 15s 采样一次，**采样间隔内出生并逃逸的进程可能漏记**（由进程围栏兜底，只吃预算不致命）；名册缺失/损坏自动降级为只做第一段，不阻断清扫。`handoff footprint` 报的进程数也是两段并集，与回收范围一致。
+
 claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程由各自 adapter 经 prochost 拉起，实况统一经 `handoff attach` 观看。诊断文件按 executor 对应：claude 是 `out.jsonl`（stdout 事件流）与 `claude.log`（stderr）与 `proc.json`（Handle / session_id / 已消费 offset）；grok 是 `serve.log` 与 `proc.json`（Handle / 端口 / session_id）；codex 是 `serve.log` 与 `proc.json`（Handle / 端口 / threadId）。
 
 > **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段，由 claude 自己读取，handoff 不复制这份配置（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
