@@ -109,13 +109,20 @@ export interface CreateProjectReq {
   path?: string
 }
 
-// CreateProjectResp 是 201 响应体。
+// CreateProjectResp 是登记成功的响应体：**200**（不是 201），体是完整的
+// ProjectLocation——B62 实现如此，fixture 见 testdata/ProjectLocation.json。
+// status 是 list 时现场探得的字段，登记响应里不带，故可选。
 export interface CreateProjectResp {
   project_id: string
   name: string
   path: string
+  origin_url: string
+  created_at: string
+  status?: string
 }
 ```
+
+已存在的 `ProjectLocation`（`web/src/api/types.ts`，即 `GET /api/projects` 的扁平列表元素）与它同形——**别再抄一遍**，`CreateProjectResp` 直接 `export type CreateProjectResp = ProjectLocation` 即可。
 
 **跨机路由**（W3a spec §5.1.1，写本计划时发现缺口后补入）：
 
