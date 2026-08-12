@@ -42,6 +42,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/rawtap"
 	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
@@ -449,6 +450,9 @@ func (r *runState) streamLoop(a *Adapter) {
 		a.log.Info("claude 事件流退出", "task", r.taskID)
 	}()
 	tl := newTailer(filepath.Join(r.taskDir, outFileName), r.startOffset, a.log)
+	// 原始字节旁路：随 tailer 构造开启（Run 退出时由 tailer.Close 收尾）。
+	// 缺省关闭时 Open 返回 nil，Write 为空操作
+	tl.rawTap = rawtap.Open("claudecode", r.taskID, a.log)
 	var lastPersist time.Time
 	err := tl.Run(r.runCtx, func(m streamMsg) {
 		// offset 持久化节流：高频文本增量下不每行都写盘
