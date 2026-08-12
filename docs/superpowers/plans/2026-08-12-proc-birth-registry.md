@@ -250,18 +250,17 @@ func TestDescendantsOfExcludesRoot(t *testing.T) {
 // 自环/互指不能让闭包死循环——真实进程表里 pid 1 的 ppid 就是 0 或 1，
 // 而被 reparent 的进程在快照的两条记录之间也可能出现看起来成环的形态。
 func TestDescendantsOfTerminatesOnCycle(t *testing.T) {
+	// 环必须**从 root 可达**，否则这条用例是空转的：自环的 root 会被建索引时的
+	// `p.PID == p.PPID` 跳过、children[root] 为空，删不删 visited 都立即返回
 	procs := []procEntry{
-		{PID: 100, PPID: 100, PGID: 100, StartedAt: 1000}, // 自环
-		{PID: 101, PPID: 102, PGID: 101, StartedAt: 1100}, // 与 102 互指
-		{PID: 102, PPID: 101, PGID: 102, StartedAt: 1200},
+		{PID: 100, PPID: 101, PGID: 100, StartedAt: 1000}, // root，与 101 互指
+		{PID: 101, PPID: 100, PGID: 101, StartedAt: 1100},
 	}
 	done := make(chan []rosterEntry, 1)
 	go func() { done <- descendantsOf(100, procs) }()
 	select {
 	case got := <-done:
-		if len(got) != 0 {
-			t.Fatalf("自环 root 不该有后代，得到 %+v", got)
-		}
+		assertRoster(t, got, []rosterEntry{{PID: 101, StartedAt: 1100}})
 	case <-time.After(2 * time.Second):
 		t.Fatal("descendantsOf 未终止，闭包缺少 visited 保护")
 	}
@@ -1390,7 +1389,9 @@ git commit -m "feat(prochost): Footprint 并入名册成员，报的数与杀的
 
 - [ ] **Step 1: 变异一——名册判据去掉出生时刻比对**
 
-`rosterKill` 里 `if started != e.StartedAt` 那段整体删除（只要 pid 在表里就杀）。
+把 `rosterKill` 里的出生时刻比对短路掉：`if started != e.StartedAt {` 改成 `if false && started != e.StartedAt {`（只要 pid 在表里就杀）。
+
+（别按「整段删除」做：`started` 会变成声明未使用，编译不过，那是编译错误不是变异。）
 
 Run: `go test -run TestSweepSkipsRosterMemberWithMismatchedBirth ./internal/prochost/ -v`
 Expected: **FAIL**（`出生时刻不符时绝不能发信号，实得 [501]`）
@@ -1418,6 +1419,8 @@ Expected: **FAIL**（`root 不得出现在名册里`）
 - [ ] **Step 4: 变异四——去掉闭包的 visited 保护**
 
 `descendantsOf` 里 `if visited[c.PID] { continue }` 与两处 `visited[...] = true` 全部删除。
+
+（初版这条变异抓不住，因为用例的环对 root 不可达；fixture 已按上面 Task 2 的版本更正，环从 root 可达时删掉 visited 会真死循环。）
 
 Run: `go test -run TestDescendantsOfTerminatesOnCycle -timeout 30s ./internal/prochost/ -v`
 Expected: **FAIL**（`descendantsOf 未终止，闭包缺少 visited 保护`，或整包 `-timeout` 触发 panic）
@@ -1477,10 +1480,12 @@ GOOS=windows go build ./...
 
 ```bash
 D=$(mktemp -d); go build -o "$D/handoff-b72" .
-# spec 指向一个会 setsid 逃逸的子进程：sh 起一个 setsid 的 sleep，自己立刻退出，
-# 于是 sleep 既不在 shim 的进程组里，也在 shim 死后成为孤儿——正是要回收的形态
+# spec 指向一个会 setsid 逃逸的子进程：sh 起一个新会话里的 sleep，自己活 30s，
+# 于是 sleep 既不在 shim 的进程组里，也在 shim 死后成为孤儿——正是要回收的形态。
+# **macOS 没有 setsid 可执行文件**（`command -v setsid` 与 /usr/bin/setsid 都不存在），
+# 用 python3 调 os.setsid() 再 execv 是等价手段：同样是新会话+新进程组+exec sleep
 cat > "$D/spec.json" <<EOF
-{"argv":["/bin/sh","-c","setsid /bin/sleep 300 & sleep 30"],"dir":"$D","env":[],
+{"argv":["/bin/sh","-c","python3 -c 'import os; os.setsid(); os.execv(\"/bin/sleep\", [\"/bin/sleep\",\"300\"])' & sleep 30"],"dir":"$D","env":[],
  "stdout":"$D/serve.log","stderr":"$D/serve.log","lock_path":"$D/proc.lock",
  "info_path":"$D/proc.json","sentinel":false}
 EOF
