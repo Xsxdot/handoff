@@ -1,13 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { Machine, MachinesResp } from '../../api/types'
-import { EMPTY_FILTER } from '../board/filter'
+import type { Machine, MachinesResp, ProjectTreeResp } from '../../api/types'
 import { useMachines } from '../data/useMachines'
-import { useShellContext } from '../shell/Shell'
 import { MachinesPage } from './MachinesPage'
 
 vi.mock('../data/useMachines', () => ({ useMachines: vi.fn() }))
-vi.mock('../shell/Shell', () => ({ useShellContext: vi.fn() }))
 
 const localMachine: Machine = {
   name: '', addr: '127.0.0.1:7777', reachable: true, version: 'v0.1.0',
@@ -31,20 +28,15 @@ function mockStream(machines: Machine[]) {
     errorText: '',
     refresh: vi.fn(),
   })
-  vi.mocked(useShellContext).mockReturnValue({
-    tasks: [],
-    tasksState: { data: [], disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn() },
-    tree: { projects: [], unowned: [] },
-    filter: EMPTY_FILTER,
-    setFilter: vi.fn(),
-    onOpenTask: vi.fn(),
-  })
 }
 
 function renderMachines(machines: Machine[]) {
   mockStream(machines)
-  return render(<MachinesPage />)
+  return render(<MachinesPage tree={tree} />)
 }
+
+// 最小合法树：MachinesPage 现在由 SettingsPage 传入 tree，这里用一个空树即可。
+const tree: ProjectTreeResp = { projects: [], unowned: [] }
 
 describe('MachinesPage', () => {
   it('顶部三个统计：台数 / 在线数 / 运行任务数', () => {
@@ -77,9 +69,9 @@ describe('MachinesPage', () => {
     expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
-  it('不渲染未实现功能：配对开发机 / 重启 agent / 打开终端 / Env 文件', () => {
+  it('不渲染未实现功能：配对开发机 / Env 文件（形态未定；重启/终端是 NOT_WIRED 按钮）', () => {
     renderMachines([localMachine, devbox])
-    for (const name of [/配对/, /重启/, /终端/, /Env/]) {
+    for (const name of [/配对/, /Env/]) {
       expect(screen.queryByRole('button', { name })).toBeNull()
     }
   })
@@ -87,6 +79,19 @@ describe('MachinesPage', () => {
   it('不渲染「操作系统」格（后端没有这个数据）', () => {
     renderMachines([devbox])
     expect(screen.queryByText(/操作系统/)).toBeNull()
+  })
+
+  it('三个未接线的操作可点，点了明说尚未实现（不置灰）', () => {
+    mockStream([localMachine])
+    render(<MachinesPage tree={tree} />)
+    // 卡片按钮与详情标题都含「本机」文案，点卡片按钮本身来选中本机。
+    fireEvent.click(screen.getByRole('button', { name: /本机/ }))
+    for (const label of ['可用执行者', '重启 agent', '打开终端']) {
+      const btn = screen.getByRole('button', { name: new RegExp(label) })
+      expect(btn).not.toBeDisabled()
+      fireEvent.click(btn)
+    }
+    expect(screen.getAllByText(/尚未实现/).length).toBeGreaterThan(0)
   })
 
   it('离开 /machines 后停止探活', () => {
