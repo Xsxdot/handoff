@@ -15,6 +15,21 @@
         "--strictPort"
       ],
       "port": 5173
+    },
+    {
+      "name": "prototype-desktop-console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/xushixin/workspace/handoff/.claude/worktrees/web-console/prototypes/desktop-console",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5280",
+        "--strictPort"
+      ],
+      "port": 5280
     }
   ]
 }
