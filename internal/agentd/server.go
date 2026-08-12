@@ -315,16 +315,22 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		tasks = []proto.Task{}
 	}
 	// 拼装 API 视图：附上「有几个人在听」这条只有 hub 知道的运行态
+	idx := s.projectIndex()
 	views := make([]proto.TaskView, 0, len(tasks))
 	unattended := 0
+	owned := 0
 	for _, t := range tasks {
+		t.ProjectID = idx.projectIDOf(t.RepoPath) // 读时 join，不落库
+		if t.ProjectID != "" {
+			owned++
+		}
 		w := s.hub.Watchers(t.ID)
 		if w == 0 && !isTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
 			unattended++
 		}
 		views = append(views, proto.TaskView{Task: t, Watchers: w})
 	}
-	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended)
+	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended, "owned", owned)
 	writeJSON(w, http.StatusOK, views)
 }
 
@@ -367,6 +373,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		events = []proto.Event{}
 	}
 	watchers := s.hub.Watchers(taskID)
+	task.ProjectID = s.projectIndex().projectIDOf(task.RepoPath) // 读时 join，不落库
 	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
 		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
