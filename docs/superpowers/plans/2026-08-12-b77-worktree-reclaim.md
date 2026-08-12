@@ -1592,11 +1592,11 @@ func (c *Client) ReclaimList(ctx context.Context) (*proto.ReclaimListResp, error
 // 的方向。因此收到 404 时补打一次 GET /api/reclaim：它也 404 才是老 agentd，
 // 它 200 说明任务是真不存在。只在错误路径上多一次往返，换一个不靠猜的结论
 func (c *Client) Reclaim(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error) {
-	body, err := json.Marshal(map[string]bool{"force": force})
-	if err != nil {
-		return nil, fmt.Errorf("编码回收请求: %w", err)
-	}
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reclaim", bytes.NewReader(body))
+	// c.do 自己会 json.Marshal(body)——这里必须传**值**，不能传 io.Reader。
+	// 传 bytes.NewReader 会被二次序列化成 {}（*bytes.Reader 没有导出字段），
+	// force 永远到不了服务端，而且两侧都不报错，只是 --force 静默失效
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reclaim",
+		map[string]bool{"force": force})
 	if err != nil {
 		return nil, fmt.Errorf("回收 worktree 请求: %w", err)
 	}
