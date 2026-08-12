@@ -11,6 +11,7 @@
 //
 // 为什么中央区在没有 tab 时也渲染它：中央区域一块死掉的空白会让人以为
 // 「这里还没做好」，而它其实是整个工作台的起点。
+import { useEffect, useRef } from 'react'
 import { FileText, Bot, TerminalSquare } from 'lucide-react'
 import type { BaseDir } from './useWorkbench'
 
@@ -53,6 +54,18 @@ export function BlankTab({ base, onPick, hint, onBack }: BlankTabProps) {
   // （spec §2.6 —— ~/.handoff/config.yaml 里存着 agentd 主令牌）
   const items = base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS
 
+  // 挂载即聚焦。**不能用 `autoFocus`**：React 只对表单元素实现它，写在普通 div 上
+  // 只会落成一个 `autofocus` 属性，而该属性对动态插入的非表单元素不生效——走查里
+  // 实测面板开出来后 activeElement 仍是 body，于是印在面板上的 ⌘T 按下去没反应。
+  // 键盘处理本身是对的（手动聚焦后 ⌘T 正常开终端），缺的只是这一次 focus()。
+  //
+  // 依赖 hint 而不是空数组：从「已选种类、正在等目标」按返回退回选择态时，
+  // 面板要重新拿回焦点，否则退回来之后快捷键又是死的。
+  const panelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!hint) panelRef.current?.focus()
+  }, [hint])
+
   // 快捷键接在**这个面板自己身上**（容器可聚焦 + 挂载自动聚焦），不是 window 级监听。
   // 理由：分屏时可能有两个空白面板同时在屏上，window 级监听会让一次 ⌘T 开出两个终端；
   // 而印在面板上的提示如果按了没反应，就是一句 UI 说了不算的话（与「不置灰」同源）。
@@ -75,10 +88,15 @@ export function BlankTab({ base, onPick, hint, onBack }: BlankTabProps) {
     )
   }
   return (
-    // tabIndex={-1} 让容器可被 autoFocus 聚焦但不在 Tab 序里：快捷键必须挂在
+    // tabIndex={-1} 让容器能被上面那次 focus() 聚焦但不进 Tab 序：快捷键必须挂在
     // 面板自己身上（见 onKeyDown 的说明），否则分屏时一次 ⌘T 会开出两个终端。
     // 项目未装 jsx-a11y，无对应 role 会触发此规则，故不需要 disable 注释。
-    <div tabIndex={-1} autoFocus onKeyDown={onKeyDown} className="flex h-full flex-col items-center justify-center gap-4 p-8 outline-none">
+    <div
+      ref={panelRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="flex h-full flex-col items-center justify-center gap-4 p-8 outline-none"
+    >
       <p className="text-xs text-muted-foreground">
         基准目录 <span className="font-mono text-foreground">{base.label}</span>
         {base.kind === 'home' && '（不挂在任何项目上）'}

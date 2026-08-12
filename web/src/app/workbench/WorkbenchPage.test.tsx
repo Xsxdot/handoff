@@ -74,6 +74,30 @@ describe('BlankTab', () => {
     expect(onPick.mock.calls.map((c) => c[0])).toEqual(['terminal', 'file', 'tui'])
   })
 
+  // 走查回归：上面那条用例把按键直接打在面板元素上，绕过了「面板有没有焦点」，
+  // 所以它一直是绿的，而真机上面板压根没拿到焦点（autoFocus 对普通 div 不生效），
+  // 印上去的 ⌘T 按下去没反应。这两条从 activeElement 出发，堵住这个缺口。
+  it('面板挂载即拿到焦点，否则印上去的快捷键是死的', () => {
+    const { container } = render(<BlankTab base={base} onPick={vi.fn()} />)
+    expect(document.activeElement).toBe(container.firstElementChild)
+  })
+
+  it('不预先聚焦、直接对着当前焦点按 ⌘T，也能开出终端', () => {
+    const onPick = vi.fn()
+    render(<BlankTab base={base} onPick={onPick} />)
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 't', metaKey: true })
+    expect(onPick).toHaveBeenCalledWith('terminal')
+  })
+
+  it('从「等目标」态点返回选择后，面板重新拿回焦点', () => {
+    const { container, rerender } = render(
+      <BlankTab base={base} onPick={vi.fn()} hint="在右侧文件树里点一个文件" onBack={vi.fn()} />,
+    )
+    expect(document.activeElement).not.toBe(container.firstElementChild)
+    rerender(<BlankTab base={base} onPick={vi.fn()} />)
+    expect(document.activeElement).toBe(container.firstElementChild)
+  })
+
   it('home 基准下 ⌘⇧O 不生效——隐藏项不能被快捷键绕过', () => {
     const home: BaseDir = { key: '~', kind: 'home', path: '~', label: 'home', projectName: '', machine: '' }
     const onPick = vi.fn()
@@ -158,6 +182,20 @@ describe('WorkbenchPage', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /新终端/ }))
     expect(openTerminal).toHaveBeenCalledWith(base, 0)
+  })
+
+  // 走查回归：空组面板与空白 tab 面板是三元的相邻分支，不给 key 时 React 原地复用，
+  // BlankTab 不重挂 → 不重新聚焦 → 点 + 之后印在面板上的 ⌘T 是死的。
+  it('从空组点 + 开出空白 tab 后，面板重新拿到焦点（快捷键才是活的）', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    const { container, rerender } = render(
+      <WorkbenchPage api={api()} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />,
+    )
+    const emptyPanel = document.activeElement
+    rerender(<WorkbenchPage api={api({ wb })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />)
+    expect(document.activeElement).not.toBe(emptyPanel)
+    expect(container.contains(document.activeElement)).toBe(true)
+    expect((document.activeElement as HTMLElement).textContent).toContain('新终端')
   })
 
   it('渲染 tab 条与激活 tab 的内容', () => {

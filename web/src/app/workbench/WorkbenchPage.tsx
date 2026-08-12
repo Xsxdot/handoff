@@ -94,11 +94,18 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
               onClose={api.close}
               onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
             />
+            {/*
+              两处 BlankTab 的 key 必须区分开。它们在三元的相邻分支上，同类型同位置，
+              React 默认会把「空组面板」原地复用成「空白 tab 面板」——DOM 节点不换，
+              于是面板的「挂载即聚焦」不会重跑，点了 + 之后焦点还留在 + 按钮上，
+              印在面板上的 ⌘T 按下去没反应（走查实测）。给出各自的身份，让它真的重挂。
+            */}
             <div className="min-h-0 flex-1 overflow-auto">
               {activeTab === null ? (
-                <BlankTab base={base} onPick={(k) => startFromEmpty(gi, k)} />
+                <BlankTab key={`empty-${gi}`} base={base} onPick={(k) => startFromEmpty(gi, k)} />
               ) : activeTab.content.kind === 'blank' ? (
                 <BlankTab
+                  key={activeTab.id}
                   base={base}
                   onPick={(k) => pick(gi, activeTab.id, k)}
                   hint={awaiting[activeTab.id] ? PICK_HINT[awaiting[activeTab.id]] : undefined}
