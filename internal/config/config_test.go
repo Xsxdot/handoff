@@ -430,6 +430,43 @@ func TestPathDirsRoundTripAndOmitEmpty(t *testing.T) {
 	}
 }
 
+// 缺省值：不禁用、保留比 0.1。这两个默认值是安全侧的——不写配置的用户
+// 也应该被围栏保护。
+func TestProcFenceDefaults(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n")
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.ProcFence.Disabled {
+		t.Fatalf("默认不应禁用围栏")
+	}
+	if cfg.ProcFence.ReserveRatio != 0.1 {
+		t.Fatalf("默认保留比应为 0.1，得到 %v", cfg.ProcFence.ReserveRatio)
+	}
+}
+
+// 显式配置生效。
+func TestProcFenceExplicit(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n"+
+		"proc_fence:\n  disabled: true\n  reserve_ratio: 0.25\n")
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if !cfg.ProcFence.Disabled || cfg.ProcFence.ReserveRatio != 0.25 {
+		t.Fatalf("显式配置未生效: %+v", cfg.ProcFence)
+	}
+}
+
+// loadFromString 把 yaml 字符串写进临时 config.yaml 再 Load。
+func loadFromString(t *testing.T, body string) (*config.Config, error) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("写配置: %v", err)
+	}
+	return config.Load(p)
+}
+
 // TestLoadFillsRepoRootDefault 验证 repo_root 未配置时补 <DataDir>/repos，
 // 且配置里写了的值不被覆盖。
 //

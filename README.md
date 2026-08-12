@@ -227,6 +227,9 @@ env:                          # agent 启动时注入的环境变量文件（放
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
 repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
 path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才加，不需要就别写这个键
+proc_fence:                   # executor 进程围栏（RLIMIT_NPROC），默认启用
+  disabled: false             # true=完全不装围栏；逃生开关，正常不该用
+  reserve_ratio: 0.1          # 保留给 agentd/sshd/登录 shell 的名额占系统上限的比例
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -253,6 +256,21 @@ PATH=${PATH}:/usr/local/go/bin
 
 这不是给 executor 传环境变量的地方：代理、私有 registry 那些走 `env` 段。
 
+`proc_fence` 是 executor 进程围栏：executor 全树继承 `RLIMIT_NPROC`，上限按系统
+进程配额（`kern.maxprocperuid`）贴天花板再砍掉 `reserve_ratio`（默认 **0.1**）——
+那 10% 是留给 agentd/sshd/登录 shell 的**救护车道**，保证最坏情况下这台机器至少
+还能被你连进去看、还能查日志。两个字段含义：
+
+- `disabled`（默认 `false`）：置 `true` 时完全不装围栏。它是**逃生开关**，正常不该
+  用——2026-08-12 的整机 fork 瘫痪正是发生在无围栏状态下。
+- `reserve_ratio`（默认 `0.1`）：保留比例，0 或越界（≥1）时取默认值。**保留额是
+  救护车道，不是节流旋钮**——调小它不增加安全性，只会让 executor 更早撞墙。
+
+若看到报错文案 `进程配额耗尽（当前 uid X/Y）`：这是 executor 撞上了围栏（Y=围栏
+上限），进程创建被拒绝。它**不是你的代码 bug**——按派发指令里预埋的资源纪律
+（见下节）收敛并行、报告审核者即可，不要重试、不要改代码。若没撞围栏也报
+`resource temporarily unavailable`，那更可能是整机配额耗尽，同样归因处理。
+
 `repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
 agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
 项目登记是「哪台执行机」的属性，放顶层的语义是「每台执行机自己决定项目放在哪」。自动登记在目标机上的
@@ -271,6 +289,17 @@ agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，
 > 代理、自定义 `base_url` 这类**额外**环境用的，不是鉴权的必要条件。env 文件里若设了 `HOME`
 > 或 `CLAUDE_CONFIG_DIR`，会连带改变 claude 读哪份用户配置（`--setting-sources user` 的落点）
 > 与凭据落盘位置——这是用户自己的显式配置，不拦，只是需要知道它会一并生效。
+
+### 派发指令里预埋一句资源纪律
+
+派发指令的模板里固定预埋一句（spec §3.3），审核者可直接复制：
+
+> 若见 `resource temporarily unavailable`：这是机器进程配额耗尽，不是你的代码
+> bug——立即停止并行操作、收敛后报告审核者，不要重试，不要改代码。
+
+它是本计划里唯一一条**约定而非机制**的防线：执行者可能没读、可能读了不照做，真正的
+纠偏靠审核者——他手里有 `resource_pressure` 事件和失败事件里的占用快照，两者都是
+机制。这一句只是让执行者有机会自己先反应过来，省一轮往返。**软约束，由 §3.2 兜底。**
 
 ## 分级审批链
 
