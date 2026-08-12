@@ -22,9 +22,12 @@ function base(over: Partial<FilterBarProps> = {}): FilterBarProps {
 }
 
 function renderBar(over: Partial<FilterBarProps> = {}) {
-  const props = base(over)
+  // onChange 用本地 mock 而不是 props 里的，保证返回类型是 Mock（能访问 .mock）；
+  // over 里若传了 onChange 会被覆盖。
+  const onChange = vi.fn()
+  const props: FilterBarProps = { ...base(), onChange, ...over }
   render(<FilterBar {...props} />)
-  return props
+  return { onChange }
 }
 
 describe('FilterBar', () => {
