@@ -960,6 +960,14 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
+	// 附加头（agentd→agentd 的防环标记）同样带进 WS 握手：
+	// streamOnce 不走 do，这里补一遍，让 MarkForwarded 的镜像连接从拨号起就带标记
+	for k, v := range c.extraHeaders {
+		if opts.HTTPHeader == nil {
+			opts.HTTPHeader = http.Header{}
+		}
+		opts.HTTPHeader.Set(k, v)
+	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
