@@ -31,6 +31,7 @@ func runInit(t *testing.T, cfgPath string, tty bool, answers string) (string, er
 // 其余用例一律走 runInit 的默认空 fake，保证不真装任何服务。
 func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fakeManager) (string, error) {
 	t.Helper()
+	resetFlags(t)
 	if f == nil {
 		f = &fakeManager{}
 	}
