@@ -546,8 +546,8 @@ func TestIdleClassifyFinish(t *testing.T) {
 }
 
 // TestIdleFallbackNoTrailer 验证无 trailer 时的 git 兜底分类：
-// 无新 commit → question（回合全文交审核者）；有新 commit → result OK
-// （branch/commit 取 git 实况，summary 取回合末文本）。
+// 无新 commit → question（回合全文交审核者）；有新 commit → result !OK
+// （B74：绝不替模型宣布完成，branch/commit 取 git 实况留结构化字段）。
 func TestIdleFallbackNoTrailer(t *testing.T) {
 	const assistantText = "我做了改动，但忘了按纪律输出协议 JSON"
 
@@ -580,8 +580,9 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 		fs.push(statusIdleEvent())
 
 		ev := waitEventType(t, ch, "result")
-		if ev.Result == nil || !ev.Result.OK {
-			t.Fatalf("期望兜底 result OK，实际 %+v", ev.Result)
+		// B74 翻转：有新提交 ≠ 干完了，绝不宣布完成
+		if ev.Result == nil || ev.Result.OK {
+			t.Fatalf("期望兜底 result !OK，实际 %+v", ev.Result)
 		}
 		if ev.Result.Branch != "main" {
 			t.Errorf("兜底 Branch=%q，期望 main（git 实况）", ev.Result.Branch)
@@ -589,8 +590,12 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 		if ev.Result.CommitHash != wantHead {
 			t.Errorf("兜底 Commit=%q，期望 git 实况 %q", ev.Result.CommitHash, wantHead)
 		}
-		if ev.Result.Summary != assistantText {
-			t.Errorf("兜底 Summary=%q，期望回合末全文 %q", ev.Result.Summary, assistantText)
+		// git 实况留在结构化字段，失败原因仍带回合尾部给人看
+		if !strings.Contains(ev.Result.FailReason, "未输出协议 trailer") {
+			t.Errorf("兜底 FailReason 缺判定依据: %q", ev.Result.FailReason)
+		}
+		if !strings.Contains(ev.Result.FailReason, assistantText) {
+			t.Errorf("兜底 FailReason 缺回合尾部: %q", ev.Result.FailReason)
 		}
 	})
 }
