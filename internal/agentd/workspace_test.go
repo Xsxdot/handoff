@@ -8,9 +8,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -888,5 +891,90 @@ func TestEnsureRepoUsableGitMissing(t *testing.T) {
 	err := EnsureRepoUsable(context.Background(), repo)
 	if !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("git 不在 PATH 时 err = %v, want ErrRepoUnusable", err)
+	}
+}
+
+// TestListDirBasic 覆盖列举的四条硬约束：只列一层、目录在前、字典序、rel 为空即根。
+func TestListDirBasic(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "internal", "agentd"))
+	mustMkdirAll(t, filepath.Join(repo, "cmd"))
+	mustWriteFile(t, filepath.Join(repo, "go.mod"), "module x\n")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hi")
+
+	entries, err := ListDir(repo, "")
+	if err != nil {
+		t.Fatalf("ListDir 根目录: %v", err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, fmt.Sprintf("%s/%v", e.Name, e.IsDir))
+	}
+	want := []string{"cmd/true", "internal/true", "README.md/false", "go.mod/false"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("根目录列举 = %v, want %v", got, want)
+	}
+
+	// 只列一层：internal 下只应有 agentd，不含 internal/agentd 的内容
+	sub, err := ListDir(repo, "internal")
+	if err != nil {
+		t.Fatalf("ListDir internal: %v", err)
+	}
+	if len(sub) != 1 || sub[0].Name != "agentd" || !sub[0].IsDir {
+		t.Errorf("internal 列举 = %+v, want 只有目录 agentd", sub)
+	}
+
+	// 普通文件带 size
+	root, err := ListDir(repo, ".")
+	if err != nil {
+		t.Fatalf("ListDir .: %v", err)
+	}
+	for _, e := range root {
+		if e.Name == "go.mod" && e.Size != int64(len("module x\n")) {
+			t.Errorf("go.mod size = %d, want %d", e.Size, len("module x\n"))
+		}
+	}
+}
+
+// TestListDirRejectsEscape 断言列举与 ReadFile 共用同一条逃逸红线。
+func TestListDirRejectsEscape(t *testing.T) {
+	repo := t.TempDir()
+	for _, rel := range []string{"..", "../etc", "/etc", filepath.Join("a", "..", "..")} {
+		if _, err := ListDir(repo, rel); !errors.Is(err, ErrPathEscape) {
+			t.Errorf("ListDir(%q) err = %v, want ErrPathEscape", rel, err)
+		}
+	}
+}
+
+// TestListDirOnFileIsNotDir 断言把文件当目录列举时给出可辨识的错误（映射 400）。
+func TestListDirOnFileIsNotDir(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "go.mod"), "module x\n")
+	if _, err := ListDir(repo, "go.mod"); !errors.Is(err, ErrPathNotDir) {
+		t.Errorf("ListDir(go.mod) err = %v, want ErrPathNotDir", err)
+	}
+}
+
+// TestListDirMissing 断言不存在的子目录返回 fs.ErrNotExist（映射 404）。
+func TestListDirMissing(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := ListDir(repo, "nope"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ListDir(nope) err = %v, want fs.ErrNotExist", err)
+	}
+}
+
+// mustMkdirAll 建目录，失败即 Fatal。
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("建目录 %s: %v", dir, err)
+	}
+}
+
+// mustWriteFile 写文件，失败即 Fatal。
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写文件 %s: %v", path, err)
 	}
 }

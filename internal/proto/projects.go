@@ -121,3 +121,21 @@ type TasksResp struct {
 	Machines []MachineStatus `json:"machines"`
 	Tasks    []TaskView      `json:"tasks"`
 }
+
+// DirEntry 是工作树目录列举里的一项（GET /api/workspaces/dir）。
+//
+// 只有三个字段是刻意的：文件浏览需要的是「这一层有什么、哪些能展开、多大」，
+// 而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按 mtime 猜改动，
+// 那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被 omitempty 省略。
+type DirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size,omitempty"`
+}
+
+// DirListResult 是 GET /api/workspaces/dir 的响应体。
+//
+// Entries 永不为 nil：空目录返回 []，前端 `.map` 不需要判空。
+type DirListResult struct {
+	Entries []DirEntry `json:"entries"`
+}

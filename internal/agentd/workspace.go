@@ -5,7 +5,8 @@
 //     工作区（脏工作区一律拒绝；new-worktree 免脏检查）——PrepareBranch 是其
 //     原地+自动分支的过渡薄包装
 //   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
-//     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
+//     ReadFile（读仓库内文件）、ListDir（列举工作树内一层目录）、
+//     RunCmd（远程跑测试/lint 等审阅命令）
 //   - 派发前的基线决议：ResolveBaseline 一次算出「校验结论 + 新分支起点 +
 //     任务仓库领先多少提交」，保证校验的东西和用的东西是同一个
 //
@@ -31,15 +32,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // 错误定义：
 //   - ErrDirtyWorktree：工作区有未提交/未跟踪的改动，拒绝派发
 //   - ErrPathEscape：请求的文件路径逃逸出任务仓库（含符号链接逃逸）
 //   - ErrPathIsDir：请求的文件路径指向目录（fetch 只服务普通文件）
+//   - ErrPathNotDir：请求列举的路径不是目录（ListDir 只服务目录）
 //   - ErrNotRegularFile：请求的文件路径指向管道/设备等特殊文件（不可读）
 //   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
 //     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
@@ -52,6 +57,7 @@ var (
 	ErrDirtyWorktree   = errors.New("工作区不干净（有未提交改动），拒绝派发")
 	ErrPathEscape      = errors.New("路径逃逸被拒绝")
 	ErrPathIsDir       = errors.New("路径是目录，不是文件")
+	ErrPathNotDir      = errors.New("路径不是目录")
 	ErrNotRegularFile  = errors.New("路径不是普通文件（管道/设备等特殊文件不可读）")
 	ErrRepoUnusable    = errors.New("任务仓库不可用（路径不存在或不是 git 仓库）")
 	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
@@ -854,6 +860,89 @@ func ReadFile(repo, rel string) (string, error) {
 		return string(b[:maxRunOutput]) + truncatedNotice(fi.Size()), nil
 	}
 	return string(b), nil
+}
+
+// ListDir 列举工作树内某个目录的**直接子项**，不递归。
+//
+// 与 ReadFile 共用同一套路径防护（安全红线，两道）：
+//  1. filepath.Clean 归一化后，绝对路径或残留 .. 前缀一律拒绝（ErrPathEscape）
+//  2. 实际打开经 os.OpenRoot（内核级 jail），符号链接逃逸由内核在单次系统调用
+//     内拒绝，不留 TOCTOU 窗口
+//
+// 为什么不递归：一次递归列举一个大仓库要遍历几十万个 inode，而前端一次只画
+// 一层。按需展开把成本摊到用户真正点开的那几层上。
+//
+// 排序：目录在前、各自按名称字典序。为什么由服务端排而不是前端排：前端会有
+// 搜索过滤与虚拟滚动，排序稳定性交给一处比在多处各排一次可靠。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 相对工作树根的目录路径；"" 与 "." 都表示根
+//
+// 返回：
+//   - 子项列表（**永不为 nil**）
+//   - err: 逃逸返回 ErrPathEscape；目标不是目录返回 ErrPathNotDir；
+//     目标不存在返回 *fs.PathError（含 %w 链，errors.Is(err, fs.ErrNotExist) 为真）
+func ListDir(repo, rel string) ([]proto.DirEntry, error) {
+	cleaned := filepath.Clean(rel)
+	if rel == "" {
+		cleaned = "."
+	}
+	if filepath.IsAbs(cleaned) || cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		log().Warn("目录列举路径逃逸被拒绝", "repo", repo, "path", rel)
+		return nil, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	// O_NONBLOCK 的理由与 ReadFile 相同：没有写端的 FIFO 会让 openat 永久挂住，
+	// 而「不是目录」的判定排在打开之后
+	f, err := root.OpenFile(cleaned, os.O_RDONLY|openNonBlock, 0)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("目录列举路径逃逸被拒绝", "repo", repo, "path", rel)
+			return nil, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		}
+		return nil, fmt.Errorf("列举目录 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("列举目录 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	if !fi.IsDir() {
+		log().Warn("目录列举目标不是目录", "repo", repo, "path", rel, "mode", fi.Mode().String())
+		return nil, fmt.Errorf("%w: %q", ErrPathNotDir, rel)
+	}
+	des, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("列举目录 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	entries := make([]proto.DirEntry, 0, len(des))
+	for _, de := range des {
+		e := proto.DirEntry{Name: de.Name(), IsDir: de.IsDir()}
+		if !de.IsDir() {
+			// Info 失败（列举与 stat 之间文件被删）不是整次列举的失败：
+			// 少一个 size 比整棵树列不出来强，如实按 0 记并 Debug
+			if info, err := de.Info(); err == nil {
+				e.Size = info.Size()
+			} else {
+				log().Debug("取子项大小失败，按 0 记", "repo", repo, "path", rel, "name", de.Name(), "cause", err)
+			}
+		}
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir // 目录在前
+		}
+		return entries[i].Name < entries[j].Name
+	})
+	log().Debug("目录列举完成", "repo", repo, "path", rel, "entries", len(entries))
+	return entries, nil
 }
 
 // truncatedNotice 生成附在截断内容末尾的醒目提示（含真实文件大小与上限）。

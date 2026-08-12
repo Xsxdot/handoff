@@ -76,6 +76,7 @@ func TestContractFixtures(t *testing.T) {
 		{"ActiveTask", activeTaskSample(taskID)},
 		{"StatusResp", statusSample(now, taskID)},
 		{"Frame", frameSample(now)},
+		{"DirListResult", dirListSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -353,5 +354,17 @@ func frameSample(now time.Time) Frame {
 		Output:    "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
 		Truncated: true,
 		Bytes:     193422,
+	}
+}
+
+// dirListSample 返回 DirListResult 的代表性样本。
+//
+// 一目录一文件覆盖 Size 的 omitempty 边界：目录不带 size 键，普通文件带。
+func dirListSample() DirListResult {
+	return DirListResult{
+		Entries: []DirEntry{
+			{Name: "internal", IsDir: true},
+			{Name: "go.mod", IsDir: false, Size: 1284},
+		},
 	}
 }
