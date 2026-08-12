@@ -77,6 +77,15 @@ const (
 	// **只入库不 Publish**，且在客户端不可交付（见 client.isDeliverable）：它与
 	// completed/failed 同时刻产生，可交付就会抢走一次性 wait 的收手权。
 	EventTypeTicketsVoided EventType = "tickets_voided"
+	// EventTypeArchived 是任务被 done 归档时追加的终态事件，payload 为 ArchivedPayload。
+	//
+	// 为什么归档需要一条自己的事件：在此之前 Done 只做状态迁移、不追加任何事件，
+	// 跟随中的 wait --follow 只能从「订阅被关掉了」间接推断任务结束。等待方要判断
+	// 「这个任务做完没有」时，事件流里根本没有可等的东西（B68）。
+	//
+	// 注意：本事件**唤醒 wait**（与 progress / approver_decision 那类只入库的事件不同）,
+	// README 与 handoff skill 的事件表必须同步列出它。
+	EventTypeArchived EventType = "archived"
 )
 
 // Task 表示一个 handoff 任务。
@@ -121,6 +130,26 @@ type Task struct {
 	// 「等 N 处」）；服务端截断后的展示用字段，与 PlanSummary 同形，不供程序消费
 	//（要精确条数请读 RepoDirtyCount）。
 	RepoDirtyFiles string `json:"repo_dirty_files"`
+	// DoneNote 是归档时审核者留下的完成说明（handoff done --note）；空串=未留说明
+	// 或该任务归档于本功能上线之前。它回答的是「这次到底做完了什么、为什么放行」——
+	// 归档之后除了一个 completed 状态位，此前没有任何地方记录这件事。
+	DoneNote string `json:"done_note"`
+}
+
+// MaxDoneNoteBytes 是归档说明的字节上限。
+//
+// 为什么超限要报错而不是截断：B6 的教训正是「静默截断让审核者盲信自己看到的是
+// 全文」。审核者写了 6KB 说明、系统悄悄存 4KB，比直接拒绝糟糕得多。
+// 取值 4096：比一句话说明宽出两个数量级，同时挡住「把整个 diff 粘进来」的误用。
+const MaxDoneNoteBytes = 4096
+
+// ArchivedPayload 是 EventTypeArchived 的事件负载。
+//
+// 为什么定义在 proto 而不是 agentd：CLI 侧（B67 与任何解析事件流的脚本）要读
+// Note，放在 agentd 包里会逼两边各写一份结构体，形态一漂就是解析不出来。
+// 这与只在 agentd 内部使用的 progressPayload 情况不同。
+type ArchivedPayload struct {
+	Note string `json:"note"`
 }
 
 // Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它
