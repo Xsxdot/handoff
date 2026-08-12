@@ -294,6 +294,34 @@ opencode 的回合终结与分类链路：
 | 8 | 探针 15 次派发全部有归档样本，S3 结论明确（复现 / 未复现） | 探针 plan 的产出物清单 |
 | 9 | 真机验收：codex 沙箱内 `handoff wait` 游标能推进，不再重复吐旧事件 | 审核者在 codex 沙箱里实跑，非执行者自述 |
 
+### 8.1 验收记录（2026-08-12）
+
+1–8 由 `go test ./... -count=1`（28 包全 ok，0 FAIL）+ 四处变异锚实跑覆盖；#8 的样本清单见
+`docs/superpowers/probes/2026-08-12-turn-end/README.md`，opencode 四份原始样本已入库
+`internal/executor/opencode/testdata/`。下面只记 #9 的真机现场。
+
+**沙箱怎么来的**：`codex sandbox` 在 0.144.1 上要求先配 `[permissions.<name>]` 档案，这一层与被测行为无关，
+故改用 macOS 自身的 seatbelt（codex workspace-write 底下用的同一套内核机制）复刻同一形态——
+`(allow default)` + `(deny file-write*)` + 只放开 cwd 的写权限，于是 **cwd 可写、`$HOME` 拒写、网络放行**。
+先单跑一条探针确认形态成立：cwd `touch` 成功，`$HOME/.handoff` 下 `touch` 被拒。
+
+**首跑**（`handoff wait <task> --no-sync --timeout 20s`，cwd = 沙箱目录）：
+
+- stderr：`WARN 游标目录不可写，已降级 原因="/Users/xushixin/.handoff 不可写: 试写: open …/.probe-3864575430: operation not permitted" 改用=<cwd>/.handoff/cursors`
+  —— 降级的两条信息（为什么、换去哪）都在，不是静默。
+- `from_seq=0` → 收到 `seq=28`，退出码 0。
+- 落盘：`<cwd>/.handoff/cursors/127.0.0.1_7777/<taskID>`，内容 `28` —— 分篓键是 agentd 地址，不是 `--target` 别名。
+
+**二跑**（同沙箱、同 cwd、`--timeout 8s`）：`from_seq=28`，**stdout 0 字节**，8s 后超时退出非 0。
+旧事件一条都没重吐 —— 这正是 #9 要的那半。
+
+**非沙箱回归**：同一二进制在正常环境下游标仍落 `~/.handoff/cursors`，且该目录下已自然分出
+`127.0.0.1_7777` 与 `100.73.238.21_7777` 两篓（本机 agentd 与 devbox），命名空间在真实使用里已经在生效。
+
+**一处如实记下的偏差**：本次沙箱由 seatbelt 直接构造，不是从 codex 进程里发起的。
+被测面是「`$HOME` 拒写 + cwd 可写」这一形态，与 codex workspace-write 一致；
+但 codex 自身若将来改变 cwd 的授权口径，本记录不自动跟随。
+
 ---
 
 ## 9. 风险与已知边界
