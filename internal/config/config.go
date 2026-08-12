@@ -51,7 +51,18 @@ type Config struct {
 	// 「每台执行机自己决定它的仓库放在哪」。
 	// yaml:"repo_root"：strict 解码器（KnownFields）按 tag 匹配键名，不加 tag 时
 	// yaml.v3 会把 RepoRoot 映射成 reporoot，与 README/设计文档里的 repo_root 不符。
-	RepoRoot     string `yaml:"repo_root"`
+	RepoRoot string `yaml:"repo_root"`
+	// PathDirs 是本机额外的可执行文件搜索目录：agentd 启动时按序追加到 PATH 末尾
+	// （见 internal/pathenv）。内置已知目录表没覆盖到的安装位置写在这里。
+	//
+	// 为什么放顶层而不是放进 Executor：它描述的是「**这台机器**上工具装在哪」，
+	// 不是执行者的属性——与 RepoRoot 同一个道理。
+	//
+	// omitempty 是硬要求，不是风格：配置以 KnownFields(true) 严格解析，未知键让
+	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 path_dirs: [] 写进
+	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
+	//（B59 spec D7 同款，方向相反）。
+	PathDirs     []string `yaml:"path_dirs,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -278,7 +289,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

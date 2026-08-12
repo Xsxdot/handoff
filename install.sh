@@ -95,6 +95,20 @@ sha256_of() {
   fi
 }
 
+# print_next_steps 打印装完之后该做什么。
+#
+# 独立成函数是为了能被 install_test.sh source 之后单独断言：提示文案是本脚本
+# 唯一直接影响用户下一步动作的产物，值得一条断言守着。
+#
+# 边界不变：本脚本仍然不写服务单元、不改 rc、不 sudo——托管由 handoff init
+# 追问、由 handoff service install 执行。
+print_next_steps() {
+  log ""
+  log "下一步   handoff init"
+  log "         执行机会探测 executor，并问你是否把 agentd 交给 launchd / systemd 托管。"
+  log "         没有托管的 agentd 在机器重启后不会自己回来。"
+}
+
 # main 是安装主流程。
 main() {
   command -v curl > /dev/null 2>&1 || die "需要 curl，请先安装"
@@ -156,6 +170,8 @@ main() {
       log "（本脚本不会去改你的配置文件）"
       ;;
   esac
+
+  print_next_steps
 }
 
 # 被 install_test.sh source 时只加载函数，不执行主流程
