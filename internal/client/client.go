@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -153,7 +154,8 @@ type AttachInfo struct {
 
 // Client 是 agentd 的 HTTP/WS 客户端，持有服务地址与 Bearer 令牌。
 //
-// 并发安全：字段构造后只读，可被多个 goroutine 同时使用。
+// 并发安全：baseURL/token/hc 与 WS 节奏字段构造后只读；游标根由
+// cursorRootOnce 保护，首次调用解析、后续读缓存，可被多个 goroutine 同时使用。
 type Client struct {
 	baseURL string
 	token   string
@@ -163,6 +165,11 @@ type Client struct {
 	wsInitialBackoff time.Duration
 	wsMaxBackoff     time.Duration
 	wsStableAfter    time.Duration
+	// 游标根解析结果的缓存（见 cursordir.go）。缓存错误与缓存成功同等重要：
+	// 不缓存错误的话，两处都不可写时每写一次游标都要重跑两次文件系统探测。
+	cursorRootOnce sync.Once
+	cursorRoot     string
+	cursorRootErr  error
 }
 
 // New 创建 agentd 客户端。
