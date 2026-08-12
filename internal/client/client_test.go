@@ -682,3 +682,24 @@ func TestReclaimListUnsupportedOn404(t *testing.T) {
 		t.Fatalf("列表 404 应判为不支持，实得 %v", err)
 	}
 }
+
+// 真机烟测照出的缺陷回归：Reclaim 的 force 必须真实进入请求体。修复前实现把
+// 预编码的 bytes.NewReader 传给 c.do，而 c.do 会对 body 再 json.Marshal 一次——
+// bytes.Reader 无导出字段，序列化成 {}，force 悄悄变 false，CLI 的 --force 永远被拒。
+func TestReclaimForceCarriesIntoRequestBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"removed":true,"action":"removed"}`))
+	}))
+	defer srv.Close()
+
+	if _, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", true); err != nil {
+		t.Fatalf("回收：%v", err)
+	}
+	if !strings.Contains(gotBody, `"force":true`) {
+		t.Fatalf("请求体必须带 force=true，实得：%s", gotBody)
+	}
+}

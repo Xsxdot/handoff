@@ -387,11 +387,12 @@ func (c *Client) ReclaimList(ctx context.Context) (*proto.ReclaimListResp, error
 // 的方向。因此收到 404 时补打一次 GET /api/reclaim：它也 404 才是老 agentd，
 // 它 200 说明任务是真不存在。只在错误路径上多一次往返，换一个不靠猜的结论
 func (c *Client) Reclaim(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error) {
-	body, err := json.Marshal(map[string]bool{"force": force})
-	if err != nil {
-		return nil, fmt.Errorf("编码回收请求: %w", err)
-	}
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reclaim", bytes.NewReader(body))
+	// 为什么传 map 而不是预编码的 bytes.NewReader：c.do 会对 body 再走一次
+	// json.Marshal——bytes.Reader 没有导出字段，会序列化成 {}，force 悄悄变 false。
+	// 真机烟测照出的缺陷：curl 直打 force=true 有效、CLI 的 --force 却永远被拒。
+	// 与 Reply 等既有方法保持一致，传可序列化的 map。
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reclaim",
+		map[string]bool{"force": force})
 	if err != nil {
 		return nil, fmt.Errorf("回收 worktree 请求: %w", err)
 	}
