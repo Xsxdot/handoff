@@ -14,6 +14,7 @@
 package buildinfo
 
 import (
+	"runtime"
 	"runtime/debug"
 
 	"github.com/xushixin/handoff/internal/proto"
@@ -45,13 +46,17 @@ var releaseVersion string
 //   - Revision 为空：不是 go build 产物（go run / 测试二进制），调用方应显示
 //     「版本未知」而不是空字符串
 func Read() (proto.BuildInfo, bool) {
+	// 平台是编译期确定的，与能否读到 debug.BuildInfo 无关——两条返回路径
+	// 都必须带上它，漏一条就会让「非 go build 产物」的 agentd 报空平台，
+	// 而空平台在远程升级里的语义是「对端过旧，拒绝」，等于一个填漏变成假拒绝
+	platform := runtime.GOOS + "/" + runtime.GOARCH
 	bi, ok := readBuildInfo()
 	if !ok {
 		// 即使读不到构建信息，注入的版本号仍然有效——它是编译期常量，
 		// 与 debug.ReadBuildInfo 能否读到无关
-		return proto.BuildInfo{Version: releaseVersion}, false
+		return proto.BuildInfo{Version: releaseVersion, Platform: platform}, false
 	}
-	out := proto.BuildInfo{Go: bi.GoVersion, Version: releaseVersion}
+	out := proto.BuildInfo{Go: bi.GoVersion, Version: releaseVersion, Platform: platform}
 	for _, s := range bi.Settings {
 		switch s.Key {
 		case "vcs.revision":

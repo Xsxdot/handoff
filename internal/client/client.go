@@ -101,10 +101,47 @@ func isPermanent(err error) bool {
 	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
 }
 
+// isDeliverable 判定一个事件类型是否该唤醒审核者。
+//
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled}。
+//
+// 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
+// approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
+// 没有症状。但 WS 重放读的是 store（EventsFromAsc），会把它们一并推来，于是
+// 「重连交付的东西比实时流更多」，多出来的全是审计噪音；审批链裁决越密，
+// 重连时的唤醒风暴越大。handoff skill 早已写明这三类不唤醒 wait，这里是让
+// 代码追上契约。
+//
+// 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
+func isDeliverable(t proto.EventType) bool {
+	switch t {
+	case proto.EventTypeProgress,
+		proto.EventTypeApproverDecision,
+		proto.EventTypeApproverDisabled:
+		return false
+	}
+	return true
+}
+
+// ErrIdleTimeout 表示 follow 期间空闲超过约定时长——期间**一帧都没收到**
+// （含被过滤掉的 progress）。
+//
+// 为什么它值得一个独立哨兵：它与「任务停滞」不是一回事。任务停滞由 agentd 的
+// 看门狗诊断并作为 stalled 事件送达（带 last_seq 与 idle 时长）；本错误只说明
+// 连接侧一片死寂，第一嫌疑是 agentd 失联而不是任务卡住。
+var ErrIdleTimeout = errors.New("空闲超时：期间未收到任何帧")
+
+// errStopStream 是 streamOnce 的内部哨兵：onFrame 返回它表示「本次连接的使命
+// 已完成」，按正常结束处理而非错误（一次性 wait 用它在首个可动作事件后收手）。
+var errStopStream = errors.New("stream stopped by callback")
+
+// errArchived 是内部哨兵：对端以 StatusNormalClosure 关闭，表示任务已归档。
+var errArchived = errors.New("任务已归档")
+
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
 type AttachInfo struct {
-	Task           proto.Task     `json:"task"`
+	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
 	RecentEvents   []proto.Event  `json:"recent_events"`
 }
@@ -254,7 +291,7 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 // 返回：
 //   - 任务列表；服务端保证空库时返回空切片而非 nil
 //   - 请求失败或响应非法时返回错误
-func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
+func (c *Client) ListTasks(ctx context.Context) ([]proto.TaskView, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/api/tasks", nil)
 	if err != nil {
 		return nil, fmt.Errorf("任务列表请求: %w", err)
@@ -263,7 +300,7 @@ func (c *Client) ListTasks(ctx context.Context) ([]proto.Task, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.httpError("任务列表", resp)
 	}
-	var tasks []proto.Task
+	var tasks []proto.TaskView
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
 		return nil, fmt.Errorf("解析任务列表响应: %w", err)
 	}
@@ -320,7 +357,10 @@ func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) err
 // Prompt 是直接指令（prompt-only 派发）；两者都传时 Prompt 作为附加指令拼接在
 // plan 之后。Branch/NewBranch、Worktree/NewWorktree 各自二选一，空=自动分支/原地。
 type DispatchOpts struct {
-	Repo        string
+	// ProjectID 是项目身份，由 CLI 从 cwd 的 origin 离线算出；与 ProjectName 二选一。
+	ProjectID string
+	// ProjectName 是 --project <名字> 的取值，仅在 cwd 不是目标项目时使用。
+	ProjectName string
 	PlanB64     string
 	PlanName    string
 	Target      string
@@ -336,9 +376,6 @@ type DispatchOpts struct {
 	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
-	// OriginURL 是审核者 cwd 仓库的 origin 地址，随请求上送；Repo 省略时 agentd
-	// 按它自动匹配本机登记（cwd 不是 git 仓库时为空）。
-	OriginURL string
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -350,11 +387,11 @@ type DispatchOpts struct {
 //   - 创建后的任务（state=running）；服务端启动 executor 失败时返回错误
 func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]any{
-		"repo": opts.Repo, "plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
+		"project_id": opts.ProjectID, "project_name": opts.ProjectName,
+		"plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
-		"origin_url": opts.OriginURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
@@ -370,70 +407,72 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	return &task, nil
 }
 
-// RepoAddOpts 是 RepoAdd 的参数。
+// ProjectAddOpts 是 ProjectAdd 的参数。
 //
-// 两种形态：Clone=false 时 Path 必填（登记执行机上已有的克隆）；
-// Clone=true 时 URL 必填（让 agentd 克隆一份），Path 为落点、可省。
-type RepoAddOpts struct {
-	Name  string
-	Path  string
-	URL   string
-	Clone bool
+// 两种形态由 Path 是否为空决定：
+//   - Path 非空：目标 agentd 所在机器上已经有一份代码，登记它（agentd 现读
+//     它的 origin 校验一致）
+//   - Path 为空：让 agentd 自己 clone 到 repo_root/<Name>
+type ProjectAddOpts struct {
+	OriginURL string
+	Name      string
+	Path      string
 }
 
-// RepoAdd 在目标 agentd 上登记一个仓库（必要时先克隆）。
+// ProjectAdd 在目标 agentd 上登记一个项目位置（必要时先克隆）。
 //
 // 注意：
 //   - 路径不是 git 仓库/没有 origin/克隆失败返回 400 错误（报文含 git 原文）
-//   - 名字或路径已被登记、克隆落点已存在返回 409 错误
-func (c *Client) RepoAdd(ctx context.Context, opts RepoAddOpts) (*proto.Repo, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/repos", map[string]any{
-		"name": opts.Name, "path": opts.Path, "url": opts.URL, "clone": opts.Clone,
+//   - 路径上是另一个项目返回 400 错误（报文同时给出两边的 origin）
+//   - 项目/名字/路径已被登记、克隆落点已存在返回 409 错误
+func (c *Client) ProjectAdd(ctx context.Context, opts ProjectAddOpts) (*proto.ProjectLocation, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
+		"origin_url": opts.OriginURL, "name": opts.Name, "path": opts.Path,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("repo add 请求: %w", err)
+		return nil, fmt.Errorf("project add 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("repo add", resp)
+		return nil, c.httpError("project add", resp)
 	}
-	var repo proto.Repo
-	if err := json.NewDecoder(resp.Body).Decode(&repo); err != nil {
-		return nil, fmt.Errorf("解析 repo add 响应: %w", err)
+	var loc proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&loc); err != nil {
+		return nil, fmt.Errorf("解析 project add 响应: %w", err)
 	}
-	return &repo, nil
+	return &loc, nil
 }
 
-// RepoList 列出目标 agentd 上的全部仓库登记（含实际状态）。
-func (c *Client) RepoList(ctx context.Context) ([]proto.Repo, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/api/repos", nil)
+// ProjectList 列出目标 agentd 上的全部项目位置（含实际状态）。
+func (c *Client) ProjectList(ctx context.Context) ([]proto.ProjectLocation, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects", nil)
 	if err != nil {
-		return nil, fmt.Errorf("repo list 请求: %w", err)
+		return nil, fmt.Errorf("project list 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("repo list", resp)
+		return nil, c.httpError("project list", resp)
 	}
-	var repos []proto.Repo
-	if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-		return nil, fmt.Errorf("解析 repo list 响应: %w", err)
+	var locs []proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&locs); err != nil {
+		return nil, fmt.Errorf("解析 project list 响应: %w", err)
 	}
-	return repos, nil
+	return locs, nil
 }
 
-// RepoRemove 注销一条仓库登记。
+// ProjectRemove 注销一条项目位置。
 //
 // 注意：
-//   - 只删登记，**不删磁盘上的仓库**
-//   - 登记不存在返回 404 错误；仓库仍被活跃任务占用返回 409 错误
-func (c *Client) RepoRemove(ctx context.Context, name string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/api/repos/"+name, nil)
+//   - 只删登记，**不删磁盘上的代码**
+//   - 登记不存在返回 404 错误；项目仓库仍被活跃任务占用返回 409 错误
+func (c *Client) ProjectRemove(ctx context.Context, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/projects/"+name, nil)
 	if err != nil {
-		return fmt.Errorf("repo remove 请求: %w", err)
+		return fmt.Errorf("project remove 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("repo remove", resp)
+		return c.httpError("project remove", resp)
 	}
 	return nil
 }
@@ -800,17 +839,24 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 	}
 }
 
-// waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
+// streamOnce 建立一次 WS 连接并把收到的每一帧交给 onFrame，直到 onFrame 收手或连接结束。
+//
+// 参数：
+//   - fromSeq: 断线续拉起点（服务端据此补发历史事件）
+//   - readDeadline: 每次 Read 前调用一次，返回本次读取的**绝对**截止时刻；
+//     返回零值表示不设。为什么是绝对时刻而不是时长：空闲要跨重连累计，
+//     每次连接都从头计时等于让一个反复断连的对端永远超不了时
+//   - onFrame: 每收到一帧调用一次（**含 progress**，过滤由调用方做）
 //
 // 返回：
-//   - 可动作事件；连接失败/断流时返回错误（由 WaitEvent 决定是否重连）
-//
-// 注意：
-//   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
-//   - 永久性失败以 permanentError 返回（握手 400/401/403），或原样透传对端的
-//     StatusPolicyViolation close（任务不存在）——两者均被 isPermanent 识别，不再重连
-func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
-	// http→ws / https→wss 的 scheme 换算；本项目只用 http，https 分支为完整性防御
+//   - nil: onFrame 返回 errStopStream
+//   - errArchived: 对端以 StatusNormalClosure 关闭（任务已归档）
+//   - ErrIdleTimeout: 读取超过 readDeadline 且外层 ctx 未取消
+//   - permanentError / 其他: 拨号或读取失败，由调用方决定是否重连
+func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
+	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
+	// 拨号段：与原 waitOnce 完全一致（scheme 换算、Bearer 头、dialTimeout、
+	// 永久状态码判定、连接建立/关闭日志），照搬不改
 	wsScheme := "ws"
 	if strings.HasPrefix(c.baseURL, "https://") {
 		wsScheme = "wss"
@@ -822,21 +868,17 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
-	// 拨号套独立超时：握手（含 TCP 连接）必须在 dialTimeout 内完成，否则按连接
-	// 失败交给外层退避重连——黑洞对端不再把每次重连拖到 ~2min 才失败
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
 	if err != nil {
 		if resp != nil && isPermanentStatus(resp.StatusCode) {
-			// 配置类错误（400/401/403）以永久失败返回，由 WaitEvent 立即上报，
-			// 不做退避——见 isPermanentStatus 的 why
-			return nil, &permanentError{op: "WS 拨号", code: resp.StatusCode, cause: err}
+			return &permanentError{op: "WS 拨号", code: resp.StatusCode, cause: err}
 		}
 		if resp != nil {
-			return nil, fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
+			return fmt.Errorf("WS 拨号失败 status=%d: %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("WS 拨号失败: %w", err)
+		return fmt.Errorf("WS 拨号失败: %w", err)
 	}
 	c.log().Info("WS 连接建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
 	defer func() {
@@ -845,20 +887,253 @@ func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all
 	}()
 
 	for {
-		_, b, err := conn.Read(ctx)
+		readCtx, cancelRead := ctx, context.CancelFunc(func() {})
+		if readDeadline != nil {
+			if dl := readDeadline(); !dl.IsZero() {
+				readCtx, cancelRead = context.WithDeadline(ctx, dl)
+			}
+		}
+		_, b, err := conn.Read(readCtx)
+		// 顺序要紧：先分辨「是我们自己设的空闲期限到了」（外层 ctx 仍活着），
+		// 再分辨归档，最后才当普通断线交给外层重连。
+		//
+		// 为什么必须在 cancelRead() 之前读取 readCtx.Err()：cancel 之后它的 Err()
+		// 恒为 context.Canceled。若先 cancel 再判，idle>0 下任何读错误（归档的
+		// StatusNormalClosure、普通断线、对端重启）都会被误判成 ErrIdleTimeout——
+		// errArchived 与重连分支永远到不了，124 会掩盖一切。判据必须收紧到
+		// DeadlineExceeded 本身，而不是「非 nil」。
+		idleExpired := ctx.Err() == nil && errors.Is(readCtx.Err(), context.DeadlineExceeded)
+		cancelRead()
 		if err != nil {
-			return nil, fmt.Errorf("WS 读取: %w", err)
+			if idleExpired {
+				return ErrIdleTimeout
+			}
+			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				return errArchived
+			}
+			return fmt.Errorf("WS 读取: %w", err)
 		}
 		var ev proto.Event
 		if err := json.Unmarshal(b, &ev); err != nil {
 			// 服务端推了非事件 JSON：按连接异常处理，交给外层重连（数据已由 store 兜底）
-			return nil, fmt.Errorf("WS 事件反序列化: %w", err)
+			return fmt.Errorf("WS 事件反序列化: %w", err)
 		}
-		if !all && ev.Type == proto.EventTypeProgress {
-			continue // progress 不唤醒（why 见 WaitEvent doc 注释）
+		if err := onFrame(ev); err != nil {
+			if errors.Is(err, errStopStream) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
+//
+// 返回：
+//   - 可动作事件；连接失败/断流时返回错误（由 WaitEvent 决定是否重连）
+//
+// 注意：
+//   - 返回错误时调用方凭 fromSeq 重连补拉，已消费的事件不会重复交付（见 WaitEvent doc）
+//   - 永久性失败以 permanentError 返回（握手 400/401/403），或原样透传对端的
+//     StatusPolicyViolation close（任务不存在）——两者均被 isPermanent 识别，不再重连
+//   - 本函数现在是 streamOnce 的薄封装，外部行为与重构前逐字节一致；
+//     正常关闭码在 streamOnce 里被识别为 errArchived，它不是永久失败，
+//     WaitEvent 仍按断线重连处理（ws_backoff_test 钉住了这条等价性）
+func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
+	var got *proto.Event
+	err := c.streamOnce(ctx, taskID, fromSeq, nil, func(ev proto.Event) error {
+		if !all && !isDeliverable(ev.Type) {
+			return nil // 审计类与 progress 不唤醒；口径与 FollowEvents 共用 isDeliverable，避免两处漂移
 		}
 		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
-		return &ev, nil
+		got = &ev
+		return errStopStream
+	})
+	if err != nil {
+		return nil, err
+	}
+	return got, nil
+}
+
+// reconcileBacklog 在建立 WS 连接前对账：拿一次权威快照，判断本机 cursor 之后
+// 是否积压了未读事件；有则吐一行摘要并把 cursor 直接推到当前水位。
+//
+// 参数：
+//   - taskID: 完整 UUID
+//   - fromSeq: 本机 cursor 当前停在哪
+//   - onBacklog: 摘要的消费者（cmd 层写 stdout）；返回非 nil 立即上抛
+//
+// 返回：
+//   - next: WS 应当使用的 from_seq——有积压时是当前水位，否则原样是 fromSeq
+//   - terminal: 快照显示任务已 failed，调用方应吐完摘要后正常收尾（返回 nil）
+//   - err: 仅当 onBacklog 报错；**网络/HTTP 失败一律不报错**（见下）
+//
+// 为什么积压事件不拉取而是直接跳过：摘要用的是权威快照，比逐条重放**信息更全**
+// ——重放里混着已被审批链答掉的历史工单（补 reply 会 404），而 PendingTickets
+// 只含真正还欠的，且每张带完整 Request 原文。
+//
+// 为什么 Attach 失败是降级而不是报错：摘要是优化不是正确性，对账失败就该退回
+// 改动前的逐条重放，绝不能因此中断 follow。永久性（401/404）也不在这里判——
+// Client.Attach 的错误是普通 fmt.Errorf 而非 permanentError，isPermanent 认不出
+// 它；紧随其后的 WS 握手会用既有的、已被测试覆盖的路径判出同一个结论。判定
+// 只留一处，不复制。
+func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq int64,
+	onBacklog func(*BacklogSummary) error) (int64, bool, error) {
+	c.log().Debug("follow 积压对账开始", "task", taskID, "from_seq", fromSeq)
+
+	snap, err := c.Attach(ctx, taskID)
+	if err != nil {
+		c.log().Warn("follow 积压对账失败，退回逐条重放", "task", taskID,
+			"from_seq", fromSeq, "cause", err)
+		return fromSeq, false, nil
+	}
+
+	sum := computeBacklog(taskID, fromSeq, snap)
+	if sum == nil {
+		c.log().Debug("follow 积压对账完成：无积压", "task", taskID, "from_seq", fromSeq)
+		return fromSeq, false, nil
+	}
+
+	// 有积压是「你离开期间发生了事」，是 Info 不是 Debug：它是排查「我错过了什么」
+	// 的唯一线索行，必须带齐全部计数
+	c.log().Info("follow 积压对账：有积压", "task", taskID,
+		"from_seq", sum.FromSeq, "to_seq", sum.ToSeq, "missed", sum.Missed,
+		"stale", sum.Stale, "actionable", len(sum.Actionable),
+		"truncated", sum.MissedTruncated, "state", string(sum.State))
+
+	if berr := onBacklog(sum); berr != nil {
+		return fromSeq, false, berr
+	}
+	if werr := c.writeCursor(taskID, sum.ToSeq); werr != nil {
+		// 不因写盘失败中止：下次对账会重新吐同一行摘要，重复一行无害；
+		// 吞掉才危险
+		c.log().Warn("对账后 cursor 写盘失败", "task", taskID, "seq", sum.ToSeq, "cause", werr)
+	}
+	return sum.ToSeq, sum.State == proto.TaskStateFailed, nil
+}
+
+// FollowEvents 持续订阅任务事件流，逐条交给 onEvent，直到任务终结或出错。
+//
+// 与 WaitEvent 的区别只有一条：不在首个事件后返回。这条区别是本设计的全部理由
+// ——一事件一退出意味着每两个事件之间必然有一段无人订阅的真空，而「回合结束后
+// 记得重挂」是需要每轮重做的人工动作，漏一次即永久断链。
+//
+// 参数：
+//   - all: false 时过滤 progress（与 WaitEvent 同义）
+//   - idle: 空闲上限，0 表示不设。**空闲以「收到任何帧」为准，包含被过滤掉的
+//     progress**——一个健康的长跑任务可以数小时只有 progress，用可交付事件计时
+//     会让它周期性无故超时。这个计时跨重连累计
+//   - onEvent: 每条**可交付**事件调用一次；返回非 nil 立即终止跟随并原样返回该错误
+//   - onBacklog: 每次建连前对账出的积压摘要的消费者。**传 nil 表示完全跳过对账**，
+//     行为与改动前逐字一致——不能只是丢弃摘要却照样跳过积压，那会让事件无声消失
+//
+// 返回：
+//   - nil: 任务终结（收到 failed 事件，或对端归档关闭连接）
+//   - ErrIdleTimeout: 空闲超过 idle
+//   - ctx.Err() / 永久失败（401、任务不存在）: 原样返回
+//
+// cursor 语义（与 WaitEvent 的差别，取舍已在 spec §2.4 记录并接受）：
+//   - cursor 仍只在**交付**事件时推进，但「交付」不再等价于「审核者看过了」
+//     ——事件可能在审核者正忙时流入。此刻会话若崩溃，该事件不会再重放
+//   - 接受这个回退的理由：事件流本就不是权威，工单在 agentd 侧持久，
+//     pending_tickets 才是权威清单。醒来先 show 这条纪律因此从建议变成必须
+//   - 断线续拉起点（fromSeq）则按**任何帧**推进：已经收到的帧没有再补发的必要，
+//     它与 cursor 的分叉是有意的，且分叉方向安全（cursor 永远更保守）
+func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
+	idle time.Duration, onEvent func(*proto.Event) error,
+	onBacklog func(*BacklogSummary) error) error {
+	fromSeq := c.readCursor(taskID)
+	lastFrame := time.Now()
+	// readDeadline 与 onFrame 都只在 streamOnce 的读循环里被同一个 goroutine 调用，
+	// lastFrame 无需加锁
+	readDeadline := func() time.Time {
+		if idle <= 0 {
+			return time.Time{}
+		}
+		return lastFrame.Add(idle)
+	}
+
+	c.log().Info("follow 开始", "addr", c.baseURL, "task", taskID,
+		"from_seq", fromSeq, "idle", idle.String(), "all", all)
+
+	backoff := c.wsInitialBackoff
+	for attempt := 1; ; attempt++ {
+		// 每次建连前对账——首连与重连同一条路径。断网重连与「忘挂后补挂」是
+		// 同一个问题的两种入口，不该有两套代码
+		if onBacklog != nil {
+			next, terminal, rerr := c.reconcileBacklog(ctx, taskID, fromSeq, onBacklog)
+			if rerr != nil {
+				return rerr
+			}
+			fromSeq = next
+			if terminal {
+				c.log().Info("follow 结束：对账时快照已是 failed", "task", taskID, "from_seq", fromSeq)
+				return nil
+			}
+		}
+		start := time.Now()
+		err := c.streamOnce(ctx, taskID, fromSeq, readDeadline, func(ev proto.Event) error {
+			lastFrame = time.Now()
+			fromSeq = ev.Seq
+			if !all && !isDeliverable(ev.Type) {
+				return nil // 审计类与 progress 不交付；口径与 waitOnce 共用 isDeliverable，避免两处漂移
+			}
+			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
+				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
+				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
+			}
+			c.log().Info("follow 事件交付", "task", taskID, "seq", ev.Seq, "type", ev.Type)
+			if err := onEvent(&ev); err != nil {
+				return err
+			}
+			if ev.Type == proto.EventTypeFailed {
+				// failed 是任务终态；completed 不是——那只是一轮结束，continue 之后还有事件
+				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
+				return errStopStream
+			}
+			return nil
+		})
+		lived := time.Since(start)
+
+		switch {
+		case err == nil:
+			return nil // onEvent 侧收手（failed）
+		case errors.Is(err, errArchived):
+			c.log().Info("follow 结束：任务已归档", "task", taskID)
+			return nil
+		case errors.Is(err, ErrIdleTimeout):
+			c.log().Error("follow 空闲超时", "addr", c.baseURL, "task", taskID,
+				"idle", idle.String(), "last_frame", lastFrame.Format(time.RFC3339))
+			return err
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case isPermanent(err):
+			c.log().Error("follow 永久失败，不再重试", "addr", c.baseURL, "task", taskID, "cause", err)
+			return err
+		}
+
+		// 断线：与 WaitEvent 同一套退避（复位判据是「连接活够 wsStableAfter」，why 见那里）
+		c.log().Info("follow 连接断开，等待后重连", "addr", c.baseURL, "task", taskID,
+			"attempt", attempt, "next_backoff_seconds", int(backoff.Seconds()), "cause", err)
+		if idle > 0 && time.Since(lastFrame) >= idle {
+			// 重连期间同样在空闲：不检查这里，一个反复拒连的对端会让 follow 永远超不了时
+			c.log().Error("follow 空闲超时（重连期间）", "task", taskID, "idle", idle.String())
+			return ErrIdleTimeout
+		}
+		if lived >= c.wsStableAfter {
+			backoff = c.wsInitialBackoff
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if lived < c.wsStableAfter {
+			backoff *= 2
+			if backoff > c.wsMaxBackoff {
+				backoff = c.wsMaxBackoff
+			}
+		}
 	}
 }
 

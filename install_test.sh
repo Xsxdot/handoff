@@ -74,6 +74,97 @@ check "sha256(abc)" \
   "$(sha256_of "$tmpf")"
 rm -f "$tmpf"
 
+# main 的完整成功路径：桩掉 curl 之后不需要真实 Release 也能跑通，因此这里能覆盖
+# 「装完之后」的两件事——退出码和清理。
+#
+# why（这条测试的由来）：修复前 tmp 是 main 的 local，而 EXIT trap 在 main 返回
+# 之后才展开它，set -u 当场判未绑定：安装明明成功，退出码却是 1，临时目录也永远
+# 留着。两个症状都在正常输出之后才出现，肉眼极易放过——必须由测试来盯。
+probe_dir="$(mktemp -d)"
+fixture="${probe_dir}/fixture"
+mkdir -p "$fixture"
+printf '#!/bin/sh\nexit 0\n' > "${fixture}/handoff"
+( cd "$fixture" && tar czf handoff_v0.1.0_darwin_arm64.tar.gz handoff &&
+  sha256_of handoff_v0.1.0_darwin_arm64.tar.gz | \
+    awk '{print $1 "  handoff_v0.1.0_darwin_arm64.tar.gz"}' > checksums.txt )
+
+# TMPDIR 指向一个空目录：main 里的 mktemp -d 会落在它下面，跑完数一下就知道清没清
+mkdir -p "${probe_dir}/tmp"
+(
+  export TMPDIR="${probe_dir}/tmp"
+  # 必须直接改 INSTALL_DIR，不能 export HANDOFF_INSTALL_DIR：INSTALL_DIR 在
+  # install.sh 被 source 的那一刻（本文件第 10 行）就已求值定死了，此处再设环境
+  # 变量完全不起作用——main 会把桩二进制装进真实的 ~/.local/bin，覆盖用户在用的
+  # handoff。这不是假设：本条测试第一版就是这么写的，当场把本机 CLI 写坏了
+  INSTALL_DIR="${probe_dir}/bin"
+  # 上面那条一旦被后人改回去，这里当场拦下，绝不让测试碰 probe_dir 以外的任何路径
+  case "$INSTALL_DIR" in
+    "${probe_dir}"/*) ;;
+    *) printf '安装目录未被隔离到探针目录（实得 %s），拒绝执行 main\n' "$INSTALL_DIR" >&2
+       exit 99 ;;
+  esac
+  latest_tag() { printf 'v0.1.0'; }
+  # 替身 curl：忽略地址，按 -o 的目标文件名从 fixture 取件
+  curl() {
+    local dst=""
+    while [ $# -gt 0 ]; do
+      [ "$1" = "-o" ] && { dst="$2"; shift; }
+      shift
+    done
+    [ -n "$dst" ] && cp "${fixture}/$(basename "$dst")" "$dst"
+  }
+  with_uname Darwin arm64 main
+) > /dev/null 2>&1 && rc=0 || rc=$?
+check "成功路径退出码" "0" "$rc"
+check "装出的二进制存在" "yes" "$([ -x "${probe_dir}/bin/handoff" ] && echo yes || echo no)"
+check "临时目录已清理" "0" "$(find "${probe_dir}/tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+rm -rf "$probe_dir"
+
+# 桩二进制 exit 3（skill install 失败）：安装主流程**仍必须退 0**，且 stderr
+# 要明说「skill 没装上、之后可手动补」。二进制已经装好了，skill 是附属动作，
+# 让一个附属动作把整条安装拖成失败，用户会以为 handoff 没装上；静默失败则会让
+# 用户拿到一份旧 skill 而毫不知情——两个症状都不许出现。
+probe_dir="$(mktemp -d)"
+fixture="${probe_dir}/fixture"
+mkdir -p "$fixture"
+printf '#!/bin/sh\nexit 3\n' > "${fixture}/handoff"
+( cd "$fixture" && tar czf handoff_v0.1.0_darwin_arm64.tar.gz handoff &&
+  sha256_of handoff_v0.1.0_darwin_arm64.tar.gz | \
+    awk '{print $1 "  handoff_v0.1.0_darwin_arm64.tar.gz"}' > checksums.txt )
+
+mkdir -p "${probe_dir}/tmp"
+stderr_log="${probe_dir}/stderr.log"
+(
+  export TMPDIR="${probe_dir}/tmp"
+  # 与上一块同样的隔离纪律：INSTALL_DIR 必须落在探针目录内，绝不允许碰真实
+  # ~/.local/bin——否则测试会当场把用户在用的 handoff 二进制写坏
+  INSTALL_DIR="${probe_dir}/bin"
+  case "$INSTALL_DIR" in
+    "${probe_dir}"/*) ;;
+    *) printf '安装目录未被隔离到探针目录（实得 %s），拒绝执行 main\n' "$INSTALL_DIR" >&2
+       exit 99 ;;
+  esac
+  latest_tag() { printf 'v0.1.0'; }
+  # 替身 curl：忽略地址，按 -o 的目标文件名从 fixture 取件
+  curl() {
+    local dst=""
+    while [ $# -gt 0 ]; do
+      [ "$1" = "-o" ] && { dst="$2"; shift; }
+      shift
+    done
+    [ -n "$dst" ] && cp "${fixture}/$(basename "$dst")" "$dst"
+  }
+  with_uname Darwin arm64 main
+) > /dev/null 2> "$stderr_log" && rc=0 || rc=$?
+check "skill 安装失败时安装仍退 0" "0" "$rc"
+err="$(cat "$stderr_log")"
+case "$err" in
+  *"skill 安装失败"*) ;;
+  *) printf 'FAIL  stderr 应提示 skill 安装失败\n      实得 %s\n' "$err" >&2
+     fails=$((fails + 1)) ;;
+esac
+rm -rf "$probe_dir"
+
 if [ "$fails" -ne 0 ]; then
   printf '\n%d 项失败\n' "$fails" >&2
   exit 1

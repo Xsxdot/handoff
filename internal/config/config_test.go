@@ -2,6 +2,8 @@
 package config_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,5 +274,182 @@ func TestLoadParsesWebAllowedHosts(t *testing.T) {
 	}
 	if len(cfg.Web.AllowedHosts) != 1 || cfg.Web.AllowedHosts[0] != "foo.example.com" {
 		t.Fatalf("web.allowed_hosts 解析错误: %#v", cfg.Web.AllowedHosts)
+	}
+}
+
+// 没写 update 段时必须落在出厂默认上。
+//
+// why 单独钉一例：Load 用的是「字面量预置默认 + yaml 覆盖式解码」，
+// 新加的段一旦忘了写进那个字面量，表现就是 Auto=false、Interval=0——
+// 自动更新静默不工作，且没有任何报错。
+func TestUpdateDefaults(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Update.Auto {
+		t.Error("update.auto 默认应为 true")
+	}
+	if cfg.Update.Interval != 6*time.Hour {
+		t.Errorf("update.interval 默认应为 6h，得到 %s", cfg.Update.Interval)
+	}
+}
+
+// 显式写了就以写的为准。
+func TestUpdateExplicit(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 30m\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Update.Auto {
+		t.Error("显式 auto: false 未生效")
+	}
+	if cfg.Update.Interval != 30*time.Minute {
+		t.Errorf("interval=%s，期望 30m", cfg.Update.Interval)
+	}
+}
+
+// 启用自动更新却给了非正 interval：必须在启动期拦下。
+//
+// why：0 会让更新循环退化成忙轮询，每个 tick 都立刻到期，把 GitHub API
+// 的匿名限流（60 次/小时）几秒钟打满，然后所有版本检查一起失败。
+// 这和 stalltimeout 必须为正是同一类问题，处置也保持一致：显式写错才拦，
+// 省略该键走默认值是正常用法。
+func TestUpdateIntervalMustBePositiveWhenAuto(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: true\n  interval: 0s\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("interval=0 且 auto=true 时应报错")
+	} else if !strings.Contains(err.Error(), "update.interval") {
+		t.Fatalf("报错应点名 update.interval，得到: %v", err)
+	}
+}
+
+// 关掉自动更新时不校验 interval——没启用的东西写错不该拦启动。
+func TestUpdateIntervalNotCheckedWhenAutoOff(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 0s\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("auto=false 时不应校验 interval，却报错: %v", err)
+	}
+}
+
+// 未知字段的报错必须把 update 列进已知键清单。
+//
+// why：那条消息是用户唯一能看到的「支持哪些键」的清单。漏了 update，
+// 用户配了正确的键、看到「不支持」的报错，会去删掉本来对的配置。
+func TestUnknownFieldMessageListsUpdate(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("nonsense_key: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应报错")
+	}
+	if !strings.Contains(err.Error(), "update{auto,interval}") {
+		t.Fatalf("已知键清单里缺 update{auto,interval}: %v", err)
+	}
+}
+
+// TestLoadAcceptsDeprecatedUpdateKeys 是这次删除里唯一不能出错的一条。
+//
+// why：配置是 KnownFields(true) 严格解析的——未知键让 agentd **启动失败**。
+// v0.1.0 首次运行会把 update.auto / update.interval 写进 config.yaml，
+// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来，正是这个设计要
+// 消灭的那类失配的最狠形态。
+func TestLoadAcceptsDeprecatedUpdateKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(p, []byte("token: tk\nupdate:\n  auto: false\n  interval: 12h\n"), 0o600)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("含 update 键的旧配置必须能正常加载: %v", err)
+	}
+	if cfg.Update.Auto {
+		t.Fatal("字段值仍应被解出来（只是不再有效果）")
+	}
+}
+
+// TestWarnDeprecatedFiresOnNonDefault：取值非默认时必须 Warn。
+// 用户把 auto 设成 false 是有意图的，悄悄让它失效等于骗人。
+func TestWarnDeprecatedFiresOnNonDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	(&config.Config{Update: config.UpdateConfig{Auto: false, Interval: 6 * time.Hour}}).WarnDeprecated(log)
+	if !strings.Contains(buf.String(), "update.auto") {
+		t.Fatalf("非默认值必须 Warn:\n%s", buf.String())
+	}
+}
+
+// TestWarnDeprecatedSilentOnDefault：默认值不打——绝大多数机器都是默认值，
+// 每次启动打一条无从处置的 Warn，只会让人学会忽略日志。
+func TestWarnDeprecatedSilentOnDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	(&config.Config{Update: config.UpdateConfig{Auto: true, Interval: 6 * time.Hour}}).WarnDeprecated(log)
+	if buf.Len() != 0 {
+		t.Fatalf("默认值不该打 Warn:\n%s", buf.String())
+	}
+}
+
+// TestLoadFillsRepoRootDefault 验证 repo_root 未配置时补 <DataDir>/repos，
+// 且配置里写了的值不被覆盖。
+//
+// 为什么必须有默认值：自动登记（B62 §6）把 clone 变成首次派发的主路径，
+// repo_root 为空时 agentd 直接拒绝 clone，全新开发机上第一次派发必然失败。
+func TestLoadFillsRepoRootDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// 首次运行：文件不存在，生成默认配置并写盘。
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(cfg.DataDir, "repos")
+	if cfg.RepoRoot != want {
+		t.Fatalf("RepoRoot = %q, want %q", cfg.RepoRoot, want)
+	}
+	// 默认值必须**落盘**，让人看得见，而不是藏在使用点。
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读回配置: %v", err)
+	}
+	if !strings.Contains(string(b), "repo_root:") {
+		t.Fatalf("默认 repo_root 应随首次写盘落到 config.yaml，实际内容:\n%s", b)
+	}
+
+	// 显式配置不被覆盖。
+	explicit := filepath.Join(dir, "explicit.yaml")
+	if err := os.WriteFile(explicit,
+		[]byte("token: abc\nrepo_root: /srv/code\n"), 0o600); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	cfg2, err := config.Load(explicit)
+	if err != nil {
+		t.Fatalf("Load(explicit): %v", err)
+	}
+	if cfg2.RepoRoot != "/srv/code" {
+		t.Fatalf("显式 repo_root 被覆盖了: %q", cfg2.RepoRoot)
 	}
 }

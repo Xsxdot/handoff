@@ -554,7 +554,7 @@ func TestDispatchErrorBodyNotTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, err := client.New(srv.URL, "tok").Dispatch(context.Background(), client.DispatchOpts{
-		Repo: "/repo", PlanB64: "eGluZw==", PlanName: "plan.md",
+		ProjectID: "deadbeefdeadbeef", PlanB64: "eGluZw==", PlanName: "plan.md",
 	})
 	if err == nil {
 		t.Fatal("409 必须返回错误")

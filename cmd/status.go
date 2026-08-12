@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/client"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/skill"
 )
 
 // statusJSONOut 对应 --json。
@@ -100,6 +102,21 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	fmt.Fprintf(w, "本地     %s\n", compareBuild(cli, st.Version))
 	fmt.Fprintf(w, "数据     %s   已运行 %s\n", st.DataDir, humanUptime(st.StartedAt))
 	fmt.Fprintf(w, "执行者   %s\n", strings.Join(markDefault(st.Executors, st.DefaultExecutor), "  "))
+	if u := st.Update; u != nil && !u.Managed {
+		// 非托管的后果要在这里说清楚：handoff upgrade 会硬拒绝这台机器，
+		// 而且 --force 也不越过。不说，用户只会看到一条没头没脑的拒绝
+		fmt.Fprintf(w, "更新     agentd 非托管启动，换版会被拒绝（--force 也不越过）\n")
+		fmt.Fprintf(w, "         处置 在该机器上 handoff service install\n")
+	}
+	// 只在**本机**查 skill：skill 服务于审核者，审核者在本机；对着远端
+	// agentd 报本机的 skill 状态会让人以为那台机器上装了什么
+	if targetName == "" && skillContent != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			if sites, _ := skill.Status(skillContent, home); !skill.InSync(sites) {
+				fmt.Fprintf(w, "skill    有落点与当前二进制不一致，handoff skill install 重新同步\n")
+			}
+		}
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "任务     %s\n", renderCounts(st.TaskCounts))
 	if len(st.Active) == 0 {
@@ -107,8 +124,14 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	}
 	fmt.Fprintln(w, "活跃")
 	for _, a := range st.Active {
-		fmt.Fprintf(w, "  %s  %s  %s  %s  %s\n",
+		line := fmt.Sprintf("  %s  %s  %s  %s  %s",
 			short8(a.ID), a.Name, a.State, a.Executor, liveText(a))
+		if unattended(a) {
+			// 追加而不是替换：executor 活着但没人听，与 executor 死了是两个独立结论，
+			// 昨晚的现场正是「存活 + 无人值守」这一格
+			line += "  ⚠ 无人值守"
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 
@@ -242,6 +265,31 @@ func liveText(a proto.ActiveTask) string {
 		return fmt.Sprintf("executor 已不在（%s）", a.Note)
 	default:
 		return fmt.Sprintf("存活性未知（%s）", a.Note)
+	}
+}
+
+// unattended 判断一个活跃任务是否处于「该有人听却没人听」的异常状态。
+//
+// 参数：
+//   - a: status 响应里的一个活跃任务
+//
+// 返回：
+//   - true 仅当：对端给出了 watchers（非 nil）、其值为 0、且状态属于
+//     pending / running / waiting_answer 三者之一
+//
+// 为什么判据写死而不做成配置：这三个状态里事件随时会来，没人听等于事件掉地上；
+// 而 waiting_review 是在等审核者裁决，挂几天都正常，本就不需要有人盯着。把它
+// 也算进来，这条标记会天天亮，一周之内就没人再看它了——误报是诊断标记最贵的
+// 失败模式。终态同理。
+func unattended(a proto.ActiveTask) bool {
+	if a.Watchers == nil || *a.Watchers > 0 {
+		return false
+	}
+	switch proto.TaskState(a.State) {
+	case proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateWaitingAnswer:
+		return true
+	default:
+		return false
 	}
 }
 

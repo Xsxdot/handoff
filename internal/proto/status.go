@@ -32,6 +32,15 @@ type BuildInfo struct {
 	Time     string `json:"time"`
 	Modified bool   `json:"modified"`
 	Go       string `json:"go"`
+
+	// Platform 是构建目标平台，形如 "linux/amd64"，在 buildinfo.Read() 里用
+	// runtime.GOOS + "/" + runtime.GOARCH 现算填入（CLI 与 agentd 同一条路径，
+	// 不会出现只有一端填的情况）。
+	//
+	// **空串表示对端没给这个字段**（老 agentd）。此时远程升级必须明确拒绝而不是
+	// 猜一个默认值——猜错就是给一台 linux 机器推一个 darwin 二进制，自检会拦下，
+	// 但那是白跑一次 15MB 上传换来的一条晦涩错误。
+	Platform string `json:"platform,omitempty"`
 }
 
 // ActiveTask.Live 的三个取值。
@@ -57,6 +66,26 @@ type ActiveTask struct {
 	RepoPath string `json:"repo_path"`
 	Live     string `json:"live"` // LiveAlive / LiveDead / LiveUnknown
 	Note     string `json:"note"` // 判死或判不出的一句话理由；alive 时为空
+
+	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	//
+	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd），与「确实是 0」
+	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
+	// 是同一条纪律：一条会说谎的诊断命令比没有更糟，因为你会信它。
+	Watchers *int `json:"watchers,omitempty"`
+}
+
+// UpdateStatus 是这台 agentd 与「换版」有关的状态。
+//
+// 字段说明：
+//   - Managed: 当前 agentd 进程是不是被进程管理器（systemd / launchd）拉起的。
+//     **false 时换版被硬拒绝**——换完 exit(0) 之后没人拉起，这台机器上就此
+//     没有 agentd 在跑，且没有任何信号告诉任何人。`--force` 也不越过这一条
+//
+// 为什么没有「待命版本」了：B59 取消了「下载完等空闲窗口再换」的自主决策，
+// 换版由操作者一条命令触发并当场完成，中间不存在待命态（见 B59 spec D1）。
+type UpdateStatus struct {
+	Managed bool `json:"managed"`
 }
 
 // StatusResp 是 GET /api/status 的响应。
@@ -72,4 +101,16 @@ type StatusResp struct {
 	DefaultExecutor string         `json:"default_executor"`
 	TaskCounts      map[string]int `json:"task_counts"`
 	Active          []ActiveTask   `json:"active"`
+
+	// StallTimeout 是 agentd 看门狗判定「卡住」的空闲阈值，形如 "2h0m0s"
+	//（time.Duration.String()）。空串 = 对端未提供。
+	//
+	// 为什么要外露：wait --follow 的 --timeout 若不大于它，两个计时器同时到点时
+	// 客户端的 124 会抢在 agentd 的 stalled 前面退出进程，把一次带 last_seq 和
+	// idle 时长的**诊断**降级成一句「我没收到东西」——审核者拿到的信息严格更少。
+	StallTimeout string `json:"stall_timeout,omitempty"`
+
+	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
+	// 消费方拿到 nil 就该什么都不显示，而不是显示一个「未托管、无待命」的假状态
+	Update *UpdateStatus `json:"update,omitempty"`
 }

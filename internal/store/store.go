@@ -1,9 +1,11 @@
 // Package store 是 handoff 的唯一持久化入口，基于 SQLite（modernc.org/sqlite，纯 Go 无 cgo）。
 //
 // 职责：
-//   - 提供任务（tasks）、事件（events）、工单（tickets）、仓库登记（repos）四张表的建表与增删改查
+//   - 提供任务（tasks）、事件（events）、工单（tickets）、项目位置（project_locations）
+//     四张表的建表与增删改查
 //   - 通过 database/sql 连接池支撑单进程多 goroutine 并发访问（WAL + busy_timeout 防 SQLITE_BUSY）
 //   - CreateTicket 用 INSERT OR IGNORE 实现按 id 幂等创建
+//   - Open 时顺带把旧 repos 表迁入 project_locations（B62 一次性迁移，见 projects.go）
 //
 // 边界：
 //   - 不含业务规则，仅保留 UpdateTaskState 对 proto.CanTransit 的一处防护性校验
@@ -94,9 +96,15 @@ func Open(path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
   answer TEXT, created_at TIMESTAMP NOT NULL, answered_at TIMESTAMP,
-  delivered_at TIMESTAMP)`,
-		`CREATE TABLE IF NOT EXISTS repos (
-  name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+  delivered_at TIMESTAMP, fingerprint TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS project_locations (
+  -- project_id 做主键：ADR-0008 的「一台机器上一个项目最多一个位置」由它
+  -- 直接强制，不需要额外唯一索引，也不需要在应用层再校验一遍。
+  project_id TEXT PRIMARY KEY,
+  -- name 唯一：--project <名字> 与 project rm <名字> 要靠它引用。
+  name TEXT NOT NULL UNIQUE,
+  -- path 唯一：两个不同项目不能声称在同一个目录。
+  path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,           -- 会话 id，可公开，用于列出与吊销
@@ -130,6 +138,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("迁移 tickets.delivered_at: %w", err)
 	}
+	// 迁移：为旧库补 tickets.fingerprint 列（B57②）。
+	//
+	// why 容忍 duplicate column：SQLite 无 ADD COLUMN IF NOT EXISTS，也不支持
+	// 一次加多列，只能逐条 ALTER；列已存在时报 duplicate column 属预期。
+	// 旧库里既有工单的 fingerprint 为默认空串——空指纹永不参与复用
+	// （FindReusableGrant 对空 fingerprint 直接返回无匹配），旧数据不会被误当先例。
+	if _, err := db.ExecContext(context.Background(),
+		`ALTER TABLE tickets ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("迁移 tickets.fingerprint: %w", err)
+	}
 	// 迁移：为旧库补 tasks 增量列（二期 name/executor/model/work_dir/worktree_managed + B35 base_commit/base_ahead）。
 	//
 	// why（逐列 ALTER + 容忍 duplicate column）：SQLite 的 ADD COLUMN 不支持
@@ -152,6 +172,12 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("迁移 tasks.%s: %w", col, err)
 		}
+	}
+	// 迁移（B62）：旧 repos 表 → project_locations，随后 DROP 旧表。
+	// 放在建表之后：迁移要往新表里写。幂等由「旧表已 DROP 则无操作」保证。
+	if err := migrateReposToProjectLocations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移 repos → project_locations: %w", err)
 	}
 	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil
@@ -557,9 +583,9 @@ WHERE task_id = ? ORDER BY seq DESC LIMIT 1`, taskID).
 //   - answer/answered_at 一律由 AnswerTicket 写入，入参中的值被忽略
 func (s *Store) CreateTicket(tk *proto.Ticket) (bool, error) {
 	res, err := s.db.ExecContext(context.Background(), `
-INSERT OR IGNORE INTO tickets (id, task_id, kind, request, answer, created_at, answered_at)
-VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
-		tk.ID, tk.TaskID, tk.Kind, string(tk.Request), fmtTime(tk.CreatedAt))
+INSERT OR IGNORE INTO tickets (id, task_id, kind, request, answer, created_at, answered_at, fingerprint)
+VALUES (?, ?, ?, ?, NULL, ?, NULL, ?)`,
+		tk.ID, tk.TaskID, tk.Kind, string(tk.Request), fmtTime(tk.CreatedAt), tk.Fingerprint)
 	if err != nil {
 		return false, fmt.Errorf("写入工单 %s: %w", tk.ID, err)
 	}
@@ -653,11 +679,12 @@ func (s *Store) GetTicket(id string) (*proto.Ticket, error) {
 		answeredAt  sql.NullString
 		deliveredAt sql.NullString
 		createdAt   string
+		fingerprint string
 	)
 	err := s.db.QueryRowContext(context.Background(), `
-SELECT id, task_id, kind, request, answer, created_at, answered_at, delivered_at
+SELECT id, task_id, kind, request, answer, created_at, answered_at, delivered_at, fingerprint
 FROM tickets WHERE id = ?`, id).
-		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &deliveredAt)
+		Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &deliveredAt, &fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -678,7 +705,42 @@ FROM tickets WHERE id = ?`, id).
 		t := parseTime(deliveredAt.String)
 		tk.DeliveredAt = &t
 	}
+	tk.Fingerprint = fingerprint
 	return &tk, nil
+}
+
+// FindReusableGrant 查同任务、同指纹、已被审核者批准且已送达的 gate 工单。
+//
+// 参数：
+//   - taskID: 任务 id（复用严格限制在任务内，见 spec §3.4）
+//   - fingerprint: 权限描述全文的 sha256；空串直接返回无匹配
+//
+// 返回：
+//   - 命中时返回该工单；无匹配返回 (nil, nil)；查询出错返回错误
+//
+// 注意：
+//   - answer 必须**严格等于** "allow"——gate 的翻译规则就是严格相等，
+//     这里放宽（如 LIKE 'allow%'）会让 "allowed once, then never" 之类的
+//     人工笔误变成一张长期通行证
+//   - delivered_at 必须非空：应答落库但中继失败的工单不构成有效先例，
+//     executor 侧那次请求根本没收到批准
+func (s *Store) FindReusableGrant(taskID, fingerprint string) (*proto.Ticket, error) {
+	if fingerprint == "" {
+		return nil, nil
+	}
+	var id string
+	err := s.db.QueryRowContext(context.Background(), `
+SELECT id FROM tickets
+WHERE task_id = ? AND fingerprint = ? AND kind = 'gate'
+  AND answer = 'allow' AND delivered_at IS NOT NULL
+ORDER BY created_at DESC LIMIT 1`, taskID, fingerprint).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询任务 %s 可复用裁决: %w", taskID, err)
+	}
+	return s.GetTicket(id)
 }
 
 // MarkTicketDelivered 标记工单应答已送达 executor。
@@ -831,7 +893,7 @@ func (s *Store) VoidPendingTickets(taskID string) (int, error) {
 //   - 用于 agent 阻塞等待人工答复的场景；回答过的工单不会出现在结果中
 func (s *Store) PendingTickets(taskID string) ([]proto.Ticket, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
-SELECT id, task_id, kind, request, answer, created_at, answered_at FROM tickets
+SELECT id, task_id, kind, request, answer, created_at, answered_at, fingerprint FROM tickets
 WHERE task_id = ? AND answer IS NULL ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("查询待办工单: %w", err)
@@ -840,17 +902,19 @@ WHERE task_id = ? AND answer IS NULL ORDER BY created_at ASC`, taskID)
 	var tickets []proto.Ticket
 	for rows.Next() {
 		var (
-			tk         proto.Ticket
-			request    string
-			answer     sql.NullString
-			answeredAt sql.NullString
-			createdAt  string
+			tk          proto.Ticket
+			request     string
+			answer      sql.NullString
+			answeredAt  sql.NullString
+			createdAt   string
+			fingerprint string
 		)
-		if err := rows.Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt); err != nil {
+		if err := rows.Scan(&tk.ID, &tk.TaskID, &tk.Kind, &request, &answer, &createdAt, &answeredAt, &fingerprint); err != nil {
 			return nil, fmt.Errorf("读取工单行: %w", err)
 		}
 		tk.Request = json.RawMessage(request)
 		tk.CreatedAt = parseTime(createdAt)
+		tk.Fingerprint = fingerprint
 		if answer.Valid {
 			tk.Answer = &answer.String
 		}

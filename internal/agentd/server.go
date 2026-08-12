@@ -28,6 +28,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/release"
 	"github.com/xushixin/handoff/internal/store"
 )
 
@@ -56,6 +59,12 @@ const eventReplayLimit = 10000
 // 越限即断开连接：所有广播事件都已落库，客户端凭 cursor 重连即可完整补拉，
 // 断开是无损的。
 const liveBufferLimit = 1000
+
+// maxUpdateBytes 是换版接口单个请求体的上限，与 release 侧 maxAssetBytes 同量级。
+//
+// 上限本身是防线：被劫持或出错的请求不该把内存吃光——换版 body 是整包
+// tar.gz 原文，失控请求直接进 io.ReadAll，无上限等于把内存消耗交给对端。
+const maxUpdateBytes = 100 << 20
 
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
@@ -77,6 +86,11 @@ type Server struct {
 	// sessionRecheck 是 WS 连接上会话复验的周期（defaultSessionRecheck 的实例副本），
 	// 供测试注入毫秒级值验证「吊销后被踢」（生产恒为默认值）。
 	sessionRecheck time.Duration
+	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
+	upd UpdateDeps
+	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
+	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
+	restart func(reason string) bool
 }
 
 // NewServer 创建 agentd 服务端。
@@ -90,7 +104,8 @@ type Server struct {
 //   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
-	return &Server{
+	inst := release.NewInstaller(log)
+	s := &Server{
 		cfg:            cfg,
 		st:             st,
 		hub:            NewHub(),
@@ -100,12 +115,45 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		liveLimit:      liveBufferLimit,
 		sessionRecheck: defaultSessionRecheck,
 	}
+	s.upd = UpdateDeps{
+		Getenv:     os.Getenv,
+		Executable: resolvedExecutable,
+		Install:    inst.InstallArchive,
+		Activate:   release.Activate,
+	}
+	return s
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
 func (s *Server) Hub() *Hub {
 	return s.hub
 }
+
+// resolvedExecutable 返回当前二进制的真实路径。
+//
+// 必须 EvalSymlinks：装在 ~/.local/bin 的二进制常常是个 symlink，
+// 替换 symlink 本身只会把链接换成普通文件，链接目标仍是旧版。
+// 与 cmd/agentd.go 的同名函数分属两包，互不冲突。
+func resolvedExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved, nil
+	}
+	return exe, nil
+}
+
+// SetRestart 注入优雅关停的触发函数（Shutdown.Trigger）。
+//
+// 必须在监听之前注入：换版接口返回 200 之后就靠它退出进程交接给新二进制，
+// 没注入时换版会成功但永远不重启，而现场只剩一个「版本没变」的空结论。
+func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
+
+// SetUpdateDeps 替换换版接口的外部依赖。**仅供测试**：这些依赖会真的
+// 执行文件、rename 二进制、停进程。
+func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
 // SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
 //
@@ -130,9 +178,9 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
-//   - POST /api/repos                    登记仓库（必要时先克隆）
-//   - GET  /api/repos                    列出仓库登记（含现场实际状态）
-//   - DELETE /api/repos/{name}           注销仓库登记（只删登记，不动磁盘）
+//   - POST /api/projects               登记项目（必要时先克隆）
+//   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
 //   - GET  /api/auth/sessions           列出会话（含已吊销）
@@ -154,9 +202,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
 	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
 	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
-	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
-	mux.HandleFunc("GET /api/repos", s.handleRepoList)
-	mux.HandleFunc("DELETE /api/repos/{name}", s.handleRepoRemove)
+	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)
+	mux.HandleFunc("GET /api/projects", s.handleProjectList)
+	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
 	mux.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
 	mux.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
@@ -249,7 +298,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleListTasks 返回全部任务（created_at 降序），供 tasks 命令展示。
+// handleListTasks 返回全部任务（created_at 降序）及其实时订阅数，供 tasks 命令展示。
+//
+// 注意：watchers 取自 hub 的瞬时状态、不落库；它只回答「此刻有几个连接在听」，
+// 不回答「该不该有人听」——那条判据在 status 侧（unattended）。
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
 	tasks, err := s.st.ListTasks()
@@ -262,7 +314,18 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		// 空列表序列化为 [] 而非 null，保证客户端解码出的始终是数组
 		tasks = []proto.Task{}
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	// 拼装 API 视图：附上「有几个人在听」这条只有 hub 知道的运行态
+	views := make([]proto.TaskView, 0, len(tasks))
+	unattended := 0
+	for _, t := range tasks {
+		w := s.hub.Watchers(t.ID)
+		if w == 0 && !isTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
+			unattended++
+		}
+		views = append(views, proto.TaskView{Task: t, Watchers: w})
+	}
+	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended)
+	writeJSON(w, http.StatusOK, views)
 }
 
 // handleGetTask 返回任务详情（任务 + 待办工单 + 最近事件），是 attach 命令的数据源。
@@ -303,8 +366,11 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []proto.Event{}
 	}
+	watchers := s.hub.Watchers(taskID)
+	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
+		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
-		Task:           *task,
+		Task:           proto.TaskView{Task: *task, Watchers: watchers},
 		PendingTickets: pending,
 		RecentEvents:   events,
 	})
@@ -312,7 +378,8 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 
 // taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）。
 type taskDetail struct {
-	Task           proto.Task     `json:"task"`
+	// Task 用 TaskView 而非 Task：多带一个 watchers，且因字段提升线格式不变
+	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
 	RecentEvents   []proto.Event  `json:"recent_events"`
 }
@@ -488,15 +555,18 @@ func (s *Server) resumeIfIdle(taskID string) {
 // dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，
 // prompt-only 派发时 prompt 非空、plan_b64 为空）。
 type dispatchRequest struct {
-	Repo     string `json:"repo"`
-	PlanB64  string `json:"plan_b64"`
-	PlanName string `json:"plan_name"`
-	Target   string `json:"target"`
-	Prompt   string `json:"prompt"`
-	Name     string `json:"name"`
-	Executor string `json:"executor"`
-	Model    string `json:"model"`
-	Branch   string `json:"branch"`
+	// project_id 与 project_name 二选一。**请求体里没有任何路径字段**：
+	// 「代码在这台机器的哪个目录」是执行机自己的私事，调用方不该描述它（B62）。
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	PlanB64     string `json:"plan_b64"`
+	PlanName    string `json:"plan_name"`
+	Target      string `json:"target"`
+	Prompt      string `json:"prompt"`
+	Name        string `json:"name"`
+	Executor    string `json:"executor"`
+	Model       string `json:"model"`
+	Branch      string `json:"branch"`
 	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
 	NewBranch   string `json:"new_branch"`
 	Base        string `json:"base"`
@@ -504,8 +574,6 @@ type dispatchRequest struct {
 	NewWorktree bool   `json:"new_worktree"`
 	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
-	// OriginURL 是审核者 cwd 仓库的 origin，用于 repo 省略时自动匹配登记（B46）。
-	OriginURL string `json:"origin_url"`
 }
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
@@ -521,18 +589,18 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	var req dispatchRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		s.log.Warn("dispatch 请求体解析失败", "err", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {repo, plan_b64, ...}"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
-		Repo: req.Repo, PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
+		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
+		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
-		OriginURL: req.OriginURL,
 	})
 	if err != nil {
-		s.writeDispatchError(w, req.Repo, err)
+		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
 	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
@@ -552,9 +620,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
-//   - ErrRepoNotRegistered / ErrRepoAmbiguous → 400：--repo 给的登记名查不到，
-//     或省略 --repo 时 origin 匹配到多条/零条——报文自带本机已登记清单或候选
-//     清单，审核者拿到即可行动（换名字，或先 handoff repo add）
+//   - ErrProjectNotRegistered → 400：project_id / project_name 在本机位置表里查不到，
+//     报文自带本机已登记清单——审核者拿到即可行动（换名字，或先 handoff project add）；
+//     本机 CLI 收到这条会自动补登记后重发（B62）
 //   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
 //     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
@@ -562,142 +630,143 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
-func (s *Server) writeDispatchError(w http.ResponseWriter, repo string, err error) {
+func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
 	case errors.Is(err, ErrDirtyWorktree):
-		s.log.Warn("dispatch 被拒：工作区不干净", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
-		s.log.Warn("dispatch 被拒：目标工作目录被占用", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBaseCommitMissing):
-		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable):
-		s.log.Warn("dispatch 被拒：仓库不可用", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：仓库不可用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoNotRegistered):
-		s.log.Warn("dispatch 被拒：仓库未登记", "repo", repo, "cause", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoAmbiguous):
-		s.log.Warn("dispatch 被拒：origin 匹配到多条登记", "repo", repo, "cause", err)
+	case errors.Is(err, ErrProjectNotRegistered):
+		s.log.Warn("dispatch 被拒：项目未登记", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errBadDispatchRequest):
-		s.log.Warn("dispatch 被拒：请求参数非法", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：请求参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBadWorkspaceReq):
-		s.log.Warn("dispatch 被拒：工作区参数非法", "repo", repo, "cause", err)
+		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errExecutorStartFailed):
-		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "repo", repo, "cause", err)
+		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	case errors.Is(err, errEnvResolveFailed):
-		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "repo", repo, "cause", err)
+		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
-		s.log.Error("派发任务失败", "repo", repo, "cause", err)
+		s.log.Error("派发任务失败", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})
 	}
 }
 
-// repoAddRequest 是 POST /api/repos 的请求体。
+// projectAddRequest 是 POST /api/projects 的请求体。
 //
-// 两种形态：clone=false 时 path 必填（登记已有克隆）；clone=true 时 url 必填
-// （先克隆再登记），path 为落点、可省（省时用 agentd 配置的 repo_root）。
-type repoAddRequest struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	URL   string `json:"url"`
-	Clone bool   `json:"clone"`
+// 两种形态由 path 是否为空决定：给了 path 就是「这台机器上已经有一份，用它」
+//（agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
+type projectAddRequest struct {
+	OriginURL string `json:"origin_url"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
 }
 
-// handleRepoAdd 登记一个仓库（必要时先克隆）。
-func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("repo add 请求", "method", r.Method, "path", r.URL.Path)
+// handleProjectAdd 登记一个项目（必要时先克隆）。
+func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("project add 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
-		s.log.Warn("repo add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		s.log.Warn("project add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	var req repoAddRequest
+	var req projectAddRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		s.log.Warn("repo add 请求体解析失败", "err", err)
+		s.log.Warn("project add 请求体解析失败", "err", err)
 		writeJSON(w, http.StatusBadRequest,
-			map[string]string{"error": "请求体必须是 JSON {name, path, url, clone}"})
+			map[string]string{"error": "请求体必须是 JSON {origin_url, name, path}"})
 		return
 	}
-	repo, err := s.mgr.RegisterRepo(r.Context(), RegisterRepoReq{
-		Name: req.Name, Path: req.Path, URL: req.URL, Clone: req.Clone})
+	loc, err := s.mgr.RegisterProject(r.Context(), RegisterProjectReq{
+		OriginURL: req.OriginURL, Name: req.Name, Path: req.Path})
 	if err != nil {
-		s.writeRepoError(w, req.Name, err)
+		s.writeProjectError(w, req.Name, err)
 		return
 	}
-	s.log.Info("repo add 完成", "name", repo.Name, "path", repo.Path)
-	writeJSON(w, http.StatusOK, repo)
+	s.log.Info("project add 完成", "project_id", loc.ProjectID, "name", loc.Name, "path", loc.Path)
+	writeJSON(w, http.StatusOK, loc)
 }
 
-// handleRepoList 列出全部仓库登记（含现场探得的实际状态）。
-func (s *Server) handleRepoList(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("repo list 请求", "method", r.Method, "path", r.URL.Path)
+// handleProjectList 列出全部项目位置（含现场探得的实际状态）。
+func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("project list 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	repos, err := s.mgr.ListRepos(r.Context())
+	locs, err := s.mgr.ListProjects(r.Context())
 	if err != nil {
-		s.writeRepoError(w, "", err)
+		s.writeProjectError(w, "", err)
 		return
 	}
-	if repos == nil {
-		repos = []proto.Repo{} // 空列表要序列化成 []，不是 null
+	if locs == nil {
+		locs = []proto.ProjectLocation{} // 空列表要序列化成 []，不是 null
 	}
-	s.log.Info("repo list 完成", "count", len(repos))
-	writeJSON(w, http.StatusOK, repos)
+	s.log.Info("project list 完成", "count", len(locs))
+	writeJSON(w, http.StatusOK, locs)
 }
 
-// handleRepoRemove 注销一条仓库登记（只删登记，不动磁盘）。
-func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
+// handleProjectRemove 注销一条项目位置（只删登记，不动磁盘）。
+func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	s.log.Info("repo remove 请求", "name", name)
+	s.log.Info("project remove 请求", "name", name)
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.UnregisterRepo(r.Context(), name); err != nil {
-		s.writeRepoError(w, name, err)
+	if err := s.mgr.UnregisterProject(r.Context(), name); err != nil {
+		s.writeProjectError(w, name, err)
 		return
 	}
-	s.log.Info("repo remove 完成", "name", name)
+	s.log.Info("project remove 完成", "name", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// writeRepoError 把仓库登记操作的失败映射为 HTTP 状态码与可读原因。
+// writeProjectError 把项目登记操作的失败映射为 HTTP 状态码与可读原因。
 //
 // 映射规则（与 writeDispatchError 同一套哲学：调用方拿到就能行动）：
 //   - store.ErrNotFound → 404：登记名不存在
-//   - ErrRepoAlreadyExists → 409：名字/路径已被占用，或克隆落点已存在——
+//   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
 //     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
-//   - ErrWorkdirBusy → 409：注销时仓库仍被活跃任务占用
+//   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
+//   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
+//     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
 //   - ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
 //     （路径不是仓库、没有 origin、clone 失败、参数缺失）
 //   - 其余 → 500
-func (s *Server) writeRepoError(w http.ResponseWriter, name string, err error) {
+func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		s.log.Warn("仓库登记操作被拒：登记不存在", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：登记不存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoAlreadyExists):
-		s.log.Warn("仓库登记操作被拒：已存在", "name", name, "cause", err)
+	case errors.Is(err, ErrProjectAlreadyExists):
+		s.log.Warn("项目登记操作被拒：已存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
-		s.log.Warn("仓库登记操作被拒：被活跃任务占用", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrProjectOriginMismatch):
+		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
-		s.log.Warn("仓库登记操作被拒：请求非法", "name", name, "cause", err)
+		s.log.Warn("项目登记操作被拒：请求非法", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
-		s.log.Error("仓库登记操作失败", "name", name, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "仓库登记操作失败"})
+		s.log.Error("项目登记操作失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "项目登记操作失败"})
 	}
 }
 
@@ -1033,6 +1102,9 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
+//   - 任务归档（done）时 hub 会关闭本连接的订阅，此处以 StatusNormalClosure +
+//     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
+//     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {
@@ -1114,6 +1186,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		liveMu      sync.Mutex
 		live        []proto.Event
 		overflow    bool
+		archived    bool // 订阅被 hub 关闭（任务归档），与「本连接自己结束」区分
 		drainNotify = make(chan struct{}, 1)
 	)
 	notifyDrain := func() {
@@ -1127,7 +1200,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
-					return // 订阅被取消（连接结束，defer cancel 触发），排空器退出
+					// 通道被关闭有两种可能：连接结束时 defer cancel 关的（此时主循环
+					// 已在退出路上，下面这个标记没人读，无害），或 hub.CloseTask 关的
+					//（任务归档）。后者必须让主循环知道，好以正常关闭码收尾
+					liveMu.Lock()
+					archived = true
+					liveMu.Unlock()
+					notifyDrain()
+					return
 				}
 				liveMu.Lock()
 				if len(live) >= s.liveLimit {
@@ -1268,8 +1348,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			pending := live
 			live = nil
 			over := overflow
+			arch := archived
 			liveMu.Unlock()
 			if !writeLiveBatch(pending) {
+				return
+			}
+			if arch {
+				// 顺序硬约束：先写完归档前排队的事件，再关连接——反过来会在
+				// 归档瞬间吞掉最后一批事件
+				s.log.Info("任务已归档，以正常关闭码结束事件流", "task", taskID,
+					"sent", sent, "last_written", lastWrittenSeq)
+				if cerr := conn.Close(websocket.StatusNormalClosure, "task archived"); cerr != nil {
+					// 对端可能已经走了；关闭码送不到不改变结论，如实记一笔即可
+					s.log.Debug("WS 归档关闭失败", "task", taskID, "err", cerr)
+				}
 				return
 			}
 			if over {

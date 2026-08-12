@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // Resume 重建 agentd 重启前已在执行的任务（spec §8「存活则重连 SSE 继续」）：
@@ -179,11 +180,65 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	// 没有「错过的进展」，且水位已随新会话失去意义
 	if mode != executor.ResumeModeFresh {
 		go a.reconcileAfterRecovery(context.Background(), req.TaskID, "startup")
+		go a.rediscoverPendingQuestions(context.Background(), req.TaskID)
 	}
 	return executor.ResumeOutcome{
 		Alive: true, Mode: mode, SessionID: sessionID,
 		Note: resumeNote(mode, sessionID),
 	}, nil
+}
+
+// rediscoverPendingQuestions 在恢复后重新发现本任务挂起的提问并补发工单。
+//
+// 参数：taskID 为已完成运行态重建的任务 id
+//
+// 为什么必须有这一步：SSE 没有重放语义，agentd 重启窗口里发生的
+// question.asked 永远收不到。而 opencode 侧的 question 工具还在阻塞等应答——
+// 不重新发现，任务就是个谁也叫不醒的孤儿（与 B18/B20/B24 同一条纪律：
+// 重启后一切「executor 那边还等着人」的状态都必须被重新发现）。
+//
+// 注意：
+//   - GET /question 返回全部会话的挂起请求，必须按本任务的会话 id 过滤
+//   - 本函数在 goroutine 里跑，不阻塞 Resume 返回；失败只记日志（挂起提问
+//     发现不了仍有 stall 看门狗兜底，不该让恢复本身失败）
+func (a *Adapter) rediscoverPendingQuestions(ctx context.Context, taskID string) {
+	r := a.lookup(taskID)
+	if r == nil || r.api == nil {
+		a.log.Debug("重新发现挂起提问跳过：该任务无运行态", "task", taskID)
+		return
+	}
+	pending, err := r.api.ListPendingQuestions(ctx)
+	if err != nil {
+		a.log.Warn("重新发现挂起提问失败，若确有挂起提问将由 stall 看门狗兜底",
+			"task", taskID, "cause", err)
+		return
+	}
+	for _, p := range pending {
+		if p.SessionID != r.session {
+			continue // 别的任务/会话的提问
+		}
+		r.turnMu.Lock()
+		if r.seenQuestionIDs[p.ID] {
+			r.turnMu.Unlock()
+			continue
+		}
+		r.seenQuestionIDs[p.ID] = true
+		r.pendingQuestionID = p.ID
+		r.pendingQuestions = p.Questions
+		r.turnMu.Unlock()
+
+		a.log.Info("恢复后发现挂起提问，补发工单", "task", taskID,
+			"request", p.ID, "question_count", len(p.Questions))
+		// 必须带原生 request id：这条补发与重启前那条实时 question.asked 指的是
+		// **同一个**挂起提问，manager 靠 QuestionID 折出同一个 ticket id
+		// （taskID:questionID）才认得出这是重放而非新提问。漏掉它就退回 uuid，
+		// 于是重启前后各留一张工单、旧的那张永不作废——正是 B58 的原始症状。
+		// seenQuestionIDs 兜不住：它是 runState 内存态，重启即清零。
+		a.emit(r, executor.AdapterEvent{Type: "question", QuestionID: p.ID,
+			Text: turn.ClampQuestion(renderQuestionTicket(p.Questions))})
+		return // 工具阻塞保证至多一个挂起请求，发现一个即可
+	}
+	a.log.Info("恢复后未发现本任务的挂起提问", "task", taskID, "total_pending", len(pending))
 }
 
 // resumeNote 拼恢复结果的一句话结论（进 ResumeOutcome.Note 供 manager 转播）。

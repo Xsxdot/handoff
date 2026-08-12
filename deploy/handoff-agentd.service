@@ -6,6 +6,9 @@
 #
 # 把 User / ExecStart 的路径改成你自己的。
 #
+# 从 B54.2 起，这个模板可以由 `handoff service install` 自动生成并安装，
+# 不必再手动 cp。本文件保留为参考与手动部署用。
+#
 # 注意 User 必须填字面用户名，不要写 %i：%i 是**模板 unit**（形如
 # handoff-agentd@user.service，用 enable handoff-agentd@alice 实例化）的实例名占位符，
 # 在本文件这种非模板 unit 里它解析为空串，`User=` 空值会被重置为默认值 root
@@ -20,7 +23,10 @@ Wants=network-online.target
 Type=simple
 User=CHANGEME
 ExecStart=/usr/local/bin/handoff agentd --executor=opencode
-Restart=on-failure
+# Restart=always 而不是 on-failure：agentd 的优雅关停以 exit 0 结束
+#（自更新换版就是靠它交接给新二进制）。on-failure 在 exit 0 时**不会**重启
+# ——换完版服务就此消失，而且没有任何信号告诉任何人。
+Restart=always
 RestartSec=3
 
 # KillMode=process 是本项目的硬要求，不是可选优化。

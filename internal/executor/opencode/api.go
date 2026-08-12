@@ -574,6 +574,157 @@ func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response
 	return nil
 }
 
+// ErrCustomAnswerRejected 表示 opencode 拒绝了本次 reply 携带的答案——最可能的
+// 原因是该问不接受自定义答案（服务端按选项 label 白名单校验）。
+//
+// 为什么要一个专门的哨兵：审核者填了一个不在选项里的答案时，调用方要把它
+// 降级成「重问」而不是报一个语焉不详的 HTTP 错误。只有 4xx 归入本哨兵，
+// 5xx 是服务端故障，与答案内容无关（见 ReplyQuestion）。
+var ErrCustomAnswerRejected = errors.New("opencode 拒绝了自定义答案")
+
+// QuestionOption 是一个问题的一个候选项。
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// QuestionInfo 是 opencode question 工具的单个问题。
+//
+// Multiple 为真表示该问可多选，Custom 为真表示该问接受选项之外的自定义答案。
+type QuestionInfo struct {
+	Question string           `json:"question"`
+	Header   string           `json:"header"`
+	Options  []QuestionOption `json:"options"`
+	Multiple bool             `json:"multiple"`
+	Custom   bool             `json:"custom"`
+}
+
+// PendingQuestion 是一条挂起的 question 请求（一次可含多道问题）。
+type PendingQuestion struct {
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionID"`
+	Questions []QuestionInfo `json:"questions"`
+}
+
+// questionReplyRequest 是 POST /question/{id}/reply 的请求体。
+type questionReplyRequest struct {
+	// Answers 按问题顺序排列，每项是该问选中的 label 数组（多选时多元素）
+	Answers [][]string `json:"answers"`
+}
+
+// ReplyQuestion 把审核者的答案回填给 opencode 的 question 工具，工具随即返回、
+// 回合继续。
+//
+// 参数：
+//   - requestID: question.asked 事件里的 properties.id
+//   - answers: 按问题顺序排列，每项是该问选中的 label 数组
+//
+// 返回：
+//   - 4xx 时返回可 errors.Is 命中 ErrCustomAnswerRejected 的错误（答案不被接受）
+//   - 其余失败返回普通错误
+func (a *API) ReplyQuestion(ctx context.Context, requestID string, answers [][]string) (err error) {
+	if requestID == "" {
+		return fmt.Errorf("应答提问：请求 id 为空")
+	}
+	start := time.Now()
+	path := "/question/" + requestID + "/reply"
+	a.log().Info("opencode 应答提问", "path", path, "request", requestID,
+		"answer_count", len(answers))
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 应答提问失败", "path", path, "request", requestID,
+				"cause", err)
+		} else {
+			a.log().Info("opencode 提问应答完成", "path", path, "request", requestID,
+				"elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodPost, path, questionReplyRequest{Answers: answers})
+	if err != nil {
+		return fmt.Errorf("应答提问: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		// 4xx：请求本身被拒。答案内容是这次请求里唯一由审核者决定的部分，
+		// 因此归因到「答案不被接受」，由调用方降级重问。5xx 不能这样归因
+		return fmt.Errorf("%w: %v", ErrCustomAnswerRejected, a.httpError("应答提问", resp))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return a.httpError("应答提问", resp)
+	}
+	return nil
+}
+
+// RejectQuestion 拒绝一条挂起的提问，解除 question 工具的阻塞。
+//
+// 参数：requestID 为 question.asked 事件里的 properties.id
+//
+// 注意：
+//   - 用于「任务要停了但提问还挂着」的兜底解阻塞，不是审核者的正常答复通道
+func (a *API) RejectQuestion(ctx context.Context, requestID string) (err error) {
+	if requestID == "" {
+		return fmt.Errorf("拒绝提问：请求 id 为空")
+	}
+	start := time.Now()
+	path := "/question/" + requestID + "/reject"
+	a.log().Info("opencode 拒绝提问", "path", path, "request", requestID)
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 拒绝提问失败", "path", path, "request", requestID,
+				"cause", err)
+		} else {
+			a.log().Info("opencode 提问已拒绝", "path", path, "request", requestID,
+				"elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return fmt.Errorf("拒绝提问: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return a.httpError("拒绝提问", resp)
+	}
+	return nil
+}
+
+// ListPendingQuestions 拉取当前全部挂起的提问请求（跨会话）。
+//
+// 返回：挂起请求列表；请求失败或解析失败时返回错误，列表为 nil
+//
+// 注意：
+//   - 返回的是**全部会话**的挂起请求，调用方必须按 SessionID 过滤出自己的
+//   - agentd 重启后重新发现挂起提问的唯一途径：SSE 无重放语义，重启窗口里
+//     发生的 question.asked 永远收不到
+func (a *API) ListPendingQuestions(ctx context.Context) (out []PendingQuestion, err error) {
+	start := time.Now()
+	const path = "/question"
+	a.log().Info("opencode 查询挂起提问", "path", path)
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 查询挂起提问失败", "path", path, "cause", err)
+		} else {
+			a.log().Info("opencode 挂起提问已取得", "path", path, "count", len(out),
+				"elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("查询挂起提问请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, a.httpError("查询挂起提问", resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析挂起提问: %w", err)
+	}
+	return out, nil
+}
+
 // SubscribeEvents 订阅 GET /event（SSE），每收到一条事件就同步调用
 // onEvent(raw)，直到 ctx 取消。
 //

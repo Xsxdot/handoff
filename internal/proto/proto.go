@@ -58,6 +58,16 @@ const (
 	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
 	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
 	EventTypeApproverDisabled EventType = "approver_disabled"
+	// EventTypePermissionReuse 表示一次权限请求命中了本任务内**同一权限描述**的
+	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
+	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
+	EventTypePermissionReuse EventType = "permission_reuse"
+	// EventTypeDenyGuidanceRelayed 表示审核者拒绝时给出的原因已作为一条消息
+	// 下发给 executor（B50）。
+	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"
+	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
+	// 就终结了。审核者据此知道要用 continue 自己把话带上。
+	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
 )
 
 // Task 表示一个 handoff 任务。
@@ -116,6 +126,22 @@ func (t *Task) Workdir() string {
 	return t.RepoPath
 }
 
+// TaskView 是 Task 的 API 视图：任务本体 + 不落库的运行态。
+//
+// 为什么用嵌入而不是给 Task 加字段：Watchers 是 agentd 内 Hub 的瞬时状态，
+// 与任务的持久身份无关。加进 Task 会让存储层背一个它不该知道的概念，迟早有人
+// 把它写进 SQLite；嵌入则让存储结构保持纯粹，同时 JSON 字段提升后线格式与旧版
+// 逐字节兼容——只多一个 watchers 键，老客户端解码不受影响。
+//
+// 注意：Watchers 是服务端应答那一刻的快照，不做任何时效承诺。
+type TaskView struct {
+	Task
+	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// 0 不一定是异常：waiting_review 与终态本来就不需要有人盯，判据见
+	// handoff status 的 unattended。
+	Watchers int `json:"watchers"`
+}
+
 // Event 表示任务生命周期中产生的一条事件记录。
 //
 // JSON 线格式契约（wait 命令输出与 WS 推送共用此结构）：{"seq":..,"task_id":..,
@@ -144,6 +170,10 @@ type Ticket struct {
 	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
 	DeliveredAt *time.Time `json:"delivered_at"`
+	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
+	// 它让「审核者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
+	// ask 工单不参与复用，留空。
+	Fingerprint string `json:"fingerprint"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。
@@ -178,17 +208,27 @@ func CanTransit(from, to TaskState) bool {
 	return false
 }
 
-// Repo 是一条「执行机 × 仓库」登记：把该执行机上一个已落地的 git 仓库
-// 与一个短名字绑定，使 dispatch 不必再写完整路径。
+// ProjectLocation 是一条「项目 × 机器」位置记录：项目在**这一台**机器上的
+// 那一个工作副本。
+//
+// 模型（B62）：
+//   - 项目（project）：一份代码的逻辑身份，与机器无关，由 ProjectID 标识
+//   - 位置（location）：项目在某一台机器上的工作副本，由 Path 标识
+//   - ADR-0008：一台机器上一个项目**最多一个位置**，由 ProjectID 做主键强制
 //
 // 字段：
-//   - Name: 登记名（每台执行机内唯一），dispatch 时可用作 --repo 的取值
-//   - Path: 该执行机上仓库的绝对路径
-//   - OriginURL: 仓库的 origin 地址，dispatch 省略 --repo 时据此自动匹配
+//   - ProjectID: sha256(归一化 origin) 前 16 位；**纯函数派生**，每台机器各算
+//     各的，同一个 origin 必然得到同一个值——跨机引用因此不需要任何协调
+//   - Name: 人可读引用（每台机器内唯一），由 origin 末段派生，冲突时补 -2；
+//     只用于 --project <名字> 与 project rm <名字>，**不参与身份判定**
+//   - Path: 该机器上的绝对路径（登记时 Abs+Clean，且已归并到主工作树）
+//   - OriginURL: agentd 在该机器上**现读**的权威值，不采信调用方上送的字符串
 //   - CreatedAt: 登记时间
-//   - Status: repo ls 时**现场探得**的实际状态（"有效"/"路径不存在"/"不是 git 仓库"），
-//     不落库，仅列表响应携带——它是登记与文件系统漂移的可见化手段
-type Repo struct {
+//   - Status: project ls 时**现场探得**的实际状态（"有效"/"路径不存在"/
+//     "不是 git 仓库"），不落库，仅列表响应携带——它是登记与文件系统漂移的
+//     可见化手段
+type ProjectLocation struct {
+	ProjectID string    `json:"project_id"`
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
 	OriginURL string    `json:"origin_url"`

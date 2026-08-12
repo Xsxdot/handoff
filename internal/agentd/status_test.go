@@ -72,6 +72,24 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 	return &statusEnv{ts: env.ts, st: env.st}
 }
 
+// newTestManager 构造一个能直接调 Manager.Status() 的 manager。
+//
+// 与 newStatusEnv 的差异：只构造 Manager，不挂 HTTP server——本测试直接调
+// Status() 方法本身，不需要经过 wire 层。
+func newTestManager(t *testing.T) *agentd.Manager {
+	t.Helper()
+	cfg := &config.Config{
+		Token:    testToken,
+		DataDir:  t.TempDir(),
+		Listen:   "127.0.0.1:7777",
+		Executor: config.ExecutorConfig{Default: "stub"},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := newTestEnvWithCfg(t, cfg, logger)
+	return agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": &probeStub{alive: true}},
+		cfg, nil, nil, logger)
+}
+
 // seedTask 落一条指定状态的任务（executor 一律 "stub"，保证探活路由到 stub）。
 func (e *statusEnv) seedTask(t *testing.T, id string, state proto.TaskState) {
 	t.Helper()
@@ -197,5 +215,24 @@ func TestStatusRequiresAuth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("状态码=%d, want 401——status 不开匿名口", resp.StatusCode)
+	}
+}
+
+// TestStatusAlwaysReportsUpdate 锁住「Update 恒返回」。
+//
+// why：改之前 Update 只在 pending.json 存在时才填，而现在闸二与巡检
+// 每台机器都要读 Managed——只在特殊情况下才给的字段，消费方拿到 nil
+// 只能猜，而猜出来的诊断会说谎。
+func TestStatusAlwaysReportsUpdate(t *testing.T) {
+	m := newTestManager(t)
+	resp, err := m.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Update == nil {
+		t.Fatal("Update 必须恒返回，nil 的语义是「对端没给」")
+	}
+	if resp.Version.Platform == "" {
+		t.Fatal("Platform 必须上报，空串的语义是「对端过旧」")
 	}
 }

@@ -167,6 +167,29 @@ func mustCreateTask(t *testing.T, st *store.Store, task *proto.Task) {
 	}
 }
 
+// registerTestProject 把 repo 登记成一个项目位置，返回它的 project_id。
+//
+// 为什么每个派发用例都要先登记：B62 之后「必须先登记才能派发」是服务端单方面
+// 保证的不变式，**不给测试开旁路**——开了旁路，测试就测不到真实调用路径。
+//
+// 参数：
+//   - m: 被测 Manager（登记会落到它的 store）
+//   - repo: 仓库路径；本助手会给它配一个由路径派生的唯一 origin
+//
+// 返回：
+//   - project_id，供 DispatchReq{ProjectID: ...} 使用
+func registerTestProject(t *testing.T, m *Manager, repo string) string {
+	t.Helper()
+	// origin 由路径派生：每个用例的临时仓库各不相同，project_id 因此天然不撞。
+	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
+	gitAt(t, repo, "remote", "add", "origin", origin)
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	if err != nil {
+		t.Fatalf("registerTestProject(%s): %v", repo, err)
+	}
+	return loc.ProjectID
+}
+
 // TestAdapterForRoutesByTaskExecutor 验证 adapterFor 按 task.Executor 路由：
 // 显式 executor 命中注册表对应 adapter；executor 为空回退缺省执行者（老任务兼容）。
 func TestAdapterForRoutesByTaskExecutor(t *testing.T) {
@@ -195,8 +218,9 @@ func TestResolveExecutorRejectsUnknown(t *testing.T) {
 func TestDispatchPromptOnly(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "把 README 安装命令改成 brew", Target: "local",
+		ProjectID: pid, Prompt: "把 README 安装命令改成 brew", Target: "local",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +236,11 @@ func TestDispatchPromptOnly(t *testing.T) {
 // TestDispatchRequiresPlanOrPrompt 验证 plan 与 prompt 都缺时 400 拒绝。
 func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
-	if _, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r"}); !errors.Is(err, errBadDispatchRequest) {
+	// 先登记一个真实项目：本用例要测的是「plan 与 prompt 都缺」这一条校验，
+	// 不能让它被「未指明项目」这个更靠前的错误遮蔽
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid}); !errors.Is(err, errBadDispatchRequest) {
 		t.Fatalf("plan 与 prompt 都缺应 400: %v", err)
 	}
 }
@@ -222,9 +250,10 @@ func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
 func TestDispatchPromptAppendedToPlan(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	plan := base64.StdEncoding.EncodeToString([]byte("# 计划标题\n正文"))
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, PlanB64: plan, PlanName: "p.md", Prompt: "只改 X 模块",
+		ProjectID: pid, PlanB64: plan, PlanName: "p.md", Prompt: "只改 X 模块",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +267,11 @@ func TestDispatchPromptAppendedToPlan(t *testing.T) {
 // TestDispatchUnknownExecutorRejected 验证未注册执行者 dispatch 被拒（400）。
 func TestDispatchUnknownExecutorRejected(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
-	_, err := m.Dispatch(context.Background(), DispatchReq{Repo: "/r", Prompt: "x", Executor: "nope"})
+	// 先登记一个真实项目：本用例要测的是「执行者未注册」这一条校验，
+	// 不能让它被「未指明项目」这个更靠前的错误遮蔽
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	_, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "x", Executor: "nope"})
 	if !errors.Is(err, errBadDispatchRequest) {
 		t.Fatalf("未注册执行者应 400: %v", err)
 	}
@@ -249,8 +282,9 @@ func TestDispatchUnknownExecutorRejected(t *testing.T) {
 func TestDispatchPersistsExecutorModelAndWorkspace(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", Model: "m1",
+		ProjectID: pid, Prompt: "x", Executor: "fake", Model: "m1",
 		Name: "自定义名", NewWorktree: true,
 	})
 	if err != nil {
@@ -308,9 +342,10 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, newTestGate(t), logger)
+	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
 	}
@@ -353,9 +388,10 @@ func (a *failStartAdapter) Stop(string) error { return nil }
 func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &failStartAdapter{}}, "fake")
+	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	}); err == nil {
 		t.Fatal("adapter.Start 失败应使 dispatch 失败")
 	}
@@ -385,8 +421,9 @@ func TestStopRemovesManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -419,10 +456,11 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	pid := registerTestProject(t, m, repo)
 
 	// managed worktree：stop 真删了 worktree → worktree_removed=true
 	wtTask, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,7 +478,7 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 
 	// 原地模式：WorktreeManaged=false（WorkDir 回退为 RepoPath）→ 无 worktree 可删
 	plainTask, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "y", Executor: "fake",
+		ProjectID: pid, Prompt: "y", Executor: "fake",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -463,8 +501,9 @@ func TestDoneRemovesManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -495,8 +534,9 @@ func TestDoneKeepsUserWorktree(t *testing.T) {
 	gitT(t, repo, "worktree", "add", "-b", "pre-branch", wt)
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", Worktree: wt,
+		ProjectID: pid, Prompt: "x", Executor: "fake", Worktree: wt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -518,8 +558,9 @@ func TestDoneWorktreeRemoveFailureDoesNotBlockArchive(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1132,10 +1173,13 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 	}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
 
-	// Repo 随便给一个不存在的路径即可：env 解析发生在任何 git 动作之前，
-	// 这条断言同时证明了「解析确实排在最前段」
+	// 先登记一个真实项目让解析通过：env 解析发生在任何 git 动作之前，
+	// 这条断言同时证明了「解析确实排在最前段」——若排到 git 动作之后，
+	// 这里就不会是 errEnvResolveFailed
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	_, derr := m.Dispatch(context.Background(), DispatchReq{
-		Repo: "/nonexistent/repo", Prompt: "任意指令",
+		ProjectID: pid, Prompt: "任意指令",
 	})
 	if derr == nil {
 		t.Fatal("env 文件缺失时应拒发")
@@ -1180,8 +1224,9 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, newTestGate(t), logger)
+	pid := registerTestProject(t, m, repo)
 
-	if _, derr := m.Dispatch(context.Background(), DispatchReq{Repo: repo, Prompt: "任意指令"}); derr != nil {
+	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
 		t.Fatalf("Dispatch: %v", derr)
 	}
 	if len(rec.gotEnv) != 1 || rec.gotEnv[0] != "HTTPS_PROXY=http://p:1" {
@@ -1284,10 +1329,11 @@ func TestResumeUnaffectedForNonVolatileAdapter(t *testing.T) {
 func TestDispatchAutoBranchStartsAtBaseCommit(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	writeAndCommit(t, repo, "drift.txt", "x") // 仓库 HEAD 前进，模拟执行机落后/超前
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1303,11 +1349,12 @@ func TestDispatchAutoBranchStartsAtBaseCommit(t *testing.T) {
 func TestDispatchRecordsBaseline(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	writeAndCommit(t, repo, "one.txt", "1")
 	writeAndCommit(t, repo, "two.txt", "2")
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1330,11 +1377,12 @@ func TestDispatchRecordsBaseline(t *testing.T) {
 func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
 	explicit := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	baseline := writeAndCommit(t, repo, "mid.txt", "m") // 基线比 explicit 新
 	writeAndCommit(t, repo, "tip.txt", "t")             // 仓库 HEAD 再前进一格
 	task, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true,
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 		BaseCommit: baseline, Base: explicit,
 	})
 	if err != nil {
@@ -1433,8 +1481,9 @@ func TestDecideBranchAction(t *testing.T) {
 func TestCompensateDeletesCreatedBranch(t *testing.T) {
 	repo := initTestRepo(t)
 	m, _ := compensateFixture(t)
+	pid := registerTestProject(t, m, repo)
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, NewBranch: "e2e/retry",
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, NewBranch: "e2e/retry",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
 	}
@@ -1449,8 +1498,9 @@ func TestCompensateKeepsExistingBranch(t *testing.T) {
 	repo := initTestRepo(t)
 	gitT(t, repo, "branch", "mine")
 	m, _ := compensateFixture(t)
+	pid := registerTestProject(t, m, repo)
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewWorktree: true, Branch: "mine",
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, Branch: "mine",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
 	}
@@ -1468,8 +1518,9 @@ func TestCompensateInPlaceRestoresPrevRef(t *testing.T) {
 	repo := initTestRepo(t)
 	before := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
 	m, _ := compensateFixture(t)
+	pid := registerTestProject(t, m, repo)
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewBranch: "e2e/inplace",
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewBranch: "e2e/inplace",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
 	}
@@ -1488,8 +1539,9 @@ func TestCompensateInPlaceRestoresDetached(t *testing.T) {
 	head := gitOut(t, repo, "rev-parse", "HEAD")
 	gitT(t, repo, "checkout", "--detach", "-q", head)
 	m, _ := compensateFixture(t)
+	pid := registerTestProject(t, m, repo)
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
-		Repo: repo, Prompt: "x", Executor: "fake", NewBranch: "e2e/detached",
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewBranch: "e2e/detached",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
 	}
@@ -1578,5 +1630,284 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 	}
 	if branchExists(t, repo, "e2e/userwt") {
 		t.Fatal("用户树模式下本次新建的分支同样应被删除")
+	}
+}
+
+// TestPermissionReuseSkipsSecondTicket 验证 B57②：同一任务内同一权限描述
+// 第二次到达时不再建工单、不再叫醒审核者，而是复用首次的人工批准自动放行。
+func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	permText := "external_directory: /Users/x/go/pkg/mod/github.com/coder/websocket@v1.8.15/*"
+
+	// 第一次：升级人工 → 审核者批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：同一文案、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	// 断言 1：没有新的挂起工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("复用后仍有 %d 张挂起工单，期望 0：%+v", len(pending), pending)
+	}
+
+	// 断言 2：落了 permission_reuse 审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var reuse int
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionReuse {
+			reuse++
+		}
+	}
+	if reuse != 1 {
+		t.Fatalf("permission_reuse 事件 %d 条，期望 1", reuse)
+	}
+
+	// 断言 3：批准真的回传给了 executor
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseIgnoresDeny 验证只复用 allow：首次被拒后，同文案的第二次
+// 仍然升级人工。自动重复拒绝会静默掐死回合，方向与 deny 原因下发正好相反。
+func TestPermissionReuseIgnoresDeny(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	permText := "bash: rm -rf /tmp/x"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: permText,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "deny: 太危险"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: permText,
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != "T1:p2" {
+		t.Fatalf("deny 之后第二次应照常出单，得到 %+v", pending)
+	}
+}
+
+// TestQuestionTicketIdempotentOnReplay 验证 B58：带原生 id 的提问重放（agentd
+// 重启后 executor 重发同一个 request）不产生第二张工单。
+func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev) // 重放
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重放后有 %d 张挂起工单，期望 1：%+v", len(pending), pending)
+	}
+	if pending[0].ID != "T1:que_ff" {
+		t.Fatalf("工单 id = %q，期望 T1:que_ff", pending[0].ID)
+	}
+
+	// 事件也只该有一条 question——重放不该再唤醒审核者一次
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var qn int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeQuestion {
+			qn++
+		}
+	}
+	if qn != 1 {
+		t.Fatalf("question 事件 %d 条，期望 1", qn)
+	}
+}
+
+// TestQuestionReissueAfterAnswerCreatesNewTicket 钉住三岔的第三条：opencode 的
+// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，审核者答错一次
+// 之后就再也答不了，任务停在 waiting_answer 直到 stall 超时——比 B58 本身严重。
+func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "que_ff", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	if err := st.AnswerTicket("T1:que_ff", "5000ms"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+
+	// 折算失败，adapter 用同一个 reqID 重发
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", QuestionID: "que_ff", Text: "上一次答复没能对上选项。选哪个？",
+	})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("重发后挂起工单 %d 张，期望 1（新单）：%+v", len(pending), pending)
+	}
+	if pending[0].ID == "T1:que_ff" {
+		t.Fatal("重发复用了已答工单的 id，审核者将无法作答")
+	}
+}
+
+// TestQuestionWithoutIDFallsBackToUUID 验证无原生 id 的 executor（claudecode /
+// codex / grok 的 trailer ask）行为不变：每次提问都是一张新单。
+func TestQuestionWithoutIDFallsBackToUUID(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ev := executor.AdapterEvent{Type: "question", Text: "选哪个？"}
+
+	m.handleQuestion(context.Background(), "T1", ev)
+	m.handleQuestion(context.Background(), "T1", ev)
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("无 id 的两次提问应出两张单，得到 %d 张", len(pending))
+	}
+}
+
+// TestGateDecisionParsesReason 表驱动钉住 gate 应答的翻译：只有严格 "allow"
+// 放行，其余一律 reject；reason 从 deny/deny: 前缀后取余文。
+func TestGateDecisionParsesReason(t *testing.T) {
+	cases := []struct {
+		name, answer, wantDecision, wantReason string
+	}{
+		{"批准", "allow", "once", ""},
+		{"批准带空白", "  allow  ", "once", ""},
+		{"裸拒绝", "deny", "reject", ""},
+		{"带原因", "deny: 改用 go build ./...", "reject", "改用 go build ./..."},
+		{"带原因无空格", "deny:改用 go build", "reject", "改用 go build"},
+		{"任意文本", "看着办", "reject", ""},
+		{"空串", "", "reject", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, r := gateDecision(c.answer)
+			if d != c.wantDecision || r != c.wantReason {
+				t.Fatalf("gateDecision(%q) = (%q,%q)，期望 (%q,%q)",
+					c.answer, d, r, c.wantDecision, c.wantReason)
+			}
+		})
+	}
+}
+
+// TestDenyGuidanceRelayedOnNextQuestion 验证 B50：带原因的拒绝，其原因在下一条
+// question 到达时被 Send 给 executor，且该分支不建工单、不落 waiting_answer。
+func TestDenyGuidanceRelayedOnNextQuestion(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用 go build ./...")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{
+		Type: "question", Text: "上一步操作因权限被拒而终止了本回合",
+	})
+
+	// 不建工单
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("guidance 分支不应建工单，得到 %+v", pending)
+	}
+	// 不落 waiting_answer（否则就是「等你回答却零挂起工单」的死形态）
+	task, err := st.GetTask("T1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("状态 = %q，期望保持 running", task.State)
+	}
+	// 原因真的发给了 executor
+	sends := ad.sendsRec()
+	if len(sends) != 1 || !strings.Contains(sends[0], "改用 go build ./...") {
+		t.Fatalf("Send 记录 = %v，未包含拒绝原因", sends)
+	}
+	// 落了审计事件
+	evs, err := st.EventsFromAsc("T1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var relayed int
+	for _, e := range evs {
+		if e.Type == proto.EventTypeDenyGuidanceRelayed {
+			relayed++
+		}
+	}
+	if relayed != 1 {
+		t.Fatalf("deny_guidance_relayed 事件 %d 条，期望 1", relayed)
+	}
+}
+
+// TestDenyGuidanceConsumedOnce 验证取走式：guidance 只抑制一条 question，
+// 第二条正常出单。常驻会让后续真提问被永久吞掉，任务停在 running 无人知晓。
+func TestDenyGuidanceConsumedOnce(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidance("T1", "改用别的办法")
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题一"})
+	m.handleQuestion(context.Background(), "T1", executor.AdapterEvent{Type: "question", Text: "问题二"})
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("第二条 question 应正常出单，挂起工单 %d 张", len(pending))
 	}
 }

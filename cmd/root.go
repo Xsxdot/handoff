@@ -12,10 +12,17 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/release"
+	"github.com/xushixin/handoff/internal/selfupdate"
 )
 
 var (
@@ -40,12 +47,14 @@ var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 		cmd.SilenceUsage = true
 	},
+	PersistentPostRun: func(cmd *cobra.Command, _ []string) { maybeNotifyUpdate(cmd) },
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&agentdURL, "agentd", "http://127.0.0.1:7777", "agentd 服务地址")
 	rootCmd.PersistentFlags().StringVar(&targetName, "target", "", "目标主机名（从配置 Targets 中换算 addr/token）")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "配置文件路径（默认 ~/.handoff/config.yaml）")
+	rootCmd.AddCommand(updateCheckCmd)
 }
 
 // Execute 运行根命令，错误返回给 main。
@@ -81,6 +90,60 @@ func resetPerRunState(c *cobra.Command) {
 	for _, sub := range c.Commands() {
 		resetPerRunState(sub)
 	}
+}
+
+// Endpoint 是一台可被升级的机器。
+//
+// Local 为 true 时 Name 恒为「本机」：它的二进制由 CLI 直接换（文件就在本地），
+// 与远端走的是两条不同的路径（spec §4.2）。
+type Endpoint struct {
+	Name  string
+	Addr  string
+	Token string
+	Local bool
+}
+
+// Endpoints 返回要处理的机器清单。
+//
+// 参数：
+//   - only: 为空时返回 [本机, 全部 target（按名字排序）]；非空时只返回该 target
+//
+// 返回：
+//   - 机器清单；only 指定的 target 不存在时返回错误
+//
+// 为什么本机也在清单里：版本一致本身就是要解决的问题，把本机排除在外，
+// 「本机新远端旧」就会成为常态。而操作者不必记住配置里有哪些 target——
+// 这正是「一条命令看清所有机器」的前提（spec D2）。
+func Endpoints(only string) ([]Endpoint, error) {
+	p := configPath
+	if p == "" {
+		p = config.DefaultPath()
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		return nil, fmt.Errorf("加载配置 %s: %w", p, err)
+	}
+	if only != "" {
+		t, ok := cfg.Targets[only]
+		if !ok {
+			return nil, fmt.Errorf("target %q 未在配置 %s 中定义", only, p)
+		}
+		return []Endpoint{{Name: only, Addr: "http://" + t.Addr, Token: t.Token}}, nil
+	}
+	local := cfg.Listen
+	if !strings.Contains(local, "://") {
+		local = "http://" + local
+	}
+	eps := []Endpoint{{Name: "本机", Addr: local, Token: cfg.Token, Local: true}}
+	names := make([]string, 0, len(cfg.Targets))
+	for n := range cfg.Targets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		eps = append(eps, Endpoint{Name: n, Addr: "http://" + cfg.Targets[n].Addr, Token: cfg.Targets[n].Token})
+	}
+	return eps, nil
 }
 
 // TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。
@@ -129,6 +192,23 @@ func TargetEndpoint() (addr, token string, err error) {
 	return "http://" + t.Addr, t.Token, nil
 }
 
+// LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。
+//
+// 返回：
+//   - addr: 本机 agentd 完整地址（含 http:// 前缀）
+//   - token: 本机令牌
+//   - err: 配置加载失败或本机 token 为空时返回
+//
+// 为什么需要它而不是复用 TargetEndpoint：登记是**两跳**（本机 + 目标机，
+// spec §6.1），而 TargetEndpoint 读的是包级 targetName，指定了 --target 时
+// 拿不到本机端点。两跳都要发，就必须有一个不受 --target 影响的取端点入口。
+func LocalEndpoint() (addr, token string, err error) {
+	saved := targetName
+	targetName = ""
+	defer func() { targetName = saved }()
+	return TargetEndpoint()
+}
+
 // loadCLIConfig 加载 CLI 侧配置（wait/dispatch/pull 等子命令读同步/终端偏好）。
 // 配置加载失败时返回空配置：偏好项（Sync.Auto / Terminal.Auto）取默认值即可，
 // 真正的配置错误由 TargetEndpoint 在更早处暴露。
@@ -142,4 +222,69 @@ func loadCLIConfig() *config.Config {
 		return &config.Config{}
 	}
 	return cfg
+}
+
+// updateCheckCmd 是被 CLI 自己以后台进程方式拉起的隐藏子命令：查一次版本、
+// 写缓存、退出。
+//
+// 为什么要一个独立进程而不是在当前命令里起 goroutine：CLI 进程通常在几十
+// 毫秒内就退出了，goroutine 会被一起带走，那个"异步检查"永远跑不完。
+// 独立子进程在父进程退出后被 init 收养，能安安静静地把检查做完。
+var updateCheckCmd = &cobra.Command{
+	Use:    "update-check",
+	Short:  "内部命令：后台检查最新版本并写缓存",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := config.Load(effectiveConfigPath())
+		if err != nil {
+			return err
+		}
+		rel, err := release.NewClient().Latest(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return selfupdate.SaveCLICheck(cfg.DataDir, &selfupdate.CLICheck{
+			CheckedAt: time.Now().UTC(), Latest: rel.Tag,
+		})
+	},
+}
+
+// maybeNotifyUpdate 在每条命令跑完后打一行更新提示，并在缓存过期时拉起一次
+// 后台检查。
+//
+// 注意：
+//   - 提示打在 **stderr**：stdout 是各命令的机器可读输出（dispatch 的 JSON、
+//     tasks 的每行 JSON），往里掺一行人话会让 jq 直接失败
+//   - 任何一步失败都静默跳过。这条路径挂在每一条命令上，它自己绝不能成为
+//     故障源——少提示一次更新，比让所有命令都报错好得多
+//   - 隐藏子命令自己不触发（否则每次后台检查又拉起一个后台检查）
+func maybeNotifyUpdate(cmd *cobra.Command) {
+	if cmd.Name() == updateCheckCmd.Name() || cmd.Name() == upgradeCmd.Name() {
+		return
+	}
+	cfg, err := config.Load(effectiveConfigPath())
+	if err != nil {
+		return
+	}
+	c := selfupdate.LoadCLICheck(cfg.DataDir)
+	bi, _ := buildinfo.Read()
+	if line := selfupdate.NotifyLine(c, bi.Version); line != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
+	}
+	if !selfupdate.CLICheckStale(c, time.Now().UTC()) {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// 不等它：Start 之后本进程照常退出，子进程被 init 收养后自己跑完
+	bg := exec.Command(exe, "update-check", "--config", effectiveConfigPath())
+	bg.Stdout, bg.Stderr, bg.Stdin = nil, nil, nil
+	if err := bg.Start(); err != nil {
+		return
+	}
+	// 必须 Release：不回收也不等待的子进程会变成僵尸，虽然本进程马上就退了，
+	// 但在 `handoff wait` 这种长命命令里会实实在在留一个
+	_ = bg.Process.Release()
 }

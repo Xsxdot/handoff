@@ -34,6 +34,7 @@ import (
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/fake"
 	"github.com/xushixin/handoff/internal/permgate"
+	"github.com/xushixin/handoff/internal/projectid"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -55,11 +56,20 @@ type integEnv struct {
 	st   *store.Store
 	fake *fake.Fake
 	cli  *client.Client
-	repo string // 任务仓库（沙箱里 git init 的干净仓库，Dispatch 的分支准备落在这里）
+	mgr  *agentd.Manager // 供测试直接登记项目（B62：派发必须先登记）
+	// repo 是任务仓库（沙箱里 git init 的干净仓库，Dispatch 的分支准备落在这里）。
+	// repoPID 是它登记后的 project_id（懒登记，首次用时缓存）。
+	repo    string
+	repoPID string
 }
 
 // newIntegEnv 组装完整测试环境并注册清理；fake 脚本为 nil 时用空脚本（后续 fake.Add 补）。
 func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
+	return newIntegEnvCfg(t, script, nil)
+}
+
+// newIntegEnvCfg 组装测试环境，cfgMut 可在构造 manager 前调整配置（如 RepoRoot）。
+func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config)) *integEnv {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir()) // cursor 落盘重定向到测试沙箱
 	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
@@ -69,13 +79,39 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	if cfgMut != nil {
+		cfgMut(cfg)
+	}
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
-	return &integEnv{srv: srv, ts: ts, st: st, fake: f, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
+	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
+}
+
+// registerProject 把 repo 登记成一个项目位置（同一仓库只登一次，结果缓存），
+// 返回它的 project_id。
+//
+// 为什么每个派发用例都要先登记：B62 之后「必须先登记才能派发」是服务端单方面
+// 保证的不变式，**不给测试开旁路**——开了旁路，测试就测不到真实调用路径。
+// origin 由路径派生：每个用例的仓库各不相同，project_id 因此天然不撞。
+func (e *integEnv) registerProject(t *testing.T, repo string) string {
+	t.Helper()
+	if repo == e.repo && e.repoPID != "" {
+		return e.repoPID
+	}
+	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
+	runGit(t, repo, "remote", "add", "origin", origin)
+	loc, err := e.mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	if err != nil {
+		t.Fatalf("registerProject(%s): %v", repo, err)
+	}
+	if repo == e.repo {
+		e.repoPID = loc.ProjectID
+	}
+	return loc.ProjectID
 }
 
 // newTestRepo 在沙箱里造一个干净的 git 仓库（main 分支 + 初始提交），返回仓库路径。
@@ -108,8 +144,9 @@ func runGit(t *testing.T, dir string, args ...string) string {
 // dispatchPlan 用真实 client 派发一个任务并返回任务（仓库用沙箱里的干净 git 仓库）。
 func (e *integEnv) dispatchPlan(t *testing.T, plan string) *proto.Task {
 	t.Helper()
+	pid := e.registerProject(t, e.repo)
 	task, err := e.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: e.repo, PlanB64: base64.StdEncoding.EncodeToString([]byte(plan)), PlanName: "plan.md", Target: "local",
+		ProjectID: pid, PlanB64: base64.StdEncoding.EncodeToString([]byte(plan)), PlanName: "plan.md", Target: "local",
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -483,6 +520,7 @@ func TestPermissionImmediateVisible(t *testing.T) {
 func TestDispatchDirtyWorktree409(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 
 	// 弄脏工作区（未跟踪文件）
 	dirtyPath := filepath.Join(env.repo, "dirty.txt")
@@ -491,7 +529,7 @@ func TestDispatchDirtyWorktree409(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(dirtyPath) })
 
-	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("脏工作区派发应被拒绝")
 	}
@@ -503,7 +541,7 @@ func TestDispatchDirtyWorktree409(t *testing.T) {
 	if err := os.Remove(dirtyPath); err != nil {
 		t.Fatalf("清理脏文件: %v", err)
 	}
-	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
+	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err != nil {
 		t.Fatalf("清理后 Dispatch: %v", err)
 	}
@@ -518,7 +556,15 @@ func TestDispatchRepoUnusable400(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
 
-	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: filepath.Join(t.TempDir(), "no-such-repo"), PlanB64: plan, PlanName: "plan.md", Target: "local"})
+	// B62：项目必须先登记；登记要求路径是可用 git 仓库，登记完把目录删掉，
+	// 让派发命中「路径不存在」的仓库可用性检查（原用例的直接塞不存在路径已不可行）
+	repo := newTestRepo(t)
+	pid := env.registerProject(t, repo)
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatalf("RemoveAll(%s): %v", repo, err)
+	}
+
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("仓库不可用应被拒绝")
 	}
@@ -532,6 +578,7 @@ func TestDispatchRepoUnusable400(t *testing.T) {
 func TestDispatchUnknownError500(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 
 	// store 关闭后 CreateTask 失败：非 ErrDirtyWorktree/ErrRepoUnusable/
 	// errBadDispatchRequest 的未知错误 → 走 500 兜底（store.Close 幂等，
@@ -539,7 +586,7 @@ func TestDispatchUnknownError500(t *testing.T) {
 	if err := env.st.Close(); err != nil {
 		t.Fatalf("关闭 store: %v", err)
 	}
-	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local"})
+	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local"})
 	if err == nil {
 		t.Fatal("store 关闭后派发应失败")
 	}
@@ -590,9 +637,16 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	srv.SetManager(mgr)
 
 	repo := newTestRepo(t)
+	// B62：派发必须先登记，登记会落到 store，随后 Dispatch 解析出同一路径
+	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
+	runGit(t, repo, "remote", "add", "origin", origin)
+	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	if rerr != nil {
+		t.Fatalf("RegisterProject: %v", rerr)
+	}
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
 	_, err = client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
-		Repo: repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+		ProjectID: loc.ProjectID, PlanB64: plan, PlanName: "plan.md", Target: "local",
 	})
 	if err == nil {
 		t.Fatal("executor 启动失败应使 dispatch 失败")
@@ -680,8 +734,16 @@ func TestDispatchNewWorktreeRepoUnusable400(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
 
+	// B62：项目必须先登记；登记要求路径是可用 git 仓库，登记完把目录删掉，
+	// 让派发命中「路径不存在」的仓库可用性检查（等价于旧用例的非 git 路径）
+	repo := newTestRepo(t)
+	pid := env.registerProject(t, repo)
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatalf("RemoveAll(%s): %v", repo, err)
+	}
+
 	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: t.TempDir(), PlanB64: plan, PlanName: "plan.md",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md",
 		Target: "local", NewWorktree: true,
 	})
 	if err == nil {
@@ -700,8 +762,16 @@ func TestDispatchRepoUnusableNotMisdiagnosed(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
 
+	// B62：项目必须先登记；登记要求路径是可用 git 仓库，登记完把目录删掉，
+	// 让派发命中「路径不存在」的仓库可用性检查
+	repo := newTestRepo(t)
+	pid := env.registerProject(t, repo)
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatalf("RemoveAll(%s): %v", repo, err)
+	}
+
 	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: t.TempDir(), PlanB64: plan, PlanName: "plan.md",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md",
 		Target: "local", NewWorktree: true,
 		BaseCommit: strings.Repeat("a", 40),
 	})
@@ -723,10 +793,11 @@ func TestDispatchRepoUnusableNotMisdiagnosed(t *testing.T) {
 func TestDispatchWorkdirBusyWhileRunning409(t *testing.T) {
 	env := newIntegEnv(t, nil) // 空脚本：A 起来后停在 running
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 	a := env.dispatchPlan(t, "第一个任务")
 
 	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local",
 	})
 	if err == nil {
 		t.Fatal("同一仓库的第二个原地任务应被拒绝")
@@ -757,6 +828,7 @@ func TestDispatchWorkdirBusyWhileRunning409(t *testing.T) {
 func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
 	env := newIntegEnv(t, []fake.Step{{Finish: executor.Result{OK: true, Summary: "干完了"}}})
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 	a := env.dispatchPlan(t, "第一个任务")
 
 	if ev := env.waitAction(t, a.ID); ev.Type != proto.EventTypeCompleted {
@@ -768,7 +840,7 @@ func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
 	})
 
 	_, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local",
 	})
 	if err == nil {
 		t.Fatal("waiting_review 的任务仍占着工作树，第二个任务应被拒绝")
@@ -791,9 +863,10 @@ func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
 func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 	for i := 0; i < 2; i++ {
 		task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-			Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+			ProjectID: pid, PlanB64: plan, PlanName: "plan.md",
 			Target: "local", NewWorktree: true,
 		})
 		if err != nil {
@@ -810,17 +883,18 @@ func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
 func TestDispatchUserWorktreeBusy(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 	wt := filepath.Join(t.TempDir(), "wt")
 	runGit(t, env.repo, "worktree", "add", "-b", "wt-branch", wt)
 
 	first, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
 	})
 	if err != nil {
 		t.Fatalf("首个用户树派发: %v", err)
 	}
 	_, err = env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md", Target: "local", Worktree: wt,
 	})
 	if err == nil {
 		t.Fatal("同一棵用户 worktree 的第二个任务应被拒绝")
@@ -837,6 +911,7 @@ func TestDispatchUserWorktreeBusy(t *testing.T) {
 func TestDispatchNewWorktreeCarriesDirtySnapshot(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 	for i := 0; i < 9; i++ {
 		name := fmt.Sprintf("dirty-%d.txt", i)
 		if err := os.WriteFile(filepath.Join(env.repo, name), []byte("x"), 0o644); err != nil {
@@ -845,7 +920,7 @@ func TestDispatchNewWorktreeCarriesDirtySnapshot(t *testing.T) {
 	}
 
 	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md",
 		Target: "local", NewWorktree: true,
 	})
 	if err != nil {
@@ -867,9 +942,10 @@ func TestDispatchNewWorktreeCarriesDirtySnapshot(t *testing.T) {
 func TestDispatchNewWorktreeCleanRepoNoSnapshot(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
+	pid := env.registerProject(t, env.repo)
 
 	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
-		Repo: env.repo, PlanB64: plan, PlanName: "plan.md",
+		ProjectID: pid, PlanB64: plan, PlanName: "plan.md",
 		Target: "local", NewWorktree: true,
 	})
 	if err != nil {
@@ -1006,134 +1082,151 @@ func postRaw(t *testing.T, srv *httptest.Server, path string, body any, wantStat
 	return string(rb)
 }
 
-// TestRepoAPIAddListRemove 走完整 HTTP 面：登记 → 列出 → 注销。
-func TestRepoAPIAddListRemove(t *testing.T) {
+// TestProjectAPIAddListRemove 走完整 HTTP 面：登记 → 列出 → 注销。
+func TestProjectAPIAddListRemove(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
 	repo := initWorkRepo(t, origin)
 
-	var added proto.Repo
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo}, http.StatusOK, &added)
+	var added proto.ProjectLocation
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "r1", "path": repo, "origin_url": origin}, http.StatusOK, &added)
 	if added.OriginURL != origin {
 		t.Fatalf("OriginURL = %q, want %q", added.OriginURL, origin)
 	}
+	if added.ProjectID == "" {
+		t.Fatal("project_id 应由 origin 派生，不应为空")
+	}
 
-	var list []proto.Repo
-	getJSON(t, srv, "/api/repos", http.StatusOK, &list)
+	var list []proto.ProjectLocation
+	getJSON(t, srv, "/api/projects", http.StatusOK, &list)
 	if len(list) != 1 || list[0].Name != "r1" || list[0].Status != "有效" {
 		t.Fatalf("列表不符: %+v", list)
 	}
 
-	deleteReq(t, srv, "/api/repos/r1", http.StatusOK)
-	getJSON(t, srv, "/api/repos", http.StatusOK, &list)
+	deleteReq(t, srv, "/api/projects/r1", http.StatusOK)
+	getJSON(t, srv, "/api/projects", http.StatusOK, &list)
 	if len(list) != 0 {
 		t.Fatalf("注销后仍有 %d 条", len(list))
 	}
 }
 
-// TestRepoAPIRejectsNonRepoWithReadableReason 验证非 git 路径 → 400 且带 git 原文，
+// TestProjectAPIRejectsNonRepoWithReadableReason 验证非 git 路径 → 400 且带 git 原文，
 // 不被扁平化成「操作失败」（B45 立下的规矩）。
-func TestRepoAPIRejectsNonRepoWithReadableReason(t *testing.T) {
+func TestProjectAPIRejectsNonRepoWithReadableReason(t *testing.T) {
 	srv, _ := newTestServer(t)
-	body := postRaw(t, srv, "/api/repos",
-		map[string]any{"name": "x", "path": t.TempDir()}, http.StatusBadRequest)
+	body := postRaw(t, srv, "/api/projects",
+		map[string]any{"name": "x", "path": t.TempDir(), "origin_url": "git@example.com:org/x.git"},
+		http.StatusBadRequest)
 	if !strings.Contains(body, "not a git repository") {
 		t.Fatalf("响应体未带 git 原文: %s", body)
 	}
 }
 
-// TestRepoAPICloneIntoExistingPathConflicts 验证落点已存在 → 409。
-func TestRepoAPICloneIntoExistingPathConflicts(t *testing.T) {
-	srv, _ := newTestServer(t)
+// TestProjectAPICloneIntoExistingPathConflicts 验证克隆落点已存在 → 409
+//（不给 path 让 agentd 自己 clone，落点 repo_root/<名字> 已被占住）。
+func TestProjectAPICloneIntoExistingPathConflicts(t *testing.T) {
+	root := t.TempDir()
+	env := newIntegEnvCfg(t, nil, func(cfg *config.Config) { cfg.RepoRoot = root })
 	origin := initBareOrigin(t)
-	postRaw(t, srv, "/api/repos",
-		map[string]any{"name": "x", "path": t.TempDir(), "url": origin, "clone": true},
+	dest := filepath.Join(root, "x")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	postRaw(t, env.ts, "/api/projects",
+		map[string]any{"name": "x", "origin_url": origin},
 		http.StatusConflict)
 }
 
-// TestRepoAPIRemoveMissing 验证注销不存在的登记 → 404。
-func TestRepoAPIRemoveMissing(t *testing.T) {
+// TestProjectAPIRemoveMissing 验证注销不存在的位置 → 404。
+func TestProjectAPIRemoveMissing(t *testing.T) {
 	srv, _ := newTestServer(t)
-	deleteReq(t, srv, "/api/repos/nope", http.StatusNotFound)
+	deleteReq(t, srv, "/api/projects/nope", http.StatusNotFound)
 }
 
-// TestDispatchResolvesRegisteredShortName 验证短名派发落到登记的路径上。
+// TestDispatchResolvesRegisteredShortName 验证 project_name 派发落到登记的路径上。
 func TestDispatchResolvesRegisteredShortName(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
 	repo := initWorkRepo(t, origin)
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo},
-		http.StatusOK, &proto.Repo{})
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "r1", "path": repo, "origin_url": origin},
+		http.StatusOK, &proto.ProjectLocation{})
 
 	var task proto.Task
 	postJSON(t, srv, "/api/tasks",
-		map[string]any{"repo": "r1", "prompt": "干活", "new_worktree": true},
+		map[string]any{"project_name": "r1", "prompt": "干活", "new_worktree": true},
 		http.StatusOK, &task)
 	if task.RepoPath != repo {
 		t.Fatalf("RepoPath = %q, want 登记的 %q", task.RepoPath, repo)
 	}
 }
 
-// TestDispatchAutoSelectsByOrigin 验证省略 repo 时按 origin 唯一命中自动选中。
-func TestDispatchAutoSelectsByOrigin(t *testing.T) {
+// TestDispatchResolvesProjectID 验证按 project_id 派发落到登记的路径上
+//（B62 的主路径：CLI 从 cwd 的 origin 离线算出 project_id 上送）。
+func TestDispatchResolvesProjectID(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
 	repo := initWorkRepo(t, origin)
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "r1", "path": repo},
-		http.StatusOK, &proto.Repo{})
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "r1", "path": repo, "origin_url": origin},
+		http.StatusOK, &proto.ProjectLocation{})
 
 	var task proto.Task
 	postJSON(t, srv, "/api/tasks",
-		map[string]any{"repo": "", "origin_url": origin, "prompt": "干活", "new_worktree": true},
+		map[string]any{"project_id": projectid.FromOrigin(origin), "prompt": "干活", "new_worktree": true},
 		http.StatusOK, &task)
 	if task.RepoPath != repo {
 		t.Fatalf("RepoPath = %q, want %q", task.RepoPath, repo)
 	}
 }
 
-// TestDispatchAmbiguousOriginListsCandidates 验证多命中 → 400 且报文列出候选。
-func TestDispatchAmbiguousOriginListsCandidates(t *testing.T) {
+// TestProjectAPISecondLocationSameProject409 验证 ADR-0008 在 HTTP 面的新边界：
+// 同一项目登记第二个位置（同 origin、换路径）→ 409。B62 之前同名 origin 会造出
+// 派发歧义，之后被「一台机器一个位置」的主键直接拒掉。
+func TestProjectAPISecondLocationSameProject409(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
-	r1, r2 := initWorkRepo(t, origin), initWorkRepo(t, origin)
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "a", "path": r1}, http.StatusOK, &proto.Repo{})
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "b", "path": r2}, http.StatusOK, &proto.Repo{})
-
-	body := postRaw(t, srv, "/api/tasks",
-		map[string]any{"origin_url": origin, "prompt": "干活", "new_worktree": true},
-		http.StatusBadRequest)
-	for _, want := range []string{"a", "b"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("报文 %q 未列出候选 %q", body, want)
-		}
+	first := initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "a", "path": first, "origin_url": origin},
+		http.StatusOK, &proto.ProjectLocation{})
+	second := initWorkRepo(t, origin)
+	body := postRaw(t, srv, "/api/projects",
+		map[string]any{"name": "b", "path": second, "origin_url": origin},
+		http.StatusConflict)
+	if !strings.Contains(body, "已登记") {
+		t.Fatalf("409 报文应指向已有位置: %s", body)
 	}
 }
 
-// TestDispatchUnregisteredNameLists 验证短名查不到 → 400 且报文带已登记清单。
+// TestDispatchUnregisteredNameLists 验证 project_name 查不到 → 400 且报文带已登记清单。
 func TestDispatchUnregisteredNameLists(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
 	repo := initWorkRepo(t, origin)
-	postJSON(t, srv, "/api/repos", map[string]any{"name": "known", "path": repo},
-		http.StatusOK, &proto.Repo{})
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "known", "path": repo, "origin_url": origin},
+		http.StatusOK, &proto.ProjectLocation{})
 	body := postRaw(t, srv, "/api/tasks",
-		map[string]any{"repo": "unknown", "prompt": "干活", "new_worktree": true},
+		map[string]any{"project_name": "unknown", "prompt": "干活", "new_worktree": true},
 		http.StatusBadRequest)
 	if !strings.Contains(body, "known") {
-		t.Fatalf("报文未列出已登记的仓库: %s", body)
+		t.Fatalf("报文未列出已登记的项目: %s", body)
 	}
 }
 
-// TestDispatchAbsolutePathStillWorks 验证老用法（完整路径）行为完全不变。
-func TestDispatchAbsolutePathStillWorks(t *testing.T) {
+// TestDispatchBodyPathFieldIgnored 验证 B62 的边界：请求体里即使塞了 repo 路径
+// 也会被忽略——「代码在这台机器的哪个目录」由本机位置表决定，不由调用方描述。
+func TestDispatchBodyPathFieldIgnored(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)
 	repo := initWorkRepo(t, origin)
+	postJSON(t, srv, "/api/projects", map[string]any{"name": "r1", "path": repo, "origin_url": origin},
+		http.StatusOK, &proto.ProjectLocation{})
+
+	// 塞一个指向别的仓库的 repo 字段：应当被忽略，任务仍落在登记的位置上
+	other := initWorkRepo(t, initBareOrigin(t))
 	var task proto.Task
 	postJSON(t, srv, "/api/tasks",
-		map[string]any{"repo": repo, "prompt": "干活", "new_worktree": true},
+		map[string]any{"project_id": projectid.FromOrigin(origin), "prompt": "干活", "new_worktree": true, "repo": other},
 		http.StatusOK, &task)
 	if task.RepoPath != repo {
-		t.Fatalf("RepoPath = %q, want %q", task.RepoPath, repo)
+		t.Fatalf("请求体里的 repo 路径应被忽略：RepoPath = %q, want 登记的 %q", task.RepoPath, repo)
 	}
 }

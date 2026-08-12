@@ -54,7 +54,71 @@ go build -o handoff . && sudo mv handoff /usr/local/bin/   # 或直接 go run . 
 Windows 实现尚未完成。
 
 装完用 `handoff version` 确认：首行是版本号（形如 `v0.1.0`）说明装的是 release 构建；
-显示 `unknown` 说明这是本地 `go build` 的产物，自动更新不会作用于它。
+显示 `unknown` 说明这是本地 `go build` 的产物，`handoff upgrade` 不会把它当 release
+版本比对。
+
+装完先配一次：
+
+```bash
+handoff init                    # 探测本机 executor，问答式写出 config.yaml
+handoff service install         # 把 agentd 交给 launchd / systemd 托管
+handoff service status          # 看托管状态
+```
+
+`handoff init` 可以随时重跑当改配置用——每一问的默认值取当前配置的实际值，
+一路回车即原样保持。stdin 不是终端时（例如经管道调起）它一问不问，只写默认配置。
+
+**托管之后 agentd 的形态会变**：它由进程管理器拉起，崩溃或退出都会被自动拉回。
+Ctrl-C 停不掉它（会被立刻重新拉起），要真正停掉请用 `handoff service uninstall`，
+或 `systemctl stop handoff-agentd` / `launchctl bootout gui/$(id -u)/dev.gosuper.handoff.agentd`。
+macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的服务空窗——
+执行者不受影响（它们在独立会话里），但期间的 `dispatch` / `reply` 会失败。
+
+### 升级与 skill 分发
+
+升级由**操作者触发**，不再有定时自动更新：一条命令看清本机与全部 target 的版本，
+一条命令把所有落后的机器升到同一版本。二进制由本机（审核者机器）下载后推送，
+**执行机无需出网**——内网机器、跳板机后面的机器也一样能升。
+
+```bash
+handoff upgrade                       # 巡检：列出所有机器的版本与结论（默认行为）
+handoff upgrade --now                 # 升级所有落后的机器（含本机；本机排最后）
+handoff upgrade --now --target devbox # 只升 devbox 这一台
+handoff upgrade --now --force         # 越过「有活跃任务」那道闸
+handoff upgrade --rollback            # 本机回滚（<二进制>.prev；不支持 --target）
+```
+
+巡检输出示例：
+
+```
+最新     v0.1.1
+本机     二进制 v0.1.0 · agentd v0.1.0   需要升级
+devbox   v0.1.0                          需要升级
+prod     v0.1.1                          已是最新
+aliyun   够不着（dial tcp 10.0.0.5:7777: connect: connection refused）
+```
+
+`--now` 会经接口触发 agentd 重启（远端全部处理完才轮到本机——本机重启会打断操作者
+正用着的 agentd）。换版后 CLI 轮询 status 确认新版本上线，超时则如实报「已换版但
+新进程未上线」并给出回滚命令，绝不报成「升级完成」。
+
+两道闸在下载前逐台预检，agentd 收到推送时再复检一次：
+
+- **活跃任务**：`running` 与 `waiting_answer` 不为 0 时默认拒绝（`waiting_review`
+  不计入——它可能挂几天）。`--force` 可越过，报告里会给可复制的 `--force` 命令行。
+- **非托管**：agentd 不是被 launchd / systemd 拉起的，换完没人拉起。**`--force`
+  也不越过**——处置是先在该机器上 `handoff service install`。
+
+`update.auto` / `update.interval` 两个配置键**已废弃、不再有任何效果**（agentd 不再
+定时查版本）。字段保留只是为了让 v0.1.0 写下的旧配置能继续加载；取非默认值时启动
+会打一条 Warn 说明。
+
+新版起来后如果有问题，**不会自动回滚**——旧二进制留在 `<路径>.prev`，用
+`handoff upgrade --rollback` 人工换回。自动回滚需要「新版启动后自证健康」的握手
+协议，而它挡不住的恰恰是「能起来但有逻辑回归」那一类。
+
+CLI 每天最多在后台查一次版本，有新版时在 **stderr** 打一行提示。它**不会**自动
+替换自己。
 
 ```bash
 # 1. 启动 agentd（executor 机；首次运行自动生成 ~/.handoff/config.yaml，内含随机 Token）
@@ -71,22 +135,33 @@ handoff agentd --executor=codex             # 用 codex 执行（需本机已登
 #    不配它会 Permission denied（pull 无法建立 ssh 连接）。
 
 # 3. 派发一个计划（executor 机侧或经 --target 远程；仓库必须工作区干净）
-handoff dispatch --repo /path/to/repo plan.md
-handoff dispatch --repo /path/to/repo --prompt "把 README 安装命令改成 brew"   # 无 plan 文件
-handoff dispatch --repo /path/to/repo --new-worktree --executor opencode --model cheap/model plan.md
-handoff dispatch --repo /path/to/repo --new-worktree --executor claude plan.md              # 用 Claude Code 执行
-handoff dispatch --repo /path/to/repo --new-worktree --executor grok plan.md                # 用 grok 执行
-handoff dispatch --repo /path/to/repo --new-worktree --executor codex plan.md               # 用 codex 执行
-handoff dispatch --repo /path/to/repo --no-terminal plan.md                    # 派发后不弹终端
+# 派发的项目由当前目录识别，不需要写路径
+handoff dispatch plan.md
+handoff dispatch --prompt "把 README 安装命令改成 brew"                        # 无 plan 文件
+handoff dispatch --new-worktree --executor opencode --model cheap/model plan.md
+handoff dispatch --new-worktree --executor claude plan.md                      # 用 Claude Code 执行
+handoff dispatch --target devbox plan.md                                      # 派到开发机（未登记会自动登记）
+handoff dispatch --project nova --target devbox plan.md                       # 跨项目：cwd 不是目标项目时
+handoff dispatch --no-terminal plan.md                                        # 派发后不弹终端
 
 # 4. 审核者侧典型循环
-handoff wait <task-id> --notify             # 挂后台；事件到达输出单行 JSON 并退出
-handoff wait <task-id> --timeout 1h         # 到点报错退出非 0（区别于事件到达的 0）
+handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
+handoff wait --follow <task-id> --timeout 3h  # 持续订阅：每条事件单行输出，任务终结（failed/归档）才退出
 handoff reply <task-id> --ticket <id> --approve                       # 批权限门
 handoff reply <task-id> --ticket <id> --deny --reason "不该装这个"     # 拒权限门
 handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答提问
-handoff wait <task-id>                       # 重新挂 wait，循环往复
 ```
+
+`--timeout` 在两种模式下语义不同：一次性模式是「等不到事件的总时长上限」，
+`--follow` 模式是「空闲上限」——距上一次收到任何帧（含不唤醒的 progress）的
+时长，跨重连累计。**`--follow` 下它必须大于 agentd 的 `stalltimeout`（默认 2h）**，
+否则客户端超时会抢在服务端的停滞诊断前面退出；设小了 handoff 会打一条 WARN。
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 一次性：等到事件；`--follow`：任务已终结（failed 或被归档） |
+| 124 | 超时（一次性：总时长；`--follow`：空闲） |
+| 其他非 0 | 鉴权失败 / 任务不存在 / 连接永久失败 |
 
 事件到达后：`completed`/`failed` 进审核 → `handoff diff <task>` 看改动、必要时 `fetch`/`run` 取证 → 要改就 `handoff continue <task> "<指令>"`（同一会话续接），审过就 `handoff done <task>`。
 
@@ -95,11 +170,11 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | 命令 | 用途 | 关键参数 |
 |------|------|----------|
 | `handoff agentd` | 启动 agentd 服务（HTTP + WS） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发计划任务 | `--repo <路径\|登记名>`（可省略，省略时按当前目录 origin 自动匹配登记）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`（派发后不弹终端实况）；`--no-sync-check`（远程派发时跳过基线校验）；`--allow-dirty`（本地工作区有未提交的已跟踪改动时仍照常派发） |
-| `handoff repo add [名字]` | 登记一个仓库到执行机（可让 agentd 克隆一份） | `--path <执行机上的仓库路径>`，或 `--clone [--url <URL>] [--path <落点>]`（二选一；名字省略时按 origin 末段派生） |
-| `handoff repo ls` | 列出执行机上的仓库登记（含实际状态） | — |
-| `handoff repo rm <名字>` | 注销一条仓库登记（只删登记，不删磁盘） | — |
-| `handoff wait <task>` | 阻塞等待下一个可动作事件 | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（如 `1h`，到点报错退出非 0，默认无限等）；`--no-sync`（任务结束时不自动同步远程任务分支） |
+| `handoff dispatch [plan.md]` | 派发计划任务（项目由当前目录自动识别） | `--project <名字>`（cwd 不是目标项目时指定）；`--prompt "<指令>"`（prompt-only 派发，与 plan 文件至少其一）；`--name`/`--executor`/`--model`；`--branch <b>\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--no-terminal`；`--no-sync-check`；`--allow-dirty` |
+| `handoff project add [名字]` | 把当前项目登记到本机（`--target` 时一并登记到那台开发机） | `--target <机器>`（一起登记；那台机器上没有时自动 clone）；`--path <该机器上已有的路径>`（仅与 `--target` 连用） |
+| `handoff project ls` | 列出机器上的项目位置（含实际状态） | `--target <机器>` |
+| `handoff project rm <名字>` | 注销一条项目位置（只删登记，不删磁盘上的代码） | `--target <机器>` |
+| `handoff wait <task>` | 阻塞等待任务的下一个可动作事件（`--follow` 时持续订阅，任务终结才退出） | `--notify`（macOS 系统通知兜底）；`--timeout <时长>`（一次性=总时长上限，`--follow`=空闲上限，默认无限等）；`--follow`（持续订阅，事件单行输出）；`--no-sync` |
 | `handoff reply <task>` | 回答一个工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"`（三选一） |
 | `handoff tasks` | 列出全部任务（每行一个 JSON） | — |
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
@@ -109,6 +184,10 @@ handoff wait <task-id>                       # 重新挂 wait，循环往复
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
+| `handoff init` | 探测本机 executor 并交互式生成/更新配置（幂等，可重跑） | — |
+| `handoff service install\|uninstall\|status` | 把 agentd 交给 launchd / systemd 托管 | — |
+| `handoff upgrade [--check\|--now\|--force\|--target <名>\|--rollback]` | 巡检 / 升级本机与全部 target，或回滚本机 | `--now`（执行升级）；`--target <名>`（只升那一台）；`--force`（越过活跃任务闸，不越过非托管闸）；`--rollback`（本机回滚，不支持 `--target`） |
+| `handoff skill [install]` | 报告 / 重装内嵌 skill 在本机各 agent 的安装状态 | 安装与升级会自动调用，正常不需要手工跑 |
 | `handoff pull <task>` | 把远程任务分支同步到本地仓库（只 fetch，不 checkout） | — |
 | `handoff resume <task>` | 恢复卡死任务：重投未送达的应答，或对账补回断连窗口丢失的回合终态 | `--force`（对账判不出时仍强制收口到待审核，保住 executor 会话） |
 | `handoff diff <task>` | 输出 git diff + 提交列表（审阅素材） | `--base <分支>`（默认按仓库推导） |
@@ -175,7 +254,7 @@ sync:                         # 任务结束（completed/failed）后自动同�
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
   claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
-repo_root: ""                 # repo add --clone 未显式给路径时的默认落点根目录（可选）
+repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
 web:                          # 浏览器控制台 Host 白名单
   allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
     - handoff.example.com
@@ -195,9 +274,17 @@ PATH=${PATH}:/usr/local/go/bin
 静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
-`repo_root` 是**执行机顶层配置**：仓库登记是「哪台执行机」的属性，放顶层的语义是「每台执行机
-自己决定仓库放在哪」。只有 `repo add --clone` 省略落点路径时才用到——落点为
-`repo_root/<登记名>`；未配置时必须显式给 `--path`。
+`repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
+agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
+项目登记是「哪台执行机」的属性，放顶层的语义是「每台执行机自己决定项目放在哪」。自动登记在目标机上的
+落点有三种结局：
+
+- 落点不存在 → agentd clone 一份再登记
+- 落点已存在且就是本项目 → **直接登记，不重复 clone**（project rm 之后再派发能自动恢复登记，靠的就是这条）
+- 落点已存在但不是 git 仓库、或属于另一个项目 → 拒绝并要求人工处置；**agentd 不会自动删除或改名**
+
+因此**想改落点，不能靠「删掉登记再派发」**：那会重新认领老目录（repo_root/名字 还在），落点根本没变。
+要换位置请显式 `handoff project add --target <机器> --path <新位置>`，或先把老目录挪走/删掉。
 
 > **claude 执行者的 env 耦合**（2026-08-09 实测）：claude adapter 的任务级 `settings.json`
 > 是纯策略文件、**不含任何凭证**——**凭证由 claude 自己经 `--setting-sources user` 从真实
@@ -219,7 +306,7 @@ handoff tasks                      # 列出全部任务及状态
 handoff show <task>                # plan 摘要 + 事件历史 + 未处理挂起项（pending_tickets）
 ```
 
-处理完挂起项（未答提问、未批权限、待审核的完成事件）后重新挂 `wait` 即恢复循环。
+处理完挂起项（未答提问、未批权限、待审核的完成事件）后按 state 决定：`running` → follow 订阅继续收新事件；`waiting_review` → 进审核。
 
 > 快照查看是 `handoff show <task>`；`handoff attach [task]` 是在终端跟随任务实况（render 流），无参时在任务列表里选择。二期起两者分离——一期 attach 的语义更名给 show。
 
@@ -304,4 +391,4 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 
 - 设计文档（架构、协议、错误处理）：`docs/superpowers/specs/2026-08-07-handoff-design.md`
 - 真实 opencode e2e 手动验证清单：`docs/superpowers/e2e-checklist.md`
-- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。`bash skills/install.sh` 装到本机 Claude Code（基准副本）并软链给 codex / opencode / grok。
+- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。skill **内嵌在二进制里**，版本与二进制一致、不可能漂移：一行安装装完自动同步，`handoff upgrade --now` 换版后也会自动同步，日常不需要手工管。要查状态或重装用 `handoff skill` / `handoff skill install`（开发时用 `go run . skill install`）。

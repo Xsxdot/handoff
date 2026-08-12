@@ -33,6 +33,14 @@ func TestParseTrailer(t *testing.T) {
 		{"损坏 JSON 按 none", `{"ask":`, "none", ""},
 		{"无 JSON 行按 none", "普通输出，没有协议行", "none", ""},
 		{"合法 JSON 但无协议字段", `{"foo":1}`, "none", ""},
+		{"末行前缀正文 + finish（B48 现场）",
+			`g.{"branch":"handoff/T1","commit":"abc123","summary":"done"}`, "finish", "abc123"},
+		{"末行后缀正文 + ask", `{"ask":"用哪个库？"} 好的`, "ask", "用哪个库？"},
+		{"末行前后都有正文", `前缀 {"ask":"问题"} 后缀`, "ask", "问题"},
+		{"末行是正文时回退到更早的以 { 开头的行",
+			"{\"ask\":\"更早的问题\"}\n收尾说明没有花括号", "ask", "更早的问题"},
+		{"末行含 { 但不是合法 JSON", "见 {} 占位\n真的没有协议行", "none", ""},
+		{"末行是合法 JSON 但无协议字段", `说明 {"foo":1}`, "none", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

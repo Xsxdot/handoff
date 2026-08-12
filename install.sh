@@ -19,6 +19,14 @@ set -euo pipefail
 REPO="Xsxdot/handoff"
 INSTALL_DIR="${HANDOFF_INSTALL_DIR:-$HOME/.local/bin}"
 
+# TMPDIR_ 是下载与解包用的临时目录，由 main 赋值。这里必须先声明为空串：
+# EXIT trap 在 main 之外执行，而 main 可能在 mktemp 之前就 die（比如缺 curl），
+# 那时 trap 展开一个未赋值的变量会被 set -u 判成错误，把退出码顶成 1
+TMPDIR_=""
+# 清理下载物：安装成功、校验失败、中途 die 三条路径都经这里
+cleanup() { [ -n "$TMPDIR_" ] && rm -rf "$TMPDIR_"; return 0; }
+trap cleanup EXIT
+
 # log 输出到 stderr：stdout 留给可能被管道消费的内容，诊断信息不该混进去。
 log() { printf '%s\n' "$*" >&2; }
 
@@ -92,39 +100,52 @@ main() {
   command -v curl > /dev/null 2>&1 || die "需要 curl，请先安装"
   command -v tar > /dev/null 2>&1 || die "需要 tar，请先安装"
 
-  local platform tag tarball tmp want got
+  local platform tag tarball want got
   platform="$(detect_platform)"
   tag="$(latest_tag)"
   tarball="handoff_${tag}_${platform}.tar.gz"
 
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  # TMPDIR_ 必须是脚本级变量，不能是 main 的 local：EXIT trap 在 main 返回之后
+  # 才执行，那时 local 已出作用域，set -u 会把它判成未绑定——结果是安装明明成功
+  # 却退出码 1，且下载目录永远清不掉（die 里「下载物已清理」也随之变成假话）
+  TMPDIR_="$(mktemp -d)"
 
   log "handoff ${tag}  ${platform}"
 
-  curl -fsSL -o "${tmp}/${tarball}" \
+  curl -fsSL -o "${TMPDIR_}/${tarball}" \
     "https://github.com/${REPO}/releases/download/${tag}/${tarball}" ||
     die "下载 ${tarball} 失败（该平台的资产可能不存在于 ${tag}）"
-  curl -fsSL -o "${tmp}/checksums.txt" \
+  curl -fsSL -o "${TMPDIR_}/checksums.txt" \
     "https://github.com/${REPO}/releases/download/${tag}/checksums.txt" ||
     die "下载 checksums.txt 失败"
 
   # checksums.txt 每行是 "<sha>  <裸文件名>"；sha256sum 的 * 前缀（二进制模式）也认
-  want="$(awk -v f="$tarball" '$2 == f || $2 == "*" f {print $1}' "${tmp}/checksums.txt")"
+  want="$(awk -v f="$tarball" '$2 == f || $2 == "*" f {print $1}' "${TMPDIR_}/checksums.txt")"
   [ -n "$want" ] || die "checksums.txt 里没有 ${tarball} 的条目"
-  got="$(sha256_of "${tmp}/${tarball}")"
+  got="$(sha256_of "${TMPDIR_}/${tarball}")"
   [ "$want" = "$got" ] ||
     die "校验失败：期望 ${want}，实得 ${got}。不安装，下载物已清理"
 
-  tar xzf "${tmp}/${tarball}" -C "$tmp" || die "解包 ${tarball} 失败"
-  [ -f "${tmp}/handoff" ] || die "包内没有 handoff 可执行文件"
+  tar xzf "${TMPDIR_}/${tarball}" -C "$TMPDIR_" || die "解包 ${tarball} 失败"
+  [ -f "${TMPDIR_}/handoff" ] || die "包内没有 handoff 可执行文件"
 
   mkdir -p "$INSTALL_DIR" || die "创建 ${INSTALL_DIR} 失败"
   # install 而非 mv：目标已存在时原子覆盖，脚本因此可以反复重跑
-  install -m 0755 "${tmp}/handoff" "${INSTALL_DIR}/handoff" ||
+  install -m 0755 "${TMPDIR_}/handoff" "${INSTALL_DIR}/handoff" ||
     die "写入 ${INSTALL_DIR} 失败（目录不可写？可用 HANDOFF_INSTALL_DIR 换一个目录）"
 
   log "已安装 ${INSTALL_DIR}/handoff  ${tag}"
+
+  # 顺手把 skill 装给本机各家 agent。**必须调刚装好的那个文件**，不是别的
+  # handoff——skill 内嵌在二进制里，调旧的就装旧的。
+  #
+  # 失败不算安装失败：二进制已经装好了，skill 少一份不影响 CLI 可用，
+  # 而让整条安装因为一个附属动作退非零，用户会以为 handoff 没装上
+  if "${INSTALL_DIR}/handoff" skill install >&2; then
+    :
+  else
+    log "注意：skill 安装失败，可稍后手动跑 ${INSTALL_DIR}/handoff skill install"
+  fi
 
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;

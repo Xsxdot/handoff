@@ -41,8 +41,9 @@ type Config struct {
 	Listen  string
 	Token   string
 	DataDir string
-	// RepoRoot 是 repo add --clone 未显式指定路径时的默认落点根目录，
-	// 实际落点为 RepoRoot/<登记名>。空=未配置，此时 --clone 必须显式给路径。
+	// RepoRoot 是自动登记（B62）的 clone 落点根目录：首次派发到某台机器、而
+	// 那台机器上还没有该项目时，agentd 会把仓库 clone 到这里，实际落点为
+	// RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos。
 	//
 	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
@@ -62,6 +63,8 @@ type Config struct {
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
+	// Update 是自动更新配置。Auto 默认 true，Interval 默认 6h。
+	Update UpdateConfig
 	// Env 是 agent（executor）名 → env 文件名的映射：该 agent 启动时注入该文件里的
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
@@ -74,6 +77,41 @@ type Config struct {
 // 同步到本地仓库。Auto 默认 true；关闭后仍可用 handoff pull 手动同步。
 type SyncConfig struct {
 	Auto bool
+}
+
+// UpdateConfig 是**已废弃**的自动更新配置。
+//
+// B59 取消了 agentd 的定时自更新循环：升级改由操作者一条 handoff upgrade
+// 触发，二进制由本机下载后推送给远端。这两个字段因此不再有任何效果。
+//
+// **为什么保留字段而不是删掉**：配置是 KnownFields(true) 严格解析的，未知键
+// 让 agentd **启动失败**。v0.1.0 的首次运行会把这两个键写进 config.yaml，
+// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来——正是这个设计要消灭
+// 的那类失配的最狠形态（B59 spec D7）。
+//
+// 取值非默认时由 WarnDeprecated 打一条 Warn：用户把 auto 设成 false 是有
+// 意图的，悄悄让它失效等于骗人。
+type UpdateConfig struct {
+	Auto     bool
+	Interval time.Duration
+}
+
+// WarnDeprecated 对已废弃且被显式改过的配置打一条 Warn。
+//
+// 参数：
+//   - log: 日志器（agentd 启动时传自己的）
+//
+// 注意：
+//   - 默认值不打。绝大多数机器都是默认值，每次启动打一条无从处置的 Warn，
+//     只会让人学会忽略日志——而那是比不打更糟的结果
+func (c *Config) WarnDeprecated(log *slog.Logger) {
+	if !c.Update.Auto {
+		log.Warn("配置 update.auto 已废弃且不再有效果：agentd 不再自动更新，升级请在审核者机器上跑 handoff upgrade --now")
+	}
+	if c.Update.Interval != 6*time.Hour {
+		log.Warn("配置 update.interval 已废弃且不再有效果：agentd 不再定时检查版本",
+			"配置值", c.Update.Interval)
+	}
 }
 
 // ApproverConfig 描述审批链的廉价模型审批者。
@@ -146,17 +184,19 @@ func Load(path string) (*Config, error) {
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: true},
 		Sync:     SyncConfig{Auto: true},
+		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
 		Targets:  map[string]Target{},
 		Env:      map[string]string{},
 	}
+	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
+	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
+	firstRun := false
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		cfg.Token = randToken() // 首次运行：生成 token 并写盘，配对时人工同步到本机 targets
-		log().Info("首次运行，已生成配置", "path", path)
-		if werr := save(path, cfg); werr != nil {
-			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
-		}
+		firstRun = true
+		log().Info("首次运行，将生成配置", "path", path)
 	case err != nil:
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	default:
@@ -164,6 +204,22 @@ func Load(path string) (*Config, error) {
 			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
+	}
+	// repo_root 的默认值必须在解码之后补，不能预置在初始字面量里：
+	// 它派生自 DataDir，而 DataDir 本身可能被配置文件改写。
+	//
+	// 为什么必须有默认值：自动登记（B62）把 clone 变成首次派发的主路径，
+	// repo_root 为空时 agentd 会直接拒绝 clone，新开发机上第一次派发必然失败。
+	// 落盘之后就固定，此后改 datadir 不会静默改克隆落点。
+	if cfg.RepoRoot == "" {
+		cfg.RepoRoot = filepath.Join(cfg.DataDir, "repos")
+		log().Debug("repo_root 未配置，采用默认落点", "repo_root", cfg.RepoRoot)
+	}
+	if firstRun {
+		if werr := save(path, cfg); werr != nil {
+			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
+		}
+		log().Info("首次运行，已生成配置", "path", path)
 	}
 	if verr := cfg.validate(); verr != nil {
 		log().Error("配置校验失败", "path", path, "cause", verr)
@@ -196,6 +252,16 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	// update.interval 只在启用自动更新时校验：没启用的东西写错不该拦启动，
+	// 与 approver 那组的处置保持一致。
+	//
+	// 为什么非正值必须拦：0 会让更新循环的 ticker 每个 tick 都立刻到期，
+	// 退化成忙轮询，几秒钟打满 GitHub 匿名限流（60 次/小时），此后所有
+	// 版本检查一起失败——症状是「自动更新莫名其妙不工作了」，根因却在
+	// 一行配置上。省略该键走默认 6h 是正常用法。
+	if c.Update.Auto && c.Update.Interval <= 0 {
+		return fmt.Errorf("update.interval 必须为正时长（当前 %s）；省略该键即用默认 6h", c.Update.Interval)
+	}
 	return nil
 }
 
@@ -221,7 +287,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }
@@ -263,3 +329,16 @@ func save(path string, cfg *Config) error {
 	}
 	return os.WriteFile(path, b, 0o600)
 }
+
+// Save 把配置以 YAML 写盘，自动创建父目录，文件权限 0600。
+//
+// 参数：
+//   - path: 目标路径
+//   - cfg: 要写入的配置
+//
+// 返回：
+//   - 错误信息：建目录、序列化或写盘失败时返回
+//
+// 注意：
+//   - 0600 是硬要求：配置里含 token，组内可读就等于把令牌给了同机其他账号
+func Save(path string, cfg *Config) error { return save(path, cfg) }
