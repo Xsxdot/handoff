@@ -327,3 +327,62 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 	base.Removed, base.Action, base.Discarded = true, proto.ReclaimRemoved, dirty
 	return base, nil
 }
+
+// ReclaimList 体检全部终态任务的 managed worktree 残留。
+//
+// 返回：
+//   - 只含「仍有残留或判不出」的行，外加体检总数；查询任务列表失败才返回错误
+//
+// 注意：
+//   - **单个仓库不可达不拖垮整张表**：该行标 unknown 继续走完。列表的核心
+//     价值正是在环境已经不健康的时候还能用——这与单任务回收「判不出就拒绝」
+//     的处置刻意相反，因为两者的失败代价不同
+//   - 按仓库分组只拉一次工作树册：同一仓库下的多个任务共用一次 git 调用
+//   - 与 FootprintAll 分工：那个数进程，这个数工作树，互不覆盖
+func (m *Manager) ReclaimList() (*proto.ReclaimListResp, error) {
+	tasks, err := m.st.ListTasks()
+	if err != nil {
+		m.log.Error("残留体检：查询任务列表失败", "cause", err)
+		return nil, fmt.Errorf("查询任务列表: %w", err)
+	}
+	m.log.Info("残留体检开始", "tasks", len(tasks))
+
+	ctx := context.Background()
+	resp := &proto.ReclaimListResp{Rows: make([]proto.ReclaimRow, 0)}
+	// 每个仓库只拉一次册；值为 nil 表示该仓库不可达（判不出）
+	cache := make(map[string]map[string]worktreeEntry)
+	failed := make(map[string]string)
+
+	for _, t := range tasks {
+		if !t.State.IsTerminal() || !t.WorktreeManaged || t.WorkDir == "" {
+			continue
+		}
+		resp.Scanned++
+		entries, cached := cache[t.RepoPath]
+		if !cached {
+			e, lerr := repoWorktrees(ctx, t.RepoPath)
+			if lerr != nil {
+				failed[t.RepoPath] = strings.TrimSpace(truncateRunes(lerr.Error(), 200))
+			}
+			cache[t.RepoPath], entries = e, e
+		}
+		row := proto.ReclaimRow{
+			TaskID: t.ID, Name: t.Name, State: string(t.State),
+			Branch: t.Branch, WorkDir: t.WorkDir,
+		}
+		if entries == nil {
+			row.Worktree, row.Note = proto.WorktreeUnknown, failed[t.RepoPath]
+			resp.Rows = append(resp.Rows, row)
+			continue
+		}
+		state, dirty, note := classifyWorktree(ctx, entries, t.WorkDir)
+		if state == proto.WorktreeAbsent {
+			continue // 干净收场，不入表
+		}
+		row.Worktree, row.DirtyCount, row.Note = state, len(dirty), note
+		resp.Rows = append(resp.Rows, row)
+	}
+	m.log.Info("残留体检完成", "scanned", resp.Scanned, "rows", len(resp.Rows),
+		"bad_repos", len(failed))
+	return resp, nil
+}

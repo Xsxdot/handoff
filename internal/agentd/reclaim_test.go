@@ -385,3 +385,93 @@ func TestReclaimNotFound(t *testing.T) {
 		t.Fatalf("不存在的任务应返回 ErrNotFound，实得 %v", err)
 	}
 }
+
+func TestReclaimListShowsResidueOnly(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	dirtyWT := newWorktree(t, repo, "wt-l1", "f-l1")
+	if err := os.WriteFile(filepath.Join(dirtyWT, "probe.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("造脏：%v", err)
+	}
+	dirtyID := seedTerminalTask(t, m, repo, dirtyWT, "f-l1", proto.TaskStateFailed, true)
+	// 已回收干净的任务：记录还在、worktree_managed 仍是 true，但不该入表
+	goneWT := filepath.Join(filepath.Dir(repo), "wt-l2-never")
+	seedTerminalTask(t, m, repo, goneWT, "f-l2", proto.TaskStateCompleted, true)
+
+	resp, err := m.ReclaimList()
+	if err != nil {
+		t.Fatalf("列表：%v", err)
+	}
+	if resp.Scanned != 2 {
+		t.Fatalf("应体检 2 个终态任务，实得 %d", resp.Scanned)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].TaskID != dirtyID {
+		t.Fatalf("只有脏树那条该入表，实得 %+v", resp.Rows)
+	}
+	if resp.Rows[0].Worktree != proto.WorktreeDirty || resp.Rows[0].DirtyCount != 1 {
+		t.Fatalf("脏行应带态与条数，实得 %+v", resp.Rows[0])
+	}
+}
+
+// 非终态任务不入表：它的工作树正被使用，不是残留。
+func TestReclaimListSkipsNonTerminal(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-l3", "f-l3")
+	seedTerminalTask(t, m, repo, wt, "f-l3", proto.TaskStateRunning, true)
+
+	resp, err := m.ReclaimList()
+	if err != nil {
+		t.Fatalf("列表：%v", err)
+	}
+	if resp.Scanned != 0 || len(resp.Rows) != 0 {
+		t.Fatalf("非终态不该被体检或入表，实得 %+v", resp)
+	}
+}
+
+// 一个仓库不可达不能拖垮整张表——列表的核心价值正是在环境已不健康时还能用。
+func TestReclaimListDegradesPerRepo(t *testing.T) {
+	m, goodRepo := newReclaimManager(t)
+	goodWT := newWorktree(t, goodRepo, "wt-l4", "f-l4")
+	if err := os.WriteFile(filepath.Join(goodWT, "probe.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("造脏：%v", err)
+	}
+	goodID := seedTerminalTask(t, m, goodRepo, goodWT, "f-l4", proto.TaskStateFailed, true)
+
+	deadRepo := t.TempDir() // 不是 git 仓库
+	deadID := seedTerminalTask(t, m, deadRepo, filepath.Join(deadRepo, "wt"), "f-l5",
+		proto.TaskStateFailed, true)
+
+	resp, err := m.ReclaimList()
+	if err != nil {
+		t.Fatalf("单仓不可达不该让整张表失败，实得 %v", err)
+	}
+	var sawGood, sawUnknown bool
+	for _, r := range resp.Rows {
+		if r.TaskID == goodID && r.Worktree == proto.WorktreeDirty {
+			sawGood = true
+		}
+		if r.TaskID == deadID && r.Worktree == proto.WorktreeUnknown {
+			sawUnknown = true
+		}
+	}
+	if !sawGood {
+		t.Fatalf("健康仓库的行必须照常返回，实得 %+v", resp.Rows)
+	}
+	if !sawUnknown {
+		t.Fatalf("不可达仓库的行必须标 unknown 而不是消失，实得 %+v", resp.Rows)
+	}
+}
+
+// 非 managed 的任务不入表：用户自带工作树不是 agentd 的残留。
+func TestReclaimListSkipsNotManaged(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-l6", "f-l6")
+	seedTerminalTask(t, m, repo, wt, "f-l6", proto.TaskStateFailed, false)
+
+	resp, err := m.ReclaimList()
+	if err != nil {
+		t.Fatalf("列表：%v", err)
+	}
+	if resp.Scanned != 0 || len(resp.Rows) != 0 {
+		t.Fatalf("非 managed 不该入表，实得 %+v", resp)
+	}
+}
