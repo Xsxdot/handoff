@@ -815,7 +815,9 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
 	}
-	s.log.Info("done 完成", "task", taskID, "note_saved", req.Note != "")
+	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
+	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
+	s.log.Info("done 请求完成", "task", taskID, "note_saved", req.Note != "")
 	writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 }
 
