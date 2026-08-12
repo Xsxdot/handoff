@@ -103,7 +103,7 @@ func TestWriteCursorConcurrent(t *testing.T) {
 	// 两个写者各写一段互不相交的合法值区间，读方按「内容 ∈ 合法集合」校验
 	valid := func(n int64) bool { return (n >= 10001 && n <= 10000+iters) || (n >= 20001 && n <= 20000+iters) }
 
-	p, err := cursorPath(taskID)
+	p, err := c.cursorPath(taskID)
 	if err != nil {
 		t.Fatalf("cursorPath: %v", err)
 	}
@@ -168,8 +168,8 @@ func TestWriteCursorConcurrent(t *testing.T) {
 	if got := strings.TrimSpace(string(final)); got != "10200" && got != "20200" {
 		t.Fatalf("最终 cursor=%q, want 10200 或 20200（写者终值）", got)
 	}
-	// 临时文件全部被 rename/清理：目录不得残留 cursor-<task>-*.tmp
-	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(p), "cursor-"+taskID+"-*.tmp"))
+	// 临时文件全部被 rename/清理：目录不得残留 <task>-*.tmp
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(p), taskID+"-*.tmp"))
 	if err != nil {
 		t.Fatalf("glob 残留临时文件: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestWriteCursorSweepsStaleTemps(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	c := New("http://127.0.0.1:1", "")
-	p, err := cursorPath("task-sweep")
+	p, err := c.cursorPath("task-sweep")
 	if err != nil {
 		t.Fatalf("cursorPath: %v", err)
 	}
@@ -198,8 +198,8 @@ func TestWriteCursorSweepsStaleTemps(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("建目录: %v", err)
 	}
-	stale := filepath.Join(dir, "cursor-task-sweep-999.tmp")
-	fresh := filepath.Join(dir, "cursor-task-sweep-111.tmp")
+	stale := filepath.Join(dir, "task-sweep-999.tmp")
+	fresh := filepath.Join(dir, "task-sweep-111.tmp")
 	for _, p := range []string{stale, fresh} {
 		if err := os.WriteFile(p, []byte("7"), 0o600); err != nil {
 			t.Fatalf("造临时文件: %v", err)
