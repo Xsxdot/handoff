@@ -24,11 +24,13 @@ import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
 import ticketFixture from './testdata/Ticket.json'
+import frameFixture from './testdata/Frame.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
   type BuildInfo,
   type Event,
+  type Frame,
   type MachinesResp,
   type ProjectLocation,
   type ProjectTreeResp,
@@ -144,5 +146,30 @@ describe('W3a 契约', () => {
     const t: Task = taskFixture
     expect(typeof t.machine).toBe('string')
     expect(typeof t.project_id).toBe('string')
+  })
+})
+
+describe('W4a 帧契约', () => {
+  it('Frame：可解析为 Frame 类型，omitempty 字段缺席', () => {
+    const f: Frame = frameFixture
+    expect(f.seq).toBe(42)
+    expect(f.turn).toBe(2)
+    expect(f.type).toBe('tool_result')
+    expect(f.part).toBe('toolu_01ABCdefGHIjklMNOpqrs')
+    expect(f.status).toBe('error')
+    expect(f.truncated).toBe(true)
+    expect(f.bytes).toBe(193422)
+    expect(f.ts).toMatch(/^2026-/)
+    // omitempty 的边界：这六个键必须**缺席**而不是空值。
+    // 前端据此可以用 `f.delta ?? ''` 安全兜底；若它们变成 "" 或 null，
+    // 说明 Go 侧丢了 omitempty，解析侧的假设就塌了。
+    for (const key of ['delta', 'tool', 'input', 'ref_seq', 'event', 'reason']) {
+      expect(Object.keys(frameFixture)).not.toContain(key)
+    }
+  })
+
+  it('Frame：可选字段可以显式赋 undefined（指针语义镜像）', () => {
+    const f: Frame = { ...frameFixture, part: undefined, status: undefined, bytes: undefined }
+    expect(f.part).toBeUndefined()
   })
 })

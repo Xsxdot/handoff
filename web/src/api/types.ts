@@ -261,3 +261,42 @@ export interface ResumeResult {
   state: string
   note: string
 }
+
+// FrameType 是结构化回合帧的类型（W4a §3.2）。
+//
+// 刻意用 `string` 而不是收窄的 union：前端比后端晚部署是常态，契约新增一种帧
+// 时旧前端必须还能解析并渲染成中性条目，而不是在类型层就把它判为非法。
+// 已知取值集中在 KNOWN_FRAME_TYPES，供渲染层分发。
+export type FrameType = string
+
+// KNOWN_FRAME_TYPES 是本前端版本认识的帧类型。不在其中的一律走「未知类型」分支。
+export const KNOWN_FRAME_TYPES = ['text', 'reasoning', 'tool_call', 'tool_result', 'event', 'turn_start'] as const
+
+// Frame 是 frames.jsonl 的一行，也是 GET /api/tasks/{id}/frames 流的一行。
+//
+// 与 internal/proto.Frame 一一对应。Go 侧带 omitempty 的字段在这里都是可选（?）
+// 而不是 `| null`——它们缺席而不是取空值（contract.test.ts 钉住了这一点）。
+//
+// 两套 seq 不要混用：`seq` 是**任务内**从 1 开始的帧行号；`ref_seq` 只出现在
+// `event` 帧上，指向 events 表的**库级**自增 seq。
+//
+// 配对与拼接都靠 `part`：`text`/`reasoning` 按 part 拼接增量，`tool_call` 与其
+// `tool_result` 用同一个 part 配对。part 只在**同一回合内**唯一，跨回合会重复，
+// 所以任何以 part 为键的索引都必须带上 turn。
+export interface Frame {
+  seq: number
+  ts: string
+  turn: number
+  type: FrameType
+  part?: string
+  delta?: string
+  tool?: string
+  input?: string
+  output?: string
+  status?: string
+  truncated?: boolean
+  bytes?: number
+  ref_seq?: number
+  event?: string
+  reason?: string
+}
