@@ -6,9 +6,12 @@
 package agentd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 func TestParseWorktreeListMarksPrunable(t *testing.T) {
@@ -94,5 +97,100 @@ func TestFindEntryMatchesAcrossSymlink(t *testing.T) {
 	}
 	if _, ok := findEntry(entries, filepath.Join(real, "other")); ok {
 		t.Fatalf("不同路径不该匹配")
+	}
+}
+
+// newWorktree 在 repo 下建一个 managed 风格的工作树并返回其路径。
+func newWorktree(t *testing.T, repo, name, branch string) string {
+	t.Helper()
+	dir := filepath.Join(filepath.Dir(repo), name)
+	gitAt(t, repo, "worktree", "add", "-q", dir, "-b", branch)
+	return dir
+}
+
+func TestClassifyCleanWorktree(t *testing.T) {
+	repo := initGitRepo(t)
+	wt := newWorktree(t, repo, "wt-clean", "f-clean")
+	entries, err := repoWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("拉工作树册：%v", err)
+	}
+	state, dirty, _ := classifyWorktree(context.Background(), entries, wt)
+	if state != proto.WorktreeClean {
+		t.Fatalf("期望 clean，实得 %s", state)
+	}
+	if len(dirty) != 0 {
+		t.Fatalf("干净树不该有脏清单，实得 %+v", dirty)
+	}
+}
+
+// 只有未跟踪文件也必须判脏：git worktree remove 正是会因未跟踪文件失败
+// （实证 git 2.50.1：fatal: contains modified or untracked files）。
+// 判据不与它对齐，就会出现「我说是净的，删的时候被拒了」。
+func TestClassifyUntrackedOnlyIsDirty(t *testing.T) {
+	repo := initGitRepo(t)
+	wt := newWorktree(t, repo, "wt-untracked", "f-untracked")
+	if err := os.WriteFile(filepath.Join(wt, "probe.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("写未跟踪文件：%v", err)
+	}
+	entries, err := repoWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("拉工作树册：%v", err)
+	}
+	state, dirty, _ := classifyWorktree(context.Background(), entries, wt)
+	if state != proto.WorktreeDirty {
+		t.Fatalf("只有未跟踪文件时也应判 dirty，实得 %s", state)
+	}
+	if len(dirty) != 1 || dirty[0].Path != "probe.log" {
+		t.Fatalf("脏清单应含 probe.log，实得 %+v", dirty)
+	}
+}
+
+func TestClassifyModifiedIsDirty(t *testing.T) {
+	repo := initGitRepo(t)
+	wt := newWorktree(t, repo, "wt-mod", "f-mod")
+	if err := os.WriteFile(filepath.Join(wt, "README.md"), []byte("changed"), 0o644); err != nil {
+		t.Fatalf("改已跟踪文件：%v", err)
+	}
+	entries, _ := repoWorktrees(context.Background(), repo)
+	state, dirty, _ := classifyWorktree(context.Background(), entries, wt)
+	if state != proto.WorktreeDirty {
+		t.Fatalf("期望 dirty，实得 %s", state)
+	}
+	if len(dirty) != 1 || dirty[0].Path != "README.md" {
+		t.Fatalf("脏清单应含 README.md，实得 %+v", dirty)
+	}
+}
+
+func TestClassifyPrunableWhenDirGone(t *testing.T) {
+	repo := initGitRepo(t)
+	wt := newWorktree(t, repo, "wt-gone", "f-gone")
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("删工作树目录：%v", err)
+	}
+	entries, _ := repoWorktrees(context.Background(), repo)
+	state, _, note := classifyWorktree(context.Background(), entries, wt)
+	if state != proto.WorktreePrunable {
+		t.Fatalf("目录已失应判 prunable，实得 %s", state)
+	}
+	if note == "" {
+		t.Fatalf("prunable 必须带原因")
+	}
+}
+
+func TestClassifyAbsentWhenNotRegistered(t *testing.T) {
+	repo := initGitRepo(t)
+	entries, _ := repoWorktrees(context.Background(), repo)
+	state, _, _ := classifyWorktree(context.Background(), entries, filepath.Join(repo, "never-existed"))
+	if state != proto.WorktreeAbsent {
+		t.Fatalf("未注册路径应判 absent，实得 %s", state)
+	}
+}
+
+// 仓库不可达必须报 unknown 而不是 absent：把「判不出」渲染成「没有残留」，
+// 等于用假结论把该看的东西藏起来（同 B70 的「不猜 0」纪律）。
+func TestRepoWorktreesFailsOnNonRepo(t *testing.T) {
+	if _, err := repoWorktrees(context.Background(), t.TempDir()); err == nil {
+		t.Fatalf("非 git 仓库应返回错误，实得 nil")
 	}
 }

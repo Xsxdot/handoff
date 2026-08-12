@@ -16,6 +16,8 @@
 package agentd
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -133,4 +135,70 @@ func findEntry(entries map[string]worktreeEntry, workdir string) (worktreeEntry,
 		}
 	}
 	return worktreeEntry{}, false
+}
+
+// repoWorktrees 拉取一个仓库当前在册的全部工作树。
+//
+// 参数：
+//   - ctx: 上层上下文，内部叠加 WorkspaceGitTimeout
+//   - repo: 仓库路径
+//
+// 返回：
+//   - 条目表；仓库不可达或不是 git 仓库时返回错误（调用方据此报「判不出」）
+//
+// 注意：这是**地面真相的唯一来源**。任务库里的 worktree_managed 只说明
+// 「当初建过」，删成功从不回写，用它判「现在还在不在」必然出假阳性
+func repoWorktrees(ctx context.Context, repo string) (map[string]worktreeEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
+	out, stderr, err := gitRun(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		log().Warn("拉工作树册失败，该仓库下的任务判不出",
+			"repo", repo, "stderr", truncateRunes(stderr, 200), "cause", err)
+		return nil, fmt.Errorf("git worktree list %s: %s: %w",
+			repo, strings.TrimSpace(truncateRunes(stderr, 200)), err)
+	}
+	entries := parseWorktreeList(out)
+	log().Info("工作树册已拉取", "repo", repo, "entries", len(entries))
+	return entries, nil
+}
+
+// classifyWorktree 判定一个工作区当前所处的态。
+//
+// 参数：
+//   - ctx: 上层上下文，内部叠加 WorkspaceGitTimeout
+//   - entries: repoWorktrees 的产出
+//   - workdir: 任务记录里的工作区路径
+//
+// 返回：
+//   - 状态；脏清单（仅 dirty 时非空）；note（unknown / prunable 时的真因）
+//
+// 注意：脏的判据含**未跟踪文件**。这不是保守，而是必须与 git worktree remove
+// 自身的拒绝条件对齐——实证 git 2.50.1，只有未跟踪文件时 remove 也会失败
+func classifyWorktree(ctx context.Context, entries map[string]worktreeEntry, workdir string) (proto.WorktreeState, []proto.DirtyFile, string) {
+	e, ok := findEntry(entries, workdir)
+	if !ok {
+		log().Info("工作树判定：不在册，无残留", "workdir", workdir)
+		return proto.WorktreeAbsent, nil, ""
+	}
+	if e.Prunable {
+		log().Info("工作树判定：元数据残留", "workdir", workdir, "reason", e.PruneReason)
+		return proto.WorktreePrunable, nil, e.PruneReason
+	}
+	sctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
+	defer cancel()
+	out, stderr, err := gitRun(sctx, workdir, "status", "--porcelain")
+	if err != nil {
+		note := strings.TrimSpace(truncateRunes(stderr, 200))
+		log().Warn("工作树判定：读不到 status，判不出",
+			"workdir", workdir, "stderr", note, "cause", err)
+		return proto.WorktreeUnknown, nil, note
+	}
+	files := parsePorcelainStatus(out)
+	if len(files) == 0 {
+		log().Info("工作树判定：干净，可回收", "workdir", workdir)
+		return proto.WorktreeClean, nil, ""
+	}
+	log().Info("工作树判定：脏，默认拒绝回收", "workdir", workdir, "dirty", len(files))
+	return proto.WorktreeDirty, files, ""
 }
