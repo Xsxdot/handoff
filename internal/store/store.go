@@ -151,6 +151,7 @@ func Open(path string) (*Store, error) {
 		"base_ahead":       "INTEGER NOT NULL DEFAULT 0",
 		"repo_dirty_count": "INTEGER NOT NULL DEFAULT 0",
 		"repo_dirty_files": "TEXT NOT NULL DEFAULT ''",
+		"done_note":        "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -204,7 +205,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
 // Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
 const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files`
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -225,7 +226,8 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
-		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles); err != nil {
+		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
+		&task.DoneNote); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)
@@ -375,17 +377,19 @@ func (s *Store) UpdateTaskState(id string, st proto.TaskState) error {
 
 // allowedTaskFields 是 SetTaskField 可写字段白名单。
 // 白名单约束保证字段名永远来自受控集合，杜绝 SQL 列注入与越权写关键列（如 id/state）。
+// done_note 可写：归档说明由 Done 在状态迁移前写入，属任务元数据而非关键列。
 var allowedTaskFields = map[string]bool{
 	"branch":           true,
 	"executor_session": true,
 	"plan_summary":     true,
+	"done_note":        true,
 }
 
-// SetTaskField 更新任务白名单内的单个字段（branch/executor_session/plan_summary）。
+// SetTaskField 更新任务白名单内的单个字段（branch/executor_session/plan_summary/done_note）。
 //
 // 参数：
 //   - id: 任务 ID
-//   - field: 字段名，仅允许白名单三项
+//   - field: 字段名，仅允许白名单四项
 //   - value: 新值
 //
 // 注意：
