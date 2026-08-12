@@ -32,5 +32,6 @@
       "live": "alive",
       "note": ""
     }
-  ]
+  ],
+  "pty_supported": true
 }

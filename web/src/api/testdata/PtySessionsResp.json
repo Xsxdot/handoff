@@ -1,0 +1,45 @@
+{
+  "sessions": [
+    {
+      "id": "2f0f6a3c-8f1e-4f2a-9a77-1c2d3e4f5a6b",
+      "machine": "",
+      "base_path": "/home/dev/handoff",
+      "base_kind": "workspace",
+      "shell": "/bin/zsh",
+      "created_at": "2026-08-11T10:30:00+08:00",
+      "cols": 120,
+      "rows": 40,
+      "attached": 1,
+      "pid": 48213,
+      "bytes_out": 81920
+    },
+    {
+      "id": "9b8a7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d",
+      "machine": "devbox",
+      "base_path": "/home/dev/handoff",
+      "base_kind": "workspace",
+      "shell": "/bin/zsh",
+      "created_at": "2026-08-11T10:30:00+08:00",
+      "cols": 120,
+      "rows": 40,
+      "attached": 0,
+      "pid": 48213,
+      "exit_code": 3,
+      "bytes_out": 81920
+    }
+  ],
+  "machines": [
+    {
+      "name": "",
+      "ok": true,
+      "fetched_at": "2026-08-11T10:30:00+08:00",
+      "error": ""
+    },
+    {
+      "name": "devbox",
+      "ok": true,
+      "fetched_at": "2026-08-11T10:30:00+08:00",
+      "error": ""
+    }
+  ]
+}

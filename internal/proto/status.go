@@ -133,6 +133,15 @@ type StatusResp struct {
 	// Proc 是本机 uid 级的进程占用与上限。指针 + omitempty：老 agentd 不发这个
 	// 字段，消费方拿到 nil 应当什么都不显示，而不是显示一个「0/0」的假状态。
 	Proc *ProcUsage `json:"proc,omitempty"`
+
+	// PtySupported 报告本机 agentd 是否支持 PTY 终端。
+	//
+	// 三态，与 Update / Proc 同一纪律：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（Windows：ConPTY 是另一套 API，本轮不假装支持）
+	//   true      = 支持
+	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
+	PtySupported *bool `json:"pty_supported,omitempty"`
 }
 
 // FootprintRow 是一个任务的进程足迹体检结果。

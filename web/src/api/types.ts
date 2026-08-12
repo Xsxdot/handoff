@@ -188,6 +188,8 @@ export interface StatusResp {
   default_executor: string
   task_counts: Record<string, number>
   active: ActiveTask[]
+  // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
+  pty_supported?: boolean
 }
 
 // taskDetail 是 GET /api/tasks/{id} 的响应体（任务 + 待办工单 + 最近事件）。
@@ -315,4 +317,46 @@ export interface DirEntry {
 // DirListResult 是 GET /api/workspaces/dir 的响应体；entries 永不为 null。
 export interface DirListResult {
   entries: DirEntry[]
+}
+
+// PtySession 是一个 PTY 终端会话（W4 PTY 终端 spec §3.1）。
+//
+// exit_code 缺席 = 会话还活着（Go 侧是 *int + omitempty）。不要写
+// `session.exit_code ?? 0`——那会把「跑着的会话」显示成「正常退出」。
+export interface PtySession {
+  id: string
+  machine: string        // ""=本机；否则为汇总方 cfg.Targets 的键
+  base_path: string
+  base_kind: string      // 'workspace' | 'home'
+  shell: string
+  created_at: string
+  cols: number
+  rows: number
+  attached: number
+  pid: number
+  exit_code?: number
+  bytes_out: number      // /ws/pty 的 since 水位
+}
+
+export interface PtySessionsResp {
+  sessions: PtySession[]
+  machines?: MachineStatus[]
+}
+
+export interface CreatePtySessionReq {
+  base_path: string
+  base_kind: string
+  cols: number
+  rows: number
+}
+
+// PtyControl 是 /ws/pty 上的 text 帧。二进制帧是 PTY 原始字节，不经过这里。
+export interface PtyControl {
+  type: string           // 'attached' | 'exit' | 'error' | 'resize'
+  since: number
+  truncated: boolean
+  exit_code?: number
+  message?: string
+  cols?: number
+  rows?: number
 }
