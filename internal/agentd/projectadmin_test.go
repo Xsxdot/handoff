@@ -340,3 +340,35 @@ func TestUnregisterProjectRejectsBusy(t *testing.T) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrWorkdirBusy)", err)
 	}
 }
+
+// TestRegisterProjectExistingInfersOrigin 验证 path 指向已有仓且请求不带
+// origin_url 时，agentd 现读 origin 完成登记（Web「只填 path」主路径）。
+func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	const origin = "git@github.com:xushixin/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: repo})
+	if err != nil {
+		t.Fatalf("RegisterProject(无 origin): %v", err)
+	}
+	if loc.OriginURL != origin {
+		t.Errorf("OriginURL = %q, want 现读的 %q", loc.OriginURL, origin)
+	}
+	if loc.ProjectID != projectid.FromOrigin(origin) {
+		t.Errorf("project_id = %q, want %q", loc.ProjectID, projectid.FromOrigin(origin))
+	}
+	if loc.Name != "handoff" {
+		t.Errorf("name = %q, want handoff", loc.Name)
+	}
+}
+
+// TestRegisterProjectRejectsEmptyOriginAndEmptyPath 验证既无 path 也无 origin 时
+// 无法确定身份与落点。
+func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+}

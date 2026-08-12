@@ -57,14 +57,18 @@ const nameFallbackLimit = 50
 
 // RegisterProjectReq 是登记一个项目位置的请求。
 //
-// 两种形态由 Path 是否为空决定：
-//   - Path 非空：这台机器上已经有一份，用它（agentd 现读它的 origin 校验一致）
-//   - Path 为空：由本机 clone 到 cfg.RepoRoot/<Name>
+// 形态由 Path 是否给出 / 路径是否存在 / OriginURL 是否非空共同决定（三态决策表）：
+//   - Path 空 + OriginURL 空 → 400：既无身份也无落点
+//   - Path 空 + OriginURL 有 → 由本机 clone 到 cfg.RepoRoot/<Name>（或认领已有落点）
+//   - Path 非空且目录存在 → 登记已有仓（OriginURL 可省，省则现读 origin）
+//   - Path 非空且目录不存在 + OriginURL 有 → clone 到该 Path（见 Task 2 分支）
+//   - 其余非法组合 → 400
 //
-// 为什么没有 Clone 布尔位：形态已被 Path 完全决定，多一个布尔位只会多出
-// 一组无意义的非法组合。
+// 为什么没有 Clone 布尔位：形态已被 Path + 文件系统状态 + OriginURL 是否为空
+// 完全决定，多一个布尔位只会多出一组无意义的非法组合。
 //
-// Name 可省，此时由 OriginURL 末段派生；它只是人可读引用，不参与身份判定。
+// Name 可省，此时由 OriginURL（请求给出或现读的实际 origin）末段派生；
+// 它只是人可读引用，不参与身份判定。
 type RegisterProjectReq struct {
 	OriginURL string
 	Name      string
@@ -134,7 +138,7 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// RegisterProject 登记一个项目位置（两种形态见 RegisterProjectReq）。
+// RegisterProject 登记一个项目位置（各形态与分派见 RegisterProjectReq 的决策表）。
 //
 // 参数：
 //   - ctx: 控制整组 git 调用的生命周期
@@ -153,18 +157,41 @@ func validateProjectName(name string) error {
 //   - clone 的落点若已存在则直接拒绝，绝不往里 clone、绝不覆盖
 func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	m.log.Info("登记项目请求", "origin", req.OriginURL, "name", req.Name, "path", req.Path)
-	if strings.TrimSpace(req.OriginURL) == "" {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 登记必须带 origin_url（项目身份由它派生）",
-			errBadDispatchRequest)
-	}
-	if strings.HasPrefix(req.OriginURL, "-") {
+	req.OriginURL = strings.TrimSpace(req.OriginURL)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Path = strings.TrimSpace(req.Path)
+	if req.OriginURL != "" && strings.HasPrefix(req.OriginURL, "-") {
 		// git 会把以 - 开头的参数解释为选项——参数注入面，与 ErrBadBaseBranch 同源。
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", errBadDispatchRequest)
 	}
 	if req.Path != "" {
-		return m.registerExistingProject(ctx, req)
+		return m.registerAtPath(ctx, req)
+	}
+	// 无 path：只能 clone 到 repo_root，必须带 origin——否则既无落点也无项目身份。
+	if req.OriginURL == "" {
+		return proto.ProjectLocation{}, fmt.Errorf(
+			"%w: 不带 path 时必须提供 origin_url（否则既无落点也无项目身份）",
+			errBadDispatchRequest)
 	}
 	return m.cloneAndRegisterProject(ctx, req)
+}
+
+// registerAtPath 处理 Path 非空的请求：按目录是否存在在「登记已有仓」与
+// 「clone 到该 Path」间分派。
+//
+// 本阶段「不存在」分支尚未实现 clone（见实现计划 Task 2），先以
+// errBadDispatchRequest 拒绝，绝不往不存在的路径上臆测行为。
+func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	_, err := os.Stat(req.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return proto.ProjectLocation{}, fmt.Errorf(
+			"%w: 路径 %s 不存在（clone 到指定 path 尚未支持）；不带 origin_url 无法创建，带上则请等 clone-to-path 能力就绪",
+			errBadDispatchRequest, req.Path)
+	}
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", ErrRepoUnusable, req.Path, err)
+	}
+	return m.registerExistingProject(ctx, req)
 }
 
 // registeredProjectByID 在位置表里按 project_id 查已登记的位置。
@@ -244,14 +271,21 @@ func (m *Manager) inspectRepoDir(ctx context.Context, dir string) (root, origin 
 	return root, origin, nil
 }
 
-// registerExistingProject 登记本机上已存在的一份代码。
+// registerExistingProject 登记本机上已存在的一份代码（Path 已确认存在）。
+//
+// OriginURL 可空：空时采用 inspectRepoDir 现读的 actual 作为项目身份与落库值
+// （Web「只填 path」主路径——磁盘上的仓库本身就是权威，不要求调用方复述）；
+// 非空时仅作一致性校验，不一致仍报 ErrProjectOriginMismatch。
+// 落库 origin 永远用 actual，不采信请求串里未校验的写法。
 func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	root, actual, err := m.inspectRepoDir(ctx, req.Path)
 	if err != nil {
 		return proto.ProjectLocation{}, err
 	}
-	// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
-	if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+	if req.OriginURL == "" {
+		m.log.Info("登记已有目录（origin 由磁盘现读）", "path", root, "origin", actual)
+	} else if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+		// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
 		m.log.Warn("登记被拒：路径上的仓库不是请求的项目",
 			"path", root, "actual_origin", actual, "want_origin", req.OriginURL)
 		return proto.ProjectLocation{}, fmt.Errorf(
