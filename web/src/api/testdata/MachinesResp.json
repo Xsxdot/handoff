@@ -1,0 +1,29 @@
+{
+  "machines": [
+    {
+      "name": "",
+      "addr": "127.0.0.1:7777",
+      "reachable": true,
+      "version": "v0.1.0",
+      "executors": [
+        "claude",
+        "opencode"
+      ],
+      "default_executor": "opencode",
+      "probe_ms": 0,
+      "active_tasks": 1,
+      "error": ""
+    },
+    {
+      "name": "devbox",
+      "addr": "10.0.0.8:7777",
+      "reachable": false,
+      "version": "",
+      "executors": [],
+      "default_executor": "",
+      "probe_ms": 3000,
+      "active_tasks": 0,
+      "error": "dial tcp 10.0.0.8:7777: connect: connection refused"
+    }
+  ]
+}

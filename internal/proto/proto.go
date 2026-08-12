@@ -112,6 +112,21 @@ type Task struct {
 	// 「等 N 处」）；服务端截断后的展示用字段，与 PlanSummary 同形，不供程序消费
 	//（要精确条数请读 RepoDirtyCount）。
 	RepoDirtyFiles string `json:"repo_dirty_files"`
+	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
+	//
+	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，
+	// 语义是「我从哪个 target 拉来的」。
+	//
+	// 为什么不复用 Target：`target` 存的是「当年派发它的那个 CLI 管这台机器叫
+	// 什么」——换一台笔记本、换一份配置派发，同一台机器可以叫不同名字，它是
+	// 历史记录不是路由键。透明路由与 UI 的机器筛选必须锚在本机配置上。
+	Machine string `json:"machine"`
+	// ProjectID 是任务的项目归属：读时按 repo_path 与 project_locations.path
+	// 等值 join 得到（W3a §1.3），未归属为 ""。
+	//
+	// 线注解，不入库：tasks 表不加这一列——历史任务或已注销项目的任务应当
+	// 诚实显示「未归属」，而不是一列陈旧数据说谎。
+	ProjectID string `json:"project_id"`
 }
 
 // Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它

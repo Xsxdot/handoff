@@ -17,7 +17,7 @@ import activeTaskFixture from './testdata/ActiveTask.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
-import repoFixture from './testdata/Repo.json'
+import projectLocationFixture from './testdata/ProjectLocation.json'
 import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
@@ -27,7 +27,7 @@ import {
   type AuthTicketResp,
   type BuildInfo,
   type Event,
-  type Repo,
+  type ProjectLocation,
   type SessionInfo,
   type StatusResp,
   type Task,
@@ -69,11 +69,12 @@ describe('契约 fixture 与 TS 类型', () => {
     expect(optional.answer).toBeUndefined()
   })
 
-  it('Repo / AuthTicketResp / SessionInfo：可解析且关键字段齐全', () => {
-    const repo: Repo = repoFixture
-    expect(repo.name).toBe('handoff')
-    expect(repo.path).toContain('/handoff')
-    expect(repo.status).toBe('有效')
+  it('ProjectLocation / AuthTicketResp / SessionInfo：可解析且关键字段齐全', () => {
+    const loc: ProjectLocation = projectLocationFixture
+    expect(loc.project_id).toHaveLength(16)
+    expect(loc.name).toBe('handoff')
+    expect(loc.path).toContain('/handoff')
+    expect(loc.status).toBe('有效')
 
     const auth: AuthTicketResp = authTicketFixture
     expect(auth.url).toContain('/console?ticket=')

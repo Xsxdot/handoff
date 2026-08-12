@@ -53,7 +53,15 @@ export interface Ticket {
   delivered_at?: string
 }
 
-export interface Repo {
+// ProjectLocation 是一条「项目 × 机器」位置记录：项目在本机的那一个工作副本
+// （B62 的 project_locations 表）。GET /api/projects 返回它的数组，
+// POST /api/projects 登记成功时 200 返回单条。
+//
+// project_id = sha256(归一化 origin) 前 16 位，跨机同一；name 只是本机内唯一
+// 的人可读引用，不参与身份判定。status 是 list 时现场探得的实际状态
+// （"有效"/"路径不存在"/"不是 git 仓库"），不落库，故为可选。
+export interface ProjectLocation {
+  project_id: string
   name: string
   path: string
   origin_url: string

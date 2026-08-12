@@ -66,7 +66,10 @@ func TestContractFixtures(t *testing.T) {
 		{"Task", taskSample(now, taskID)},
 		{"Event", eventSample(now, taskID)},
 		{"Ticket", ticketSample(now, taskID)},
-		{"Repo", repoSample(now)},
+		{"ProjectLocation", projectLocationSample(now)},
+		{"ProjectTreeResp", projectTreeSample()},
+		{"MachinesResp", machinesSample()},
+		{"TasksResp", tasksRespSample(now, taskID)},
 		{"AuthTicketResp", authTicketSample(now)},
 		{"SessionInfo", sessionSample(now)},
 		{"BuildInfo", buildSample()},
@@ -139,6 +142,8 @@ func taskSample(now time.Time, taskID string) Task {
 		BaseAhead:       1,
 		RepoDirtyCount:  2,
 		RepoDirtyFiles:  "web/package.json, internal/proto/proto.go 等 2 处",
+		Machine:         "",
+		ProjectID:       "a1b2c3d4e5f60718",
 	}
 }
 
@@ -171,14 +176,106 @@ func ticketSample(now time.Time, taskID string) Ticket {
 	}
 }
 
-// repoSample 返回 Repo 的代表性样本（登记有效）。
-func repoSample(now time.Time) Repo {
-	return Repo{
+// projectLocationSample 返回 ProjectLocation 的代表性样本（登记有效）。
+//
+// 它同时是 POST /api/projects 的响应体形状：B62 登记成功返回 200 + 完整位置。
+func projectLocationSample(now time.Time) ProjectLocation {
+	return ProjectLocation{
+		ProjectID: "a1b2c3d4e5f60718",
 		Name:      "handoff",
 		Path:      "/home/dev/handoff",
 		OriginURL: "git@github.com:xushixin/handoff.git",
 		CreatedAt: now,
 		Status:    "有效",
+	}
+}
+
+// projectTreeSample 返回 ProjectTreeResp 的代表性样本（**单机**形态）。
+//
+// 为什么样本必须是单机形态：单机响应里每个项目恒 0 或 1 个 location
+// （ADR-0008 / W3a §1.1），前端契约测试正是拿这条不变式做断言。汇总形态
+// （多 location + machines 栏）由 TasksResp 样本一并钉住 MachineStatus。
+//
+// 两个工作树覆盖两种形态：主工作树（人手 clone）与 agentd 自建的任务工作树。
+func projectTreeSample() ProjectTreeResp {
+	return ProjectTreeResp{
+		Projects: []ProjectNode{{
+			ProjectID: "a1b2c3d4e5f60718",
+			OriginURL: "git@github.com:xushixin/handoff.git",
+			Name:      "handoff",
+			Locations: []ProjectLocationNode{{
+				Machine: "",
+				Name:    "handoff",
+				Path:    "/home/dev/handoff",
+				Workspaces: []Workspace{
+					{
+						Path:    "/home/dev/handoff",
+						Branch:  "main",
+						Head:    "482aab1",
+						IsMain:  true,
+						Managed: false,
+					},
+					{
+						Path:    "/home/dev/.handoff/worktrees/w1",
+						Branch:  "handoff/w1-web-scaffold",
+						Head:    "9e12a3b",
+						IsMain:  false,
+						Managed: true,
+					},
+				},
+				ProbeError: "",
+			}},
+		}},
+		Unowned: []string{},
+	}
+}
+
+// machinesSample 返回 MachinesResp 的代表性样本。
+//
+// 两台覆盖两种结局：本机（name 空串、probe_ms 恒 0）与不可达的远端
+// （reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见）。
+func machinesSample() MachinesResp {
+	return MachinesResp{
+		Machines: []Machine{
+			{
+				Name:            "",
+				Addr:            "127.0.0.1:7777",
+				Reachable:       true,
+				Version:         "v0.1.0",
+				Executors:       []string{"claude", "opencode"},
+				DefaultExecutor: "opencode",
+				ProbeMs:         0,
+				ActiveTasks:     1,
+				Error:           "",
+			},
+			{
+				Name:            "devbox",
+				Addr:            "10.0.0.8:7777",
+				Reachable:       false,
+				Version:         "",
+				Executors:       []string{},
+				DefaultExecutor: "",
+				ProbeMs:         3000,
+				ActiveTasks:     0,
+				Error:           "dial tcp 10.0.0.8:7777: connect: connection refused",
+			},
+		},
+	}
+}
+
+// tasksRespSample 返回 TasksResp（?scope=all）的代表性样本。
+//
+// 一台成功一台失败：失败那台照样占一行且带原文，这正是 §5.3 的硬约束。
+// tasks 里给一条本机任务（machine 空串）——远端条目形状同构，只是 machine
+// 由汇总方盖上 target 名。
+func tasksRespSample(now time.Time, taskID string) TasksResp {
+	return TasksResp{
+		Machines: []MachineStatus{
+			{Name: "", Ok: true, FetchedAt: now, Error: ""},
+			{Name: "devbox", Ok: false, FetchedAt: now,
+				Error: "dial tcp 10.0.0.8:7777: connect: connection refused"},
+		},
+		Tasks: []TaskView{{Task: taskSample(now, taskID), Watchers: 1}},
 	}
 }
 
