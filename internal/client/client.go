@@ -258,6 +258,12 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 // CLI 据此输出降级结论并退 0，而不是把一台完全能用的机器判成失败。
 var ErrStatusUnsupported = errors.New("对端 agentd 不支持 /api/status")
 
+// ErrFootprintUnsupported 表示对端 agentd 太旧，没有 /api/footprint。
+//
+// 与 ErrStatusUnsupported 分开而不复用：调用方要给出的处置建议不同
+// （那条说「升级后才能看状态」，这条说「升级后才能看进程足迹，眼下只能上机器 ps」）
+var ErrFootprintUnsupported = errors.New("对端 agentd 不支持足迹体检")
+
 // Status 查询 agentd 的可用性与身份信息（handoff status 的数据源）。
 //
 // 返回：
@@ -287,6 +293,35 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error) {
 	var out proto.StatusResp
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("解析状态响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Footprint 拉取对端全部任务的进程足迹体检结果。
+//
+// 返回：
+//   - 体检结果；404（对端 agentd 过旧、没有这个端点）返回 ErrFootprintUnsupported
+//   - 请求失败或响应非法时返回错误
+//
+// 注意：这是慢命令——对端要遍历全部历史任务目录，调用方应给足超时。
+func (c *Client) Footprint(ctx context.Context) (*proto.FootprintResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/footprint", nil)
+	if err != nil {
+		return nil, fmt.Errorf("足迹体检请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// 与 Status 的 404 同款处理：这是**预期结论**不是异常，用 Debug 而非
+		// Info——调用方会把它渲染成人读的一句话，库层再打 Info 就是重复
+		c.log().Debug("对端 agentd 不支持 /api/footprint，按版本过旧处理")
+		return nil, ErrFootprintUnsupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("足迹体检", resp)
+	}
+	var out proto.FootprintResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析足迹体检响应: %w", err)
 	}
 	return &out, nil
 }

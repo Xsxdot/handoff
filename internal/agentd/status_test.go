@@ -9,18 +9,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/xushixin/handoff/internal/agentd"
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 )
 
 // probeStub 是一个可控探活结论的假 adapter，用来在服务端测试里制造三态现场。
-// 它只需实现 executor.Adapter 的五动作 + Probe；五动作全部返回零值即可，
-// status 路径不会调到它们。
+// 它实现 executor.Adapter 的五动作 + Probe + ProcHandle（footprinter）；五动作
+// 全部返回零值即可，status 路径不会调到它们。
 type probeStub struct {
 	alive bool
 	note  string
@@ -35,6 +37,19 @@ func (p *probeStub) RespondPermission(ctx context.Context, taskID, permID, decis
 	return nil
 }
 func (p *probeStub) Stop(taskID string) error { return nil }
+
+// ProcHandle 实现 footprinter：交出一个指向「不可能存在」的假 pid 的句柄。
+//
+// 2147480000 接近 int32 上限，macOS/linux 内核永远分配不到这么高的 pid——
+// classify 的 leader_reuse 检查与组成员收集都必然落空，Footprint 稳定返回
+// VerdictOK + 0 成员，不依赖本机真实进程现场。
+func (p *probeStub) ProcHandle(taskID, taskDir string) (prochost.Handle, error) {
+	return prochost.Handle{
+		PID:       2147480000,
+		LockPath:  filepath.Join(taskDir, "shim.lock"),
+		StartedAt: 1,
+	}, nil
+}
 
 func (p *probeStub) Probe(executor.ProbeReq) (executor.ProbeOutcome, error) {
 	if p.delay > 0 {
@@ -52,6 +67,8 @@ type statusEnv struct {
 	st interface {
 		CreateTask(t *proto.Task) error
 	}
+	// mgr 是同一个 manager 的引用：FootprintAll 等直接调方法的测试不走 HTTP。
+	mgr *agentd.Manager
 }
 
 // newStatusEnv 构造 status 测试环境：manager 以单只 probeStub 注册为 "stub"，
@@ -69,7 +86,7 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": ad},
 		cfg, nil, nil, logger)
 	env.srv.SetManager(mgr)
-	return &statusEnv{ts: env.ts, st: env.st}
+	return &statusEnv{ts: env.ts, st: env.st, mgr: mgr}
 }
 
 // newTestManager 构造一个能直接调 Manager.Status() 的 manager。
@@ -234,5 +251,96 @@ func TestStatusAlwaysReportsUpdate(t *testing.T) {
 	}
 	if resp.Version.Platform == "" {
 		t.Fatal("Platform 必须上报，空串的语义是「对端过旧」")
+	}
+}
+
+// plainStub 是只实现五动作 + Probe 的最小 adapter。
+//
+// probeStub 加了 ProcHandle 后已经是 footprinter 了，验证「不支持足迹」的路径
+// 需要另一个不带该方法的独立类型。
+type plainStub struct{}
+
+func (p *plainStub) Start(ctx context.Context, req executor.StartReq) error { return nil }
+func (p *plainStub) Events(taskID string) <-chan executor.AdapterEvent      { return nil }
+func (p *plainStub) Send(ctx context.Context, taskID, text string) error    { return nil }
+func (p *plainStub) RespondPermission(ctx context.Context, taskID, permID, decision string) error {
+	return nil
+}
+func (p *plainStub) Stop(taskID string) error { return nil }
+
+func (p *plainStub) Probe(executor.ProbeReq) (executor.ProbeOutcome, error) {
+	return executor.ProbeOutcome{Alive: true}, nil
+}
+
+// TestStatusFillsProcsForActiveTasks 验证活跃任务带上进程数。
+//
+// 假 pid 用 2147480000：接近 int32 上限，本机内核永远分配不到，足迹判定必然
+// 稳定在 VerdictOK + 0 成员，不会被真实进程干扰。
+func TestStatusFillsProcsForActiveTasks(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	env.seedRunningTask(t, "T-procs")
+	got := env.getStatus(t)
+	for _, a := range got.Active {
+		if a.ID != "T-procs" {
+			continue
+		}
+		if a.Procs == nil {
+			t.Fatal("活跃任务应带 Procs（取不到时也该留 nil，见下）")
+		}
+		return
+	}
+	t.Fatalf("响应里没有任务 T-procs")
+}
+
+// TestStatusProcsNilWhenUnsupported adapter 不支持时 Procs 必须是 nil，不能填 0。
+//
+// nil 表示「没这个信息」，0 表示「确实没有进程」。填 0 就是制造假阳性——
+// 与 Watchers / Live 三态是同一条纪律。
+func TestStatusProcsNilWhenUnsupported(t *testing.T) {
+	env := newStatusEnv(t, &plainStub{})
+	env.seedRunningTask(t, "T-plain")
+	got := env.getStatus(t)
+	for _, a := range got.Active {
+		if a.Procs != nil {
+			t.Fatalf("不支持的 adapter 应留 nil，got %d", *a.Procs)
+		}
+	}
+}
+
+// TestFootprintAllCoversArchivedTasks 验证体检覆盖已归档任务。
+//
+// 这是这条命令存在的理由：Done 只删 worktree、不删任务目录，历史任务的
+// proc.json 都还在。若只扫活跃任务，它与 status 就没有区别了。
+func TestFootprintAllCoversArchivedTasks(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	archived := "T-archived"
+	env.seedTask(t, archived, proto.TaskStateCompleted)
+
+	resp, err := env.mgr.FootprintAll()
+	if err != nil {
+		t.Fatalf("FootprintAll 失败: %v", err)
+	}
+	for _, r := range resp.Rows {
+		if r.TaskID == archived {
+			return
+		}
+	}
+	t.Fatalf("体检结果里没有已归档任务 %s（共 %d 行）", archived, len(resp.Rows))
+}
+
+// TestFootprintAllReportsVerdict 验证判定结论如实带出，不被抹成 0。
+func TestFootprintAllReportsVerdict(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	env.seedTask(t, "T-verdict", proto.TaskStateCompleted)
+
+	resp, err := env.mgr.FootprintAll()
+	if err != nil {
+		t.Fatalf("FootprintAll 失败: %v", err)
+	}
+	if len(resp.Rows) == 0 {
+		t.Fatal("应至少有一行")
+	}
+	if resp.Rows[0].Verdict == "" {
+		t.Fatal("Verdict 不得为空——判不出结论也要如实说，不能只给一个 0")
 	}
 }

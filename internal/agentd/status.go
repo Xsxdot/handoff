@@ -20,6 +20,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/selfupdate"
 )
@@ -99,6 +100,14 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 	// 每台机器都要读它，只在特殊情况下才给的字段会让消费方拿 nil 去猜
 	resp.Update = &proto.UpdateStatus{Managed: selfupdate.IsManaged(os.Getenv)}
 
+	// 全局占用：失败只 Warn 并留 nil——status 是诊断命令，宁可少一个数
+	// 也不能给一个编出来的数
+	if used, limit, err := prochost.UIDUsage(); err != nil {
+		m.log.Warn("状态聚合：读不到进程占用，该字段留空", "cause", err)
+	} else {
+		resp.Proc = &proto.ProcUsage{Used: used, Limit: limit}
+	}
+
 	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
 		"executors", len(names), "unattended", unattended, "managed", resp.Update.Managed)
 	return resp, nil
@@ -127,6 +136,22 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 		w := m.hub.Watchers(t.ID)
 		at.Watchers = &w
 		at.Live, at.Note = m.probeOne(t, time.Until(deadline))
+		// per-task 足迹：只读、失败留 nil。它复用本函数既有的时限纪律——
+		// status 不能因为多了一个诊断字段就变成慢命令
+		if ad, aerr := m.adapterFor(t.ID); aerr == nil {
+			if fp, ok := ad.(footprinter); ok {
+				taskDir := filepath.Join(m.cfg.DataDir, "tasks", t.ID)
+				if h, herr := fp.ProcHandle(t.ID, taskDir); herr == nil {
+					if members, v, ferr := prochost.Footprint(h); ferr == nil && v == prochost.VerdictOK {
+						n := len(members)
+						at.Procs = &n
+					} else {
+						m.log.Debug("状态聚合：足迹判定不可用，该任务 procs 留空",
+							"task", t.ID, "verdict", string(v), "cause", ferr)
+					}
+				}
+			}
+		}
 		out = append(out, at)
 	}
 	return out
@@ -192,4 +217,59 @@ func (m *Manager) probeOne(t proto.Task, budget time.Duration) (live, note strin
 		m.log.Warn("状态探活：超时，结论未知（不判死）", "task", t.ID, "budget", budget)
 		return proto.LiveUnknown, "探活超时"
 	}
+}
+
+// FootprintAll 体检全部任务（含已归档）的进程足迹。
+//
+// 返回：
+//   - 每个任务一行（含判定结论）与本机 uid 占用；查询任务列表失败才返回错误
+//
+// 注意：
+//   - **只读，绝不发信号**：本方法只数不杀。数出来之后要不要动手是人的决定
+//   - 与 status 分开的理由：本方法遍历全部历史任务目录，天然是慢命令；
+//     status 有「不能变成慢命令」的硬纪律，两者不能合并
+//   - 已归档任务同样体检：Done 只删 worktree、不删任务目录，凭据都还在
+func (m *Manager) FootprintAll() (*proto.FootprintResp, error) {
+	tasks, err := m.st.ListTasks()
+	if err != nil {
+		m.log.Error("足迹体检：查询任务列表失败", "cause", err)
+		return nil, fmt.Errorf("查询任务列表: %w", err)
+	}
+	m.log.Info("足迹体检开始", "tasks", len(tasks))
+	resp := &proto.FootprintResp{Rows: make([]proto.FootprintRow, 0, len(tasks))}
+	scanned, withProcs := 0, 0
+	for _, t := range tasks {
+		ad, aerr := m.adapterFor(t.ID)
+		if aerr != nil {
+			continue
+		}
+		fp, ok := ad.(footprinter)
+		if !ok {
+			continue
+		}
+		h, herr := fp.ProcHandle(t.ID, filepath.Join(m.cfg.DataDir, "tasks", t.ID))
+		if herr != nil {
+			continue // 无凭据（多为从未启动或已清理）：不是异常，不入表
+		}
+		scanned++
+		members, v, ferr := prochost.Footprint(h)
+		if ferr != nil {
+			m.log.Warn("足迹体检：枚举失败", "task", t.ID, "cause", ferr)
+			continue
+		}
+		if len(members) > 0 {
+			withProcs++
+		}
+		resp.Rows = append(resp.Rows, proto.FootprintRow{
+			TaskID: t.ID, Name: t.Name, State: string(t.State),
+			Procs: len(members), Verdict: string(v),
+		})
+	}
+	if used, limit, uerr := prochost.UIDUsage(); uerr == nil {
+		resp.Usage = &proto.ProcUsage{Used: used, Limit: limit}
+	} else {
+		m.log.Warn("足迹体检：读不到进程占用，该字段留空", "cause", uerr)
+	}
+	m.log.Info("足迹体检完成", "scanned", scanned, "with_procs", withProcs, "rows", len(resp.Rows))
+	return resp, nil
 }

@@ -164,6 +164,7 @@ func (s *Server) SetManager(m *Manager) {
 //
 // 路由（Go 1.22+ 方法路由）：
 //   - GET  /api/status                    agentd 可用性与身份
+//   - GET  /api/footprint                 全任务进程足迹体检
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
@@ -181,6 +182,7 @@ func (s *Server) SetManager(m *Manager) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/footprint", s.handleFootprint)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
@@ -260,6 +262,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.StartedAt = s.startedAt
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleFootprint 返回全部任务（含已归档）的进程足迹体检。
+//
+// 注意：这是慢接口——它遍历全部历史任务目录逐个枚举进程。与 /api/status
+// 分开正是为了不把那条「必须快」的诊断路径拖下水。
+func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("足迹体检请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Error("manager 未就绪，无法体检足迹")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	resp, err := s.mgr.FootprintAll()
+	if err != nil {
+		s.log.Error("足迹体检失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -633,7 +656,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 // projectAddRequest 是 POST /api/projects 的请求体。
 //
 // 两种形态由 path 是否为空决定：给了 path 就是「这台机器上已经有一份，用它」
-//（agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
+// （agentd 会现读它的 origin 校验一致）；没给就是「你自己 clone 到 repo_root/<name>」。
 type projectAddRequest struct {
 	OriginURL string `json:"origin_url"`
 	Name      string `json:"name"`

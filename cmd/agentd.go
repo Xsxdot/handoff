@@ -159,7 +159,7 @@ var agentdCmd = &cobra.Command{
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交审核者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
-		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, logger); err != nil {
+		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
 		// 看门狗随停机一起收：以前挂在 context.Background() 上靠进程退出终止，

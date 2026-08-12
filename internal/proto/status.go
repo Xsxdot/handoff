@@ -73,6 +73,22 @@ type ActiveTask struct {
 	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
 	// 是同一条纪律：一条会说谎的诊断命令比没有更糟，因为你会信它。
 	Watchers *int `json:"watchers,omitempty"`
+
+	// Procs 是该任务当前占用的进程数。
+	//
+	// 为什么是指针：nil 表示**取不到这个信息**（老 agentd、adapter 不支持、
+	// 平台不支持、或 pgid 判定为复用/凭据不全），与「确实是 0 个进程」是两回事。
+	// 猜一个 0 就是制造假阳性——与 Watchers、Live 三态同一条纪律。
+	Procs *int `json:"procs,omitempty"`
+}
+
+// ProcUsage 是本机当前 uid 的进程占用与上限。
+//
+// 为什么两个数必须一起给：只看 Used 不知道离墙还有多远，只看 Limit 没有意义。
+// 2026-08-12 devbox 整机 fork 瘫痪时，346/2666 这两个数并排才说明得了问题。
+type ProcUsage struct {
+	Used  int `json:"used"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStatus 是这台 agentd 与「换版」有关的状态。
@@ -113,4 +129,27 @@ type StatusResp struct {
 	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
 	// 消费方拿到 nil 就该什么都不显示，而不是显示一个「未托管、无待命」的假状态
 	Update *UpdateStatus `json:"update,omitempty"`
+
+	// Proc 是本机 uid 级的进程占用与上限。指针 + omitempty：老 agentd 不发这个
+	// 字段，消费方拿到 nil 应当什么都不显示，而不是显示一个「0/0」的假状态。
+	Proc *ProcUsage `json:"proc,omitempty"`
+}
+
+// FootprintRow 是一个任务的进程足迹体检结果。
+//
+// 注意：Verdict 恒非空。判不出结论时给 leader_reuse / no_credential，而不是
+// 把 Procs 抹成 0 了事——「没有残留」与「我们不敢下结论」是两回事，后者需要
+// 人工看一眼，前者不需要。
+type FootprintRow struct {
+	TaskID  string `json:"task_id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Procs   int    `json:"procs"`
+	Verdict string `json:"verdict"`
+}
+
+// FootprintResp 是 GET /api/footprint 的响应：全部任务（含已归档）的足迹体检。
+type FootprintResp struct {
+	Rows  []FootprintRow `json:"rows"`
+	Usage *ProcUsage     `json:"usage,omitempty"`
 }
