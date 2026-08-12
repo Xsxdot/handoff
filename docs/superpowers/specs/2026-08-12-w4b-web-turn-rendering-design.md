@@ -161,7 +161,7 @@ grok 的工具信息只是 200 字符的人类摘要、codex 没有真实抓包�
 
 | 文件 | 职责 | 边界 |
 |---|---|---|
-| `frames.ts` | 纯函数：ndjson 文本 → 可渲染块。半行缓冲、delta 合并、`RefSeq` 配对 | 不碰 DOM、不发请求 |
+| `frames.ts` | 纯函数：ndjson 文本 → 可渲染块。半行缓冲、delta 合并、`part` 配对 | 不碰 DOM、不发请求 |
 | `useFramesStream.ts` | 加载 / 跟随 / 回翻的 hook | 只管 I/O 与状态，不决定长什么样 |
 | `TimelinePanel.tsx` | 容器：回合分隔、锚点条、加载更早、跟随徽章、切换开关 | 不解析原始文本 |
 | `TextBlock.tsx` / `ThinkingBlock.tsx` / `ToolCard.tsx` / `EventMark.tsx` | 四种块的展示 | 各自独立可测 |
@@ -183,7 +183,12 @@ grok 的工具信息只是 200 字符的人类摘要、codex 没有真实抓包�
 
 ### 8.2 工具配对
 
-`tool_result.RefSeq` 指向对应 `tool_call.Seq`。未配上结果的 `tool_call` 分两种状态，不含糊成同一种：
+配对键是 **`(turn, part)`**，不是 `ref_seq`。W4a §3.3 把 `ref_seq` 留给了 `event` 帧指向
+events 表的库级 seq，与帧的任务内 seq 是两套编号；`tool_call` 与其 `tool_result` 用同一个
+`part`（W4a §3.2「这是前端把结果挂回调用卡片的唯一依据」）。`part` 只在回合内唯一，所以
+键必须带上 `turn`。
+
+未配上结果的 `tool_call` 分两种状态，不含糊成同一种：
 
 - 任务 `running` 或 `waiting_answer` → 「进行中」
 - 任务 `waiting_review` / `completed` / `failed` → 「未返回」
@@ -221,7 +226,8 @@ grok 的工具信息只是 200 字符的人类摘要、codex 没有真实抓包�
 
 - 半行切分：一帧被拆在两次 chunk 之间
 - delta 合并：同 part 连续帧合一块；part 变化开新块；turn 变化开新块
-- `RefSeq` 配对：正常配对、未配对（两种状态各一）、结果先于调用到达
+- `(turn, part)` 配对：正常配对、未配对（两种状态各一）、结果先于调用到达、
+  不同回合复用同一个 `part` 不互相串台
 - 未知 type：不丢弃、不抛异常
 - 坏行：非 JSON、JSON 但缺 `seq`、空行——均跳过并计数，不影响其余帧
 
