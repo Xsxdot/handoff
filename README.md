@@ -180,7 +180,7 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 | `handoff show <task>` | 输出任务现场快照（任务+待办工单+最近事件） | — |
 | `handoff attach [task]` | 在终端跟随任务实况（render 流；无参时任务选择列表，非 TTY 打印建议命令） | `--all`（从头播放全部实况）；`--no-follow`（放完当前内容即退出） |
 | `handoff continue <task> "<指令>"` | 向任务续发修改指令（要求 waiting_review） | — |
-| `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review） | — |
+| `handoff done <task>` | 归档任务并回收 executor（要求 waiting_review）；说明会写进任务记录（`show` 可见）与 `archived` 事件 | `--note "<说明>"`（可选；会写进任务记录与 archived 事件） |
 | `handoff stop <task>` | 主动中止任务（停 executor、作废挂起工单，任务落 failed） | — |
 | `handoff status [--target <名字>]` | 看这个 agentd 能不能用、是什么版本、有哪些活跃任务及其 executor 是否还活着 | `--json`（reachable 与退出码同源；老 agentd 显示 degraded） |
 | `handoff version` | 打印本二进制的版本标识（首行为纯版本号，供脚本比对） | — |
@@ -196,7 +196,7 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 
 全局参数：`--agentd http://127.0.0.1:7777`（agentd 地址）、`--target <name>`（按配置 Targets 换算地址与 token）、`--config <path>`（配置文件，默认 `~/.handoff/config.yaml`）。
 
-事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
+事件类型：`permission_request` / `question`（`wait` 唤醒，凭 `ticket_id` 用 `reply` 回答）、`completed` / `failed`（进审核）、`archived`（任务被 done 归档，payload 带 `note`；唤醒 `wait`，等待方据此判断任务真正结束）、`delivery_failed`（应答没送到 executor，执行 `handoff resume` 重投）、`stalled`（看门狗：长时间无产出）、`progress`（只入库不唤醒）、`approver_decision` / `approver_disabled`（分级审批链审计，只入库不唤醒）。
 
 ## 配置（~/.handoff/config.yaml）
 
