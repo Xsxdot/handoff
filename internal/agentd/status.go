@@ -20,6 +20,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/executor"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/selfupdate"
 )
@@ -99,6 +100,14 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 	// 每台机器都要读它，只在特殊情况下才给的字段会让消费方拿 nil 去猜
 	resp.Update = &proto.UpdateStatus{Managed: selfupdate.IsManaged(os.Getenv)}
 
+	// 全局占用：失败只 Warn 并留 nil——status 是诊断命令，宁可少一个数
+	// 也不能给一个编出来的数
+	if used, limit, err := prochost.UIDUsage(); err != nil {
+		m.log.Warn("状态聚合：读不到进程占用，该字段留空", "cause", err)
+	} else {
+		resp.Proc = &proto.ProcUsage{Used: used, Limit: limit}
+	}
+
 	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
 		"executors", len(names), "unattended", unattended, "managed", resp.Update.Managed)
 	return resp, nil
@@ -127,6 +136,22 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 		w := m.hub.Watchers(t.ID)
 		at.Watchers = &w
 		at.Live, at.Note = m.probeOne(t, time.Until(deadline))
+		// per-task 足迹：只读、失败留 nil。它复用本函数既有的时限纪律——
+		// status 不能因为多了一个诊断字段就变成慢命令
+		if ad, aerr := m.adapterFor(t.ID); aerr == nil {
+			if fp, ok := ad.(footprinter); ok {
+				taskDir := filepath.Join(m.cfg.DataDir, "tasks", t.ID)
+				if h, herr := fp.ProcHandle(t.ID, taskDir); herr == nil {
+					if members, v, ferr := prochost.Footprint(h); ferr == nil && v == prochost.VerdictOK {
+						n := len(members)
+						at.Procs = &n
+					} else {
+						m.log.Debug("状态聚合：足迹判定不可用，该任务 procs 留空",
+							"task", t.ID, "verdict", string(v), "cause", ferr)
+					}
+				}
+			}
+		}
 		out = append(out, at)
 	}
 	return out

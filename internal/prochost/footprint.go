@@ -197,3 +197,27 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 	return len(members), VerdictOK,
 		fmt.Errorf("%w: pgid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
+
+// UIDUsage 报告当前 uid 的进程占用与上限。
+//
+// 返回：
+//   - used: 当前 uid 的进程数；limit: 每 uid 上限
+//   - err: 平台不支持（errNotSupported）或读取失败
+//
+// 注意：与 Footprint 共用同一次进程枚举的实现，但回答的是不同问题——
+// Footprint 问「这个任务占了多少」，本函数问「这台机器还剩多少」。
+// 调用方拿到 err 时必须如实呈现为「未知」，不得回退成 0。
+func UIDUsage() (used, limit int, err error) {
+	procs, err := enumProcsFn()
+	if err != nil {
+		log().Error("统计 uid 进程占用失败", "cause", err)
+		return 0, 0, err
+	}
+	limit, err = procLimit()
+	if err != nil {
+		log().Error("读取进程数上限失败", "cause", err)
+		return len(procs), 0, err
+	}
+	log().Debug("uid 进程占用", "used", len(procs), "limit", limit)
+	return len(procs), limit, nil
+}
