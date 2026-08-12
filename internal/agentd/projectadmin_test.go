@@ -372,3 +372,45 @@ func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
 		t.Fatalf("err = %v, want errBadDispatchRequest", err)
 	}
 }
+
+// TestRegisterProjectClonesToExplicitPath 验证 path 不存在且带 origin 时
+// clone 到调用方指定的 path（不是 repo_root/<name>）。
+// 造 clone 源的手法与 TestRegisterProjectClonesWhenNoPath 相同：本地目录当源，不依赖网络。
+func TestRegisterProjectClonesToExplicitPath(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+	// 父目录 workdir 也不存在，验证实现会 MkdirAll。
+	dest := filepath.Join(t.TempDir(), "workdir", "my-handoff")
+
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: src,
+		Name:      "my-handoff",
+		Path:      dest,
+	})
+	if err != nil {
+		t.Fatalf("RegisterProject(clone-to-path): %v", err)
+	}
+	want, _ := filepath.Abs(dest)
+	if loc.Path != want {
+		t.Fatalf("落点 = %q, want %q", loc.Path, want)
+	}
+	if loc.Name != "my-handoff" {
+		t.Errorf("name = %q, want my-handoff", loc.Name)
+	}
+	if loc.ProjectID != projectid.FromOrigin(src) {
+		t.Errorf("project_id = %q, want %q", loc.ProjectID, projectid.FromOrigin(src))
+	}
+	if _, err := os.Stat(filepath.Join(want, ".git")); err != nil {
+		t.Fatalf("落点应是一个克隆好的仓库: %v", err)
+	}
+}
+
+// TestRegisterProjectMissingPathRequiresOrigin 验证 path 不存在且无 origin → 400。
+func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	dest := filepath.Join(t.TempDir(), "nope")
+	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: dest})
+	if !errors.Is(err, errBadDispatchRequest) {
+		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	}
+}
