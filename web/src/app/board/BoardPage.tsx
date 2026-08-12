@@ -100,7 +100,7 @@ export function BoardPage() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-muted/40">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-3 sm:px-6">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-2.5">
         <h1 className="flex items-center gap-2 text-base font-semibold">
           <LayoutDashboard className="size-4" />
           handoff 控制台 · 任务看板
@@ -116,7 +116,7 @@ export function BoardPage() {
         </p>
       </header>
 
-      <main className="flex w-full flex-1 flex-col gap-4 p-4 sm:p-6">
+      <main className="flex w-full flex-1 flex-col gap-3 p-3">
         {sessionExpired && <SessionExpiredBanner />}
         {disconnected && !sessionExpired && <DisconnectedBanner message={errorText} />}
 
@@ -125,7 +125,7 @@ export function BoardPage() {
             <LoadFailed message={errorText || '正在连接 agentd…'} onRetry={() => window.location.reload()} />
           )
         ) : (
-          <div className="flex flex-1 items-stretch gap-4 overflow-x-auto pb-2">
+          <div className="flex flex-1 items-stretch gap-3 overflow-x-auto pb-2">
             {BOARD_COLUMNS.map((col) => (
               <BoardColumn
                 key={col}
@@ -177,7 +177,7 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className={`flex flex-col gap-1.5 rounded-md border bg-background p-3 text-left shadow-sm transition-colors hover:bg-accent/60 ${
+      className={`flex flex-col gap-1 rounded-md border bg-background p-2.5 text-left shadow-sm transition-colors hover:bg-accent/60 ${
         failed ? 'border-destructive/40 bg-destructive/5' : ''
       }`}
     >
