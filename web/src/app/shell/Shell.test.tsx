@@ -25,9 +25,10 @@ vi.mock('../../api/client', async () => {
     fetchWorkspaceDir: vi.fn(),
     fetchTaskDetail: vi.fn(),
     fetchTaskDiff: vi.fn(),
+    fetchPtySessions: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchTaskDetail, fetchTaskDiff } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchTaskDetail, fetchTaskDiff, fetchPtySessions } = await import('../../api/client')
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 const t1: Task = {
@@ -117,6 +118,7 @@ beforeEach(() => {
     recent_events: [],
   })
   vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: '' })
+  vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
 })
 
 function renderShell(path = '/') {

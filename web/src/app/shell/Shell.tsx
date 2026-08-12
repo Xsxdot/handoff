@@ -33,6 +33,7 @@ import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
 import { FloatingNewPane } from '../workbench/FloatingNewPane'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
@@ -54,6 +55,9 @@ export function Shell() {
   const [wizardOpen, setWizardOpen] = useState(false)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
+  // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
+  // openTerminal：它不会把用户的选中目录拽走
+  const ptyRestore = usePtyRestore(wb.restoreTerminal)
 
   const onUnregister = async (name: string, machine: string) => {
     await deleteProject(name, machine)
@@ -88,6 +92,9 @@ export function Shell() {
         {treeState.sessionExpired && <SessionExpiredBanner />}
         {treeState.disconnected && !treeState.sessionExpired && (
           <DisconnectedBanner message={treeState.errorText} compact />
+        )}
+        {ptyRestore.error !== '' && (
+          <DisconnectedBanner message={`终端会话恢复失败：${ptyRestore.error}`} compact />
         )}
         {treeState.data && (
           <ProjectTree

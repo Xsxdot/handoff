@@ -81,3 +81,35 @@ describe('useWorkbench', () => {
     expect(result.current.wb.groups[0].tabs).toHaveLength(0)
   })
 })
+
+describe('restoreTerminal', () => {
+  it('把会话恢复进目标目录的 tab 组，但**不切换当前基准**', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.restoreTerminal(wsB, 'sess-b'))
+    // 选中的仍是 A：页面加载时恢复一批会话，不该把用户的选择拽到最后一条上
+    expect(result.current.base?.key).toBe(wsA.key)
+    expect(result.current.wb.groups[0].tabs).toHaveLength(0)
+    act(() => result.current.select(wsB))
+    expect(result.current.wb.groups[0].tabs[0].content).toMatchObject({
+      kind: 'terminal', sessionId: 'sess-b',
+    })
+  })
+
+  it('同一个会话恢复两次只得到一个 tab（dedupKey 生效）', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.restoreTerminal(wsA, 's'))
+    act(() => result.current.restoreTerminal(wsA, 's'))
+    act(() => result.current.select(wsA))
+    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
+  })
+
+  it('同目录两个会话各占一个 tab，序号递增', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.restoreTerminal(wsA, 's1'))
+    act(() => result.current.restoreTerminal(wsA, 's2'))
+    act(() => result.current.select(wsA))
+    const seqs = result.current.wb.groups[0].tabs.map((t) => (t.content as { seq: number }).seq)
+    expect(seqs).toEqual([1, 2])
+  })
+})
