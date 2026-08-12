@@ -159,7 +159,7 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	// 走不到 transit 的终态分支，但「executor 已死 ⇒ 挂起工单不可能再被回答」的
 	// 语义与终态一致，审计痕迹也该一致
 	voidTicketsWithAudit(st, taskID, reason, log)
-	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: reason})
+	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason))
 	if err != nil {
 		log.Error("对账追加 failed 事件失败，不迁移状态", "task", taskID, "cause", err)
 		sweep(taskID) // 状态没迁成不代表 executor 还活着，残留照收

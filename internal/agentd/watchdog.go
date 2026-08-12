@@ -41,6 +41,13 @@ type stalledPayload struct {
 	Idle    string `json:"idle"`     // 空闲时长（如 "3h2m5s"，秒粒度）
 }
 
+// resourcePressurePayload 是高水位事件的载荷：审核者要靠这两个数字判断
+// 该不该收敛，只说「压力大」没有任何操作价值。
+type resourcePressurePayload struct {
+	Used  int `json:"used"`
+	Limit int `json:"limit"`
+}
+
 // RunWatchdog 启动任务卡住看门狗并持续运行，直到 ctx 取消。
 //
 // 参数：
@@ -58,6 +65,8 @@ type stalledPayload struct {
 //     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如审核者 reply）
 //     且 executor 仍无事件产出时下一轮会二次触发（「只发一次」按活动裁决，
 //     设计见 scanStalled 的函数头 P1-15a）
+//   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
+//     给每个活跃任务发一条 resource_pressure 事件唤醒审核者收敛
 func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
 	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, log)
 }
@@ -68,6 +77,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	log.Info("看门狗启动", "tick", tick, "stall_timeout", stallTimeout)
+	pressure := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -75,6 +85,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 			return
 		case <-ticker.C:
 			scanStalled(st, hub, stallTimeout, log)
+			pressure = scanPressure(st, hub, pressure, log)
 		}
 	}
 }
@@ -158,6 +169,65 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 			"idle", idle.Round(time.Second).String(), "last_seq", lastSeq)
 	}
 	log.Debug("看门狗扫描完成", "checked", checked, "fired", fired)
+}
+
+// scanPressure 判读一次进程余量，越线沿时给每个活跃任务发一条高水位事件。
+//
+// 参数：
+//   - active: 上一轮的置位状态（越线后为 true）
+//   - 其余同 scanStalled
+//
+// 返回：本轮结束后的置位状态，由调用方持有并回传——**不用包级变量**，
+// 那会让两个 agentd 实例（测试里常见）互相踩状态。
+//
+// 三条语义：
+//   - 越线（!active && NearFull）：对每个活跃任务发一次，置位
+//   - 已置位且仍在高水位：不重发。事件风暴会把审核者的会话刷爆，
+//     反而淹掉真正要处置的工单
+//   - 回落到水位线以下：复位，下次越线可再发
+//
+// 读数未知时**原样返回 active，什么都不做**：把「量不出来」当成「回落了」，
+// 会让下一次真越线因为状态错乱而漏报——漏报一次高水位，就等于回到事故当天
+// 那个「第一个信号是整机瘫痪」的处境。
+func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool {
+	a := admissionFn()
+	if !a.Known {
+		log.Debug("进程余量未知，跳过高水位判读")
+		return active
+	}
+	if !a.NearFull() {
+		if active {
+			log.Info("进程余量已回落到水位线以下", "used", a.Used, "limit", a.Limit)
+		}
+		return false
+	}
+	if active {
+		return true // 仍在高水位，已告警过，不重发
+	}
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("高水位告警读取任务列表失败", "cause", err)
+		return false // 没发出去就不置位，下一轮重试
+	}
+	fired := 0
+	for _, t := range tasks {
+		// 终态任务不需要知道机器压力大——它们已经不会再 fork 任何东西了。
+		// 用 IsTerminal 取反而不是枚举活跃态：新增状态时这里自动跟上
+		if t.State.IsTerminal() {
+			continue
+		}
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeResourcePressure,
+			resourcePressurePayload{Used: a.Used, Limit: a.Limit})
+		if aerr != nil {
+			log.Error("追加高水位事件失败", "task", t.ID, "cause", aerr)
+			continue
+		}
+		hub.Publish(evt)
+		fired++
+	}
+	log.Warn("执行机进程余量达高水位，已告警活跃任务",
+		"used", a.Used, "limit", a.Limit, "fired", fired)
+	return true
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：

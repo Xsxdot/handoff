@@ -62,6 +62,7 @@ import (
 	"github.com/xushixin/handoff/internal/envfile"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/permgate"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -351,6 +352,31 @@ type completedPayload struct {
 // failedPayload 是 failed 事件的 payload。
 type failedPayload struct {
 	FailReason string `json:"fail_reason"`
+	// ProcUsage 是任务失败时刻的进程占用快照；读不出数时为 nil。
+	//
+	// 为什么用指针 + omitempty 而不是零值：一个「0/0」的快照会被读成
+	// 「死亡时机器很空闲」，那是彻头彻尾的谎话，比没有快照更糟。nil 表示
+	// 「没测到」，与「测到了，很空闲」是两件事，必须能区分
+	ProcUsage *prochost.Admission `json:"proc_usage,omitempty"`
+}
+
+// newFailedPayload 构造带占用快照的失败载荷。
+//
+// 参数：reason 为失败原因，原样保留不做改写
+//
+// 为什么所有 failed 事件都要走这里：三个发射点（Stop、executor 死亡对账、
+// reconcile）各自构造等于三处都可能漏挂快照，而漏掉的那次恰好可能就是
+// 配额事故那次。审核者拿到「死亡时 2390/2400」与「死亡时 300/2400」，
+// 一眼就能定性两个完全不同的排查方向。
+//
+// 为什么这里不打日志：它只是构造载荷，失败本身在三个发射点各自已有日志；
+// 在这里再记一遍等于同一件事写四次。
+func newFailedPayload(reason string) failedPayload {
+	p := failedPayload{FailReason: reason}
+	if a := admissionFn(); a.Known {
+		p.ProcUsage = &a
+	}
+	return p
 }
 
 // approverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限
@@ -1140,9 +1166,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
 
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{
-		FailReason: "审核者主动中止（handoff stop）",
-	})
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload("审核者主动中止（handoff stop）"))
 	if err != nil {
 		return false, fmt.Errorf("追加中止事件: %w", err)
 	}
@@ -2446,7 +2470,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		// 路径同语义。不作废的话 attach 仍向审核者展示可操作的挂起项，而 executor
 		// 已不在——一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态
 		voidTicketsWithAudit(m.st, taskID, "executor 已终结", m.log)
-		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed, failedPayload{FailReason: r.FailReason})
+		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(r.FailReason))
 	}
 	if err != nil {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)
