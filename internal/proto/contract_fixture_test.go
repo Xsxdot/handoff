@@ -348,22 +348,23 @@ func statusSample(now time.Time, taskID string) StatusResp {
 // ptySessionSample 返回 PtySession 的代表性样本（活着的会话：exit_code 缺席）。
 func ptySessionSample(now time.Time) PtySession {
 	return PtySession{
-		ID:        "2f0f6a3c-8f1e-4f2a-9a77-1c2d3e4f5a6b",
-		Machine:   "",
-		BasePath:  "/home/dev/handoff",
-		BaseKind:  "workspace",
-		Shell:     "/bin/zsh",
-		CreatedAt: now,
-		Cols:      120,
-		Rows:      40,
-		Attached:  1,
-		PID:       48213,
-		BytesOut:  81920,
+		ID:         "2f0f6a3c-8f1e-4f2a-9a77-1c2d3e4f5a6b",
+		Machine:    "",
+		BasePath:   "/home/dev/handoff",
+		BaseKind:   "workspace",
+		Shell:      "/bin/zsh",
+		CreatedAt:  now,
+		Cols:       120,
+		Rows:       40,
+		Attached:   1,
+		Foreground: true,
+		PID:        48213,
+		BytesOut:   81920,
 	}
 }
 
 // ptySessionsRespSample 覆盖 scope=all 信封：一条本机活会话 + 一条远端已退出会话
-//（exit_code 出现），外加两行机器应答。
+// （exit_code 出现），外加两行机器应答。
 func ptySessionsRespSample(now time.Time) PtySessionsResp {
 	code := 3
 	remote := ptySessionSample(now)
@@ -371,6 +372,7 @@ func ptySessionsRespSample(now time.Time) PtySessionsResp {
 	remote.Machine = "devbox"
 	remote.Attached = 0
 	remote.ExitCode = &code
+	remote.Foreground = false
 	return PtySessionsResp{
 		Sessions: []PtySession{ptySessionSample(now), remote},
 		Machines: []MachineStatus{

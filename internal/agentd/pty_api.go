@@ -52,7 +52,7 @@ func (s *Server) sessionEnv() []string {
 // resolvePtyBase 把请求里的 base_kind/base_path 归一化成实际 cwd。
 //
 // **这是参数校验，不是安全边界。** 控制台会话在能力上等价于主令牌
-//（POST /api/tasks/{id}/run 就是 sh -c，见 spec §1），白名单挡不住任何有心人
+// （POST /api/tasks/{id}/run 就是 sh -c，见 spec §1），白名单挡不住任何有心人
 // ——终端里一条 `cd ~` 就出去了。它存在的唯一理由是：防止前端传一个打错的
 // 路径、让 shell 起在文件系统某个莫名其妙的角落。因此失败是 400（参数错），
 // 不是 403（没权限）。
@@ -224,6 +224,6 @@ func ptySessionView(s ptyhost.Session, machine string) proto.PtySession {
 	return proto.PtySession{
 		ID: s.ID, Machine: machine, BasePath: s.BasePath, BaseKind: s.BaseKind,
 		Shell: s.Shell, CreatedAt: s.CreatedAt, Cols: s.Cols, Rows: s.Rows,
-		Attached: s.Attached, PID: s.PID, ExitCode: s.ExitCode, BytesOut: s.BytesOut,
+		Attached: s.Attached, Foreground: s.Foreground, PID: s.PID, ExitCode: s.ExitCode, BytesOut: s.BytesOut,
 	}
 }

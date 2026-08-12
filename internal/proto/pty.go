@@ -22,8 +22,12 @@ type PtySession struct {
 	Cols      int       `json:"cols"`
 	Rows      int       `json:"rows"`
 	Attached  int       `json:"attached"`
-	PID       int       `json:"pid"`
-	ExitCode  *int      `json:"exit_code,omitempty"`
+	// Foreground 表示会话里有命令跑在前台。控制台据此决定关 tab 时要不要先确认
+	//（spec §6.2）。**不带 omitempty**：false 是一个有意义的结论（「空闲，随便关」），
+	// 缺键会让前端分不清它和「这版服务端还不认识这个字段」。
+	Foreground bool `json:"foreground"`
+	PID        int  `json:"pid"`
+	ExitCode   *int `json:"exit_code,omitempty"`
 	// BytesOut 是该会话累计输出的字节数，也是 /ws/pty 的 since 水位。
 	BytesOut uint64 `json:"bytes_out"`
 }

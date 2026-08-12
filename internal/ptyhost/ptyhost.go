@@ -66,7 +66,13 @@ type Session struct {
 	Attached  int
 	PID       int
 	ExitCode  *int
-	BytesOut  uint64
+	// Foreground 表示会话里当前有一个跑在前台的命令（前台进程组 ≠ shell 自己）。
+	//
+	// 为什么是 bool 而不是三态：读不到（shell 已退出、平台不支持）时结论是
+	// **false**——两种情形下「关掉它会打断什么」的答案都是「不会」，与真的空闲
+	// 同解。这与 PtySupported 那种「不知道」不是一回事，不要照抄那条纪律。
+	Foreground bool
+	BytesOut   uint64
 }
 
 // OpenOptions 是开会话的入参。Env 是**完整环境**，不会再追加 os.Environ()——
@@ -215,6 +221,9 @@ func (s *session) snapshot() Session {
 	m.Attached = len(s.subs)
 	m.ExitCode = s.exitCode
 	m.BytesOut = s.buf.total()
+	fg, fgok := foregroundPgid(s.f)
+	// 相等 = shell 自己在前台，也就是在等提示符；不等 = 有命令跑在前台
+	m.Foreground = fgok && fg != s.meta.PID
 	return m
 }
 

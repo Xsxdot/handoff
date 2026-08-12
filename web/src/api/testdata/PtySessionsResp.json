@@ -10,6 +10,7 @@
       "cols": 120,
       "rows": 40,
       "attached": 1,
+      "foreground": true,
       "pid": 48213,
       "bytes_out": 81920
     },
@@ -23,6 +24,7 @@
       "cols": 120,
       "rows": 40,
       "attached": 0,
+      "foreground": false,
       "pid": 48213,
       "exit_code": 3,
       "bytes_out": 81920

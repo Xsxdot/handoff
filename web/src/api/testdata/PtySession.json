@@ -8,6 +8,7 @@
   "cols": 120,
   "rows": 40,
   "attached": 1,
+  "foreground": true,
   "pid": 48213,
   "bytes_out": 81920
 }

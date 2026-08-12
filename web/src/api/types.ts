@@ -338,6 +338,7 @@ export interface PtySession {
   attached: number
   pid: number
   exit_code?: number
+  foreground: boolean    // 有前台命令在跑，控制台据此在关 tab 前先确认
   bytes_out: number      // /ws/pty 的 since 水位
 }
 

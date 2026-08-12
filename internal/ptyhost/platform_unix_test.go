@@ -190,3 +190,50 @@ func TestTerminatePtyKillsProcessGroup(t *testing.T) {
 	}
 	t.Fatalf("终止会话后子进程 %d 仍存活，进程组没打中", child)
 }
+
+// TestForegroundPgidIdleShellIsItself 断言：shell 空闲时前台进程组就是它自己，
+// 判据据此得出「没有前台进程」。
+func TestForegroundPgidIdleShellIsItself(t *testing.T) {
+	f, cmd, err := startPty("/bin/sh", t.TempDir(), []string{"PATH=/usr/bin:/bin"}, 80, 24)
+	if err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	defer func() { _ = killPty(cmd); _ = f.Close() }()
+
+	fgp, ok := foregroundPgid(f)
+	if !ok {
+		t.Fatalf("拿不到前台进程组")
+	}
+	if fgp != cmd.Process.Pid {
+		t.Fatalf("空闲 shell 的前台组应当是它自己：fg=%d pid=%d", fgp, cmd.Process.Pid)
+	}
+}
+
+// TestForegroundPgidRunsChild 断言：shell 里跑一个前台命令时，前台进程组换成
+// 那个命令的组——这正是「别把用户的 build 静默杀掉」所需要的判据。
+//
+// 已实测：macOS 交互式 /bin/sh（bash）开启作业控制，前台命令会自成进程组。
+func TestForegroundPgidRunsChild(t *testing.T) {
+	f, cmd, err := startPty("/bin/sh", t.TempDir(), []string{"PATH=/usr/bin:/bin"}, 80, 24)
+	if err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	defer func() { _ = killPty(cmd); _ = f.Close() }()
+	// 排空主端：提示符与回显若没人读，shell 可能在写路径上阻塞，前台命令起不来
+	var sb strings.Builder
+	startDrain(f, &sb)
+
+	if _, err := f.Write([]byte("sleep 5\n")); err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	// 轮询而不是 sleep 一个定值：shell 起子进程的耗时在不同机器上差一个数量级，
+	// 定值要么慢要么偶发失败
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if fgp, ok := foregroundPgid(f); ok && fgp != cmd.Process.Pid {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("3 秒内前台进程组始终等于 shell 自己，前台命令没被识别出来")
+}

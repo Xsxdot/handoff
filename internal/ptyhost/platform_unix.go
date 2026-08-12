@@ -21,6 +21,7 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // ptySupported 是本平台的能力常量，经 Host.Supported() 上报到 /api/status。
@@ -94,4 +95,23 @@ func waitExitCode(cmd *exec.Cmd) int {
 		return ee.ExitCode()
 	}
 	return -1
+}
+
+// foregroundPgid 读出该 PTY 当前的前台进程组 id。
+//
+// 参数：ptmx 为主设备端文件
+//
+// 返回：
+//   - pgid: 前台进程组 id
+//   - ok: 读到了才为 true。读不到的两种情形都归到 false：shell 已退出
+//     （fd 已关）、或本平台不认这个 ioctl
+//
+// 注意：调用方要的通常不是 pgid 本身，而是「它是否 != shell 自己的 pid」——
+// 相等意味着 shell 在等提示符（没有前台命令），不等意味着有个命令正跑在前台。
+func foregroundPgid(ptmx *os.File) (int, bool) {
+	pgid, err := unix.IoctlGetInt(int(ptmx.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgid <= 0 {
+		return 0, false
+	}
+	return pgid, true
 }

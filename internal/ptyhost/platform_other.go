@@ -31,3 +31,9 @@ func killPty(cmd *exec.Cmd) error { return ErrNotSupported }
 
 // waitExitCode 在本平台永远不会被调用（会话根本起不来），返回 -1 表示未知。
 func waitExitCode(cmd *exec.Cmd) int { return -1 }
+
+// foregroundPgid 在没有 PTY 的平台上恒为「读不到」。
+//
+// 返回 false 而不是「没有前台进程」：这里连会话都开不出来，给一个 bool 结论
+// 等于替一个不存在的东西作证。
+func foregroundPgid(*os.File) (int, bool) { return 0, false }
