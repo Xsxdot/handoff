@@ -93,10 +93,25 @@ stop 成功清完树的任务，记录里照样是 `worktree_managed=true`。
 ### 3.3 第三态：`prunable`
 
 目录被手工 `rm -rf` 掉、git 元数据还挂着的工作树，`git worktree list --porcelain`
-会打 `prunable` 标记，对它跑 `remove` 同样失败。
+会打 `prunable <原因>` 标记。
 
 这一态占的不是磁盘而是**分支占用**——它照样能让 `push --delete` 被拒，与 §1 撞上的
-症状完全一致。因此必须纳入：列表要认它，回收时走 `git worktree prune` 而非 `remove`。
+症状完全一致，因此列表必须认它。
+
+**但它不需要单独的回收动作。** 实测（git 2.50.1，临时仓库造 prunable 条目）：
+
+```
+$ git worktree remove ../wt2     # 目录已被 rm -rf 的 prunable 条目
+                                 # 退 0，条目直接消失，无需 prune
+```
+
+> 本节初稿写的是「对它跑 `remove` 同样失败，回收要走 `git worktree prune`」，
+> 实跑推翻了这条。`prunable` 因此只是**列表上的显示态**，不改变回收动作。
+
+回收动作对所有在册条目统一为 `git worktree remove`（脏树加 `--force`）。
+保留一条兜底：`remove` 在 prunable 条目上失败时（旧版 git 可能行为不同）
+退回 `git worktree prune` 并复查列表——一个分支、一个用例的成本，换掉一处
+版本依赖假设。
 
 ### 3.4 判不出要如实说
 
@@ -109,7 +124,7 @@ stop 成功清完树的任务，记录里照样是 `worktree_managed=true`。
 |---|---|---|
 | 净 | 在 worktree list 中，`git status --porcelain` 为空 | `git worktree remove` |
 | 脏 | 在 worktree list 中，`git status --porcelain` 非空 | 默认拒绝；`--force` 时 `git worktree remove --force` |
-| 元数据残留 | worktree list 标 `prunable` | `git worktree prune` |
+| 元数据残留 | worktree list 标 `prunable` | `git worktree remove`（实证可行，见 §3.3）；失败才退回 `git worktree prune` |
 | 无残留 | 不在 worktree list 中 | 无动作，幂等成功 |
 | 判不出 | 仓库不可达 / 非 git 仓库 | 无动作。**列表**里标出该行；**单任务回收**按 409 拒绝，错误文本点名仓库路径与真因 |
 
@@ -245,7 +260,9 @@ handoff reclaim <task-id> [--target <名字>] [--force]  # 收
 | 净树回收 | `action=removed`，树确实不在了 |
 | 脏树无 `--force` | 409 `reason=dirty`，清单里确有那几个文件 |
 | 脏树带 `--force` | `action=removed` |
-| `prunable` 条目 | 走 `prune` 而非 `remove` |
+| 脏树的判据含未跟踪文件 | 只有未跟踪文件时也判脏（实证：`remove` 会因未跟踪文件失败） |
+| `prunable` 条目 | `remove` 直接成功，`action=removed` |
+| `prunable` 且 `remove` 失败 | 退回 `prune`，复查列表确认条目已消失 |
 | 树已不在 | `action=already_absent` 且退 0（幂等的定义，必须钉死） |
 | 非终态任务 | 409 `reason=not_terminal`，错误文本点名当前状态 |
 | `Managed=false` | 409 `reason=not_managed` |
