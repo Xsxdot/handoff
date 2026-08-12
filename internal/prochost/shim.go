@@ -109,7 +109,15 @@ func RunShim(specPath string) error {
 	// env 只打 key 名：值可能含凭据（代理 URL 里的 user:pass、API key）
 	l.Info("shim 拉起执行者进程", "bin", spec.Argv[0], "dir", spec.Dir,
 		"env_keys", envKeys(spec.Env), "input_ch", spec.InputCh != "")
+	// 注意 shim 这一处的特殊性：这里的 EAGAIN 很可能是**围栏自己造成的**——uid
+	// 占用已经 ≥ L，shim 连 executor 都 fork 不出来。日志必须带 fence 字段，
+	// 否则排障的人会以为是系统上限满了，去查错的方向。
 	if err := cmd.Start(); err != nil {
+		if note, _ := ExplainForkFailure(err); note != "" {
+			l.Error("拉起执行者进程失败（进程配额）", "bin", spec.Argv[0],
+				"note", note, "fence", spec.NprocLimit, "cause", err)
+			return fmt.Errorf("%s: 拉起 %s: %w", note, spec.Argv[0], err)
+		}
 		l.Error("拉起执行者进程失败", "bin", spec.Argv[0], "cause", err)
 		return fmt.Errorf("拉起 %s: %w", spec.Argv[0], err)
 	}

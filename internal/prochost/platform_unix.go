@@ -69,6 +69,10 @@ func spawnDetached(argv []string, dir string) (int, error) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		if note, _ := ExplainForkFailure(err); note != "" {
+			log().Error("拉起 shim 失败（进程配额）", "note", note, "cause", err)
+			return 0, fmt.Errorf("%s: %w", note, err)
+		}
 		return 0, fmt.Errorf("拉起 %s: %w", argv[0], err)
 	}
 	pid := cmd.Process.Pid
