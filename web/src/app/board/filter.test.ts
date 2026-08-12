@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ProjectNode } from '../../api/types'
 import type { Task } from '../../api/types'
 import {
-  EMPTY_FILTER, applyFilter, selectMachine, selectProject, selectWorkspace,
+  EMPTY_FILTER, applyFilter,
   setPendingOnly, setProjects, setSearch,
 } from './filter'
 
@@ -25,30 +25,14 @@ function t(over: Partial<Task>): Task {
 }
 
 describe('BoardFilter 写入规则', () => {
-  it('点项目会清空 machine 与 workspace（换项目后旧的收窄没有意义）', () => {
-    const f = selectWorkspace(selectMachine(selectProject(EMPTY_FILTER, 'p1'), 'devbox'), '/srv/a')
-    const next = selectProject(f, 'p2')
-    expect(next.projects).toEqual(new Set(['p2']))
-    expect(next.machine).toBeNull()
-    expect(next.workspace).toBeNull()
-  })
-
-  it('点机器保留项目、清空 workspace', () => {
-    const f = selectWorkspace(selectMachine(selectProject(EMPTY_FILTER, 'p1'), 'devbox'), '/srv/a')
-    const next = selectMachine(f, '')
-    expect(next.projects).toEqual(new Set(['p1']))
-    expect(next.machine).toBe('')
-    expect(next.workspace).toBeNull()
-  })
-
   it('顶部多选改 projects；若当前 machine 不再属于任一选中项目则一并清空', () => {
-    const f = selectMachine(selectProject(EMPTY_FILTER, 'p1'), 'devbox')
+    const f = { ...EMPTY_FILTER, projects: new Set(['p1']), machine: 'devbox' }
     const next = setProjects(f, new Set(['p2']), tree) // p2 只有本机位置
     expect(next.machine).toBeNull()
   })
 
   it('顶部多选改 projects；machine 仍属于选中项目时保留', () => {
-    const f = selectMachine(selectProject(EMPTY_FILTER, 'p1'), 'devbox')
+    const f = { ...EMPTY_FILTER, projects: new Set(['p1']), machine: 'devbox' }
     const next = setProjects(f, new Set(['p1', 'p2']), tree)
     expect(next.machine).toBe('devbox')
   })
@@ -68,16 +52,17 @@ describe('applyFilter', () => {
   ]
 
   it('按项目筛', () => {
-    expect(applyFilter(tasks, selectProject(EMPTY_FILTER, 'p1'), tree).map((x) => x.id)).toEqual(['a', 'b'])
+    const f = { ...EMPTY_FILTER, projects: new Set(['p1']) }
+    expect(applyFilter(tasks, f, tree).map((x) => x.id)).toEqual(['a', 'b'])
   })
 
   it('按机器收窄（""=本机，不是"不筛"）', () => {
-    const f = selectMachine(selectProject(EMPTY_FILTER, 'p1'), '')
+    const f = { ...EMPTY_FILTER, projects: new Set(['p1']), machine: '' }
     expect(applyFilter(tasks, f, tree).map((x) => x.id)).toEqual(['a'])
   })
 
   it('按工作树收窄', () => {
-    const f = selectWorkspace(selectMachine(selectProject(EMPTY_FILTER, 'p1'), 'devbox'), '/srv/a')
+    const f = { ...EMPTY_FILTER, projects: new Set(['p1']), machine: 'devbox', workspace: '/srv/a' }
     expect(applyFilter(tasks, f, tree).map((x) => x.id)).toEqual(['b'])
   })
 
