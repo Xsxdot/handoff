@@ -18,7 +18,9 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/pathenv"
 	"github.com/xushixin/handoff/internal/toolchain"
 )
 
@@ -55,8 +58,19 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("加载配置 %s: %w", p, err)
 		}
 
+		// PATH 补全（B71）：探测前先按 agentd 的同一套规则补全，否则 init 说
+		// 「就绪」而 agentd 说「未安装」是可能的——两边的 PATH 来源本就不同。
+		// 关掉登录 shell 那一层：init 本来就跑在用户的登录 shell 里，再跑一次
+		// 只是白等最多 3 秒。
+		//
+		// 用一个只放行 WARN 的 logger：补全成功是常态，把 INFO 打进交互向导的
+		// 输出里只会挤掉用户真正要读的探测表；真出问题（$SHELL 没设、path_dirs
+		// 目录不存在）仍然要让用户看见。
+		quiet := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: slog.LevelWarn}))
+		added := pathenv.Apply(cmd.Context(), pathenv.Options{ExtraDirs: cfg.PathDirs}, quiet)
+
 		results := toolchain.Detect()
-		printDetection(out, results)
+		printDetection(out, results, added)
 
 		if !initStdinIsTTY() {
 			// 非交互降级：只探测 + 写出厂默认，明确告诉用户下一步做什么
@@ -84,7 +98,16 @@ var initCmd = &cobra.Command{
 }
 
 // printDetection 打印四家 executor 的探测表。
-func printDetection(w io.Writer, rs []toolchain.Result) {
+//
+// 参数：
+//   - w: 输出目标
+//   - rs: 探测结果
+//   - addedDirs: 本次 PATH 补全新增的目录（pathenv.Apply 的返回值）
+//
+// 注意：
+//   - 工具的所在目录若来自 addedDirs，要在该行下面说明清楚——用户在自己 shell 里
+//     `which` 不到它，不解释的话这张表看起来就是错的
+func printDetection(w io.Writer, rs []toolchain.Result, addedDirs []string) {
 	fmt.Fprintln(w, "本机 executor 探测：")
 	for _, r := range rs {
 		path := r.Path
@@ -92,6 +115,9 @@ func printDetection(w io.Writer, rs []toolchain.Result) {
 			path = "—"
 		}
 		fmt.Fprintf(w, "  %-9s %-20s %s\n", r.Name, r.State.String(), path)
+		if d := coveredBy(r.Path, addedDirs); d != "" {
+			fmt.Fprintf(w, "            ↳ %s 不在你的 PATH 里，agentd 启动时会自动补上。\n", d)
+		}
 	}
 	for _, r := range rs {
 		if r.Name == "claude" && r.State == toolchain.StateAuthUnknown {
@@ -106,6 +132,24 @@ func printDetection(w io.Writer, rs []toolchain.Result) {
 			fmt.Fprintln(w, "  failed to refresh available models。")
 		}
 	}
+}
+
+// coveredBy 返回 path 所在目录——当且仅当那个目录是本次 PATH 补全新增的；
+// 否则返回空串。
+//
+// 为什么按目录精确相等而不是前缀匹配：前缀匹配会把 /opt/homebrew/bin/x/y 这类
+// 更深层的路径也算进来，那不是同一个目录，说明会是错的。
+func coveredBy(path string, added []string) string {
+	if path == "" {
+		return ""
+	}
+	dir := filepath.Dir(path)
+	for _, d := range added {
+		if d == dir {
+			return d
+		}
+	}
+	return ""
 }
 
 // askAll 按角色分支问完全部问题，就地改写 cfg。

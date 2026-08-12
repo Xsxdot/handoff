@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/toolchain"
 )
 
 // runInit 跑一次 init：answers 是按行喂给 stdin 的答案，tty 控制是否走交互分支。
@@ -154,5 +155,55 @@ func TestInitPrintsPairingSnippet(t *testing.T) {
 	}
 	if !strings.Contains(out, loadCfg(t, p).Token) {
 		t.Error("配对片段里应含本机 token")
+	}
+}
+
+// 工具落在「本次补全新增的目录」里时，探测表要说清楚这件事。
+//
+// why：这是整个 B71 里用户唯一能直接看到的价值——它同时回答了「为什么我 shell 里
+// which opencode 找不到、handoff 却说就绪」和「重启之后还灵不灵」。
+func TestPrintDetectionExplainsAugmentedDir(t *testing.T) {
+	var buf bytes.Buffer
+	rs := []toolchain.Result{
+		{Name: "opencode", State: toolchain.StateReady, Path: "/home/u/.opencode/bin/opencode"},
+	}
+
+	printDetection(&buf, rs, []string{"/home/u/.opencode/bin"})
+
+	out := buf.String()
+	if !strings.Contains(out, "/home/u/.opencode/bin") {
+		t.Errorf("应点名那个补出来的目录，实得:\n%s", out)
+	}
+	if !strings.Contains(out, "不在你的 PATH 里") {
+		t.Errorf("应说明该目录不在用户 PATH 里，实得:\n%s", out)
+	}
+	if !strings.Contains(out, "自动补上") {
+		t.Errorf("应说明 agentd 启动时会自动补上，实得:\n%s", out)
+	}
+}
+
+// 工具本来就在用户 PATH 上时不加这句——不是每一行都要挂个说明。
+func TestPrintDetectionQuietWhenDirAlreadyOnPath(t *testing.T) {
+	var buf bytes.Buffer
+	rs := []toolchain.Result{
+		{Name: "opencode", State: toolchain.StateReady, Path: "/usr/local/bin/opencode"},
+	}
+
+	printDetection(&buf, rs, []string{"/home/u/.opencode/bin"})
+
+	if strings.Contains(buf.String(), "不在你的 PATH 里") {
+		t.Errorf("目录本来就在 PATH 上时不该加说明，实得:\n%s", buf.String())
+	}
+}
+
+// 没探到的工具（Path 为空）不该匹配上任何补全目录。
+func TestPrintDetectionQuietForMissingTool(t *testing.T) {
+	var buf bytes.Buffer
+	rs := []toolchain.Result{{Name: "grok", State: toolchain.StateMissing}}
+
+	printDetection(&buf, rs, []string{"/home/u/.grok/bin"})
+
+	if strings.Contains(buf.String(), "不在你的 PATH 里") {
+		t.Errorf("没装的工具不该带补全说明，实得:\n%s", buf.String())
 	}
 }
