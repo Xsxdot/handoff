@@ -296,3 +296,40 @@ func TestShimLogsLandInTaskDirShimLog(t *testing.T) {
 		t.Fatalf("shim 日志应落入任务目录 shim.log，实得 %q", got)
 	}
 }
+
+// shim 必须在拉起 executor 后**立即**落一次名册，而不是等第一个周期到点。
+// 短命任务（几秒就结束）在等待周期的窗口里死掉的话，名册永远是空的，
+// 第二段清扫就等于不存在——这正是逃逸残留最容易发生的场景（编译、跑测试）。
+func TestShimWritesRosterImmediately(t *testing.T) {
+	dir := t.TempDir()
+	// 让 executor 活得久一点，好让我们在它还活着时读到名册
+	spec := baseSpec(dir, "sleep 5")
+	specPath := writeSpec(t, dir, spec)
+
+	t.Setenv(helperEnv, "shimentry")
+	t.Setenv("PROCHOST_TEST_SPEC", specPath)
+	pid, err := spawnDetached(
+		[]string{os.Args[0], "-test.run", "^TestHelperShimEntry$", "-test.v=false"},
+		dir, nil)
+	if err != nil {
+		t.Fatalf("拉起 shim: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+
+	path := rosterPath(spec.InfoPath)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, rerr := readRoster(path)
+		if rerr == nil && len(entries) > 0 {
+			// 名册里必须有真实存活的 pid，且带非零出生时刻
+			for _, e := range entries {
+				if e.PID <= 0 || e.StartedAt <= 0 {
+					t.Fatalf("名册条目字段不全: %+v", e)
+				}
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("10s 内没等到非空名册（path=%s）", path)
+}

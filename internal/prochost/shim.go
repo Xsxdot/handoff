@@ -27,15 +27,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SentinelPrefix 是死亡哨兵行的类型标记，adapter 扫 stdout 判死时匹配它。
 const SentinelPrefix = `"type":"handoff_exit"`
+
+// rosterInterval 是后代名册的采样间隔。
+//
+// 为什么是 15s：名册的陈旧度上界就是它——间隔内出生并在下次快照前逃逸的进程
+// 会漏记（由 B73 的围栏兜底，只吃预算不致命）。再密下去每次都要全量枚举进程表
+// （数千条）且对回收成功率没有实质提升：真正堆积的是长命的编译/测试进程，
+// 它们活得远比 15s 长。
+//
+// 是变量而非常量：测试要把它调到毫秒级，否则每条周期用例都真等 15s。
+var rosterInterval = 15 * time.Second
 
 // RunShim 是 shim 进程的入口：读 spec、持锁、拉起 executor、收尸写哨兵。
 //
@@ -128,6 +140,26 @@ func RunShim(specPath string) error {
 	}
 	l.Info("执行者进程已启动", "child_pid", childPID)
 
+	// 出生登记：趁进程树还活着，周期把后代名册落盘。executor 一死后代就被
+	// reparent 给 init/launchd，ppid 链当场断——名册是那之后唯一还能凭出生
+	// 事实认人的东西（why 见 roster.go 的 descendantsOf）
+	stopRoster := make(chan struct{})
+	rosterDone := make(chan struct{})
+	go func() {
+		defer close(rosterDone)
+		snapshotRoster(l, spec.InfoPath)
+		tk := time.NewTicker(rosterInterval)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stopRoster:
+				return
+			case <-tk.C:
+				snapshotRoster(l, spec.InfoPath)
+			}
+		}
+	}()
+
 	code := 0
 	if werr := cmd.Wait(); werr != nil {
 		var ee *exec.ExitError
@@ -138,6 +170,11 @@ func RunShim(specPath string) error {
 			code = -1
 		}
 	}
+	// executor 已退出，停止采样。最后一次快照留在盘上，它 ≈ 死亡时刻的存活者，
+	// 正是第二段清扫要点名的那批
+	close(stopRoster)
+	<-rosterDone
+	l.Info("出生登记已停止", "roster", rosterPath(spec.InfoPath))
 	if spec.Sentinel {
 		if _, err := fmt.Fprintf(stdout, "{%s,\"code\":%d}\n", SentinelPrefix, code); err != nil {
 			// 哨兵写不出去 = adapter 永远发现不了死亡，这是必须 Error 的严重情况
@@ -226,4 +263,32 @@ func envKeys(env []string) []string {
 		}
 	}
 	return keys
+}
+
+// snapshotRoster 采一次后代名册并落盘。
+//
+// 参数：
+//   - l: 已带 lock 字段的日志入口
+//   - infoPath: adapter 的 proc.json 路径，名册与它同目录
+//
+// 注意：**任何一步失败都只打日志、不中断 shim**。名册写不出去只意味着这一轮
+// 没有第二段清扫（残留由围栏兜底），为它杀掉正在干活的 executor 是本末倒置。
+func snapshotRoster(l *slog.Logger, infoPath string) {
+	path := rosterPath(infoPath)
+	if path == "" {
+		l.Warn("无 info_path，无法落盘后代名册，本任务不做出生登记")
+		return
+	}
+	procs, err := enumProcsFn()
+	if err != nil {
+		l.Warn("枚举进程失败，本轮跳过出生登记", "cause", err)
+		return
+	}
+	entries := descendantsOf(os.Getpid(), procs)
+	if err := writeRoster(path, entries); err != nil {
+		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", path, "cause", err)
+		return
+	}
+	// Debug 级：这是每 15s 一次的周期日志，Info 会把任务日志刷满
+	l.Debug("后代名册已更新", "path", path, "count", len(entries))
 }
