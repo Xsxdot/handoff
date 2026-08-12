@@ -29,7 +29,12 @@ import (
 	"github.com/xushixin/handoff/internal/proto"
 )
 
-// projectAddPath 是 --path：目标机上已有的那份代码的路径（省略则让它自己 clone）。
+// projectAddPath 是 --path：目标机上这份代码的落点。
+//
+// 三态（与 agentd 的决策表一致）：路径已存在 → 登记它；路径不存在 → 由那台
+// 机器 clone 到该路径；省略 → 由那台机器 clone 到它自己的 repo_root/<名字>。
+// 注意「路径不存在就 clone」意味着 --path 打错字不会被拦下，而是会在错的
+// 路径上克隆出一份新的——路径要自己核对。
 var projectAddPath string
 
 // project ls 的展示开关（W3a）：
@@ -80,7 +85,7 @@ var projectCmd = &cobra.Command{
 //
 //	handoff project add [名字]                                       # 把 cwd 登记为本机位置
 //	handoff project add [名字] --target devbox                       # 本机与 devbox 一起登记，devbox 自动 clone
-//	handoff project add [名字] --target devbox --path /root/work/x   # 同上，但 devbox 上已有一份
+//	handoff project add [名字] --target devbox --path /root/work/x   # 同上，但落点指定为 /root/work/x（已有就登记它，没有就 clone 过去）
 var projectAddCmd = &cobra.Command{
 	Use:   "add [名字]",
 	Short: "把当前项目登记到本机（--target 时一并登记到那台开发机）",
@@ -109,7 +114,8 @@ var projectAddCmd = &cobra.Command{
 //   - origin: cwd 的 origin（项目身份来源）
 //   - name: 人可读引用名（可空，由 agentd 从 origin 末段派生）
 //   - localPath: 本机位置（cwd 的主工作树）
-//   - remotePath: 目标机上已有的路径（可空，空则让那台机器自己 clone）
+//   - remotePath: 目标机上的落点（可空，空则让那台机器 clone 到自己的 repo_root/<名字>；
+//     非空时已存在就登记它、不存在就 clone 到它）
 //
 // 返回：
 //   - 错误：任一跳失败即返回；**不回滚另一跳**（登记是幂等的，重跑即可）
@@ -300,7 +306,7 @@ var projectRmCmd = &cobra.Command{
 
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPath, "path", "",
-		"目标机上已有的那份代码的路径（仅与 --target 连用；省略则由那台机器 clone 到它的 repo_root/<名字>）")
+		"目标机上的落点（仅与 --target 连用）：已存在则登记它，不存在则 clone 到它；省略则 clone 到那台机器的 repo_root/<名字>")
 	projectLsCmd.Flags().BoolVar(&projectTree, "tree", false, "以三层项目树输出（project → location → workspace，现场探测工作树）")
 	projectLsCmd.Flags().BoolVar(&projectTreeAll, "all", false, "跨机汇总所有机器上的项目树（配合 --tree 使用）")
 	projectLsCmd.Flags().BoolVar(&projectTreeJSON, "json", false, "树形输出改为单行 JSON（配合 --tree/--all 使用）")
