@@ -13,10 +13,16 @@
 // （规则见 filter.ts）；树本身不被 filter 过滤——它就是筛选的编辑入口。
 //
 // 计数来源：任务流（2.5s），见 counts.ts 的文件头注释。
+//
+// 任务 9：底部「添加项目」接 onAddProject 打开登记向导；机器（位置）行右侧悬浮
+// 注销按钮（仅当 onUnregister 提供时渲染），点按弹 ConfirmDialog 二次确认，
+// agentd 报错原文透出（spec §10）。
 import { useState } from 'react'
-import { ChevronRight, FolderGit2, HardDrive, Plus, WifiOff } from 'lucide-react'
+import { ChevronRight, FolderGit2, HardDrive, Plus, Trash2, WifiOff } from 'lucide-react'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { selectMachine, selectProject, selectWorkspace, type BoardFilter } from '../board/filter'
+import { ConfirmDialog } from '../lib/ConfirmDialog'
+import { errorMessage } from '../lib/format'
 import { countsForMachine, countsForProject } from './counts'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +32,8 @@ export interface ProjectTreeProps {
   filter: BoardFilter
   onFilterChange: (f: BoardFilter) => void
   onOpenTask: (id: string) => void
+  onAddProject?: () => void
+  onUnregister?: (name: string, machine: string) => Promise<void> | void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -83,10 +91,12 @@ function DisconnectedBadge() {
   )
 }
 
-export function ProjectTree({ tree, tasks, filter, onFilterChange, onOpenTask }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, filter, onFilterChange, onOpenTask, onAddProject, onUnregister }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
+  const [unregisterError, setUnregisterError] = useState('')
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -159,7 +169,7 @@ export function ProjectTree({ tree, tasks, filter, onFilterChange, onOpenTask }:
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
                 return (
-                  <div key={mKey}>
+                  <div key={mKey} className="group relative">
                     <button
                       type="button"
                       aria-disabled={problem !== '' || undefined}
@@ -179,6 +189,16 @@ export function ProjectTree({ tree, tasks, filter, onFilterChange, onOpenTask }:
                       {problem !== '' && <DisconnectedBadge />}
                       <RowCounts text={`${mCounts.dirs}·${mCounts.running}·${mCounts.pending}`} title="目录·运行·待处理" />
                     </button>
+                    {onUnregister && (
+                      <button
+                        type="button"
+                        aria-label="注销"
+                        onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
+                        className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    )}
 
                     {problem !== '' && (
                       <p
@@ -263,15 +283,43 @@ export function ProjectTree({ tree, tasks, filter, onFilterChange, onOpenTask }:
 
       <button
         type="button"
-        onClick={() => {
-          /* Task 9 接入 */
-        }}
+        onClick={onAddProject}
         className={cn(ROW_CLASS, 'mt-1 text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
         style={{ paddingLeft: 8 }}
       >
         <Plus className="size-4 shrink-0" />
         <span>添加项目</span>
       </button>
+
+      {onUnregister && (
+        <ConfirmDialog
+          open={unregisterTarget !== null}
+          title="注销项目位置"
+          description={
+            unregisterTarget
+              ? `将解除「${unregisterTarget.name}」在${machineLabel(unregisterTarget.machine)}上的登记。只解除登记，不删除磁盘上的代码。`
+              : ''
+          }
+          confirmLabel="注销"
+          destructive
+          error={unregisterError || undefined}
+          onConfirm={async () => {
+            if (!unregisterTarget || !onUnregister) return
+            try {
+              await onUnregister(unregisterTarget.name, unregisterTarget.machine)
+              setUnregisterTarget(null)
+              setUnregisterError('')
+            } catch (err) {
+              // agentd 报错原文透出，不缩略成「操作失败」（spec §10）
+              setUnregisterError(errorMessage(err))
+            }
+          }}
+          onCancel={() => {
+            setUnregisterTarget(null)
+            setUnregisterError('')
+          }}
+        />
+      )}
     </div>
   )
 }

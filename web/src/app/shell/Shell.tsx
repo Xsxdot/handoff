@@ -12,15 +12,21 @@
 // 边界：
 //   - 不渲染任何未实现功能的入口（左栏齿轮、设置页、配对开发机）——
 //     置灰控件承诺"以后能用"，用户会反复点；缺一个按钮反而诚实（spec §0）
-//   - 不持有机器流：那只在 /machines 可见时开表（spec §6）
+//   - 机器流只随登记向导开表（useMachines(wizardOpen)）：探活会向每台远程机发
+//     GET /api/status，没人看的时候没有理由持续打扰它们（spec §6）
+//   - 注销入口在树的位置行（onUnregister → deleteProject + refresh），
+//     向导打开/登记成功也走 treeState.refresh 让左栏即出新项目
 import { useState } from 'react'
 import { Outlet, useNavigate, useOutletContext } from 'react-router-dom'
+import { deleteProject } from '../../api/client'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import { EMPTY_FILTER, type BoardFilter } from '../board/filter'
+import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
 import type { PollState } from '../data/usePoll'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
+import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectTree } from '../tree/ProjectTree'
 import { TopTabs } from './TopTabs'
 
@@ -47,6 +53,16 @@ export function Shell() {
   const navigate = useNavigate()
   const onOpenTask = (id: string) => navigate(`/tasks/${id}`)
 
+  const [wizardOpen, setWizardOpen] = useState(false)
+  // 机器流只在向导打开时开表：探活会向每台远程机发 GET /api/status，没人看的时候
+  // 没有理由持续打扰它们（spec §6）；向导打开即首拉，关闭即停表。
+  const machinesState = useMachines(wizardOpen)
+
+  const onUnregister = async (name: string, machine: string) => {
+    await deleteProject(name, machine)
+    treeState.refresh()
+  }
+
   return (
     <div className="grid h-dvh grid-cols-[260px_1fr] grid-rows-[auto_1fr] bg-background">
       <div className="col-span-2 border-b bg-background">
@@ -64,6 +80,8 @@ export function Shell() {
             filter={filter}
             onFilterChange={setFilter}
             onOpenTask={onOpenTask}
+            onAddProject={() => setWizardOpen(true)}
+            onUnregister={onUnregister}
           />
         )}
       </aside>
@@ -79,6 +97,12 @@ export function Shell() {
           }}
         />
       </main>
+      <AddProjectWizard
+        open={wizardOpen}
+        machines={machinesState.data?.machines ?? []}
+        onClose={() => setWizardOpen(false)}
+        onDone={() => treeState.refresh()}
+      />
     </div>
   )
 }

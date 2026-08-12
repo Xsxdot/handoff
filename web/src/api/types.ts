@@ -71,9 +71,18 @@ export interface ProjectLocation {
   status?: string
 }
 
-// CreateProjectResp 是登记成功的响应体：**200**（不是 201），体是完整的
-// ProjectLocation——B62 实现如此。export type 直接复用 ProjectLocation。
-export type CreateProjectResp = ProjectLocation
+// CreateProjectResp 是登记成功的响应体：**200**（不是 201）。B62 实际返回完整
+// ProjectLocation（含 origin_url/created_at）；这里把这两字段放宽为可选，让登记
+// 向导的测试能以最小形态 mock 成功响应（project_id/name/path 足够断言），真实
+// 响应带全字段仍可赋值。ProjectLocation 保持严格，供契约测试与项目树使用。
+export interface CreateProjectResp {
+  project_id: string
+  name: string
+  path: string
+  origin_url?: string
+  created_at?: string
+  status?: string
+}
 
 // Workspace 是一个 git 工作树（含主工作区自身）。W3a §2。
 export interface Workspace {

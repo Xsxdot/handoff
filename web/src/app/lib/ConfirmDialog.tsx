@@ -11,6 +11,7 @@
 //   - confirmLabel: 确认按钮文案
 //   - destructive: 确认按钮是否用 destructive 视觉
 //   - busy: 确认中置为不可点（防重复提交）
+//   - error: 可选的操作失败原文，展示在 description 与按钮之间（透出 agentd 报错）
 //   - onConfirm / onCancel
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ export interface ConfirmDialogProps {
   confirmLabel: string
   destructive?: boolean
   busy?: boolean
+  error?: string
   onConfirm: () => void
   onCancel: () => void
 }
@@ -33,6 +35,7 @@ export function ConfirmDialog({
   confirmLabel,
   destructive = false,
   busy = false,
+  error,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -64,6 +67,9 @@ export function ConfirmDialog({
           {title}
         </h2>
         <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{description}</p>
+        {error && (
+          <p role="alert" className="mt-2 whitespace-pre-wrap text-sm text-destructive">{error}</p>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={onCancel} disabled={busy}>
             取消
