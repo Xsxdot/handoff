@@ -121,6 +121,8 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		Install:    inst.InstallArchive,
 		Activate:   release.Activate,
 	}
+	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
+	s.registerEventFrameHook()
 	return s
 }
 
