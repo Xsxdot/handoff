@@ -1,0 +1,5 @@
+思考中我要改 foo.go
+▸ echo hi
+  └ completed
+
+{"ask":"用哪个库？"}
