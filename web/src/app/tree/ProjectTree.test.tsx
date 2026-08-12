@@ -282,4 +282,36 @@ describe('ProjectTree', () => {
     fireEvent.change(input, { target: { value: '' } })
     expect(screen.queryByText('main')).not.toBeInTheDocument()
   })
+
+  it('⌘K 聚焦搜索框', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    expect(document.activeElement).not.toBe(input)
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('Ctrl+K 同样聚焦（非 mac）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'K', ctrlKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('输入框内 Esc 清空并失焦', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(input.value).toBe('handoff')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input.value).toBe('')
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('单独按 k 不聚焦（不劫持普通输入）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'k' })
+    expect(document.activeElement).not.toBe(input)
+  })
 })

@@ -26,7 +26,7 @@
 // 任务 9：底部「添加项目」接 onAddProject 打开登记向导；机器（位置）行右侧悬浮
 // 注销按钮（仅当 onUnregister 提供时渲染），点按弹 ConfirmDialog 二次确认，
 // agentd 报错原文透出（spec §10）。
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, Trash2, WifiOff,
 } from 'lucide-react'
@@ -185,6 +185,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
   const filtered = useMemo(() => filterTree(tree, tasks, query), [tree, tasks, query])
   const searching = filtered.query !== ''
+
+  // ⌘K / Ctrl+K 聚焦搜索框。
+  //
+  // 刻意挂在**冒泡阶段**（addEventListener 第三参不传 true），不是捕获阶段。
+  // 这是一条让位次序：将来中央的终端 tab 拿到焦点时，xterm 会吞掉自己的
+  // 按键；冒泡阶段监听意味着「任何调用 stopPropagation 的组件优先」——
+  // 在终端里按 ⌘K 不该把焦点抢到左栏来。改成 capture 会当场破坏这一点。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'k') return
+      e.preventDefault()
+      searchRef.current?.focus()
+      searchRef.current?.select()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
   const toggle = (key: string) =>
@@ -236,6 +253,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
             ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Esc 清空并失焦：一次按键回到无过滤状态，不用手动全选删除
+              if (e.key === 'Escape') {
+                setQuery('')
+                e.currentTarget.blur()
+              }
+            }}
             placeholder="搜索项目、机器或任务"
             className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
           />
