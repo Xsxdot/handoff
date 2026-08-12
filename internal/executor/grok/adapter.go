@@ -100,6 +100,9 @@ type runState struct {
 	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
 	askedViaTool bool
 
+	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart string            // 本回合正文/思维链的 part 标识
+
 	pendMu  sync.Mutex
 	pending map[string]pendingPerm // toolCallId -> 待裁决权限（perm.go 使用）
 }
@@ -148,6 +151,16 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
 		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
 	}
+	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
+	// （放块里用局部 err：Start 的 err 是命名返回值，覆写它会让下面的
+	// defer 把「本任务无结构化帧」误判成「启动失败」而杀掉 serve 进程）
+	{
+		fw, err := turn.NewFrameWriter(req.TaskDir, a.log)
+		if err != nil {
+			a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+		}
+		r.frames = fw
+	}
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
 		r.startCommit = c
@@ -174,6 +187,10 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		return err
 	}
+	if err := r.frames.BeginTurn("dispatch"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	// 不等待：session/prompt 要跑完一整个回合才响应，Start 必须立即返回
 	resCh, err := cli.CallAsync("session/prompt", map[string]any{
 		"sessionId": r.sessionID,
@@ -251,6 +268,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
+	if err := r.frames.BeginTurn("send"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	// 续接即发新的 session/prompt，回合边界由它的响应（stopReason）标记
 	resCh, err := r.cli.CallAsync("session/prompt", map[string]any{
 		"sessionId": r.sessionID,
@@ -545,6 +566,34 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
+// updateKind 是 ACP sessionUpdate 的帧归类。
+type updateKind int
+
+const (
+	updateNone      updateKind = iota // 不产帧
+	updateText                        // 产 text 帧
+	updateReasoning                   // 产 reasoning 帧
+)
+
+// updateFrameKind 把 ACP 的 sessionUpdate 类型归类成帧类型。
+//
+// 为什么 tool_call / tool_call_update 归 updateNone：grok 的工具动作今天只有
+// 一行人读摘要（toolLine，带 200 截断），拿它当 tool_call 帧的 input 会把
+// 「命令尾部可能藏着危险片段」这个已知问题（见 adapter.go 的 toolLine 注释）
+// 复制进帧流。W4a 不为 grok 造工具帧——诚实缺席好过失真在场（spec §3.5）。
+//
+// 未知类型一律 updateNone。
+func updateFrameKind(sessionUpdate string) updateKind {
+	switch sessionUpdate {
+	case "agent_message_chunk":
+		return updateText
+	case "agent_thought_chunk":
+		return updateReasoning
+	default:
+		return updateNone
+	}
+}
+
 // turnAccumulator 是单回合的文本累积器：把 session/update 分流成
 // 「回合正文」与「render.log 可见性文本」两股。
 //
@@ -609,6 +658,29 @@ func (t *turnAccumulator) feedRaw(raw []byte) {
 			t.renderBuf.WriteString("  └ " + u.Status + "\n")
 		}
 	}
+}
+
+// updateFrameFields 从一条原始 session/update 消息里取 sessionUpdate 类型与
+// content.text，供调用方在 feedRaw 之外把帧分流出去。
+//
+// 解析形状与 feedRaw 一致（同一份消息、同一套字段名）；解析失败或不是
+// session/update 时返回空串（调用方据此跳过分流，绝不 panic）。
+func updateFrameFields(raw []byte) (kind, text string) {
+	var msg struct {
+		Method string `json:"method"`
+		Params struct {
+			Update struct {
+				Kind    string `json:"sessionUpdate"`
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Method != "session/update" {
+		return "", ""
+	}
+	return msg.Params.Update.Kind, msg.Params.Update.Content.Text
 }
 
 // toolLine 把工具调用渲染成一行人类可读摘要：优先用 rawInput.command，
@@ -745,7 +817,22 @@ func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
 		return
 	}
 	h.r.turnMu.Lock()
-	h.r.acc.feedRaw(append([]byte(`{"method":"session/update","params":`), append(params, '}')...))
+	raw := append([]byte(`{"method":"session/update","params":`), append(params, '}')...)
+	h.r.acc.feedRaw(raw)
+	// W4a：turnAccumulator 是纯累积器，不该带 I/O——帧在它的调用方分流。
+	// bodyBuf / renderBuf 的两股走向一字不改，这里只是多一路输出
+	if kind, text := updateFrameFields(raw); text != "" {
+		switch updateFrameKind(kind) {
+		case updateText:
+			if err := h.r.frames.Text(h.r.textPart, text); err != nil {
+				h.a.log.Warn("写 text 帧失败，不影响回合", "task", h.r.taskID, "cause", err)
+			}
+		case updateReasoning:
+			if err := h.r.frames.Reasoning(h.r.textPart, text); err != nil {
+				h.a.log.Warn("写 reasoning 帧失败，不影响回合", "task", h.r.taskID, "cause", err)
+			}
+		}
+	}
 	h.r.turnMu.Unlock()
 	h.a.flushRender(h.r)
 }
