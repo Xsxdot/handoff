@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/xushixin/handoff/internal/proxycfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,7 +64,25 @@ type Config struct {
 	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 path_dirs: [] 写进
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（B59 spec D7 同款，方向相反）。
-	PathDirs     []string `yaml:"path_dirs,omitempty"`
+	PathDirs []string `yaml:"path_dirs,omitempty"`
+	// Proxy 是 handoff **自身**出网时使用的代理地址，形如 http://host:port、
+	// https://host:port、socks5://host:port、socks5h://host:port。
+	// 空 = 不配，沿用 HTTPS_PROXY/HTTP_PROXY/NO_PROXY 环境变量（现行为不变）。
+	//
+	// 作用范围只有两处：更新链路的 HTTP 出网（查 release、下资产）与 agentd 的
+	// git clone/fetch。**不作用于协调者↔agentd 链路**——那是 LAN/loopback 地址，
+	// 代理化轻则每次请求多绕一跳，重则 socks5 代理解析不了 100.x.y.z 直接断链，
+	// 而这条链路的可达性是 handoff 的命根子。也**不作用于 executor**：executor
+	// 的出网归 env 段（B19），两者故障域不交叉——代理挂了只影响升级，不影响任务执行。
+	//
+	// 为什么放顶层而不是放进 Target：它描述的是「**这台机器**怎么出网」，
+	// 与 RepoRoot / PathDirs 同一个道理。
+	//
+	// omitempty 是硬要求，不是风格：配置以 KnownFields(true) 严格解析，未知键让
+	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 proxy: "" 写进
+	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
+	//（PathDirs 同款）。
+	Proxy        string `yaml:"proxy,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -230,6 +249,10 @@ func Load(path string) (*Config, error) {
 		log().Error("配置校验失败", "path", path, "cause", verr)
 		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
 	}
+	if cfg.Proxy != "" {
+		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
+		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	}
 	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
 	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
 	// 把整台机器卡死在升级后的第一秒。
@@ -252,6 +275,13 @@ func Load(path string) (*Config, error) {
 func (c *Config) validate() error {
 	if c.StallTimeout <= 0 {
 		return fmt.Errorf("stalltimeout 必须为正时长（当前 %s）；省略该键即用默认 2h", c.StallTimeout)
+	}
+	// 坏代理必须在启动期硬拒。运行期容错的后果是：后台更新检查那条路径的纪律
+	// 是「任何一步失败都静默跳过」（它挂在每条命令上，自己不能成为故障源），
+	// 于是一个拼错的代理表现为**什么都不发生**，可以存在数月而无人察觉。
+	// 与 approver.blacklist 的正则在启动期编译校验是同一条纪律。
+	if err := proxycfg.Validate(c.Proxy); err != nil {
+		return err
 	}
 	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
 	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
@@ -292,7 +322,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }
