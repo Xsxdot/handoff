@@ -64,14 +64,61 @@ handoff 自己维护一张「模型 → 窗口大小」的表（会过时、会�
 顺带一提，`rate_limits` 里连套餐类型和额度重置时间都有——那不是本轮要的东西，
 但记一笔，将来若要做「额度快用完了」的提示，数据是现成的。
 
-**未决**：以上取自 codex **自己**的 rollout 文件，不是 handoff 读的那条线。
-handoff 的 codex adapter 走的是 app-server 的 `thread/*` + `item/*` JSON-RPC
-（见 [adapter.go:60-95](../../../internal/executor/codex/adapter.go:60)），
-`token_count` 是 `event_msg` 家族的，**这个协议转不转发它，本次没验**。
+**未决（08-13 已 settle，见下）**：以上取自 codex **自己**的 rollout 文件，不是
+handoff 读的那条线。handoff 的 codex adapter 走的是 app-server 的 `thread/*` +
+`item/*` JSON-RPC（见 [adapter.go:60-95](../../../internal/executor/codex/adapter.go:60)），
+`token_count` 是 `event_msg` 家族的，**这个协议转不转发它，08-12 没验**。
 
-要settle 它只需一次实验：拿 codex 派一个最小任务，把 adapter 收到的所有通知方法名
-打一遍 debug 日志，看有没有携带 usage 的帧。没做是因为它要占一个真实任务，
-而这个问题属于将来那个 brainstorm 的范围，不属于探针。
+### 1.1 08-13 补验：app-server **转发**，而且分母也在（codex-cli 0.144.1）
+
+**方法**：不占真实任务，也不改产品代码——本机直接按 adapter 同样的姿势拉起
+`codex app-server --listen ws://…`，走 `initialize` → `initialized` →
+`thread/start` → `turn/start`，把收到的每一帧原样打出来。输入是一句
+「只回一个字：好」，sandbox 用 `read-only`。
+
+**结论一：用量在专门的通知里，带分母。**
+
+```json
+{"method":"thread/tokenUsage/updated","params":{
+  "threadId":"019ffb3d-…","turnId":"019ffb3d-…",
+  "tokenUsage":{
+    "total":{"totalTokens":24673,"inputTokens":24668,"cachedInputTokens":9984,
+             "outputTokens":5,"reasoningOutputTokens":0},
+    "last":{…同结构…},
+    "modelContextWindow":258400}}}
+```
+
+字段与 rollout 里的 `token_count` 一一对应，只是 snake_case 换成 camelCase：
+`total_token_usage`→`total`、`last_token_usage`→`last`、
+**`model_context_window`→`modelContextWindow`**。分子分母都在同一条通知上。
+
+**到达时机可靠**：一个回合内出现一次，**排在 `turn/completed` 之前**
+（实测帧序 … `item/completed` → `thread/tokenUsage/updated` →
+`account/rateLimits/updated` → `thread/status/changed` → `turn/completed`）。
+所以不需要另起轮询，回合终态到手时用量必然已经到了。
+
+**结论二：实际模型名也在这条线上，handoff 现在把它扔了。**
+
+`thread/start` 的**响应**顶层就带（不是 `thread` 子对象里）：
+
+```json
+{"id":2,"result":{"thread":{…},"model":"gpt-5.6-sol","modelProvider":"openai",
+  "serviceTier":"default","reasoningEffort":"high","sandbox":{…},…}}
+```
+
+本次实验**没有**传 `model` 入参（adapter 也只在 `model != ""` 时才传），
+回来的 `gpt-5.6-sol` 就是 codex 自己的默认——正是「发现一」要的那个回读值。
+而 [adapter.go:306-313](../../../internal/executor/codex/adapter.go:306) 对这个响应
+只解 `thread.id`，`model` / `reasoningEffort` 全部丢弃。**补这个缺口不需要新协议
+调用，只要多解几个字段。**
+
+**顺带三条**（不在本轮范围，记一笔）：`account/rateLimits/updated` 同样是这条线上
+的实时通知（`usedPercent` / `resetsAt` / `planType` / `credits`），不必去读 rollout；
+`thread/started` 里有 rollout 文件的绝对 `path`，需要更细的历史时有现成入口；
+`turn/completed` 的报文里**没有**任何用量字段，别去那儿找。
+
+**对第 ③ 问的回答**：转发。codex 保持「最全」，不会掉到 grok 那一档——
+所以第 ① 问（百分比还是绝对值）的前提不变：分母仍然只有 codex 给。
 
 ---
 
@@ -168,8 +215,12 @@ OTel collector 只为读自己任务的 token 数，代价与收益完全不成�
    codex 的 `total_token_usage` 是**整个会话累计**的，opencode 的 `tokens.total` 是
    **该条消息的**。三家口径不同，硬凑成一个数之前得先定义清楚 TUI 顶栏那个数
    到底是什么意思。
-3. **codex 的 app-server 转不转发 `token_count`？** §1 的未决项，一次最小实验可settle。
-   若不转发，codex 从「最全」掉到「和 grok 一样报不了」——这会反过来改变第 1 问的答案。
+3. ~~**codex 的 app-server 转不转发 `token_count`？**~~ **08-13 已答：转发**，见 §1.1。
+   通知是 `thread/tokenUsage/updated`，分子分母俱全，且排在 `turn/completed` 之前。
+   codex 保持「最全」，第 1 问的前提不变。**新冒出来的问题**：实际模型名就在
+   `thread/start` 的响应顶层、handoff 现在丢弃它——那么「模型名」这一半是不是应该
+   和用量拆成两件事各自推进？回读模型名三家都能做、成本低、没有口径分歧；
+   用量则卡在第 1、2 问上。
 
 ---
 
@@ -187,3 +238,10 @@ ssh sycm@100.73.238.21 'cd ~/.handoff/tasks && f=$(ls -S */out.jsonl | head -1);
 # opencode
 ssh sycm@100.73.238.21 'sqlite3 "file:$HOME/.local/share/opencode/opencode.db?mode=ro" "select data from message where data like '"'"'%\"total\":%'"'"' order by rowid desc limit 1;"'
 ```
+
+§1.1 的 app-server 实验不是只读的（它跑一个真实回合、花额度），复现方式：本机起
+`codex app-server --listen ws://127.0.0.1:<port>`，用任一 WebSocket 客户端按
+`initialize` → `initialized`（通知）→ `thread/start` → `turn/start` 发一遍，
+参数照抄 [adapter.go:279-340](../../../internal/executor/codex/adapter.go:279)，
+sandbox 换成 `read-only` 即可。要看的是 `thread/start` 的响应顶层与
+`thread/tokenUsage/updated` 这一帧。
