@@ -105,7 +105,7 @@ func (p *fakePeer) RestartAgentd(_ context.Context, _ bool) (*proto.UpdateResp, 
 	return &proto.UpdateResp{OK: true, Restarted: true}, nil
 }
 
-func (p *fakePeer) WaitVersion(_ context.Context, _ string, _, _ time.Duration) error {
+func (p *fakePeer) WaitVersion(_ context.Context, _ string, _, _ time.Duration, _ bool) error {
 	if p.m != nil {
 		return p.m.waitErr
 	}

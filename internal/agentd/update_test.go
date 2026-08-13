@@ -333,6 +333,24 @@ func TestPullTrackerKeepsFailure(t *testing.T) {
 	}
 }
 
+// 自拉进行中再来一个 push 必须 409 + pull_in_progress：
+// 两个换版会写同一个确定性临时文件（release.TempName(tag)），互相截断出坏二进制。
+func TestPushRejectedWhilePullRunning(t *testing.T) {
+	s := newTestServerManaged(t)
+	if !s.pull.begin("v1.0.0") {
+		t.Fatal("begin 应成功")
+	}
+	rr := doUpdate(t, s, "?mode=push&tag=v1.0.0&sha256=abc", []byte("tgz"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("自拉进行中 push 应 409，实得 %d", rr.Code)
+	}
+	var e proto.UpdateError
+	json.Unmarshal(rr.Body.Bytes(), &e)
+	if e.Reason != proto.UpdateReasonPullInProgress {
+		t.Fatalf("reason 应 pull_in_progress，实得 %q", e.Reason)
+	}
+}
+
 // 成功路径：下载 → 安装 → 换版 → 触发重启，且四步都被真的调到。
 func TestPullSuccessInstallsAndRestarts(t *testing.T) {
 	s := newTestServerManaged(t)

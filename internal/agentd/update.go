@@ -6,7 +6,8 @@
 //   - 换版成功后触发优雅关停，由进程管理器拉起新二进制
 //
 // 边界：
-//   - **不出网**：资产由 CLI 下载并推来，这里只收字节（B59 spec D1）
+//   - push 模式（body 非空）不出网：资产由 CLI 下载并推来，这里只收字节。
+//     pull 模式（mode=pull，B87 新增）相反：agentd 自己出网按 tag 下载
 //   - 不做回滚编排：换版失败时 release.Activate 自己把 .prev 换回去，
 //     人工回滚是 handoff upgrade --rollback，不在这条路径上
 //   - 不做鉴权加码：持有 bearer token 的人本来就能 handoff run 执行任意命令，
@@ -143,6 +144,17 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("换版：body 为空，只重启不换版", "busy", busy)
 		writeJSON(w, http.StatusOK, proto.UpdateResp{OK: true, Restarted: true})
 		s.triggerRestart("收到重启请求")
+		return
+	}
+
+	// push 与自拉同抢 release.TempName(tag) 这个确定性临时文件路径：自拉在跑时
+	// 再受理 push，两个换版会往同一个文件写、互相截断出一个坏二进制
+	if s.pull.busy() {
+		s.log.Warn("换版被拒：已有自拉换版在进行中", "tag", tag)
+		writeJSON(w, http.StatusConflict, proto.UpdateError{
+			Error:  "已有自拉换版在进行中，等它跑完再推送；去 status 看 pull_state",
+			Reason: proto.UpdateReasonPullInProgress,
+		})
 		return
 	}
 

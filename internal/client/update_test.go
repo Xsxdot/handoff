@@ -111,7 +111,7 @@ func TestWaitVersionTimesOut(t *testing.T) {
 		json.NewEncoder(w).Encode(proto.StatusResp{Version: proto.BuildInfo{Version: "v0"}})
 	}))
 	defer srv.Close()
-	err := client.New(srv.URL, "tk").WaitVersion(context.Background(), "v1", 150*time.Millisecond, 20*time.Millisecond)
+	err := client.New(srv.URL, "tk").WaitVersion(context.Background(), "v1", 150*time.Millisecond, 20*time.Millisecond, false)
 	if err == nil {
 		t.Fatal("版本一直没变必须报超时")
 	}
@@ -129,7 +129,7 @@ func TestWaitVersionSucceedsAfterRestart(t *testing.T) {
 		json.NewEncoder(w).Encode(proto.StatusResp{Version: proto.BuildInfo{Version: "v1"}})
 	}))
 	defer srv.Close()
-	if err := client.New(srv.URL, "tk").WaitVersion(context.Background(), "v1", 2*time.Second, 20*time.Millisecond); err != nil {
+	if err := client.New(srv.URL, "tk").WaitVersion(context.Background(), "v1", 2*time.Second, 20*time.Millisecond, false); err != nil {
 		t.Fatalf("中途的失败是重启过程，不该放弃: %v", err)
 	}
 }
@@ -200,7 +200,7 @@ func TestWaitVersionAbortsOnPullFailure(t *testing.T) {
 
 	start := time.Now()
 	err := client.New(srv.URL, "tok").WaitVersion(context.Background(), "v1.0.0",
-		30*time.Second, 50*time.Millisecond)
+		30*time.Second, 50*time.Millisecond, true)
 	if err == nil {
 		t.Fatal("pull 失败时 WaitVersion 应返回错误")
 	}
@@ -235,7 +235,36 @@ func TestWaitVersionIgnoresStaleFailureOfOtherTag(t *testing.T) {
 	defer srv.Close()
 
 	if err := client.New(srv.URL, "tok").WaitVersion(context.Background(), "v1.0.0",
-		30*time.Second, 20*time.Millisecond); err != nil {
+		30*time.Second, 20*time.Millisecond, true); err != nil {
 		t.Fatalf("陈旧的其他版本失败态不该中止本次等待，实得 %v", err)
+	}
+}
+
+// 推送模式不读 pull_state：同 tag 先自拉失败、后用 --push 回退时，
+// 重启窗口里的陈旧 failed 态不该让等待中止——推送会真的成功。
+func TestWaitVersionIgnoresPullStateInPushMode(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		v := "v0.9.0"
+		if n > 2 {
+			v = "v1.0.0" // 第三次轮询时新版本上线
+		}
+		json.NewEncoder(w).Encode(proto.StatusResp{
+			Version: proto.BuildInfo{Version: v},
+			Update: &proto.UpdateStatus{
+				Managed: true,
+				PullState: &proto.PullState{
+					Tag: "v1.0.0", Stage: proto.PullStageFailed,
+					Error: "proxyconnect tcp: connection refused",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	if err := client.New(srv.URL, "tok").WaitVersion(context.Background(), "v1.0.0",
+		30*time.Second, 20*time.Millisecond, false); err != nil {
+		t.Fatalf("推送模式不该被陈旧 pull 失败态中止，实得 %v", err)
 	}
 }

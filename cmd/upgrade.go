@@ -68,7 +68,7 @@ type agentdPeer interface {
 	PushUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool) (*proto.UpdateResp, error)
 	PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error)
 	RestartAgentd(ctx context.Context, force bool) (*proto.UpdateResp, error)
-	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration) error
+	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
 }
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
@@ -107,14 +107,17 @@ var (
 	}
 )
 
-// upgradeWaitTimeout / upgradeWaitInterval 是换版后等新进程上线的时限与轮询间隔。
+// upgradeWaitTimeoutPull / upgradeWaitTimeoutPush / upgradeWaitInterval 是换版后
+// 等新进程上线的时限与轮询间隔。
 //
-// 自拉模式下这段时间里对端要下 20MB（慢网 + 代理下几分钟很正常），
-// 所以从推送时代的 60s 放宽到 10min。**放宽是安全的**：WaitVersion 会读对端
-// 的 pull_state，真失败时立刻中止，不会真的干等满 10 分钟（见 internal/client）
+// 自拉模式下对端要下 20MB（慢网 + 代理下几分钟很正常），放宽到 10min，
+// 且 WaitVersion 在 pull 模式会读对端 pull_state，真失败时立刻中止、不会干等满。
+// 推送模式二进制已经在对端、换版是秒级动作，维持 60s——一次真起不来的换版
+// 不该让操作者晾 10 分钟。
 const (
-	upgradeWaitTimeout  = 10 * time.Minute
-	upgradeWaitInterval = 2 * time.Second
+	upgradeWaitTimeoutPull = 10 * time.Minute
+	upgradeWaitTimeoutPush = 60 * time.Second
+	upgradeWaitInterval    = 2 * time.Second
 )
 
 var (
@@ -629,9 +632,13 @@ func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer a
 		return outcomeFail
 	}
 
+	waitTimeout := upgradeWaitTimeoutPull
+	if !usePull {
+		waitTimeout = upgradeWaitTimeoutPush
+	}
 	slog.Default().Info("换版已受理，等待新版本上线", "name", name,
 		"version", resp.Version, "prev", resp.Prev, "accepted", resp.Accepted)
-	if err := peer.WaitVersion(ctx, rel.Tag, upgradeWaitTimeout, upgradeWaitInterval); err != nil {
+	if err := peer.WaitVersion(ctx, rel.Tag, waitTimeout, upgradeWaitInterval, usePull); err != nil {
 		// 自拉与推送的失败措辞必须不同：推送模式下二进制已经在对端了，
 		// 提 prev 与回滚是对的；自拉模式下可能连下载都没成，提回滚是误导
 		slog.Default().Error("等待新版本上线失败", "name", name, "use_pull", usePull, "cause", err)
@@ -639,7 +646,7 @@ func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer a
 			fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
 			fmt.Fprintf(out, "         handoff status --target %s 看 pull_state 拿完整原因\n", name)
 		} else {
-			fmt.Fprintf(out, "%-8s 失败   已换版但新进程未在 %s 内上线\n", name, upgradeWaitTimeout)
+			fmt.Fprintf(out, "%-8s 失败   已换版但新进程未在 %s 内上线\n", name, waitTimeout)
 			fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", resp.Prev)
 		}
 		return outcomeFail

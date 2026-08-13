@@ -38,6 +38,8 @@ var SupportedSchemes = []string{"http", "https", "socks5", "socks5h"}
 //   - 错误：URL 畸形、scheme 不在 SupportedSchemes、或缺 host。
 //     错误文本一律列出支持的 scheme——只说"不支持"而不说"支持什么"，
 //     等于让用户去猜
+//   - 错误文本一律经 Redact，凭据不得落日志：Validate 的错误最终会被
+//     config.Load 记进启动日志，原文回显等于把 user:pass@ 里的密码打出去
 func Validate(proxy string) error {
 	if proxy == "" {
 		return nil
@@ -45,15 +47,15 @@ func Validate(proxy string) error {
 	u, err := url.Parse(proxy)
 	if err != nil {
 		return fmt.Errorf("proxy %q 不是合法 URL: %w（支持 %s）",
-			proxy, err, strings.Join(SupportedSchemes, "/"))
+			Redact(proxy), err, strings.Join(SupportedSchemes, "/"))
 	}
 	if !schemeSupported(u.Scheme) {
 		return fmt.Errorf("proxy %q 的 scheme 为 %q，只支持 %s（裸 host:port 也不行，必须带 scheme）",
-			proxy, u.Scheme, strings.Join(SupportedSchemes, "/"))
+			Redact(proxy), u.Scheme, strings.Join(SupportedSchemes, "/"))
 	}
 	if u.Host == "" {
 		return fmt.Errorf("proxy %q 缺少主机地址（支持 %s）",
-			proxy, strings.Join(SupportedSchemes, "/"))
+			Redact(proxy), strings.Join(SupportedSchemes, "/"))
 	}
 	return nil
 }

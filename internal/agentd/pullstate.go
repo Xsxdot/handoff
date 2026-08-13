@@ -33,6 +33,13 @@ type pullTracker struct {
 
 func newPullTracker() *pullTracker { return &pullTracker{} }
 
+// busy 报告是否有一个自拉正在推进。
+func (p *pullTracker) busy() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.running
+}
+
 // begin 尝试开始一次自拉。
 //
 // 返回：

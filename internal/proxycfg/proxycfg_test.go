@@ -111,3 +111,15 @@ func TestRedactHidesCredentials(t *testing.T) {
 		t.Errorf("空串应返回空串，实得 %q", got)
 	}
 }
+
+// 错误文本同样不能泄漏凭据：Validate 的错误最终会进 agentd 启动日志
+// （config.Load 把校验错误记进日志），原文含密码等于凭据落地。
+func TestValidateErrorRedactsCredentials(t *testing.T) {
+	err := proxycfg.Validate("socks4://alice:s3cr3t@h:1080")
+	if err == nil {
+		t.Fatal("socks4 应被拒")
+	}
+	if strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("Validate 错误泄漏了密码：%q", err)
+	}
+}

@@ -155,13 +155,16 @@ func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, fo
 // 参数：
 //   - want: 期望的版本号（形如 v0.1.1）
 //   - timeout / interval: 等待时限与轮询间隔（生产取 60s / 2s）
+//   - checkPull: 是否检查对端 pull_state。自拉 true——真失败立刻中止，
+//     干等满超时只会得到一句「版本仍是 X」；推送 false——同 tag 先自拉失败
+//     留下的陈旧 failed 态不该让一次真的会成功的 --push 被提前判死
 //
 // 注意：
 //   - **轮询期间的失败一律忽略继续等**。重启窗口里连接被拒、502、503 都是
 //     过程而不是结论；第一次 dial 失败就放弃，等于把每一次正常换版都报成失败
 //   - 超时返回错误。不确认就报成功是主张不是事实，而 agentd 起不来恰恰是最
 //     需要立刻知道的时刻
-func (c *Client) WaitVersion(ctx context.Context, want string, timeout, interval time.Duration) error {
+func (c *Client) WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error {
 	deadline := time.Now().Add(timeout)
 	var last error
 	for attempt := 1; ; attempt++ {
@@ -171,19 +174,21 @@ func (c *Client) WaitVersion(ctx context.Context, want string, timeout, interval
 			c.log().Info("新版本已上线", "want", want, "attempts", attempt)
 			return nil
 		case err == nil:
-			// 对端自拉失败时立刻中止：干等到超时只会得到一句「版本仍是 X」，
-			// 而真正的原因（代理连不上、sha256 不符、自检没过）就在对端的
-			// pull_state 里躺着。**只认目标 tag 的失败**——上一次别的版本留下的
-			// 陈旧 failed 态若也中止，一台曾经失败过的机器就再也升不上去了
-			if ps := pullFailure(st, want); ps != nil {
-				c.log().Error("对端自拉换版失败", "want", want,
-					"stage", ps.Stage, "detail", ps.Error)
-				return fmt.Errorf("对端自拉 %s 失败：%s", want, ps.Error)
+			if checkPull {
+				// 对端自拉失败时立刻中止：干等到超时只会得到一句「版本仍是 X」，
+				// 而真正的原因（代理连不上、sha256 不符、自检没过）就在对端的
+				// pull_state 里躺着。**只认目标 tag 的失败**——上一次别的版本留下的
+				// 陈旧 failed 态若也中止，一台曾经失败过的机器就再也升不上去了
+				if ps := pullFailure(st, want); ps != nil {
+					c.log().Error("对端自拉换版失败", "want", want,
+						"stage", ps.Stage, "detail", ps.Error)
+					return fmt.Errorf("对端自拉 %s 失败：%s", want, ps.Error)
+				}
+				if ps := pullProgress(st, want); ps != nil {
+					c.log().Info("对端自拉进行中", "want", want, "stage", ps.Stage)
+				}
 			}
 			last = fmt.Errorf("对端版本仍是 %q", st.Version.Version)
-			if ps := pullProgress(st, want); ps != nil {
-				c.log().Info("对端自拉进行中", "want", want, "stage", ps.Stage)
-			}
 		default:
 			last = err
 		}
