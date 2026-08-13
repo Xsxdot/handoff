@@ -16,7 +16,7 @@
 | **codex** | ✅ `turn_context.model` | ✅ 累计 + 单回合，分项齐全 | ✅ **`model_context_window`** | 真实数据 |
 | **claudecode** | ✅ `system/init.model` | ✅ 每条 assistant 消息分项 | ❌ 无 | 真实数据 |
 | **opencode** | ✅ `modelID` + `providerID` | ✅ `tokens.total` 直接给 | ❌ 无 | 真实数据（含在跑的任务） |
-| **grok** | ❓ 未取到证据 | ❌ 会话协议里没有 | ❌ 无 | 反面证据（见 §4） |
+| **grok** | ✅ `_meta.modelId` | ✅ 回合响应 `_meta.usage`，分项齐全 | ✅ **`totalContextTokens`** | 真实数据（08-13 实抓，见 §4.1；§4 的「没有」已被推翻） |
 
 两条结构性发现，比逐家的字段清单更重要：
 
@@ -26,15 +26,22 @@
 本次派发的任务 `4e3565e1` 就是 `"model":""`，而 opencode 库里记的是 `deepseek-v4-flash`
 ——这个缺口是实的，而且三家都已经把答案摆在协议里了，是能补上的。
 
-**发现二：分母只有 codex 给。**
-「context token 用量」在原型 TUI 上是个百分比，它需要分子和分母。分子三家都有；
-分母（模型的上下文窗口大小）**只有 codex 在协议里报**。claude 与 opencode 要么由
-handoff 自己维护一张「模型 → 窗口大小」的表（会过时、会漏新模型），要么就只报绝对值不报百分比。
+**发现二：分母只有一半的家给。**（08-13 修正：原文是「只有 codex 给」，
+grok 也给，见 §4.1；结构性判断不变，只是比例从 1/4 变成 2/4。）
+「context token 用量」在原型 TUI 上是个百分比，它需要分子和分母。分子**四家都有**；
+分母（模型的上下文窗口大小）**codex 与 grok 在协议里报，claudecode 与 opencode 不报**。
+后两家要么由 handoff 自己维护一张「模型 → 窗口大小」的表（会过时、会漏新模型），
+要么就只报绝对值不报百分比。
 
 这直接决定了将来那个 brainstorm 的头一个问题：**要百分比还是要绝对值**。选百分比，
-就得接受三家里有两家的分母是 handoff 猜的；选绝对值，形态上就与原型不一致。
+就得接受四家里有两家的分母是 handoff 猜的；选绝对值，形态上就与原型不一致。
 交接文档预判的「有的 adapter 报不了，就如实缺席」也成立了一半——缺席的不是用量本身，
 是分母。
+
+**发现三（08-13 追加）：四家的数据，全都落在 handoff 已经在读的那一帧上。**
+codex 在 `thread/start` 的响应顶层与 `thread/tokenUsage/updated`（§1.1），
+grok 在 `session/prompt` 的响应 `_meta`（§4.1）——两家都是「解析函数只挑了自己
+当时要的字段，其余整块丢掉」。这不是要接新通道，是要多解几个字段。
 
 ---
 
@@ -180,7 +187,15 @@ opencode 的 subagent 活动在这一层是**可见的**——将来若要做「
 
 ---
 
-## 4. grok：会话协议里没有，用量走的是 OTel
+## 4. ~~grok：会话协议里没有，用量走的是 OTel~~ —— **08-13 推翻，见 §4.1**
+
+> **本节结论是错的。** grok 的 ACP 线上有完整用量，而且分母也有。
+> 下面的原文保留不删，因为它示范了一种具体的错误方式：**三条反面证据全是真的，
+> 但它们证明的是「我没找到」，不是「不存在」**。第 1 条说 wire 不落盘——那正是
+> 「所以要抓活的」，不是「所以没有」；第 2 条列的四个 `session/update` 变体确实
+> 不带用量——但用量根本不在 `session/update` 上；第 3 条的 OTel 文档说的是**导出
+> 给组织的指标通道**，与「协议里报不报」是两件事，共存不矛盾。
+> 反面证据只有在穷举过通道之后才成立，而当时没有穷举，只是读了落盘的东西。
 
 这是唯一一家给不出正面证据的。三条独立的反面证据：
 
@@ -202,13 +217,87 @@ OTel collector 只为读自己任务的 token 数，代价与收益完全不成�
 这与仓库既有的 B69/B70 纪律一致：指针 + `omitempty`，nil 表示「取不到」，
 永远不猜 0。用 0 冒充「grok 没用 token」是在编造。
 
+### 4.1 08-13 补验：**grok 是四家里唯一分子分母都在同一次回合里给全的**（grok 1.0.3）
+
+起因是 grok 自己被问到「handoff 怎么监控 executor 用量」，它答「用量在 ACP 的
+`_x.ai/session/update` 的 `turn_completed.usage` 里，只是 handoff 的 `feedRaw`
+只认 `session/update`、私有通知一概忽略」。本机实抓验证。
+
+**做法**：按 `grok/proc.go` 的 `grokServeArgv` 原样起
+`grok agent serve --bind 127.0.0.1:<port>`（`GROK_AGENT_SECRET` 走 env），
+按 `grok/adapter.go` 的 `openSession` 原样握手 `initialize` → `session/new` →
+`session/prompt`，把每一帧原样打出来。**不设 `GROK_HOME`**——任务级 home 里没有
+登录态，`session/new` 会直接 `Authentication required`。55 帧。
+
+**核对 grok 自己的说法**：主张成立，**位置说错了**。
+
+| grok 的说法 | 实测 |
+|---|---|
+| 用量在 ACP 线上 | ✅ 成立 |
+| 字段 `inputTokens`/`outputTokens`/`cachedReadTokens`/`reasoningTokens`/`costUsdTicks` | ✅ 一字不差 |
+| 方法名 `_x.ai/session/update` | ❌ 实际是 **`_x.ai/session_notification`**，`update.sessionUpdate = "turn_completed"` |
+| `feedRaw` 只认 `session/update`、私有通知被忽略 | ✅ 成立，代码注释就写着 `// _x.ai/* 等私有通知一概忽略`（[grok/adapter.go:644](../../../internal/executor/grok/adapter.go:644)） |
+| `failed` 事件已带 `ProcUsage`，是「快照挂终态」的先例 | ❌ 张冠李戴。`proto.ProcUsage` 是本机 uid 的**进程数**占用（`Used`/`Limit`），与 token 无关 |
+
+**但真正的发现是：根本不用碰私有通知。** 同一份 usage 也挂在
+**`session/prompt` 的响应**上——而 handoff 的 `awaitTurn` 已经在读这个响应了
+（取 `stopReason` 当回合边界），只是没解 `_meta`：
+
+```json
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{
+  "sessionId":"019ffb4e-…","promptId":"a95e4bff-…",
+  "modelId":"grok-4.6",
+  "inputTokens":34502,"outputTokens":56,"totalTokens":34558,
+  "cachedReadTokens":5888,"reasoningTokens":51,
+  "usage":{"inputTokens":34502,"outputTokens":56,"totalTokens":34558,
+    "cachedReadTokens":5888,"cacheCreationTokens":0,"reasoningTokens":51,
+    "modelCalls":1,"apiDurationMs":3943,"costUsdTicks":605080000,
+    "modelUsage":{"grok-4.6-build":{…同结构…}},"numTurns":1}}}}
+```
+
+这和 §1.1 的 codex 是**同一个形状的结论**：数据早就在 handoff 已经读的那一帧里，
+缺的只是多解几个字段。
+
+**分母也有**，在私有通知 `_x.ai/models/update` 上（会话建立后即到，回合前）：
+
+```json
+{"method":"_x.ai/models/update","params":{"currentModelId":"grok-4.6",
+  "availableModels":[{"modelId":"grok-4.6","name":"Grok 4.6",
+    "_meta":{"totalContextTokens":500000,…}}]}}
+```
+
+这条走 `OnNotify`（[acp.go:255](../../../internal/executor/grok/acp.go:255) 的
+`case msg.Method != ""`），adapter 层拿得到——被丢掉的是 `feedRaw` 那一层，不是
+连接层。加一个 case 即可，不需要新协议调用。
+
+**算术**：`totalTokens 34558 = inputTokens 34502 + outputTokens 56`，所以
+`cachedReadTokens 5888` 是 `inputTokens` 的**子集**，与 codex 同规矩，相加会重复计数。
+当前 context 占用取 `inputTokens`，分母取 `totalContextTokens` →
+`34.5k / 500k (7%)`。
+
+**三个附带发现**：
+
+1. 同一条线上有**两套命名**。回合中还会来一条
+   `_x.ai/session_notification` + `sessionUpdate: "response_completed"`，它的 usage 是
+   snake_case（`input_tokens` / `cache_read_input_tokens` / `reasoning_tokens`），
+   数值也不同（`input_tokens: 28614`，是单次模型调用；`turn_completed` 的 34502 是整回合）。
+   **取 `turn_completed` / `_meta` 那份**，别按名字模糊匹配。
+2. 每条 `session/update` 的 `_meta.totalTokens` 带回合内实时快照（本次 23636）。
+   要「回合中途就刷新用量」的话通道现成，但那是另一个口径，先不用。
+3. `_meta.modelId = "grok-4.6"` 也在同一帧，实际模型名一并解决——
+   §5 第 3 问「模型名要不要和用量拆开推进」现在四家全部落在同一批帧里，拆的理由更弱了。
+
+**结论修正**：grok 从「如实缺席」改为**四家里唯一分子分母都在同一次回合里给全的**
+（codex 的分母在 `thread/tokenUsage/updated`，也全，但那是独立通知）。
+真正没有分母的只剩 claudecode 与 opencode 两家。
+
 ---
 
 ## 5. 给将来那个 brainstorm 的三个问题
 
 探针到此为止，下面是设计问题，**不在本文回答**：
 
-1. **百分比还是绝对值？** 分母只有 codex 给。要百分比，claude 与 opencode 的分母
+1. **百分比还是绝对值？**（08-13：分母 codex 与 grok 都给）要百分比，claude 与 opencode 的分母
    得由 handoff 维护一张模型表——那张表会过时、会漏新模型，且漏了就是**静默错误**
    （百分比照常显示，只是错的）。绝对值不会错，但与原型形态不一致。
 2. **累计口径还是当前口径？** claude 的 `assistant.usage` 是**每条消息**的，
@@ -245,3 +334,11 @@ ssh sycm@100.73.238.21 'sqlite3 "file:$HOME/.local/share/opencode/opencode.db?mo
 参数照抄 [adapter.go:279-340](../../../internal/executor/codex/adapter.go:279)，
 sandbox 换成 `read-only` 即可。要看的是 `thread/start` 的响应顶层与
 `thread/tokenUsage/updated` 这一帧。
+
+§4.1 的 grok 实验同理（也花额度）：本机起
+`grok agent serve --bind 127.0.0.1:<port>`，`GROK_AGENT_SECRET` 走 env，
+连 `ws://127.0.0.1:<port>/ws?server-key=<secret>`，按
+[grok/adapter.go:225-245](../../../internal/executor/grok/adapter.go:225) 发
+`initialize` → `session/new` → `session/prompt`。**不要设 `GROK_HOME`**——
+任务级 home 没有登录态，`session/new` 会返回 `Authentication required`。
+要看的是 `session/prompt` 响应的 `result._meta` 与 `_x.ai/models/update` 这一帧。
