@@ -187,6 +187,44 @@ opencode 的 subagent 活动在这一层是**可见的**——将来若要做「
 
 ---
 
+### 3.1 08-13 补验：SSE 线上确认，外加一个界面陷阱
+
+§3 读的是 SQLite 落盘，而 handoff 读的是 SSE——**「库里有」不等于「线上有」**，
+这正是 §4 栽的那种坑，所以补验一次。
+
+方法（零成本、只读、不干扰）：mac-02 上有一个 `running` 的 opencode 任务，从它的
+`proc.json` 取 port 与 password，`curl -u opencode:<pw> http://127.0.0.1:<port>/event`
+旁听广播流——handoff 自己就是这条流的一个订阅者，多一个只读订阅者不改变任何状态。
+
+`message.updated` 的 `properties.info` 是**完整的 message 对象**，与库里那份同形：
+
+```json
+{"type":"message.updated","properties":{"sessionID":"ses_…","info":{
+  "id":"msg_…","role":"assistant","cost":0.0001408596,
+  "tokens":{"total":47071,"input":131,"output":182,"reasoning":294,
+            "cache":{"write":0,"read":46464}},
+  "modelID":"deepseek-v4-flash","providerID":"opencode-go",
+  "time":{"created":1786628040082,"completed":1786628048168},
+  "finish":"tool-calls"}}}
+```
+
+handoff 现在只解 `info.id` 与 `info.role`
+（[opencode/adapter.go:1390](../../../internal/executor/opencode/adapter.go:1390)），
+其余整块丢掉——与 codex、grok 同一个形状，**发现三**在三家上都成立。
+
+**陷阱：同一条消息会被推多次，且新消息的 tokens 是全 0。** 实测序列是
+「有 tokens 无 `time.completed`」→「有 tokens 有 `time.completed`」→
+**下一条新消息，tokens 全 0**。天真的「取最后一条 message 的 tokens」会让界面
+在每条新 assistant 消息开头闪回 0。取数必须带条件（`tokens.total > 0`，
+或 `time.completed` 存在）。
+
+**算术**：`total 47071 = input 131 + output 182 + reasoning 294 + cache.read 46464`。
+所以 `tokens.total` **不是** context 占用（它含 output 与 reasoning），
+context 占用是 `input + cache.read + cache.write = 46595`。§3 说「`tokens.total`
+直接就是 context 占用」是不准的，以本节为准。
+
+---
+
 ## 4. ~~grok：会话协议里没有，用量走的是 OTel~~ —— **08-13 推翻，见 §4.1**
 
 > **本节结论是错的。** grok 的 ACP 线上有完整用量，而且分母也有。
