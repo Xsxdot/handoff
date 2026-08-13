@@ -189,7 +189,7 @@ func TestStatusFallsBackToRevisionWhenNoVersion(t *testing.T) {
 
 // TestUnattendedJudgement 钉死 §3.3 的异常判据。
 //
-// 为什么必须写死而不是「watchers==0 就报警」：waiting_review 等审核者裁决，
+// 为什么必须写死而不是「watchers==0 就报警」：waiting_review 等协调者裁决，
 // 挂几天都正常，把它算进来这条标记就会天天亮，变成没人再看的狼来了。
 func TestUnattendedJudgement(t *testing.T) {
 	zero, one := 0, 1

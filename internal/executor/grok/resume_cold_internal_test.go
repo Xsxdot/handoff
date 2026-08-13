@@ -76,7 +76,7 @@ func TestResumeColdRestartFailureIsNotAnError(t *testing.T) {
 		t.Fatalf("起不来应 Alive=false")
 	}
 	if out.Note == "" {
-		t.Fatalf("Note 必须写清为什么恢复不了，审核者要看到这句")
+		t.Fatalf("Note 必须写清为什么恢复不了，协调者要看到这句")
 	}
 }
 

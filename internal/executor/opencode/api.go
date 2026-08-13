@@ -60,7 +60,7 @@ const (
 	// unaryTimeout 是一元调用（建会话/发 prompt/权限应答）的超时上限。
 	// 为什么 30s：这些调用对应「一次人工应答的最长合理等待」——opencode 若半死
 	// （TCP 通但不响应），30s 内拿不到响应就按失败处理，不让 handoff reply 回程
-	// 在审核者终端永久挂起。SSE 长连接不适用此值（见 NewAPI 的 sseClient 注释）。
+	// 在协调者终端永久挂起。SSE 长连接不适用此值（见 NewAPI 的 sseClient 注释）。
 	unaryTimeout = 30 * time.Second
 	// ownershipTimeout 是子会话归属判定（GetSession）的超时上限。
 	// 为什么不用 unaryTimeout（30s）：本调用在 SSE 事件回调里同步执行，会阻塞
@@ -426,7 +426,7 @@ func (a *API) LastAssistantMessage(ctx context.Context, sessionID string) (msg *
 		}
 		// error 字段的形态在不同版本里可能是 null / 字符串 / 对象（本次真机抓包
 		// 的会话里该字段完全缺席），统一按原始 JSON 处理：非 null 即视为出错，
-		// 原文进 ErrorText 供审核者看；对象形态时取 name 进 ErrorName（对账判
+		// 原文进 ErrorText 供协调者看；对象形态时取 name 进 ErrorName（对账判
 		// "MessageAbortedError" 用）
 		if s := strings.TrimSpace(string(e.Info.Error)); s != "" && s != "null" {
 			out.ErrorText = s
@@ -578,7 +578,7 @@ func (a *API) RespondPermission(ctx context.Context, sessionID, permID, response
 // ErrCustomAnswerRejected 表示 opencode 拒绝了本次 reply 携带的答案——最可能的
 // 原因是该问不接受自定义答案（服务端按选项 label 白名单校验）。
 //
-// 为什么要一个专门的哨兵：审核者填了一个不在选项里的答案时，调用方要把它
+// 为什么要一个专门的哨兵：协调者填了一个不在选项里的答案时，调用方要把它
 // 降级成「重问」而不是报一个语焉不详的 HTTP 错误。只有 4xx 归入本哨兵，
 // 5xx 是服务端故障，与答案内容无关（见 ReplyQuestion）。
 var ErrCustomAnswerRejected = errors.New("opencode 拒绝了自定义答案")
@@ -613,7 +613,7 @@ type questionReplyRequest struct {
 	Answers [][]string `json:"answers"`
 }
 
-// ReplyQuestion 把审核者的答案回填给 opencode 的 question 工具，工具随即返回、
+// ReplyQuestion 把协调者的答案回填给 opencode 的 question 工具，工具随即返回、
 // 回合继续。
 //
 // 参数：
@@ -647,7 +647,7 @@ func (a *API) ReplyQuestion(ctx context.Context, requestID string, answers [][]s
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		// 4xx：请求本身被拒。答案内容是这次请求里唯一由审核者决定的部分，
+		// 4xx：请求本身被拒。答案内容是这次请求里唯一由协调者决定的部分，
 		// 因此归因到「答案不被接受」，由调用方降级重问。5xx 不能这样归因
 		return fmt.Errorf("%w: %v", ErrCustomAnswerRejected, a.httpError("应答提问", resp))
 	}
@@ -662,7 +662,7 @@ func (a *API) ReplyQuestion(ctx context.Context, requestID string, answers [][]s
 // 参数：requestID 为 question.asked 事件里的 properties.id
 //
 // 注意：
-//   - 用于「任务要停了但提问还挂着」的兜底解阻塞，不是审核者的正常答复通道
+//   - 用于「任务要停了但提问还挂着」的兜底解阻塞，不是协调者的正常答复通道
 func (a *API) RejectQuestion(ctx context.Context, requestID string) (err error) {
 	if requestID == "" {
 		return fmt.Errorf("拒绝提问：请求 id 为空")

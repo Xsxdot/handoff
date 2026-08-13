@@ -46,9 +46,9 @@ type Config struct {
 	// 那台机器上还没有该项目时，agentd 会把仓库 clone 到这里，实际落点为
 	// RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos。
 	//
-	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
+	// 为什么放顶层而不是放进 Target：Target 是在**协调者本地**被读取的
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
-	// 变成审核者的本地状态，换一台审核机接管就得重配。放顶层的语义是
+	// 变成协调者的本地状态，换一台协调者机接管就得重配。放顶层的语义是
 	// 「每台执行机自己决定它的仓库放在哪」。
 	// yaml:"repo_root"：strict 解码器（KnownFields）按 tag 匹配键名，不加 tag 时
 	// yaml.v3 会把 RepoRoot 映射成 reporoot，与 README/设计文档里的 repo_root 不符。
@@ -67,7 +67,7 @@ type Config struct {
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
-	//（二期前的现行为：权限请求直接走人工审核者）。
+	//（二期前的现行为：权限请求直接走人工协调者）。
 	Approver ApproverConfig
 	// Executor 是任务的缺省执行者选择配置。
 	Executor ExecutorConfig
@@ -95,7 +95,7 @@ type SyncConfig struct {
 //   - Executor：审批者执行者名（如 opencode/claude/grok）；空=不启用审批链
 //   - Model：审批者模型名；空=用执行者自身默认模型
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
-//   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工审核者
+//   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者
 type ApproverConfig struct {
 	Executor  string
 	Model     string
@@ -247,7 +247,7 @@ func Load(path string) (*Config, error) {
 //
 // 为什么 stalltimeout 必须为正：它是「running 任务多久没动静就算卡住」的阈值。
 // 写成 0 或负数时，看门狗会在**每个** running 任务的首个 tick 上判定 stalled，
-// 审核者被一批凭空的 stalled 事件叫醒，而任务其实好好的。省略该键走默认值
+// 协调者被一批凭空的 stalled 事件叫醒，而任务其实好好的。省略该键走默认值
 // （2h）是正常用法，只有显式写了非正值才是配置错误。
 func (c *Config) validate() error {
 	if c.StallTimeout <= 0 {

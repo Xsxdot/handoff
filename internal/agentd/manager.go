@@ -4,10 +4,10 @@
 //   - 任务生命周期的唯一状态写入者：dispatch（pending→running）、permission/question
 //     中介（→waiting_answer→running）、result（→waiting_review）、continue/done（→running/completed）
 //   - 把 executor 的 AdapterEvent 中介为「ticket + 事件 + 状态迁移」三件套：
-//     permission/question 落 ticket 并挂到 hub.WaitAnswer 等审核者应答，
+//     permission/question 落 ticket 并挂到 hub.WaitAnswer 等协调者应答，
 //     progress 只入库，result 落 completed/failed 事件进 waiting_review
-//   - 审核者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
-//   - stop：审核者主动中止任务（停 executor、作废工单（随终态迁移收口完成）、落 failed）
+//   - 协调者应答经 reply 回程（server）→ NotifyAnswer 唤醒等待 goroutine → 回传 executor
+//   - stop：协调者主动中止任务（停 executor、作废工单（随终态迁移收口完成）、落 failed）
 //
 // 中介时序与工单幂等的不变量（P1-2/P1-6/P1-7）：
 //   - 权限工单 id = taskID+":"+permID（按任务命名空间隔离，跨任务 permID 碰撞不吞工单）；
@@ -21,7 +21,7 @@
 //
 // 边界：
 //   - 不做审批判断：「allow 之外一律 reject」「回答原样透传」是仅有的两条翻译规则，
-//     批不批、答什么由审核者（人/上层）决定
+//     批不批、答什么由协调者（人/上层）决定
 //   - 不直接接触 executor 进程/会话细节，一切经由 executor.Adapter 契约
 //   - 不负责看门狗（Task 12）等横向能力；git 工作区操作委托 workspace 包（Task 9）
 //   - dispatch 前经 workspace.PrepareWorkspace 准备任务工作区（分支×worktree，
@@ -29,7 +29,7 @@
 //
 // 「失败也进 waiting_review」的 why：
 //
-//	失败的 result 同样进 waiting_review 而非自动重试或直接 failed——让审核者看到
+//	失败的 result 同样进 waiting_review 而非自动重试或直接 failed——让协调者看到
 //	失败现场（failed 事件携带原因）决定重试话术；自动重试会在同一坑里反复烧
 //	token 且无人知情，failed 终态又让任务失去续接入口。人工裁决是唯一解。
 //
@@ -82,9 +82,9 @@ var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 // 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
 //
 // 为什么单独成类：executor 依赖缺失（如执行者二进制不在 PATH）是
-// **环境问题**而非 agentd 内部故障——审核者需要看到真因（exec: "opencode":
+// **环境问题**而非 agentd 内部故障——协调者需要看到真因（exec: "opencode":
 // executable file not found）才能动手装依赖，扁平化的「派发任务失败」只会让
-// 审核者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
+// 协调者去 agentd.log 里翻一行 exec 错误，完全没有可行动信息。
 var errExecutorStartFailed = errors.New("启动 executor 失败")
 
 // errEnvResolveFailed 表示 env 文件解析失败（文件缺失/语法错/文件名非法）。
@@ -110,7 +110,7 @@ type Manager struct {
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
-	// 权限请求直接升级人工审核者）。构造后只读。
+	// 权限请求直接升级人工协调者）。构造后只读。
 	approver *Approver
 	// gate 是权限判据网关（B23/B27）：把权限请求判成 AutoAllow/Consult/Escalate。
 	// **与 approver 解耦**——approver 为 nil 时 gate 依然工作，否则未配置审批者的
@@ -124,7 +124,7 @@ type Manager struct {
 	//   - apInflight：正在裁决中的 ticket id 集合（防 SSE 重放双呼审批者）
 	//   - apFails：每任务连续裁决失败计数（Err 非 nil 才累计）
 	//   - apDisabled：已停用审批链的任务集合（连续失败 3 次）
-	//   - denyGuidance：审核者拒绝时给出的原因，等下一条 question 到达时下发
+	//   - denyGuidance：协调者拒绝时给出的原因，等下一条 question 到达时下发
 	//     （取走式，见 takeDenyGuidance 的 why）
 	apMu         sync.Mutex
 	apInflight   map[string]bool
@@ -242,7 +242,7 @@ type DispatchReq struct {
 	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
 	Worktree    string
 	NewWorktree bool
-	// BaseCommit 是审核者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
+	// BaseCommit 是协调者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
 	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
 	BaseCommit string
 }
@@ -260,7 +260,7 @@ const planSummaryLimit = 200
 // planSummaryLimit 截断；内容为空或全空行时返回空串。
 // 为什么用「首个非空行」而非「前 N 字符整体截断」：plan 开头常有空行/分隔线/
 // 注释行，前 N 字符的摘要可能全是空白与噪音；首行标题是 markdown 惯例的意图
-// 浓缩位，审核者一眼即知任务方向（P1-12）。
+// 浓缩位，协调者一眼即知任务方向（P1-12）。
 func planSummaryFromContent(content []byte) string {
 	for _, line := range strings.Split(string(content), "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
@@ -330,7 +330,7 @@ type questionPayload struct {
 }
 
 // deliveryFailedPayload 是 delivery_failed 事件的 payload：哪张工单没送到、
-// 为什么、以及审核者该做什么。
+// 为什么、以及协调者该做什么。
 type deliveryFailedPayload struct {
 	TicketID string `json:"ticket_id"`
 	Reason   string `json:"reason"`
@@ -355,7 +355,7 @@ type failedPayload struct {
 	// Branch/CommitHash 为 omitempty：绝大多数 failed（executor 崩溃、看门狗
 	// 判死）没有 git 实况，让空字段出现在 payload 里会让下游以为「查过 git 且
 	// 分支是空」。只有回合纪律类失败（无 trailer 但有新提交）才带这两个字段——
-	// 它们是审核者判断「这回合到底干到哪儿」的唯一结构化依据，降级成 FailReason
+	// 它们是协调者判断「这回合到底干到哪儿」的唯一结构化依据，降级成 FailReason
 	// 里的一段自由文本就没法再结构化取用了。
 	Branch     string `json:"branch,omitempty"`
 	CommitHash string `json:"commit,omitempty"`
@@ -374,7 +374,7 @@ type failedPayload struct {
 //
 // 为什么所有 failed 事件都要走这里：三个发射点（Stop、executor 死亡对账、
 // reconcile）各自构造等于三处都可能漏挂快照，而漏掉的那次恰好可能就是
-// 配额事故那次。审核者拿到「死亡时 2390/2400」与「死亡时 300/2400」，
+// 配额事故那次。协调者拿到「死亡时 2390/2400」与「死亡时 300/2400」，
 // 一眼就能定性两个完全不同的排查方向。git 实况同样只此一处带上（B74）：
 // 另起一条不带 ProcUsage 的构造路径，就等于把 B73 的快照约定废了。
 //
@@ -413,8 +413,8 @@ type permissionReusePayload struct {
 }
 
 // denyGuidancePayload 是 deny_guidance_relayed / deny_guidance_dropped 事件的
-// payload：审核者拒绝时给出的原因。Dropped 时 Cause 说明没能下发的缘由
-// （回合终结 / adapter 解析失败 / Send 失败），审核者据此知道要用 continue
+// payload：协调者拒绝时给出的原因。Dropped 时 Cause 说明没能下发的缘由
+// （回合终结 / adapter 解析失败 / Send 失败），协调者据此知道要用 continue
 // 自己把话带上。
 type denyGuidancePayload struct {
 	Reason string `json:"reason"`
@@ -424,7 +424,7 @@ type denyGuidancePayload struct {
 // maxApproverFails 是同任务审批者连续裁决失败（Err 非 nil）多少次后停用审批链。
 //
 // 为什么 3：对「已损坏的审批者命令」（如二进制被卸载、模型服务永久报错）的一次
-// 重试代价是整条权限请求被升级、审核者被叫醒一次——反复重试只会形成「每次权限都
+// 重试代价是整条权限请求被升级、协调者被叫醒一次——反复重试只会形成「每次权限都
 // 升级 + 每次审批都失败」的重试风暴，烧人工注意力的同时毫无收益；3 次是「确认
 // 不是偶发抖动」的合理样本量。
 const maxApproverFails = 3
@@ -434,7 +434,7 @@ const maxApproverFails = 3
 const permEventTextLimit = 200
 
 // permEventText 把权限描述压成事件 payload 用的短文本，超限时带显式截断标记——
-// 无标记的截断会让审核者以为看到的就是全部（这正是 B6 的根因），有标记才知道
+// 无标记的截断会让协调者以为看到的就是全部（这正是 B6 的根因），有标记才知道
 // 要去 handoff show 看工单里的全文。
 func permEventText(s string) string {
 	if len([]rune(s)) <= permEventTextLimit {
@@ -451,11 +451,11 @@ func permEventText(s string) string {
 //
 // 返回：
 //   - 已入库的任务（state 为 running）；Adapter.Start 失败时返回错误，
-//     此时任务已落库并迁移为 failed（供审核者经 tasks 命令查看失败现场）
+//     此时任务已落库并迁移为 failed（供协调者经 tasks 命令查看失败现场）
 //
 // 注意：
 //   - 任务分支（handoff/<id8>）的准备发生在建任务之前：分支准备是纯前置校验
-//     （工作区干净/可开分支），失败时不落任何任务记录，审核者修好仓库重新
+//     （工作区干净/可开分支），失败时不落任何任务记录，协调者修好仓库重新
 //     dispatch 即可——不会为每次被拒的派发留下 failed 噪音
 //   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
 //     带列写入，保持「创建期只写创建时已知的字段」的约定）
@@ -611,7 +611,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
-	// 审核者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
+	// 协调者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
 	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
 		Repo: repoPath, TaskID: taskID,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: start,
@@ -689,7 +689,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	task.Branch = ws.Branch
 
 	// plan 摘要经 SetTaskField 白名单落库（P1-12）：PlanPath 是 agentd 侧文件路径，
-	// 审核者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
+	// 协调者读不到——spec §7 要求全新会话能知道「这个任务本来要干什么」，
 	// plan_summary 就是 attach/tasks 里那一眼速览。失败与 branch 同款按派发失败处理
 	if err := m.st.SetTaskField(taskID, "plan_summary", summary); err != nil {
 		m.log.Error("写入任务 plan 摘要失败", "task", taskID, "cause", err)
@@ -702,9 +702,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir, Env: envKVs}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
-		// pending→failed 合法；失败现场留在任务里，审核者可见。
+		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
-		// 包 errExecutorStartFailed 哨兵，让 server 层把真因回显给审核者（修复 3）
+		// 包 errExecutorStartFailed 哨兵，让 server 层把真因回显给协调者（修复 3）
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
 		return nil, fmt.Errorf("%w: %v", errExecutorStartFailed, err)
 	}
@@ -781,7 +781,7 @@ func (m *Manager) guardWorkdirBusy(workDir string) error {
 // 注意：
 //   - 由 Dispatch 的 defer 统一调用，且只在 executor 未接管时（见 executorStarted
 //     注释）；executor 接管后删工作树是把运行中的任务脚下抽空
-//   - 全程只记日志，**不覆盖也不替换原始派发错误**——审核者要看的是任务为什么
+//   - 全程只记日志，**不覆盖也不替换原始派发错误**——协调者要看的是任务为什么
 //     没派出去，补偿成败是次要信息
 //   - 三条 fail-safe：worktree 删除失败 / 切回原 ref 失败 / 分支尖端对不上，
 //     任一命中都保留现场不再往下做。宁可留残留，不可误删
@@ -908,7 +908,7 @@ func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Works
 //
 // 返回：
 //   - 任务不存在返回 store.ErrNotFound；状态不允许续接返回 store.ErrBadTransit
-//   - Send 失败时任务回迁 waiting_review（审核者可重试指令），并返回该错误
+//   - Send 失败时任务回迁 waiting_review（协调者可重试指令），并返回该错误
 //
 // 注意：
 //   - Send 撞 ErrTaskNotRunning 时走恢复阶梯（resumeForContinue）：executor
@@ -940,13 +940,13 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		// 执行者无法路由（如任务记录损坏/缺省执行者未注册）：退回 waiting_review，
-		// 审核者可见原因后可处置，不让任务死在 running
+		// 协调者可见原因后可处置，不让任务死在 running
 		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 路由执行者失败回迁")
 		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 	}
 	if err := ad.Send(ctx, taskID, instructions); err != nil {
 		if !errors.Is(err, executor.ErrTaskNotRunning) {
-			// executor 还在，只是这次没打通：保持原语义，回迁让审核者可重试
+			// executor 还在，只是这次没打通：保持原语义，回迁让协调者可重试
 			m.log.Error("续发指令失败", "task", taskID, "cause", err)
 			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 发送失败回迁")
 			return fmt.Errorf("续发指令: %w", err)
@@ -971,16 +971,16 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 
 // resumeForContinue 是 continue 撞上「executor 已不在」时的恢复阶梯（spec §5.4）。
 //
-// 与启动恢复的关键差别是 Cold=true：审核者手里正好有一条指令要送，把会话拉起来
+// 与启动恢复的关键差别是 Cold=true：协调者手里正好有一条指令要送，把会话拉起来
 // 立刻有用；而 agentd 启动时冷恢复等于凭空拉起一堆没人跟它说话的 executor。
 //
 // 返回：
 //   - nil: 已拿到可用运行态，调用方可以重试 Send
-//   - 非 nil: 不可恢复，错误里带 Outcome.Note（server 映射 409 时回显给审核者）
+//   - 非 nil: 不可恢复，错误里带 Outcome.Note（server 映射 409 时回显给协调者）
 //
 // 注意：
 //   - Mode != reattach 时必须产出 progress 事件：冷恢复换了进程、fresh 断了
-//     上下文，都是审核者需要知道的事实（fresh 直接决定下一条指令要不要重述背景）
+//     上下文，都是协调者需要知道的事实（fresh 直接决定下一条指令要不要重述背景）
 func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad executor.Adapter) error {
 	task, err := m.st.GetTask(taskID)
 	if err != nil {
@@ -1023,7 +1023,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 				"session", out.SessionID, "cause", serr)
 		}
 	}
-	// 重连（executor 一直活着）对审核者是无感事件，不打扰；换了进程或断了上下文才播报
+	// 重连（executor 一直活着）对协调者是无感事件，不打扰；换了进程或断了上下文才播报
 	if out.Mode == executor.ResumeModeReattach {
 		return nil
 	}
@@ -1053,9 +1053,9 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 //
 // 注意：
 //   - Stop 失败仅打 Error 日志不影响归档：任务已完成，executor 残留交给人工兜底
-//   - 顺序是「先落说明、再迁移状态」：写失败时任务仍在 waiting_review，审核者可
+//   - 顺序是「先落说明、再迁移状态」：写失败时任务仍在 waiting_review，协调者可
 //     原样重试；反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done
-//     对已 completed 的任务返回 409，审核者补不回来
+//     对已 completed 的任务返回 409，协调者补不回来
 func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	m.log.Info("done 进入", "task", taskID)
 	defer func() {
@@ -1074,9 +1074,9 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 		m.log.Warn("done 状态不允许", "task", taskID, "state", cur.State)
 		return fmt.Errorf("任务 %s 状态 %s 不允许归档（需 waiting_review）: %w", taskID, cur.State, store.ErrBadTransit)
 	}
-	// 先落说明再迁移状态：写失败时任务仍在 waiting_review，审核者可原样重试；
+	// 先落说明再迁移状态：写失败时任务仍在 waiting_review，协调者可原样重试；
 	// 反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done 对
-	// 已 completed 的任务返回 409，审核者补不回来
+	// 已 completed 的任务返回 409，协调者补不回来
 	if note != "" {
 		if err := m.st.SetTaskField(taskID, "done_note", note); err != nil {
 			m.log.Error("写入归档说明失败", "task", taskID, "note_bytes", len(note), "cause", err)
@@ -1117,7 +1117,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
 	//
-	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是协调者自己的资产，
 	// agentd 无权删别人的工作树；为什么失败只降级不阻塞归档：任务已审核通过，
 	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
 	if cur.WorktreeManaged && cur.WorkDir != "" {
@@ -1138,7 +1138,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	return nil
 }
 
-// Stop 主动中止一个任务：停 executor、落 failed 并唤醒审核者；挂起工单的作废
+// Stop 主动中止一个任务：停 executor、落 failed 并唤醒协调者；挂起工单的作废
 // 交由终态迁移的收口完成（B63），不在此处单独做。
 //
 // 参数：
@@ -1157,7 +1157,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 //   - 复用 failed 终态而不新增 aborted：状态机零改动，且 failed→running 已允许，
 //     中止后仍可重新派发。「人为中止」与「真失败」的区分靠 failed 事件的
 //     fail_reason 文本，不靠状态
-//   - 不删任务分支：那是审核者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
+//   - 不删任务分支：那是协调者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
 //   - 删除 agentd 管理的 worktree（Managed=true）：被 stop 的任务落 failed，没有
 //     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
 //     不阻断 stop（此时 worktreeRemoved=false，提示如实反映工作树仍在）
@@ -1192,8 +1192,8 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
 
-	// Stop 是审核者主动中止：无 git 实况可带（不是回合收尾）
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload("审核者主动中止（handoff stop）", "", ""))
+	// Stop 是协调者主动中止：无 git 实况可带（不是回合收尾）
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload("协调者主动中止（handoff stop）", "", ""))
 	if err != nil {
 		return false, fmt.Errorf("追加中止事件: %w", err)
 	}
@@ -1204,9 +1204,9 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	m.clearApproverState(taskID)
 	// worktree 清理（P2-2 修复）：被 stop 的任务落 failed，而 failed 没有 done 的
 	// waiting_review 门禁清理路径——不在这里删，managed worktree 就永久残留、
-	// 任务永远归档不了。分支必须保留（stop 不丢工作，审核者可切回分支审阅/回滚）。
+	// 任务永远归档不了。分支必须保留（stop 不丢工作，协调者可切回分支审阅/回滚）。
 	//
-	// 为什么只删 managed：用户自带 worktree（Managed=false）是审核者自己的资产，
+	// 为什么只删 managed：用户自带 worktree（Managed=false）是协调者自己的资产，
 	// agentd 无权删别人的工作树；为什么失败只降级不阻断 stop：中止已经达成
 	// （任务落 failed、事件已追加），残树是运维问题不是任务问题——留一条带原因的
 	// progress 事件提示人工处理，与 Done 的清理失败降级同款
@@ -1234,7 +1234,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 //
 // 为什么 30s：与 opencode 客户端的一元超时同值（客户端 Timeout 已兜底），这里再
 // 包一层 ctx 截止时间是双保险——未来 executor 若无客户端级超时，管理层的截止时间
-// 仍保证「审核者 reply 回程不会永久挂起」。与等待阶段（WaitAnswer，人工应答时长
+// 仍保证「协调者 reply 回程不会永久挂起」。与等待阶段（WaitAnswer，人工应答时长
 // 无上限）无关，见 unaryCtx。
 const unaryAPITimeout = 30 * time.Second
 
@@ -1242,24 +1242,24 @@ const unaryAPITimeout = 30 * time.Second
 //
 // 为什么派生子 ctx 而不直接把 parent 传下去：等待阶段（WaitAnswer 等人工应答）
 // 时长无上限，截止时间必须只包住调用本身、不能缩短等待窗口——parent 在等待期
-// 结束后可能已接近/超过 30s（审核者思考了 5 分钟才回复），直接复用会把本应成功
+// 结束后可能已接近/超过 30s（协调者思考了 5 分钟才回复），直接复用会把本应成功
 // 的调用掐死在截止时间上。
 func unaryCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, unaryAPITimeout)
 }
 
-// RelayAnswer 在 reply 回程找不到等待者时，把已落库的审核者应答直接回传给
+// RelayAnswer 在 reply 回程找不到等待者时，把已落库的协调者应答直接回传给
 // executor，自愈「agentd 重启后等待 goroutine 消亡 → 回答丢失 → executor 永远阻塞」。
 //
 // 场景：agentd 重启时 waitPermission/waitQuestion goroutine 随进程消亡，且 /event
-// 不重放历史的话，审核者的 reply 在 hub 里找不到等待者；若应答就此丢弃，任务状态
+// 不重放历史的话，协调者的 reply 在 hub 里找不到等待者；若应答就此丢弃，任务状态
 // 被 resumeIfIdle 回迁 running，executor 却永远等不到权限裁决——工单已答、二次
 // reply 404、done 409，不可恢复。本方法读取工单把应答按既有翻译规则直接送达 executor。
 //
 // 参数：
 //   - taskID: 工单所属任务 ID（reply 路由的路径参数）
 //   - ticketID: 已回答的工单 ID（AnswerTicket 已落库，此处只负责回传）
-//   - answer: 审核者应答原文（与落库值一致）
+//   - answer: 协调者应答原文（与落库值一致）
 //
 // 返回：
 //   - 工单不存在/不属于该任务/类型不识别返回错误；adapter 回传失败返回错误
@@ -1328,10 +1328,10 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 //
 // 任务级 ctx 与取消时机（P1-2）：taskCtx 供 waitPermission/waitQuestion 的应答
 // 等待共用，中介循环退出（adapter 事件通道关闭 = 执行终结：Done/Stop/serve 死亡）
-// 时 defer cancel 取消全部在等应答的 waiter——否则「审核者永不回答 + 执行终结」
+// 时 defer cancel 取消全部在等应答的 waiter——否则「协调者永不回答 + 执行终结」
 // 的组合会让 wait goroutine 用 context.Background() 永久挂死。
 //
-// 为什么不在 result 到达时取消：result → waiting_review 后任务仍活（审核者可
+// 为什么不在 result 到达时取消：result → waiting_review 后任务仍活（协调者可
 // continue/回答挂起工单），回答晚于 result 到达是合法流程（应答后 executor 被
 // 唤醒续跑，见 TestTransitToReviewTwoHopFromWaitingAnswer）——只有「事件通道
 // 关闭」这一执行终结信号才是取消时机。
@@ -1342,7 +1342,7 @@ func (m *Manager) mediate(taskID string) {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		// 任务执行者无法路由（缺省执行者未注册/记录损坏）：中介循环无从消费
-		// 事件，按 executor 已不在处置——转交审核者裁决，不静默退出
+		// 事件，按 executor 已不在处置——转交协调者裁决，不静默退出
 		m.log.Error("中介循环无法路由执行者", "task", taskID, "cause", err)
 		return
 	}
@@ -1388,7 +1388,7 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 }
 
 // handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
-// waiting_answer → goroutine 等审核者应答后回传 executor。
+// waiting_answer → goroutine 等协调者应答后回传 executor。
 //
 // 审批链前置的时序说明（二期新增）：approver 启用且黑名单未命中时，请求先交
 // consultApprover 做廉价模型裁决——approve 全程不动状态机（任务保持 running，
@@ -1445,12 +1445,12 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	m.escalatePermission(ctx, taskID, ev, ticketID)
 }
 
-// escalatePermission 把权限请求升级人工审核者：落状态 → 建工单 → 追加事件 →
+// escalatePermission 把权限请求升级人工协调者：落状态 → 建工单 → 追加事件 →
 // waiter → Publish（一期 handlePermission 的完整既有行为，顺序契约见其 doc）。
 //
 // 本函数同时是审批者 escalate 路径的出口——两路共用保证行为一致。
 //
-// 工单存权限描述全文，事件 payload 另行截断——全文是审核者裁决的依据，不能只存
+// 工单存权限描述全文，事件 payload 另行截断——全文是协调者裁决的依据，不能只存
 // 唤醒用的摘要。
 func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	// 复用判定必须早于任何状态迁移（spec §3.2）：先落 waiting_answer 再放行回迁
@@ -1458,12 +1458,12 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	if m.reuseDecision(taskID, ev, ticketID) {
 		return
 	}
-	// 先落状态再建工单（U-1）：审核者经 attach 读到挂起工单后会立即 reply，
+	// 先落状态再建工单（U-1）：协调者经 attach 读到挂起工单后会立即 reply，
 	// 「工单已可见但状态还没落 waiting_answer」这段窗口里的 reply 会走完中继、
 	// resumeIfIdle 读到 running 直接返回，随后 manager 才盖上 waiting_answer——
 	// 任务显示「等你回答」却零挂起工单，reply/continue/done 三条路全封死。
 	// 反过来「状态已落但工单还没建」是安全的：reply 找不到工单只会 404，
-	// 审核者重试即可，且工单随即出现。
+	// 协调者重试即可，且工单随即出现。
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "permission_request")
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
@@ -1485,7 +1485,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		m.log.Error("追加 permission_request 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
-	m.log.Info("权限升级人工审核者", "task", taskID, "ticket", ticketID,
+	m.log.Info("权限升级人工协调者", "task", taskID, "ticket", ticketID,
 		"perm_chars", len([]rune(ev.Text)), "event_truncated", len([]rune(ev.Text)) > permEventTextLimit)
 	go m.waitPermission(ctx, taskID, ev.PermissionID, ticketID)
 	m.hub.Publish(evt)
@@ -1618,7 +1618,7 @@ func (m *Manager) shouldConsultApprover(taskID string) bool {
 	disabled := m.apDisabled[taskID]
 	m.apMu.Unlock()
 	if disabled {
-		m.log.Debug("审批链已停用，直接升级审核者", "task", taskID)
+		m.log.Debug("审批链已停用，直接升级协调者", "task", taskID)
 		return false
 	}
 	return true
@@ -1638,7 +1638,7 @@ func (m *Manager) markApproverInflight(ticketID string) bool {
 
 // consultApprover 在独立 goroutine 里完成一次权限请求的审批者裁决（不阻塞
 // mediate 循环）。流程：Decide → 落 approver_decision 审计事件（不 Publish）→
-// 按结果分流：approve 自动放行 / escalate 升级人工审核者 / Err 计数并 fail-closed。
+// 按结果分流：approve 自动放行 / escalate 升级人工协调者 / Err 计数并 fail-closed。
 func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
 	defer func() {
 		m.apMu.Lock()
@@ -1664,7 +1664,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	}
 	// 只入库不 Publish：approve 路径无人可唤醒（已自动放行），escalate 路径的
 	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
-	// 审核者经 show 可见
+	// 协调者经 show 可见
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
 		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
 		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
@@ -1691,7 +1691,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	}
 
 	if d.Err != nil {
-		// fail-closed：裁决失败升级审核者，并按连续失败计数决定是否停用
+		// fail-closed：裁决失败升级协调者，并按连续失败计数决定是否停用
 		//（防对已损坏审批者命令的重试风暴，见 maxApproverFails 的 why）
 		m.countApproverFail(taskID)
 		m.escalatePermission(ctx, taskID, ev, ticketID)
@@ -1717,9 +1717,9 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 // 失败计数也不该残留（新回合从干净状态重新评估审批链）。
 //
 // 为什么这里一并处理 denyGuidance：拒绝原因的生命周期是「从这次拒绝到下一条
-// 提问」；回合终结意味着那条提问永远不会来了。若删除时原因还挂着，说明审核者
+// 提问」；回合终结意味着那条提问永远不会来了。若删除时原因还挂着，说明协调者
 // 说的话没机会送达——必须落一条 deny_guidance_dropped 审计事件说明去向，
-// 「审核者说的话去哪了」在任何路径下都有答案（B50）。
+// 「协调者说的话去哪了」在任何路径下都有答案（B50）。
 func (m *Manager) clearApproverState(taskID string) {
 	m.apMu.Lock()
 	delete(m.apFails, taskID)
@@ -1750,7 +1750,7 @@ func (m *Manager) countApproverFail(taskID string) {
 	if fails >= maxApproverFails && !m.apDisabled[taskID] {
 		m.apDisabled[taskID] = true
 		if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDisabled, approverDisabledPayload{
-			Reason: fmt.Sprintf("连续 %d 次裁决失败，审批链已停用（后续权限直接升级人工审核者）", maxApproverFails),
+			Reason: fmt.Sprintf("连续 %d 次裁决失败，审批链已停用（后续权限直接升级人工协调者）", maxApproverFails),
 		}); err != nil {
 			m.log.Error("追加 approver_disabled 事件失败", "task", taskID, "cause", err)
 		}
@@ -1794,8 +1794,8 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		// 工单已被 AnswerTicket 消耗（answer IS NULL 守卫失效），executor 仍原地
-		// 阻塞等待——必须产出 delivery_failed 事件让审核者知道该 resume（P1-4），
-		// 与紧邻的 RespondPermission 失败分支一致；只记 Error 会让审核者毫无感知
+		// 阻塞等待——必须产出 delivery_failed 事件让协调者知道该 resume（P1-4），
+		// 与紧邻的 RespondPermission 失败分支一致；只记 Error 会让协调者毫无感知
 		m.log.Error("审批者批准：解析执行者失败", "task", taskID, "source", source, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -1823,7 +1823,7 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason
 //   - 工单存在且已应答 → 真重放，跳过：再动一次就是重复交付
 //   - 工单存在但通知事件缺失 → **不是**重放，而是崩溃恰好落在「建工单」与
 //     「追加事件」之间留下的半截状态。仅凭工单存在就跳过，会让 permission_request
-//     永不产生、状态停在 running、无等待者，审核者的 wait 永远不触发（N-4）——
+//     永不产生、状态停在 running、无等待者，协调者的 wait 永远不触发（N-4）——
 //     此处放行以补发事件，CreateTicket 本身幂等，不会产生第二张工单
 //   - 工单存在且事件也在 → 真重放，跳过（P1-7 的幂等承诺）
 func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
@@ -1886,11 +1886,11 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 			"ticket", ticketID, "fingerprint", fp[:8])
 		return false
 	}
-	m.log.Info("命中既有人工批准，自动放行不再叫醒审核者", "task", taskID,
+	m.log.Info("命中既有人工批准，自动放行不再叫醒协调者", "task", taskID,
 		"ticket", ticketID, "prior_ticket", prior.ID, "fingerprint", fp[:8],
 		"perm_chars", len([]rune(ev.Text)))
 	// 只入库不 Publish：照 approver_decision 的先例——自动放行没有人需要被唤醒，
-	// 但审核者经 show 必须能看到「这条是复用工单 X 的裁决放行的」
+	// 但协调者经 show 必须能看到「这条是复用工单 X 的裁决放行的」
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypePermissionReuse, permissionReusePayload{
 		TicketID: ticketID, PriorTicketID: prior.ID,
 		Fingerprint: fp[:8], Permission: permEventText(ev.Text),
@@ -1905,9 +1905,9 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 	return true
 }
 
-// gateDecision 把审核者对 gate 工单的应答翻译成回传 executor 的裁决与可选原因。
+// gateDecision 把协调者对 gate 工单的应答翻译成回传 executor 的裁决与可选原因。
 //
-// 参数：answer 为审核者应答原文（CLI 侧 --approve → "allow"、
+// 参数：answer 为协调者应答原文（CLI 侧 --approve → "allow"、
 // --deny [--reason r] → "deny" 或 "deny: r"，见 cmd/reply.go）
 //
 // 返回：
@@ -1925,7 +1925,7 @@ func gateDecision(answer string) (decision, reason string) {
 	rest := strings.TrimPrefix(trimmed, "deny")
 	rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
 	if rest == trimmed {
-		// 前缀根本不是 deny（如审核者手工 POST 了任意文本）：照旧 reject，
+		// 前缀根本不是 deny（如协调者手工 POST 了任意文本）：照旧 reject，
 		// 但那段文本不是「拒绝原因」，不下发给模型
 		return "reject", ""
 	}
@@ -1934,11 +1934,11 @@ func gateDecision(answer string) (decision, reason string) {
 
 // noteDenyGuidance 登记一条待下发的拒绝原因。
 //
-// 参数：taskID 为任务 id；reason 为审核者给出的原因（空串直接忽略）
+// 参数：taskID 为任务 id；reason 为协调者给出的原因（空串直接忽略）
 //
 // 为什么不立刻 Send：executor 收到 reject 会当场终结回合（opencode 实测），
 // 此刻发消息会撞上正在终结的回合，而回合终结时 adapter 还会补一条兜底提问——
-// 审核者刚说完怎么改，又被问一遍「请给出下一步指令」。挂起到下一条 question
+// 协调者刚说完怎么改，又被问一遍「请给出下一步指令」。挂起到下一条 question
 // 到达时再下发，正好用那次机会开新回合。
 func (m *Manager) noteDenyGuidance(taskID, reason string) {
 	if strings.TrimSpace(reason) == "" {
@@ -1965,15 +1965,15 @@ func (m *Manager) takeDenyGuidance(taskID string) string {
 	return r
 }
 
-// relayDenyGuidance 把审核者的拒绝原因作为一条普通消息下发给 executor，开新回合。
+// relayDenyGuidance 把协调者的拒绝原因作为一条普通消息下发给 executor，开新回合。
 //
 // 注意：
 //   - **不得触碰状态机**：本分支不建工单，落 waiting_answer 会造出「等你回答却
 //     零挂起工单」的死形态（reply/continue/done 三条路全封死）。任务保持 running
 //   - Send 失败只记 Error + 审计事件：executor 此刻没有在等任何应答，
-//     发不出去不会让任何东西挂死，审核者可用 continue 自己把话带上
+//     发不出去不会让任何东西挂死，协调者可用 continue 自己把话带上
 func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string) {
-	text := "你请求的操作已被审核者拒绝。原因：" + guidance +
+	text := "你请求的操作已被协调者拒绝。原因：" + guidance +
 		"\n请据此调整做法后继续，不要重复发起同一请求。"
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
@@ -1997,7 +1997,7 @@ func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string
 }
 
 // appendGuidanceDropped 记录拒绝原因没能下发的审计事件与告警：回合在下一条
-// 提问到达前就终结了，审核者说的话无处送达，必须留痕让审核者知道用 continue
+// 提问到达前就终结了，协调者说的话无处送达，必须留痕让协调者知道用 continue
 // 自己把话带上（B50）。
 func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
@@ -2008,7 +2008,7 @@ func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
 		"task", taskID, "reason", truncateRunes(guidance, 80), "cause", cause)
 }
 
-// waitPermission 阻塞等待权限工单的审核者应答，按规则回传 executor 并回迁 running。
+// waitPermission 阻塞等待权限工单的协调者应答，按规则回传 executor 并回迁 running。
 //
 // 规则：应答 trim 后等于 "allow" → RespondPermission("once")，其余一律 "reject"
 // （deny:原因 等拒绝表达全部归入 reject，原因已随应答落库可追溯）。
@@ -2043,8 +2043,8 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		return
 	}
 	if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
-		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由审核者裁决。
-		// 工单未标记送达，审核者可用 handoff resume 重投（见 RecoverStuck）
+		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由协调者裁决。
+		// 工单未标记送达，协调者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -2056,18 +2056,18 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 }
 
 // handleQuestion 中介提问：ticket(uuid, kind=ask) → 事件 → waiting_answer →
-// goroutine 等审核者回答后原样透传 executor。
+// goroutine 等协调者回答后原样透传 executor。
 //
 // 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer 再 Publish；
 // waiter 注册异步，reply 先于注册到达时退化为自愈中继路径兜底。
 func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor.AdapterEvent) {
-	// 拒绝原因优先下发（B50）：审核者刚说完该怎么改，此刻 executor 的任何提问
+	// 拒绝原因优先下发（B50）：协调者刚说完该怎么改，此刻 executor 的任何提问
 	// 都应先收到那条指令。收到后若仍要问，它会再发一次 question——那时 guidance
 	// 已消费，正常出单。
 	//
 	// 这里刻意不区分「被拒终止的兜底提问」与「模型真的在问问题」：manager 没有
 	// 可靠判据（文本前缀匹配一改文案就失效）。吞错的代价是**模型**的一个回合，
-	// 漏抑制的代价是**审核者**的一个回合——后者正是本条要消灭的东西。
+	// 漏抑制的代价是**协调者**的一个回合——后者正是本条要消灭的东西。
 	if guidance := m.takeDenyGuidance(taskID); guidance != "" {
 		m.relayDenyGuidance(ctx, taskID, guidance)
 		return
@@ -2100,7 +2100,7 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 			return
 		case prior.Answer == nil:
 			// 重放：agentd 重启后 executor 重发了同一个仍未作答的 request。
-			// 不建单、不发第二条事件（审核者已经被叫醒过一次），但必须重挂
+			// 不建单、不发第二条事件（协调者已经被叫醒过一次），但必须重挂
 			// waiter——新 agentd 实例里没有任何 goroutine 在等这张单
 			m.log.Info("提问重放，复用既有工单并重挂等待", "task", taskID, "ticket", ticketID)
 			go m.waitQuestion(ctx, taskID, ticketID)
@@ -2108,7 +2108,7 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 		default:
 			// 重发：旧单已答，但 executor 又问了一次（opencode 的「答复没对上
 			// 选项」路径用的是同一个 reqID）。此时**必须**新开一张单——复用已答
-			// 工单的 id 会让审核者再也答不了，任务停在 waiting_answer 到 stall
+			// 工单的 id 会让协调者再也答不了，任务停在 waiting_answer 到 stall
 			m.log.Info("提问重发（旧单已答），另开新工单", "task", taskID,
 				"prior_ticket", ticketID)
 			ticketID = uuid.NewString()
@@ -2135,8 +2135,8 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 
 // waitQuestion 阻塞等待提问工单的回答，把回答原文原样透传给 executor 并回迁 running。
 //
-// 为什么原文透传：回答语义（技术建议、需求取舍）只有审核者理解，manager 不做
-// 任何加工——无损透传是「回答什么由审核者决定」承诺的执行保证。
+// 为什么原文透传：回答语义（技术建议、需求取舍）只有协调者理解，manager 不做
+// 任何加工——无损透传是「回答什么由协调者决定」承诺的执行保证。
 //
 // 为什么先回迁 running 再 Send：同 waitPermission——Send 一发出 executor 立刻恢复
 // 执行并可能立即产出 result，先落状态保证 result 到达时状态必为 running。
@@ -2171,7 +2171,7 @@ type RecoverReport struct {
 	Task string `json:"task"`
 	// Redelivered 是本次成功重投给 executor 的应答条数
 	Redelivered int `json:"redelivered"`
-	// ExecutorGone 为真表示 executor 已不在，任务已被交给审核者裁决
+	// ExecutorGone 为真表示 executor 已不在，任务已被交给协调者裁决
 	ExecutorGone bool `json:"executor_gone"`
 	// Reconciled 为真表示本次真的执行了会话对账（adapter 支持且任务状态合适）；
 	// 为假时 TurnEnded/Emitted 无意义
@@ -2184,7 +2184,7 @@ type RecoverReport struct {
 	Forced bool `json:"forced"`
 	// State 是操作完成后的任务状态
 	State proto.TaskState `json:"state"`
-	// Note 是给审核者看的一句话结论
+	// Note 是给协调者看的一句话结论
 	Note string `json:"note"`
 }
 
@@ -2198,20 +2198,20 @@ type reconciler interface {
 	Reconcile(ctx context.Context, taskID string) (executor.ReconcileOutcome, error)
 }
 
-// RecoverStuck 是审核者的显式恢复操作（CLI: handoff resume <task>），
+// RecoverStuck 是协调者的显式恢复操作（CLI: handoff resume <task>），
 // 用来解开两类卡死：
 //   - 「应答已落库但没送到 executor」：重投未送达的应答
 //   - 「agentd 与 executor 断连期间回合已完结、终态事件丢失」（B38）：
 //     会话对账补发丢失的终态
 //
 // 为什么需要它：reply 的回程里，应答一旦落库就消耗掉了工单的 answer IS NULL
-// 守卫；若此时中继失败（executor 半死、调用超时），审核者会拿到 502，而工单
+// 守卫；若此时中继失败（executor 半死、调用超时），协调者会拿到 502，而工单
 // 已从 pending 里消失、任务停在 waiting_answer——reply 得 404、continue/done
 // 得 409，CLI 上再无一条可走的路。此前唯一的出口是运维重启 agentd 让
 // RecoverOnStartup 探活，而那条路只在 executor **已死**时有效：executor 还
 // 活着并仍阻塞在权限上时，重启探活成功、订阅重建、已答工单从不重放，是彻底的
 // 死锁。B38 又补上第二类：断连窗口内完成的回合，终态事件在 /event 上永久丢失，
-// 任务冻死在 running。本方法把出口交到审核者自己手里。
+// 任务冻死在 running。本方法把出口交到协调者自己手里。
 //
 // 参数：
 //   - taskID: 任务 ID
@@ -2227,9 +2227,9 @@ type reconciler interface {
 //  1. 无未送达应答 → 转入会话对账（adapter 支持且状态合适时）；force 时再收口
 //  2. 有未送达应答 → 逐条重投；成功即标记送达，全部成功后任务回 running
 //  3. 重投遇到 executor.ErrTaskNotRunning（executor 确实不在）→ 追加 failed
-//     事件、作废挂起工单、任务转 waiting_review 交审核者，不再重试
+//     事件、作废挂起工单、任务转 waiting_review 交协调者，不再重试
 //  4. 重投遇到其他错误（executor 还在，只是这次调用失败）→ 保持 waiting_answer
-//     与未送达标记，返回错误；审核者稍后可再执行一次
+//     与未送达标记，返回错误；协调者稍后可再执行一次
 //
 // 注意：
 //   - 幂等：已标记送达的应答不会被重投，重复执行是安全的；对账也幂等（水位已
@@ -2267,7 +2267,7 @@ func (m *Manager) RecoverStuck(taskID string, force bool) (*RecoverReport, error
 		}
 		if err := m.RelayAnswer(taskID, tk.ID, answer); err != nil {
 			if errors.Is(err, executor.ErrTaskNotRunning) {
-				// executor 确实不在：继续重投没有意义，转交审核者裁决
+				// executor 确实不在：继续重投没有意义，转交协调者裁决
 				rep.ExecutorGone = true
 				rep.State = m.abandonToReview(taskID, tk.ID, err)
 				rep.Note = "executor 已不在，任务已转交审核（可 continue 重新派发或 done 归档）"
@@ -2306,7 +2306,7 @@ func (m *Manager) RecoverStuck(taskID string, force bool) (*RecoverReport, error
 //   - 只对 running / waiting_answer 生效。其余状态如实说明而不是静默成功：
 //     pending 尚未启动、waiting_review 本就该走 continue/done、终态已结束
 //   - adapter 未实现 reconciler 时不改状态、不伪装成「对账过了」
-//   - 对账失败只记 WARN 并把原因写进 Note，**不返回错误**——审核者要的是
+//   - 对账失败只记 WARN 并把原因写进 Note，**不返回错误**——协调者要的是
 //     「现在怎么办」，不是一个让 CLI 退非零的堆栈
 func (m *Manager) reconcileInto(rep *RecoverReport, taskID string, state proto.TaskState) {
 	if state != proto.TaskStateRunning && state != proto.TaskStateWaitingAnswer {
@@ -2354,7 +2354,7 @@ func (m *Manager) reconcileInto(rep *RecoverReport, taskID string, state proto.T
 // forceToReview 把任务强制收口到 waiting_review（handoff resume --force）。
 //
 // 为什么需要它：对账判不出来（adapter 不支持 / 会话确实还在忙 / 查询失败）时，
-// 审核者此前只剩 handoff stop——而 stop 会把一个其实成功了的任务落成 failed，
+// 协调者此前只剩 handoff stop——而 stop 会把一个其实成功了的任务落成 failed，
 // 并杀掉 executor。本操作**保住会话**，只把状态推到可 continue/done 的位置。
 //
 // 风险与护栏：executor 可能真的还在跑，收口后 continue 会往忙碌会话里塞指令。
@@ -2362,7 +2362,7 @@ func (m *Manager) reconcileInto(rep *RecoverReport, taskID string, state proto.T
 // 而这个场景的全部意义恰恰是不杀会话。
 func (m *Manager) forceToReview(rep *RecoverReport, taskID string, state proto.TaskState) {
 	rep.Forced = true
-	text := "审核者人工强制收口（handoff resume --force）：未经 executor 确认。" +
+	text := "协调者人工强制收口（handoff resume --force）：未经 executor 确认。" +
 		"对账当时的结论是：" + rep.Note + "。若 executor 其实仍在执行，" +
 		"后续 continue 的指令会进入一个忙碌会话，请先 handoff attach 确认现场。"
 	m.log.Warn("恢复操作：人工强制收口", "task", taskID, "from", state, "note", rep.Note)
@@ -2378,7 +2378,7 @@ func (m *Manager) forceToReview(rep *RecoverReport, taskID string, state proto.T
 }
 
 // appendProgress 追加一条 progress 事件并广播（恢复/强制收口等人工提示用）。
-// 落库失败只 Error 不回滚——状态迁移已经发生，事件缺失最坏是审核者少看一条提示。
+// 落库失败只 Error 不回滚——状态迁移已经发生，事件缺失最坏是协调者少看一条提示。
 func (m *Manager) appendProgress(taskID, text string) {
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
 	if err != nil {
@@ -2411,11 +2411,11 @@ func (m *Manager) markDelivered(taskID, ticketID string) {
 // 参数：
 //   - taskID: 任务 ID
 //   - ticketID: 未送达的工单 ID
-//   - cause: 送达失败的原因（原样进 payload 供审核者诊断）
+//   - cause: 送达失败的原因（原样进 payload 供协调者诊断）
 //
 // why（必须是事件而不只是日志）：此时 executor 仍原地阻塞，而工单已被应答消耗、
-// 不再出现在 attach 的挂起项里——只写日志的话审核者这边完全无感，任务一路挂到
-// 看门狗超时。产出事件才能唤醒审核者（wait 不过滤该类型），提示执行 handoff resume。
+// 不再出现在 attach 的挂起项里——只写日志的话协调者这边完全无感，任务一路挂到
+// 看门狗超时。产出事件才能唤醒协调者（wait 不过滤该类型），提示执行 handoff resume。
 // 供 manager 内部的应答等待链路与 server 的 reply 回程共用。
 func (m *Manager) NoteDeliveryFailed(taskID, ticketID string, cause error) {
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed, deliveryFailedPayload{
@@ -2451,12 +2451,12 @@ func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
 }
 
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进
-// waiting_review（why 见文件头）——失败也交审核者裁决，不自动重试烧 token。
+// waiting_review（why 见文件头）——失败也交协调者裁决，不自动重试烧 token。
 //
-// 顺序为什么是「追加事件 → 迁移状态 → 广播」而非广播在前：审核者（或脚本）收到
+// 顺序为什么是「追加事件 → 迁移状态 → 广播」而非广播在前：协调者（或脚本）收到
 // completed 事件后可能立即执行 continue/done，若状态尚未回迁 waiting_review 会被
 // 409 拒绝——先落状态再唤醒，保证「事件到达时状态已就绪」。迁移失败（如并发
-// done 已抢先归档）则不广播，避免唤醒审核者去操作一个已终结的任务。
+// done 已抢先归档）则不广播，避免唤醒协调者去操作一个已终结的任务。
 func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	if ev.Result == nil {
 		m.log.Error("result 事件缺 Result", "task", taskID)
@@ -2494,7 +2494,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		})
 	} else {
 		// 挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复路径同语义。
-		// 不作废的话 attach 仍向审核者展示可操作的挂起项，而工单已无人消费——
+		// 不作废的话 attach 仍向协调者展示可操作的挂起项，而工单已无人消费——
 		// 一旦 reply，工单被消耗、中继失败返回 502，任务落进不可恢复状态。
 		//
 		// 理由由 result 侧提供而非硬编码：作废行为在两种情形下相同，但审计
@@ -2551,7 +2551,7 @@ func (m *Manager) transitToReview(taskID string) error {
 //   - 两跳中的 running 迁移容忍 ErrBadTransit：该迁移与应答 goroutine 的回迁并发竞争
 //     同一 CAS，输家（本方法）说明 running 已达成（谁赢都是 running），继续补跳即收敛
 //   - 其余状态（如 done 已抢先归档的 completed/failed）返回错误：任务已终结，
-//     由 handleResult 决定不广播，避免唤醒审核者去操作一个已终结的任务
+//     由 handleResult 决定不广播，避免唤醒协调者去操作一个已终结的任务
 func (m *Manager) transitToReviewRetry(taskID string) error {
 	cur, err := m.st.GetTask(taskID)
 	if err != nil {
@@ -2645,17 +2645,17 @@ type volatilePermitter interface {
 // 返回：
 //   - true：执行器存活且事件流已重建，任务继续执行
 //   - false：执行器已不在（或 adapter 无恢复能力），供 RecoverOnStartup 把任务
-//     迁移 failed/waiting_review 交审核者裁决
+//     迁移 failed/waiting_review 交协调者裁决
 //
 // 注意：
 //   - 本方法作为 RecoverOnStartup 的探活闭包传入：存活的「重建订阅 + 重启中介
 //     循环」动作封装在闭包内部（见 watchdog.go RecoverOnStartup 的 seam 说明）
 //   - 重启前已挂起的权限/提问等待不需要在此重建：reply 回程的 resumeIfIdle
-//     自带「回答后无未答工单即回迁 running」的兜底（server.go），审核者回答
+//     自带「回答后无未答工单即回迁 running」的兜底（server.go），协调者回答
 //     挂起工单后任务自然恢复执行
 //   - 失败的恢复（adapter 报错）返回 false 而非错误：探活闭包契约只有 bool，
 //     具体原因已由 Error 日志留痕，恢复路径按不存活处理是保守且安全的选择
-//     （宁可交审核者裁决，不可静默吞掉仍在执行的任务事件）
+//     （宁可交协调者裁决，不可静默吞掉仍在执行的任务事件）
 func (m *Manager) ResumeTask(taskID string) bool {
 	task, err := m.st.GetTask(taskID)
 	if err != nil {
@@ -2674,7 +2674,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	}
 	// 权限随连接消亡的 adapter：任务若还挂着未决权限工单，恢复了也永远不会前进
 	// （executor 侧那次授权请求已随旧连接卡死，session/load 不会重发），直接判
-	// 不可恢复交审核者裁决，而不是建立一条永远不会前进的连接。
+	// 不可恢复交协调者裁决，而不是建立一条永远不会前进的连接。
 	if vp, ok := ad.(volatilePermitter); ok && vp.PermissionsVolatile() {
 		pending, err := m.st.PendingTickets(taskID)
 		if err != nil {

@@ -4,7 +4,7 @@
 //   - 调 client.Fetch 拉取仓库内相对路径文件并原文输出到 stdout
 //
 // 边界：
-//   - 不修改文件；路径由审核者指定，逃逸路径由 agentd 拒绝
+//   - 不修改文件；路径由协调者指定，逃逸路径由 agentd 拒绝
 package cmd
 
 import (

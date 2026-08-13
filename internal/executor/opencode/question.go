@@ -1,8 +1,8 @@
 // Package opencode 的提问通路纯逻辑。
 //
 // 职责：
-//   - renderQuestionTicket：把 opencode 的 question 请求渲染成审核者可读的工单文本
-//   - parseQuestionAnswers：把审核者的自由文本答复折算回 opencode 要的 answers
+//   - renderQuestionTicket：把 opencode 的 question 请求渲染成协调者可读的工单文本
+//   - parseQuestionAnswers：把协调者的自由文本答复折算回 opencode 要的 answers
 //
 // 边界：
 //   - 全部是纯函数：不碰 runState、不发 HTTP、不打日志、不读时钟
@@ -23,7 +23,7 @@ import (
 // 返回：多段文本，每问一段，选项按 `<问号>.<选项号>` 编号
 //
 // 注意：
-//   - 编号跨问连续编排（1.1/1.2/2.1），审核者据此作答，parseQuestionAnswers
+//   - 编号跨问连续编排（1.1/1.2/2.1），协调者据此作答，parseQuestionAnswers
 //     按同一套编号回读——两者是同一契约的两半，改一个必须改另一个
 //   - 无选项的问题不编号，提示直接作答：opencode 允许问题只有正文
 func renderQuestionTicket(qs []QuestionInfo) string {
@@ -64,11 +64,11 @@ func renderQuestionTicket(qs []QuestionInfo) string {
 	return b.String()
 }
 
-// parseQuestionAnswers 把审核者的自由文本答复折算成 opencode 要的 answers。
+// parseQuestionAnswers 把协调者的自由文本答复折算成 opencode 要的 answers。
 //
 // 参数：
 //   - qs: 本次请求的问题数组（顺序即 answers 的顺序）
-//   - reply: 审核者 `handoff reply --answer` 的原文
+//   - reply: 协调者 `handoff reply --answer` 的原文
 //
 // 返回：
 //   - answers: 按问题顺序排列，每项是该问选中的 label 数组
@@ -79,7 +79,7 @@ func renderQuestionTicket(qs []QuestionInfo) string {
 //   - 分级匹配：编号 `问.选`（每段也接受裸选项号——该段的第 N 个选项）→
 //     label 原文（TrimSpace + 大小写归一后精确匹配）→ 该问 Custom 时原文透传
 //   - 多问用分号分隔，多选用逗号分隔；两级分隔符不重叠，故可先分号后逗号
-//   - 猜错一个选项的代价是模型按错误前提继续干活，重问的代价只是审核者多按
+//   - 猜错一个选项的代价是模型按错误前提继续干活，重问的代价只是协调者多按
 //     一次——错误方向必须选后者（与 B6「误升级好过漏放行」同一取舍）
 func parseQuestionAnswers(qs []QuestionInfo, reply string) ([][]string, error) {
 	if len(qs) == 0 {
@@ -129,7 +129,7 @@ func splitAnswerSegments(reply string, questionCount int) []string {
 
 // splitAndTrim 按 sep 切分并去掉每段首尾空白，丢弃空段。
 //
-// 中文全角分隔符（；、）一并接受：审核者在中文输入法下很容易打出全角，
+// 中文全角分隔符（；、）一并接受：协调者在中文输入法下很容易打出全角，
 // 因此而重问是纯粹的摩擦。
 func splitAndTrim(s, sep string) []string {
 	switch sep {

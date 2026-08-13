@@ -53,7 +53,7 @@ func TestMapExitSentinelEmitsFailure(t *testing.T) {
 		t.Fatalf("哨兵应产出失败 result，实际 %+v", ev)
 	}
 	if ev.Result.FailReason == "" {
-		t.Error("失败原因不得为空（审核者要靠它判断怎么处置）")
+		t.Error("失败原因不得为空（协调者要靠它判断怎么处置）")
 	}
 }
 
@@ -67,7 +67,7 @@ func TestPermissionEventUsesRawToolUseID(t *testing.T) {
 		t.Fatalf("PermissionID 必须是裸 tool_use_id，实际 %+v", ev)
 	}
 	if ev.Text == "" {
-		t.Error("权限描述不得为空（审核者要靠它决定批不批）")
+		t.Error("权限描述不得为空（协调者要靠它决定批不批）")
 	}
 }
 
@@ -125,7 +125,7 @@ func mustRecv(t *testing.T, r *runState) executor.AdapterEvent {
 // TestFallbackClassifyEmptyTextEmitsFailedResult 兜底分支的空文本守卫。
 //
 // 旧实现在无新提交时 emit question 携带回合文本，文本为空时产出的是一张**空工单**
-// ——审核者收到一个没有内容的问题，除了瞎猜什么也做不了。零文本是故障，按故障报。
+// ——协调者收到一个没有内容的问题，除了瞎猜什么也做不了。零文本是故障，按故障报。
 func TestFallbackClassifyEmptyTextEmitsFailedResult(t *testing.T) {
 	a, r := newTestRun(t)
 	r.session = "sess-1"
@@ -137,6 +137,6 @@ func TestFallbackClassifyEmptyTextEmitsFailedResult(t *testing.T) {
 		t.Fatalf("零文本且无新提交应产出失败结果，实际 %s %+v", ev.Type, ev.Result)
 	}
 	if ev.Result.FailReason == "" {
-		t.Fatalf("FailReason 必须写清现场，否则审核者不知道发生了什么")
+		t.Fatalf("FailReason 必须写清现场，否则协调者不知道发生了什么")
 	}
 }

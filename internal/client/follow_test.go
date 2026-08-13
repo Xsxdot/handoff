@@ -256,7 +256,7 @@ func TestFollowAbruptCloseReconnectsNotIdleTimeout(t *testing.T) {
 }
 
 // TestFollowFiltersAuditEvents 钉住可交付口径：approver_decision / approver_disabled
-// 与 progress 一样不唤醒审核者。
+// 与 progress 一样不唤醒协调者。
 //
 // 为什么这条会退化：这两类在服务端只入库不 Publish，实时流本就见不到，
 // 于是「客户端不过滤」长期没有症状——直到 WS 重放从 store 读出它们。
@@ -278,7 +278,7 @@ func TestFollowFiltersAuditEvents(t *testing.T) {
 	}
 	want := []int64{4, 5}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("交付 seq = %v, want %v（审计类事件不该唤醒审核者）", got, want)
+		t.Fatalf("交付 seq = %v, want %v（审计类事件不该唤醒协调者）", got, want)
 	}
 }
 

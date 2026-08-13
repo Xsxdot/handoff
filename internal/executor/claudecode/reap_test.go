@@ -35,7 +35,7 @@ func sleepCmd(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
-// TestReapMissingProcInfoErrors 兜底回收依赖 proc.json——缺失时如实报错交审核者，
+// TestReapMissingProcInfoErrors 兜底回收依赖 proc.json——缺失时如实报错交协调者，
 // 不猜（旧实现的确定性会话名可由 taskID 推导，锁+pid 不能）。
 func TestReapMissingProcInfoErrors(t *testing.T) {
 	a := New(nil)

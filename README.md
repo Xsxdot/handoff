@@ -1,6 +1,6 @@
 # handoff
 
-把实现计划派发给独立 executor 执行、由交互式审核者（Claude Code 会话）通过 `wait`/`reply` 被唤醒并审核修改的两人协作工具：审核者写 plan → `handoff dispatch` 派发给 agentd（本机或远程，Tailscale 内网直连）→ executor 以独立会话跑 `opencode serve` 执行（权限门/提问经 SSE 转成工单唤醒审核者）→ 审核通过 `handoff done` 归档。全程无中心 server、无 hooks、无 MCP：断网不丢事件，审核者会话崩溃可凭两条命令完整恢复现场。
+把实现计划派发给独立 executor 执行、由交互式协调者（Claude Code 会话）通过 `wait`/`reply` 被唤醒并审核修改的两人协作工具：协调者写 plan → `handoff dispatch` 派发给 agentd（本机或远程，Tailscale 内网直连）→ executor 以独立会话跑 `opencode serve` 执行（权限门/提问经 SSE 转成工单唤醒协调者）→ 审核通过 `handoff done` 归档。全程无中心 server、无 hooks、无 MCP：断网不丢事件，协调者会话崩溃可凭两条命令完整恢复现场。
 
 ## 架构
 
@@ -8,7 +8,7 @@
 本机（Mac，随时断网）                     executor 所在机（本机或远程，常在线）
 ┌─────────────────────┐                ┌──────────────────────────────┐
 │ 交互式 Claude Code   │                │ handoff agentd（WS listener） │
-│  （审核者）          │   WebSocket    │  ├─ 任务/事件存储（SQLite）    │
+│  （协调者）          │   WebSocket    │  ├─ 任务/事件存储（SQLite）    │
 │         │           │ ◄────直连────► │  ├─ executor adapter          │
 │  handoff wait（后台） │   本机主动拨号  │  │   ├─ opencode serve（shim）  │
 │  handoff reply/...   │                │  │   ├─ claude -p（shim）       │
@@ -22,8 +22,8 @@
 
 - **handoff CLI**：`dispatch` / `wait` / `reply` / `continue` / `diff` / `fetch` / `run` / `tasks` / `show` / `attach` / `done` / `stop` / `pull`，只与 agentd 的 HTTP/WS 端口通信，不直接碰 executor 或工作区。
 - **handoff agentd**：任务状态机、事件持久化、executor 生命周期（经 shim 以独立会话拉起/续接/回收）、git 工作区操作（建分支、取 diff）。`--target local` 场景由 CLI 直连本机 agentd。
-- **executor 挂载**：四种真实执行者各有传输形态——opencode 走 HTTP API + SSE 事件流（`POST /session`、`prompt_async`、`/event` SSE），claude 走 `claude -p --input-format stream-json` 的进程流（权限门经 handoff 内置 stdio MCP server + unix socket），grok 走 `grok agent serve` 的 ACP（JSON-RPC over WebSocket），codex 走 `codex app-server --listen ws://` 的 WS JSON-RPC 2.0（双向）。权限等待一律发生在 executor 会话内部，与审核者是否在线解耦。
-- **审核者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
+- **executor 挂载**：四种真实执行者各有传输形态——opencode 走 HTTP API + SSE 事件流（`POST /session`、`prompt_async`、`/event` SSE），claude 走 `claude -p --input-format stream-json` 的进程流（权限门经 handoff 内置 stdio MCP server + unix socket），grok 走 `grok agent serve` 的 ACP（JSON-RPC over WebSocket），codex 走 `codex app-server --listen ws://` 的 WS JSON-RPC 2.0（双向）。权限等待一律发生在 executor 会话内部，与协调者是否在线解耦。
+- **协调者**：消费事件、决策审批、回答提问、审核 diff、下发修改指令；不持有任何任务状态（状态全在 agentd）。
 
 ## 快速开始
 
@@ -83,7 +83,7 @@ macOS 上 launchd 对重生有约 10 秒节流，重启期间会有约 10 秒的
 ### 升级与 skill 分发
 
 升级由**操作者触发**，不再有定时自动更新：一条命令看清本机与全部 target 的版本，
-一条命令把所有落后的机器升到同一版本。二进制由本机（审核者机器）下载后推送，
+一条命令把所有落后的机器升到同一版本。二进制由本机（协调者机器）下载后推送，
 **执行机无需出网**——内网机器、跳板机后面的机器也一样能升。
 
 ```bash
@@ -115,9 +115,7 @@ aliyun   够不着（dial tcp 10.0.0.5:7777: connect: connection refused）
 - **非托管**：agentd 不是被 launchd / systemd 拉起的，换完没人拉起。**`--force`
   也不越过**——处置是先在该机器上 `handoff service install`。
 
-`update.auto` / `update.interval` 两个配置键**已废弃、不再有任何效果**（agentd 不再
-定时查版本）。字段保留只是为了让 v0.1.0 写下的旧配置能继续加载；取非默认值时启动
-会打一条 Warn 说明。
+升级用 `handoff upgrade`，没有定时自动更新，也没有对应配置项。
 
 新版起来后如果有问题，**不会自动回滚**——旧二进制留在 `<路径>.prev`，用
 `handoff upgrade --rollback` 人工换回。自动回滚需要「新版启动后自证健康」的握手
@@ -150,7 +148,7 @@ handoff dispatch --target devbox plan.md                                      # 
 handoff dispatch --project nova --target devbox plan.md                       # 跨项目：cwd 不是目标项目时
 handoff dispatch --no-terminal plan.md                                        # 配置开 terminal.auto: true 时，逐次关闭弹终端
 
-# 4. 审核者侧典型循环
+# 4. 协调者侧典型循环
 handoff wait <task-id> --notify             # 一次性：等到下一个可动作事件就退出（派发后等第一个事件适用）
 handoff wait --follow <task-id> --timeout 3h  # 持续订阅：每条事件单行输出，任务终结（failed/归档）才退出
 handoff reply <task-id> --ticket <id> --approve                       # 批权限门
@@ -210,14 +208,14 @@ handoff reply <task-id> --ticket <id> --answer "用 pgx 不用 gorm"      # 答�
 
 ```yaml
 approver:                     # 分级审批链的廉价模型审批者
-  executor: opencode          # 空=不启用审批链（权限请求直接升级人工审核者）
+  executor: opencode          # 空=不启用审批链（权限请求直接升级人工协调者）
   model: cheap/model          # 审批者模型；空=用执行者自身默认
   timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
   blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
     - "kubectl .*delete"
-executor:                     # dispatch 未显式指定执行者时的缺省
+executor:                     # dispatch 未显式指定执行者时的默认
   default: opencode
-  model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
+  model: ""                   # 默认模型（dispatch --model 可逐任务覆盖）
 terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
   auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
 sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
@@ -243,7 +241,7 @@ PATH=${PATH}:/usr/local/go/bin
 ```
 
 同一份 env 也会注入审批者（`approver.executor`）—— 否则代理只配半边，审批者连不出去会
-静默升级人工审核者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
+静默升级人工协调者。文件不存在或语法错时**拒绝派发**并回显完整路径与行号，不会带病启动。
 不支持行内注释（`#` 只在行首生效，因为 URL 里 `#` 合法）。
 
 `path_dirs` 是**执行机顶层配置**：agentd 启动时会把这些目录追加到 PATH 末尾，用来兜住
@@ -268,7 +266,7 @@ PATH=${PATH}:/usr/local/go/bin
 
 若看到报错文案 `进程配额耗尽（当前 uid X/Y）`：这是 executor 撞上了围栏（Y=围栏
 上限），进程创建被拒绝。它**不是你的代码 bug**——按派发指令里预埋的资源纪律
-（见下节）收敛并行、报告审核者即可，不要重试、不要改代码。若没撞围栏也报
+（见下节）收敛并行、报告协调者即可，不要重试、不要改代码。若没撞围栏也报
 `resource temporarily unavailable`，那更可能是整机配额耗尽，同样归因处理。
 
 `repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
@@ -292,22 +290,22 @@ agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，
 
 ### 派发指令里预埋一句资源纪律
 
-派发指令的模板里固定预埋一句（spec §3.3），审核者可直接复制：
+派发指令的模板里固定预埋一句（spec §3.3），协调者可直接复制：
 
 > 若见 `resource temporarily unavailable`：这是机器进程配额耗尽，不是你的代码
-> bug——立即停止并行操作、收敛后报告审核者，不要重试，不要改代码。
+> bug——立即停止并行操作、收敛后报告协调者，不要重试，不要改代码。
 
 它是本计划里唯一一条**约定而非机制**的防线：执行者可能没读、可能读了不照做，真正的
-纠偏靠审核者——他手里有 `resource_pressure` 事件和失败事件里的占用快照，两者都是
+纠偏靠协调者——他手里有 `resource_pressure` 事件和失败事件里的占用快照，两者都是
 机制。这一句只是让执行者有机会自己先反应过来，省一轮往返。**软约束，由 §3.2 兜底。**
 
 ## 分级审批链
 
-权限请求的三级分流（spec §3）：**第 0 层静态规则**（taskenv 的 bash 模式表，edit 放行/危险命令 ask）→ **第 1 层廉价模型审批者**（黑名单硬规则 + one-shot CLI 裁决，approve 自动放行 / escalate 升级人工）→ **第 2 层人工审核者**（`reply` 裁决）。第 1 层 fail-closed：裁决失败/超时一律升级；同任务连续失败 3 次停用审批链（`approver_disabled` 事件留痕），后续权限直接升级人工。
+权限请求的三级分流（spec §3）：**第 0 层静态规则**（taskenv 的 bash 模式表，edit 放行/危险命令 ask）→ **第 1 层廉价模型审批者**（黑名单硬规则 + one-shot CLI 裁决，approve 自动放行 / escalate 升级人工）→ **第 2 层人工协调者**（`reply` 裁决）。第 1 层 fail-closed：裁决失败/超时一律升级；同任务连续失败 3 次停用审批链（`approver_disabled` 事件留痕），后续权限直接升级人工。
 
-## 审核者会话恢复
+## 协调者会话恢复
 
-一个没有任何前文的新审核者会话，仅凭两条命令完整重建现场（覆盖本机会话崩溃、主动关闭重开、换机器接管三种场景）：
+一个没有任何前文的新协调者会话，仅凭两条命令完整重建现场（覆盖本机会话崩溃、主动关闭重开、换机器接管三种场景）：
 
 ```bash
 handoff tasks                      # 列出全部任务及状态
@@ -353,7 +351,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
 
 claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程由各自 adapter 经 prochost 拉起，实况统一经 `handoff attach` 观看。诊断文件按 executor 对应：claude 是 `out.jsonl`（stdout 事件流）与 `claude.log`（stderr）与 `proc.json`（Handle / session_id / 已消费 offset）；grok 是 `serve.log` 与 `proc.json`（Handle / 端口 / session_id）；codex 是 `serve.log` 与 `proc.json`（Handle / 端口 / threadId）。
 
-> **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段，由 claude 自己读取，handoff 不复制这份配置（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交审核者。
+> **已知限制（2026-08-09 探针实测）**：claude 执行者的任务级 `settings.json` 采用「`allow` 兜底 + `ask` 收窄」的静态分级，探针确认同文件内任务级 `ask` 压得过 `allow`、且跨来源压得过用户级 `allow`（个人 allowlist 无法绕过任务级收窄），详见 spec §5.4。执行机 claude 的登录态（`ANTHROPIC_API_KEY` 等）存在于 `~/.claude/settings.json` 的 `env` 段，由 claude 自己读取，handoff 不复制这份配置（见上文「claude 执行者的 env 耦合」）；若执行机 claude 未登录，任务会启动失败并转交协调者。
 
 **常见问题**
 
@@ -362,12 +360,12 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 - 收到 `delivery_failed` 事件，或 `reply` 返回 502 → 裁决已落库但没送到 executor（executor 半死、调用超时）。此时工单已被消耗、`attach` 看不到挂起项，`reply` 会 404、`continue`/`done` 会 409——执行 `handoff resume <task>` 重投：executor 还在就继续执行，确已不在则任务转交审核（之后可 `continue` 重派或 `done` 归档）。该命令幂等，已送达的应答不会重复投递。
 - 任务冻死在 `running`、`attach` 能看到模型已经干完 → **agentd 与 executor 断连窗口内回合已完结、终态事件永久丢失（B38）**。`handoff resume <task>` 会做会话对账，把丢失的回合终态补回事件流，任务按补回的事件自然迁移（`result`→`waiting_review`、`question`→`waiting_answer`），此后可正常 `continue`/`reply`。对账判不出（executor 不支持对账 / 回合确实还在忙 / 查询失败）时加 `--force`：把任务强制收口到 `waiting_review` 并留下「人工强制、未经 executor 确认」的事件——它**保住 executor 会话**，与 `handoff stop`（杀会话、落 failed）根本不同。
 - `dispatch` 报「工作区不干净」→ 任务仓库有未提交/未跟踪改动，提交或 stash 后重试（脏工作区会被污染进任务分支）。
-- agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交审核者裁决。
+- agentd 重启后任务不丢 → SQLite 落盘 + `RecoverOnStartup` 探活重建 SSE；任务目录 `serve.json` 缺失的任务按「执行器已不在」转 failed 交协调者裁决。
 - 派发报 `xxx 未安装: executable file not found in $PATH`，但你在自己终端里明明能跑它 → agentd 拿到的 PATH 与你终端里的不是一回事（launchd 给的就是 `/usr/bin:/bin:/usr/sbin:/sbin`）。agentd 启动时会补全（登录 shell + 内置已知目录表），启动日志里搜 `已补全 PATH` 看它到底补了什么、搜 `executor 探测` 看四家各自解析到哪。都没覆盖到就把工具目录写进 `config.yaml` 的 `path_dirs` 后重启 agentd。
 - **grok 执行者会读到你的 Claude Code 个人配置**：grok 无视 `GROK_HOME`，仍从真实 HOME 读 `~/.claude/settings.local.json` 的权限规则与 `~/.claude/skills`。handoff 写入任务级 `ask` 规则可以压过其中的 `allow`（grok 的求值是 `deny` > `ask` > `allow` 跨源生效），危险模式表仍然有效；但「handoff 没枚举、而你个人 allow 了」的操作会被静默放行。agentd 侧的硬黑名单是独立兜底。
-- **grok 任务断连即失败**：ACP 的权限是随连接存续的阻塞请求，连接断开后未决的授权请求不会被重发。handoff 选择立刻转 failed 交审核者（可 `continue` 重开一轮），而不是假装恢复成功留下一个静止的任务。
-- **codex 复用你执行机的全局 codex 环境**：`~/.codex/AGENTS.md`、`~/.codex/hooks.json`、`config.toml` 的 `[mcp_servers]` 都会改变 executor 的干活方式（`hooks.json` 没有协议级开关能关掉，只能清理——agentd 以 codex 为缺省执行者启动时会对这三样打 WARN）。安全档位由 handoff 协议级钉死（`on-request` + OS 沙箱 + 每回合重钉），不依赖开发机干净；详见下方「codex 与其它 executor 的差异」。
-- **codex 任务断连即失败**：权限请求随 WS 连接存续，连接断开后未决请求不会被重发。handoff 选择立刻转 failed 交审核者，与 grok 同策略。
+- **grok 任务断连即失败**：ACP 的权限是随连接存续的阻塞请求，连接断开后未决的授权请求不会被重发。handoff 选择立刻转 failed 交协调者（可 `continue` 重开一轮），而不是假装恢复成功留下一个静止的任务。
+- **codex 复用你执行机的全局 codex 环境**：`~/.codex/AGENTS.md`、`~/.codex/hooks.json`、`config.toml` 的 `[mcp_servers]` 都会改变 executor 的干活方式（`hooks.json` 没有协议级开关能关掉，只能清理——agentd 以 codex 为默认执行者启动时会对这三样打 WARN）。安全档位由 handoff 协议级钉死（`on-request` + OS 沙箱 + 每回合重钉），不依赖开发机干净；详见下方「codex 与其它 executor 的差异」。
+- **codex 任务断连即失败**：权限请求随 WS 连接存续，连接断开后未决请求不会被重发。handoff 选择立刻转 failed 交协调者，与 grok 同策略。
 - **SSE 重放风险**：opencode `/event` 在重连时是否重放历史事件尚未经真实样本证实（权限/提问靠 ticket id 幂等去重，但旧 result 重放可能误杀存活的执行器会话）。这是验收级风险，见 `docs/superpowers/e2e-checklist.md` 的 SPIKE-1b 与「水位线应急方案」，上线前必须按清单实测。
 
 ## 执行者差异
@@ -403,4 +401,4 @@ claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程�
 
 - 设计文档（架构、协议、错误处理）：`docs/superpowers/specs/2026-08-07-handoff-design.md`
 - 真实 opencode e2e 手动验证清单：`docs/superpowers/e2e-checklist.md`
-- **给 AI 审核者的使用 skill**：`skills/handoff/SKILL.md`——审核者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。skill **内嵌在二进制里**，版本与二进制一致、不可能漂移：一行安装装完自动同步，`handoff upgrade --now` 换版后也会自动同步，日常不需要手工管。要查状态或重装用 `handoff skill` / `handoff skill install`（开发时用 `go run . skill install`）。
+- **给 AI 协调者的使用 skill**：`skills/handoff/SKILL.md`——协调者回路（dispatch → wait → reply → diff → continue/done）、状态机硬约束与排障。skill **内嵌在二进制里**，版本与二进制一致、不可能漂移：一行安装装完自动同步，`handoff upgrade --now` 换版后也会自动同步，日常不需要手工管。要查状态或重装用 `handoff skill` / `handoff skill install`（开发时用 `go run . skill install`）。

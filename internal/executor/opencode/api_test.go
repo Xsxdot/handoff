@@ -378,7 +378,7 @@ func TestSubscribeCtxCancel(t *testing.T) {
 
 // TestUnaryTimeoutHang 验证一元调用对「挂起不响应」的 server 在超时内返回错误：
 // 模拟半死的 opencode（TCP 通但不响应）——没有客户端超时的话 handoff reply 回程
-// 会在审核者终端永久挂起。超时经 NewAPIWithUnaryTimeout 注入 200ms，避免测试耗时。
+// 会在协调者终端永久挂起。超时经 NewAPIWithUnaryTimeout 注入 200ms，避免测试耗时。
 func TestUnaryTimeoutHang(t *testing.T) {
 	quietLog(t)
 	// unblock 放行 handler 供 ts.Close 收尾：半死 handler 挂起期间请求 ctx 不随

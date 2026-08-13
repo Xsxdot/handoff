@@ -1,11 +1,11 @@
-// Package localsync 负责把远程执行机上的任务分支同步到审核者本地仓库。
+// Package localsync 负责把远程执行机上的任务分支同步到协调者本地仓库。
 //
 // 职责：
 //   - 以 git fetch <url> <branch>:<branch> 把远程任务分支拉到本地同名分支
-//   - 报告本次同步的增量（新建分支 / 新增提交数），供 CLI 打印给审核者
+//   - 报告本次同步的增量（新建分支 / 新增提交数），供 CLI 打印给协调者
 //
 // 边界：
-//   - 只 fetch，不 checkout、不 merge、不碰 HEAD——审核者本地可能正在改别的东西，
+//   - 只 fetch，不 checkout、不 merge、不碰 HEAD——协调者本地可能正在改别的东西，
 //     合不合、怎么合是人的决定
 //   - 不解析 ssh 配置、不管凭证：RemoteURL 原样交给 git，认证由 ssh 自身完成
 //   - 不判断「该不该同步」：触发时机由调用方（wait/pull）决定
@@ -29,7 +29,7 @@ func log() *slog.Logger { return slog.Default() }
 
 // Opts 描述一次同步。
 //
-//   - LocalRepo: 本地仓库路径（通常是审核者的 cwd）
+//   - LocalRepo: 本地仓库路径（通常是协调者的 cwd）
 //   - RemoteURL: 远程仓库地址，形如 host:/path/to/repo（也接受本地路径，git 同一条路径处理）
 //   - Branch:    要同步的任务分支名（取 task.Branch，不是从任务 ID 派生）
 type Opts struct {
@@ -62,7 +62,7 @@ type Result struct {
 //
 // 注意：
 //   - 非快进由 git 自身拒绝（fetch <src>:<dst> 的默认语义），这正是要的行为——
-//     宁可报错也不能悄悄覆盖审核者的本地提交
+//     宁可报错也不能悄悄覆盖协调者的本地提交
 func Fetch(ctx context.Context, o Opts) (Result, error) {
 	if o.LocalRepo == "" || o.RemoteURL == "" || o.Branch == "" {
 		return Result{}, fmt.Errorf("同步参数不完整：local=%q remote=%q branch=%q", o.LocalRepo, o.RemoteURL, o.Branch)
@@ -85,7 +85,7 @@ func Fetch(ctx context.Context, o Opts) (Result, error) {
 	if _, stderr, ferr := run(ctx, o.LocalRepo, "fetch", o.RemoteURL, refspec); ferr != nil {
 		// 降级为 Debug（B51，合并撞号前编号 B48，spec/计划里仍称 B48）：
 		// 这段 git 原文已经原样进了下面的返回值，
-		// cmd/wait.go 会把它打给人看。库层再 Error 一遍，审核者就会在 stderr 上
+		// cmd/wait.go 会把它打给人看。库层再 Error 一遍，协调者就会在 stderr 上
 		// 紧挨着看到同一段报错的两份副本，真正的排障信息被自己的副本淹没。
 		// 与仓库既有纪律一致（internal/store 全层不打日志，靠 %w 带上下文、
 		// 由调用方带业务上下文记录）。降级而非删除：agentd 侧若将来复用本库，

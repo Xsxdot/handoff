@@ -5,7 +5,7 @@
 //   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault →
 //     pathenv.Apply（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
-//   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
+//   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒协调者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
 //   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
@@ -162,7 +162,7 @@ var agentdCmd = &cobra.Command{
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
-		// 任务转 failed/waiting_review 交审核者裁决。探活与「重建订阅」封装在同一个
+		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
 		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
@@ -195,7 +195,7 @@ var agentdCmd = &cobra.Command{
 }
 
 // logExecutorDetection 把四家 executor 的探测结果成表写进启动日志，并对
-// 「缺省执行者没找到」打一条带处置的 WARN。
+// 「默认执行者没找到」打一条带处置的 WARN。
 //
 // 参数：
 //   - log: 日志入口
@@ -224,7 +224,7 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 			continue
 		}
 		if r.State == toolchain.StateMissing {
-			log.Warn("缺省执行者未找到，派发到本机的任务会失败",
+			log.Warn("默认执行者未找到，派发到本机的任务会失败",
 				"executor", r.Name,
 				"处置", "在本机装上它，或把它所在目录写进 config.yaml 的 path_dirs")
 		}
@@ -282,5 +282,5 @@ var executorFlag string
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖缺省执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+		"覆盖默认执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }

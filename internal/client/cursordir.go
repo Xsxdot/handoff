@@ -1,4 +1,4 @@
-// cursordir.go —— 审核者侧游标目录的解析、降级与命名空间折算。
+// cursordir.go —— 协调者侧游标目录的解析、降级与命名空间折算。
 //
 // 职责：
 //   - 解析游标根：~/.handoff → <cwd>/.handoff 两级确定性降级，都不可写则报错
@@ -103,7 +103,7 @@ func (c *Client) cursorRootDir() (string, error) {
 //
 // 顺序硬约束：先 ~/.handoff（缺省，与历史行为一致），不可写才退 <cwd>/.handoff。
 // 为什么降级目标是 cwd 而不是 $TMPDIR：codex 的 workspace-write 可写 cwd、
-// $TMPDIR、/tmp 三处，但只有 cwd 是审核者的项目目录、跨 session 稳定；
+// $TMPDIR、/tmp 三处，但只有 cwd 是协调者的项目目录、跨 session 稳定；
 // $TMPDIR 会被清理，游标续不上等于没修。
 func (c *Client) resolveCursorRoot() (string, error) {
 	var homeReason string
@@ -129,7 +129,7 @@ func (c *Client) resolveCursorRoot() (string, error) {
 		return "", fmt.Errorf("游标目录不可用：%s；%s 也不可写: %v",
 			homeReason, filepath.Dir(cand), perr)
 	}
-	// 降级是审核者必须知道的事实（游标换了地方，跨目录 wait 会各持一份），
+	// 降级是协调者必须知道的事实（游标换了地方，跨目录 wait 会各持一份），
 	// 因此是 Warn 不是 Debug；只打一次由 cursorRootOnce 保证
 	c.log().Warn("游标目录不可写，已降级", "原因", homeReason, "改用", cand)
 	return cand, nil

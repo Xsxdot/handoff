@@ -123,7 +123,7 @@ func TestPermTableTakeAndVoid(t *testing.T) {
 	}
 }
 
-// 被拒清单交给审核者的是描述而不是不透明 id
+// 被拒清单交给协调者的是描述而不是不透明 id
 func TestRejectedTurnQuestionShowsDescription(t *testing.T) {
 	tb := codex.NewPermTableForTest()
 	tb.NoteRejectedForTest("运行 rm -rf /etc")

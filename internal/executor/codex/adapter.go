@@ -71,7 +71,7 @@ var deltaNotifications = map[string]bool{
 //
 // networkAccess 为 true 是 2026-08-09 用户的明确决定（spec §2.2）：executor 跑在
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
-// 且实证拒网**不产工单**，属于审核者不知情的哑失败。
+// 且实证拒网**不产工单**，属于协调者不知情的哑失败。
 func sandboxPolicy() map[string]any {
 	return map[string]any{
 		"type":                "workspaceWrite",
@@ -273,7 +273,7 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 // startTurn 发起一个回合。
 //
 // 参数：
-//   - text: 回合输入原文（首轮是渲染后的 plan 提示词，续接时是审核者原话）
+//   - text: 回合输入原文（首轮是渲染后的 plan 提示词，续接时是协调者原话）
 //
 // 注意：**四个安全参数每回合重钉一遍**（spec §5.1 步骤 6）——安全姿态因此与
 // thread 的历史状态和恢复路径完全无关。
@@ -501,7 +501,7 @@ func (r *runState) appendRenderDelta(s string) {
 	}
 }
 
-// noteAskedViaTool 标记本回合已通过原生提问工具向审核者递过问题。
+// noteAskedViaTool 标记本回合已通过原生提问工具向协调者递过问题。
 func (r *runState) noteAskedViaTool() {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
@@ -608,9 +608,9 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
 		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它
 		// 宣布（B74）：发 result{OK:false}，git 实况留在结构化字段，
-		// 审核者在 waiting_review 里看一眼再决定 done 还是 continue。
+		// 协调者在 waiting_review 里看一眼再决定 done 还是 continue。
 		if hasNew {
-			a.log.Warn("回合无收尾协议但有新提交，转失败交审核者裁决",
+			a.log.Warn("回合无收尾协议但有新提交，转失败交协调者裁决",
 				"task", r.taskID, "branch", branch, "commit", commit)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 				Result: turn.NoTrailerResult(r.threadID, branch, commit, text)})
@@ -624,7 +624,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 		}
 		// 空文本守卫：零文本是故障报告，不是问题
 		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 				Result: &executor.Result{OK: false, SessionID: r.threadID,
 					FailReason: "回合结束但零文本产出；executor 仍在线，可 continue 续接重试",
@@ -639,7 +639,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 // onClosed 是连接终止的唯一处置入口。
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
-// 此时必须**不**产出失败结果——审核者看到的失败原因是假的。
+// 此时必须**不**产出失败结果——协调者看到的失败原因是假的。
 //
 // 为什么挂起表非空就直接终结、不再尝试重连：按最保守路径实现（spec §8）——
 // 假设未决权限在重连后不会重发。重连成功反而更危险：adapter 会以为一切正常，
@@ -690,7 +690,7 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 		it, ok := parseItemNotification(params)
 		if !ok {
 			// 解析失败会导致后续 fileChange 权限门 fail-closed 升级人工，
-			// 审核者需要能查到原因（items.go 的约定）
+			// 协调者需要能查到原因（items.go 的约定）
 			a.log.Debug("codex item 通知解析失败，跳过", "method", method, "params_len", len(params))
 			return
 		}
@@ -815,7 +815,7 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 	case reqPermissionsApproval:
 		// 一律 fail-closed（spec §5.4）：这是「模型申请把沙箱放宽一截」，等价于
 		// acceptForSession。**绝不做成可批准的权限门**——能被批准的「放宽沙箱」
-		// 正是 §2.1 安全论证赖以成立的那道边界。回一份空 profile，只让审核者知情。
+		// 正是 §2.1 安全论证赖以成立的那道边界。回一份空 profile，只让协调者知情。
 		a.log.Warn("codex 申请放宽沙箱，已拒绝（fail-closed）", "task", r.taskID,
 			"params", string(params))
 		if err := r.cli.Reply(reqID, map[string]any{
@@ -846,9 +846,9 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 			return true
 		}
 		text := userInputText(qs)
-		a.log.Info("codex 提问已转交审核者", "task", r.taskID, "item", itemID,
+		a.log.Info("codex 提问已转交协调者", "task", r.taskID, "item", itemID,
 			"question_count", len(qs))
-		// 立即应答：回调在读循环上，等审核者会卡死整条连接
+		// 立即应答：回调在读循环上，等协调者会卡死整条连接
 		if err := r.cli.Reply(reqID, userInputReply(qs)); err != nil {
 			a.log.Error("回发提问应答失败", "task", r.taskID, "item", itemID, "cause", err)
 		}

@@ -332,7 +332,7 @@ func TestReadFileSymlinkEscape(t *testing.T) {
 
 // TestReadFileSizeCap 验证读取大小上限（P1-5）：超过 maxRunOutput 的文件只返回
 // 开头 maxRunOutput 字节 + 一行截断提示（截断而非拒绝——与 RunCmd 输出截断
-// 语义一致；提示不可省，否则审核者会把截断处当文件末尾），边界内的文件完整返回。
+// 语义一致；提示不可省，否则协调者会把截断处当文件末尾），边界内的文件完整返回。
 func TestReadFileSizeCap(t *testing.T) {
 	repo := initGitRepo(t)
 	big := filepath.Join(repo, "big.bin")
@@ -721,7 +721,7 @@ func TestResolveBaselineEmptyRepoHasNoStart(t *testing.T) {
 }
 
 // TestResolveBaselineMissingRejects 验证基线缺失且 fetch 补不回来时拒发，
-// 且错误里带上基线 sha —— 审核者据此才知道该 push 哪个提交。
+// 且错误里带上基线 sha —— 协调者据此才知道该 push 哪个提交。
 func TestResolveBaselineMissingRejects(t *testing.T) {
 	repo := initTestRepo(t)
 	const absent = "0123456789abcdef0123456789abcdef01234567"
@@ -1032,7 +1032,7 @@ func TestResolveCommitMissingRejects(t *testing.T) {
 
 // TestResolveCommitAmbiguousRemoteOnlyBranch 钉住歧义出口：两个远端都有同名
 // 分支时（fork 工作流 origin+upstream 的常态），必须按歧义拒发并列出全部候选，
-// 而不能降级成「起点不存在，先 git push」——起点明明在，让审核者去 push 是
+// 而不能降级成「起点不存在，先 git push」——起点明明在，让协调者去 push 是
 // 把他引向错误的排查方向。
 func TestResolveCommitAmbiguousRemoteOnlyBranch(t *testing.T) {
 	up := initTestRepo(t)
@@ -1055,6 +1055,6 @@ func TestResolveCommitAmbiguousRemoteOnlyBranch(t *testing.T) {
 		t.Fatalf("错误文本应列出全部候选 ref: %v", err)
 	}
 	if strings.Contains(err.Error(), "git push") {
-		t.Fatalf("歧义不是不存在，错误文本不得误导审核者去 push: %v", err)
+		t.Fatalf("歧义不是不存在，错误文本不得误导协调者去 push: %v", err)
 	}
 }

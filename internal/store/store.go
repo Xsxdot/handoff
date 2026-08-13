@@ -114,7 +114,7 @@ func Open(path string) (*Store, error) {
 	}
 	// 迁移：为旧库补 delivered_at 列。
 	//
-	// why（这一列必须独立于 answer）：「审核者已裁决」与「裁决已送达 executor」
+	// why（这一列必须独立于 answer）：「协调者已裁决」与「裁决已送达 executor」
 	// 是两件不同的事实，把它们压在 answer 一个字段上，正是「reply 中继失败后
 	// 工单已被消耗、却无从知道该不该重投」这个死局的根因。列已存在时 SQLite 报
 	// duplicate column，属预期，忽略即可（SQLite 无 ADD COLUMN IF NOT EXISTS）。
@@ -624,7 +624,7 @@ func (s *Store) CountEvents(taskID string, afterSeq, throughSeq int64) (int, err
 //
 // 注意：
 //   - 用途是「工单已创建但通知事件缺失」的自愈判定（崩溃恰好落在两次写之间）：
-//     仅凭工单存在就认定为重放，会把审核者的唤醒事件永久吞掉
+//     仅凭工单存在就认定为重放，会把协调者的唤醒事件永久吞掉
 //   - payload 是 JSON 文本，这里取回后在 Go 侧精确解码比对，不用 LIKE 匹配
 //     （ticket_id 含 `_` 等 LIKE 通配符，字符串匹配会误判）
 //   - 单任务的问答类事件量级在几十条，全量扫描代价可忽略；且只在重放分支调用
@@ -699,7 +699,7 @@ FROM tickets WHERE id = ?`, id).
 	return &tk, nil
 }
 
-// FindReusableGrant 查同任务、同指纹、已被审核者批准且已送达的 gate 工单。
+// FindReusableGrant 查同任务、同指纹、已被协调者批准且已送达的 gate 工单。
 //
 // 参数：
 //   - taskID: 任务 id（复用严格限制在任务内，见 spec §3.4）
@@ -763,7 +763,7 @@ func (s *Store) MarkTicketDelivered(id string) error {
 // 注意：
 //   - 作废工单（answer = VoidAnswer）不在其中：它们是「任务已终结，不会再被回答」
 //     的墓碑，不是待送达的裁决
-//   - 这是「审核者 reply 得到 502 之后」的可恢复面：列表非空即说明有裁决卡在半路
+//   - 这是「协调者 reply 得到 502 之后」的可恢复面：列表非空即说明有裁决卡在半路
 func (s *Store) UndeliveredAnswers(taskID string) ([]proto.Ticket, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
 SELECT id, task_id, kind, request, answer, created_at, answered_at
@@ -813,7 +813,7 @@ ORDER BY answered_at ASC`, taskID, VoidAnswer)
 //   - 以 answer IS NULL 为更新条件：工单不存在或已回答（不可重复回答）均返回 ErrNotFound
 //   - 回答成功后刷新所属任务的 updated_at（子查询取 task_id）：answer 落库是任务
 //     活动信号，看门狗以此判定「stalled 之后是否有回复」从而二次告警（P1-15a）；
-//     否则「已 stalled → 审核者回答 → executor 仍死」永远不再告警
+//     否则「已 stalled → 协调者回答 → executor 仍死」永远不再告警
 func (s *Store) AnswerTicket(id, answer string) error {
 	res, err := s.db.ExecContext(context.Background(),
 		"UPDATE tickets SET answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
@@ -842,7 +842,7 @@ func (s *Store) AnswerTicket(id, answer string) error {
 // VoidAnswer 是 VoidPendingTickets 写入的占位答案值。
 //
 // 语义：任务已终结（executor 已不存在）时挂起工单不再可能被回答，作废后
-// PendingTickets（answer IS NULL）天然不再返回它们——审核者看到的是「无挂起项」
+// PendingTickets（answer IS NULL）天然不再返回它们——协调者看到的是「无挂起项」
 // 而非可操作的假象；作废原因由调用方（RecoverOnStartup 的 failed 事件）留痕。
 const VoidAnswer = "__void__"
 

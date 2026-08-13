@@ -35,12 +35,12 @@ import (
 
 const (
 	progressThrottle = 30 * time.Second // 与 opencode 同值：防高频增量刷爆事件库
-	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给审核者看的上限）。
+	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给协调者看的上限）。
 	//
 	// adapter 发出的 AdapterEvent.Text 是权限描述的唯一真相源，manager 拿它做三件事：
 	//   - shouldConsultApprover 的黑名单正则扫描（命中即跳过审批者升级人工）
 	//   - 第 1 层模型审批者 Decide 的输入
-	//   - 权限工单里保存的全文（审核者裁决的依据）
+	//   - 权限工单里保存的全文（协调者裁决的依据）
 	// 展示用的短截断由 manager 的 permEventText() 单独负责，只作用于事件 payload，
 	// 且带显式截断标记。**在 adapter 层提前砍短会让黑名单只扫到截断前缀，危险片段
 	// 落在其后即静默放行**——这是 B6 修掉过的根因，不能在此复活。64KB 只防失控输出。
@@ -96,7 +96,7 @@ type runState struct {
 	acc          *turnAccumulator
 	lastProgress time.Time
 	rejected     []string // 本回合被拒的权限描述（perm.go 写入，回合收尾交代）
-	// askedViaTool 记「本回合已经通过原生 ask_user_question 给审核者递过问题」。
+	// askedViaTool 记「本回合已经通过原生 ask_user_question 给协调者递过问题」。
 	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
 	askedViaTool bool
 
@@ -107,7 +107,7 @@ type runState struct {
 // pendingPerm 是挂起表中一条待裁决的权限请求。
 //
 // reqID 是应答回发必需的 ACP 请求 id；desc 是给人看的权限描述——RespondPermission
-// 拒绝时用它记入被拒清单（用 toolCallId 会让审核者看到一串不透明 id，等于没说清
+// 拒绝时用它记入被拒清单（用 toolCallId 会让协调者看到一串不透明 id，等于没说清
 // 模型刚才想干什么）。
 type pendingPerm struct {
 	reqID json.RawMessage
@@ -365,7 +365,7 @@ func (r *runState) closeEvents() {
 	close(r.evCh)
 }
 
-// noteAskedViaTool 标记本回合已通过原生提问工具向审核者递过问题。
+// noteAskedViaTool 标记本回合已通过原生提问工具向协调者递过问题。
 func (r *runState) noteAskedViaTool() {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
@@ -437,7 +437,7 @@ func (a *Adapter) awaitTurn(r *runState, ch <-chan ACPResult) {
 // finishTurn 处理一个回合的终局：按 stopReason 与 trailer 分类产出事件。
 //
 // 为什么 stopReason != end_turn 一律判失败：那意味着回合没跑完（拒答、达到
-// 上限、被取消），此时模型的产出不可信，交审核者比替它猜测安全。
+// 上限、被取消），此时模型的产出不可信，交协调者比替它猜测安全。
 func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	if res.Err != nil {
 		a.emitFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
@@ -480,15 +480,15 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
 		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它
 		// 宣布（B74）：发 result{OK:false}，git 实况留在结构化字段，
-		// 审核者在 waiting_review 里看一眼再决定 done 还是 continue。
+		// 协调者在 waiting_review 里看一眼再决定 done 还是 continue。
 		if hasNew {
-			a.log.Warn("回合无收尾协议但有新提交，转失败交审核者裁决",
+			a.log.Warn("回合无收尾协议但有新提交，转失败交协调者裁决",
 				"task", r.taskID, "branch", branch, "commit", commit)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: turn.NoTrailerResult(r.sessionID, branch, commit, text)})
 			return
 		}
-		// 本回合已经通过原生提问工具给过审核者一个问题时，兜底闭嘴：兜底的职责是
+		// 本回合已经通过原生提问工具给过协调者一个问题时，兜底闭嘴：兜底的职责是
 		// 「别让回合静默结束」，那个诉求已经满足了。真机 47c36ab9 实测，此处补的
 		// 第二张工单内容是「已调用一次提问工具；本回合结束。」——不是问题，回答它
 		// 等于把废话灌回模型。
@@ -497,11 +497,11 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 				"task", r.taskID)
 			return
 		}
-		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，协调者收到一个
 		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle
 		// 的空回合处置对称）
 		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: &executor.Result{OK: false, SessionID: r.sessionID,
 					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
@@ -516,11 +516,11 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 // onClosed 是 ACP 连接终止的唯一处置入口。
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
-// 此时必须**不**产出失败结果——审核者看到的失败原因是假的（真实是用户主动停）。
+// 此时必须**不**产出失败结果——协调者看到的失败原因是假的（真实是用户主动停）。
 //
 // 为什么挂起表非空就直接终结、不再尝试重连：实测重连后 grok 不会重发未决的
 // 权限请求，那次工具调用已永久卡死。重连成功反而更危险——adapter 会以为一切
-// 正常，而任务再也不会前进。宁可立刻转 failed 让审核者 continue 重开一轮。
+// 正常，而任务再也不会前进。宁可立刻转 failed 让协调者 continue 重开一轮。
 func (a *Adapter) onClosed(r *runState, cause error) {
 	r.emitMu.Lock()
 	stopping := r.stopping
@@ -776,7 +776,7 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 	}
 	text = turn.TruncateMarked(text, permTextHardLimit)
 	// 挂起登记同时存 desc：RespondPermission 拒绝时把它记入被拒清单，而不是让
-	// 审核者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
+	// 协调者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
 	h.r.notePending(p.ToolCall.ToolCallID, reqID, text)
 	req := permRequestFromToolCall(p.ToolCall)
 	if req == nil {
@@ -799,7 +799,7 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 //
 // 应答形态见 askQuestionReply：形状错了不会挂死，但会被 grok 判为工具执行失败报回
 // 模型（2026-08-09 真机两轮实测），模型要么重问一遍、要么把「工具报错了」写进回合
-// 文本——两种都会脏掉审核者看到的工单。
+// 文本——两种都会脏掉协调者看到的工单。
 func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 	// 先解阻塞：任何解析失败都不能挡住这一步
 	if err := h.r.cli.Reply(reqID, askQuestionReply()); err != nil {
@@ -809,11 +809,11 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 
 	text := askQuestionText(params)
 	if text == "" {
-		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报审核者",
+		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报协调者",
 			"task", h.r.taskID)
 		return
 	}
-	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交审核者",
+	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交协调者",
 		"task", h.r.taskID)
 	// 记在回合上：收尾兜底据此不再把回合叙述补成第二张工单
 	h.r.noteAskedViaTool()
@@ -841,7 +841,7 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 // 为什么选 skip_interview：它对应「用户跳过这轮问答」，grok 收到后给模型的提示是
 // 「用户没有作答，按你自己的判断继续，或换个问题问」——正是 handoff 想要的语义。
 // handoff 的提问真相源是回合 trailer 的 {"ask":…}，本通道只负责**立刻解阻塞**，
-// 不承担作答（作答走审核者工单，答案在下一回合以 prompt 送进来）。选 accepted 就
+// 不承担作答（作答走协调者工单，答案在下一回合以 prompt 送进来）。选 accepted 就
 // 得在这里同步憋出一份 answers，会让 ACP 请求阻塞到人回话为止——那正是 §4.2.3
 // 要避免的挂死形态。
 //

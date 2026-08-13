@@ -7,7 +7,7 @@
 //
 // 边界：
 //   - **纯资源动作**：不改任务状态、不追加状态迁移事件、不发唤醒
-//   - 不删任务分支（审核者的工作成果），不删任务目录（失败任务的排查素材）
+//   - 不删任务分支（协调者的工作成果），不删任务目录（失败任务的排查素材）
 //   - 不读 worktree_managed 判断「现在还在不在」——该字段删成功从不回写，
 //     只用于判断「这个任务当初是不是 managed 模式」
 //   - 本文件的解析类函数（parseWorktreeList / parsePorcelainStatus / canonPath /
@@ -77,7 +77,7 @@ func parseWorktreeList(out string) map[string]worktreeEntry {
 //   - 脏条目清单；输出为空表示工作树干净
 //
 // 注意：重命名行形如 "R  old -> new"，这里整段留在 Path 里不再拆——
-// 审核者要看的是「动了什么」，拆开反而丢失了「从哪来」这条信息
+// 协调者要看的是「动了什么」，拆开反而丢失了「从哪来」这条信息
 func parsePorcelainStatus(out string) []proto.DirtyFile {
 	var files []proto.DirtyFile
 	for _, line := range strings.Split(out, "\n") {
@@ -211,13 +211,13 @@ var (
 	// ErrReclaimRepoUnreachable 表示仓库不可达或不是 git 仓库，判不出。
 	// 单任务回收必须据此拒绝，绝不能降级成「无残留」静默成功。
 	ErrReclaimRepoUnreachable = errors.New("仓库不可达，工作树状态判不出")
-	// ErrReclaimNotManaged 表示该任务用的是审核者自带的工作树，agentd 无权删。
+	// ErrReclaimNotManaged 表示该任务用的是协调者自带的工作树，agentd 无权删。
 	ErrReclaimNotManaged = errors.New("工作区不是 agentd 管理的 worktree")
 )
 
 // DirtyWorktreeError 表示工作树有未提交改动或未跟踪文件，未带 force 时拒绝回收。
 //
-// 为什么是带清单的类型而不是裸哨兵：审核者要决定「这些改动能不能丢」，
+// 为什么是带清单的类型而不是裸哨兵：协调者要决定「这些改动能不能丢」，
 // 就必须看见改了什么。只给一句「树是脏的」等于把决定权交出去却不给依据。
 // 注意名字避开 workspace.go 里的 ErrDirtyWorktree 哨兵——那是 dispatch 拒发的
 // 错误，语义是「拒绝派发」，与这里的「回收被拒、带清单」是两回事。

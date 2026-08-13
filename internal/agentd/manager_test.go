@@ -404,13 +404,13 @@ func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("adapter.Start 失败后 managed worktree 应被补偿清理，仍有: %v", entries)
 	}
-	// 任务落 failed：审核者仍能经 tasks 看到失败现场（PlanPath 等已落库）
+	// 任务落 failed：协调者仍能经 tasks 看到失败现场（PlanPath 等已落库）
 	tasks, err := st.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
-		t.Fatalf("任务应落 failed 供审核者查看, got %+v", tasks)
+		t.Fatalf("任务应落 failed 供协调者查看, got %+v", tasks)
 	}
 }
 
@@ -766,7 +766,7 @@ func TestTransitToReviewAnswerRaceConverges(t *testing.T) {
 		if completed != 1 {
 			t.Fatalf("第 %d 轮 completed 事件数=%d, want 1", i, completed)
 		}
-		// 收敛断言 4：终态为 waiting_review（事件已交割给审核者）或 running（应答后到，
+		// 收敛断言 4：终态为 waiting_review（事件已交割给协调者）或 running（应答后到，
 		// executor 被重新唤醒续跑，属正常语义而非卡死）；绝不静默停在等待者已应答的空转态
 		cur, err := st.GetTask(taskID)
 		if err != nil {
@@ -908,7 +908,7 @@ func TestRelayAnswer(t *testing.T) {
 
 // TestWaiterCanceledOnTaskEnd 覆盖 P1-2 的 ctx 取消半段：任务执行终结（adapter
 // 事件通道关闭）后，挂起的应答等待 goroutine 必须被取消并从 hub 等待表移除——
-// 旧实现 waitPermission 用 context.Background() 永久挂死（审核者不再回答即泄漏）。
+// 旧实现 waitPermission 用 context.Background() 永久挂死（协调者不再回答即泄漏）。
 //
 // 为什么事件通道关闭是唯一取消时机：result → waiting_review 后任务仍活，回答
 // 晚于 result 到达是合法流程（见 mediate 的 why 注释），只有「执行终结」才
@@ -1014,7 +1014,7 @@ func TestPermissionReplaySkipsDuplicates(t *testing.T) {
 		t.Fatalf("重放后 state=%s, want waiting_answer（不重复迁移）", cur.State)
 	}
 
-	// 一次应答 → 恰好一次 RespondPermission（不重复唤醒审核者/executor）
+	// 一次应答 → 恰好一次 RespondPermission（不重复唤醒协调者/executor）
 	hub.NotifyAnswer("t1:perm-1", "allow")
 	eventually(t, 2*time.Second, "executor 收到恰一次应答", func() bool {
 		return len(ad.permsRec()) == 1
@@ -1058,7 +1058,7 @@ func TestPlanSummaryFromContent(t *testing.T) {
 
 // TestPermissionTicketKeepsFullText 验证权限工单存全文、事件 payload 截断。
 // why：旧实现在 adapter 侧就把描述截到 200 字，工单里存的本身就是截断版——
-// 审核者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
+// 协调者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
 func TestPermissionTicketKeepsFullText(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
 	task := &proto.Task{ID: "T-full", RepoPath: t.TempDir(), Executor: "fake",
@@ -1106,7 +1106,7 @@ func TestStopEndsRunningTask(t *testing.T) {
 	task := &proto.Task{ID: "T-stop", RepoPath: t.TempDir(), Executor: "fake",
 		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	mustCreateTask(t, st, task)
-	// 造一个挂起工单：stop 后它必须被作废，否则审核者仍会看到可操作项，
+	// 造一个挂起工单：stop 后它必须被作废，否则协调者仍会看到可操作项，
 	// 一 reply 就打进已死会话（与 handleResult 失败分支同一条理由）
 	if _, err := st.CreateTicket(&proto.Ticket{ID: "T-stop:p1", TaskID: "T-stop", Kind: "gate",
 		Request: []byte(`{"kind":"gate","permission":"bash: ls"}`), CreatedAt: time.Now()}); err != nil {
@@ -1639,7 +1639,7 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 }
 
 // TestPermissionReuseSkipsSecondTicket 验证 B57②：同一任务内同一权限描述
-// 第二次到达时不再建工单、不再叫醒审核者，而是复用首次的人工批准自动放行。
+// 第二次到达时不再建工单、不再叫醒协调者，而是复用首次的人工批准自动放行。
 func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
 	m, st, _, ad := newTestManager(t)
 	mustCreateTask(t, st, &proto.Task{
@@ -1649,7 +1649,7 @@ func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
 
 	permText := "external_directory: /Users/x/go/pkg/mod/github.com/coder/websocket@v1.8.15/*"
 
-	// 第一次：升级人工 → 审核者批准 → 送达
+	// 第一次：升级人工 → 协调者批准 → 送达
 	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
 		Type: "permission", PermissionID: "p1", Text: permText,
 	}, "T1:p1")
@@ -1748,7 +1748,7 @@ func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
 		t.Fatalf("工单 id = %q，期望 T1:que_ff", pending[0].ID)
 	}
 
-	// 事件也只该有一条 question——重放不该再唤醒审核者一次
+	// 事件也只该有一条 question——重放不该再唤醒协调者一次
 	evs, err := st.EventsFromAsc("T1", 0, 100)
 	if err != nil {
 		t.Fatalf("EventsFromAsc: %v", err)
@@ -1765,7 +1765,7 @@ func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
 }
 
 // TestQuestionReissueAfterAnswerCreatesNewTicket 钉住三岔的第三条：opencode 的
-// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，审核者答错一次
+// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，协调者答错一次
 // 之后就再也答不了，任务停在 waiting_answer 直到 stall 超时——比 B58 本身严重。
 func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
@@ -1793,7 +1793,7 @@ func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
 		t.Fatalf("重发后挂起工单 %d 张，期望 1（新单）：%+v", len(pending), pending)
 	}
 	if pending[0].ID == "T1:que_ff" {
-		t.Fatal("重发复用了已答工单的 id，审核者将无法作答")
+		t.Fatal("重发复用了已答工单的 id，协调者将无法作答")
 	}
 }
 

@@ -135,7 +135,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 // activeCount 返回活跃任务数（running + waiting_answer）。
 //
-// waiting_review 不计入：它在等审核者裁决，挂几天都正常，计入等于让升级
+// waiting_review 不计入：它在等协调者裁决，挂几天都正常，计入等于让升级
 // 被无限期阻塞（沿用 B54.3 的 D12）。
 func (s *Server) activeCount() (int, error) {
 	tasks, err := s.st.ListTasks()

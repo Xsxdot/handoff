@@ -230,7 +230,7 @@ func TestStopExecutorFallsBackToReap(t *testing.T) {
 
 // TestStopExecutorEmitsEventWhenReapFails 信号对称：回收不掉必须留事件。
 // worktree 清理失败会发 progress 提示人工，executor 停不掉却完全静默——
-// 审核者根本无从知道有残留（B20 的第二个可改点）。
+// 协调者根本无从知道有残留（B20 的第二个可改点）。
 func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
 		reapErr: errors.New("进程组回收失败")}
@@ -254,9 +254,9 @@ func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	}
 }
 
-// TestStopExecutorNotifiesOnStillAlive 验证 Stop 报「进程仍存活」时，审核者
+// TestStopExecutorNotifiesOnStillAlive 验证 Stop 报「进程仍存活」时，协调者
 // 能在事件流里看到人工提示——B47 的全部意义就在这一条。改动前这里只有一行
-// Error 日志进 agentd.log，审核者的终端上什么都不会出现。
+// Error 日志进 agentd.log，协调者的终端上什么都不会出现。
 func TestStopExecutorNotifiesOnStillAlive(t *testing.T) {
 	ad := &stopErrAdapter{
 		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
@@ -284,7 +284,7 @@ func TestStopExecutorNotifiesOnStillAlive(t *testing.T) {
 }
 
 // TestStopExecutorStaysQuietOnOtherErrors 验证其它 Stop 失败**不**发事件：
-// 全发等于把审核者淹了，那样这条提示就没人看了。
+// 全发等于把协调者淹了，那样这条提示就没人看了。
 func TestStopExecutorStaysQuietOnOtherErrors(t *testing.T) {
 	ad := &stopErrAdapter{
 		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
@@ -368,8 +368,8 @@ func TestContinueColdResumesAndRetriesSend(t *testing.T) {
 }
 
 // TestContinueColdResumeEmitsProgressEvent 冷恢复/降级必须产出事件而不只是日志。
-// fresh 尤其重要：上下文断了是审核者需要知道的事实——它直接决定下一条指令
-// 要不要重述背景。只写日志等于让审核者在不知情的前提下继续对话。
+// fresh 尤其重要：上下文断了是协调者需要知道的事实——它直接决定下一条指令
+// 要不要重述背景。只写日志等于让协调者在不知情的前提下继续对话。
 func TestContinueColdResumeEmitsProgressEvent(t *testing.T) {
 	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
 		outcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeFresh,
@@ -411,7 +411,7 @@ func TestContinueUnrecoverableFallsBackToReview(t *testing.T) {
 		t.Fatalf("不可恢复应返回错误")
 	}
 	if !strings.Contains(err.Error(), "会话数据已不在磁盘上") {
-		t.Fatalf("错误应带 Outcome.Note 让审核者知道为什么: %v", err)
+		t.Fatalf("错误应带 Outcome.Note 让协调者知道为什么: %v", err)
 	}
 	cur, _ := st.GetTask("t1")
 	if cur.State != proto.TaskStateWaitingReview {

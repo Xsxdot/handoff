@@ -139,7 +139,7 @@ func looksLikeSHA(s string) bool {
 	return true
 }
 
-// baselineLine 拼派发后回显给审核者的那一行（分支 + 起点 [+ base 原文] [+ 领先提示]）。
+// baselineLine 拼派发后回显给协调者的那一行（分支 + 起点 [+ base 原文] [+ 领先提示]）。
 //
 // 参数：
 //   - task: 派发应答里的任务；BaseCommit 由 agentd 保证是 40 位 sha
@@ -248,12 +248,12 @@ var dispatchCmd = &cobra.Command{
 		}
 		// 基线摘要走 stderr：stdout 是「单行任务 JSON」的既有契约，上层脚本
 		// 按行解析，多打一行就会把它们全部打断。为什么必须打：B35 的现场里
-		// 分支开在了三批改动之前，而这件事在任何输出里都不留痕迹——审核者
+		// 分支开在了三批改动之前，而这件事在任何输出里都不留痕迹——协调者
 		// 甚至反过来怀疑是执行者找错了目录
 		if task.BaseCommit != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), baselineLine(task, dispatchBase))
 		}
-		// B43：新工作树不含执行机仓库里未提交的改动，而审核者看不到那台机器的
+		// B43：新工作树不含执行机仓库里未提交的改动，而协调者看不到那台机器的
 		// 工作区——不说，executor 就会在一份没有那些改动的代码上开工而无人知晓。
 		// 与基线行同走 stderr（stdout 的单行任务 JSON 契约不能破，见上方注释）
 		if task.RepoDirtyCount > 0 {
@@ -277,7 +277,7 @@ func init() {
 		"跨项目派发时指定项目名（省略则由当前目录自动识别；用 handoff project ls 查看有哪些）")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
 	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
-	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/grok/fake；空=agentd 缺省执行者）")
+	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/grok/fake；空=agentd 默认执行者）")
 	dispatchCmd.Flags().StringVar(&dispatchModel, "model", "", "任务级模型覆盖（空=执行者自身默认）")
 	dispatchCmd.Flags().StringVar(&dispatchBranch, "branch", "", "切到已存在分支（与 --new-branch 互斥）")
 	dispatchCmd.Flags().StringVar(&dispatchNewBranch, "new-branch", "", "新建分支名（空且 --branch 空=自动 handoff/<id8>）")
@@ -345,7 +345,7 @@ func appleScriptQuote(s string) string {
 // openTerminal 用 osascript 在 macOS 上弹 Terminal.app 执行 attach 命令。
 //
 // 测试缝：包级变量，测试替换记录调用。为什么用 do script 而不是让 agentd 弹：
-// dispatch 成功时审核者大概率不在本机终端前（在 agentd 所在机器的桌面前），
+// dispatch 成功时协调者大概率不在本机终端前（在 agentd 所在机器的桌面前），
 // Terminal.app 弹窗把「executor 实况」直接送到桌面——do script 让 Terminal
 // 打开新窗口执行 attach，窗口内即实况；activate 把窗口置前。
 var openTerminal = func(attachArgv []string) error {

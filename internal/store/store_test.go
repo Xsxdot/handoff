@@ -417,7 +417,7 @@ func TestWorkdirFallsBackToRepoPath(t *testing.T) {
 
 // TestAnswerTicketRefreshesTaskUpdatedAt 验证回答工单会刷新所属任务的 updated_at
 // （P1-15a 二次告警的活动信号）：看门狗凭 updated_at 前进判定「stalled 之后有
-// 回复」，回答必须推进它，否则「已 stalled → 审核者回答 → executor 仍死」永远
+// 回复」，回答必须推进它，否则「已 stalled → 协调者回答 → executor 仍死」永远
 // 不再告警。
 func TestAnswerTicketRefreshesTaskUpdatedAt(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))

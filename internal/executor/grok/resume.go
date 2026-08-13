@@ -49,7 +49,7 @@ const (
 //   - Alive=true：serve 存活、ACP 已重连、会话已载入、事件流已重建；
 //     Mode 说明走到的级别（reattach 热重连 / cold 冷恢复 / fresh 新会话）
 //   - Alive=false：serve 已不在且不允许冷恢复、或凭据缺失，调用方据此转
-//     failed 交审核者
+//     failed 交协调者
 func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, err error) {
 	taskID, taskDir, repoPath, sessionID := req.TaskID, req.TaskDir, req.RepoPath, req.SessionID
 	a.log.Info("grok 尝试恢复任务", "task", taskID, "task_dir", taskDir, "session", sessionID)
@@ -172,7 +172,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 				Note: fmt.Sprintf("载入原会话失败：%v", err)}, nil
 		}
 		// 第 4 级：原会话载不进，新开一个。上下文断了，manager 会据 Mode=fresh
-		// 播报给审核者——这一条必须让人知道，它决定下一条指令要不要重述背景
+		// 播报给协调者——这一条必须让人知道，它决定下一条指令要不要重述背景
 		a.log.Warn("session/load 失败，降级新开会话", "task", taskID, "cause", err)
 		newID, nerr := a.newSessionOnConn(ctx, cli, repoPath)
 		if nerr != nil {
@@ -240,7 +240,7 @@ func resumeNote(mode, sessionID string) string {
 //
 // 注意：本函数**不重发 session/prompt**——恢复的是「正在跑的回合」的观察通道，
 // 不是重开一轮。若恢复时该回合早已结束（事件已错过），任务会停在 waiting_review
-// 由审核者处置——这比擅自重发一轮安全。
+// 由协调者处置——这比擅自重发一轮安全。
 func (a *Adapter) watchdog(r *runState) {
 	// 退场前一律补最后一次巡检：看门狗有两个出口（evClosed 正常退场、探活判死
 	// 退场），用 defer 才能结构性地同时覆盖，而不是在两个 return 前各抄一遍——

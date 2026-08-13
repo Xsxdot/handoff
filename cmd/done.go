@@ -47,7 +47,7 @@ var doneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// 兜底回收：审核者可能从不跑 wait/follow（直接 dispatch → done），
+		// 兜底回收：协调者可能从不跑 wait/follow（直接 dispatch → done），
 		// 那条通道就观察不到 archived 事件。两条通道幂等，先到者生效
 		cli.DropCursor(taskID)
 		// stdout 恒为单行 {"ok":true}：上层脚本按此解析，人读的信息一律走 stderr
@@ -58,7 +58,7 @@ var doneCmd = &cobra.Command{
 				`本次归档未留说明（下次可加 --note "一句话说明这次做完了什么"）`)
 		case !noteSaved:
 			// 归档成功了，丢的只是说明——退出码保持 0，但必须说出来，
-			// 否则审核者以为自己留了话（B30 那类哑失败）
+			// 否则协调者以为自己留了话（B30 那类哑失败）
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"说明未保存：对端 agentd 版本较旧，不支持归档说明。任务已正常归档。")
 		}

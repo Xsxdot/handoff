@@ -171,7 +171,7 @@ func TestStatusProbeAlive(t *testing.T) {
 	}
 }
 
-// 探活为 dead 时 Live=dead 且 Note 原样带出（审核者靠它判断怎么处置）。
+// 探活为 dead 时 Live=dead 且 Note 原样带出（协调者靠它判断怎么处置）。
 func TestStatusProbeDead(t *testing.T) {
 	env := newStatusEnv(t, &probeStub{alive: false, note: "tmux 会话 handoff-abcdef01 不存在"})
 	env.seedRunningTask(t, "T-dead")

@@ -132,7 +132,7 @@ func TestMapQuestionAskedEmptyQuestionsStillWakesReviewer(t *testing.T) {
 
 func TestQuestionAskedIsTaskScoped(t *testing.T) {
 	if !taskScopedEvents["question.asked"] {
-		t.Error("question.asked 必须是任务级事件：它直接产出面向审核者的工单")
+		t.Error("question.asked 必须是任务级事件：它直接产出面向协调者的工单")
 	}
 }
 
@@ -295,7 +295,7 @@ func TestSendUnparsableAnswerRepromptsAndKeepsPending(t *testing.T) {
 	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}}}}
 
 	if err := a.Send(context.Background(), "task-1", "驴唇不对马嘴"); err != nil {
-		t.Fatalf("重问路径不应返回错误（错误要以工单形式给审核者）: %v", err)
+		t.Fatalf("重问路径不应返回错误（错误要以工单形式给协调者）: %v", err)
 	}
 	ev, ok := drainOne(r)
 	if !ok || ev.Type != "question" {
@@ -409,7 +409,7 @@ func TestMapIdleClearsAskedViaToolOnNone(t *testing.T) {
 
 	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
 
-	// none 走 git 兜底：非 git 目录判定无新提交，转提问交审核者——既有行为，drain 掉它
+	// none 走 git 兜底：非 git 目录判定无新提交，转提问交协调者——既有行为，drain 掉它
 	if ev, ok := drainOne(r); !ok || ev.Type != "question" {
 		t.Fatalf("none 兜底应产出 question，实际 %+v ok=%v", ev, ok)
 	}

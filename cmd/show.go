@@ -2,12 +2,12 @@
 //
 // 职责：
 //   - 调用 client.Attach 拉取任务 + 待办工单 + 最近事件，单行输出完整 AttachInfo JSON——
-//     pending_tickets 是审核者恢复现场（「我还没答哪些」）的关键数据源
+//     pending_tickets 是协调者恢复现场（「我还没答哪些」）的关键数据源
 //
 // 边界：
 //   - 只读快照，不修改任何状态
 //   - 二期起快照命令从一期 attach 更名而来：attach 改为终端实况（见 attach.go），
-//     本命令是审核者会话恢复的关键数据源，供 wait/tasks/show 之外的脚本解析
+//     本命令是协调者会话恢复的关键数据源，供 wait/tasks/show 之外的脚本解析
 package cmd
 
 import (

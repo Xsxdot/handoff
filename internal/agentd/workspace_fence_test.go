@@ -29,8 +29,8 @@ func TestRunCmdNonQuotaErrorUnchanged(t *testing.T) {
 	}
 }
 
-// 归因文案必须能出现在返回的 error 里——审核者看到的是这个字符串，
-// 只写日志等于没归因（日志在执行机上，审核者手边没有）。
+// 归因文案必须能出现在返回的 error 里——协调者看到的是这个字符串，
+// 只写日志等于没归因（日志在执行机上，协调者手边没有）。
 func TestForkFailureNoteReachesCaller(t *testing.T) {
 	note := quotaNote(errFakeEAGAIN)
 	if note == "" {

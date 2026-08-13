@@ -13,7 +13,7 @@ import (
 	"github.com/xushixin/handoff/internal/prochost"
 )
 
-// TestReapMissingProcInfoErrors proc.json 缺失时 Reap 必须报错交审核者——
+// TestReapMissingProcInfoErrors proc.json 缺失时 Reap 必须报错交协调者——
 // 锁+pid 无法从 taskID 推导，不猜（旧实现的确定性会话名兜底随 tmux 一起拆除）。
 func TestReapMissingProcInfoErrors(t *testing.T) {
 	a := grok.New(nil)

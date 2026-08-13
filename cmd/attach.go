@@ -11,7 +11,7 @@
 // 或 ssh -t <host> tmux attach（远程）。tmux 拆除后实况改由 agentd 落盘 +
 // 流式吐出，attach 退化成一个普通 HTTP 客户端——顺带拿到三个收益：
 // 远程不再需要 ssh（复用 agentd 连接与鉴权，配置里的 user 字段对 attach 不再必要）、
-// Windows 审核者可用（syscall.Exec 在 Windows 上直接返回 EWINDOWS）、
+// Windows 协调者可用（syscall.Exec 在 Windows 上直接返回 EWINDOWS）、
 // 断线可凭已收字节数续传。
 package cmd
 

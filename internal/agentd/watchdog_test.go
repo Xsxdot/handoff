@@ -75,7 +75,7 @@ func seedCompletedTask(t *testing.T, st *store.Store, id string) {
 	}
 }
 
-// seedWaitingReviewTask 创建任务并迁到 waiting_review（审核者审阅中，executor
+// seedWaitingReviewTask 创建任务并迁到 waiting_review（协调者审阅中，executor
 // 可能还活着等续接指令，也可能已不在）。
 func seedWaitingReviewTask(t *testing.T, st *store.Store, id string) {
 	t.Helper()
@@ -189,7 +189,7 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	}
 }
 
-// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在审核者回答后
+// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在协调者回答后
 // 仍无新事件产出（executor 假死），下一轮 tick 必须二次触发 stalled——这是最需要
 // 二次告警的场景（旧实现「只发一次」裁决后永远不再告警）；而无活动时依旧只发一次
 // 不刷屏。
@@ -212,7 +212,7 @@ func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
 		return len(stalledEvents(t, st, "task-reply")) == 1
 	})
 
-	// 模拟审核者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
+	// 模拟协调者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
 	if err := st.AnswerTicket("task-reply:t1", "allow"); err != nil {
 		t.Fatalf("AnswerTicket: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestWatchdogCatchesZeroEventTask(t *testing.T) {
 // TestRecoverOnStartupVoidsPendingTickets（P1-16）：探活失败的 dead 任务，其挂起
 // 工单被作废——attach 的 pending_tickets 不再出现无法操作的挂起项（executor 已不
 // 在，一操作就撞 P0-5）；answer 置为 VoidAnswer 留审计痕迹，且该任务仍迁移
-// waiting_review 交审核者裁决。
+// waiting_review 交协调者裁决。
 func TestRecoverOnStartupVoidsPendingTickets(t *testing.T) {
 	st := newTestStore(t)
 	hub := NewHub()
@@ -310,7 +310,7 @@ func TestRecoverOnStartup(t *testing.T) {
 	st := newTestStore(t)
 	hub := NewHub()
 
-	// 探活恒 false：running 与 waiting_answer 任务都要转 failed 交审核者裁决
+	// 探活恒 false：running 与 waiting_answer 任务都要转 failed 交协调者裁决
 	seedRunningTask(t, st, "task-dead-run")
 	seedWaitingAnswerTask(t, st, "task-dead-wa")
 	// 探活恒 true：任务保持 running 不动
@@ -377,7 +377,7 @@ func TestRecoverOnStartup(t *testing.T) {
 
 // TestRecoverOnStartupRebuildsWaitingReview 覆盖 agentd 重启后 waiting_review 任务
 // 的续接恢复：executor 存活（probe=true）时必须重建订阅与中介循环（即被探活），
-// 但**不改任务状态**——waiting_review 是审核者裁决的落点，就该留在原地等人；也不得
+// 但**不改任务状态**——waiting_review 是协调者裁决的落点，就该留在原地等人；也不得
 // 追加任何事件。旧实现显式跳过 waiting_review（「是人的节奏」），续接上下文随
 // agentd 进程消亡而丢失，continue 永久失败。
 func TestRecoverOnStartupRebuildsWaitingReview(t *testing.T) {

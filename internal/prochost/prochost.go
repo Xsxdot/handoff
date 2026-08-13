@@ -124,14 +124,14 @@ func Alive(h Handle) bool {
 //
 // 与「信号发送失败」区分开：后者是系统调用出错（可能只是权限或参数问题），
 // 前者是进程**真的没死**——只有后一种意味着会留下长期孤儿，值得惊动人。
-// agentd 侧靠 errors.Is 认这个哨兵来决定要不要给审核者发提示事件。
+// agentd 侧靠 errors.Is 认这个哨兵来决定要不要给协调者发提示事件。
 var ErrStillAlive = errors.New("进程组仍然存活")
 
 // killVerifyWindow 是复核存活的总时长上限，killVerifyBackoff 的各项之和。
 //
 // 为什么是 1s 而不是更久：Kill 处在归档/中止的同步路径上，它变慢等于
 // handoff done / handoff stop 变慢。1s 足以覆盖 SIGKILL 的正常生效窗口；
-// 超过 1s 还活着的本来就该交给人和后台重试，而不是让审核者对着终端干等。
+// 超过 1s 还活着的本来就该交给人和后台重试，而不是让协调者对着终端干等。
 const killVerifyWindow = time.Second
 
 // killVerifyBackoff 是 killGroup 之后逐次复核的等待序列（累计 = killVerifyWindow）。

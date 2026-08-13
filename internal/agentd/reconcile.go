@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - reconcileExecutorGone：「executor 已不在」这一事实的唯一收尾实现，
-//     三个到达口（启动探活 / 事件通道关闭 / 审核者动作撞上失配）共用
+//     三个到达口（启动探活 / 事件通道关闭 / 协调者动作撞上失配）共用
 //
 // 边界：
 //   - 不探活：本文件只负责「已经知道 executor 没了之后怎么办」，
@@ -82,7 +82,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		// 唯独「已发 SIGKILL 但复核仍存活」要惊动人：这是唯一一种不提示就会
 		// 留下长期孤儿的失败（B20 现场存活了 11.5 小时，正是因为完全静默）。
 		// 其余 Stop 失败五花八门（ctx 取消、内部状态不一致），全发事件等于
-		// 把审核者淹了，那样这条提示就没人看了。
+		// 把协调者淹了，那样这条提示就没人看了。
 		if errors.Is(err, prochost.ErrStillAlive) {
 			m.notifyOrphanRisk(taskID, fmt.Sprintf(
 				"executor 进程可能残留（已发 SIGKILL 但复核仍存活），"+
@@ -99,7 +99,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
 	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
 		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "cause", rerr)
-		// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
+		// 给协调者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
 		// tmux kill-session，那个命令现在不存在了，照做只会更困惑
 		m.notifyOrphanRisk(taskID, fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
 			"再 handoff stop %s 回收（原因：%v）", taskID, rerr))
@@ -112,7 +112,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 //
 // 参数：
 //   - taskID: 目标任务
-//   - text: 面向审核者的正文；给的必须是「下一步做什么」而不是「出了什么错」
+//   - text: 面向协调者的正文；给的必须是「下一步做什么」而不是「出了什么错」
 //
 // 注意：
 //   - 追加失败只记日志、不返回错误：调用方全都处在归档/中止的收尾路径上，
@@ -124,7 +124,7 @@ func (m *Manager) notifyOrphanRisk(taskID, text string) {
 		return
 	}
 	m.hub.Publish(evt)
-	m.log.Info("已向审核者发出 executor 残留提示", "task", taskID)
+	m.log.Info("已向协调者发出 executor 残留提示", "task", taskID)
 }
 
 // reconcileExecutorGone 收尾一个 executor 已不在的任务。
@@ -138,7 +138,7 @@ func (m *Manager) notifyOrphanRisk(taskID, text string) {
 // 过的任务同样可能有残留（那次 Kill 正因锁已释放而空转）。2026-08-12 事故里两个
 // 任务最终都停在 waiting_review，恰好是提前返回会跳过的形态。
 //
-// 顺序：状态收尾在前、清扫在后。审核者的工作流（任务进 waiting_review）不受
+// 顺序：状态收尾在前、清扫在后。协调者的工作流（任务进 waiting_review）不受
 // 清扫成败影响——清扫失败只上报，绝不回头改状态。
 func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	log *slog.Logger, sweep func(taskID string)) proto.TaskState {
@@ -195,7 +195,7 @@ type footprinter interface {
 //   - 无返回值：调用方全都处在收尾路径上，清扫成败不该反过来影响那件事
 //   - 只有「确实有残留但我们没敢动」才发事件提示人工；成功与无残留只进日志。
 //     这是尊重 stopExecutor 已经想清楚过的事——「其余失败五花八门，全发事件
-//     等于把审核者淹了，那样这条提示就没人看了」
+//     等于把协调者淹了，那样这条提示就没人看了」
 //   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
 //     不是给外部当通用 API 用
 func (m *Manager) SweepTaskProcs(taskID string) {

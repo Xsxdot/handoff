@@ -6,7 +6,7 @@
 //   - 连接断开时作废全部挂起项并告知调用方
 //
 // 边界：
-//   - 不做审批判断：批不批由 manager 依审核者/审批者的应答决定，本层只转发
+//   - 不做审批判断：批不批由 manager 依协调者/审批者的应答决定，本层只转发
 //   - 不碰 store：工单、黑名单、升级链全在 manager
 //
 // 为什么需要挂起表（opencode 没有）：ACP 的权限是 agent→client 的**阻塞式
@@ -29,7 +29,7 @@ import (
 
 // optionIDFor 把 handoff 的裁决翻译为 ACP 的 optionId。
 //
-// fail-closed：未知裁决一律按拒绝，绝不误放行——误拒的代价是审核者再来一轮，
+// fail-closed：未知裁决一律按拒绝，绝不误放行——误拒的代价是协调者再来一轮，
 // 误放的代价可能是不可逆的破坏性操作。
 func optionIDFor(decision string) string {
 	if decision == "once" {
@@ -68,7 +68,7 @@ func (r *runState) voidAllPending() int {
 	return n
 }
 
-// noteRejected 记下本回合被拒的权限描述，回合收尾时一并交代给审核者。
+// noteRejected 记下本回合被拒的权限描述，回合收尾时一并交代给协调者。
 func (r *runState) noteRejected(desc string) {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
@@ -84,7 +84,7 @@ func (r *runState) takeRejected() []string {
 	return out
 }
 
-// rejectedTurnQuestion 把被拒清单拼成交给审核者的问题。
+// rejectedTurnQuestion 把被拒清单拼成交给协调者的问题。
 func rejectedTurnQuestion(rejected []string) string {
 	var b strings.Builder
 	b.WriteString("本回合有权限请求被拒，模型可能改用其它做法或停下。被拒清单：\n")
@@ -110,7 +110,7 @@ func (a *Adapter) PermissionsVolatile() bool { return true }
 //
 // 返回：
 //   - 任务不在运行中、或挂起表查不到该 permID 时，包装 executor.ErrTaskNotRunning
-//     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交审核者，
+//     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交协调者，
 //     而不是当作可重试的瞬时错误
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
 	r := a.lookup(taskID)
@@ -134,7 +134,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		return fmt.Errorf("回发权限裁决: %w", err)
 	}
 	if opt == "reject-once" {
-		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让审核者知道
+		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让协调者知道
 		// 「模型刚才想干什么、被挡了」，一串不透明 toolCallId 等于没说（见
 		// rejectedTurnQuestion）。desc 用完整文本，长度收口由回合收尾处的
 		// turn.ClampQuestion 负责，不在本处截短。

@@ -546,7 +546,7 @@ func TestIdleClassifyFinish(t *testing.T) {
 }
 
 // TestIdleFallbackNoTrailer 验证无 trailer 时的 git 兜底分类：
-// 无新 commit → question（回合全文交审核者）；有新 commit → result !OK
+// 无新 commit → question（回合全文交协调者）；有新 commit → result !OK
 // （B74：绝不替模型宣布完成，branch/commit 取 git 实况留结构化字段）。
 func TestIdleFallbackNoTrailer(t *testing.T) {
 	const assistantText = "我做了改动，但忘了按纪律输出协议 JSON"
@@ -625,7 +625,7 @@ func TestSessionReadyProgress(t *testing.T) {
 }
 
 // TestIdleEmptyTurnSkips 验证空回合 idle 的收尾行为（B21 修复后）：
-// 无任何文本 part 时回合文本为空，idle 必须产出失败结果（交审核者，不再静默
+// 无任何文本 part 时回合文本为空，idle 必须产出失败结果（交协调者，不再静默
 // 挂到 2h 看门狗）；冗余的 session.idle 信号同现时不得重复产出第二条事件。
 func TestIdleEmptyTurnSkips(t *testing.T) {
 	quietLog(t)
@@ -664,8 +664,8 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 // error 状态的 tool part（"The user rejected permission to use this specific tool
 // call."），零文本 part。于是 idle 到来时回合文本为空，旧实现只打一条 Warn 就
 // return，不产出任何事件：manager 收不到东西、任务永远停在 running，直到 2 小时
-// 看门狗才报 stalled。修复后这种回合必须转 question 唤醒审核者，并在文本里点明
-// 是哪条权限被拒导致的终止，审核者据此续发指令（换方式/跳过/收尾）。
+// 看门狗才报 stalled。修复后这种回合必须转 question 唤醒协调者，并在文本里点明
+// 是哪条权限被拒导致的终止，协调者据此续发指令（换方式/跳过/收尾）。
 func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
@@ -676,14 +676,14 @@ func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 	if ev.PermissionID != "per-rej-1" {
 		t.Fatalf("PermissionID=%q，期望 per-rej-1", ev.PermissionID)
 	}
-	// 审核者拒绝：adapter 回传 reject 后，opencode 侧回合随即终止（无文本产出）
+	// 协调者拒绝：adapter 回传 reject 后，opencode 侧回合随即终止（无文本产出）
 	if err := ad.RespondPermission(context.Background(), "task-reject-01", "per-rej-1", "reject"); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	fs.push(statusIdleEvent())
 
 	got := waitEventType(t, ch, "question")
-	// 文本必须让审核者一眼看懂「为什么停了」：点明权限被拒 + 原始命令
+	// 文本必须让协调者一眼看懂「为什么停了」：点明权限被拒 + 原始命令
 	if !strings.Contains(got.Text, "权限被拒") {
 		t.Errorf("question 文本应说明回合因权限被拒终止，实际=%q", got.Text)
 	}
@@ -695,7 +695,7 @@ func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 // TestApprovedPermissionEmptyTurnEmitsFailedResult 验证 B21 修复后的边界：
 // 权限被批准后回合正常继续，但若回合最终零文本（供应商流中断/文本流没被接住），
 // idle 产出的是一份故障报告 result{OK:false}，而不是 question——被拒终止才有内容
-// 可问（走 question），零文本回合没有任何可问的，只能按故障报交审核者。
+// 可问（走 question），零文本回合没有任何可问的，只能按故障报交协调者。
 func TestApprovedPermissionEmptyTurnEmitsFailedResult(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
@@ -1079,7 +1079,7 @@ subDone:
 	}
 	assertClosed("kill 失败保留期间", ad.Events(taskID))
 	// 保留态是惰性的：Send/RespondPermission 必须拒绝（订阅已退出，指令发出
-	// 也没有事件回程，会静默挂死——宁可让审核者看到明确错误）
+	// 也没有事件回程，会静默挂死——宁可让协调者看到明确错误）
 	if err := ad.Send(context.Background(), taskID, "继续"); err == nil {
 		t.Fatal("保留态不应接受 Send 续接指令")
 	}
@@ -1494,7 +1494,7 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 //
 // 现场（B21）：opencode 连做 7 个回合工具调用后，最后一步 step-finish 的
 // reason=unknown、tokens 全 0（供应商流中断），会话随即 idle、零文本。旧实现
-// 只打一条 WARN 就 return，任务停在 running 静止 1 小时，审核者要等 2h 看门狗。
+// 只打一条 WARN 就 return，任务停在 running 静止 1 小时，协调者要等 2h 看门狗。
 func TestMapIdleEmptyTurnEmitsFailedResult(t *testing.T) {
 	a := New(quietLogger())
 	r := a.newRun("t1", t.TempDir(), t.TempDir())
@@ -1509,7 +1509,7 @@ func TestMapIdleEmptyTurnEmitsFailedResult(t *testing.T) {
 			t.Fatalf("空回合应是失败结果: %+v", ev.Result)
 		}
 		if ev.Result.FailReason == "" {
-			t.Fatalf("FailReason 必须写清现场，否则审核者不知道发生了什么")
+			t.Fatalf("FailReason 必须写清现场，否则协调者不知道发生了什么")
 		}
 	default:
 		t.Fatalf("空回合静默（无事件产出）——这正是 B21 的缺陷")
@@ -1572,7 +1572,7 @@ func TestChildSessionOwnershipCached(t *testing.T) {
 }
 
 // TestOwnershipFailureEmitsProgress 认亲失败必须不静默：无工单，但要有一条
-// progress 事件让审核者在 handoff show 的事件历史里看得见。
+// progress 事件让协调者在 handoff show 的事件历史里看得见。
 func TestOwnershipFailureEmitsProgress(t *testing.T) {
 	quietLog(t)
 	taskID := "task-child-0003"
@@ -1619,7 +1619,7 @@ func TestOwnershipNegativeResultNotCached(t *testing.T) {
 	}
 }
 
-// TestChildPermissionTextCarriesSubagentPrefix 工单文案必须让审核者一眼看出
+// TestChildPermissionTextCarriesSubagentPrefix 工单文案必须让协调者一眼看出
 // 这条审批来自子 agent——子 agent 的越权和主 agent 的越权含义完全不同。
 func TestChildPermissionTextCarriesSubagentPrefix(t *testing.T) {
 	quietLog(t)
@@ -1640,7 +1640,7 @@ func TestChildPermissionTextCarriesSubagentPrefix(t *testing.T) {
 }
 
 // TestRespondPermissionRoutesToChildSession 应答必须发回请求所在的子会话。
-// 发给父会话 opencode 不认，审核者的批准落不了地，任务照样挂死。
+// 发给父会话 opencode 不认，协调者的批准落不了地，任务照样挂死。
 func TestRespondPermissionRoutesToChildSession(t *testing.T) {
 	quietLog(t)
 	taskID := "task-child-0006"

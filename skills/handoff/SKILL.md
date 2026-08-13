@@ -1,27 +1,28 @@
 ---
 name: handoff
-description: 用 handoff CLI 把实现计划派发给独立 executor（opencode / claude / grok）执行，并以审核者身份驱动 dispatch → wait → reply → diff → continue/done 的完整回路。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
+description: 用 handoff CLI 把实现计划派发给独立 executor（opencode / claude / grok）执行，并以协调者身份驱动 dispatch → wait → reply → diff → continue/done 的完整回路。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
 ---
 
 <!--
 职责：
-  - 教会「审核者」角色如何用 handoff CLI 驱动一个派发任务的完整生命周期。
+  - 教会「协调者」角色如何用 handoff CLI 驱动一个派发任务的完整生命周期。
+    不叫审核者：用户把审核者理解成 code review，协调者才是派发与盯任务的那一端。
   - 固化那些一旦搞错就会卡住任务的硬约束：ID 形态、状态机前置条件、事件分诊、失败出口。
 
 边界：
   - 不讲 agentd 的部署与配置（config.yaml 各段、approver 审批链、env 注入）——见仓库 README。
   - 不讲三个 executor 的内部差异与协议实现——见 README「执行者差异」与 docs/superpowers/specs/。
-  - 不替审核者做审批判断：批不批、改不改由审核者（必要时升级给人）决定。
+  - 不替协调者做审批判断：批不批、改不改由协调者（必要时升级给人）决定。
 -->
 
-# handoff：以审核者身份驱动派发任务
+# handoff：以协调者身份驱动派发任务
 
 ## 心智模型
 
 handoff 把「写计划的人」和「干活的人」拆成两个进程：
 
 - **agentd** 跑在 executor 所在机器上，持有**全部**状态——任务、事件、工单、executor 生命周期，落 SQLite。
-- **你（审核者）**只是一个客户端。你不持有任何状态，随时可以崩溃、断网、换一台机器接管。
+- **你（协调者）**只是一个客户端。你不持有任何状态，随时可以崩溃、断网、换一台机器接管。
 - 你和 agentd 之间只有一条通道：`handoff` CLI。
 
 这条架构直接决定了三件事，后面所有纪律都是它的推论：
@@ -119,7 +120,7 @@ handoff wait <task> --notify --timeout 1h
 
 ### cursor 语义：为什么 wait 可能吐出旧事件
 
-`wait` 的「不重不丢」靠审核者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
+`wait` 的「不重不丢」靠协调者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
 
 - `show` / `reply` 不推进 cursor。走「show → reply」恢复流程之后再挂 wait，第一批返回的可能是**你早已处理过的历史事件**（答过的 question、continue 过的 completed）。
 - 换一台机器接管时本机没有 cursor 文件。**`wait --follow` 会在建连前先对账**，
@@ -206,7 +207,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 | `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer "..."` |
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
 | `failed` | 任务失败落 `failed` | `diff` 看做到哪、`attach` 看现场；要接着干就重新 `dispatch` |
-| `archived` | 任务被 `done` 归档，`payload.note` 是审核者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是审核者时无需动作 |
+| `archived` | 任务被 `done` 归档，`payload.note` 是协调者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是协调者时无需动作 |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
 | `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
 
@@ -358,7 +359,7 @@ handoff done <task>
 
 ## 延伸阅读
 
-这份 skill 只覆盖审核者回路。以下不在范围内，需要时读仓库文档：
+这份 skill 只覆盖协调者回路。以下不在范围内，需要时读仓库文档：
 
 - **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。
 - **三个 executor 的传输形态与差异（SSE / stream-json / ACP）**：`README.md` 的「执行者差异」。

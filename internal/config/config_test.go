@@ -110,7 +110,7 @@ func TestLoadEmptyFileKeepsDefaults(t *testing.T) {
 // 立即报错，而不是带着一个必然误判的值启动。
 //
 // 缺陷形态：无校验时 stalltimeout=0 会让看门狗在**每个** running 任务的首个
-// tick 上判定 stalled——审核者会被一批凭空的 stalled 事件叫醒，而任务其实好好的。
+// tick 上判定 stalled——协调者会被一批凭空的 stalled 事件叫醒，而任务其实好好的。
 func TestLoadRejectsNonPositiveStallTimeout(t *testing.T) {
 	for _, v := range []string{"0s", "-5m"} {
 		p := filepath.Join(t.TempDir(), "config.yaml")

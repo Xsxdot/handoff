@@ -1,7 +1,7 @@
 // 本文件实现 handoff reply 子命令：回答一个待办工单（权限门/提问）。
 //
 // 职责：
-//   - 把审核者的裁决转成应答原文：--approve → "allow"、--deny [--reason] → "deny[:原因]"、
+//   - 把协调者的裁决转成应答原文：--approve → "allow"、--deny [--reason] → "deny[:原因]"、
 //     --answer 原样透传，经 client.Reply 交给 agentd
 //   - 成功时单行输出 {"ok":true}（供上层脚本解析）
 //

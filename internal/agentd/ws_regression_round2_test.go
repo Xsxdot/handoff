@@ -327,7 +327,7 @@ func tailStr(s string, n int) string {
 // 服务端以 StatusNormalClosure 收尾，而不是把连接晾着。
 //
 // 缺陷形态：transit 只改状态不发事件，跟随端拿不到任何「没有下文了」的信号，
-// 会一直挂到空闲超时——那是一个会把审核者引向「agentd 失联」的假线索。
+// 会一直挂到空闲超时——那是一个会把协调者引向「agentd 失联」的假线索。
 func TestWSClosesNormallyOnArchive(t *testing.T) {
 	env := newWSTestEnv(t)
 	const id = "task-archive-ws"

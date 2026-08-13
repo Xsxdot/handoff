@@ -461,7 +461,7 @@ func TestFootprintIncludesRosterMembers(t *testing.T) {
 }
 
 // 与 Sweep 同一条红线：出生时刻对不上的名册成员**不计入**足迹。
-// 数字上多算一个只是难看，但它会让审核者以为残留还在、去追一个不存在的东西。
+// 数字上多算一个只是难看，但它会让协调者以为残留还在、去追一个不存在的东西。
 func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 	dir := t.TempDir()
 	roster := filepath.Join(dir, RosterFileName)

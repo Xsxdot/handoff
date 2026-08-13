@@ -264,7 +264,7 @@ func startWith(cmd *exec.Cmd, spec Spec) (Handle, error) {
 
 // TestShimLogsLandInTaskDirShimLog（8.1 回归）：spawnDetached 必须把 shim 的
 // stderr 接到调用方给的日志文件，否则 shim 的 slog（含撞墙归因那行）全落进
-// /dev/null，审核者在任务目录里什么都读不到。生产里该文件是 <taskDir>/shim.log，
+// /dev/null，协调者在任务目录里什么都读不到。生产里该文件是 <taskDir>/shim.log，
 // 由 Start 打开后传入；这里直接用真实 shim 入口经 spawnDetached 拉起，断言
 // shim 自己必打的那行 slog 出现在日志文件里。
 func TestShimLogsLandInTaskDirShimLog(t *testing.T) {

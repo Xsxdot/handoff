@@ -77,7 +77,7 @@ func TestRunAttachStreamsToStdout(t *testing.T) {
 }
 
 // TestRunAttachRemoteNeedsNoSSH 钉死跨平台收益：
-// 远程 target 不再拼 ssh 命令——复用 agentd 连接即可，因此 Windows 审核者也能用。
+// 远程 target 不再拼 ssh 命令——复用 agentd 连接即可，因此 Windows 协调者也能用。
 func TestRunAttachRemoteNeedsNoSSH(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/render") {

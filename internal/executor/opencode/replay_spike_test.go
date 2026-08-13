@@ -159,7 +159,7 @@ func TestReplaySpike3Permission(t *testing.T) {
 }
 
 // TestReplaySpike3NoLeak 验证 spike3 里 user 消息原文与模型 reasoning
-// 都不会作为回合文本流出（reasoning 泄漏 = 思维链变成面向审核者的提问）。
+// 都不会作为回合文本流出（reasoning 泄漏 = 思维链变成面向协调者的提问）。
 func TestReplaySpike3NoLeak(t *testing.T) {
 	got := collectReplay(t, startReplay(t, spike3), 500*time.Millisecond)
 
@@ -174,10 +174,10 @@ func TestReplaySpike3NoLeak(t *testing.T) {
 }
 
 // TestReplaySpike5Classifies 验证 spike5（完整一轮：权限 → 应答 → 模型输出
-// → idle）重放出权限事件，并在回合结束时把模型最终输出交给审核者。
+// → idle）重放出权限事件，并在回合结束时把模型最终输出交给协调者。
 //
 // 样本的最终可见文本是 "spike-hi"：无协议 trailer、仓库无新提交 →
-// 兜底分类判「转提问交审核者裁决」。
+// 兜底分类判「转提问交协调者裁决」。
 func TestReplaySpike5Classifies(t *testing.T) {
 	got := collectReplay(t, startReplay(t, spike5), 800*time.Millisecond)
 

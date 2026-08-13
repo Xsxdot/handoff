@@ -331,7 +331,7 @@ type procInfo struct {
 // why（必须持久化）：agentd 重启后内存中的 Proc（端口/密码）丢失，而 shim 内的
 // serve 进程独立存活；RecoverOnStartup 凭此文件探活并重建 SSE 订阅（spec §8）。
 // 写失败不阻断启动（adapter.Start 只 Warn），缺失时该任务重启后按「执行器已不在」
-// 转 failed 交审核者——保守胜于静默丢事件。
+// 转 failed 交协调者——保守胜于静默丢事件。
 func writeProcInfo(taskDir string, pi *procInfo) error {
 	b, err := json.Marshal(pi)
 	if err != nil {

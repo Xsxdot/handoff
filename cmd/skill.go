@@ -6,7 +6,7 @@
 //
 // 边界：
 //   - 不含安装逻辑本身（在 internal/skill）：本层只做参数、打印与退出码
-//   - 不装到远端：skill 服务于审核者，审核者在本机
+//   - 不装到远端：skill 服务于协调者，协调者在本机
 package cmd
 
 import (
@@ -28,7 +28,7 @@ func SetSkillContent(s string) { skillContent = s }
 
 var skillCmd = &cobra.Command{
 	Use:   "skill",
-	Short: "查看或安装给 AI 审核者的 handoff skill",
+	Short: "查看或安装给 AI 协调者的 handoff skill",
 	Long: "不带参数报告各落点是否与当前二进制内嵌的 skill 一致。\n" +
 		"skill install 把内嵌版本装到本机各家 agent（Claude Code / codex / opencode / grok）。\n" +
 		"安装与升级会自动调用它，正常不需要手工跑。",

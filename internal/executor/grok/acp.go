@@ -6,7 +6,7 @@
 //     异步等待（它要跑完一整个回合才响应）
 //   - 对方通知（session/update 及 _x.ai/* 私有通知）经 OnNotify 分发
 //   - 对方请求（session/request_permission）经 OnPermission 上抛，应答可延迟
-//     任意久后经 Reply 回发——审核者可能过夜才裁决（spec §5.1 实测 20min 无超时）
+//     任意久后经 Reply 回发——协调者可能过夜才裁决（spec §5.1 实测 20min 无超时）
 //
 // 边界：
 //   - 不认识 ACP 的业务语义（不知道什么是权限、什么是回合），只做协议管道；

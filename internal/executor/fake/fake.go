@@ -4,7 +4,7 @@
 //   - 按脚本（Step 队列）逐步产出 AdapterEvent：Permission（发权限请求后阻塞至
 //     RespondPermission）、Question（发提问后阻塞至 Send）、Finish（发回合结果）
 //   - 完整记录 Send / RespondPermission / Stop 的全部实参，供测试断言
-//   - 支持运行中追加脚本（Add），模拟「审核者续接指令 → executor 继续执行并再完成」
+//   - 支持运行中追加脚本（Add），模拟「协调者续接指令 → executor 继续执行并再完成」
 //
 // 边界：
 //   - 无真实执行：不碰文件系统、不启动进程，只做事件流编排
@@ -12,7 +12,7 @@
 //   - 仅服务于测试与演示（agentd --executor=fake 冒烟），不用于生产
 //
 // 事件流语义：
-//   - 事件通道在 Stop 前保持打开：任务进入 waiting_review 后审核者可能继续续接，
+//   - 事件通道在 Stop 前保持打开：任务进入 waiting_review 后协调者可能继续续接，
 //     新步骤由 Add 注入；Stop 后通道关闭，manager 的中介循环随之退出
 //   - 未启动任务调 Events 返回已关闭通道（契约：通道关闭 = 执行终结），
 //     range 立即结束而非永久阻塞（P1-11，与 opencode adapter 语义一致）
@@ -114,7 +114,7 @@ func New(script []Step) *Fake {
 //
 // 注意：
 //   - 追加后步骤要等「续接门禁」放行才会执行：脚本耗尽后（任务已进 waiting_review），
-//     runner 阻塞在 Send 上，审核者的 continue 指令（Send）到达才解锁后续步骤——
+//     runner 阻塞在 Send 上，协调者的 continue 指令（Send）到达才解锁后续步骤——
 //     这保证「executor 先收到指令、再继续产出事件」的顺序，测试据此确定性断言
 func (f *Fake) Add(taskID string, steps ...Step) {
 	r := f.runner(taskID)
@@ -328,7 +328,7 @@ func (r *taskRun) run(f *Fake) {
 // nextStep 取出下一个待执行步骤；脚本为空时阻塞等待 Send（续接门禁）/ Stop。
 //
 // 续接门禁的 why：脚本耗尽时任务已进 waiting_review，此时 runner 只被 Send 唤醒——
-// 审核者的 continue 指令（Send）到达才解锁新步骤，保证「executor 收到指令后才
+// 协调者的 continue 指令（Send）到达才解锁新步骤，保证「executor 收到指令后才
 // 继续产出事件」的因果顺序（Add 只入队，不唤醒）。
 //
 // 为什么 Send 在这里只排空不记录：Send 的实参已由 fake.Send 同步记录（断言数据源

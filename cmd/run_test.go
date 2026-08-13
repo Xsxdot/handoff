@@ -2,7 +2,7 @@
 //
 // 覆盖：`handoff run <task> <命令...>` 里任务名后的 -v/-race/-run 等 flag 必须
 // 原样进入 args[1:]（cobra SetInterspersed(false)），而不是被当 handoff 的未知
-// flag 报错——审核者最主要的验证动作（跑测试）直接可用。
+// flag 报错——协调者最主要的验证动作（跑测试）直接可用。
 package cmd
 
 import (

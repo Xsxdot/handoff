@@ -454,12 +454,12 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 // 场景：无等待者（agentd 重启后等待 goroutine 已消亡）且 adapter 无该任务运行态
 // （executor 已不在）——回答落库后中继必失败。断言：
 //   - 502 + {"ok":true,"relayed":false,"reason":...}，reason 含失败原因，
-//     审核者在 CLI 立即看到 executor 没收到（而非只有 agentd.log 一行）
+//     协调者在 CLI 立即看到 executor 没收到（而非只有 agentd.log 一行）
 //   - 任务保持 waiting_answer 不回迁 running：executor 未收到应答、未恢复执行，
 //     标 running 是虚假状态；waiting_answer 保留下次 agentd 重启时
 //     RecoverOnStartup 的探活恢复路径
 //   - 回答已落库不可回滚：二次 reply 404（与「回滚为未应答」方案的区别所在——
-//     应答是「审核者裁决过」的持久审计事实）
+//     应答是「协调者裁决过」的持久审计事实）
 func TestReplyRelayFailureReturns502(t *testing.T) {
 	env := newTestEnv(t)
 	now := time.Now().UTC()
@@ -570,7 +570,7 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 // TestContinueErrTaskNotRunningReturns409 覆盖 agentd 重启后 waiting_review 任务
 // 续接失败的映射：Continue 遇到 executor.ErrTaskNotRunning（executor 运行态已随
 // 进程消亡丢失，agentd 可能重启过）必须回带可行动文本的 409，而不是扁平 500——
-// 审核者据此得知「重新派发」，而不是被内部错误挡在外面。
+// 协调者据此得知「重新派发」，而不是被内部错误挡在外面。
 func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	env := newTestEnv(t)
 	now := time.Now().UTC()
@@ -606,7 +606,7 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 //
 // 覆盖场景（旧实现必失败）：旧代码「先重放后订阅」，重放被背压阻塞期间 Publish 的
 // question 无订阅者、被 hub 直接丢弃——任务随即进入 waiting_answer 不再产出事件，
-// 客户端连接健康不会重连，审核者永远不被唤醒。新实现「先订阅后重放」，重放期间的
+// 客户端连接健康不会重连，协调者永远不被唤醒。新实现「先订阅后重放」，重放期间的
 // 实时事件由排空器收集、按 seq 归并补出。
 //
 // 判定逻辑（确定性优先，不依赖机器 TCP 缓冲大小与调度速度）：

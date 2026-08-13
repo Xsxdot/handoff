@@ -4,7 +4,7 @@
 //   - 派发前的工作区准备：PrepareWorkspace 按分支×worktree 两个正交维度准备任务
 //     工作区（脏工作区一律拒绝；new-worktree 免脏检查）——PrepareBranch 是其
 //     原地+自动分支的过渡薄包装
-//   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
+//   - 协调者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、RunCmd（远程跑测试/lint 等审阅命令）
 //   - 派发前的基线决议：ResolveBaseline 一次算出「校验结论 + 新分支起点 +
 //     任务仓库领先多少提交」，保证校验的东西和用的东西是同一个
@@ -12,7 +12,7 @@
 // 边界：
 //   - 全部操作是「分支准备 + 只读审阅」：绝不代 executor 写代码/提交，
 //     executor 的改动必须经它自己的 commit 落进任务分支
-//   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由审核者决定
+//   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由协调者决定
 //   - git 全部经 exec.Command("git","-C",repo,...) 执行，不拼接 shell
 //   - 每条命令都有超时/输出护栏：工作区准备/清理一组 git 调用上限
 //     WorkspaceGitTimeout=2min（pre-checkout hook / credential 交互提示会挂死 git，
@@ -44,7 +44,7 @@ import (
 //   - ErrPathIsDir：请求的文件路径指向目录（fetch 只服务普通文件）
 //   - ErrNotRegularFile：请求的文件路径指向管道/设备等特殊文件（不可读）
 //   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
-//     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
+//     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要协调者先解决
 //     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
 //   - ErrBadBaseBranch：diff 的基准分支参数非法（以 "-" 开头，会被 git 解释为
 //     选项而非 rev——git 参数注入面）
@@ -60,7 +60,7 @@ var (
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
 	ErrWorkdirBusy     = errors.New("目标工作目录已被活跃任务占用")
 
-	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
+	// ErrBaseCommitMissing 表示协调者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
 	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
 
@@ -94,7 +94,7 @@ func log() *slog.Logger { return slog.Default() }
 // quotaNote 把一次进程创建失败翻译成归因文案；与配额无关时返回空串。
 //
 // 为什么在 agentd 侧包一层而不是四处直接调 prochost.ExplainForkFailure：
-// 归因文案要同时进日志和进返回给审核者的 error，收在一处才不会两边写法漂移。
+// 归因文案要同时进日志和进返回给协调者的 error，收在一处才不会两边写法漂移。
 func quotaNote(err error) string {
 	note, _ := prochost.ExplainForkFailure(err)
 	return note
@@ -707,7 +707,7 @@ type Baseline struct {
 // 手动补一次唯一匹配（与 git checkout 的 guess_remote 同语义），保证
 // --base <只有远程跟踪 ref 的分支> 的用户语义不变；多个远端同时同名时视为
 // 歧义拒发，错误文本列出全部候选 ref 并给出出路（用带远端前缀的全名或 sha）——
-// 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的审核者引向
+// 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的协调者引向
 // 错误排查方向。
 func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
@@ -727,7 +727,7 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 		}
 	}
 	// 多于一棵远端同时有这个分支名：歧义，拒发（git 同样不猜）。歧义不是
-	// 「不存在」——起点明明在，让审核者去 git push 是把他引向错误方向（fork
+	// 「不存在」——起点明明在，让协调者去 git push 是把他引向错误方向（fork
 	// 工作流 origin+upstream 同名分支会真实撞上）；出路是给带远端前缀的全名
 	// 或直接给 sha，两者 resolveCommit 都认。
 	if len(cands) > 1 {
@@ -750,13 +750,13 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 		"（若它是你本地的分支，先 git push 再派发；或换一个起点）", ErrBadWorkspaceReq, rev)
 }
 
-// ResolveBaseline 决议任务的基线：校验审核者本地基线在任务仓库中可用，并给出
+// ResolveBaseline 决议任务的基线：校验协调者本地基线在任务仓库中可用，并给出
 // 新分支应当使用的起点与「任务仓库比它多出多少提交」。
 //
 // 参数：
 //   - ctx: 上层上下文；fetch 阶段内部叠加 FetchTimeout
 //   - repo: 任务仓库路径
-//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=未提供（--no-sync-check
+//   - sha: 协调者本地 HEAD 的 40 位十六进制提交号；空=未提供（--no-sync-check
 //     或调用方 cwd 不是 git 仓库），此时起点退回任务仓库当前 HEAD
 //
 // 返回：
@@ -902,7 +902,7 @@ func Diff(repo, baseBranch string) (string, error) {
 //  1. 仓库远端默认分支（refs/remotes/origin/HEAD 符号引用，如 origin/main）
 //  2. 本地 main
 //  3. 本地 master
-//  4. 都没有 → 空串（由路由层报错，提示审核者显式 --base）
+//  4. 都没有 → 空串（由路由层报错，提示协调者显式 --base）
 //
 // 为什么需要这个兜底链：任务仓库的分支名不可预知（main/master/dev 皆可能），
 // 派发时并未记录基准分支名，diff 必须从仓库自身推导出合理默认。
@@ -919,7 +919,7 @@ func resolveBaseBranch(repo string) string {
 	return ""
 }
 
-// ReadFile 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
+// ReadFile 读取任务仓库内相对路径文件的内容（协调者取上下文用）。
 //
 // 路径逃逸防御（安全红线，两道）：
 //  1. filepath.Clean 归一化后，任何绝对路径或残留 .. 前缀的路径一律拒绝（ErrPathEscape）
@@ -937,7 +937,7 @@ func resolveBaseBranch(repo string) string {
 // 大小上限：只读 maxRunOutput+1 字节（+1 仅用于判定是否超限），超限截断并 Warn——
 // 与 RunCmd 的输出截断语义一致：返回开头、不整读内存，64MiB 大文件不会把 agentd 读挂。
 // 截断而非拒绝：fetch 的用途是看文件开头（审阅上下文），1MiB 对源文件足够；
-// 大文件多为生成物/数据文件，拒绝会让审核者误以为路径有误。
+// 大文件多为生成物/数据文件，拒绝会让协调者误以为路径有误。
 //
 // 非普通文件（目录/管道/设备等）一律拒绝：目录给 ErrPathIsDir（400 语义），
 // 其余特殊文件 read 语义不可控（可能无限输出或永久阻塞），给 ErrNotRegularFile。
@@ -997,7 +997,7 @@ func ReadFile(repo, rel string) (string, error) {
 	if len(b) > maxRunOutput {
 		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
 			"size", fi.Size(), "limit", maxRunOutput)
-		// 截断必须带可见标记：无标记时审核者会把第 1MiB 处当成文件末尾去推理，
+		// 截断必须带可见标记：无标记时协调者会把第 1MiB 处当成文件末尾去推理，
 		// 而那既不是末行、也没有任何提示说明后面还有内容
 		return string(b[:maxRunOutput]) + truncatedNotice(fi.Size()), nil
 	}
@@ -1054,8 +1054,8 @@ func (b *runOutputBuffer) Write(p []byte) (int, error) {
 
 // RunCmd 在任务仓库内执行一条审阅命令（sh -c），合并 stdout+stderr 有界回收 1MB。
 //
-// 这是审核者主动发起的只读审阅动作（跑测试/lint），不走审批门——
-// 命令语义（跑什么、看什么）由审核者决定，agentd 只负责执行与回收。
+// 这是协调者主动发起的只读审阅动作（跑测试/lint），不走审批门——
+// 命令语义（跑什么、看什么）由协调者决定，agentd 只负责执行与回收。
 //
 // 参数：
 //   - ctx: 上层上下文（HTTP 请求取消会终止命令）

@@ -3,17 +3,17 @@
 // 职责：
 //   - 把 item/*/requestApproval 的报文翻译成 executor.PermRequest（安全判据的输入）
 //   - 维护 itemId → 待裁决请求 的挂起表，供 RespondPermission 回发
-//   - 记录本回合被拒清单，回合收尾时一并交代给审核者
+//   - 记录本回合被拒清单，回合收尾时一并交代给协调者
 //
 // 边界：
-//   - **不做审批判断**：批不批由 manager 依审核者应答决定（executor 契约的硬边界）
+//   - **不做审批判断**：批不批由 manager 依协调者应答决定（executor 契约的硬边界）
 //   - 不写 store、不发事件
 //
 // 裁决映射只有两个出口（spec §5.4，依据官方 schema）：
 //   - accept  —— 放行这一次
 //   - decline —— 拒这一次，**回合继续**
 //
-// 绝不使用 cancel（会立刻掐掉整个回合，等于审核者点一次「拒绝」就杀掉任务，
+// 绝不使用 cancel（会立刻掐掉整个回合，等于协调者点一次「拒绝」就杀掉任务，
 // 与另三个 adapter 行为不对等），也绝不使用 acceptForSession /
 // acceptWithExecpolicyAmendment / applyNetworkPolicyAmendment（都是「以后同类
 // 不再问」，正是 B23 明确否掉的语义）。
@@ -38,7 +38,7 @@ const permTextHardLimit = 64 << 10
 
 // decisionFor 把 handoff 的裁决翻译为 codex 的 decision 枚举。
 //
-// fail-closed：除 "once" 外一律 decline，绝不误放行——误拒的代价是审核者再来一轮，
+// fail-closed：除 "once" 外一律 decline，绝不误放行——误拒的代价是协调者再来一轮，
 // 误放的代价可能是不可逆的破坏性操作。
 func decisionFor(decision string) string {
 	if decision == "once" {
@@ -135,7 +135,7 @@ func commandPermText(a commandApproval) string {
 
 // fileChangePermText 渲染文件变更审批的人读描述。
 //
-// 注意：it 为 nil（索引未命中）时也要给出可读文本——权限事件仍要发出去让审核者
+// 注意：it 为 nil（索引未命中）时也要给出可读文本——权限事件仍要发出去让协调者
 // 知情，只是 Perm 为 nil 触发 fail-closed。
 func fileChangePermText(it *threadItem) string {
 	if it == nil {
@@ -202,7 +202,7 @@ func (t *permTable) voidAll() int {
 	return n
 }
 
-// noteRejected 记下本回合被拒的权限描述，回合收尾时一并交代给审核者。
+// noteRejected 记下本回合被拒的权限描述，回合收尾时一并交代给协调者。
 func (t *permTable) noteRejected(desc string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -212,7 +212,7 @@ func (t *permTable) noteRejected(desc string) {
 // takeRejected 取走并清空本回合的被拒记录。
 //
 // 注意：必须取走而非读取——不清空会让下一回合重复上报同一批被拒项，
-// 审核者会收到一张内容陈旧的工单。
+// 协调者会收到一张内容陈旧的工单。
 func (t *permTable) takeRejected() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -221,9 +221,9 @@ func (t *permTable) takeRejected() []string {
 	return out
 }
 
-// rejectedTurnQuestion 把被拒清单拼成交给审核者的问题。
+// rejectedTurnQuestion 把被拒清单拼成交给协调者的问题。
 //
-// 注意：正文里放的是权限**描述**而不是 itemId——被拒清单存在的意义是让审核者
+// 注意：正文里放的是权限**描述**而不是 itemId——被拒清单存在的意义是让协调者
 // 知道「模型刚才想干什么、被挡了」，一串不透明 id 等于没说。
 func rejectedTurnQuestion(rejected []string) string {
 	var b strings.Builder
@@ -239,7 +239,7 @@ func rejectedTurnQuestion(rejected []string) string {
 //
 // 为什么需要：serverRequest/resolved 通知带的是 **requestId**（JSON-RPC id），
 // 而挂起表按 itemId 索引。没有这张反查表，「该请求已被别处了结」这个通知就无法
-// 落到具体挂起项上，那张工单会一直挂着，审核者裁决时才发现回发失败。
+// 落到具体挂起项上，那张工单会一直挂着，协调者裁决时才发现回发失败。
 func (t *permTable) noteReqID(reqID, itemID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -277,7 +277,7 @@ func (a *Adapter) PermissionsVolatile() bool { return true }
 //
 // 返回：
 //   - 任务不在运行中、或挂起表查不到该 permID 时，包装 executor.ErrTaskNotRunning
-//     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交审核者，
+//     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交协调者，
 //     而不是当作可重试的瞬时错误
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) error {
 	r := a.lookup(taskID)
@@ -298,7 +298,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		return fmt.Errorf("回发权限裁决: %w", err)
 	}
 	if d == "decline" {
-		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让审核者知道
+		// 记入被拒清单的是权限描述而非 permID：被拒清单存在的意义是让协调者知道
 		// 「模型刚才想干什么、被挡了」，一串不透明 id 等于没说。长度收口在回合
 		// 收尾的 turn.ClampQuestion 里做，不在本处截短。
 		r.noteRejected(pp.desc)

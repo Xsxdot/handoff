@@ -28,7 +28,7 @@ import (
 //
 // 返回：
 //   - Alive=true：执行器仍在，Note 为空
-//   - Alive=false + Note：已判死，Note 是给审核者看的一句话理由
+//   - Alive=false + Note：已判死，Note 是给协调者看的一句话理由
 //   - err != nil：探不出结论（恢复凭据缺失/损坏），调用方按 unknown 处理，
 //     **不得当成 dead**
 func (a *Adapter) Probe(req executor.ProbeReq) (executor.ProbeOutcome, error) {
@@ -43,7 +43,7 @@ func (a *Adapter) Probe(req executor.ProbeReq) (executor.ProbeOutcome, error) {
 		a.log.Info("claude 探活：执行器存活", "task", req.TaskID, "shim_pid", pi.Handle.PID)
 		return executor.ProbeOutcome{Alive: true}, nil
 	}
-	// Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导
+	// Note 是判死后直接呈给协调者的一句话理由，写着一个已经不存在的概念等于误导
 	note := fmt.Sprintf("claude 执行器已不在（进程 pid %d）", pi.Handle.PID)
 	a.log.Info("claude 探活：执行器已不在", "task", req.TaskID, "shim_pid", pi.Handle.PID)
 	return executor.ProbeOutcome{Alive: false, Note: note}, nil

@@ -2,10 +2,10 @@
 //
 // 职责：
 //   - RunWatchdog：周期扫描 running/waiting_answer 任务，最新事件早于 stallTimeout
-//     判定卡住，追加 stalled 事件并广播，唤醒审核者裁决（spec §8「任务级超时看门狗」）
+//     判定卡住，追加 stalled 事件并广播，唤醒协调者裁决（spec §8「任务级超时看门狗」）
 //   - RecoverOnStartup：agentd 启动时对 running/waiting_answer/waiting_review 任务
 //     逐个探测执行器存活（spec §8「agentd 崩溃后重启恢复」）；running/waiting_answer
-//     不存活 → failed 事件 + 迁移 waiting_review 交审核者裁决；waiting_review 不存活
+//     不存活 → failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
 //     → 保持现状（本就是待审核终态，不追加事件不迁状态）；存活（含 waiting_review）
 //     → 重建 SSE 订阅继续消费
 //
@@ -35,13 +35,13 @@ import (
 // 扫描开销（全表 ListTasks + 每任务 LatestEvent）极低。
 const watchdogTick = time.Minute
 
-// stalledPayload 是 stalled 事件的 payload，供审核者快速判断卡了多久、卡在哪个事件后。
+// stalledPayload 是 stalled 事件的 payload，供协调者快速判断卡了多久、卡在哪个事件后。
 type stalledPayload struct {
 	LastSeq int64  `json:"last_seq"` // 卡住判定时刻的最新事件 seq（事发锚点）；零事件任务无事件可锚，记 0
 	Idle    string `json:"idle"`     // 空闲时长（如 "3h2m5s"，秒粒度）
 }
 
-// resourcePressurePayload 是高水位事件的载荷：审核者要靠这两个数字判断
+// resourcePressurePayload 是高水位事件的载荷：协调者要靠这两个数字判断
 // 该不该收敛，只说「压力大」没有任何操作价值。
 type resourcePressurePayload struct {
 	Used  int `json:"used"`
@@ -62,11 +62,11 @@ type resourcePressurePayload struct {
 //   - 扫描间隔固定为 watchdogTick（每分钟）；测试需要注入短间隔时直接调用
 //     同包的 runWatchdog 并传入 tick 参数
 //   - 每轮扫描对 running/waiting_answer 任务判定；同一任务在 stalled 之后若无
-//     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如审核者 reply）
+//     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如协调者 reply）
 //     且 executor 仍无事件产出时下一轮会二次触发（「只发一次」按活动裁决，
 //     设计见 scanStalled 的函数头 P1-15a）
 //   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
-//     给每个活跃任务发一条 resource_pressure 事件唤醒审核者收敛
+//     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛
 func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
 	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, log)
 }
@@ -93,10 +93,10 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 // scanStalled 扫描一轮：对 running/waiting_answer 任务判定是否卡住并触发 stalled。
 //
 // 为什么只扫 running/waiting_answer：pending 尚在启动中（无事件正常）、
-// waiting_review 卡住说明审核者还没处理（那是人的节奏，不归看门狗）、
+// waiting_review 卡住说明协调者还没处理（那是人的节奏，不归看门狗）、
 // completed/failed 已终结；只有「executor 应该在干活」的状态才是卡住判定对象。
-// waiting_answer 卡住正是「审批挂起过夜」场景——executor 等审核者答复等太久，
-// 值得再发一条 stalled 把审核者拽回来。
+// waiting_answer 卡住正是「审批挂起过夜」场景——executor 等协调者答复等太久，
+// 值得再发一条 stalled 把协调者拽回来。
 //
 // 活动基线（P1-15 重新设计）：
 //   - 最新事件时间；零事件任务（建好后从未产出事件，即「静默挂起」）以
@@ -107,7 +107,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 // 该 stalled 之后出现过活动（task.UpdatedAt 前进）才允许重发。为什么以
 // UpdatedAt 变化为二次触发的准绳：reply 回程的 AnswerTicket 会刷新任务的
 // updated_at（见 store.AnswerTicket），resumeIfIdle 回迁 running 也会刷新——
-// 正是「已 stalled → 审核者回答 → executor 仍然死着」这个最需要二次告警的
+// 正是「已 stalled → 协调者回答 → executor 仍然死着」这个最需要二次告警的
 // 场景（旧实现永远不再告警）；而普通无活动状态下 updated_at 停在 stalled
 // 事件之前，每轮扫描照旧跳过，不产生事件风暴。新 stalled 事件落库时间晚于
 // 当时 updated_at，下一轮自然回到「不重发」分支。
@@ -182,7 +182,7 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 //
 // 三条语义：
 //   - 越线（!active && NearFull）：对每个活跃任务发一次，置位
-//   - 已置位且仍在高水位：不重发。事件风暴会把审核者的会话刷爆，
+//   - 已置位且仍在高水位：不重发。事件风暴会把协调者的会话刷爆，
 //     反而淹掉真正要处置的工单
 //   - 回落到水位线以下：复位，下次越线可再发
 //
@@ -233,11 +233,11 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
 // 对全部 running/waiting_answer/waiting_review 任务调用 probe 探测执行器存活——
 //   - running/waiting_answer 不存活：追加 failed 事件（原因固定为「agentd 重启后
-//     执行器已不在」）并迁移 waiting_review，交审核者裁决（失败现场留在事件里，
-//     审核者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
+//     执行器已不在」）并迁移 waiting_review，交协调者裁决（失败现场留在事件里，
+//     协调者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
 //     VoidPendingTickets 的语义），事件照常广播，启动期无人订阅则由客户端凭
 //     seq cursor 补拉
-//   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待审核者
+//   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待协调者
 //     裁决（continue 重派 / done 归档）是既有的终态语义，追加 failed 事件或再迁
 //     状态只会产生噪音，**不**复用 running/waiting_answer 的 failed 迁移路径
 //   - 存活（含 waiting_review）：重建 SSE 订阅继续消费——重建动作由 probe 闭包
@@ -267,7 +267,7 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 //   - waiting_answer 任务迁移 waiting_review 需经 running 两跳（waiting_answer→
 //     waiting_review 直接迁移不在 6 状态迁移表中，见 recoverTransit）
 //   - 探活本身无副作用：waiting_review 任务无论 probe 结果如何都不改状态，
-//     状态由审核者动作（continue/done）驱动
+//     状态由协调者动作（continue/done）驱动
 func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 	sweep func(taskID string), log *slog.Logger) error {
 	tasks, err := st.ListTasks()
@@ -286,18 +286,18 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		}
 		if t.State == proto.TaskStateWaitingReview {
 			// waiting_review 本来就是待审核终态：executor 不在不追加事件、不迁移
-			// 状态——审核者裁决（continue 重派 / done 归档）才是它该走的路。
+			// 状态——协调者裁决（continue 重派 / done 归档）才是它该走的路。
 			//
 			// 但**残留进程照收**：那条理由说的是状态与事件噪音，不是资源。
 			// 2026-08-12 事故里两个任务最终正停在这个状态，若跟着一起跳过，
 			// 清扫会在最该工作的场景里恰好不工作
 			kept++
-			log.Info("waiting_review 任务 executor 已不在，保持现状等审核者裁决", "task", t.ID, "alive", false)
+			log.Info("waiting_review 任务 executor 已不在，保持现状等协调者裁决", "task", t.ID, "alive", false)
 			sweep(t.ID)
 			continue
 		}
 		failed++
-		log.Info("执行器已不在，任务转 waiting_review 交审核者", "task", t.ID, "alive", false, "state", t.State)
+		log.Info("执行器已不在，任务转 waiting_review 交协调者", "task", t.ID, "alive", false, "state", t.State)
 		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log, sweep)
 	}
 	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)

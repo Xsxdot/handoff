@@ -26,7 +26,7 @@ type ProbeReq struct {
 //
 // 字段说明：
 //   - Alive: executor 是否仍在
-//   - Note: 一句话理由，直接给审核者看（如「执行者进程 pid 1234 不存在」）；
+//   - Note: 一句话理由，直接给协调者看（如「执行者进程 pid 1234 不存在」）；
 //     Alive=true 时为空
 //
 // 三态怎么区分：实现方用 error 表达「探不出结论」——err != nil 即 unknown，

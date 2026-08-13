@@ -66,7 +66,7 @@ func TestFetchBringsTaskBranchLocally(t *testing.T) {
 	if got := git(t, local, "rev-parse", "handoff/abc12345"); got == "" {
 		t.Error("本地必须出现任务分支")
 	}
-	// 不得动 HEAD：审核者本地可能正在改别的东西
+	// 不得动 HEAD：协调者本地可能正在改别的东西
 	if got := git(t, local, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
 		t.Errorf("同步不得切换分支，HEAD = %q", got)
 	}

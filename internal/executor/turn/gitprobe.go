@@ -20,7 +20,7 @@ import (
 // 返回：分支名、HEAD hash、是否有新提交、错误
 //
 // 为什么需要它：模型可能不守收尾纪律（不输出 trailer）。此时唯一可信的是 git
-// 实况——有新提交才可能是「干完了」，没有就该交审核者，绝不替模型宣布完成。
+// 实况——有新提交才可能是「干完了」，没有就该交协调者，绝不替模型宣布完成。
 func GitTurnStatus(repoPath, startCommit string) (branch, commit string, hasNew bool, err error) {
 	run := func(args ...string) (string, error) {
 		out, err := exec.Command("git", append([]string{"-C", repoPath}, args...)...).Output()

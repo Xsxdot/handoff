@@ -67,7 +67,7 @@ type ActiveTask struct {
 	Live     string `json:"live"` // LiveAlive / LiveDead / LiveUnknown
 	Note     string `json:"note"` // 判死或判不出的一句话理由；alive 时为空
 
-	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// Watchers 是当前订阅该任务事件流的连接数（几个协调者在听）。
 	//
 	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd），与「确实是 0」
 	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
@@ -123,7 +123,7 @@ type StatusResp struct {
 	//
 	// 为什么要外露：wait --follow 的 --timeout 若不大于它，两个计时器同时到点时
 	// 客户端的 124 会抢在 agentd 的 stalled 前面退出进程，把一次带 last_seq 和
-	// idle 时长的**诊断**降级成一句「我没收到东西」——审核者拿到的信息严格更少。
+	// idle 时长的**诊断**降级成一句「我没收到东西」——协调者拿到的信息严格更少。
 	StallTimeout string `json:"stall_timeout,omitempty"`
 
 	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，

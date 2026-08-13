@@ -29,6 +29,12 @@ func TestHandleRPCInitializeAndList(t *testing.T) {
 	if !strings.Contains(string(b), `"ask"`) {
 		t.Errorf("tools/list 未暴露 ask 工具: %s", b)
 	}
+	if !strings.Contains(string(b), "handoff coordinator") {
+		t.Errorf("ask 工具描述应为 coordinator: %s", b)
+	}
+	if strings.Contains(string(b), "reviewer") {
+		t.Errorf("ask 工具描述不应再含 reviewer: %s", b)
+	}
 }
 
 func TestHandleRPCNotificationNoResponse(t *testing.T) {

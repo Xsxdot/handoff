@@ -56,7 +56,7 @@ var askRules = []string{
 }
 
 // allowRules 是兜底放行表：在任务分支上改代码、读文件、跑测试是派发的目的本身，
-// diff 审核兜底。不写它会退回「默认全 ask」，造成一期那种连环唤醒审核者的噪音
+// diff 审核兜底。不写它会退回「默认全 ask」，造成一期那种连环唤醒协调者的噪音
 // （见 opencode/taskenv.go 文件头的 dogfooding 修正记录；ask 压过 allow 的形态
 // 已由 2026-08-09 探针证实，spec §5.4）。
 //
@@ -76,8 +76,8 @@ type settingsFile struct {
 // permissionsSection 是 permissions 段。
 //
 // Deny 恒为空并显式序列化（json 标签不带 omitempty）：留一个可见的空数组，
-// 提醒读配置的人「这里是故意不写的」——黑名单命中的语义是升级审核者而非硬拒，
-// 写进 deny 会让审核者连看都看不到（spec §5.4）。
+// 提醒读配置的人「这里是故意不写的」——黑名单命中的语义是升级协调者而非硬拒，
+// 写进 deny 会让协调者连看都看不到（spec §5.4）。
 type permissionsSection struct {
 	Allow []string `json:"allow"`
 	Ask   []string `json:"ask"`

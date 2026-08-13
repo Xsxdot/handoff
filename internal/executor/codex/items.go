@@ -138,7 +138,7 @@ func (x *itemIndex) get(id string) (*threadItem, bool) {
 
 // renderLine 把 item 渲染成 render.log 的一行人读文本。
 //
-// 注意：审核者 `handoff attach` 看到的就是这行，跨 executor 要同形——
+// 注意：协调者 `handoff attach` 看到的就是这行，跨 executor 要同形——
 // 命令带 cwd、文件变更带路径清单、模型消息取正文。
 func (it *threadItem) renderLine() string {
 	switch it.Type {

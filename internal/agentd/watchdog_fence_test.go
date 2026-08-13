@@ -13,7 +13,7 @@ import (
 	"github.com/xushixin/handoff/internal/store"
 )
 
-// 越线时对每个活跃任务发一次，且只发一次——事件风暴会把审核者的
+// 越线时对每个活跃任务发一次，且只发一次——事件风暴会把协调者的
 // 会话刷爆，反而淹掉真正要处置的工单。
 func TestResourcePressureFiresOnceOnRisingEdge(t *testing.T) {
 	st, hub := newTestStoreHub(t) // 复用 watchdog_test.go 既有骨架

@@ -302,14 +302,14 @@ func TestAskQuestionReplyContainsOutcome(t *testing.T) {
 	}
 }
 
-// TestToolAskSuppressesNoTrailerFallbackQuestion 钉住「一次提问只给审核者一张工单」。
+// TestToolAskSuppressesNoTrailerFallbackQuestion 钉住「一次提问只给协调者一张工单」。
 //
 // 真机复现（2026-08-09，任务 47c36ab9）：模型调了原生 ask_user_question，适配器把问题
-// 转交审核者（工单一）；模型随后结束回合、没输出收尾协议 JSON，收尾兜底又把整段回合
+// 转交协调者（工单一）；模型随后结束回合、没输出收尾协议 JSON，收尾兜底又把整段回合
 // 叙述文本当成提问交上去（工单二，内容是「已调用一次提问工具；本回合结束。」）。
-// 审核者因此看到两张工单，其中一张根本不是问题——回答它等于把废话灌回模型。
+// 协调者因此看到两张工单，其中一张根本不是问题——回答它等于把废话灌回模型。
 //
-// 兜底本身要留（它保证回合不会静默结束），但本回合已经通过工具通道给过审核者一个
+// 兜底本身要留（它保证回合不会静默结束），但本回合已经通过工具通道给过协调者一个
 // 问题时，「不让回合静默」这个诉求已经满足，再补一张就是纯噪声。
 func TestToolAskSuppressesNoTrailerFallbackQuestion(t *testing.T) {
 	a, r := grok.NewAdapterWithRunForTest("t-dup")
@@ -327,7 +327,7 @@ func TestToolAskSuppressesNoTrailerFallbackQuestion(t *testing.T) {
 }
 
 // TestNoTrailerFallbackStillAsksWhenToolDidNot 钉住上面的抑制不能矫枉过正：本回合
-// 没走过工具提问时，兜底必须照旧把回合文本交审核者，否则回合会静默结束、任务卡死。
+// 没走过工具提问时，兜底必须照旧把回合文本交协调者，否则回合会静默结束、任务卡死。
 func TestNoTrailerFallbackStillAsksWhenToolDidNot(t *testing.T) {
 	a, r := grok.NewAdapterWithRunForTest("t-nodup")
 	r.SetTaskDirForTest(t.TempDir())

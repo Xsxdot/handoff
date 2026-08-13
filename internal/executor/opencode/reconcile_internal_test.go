@@ -255,7 +255,7 @@ func TestReconcileQueryFailureDoesNotEmit(t *testing.T) {
 // TestReconcileRestoresQuestionNotResult —— spec §8.1 断言 6，**本设计的核心断言**：
 // 以提问收尾的回合必须还原成 question 工单，而不是一条假的「做完了」。
 //
-// why 这条最重要：若对账一律合成 result，审核者会以为任务完成，实际模型正在等
+// why 这条最重要：若对账一律合成 result，协调者会以为任务完成，实际模型正在等
 // 他回答——任务换个姿势继续冻死，而且这次连 stalled 都不会再报（状态已离开 running）。
 func TestReconcileRestoresQuestionNotResult(t *testing.T) {
 	srv := fakeSession(t, []map[string]any{

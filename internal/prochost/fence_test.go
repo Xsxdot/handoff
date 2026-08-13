@@ -155,7 +155,7 @@ func TestCheckAdmissionWatermarkUsesFenceLimit(t *testing.T) {
 	}
 }
 
-// EAGAIN + 占用 ≥ 实际生效软限 = 确定归因；文案必须带真实数字（审核者要靠它
+// EAGAIN + 占用 ≥ 实际生效软限 = 确定归因；文案必须带真实数字（协调者要靠它
 // 一眼定性）。参考上限是本进程实际软限（getNprocLimit），不是策略层重算的默认 L。
 func TestExplainForkFailureQuotaExhausted(t *testing.T) {
 	withFakeProcs(t, 2450, 2666, nil)

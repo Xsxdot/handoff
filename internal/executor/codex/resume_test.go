@@ -56,7 +56,7 @@ func TestResumeColdDisallowedStaysDead(t *testing.T) {
 		t.Fatal("不允许冷恢复时不应判活")
 	}
 	if out.Note == "" {
-		t.Fatal("必须给出判死原因，审核者要能看懂为什么任务没恢复")
+		t.Fatal("必须给出判死原因，协调者要能看懂为什么任务没恢复")
 	}
 }
 
@@ -74,7 +74,7 @@ func TestResumeColdRefusesWhenTaskDirGone(t *testing.T) {
 	}
 }
 
-// Reap：proc.json 缺失时如实报错交审核者，不猜（旧确定性会话名兜底已拆除）
+// Reap：proc.json 缺失时如实报错交协调者，不猜（旧确定性会话名兜底已拆除）
 func TestReapMissingProcInfoErrors(t *testing.T) {
 	a := codex.New(nil)
 	err := a.Reap("abcdef1234", t.TempDir())

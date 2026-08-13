@@ -47,10 +47,10 @@ func newTestServerWithManager(t *testing.T) (*Server, *Manager, *store.Store) {
 }
 
 // TestPermissionStateVisibleBeforeTicket 验证权限中介的顺序契约（U-1）：
-// 工单对审核者可见时，任务状态必须已经是 waiting_answer。
+// 工单对协调者可见时，任务状态必须已经是 waiting_answer。
 //
 // 修复前顺序是 CreateTicket → AppendEvent → transit(waiting_answer)，中间隔着
-// SQLite 往返。审核者经 spec §7 的恢复流程（attach 读 pending_tickets → reply）
+// SQLite 往返。协调者经 spec §7 的恢复流程（attach 读 pending_tickets → reply）
 // 恰好落在这个窗口时：应答被中继、executor 恢复执行、resumeIfIdle 看到 running
 // 直接返回，而随后 manager 才把 waiting_answer 盖上去——任务显示「等你回答」
 // 却零挂起工单，reply→404 / continue→409 / done→409，无任何恢复路径。
@@ -76,7 +76,7 @@ func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			// 模拟审核者「一看到挂起工单就回答」：紧贴工单可见的瞬间进入回程
+			// 模拟协调者「一看到挂起工单就回答」：紧贴工单可见的瞬间进入回程
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
 				if pending, err := st.PendingTickets(taskID); err == nil && len(pending) > 0 {
@@ -109,7 +109,7 @@ func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
 // （U-3）。
 //
 // 修复前只有 agentd 重启路径（RecoverOnStartup）作废工单，进程内死亡
-// （subscribeLoop 产出 !OK result → handleResult）不作废：attach 仍向审核者
+// （subscribeLoop 产出 !OK result → handleResult）不作废：attach 仍向协调者
 // 展示可操作的挂起项，而 executor 已经不在——一旦 reply，工单被消耗、中继失败
 // 返回 502，任务进入不可恢复状态。
 func TestDeadExecutorVoidsPendingTickets(t *testing.T) {
@@ -151,7 +151,7 @@ func TestDeadExecutorVoidsPendingTickets(t *testing.T) {
 // 场景：agentd 在 CreateTicket 成功、AppendEvent 之前崩溃（或 AppendEvent 失败），
 // 留下一个有工单无事件的状态。此后 SSE 重放同一权限时，修复前仅凭 created==false
 // 就整体跳过——permission_request 事件永不产生、状态停在 running、无等待者，
-// 审核者的 wait 永不触发。修复前的基线版本在这里是能自愈的，这是修复引入的退化。
+// 协调者的 wait 永不触发。修复前的基线版本在这里是能自愈的，这是修复引入的退化。
 func TestPermissionSelfHealsWhenEventMissing(t *testing.T) {
 	mgr, st, _, _ := newTestManager(t)
 	const taskID = "task-orphan-ticket"
@@ -181,7 +181,7 @@ func TestPermissionSelfHealsWhenEventMissing(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("工单存在但通知事件缺失时未自愈补发 permission_request——审核者的 wait 永不触发")
+		t.Error("工单存在但通知事件缺失时未自愈补发 permission_request——协调者的 wait 永不触发")
 	}
 	task, err := st.GetTask(taskID)
 	if err != nil {

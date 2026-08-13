@@ -121,7 +121,7 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 	//     docs/superpowers/specs/2026-08-08-handoff-grok-adapter-design.md）。
 	//     真实 ~/.grok 有 version.json 等缓存所以从不触发。
 	//  3. 即便不挂起也不该开：任务执行到一半把 CLI 自更新掉，等于在任务中途
-	//     换掉执行器版本——后台静默变基，审核者的结论可能因此失准。
+	//     换掉执行器版本——后台静默变基，协调者的结论可能因此失准。
 	//
 	// 实测：任务级 home 里我们自己写 [cli] auto_update = false 后，grok 不再重写
 	// config（注释保住），serve 正常监听。

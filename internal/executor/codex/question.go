@@ -1,14 +1,14 @@
 // question.go —— codex 原生提问通道 item/tool/requestUserInput 的翻译。
 //
 // 职责：
-//   - 解析提问报文，渲染成交给审核者的问题全文
+//   - 解析提问报文，渲染成交给协调者的问题全文
 //   - 构造必须立即回发的应答体
 //
 // 边界：
 //   - 不决定「回合要不要结束」：那是 adapter 回合收尾的事
 //   - **不代传机密**：isSecret 的问题正文不进事件库
 //
-// 为什么必须立即应答而不是等审核者：回调跑在读循环 goroutine 上，等审核者会卡死
+// 为什么必须立即应答而不是等协调者：回调跑在读循环 goroutine 上，等协调者会卡死
 // 整条连接；而不应答会让 codex 侧的回合永久挂起。grok 那边这条通道翻过两次车
 // （应答形态错被判工具失败、兜底重复上报导致一次提问两张工单），此处逐条对症。
 package codex
@@ -22,7 +22,7 @@ import (
 //
 // 内容必须是**对模型有效的指令**而不是占位符：告诉它问题已转交人类、按收尾协议
 // 结束本回合。空答案或无意义答案会被 codex 判成工具失败（grok 的教训）。
-const handoffAnswerText = "该问题已转交给人类审核者。请立即按 handoff 收尾协议结束本回合" +
+const handoffAnswerText = "该问题已转交给人类协调者。请立即按 handoff 收尾协议结束本回合" +
 	"（输出 HANDOFF_STATUS: ask 及问题正文），不要自行猜测答案继续执行。"
 
 // userInputOption 是一个候选答案。
@@ -56,7 +56,7 @@ func parseUserInput(params json.RawMessage) (string, []userInputQuestion, bool) 
 	return p.ItemID, p.Questions, true
 }
 
-// userInputText 把问题列表渲染成交给审核者的正文。
+// userInputText 把问题列表渲染成交给协调者的正文。
 //
 // 注意：isSecret 的问题**只给标题不给正文**——凭据不经 handoff 的事件库中转，
 // 事件是要落盘的。

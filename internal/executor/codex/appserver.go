@@ -5,7 +5,7 @@
 //   - 我方请求（initialize / thread.* / turn.*）按 id 匹配响应；turn/start 用
 //     CallAsync 拿异步通道（它虽然立即返回，但仍不能阻塞 Start 的启动路径）
 //   - 对方通知经 OnNotify 分发；对方请求经 OnServerRequest 上抛，应答可延迟任意久
-//     后经 Reply 回发——审核者可能过夜才裁决
+//     后经 Reply 回发——协调者可能过夜才裁决
 //
 // 边界：
 //   - 不认识 codex 的业务语义（不知道什么是回合、什么是权限），只做协议管道；

@@ -226,7 +226,7 @@ func TestDispatchPrintsBaselineToStderr(t *testing.T) {
 }
 
 // TestDispatchPrintsDivergenceToStderr 验证任务仓库领先基线时把丢掉的提交数
-// 说出来——B35 的现场就是这个差异毫无痕迹，审核者甚至反过来怀疑执行者搞错了。
+// 说出来——B35 的现场就是这个差异毫无痕迹，协调者甚至反过来怀疑执行者搞错了。
 func TestDispatchPrintsDivergenceToStderr(t *testing.T) {
 	old := dispatchTestTaskJSON
 	dispatchTestTaskJSON = `{"id":"task-abc123","state":"running","base_commit":"d64bac4d64bac4d64bac4d64bac4d64bac4d64ba","base_ahead":3}`
@@ -390,7 +390,7 @@ func TestDispatchLocalDirtyNotChecked(t *testing.T) {
 }
 
 // TestDispatchPrintsDirtySnapshotToStderr 验证 B43 的回显：执行机仓库有未提交
-// 改动时 stderr 说出来（远程派发时审核者根本看不到那台机器的工作区），且
+// 改动时 stderr 说出来（远程派发时协调者根本看不到那台机器的工作区），且
 // stdout 仍是单行任务 JSON——上层脚本按行解析，多一行就全乱。
 func TestDispatchPrintsDirtySnapshotToStderr(t *testing.T) {
 	old := dispatchTestTaskJSON
@@ -423,7 +423,7 @@ func TestDispatchNoDirtySnapshotNoLine(t *testing.T) {
 
 // TestBaselineLine 钉住派发回显：分支名、解析后起点短号、用户输入的 --base
 // 原文三者同行互证。B76 现场里只有一行「基线 worktre」——分支名被按短 sha
-// 截成 7 字符，审核者盯着它也看不出分支错了。
+// 截成 7 字符，协调者盯着它也看不出分支错了。
 func TestBaselineLine(t *testing.T) {
 	sha := "e911147aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, tc := range []struct {

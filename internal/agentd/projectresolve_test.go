@@ -64,7 +64,7 @@ func TestResolveProject(t *testing.T) {
 }
 
 // TestResolveProjectErrorsAreActionable 验证拒绝报文带得走「本机登记了什么」，
-// 而不是一句干巴巴的「未登记」——远程派发时审核者读不到执行机的 agentd.log，
+// 而不是一句干巴巴的「未登记」——远程派发时协调者读不到执行机的 agentd.log，
 // 报文是他唯一的线索。
 func TestResolveProjectErrorsAreActionable(t *testing.T) {
 	_, err := resolveProject("deadbeefdeadbeef", "", locFixture())

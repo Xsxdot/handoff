@@ -29,12 +29,12 @@ import (
 //     SessionID 是落库的 opencode 会话 id）
 //
 // 返回：
-//   - Alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
+//   - Alive=false 时调用方（manager）把任务转 failed 交协调者裁决（保守优于静默）
 //   - err: 重建失败（proc.json 缺失/损坏、SessionID 为空），此时视为不可恢复
 //
 // 注意：
 //   - SessionID 为空时拒绝恢复：mapEvent 按会话 id 过滤事件，空 id 会把全部
-//     事件当「其他会话」丢弃，静默恢复等于无声断流，宁可交审核者裁决
+//     事件当「其他会话」丢弃，静默恢复等于无声断流，宁可交协调者裁决
 //   - 重启时正在进行的回合文本累积在内存里已丢失：重建后的回合从 SSE 重放的新
 //     快照重新累积（partSeen/partSnap 重新对账），idle 分类的 git 基线以重启
 //     时刻的 HEAD 为准——这是 MVP 接受的缝隙，由 e2e 清单「agentd 重启」项
@@ -142,7 +142,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 
 	if mode == executor.ResumeModeCold {
 		// 会话在全局 sqlite 里，进程重起不影响它——但要确认它真的还在，
-		// 不能默认。不在就降级新会话并如实播报（上下文断了是审核者需要知道的）
+		// 不能默认。不在就降级新会话并如实播报（上下文断了是协调者需要知道的）
 		has, err := r.api.HasSession(context.Background(), sessionID)
 		if err != nil {
 			a.log.Warn("查询会话列表失败，保守降级新会话", "task", req.TaskID, "cause", err)

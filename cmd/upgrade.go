@@ -486,7 +486,7 @@ func (ms *machineState) localUpgrade(ctx context.Context, out io.Writer, peer ag
 // 当前进程是旧二进制，它内嵌的是**旧 skill**；新 skill 在刚换上去的那个
 // 文件里。所以是 exec 新二进制，不是直接调用本进程的 skill.Install。失败
 // 不算升级失败：二进制已经换好了，但必须说出来——悄悄留一份旧 skill，它会
-// 按已经变了的规则主动误导审核者。
+// 按已经变了的规则主动误导协调者。
 func (ms *machineState) syncSkill(ctx context.Context, out io.Writer, target string) {
 	if outStr, err := execSkillInstall(ctx, target); err != nil {
 		fmt.Fprintf(out, "         注意 skill 同步失败，请手动跑 %s skill install：%s\n",

@@ -45,32 +45,32 @@ const (
 	EventTypeCompleted         EventType = "completed"
 	EventTypeFailed            EventType = "failed"
 	EventTypeStalled           EventType = "stalled"
-	// EventTypeDeliveryFailed 表示审核者的应答已落库但没能送达 executor。
+	// EventTypeDeliveryFailed 表示协调者的应答已落库但没能送达 executor。
 	//
 	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，
-	// 而工单已被消耗、不再出现在挂起项里——若只写日志，审核者这边完全无感，
-	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒审核者去执行 handoff resume。
+	// 而工单已被消耗、不再出现在挂起项里——若只写日志，协调者这边完全无感，
+	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒协调者去执行 handoff resume。
 	EventTypeDeliveryFailed EventType = "delivery_failed"
 	// EventTypeApproverDecision 表示分级审批链中廉价模型审批者对权限请求的裁决
-	// 结果（approve/escalate/error）。只入库做审计（show 可见），不唤醒审核者——
+	// 结果（approve/escalate/error）。只入库做审计（show 可见），不唤醒协调者——
 	// approve 路径已自动放行、escalate 路径由紧随其后的 permission_request 唤醒。
 	EventTypeApproverDecision EventType = "approver_decision"
 	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
-	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
+	// 已停用，后续权限请求一律直接升级人工协调者，不再浪费一次注定失败的裁决调用。
 	EventTypeApproverDisabled EventType = "approver_disabled"
 	// EventTypePermissionReuse 表示一次权限请求命中了本任务内**同一权限描述**的
-	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
+	// 既有人工批准，被自动放行而没有再次叫醒协调者（B57②）。
 	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
 	EventTypePermissionReuse EventType = "permission_reuse"
-	// EventTypeDenyGuidanceRelayed 表示审核者拒绝时给出的原因已作为一条消息
+	// EventTypeDenyGuidanceRelayed 表示协调者拒绝时给出的原因已作为一条消息
 	// 下发给 executor（B50）。
 	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
-	// 就终结了。审核者据此知道要用 continue 自己把话带上。
+	// 就终结了。协调者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
 	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
 	//
-	// 为什么必须留痕：pending_tickets 是审核者接管陌生会话时「我还欠哪些没答」
+	// 为什么必须留痕：pending_tickets 是协调者接管陌生会话时「我还欠哪些没答」
 	// 的权威清单，工单凭空消失与工单凭空挂着一样难排查——show 里要能回答
 	// 「那张单是何时、因为什么被作废的」。
 	//
@@ -88,8 +88,8 @@ const (
 	EventTypeArchived EventType = "archived"
 	// EventTypeResourcePressure 表示执行机的进程余量已达高水位（参考上限的九成）。
 	//
-	// 为什么必须是一类**唤醒**事件而不只是日志：日志在执行机上，审核者手边
-	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让审核者
+	// 为什么必须是一类**唤醒**事件而不只是日志：日志在执行机上，协调者手边
+	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让协调者
 	// 知道要收敛。2026-08-12 事故里没有任何前兆，第一个信号就是整机瘫痪。
 	EventTypeResourcePressure EventType = "resource_pressure"
 )
@@ -136,7 +136,7 @@ type Task struct {
 	// 「等 N 处」）；服务端截断后的展示用字段，与 PlanSummary 同形，不供程序消费
 	//（要精确条数请读 RepoDirtyCount）。
 	RepoDirtyFiles string `json:"repo_dirty_files"`
-	// DoneNote 是归档时审核者留下的完成说明（handoff done --note）；空串=未留说明
+	// DoneNote 是归档时协调者留下的完成说明（handoff done --note）；空串=未留说明
 	// 或该任务归档于本功能上线之前。它回答的是「这次到底做完了什么、为什么放行」——
 	// 归档之后除了一个 completed 状态位，此前没有任何地方记录这件事。
 	DoneNote string `json:"done_note"`
@@ -144,8 +144,8 @@ type Task struct {
 
 // MaxDoneNoteBytes 是归档说明的字节上限。
 //
-// 为什么超限要报错而不是截断：B6 的教训正是「静默截断让审核者盲信自己看到的是
-// 全文」。审核者写了 6KB 说明、系统悄悄存 4KB，比直接拒绝糟糕得多。
+// 为什么超限要报错而不是截断：B6 的教训正是「静默截断让协调者盲信自己看到的是
+// 全文」。协调者写了 6KB 说明、系统悄悄存 4KB，比直接拒绝糟糕得多。
 // 取值 4096：比一句话说明宽出两个数量级，同时挡住「把整个 diff 粘进来」的误用。
 const MaxDoneNoteBytes = 4096
 
@@ -180,7 +180,7 @@ func (t *Task) Workdir() string {
 // 注意：Watchers 是服务端应答那一刻的快照，不做任何时效承诺。
 type TaskView struct {
 	Task
-	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// Watchers 是当前订阅该任务事件流的连接数（几个协调者在听）。
 	// 0 不一定是异常：waiting_review 与终态本来就不需要有人盯，判据见
 	// handoff status 的 unattended。
 	Watchers int `json:"watchers"`
@@ -211,11 +211,11 @@ type Ticket struct {
 	CreatedAt  time.Time       `json:"created_at"`
 	AnsweredAt *time.Time      `json:"answered_at"`
 	// DeliveredAt 是应答送达 executor 的时刻；非 nil 才代表 executor 真的收到了。
-	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
+	// 与 AnsweredAt 分开记录：「协调者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
 	DeliveredAt *time.Time `json:"delivered_at"`
 	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
-	// 它让「审核者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
+	// 它让「协调者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
 	// ask 工单不参与复用，留空。
 	Fingerprint string `json:"fingerprint"`
 }
