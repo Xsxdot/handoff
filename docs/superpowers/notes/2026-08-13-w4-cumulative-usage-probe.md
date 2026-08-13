@@ -32,7 +32,12 @@ claudecode 与 codex 白给会话累计；grok 与 opencode 只给单次，hando
 B83 那张「模型 → API 牌价」的估算表只服务 codex，其余三家自报。这比最初担心的范围小得多。
 但下面 §1 有个坑：grok 的自报**有条件**，认证方式不对就整块缺席。
 
-**发现三（推翻旧结论）：claudecode 有分母。**
+**发现三（最要紧的一条，见 §2.2）：所谓「白给会话累计」只在进程存活期间成立。**
+用同一个 session id `--resume` 之后，claudecode 的累计**从零重新开始**。
+handoff 的任务会跨进程恢复，所以四家必须统一成「handoff 自己按幂等键逐次累加」，
+一个执行器的累计字段都不能依赖。上表「不用」那一列因此只是「进程内不用」，不是设计结论。
+
+**发现四（推翻旧结论）：claudecode 有分母。**
 旧探针 §2 写「没有任何字段告诉你上限是多少」——那是只看了 `assistant` 消息。
 `result` 行的 `modelUsage.<model>.contextWindow` 就是分母（实测 `262144`）。
 **这条直接影响已经实现完的 B80**，见 §5。
@@ -124,6 +129,43 @@ grok 自己的文档也是这么说的——`total_cost_usd_ticks` 那段写明�
    只认 `subtype` 会把一次认证失败当成一次零消耗的成功回合记进累计。
    要认的是 `is_error` 与 `terminal_reason`。
 
+### 2.2 补验：`--resume` 之后累计归零——「会话累计」其实是「进程累计」
+
+上面三轮是**同一个进程**。handoff 的任务不是这样跑的：agentd 重启、executor 崩溃、
+任务恢复，都会起一个新进程并 `--resume <session_id>` 接回原会话。所以必须再问一次：
+新进程里的 `modelUsage` 带不带前一个进程的量？
+
+**做法**：拿上面那个会话的 id 重跑同一个探针，只把 `--session-id` 换成 `--resume`。
+
+| 轮 | `usage.input_tokens` | `usage.cache_read` | `modelUsage.*.inputTokens` | `modelUsage.*.cacheRead` | `modelUsage.*.output` | `total_cost_usd` |
+|---|---|---|---|---|---|---|
+| 1 | 98 | 32768 | 98 | 32768 | 14 | 0.017224 |
+| 2 | 138 | 32768 | 236 | 65536 | 28 | 0.034648 |
+| 3 | 178 | 32768 | 414 | 98304 | 42 | 0.052272 |
+
+前一个进程收尾时是 in=**3095** / cacheRd=**95232** / out=**63** / cost=**$0.064666**。
+新进程第一轮是 in=**98** / cacheRd=32768 / out=14 / cost=**$0.017224**——**一点都没带过来**。
+
+会话内容本身确实恢复了（第一轮 `cache_read` 就有 32768，`input_tokens` 只有 98，
+说明历史上下文在缓存里），**归零的只是用量计数器**。
+
+**所以 §0 那张表的「要不要自己加」一列，正确读法是「进程内要不要自己加」。**
+跨进程看，四家全都要 handoff 自己累加：
+
+| executor | 逐次量取哪里 | 幂等键 |
+|---|---|---|
+| claudecode | `assistant.message.usage`（本轮） | assistant message 的 `id` |
+| codex | `tokenUsage.last`（本次调用） | `params.turnId` |
+| grok | `response_completed` / `turn_completed` 的本回合 usage | `_meta.promptId`（实测三回合各不相同） |
+| opencode | `message.updated` 的 `info.tokens` | `info.id` |
+
+统一成这一套的附带好处是**不用再关心哪家给不给累计**——四家一个算法，
+agentd 重启、executor 换进程、任务 resume 都不影响正确性，代价只是必须落库且幂等。
+
+**codex 的 `thread/resume` 未验**（跑一次要花额度改探针）。但它不影响设计：
+上面这套一律取「本次调用」的量，`tokenUsage.total` 延不延续都用不到它。
+真要用 `total` 才需要先验这一条。
+
 ---
 
 ## 3. codex：tokens 白给累计，花费一个字都不报
@@ -194,7 +236,7 @@ B80（`feat/b80-executor-model-usage`，7 个 commit 已完成）里，claudecod
 
 ## 6. 对 B83 的设计约束（不在本文回答，但探针已经把边界钉死）
 
-1. **累加必须落库且幂等。** grok 与 opencode 要 handoff 自己加，而 B80 的去重是**内存态**
+1. **累加必须落库且幂等，而且是四家都要（§2.2）。** B80 的去重是**内存态**
    （`Manager.lastUsage`），agentd 重启后首帧必写一次——对「当前占用」无害（覆盖同值），
    对「累计」就是重复计数。幂等键：opencode 用 `info.id`，grok 用 `_meta.promptId`
    （本轮实测三个回合的 `promptId` 各不相同，可用）。
