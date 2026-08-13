@@ -276,9 +276,12 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 		"--options runtime", // 硬化运行时是公证的前置条件，不加会被拒
 		"notarytool submit",
 		"status: Accepted", // notarytool 可能在 Invalid 时仍退 0，必须查状态串
-		// 裸 CLI 不能 staple、spctl 也只认 app bundle，所以本机能验的就是
-		// 签发者与硬化运行时这两条（详见 workflow 里那段注释）
 		"Authority=Developer ID Application",
+		// 裸 CLI 不能 staple 票据，但 spctl 的 `-t open` 能按 cdhash 查到它。
+		// 这两条钉住的是「喂法必须是 -t open」——写成 -t exec 会被 app 类型检查
+		// 挡掉，而那次失败长得像「公证没生效」，极易被再撤一次（2026-08-13 已撤过）。
+		"-t open --context context:primary-signature",
+		"source=Notarized Developer ID",
 		"CGO_ENABLED", // macOS 上 CGO 默认开，开了会引入动态链接与最低系统版本约束
 	} {
 		if !strings.Contains(wf, want) {

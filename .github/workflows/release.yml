@@ -196,15 +196,9 @@ jobs:
 
           for arch in $DARWIN_ARCHES; do
             bin="build/${arch}/handoff"
-            # 为什么不是 spctl：`spctl -a -t exec` 只评估 **app bundle**，喂裸
-            # Mach-O 会直接被类型检查挡掉，报 "the code is valid but does not
-            # seem to be an app"——不是票据没生效，是这条命令对 CLI 根本不适用
-            # （2026-08-13 实测：公证明明已 Accepted，三次重试全是这句）。
-            # 裸 CLI 又不能 staple 票据，所以离线也验不到公证结果。
-            #
-            # 于是这道门验的是**在本机能验的全部三件事**：签名有效、签发者是
-            # Developer ID、硬化运行时已开（公证的前置条件）。第四件「公证被
-            # 接受」由上面 notarytool 的 `status: Accepted` 硬门守着。
+            # 这道门验四件事：签名有效、签发者是 Developer ID、硬化运行时已开
+            # （公证的前置条件）、以及**这份即将被打包的文件**在 Apple 那边查得到
+            # 公证票据。
             codesign -dv --verbose=4 "$bin" 2>/tmp/codesign.log || {
               echo "codesign -dv 失败（${arch}）：" >&2; cat /tmp/codesign.log >&2; exit 1; }
             grep -q 'Authority=Developer ID Application' /tmp/codesign.log || {
@@ -214,6 +208,38 @@ jobs:
             grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign.log || {
               echo "硬化运行时未开（${arch}），公证会被拒：" >&2
               cat /tmp/codesign.log >&2; exit 1; }
+
+            # spctl 能评估裸 CLI，但**只有** `-t open --context
+            # context:primary-signature` 这一种喂法。`-t exec` 只认 app bundle，
+            # 喂裸 Mach-O 会被类型检查当场挡掉，报 "the code is valid but does
+            # not seem to be an app"——2026-08-13 先踩过一次，当时误判成「spctl
+            # 对 CLI 整体不适用」而把这道门整个撤了。`-t open` 是 Apple 给
+            # 非 app 内容准备的评估入口，同日在真机上对 v0.2.2 的 darwin/arm64
+            # 资产实测：accepted，source=Notarized Developer ID。
+            #
+            # 为什么值得单列一道门：上面 notarytool 的 `status: Accepted` 只证明
+            # **提交上去的那份**过了公证，而这里验的是**即将被 tar 进资产的这个
+            # 文件**能按 cdhash 在 Apple 那边查到票据。中间任何一次重签、改字节、
+            # 拿错文件，都会让两者分叉，而分叉的代价是用户机器上的一次弹窗。
+            #
+            # 票据发布到 Apple 边缘有传播延迟，所以重试而不是一次定生死。
+            ok=0
+            for attempt in 1 2 3; do
+              if spctl -a -vvv -t open --context context:primary-signature "$bin" \
+                   >/tmp/spctl.log 2>&1; then
+                ok=1; break
+              fi
+              echo "spctl 第 ${attempt} 次未通过（${arch}），20s 后重试：" >&2
+              cat /tmp/spctl.log >&2
+              sleep 20
+            done
+            [ "$ok" = 1 ] || {
+              echo "公证票据在本机查不到（${arch}）：" >&2; cat /tmp/spctl.log >&2; exit 1; }
+            grep -q 'source=Notarized Developer ID' /tmp/spctl.log || {
+              echo "评估通过但来源不是 Notarized Developer ID（${arch}）：" >&2
+              cat /tmp/spctl.log >&2; exit 1; }
+            echo "公证票据校验通过（${arch}）"
+
             # 打包必须在签名之后：签名会改字节，先算校验和再签就全错
             tar czf "handoff_${TAG}_darwin_${arch}.tar.gz" -C "build/${arch}" handoff
           done
