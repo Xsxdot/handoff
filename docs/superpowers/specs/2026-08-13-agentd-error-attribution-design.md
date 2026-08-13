@@ -106,17 +106,40 @@ if attr != nil && attr.Sys == nil && attr.Dir != "" {
 在 [workspace.go](../../../internal/agentd/workspace.go) 中紧邻 `gitRun` 新增：
 
 ```go
+// probeOutcome 是一次探测的三种结局。三态而非 bool 的理由见下方「必须区分 fatal」。
+type probeOutcome int
+
+const (
+    probeHit   probeOutcome = iota // 命中：退出 0
+    probeMiss                      // 未命中：非零退出，预期内
+    probeFatal                     // 探测未能完成：fork 失败等资源性故障，结论未知
+)
+
 // gitProbe 执行一次探测性 git 调用：非零退出是预期内的未命中，不是故障。
-func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr string, ok bool)
+// note 仅在 res == probeFatal 时有值，是配额归因文案，供调用方拼进给人看的报文。
+func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr string, res probeOutcome, note string)
 ```
 
-**返回 `ok` 而不是 `err`**：调用点从「拿 err 当判据」变成「拿 ok 当判据」，探测语义在调用处自解释，不必读被调函数才知道这次失败是预期的。
+**返回结局而不是 `err`**：调用点从「拿 err 当判据」变成「拿 `res == probeHit` 当判据」，探测语义在调用处自解释，不必读被调函数才知道这次失败是预期的。
 
 **保留 `stderr`**：11 处改造点里有 3 处真在用它——[444](../../../internal/agentd/workspace.go) 包进 `ErrRepoUnusable` 的提示、[617](../../../internal/agentd/workspace.go) 包进返回的 error、[reclaim.191](../../../internal/agentd/reclaim.go) 当 `note` 交给上层。
 
-**共用执行体**：`gitRun` 与 `gitProbe` 必须复用同一个内部执行函数（命令构造、双缓冲、耗时统计、`quotaNote` 归因）。两者唯一的差别是失败时走 `Debug` 还是 `Error`。抄成两份实现的话，超时或缓冲策略下次只会被改一处。
+**共用执行体**：`gitRun` 与 `gitProbe` 必须复用同一个内部执行函数 `gitExec`（命令构造、双缓冲、耗时统计、进入/完成日志）。两者唯一的差别是失败时怎么归类、打什么级别。抄成两份实现的话，超时或缓冲策略下次只会被改一处。
 
-**必须保留的例外**：`quotaNote(err)` 非空时（fork 失败、进程配额耗尽），`gitProbe` **照样打 `Error`** 并返回 `ok=false`。fork 不出进程不是「探测未命中」，是这台机器真的没资源了；它恰好经由同一个错误返回值到达，但性质完全不同。把 `gitProbe` 的失败一律降 Debug，等于在另一个方向上重新造出本 spec 要消灭的问题。
+执行体经包级变量 `var gitExecFn = gitExec` 间接调用，测试可替换——这与本包既有约定同款（`killProcGroup`、`admissionFn`、`enumProcsFn` 都是「包级 var 而非 func：便于测试替换」）。判据 3 的端到端那半依赖这个注入点。
+
+**必须区分 fatal**：`quotaNote(err)` 非空时（fork 失败、进程配额耗尽），`gitProbe` **照样打 `Error`** 并返回 `probeFatal`。fork 不出进程不是「探测未命中」，是这台机器真的没资源了；它恰好经由同一个错误返回值到达，但性质完全不同。把它降级成 Debug，等于在另一个方向上重新造出本 spec 要消灭的问题。
+
+三态而非 `ok bool` 的理由是走一遍 fork 耗尽时的 `resolveCommit` 就能看到：713 探测失败 → 落 722 兜底 → 也失败 → 最终拒发，报文是「起点 X 在任务仓库中不存在（若它是你本地的分支，先 git push 再派发）」。**起点明明在，机器只是 fork 不出进程**——这正是本 spec 要消灭的那类假报文换了个触发条件。若把 fatal 与 miss 合并成一个 `false`，修复里就带着一个同类 bug 出厂。
+
+调用点的义务分两档：
+
+- **必须单独处置 `probeFatal` 的两处**：[252](../../../internal/agentd/workspace.go)（否则报「分支 X 不存在」）与 `resolveCommit` 的 713/722/741（否则报「起点 X 不存在」）。两者都在派发路径上，用户拿到的是拒发理由，必须指向资源耗尽而非「不存在」。
+拿到 `note` 后，这两处的拒发报文复用既有哨兵 `ErrNoProcHeadroom`（admission.go 已有，语义正是「机器资源不够，不是你的输入有问题」），不新造哨兵。
+
+- **其余 9 处按 `!= probeHit` 一并处置即可**（`note` 用 `_` 丢弃）：它们的下游结论对 fatal 与 miss 恰好相同且不误导（如 `reclaim.191` 落 `WorktreeUnknown`「判不出」本就是诚实答案；`hasCommit` 落 fetch，fetch 自己会响；`currentRef` 已打 Warn）。
+
+上游虽有 [manager.go:608](../../../internal/agentd/manager.go) 的 `checkProcHeadroom("dispatch")` 前置门，但它在余量 `Known=false` 时放行，挡不住全部，不能替代此处的区分。
 
 ### 3.2 改造范围：11 处
 
@@ -159,7 +182,7 @@ func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr 
 |---|---|---|
 | 1 | 一次成功的 `--base <仅远程存在的分支>` 派发，全程 ERROR 计数 = 0 | §1.1 本体 |
 | 2 | 一次必然失败的真调用（如 `checkout` 不存在的 ref），ERROR 计数 = 1 | **过度降级**——把噪音连同信号一起静音 |
-| 3 | `gitProbe` 遇进程配额失败仍打 ERROR | §3.1 的例外，不能只活在注释里 |
+| 3 | `gitProbe` 遇进程配额失败打 ERROR 并返回 `probeFatal`，且 `resolveCommit` 据此给出「资源耗尽」而非「起点不存在」 | §3.1 的三态区分，不能只活在注释里 |
 | 4 | 工作树被删后调 `RunCmd`，报文含工作区路径、**不含** `/bin/sh` | §1.2 本体 |
 | 5 | 工作树被删后请求 `run` / `diff` / `file`，均返回 409 且报文一致 | §3.3 入口道 |
 
@@ -171,7 +194,7 @@ func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr 
 
 **判据 4 的陷阱（必须写进实现约束）**：该测试**必须保留 `setProcGroup`**。这个 bug 存在的前提正是 `SysProcAttr` 关掉了 Go 的友好归因；若将来有人在测试里图省事不设进程组，Go 会自动给出清楚的 `chdir ...` 报文，**测试照样通过，而线上照样报 `/bin/sh`**。这是该回归测试唯一的失效方式，因此它不属于实现细节，属于设计约束。
 
-**判据 3 的可测性**：取决于 `prochost` / `checkProcHeadroom` 是否有可注入点。若注入成本过高，退而求其次——实现上保留显式分支并加注释，在 plan 阶段明确记为「未覆盖」，不假装测过。
+**判据 3 的可测性**：已确认可测，不需妥协。`prochost.ExplainForkFailure` 的触发条件是 `errors.Is(err, syscall.EAGAIN)`，且 EAGAIN 路径上的四个分支都返回非空 note——测试构造 `fmt.Errorf("...: %w", syscall.EAGAIN)` 即可稳定命中，不依赖机器实际进程数。端到端那半（`resolveCommit` 在 fatal 下的报文）经 `gitExecFn` 注入点驱动，见 §3.1 的执行体拆分。
 
 ## 6. 残留风险
 
