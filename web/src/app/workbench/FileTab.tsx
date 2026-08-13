@@ -16,7 +16,7 @@
 //
 // 错误处理：agentd 的中文错误原文原样透传（诚实展示纪律），不吞成「操作失败」。
 import { useCallback, useEffect, useState } from 'react'
-import { fetchWorkspaceFile, writeWorkspaceFile } from '../../api/client'
+import { ApiError, fetchWorkspaceFile, writeWorkspaceFile } from '../../api/client'
 import type { FileRead } from '../../api/types'
 import { errorMessage, formatSize } from '../lib/format'
 import type { BaseDir } from './useWorkbench'
@@ -30,6 +30,10 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
   const [baseSha, setBaseSha] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  // ConflictState 是一次未解决的写入冲突。current 是服务端在 409 里附带的磁盘现状，
+  // 两个出口都要用它：「放弃」要它的正文，「覆盖」要它的哈希当新基线
+  type ConflictState = { current: FileRead; confirming: boolean }
+  const [conflict, setConflict] = useState<ConflictState | null>(null)
 
   useEffect(() => {
     // cancelled 防止「快速连点两个文件」时先发的请求后到，把后选的内容盖掉
@@ -57,7 +61,11 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
   const editable = read !== null && baseSha !== ''
   const dirty = editable && draft !== read.content
 
-  const save = useCallback(async () => {
+  // saveWith(sha) 用显式传入的哈希当基线的保存路径。为什么要显式传哈希而不是读
+  // state：overwrite 需要先 setBaseSha(next) 再用 next 发请求，而 React 的 state
+  // 更新是异步的，同一轮里从 state 读到的还是旧值——这是这里最容易踩的坑，
+  // 传参把「这次保存用哪个基线」从渲染时序里剥离开
+  const saveWith = useCallback(async (sha: string) => {
     if (!editable || !dirty || saving) return
     setSaving(true)
     setSaveError('')
@@ -65,7 +73,7 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
       const res = await writeWorkspaceFile(
         base.path,
         rel,
-        { content: draft, base_sha256: baseSha },
+        { content: draft, base_sha256: sha },
         base.machine || undefined,
       )
       // 回基线：read.content 换成刚存进去的内容，baseSha 换成新哈希。
@@ -73,12 +81,48 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
       setRead((r) => (r === null ? r : { ...r, content: draft, size: res.size, sha256: res.sha256 }))
       setBaseSha(res.sha256)
     } catch (err) {
-      // 保存失败**不动草稿**：用户的输入是唯一一份，界面上再没有第二处能找回来
+      // 先认冲突：409 不是普通失败，它带着磁盘现状，要交给冲突条而不是 saveError
+      const cur = conflictCurrent(err)
+      if (cur !== null) {
+        setConflict({ current: cur, confirming: false })
+        setSaveError('')
+        return
+      }
+      // 其他失败**不动草稿**：用户的输入是唯一一份，界面上再没有第二处能找回来
       setSaveError(errorMessage(err))
     } finally {
       setSaving(false)
     }
-  }, [base.path, base.machine, rel, draft, baseSha, editable, dirty, saving])
+  // baseSha 不进依赖数组：函数体里没直接用它（实际基线是传入的 sha，回基线用 res.sha256），
+  // editable/dirty 已在依赖里覆盖了它对门卫的间接影响
+  }, [base.path, base.machine, rel, draft, editable, dirty, saving])
+
+  const save = useCallback(() => saveWith(baseSha), [saveWith, baseSha])
+
+  // discard 把草稿整体换成磁盘现状，基线跟着换——等价于「重新打开这个文件」
+  const discard = () => {
+    if (conflict === null) return
+    setRead(conflict.current)
+    setDraft(conflict.current.content)
+    setBaseSha(conflict.current.sha256 ?? '')
+    setConflict(null)
+  }
+
+  // overwrite 拿 current.sha256 当**新的** base_sha256 重发一次。
+  //
+  // 为什么不是「跳过校验」：覆盖的语义是「我看过磁盘上那一版了，接受它当新基线」。
+  // 若这中间磁盘又变了，第二次照样 409——这正确，而一个 force 标志会把它变成静默覆盖。
+  //
+  // 为什么要二次确认：orca 敢在「警告过了」之后直接放行手动保存，因为它有 watcher,
+  // 横幅在你按保存之前就出现了。我们没有 watcher，冲突只在保存那一刻才暴露，
+  // 用户在此之前从没被警告过，所以覆盖必须自带确认
+  const overwrite = async () => {
+    if (conflict === null) return
+    const next = conflict.current.sha256 ?? ''
+    setConflict(null)
+    setBaseSha(next)
+    await saveWith(next)
+  }
 
   return (
     <div
@@ -108,6 +152,29 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
         )}
       </div>
       {saveError !== '' && <p className="border-b px-3 py-1.5 text-xs text-destructive">{saveError}</p>}
+      {conflict !== null && (
+        <div className="border-b bg-muted px-3 py-2 text-xs">
+          <p className="text-foreground">文件已在磁盘上变了（很可能是 executor 改的）。</p>
+          {conflict.confirming ? (
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="text-destructive">
+                覆盖会丢掉磁盘上那一版的改动，不可撤销。
+              </span>
+              <button type="button" className="rounded border px-2 py-0.5"
+                onClick={() => void overwrite()}>确认覆盖</button>
+              <button type="button" className="rounded border px-2 py-0.5"
+                onClick={() => setConflict({ ...conflict, confirming: false })}>取消</button>
+            </div>
+          ) : (
+            <div className="mt-1.5 flex items-center gap-2">
+              <button type="button" className="rounded border px-2 py-0.5"
+                onClick={() => discard()}>放弃我的改动，载入磁盘版本</button>
+              <button type="button" className="rounded border px-2 py-0.5"
+                onClick={() => setConflict({ ...conflict, confirming: true })}>用我的内容覆盖</button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {error !== null ? (
           <p className="p-4 text-sm text-destructive">{error}</p>
@@ -142,4 +209,16 @@ function headerNote(read: FileRead | null, dirty: boolean): string {
   if (read.binary) return '二进制文件，不支持在线编辑'
   if (read.truncated) return `文件 ${formatSize(read.size)}，仅显示开头 1 MB，不支持在线编辑`
   return dirty ? '未保存' : ''
+}
+
+// conflictCurrent 从一个错误里认出 409 冲突并取出磁盘现状；不是冲突时返回 null。
+//
+// 防御性地校验形状而不是直接断言：旧版 agentd 可能只回 {error}，那时应当退回
+// 普通错误展示，而不是让界面因为读不到 current 崩掉
+function conflictCurrent(err: unknown): FileRead | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  const body = err.body as { current?: FileRead } | undefined
+  const cur = body?.current
+  if (cur === undefined || typeof cur.content !== 'string') return null
+  return cur
 }

@@ -136,3 +136,67 @@ describe('FileTab 编辑', () => {
     expect(box).toHaveValue('module handoff\nx')
   })
 })
+
+const CONFLICT = new ApiError(409, '文件已被改动', {
+  error: '文件已被改动',
+  current: { content: 'executor 改过的内容\n', size: 20, sha256: 'diskhash' },
+})
+
+describe('FileTab 冲突', () => {
+  it('409 亮冲突条，两个出口都在', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockRejectedValue(CONFLICT)
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    await fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    await fireEvent.click(screen.getByRole('button', { name: /^保存$/ }))
+    expect(await screen.findByText(/文件已在磁盘上变了/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /放弃我的改动/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /用我的内容覆盖/ })).toBeInTheDocument()
+  })
+
+  it('放弃我的改动：草稿换成磁盘版本，基线换成磁盘哈希，脏标记清掉', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockRejectedValue(CONFLICT)
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    await fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    await fireEvent.click(screen.getByRole('button', { name: /^保存$/ }))
+    await fireEvent.click(await screen.findByRole('button', { name: /放弃我的改动/ }))
+    expect(box).toHaveValue('executor 改过的内容\n')
+    expect(screen.queryByText('未保存')).not.toBeInTheDocument()
+    expect(screen.queryByText(/文件已在磁盘上变了/)).not.toBeInTheDocument()
+  })
+
+  it('用我的内容覆盖：二次确认后拿 current.sha256 当新 base 重发', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile)
+      .mockRejectedValueOnce(CONFLICT)
+      .mockResolvedValueOnce({ sha256: 'afterforce', size: 17 })
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    await fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    await fireEvent.click(screen.getByRole('button', { name: /^保存$/ }))
+    await fireEvent.click(await screen.findByRole('button', { name: /用我的内容覆盖/ }))
+    // 二次确认：覆盖是不可逆的，而我们没有 watcher，用户在按保存之前从没被警告过
+    await fireEvent.click(await screen.findByRole('button', { name: /确认覆盖/ }))
+    await waitFor(() =>
+      expect(vi.mocked(writeWorkspaceFile).mock.calls[1][2]).toEqual({
+        content: 'module handoff\nx',
+        base_sha256: 'diskhash', // 不是空串、不是原始 basehash
+      }),
+    )
+  })
+
+  it('覆盖时磁盘又变了：第二次照样 409，冲突条重新出现', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockRejectedValue(CONFLICT)
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    await fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    await fireEvent.click(screen.getByRole('button', { name: /^保存$/ }))
+    await fireEvent.click(await screen.findByRole('button', { name: /用我的内容覆盖/ }))
+    await fireEvent.click(await screen.findByRole('button', { name: /确认覆盖/ }))
+    expect(await screen.findByText(/文件已在磁盘上变了/)).toBeInTheDocument()
+  })
+})
