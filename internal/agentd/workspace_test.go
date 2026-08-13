@@ -80,6 +80,35 @@ func initGitRepoIn(t *testing.T, dir string) string {
 	return dir
 }
 
+// initClonedRepo 造「上游仓库 + 克隆」这一对，返回克隆出的仓库路径。
+//
+// 参数：
+//   - baseBranch: 在上游建出的分支名；克隆里它**只以远程跟踪 ref 存在**
+//
+// 为什么必须是克隆：B76 的触发前提是「base 只有远程跟踪 ref、无本地同名分支」，
+// 而 initTestRepo 那种本地 git init 的仓库里本地同名分支总是存在，DWIM 不会
+// 发生——这正是这个 bug 一直没被任何测试抓到的原因。
+//
+// 为什么把 origin 改名成 upstream：registerTestProject 要往仓库里 remote add
+// origin，克隆自带的 origin 会让它撞车。改名后远程跟踪 ref 变成
+// refs/remotes/upstream/<baseBranch>，DWIM 照样触发（它认的是「在所有 remote 里
+// 唯一」，不是「叫 origin」），顺带证明这个缺陷与 remote 叫什么无关。
+func initClonedRepo(t *testing.T, baseBranch string) string {
+	t.Helper()
+	up := initTestRepo(t)
+	gitT(t, up, "branch", baseBranch)
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "config", "user.email", "test@handoff.dev")
+	gitT(t, clone, "config", "user.name", "handoff test")
+	// 前提自检：克隆里不能有本地同名分支，否则用例测的就不是 B76 的场景了
+	if out := gitOut(t, clone, "branch", "--list", baseBranch); out != "" {
+		t.Fatalf("fixture 失效：克隆里出现了本地分支 %s（%q），触发前提不成立", baseBranch, out)
+	}
+	return clone
+}
+
 // TestPrepareBranchCleanAndDirty 验证分支准备的两种前置：
 // 干净工作区 → 建出 handoff/<id8> 并切过去；脏工作区（已修改/未跟踪）→ ErrDirtyWorktree
 // 拒绝派发，且拒绝后不得擅自建分支。
@@ -888,5 +917,28 @@ func TestEnsureRepoUsableGitMissing(t *testing.T) {
 	err := EnsureRepoUsable(context.Background(), repo)
 	if !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("git 不在 PATH 时 err = %v, want ErrRepoUnusable", err)
+	}
+}
+
+// TestPrepareWorkspaceRejectsBranchIdentityMismatch 钉住 B76 的守卫：git 报成功
+// 但给出的分支不是请求的那个时，必须回滚并拒发，而不是带着错分支继续。
+func TestPrepareWorkspaceRejectsBranchIdentityMismatch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	wtDir := filepath.Join(t.TempDir(), "worktrees")
+
+	_, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: clone, TaskID: "abcdefgh-b76", NewWorktree: true, WorktreesDir: wtDir,
+		NewBranch: "feat/wanted", Base: "shared-base",
+	})
+	if !errors.Is(err, ErrBranchIdentityMismatch) {
+		t.Fatalf("应按分支身份不符拒发, got: %v", err)
+	}
+	// 错误文本必须同时点名两个分支——只说「不符」的报错等于没说
+	if !strings.Contains(err.Error(), "feat/wanted") || !strings.Contains(err.Error(), "shared-base") {
+		t.Fatalf("错误文本应同时含请求分支与实到分支: %v", err)
+	}
+	// 拒发必须干净：刚建的工作树不能留下
+	if _, statErr := os.Stat(filepath.Join(wtDir, "abcdefgh")); !os.IsNotExist(statErr) {
+		t.Fatalf("拒发后 managed worktree 应已清理, stat err=%v", statErr)
 	}
 }

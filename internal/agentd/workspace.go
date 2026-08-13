@@ -63,6 +63,10 @@ var (
 	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
 	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
+
+	// ErrBranchIdentityMismatch 表示 git 报告成功，但工作区实际所在的分支
+	// 不是我们请求的那个（B76：worktree add -b 被 DWIM 顶替）。
+	ErrBranchIdentityMismatch = errors.New("工作区分支与请求不符")
 )
 
 // 执行护栏：
@@ -318,6 +322,14 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	}
+	// 守卫（B76）：三条路径统一在此核对，因为它们都已把结果收敛进 ws
+	if verr := verifyBranchIdentity(ctx, ws.WorkDir, ws.Branch); verr != nil {
+		log().Error("工作区分支身份核对失败，回滚并拒发", "task", req.TaskID,
+			"want", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed, "cause", verr)
+		rollbackWorkspace(ctx, req.Repo, ws)
+		return Workspace{}, verr
+	}
+	log().Info("工作区分支身份核对通过", "task", req.TaskID, "branch", ws.Branch)
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
 	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
 	// 不显式记录一条就无法在日志里区分「命令自己失败」与「被我们掐断」
@@ -349,6 +361,64 @@ func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExi
 		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
 	}
 	return nil
+}
+
+// verifyBranchIdentity 核对工作区实际所在分支是否就是决议出的分支。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - workDir: 已建好的工作区目录
+//   - want: 第 2 层决议出的分支名
+//
+// 返回：不符或读取失败时返回包 ErrBranchIdentityMismatch 的错误，文本同时
+// 含请求分支与实到分支。
+//
+// 为什么需要这道核对：git 的退出码只说明「命令没报错」，不说明「它做了你要
+// 的事」。B76 里 `worktree add -b X <dir> <base>` 在 base 只有远程跟踪 ref 时
+// 被 DWIM 顶替成「检出 base」，丢掉 X 且退出码为 0——要的分支与实到分支从来
+// 没被比对过，这是结构性空白，不是某一次 git 行为的补丁。
+func verifyBranchIdentity(ctx context.Context, workDir, want string) error {
+	out, stderr, err := gitRun(ctx, workDir, "branch", "--show-current")
+	got := strings.TrimSpace(out)
+	if err != nil {
+		return fmt.Errorf("%w: 读取工作区 %s 的当前分支失败（请求分支 %s）: %s",
+			ErrBranchIdentityMismatch, workDir, want, strings.TrimSpace(stderr))
+	}
+	if got != want {
+		return fmt.Errorf("%w: 请求分支 %s，git 实际给出 %s（工作区 %s）",
+			ErrBranchIdentityMismatch, want, got, workDir)
+	}
+	return nil
+}
+
+// rollbackWorkspace 在 PrepareWorkspace 内部失败时回滚已建的工作区。
+//
+// 为什么不能交给 manager 的补偿 defer：那个 defer 用的是 PrepareWorkspace 的
+// **返回值** ws，失败时它是零值，WorkDir 为空，compensateWorkspace 会直接返回。
+// 所以 PrepareWorkspace 自己建的东西必须自己收。
+func rollbackWorkspace(ctx context.Context, repo string, ws Workspace) {
+	if ws.WorkDir == "" {
+		return
+	}
+	if ws.Managed {
+		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+			log().Error("回滚 managed worktree 失败，需人工清理", "repo", repo,
+				"workdir", ws.WorkDir, "cause", err)
+			return
+		}
+		log().Info("已回滚 managed worktree", "repo", repo, "workdir", ws.WorkDir)
+		return
+	}
+	if ws.PrevRef == "" {
+		log().Warn("无 PrevRef 可复原，工作区停在当前 ref", "workdir", ws.WorkDir)
+		return
+	}
+	if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+		log().Error("回滚切回原 ref 失败，需人工处理", "workdir", ws.WorkDir,
+			"prev_ref", ws.PrevRef, "stderr", strings.TrimSpace(stderr), "cause", err)
+		return
+	}
+	log().Info("已回滚至原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
 }
 
 // EnsureRepoUsable 校验 repo 确实是一个可用的 git 仓库。
