@@ -12,6 +12,10 @@
 
 ### 修复
 
+- `go install github.com/Xsxdot/handoff@latest` 现在能用了。go.mod 声明的模块
+  路径一直是 `github.com/xushixin/handoff`，而仓库实际在 `Xsxdot` 名下——按仓库
+  地址装会被 Go 拒（「module declares its path as …」），按声明路径装则是 404，
+  两个方向都堵死，pkg.go.dev 也永远不会收录。已改为真实路径。
 - 自更新的下载遇到瞬时网络故障会自动重试，不再一次抖动就判整台机器升级失败。
   传输层错误（超时、连接重置、EOF）与 HTTP 5xx / 429 最多重试 3 次，间隔
   2s、4s；4xx 不重试——404 是「这个版本没有这个资产」，确定性的缺失，重试

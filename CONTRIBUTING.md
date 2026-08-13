@@ -20,9 +20,9 @@ go build ./...
 go test ./... -count=1
 ```
 
-> 这个仓库的历史里有已封存的桌面端原型（含 `node_modules`），完整 clone 约
-> 800MB。只想改代码的话 `git clone --depth 1 https://github.com/Xsxdot/handoff.git`
-> 就够了。
+> 这个仓库的历史里有已封存的桌面端原型（含 `node_modules` 与若干演示 gif），
+> 所以完整 clone（含全部分支）约 80MB。只想改代码的话
+> `git clone --single-branch https://github.com/Xsxdot/handoff.git` 只要 7MB 左右。
 
 想装到自己机器上试：
 
