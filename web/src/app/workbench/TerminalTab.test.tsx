@@ -25,7 +25,10 @@ const termInstance = {
 vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstance }) }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() } }) }))
-vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return {} }) }))
+// webgl addon 的替身要能捕获 onContextLoss 回调并记录 dispose：
+// 「上下文丢了之后有没有回退」正是本组件的职责，必须能测
+const webglAddon = { onContextLoss: vi.fn(), dispose: vi.fn() }
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return webglAddon }) }))
 
 const createPtySession = vi.fn()
 const connectPty = vi.fn()
@@ -116,6 +119,20 @@ describe('TerminalTab', () => {
     createPtySession.mockRejectedValue(new Error('该 agentd 所在平台不支持 PTY 终端'))
     render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
     expect(await screen.findByText(/不支持 PTY 终端/)).toBeInTheDocument()
+  })
+
+  it('WebGL 上下文丢失时 dispose 掉渲染器，交回 DOM 渲染——不能白屏', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(webglAddon.onContextLoss).toHaveBeenCalled())
+    webglAddon.onContextLoss.mock.calls[0][0]({})
+    expect(webglAddon.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('构造期就不可用时照样活着——不抛出去，终端仍然能连', async () => {
+    const { WebglAddon } = await import('@xterm/addon-webgl')
+    vi.mocked(WebglAddon).mockImplementationOnce(() => { throw new Error('no webgl') })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
   })
 
   it('卸载时只断连接，不删会话', async () => {

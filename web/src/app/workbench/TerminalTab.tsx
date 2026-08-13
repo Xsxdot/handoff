@@ -71,13 +71,22 @@ export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProp
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+    // WebGL 渲染器有两条失效路径，两条都不能白屏（spec §6.3）：
+    //   1. 构造期不可用（远程桌面、禁用硬件加速、老显卡）——构造直接抛，
+    //      catch 住即可，xterm 用内建 DOM 渲染器继续。
+    //   2. 运行期上下文丢失（GPU 复位、驱动重启、浏览器驱逐 WebGL 上下文——
+    //      终端 tab 开多了就够得着）。这条 try/catch **管不着**：addon 已经
+    //      挂上去了，不 dispose 它就留下一个死渲染器，画面永久停住，控制台
+    //      刷 `dimensions` 的 TypeError。所以必须注册 onContextLoss 主动摘除。
     try {
-      term.loadAddon(new WebglAddon())
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => {
+        console.warn('WebGL 上下文丢失，已摘除 WebGL 渲染器回退到 DOM 渲染（会慢一些，但画面继续）')
+        webgl.dispose()
+      })
+      term.loadAddon(webgl)
     } catch (err) {
-      // WebGL 不可用（远程桌面、禁用了硬件加速、老显卡）时 xterm 自动回退到
-      // canvas/DOM 渲染：慢一点，但**不能白屏**（spec §6.3）。吞掉这个异常正是
-      // 为了让回退发生，所以它不是「静默失败」——功能完好，只是渲染路径不同。
-      console.warn('WebGL 渲染器不可用，已回退到 canvas 渲染', err)
+      console.warn('WebGL 渲染器不可用，已回退到 DOM 渲染', err)
     }
     fit.fit()
 
