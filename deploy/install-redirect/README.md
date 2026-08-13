@@ -1,8 +1,12 @@
-# handoff.gosuper.dev/install 重定向
+# handoff.gosuper.dev 安装入口重定向
 
-一行安装那句 `curl -fsSL https://handoff.gosuper.dev/install | bash` 背后就是这个
-Cloudflare Worker。它只做一件事：把 `/install` 302 到仓库 main 分支上的
-`install.sh`。
+一行安装那两句背后就是这个 Cloudflare Worker：
+
+- `curl -fsSL https://handoff.gosuper.dev/install | bash` → 302 到 `install.sh`
+- `irm https://handoff.gosuper.dev/install.ps1 | iex` → 302 到 `install.ps1`
+
+两条路径分开而不是按 User-Agent 猜：用户敲的命令本身已经说清了要哪一个，猜只会在
+WSL / Git Bash 上挑错。
 
 ## 为什么不直接让用户 curl raw.githubusercontent.com
 
@@ -10,8 +14,8 @@ Cloudflare Worker。它只做一件事：把 `/install` 302 到仓库 main 分�
 - 将来要换分发方式（换 CDN、改成指向某个 tag 的固定版本、加地区分流），
   只需要改这个 Worker，已经流传出去的那行命令不用动。
 
-**脚本内容不在这里。** 唯一权威是仓库根目录的 `install.sh`——改脚本推 main 即可
-生效，不需要重新部署 Worker。
+**脚本内容不在这里。** 唯一权威是仓库根目录的 `install.sh` 与 `install.ps1`——改脚本
+推 main 即可生效，不需要重新部署 Worker。
 
 ## 部署
 
@@ -33,9 +37,10 @@ DNS 记录；而 OAuth 登录拿到的令牌通常只有 `zone (read)`，没有 
 
 ```bash
 curl -sI https://handoff.gosuper.dev/install | head -3
+curl -sI https://handoff.gosuper.dev/install.ps1 | head -3
 ```
 
-期望：`HTTP/2 302` 且 `location: https://raw.githubusercontent.com/Xsxdot/handoff/main/install.sh`。
+期望：都是 `HTTP/2 302`，`location` 分别指向 main 分支上的 `install.sh` 与 `install.ps1`。
 
 其余路径（除 `/` 外）应当是 404——这个域名只有安装这一个用途，把别的路径也重定向
 到脚本会让人拿到意料之外的东西。
