@@ -11,6 +11,8 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -23,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -42,7 +45,21 @@ const selfCheckTimeout = 10 * time.Second
 // TempName 返回某版本的临时文件名。
 //
 // 前导点让它在目录列表里不显眼；带上 tag 使多次尝试不同版本时互不覆盖。
-func TempName(tag string) string { return ".handoff.new-" + tag }
+// Windows 上追加 .exe——selfCheck 要 exec 这个临时文件跑 version，
+// 没有该后缀的文件在 Windows 上起不来。
+func TempName(tag string) string { return tempName(tag, runtime.GOOS) }
+
+// tempName 是 TempName 的可测实现，平台由调用方给定。
+//
+// 拆出这一层的唯一理由是可测性：判据写死成 runtime.GOOS 时，
+// 「Windows 上带 .exe」这条行为在非 Windows 的 CI 上永远测不到。
+func tempName(tag, goos string) string {
+	name := ".handoff.new-" + tag
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return name
+}
 
 // PrevPath 返回某目标路径对应的旧二进制留存路径。
 func PrevPath(target string) string { return target + ".prev" }
@@ -141,11 +158,15 @@ func (i *Installer) InstallArchive(tgz []byte, wantSum, wantTag, destDir string)
 			i.Log.Warn("清理临时文件失败", "path", tmp, "cause", err)
 		}
 	}
-	if err := extractBinary(tgz, tmp); err != nil {
+	format, err := extractBinary(tgz, tmp)
+	if err != nil {
 		cleanup()
 		i.Log.Error("安装被拒：解包失败", "tag", wantTag, "path", tmp, "cause", err)
 		return "", fmt.Errorf("解包 %s: %w", wantTag, err)
 	}
+	// 装的到底是 zip 还是 tar.gz 是排查「资产格式与平台不符」时的第一个问题，
+	// 而它此前只能靠资产名去猜
+	i.Log.Info("归档解包完成", "tag", wantTag, "format", format, "path", tmp)
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		cleanup()
 		i.Log.Error("安装被拒：置可执行位失败", "tag", wantTag, "path", tmp, "cause", err)
@@ -217,9 +238,50 @@ func sumFor(body, name string) (string, error) {
 	return "", fmt.Errorf("%s 里没有 %s 的校验和", ChecksumsName, name)
 }
 
-// extractBinary 从 tar.gz 里取出名为 handoff 的文件写到 dest。
-func extractBinary(tgz []byte, dest string) error {
-	gz, err := gzip.NewReader(strings.NewReader(string(tgz)))
+// gzipMagic / zipMagic 是两种归档的文件头。
+var (
+	gzipMagic = []byte{0x1f, 0x8b}
+	zipMagic  = []byte{'P', 'K', 0x03, 0x04}
+)
+
+// binaryNames 是归档内可接受的可执行文件名。
+//
+// Windows 资产里是 handoff.exe，其余平台是 handoff。两个都认而不按平台分派，
+// 理由同 extractBinary：判据来自归档本身，不来自调用方对平台的声明。
+var binaryNames = map[string]bool{"handoff": true, "handoff.exe": true}
+
+// extractBinary 从归档里取出 handoff 可执行文件写到 dest。
+//
+// 参数：
+//   - data: 归档原文（tar.gz 或 zip）
+//   - dest: 落点路径
+//
+// 返回：
+//   - format: 实际识别出的格式（"tar.gz" / "zip"），供调用方打进日志
+//   - 错误：格式不认、解包失败、包内没有可执行文件
+//
+// 注意：
+//   - 格式**按魔数判定，不按调用方传入的平台**。传平台会制造第二个真相来源，
+//     一旦它与实际字节不符，报错会指向错误的方向；字节才是权威。这条选择的
+//     额外好处是 InstallArchive / Fetch / FetchArchive 三个签名都不用动
+func extractBinary(data []byte, dest string) (string, error) {
+	switch {
+	case bytes.HasPrefix(data, gzipMagic):
+		return "tar.gz", extractFromTarGz(data, dest)
+	case bytes.HasPrefix(data, zipMagic):
+		return "zip", extractFromZip(data, dest)
+	default:
+		head := data
+		if len(head) > 4 {
+			head = head[:4]
+		}
+		return "", fmt.Errorf("无法识别的归档格式：既不是 gzip 也不是 zip（前 %d 字节 %x）", len(head), head)
+	}
+}
+
+// extractFromTarGz 从 tar.gz 里取出可执行文件写到 dest。
+func extractFromTarGz(data []byte, dest string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("gzip: %w", err)
 	}
@@ -228,24 +290,50 @@ func extractBinary(tgz []byte, dest string) error {
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return fmt.Errorf("包里没有名为 handoff 的文件")
+			return errors.New("包里没有名为 handoff / handoff.exe 的文件")
 		}
 		if err != nil {
 			return fmt.Errorf("tar: %w", err)
 		}
-		if filepath.Base(h.Name) != "handoff" || h.Typeflag != tar.TypeReg {
+		if !binaryNames[filepath.Base(h.Name)] || h.Typeflag != tar.TypeReg {
 			continue
 		}
-		f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if _, err := io.Copy(f, io.LimitReader(tr, maxAssetBytes)); err != nil {
-			return err
-		}
-		return nil
+		return writeExtracted(tr, dest)
 	}
+}
+
+// extractFromZip 从 zip 里取出可执行文件写到 dest。
+func extractFromZip(data []byte, dest string) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("zip: %w", err)
+	}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || !binaryNames[filepath.Base(f.Name)] {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("zip 打开 %s: %w", f.Name, err)
+		}
+		defer rc.Close()
+		return writeExtracted(rc, dest)
+	}
+	return errors.New("包里没有名为 handoff / handoff.exe 的文件")
+}
+
+// writeExtracted 把归档条目的内容写到 dest，带大小上限。
+//
+// 抽出来是因为两种格式的写盘部分完全一样，而这段恰好是唯一会在磁盘上
+// 留下痕迹的地方——只有一处，出问题时也只需要看一处。
+func writeExtracted(r io.Reader, dest string) error {
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, io.LimitReader(r, maxAssetBytes))
+	return err
 }
 
 // selfCheck 跑新二进制的 version 子命令，要求首行等于期望 tag。
@@ -283,6 +371,10 @@ func (i *Installer) selfCheck(path, wantTag string) error {
 //   - 两次 rename 都是同目录内操作，因而是原子的。中途失败最坏的结果是
 //     「旧的已挪到 .prev、新的还没就位」——此时目标路径暂时缺失，
 //     所以第二次 rename 失败时会把 .prev 挪回来
+//   - **两次 rename 的顺序在 Windows 上是承重的**：Windows 允许 rename 一个
+//     正在运行的 exe，但不允许覆盖或删除它。所以「先把旧的挪走、再把新的挪进来」
+//     恰好就是 Windows 自更新的标准手法。**不要**把它「优化」成先删后写——
+//     那在 unix 上照样绿，在 Windows 上当场炸
 func Activate(newPath, target string) (string, error) {
 	dir := filepath.Dir(target)
 	// 先探一次写权限：直接 rename 得到的是扁平的 permission denied，

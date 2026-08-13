@@ -3,6 +3,7 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -351,5 +352,121 @@ func TestActivateUnwritableDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "写权限") {
 		t.Fatalf("报错应点明是目录写权限问题，得到: %v", err)
+	}
+}
+
+// makeZip 造一个含单个指定文件名的 zip。
+//
+// 参数：
+//   - name: 包内文件名（用来覆盖 handoff.exe 与「包里没有目标文件」两种情形）
+//   - content: 文件内容
+func makeZip(t *testing.T, name string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("建 zip 条目失败: %v", err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatalf("写 zip 条目失败: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("关闭 zip 失败: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// Windows 资产是 zip，包内是 handoff.exe，两者都要认。
+func TestExtractBinaryReadsZip(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	format, err := extractBinary(makeZip(t, "handoff.exe", []byte("BINARY")), dest)
+	if err != nil {
+		t.Fatalf("解 zip 失败: %v", err)
+	}
+	if format != "zip" {
+		t.Fatalf("format = %q，期望 zip", format)
+	}
+	b, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("读解出的文件失败: %v", err)
+	}
+	if string(b) != "BINARY" {
+		t.Fatalf("解出的内容 = %q，期望 BINARY", b)
+	}
+}
+
+// darwin/linux 资产仍是 tar.gz，包内是 handoff。
+func TestExtractBinaryReadsTarGz(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	format, err := extractBinary(makeTarGz(t, "#!/bin/sh\necho hi\n"), dest)
+	if err != nil {
+		t.Fatalf("解 tar.gz 失败: %v", err)
+	}
+	if format != "tar.gz" {
+		t.Fatalf("format = %q，期望 tar.gz", format)
+	}
+}
+
+// 格式按魔数判定，不按调用方传的平台——所以「两者都不是」必须有明确报文，
+// 否则症状会是一句无从下手的 gzip 解析错误。
+func TestExtractBinaryRejectsUnknownFormat(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	_, err := extractBinary([]byte("not an archive at all"), dest)
+	if err == nil {
+		t.Fatal("无法识别的格式应当报错")
+	}
+	if !strings.Contains(err.Error(), "既不是 gzip 也不是 zip") {
+		t.Fatalf("报文应说清两种格式都不匹配，实得 %v", err)
+	}
+}
+
+// tgzNamed 造一个含单个指定文件名的 tar.gz。
+//
+// 与既有的 tgzWith 的区别只在于文件名可指定：tgzWith 把名字写死成 handoff，
+// 测不了「包里没有目标文件」这一支。
+func tgzNamed(t *testing.T, name, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// 包里没有可执行文件时两种格式都要报错，不能留一个空文件在目标路径上。
+func TestExtractBinaryRejectsArchiveWithoutBinary(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	if _, err := extractBinary(makeZip(t, "README.txt", []byte("x")), dest); err == nil {
+		t.Fatal("zip 里没有 handoff.exe 时应当报错")
+	}
+	if _, err := extractBinary(tgzNamed(t, "README.txt", "x"), dest); err == nil {
+		t.Fatal("tar.gz 里没有 handoff 时应当报错")
+	}
+}
+
+// Windows 上临时文件必须以 .exe 结尾：selfCheck 要 exec 它跑 version，
+// 没有该后缀的文件在 Windows 上起不来——症状是「自检失败」，真因是文件名。
+func TestTempNameHasExeSuffixOnWindows(t *testing.T) {
+	if got := tempName("v1.2.3", "windows"); got != ".handoff.new-v1.2.3.exe" {
+		t.Fatalf("windows: tempName = %q，期望 .handoff.new-v1.2.3.exe", got)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := tempName("v1.2.3", goos); got != ".handoff.new-v1.2.3" {
+			t.Fatalf("%s: tempName = %q，期望 .handoff.new-v1.2.3", goos, got)
+		}
 	}
 }
