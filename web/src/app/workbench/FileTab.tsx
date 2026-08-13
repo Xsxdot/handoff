@@ -87,9 +87,13 @@ export function FileTab({
           restored = loadDraft(draftKey(base.machine || 'local', base.path, rel))
         }
         // 有草稿就用草稿，但 read.content 仍是磁盘那一版——dirty 是两者之差，
-        // 这样切回来时脏标记还在，而不是把草稿误当成干净内容
+        // 这样切回来时脏标记还在，而不是把草稿误当成干净内容。
+        // baseSha 同样以草稿原始基线为准、而不是磁盘当前哈希：若换成磁盘哈希，
+        // 普通保存会用新基线比对通过、绕过「确认覆盖」的二次确认；且去抖 effect
+        // 会把草稿里的 baseSha 覆写成磁盘哈希，打开一次 500ms 后 stale 标记就被
+        // 摧毁，刷新后不再判为过期草稿。草稿基线 ≠ 磁盘哈希正是冲突条的判据
         setDraft(restored?.draft ?? r.content)
-        setBaseSha(r.sha256 ?? '')
+        setBaseSha(restored?.baseSha ?? r.sha256 ?? '')
         // 草稿连 baseSha 一起存，就是为了这一刻：拿它和磁盘现在的 sha256 一比，
         // 不等说明磁盘在你离开期间变了。走**同一条冲突条、同两个出口**，
         // 不发明第二套逻辑——用户面对的是同一个问题
@@ -167,6 +171,10 @@ export function FileTab({
       // 保存成功，localStorage 里那份草稿没有存在意义了——留着下次刷新还会
       // 被当成过期草稿再触发一遍冲突条
       clearDraft(draftKey(base.machine || 'local', base.path, rel))
+      // 保存成功，内存层那份草稿也清掉：不清的话 tab 内容还带着旧 draft，
+      // 关闭时会误弹「未保存」确认框（文件其实已经保存了）。卸载回写那条路
+      // 只在卸载时走，这里要先主动通知
+      notifyRef.current?.(null)
     } catch (err) {
       // 先认冲突：409 不是普通失败，它带着磁盘现状，要交给冲突条而不是 saveError
       const cur = conflictCurrent(err)
