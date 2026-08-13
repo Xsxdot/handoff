@@ -1,7 +1,9 @@
 # 推 tag 时构建并发布 handoff。
 #
 # 触发：git push origin vX.Y.Z
-# 产出：四个平台的 handoff_<tag>_<os>_<arch>.tar.gz + 一个 checksums.txt
+# 产出：六个平台（darwin/arm64、darwin/amd64、linux/amd64、linux/arm64、
+#       windows/amd64、windows/arm64）的资产：Windows 出 zip、其余出 tar.gz，
+#       外加一个 checksums.txt
 #
 # 资产命名与 ldflags 注入路径是与 install.sh / 自更新的契约，
 # 由仓库根的 release_workflow_test.go 钉住，改这里必须同步改那边与消费方。
@@ -21,7 +23,7 @@ jobs:
   verify:
     uses: ./.github/workflows/ci.yml
 
-  build:
+  build-unix:
     needs: verify
     runs-on: ubuntu-latest
     strategy:
@@ -36,6 +38,10 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -49,18 +55,32 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+          # Windows 出 zip 且包内是 handoff.exe；其余出 tar.gz 且包内是 handoff。
+          # 这四处（这里、internal/release.archiveExt、install.sh、install.ps1）
+          # 是同一个契约，改一处必须四处同步。
+          if [ "${GOOS}" = "windows" ]; then
+            BIN=handoff.exe
+          else
+            BIN=handoff
+          fi
           go build -trimpath \
             -ldflags "-s -w -X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=${TAG}" \
-            -o handoff .
-          tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" handoff
+            -o "${BIN}" .
+          if [ "${GOOS}" = "windows" ]; then
+            zip -q "handoff_${TAG}_${GOOS}_${GOARCH}.zip" "${BIN}"
+          else
+            tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" "${BIN}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: handoff_*.tar.gz
+          path: |
+            handoff_*.tar.gz
+            handoff_*.zip
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: build-unix
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -72,7 +92,7 @@ jobs:
           set -euo pipefail
           cd dist
           # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
-          sha256sum handoff_*.tar.gz > checksums.txt
+          sha256sum handoff_*.tar.gz handoff_*.zip > checksums.txt
           cat checksums.txt
       - name: 建 Release 并上传资产
         env:
@@ -83,4 +103,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            dist/handoff_*.tar.gz dist/checksums.txt
+            dist/handoff_*.tar.gz dist/handoff_*.zip dist/checksums.txt

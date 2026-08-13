@@ -50,22 +50,59 @@ func TestWorkflowUsesAgreedAssetNaming(t *testing.T) {
 	}
 }
 
-// 平台矩阵必须正好是这四项：少一项等于某个平台装不上，
-// 多一项（尤其 windows）等于发一个 agentd 根本跑不起来的二进制（backlog B37）。
-func TestWorkflowCoversExactlyFourPlatforms(t *testing.T) {
-	wf := readWorkflow(t)
-	for _, pair := range []string{
-		"goos: darwin\n            goarch: arm64",
-		"goos: darwin\n            goarch: amd64",
-		"goos: linux\n            goarch: amd64",
-		"goos: linux\n            goarch: arm64",
-	} {
-		if !strings.Contains(wf, pair) {
-			t.Fatalf("矩阵缺少组合:\n%s", pair)
+// 平台清单必须正好是这六项。
+//
+// 这条断言在 B86 之前是「正好四项，且不得含 windows」——理由是 agentd 在
+// Windows 上跑不起来（B37），发一个装了也用不了的二进制是负价值。B84 让
+// 纯协调者机不再需要 agentd 之后，Windows 二进制第一次有了真实用途（只当
+// 协调者），于是断言反转。**反转不等于取消**：少一项等于某个平台装不上，
+// 多一项等于发一个没人验证过的资产。
+//
+// 清单从两处收集并取并集：交叉编译 job 的 matrix.include，以及签名 job 的
+// DARWIN_ARCHES（darwin 两项要在同一个 job 里合并成一个 zip 一次提交公证，
+// 所以它不是矩阵）。取并集而不是写死取哪个 job，这条断言才能跨越
+// 「darwin 还在矩阵里」与「darwin 已拆走」两种布局都成立。
+func TestWorkflowCoversExactlySixPlatforms(t *testing.T) {
+	jobs := releaseJobs(t)
+	got := map[string]bool{}
+	for _, j := range jobs {
+		for _, e := range j.Strategy.Matrix.Include {
+			got[e.Goos+"/"+e.Goarch] = true
+		}
+		for _, a := range strings.Fields(j.Env["DARWIN_ARCHES"]) {
+			got["darwin/"+a] = true
 		}
 	}
-	if strings.Contains(wf, "windows") {
-		t.Fatal("不得发布 windows 资产：prochost 的 Windows 实现尚未完成（backlog B37），装了也跑不起来")
+	want := map[string]bool{
+		"darwin/arm64": true, "darwin/amd64": true,
+		"linux/amd64": true, "linux/arm64": true,
+		"windows/amd64": true, "windows/arm64": true,
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("平台清单缺 %s", p)
+		}
+	}
+	for p := range got {
+		if !want[p] {
+			t.Errorf("平台清单多出 %s —— 多一项等于发一个没人验证过的资产", p)
+		}
+	}
+}
+
+// 归档格式按平台分，这是与 internal/release.archiveExt 及两个 install 脚本
+// 四处共同的契约：Windows 出 zip（资源管理器可双击、Expand-Archive 人人有），
+// 其余出 tar.gz。
+func TestWorkflowUsesZipForWindowsOnly(t *testing.T) {
+	wf := readWorkflow(t)
+	for _, want := range []string{
+		`handoff_${TAG}_${GOOS}_${GOARCH}.zip`,
+		`handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz`,
+		"handoff.exe",
+	} {
+		if !strings.Contains(wf, want) {
+			t.Fatalf("workflow 缺约定 %q", want)
+		}
 	}
 }
 
