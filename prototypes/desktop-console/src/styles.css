@@ -657,8 +657,90 @@ button {
 
 .tui-meta strong {
   grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   color: #cbd8e7;
   font-weight: 550;
+}
+
+/* B83 累计用量：切换按钮、单行用量、估算标记 */
+.usage-toggle {
+  border: 1px solid #3d4c60;
+  border-radius: 3px;
+  background: transparent;
+  color: #97a7ba;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 450;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+.usage-toggle:hover {
+  border-color: #5b6d84;
+  color: #cbd8e7;
+}
+
+/* 跨掉标签列拿全宽：内容比 Context 行长得多，关在第二列会正好卡满、多一位数字就折行 */
+.usage-line {
+  grid-column: 1 / -1;
+  white-space: nowrap;
+}
+
+.usage-line b {
+  font-weight: 450;
+  color: #8b9bb0;
+}
+
+/* 估算值不能和自报值长得一样——那是在暗示一个它没有的精度 */
+.usage-est {
+  color: #8b9bb0;
+}
+
+.usage-est em {
+  font-style: normal;
+  font-size: 9px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid #3d4c60;
+  border-radius: 2px;
+  opacity: 0.85;
+}
+
+/* 原型专用脚手架：真实控制台里没有这排开关 */
+.usage-scaffold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 11px;
+  font-size: 9px;
+  color: #6f7f93;
+}
+
+.usage-scaffold small {
+  margin-left: 4px;
+}
+
+.usage-scaffold small:first-child {
+  margin-left: 0;
+}
+
+.usage-scaffold button {
+  border: 1px dashed #3d4c60;
+  border-radius: 3px;
+  background: transparent;
+  color: #8b9bb0;
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.usage-scaffold button.on {
+  border-style: solid;
+  border-color: #5b6d84;
+  color: #cbd8e7;
 }
 
 .tui-scroll {
