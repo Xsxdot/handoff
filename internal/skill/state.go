@@ -45,7 +45,7 @@ func Status(content, home string) ([]Site, error) {
 
 	sites := []Site{check(filepath.Join(BasePath(home), fileName))}
 	for _, rel := range agentDirs {
-		// 经软链读到的就是基准副本；落点是实体目录时读到的是它自己那份
+		// 落点是各自一份副本；老装机残留的软链读到的是基准副本——两种形态都按内容比对，本函数不关心是哪种
 		sites = append(sites, check(filepath.Join(home, rel, skillDirName, fileName)))
 	}
 	return sites, nil
