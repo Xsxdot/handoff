@@ -233,11 +233,32 @@ sync:
 
 repo_root: ""                 # 自动登记时项目落地的根目录；空 = <datadir>/repos
 path_dirs: ["/opt/tools/bin"] # 额外可执行目录；agentd 已自动合并登录 shell PATH 与常见安装目录，兜不住才加
+proxy: ""                     # handoff 自身出网代理；空 = 沿用 HTTPS_PROXY 等环境变量
+                              # 支持 http:// https:// socks5:// socks5h://
 
 proc_fence:                   # executor 进程围栏（RLIMIT_NPROC），防失控 fork 拖垮整机
   disabled: false             # 逃生开关，正常别动
   reserve_ratio: 0.1          # 给 agentd/sshd 留的救护车道比例
 ```
+
+**`proxy` 段**：给 **handoff 自己**的出网配代理。作用范围只有两处——更新链路
+（查 release、下资产）与 agentd 的 `git clone` / `git fetch`。配置它比设
+`HTTPS_PROXY` 环境变量更实用的地方在于：agentd 由 launchd / systemd 拉起，
+**读不到你终端的 shell env**，而这台机器上本来就有一份 `config.yaml`。
+
+三条边界值得记住：
+
+- **不作用于协调者 ↔ agentd 那条链路**。那是 LAN / 虚拟组网 / loopback 地址，
+  代理化只会给它凭空加失败模式。
+- **不作用于 executor**。executor 的出网走 `env` 段（下一节），两者故障域不交叉
+  ——代理挂了只影响升级，不影响任务执行。
+- **SSH 协议的 git remote 吃不到它**。git 的 `http.proxy` 只对 `http(s)://` 的
+  remote 生效。如果自动登记要 clone 的仓库是 `git@github.com:...`，改用 HTTPS
+  地址即可（`git config --global url."https://github.com/".insteadOf git@github.com:`）。
+
+值写错（scheme 不在支持范围、缺主机）时 agentd **启动就会失败并说明原因**——
+这是刻意的：后台更新检查那条路径失败时是静默跳过的，坏代理若不在启动期拦下，
+表现就是"什么都不发生"，可以数月无人察觉。
 
 **`env` 段**：给 executor 带上代理、私有 registry 等环境变量。配置里按 executor 名写**纯文件名**（如上例 `opencode: dev.env`，未配置的 executor 不注入），文件本体放**执行机**的 `~/.handoff/env/` 下，dotenv 格式：
 
@@ -266,7 +287,16 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
 
 ## 升级
 
-升级由你触发，没有定时自动更新。二进制由本机下载后推送，**执行机无需出网**：
+升级由你触发，没有定时自动更新。默认由**执行机自己**去 GitHub 下载：协调者只查一次
+版本、下一份几百字节的 `checksums.txt`，把 tag 与 sha256 下发过去。这样一次多机
+升级在协调者与执行机之间只走几十字节，而不是每台机器一份 20MB 的二进制——走云
+中转时这个差别是决定性的。
+
+完整性由**协调者下发的** sha256 把关：执行机下完资产比对它，本机代理或镜像被
+投毒时会当场被抓住（校验和与资产走两条不同的信任路径）。
+
+执行机确实出不了网时用 `--push` 回退到「本机下载后推送」。对端 agentd 版本过旧
+（不认自拉）时会**自动**降级推送，不需要你操心。
 
 ```bash
 handoff upgrade                       # 巡检：列出所有机器的版本与结论
@@ -311,6 +341,7 @@ handoff show <task>                # 现场快照：状态 + 未处理工单 + �
 | 派发报 executor `not found in $PATH`，但你终端里明明能跑 | agentd 的 PATH 与你终端不同。它启动时会自动补全（登录 shell + 常见安装目录），日志搜「已补全 PATH」；还兜不住就把目录写进 `path_dirs` 重启 agentd |
 | executor 报 `resource temporarily unavailable` | 撞上进程围栏（防失控 fork 的保护），不是代码 bug。收敛并行即可，报错细节在任务目录 `shim.log` |
 | agentd 起不来，报数据目录被锁 | 已有一个 agentd 在跑。复用它；升级要先停旧再起新 |
+| `upgrade --now` 报失败，或卡着不动 | 默认走执行机自拉，原因在对端。`handoff status --target <名字>` 看 `update.pull_state`：`stage` 是到哪一步、`error` 是原文（代理连不上 / sha256 不符 / 自检没过）。执行机出不了网就用 `handoff upgrade --now --push` |
 
 **macOS：从 Releases 页面下载后提示「无法打开，因为无法验证开发者」**
 

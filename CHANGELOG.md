@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+### 新增
+
+- `proxy` 配置项：给 handoff 自身出网配代理，支持 `http` / `https` / `socks5` /
+  `socks5h`。作用于更新链路与 agentd 的 git clone/fetch；不作用于协调者↔agentd
+  链路与 executor（后者仍走 `env` 段）。空值时行为不变（沿用 `HTTPS_PROXY` 等环境变量）。
+- `handoff upgrade --push`：强制由本机下载并推送二进制。
+
+### 变更
+
+- `handoff upgrade --now` 默认改为**让执行机自己下载**：协调者只下发 tag 与
+  sha256。一次多机升级的跨机流量从每台 20MB 降到几十字节。对端 agentd 过旧时
+  自动降级为推送，无需干预。
+- `/api/update` 新增 `mode` 查询参数（`pull` / `push`）。省略时行为与此前一字不变。
+- `/api/status` 的 `update` 段新增 `pull`（能力位）与 `pull_state`（自拉进度与失败原文）。
+
 ## [v0.2.2] - 2026-08-13
 
 ### 修复
