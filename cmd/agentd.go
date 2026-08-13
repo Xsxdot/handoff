@@ -174,9 +174,22 @@ var agentdCmd = &cobra.Command{
 		defer wdCancel()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout, logger)
 
-		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
+		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
+		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
+		listenAddrs := []string{cfg.Listen}
+		var listenAux string
+		if cls, aux := config.ClassifyListen(cfg.Listen); cls == config.ListenSingle {
+			listenAux = aux
+			listenAddrs = append(listenAddrs, aux)
+		}
+		startAttrs := []any{"addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
 			"proc_fence_disabled", cfg.ProcFence.Disabled,
-			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio)
+			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio}
+		// 无辅助监听时不打 listen_aux 字段：两档常规配置的启动日志保持不变
+		if listenAux != "" {
+			startAttrs = append(startAttrs, "listen_aux", listenAux)
+		}
+		logger.Info("agentd 服务启动", startAttrs...)
 
 		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
 		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /
@@ -190,7 +203,7 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel)
+		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
 	},
 }
 

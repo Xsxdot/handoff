@@ -6,12 +6,12 @@
 package agentd
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,7 +55,7 @@ func TestServeReturnsNilOnGracefulShutdown(t *testing.T) {
 
 	var cleanups atomic.Int32
 	done := make(chan error, 1)
-	go func() { done <- sd.serveWithListener(ln, srv, func() { cleanups.Add(1) }) }()
+	go func() { done <- sd.serveWithListeners([]net.Listener{ln}, srv, func() { cleanups.Add(1) }) }()
 
 	// 等服务真的起来再触发，否则测的是"还没开始就停"的空路径
 	waitListening(t, ln.Addr().String())
@@ -105,5 +105,60 @@ func waitListening(t *testing.T, addr string) {
 	t.Fatalf("端口 %s 在 5s 内未就绪", addr)
 }
 
-// 确保未使用的导入不报错（context 供 shutdown.go 使用，此处占位断言）
-var _ = context.Background
+// 双监听：两个地址都应答，Trigger 后两个一起停收。
+//
+// why 这条重要：B85 的辅助监听挂在同一个 http.Server 上，靠 srv.Shutdown
+// 关掉全部 listener——若第二个 listener 没被追踪，关停后它还在收连接，
+// 本机 CLI 会打到一个正在退出的进程上。
+func TestServeMultipleListeners(t *testing.T) {
+	ln1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.NewServeMux()}
+	sd := NewShutdown(quietLogger())
+	done := make(chan error, 1)
+	go func() { done <- sd.serveWithListeners([]net.Listener{ln1, ln2}, srv, func() {}) }()
+
+	waitListening(t, ln1.Addr().String())
+	waitListening(t, ln2.Addr().String())
+	sd.Trigger("test")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("优雅关停应返回 nil，得到 %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve 未在 10s 内返回")
+	}
+	for _, a := range []string{ln1.Addr().String(), ln2.Addr().String()} {
+		if c, err := net.DialTimeout("tcp", a, time.Second); err == nil {
+			c.Close()
+			t.Fatalf("关停后 %s 仍在接受连接", a)
+		}
+	}
+}
+
+// 辅助地址绑不上必须整体启动失败（B85 决策：与主监听同等对待），
+// 且错误报文要指明是哪个地址。
+func TestServeAuxBindFailureFailsFast(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	srv := &http.Server{Handler: http.NewServeMux()}
+	sd := NewShutdown(quietLogger())
+	err = sd.Serve(srv, func() {}, "127.0.0.1:0", occupied.Addr().String())
+	if err == nil {
+		t.Fatal("辅助地址被占应启动失败")
+	}
+	if !strings.Contains(err.Error(), occupied.Addr().String()) {
+		t.Fatalf("错误应指明绑不上的地址，got %v", err)
+	}
+}
