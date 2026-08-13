@@ -1199,7 +1199,8 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				return err
 			}
 			if ev.Type == proto.EventTypeFailed {
-				// failed 是任务终态；completed 不是——那只是一轮结束，continue 之后还有事件
+				// failed 事件收流，交还协调者处置（回合失败已迁 waiting_review，可 continue，
+				// 但 continue 后需要重新挂 follow）；completed 不收流——一轮结束后订阅继续活着
 				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
 				return errStopStream
 			}

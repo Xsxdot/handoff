@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: 用 handoff CLI 把实现计划派发给独立 executor（opencode / claude / grok）执行，并以协调者身份驱动 dispatch → wait → reply → diff → continue/done 的完整回路。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
+description: 用 handoff CLI 以协调者身份把实现计划派发给独立 executor（opencode / claude / grok / codex）执行并盯完全程。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
 ---
 
 <!--
@@ -11,7 +11,7 @@ description: 用 handoff CLI 把实现计划派发给独立 executor（opencode 
 
 边界：
   - 不讲 agentd 的部署与配置（config.yaml 各段、approver 审批链、env 注入）——见仓库 README。
-  - 不讲三个 executor 的内部差异与协议实现——见 README「执行者差异」与 docs/superpowers/specs/。
+  - 不讲各 executor 的内部差异与协议实现——见 README「各 executor 须知」与 docs/superpowers/specs/。
   - 不替协调者做审批判断：批不批、改不改由协调者（必要时升级给人）决定。
 -->
 
@@ -29,19 +29,19 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 
 1. **你的会话不是权威**。「我记得这个任务已经批过了」不作数，`handoff show` 说了算。
 2. **断网不丢事件**。事件在 agentd 侧持久化并带 cursor，`wait` 重连后从断点续拉。所以你没必要一直挂着。
-3. **绕过 CLI 就会失配**。ssh 到执行机去 `tmux kill-session`、手删任务目录、直接进工作区改代码——这些 agentd 全都不知道，它记的运行态和真实存活性会当场对不上，任务卡成孤儿。
+3. **绕过 CLI 就会失配**。ssh 到执行机去杀 executor 进程、手删任务目录、直接进工作区改代码——这些 agentd 全都不知道，它记的运行态和真实存活性会当场对不上，任务卡成孤儿。
 
 ### 铁律：一切经 CLI
 
-需要看 executor 在干什么，用 `handoff attach`（它会替你 ssh + tmux attach）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`。
+需要看 executor 在干什么，用 `handoff attach`（经 agentd 的 render 流，远程也不需要 ssh）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`；归档后残留的 managed worktree 用 `handoff reclaim` 清。
 
-**唯一例外**：任务已经彻底死了、CLI 三条路（`resume` / `continue` / `done`）全被拒，此时手工 `tmux kill-session -t handoff-<id8>` 是兜底。但那是排障，不是日常。
+**唯一例外**：任务已经彻底死了、CLI 三条路（`resume` / `continue` / `done`）全被拒，此时按任务目录 `proc.json` 里的 `handle.pid` 手工 kill shim 进程是兜底。但那是排障，不是日常。
 
 ## 任务 ID 必须是完整 UUID
 
 所有接受 `<task>` 的子命令都是**精确匹配**，没有前缀补全。传 8 位短 id 一律 404「任务不存在」。
 
-短 id（`id8`）只出现在两个地方：tmux 会话名 `handoff-<id8>`、`--notify` 的通知文案。它们不能当命令参数用。
+短 id（`id8`）只出现在 `--notify` 的通知文案里，不能当命令参数用。
 
 拿完整 id 的办法：`dispatch` 的输出 JSON 里的 `.id`，或者 `handoff tasks | jq -r 'select(.name=="...") | .id'`。
 
@@ -52,13 +52,15 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 | 状态 | 含义 | 此时能做 | 此时会被拒 |
 |------|------|----------|-----------|
 | `pending` | 已建任务，executor 还没起来 | `show` / `stop` | `continue` / `done` |
-| `running` | executor 正在干活 | `wait` / `attach` / `show` / `stop` | `continue` / `done` |
+| `running` | executor 正在干活 | `wait` / `attach` / `show` / `diff` / `stop` | `continue` / `done` |
 | `waiting_answer` | 有工单挂起，等你裁决 | `reply --ticket ...` / `attach` / `stop` | `continue` / `done` |
 | `waiting_review` | 一轮干完了，等你审 | `diff` / `fetch` / `run` / **`continue`** / **`done`** / `stop` | — |
 | `completed` | 已归档 | `show` / `diff`（只读） | 一切写操作，含 `stop` |
 | `failed` | 已失败 | `show` / `diff` / `pull`（只读取证） | `continue` / `done` / `stop` |
 
-> `failed` 是终态。想在失败后继续，路径是重新 `dispatch`，不是 `continue`。
+> **failed 事件 ≠ failed 状态**：回合以失败收尾（failed 事件）时任务进的是 `waiting_review`——executor 会话与上下文都在，`continue` 就能续接重试。只有 `stop`、executor 启动失败等才落 `failed` **状态**；它是终态，想继续只能重新 `dispatch`。
+>
+> `diff` / `fetch` / `run` 无状态门禁：`running` 中也能看实时进度。但 `completed`（已归档）的 `--new-worktree` 任务其 worktree 已被清理，diff 可能失败。
 
 **动手前先确认状态**：`handoff show <task>` 输出一行 JSON，含任务体 + `pending_tickets` + 最近事件。不确定就先 show，比吃一个 409 便宜。
 
@@ -85,7 +87,7 @@ handoff wait <task> --notify --timeout 1h
 
 无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。
 
-`progress` / `approver_decision` / `approver_disabled` 三类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
+`progress` / `approver_decision` / `approver_disabled` / `tickets_voided` 四类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
 
 ## 在 agent 会话里挂 wait（Claude Code 等）
 
@@ -106,7 +108,8 @@ handoff wait <task> --notify --timeout 1h
   客户端的超时会抢在 agentd 的 stalled 诊断前面退出——把一条带 last_seq 的
   诊断换成一句「我没收到东西」。
 - **follow 进程退出本身就是信号**，必须看退出码：
-  - `0`：任务已终结（failed 事件或被 done 归档）→ 进入终态处置
+  - `0`：收到终结性事件（failed 或 archived）→ 先 `show`：failed 多半停在
+    `waiting_review`、可 `continue` 续接；archived 才是真结束
   - `124`：空闲 3 小时一帧都没收到 → **可疑**。正常情况下 agentd 的 stalled
     会先到；先 `handoff show`，再怀疑 agentd 失联
   - 其他非 0：鉴权失败 / 任务不存在 / 连接永久失败 → 看 stderr 按排障表办，
@@ -120,7 +123,7 @@ handoff wait <task> --notify --timeout 1h
 
 ### cursor 语义：为什么 wait 可能吐出旧事件
 
-`wait` 的「不重不丢」靠协调者**本机**的 `~/.handoff/cursor-<task>` 文件，且**只有 wait 成功交付事件时才推进**。两个直接后果：
+`wait` 的「不重不丢」靠协调者**本机**的游标文件（`~/.handoff/cursors/` 下按 agentd 地址分命名空间，每任务一个），且**只有 wait 成功交付事件时才推进**。两个直接后果：
 
 - `show` / `reply` 不推进 cursor。走「show → reply」恢复流程之后再挂 wait，第一批返回的可能是**你早已处理过的历史事件**（答过的 question、continue 过的 completed）。
 - 换一台机器接管时本机没有 cursor 文件。**`wait --follow` 会在建连前先对账**，
@@ -140,7 +143,7 @@ handoff wait <task> --notify --timeout 1h
 这条机制有三个必须记住的边界：
 
 - **只 commit 不够，必须 push。** 校验的是「远端能不能 fetch 到这个 commit」。没推上去的提交，远程永远拿不到；未提交的改动更是完全不可见——校验会拿你的 HEAD 去比，而 HEAD 不含工作区的脏改动，所以它会**静默通过**，然后 executor 基于一份没有你最新改动的代码开工。
-- **项目本身就取自 cwd，所以必须在项目目录里发 `dispatch`。** 项目由当前工作目录的 origin 识别，基线同样取自 cwd。cwd 不是 git 仓库时**直接被拒**，不会像以前那样只打一行提示就放行。
+- **项目本身就取自 cwd，所以必须在项目目录里发 `dispatch`。** 项目由当前工作目录的 origin 识别，基线同样取自 cwd。未给 `--project` 时，cwd 不是 git 仓库**直接被拒**；显式给了 `--project`（跨项目派发）则只跳过基线校验放行——此时新分支起点退回执行机仓库的 HEAD，风险自担。
 - **新分支的起点是你派发时的本地 HEAD，不是执行机仓库的 HEAD。** agentd 收到基线后，既拿它做存在性校验，也拿它做新分支的起点——两件事出自同一次决议，不会再分叉（B35 之前会：校验的是你的基线，开分支用的是执行机 HEAD，中间可以差出几十个提交而毫无痕迹）。派发成功后 stderr 会打一行 `基线 <短号>`；执行机仓库比这个起点新时还会补上「领先 N 个提交，新分支不含它们」。
 - **`--no-sync-check` 关掉的不止是校验。** 它同时关掉起点决议——没有基线可用时，新分支的起点退回执行机仓库当前的 HEAD（很可能是旧的）。只在 cwd 与 `--project` 指定的项目不是同一个仓库时用它。
 
@@ -164,7 +167,7 @@ handoff pull <task> --target devbox
 
 `pull` 经 ssh 从执行机 fetch 任务分支到**当前工作目录**的仓库。**只 fetch，不 checkout、不合并**——合并进你的主线是审核决定，handoff 不替你做。
 
-去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 的机器还需要在配置里配 `user` 字段，否则 `attach` / `pull` 的 ssh 建不起来。
+去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 机器配置里的 `user` 字段是 `pull` 用的 ssh 用户名：与本机用户名不一致时必须配，否则 Permission denied；`attach` 走 agentd 的 render 流、不走 ssh，不需要它。
 
 本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。
 
@@ -206,7 +209,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 | `permission_request` | executor 要执行一个需授权的操作 | 判断后 `reply <task> --ticket <id> --approve` 或 `--deny --reason "..."` |
 | `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer "..."` |
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
-| `failed` | 任务失败落 `failed` | `diff` 看做到哪、`attach` 看现场；要接着干就重新 `dispatch` |
+| `failed` | 一轮以失败收尾，任务进 `waiting_review`（executor 会话还在） | 与 `completed` 同路：`diff` 取证后 `continue` 续接重试或 `done` 归档。**别急着重新 dispatch**——只有 `show` 确认状态真是 `failed`（stop/启动失败）才需要重派 |
 | `archived` | 任务被 `done` 归档，`payload.note` 是协调者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是协调者时无需动作 |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
 | `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
@@ -215,9 +218,9 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 ## 审批：批什么，不批什么
 
-`--approve` 批的是**这一次这一条**操作，不是一类操作的长期授权。
+`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**一字不差**的同一权限请求会自动复用你先前的 allow（`permission_reuse` 事件留痕，跨任务不复用）；工作区内的文件写入由静态规则自动放行，根本不会来问你。
 
-**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。
+**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否真送达模型，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped` 留痕。
 
 ```bash
 handoff reply <task> --ticket <id> --deny --reason "别装全局包，加到 go.mod 里"
@@ -247,14 +250,14 @@ handoff run T1 --target devbox go test ./...         # ❌ --target 会被当成
 
 ```bash
 handoff continue <task> "把重试次数改成 3，并给这个分支补一条失败用例"
-handoff done <task>
+handoff done <task> --note "已验收：重试与失败用例都符合预期"
 ```
 
 - `continue` 是**同一会话续接**，executor 的上下文完整保留——不需要在指令里重述前情。
-- `continue` 之后任务回到 `running`；follow 订阅会继续收到新一轮事件，**不需要重挂**。
-- `done` 归档任务并回收 executor（停进程、删 managed worktree、清任务目录）。
+- `continue` 之后任务回到 `running`；follow 订阅还活着时会继续收到新一轮事件，**不需要重挂**。唯一例外：**failed 事件会让 follow 退出**（退出码 0），失败后 `continue` 要重新挂一条 follow。
+- `done` 归档任务并回收 executor（停进程、删 managed worktree、清任务目录）；`--note` 的说明会写进任务记录与 `archived` 事件，等这个任务的下游会话靠它知道结果。
 
-**`done` 返回成功之前，什么都不要删。** `done` 会因状态不符被拒（409）；如果你已经先手删了任务目录或杀了 tmux，就会留下一个 agentd 记着、但资源已经被你拆掉的孤儿，只能手工补清。顺序永远是：先 `done`，看到 `{"ok":true}` 再谈清理。
+**`done` 返回成功之前，什么都不要删。** `done` 会因状态不符被拒（409）；如果你已经先手删了任务目录或杀了 executor 进程，就会留下一个 agentd 记着、但资源已经被你拆掉的孤儿，只能手工补清。顺序永远是：先 `done`，看到 `{"ok":true}` 再谈清理。
 
 `handoff stop <task>` 是另一条出口：主动中止，停 executor、作废挂起工单、任务落 `failed`。任务跑偏了不想再等，用它。
 
@@ -296,7 +299,7 @@ handoff done <task>
 退出码：**0 = 能用**（含版本过旧）；**1 = 够不着**。
 
 **红线：查到有 agentd 在跑就复用它，不要起第二个。**
-两个 agentd 抢同一份数据目录、同一批 worktree 与 tmux 会话，正是状态机最怕的
+两个 agentd 抢同一份数据目录、同一批 worktree 与 executor 进程，正是状态机最怕的
 失配。这条现在由代码兜底——同一个 DataDir 起第二个 agentd 会直接被文件锁挡下
 并报错，什么都不会被改动。别把它当逃生口：它挡的是事故，不是流程。
 
@@ -324,14 +327,14 @@ handoff done <task>
 | `dispatch` 报「本地工作区有 N 处未提交的已跟踪改动」 | **你本地**（不是执行机）有改动没提交，远程派发的基线不含它们，executor 会基于旧代码开工 | `git commit` 或 `git stash` 后重试；确认这些改动与本次任务无关时加 `--allow-dirty`（放行仍会打印被忽略的文件） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「基线」行就是实际起点 |
-| `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复结果」看四级恢复阶梯走到哪一级 |
-| 任务归档后 tmux 会话还在 | executor 回收失败（事件里会带残留提示） | 按提示 `tmux kill-session -t handoff-<id8>` 手工兜底 |
+| `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
+| 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
 
 **日志在哪**（在 executor 所在机器上）：
 
 - `~/.handoff/agentd.log`：agentd 主日志。`HANDOFF_LOG_LEVEL=debug` 可调低级别。
-- `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 的第二个窗口就是 `tail -f` 它。
-- 同目录下按 executor 分：opencode 是 `serve.log` / `serve.json`，claude 是 `claude.log` / `claude.json`，grok 是 `serve.log` / `serve.json`。
+- `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 流式读取的就是它。
+- 同目录下按 executor 分：opencode / grok / codex 是 `serve.log` + `proc.json`（连接凭据与探活依据）；claude 是 `claude.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `proc.json`。`shim.log` 是进程承载层日志，`proc.lock` 是存活锁。
 
 ## 红旗——想到这些说明你在偷懒
 
@@ -340,7 +343,8 @@ handoff done <task>
 | 「我记得这个任务的状态是……」 | 你的会话不是权威。`handoff show` 是。 |
 | 「短 id 应该也能认吧」 | 精确匹配，没有前缀补全。一定 404。 |
 | 「先删掉任务目录再 done」 | 顺序反了。`done` 可能被拒，先删就留孤儿。 |
-| 「ssh 上去 tmux 里手动改一下更快」 | agentd 不知道你改了什么，运行态当场失配。走 CLI。 |
+| 「ssh 上执行机手动杀进程/改工作区更快」 | agentd 不知道你改了什么，运行态当场失配。走 CLI。 |
+| 「收到 failed 事件，只能重新 dispatch 了」 | failed 事件 ≠ failed 状态。回合失败进 `waiting_review`，`continue` 能续接，重派才是浪费。 |
 | 「拒了就拒了，不用写理由」 | 理由是给模型看的。不给，它就原地重试同样的操作。 |
 | 「reply 报 502，我再 reply 一次」 | 工单已被消耗，第二次必 404。要的是 `resume`。 |
 | 「wait 没动静，是不是挂了？」 | 没有事件就是没有事件。看退出码和 stderr，别瞎重启。 |
@@ -362,5 +366,5 @@ handoff done <task>
 这份 skill 只覆盖协调者回路。以下不在范围内，需要时读仓库文档：
 
 - **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。
-- **三个 executor 的传输形态与差异（SSE / stream-json / ACP）**：`README.md` 的「执行者差异」。
+- **各 executor 的差异与就绪判据（opencode / claude / grok / codex）**：`README.md` 的「各 executor 须知」。
 - **架构与协议设计**：`docs/superpowers/specs/2026-08-07-handoff-design.md`。

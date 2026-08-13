@@ -277,7 +277,7 @@ func init() {
 		"跨项目派发时指定项目名（省略则由当前目录自动识别；用 handoff project ls 查看有哪些）")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
 	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
-	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（如 opencode/grok/fake；空=agentd 默认执行者）")
+	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（opencode/claude/grok/codex/fake；空=agentd 默认执行者）")
 	dispatchCmd.Flags().StringVar(&dispatchModel, "model", "", "任务级模型覆盖（空=执行者自身默认）")
 	dispatchCmd.Flags().StringVar(&dispatchBranch, "branch", "", "切到已存在分支（与 --new-branch 互斥）")
 	dispatchCmd.Flags().StringVar(&dispatchNewBranch, "new-branch", "", "新建分支名（空且 --branch 空=自动 handoff/<id8>）")
