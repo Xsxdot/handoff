@@ -99,14 +99,15 @@ OTel 接入、CLI 渲染改动、原型改动。
 - `turn_completed` / `session/prompt` 响应的 `_meta.usage` 是**整回合跨调用累加**
   （§4.2 实证：`inputTokens 138637` = 四次调用的 `input_tokens` 之和加
   `cache_read` 之和），本轮**不取**它做分子。它是将来做累计消耗的正确来源。
-- 两条都是 `_x.ai/*` 私有通知。它们经 `ACPClient.readLoop` 的
+- 两条都是 `_x.ai/*` 私有通知。**连接层不丢它们**：`ACPClient.readLoop` 的
   `case msg.Method != "": h.OnNotify(...)`
-  （[grok/acp.go:255](../../../internal/executor/grok/acp.go:255)）到达 adapter，
-  **连接层不丢**；丢它们的是 `turnAccumulator.feedRaw` 的
-  `if msg.Method != "session/update" { return }`
-  （[grok/adapter.go:644](../../../internal/executor/grok/adapter.go:644)）。
-  本设计**不动 `feedRaw`**——它的职责是拼正文，用量不该进正文缓冲。
-  新增的处理挂在 adapter 的 `OnNotify` 分流上。
+  （[grok/acp.go:255](../../../internal/executor/grok/acp.go:255)）会原样交给 adapter。
+  真正丢掉它们的是 **`acpHandler.OnNotify` 的第一行早返回**：
+  `if method != "session/update" { return }`
+  （[grok/adapter.go:816](../../../internal/executor/grok/adapter.go:816)）——
+  私有通知在这里就没了，压根到不了 `feedRaw`。
+  **改动点是这个早返回，不是 `feedRaw`**：`feedRaw` 的职责是拼正文，
+  用量不该进正文缓冲，它一行都不改。
 - `availableModels` 数组可能含多个模型，**必须按 `currentModelId` 匹配**，
   不能取第 0 个。
 - **分子与分母来自不同的帧**：`models/update` 在会话建立后立刻到（回合尚未开始），
@@ -117,11 +118,17 @@ OTel 接入、CLI 渲染改动、原型改动。
 #### claudecode
 
 ```json
-{"type":"assistant","model":"k3-256k",
- "usage":{"input_tokens":121801,"cache_creation_input_tokens":0,
-   "cache_read_input_tokens":0,"output_tokens":0,"service_tier":"standard"}}
+{"type":"assistant","session_id":"…","message":{
+  "model":"k3-256k","content":[…],
+  "usage":{"input_tokens":121801,"cache_creation_input_tokens":0,
+    "cache_read_input_tokens":0,"output_tokens":0,"service_tier":"standard"}}}
 ```
 
+- **`model` 与 `usage` 在 `message` 对象内部，与 `content` 同级**——不在顶层。
+  `mapAssistant(r, m.Message)` 收到的正是这个 `message` 对象
+  （`streamMsg.Message` 是 `json.RawMessage`，见
+  [claudecode/stream.go:46](../../../internal/executor/claudecode/stream.go:46)），
+  在它现有的匿名结构体里加两个字段即可，不需要改 `streamMsg`。
 - 模型名优先取 `system`/`init` 的 `model`；`result` 行的 `model` 是 `null`，别去那儿取。
 - `assistant` 消息一个回合有几百条，manager 侧靠 §3.3 的去重防写库风暴。
 - 现有 `mapAssistant` 只解 `content`
