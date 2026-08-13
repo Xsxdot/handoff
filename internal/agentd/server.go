@@ -85,6 +85,8 @@ type Server struct {
 	liveLimit   int
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
+	pull *pullTracker
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
@@ -110,6 +112,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		startedAt:   time.Now(),
 		replayLimit: eventReplayLimit,
 		liveLimit:   liveBufferLimit,
+		pull:        newPullTracker(),
 	}
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,

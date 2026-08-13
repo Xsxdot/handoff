@@ -91,6 +91,43 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := r.URL.Query().Get("mode")
+	switch mode {
+	case "", proto.UpdateModePush, proto.UpdateModePull:
+	default:
+		// 不静默降级成某个默认模式：猜错的代价是装错东西，或者白重启一次
+		// 而调用方以为换版成功了
+		s.log.Warn("换版被拒：未知 mode", "mode", mode, "tag", tag)
+		writeJSON(w, http.StatusBadRequest, proto.UpdateError{
+			Error: fmt.Sprintf("未知 mode %q，只支持 %q 与 %q（省略 mode 时按 body 空不空判别）",
+				mode, proto.UpdateModePull, proto.UpdateModePush),
+		})
+		return
+	}
+
+	// 显式 mode 与 body 必须自洽。两种模式的意图互斥，不做"猜一个"的兼容：
+	// 调用方说了 push 却没带字节、说了 pull 却带了字节，都是 bug，
+	// 静默按另一种模式处理会让那个 bug 以"换版成功了"的样子存活下去
+	if mode == proto.UpdateModePush && len(body) == 0 {
+		s.log.Warn("换版被拒：mode=push 但 body 为空", "tag", tag)
+		writeJSON(w, http.StatusBadRequest, proto.UpdateError{
+			Error: "mode=push 必须带 tar.gz 原文；只想重启请省略 mode 并发空 body",
+		})
+		return
+	}
+	if mode == proto.UpdateModePull && len(body) > 0 {
+		s.log.Warn("换版被拒：mode=pull 但带了 body", "tag", tag, "bytes", len(body))
+		writeJSON(w, http.StatusBadRequest, proto.UpdateError{
+			Error: "mode=pull 由 agentd 自己下载，不接受 body",
+		})
+		return
+	}
+
+	if mode == proto.UpdateModePull {
+		s.handlePullUpdate(w, tag, sum, busy)
+		return
+	}
+
 	// 纯重启模式（D8）
 	if len(body) == 0 {
 		s.log.Info("换版：body 为空，只重启不换版", "busy", busy)
@@ -131,6 +168,38 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("换版完成，准备重启", "tag", tag, "target", target, "prev", prev, "busy", busy)
 	writeJSON(w, http.StatusOK, proto.UpdateResp{OK: true, Version: tag, Prev: prev, Restarted: true})
 	s.triggerRestart("换版到 " + tag)
+}
+
+// handlePullUpdate 处理自拉换版：校验参数、抢并发锁、受理后交给后台。
+//
+// 参数：
+//   - tag / sum: 协调者下发的目标版本与期望 sha256，**必须成对**
+//   - busy: 已统计出的活跃任务数，只用于日志
+//
+// 注意：
+//   - 两道闸已由调用方检查过，这里不重复
+func (s *Server) handlePullUpdate(w http.ResponseWriter, tag, sum string, busy int) {
+	if tag == "" || sum == "" {
+		s.log.Warn("自拉被拒：缺 tag 或 sha256", "tag", tag, "has_sum", sum != "")
+		writeJSON(w, http.StatusBadRequest, proto.UpdateError{
+			Error: "mode=pull 时 tag 与 sha256 都必须给：缺了它们无从校验完整性，也无从自检",
+		})
+		return
+	}
+	if !s.pull.begin(tag) {
+		// force 不越过这一条：两个自拉会往同一个临时文件路径写
+		//（release.TempName(tag) 是确定性的），互相截断出一个坏二进制
+		cur := s.pull.snapshot()
+		s.log.Warn("自拉被拒：已有一个自拉在跑", "tag", tag, "current", cur)
+		writeJSON(w, http.StatusConflict, proto.UpdateError{
+			Error:  "已有一个自拉换版在进行中，去 status 看 pull_state",
+			Reason: proto.UpdateReasonPullInProgress,
+		})
+		return
+	}
+	s.log.Info("自拉换版已受理", "tag", tag, "sha256", sum, "busy", busy)
+	writeJSON(w, http.StatusAccepted, proto.UpdateResp{OK: true, Accepted: true, Version: tag})
+	// Task 8 在此起后台 goroutine
 }
 
 // activeCount 返回活跃任务数（running + waiting_answer）。
