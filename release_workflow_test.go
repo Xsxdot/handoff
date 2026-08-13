@@ -233,3 +233,31 @@ func TestCIGateCoversFullCheckSuite(t *testing.T) {
 		}
 	}
 }
+
+// 签名与公证不能被摘掉。
+//
+// 这条与 TestEveryReleaseJobIsGatedByVerify 是同一类断言：把 codesign /
+// notarytool 那几步删了，release 会跑得更快、照样出资产，只是从此发出去的
+// 是未签名版本——症状出现在用户机器上（浏览器下载被 Gatekeeper 拦），
+// 且从 CI 的绿色里完全看不出来。
+func TestDarwinJobSignsAndNotarizes(t *testing.T) {
+	jobs := releaseJobs(t)
+	j, ok := jobs["build-darwin"]
+	if !ok {
+		t.Fatal("release.yml 缺 build-darwin job")
+	}
+	if !strings.HasPrefix(j.RunsOn, "macos") {
+		t.Fatalf("darwin 资产必须在 macOS runner 上构建（codesign/notarytool 只在那儿有），实得 runs-on=%q", j.RunsOn)
+	}
+	wf := readWorkflow(t)
+	for _, want := range []string{
+		"--options runtime", // 硬化运行时是公证的前置条件，不加会被拒
+		"notarytool submit",
+		"spctl -a -t exec",
+		"CGO_ENABLED", // macOS 上 CGO 默认开，开了会引入动态链接与最低系统版本约束
+	} {
+		if !strings.Contains(wf, want) {
+			t.Fatalf("build-darwin 缺关键步骤 %q", want)
+		}
+	}
+}
