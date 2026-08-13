@@ -122,7 +122,24 @@ git -C <repo> rev-parse --verify --quiet <start>^{commit}
 
 之后 `WorkspaceReq.Base` 与 `proto.Task.BaseCommit` **都用解析出的 sha**，一次解析服务两处，不存在两者分叉的可能。
 
-关键事实（已实测）：`rev-parse` 对「只有 `origin/<name>` 的分支简写」**能解析**，返回远程尖端。所以这个改动不损失任何易用性——`--base <分支名>` 依然是「从那条分支的尖端开分支」，只是新分支终于叫用户要的名字。
+> **08-13 实施期更正。** 本节原先写着「关键事实（已实测）：`rev-parse` 对『只有 `origin/<name>` 的分支简写』**能解析**」。这条断言是错的，而且当时并没有实测过。实测（克隆仓库、`shared-base` 只以远程跟踪 ref 存在）：
+>
+> ```
+> git rev-parse --verify --quiet 'shared-base^{commit}'   → 无输出，exit=1
+> git rev-parse --verify --quiet 'upstream/shared-base^{commit}' → 尖端 sha，exit=0
+> ```
+>
+> `rev-parse` **不做**远程跟踪分支的 DWIM——那是 `checkout` / `worktree add` 才有的 guess，也正是 B76 的病灶本身。照原样实现会把 B76 从「静默开错分支」变成「`--base <分支名>` 一律拒发」，等于砸掉这个 flag。下面是按实测改正后的设计。
+
+`rev-parse` 解析不出时（`--base` 给的分支在本地无同名分支），再按 `git checkout` 的 guess 语义补一次唯一匹配：
+
+```
+git -C <repo> for-each-ref --format=%(refname) 'refs/remotes/*/<start>'
+```
+
+- 恰好一个候选 → 用它剥到 commit，`--base <分支名>` 的用户语义因此零变化。
+- 多于一个候选 → **歧义，拒发**（git 自己同样不猜）。错误文本列出全部候选 ref 并给出出路：改用带远端前缀的全名（`--base upstream/<name>`）或直接给 sha。歧义不是「不存在」，把它降级成「先 git push」会把 fork 工作流（`origin` + `upstream` 同名分支）的审核者引向错误的排查方向。
+- 零候选 → 按下面的「解析失败」处置。
 
 `^{commit}` 的剥离是必需的：base 可能是 annotated tag，那种情况下裸 `rev-parse` 给的是 tag 对象而非 commit。
 
@@ -181,6 +198,7 @@ B76 的教训本身就是 agentd 信任了 git 的退出码。git 报 0、干了
 | 原地 + 同上 | 建分支成功，当前分支 == `X`（原为硬失败） |
 | 用户树 + 同上 | 同上 |
 | base 解析不出来 | 按 `ErrBadWorkspaceReq` 拒发，错误文本含 base 原文 |
+| base 在多个远端同时同名（08-13 补） | 按歧义拒发，错误文本列出全部候选 ref，且**不含**「git push」这种误导性建议 |
 | 守卫：要的分支 ≠ 实到分支 | 拒发，且刚建的工作树已被清理，错误文本同时含两个分支名 |
 | base 是 annotated tag | 解析到 commit 而非 tag 对象 |
 | `BaseCommit` 落库形态 | 显式 `--base <分支名>` 派发后，任务记录里是 40 位 sha |
