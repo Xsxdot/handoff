@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // 事件映射：init → progress 带 SessionID

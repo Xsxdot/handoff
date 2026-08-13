@@ -18,12 +18,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/selfupdate"
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/selfupdate"
 )
 
 const (

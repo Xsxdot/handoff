@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/service"
+	"github.com/Xsxdot/handoff/internal/service"
 )
 
 // fakeManager 是可编排的 service.Manager。

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // runDone 执行一次 done 命令，**分开**返回 stdout 与 stderr。

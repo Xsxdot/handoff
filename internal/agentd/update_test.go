@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 // seedTask 以指定状态落一条任务。CreateTask 原样入库不经状态机，

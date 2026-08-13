@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // statusBusyEvent 构造一条 session.status（status.type=busy，回合进行中信号）。

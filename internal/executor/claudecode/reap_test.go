@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // alive 判断 pid 是否还存在（信号 0 探测，不实际发信号）。

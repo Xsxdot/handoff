@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // runCmd 在任务仓库执行一条审阅命令并输出合并结果。

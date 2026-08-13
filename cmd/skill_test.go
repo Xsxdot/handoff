@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/skill"
+	"github.com/Xsxdot/handoff/internal/skill"
 )
 
 // runSkill 执行一次 handoff skill，返回 stdout 与错误。

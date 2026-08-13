@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestRenderReclaimListShowsAllStates(t *testing.T) {

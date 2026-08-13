@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 )
 
 func TestRespondPermissionUnknownTaskIsNotRunning(t *testing.T) {

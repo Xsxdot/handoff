@@ -10,8 +10,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // fetchCmd 输出任务仓库内指定文件的内容。

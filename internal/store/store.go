@@ -26,7 +26,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // log 是本包日志入口，运行时取 slog.Default()（与 config 包一致）。

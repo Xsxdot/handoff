@@ -31,8 +31,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // 常量说明：

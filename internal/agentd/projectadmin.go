@@ -24,9 +24,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // ErrProjectAlreadyExists 表示位置冲突或克隆落点已被占用，映射 409。
@@ -98,7 +98,7 @@ func projectOriginURL(ctx context.Context, repo string) (string, error) {
 
 // projectNameFromURL 从 git URL 末段派生缺省引用名（去掉 .git 后缀）。
 //
-// 例：git@github.com:xushixin/handoff.git → handoff
+// 例：git@github.com:Xsxdot/handoff.git → handoff
 func projectNameFromURL(url string) string {
 	s := strings.TrimRight(strings.TrimSpace(url), "/")
 	s = strings.TrimSuffix(s, ".git")

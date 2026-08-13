@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // dialAsk 模拟 MCP 进程：连 socket、发一条 ask、返回连接供读裁决。

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/executor/codex"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"runtime/debug"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // readBuildInfo 是 debug.ReadBuildInfo 的测试缝（与各 adapter 的进程启动缝
@@ -32,7 +32,7 @@ var readBuildInfo = debug.ReadBuildInfo
 //
 // 注入方式（见 .github/workflows/release.yml，路径必须逐字一致）：
 //
-//	-ldflags "-X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=v0.1.0"
+//	-ldflags "-X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=v0.1.0"
 //
 // why（注入而不是运行时读 tag）：二进制跑起来时身边没有 git 仓库可读；
 // vcs.revision 只有 commit 没有版本，而「哪个版本更新」是自动更新唯一

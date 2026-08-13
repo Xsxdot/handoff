@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // locFixture 是解析用例共用的位置表快照。
@@ -17,16 +17,16 @@ func locFixture() []proto.ProjectLocation {
 		}
 	}
 	return []proto.ProjectLocation{
-		mk("handoff", "/root/work/handoff", "git@github.com:xushixin/handoff.git"),
-		mk("tk", "/root/work/tk", "https://github.com/xushixin/tk.git"),
+		mk("handoff", "/root/work/handoff", "git@github.com:Xsxdot/handoff.git"),
+		mk("tk", "/root/work/tk", "https://github.com/Xsxdot/tk.git"),
 	}
 }
 
 // TestResolveProject 覆盖 project_id / project_name / 都空 三种入参 × 命中与否。
 func TestResolveProject(t *testing.T) {
-	handoffID := projectid.FromOrigin("git@github.com:xushixin/handoff.git")
+	handoffID := projectid.FromOrigin("git@github.com:Xsxdot/handoff.git")
 	// 同一仓库的另一种写法必须算出同一个 ID——这是跨机引用成立的前提。
-	altID := projectid.FromOrigin("https://github.com/xushixin/handoff")
+	altID := projectid.FromOrigin("https://github.com/Xsxdot/handoff")
 
 	tests := []struct {
 		name     string

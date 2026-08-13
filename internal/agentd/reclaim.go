@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // worktreeEntry 是 git worktree list --porcelain 里的一条记录。

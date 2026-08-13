@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/selfupdate"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/release"
-	"github.com/xushixin/handoff/internal/selfupdate"
 )
 
 var (

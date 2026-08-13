@@ -3,7 +3,7 @@ package codex_test
 import (
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 func TestParseItemNotificationExtractsFileChangePaths(t *testing.T) {

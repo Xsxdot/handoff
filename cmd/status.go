@@ -20,11 +20,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/skill"
 )
 
 // statusJSONOut 对应 --json。

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // proc.json 缺失 → 返回错误（调用方判 unknown）。

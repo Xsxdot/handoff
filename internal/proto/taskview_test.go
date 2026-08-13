@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestTaskViewWireCompatible 验证 TaskView 的 JSON 与 Task **逐键兼容**：

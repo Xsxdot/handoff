@@ -24,9 +24,8 @@ import (
 
 // DefaultRepo 是 Release 所在的 GitHub 仓库。
 //
-// 注意 owner 是 Xsxdot，与 go.mod 的 module path（github.com/xushixin/handoff）
-// 不一致——这是已知的 backlog B55，只影响 `go install`，不影响本条下载链。
-// **不要"顺手统一"**：改 module path 等于全仓 import 重写。
+// 注意 go.mod 的 module path（github.com/Xsxdot/handoff）已与 GitHub owner
+// 一致：`go install github.com/Xsxdot/handoff@latest` 与下载链指向同一个仓库。
 const DefaultRepo = "Xsxdot/handoff"
 
 // DefaultAPIBase 是 GitHub REST API 的根。

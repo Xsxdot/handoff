@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // writeStatusConfig 写一份最小可用配置，返回路径。

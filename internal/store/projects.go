@@ -20,8 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // ErrProjectDuplicate 表示位置登记冲突，三种成因合用一个哨兵：

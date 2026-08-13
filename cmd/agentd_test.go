@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。

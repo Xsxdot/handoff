@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"os"
 
-	"github.com/xushixin/handoff/cmd"
+	"github.com/Xsxdot/handoff/cmd"
 )
 
 // skillContent 是给 AI 协调者的 skill 全文，编译期嵌进二进制。

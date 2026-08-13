@@ -49,8 +49,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // 看门狗与节流参数：

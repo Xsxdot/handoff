@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // WriteServeInfoForTest 暴露恢复凭据写入，供 grok_test 包做往返断言。

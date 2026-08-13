@@ -26,9 +26,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 const wsTestToken = "ws-test-token"

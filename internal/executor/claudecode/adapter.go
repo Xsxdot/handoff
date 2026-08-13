@@ -40,10 +40,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/rawtap"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/rawtap"
-	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // 心跳节流与权限描述防失控参数：

@@ -14,8 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // showCmd 输出指定任务的完整现场快照（任务 + 待办工单 + 最近事件）。

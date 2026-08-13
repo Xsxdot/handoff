@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestPushUpdateSurfacesReason 锁住「拒绝原因必须可判别」。

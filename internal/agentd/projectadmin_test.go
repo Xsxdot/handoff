@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // initGitRepoWithOrigin 造一个带初始提交且配好 origin 的仓库，返回路径。
@@ -25,7 +25,7 @@ func initGitRepoWithOrigin(t *testing.T, origin string) string {
 // 算出 project_id 落库。
 func TestRegisterProjectExisting(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
 	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
@@ -47,7 +47,7 @@ func TestRegisterProjectExisting(t *testing.T) {
 // 位置表以 project_id 为主键，worktree 与主仓 origin 相同，不归并就撞主键。
 func TestRegisterProjectMergesWorktree(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	main := initGitRepoWithOrigin(t, origin)
 	wt := filepath.Join(t.TempDir(), "wt")
 	gitAt(t, main, "worktree", "add", "-b", "feat/x", wt)
@@ -67,10 +67,10 @@ func TestRegisterProjectMergesWorktree(t *testing.T) {
 // 仓库」被拒——这是自动化最容易造出的脏登记（spec §3.1）。
 func TestRegisterProjectRejectsOriginMismatch(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	repo := initGitRepoWithOrigin(t, "git@github.com:xushixin/tk.git")
+	repo := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/tk.git")
 
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
-		OriginURL: "git@github.com:xushixin/handoff.git", Path: repo})
+		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
 	if !errors.Is(err, ErrProjectOriginMismatch) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectOriginMismatch)", err)
 	}
@@ -87,7 +87,7 @@ func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	repo := initGitRepo(t) // 刻意不加 origin
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
-		OriginURL: "git@github.com:xushixin/handoff.git", Path: repo})
+		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
 	if !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrRepoUnusable)", err)
 	}
@@ -96,7 +96,7 @@ func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 // TestRegisterProjectDuplicateProject 验证同一项目重复登记被拒，且报文指向已有位置。
 func TestRegisterProjectDuplicateProject(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	first := initGitRepoWithOrigin(t, origin)
 	if _, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: first}); err != nil {
 		t.Fatalf("首次登记: %v", err)
@@ -115,7 +115,7 @@ func TestRegisterProjectDuplicateProject(t *testing.T) {
 // 第二次调用成功并返回与首次完全一致的行，位置表不新增行。
 func TestRegisterProjectIdempotentSamePath(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
 	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
@@ -145,7 +145,7 @@ func TestRegisterProjectIdempotentSamePath(t *testing.T) {
 // 已登记的主仓会幂等成功：归并后路径等于主仓那行，返回主仓位置，表仍只有 1 行。
 func TestRegisterProjectIdempotentLinkedWorktree(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	main := initGitRepoWithOrigin(t, origin)
 	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: main})
 	if err != nil {
@@ -207,9 +207,9 @@ func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
 // TestRegisterProjectNameCollisionFallsBack 验证不同项目撞名字时落到 name-2。
 func TestRegisterProjectNameCollisionFallsBack(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	a := initGitRepoWithOrigin(t, "git@github.com:xushixin/handoff.git")
+	a := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/handoff.git")
 	if _, err := m.RegisterProject(context.Background(), RegisterProjectReq{
-		OriginURL: "git@github.com:xushixin/handoff.git", Path: a}); err != nil {
+		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: a}); err != nil {
 		t.Fatalf("首次登记: %v", err)
 	}
 	b := initGitRepoWithOrigin(t, "git@github.com:other/handoff.git")
@@ -282,7 +282,7 @@ func TestRegisterProjectClaimExistingDest(t *testing.T) {
 // 时认领失败，保持 409，报文带上落点路径。
 func TestRegisterProjectClaimRejectsNonRepoDest(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	root := filepath.Join(t.TempDir(), "repos")
 	m.cfg.RepoRoot = root
 	dest := filepath.Join(root, "handoff")
@@ -312,10 +312,10 @@ func TestRegisterProjectClaimRejectsForeignRepoDest(t *testing.T) {
 	// 指向另一个项目（tk）的仓库。
 	dest := filepath.Join(root, "handoff")
 	repo := initGitRepoIn(t, dest)
-	gitAt(t, repo, "remote", "add", "origin", "git@github.com:xushixin/tk.git")
+	gitAt(t, repo, "remote", "add", "origin", "git@github.com:Xsxdot/tk.git")
 
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
-		OriginURL: "git@github.com:xushixin/handoff.git"})
+		OriginURL: "git@github.com:Xsxdot/handoff.git"})
 	if !errors.Is(err, ErrProjectAlreadyExists) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
 	}
@@ -329,7 +329,7 @@ func TestRegisterProjectClaimRejectsForeignRepoDest(t *testing.T) {
 // TestUnregisterProjectRejectsBusy 验证仓库仍被活跃任务占用时拒绝注销。
 func TestUnregisterProjectRejectsBusy(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
-	const origin = "git@github.com:xushixin/handoff.git"
+	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {

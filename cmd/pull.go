@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/localsync"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/localsync"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // pullCmd 把指定任务的远程分支同步到本地。

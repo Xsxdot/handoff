@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestProcInfoWatermarkRoundTrip 验水位字段能写进去也能读回来。

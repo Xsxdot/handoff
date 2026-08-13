@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // UpdateRejected 是被两道闸拒绝时的错误。

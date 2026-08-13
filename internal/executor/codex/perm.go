@@ -26,8 +26,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // permTextHardLimit 是权限描述的硬上限（64KB）。

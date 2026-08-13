@@ -21,7 +21,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // lockFileName 是 DataDir 下单实例锁文件的名字。

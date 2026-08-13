@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // discardLogger 返回丢弃输出的 logger，保证测试输出干净（与 hub_test 的 TestMain 同款）。

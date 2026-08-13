@@ -17,8 +17,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // Reconcile 把断连期间错过的回合终态补回事件流。

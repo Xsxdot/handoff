@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // TestIsPermanent 覆盖分类函数对各类错误的判定：配置类（401/403/400）、

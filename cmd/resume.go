@@ -17,8 +17,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // resumeForce 对应 --force：对账判不出来时仍强制收口到待审核。

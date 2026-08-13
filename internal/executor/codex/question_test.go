@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 const userInputParams = `{"itemId":"tool-1","threadId":"t","turnId":"u","questions":[

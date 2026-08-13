@@ -5,7 +5,7 @@
 
 package turn
 
-import "github.com/xushixin/handoff/internal/executor"
+import "github.com/Xsxdot/handoff/internal/executor"
 
 // QuestionTextLimit 是交给协调者的回合文本上限。兜底分类会把整个回合原文当
 // question 发出，一个失控的长回合会直接灌进工单行与协调者终端；全文始终在

@@ -50,12 +50,31 @@ func stripYAMLComments(s string) string {
 	return b.String()
 }
 
+// modulePathFromGoMod 读 go.mod 的 `module ` 行，返回模块路径。
+func modulePathFromGoMod(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatalf("读 go.mod 失败: %v", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	t.Fatal("go.mod 里没有 module 行")
+	return ""
+}
+
 // ldflags 的 -X 路径必须是 module path，写成 GitHub owner 会静默失效
 // （构建成功、二进制自称 unknown、自动更新永远认为自己已是最新）。
+// 期望值从 go.mod 派生，杜绝「模块改名后这里分叉」。
 func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
-	const want = "-X github.com/xushixin/handoff/internal/buildinfo.releaseVersion="
-	if !strings.Contains(stripYAMLComments(readWorkflow(t)), want) {
-		t.Fatalf("workflow 缺少注入路径 %q", want)
+	want := "-X " + modulePathFromGoMod(t) + "/internal/buildinfo.releaseVersion="
+	// Count 而不是 Contains：同一注入串在 build-unix 与 build-darwin 各出现
+	// 一次，只断言「至少一次」会放走「只改对一处、另一处漏改」的情况。
+	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != 2 {
+		t.Fatalf("workflow 应恰好含两处注入路径 %q，实得 %d 处", want, n)
 	}
 }
 

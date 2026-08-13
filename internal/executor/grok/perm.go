@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // optionIDFor 把 handoff 的裁决翻译为 ACP 的 optionId。

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestBacklogSummaryLineIsSingleJSON(t *testing.T) {

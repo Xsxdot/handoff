@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 const testToken = "test-token"

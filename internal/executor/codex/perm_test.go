@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 // 裁决映射：只有 once 放行，其余一律 decline（fail-closed）

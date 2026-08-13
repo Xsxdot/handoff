@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // eventBufferSize 是每个事件订阅者通道的缓冲长度。

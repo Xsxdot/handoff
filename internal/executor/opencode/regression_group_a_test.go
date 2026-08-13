@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // bareLimit 是本文件里构造超长文本的长度（远超权限描述 64KB 防失控硬上限，

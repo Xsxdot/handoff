@@ -18,7 +18,7 @@ package turn
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // shortCommitLen 是失败原因里 commit 的展示长度。

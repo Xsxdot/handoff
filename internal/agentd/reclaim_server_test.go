@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // newServerWithDirtyWorktree 造一个 server+manager+真 git 仓库，任务为终态 +

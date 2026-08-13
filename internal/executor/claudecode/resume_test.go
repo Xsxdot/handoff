@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // 凭据缺失 → 判死不存活（manager 按不存活走 failed 恢复路径）。

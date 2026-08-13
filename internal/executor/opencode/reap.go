@@ -10,7 +10,7 @@ package opencode
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // Reap 在没有内存运行态时按 proc.json 兜底回收 executor 侧资源。

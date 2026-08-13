@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // serveReadyTimeout 是 StartServe 等待 serve 就绪的总超时。

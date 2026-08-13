@@ -19,8 +19,8 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/selfupdate"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/selfupdate"
 )
 
 // UpdateDeps 是换版接口的外部依赖集合。

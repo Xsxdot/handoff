@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // gitAt 在 dir 里执行 git 命令，失败即 Fatal（测试环境问题，不是被测行为）。

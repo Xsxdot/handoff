@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // fakeSession 起一个只回 /session/{id}/message 的假 serve，按传入的消息列表回应。

@@ -115,7 +115,7 @@ func TestAssetNameExtensionPerOS(t *testing.T) {
 // 默认仓库与端点不能被改掉——它们是硬约束。
 func TestDefaults(t *testing.T) {
 	if DefaultRepo != "Xsxdot/handoff" {
-		t.Errorf("DefaultRepo=%q，GitHub owner 是 Xsxdot（go.mod 里的 xushixin 是 B55，不影响这条链）", DefaultRepo)
+		t.Errorf("DefaultRepo=%q，GitHub owner 是 Xsxdot", DefaultRepo)
 	}
 	c := NewClient()
 	if c.APIBase != DefaultAPIBase || c.Repo != DefaultRepo {

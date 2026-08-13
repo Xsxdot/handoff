@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // maxDecideOutput 是裁决命令输出保留上限：模型在 JSON 后可能输出废话，

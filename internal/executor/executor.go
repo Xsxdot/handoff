@@ -24,7 +24,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // ErrTaskNotRunning 表示任务在本 adapter 里没有运行态：executor 已终结、

@@ -25,7 +25,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Step 是 fake 脚本的一个步骤，三种形态互斥（至多填一个字段）：

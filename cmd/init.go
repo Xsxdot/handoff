@@ -30,9 +30,9 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/pathenv"
-	"github.com/xushixin/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/pathenv"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // initStdinIsTTY 判断 stdin 是不是终端。测试替换它以覆盖两条分支。

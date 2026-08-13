@@ -37,8 +37,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/rawtap"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor/rawtap"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // 常量说明：

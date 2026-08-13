@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // spikeFixture 描述一份抓包样本及其可核对的事实。

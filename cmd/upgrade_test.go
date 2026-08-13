@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/release"
 )
 
 // fakeMachine 是一台被完全替身化的机器：既不联网也不动任何真实文件。

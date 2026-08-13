@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // mustTaskWithTicket 造一个指定状态的任务，并挂一张未回答的 gate 工单。

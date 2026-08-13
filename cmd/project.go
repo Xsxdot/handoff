@@ -23,9 +23,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // projectAddPath 是 --path：目标机上已有的那份代码的路径（省略则让它自己 clone）。
