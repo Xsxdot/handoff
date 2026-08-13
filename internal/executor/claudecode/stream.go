@@ -40,16 +40,19 @@ const garbageLimit = 64
 // 只声明 adapter 用得到的字段：claude 的消息体字段很多且随版本变化，
 // 全量建模会让每次 claude 升级都变成一次编译错误。
 type streamMsg struct {
-	Type       string                `json:"type"`
-	Subtype    string                `json:"subtype"`
-	SessionID  string                `json:"session_id"`
-	Message    json.RawMessage       `json:"message"`
-	Event      json.RawMessage       `json:"event"`
-	Result     string                `json:"result"`
-	IsError    bool                  `json:"is_error"`
-	ExitCode   int                   `json:"code"`       // handoff_exit 哨兵携带
-	Model      string                `json:"model"`      // system/init 行携带的实际模型名
-	ModelUsage map[string]modelUsage `json:"modelUsage"` // result 行携带的会话级窗口（B80：分母来源）
+	Type         string                `json:"type"`
+	Subtype      string                `json:"subtype"`
+	SessionID    string                `json:"session_id"`
+	Message      json.RawMessage       `json:"message"`
+	Event        json.RawMessage       `json:"event"`
+	Result       string                `json:"result"`
+	IsError      bool                  `json:"is_error"`
+	ExitCode     int                   `json:"code"`           // handoff_exit 哨兵携带
+	Model        string                `json:"model"`          // system/init 行携带的实际模型名
+	ModelUsage   map[string]modelUsage `json:"modelUsage"`     // result 行携带的会话级窗口（B80：分母来源）
+	UUID         string                `json:"uuid"`           // result 行的唯一标识（B83：账目的幂等键）
+	TotalCostUSD float64               `json:"total_cost_usd"` // **进程内累计**花费，本轮花费要做差分
+	Usage        json.RawMessage       `json:"usage"`          // result 行的**本轮**用量（与 modelUsage 的进程累计不是一回事）
 }
 
 // tailer 从指定 offset 增量读 out.jsonl。

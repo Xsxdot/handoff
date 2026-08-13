@@ -117,6 +117,9 @@ type runState struct {
 	// actualModel 是已知的实际模型名（init 行或 assistant 消息带来），
 	// result 行 modelUsage 多键匹配窗口时优先用它（0 值语义见 ctxWindow）。
 	actualModel string
+	// prevCostUSD 是**本进程内**上一次 result 行的 total_cost_usd，用于把
+	// 进程累计花费差分成本轮花费（见 parseResultSpend）。0 = 本进程还没有回合。
+	prevCostUSD float64
 	ready       chan struct{}
 	readyOnce   sync.Once
 	startOffset int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
@@ -702,6 +705,18 @@ func (a *Adapter) mapResult(r *runState, m streamMsg) {
 			"task", r.taskID, "window", w)
 	}
 	r.ctxWindow = w
+	// 累计消耗：result 行同时带本轮 token 与进程累计花费，差分成本轮账目。
+	// 与上面的窗口是两回事——窗口进 Usage（当前占用），这里进 Spend（累计消耗）。
+	if e, next, ok := parseResultSpend(m, r.prevCostUSD); ok {
+		if m.TotalCostUSD < r.prevCostUSD {
+			a.log.Warn("claude 花费基线陈旧，本轮按当前值入账",
+				"task", r.taskID, "prev", r.prevCostUSD, "now", m.TotalCostUSD)
+		}
+		r.prevCostUSD = next
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	} else {
+		a.log.Debug("claude result 行不带可入账的消耗，跳过", "task", r.taskID, "uuid", m.UUID)
+	}
 	if m.Subtype != "success" || m.IsError {
 		tail := claudeLogTail(r.taskDir)
 		a.log.Error("claude 回合异常结束", "task", r.taskID, "subtype", m.Subtype, "stderr_tail", tail)
