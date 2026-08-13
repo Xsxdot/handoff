@@ -100,6 +100,14 @@ type runState struct {
 	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
 	askedViaTool bool
 
+	// ctxWindow 是当前模型的上下文窗口上限，由 _x.ai/models/update 带来（0=未知）。
+	// 为什么要暂存：分子与分母来自**不同的帧**——窗口在会话建立后立刻到，
+	// 占用在每次模型调用后到。只发分子的话分母永远补不上
+	//（manager 的「nil=不更新」保护的是已落库的值，不是从没落过库的值）。
+	ctxWindow int
+	// actualModel 是 grok 报回的实际模型名（同上，随用量一起发出去）。
+	actualModel string
+
 	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
 	textPart string            // 本回合正文/思维链的 part 标识
 
@@ -812,10 +820,28 @@ type acpHandler struct {
 	r *runState
 }
 
+// OnNotify 分流对方通知。
+//
+// 三类：session/update（正文与工具调用，原有链路）、_x.ai/session_notification
+// （用量）、_x.ai/models/update（模型名与窗口）。其余私有通知继续忽略。
+//
+// 为什么这里要认 _x.ai/*：grok 把用量放在私有通知上，标准的 session/update
+// 变体一个都不带计数。此前这个函数的第一行是 `if method != "session/update"
+// { return }`，私有通知在那里就没了——它们压根到不了 feedRaw。
 func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
-	if method != "session/update" {
-		return
+	switch method {
+	case "session/update":
+		h.onSessionUpdate(params)
+	case "_x.ai/session_notification":
+		h.onUsageNotification(params)
+	case "_x.ai/models/update":
+		h.onModelsUpdate(params)
 	}
+}
+
+// onSessionUpdate 是原 OnNotify 的正文链路，一字未改，只是从早返回后的直线
+// 变成 switch 的一个分支。
+func (h *acpHandler) onSessionUpdate(params json.RawMessage) {
 	h.r.turnMu.Lock()
 	raw := append([]byte(`{"method":"session/update","params":`), append(params, '}')...)
 	h.r.acc.feedRaw(raw)
@@ -835,6 +861,41 @@ func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
 	}
 	h.r.turnMu.Unlock()
 	h.a.flushRender(h.r)
+}
+
+// onUsageNotification 处理 _x.ai/session_notification：只有 response_completed
+// 会产出用量，其余（turn_completed 等）一律忽略——理由见 parseResponseCompleted。
+func (h *acpHandler) onUsageNotification(params json.RawMessage) {
+	u, ok := parseResponseCompleted(params)
+	if !ok {
+		return // 不是 response_completed，或没有有效数字：静默跳过，不是错误
+	}
+	h.r.turnMu.Lock()
+	if h.r.ctxWindow > 0 {
+		w := h.r.ctxWindow
+		u.ContextWindow = &w
+	}
+	model := h.r.actualModel
+	h.r.turnMu.Unlock()
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+}
+
+// onModelsUpdate 处理 _x.ai/models/update：记下模型名与窗口，供后续用量帧带上。
+func (h *acpHandler) onModelsUpdate(params json.RawMessage) {
+	model, window, ok := parseModelsUpdate(params)
+	if !ok {
+		h.a.log.Debug("grok 模型通知解析失败，跳过", "task", h.r.taskID)
+		return
+	}
+	h.r.turnMu.Lock()
+	changed := h.r.actualModel != model || h.r.ctxWindow != window
+	h.r.actualModel, h.r.ctxWindow = model, window
+	h.r.turnMu.Unlock()
+	if changed {
+		h.a.log.Info("grok 实际模型", "task", h.r.taskID, "model", model, "window", window)
+	}
+	// 模型名先单发一次：回合还没开始就能显示，不必等第一次模型调用完成
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model})
 }
 
 func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
