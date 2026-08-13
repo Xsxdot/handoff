@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -27,7 +27,6 @@ import {
   FolderOpen,
   Folders,
   GitBranch,
-  Globe2,
   HardDrive,
   House,
   KeyRound,
@@ -38,8 +37,6 @@ import {
   Monitor,
   MoreHorizontal,
   Network,
-  PanelBottomClose,
-  PanelBottomOpen,
   PanelRight,
   Play,
   Plus,
@@ -180,6 +177,23 @@ const codeByFile = {
     ['26', '    return len(g.peers)'],
     ['27', '}'],
   ],
+  'fixtures.json': [
+    ['1', '{'],
+    ['2', '  "peers": ['],
+    ['3', '    {"id": 1, "addr": "10.0.0.11:7946", "zone": "a"},'],
+    ['4', '    {"id": 2, "addr": "10.0.0.12:7946", "zone": "a"},'],
+    ['5', '    {"id": 3, "addr": "10.0.0.13:7946", "zone": "b"},'],
+    ['6', '    {"id": 4, "addr": "10.0.0.14:7946", "zone": "b"},'],
+    ['7', '    {"id": 5, "addr": "10.0.0.15:7946", "zone": "c"},'],
+  ],
+};
+
+// fileKinds 只登记「不是普通可编辑文本」的文件。
+// 没登记的一律按可编辑文本处理，这与真实实现的判定方向一致：
+// agentd 是在读到内容之后才知道它是二进制/超限的，不靠扩展名猜。
+const fileKinds = {
+  'logo.png': { kind: 'binary', size: '48.2 KB' },
+  'fixtures.json': { kind: 'truncated', size: '3.2 MB' },
 };
 
 const fileRows = [
@@ -201,7 +215,26 @@ const fileRows = [
   { name: 'go.mod', type: 'file', depth: 0 },
   { name: 'README.md', type: 'file', depth: 0 },
   { name: 'Makefile', type: 'file', depth: 0, modified: true },
+  // 这两条不是装饰：点开它们才能看到 B81 的另外两种读取结果（二进制 / 超限截断）
+  { name: 'fixtures.json', type: 'file', depth: 0 },
+  { name: 'logo.png', type: 'file', depth: 0 },
 ];
+
+// filePaths 从 fileRows 的缩进结构还原每个文件的目录路径，供编辑器面包屑用。
+// 写死一份对照表也能跑，但那样每加一个文件就要同步改两处——让树自己说话。
+const filePaths = (() => {
+  const stack = [];
+  const paths = {};
+  for (const row of fileRows) {
+    stack.length = row.depth;
+    if (row.type === 'folder') {
+      stack[row.depth] = row.name;
+      continue;
+    }
+    paths[row.name] = stack.slice(0, row.depth);
+  }
+  return paths;
+})();
 
 function IconButton({ label, children, className = '', ...props }) {
   return (
@@ -478,19 +511,6 @@ function ToolCall({ icon: Icon, label, detail, done = true }) {
   );
 }
 
-function highlightGo(line) {
-  const tokenPattern = /(\s*\/\/.*$|".*?"|\b(?:func|defer|for|range|var|go|if|nil|close|return|type|struct|make|chan|error)\b|\b\d+\b)/g;
-  return line.split(tokenPattern).filter(Boolean).map((part, index) => {
-    const value = part.trim();
-    let className = '';
-    if (value.startsWith('//')) className = 'token-comment';
-    else if (value.startsWith('"')) className = 'token-string';
-    else if (/^\d+$/.test(value)) className = 'token-number';
-    else if (/^(func|defer|for|range|var|go|if|nil|close|return|type|struct|make|chan|error)$/.test(value)) className = 'token-keyword';
-    return <span className={className} key={`${index}-${part}`}>{part}</span>;
-  });
-}
-
 function TaskTui({ activeTask, setActiveTask }) {
   const [approvalState, setApprovalState] = useState(null);
   const [draft, setDraft] = useState('');
@@ -578,70 +598,155 @@ function TaskTui({ activeTask, setActiveTask }) {
   );
 }
 
-function CodeEditor({ selectedFile }) {
+// FileEditor 是 B81「工作树文件写回」的形态载体。
+//
+// 它刻意长得**朴素**：没有行号、没有语法高亮、没有代码折叠。真实实现是一个
+// 裸 textarea（spec §6.2），原型比真实实现好看只会让验收时的对照失真。
+//
+// 三种读取结果对应 spec §2 的 FileRead 三个分支，点左边文件树就能分别看到：
+//   - 文本：可编辑，有脏标记、保存按钮、⌘S
+//   - 二进制：只读，说明为什么不给编辑
+//   - 超限截断：只读，说明看到的只是开头一段
+//
+// 「模拟执行者改动此文件」是**原型专用开关**，真实实现里没有这个东西——
+// 它存在的唯一理由是让 409 冲突条能被点出来看，否则那条最重要的形态没法验。
+function FileEditor({ selectedFile }) {
+  const meta = fileKinds[selectedFile] || { kind: 'text' };
   const rows = codeByFile[selectedFile] || codeByFile['transport_test.go'];
+  const diskText = useMemo(() => rows.map(([, line]) => line).join('\n'), [rows]);
+
+  const [draft, setDraft] = useState(diskText);
+  const [base, setBase] = useState(diskText); // 上次读到/保存成功的内容，等价于 baseSHA256
+  const [conflict, setConflict] = useState(false);
+  const [staleOnDisk, setStaleOnDisk] = useState(false); // 原型开关
+  const [notice, setNotice] = useState('');
+
+  // 换文件等于换一份 base：草稿、冲突态、提示全部重置。
+  // 真实实现里草稿是按 tab 存的，切 tab 不会丢——那是 spec §7 的事，
+  // 原型只有一个编辑器，不模拟多草稿。
+  useEffect(() => {
+    setDraft(diskText);
+    setBase(diskText);
+    setConflict(false);
+    setStaleOnDisk(false);
+    setNotice('');
+  }, [selectedFile, diskText]);
+
+  const dirty = draft !== base;
+  // 执行者「改动后」的磁盘内容：多一行，好让放弃改动这条出口看得出效果
+  const remoteText = `// ← 执行者在你编辑期间改了这个文件（原型模拟）\n${base}`;
+
+  function save() {
+    if (staleOnDisk) {
+      // 对应 409：服务端算出的 sha256 与我们上送的 baseSHA256 不一致
+      setConflict(true);
+      setNotice('');
+      return;
+    }
+    setBase(draft);
+    setConflict(false);
+    setNotice('已保存');
+  }
+
+  function overwrite() {
+    // 对应「拿 current.sha256 当新 base 重发一次」
+    setBase(draft);
+    setConflict(false);
+    setStaleOnDisk(false);
+    setNotice('已用你的内容覆盖执行者的改动');
+  }
+
+  function discard() {
+    setDraft(remoteText);
+    setBase(remoteText);
+    setConflict(false);
+    setStaleOnDisk(false);
+    setNotice('已放弃改动，载入磁盘版本');
+  }
+
+  function onKeyDown(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+      event.preventDefault(); // 否则触发浏览器的「保存网页」
+      if (dirty) save();
+    }
+  }
+
   return (
     <div className="editor-surface">
-      <div className="editor-breadcrumb">internal <ChevronRight size={12} /> cluster <ChevronRight size={12} /><FileCode2 size={13} /><span>{selectedFile}</span></div>
-      <div className="code-scroll">
-        {rows.map(([number, line]) => {
-          const lineNumber = Number(number);
-          const highlight = selectedFile === 'transport_test.go' && lineNumber >= 78 && lineNumber <= 94;
-          return (
-            <div className={`code-line ${highlight ? 'highlight' : ''}`} key={`${selectedFile}-${number}`}>
-              <span className="line-number">{number}</span>
-              <code>{line ? highlightGo(line) : ' '}</code>
-            </div>
-          );
-        })}
-      </div>
-      <div className="editor-status"><span>Go</span><span>行 78–94, 已修改</span><span>UTF-8</span><span>LF</span></div>
-    </div>
-  );
-}
-
-function BrowserPreview() {
-  return (
-    <div className="browser-surface">
-      <div className="browser-address"><Globe2 size={14} /><span>http://localhost:5173</span><RefreshCw size={13} /></div>
-      <div className="browser-page">
-        <span className="preview-kicker">super-debug / integration/b2-b3</span>
-        <h2>Transport health</h2>
-        <p>Local preview from devbox-01</p>
-        <div className="preview-list">
-          <span><StatusDot />Peer manager <b>Healthy</b></span>
-          <span><StatusDot />Drain queue <b>Healthy</b></span>
-          <span><StatusDot tone="attention" />Snapshot <b>Needs approval</b></span>
+      <div className="editor-bar">
+        <div className="editor-breadcrumb">
+          {(filePaths[selectedFile] || []).map((segment) => (
+            <span key={segment}>{segment}<ChevronRight size={12} /></span>
+          ))}
+          <FileCode2 size={13} /><span>{selectedFile}</span>
         </div>
+        {meta.kind === 'text' ? (
+          <div className="editor-bar-actions">
+            {dirty && <span className="dirty-flag">● 未保存</span>}
+            <button className="save-button" type="button" disabled={!dirty} onClick={save}>
+              <Save size={13} />保存<kbd>⌘S</kbd>
+            </button>
+          </div>
+        ) : (
+          <span className="readonly-flag"><LockKeyhole size={12} />只读</span>
+        )}
       </div>
-    </div>
-  );
-}
 
-function ShellPanel({ open, setOpen }) {
-  return (
-    <section className={`shell-panel ${open ? '' : 'collapsed'}`}>
-      <header>
-        <div className="shell-tabs"><button className="active" type="button">终端</button><button type="button">问题</button><button type="button">输出</button><button type="button">调试控制台</button></div>
-        <div className="shell-actions"><span>bash</span><IconButton label={open ? '收起终端' : '展开终端'} onClick={() => setOpen((value) => !value)}>{open ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}</IconButton><IconButton label="更多"><MoreHorizontal size={15} /></IconButton></div>
-      </header>
-      {open && (
-        <div className="shell-output">
-          <p><strong>devbox-01:~/workspace/super-debug/integration/b2-b3$</strong> go test ./internal/cluster -run DropPeer -count=50 -race</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/transport&nbsp;&nbsp;&nbsp;&nbsp; 12.851s</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/cluster&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 18.237s</p>
-          <p>PASS</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/transport&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 0.698s</p>
-          <p><strong>devbox-01:~/workspace/super-debug/integration/b2-b3$</strong> <span className="cursor" /></p>
+      {conflict && (
+        <div className="editor-conflict">
+          <TriangleAlert size={15} />
+          <div>
+            <strong>文件已被执行者改动</strong>
+            <span>你打开它之后 agentd 上的内容变了。直接保存会覆盖掉那次改动。</span>
+          </div>
+          <button type="button" className="conflict-ghost" onClick={discard}>放弃我的改动</button>
+          <button type="button" className="conflict-danger" onClick={overwrite}>用我的内容覆盖</button>
         </div>
       )}
-    </section>
+
+      {meta.kind === 'text' && (
+        <textarea
+          className="editor-textarea"
+          value={draft}
+          spellCheck={false}
+          onChange={(event) => { setDraft(event.target.value); setNotice(''); }}
+          onKeyDown={onKeyDown}
+        />
+      )}
+
+      {meta.kind === 'binary' && (
+        <div className="editor-blocked">
+          <TriangleAlert size={22} />
+          <strong>二进制文件，不支持在线编辑</strong>
+          <p>前 8 KiB 里出现了 NUL 字节，agentd 不会把它当文本返回，因此也拒绝写回。</p>
+          <span>{selectedFile} · {meta.size}</span>
+        </div>
+      )}
+
+      {meta.kind === 'truncated' && (
+        <div className="editor-truncated">
+          <div className="truncated-banner"><TriangleAlert size={14} />文件 {meta.size}，超过 1 MiB 上限，只显示开头一段且不支持编辑</div>
+          <pre>{diskText}</pre>
+          <div className="truncated-tail">===== 内容已截断 =====</div>
+        </div>
+      )}
+
+      <div className="editor-status">
+        <span>{meta.kind === 'text' ? 'Go' : meta.kind === 'binary' ? 'PNG' : 'JSON'}</span>
+        <span>{dirty ? '有未保存改动' : notice || '与磁盘一致'}</span>
+        <span>UTF-8</span>
+        <span>LF</span>
+        {meta.kind === 'text' && (
+          <button type="button" className={`proto-toggle ${staleOnDisk ? 'armed' : ''}`} onClick={() => setStaleOnDisk((value) => !value)}>
+            {staleOnDisk ? '原型：磁盘已变，下次保存会冲突' : '原型：模拟执行者改动此文件'}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
-function Workspace({ activeTask, setActiveTask, selectedFile, setSelectedFile }) {
-  const [rightTab, setRightTab] = useState('editor');
-  const [shellOpen, setShellOpen] = useState(true);
+function Workspace({ activeTask, setActiveTask, selectedFile }) {
   return (
     <main className="workspace">
       <section className="tab-group tui-group">
@@ -654,13 +759,11 @@ function Workspace({ activeTask, setActiveTask, selectedFile, setSelectedFile })
       </section>
       <section className="tab-group editor-group">
         <div className="tab-strip editor-tabs">
-          <Tab active={rightTab === 'editor'} icon={FileCode2} label={selectedFile} modified onClick={() => setRightTab('editor')} />
-          <Tab active={rightTab === 'browser'} icon={Globe2} label="localhost:5173" onClick={() => setRightTab('browser')} />
+          <Tab active icon={FileCode2} label={selectedFile} modified />
           <IconButton label="新建标签"><Plus size={15} /></IconButton>
         </div>
         <div className="right-group-body">
-          {rightTab === 'editor' ? <CodeEditor selectedFile={selectedFile} /> : <BrowserPreview />}
-          <ShellPanel open={shellOpen} setOpen={setShellOpen} />
+          <FileEditor key={selectedFile} selectedFile={selectedFile} />
         </div>
       </section>
     </main>
