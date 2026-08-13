@@ -23,6 +23,8 @@ import (
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/xushixin/handoff/internal/executor/rawtap"
 )
 
 // tailPollInterval 是文件无新内容时的轮询间隔。
@@ -55,6 +57,9 @@ type tailer struct {
 	path   string
 	log    *slog.Logger
 	offset atomic.Int64 // 已消费的字节数（含换行符）；Run 写、Offset 读
+	// rawTap 是本任务的上游原始字节旁路（由构造 tailer 处 Open，Run 退出时 Close）。
+	// 缺省关闭时为 nil，Write 是空操作，不影响任何既有行为。
+	rawTap *rawtap.Tap
 }
 
 // newTailer 创建 out.jsonl 的增量读取器。
@@ -84,6 +89,7 @@ func (t *tailer) Offset() int64 {
 //   - 半行（未以换行符结尾）不推进 offset：下轮轮询会从同一位置重读
 func (t *tailer) Run(ctx context.Context, onMsg func(streamMsg)) error {
 	t.log.Info("tailer 启动", "path", t.path, "offset", t.Offset())
+	defer t.rawTap.Close() // 正常或异常退出都收尾；nil 接收者安全
 	garbage := 0
 	for {
 		adv, err := t.scanOnce(onMsg, &garbage)
@@ -136,6 +142,10 @@ func (t *tailer) scanOnce(onMsg func(streamMsg), garbage *int) (int64, error) {
 		}
 		consumed += int64(len(line))
 		t.offset.Add(int64(len(line)))
+
+		// 原始字节旁路：在 Unmarshal 之前写，非 JSON 的坏行也要留样——
+		// 坏行极可能正是被截断的回合终结消息，跳过它样本就不完整
+		t.rawTap.Write(line)
 
 		var m streamMsg
 		if jerr := json.Unmarshal(line, &m); jerr != nil {

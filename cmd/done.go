@@ -42,10 +42,14 @@ var doneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		noteSaved, err := client.New(addr, token).Done(cmd.Context(), taskID, doneNote)
+		cli := client.New(addr, token)
+		noteSaved, err := cli.Done(cmd.Context(), taskID, doneNote)
 		if err != nil {
 			return err
 		}
+		// 兜底回收：审核者可能从不跑 wait/follow（直接 dispatch → done），
+		// 那条通道就观察不到 archived 事件。两条通道幂等，先到者生效
+		cli.DropCursor(taskID)
 		// stdout 恒为单行 {"ok":true}：上层脚本按此解析，人读的信息一律走 stderr
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
 		switch {

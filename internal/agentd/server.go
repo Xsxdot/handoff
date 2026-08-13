@@ -176,12 +176,14 @@ func (s *Server) SetManager(m *Manager) {
 // 路由（Go 1.22+ 方法路由）：
 //   - GET  /api/status                    agentd 可用性与身份
 //   - GET  /api/footprint                 全任务进程足迹体检
+//   - GET  /api/reclaim                    终态任务 managed worktree 残留体检
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
 //   - POST /api/tasks/{id}/reply        回答工单
 //   - POST /api/tasks/{id}/continue     续发修改指令
 //   - POST /api/tasks/{id}/done         归档任务
+//   - POST /api/tasks/{id}/reclaim       回收单个终态任务的 managed worktree
 //   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/frames      结构化回合帧（frames.jsonl）流式读取（W4b/TUI 数据源）
@@ -203,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/footprint", s.handleFootprint)
+	mux.HandleFunc("GET /api/reclaim", s.handleReclaimList)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
@@ -212,6 +215,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
+	mux.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
 	mux.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
 	mux.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
 	mux.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
@@ -349,6 +353,84 @@ func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
 	resp.Pty = s.ptyFootprint()
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleReclaimList 返回全部终态任务的 managed worktree 残留体检结果。
+func (s *Server) handleReclaimList(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("残留体检请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Error("manager 未就绪，无法体检残留")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	resp, err := s.mgr.ReclaimList()
+	if err != nil {
+		s.log.Error("残留体检失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	s.log.Info("残留体检请求完成", "rows", len(resp.Rows), "scanned", resp.Scanned)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleReclaim 回收单个终态任务的 managed worktree。
+//
+// 状态码：404 任务不存在；409 四种拒绝（reason 区分）；200 成功。
+//
+// 注意：四种 409 共用状态码，响应体必须带机器码 reason——CLI 靠它分派渲染，
+// 解析中文文案是不行的（文案会改，机器码不改）
+func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("回收请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	if s.mgr == nil {
+		s.log.Warn("回收请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var body struct {
+		Force bool `json:"force"`
+	}
+	// 解码失败按 force=false 处理：强删是破坏性动作，看不懂的输入必须走保守的那边
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	resp, err := s.mgr.Reclaim(r.Context(), taskID, body.Force)
+	if err != nil {
+		s.writeReclaimError(w, taskID, err)
+		return
+	}
+	s.log.Info("回收请求完成", "task", taskID, "action", resp.Action, "removed", resp.Removed)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeReclaimError 把 Reclaim 的错误翻成 HTTP 应答。
+//
+// 注意：4xx 一律 Warn 不 Error（B11 已定的纪律）——被拒不是 agentd 出故障
+func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err error) {
+	var de *DirtyWorktreeError
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.log.Warn("回收被拒：任务不存在", "task", taskID)
+		writeJSON(w, http.StatusNotFound, proto.ReclaimError{Error: err.Error()})
+	case errors.As(err, &de):
+		s.log.Warn("回收被拒：工作树脏", "task", taskID, "dirty", len(de.Files))
+		writeJSON(w, http.StatusConflict, proto.ReclaimError{
+			Error: err.Error(), Reason: proto.ReasonDirty, Dirty: de.Files})
+	case errors.Is(err, ErrReclaimNotTerminal):
+		s.log.Warn("回收被拒：任务非终态", "task", taskID)
+		writeJSON(w, http.StatusConflict, proto.ReclaimError{
+			Error: err.Error(), Reason: proto.ReasonNotTerminal})
+	case errors.Is(err, ErrReclaimNotManaged):
+		s.log.Warn("回收被拒：非 managed 工作区", "task", taskID)
+		writeJSON(w, http.StatusConflict, proto.ReclaimError{
+			Error: err.Error(), Reason: proto.ReasonNotManaged})
+	case errors.Is(err, ErrReclaimRepoUnreachable):
+		s.log.Warn("回收被拒：仓库不可达", "task", taskID, "cause", err)
+		writeJSON(w, http.StatusConflict, proto.ReclaimError{
+			Error: err.Error(), Reason: proto.ReasonRepoUnreachable})
+	default:
+		s.log.Error("回收失败", "task", taskID, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, proto.ReclaimError{Error: err.Error()})
+	}
 }
 
 // handleListTasks 返回全部任务（created_at 降序）及其实时订阅数，供 tasks 命令展示。
@@ -733,6 +815,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoProcHeadroom):
+		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errExecutorStartFailed):
 		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
@@ -1171,6 +1256,11 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	}
 	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
+		if errors.Is(err, ErrNoProcHeadroom) {
+			s.log.Warn("run 被拒：进程余量不足", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
+			return
+		}
 		s.log.Error("run 执行失败", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return

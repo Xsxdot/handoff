@@ -2,7 +2,7 @@
 //
 // 关键约定：
 //   - 全部测试用 t.Setenv("HOME", t.TempDir()) 重定向用户主目录，cursor 文件落在
-//     $HOME/.handoff/cursor-<task>，断言与清理都在测试沙箱内完成，不污染真实主目录
+//     $HOME/.handoff/cursors/<agentd>/<task>，断言与清理都在测试沙箱内完成，不污染真实主目录
 //   - WaitEvent 的断线重连测试需要「同地址重启」：用 net.Listen("tcp","127.0.0.1:0")
 //     先占一个固定端口，关闭后用同一地址重新 Listen
 package client_test
@@ -75,9 +75,26 @@ func (e *newTestEnv) createPendingTask(t *testing.T) string {
 	return id
 }
 
-// cursorPath 返回测试期望的 cursor 文件路径（与 client 实现同规则：$HOME/.handoff/cursor-<task>）。
+// cursorPath 返回测试期望的 cursor 文件路径（与 client 实现同规则：
+// $HOME/.handoff/cursors/<agentd>/<task>，<agentd> 是 host:port 折成的路径段）。
 func (e *newTestEnv) cursorPath(taskID string) string {
-	return filepath.Join(e.home, ".handoff", "cursor-"+taskID)
+	return filepath.Join(e.home, ".handoff", "cursors", cursorNS(e.ts.URL), taskID)
+}
+
+// cursorNS 把 agentd 地址折成路径段（与 client 内部 cursorNamespace 同规则，
+// 外部测试包无法访问未导出函数，故在此复刻一份）。
+func cursorNS(addr string) string {
+	u := strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
+	var b strings.Builder
+	for _, r := range u {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // readCursor 读取 cursor 文件内容；不存在时返回空串。
@@ -611,5 +628,95 @@ func TestDoneSendsNoteInBody(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"note":"改完了"`) {
 		t.Fatalf("note 没进请求体: %s", gotBody)
+	}
+}
+
+// 老 agentd：两个端点都 404 → 判定为不支持，调用方据此降级退 0。
+func TestReclaimOnOldAgentdReportsUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // 老 agentd：两条路由都不存在
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	if !errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("两端点皆 404 应判为不支持，实得 %v", err)
+	}
+}
+
+// 新 agentd + 不存在的任务：动作 404 但列表 200 → 任务是真不存在。
+// 这两条走同一个 HTTP 码，用例分不开就等于没修。
+func TestReclaimUnknownTaskIsNotMistakenForUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/reclaim" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"rows":[],"scanned":0}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"任务 abc 不存在"}`))
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	if err == nil {
+		t.Fatalf("应报错")
+	}
+	if errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("列表可用时不得判成「不支持」，实得 %v", err)
+	}
+	if !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("错误应透传服务端真因，实得 %v", err)
+	}
+}
+
+func TestReclaimDirtyRejectionCarriesStructuredList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"工作树有 2 项未提交改动或未跟踪文件",
+"reason":"dirty","dirty":[{"status":" M","path":"a.go"},{"status":"??","path":"b.log"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", false)
+	var rej *client.ReclaimRejected
+	if !errors.As(err, &rej) {
+		t.Fatalf("409 应解成 ReclaimRejected，实得 %v", err)
+	}
+	if rej.Reason != proto.ReasonDirty || len(rej.Dirty) != 2 {
+		t.Fatalf("拒绝详情解析错：%+v", rej)
+	}
+}
+
+func TestReclaimListUnsupportedOn404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	if _, err := client.New(srv.URL, "tok").ReclaimList(context.Background()); !errors.Is(err, client.ErrReclaimUnsupported) {
+		t.Fatalf("列表 404 应判为不支持，实得 %v", err)
+	}
+}
+
+// 真机烟测照出的缺陷回归：Reclaim 的 force 必须真实进入请求体。修复前实现把
+// 预编码的 bytes.NewReader 传给 c.do，而 c.do 会对 body 再 json.Marshal 一次——
+// bytes.Reader 无导出字段，序列化成 {}，force 悄悄变 false，CLI 的 --force 永远被拒。
+func TestReclaimForceCarriesIntoRequestBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"removed":true,"action":"removed"}`))
+	}))
+	defer srv.Close()
+
+	if _, err := client.New(srv.URL, "tok").Reclaim(context.Background(), "abc", true); err != nil {
+		t.Fatalf("回收：%v", err)
+	}
+	if !strings.Contains(gotBody, `"force":true`) {
+		t.Fatalf("请求体必须带 force=true，实得：%s", gotBody)
 	}
 }

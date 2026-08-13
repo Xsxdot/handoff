@@ -70,44 +70,49 @@ func enumProcs() ([]procEntry, error) {
 		if !ok || int(sys.Uid) != uid {
 			continue // 只要当前 uid 的
 		}
-		pgid, start, perr := readStat(pid, boot)
+		ppid, pgid, start, perr := readStat(pid, boot)
 		if perr != nil {
 			continue // 同上：读到一半进程没了
 		}
-		out = append(out, procEntry{PID: pid, PGID: pgid, StartedAt: start})
+		out = append(out, procEntry{PID: pid, PPID: ppid, PGID: pgid, StartedAt: start})
 	}
 	log().Debug("进程枚举完成", "uid", uid, "count", len(out))
 	return out, nil
 }
 
-// readStat 解析 /proc/<pid>/stat，取 pgrp（字段 5）与 starttime（字段 22）。
+// readStat 解析 /proc/<pid>/stat，取 ppid（字段 4）、pgrp（字段 5）与 starttime（字段 22）。
 //
 // 注意：字段 2 是 comm，可能含空格与右括号（如 "(my prog)"），因此必须从
 // **最后一个** ')' 之后开始切分，不能直接按空格分割整行。
-func readStat(pid int, bootNano int64) (pgid int, startedAt int64, err error) {
+func readStat(pid int, bootNano int64) (ppid, pgid int, startedAt int64, err error) {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	s := string(b)
 	idx := strings.LastIndex(s, ")")
 	if idx < 0 || idx+2 >= len(s) {
-		return 0, 0, fmt.Errorf("stat 格式异常 pid=%d", pid)
+		return 0, 0, 0, fmt.Errorf("stat 格式异常 pid=%d", pid)
 	}
-	// idx+2 起是字段 3（state）；fields[0]=state, fields[2]=pgrp, fields[19]=starttime
+	// idx+2 起是字段 3（state）；fields[0]=state, fields[1]=ppid, fields[2]=pgrp,
+	// fields[19]=starttime
 	fields := strings.Fields(s[idx+2:])
 	if len(fields) < 20 {
-		return 0, 0, fmt.Errorf("stat 字段不足 pid=%d, got %d", pid, len(fields))
+		return 0, 0, 0, fmt.Errorf("stat 字段不足 pid=%d, got %d", pid, len(fields))
+	}
+	ppid, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("解析 ppid pid=%d: %w", pid, err)
 	}
 	pgid, err = strconv.Atoi(fields[2])
 	if err != nil {
-		return 0, 0, fmt.Errorf("解析 pgrp pid=%d: %w", pid, err)
+		return 0, 0, 0, fmt.Errorf("解析 pgrp pid=%d: %w", pid, err)
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("解析 starttime pid=%d: %w", pid, err)
+		return 0, 0, 0, fmt.Errorf("解析 starttime pid=%d: %w", pid, err)
 	}
-	return pgid, bootNano + ticks*int64(time.Second)/clockTick, nil
+	return ppid, pgid, bootNano + ticks*int64(time.Second)/clockTick, nil
 }
 
 // procLimit 读当前进程的 RLIMIT_NPROC 软上限（每 uid 可创建进程数）。

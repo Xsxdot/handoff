@@ -86,6 +86,12 @@ const (
 	// 注意：本事件**唤醒 wait**（与 progress / approver_decision 那类只入库的事件不同）,
 	// README 与 handoff skill 的事件表必须同步列出它。
 	EventTypeArchived EventType = "archived"
+	// EventTypeResourcePressure 表示执行机的进程余量已达高水位（参考上限的九成）。
+	//
+	// 为什么必须是一类**唤醒**事件而不只是日志：日志在执行机上，审核者手边
+	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让审核者
+	// 知道要收敛。2026-08-12 事故里没有任何前兆，第一个信号就是整机瘫痪。
+	EventTypeResourcePressure EventType = "resource_pressure"
 )
 
 // Task 表示一个 handoff 任务。

@@ -3,6 +3,7 @@
 // 职责：
 //   - 持有存活锁（整个生命周期），作为 prochost.Alive 的唯一判据
 //   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时以 O_RDWR 持有 FIFO 读端
+//   - 在 spawn executor 之前安装进程围栏（RLIMIT_NPROC），executor 全树继承
 //   - spawn 真正的 executor，把它的 pid 记进 child.pid
 //   - wait 子进程，退出后向 stdout 追加 handoff_exit 哨兵
 //
@@ -10,6 +11,7 @@
 //   - 不认识 executor 协议、不解析输出：只做搬运与收尸
 //   - 不写任务状态、不连 agentd：shim 与 agentd 之间只有文件（锁、child.pid、日志）
 //   - 不写 proc.json：那是 adapter 的独占文件，双写者会丢更新（见 recordChildPID）
+//   - 不决定围栏值取多少：那是 prochost 策略层（fence.go）的事，shim 只负责装
 //
 // 为什么必须有 shim（而不是 agentd 直接 detach executor）：退出哨兵需要一个
 // 常驻父进程 waitpid 才能拿到。agentd 重启后，reparent 给 init 的 executor
@@ -25,15 +27,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SentinelPrefix 是死亡哨兵行的类型标记，adapter 扫 stdout 判死时匹配它。
 const SentinelPrefix = `"type":"handoff_exit"`
+
+// rosterInterval 是后代名册的采样间隔。
+//
+// 为什么是 15s：名册的陈旧度上界就是它——间隔内出生并在下次快照前逃逸的进程
+// 会漏记（由 B73 的围栏兜底，只吃预算不致命）。再密下去每次都要全量枚举进程表
+// （数千条）且对回收成功率没有实质提升：真正堆积的是长命的编译/测试进程，
+// 它们活得远比 15s 长。
+//
+// 是变量而非常量：测试要把它调到毫秒级，否则每条周期用例都真等 15s。
+var rosterInterval = 15 * time.Second
 
 // RunShim 是 shim 进程的入口：读 spec、持锁、拉起 executor、收尸写哨兵。
 //
@@ -76,6 +90,18 @@ func RunShim(specPath string) error {
 		defer stderr.Close()
 	}
 
+	// 围栏必须在 spawn 之前装：rlimit 随 fork 继承，装晚一步 executor 就在
+	// 围栏外面了。装不上不阻断——防护装置故障不该变成拒绝服务
+	if spec.NprocLimit > 0 {
+		if ferr := setNprocLimit(spec.NprocLimit); ferr != nil {
+			l.Warn("安装进程围栏失败，本任务无围栏保护", "limit", spec.NprocLimit, "cause", ferr)
+		} else {
+			l.Info("进程围栏已安装", "limit", spec.NprocLimit)
+		}
+	} else {
+		l.Info("本任务未设进程围栏", "reason", "spec 未下发围栏值")
+	}
+
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
@@ -95,7 +121,15 @@ func RunShim(specPath string) error {
 	// env 只打 key 名：值可能含凭据（代理 URL 里的 user:pass、API key）
 	l.Info("shim 拉起执行者进程", "bin", spec.Argv[0], "dir", spec.Dir,
 		"env_keys", envKeys(spec.Env), "input_ch", spec.InputCh != "")
+	// 注意 shim 这一处的特殊性：这里的 EAGAIN 很可能是**围栏自己造成的**——uid
+	// 占用已经 ≥ L，shim 连 executor 都 fork 不出来。日志必须带 fence 字段，
+	// 否则排障的人会以为是系统上限满了，去查错的方向。
 	if err := cmd.Start(); err != nil {
+		if note, _ := ExplainForkFailure(err); note != "" {
+			l.Error("拉起执行者进程失败（进程配额）", "bin", spec.Argv[0],
+				"note", note, "fence", spec.NprocLimit, "cause", err)
+			return fmt.Errorf("%s: 拉起 %s: %w", note, spec.Argv[0], err)
+		}
 		l.Error("拉起执行者进程失败", "bin", spec.Argv[0], "cause", err)
 		return fmt.Errorf("拉起 %s: %w", spec.Argv[0], err)
 	}
@@ -105,6 +139,26 @@ func RunShim(specPath string) error {
 		l.Warn("记录 child.pid 失败，不影响执行", "path", childPIDPath(spec.InfoPath), "cause", err)
 	}
 	l.Info("执行者进程已启动", "child_pid", childPID)
+
+	// 出生登记：趁进程树还活着，周期把后代名册落盘。executor 一死后代就被
+	// reparent 给 init/launchd，ppid 链当场断——名册是那之后唯一还能凭出生
+	// 事实认人的东西（why 见 roster.go 的 descendantsOf）
+	stopRoster := make(chan struct{})
+	rosterDone := make(chan struct{})
+	go func() {
+		defer close(rosterDone)
+		snapshotRoster(l, spec.InfoPath)
+		tk := time.NewTicker(rosterInterval)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stopRoster:
+				return
+			case <-tk.C:
+				snapshotRoster(l, spec.InfoPath)
+			}
+		}
+	}()
 
 	code := 0
 	if werr := cmd.Wait(); werr != nil {
@@ -116,6 +170,11 @@ func RunShim(specPath string) error {
 			code = -1
 		}
 	}
+	// executor 已退出，停止采样。最后一次快照留在盘上，它 ≈ 死亡时刻的存活者，
+	// 正是第二段清扫要点名的那批
+	close(stopRoster)
+	<-rosterDone
+	l.Info("出生登记已停止", "roster", rosterPath(spec.InfoPath))
 	if spec.Sentinel {
 		if _, err := fmt.Fprintf(stdout, "{%s,\"code\":%d}\n", SentinelPrefix, code); err != nil {
 			// 哨兵写不出去 = adapter 永远发现不了死亡，这是必须 Error 的严重情况
@@ -204,4 +263,32 @@ func envKeys(env []string) []string {
 		}
 	}
 	return keys
+}
+
+// snapshotRoster 采一次后代名册并落盘。
+//
+// 参数：
+//   - l: 已带 lock 字段的日志入口
+//   - infoPath: adapter 的 proc.json 路径，名册与它同目录
+//
+// 注意：**任何一步失败都只打日志、不中断 shim**。名册写不出去只意味着这一轮
+// 没有第二段清扫（残留由围栏兜底），为它杀掉正在干活的 executor 是本末倒置。
+func snapshotRoster(l *slog.Logger, infoPath string) {
+	path := rosterPath(infoPath)
+	if path == "" {
+		l.Warn("无 info_path，无法落盘后代名册，本任务不做出生登记")
+		return
+	}
+	procs, err := enumProcsFn()
+	if err != nil {
+		l.Warn("枚举进程失败，本轮跳过出生登记", "cause", err)
+		return
+	}
+	entries := descendantsOf(os.Getpid(), procs)
+	if err := writeRoster(path, entries); err != nil {
+		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", path, "cause", err)
+		return
+	}
+	// Debug 级：这是每 15s 一次的周期日志，Info 会把任务日志刷满
+	l.Debug("后代名册已更新", "path", path, "count", len(entries))
 }

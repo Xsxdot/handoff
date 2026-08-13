@@ -37,6 +37,7 @@ import (
 	"github.com/xushixin/handoff/internal/logx"
 	"github.com/xushixin/handoff/internal/pathenv"
 	"github.com/xushixin/handoff/internal/permgate"
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/store"
 	"github.com/xushixin/handoff/internal/toolchain"
 )
@@ -63,6 +64,10 @@ var agentdCmd = &cobra.Command{
 		// hub 构造时取 slog.Default()，必须先于 NewServer 生效，才能让 hub/store/config
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
+
+		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
+		// 这两个包级值，晚一步就会有任务在默认策略下开工
+		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio)
 
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
@@ -184,7 +189,9 @@ var agentdCmd = &cobra.Command{
 		// 继续加载，取值非默认时打条 Warn，让改动过的人知道它已不再有效果
 		cfg.WarnDeprecated(logger)
 
-		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default)
+		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
+			"proc_fence_disabled", cfg.ProcFence.Disabled,
+			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio)
 
 		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
 		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /

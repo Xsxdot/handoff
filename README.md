@@ -265,6 +265,9 @@ path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才
 web:                          # 浏览器控制台 Host 白名单
   allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
     - handoff.example.com
+proc_fence:                   # executor 进程围栏（RLIMIT_NPROC），默认启用
+  disabled: false             # true=完全不装围栏；逃生开关，正常不该用
+  reserve_ratio: 0.1          # 保留给 agentd/sshd/登录 shell 的名额占系统上限的比例
 ```
 
 `env` 段让 agent 启动时带上代理、私有 registry、额外 PATH 等环境变量。文件放执行机的
@@ -291,6 +294,21 @@ PATH=${PATH}:/usr/local/go/bin
 
 这不是给 executor 传环境变量的地方：代理、私有 registry 那些走 `env` 段。
 
+`proc_fence` 是 executor 进程围栏：executor 全树继承 `RLIMIT_NPROC`，上限按系统
+进程配额（`kern.maxprocperuid`）贴天花板再砍掉 `reserve_ratio`（默认 **0.1**）——
+那 10% 是留给 agentd/sshd/登录 shell 的**救护车道**，保证最坏情况下这台机器至少
+还能被你连进去看、还能查日志。两个字段含义：
+
+- `disabled`（默认 `false`）：置 `true` 时完全不装围栏。它是**逃生开关**，正常不该
+  用——2026-08-12 的整机 fork 瘫痪正是发生在无围栏状态下。
+- `reserve_ratio`（默认 `0.1`）：保留比例，0 或越界（≥1）时取默认值。**保留额是
+  救护车道，不是节流旋钮**——调小它不增加安全性，只会让 executor 更早撞墙。
+
+若看到报错文案 `进程配额耗尽（当前 uid X/Y）`：这是 executor 撞上了围栏（Y=围栏
+上限），进程创建被拒绝。它**不是你的代码 bug**——按派发指令里预埋的资源纪律
+（见下节）收敛并行、报告审核者即可，不要重试、不要改代码。若没撞围栏也报
+`resource temporarily unavailable`，那更可能是整机配额耗尽，同样归因处理。
+
 `repo_root` 是**执行机顶层配置**：它是**自动登记时项目落地的根目录**——首次派发到一台新开发机，
 agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，首次生成配置时写回本文件）。
 项目登记是「哪台执行机」的属性，放顶层的语义是「每台执行机自己决定项目放在哪」。自动登记在目标机上的
@@ -309,6 +327,17 @@ agentd 会在这里落地项目（config 里留空时默认 `<datadir>/repos`，
 > 代理、自定义 `base_url` 这类**额外**环境用的，不是鉴权的必要条件。env 文件里若设了 `HOME`
 > 或 `CLAUDE_CONFIG_DIR`，会连带改变 claude 读哪份用户配置（`--setting-sources user` 的落点）
 > 与凭据落盘位置——这是用户自己的显式配置，不拦，只是需要知道它会一并生效。
+
+### 派发指令里预埋一句资源纪律
+
+派发指令的模板里固定预埋一句（spec §3.3），审核者可直接复制：
+
+> 若见 `resource temporarily unavailable`：这是机器进程配额耗尽，不是你的代码
+> bug——立即停止并行操作、收敛后报告审核者，不要重试，不要改代码。
+
+它是本计划里唯一一条**约定而非机制**的防线：执行者可能没读、可能读了不照做，真正的
+纠偏靠审核者——他手里有 `resource_pressure` 事件和失败事件里的占用快照，两者都是
+机制。这一句只是让执行者有机会自己先反应过来，省一轮往返。**软约束，由 §3.2 兜底。**
 
 ## 分级审批链
 
@@ -352,10 +381,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now handoff-agentd
   - `prompt.md` / `opencode.json`：派发给模型的回合制 prompt 与权限配置（edit/bash/webfetch/external_directory 均为 ask）。
   - `proc.json`：执行者连接凭据（shim Handle / 端口 / session_id），agentd 重启后凭它探活与重建订阅。
   - `spec.json`：拉起 shim 的启动描述，**权限 0600 且含完整 env**（可能含凭据，走 env 而非 argv，避免出现在 `ps` 输出里）；任务归档后随任务目录一并清理。
+  - `shim.log`：shim 自身的日志（围栏安装/撞墙归因等）。撞墙时报错只落在这里，不进 agentd.log——排障「fork 报 resource temporarily unavailable」时先看它。
   - `proc.lock`：shim 的存活锁（`prochost.Alive` 的唯一判据；内核在进程死亡时自动释放）。
 - 执行者输出落盘 `<taskDir>/serve.log`（或 claude 的 `out.jsonl`/`claude.log`）：serve 退出后仍可读，事后取证一律以落盘文件为准。
 
 **执行者进程的承载与回收**：每个任务由 agentd 经 `prochost.Start` 拉起一个极轻的 shim 进程（`handoff _shim`），shim 持有 `proc.lock`、承载真正执行者并负责收尸（补写退出哨兵）。agentd 重启/崩溃不影响执行者——恢复后凭 `proc.json` 探活重连。回收统一走 `handoff stop`（按进程组 Kill）或任务自然结束；人工兜底可 `kill -9 <shim pid>`（pid 见 `proc.json` 的 `handle.pid`）。
+
+**两段回收（B72）**：executor 经 Bash 工具拉起的子进程会 `setsid` 自成新会话与进程组（pgid 判据看不到它们），因此回收分两段——第一段按进程组收「shim + executor 本体」这一层；第二段按 shim 生前落盘的出生名册（`roster.json`，同目录）点名回收逃逸后代，判据是「pid 在进程表 **且** `started_at` 完全一致」，对不上即视为 pid 已易主、**绝不发信号**（宁漏勿错）。名册每 15s 采样一次，**采样间隔内出生并逃逸的进程可能漏记**（由进程围栏兜底，只吃预算不致命）；名册缺失/损坏自动降级为只做第一段，不阻断清扫。`handoff footprint` 报的进程数也是两段并集，与回收范围一致。
 
 claude 与 grok 与 codex 的承载方式与 opencode 同构：执行者进程由各自 adapter 经 prochost 拉起，实况统一经 `handoff attach` 观看。诊断文件按 executor 对应：claude 是 `out.jsonl`（stdout 事件流）与 `claude.log`（stderr）与 `proc.json`（Handle / session_id / 已消费 offset）；grok 是 `serve.log` 与 `proc.json`（Handle / 端口 / session_id）；codex 是 `serve.log` 与 `proc.json`（Handle / 端口 / threadId）。
 

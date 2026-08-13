@@ -22,6 +22,8 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
+
+	"github.com/xushixin/handoff/internal/executor/rawtap"
 )
 
 // ACPResult 是一次异步调用的终局（二选一）。
@@ -51,6 +53,9 @@ type ACPClient struct {
 	conn   *websocket.Conn
 	log    *slog.Logger
 	cancel context.CancelFunc
+	// rawTap 是本连接的上游原始字节旁路（DialACP 开启，readLoop 退出时 Close）。
+	// 缺省关闭时为 nil，Write 是空操作，不影响任何既有行为。
+	rawTap *rawtap.Tap
 
 	writeMu sync.Mutex
 
@@ -85,6 +90,10 @@ func DialACP(ctx context.Context, wsURL string, h ACPHandler, log *slog.Logger) 
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	c := &ACPClient{conn: conn, log: log, cancel: cancel, pending: map[int]chan ACPResult{}}
+	// 原始字节旁路：随建连开启，readLoop 退出时 Close。taskID 传空串——
+	// DialACP 不持有任务标识，按协议不为此重构构造链路；文件名退化为
+	// grok-.jsonl，探针一次只跑一个任务，可接受
+	c.rawTap = rawtap.Open("grok", "", log)
 	go c.readLoop(runCtx, h)
 	log.Info("ACP 连接就绪")
 	return c, nil
@@ -185,6 +194,7 @@ func (c *ACPClient) write(msg map[string]any) error {
 func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 	var exitErr error
 	defer func() {
+		c.rawTap.Close() // 连接终止即收尾旁路；nil 接收者安全
 		c.mu.Lock()
 		c.closed = true
 		active := c.activelyClosed
@@ -213,6 +223,10 @@ func (c *ACPClient) readLoop(ctx context.Context, h ACPHandler) {
 			exitErr = err
 			return
 		}
+		// 原始字节旁路：在 Unmarshal 之前写，解析失败被跳过的坏帧也要留样——
+		// 被截断的工具调用极可能正是解析失败的那一帧，跳过它样本就不完整
+		c.rawTap.Write(data)
+
 		var msg struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`

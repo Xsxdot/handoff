@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xushixin/handoff/internal/prochost"
 	"github.com/xushixin/handoff/internal/proto"
 )
 
@@ -91,6 +92,15 @@ var (
 // log 返回 slog.Default()（与 store 同款约定：bootstrap 后统一 logger）。
 func log() *slog.Logger { return slog.Default() }
 
+// quotaNote 把一次进程创建失败翻译成归因文案；与配额无关时返回空串。
+//
+// 为什么在 agentd 侧包一层而不是四处直接调 prochost.ExplainForkFailure：
+// 归因文案要同时进日志和进返回给审核者的 error，收在一处才不会两边写法漂移。
+func quotaNote(err error) string {
+	note, _ := prochost.ExplainForkFailure(err)
+	return note
+}
+
 // gitRun 执行 git -C repo <args...>，返回 stdout 与 stderr。
 //
 // 日志：调用前 Info（repo、args）、调用后 Info（耗时）；失败 Error 带 stderr
@@ -106,6 +116,11 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 	log().Info("git 调用完成", "repo", repo, "args", args,
 		"elapsed_ms", time.Since(start).Milliseconds())
 	if err != nil {
+		if note := quotaNote(err); note != "" {
+			log().Error("git 调用失败（进程配额）", "repo", repo, "args", args,
+				"note", note, "cause", err)
+			return outBuf.String(), errBuf.String(), fmt.Errorf("%s: %w", note, err)
+		}
 		log().Error("git 调用失败", "repo", repo, "args", args,
 			"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
 	}
@@ -1009,6 +1024,9 @@ func (b *runOutputBuffer) Write(p []byte) (int, error) {
 //   - err: 超时返回 context 相关错误；启动失败返回 exec 错误。
 //     命令非零退出**不**返回错误——exitCode 已表达结果，路由层据此返回 200
 func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode int, err error) {
+	if err := checkProcHeadroom("run"); err != nil {
+		return "", -1, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, RunCmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
@@ -1023,6 +1041,11 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	log().Info("run 命令执行", "repo", repo, "cmd", truncateRunes(cmdline, 200))
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
+		if note := quotaNote(err); note != "" {
+			log().Error("run 命令启动失败（进程配额）", "repo", repo,
+				"cmd", truncateRunes(cmdline, 200), "note", note, "cause", err)
+			return "", -1, fmt.Errorf("%s: %w", note, err)
+		}
 		log().Error("run 命令启动失败", "repo", repo, "cmd", truncateRunes(cmdline, 200),
 			"cause", err)
 		return "", -1, err

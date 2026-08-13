@@ -498,12 +498,15 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 				CommitHash: firstNonEmpty(tr.Commit, commit), SessionID: r.sessionID,
 				Summary: tr.Summary}})
 	default:
-		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——有新提交才可能是
-		// 「干完了」，没有就把整段回合文本当提问交审核者，绝不替模型宣布完成。
+		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
+		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它
+		// 宣布（B74）：发 result{OK:false}，git 实况留在结构化字段，
+		// 审核者在 waiting_review 里看一眼再决定 done 还是 continue。
 		if hasNew {
+			a.log.Warn("回合无收尾协议但有新提交，转失败交审核者裁决",
+				"task", r.taskID, "branch", branch, "commit", commit)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
-				Result: &executor.Result{OK: true, Branch: branch, CommitHash: commit,
-					SessionID: r.sessionID, Summary: "（模型未输出收尾协议，按 git 新提交判定完成）"}})
+				Result: turn.NoTrailerResult(r.sessionID, branch, commit, text)})
 			return
 		}
 		// 本回合已经通过原生提问工具给过审核者一个问题时，兜底闭嘴：兜底的职责是
@@ -522,7 +525,9 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: &executor.Result{OK: false, SessionID: r.sessionID,
-					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"}})
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
+					// 与上一行的 FailReason 保持一致：executor 还活着（spec §3.3）
+					VoidReason: executor.VoidReasonTurnDiscipline}})
 			return
 		}
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})

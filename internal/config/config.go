@@ -62,7 +62,7 @@ type Config struct {
 	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 path_dirs: [] 写进
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（B59 spec D7 同款，方向相反）。
-	PathDirs     []string `yaml:"path_dirs,omitempty"`
+	PathDirs []string `yaml:"path_dirs,omitempty"`
 	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
 	//
 	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
@@ -78,7 +78,7 @@ type Config struct {
 	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
 	//
 	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
-	EnvForward     []string `yaml:"env_forward,omitempty"`
+	EnvForward   []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -98,6 +98,8 @@ type Config struct {
 	Env map[string]string
 	// Web 是浏览器控制台相关配置。
 	Web WebConfig
+	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
+	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
@@ -195,6 +197,23 @@ type Target struct {
 	User  string
 }
 
+// ProcFenceConfig 描述 executor 进程围栏（RLIMIT_NPROC）的策略。
+//
+// 字段说明：
+//   - Disabled: true 时完全不装围栏。逃生开关，正常不该用——2026-08-12 的
+//     整机 fork 瘫痪就是无围栏状态下发生的
+//   - ReserveRatio: 保留给 agentd/sshd/登录 shell 的名额占系统上限的比例；
+//     0 或越界时取默认 0.1。这是「救护车道」的宽度，不是给 executor 的节流
+//     旋钮——调小它不增加安全性，只会让 executor 更早撞墙
+//
+// 注意：yaml tag 必须写全。strict 解码器（KnownFields）按 tag 匹配键名，
+// 不加 tag 时 yaml.v3 会把 ReserveRatio 映射成 reserveratio，与 README 里的
+// reserve_ratio 对不上（RepoRoot 同款教训）。
+type ProcFenceConfig struct {
+	Disabled     bool    `yaml:"disabled"`
+	ReserveRatio float64 `yaml:"reserve_ratio"`
+}
+
 // Load 加载配置：文件不存在时返回带默认值的 Config 并自动生成随机 Token 写盘。
 //
 // 参数：
@@ -246,6 +265,10 @@ func Load(path string) (*Config, error) {
 	if cfg.RepoRoot == "" {
 		cfg.RepoRoot = filepath.Join(cfg.DataDir, "repos")
 		log().Debug("repo_root 未配置，采用默认落点", "repo_root", cfg.RepoRoot)
+	}
+	// 保留比缺省 0.1：不写配置的用户也应该被围栏保护，默认必须在安全侧
+	if cfg.ProcFence.ReserveRatio <= 0 || cfg.ProcFence.ReserveRatio >= 1 {
+		cfg.ProcFence.ReserveRatio = 0.1
 	}
 	if firstRun {
 		if werr := save(path, cfg); werr != nil {

@@ -1581,7 +1581,7 @@ func TestCompensateKeepsBranchWhenWorktreeRemoveFails(t *testing.T) {
 	gitT(t, repo, "branch", "e2e/stuck")
 	tip := gitOut(t, repo, "rev-parse", "refs/heads/e2e/stuck")
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), repo, Workspace{
+	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, Workspace{
 		Branch: "e2e/stuck", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
 		Managed: true, NewBranchTip: tip,
 	})
@@ -1600,7 +1600,7 @@ func TestCompensateKeepsBranchWhenTipMoved(t *testing.T) {
 	writeAndCommit(t, repo, "extra.txt", "x\n") // 尖端前移，与 staleTip 不再相等
 	gitT(t, repo, "checkout", "-q", orig)
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), repo, Workspace{
+	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, Workspace{
 		Branch: "e2e/moved", WorkDir: repo, Managed: false,
 		NewBranchTip: staleTip, PrevRef: orig,
 	})
@@ -1628,7 +1628,7 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 	}
 
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), repo, ws)
+	m.compensateWorkspace(context.Background(), "eeeeeeee-0000-0000-0000-000000000000", repo, ws)
 
 	if got := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD"); got != "userbase" {
 		t.Fatalf("用户树应被切回 userbase，实际停在 %s", got)
@@ -2000,5 +2000,20 @@ func TestDonePersistsNote(t *testing.T) {
 	}
 	if got.DoneNote != "两个用例补齐" {
 		t.Fatalf("done_note 未落库: %q", got.DoneNote)
+	}
+}
+
+// 清理失败的提示必须指向可执行的出路，而不是一条会撞同一堵墙的手工命令。
+func TestWorktreeCleanupFailureHintPointsToReclaim(t *testing.T) {
+	got := worktreeCleanupHint("abcdef12-0000-0000-0000-000000000000",
+		errors.New("contains modified or untracked files"))
+	if !strings.Contains(got, "handoff reclaim abcdef12") {
+		t.Fatalf("提示必须给出 reclaim 命令，实得：%s", got)
+	}
+	if strings.Contains(got, "git worktree remove") {
+		t.Fatalf("不该再引导手动 git worktree remove——它撞的是同一堵墙：%s", got)
+	}
+	if !strings.Contains(got, "contains modified or untracked files") {
+		t.Fatalf("提示必须带真因，实得：%s", got)
 	}
 }
