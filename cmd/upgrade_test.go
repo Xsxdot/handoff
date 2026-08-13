@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/release"
 )
@@ -399,5 +401,36 @@ func TestCheckAndNowAgreeOnEveryMachine(t *testing.T) {
 				t.Errorf("--now 输出不该含 %q：\n%s", c.denyNow, now)
 			}
 		})
+	}
+}
+
+// 配置里的代理必须真的传进 release 的 client。断言打在 Transport 的 Proxy
+// 行为上而不是指针相等——函数值不可比较，且我们要的本来就是行为。
+func TestProxyTransportUsesConfig(t *testing.T) {
+	rt := proxyTransport(&config.Config{Proxy: "socks5://127.0.0.1:1080"})
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("期望 *http.Transport，实得 %T", rt)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+	u, err := tr.Proxy(req)
+	if err != nil || u == nil || u.Host != "127.0.0.1:1080" {
+		t.Fatalf("代理未接上，proxy=%v err=%v", u, err)
+	}
+}
+
+// 未配代理时必须返回 nil（= 标准库默认 transport），而不是一个"什么都不代理"
+// 的自造 transport——后者会丢掉 DefaultTransport 的连接池与 HTTP/2 设置。
+func TestProxyTransportNilWhenUnset(t *testing.T) {
+	if rt := proxyTransport(&config.Config{}); rt != nil {
+		t.Fatalf("未配代理时应返回 nil，实得 %T", rt)
+	}
+}
+
+// 坏代理不得让 CLI 崩：配置校验已经在 Load 时挡过一道，这里是纵深防御，
+// 走到这儿只可能是有人绕过 Load 直接构造了 Config。降级为不用代理并打日志。
+func TestProxyTransportBadValueDegrades(t *testing.T) {
+	if rt := proxyTransport(&config.Config{Proxy: "socks4://h:1"}); rt != nil {
+		t.Fatalf("坏代理应降级为 nil，实得 %T", rt)
 	}
 }

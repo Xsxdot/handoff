@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +34,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xushixin/handoff/internal/buildinfo"
 	"github.com/xushixin/handoff/internal/client"
+	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/proxycfg"
 	"github.com/xushixin/handoff/internal/release"
 )
 
@@ -65,10 +68,17 @@ type agentdPeer interface {
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
-	newReleaseChecker = func() releaseChecker { return release.NewClient(nil) }
-	newReleaseFetcher = func() releaseFetcher { return release.NewInstaller(slog.Default(), nil) }
-	activateBinary    = release.Activate
-	rollbackBinary    = release.Rollback
+	newReleaseChecker = func() releaseChecker {
+		// 每次调用重新 loadCLIConfig：这两个缝在测试里会被整体替换，生产路径上
+		// 一条命令最多调一两次，重读一次 YAML 的代价远小于把配置提到包级变量后
+		// 与 --config 标志的求值时序纠缠
+		return release.NewClient(proxyTransport(loadCLIConfig()))
+	}
+	newReleaseFetcher = func() releaseFetcher {
+		return release.NewInstaller(slog.Default(), proxyTransport(loadCLIConfig()))
+	}
+	activateBinary = release.Activate
+	rollbackBinary = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它
 	// 就能整套替身化远端，而不必起真实 HTTP 服务
 	newAgentdClient = func(ep Endpoint) agentdPeer { return client.New(ep.Addr, ep.Token) }
@@ -143,6 +153,33 @@ func currentBinary() (string, error) {
 		return resolved, nil
 	}
 	return exe, nil
+}
+
+// proxyTransport 按配置造更新链路用的 HTTP transport。
+//
+// 参数：
+//   - cfg: 已加载的配置
+//
+// 返回：
+//   - 配了代理的 *http.Transport；**未配代理或配置有问题时返回 nil**，
+//     调用方把 nil 直接传给 release.NewClient/NewInstaller 即为标准库默认行为
+//
+// 注意：
+//   - 坏代理走到这里只可能是绕过了 config.Load 的校验（那里已经硬拒过一道）。
+//     此时降级为不用代理并打 Error，而不是 panic 或让整条命令失败——
+//     升级链路本身不该因为一个附属设置而彻底不可用
+func proxyTransport(cfg *config.Config) http.RoundTripper {
+	if cfg == nil || cfg.Proxy == "" {
+		return nil
+	}
+	tr, err := proxycfg.Transport(cfg.Proxy)
+	if err != nil {
+		slog.Default().Error("代理配置无法使用，本次出网不走代理",
+			"proxy", proxycfg.Redact(cfg.Proxy), "cause", err)
+		return nil
+	}
+	slog.Default().Info("更新链路使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	return tr
 }
 
 // outcome 是一台机器本次处理的结果分类。
