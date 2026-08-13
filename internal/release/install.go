@@ -157,6 +157,7 @@ func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch 
 func (i *Installer) FetchChecksum(ctx context.Context, rel Release, goos, goarch string) (string, error) {
 	ck, ok := rel.Checksums()
 	if !ok {
+		i.Log.Error("发布没有校验和文件，无法校验完整性", "tag", rel.Tag, "asset", ChecksumsName)
 		return "", fmt.Errorf("发布 %s 没有 %s，无法校验完整性", rel.Tag, ChecksumsName)
 	}
 	i.Log.Info("下载校验和文件", "tag", rel.Tag, "url", ck.URL)
