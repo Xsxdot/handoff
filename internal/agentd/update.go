@@ -14,6 +14,7 @@
 package agentd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +38,15 @@ type UpdateDeps struct {
 	Install func(tgz []byte, wantSum, wantTag, destDir string) (string, error)
 	// Activate 原子换版，返回旧二进制的留存路径
 	Activate func(newPath, target string) (string, error)
+	// FetchByTag 按 tag 下载本机平台的资产并用 wantSum 校验。自拉模式专用。
+	//
+	// 为什么是 tag 而不是 release.Release：agentd **不查 GitHub API**——
+	// 资产地址是确定性的（release.AssetURL），而 api.github.com 有
+	// 60 次/小时/IP 的匿名限流，多台执行机很可能共用一个代理出口 IP
+	FetchByTag func(ctx context.Context, tag, goos, goarch, wantSum string) ([]byte, error)
+	// Platform 返回本机 goos/goarch。抽成缝只为可测：写死 runtime.GOOS 时
+	// "按本机平台取资产名"这条行为在单一平台的 CI 上验不出来
+	Platform func() (string, string)
 }
 
 // handleUpdate 处理换版请求。
@@ -199,7 +209,64 @@ func (s *Server) handlePullUpdate(w http.ResponseWriter, tag, sum string, busy i
 	}
 	s.log.Info("自拉换版已受理", "tag", tag, "sha256", sum, "busy", busy)
 	writeJSON(w, http.StatusAccepted, proto.UpdateResp{OK: true, Accepted: true, Version: tag})
-	// Task 8 在此起后台 goroutine
+	// 必须在写完响应之后再起 goroutine——与 triggerRestart 同一条纪律：
+	// 先动作后响应会让客户端拿到一个断掉的连接
+	go s.runPull(tag, sum)
+}
+
+// runPull 在后台执行一次自拉换版：下载 → 安装（校验+解包+自检）→ 换版 → 重启。
+//
+// 参数：
+//   - tag: 目标版本
+//   - sum: 协调者下发的期望 sha256。**不是本机自己取的**——校验和与资产走
+//     两条不同的信任路径，本机代理/镜像被投毒时才抓得住（spec §5.5）
+//
+// 注意：
+//   - 由 handlePullUpdate 在抢到 pull 锁之后起。任何失败路径都必须调
+//     s.pull.fail 释放锁，否则这台 agentd 从此再也不能自拉
+//   - 成功路径不释放锁：换版成功即触发重启，进程整个换掉
+func (s *Server) runPull(tag, sum string) {
+	ctx := s.pullBaseCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	goos, goarch := s.upd.Platform()
+	s.log.Info("自拉换版开始", "tag", tag, "platform", goos+"/"+goarch, "sha256", sum)
+
+	s.pull.stage(proto.PullStageDownloading)
+	tgz, err := s.upd.FetchByTag(ctx, tag, goos, goarch, sum)
+	if err != nil {
+		s.log.Error("自拉换版失败：下载或校验不过", "tag", tag,
+			"platform", goos+"/"+goarch, "cause", err)
+		s.pull.fail(err)
+		return
+	}
+	s.log.Info("自拉换版：资产已就绪", "tag", tag, "bytes", len(tgz))
+
+	target, err := s.upd.Executable()
+	if err != nil {
+		s.log.Error("自拉换版失败：取当前二进制路径", "tag", tag, "cause", err)
+		s.pull.fail(err)
+		return
+	}
+
+	s.pull.stage(proto.PullStageInstalling)
+	// 临时文件必须与目标同目录：os.Rename 的原子性只在同一文件系统内成立
+	newPath, err := s.upd.Install(tgz, sum, tag, filepath.Dir(target))
+	if err != nil {
+		s.log.Error("自拉换版失败：校验或自检未通过", "tag", tag, "target", target, "cause", err)
+		s.pull.fail(err)
+		return
+	}
+	prev, err := s.upd.Activate(newPath, target)
+	if err != nil {
+		s.log.Error("自拉换版失败：替换二进制出错", "tag", tag, "target", target, "cause", err)
+		s.pull.fail(err)
+		return
+	}
+
+	s.log.Info("自拉换版完成，准备重启", "tag", tag, "target", target, "prev", prev)
+	s.triggerRestart("自拉换版到 " + tag)
 }
 
 // activeCount 返回活跃任务数（running + waiting_answer）。

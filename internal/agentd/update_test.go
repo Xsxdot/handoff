@@ -8,6 +8,7 @@ package agentd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xushixin/handoff/internal/config"
+	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -208,10 +210,18 @@ func TestUpdateInstallFailureDoesNotActivate(t *testing.T) {
 }
 
 // newTestServerManaged 建一个托管 + 无活跃任务的换版 Server（Task 7+ 的通用助手）。
+//
+// 依赖扩展（Task 8）：
+//   - 注入 manager：handleStatus 在 mgr==nil 时返回 503，而 status 测试直接调它
+//   - 补 Platform 缝：runPull 会调 s.upd.Platform()，Task 7 的 newUpdateServer 没设
+//     它是 nil，不补会 panic
 func newTestServerManaged(t *testing.T) *Server {
 	t.Helper()
 	st := newTestStore(t)
 	srv, _ := newUpdateServer(t, st, true)
+	srv.SetManager(NewManager(st, srv.Hub(), map[string]executor.Adapter{}, srv.cfg, nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv.upd.Platform = func() (string, string) { return "linux", "amd64" }
 	return srv
 }
 
@@ -321,4 +331,119 @@ func TestPullTrackerKeepsFailure(t *testing.T) {
 	if got.Tag != "v1.0.0" {
 		t.Errorf("应留下 tag，实得 %q", got.Tag)
 	}
+}
+
+// 成功路径：下载 → 安装 → 换版 → 触发重启，且四步都被真的调到。
+func TestPullSuccessInstallsAndRestarts(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated, restarted bool
+	done := make(chan struct{})
+	s.upd.FetchByTag = func(_ context.Context, tag, goos, goarch, sum string) ([]byte, error) {
+		return []byte("archive"), nil
+	}
+	s.upd.Install = func(tgz []byte, wantSum, wantTag, destDir string) (string, error) {
+		return filepath.Join(destDir, "new"), nil
+	}
+	s.upd.Activate = func(newPath, target string) (string, error) {
+		activated = true
+		return target + ".prev", nil
+	}
+	s.SetRestart(func(string) bool { restarted = true; close(done); return true })
+
+	rr := doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("自拉应 202，实得 %d: %s", rr.Code, rr.Body)
+	}
+	var out proto.UpdateResp
+	json.Unmarshal(rr.Body.Bytes(), &out)
+	if !out.Accepted || out.Version != "v1.0.0" {
+		t.Fatalf("响应应为 accepted + version，实得 %+v", out)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("后台自拉未在 5s 内触发重启")
+	}
+	if !activated || !restarted {
+		t.Fatalf("activated=%v restarted=%v，两者都应为 true", activated, restarted)
+	}
+}
+
+// 下载失败：不得 Activate、不得重启，状态落 failed 且带错误原文。
+// 这条是"失败时协调者能拿到原因"的落点——没有它，一次代理配错要让人
+// 干等到超时才看到一句「版本仍是 X」。
+func TestPullDownloadFailureRecordsAndDoesNotActivate(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated, restarted bool
+	s.upd.FetchByTag = func(_ context.Context, _, _, _, _ string) ([]byte, error) {
+		return nil, errors.New("proxyconnect tcp: dial tcp 127.0.0.1:1080: connection refused")
+	}
+	s.upd.Activate = func(string, string) (string, error) { activated = true; return "", nil }
+	s.SetRestart(func(string) bool { restarted = true; return true })
+
+	rr := doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("受理阶段应 202，实得 %d", rr.Code)
+	}
+	waitPullStage(t, s, proto.PullStageFailed, 5*time.Second)
+
+	if activated || restarted {
+		t.Fatalf("下载失败不得换版或重启，activated=%v restarted=%v", activated, restarted)
+	}
+	got := s.pull.snapshot()
+	if !strings.Contains(got.Error, "connection refused") {
+		t.Errorf("状态应留下错误原文，实得 %q", got.Error)
+	}
+}
+
+// 安装失败（sha256 不符、自检不过等）同样不得 Activate。
+func TestPullInstallFailureDoesNotActivate(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated bool
+	s.upd.FetchByTag = func(_ context.Context, _, _, _, _ string) ([]byte, error) {
+		return []byte("archive"), nil
+	}
+	s.upd.Install = func([]byte, string, string, string) (string, error) {
+		return "", errors.New("自检失败：版本号对不上")
+	}
+	s.upd.Activate = func(string, string) (string, error) { activated = true; return "", nil }
+
+	doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	waitPullStage(t, s, proto.PullStageFailed, 5*time.Second)
+	if activated {
+		t.Fatal("安装失败不得换版")
+	}
+}
+
+// status 必须上报能力位与自拉状态：前者是协调者的选路判据，
+// 后者是失败时唯一能拿到原因的地方。
+func TestStatusReportsPullCapabilityAndState(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := httptest.NewRecorder()
+	s.handleStatus(rr, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var st proto.StatusResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Update == nil || st.Update.Pull == nil || !*st.Update.Pull {
+		t.Fatalf("status 应上报 pull=true，实得 %+v", st.Update)
+	}
+	if st.Update.PullState != nil {
+		t.Errorf("没跑过自拉时 pull_state 应为 nil，实得 %+v", st.Update.PullState)
+	}
+}
+
+// waitPullStage 轮询等状态到达期望阶段。
+// 用轮询而不是 sleep：后台 goroutine 的耗时不确定，固定 sleep 要么慢要么脆。
+func waitPullStage(t *testing.T, s *Server, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if st := s.pull.snapshot(); st != nil && st.Stage == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待 pull 阶段 %q 超时，实得 %+v", want, s.pull.snapshot())
 }
