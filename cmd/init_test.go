@@ -50,6 +50,15 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 	initStdinIsTTY = func() bool { return tty }
 	t.Cleanup(func() { initStdinIsTTY = oldTTY })
 
+	// 平台钉成 darwin + 非 root：托管追问在 macOS（launchd 用户级，当场装）与
+	// Linux（systemd 要 root，非 root 只打 sudo 提示就返回）上行为相反，不钉住
+	// 就是拿跑测试的机器当断言前提——开发机全绿、Linux CI 全红（2026-08-13 实测）。
+	// Linux 那条分支由 TestMaybeInstallServiceLinuxNonRootOnlyHints 单独覆盖。
+	oldGOOS, oldEuid := initGOOS, initGeteuid
+	initGOOS = func() string { return "darwin" }
+	initGeteuid = func() int { return 501 }
+	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+
 	// 测试不得走 huh：CI 没有真终端，huh 会挂死。生产 RunE 用
 	// newInteractivePrompter；这里一律换成脚本化，按行吃 SetIn 的答案。
 	oldP := newInteractivePrompter
@@ -428,6 +437,61 @@ func TestInitAllDefaultsInstallsService(t *testing.T) {
 	}
 	if f.installed == nil {
 		t.Error("全默认作答时托管追问取默认 y，必须真的调 Install")
+	}
+}
+
+// Linux 非 root：只打 sudo 提示，既不追问也不装。
+//
+// why 单独一条而不是走 runInitWith：托管路径在两个平台上行为相反，runInitWith
+// 把平台钉成了 darwin（否则断言会跟着跑测试的机器变）。Linux 这条分支在开发机上
+// 恒不成立，只有钉住 GOOS 才验得到——不验它，「systemd 单元要 root」这条真行为
+// 就从来没有人测过。
+//
+// why 喂 y：如果平台门漏了，这个答案会让它一路走到 Install，installed 非空即暴露。
+func TestMaybeInstallServiceLinuxNonRootOnlyHints(t *testing.T) {
+	f := &fakeManager{}
+	withFakeManager(t, f)
+
+	oldGOOS, oldEuid := initGOOS, initGeteuid
+	initGOOS = func() string { return "linux" }
+	initGeteuid = func() int { return 1000 }
+	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+
+	var buf bytes.Buffer
+	p := newScriptedPrompter(strings.NewReader("y\n"), &buf)
+	maybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+
+	if f.installed != nil {
+		t.Error("Linux 非 root 时不该调 Install：systemd 单元写不进 /etc")
+	}
+	if !strings.Contains(buf.String(), "sudo handoff service install") {
+		t.Errorf("必须给出带 sudo 的可复制命令，实得:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "重启") {
+		t.Errorf("要说清不托管的后果（重启后不会自己回来），实得:\n%s", buf.String())
+	}
+}
+
+// Linux + root：能写 /etc，就该照常追问并安装，不能被平台门一刀切拦掉。
+func TestMaybeInstallServiceLinuxRootInstalls(t *testing.T) {
+	f := &fakeManager{}
+	withFakeManager(t, f)
+
+	oldExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/handoff", nil }
+	t.Cleanup(func() { osExecutable = oldExe })
+
+	oldGOOS, oldEuid := initGOOS, initGeteuid
+	initGOOS = func() string { return "linux" }
+	initGeteuid = func() int { return 0 }
+	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+
+	var buf bytes.Buffer
+	p := newScriptedPrompter(strings.NewReader("y\n"), &buf)
+	maybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+
+	if f.installed == nil {
+		t.Errorf("Linux root 下答 y 必须真的装，实得输出:\n%s", buf.String())
 	}
 }
 

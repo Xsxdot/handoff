@@ -16,7 +16,11 @@ import (
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	// 身份用 -c 逐次注入，而不是只在 newRepo 里 git config：clone 出来的仓库
+	// 不继承源仓库的 user.*，开发机靠全局配置兜住，**干净机器上没有全局配置**，
+	// commit 会直接 128 "Author identity unknown"（2026-08-13 CI 实测）
+	base := []string{"-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t"}
+	out, err := exec.Command("git", append(base, args...)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}

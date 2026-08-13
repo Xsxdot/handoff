@@ -54,6 +54,7 @@ func TestClaudeArgvHasNoShell(t *testing.T) {
 // proc.json 必须在 Start 之前落盘，否则 Start 成功但进程记录缺失时 Reap 无据可查。
 func TestStartProcWritesProcInfoBeforeSpawn(t *testing.T) {
 	dir := t.TempDir()
+	stubClaudeLookup(t)
 	var infoExistedAtSpawn bool
 	orig := startProcHost
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {

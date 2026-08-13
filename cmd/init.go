@@ -405,6 +405,18 @@ func listenKind(listen string) string {
 	}
 }
 
+// initGOOS / initGeteuid 是 maybeInstallService 里那道平台门的测试缝。
+//
+// 为什么必须是缝：托管路径在 macOS（launchd，用户级）与 Linux（systemd，要 root）
+// 上行为**相反**——前者当场装，后者只打一行 sudo 提示就返回。直接读
+// runtime.GOOS 的话，一套用例只能覆盖跑测试的那个平台，另一条分支在该平台上
+// 恒不成立：开发机是 macOS，于是「答 y 必须真的调 Install」在 Linux CI 上
+// 必然失败（2026-08-13 实测三条），而 Linux 那条真行为反倒从来没人验过。
+var (
+	initGOOS    = func() string { return runtime.GOOS }
+	initGeteuid = os.Geteuid
+)
+
 // maybeInstallService 在执行机上追问是否现在把 agentd 交给进程管理器托管，
 // 答 y 则就地代跑。
 //
@@ -428,7 +440,7 @@ func maybeInstallService(w io.Writer, p prompter, isExec bool, cfgPath string) {
 		// 协调者机不跑 agentd，托管对它没有意义
 		return
 	}
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+	if initGOOS() == "linux" && initGeteuid() != 0 {
 		fmt.Fprintln(w, "\n下一步   sudo handoff service install")
 		fmt.Fprintln(w, "         systemd 单元要写 /etc/systemd/system，需要 root，init 不替你 sudo。")
 		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")

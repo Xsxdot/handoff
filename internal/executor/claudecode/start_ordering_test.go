@@ -139,6 +139,7 @@ func TestStartProcKillsShimWhenFIFOReaderNeverReady(t *testing.T) {
 	go func() { _ = victim.Wait(); close(reaped) }()
 	t.Cleanup(func() { _ = victim.Process.Kill(); <-reaped })
 
+	stubClaudeLookup(t)
 	old := startProcHost
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {
 		return prochost.Handle{PID: victim.Process.Pid, LockPath: lockPath}, nil

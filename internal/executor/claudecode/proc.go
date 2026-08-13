@@ -108,6 +108,15 @@ var startProc = StartProc
 // 真进程做不出「杀不死」的形态，回收失败路径只能靠替换它来驱动。
 var killProcHost = prochost.Kill
 
+// lookClaudePath 解析 claude 可执行文件的绝对路径。
+//
+// 独立成变量同样是测试缝：不这么做，凡是走到 StartProc 的用例都隐式要求**跑
+// 测试的机器上装了 Claude Code**——开发机上通常装着，于是永远绿；CI runner 上
+// 没有，用例会在 LookPath 处提前返回，而它们断言的是更靠后的行为，表现成
+// 「proc.json 没落盘」「shim 没被回收」这类与真实缺陷一模一样的假失败
+// （2026-08-13 CI 实测两条）。
+var lookClaudePath = func() (string, error) { return exec.LookPath("claude") }
+
 // StartProc 备物料、经 prochost 拉起 shim 承载 claude，返回进程句柄。
 //
 // 参数：
@@ -138,7 +147,7 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 		l.Error("创建输入通道失败", "path", fifoPath, "cause", err)
 		return nil, err
 	}
-	bin, err := exec.LookPath("claude")
+	bin, err := lookClaudePath()
 	if err != nil {
 		l.Error("claude 未安装", "cause", err)
 		return nil, fmt.Errorf("claude 未安装: %w", err)
