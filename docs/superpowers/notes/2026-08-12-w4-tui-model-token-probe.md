@@ -14,7 +14,7 @@
 | executor | 有效模型名 | context token 用量 | 上下文窗口上限（分母） | 证据强度 |
 |---|---|---|---|---|
 | **codex** | ✅ `turn_context.model` | ✅ 累计 + 单回合，分项齐全 | ✅ **`model_context_window`** | 真实数据 |
-| **claudecode** | ✅ `system/init.model` | ✅ 每条 assistant 消息分项 | ❌ 无 | 真实数据 |
+| **claudecode** | ✅ `system/init.model` | ✅ 每条 assistant 消息分项 | ✅ **`result.modelUsage.*.contextWindow`** | 真实数据（08-13 实抓，见 §2.1；本行原写「❌ 无」已被推翻） |
 | **opencode** | ✅ `modelID` + `providerID` | ✅ `tokens.total` 直接给 | ❌ 无 | 真实数据（含在跑的任务） |
 | **grok** | ✅ `_meta.modelId` | ✅ 回合响应 `_meta.usage`，分项齐全 | ✅ **`totalContextTokens`** | 真实数据（08-13 实抓，见 §4.1；§4 的「没有」已被推翻） |
 
@@ -26,17 +26,16 @@
 本次派发的任务 `4e3565e1` 就是 `"model":""`，而 opencode 库里记的是 `deepseek-v4-flash`
 ——这个缺口是实的，而且三家都已经把答案摆在协议里了，是能补上的。
 
-**发现二：分母只有一半的家给。**（08-13 修正：原文是「只有 codex 给」，
-grok 也给，见 §4.1；结构性判断不变，只是比例从 1/4 变成 2/4。）
+**发现二：分母只有 opencode 一家没有。**（本节被推翻过两次：原文写「只有 codex 给」，
+08-13 上午 grok 也给（§4.1），08-13 晚 claudecode 也给（§2.1）。比例 1/4 → 2/4 → **3/4**。
+两次推翻是同一种错误：**只看落盘、没穷举通道**——grok 的在私有通知里，
+claudecode 的在 `result` 行而不是 `assistant` 消息里。）
 「context token 用量」在原型 TUI 上是个百分比，它需要分子和分母。分子**四家都有**；
-分母（模型的上下文窗口大小）**codex 与 grok 在协议里报，claudecode 与 opencode 不报**。
-后两家要么由 handoff 自己维护一张「模型 → 窗口大小」的表（会过时、会漏新模型），
-要么就只报绝对值不报百分比。
+分母（模型的上下文窗口大小）**codex、grok、claudecode 都在协议里报，只有 opencode 不报**。
 
-这直接决定了将来那个 brainstorm 的头一个问题：**要百分比还是要绝对值**。选百分比，
-就得接受四家里有两家的分母是 handoff 猜的；选绝对值，形态上就与原型不一致。
-交接文档预判的「有的 adapter 报不了，就如实缺席」也成立了一半——缺席的不是用量本身，
-是分母。
+这直接决定了将来那个 brainstorm 的头一个问题：**要百分比还是要绝对值**。
+现在这个问题小多了：要百分比，只有 opencode 一家的分母得靠猜（或如实缺席）。
+交接文档预判的「有的 adapter 报不了，就如实缺席」仍然成立，只是范围收到了一家。
 
 **发现三（08-13 追加）：四家的数据，全都落在 handoff 已经在读的那一帧上。**
 codex 在 `thread/start` 的响应顶层与 `thread/tokenUsage/updated`（§1.1），
@@ -155,7 +154,33 @@ handoff 读的那条线。handoff 的 codex adapter 走的是 app-server 的 `th
 `null`——要模型名就得从 `init` 或 `assistant` 取，别指望 `result`。
 
 context 占用要自己加：`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`。
-**没有任何字段告诉你上限是多少。**
+
+~~**没有任何字段告诉你上限是多少。**~~ —— **08-13 推翻，见 §2.1**。
+
+### 2.1 08-13 补验：分母在 `result` 行，不在 `assistant` 消息
+
+上面读的是 `assistant` 消息，那一层确实没有窗口上限。但**回合结束的 `result` 行里有**：
+
+```json
+{"type":"result","total_cost_usd":0.136677,
+ "usage":{"input_tokens":26591,"cache_read_input_tokens":6144,"output_tokens":26},
+ "modelUsage":{"k3-256k":{"inputTokens":26591,"outputTokens":26,
+   "cacheReadInputTokens":6144,"costUSD":0.136677,
+   "contextWindow":262144,"maxOutputTokens":32000,
+   "canonicalModel":"k3-256k","provider":"firstParty"}}}
+```
+
+`contextWindow: 262144` 就是分母，`total_cost_usd` 还顺带把花费也给了。
+
+**这是第二次栽在同一个坑里**：§4 判 grok「没有」，是因为只翻了落盘没穷举通道；
+这里判 claudecode「没有」，是因为只翻了 `assistant` 没看 `result`。
+两次的反面证据都是真的，证明的都只是「我没找到」。
+
+代价：`result` 行要等回合结束，所以**第一个回合结束前 claudecode 没有分母**，
+界面得晚一个回合才能从绝对值切成百分比。
+
+`modelUsage.<model>` 那一整块还是**会话累计**用量的正确来源，与 `usage`（本轮）
+是两个口径——详见 [2026-08-13-w4-cumulative-usage-probe.md](2026-08-13-w4-cumulative-usage-probe.md) §2。
 
 ---
 
