@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [v0.2.3] - 2026-08-13
+
 ### 修复
 
 - `go install github.com/Xsxdot/handoff@latest` 现在能用了。go.mod 声明的模块
