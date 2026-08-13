@@ -24,6 +24,8 @@ package agentd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -777,6 +779,26 @@ func resolveBaseBranch(repo string) string {
 	return ""
 }
 
+// binaryProbeBytes 是二进制判定的探测长度：前 8 KiB 内出现 NUL 字节即判为二进制。
+//
+// 判据抄自 orca 的 relay 文件通道（BINARY_PROBE_BYTES = 8192）。它朴素、无依赖，
+// 且对源码/配置/文案这类真正需要在线编辑的东西零误判——真正的文本文件不会在
+// 头 8 KiB 里塞 NUL。
+const binaryProbeBytes = 8192
+
+// isBinaryPrefix 判定一段内容的开头是否含 NUL 字节。
+//
+// 参数：
+//   - b: 已读到的内容（可能已被 maxRunOutput 截断）
+//
+// 返回：前 min(len(b), 8192) 字节内出现 0x00 为真
+func isBinaryPrefix(b []byte) bool {
+	if len(b) > binaryProbeBytes {
+		b = b[:binaryProbeBytes]
+	}
+	return bytes.IndexByte(b, 0) >= 0
+}
+
 // ReadFile 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
 //
 // 路径逃逸防御（安全红线，两道）：
@@ -796,6 +818,9 @@ func resolveBaseBranch(repo string) string {
 // 与 RunCmd 的输出截断语义一致：返回开头、不整读内存，64MiB 大文件不会把 agentd 读挂。
 // 截断而非拒绝：fetch 的用途是看文件开头（审阅上下文），1MiB 对源文件足够；
 // 大文件多为生成物/数据文件，拒绝会让审核者误以为路径有误。
+// 截断提示不再由本函数拼接，改由端点层按各自契约决定（handleTaskFile 拼、
+// handleWorkspaceFile 不拼）——本函数返回的是保真的读，在线编辑那条线才敢把
+// 内容原样存回磁盘。
 //
 // 非普通文件（目录/管道/设备等）一律拒绝：目录给 ErrPathIsDir（400 语义），
 // 其余特殊文件 read 语义不可控（可能无限输出或永久阻塞），给 ErrNotRegularFile。
@@ -805,19 +830,20 @@ func resolveBaseBranch(repo string) string {
 //   - rel: 相对仓库根的路径（如 cmd/foo.go）
 //
 // 返回：
-//   - 文件内容（超过 1MiB 时截断为开头 1MiB）
+//   - proto.FileRead{Content, Size, Truncated, Binary, SHA256}，其中 SHA256 仅当
+//     !Binary && !Truncated 时有值
 //   - err: 路径逃逸（含符号链接逃逸）返回 ErrPathEscape；目录返回 ErrPathIsDir；
 //     其他特殊文件返回 ErrNotRegularFile；文件不存在返回 *fs.PathError（含 %w 链）
-func ReadFile(repo, rel string) (string, error) {
+func ReadFile(repo, rel string) (proto.FileRead, error) {
 	cleaned := filepath.Clean(rel)
 	if rel == "" || cleaned == "." || filepath.IsAbs(cleaned) ||
 		cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
-		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
 	}
 	root, err := os.OpenRoot(repo)
 	if err != nil {
-		return "", fmt.Errorf("打开任务仓库 %s: %w", repo, err)
+		return proto.FileRead{}, fmt.Errorf("打开任务仓库 %s: %w", repo, err)
 	}
 	defer root.Close()
 	// 以 O_NONBLOCK 打开（why）：没有写端的 FIFO 会让 openat 本身一直挂住，
@@ -830,36 +856,45 @@ func ReadFile(repo, rel string) (string, error) {
 		if rootErrIsEscape(err) {
 			// 符号链接逃逸在 OpenRoot 层被内核拒绝：与词汇层逃逸同一语义
 			log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
-			return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
 		}
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	if !fi.Mode().IsRegular() {
 		log().Warn("文件读取目标不是普通文件", "repo", repo, "path", rel, "mode", fi.Mode().String())
 		if fi.IsDir() {
-			return "", fmt.Errorf("%w: %q", ErrPathIsDir, rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathIsDir, rel)
 		}
-		return "", fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
 	}
 	// 只读 maxRunOutput+1 字节：多出的 1 字节用于判定「是否超限」，
 	// 不额外多一次 Stat 也能得到截断结论（真实大小取已打开的 f.Stat）
 	b, err := io.ReadAll(io.LimitReader(f, int64(maxRunOutput)+1))
 	if err != nil {
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
+	out := proto.FileRead{Size: fi.Size()}
 	if len(b) > maxRunOutput {
 		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
 			"size", fi.Size(), "limit", maxRunOutput)
-		// 截断必须带可见标记：无标记时审核者会把第 1MiB 处当成文件末尾去推理，
-		// 而那既不是末行、也没有任何提示说明后面还有内容
-		return string(b[:maxRunOutput]) + truncatedNotice(fi.Size()), nil
+		out.Truncated = true
+		b = b[:maxRunOutput]
 	}
-	return string(b), nil
+	out.Content = string(b)
+	out.Binary = isBinaryPrefix(b)
+	// 哈希只在「完整且是文本」时才算：它唯一的用途是当写入的前置条件，
+	// 而截断内容当基线等于允许把文件截断后存回去，二进制本来就不许写。
+	// 空值在契约上就是「这文件不可编辑」，前后端共用这一个判据
+	if !out.Binary && !out.Truncated {
+		sum := sha256.Sum256(b)
+		out.SHA256 = hex.EncodeToString(sum[:])
+	}
+	return out, nil
 }
 
 // ListDir 列举工作树内某个目录的**直接子项**，不递归。

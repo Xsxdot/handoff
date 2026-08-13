@@ -1106,7 +1106,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	content, err := ReadFile(repo, rel)
+	res, err := ReadFile(repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1127,6 +1127,14 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
 		}
 		return
+	}
+	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
+	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里
+	// 之后 ReadFile 的返回才是保真的，在线编辑那条线才敢把内容存回磁盘。
+	// 本端点的响应体因此逐字节不变，handoff fetch 行为零变更
+	content := res.Content
+	if res.Truncated {
+		content += truncatedNotice(res.Size)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
 }

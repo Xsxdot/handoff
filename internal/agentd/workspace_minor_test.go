@@ -13,10 +13,12 @@ import (
 	"testing"
 )
 
-// TestReadFileTruncationIsMarked 验证超过上限的文件在返回内容里带显式截断标记。
+// TestReadFileTruncationIsMarked 验证超过上限的文件标记 Truncated 且返回开头内容。
 //
 // 无标记的截断会让审核者把「第 1MiB 处」当成文件末尾去推理——它看到的最后
-// 一行既不是真正的末行，也没有任何提示说明后面还有内容。
+// 一行既不是真正的末行，也没有任何提示说明后面还有内容。截断提示本体已迁到
+// handleTaskFile 端点（见 TestTaskFileKeepsTruncatedNotice），这里只守 ReadFile
+// 的保真标记。
 func TestReadFileTruncationIsMarked(t *testing.T) {
 	repo := t.TempDir()
 	big := strings.Repeat("a", maxRunOutput+1024)
@@ -29,10 +31,10 @@ func TestReadFileTruncationIsMarked(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	if !strings.Contains(got, "已截断") {
-		t.Errorf("超限文件未带截断标记，审核者会把截断处当文件末尾（长度 %d）", len(got))
+	if !got.Truncated {
+		t.Errorf("超限文件未标记 Truncated（长度 %d）", len(got.Content))
 	}
-	if !strings.HasPrefix(got, strings.Repeat("a", 1024)) {
-		t.Error("截断标记不应污染文件正文开头")
+	if !strings.HasPrefix(got.Content, strings.Repeat("a", 1024)) {
+		t.Error("截断不应污染文件正文开头")
 	}
 }

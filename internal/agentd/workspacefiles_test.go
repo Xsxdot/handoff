@@ -4,12 +4,14 @@
 package agentd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,5 +161,40 @@ func TestWorkspaceFileErrorMapping(t *testing.T) {
 				t.Errorf("状态码 = %d, want %d；体 = %s", code, c.want, body)
 			}
 		})
+	}
+}
+
+// TestTaskFileKeepsTruncatedNotice 是 CLI 契约的回归防线：GET /api/tasks/{id}/file
+// 在截断时仍必须把那行中文提示拼进正文，否则 handoff fetch 的输出静默变样。
+// 这是 ReadFile 截断提示迁出后唯一还在拼提示的地方（handleTaskFile 端点）。
+func TestTaskFileKeepsTruncatedNotice(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	big := bytes.Repeat([]byte("y"), maxRunOutput+4096)
+	if err := os.WriteFile(filepath.Join(repo, "big.txt"), big, 0o644); err != nil {
+		t.Fatalf("写大文件: %v", err)
+	}
+	taskID := "task-big"
+	mustCreateTask(t, env.st, &proto.Task{ID: taskID, RepoPath: repo})
+
+	code, body := doGet(t, env, "/api/tasks/"+taskID+"/file", url.Values{"path": {"big.txt"}})
+	if code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200；体 = %s", code, body)
+	}
+	var got struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	notice := truncatedNotice(int64(len(big)))
+	if !strings.HasSuffix(got.Content, notice) {
+		tail := got.Content
+		if len(tail) > 80 {
+			tail = tail[len(tail)-80:]
+		}
+		t.Errorf("content 应以截断提示结尾，实得尾部 %q", tail)
+	}
+	if want := maxRunOutput + len(notice); len(got.Content) != want {
+		t.Errorf("len(content) = %d, want %d（正文 maxRunOutput + 提示长度）", len(got.Content), want)
 	}
 }

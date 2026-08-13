@@ -158,7 +158,7 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 rel 参数"})
 		return
 	}
-	content, err := ReadFile(root, rel)
+	res, err := ReadFile(root, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -179,6 +179,16 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.log.Info("工作树读文件完成", "root", root, "rel", rel, "bytes", len(content))
-	writeJSON(w, http.StatusOK, map[string]string{"content": content})
+	// 二进制的正文在**端点层**置空，不在 ReadFile 里置空：ReadFile 是
+	// handoff fetch 与在线编辑共用的一段代码，在那里抹掉内容会把 CLI 的
+	// 既有行为一起改掉（fetch 一个 PNG 现在返回原始字节，那是已发布契约）。
+	// 而对浏览器，返回一串被 UTF-8 替换字符打烂的内容既没有展示价值，
+	// 又会诱使人把它存回去
+	if res.Binary {
+		res.Content = ""
+	}
+	s.log.Info("工作树读文件完成", "root", root, "rel", rel,
+		"bytes", len(res.Content), "size", res.Size,
+		"truncated", res.Truncated, "binary", res.Binary)
+	writeJSON(w, http.StatusOK, res)
 }
