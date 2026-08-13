@@ -1,5 +1,7 @@
 # handoff
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **把实现计划派发给另一个 AI 执行，你只负责审。**
 
 handoff 是一个纯 CLI 的两角色协作工具：你（或任意 coding agent 会话——Claude Code、opencode、grok、codex 都行）扮演**协调者**——写计划、派发任务、裁决权限、审核改动；**executor**（opencode / Claude Code / grok / codex）在独立会话里真正干活，可以在本机，也可以在网络可达的任何一台开发机上（见「连接远程执行机」）。
@@ -25,13 +27,25 @@ handoff 是一个纯 CLI 的两角色协作工具：你（或任意 coding agent
 
 ## 安装
 
-macOS / Linux（amd64 / arm64）。Windows 暂不支持作为执行机，只能当协调机——协调者侧命令（dispatch / wait / reply / diff 等）可用，但没有安装脚本与 release 资产，需自行 `go build`；因此 `handoff upgrade` 升不了本机这一份（升远端执行机不受影响），`wait --notify` 的桌面通知也只有 macOS 有。
+macOS / Linux（amd64 / arm64）：
 
 ```bash
 curl -fsSL https://handoff.gosuper.dev/install | bash
 ```
 
-脚本把二进制装到 `~/.local/bin/handoff`（免 sudo，`HANDOFF_INSTALL_DIR` 可换目录），校验 sha256 后才落盘，可反复重跑。装完确认：
+Windows（amd64 / arm64，PowerShell）：
+
+```powershell
+irm https://handoff.gosuper.dev/install.ps1 | iex
+```
+
+**Windows 上 handoff 只能当协调者**——派发、审阅、裁决权限、`upgrade` 升远端都可以，
+但本机不能当执行机：agentd 依赖的进程承载层在非 unix 平台尚未实现（backlog B37）。
+派发目标必须是一台 macOS 或 Linux 执行机。另外 `wait --notify` 的桌面通知只有 macOS
+有，Windows 上唤醒通道是 `wait` 的 stdout。
+
+脚本把二进制装到 `~/.local/bin/handoff`（Windows 是 `%LOCALAPPDATA%\Programs\handoff\handoff.exe`），
+免 sudo / 免管理员，`HANDOFF_INSTALL_DIR` 可换目录，校验 sha256 后才落盘，可反复重跑。装完确认：
 
 ```bash
 handoff version
@@ -257,6 +271,9 @@ handoff upgrade --rollback            # 本机回滚到 <二进制>.prev
 
 两道安全闸：有活跃任务（`running` / `waiting_answer`）的机器默认拒升（`--force` 可越过）；agentd 非托管的机器拒升且 `--force` 也不越过——先在那台机器 `handoff service install`。升级不会自动回滚，旧二进制保留在 `<路径>.prev`。
 
+三个平台都能自更新，Windows 也不例外——替换是「先把旧的改名成 `.prev`，再把新的移进来」，
+这正是 Windows 允许对一个正在运行的 exe 做的操作。
+
 CLI 每天最多后台查一次新版本，有更新在 stderr 提示一行，不会自动替换自己。
 
 ## 会话恢复
@@ -289,6 +306,24 @@ handoff show <task>                # 现场快照：状态 + 未处理工单 + �
 | executor 报 `resource temporarily unavailable` | 撞上进程围栏（防失控 fork 的保护），不是代码 bug。收敛并行即可，报错细节在任务目录 `shim.log` |
 | agentd 起不来，报数据目录被锁 | 已有一个 agentd 在跑。复用它；升级要先停旧再起新 |
 
+**macOS：从 Releases 页面下载后提示「无法打开，因为无法验证开发者」**
+
+发布的 darwin 资产已做 Developer ID 签名与公证，但裸命令行工具无法内嵌公证票据
+（Apple 的 stapler 只支持 .app / .dmg / .pkg），首次运行需要联网让系统去 Apple
+校验。断网时会被拦下。处置：联网后重试，或手动摘掉隔离标记：
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/handoff
+```
+
+用 `curl | bash` 安装不会遇到这个问题——curl 不打隔离标记。
+
+**Windows：提示「Windows 已保护你的电脑」**
+
+Windows 二进制未做 Authenticode 签名（需另购 OV/EV 证书），SmartScreen 会提示
+未知发布者。处置：点「更多信息」→「仍要运行」。可先用 `checksums.txt` 核对
+下载物的 sha256 再运行。
+
 ## 卸载
 
 ```bash
@@ -312,3 +347,7 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 
 - [Linux Do](https://linux.do) —— 真诚、友善、团结、专业的开发者社区
 - [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) —— handoff 的默认 executor；这是邀请链接，经它注册你我各得 $5 额度
+
+## License
+
+[Apache License 2.0](LICENSE)

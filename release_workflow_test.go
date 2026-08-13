@@ -261,3 +261,31 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 		}
 	}
 }
+
+// release notes 必须优先取自 CHANGELOG。
+//
+// 没有这条，CHANGELOG 就是个没人看也没人维护的摆设——而没人维护的文档
+// 比没有更糟：它会让读者相信一份过期的事实。
+func TestReleaseNotesComeFromChangelog(t *testing.T) {
+	wf := readWorkflow(t)
+	for _, want := range []string{"CHANGELOG.md", "--notes-file"} {
+		if !strings.Contains(wf, want) {
+			t.Fatalf("release job 缺 %q —— release notes 应优先取自 CHANGELOG", want)
+		}
+	}
+	// 抽不到时仍要能发布，否则一次格式失误会把整条发布卡死
+	if !strings.Contains(wf, "--generate-notes") {
+		t.Fatal("缺 --generate-notes 回落分支：CHANGELOG 抽取失败不该卡死发布")
+	}
+}
+
+// CHANGELOG 必须存在且有 Unreleased 一节可供下次发布填写。
+func TestChangelogExists(t *testing.T) {
+	b, err := os.ReadFile("CHANGELOG.md")
+	if err != nil {
+		t.Fatalf("读 CHANGELOG.md 失败: %v", err)
+	}
+	if !strings.Contains(string(b), "## [Unreleased]") {
+		t.Fatal("CHANGELOG.md 缺 [Unreleased] 一节")
+	}
+}

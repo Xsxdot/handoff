@@ -226,6 +226,9 @@ jobs:
     needs: [build-unix, build-darwin]
     runs-on: ubuntu-latest
     steps:
+      # checkout 必须排在 download 之前：两者写同一个工作目录，后执行的
+      # checkout 可能清掉先下载好的内容。这里要读 CHANGELOG，所以必须 checkout。
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -239,6 +242,25 @@ jobs:
           # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
           sha256sum handoff_*.tar.gz handoff_*.zip > checksums.txt
           cat checksums.txt
+      - name: 从 CHANGELOG 抽取本版说明
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # 抽取 "## [<tag>]" 到下一个 "## " 之前的内容。
+          # 抽不到不算失败——一次格式失误不该把整条发布卡死；但必须打警告，
+          # 否则「CHANGELOG 承重」这个设计会在无人察觉中失效
+          awk -v tag="## [${TAG}]" '
+            index($0, tag) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md || true
+          if [ -s notes.md ]; then
+            echo "NOTES_ARG=--notes-file=notes.md" >> "$GITHUB_ENV"
+            echo "已从 CHANGELOG.md 抽到 ${TAG} 的说明"
+          else
+            echo "NOTES_ARG=--generate-notes" >> "$GITHUB_ENV"
+            echo "警告：CHANGELOG.md 里没有 ${TAG} 的小节，回落成自动生成的 commit 列表" >&2
+          fi
       - name: 建 Release 并上传资产
         env:
           GH_TOKEN: ${{ github.token }}
@@ -247,5 +269,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
+            "${NOTES_ARG}" \
             dist/handoff_*.tar.gz dist/handoff_*.zip dist/checksums.txt
