@@ -33,8 +33,18 @@ export interface Task {
   repo_dirty_count: number
   repo_dirty_files: string
   done_note: string    // 归档时审核者留的完成说明（handoff done --note）；""=未留说明或归档于该功能之前
+  actual_model?: string   // executor 报回的实际模型名；缺省=还没报（与入参 model 不是一回事）
+  usage?: Usage           // 当前 context 占用；缺省=还没有任何一次模型调用完成
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
+}
+
+// Usage 是任务当前的 context 占用。
+// context_window 缺省表示该 executor 不在协议里报窗口（claudecode / opencode），
+// 此时只显绝对值——前端绝不自己猜分母。
+export interface Usage {
+  context_tokens: number
+  context_window?: number
 }
 
 export interface Event {

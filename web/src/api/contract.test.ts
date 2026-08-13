@@ -55,7 +55,7 @@ describe('契约 fixture 与 TS 类型', () => {
     expect(task.branch).toBe('handoff/w1-web-scaffold')
     expect(task.created_at).toMatch(/^2026-08-11T/)
     expect(task.worktree_managed).toBe(true)
-    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files']) {
+    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage']) {
       expect(Object.keys(task)).toContain(key)
     }
   })
@@ -152,6 +152,15 @@ describe('W3a 契约', () => {
     const t: Task = taskFixture
     expect(typeof t.machine).toBe('string')
     expect(typeof t.project_id).toBe('string')
+  })
+
+  it('Task 的 usage：分子必填、分母可选', () => {
+    const t: Task = taskFixture
+    expect(t.actual_model).toBe('gpt-5.6-sol')
+    expect(t.usage?.context_tokens).toBe(24668)
+    // 分母在 fixture 里有值；不报窗口的 executor 会让这个键整个缺席，
+    // 而不是给 0——那是「如实缺席」的线格式约定
+    expect(t.usage?.context_window).toBe(258400)
   })
 })
 

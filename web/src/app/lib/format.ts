@@ -5,6 +5,7 @@
 //
 // 注意：display 层的「前 8 位短号」仅供人肉对照，任何拿去当参数的地方必须用
 // 完整 ID（store 是精确匹配，短号会 404）。
+import type { Task } from '../../api/types'
 
 // shortID 取 UUID 的前 8 位，与 handoff-<id8> 的 CLI 惯例一致。
 export function shortID(id: string): string {
@@ -49,4 +50,35 @@ export function formatFull(iso: string): string {
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+// formatTokens 把 token 数格式化成人眼可读的短串：千位以上用 k 并保留一位小数。
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  return `${(n / 1000).toFixed(1)}k`
+}
+
+// formatExecutorLine 组装任务详情页「执行器」行的整行文案。
+//
+// 三段各自「有才显示」，不占位、不显示 — 或 0：
+//   执行器 · 实际模型名 · 24.7k / 258.4k (10%)
+//
+// 两条产品决策写死在这里：
+//   - **只显实际模型名**（task.actual_model）。task.model 是 dispatch 的入参，
+//     用户要知道的是「现在实际跑在什么上」，二者不一致也不提示。
+//   - **只有拿到分母才显百分比**。分母缺席就只显绝对值，绝不由前端猜一个
+//     ——猜错是静默错误，百分比照常显示只是错的。
+export function formatExecutorLine(task: Task): string {
+  const parts: string[] = [task.executor || '（缺省）']
+  if (task.actual_model) parts.push(task.actual_model)
+  const u = task.usage
+  if (u && u.context_tokens > 0) {
+    if (u.context_window && u.context_window > 0) {
+      const pct = Math.round((u.context_tokens / u.context_window) * 100)
+      parts.push(`${formatTokens(u.context_tokens)} / ${formatTokens(u.context_window)} (${pct}%)`)
+    } else {
+      parts.push(`${formatTokens(u.context_tokens)} tokens`)
+    }
+  }
+  return parts.join(' · ')
 }

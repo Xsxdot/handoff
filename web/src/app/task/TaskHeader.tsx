@@ -6,7 +6,7 @@ import { AlertTriangle, GitBranch, TerminalSquare } from 'lucide-react'
 import type { Task } from '../../api/types'
 import { Badge } from '@/components/ui/badge'
 import { stateBadgeVariant, stateLabel } from '../board/columns'
-import { shortCommit, shortID } from '../lib/format'
+import { formatExecutorLine, shortCommit, shortID } from '../lib/format'
 
 // DirtyRepoHint 是 repo_dirty_count > 0 时的提示。
 //
@@ -58,7 +58,7 @@ export function TaskHeader({ task, compact = false }: { task: Task; compact?: bo
           <span className="ml-2 text-muted-foreground">handoff-{shortID(task.id)}</span>
         </dd>
         <dt className="text-muted-foreground">执行器</dt>
-        <dd>{task.executor || '（缺省）'}{task.model ? ` · ${task.model}` : ''}</dd>
+        <dd>{formatExecutorLine(task)}</dd>
         <dt className="text-muted-foreground">分支</dt>
         <dd className="flex items-center gap-1 break-all font-mono text-xs">
           <GitBranch className="size-3.5 shrink-0" />

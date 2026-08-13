@@ -27,4 +27,19 @@ describe('TaskHeader', () => {
     expect(screen.getByText('handoff-7ec762e7')).toBeInTheDocument()
     expect(screen.queryByText('工作目录')).not.toBeInTheDocument()
   })
+
+  it('执行器行显示实际模型名与 context 占用', () => {
+    const withUsage = {
+      ...task,
+      actual_model: 'gpt-5.6-sol',
+      usage: { context_tokens: 24673, context_window: 258400 },
+    } as unknown as Task
+    render(<TaskHeader task={withUsage} />)
+    expect(screen.getByText('opencode · gpt-5.6-sol · 24.7k / 258.4k (10%)')).toBeInTheDocument()
+  })
+
+  it('旧任务没有用量字段时不报错，只显执行器', () => {
+    render(<TaskHeader task={task} />)
+    expect(screen.getByText('opencode')).toBeInTheDocument()
+  })
 })
