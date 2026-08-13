@@ -106,6 +106,78 @@ type Usage struct {
 	ContextWindow *int `json:"context_window,omitempty"`
 }
 
+// CostState 是花费的可信度。
+//
+// 取值范围**分两级**：单条账目（SpendEntry / ledger 行）只可能是
+// CostReported / CostEstimated / CostUnknown；CostPartial 只在**求和之后**
+// 产生（部分行有花费、部分行没有），任何 adapter 都不会产出它。
+// 别去找「哪个 adapter 报 partial」——没有。
+type CostState string
+
+const (
+	// CostReported：执行器自报了花费且完整。
+	CostReported CostState = "reported"
+	// CostEstimated：执行器不报花费，由 handoff 按 API 牌价估算（只有 codex）。
+	CostEstimated CostState = "estimated"
+	// CostPartial：**仅聚合级**。有已知部分，但有调用没拿到花费——所以它是
+	// **下界**，真实值只会更高。展示时必须能读出这一点。
+	CostPartial CostState = "partial"
+	// CostUnknown：一次都没拿到。展示成「—」，**绝不是 $0.00**：
+	// 花费的缺席意味着 "unreported or incomplete, never free"。
+	CostUnknown CostState = "unknown"
+)
+
+// Cost 是累计花费及其可信度。
+//
+// 注意：State 为 CostPartial 时，Ticks 只是**已知部分**的和，是下界不是总额。
+type Cost struct {
+	// Ticks 是花费，单位 1 USD = 10^10 ticks。
+	//
+	// 为什么用整数 ticks 而不是浮点美元：grok 原生就给 ticks，且它的文档明说
+	// 浮点求和对不上服务端的账。统一整数累加，只在展示的最后一步转美元。
+	Ticks int64 `json:"ticks"`
+	// State 见 CostState 的注释。CostUnknown 时 Ticks 恒为 0。
+	State CostState `json:"state"`
+}
+
+// Cumulative 是任务的累计消耗快照。
+//
+// 与 Usage 的区别（**改错了不会报错，只会显示错的数**）：Usage 描述
+// 「现在占用多少 context」（最后一次模型调用的输入侧），本结构描述
+// 「这个任务一共烧了多少」（跨全部调用累加）。两者数量级差几倍到几十倍，
+// 不要因为字段名像就互相赋值。
+//
+// 边界：本结构由 Store.TaskCumulative 对 task_usage_ledger 求和产出，
+// 只在**单任务读取**时填充；列表接口不填（见 Store.ListTasks 的注释）。
+type Cumulative struct {
+	// InputTokens 是未命中缓存的输入（口径见 Store.UpsertSpend 的注释）。
+	InputTokens int `json:"input_tokens"`
+	// CachedTokens 是命中缓存的输入（读缓存 + 写缓存）。
+	CachedTokens int `json:"cached_tokens"`
+	// OutputTokens 是模型产出，含 reasoning。
+	OutputTokens int `json:"output_tokens"`
+	// TotalTokens 是上面三项之和，由 store 算好，前端不再自己加。
+	TotalTokens int `json:"total_tokens"`
+	// Cost 是累计花费；nil = 还没有任何一条账目带花费信息。
+	Cost *Cost `json:"cost,omitempty"`
+}
+
+// SpendEntry 是一条待入账的消耗（adapter 产出，store 消费）。
+//
+// Key 必须在同一个任务内**稳定且唯一**——它是幂等的全部依据。同 Key 重复上报
+// 按**覆盖**处理（不是累加），所以流式增长的值可以放心重复报：
+// opencode 对同一条 message 会随生成推很多次、id 相同而 tokens 在涨，
+// 覆盖天然取到最终值；重复推同值则是无操作。
+type SpendEntry struct {
+	Key          string
+	InputTokens  int
+	CachedTokens int
+	OutputTokens int
+	CostTicks    int64
+	// CostState 只能是 CostReported / CostEstimated / CostUnknown 三者之一。
+	CostState CostState
+}
+
 // Task 表示一个 handoff 任务。
 //
 // JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
@@ -161,6 +233,9 @@ type Task struct {
 	ActualModel string `json:"actual_model,omitempty"`
 	// Usage 是当前 context 占用；nil=还没有任何一次模型调用完成。
 	Usage *Usage `json:"usage,omitempty"`
+	// Cumulative 是任务的累计消耗；nil = 没有任何账目（或本次是列表读取，
+	// 列表不填充——见 Store.ListTasks）。与 Usage 是两个口径，别混。
+	Cumulative *Cumulative `json:"cumulative,omitempty"`
 	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
 	//
 	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，

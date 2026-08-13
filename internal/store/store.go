@@ -102,6 +102,24 @@ func Open(path string) (*Store, error) {
   actual_model TEXT NOT NULL DEFAULT '',
   usage_context_tokens INTEGER NOT NULL DEFAULT 0,
   usage_context_window INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS task_usage_ledger (
+  -- B83 账本：一行 = 一次「新增消耗」的账目，累计值由对本表求和得到。
+  -- 为什么不在 tasks 表上冗余累计列：冗余就有一致性问题（漏写一次永久偏差），
+  -- 而行数是回合数量级（几十到几百），一次 SUM 的成本可以忽略。
+  task_id TEXT NOT NULL,
+  -- entry_key 是 adapter 给的幂等键（claudecode=result.uuid、codex=turnId、
+  -- grok=promptId、opencode=message.id）。同键**覆盖**而非累加：流式推送的
+  -- 同一条消息会推多次且值在涨，覆盖才拿到最终值。
+  entry_key TEXT NOT NULL,
+  input INTEGER NOT NULL DEFAULT 0,
+  cached_input INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  -- cost_ticks 单位 1 USD = 10^10 ticks；cost_state 只可能是
+  -- reported / estimated / unknown（partial 是聚合级状态，不落库）。
+  cost_ticks INTEGER NOT NULL DEFAULT 0,
+  cost_state TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (task_id, entry_key))`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -314,6 +332,12 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取任务 %s: %w", id, err)
 	}
+	// 累计消耗来自另一张表，单读时一并带上；列表刻意不带（见下方注释）。
+	cum, err := s.TaskCumulative(id)
+	if err != nil {
+		return nil, err
+	}
+	task.Cumulative = cum
 	return &task, nil
 }
 
@@ -321,6 +345,8 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 //
 // 注意：
 //   - created_at 统一为 UTC RFC3339Nano 文本，字典序即时间序，可直接排序
+//   - **不填充 Task.Cumulative**。列表页不显示累计消耗，为每一行做一次
+//     SUM 是纯浪费；要拿累计值请用 GetTask。这不是 bug，改之前先想清楚代价。
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(),
 		`SELECT `+taskColumns+` FROM tasks ORDER BY created_at DESC`)
@@ -507,6 +533,114 @@ func (s *Store) SetTaskUsage(id, model string, ctxTokens int, ctxWindow *int) er
 		return fmt.Errorf("更新任务 %s 用量: %w", id, err)
 	}
 	return nil
+}
+
+// UpsertSpend 记一条消耗账目；同 (taskID, e.Key) **覆盖**既有行。
+//
+// 参数：
+//   - taskID: 所属任务
+//   - e: 账目。三个 token 分项的口径是归一化后的值——**输入不含缓存**、
+//     **缓存输入 = 读缓存 + 写缓存**、**输出含 reasoning**。四家 executor 的
+//     原始字段含义互不相同（codex/grok 的输入含缓存要减，claudecode/opencode
+//     的要加；opencode 的 reasoning 与 output 平行要加，codex/grok 的是子集
+//     不能加），归一化在各 adapter 的 spend.go 里完成，本方法不做换算。
+//
+// 注意：
+//   - e.Key 为空时直接返回错误——没有键就没有幂等，宁可报错也不写一行永远
+//     去不掉重的账
+//   - 覆盖而非累加是刻意的，理由见 proto.SpendEntry 的注释
+//   - **不打成功日志**：频率与 assistant 消息同级，会刷屏；错误由调用方
+//     handleSpend 打（见 Task 2）
+func (s *Store) UpsertSpend(taskID string, e proto.SpendEntry) error {
+	if e.Key == "" {
+		return fmt.Errorf("记任务 %s 的消耗：幂等键为空", taskID)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO task_usage_ledger
+   (task_id, entry_key, input, cached_input, output, cost_ticks, cost_state, updated_at)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ ON CONFLICT(task_id, entry_key) DO UPDATE SET
+   input = excluded.input, cached_input = excluded.cached_input,
+   output = excluded.output, cost_ticks = excluded.cost_ticks,
+   cost_state = excluded.cost_state, updated_at = excluded.updated_at`,
+		taskID, e.Key, e.InputTokens, e.CachedTokens, e.OutputTokens,
+		e.CostTicks, string(e.CostState), fmtTime(time.Now())); err != nil {
+		return fmt.Errorf("记任务 %s 消耗 %s: %w", taskID, e.Key, err)
+	}
+	return nil
+}
+
+// TaskCumulative 对该任务的全部账目求和，得到累计消耗。
+//
+// 返回：
+//   - 没有任何账目行时返回 (nil, nil)。**不返回零值结构**——0 会被读成
+//     「一共花了 0」，而真相是「还不知道」
+//   - 花费状态按四条规则定（known=非 unknown 行的 ticks 之和，
+//     missing=unknown 行的条数，est=是否含 estimated 行）：
+//     missing==0 && !est → reported；missing==0 && est → estimated；
+//     missing>0 && known>0 → partial（**下界**）；missing>0 && known==0 → unknown
+//
+// 注意：estimated 与 missing 同时成立时按 partial——漏账比不准要紧，
+// 而 partial 的展示（下界）也已经隐含了「别当真」。
+//
+// **本方法读路径高频，成功不打日志**；只在调用方需要时报错（扫描/遍历出错
+// 由调用方带上下文记录）。
+func (s *Store) TaskCumulative(taskID string) (*proto.Cumulative, error) {
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT input, cached_input, output, cost_ticks, cost_state
+   FROM task_usage_ledger WHERE task_id = ?`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("读任务 %s 消耗账本: %w", taskID, err)
+	}
+	defer rows.Close()
+
+	var (
+		c       proto.Cumulative
+		known   int64
+		missing int
+		est     bool
+		n       int
+	)
+	for rows.Next() {
+		var in, cached, out int
+		var ticks int64
+		var state string
+		if err := rows.Scan(&in, &cached, &out, &ticks, &state); err != nil {
+			return nil, fmt.Errorf("扫描任务 %s 的消耗行: %w", taskID, err)
+		}
+		n++
+		c.InputTokens += in
+		c.CachedTokens += cached
+		c.OutputTokens += out
+		switch proto.CostState(state) {
+		case proto.CostUnknown:
+			missing++
+		case proto.CostEstimated:
+			est = true
+			known += ticks
+		default:
+			known += ticks
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历任务 %s 的消耗账本: %w", taskID, err)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	c.TotalTokens = c.InputTokens + c.CachedTokens + c.OutputTokens
+	c.Cost = &proto.Cost{Ticks: known}
+	switch {
+	case missing == 0 && !est:
+		c.Cost.State = proto.CostReported
+	case missing == 0:
+		c.Cost.State = proto.CostEstimated
+	case known > 0:
+		c.Cost.State = proto.CostPartial
+	default:
+		c.Cost.State = proto.CostUnknown
+	}
+	return &c, nil
 }
 
 // AppendEvent 为任务追加一条事件，返回落库后带自增 seq 的完整事件。
