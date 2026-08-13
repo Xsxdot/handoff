@@ -47,7 +47,8 @@ type streamMsg struct {
 	Event     json.RawMessage `json:"event"`
 	Result    string          `json:"result"`
 	IsError   bool            `json:"is_error"`
-	ExitCode  int             `json:"code"` // handoff_exit 哨兵携带
+	ExitCode  int             `json:"code"`  // handoff_exit 哨兵携带
+	Model     string          `json:"model"` // system/init 行携带的实际模型名
 }
 
 // tailer 从指定 offset 增量读 out.jsonl。

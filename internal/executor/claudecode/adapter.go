@@ -514,6 +514,12 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 		r.session = m.SessionID
 		r.markReady()
 		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: m.SessionID, Text: "会话就绪"})
+		// init 行就带实际模型名，比第一条 assistant 消息早。
+		// result 行的 model 是 null，别去那儿取。
+		if m.Model != "" {
+			a.log.Info("claude 实际模型", "task", r.taskID, "model", m.Model)
+			a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: m.Model})
+		}
 	case m.Type == "system":
 		// thinking_tokens 等系统副消息：仅留痕
 		a.log.Debug("system 消息跳过", "task", r.taskID, "subtype", m.Subtype)
@@ -565,6 +571,11 @@ func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
 // why（text 块不重复追加 render.log）：render.log 已由 text_delta 增量写过，
 // 整块再写会出两遍正文；这里只累积进 turnBuf 供分类用。
 func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
+	// 模型名与用量与 content 同级，就在这条消息里——此前整块丢弃。
+	// 每条 assistant 消息都带，manager 侧靠去重防写库风暴。
+	if model, u, ok := parseAssistantUsage(msg); ok && (model != "" || u != nil) {
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
 	var m struct {
 		Content []struct {
 			Type  string          `json:"type"`
