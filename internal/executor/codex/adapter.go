@@ -23,6 +23,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // progressThrottle 与 opencode/grok 同值：防高频增量刷爆事件库。
@@ -166,6 +167,13 @@ type runState struct {
 	renderBuf    strings.Builder
 	lastProgress time.Time
 	askedViaTool bool
+
+	// spendBase 是累计消耗的回合基线（B83）。与 usage 的当前占用是两个口径，
+	// 共用同一条 thread/tokenUsage/updated 通知但取不同字段，别混。
+	spendBase spendBase
+	// pricingWarned 是「模型不在牌价表」的 Warn 已打标记：同模型只打一次，
+	// 否则每回合刷一条。
+	pricingWarned bool
 }
 
 // newRunState 建一条运行态。
@@ -319,6 +327,8 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 	a.log.Info("codex 会话已建立", "task", r.taskID, "thread", r.threadID)
 	// 在会话就绪之后补发实际模型名：init 帧里没带，thread/start 的顶层才有
 	if out.Model != "" {
+		// 牌价估算要用实际模型名，而 emit 之后这个值就没别处留存了。
+		r.spendBase.Model = out.Model
 		a.log.Info("codex 实际模型", "task", r.taskID, "model", out.Model)
 		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: out.Model})
 	}
@@ -776,6 +786,8 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			a.log.Debug("codex 收到无对应回合的 turn/completed，忽略", "task", r.taskID)
 			return
 		}
+		// 回合边界：把本回合最后看到的 total 推进为下一个回合的基线。
+		r.spendBase = r.spendBase.commit()
 		status, errMsg := parseTurnCompleted(params)
 		a.finishTurn(r, status, errMsg, r.takeTurnText())
 	case method == ntfThreadStatus || method == ntfRateLimits:
@@ -798,6 +810,24 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
 		} else {
 			a.log.Debug("codex 用量通知解析失败，跳过", "task", r.taskID)
+		}
+		// 累计消耗：同一帧的 total 做回合级差分。取 total 不取 last——
+		// 上面那行当前占用恰好相反。
+		if e, next, ok := parseTurnSpend(params, r.spendBase); ok {
+			if next.pending.Input < r.spendBase.Input {
+				a.log.Warn("codex 用量计数器疑似归零，本回合按当前值全量入账",
+					"task", r.taskID, "base_input", r.spendBase.Input,
+					"now_input", next.pending.Input)
+			}
+			r.spendBase = next
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+			// 模型不在牌价表是用户看不到花费的唯一原因，日志里必须能查到；
+			// 同一个模型只 Warn 一次，否则每回合刷一条。
+			if e.CostState == proto.CostUnknown && !r.pricingWarned {
+				r.pricingWarned = true
+				a.log.Warn("codex 模型不在牌价表，本任务不显示花费",
+					"task", r.taskID, "model", r.spendBase.Model)
+			}
 		}
 	default:
 		a.log.Debug("codex 未处理的通知", "method", method)
