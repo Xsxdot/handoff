@@ -2,7 +2,7 @@
 
 **把实现计划派发给另一个 AI 执行，你只负责审。**
 
-handoff 是一个纯 CLI 的两角色协作工具：你（或你的 Claude Code 会话）扮演**协调者**——写计划、派发任务、裁决权限、审核改动；**executor**（opencode / Claude Code / grok / codex）在独立会话里真正干活，可以在本机，也可以在网络可达的任何一台开发机上（见「连接远程执行机」）。
+handoff 是一个纯 CLI 的两角色协作工具：你（或任意 coding agent 会话——Claude Code、opencode、grok、codex 都行）扮演**协调者**——写计划、派发任务、裁决权限、审核改动；**executor**（opencode / Claude Code / grok / codex）在独立会话里真正干活，可以在本机，也可以在网络可达的任何一台开发机上（见「连接远程执行机」）。
 
 ```
 写 plan → handoff dispatch → executor 独立执行
@@ -20,6 +20,8 @@ handoff 是一个纯 CLI 的两角色协作工具：你（或你的 Claude Code 
 - **断网不丢现场**：所有状态与事件持久化在执行机的 agentd（SQLite），你的会话崩溃、合盖断网、换一台电脑，两条命令就能完整接管现场。
 - **远程算力**：笔记本上写计划，派发到常开机的工作站执行；代码经 git 走，改动经 `handoff pull` 回来。
 - **无中心依赖**：没有中心 server、没有 hooks、没有 MCP 配置。两台机器 + 一条 WebSocket 直连。
+
+这套流程经过实测检验：**本项目自身除第一期外的全部功能，都是由 Claude Code 作为协调者、经 handoff 派发给 opencode 开发完成的**——你现在看到的代码就是它自己的产物。
 
 ## 安装
 
@@ -89,7 +91,7 @@ handoff done <task> --note "已验收"        # 满意：归档并回收 executo
 
 想实时看 executor 在干什么，任何时候 `handoff attach <task>`。
 
-> 协调者是 Claude Code 等 AI 会话时，不需要记这些：安装时已自动装好 handoff skill，AI 会按 skill 里的纪律驱动整个回路（含用 `wait --follow` 挂长订阅而非轮询）。
+> 协调者是 AI 会话时，不需要记这些：安装时已自动装好 handoff skill（Claude Code / opencode / grok / codex 四家都装），AI 会按 skill 里的纪律驱动整个回路。一处能力差异：Claude Code 与 grok 有后台任务唤醒机制，可挂 `wait --follow` 长订阅；opencode 与 codex 没有，skill 会引导它们退回前台逐轮 `wait` 阻塞等待。
 
 ## 连接远程执行机
 
@@ -232,7 +234,7 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
 
 `--executor` 可选 `opencode`（默认）/ `claude` / `grok` / `codex` / `fake`（无依赖的脚本演示）。就绪判据与注意事项：
 
-- **opencode**：执行机安装 `opencode` 并配好模型凭证。
+- **opencode**：执行机安装 [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) 并配好模型凭证（这是邀请链接：经它注册，你我各得 $5 额度）。
 - **claude**（Claude Code）：执行机已登录（`claude -p "hi"` 能出结果）。任务级权限策略是纯策略文件、不含凭证；凭证由 claude 自己从用户配置读。
 - **grok**：执行机已登录（`grok -p "hi"` 能出结果）。注意 grok 会读到执行机上的 Claude Code 个人配置（`~/.claude/settings.local.json` 的 allow 规则），handoff 的任务级 ask 能压过其中大部分，但个人 allow 且 handoff 未枚举的操作会被放行；断连时未决权限请求不会重发，任务直接落 failed（可 `continue` 重开）。
 - **codex**：执行机已 `codex login`。三点须知：
@@ -303,3 +305,8 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 - 设计文档（架构、协议、错误处理）：[docs/superpowers/specs/2026-08-07-handoff-design.md](docs/superpowers/specs/2026-08-07-handoff-design.md)
 - 给 AI 协调者的使用 skill：[skills/handoff/SKILL.md](skills/handoff/SKILL.md)——skill 内嵌在二进制里，随安装与升级自动同步到本机各 agent，版本不会漂移
 - systemd 手工部署模板：[deploy/handoff-agentd.service](deploy/handoff-agentd.service)（注意模板中 `KillMode=process` 是硬要求：它保证重启 agentd 不杀正在跑的 executor）
+
+## 友情链接
+
+- [Linux Do](https://linux.do) —— 真诚、友善、团结、专业的开发者社区
+- [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) —— handoff 的默认 executor；这是邀请链接，经它注册你我各得 $5 额度

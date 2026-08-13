@@ -89,11 +89,14 @@ handoff wait <task> --notify --timeout 1h
 
 `progress` / `approver_decision` / `approver_disabled` / `tickets_voided` 四类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
 
-## 在 agent 会话里挂 wait（Claude Code 等）
+## 在 agent 会话里挂 wait
 
-上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态只有一种：
+上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态按你所在 harness 的能力二选一：
 
-### 订阅：开一次，活到会话结束
+- **有后台任务/监控机制的 harness（Claude Code 的 Monitor、grok 的 background task）**：挂一条后台 `wait --follow` 长订阅，见下节。
+- **没有后台唤醒机制的 harness（opencode、codex）**：挂不了 `--follow` 订阅，退回**前台一次性 wait 逐轮挂**：`handoff wait <完整 task-id> --timeout <小于前台超时上限，如 5m>`，阻塞到返回一个事件就处置，处置完再挂下一条；退出码 124 表示这轮没等到，直接再挂即可。每轮一条独立命令，事件 JSON 完整落在命令输出里——这不是被禁止的轮询循环，禁的是拿不到事件的 `show`+`sleep` 和吞掉输出的 shell 大循环。
+
+### 订阅：开一次，活到会话结束（Claude Code / grok）
 
     Monitor({
       command: "handoff wait --follow <完整 task-id> --timeout 3h",
@@ -267,7 +270,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 1. `handoff tasks` —— 每行任务 JSON 现在带 `watchers`（有几个连接在听）
 2. 给每个 `watchers == 0` 的**活跃**任务（`pending` / `running` /
-   `waiting_answer`）补开一条 follow Monitor。`waiting_review` 不用补：
+   `waiting_answer`）补开一条 follow 订阅（无后台机制的 harness 改为前台
+   逐轮 wait，见「在 agent 会话里挂 wait」）。`waiting_review` 不用补：
    它在等你裁决，挂几天都正常
 3. `handoff show` 逐个清 `pending_tickets`
 
