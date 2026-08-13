@@ -38,6 +38,71 @@ with_curl_url() {
   unset -f curl
 }
 
+# make_probe <桩 handoff 的退出码>：搭一个自足的安装探针目录并回显它的路径。
+#
+# 目录里有：fixture/（假资产与 checksums）、stub/（替身 uname 与 curl）、
+# tmp/（喂给 install.sh 的 TMPDIR）、bin/（安装落点，由 install.sh 自己建）。
+#
+# 为什么替身做成 PATH 上的可执行文件而不是 shell 函数：install.sh 要以**真子
+# 进程**跑（EXIT trap 只在脚本进程退出时展开），函数替身跨不过进程边界。
+make_probe() {
+  local exit_code="$1" dir fixture stub
+  dir="$(mktemp -d)"
+  fixture="${dir}/fixture"
+  stub="${dir}/stub"
+  mkdir -p "$fixture" "$stub" "${dir}/tmp"
+  printf '#!/bin/sh\nexit %s\n' "$exit_code" > "${fixture}/handoff"
+  ( cd "$fixture" && tar czf handoff_v0.1.0_darwin_arm64.tar.gz handoff &&
+    sha256_of handoff_v0.1.0_darwin_arm64.tar.gz | \
+      awk '{print $1 "  handoff_v0.1.0_darwin_arm64.tar.gz"}' > checksums.txt )
+
+  # 替身 uname：把平台钉死成 darwin/arm64，与 fixture 里的资产名对上
+  cat > "${stub}/uname" <<'STUB'
+#!/bin/sh
+case "$1" in -s) printf 'Darwin' ;; -m) printf 'arm64' ;; esac
+STUB
+  # 替身 curl：带 -I 的那次（latest_tag 解析重定向）回一个末段是 v0.1.0 的
+  # 地址；带 -o 的那两次按目标文件名从 fixture 取件。判 -I 必须排在用 dst
+  # 之前——latest_tag 那次同时带着 -o /dev/null
+  cat > "${stub}/curl" <<'STUB'
+#!/bin/sh
+dst=""; head=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dst="$2"; shift ;;
+    -*I*) head=1 ;;
+  esac
+  shift
+done
+if [ "$head" -eq 1 ]; then
+  printf 'https://github.com/Xsxdot/handoff/releases/tag/v0.1.0'
+  exit 0
+fi
+[ -n "$dst" ] || exit 1
+# 记下 install.sh 让我们往哪儿写：这就是它 mktemp 出来的临时目录。
+# 测试据此断言那个目录真的落在 TMPDIR 里——否则「已清理」会退化成
+# 「本来就没在这儿建过」的假绿（BSD mktemp 无模板时正是如此）
+dirname "$dst" > "${HANDOFF_TEST_WITNESS}"
+cp "${HANDOFF_TEST_FIXTURE}/$(basename "$dst")" "$dst"
+STUB
+  chmod +x "${stub}/uname" "${stub}/curl"
+  printf '%s' "$dir"
+}
+
+# run_install <探针目录> <stdout 去处> <stderr 去处>：以真子进程跑 install.sh，
+# 回显它的退出码。安装目录经环境变量隔离到探针目录内——子进程跑法下这是可靠的，
+# INSTALL_DIR 在子进程 source install.sh 的那一刻才求值。
+run_install() {
+  local dir="$1" out="$2" err="$3" rc=0
+  env PATH="${dir}/stub:${PATH}" \
+      TMPDIR="${dir}/tmp" \
+      HANDOFF_INSTALL_DIR="${dir}/bin" \
+      HANDOFF_TEST_FIXTURE="${dir}/fixture" \
+      HANDOFF_TEST_WITNESS="${dir}/witness" \
+      bash "$(dirname "$0")/install.sh" > "$out" 2> "$err" || rc=$?
+  printf '%s' "$rc"
+}
+
 # 四个受支持平台都要归一正确
 check "darwin arm64"  "darwin_arm64" "$(with_uname Darwin arm64 detect_platform)"
 check "darwin x86_64" "darwin_amd64" "$(with_uname Darwin x86_64 detect_platform)"
@@ -75,49 +140,29 @@ check "sha256(abc)" \
   "$(sha256_of "$tmpf")"
 rm -f "$tmpf"
 
-# main 的完整成功路径：桩掉 curl 之后不需要真实 Release 也能跑通，因此这里能覆盖
-# 「装完之后」的两件事——退出码和清理。
+# main 的完整成功路径：以**真子进程**跑 install.sh。
 #
 # why（这条测试的由来）：修复前 tmp 是 main 的 local，而 EXIT trap 在 main 返回
 # 之后才展开它，set -u 当场判未绑定：安装明明成功，退出码却是 1，临时目录也永远
 # 留着。两个症状都在正常输出之后才出现，肉眼极易放过——必须由测试来盯。
-probe_dir="$(mktemp -d)"
-fixture="${probe_dir}/fixture"
-mkdir -p "$fixture"
-printf '#!/bin/sh\nexit 0\n' > "${fixture}/handoff"
-( cd "$fixture" && tar czf handoff_v0.1.0_darwin_arm64.tar.gz handoff &&
-  sha256_of handoff_v0.1.0_darwin_arm64.tar.gz | \
-    awk '{print $1 "  handoff_v0.1.0_darwin_arm64.tar.gz"}' > checksums.txt )
-
-# TMPDIR 指向一个空目录：main 里的 mktemp -d 会落在它下面，跑完数一下就知道清没清
-mkdir -p "${probe_dir}/tmp"
-(
-  export TMPDIR="${probe_dir}/tmp"
-  # 必须直接改 INSTALL_DIR，不能 export HANDOFF_INSTALL_DIR：INSTALL_DIR 在
-  # install.sh 被 source 的那一刻（本文件第 10 行）就已求值定死了，此处再设环境
-  # 变量完全不起作用——main 会把桩二进制装进真实的 ~/.local/bin，覆盖用户在用的
-  # handoff。这不是假设：本条测试第一版就是这么写的，当场把本机 CLI 写坏了
-  INSTALL_DIR="${probe_dir}/bin"
-  # 上面那条一旦被后人改回去，这里当场拦下，绝不让测试碰 probe_dir 以外的任何路径
-  case "$INSTALL_DIR" in
-    "${probe_dir}"/*) ;;
-    *) printf '安装目录未被隔离到探针目录（实得 %s），拒绝执行 main\n' "$INSTALL_DIR" >&2
-       exit 99 ;;
-  esac
-  latest_tag() { printf 'v0.1.0'; }
-  # 替身 curl：忽略地址，按 -o 的目标文件名从 fixture 取件
-  curl() {
-    local dst=""
-    while [ $# -gt 0 ]; do
-      [ "$1" = "-o" ] && { dst="$2"; shift; }
-      shift
-    done
-    [ -n "$dst" ] && cp "${fixture}/$(basename "$dst")" "$dst"
-  }
-  with_uname Darwin arm64 main
-) > /dev/null 2>&1 && rc=0 || rc=$?
+#
+# why 必须是真子进程：EXIT trap 只在**脚本进程**退出时展开，在 `( ... main )`
+# 子 shell 里调 main 根本不触发它。叠上 BSD mktemp 无模板时忽略 TMPDIR，探针
+# 目录下压根不会有东西——两件事合起来让「临时目录已清理」在 macOS 上成了一条
+# 恒真的假绿，08-13 才由 ubuntu 上的 GNU mktemp（认 TMPDIR）捅破。
+probe_dir="$(make_probe 0)"
+rc="$(run_install "$probe_dir" /dev/null /dev/null)"
 check "成功路径退出码" "0" "$rc"
 check "装出的二进制存在" "yes" "$([ -x "${probe_dir}/bin/handoff" ] && echo yes || echo no)"
+# 先证「它真的建在 TMPDIR 里」，再证「跑完不剩东西」。少了前一条，后一条在
+# 忽略 TMPDIR 的平台上会变成恒真
+witness="$(cat "${probe_dir}/witness" 2>/dev/null || printf '(没记到)')"
+case "$witness" in
+  "${probe_dir}/tmp"/*) ;;
+  *) printf 'FAIL  临时目录应建在 TMPDIR 下\n      期望 %s/tmp/* \n      实得 %s\n' \
+       "$probe_dir" "$witness" >&2
+     fails=$((fails + 1)) ;;
+esac
 check "临时目录已清理" "0" "$(find "${probe_dir}/tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
 rm -rf "$probe_dir"
 
@@ -125,38 +170,12 @@ rm -rf "$probe_dir"
 # 要明说「skill 没装上、之后可手动补」。二进制已经装好了，skill 是附属动作，
 # 让一个附属动作把整条安装拖成失败，用户会以为 handoff 没装上；静默失败则会让
 # 用户拿到一份旧 skill 而毫不知情——两个症状都不许出现。
-probe_dir="$(mktemp -d)"
-fixture="${probe_dir}/fixture"
-mkdir -p "$fixture"
-printf '#!/bin/sh\nexit 3\n' > "${fixture}/handoff"
-( cd "$fixture" && tar czf handoff_v0.1.0_darwin_arm64.tar.gz handoff &&
-  sha256_of handoff_v0.1.0_darwin_arm64.tar.gz | \
-    awk '{print $1 "  handoff_v0.1.0_darwin_arm64.tar.gz"}' > checksums.txt )
-
-mkdir -p "${probe_dir}/tmp"
+#
+# 同样走真子进程：这条断言盯的是**脚本的退出码**，而 EXIT trap 正是能把它顶成
+# 非零的那个东西（见上一块的由来），在子 shell 里调 main 就恰好绕开了它。
+probe_dir="$(make_probe 3)"
 stderr_log="${probe_dir}/stderr.log"
-(
-  export TMPDIR="${probe_dir}/tmp"
-  # 与上一块同样的隔离纪律：INSTALL_DIR 必须落在探针目录内，绝不允许碰真实
-  # ~/.local/bin——否则测试会当场把用户在用的 handoff 二进制写坏
-  INSTALL_DIR="${probe_dir}/bin"
-  case "$INSTALL_DIR" in
-    "${probe_dir}"/*) ;;
-    *) printf '安装目录未被隔离到探针目录（实得 %s），拒绝执行 main\n' "$INSTALL_DIR" >&2
-       exit 99 ;;
-  esac
-  latest_tag() { printf 'v0.1.0'; }
-  # 替身 curl：忽略地址，按 -o 的目标文件名从 fixture 取件
-  curl() {
-    local dst=""
-    while [ $# -gt 0 ]; do
-      [ "$1" = "-o" ] && { dst="$2"; shift; }
-      shift
-    done
-    [ -n "$dst" ] && cp "${fixture}/$(basename "$dst")" "$dst"
-  }
-  with_uname Darwin arm64 main
-) > /dev/null 2> "$stderr_log" && rc=0 || rc=$?
+rc="$(run_install "$probe_dir" /dev/null "$stderr_log")"
 check "skill 安装失败时安装仍退 0" "0" "$rc"
 err="$(cat "$stderr_log")"
 case "$err" in
