@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,11 +145,18 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
-// 显式回答要被采纳：选审核者机角色 + 给一个 listen。
+// 显式回答要被采纳：角色 executor，监听走 custom 再手填。
 func TestInitAcceptsAnswers(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	// 角色选 1（执行机），listen 给 0.0.0.0:7799，其余回车
-	answers := "1\n\n\n0.0.0.0:7799\n" + strings.Repeat("\n", 26)
+	answers := strings.Join([]string{
+		"executor",
+		"", // 默认执行者
+		"", // 模型
+		"custom",
+		"0.0.0.0:7799",
+		"", // repo_root
+		"", // 审批链
+	}, "\n") + "\n" + strings.Repeat("\n", 10)
 	if _, err := runInit(t, p, true, answers); err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -157,10 +165,10 @@ func TestInitAcceptsAnswers(t *testing.T) {
 	}
 }
 
-// 末尾必须打印本机 token 与现成的配对片段——审核者机要靠它配 targets。
+// 末尾必须打印本机 token 与现成的配对片段——协调者机要靠它配 targets。
 func TestInitPrintsPairingSnippet(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := runInit(t, p, true, "1\n"+strings.Repeat("\n", 29))
+	out, err := runInit(t, p, true, "executor\n"+strings.Repeat("\n", 29))
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -224,16 +232,19 @@ func TestPrintDetectionQuietForMissingTool(t *testing.T) {
 
 // execAnswers 是「角色=执行机」那条问答路径的答案脚本，末尾一项是托管追问。
 //
-// 顺序对应 askAll 的提问顺序：角色 / 缺省执行者 / 模型 / 监听 / repo_root /
+// 顺序对应 askAll：角色 / 默认执行者 / 模型 / 监听（Select） / repo_root /
 // 审批链执行者 / 托管追问。空行=取默认值。
+//
+// 监听 Select 预选不是 custom 时没有后续 Input；custom 预选会多吃一行，
+// 那种用例不要用本函数，自己把 Input 空行写进去。
 func execAnswers(installAnswer string) string {
 	return strings.Join([]string{
-		"1", // 角色：执行机
-		"",  // 缺省执行者：取默认
-		"",  // 模型
-		"",  // 监听地址
-		"",  // repo_root
-		"",  // 审批链执行者（空=不启用，后续不再追问模型）
+		"executor",
+		"", // 默认执行者
+		"", // 模型
+		"", // 监听（首次预选 all）
+		"", // repo_root
+		"", // 审批链 = 不启用
 		installAnswer,
 	}, "\n") + "\n"
 }
@@ -293,18 +304,18 @@ func TestInitSurvivesServiceInstallFailure(t *testing.T) {
 	}
 }
 
-// 审核者机不追问托管——那台机器上根本不跑 agentd。
-func TestInitDoesNotAskServiceForReviewer(t *testing.T) {
+// 协调者机不追问托管——那台机器上根本不跑 agentd。
+func TestInitDoesNotAskServiceForCoordinator(t *testing.T) {
 	f := &fakeManager{}
 	p := filepath.Join(t.TempDir(), "config.yaml")
 
-	answers := strings.Join([]string{"2", "", "", "", ""}, "\n") + "\n" // 角色=审核者机
+	answers := strings.Join([]string{"coordinator", "", ""}, "\n") + "\n" // 角色 + sync + 结束配对
 	out, err := runInitWith(t, p, true, answers, f)
 	if err != nil {
 		t.Fatalf("init 不应报错: %v", err)
 	}
 	if f.installed != nil {
-		t.Errorf("审核者机不该装服务，实得输出:\n%s", out)
+		t.Errorf("协调者机不该装服务，实得输出:\n%s", out)
 	}
 }
 
@@ -316,12 +327,222 @@ func TestInitAllDefaultsInstallsService(t *testing.T) {
 	f := &fakeManager{}
 	p := filepath.Join(t.TempDir(), "config.yaml")
 
-	// 角色显式选 1（执行机）以钉住分支，其余各问全部空行取默认
-	answers := "1\n" + strings.Repeat("\n", 8)
+	answers := "executor\n" + strings.Repeat("\n", 8)
 	if _, err := runInitWith(t, p, true, answers, f); err != nil {
 		t.Fatalf("init 不应报错: %v", err)
 	}
 	if f.installed == nil {
 		t.Error("全默认作答时托管追问取默认 y，必须真的调 Install")
+	}
+}
+
+// 首次执行机：文件事先不存在，监听回车应预选所有网卡。
+//
+// why 必须 stat-before-Load：Load 会把缺文件写成 127.0.0.1:7777，事后再也
+// 分不清「出厂」和「用户选过仅本机」。
+func TestInitFirstRunExecutorListenDefaultsToAll(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("测试前提：配置文件必须事先不存在")
+	}
+	if _, err := runInit(t, p, true, execAnswers("n")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Listen; got != "0.0.0.0:7777" {
+		t.Fatalf("首次执行机 listen=%q，期望 0.0.0.0:7777", got)
+	}
+}
+
+// 文件已在且 listen 是仅本机：重跑回车必须保住 loopback，不能因为角色是执行机就改成 all。
+func TestInitRerunKeepsLoopbackListen(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "listen: 127.0.0.1:7777\ntoken: keepme\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runInit(t, p, true, execAnswers("n")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Listen; got != "127.0.0.1:7777" {
+		t.Fatalf("重跑后 listen=%q，期望仍是 127.0.0.1:7777", got)
+	}
+}
+
+// 手填残值必须 round-trip：0.0.0:7777 预选手填，空 Input 原样保留。
+func TestInitRerunKeepsCustomListen(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "listen: 0.0.0:7777\ntoken: keepme\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// custom 预选之后还有一档 Input，比 execAnswers 多一个空行
+	answers := strings.Join([]string{
+		"executor",
+		"", // 默认执行者
+		"", // 模型
+		"", // 监听 Select → custom
+		"", // 监听 Input → 保留 0.0.0:7777
+		"", // repo_root
+		"", // 审批链
+		"n",
+	}, "\n") + "\n"
+	if _, err := runInit(t, p, true, answers); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Listen; got != "0.0.0:7777" {
+		t.Fatalf("重跑后 listen=%q，期望仍是 0.0.0:7777", got)
+	}
+}
+
+// 审批链空选（不启用）→ approver.executor 为空，且不会再问模型把后续答案错位。
+func TestInitApproverEmptyDisables(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := runInit(t, p, true, execAnswers("n")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Approver.Executor; got != "" {
+		t.Fatalf("审批链空选后 Approver.Executor=%q，期望空串", got)
+	}
+}
+
+// 用户可见输出用「协调者」「默认」，不再出现「审核者」「缺省」。
+func TestInitWordingCoordinatorNotReviewer(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	out, err := runInit(t, p, true, execAnswers("n"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if !strings.Contains(out, "协调者") {
+		t.Errorf("输出应含「协调者」:\n%s", out)
+	}
+	if !strings.Contains(out, "默认") {
+		t.Errorf("输出应含「默认」:\n%s", out)
+	}
+	if strings.Contains(out, "审核者") {
+		t.Errorf("输出不应再含「审核者」:\n%s", out)
+	}
+	if strings.Contains(out, "缺省") {
+		t.Errorf("输出不应再含「缺省」:\n%s", out)
+	}
+}
+
+// 探测区打通用 env 提示，不再写 codex 那三段代理专文。
+func TestInitPrintsGenericEnvHint(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	out, err := runInit(t, p, true, execAnswers("n"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if !strings.Contains(out, "~/.handoff/env/") {
+		t.Errorf("应打印通用 env 提示:\n%s", out)
+	}
+	if !strings.Contains(out, "init 不创建、不修改这些文件") {
+		t.Errorf("env 提示应说明 init 不碰这些文件:\n%s", out)
+	}
+	if strings.Contains(out, "failed to refresh available models") {
+		t.Errorf("不应再出现 codex 代理专文:\n%s", out)
+	}
+}
+
+// 写盘后提醒可随时重跑。
+func TestInitPrintsRerunHint(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	out, err := runInit(t, p, true, execAnswers("n"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if !strings.Contains(out, "可随时重跑") {
+		t.Errorf("写盘后应提示可随时重跑:\n%s", out)
+	}
+}
+
+// 监听选所有网卡时，配对片段的 addr 用探到的可达 IP，而不是占位符。
+func TestInitPairingUsesDetectedIP(t *testing.T) {
+	old := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("100.73.1.2"), Mask: net.CIDRMask(32, 32)}}, nil
+	}
+	t.Cleanup(func() { interfaceAddrs = old })
+
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	out, err := runInit(t, p, true, execAnswers("n"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if !strings.Contains(out, "100.73.1.2:7777") {
+		t.Errorf("配对片段应含探到的 100.73.1.2:7777，实得:\n%s", out)
+	}
+	if strings.Contains(out, "<本机IP>") {
+		t.Errorf("有可达 IP 时不该再打占位符:\n%s", out)
+	}
+}
+
+// 监听三档：显式选 all / loopback 写入对应地址。
+func TestInitListenSelectAll(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	answers := strings.Join([]string{"executor", "", "", "all", "", "", "n"}, "\n") + "\n"
+	if _, err := runInit(t, p, true, answers); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Listen; got != "0.0.0.0:7777" {
+		t.Fatalf("选 all 后 listen=%q", got)
+	}
+}
+
+func TestInitListenSelectLoopback(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	answers := strings.Join([]string{"executor", "", "", "loopback", "", "", "n"}, "\n") + "\n"
+	if _, err := runInit(t, p, true, answers); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := loadCfg(t, p).Listen; got != "127.0.0.1:7777" {
+		t.Fatalf("选 loopback 后 listen=%q", got)
+	}
+}
+
+// 没装的执行者也必须出现在选项里——探测不阻断选择。
+func TestExecutorOptionsIncludeMissing(t *testing.T) {
+	rs := []toolchain.Result{
+		{Name: "opencode", State: toolchain.StateReady},
+		{Name: "claude", State: toolchain.StateAuthUnknown},
+		{Name: "grok", State: toolchain.StateMissing},
+		{Name: "codex", State: toolchain.StateNoCreds},
+	}
+	opts := executorOptions(rs)
+	if len(opts) != 4 {
+		t.Fatalf("应列出四家，得到 %d", len(opts))
+	}
+	byName := map[string]string{}
+	for _, o := range opts {
+		byName[o.Value] = o.Label
+	}
+	if !strings.Contains(byName["grok"], "没装") {
+		t.Errorf("没装的 grok 应留在列表并旁注状态，得到 %q", byName["grok"])
+	}
+	if !strings.Contains(byName["opencode"], "就绪") {
+		t.Errorf("就绪项 Label 应含状态，得到 %q", byName["opencode"])
+	}
+}
+
+func TestListenPreset(t *testing.T) {
+	cases := []struct {
+		listen  string
+		existed bool
+		isExec  bool
+		want    string
+	}{
+		{"127.0.0.1:7777", false, true, listenAll},
+		{"127.0.0.1:7777", true, true, listenLoopback},
+		{"0.0.0.0:7777", true, true, listenAll},
+		{"[::]:7777", true, true, listenAll},
+		{"0.0.0:7777", true, true, listenCustom},
+		{"0.0.0.0:7788", true, true, listenCustom},
+		{"192.168.1.9:7788", true, true, listenCustom},
+	}
+	for _, tc := range cases {
+		if got := listenPreset(tc.listen, tc.existed, tc.isExec); got != tc.want {
+			t.Errorf("listenPreset(%q, existed=%v, exec=%v)=%q, want %q",
+				tc.listen, tc.existed, tc.isExec, got, tc.want)
+		}
 	}
 }
