@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### 修复
+
+- `install.ps1` 的一行安装真的能用了。真机（Windows Server 2025，PowerShell 5.1，
+  zh-CN）实测暴露两条，v0.2.1 里那份**任何机器上都装不上**：
+  - `checksums.txt` 被 GitHub 按 `application/octet-stream` 发，
+    `Invoke-WebRequest` 的 `.Content` 于是给 **byte[]** 而不是字符串（5.1 与 7
+    都一样），拿它去切行只得到一个无用对象——每次安装都死在「checksums.txt
+    里没有 xxx 的条目」，而条目其实好端端在那儿。
+  - v0.2.1 给 `install.ps1` 补的 UTF-8 BOM 打断了 `irm ... | iex`：PowerShell 5.1
+    不把 U+FEFF 当空白，BOM 会粘进首个 token，脚本第一行就报「无法将 ?# 识别为
+    cmdlet」。BOM 修好的是「存成文件再跑」那条路，代价是打断了文档里的主路径。
+    两个要求互斥，唯一同时满足的解是**不含非 ASCII 字节**，所以 `install.ps1`
+    改成纯英文、去掉 BOM。`install_test.ps1` 只从磁盘跑，保持带 BOM 的中文。
+
 ## [v0.2.1] - 2026-08-13
 
 ### 新增

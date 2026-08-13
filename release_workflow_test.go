@@ -315,23 +315,57 @@ func TestChangelogExists(t *testing.T) {
 	}
 }
 
-// PowerShell 5.1（Windows 自带、绝大多数用户手上就是它）读 .ps1 时，没有
+// utf8BOM 写成转义而不是字面量：Go 源码里出现字面 BOM 会被编译器直接拒收。
+const utf8BOM = "\xef\xbb\xbf"
+
+// install_test.ps1 只从磁盘跑（`powershell.exe -File`），所以它必须带 BOM。
+//
+// PowerShell 5.1（Windows 自带、绝大多数用户手上就是它）读 .ps1 文件时，没有
 // UTF-8 BOM 就按系统 ANSI 代码页解码。中文 Windows 是 cp936/GBK，GBK 的前导
 // 字节会把紧跟其后的 ASCII 字符吞掉，脚本当场变成语法错误、一行都跑不了。
 //
 // 这条断言必须存在的理由：CI 的 windows-latest 是 cp1252，字节一一对应不吞
 // 字符，脚本照样能跑（只是中文乱码）——所以 CI 全绿也证明不了真机能跑。
-// 08-13 真机（zh-CN，PowerShell 5.1.19041）实测炸过一次，就是这么炸的。
-func TestPowerShellScriptsCarryUTF8BOM(t *testing.T) {
-	for _, name := range []string{"install.ps1", "install_test.ps1"} {
-		b, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("读 %s 失败: %v", name, err)
-		}
-		// 写成转义而不是字面 BOM：Go 源码里出现字面 BOM 会被编译器直接拒收
-		if !strings.HasPrefix(string(b), "\xef\xbb\xbf") {
-			t.Fatalf("%s 缺 UTF-8 BOM —— PowerShell 5.1 会按 ANSI 代码页解码它，"+
-				"中文 Windows 上整个脚本会变成语法错误", name)
+// 08-13 真机（zh-CN，PowerShell 5.1）实测炸过一次，就是这么炸的。
+func TestInstallTestPs1CarriesUTF8BOM(t *testing.T) {
+	b, err := os.ReadFile("install_test.ps1")
+	if err != nil {
+		t.Fatalf("读 install_test.ps1 失败: %v", err)
+	}
+	if !strings.HasPrefix(string(b), utf8BOM) {
+		t.Fatal("install_test.ps1 缺 UTF-8 BOM —— PowerShell 5.1 会按 ANSI 代码页" +
+			"解码它，中文 Windows 上整个脚本会变成语法错误")
+	}
+}
+
+// install.ps1 的规则**与上一条相反**：必须无 BOM，且必须纯 ASCII。
+//
+// 它的主消费方式是 README 里那条 `irm ... | iex`——`irm` 交给 `iex` 的是一个
+// **字符串**，而 PowerShell 5.1 不把 U+FEFF 当空白，BOM 会粘进首个 token，
+// 脚本在第一行就报「无法将 ?# 识别为 cmdlet」，且首行写什么都救不了（实测把
+// 首行换成空行同样报「无法将 ? 识别为 cmdlet」）。
+//
+// 但它也可能被存下来当 .ps1 跑，那条路径又要求非 ASCII 内容必须有 BOM。
+// 两个要求互斥，唯一同时满足的解是**不含任何非 ASCII 字节**——ASCII 在
+// UTF-8 / cp936 / cp1252 下解码完全一致，于是 BOM 变得多余。
+//
+// 2026-08-13 真机实测（Windows Server 2025，PowerShell 5.1.26100，zh-CN，
+// ANSI 代码页 936）：带 BOM 的版本经 irm|iex 跑，首行必红。
+func TestInstallPs1IsBOMFreeASCII(t *testing.T) {
+	b, err := os.ReadFile("install.ps1")
+	if err != nil {
+		t.Fatalf("读 install.ps1 失败: %v", err)
+	}
+	if strings.HasPrefix(string(b), utf8BOM) {
+		t.Fatal("install.ps1 带了 UTF-8 BOM —— 它主要经 `irm | iex` 消费，" +
+			"PS 5.1 会把 BOM 粘进首个 token，脚本第一行就挂")
+	}
+	for i, c := range b {
+		if c > 0x7f {
+			line := 1 + strings.Count(string(b[:i]), "\n")
+			t.Fatalf("install.ps1 第 %d 行含非 ASCII 字节 0x%02x —— 无 BOM 时 "+
+				"PS 5.1 会按 cp936 解码它，GBK 前导字节会吞掉后面的 ASCII 字符。"+
+				"这个文件只能写英文（原委见其文件头）", line, c)
 		}
 	}
 }

@@ -1,87 +1,132 @@
-﻿#!/usr/bin/env pwsh
-# handoff 的 Windows 一行安装脚本。
+#!/usr/bin/env pwsh
+# One-line Windows installer for handoff.
 #
-# 用法：irm https://handoff.gosuper.dev/install.ps1 | iex
+# Usage: irm https://handoff.gosuper.dev/install.ps1 | iex
 #
-# 职责：
-#   - 探测架构，从 GitHub Release 拉对应的 zip，校验 sha256，装到 %LOCALAPPDATA%\Programs\handoff
+# Responsibility:
+#   - Detect the architecture, fetch the matching zip from the GitHub Release,
+#     verify its sha256, install it into %LOCALAPPDATA%\Programs\handoff
 #
-# 边界：
-#   - 只在「本机还没有 handoff」时用一次；后续换版走 handoff upgrade
-#   - **不改 PATH、不写服务、不提权**——与 install.sh 的边界逐条一致
-#   - Windows 上 handoff 只能当协调者：agentd 的进程承载层在非 unix 平台
-#     尚未实现（backlog B37），派发目标必须是一台 macOS/Linux 执行机
+# Boundaries:
+#   - Meant for a machine that has no handoff yet; use `handoff upgrade` afterwards
+#   - Does NOT touch PATH, does NOT install a service, does NOT elevate
+#     (each boundary matches install.sh exactly)
+#   - On Windows handoff can only act as a coordinator: agentd's process host
+#     is not implemented for non-unix platforms yet (backlog B37), so the
+#     dispatch target must be a macOS or Linux executor machine
 #
-# 环境变量：
-#   HANDOFF_INSTALL_DIR  覆盖安装目录
-#   HANDOFF_INSTALL_LIB  设为 1 时只定义函数不执行主流程（供 install_test.ps1 用）
+# Environment variables:
+#   HANDOFF_INSTALL_DIR  override the install directory
+#   HANDOFF_INSTALL_LIB  set to 1 to only define functions, skipping the main
+#                        flow (used by install_test.ps1)
 #
-# 兼容性：必须同时在 Windows 自带的 PowerShell 5.1 与 PowerShell 7 上可用。
+# Compatibility: must work on both Windows' built-in PowerShell 5.1 and PowerShell 7.
 #
-# 本文件**必须带 UTF-8 BOM**（首三字节 EF BB BF），别把它当成编辑器噪音删掉：
-# PowerShell 5.1 读 .ps1 时，没有 BOM 就按系统 ANSI 代码页解码，而不是 UTF-8。
-# 在中文 Windows（cp936/GBK）上，注释里的中文会被按 GBK 拆成双字节——GBK 的
-# 前导字节会把紧跟其后的 ASCII 字符（引号、右括号、换行）一并吞掉，于是整个
-# 脚本变成语法错误、一行都跑不了。英文 Windows（cp1252）字节一一对应不吞字符，
-# 只是中文显示成乱码，照样能跑——所以 CI 的 windows-latest 验不出这条，
-# 只有真机（zh-CN）会炸。BOM 一加，5.1 与 7 都按 UTF-8 解码。
+# ---------------------------------------------------------------------------
+# THIS FILE MUST STAY PURE ASCII, AND MUST NOT CARRY A UTF-8 BOM.
+# Do not "fix" it back to Chinese comments; both constraints are load-bearing,
+# and they come from the two ways this file is consumed:
+#
+#   1. `irm ... | iex` (the documented one-liner, and the path essentially every
+#      user takes). `irm` hands `iex` a *string*. PowerShell 5.1 does not treat
+#      U+FEFF as whitespace, so a BOM becomes part of the very first token:
+#      the script dies on line 1 with "cannot recognize ?# as a cmdlet" no
+#      matter what that line says -- comment, blank line, anything.
+#      Measured 2026-08-13 on Windows Server 2025, PowerShell 5.1.26100, zh-CN.
+#
+#   2. Saved to disk and run as a .ps1. Without a BOM, PowerShell 5.1 decodes
+#      the file using the system ANSI code page. On Chinese Windows that is
+#      cp936/GBK, whose lead bytes swallow the ASCII character that follows,
+#      turning the script into a syntax error.
+#
+# A BOM fixes (2) and breaks (1); no BOM fixes (1) and breaks (2) -- unless the
+# file contains no non-ASCII bytes at all, which decodes identically under
+# UTF-8, cp936 and cp1252. Hence: ASCII only, no BOM. Enforced by
+# TestInstallPs1IsBOMFreeASCII in release_workflow_test.go.
+#
+# install_test.ps1 is a different case: it is only ever run from disk, never
+# piped into iex, so it keeps its BOM and its Chinese text.
+# ---------------------------------------------------------------------------
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'Xsxdot/handoff'
 
-# Write-Log 输出到 stderr：stdout 留给可能被管道消费的内容。
+# Write-Log writes to stderr; stdout is left for content a pipe may consume.
 function Write-Log([string]$Message) {
     [Console]::Error.WriteLine($Message)
 }
 
-# Stop-Install 打印失败原因后抛出。
+# Stop-Install reports why we are giving up, then throws.
 #
-# 每个失败分支都必须经它退出——脚本挂掉时用户能看到的只有这一行，
-# 缺上下文的「安装失败」等于让用户去猜网络、权限还是架构。
+# Every failure branch must exit through here: this single line is all the user
+# gets to see when the script dies, and "install failed" without context leaves
+# them guessing between network, permissions and architecture.
 function Stop-Install([string]$Message) {
-    throw "handoff 安装失败：$Message"
+    throw "handoff install failed: $Message"
 }
 
-# Get-HandoffArch 把处理器架构归一成 Release 资产用的 arch 名。
+# Get-HandoffArch normalizes the processor architecture to the Release asset name.
 #
-# 返回：amd64 或 arm64
+# Returns: amd64 or arm64
 #
-# 注意：不在矩阵内的架构一律抛错。静默装一个跑不起来的二进制，
-# 比当场报错糟得多——症状会推迟到运行时才出现，且看不出根因。
+# Note: anything outside the build matrix is a hard error. Silently installing a
+# binary that cannot run is far worse -- the symptom shows up later, at run time,
+# with no hint of the cause.
 function Get-HandoffArch {
     switch ($env:PROCESSOR_ARCHITECTURE) {
         'AMD64' { return 'amd64' }
         'ARM64' { return 'arm64' }
-        default { Stop-Install "不支持的架构 $($env:PROCESSOR_ARCHITECTURE)（仅 AMD64/ARM64）" }
+        default { Stop-Install "unsupported architecture $($env:PROCESSOR_ARCHITECTURE) (only AMD64/ARM64)" }
     }
 }
 
-# Get-HandoffInstallDir 解析安装目录。
+# Get-HandoffInstallDir resolves the install directory.
 #
-# 默认 %LOCALAPPDATA%\Programs\handoff——这是 Windows 上的用户级安装惯例，
-# 无需管理员权限。install.sh 用的 ~/.local/bin 在 Windows 上没有工具认。
+# Defaults to %LOCALAPPDATA%\Programs\handoff -- the per-user install convention
+# on Windows, requiring no administrator rights. install.sh's ~/.local/bin means
+# nothing to any tool on Windows.
 function Get-HandoffInstallDir {
     if ($env:HANDOFF_INSTALL_DIR) { return $env:HANDOFF_INSTALL_DIR }
     return (Join-Path $env:LOCALAPPDATA 'Programs\handoff')
 }
 
-# Get-LatestTag 解析 releases/latest 的重定向，取最新 tag。
+# ConvertTo-HandoffText turns an Invoke-WebRequest .Content into a string.
 #
-# 返回：形如 v0.1.0
+# Params:
+#   - Content: whatever .Content gave us (string or byte[])
 #
-# why（不打 api.github.com）：匿名 API 限流 60 次/小时/IP，安装这条路径
-# 不该被限流影响。重定向没有限流。
+# Why this exists: GitHub serves release assets as application/octet-stream,
+# including checksums.txt. For a non-text content type Invoke-WebRequest hands
+# back a **byte[]**, not a string -- on PowerShell 5.1 and 7 alike. Splitting a
+# byte[] on newlines yields one useless object, so the checksum lookup found no
+# entry and every single install died with "checksums.txt has no entry for ...".
+# Measured 2026-08-13 on a real box; CI never caught it because install_test.ps1
+# only exercises the pure functions and never goes near the network.
+function ConvertTo-HandoffText($Content) {
+    if ($Content -is [byte[]]) {
+        return [System.Text.Encoding]::UTF8.GetString($Content)
+    }
+    return [string]$Content
+}
+
+# Get-LatestTag resolves the releases/latest redirect and takes the newest tag.
 #
-# why（两套取 URL 的写法）：PowerShell 5.1 的 BaseResponse 是 HttpWebResponse
-# （用 .ResponseUri），7 上是 HttpResponseMessage（用 .RequestMessage.RequestUri）。
-# 只写 7 的写法会让脚本在绝大多数 Windows 机器上第一步就挂。
+# Returns: something like v0.1.0
+#
+# Why not api.github.com: anonymous API calls are rate-limited to 60/hour/IP, and
+# the install path should not be affected by that. Redirects are not rate-limited.
+#
+# Why two ways of reading the final URL: on PowerShell 5.1 BaseResponse is an
+# HttpWebResponse (use .ResponseUri); on 7 it is an HttpResponseMessage (use
+# .RequestMessage.RequestUri). Writing only the 7 form would make the script die
+# on its first step on the vast majority of Windows machines.
 function Get-LatestTag {
     $url = "https://github.com/$Repo/releases/latest"
     try {
         $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -MaximumRedirection 10
     } catch {
-        Stop-Install "取最新版本失败：连不上 github.com（$($_.Exception.Message)）"
+        Stop-Install "cannot resolve the latest version: github.com unreachable ($($_.Exception.Message))"
     }
     $final = $null
     if ($resp.BaseResponse.PSObject.Properties.Name -contains 'ResponseUri') {
@@ -89,53 +134,57 @@ function Get-LatestTag {
     } elseif ($resp.BaseResponse.PSObject.Properties.Name -contains 'RequestMessage') {
         $final = $resp.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
     }
-    if (-not $final) { Stop-Install '取最新版本失败：无法从响应里取出最终地址' }
+    if (-not $final) { Stop-Install 'cannot resolve the latest version: no final URL in the response' }
     $tag = $final.Split('/')[-1]
-    # 仓库一个 release 都没有时，GitHub 重定向到 .../releases，末段不是版本号
-    if ($tag -notmatch '^v') { Stop-Install "取最新版本失败：$Repo 还没有任何 release（重定向到 $final）" }
+    # With no releases at all, GitHub redirects to .../releases and the last
+    # segment is not a version number
+    if ($tag -notmatch '^v') { Stop-Install "cannot resolve the latest version: $Repo has no releases yet (redirected to $final)" }
     return $tag
 }
 
-# Test-HandoffChecksum 比对文件的 sha256 与 checksums.txt 里的声明。
+# Test-HandoffChecksum compares a file's sha256 against checksums.txt.
 #
-# 参数：
-#   - Path: 待校验的文件
-#   - ChecksumsText: checksums.txt 全文
-#   - Name: 资产的裸文件名
+# Params:
+#   - Path: the file to verify
+#   - ChecksumsText: the full text of checksums.txt
+#   - Name: the bare asset file name
 #
-# 返回：校验通过返回 $true；条目缺失或不符抛错（不返回 $false——
-# 让调用方忘记检查返回值就装上一个坏包，是这里最不能接受的失败模式）
+# Returns: $true when it matches; a missing entry or a mismatch throws (it never
+# returns $false -- a caller who forgets to check the return value and installs a
+# corrupt package is the worst failure mode available here)
 function Test-HandoffChecksum([string]$Path, [string]$ChecksumsText, [string]$Name) {
     $want = $null
     foreach ($line in $ChecksumsText -split "`n") {
         $f = $line.Trim() -split '\s+'
         if ($f.Count -ne 2) { continue }
-        # sha256sum 在二进制模式下会给文件名加 * 前缀，一并容忍
+        # sha256sum prefixes the name with * in binary mode; tolerate it
         if ($f[1].TrimStart('*') -eq $Name) { $want = $f[0]; break }
     }
-    if (-not $want) { Stop-Install "checksums.txt 里没有 $Name 的条目" }
+    if (-not $want) { Stop-Install "checksums.txt has no entry for $Name" }
     $got = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $want.ToLower()) {
-        Stop-Install "校验失败：期望 $want，实得 $got。不安装，下载物已清理"
+        Stop-Install "checksum mismatch: want $want, got $got. Not installing; the download has been removed"
     }
     return $true
 }
 
-# Write-NextSteps 打印装完之后该做什么。
+# Write-NextSteps prints what to do once the binary is in place.
 function Write-NextSteps([string]$Dir) {
     Write-Log ''
-    Write-Log '下一步   handoff init'
-    Write-Log '         Windows 上 handoff 只能当协调者，init 会带你配对一台远程执行机。'
-    Write-Log '         agentd 在 Windows 上跑不起来（backlog B37），本机不能当执行机。'
+    Write-Log 'Next     handoff init'
+    Write-Log '         On Windows handoff can only be a coordinator; init walks you'
+    Write-Log '         through pairing a remote executor machine.'
+    Write-Log '         agentd does not run on Windows (backlog B37), so this machine'
+    Write-Log '         cannot be an executor.'
     if (($env:PATH -split ';') -notcontains $Dir) {
         Write-Log ''
-        Write-Log "注意：$Dir 不在 PATH 里。在 PowerShell 里跑下面这行把它加上（只需一次）："
+        Write-Log "Note: $Dir is not on your PATH. Run this once in PowerShell to add it:"
         Write-Log "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$Dir', 'User')"
-        Write-Log '（本脚本不会去改你的 PATH）'
+        Write-Log '(this script does not modify your PATH)'
     }
 }
 
-# Invoke-Main 是安装主流程。
+# Invoke-Main is the install flow.
 function Invoke-Main {
     $arch = Get-HandoffArch
     $tag = Get-LatestTag
@@ -147,25 +196,27 @@ function Invoke-Main {
         Write-Log "handoff $tag  windows_$arch"
         $zipPath = Join-Path $tmp $zip
         Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$tag/$zip" -OutFile $zipPath -UseBasicParsing
-        $sums = (Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$tag/checksums.txt" -UseBasicParsing).Content
+        $sums = ConvertTo-HandoffText (Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$tag/checksums.txt" -UseBasicParsing).Content
         Test-HandoffChecksum -Path $zipPath -ChecksumsText $sums -Name $zip | Out-Null
 
         Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
         $exe = Join-Path $tmp 'handoff.exe'
-        if (-not (Test-Path $exe)) { Stop-Install "包内没有 handoff.exe" }
+        if (-not (Test-Path $exe)) { Stop-Install 'the package contains no handoff.exe' }
 
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $dest = Join-Path $dir 'handoff.exe'
         Copy-Item -Path $exe -Destination $dest -Force
-        Write-Log "已安装 $dest  $tag"
+        Write-Log "installed $dest  $tag"
 
-        # 顺手把 skill 装给本机各家 agent。**必须调刚装好的那个文件**——
-        # skill 内嵌在二进制里，调旧的就装旧的。
-        # 失败不算安装失败：二进制已经装好了，skill 少一份不影响 CLI 可用。
+        # Install the skill for every agent on this machine. This must invoke the
+        # binary we just installed -- the skill is embedded in it, so calling an
+        # older one installs an older skill.
+        # A failure here is not an install failure: the binary is in place, and a
+        # missing skill does not affect the CLI.
         try {
             & $dest skill install
         } catch {
-            Write-Log "注意：skill 安装失败，可稍后手动跑 `"$dest`" skill install"
+            Write-Log "Note: skill install failed; you can run `"$dest`" skill install later"
         }
 
         Write-NextSteps -Dir $dir
@@ -174,5 +225,5 @@ function Invoke-Main {
     }
 }
 
-# 被 install_test.ps1 dot-source 时只定义函数，不执行主流程
+# When dot-sourced by install_test.ps1, only define functions
 if ($env:HANDOFF_INSTALL_LIB -ne '1') { Invoke-Main }
