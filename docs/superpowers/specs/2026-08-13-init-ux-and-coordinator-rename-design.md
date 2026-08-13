@@ -64,7 +64,7 @@
 | D3 | **监听只给三档：仅本机 / 所有网卡 / 手填** | bind 和广告是两件事。把探到的 IP 做成 listen 选项，等于教人把 DHCP / Tailscale 地址写进 bind | 把每个网卡 IP 列为 listen 候选项 |
 | D4 | **探到的 IP 只写进配对 `addr`** | 协调者机要连的是「现在能通的那张地址」，不是 `0.0.0.0`，也不是 `<本机IP>` 占位符 | 继续打印占位符让人自己填 |
 | D5 | **产品级更名，协议与历史文档不动** | 用户看见的词必须一致（README、内嵌 skill、init、帮助、当前代码日志/注释）。协议字段和旧 spec 改了只制造失配 | 只改 init 文案（skill 里仍写审核者，AI 会把两套词当成两个角色）；连 `waiting_review` 一起改 |
-| D6 | **删掉自动更新两问，字段留在配置里** | B59：键已无效果，但 `KnownFields(true)`，删字段会让旧配置启动失败 | 问完再写进去（教人开死功能）；从 `Config` 结构体删除 |
+| D6 | **彻底删除 `update.auto` / `update.interval`** | 留在 yaml 里等于继续宣传一个已死功能，08-13 重装后两边都还写着 `update.auto: true`。B59 留字段是为了旧文件能启动——改成 Load 先剥掉再严格解码，旧文件照样起，Save 永远不再写出 | 字段留着不写进向导（磁盘上仍误导）；问完再写进去 |
 | D7 | **探测结果只标注、不阻断** | 一台刚装好、执行者还没登录的机器必须能配完。拦等于逼人先登录再回来 | 没装的执行者从列表里拿掉 |
 | D8 | **托管追问保留，失败不让 init 失败** | B71 已验：只提示没人装。Linux 非 root 仍只打印 `sudo` 命令 | 做成必选项；失败回滚配置 |
 
@@ -154,7 +154,7 @@
 
 **不再出现的问**
 
-- `update.auto` / `update.interval`。`Save` 仍会把内存里的这两个字段写回去（Load 给的默认或旧值），新 `init` 不表达任何「我要不要自动更新」的意图。
+- `update.auto` / `update.interval`。结构体删除这两个字段；见 §4.8。
 
 ### 4.4 监听：绑定与广告
 
@@ -220,6 +220,23 @@ IP 枚举做成可测的纯函数（`listAdvertiseAddrs() []net.IP`，测试替�
 
 Windows：agentd 本就不支持（B37）。huh 在 Windows 终端上的表现不在本期验收范围；`GOOS=windows go build ./...` 仍须通过。
 
+### 4.8 删除 `update.*` 配置项
+
+`Config` 上删除 `Update` 字段和 `UpdateConfig` 类型。`validate` 里对 `update.interval` 的校验一并删。`WarnDeprecated` 整段删除——没有字段可警告。
+
+`handoff upgrade` **不动**。那是操作者触发的换版命令，和这份死配置不是一回事。
+
+**旧文件必须还能启动。** `KnownFields(true)` 若直接解码会把 `update:` 当未知键拒掉，所有 v0.1.x 写过的机器升级即砖。做法：
+
+1. `Load` 在 `decodeStrict` 之前走一遍 yaml 节点，剥掉顶层 `update` 键。
+2. 剥到了就打一条 Warn：`配置 update 段已废弃，已忽略并将从文件删除`。
+3. 剥掉后再 `decodeStrict`。其它未知键仍硬拒。
+4. 若这次 Load 剥过 `update` 且不是 firstRun，**就地 `Save` 一次**，磁盘上立刻干净。Save 只是 yaml 重排 + 丢掉死键，token / listen / targets 不变。回写失败打 Error，**不阻断启动**——内存里已经没有这个字段了。
+
+`decodeStrict` 的「支持字段」清单去掉 `update{auto,interval}`。
+
+README 配置示例和「`update.auto` 已废弃」那一段删掉，改成一句：升级用 `handoff upgrade`，没有定时自动更新，也没有对应配置项。
+
 ---
 
 ## 5. 测试
@@ -251,6 +268,9 @@ Windows：agentd 本就不支持（B37）。huh 在 Windows 终端上的表现�
 | huh 取消 | 返回错误，配置文件内容与跑之前一致 |
 | 文案 | 用户可见输出不再出现「审核者」「缺省」；出现「协调者」「默认」 |
 | 不再问更新 | 脚本化答案序列里没有 `update.auto` 这一档；重跑不会因为少答两行就错位 |
+| 旧文件含 `update:` 仍能 Load | 不报未知字段 |
+| Load 之后 Save / 就地回写 | 磁盘 yaml 不再含 `update` |
+| 新文件 | 首次生成的 config.yaml 没有 `update` 键 |
 
 更名：断言「审核者机不该装服务」的字符串改成「协调者」。MCP 工具描述单测若钉了 `reviewer` 一词，改钉 `coordinator`。
 
@@ -269,6 +289,7 @@ Windows：agentd 本就不支持（B37）。huh 在 Windows 终端上的表现�
 - huh 取消或失败（Warn / Error，带原因）
 - 广告地址：探到几条、选用哪一条（Info）；一台都没有（Warn）
 - 托管代跑成功或失败（沿用 `installService` 现有日志）
+- Load 剥掉 `update` 段（Warn，带路径）；就地回写成功（Info）/ 失败（Error，不阻断启动）
 
 新文件头注释写职责和边界。`prompter`、`listAdvertiseAddrs` 及导出方法补参数 / 返回 / 注意。监听三档和「探到的 IP 不进 listen」两处用中文注释写清为什么——表面上看「列出 IP 让人选」更直观，不写就会有人改回去。
 
@@ -276,8 +297,9 @@ Windows：agentd 本就不支持（B37）。huh 在 Windows 终端上的表现�
 
 ## 7. 影响与兼容
 
-- **已有 `config.yaml` 无需迁移。** 键名、token、targets 结构不变。
-- **旧 agentd 能读新 `init` 写出的配置。** 没有新键。`update.*` 仍按 Load 的值写回。
+- **已有 `config.yaml` 无需手工迁移。** token / listen / targets 结构不变。`update` 段由 Load 自动剥掉并回写。
+- **旧 agentd 读新 `init` 写出的配置。** 新文件没有 `update` 键，旧二进制把缺键当默认，仍能启动（B59 的旧二进制只是忽略缺键）。
+- **新 agentd 读旧配置。** 靠 §4.8 的剥键，不会因 `KnownFields` 拒启动。
 - **内嵌 skill 随下一次发版二进制走。** 开发机用 `go run . skill install` 或 `handoff skill install` 才能看到新词。本期不发 tag。
 - **行为变化：** 执行机**首次**跑 init（配置文件事先不存在），监听预选从出厂 loopback 改为 `0.0.0.0:7777`。这是纠错——出厂 loopback 正是 08-13 执行机差点配错的根。重跑时文件已在，listen 是 `127.0.0.1:7777` 就预选「仅本机」，尊重上次的选择（本机「两者」跑探针就是这种形态）。
 - **配对片段 `addr` 从占位符变成具体 IP。** 抄过去就能连。IP 变了重跑 init 或手改 targets。
