@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+### 修复
+
+- `go install` 装出来的二进制不再自称 `unknown`，改为回落到模块版本。这条路径
+  永远不经过 release 流水线的 ldflags 注入，此前版本恒为空，`upgrade --check`
+  会一直劝「需要升级」——而升级后仍是 unknown，仍旧劝，是个没有出口的循环。
+  只认 `vX.Y.Z` 形态：仓库内 `go build` 的 `(devel)` 与 `@main` 的
+  `v0.0.0-<时间>-<sha>` 伪版本都不算，前者会顶掉更有排障价值的 revision 展示，
+  后者恒小于任何真实 tag，会把开发版说成「比最新 release 旧的 release」。
+
 ## [v0.2.3] - 2026-08-13
 
 ### 修复
