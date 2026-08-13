@@ -133,3 +133,109 @@ func TestWaitVersionSucceedsAfterRestart(t *testing.T) {
 		t.Fatalf("中途的失败是重启过程，不该放弃: %v", err)
 	}
 }
+
+// PullUpdate 必须发 mode=pull、带 tag 与 sha256、且 body 为空。
+func TestPullUpdateSendsModeAndNoBody(t *testing.T) {
+	var gotQuery url.Values
+	var gotLen int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		gotLen = r.ContentLength
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(proto.UpdateResp{OK: true, Accepted: true, Version: "v1.0.0"})
+	}))
+	defer srv.Close()
+
+	resp, err := client.New(srv.URL, "tok").PullUpdate(context.Background(), "v1.0.0", "abc", false)
+	if err != nil {
+		t.Fatalf("PullUpdate: %v", err)
+	}
+	if !resp.Accepted {
+		t.Errorf("应解出 accepted=true，实得 %+v", resp)
+	}
+	if gotQuery.Get("mode") != proto.UpdateModePull {
+		t.Errorf("mode = %q，期望 pull", gotQuery.Get("mode"))
+	}
+	if gotQuery.Get("tag") != "v1.0.0" || gotQuery.Get("sha256") != "abc" {
+		t.Errorf("tag/sha256 未带上: %v", gotQuery)
+	}
+	if gotLen > 0 {
+		t.Errorf("自拉不得带 body，ContentLength = %d", gotLen)
+	}
+}
+
+// 409 + pull_in_progress 要解成可判别的 UpdateRejected，调用方才能给对处置。
+func TestPullUpdateRejectedInProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(proto.UpdateError{
+			Error: "已有一个自拉换版在进行中", Reason: proto.UpdateReasonPullInProgress,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := client.New(srv.URL, "tok").PullUpdate(context.Background(), "v1.0.0", "abc", false)
+	var rej *client.UpdateRejected
+	if !errors.As(err, &rej) || rej.Reason != proto.UpdateReasonPullInProgress {
+		t.Fatalf("应解出 pull_in_progress，实得 %v", err)
+	}
+}
+
+// 核心行为：WaitVersion 看到 pull 失败必须**立刻**返回并带上原文，
+// 而不是等满超时才说一句"版本仍是 X"。没有这条，一次代理配错要干等 10 分钟。
+func TestWaitVersionAbortsOnPullFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(proto.StatusResp{
+			Version: proto.BuildInfo{Version: "v0.9.0"},
+			Update: &proto.UpdateStatus{
+				Managed: true,
+				PullState: &proto.PullState{
+					Tag: "v1.0.0", Stage: proto.PullStageFailed,
+					Error: "proxyconnect tcp: dial tcp 127.0.0.1:1080: connection refused",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	err := client.New(srv.URL, "tok").WaitVersion(context.Background(), "v1.0.0",
+		30*time.Second, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("pull 失败时 WaitVersion 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("错误应带上对端的原文，实得 %q", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("应立刻中止，实际等了 %s", elapsed)
+	}
+}
+
+// 只有**目标 tag** 的失败才中止。上一次别的版本留下的陈旧 failed 状态
+// 不该把这一次的等待打断——否则一台曾经失败过的机器再也升不上去。
+func TestWaitVersionIgnoresStaleFailureOfOtherTag(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		v := "v0.9.0"
+		if n > 2 {
+			v = "v1.0.0" // 第三次轮询时新版本上线
+		}
+		json.NewEncoder(w).Encode(proto.StatusResp{
+			Version: proto.BuildInfo{Version: v},
+			Update: &proto.UpdateStatus{
+				Managed: true,
+				PullState: &proto.PullState{
+					Tag: "v0.8.0", Stage: proto.PullStageFailed, Error: "旧的失败",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	if err := client.New(srv.URL, "tok").WaitVersion(context.Background(), "v1.0.0",
+		30*time.Second, 20*time.Millisecond); err != nil {
+		t.Fatalf("陈旧的其他版本失败态不该中止本次等待，实得 %v", err)
+	}
+}

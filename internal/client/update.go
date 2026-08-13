@@ -55,17 +55,40 @@ var ErrUpdateUnsupported = errors.New("对端 agentd 不支持 /api/update")
 //   - 成功响应（含 Prev：旧二进制留存路径，回滚要用）
 //   - *UpdateRejected（两道闸）/ ErrUpdateUnsupported（对端过旧）/ 其他错误
 func (c *Client) PushUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool) (*proto.UpdateResp, error) {
-	return c.postUpdate(ctx, tag, sum, tgz, force)
+	return c.postUpdate(ctx, tag, sum, tgz, force, proto.UpdateModePush)
 }
 
 // RestartAgentd 让对端 agentd 重启但不换版（body 为空，spec D8）。
 //
 // 用于本机：二进制由 CLI 直接换掉了，但正在跑的 agentd 仍是旧进程。
 func (c *Client) RestartAgentd(ctx context.Context, force bool) (*proto.UpdateResp, error) {
-	return c.postUpdate(ctx, "", "", nil, force)
+	return c.postUpdate(ctx, "", "", nil, force, "")
 }
 
-func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool) (*proto.UpdateResp, error) {
+// PullUpdate 让对端 agentd **自己**去下载指定版本并换版。
+//
+// 参数：
+//   - tag: 目标版本，agentd 用它拼下载地址、并在自检时比对新二进制的 version
+//   - sum: 资产的 sha256（十六进制小写），来自**协调者**下的 checksums.txt。
+//     agentd 下完资产比对它——校验和与资产因此走两条不同的信任路径，
+//     执行机侧的代理/镜像被投毒时会当场被抓住
+//   - force: 越过闸一（活跃任务）。**不越过闸二（非托管）**，也不越过
+//     「已有自拉在跑」
+//
+// 返回：
+//   - 202 的受理响应（Accepted=true）。**换版还没发生**——结果要靠
+//     WaitVersion 轮询确认
+//   - *UpdateRejected（三道闸）/ ErrUpdateUnsupported（对端过旧）/ 其他错误
+//
+// 注意：
+//   - 调用前必须确认对端支持自拉（status 的 update.pull 为 true）。老 agentd
+//     会把这个请求当成纯重启并回 200，于是这次"升级"什么都没发生而调用方
+//     以为受理了——选路判据见 cmd/upgrade.go
+func (c *Client) PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error) {
+	return c.postUpdate(ctx, tag, sum, nil, force, proto.UpdateModePull)
+}
+
+func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool, mode string) (*proto.UpdateResp, error) {
 	q := url.Values{}
 	if tag != "" {
 		q.Set("tag", tag)
@@ -75,6 +98,9 @@ func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, fo
 	}
 	if force {
 		q.Set("force", "1")
+	}
+	if mode != "" {
+		q.Set("mode", mode)
 	}
 	u := c.baseURL + "/api/update"
 	if len(q) > 0 {
@@ -93,7 +119,7 @@ func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, fo
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	c.log().Info("推送换版请求", "tag", tag, "bytes", len(tgz), "force", force)
+	c.log().Info("推送换版请求", "tag", tag, "bytes", len(tgz), "force", force, "mode", mode)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		c.log().Error("换版请求失败", "tag", tag, "cause", err)
@@ -106,7 +132,7 @@ func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, fo
 		return nil, ErrUpdateUnsupported
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		var e proto.UpdateError
 		// 解不出结构化错误就退回原文：一条读得懂的原文好过一句「解析失败」
 		if err := json.Unmarshal(body, &e); err != nil || e.Error == "" {
@@ -145,7 +171,19 @@ func (c *Client) WaitVersion(ctx context.Context, want string, timeout, interval
 			c.log().Info("新版本已上线", "want", want, "attempts", attempt)
 			return nil
 		case err == nil:
+			// 对端自拉失败时立刻中止：干等到超时只会得到一句「版本仍是 X」，
+			// 而真正的原因（代理连不上、sha256 不符、自检没过）就在对端的
+			// pull_state 里躺着。**只认目标 tag 的失败**——上一次别的版本留下的
+			// 陈旧 failed 态若也中止，一台曾经失败过的机器就再也升不上去了
+			if ps := pullFailure(st, want); ps != nil {
+				c.log().Error("对端自拉换版失败", "want", want,
+					"stage", ps.Stage, "detail", ps.Error)
+				return fmt.Errorf("对端自拉 %s 失败：%s", want, ps.Error)
+			}
 			last = fmt.Errorf("对端版本仍是 %q", st.Version.Version)
+			if ps := pullProgress(st, want); ps != nil {
+				c.log().Info("对端自拉进行中", "want", want, "stage", ps.Stage)
+			}
 		default:
 			last = err
 		}
@@ -160,4 +198,31 @@ func (c *Client) WaitVersion(ctx context.Context, want string, timeout, interval
 		case <-time.After(interval):
 		}
 	}
+}
+
+// pullFailure 返回对端针对 want 这个版本的自拉失败状态；无失败时返回 nil。
+//
+// 为什么要比对 tag：陈旧的失败态（上一次升别的版本没成）留在内存里，
+// 若不加区分地据此中止，这台机器就永远升不上去了。
+func pullFailure(st *proto.StatusResp, want string) *proto.PullState {
+	if st == nil || st.Update == nil || st.Update.PullState == nil {
+		return nil
+	}
+	ps := st.Update.PullState
+	if ps.Tag != want || ps.Stage != proto.PullStageFailed {
+		return nil
+	}
+	return ps
+}
+
+// pullProgress 返回对端针对 want 的进行中状态，供轮询时打进度日志。
+func pullProgress(st *proto.StatusResp, want string) *proto.PullState {
+	if st == nil || st.Update == nil || st.Update.PullState == nil {
+		return nil
+	}
+	ps := st.Update.PullState
+	if ps.Tag != want || ps.Stage == proto.PullStageFailed {
+		return nil
+	}
+	return ps
 }
