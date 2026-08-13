@@ -41,8 +41,10 @@ irm https://handoff.gosuper.dev/install.ps1 | iex
 
 **Windows 上 handoff 只能当协调者**——派发、审阅、裁决权限、`upgrade` 升远端都可以，
 但本机不能当执行机：agentd 依赖的进程承载层在非 unix 平台尚未实现（backlog B37）。
-派发目标必须是一台 macOS 或 Linux 执行机。另外 `wait --notify` 的桌面通知只有 macOS
-有，Windows 上唤醒通道是 `wait` 的 stdout。
+派发目标必须是一台 macOS 或 Linux 执行机；想拿 Windows 机器当执行机，建议装 WSL2，
+在里面按 Linux 流程装 handoff 与 executor（协调机连 WSL2 需要把 agentd 端口从 Windows
+宿主转发进去，或让 WSL2 直接加入 Tailscale 这类虚拟组网）。另外 `wait --notify` 的
+桌面通知只有 macOS 有，Windows 上唤醒通道是 `wait` 的 stdout。
 
 脚本把二进制装到 `~/.local/bin/handoff`（Windows 是 `%LOCALAPPDATA%\Programs\handoff\handoff.exe`），
 免 sudo / 免管理员，`HANDOFF_INSTALL_DIR` 可换目录，校验 sha256 后才落盘，可反复重跑。装完确认：
