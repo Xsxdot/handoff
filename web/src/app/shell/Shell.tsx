@@ -70,6 +70,9 @@ export function Shell() {
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
+  // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
+  // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
+  const [closingDirtyFile, setClosingDirtyFile] = useState<{ group: number; tabId: string; rel: string } | null>(null)
 
   // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
   const ptyNote = (machine: string): string => {
@@ -90,6 +93,15 @@ export function Shell() {
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
   const beforeCloseTab = (c: TabContent, group: number, tabId: string): boolean => {
+    // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
+    // 与终端那条分支同一个理由——不可逆操作先问一句。
+    //
+    // 为什么只拦有草稿的：干净文件关了随时能再开，拦它只会让每次关 tab 都多一次
+    // 点击，纯打扰。草稿才是磁盘上没有第二份的东西
+    if (c.kind === 'file' && c.draft !== undefined) {
+      setClosingDirtyFile({ group, tabId, rel: c.rel })
+      return false
+    }
     if (c.kind !== 'terminal' || !c.sessionId) return true
     setClosingPty({ group, tabId, sessionId: c.sessionId })
     setCloseError('')
@@ -286,6 +298,24 @@ export function Shell() {
         error={closeError}
         onConfirm={() => void confirmClosePty()}
         onCancel={() => setClosingPty(null)}
+      />
+
+      <ConfirmDialog
+        open={closingDirtyFile !== null}
+        title="关闭未保存的文件"
+        description={
+          `${closingDirtyFile?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
+          // 文案要点明「切 tab 不丢」：Task 8 刚让草稿在切走时回写进 tab 内容，
+          // 用户不知道这件事，误以为必须二选一。切走是零成本的
+          '只是想看别的东西的话直接切到别的 tab——草稿会留着。'
+        }
+        confirmLabel="不保存，关闭"
+        destructive
+        onConfirm={() => {
+          if (closingDirtyFile) wb.close(closingDirtyFile.group, closingDirtyFile.tabId)
+          setClosingDirtyFile(null)
+        }}
+        onCancel={() => setClosingDirtyFile(null)}
       />
 
       <AddProjectWizard
