@@ -11,7 +11,7 @@
 //
 // 为什么单独成包而不是放 proto 或 agentd：internal/store 的迁移与
 // internal/agentd 的登记/解析都要算 project_id，而 store 不能导入 agentd
-//（会成引用环），proto 又定了「纯类型包、无业务逻辑」的边界。
+// （会成引用环），proto 又定了「纯类型包、无业务逻辑」的边界。
 package projectid
 
 import (

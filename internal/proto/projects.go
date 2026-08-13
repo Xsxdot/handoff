@@ -103,6 +103,16 @@ type Machine struct {
 	ProbeMs     int64  `json:"probe_ms"`
 	ActiveTasks int    `json:"active_tasks"`
 	Error       string `json:"error"`
+
+	// PtySupported 是这台机器的 PTY 能力位，探活时从它的 StatusResp 投影而来。
+	//
+	// 三态，与 StatusResp.PtySupported 同一纪律：
+	//   nil   = 没上报（对端版本过旧，或这台机器压根没探到）
+	//   false = 平台明确不支持
+	//   true  = 支持
+	// 消费方（控制台）据此决定终端入口画什么。**nil 不许当 false 用**：
+	// 那会让老版本 agentd 上的终端入口凭空消失，而它其实可能是能用的。
+	PtySupported *bool `json:"pty_supported,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。
@@ -120,4 +130,22 @@ type MachinesResp struct {
 type TasksResp struct {
 	Machines []MachineStatus `json:"machines"`
 	Tasks    []TaskView      `json:"tasks"`
+}
+
+// DirEntry 是工作树目录列举里的一项（GET /api/workspaces/dir）。
+//
+// 只有三个字段是刻意的：文件浏览需要的是「这一层有什么、哪些能展开、多大」，
+// 而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按 mtime 猜改动，
+// 那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被 omitempty 省略。
+type DirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size,omitempty"`
+}
+
+// DirListResult 是 GET /api/workspaces/dir 的响应体。
+//
+// Entries 永不为 nil：空目录返回 []，前端 `.map` 不需要判空。
+type DirListResult struct {
+	Entries []DirEntry `json:"entries"`
 }

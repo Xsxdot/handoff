@@ -1,4 +1,4 @@
-// TicketsPanel —— 挂起工单区（审核台核心）。
+// TicketsPanel —— 工单面板（审核台核心）。
 //
 // 浏览器点「批准」与 CLI 敲 `reply --approve` 是同一件事，因此应答编码与 agentd
 // 的契约严格对齐（review.ts）：gate 批准 → "allow"，gate 拒绝 → "deny: <理由>"，
@@ -27,9 +27,28 @@ export interface TicketsPanelProps {
   tickets: Ticket[]
   disabled: boolean
   onReply: (ticket: Ticket, answer: string) => Promise<void>
+  // bare 去掉本组件自带的卡片外框与「挂起工单」标题，只留工单本体：
+  // 全局工单弹层里每行已是自己的 li 容器与任务归属行，再套一层卡片和标题就重了
+  bare?: boolean
 }
 
-export function TicketsPanel({ tickets, disabled, onReply }: TicketsPanelProps) {
+export function TicketsPanel({ tickets, disabled, onReply, bare = false }: TicketsPanelProps) {
+  if (bare) {
+    return (
+      <div className="flex flex-col gap-3">
+        {disabled && <p className="text-xs text-amber-700">已断开，暂不能作答（保留草稿）</p>}
+        {tickets.length === 0 ? (
+          <p className="text-sm text-muted-foreground">没有等待处理的工单。</p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {tickets.map((t) => (
+              <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} />
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
   return (
     <section className="flex flex-col gap-2 rounded-lg border bg-background p-4">
       <header className="flex items-center justify-between">

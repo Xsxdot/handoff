@@ -14,12 +14,15 @@
 // 路径按模块相对解析、稳定且自带编译期类型。
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
+import dirListFixture from './testdata/DirListResult.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
 import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
 import projectTreeFixture from './testdata/ProjectTreeResp.json'
+import ptySessionFixture from './testdata/PtySession.json'
+import ptySessionsRespFixture from './testdata/PtySessionsResp.json'
 import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
@@ -29,11 +32,14 @@ import {
   type ActiveTask,
   type AuthTicketResp,
   type BuildInfo,
+  type DirListResult,
   type Event,
   type Frame,
   type MachinesResp,
   type ProjectLocation,
   type ProjectTreeResp,
+  type PtySession,
+  type PtySessionsResp,
   type SessionInfo,
   type StatusResp,
   type Task,
@@ -171,5 +177,41 @@ describe('W4a 帧契约', () => {
   it('Frame：可选字段可以显式赋 undefined（指针语义镜像）', () => {
     const f: Frame = { ...frameFixture, part: undefined, status: undefined, bytes: undefined }
     expect(f.part).toBeUndefined()
+  })
+})
+
+describe('DirListResult 契约', () => {
+  it('目录项不带 size，普通文件带 size', () => {
+    const resp: DirListResult = dirListFixture
+    expect(resp.entries).toHaveLength(2)
+    const [dir, file] = resp.entries
+    expect(dir.is_dir).toBe(true)
+    // 目录的 size 被 omitempty 省略：缺键而不是 0
+    expect(dir.size).toBeUndefined()
+    expect(file.is_dir).toBe(false)
+    expect(file.size).toBe(1284)
+  })
+})
+
+describe('PtySession 契约', () => {
+  it('活着的会话：exit_code 缺席而不是 0', () => {
+    const s: PtySession = ptySessionFixture
+    expect(s.base_kind).toBe('workspace')
+    expect(s.bytes_out).toBe(81920)
+    expect('exit_code' in s).toBe(false)
+  })
+
+  it('scope=all 信封：远端会话带 machine 与 exit_code', () => {
+    const resp = ptySessionsRespFixture as PtySessionsResp
+    expect(resp.sessions).toHaveLength(2)
+    expect(resp.sessions[0].machine).toBe('')
+    expect(resp.sessions[1].machine).toBe('devbox')
+    expect(resp.sessions[1].exit_code).toBe(3)
+    expect(resp.machines?.map((m) => m.name)).toEqual(['', 'devbox'])
+  })
+
+  it('StatusResp：pty_supported 已上报', () => {
+    const status = statusFixture as StatusResp
+    expect(status.pty_supported).toBe(true)
   })
 })

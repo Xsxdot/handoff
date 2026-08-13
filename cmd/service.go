@@ -14,6 +14,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -68,35 +69,49 @@ func effectiveConfigPath() string {
 	return config.DefaultPath()
 }
 
+// installService 安装并启动服务单元，把结果打给用户。
+//
+// 参数：
+//   - out: 面向用户的输出（不是日志）
+//   - cfgPath: 传给 agentd 的配置路径
+//
+// 返回：
+//   - 错误：构造管理器、解析 Spec、安装任一步失败
+//
+// 注意：
+//   - 抽成函数是为了让 handoff init 能走**同一条**代码路径追问并代跑（B71）。
+//     init 复制一份逻辑的话，两处的托管行为会各自演化
+func installService(out io.Writer, cfgPath string) error {
+	log := slog.Default()
+	m, err := newServiceManager(log)
+	if err != nil {
+		return err
+	}
+	spec, err := resolveSpec(cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := m.Install(spec); err != nil {
+		return fmt.Errorf("安装服务失败: %w", err)
+	}
+	unit, _ := m.UnitPath()
+	fmt.Fprintf(out, "已托管   %s\n", m.Kind())
+	fmt.Fprintf(out, "单元     %s\n", unit)
+	fmt.Fprintf(out, "二进制   %s\n", spec.BinPath)
+	fmt.Fprintf(out, "配置     %s\n", spec.ConfigPath)
+	fmt.Fprintf(out, "日志     %s\n", spec.LogPath)
+	// 形态变化必须说清楚：托管之后手动 Ctrl-C 会被拉回来，这是最容易
+	// 让人以为「服务停不掉」的一点
+	fmt.Fprintf(out, "\n注意     agentd 现在由 %s 托管，崩溃或退出都会被自动拉起。\n", m.Kind())
+	fmt.Fprintf(out, "         想真正停掉它请用 handoff service uninstall，Ctrl-C 只会让它被重新拉起。\n")
+	return nil
+}
+
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "安装并启动服务单元",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		log := slog.Default()
-		m, err := newServiceManager(log)
-		if err != nil {
-			return err
-		}
-		p := effectiveConfigPath()
-		spec, err := resolveSpec(p)
-		if err != nil {
-			return err
-		}
-		if err := m.Install(spec); err != nil {
-			return fmt.Errorf("安装服务失败: %w", err)
-		}
-		unit, _ := m.UnitPath()
-		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "已托管   %s\n", m.Kind())
-		fmt.Fprintf(out, "单元     %s\n", unit)
-		fmt.Fprintf(out, "二进制   %s\n", spec.BinPath)
-		fmt.Fprintf(out, "配置     %s\n", spec.ConfigPath)
-		fmt.Fprintf(out, "日志     %s\n", spec.LogPath)
-		// 形态变化必须说清楚：托管之后手动 Ctrl-C 会被拉回来，这是最容易
-		// 让人以为「服务停不掉」的一点
-		fmt.Fprintf(out, "\n注意     agentd 现在由 %s 托管，崩溃或退出都会被自动拉起。\n", m.Kind())
-		fmt.Fprintf(out, "         想真正停掉它请用 handoff service uninstall，Ctrl-C 只会让它被重新拉起。\n")
-		return nil
+		return installService(cmd.OutOrStdout(), effectiveConfigPath())
 	},
 }
 

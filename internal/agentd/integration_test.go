@@ -287,7 +287,7 @@ func TestFullLoop(t *testing.T) {
 	}
 
 	// 5. 归档：done → 任务 completed 且 fake 收到 Stop
-	if err := env.cli.Done(context.Background(), task.ID); err != nil {
+	if _, err := env.cli.Done(context.Background(), task.ID, ""); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	info, err = env.cli.Attach(context.Background(), task.ID)
@@ -849,7 +849,7 @@ func TestDispatchWorkdirBusyWhileWaitingReview(t *testing.T) {
 		t.Fatalf("报文应为 409 并说明占用者状态, got: %v", err)
 	}
 
-	if err := env.cli.Done(context.Background(), a.ID); err != nil {
+	if _, err := env.cli.Done(context.Background(), a.ID, ""); err != nil {
 		t.Fatalf("Done(A): %v", err)
 	}
 	b := env.dispatchPlan(t, "第二个任务")
@@ -1123,7 +1123,7 @@ func TestProjectAPIRejectsNonRepoWithReadableReason(t *testing.T) {
 }
 
 // TestProjectAPICloneIntoExistingPathConflicts 验证克隆落点已存在 → 409
-//（不给 path 让 agentd 自己 clone，落点 repo_root/<名字> 已被占住）。
+// （不给 path 让 agentd 自己 clone，落点 repo_root/<名字> 已被占住）。
 func TestProjectAPICloneIntoExistingPathConflicts(t *testing.T) {
 	root := t.TempDir()
 	env := newIntegEnvCfg(t, nil, func(cfg *config.Config) { cfg.RepoRoot = root })
@@ -1161,7 +1161,7 @@ func TestDispatchResolvesRegisteredShortName(t *testing.T) {
 }
 
 // TestDispatchResolvesProjectID 验证按 project_id 派发落到登记的路径上
-//（B62 的主路径：CLI 从 cwd 的 origin 离线算出 project_id 上送）。
+// （B62 的主路径：CLI 从 cwd 的 origin 离线算出 project_id 上送）。
 func TestDispatchResolvesProjectID(t *testing.T) {
 	srv, _ := newTestServer(t)
 	origin := initBareOrigin(t)

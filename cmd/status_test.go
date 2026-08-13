@@ -349,3 +349,76 @@ func TestRenderStatusNoUpdateLine(t *testing.T) {
 		t.Fatalf("Update=nil 时不该打更新行:\n%s", buf.String())
 	}
 }
+
+// TestRenderStatusShowsProcUsage 验证 uid 级进程占用以「已用/上限」形式渲染，
+// 且对端没给（nil）时整行不打印——打一行「0/0」比不打更糟。
+func TestRenderStatusShowsProcUsage(t *testing.T) {
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{},
+		Proc:       &proto.ProcUsage{Used: 346, Limit: 2666},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "346/2666") {
+		t.Fatalf("进程行应含 346/2666:\n%s", buf.String())
+	}
+
+	var nilBuf bytes.Buffer
+	st.Proc = nil
+	renderStatus(&nilBuf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(nilBuf.String(), "进程") {
+		t.Fatalf("Proc=nil 时不该打进程行:\n%s", nilBuf.String())
+	}
+}
+
+// TestRenderStatusShowsPerTaskProcs 验证活跃任务行追加进程数，
+// 且 nil 时不追加（对端没给这个信息，猜 0 就是制造假阳性）。
+func TestRenderStatusShowsPerTaskProcs(t *testing.T) {
+	five := 5
+	var buf bytes.Buffer
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{"running": 1},
+		Active: []proto.ActiveTask{
+			{ID: "cccccccc-1", Name: "带计数的", State: "running",
+				Executor: "opencode", Live: proto.LiveAlive, Procs: &five},
+		},
+	}
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "5 进程") {
+		t.Fatalf("活跃任务行应含 \"5 进程\":\n%s", buf.String())
+	}
+
+	var nilBuf bytes.Buffer
+	st.Active[0].Procs = nil
+	renderStatus(&nilBuf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(nilBuf.String(), "进程") {
+		t.Fatalf("Procs=nil 时不该追加进程数:\n%s", nilBuf.String())
+	}
+}
+
+// TestRenderStatusShowsPtySessions 验证终端会话数出现在 status，
+// 且 nil 时整行不打印（对端没上报，编一个 0 就是假结论）。
+func TestRenderStatusShowsPtySessions(t *testing.T) {
+	two := 2
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{}, PtySessions: &two,
+	}
+	var buf bytes.Buffer
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "终端") || !strings.Contains(buf.String(), "2 个会话") {
+		t.Fatalf("应含终端会话行:\n%s", buf.String())
+	}
+
+	var nilBuf bytes.Buffer
+	st.PtySessions = nil
+	renderStatus(&nilBuf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(nilBuf.String(), "终端") {
+		t.Fatalf("PtySessions=nil 时不该打这一行:\n%s", nilBuf.String())
+	}
+}

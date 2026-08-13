@@ -103,7 +103,7 @@ describe('TimelinePanel', () => {
     }))
     render(<TimelinePanel taskId="t1" taskState="running" />)
     expect(screen.queryByRole('button', { name: /批准|拒绝/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/裁决入口在右侧工单区/)).toBeInTheDocument()
+    expect(screen.getByText(/裁决入口在左栏底部的工单面板/)).toBeInTheDocument()
   })
 
   it('开关能切到原始实况正文，并能切回来', () => {

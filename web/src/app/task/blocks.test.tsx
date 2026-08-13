@@ -1,7 +1,7 @@
 // 块组件的行为测试：只断言行为，不测样式。
 //
 // 四条硬要求：思维链默认折叠；工具卡默认折叠且三种状态各自可辨；事件标记
-// **不可点**（审批入口唯一在工单区）；未知类型可展开看原始 JSON。
+// **不可点**（审批入口唯一在工单面板）；未知类型可展开看原始 JSON。
 import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ToolBlock } from './frames'
@@ -88,21 +88,21 @@ describe('EventMark', () => {
     expect(screen.getByText(/权限工单/)).toBeInTheDocument()
   })
 
-  it('明确指向工单区，不在时间线里开第二个审批入口', () => {
+  it('明确指向工单面板，不在时间线里开第二个审批入口', () => {
     render(<EventMark event="permission_request" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单区/)).toBeInTheDocument()
+    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
   })
 
-  it('提问工单同样指向工单区', () => {
+  it('提问工单同样指向工单面板', () => {
     render(<EventMark event="question" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单区/)).toBeInTheDocument()
+    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
   })
 
   it.each(['completed', 'failed', 'delivery_failed', 'stalled', 'some_new_event'])(
     '无可裁决物的事件（%s）不挂「裁决入口」指引',
     (event) => {
       render(<EventMark event={event} ts="2026-08-12T10:31:02+08:00" />)
-      expect(screen.queryByText(/工单区/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/工单面板/)).not.toBeInTheDocument()
     },
   )
 

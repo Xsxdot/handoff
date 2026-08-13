@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // TestIsPermanent 覆盖分类函数对各类错误的判定：配置类（401/403/400）、
@@ -218,5 +219,17 @@ func TestWriteCursorSweepsStaleTemps(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Errorf("在途的新 .tmp 不应被误删（可能是并发进程的写入）: %v", err)
+	}
+}
+
+// tickets_voided 是纯审计事件，绝不能可交付：它与 completed/failed 同时刻产生，
+// 一旦可交付，一次性 wait 可能拿到一条审计噪音而不是任务真正的结论。
+func TestTicketsVoidedIsNotDeliverable(t *testing.T) {
+	if isDeliverable(proto.EventTypeTicketsVoided) {
+		t.Error("tickets_voided 不应可交付，否则会抢走一次性 wait 的收手权")
+	}
+	// 对照组：终态事件必须仍可交付，别把黑名单写宽了
+	if !isDeliverable(proto.EventTypeCompleted) {
+		t.Error("completed 必须可交付")
 	}
 }

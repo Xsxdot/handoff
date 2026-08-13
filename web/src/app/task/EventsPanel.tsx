@@ -5,7 +5,7 @@
 //
 // 展示纪律：
 //   - 事件 payload 里的 permission 是**截断摘要**，这里只做简览；权限/提问全文
-//     只在挂起工单区（读工单 request）——两个区域不混用
+//     只在工单面板（读工单 request）——两个区域不混用
 //   - 连接状态可观察：open / connecting / closed 都有明确展示，不静默
 //   - 列表封顶（丢最旧）：本区是实时视图，不承担回放职责
 import { Radio } from 'lucide-react'

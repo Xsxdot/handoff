@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import { EMPTY_FILTER, type BoardFilter } from '../board/filter'
+import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree } from './ProjectTree'
 
 function task(over: Partial<Task>): Task {
@@ -10,57 +10,69 @@ function task(over: Partial<Task>): Task {
     executor_session: '', state: 'running', created_at: '', updated_at: '', name: '',
     executor: 'opencode', model: '', work_dir: '', worktree_managed: false,
     base_commit: '', base_ahead: 0, repo_dirty_count: 0, repo_dirty_files: '',
+    done_note: '',
     machine: '', project_id: 'p1', ...over,
   }
 }
 
-const twoWorkspacesTree: ProjectTreeResp = {
-  projects: [
-    {
-      project_id: 'p1', origin_url: 'git@x:/a.git', name: 'alpha',
-      locations: [
-        {
-          machine: '', name: 'alpha', path: '/a', probe_error: '',
-          workspaces: [
-            { path: '/a', branch: 'main', head: 'abc', is_main: true, managed: false },
-            { path: '/a-wt', branch: 'feat', head: 'def', is_main: false, managed: true },
-          ],
-        },
-      ],
-    },
-  ],
-  unowned: [],
-}
-
-function renderTree(overrides: { tree?: ProjectTreeResp; tasks?: Task[]; filter?: BoardFilter } = {}) {
-  const onFilterChange = vi.fn()
-  const onOpenTask = vi.fn()
-  render(
-    <ProjectTree
-      tree={overrides.tree ?? twoWorkspacesTree}
-      tasks={overrides.tasks ?? []}
-      filter={overrides.filter ?? EMPTY_FILTER}
-      onFilterChange={onFilterChange}
-      onOpenTask={onOpenTask}
-    />,
-  )
-  return { onFilterChange, onOpenTask }
+// props 返回一套完整可用的 <ProjectTree> props，默认树为一个项目 handoff（p1）、
+// 一台本机、主目录 /w + 工作树 /w/b2-b3，目录下挂任务 T1。over 可覆写
+// 分支 / 选中目录 / 工单数 / 是否带原地任务与全部回调。
+// 为什么这里只构造 props 不自己 render：调用方统一用
+// `render(<ProjectTree {...props({...})} />)`，若在工厂里也 render 一次，
+// 单测内会出现两棵树、getByRole/getByText 报 multiple matches。
+function props(over: {
+  branch?: string
+  selectedKey?: string | null
+  ticketCount?: number
+  inPlaceTask?: boolean
+  onSelectDir?: (b: BaseDir) => void
+  onOpenTask?: (b: BaseDir | null, id: string) => void
+  onOpenBoard?: () => void
+  onOpenTickets?: () => void
+  onOpenSettings?: () => void
+  onAddProject?: () => void
+  onUnregister?: (name: string, machine: string) => Promise<void> | void
+} = {}) {
+  const tree: ProjectTreeResp = {
+    projects: [{
+      project_id: 'p1', origin_url: '', name: 'handoff',
+      locations: [{
+        machine: '', name: 'handoff', path: '/w', probe_error: '',
+        workspaces: [
+          { path: '/w', branch: 'main', head: 'abc', is_main: true, managed: false },
+          { path: '/w/b2-b3', branch: over.branch ?? 'integration/b2-b3', head: 'def', is_main: false, managed: true },
+        ],
+      }],
+    }],
+    unowned: [],
+  }
+  const tasks: Task[] = []
+  if (over.inPlaceTask) tasks.push(task({ id: 'T0', project_id: 'p1', machine: '', work_dir: '', name: '原地任务' }))
+  tasks.push(task({ id: 'T1', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '重构工单通道' }))
+  const p = {
+    tree, tasks,
+    selectedKey: over.selectedKey ?? null,
+    ticketCount: over.ticketCount ?? 0,
+    onSelectDir: over.onSelectDir ?? vi.fn(),
+    onOpenTask: over.onOpenTask ?? vi.fn(),
+    onOpenBoard: over.onOpenBoard ?? vi.fn(),
+    onOpenTickets: over.onOpenTickets ?? vi.fn(),
+    onOpenSettings: over.onOpenSettings ?? vi.fn(),
+    onAddProject: over.onAddProject ?? vi.fn(),
+    onUnregister: over.onUnregister ?? vi.fn(),
+  }
+  return p
 }
 
 describe('ProjectTree', () => {
   it('层级是 项目 → 机器 → 目录 → 任务', () => {
-    renderTree({
-      tasks: [
-        task({ id: 't1', project_id: 'p1', machine: '', work_dir: '/a', name: '重构登录' }),
-        task({ id: 't2', project_id: 'p1', machine: '', work_dir: '/a-wt', name: '修 CI' }),
-      ],
-    })
-    expect(screen.getByText('alpha')).toBeInTheDocument()
+    render(<ProjectTree {...props({ inPlaceTask: true })} />)
+    expect(screen.getByText('handoff')).toBeInTheDocument()
     expect(screen.getByText('本机')).toBeInTheDocument()
-    expect(screen.getByText('/a')).toBeInTheDocument()
-    expect(screen.getByText('/a-wt')).toBeInTheDocument()
-    expect(screen.getByText('重构登录')).toBeInTheDocument()
-    expect(screen.getByText('修 CI')).toBeInTheDocument()
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+    expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
   it('不可达机器保持可见、标已断开、且不可展开', () => {
@@ -68,19 +80,27 @@ describe('ProjectTree', () => {
       projects: [
         {
           project_id: 'p1', origin_url: '', name: 'alpha',
-          locations: [{ machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: '', workspaces: [] }],
+          locations: [{
+            machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: '',
+            workspaces: [{ path: '/srv/a', branch: 'main', head: 'abc', is_main: true, managed: false }],
+          }],
         },
       ],
       unowned: [],
       machines: [{ name: 'devbox', ok: false, fetched_at: '', error: 'dial tcp 10.0.0.8:7777: connect: connection refused' }],
     }
-    renderTree({ tree })
+    render(
+      <ProjectTree
+        tree={tree} tasks={[]} selectedKey={null} ticketCount={0}
+        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      />,
+    )
     const row = screen.getByRole('button', { name: /devbox/ })
     expect(row).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByText('已断开')).toBeInTheDocument()
     expect(screen.getByText(/connection refused/)).toBeInTheDocument()
     fireEvent.click(row)
-    expect(screen.queryByText('/srv/a')).toBeNull()
+    expect(screen.queryByText('main')).toBeNull()
   })
 
   it('probe_error 只影响该 location，不炸整棵树', () => {
@@ -97,75 +117,219 @@ describe('ProjectTree', () => {
       ],
       unowned: [],
     }
-    renderTree({ tree })
+    render(
+      <ProjectTree
+        tree={tree} tasks={[]} selectedKey={null} ticketCount={0}
+        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      />,
+    )
     expect(screen.getByText('目录不存在')).toBeInTheDocument()
     expect(screen.getByText('beta')).toBeInTheDocument()
     expect(screen.getByText('alpha')).toBeInTheDocument()
   })
 
   it('未归属任务挂在末尾的「未归属」分组，不被吞掉', () => {
-    renderTree({ tasks: [task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })] })
+    const tree: ProjectTreeResp = { projects: [], unowned: [] }
+    const tasks = [task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
+    render(
+      <ProjectTree
+        tree={tree} tasks={tasks} selectedKey={null} ticketCount={0}
+        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      />,
+    )
     expect(screen.getByText('未归属')).toBeInTheDocument()
     expect(screen.getByText('游离任务')).toBeInTheDocument()
   })
 
-  it('点项目/机器/目录写 filter，点任务导航', () => {
-    const onFilterChange = vi.fn()
+  it('点项目行只展开折叠，不再写筛选', () => {
+    const onSelectDir = vi.fn()
+    render(<ProjectTree {...props({ onSelectDir })} />)
+    fireEvent.click(screen.getByText('handoff'))
+    expect(onSelectDir).not.toHaveBeenCalled()
+    // 折叠后其下的目录行消失
+    expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
+  })
+
+  it('点目录行选中它，回调带完整 BaseDir', () => {
+    const onSelectDir = vi.fn()
+    render(<ProjectTree {...props({ onSelectDir })} />)
+    fireEvent.click(screen.getByText('integration/b2-b3'))
+    expect(onSelectDir).toHaveBeenCalledWith({
+      key: '/w/b2-b3',
+      kind: 'workspace',
+      path: '/w/b2-b3',
+      label: 'integration/b2-b3',
+      projectName: 'handoff',
+      machine: '',
+    })
+  })
+
+  it('detached 的目录用目录名兜底作为 label', () => {
+    const onSelectDir = vi.fn()
+    render(<ProjectTree {...props({ onSelectDir, branch: '' })} />)
+    fireEvent.click(screen.getByText('b2-b3'))
+    expect(onSelectDir).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
+  })
+
+  it('selectedKey 命中的目录行带 aria-current', () => {
+    render(<ProjectTree {...props({ selectedKey: '/w/b2-b3' })} />)
+    expect(screen.getByRole('button', { name: /integration\/b2-b3/ })).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('点任务行同时给出它所在目录与任务 id', () => {
     const onOpenTask = vi.fn()
-    const tree: ProjectTreeResp = {
-      projects: [
-        {
-          project_id: 'p1', origin_url: '', name: 'alpha',
-          locations: [{ machine: '', name: 'alpha', path: '/a', probe_error: '', workspaces: [{ path: '/a', branch: 'main', head: 'abc', is_main: true, managed: false }] }],
-        },
-      ],
-      unowned: [],
-    }
-    const tasks = [task({ id: 't1', project_id: 'p1', machine: '', work_dir: '/a', name: '重构登录' })]
-
-    const view = render(
-      <ProjectTree tree={tree} tasks={tasks} filter={EMPTY_FILTER} onFilterChange={onFilterChange} onOpenTask={onOpenTask} />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /alpha/ }))
-    expect(onFilterChange.mock.calls.at(-1)![0]).toMatchObject({ machine: null, workspace: null })
-    expect(onFilterChange.mock.calls.at(-1)![0].projects).toEqual(new Set(['p1']))
-
-    view.rerender(
-      <ProjectTree tree={tree} tasks={tasks} filter={{ ...EMPTY_FILTER, projects: new Set(['p1']) }} onFilterChange={onFilterChange} onOpenTask={onOpenTask} />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: /本机/ }))
-    expect(onFilterChange.mock.calls.at(-1)![0].projects).toEqual(new Set(['p1']))
-    expect(onFilterChange.mock.calls.at(-1)![0].machine).toBe('')
-    expect(onFilterChange.mock.calls.at(-1)![0].workspace).toBeNull()
-
-    view.rerender(
-      <ProjectTree tree={tree} tasks={tasks} filter={{ ...EMPTY_FILTER, projects: new Set(['p1']), machine: '' }} onFilterChange={onFilterChange} onOpenTask={onOpenTask} />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: /\/a/ }))
-    expect(onFilterChange.mock.calls.at(-1)![0].machine).toBe('')
-    expect(onFilterChange.mock.calls.at(-1)![0].workspace).toBe('/a')
-
-    fireEvent.click(screen.getByRole('button', { name: /重构登录/ }))
-    expect(onOpenTask).toHaveBeenCalledWith('t1')
+    render(<ProjectTree {...props({ onOpenTask })} />)
+    fireEvent.click(screen.getByText('重构工单通道'))
+    expect(onOpenTask).toHaveBeenCalledWith(expect.objectContaining({ key: '/w/b2-b3' }), 'T1')
   })
 
-  it('多选时左栏不高亮单项，显示选中计数', () => {
-    const tree: ProjectTreeResp = {
-      projects: [
-        { project_id: 'p1', origin_url: '', name: 'alpha', locations: [{ machine: '', name: 'alpha', path: '/a', probe_error: '', workspaces: [] }] },
-        { project_id: 'p2', origin_url: '', name: 'beta', locations: [{ machine: '', name: 'beta', path: '/b', probe_error: '', workspaces: [] }] },
-      ],
-      unowned: [],
-    }
-    renderTree({ tree, filter: { ...EMPTY_FILTER, projects: new Set(['p1', 'p2']) } })
-    expect(screen.getByText('已选 2 个项目')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /alpha/ })).not.toHaveAttribute('aria-current', 'true')
-    expect(screen.getByRole('button', { name: /beta/ })).not.toHaveAttribute('aria-current', 'true')
+  it('work_dir 为空的任务挂到主目录（原地模式）', () => {
+    render(<ProjectTree {...props({ inPlaceTask: true })} />)
+    // 主目录行下应出现这条任务
+    expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
-  it('单选项目时对应行有选中态', () => {
-    renderTree({ filter: { ...EMPTY_FILTER, projects: new Set(['p1']) } })
-    expect(screen.getByRole('button', { name: /alpha/ })).toHaveAttribute('aria-current', 'true')
+  it('顶部有任务看板入口，且不再有开发机入口', () => {
+    const onOpenBoard = vi.fn()
+    render(<ProjectTree {...props({ onOpenBoard })} />)
+    fireEvent.click(screen.getByRole('button', { name: /任务看板/ }))
+    expect(onOpenBoard).toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: '开发机' })).not.toBeInTheDocument()
+  })
+
+  it('底部三个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
+    render(<ProjectTree {...props({ ticketCount: 0 })} />)
+    expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
+    // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
+    expect(screen.getByRole('button', { name: /^工单$/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
+  })
+
+  it('工单数大于 0 时显示角标并可点开', () => {
+    const onOpenTickets = vi.fn()
+    render(<ProjectTree {...props({ ticketCount: 3, onOpenTickets })} />)
+    expect(screen.getByText('3')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工单$/ }))
+    expect(onOpenTickets).toHaveBeenCalled()
+  })
+
+  it('设置入口可点', () => {
+    const onOpenSettings = vi.fn()
+    render(<ProjectTree {...props({ onOpenSettings })} />)
+    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+    expect(onOpenSettings).toHaveBeenCalled()
+  })
+
+  it('未归属任务行回调的首参是 null（没有基准目录）', () => {
+    const onOpenTask = vi.fn()
+    const tree: ProjectTreeResp = { projects: [], unowned: [] }
+    const tasks = [task({ id: 'U1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
+    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    fireEvent.click(screen.getByText('游离任务'))
+    expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
+  })
+
+  it('渲染搜索框与「项目 N」，N 默认是项目总数', () => {
+    render(<ProjectTree {...props()} />)
+    expect(screen.getByPlaceholderText('搜索项目、机器或任务')).toBeInTheDocument()
+    expect(screen.getByText('项目')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+  })
+
+  it('搜任务名：该任务可见，无关目录不可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: '重构工单' },
+    })
+    expect(screen.getByText('重构工单通道')).toBeInTheDocument()
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('搜项目名：N 仍是 1，整棵子树可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'handoff' },
+    })
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+
+  it('零结果时出空态文案，N 归 0', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'zzzz-nothing' },
+    })
+    expect(screen.getByText('没有匹配的项目或任务')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('0')
+  })
+
+  // 钉住「旁路而非清空」：搜索期间强制展开，清空后手动折叠的状态原样回来
+  it('清空搜索后，此前手动折叠的节点仍是折叠的', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+
+    // 先手动折叠项目 handoff
+    fireEvent.click(screen.getByText('handoff'))
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+
+    // 搜索期间强制展开
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(screen.getByText('main')).toBeInTheDocument()
+
+    // 清空后折叠态原样回来
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('⌘K 聚焦搜索框', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    expect(document.activeElement).not.toBe(input)
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('Ctrl+K 同样聚焦（非 mac）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'K', ctrlKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('输入框内 Esc 清空并失焦', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(input.value).toBe('handoff')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input.value).toBe('')
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('单独按 k 不聚焦（不劫持普通输入）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'k' })
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('左栏任务行的圆点跟随任务状态', () => {
+    const p = props()
+    p.tasks = [
+      task({ id: 'T1', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '跑测试', state: 'running' }),
+      task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
+    ]
+    const { container } = render(<ProjectTree {...p} />)
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
+  })
+
+  it('工单角标用状态 token，不用裸 amber', () => {
+    const { container } = render(<ProjectTree {...props({ ticketCount: 3 })} />)
+    const badge = screen.getByText('3')
+    expect(badge.className).toContain('bg-state-intervention')
+    expect(container.innerHTML).not.toContain('bg-amber-500')
   })
 })

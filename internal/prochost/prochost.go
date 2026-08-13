@@ -63,6 +63,17 @@ type Spec struct {
 type Handle struct {
 	PID      int    `json:"pid"`
 	LockPath string `json:"lock_path"`
+
+	// StartedAt 是 shim 进程的启动时刻（unix 纳秒），足迹身份校验的时间下界。
+	//
+	// 为什么读内核而不是记墙钟：规则三要把**成员**的启动时刻与它直接比较，而成员
+	// 的时刻来自内核（darwin p_starttime / linux /proc starttime）。两边取自同一个
+	// 时钟源才可比——记 time.Now() 会引入毫秒级偏差，linux 的 jiffies 精度（10ms）
+	// 下足以让紧随其后 fork 的子进程「看起来比父进程还早」，从而被规则三误排除。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出 0 即判
+	// VerdictNoCredential 降级为只上报不清扫。老任务不会因为升级就被动手。
+	StartedAt int64 `json:"started_at,omitempty"`
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -224,6 +235,15 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		log().Error("拉起 shim 失败", "spec", specPath, "cause", err)
 		return Handle{}, err
 	}
-	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath)
-	return Handle{PID: pid, LockPath: spec.LockPath}, nil
+	// 读回内核记录的启动时刻作为身份校验的时间下界（why 见 Handle.StartedAt）。
+	// 读不到不阻断拉起：shim 已经在跑了，为一个诊断字段把它杀掉是本末倒置——
+	// 代价是这个任务此后只能上报、不能自动清扫，如实降级即可
+	startedAt := lookupStartedAt(pid)
+	if startedAt <= 0 {
+		log().Warn("读不到 shim 启动时刻，该任务将只能上报残留、无法自动清扫",
+			"pid", pid, "spec", specPath)
+	}
+	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
+		"started_at", startedAt)
+	return Handle{PID: pid, LockPath: spec.LockPath, StartedAt: startedAt}, nil
 }

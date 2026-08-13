@@ -73,6 +73,22 @@ type ActiveTask struct {
 	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
 	// 是同一条纪律：一条会说谎的诊断命令比没有更糟，因为你会信它。
 	Watchers *int `json:"watchers,omitempty"`
+
+	// Procs 是该任务当前占用的进程数。
+	//
+	// 为什么是指针：nil 表示**取不到这个信息**（老 agentd、adapter 不支持、
+	// 平台不支持、或 pgid 判定为复用/凭据不全），与「确实是 0 个进程」是两回事。
+	// 猜一个 0 就是制造假阳性——与 Watchers、Live 三态同一条纪律。
+	Procs *int `json:"procs,omitempty"`
+}
+
+// ProcUsage 是本机当前 uid 的进程占用与上限。
+//
+// 为什么两个数必须一起给：只看 Used 不知道离墙还有多远，只看 Limit 没有意义。
+// 2026-08-12 devbox 整机 fork 瘫痪时，346/2666 这两个数并排才说明得了问题。
+type ProcUsage struct {
+	Used  int `json:"used"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStatus 是这台 agentd 与「换版」有关的状态。
@@ -113,4 +129,59 @@ type StatusResp struct {
 	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
 	// 消费方拿到 nil 就该什么都不显示，而不是显示一个「未托管、无待命」的假状态
 	Update *UpdateStatus `json:"update,omitempty"`
+
+	// Proc 是本机 uid 级的进程占用与上限。指针 + omitempty：老 agentd 不发这个
+	// 字段，消费方拿到 nil 应当什么都不显示，而不是显示一个「0/0」的假状态。
+	Proc *ProcUsage `json:"proc,omitempty"`
+
+	// PtySupported 报告本机 agentd 是否支持 PTY 终端。
+	//
+	// 三态，与 Update / Proc 同一纪律：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（Windows：ConPTY 是另一套 API，本轮不假装支持）
+	//   true      = 支持
+	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
+	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// PtySessions 是当前活着的终端会话数。指针 + omitempty，与 Proc 同一纪律：
+	// nil = 对端没上报，渲染时整行不打印；0 = 确实一个都没有。
+	//
+	// 为什么 status 只给个数、不给每个会话占多少进程：数进程要枚举全机进程，
+	// 而 status 有「不能变成慢命令」的硬纪律。进程数在 /api/footprint 里给。
+	PtySessions *int `json:"pty_sessions,omitempty"`
+}
+
+// PtyFootprintRow 是一个终端会话的足迹体检结果。
+//
+// Procs 为指针：数不出来（平台不支持枚举）时是 nil，**不是 0**——与 ProcUsage
+// 同一条理由，0 看起来像结论。
+type PtyFootprintRow struct {
+	ID         string `json:"id"`
+	BasePath   string `json:"base_path"`
+	PID        int    `json:"pid"`
+	Procs      *int   `json:"procs,omitempty"`
+	Foreground bool   `json:"foreground"`
+}
+
+// FootprintRow 是一个任务的进程足迹体检结果。
+//
+// 注意：Verdict 恒非空。判不出结论时给 leader_reuse / no_credential，而不是
+// 把 Procs 抹成 0 了事——「没有残留」与「我们不敢下结论」是两回事，后者需要
+// 人工看一眼，前者不需要。
+type FootprintRow struct {
+	TaskID  string `json:"task_id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Procs   int    `json:"procs"`
+	Verdict string `json:"verdict"`
+}
+
+// FootprintResp 是 GET /api/footprint 的响应：全部任务（含已归档）的足迹体检。
+type FootprintResp struct {
+	Rows  []FootprintRow `json:"rows"`
+	Usage *ProcUsage     `json:"usage,omitempty"`
+
+	// Pty 是终端会话的足迹。会话只在内存里，所以这一段与 Rows 不同——
+	// 它不含历史，列出的都是此刻活着的会话。
+	Pty []PtyFootprintRow `json:"pty,omitempty"`
 }

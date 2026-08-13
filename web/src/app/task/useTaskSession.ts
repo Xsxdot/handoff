@@ -1,14 +1,18 @@
-// TaskPage —— 任务详情 / 审核台（一个任务一页，可深链 /tasks/:id）。
+// useTaskSession —— 一个任务会话的数据编排（原 TaskPage 的上半截）。
 //
-// 数据编排：
+// 职责：
 //   - GET /api/tasks/{id} 轮询详情（任务 + 挂起工单，4s 一次），页面隐藏时暂停
 //   - 首拉时以 recent_events 打底事件流，然后开**一条** /ws/events?task=<id>
 //     &from_seq=<最大 seq> 收实时增量（WS 层自己推进游标，重连不重放）
-//   - GET /api/tasks/{id}/frames 结构化回合流（TimelinePanel → useFramesStream
-//     内自管 AbortController）；切到原始视图时改用 /render（RenderPanel），
-//     两条流互斥，任一时刻只开一条
+//   - 工单应答（POST reply）并在成功后立即补拉
 //
-// 断线语义（硬契约）：
+// 边界：
+//   - 不渲染任何东西。W4 把它从 TaskPage 里提出来，是因为同一份会话要同时
+//     喂给 TUI tab 与（未来的）其他消费者；留在页面组件里必然要复制一份
+//   - 不管 frames / render 流：那两条在 TimelinePanel / RenderPanel 内部自管，
+//     且互斥（任一时刻只开一条）
+//
+// 断线语义（硬契约，照搬不得放宽）：
 //   - 断线保留最后拿到的数据继续显示，所有会改状态的按钮禁用，标注「已断开」；
 //     不称为「只读」——只读暗示数据是新的，而它不是
 //   - WS close code 1008（会话被吊销）落到「会话已失效」终止态，不无脑重连；
@@ -17,26 +21,28 @@
 // cursor 归属：浏览器不碰 ~/.handoff/cursor-*（那是 CLI 审核者的本机游标账本），
 // 这里从 from_seq=0 或已知最大 seq 续，是观察者；与 CLI 同时盯同一任务互不干扰。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
 import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Event, TaskDetail, Ticket } from '../../api/types'
 import { connectEvents, type WsStatus } from '../../api/ws'
-import { Badge } from '@/components/ui/badge'
-import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
-import { errorMessage, shortID } from '../lib/format'
-import { TaskHeader } from './TaskHeader'
-import { TicketsPanel } from './TicketsPanel'
-import { EventsPanel } from './EventsPanel'
-import { TimelinePanel } from './TimelinePanel'
-import { ReviewPanel } from './ReviewPanel'
-import { AdvanceActions } from './AdvanceActions'
+import { errorMessage } from '../lib/format'
 
 // DETAIL_POLL_INTERVAL 是详情轮询间隔：任务状态与挂起工单靠它保鲜。
 const DETAIL_POLL_INTERVAL = 4000
 
-export function TaskPage() {
-  const { id } = useParams<{ id: string }>()
+export interface TaskSession {
+  detail: TaskDetail | null
+  events: Event[]
+  wsStatus: WsStatus
+  wsError: string | null
+  loadError: string | null
+  disconnected: boolean
+  disconnectReason: string
+  sessionExpired: boolean
+  refresh: () => void
+  replyToTicket: (ticket: Ticket, answer: string) => Promise<void>
+}
+
+export function useTaskSession(id: string | undefined): TaskSession {
   const [detail, setDetail] = useState<TaskDetail | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [disconnected, setDisconnected] = useState(false)
@@ -88,7 +94,7 @@ export function TaskPage() {
   // 详情轮询循环：立即首拉 → 定时续拉；页面隐藏停表、可见恢复并立即补拉。
   useEffect(() => {
     if (!id) return
-    // 换任务（/tasks/A → /tasks/B 同一组件实例复用）时重置首拉标记与会话失效态
+    // 换任务（同一 hook 实例换 id）时重置首拉标记与会话失效态
     initializedRef.current = false
     sessionExpiredRef.current = false
     setSeeded(false)
@@ -167,60 +173,16 @@ export function TaskPage() {
     [id, refreshDetail],
   )
 
-  if (!id) return null
-
-  return (
-    <div className="flex min-h-dvh flex-col bg-muted/40">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background px-4 py-2.5">
-        <Link
-          to="/"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-4" />
-          看板
-        </Link>
-        <h1 className="text-base font-semibold">
-          {detail ? detail.task.name || '任务详情' : '任务详情'}
-          {detail && <span className="ml-2 font-mono text-xs text-muted-foreground">handoff-{shortID(detail.task.id)}</span>}
-        </h1>
-        <div className="ml-auto flex items-center gap-2">
-          {disconnected && <Badge variant="destructive">已断开</Badge>}
-          {wsStatus === 'open' && <Badge variant="outline">实时</Badge>}
-        </div>
-      </header>
-
-      <main className="flex w-full flex-1 flex-col gap-3 p-3">
-        {sessionExpired && <SessionExpiredBanner />}
-        {disconnected && !sessionExpired && <DisconnectedBanner message={disconnectReason} />}
-
-        {detail === null ? (
-          loadError ? (
-            <LoadFailed message={loadError} onRetry={() => void refreshDetail()} />
-          ) : sessionExpired ? null : (
-            <p className="text-sm text-muted-foreground">正在加载任务…</p>
-          )
-        ) : (
-          <div className="grid flex-1 items-start gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-            {/* 左列：实况正文 + 事件流 */}
-            <div className="flex flex-col gap-4">
-              <TimelinePanel taskId={id} taskState={detail.task.state} />
-              <EventsPanel events={events} status={wsStatus} error={wsError} />
-            </div>
-
-            {/* 右列：任务头 + 审批台 + 推进动作 + 审阅取证 */}
-            <div className="flex flex-col gap-4">
-              <TaskHeader task={detail.task} />
-              <TicketsPanel
-                tickets={detail.pending_tickets}
-                disabled={disconnected}
-                onReply={replyToTicket}
-              />
-              <AdvanceActions task={detail.task} disabled={disconnected} onChanged={() => void refreshDetail()} />
-              <ReviewPanel taskId={detail.task.id} />
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
-  )
+  return {
+    detail,
+    events,
+    wsStatus,
+    wsError,
+    loadError,
+    disconnected,
+    disconnectReason,
+    sessionExpired,
+    refresh: () => void refreshDetail(),
+    replyToTicket,
+  }
 }

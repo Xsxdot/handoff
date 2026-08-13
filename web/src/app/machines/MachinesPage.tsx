@@ -1,18 +1,20 @@
-// MachinesPage —— 开发机页（只读）。左侧机器卡片列表 + 右侧选中机器详情。
+// MachinesPage —— 开发机分区（只读）。左侧机器卡片列表 + 右侧选中机器详情。
 //
-// 数据源：useMachines(true)（15s 探活，spec §6——只在 /machines 可见时开表）。
-// 组件挂在 Shell 的路由里，路由切走即卸载，usePoll 的 effect 清理自动停表。
+// 数据源：useMachines(true)（15s 探活，spec §6——只在设置页的开发机分区可见时开表）。
+// 组件挂在设置页的开发机分区里，分区切走即卸载，usePoll 的 effect 清理自动停表。
 //
 // 诚实展示（spec §8）：
 //   - 不可达机器仍然渲染，标「已断开」并透出 error 原文——绝不静默少一台
 //   - 顶部台数统计**含不可达那台**：少一台就是静默丢机器
-//   - 不渲染任何未实现功能（配对/重启/终端/Env/操作系统格），不留置灰入口
+//   - 三个未接线的操作（可用执行者开关 / 重启 agent / 打开终端）本期**只渲染不接线**：
+//     它们需要 agentd 侧的写接口，不在本期。按「不置灰」纪律（spec §0），它们可点，
+//     点了给出明确的「尚未实现」说明，而不是一个永远按不动的灰按钮。
+//     配对开发机与 Env 文件仍然不渲染——那两项连形态都还没定。
 //
 // 边界：只读页面，不含任何写操作入口（执行器开关属机器级配置，W3b 不实现）。
 import { useEffect, useState } from 'react'
 import type { Machine, ProjectTreeResp } from '../../api/types'
 import { useMachines } from '../data/useMachines'
-import { useShellContext } from '../shell/Shell'
 import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
 import { MachineDetail } from './MachineDetail'
 import { cn } from '@/lib/utils'
@@ -32,9 +34,8 @@ function dirCountOf(tree: ProjectTreeResp | null, machine: string): number {
   }, 0)
 }
 
-export function MachinesPage() {
+export function MachinesPage({ tree }: { tree: ProjectTreeResp | null }) {
   const machinesState = useMachines(true)
-  const { tree } = useShellContext()
   const [selected, setSelected] = useState<string | null>(null)
   const [lastProbe, setLastProbe] = useState<number | null>(null)
 
@@ -50,7 +51,7 @@ export function MachinesPage() {
   const activeMachine = machines.find((m) => m.name === (selected ?? '')) ?? machines[0] ?? null
 
   return (
-    <main className="flex w-full flex-col gap-3 p-3">
+    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
       {machinesState.sessionExpired && <SessionExpiredBanner />}
       {machinesState.disconnected && !machinesState.sessionExpired && (
         <DisconnectedBanner message={machinesState.errorText} />
@@ -100,7 +101,7 @@ export function MachinesPage() {
           </div>
         </>
       )}
-    </main>
+    </div>
   )
 }
 

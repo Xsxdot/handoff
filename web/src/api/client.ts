@@ -16,10 +16,14 @@
 import type {
   CreateProjectReq,
   CreateProjectResp,
+  CreatePtySessionReq,
   DiffResult,
+  DirListResult,
   FileResult,
   MachinesResp,
   ProjectTreeResp,
+  PtySession,
+  PtySessionsResp,
   ReplyRequest,
   ReplyResult,
   ResumeResult,
@@ -190,6 +194,30 @@ export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
 }
 
+// workspaceQuery 拼两个工作树接口共用的查询串。
+//
+// rel 省略表示工作树根；machine 省略或空串 = 本机（与 Task.machine 的空串语义一致）。
+function workspaceQuery(path: string, rel?: string, machine?: string): string {
+  const q = new URLSearchParams({ path })
+  if (rel) q.set('rel', rel)
+  if (machine) q.set('machine', machine)
+  return q.toString()
+}
+
+// fetchWorkspaceDir 列举工作树内一层目录（GET /api/workspaces/dir）。
+//
+// path 必须是 GET /api/projects/tree 给出的某个 Workspace.path 原样值——
+// agentd 侧按等值比对做白名单，任意路径返回 403（spec §7.1）。
+export function fetchWorkspaceDir(path: string, rel?: string, machine?: string): Promise<DirListResult> {
+  return request<DirListResult>(`/api/workspaces/dir?${workspaceQuery(path, rel, machine)}`)
+}
+
+// fetchWorkspaceFile 读工作树内单个文件（GET /api/workspaces/file）。
+// 语义与 fetchTaskFile 一致，只是寻址从任务改为工作树。
+export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileResult> {
+  return request<FileResult>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
+}
+
 // createProject 登记一个项目位置（POST /api/projects）。
 //
 // 参数：
@@ -204,6 +232,33 @@ export function createProject(req: CreateProjectReq, machine?: string): Promise<
 export function deleteProject(name: string, machine?: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(
     `/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// fetchPtySessions 列终端会话（GET /api/pty/sessions）。
+//
+// scope='all' 取跨机汇总（多一个 machines 字段）。**这是会话恢复的唯一真相源**：
+// 前端不做任何本地持久化，列表里没有的会话就是不存在（spec §6.1）。
+export function fetchPtySessions(scope?: 'all'): Promise<PtySessionsResp> {
+  return request<PtySessionsResp>(`/api/pty/sessions${scope === 'all' ? '?scope=all' : ''}`)
+}
+
+// createPtySession 开一个终端会话（POST /api/pty/sessions）。
+//
+// base_kind='home' 时 base_path 被服务端忽略（它用自己的 $HOME）。
+// 501 = 那台机器的平台不支持 PTY；400 = base_path 不是已探测到的工作树。
+export function createPtySession(req: CreatePtySessionReq, machine?: string): Promise<PtySession> {
+  return postJSON<PtySession>(`/api/pty/sessions${machineQuery(machine)}`, req)
+}
+
+// deletePtySession 显式关闭一个终端会话（DELETE /api/pty/sessions/{id}）。
+//
+// **只有用户点 × 才该调它。** 组件卸载、切基准目录、关页面都只断 WS，
+// 不调这里——否则「跑一晚上的 build」会被一次切目录杀掉（spec §3.2）。
+export function deletePtySession(id: string, machine?: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/pty/sessions/${encodeURIComponent(id)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
 }

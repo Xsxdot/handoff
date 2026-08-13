@@ -26,7 +26,22 @@ function DirtyRepoHint({ task }: { task: Task }) {
   )
 }
 
-export function TaskHeader({ task }: { task: Task }) {
+// compact 为真时只出单行摘要：TUI tab 的顶栏只有一行高度，塞不下完整的
+// 定义列表，而任务 ID、分支、工作目录这些在面包屑与左栏已经能看到。
+export function TaskHeader({ task, compact = false }: { task: Task; compact?: boolean }) {
+  if (compact) {
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium">
+          {task.name || task.plan_summary || '（无名称）'}
+        </span>
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+          handoff-{shortID(task.id)}
+        </span>
+        <Badge variant={stateBadgeVariant(task.state)}>{stateLabel(task.state)}</Badge>
+      </div>
+    )
+  }
   return (
     <section className="flex flex-col gap-3 rounded-lg border bg-background p-4">
       <div className="flex flex-wrap items-center gap-2">

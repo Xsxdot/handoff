@@ -119,6 +119,16 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "任务     %s\n", renderCounts(st.TaskCounts))
+	// nil 表示对端没给（老 agentd / 平台不支持），整行不打印。
+	// 打一行「0/0」比不打更糟：它看起来像个结论，实际是我们不知道
+	if st.Proc != nil {
+		fmt.Fprintf(w, "进程     %d/%d（本机 uid 已用/上限）\n", st.Proc.Used, st.Proc.Limit)
+	}
+	// 同上：nil 整行不打。放在进程行之后——会话是进程占用的一个来源，
+	// 先给总量再给来源
+	if st.PtySessions != nil {
+		fmt.Fprintf(w, "终端     %d 个会话（handoff footprint 看各自占用）\n", *st.PtySessions)
+	}
 	if len(st.Active) == 0 {
 		return
 	}
@@ -126,6 +136,11 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	for _, a := range st.Active {
 		line := fmt.Sprintf("  %s  %s  %s  %s  %s",
 			short8(a.ID), a.Name, a.State, a.Executor, liveText(a))
+		// 同上：nil 不追加。这里刻意放在存活结论之后——先回答「活没活」，
+		// 再回答「占了多少」，后者是前者的补充而不是替代
+		if a.Procs != nil {
+			line += fmt.Sprintf("  %d 进程", *a.Procs)
+		}
 		if unattended(a) {
 			// 追加而不是替换：executor 活着但没人听，与 executor 死了是两个独立结论，
 			// 昨晚的现场正是「存活 + 无人值守」这一格

@@ -43,32 +43,6 @@ function cloneFilter(f: BoardFilter): BoardFilter {
   }
 }
 
-// selectProject 把筛选收窄到单个项目（左栏点项目）。
-// 换项目后旧的 machine / workspace 收窄没有意义，一并清空（spec §2.3 写入规则）。
-export function selectProject(f: BoardFilter, projectId: string): BoardFilter {
-  const next = cloneFilter(f)
-  next.projects = new Set([projectId])
-  next.machine = null
-  next.workspace = null
-  return next
-}
-
-// selectMachine 按机器收窄（左栏点机器节点）。机器名 ""=本机；保留项目筛选，
-// 清空 workspace（工作树是项目×机器之下的第三层，换机器后旧工作树必然失配）。
-export function selectMachine(f: BoardFilter, machine: string): BoardFilter {
-  const next = cloneFilter(f)
-  next.machine = machine
-  next.workspace = null
-  return next
-}
-
-// selectWorkspace 按工作树路径收窄（左栏点目录节点）。保持上层项目与机器筛选。
-export function selectWorkspace(f: BoardFilter, path: string): BoardFilter {
-  const next = cloneFilter(f)
-  next.workspace = path
-  return next
-}
-
 // setProjects 设项目多选集（顶部下拉）。若当前 machine 不再属于任一选中项目，
 // 一并清空 machine 与 workspace——否则会出现"筛了个项目结果一个任务都没有"。
 export function setProjects(f: BoardFilter, ids: Set<string>, tree: ProjectNode[]): BoardFilter {

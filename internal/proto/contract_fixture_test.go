@@ -75,7 +75,10 @@ func TestContractFixtures(t *testing.T) {
 		{"BuildInfo", buildSample()},
 		{"ActiveTask", activeTaskSample(taskID)},
 		{"StatusResp", statusSample(now, taskID)},
+		{"PtySession", ptySessionSample(now)},
+		{"PtySessionsResp", ptySessionsRespSample(now)},
 		{"Frame", frameSample(now)},
+		{"DirListResult", dirListSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -236,6 +239,7 @@ func projectTreeSample() ProjectTreeResp {
 // 两台覆盖两种结局：本机（name 空串、probe_ms 恒 0）与不可达的远端
 // （reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见）。
 func machinesSample() MachinesResp {
+	ptyOK := true
 	return MachinesResp{
 		Machines: []Machine{
 			{
@@ -248,6 +252,7 @@ func machinesSample() MachinesResp {
 				ProbeMs:         0,
 				ActiveTasks:     1,
 				Error:           "",
+				PtySupported:    &ptyOK,
 			},
 			{
 				Name:            "devbox",
@@ -318,6 +323,7 @@ func activeTaskSample(taskID string) ActiveTask {
 //
 // 注意 TaskCounts 六个状态键恒存在：键缺了要能当场暴露（0 与缺键对消费方是两回事）。
 func statusSample(now time.Time, taskID string) StatusResp {
+	ptyOK := true
 	return StatusResp{
 		Version:         buildSample(),
 		Listen:          "127.0.0.1:7777",
@@ -334,6 +340,45 @@ func statusSample(now time.Time, taskID string) StatusResp {
 			"failed":         0,
 		},
 		Active: []ActiveTask{activeTaskSample(taskID)},
+		// 放在 Active 之后：能力位与运行时数据分开，一眼能看出它是 agentd 上报的。
+		PtySupported: &ptyOK,
+	}
+}
+
+// ptySessionSample 返回 PtySession 的代表性样本（活着的会话：exit_code 缺席）。
+func ptySessionSample(now time.Time) PtySession {
+	return PtySession{
+		ID:         "2f0f6a3c-8f1e-4f2a-9a77-1c2d3e4f5a6b",
+		Machine:    "",
+		BasePath:   "/home/dev/handoff",
+		BaseKind:   "workspace",
+		Shell:      "/bin/zsh",
+		CreatedAt:  now,
+		Cols:       120,
+		Rows:       40,
+		Attached:   1,
+		Foreground: true,
+		PID:        48213,
+		BytesOut:   81920,
+	}
+}
+
+// ptySessionsRespSample 覆盖 scope=all 信封：一条本机活会话 + 一条远端已退出会话
+// （exit_code 出现），外加两行机器应答。
+func ptySessionsRespSample(now time.Time) PtySessionsResp {
+	code := 3
+	remote := ptySessionSample(now)
+	remote.ID = "9b8a7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d"
+	remote.Machine = "devbox"
+	remote.Attached = 0
+	remote.ExitCode = &code
+	remote.Foreground = false
+	return PtySessionsResp{
+		Sessions: []PtySession{ptySessionSample(now), remote},
+		Machines: []MachineStatus{
+			{Name: "", Ok: true, FetchedAt: now},
+			{Name: "devbox", Ok: true, FetchedAt: now},
+		},
 	}
 }
 
@@ -353,5 +398,17 @@ func frameSample(now time.Time) Frame {
 		Output:    "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
 		Truncated: true,
 		Bytes:     193422,
+	}
+}
+
+// dirListSample 返回 DirListResult 的代表性样本。
+//
+// 一目录一文件覆盖 Size 的 omitempty 边界：目录不带 size 键，普通文件带。
+func dirListSample() DirListResult {
+	return DirListResult{
+		Entries: []DirEntry{
+			{Name: "internal", IsDir: true},
+			{Name: "go.mod", IsDir: false, Size: 1284},
+		},
 	}
 }

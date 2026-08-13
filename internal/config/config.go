@@ -51,7 +51,34 @@ type Config struct {
 	// 「每台执行机自己决定它的仓库放在哪」。
 	// yaml:"repo_root"：strict 解码器（KnownFields）按 tag 匹配键名，不加 tag 时
 	// yaml.v3 会把 RepoRoot 映射成 reporoot，与 README/设计文档里的 repo_root 不符。
-	RepoRoot     string `yaml:"repo_root"`
+	RepoRoot string `yaml:"repo_root"`
+	// PathDirs 是本机额外的可执行文件搜索目录：agentd 启动时按序追加到 PATH 末尾
+	// （见 internal/pathenv）。内置已知目录表没覆盖到的安装位置写在这里。
+	//
+	// 为什么放顶层而不是放进 Executor：它描述的是「**这台机器**上工具装在哪」，
+	// 不是执行者的属性——与 RepoRoot 同一个道理。
+	//
+	// omitempty 是硬要求，不是风格：配置以 KnownFields(true) 严格解析，未知键让
+	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 path_dirs: [] 写进
+	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
+	//（B59 spec D7 同款，方向相反）。
+	PathDirs     []string `yaml:"path_dirs,omitempty"`
+	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
+	//
+	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
+	// launchd / ssh-agent **按会话注入**，不来自任何 dotfile，因此 login shell
+	// 的 rc 链**无法**像恢复 PATH 那样把它恢复出来。agentd 以服务形态托管时，
+	// 终端里的 ssh / git push 会因此全部失败。
+	//
+	// 三态语义（**不要**在 Load 里填默认值）：
+	//   nil        → 用内置默认清单 ptyhost.DefaultEnvForward()（当前是 SSH_AUTH_SOCK）
+	//   非 nil     → 完全以配置为准
+	//   []（显式） → 一个都不转发
+	// 一旦 Load 把默认值填进结构体，下一次 Save 就会把 env_forward 落进
+	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
+	//
+	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
+	EnvForward     []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -59,7 +86,7 @@ type Config struct {
 	Approver ApproverConfig
 	// Executor 是任务的缺省执行者选择配置。
 	Executor ExecutorConfig
-	// Terminal 是 dispatch 成功后是否默认弹终端实况的配置。
+	// Terminal 是 dispatch 成功后是否弹终端实况的配置（Auto 默认 false，见 TerminalConfig）。
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
@@ -136,8 +163,13 @@ type ExecutorConfig struct {
 
 // TerminalConfig 描述 dispatch 成功后的终端弹窗行为。
 //
-// Auto 默认 true，仅 darwin 生效（osascript 弹 Terminal.app）；其余平台
-// 降级为打印「实况: handoff attach <id>」提示行。
+// Auto 默认 **false**（不弹）；仅当置 true 时才在 darwin 下用 osascript 弹
+// Terminal.app 进实况；其余平台无论配置如何都降级为打印
+// 「实况: handoff attach <id>」提示行。
+//
+// 为什么默认不弹：dispatch 的 stdout 有「单行任务 JSON」契约，弹窗与提示行都
+// 不该干扰它；且逐次开关由 --no-terminal 承担，默认不弹才不会让老脚本因为
+// 多出一行提示而解析错乱。
 type TerminalConfig struct {
 	Auto bool
 }
@@ -176,13 +208,13 @@ type Target struct {
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
 func Load(path string) (*Config, error) {
 	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
-	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=true），
+	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
 	// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
 	cfg := &Config{
 		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
 		Approver: ApproverConfig{Timeout: 60 * time.Second},
 		Executor: ExecutorConfig{Default: "opencode"},
-		Terminal: TerminalConfig{Auto: true},
+		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
 		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
 		Targets:  map[string]Target{},
@@ -287,7 +319,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

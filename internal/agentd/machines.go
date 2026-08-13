@@ -88,6 +88,11 @@ func (s *Server) localMachine() proto.Machine {
 		return m
 	}
 	fillFromStatus(&m, st)
+
+	// 本机能力位就地填：localMachine 直调 mgr.Status()，不走 HTTP，而能力位
+	// 只在 handleStatus 组装 HTTP 响应时才有；本机的平台支持度只有这里知道。
+	ptyOK := s.pty.Supported()
+	m.PtySupported = &ptyOK
 	return m
 }
 
@@ -124,6 +129,9 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 	}
 	m.DefaultExecutor = st.DefaultExecutor
 	m.ActiveTasks = len(st.Active)
+
+	// 能力位原样搬运，包括 nil：探到了但对端没这个字段，结论就是「没上报」
+	m.PtySupported = st.PtySupported
 }
 
 // handleMachines 处理 GET /api/machines。

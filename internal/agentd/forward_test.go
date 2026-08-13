@@ -44,7 +44,10 @@ func TestForwardUnknownMachineRejected(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost,
 		local.ts.URL+"/api/projects?machine=ghost", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Authorization", "Bearer "+testToken)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -67,7 +70,10 @@ func TestForwardedRequestNeverForwardsAgain(t *testing.T) {
 		local.ts.URL+"/api/projects?machine=devbox", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set(forwardedHeader, "1")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
 	defer resp.Body.Close()
 	// devbox 是黑洞地址：真转发了就会是 502/超时；本机处理则是 503（manager 未注入）
 	if resp.StatusCode != http.StatusServiceUnavailable {
