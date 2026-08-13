@@ -1029,3 +1029,32 @@ func TestResolveCommitMissingRejects(t *testing.T) {
 		t.Fatalf("错误文本应含起点原文与可操作出路: %v", err)
 	}
 }
+
+// TestResolveCommitAmbiguousRemoteOnlyBranch 钉住歧义出口：两个远端都有同名
+// 分支时（fork 工作流 origin+upstream 的常态），必须按歧义拒发并列出全部候选，
+// 而不能降级成「起点不存在，先 git push」——起点明明在，让审核者去 push 是
+// 把他引向错误的排查方向。
+func TestResolveCommitAmbiguousRemoteOnlyBranch(t *testing.T) {
+	up := initTestRepo(t)
+	gitT(t, up, "branch", "shared-base")
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "config", "user.email", "test@handoff.dev")
+	gitT(t, clone, "config", "user.name", "handoff test")
+	// 第二个远端指向同一个上游：fetch 后 refs/remotes/upstream/shared-base 与
+	// refs/remotes/other/shared-base 同时存在，for-each-ref 唯一匹配失效
+	gitT(t, clone, "remote", "add", "other", up)
+	gitT(t, clone, "fetch", "-q", "other")
+
+	_, err := resolveCommit(context.Background(), clone, "shared-base")
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("歧义应按 ErrBadWorkspaceReq 拒发, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "upstream/shared-base") || !strings.Contains(err.Error(), "other/shared-base") {
+		t.Fatalf("错误文本应列出全部候选 ref: %v", err)
+	}
+	if strings.Contains(err.Error(), "git push") {
+		t.Fatalf("歧义不是不存在，错误文本不得误导审核者去 push: %v", err)
+	}
+}

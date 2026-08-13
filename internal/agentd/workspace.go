@@ -696,7 +696,7 @@ type Baseline struct {
 //   - rev: 待解析的起点原文（用户的 --base 或决议出的基线）
 //
 // 返回：
-//   - 40 位 sha；解析不出时返回包 ErrBadWorkspaceReq 的错误（server 映射 400）
+//   - 40 位 sha；解析不出或歧义时返回包 ErrBadWorkspaceReq 的错误（server 映射 400）
 //
 // 为什么起点必须以 sha 形态交给 git（B76）：给分支名会触发 DWIM——base 只有
 // origin/<name> 时，`worktree add -b X <dir> <base>` 会忽略显式的 -b、开出
@@ -705,7 +705,10 @@ type Baseline struct {
 // 注意：^{commit} 的剥离是必需的：rev 可能是 annotated tag，裸解析给的是
 // tag 对象而不是提交。rev-parse 本身不做「远程跟踪分支简写」的 DWIM，这里
 // 手动补一次唯一匹配（与 git checkout 的 guess_remote 同语义），保证
-// --base <只有远程跟踪 ref 的分支> 的用户语义不变。
+// --base <只有远程跟踪 ref 的分支> 的用户语义不变；多个远端同时同名时视为
+// 歧义拒发，错误文本列出全部候选 ref 并给出出路（用带远端前缀的全名或 sha）——
+// 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的审核者引向
+// 错误排查方向。
 func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	sha := strings.TrimSpace(out)
@@ -715,14 +718,24 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 	}
 	// rev-parse 不 DWIM：base 分支只以 refs/remotes/*/<rev> 存在时上面的调用取不到
 	// （B76 的触发前提正是这种仓库）。按 git checkout 的 guess 语义补一次「唯一
-	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。多于一棵远端
-	// 同时有这个分支名视为歧义，拒发（git 同样不猜）。
+	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。
 	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+rev)
 	var cands []string
 	for _, line := range strings.Split(matches, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			cands = append(cands, line)
 		}
+	}
+	// 多于一棵远端同时有这个分支名：歧义，拒发（git 同样不猜）。歧义不是
+	// 「不存在」——起点明明在，让审核者去 git push 是把他引向错误方向（fork
+	// 工作流 origin+upstream 同名分支会真实撞上）；出路是给带远端前缀的全名
+	// 或直接给 sha，两者 resolveCommit 都认。
+	if len(cands) > 1 {
+		log().Warn("起点解析歧义：多棵远端都有同名分支，拒绝派发",
+			"repo", repo, "base", rev, "cands", cands)
+		return "", fmt.Errorf("%w: 起点 %s 在多个远端同时存在（%s）；"+
+			"请改用带远端前缀的全名（如 --base upstream/%s）或直接给 40 位 sha",
+			ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
 	}
 	if len(cands) == 1 {
 		if mout, _, e := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
