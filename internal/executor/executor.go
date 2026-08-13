@@ -165,6 +165,12 @@ type AdapterEvent struct {
 	// Usage 是当前 context 占用快照；nil=本帧没带用量。
 	// 语义见 proto.Usage：只描述占用不描述消耗，且绝不用 0 冒充「没有」。
 	Usage *proto.Usage
+	// Spend 是这一次调用/回合**新增**的消耗；nil = 本帧不带消耗信息。
+	//
+	// 与 Usage 的区别：Usage 是「当前占用」的快照（后到的覆盖先到的），
+	// Spend 是「新增消耗」的账目（按 Key 覆盖后**求和**）。数量级完全不同，
+	// 一个帧可以两者都带，但**绝不能互相赋值**。
+	Spend *proto.SpendEntry
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。

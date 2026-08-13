@@ -2074,3 +2074,53 @@ func TestHandleUsageDedupesRepeatedValues(t *testing.T) {
 		t.Fatalf("值变化后应落库，得到 %d", changed.Usage.ContextTokens)
 	}
 }
+
+// TestHandleSpendWritesLedger 验 Spend 事件落进账本，且不碰当前占用三元组。
+func TestHandleSpendWritesLedger(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-spend", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	// 先落一次当前占用（B80 通道）
+	m.handleUsage(task.ID, executor.AdapterEvent{
+		Type: "usage", ActualModel: "m1",
+		Usage: &proto.Usage{ContextTokens: 999},
+	})
+	// 再落一条累计账目（B83 通道）
+	m.handleSpend(task.ID, executor.AdapterEvent{
+		Type: "usage",
+		Spend: &proto.SpendEntry{Key: "k1", InputTokens: 10, CachedTokens: 20,
+			OutputTokens: 5, CostTicks: 100, CostState: proto.CostReported},
+	})
+
+	got, err := m.st.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// 累计写进去了
+	if got.Cumulative == nil || got.Cumulative.InputTokens != 10 {
+		t.Fatalf("累计应落库，实得 %+v", got.Cumulative)
+	}
+	// 当前占用没被累计通道冲掉——这是两条通道必须互不干扰的证据
+	if got.ActualModel != "m1" || got.Usage == nil || got.Usage.ContextTokens != 999 {
+		t.Fatalf("累计通道不得影响当前占用，实得 model=%q usage=%+v",
+			got.ActualModel, got.Usage)
+	}
+}
+
+// TestHandleSpendNilIsNoop 验没有 Spend 的帧不写库、不报错。
+func TestHandleSpendNilIsNoop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-spend2", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	m.handleSpend(task.ID, executor.AdapterEvent{Type: "usage"})
+	got, err := m.st.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Cumulative != nil {
+		t.Fatalf("空 Spend 不应产生账目，实得 %+v", got.Cumulative)
+	}
+}

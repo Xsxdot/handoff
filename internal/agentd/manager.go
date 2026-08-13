@@ -1332,7 +1332,9 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 	case adapterEventUsage:
 		// 不打 Info：用量事件频率高（claudecode 一个回合几百条），
 		// 每条都打入口日志就是刷屏。首次落库的日志在 handleUsage 里打。
+		// 两条通道各走各的：Usage 走当前占用，Spend 走累计账本，绝不交叉。
 		m.handleUsage(taskID, ev)
+		m.handleSpend(taskID, ev)
 	default:
 		m.log.Warn("未知 adapter 事件", "task", taskID, "type", ev.Type)
 	}
@@ -2457,6 +2459,34 @@ func derefOrNil(p *int) int {
 		return -1
 	}
 	return *p
+}
+
+// handleSpend 把 executor 报回的「本次新增消耗」记进账本。
+//
+// 与 handleUsage 的区别（**两条通道必须互不干扰**）：
+//   - handleUsage 走 SetTaskUsage，**整体覆盖** (model, tokens, window) 三元组，
+//     描述「当前占用」；
+//   - 本方法走 UpsertSpend，按幂等键**覆盖单行**后求和，描述「累计消耗」。
+//
+// 拿任何一条的值去写另一条，都会产生一个不报错、只是数字错的故障。
+//
+// 与 handleUsage 相同的两点：**只写库，不追加事件行、不广播**（频率同样高，
+// 进事件日志会淹没审核者真正要看的 permission/question/completed）；
+// 落库失败仅 Warn（用量属可修复的辅助字段，不影响主流程）。
+//
+// 幂等不做内存去重：内存态在 agentd 重启后为空，首帧必写一次——对「当前占用」
+// 无害（覆盖成同值），对「累计」就是重复计数。所以幂等只能落在库里。
+func (m *Manager) handleSpend(taskID string, ev executor.AdapterEvent) {
+	if ev.Spend == nil {
+		return
+	}
+	if err := m.st.UpsertSpend(taskID, *ev.Spend); err != nil {
+		m.log.Warn("记任务消耗失败", "task", taskID, "key", ev.Spend.Key, "cause", err)
+		return
+	}
+	m.log.Debug("任务消耗已入账", "task", taskID, "key", ev.Spend.Key,
+		"input", ev.Spend.InputTokens, "cached", ev.Spend.CachedTokens,
+		"output", ev.Spend.OutputTokens, "cost_state", ev.Spend.CostState)
 }
 
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进
