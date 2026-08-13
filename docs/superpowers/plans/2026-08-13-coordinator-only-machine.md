@@ -888,23 +888,28 @@ Status 本就按内容比对、不关心落点形态，改副本零改动即兼�
 
 - [ ] **Step 1: README 补一句「纯协调者机不需要本机 agentd」**
 
-在 README 讲 `handoff init` 角色那一段之后（「角色选了执行机时…」那段附近）追加：
+在 README「**2. 托管 agentd**」那段之后（讲 `init` 选了执行机角色顺带装 agentd 的那一段，
+以「托管后 Ctrl-C 停不掉它…」结尾），另起一段追加：
 
 ```markdown
-角色只选协调者时**不需要本机 agentd**：派发、审阅、`wait`、`attach` 全部直连
-目标机。首次给一个新项目派发时，CLI 会顺带把项目登记到本机一份用于项目树；
-本机没有 agentd 时这一跳自动跳过并提示，不影响派发本身。
+**只当协调机时不需要本机 agentd**：派发、`wait`、`reply`、`diff`、`attach` 全部直连
+目标机的 agentd。首次给一个新项目派发时，CLI 会顺带把项目也登记到本机一份（用于
+`handoff project ls` 的本机项目树）；本机没有 agentd 时这一跳自动跳过并提示，不影响
+派发本身。
 ```
 
-- [ ] **Step 2: README 修正 Windows 那句**
+- [ ] **Step 2: README 给 Windows 那句补两条限制**
 
-现有安装章节写着「**不支持 Windows**——agentd 依赖的进程承载层 Windows 实现尚未完成」。这句现在只对执行机成立，改为：
+安装章节现有这一句（README 第 26 行前后）：
 
 ```markdown
-安装脚本与 Release 资产只覆盖 macOS / Linux。**Windows 不能当执行机**——agentd
-依赖的进程承载层 Windows 实现尚未完成；当协调机则可用，但需自行 `go build`
-（没有 Windows 资产，`handoff upgrade` 也因此升不了本机，升远端不受影响），
-且没有桌面通知（`wait --notify` 仅 macOS）。
+macOS / Linux（amd64 / arm64）。Windows 暂不支持作为执行机，只能当协调机——协调者侧命令（dispatch / wait / reply / diff 等）可用，但没有安装脚本与 release 资产，需自行 `go build`。
+```
+
+方向已经对，缺两条会让人踩坑的后果，补成：
+
+```markdown
+macOS / Linux（amd64 / arm64）。Windows 暂不支持作为执行机，只能当协调机——协调者侧命令（dispatch / wait / reply / diff 等）可用，但没有安装脚本与 release 资产，需自行 `go build`；因此 `handoff upgrade` 升不了本机这一份（升远端执行机不受影响），`wait --notify` 的桌面通知也只有 macOS 有。
 ```
 
 - [ ] **Step 3: 跑六闸门**
