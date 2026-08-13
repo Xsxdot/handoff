@@ -71,32 +71,47 @@ handoff 的任务恰恰是跨进程活着的：agentd 重启、executor 崩溃�
 |---|---|---|---|---|---|
 | **claudecode** | `result` 行 | `usage.input_tokens` | `usage.cache_read_input_tokens + usage.cache_creation_input_tokens` | `usage.output_tokens` | `total_cost_usd` 的**进程内差分**（§5.2） |
 | **codex** | `turn/completed` 时取最近一条 `thread/tokenUsage/updated` | `(total.inputTokens - total.cachedInputTokens)` 的差分 | `total.cachedInputTokens` 的差分 | `total.outputTokens` 的差分 | **不报** → 估算（§6） |
-| **grok** | `turn_completed` 通知 | `inputTokens - cachedReadTokens - cacheCreationTokens` | `cachedReadTokens + cacheCreationTokens` | `outputTokens` | `costUsdTicks` |
-| **opencode** | SSE `message.updated`（`info.role == "assistant"`） | `tokens.input` | `tokens.cache.read + tokens.cache.write` | `tokens.output` | `info.cost` |
+| **grok** | `session/prompt` **响应**的 `result._meta`（不是通知，见下） | `usage.inputTokens - usage.cachedReadTokens - usage.cacheCreationTokens` | `usage.cachedReadTokens + usage.cacheCreationTokens` | `usage.outputTokens` | `usage.costUsdTicks` |
+| **opencode** | SSE `message.updated`（`info.role == "assistant"`） | `tokens.input` | `tokens.cache.read + tokens.cache.write` | `tokens.output + tokens.reasoning`（**相加**，见下） | `info.cost` |
 
 **逐条说明为什么是这个公式**（每一条都有实抓佐证，别按字段名类推）：
 
 - **codex 的 `cachedInputTokens` 是 `inputTokens` 的子集**，所以输入要**减**。
   佐证：`last.totalTokens 24673 = inputTokens 24668 + outputTokens 5`，
   9984 的缓存若是加项，等式不成立（探针笔记 §3）。
-- **grok 的 `turn_completed.usage.inputTokens` 含缓存**，所以要**减**。
+- **grok 取的是 `session/prompt` 的响应，不是 `turn_completed` 通知。**
+  两者的 usage 逐回合**完全一致**（探针实测），但响应这一帧更好：
+  ① `awaitTurn` 已经在读它了（取 `stopReason` 当回合边界），只是没解 `_meta`；
+  ② 幂等键 `promptId` 就在同一块 `_meta` 里，不用跨帧拼；
+  ③ 不必新增私有通知的 handler。报文形状见 B80 探针笔记 §4.1 的实抓块。
+- **grok 的 `_meta.usage.inputTokens` 含缓存**，所以要**减**。
   佐证：四条 `response_completed` 的 `input_tokens` 之和 29069 加上
-  `cache_read_input_tokens` 之和 109568 恰好等于 `turn_completed` 的 138637
+  `cache_read_input_tokens` 之和 109568 恰好等于回合级的 138637
   （B80 探针笔记 §4.2）。grok 官方文档也写明只有 headless 投影会把缓存减掉。
 - **claudecode 的 `input_tokens` 不含缓存**，所以要**加**。
   佐证：轮 3 的 `input_tokens` 只有 54 而 `cache_read` 有 32768（探针笔记 §2）。
 - **opencode 的 `cache.read` / `cache.write` 与 `input` 平行**，所以要**加**（B80 探针笔记 §3.1）。
-- **reasoning 一律不单列**：codex 的 `reasoningOutputTokens` 与 grok 的
-  `reasoningTokens` 都是 `outputTokens` 的子集（grok 实抓 `outputTokens 56`、
-  `reasoningTokens 51`，`totalTokens 34558 = 34502 + 56`）。单列会重复计数。
+- **reasoning 在三家是子集、在 opencode 是加项**——这是本表最容易写错的一格：
+  - codex 的 `reasoningOutputTokens` ⊂ `outputTokens`（`totalTokens 24673 =
+    inputTokens 24668 + outputTokens 5`，没有 reasoning 的位置）；
+  - grok 的 `reasoningTokens` ⊂ `outputTokens`（实抓 `outputTokens 56`、
+    `reasoningTokens 51`，`totalTokens 34558 = 34502 + 56`）；
+  - **opencode 的 `tokens.reasoning` 与 `tokens.output` 平行**，实抓
+    `total 47071 = input 131 + output 182 + reasoning 294 + cache.read 46464`
+    ——不加就少算，而且这里 reasoning 比 output 还大，少算得很显眼；
+  - claudecode 没有独立的 reasoning 字段，`output_tokens` 就是全部。
+
+  三家「不加」一家「加」，看起来像不一致，其实是同一条规则：
+  **让「输出」= 模型产出的全部 token，不重不漏**。
 
 ### 3.2 与 B80 的取数落点**不同**，这是有意的
 
-B80 取 grok 的 `response_completed`（snake_case，缓存是加项），本轮取
-`turn_completed`（camelCase，缓存已含在内）。同一个产品两套口径，官方文档已确认。
+B80 取 grok 的 `response_completed` 通知（snake_case，缓存是加项），本轮取
+`session/prompt` 的**响应** `_meta`（camelCase，缓存已含在内）。
+同一个产品两套口径，官方文档已确认。
 
 原因：B80 要的是「最后一次调用的占用」，所以取每次调用的帧；本轮要的是
-「整个回合消耗了多少」，`turn_completed` 正好是回合级的 roll-up，且花费也只在那里。
+「整个回合消耗了多少」，响应 `_meta` 正好是回合级的 roll-up，且花费也只在那里。
 **实现时不要为了「统一」把两处改成同一个帧**——那会同时弄错两个口径。
 
 ---
