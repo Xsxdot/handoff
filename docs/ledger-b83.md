@@ -12,3 +12,4 @@
 - 2026-08-13 Task 4（codex 账目 + 牌价表）完成，commit c858b519，审查 PASS（无修复轮）。
 - 2026-08-13 Task 5（grok 账目）完成，commit 4856b86b，审查 PASS（无修复轮）。
 - 2026-08-13 Task 6（opencode 账目）完成，commit 94ed4c2f，审查 PASS（无修复轮）。
+- 2026-08-13 Task 7（前端切换视图）完成，commit a9835cd8，审查 PASS（形态基准与 Step 8 字面 JSX 冲突时按形态基准实现，测试适配 user-event→fireEvent、无 Context 字样）。
