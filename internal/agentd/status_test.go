@@ -344,3 +344,37 @@ func TestFootprintAllReportsVerdict(t *testing.T) {
 		t.Fatal("Verdict 不得为空——判不出结论也要如实说，不能只给一个 0")
 	}
 }
+
+// Listen 为单网卡 IP 时 ListenAux 必须给出 loopback 变体；Listen 保持
+// cfg.Listen 不变（身份/配对语义，消费方不该看到列表）。loopback 配置恒为空。
+func TestStatusListenAux(t *testing.T) {
+	cfg := &config.Config{
+		Token:    testToken,
+		DataDir:  t.TempDir(),
+		Listen:   "100.64.0.5:7777",
+		Executor: config.ExecutorConfig{Default: "stub"},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := newTestEnvWithCfg(t, cfg, logger)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"stub": &probeStub{alive: true}}, cfg, nil, nil, logger)
+
+	st, err := mgr.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Listen != "100.64.0.5:7777" {
+		t.Fatalf("Listen=%q, 应保持 cfg.Listen 原值", st.Listen)
+	}
+	if st.ListenAux != "127.0.0.1:7777" {
+		t.Fatalf("ListenAux=%q, want 127.0.0.1:7777", st.ListenAux)
+	}
+
+	loop, err := newTestManager(t).Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if loop.ListenAux != "" {
+		t.Fatalf("loopback 配置 ListenAux=%q, 应为空", loop.ListenAux)
+	}
+}
