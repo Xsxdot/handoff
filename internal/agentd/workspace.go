@@ -688,6 +688,55 @@ type Baseline struct {
 	Fetched bool
 }
 
+// resolveCommit 把任意 commit-ish（分支名/tag/sha）解析成 40 位提交号。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径
+//   - rev: 待解析的起点原文（用户的 --base 或决议出的基线）
+//
+// 返回：
+//   - 40 位 sha；解析不出时返回包 ErrBadWorkspaceReq 的错误（server 映射 400）
+//
+// 为什么起点必须以 sha 形态交给 git（B76）：给分支名会触发 DWIM——base 只有
+// origin/<name> 时，`worktree add -b X <dir> <base>` 会忽略显式的 -b、开出
+// 名为 <base> 的分支，且退出码为 0。传 sha 让 DWIM 从原理上无从发生。
+//
+// 注意：^{commit} 的剥离是必需的：rev 可能是 annotated tag，裸解析给的是
+// tag 对象而不是提交。rev-parse 本身不做「远程跟踪分支简写」的 DWIM，这里
+// 手动补一次唯一匹配（与 git checkout 的 guess_remote 同语义），保证
+// --base <只有远程跟踪 ref 的分支> 的用户语义不变。
+func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	sha := strings.TrimSpace(out)
+	if err == nil && sha != "" {
+		log().Info("起点已解析为提交号", "repo", repo, "base", rev, "sha", sha)
+		return sha, nil
+	}
+	// rev-parse 不 DWIM：base 分支只以 refs/remotes/*/<rev> 存在时上面的调用取不到
+	// （B76 的触发前提正是这种仓库）。按 git checkout 的 guess 语义补一次「唯一
+	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。多于一棵远端
+	// 同时有这个分支名视为歧义，拒发（git 同样不猜）。
+	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+rev)
+	var cands []string
+	for _, line := range strings.Split(matches, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			cands = append(cands, line)
+		}
+	}
+	if len(cands) == 1 {
+		if mout, _, e := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
+			sha = strings.TrimSpace(mout)
+			log().Info("起点已解析为提交号（远程跟踪分支）", "repo", repo, "base", rev, "sha", sha, "ref", cands[0])
+			return sha, nil
+		}
+	}
+	log().Warn("起点解析失败，拒绝派发", "repo", repo, "base", rev,
+		"stderr", strings.TrimSpace(truncateRunes(stderr, 300)))
+	return "", fmt.Errorf("%w: 起点 %s 在任务仓库中不存在"+
+		"（若它是你本地的分支，先 git push 再派发；或换一个起点）", ErrBadWorkspaceReq, rev)
+}
+
 // ResolveBaseline 决议任务的基线：校验审核者本地基线在任务仓库中可用，并给出
 // 新分支应当使用的起点与「任务仓库比它多出多少提交」。
 //

@@ -588,6 +588,21 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("基线起点已确定", "repo", repoPath, "start", start, "ahead", ahead,
 		"explicit_base", req.Base != "")
 
+	// B76：起点必须以 sha 形态交给 git。给分支名会触发 DWIM——base 只有
+	// origin/<name> 时 git 会忽略显式的 -b 并开出 base 名字的分支，退出码还是 0。
+	// 解析放在这里（而不是 PrepareWorkspace 内部）是因为 start 同时喂给工作区
+	// 准备与任务记录的 BaseCommit，一次解析服务两处，两者不可能再分叉。
+	if start != "" {
+		resolved, rerr := resolveCommit(ctx, repoPath, start)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if resolved != start {
+			m.log.Info("起点原文已解析为提交号", "repo", repoPath, "base", start, "sha", resolved)
+		}
+		start = resolved
+	}
+
 	// 准入闸必须排在建任务行、建 worktree 之前：拒发要干干净净，
 	// 不能留下一个建了一半的任务等人收
 	if err := checkProcHeadroom("dispatch"); err != nil {

@@ -942,3 +942,90 @@ func TestPrepareWorkspaceRejectsBranchIdentityMismatch(t *testing.T) {
 		t.Fatalf("拒发后 managed worktree 应已清理, stat err=%v", statErr)
 	}
 }
+
+// TestPrepareWorkspaceRemoteOnlyBaseAllPaths 钉住三条工作树路径在「base 只有
+// origin/<name>」时的一致行为：都应建出请求的分支。原地与用户树此前是硬失败。
+func TestPrepareWorkspaceRemoteOnlyBaseAllPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(t *testing.T, clone, base string) WorkspaceReq
+	}{
+		{"新树", func(t *testing.T, clone, base string) WorkspaceReq {
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-nw", NewWorktree: true,
+				WorktreesDir: filepath.Join(t.TempDir(), "w"), NewBranch: "feat/wanted", Base: base}
+		}},
+		{"原地", func(t *testing.T, clone, base string) WorkspaceReq {
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-ip", NewBranch: "feat/wanted", Base: base}
+		}},
+		{"用户树", func(t *testing.T, clone, base string) WorkspaceReq {
+			wt := filepath.Join(t.TempDir(), "userwt")
+			gitT(t, clone, "worktree", "add", "-q", wt)
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-uw", Worktree: wt,
+				NewBranch: "feat/wanted", Base: base}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := initClonedRepo(t, "shared-base")
+			// 调用方（manager）已把起点解析成 sha，测试同样喂 sha
+			base, err := resolveCommit(context.Background(), clone, "shared-base")
+			if err != nil {
+				t.Fatalf("解析起点: %v", err)
+			}
+			ws, err := PrepareWorkspace(context.Background(), tc.mk(t, clone, base))
+			if err != nil {
+				t.Fatalf("应成功: %v", err)
+			}
+			if ws.Branch != "feat/wanted" {
+				t.Fatalf("ws.Branch=%q", ws.Branch)
+			}
+			if cur := gitOut(t, ws.WorkDir, "branch", "--show-current"); cur != "feat/wanted" {
+				t.Fatalf("工作区当前分支=%q", cur)
+			}
+		})
+	}
+}
+
+// TestResolveCommitRemoteOnlyBranch 钉住 B76 的源头修复：base 只有 origin/<name>
+// 时也必须解析得出（取远程尖端），否则修复会以「拒发」的形式打断正常派发。
+func TestResolveCommitRemoteOnlyBranch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	want := gitOut(t, clone, "rev-parse", "upstream/shared-base")
+
+	got, err := resolveCommit(context.Background(), clone, "shared-base")
+	if err != nil {
+		t.Fatalf("远程跟踪分支简写应可解析: %v", err)
+	}
+	if got != want {
+		t.Fatalf("sha=%q, want %q", got, want)
+	}
+}
+
+// TestResolveCommitAnnotatedTagPeelsToCommit 钉住 ^{commit} 剥离：annotated tag
+// 的裸 rev-parse 给的是 tag 对象，直接拿去开分支会得到非预期的起点。
+func TestResolveCommitAnnotatedTagPeelsToCommit(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "tag", "-a", "v1", "-m", "release 1")
+
+	got, err := resolveCommit(context.Background(), repo, "v1")
+	if err != nil {
+		t.Fatalf("annotated tag 应可解析: %v", err)
+	}
+	if got != head {
+		t.Fatalf("应剥离到 commit: got=%q, want=%q", got, head)
+	}
+}
+
+// TestResolveCommitMissingRejects 钉住拒发出口：起点不存在时给可操作的报错，
+// 而不是让它一路走到 git 内部措辞（`is not a commit`）才炸。
+func TestResolveCommitMissingRejects(t *testing.T) {
+	repo := initTestRepo(t)
+
+	_, err := resolveCommit(context.Background(), repo, "no-such-branch")
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("应按 ErrBadWorkspaceReq 拒发, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") || !strings.Contains(err.Error(), "git push") {
+		t.Fatalf("错误文本应含起点原文与可操作出路: %v", err)
+	}
+}
