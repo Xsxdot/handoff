@@ -286,6 +286,21 @@ func TestFullLoop(t *testing.T) {
 		t.Fatalf("续接后 completed payload=%v, want commit=def456", cm)
 	}
 
+	// 收到 completed 的那一刻状态就必须已经是 waiting_review——这是 handleResult
+	// 「迁移 → 追加事件 → 广播」那条顺序的对外承诺。下面的 Done 紧跟着发，正是
+	// 协调者脚本的真实形态；承诺一旦破了，它就会拿到 409。
+	//
+	// why 这里也要单独断一次（步骤 3 已断过一次）：步骤 3 的 wait 是**首次**连接，
+	// 步骤 4 是重连后的历史重放路径——事件从 store 直接读出，一落库就可见，和实时
+	// 订阅完全是两条路。2026-08-13 CI 实测炸的就是这一条。
+	info, err = env.cli.Attach(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if info.Task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("续接后 completed 到达时 state=%s, want waiting_review（事件先于状态可见）", info.Task.State)
+	}
+
 	// 5. 归档：done → 任务 completed 且 fake 收到 Stop
 	if _, err := env.cli.Done(context.Background(), task.ID, ""); err != nil {
 		t.Fatalf("Done: %v", err)

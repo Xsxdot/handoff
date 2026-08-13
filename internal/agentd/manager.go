@@ -2453,10 +2453,22 @@ func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进
 // waiting_review（why 见文件头）——失败也交协调者裁决，不自动重试烧 token。
 //
-// 顺序为什么是「追加事件 → 迁移状态 → 广播」而非广播在前：协调者（或脚本）收到
+// 顺序是「迁移状态 → 追加事件 → 广播」，三步都不能换位：协调者（或脚本）收到
 // completed 事件后可能立即执行 continue/done，若状态尚未回迁 waiting_review 会被
-// 409 拒绝——先落状态再唤醒，保证「事件到达时状态已就绪」。迁移失败（如并发
-// done 已抢先归档）则不广播，避免唤醒协调者去操作一个已终结的任务。
+// 409 拒绝，所以状态必须先就位。
+//
+// 为什么迁移必须排在**追加事件**之前，而不只是排在 Publish 之前（2026-08-13 修）：
+// 事件有两条送达路径，Publish 只是其中之一。WS 连接建立时的历史重放直接读 store
+// （server.go 的 EventsFromAsc），所以事件在 **AppendEvent 落库的那一刻**就已经
+// 可被观测——排在迁移之前就等于把「事件到达时状态已就绪」这条保证只留给实时订阅
+// 者，任何断线重连、一次性 wait（每轮新建连接）都会撞进窗口。CI 上实测撞到过：
+// TestFullLoop 收到第二条 completed 后立刻 Done，得到 409。
+//
+// 崩溃语义也因此更好：崩在两步之间留下的是「waiting_review 但缺一条 completed」，
+// show 出来仍是可裁决的；反过来则是「卡在 running 却已有 completed」，只能等看门狗。
+//
+// 迁移失败（如并发 done 已抢先归档）则事件也不追加、不广播：任务已终结，既不该
+// 唤醒协调者去操作它，也不该给一个已归档的任务再记一条回合结果。
 func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	if ev.Result == nil {
 		m.log.Error("result 事件缺 Result", "task", taskID)
@@ -2487,6 +2499,12 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 			m.log.Warn("落库 executor_session 失败", "task", taskID, "session", r.SessionID, "cause", err)
 		}
 	}
+	// 状态先就位：事件一落库就可被 WS 重放读到，晚于事件迁移等于放任协调者
+	// 在 running 上执行 done（详见函数头注释）
+	if err := m.transitToReview(taskID); err != nil {
+		m.log.Error("回迁 waiting_review 失败，不追加也不广播结果事件", "task", taskID, "cause", err)
+		return
+	}
 	var evt proto.Event
 	if r.OK {
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeCompleted, completedPayload{
@@ -2516,10 +2534,6 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)
 		return
 	}
-	if err := m.transitToReview(taskID); err != nil {
-		m.log.Error("回迁 waiting_review 失败，不广播事件", "task", taskID, "cause", err)
-		return
-	}
 	// 回合结束（任务进入 waiting_review）：清理审批链运行时状态，防内存 map
 	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
 	m.clearApproverState(taskID)
@@ -2529,9 +2543,9 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 // transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑
 // 链路尚未回迁 running 的 waiting_answer 防御场景），按最新快照走兜底路径重试。
 //
-// 为什么失败后必须重读重试而不是直接报错：result 事件已在 handleResult 中追加落库，
-// 一旦本方法返回错误，事件会连同 Publish 一起被丢弃，任务可能卡死在 running——
-// 竞态细节见 transitToReviewRetry。
+// 为什么失败后必须重读重试而不是直接报错：本方法一返回错误，handleResult 就连
+// result 事件都不再追加（顺序见其函数头），一次可收敛的 CAS 竞态会被误判成「任务
+// 已终结」，任务卡在 running 直到看门狗——竞态细节见 transitToReviewRetry。
 func (m *Manager) transitToReview(taskID string) error {
 	if err := m.transit(taskID, proto.TaskStateWaitingReview, "result"); err == nil {
 		return nil
