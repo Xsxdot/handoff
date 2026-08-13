@@ -63,6 +63,10 @@ var (
 	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
 	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
+
+	// ErrBranchIdentityMismatch 表示 git 报告成功，但工作区实际所在的分支
+	// 不是我们请求的那个（B76：worktree add -b 被 DWIM 顶替）。
+	ErrBranchIdentityMismatch = errors.New("工作区分支与请求不符")
 )
 
 // 执行护栏：
@@ -318,6 +322,14 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	}
+	// 守卫（B76）：三条路径统一在此核对，因为它们都已把结果收敛进 ws
+	if verr := verifyBranchIdentity(ctx, ws.WorkDir, ws.Branch); verr != nil {
+		log().Error("工作区分支身份核对失败，回滚并拒发", "task", req.TaskID,
+			"want", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed, "cause", verr)
+		rollbackWorkspace(ctx, req.Repo, ws)
+		return Workspace{}, verr
+	}
+	log().Info("工作区分支身份核对通过", "task", req.TaskID, "branch", ws.Branch)
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
 	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
 	// 不显式记录一条就无法在日志里区分「命令自己失败」与「被我们掐断」
@@ -349,6 +361,64 @@ func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExi
 		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
 	}
 	return nil
+}
+
+// verifyBranchIdentity 核对工作区实际所在分支是否就是决议出的分支。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - workDir: 已建好的工作区目录
+//   - want: 第 2 层决议出的分支名
+//
+// 返回：不符或读取失败时返回包 ErrBranchIdentityMismatch 的错误，文本同时
+// 含请求分支与实到分支。
+//
+// 为什么需要这道核对：git 的退出码只说明「命令没报错」，不说明「它做了你要
+// 的事」。B76 里 `worktree add -b X <dir> <base>` 在 base 只有远程跟踪 ref 时
+// 被 DWIM 顶替成「检出 base」，丢掉 X 且退出码为 0——要的分支与实到分支从来
+// 没被比对过，这是结构性空白，不是某一次 git 行为的补丁。
+func verifyBranchIdentity(ctx context.Context, workDir, want string) error {
+	out, stderr, err := gitRun(ctx, workDir, "branch", "--show-current")
+	got := strings.TrimSpace(out)
+	if err != nil {
+		return fmt.Errorf("%w: 读取工作区 %s 的当前分支失败（请求分支 %s）: %s",
+			ErrBranchIdentityMismatch, workDir, want, strings.TrimSpace(stderr))
+	}
+	if got != want {
+		return fmt.Errorf("%w: 请求分支 %s，git 实际给出 %s（工作区 %s）",
+			ErrBranchIdentityMismatch, want, got, workDir)
+	}
+	return nil
+}
+
+// rollbackWorkspace 在 PrepareWorkspace 内部失败时回滚已建的工作区。
+//
+// 为什么不能交给 manager 的补偿 defer：那个 defer 用的是 PrepareWorkspace 的
+// **返回值** ws，失败时它是零值，WorkDir 为空，compensateWorkspace 会直接返回。
+// 所以 PrepareWorkspace 自己建的东西必须自己收。
+func rollbackWorkspace(ctx context.Context, repo string, ws Workspace) {
+	if ws.WorkDir == "" {
+		return
+	}
+	if ws.Managed {
+		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+			log().Error("回滚 managed worktree 失败，需人工清理", "repo", repo,
+				"workdir", ws.WorkDir, "cause", err)
+			return
+		}
+		log().Info("已回滚 managed worktree", "repo", repo, "workdir", ws.WorkDir)
+		return
+	}
+	if ws.PrevRef == "" {
+		log().Warn("无 PrevRef 可复原，工作区停在当前 ref", "workdir", ws.WorkDir)
+		return
+	}
+	if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+		log().Error("回滚切回原 ref 失败，需人工处理", "workdir", ws.WorkDir,
+			"prev_ref", ws.PrevRef, "stderr", strings.TrimSpace(stderr), "cause", err)
+		return
+	}
+	log().Info("已回滚至原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
 }
 
 // EnsureRepoUsable 校验 repo 确实是一个可用的 git 仓库。
@@ -616,6 +686,68 @@ type Baseline struct {
 	// Fetched 表示是否为定位 Start 补拉过远端。只用于日志：排障时要能分清
 	// 「基线本来就在」与「补拉才拿到」，前者说明两边同步，后者说明执行机落后过。
 	Fetched bool
+}
+
+// resolveCommit 把任意 commit-ish（分支名/tag/sha）解析成 40 位提交号。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径
+//   - rev: 待解析的起点原文（用户的 --base 或决议出的基线）
+//
+// 返回：
+//   - 40 位 sha；解析不出或歧义时返回包 ErrBadWorkspaceReq 的错误（server 映射 400）
+//
+// 为什么起点必须以 sha 形态交给 git（B76）：给分支名会触发 DWIM——base 只有
+// origin/<name> 时，`worktree add -b X <dir> <base>` 会忽略显式的 -b、开出
+// 名为 <base> 的分支，且退出码为 0。传 sha 让 DWIM 从原理上无从发生。
+//
+// 注意：^{commit} 的剥离是必需的：rev 可能是 annotated tag，裸解析给的是
+// tag 对象而不是提交。rev-parse 本身不做「远程跟踪分支简写」的 DWIM，这里
+// 手动补一次唯一匹配（与 git checkout 的 guess_remote 同语义），保证
+// --base <只有远程跟踪 ref 的分支> 的用户语义不变；多个远端同时同名时视为
+// 歧义拒发，错误文本列出全部候选 ref 并给出出路（用带远端前缀的全名或 sha）——
+// 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的审核者引向
+// 错误排查方向。
+func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	sha := strings.TrimSpace(out)
+	if err == nil && sha != "" {
+		log().Info("起点已解析为提交号", "repo", repo, "base", rev, "sha", sha)
+		return sha, nil
+	}
+	// rev-parse 不 DWIM：base 分支只以 refs/remotes/*/<rev> 存在时上面的调用取不到
+	// （B76 的触发前提正是这种仓库）。按 git checkout 的 guess 语义补一次「唯一
+	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。
+	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+rev)
+	var cands []string
+	for _, line := range strings.Split(matches, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			cands = append(cands, line)
+		}
+	}
+	// 多于一棵远端同时有这个分支名：歧义，拒发（git 同样不猜）。歧义不是
+	// 「不存在」——起点明明在，让审核者去 git push 是把他引向错误方向（fork
+	// 工作流 origin+upstream 同名分支会真实撞上）；出路是给带远端前缀的全名
+	// 或直接给 sha，两者 resolveCommit 都认。
+	if len(cands) > 1 {
+		log().Warn("起点解析歧义：多棵远端都有同名分支，拒绝派发",
+			"repo", repo, "base", rev, "cands", cands)
+		return "", fmt.Errorf("%w: 起点 %s 在多个远端同时存在（%s）；"+
+			"请改用带远端前缀的全名（如 --base upstream/%s）或直接给 40 位 sha",
+			ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
+	}
+	if len(cands) == 1 {
+		if mout, _, e := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
+			sha = strings.TrimSpace(mout)
+			log().Info("起点已解析为提交号（远程跟踪分支）", "repo", repo, "base", rev, "sha", sha, "ref", cands[0])
+			return sha, nil
+		}
+	}
+	log().Warn("起点解析失败，拒绝派发", "repo", repo, "base", rev,
+		"stderr", strings.TrimSpace(truncateRunes(stderr, 300)))
+	return "", fmt.Errorf("%w: 起点 %s 在任务仓库中不存在"+
+		"（若它是你本地的分支，先 git push 再派发；或换一个起点）", ErrBadWorkspaceReq, rev)
 }
 
 // ResolveBaseline 决议任务的基线：校验审核者本地基线在任务仓库中可用，并给出
