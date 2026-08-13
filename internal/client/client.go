@@ -235,7 +235,22 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.hc.Do(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		// ctx 取消/超时不算「够不着」：它们同样从 hc.Do 的错误返回出来，但含义是
+		// 「人按了 Ctrl-C」或「主动限时到了」，不是「那台机器不在」。混进
+		// ErrUnreachable 会让调用方的降级分支在用户中断之后继续往下走。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		// Debug 而非 Warn：status 轮询这类热路径会连续撞这里（upgrade 换版后每秒一次），
+		// 在这一层打 Warn 会把真正需要注意的失败淹掉。这次够不着是致命还是可降级，
+		// 只有调用方知道——由它决定要不要升级成 Warn（见 cmd/project.go 的降级点）。
+		c.log().Debug("agentd 请求未拿到响应",
+			"method", method, "path", path, "url", c.baseURL, "cause", err)
+		return nil, fmt.Errorf("%w: %s %s: %w", ErrUnreachable, method, path, err)
+	}
+	return resp, nil
 }
 
 // httpError 把非 2xx 响应转成错误，并按状态码分级记录日志。
@@ -264,6 +279,18 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 // 能收到 404 说明 TCP 通、HTTP 正常、Bearer 已经通过，三件事都被证明了。
 // CLI 据此输出降级结论并退 0，而不是把一台完全能用的机器判成失败。
 var ErrStatusUnsupported = errors.New("对端 agentd 不支持 /api/status")
+
+// ErrUnreachable 表示这次请求**一个 HTTP 响应都没拿到**——TCP 拨不通、连接被拒、
+// DNS 解析失败或读写中断，对端在不在都无从判断。
+//
+// why（必须是可判别的哨兵）：调用方要区分「对端不在」与「对端拒绝了这次请求」。
+// 后者（400/409/500）拿到了响应，说明 agentd 在、Bearer 通过、语义上真的冲突了，
+// 绝不能当成「机器不在」咽下去——那是往登记表里写脏数据。这个区分只有 client
+// 知道；让调用方去 grep 错误文本里的 "connection refused" 是把 Go 的错误措辞与
+// 平台差异变成契约。同 ErrStatusUnsupported 的理由。
+//
+// **不包含 ctx 取消与超时**（见 do 里的注释）。
+var ErrUnreachable = errors.New("对端 agentd 够不着")
 
 // ErrFootprintUnsupported 表示对端 agentd 太旧，没有 /api/footprint。
 //
@@ -1199,7 +1226,8 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				return err
 			}
 			if ev.Type == proto.EventTypeFailed {
-				// failed 是任务终态；completed 不是——那只是一轮结束，continue 之后还有事件
+				// failed 事件收流，交还协调者处置（回合失败已迁 waiting_review，可 continue，
+				// 但 continue 后需要重新挂 follow）；completed 不收流——一轮结束后订阅继续活着
 				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
 				return errStopStream
 			}
