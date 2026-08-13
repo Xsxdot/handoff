@@ -23,7 +23,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { createPtySession } from '../../api/client'
+import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
 import type { BaseDir } from './useWorkbench'
 
@@ -97,8 +97,19 @@ export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProp
           { ...ptyBase(base), cols: term.cols, rows: term.rows },
           base.machine,
         )
+        if (disposed) {
+          // 会话已在服务端建成（shell 已 fork），但 id 从没回报给上层——
+          // 界面上没有任何入口能连上它或杀掉它，而 ptyhost 只在 shell 退出时
+          // 回收、没有空闲清扫，不删就是一个永远挂着的孤儿。
+          //
+          // 这跟「卸载不删会话」的纪律不冲突：那条护的是**已回报**的会话
+          // （tab 里记着 id，切回来还能接上）。这里的会话没人知道它存在。
+          void deletePtySession(created.id, base.machine).catch((err: unknown) => {
+            console.warn('回收孤儿终端会话失败，服务端可能残留一个 shell', created.id, err)
+          })
+          return
+        }
         id = created.id
-        if (disposed) return
         onSession(id)
       }
       if (disposed) return

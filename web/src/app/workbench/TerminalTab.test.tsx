@@ -31,8 +31,12 @@ const webglAddon = { onContextLoss: vi.fn(), dispose: vi.fn() }
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return webglAddon }) }))
 
 const createPtySession = vi.fn()
+const deletePtySession = vi.fn()
 const connectPty = vi.fn()
-vi.mock('../../api/client', () => ({ createPtySession: (...a: unknown[]) => createPtySession(...a) }))
+vi.mock('../../api/client', () => ({
+  createPtySession: (...a: unknown[]) => createPtySession(...a),
+  deletePtySession: (...a: unknown[]) => deletePtySession(...a),
+}))
 vi.mock('../../api/pty', () => ({ connectPty: (...a: unknown[]) => connectPty(...a) }))
 
 const WS: BaseDir = {
@@ -55,6 +59,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks()
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
+  deletePtySession.mockResolvedValue({ ok: true })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
 })
 
@@ -143,5 +148,22 @@ describe('TerminalTab', () => {
     unmount()
     expect(handle.close).toHaveBeenCalled()
     expect(termInstance.dispose).toHaveBeenCalled()
+  })
+
+  it('建会话的过程中被卸载：把这个没人知道的会话删掉，不留孤儿 shell', async () => {
+    let resolveCreate!: (v: unknown) => void
+    createPtySession.mockReturnValue(new Promise((r) => { resolveCreate = r }))
+    const { unmount } = render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    unmount()
+    resolveCreate({ id: 'orphan-1', base_path: WS.path })
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('orphan-1', ''))
+  })
+
+  it('已回报过的会话在卸载时不删——切 tab 不能杀掉跑了一晚上的 build', async () => {
+    const { unmount } = render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    unmount()
+    expect(deletePtySession).not.toHaveBeenCalled()
   })
 })
