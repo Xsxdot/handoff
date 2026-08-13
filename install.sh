@@ -124,7 +124,11 @@ main() {
   # TMPDIR_ 必须是脚本级变量，不能是 main 的 local：EXIT trap 在 main 返回之后
   # 才执行，那时 local 已出作用域，set -u 会把它判成未绑定——结果是安装明明成功
   # 却退出码 1，且下载目录永远清不掉（die 里「下载物已清理」也随之变成假话）
-  TMPDIR_="$(mktemp -d)"
+  # 显式给模板而不是裸 mktemp -d：BSD 的 mktemp（macOS）在无模板时**忽略
+  # TMPDIR**，直接落到 /var/folders/... 的按用户临时目录；GNU 的认 TMPDIR。
+  # 不统一的后果不止是「用户设了 TMPDIR 不生效」——install_test.sh 正是靠
+  # 把 TMPDIR 指向探针目录来验清理，行为不一致会让那条断言在 macOS 上恒真
+  TMPDIR_="$(mktemp -d "${TMPDIR:-/tmp}/handoff-install.XXXXXX")"
 
   log "handoff ${tag}  ${platform}"
 

@@ -29,6 +29,9 @@
 
 ### 修复
 
+- `install.sh` 的下载临时目录改用显式模板 `${TMPDIR:-/tmp}/handoff-install.XXXXXX`。
+  此前在 macOS 上用的是裸 `mktemp -d`，而 BSD 的 mktemp 无模板时**忽略 TMPDIR**，
+  用户设的 TMPDIR 不起作用。
 - `install.ps1` 与 `install_test.ps1` 补上 UTF-8 BOM。没有 BOM 时
   PowerShell 5.1（Windows 自带的那个）会按系统 ANSI 代码页解码脚本，中文
   Windows 上整个脚本会被解析成语法错误、一行都跑不了。
