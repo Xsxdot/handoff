@@ -8,6 +8,7 @@ package agentd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/google/uuid"
@@ -205,4 +207,261 @@ func TestUpdateInstallFailureDoesNotActivate(t *testing.T) {
 	if len(*acts) != 0 {
 		t.Fatalf("失败后不该有动作，实得 %v", *acts)
 	}
+}
+
+// newTestServerManaged 建一个托管 + 无活跃任务的换版 Server（Task 7+ 的通用助手）。
+//
+// 依赖扩展（Task 8）：
+//   - 注入 manager：handleStatus 在 mgr==nil 时返回 503，而 status 测试直接调它
+//   - 补 Platform 缝：runPull 会调 s.upd.Platform()，Task 7 的 newUpdateServer 没设
+//     它是 nil，不补会 panic
+func newTestServerManaged(t *testing.T) *Server {
+	t.Helper()
+	st := newTestStore(t)
+	srv, _ := newUpdateServer(t, st, true)
+	srv.SetManager(NewManager(st, srv.Hub(), map[string]executor.Adapter{}, srv.cfg, nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv.upd.Platform = func() (string, string) { return "linux", "amd64" }
+	return srv
+}
+
+// doUpdate 直接调 s.handleUpdate 发一次换版请求，返回响应记录器。
+func doUpdate(t *testing.T, s *Server, query string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/update"+query, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleUpdate(w, req)
+	return w
+}
+
+// mode=pull 缺 tag 或缺 sha256 一律 400：缺了它们无从校验完整性，
+// 而"下一个来路不明的二进制装上去"是这条链路最不能容忍的失败。
+func TestPullRequiresTagAndSum(t *testing.T) {
+	for _, q := range []string{
+		"?mode=pull",
+		"?mode=pull&tag=v1.0.0",
+		"?mode=pull&sha256=abc",
+	} {
+		s := newTestServerManaged(t)
+		rr := doUpdate(t, s, q, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s 应 400，实得 %d", q, rr.Code)
+		}
+	}
+}
+
+// mode 非法值不得静默降级成某个默认模式——猜错的代价是装错东西或白重启。
+func TestUnknownModeRejected(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := doUpdate(t, s, "?mode=sideload&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 mode 应 400，实得 %d", rr.Code)
+	}
+}
+
+// mode=push 带空 body → 400。调用方显式说了"我要推送"却没带字节，这是个 bug；
+// 静默当成纯重启会让它以为换版成功了。
+func TestPushModeRejectsEmptyBody(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := doUpdate(t, s, "?mode=push&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("mode=push 空 body 应 400，实得 %d", rr.Code)
+	}
+}
+
+// mode=pull 带非空 body → 400。两种模式的意图互斥，不做"猜一个"的兼容。
+func TestPullModeRejectsBody(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", []byte("x"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("mode=pull 带 body 应 400，实得 %d", rr.Code)
+	}
+}
+
+// 回归：空 body 且无 mode 仍是纯重启（B59 D8 行为一字不变）。
+func TestEmptyBodyNoModeStillRestarts(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := doUpdate(t, s, "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("纯重启应 200，实得 %d: %s", rr.Code, rr.Body)
+	}
+	var out proto.UpdateResp
+	json.Unmarshal(rr.Body.Bytes(), &out)
+	if !out.Restarted || out.Accepted {
+		t.Fatalf("纯重启应 restarted=true accepted=false，实得 %+v", out)
+	}
+}
+
+// 并发锁：一个自拉在跑时，第二个请求 409 + pull_in_progress。
+// 没有这道锁，两个 goroutine 会往同一个临时文件路径写，互相截断出一个坏二进制。
+func TestPullTrackerRejectsConcurrent(t *testing.T) {
+	p := newPullTracker()
+	if !p.begin("v1.0.0") {
+		t.Fatal("首次 begin 应成功")
+	}
+	if p.begin("v1.0.1") {
+		t.Fatal("已有自拉在跑时 begin 应失败")
+	}
+	p.fail(errors.New("boom"))
+	if !p.begin("v1.0.2") {
+		t.Fatal("失败释放后 begin 应能再次成功")
+	}
+}
+
+// 没跑过自拉时 snapshot 返回 nil：status 不该显示一个编出来的空状态。
+func TestPullTrackerSnapshotNilWhenIdle(t *testing.T) {
+	if got := newPullTracker().snapshot(); got != nil {
+		t.Fatalf("空闲时应返回 nil，实得 %+v", got)
+	}
+}
+
+// 失败后 snapshot 必须留住阶段与错误原文——进程不重启，这正是要查它的场合。
+func TestPullTrackerKeepsFailure(t *testing.T) {
+	p := newPullTracker()
+	p.begin("v1.0.0")
+	p.stage(proto.PullStageDownloading)
+	p.fail(errors.New("proxyconnect tcp: connection refused"))
+	got := p.snapshot()
+	if got == nil || got.Stage != proto.PullStageFailed {
+		t.Fatalf("应留下 failed 状态，实得 %+v", got)
+	}
+	if !strings.Contains(got.Error, "connection refused") {
+		t.Errorf("应留下错误原文，实得 %q", got.Error)
+	}
+	if got.Tag != "v1.0.0" {
+		t.Errorf("应留下 tag，实得 %q", got.Tag)
+	}
+}
+
+// 自拉进行中再来一个 push 必须 409 + pull_in_progress：
+// 两个换版会写同一个确定性临时文件（release.TempName(tag)），互相截断出坏二进制。
+func TestPushRejectedWhilePullRunning(t *testing.T) {
+	s := newTestServerManaged(t)
+	if !s.pull.begin("v1.0.0") {
+		t.Fatal("begin 应成功")
+	}
+	rr := doUpdate(t, s, "?mode=push&tag=v1.0.0&sha256=abc", []byte("tgz"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("自拉进行中 push 应 409，实得 %d", rr.Code)
+	}
+	var e proto.UpdateError
+	json.Unmarshal(rr.Body.Bytes(), &e)
+	if e.Reason != proto.UpdateReasonPullInProgress {
+		t.Fatalf("reason 应 pull_in_progress，实得 %q", e.Reason)
+	}
+}
+
+// 成功路径：下载 → 安装 → 换版 → 触发重启，且四步都被真的调到。
+func TestPullSuccessInstallsAndRestarts(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated, restarted bool
+	done := make(chan struct{})
+	s.upd.FetchByTag = func(_ context.Context, tag, goos, goarch, sum string) ([]byte, error) {
+		return []byte("archive"), nil
+	}
+	s.upd.Install = func(tgz []byte, wantSum, wantTag, destDir string) (string, error) {
+		return filepath.Join(destDir, "new"), nil
+	}
+	s.upd.Activate = func(newPath, target string) (string, error) {
+		activated = true
+		return target + ".prev", nil
+	}
+	s.SetRestart(func(string) bool { restarted = true; close(done); return true })
+
+	rr := doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("自拉应 202，实得 %d: %s", rr.Code, rr.Body)
+	}
+	var out proto.UpdateResp
+	json.Unmarshal(rr.Body.Bytes(), &out)
+	if !out.Accepted || out.Version != "v1.0.0" {
+		t.Fatalf("响应应为 accepted + version，实得 %+v", out)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("后台自拉未在 5s 内触发重启")
+	}
+	if !activated || !restarted {
+		t.Fatalf("activated=%v restarted=%v，两者都应为 true", activated, restarted)
+	}
+}
+
+// 下载失败：不得 Activate、不得重启，状态落 failed 且带错误原文。
+// 这条是"失败时协调者能拿到原因"的落点——没有它，一次代理配错要让人
+// 干等到超时才看到一句「版本仍是 X」。
+func TestPullDownloadFailureRecordsAndDoesNotActivate(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated, restarted bool
+	s.upd.FetchByTag = func(_ context.Context, _, _, _, _ string) ([]byte, error) {
+		return nil, errors.New("proxyconnect tcp: dial tcp 127.0.0.1:1080: connection refused")
+	}
+	s.upd.Activate = func(string, string) (string, error) { activated = true; return "", nil }
+	s.SetRestart(func(string) bool { restarted = true; return true })
+
+	rr := doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("受理阶段应 202，实得 %d", rr.Code)
+	}
+	waitPullStage(t, s, proto.PullStageFailed, 5*time.Second)
+
+	if activated || restarted {
+		t.Fatalf("下载失败不得换版或重启，activated=%v restarted=%v", activated, restarted)
+	}
+	got := s.pull.snapshot()
+	if !strings.Contains(got.Error, "connection refused") {
+		t.Errorf("状态应留下错误原文，实得 %q", got.Error)
+	}
+}
+
+// 安装失败（sha256 不符、自检不过等）同样不得 Activate。
+func TestPullInstallFailureDoesNotActivate(t *testing.T) {
+	s := newTestServerManaged(t)
+	var activated bool
+	s.upd.FetchByTag = func(_ context.Context, _, _, _, _ string) ([]byte, error) {
+		return []byte("archive"), nil
+	}
+	s.upd.Install = func([]byte, string, string, string) (string, error) {
+		return "", errors.New("自检失败：版本号对不上")
+	}
+	s.upd.Activate = func(string, string) (string, error) { activated = true; return "", nil }
+
+	doUpdate(t, s, "?mode=pull&tag=v1.0.0&sha256=abc", nil)
+	waitPullStage(t, s, proto.PullStageFailed, 5*time.Second)
+	if activated {
+		t.Fatal("安装失败不得换版")
+	}
+}
+
+// status 必须上报能力位与自拉状态：前者是协调者的选路判据，
+// 后者是失败时唯一能拿到原因的地方。
+func TestStatusReportsPullCapabilityAndState(t *testing.T) {
+	s := newTestServerManaged(t)
+	rr := httptest.NewRecorder()
+	s.handleStatus(rr, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var st proto.StatusResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Update == nil || st.Update.Pull == nil || !*st.Update.Pull {
+		t.Fatalf("status 应上报 pull=true，实得 %+v", st.Update)
+	}
+	if st.Update.PullState != nil {
+		t.Errorf("没跑过自拉时 pull_state 应为 nil，实得 %+v", st.Update.PullState)
+	}
+}
+
+// waitPullStage 轮询等状态到达期望阶段。
+// 用轮询而不是 sleep：后台 goroutine 的耗时不确定，固定 sleep 要么慢要么脆。
+func waitPullStage(t *testing.T, s *Server, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if st := s.pull.snapshot(); st != nil && st.Stage == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待 pull 阶段 %q 超时，实得 %+v", want, s.pull.snapshot())
 }

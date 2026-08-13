@@ -356,7 +356,7 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 	m.log.Info("开始克隆项目", "origin", req.OriginURL, "dest", dest)
 	start := time.Now()
 	// gitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
-	if _, stderr, err := gitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+	if _, stderr, err := gitRunNet(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)

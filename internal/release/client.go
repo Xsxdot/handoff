@@ -34,6 +34,11 @@ const DefaultRepo = "Xsxdot/handoff"
 // 重定向规则改错，任何一样都会让所有机器的自动更新一起哑掉。
 const DefaultAPIBase = "https://api.github.com"
 
+// DownloadBase 是 release 资产的下载根（GitHub 的确定性地址）。
+//
+// D11 同理：自动更新链路一律打 GitHub 原生地址，不走自有域名。
+const DownloadBase = "https://github.com"
+
 // ChecksumsName 是校验和文件名，与 .github/workflows/release.yml 产出一致。
 const ChecksumsName = "checksums.txt"
 
@@ -109,13 +114,20 @@ type Client struct {
 	Repo    string
 }
 
-// NewClient 构造默认 client：30s 超时，打 GitHub 官方端点。
+// NewClient 构造 release 查询 client：30s 超时，打 GitHub 官方端点。
 //
-// 30s 而不是更长：查版本是一个可以失败的后台动作（失败就等下一个 interval），
-// 卡住一个 goroutine 几分钟没有任何好处。
-func NewClient() *Client {
+// 参数：
+//   - tr: HTTP transport；**nil = 用标准库默认**（认 HTTPS_PROXY 等环境变量），
+//     与本参数加入前的行为一字不差。要走配置里的代理，传 proxycfg.Transport 的产物
+//
+// 注意：
+//   - 本包不读 handoff 配置（见 package 注释），所以收的是造好的 transport
+//     而不是配置字符串——这条边界是刻意的，别"顺手"改成传 *config.Config
+//   - 30s 而不是更长：查版本是一个可以失败的后台动作（失败就等下一个 interval），
+//     卡住一个 goroutine 几分钟没有任何好处
+func NewClient(tr http.RoundTripper) *Client {
 	return &Client{
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP:    &http.Client{Timeout: 30 * time.Second, Transport: tr},
 		APIBase: DefaultAPIBase,
 		Repo:    DefaultRepo,
 	}
@@ -182,6 +194,24 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 
 // CurrentPlatform 返回当前进程的 goos/goarch，便于调用方少写两个 runtime 引用。
 func CurrentPlatform() (string, string) { return runtime.GOOS, runtime.GOARCH }
+
+// AssetURL 拼一个 release 资产的下载地址。
+//
+// 参数：
+//   - repo: owner/name，如 Xsxdot/handoff
+//   - tag: 版本号，形如 v0.2.3
+//   - name: 资产文件名，用 AssetName 生成
+//
+// 返回：
+//   - 完整下载地址
+//
+// 注意：
+//   - GitHub 的这个地址是**确定性**的，不需要先查 API 就能拼出来。agentd
+//     自拉时用的正是它——api.github.com 有 60 次/小时/IP 的匿名限流，
+//     而多台执行机很可能共用一个代理出口 IP，走 API 迟早互相打架
+func AssetURL(repo, tag, name string) string {
+	return fmt.Sprintf("%s/%s/releases/download/%s/%s", DownloadBase, repo, tag, name)
+}
 
 // firstLine 取多行文本的第一行，用作错误摘要。
 func firstLine(s string) string {

@@ -39,6 +39,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
@@ -85,6 +86,14 @@ type Server struct {
 	liveLimit   int
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
+	pull *pullTracker
+	// pullBaseCtx 是后台自拉的基准上下文。
+	//
+	// **绝不能用 r.Context()**：handler 一返回它就被取消，下载会在受理后的
+	// 下一毫秒当场断掉。总时限由 Installer 的 HTTP 超时（10min）兜底。
+	// NewServer 拿不到 agentd 的生命周期 ctx，留 nil 由 runPull 退到 context.Background()
+	pullBaseCtx context.Context
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
@@ -101,7 +110,21 @@ type Server struct {
 //   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
-	inst := release.NewInstaller(log)
+	// 出网 transport 按配置里的代理造。坏值不阻断启动（config.Load 已经硬拒过
+	// 一道，走到这儿只可能是绕过了它），降级为不用代理并打 Error——
+	// agentd 不该因为一个附属设置而起不来
+	var tr http.RoundTripper
+	if cfg.Proxy != "" {
+		t, err := proxycfg.Transport(cfg.Proxy)
+		if err != nil {
+			log.Error("代理配置无法使用，自拉换版将不走代理",
+				"proxy", proxycfg.Redact(cfg.Proxy), "cause", err)
+		} else {
+			tr = t
+			log.Info("自拉换版将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
+		}
+	}
+	inst := release.NewInstaller(log, tr)
 	s := &Server{
 		cfg:         cfg,
 		st:          st,
@@ -110,12 +133,17 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		startedAt:   time.Now(),
 		replayLimit: eventReplayLimit,
 		liveLimit:   liveBufferLimit,
+		pull:        newPullTracker(),
 	}
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
 		Executable: resolvedExecutable,
 		Install:    inst.InstallArchive,
 		Activate:   release.Activate,
+		Platform:   release.CurrentPlatform,
+		FetchByTag: func(ctx context.Context, tag, goos, goarch, wantSum string) ([]byte, error) {
+			return inst.FetchByTag(ctx, release.DefaultRepo, tag, goos, goarch, wantSum)
+		},
 	}
 	return s
 }
@@ -265,6 +293,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.StartedAt = s.startedAt
+	// pull 能力位与自拉状态由 Server 装配而不是 Manager：它们的持有者是
+	// Server（换版 handler 在这里），Manager 不该为了填两个字段而反向依赖它
+	if resp.Update != nil {
+		yes := true
+		resp.Update.Pull = &yes
+		resp.Update.PullState = s.pull.snapshot()
+	}
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -80,11 +80,22 @@ func PrevPath(target string) string { return target + ".prev" }
 type Installer struct {
 	HTTP *http.Client
 	Log  *slog.Logger
+	// DownloadBase 是资产下载根，默认 release.DownloadBase。
+	// 存在的唯一理由是可测性：不覆盖它，FetchByTag 的测试必须真的打 github.com
+	DownloadBase string
 }
 
 // NewInstaller 构造默认 installer（10 分钟超时，覆盖慢网下的 20MB 下载）。
-func NewInstaller(log *slog.Logger) *Installer {
-	return &Installer{HTTP: &http.Client{Timeout: 10 * time.Minute}, Log: log}
+//
+// 参数：
+//   - log: 日志入口
+//   - tr: HTTP transport；**nil = 用标准库默认**（认 HTTPS_PROXY 等环境变量）
+func NewInstaller(log *slog.Logger, tr http.RoundTripper) *Installer {
+	return &Installer{
+		HTTP:         &http.Client{Timeout: 10 * time.Minute, Transport: tr},
+		Log:          log,
+		DownloadBase: DownloadBase,
+	}
 }
 
 // FetchArchive 按指定平台下载资产并校验完整性，返回字节与期望哈希。
@@ -137,6 +148,89 @@ func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch 
 	}
 	i.Log.Info("资产校验通过", "tag", rel.Tag, "asset", asset.Name, "sha256", want, "bytes", len(tgz))
 	return tgz, want, nil
+}
+
+// FetchChecksum 只下载 checksums.txt 并解出某平台资产的期望哈希。
+//
+// 参数：
+//   - ctx: 上下文
+//   - rel: 目标发布（需要它的 Assets 里有 checksums.txt 的 URL）
+//   - goos / goarch: 目标机器的平台
+//
+// 返回：
+//   - 该平台资产的 sha256（十六进制小写）
+//   - 错误：缺 checksums 资产、下载失败、文件里没有该资产的行
+//
+// 注意：
+//   - **不下资产**。这正是自拉模式的省流量点：协调者只下几百字节的 checksums，
+//     20MB 的资产由执行机自己去下（spec §5.5）
+//   - 一次 upgrade --now 涉及多台机器时，调用方应当只调一次并缓存——
+//     同一个 release 的 checksums.txt 对所有平台是同一份
+func (i *Installer) FetchChecksum(ctx context.Context, rel Release, goos, goarch string) (string, error) {
+	ck, ok := rel.Checksums()
+	if !ok {
+		i.Log.Error("发布没有校验和文件，无法校验完整性", "tag", rel.Tag, "asset", ChecksumsName)
+		return "", fmt.Errorf("发布 %s 没有 %s，无法校验完整性", rel.Tag, ChecksumsName)
+	}
+	i.Log.Info("下载校验和文件", "tag", rel.Tag, "url", ck.URL)
+	sums, err := i.get(ctx, ck.URL)
+	if err != nil {
+		i.Log.Error("下载校验和文件失败", "tag", rel.Tag, "url", ck.URL, "cause", err)
+		return "", fmt.Errorf("下载 %s: %w", ChecksumsName, err)
+	}
+	sum, err := sumFor(string(sums), AssetName(rel.Tag, goos, goarch))
+	if err != nil {
+		i.Log.Error("校验和文件里没有该平台的行", "tag", rel.Tag,
+			"platform", goos+"/"+goarch, "cause", err)
+		return "", err
+	}
+	i.Log.Info("取得校验和", "tag", rel.Tag, "platform", goos+"/"+goarch, "sha256", sum)
+	return sum, nil
+}
+
+// FetchByTag 按 tag 拼出下载地址、下载资产并用**给定的** sha256 校验。
+//
+// 参数：
+//   - ctx: 上下文
+//   - repo: owner/name
+//   - tag: 目标版本
+//   - goos / goarch: 本机平台
+//   - wantSum: 期望的 sha256（十六进制小写）。自拉模式下**来自协调者下发**
+//
+// 返回：
+//   - 资产原文（tar.gz / zip 字节，未解包）
+//   - 错误：下载失败、sha256 不符
+//
+// 注意：
+//   - 与 FetchArchive 的区别是**不需要 Release 对象、不查 API**：地址由
+//     AssetURL 确定性拼出，wantSum 由调用方给。这让执行机完全不碰
+//     api.github.com（避开 60 次/小时/IP 的匿名限流）
+//   - wantSum 由调用方给而不是自己去取 checksums，是刻意的：校验和与资产
+//     走两条不同的信任路径，本机代理/镜像被投毒时才抓得住（spec §5.5）。
+//     **别"优化"成自己下 checksums**
+//   - 不重试：完整性失败重试只会重下同一份坏数据（spec §4.7）
+func (i *Installer) FetchByTag(ctx context.Context, repo, tag, goos, goarch, wantSum string) ([]byte, error) {
+	base := i.DownloadBase
+	if base == "" {
+		base = DownloadBase
+	}
+	name := AssetName(tag, goos, goarch)
+	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", base, repo, tag, name)
+
+	i.Log.Info("开始下载资产", "tag", tag, "platform", goos+"/"+goarch, "asset", name, "url", url)
+	b, err := i.get(ctx, url)
+	if err != nil {
+		i.Log.Error("下载资产失败", "tag", tag, "url", url, "cause", err)
+		return nil, fmt.Errorf("下载 %s: %w", name, err)
+	}
+	got := sha256.Sum256(b)
+	if hex.EncodeToString(got[:]) != wantSum {
+		i.Log.Error("资产校验不通过", "tag", tag, "asset", name,
+			"want", wantSum, "got", hex.EncodeToString(got[:]), "bytes", len(b))
+		return nil, fmt.Errorf("sha256 校验不通过（期望 %s，实得 %s）", wantSum, hex.EncodeToString(got[:]))
+	}
+	i.Log.Info("资产校验通过", "tag", tag, "asset", name, "sha256", wantSum, "bytes", len(b))
+	return b, nil
 }
 
 // InstallArchive 校验、解包、自检一份已下载的资产，返回可供 Activate 的临时文件路径。

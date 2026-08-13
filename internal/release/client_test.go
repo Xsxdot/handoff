@@ -39,7 +39,7 @@ func TestLatestParsesTagAndAssets(t *testing.T) {
 	  {"name":"handoff_v0.2.0_linux_amd64.tar.gz","browser_download_url":"https://example/d2"},
 	  {"name":"checksums.txt","browser_download_url":"https://example/c"}]}`
 	srv := fakeAPI(t, body, 200)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	rel, err := c.Latest(context.Background())
 	if err != nil {
@@ -70,7 +70,7 @@ func TestAssetForMissingPlatform(t *testing.T) {
 // 限流/服务端错误必须带上状态码——「查版本失败」不带码等于没法判断是限流还是挂了。
 func TestLatestSurfacesHTTPStatus(t *testing.T) {
 	srv := fakeAPI(t, `{"message":"API rate limit exceeded"}`, 403)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	_, err := c.Latest(context.Background())
 	if err == nil {
@@ -87,7 +87,7 @@ func TestLatestSurfacesHTTPStatus(t *testing.T) {
 // 下载一个名为 handoff__darwin_arm64.tar.gz 的东西，永远失败且永远重试。
 func TestLatestRejectsEmptyTag(t *testing.T) {
 	srv := fakeAPI(t, `{"tag_name":"","assets":[]}`, 200)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	if _, err := c.Latest(context.Background()); err == nil {
 		t.Fatal("空 tag 应报错")
@@ -117,7 +117,7 @@ func TestDefaults(t *testing.T) {
 	if DefaultRepo != "Xsxdot/handoff" {
 		t.Errorf("DefaultRepo=%q，GitHub owner 是 Xsxdot", DefaultRepo)
 	}
-	c := NewClient()
+	c := NewClient(nil)
 	if c.APIBase != DefaultAPIBase || c.Repo != DefaultRepo {
 		t.Errorf("NewClient 默认值不对: %+v", c)
 	}

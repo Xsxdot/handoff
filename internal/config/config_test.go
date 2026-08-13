@@ -453,3 +453,66 @@ func TestLoadFillsRepoRootDefault(t *testing.T) {
 		t.Fatalf("显式 repo_root 被覆盖了: %q", cfg2.RepoRoot)
 	}
 }
+
+func TestProxyParsedAndValidated(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("proxy: socks5://127.0.0.1:1080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("加载: %v", err)
+	}
+	if cfg.Proxy != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %q，期望 socks5://127.0.0.1:1080", cfg.Proxy)
+	}
+}
+
+// 坏代理必须在**启动期**被拒。运行期容错会让它表现为"后台更新检查什么都不发生"，
+// 而那条路径的纪律是失败静默跳过，于是错误配置可以数月无人察觉。
+func TestLoadRejectsBadProxy(t *testing.T) {
+	for _, bad := range []string{"socks4://h:1080", "127.0.0.1:1080", "http://"} {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte("proxy: \""+bad+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := config.Load(p); err == nil {
+			t.Errorf("proxy=%q 应拒绝加载", bad)
+		}
+	}
+}
+
+// 旧版本兼容契约：未配置时 proxy 键不得落盘，否则旧 agentd 的 KnownFields
+// 读到未知键就再也起不来（与 path_dirs 同款教训）。
+func TestProxyOmitEmptyOnSave(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if _, err := config.Load(p); err != nil { // 首次运行写盘
+		t.Fatalf("首次加载: %v", err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "proxy") {
+		t.Errorf("未配置时 proxy 不得落盘，实得:\n%s", b)
+	}
+}
+
+// 未知键的错误提示必须把 proxy 列进"支持的键"，否则用户配对了却被拒时无从判断。
+func TestUnknownKeyErrorMentionsProxy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("nosuchkey: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应被拒")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("错误文本应列出 proxy，实得 %q", err)
+	}
+}

@@ -126,7 +126,7 @@ func TestFetchArchiveHonorsRequestedPlatform(t *testing.T) {
 	})
 	defer closeFn()
 
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	got, gotSum, err := i.FetchArchive(context.Background(), rel, "linux", "amd64")
 	if err != nil {
 		t.Fatalf("FetchArchive: %v", err)
@@ -151,7 +151,7 @@ func TestFetchArchiveDoesNotSelfCheck(t *testing.T) {
 	})
 	defer closeFn()
 
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if _, _, err := i.FetchArchive(context.Background(), rel, "linux", "amd64"); err != nil {
 		t.Fatalf("FetchArchive 不该自检，却失败了: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestFetchArchiveDoesNotSelfCheck(t *testing.T) {
 // TestInstallArchiveRejectsBadSum 锁住 agentd 侧那道「传输完整性」校验。
 func TestInstallArchiveRejectsBadSum(t *testing.T) {
 	dir := t.TempDir()
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	_, err := i.InstallArchive(tgzWith(t, "#!/bin/sh\necho v1\n"), strings.Repeat("0", 64), "v1", dir)
 	if err == nil {
 		t.Fatal("sha256 不符必须拒绝")
@@ -176,7 +176,7 @@ func TestInstallArchiveSelfChecks(t *testing.T) {
 	dir := t.TempDir()
 	body := tgzWith(t, "#!/bin/sh\necho v-WRONG\n")
 	s := sha256.Sum256(body)
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	_, err := i.InstallArchive(body, hex.EncodeToString(s[:]), "v9.9.9", dir)
 	if err == nil {
 		t.Fatal("version 首行对不上目标 tag 必须拒绝")
@@ -193,7 +193,7 @@ func TestFetchHappyPath(t *testing.T) {
 	// 自检跑的是 `<新二进制> version`，首行必须等于 tag
 	rel := serveRelease(t, tag, "#!/bin/sh\necho "+tag+"\n", false)
 	dir := t.TempDir()
-	p, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	p, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestFetchRejectsBadChecksum(t *testing.T) {
 	tag := "v9.9.9"
 	rel := serveRelease(t, tag, "#!/bin/sh\necho "+tag+"\n", true)
 	dir := t.TempDir()
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err == nil {
 		t.Fatal("checksum 不匹配应报错")
 	}
@@ -242,7 +242,7 @@ func TestFetchRejectsFailedSelfCheck(t *testing.T) {
 	tag := "v9.9.9"
 	rel := serveRelease(t, tag, "#!/bin/sh\necho v0.0.1-wrong\n", false)
 	dir := t.TempDir()
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err == nil {
 		t.Fatal("自检版本对不上应报错")
 	}
@@ -258,7 +258,7 @@ func TestFetchRejectsFailedSelfCheck(t *testing.T) {
 // 本平台没有资产：在下载之前就报错。
 func TestFetchMissingPlatformAsset(t *testing.T) {
 	rel := Release{Tag: "v9.9.9", Assets: []Asset{{Name: ChecksumsName, URL: "http://x/c"}}}
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, t.TempDir())
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, t.TempDir())
 	if err == nil {
 		t.Fatal("缺本平台资产应报错")
 	}
@@ -491,7 +491,7 @@ func TestGetRetriesOnServerError(t *testing.T) {
 	downloadRetryBase = time.Millisecond
 	t.Cleanup(func() { downloadRetryBase = old })
 
-	i := NewInstaller(quietLog())
+	i := NewInstaller(quietLog(), nil)
 	got, err := i.get(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("get 应当在前两次 500 后重试成功，却报错: %v", err)
@@ -538,7 +538,7 @@ func TestGetRetriesOnTransportError(t *testing.T) {
 	downloadRetryBase = time.Millisecond
 	t.Cleanup(func() { downloadRetryBase = old })
 
-	i := NewInstaller(quietLog())
+	i := NewInstaller(quietLog(), nil)
 	got, err := i.get(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("前两次连接被掐断应当重试后成功，却报错: %v", err)
@@ -565,7 +565,7 @@ func TestGetDoesNotRetryOnClientError(t *testing.T) {
 	downloadRetryBase = time.Millisecond
 	t.Cleanup(func() { downloadRetryBase = old })
 
-	i := NewInstaller(quietLog())
+	i := NewInstaller(quietLog(), nil)
 	if _, err := i.get(context.Background(), srv.URL); err == nil {
 		t.Fatal("404 应当报错")
 	}
@@ -587,7 +587,7 @@ func TestGetFailsAfterRetriesExhausted(t *testing.T) {
 	downloadRetryBase = time.Millisecond
 	t.Cleanup(func() { downloadRetryBase = old })
 
-	i := NewInstaller(quietLog())
+	i := NewInstaller(quietLog(), nil)
 	_, err := i.get(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("三次全 500 应当报错")
@@ -619,7 +619,7 @@ func TestGetCancelStopsBackoff(t *testing.T) {
 	time.AfterFunc(50*time.Millisecond, cancel)
 
 	start := time.Now()
-	i := NewInstaller(quietLog())
+	i := NewInstaller(quietLog(), nil)
 	_, err := i.get(ctx, srv.URL)
 	elapsed := time.Since(start)
 
@@ -628,5 +628,123 @@ func TestGetCancelStopsBackoff(t *testing.T) {
 	}
 	if elapsed >= 1*time.Second {
 		t.Fatalf("取消后用了 %v 才返回，说明退避没被 ctx 打断", elapsed)
+	}
+}
+
+// countingRT 数一共发了几个请求，并把全部请求转给内部的真实 transport。
+type countingRT struct {
+	n    int
+	base http.RoundTripper
+}
+
+func (c *countingRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.n++
+	return c.base.RoundTrip(r)
+}
+
+// 传进来的 transport 必须真的被用上——否则代理配了等于没配，
+// 而症状是"配了代理还是连不上"，没人会想到是接线断了。
+func TestInstallerUsesGivenTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+	rt := &countingRT{base: http.DefaultTransport}
+	i := NewInstaller(quietLog(), rt)
+	if _, err := i.get(context.Background(), srv.URL); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rt.n != 1 {
+		t.Fatalf("传入的 transport 未被使用，请求数 = %d", rt.n)
+	}
+}
+
+func TestClientUsesGivenTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v9.9.9","assets":[]}`))
+	}))
+	defer srv.Close()
+	rt := &countingRT{base: http.DefaultTransport}
+	c := NewClient(rt)
+	c.APIBase = srv.URL
+	if _, err := c.Latest(context.Background()); err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if rt.n != 1 {
+		t.Fatalf("传入的 transport 未被使用，请求数 = %d", rt.n)
+	}
+}
+
+// nil transport 必须与改造前行为一致（默认 transport，认环境变量）。
+func TestNilTransportKeepsDefault(t *testing.T) {
+	if NewInstaller(quietLog(), nil).HTTP.Transport != nil {
+		t.Error("nil 应保持 http.Client 的零值 Transport（即 http.DefaultTransport）")
+	}
+	if NewClient(nil).HTTP.Transport != nil {
+		t.Error("nil 应保持 http.Client 的零值 Transport（即 http.DefaultTransport）")
+	}
+}
+
+// 资产下载地址是确定性的，不需要查 API 就能拼出来。
+// 这是 agentd 自拉不打 api.github.com 的前提（后者有 60 次/小时/IP 匿名限流，
+// 而多台执行机很可能共用一个代理出口 IP）。
+func TestAssetURL(t *testing.T) {
+	got := AssetURL("Xsxdot/handoff", "v0.2.3", "handoff_v0.2.3_linux_amd64.tar.gz")
+	want := "https://github.com/Xsxdot/handoff/releases/download/v0.2.3/handoff_v0.2.3_linux_amd64.tar.gz"
+	if got != want {
+		t.Errorf("AssetURL = %q，期望 %q", got, want)
+	}
+}
+
+// FetchChecksum 只下 checksums.txt，**不下资产**——自拉模式下协调者靠它
+// 拿 sha256 下发，20MB 的资产由执行机自己去下。
+func TestFetchChecksumDownloadsOnlyChecksums(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Write([]byte("abc123  handoff_v1.0.0_linux_amd64.tar.gz\n"))
+	}))
+	defer srv.Close()
+	rel := Release{Tag: "v1.0.0", Assets: []Asset{
+		{Name: "handoff_v1.0.0_linux_amd64.tar.gz", URL: srv.URL + "/asset"},
+		{Name: ChecksumsName, URL: srv.URL + "/checksums"},
+	}}
+	sum, err := NewInstaller(quietLog(), nil).FetchChecksum(context.Background(), rel, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("FetchChecksum: %v", err)
+	}
+	if sum != "abc123" {
+		t.Errorf("sum = %q，期望 abc123", sum)
+	}
+	if len(paths) != 1 || paths[0] != "/checksums" {
+		t.Errorf("只应请求 checksums，实得 %v", paths)
+	}
+}
+
+// FetchByTag 拼 URL 自己下，并用**传进来的** sum 校验（协调者下发的那个）。
+func TestFetchByTagVerifiesGivenSum(t *testing.T) {
+	payload := []byte("fake-archive")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer srv.Close()
+	i := NewInstaller(quietLog(), nil)
+	i.DownloadBase = srv.URL // 测试缝：把 github.com 换成本地服务
+
+	got, err := i.FetchByTag(context.Background(), "o/r", "v1.0.0", "linux", "amd64",
+		hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatalf("FetchByTag: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("下到的字节不对")
+	}
+
+	// sum 不符必须失败——这是「协调者下发 sum」这条信任链的落点：
+	// agentd 侧的代理/镜像被投毒时就在这里被抓住
+	if _, err := i.FetchByTag(context.Background(), "o/r", "v1.0.0", "linux", "amd64",
+		strings.Repeat("0", 64)); err == nil {
+		t.Error("sha256 不符时 FetchByTag 必须失败")
 	}
 }
