@@ -5,6 +5,8 @@ package agentd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -211,5 +213,177 @@ func TestTaskFileKeepsTruncatedNotice(t *testing.T) {
 	}
 	if want := maxRunOutput + len(notice); len(got.Content) != want {
 		t.Errorf("len(content) = %d, want %d（正文 maxRunOutput + 提示长度）", len(got.Content), want)
+	}
+}
+
+// doPut 发一个带 token 的 PUT（body 为 []byte 时按原文发送，否则 JSON 编码）到
+// env.ts 并返回状态码与响应体。
+func doPut(t *testing.T, env *testAgentdEnv, path string, q url.Values, body any) (int, []byte) {
+	t.Helper()
+	var reader io.Reader
+	switch b := body.(type) {
+	case []byte:
+		reader = bytes.NewReader(b)
+	case nil:
+		reader = nil
+	default:
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequest(http.MethodPut, env.ts.URL+path+"?"+q.Encode(), reader)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	return resp.StatusCode, got
+}
+
+// TestWorkspaceFileWriteOK 走完整 HTTP 链路：白名单 → 写入 → 200 + 新哈希。
+func TestWorkspaceFileWriteOK(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	// 先经 ReadFile 拿到磁盘现状的哈希，模拟「调用方读到那一版」
+	cur, err := ReadFile(repo, "go.mod")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if cur.SHA256 == "" {
+		t.Fatalf("go.mod 的 SHA256 为空，无法作为写入基线")
+	}
+	newContent := "module handoff\n\ngo 1.26.1\n"
+	sum := sha256.Sum256([]byte(newContent))
+
+	code, body := doPut(t, env, "/api/workspaces/file",
+		url.Values{"path": {repo}, "rel": {"go.mod"}},
+		proto.FileWriteReq{Content: newContent, BaseSHA256: cur.SHA256})
+	if code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200；体 = %s", code, body)
+	}
+	var got proto.FileWriteResp
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if got.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("sha256 = %q, want 新内容哈希 %q", got.SHA256, hex.EncodeToString(sum[:]))
+	}
+	if got.Size != int64(len(newContent)) {
+		t.Errorf("size = %d, want %d", got.Size, len(newContent))
+	}
+	// 落盘核对：内容确实被替换
+	disk, err := os.ReadFile(filepath.Join(repo, "go.mod"))
+	if err != nil {
+		t.Fatalf("读磁盘: %v", err)
+	}
+	if string(disk) != newContent {
+		t.Errorf("磁盘内容 = %q, want %q", disk, newContent)
+	}
+}
+
+// TestWorkspaceFileWriteConflict 验证 409 的 body 带着 current（省掉前端一次往返）。
+func TestWorkspaceFileWriteConflict(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	cur, err := ReadFile(repo, "go.mod")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// 故意传一个对不上的基线
+	wrong := "0000000000000000000000000000000000000000"
+	if wrong == cur.SHA256 {
+		wrong = "1111111111111111111111111111111111111111"
+	}
+	code, body := doPut(t, env, "/api/workspaces/file",
+		url.Values{"path": {repo}, "rel": {"go.mod"}},
+		proto.FileWriteReq{Content: "module handoff\n", BaseSHA256: wrong})
+	if code != http.StatusConflict {
+		t.Fatalf("状态码 = %d, want 409；体 = %s", code, body)
+	}
+	if !strings.Contains(string(body), "文件已被改动") {
+		t.Errorf("响应体不含冲突文案「文件已被改动」：%s", body)
+	}
+	var got proto.FileConflictResp
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if got.Current.Content != "module x\n" {
+		t.Errorf("current.content = %q, want 磁盘现状 %q", got.Current.Content, "module x\n")
+	}
+	if got.Current.SHA256 == "" {
+		t.Errorf("current.sha256 为空，冲突界面拿不到新基线")
+	}
+}
+
+// TestWorkspaceFileWriteStatusMap 逐条钉住错误到状态码的映射。
+func TestWorkspaceFileWriteStatusMap(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	// 造各拒绝面需要的文件：符号链接、目录、二进制（含 NUL）、超限
+	if err := os.Symlink("go.mod", filepath.Join(repo, "link.txt")); err != nil {
+		t.Fatalf("建符号链接: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatalf("建目录: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "logo.png"),
+		[]byte{0x89, 'P', 'N', 'G', 0, 0, 0}, 0o644); err != nil {
+		t.Fatalf("写二进制: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "big.txt"),
+		bytes.Repeat([]byte("y"), maxRunOutput+1), 0o644); err != nil {
+		t.Fatalf("写大文件: %v", err)
+	}
+	cur, err := ReadFile(repo, "go.mod")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wrongBase := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if wrongBase == cur.SHA256 {
+		wrongBase = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	}
+
+	cases := []struct {
+		name string
+		path string // 空串表示 repo
+		rel  string
+		body any
+		want int
+	}{
+		{"白名单不中", t.TempDir(), "go.mod", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"缺 rel", "", "", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{".git", "", ".git/config", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"符号链接", "", "link.txt", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"目录", "", "sub", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"二进制", "", "logo.png", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"超限", "", "big.txt", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"逃逸", "", "../etc/passwd", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusBadRequest},
+		{"不存在", "", "nope.go", proto.FileWriteReq{Content: "x\n", BaseSHA256: cur.SHA256}, http.StatusNotFound},
+		{"哈希不匹配", "", "go.mod", proto.FileWriteReq{Content: "x\n", BaseSHA256: wrongBase}, http.StatusConflict},
+		{"请求体不是合法 JSON", "", "go.mod", []byte("{"), http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := c.path
+			if p == "" {
+				p = repo
+			}
+			q := url.Values{"path": {p}}
+			if c.rel != "" {
+				q.Set("rel", c.rel)
+			}
+			code, _ := doPut(t, env, "/api/workspaces/file", q, c.body)
+			if code != c.want {
+				t.Errorf("状态码 = %d, want %d", code, c.want)
+			}
+		})
 	}
 }
