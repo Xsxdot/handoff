@@ -125,6 +125,10 @@ func buildSample() BuildInfo {
 }
 
 // taskSample 返回 Task 的代表性样本（running 的 managed-worktree 任务）。
+//
+// sampleCtxWindow 是 fixture 用的窗口上限；单独取变量只因为 Go 不能对字面量取址。
+var sampleCtxWindow = 258400
+
 func taskSample(now time.Time, taskID string) Task {
 	return Task{
 		ID:              taskID,
@@ -146,8 +150,13 @@ func taskSample(now time.Time, taskID string) Task {
 		BaseAhead:       1,
 		RepoDirtyCount:  2,
 		RepoDirtyFiles:  "web/package.json, internal/proto/proto.go 等 2 处",
-		Machine:         "",
-		ProjectID:       "a1b2c3d4e5f60718",
+		// B80：给非零值才能把线格式钉进 fixture（两个字段都带 omitempty）。
+		// context_window 给值是为了钉住「有分母」的形状；无分母时该键缺席，
+		// 由 web 侧的 Usage 可选字段与 TaskHeader 测试覆盖。
+		ActualModel: "gpt-5.6-sol",
+		Usage:       &Usage{ContextTokens: 24668, ContextWindow: &sampleCtxWindow},
+		Machine:     "",
+		ProjectID:   "a1b2c3d4e5f60718",
 	}
 }
 

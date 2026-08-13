@@ -866,3 +866,92 @@ func TestDoneNoteRoundTrip(t *testing.T) {
 		t.Fatalf("done_note 没读回来: %q", got.DoneNote)
 	}
 }
+
+// TestSetTaskUsageWritesAndRestoresNil 覆盖三件事：写入回读一致、空值语义是
+// 「不更新」而非「清空」、0/空列还原成 nil（绝不冒充 0）。
+func TestSetTaskUsageWritesAndRestoresNil(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.CreateTask(&proto.Task{
+		ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// 新任务：三列都是零值 → Usage 必须是 nil，ActualModel 必须是空串
+	got, err := s.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Usage != nil {
+		t.Fatalf("零值任务的 Usage 应为 nil，得到 %+v", got.Usage)
+	}
+	if got.ActualModel != "" {
+		t.Fatalf("零值任务的 ActualModel 应为空串，得到 %q", got.ActualModel)
+	}
+
+	// 带分母写入
+	win := 258400
+	if err := s.SetTaskUsage("t1", "gpt-5.6-sol", 24668, &win); err != nil {
+		t.Fatalf("SetTaskUsage: %v", err)
+	}
+	got, _ = s.GetTask("t1")
+	if got.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("ActualModel = %q，期望 gpt-5.6-sol", got.ActualModel)
+	}
+	if got.Usage == nil || got.Usage.ContextTokens != 24668 {
+		t.Fatalf("ContextTokens 回读不一致: %+v", got.Usage)
+	}
+	if got.Usage.ContextWindow == nil || *got.Usage.ContextWindow != 258400 {
+		t.Fatalf("ContextWindow 回读不一致: %+v", got.Usage)
+	}
+
+	// 空值 = 不更新（不是清空）：只更新分子，模型名与分母必须原样保留
+	if err := s.SetTaskUsage("t1", "", 30000, nil); err != nil {
+		t.Fatalf("SetTaskUsage 二次: %v", err)
+	}
+	got, _ = s.GetTask("t1")
+	if got.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("空模型名不该清空既有值，得到 %q", got.ActualModel)
+	}
+	if got.Usage.ContextWindow == nil || *got.Usage.ContextWindow != 258400 {
+		t.Fatalf("nil 分母不该清空既有值: %+v", got.Usage)
+	}
+	if got.Usage.ContextTokens != 30000 {
+		t.Fatalf("分子应更新为 30000，得到 %d", got.Usage.ContextTokens)
+	}
+}
+
+// TestUsageWithoutWindowStaysNil 覆盖不报分母的执行者（claudecode/opencode）：
+// 有分子无分母时 ContextWindow 必须是 nil，界面据此不显示百分比。
+func TestUsageWithoutWindowStaysNil(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.CreateTask(&proto.Task{
+		ID: "t2", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := s.SetTaskUsage("t2", "k3-256k", 121801, nil); err != nil {
+		t.Fatalf("SetTaskUsage: %v", err)
+	}
+	got, _ := s.GetTask("t2")
+	if got.Usage == nil || got.Usage.ContextTokens != 121801 {
+		t.Fatalf("分子回读不一致: %+v", got.Usage)
+	}
+	if got.Usage.ContextWindow != nil {
+		t.Fatalf("无分母时 ContextWindow 必须是 nil，得到 %d", *got.Usage.ContextWindow)
+	}
+}

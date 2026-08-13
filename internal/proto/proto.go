@@ -88,6 +88,24 @@ const (
 	EventTypeArchived EventType = "archived"
 )
 
+// Usage 是任务当前的 context 占用快照。
+//
+// 「当前占用」= 最后一次模型调用的输入侧（含缓存命中），**不是**回合或会话的
+// 累加。两者差别巨大：实测一个 4 次模型调用的 grok 回合，累加值是真实占用的
+// 4 倍，且工具调用越多越离谱，长回合会超过 100%（探针笔记 §4.2）。
+//
+// 边界：本结构只描述「占用」，不描述「消耗」。累计 token 与花费是另一个口径，
+// 将来以新增字段的形式加进来，形状不变、不需要重新设计。
+type Usage struct {
+	// ContextTokens 是当前 context 占用的 token 数。永远 > 0——取不到时整个
+	// Usage 为 nil，不用 0 冒充「没用 token」（B69/B70 纪律）。
+	ContextTokens int `json:"context_tokens"`
+	// ContextWindow 是该模型的上下文窗口上限（百分比的分母）。
+	// nil = 该 executor 不在协议里报窗口（claudecode / opencode），此时界面
+	// 只显绝对值。**绝不由 handoff 猜**：猜错是静默错误，百分比照常显示只是错的。
+	ContextWindow *int `json:"context_window,omitempty"`
+}
+
 // Task 表示一个 handoff 任务。
 //
 // JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
@@ -134,6 +152,15 @@ type Task struct {
 	// 或该任务归档于本功能上线之前。它回答的是「这次到底做完了什么、为什么放行」——
 	// 归档之后除了一个 completed 状态位，此前没有任何地方记录这件事。
 	DoneNote string `json:"done_note"`
+	// ActualModel 是 executor 报回的**实际**模型名；空=执行者还没报（回合未
+	// 开始）或该任务跑在不报模型名的旧版执行者上。
+	//
+	// 它与 Model 是两件事：Model 是 dispatch --model 发下去的**入参**（常为空，
+	// 意思是「用执行者自己的默认」），ActualModel 是执行者实际在用的那个。
+	// 二者不一致时以 ActualModel 为准，界面不并列显示。
+	ActualModel string `json:"actual_model,omitempty"`
+	// Usage 是当前 context 占用；nil=还没有任何一次模型调用完成。
+	Usage *Usage `json:"usage,omitempty"`
 	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
 	//
 	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，

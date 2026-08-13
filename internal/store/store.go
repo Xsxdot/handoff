@@ -94,7 +94,14 @@ func Open(path string) (*Store, error) {
   base_commit TEXT NOT NULL DEFAULT '', base_ahead INTEGER NOT NULL DEFAULT 0,
   -- B43 两列：repo_dirty_count=派发当时任务仓库未提交改动总数（仅 managed 模式采集）；
   -- repo_dirty_files=其文件名展示串（封顶 5 个）。这些改动不在新工作树里。
-  repo_dirty_count INTEGER NOT NULL DEFAULT 0, repo_dirty_files TEXT NOT NULL DEFAULT '')`,
+  repo_dirty_count INTEGER NOT NULL DEFAULT 0, repo_dirty_files TEXT NOT NULL DEFAULT '',
+  -- B80 三列：actual_model=executor 报回的实际模型名（与入参 model 不是一回事）；
+  -- usage_context_tokens=当前 context 占用；usage_context_window=该模型的窗口上限。
+  -- 0/空一律表示「取不到」——真实的模型调用输入与真实的窗口都必然 > 0，
+  -- 所以 0 可以安全地当哨兵，读取时还原成 nil（绝不冒充 0）。
+  actual_model TEXT NOT NULL DEFAULT '',
+  usage_context_tokens INTEGER NOT NULL DEFAULT 0,
+  usage_context_window INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -181,16 +188,19 @@ func Open(path string) (*Store, error) {
 	// IF NOT EXISTS，且不支持一次加多列，只能逐条 ALTER；已存在时报 duplicate
 	// column 属预期，忽略即可（与 tickets.delivered_at 的迁移写法保持一致）。
 	for col, typ := range map[string]string{
-		"name":             "TEXT NOT NULL DEFAULT ''",
-		"executor":         "TEXT NOT NULL DEFAULT ''",
-		"model":            "TEXT NOT NULL DEFAULT ''",
-		"work_dir":         "TEXT NOT NULL DEFAULT ''",
-		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
-		"base_commit":      "TEXT NOT NULL DEFAULT ''",
-		"base_ahead":       "INTEGER NOT NULL DEFAULT 0",
-		"repo_dirty_count": "INTEGER NOT NULL DEFAULT 0",
-		"repo_dirty_files": "TEXT NOT NULL DEFAULT ''",
-		"done_note":        "TEXT NOT NULL DEFAULT ''",
+		"name":                 "TEXT NOT NULL DEFAULT ''",
+		"executor":             "TEXT NOT NULL DEFAULT ''",
+		"model":                "TEXT NOT NULL DEFAULT ''",
+		"work_dir":             "TEXT NOT NULL DEFAULT ''",
+		"worktree_managed":     "INTEGER NOT NULL DEFAULT 0",
+		"base_commit":          "TEXT NOT NULL DEFAULT ''",
+		"base_ahead":           "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_count":     "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_files":     "TEXT NOT NULL DEFAULT ''",
+		"done_note":            "TEXT NOT NULL DEFAULT ''",
+		"actual_model":         "TEXT NOT NULL DEFAULT ''",
+		"usage_context_tokens": "INTEGER NOT NULL DEFAULT 0",
+		"usage_context_window": "INTEGER NOT NULL DEFAULT 0",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -244,7 +254,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
 // Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
 const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note`
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
+  actual_model, usage_context_tokens, usage_context_window`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -261,17 +272,28 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		createdAt       string
 		updatedAt       string
 		worktreeManaged int
+		ctxTokens       int
+		ctxWindow       int
 	)
 	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
-		&task.DoneNote); err != nil {
+		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)
 	task.UpdatedAt = parseTime(updatedAt)
 	task.WorktreeManaged = worktreeManaged != 0
+	// 0 还原成 nil：任何一次真实的模型调用输入都 > 0，所以 0 只可能是
+	// 「还没有任何一次调用完成」。用 0 表示「占用为零」是编造。
+	if ctxTokens > 0 {
+		task.Usage = &proto.Usage{ContextTokens: ctxTokens}
+		if ctxWindow > 0 {
+			w := ctxWindow
+			task.Usage.ContextWindow = &w
+		}
+	}
 	return task, nil
 }
 
@@ -441,6 +463,48 @@ func (s *Store) SetTaskField(id, field, value string) error {
 		"UPDATE tasks SET "+field+" = ?, updated_at = ? WHERE id = ?",
 		value, fmtTime(time.Now()), id); err != nil {
 		return fmt.Errorf("更新任务 %s 字段 %s: %w", id, field, err)
+	}
+	return nil
+}
+
+// SetTaskUsage 一次性更新任务的实际模型名与 context 占用。
+//
+// 参数：
+//   - id: 任务 ID
+//   - model: 实际模型名；**空串表示本次不更新该列**（保留既有值）
+//   - ctxTokens: 当前 context 占用；**0 表示不更新**
+//   - ctxWindow: 上下文窗口上限；**nil 表示不更新**
+//
+// 为什么空值语义是「不更新」而不是「清空」：用量与模型名往往来自**不同的帧**
+// （grok 的窗口在会话建立时到、占用在每次模型调用后到），若空值等于清空，
+// 后到的那一帧会把先到的那一半抹掉。
+//
+// 注意：
+//   - 三个参数全为空时是空操作，不打库
+//   - 任务不存在时不报错（与 SetTaskField 一致，不影响其他行即返回 nil）
+func (s *Store) SetTaskUsage(id, model string, ctxTokens int, ctxWindow *int) error {
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 5)
+	if model != "" {
+		sets = append(sets, "actual_model = ?")
+		args = append(args, model)
+	}
+	if ctxTokens > 0 {
+		sets = append(sets, "usage_context_tokens = ?")
+		args = append(args, ctxTokens)
+	}
+	if ctxWindow != nil {
+		sets = append(sets, "usage_context_window = ?")
+		args = append(args, *ctxWindow)
+	}
+	if len(sets) == 0 {
+		return nil // 无事可做，不打库
+	}
+	args = append(args, fmtTime(time.Now()), id)
+	if _, err := s.db.ExecContext(context.Background(),
+		"UPDATE tasks SET "+strings.Join(sets, ", ")+", updated_at = ? WHERE id = ?",
+		args...); err != nil {
+		return fmt.Errorf("更新任务 %s 用量: %w", id, err)
 	}
 	return nil
 }
