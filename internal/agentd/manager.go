@@ -57,14 +57,14 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 // eventType 常量：AdapterEvent.Type 的合法取值（与 proto.EventType 的映射见各 handler）。

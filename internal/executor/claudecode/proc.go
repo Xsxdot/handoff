@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // 任务目录内的执行器物料文件名（目录本身 0700，见 manager 创建处）。

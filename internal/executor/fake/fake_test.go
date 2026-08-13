@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestEventsClosedForUnstartedTask 覆盖 P1-11 的 fake 侧：未启动任务调 Events

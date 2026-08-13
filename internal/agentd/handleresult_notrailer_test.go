@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // lastEventOfType 取任务最后一条指定类型的事件；没有则 t.Fatal。

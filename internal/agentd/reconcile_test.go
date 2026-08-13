@@ -12,9 +12,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // quietLog 返回丢弃所有输出的日志器（对账函数白盒测试用）。

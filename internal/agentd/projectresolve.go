@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // ErrProjectNotRegistered 表示派发请求指向的项目在本机没有位置。

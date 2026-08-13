@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 )
 
 const testPassword = "test-password-123"

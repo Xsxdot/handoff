@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // 没有 threadId 就没法 resume——判不可恢复，且这不是错误

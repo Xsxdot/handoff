@@ -28,15 +28,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // newTestGate 造一个只带内置黑名单的判据网关（agentd_test 包的统一装配）。

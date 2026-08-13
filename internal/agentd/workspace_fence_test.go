@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // errFakeEAGAIN 模拟一次真实的 fork 失败：错误链里挂着 syscall.EAGAIN，

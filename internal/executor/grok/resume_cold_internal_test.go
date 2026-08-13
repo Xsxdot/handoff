@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // quietLogger 返回丢弃所有输出的 logger（供不依赖 t 的纯函数级用例直接构造）。

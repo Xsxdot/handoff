@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/config"
 )
 
 func TestLoadGeneratesDefaultsAndToken(t *testing.T) {

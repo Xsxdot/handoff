@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
 )
 
 // newEnvApprover 造一个带 env 文件的审批者；body 为 env 文件内容。

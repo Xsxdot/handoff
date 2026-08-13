@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // TestPermRequestFromToolCall 用 Task 1 真机取样的三份载荷断言结构提取。

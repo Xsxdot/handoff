@@ -30,10 +30,10 @@ const idLen = 16
 // NormalizeGitURL 把 git 远程地址折叠成可比对的规范串。
 //
 // 参数：
-//   - raw: 原始 URL，如 git@github.com:xushixin/handoff.git
+//   - raw: 原始 URL，如 git@github.com:Xsxdot/handoff.git
 //
 // 返回：
-//   - 规范串，如 github.com/xushixin/handoff；输入为空白时返回空串
+//   - 规范串，如 github.com/Xsxdot/handoff；输入为空白时返回空串
 //
 // 注意：
 //   - 仅用于**比对与派生**，位置表里存的始终是原始 URL

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 // swapCodexPathForTest 让 exec.LookPath 视为「codex 在 PATH 上」。

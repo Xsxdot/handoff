@@ -1,4 +1,4 @@
-module github.com/xushixin/handoff
+module github.com/Xsxdot/handoff
 
 go 1.26.1
 

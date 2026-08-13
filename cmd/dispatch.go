@@ -30,10 +30,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 var (

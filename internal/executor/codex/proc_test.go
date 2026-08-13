@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/codex"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestCodexSpecArgvIsListenForm 钉死 codex 的启动形态：

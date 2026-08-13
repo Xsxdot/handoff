@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // wdAuthJSON 造一份单账号 auth.json 文本。

@@ -12,8 +12,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // continueCmd 向任务续发修改指令，要求任务处于 waiting_review。

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // 越线时对每个活跃任务发一次，且只发一次——事件风暴会把协调者的

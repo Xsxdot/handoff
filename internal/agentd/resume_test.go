@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // stuckTicket 造出「应答已落库但未送达 executor」的卡死现场：

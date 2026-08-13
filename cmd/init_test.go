@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // runInit 跑一次 init：answers 是按行喂给 stdin 的答案，tty 控制是否走交互分支。

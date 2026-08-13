@@ -22,7 +22,7 @@ import (
 	"log/slog"
 	"regexp"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Action 是一次权限裁决的出口。

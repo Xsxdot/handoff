@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestClaudeArgvHasNoShell 钉死「argv 直传、不经任何 shell」：

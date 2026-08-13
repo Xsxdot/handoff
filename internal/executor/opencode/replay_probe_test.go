@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // probeSample 描述一份探针样本及其可核对的事实。

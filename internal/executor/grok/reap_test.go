@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/grok"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestReapMissingProcInfoErrors proc.json 缺失时 Reap 必须报错交协调者——

@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // dispatchTestTaskJSON 是假 agentd 返回的任务 JSON。测试可临时改写它来构造

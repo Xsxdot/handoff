@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestProcHandleReadsProcInfo 验证 adapter 能把 proc.json 里的进程句柄交出来。

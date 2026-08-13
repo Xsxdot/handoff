@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // progressThrottle 与 opencode/grok 同值：防高频增量刷爆事件库。

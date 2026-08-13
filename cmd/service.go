@@ -21,9 +21,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/service"
 )
 
 // osExecutable 是取当前二进制路径的缝。测试换成一个稳定路径，避免

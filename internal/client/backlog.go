@@ -15,7 +15,7 @@ package client
 import (
 	"encoding/json"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // BacklogSummaryType 是摘要行的 type 取值。

@@ -25,7 +25,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/xushixin/handoff/internal/executor/rawtap"
+	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 )
 
 // Result 是一次异步调用的终局（二选一）。

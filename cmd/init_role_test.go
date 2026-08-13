@@ -7,8 +7,8 @@ package cmd
 import (
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // Windows 上选执行机会一路走到 service install 才撞墙（agentd 的进程承载层

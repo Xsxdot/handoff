@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/rawtap"
+	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 )
 
 // tailPollInterval 是文件无新内容时的轮询间隔。

@@ -14,8 +14,8 @@ package agentd
 import (
 	"log/slog"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // ticketsVoidedPayload 是 tickets_voided 事件的 payload。

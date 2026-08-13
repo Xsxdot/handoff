@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 )
 
 // TestTaskModelOverridesEnv 验证任务级 model 优先于 HANDOFF_OPENCODE_MODEL：

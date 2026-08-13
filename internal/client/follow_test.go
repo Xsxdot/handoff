@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // pushEvents 起一个把给定事件依次推给客户端的 WS 端点，推完按 after 收尾。

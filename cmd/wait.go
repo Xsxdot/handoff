@@ -33,10 +33,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/logx"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。

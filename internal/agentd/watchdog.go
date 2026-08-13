@@ -24,8 +24,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // watchdogTick 是 RunWatchdog 的生产扫描间隔（一分钟）。

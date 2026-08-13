@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // TestOnClosedDropsRunState 连接断开后运行态必须从 runs 表摘除。

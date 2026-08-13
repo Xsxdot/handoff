@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // TestWaitEventBackoffResetsAfterHealthyConnection 验证 A-9：

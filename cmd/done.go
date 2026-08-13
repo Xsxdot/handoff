@@ -14,9 +14,9 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // doneNote 是本次归档的完成说明（--note）；空串=不留说明。

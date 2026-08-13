@@ -33,8 +33,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 const (

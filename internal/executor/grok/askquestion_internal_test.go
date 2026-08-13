@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestAskQuestionTextRendersQuestionsAndOptions(t *testing.T) {

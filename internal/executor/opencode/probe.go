@@ -12,7 +12,7 @@ package opencode
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Probe 只读探测 opencode serve 是否仍存活（manager 的 prober 可选接口）。

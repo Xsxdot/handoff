@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // permEv 构造一条带 ticket_id 的 permission_request 事件。

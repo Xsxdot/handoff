@@ -36,12 +36,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/release"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 // recentEventsLimit 是任务详情接口返回的最近事件条数上限。

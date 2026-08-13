@@ -14,8 +14,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/skill"
 )
 
 // skillContent 是 main 包用 go:embed 注入的 SKILL.md 全文。

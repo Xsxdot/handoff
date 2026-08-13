@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/logx"
 )
 
 func TestSetupWritesJSONToFile(t *testing.T) {

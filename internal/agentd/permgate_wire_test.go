@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestJudgePermissionNilPermEscalates adapter 没给结构 → fail-closed 升级。

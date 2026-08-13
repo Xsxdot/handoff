@@ -62,7 +62,7 @@ jobs:
             BIN=handoff
           fi
           go build -trimpath \
-            -ldflags "-s -w -X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
             -o "${BIN}" .
           if [ "${GOOS}" = "windows" ]; then
             zip -q "handoff_${TAG}_${GOOS}_${GOARCH}.zip" "${BIN}"
@@ -174,7 +174,7 @@ jobs:
             # 目录名带 arch、文件名固定 handoff：tar 里的文件名是与 install.sh
             # 及 extractBinary 的契约，不能带 arch 后缀
             GOOS=darwin GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+              -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
               -o "build/${arch}/handoff" .
             # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
             codesign --force --options runtime --timestamp \

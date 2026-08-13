@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 // TestServeSpecShape 钉住启动形态：codex app-server --listen、不设 CODEX_HOME、

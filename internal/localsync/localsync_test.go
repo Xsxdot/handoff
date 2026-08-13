@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/localsync"
+	"github.com/Xsxdot/handoff/internal/localsync"
 )
 
 func git(t *testing.T, dir string, args ...string) string {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 )
 
 // TestMapUpdateRoutesByKind 验证四类 session/update 的分流：

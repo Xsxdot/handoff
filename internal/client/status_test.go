@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/client"
 )
 
 // 正常 200：字段要能解出来。

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/client"
 )
 
 // testOrigin 是三条用例共用的请求体填充值，内容本身不参与断言。

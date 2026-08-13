@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // probeStub 是一个可控探活结论的假 adapter，用来在服务端测试里制造三态现场。
