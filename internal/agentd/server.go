@@ -101,7 +101,7 @@ type Server struct {
 //   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
-	inst := release.NewInstaller(log)
+	inst := release.NewInstaller(log, nil)
 	s := &Server{
 		cfg:         cfg,
 		st:          st,

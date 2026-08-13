@@ -65,8 +65,8 @@ type agentdPeer interface {
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
-	newReleaseChecker = func() releaseChecker { return release.NewClient() }
-	newReleaseFetcher = func() releaseFetcher { return release.NewInstaller(slog.Default()) }
+	newReleaseChecker = func() releaseChecker { return release.NewClient(nil) }
+	newReleaseFetcher = func() releaseFetcher { return release.NewInstaller(slog.Default(), nil) }
 	activateBinary    = release.Activate
 	rollbackBinary    = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它

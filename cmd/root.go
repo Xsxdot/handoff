@@ -262,7 +262,7 @@ var updateCheckCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		rel, err := release.NewClient().Latest(cmd.Context())
+		rel, err := release.NewClient(nil).Latest(cmd.Context())
 		if err != nil {
 			return err
 		}
