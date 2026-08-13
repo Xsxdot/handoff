@@ -196,23 +196,24 @@ jobs:
 
           for arch in $DARWIN_ARCHES; do
             bin="build/${arch}/handoff"
-            # 票据在 Apple 侧生效有传播延迟，紧跟 submit 之后立刻 spctl 有概率
-            # 报未公证。重试三次；仍失败即整个 job 失败——「只警告」会让这道
-            # 验证退化成装饰。
-            ok=0
-            for i in 1 2 3; do
-              if spctl -a -t exec -vv "$bin" 2>&1 | tee /tmp/spctl.log \
-                 | grep -q 'source=Notarized Developer ID'; then
-                ok=1; break
-              fi
-              echo "第 ${i} 次 spctl 未通过（${arch}），20s 后重试"
-              sleep 20
-            done
-            if [ "$ok" != "1" ]; then
-              echo "spctl 三次均未报 Notarized Developer ID（${arch}）：" >&2
-              cat /tmp/spctl.log >&2
-              exit 1
-            fi
+            # 为什么不是 spctl：`spctl -a -t exec` 只评估 **app bundle**，喂裸
+            # Mach-O 会直接被类型检查挡掉，报 "the code is valid but does not
+            # seem to be an app"——不是票据没生效，是这条命令对 CLI 根本不适用
+            # （2026-08-13 实测：公证明明已 Accepted，三次重试全是这句）。
+            # 裸 CLI 又不能 staple 票据，所以离线也验不到公证结果。
+            #
+            # 于是这道门验的是**在本机能验的全部三件事**：签名有效、签发者是
+            # Developer ID、硬化运行时已开（公证的前置条件）。第四件「公证被
+            # 接受」由上面 notarytool 的 `status: Accepted` 硬门守着。
+            codesign -dv --verbose=4 "$bin" 2>/tmp/codesign.log || {
+              echo "codesign -dv 失败（${arch}）：" >&2; cat /tmp/codesign.log >&2; exit 1; }
+            grep -q 'Authority=Developer ID Application' /tmp/codesign.log || {
+              echo "签发者不是 Developer ID Application（${arch}）：" >&2
+              cat /tmp/codesign.log >&2; exit 1; }
+            # flags 里的 runtime 就是 --options runtime 的落地证据
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign.log || {
+              echo "硬化运行时未开（${arch}），公证会被拒：" >&2
+              cat /tmp/codesign.log >&2; exit 1; }
             # 打包必须在签名之后：签名会改字节，先算校验和再签就全错
             tar czf "handoff_${TAG}_darwin_${arch}.tar.gz" -C "build/${arch}" handoff
           done
