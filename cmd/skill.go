@@ -11,6 +11,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -67,6 +68,18 @@ var skillInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// 逐个落点数出结论：安装是个「部分成功」的操作，只把表打给人看，
+		// 事后排查（比如「为什么这台机器的 codex 没有 skill」）就没有任何痕迹
+		var installed, skipped int
+		for _, s := range sites {
+			if s.State == skill.StateSkipped {
+				skipped++
+				slog.Warn("skill 落点跳过", "path", s.Path, "reason", s.Note)
+				continue
+			}
+			installed++
+		}
+		slog.Info("skill 安装完成", "home", home, "installed", installed, "skipped", skipped)
 		out := cmd.OutOrStdout()
 		for _, s := range sites {
 			fmt.Fprintf(out, "%-8s %s%s\n", skillStateText(s.State), s.Path, noteSuffix(s))

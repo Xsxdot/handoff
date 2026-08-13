@@ -1,8 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/xushixin/handoff/internal/proto"
@@ -123,5 +131,103 @@ func TestDispatchWithAutoRegisterPassesThroughOtherErrors(t *testing.T) {
 	}
 	if registers != 0 {
 		t.Fatalf("不该触发登记，got register=%d", registers)
+	}
+}
+
+// cleanRepoWithOrigin 在临时目录造一个「有 origin、工作区干净、有一个提交」
+// 的仓库并 chdir 进去。dispatch 需要这三样：origin 派生项目身份、
+// 干净工作区过 checkLocalWorktree、HEAD 算基线。
+func cleanRepoWithOrigin(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "t")
+	git("remote", "add", "origin", "git@example.com:x/handoff.git")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+	t.Chdir(repo)
+	return repo
+}
+
+// TestDispatchAutoRegisterSurvivesMissingLocalAgentd 是纯协调者机首次派发的
+// 端到端回归：目标机不认识这个项目 → CLI 自动登记 → 本机那一跳够不着被降级
+// → 目标机登记成功 → 重发派发成功。
+//
+// 修复前的症状：整条命令停在「登记到本机: … connection refused」，
+// 目标机那一跳一个字节都没发出去。
+func TestDispatchAutoRegisterSurvivesMissingLocalAgentd(t *testing.T) {
+	cleanRepoWithOrigin(t)
+
+	var taskHits, projectHits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/projects":
+			projectHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, projectHopJSON)
+		case "/api/tasks":
+			// 第一次派发：目标机不认识这个项目，报文以「项目未登记」开头
+			// （CLI 靠这四个字触发自动登记，见 isProjectNotRegistered）
+			if taskHits.Add(1) == 1 {
+				http.Error(w, "项目未登记: project_id=pid1；本机已登记的项目：（本机尚无任何项目）",
+					http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, dispatchTestTaskJSON)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	cfg := writeTestConfig(t, "listen: \"127.0.0.1:1\"\ntoken: \"local-tok\"\n"+
+		"targets:\n  devbox:\n    addr: \""+addr+"\"\n    token: \"remote-tok\"\n")
+	resetFlags(t)
+	configPath = cfg
+	targetName = "devbox"
+	agentdURL = "http://127.0.0.1:7777"
+	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+	t.Cleanup(func() { dispatchNoTerminal = false })
+
+	rootCmd.SetArgs([]string{"dispatch", "--target", "devbox", "--prompt", "x", "--no-terminal"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	if err := Execute(); err != nil {
+		t.Fatalf("本机没有 agentd 时首次派发应当成功: %v（stderr=%q）", err, errBuf.String())
+	}
+	if got := projectHits.Load(); got != 1 {
+		t.Errorf("目标机应收到 1 次登记，实得 %d", got)
+	}
+	if got := taskHits.Load(); got != 2 {
+		t.Errorf("派发应发生 2 次（首拒 + 重发），实得 %d", got)
+	}
+	if !strings.Contains(errBuf.String(), "跳过本机登记") {
+		t.Errorf("降级必须说出来，stderr=%q", errBuf.String())
+	}
+	// stdout 契约：第一行必须是任务 JSON，降级提示一个字都不许漏进来
+	first := strings.SplitN(strings.TrimSpace(out.String()), "\n", 2)[0]
+	if !strings.HasPrefix(first, "{") {
+		t.Errorf("stdout 第一行必须是任务 JSON，实得 %q", first)
 	}
 }
