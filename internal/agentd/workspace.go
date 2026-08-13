@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -65,6 +66,14 @@ var (
 	ErrBadBaseBranch   = errors.New("非法的基准分支：不允许以 - 开头")
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
 	ErrWorkdirBusy     = errors.New("目标工作目录已被活跃任务占用")
+
+	// 以下五个是在线编辑（B81）的拒绝面。文案就是 HTTP 层原样吐给用户的中文，
+	// 所以每条都要能独立读懂——「操作失败」帮不上任何人
+	ErrGitDirWrite   = errors.New("不允许写入 .git 目录")
+	ErrSymlinkTarget = errors.New("目标是符号链接，不支持在线编辑")
+	ErrBinaryFile    = errors.New("二进制文件不支持在线编辑")
+	ErrFileTooLarge  = errors.New("文件超过 1 MB，不支持在线编辑")
+	ErrBaseMismatch  = errors.New("文件已被改动")
 
 	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
@@ -797,6 +806,192 @@ func isBinaryPrefix(b []byte) bool {
 		b = b[:binaryProbeBytes]
 	}
 	return bytes.IndexByte(b, 0) >= 0
+}
+
+// isGitPath 判定一个已 Clean 的相对路径是否落在工作树根的 .git 下。
+//
+// 为什么要挡：`.git` 在 worktree 里是个几十字节的指针文件（内容 `gitdir: <路径>`），
+// 改它能把整个工作树重指向别处；在主仓库里 `.git/config` 写进 core.pager /
+// core.sshCommand / hooksPath，就是下一次任何 git 操作时的任意命令执行，改 HEAD、
+// 删 index 也都能直接搞坏仓库。
+//
+// 这不是提权（控制台会话本来就与主令牌等价，见 spec §1.1），是「一次误操作就把
+// 仓库弄坏」——正是那条参数校验闸门该挡的东西。
+//
+// 只挡工作树**根下**的 .git：嵌套子模块不在本期范围。前缀相同的 .gitignore /
+// .gitattributes 不受影响。
+//
+// 参数：
+//   - cleaned: 已经 filepath.Clean 过的相对路径
+func isGitPath(cleaned string) bool {
+	return cleaned == ".git" || strings.HasPrefix(cleaned, ".git"+string(filepath.Separator))
+}
+
+// atomicReplace 用同目录临时文件 + rename 原子替换目标文件。
+//
+// 为什么做原子替换（而不是像 orca 那样对用户文件裸 WriteFile）：executor 就在
+// 同一个工作树里跑，裸覆盖有一个窗口能让它读到半截文件。orca 的编辑对象通常
+// 没有一个高频读者在旁边，我们有。
+//
+// 为什么**不** fsync：工作树在 git 管着，掉电丢一次编辑不是灾难，而每次保存
+// fsync 的代价在远程机上更明显。orca 只对自己的状态文件做 fsync——那些丢了
+// 没有第二份，工作树文件不是。
+//
+// 参数：
+//   - root: 已打开的工作树 Root（全程不出根）
+//   - cleaned: 目标文件的相对路径
+//   - data: 新内容
+//   - perm: 目标文件原有的权限位（保留可执行位，丢了是静默故障）
+func atomicReplace(root *os.Root, cleaned string, data []byte, perm fs.FileMode) error {
+	tmp := filepath.Join(filepath.Dir(cleaned),
+		fmt.Sprintf(".%s.%d.%d.tmp", filepath.Base(cleaned), os.Getpid(), time.Now().UnixNano()))
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return fmt.Errorf("创建临时文件 %s: %w", tmp, err)
+	}
+	// 任何没走到 rename 的路径（含 panic）都要把 tmp 删掉：留一个 .foo.tmp
+	// 在工作树里会进 git status，下一次 dispatch 的「工作区必须干净」检查会直接拒发
+	committed := false
+	defer func() {
+		if !committed {
+			_ = f.Close()
+			if err := root.Remove(tmp); err != nil {
+				log().Warn("清理临时文件失败", "tmp", tmp, "cause", err)
+			}
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写临时文件 %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件 %s: %w", tmp, err)
+	}
+	if err := root.Rename(tmp, cleaned); err != nil {
+		return fmt.Errorf("替换文件 %s: %w", cleaned, err)
+	}
+	committed = true
+	return nil
+}
+
+// WriteFile 用新内容原子替换工作树内一个已存在的文本文件，带基线哈希前置条件。
+//
+// 冲突保护的整个机制就是这个前置条件：调用方把它**读到那一版**的 sha256 带回来，
+// 本函数比对磁盘现状，不一致就拒绝并把现状带回去。为什么不用 mtime：executor 在
+// 工作树里频繁跑 git 操作，checkout/rebase 会动 mtime 但不动内容，用 mtime 会把
+// 大量无害情况报成冲突。
+//
+// **已知窗口，如实记录**：第 6 步读哈希与第 9 步 rename 之间不是原子的。executor
+// 恰好在这个窗口里写同一个文件，本函数检测不到，结果是它的改动被覆盖。加锁解决
+// 不了——锁只挡得住 agentd 自己的并发写，executor 直接动文件系统，根本不经过这里。
+// 窗口从「整个编辑时长」缩到「一次读 + 一次 rename」，是这条路能拿到的全部。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 相对工作树根的路径
+//   - content: 新内容
+//   - baseSHA256: 调用方读到那一版的 sha256 十六进制串；空串一律判为不匹配
+//
+// 返回：
+//   - err == nil：res 是**新内容**的结论（SHA256 可直接当下一次的基线，Size 是新大小）
+//   - errors.Is(err, ErrBaseMismatch)：res 是**磁盘现状**（含正文与现状哈希），
+//     给调用方省一次往返
+//   - 其余错误：res 是零值
+//   - 错误取值：ErrPathEscape / ErrGitDirWrite / ErrSymlinkTarget / ErrPathIsDir /
+//     ErrNotRegularFile / ErrBinaryFile / ErrFileTooLarge / ErrBaseMismatch /
+//     fs.ErrNotExist（含 %w 链）
+func WriteFile(repo, rel, content, baseSHA256 string) (proto.FileRead, error) {
+	cleaned := filepath.Clean(rel)
+	if rel == "" || cleaned == "." || filepath.IsAbs(cleaned) ||
+		cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		log().Warn("文件写入路径逃逸被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+	}
+	if isGitPath(cleaned) {
+		log().Warn("文件写入命中 .git 被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrGitDirWrite, rel)
+	}
+	// 新内容也受同一个上限约束。理由对称：读不回来的东西就不该写得进去，
+	// 否则存一次之后这个文件自己就变成不可编辑的了
+	if len(content) > maxRunOutput {
+		log().Warn("写入内容超过上限被拒绝", "repo", repo, "path", rel,
+			"bytes", len(content), "limit", maxRunOutput)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrFileTooLarge, rel)
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.FileRead{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+
+	// Lstat 而不是 Stat：要看到符号链接本身。原子替换的 rename 会把链接换成普通
+	// 文件，语义悄悄就变了——与其猜用户想改链接还是改目标，不如拒掉并说清楚
+	fi, err := root.Lstat(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("文件写入路径逃逸被拒绝", "repo", repo, "path", rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		}
+		return proto.FileRead{}, fmt.Errorf("检查文件 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		log().Warn("文件写入目标是符号链接被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrSymlinkTarget, rel)
+	case fi.IsDir():
+		log().Warn("文件写入目标是目录被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathIsDir, rel)
+	case !fi.Mode().IsRegular():
+		log().Warn("文件写入目标不是普通文件被拒绝", "repo", repo, "path", rel,
+			"mode", fi.Mode().String())
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
+	}
+
+	// 复用 ReadFile 而不是另写一遍读取：「这文件能不能编辑」的判据必须由**同一段
+	// 代码**在读侧和写侧给出。两边各判一次，早晚会分叉成「前端说能编辑、后端说不能」
+	cur, err := ReadFile(repo, cleaned)
+	if err != nil {
+		return proto.FileRead{}, err
+	}
+	// 这两种情况下 cur.SHA256 必然是空值，下面的比对必定不通过——但要在这里用
+	// **说得清的理由**拒掉，而不是让它掉进一个「哈希对不上」的 409，
+	// 那会让用户以为「文件被谁改了」
+	if cur.Binary {
+		log().Warn("文件写入目标是二进制被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrBinaryFile, rel)
+	}
+	if cur.Truncated {
+		log().Warn("文件写入目标超过读取上限被拒绝", "repo", repo, "path", rel, "size", cur.Size)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrFileTooLarge, rel)
+	}
+	if cur.SHA256 != baseSHA256 {
+		log().Warn("文件写入基线不匹配", "repo", repo, "path", rel,
+			"base", shortHash(baseSHA256), "current", shortHash(cur.SHA256))
+		return cur, fmt.Errorf("%w: %q", ErrBaseMismatch, rel)
+	}
+
+	log().Info("开始原子替换文件", "repo", repo, "path", rel, "bytes", len(content))
+	if err := atomicReplace(root, cleaned, []byte(content), fi.Mode().Perm()); err != nil {
+		log().Error("文件写入失败", "repo", repo, "path", rel, "cause", err)
+		return proto.FileRead{}, err
+	}
+	sum := sha256.Sum256([]byte(content))
+	res := proto.FileRead{
+		Content: content,
+		Size:    int64(len(content)),
+		SHA256:  hex.EncodeToString(sum[:]),
+	}
+	log().Info("文件写入完成", "repo", repo, "path", rel,
+		"bytes", res.Size, "sha256", shortHash(res.SHA256))
+	return res, nil
+}
+
+// shortHash 取哈希前 8 位供日志用。全量 64 位十六进制串在日志里既占地方又没人读，
+// 而排障时要的只是「这两个是不是同一个」。
+func shortHash(h string) string {
+	if len(h) <= 8 {
+		return h
+	}
+	return h[:8]
 }
 
 // ReadFile 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
