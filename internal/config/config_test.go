@@ -323,12 +323,21 @@ func TestLoadStripUpdateDoesNotBlockOnSaveFailure(t *testing.T) {
 	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: tk\nupdate:\n  auto: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	// chmod 文件本身，不是目录：macOS 上 WriteFile 仍能截断已有 0600 文件，
+	// 目录 0500 挡不住回写，用例会假绿。0444 才让 Save 真正失败。
+	if err := os.Chmod(p, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
 	if _, err := config.Load(p); err != nil {
 		t.Fatalf("回写失败不得阻断启动: %v", err)
+	}
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "update") {
+		t.Fatalf("回写应失败，磁盘上仍须留着 update 段:\n%s", body)
 	}
 }
 
