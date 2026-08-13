@@ -504,6 +504,53 @@ func TestGetRetriesOnServerError(t *testing.T) {
 	}
 }
 
+// 前两次请求被对端直接掐断、第三次正常：传输层错误必须触发重试。
+//
+// 为什么不能用 5xx 代替：5xx 是**有响应**的失败，走 httpStatusError 分支；
+// 这里掐断连接是**没有响应**的失败，客户端拿到的是 EOF / connection reset
+// 之类的 *url.Error，走的是 isRetryable 的 default 分支。两条分支互相不能
+// 代表——本改动的起因（真机上的 "unexpected EOF"、"i/o timeout"）恰恰都
+// 落在后者，一旦 default 被改成 return false，这四条状态码测试照样全绿，
+// 线上却退化回一次抖动即失败。
+func TestGetRetriesOnTransportError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("httptest server 应支持 Hijacker")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("Hijack 失败: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.Write([]byte("hello retry"))
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog())
+	got, err := i.get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("前两次连接被掐断应当重试后成功，却报错: %v", err)
+	}
+	if !bytes.Equal(got, []byte("hello retry")) {
+		t.Fatalf("正文 = %q，期望 hello retry", got)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3（首次 + 2 次重试）", attempts)
+	}
+}
+
 // 404 是一次性错误，不该重试。
 // 这是约束测试：当前实现无重试，红期也会过，但锁住「4xx 不可重试」。
 func TestGetDoesNotRetryOnClientError(t *testing.T) {
