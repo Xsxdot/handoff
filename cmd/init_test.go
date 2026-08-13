@@ -40,6 +40,12 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 	}
 	withFakeManager(t, f)
 
+	// go test 二进制在编译缓存里，resolveSpec 会当临时文件拒掉，
+	// 执行机答 y 的托管用例就走不到 fake.Install。
+	oldExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/handoff", nil }
+	t.Cleanup(func() { osExecutable = oldExe })
+
 	oldTTY := initStdinIsTTY
 	initStdinIsTTY = func() bool { return tty }
 	t.Cleanup(func() { initStdinIsTTY = oldTTY })

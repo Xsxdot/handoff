@@ -203,7 +203,7 @@ func coveredBy(path string, added []string) string {
 //   - role: 选中的角色 Value，供写盘日志
 //   - 错误：问答失败（脚本化路径几乎不返回错；huh 取消会走这里）
 func askAll(w io.Writer, p prompter, cfg *config.Config, rs []toolchain.Result, cfgExisted bool) (bool, string, error) {
-	fmt.Fprintln(w, "\n以下每一问直接回车即取方括号里的当前值。")
+	fmt.Fprintln(w, "\n以下每一问直接回车即保留预选项。")
 
 	defRole := defaultRole(cfg, cfgExisted, rs)
 	role, err := p.Select("这台机器的角色", []promptOption{

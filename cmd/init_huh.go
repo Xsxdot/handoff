@@ -17,7 +17,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 )
 
 // huhPrompter 用 huh 控件问完一题。空结构体：状态都在控件里。
@@ -44,6 +44,32 @@ func newHuhPrompter() prompter {
 //
 // 返回：选中的 Value；取消时返回 errPromptCanceled。
 func (huhPrompter) Select(title string, options []promptOption, def string) (string, error) {
+	value := def
+	err := newHuhSelect(title, options, &value).Run()
+	if err != nil {
+		return "", mapHuhErr(title, err)
+	}
+	slog.Debug("huh Select 完成", "title", title, "value", value)
+	return value, nil
+}
+
+// newHuhSelect 构造会把全部选项画出来的 Select。
+//
+// 参数：
+//   - title: 题干
+//   - options: Value 写入配置，Label 给人看
+//   - value: 预选值，Run 后写成用户的选择
+//
+// 注意：
+//   - huh v1 把 viewport.YOffset 直接设成 selected，三项里预选第二项时
+//     「执行机」被卷出视口。v2 改成 ensureCursorVisible，只做让光标露出来
+//     的最小滚动；Height 再锁成「标题 + 全部选项」，避免 Form 按终端高度
+//     再裁一刀。
+func newHuhSelect(title string, options []promptOption, value *string) *huh.Select[string] {
+	def := ""
+	if value != nil {
+		def = *value
+	}
 	opts := make([]huh.Option[string], 0, len(options))
 	for _, o := range options {
 		opt := huh.NewOption(o.Label, o.Value)
@@ -52,17 +78,12 @@ func (huhPrompter) Select(title string, options []promptOption, def string) (str
 		}
 		opts = append(opts, opt)
 	}
-	value := def
-	err := huh.NewSelect[string]().
+	slog.Debug("huh Select 构造", "title", title, "options", len(options), "default", def)
+	return huh.NewSelect[string]().
 		Title(title).
 		Options(opts...).
-		Value(&value).
-		Run()
-	if err != nil {
-		return "", mapHuhErr(title, err)
-	}
-	slog.Debug("huh Select 完成", "title", title, "value", value)
-	return value, nil
+		Value(value).
+		Height(len(options) + 2)
 }
 
 // Input 用 huh 读一行字符串，预填 def。
