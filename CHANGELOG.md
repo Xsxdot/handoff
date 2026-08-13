@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [v0.2.1] - 2026-08-13
+
 ### 新增
 
 - Windows 协调者分发：发 `windows/amd64` 与 `windows/arm64` 资产（`.zip`，内含
@@ -24,6 +26,12 @@
 ### 变更
 
 - `handoff init` 在 Windows 上只提供「协调者」一个角色选项。
+
+### 修复
+
+- `install.ps1` 与 `install_test.ps1` 补上 UTF-8 BOM。没有 BOM 时
+  PowerShell 5.1（Windows 自带的那个）会按系统 ANSI 代码页解码脚本，中文
+  Windows 上整个脚本会被解析成语法错误、一行都跑不了。
 
 ## [v0.2.0] - 2026-08-13
 
