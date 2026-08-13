@@ -7,3 +7,4 @@
 ## 进度
 
 - 2026-08-13 Task 1（proto 类型 + store 账本）完成，commit a5f15857，审查 PASS（无修复轮）。
+- 2026-08-13 Task 2（adapter 契约 + manager 接线）完成，commit 44f2cec7，审查 PASS（无修复轮）。
