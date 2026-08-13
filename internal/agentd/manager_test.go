@@ -2002,3 +2002,75 @@ func TestDonePersistsNote(t *testing.T) {
 		t.Fatalf("done_note 未落库: %q", got.DoneNote)
 	}
 }
+
+// TestHandleUsageWritesTaskFieldsWithoutEvents 覆盖 usage 事件的两条契约：
+// ①落到任务字段上；②**不**产生任何事件行——用量刷新频率高（claudecode 一个回合
+// 几百条 assistant 消息），进事件日志会淹掉审核者真正要看的 permission/question。
+func TestHandleUsageWritesTaskFieldsWithoutEvents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{
+		ID: "u1", RepoPath: t.TempDir(), State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	before, err := st.EventsFrom("u1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+
+	win := 258400
+	m.handleEvent(context.Background(), "u1", executor.AdapterEvent{
+		Type: "usage", ActualModel: "gpt-5.6-sol",
+		Usage: &proto.Usage{ContextTokens: 24668, ContextWindow: &win},
+	})
+
+	task, err := st.GetTask("u1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("ActualModel = %q，期望 gpt-5.6-sol", task.ActualModel)
+	}
+	if task.Usage == nil || task.Usage.ContextTokens != 24668 {
+		t.Fatalf("Usage 未落库: %+v", task.Usage)
+	}
+	after, _ := st.EventsFrom("u1", 0, 100)
+	if len(after) != len(before) {
+		t.Fatalf("usage 事件不该产生事件行，前 %d 条后 %d 条", len(before), len(after))
+	}
+}
+
+// TestHandleUsageDedupesRepeatedValues 覆盖去重：同值连续多次只打库一次。
+// 这是写库风暴的唯一防线——claudecode 每条 assistant 消息都带 usage。
+func TestHandleUsageDedupesRepeatedValues(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{
+		ID: "u2", RepoPath: t.TempDir(), State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	ev := executor.AdapterEvent{Type: "usage", ActualModel: "k3-256k",
+		Usage: &proto.Usage{ContextTokens: 121801}}
+	m.handleEvent(context.Background(), "u2", ev)
+	first, _ := st.GetTask("u2")
+	firstUpdated := first.UpdatedAt
+
+	// 同值再来两次：updated_at 不该再动（说明没打库）
+	m.handleEvent(context.Background(), "u2", ev)
+	m.handleEvent(context.Background(), "u2", ev)
+	again, _ := st.GetTask("u2")
+	if !again.UpdatedAt.Equal(firstUpdated) {
+		t.Fatalf("同值重复不该再打库，updated_at 从 %v 变成 %v", firstUpdated, again.UpdatedAt)
+	}
+
+	// 值变了就必须落库
+	ev2 := executor.AdapterEvent{Type: "usage", ActualModel: "k3-256k",
+		Usage: &proto.Usage{ContextTokens: 130000}}
+	m.handleEvent(context.Background(), "u2", ev2)
+	changed, _ := st.GetTask("u2")
+	if changed.Usage.ContextTokens != 130000 {
+		t.Fatalf("值变化后应落库，得到 %d", changed.Usage.ContextTokens)
+	}
+}

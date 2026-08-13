@@ -72,6 +72,7 @@ const (
 	adapterEventQuestion   = "question"
 	adapterEventProgress   = "progress"
 	adapterEventResult     = "result"
+	adapterEventUsage      = "usage"
 )
 
 // errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
@@ -134,6 +135,9 @@ type Manager struct {
 	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
 	mu       sync.Mutex
 	stopping map[string]struct{}
+	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
+	usageMu   sync.Mutex
+	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
 }
 
 // NewManager 创建任务管理器。
@@ -1325,6 +1329,10 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 			m.log.Warn("执行结果事件缺 Result", "task", taskID)
 		}
 		m.handleResult(taskID, ev)
+	case adapterEventUsage:
+		// 不打 Info：用量事件频率高（claudecode 一个回合几百条），
+		// 每条都打入口日志就是刷屏。首次落库的日志在 handleUsage 里打。
+		m.handleUsage(taskID, ev)
 	default:
 		m.log.Warn("未知 adapter 事件", "task", taskID, "type", ev.Type)
 	}
@@ -2391,6 +2399,64 @@ func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
 		return
 	}
 	m.hub.Publish(evt)
+}
+
+// handleUsage 落 executor 报回的实际模型名与 context 占用。
+//
+// 与 handleProgress 的区别：**只写任务字段，不追加事件行、不广播**。
+// 用量刷新频率高（claudecode 一个回合几百条 assistant 消息），进事件日志会淹没
+// 审核者真正要看的 permission/question/completed；界面靠详情轮询自然拿到，
+// 不需要事件推送。
+//
+// 去重是写库风暴的唯一防线：与内存里上一次的三元组全等就直接返回。
+// agentd 重启后内存态为空，首帧必写一次，这是可接受的代价。
+//
+// 落库失败仅 Warn：用量属可修复的辅助字段，与 executor_session 同级，
+// 不影响主流程。
+func (m *Manager) handleUsage(taskID string, ev executor.AdapterEvent) {
+	tokens, window := 0, (*int)(nil)
+	if ev.Usage != nil {
+		tokens = ev.Usage.ContextTokens
+		window = ev.Usage.ContextWindow
+	}
+	if m.takeUsageUnchanged(taskID, ev.ActualModel, tokens, window) {
+		return
+	}
+	if err := m.st.SetTaskUsage(taskID, ev.ActualModel, tokens, window); err != nil {
+		m.log.Warn("落库任务用量失败", "task", taskID, "model", ev.ActualModel,
+			"tokens", tokens, "cause", err)
+		return
+	}
+	m.log.Info("任务用量已更新", "task", taskID, "model", ev.ActualModel,
+		"tokens", tokens, "window", window)
+}
+
+// takeUsageUnchanged 判定这次上报与上一次是否完全相同（相同返回 true，
+// 调用方据此跳过打库），并在不同的情况下就地记下新值。
+//
+// 为什么把窗口也纳入比较：不报窗口的执行者每次都传 nil，只比模型名与分子会让
+// 「窗口首次到达」这一帧被误判成重复而丢掉。
+func (m *Manager) takeUsageUnchanged(taskID, model string, tokens int, window *int) bool {
+	key := fmt.Sprintf("%s|%d|%v", model, tokens, derefOrNil(window))
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	if m.lastUsage == nil {
+		m.lastUsage = map[string]string{}
+	}
+	if m.lastUsage[taskID] == key {
+		return true
+	}
+	m.lastUsage[taskID] = key
+	return false
+}
+
+// derefOrNil 把 *int 摊平成可比较的展示值：nil 记作 -1（真实窗口必然 > 0，
+// 不会与之相撞）。
+func derefOrNil(p *int) int {
+	if p == nil {
+		return -1
+	}
+	return *p
 }
 
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进
