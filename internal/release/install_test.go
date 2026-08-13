@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -468,5 +470,116 @@ func TestTempNameHasExeSuffixOnWindows(t *testing.T) {
 		if got := tempName("v1.2.3", goos); got != ".handoff.new-v1.2.3" {
 			t.Fatalf("%s: tempName = %q，期望 .handoff.new-v1.2.3", goos, got)
 		}
+	}
+}
+
+// 前两次 500、第三次 200：get 必须重试并最终成功。
+// 重试会真睡退避，所以先把 downloadRetryBase 压到毫秒级，测完恢复。
+func TestGetRetriesOnServerError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("hello retry"))
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog())
+	got, err := i.get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("get 应当在前两次 500 后重试成功，却报错: %v", err)
+	}
+	if !bytes.Equal(got, []byte("hello retry")) {
+		t.Fatalf("正文 = %q，期望 hello retry", got)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3（首次 + 2 次重试）", attempts)
+	}
+}
+
+// 404 是一次性错误，不该重试。
+// 这是约束测试：当前实现无重试，红期也会过，但锁住「4xx 不可重试」。
+func TestGetDoesNotRetryOnClientError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.NotFound(w, nil)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog())
+	if _, err := i.get(context.Background(), srv.URL); err == nil {
+		t.Fatal("404 应当报错")
+	}
+	if attempts != 1 {
+		t.Fatalf("请求次数 = %d，期望 1（4xx 不可重试）", attempts)
+	}
+}
+
+// 三次全 500：重试耗尽后必须失败，且报错点明尝试次数。
+func TestGetFailsAfterRetriesExhausted(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog())
+	_, err := i.get(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("三次全 500 应当报错")
+	}
+	if !strings.Contains(err.Error(), "尝试 3 次") {
+		t.Fatalf("报错应点明尝试次数，实得: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", attempts)
+	}
+}
+
+// ctx 取消必须立刻中断退避，不能真等 2s→4s 的整段退避。
+// 故意把退避设成 2s 起步：若实现不尊重 ctx，本测试会真睡 6 秒——这正是它锁的行为。
+func TestGetCancelStopsBackoff(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = 2 * time.Second
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	i := NewInstaller(quietLog())
+	_, err := i.get(ctx, srv.URL)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消后应返回 context.Canceled，实得: %v", err)
+	}
+	if elapsed >= 1*time.Second {
+		t.Fatalf("取消后用了 %v 才返回，说明退避没被 ctx 打断", elapsed)
 	}
 }

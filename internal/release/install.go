@@ -36,6 +36,18 @@ import (
 // 出错的响应不该把内存吃光。
 const maxAssetBytes = 100 << 20
 
+// downloadRetryMax 是单个 URL 的总尝试次数上限（首次 + 2 次重试）。
+//
+// 瞬时网络故障（EOF、连接重置、超时）绝大多数在几秒内自愈，3 次覆盖
+// 「抖动一下」的常见情形；再多只会把清晰的失败拖成更久的沉默。
+var downloadRetryMax = 3
+
+// downloadRetryBase 是首次重试前的等待，之后指数翻倍（2s → 4s）。
+//
+// 连续失败说明网络持续不稳，退避给服务端喘息空间、避免故障高峰期加剧压力。
+// 做成 var 而非常量，是为了测试里能改成毫秒级，否则一个跑 6 秒的单测会被后人删掉。
+var downloadRetryBase = 2 * time.Second
+
 // selfCheckTimeout 是新二进制自检的时间上限。
 //
 // `handoff version` 不读配置不联网，正常是毫秒级；10s 只是防止一个坏掉的
