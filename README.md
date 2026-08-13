@@ -23,7 +23,7 @@ handoff 是一个纯 CLI 的两角色协作工具：你（或你的 Claude Code 
 
 ## 安装
 
-macOS / Linux（amd64 / arm64）。Windows 暂不支持作为执行机，只能当协调机——协调者侧命令（dispatch / wait / reply / diff 等）可用，但没有安装脚本与 release 资产，需自行 `go build`。
+macOS / Linux（amd64 / arm64）。Windows 暂不支持作为执行机，只能当协调机——协调者侧命令（dispatch / wait / reply / diff 等）可用，但没有安装脚本与 release 资产，需自行 `go build`；因此 `handoff upgrade` 升不了本机这一份（升远端执行机不受影响），`wait --notify` 的桌面通知也只有 macOS 有。
 
 ```bash
 curl -fsSL https://handoff.gosuper.dev/install | bash
@@ -59,6 +59,8 @@ handoff service status
 ```
 
 `init` 选了执行机角色时会顺带问你要不要装，答 y 即就地装好。**不托管的 agentd 重启后不会自己回来**，而且它的 PATH 取决于启动它的那个 shell——「重启后第一次派发报 executor 未安装」多半是这个原因。托管后 Ctrl-C 停不掉它（会被自动拉回），要停用 `handoff service uninstall`。
+
+**只当协调机时不需要本机 agentd**：派发、`wait`、`reply`、`diff`、`attach` 全部直连目标机的 agentd。首次给一个新项目派发时，CLI 会顺带把项目也登记到本机一份（用于 `handoff project ls` 的本机项目树）；本机没有 agentd 时这一跳自动跳过并提示，不影响派发本身。
 
 **3. 派发第一个任务。** 在你的项目目录里（工作区必须干净）：
 
