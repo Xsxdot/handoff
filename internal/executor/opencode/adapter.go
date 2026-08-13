@@ -1393,6 +1393,14 @@ func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 	if model, u, ok := parseMessageUsage(props); ok && (model != "" || u != nil) {
 		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
 	}
+	// 累计消耗：同一帧还带这条消息的 cost 与产出侧 token。与上面的当前占用
+	// 是两个口径——上面只算输入侧，这里连产出一起算，且 reasoning 要相加。
+	//
+	// opencode 的消息帧频率极高（一条消息推几十次），**这里刻意不打任何日志**——
+	// 入账的 Debug 已经由 handleSpend 统一打了，adapter 再打就是双份刷屏。
+	if e, ok := parseMessageSpend(props); ok {
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	}
 	var msg struct {
 		Info struct {
 			ID   string `json:"id"`
