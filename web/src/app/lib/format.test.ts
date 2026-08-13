@@ -4,7 +4,7 @@
 // 百分比，没有用量就不显用量，绝不用 0 或 — 占位。
 import { describe, expect, it } from 'vitest'
 
-import { formatExecutorLine, formatTokens } from './format'
+import { formatCost, formatCumulativeLine, formatExecutorLine, formatTokens } from './format'
 
 describe('formatTokens', () => {
   it('千位以上用 k 缩写并保留一位小数', () => {
@@ -53,5 +53,49 @@ describe('formatExecutorLine', () => {
 
   it('连执行器都没有的老任务显示（缺省）', () => {
     expect(formatExecutorLine({} as never)).toBe('（缺省）')
+  })
+})
+
+describe('formatCost', () => {
+  it('自报且完整：直接显金额，无 ≈、无小标', () => {
+    expect(formatCost({ ticks: 42_000_000_000, state: 'reported' }))
+      .toEqual({ text: '$4.20', hint: '' })
+  })
+  it('估算：带 ≈ 与「估算」小标', () => {
+    expect(formatCost({ ticks: 42_000_000_000, state: 'estimated' }))
+      .toEqual({ text: '≈$4.20', hint: '估算' })
+  })
+  it('不全：带 ≈ 与「不全」小标——它是下界不是近似值', () => {
+    expect(formatCost({ ticks: 42_000_000_000, state: 'partial' }))
+      .toEqual({ text: '≈$4.20', hint: '不全' })
+  })
+  it('未知：显 — 而不是 $0.00', () => {
+    expect(formatCost({ ticks: 0, state: 'unknown' }))
+      .toEqual({ text: '—', hint: '' })
+  })
+  it('金额不足一分也不显示成 $0.00', () => {
+    // 0.004 美元 → 保留两位会变 $0.00，必须换更细的位数
+    const r = formatCost({ ticks: 40_000_000, state: 'reported' })
+    expect(r.text).not.toBe('$0.00')
+  })
+})
+
+describe('formatCumulativeLine', () => {
+  const base = { cumulative: {
+    input_tokens: 340_200, cached_tokens: 820_500,
+    output_tokens: 39_300, total_tokens: 1_200_000,
+    cost: { ticks: 42_000_000_000, state: 'estimated' as const },
+  } }
+  it('五项齐全时按原型顺序排列', () => {
+    expect(formatCumulativeLine(base as never))
+      .toBe('1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20')
+  })
+  it('没有累计时返回空串，由调用方决定不渲染', () => {
+    expect(formatCumulativeLine({} as never)).toBe('')
+  })
+  it('没有花费信息时只显四项 token', () => {
+    const noCost = { cumulative: { ...base.cumulative, cost: undefined } }
+    expect(formatCumulativeLine(noCost as never))
+      .toBe('1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k')
   })
 })

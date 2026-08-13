@@ -1,12 +1,14 @@
 // TaskHeader —— 任务详情页的任务头：id、名称、状态、执行器、model、分支、
 // 工作目录、基准提交短号、派发时仓库脏改动提示。
 //
-// 边界：纯展示；「已断开」/「会话失效」等全局状态由父级 TaskPage 处理。
+// 唯一的状态是「当前占用 / 累计消耗」两视图的切换（view），其余仍是纯展示；
+// 「已断开」/「会话失效」等全局状态由父级 TaskPage 处理。
+import { useState } from 'react'
 import { AlertTriangle, GitBranch, TerminalSquare } from 'lucide-react'
 import type { Task } from '../../api/types'
 import { Badge } from '@/components/ui/badge'
 import { stateBadgeVariant, stateLabel } from '../board/columns'
-import { formatExecutorLine, shortCommit, shortID } from '../lib/format'
+import { formatCost, formatCumulativeLine, formatExecutorLine, shortCommit, shortID } from '../lib/format'
 
 // DirtyRepoHint 是 repo_dirty_count > 0 时的提示。
 //
@@ -29,6 +31,10 @@ function DirtyRepoHint({ task }: { task: Task }) {
 // compact 为真时只出单行摘要：TUI tab 的顶栏只有一行高度，塞不下完整的
 // 定义列表，而任务 ID、分支、工作目录这些在面包屑与左栏已经能看到。
 export function TaskHeader({ task, compact = false }: { task: Task; compact?: boolean }) {
+  // 「当前占用」与「累计消耗」是两个口径，同一行两个视图切换显示。
+  // 切换不改行数与框高——原型量过：累计行跨掉标签列后有约 16% 余量，
+  // 不会折行，下面的正文不会跳。
+  const [view, setView] = useState<'context' | 'cumulative'>('context')
   if (compact) {
     return (
       <div className="flex min-w-0 items-center gap-2">
@@ -49,6 +55,17 @@ export function TaskHeader({ task, compact = false }: { task: Task; compact?: bo
           {task.name || task.plan_summary || '（无名称）'}
         </h1>
         <Badge variant={stateBadgeVariant(task.state)}>{stateLabel(task.state)}</Badge>
+        {/* 有累计数据才给切换入口：没有账目时切过去是一片空白。
+            按钮在标题行右上角，文案是「要切去的那个视图」的名字。 */}
+        {task.cumulative ? (
+          <button
+            type="button"
+            className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+            onClick={() => setView(view === 'context' ? 'cumulative' : 'context')}
+          >
+            {view === 'context' ? '累计用量' : '当前占用'}
+          </button>
+        ) : null}
       </div>
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
@@ -57,8 +74,25 @@ export function TaskHeader({ task, compact = false }: { task: Task; compact?: bo
           {task.id}
           <span className="ml-2 text-muted-foreground">handoff-{shortID(task.id)}</span>
         </dd>
-        <dt className="text-muted-foreground">执行器</dt>
-        <dd>{formatExecutorLine(task)}</dd>
+        {view === 'cumulative' ? (
+          <dd className="flex items-center gap-1.5 [grid-column:1/-1]">
+            <span className="shrink-0 text-muted-foreground">累计</span>
+            <span className="min-w-0 flex-1">{formatCumulativeLine(task)}</span>
+            {task.cumulative?.cost
+              ? (() => {
+                  const { hint } = formatCost(task.cumulative.cost)
+                  return hint ? (
+                    <em className="ml-1 not-italic text-[10px] text-muted-foreground">{hint}</em>
+                  ) : null
+                })()
+              : null}
+          </dd>
+        ) : (
+          <>
+            <dt className="text-muted-foreground">执行器</dt>
+            <dd>{formatExecutorLine(task)}</dd>
+          </>
+        )}
         <dt className="text-muted-foreground">分支</dt>
         <dd className="flex items-center gap-1 break-all font-mono text-xs">
           <GitBranch className="size-3.5 shrink-0" />

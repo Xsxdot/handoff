@@ -5,7 +5,7 @@
 //
 // 注意：display 层的「前 8 位短号」仅供人肉对照，任何拿去当参数的地方必须用
 // 完整 ID（store 是精确匹配，短号会 404）。
-import type { Task } from '../../api/types'
+import type { Cost, Task } from '../../api/types'
 
 // shortID 取 UUID 的前 8 位，与 handoff-<id8> 的 CLI 惯例一致。
 export function shortID(id: string): string {
@@ -80,5 +80,54 @@ export function formatExecutorLine(task: Task): string {
       parts.push(`${formatTokens(u.context_tokens)} tokens`)
     }
   }
+  return parts.join(' · ')
+}
+
+// TICKS_PER_USD 是花费的内部单位换算：后端全程用整数 ticks 累加，
+// 只在这里（展示的最后一步）转成美元。
+const TICKS_PER_USD = 1e10
+
+// formatCost 把累计花费格式化成「金额 + 可信度小标」。
+//
+// 返回 { text, hint }：text 进正文，hint 是紧跟其后的小字（空串=不显示小标）。
+//
+// 四种状态三种形态（用户已确认的形态决策）：
+//   - reported  → `$4.20`，无标记：这是执行器自报的完整值
+//   - estimated → `≈$4.20` +「估算」：handoff 按 API 牌价算的，可能不准
+//   - partial   → `≈$4.20` +「不全」：**下界**，真实值只会更高
+//   - unknown   → `—`：一次都没拿到
+//
+// 为什么 estimated 与 partial 不合并成一个「≈」：它们对用户的含义相反。
+// 估算是近似值（可能高可能低），不全是下界（只会更高）。合并会把下界讲成
+// 近似值——看到 `≈$4.20` 的人不会想到实际可能是 $8。
+//
+// 为什么 unknown 显「—」而不是 `$0.00`：花费的缺席意味着
+// "unreported or incomplete, never free"。用 0 冒充「不知道」是在撒谎。
+export function formatCost(cost: Cost): { text: string; hint: string } {
+  if (cost.state === 'unknown') return { text: '—', hint: '' }
+  const usd = cost.ticks / TICKS_PER_USD
+  // 不足一分的金额用更细的位数，否则 $0.004 会显示成 $0.00——那和「免费」没区别
+  const amount = usd >= 0.01 ? usd.toFixed(2) : usd.toFixed(4)
+  if (cost.state === 'reported') return { text: `$${amount}`, hint: '' }
+  return { text: `≈$${amount}`, hint: cost.state === 'estimated' ? '估算' : '不全' }
+}
+
+// formatCumulativeLine 组装「累计用量」视图的整行文案（不含「累计」前缀，
+// 前缀由 TaskHeader 单独渲染成弱化样式）。
+//
+//   1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20
+//
+// 没有累计数据时返回空串，由调用方决定不渲染这一行。
+// 花费缺席时只显四项 token——不知道花了多少钱，不代表不知道烧了多少 token。
+export function formatCumulativeLine(task: Task): string {
+  const c = task.cumulative
+  if (!c) return ''
+  const parts = [
+    formatTokens(c.total_tokens),
+    `输入 ${formatTokens(c.input_tokens)}`,
+    `缓存 ${formatTokens(c.cached_tokens)}`,
+    `输出 ${formatTokens(c.output_tokens)}`,
+  ]
+  if (c.cost) parts.push(formatCost(c.cost).text)
   return parts.join(' · ')
 }

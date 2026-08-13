@@ -35,6 +35,7 @@ export interface Task {
   done_note: string    // 归档时审核者留的完成说明（handoff done --note）；""=未留说明或归档于该功能之前
   actual_model?: string   // executor 报回的实际模型名；缺省=还没报（与入参 model 不是一回事）
   usage?: Usage           // 当前 context 占用；缺省=还没有任何一次模型调用完成
+  cumulative?: Cumulative  // 累计消耗；缺省=还没有账目，或本次是列表读取
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
 }
@@ -45,6 +46,24 @@ export interface Task {
 export interface Usage {
   context_tokens: number
   context_window?: number
+}
+
+// Cost 是累计花费及其可信度。
+// state 为 'partial' 时 ticks 只是**已知部分**的和，是下界不是总额。
+export interface Cost {
+  ticks: number   // 1 USD = 10^10 ticks
+  state: 'reported' | 'estimated' | 'partial' | 'unknown'
+}
+
+// Cumulative 是任务的累计消耗。
+// 与 Usage 是两个口径：Usage 是「现在占用多少」，本结构是「一共烧了多少」。
+// 只在任务详情（GetTask）里有，列表接口不带。
+export interface Cumulative {
+  input_tokens: number   // 未命中缓存的输入
+  cached_tokens: number  // 命中缓存的输入
+  output_tokens: number  // 含 reasoning
+  total_tokens: number   // 三项之和，后端算好
+  cost?: Cost            // 缺省=还没有任何花费信息
 }
 
 export interface Event {
