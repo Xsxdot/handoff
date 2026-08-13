@@ -94,6 +94,24 @@ func TestLatestRejectsEmptyTag(t *testing.T) {
 	}
 }
 
+// AssetName 的扩展名是与 release.yml 的契约。Windows 出 zip 而非 tar.gz：
+// zip 在资源管理器里双击即开，且 Expand-Archive 人人都有，tar.exe 只有
+// Win10 1803+ 才有。改这里必须同步改 workflow 与两个 install 脚本。
+func TestAssetNameExtensionPerOS(t *testing.T) {
+	for _, c := range []struct{ goos, goarch, want string }{
+		{"darwin", "arm64", "handoff_v1.2.3_darwin_arm64.tar.gz"},
+		{"darwin", "amd64", "handoff_v1.2.3_darwin_amd64.tar.gz"},
+		{"linux", "amd64", "handoff_v1.2.3_linux_amd64.tar.gz"},
+		{"linux", "arm64", "handoff_v1.2.3_linux_arm64.tar.gz"},
+		{"windows", "amd64", "handoff_v1.2.3_windows_amd64.zip"},
+		{"windows", "arm64", "handoff_v1.2.3_windows_arm64.zip"},
+	} {
+		if got := AssetName("v1.2.3", c.goos, c.goarch); got != c.want {
+			t.Errorf("AssetName(v1.2.3, %s, %s) = %q，期望 %q", c.goos, c.goarch, got, c.want)
+		}
+	}
+}
+
 // 默认仓库与端点不能被改掉——它们是硬约束。
 func TestDefaults(t *testing.T) {
 	if DefaultRepo != "Xsxdot/handoff" {

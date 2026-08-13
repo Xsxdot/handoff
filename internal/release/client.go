@@ -50,6 +50,18 @@ type Release struct {
 	Assets []Asset
 }
 
+// archiveExt 返回某平台的归档扩展名。
+//
+// Windows 用 zip 而非 tar.gz：zip 在资源管理器里双击即开，而 tar.gz 必须敲
+// 命令行；且 Expand-Archive 存在于每一个 PowerShell，tar.exe 只有 Win10
+// 1803+ 才有。手动下载是 Windows 用户的常见路径，这个差异值得多一种格式。
+func archiveExt(goos string) string {
+	if goos == "windows" {
+		return ".zip"
+	}
+	return ".tar.gz"
+}
+
 // AssetName 拼装某平台的资产名。
 //
 // 参数：
@@ -62,14 +74,15 @@ type Release struct {
 // 注意：
 //   - 格式必须与 .github/workflows/release.yml 里的产出**逐字一致**。
 //     不一致的症状是查得到版本但下不到东西，且每轮重试
+//   - 扩展名按平台分（见 archiveExt），install.sh / install.ps1 两边也依赖这条
 func AssetName(tag, goos, goarch string) string {
-	return fmt.Sprintf("handoff_%s_%s_%s.tar.gz", tag, goos, goarch)
+	return fmt.Sprintf("handoff_%s_%s_%s%s", tag, goos, goarch, archiveExt(goos))
 }
 
 // AssetFor 取本平台的资产。
 //
 // 返回：
-//   - 资产与是否找到。找不到说明这次发布没出这个平台（例如 Windows，B37 未支持）
+//   - 资产与是否找到。找不到说明这次发布漏了某平台
 func (r Release) AssetFor(goos, goarch string) (Asset, bool) {
 	want := AssetName(r.Tag, goos, goarch)
 	for _, a := range r.Assets {
