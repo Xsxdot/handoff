@@ -60,3 +60,18 @@ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" /tmp/handoff-pty agentd -
 | 10 | 老版本 agentd（`pty_supported=nil`）不被误判为「不支持」，文案区分「对端没上报」与「明确不支持」 | 未验（无 `pty_supported=nil` 的对端；分支已由 Task 16 `usePtySupport.test.ts` 的三态单测覆盖） |
 | 11 | 用户没有显式配置时，新版 `Save` 写出的 `config.yaml` **不含** `env_forward` 键，而 `SSH_AUTH_SOCK` 转发照样工作 | 未验（待审核者在本地带浏览器的环境执行） |
 | 12 | W4 spec §2.6 已追加指向 §1 的修正说明 | 通过（文档核对）：`docs/superpowers/specs/2026-08-12-w4-shell-calibration-design.md:179` 保留指向 `2026-08-12-w4-pty-terminal-design.md#1-前提修正控制台会话在能力上等价于主令牌` 的警告，锚点存在 |
+
+## 缺陷修复回填（2026-08-13）
+
+审核者在本地带浏览器的环境跑完了本分支的真机走查（12 条验收：10 通过 / 1 部分 / 1 未验），
+并定性了三个缺陷。三条均已在本分支修复：
+
+| 缺陷 | 现象 | 修法 | 提交 |
+|---|---|---|---|
+| A | WebGL 上下文运行期丢失后终端永久白屏；spec §6.3「不能白屏」在运行期这侧是断的 | 注册 `onContextLoss` 并 dispose addon，交回 DOM 渲染 | bcb3e2c |
+| B | `ranRef` + 局部 `cancelled` 在 StrictMode 下互相拆台，开发模式恢复不出任何终端 tab | 取消标志改为跨 effect run 的 ref，进入 effect 时撤销 | 83f7100 |
+| C | 建会话中途被卸载会漏孤儿 shell（服务端已建、id 从未回报、无人能连能杀） | 该路径显式 DELETE 掉这个没人知道的会话 | 895166f |
+
+仍未验证、不在本次修复范围内的两条：
+- 验收第 3 条只做到「两个本机 agentd 之间验通反代链路」，真 devbox + 界面远程终端入口未验（devbox 上跑的是 main，没有 PTY 接口；界面机器节点来自项目位置，假远程不上树）。
+- 验收第 9 条（`pty_supported=false` 的对端）无 Windows 对端，未验。
