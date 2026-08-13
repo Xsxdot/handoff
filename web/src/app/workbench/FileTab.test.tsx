@@ -23,7 +23,11 @@ afterEach(() => vi.mocked(fetchWorkspaceFile).mockReset())
 
 describe('FileTab', () => {
   it('按基准目录 + 相对路径 + 机器名取文件并显示内容', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n' })
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({
+      content: 'module handoff\n',
+      size: 15,
+      sha256: 's1',
+    })
     render(<FileTab base={base} rel="go.mod" />)
     await waitFor(() => expect(screen.getByText(/module handoff/)).toBeInTheDocument())
     expect(fetchWorkspaceFile).toHaveBeenCalledWith('/w/b2-b3', 'go.mod', 'devbox')
@@ -44,7 +48,7 @@ describe('FileTab', () => {
   })
 
   it('本期只读：不渲染保存按钮，且明示只读', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'x' })
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'x', size: 1, sha256: 'sx' })
     render(<FileTab base={base} rel="a.txt" />)
     await waitFor(() => expect(screen.getByText('x')).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /保存/ })).not.toBeInTheDocument()
@@ -52,10 +56,10 @@ describe('FileTab', () => {
   })
 
   it('换文件时重新取数', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'a' })
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'a', size: 1, sha256: 'sa' })
     const { rerender } = render(<FileTab base={base} rel="a.txt" />)
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument())
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'b' })
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'b', size: 1, sha256: 'sb' })
     rerender(<FileTab base={base} rel="b.txt" />)
     await waitFor(() => expect(screen.getByText('b')).toBeInTheDocument())
   })
