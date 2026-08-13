@@ -1388,6 +1388,11 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 // 文本全部丢弃、idle 走空回合分支永不分类，任务静默挂死（A-3）。回合缓冲由
 // mapIdle 在分类后清空即可，不需要第二个清空信号。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
+	// 模型名与用量就在这一帧的 info 里——此前只解了 id 与 role。
+	// 零值帧由 parseMessageUsage 内部跳过，否则界面会在每条新消息开头闪回 0。
+	if model, u, ok := parseMessageUsage(props); ok && (model != "" || u != nil) {
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
 	var msg struct {
 		Info struct {
 			ID   string `json:"id"`
