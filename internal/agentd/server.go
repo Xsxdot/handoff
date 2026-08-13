@@ -191,6 +191,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
+//   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
@@ -224,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/machines", s.handleMachines)
 	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
+	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)

@@ -79,6 +79,10 @@ func TestContractFixtures(t *testing.T) {
 		{"PtySessionsResp", ptySessionsRespSample(now)},
 		{"Frame", frameSample(now)},
 		{"DirListResult", dirListSample()},
+		{"FileRead", fileReadSample()},
+		{"FileWriteReq", fileWriteReqSample()},
+		{"FileWriteResp", fileWriteRespSample()},
+		{"FileConflictResp", fileConflictSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -409,6 +413,43 @@ func dirListSample() DirListResult {
 		Entries: []DirEntry{
 			{Name: "internal", IsDir: true},
 			{Name: "go.mod", IsDir: false, Size: 1284},
+		},
+	}
+}
+
+// fileReadSample 返回 FileRead 的代表性样本（可编辑文本：非截断非二进制，有 sha256）。
+func fileReadSample() FileRead {
+	return FileRead{
+		Content: "module handoff\n\ngo 1.26.1\n",
+		Size:    29,
+		SHA256:  "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	}
+}
+
+// fileWriteReqSample 返回 FileWriteReq 的代表性样本（带 base_sha256）。
+func fileWriteReqSample() FileWriteReq {
+	return FileWriteReq{
+		Content:    "module handoff\n\ngo 1.26.1\n",
+		BaseSHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	}
+}
+
+// fileWriteRespSample 返回 FileWriteResp 的代表性样本。
+func fileWriteRespSample() FileWriteResp {
+	return FileWriteResp{
+		SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		Size:   29,
+	}
+}
+
+// fileConflictSample 返回 FileConflictResp 的代表性样本（带磁盘现状 current）。
+func fileConflictSample() FileConflictResp {
+	return FileConflictResp{
+		Error: "文件已被改动",
+		Current: FileRead{
+			Content: "module handoff\n",
+			Size:    15,
+			SHA256:  "8b1a9953c4611296a827abf8c47804d7",
 		},
 	}
 }

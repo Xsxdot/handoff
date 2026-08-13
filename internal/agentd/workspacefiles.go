@@ -1,12 +1,13 @@
-// 本文件实现「按工作树寻址」的两个只读文件接口：目录列举与读文件。
+// 本文件实现「按工作树寻址」的文件接口：目录列举、读文件与写文件。
 //
 // 职责：
 //   - resolveWorkspace：白名单闸门——只有 GET /api/projects/tree 探测得出的
 //     工作树路径才被接受
-//   - handleWorkspaceDir / handleWorkspaceFile：两个端点的 HTTP 层
+//   - handleWorkspaceDir / handleWorkspaceFile / handleWorkspaceFileWrite：
+//     三个端点的 HTTP 层（写文件只解请求体 + 映射错误，判断力全在 WriteFile）
 //
 // 边界：
-//   - 不写文件、不建目录、不删任何东西：本期是只读的（spec §7.3）
+//   - 写接口只在单个已存在文件上做原子替换：不建目录、不删任何东西
 //   - 不接受任意路径。**这是参数校验，不是安全边界**：控制台会话在能力上
 //     等价于主令牌（auth 中间件让两者落在同一个 mux 上，其中包含
 //     POST /api/tasks/{id}/run 的 sh -c），白名单挡不住任何有心人。它存在的
@@ -19,6 +20,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -195,4 +197,74 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		"bytes", len(res.Content), "size", res.Size,
 		"truncated", res.Truncated, "binary", res.Binary)
 	writeJSON(w, http.StatusOK, res)
+}
+
+// handleWorkspaceFileWrite 处理 PUT /api/workspaces/file?path=&rel=[&machine=]。
+//
+// 判断力全在 WriteFile 里，本函数只做三件事：解请求体、调它、把哨兵错误映射成
+// 状态码。**中文错误原文原样透传**，不吞成「操作失败」——用户看到「不允许写入
+// .git 目录」能立刻明白，看到「操作失败」只能来问。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 工作树内的相对路径（必须）
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested，与两个读端点同一条路）
+func (s *Server) handleWorkspaceFileWrite(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	rel := r.URL.Query().Get("rel")
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	if rel == "" {
+		s.log.Warn("工作树写文件缺 rel 参数", "root", root)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 rel 参数"})
+		return
+	}
+	var req proto.FileWriteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("工作树写文件请求体解析失败", "root", root, "rel", rel, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	// 请求体里的 content 可能有几百 KB，日志只记长度不记内容
+	s.log.Info("工作树写文件请求", "root", root, "rel", rel,
+		"bytes", len(req.Content), "base", shortHash(req.BaseSHA256))
+
+	res, err := WriteFile(root, rel, req.Content, req.BaseSHA256)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrBaseMismatch):
+			// 409 的 body 带磁盘现状：冲突界面的两个出口都要用它
+			s.log.Warn("工作树写文件冲突", "root", root, "rel", rel,
+				"base", shortHash(req.BaseSHA256), "current", shortHash(res.SHA256))
+			writeJSON(w, http.StatusConflict, proto.FileConflictResp{
+				Error: "文件已被改动", Current: res})
+		case errors.Is(err, ErrPathEscape):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出工作树）"})
+		case errors.Is(err, ErrGitDirWrite):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不允许写入 .git 目录"})
+		case errors.Is(err, ErrSymlinkTarget):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "目标是符号链接，不支持在线编辑"})
+		case errors.Is(err, ErrPathIsDir):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径是目录，不是文件"})
+		case errors.Is(err, ErrNotRegularFile):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是普通文件"})
+		case errors.Is(err, ErrBinaryFile):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "二进制文件不支持在线编辑"})
+		case errors.Is(err, ErrFileTooLarge):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "文件超过 1 MB，不支持在线编辑"})
+		case errors.Is(err, fs.ErrNotExist):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
+		default:
+			s.log.Error("工作树写文件失败", "root", root, "rel", rel, "cause", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "写入文件失败"})
+		}
+		return
+	}
+	s.log.Info("工作树写文件完成", "root", root, "rel", rel,
+		"bytes", res.Size, "sha256", shortHash(res.SHA256))
+	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: res.SHA256, Size: res.Size})
 }
