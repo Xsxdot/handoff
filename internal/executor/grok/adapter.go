@@ -31,6 +31,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 const (
@@ -473,9 +474,23 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		return
 	}
 	var out struct {
-		StopReason string `json:"stopReason"`
+		StopReason string          `json:"stopReason"`
+		Meta       json.RawMessage `json:"_meta"` // 整回合的 usage 与 costUsdTicks（B83）
 	}
 	_ = json.Unmarshal(res.Result, &out)
+	// 累计消耗要**先于** stopReason 判定记账：回合没跑完（拒答、超限、被取消）
+	// 这些 token 也已经烧掉了，漏记就成了系统性少算。
+	// 注意这与 onUsageNotification 取的是**两套口径**、缓存算法相反（见 spend.go 文件头）。
+	// 解析失败**有意不记日志**：awaitTurn 每回合都跑，失败只是这条没入账，不构成告警。
+	if len(out.Meta) > 0 {
+		if e, ok := parseTurnMetaSpend(out.Meta); ok {
+			if e.CostState == proto.CostUnknown {
+				a.log.Info("grok 本回合没有花费戳（pool/OAuth 路径或 cost_is_partial），"+
+					"token 照常入账、花费记未知", "task", r.taskID, "prompt", e.Key)
+			}
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+		}
+	}
 	if out.StopReason != "end_turn" {
 		a.emitFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
 		return
