@@ -80,6 +80,35 @@ func initGitRepoIn(t *testing.T, dir string) string {
 	return dir
 }
 
+// initClonedRepo 造「上游仓库 + 克隆」这一对，返回克隆出的仓库路径。
+//
+// 参数：
+//   - baseBranch: 在上游建出的分支名；克隆里它**只以远程跟踪 ref 存在**
+//
+// 为什么必须是克隆：B76 的触发前提是「base 只有远程跟踪 ref、无本地同名分支」，
+// 而 initTestRepo 那种本地 git init 的仓库里本地同名分支总是存在，DWIM 不会
+// 发生——这正是这个 bug 一直没被任何测试抓到的原因。
+//
+// 为什么把 origin 改名成 upstream：registerTestProject 要往仓库里 remote add
+// origin，克隆自带的 origin 会让它撞车。改名后远程跟踪 ref 变成
+// refs/remotes/upstream/<baseBranch>，DWIM 照样触发（它认的是「在所有 remote 里
+// 唯一」，不是「叫 origin」），顺带证明这个缺陷与 remote 叫什么无关。
+func initClonedRepo(t *testing.T, baseBranch string) string {
+	t.Helper()
+	up := initTestRepo(t)
+	gitT(t, up, "branch", baseBranch)
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "config", "user.email", "test@handoff.dev")
+	gitT(t, clone, "config", "user.name", "handoff test")
+	// 前提自检：克隆里不能有本地同名分支，否则用例测的就不是 B76 的场景了
+	if out := gitOut(t, clone, "branch", "--list", baseBranch); out != "" {
+		t.Fatalf("fixture 失效：克隆里出现了本地分支 %s（%q），触发前提不成立", baseBranch, out)
+	}
+	return clone
+}
+
 // TestPrepareBranchCleanAndDirty 验证分支准备的两种前置：
 // 干净工作区 → 建出 handoff/<id8> 并切过去；脏工作区（已修改/未跟踪）→ ErrDirtyWorktree
 // 拒绝派发，且拒绝后不得擅自建分支。
@@ -888,5 +917,144 @@ func TestEnsureRepoUsableGitMissing(t *testing.T) {
 	err := EnsureRepoUsable(context.Background(), repo)
 	if !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("git 不在 PATH 时 err = %v, want ErrRepoUnusable", err)
+	}
+}
+
+// TestPrepareWorkspaceRejectsBranchIdentityMismatch 钉住 B76 的守卫：git 报成功
+// 但给出的分支不是请求的那个时，必须回滚并拒发，而不是带着错分支继续。
+func TestPrepareWorkspaceRejectsBranchIdentityMismatch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	wtDir := filepath.Join(t.TempDir(), "worktrees")
+
+	_, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: clone, TaskID: "abcdefgh-b76", NewWorktree: true, WorktreesDir: wtDir,
+		NewBranch: "feat/wanted", Base: "shared-base",
+	})
+	if !errors.Is(err, ErrBranchIdentityMismatch) {
+		t.Fatalf("应按分支身份不符拒发, got: %v", err)
+	}
+	// 错误文本必须同时点名两个分支——只说「不符」的报错等于没说
+	if !strings.Contains(err.Error(), "feat/wanted") || !strings.Contains(err.Error(), "shared-base") {
+		t.Fatalf("错误文本应同时含请求分支与实到分支: %v", err)
+	}
+	// 拒发必须干净：刚建的工作树不能留下
+	if _, statErr := os.Stat(filepath.Join(wtDir, "abcdefgh")); !os.IsNotExist(statErr) {
+		t.Fatalf("拒发后 managed worktree 应已清理, stat err=%v", statErr)
+	}
+}
+
+// TestPrepareWorkspaceRemoteOnlyBaseAllPaths 钉住三条工作树路径在「base 只有
+// origin/<name>」时的一致行为：都应建出请求的分支。原地与用户树此前是硬失败。
+func TestPrepareWorkspaceRemoteOnlyBaseAllPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(t *testing.T, clone, base string) WorkspaceReq
+	}{
+		{"新树", func(t *testing.T, clone, base string) WorkspaceReq {
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-nw", NewWorktree: true,
+				WorktreesDir: filepath.Join(t.TempDir(), "w"), NewBranch: "feat/wanted", Base: base}
+		}},
+		{"原地", func(t *testing.T, clone, base string) WorkspaceReq {
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-ip", NewBranch: "feat/wanted", Base: base}
+		}},
+		{"用户树", func(t *testing.T, clone, base string) WorkspaceReq {
+			wt := filepath.Join(t.TempDir(), "userwt")
+			gitT(t, clone, "worktree", "add", "-q", wt)
+			return WorkspaceReq{Repo: clone, TaskID: "abcdefgh-uw", Worktree: wt,
+				NewBranch: "feat/wanted", Base: base}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := initClonedRepo(t, "shared-base")
+			// 调用方（manager）已把起点解析成 sha，测试同样喂 sha
+			base, err := resolveCommit(context.Background(), clone, "shared-base")
+			if err != nil {
+				t.Fatalf("解析起点: %v", err)
+			}
+			ws, err := PrepareWorkspace(context.Background(), tc.mk(t, clone, base))
+			if err != nil {
+				t.Fatalf("应成功: %v", err)
+			}
+			if ws.Branch != "feat/wanted" {
+				t.Fatalf("ws.Branch=%q", ws.Branch)
+			}
+			if cur := gitOut(t, ws.WorkDir, "branch", "--show-current"); cur != "feat/wanted" {
+				t.Fatalf("工作区当前分支=%q", cur)
+			}
+		})
+	}
+}
+
+// TestResolveCommitRemoteOnlyBranch 钉住 B76 的源头修复：base 只有 origin/<name>
+// 时也必须解析得出（取远程尖端），否则修复会以「拒发」的形式打断正常派发。
+func TestResolveCommitRemoteOnlyBranch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	want := gitOut(t, clone, "rev-parse", "upstream/shared-base")
+
+	got, err := resolveCommit(context.Background(), clone, "shared-base")
+	if err != nil {
+		t.Fatalf("远程跟踪分支简写应可解析: %v", err)
+	}
+	if got != want {
+		t.Fatalf("sha=%q, want %q", got, want)
+	}
+}
+
+// TestResolveCommitAnnotatedTagPeelsToCommit 钉住 ^{commit} 剥离：annotated tag
+// 的裸 rev-parse 给的是 tag 对象，直接拿去开分支会得到非预期的起点。
+func TestResolveCommitAnnotatedTagPeelsToCommit(t *testing.T) {
+	repo := initTestRepo(t)
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "tag", "-a", "v1", "-m", "release 1")
+
+	got, err := resolveCommit(context.Background(), repo, "v1")
+	if err != nil {
+		t.Fatalf("annotated tag 应可解析: %v", err)
+	}
+	if got != head {
+		t.Fatalf("应剥离到 commit: got=%q, want=%q", got, head)
+	}
+}
+
+// TestResolveCommitMissingRejects 钉住拒发出口：起点不存在时给可操作的报错，
+// 而不是让它一路走到 git 内部措辞（`is not a commit`）才炸。
+func TestResolveCommitMissingRejects(t *testing.T) {
+	repo := initTestRepo(t)
+
+	_, err := resolveCommit(context.Background(), repo, "no-such-branch")
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("应按 ErrBadWorkspaceReq 拒发, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") || !strings.Contains(err.Error(), "git push") {
+		t.Fatalf("错误文本应含起点原文与可操作出路: %v", err)
+	}
+}
+
+// TestResolveCommitAmbiguousRemoteOnlyBranch 钉住歧义出口：两个远端都有同名
+// 分支时（fork 工作流 origin+upstream 的常态），必须按歧义拒发并列出全部候选，
+// 而不能降级成「起点不存在，先 git push」——起点明明在，让审核者去 push 是
+// 把他引向错误的排查方向。
+func TestResolveCommitAmbiguousRemoteOnlyBranch(t *testing.T) {
+	up := initTestRepo(t)
+	gitT(t, up, "branch", "shared-base")
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "config", "user.email", "test@handoff.dev")
+	gitT(t, clone, "config", "user.name", "handoff test")
+	// 第二个远端指向同一个上游：fetch 后 refs/remotes/upstream/shared-base 与
+	// refs/remotes/other/shared-base 同时存在，for-each-ref 唯一匹配失效
+	gitT(t, clone, "remote", "add", "other", up)
+	gitT(t, clone, "fetch", "-q", "other")
+
+	_, err := resolveCommit(context.Background(), clone, "shared-base")
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("歧义应按 ErrBadWorkspaceReq 拒发, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "upstream/shared-base") || !strings.Contains(err.Error(), "other/shared-base") {
+		t.Fatalf("错误文本应列出全部候选 ref: %v", err)
+	}
+	if strings.Contains(err.Error(), "git push") {
+		t.Fatalf("歧义不是不存在，错误文本不得误导审核者去 push: %v", err)
 	}
 }

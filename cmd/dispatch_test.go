@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // dispatchTestTaskJSON 是假 agentd 返回的任务 JSON。测试可临时改写它来构造
@@ -201,24 +203,24 @@ func TestDispatchStdoutStrictSingleLineJSON(t *testing.T) {
 	}
 }
 
-// TestDispatchPrintsBaselineToStderr 验证派发后 stderr 打出基线短号，且 stdout
-// 契约不受影响（仍是单行任务 JSON——上层脚本按行解析，多一行就全乱）。
+// TestDispatchPrintsBaselineToStderr 验证派发后 stderr 打出分支名与起点短号，
+// 且 stdout 契约不受影响（仍是单行任务 JSON——上层脚本按行解析，多一行就全乱）。
 func TestDispatchPrintsBaselineToStderr(t *testing.T) {
 	old := dispatchTestTaskJSON
-	dispatchTestTaskJSON = `{"id":"task-abc123","state":"running","base_commit":"d64bac4d64bac4d64bac4d64bac4d64bac4d64ba","base_ahead":0}`
+	dispatchTestTaskJSON = `{"id":"task-abc123","state":"running","branch":"feat/abc","base_commit":"d64bac4d64bac4d64bac4d64bac4d64bac4d64ba","base_ahead":0}`
 	t.Cleanup(func() { dispatchTestTaskJSON = old })
 
 	out, errOut, err := runDispatch(t, "--no-terminal")
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if !strings.Contains(errOut, "基线 d64bac4") {
-		t.Fatalf("stderr 应含基线短号，得到 %q", errOut)
+	if !strings.Contains(errOut, "分支 feat/abc，起点 d64bac4") {
+		t.Fatalf("stderr 应含分支名与起点短号，得到 %q", errOut)
 	}
 	if strings.Contains(errOut, "领先") {
 		t.Fatalf("未分叉时不该提领先提交数，得到 %q", errOut)
 	}
-	if strings.Contains(out, "基线") {
+	if strings.Contains(out, "分支") || strings.Contains(out, "起点") {
 		t.Fatalf("stdout 必须只有任务 JSON（脚本按行解析），得到 %q", out)
 	}
 }
@@ -416,5 +418,36 @@ func TestDispatchNoDirtySnapshotNoLine(t *testing.T) {
 	}
 	if strings.Contains(errOut, "未提交改动") {
 		t.Fatalf("干净时不应打提示行，得到 %q", errOut)
+	}
+}
+
+// TestBaselineLine 钉住派发回显：分支名、解析后起点短号、用户输入的 --base
+// 原文三者同行互证。B76 现场里只有一行「基线 worktre」——分支名被按短 sha
+// 截成 7 字符，审核者盯着它也看不出分支错了。
+func TestBaselineLine(t *testing.T) {
+	sha := "e911147aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, tc := range []struct {
+		name, userBase string
+		task           proto.Task
+		want           string
+	}{
+		{"给了分支名", "worktree-b69-b70-proc-footprint",
+			proto.Task{Branch: "feat/b72-birth-registry", BaseCommit: sha},
+			"分支 feat/b72-birth-registry，起点 e911147（worktree-b69-b70-proc-footprint）"},
+		{"没给 base", "",
+			proto.Task{Branch: "handoff/abcdefgh", BaseCommit: sha},
+			"分支 handoff/abcdefgh，起点 e911147"},
+		{"base 本来就是 sha", sha,
+			proto.Task{Branch: "feat/x", BaseCommit: sha},
+			"分支 feat/x，起点 e911147"},
+		{"任务仓库领先", "main",
+			proto.Task{Branch: "feat/x", BaseCommit: sha, BaseAhead: 3},
+			"分支 feat/x，起点 e911147（main）（任务仓库 HEAD 领先 3 个提交，新分支不含它们）"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := baselineLine(&tc.task, tc.userBase); got != tc.want {
+				t.Fatalf("got  %q\nwant %q", got, tc.want)
+			}
+		})
 	}
 }

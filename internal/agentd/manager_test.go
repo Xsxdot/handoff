@@ -2017,3 +2017,32 @@ func TestWorktreeCleanupFailureHintPointsToReclaim(t *testing.T) {
 		t.Fatalf("提示必须带真因，实得：%s", got)
 	}
 }
+
+// TestDispatchBaseBranchNameYieldsRequestedBranch 是 B76 的端到端守门人：
+// --base 给分支名（且该分支在任务仓库里只有远程跟踪 ref）时，任务必须开在
+// --new-branch 请求的分支上，且 BaseCommit 落库为 40 位 sha。
+func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	wantBase := gitOut(t, clone, "rev-parse", "upstream/shared-base")
+	m := compensateOnlyManager(t)
+	pid := registerTestProject(t, m, clone)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
+		NewBranch: "feat/wanted", Base: "shared-base",
+	})
+	if err != nil {
+		t.Fatalf("派发应成功: %v", err)
+	}
+	if task.Branch != "feat/wanted" {
+		t.Fatalf("任务分支应为请求的那个, got %q", task.Branch)
+	}
+	// BaseCommit 的注释契约是「40 位 sha」，B76 之前它存的是 --base 原文
+	if task.BaseCommit != wantBase {
+		t.Fatalf("BaseCommit 应为解析后的 sha: got %q, want %q", task.BaseCommit, wantBase)
+	}
+	// 分支确实建在任务仓库里，且指向 base 的尖端
+	if got := gitOut(t, clone, "rev-parse", "refs/heads/feat/wanted"); got != wantBase {
+		t.Fatalf("新分支应从解析后的起点开出: branch=%s base=%s", got, wantBase)
+	}
+}

@@ -124,6 +124,42 @@ func shortSHA(sha string) string {
 	return sha[:7]
 }
 
+// looksLikeSHA 判断字符串是否是提交号形态（全十六进制且不短于 7 位）。
+// 用途单一：决定回显里要不要把用户输入的 --base 原文再打一遍——原文就是
+// sha 时再打一遍是纯噪音。
+func looksLikeSHA(s string) bool {
+	if len(s) < 7 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
+}
+
+// baselineLine 拼派发后回显给审核者的那一行（分支 + 起点 [+ base 原文] [+ 领先提示]）。
+//
+// 参数：
+//   - task: 派发应答里的任务；BaseCommit 由 agentd 保证是 40 位 sha
+//   - userBase: 用户在命令行给的 --base 原文（空=没给）
+//
+// 为什么要同时打三样：B76 的现场里回显只有「基线 worktre」——BaseCommit 当时
+// 存的是分支名，又被 shortSHA 按短 sha 截成 7 字符，于是「任务开错了分支」这件
+// 事在派发那一刻毫无痕迹，一路静默到收工 pull 才炸。三个信息同行互证，任何一
+// 项不符当场看得见。
+func baselineLine(task *proto.Task, userBase string) string {
+	line := fmt.Sprintf("分支 %s，起点 %s", task.Branch, shortSHA(task.BaseCommit))
+	if userBase != "" && !looksLikeSHA(userBase) {
+		line += "（" + userBase + "）"
+	}
+	if task.BaseAhead > 0 {
+		line += fmt.Sprintf("（任务仓库 HEAD 领先 %d 个提交，新分支不含它们）", task.BaseAhead)
+	}
+	return line
+}
+
 // dispatchCmd 派发一个计划任务到 agentd 执行。
 //
 // 使用方式：handoff dispatch [--project <名字>] [--prompt ...] [--executor x] [--model m]
@@ -215,11 +251,7 @@ var dispatchCmd = &cobra.Command{
 		// 分支开在了三批改动之前，而这件事在任何输出里都不留痕迹——审核者
 		// 甚至反过来怀疑是执行者找错了目录
 		if task.BaseCommit != "" {
-			line := "基线 " + shortSHA(task.BaseCommit)
-			if task.BaseAhead > 0 {
-				line += fmt.Sprintf("（任务仓库 HEAD 领先 %d 个提交，新分支不含它们）", task.BaseAhead)
-			}
-			fmt.Fprintln(cmd.ErrOrStderr(), line)
+			fmt.Fprintln(cmd.ErrOrStderr(), baselineLine(task, dispatchBase))
 		}
 		// B43：新工作树不含执行机仓库里未提交的改动，而审核者看不到那台机器的
 		// 工作区——不说，executor 就会在一份没有那些改动的代码上开工而无人知晓。
