@@ -91,10 +91,14 @@ func (s *Server) workspaceRootOrErr(w http.ResponseWriter, r *http.Request) (str
 	}
 	root, ok := s.resolveWorkspace(r.Context(), path)
 	if !ok {
-		// 403 而不是 404：路径存在与否不该从状态码泄露出去，而「你没有权限
-		// 浏览这个目录」正是真实原因
+		// 400 而不是 403：白名单是**参数校验**，不是安全边界。控制台会话在
+		// 能力上等价于主令牌（auth 中间件让两者落在同一个 mux 上，其中包含
+		// POST /api/tasks/{id}/run 的 sh -c），所以这里挡不住任何有心人，
+		// 它挡的是「前端传了个打错的路径，把 agentd 变成任意目录浏览器」。
+		// 403 会宣称一个不存在的权限模型，误导排障的人往鉴权方向找。
+		// 完整论证见 docs/superpowers/specs/2026-08-12-w4-pty-terminal-design.md §1
 		s.log.Warn("工作树白名单拒绝", "path", path, "url_path", r.URL.Path)
-		writeJSON(w, http.StatusForbidden, map[string]string{
+		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "路径不是本机已探测到的工作树，拒绝访问"})
 		return "", false
 	}
@@ -104,7 +108,7 @@ func (s *Server) workspaceRootOrErr(w http.ResponseWriter, r *http.Request) (str
 // handleWorkspaceDir 处理 GET /api/workspaces/dir?path=&rel=[&machine=]。
 //
 // 参数：
-//   - path: 工作树绝对路径（必须，且必须命中白名单，否则 403）
+//   - path: 工作树绝对路径（必须，且必须命中白名单，否则 400）
 //   - rel: 工作树内的相对目录路径；省略或空串表示工作树根
 //   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
 func (s *Server) handleWorkspaceDir(w http.ResponseWriter, r *http.Request) {

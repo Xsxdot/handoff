@@ -1,6 +1,6 @@
 // 按工作树寻址的两个只读接口（/api/workspaces/dir、/api/workspaces/file）的
-// 白盒测试。核心红线：未登记的任意路径（含 $HOME）一律 403——agentd 不是
-// 任意目录浏览器，论证见 spec §2.6。
+// 白盒测试。核心红线：未登记的任意路径（含 $HOME）一律 400——白名单是
+// **参数校验**不是安全边界，agentd 不是任意目录浏览器（PTY spec §1）。
 package agentd
 
 import (
@@ -86,14 +86,14 @@ func TestWorkspaceDirListsWhitelistedPath(t *testing.T) {
 	}
 }
 
-// TestWorkspaceDirRejectsUnknownPath 是本任务的安全红线：
-// 未登记的任意目录一律 403，agentd 不是任意目录浏览器。
+// TestWorkspaceDirRejectsUnknownPath 钉住白名单语义：未登记的任意目录一律
+// 400——这是参数校验不是权限边界（PTY spec §1），agentd 不是任意目录浏览器。
 func TestWorkspaceDirRejectsUnknownPath(t *testing.T) {
 	env, _ := wsFilesFixture(t)
 	outside := t.TempDir()
 	code, body := doGet(t, env, "/api/workspaces/dir", url.Values{"path": {outside}})
-	if code != http.StatusForbidden {
-		t.Fatalf("状态码 = %d, want 403；体 = %s", code, body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, want 400；体 = %s", code, body)
 	}
 }
 
@@ -105,8 +105,23 @@ func TestWorkspaceDirRejectsHome(t *testing.T) {
 		t.Skip("取不到 home 目录")
 	}
 	code, _ := doGet(t, env, "/api/workspaces/dir", url.Values{"path": {home}})
-	if code != http.StatusForbidden {
-		t.Fatalf("$HOME 列举状态码 = %d, want 403", code)
+	if code != http.StatusBadRequest {
+		t.Fatalf("$HOME 列举状态码 = %d, want 400", code)
+	}
+}
+
+// TestWorkspaceWhitelistRejectsWith400 钉住状态码语义：白名单是**参数校验**
+// 不是权限边界，所以是 400 不是 403。403 会让人以为控制台会话比主令牌弱，
+// 而它们在能力上等价（PTY spec §1）。
+func TestWorkspaceWhitelistRejectsWith400(t *testing.T) {
+	env, _ := wsFilesFixture(t)
+	outside := t.TempDir()
+	code, body := doGet(t, env, "/api/workspaces/dir", url.Values{"path": {outside}})
+	if code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, want 400；体 = %s", code, body)
+	}
+	if !strings.Contains(string(body), "路径不是本机已探测到的工作树，拒绝访问") {
+		t.Errorf("响应体不含白名单拒绝文案：%s", body)
 	}
 }
 
