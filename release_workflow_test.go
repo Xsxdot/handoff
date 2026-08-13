@@ -311,3 +311,24 @@ func TestChangelogExists(t *testing.T) {
 		t.Fatal("CHANGELOG.md 缺 [Unreleased] 一节")
 	}
 }
+
+// PowerShell 5.1（Windows 自带、绝大多数用户手上就是它）读 .ps1 时，没有
+// UTF-8 BOM 就按系统 ANSI 代码页解码。中文 Windows 是 cp936/GBK，GBK 的前导
+// 字节会把紧跟其后的 ASCII 字符吞掉，脚本当场变成语法错误、一行都跑不了。
+//
+// 这条断言必须存在的理由：CI 的 windows-latest 是 cp1252，字节一一对应不吞
+// 字符，脚本照样能跑（只是中文乱码）——所以 CI 全绿也证明不了真机能跑。
+// 08-13 真机（zh-CN，PowerShell 5.1.19041）实测炸过一次，就是这么炸的。
+func TestPowerShellScriptsCarryUTF8BOM(t *testing.T) {
+	for _, name := range []string{"install.ps1", "install_test.ps1"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读 %s 失败: %v", name, err)
+		}
+		// 写成转义而不是字面 BOM：Go 源码里出现字面 BOM 会被编译器直接拒收
+		if !strings.HasPrefix(string(b), "\xef\xbb\xbf") {
+			t.Fatalf("%s 缺 UTF-8 BOM —— PowerShell 5.1 会按 ANSI 代码页解码它，"+
+				"中文 Windows 上整个脚本会变成语法错误", name)
+		}
+	}
+}

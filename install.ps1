@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # handoff 的 Windows 一行安装脚本。
 #
 # 用法：irm https://handoff.gosuper.dev/install.ps1 | iex
@@ -17,6 +17,14 @@
 #   HANDOFF_INSTALL_LIB  设为 1 时只定义函数不执行主流程（供 install_test.ps1 用）
 #
 # 兼容性：必须同时在 Windows 自带的 PowerShell 5.1 与 PowerShell 7 上可用。
+#
+# 本文件**必须带 UTF-8 BOM**（首三字节 EF BB BF），别把它当成编辑器噪音删掉：
+# PowerShell 5.1 读 .ps1 时，没有 BOM 就按系统 ANSI 代码页解码，而不是 UTF-8。
+# 在中文 Windows（cp936/GBK）上，注释里的中文会被按 GBK 拆成双字节——GBK 的
+# 前导字节会把紧跟其后的 ASCII 字符（引号、右括号、换行）一并吞掉，于是整个
+# 脚本变成语法错误、一行都跑不了。英文 Windows（cp1252）字节一一对应不吞字符，
+# 只是中文显示成乱码，照样能跑——所以 CI 的 windows-latest 验不出这条，
+# 只有真机（zh-CN）会炸。BOM 一加，5.1 与 7 都按 UTF-8 解码。
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 

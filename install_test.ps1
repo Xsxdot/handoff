@@ -1,10 +1,14 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # install.ps1 的单元测试：只测能纯函数化的部分（架构归一、安装目录、校验和）。
 #
 # 用法：pwsh -File install_test.ps1  /  powershell.exe -File install_test.ps1
 # 全通过时静默退出 0；有失败时逐条打印期望/实得并退 1。
 #
 # 边界：不测下载与安装本身——那需要真实 Release，属真机验证。
+#
+# 与 install.ps1 同理，本文件**必须带 UTF-8 BOM**：PowerShell 5.1 无 BOM 时按
+# 系统 ANSI 代码页解码，中文 Windows 上会把脚本解成语法错误。原委见 install.ps1
+# 头部；`TestPowerShellScriptsCarryUTF8BOM` 守着这条，删掉 BOM 会让测试变红。
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
