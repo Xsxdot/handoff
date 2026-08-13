@@ -17,12 +17,16 @@
 // TabContent 是一个 tab 承载的东西。
 //
 // 三种正式种类的「目标」各不相同，这决定了去重规则（见 dedupKey）：
-//   - terminal 的目标是序号：同一目录可以开多个终端，永不去重
+//   - terminal 的目标是序号；有会话后目标是那个服务端会话的 id
 //   - file 的目标是基准目录内的相对路径
 //   - tui 的目标是 task id
 export type TabContent =
   | { kind: 'blank' }
-  | { kind: 'terminal'; seq: number }
+  // sessionId 是服务端会话的 id，**建出来之后**才有。
+  //
+  // 为什么可选而不是必填：tab 先出现、会话后建立——用户点「终端」的那一刻
+  // 界面就该有反应，不能等一次网络往返。会话建成后由 TerminalTab 回填。
+  | { kind: 'terminal'; seq: number; sessionId?: string }
   | { kind: 'file'; rel: string }
   | { kind: 'tui'; taskId: string }
 
@@ -50,14 +54,19 @@ export const EMPTY_WORKBENCH: Workbench = { groups: [{ tabs: [], activeId: null 
 
 // dedupKey 返回一个 tab 内容的去重键；返回 null 表示这种内容**永不去重**。
 //
-// 为什么 terminal 与 blank 不去重：它们没有「目标」——再开一个终端就是真的
-// 想要第二个终端，把它折叠到已有终端上是把用户的意图吃掉了。
+// 终端分两种情况：
+//   - 还没有 sessionId：没有「目标」，永不去重——再开一个终端就是真的想要
+//     第二个终端，把它折叠到已有终端上是把用户的意图吃掉了
+//   - 已有 sessionId：目标就是那个服务端会话。刷新页面时会话列表与残留 tab
+//     可能同时命中同一个会话，不去重就会长出两个连着同一个 PTY 的 tab
 export function dedupKey(c: TabContent): string | null {
   switch (c.kind) {
     case 'file':
       return `file:${c.rel}`
     case 'tui':
       return `tui:${c.taskId}`
+    case 'terminal':
+      return c.sessionId ? `pty:${c.sessionId}` : null
     default:
       return null
   }

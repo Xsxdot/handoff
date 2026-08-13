@@ -399,3 +399,26 @@ func TestRenderStatusShowsPerTaskProcs(t *testing.T) {
 		t.Fatalf("Procs=nil 时不该追加进程数:\n%s", nilBuf.String())
 	}
 }
+
+// TestRenderStatusShowsPtySessions 验证终端会话数出现在 status，
+// 且 nil 时整行不打印（对端没上报，编一个 0 就是假结论）。
+func TestRenderStatusShowsPtySessions(t *testing.T) {
+	two := 2
+	st := &proto.StatusResp{
+		Listen: "127.0.0.1:7777", DataDir: "/d", StartedAt: time.Now(),
+		Executors: []string{"opencode"}, DefaultExecutor: "opencode",
+		TaskCounts: map[string]int{}, PtySessions: &two,
+	}
+	var buf bytes.Buffer
+	renderStatus(&buf, "http://x", proto.BuildInfo{}, st)
+	if !strings.Contains(buf.String(), "终端") || !strings.Contains(buf.String(), "2 个会话") {
+		t.Fatalf("应含终端会话行:\n%s", buf.String())
+	}
+
+	var nilBuf bytes.Buffer
+	st.PtySessions = nil
+	renderStatus(&nilBuf, "http://x", proto.BuildInfo{}, st)
+	if strings.Contains(nilBuf.String(), "终端") {
+		t.Fatalf("PtySessions=nil 时不该打这一行:\n%s", nilBuf.String())
+	}
+}

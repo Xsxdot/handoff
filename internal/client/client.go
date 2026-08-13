@@ -1466,3 +1466,23 @@ func (c *Client) sweepStaleCursorTemps(dir, taskID string) {
 		c.log().Debug("已清理遗留 cursor 临时文件", "task", taskID, "path", m)
 	}
 }
+
+// PtySessions 取对端的**单机**终端会话列表（GET /api/pty/sessions）。
+//
+// 供本机 agentd 的 ?scope=all 扇出使用，调用方应先 MarkForwarded()——
+// 否则对端会再扇出一轮，一跳封顶的约定就破了。
+func (c *Client) PtySessions(ctx context.Context) (*proto.PtySessionsResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/pty/sessions", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求终端会话列表: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("终端会话列表", resp)
+	}
+	var out proto.PtySessionsResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析终端会话列表响应: %w", err)
+	}
+	return &out, nil
+}

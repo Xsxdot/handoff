@@ -25,6 +25,7 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     activate: vi.fn(),
     setContent: vi.fn(),
     split: vi.fn(),
+    restoreTerminal: vi.fn(),
     ...overrides,
   }
 }
@@ -241,6 +242,23 @@ describe('WorkbenchPage', () => {
     expect(screen.getAllByRole('tablist')).toHaveLength(2)
   })
 
+  it('renderContent 拿得到自己所在的组号与 tab id', () => {
+    const seen: Array<[number, string]> = []
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
+    const id = wb.groups[0].tabs[0].id
+    render(
+      <WorkbenchPage
+        api={api({ wb })}
+        onAddProject={vi.fn()}
+        renderContent={(_c, _b, group, tabId) => {
+          seen.push([group, tabId])
+          return <div>内容</div>
+        }}
+      />,
+    )
+    expect(seen[0]).toEqual([0, id])
+  })
+
   it('空白 tab 选了种类后调 setContent 而不是再开一个 tab', () => {
     const setContent = vi.fn()
     const open = vi.fn()
@@ -256,5 +274,42 @@ describe('WorkbenchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /新终端/ }))
     expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'terminal', seq: 1 })
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it('终端不可用时选择面板不列终端项，改说一句实话', () => {
+    render(
+      <WorkbenchPage
+        api={api()}
+        onAddProject={vi.fn()}
+        terminalUnavailable="这台机器的 agentd 运行在不支持 PTY 的平台上"
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /新终端/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/不支持 PTY/)).toBeInTheDocument()
+  })
+
+  it('onBeforeClose 返回 false 时 tab 不关——上层要先删服务端会话', () => {
+    const close = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    render(
+      <WorkbenchPage
+        api={api({ wb, close })}
+        onAddProject={vi.fn()}
+        onBeforeClose={() => false}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '关闭 bash · b2-b3' }))
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('没挂 onBeforeClose 时照常直接关——拦截是加出来的，不是默认的', () => {
+    const close = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    const id = wb.groups[0].tabs[0].id
+    render(<WorkbenchPage api={api({ wb, close })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />)
+    fireEvent.click(screen.getByRole('button', { name: '关闭 bash · b2-b3' }))
+    expect(close).toHaveBeenCalledWith(0, id)
   })
 })

@@ -124,6 +124,11 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	if st.Proc != nil {
 		fmt.Fprintf(w, "进程     %d/%d（本机 uid 已用/上限）\n", st.Proc.Used, st.Proc.Limit)
 	}
+	// 同上：nil 整行不打。放在进程行之后——会话是进程占用的一个来源，
+	// 先给总量再给来源
+	if st.PtySessions != nil {
+		fmt.Fprintf(w, "终端     %d 个会话（handoff footprint 看各自占用）\n", *st.PtySessions)
+	}
 	if len(st.Active) == 0 {
 		return
 	}

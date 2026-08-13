@@ -40,6 +40,7 @@ import (
 	"github.com/xushixin/handoff/internal/config"
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/proto"
+	"github.com/xushixin/handoff/internal/ptyhost"
 	"github.com/xushixin/handoff/internal/release"
 	"github.com/xushixin/handoff/internal/store"
 )
@@ -91,6 +92,9 @@ type Server struct {
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
+	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
+	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
+	pty *ptyhost.Host
 }
 
 // NewServer 创建 agentd 服务端。
@@ -114,6 +118,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		replayLimit:    eventReplayLimit,
 		liveLimit:      liveBufferLimit,
 		sessionRecheck: defaultSessionRecheck,
+		pty:            ptyhost.New(log),
 	}
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
@@ -188,6 +193,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
+//   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
 //   - GET  /api/auth/sessions           列出会话（含已吊销）
 //   - DELETE /api/auth/sessions/{id}    吊销指定会话
@@ -219,8 +225,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
+	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
+	mux.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
+	mux.HandleFunc("GET /ws/pty", s.handlePtyWS)
 	mux.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
 	mux.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
@@ -308,6 +318,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.StartedAt = s.startedAt
+	ptyOK := s.pty.Supported()
+	resp.PtySupported = &ptyOK
+	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
+	if s.pty != nil {
+		n := len(s.pty.List())
+		resp.PtySessions = &n
+	}
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -330,6 +347,7 @@ func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
+	resp.Pty = s.ptyFootprint()
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -25,7 +25,15 @@ import type { BaseDir, WorkbenchApi } from './useWorkbench'
 export interface WorkbenchPageProps {
   api: WorkbenchApi
   onAddProject: () => void
-  renderContent: (content: TabContent, base: BaseDir) => ReactNode
+  // renderContent 多收 group 与 tabId：终端 tab 建出会话之后要把 id 写回
+  // **它自己**（setContent(group, tabId, …)），而中央区是唯一知道自己在哪一组、
+  // 哪个 tab 的地方。
+  renderContent: (content: TabContent, base: BaseDir, group: number, tabId: string) => ReactNode
+  // terminalUnavailable：当前基准目录所在机器不能开终端时的原因原文
+  terminalUnavailable?: string
+  // onBeforeClose 返回 false = 这次关闭由上层接管（要先弹确认、先删服务端会话）。
+  // 返回 true 或不提供 = 直接关。
+  onBeforeClose?: (c: TabContent, group: number, tabId: string) => boolean
 }
 
 // PICK_HINT 是「种类选好了但还缺一个目标」时的指路文案。
@@ -38,7 +46,13 @@ export const PICK_HINT: Record<Exclude<PickKind, 'terminal'>, string> = {
   tui: '在左侧该目录下点一个任务，它的 TUI 会在这里打开。',
 }
 
-export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPageProps) {
+export function WorkbenchPage({
+  api,
+  onAddProject,
+  renderContent,
+  terminalUnavailable,
+  onBeforeClose,
+}: WorkbenchPageProps) {
   const { base, wb } = api
   // awaiting 记「哪个空白 tab 已经选了种类、正在等目标」。
   // 它是本组件的本地 UI 状态，**不进 TabContent**：TabContent 多一支就等于
@@ -51,6 +65,7 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
   // 选了种类之后：终端直接就位；文件与 TUI 缺目标，把该 tab 停在提示态
   const pick = (group: number, tabId: string, kind: PickKind) => {
     if (kind === 'terminal') {
+      if (terminalUnavailable) return
       api.setContent(group, tabId, { kind: 'terminal', seq: nextTerminalSeq(wb) })
       return
     }
@@ -73,6 +88,7 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
   // 一个 tab。
   const startFromEmpty = (group: number, kind: PickKind) => {
     if (kind === 'terminal') {
+      if (terminalUnavailable) return
       api.openTerminal(base, group)
       return
     }
@@ -91,7 +107,11 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
               activeId={g.activeId}
               baseLabel={base.label}
               onActivate={api.activate}
-              onClose={api.close}
+              onClose={(g, id) => {
+                const tab = wb.groups[g]?.tabs.find((t) => t.id === id)
+                if (tab && onBeforeClose && !onBeforeClose(tab.content, g, id)) return
+                api.close(g, id)
+              }}
               onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
             />
             {/*
@@ -102,7 +122,12 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
             */}
             <div className="min-h-0 flex-1 overflow-auto">
               {activeTab === null ? (
-                <BlankTab key={`empty-${gi}`} base={base} onPick={(k) => startFromEmpty(gi, k)} />
+                <BlankTab
+                  key={`empty-${gi}`}
+                  base={base}
+                  onPick={(k) => startFromEmpty(gi, k)}
+                  terminalUnavailable={terminalUnavailable}
+                />
               ) : activeTab.content.kind === 'blank' ? (
                 <BlankTab
                   key={activeTab.id}
@@ -110,9 +135,10 @@ export function WorkbenchPage({ api, onAddProject, renderContent }: WorkbenchPag
                   onPick={(k) => pick(gi, activeTab.id, k)}
                   hint={awaiting[activeTab.id] ? PICK_HINT[awaiting[activeTab.id]] : undefined}
                   onBack={() => back(activeTab.id)}
+                  terminalUnavailable={terminalUnavailable}
                 />
               ) : (
-                renderContent(activeTab.content, base)
+                renderContent(activeTab.content, base, gi, activeTab.id)
               )}
             </div>
           </section>

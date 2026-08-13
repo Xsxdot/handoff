@@ -21,6 +21,8 @@ import eventFixture from './testdata/Event.json'
 import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
 import projectTreeFixture from './testdata/ProjectTreeResp.json'
+import ptySessionFixture from './testdata/PtySession.json'
+import ptySessionsRespFixture from './testdata/PtySessionsResp.json'
 import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
@@ -36,6 +38,8 @@ import {
   type MachinesResp,
   type ProjectLocation,
   type ProjectTreeResp,
+  type PtySession,
+  type PtySessionsResp,
   type SessionInfo,
   type StatusResp,
   type Task,
@@ -186,5 +190,28 @@ describe('DirListResult 契约', () => {
     expect(dir.size).toBeUndefined()
     expect(file.is_dir).toBe(false)
     expect(file.size).toBe(1284)
+  })
+})
+
+describe('PtySession 契约', () => {
+  it('活着的会话：exit_code 缺席而不是 0', () => {
+    const s: PtySession = ptySessionFixture
+    expect(s.base_kind).toBe('workspace')
+    expect(s.bytes_out).toBe(81920)
+    expect('exit_code' in s).toBe(false)
+  })
+
+  it('scope=all 信封：远端会话带 machine 与 exit_code', () => {
+    const resp = ptySessionsRespFixture as PtySessionsResp
+    expect(resp.sessions).toHaveLength(2)
+    expect(resp.sessions[0].machine).toBe('')
+    expect(resp.sessions[1].machine).toBe('devbox')
+    expect(resp.sessions[1].exit_code).toBe(3)
+    expect(resp.machines?.map((m) => m.name)).toEqual(['', 'devbox'])
+  })
+
+  it('StatusResp：pty_supported 已上报', () => {
+    const status = statusFixture as StatusResp
+    expect(status.pty_supported).toBe(true)
   })
 })

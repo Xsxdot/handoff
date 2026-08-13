@@ -63,6 +63,22 @@ type Config struct {
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（B59 spec D7 同款，方向相反）。
 	PathDirs     []string `yaml:"path_dirs,omitempty"`
+	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
+	//
+	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
+	// launchd / ssh-agent **按会话注入**，不来自任何 dotfile，因此 login shell
+	// 的 rc 链**无法**像恢复 PATH 那样把它恢复出来。agentd 以服务形态托管时，
+	// 终端里的 ssh / git push 会因此全部失败。
+	//
+	// 三态语义（**不要**在 Load 里填默认值）：
+	//   nil        → 用内置默认清单 ptyhost.DefaultEnvForward()（当前是 SSH_AUTH_SOCK）
+	//   非 nil     → 完全以配置为准
+	//   []（显式） → 一个都不转发
+	// 一旦 Load 把默认值填进结构体，下一次 Save 就会把 env_forward 落进
+	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
+	//
+	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
+	EnvForward     []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -303,7 +319,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

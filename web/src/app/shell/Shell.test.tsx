@@ -25,9 +25,12 @@ vi.mock('../../api/client', async () => {
     fetchWorkspaceDir: vi.fn(),
     fetchTaskDetail: vi.fn(),
     fetchTaskDiff: vi.fn(),
+    fetchPtySessions: vi.fn(),
+    fetchMachines: vi.fn(),
+    deletePtySession: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchTaskDetail, fetchTaskDiff } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession } = await import('../../api/client')
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 const t1: Task = {
@@ -117,6 +120,27 @@ beforeEach(() => {
     recent_events: [],
   })
   vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: '' })
+  vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+  // 本机上报支持 PTY：能力门在既有用例里必须是「放行」，否则一堆无关用例
+  // 会因为终端项被收起而失败。Machine 其余字段按 /api/machines 契约给全，
+  // 否则 /settings 里的 MachineDetail 会在 machine.executors 上崩
+  vi.mocked(fetchMachines).mockResolvedValue({
+    machines: [
+      {
+        name: '',
+        addr: '',
+        reachable: true,
+        version: '',
+        executors: [],
+        default_executor: '',
+        probe_ms: 0,
+        active_tasks: 0,
+        error: '',
+        pty_supported: true,
+      },
+    ],
+  })
+  vi.mocked(deletePtySession).mockResolvedValue({ ok: true })
 })
 
 function renderShell(path = '/') {

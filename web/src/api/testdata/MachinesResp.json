@@ -12,7 +12,8 @@
       "default_executor": "opencode",
       "probe_ms": 0,
       "active_tasks": 1,
-      "error": ""
+      "error": "",
+      "pty_supported": true
     },
     {
       "name": "devbox",

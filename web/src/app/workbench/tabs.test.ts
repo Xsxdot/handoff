@@ -166,3 +166,34 @@ describe('不可变性', () => {
     expect(after).not.toBe(before)
   })
 })
+
+describe('终端 tab 的会话身份', () => {
+  it('还没建出会话的终端仍然永不去重——再点一次就是真的想要第二个', () => {
+    expect(dedupKey({ kind: 'terminal', seq: 1 })).toBeNull()
+    expect(dedupKey({ kind: 'terminal', seq: 2 })).toBeNull()
+  })
+
+  it('已有会话 id 的终端按会话去重：刷新恢复不该长出两个同一会话的 tab', () => {
+    expect(dedupKey({ kind: 'terminal', seq: 1, sessionId: 'abc' })).toBe('pty:abc')
+  })
+
+  it('重复 openTab 同一个会话只得到一个 tab', () => {
+    let wb = EMPTY_WORKBENCH
+    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'abc' })
+    wb = openTab(wb, { kind: 'terminal', seq: 2, sessionId: 'abc' })
+    expect(wb.groups[0].tabs).toHaveLength(1)
+  })
+
+  it('不同会话各占一个 tab', () => {
+    let wb = EMPTY_WORKBENCH
+    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
+    wb = openTab(wb, { kind: 'terminal', seq: 2, sessionId: 'b' })
+    expect(wb.groups[0].tabs).toHaveLength(2)
+  })
+
+  it('nextTerminalSeq 不受 sessionId 影响', () => {
+    let wb = EMPTY_WORKBENCH
+    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
+    expect(nextTerminalSeq(wb)).toBe(2)
+  })
+})
