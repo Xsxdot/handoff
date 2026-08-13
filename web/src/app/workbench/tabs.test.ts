@@ -19,6 +19,12 @@ describe('dedupKey', () => {
     expect(dedupKey({ kind: 'terminal', seq: 2 })).toBeNull()
     expect(dedupKey({ kind: 'blank' })).toBeNull()
   })
+
+  it('file tab 的去重键只看 rel，草稿不参与——同一个文件不该因为改了字就开出第二个 tab', () => {
+    expect(dedupKey({ kind: 'file', rel: 'a.go', draft: 'x', baseSha: 'h' })).toBe(
+      dedupKey({ kind: 'file', rel: 'a.go' }),
+    )
+  })
 })
 
 describe('openTab', () => {

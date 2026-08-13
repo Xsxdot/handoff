@@ -200,3 +200,44 @@ describe('FileTab 冲突', () => {
     expect(await screen.findByText(/文件已在磁盘上变了/)).toBeInTheDocument()
   })
 })
+
+describe('FileTab 草稿寄存', () => {
+  it('卸载时把草稿回写出去，不是每敲一个字都回写', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    const onDraftChange = vi.fn()
+    const { unmount } = render(
+      <FileTab base={base} rel="go.mod" onDraftChange={onDraftChange} />,
+    )
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'module handoff\nabc' } })
+    expect(onDraftChange).not.toHaveBeenCalled()
+    unmount()
+    expect(onDraftChange).toHaveBeenCalledWith({
+      draft: 'module handoff\nabc',
+      baseSha: 'basehash',
+    })
+  })
+
+  it('干净时卸载回写 null，不留一份和磁盘一样的假草稿', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    const onDraftChange = vi.fn()
+    const { unmount } = render(<FileTab base={base} rel="go.mod" onDraftChange={onDraftChange} />)
+    await screen.findByRole('textbox')
+    unmount()
+    expect(onDraftChange).toHaveBeenCalledWith(null)
+  })
+
+  it('带 initial 挂载时直接用草稿，不等网络', async () => {
+    vi.mocked(fetchWorkspaceFile).mockReturnValue(new Promise(() => {}))
+    render(
+      <FileTab
+        base={base}
+        rel="go.mod"
+        initial={{ draft: '切走之前改的内容', baseSha: 'basehash' }}
+        onDraftChange={vi.fn()}
+      />,
+    )
+    expect(await screen.findByRole('textbox')).toHaveValue('切走之前改的内容')
+    expect(screen.getByText('未保存')).toBeInTheDocument()
+  })
+})

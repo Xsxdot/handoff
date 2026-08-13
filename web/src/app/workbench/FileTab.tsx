@@ -15,19 +15,35 @@
 //   - 不新建、不删除、不改名：只编辑已存在的文件
 //
 // 错误处理：agentd 的中文错误原文原样透传（诚实展示纪律），不吞成「操作失败」。
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchWorkspaceFile, writeWorkspaceFile } from '../../api/client'
 import type { FileRead } from '../../api/types'
 import { errorMessage, formatSize } from '../lib/format'
 import type { BaseDir } from './useWorkbench'
 
-export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
-  const [read, setRead] = useState<FileRead | null>(null)
+export function FileTab({
+  base,
+  rel,
+  initial,
+  onDraftChange,
+}: {
+  base: BaseDir
+  rel: string
+  initial?: { draft: string; baseSha: string }
+  onDraftChange?: (d: { draft: string; baseSha: string } | null) => void
+}) {
+  const [read, setRead] = useState<FileRead | null>(
+    // initial 命中时用草稿造一个临时的 read，让「editable + dirty」从第一帧就成立，
+    // 不等网络。为什么 content 置空串而不是草稿本身：content 的语义是**磁盘那一版**，
+    // 草稿是草稿——两者不等才是脏，填成一样反而把脏标记骗没了
+    initial === undefined ? null : { content: '', size: 0, sha256: initial.baseSha },
+  )
   const [error, setError] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
-  // baseSha 是「我这份草稿是从哪一版改出来的」。保存成功后换成服务端返回的新哈希，
-  // 而不是重新读一次——那会在两次请求之间再开一个窗口
-  const [baseSha, setBaseSha] = useState('')
+  // 草稿初值也来自 initial：网络回来之前 textarea 里就该是切走之前的内容
+  const [draft, setDraft] = useState(initial?.draft ?? '')
+  // baseSha 是「我这份草稿是从哪一版改出来的」。initial 带回来的是草稿当时存的基线；
+  // 保存成功后换成服务端返回的新哈希，而不是重新读一次——那会在两次请求之间再开一个窗口
+  const [baseSha, setBaseSha] = useState(initial?.baseSha ?? '')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   // ConflictState 是一次未解决的写入冲突。current 是服务端在 409 里附带的磁盘现状，
@@ -35,17 +51,30 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
   type ConflictState = { current: FileRead; confirming: boolean }
   const [conflict, setConflict] = useState<ConflictState | null>(null)
 
+  // initialRef 让 effect 在跑的那一刻读到**当前渲染**的 initial，同时不把 initial 写进
+  // 依赖数组：Shell 每次渲染都会新建一个 initial 对象（tab 内容没变时语义也没变），
+  // 放进去会让文件在「读取中→已读」之间来回闪
+  const initialRef = useRef(initial)
+  initialRef.current = initial
   useEffect(() => {
     // cancelled 防止「快速连点两个文件」时先发的请求后到，把后选的内容盖掉
     let cancelled = false
-    setRead(null)
+    // initial 命中时不能 setRead(null)：那会把「正在读取」盖到草稿上、textarea 消失。
+    // 网络没回来就该先把草稿画出来，这里保持那个假 read 在位
+    setRead(
+      initialRef.current === undefined
+        ? null
+        : { content: '', size: 0, sha256: initialRef.current.baseSha },
+    )
     setError(null)
     setSaveError('')
     fetchWorkspaceFile(base.path, rel, base.machine || undefined)
       .then((r) => {
         if (cancelled) return
         setRead(r)
-        setDraft(r.content)
+        // 有草稿就用草稿，但 read.content 仍是磁盘那一版——dirty 是两者之差，
+        // 这样切回来时脏标记还在，而不是把草稿误当成干净内容
+        setDraft(initialRef.current?.draft ?? r.content)
         setBaseSha(r.sha256 ?? '')
       })
       .catch((err) => {
@@ -60,6 +89,29 @@ export function FileTab({ base, rel }: { base: BaseDir; rel: string }) {
   // 前端不再按扩展名或大小另判一次——两边各判一次早晚会分叉
   const editable = read !== null && baseSha !== ''
   const dirty = editable && draft !== read.content
+
+  // draftRef 记住最新草稿，卸载时一次性刷出去。
+  //
+  // 为什么不是每次 onChange 都回写：那会把整棵 WorkbenchPage 重渲染一遍。orca 正是
+  // 在这儿栽过（issue #826：一次 reload dispatch 扇出成 N 次 EditorPanel 重建把渲染
+  // 进程卡死，只能加 75ms 去抖）。我们不用去抖这种概率性方案——打字只动组件本地
+  // state，卸载时刷一次，精确且打字期间父层零重渲染
+  const draftRef = useRef<{ draft: string; baseSha: string } | null>(null)
+  useEffect(() => {
+    draftRef.current = dirty ? { draft, baseSha } : null
+  }, [dirty, draft, baseSha])
+
+  // 回调本身也用 ref 存住，卸载 effect 的依赖才能是空数组。
+  //
+  // 直接把 onDraftChange 写进依赖的话，调用方每次渲染传一个新的内联箭头函数就会
+  // 触发一次「清理 + 重建」——而清理函数正是回写草稿的那一句，草稿会在用户还在
+  // 打字的时候被提前刷出去。用 ref 就对调用方零要求，不必让 Shell 那边额外维护
+  // 一个 useCallback（那种约束写在别处、坏在这里，最难查）
+  const notifyRef = useRef(onDraftChange)
+  notifyRef.current = onDraftChange
+  useEffect(() => {
+    return () => notifyRef.current?.(draftRef.current)
+  }, [])
 
   // saveWith(sha) 用显式传入的哈希当基线的保存路径。为什么要显式传哈希而不是读
   // state：overwrite 需要先 setBaseSha(next) 再用 next 发请求，而 React 的 state

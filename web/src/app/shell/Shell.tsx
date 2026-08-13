@@ -209,7 +209,27 @@ export function Shell() {
                         )
                       }
                       case 'file':
-                        return <FileTab base={base} rel={c.rel} />
+                        return (
+                          <FileTab
+                            base={base}
+                            rel={c.rel}
+                            initial={
+                              c.draft !== undefined && c.baseSha !== undefined
+                                ? { draft: c.draft, baseSha: c.baseSha }
+                                : undefined
+                            }
+                            // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
+                            // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
+                            onDraftChange={(d) =>
+                              wb.setContent(group, tabId, {
+                                kind: 'file',
+                                rel: c.rel,
+                                draft: d?.draft,
+                                baseSha: d?.baseSha,
+                              })
+                            }
+                          />
+                        )
                       case 'tui':
                         return <TuiTab taskId={c.taskId} />
                       default:
