@@ -608,8 +608,13 @@ function TaskTui({ activeTask, setActiveTask }) {
 //   - 二进制：只读，说明为什么不给编辑
 //   - 超限截断：只读，说明看到的只是开头一段
 //
-// 「模拟执行者改动此文件」是**原型专用开关**，真实实现里没有这个东西——
-// 它存在的唯一理由是让 409 冲突条能被点出来看，否则那条最重要的形态没法验。
+// 冲突条有**两个入口、一套出口**：保存时撞 409（reason=save），和重开文件时发现
+// 草稿基线已过期（reason=stale-draft）。用户面对的是同一个问题，所以不发明第二套
+// 逻辑。「用我的内容覆盖」带二次确认，理由见 AGENTS.md：我们没有 watcher，
+// 冲突只在保存那一刻才暴露，用户在此之前从没被警告过。
+//
+// 底部两个「原型：…」按钮是**原型专用开关**，真实实现里没有这些东西——
+// 它们存在的唯一理由是让两条冲突路径都能被点出来看，否则最重要的形态没法验。
 function FileEditor({ selectedFile }) {
   const meta = fileKinds[selectedFile] || { kind: 'text' };
   const rows = codeByFile[selectedFile] || codeByFile['transport_test.go'];
@@ -617,7 +622,8 @@ function FileEditor({ selectedFile }) {
 
   const [draft, setDraft] = useState(diskText);
   const [base, setBase] = useState(diskText); // 上次读到/保存成功的内容，等价于 baseSHA256
-  const [conflict, setConflict] = useState(false);
+  // null = 无冲突；否则 { reason: 'save' | 'stale-draft', confirming: 是否在二次确认 }
+  const [conflict, setConflict] = useState(null);
   const [staleOnDisk, setStaleOnDisk] = useState(false); // 原型开关
   const [notice, setNotice] = useState('');
 
@@ -627,7 +633,7 @@ function FileEditor({ selectedFile }) {
   useEffect(() => {
     setDraft(diskText);
     setBase(diskText);
-    setConflict(false);
+    setConflict(null);
     setStaleOnDisk(false);
     setNotice('');
   }, [selectedFile, diskText]);
@@ -639,19 +645,28 @@ function FileEditor({ selectedFile }) {
   function save() {
     if (staleOnDisk) {
       // 对应 409：服务端算出的 sha256 与我们上送的 baseSHA256 不一致
-      setConflict(true);
+      setConflict({ reason: 'save', confirming: false });
       setNotice('');
       return;
     }
     setBase(draft);
-    setConflict(false);
+    setConflict(null);
     setNotice('已保存');
   }
 
+  // 模拟「带着草稿重开这个文件」：真实实现里草稿连 baseSha 一起存在 localStorage，
+  // 重开时拿它和磁盘现在的 sha256 一比，不等就是过期草稿。原型只有一个编辑器、
+  // 没有 tab 与刷新，所以给一个按钮把这一刻直接摆出来
+  function reopenWithStaleDraft() {
+    setConflict({ reason: 'stale-draft', confirming: false });
+    setNotice('');
+  }
+
   function overwrite() {
-    // 对应「拿 current.sha256 当新 base 重发一次」
+    // 对应「拿 current.sha256 当新 base 重发一次」——不是「跳过校验」。
+    // 这一步只有在二次确认之后才会走到
     setBase(draft);
-    setConflict(false);
+    setConflict(null);
     setStaleOnDisk(false);
     setNotice('已用你的内容覆盖执行者的改动');
   }
@@ -659,7 +674,7 @@ function FileEditor({ selectedFile }) {
   function discard() {
     setDraft(remoteText);
     setBase(remoteText);
-    setConflict(false);
+    setConflict(null);
     setStaleOnDisk(false);
     setNotice('已放弃改动，载入磁盘版本');
   }
@@ -696,11 +711,26 @@ function FileEditor({ selectedFile }) {
         <div className="editor-conflict">
           <TriangleAlert size={15} />
           <div>
-            <strong>文件已被执行者改动</strong>
-            <span>你打开它之后 agentd 上的内容变了。直接保存会覆盖掉那次改动。</span>
+            <strong>
+              {conflict.reason === 'stale-draft'
+                ? '本地草稿基于的版本已经变了。'
+                : '文件已在磁盘上变了（很可能是 executor 改的）。'}
+            </strong>
+            {conflict.confirming && (
+              <span className="conflict-warn">覆盖会丢掉磁盘上那一版的改动，不可撤销。</span>
+            )}
           </div>
-          <button type="button" className="conflict-ghost" onClick={discard}>放弃我的改动</button>
-          <button type="button" className="conflict-danger" onClick={overwrite}>用我的内容覆盖</button>
+          {conflict.confirming ? (
+            <>
+              <button type="button" className="conflict-ghost" onClick={() => setConflict({ ...conflict, confirming: false })}>取消</button>
+              <button type="button" className="conflict-danger" onClick={overwrite}>确认覆盖</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="conflict-ghost" onClick={discard}>放弃我的改动，载入磁盘版本</button>
+              <button type="button" className="conflict-danger" onClick={() => setConflict({ ...conflict, confirming: true })}>用我的内容覆盖</button>
+            </>
+          )}
         </div>
       )}
 
@@ -739,6 +769,11 @@ function FileEditor({ selectedFile }) {
         {meta.kind === 'text' && (
           <button type="button" className={`proto-toggle ${staleOnDisk ? 'armed' : ''}`} onClick={() => setStaleOnDisk((value) => !value)}>
             {staleOnDisk ? '原型：磁盘已变，下次保存会冲突' : '原型：模拟执行者改动此文件'}
+          </button>
+        )}
+        {meta.kind === 'text' && staleOnDisk && (
+          <button type="button" className="proto-toggle" onClick={reopenWithStaleDraft}>
+            原型：模拟带草稿重开此文件
           </button>
         )}
       </div>

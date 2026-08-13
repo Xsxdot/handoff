@@ -1067,6 +1067,12 @@ button {
   color: #927338;
 }
 
+/* 二次确认那句话必须比正文更硬：它是唯一在「不可撤销」发生前的提示 */
+.editor-conflict span.conflict-warn {
+  color: #c0512f;
+  font-weight: 600;
+}
+
 .conflict-ghost,
 .conflict-danger {
   height: 25px;
