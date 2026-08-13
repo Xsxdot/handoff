@@ -9,3 +9,4 @@
 - 2026-08-13 Task 1（proto 类型 + store 账本）完成，commit a5f15857，审查 PASS（无修复轮）。
 - 2026-08-13 Task 2（adapter 契约 + manager 接线）完成，commit 44f2cec7，审查 PASS（无修复轮）。
 - 2026-08-13 Task 3（claudecode 账目）完成，commit 580dbddf，审查 PASS（1 轮 gofmt 修复：stream.go 字段对齐）。
+- 2026-08-13 Task 4（codex 账目 + 牌价表）完成，commit c858b519，审查 PASS（无修复轮）。
