@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 探测四家 executor 的状态并成表打印
-//   - 按角色分支问 11 组问题，把答案写进 config.yaml
+//   - 按角色分支问配置问题，把答案写进 config.yaml
 //   - 末尾打印本机 token 与现成的配对 yaml 片段
 //
 // 边界：
@@ -200,12 +200,6 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 		if cfg.Approver.Executor != "" {
 			cfg.Approver.Model = askString(w, r, "审批链模型 approver.model（空=用执行者自身默认）", cfg.Approver.Model)
 		}
-	}
-
-	// 7-8. 自动更新（两种角色都要）
-	cfg.Update.Auto = askBool(w, r, "启用自动更新 update.auto", cfg.Update.Auto)
-	if cfg.Update.Auto {
-		cfg.Update.Interval = askDuration(w, r, "检查频率 update.interval", cfg.Update.Interval)
 	}
 
 	if isReviewer {

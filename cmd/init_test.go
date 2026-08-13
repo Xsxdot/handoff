@@ -89,9 +89,6 @@ func TestInitNonInteractiveWritesDefaults(t *testing.T) {
 	if cfg.Token == "" {
 		t.Error("token 应被生成")
 	}
-	if !cfg.Update.Auto {
-		t.Error("update.auto 应为出厂默认 true")
-	}
 }
 
 // 探测表必须打印，且四家都在。
@@ -228,7 +225,7 @@ func TestPrintDetectionQuietForMissingTool(t *testing.T) {
 // execAnswers 是「角色=执行机」那条问答路径的答案脚本，末尾一项是托管追问。
 //
 // 顺序对应 askAll 的提问顺序：角色 / 缺省执行者 / 模型 / 监听 / repo_root /
-// 审批链执行者 / update.auto / update.interval / 托管追问。空行=取默认值。
+// 审批链执行者 / 托管追问。空行=取默认值。
 func execAnswers(installAnswer string) string {
 	return strings.Join([]string{
 		"1", // 角色：执行机
@@ -237,8 +234,6 @@ func execAnswers(installAnswer string) string {
 		"",  // 监听地址
 		"",  // repo_root
 		"",  // 审批链执行者（空=不启用，后续不再追问模型）
-		"",  // update.auto
-		"",  // update.interval
 		installAnswer,
 	}, "\n") + "\n"
 }

@@ -174,10 +174,6 @@ var agentdCmd = &cobra.Command{
 		defer wdCancel()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout, logger)
 
-		// update.auto / update.interval 已废弃（B59）：字段保留只为了旧配置能
-		// 继续加载，取值非默认时打条 Warn，让改动过的人知道它已不再有效果
-		cfg.WarnDeprecated(logger)
-
 		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
 			"proc_fence_disabled", cfg.ProcFence.Disabled,
 			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio)

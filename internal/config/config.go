@@ -3,6 +3,7 @@
 // 职责：
 //   - 读取 ~/.handoff/config.yaml（或指定路径）并解析为 Config
 //   - 首次运行（文件不存在）时生成默认配置与随机 Token 并写盘
+//   - 旧文件顶层 update 段先剥再严格解码，避免 KnownFields 拒启动
 //   - 提供 DefaultPath 默认配置路径
 //
 // 边界：
@@ -74,8 +75,6 @@ type Config struct {
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
-	// Update 是自动更新配置。Auto 默认 true，Interval 默认 6h。
-	Update UpdateConfig
 	// Env 是 agent（executor）名 → env 文件名的映射：该 agent 启动时注入该文件里的
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
@@ -88,41 +87,6 @@ type Config struct {
 // 同步到本地仓库。Auto 默认 true；关闭后仍可用 handoff pull 手动同步。
 type SyncConfig struct {
 	Auto bool
-}
-
-// UpdateConfig 是**已废弃**的自动更新配置。
-//
-// B59 取消了 agentd 的定时自更新循环：升级改由操作者一条 handoff upgrade
-// 触发，二进制由本机下载后推送给远端。这两个字段因此不再有任何效果。
-//
-// **为什么保留字段而不是删掉**：配置是 KnownFields(true) 严格解析的，未知键
-// 让 agentd **启动失败**。v0.1.0 的首次运行会把这两个键写进 config.yaml，
-// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来——正是这个设计要消灭
-// 的那类失配的最狠形态（B59 spec D7）。
-//
-// 取值非默认时由 WarnDeprecated 打一条 Warn：用户把 auto 设成 false 是有
-// 意图的，悄悄让它失效等于骗人。
-type UpdateConfig struct {
-	Auto     bool
-	Interval time.Duration
-}
-
-// WarnDeprecated 对已废弃且被显式改过的配置打一条 Warn。
-//
-// 参数：
-//   - log: 日志器（agentd 启动时传自己的）
-//
-// 注意：
-//   - 默认值不打。绝大多数机器都是默认值，每次启动打一条无从处置的 Warn，
-//     只会让人学会忽略日志——而那是比不打更糟的结果
-func (c *Config) WarnDeprecated(log *slog.Logger) {
-	if !c.Update.Auto {
-		log.Warn("配置 update.auto 已废弃且不再有效果：agentd 不再自动更新，升级请在审核者机器上跑 handoff upgrade --now")
-	}
-	if c.Update.Interval != 6*time.Hour {
-		log.Warn("配置 update.interval 已废弃且不再有效果：agentd 不再定时检查版本",
-			"配置值", c.Update.Interval)
-	}
 }
 
 // ApproverConfig 描述审批链的廉价模型审批者。
@@ -191,10 +155,11 @@ type ProcFenceConfig struct {
 //
 // 返回：
 //   - 解析后的配置；文件不存在时返回默认配置
-//   - 错误信息：读/解析/写盘失败时返回
+//   - 错误信息：读/解析/校验失败时返回。剥 update 后回写失败不返回错误
 //
 // 注意：
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
+//   - 旧文件的顶层 update 必须先剥再 KnownFields，否则 v0.1.x 机器升级即砖
 func Load(path string) (*Config, error) {
 	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
 	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
@@ -205,13 +170,15 @@ func Load(path string) (*Config, error) {
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
-		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
 		Targets:  map[string]Target{},
 		Env:      map[string]string{},
 	}
 	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
 	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
 	firstRun := false
+	// stripped 表示这次从已有文件剥掉了废弃的顶层 update。必须提到 switch
+	// 外面：validate 通过后才回写，校验失败的脏配置不该被我们「修好」落盘。
+	stripped := false
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -221,6 +188,19 @@ func Load(path string) (*Config, error) {
 	case err != nil:
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	default:
+		// 必须先剥顶层 update 再 KnownFields：v0.1.x 写过的旧文件里仍有
+		// 这段死配置，直接严格解码会把整个 agentd 卡在启动上。
+		var cleaned []byte
+		var serr error
+		cleaned, stripped, serr = stripDeprecatedTopLevel(b)
+		if serr != nil {
+			log().Error("配置解析失败", "path", path, "cause", serr)
+			return nil, fmt.Errorf("解析配置 %s: %w", path, serr)
+		}
+		if stripped {
+			log().Warn("配置 update 段已废弃，已忽略并将从文件删除", "path", path)
+			b = cleaned
+		}
 		if uerr := decodeStrict(b, cfg); uerr != nil {
 			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
@@ -250,6 +230,16 @@ func Load(path string) (*Config, error) {
 		log().Error("配置校验失败", "path", path, "cause", verr)
 		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
 	}
+	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
+	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
+	// 把整台机器卡死在升级后的第一秒。
+	if stripped && !firstRun {
+		if werr := save(path, cfg); werr != nil {
+			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
+		} else {
+			log().Info("已从配置文件删除废弃 update 段", "path", path)
+		}
+	}
 	return cfg, nil
 }
 
@@ -277,16 +267,6 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	// update.interval 只在启用自动更新时校验：没启用的东西写错不该拦启动，
-	// 与 approver 那组的处置保持一致。
-	//
-	// 为什么非正值必须拦：0 会让更新循环的 ticker 每个 tick 都立刻到期，
-	// 退化成忙轮询，几秒钟打满 GitHub 匿名限流（60 次/小时），此后所有
-	// 版本检查一起失败——症状是「自动更新莫名其妙不工作了」，根因却在
-	// 一行配置上。省略该键走默认 6h 是正常用法。
-	if c.Update.Auto && c.Update.Interval <= 0 {
-		return fmt.Errorf("update.interval 必须为正时长（当前 %s）；省略该键即用默认 6h", c.Update.Interval)
-	}
 	return nil
 }
 
@@ -312,9 +292,56 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
+}
+
+// stripDeprecatedTopLevel 删掉已废弃的顶层键，返回剥过的 yaml 和是否剥到了东西。
+//
+// 为什么在 KnownFields 之前做：v0.1.x 写过 update 段的机器升级后，直接严格
+// 解码会拒启动。剥掉再解码，旧文件能起，其它未知键仍硬拒。只剥顶层，
+// 不走进 targets / env，避免误伤嵌套里碰巧叫 update 的键。
+func stripDeprecatedTopLevel(b []byte) (out []byte, stripped bool, err error) {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return b, false, nil
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		return nil, false, err
+	}
+	// yaml.Unmarshal 通常得到 DocumentNode，真正的 mapping 在 Content[0]。
+	mapping := &root
+	if root.Kind == yaml.DocumentNode {
+		if len(root.Content) == 0 {
+			return b, false, nil
+		}
+		mapping = root.Content[0]
+	}
+	if mapping.Kind != yaml.MappingNode {
+		return b, false, nil
+	}
+	stripped = removeMapKey(mapping, "update")
+	if !stripped {
+		return b, false, nil
+	}
+	out, err = yaml.Marshal(&root)
+	return out, true, err
+}
+
+// removeMapKey 从 MappingNode 顶层切掉名为 key 的那一对（Content 是
+// key/value 交错）。只动这一层，不递归。
+func removeMapKey(n *yaml.Node, key string) bool {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			n.Content = append(n.Content[:i], n.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultPath 返回默认配置文件路径（~/.handoff/config.yaml）。
