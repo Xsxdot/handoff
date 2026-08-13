@@ -47,31 +47,41 @@ export function baseOfSession(s: PtySession): BaseDir {
 export function usePtyRestore(restore: (b: BaseDir, sessionId: string) => void): { error: string } {
   const [error, setError] = useState('')
   // ranRef 让它严格只跑一次：React 18 的 StrictMode 会把 effect 跑两遍，
-  // 空依赖数组挡不住，而这里跑两遍就是两次跨机探活
+  // 空依赖数组挡不住，而这里跑两遍就是两次跨机探活。
+  // cancelledRef 与它配对：ranRef 管「只跑一次」，cancelledRef 管「结果还要
+  // 不要」，两者都必须跨 effect run，缺一不可。用局部变量是错的——上一轮
+  // cleanup 会取消掉这一轮仍有效的请求，StrictMode 下开发端 100% 恢复不出
+  // 任何 tab
   const ranRef = useRef(false)
+  const cancelledRef = useRef(false)
   // restoreRef 让 effect 不必把 restore 列进依赖：调用方每次渲染都会传一个新
   // 函数引用，列进去就等于每次渲染都重新恢复一遍
   const restoreRef = useRef(restore)
   restoreRef.current = restore
 
   useEffect(() => {
-    if (ranRef.current) return
-    ranRef.current = true
-    let cancelled = false
-    fetchPtySessions('all')
-      .then((resp) => {
-        if (cancelled) return
-        for (const s of resp.sessions) {
-          // exit_code 出现 = 已退出。恢复一个死会话只会让人以为它还能用
-          if (s.exit_code !== undefined && s.exit_code !== null) continue
-          restoreRef.current(baseOfSession(s), s.id)
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(errorMessage(err))
-      })
+    // 每次挂载（含 StrictMode 的第二次）先撤销上一次 cleanup 的取消
+    cancelledRef.current = false
+    if (!ranRef.current) {
+      ranRef.current = true
+      fetchPtySessions('all')
+        .then((resp) => {
+          if (cancelledRef.current) return
+          for (const s of resp.sessions) {
+            // exit_code 出现 = 已退出。恢复一个死会话只会让人以为它还能用
+            if (s.exit_code !== undefined && s.exit_code !== null) continue
+            restoreRef.current(baseOfSession(s), s.id)
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelledRef.current) return
+          // 拉不到列表 = 用户会看到「终端都不见了」，必须说清为什么
+          console.warn('恢复终端会话失败，本次不恢复任何 tab', err)
+          setError(errorMessage(err))
+        })
+    }
     return () => {
-      cancelled = true
+      cancelledRef.current = true
     }
   }, [])
 

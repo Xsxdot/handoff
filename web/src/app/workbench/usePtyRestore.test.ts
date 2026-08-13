@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { usePtyRestore } from './usePtyRestore'
@@ -69,5 +70,24 @@ describe('usePtyRestore', () => {
     fetchPtySessions.mockRejectedValue(new Error('会话过期'))
     const { result } = renderHook(() => usePtyRestore(vi.fn()))
     await waitFor(() => expect(result.current.error).toContain('会话过期'))
+  })
+
+  it('StrictMode 双调用 effect 时仍然恢复——上一轮的 cleanup 不该取消这一轮的请求', async () => {
+    fetchPtySessions.mockResolvedValue({ sessions: [session()] })
+    const restore = vi.fn()
+    renderHook(() => usePtyRestore(restore), { wrapper: StrictMode })
+    await waitFor(() => expect(restore).toHaveBeenCalledTimes(1))
+    expect(fetchPtySessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('真的卸载之后不再回灌——组件都没了还往里写就是脏写', async () => {
+    let resolve!: (v: unknown) => void
+    fetchPtySessions.mockReturnValue(new Promise((r) => { resolve = r }))
+    const restore = vi.fn()
+    const { unmount } = renderHook(() => usePtyRestore(restore))
+    unmount()
+    resolve({ sessions: [session()] })
+    await Promise.resolve()
+    expect(restore).not.toHaveBeenCalled()
   })
 })

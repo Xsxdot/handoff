@@ -25,27 +25,37 @@ export interface PtySupport {
 export function usePtySupport(): PtySupport {
   const [map, setMap] = useState<Record<string, boolean> | null>(null)
   const [error, setError] = useState('')
+  // ranRef 与 cancelledRef 配对：ranRef 管「只跑一次」，cancelledRef 管「结果
+  // 还要不要」，两者都必须跨 effect run，缺一不可。用局部变量是错的——上一轮
+  // cleanup 会取消掉这一轮仍有效的请求
   const ranRef = useRef(false)
+  const cancelledRef = useRef(false)
 
+  // 与 usePtyRestore 同因同修：cancelledRef 必须跨 effect run，否则 StrictMode
+  // 下第一轮 cleanup 会取消掉唯一那次请求，能力表永远停在 null。
+  // 停在 null 不会出错（三态门对 null 的反应是放行），但等于这个门没生效。
   useEffect(() => {
-    if (ranRef.current) return
-    ranRef.current = true
-    let cancelled = false
-    fetchMachines()
-      .then((resp) => {
-        if (cancelled) return
-        const next: Record<string, boolean> = {}
-        for (const m of resp.machines) {
-          // 只收明确上报的：缺席/null 不进表，查询时自然落到 null
-          if (typeof m.pty_supported === 'boolean') next[m.name] = m.pty_supported
-        }
-        setMap(next)
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(errorMessage(err))
-      })
+    cancelledRef.current = false
+    if (!ranRef.current) {
+      ranRef.current = true
+      fetchMachines()
+        .then((resp) => {
+          if (cancelledRef.current) return
+          const next: Record<string, boolean> = {}
+          for (const m of resp.machines) {
+            // 只收明确上报的：缺席/null 不进表，查询时自然落到 null
+            if (typeof m.pty_supported === 'boolean') next[m.name] = m.pty_supported
+          }
+          setMap(next)
+        })
+        .catch((err: unknown) => {
+          if (cancelledRef.current) return
+          console.warn('拉取机器能力位失败，PTY 三态门降级为一律放行', err)
+          setError(errorMessage(err))
+        })
+    }
     return () => {
-      cancelled = true
+      cancelledRef.current = true
     }
   }, [])
 

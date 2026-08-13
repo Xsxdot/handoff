@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { usePtySupport } from './usePtySupport'
@@ -36,5 +37,12 @@ describe('usePtySupport', () => {
     const { result } = renderHook(() => usePtySupport())
     await waitFor(() => expect(result.current.error).toContain('连不上'))
     expect(result.current.supported('')).toBeNull()
+  })
+
+  it('StrictMode 双调用 effect 时能力表仍然落表——否则三态门永远停在 null', async () => {
+    fetchMachines.mockResolvedValue({ machines: [{ name: 'devbox', pty_supported: false }] })
+    const { result } = renderHook(() => usePtySupport(), { wrapper: StrictMode })
+    await waitFor(() => expect(result.current.supported('devbox')).toBe(false))
+    expect(fetchMachines).toHaveBeenCalledTimes(1)
   })
 })
