@@ -18,12 +18,12 @@ import {
   BOARD_COLUMNS,
   COLUMN_LABELS,
   isFailed,
-  isWaitingAnswer,
-  stateBadgeVariant,
-  stateLabel,
+  needsIntervention,
   stateToColumn,
   type BoardColumn,
 } from './columns'
+import { cn } from '@/lib/utils'
+import { TaskState } from './StateDot'
 import { applyFilter, EMPTY_FILTER, type BoardFilter } from './filter'
 import { FilterBar } from './FilterBar'
 import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
@@ -142,30 +142,33 @@ function BoardColumn({
   )
 }
 
-// TaskCard 是一张任务卡片：名称、状态、执行器、以及三行元信息——
-// 项目（未归属时标「未归属」）、工作树（branch）、机器（""=本机）。
-// waiting_answer 加「等你答复」标记；failed 整卡视觉区分。
-function TaskCard({ task, projectName, onOpen }: { task: Task; projectName: string; onOpen: () => void }) {
-  const waitingAnswer = isWaitingAnswer(task.state)
+// TaskCard 是一张任务卡片：名称、三行元信息（项目 / 工作树 / 机器）、
+// 底部一行状态与执行器。
+//
+// 卡片级视觉分三档，互斥：
+//   - 干预态（waiting_answer / waiting_review）：琥珀边框 + 左侧竖条。
+//     这是「哪张卡真的卡着你」的唯一线索——只染状态文字的话，Review 列
+//     两张卡看起来一样重
+//   - failed：红边 + 淡红底，终态的视觉区分
+//   - 其余：普通边框
+//
+// 导出仅为单测直接渲染（整页渲染需要 router，测一个纯展示组件不值当）。
+export function TaskCard({ task, projectName, onOpen }: { task: Task; projectName: string; onOpen: () => void }) {
+  const intervention = needsIntervention(task.state)
   const failed = isFailed(task.state)
   return (
     <button
       type="button"
       onClick={onOpen}
-      className={`flex flex-col gap-1.5 rounded-md border bg-background p-2.5 text-left shadow-sm transition-colors hover:bg-accent/60 ${
-        failed ? 'border-destructive/40 bg-destructive/5' : ''
-      }`}
+      className={cn(
+        'flex flex-col gap-1.5 rounded-md border bg-background p-2.5 text-left shadow-sm transition-colors hover:bg-accent/60',
+        intervention && 'border-state-intervention/45 shadow-[inset_3px_0_var(--state-intervention)]',
+        failed && 'border-destructive/40 bg-destructive/5',
+      )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {task.name || task.plan_summary || '（无名称）'}
-        </span>
-        {waitingAnswer && <Badge variant="destructive">等你答复</Badge>}
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Badge variant={stateBadgeVariant(task.state)}>{stateLabel(task.state)}</Badge>
-        <span className="font-mono text-xs text-muted-foreground">{task.executor}</span>
-      </div>
+      <span className="min-w-0 truncate text-sm font-medium">
+        {task.name || task.plan_summary || '（无名称）'}
+      </span>
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="min-w-0 truncate font-mono">{task.branch}</span>
         <span className="shrink-0">{formatRelative(task.updated_at)}</span>
@@ -174,6 +177,11 @@ function TaskCard({ task, projectName, onOpen }: { task: Task; projectName: stri
         <span className="min-w-0 truncate">{projectName || '未归属'}</span>
         <span aria-hidden>·</span>
         <span className="shrink-0">{task.machine === '' ? '本机' : task.machine}</span>
+      </div>
+      {/* 底部一行：状态 + 执行器，对齐原型的 board-card-footer */}
+      <div className="flex items-center justify-between gap-2 border-t pt-1.5">
+        <TaskState state={task.state} />
+        <span className="font-mono text-xs text-muted-foreground">{task.executor}</span>
       </div>
     </button>
   )

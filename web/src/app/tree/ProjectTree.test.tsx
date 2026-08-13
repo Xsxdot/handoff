@@ -229,4 +229,107 @@ describe('ProjectTree', () => {
     fireEvent.click(screen.getByText('游离任务'))
     expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
   })
+
+  it('渲染搜索框与「项目 N」，N 默认是项目总数', () => {
+    render(<ProjectTree {...props()} />)
+    expect(screen.getByPlaceholderText('搜索项目、机器或任务')).toBeInTheDocument()
+    expect(screen.getByText('项目')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+  })
+
+  it('搜任务名：该任务可见，无关目录不可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: '重构工单' },
+    })
+    expect(screen.getByText('重构工单通道')).toBeInTheDocument()
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('搜项目名：N 仍是 1，整棵子树可见', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'handoff' },
+    })
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+
+  it('零结果时出空态文案，N 归 0', () => {
+    render(<ProjectTree {...props()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), {
+      target: { value: 'zzzz-nothing' },
+    })
+    expect(screen.getByText('没有匹配的项目或任务')).toBeInTheDocument()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('0')
+  })
+
+  // 钉住「旁路而非清空」：搜索期间强制展开，清空后手动折叠的状态原样回来
+  it('清空搜索后，此前手动折叠的节点仍是折叠的', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+
+    // 先手动折叠项目 handoff
+    fireEvent.click(screen.getByText('handoff'))
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+
+    // 搜索期间强制展开
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(screen.getByText('main')).toBeInTheDocument()
+
+    // 清空后折叠态原样回来
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('⌘K 聚焦搜索框', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    expect(document.activeElement).not.toBe(input)
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('Ctrl+K 同样聚焦（非 mac）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'K', ctrlKey: true })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('输入框内 Esc 清空并失焦', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'handoff' } })
+    expect(input.value).toBe('handoff')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input.value).toBe('')
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('单独按 k 不聚焦（不劫持普通输入）', () => {
+    render(<ProjectTree {...props()} />)
+    const input = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'k' })
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('左栏任务行的圆点跟随任务状态', () => {
+    const p = props()
+    p.tasks = [
+      task({ id: 'T1', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '跑测试', state: 'running' }),
+      task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
+    ]
+    const { container } = render(<ProjectTree {...p} />)
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
+  })
+
+  it('工单角标用状态 token，不用裸 amber', () => {
+    const { container } = render(<ProjectTree {...props({ ticketCount: 3 })} />)
+    const badge = screen.getByText('3')
+    expect(badge.className).toContain('bg-state-intervention')
+    expect(container.innerHTML).not.toContain('bg-amber-500')
+  })
 })
