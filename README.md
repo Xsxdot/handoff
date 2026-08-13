@@ -348,6 +348,8 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 - 设计文档（架构、协议、错误处理）：[docs/superpowers/specs/2026-08-07-handoff-design.md](docs/superpowers/specs/2026-08-07-handoff-design.md)
 - 给 AI 协调者的使用 skill：[skills/handoff/SKILL.md](skills/handoff/SKILL.md)——skill 内嵌在二进制里，随安装与升级自动同步到本机各 agent，版本不会漂移
 - systemd 手工部署模板：[deploy/handoff-agentd.service](deploy/handoff-agentd.service)（注意模板中 `KillMode=process` 是硬要求：它保证重启 agentd 不杀正在跑的 executor）
+- 参与贡献（本地怎么跑、提交前要过哪几道门）：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全策略与威胁模型（**漏洞请走私密通道，不要开公开 issue**）：[SECURITY.md](SECURITY.md)
 
 ## 友情链接
 
