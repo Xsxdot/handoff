@@ -1058,3 +1058,36 @@ func TestResolveCommitAmbiguousRemoteOnlyBranch(t *testing.T) {
 		t.Fatalf("歧义不是不存在，错误文本不得误导协调者去 push: %v", err)
 	}
 }
+
+// 出网 git 必须带上 -c http.proxy，且它要排在子命令**之前**——
+// git 的 -c 是全局选项，放到子命令后面 git 会当成子命令的参数直接报错。
+func TestGitNetArgsCarryProxyBeforeSubcommand(t *testing.T) {
+	SetGitProxy("socks5://127.0.0.1:1080")
+	defer SetGitProxy("")
+
+	got := gitNetArgs("clone", "--", "url", "dest")
+	if len(got) < 3 {
+		t.Fatalf("参数太少: %v", got)
+	}
+	if got[0] != "-c" || got[1] != "http.proxy=socks5://127.0.0.1:1080" {
+		t.Fatalf("代理参数不在最前: %v", got)
+	}
+	if got[2] != "clone" {
+		t.Fatalf("子命令应紧跟在代理参数之后: %v", got)
+	}
+}
+
+// 未配代理时参数一字不变——不能让所有没配代理的机器平白多两个参数。
+func TestGitNetArgsUnchangedWithoutProxy(t *testing.T) {
+	SetGitProxy("")
+	got := gitNetArgs("fetch", "--all", "--prune")
+	want := []string{"fetch", "--all", "--prune"}
+	if len(got) != len(want) {
+		t.Fatalf("gitNetArgs = %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("gitNetArgs = %v，期望 %v", got, want)
+		}
+	}
+}

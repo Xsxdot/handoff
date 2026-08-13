@@ -38,6 +38,7 @@ import (
 	"github.com/xushixin/handoff/internal/pathenv"
 	"github.com/xushixin/handoff/internal/permgate"
 	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/xushixin/handoff/internal/proxycfg"
 	"github.com/xushixin/handoff/internal/store"
 	"github.com/xushixin/handoff/internal/toolchain"
 )
@@ -133,6 +134,13 @@ var agentdCmd = &cobra.Command{
 		gate, err := permgate.New(cfg.Approver.Blacklist, logger)
 		if err != nil {
 			return fmt.Errorf("构造权限判据网关: %w", err)
+		}
+
+		// git 出网代理必须在任何 clone/fetch 之前注入。放在 NewServer 之前而不是
+		// 之后：自动登记（B62）的 clone 可能在服务起来后的第一个请求就发生
+		agentd.SetGitProxy(cfg.Proxy)
+		if cfg.Proxy != "" {
+			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)

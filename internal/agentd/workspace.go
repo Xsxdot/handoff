@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/xushixin/handoff/internal/proxycfg"
 )
 
 // 错误定义：
@@ -124,6 +125,55 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 			"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
 	}
 	return outBuf.String(), errBuf.String(), err
+}
+
+// gitProxy 是本机出网 git（clone/fetch）使用的代理地址，由 agentd bootstrap
+// 经 SetGitProxy 注入一次。
+//
+// 为什么是包级变量而不是把 proxy 串进签名：ResolveBaseline 等函数是包级函数，
+// 调用链上大部分环节与网络无关，把 proxy 串进每个签名会污染一大片无关代码。
+// 这与本包 log() 用运行时取值而非依赖注入是同一个权衡。
+var gitProxy string
+
+// SetGitProxy 设置出网 git 使用的代理，由 agentd bootstrap 调用一次。
+//
+// 参数：
+//   - proxy: 代理地址；空串 = 不用代理
+//
+// 注意：
+//   - 只影响 clone / fetch 两处出网操作，本地 git 操作（rev-parse/status/
+//     worktree/diff…）一律不带代理——它们根本不出网，带上只会平白多一个配置
+//   - 非并发安全：只在启动期调用一次。测试里改它必须串行
+func SetGitProxy(proxy string) { gitProxy = proxy }
+
+// gitNetArgs 在 git 参数前插入代理参数。
+//
+// 代理参数必须排在子命令**之前**：git 的 -c 是全局选项，放到子命令后面
+// git 会把它当成子命令的参数并直接报错。
+func gitNetArgs(args ...string) []string {
+	p := proxycfg.GitArgs(gitProxy)
+	if len(p) == 0 {
+		return args
+	}
+	return append(p, args...)
+}
+
+// gitRunNet 执行**会出网**的 git 操作（clone / fetch），自动带上代理参数。
+//
+// 参数与返回同 gitRun。
+//
+// 注意：
+//   - 只有 clone 与 fetch 该用它。给本地操作用不会出错，但会让「哪些操作出网」
+//     这个信息从代码里消失，下一个人就无从判断代理配错会影响哪些功能
+//   - git 的 http.proxy 对 ssh:// 与 git@host:path 的 remote **无效**。
+//     SSH remote 要走代理得配 ssh 的 ProxyCommand，那会动到用户的 ssh 配置面，
+//     不在 handoff 职责内；README 给出改用 HTTPS remote（insteadOf）的解法
+func gitRunNet(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+	if gitProxy != "" {
+		log().Info("git 出网操作将走代理", "repo", repo, "args", args,
+			"proxy", proxycfg.Redact(gitProxy))
+	}
+	return gitRun(ctx, repo, gitNetArgs(args...)...)
 }
 
 // PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
@@ -786,7 +836,7 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 		log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
 		fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 		defer cancel()
-		_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
+		_, stderr, ferr := gitRunNet(fctx, repo, "fetch", "--all", "--prune")
 		if ferr != nil {
 			log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
 				"stderr", truncateRunes(stderr, 500), "cause", ferr)
