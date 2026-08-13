@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [v0.2.2] - 2026-08-13
+
 ### 修复
 
 - `install.ps1` 的一行安装真的能用了。真机（Windows Server 2025，PowerShell 5.1，
