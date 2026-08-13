@@ -39,33 +39,66 @@ type fakeMachine struct {
 // fakeMachines 是当前测试的机器表。键 __本机 的数据用于本机端点。
 var fakeMachines map[string]*fakeMachine
 
-// fakePeer 实现 agentdPeer，读取 fakeMachine 的数据。
+// fakePeer 实现 agentdPeer。两种形态：
+//   - m 非 nil：读 fakeMachine（既有测试的形态）；
+//   - m 为 nil：用直接字段（自拉测试的形态），pull/platform/version 各自为政。
+//
+// pullCalls/pushCalls/lastSum 记录调用，供选路断言。
 type fakePeer struct {
 	m *fakeMachine
+
+	// 自拉测试形态
+	pull     *bool
+	platform string
+	version  string
+
+	pullCalls int
+	pushCalls int
+	lastSum   string
 }
 
 func (p *fakePeer) Status(ctx context.Context) (*proto.StatusResp, error) {
-	if p.m.statusErr != nil {
-		return nil, p.m.statusErr
+	if p.m != nil {
+		if p.m.statusErr != nil {
+			return nil, p.m.statusErr
+		}
+		resp := &proto.StatusResp{
+			Version: proto.BuildInfo{Version: p.m.version, Platform: p.m.platform},
+		}
+		if !p.m.noUpdate {
+			resp.Update = &proto.UpdateStatus{Managed: p.m.managed}
+		}
+		for i := 0; i < p.m.busy; i++ {
+			resp.Active = append(resp.Active, proto.ActiveTask{ID: "t", State: string(proto.TaskStateRunning)})
+		}
+		return resp, nil
 	}
 	resp := &proto.StatusResp{
-		Version: proto.BuildInfo{Version: p.m.version, Platform: p.m.platform},
+		Version: proto.BuildInfo{Version: p.version, Platform: p.platform},
 	}
-	if !p.m.noUpdate {
-		resp.Update = &proto.UpdateStatus{Managed: p.m.managed}
-	}
-	for i := 0; i < p.m.busy; i++ {
-		resp.Active = append(resp.Active, proto.ActiveTask{ID: "t", State: string(proto.TaskStateRunning)})
-	}
+	// 自拉测试形态：始终上报托管（要走到 remoteUpgrade），Pull 随 p.pull——
+	// nil 表示老 agentd 不报 pull，正是降级推送要测的情形；若只在 p.pull != nil
+	// 时给 Update，pull=nil 会整段塌成「未上报托管状态」而提前跳过，测不到降级
+	resp.Update = &proto.UpdateStatus{Managed: true, Pull: p.pull}
 	return resp, nil
 }
 
-func (p *fakePeer) PushUpdate(_ context.Context, tag, _ string, _ []byte, _ bool) (*proto.UpdateResp, error) {
-	p.m.pushed = true
-	if p.m.pushErr != nil {
-		return nil, p.m.pushErr
+func (p *fakePeer) PushUpdate(_ context.Context, tag, sum string, _ []byte, _ bool) (*proto.UpdateResp, error) {
+	p.pushCalls++
+	p.lastSum = sum
+	if p.m != nil {
+		p.m.pushed = true
+		if p.m.pushErr != nil {
+			return nil, p.m.pushErr
+		}
 	}
 	return &proto.UpdateResp{OK: true, Version: tag, Prev: "/x.prev", Restarted: true}, nil
+}
+
+func (p *fakePeer) PullUpdate(_ context.Context, tag, sum string, _ bool) (*proto.UpdateResp, error) {
+	p.pullCalls++
+	p.lastSum = sum
+	return &proto.UpdateResp{OK: true, Accepted: true, Version: tag}, nil
 }
 
 func (p *fakePeer) RestartAgentd(_ context.Context, _ bool) (*proto.UpdateResp, error) {
@@ -73,18 +106,33 @@ func (p *fakePeer) RestartAgentd(_ context.Context, _ bool) (*proto.UpdateResp, 
 }
 
 func (p *fakePeer) WaitVersion(_ context.Context, _ string, _, _ time.Duration) error {
-	return p.m.waitErr
+	if p.m != nil {
+		return p.m.waitErr
+	}
+	return nil
 }
 
-// fakeFetcher 实现 releaseFetcher，两个方法都不落盘不联网。
-type fakeFetcher struct{}
+// fakeFetcher 实现 releaseFetcher。sum 是 FetchChecksum 返回的校验和；
+// checksumCalls / archiveCalls 记录调用次数，供「checksums 只下一次」类断言用。
+// 零值即可用（既有测试不关心计数）。
+type fakeFetcher struct {
+	sum           string
+	checksumCalls int
+	archiveCalls  int
+}
 
-func (fakeFetcher) Fetch(context.Context, release.Release, string) (string, error) {
+func (f *fakeFetcher) Fetch(context.Context, release.Release, string) (string, error) {
 	return "/tmp/.handoff.new", nil
 }
 
-func (fakeFetcher) FetchArchive(context.Context, release.Release, string, string) ([]byte, string, error) {
+func (f *fakeFetcher) FetchArchive(context.Context, release.Release, string, string) ([]byte, string, error) {
+	f.archiveCalls++
 	return []byte("TGZ"), strings.Repeat("a", 64), nil
+}
+
+func (f *fakeFetcher) FetchChecksum(context.Context, release.Release, string, string) (string, error) {
+	f.checksumCalls++
+	return f.sum, nil
 }
 
 type checkerFunc func(context.Context) (release.Release, error)
@@ -104,7 +152,7 @@ func setupUpgradeTest(t *testing.T, machines map[string]*fakeMachine) {
 			return release.Release{Tag: "v0.1.1"}, nil
 		})
 	}
-	newReleaseFetcher = func() releaseFetcher { return fakeFetcher{} }
+	newReleaseFetcher = func() releaseFetcher { return &fakeFetcher{} }
 	activateBinary = func(string, string) (string, error) { return "/tmp/handoff.prev", nil }
 	rollbackBinary = func(string) error { return nil }
 	newAgentdClient = func(ep Endpoint) agentdPeer {
@@ -160,6 +208,7 @@ func runUpgrade(t *testing.T, args ...string) (string, error) {
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		upgradeCheck, upgradeNow, upgradeRollback, upgradeForce = false, false, false, false
+		upgradePush = false
 	})
 	err := rootCmd.ExecuteContext(context.Background())
 	return buf.String(), err
@@ -175,9 +224,11 @@ func runUpgradeCheck(t *testing.T, machines map[string]*fakeMachine) string {
 	return out
 }
 
-func runUpgradeNow(t *testing.T, machines map[string]*fakeMachine) string {
+func runUpgradeNow(t *testing.T, machines ...map[string]*fakeMachine) string {
 	t.Helper()
-	setupUpgradeTest(t, machines)
+	if len(machines) > 0 {
+		setupUpgradeTest(t, machines[0])
+	}
 	out, _ := runUpgrade(t, "--now")
 	return out
 }
@@ -186,6 +237,70 @@ func runUpgradeNowErr(t *testing.T, machines map[string]*fakeMachine) (string, e
 	t.Helper()
 	setupUpgradeTest(t, machines)
 	return runUpgrade(t, "--now")
+}
+
+// withStubs 把 upgrade 的七个缝整体换成给定的一台替身机器（自拉测试形态）。
+// listEndpoints 只返回一台远端 devbox，不处理本机。
+func withStubs(t *testing.T, fetcher *fakeFetcher, peer *fakePeer) {
+	t.Helper()
+	oldC, oldF, oldA, oldLE := newReleaseChecker, newReleaseFetcher, newAgentdClient, listEndpoints
+	oldAct, oldRol, oldExec := activateBinary, rollbackBinary, execSkillInstall
+	newReleaseChecker = func() releaseChecker {
+		return checkerFunc(func(context.Context) (release.Release, error) {
+			return release.Release{Tag: "v0.1.1"}, nil
+		})
+	}
+	newReleaseFetcher = func() releaseFetcher { return fetcher }
+	byName := map[string]*fakePeer{"devbox": peer}
+	newAgentdClient = func(ep Endpoint) agentdPeer { return byName[ep.Name] }
+	listEndpoints = func(only string) ([]Endpoint, error) {
+		return []Endpoint{{Name: "devbox", Addr: "http://devbox"}}, nil
+	}
+	activateBinary = func(string, string) (string, error) { return "/tmp/handoff.prev", nil }
+	rollbackBinary = func(string) error { return nil }
+	execSkillInstall = func(context.Context, string) (string, error) { return "", nil }
+	t.Cleanup(func() {
+		newReleaseChecker, newReleaseFetcher, newAgentdClient, listEndpoints = oldC, oldF, oldA, oldLE
+		activateBinary, rollbackBinary, execSkillInstall = oldAct, oldRol, oldExec
+	})
+}
+
+// withStubsMulti 同 withStubs，但注入多台替身机器（按端点名索引，避免与
+// probeMachine/process 各调一次 newAgentdClient 打架）。
+func withStubsMulti(t *testing.T, fetcher *fakeFetcher, peers []*fakePeer) {
+	t.Helper()
+	oldC, oldF, oldA, oldLE := newReleaseChecker, newReleaseFetcher, newAgentdClient, listEndpoints
+	oldAct, oldRol, oldExec := activateBinary, rollbackBinary, execSkillInstall
+	newReleaseChecker = func() releaseChecker {
+		return checkerFunc(func(context.Context) (release.Release, error) {
+			return release.Release{Tag: "v0.1.1"}, nil
+		})
+	}
+	newReleaseFetcher = func() releaseFetcher { return fetcher }
+	byName := make(map[string]*fakePeer, len(peers))
+	eps := make([]Endpoint, 0, len(peers))
+	for idx, p := range peers {
+		name := fmt.Sprintf("devbox%d", idx)
+		byName[name] = p
+		eps = append(eps, Endpoint{Name: name, Addr: "http://" + name})
+	}
+	newAgentdClient = func(ep Endpoint) agentdPeer { return byName[ep.Name] }
+	listEndpoints = func(only string) ([]Endpoint, error) {
+		if only != "" {
+			if _, ok := byName[only]; !ok {
+				return nil, fmt.Errorf("target %q 未在配置中定义", only)
+			}
+			return []Endpoint{{Name: only, Addr: "http://" + only}}, nil
+		}
+		return eps, nil
+	}
+	activateBinary = func(string, string) (string, error) { return "/tmp/handoff.prev", nil }
+	rollbackBinary = func(string) error { return nil }
+	execSkillInstall = func(context.Context, string) (string, error) { return "", nil }
+	t.Cleanup(func() {
+		newReleaseChecker, newReleaseFetcher, newAgentdClient, listEndpoints = oldC, oldF, oldA, oldLE
+		activateBinary, rollbackBinary, execSkillInstall = oldAct, oldRol, oldExec
+	})
 }
 
 // TestUpgradeCheckRendersEveryMachine 巡检必须一台不落，够不着的也要有一行。
@@ -432,5 +547,76 @@ func TestProxyTransportNilWhenUnset(t *testing.T) {
 func TestProxyTransportBadValueDegrades(t *testing.T) {
 	if rt := proxyTransport(&config.Config{Proxy: "socks4://h:1"}); rt != nil {
 		t.Fatalf("坏代理应降级为 nil，实得 %T", rt)
+	}
+}
+
+// 对端上报 pull=true 时走自拉：不下 20MB 资产，只下 checksums 并下发 tag+sum。
+func TestRemoteUpgradeUsesPullWhenCapable(t *testing.T) {
+	// 沿用本文件既有的替身装配方式（listEndpoints / newAgentdClient /
+	// newReleaseChecker / newReleaseFetcher 四个缝全部替换）
+	fetcher := &fakeFetcher{sum: "abc"}
+	peer := &fakePeer{pull: boolPtr(true), platform: "linux/amd64", version: "v0.9.0"}
+	withStubs(t, fetcher, peer)
+
+	runUpgradeNow(t)
+
+	if fetcher.archiveCalls != 0 {
+		t.Errorf("自拉模式不得下载资产，实得 %d 次", fetcher.archiveCalls)
+	}
+	if peer.pullCalls != 1 {
+		t.Errorf("应调一次 PullUpdate，实得 %d", peer.pullCalls)
+	}
+	if peer.pushCalls != 0 {
+		t.Errorf("不该调 PushUpdate，实得 %d", peer.pushCalls)
+	}
+	if peer.lastSum != "abc" {
+		t.Errorf("下发的 sha256 = %q，期望 abc", peer.lastSum)
+	}
+}
+
+// 对端没上报 pull（老 agentd，nil）→ 自动降级推送，升级链路不断。
+func TestRemoteUpgradeFallsBackToPushWhenPullNil(t *testing.T) {
+	fetcher := &fakeFetcher{sum: "abc"}
+	peer := &fakePeer{pull: nil, platform: "linux/amd64", version: "v0.9.0"}
+	withStubs(t, fetcher, peer)
+
+	runUpgradeNow(t)
+
+	if peer.pushCalls != 1 {
+		t.Errorf("老 agentd 应降级推送，实得 push=%d pull=%d", peer.pushCalls, peer.pullCalls)
+	}
+}
+
+// --push 强制走推送，无论对端能力如何——内网执行机出不了网时的逃生路径。
+func TestPushFlagForcesPushMode(t *testing.T) {
+	fetcher := &fakeFetcher{sum: "abc"}
+	peer := &fakePeer{pull: boolPtr(true), platform: "linux/amd64", version: "v0.9.0"}
+	withStubs(t, fetcher, peer)
+
+	upgradePush = true
+	defer func() { upgradePush = false }()
+	runUpgradeNow(t)
+
+	if peer.pushCalls != 1 || peer.pullCalls != 0 {
+		t.Errorf("--push 应强制推送，实得 push=%d pull=%d", peer.pushCalls, peer.pullCalls)
+	}
+}
+
+// checksums.txt 对一个 release 只下一次，同平台的多台机器共用缓存——
+// 这正是自拉省流量的点，每台机器各下一次会把省下的流量又还回去一部分，
+// 而且平白多几次 GitHub 请求。
+// 注意：校验和按平台不同，缓存键是 goos/goarch，所以两台机器必须是**同平台**
+// 才只下一次（不同平台的校验和本来就不同，各下一次是正确行为）。
+func TestChecksumFetchedOncePerRun(t *testing.T) {
+	fetcher := &fakeFetcher{sum: "abc"}
+	withStubsMulti(t, fetcher, []*fakePeer{
+		{pull: boolPtr(true), platform: "linux/amd64", version: "v0.9.0"},
+		{pull: boolPtr(true), platform: "linux/amd64", version: "v0.9.0"},
+	})
+
+	runUpgradeNow(t)
+
+	if fetcher.checksumCalls != 1 {
+		t.Errorf("checksums 应只下一次，实得 %d 次", fetcher.checksumCalls)
 	}
 }
