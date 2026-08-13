@@ -101,6 +101,10 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	fmt.Fprintf(w, "版本     %s\n", describeBuild(st.Version))
 	fmt.Fprintf(w, "本地     %s\n", compareBuild(cli, st.Version))
 	fmt.Fprintf(w, "数据     %s   已运行 %s\n", st.DataDir, humanUptime(st.StartedAt))
+	// 只在有辅助监听时打这一行：两档常规配置的输出保持不变（B85）
+	if st.ListenAux != "" {
+		fmt.Fprintf(w, "监听     %s（辅 %s）\n", st.Listen, st.ListenAux)
+	}
 	fmt.Fprintf(w, "执行者   %s\n", strings.Join(markDefault(st.Executors, st.DefaultExecutor), "  "))
 	if u := st.Update; u != nil && !u.Managed {
 		// 非托管的后果要在这里说清楚：handoff upgrade 会硬拒绝这台机器，

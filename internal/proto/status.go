@@ -109,8 +109,14 @@ type UpdateStatus struct {
 // 注意：TaskCounts 的六个状态键恒存在，计数为零也出现——缺键与零值对消费方
 // 是两回事。
 type StatusResp struct {
-	Version         BuildInfo      `json:"version"`
-	Listen          string         `json:"listen"`
+	Version BuildInfo `json:"version"`
+	Listen  string    `json:"listen"`
+
+	// ListenAux 是 loopback 辅助监听地址（B85）：Listen 为单网卡 IP 时 agentd
+	// 额外监听 "127.0.0.1:<同端口>"，本机 CLI 的确定性改写拨的就是它。
+	// 空 = 无辅助监听（Listen 为 loopback/通配，或对端是老 agentd）。
+	ListenAux string `json:"listen_aux,omitempty"`
+
 	DataDir         string         `json:"data_dir"`
 	StartedAt       time.Time      `json:"started_at"`
 	Executors       []string       `json:"executors"`

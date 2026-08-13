@@ -12,6 +12,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sort"
@@ -103,6 +104,31 @@ type Endpoint struct {
 	Local bool
 }
 
+// localDialAddr 决议本机模式的拨号地址：host 非 loopback（通配或单网卡 IP）
+// 一律改拨 127.0.0.1 同端口（B85 确定性改写，不做先试后退）——单网卡档靠
+// agentd 的 loopback 辅助监听兜底，通配档 loopback 本就在监听面里。
+//
+// 参数：
+//   - listen: 配置里的监听地址（可能带也可能不带 scheme；带 scheme 时
+//     SplitHostPort 解析失败，归 loopback 档原样保留）
+//
+// 返回：
+//   - 带 http:// 前缀的拨号地址
+//
+// 已知代价（spec §3.3，接受）：新 CLI + 旧 agentd（无辅助监听）且 listen 为
+// 单网卡 IP 时本机命令连接拒绝，升级 agentd 即愈。
+func localDialAddr(listen string) string {
+	if cls, lo := config.ClassifyListen(listen); cls != config.ListenLoopback {
+		// Debug 留痕：连接拒绝排障时第一个要回答的就是「它到底拨了哪」
+		slog.Debug("本机拨号地址改写", "listen", listen, "dial", lo)
+		listen = lo
+	}
+	if !strings.Contains(listen, "://") {
+		listen = "http://" + listen
+	}
+	return listen
+}
+
 // Endpoints 返回要处理的机器清单。
 //
 // 参数：
@@ -130,10 +156,7 @@ func Endpoints(only string) ([]Endpoint, error) {
 		}
 		return []Endpoint{{Name: only, Addr: "http://" + t.Addr, Token: t.Token}}, nil
 	}
-	local := cfg.Listen
-	if !strings.Contains(local, "://") {
-		local = "http://" + local
-	}
+	local := localDialAddr(cfg.Listen)
 	eps := []Endpoint{{Name: "本机", Addr: local, Token: cfg.Token, Local: true}}
 	names := make([]string, 0, len(cfg.Targets))
 	for n := range cfg.Targets {
@@ -150,8 +173,9 @@ func Endpoints(only string) ([]Endpoint, error) {
 //
 // 参数（读取全局 flag）：
 //   - --target 为空（本机模式）：token 一律取本地配置 cfg.Token（服务端无条件要求
-//     Bearer，无 token 的本机调用必然 401）；地址取 --agentd（显式指定时优先）或
-//     cfg.Listen（与 agentd 实际监听一致），cfg.Token 为空时返回错误
+//     Bearer，无 token 的本机调用必然 401）；地址由 localDialAddr 决议（loopback
+//     照拨，通配/单网卡改拨 127.0.0.1，B85）；显式 --agentd 优先；cfg.Token 为空时
+//     返回错误
 //   - --target 非空：从配置 Targets 中查出 addr/token（远程配对）
 //
 // 返回：
@@ -174,14 +198,12 @@ func TargetEndpoint() (addr, token string, err error) {
 			return "", "", fmt.Errorf("配置 %s 未设置 token，无法认证本机 agentd", p)
 		}
 		// 地址优先级：显式 --agentd 优先（用户指明了别的端点）；未显式指定时
-		// 用配置 Listen，与 agentd 实际监听保持一致，避免默认值与配置漂移
+		// 由 localDialAddr 决议——loopback 照拨，通配/单网卡改拨 127.0.0.1
+		//（B85，单网卡档靠 agentd 辅助监听兜底）
 		if rootCmd.PersistentFlags().Changed("agentd") {
 			addr = agentdURL
 		} else {
-			addr = cfg.Listen
-			if !strings.Contains(addr, "://") {
-				addr = "http://" + addr
-			}
+			addr = localDialAddr(cfg.Listen)
 		}
 		return addr, cfg.Token, nil
 	}

@@ -308,15 +308,17 @@ func executorOptions(rs []toolchain.Result) []promptOption {
 	return opts
 }
 
-// askListen 问监听三档。探到的网卡 IP 绝不写进 listen——绑到某一张网卡会让
-// 127.0.0.1 连不上，DHCP / Tailscale 一变 agentd 也起不来。IP 只出现在配对片段。
+// askListen 问监听三档。探到的网卡 IP 不主动写进 listen——绑单网卡时本机 CLI
+// 靠 loopback 辅助监听兜底（B85），但 DHCP / Tailscale 一变（IP 不在）agentd
+// 依旧起不来，预选仍只给 loopback / 全网卡两档，单网卡留给手填。IP 只出现在
+// 配对片段。
 func askListen(p prompter, cfg *config.Config, cfgExisted, isExec bool) error {
 	preset := listenPreset(cfg.Listen, cfgExisted, isExec)
 	slog.Debug("init 监听预选", "listen", cfg.Listen, "cfg_existed", cfgExisted, "preset", preset)
 	choice, err := p.Select("监听地址", []promptOption{
 		{Value: listenLoopback, Label: "仅本机（127.0.0.1:7777）"},
 		{Value: listenAll, Label: "所有网卡（0.0.0.0:7777）"},
-		{Value: listenCustom, Label: "手填"},
+		{Value: listenCustom, Label: "手填（如绑单个网卡 IP，本机命令自动走辅助监听）"},
 	}, preset)
 	if err != nil {
 		return err
