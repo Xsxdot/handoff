@@ -18,7 +18,6 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,8 +25,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -87,8 +84,11 @@ var initCmd = &cobra.Command{
 			return nil
 		}
 
-		r := bufio.NewReader(cmd.InOrStdin())
-		isExec, err := askAll(out, r, cfg, results)
+		// TTY 与测试共用脚本化实现（读 cmd.In）。huh 在 Task 5 再接。
+		// askAll 与 maybeInstallService 必须共用同一个 prompter：各自再
+		// new 一次会各包一层 bufio，后续答案会被提前吃掉。
+		pr := newScriptedPrompter(cmd.InOrStdin(), out)
+		isExec, err := askAll(out, pr, cfg, results)
 		if err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ var initCmd = &cobra.Command{
 		}
 		fmt.Fprintf(out, "\n已写入 %s\n", p)
 		printPairing(out, cfg)
-		maybeInstallService(out, r, isExec, p)
+		maybeInstallService(out, pr, isExec, p)
 		return nil
 	},
 }
@@ -159,18 +159,34 @@ func coveredBy(path string, added []string) string {
 
 // askAll 按角色分支问完全部问题，就地改写 cfg。
 //
+// 参数：
+//   - w: 面向用户的说明文字（非问答本身）
+//   - p: 问答通道；本 task 一律是 scriptedPrompter
+//   - cfg: 就地改写
+//   - rs: 探测结果，只影响默认值与警告
+//
 // 返回：
 //   - isExec: 本机角色是否包含执行机（决定 init 之后要不要追问托管）
-//   - 错误：问答或改写失败
-func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Result) (bool, error) {
+//   - 错误：问答失败（脚本化路径几乎不返回错；huh 取消会走这里）
+func askAll(w io.Writer, p prompter, cfg *config.Config, rs []toolchain.Result) (bool, error) {
 	fmt.Fprintln(w, "\n以下每一问直接回车即取方括号里的当前值。")
 
-	// 1. 角色。探到就绪 executor 则默认「执行机」
+	// 1. 角色。探到就绪 executor 则默认「执行机」。
+	// 本 task 仍用数字 Input，不改提示文案；Task 4 再换成 Select。
 	defRole := roleReviewer
 	if toolchain.FirstReady(rs) != "" {
 		defRole = roleExecutor
 	}
-	role := askInt(w, r, "这台机器的角色 1=执行机 2=审核者机 3=两者", defRole)
+	roleStr, err := p.Input("这台机器的角色 1=执行机 2=审核者机 3=两者", strconv.Itoa(defRole))
+	if err != nil {
+		return false, err
+	}
+	role := defRole
+	if n, aerr := strconv.Atoi(roleStr); aerr != nil {
+		fmt.Fprintf(w, "  «%s» 不是数字，取默认 %d\n", roleStr, defRole)
+	} else {
+		role = n
+	}
 	isExec := role == roleExecutor || role == roleBoth
 	isReviewer := role == roleReviewer || role == roleBoth
 
@@ -184,29 +200,52 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 				defExec = "opencode"
 			}
 		}
-		cfg.Executor.Default = askString(w, r, "缺省执行者 executor.default", defExec)
+		cfg.Executor.Default, err = p.Input("缺省执行者 executor.default", defExec)
+		if err != nil {
+			return false, err
+		}
 		warnIfNotReady(w, rs, cfg.Executor.Default)
-		cfg.Executor.Model = askString(w, r, "执行者模型 executor.model（空=用执行者自身默认）", cfg.Executor.Model)
+		cfg.Executor.Model, err = p.Input("执行者模型 executor.model（空=用执行者自身默认）", cfg.Executor.Model)
+		if err != nil {
+			return false, err
+		}
 
 		// 4. 监听地址
 		fmt.Fprintln(w, "  提示：要被外机访问需改成 0.0.0.0:7777")
-		cfg.Listen = askString(w, r, "监听地址 listen", cfg.Listen)
+		cfg.Listen, err = p.Input("监听地址 listen", cfg.Listen)
+		if err != nil {
+			return false, err
+		}
 
 		// 5. 仓库落点
-		cfg.RepoRoot = askString(w, r, "项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
+		cfg.RepoRoot, err = p.Input("项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
+		if err != nil {
+			return false, err
+		}
 
 		// 6. 审批链
-		cfg.Approver.Executor = askString(w, r, "审批链执行者 approver.executor（空=不启用，权限请求直接找人）", cfg.Approver.Executor)
+		cfg.Approver.Executor, err = p.Input("审批链执行者 approver.executor（空=不启用，权限请求直接找人）", cfg.Approver.Executor)
+		if err != nil {
+			return false, err
+		}
 		if cfg.Approver.Executor != "" {
-			cfg.Approver.Model = askString(w, r, "审批链模型 approver.model（空=用执行者自身默认）", cfg.Approver.Model)
+			cfg.Approver.Model, err = p.Input("审批链模型 approver.model（空=用执行者自身默认）", cfg.Approver.Model)
+			if err != nil {
+				return false, err
+			}
 		}
 	}
 
 	if isReviewer {
 		// 9. 任务结束自动同步分支
-		cfg.Sync.Auto = askBool(w, r, "任务结束自动同步远程分支到本地 sync.auto", cfg.Sync.Auto)
+		cfg.Sync.Auto, err = p.Confirm("任务结束自动同步远程分支到本地 sync.auto", cfg.Sync.Auto)
+		if err != nil {
+			return false, err
+		}
 		// 10. targets 配对，循环添加
-		askTargets(w, r, cfg)
+		if err := askTargets(w, p, cfg); err != nil {
+			return false, err
+		}
 	}
 	return isExec, nil
 }
@@ -216,7 +255,7 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 //
 // 参数：
 //   - w: 面向用户的输出
-//   - r: 问答输入
+//   - p: 问答通道（与 askAll 共用同一实例）
 //   - isExec: 本机角色是否包含执行机
 //   - cfgPath: 配置路径（传给服务单元）
 //
@@ -229,7 +268,7 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 //   - why 要追问而不是只提示：托管是「机器重启后 agentd 还回得来」的唯一保障，
 //     它此前只是最后一行提示——B71 现场那台就是这么变成手工拉起的，重启后
 //     PATH 全靠运气
-func maybeInstallService(w io.Writer, r *bufio.Reader, isExec bool, cfgPath string) {
+func maybeInstallService(w io.Writer, p prompter, isExec bool, cfgPath string) {
 	if !isExec {
 		// 审核者机不跑 agentd，托管对它没有意义
 		return
@@ -240,7 +279,13 @@ func maybeInstallService(w io.Writer, r *bufio.Reader, isExec bool, cfgPath stri
 		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
 		return
 	}
-	if !askBool(w, r, "\n现在把 agentd 交给本机进程管理器托管", true) {
+	ok, err := p.Confirm("\n现在把 agentd 交给本机进程管理器托管", true)
+	if err != nil {
+		// 配置已经写盘，附属问答失败不能让 init 退非零
+		fmt.Fprintf(w, "托管追问失败：%v\n", err)
+		return
+	}
+	if !ok {
 		fmt.Fprintln(w, "\n下一步   handoff service install")
 		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
 		return
@@ -272,7 +317,7 @@ func warnIfNotReady(w io.Writer, rs []toolchain.Result, name string) {
 }
 
 // askTargets 循环添加远程执行机配对，回车即结束。
-func askTargets(w io.Writer, r *bufio.Reader, cfg *config.Config) {
+func askTargets(w io.Writer, p prompter, cfg *config.Config) error {
 	if cfg.Targets == nil {
 		cfg.Targets = map[string]config.Target{}
 	}
@@ -283,14 +328,26 @@ func askTargets(w io.Writer, r *bufio.Reader, cfg *config.Config) {
 		}
 	}
 	for {
-		name := askString(w, r, "\n新增远程执行机名字（直接回车结束）", "")
+		name, err := p.Input("\n新增远程执行机名字（直接回车结束）", "")
+		if err != nil {
+			return err
+		}
 		if name == "" {
-			return
+			return nil
 		}
 		t := cfg.Targets[name]
-		t.Addr = askString(w, r, "  地址 addr（形如 100.73.238.21:7777）", t.Addr)
-		t.Token = askString(w, r, "  令牌 token（对方 handoff init 末尾会打出来）", t.Token)
-		t.User = askString(w, r, "  ssh 用户名 user（attach/pull 要用）", t.User)
+		t.Addr, err = p.Input("  地址 addr（形如 100.73.238.21:7777）", t.Addr)
+		if err != nil {
+			return err
+		}
+		t.Token, err = p.Input("  令牌 token（对方 handoff init 末尾会打出来）", t.Token)
+		if err != nil {
+			return err
+		}
+		t.User, err = p.Input("  ssh 用户名 user（attach/pull 要用）", t.User)
+		if err != nil {
+			return err
+		}
 		cfg.Targets[name] = t
 	}
 }
@@ -307,72 +364,6 @@ func printPairing(w io.Writer, cfg *config.Config) {
 	fmt.Fprintf(w, "    token: \"%s\"\n", cfg.Token)
 	fmt.Fprintf(w, "    user: \"%s\"\n", os.Getenv("USER"))
 	fmt.Fprintln(w, "\n  注意：addr 里的地址要换成审核者机能连到的实际 IP。")
-}
-
-// ask 打印提示并读一行；空行返回空串（调用方据此取默认值）。
-func ask(w io.Writer, r *bufio.Reader, prompt, def string) string {
-	if def != "" {
-		fmt.Fprintf(w, "%s [%s]: ", prompt, def)
-	} else {
-		fmt.Fprintf(w, "%s []: ", prompt)
-	}
-	line, err := r.ReadString('\n')
-	if err != nil && line == "" {
-		// stdin 提前结束（脚本喂的答案用完了）：当作全部取默认，不报错。
-		// 这样测试与真实的「Ctrl-D 提前结束」都能走到写盘
-		fmt.Fprintln(w)
-		return ""
-	}
-	return strings.TrimSpace(line)
-}
-
-// askString 读一个字符串，空行取默认。
-func askString(w io.Writer, r *bufio.Reader, prompt, def string) string {
-	if v := ask(w, r, prompt, def); v != "" {
-		return v
-	}
-	return def
-}
-
-// askInt 读一个整数，空行或解析失败取默认。
-func askInt(w io.Writer, r *bufio.Reader, prompt string, def int) int {
-	v := ask(w, r, prompt, strconv.Itoa(def))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		fmt.Fprintf(w, "  «%s» 不是数字，取默认 %d\n", v, def)
-		return def
-	}
-	return n
-}
-
-// askBool 读 y/n，空行取默认。
-func askBool(w io.Writer, r *bufio.Reader, prompt string, def bool) bool {
-	d := "n"
-	if def {
-		d = "y"
-	}
-	v := strings.ToLower(ask(w, r, prompt+" (y/n)", d))
-	if v == "" {
-		return def
-	}
-	return v == "y" || v == "yes"
-}
-
-// askDuration 读一个时长，空行或解析失败取默认。
-func askDuration(w io.Writer, r *bufio.Reader, prompt string, def time.Duration) time.Duration {
-	v := ask(w, r, prompt, def.String())
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		fmt.Fprintf(w, "  «%s» 不是合法时长（如 6h / 30m），取默认 %s\n", v, def)
-		return def
-	}
-	return d
 }
 
 func init() { rootCmd.AddCommand(initCmd) }
