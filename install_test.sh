@@ -44,12 +44,13 @@ check "darwin x86_64" "darwin_amd64" "$(with_uname Darwin x86_64 detect_platform
 check "linux aarch64" "linux_arm64"  "$(with_uname Linux aarch64 detect_platform)"
 check "linux x86_64"  "linux_amd64"  "$(with_uname Linux x86_64 detect_platform)"
 
-# Windows 必须被明确拒绝，且理由里要点出 B37——否则用户只会以为是漏了平台
+# Windows 必须被明确拒绝，且理由里要给出路（install.ps1）——
+# 只说「不支持」会让用户以为 Windows 根本装不了，而现在它是能装的
 out="$( (with_uname Windows_NT x86_64 detect_platform) 2>&1 )" && rc=0 || rc=$?
 check "Windows 退出码" "1" "$rc"
 case "$out" in
-  *B37*) ;;
-  *) printf 'FAIL  Windows 的拒绝理由应点出 backlog B37\n      实得 %s\n' "$out" >&2
+  *install.ps1*) ;;
+  *) printf 'FAIL  Windows 的拒绝理由应指向 install.ps1\n      实得 %s\n' "$out" >&2
      fails=$((fails + 1)) ;;
 esac
 

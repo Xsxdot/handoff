@@ -50,3 +50,17 @@ jobs:
           GOOS=windows GOARCH=arm64 go build ./...
       - name: install.sh 单测
         run: bash install_test.sh
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 两个版本都要跑，不是冗余：install.ps1 把「兼容 Windows 自带的 PS 5.1」
+      # 列为硬要求，而 5.1 与 7 在 Invoke-WebRequest 的响应对象上有实质差异。
+      # 只跑 pwsh 等于把这条硬要求写了却不验。
+      - name: install.ps1 单测（PowerShell 5.1）
+        shell: powershell
+        run: .\install_test.ps1
+      - name: install.ps1 单测（PowerShell 7）
+        shell: pwsh
+        run: .\install_test.ps1

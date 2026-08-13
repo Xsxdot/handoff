@@ -9,7 +9,9 @@
 # 边界：
 #   - 只在「本机还没有 handoff」时用一次；后续换版走 handoff upgrade / agentd 自更新
 #   - 不写服务单元、不改用户的 shell rc 文件、不 sudo
-#   - 不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成（backlog B37）
+#   - 不装 Windows：Windows 走 install.ps1（那边装的是 zip 资产里的 handoff.exe）。
+#     Windows 上 handoff 只能当协调者——agentd 的进程承载层在非 unix 平台
+#     尚未实现（backlog B37）
 #
 # 环境变量：
 #   HANDOFF_INSTALL_DIR  覆盖安装目录（默认 ~/.local/bin）
@@ -51,7 +53,7 @@ detect_platform() {
     Darwin) os=darwin ;;
     Linux) os=linux ;;
     MINGW* | MSYS* | CYGWIN* | Windows_NT)
-      die "暂不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成（backlog B37）" ;;
+      die "Windows 请改用 PowerShell 安装：irm https://handoff.gosuper.dev/install.ps1 | iex（Windows 上 handoff 只能当协调者，见 README）" ;;
     *) die "不支持的系统 $(uname -s)（仅 Darwin/Linux）" ;;
   esac
   case "$(uname -m)" in
