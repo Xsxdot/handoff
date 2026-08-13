@@ -315,15 +315,49 @@ OTel collector 只为读自己任务的 token 数，代价与收益完全不成�
 
 **三个附带发现**：
 
-1. 同一条线上有**两套命名**。回合中还会来一条
-   `_x.ai/session_notification` + `sessionUpdate: "response_completed"`，它的 usage 是
-   snake_case（`input_tokens` / `cache_read_input_tokens` / `reasoning_tokens`），
-   数值也不同（`input_tokens: 28614`，是单次模型调用；`turn_completed` 的 34502 是整回合）。
-   **取 `turn_completed` / `_meta` 那份**，别按名字模糊匹配。
-2. 每条 `session/update` 的 `_meta.totalTokens` 带回合内实时快照（本次 23636）。
+1. 同一条线上有**两套命名，且缓存的算法相反**。回合中每次模型调用后会来一条
+   `_x.ai/session_notification` + `sessionUpdate: "response_completed"`，usage 是
+   snake_case（`input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`），
+   其中 `input_tokens` **不含**缓存命中，要相加；而 `turn_completed` 的 camelCase
+   `inputTokens` **已含**缓存（`cachedReadTokens` 是它的子集）。按名字模糊匹配必错。
+2. 每条 `session/update` 的 `_meta.totalTokens` 带回合内实时快照。
    要「回合中途就刷新用量」的话通道现成，但那是另一个口径，先不用。
 3. `_meta.modelId = "grok-4.6"` 也在同一帧，实际模型名一并解决——
    §5 第 3 问「模型名要不要和用量拆开推进」现在四家全部落在同一批帧里，拆的理由更弱了。
+
+### 4.2 08-13 再验：**回合级 usage 是跨调用累加，不能当 context 占用**
+
+上面 §4.1 那次回合只有一次模型调用（`modelCalls: 1`），分不出「回合累加」和
+「当前占用」。补一次强制多轮工具调用的回合（`依次跑 echo one/two/three`，
+探针自动放行权限），`modelCalls: 4`：
+
+| 来源 | 值 |
+|---|---|
+| `turn_completed.usage.inputTokens` | **138637** |
+| 四条 `response_completed` 的 `input_tokens` 之和 | 28643+220+142+64 = 29069 |
+| 四条 `response_completed` 的 `cache_read_input_tokens` 之和 | 5888+34432+34560+34688 = 109568 |
+| 二者相加 | **138637** ✅ 完全吻合 |
+
+**结论：`turn_completed.usage` 是整回合跨调用的累加，不是 context 占用。**
+拿它当分子会显示 `138.6k / 500k (28%)`，而真实占用约 34.8k（7%）——差 4 倍，
+且工具调用越多涨得越离谱，长回合会超过 100%。这正是「维护模型→窗口表」被否掉时
+不接受的那类**静默错误**：数字照常显示，只是错的。
+
+**正确的分子**：本回合**最后一条** `response_completed` 的
+`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+= 64 + 34688 + 0 = **34752**，与同期流式帧的 `_meta.totalTokens ≈ 34.8k` 互证。
+
+`turn_completed.usage` 不是没用——它是**累计消耗**的正确来源（含 `costUsdTicks`、
+`modelCalls`、`apiDurationMs`），将来做「这个任务一共烧了多少」时取它。两个口径
+各有各的帧，别混。
+
+**这条同时给出一条四家通用的原则**：分子一律取**最后一次模型调用的输入侧**，
+不要取回合/会话累加。codex 的 `last` 与 `total` 就是这个区分（取 `last`）；
+claudecode 与 opencode 的 usage 本来就是每条消息的（取最后一条）。
+
+**副产品：grok 的数据确实要求 handoff 别再无条件忽略 `_x.ai/*`。**
+分子在 `_x.ai/session_notification`、分母在 `_x.ai/models/update`，两条都是私有通知。
+§4.1 说的「不用碰私有通知」只对模型名和累计口径成立，对 context 占用不成立。
 
 **结论修正**：grok 从「如实缺席」改为**四家里唯一分子分母都在同一次回合里给全的**
 （codex 的分母在 `thread/tokenUsage/updated`，也全，但那是独立通知）。
