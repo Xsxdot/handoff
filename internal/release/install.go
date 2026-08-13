@@ -36,6 +36,18 @@ import (
 // 出错的响应不该把内存吃光。
 const maxAssetBytes = 100 << 20
 
+// downloadRetryMax 是单个 URL 的总尝试次数上限（首次 + 2 次重试）。
+//
+// 瞬时网络故障（EOF、连接重置、超时）绝大多数在几秒内自愈，3 次覆盖
+// 「抖动一下」的常见情形；再多只会把清晰的失败拖成更久的沉默。
+var downloadRetryMax = 3
+
+// downloadRetryBase 是首次重试前的等待，之后指数翻倍（2s → 4s）。
+//
+// 连续失败说明网络持续不稳，退避给服务端喘息空间、避免故障高峰期加剧压力。
+// 做成 var 而非常量，是为了测试里能改成毫秒级，否则一个跑 6 秒的单测会被后人删掉。
+var downloadRetryBase = 2 * time.Second
+
 // selfCheckTimeout 是新二进制自检的时间上限。
 //
 // `handoff version` 不读配置不联网，正常是毫秒级；10s 只是防止一个坏掉的
@@ -204,21 +216,88 @@ func (i *Installer) Fetch(ctx context.Context, rel Release, destDir string) (str
 	return i.InstallArchive(tgz, sum, rel.Tag, destDir)
 }
 
-// get 取一个 URL 的全部内容，带大小上限。
+// httpStatusError 是响应状态码非 200 的错误，带上状态码供重试判定用。
+type httpStatusError struct{ code int }
+
+func (e httpStatusError) Error() string { return fmt.Sprintf("返回 %d", e.code) }
+
+// get 取一个 URL 的全部内容，带大小上限，失败时按策略重试。
+//
+// 重试策略：
+//   - 总尝试次数上限 downloadRetryMax（3 次）：首次 + 2 次重试
+//   - 退避间隔从 downloadRetryBase（2s）开始指数翻倍：第 2 次尝试前等 2s，
+//     第 3 次尝试前等 4s
+//
+// 可重试的失败：
+//   - 传输层错误（Do / 读响应体失败）：超时、连接被拒、连接重置、EOF——
+//     这一类大概率是瞬时网络抖动，几秒内能自愈
+//   - HTTP 5xx 与 429：服务端过载或暂时不可用，缓一缓再问是合理的
+//
+// 不可重试的失败：
+//   - 4xx（429 除外）：404 表示「这个版本没有这个资产」，是确定性的缺失，
+//     重试一百次还是 404，只会把一句清晰的错误拖成更久的沉默；
+//     同理，请求构造错误（URL 非法等）也是确定性的，重试没有意义
+//
+// 所以这里把重试留给「大概率会自愈」的失败，剩下的尽快如实报错——
+// 重试不是无脑重复，区分的关键不是次数，而是失败的性质。
 func (i *Installer) get(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	var lastErr error
+	for attempt := 1; attempt <= downloadRetryMax; attempt++ {
+		body, err := i.getOnce(ctx, req)
+		if err == nil {
+			if attempt > 1 {
+				i.Log.Info("下载重试成功", "url", url, "attempt", attempt)
+			}
+			return body, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			// 不可重试的失败（如 404）只发生一次，如实原样返回。
+			// 套上「尝试 N 次仍失败」等于把事实上的 1 次说成 3 次，且把确定性的
+			// 缺失错说成「重试后仍未自愈」，会让排障者去查网络而不是资产清单。
+			return nil, err
+		}
+		if attempt >= downloadRetryMax {
+			break
+		}
+		backoff := downloadRetryBase << uint(attempt-1)
+		i.Log.Warn("下载失败，即将重试", "url", url, "attempt", attempt, "backoff", backoff, "cause", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return nil, fmt.Errorf("尝试 %d 次仍失败: %w", downloadRetryMax, lastErr)
+}
+
+// getOnce 执行单次请求：Do + 读响应体。非 200 返回带状态码的 httpStatusError。
+func (i *Installer) getOnce(ctx context.Context, req *http.Request) ([]byte, error) {
 	resp, err := i.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("返回 %d", resp.StatusCode)
+		return nil, httpStatusError{code: resp.StatusCode}
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes))
+}
+
+// isRetryable 判断一次失败是否值得重试。
+//
+// 传输层错误（Do / 读响应体失败）视为瞬时故障，一律可重试；
+// 状态码错误只重试 429 与 5xx——4xx 是确定性的，重试只是把清晰的错误拖成沉默。
+func isRetryable(err error) bool {
+	var se httpStatusError
+	if errors.As(err, &se) {
+		return se.code == http.StatusTooManyRequests || se.code >= 500
+	}
+	return true
 }
 
 // sumFor 从 checksums.txt 里取某个资产的期望哈希。
