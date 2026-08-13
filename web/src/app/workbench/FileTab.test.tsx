@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FileTab } from './FileTab'
 import type { BaseDir } from './useWorkbench'
 import { ApiError } from '../../api/client'
@@ -15,21 +15,23 @@ const base: BaseDir = {
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
-  return { ...actual, fetchWorkspaceFile: vi.fn() }
+  return { ...actual, fetchWorkspaceFile: vi.fn(), writeWorkspaceFile: vi.fn() }
 })
-const { fetchWorkspaceFile } = await import('../../api/client')
+const { fetchWorkspaceFile, writeWorkspaceFile } = await import('../../api/client')
 
-afterEach(() => vi.mocked(fetchWorkspaceFile).mockReset())
+afterEach(() => {
+  vi.mocked(fetchWorkspaceFile).mockReset()
+  vi.mocked(writeWorkspaceFile).mockReset()
+})
+
+const TEXT = { content: 'module handoff\n', size: 15, sha256: 'basehash' }
 
 describe('FileTab', () => {
   it('按基准目录 + 相对路径 + 机器名取文件并显示内容', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({
-      content: 'module handoff\n',
-      size: 15,
-      sha256: 's1',
-    })
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
     render(<FileTab base={base} rel="go.mod" />)
-    await waitFor(() => expect(screen.getByText(/module handoff/)).toBeInTheDocument())
+    const box = await screen.findByRole('textbox')
+    expect(box).toHaveValue('module handoff\n')
     expect(fetchWorkspaceFile).toHaveBeenCalledWith('/w/b2-b3', 'go.mod', 'devbox')
   })
 
@@ -47,20 +49,90 @@ describe('FileTab', () => {
     )
   })
 
-  it('本期只读：不渲染保存按钮，且明示只读', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'x', size: 1, sha256: 'sx' })
-    render(<FileTab base={base} rel="a.txt" />)
-    await waitFor(() => expect(screen.getByText('x')).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: /保存/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/只读/)).toBeInTheDocument()
-  })
-
   it('换文件时重新取数', async () => {
     vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'a', size: 1, sha256: 'sa' })
     const { rerender } = render(<FileTab base={base} rel="a.txt" />)
-    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('a'))
     vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'b', size: 1, sha256: 'sb' })
     rerender(<FileTab base={base} rel="b.txt" />)
-    await waitFor(() => expect(screen.getByText('b')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('b'))
+  })
+})
+
+describe('FileTab 编辑', () => {
+  it('打字后出现脏标记，保存按钮从禁用变可点', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    expect(screen.getByRole('button', { name: /保存/ })).toBeDisabled()
+    fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    expect(screen.getByText('未保存')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /保存/ })).toBeEnabled()
+  })
+
+  it('保存成功后回基线：脏标记消失、按钮变灰、下一次保存用新哈希当 base', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockResolvedValue({ sha256: 'newhash', size: 16 })
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    await waitFor(() => expect(screen.queryByText('未保存')).not.toBeInTheDocument())
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      '/w/b2-b3', 'go.mod', { content: 'module handoff\nx', base_sha256: 'basehash' }, 'devbox',
+    )
+    // 再改一次，base 必须换成上一次返回的新哈希，而不是原始基线
+    fireEvent.change(box, { target: { value: 'module handoff\nxy' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    await waitFor(() =>
+      expect(vi.mocked(writeWorkspaceFile).mock.calls[1][2].base_sha256).toBe('newhash'),
+    )
+  })
+
+  it('二进制：无编辑框、无保存按钮，说明为什么不能编辑', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: '', size: 49382, binary: true })
+    render(<FileTab base={base} rel="logo.png" />)
+    expect(await screen.findByText(/二进制文件，不支持在线编辑/)).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /保存/ })).not.toBeInTheDocument()
+  })
+
+  it('超限：显示真实大小与「仅显示开头」，只读', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({
+      content: 'a'.repeat(100), size: 3_355_443, truncated: true,
+    })
+    render(<FileTab base={base} rel="fixtures.json" />)
+    expect(await screen.findByText(/仅显示开头/)).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /保存/ })).not.toBeInTheDocument()
+  })
+
+  it('⌘S 在 tab 内触发保存', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockResolvedValue({ sha256: 'newhash', size: 16 })
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    fireEvent.keyDown(box, { key: 's', metaKey: true })
+    await waitFor(() => expect(writeWorkspaceFile).toHaveBeenCalled())
+  })
+
+  it('⌘S 挂在 tab 容器上，容器外按不触发', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    render(<FileTab base={base} rel="go.mod" />)
+    await screen.findByRole('textbox')
+    fireEvent.keyDown(document.body, { key: 's', metaKey: true })
+    expect(writeWorkspaceFile).not.toHaveBeenCalled()
+  })
+
+  it('保存失败时原文透传，草稿不丢', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockRejectedValue(new ApiError(400, '不允许写入 .git 目录'))
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    expect(await screen.findByText('不允许写入 .git 目录')).toBeInTheDocument()
+    expect(box).toHaveValue('module handoff\nx')
   })
 })
