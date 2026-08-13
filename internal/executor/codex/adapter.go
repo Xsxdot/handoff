@@ -43,6 +43,7 @@ const (
 	ntfThreadStatus      = "thread/status/changed"
 	ntfRateLimits        = "account/rateLimits/updated"
 	ntfServerReqResolved = "serverRequest/resolved"
+	ntfTokenUsage        = "thread/tokenUsage/updated"
 
 	reqCommandApproval     = "item/commandExecution/requestApproval"
 	reqFileChangeApproval  = "item/fileChange/requestApproval"
@@ -307,12 +308,20 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		// Model 是本 thread **实际**使用的模型（如 "gpt-5.6-sol"）。
+		// 它就在我们已经在读的这一帧的顶层，此前被整块丢弃。
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil || out.Thread.ID == "" {
 		return fmt.Errorf("codex thread/start 未返回 threadId: %s", res)
 	}
 	r.threadID = out.Thread.ID
 	a.log.Info("codex 会话已建立", "task", r.taskID, "thread", r.threadID)
+	// 在会话就绪之后补发实际模型名：init 帧里没带，thread/start 的顶层才有
+	if out.Model != "" {
+		a.log.Info("codex 实际模型", "task", r.taskID, "model", out.Model)
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: out.Model})
+	}
 	return nil
 }
 
@@ -781,6 +790,14 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 				a.log.Info("codex 权限请求已被别处了结，摘掉挂起项",
 					"task", r.taskID, "perm", itemID)
 			}
+		}
+	case method == ntfTokenUsage:
+		// 这条通知排在 turn/completed 之前到达，回合结束时数据已在手。
+		// turn/completed 的报文里没有任何用量字段，别去那儿找。
+		if u, ok := parseTokenUsage(params); ok {
+			a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
+		} else {
+			a.log.Debug("codex 用量通知解析失败，跳过", "task", r.taskID)
 		}
 	default:
 		a.log.Debug("codex 未处理的通知", "method", method)

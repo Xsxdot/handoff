@@ -11,6 +11,7 @@ import (
 
 	"github.com/xushixin/handoff/internal/executor"
 	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/xushixin/handoff/internal/proto"
 )
 
 // WriteServeInfoForTest 暴露 writeProcInfo，供 proc.json 回环测试。
@@ -169,4 +170,9 @@ func SwapLookPathForTest(fn func(string) (string, error)) func() {
 	old := lookPath
 	lookPath = fn
 	return func() { lookPath = old }
+}
+
+// ParseTokenUsageForTest 暴露 token 用量解析，供 codex_test 包用真实报文断言。
+func ParseTokenUsageForTest(params json.RawMessage) (*proto.Usage, bool) {
+	return parseTokenUsage(params)
 }
