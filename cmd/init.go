@@ -303,18 +303,10 @@ func printPairing(w io.Writer, cfg *config.Config) {
 	fmt.Fprintln(w, "\n本机 token 与配对片段（贴到审核者机的 config.yaml 里）：")
 	fmt.Fprintln(w, "\ntargets:")
 	fmt.Fprintf(w, "  <给这台机器起个名字>:\n")
-	fmt.Fprintf(w, "    addr: \"%s\"\n", pairAddr(cfg.Listen))
+	fmt.Fprintf(w, "    addr: \"%s\"\n", advertiseAddr(cfg.Listen))
 	fmt.Fprintf(w, "    token: \"%s\"\n", cfg.Token)
 	fmt.Fprintf(w, "    user: \"%s\"\n", os.Getenv("USER"))
 	fmt.Fprintln(w, "\n  注意：addr 里的地址要换成审核者机能连到的实际 IP。")
-}
-
-// pairAddr 把 listen 里的 0.0.0.0 换成占位提示，免得用户直接粘一个连不上的地址。
-func pairAddr(listen string) string {
-	if strings.HasPrefix(listen, "0.0.0.0:") {
-		return "<本机IP>:" + strings.TrimPrefix(listen, "0.0.0.0:")
-	}
-	return listen
 }
 
 // ask 打印提示并读一行；空行返回空串（调用方据此取默认值）。
