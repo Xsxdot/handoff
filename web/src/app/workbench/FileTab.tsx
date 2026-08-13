@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchWorkspaceFile, writeWorkspaceFile } from '../../api/client'
 import type { FileRead } from '../../api/types'
 import { errorMessage, formatSize } from '../lib/format'
+import { clearDraft, draftKey, loadDraft, saveDraft } from './fileDraft'
 import type { BaseDir } from './useWorkbench'
 
 export function FileTab({
@@ -48,7 +49,10 @@ export function FileTab({
   const [saveError, setSaveError] = useState('')
   // ConflictState 是一次未解决的写入冲突。current 是服务端在 409 里附带的磁盘现状，
   // 两个出口都要用它：「放弃」要它的正文，「覆盖」要它的哈希当新基线
-  type ConflictState = { current: FileRead; confirming: boolean }
+  //
+  // reason 区分冲突来源：'save' 是保存时 409 撞出来的，'stale-draft' 是打开文件时
+  // 发现本地草稿基于的版本已过期。两者 UI 相同、文案不同
+  type ConflictState = { current: FileRead; confirming: boolean; reason: 'save' | 'stale-draft' }
   const [conflict, setConflict] = useState<ConflictState | null>(null)
 
   // initialRef 让 effect 在跑的那一刻读到**当前渲染**的 initial，同时不把 initial 写进
@@ -72,10 +76,26 @@ export function FileTab({
       .then((r) => {
         if (cancelled) return
         setRead(r)
+        // 有 initial（tab 切换寄存的草稿）就用它；否则回退 localStorage 层。
+        // 两层在同一把钥匙下，但优先级必须明确：内存层更新鲜（它活过的是切 tab，
+        // 比刷新更近）
+        const fromInitial = initialRef.current
+        let restored: { draft: string; baseSha: string } | null = fromInitial
+          ? { draft: fromInitial.draft, baseSha: fromInitial.baseSha }
+          : null
+        if (restored === null) {
+          restored = loadDraft(draftKey(base.machine || 'local', base.path, rel))
+        }
         // 有草稿就用草稿，但 read.content 仍是磁盘那一版——dirty 是两者之差，
         // 这样切回来时脏标记还在，而不是把草稿误当成干净内容
-        setDraft(initialRef.current?.draft ?? r.content)
+        setDraft(restored?.draft ?? r.content)
         setBaseSha(r.sha256 ?? '')
+        // 草稿连 baseSha 一起存，就是为了这一刻：拿它和磁盘现在的 sha256 一比，
+        // 不等说明磁盘在你离开期间变了。走**同一条冲突条、同两个出口**，
+        // 不发明第二套逻辑——用户面对的是同一个问题
+        if (restored !== null && r.sha256 !== undefined && restored.baseSha !== r.sha256) {
+          setConflict({ current: r, confirming: false, reason: 'stale-draft' })
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err))
@@ -113,6 +133,18 @@ export function FileTab({
     return () => notifyRef.current?.(draftRef.current)
   }, [])
 
+  // 草稿去抖 500ms 写一份进 localStorage，撑过刷新与误关。
+  //
+  // localStorage 这一层**不要求精确**：刷新丢掉最后半秒的输入可以接受，而每次
+  // 按键写一次 localStorage 会掉帧。这与内存层（卸载时精确刷一次）是两种不同的
+  // 要求，所以用两种不同的做法，不是一处该统一而没统一
+  useEffect(() => {
+    if (!dirty) return
+    const key = draftKey(base.machine || 'local', base.path, rel)
+    const t = setTimeout(() => saveDraft(key, draft, baseSha), 500)
+    return () => clearTimeout(t)
+  }, [dirty, draft, baseSha, base.machine, base.path, rel])
+
   // saveWith(sha) 用显式传入的哈希当基线的保存路径。为什么要显式传哈希而不是读
   // state：overwrite 需要先 setBaseSha(next) 再用 next 发请求，而 React 的 state
   // 更新是异步的，同一轮里从 state 读到的还是旧值——这是这里最容易踩的坑，
@@ -132,11 +164,14 @@ export function FileTab({
       // 这样 dirty 立刻变 false，而下一次保存自动用新基线
       setRead((r) => (r === null ? r : { ...r, content: draft, size: res.size, sha256: res.sha256 }))
       setBaseSha(res.sha256)
+      // 保存成功，localStorage 里那份草稿没有存在意义了——留着下次刷新还会
+      // 被当成过期草稿再触发一遍冲突条
+      clearDraft(draftKey(base.machine || 'local', base.path, rel))
     } catch (err) {
       // 先认冲突：409 不是普通失败，它带着磁盘现状，要交给冲突条而不是 saveError
       const cur = conflictCurrent(err)
       if (cur !== null) {
-        setConflict({ current: cur, confirming: false })
+        setConflict({ current: cur, confirming: false, reason: 'save' })
         setSaveError('')
         return
       }
@@ -158,6 +193,9 @@ export function FileTab({
     setDraft(conflict.current.content)
     setBaseSha(conflict.current.sha256 ?? '')
     setConflict(null)
+    // 放弃的是「我的改动」，localStorage 里那份草稿也必须一起丢掉，
+    // 否则下次刷新它又回来，白放弃一场
+    clearDraft(draftKey(base.machine || 'local', base.path, rel))
   }
 
   // overwrite 拿 current.sha256 当**新的** base_sha256 重发一次。
@@ -206,7 +244,11 @@ export function FileTab({
       {saveError !== '' && <p className="border-b px-3 py-1.5 text-xs text-destructive">{saveError}</p>}
       {conflict !== null && (
         <div className="border-b bg-muted px-3 py-2 text-xs">
-          <p className="text-foreground">文件已在磁盘上变了（很可能是 executor 改的）。</p>
+          <p className="text-foreground">
+            {conflict.reason === 'stale-draft'
+              ? '本地草稿基于的版本已经变了。'
+              : '文件已在磁盘上变了（很可能是 executor 改的）。'}
+          </p>
           {conflict.confirming ? (
             <div className="mt-1.5 flex items-center gap-2">
               <span className="text-destructive">

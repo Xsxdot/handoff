@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FileTab } from './FileTab'
 import type { BaseDir } from './useWorkbench'
 import { ApiError } from '../../api/client'
+import { draftKey, loadDraft, saveDraft } from './fileDraft'
 
 const base: BaseDir = {
   key: '/w/b2-b3',
@@ -22,6 +23,9 @@ const { fetchWorkspaceFile, writeWorkspaceFile } = await import('../../api/clien
 afterEach(() => {
   vi.mocked(fetchWorkspaceFile).mockReset()
   vi.mocked(writeWorkspaceFile).mockReset()
+  // 草稿走 localStorage，用例之间不留残留——上一个用例留下的草稿会影响
+  // 下一个用例「无 initial 挂载」的恢复路径
+  localStorage.clear()
 })
 
 const TEXT = { content: 'module handoff\n', size: 15, sha256: 'basehash' }
@@ -239,5 +243,56 @@ describe('FileTab 草稿寄存', () => {
     )
     expect(await screen.findByRole('textbox')).toHaveValue('切走之前改的内容')
     expect(screen.getByText('未保存')).toBeInTheDocument()
+  })
+})
+
+describe('FileTab 草稿存 localStorage', () => {
+  it('草稿写 localStorage 去抖 500ms，不是每按一次键写一次', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    render(<FileTab base={base} rel="go.mod" />)
+    // 加载用真实 timer 完成；之后打字这一段用 fake timer 精确控制 500ms 边界
+    await screen.findByRole('textbox')
+    vi.useFakeTimers()
+    try {
+      const box = screen.getByRole('textbox')
+      fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+      const key = draftKey('devbox', '/w/b2-b3', 'go.mod')
+      expect(localStorage.getItem(key)).toBeNull()
+      vi.advanceTimersByTime(499)
+      expect(localStorage.getItem(key)).toBeNull()
+      vi.advanceTimersByTime(1)
+      expect(loadDraft(key)).toMatchObject({ draft: 'module handoff\nx', baseSha: 'basehash' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('刷新后（重新挂载且无 initial）从 localStorage 恢复草稿', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    saveDraft(draftKey('devbox', '/w/b2-b3', 'go.mod'), 'module handoff\n草稿', 'basehash')
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    expect(box).toHaveValue('module handoff\n草稿')
+    expect(screen.getByText('未保存')).toBeInTheDocument()
+  })
+
+  it('过期草稿（baseSha 与磁盘对不上）直接亮冲突条，走同一套 UI', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ ...TEXT, sha256: 'diskchanged' })
+    saveDraft(draftKey('devbox', '/w/b2-b3', 'go.mod'), '我的草稿', 'basehash')
+    render(<FileTab base={base} rel="go.mod" />)
+    expect(await screen.findByText(/本地草稿基于的版本已经变了/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /放弃我的改动/ })).toBeInTheDocument()
+  })
+
+  it('保存成功后删掉 localStorage 里的草稿', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue(TEXT)
+    vi.mocked(writeWorkspaceFile).mockResolvedValue({ sha256: 'newhash', size: 16 })
+    const key = draftKey('devbox', '/w/b2-b3', 'go.mod')
+    saveDraft(key, 'module handoff\nx', 'basehash')
+    render(<FileTab base={base} rel="go.mod" />)
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'module handoff\nx' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    await waitFor(() => expect(loadDraft(key)).toBeNull())
   })
 })
