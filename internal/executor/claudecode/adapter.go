@@ -108,9 +108,18 @@ type runState struct {
 	startCommit  string // 本回合起点 commit（git 兜底分类的基线，每回合结束后刷新）
 	turnEnded    bool   // 本回合是否已收尾（handoff_exit code=0 判断用）
 	exitHandled  bool   // 哨兵已处理（mapExit）：streamLoop 退出时不得再补一条失败 result
-	ready        chan struct{}
-	readyOnce    sync.Once
-	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
+	// ctxWindow 是 result 行 modelUsage 里取到的窗口上限（0=还没拿到）。
+	// 为什么要暂存而不是当场 emit：窗口与分子来自**不同的帧**——分子在每条
+	// assistant 消息里，窗口只在回合收尾的 result 行里。当场单发一条 usage 会
+	// 把 manager 已落库的 model/tokens 三元组整体覆盖成空（B80 硬约束），
+	// 所以窗口挂在这，随下一条 assistant 消息的分子一起走。
+	ctxWindow int
+	// actualModel 是已知的实际模型名（init 行或 assistant 消息带来），
+	// result 行 modelUsage 多键匹配窗口时优先用它（0 值语义见 ctxWindow）。
+	actualModel string
+	ready       chan struct{}
+	readyOnce   sync.Once
+	startOffset int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -518,6 +527,7 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 		// result 行的 model 是 null，别去那儿取。
 		if m.Model != "" {
 			a.log.Info("claude 实际模型", "task", r.taskID, "model", m.Model)
+			r.actualModel = m.Model
 			a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: m.Model})
 		}
 	case m.Type == "system":
@@ -573,7 +583,15 @@ func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
 func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
 	// 模型名与用量与 content 同级，就在这条消息里——此前整块丢弃。
 	// 每条 assistant 消息都带，manager 侧靠去重防写库风暴。
+	// 窗口在 result 行才到（r.ctxWindow），这里把它挂到分子上一起发。
 	if model, u, ok := parseAssistantUsage(msg); ok && (model != "" || u != nil) {
+		if model != "" {
+			r.actualModel = model
+		}
+		if u != nil && r.ctxWindow > 0 {
+			w := r.ctxWindow
+			u.ContextWindow = &w
+		}
 		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
 	}
 	var m struct {
@@ -677,6 +695,13 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 // mapResult 处理回合收尾：result.result 是最后一条 assistant 正文，正是
 // turn.ParseTrailer 的输入；subtype!=success 时按失败处理（带 claude.log 尾部）。
 func (a *Adapter) mapResult(r *runState, m streamMsg) {
+	// 窗口只在 result 行出现，先取再走回合收尾；只存不发（硬约束见 runState.ctxWindow）。
+	w, confident := pickModelUsageWindow(m.ModelUsage, r.actualModel)
+	if !confident {
+		a.log.Warn("claude result 多模型且都匹配不上已知模型，取了任意一个的窗口",
+			"task", r.taskID, "window", w)
+	}
+	r.ctxWindow = w
 	if m.Subtype != "success" || m.IsError {
 		tail := claudeLogTail(r.taskDir)
 		a.log.Error("claude 回合异常结束", "task", r.taskID, "subtype", m.Subtype, "stderr_tail", tail)
