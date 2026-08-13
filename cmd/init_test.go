@@ -1,13 +1,15 @@
 // handoff init 的 CLI 行为测试。
 //
 // 交互经 rootCmd.SetIn 喂脚本化答案，tty 判定经 initStdinIsTTY 缝控制，
-// 因此测试既能覆盖交互分支也不需要真的终端。
+// TTY 构造经 newInteractivePrompter 换成脚本化，因此测试既能覆盖交互
+// 分支也不需要真的终端（huh 要真 TTY，CI 上会挂）。
 package cmd
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -42,6 +44,14 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 	initStdinIsTTY = func() bool { return tty }
 	t.Cleanup(func() { initStdinIsTTY = oldTTY })
 
+	// 测试不得走 huh：CI 没有真终端，huh 会挂死。生产 RunE 用
+	// newInteractivePrompter；这里一律换成脚本化，按行吃 SetIn 的答案。
+	oldP := newInteractivePrompter
+	newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
+		return newScriptedPrompter(in, out)
+	}
+	t.Cleanup(func() { newInteractivePrompter = oldP })
+
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -55,6 +65,85 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 	})
 	err := rootCmd.ExecuteContext(context.Background())
 	return buf.String(), err
+}
+
+// cancelPrompter 每个问题都立刻取消。用来钉死「取消不写盘」：
+// 半截答案绝不能 Save，否则会留下一份只配了一半的配置。
+type cancelPrompter struct{}
+
+func (cancelPrompter) Select(string, []promptOption, string) (string, error) {
+	return "", errPromptCanceled
+}
+func (cancelPrompter) Input(string, string) (string, error) {
+	return "", errPromptCanceled
+}
+func (cancelPrompter) Confirm(string, bool) (bool, error) {
+	return false, errPromptCanceled
+}
+
+// runInitProduction 走生产 TTY 构造缝，不换成脚本化。取消用例用它
+// 替换 newInteractivePrompter；其余用例必须走 runInitWith。
+func runInitProduction(t *testing.T, cfgPath string) (string, error) {
+	t.Helper()
+	resetFlags(t)
+	withFakeManager(t, &fakeManager{})
+
+	oldTTY := initStdinIsTTY
+	initStdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { initStdinIsTTY = oldTTY })
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetArgs([]string{"init", "--config", cfgPath})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetIn(nil)
+	})
+	err := rootCmd.ExecuteContext(context.Background())
+	return buf.String(), err
+}
+
+// 取消必须返回错误且不得改已有配置。
+//
+// 为什么不走 runInit：runInitWith 会把 newInteractivePrompter 换成脚本化，
+// 空答案取默认并 Save，正好掩盖「取消仍写盘」的 bug。
+func TestInitCanceledDoesNotWrite(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 先直接钉 askAll：任一问返回取消就立刻停。
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("预载配置: %v", err)
+	}
+	if _, _, err := askAll(io.Discard, cancelPrompter{}, cfg, nil, true); !errors.Is(err, errPromptCanceled) {
+		t.Fatalf("askAll 取消应得 errPromptCanceled，得到 %v", err)
+	}
+
+	oldP := newInteractivePrompter
+	newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
+		return cancelPrompter{}
+	}
+	t.Cleanup(func() { newInteractivePrompter = oldP })
+
+	if _, err := runInitProduction(t, p); err == nil {
+		t.Fatal("取消应返回错误")
+	} else if !errors.Is(err, errPromptCanceled) {
+		t.Fatalf("取消应得 errPromptCanceled，得到 %v", err)
+	}
+	body, rerr := os.ReadFile(p)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(body), "token: keep") {
+		t.Fatalf("取消不得改文件:\n%s", body)
+	}
 }
 
 // loadCfg 读回写盘的配置。

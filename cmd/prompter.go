@@ -1,8 +1,9 @@
 // 本文件是 init 问答的通道：接口 + 按行读答案的脚本化实现。
 //
 // 职责：
-//   - 定义 prompter（Select / Input / Confirm），挡住后续 huh 实现
+//   - 定义 prompter（Select / Input / Confirm）
 //   - 提供 scriptedPrompter：从 Reader 按行读，空行 / EOF 取默认
+//     （测试与 CI 用；真终端走 init_huh.go）
 //
 // 边界：
 //   - **不写配置**：只返回用户（或脚本）的答案，不碰 config.yaml
@@ -12,6 +13,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,14 +21,19 @@ import (
 	"strings"
 )
 
+// errPromptCanceled 表示用户中途取消（Ctrl-C / huh.ErrUserAborted）。
+// RunE 见到它必须立刻返回、不得 Save：半截答案写出一份只配了一半的配置，
+// 比取消本身更糟。
+var errPromptCanceled = errors.New("已取消")
+
 // promptOption 是 Select 的一项。Value 写入配置，Label 给人看。
 type promptOption struct {
 	Value string
 	Label string
 }
 
-// prompter 是 init 问答的唯一入口。生产（Task 5）走 huh；测试与当前 TTY
-// 走脚本化实现读 cmd.In。
+// prompter 是 init 问答的唯一入口。生产 TTY 走 huh（newInteractivePrompter）；
+// 测试经 runInitWith 把该缝换成脚本化实现，读 cmd.In。
 type prompter interface {
 	Select(title string, options []promptOption, def string) (string, error)
 	Input(title, def string) (string, error)
@@ -42,7 +49,7 @@ type scriptedPrompter struct {
 // newScriptedPrompter 构造按行读的 prompter。
 //
 // 参数：
-//   - in: 答案来源（测试喂 strings.Reader，TTY 喂 cmd.InOrStdin）
+//   - in: 答案来源（测试喂 strings.Reader）
 //   - out: 提示打到哪；nil 当 io.Discard
 //
 // 注意：同一份输入只能包一层。askAll 与 maybeInstallService 必须共用实例，

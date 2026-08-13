@@ -18,6 +18,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,6 +37,12 @@ import (
 
 // initStdinIsTTY 判断 stdin 是不是终端。测试替换它以覆盖两条分支。
 var initStdinIsTTY = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+
+// newInteractivePrompter 是 TTY 问答的构造缝。生产返回 huh；测试在
+// runInitWith 里换成脚本化——huh 要真终端，CI 没有，不换就会挂死。
+var newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
+	return newHuhPrompter()
+}
 
 // 角色取值写入 Select 的 Value，也是配置语义上的角色名。
 const (
@@ -104,12 +111,18 @@ var initCmd = &cobra.Command{
 			return nil
 		}
 
-		// TTY 与测试共用脚本化实现（读 cmd.In）。huh 在 Task 5 再接。
+		// 生产走 huh；测试把 newInteractivePrompter 换成脚本化（见 runInitWith）。
 		// askAll 与 maybeInstallService 必须共用同一个 prompter：各自再
-		// new 一次会各包一层 bufio，后续答案会被提前吃掉。
-		pr := newScriptedPrompter(cmd.InOrStdin(), out)
+		// new 一次会各包一层，后续答案会被提前吃掉。
+		pr := newInteractivePrompter(cmd.InOrStdin(), out)
 		isExec, role, err := askAll(out, pr, cfg, results, cfgExisted)
 		if err != nil {
+			// 取消和问答失败都不得写盘：半截答案比取消本身更糟。
+			if errors.Is(err, errPromptCanceled) {
+				slog.Warn("init 已取消，不写盘", "path", p)
+			} else {
+				slog.Error("init 问答失败，不写盘", "path", p, "cause", err)
+			}
 			return err
 		}
 		if err := config.Save(p, cfg); err != nil {
@@ -180,7 +193,7 @@ func coveredBy(path string, added []string) string {
 //
 // 参数：
 //   - w: 面向用户的说明文字（非问答本身）
-//   - p: 问答通道；本 task 一律是 scriptedPrompter
+//   - p: 问答通道（TTY 是 huh，测试是脚本化）
 //   - cfg: 就地改写
 //   - rs: 探测结果，只影响默认值与警告
 //   - cfgExisted: Load 之前文件是否已在。决定监听预选，见 listenPreset
