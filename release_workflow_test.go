@@ -28,18 +28,40 @@ func readWorkflow(t *testing.T) string {
 	return string(b)
 }
 
+// stripYAMLComments 剔除 YAML 里首个非空白字符是 # 的整行，返回剩余文本。
+//
+// 为什么存在：本文件的契约断言打在 workflow 原文上，而解释性的注释里
+// 常常出现与断言相同的字面量（比如「--options runtime 是公证的前置条件」
+// 这行注释），于是注释自己就把断言满足了——把真正的命令删掉，测试照样绿。
+// 断言只看非注释内容，这条被自己的注释架空的漏洞才堵得上。
+//
+// 只剔整行注释，不剔行尾 #：本仓库的 workflow 里没有行尾 # 注释，而剔行尾
+// # 会误伤 shell 命令里的 #（例如 sha256sum 的 "path/*  name" 里没有，
+// 但 GITHUB_ENV 的 echo "KEY=${value}" 这类行可能含 #）。
+func stripYAMLComments(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" && t[0] == '#' {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // ldflags 的 -X 路径必须是 module path，写成 GitHub owner 会静默失效
 // （构建成功、二进制自称 unknown、自动更新永远认为自己已是最新）。
 func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
 	const want = "-X github.com/xushixin/handoff/internal/buildinfo.releaseVersion="
-	if !strings.Contains(readWorkflow(t), want) {
+	if !strings.Contains(stripYAMLComments(readWorkflow(t)), want) {
 		t.Fatalf("workflow 缺少注入路径 %q", want)
 	}
 }
 
 // 资产命名是与 install.sh 的契约，模式变了两边必须一起变。
 func TestWorkflowUsesAgreedAssetNaming(t *testing.T) {
-	wf := readWorkflow(t)
+	wf := stripYAMLComments(readWorkflow(t))
 	for _, want := range []string{
 		`handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz`,
 		"checksums.txt",
@@ -94,7 +116,7 @@ func TestWorkflowCoversExactlySixPlatforms(t *testing.T) {
 // 四处共同的契约：Windows 出 zip（资源管理器可双击、Expand-Archive 人人有），
 // 其余出 tar.gz。
 func TestWorkflowUsesZipForWindowsOnly(t *testing.T) {
-	wf := readWorkflow(t)
+	wf := stripYAMLComments(readWorkflow(t))
 	for _, want := range []string{
 		`handoff_${TAG}_${GOOS}_${GOARCH}.zip`,
 		`handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz`,
@@ -217,7 +239,7 @@ func TestEveryReleaseJobIsGatedByVerify(t *testing.T) {
 
 // 验证门的内容不能被悄悄掏空。
 func TestCIGateCoversFullCheckSuite(t *testing.T) {
-	ci := readCI(t)
+	ci := stripYAMLComments(readCI(t))
 	for _, want := range []string{
 		"workflow_call",
 		"go build ./...",
@@ -249,7 +271,7 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 	if !strings.HasPrefix(j.RunsOn, "macos") {
 		t.Fatalf("darwin 资产必须在 macOS runner 上构建（codesign/notarytool 只在那儿有），实得 runs-on=%q", j.RunsOn)
 	}
-	wf := readWorkflow(t)
+	wf := stripYAMLComments(readWorkflow(t))
 	for _, want := range []string{
 		"--options runtime", // 硬化运行时是公证的前置条件，不加会被拒
 		"notarytool submit",
@@ -267,7 +289,7 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 // 没有这条，CHANGELOG 就是个没人看也没人维护的摆设——而没人维护的文档
 // 比没有更糟：它会让读者相信一份过期的事实。
 func TestReleaseNotesComeFromChangelog(t *testing.T) {
-	wf := readWorkflow(t)
+	wf := stripYAMLComments(readWorkflow(t))
 	for _, want := range []string{"CHANGELOG.md", "--notes-file"} {
 		if !strings.Contains(wf, want) {
 			t.Fatalf("release job 缺 %q —— release notes 应优先取自 CHANGELOG", want)
