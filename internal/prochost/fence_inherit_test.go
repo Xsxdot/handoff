@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 const fenceHelperEnv = "HANDOFF_FENCE_HELPER"
@@ -48,7 +50,10 @@ func TestHelperFenceChild(t *testing.T) {
 		os.Stdout.WriteString("GETFAIL " + err.Error() + "\n")
 		os.Exit(0)
 	}
-	sid, _ := syscall.Getsid(0)
+	// 用 x/sys/unix 而不是 syscall：syscall.Getsid 只在 darwin/BSD 上有，
+	// linux 的 syscall 包没有导出它——本文件的构建标签含 linux，直接用
+	// syscall.Getsid 会让 ubuntu 上的 go vet/test 编译失败（CI 实测炸过）
+	sid, _ := unix.Getsid(0)
 	os.Stdout.WriteString("PID=" + strconv.Itoa(os.Getpid()) +
 		" SID=" + strconv.Itoa(sid) +
 		" LIMIT=" + strconv.Itoa(lim) + "\n")
