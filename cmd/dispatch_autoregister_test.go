@@ -130,7 +130,7 @@ func TestDispatchWithAutoRegisterPassesThroughOtherErrors(t *testing.T) {
 		t.Fatalf("应原样透出原错误，got %v", err)
 	}
 	if registers != 0 {
-		t.Errorf("不该触发登记，got register=%d", registers)
+		t.Fatalf("不该触发登记，got register=%d", registers)
 	}
 }
 
