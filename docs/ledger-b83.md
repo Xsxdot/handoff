@@ -11,3 +11,4 @@
 - 2026-08-13 Task 3（claudecode 账目）完成，commit 580dbddf，审查 PASS（1 轮 gofmt 修复：stream.go 字段对齐）。
 - 2026-08-13 Task 4（codex 账目 + 牌价表）完成，commit c858b519，审查 PASS（无修复轮）。
 - 2026-08-13 Task 5（grok 账目）完成，commit 4856b86b，审查 PASS（无修复轮）。
+- 2026-08-13 Task 6（opencode 账目）完成，commit 94ed4c2f，审查 PASS（无修复轮）。
