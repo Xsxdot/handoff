@@ -1,0 +1,52 @@
+# PR 与 push main 上的验证门，同时经 workflow_call 供 release.yml 复用。
+#
+# 职责：
+#   - 在任何代码进 main 之前、以及任何 tag 出资产之前，跑同一套检查
+#
+# 边界：
+#   - 不产出任何资产、不发布任何东西——那是 release.yml 的事
+#   - 与 release 的前置校验必须是**同一份定义**：写两份必然漂移，
+#     且方向总是 release 那份更松（推 tag 时没人盯着它）
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 构建
+        run: go build ./...
+      - name: 静态检查
+        run: go vet ./...
+      - name: 测试
+        run: go test ./... -count=1
+      - name: 格式
+        # gofmt -l 对未格式化的文件只打印文件名、退出码仍是 0，
+        # 直接当命令用等于没有这道门，必须自己判空。
+        # 用 git ls-files 限定范围：仓库里可能存在嵌套的 .claude/worktrees/，
+        # 直接 gofmt -l . 会把它们扫进来误报。
+        run: |
+          set -euo pipefail
+          out="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$out" ]; then
+            printf '以下文件未格式化：\n%s\n' "$out" >&2
+            exit 1
+          fi
+      - name: Windows 交叉编译门禁
+        # agentd 在 Windows 上跑不起来（B37），但协调者路径必须能编译——
+        # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过
+        run: |
+          set -euo pipefail
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=windows GOARCH=arm64 go build ./...
+      - name: install.sh 单测
+        run: bash install_test.sh

@@ -16,7 +16,13 @@ permissions:
   contents: write # gh release create 要写 Releases
 
 jobs:
+  # 发布前必须过与 PR 同一套验证门。复用而非复制：写两份定义必然漂移，
+  # 且方向总是这边更松——推 tag 时没人盯着它。
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
