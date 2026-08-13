@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -296,12 +297,35 @@ func maybeNotifyUpdate(cmd *cobra.Command) {
 	if !selfupdate.CLICheckStale(c, time.Now().UTC()) {
 		return
 	}
+	// **测试进程里绝不能拉起后台检查**：下面那行 spawn 的是 os.Executable()，
+	// 在 go test 下它不是 handoff 而是 <包>.test。go test 会忽略 update-check
+	// 这类位置参数，于是子进程把整套测试从头再跑一遍——跑的过程中又走到这里，
+	// 再 spawn，指数级炸开。2026-08-13 实测：CI 的测试步 85 秒被 SIGTERM
+	// （退出码 143），一台 4c8g 机器上 1011 个 cmd.test、load average 500+。
+	//
+	// 为什么开发机上从来看不到：这段被上面的 CLICheckStale 挡着，开发机的
+	// ~/.handoff 里有新鲜的检查时间戳，判定「不陈旧」直接 return。只有
+	// **干净环境**（CI runner、新开的机器）没有状态文件，才判定陈旧走到这里。
+	if testing.Testing() {
+		return
+	}
+	startBackgroundCheck(effectiveConfigPath())
+}
+
+// startBackgroundCheck 拉起一次「不等它」的后台更新检查子进程。
+//
+// 参数：cfgPath 传给子进程的 --config，保证父子看同一份配置
+//
+// 独立成变量是测试缝：回归测试替换它来断言「测试进程下这里一次都不该被调到」
+// （见 cmd/update_check_spawn_test.go）。任何失败都静默跳过——这条路径挂在
+// 每一条命令的 PersistentPostRun 上，它自己绝不能成为故障源。
+var startBackgroundCheck = func(cfgPath string) {
 	exe, err := os.Executable()
 	if err != nil {
 		return
 	}
 	// 不等它：Start 之后本进程照常退出，子进程被 init 收养后自己跑完
-	bg := exec.Command(exe, "update-check", "--config", effectiveConfigPath())
+	bg := exec.Command(exe, "update-check", "--config", cfgPath)
 	bg.Stdout, bg.Stderr, bg.Stdin = nil, nil, nil
 	if err := bg.Start(); err != nil {
 		return

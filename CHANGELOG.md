@@ -35,6 +35,12 @@
 - `install.ps1` 与 `install_test.ps1` 补上 UTF-8 BOM。没有 BOM 时
   PowerShell 5.1（Windows 自带的那个）会按系统 ANSI 代码页解码脚本，中文
   Windows 上整个脚本会被解析成语法错误、一行都跑不了。
+- 后台更新检查不再在测试进程里拉起子进程。它 spawn 的是 `os.Executable()`，
+  在 `go test` 下那不是 handoff 而是 `<包>.test`，而 go test 会忽略
+  `update-check` 这类位置参数——子进程于是把整套测试从头重跑，跑的过程中又走到
+  同一段代码，指数级炸开。只在**干净环境**触发（开发机 `~/.handoff` 里有新鲜
+  的检查时间戳，判定不陈旧直接返回），所以本地怎么跑都绿：实测新建的 CI runner
+  上 85 秒被 SIGTERM 打断，一台 4c8g 机器上炸出 1011 个测试进程、load 500+。
 
 ## [v0.2.0] - 2026-08-13
 
