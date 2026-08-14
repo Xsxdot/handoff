@@ -184,11 +184,18 @@ export function activateTab(wb: Workbench, group: number, tabId: string): Workbe
   return next
 }
 
-// setTabContent 把一个 tab 的内容原地换掉（空白 tab 选了种类时用）。
+// setTabContent 把一个 tab 的内容原地换掉（空白 tab 选了种类、终端回写会话 id、
+// 文件回写草稿都走它）。
+//
+// **它只换内容，不动 activeId / active。** 这两件事曾经焊在一起，代价是任何一次
+// 后台回写都变成一次导航：FileTab 在**卸载时**回写草稿（Shell 的 onDraftChange），
+// 于是用户点开一个空白 tab → FileTab 卸载 → 回写 → 焦点被拽回刚离开的文件 tab，
+// 表现为「点不进新标签页」。干净文件也一样（回调无条件触发），终端的 onSession
+// 同一条路。切 tab 有专门的 activateTab，调用方需要时自己调。
 //
 // 边界情形：选中的目标已经在别的 tab 里打开了。此时正确的行为是激活那个 tab
 // 并把这个空白 tab 关掉——否则用户会得到两个标着同一个文件的 tab，其中一个
-// 是刚才的空白页。
+// 是刚才的空白页。**这一支保留激活**：它是用户刚做完一次选择动作，跳过去是他要的。
 export function setTabContent(wb: Workbench, group: number, tabId: string, content: TabContent): Workbench {
   const key = dedupKey(content)
   if (key !== null) {
@@ -205,8 +212,6 @@ export function setTabContent(wb: Workbench, group: number, tabId: string, conte
   const idx = next.groups[gi].tabs.findIndex((t) => t.id === tabId)
   if (idx === -1) return wb
   next.groups[gi].tabs[idx] = { id: tabId, content }
-  next.groups[gi].activeId = tabId
-  next.active = gi
   return next
 }
 

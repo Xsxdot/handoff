@@ -130,6 +130,43 @@ describe('setTabContent', () => {
     expect(wb.groups[0].tabs).toHaveLength(1)
     expect(wb.groups[0].activeId).toBe(existing)
   })
+
+  it('回写内容不抢焦点——这是「点不进新标签页」的根因', () => {
+    // why：setTabContent 是「换这个 tab 的内容」，不是「切到这个 tab」。
+    // 焊在一起的话，FileTab 卸载时回写草稿（Shell.tsx onDraftChange）
+    // 会把焦点从用户刚点开的空白 tab 拽回文件 tab
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'go.mod' })
+    const fileId = wb.groups[0].tabs[0].id
+    wb = openTab(wb, { kind: 'blank' })
+    const blankId = wb.groups[0].tabs[1].id
+    expect(wb.groups[0].activeId).toBe(blankId)
+
+    // 模拟 FileTab 卸载时的草稿回写：写的是**非激活**的那个 tab
+    wb = setTabContent(wb, 0, fileId, { kind: 'file', rel: 'go.mod', draft: 'x', baseSha: 'h' })
+
+    expect(wb.groups[0].activeId).toBe(blankId)
+    expect(wb.groups[0].tabs[0].content).toEqual({
+      kind: 'file',
+      rel: 'go.mod',
+      draft: 'x',
+      baseSha: 'h',
+    })
+  })
+
+  it('回写非焦点组的内容不把焦点组抢过去', () => {
+    // why：终端会话 id 回写（Shell.tsx onSession）可能发生在用户已经切到
+    // 另一组之后。next.active 一起改掉的话，分屏时焦点会莫名跳组
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
+    const termId = wb.groups[0].tabs[0].id
+    wb = splitGroup(wb)
+    wb = openTab(wb, { kind: 'blank' }, 1)
+    expect(wb.active).toBe(1)
+
+    wb = setTabContent(wb, 0, termId, { kind: 'terminal', seq: 1, sessionId: 'S1' })
+
+    expect(wb.active).toBe(1)
+    expect(wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+  })
 })
 
 describe('splitGroup', () => {
