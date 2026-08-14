@@ -6,4 +6,4 @@
 
 ## 进度
 
-（随 task 完成追加）
+- 2026-08-14 Task 1（useHomeDock 状态）完成，commit 200c5c4a，审查 1 轮修复后 PASS（文件头/test 注释逐字一致性 2 处）。
