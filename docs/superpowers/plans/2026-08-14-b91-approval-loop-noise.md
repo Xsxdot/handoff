@@ -432,6 +432,178 @@ git commit -m "fix(agentd): deny_guidance_dropped 补 Publish，审核者的 rea
 
 ---
 
+### Task 5: 路径域指纹（spec §3.5，08-14 派发中追加）
+
+> **追加说明**：本 task 是任务派发后追加的（spec §3.5）。触发它的是这个任务
+> **自己**的实况：seq 678 主 agent 批准了 `external_directory:
+> /var/folders/…/T/opencode/*`，28 秒后 seq 679 子 agent 又问了同一个目录——
+> 只因权限描述多了 `[子 agent: Task 1 审查（双裁决）]` 前缀。Task 1 的命令域
+> 治不了它：这类请求 `Perm.Command` 为空，落回全文域，而全文含前缀。
+
+**Files:**
+- Modify: `internal/agentd/manager.go`（只改 `permFingerprintFor` 一个函数体）
+- Test: `internal/agentd/manager_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 的 `permFingerprintFor(ev)`；`executor.PermRequest{Tool, Command, Paths}`
+- Produces: 无新签名。三个域的优先级固定为 **命令域 > 路径域 > 全文域**
+
+`sort` 与 `strings` 在 `manager.go` 的 import 块里已存在，不要动 import。
+
+- [ ] **Step 1: 写失败测试**
+
+```go
+// TestPermFingerprintForPathDomain 验证 B91 spec §3.5 路径域：同路径同 Tool
+// 跨子 agent 前缀相等、Paths 顺序无关、Tool 不同则不等。
+func TestPermFingerprintForPathDomain(t *testing.T) {
+	dir := "/var/folders/xc/hpx9c9w153j7tvphw53lc8qr0000gn/T/opencode/*"
+
+	// 主 agent 与子 agent 的同一个目录请求：Text 带前缀，Perm 相同
+	main := executor.AdapterEvent{
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	child := executor.AdapterEvent{
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	if permFingerprintFor(main) != permFingerprintFor(child) {
+		t.Fatal("同路径同 Tool 应跨子 agent 前缀相等（路径域忽略 Text）")
+	}
+
+	// Paths 顺序无关
+	ab := executor.AdapterEvent{Text: "x", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/a", "/b"}}}
+	ba := executor.AdapterEvent{Text: "y", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/b", "/a"}}}
+	if permFingerprintFor(ab) != permFingerprintFor(ba) {
+		t.Fatal("Paths 顺序不同应算同一指纹（排序后拼接）")
+	}
+
+	// Tool 不同则不等：edit 与 external_directory 对同一路径含义不同
+	edit := executor.AdapterEvent{Text: "z", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{dir}}}
+	if permFingerprintFor(edit) == permFingerprintFor(main) {
+		t.Fatal("同路径不同 Tool 必须算不同指纹——写文件与越界目录授权不是一件事")
+	}
+
+	// 命令域优先于路径域：同时带命令与路径时走命令域
+	both := executor.AdapterEvent{
+		Text: "external_directory: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x", Paths: []string{dir}},
+	}
+	onlyCmd := executor.AdapterEvent{
+		Text: "bash: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x"},
+	}
+	if permFingerprintFor(both) != permFingerprintFor(onlyCmd) {
+		t.Fatal("有命令时必须走命令域，路径不参与")
+	}
+
+	// 三域互不相撞
+	empty := executor.AdapterEvent{Text: "external_directory: " + dir}
+	if permFingerprintFor(empty) == permFingerprintFor(main) {
+		t.Fatal("全文域与路径域相撞，paths\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermissionReusePathAcrossSubagents 验证端到端：主 agent 批过的目录，
+// 子 agent 再问时自动放行零唤醒。复刻任务 d912b23a seq 678/679 的真机形态。
+func TestPermissionReusePathAcrossSubagents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	dir := "/var/folders/xc/abc/T/opencode/*"
+	perm := &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}}
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1",
+		Text: "external_directory: " + dir, Perm: perm,
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2",
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("子 agent 的同目录请求未复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `go test ./internal/agentd/ -run 'TestPermFingerprintForPathDomain|TestPermissionReusePathAcrossSubagents' -count=1`
+Expected: FAIL——路径域还没实现，跨前缀两条断言都不成立
+
+- [ ] **Step 3: 实现**
+
+`permFingerprintFor` 函数体改为三域优先级，doc comment 同步补路径域一段：
+
+```go
+func permFingerprintFor(ev executor.AdapterEvent) string {
+	if ev.Perm != nil {
+		if ev.Perm.Command != "" {
+			return permFingerprint("cmd\x00" + ev.Perm.Command)
+		}
+		if len(ev.Perm.Paths) > 0 {
+			// 路径域：拷贝后排序，不原地改 ev.Perm.Paths——该切片来自 adapter，
+			// 排序它会让调用方看到的顺序被本函数悄悄改掉
+			paths := append([]string(nil), ev.Perm.Paths...)
+			sort.Strings(paths)
+			// Tool 必须进指纹：edit 与 external_directory 对同一路径含义不同
+			// （写这个文件 vs 授权越界访问这个目录），裸路径合并等于把两种
+			// 授权当成一件事。NUL 作分隔符——路径不可能含 NUL，杜绝
+			// ["a","b/c"] 与 ["a/b","c"] 这类拼接歧义
+			return permFingerprint("paths\x00" + ev.Perm.Tool + "\x00" + strings.Join(paths, "\x00"))
+		}
+	}
+	return permFingerprint(ev.Text)
+}
+```
+
+doc comment 的域规则段补一条（放在命令域与全文域之间）：
+
+```
+//   - Command 为空但 Paths 非空 → 路径域：sha256("paths\x00" + Tool + "\x00" +
+//     排序后的 Paths)。治的是「同一个目录被每个子 agent 各问一次」——子 agent
+//     前缀只加在 Text 上（adapter.go:1248），Perm 不带它，所以路径域天然忽略。
+//     Tool 进指纹是硬要求，理由见函数体内注释。
+```
+
+- [ ] **Step 4: 跑测试 + 前四个 task 的用例全回归**
+
+Run: `go test ./internal/agentd/ -run 'TestPerm|TestDenyGuidance' -count=1 -v | tail -25`
+Expected: 全 PASS。特别确认 Task 1 的 `TestPermFingerprintForDomains` 里
+「无命令时退回全文指纹」那两条断言——它们用的 `pure` 事件带 `Paths`，
+**加了路径域后会改走路径域，这条断言必须同步改**：把 `pure` 的期望从
+`permFingerprint("edit: probe.md")` 改为路径域算式，或把 `pure` 的 `Paths`
+去掉只留 `Tool`。选后者更省事，但要在注释里写明「全文域现在只兜底
+Perm 为 nil 或 Command/Paths 皆空」。
+
+- [ ] **Step 5: 日志与注释自检**
+
+纯函数无日志点。确认：函数体两处「为什么」注释（不原地排序、Tool 进指纹）
++ doc comment 的路径域规则段都在。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/agentd/manager.go internal/agentd/manager_test.go
+git commit -m "feat(agentd): 指纹加路径域，同目录跨子 agent 不再重复问人（B91 §3.5）"
+```
+
+---
+
 ### Task 4: 全量回归收口
 
 **Files:** 无新改动；只跑命令与修格式
