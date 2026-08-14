@@ -2564,9 +2564,15 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// （opencode 的 Bash 工具把每条命令都 setsid 成新会话）。executor 本体
 	// 不会被误杀——Sweep 遇到它仍存活会返回 ErrExecutorAlive 并自行放弃。
 	//
-	// 依赖提醒：本调用挂在 handleResult 上。B92（failed 事件落库但状态没迁移）
-	// 若走的是别的路径，那条路径上这里不会执行——两条修复合起来才闭环，
-	// watchdog 的每任务点名（scanTaskProcs）是那种情况下的兜底。
+	// 与 B92 的关系（B92 的根因在本改动之后被推翻，这里记下修正后的事实）：
+	// 曾以为存在「failed 事件落库但状态没迁移」的缺口，若成立则本调用在那条
+	// 路径上不会执行。排查用日志与 DB 证伪了它——handleResult 的迁移一直是
+	// 正确的，B92 的真因是 grok 在回合失败时关掉了事件通道，导致 continue 的
+	// 续接回合事件被静默丢弃（已修，见 internal/executor/grok 的 emitTurnFailed）。
+	// 所以本调用在回合失败时**会**正常触发。watchdog 的每任务点名
+	// （scanTaskProcs）仍是有价值的冗余，但兜的不是这条路径，而是
+	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
+	// 的真实缺口（另见 B97）。
 	m.sweep(taskID)
 }
 
