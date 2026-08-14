@@ -8,3 +8,4 @@
 
 - 2026-08-14 Task 1（useHomeDock 状态）完成，commit 200c5c4a，审查 1 轮修复后 PASS（文件头/test 注释逐字一致性 2 处）。
 - 2026-08-14 Task 2（HomeWindow 浮窗容器）完成，commit 4fb1a248，审查直接 PASS。Minor 记账 3 条：grab 不处理 pointercancel；stopPropagation 注释机理存疑（兄弟节点不冒泡）；收起按钮在可拖 header 内按下会冒泡启动 grab。
+- 2026-08-14 Task 3（HomeDock 入口面板）完成，commit 988b843b，审查直接 PASS。面板做成深色（原型是白底）——审查裁决：真实控制台深色体系下的忠实转译，不构成违规，记录备查。Minor 记账 3 条：测试文件多了 4 行惰性注释（非字节级逐字）；面板存活点绿 #3fce6c 与角标绿 #18a86b 不统一；清单 tabLabel 恒显号与 HomeWindow tab 条 seq=1 不显号不一致（spec 测试各自钉死，如实遵从）。
