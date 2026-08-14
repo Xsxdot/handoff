@@ -103,6 +103,19 @@ describe('ProjectTree', () => {
     expect(screen.queryByText('main')).toBeNull()
   })
 
+  it('探测失败的位置渲染 failed 基调的连接态圆点', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'alpha',
+        locations: [{ machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: 'dial tcp timeout', workspaces: [] }],
+      }],
+      unowned: [],
+    }
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    expect(screen.getByText('已断开')).toBeInTheDocument()
+    expect(document.querySelector('.bg-state-failed')).not.toBeNull()
+  })
+
   it('probe_error 只影响该 location，不炸整棵树', () => {
     const tree: ProjectTreeResp = {
       projects: [
@@ -201,9 +214,12 @@ describe('ProjectTree', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
     // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
-    expect(screen.getByRole('button', { name: /^工单$/ })).toBeInTheDocument()
+    const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
+    expect(ticketBtn).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
-    expect(screen.queryByText('0')).not.toBeInTheDocument()
+    // 角标只在 ticketCount>0 时渲染。不能靠 queryByText('0')：RowCounts 改图标形态后
+    // 目录行会把值为 0 的计数渲染成可见的「0」，这里按角标自己的 token 查
+    expect(ticketBtn.querySelector('.bg-state-intervention')).toBeNull()
   })
 
   it('工单数大于 0 时显示角标并可点开', () => {
@@ -322,7 +338,8 @@ describe('ProjectTree', () => {
       task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
     ]
     const { container } = render(<ProjectTree {...p} />)
-    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    // 2 个 active：本机行一个连接态圆点 + 任务行 running 一个
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(2)
     expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
   })
 
@@ -331,5 +348,42 @@ describe('ProjectTree', () => {
     const badge = screen.getByText('3')
     expect(badge.className).toContain('bg-state-intervention')
     expect(container.innerHTML).not.toContain('bg-amber-500')
+  })
+
+  it('「项目 N」的标签与数字之间有间隔，数字更浅', () => {
+    render(<ProjectTree {...props()} />)
+    const count = screen.getByTestId('project-count')
+    // 数字与标签必须是两个可区分的元素，且数字带独立的浅色类
+    expect(count.className).toMatch(/text-muted-foreground|opacity/)
+    // 间隔靠父容器的 gap 或数字自身的 margin，两者取一即可
+    const parent = count.parentElement!
+    expect(parent.className + count.className).toMatch(/gap-|ml-/)
+  })
+
+  it('注销按钮的定位上下文是机器行本身，不是整棵子树', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    const btn = container.querySelector('[aria-label="注销"]')!
+    // 最近的 relative 祖先必须是机器行那一层，而不是包着子树的外层 div
+    const posParent = btn.closest('.relative')!
+    // 机器行内部不含目录行/任务行——用「不包含展开出来的目录行」来钉住这一点
+    expect(posParent.querySelector('[data-testid="workspace-row"]')).toBeNull()
+  })
+
+  it('树独立滚动，底部入口不在滚动区内', () => {
+    const { container } = render(<ProjectTree {...props()} />)
+    const scroller = container.querySelector('[data-testid="tree-scroll"]')!
+    expect(scroller.className).toMatch(/overflow-y-auto/)
+    expect(scroller.className).toMatch(/min-h-0/) // 缺这句 overflow 在 flex 子项里不生效
+    // 「添加项目」必须在滚动容器之外
+    const addBtn = screen.getByRole('button', { name: /添加项目/ })
+    expect(scroller.contains(addBtn)).toBe(false)
+  })
+
+  it('项目图标带取色标记，同名项目刷新后同色', () => {
+    const { unmount } = render(<ProjectTree {...props()} />)
+    const first = document.querySelector('[data-project-color]')!.getAttribute('data-project-color')
+    unmount()
+    render(<ProjectTree {...props()} />)
+    expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
   })
 })

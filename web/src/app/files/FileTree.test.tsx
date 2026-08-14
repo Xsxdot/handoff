@@ -110,4 +110,27 @@ describe('FileTree', () => {
     await waitFor(() => expect(screen.getByText(/白名单内/)).toBeInTheDocument())
     expect(screen.getByText('ok.txt')).toBeInTheDocument()
   })
+
+  it('文件图标着强调色，文件夹图标保持次要灰', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(
+      dir([
+        { name: 'src', is_dir: true },
+        { name: 'a.go', is_dir: false },
+      ]),
+    )
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} />)
+    const fileIcon = await screen.findByTestId('file-icon')
+    const dirIcon = screen.getByTestId('dir-icon')
+    expect(fileIcon.getAttribute('class')).toMatch(/text-file-accent/)
+    expect(dirIcon.getAttribute('class')).toMatch(/text-muted-foreground/)
+  })
+
+  it('M 标记用状态 token，不用裸 Tailwind 调色板类', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'a.go', is_dir: false }]))
+    vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: 'diff --git a/a.go b/a.go' })
+    render(<FileTree base={base} taskId="T1" onOpenFile={vi.fn()} />)
+    const mark = await screen.findByText('M')
+    expect(mark.className).toMatch(/text-state-intervention-text/)
+    expect(mark.className).not.toMatch(/amber-\d/)
+  })
 })

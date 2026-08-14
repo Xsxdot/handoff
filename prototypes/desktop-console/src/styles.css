@@ -3400,3 +3400,318 @@ button {
     gap: 24px;
   }
 }
+
+/* ---------- home 基准悬浮入口与浮窗（W4 console polish 原型） ----------
+   为什么单独一套而不是复用中央 tab 的样式：这套东西刻意与中央工作区无关——
+   它浮在所有内容之上、跟着自己的位置与尺寸走，样式上也应当一眼看出「不是中央的一部分」。 */
+
+.home-dock-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 44px;
+  z-index: 60;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: #10151b;
+  color: #ffffff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+}
+
+.home-dock-fab:hover {
+  opacity: 0.9;
+}
+
+.home-dock-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--green);
+  color: #ffffff;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.home-dock-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 44px;
+  z-index: 60;
+  width: 258px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+
+.home-dock-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.home-dock-panel header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.home-dock-panel header button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.home-dock-hint {
+  margin: 3px 0 8px;
+  color: var(--subtle);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.home-dock-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.home-dock-empty {
+  margin: 0;
+  padding: 10px 6px;
+  color: var(--subtle);
+  font-size: 11.5px;
+}
+
+.home-dock-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-dock-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.home-dock-item.active {
+  background: var(--sidebar-selected);
+}
+
+.home-dock-item > span:first-of-type {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-dock-live {
+  flex: 0 0 auto;
+}
+
+.home-dock-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fafafa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.home-dock-new:hover {
+  background: var(--sidebar-hover);
+}
+
+.home-dock-new kbd {
+  margin-left: auto;
+  color: var(--subtle);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.home-window {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--terminal-border);
+  border-radius: 10px;
+  background: var(--terminal);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.home-window-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 31px;
+  flex: 0 0 31px;
+  background: var(--terminal-2);
+  border-bottom: 1px solid var(--terminal-border);
+  color: var(--terminal-text);
+  font-size: 11.5px;
+  cursor: move;
+  user-select: none;
+}
+
+.home-window-title > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.home-window-spacer {
+  flex: 1;
+}
+
+.home-window-title button {
+  border: 0;
+  background: transparent;
+  color: #93a0b1;
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+}
+
+.home-window-title button:hover {
+  color: var(--terminal-text);
+}
+
+.home-window-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  flex: 0 0 29px;
+  padding: 0 6px;
+  background: var(--terminal-2);
+  border-bottom: 1px solid var(--terminal-border);
+  overflow-x: auto;
+}
+
+.home-window-tab {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px 6px 0 0;
+  color: #8e9bab;
+}
+
+.home-window-tab.active {
+  background: var(--terminal);
+  color: var(--terminal-text);
+}
+
+.home-window-tab > button:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.home-window-tab .tab-kill {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  padding: 2px 7px 2px 2px;
+  display: inline-flex;
+}
+
+.home-window-tab .tab-kill:hover {
+  opacity: 1;
+  color: var(--red);
+}
+
+.home-window-add {
+  align-self: center;
+  margin-left: 3px;
+  border: 0;
+  background: transparent;
+  color: #8e9bab;
+  cursor: pointer;
+  padding: 3px;
+  display: inline-flex;
+}
+
+.home-window-add:hover {
+  color: var(--terminal-text);
+}
+
+.home-window-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 9px 11px;
+  color: var(--terminal-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.home-window-body p {
+  margin: 0;
+}
+
+.term-prompt {
+  color: var(--green);
+  margin-right: 6px;
+}
+
+.term-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  vertical-align: text-bottom;
+  background: var(--terminal-text);
+}
+
+.home-window-corner {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 15px;
+  height: 15px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--terminal-border) 50%);
+}

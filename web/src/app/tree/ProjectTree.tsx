@@ -38,6 +38,8 @@ import { errorMessage } from '../lib/format'
 import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
+import { RowCounts } from './RowCounts'
+import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 
 export interface ProjectTreeProps {
@@ -70,18 +72,6 @@ function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | u
 
 // ROW_CLASS 是所有行的基础样式；选中态 / hover 态在其上叠加。
 const ROW_CLASS = 'flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[13px]'
-
-// RowCounts 渲染一行右侧的计数（项目/机器行 目录·运行·待处理；目录行 运行·待处理）。
-function RowCounts({ text, title }: { text: string; title: string }) {
-  return (
-    <span
-      className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground"
-      title={title}
-    >
-      {text}
-    </span>
-  )
-}
 
 // Arrow 是展开箭头所在的可点 span——必须是 span 而不是 button，避免与行 button 嵌套。
 function Arrow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -234,7 +224,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   }
 
   return (
-    <div className="py-2">
+    // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
+    // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
+    // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
+    <div className="flex min-h-0 flex-1 flex-col py-2">
+      {/* 第一段：不滚——任务看板入口 + 搜索框 + 「项目 N」 */}
       <button
         type="button"
         onClick={onOpenBoard}
@@ -269,10 +263,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
         </label>
       </div>
 
-      <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      {/* 数字紧跟标签、比标签浅一档——形态基准是原型的
+          .sidebar-section-title span { margin-left:3px; color:#969696; font-weight:500 } */}
+      <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>项目</span>
-        <span data-testid="project-count">{filtered.projectCount}</span>
+        <span data-testid="project-count" className="font-normal text-muted-foreground/70">
+          {filtered.projectCount}
+        </span>
       </div>
+
+      {/* 第二段：只有它滚 */}
+      <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
       {filtered.projects.map((project) => {
         const pKey = `p:${project.project_id}`
@@ -292,9 +293,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               ) : (
                 <span className="size-4 shrink-0" />
               )}
-              <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+              {/* 项目身份色：让整棵树不至于只有一个灰。取色只依赖 project_id，
+                  与列表顺序无关（见 projectColor.ts 的边界说明） */}
+              <FolderGit2
+                data-project-color={projectColorClass(project.project_id)}
+                className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
+              />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              <RowCounts text={`${pCounts.dirs}·${pCounts.running}·${pCounts.pending}`} title="目录·运行·待处理" />
+              <RowCounts dirs={pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
             </button>
 
             {pOpen &&
@@ -305,36 +311,47 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
                 return (
-                  <div key={mKey} className="group relative">
-                    <button
-                      type="button"
-                      aria-disabled={problem !== '' || undefined}
-                      aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
-                      onClick={problem !== '' ? undefined : () => toggle(mKey)}
-                      className={cn(ROW_CLASS, 'hover:bg-accent/60')}
-                      style={{ paddingLeft: 8 + 16 }}
-                    >
-                      {hasChildren && problem === '' ? (
-                        <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
-                      ) : (
-                        <span className="size-4 shrink-0" />
-                      )}
-                      <HardDrive className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
-                      {problem !== '' && <DisconnectedBadge />}
-                      <RowCounts text={`${mCounts.dirs}·${mCounts.running}·${mCounts.pending}`} title="目录·运行·待处理" />
-                    </button>
-                    {onUnregister && (
+                  // 外层只负责分组，不再是定位祖先
+                  <div key={mKey}>
+                    {/* 定位上下文收在机器行这一层：注销的对象是「项目在这台机器上的位置」，
+                        按钮必须长在它作用的那一行上。挂在外层时 top-1/2 会以整棵子树
+                        （实测 578px）为基准，把按钮放到列表正中间 */}
+                    <div className="group relative">
                       <button
                         type="button"
-                        aria-label="注销"
-                        onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
-                        className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                        aria-disabled={problem !== '' || undefined}
+                        aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
+                        onClick={problem !== '' ? undefined : () => toggle(mKey)}
+                        className={cn(ROW_CLASS, 'hover:bg-accent/60')}
+                        style={{ paddingLeft: 8 + 16 }}
                       >
-                        <Trash2 className="size-3.5" />
+                        {hasChildren && problem === '' ? (
+                          <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
+                        ) : (
+                          <span className="size-4 shrink-0" />
+                        )}
+                        <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+                        {/* 连接态用与任务状态同一套圆点：一个界面里两套"绿点"含义不同会更糊涂。
+                            probe_error 非空 = 这个位置探测失败 = 机器当前不可达 */}
+                        <StateDot tone={loc.probe_error !== '' ? 'failed' : 'active'} />
+                        <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
+                        {problem !== '' && <DisconnectedBadge />}
+                        {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
+                            机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
+                        <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                       </button>
-                    )}
-
+                      {onUnregister && (
+                        <button
+                          type="button"
+                          aria-label="注销"
+                          onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
+                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
                       <p
                         className="break-words pb-1 pr-2 text-[11px] text-destructive"
@@ -355,6 +372,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           <div key={base.key}>
                             <button
                               type="button"
+                              data-testid="workspace-row"
                               aria-current={dSelected ? 'true' : undefined}
                               onClick={() => onSelectDir(base)}
                               className={cn(ROW_CLASS, 'hover:bg-accent/60', dSelected && 'bg-sidebar-accent font-medium')}
@@ -367,7 +385,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                                 <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
                               )}
                               <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
-                              <RowCounts text={`${under.running}·${under.pending}`} title="运行·待处理" />
+                              <RowCounts running={under.running} pending={under.pending} />
                             </button>
 
                             {wsTasks.map((t) => (
@@ -388,7 +406,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           </div>
                         )
                       })}
-                  </div>
+                    </div>
                 )
               })}
           </div>
@@ -423,7 +441,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
       {filtered.isEmpty && searching && (
         <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
+      </div>
 
+      {/* 第三段：钉在底部 */}
       {/* 底部三入口：添加项目占主位，工单与设置收在右侧图标区（spec §3.2）。
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了 */}
       <div className="mt-1 flex items-center gap-1 border-t px-2 pt-2">

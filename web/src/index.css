@@ -52,6 +52,15 @@
   --state-intervention: oklch(0.735 0.153 68.5);    /* ≈ #e79b18 */
   --state-intervention-text: oklch(0.565 0.117 65.8); /* ≈ #a66c09 */
   --state-failed: oklch(0.638 0.163 24.8);          /* ≈ #df554f */
+  --file-accent: oklch(0.596 0.135 245.6);          /* ≈ #2187d7，原型的 --blue */
+  /* 项目身份色。取自原型 projectRows 的五个色值。
+     深色一组不是浅色的机械换算：同一个 hex 在深底上对比度会掉，
+     所以整体提亮并略降饱和——与 --state-* 那一组的做法一致 */
+  --project-1: oklch(0.606 0.233 303.9);  /* ≈ #9b5de5 紫 */
+  --project-2: oklch(0.665 0.124 240.5);  /* ≈ #4aa3df 蓝 */
+  --project-3: oklch(0.686 0.140 152.2);  /* ≈ #44b678 绿 */
+  --project-4: oklch(0.652 0.150 260.8);  /* ≈ #619df0 靛 */
+  --project-5: oklch(0.240 0.000 0);      /* ≈ #171717 近黑 */
   --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei',
     sans-serif;
@@ -96,6 +105,12 @@
   --state-intervention: oklch(0.812 0.146 72.0);
   --state-intervention-text: oklch(0.845 0.132 76.0);
   --state-failed: oklch(0.715 0.165 22.0);
+  --file-accent: oklch(0.720 0.115 245.6);
+  --project-1: oklch(0.720 0.180 303.9);
+  --project-2: oklch(0.760 0.105 240.5);
+  --project-3: oklch(0.775 0.120 152.2);
+  --project-4: oklch(0.745 0.125 260.8);
+  --project-5: oklch(0.880 0.000 0);      /* 近黑在深底上必须翻成近白 */
 }
 
 @theme inline {
@@ -135,6 +150,12 @@
   --color-state-intervention: var(--state-intervention);
   --color-state-intervention-text: var(--state-intervention-text);
   --color-state-failed: var(--state-failed);
+  --color-file-accent: var(--file-accent);
+  --color-project-1: var(--project-1);
+  --color-project-2: var(--project-2);
+  --color-project-3: var(--project-3);
+  --color-project-4: var(--project-4);
+  --color-project-5: var(--project-5);
   --font-sans: var(--font-sans);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
