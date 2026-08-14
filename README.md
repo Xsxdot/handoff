@@ -209,7 +209,59 @@ into the mainline is your review decision.
 
 ## Command Reference
 
+| Command | Purpose | Key flags |
+|------|------|----------|
+| `handoff init` | Detect executors, generate/update config interactively (idempotent) | — |
+| `handoff service install\|uninstall\|status` | Put agentd under launchd / systemd management | — |
+| `handoff agentd` | Run agentd in the foreground (development/debugging; day-to-day use goes through service) | `--executor=opencode\|claude\|grok\|codex\|fake` (default opencode) |
+| `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
+| `handoff wait <task>` | Block until the next event that needs you | `--follow` (keep subscribing until the task ends); `--notify`; `--timeout <duration>`; `--no-sync` |
+| `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
+| `handoff diff <task>` | git diff + commit list (review material) | `--base <branch>` |
+| `handoff fetch <task> <file>` | Read a single file from the task repo | — |
+| `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout) | handoff's own flags must come **before** the task id; everything after it is passed through verbatim |
+| `handoff continue <task> "<instruction>"` | Send a follow-up change instruction (requires pending-review state; continues the same session) | — |
+| `handoff done <task>` | Archive the task and reclaim the executor (requires pending-review state) | `--note "<note>"` |
+| `handoff stop <task>` | Abort (stop the executor, void tickets, task ends failed) | — |
+| `handoff tasks` | List all tasks (one JSON per line) | — |
+| `handoff show <task>` | Task snapshot (task + pending tickets + recent events) | — |
+| `handoff attach [task]` | Follow the task live in the terminal (no argument shows a picker) | `--all` (replay from the start); `--no-follow` |
+| `handoff resume <task>` | Recover a stuck task: redeliver undelivered replies / reconcile a lost turn ending | `--force` (force-close to pending review when reconciliation can't decide) |
+| `handoff pull <task>` | Sync a remote task branch to the local repo (fetch only, no checkout) | — |
+| `handoff project add\|ls\|rm` | Manage project registrations | `--target <machine>`; add takes `--path <existing path>` |
+| `handoff reclaim` | Clean up managed worktrees left by terminal-state tasks (branches kept) | — |
+| `handoff footprint` | Per-task process usage and this machine's process headroom | — |
+| `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
+| `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback` |
+| `handoff version` | Print the version (first line is the bare version, for scripts to compare) | — |
+| `handoff skill [install]` | Show/reinstall the embedded AI skill (synced automatically on install and upgrade; normally hands-off) | — |
+
+Global flags: `--agentd http://127.0.0.1:7777` (agentd address), `--target <name>`
+(resolve address and token from config), `--config <path>` (default
+`~/.handoff/config.yaml`).
+
 ## Task States and Events
+
+Task state machine: `pending` → `running` → (`waiting_answer` ⇄ `running`) →
+`waiting_review` → archived (`completed`). **A turn that ends in failure also goes to
+`waiting_review`** — the executor session is still alive with full context, so you can
+retry with `continue`. Only `stop`, or an executor failing to start, lands the task in
+`failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require
+`waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.
+
+`wait` is woken by these events:
+
+| Event | Meaning | Action |
+|------|------|------|
+| `permission_request` | executor asks for authorization | `reply --approve` / `--deny --reason` |
+| `question` | executor has a requirements question | `reply --answer` |
+| `completed` / `failed` | a turn finished / a turn ended in failure | both go to review: `diff` for evidence, then `continue` or `done` |
+| `archived` | task archived by done (payload carries the note) | the task is truly over |
+| `delivery_failed` | a reply was persisted but never reached the executor | `handoff resume <task>` to redeliver |
+| `stalled` | watchdog: no output for a long time | `attach`/`show` to judge long-running vs stuck |
+
+`progress` and approval-chain audit events are stored without waking anyone; they show up
+in `show`'s event history.
 
 ## Configuration Reference
 
