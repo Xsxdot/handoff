@@ -201,9 +201,12 @@ describe('ProjectTree', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
     // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
-    expect(screen.getByRole('button', { name: /^工单$/ })).toBeInTheDocument()
+    const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
+    expect(ticketBtn).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
-    expect(screen.queryByText('0')).not.toBeInTheDocument()
+    // 角标只在 ticketCount>0 时渲染。不能靠 queryByText('0')：RowCounts 改图标形态后
+    // 目录行会把值为 0 的计数渲染成可见的「0」，这里按角标自己的 token 查
+    expect(ticketBtn.querySelector('.bg-state-intervention')).toBeNull()
   })
 
   it('工单数大于 0 时显示角标并可点开', () => {

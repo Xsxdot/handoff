@@ -38,6 +38,7 @@ import { errorMessage } from '../lib/format'
 import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
+import { RowCounts } from './RowCounts'
 import { cn } from '@/lib/utils'
 
 export interface ProjectTreeProps {
@@ -70,18 +71,6 @@ function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | u
 
 // ROW_CLASS 是所有行的基础样式；选中态 / hover 态在其上叠加。
 const ROW_CLASS = 'flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[13px]'
-
-// RowCounts 渲染一行右侧的计数（项目/机器行 目录·运行·待处理；目录行 运行·待处理）。
-function RowCounts({ text, title }: { text: string; title: string }) {
-  return (
-    <span
-      className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground"
-      title={title}
-    >
-      {text}
-    </span>
-  )
-}
 
 // Arrow 是展开箭头所在的可点 span——必须是 span 而不是 button，避免与行 button 嵌套。
 function Arrow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -294,7 +283,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               )}
               <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              <RowCounts text={`${pCounts.dirs}·${pCounts.running}·${pCounts.pending}`} title="目录·运行·待处理" />
+              <RowCounts dirs={pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
             </button>
 
             {pOpen &&
@@ -322,7 +311,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                       <HardDrive className="size-4 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
                       {problem !== '' && <DisconnectedBadge />}
-                      <RowCounts text={`${mCounts.dirs}·${mCounts.running}·${mCounts.pending}`} title="目录·运行·待处理" />
+                      {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
+                          机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
+                      <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                     </button>
                     {onUnregister && (
                       <button
@@ -367,7 +358,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                                 <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
                               )}
                               <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
-                              <RowCounts text={`${under.running}·${under.pending}`} title="运行·待处理" />
+                              <RowCounts running={under.running} pending={under.pending} />
                             </button>
 
                             {wsTasks.map((t) => (
