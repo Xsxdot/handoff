@@ -135,6 +135,15 @@ func TestArchivedPayloadJSON(t *testing.T) {
 	}
 }
 
+// TestTaskProcPressureEventTypeLiteral 钉住 task_proc_pressure 事件类型的字面量：
+// 线上 wait/show/脚本按 "task_proc_pressure" 解析，改名会让所有读事件流的
+// 客户端与 CLI 静默失效。
+func TestTaskProcPressureEventTypeLiteral(t *testing.T) {
+	if EventTypeTaskProcPressure != "task_proc_pressure" {
+		t.Fatalf("事件类型字面量变了: %s", EventTypeTaskProcPressure)
+	}
+}
+
 // TestTaskDoneNoteJSON 钉住 Task 上的字段名：handoff show 直接序列化 Task，
 // 键名一改，所有读 show 输出的脚本同时失效。
 func TestTaskDoneNoteJSON(t *testing.T) {
