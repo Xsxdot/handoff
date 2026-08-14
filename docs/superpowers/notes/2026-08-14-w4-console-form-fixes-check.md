@@ -134,8 +134,12 @@ spec §8 的原型里机器行只有**两段**计数，实现把机器行保留�
 ✖ 10 problems (0 errors, 10 warnings)
 ```
 
-10 个 warning 全部是改动前就存在的 `react-refresh/only-export-components` 与一条
-`useMemo` 依赖 warning，位于 `workbench/` 与 `ui/` 既有代码，非本次改动引入。
+10 个 warning 全部是改动前（基线 87b2cd5e）就存在的既有 warning，非本次改动引入：
+`react-refresh/only-export-components`（9 条）与一条 `react-hooks/exhaustive-deps`
+useMemo 依赖 warning。分布在工作树既有代码里（ProjectTree.tsx、BoardPage.tsx、
+task/codeText.tsx、workbench/、components/ui/ 等）——其中落在 ProjectTree.tsx 与
+BoardPage.tsx 的几条是本计划改过的文件里**改动前就有**的旧 warning（这些文件原本
+就导出会触发 react-refresh 的工具函数，useMemo 依赖也是旧逻辑），并非本次新加。
 
 `npm run build`（末段）：
 
