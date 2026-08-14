@@ -34,7 +34,8 @@ import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
 import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
-import { FloatingNewPane } from '../workbench/FloatingNewPane'
+import { HomeDock } from '../homedock/HomeDock'
+import { useHomeDock } from '../homedock/useHomeDock'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import type { TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
@@ -63,6 +64,8 @@ export function Shell() {
   // openTerminal：它不会把用户的选中目录拽走
   const ptyRestore = usePtyRestore(wb.restoreTerminal)
   const ptySupport = usePtySupport()
+  // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
+  const dock = useHomeDock()
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
   // 确认之后要先删会话、再关那个 tab
   const [closingPty, setClosingPty] = useState<{ group: number; tabId: string; sessionId: string } | null>(null)
@@ -70,6 +73,9 @@ export function Shell() {
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
+  // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
+  // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
+  const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
 
   // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
   const ptyNote = (machine: string): string => {
@@ -101,21 +107,59 @@ export function Shell() {
     return false
   }
 
+  // killPtySession 删一个服务端终端会话，失败时把原文交给 onError 呈现。
+  // 中央 tab 的确认关闭与浮窗 tab 的 × 共用：两处都不许吞错误——点了 × 以为
+  // 会话关了，服务端却还留着一个 shell。返回是否删成功
+  const killPtySession = async (
+    sessionId: string,
+    machine: string | undefined,
+    onError: (msg: string) => void,
+  ): Promise<boolean> => {
+    try {
+      await deletePtySession(sessionId, machine)
+      return true
+    } catch (err) {
+      onError(errorMessage(err))
+      return false
+    }
+  }
+
   const confirmClosePty = async () => {
     if (!closingPty) return
     setCloseBusy(true)
     setCloseError('')
-    try {
-      await deletePtySession(closingPty.sessionId, wb.base?.machine || undefined)
+    if (await killPtySession(closingPty.sessionId, wb.base?.machine || undefined, setCloseError)) {
       wb.close(closingPty.group, closingPty.tabId)
       setClosingPty(null)
-    } catch (err) {
-      // 删失败**不关 tab**：关掉就等于把一个还活着的会话从视野里抹掉，
-      // 而它仍在占着进程。原文照抄给用户
-      setCloseError(errorMessage(err))
-    } finally {
-      setCloseBusy(false)
     }
+    // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
+    // 而它仍在占着进程（错误已由 killPtySession 塞进 ConfirmDialog）
+    setCloseBusy(false)
+  }
+
+  const confirmCloseHome = async () => {
+    if (!closingHome) return
+    setCloseBusy(true)
+    setCloseError('')
+    if (await killPtySession(closingHome.sessionId, closingHome.machine || undefined, setCloseError)) {
+      dock.closeTab(closingHome.id)
+      setClosingHome(null)
+    }
+    setCloseBusy(false)
+  }
+
+  // killHomeSession 是浮窗 tab × 的入口：找到会话、进确认弹层。为什么不吞错误：
+  // 失败被吞掉的话，用户以为会话关了、实际服务端还留着一个 shell
+  const killHomeSession = (id: string) => {
+    const tab = dock.tabs.find((t) => t.id === id)
+    if (!tab) return
+    if (!tab.sessionId) {
+      // 会话还没建成（比如刚点完新终端立刻点 ×），没有可删的东西，直接移掉
+      dock.closeTab(id)
+      return
+    }
+    setCloseError('')
+    setClosingHome({ id, sessionId: tab.sessionId, machine: tab.machine })
   }
 
   const onUnregister = async (name: string, machine: string) => {
@@ -233,8 +277,22 @@ export function Shell() {
         </div>
       )}
 
-      {/* 本机明确不支持时不渲染这个按钮：置灰控件承诺「以后能用」 */}
-      {ptySupport.supported('') !== false && <FloatingNewPane onNewTerminal={() => wb.openTerminal(HOME_BASE)} />}
+      {/* home 终端走独立浮窗，不进 wb 的 tab 组——它不挂在任何目录上，
+          塞进按目录组织的容器里就会跟着目录切换走 */}
+      {ptySupport.supported('') !== false && (
+        <HomeDock
+          dock={dock}
+          onKill={killHomeSession}
+          renderTab={(t) => (
+            <TerminalTab
+              base={HOME_BASE}
+              seq={t.seq}
+              sessionId={t.sessionId}
+              onSession={(id) => dock.setSession(t.id, id)}
+            />
+          )}
+        />
+      )}
 
       {overlay === 'board' && (
         <BoardOverlay
@@ -253,7 +311,7 @@ export function Shell() {
       )}
 
       <ConfirmDialog
-        open={closingPty !== null}
+        open={closingPty !== null || closingHome !== null}
         title="关闭终端会话"
         description={
           '关闭会终止这个终端会话，里面正在运行的命令会被一并结束。\n' +
@@ -264,8 +322,8 @@ export function Shell() {
         destructive
         busy={closeBusy}
         error={closeError}
-        onConfirm={() => void confirmClosePty()}
-        onCancel={() => setClosingPty(null)}
+        onConfirm={() => void (closingPty ? confirmClosePty() : confirmCloseHome())}
+        onCancel={() => { setClosingPty(null); setClosingHome(null) }}
       />
 
       <AddProjectWizard
