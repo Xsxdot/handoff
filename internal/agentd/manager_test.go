@@ -2042,3 +2042,103 @@ func TestPermFingerprintForDomains(t *testing.T) {
 		t.Fatal("命令域与全文域相撞，cmd\\x00 前缀隔离失效")
 	}
 }
+
+// TestPermissionReuseAcrossGateKinds 验证 B91 主场景：external_directory 形态
+// 的命令获人工 allow 且送达后，同命令的 bash 形态到达 → 自动放行零唤醒。
+// 复刻 B89 任务 4356d318 seq 630/631 的真机形态。
+func TestPermissionReuseAcrossGateKinds(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	// 第一次：external_directory 形态升级人工 → 批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：bash 形态、同一条命令、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("跨 kind 复用未命中，仍有 %d 张挂起工单：%+v", len(pending), pending)
+	}
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseCommandMismatch 验证只差一个字符的命令不复用、照常升级。
+func TestPermissionReuseCommandMismatch(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: rm -rf /tmp/a",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/a"},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: rm -rf /tmp/b",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/b"},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("不同命令不该复用，期望 1 张挂起工单，实得 %d", len(pending))
+	}
+}
+
+// TestPermissionReuseFromApproverGrant 验证审批者（廉价模型）自动批准的工单
+// 同样是复用先例——approvePermission 触点漏换指纹键会静默缩窄复用面（spec §7）。
+func TestPermissionReuseFromApproverGrant(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "go test ./..."
+	ev1 := executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/x"}},
+	}
+	// 审批者路径直接批准（建单+allow+送达一条龙）
+	m.approvePermission("T1", "T1:p1", "p1", ev1.Text, permFingerprintFor(ev1), "低危命令", "approver")
+
+	// bash 形态同命令到达 → 应命中复用
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("审批者先例未参与复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}

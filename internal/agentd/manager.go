@@ -1412,7 +1412,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(ev.Text),
+		Fingerprint: permFingerprintFor(ev),
 	}); err != nil {
 		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
 		// 工单没建成，waiting_answer 是虚假状态（无任何可答项），回迁 running
@@ -1646,7 +1646,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	m.apMu.Unlock()
 
 	if d.Approve {
-		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason, "approver")
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, permFingerprintFor(ev), d.Reason, "approver")
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
@@ -1708,17 +1708,20 @@ func (m *Manager) countApproverFail(taskID string) {
 // 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
 //
 // 参数：
+//   - fp: 调用方用 permFingerprintFor(ev) 算好的裁决指纹——本函数只收权限描述
+//     文本串、拿不到 ev.Perm，不在函数内重新猜域；键从建单就对齐 reuseDecision，
+//     审批者路径的工单才进得了复用面（B91 §7）
 //   - source: 这次批准的来源，取 "approver"（廉价模型审批者实时裁决）或
 //     "reuse"（命中本任务内既有人工批准自动复用，B57②）。日志里必须区分：
 //     复用路径若打「审批者自动批准」会把人引向一条根本没发生的裁决链去排查。
-func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason, source string) {
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, reason, source string) {
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
 		"perm", permID, "source", source, "reason", truncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(permission),
+		Fingerprint: fp,
 	}); err != nil {
 		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
 		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
@@ -1838,7 +1841,7 @@ func permFingerprintFor(ev executor.AdapterEvent) string {
 //     错误地复用是安全事故，两个方向的代价不对称
 //   - 只复用 allow、只在同任务内复用：见 spec §3.3/§3.4
 func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketID string) bool {
-	fp := permFingerprint(ev.Text)
+	fp := permFingerprintFor(ev)
 	prior, err := m.st.FindReusableGrant(taskID, fp)
 	if err != nil {
 		m.log.Warn("查询可复用裁决失败，照常升级人工", "task", taskID,
@@ -1864,7 +1867,7 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 		// 审计事件失败不阻断放行：executor 正阻塞等应答，为一条审计把它挂死
 		// 是更坏的结果；Error 日志已留痕
 	}
-	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text,
+	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, permFingerprintFor(ev),
 		"复用工单 "+prior.ID+" 的人工批准", "reuse")
 	return true
 }
