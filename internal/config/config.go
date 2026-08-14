@@ -165,6 +165,20 @@ type Target struct {
 type ProcFenceConfig struct {
 	Disabled     bool    `yaml:"disabled"`
 	ReserveRatio float64 `yaml:"reserve_ratio"`
+	// TaskBudget 是**单个任务**名下的进程数告警线，超过即发一次
+	// task_proc_pressure 事件唤醒审核者。0 = 关掉这一档。
+	//
+	// 为什么不是把围栏值调小：RLIMIT_NPROC 的内核判定是「该 uid 当前进程总数
+	// 是否超过调用者软限」，不是「这棵进程树的后代数」。给每个 shim 装 300 的
+	// 效果是「uid 总数一过 300 所有 shim 一起 fork 失败」，第二个任务会被第一个
+	// 饿死——表达不了每任务额度，只能换成 watchdog 按任务点名（B93 spec §2.2）
+	TaskBudget int `yaml:"task_budget"`
+	// TaskHardLimit 是单个任务的进程数硬上限，超过即强制清扫并落 failed。
+	// 0 = 关掉这一档。
+	//
+	// 两档的分工：TaskBudget 是「叫醒人」，TaskHardLimit 是「不等人了」。
+	// 只有一档要么太吵（每次都杀）要么太晚（人没醒机器就没了）。
+	TaskHardLimit int `yaml:"task_hard_limit"`
 }
 
 // Load 加载配置：文件不存在时返回带默认值的 Config 并自动生成随机 Token 写盘。
@@ -189,8 +203,15 @@ func Load(path string) (*Config, error) {
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
-		Targets:  map[string]Target{},
-		Env:      map[string]string{},
+		ProcFence: ProcFenceConfig{
+			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
+			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
+			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
+			// 默认（400/1200），显式写 0 覆盖为 0。
+			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
+		},
+		Targets: map[string]Target{},
+		Env:     map[string]string{},
 	}
 	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
 	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
@@ -238,6 +259,21 @@ func Load(path string) (*Config, error) {
 	// 保留比缺省 0.1：不写配置的用户也应该被围栏保护，默认必须在安全侧
 	if cfg.ProcFence.ReserveRatio <= 0 || cfg.ProcFence.ReserveRatio >= 1 {
 		cfg.ProcFence.ReserveRatio = 0.1
+	}
+	// 负数是配置写错，归零 = 关掉这一档；0 本身是合法的「关掉」，原样保留。
+	// 注意与 ReserveRatio 的兜底不同：那个用「越界就取默认」是因为 0 对它无意义，
+	// 而 TaskBudget/TaskHardLimit 的 0 是「不启用该档」的显式表达，不能改回默认。
+	if cfg.ProcFence.TaskBudget < 0 {
+		cfg.ProcFence.TaskBudget = 0
+	}
+	if cfg.ProcFence.TaskHardLimit < 0 {
+		cfg.ProcFence.TaskHardLimit = 0
+	}
+	// 硬上限低于告警线是自相矛盾的配置（还没告警就先杀了），抬到告警线。
+	// 只在两档都启用时校正——有一档是 0 说明用户刻意只要另一档
+	if cfg.ProcFence.TaskBudget > 0 && cfg.ProcFence.TaskHardLimit > 0 &&
+		cfg.ProcFence.TaskHardLimit < cfg.ProcFence.TaskBudget {
+		cfg.ProcFence.TaskHardLimit = cfg.ProcFence.TaskBudget
 	}
 	if firstRun {
 		if werr := save(path, cfg); werr != nil {
