@@ -343,6 +343,21 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if r == nil {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	// 事件通道已关闭 = 这条运行态已被 fatal 路径判死。此时开新回合是最坏的
+	// 结果：turn/start 发得出去、模型真的会跑，但产出的一切事件都会在 emit 里
+	// 被 evClosed 短路丢弃，任务停在 running 直到 2h 看门狗（B92 在 grok 上实测）。
+	//
+	// 加在 Send 而不是 startTurn：startTurn 也被首轮启动路径调用，那时通道当然
+	// 没关，加在那里是给热路径平白多一把锁。
+	//
+	// 返回 ErrTaskNotRunning 而不是自定义错误：manager 的四级恢复阶梯以
+	// errors.Is(err, ErrTaskNotRunning) 为触发条件，会尝试冷恢复重建运行态。
+	r.emitMu.Lock()
+	closed := r.evClosed
+	r.emitMu.Unlock()
+	if closed {
+		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
+	}
 	a.log.Info("codex 续接回合", "task", taskID, "thread", r.threadID)
 	return a.startTurn(r, text)
 }
