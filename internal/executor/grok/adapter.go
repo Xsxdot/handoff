@@ -250,6 +250,20 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if r == nil {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	// 事件通道已关闭 = 这条运行态已被 fatal 路径判死。此时开新回合是最坏的
+	// 结果：session/prompt 发得出去、模型真的会跑，但产出的一切事件都会在
+	// emit 里被 evClosed 短路丢弃，任务停在 running 直到 2h 看门狗（B92）。
+	//
+	// 返回 ErrTaskNotRunning 而不是自定义错误：manager 的四级恢复阶梯以
+	// errors.Is(err, ErrTaskNotRunning) 为触发条件，会尝试冷恢复重建运行态
+	// ——正是这种情况下该做的事。一个明确的错误哪怕语义不完美，也比无声
+	// 无息好一个数量级。
+	r.emitMu.Lock()
+	closed := r.evClosed
+	r.emitMu.Unlock()
+	if closed {
+		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
+	}
 	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
 	// 续接即发新的 session/prompt，回合边界由它的响应（stopReason）标记
 	resCh, err := r.cli.CallAsync("session/prompt", map[string]any{

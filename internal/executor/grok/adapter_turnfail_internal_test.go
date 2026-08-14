@@ -12,6 +12,8 @@
 package grok
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -83,5 +85,22 @@ func TestTurnFailureThenFatalStillCloses(t *testing.T) {
 	<-r.evCh
 	if _, ok := <-r.evCh; ok {
 		t.Fatal("fatal 之后通道应关闭")
+	}
+}
+
+func TestSendRefusesOnClosedChannel(t *testing.T) {
+	// why：这是本次修复的安全网。即便将来又冒出某条我们没想到的关通道路径，
+	// 这道守卫也会把「静默吞掉一整个回合」变成「continue 当场报错、manager 走
+	// 四级恢复阶梯」。B92 花了 2 小时 + 一次人工排查才被发现，代价全部来自静默
+	a, r := NewAdapterWithRunForTest("t1")
+	a.emitFatal(r, "连接断了")
+
+	err := a.Send(context.Background(), r.taskID, "接着干")
+
+	if err == nil {
+		t.Fatal("通道已关闭时 Send 必须报错，不能静默开新回合")
+	}
+	if !errors.Is(err, executor.ErrTaskNotRunning) {
+		t.Fatalf("必须是 ErrTaskNotRunning（manager 的四级恢复阶梯以它为触发条件），实际 %v", err)
 	}
 }
