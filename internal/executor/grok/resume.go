@@ -272,7 +272,7 @@ func (a *Adapter) watchdog(r *runState) {
 			continue
 		}
 		a.log.Error("grok serve 判定死亡", "task", r.taskID, "port", r.proc.Port)
-		a.emitFailed(r, "grok serve 进程已死亡；serve 日志尾部: "+r.proc.LogTail())
+		a.emitFatal(r, "grok serve 进程已死亡；serve 日志尾部: "+r.proc.LogTail())
 		return
 	}
 }
