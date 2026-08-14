@@ -1804,6 +1804,27 @@ func permFingerprint(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// permFingerprintFor 计算一次权限请求的裁决指纹，是所有建单/查询点的唯一入口。
+//
+// 域规则（B91）：
+//   - Perm.Command 非空 → 命令域：sha256("cmd\x00" + command)。同一条命令被
+//     opencode 以 external_directory 与 bash 两种 kind 各发一次时（双胞胎工单，
+//     见 B91 spec §1.1），两次算出同一指纹，第二次得以复用首次的人工批准。
+//   - 否则（纯路径的 edit/write 类、提取不出结构的 fail-closed 类）→ 全文域：
+//     沿用 B57 的权限描述全文指纹，行为不变。
+//
+// "cmd\x00" 前缀做域隔离：命令域与全文域即使文本相同也永不相撞，杜绝
+// 「某段权限描述全文恰好等于另一条命令文本」的伪命中。
+//
+// 注意：写入（建单）与查询（reuseDecision）必须都走本函数——两边规则不一致
+// 会让复用静默失效，那正是 B91 要修的缺陷形态。
+func permFingerprintFor(ev executor.AdapterEvent) string {
+	if ev.Perm != nil && ev.Perm.Command != "" {
+		return permFingerprint("cmd\x00" + ev.Perm.Command)
+	}
+	return permFingerprint(ev.Text)
+}
+
 // reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
 // 放行并返回 true，调用方不得再走升级人工那套。
 //

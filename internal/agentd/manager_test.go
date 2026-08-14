@@ -2002,3 +2002,43 @@ func TestDonePersistsNote(t *testing.T) {
 		t.Fatalf("done_note 未落库: %q", got.DoneNote)
 	}
 }
+
+// TestPermFingerprintForDomains 验证 B91 指纹换键的域规则：
+// 有命令 → 命令域（跨 gate kind 相等）；无命令 → 全文域（B57 原行为）；
+// 两域之间即使文本相同也永不相撞（cmd\x00 前缀隔离）。
+func TestPermFingerprintForDomains(t *testing.T) {
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	extDir := executor.AdapterEvent{
+		Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}
+	bash := executor.AdapterEvent{
+		Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	if permFingerprintFor(extDir) != permFingerprintFor(bash) {
+		t.Fatal("同命令的 external_directory 与 bash 形态指纹应相等（命令域）")
+	}
+
+	// 无命令（纯路径 edit 类、fail-closed 类）：维持全文域
+	pure := executor.AdapterEvent{
+		Text: "edit: probe.md",
+		Perm: &executor.PermRequest{Tool: executor.PermToolWrite, Paths: []string{"probe.md"}},
+	}
+	if permFingerprintFor(pure) != permFingerprint("edit: probe.md") {
+		t.Fatal("无命令时应退回全文指纹（B57 原行为）")
+	}
+	nilPerm := executor.AdapterEvent{Text: "看不懂的权限描述"}
+	if permFingerprintFor(nilPerm) != permFingerprint("看不懂的权限描述") {
+		t.Fatal("Perm 为 nil 时应退回全文指纹")
+	}
+
+	// 域隔离：全文域算出的指纹与命令域算同一串文本的指纹不同
+	same := "echo hi"
+	textDomain := executor.AdapterEvent{Text: same}
+	cmdDomain := executor.AdapterEvent{Text: "bash: " + same, Perm: &executor.PermRequest{Command: same}}
+	if permFingerprintFor(textDomain) == permFingerprintFor(cmdDomain) {
+		t.Fatal("命令域与全文域相撞，cmd\\x00 前缀隔离失效")
+	}
+}
