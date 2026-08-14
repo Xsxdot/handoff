@@ -364,4 +364,12 @@ describe('ProjectTree', () => {
     const addBtn = screen.getByRole('button', { name: /添加项目/ })
     expect(scroller.contains(addBtn)).toBe(false)
   })
+
+  it('项目图标带取色标记，同名项目刷新后同色', () => {
+    const { unmount } = render(<ProjectTree {...props()} />)
+    const first = document.querySelector('[data-project-color]')!.getAttribute('data-project-color')
+    unmount()
+    render(<ProjectTree {...props()} />)
+    expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
+  })
 })

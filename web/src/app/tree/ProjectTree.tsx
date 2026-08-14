@@ -39,6 +39,7 @@ import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
+import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 
 export interface ProjectTreeProps {
@@ -292,7 +293,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               ) : (
                 <span className="size-4 shrink-0" />
               )}
-              <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+              {/* 项目身份色：让整棵树不至于只有一个灰。取色只依赖 project_id，
+                  与列表顺序无关（见 projectColor.ts 的边界说明） */}
+              <FolderGit2
+                data-project-color={projectColorClass(project.project_id)}
+                className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
+              />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
               <RowCounts dirs={pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
             </button>
