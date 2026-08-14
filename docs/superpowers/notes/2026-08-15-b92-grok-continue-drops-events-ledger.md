@@ -9,7 +9,7 @@
 | # | 内容 | 状态 | commit |
 |---|------|------|--------|
 | T1 | 拆 emitFailed → emitTurnFailed / emitFatal，改五个 call site | 完成（审查 APPROVE） | aade64ee |
-| T2 | Send 的 evClosed 守卫 | 待办 | - |
+| T2 | Send 的 evClosed 守卫 | 完成（审查 APPROVE） | 7451e07f |
 | T3 | 回归 + 变异测试 + ledger 交接说明 | 待办 | - |
 | FINAL | 整分支终审 | 待办 | - |
 
@@ -21,6 +21,7 @@
 
 - T1-复审 minor①：TestFatalFailureClosesEventChannel / TestTurnFailureThenFatalStillCloses 对「通道已关」用阻塞 `<-r.evCh` 断言，若 fatal 回归为不关通道会挂到超时才失败；可改 select+time.After fail-fast。
 - T1-复审 minor②：emitFatal doc「后到者的 emit 被 evClosed 丢弃」表述略强，emit 与 closeEvents 间存在极窄竞态窗口（原 emitFailed 既有行为，非本次回归），closeEvents 幂等保证无双重终结。
+- T2-复审 minor①：Send 守卫错误文案与「任务 %s 无运行态」分支措辞风格略异，但属 spec 给定文案，无影响。
 
 ## 变异测试记录
 
