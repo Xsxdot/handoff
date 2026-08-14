@@ -2021,13 +2021,15 @@ func TestPermFingerprintForDomains(t *testing.T) {
 		t.Fatal("同命令的 external_directory 与 bash 形态指纹应相等（命令域）")
 	}
 
-	// 无命令（纯路径 edit 类、fail-closed 类）：维持全文域
+	// 全文域现在只兜底两种：Perm 为 nil，或 Command 与 Paths 皆空（提取不出
+	// 结构的 fail-closed 类）。带 Paths 的纯路径请求已改走路径域，见
+	// TestPermFingerprintForPathDomain（B91 §3.5）。
 	pure := executor.AdapterEvent{
 		Text: "edit: probe.md",
-		Perm: &executor.PermRequest{Tool: executor.PermToolWrite, Paths: []string{"probe.md"}},
+		Perm: &executor.PermRequest{Tool: executor.PermToolWrite},
 	}
 	if permFingerprintFor(pure) != permFingerprint("edit: probe.md") {
-		t.Fatal("无命令时应退回全文指纹（B57 原行为）")
+		t.Fatal("Command 与 Paths 皆空时应退回全文指纹（B57 原行为）")
 	}
 	nilPerm := executor.AdapterEvent{Text: "看不懂的权限描述"}
 	if permFingerprintFor(nilPerm) != permFingerprint("看不懂的权限描述") {
@@ -2040,6 +2042,92 @@ func TestPermFingerprintForDomains(t *testing.T) {
 	cmdDomain := executor.AdapterEvent{Text: "bash: " + same, Perm: &executor.PermRequest{Command: same}}
 	if permFingerprintFor(textDomain) == permFingerprintFor(cmdDomain) {
 		t.Fatal("命令域与全文域相撞，cmd\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermFingerprintForPathDomain 验证 B91 spec §3.5 路径域：同路径同 Tool
+// 跨子 agent 前缀相等、Paths 顺序无关、Tool 不同则不等。
+func TestPermFingerprintForPathDomain(t *testing.T) {
+	dir := "/var/folders/xc/hpx9c9w153j7tvphw53lc8qr0000gn/T/opencode/*"
+
+	// 主 agent 与子 agent 的同一个目录请求：Text 带前缀，Perm 相同
+	main := executor.AdapterEvent{
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	child := executor.AdapterEvent{
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	if permFingerprintFor(main) != permFingerprintFor(child) {
+		t.Fatal("同路径同 Tool 应跨子 agent 前缀相等（路径域忽略 Text）")
+	}
+
+	// Paths 顺序无关
+	ab := executor.AdapterEvent{Text: "x", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/a", "/b"}}}
+	ba := executor.AdapterEvent{Text: "y", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/b", "/a"}}}
+	if permFingerprintFor(ab) != permFingerprintFor(ba) {
+		t.Fatal("Paths 顺序不同应算同一指纹（排序后拼接）")
+	}
+
+	// Tool 不同则不等：edit 与 external_directory 对同一路径含义不同
+	edit := executor.AdapterEvent{Text: "z", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{dir}}}
+	if permFingerprintFor(edit) == permFingerprintFor(main) {
+		t.Fatal("同路径不同 Tool 必须算不同指纹——写文件与越界目录授权不是一件事")
+	}
+
+	// 命令域优先于路径域：同时带命令与路径时走命令域
+	both := executor.AdapterEvent{
+		Text: "external_directory: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x", Paths: []string{dir}},
+	}
+	onlyCmd := executor.AdapterEvent{
+		Text: "bash: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x"},
+	}
+	if permFingerprintFor(both) != permFingerprintFor(onlyCmd) {
+		t.Fatal("有命令时必须走命令域，路径不参与")
+	}
+
+	// 三域互不相撞
+	empty := executor.AdapterEvent{Text: "external_directory: " + dir}
+	if permFingerprintFor(empty) == permFingerprintFor(main) {
+		t.Fatal("全文域与路径域相撞，paths\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermissionReusePathAcrossSubagents 验证端到端：主 agent 批过的目录，
+// 子 agent 再问时自动放行零唤醒。复刻任务 d912b23a seq 678/679 的真机形态。
+func TestPermissionReusePathAcrossSubagents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	dir := "/var/folders/xc/abc/T/opencode/*"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1",
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2",
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("子 agent 的同目录请求未复用，挂起工单 %d 张，期望 0", len(pending))
 	}
 }
 

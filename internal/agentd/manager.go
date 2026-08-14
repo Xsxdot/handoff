@@ -1820,17 +1820,34 @@ func permFingerprint(text string) string {
 //   - Perm.Command 非空 → 命令域：sha256("cmd\x00" + command)。同一条命令被
 //     opencode 以 external_directory 与 bash 两种 kind 各发一次时（双胞胎工单，
 //     见 B91 spec §1.1），两次算出同一指纹，第二次得以复用首次的人工批准。
-//   - 否则（纯路径的 edit/write 类、提取不出结构的 fail-closed 类）→ 全文域：
+//   - Command 为空但 Paths 非空 → 路径域：sha256("paths\x00" + Tool + "\x00" +
+//     排序后的 Paths)。治的是「同一个目录被每个子 agent 各问一次」——子 agent
+//     前缀只加在 Text 上（opencode adapter.go 的 permission.asked 归一化处），
+//     Perm 不带它，所以路径域天然忽略前缀。Tool 进指纹是硬要求，理由见函数体。
+//   - 都为空（Perm 为 nil，或提取不出结构的 fail-closed 类）→ 全文域：
 //     沿用 B57 的权限描述全文指纹，行为不变。
 //
-// "cmd\x00" 前缀做域隔离：命令域与全文域即使文本相同也永不相撞，杜绝
-// 「某段权限描述全文恰好等于另一条命令文本」的伪命中。
+// 三个域各带自己的前缀做隔离，文本相同也永不相撞，杜绝「某段权限描述全文恰好
+// 等于另一条命令文本」这类伪命中。
 //
 // 注意：写入（建单）与查询（reuseDecision）必须都走本函数——两边规则不一致
 // 会让复用静默失效，那正是 B91 要修的缺陷形态。
 func permFingerprintFor(ev executor.AdapterEvent) string {
-	if ev.Perm != nil && ev.Perm.Command != "" {
-		return permFingerprint("cmd\x00" + ev.Perm.Command)
+	if ev.Perm != nil {
+		if ev.Perm.Command != "" {
+			return permFingerprint("cmd\x00" + ev.Perm.Command)
+		}
+		if len(ev.Perm.Paths) > 0 {
+			// 拷贝后排序，不原地改 ev.Perm.Paths——该切片来自 adapter，
+			// 排序它会让调用方看到的顺序被本函数悄悄改掉
+			paths := append([]string(nil), ev.Perm.Paths...)
+			sort.Strings(paths)
+			// Tool 必须进指纹：edit 与 external_directory 对同一路径含义不同
+			// （写这个文件 vs 授权越界访问这个目录），裸路径合并等于把两种
+			// 授权当成一件事。NUL 作分隔符——路径不可能含 NUL，杜绝
+			// ["a","b/c"] 与 ["a/b","c"] 这类拼接歧义
+			return permFingerprint("paths\x00" + ev.Perm.Tool + "\x00" + strings.Join(paths, "\x00"))
+		}
 	}
 	return permFingerprint(ev.Text)
 }
@@ -1874,7 +1891,9 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 		// 审计事件失败不阻断放行：executor 正阻塞等应答，为一条审计把它挂死
 		// 是更坏的结果；Error 日志已留痕
 	}
-	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, permFingerprintFor(ev),
+	// 复用 fp 而不是重算：同一个 ev 算两遍 sha256 没有意义，且两处一旦不同步
+	// 就会写出与查询键不一致的工单——正是 B91 要修的那类缺陷
+	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, fp,
 		"复用工单 "+prior.ID+" 的人工批准", "reuse")
 	return true
 }
