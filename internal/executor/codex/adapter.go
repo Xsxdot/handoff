@@ -343,6 +343,21 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if r == nil {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	// 事件通道已关闭 = 这条运行态已被 fatal 路径判死。此时开新回合是最坏的
+	// 结果：turn/start 发得出去、模型真的会跑，但产出的一切事件都会在 emit 里
+	// 被 evClosed 短路丢弃，任务停在 running 直到 2h 看门狗（B92 在 grok 上实测）。
+	//
+	// 加在 Send 而不是 startTurn：startTurn 也被首轮启动路径调用，那时通道当然
+	// 没关，加在那里是给热路径平白多一把锁。
+	//
+	// 返回 ErrTaskNotRunning 而不是自定义错误：manager 的四级恢复阶梯以
+	// errors.Is(err, ErrTaskNotRunning) 为触发条件，会尝试冷恢复重建运行态。
+	r.emitMu.Lock()
+	closed := r.evClosed
+	r.emitMu.Unlock()
+	if closed {
+		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
+	}
 	a.log.Info("codex 续接回合", "task", taskID, "thread", r.threadID)
 	return a.startTurn(r, text)
 }
@@ -437,9 +452,38 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	}
 }
 
-// emitFailed 产出失败终局并关闭事件通道（一次性语义，后到者被丢弃）。
-func (a *Adapter) emitFailed(r *runState, reason string) {
-	a.log.Error("codex 任务失败", "task", r.taskID, "reason", reason)
+// emitTurnFailed 产出一个**回合级**失败终局，**不关闭事件通道**。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 为什么不关通道：回合失败 ≠ codex app-server 完了，进程还活着，协调者一个
+// continue 就能接着干——那正是 continue 的用途。以前这里一律 closeEvents，
+// 于是 Send→startTurn 在同一个 runstate 上开新回合，新回合的一切事件在 emit
+// 里被 evClosed 短路静默丢弃，manager 的 mediate 循环也早已随通道关闭退出，
+// 任务停在 running 直到 2h 看门狗落 stalled（而 stalled 只唤醒不修复）。
+// 这是 grok 上实测到并已修复的 B92，codex 结构相同。
+//
+// 一次性语义不受影响：跨回合的去重不需要（finishTurn 每回合只调一次，
+// 各 case 互斥），与 fatal 路径之间的去重仍由 evClosed 承担。
+func (a *Adapter) emitTurnFailed(r *runState, reason string) {
+	a.log.Error("codex 回合失败", "task", r.taskID, "reason", reason)
+	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
+		Result: &executor.Result{OK: false, SessionID: r.threadID, FailReason: reason}})
+}
+
+// emitFatal 产出**执行级**失败终局并关闭事件通道。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 用于连接已断、进程已死、登录态失效——这条运行态真的不可用了，必须关通道让
+// manager 的 mediate 循环退出走对账。登录态失效也归这里：判回合级的话 continue
+// 会开一个立刻又失败的新回合，变成人肉重试循环（见 reqAuthRefresh 处那句
+// 「登录态失效重试一万次也不会好」）。
+//
+// 一次性语义：断开处置与进程判死两条路径可能同时到达，closeEvents 的幂等保证
+// 只有先到者生效，后到者的 emit 被 evClosed 丢弃，不会双重终结。
+func (a *Adapter) emitFatal(r *runState, reason string) {
+	a.log.Error("codex 执行终结", "task", r.taskID, "reason", reason)
 	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 		Result: &executor.Result{OK: false, SessionID: r.threadID, FailReason: reason}})
 	r.closeEvents()
@@ -566,7 +610,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 
 	switch status {
 	case "failed":
-		a.emitFailed(r, "回合失败: "+firstNonEmpty(errMsg, "codex 未给出原因"))
+		a.emitTurnFailed(r, "回合失败: "+firstNonEmpty(errMsg, "codex 未给出原因"))
 		return
 	case "interrupted":
 		r.emitMu.Lock()
@@ -576,7 +620,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 			a.log.Info("回合被主动中断，跳过失败处置", "task", r.taskID)
 			return
 		}
-		a.emitFailed(r, "回合被中断（非 handoff 发起）: "+errMsg)
+		a.emitTurnFailed(r, "回合被中断（非 handoff 发起）: "+errMsg)
 		return
 	}
 
@@ -659,7 +703,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if n := r.voidAll(); n > 0 {
 		a.log.Error("codex 连接断开且有未决权限，任务无法继续",
 			"task", r.taskID, "voided", n, "cause", cause)
-		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		a.emitFatal(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
 		return
 	}
 	a.log.Warn("codex 连接断开，无未决权限", "task", r.taskID, "cause", cause)
@@ -667,7 +711,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if r.proc != nil {
 		logTail = r.proc.LogTail()
 	}
-	a.emitFailed(r, fmt.Sprintf("codex 连接断开: %v；serve 日志尾部: %s", cause, logTail))
+	a.emitFatal(r, fmt.Sprintf("codex 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
 // handler 把传输层回调翻译成 handoff 语义。
@@ -834,7 +878,7 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 		// 并回显真因——登录态失效重试一万次也不会好。
 		a.log.Error("codex 请求补令牌，登录态已失效", "task", r.taskID, "params", string(params))
 		_ = r.cli.ReplyError(reqID, -32601, "handoff 不代管 codex 登录态")
-		a.emitFailed(r, "codex 登录态失效，请在 executor 机重新 `codex login`")
+		a.emitFatal(r, "codex 登录态失效，请在 executor 机重新 `codex login`")
 		return true
 
 	case reqUserInput:

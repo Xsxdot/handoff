@@ -265,7 +265,7 @@ func (a *Adapter) watchdog(r *runState) {
 		}
 		a.log.Error("codex app-server 已判死", "task", r.taskID, "port", r.proc.Port)
 		a.dropIf(r.taskID, r)
-		a.emitFailed(r, "codex app-server 进程已退出；serve 日志尾部: "+r.proc.LogTail())
+		a.emitFatal(r, "codex app-server 进程已退出；serve 日志尾部: "+r.proc.LogTail())
 		return
 	}
 }
