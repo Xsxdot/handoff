@@ -300,7 +300,7 @@ func TestCountGroupCountsOnlyItsOwnGroup(t *testing.T) {
 }
 
 // TestCountGroupEmptyGroupIsZeroNotError 断言：组里一个都没有是 0 而不是错误
-//（会话刚退出、进程刚被收走都会走到这里）。
+// （会话刚退出、进程刚被收走都会走到这里）。
 func TestCountGroupEmptyGroupIsZeroNotError(t *testing.T) {
 	stubProcs(t, []procEntry{{PID: 400, PGID: 400, StartedAt: t0}})
 	n, err := CountGroup(300)

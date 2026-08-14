@@ -62,7 +62,7 @@ type Config struct {
 	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 path_dirs: [] 写进
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（B59 spec D7 同款，方向相反）。
-	PathDirs     []string `yaml:"path_dirs,omitempty"`
+	PathDirs []string `yaml:"path_dirs,omitempty"`
 	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
 	//
 	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
@@ -78,7 +78,7 @@ type Config struct {
 	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
 	//
 	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
-	EnvForward     []string `yaml:"env_forward,omitempty"`
+	EnvForward   []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
