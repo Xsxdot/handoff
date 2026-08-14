@@ -62,8 +62,8 @@ export function HomeDock({ dock, renderTab, onKill }: {
       )}
 
       {panelOpen ? (
-        <section className="fixed right-5 bottom-11 z-40 w-[258px] rounded-[10px] border border-[#2b3542] bg-[#0b131e] p-2.5 shadow-xl">
-          <header className="flex items-center justify-between text-[12px] font-semibold text-[#d7dde5]">
+        <section className="fixed right-5 bottom-11 z-40 w-[258px] rounded-[10px] border border-border bg-popover p-2.5 text-popover-foreground shadow-xl">
+          <header className="flex items-center justify-between text-[12px] font-semibold text-popover-foreground">
             <span className="inline-flex items-center gap-1.5">
               <House className="size-3.5" />
               home 基准
@@ -72,14 +72,14 @@ export function HomeDock({ dock, renderTab, onKill }: {
               type="button"
               aria-label="收起面板"
               onClick={() => setPanelOpen(false)}
-              className="inline-flex cursor-pointer p-0.5 text-[#93a0b1] hover:text-[#d7dde5]"
+              className="inline-flex cursor-pointer p-0.5 text-muted-foreground hover:text-foreground"
             >
               <X className="size-3.5" />
             </button>
           </header>
-          <p className="mt-1 mb-2 text-[10.5px] leading-[1.45] text-[#7d8a9c]">不挂在任何项目上，与中央工作区互不影响。</p>
+          <p className="mt-1 mb-2 text-[10.5px] leading-[1.45] text-muted-foreground">不挂在任何项目上，与中央工作区互不影响。</p>
           <div className="flex max-h-[190px] flex-col gap-0.5 overflow-auto">
-            {dock.tabs.length === 0 && <p className="px-1.5 py-2.5 text-[11.5px] text-[#7d8a9c]">还没有开过终端</p>}
+            {dock.tabs.length === 0 && <p className="px-1.5 py-2.5 text-[11.5px] text-muted-foreground">还没有开过终端</p>}
             {dock.tabs.map((tab) => {
               const isActive = tab.id === dock.activeId
               return (
@@ -87,13 +87,13 @@ export function HomeDock({ dock, renderTab, onKill }: {
                   key={tab.id}
                   type="button"
                   onClick={() => focusTab(tab.id)}
-                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12px] text-[#d7dde5] ${
-                    isActive ? 'bg-[#1a2430]' : 'hover:bg-[#14202c]'
+                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12px] text-popover-foreground ${
+                    isActive ? 'bg-accent' : 'hover:bg-accent'
                   }`}
                 >
                   <SquareTerminal className="size-3.5 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{tabLabel(tab.seq)}</span>
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-[#18a86b]" />
+                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-state-active" />
                 </button>
               )
             })}
@@ -101,11 +101,11 @@ export function HomeDock({ dock, renderTab, onKill }: {
           <button
             type="button"
             onClick={openTerminal}
-            className="mt-[7px] flex w-full cursor-pointer items-center gap-1.5 rounded-[7px] border border-[#2b3542] bg-[#10151b] px-2 py-[7px] text-[12px] text-[#d7dde5] hover:bg-[#14202c]"
+            className="mt-[7px] flex w-full cursor-pointer items-center gap-1.5 rounded-[7px] border border-border bg-background px-2 py-[7px] text-[12px] hover:bg-accent"
           >
             <Plus className="size-3.5" />
             新终端
-            <kbd className="ml-auto font-mono text-[10px] text-[#7d8a9c]">⌘T</kbd>
+            <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⌘T</kbd>
           </button>
         </section>
       ) : (

@@ -113,3 +113,36 @@ web/src/app/workbench/FloatingNewPane.tsx       （删除）
 ```
 
 `git diff --stat c61b0c5e..HEAD -- web/`：`10 files changed, 771 insertions(+), 117 deletions(-)`。
+
+## 5. 走查后修正：小面板配色偏离
+
+走查发现初版把入口小面板做成了深色（`bg-[#0b131e]` 一系），与用户确认过的原型基准
+`prototypes/desktop-console/src/styles.css` 的 `.home-dock-panel`（白底 `#ffffff`、`1px solid var(--border)` 边框）不符。
+
+已修正：小面板整棵子树 token 化（`bg-popover` / `text-popover-foreground` /
+`text-muted-foreground` / `border-border` / `bg-accent` / `bg-state-active` / `bg-background`），
+浮窗本体（HomeWindow，深色 `var(--terminal)` 系）与圆钮 FAB（`#10151b`）维持原型原样。
+
+教训：走查记录漏记这处有意偏离本身就是问题——「以后有意偏离必须写进走查记录，不写就等于没发生」。本次把它补记进来。
+
+修正后四条命令仍全绿（本次重跑，真实数字见下）：
+
+```
+$ npx vitest run
+ Test Files  42 passed (42)
+      Tests  391 passed (391)
+
+$ npm run typecheck
+> tsc -b
+（无错误输出）
+
+$ npm run lint
+✖ 10 problems (0 errors, 10 warnings)
+（10 条 warning 均为既有文件：BoardPage.tsx / codeText.tsx / ProjectTree.tsx /
+ BlankTab.tsx / WorkbenchPage.tsx / badge.tsx / button.tsx 上的 react-refresh 与
+ hooks 告警；本次改动文件零告警）
+
+$ npm run build
+✓ built in 1.06s
+（仅有既有 chunk 体积 warning：单 chunk 792.50 kB 超 500 kB）
+```
