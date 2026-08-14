@@ -296,6 +296,24 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByRole('tab', { name: /home/ })).toBeNull()
   })
 
+  it('恢复时 home 会话进浮窗、工作树会话进中央', async () => {
+    vi.mocked(fetchPtySessions).mockResolvedValue({
+      sessions: [
+        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false },
+        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false },
+      ],
+    })
+    renderShell()
+
+    // home 那条：圆钮角标出现 1
+    expect(await screen.findByTestId('home-badge')).toHaveTextContent('1')
+    // 且浮窗没有被自动弹出——恢复是后台动作
+    expect(screen.queryByTestId('home-window-title')).toBeNull()
+
+    // 工作树那条：不该计进 home 角标
+    expect(screen.getByTestId('home-badge')).not.toHaveTextContent('2')
+  })
+
   it('对端不支持 PTY 时不渲染圆钮——说实话而不是给个死按钮', async () => {
     vi.mocked(fetchMachines).mockResolvedValue({
       machines: [{ name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: false }],

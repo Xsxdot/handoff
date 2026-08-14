@@ -60,12 +60,24 @@ export function Shell() {
   const [wizardOpen, setWizardOpen] = useState(false)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
-  // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
-  // openTerminal：它不会把用户的选中目录拽走
-  const ptyRestore = usePtyRestore(wb.restoreTerminal)
   const ptySupport = usePtySupport()
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
+  // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
+  // openTerminal：它不会把用户的选中目录拽走。
+  // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。
+  // 不分流的话，Task 4 之后会出现「新建的在浮窗、刷新后恢复的却在中央」
+  // 这种自相矛盾的状态。
+  //
+  // 用 adopt 而不是 newTerminal：adopt 不打开浮窗、不抢焦点——页面一加载
+  // 就弹出浮窗，等于替用户点了一下
+  const ptyRestore = usePtyRestore((b, sessionId) => {
+    if (b.kind === 'home') {
+      dock.adopt({ id: sessionId, seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+      return
+    }
+    wb.restoreTerminal(b, sessionId)
+  })
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
   // 确认之后要先删会话、再关那个 tab
   const [closingPty, setClosingPty] = useState<{ group: number; tabId: string; sessionId: string } | null>(null)
