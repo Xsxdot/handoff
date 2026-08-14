@@ -28,13 +28,14 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, Trash2, WifiOff,
+  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
+import { ContextMenu } from './ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
@@ -196,6 +197,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   }, [])
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
+  // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
+  // null = 没有菜单打开
+  const [menu, setMenu] = useState<{ x: number; y: number; name: string; machine: string } | null>(null)
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -313,10 +317,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 return (
                   // 外层只负责分组，不再是定位祖先
                   <div key={mKey}>
-                    {/* 定位上下文收在机器行这一层：注销的对象是「项目在这台机器上的位置」，
-                        按钮必须长在它作用的那一行上。挂在外层时 top-1/2 会以整棵子树
-                        （实测 578px）为基准，把按钮放到列表正中间 */}
-                    <div className="group relative">
+                    {/* 定位上下文收在机器行这一层：右键菜单按鼠标坐标 fixed 定位，
+                        不依赖它；但目录行/任务行仍不该进这个分组容器 */}
+                    <div
+                      className="group relative"
+                      data-testid="machine-row"
+                      onContextMenu={
+                        onUnregister
+                          ? (e) => {
+                              // 阻止浏览器原生菜单，换成我们这份。
+                              // Shift+F10 与 ContextMenu 键也派发这个事件，
+                              // 所以键盘用户走的是同一条路，不需要额外快捷键
+                              e.preventDefault()
+                              setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine })
+                            }
+                          : undefined
+                      }
+                    >
                       <button
                         type="button"
                         aria-disabled={problem !== '' || undefined}
@@ -340,16 +357,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                             机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
                         <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                       </button>
-                      {onUnregister && (
-                        <button
-                          type="button"
-                          aria-label="注销"
-                          onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
-                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      )}
+                      {/* 注销入口在右键菜单里，不在行内。
+                          行内 absolute 按钮与同一行右端的 RowCounts 抢位置——
+                          08-14 修过一次垂直居中（定位上下文从 578px 子树收进本行），
+                          但水平方向两者都要右端，改不出不重叠的排法 */}
                     </div>
                     {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
@@ -507,6 +518,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
             setUnregisterTarget(null)
             setUnregisterError('')
           }}
+        />
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: '注销',
+              danger: true,
+              // 走的仍是既有的确认弹层，一字不改——右键只是换了个入口，
+              // 不是换一条注销路径
+              onSelect: () => setUnregisterTarget({ name: menu.name, machine: menu.machine }),
+            },
+          ]}
         />
       )}
     </div>

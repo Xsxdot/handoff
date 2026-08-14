@@ -60,7 +60,9 @@ function props(over: {
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onAddProject: over.onAddProject ?? vi.fn(),
-    onUnregister: over.onUnregister ?? vi.fn(),
+    // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
+    // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
+    onUnregister: 'onUnregister' in over ? over.onUnregister : vi.fn(),
   }
   return p
 }
@@ -360,13 +362,31 @@ describe('ProjectTree', () => {
     expect(parent.className + count.className).toMatch(/gap-|ml-/)
   })
 
-  it('注销按钮的定位上下文是机器行本身，不是整棵子树', () => {
+  it('机器行右端只剩计数，没有常驻的注销按钮压在上面', () => {
+    // why：absolute right-2 的注销按钮与同一行右端的 RowCounts 抢位置。
+    // 08-14 只修了垂直（定位上下文从 578px 子树收进机器行），水平仍然重叠
     const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
-    const btn = container.querySelector('[aria-label="注销"]')!
-    // 最近的 relative 祖先必须是机器行那一层，而不是包着子树的外层 div
-    const posParent = btn.closest('.relative')!
-    // 机器行内部不含目录行/任务行——用「不包含展开出来的目录行」来钉住这一点
-    expect(posParent.querySelector('[data-testid="workspace-row"]')).toBeNull()
+    expect(container.querySelector('[aria-label="注销"]')).toBeNull()
+  })
+
+  it('右键机器行弹出菜单，含「注销」', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    const row = container.querySelector('[data-testid="machine-row"]')!
+    fireEvent.contextMenu(row)
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
+  it('菜单里点「注销」进既有确认弹层，文案不变', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: '注销' }))
+    expect(screen.getByText(/只解除登记，不删除磁盘上的代码/)).toBeInTheDocument()
+  })
+
+  it('未传 onUnregister 时右键不弹菜单——没有可做的操作', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: undefined })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.queryByRole('menu')).toBeNull()
   })
 
   it('树独立滚动，底部入口不在滚动区内', () => {

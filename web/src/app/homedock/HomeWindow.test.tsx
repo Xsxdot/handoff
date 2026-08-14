@@ -55,4 +55,28 @@ describe('HomeWindow', () => {
     fireEvent.pointerUp(document)
     expect(p.onGeom).toHaveBeenCalledWith(expect.objectContaining({ w: 630, h: 320 }))
   })
+
+  it('点 + 调 onNew 时不传任何实参——传了就会变成 machine', () => {
+    // why：onClick={onNew} 会把 MouseEvent 当第一个实参喂进
+    // useHomeDock.newTerminal(machine?: string)，HomeTab.machine 存成事件对象，
+    // 关会话时拼出 ?machine=[object Object] 当场炸。
+    // TS 拦不住：(machine?: string) => void 对 () => void 是合法赋值
+    const onNew = vi.fn()
+    render(
+      <HomeWindow
+        tabs={[{ id: 'a', seq: 1, machine: '' }]}
+        activeId="a"
+        geom={{ x: 0, y: 0, w: 600, h: 300 }}
+        onGeom={vi.fn()}
+        onActivate={vi.fn()}
+        onNew={onNew}
+        onKill={vi.fn()}
+        onCollapse={vi.fn()}
+        renderTab={() => <div />}
+      />,
+    )
+    fireEvent.click(screen.getByLabelText('新终端'))
+    expect(onNew).toHaveBeenCalledTimes(1)
+    expect(onNew.mock.calls[0]).toHaveLength(0)
+  })
 })
