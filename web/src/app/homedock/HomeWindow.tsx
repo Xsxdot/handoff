@@ -121,11 +121,14 @@ export function HomeWindow({ tabs, activeId, geom, onGeom, onActivate, onNew, on
             </span>
           )
         })}
+        {/* 必须包一层箭头：onClick={onNew} 会把 MouseEvent 当实参传下去，
+            而下游 newTerminal 的第一个形参是 machine，事件对象会被存进
+            HomeTab.machine，关会话时发出 ?machine=[object Object] */}
         <button
           type="button"
           aria-label="新终端"
           title="新终端"
-          onClick={onNew}
+          onClick={() => onNew()}
           className="my-auto ml-0.5 inline-flex shrink-0 cursor-pointer rounded p-1 text-[#8e9bab] hover:bg-[#1a2430] hover:text-[#d7dde5]"
         >
           <Plus className="size-3.5" />

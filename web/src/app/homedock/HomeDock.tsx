@@ -54,7 +54,7 @@ export function HomeDock({ dock, renderTab, onKill }: {
           geom={dock.geom}
           onGeom={dock.setGeom}
           onActivate={dock.activate}
-          onNew={dock.newTerminal}
+          onNew={() => dock.newTerminal()}
           onKill={onKill}
           onCollapse={dock.collapse}
           renderTab={renderTab}
