@@ -43,6 +43,22 @@ export function formatFull(iso: string): string {
   return new Date(t).toLocaleString()
 }
 
+// formatSize 把字节数格式化成人能读的大小。
+//
+// 用 1024 进制并保留一位小数：这里的读者是在判断「这文件为什么不给我编辑」，
+// 3.2 MB 比 3355443 字节能直接回答那个问题
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let v = bytes / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(1)} ${units[i]}`
+}
+
 // errorMessage 把任意抛出的值归一成人类可读的字符串。
 //
 // 为什么单独归口：catch 里拿到的不一定是 Error（fetch 网络层可能抛字符串、

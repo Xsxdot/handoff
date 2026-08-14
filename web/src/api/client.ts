@@ -19,7 +19,10 @@ import type {
   CreatePtySessionReq,
   DiffResult,
   DirListResult,
+  FileRead,
   FileResult,
+  FileWriteReq,
+  FileWriteResp,
   MachinesResp,
   ProjectTreeResp,
   PtySession,
@@ -34,32 +37,39 @@ import type {
   TaskDetail,
 } from './types'
 
-// ApiError 携带 HTTP 状态码与 agentd 返回的 error 字段（读不到时给兜底文案）。
+// ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
+//
+// 为什么要留 body：409 的响应体除了 error 还带着 current（磁盘现状），冲突界面
+// 的两个出口都要用它——「放弃我的改动」要它的正文，「用我的内容覆盖」要它的
+// 哈希当新基线。只留一个 message 就得为了拿现状再发一次请求，而两次请求之间
+// 又是一个新窗口。
 //
 // 参数：
 //   - status: HTTP 状态码；0 表示请求根本没到 agentd（网络/反代层失败）
 //   - message: 人类可读的原因
+//   - body: 已解析的响应体；解析不出时为 undefined
 export class ApiError extends Error {
   readonly status: number
+  readonly body: unknown
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
-// bodyOrError 从非 2xx 响应里提取 agentd 的 {"error": "…"} 原文；读不到时回退
-// 到「状态码 + 状态文本」兜底文案。
-async function bodyOrError(resp: Response): Promise<string> {
-  let detail = ''
+// bodyOrError 从非 2xx 响应里提取 agentd 的 {"error": "…"} 原文与完整响应体；
+// 读不到时回退到「状态码 + 状态文本」兜底文案。
+async function bodyOrError(resp: Response): Promise<{ detail: string; body: unknown }> {
   try {
     const body = (await resp.json()) as { error?: string }
-    detail = body.error ?? ''
+    return { detail: body.error ?? '', body }
   } catch {
-    // 响应体不是 JSON 时保留空 detail，用兜底文案
+    // 响应体不是 JSON 时用兜底文案，body 留 undefined
+    return { detail: '', body: undefined }
   }
-  return detail || `agentd 返回 ${resp.status} ${resp.statusText}`
 }
 
 // parseResponse 统一处理一次 fetch 的完成态：非 2xx 抛 ApiError（原文透传），
@@ -69,7 +79,8 @@ async function parseResponse<T>(resp: Response): Promise<T> {
     throw new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie')
   }
   if (!resp.ok) {
-    throw new ApiError(resp.status, await bodyOrError(resp))
+    const { detail, body } = await bodyOrError(resp)
+    throw new ApiError(resp.status, detail || `agentd 返回 ${resp.status} ${resp.statusText}`, body)
   }
   return (await resp.json()) as T
 }
@@ -100,6 +111,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// putJSON 以 JSON body 发起 PUT 请求。
+function putJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -207,15 +227,33 @@ function workspaceQuery(path: string, rel?: string, machine?: string): string {
 // fetchWorkspaceDir 列举工作树内一层目录（GET /api/workspaces/dir）。
 //
 // path 必须是 GET /api/projects/tree 给出的某个 Workspace.path 原样值——
-// agentd 侧按等值比对做白名单，任意路径返回 403（spec §7.1）。
+// agentd 侧按等值比对做白名单，任意路径返回 400（spec §7.1）。
 export function fetchWorkspaceDir(path: string, rel?: string, machine?: string): Promise<DirListResult> {
   return request<DirListResult>(`/api/workspaces/dir?${workspaceQuery(path, rel, machine)}`)
 }
 
 // fetchWorkspaceFile 读工作树内单个文件（GET /api/workspaces/file）。
-// 语义与 fetchTaskFile 一致，只是寻址从任务改为工作树。
-export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileResult> {
-  return request<FileResult>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
+//
+// 返回的是完整 FileRead 而不是只有 content：写回需要 sha256 当基线，
+// 三态展示需要 binary / truncated / size。
+export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileRead> {
+  return request<FileRead>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
+}
+
+// writeWorkspaceFile 写回工作树内单个文件（PUT /api/workspaces/file）。
+//
+// 参数：
+//   - req.base_sha256: **上一次读到那一版**的哈希；对不上时抛 409 的 ApiError，
+//     其 body 是 FileConflictResp（带磁盘现状）
+//
+// 注意：成功返回的 sha256 就是下一次写入的 base_sha256，不需要再读一次
+export function writeWorkspaceFile(
+  path: string,
+  rel: string,
+  req: FileWriteReq,
+  machine?: string,
+): Promise<FileWriteResp> {
+  return putJSON<FileWriteResp>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`, req)
 }
 
 // createProject 登记一个项目位置（POST /api/projects）。

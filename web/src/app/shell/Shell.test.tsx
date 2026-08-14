@@ -23,6 +23,7 @@ vi.mock('../../api/client', async () => {
     fetchTasks: vi.fn(),
     fetchProjectTree: vi.fn(),
     fetchWorkspaceDir: vi.fn(),
+    fetchWorkspaceFile: vi.fn(),
     fetchTaskDetail: vi.fn(),
     fetchTaskDiff: vi.fn(),
     fetchPtySessions: vi.fn(),
@@ -30,7 +31,7 @@ vi.mock('../../api/client', async () => {
     deletePtySession: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession } = await import('../../api/client')
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 const t1: Task = {
@@ -114,6 +115,9 @@ beforeEach(() => {
   vi.mocked(fetchTasks).mockResolvedValue([t1])
   vi.mocked(fetchProjectTree).mockResolvedValue(tree)
   vi.mocked(fetchWorkspaceDir).mockResolvedValue({ entries: [{ name: 'go.mod', is_dir: false, size: 5 }] })
+  // 文件内容要可编辑：sha256 有值才进 textarea 分支（FileTab 的三态判据）。
+  // 没 mock 的话 FileTab 会发真实请求，测试环境里直接炸
+  vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 'h1' })
   vi.mocked(fetchTaskDetail).mockResolvedValue({
     task: t1,
     pending_tickets: [],
@@ -244,5 +248,51 @@ describe('Shell 三栏外框', () => {
     const jump = await screen.findByRole('button', { name: '跳到该任务' })
     fireEvent.click(jump)
     await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3'))
+  })
+})
+
+describe('关闭带草稿的文件 tab 要二次确认', () => {
+  // 在同一个基准目录里切走再切回是造「带 draft 的 file tab」的唯一途径：draft
+  // 只活在 FileTab 内部 state，卸载时才经 onDraftChange 回写进 tab 内容。UI 层面
+  // 点 × 时内容还来不及拿到草稿（× 一触发 onBeforeClose 就被拦下，FileTab 没机会
+  // 卸载）。
+  //
+  // 为什么切 tab 而不是切目录：wb.select 会同步改 baseRef.current，切目录时 FileTab
+  // 的卸载回写会把草稿写进**新目录**的 workbench，草稿就丢了。同基准内点 + 开空白
+  // tab 不碰 baseRef，回写目标才是对的（回写经 setTabContent 还会把 go.mod 重新设回
+  // 激活项，正好省掉「点回去」这一步）
+  it('关一个有草稿的文件 tab 会先弹确认，不直接关掉', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(await screen.findByText('go.mod'))
+    await screen.findByRole('tab', { name: /go.mod/ })
+
+    // 等文件读出来、textarea 可用后打一行字，把「脏」造出来
+    const ta = await screen.findByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(ta, { target: { value: 'module handoff\nx' } })
+
+    // 点 + 开一个空白 tab：激活它让 FileTab 卸载回写草稿，内容就此带上 draft
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+
+    // 点 tab 条上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
+    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
+    expect(screen.getByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /go.mod/ })).toBeInTheDocument()
+
+    // 确认后真的关掉
+    fireEvent.click(screen.getByRole('button', { name: '不保存，关闭' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
+  })
+
+  it('干净的文件 tab 直接关，不打扰', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(await screen.findByText('go.mod'))
+    await screen.findByRole('tab', { name: /go.mod/ })
+
+    // 没打过字，内容没有 draft——× 应该直接关，连弹层都不出现
+    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
+    expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
   })
 })

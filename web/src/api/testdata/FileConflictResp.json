@@ -1,0 +1,8 @@
+{
+  "error": "文件已被改动",
+  "current": {
+    "content": "module handoff\n",
+    "size": 15,
+    "sha256": "8b1a9953c4611296a827abf8c47804d7"
+  }
+}

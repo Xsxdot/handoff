@@ -191,6 +191,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
+//   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
@@ -224,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/machines", s.handleMachines)
 	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
+	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
@@ -1106,7 +1108,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	content, err := ReadFile(repo, rel)
+	res, err := ReadFile(repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1127,6 +1129,14 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
 		}
 		return
+	}
+	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
+	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里
+	// 之后 ReadFile 的返回才是保真的，在线编辑那条线才敢把内容存回磁盘。
+	// 本端点的响应体因此逐字节不变，handoff fetch 行为零变更
+	content := res.Content
+	if res.Truncated {
+		content += truncatedNotice(res.Size)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
 }

@@ -284,6 +284,36 @@ export interface FileResult {
   content: string
 }
 
+// FileRead 是 GET /api/workspaces/file 的响应体（proto.FileRead 的镜像）。
+//
+// sha256 只在**完整且是文本**时有值。空值即「这文件不可编辑」——前端拿它当
+// 三态判据，不要另外按扩展名猜二进制，那必然与服务端分叉。
+export interface FileRead {
+  content: string
+  size: number
+  truncated?: boolean
+  binary?: boolean
+  sha256?: string
+}
+
+// FileWriteReq 是 PUT /api/workspaces/file 的请求体。
+export interface FileWriteReq {
+  content: string
+  base_sha256: string
+}
+
+// FileWriteResp 是写入成功的响应；sha256 直接当下一次写入的 base_sha256。
+export interface FileWriteResp {
+  sha256: string
+  size: number
+}
+
+// FileConflictResp 是 409 的响应体，current 是磁盘现状。
+export interface FileConflictResp {
+  error: string
+  current: FileRead
+}
+
 // resumeResult 是 resume 接口的响应体（RecoverReport 的镜像）。
 export interface ResumeResult {
   task: string
