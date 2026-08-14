@@ -11,11 +11,17 @@
 | T1 | 拆 emitFailed → emitTurnFailed / emitFatal，改五个 call site | 完成（审查 APPROVE） | aade64ee |
 | T2 | Send 的 evClosed 守卫 | 完成（审查 APPROVE） | 7451e07f |
 | T3 | 回归 + 变异测试 + ledger 交接说明 | 完成（审查 APPROVE） | 846fa5d9 |
-| FINAL | 整分支终审 | 待办 | - |
+| FINAL | 整分支终审 | 完成（终审 PASS，无 blocking，minor 全部接受） | 32c919f6..HEAD |
 
 ## 修复轮次
 
-（每轮修复各追加一行）
+（每轮修复各追加一行：本次全程无 REJECT，无修复轮）
+
+## 终审记录
+
+- 终审 PASS：相对分支起点 `2080f5bb` 完整 diff 仅 4 文件（internal/executor/grok/* + 本 ledger），五 call site 归属与 spec 一致，Send 守卫就位，`grep -rn "emitFailed" internal/executor/grok/` 零命中，全量 `go test -count=1 ./...` 0 FAIL。
+- Minor 观察 6 条（T1×2 / T2×1 / T3×2 / 终审新增 T1-m1 复核）全部接受，不派修复波。
+- 遗留/后续（不计本次缺陷）：codex 侧同名 emitFailed 模式、manager reconcileExecutorGone 对账窗口、B93 补 handleResult 清扫、B97/B98，均按 spec §3「不做/单开」推进。
 
 ## Minor 观察（终审统一 triage，不进修复回路）
 
