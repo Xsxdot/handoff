@@ -167,6 +167,9 @@ var agentdCmd = &cobra.Command{
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
 		srv.SetManager(mgr)
+		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
+		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
+		agentd.SetTaskProcCounter(mgr.TaskProcCount)
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
@@ -180,7 +183,8 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
-		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout, logger)
+		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs, logger)
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -192,7 +196,9 @@ var agentdCmd = &cobra.Command{
 		}
 		startAttrs := []any{"addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
 			"proc_fence_disabled", cfg.ProcFence.Disabled,
-			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio}
+			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio,
+			"proc_fence_task_budget", cfg.ProcFence.TaskBudget,
+			"proc_fence_task_hard_limit", cfg.ProcFence.TaskHardLimit}
 		// 无辅助监听时不打 listen_aux 字段：两档常规配置的启动日志保持不变
 		if listenAux != "" {
 			startAttrs = append(startAttrs, "listen_aux", listenAux)

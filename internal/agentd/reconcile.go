@@ -177,6 +177,39 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	return proto.TaskStateWaitingReview
 }
 
+// TaskProcCount 数一个任务名下当前有几个进程。
+//
+// 参数：taskID 为完整任务 id
+//
+// 返回：(n, ok)。**ok 为 false 时 n 无意义**，调用方必须什么都不做——
+// 取不到句柄、adapter 不支持、Footprint 判定不可信（Verdict 非 OK）都归此类。
+// 把「量不出来」当成「超了」会误杀，当成「没超」会让告警的置位状态错乱。
+//
+// 导出是因为 watchdog 的接线点在 cmd/agentd.go（与 SweepTaskProcs 同理），
+// 不是给外部当通用 API 用。
+func (m *Manager) TaskProcCount(taskID string) (int, bool) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Debug("点名解析执行者失败", "task", taskID, "cause", err)
+		return 0, false
+	}
+	fp, ok := ad.(footprinter)
+	if !ok {
+		return 0, false
+	}
+	h, err := fp.ProcHandle(taskID, filepath.Join(m.cfg.DataDir, "tasks", taskID))
+	if err != nil {
+		m.log.Debug("点名取进程句柄失败", "task", taskID, "cause", err)
+		return 0, false
+	}
+	members, v, err := prochost.Footprint(h)
+	if err != nil || v != prochost.VerdictOK {
+		m.log.Debug("点名读数不可信", "task", taskID, "verdict", string(v), "cause", err)
+		return 0, false
+	}
+	return len(members), true
+}
+
 // footprinter 是「交出任务进程句柄」的可选 adapter 能力（四个真实 adapter 均实现，
 // fake 不实现）。
 //
