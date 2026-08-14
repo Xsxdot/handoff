@@ -335,4 +335,24 @@ describe('ProjectTree', () => {
     expect(badge.className).toContain('bg-state-intervention')
     expect(container.innerHTML).not.toContain('bg-amber-500')
   })
+
+  it('「项目 N」的标签与数字之间有间隔，数字更浅', () => {
+    render(<ProjectTree {...props()} />)
+    const count = screen.getByTestId('project-count')
+    // 数字与标签必须是两个可区分的元素，且数字带独立的浅色类
+    expect(count.className).toMatch(/text-muted-foreground|opacity/)
+    // 间隔靠父容器的 gap 或数字自身的 margin，两者取一即可
+    const parent = count.parentElement!
+    expect(parent.className + count.className).toMatch(/gap-|ml-/)
+  })
+
+  it('树独立滚动，底部入口不在滚动区内', () => {
+    const { container } = render(<ProjectTree {...props()} />)
+    const scroller = container.querySelector('[data-testid="tree-scroll"]')!
+    expect(scroller.className).toMatch(/overflow-y-auto/)
+    expect(scroller.className).toMatch(/min-h-0/) // 缺这句 overflow 在 flex 子项里不生效
+    // 「添加项目」必须在滚动容器之外
+    const addBtn = screen.getByRole('button', { name: /添加项目/ })
+    expect(scroller.contains(addBtn)).toBe(false)
+  })
 })

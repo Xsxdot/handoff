@@ -223,7 +223,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   }
 
   return (
-    <div className="py-2">
+    // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
+    // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
+    // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
+    <div className="flex min-h-0 flex-1 flex-col py-2">
+      {/* 第一段：不滚——任务看板入口 + 搜索框 + 「项目 N」 */}
       <button
         type="button"
         onClick={onOpenBoard}
@@ -258,10 +262,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
         </label>
       </div>
 
-      <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      {/* 数字紧跟标签、比标签浅一档——形态基准是原型的
+          .sidebar-section-title span { margin-left:3px; color:#969696; font-weight:500 } */}
+      <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>项目</span>
-        <span data-testid="project-count">{filtered.projectCount}</span>
+        <span data-testid="project-count" className="font-normal text-muted-foreground/70">
+          {filtered.projectCount}
+        </span>
       </div>
+
+      {/* 第二段：只有它滚 */}
+      <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
       {filtered.projects.map((project) => {
         const pKey = `p:${project.project_id}`
@@ -414,7 +425,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
       {filtered.isEmpty && searching && (
         <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
+      </div>
 
+      {/* 第三段：钉在底部 */}
       {/* 底部三入口：添加项目占主位，工单与设置收在右侧图标区（spec §3.2）。
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了 */}
       <div className="mt-1 flex items-center gap-1 border-t px-2 pt-2">
