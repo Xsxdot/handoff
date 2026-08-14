@@ -1,7 +1,7 @@
 # 参与贡献
 
 欢迎 issue 与 PR。这份文档只讲**怎么把改动跑通并提上来**，设计与用法看
-[README](README.md)。
+[README](README.zh-CN.md)。
 
 ## 先说一句期望管理
 
@@ -107,3 +107,8 @@ Release 的说明。改动如果用户能感知到（行为变了、报错文案
 推 `v*` tag 触发 `release.yml`：跑同一套验证门 → 六平台构建 → macOS 签名与公证
 → 算 checksums → 建 Release。Apple 签名 secrets 缺失时**硬失败**，不会产出未签名
 资产。
+
+## 文档同步
+
+README 有中英两份：`README.md`（英文，GitHub 默认展示）与 `README.zh-CN.md`（中文）。
+**改动 README 的 PR 必须同时更新这两份**，先改哪一份不限。只改一份的 PR 会被要求补齐。
