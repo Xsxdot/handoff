@@ -40,6 +40,12 @@
 - 问题 2（Send 会不会在同一个 runstate 上复用已关闭通道）：**不会**。Send（adapter.go:300-325）先 lookup（:301-304，运行态已 drop 则 ErrTaskNotRunning）、再查 stopCh（:305-309）、再查 proc（:318-320）。通道关闭后 `streamLoop` 的 defer 要么 drop 运行态（:448，非 Stop 终结）→ lookup 命中 nil；要么仅当 stopCh 已关才保留运行态（:445-447）→ Send 的 stopCh 检查拦截。唯一残余是 defer 内 closeEvents（:444）到 drop（:448）之间的一小段竞态窗口，但该窗口内进程已死/被杀（mapExit :709-713、看门狗判死、流断），WriteInput 会 O_NONBLOCK 打开失败→ErrTaskNotRunning；且失败 result 已在关通道前投出，manager 不丢终局。claudecode 的 emit 另有 `<-r.stopCh` 让路分支（:840-841）兜底
 - 结论：**不同型**。claudecode 的回合失败（mapResult）从不关事件通道；通道关闭只随执行级终结经 `streamLoop` defer 发生，并与 drop/stopCh 成对出现，Send 结构上够不着 B92 的「关通道后同 runstate 开新回合静默吞事件」形态。无需改动：codex Task 2 的显式 `evClosed` 守卫是纵深防御，claudecode 靠「关通道即失活运行态」的结构性不变量达成同等效果（仅存上述微小竞态窗口，不构成 B92 症状，记入已知偏离备查）
 
+## 终审记录（2026-08-15）
+
+**终审：PASS**（0 项 blocker）。范围正确（仅 codex 三文件 + 本 ledger），全量 `go build/vet/test ./...` 29 包全绿，六处归属、三处形态差异、Send 守卫全部核对通过。
+
+**终审 minor（不修，与 grok 继承语义同构）**：adapter.go:623（emitTurnFailed）后若随后连接断开/进程判死（adapter.go:714 / resume.go:268），`emitFatal` 会在同 runstate 上再投一个 `result{OK:false}` 并关通道，manager 收两个失败终局。`evClosed` 只覆盖关闭后的去重，关通道前的第二次 emit 拦不住。需求即「原样搬到 codex」，语义与 grok 一致，双结果可容忍。
+
 ## 已知偏离
 
 - **claudecode 微小竞态窗口**：`streamLoop` defer 内 `closeEvents`（adapter.go:444）到 `drop`（:448）之间，`Send` 可能 lookup 到一条已关通道的 runstate。不构成 B92 症状（窗口内进程已死、失败 result 已先投出），且 claudecode 未在本次 B99 范围内改动，仅备查。
