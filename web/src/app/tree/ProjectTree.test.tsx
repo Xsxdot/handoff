@@ -371,21 +371,21 @@ describe('ProjectTree', () => {
 
   it('右键机器行弹出菜单，含「注销」', () => {
     const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
-    const row = container.querySelectorAll('.group.relative')[0]
+    const row = container.querySelector('[data-testid="machine-row"]')!
     fireEvent.contextMenu(row)
     expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
   })
 
   it('菜单里点「注销」进既有确认弹层，文案不变', () => {
     const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
-    fireEvent.contextMenu(container.querySelectorAll('.group.relative')[0])
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
     fireEvent.click(screen.getByRole('menuitem', { name: '注销' }))
     expect(screen.getByText(/只解除登记，不删除磁盘上的代码/)).toBeInTheDocument()
   })
 
   it('未传 onUnregister 时右键不弹菜单——没有可做的操作', () => {
     const { container } = render(<ProjectTree {...props({ onUnregister: undefined })} />)
-    fireEvent.contextMenu(container.querySelectorAll('.group.relative')[0])
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
