@@ -343,12 +343,37 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	}
 }
 
-// emitFailed 产出失败终局并关闭事件通道。
+// emitTurnFailed 产出一个**回合级**失败终局，**不关闭事件通道**。
 //
-// 一次性语义：断开处置、看门狗判死、回合异常三条路径都可能同时到达，
-// closeEvents 保证只有先到者生效，后到者被丢弃，不会双重终结。
-func (a *Adapter) emitFailed(r *runState, reason string) {
-	a.log.Error("grok 任务失败", "task", r.taskID, "reason", reason)
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 为什么不关通道：回合失败 ≠ 这个 executor 完了。serve 进程还活着，协调者
+// 一个 continue 就能接着干——那正是 continue 的用途。以前这里一律 closeEvents，
+// 于是 Send 在同一个 runstate 上开新回合，新回合的一切事件在 emit 里被 evClosed
+// 短路静默丢弃，manager 的 mediate 循环也早已随通道关闭退出，任务停在 running
+// 直到 2h 看门狗落 stalled（而 stalled 只唤醒不修复）。B92 根因报告的对照组：
+// 3 个 grok 任务 failed 后全哑火，3 个 opencode 任务 failed 后全被 continue
+// 救活——差异就在这一行，opencode/claudecode 都不因回合失败关通道。
+//
+// 一次性语义不受影响：跨回合的去重不需要（finishTurn 每回合只调一次，
+// 两条分支互斥），与 fatal 路径之间的去重仍由 evClosed 承担。
+func (a *Adapter) emitTurnFailed(r *runState, reason string) {
+	a.log.Error("grok 回合失败", "task", r.taskID, "reason", reason)
+	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+		Result: &executor.Result{OK: false, SessionID: r.sessionID, FailReason: reason}})
+}
+
+// emitFatal 产出**执行级**失败终局并关闭事件通道。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 用于连接已断或进程已死——这条运行态真的不可用了，必须关通道让 manager 的
+// mediate 循环退出走对账。
+//
+// 一次性语义：断开处置与看门狗判死两条路径可能同时到达，closeEvents 的幂等
+// 保证只有先到者生效，后到者的 emit 被 evClosed 丢弃，不会双重终结。
+func (a *Adapter) emitFatal(r *runState, reason string) {
+	a.log.Error("grok 执行终结", "task", r.taskID, "reason", reason)
 	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 		Result: &executor.Result{OK: false, SessionID: r.sessionID, FailReason: reason}})
 	r.closeEvents()
@@ -440,7 +465,7 @@ func (a *Adapter) awaitTurn(r *runState, ch <-chan ACPResult) {
 // 上限、被取消），此时模型的产出不可信，交协调者比替它猜测安全。
 func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	if res.Err != nil {
-		a.emitFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
+		a.emitTurnFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
 		return
 	}
 	var out struct {
@@ -448,7 +473,7 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	}
 	_ = json.Unmarshal(res.Result, &out)
 	if out.StopReason != "end_turn" {
-		a.emitFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
+		a.emitTurnFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
 		return
 	}
 	// 本回合有被拒权限时优先交代：模型被拒后可能悄悄绕路，人不知情
@@ -530,7 +555,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 		a.log.Info("ACP 连接已主动关闭，跳过失败处置", "task", r.taskID)
 		return
 	}
-	// 连接断了这条运行态就永远不可用了（事件通道随 emitFailed 一起关掉），
+	// 连接断了这条运行态就永远不可用了（事件通道随 emitFatal 一起关掉），
 	// 必须摘掉它——否则它以「陈运行态」的身份继续占着 runs 表：Send 会 lookup
 	// 到它、拿一条死连接去发指令；Resume 的冷恢复互斥以「runs 表里有条目」为
 	// 判据，会把这具僵尸当成「恢复进行中」而拒绝恢复。两条路都被挡死，
@@ -539,7 +564,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if n := r.voidAllPending(); n > 0 {
 		a.log.Error("ACP 连接断开且有未决权限，任务无法继续",
 			"task", r.taskID, "voided", n, "cause", cause)
-		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		a.emitFatal(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
 		return
 	}
 	a.log.Warn("ACP 连接断开，无未决权限", "task", r.taskID, "cause", cause)
@@ -547,7 +572,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if r.proc != nil {
 		logTail = r.proc.LogTail()
 	}
-	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
+	a.emitFatal(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
 // turnAccumulator 是单回合的文本累积器：把 session/update 分流成
