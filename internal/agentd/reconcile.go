@@ -195,6 +195,7 @@ func (m *Manager) TaskProcCount(taskID string) (int, bool) {
 	}
 	fp, ok := ad.(footprinter)
 	if !ok {
+		m.log.Debug("adapter 不支持进程句柄，跳过点名", "task", taskID)
 		return 0, false
 	}
 	h, err := fp.ProcHandle(taskID, filepath.Join(m.cfg.DataDir, "tasks", taskID))
