@@ -331,6 +331,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           <span className="size-4 shrink-0" />
                         )}
                         <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+                        {/* 连接态用与任务状态同一套圆点：一个界面里两套"绿点"含义不同会更糊涂。
+                            probe_error 非空 = 这个位置探测失败 = 机器当前不可达 */}
+                        <StateDot tone={loc.probe_error !== '' ? 'failed' : 'active'} />
                         <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
                         {problem !== '' && <DisconnectedBadge />}
                         {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，

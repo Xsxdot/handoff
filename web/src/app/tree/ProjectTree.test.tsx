@@ -103,6 +103,19 @@ describe('ProjectTree', () => {
     expect(screen.queryByText('main')).toBeNull()
   })
 
+  it('探测失败的位置渲染 failed 基调的连接态圆点', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'alpha',
+        locations: [{ machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: 'dial tcp timeout', workspaces: [] }],
+      }],
+      unowned: [],
+    }
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    expect(screen.getByText('已断开')).toBeInTheDocument()
+    expect(document.querySelector('.bg-state-failed')).not.toBeNull()
+  })
+
   it('probe_error 只影响该 location，不炸整棵树', () => {
     const tree: ProjectTreeResp = {
       projects: [
@@ -325,7 +338,8 @@ describe('ProjectTree', () => {
       task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
     ]
     const { container } = render(<ProjectTree {...p} />)
-    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    // 2 个 active：本机行一个连接态圆点 + 任务行 running 一个
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(2)
     expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
   })
 

@@ -166,9 +166,9 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
         >
           {open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
           {open ? (
-            <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+            <FolderOpen data-testid="dir-icon" className="size-3.5 shrink-0 text-muted-foreground" />
           ) : (
-            <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
+            <FolderClosed data-testid="dir-icon" className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="truncate">{entry.name}</span>
         </button>
@@ -185,10 +185,14 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
         className="flex w-full items-center gap-1.5 py-0.5 pr-3 text-left text-xs hover:bg-accent"
         style={pad}
       >
-        <File className="ml-3 size-3.5 shrink-0 text-muted-foreground" />
+        {/* 文件着强调色、文件夹保持灰——原型正是靠这个对比让右栏不显得平
+            （.file-row > svg:nth-of-type(2) { color: var(--blue) }） */}
+        <File data-testid="file-icon" className="ml-3 size-3.5 shrink-0 text-file-accent" />
         <span className="truncate">{entry.name}</span>
+        {/* 用状态 token 而非裸 amber：同一个界面里两种橙看起来像 bug
+            ——这条规矩 ProjectTree 的工单角标已经在守，这里补齐 */}
         {changed.has(rel) && (
-          <span title={CHANGED_TITLE} className="ml-auto shrink-0 font-mono text-[10px] text-amber-600">
+          <span title={CHANGED_TITLE} className="ml-auto shrink-0 font-mono text-[10px] text-state-intervention-text">
             M
           </span>
         )}
