@@ -29,8 +29,8 @@
 
 ### Task 3: 回归、变异测试、claudecode 同型排查
 
-**状态**：完成
-**commit**：`chore: B99 回归、变异测试与 claudecode 同型排查记录`（本 ledger 所在 commit；hash 见 `git log --oneline -1`）
+**状态**：完成，审查 PASS
+**commit**：`70e12e90`（chore: B99 回归、变异测试与 claudecode 同型排查记录）
 **回归结果**：`go build ./...` && `go vet ./...` && `go test -count=1 ./...` → 全部包 PASS，0 FAIL（29 个包全绿，含 codex / claudecode / grok / opencode 各 executor）
 **变异 1**（在 `emitTurnFailed` 函数体末尾加回一行 `r.closeEvents()`）→ **TestTurnFailureKeepsEventChannelOpen FAIL**，adapter_turnfail_internal_test.go:28 `回合失败不该关闭事件通道`（关闭权一旦回归到 turn 失败侧，红变立刻被捕获，随后 `git checkout` 还原）
 **变异 2**（整段注释掉 `Send` 内 `r.emitMu.Lock() / closed := r.evClosed / r.emitMu.Unlock()` 与 `if closed { return ... }` 守卫）→ **TestSendRefusesOnClosedChannel panic**（SIGSEGV nil pointer dereference）：守卫摘掉后 `Send` 直通 `startTurn`，`r.cli` 为 nil → `Client.CallAsync` appserver.go:123 崩溃（stack：adapter_turnfail_internal_test.go:83 → Send adapter.go:362 → startTurn adapter.go:287 → appserver.go:123）；随后 `git checkout` 还原
