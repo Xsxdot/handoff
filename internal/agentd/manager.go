@@ -135,6 +135,22 @@ type Manager struct {
 	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
 	mu       sync.Mutex
 	stopping map[string]struct{}
+	// sweepProcs 是「清扫某任务残留进程」的测试缝。**生产路径恒为 nil**，
+	// 由 sweep 方法退回 m.SweepTaskProcs；非测试代码不得赋值。
+	//
+	// 为什么用可空字段而不是包级 var：清扫是 Manager 的方法（要 m.cfg、m.log、
+	// m.adapterFor），包级 var 拿不到实例。而既有的所有 NewManager 调用点
+	// 不必改——nil 就是「用真的那个」
+	sweepProcs func(taskID string)
+}
+
+// sweep 调用清扫，走测试缝或真实实现。
+func (m *Manager) sweep(taskID string) {
+	if m.sweepProcs != nil {
+		m.sweepProcs(taskID)
+		return
+	}
+	m.SweepTaskProcs(taskID)
 }
 
 // NewManager 创建任务管理器。
@@ -2538,6 +2554,26 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
 	m.clearApproverState(taskID)
 	m.hub.Publish(evt)
+	// 回合结束即清扫这一回合留下的孤儿后代。
+	//
+	// 放在 Publish 之后：事件先落库并广播，审核者的 wait 第一时间醒；清扫是
+	// best-effort 的善后（SweepTaskProcs 内部每个失败分支都只记日志或发
+	// orphan_risk，从不返回错误），不该挡在唤醒前面。
+	//
+	// 成功分支也清扫：executor 正常收尾同样可能留下 setsid 逃逸的后代
+	// （opencode 的 Bash 工具把每条命令都 setsid 成新会话）。executor 本体
+	// 不会被误杀——Sweep 遇到它仍存活会返回 ErrExecutorAlive 并自行放弃。
+	//
+	// 与 B92 的关系（B92 的根因在本改动之后被推翻，这里记下修正后的事实）：
+	// 曾以为存在「failed 事件落库但状态没迁移」的缺口，若成立则本调用在那条
+	// 路径上不会执行。排查用日志与 DB 证伪了它——handleResult 的迁移一直是
+	// 正确的，B92 的真因是 grok 在回合失败时关掉了事件通道，导致 continue 的
+	// 续接回合事件被静默丢弃（已修，见 internal/executor/grok 的 emitTurnFailed）。
+	// 所以本调用在回合失败时**会**正常触发。watchdog 的每任务点名
+	// （scanTaskProcs）仍是有价值的冗余，但兜的不是这条路径，而是
+	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
+	// 的真实缺口（另见 B97）。
+	m.sweep(taskID)
 }
 
 // transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑

@@ -2046,3 +2046,60 @@ func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
 		t.Fatalf("新分支应从解析后的起点开出: branch=%s base=%s", got, wantBase)
 	}
 }
+
+// newManagerWithRunningTask 组装一个带 running 任务的 manager（真实 store + hub +
+// 可控 adapter），返回 (m, taskID)。handleResult 的清扫断言需要一个已运行的任务。
+func newManagerWithRunningTask(t *testing.T) (*Manager, string) {
+	t.Helper()
+	m, st, _, _ := newTestManager(t)
+	createRunningTask(t, st, "sweep-task")
+	return m, "sweep-task"
+}
+
+func TestHandleResultSweepsProcsOnFail(t *testing.T) {
+	// why：executor 报告自己死了是主路径，而 SweepTaskProcs 的三个既有调用方
+	// 全是「事后发现 executor 不在了」的补救路径。主路径不清扫，2100 个
+	// setsid 逃逸出去的后代就一直挂到审核者手动 done（B93 事故实录）
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	var sweptAtSeq int64
+	m.sweepProcs = func(id string) {
+		swept = append(swept, id)
+		if ev, err := m.st.LatestEvent(taskID); err == nil {
+			sweptAtSeq = ev.Seq
+		}
+	}
+
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: false, FailReason: "opencode 事件流意外中断"}})
+
+	if len(swept) != 1 || swept[0] != taskID {
+		t.Fatalf("失败分支应清扫一次，实际 %v", swept)
+	}
+	// 清扫必须在 failed 事件之后：事件先落库，审核者的 wait 才第一时间醒；
+	// 清扫是 best-effort 的善后，不该挡在唤醒前面
+	ev, err := m.st.LatestEvent(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != proto.EventTypeFailed {
+		t.Fatalf("最新事件应为 failed，实际 %s", ev.Type)
+	}
+	if sweptAtSeq != ev.Seq {
+		t.Fatalf("清扫时最新事件 seq=%d，failed 事件 seq=%d —— 清扫跑在事件之前了", sweptAtSeq, ev.Seq)
+	}
+}
+
+func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
+	// why：executor 正常收尾同样会留下 setsid 逃逸的后代。Sweep 遇到 executor
+	// 仍存活会返回 ErrExecutorAlive 并自行放弃（reconcile.go 的 switch 第一支），
+	// 所以「回合结束但 executor 还活着」不会被误杀——这条保护是既有的
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: true, Branch: "b", CommitHash: "c"}})
+
+	if len(swept) != 1 {
+		t.Fatalf("成功分支也应清扫一次，实际 %v", swept)
+	}
+}

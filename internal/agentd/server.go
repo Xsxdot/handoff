@@ -954,6 +954,18 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("归档说明超长（%d 字节，上限 %d）", len(req.Note), proto.MaxDoneNoteBytes)})
 		return
 	}
+	// done 幂等：agentd 被压垮时（B93 事故），第一次 done 的请求已落库但响应
+	// 读超时，审核者的自然反应是重发，而重发拿到的 409 看起来像「状态不对」。
+	// 客户端分不清「超时 = 请求没到」和「超时 = 请求到了但响应没回来」——
+	// 这是只有服务端才有的信息，只能在这里解决。
+	//
+	// **判据要严**：只有 completed 转 200。其余非 waiting_review 的状态仍然
+	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
+	// 失去「我操作错了」这个信号。
+	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
+		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
+		return
+	}
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return

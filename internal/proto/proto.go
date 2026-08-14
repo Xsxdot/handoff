@@ -92,6 +92,11 @@ const (
 	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让协调者
 	// 知道要收敛。2026-08-12 事故里没有任何前兆，第一个信号就是整机瘫痪。
 	EventTypeResourcePressure EventType = "resource_pressure"
+	// EventTypeTaskProcPressure 是**单个任务**的进程数越线告警。
+	//
+	// 与 EventTypeResourcePressure 的分工：后者说「这台机器快满了」（uid 级），
+	// 前者说「是这个任务在吃」（任务级）。事故复盘时前者才能定位到人。
+	EventTypeTaskProcPressure EventType = "task_proc_pressure"
 )
 
 // Task 表示一个 handoff 任务。

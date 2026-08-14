@@ -48,6 +48,29 @@ type resourcePressurePayload struct {
 	Limit int `json:"limit"`
 }
 
+// taskProcPressurePayload 是任务级进程越线事件的载荷。
+//
+// 与 resourcePressurePayload 分开而不是复用：那个是机器级（used/limit 都是 uid
+// 维度），这个是任务级，两者叠在一起时审核者要能一眼分清是谁在吃。
+type taskProcPressurePayload struct {
+	Used   int `json:"used"`
+	Budget int `json:"budget"`
+}
+
+// taskProcCountFn 是「数某任务名下有几个进程」的测试缝。
+// **生产路径恒为 Manager.TaskProcCount**（接线在 cmd/agentd.go），
+// 非测试代码不得赋值。
+var taskProcCountFn func(taskID string) (int, bool)
+
+// SetTaskProcCounter 注入「数某任务名下进程数」的实现，由 agentd 启动时调用一次。
+//
+// 参数：fn 为按任务 ID 返回 (进程数, 是否可信) 的实现，生产恒传 Manager.TaskProcCount。
+//
+// 注意：测试直接赋包级 taskProcCountFn 即可，不需要走本函数。
+func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
+	taskProcCountFn = fn
+}
+
 // RunWatchdog 启动任务卡住看门狗并持续运行，直到 ctx 取消。
 //
 // 参数：
@@ -56,6 +79,9 @@ type resourcePressurePayload struct {
 //   - st: 持久化存储（任务列表与最新事件的数据源）
 //   - hub: 实时路由（stalled 事件广播）
 //   - stallTimeout: 判定「卡住」的空闲时长（最新事件距今超过它即触发）
+//   - budget: 任务级进程数告警线，<=0 表示该档关闭（见 scanTaskProcs）
+//   - hardLimit: 任务级进程数硬上限，<=0 表示该档关闭（见 scanTaskProcs）
+//   - sweep: 清扫某任务残留进程的入口（接线传 mgr.SweepTaskProcs）
 //   - log: 本模块日志入口
 //
 // 注意：
@@ -66,18 +92,22 @@ type resourcePressurePayload struct {
 //     且 executor 仍无事件产出时下一轮会二次触发（「只发一次」按活动裁决，
 //     设计见 scanStalled 的函数头 P1-15a）
 //   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
-//     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛
-func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
-	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, log)
+//     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛；再按任务点名
+//     进程数（见 scanTaskProcs），两档处置——告警线只唤醒，硬上限直接清扫
+func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, sweep func(string), log *slog.Logger) {
+	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, sweep, log)
 }
 
 // runWatchdog 是看门狗的实现骨架：tick 间隔可注入（生产固定一分钟，
 // 测试注入 10ms），其余语义与 RunWatchdog 一致。
-func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, log *slog.Logger) {
+func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, sweep func(string), log *slog.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	log.Info("看门狗启动", "tick", tick, "stall_timeout", stallTimeout)
 	pressure := false
+	// 任务级进程告警的置位状态跨 tick 存活（与 pressure 同理由：不用包级变量，
+	// 那会让两个 agentd 实例互相踩状态）
+	taskFired := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -86,6 +116,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 		case <-ticker.C:
 			scanStalled(st, hub, stallTimeout, log)
 			pressure = scanPressure(st, hub, pressure, log)
+			scanTaskProcs(st, hub, budget, hardLimit, taskFired, sweep, log)
 		}
 	}
 }
@@ -228,6 +259,111 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 	log.Warn("执行机进程余量达高水位，已告警活跃任务",
 		"used", a.Used, "limit", a.Limit, "fired", fired)
 	return true
+}
+
+// scanTaskProcs 按任务点名进程数，两档处置。
+//
+// 参数：
+//   - budget: 告警线，<=0 表示该档关闭
+//   - hardLimit: 硬上限，<=0 表示该档关闭
+//   - fired: 每任务的告警置位状态，由调用方持有并跨轮传递（**不用包级变量**，
+//     那会让两个 agentd 实例互相踩状态——沿用 scanPressure 的同一条理由）
+//   - sweep: 清扫某任务残留进程的入口
+//
+// 三条语义（与 scanPressure 同构）：
+//   - 越线且未置位：发一次 task_proc_pressure 并置位
+//   - 仍越线且已置位：不重发。事件风暴会把协调者的会话刷爆
+//   - 回落到预算以下：复位，下次越线可再发
+//
+// 硬上限档是本仓库第一次让 agentd 在无人裁决的情况下杀进程，所以：读数不可信
+// 一律什么都不做；理由里必须写上 used 与 hardLimit 两个真实数字，让审核者
+// 事后能判断杀得对不对。
+func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
+	fired map[string]bool, sweep func(string), log *slog.Logger) {
+	// 两档都关 = 完全不启用。这里直接返回而不是往下走到「数了但不处置」——
+	// Footprint 每次都要枚举全系统进程表，白数是实打实的开销
+	if budget <= 0 && hardLimit <= 0 {
+		return
+	}
+	if taskProcCountFn == nil {
+		return
+	}
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("任务进程点名读取任务列表失败", "cause", err)
+		return
+	}
+	for _, t := range tasks {
+		// 终态任务已经不会再 fork 任何东西。用 IsTerminal 取反而不是枚举活跃态：
+		// 新增状态时这里自动跟上
+		if t.State.IsTerminal() {
+			continue
+		}
+		n, ok := taskProcCountFn(t.ID)
+		if !ok {
+			continue // 数不出来就什么都不做，连置位状态都不动
+		}
+		if hardLimit > 0 && n > hardLimit {
+			log.Error("任务进程数超过硬上限，强制回收", "task", t.ID, "used", n, "hard_limit", hardLimit)
+			sweep(t.ID)
+			reason := fmt.Sprintf("任务进程数 %d 超过硬上限 %d，已强制回收", n, hardLimit)
+			if err := transitFailedWithEvent(st, hub, t.ID, reason, log); err != nil {
+				log.Error("强制回收后落 failed 失败", "task", t.ID, "cause", err)
+			}
+			delete(fired, t.ID)
+			continue
+		}
+		if budget <= 0 {
+			continue
+		}
+		if n <= budget {
+			if fired[t.ID] {
+				log.Info("任务进程数已回落到预算以下", "task", t.ID, "used", n, "budget", budget)
+			}
+			delete(fired, t.ID)
+			continue
+		}
+		if fired[t.ID] {
+			continue // 仍越线，已告警过，不重发
+		}
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeTaskProcPressure,
+			taskProcPressurePayload{Used: n, Budget: budget})
+		if aerr != nil {
+			log.Error("追加任务进程越线事件失败", "task", t.ID, "cause", aerr)
+			continue // 没发出去就不置位，下一轮重试
+		}
+		// 必须广播：只落库的话审核者要主动 show 才看得见，等于没告警（B91 先例）
+		hub.Publish(evt)
+		fired[t.ID] = true
+		log.Warn("任务进程数超过预算，已告警", "task", t.ID, "used", n, "budget", budget)
+	}
+}
+
+// transitFailedWithEvent 把任务迁移到 failed 终态、追加带理由的 failed 事件并广播。
+//
+// 参数：reason 进事件 payload（硬上限分支必须带 used/hardLimit 真实数字，
+// 这是不可逆动作，审核者事后要能判断杀得对不对）
+//
+// 顺序是「先迁状态 → 追加事件 → 广播」：与 handleResult 一致——事件一落库就
+// 可被 WS 重放读到，状态必须先就位，否则审核者在一个仍 running 的任务上
+// 看到 failed 事件会困惑（handleResult 函数头的同一条理由）。
+//
+// 为什么不用 reconcileExecutorGone：那个收的是 waiting_review（executor 死了
+// 交协调者裁决），本函数是终态 failed——进程失控的强制回收没有「继续」选项。
+func transitFailedWithEvent(st *store.Store, hub *Hub, taskID, reason string, log *slog.Logger) error {
+	if err := st.UpdateTaskState(taskID, proto.TaskStateFailed); err != nil {
+		return err
+	}
+	// 终态迁移统一作废挂起工单并留痕（B63）：进程失控的强制回收同样适用。
+	// 排在 failed 事件之前：LatestEvent 锚定 failed，审核者看事件流不会被
+	// 审计噪音挡住终点
+	voidTicketsWithAudit(st, taskID, reason, log)
+	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
+	if err != nil {
+		return err
+	}
+	hub.Publish(evt)
+	return nil
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：

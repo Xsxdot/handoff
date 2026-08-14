@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGeneratesDefaultsAndToken(t *testing.T) {
@@ -399,6 +400,57 @@ func TestProcFenceExplicit(t *testing.T) {
 	}
 	if !cfg.ProcFence.Disabled || cfg.ProcFence.ReserveRatio != 0.25 {
 		t.Fatalf("显式配置未生效: %+v", cfg.ProcFence)
+	}
+}
+
+func TestProcFenceTaskLimitsDefaults(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProcFence.TaskBudget != 400 {
+		t.Fatalf("TaskBudget 默认应为 400，实际 %d", cfg.ProcFence.TaskBudget)
+	}
+	if cfg.ProcFence.TaskHardLimit != 1200 {
+		t.Fatalf("TaskHardLimit 默认应为 1200，实际 %d", cfg.ProcFence.TaskHardLimit)
+	}
+}
+
+func TestProcFenceTaskLimitsSanitized(t *testing.T) {
+	// why：0 是「关掉这一档」的合法表达，必须原样保留，不能被兜底改回默认值；
+	// 负数是配置写错，归零（= 关掉）而不是取绝对值
+	for _, c := range []struct {
+		name                 string
+		yaml                 string
+		wantBudget, wantHard int
+	}{
+		{"零表示关掉，原样保留", "proc_fence:\n  task_budget: 0\n  task_hard_limit: 0\n", 0, 0},
+		{"负数归零", "proc_fence:\n  task_budget: -5\n  task_hard_limit: -1\n", 0, 0},
+		{"硬上限小于告警线时抬到告警线", "proc_fence:\n  task_budget: 400\n  task_hard_limit: 100\n", 400, 400},
+		{"正常值原样", "proc_fence:\n  task_budget: 200\n  task_hard_limit: 800\n", 200, 800},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n"+c.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ProcFence.TaskBudget != c.wantBudget || cfg.ProcFence.TaskHardLimit != c.wantHard {
+				t.Fatalf("got (%d,%d) want (%d,%d)",
+					cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, c.wantBudget, c.wantHard)
+			}
+		})
+	}
+}
+
+func TestProcFenceTaskLimitsYamlKeys(t *testing.T) {
+	// why：不加 yaml tag 时 yaml.v3 会把 TaskBudget 映射成 taskbudget，
+	// 与 README 里写的 task_budget 对不上——同一个坑 ReserveRatio 已经踩过一次
+	var pf config.ProcFenceConfig
+	if err := yaml.Unmarshal([]byte("task_budget: 7\ntask_hard_limit: 9\n"), &pf); err != nil {
+		t.Fatal(err)
+	}
+	if pf.TaskBudget != 7 || pf.TaskHardLimit != 9 {
+		t.Fatalf("yaml key 未按 snake_case 映射：%+v", pf)
 	}
 }
 

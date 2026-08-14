@@ -862,10 +862,21 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 // newDoneEnv 组装一个挂了 manager、且有一个 waiting_review 任务的测试环境。
 func newDoneEnv(t *testing.T, taskID string) *testEnv {
 	t.Helper()
+	return newDoneEnvWithState(t, taskID, proto.TaskStateWaitingReview)
+}
+
+// newDoneEnvWithState 同 newDoneEnv，但任务初始状态由调用方指定。
+//
+// 为什么直接设初始状态而不是建完再 UpdateTaskState 硬迁：pending / waiting_answer
+// 从 waiting_review 直迁是被迁移表拒绝的（CanTransit 返回 false），硬迁会拿
+// ErrBadTransit，等于造不出来。done 幂等测试需要「其余状态仍拒绝」这条边界的
+// 全覆盖，所以状态从 CreateTask 那一刻就定死。
+func newDoneEnvWithState(t *testing.T, taskID string, state proto.TaskState) *testEnv {
+	t.Helper()
 	env := newTestEnv(t)
 	now := time.Now().UTC()
 	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "fake", RepoPath: "/repo",
-		Executor: "fake", State: proto.TaskStateWaitingReview,
+		Executor: "fake", State: state,
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -953,5 +964,65 @@ func TestDoneRejectsOversizeNote(t *testing.T) {
 	}
 	if got.State != proto.TaskStateWaitingReview {
 		t.Fatalf("被拒的归档不该改状态，得到 %s", got.State)
+	}
+}
+
+// TestDoneIsIdempotentOnCompleted 断言任务已 completed 时重发 done 返回 200 且
+// 响应体与首次逐字节相同。
+func TestDoneIsIdempotentOnCompleted(t *testing.T) {
+	// why：事故里 done 第一次返回 read: operation timed out，但请求其实已落库；
+	// 重发拿到 409，看起来像「状态不对」。客户端分不清「超时 = 请求没到」和
+	// 「超时 = 请求到了但响应没回来」——这是服务端才有的信息
+	env := newDoneEnv(t, "task-done-idem")
+
+	first := env.post(t, "/api/tasks/task-done-idem/done", `{"note":"收口"}`)
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("首次 done 应 200，实际 %d", first.StatusCode)
+	}
+	second := env.post(t, "/api/tasks/task-done-idem/done", `{"note":"收口"}`)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("重发 done 应 200（幂等），实际 %d：%s", second.StatusCode, readAllBody(t, second))
+	}
+	b1, _ := io.ReadAll(first.Body)
+	b2, _ := io.ReadAll(second.Body)
+	if string(b1) != string(b2) {
+		t.Fatalf("重发的响应体应与首次相同\n首次: %s\n重发: %s", b1, b2)
+	}
+}
+
+// readAllBody 读完一个响应体并返回文本，测试辅助（已 close 的 body 由调用方负责）。
+func readAllBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	return string(b)
+}
+
+// TestDoneStillRejectsNonReviewStates 断言幂等只覆盖 completed 这一种，其余状态
+// 一律维持 409。
+func TestDoneStillRejectsNonReviewStates(t *testing.T) {
+	// why：幂等只覆盖 completed 这一种。其余状态仍要 409——放行等于让 done
+	// 变成万能收口，审核者会失去「我操作错了」这个信号
+	for _, state := range []proto.TaskState{
+		proto.TaskStateRunning,
+		proto.TaskStateWaitingAnswer,
+		proto.TaskStateFailed,
+		proto.TaskStatePending,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			taskID := "task-done-reject-" + string(state)
+			// waiting_answer / pending 不能从 waiting_review 直迁（CanTransit
+			// 拒绝），所以初始状态就建在目标 state 上，不做硬迁
+			env := newDoneEnvWithState(t, taskID, state)
+			resp := env.post(t, "/api/tasks/"+taskID+"/done", `{}`)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("%s 状态下 done 应 409，实际 %d", state, resp.StatusCode)
+			}
+		})
 	}
 }
