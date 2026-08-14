@@ -1139,6 +1139,150 @@ function StatusBar({ selectedDirectory, currentView }) {
   );
 }
 
+// HomeDock —— 右下角悬浮入口 + home 基准终端的独立浮窗。
+//
+// 形态要点（这是本次要确认的东西）：
+//   - 圆钮点开是一张**小面板**，列出「从这里开过的」终端，并能新建；
+//     它是清单入口，不是内容容器。
+//   - 终端跑在**一个浮窗**里，浮窗内含 tab 条切换多个终端。浮窗可拖、可拉伸，
+//     与中央工作区完全无关（中央 tab 条上不会出现它们）。
+//   - 浮窗右上角是「收起」不是「关闭」：会话留着，重开还在原样。
+//     只有 tab 上的 × 才真的杀掉会话——与 PTY 既有口径一致。
+function HomeDock() {
+  const [dockOpen, setDockOpen] = useState(false);
+  const [winOpen, setWinOpen] = useState(false);
+  const [seq, setSeq] = useState(2);
+  const [tabs, setTabs] = useState([
+    { id: 't1', label: 'bash · home' },
+    { id: 't2', label: 'bash · home 2' },
+  ]);
+  const [active, setActive] = useState('t1');
+  const [pos, setPos] = useState({ x: 300, y: 150 });
+  const [size, setSize] = useState({ w: 620, h: 340 });
+
+  const openTerminal = () => {
+    const id = `t${seq + 1}`;
+    setSeq(seq + 1);
+    setTabs((current) => [...current, { id, label: `bash · home ${seq + 1}` }]);
+    setActive(id);
+    setWinOpen(true);
+    setDockOpen(false);
+  };
+
+  const focusTab = (id) => {
+    setActive(id);
+    setWinOpen(true);
+    setDockOpen(false);
+  };
+
+  const killTab = (id) => {
+    setTabs((current) => {
+      const next = current.filter((tab) => tab.id !== id);
+      if (id === active && next.length) setActive(next[0].id);
+      if (!next.length) setWinOpen(false);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      {winOpen && tabs.length > 0 && (
+        <HomeWindow
+          tabs={tabs}
+          active={active}
+          pos={pos}
+          size={size}
+          onPos={setPos}
+          onSize={setSize}
+          onActivate={setActive}
+          onNew={openTerminal}
+          onKill={killTab}
+          onCollapse={() => setWinOpen(false)}
+        />
+      )}
+
+      {dockOpen ? (
+        <div className="home-dock-panel">
+          <header>
+            <span><House size={13} />home 基准</span>
+            <button type="button" aria-label="收起面板" onClick={() => setDockOpen(false)}><X size={13} /></button>
+          </header>
+          <p className="home-dock-hint">不挂在任何项目上，与中央工作区互不影响。</p>
+          <div className="home-dock-list">
+            {tabs.length === 0 && <p className="home-dock-empty">还没有开过终端</p>}
+            {tabs.map((tab) => (
+              <button key={tab.id} type="button" className={`home-dock-item ${tab.id === active && winOpen ? 'active' : ''}`} onClick={() => focusTab(tab.id)}>
+                <SquareTerminal size={13} />
+                <span>{tab.label}</span>
+                <span className="home-dock-live"><StatusDot /></span>
+              </button>
+            ))}
+          </div>
+          <button type="button" className="home-dock-new" onClick={openTerminal}><Plus size={14} />新终端<kbd>⌘T</kbd></button>
+        </div>
+      ) : (
+        <button type="button" className="home-dock-fab" aria-label="home 基准终端" onClick={() => setDockOpen(true)}>
+          <Plus size={19} />
+          {tabs.length > 0 && <span className="home-dock-badge">{tabs.length}</span>}
+        </button>
+      )}
+    </>
+  );
+}
+
+// HomeWindow —— home 终端的浮窗本体：标题栏（可拖）+ tab 条 + 内容 + 右下拉伸角。
+function HomeWindow({ tabs, active, pos, size, onPos, onSize, onActivate, onNew, onKill, onCollapse }) {
+  // drag/resize 共用：按下记起点，移动算增量，抬起解绑。原型里做成真的可拖，
+  // 是因为「这窗口到底碍不碍事」只有拖过才知道。
+  const grab = (event, apply) => {
+    event.preventDefault();
+    const sx = event.clientX;
+    const sy = event.clientY;
+    const move = (e) => apply(e.clientX - sx, e.clientY - sy);
+    const up = () => document.removeEventListener('pointermove', move);
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  };
+
+  const onTitleDown = (event) => {
+    const from = { ...pos };
+    grab(event, (dx, dy) => onPos({ x: Math.max(8, from.x + dx), y: Math.max(8, from.y + dy) }));
+  };
+
+  const onCornerDown = (event) => {
+    const from = { ...size };
+    grab(event, (dx, dy) => onSize({ w: Math.max(360, from.w + dx), h: Math.max(200, from.h + dy) }));
+  };
+
+  return (
+    <section className="home-window" style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}>
+      <header className="home-window-title" onPointerDown={onTitleDown}>
+        <span><House size={13} />home</span>
+        <span className="home-window-spacer" />
+        <button type="button" aria-label="收起（会话保留）" title="收起（会话保留）" onClick={onCollapse}><ChevronDown size={14} /></button>
+      </header>
+      <div className="home-window-tabs">
+        {tabs.map((tab) => (
+          <span key={tab.id} className={`home-window-tab ${tab.id === active ? 'active' : ''}`}>
+            <button type="button" onClick={() => onActivate(tab.id)}><SquareTerminal size={12} />{tab.label}</button>
+            <button type="button" className="tab-kill" aria-label={`关闭 ${tab.label}`} title="关闭并结束会话" onClick={() => onKill(tab.id)}><X size={11} /></button>
+          </span>
+        ))}
+        <button type="button" className="home-window-add" aria-label="新终端" onClick={onNew}><Plus size={13} /></button>
+      </div>
+      <div className="home-window-body">
+        <p><span className="term-prompt">~</span> ssh devbox-01</p>
+        <p>Last login: Sun Aug  9 14:12:03 2026 from 100.73.238.21</p>
+        <p><span className="term-prompt">~</span> handoff status</p>
+        <p>agentd   http://127.0.0.1:7777   可用</p>
+        <p>任务     3 个活跃</p>
+        <p><span className="term-prompt">~</span> <span className="term-caret" /></p>
+      </div>
+      <span className="home-window-corner" onPointerDown={onCornerDown} aria-hidden="true" />
+    </section>
+  );
+}
+
 export function App() {
   const [currentView, setCurrentView] = useState('workbench');
   const [projects, setProjects] = useState(projectRows);
@@ -1177,6 +1321,7 @@ export function App() {
         </main>
       )}
       <StatusBar selectedDirectory={selectedDirectory} currentView={currentView} />
+      <HomeDock />
     </div>
   );
 }
