@@ -19,9 +19,14 @@ export interface OverlayProps {
   children: ReactNode
   // wide 给看板用：四列横排需要更宽的面板
   wide?: boolean
+  // tall 给看板用：高度固定 70vh，不随任务数伸缩。
+  // why：看板是"扫一眼就走"的总览，每次打开尺寸都不一样会让人重新找位置；
+  // 零任务时贴合内容还会缩成一条，看着像出错了。工单弹层不需要——它的
+  // 内容是一份长度有意义的清单，贴合内容反而是对的
+  tall?: boolean
 }
 
-export function Overlay({ title, onClose, children, wide }: OverlayProps) {
+export function Overlay({ title, onClose, children, wide, tall }: OverlayProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,6 +54,7 @@ export function Overlay({ title, onClose, children, wide }: OverlayProps) {
         className={cn(
           'relative flex max-h-full w-full flex-col rounded-lg border bg-background shadow-xl outline-none',
           wide ? 'max-w-6xl' : 'max-w-3xl',
+          tall && 'h-[70vh]',
         )}
       >
         <header className="flex items-center gap-2 border-b px-4 py-2.5">

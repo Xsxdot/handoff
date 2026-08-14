@@ -81,6 +81,17 @@ describe('Overlay', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('tall 时面板高度固定，不随内容伸缩', () => {
+    render(<Overlay title="x" onClose={() => {}} tall><p>短内容</p></Overlay>)
+    const panel = screen.getByRole('dialog')
+    expect(panel.className).toMatch(/h-\[70vh\]/)
+  })
+
+  it('不传 tall 时保持贴合内容（工单弹层的既有行为）', () => {
+    render(<Overlay title="x" onClose={() => {}}><p>短内容</p></Overlay>)
+    expect(screen.getByRole('dialog').className).not.toMatch(/h-\[70vh\]/)
+  })
 })
 
 describe('BoardOverlay', () => {
