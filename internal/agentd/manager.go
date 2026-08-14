@@ -1673,12 +1673,19 @@ func (m *Manager) clearApproverState(taskID string) {
 	if had {
 		m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 			"task", taskID, "reason", truncateRunes(guidance, 80))
-		if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		// Publish 而不是只落库（B91）：这条事件是可操作唤醒——审核者拿到的
+		// reply 返回是 {"ok":true}，不叫醒的话他永远不知道那句 reason 空转了，
+		// 唯一的补救动作（把话写进 continue）也就无从发生。progress /
+		// approver_decision 不唤醒的先例不适用：那些没有审核者动作可做，这条有。
+		evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
 			denyGuidancePayload{
 				Reason: guidance,
 				Cause:  "回合在拒绝原因下发前终结（Done/stop/result），未送达 executor",
-			}); err != nil {
+			})
+		if err != nil {
 			m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+		} else {
+			m.hub.Publish(evt)
 		}
 	}
 }
@@ -1967,9 +1974,13 @@ func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string
 // 提问到达前就终结了，审核者说的话无处送达，必须留痕让审核者知道用 continue
 // 自己把话带上（B50）。
 func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
-		denyGuidancePayload{Reason: guidance, Cause: cause.Error()}); err != nil {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		denyGuidancePayload{Reason: guidance, Cause: cause.Error()})
+	if err != nil {
 		m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+	} else {
+		// 同 clearApproverState 处的理由（B91）：可操作唤醒，不是纯审计
+		m.hub.Publish(evt)
 	}
 	m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 		"task", taskID, "reason", truncateRunes(guidance, 80), "cause", cause)

@@ -2142,3 +2142,52 @@ func TestPermissionReuseFromApproverGrant(t *testing.T) {
 		t.Fatalf("审批者先例未参与复用，挂起工单 %d 张，期望 0", len(pending))
 	}
 }
+
+// TestDenyGuidanceDroppedWakesOnTurnEnd 验证 B91：回合终结时挂着的拒绝原因
+// 被丢弃，事件必须 Publish 唤醒 wait——只落库的话审核者拿着 reply 的
+// {"ok":true} 永远不知道裁决空转了。
+func TestDenyGuidanceDroppedWakesOnTurnEnd(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.apMu.Lock()
+	m.denyGuidance["T1"] = "别删，先 git mv 归档"
+	m.apMu.Unlock()
+	m.clearApproverState("T1")
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clearApproverState 丢弃拒绝原因后没有 Publish，wait 不会醒")
+	}
+}
+
+// TestDenyGuidanceDroppedWakesOnSendFailure 验证 Send 失败路径（helper）同样唤醒。
+func TestDenyGuidanceDroppedWakesOnSendFailure(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.appendGuidanceDropped("T1", "换个姿势重试", errors.New("send: broken pipe"))
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("appendGuidanceDropped 没有 Publish，wait 不会醒")
+	}
+}
