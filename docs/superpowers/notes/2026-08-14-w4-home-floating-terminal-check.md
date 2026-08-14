@@ -75,6 +75,10 @@ $ git diff -- web/src/app/workbench/WorkbenchPage.tsx | grep renderContent   # �
 另：`web/src/app/workbench/usePtyRestore.ts` 零改动（`git diff` 空），其既有
 `console.warn`（:79，恢复失败告警）不在本计划范围、未顺手改。本批未新增任何 `console.*`。
 
+终审后按 Minor 记账修了三处（均为低风险一致性/健壮性，不影响十条验收结论）：grab 补
+`pointercancel` 解绑、收起按钮 `onPointerDown` stopPropagation 防误拖、HomeDock 存活点绿
+统一为 `#18a86b`。修复后四条命令仍全绿。
+
 ## 4. 改动面（相对分支基线 `c61b0c5e`，10 个提交：5 功能 + 5 ledger）
 
 提交列表（`git log --oneline c61b0c5e..HEAD`，从旧到新）：

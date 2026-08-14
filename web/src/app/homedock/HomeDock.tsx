@@ -93,7 +93,7 @@ export function HomeDock({ dock, renderTab, onKill }: {
                 >
                   <SquareTerminal className="size-3.5 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{tabLabel(tab.seq)}</span>
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-[#3fce6c]" />
+                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-[#18a86b]" />
                 </button>
               )
             })}

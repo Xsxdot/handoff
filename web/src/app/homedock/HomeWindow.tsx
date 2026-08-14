@@ -44,6 +44,7 @@ export function HomeWindow({ tabs, activeId, geom, onGeom, onActivate, onNew, on
     // 监听挂在 document 上而不是元素上：指针拖出窗口时元素收不到 move，窗口会卡在半路
     document.addEventListener('pointermove', move)
     document.addEventListener('pointerup', up, { once: true })
+    document.addEventListener('pointercancel', up, { once: true })
   }
 
   const onTitleDown = (event: ReactPointerEvent) => {
@@ -78,6 +79,7 @@ export function HomeWindow({ tabs, activeId, geom, onGeom, onActivate, onNew, on
           type="button"
           aria-label="收起（会话保留）"
           title="收起（会话保留）"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={onCollapse}
           className="inline-flex cursor-pointer rounded p-0.5 text-[#93a0b1] hover:bg-[#1a2430] hover:text-[#d7dde5]"
         >
