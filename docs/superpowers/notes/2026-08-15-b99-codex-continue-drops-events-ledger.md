@@ -42,4 +42,4 @@
 
 ## 已知偏离
 
-（暂无）
+- **claudecode 微小竞态窗口**：`streamLoop` defer 内 `closeEvents`（adapter.go:444）到 `drop`（:448）之间，`Send` 可能 lookup 到一条已关通道的 runstate。不构成 B92 症状（窗口内进程已死、失败 result 已先投出），且 claudecode 未在本次 B99 范围内改动，仅备查。
