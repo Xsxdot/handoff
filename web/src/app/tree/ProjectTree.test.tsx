@@ -346,6 +346,15 @@ describe('ProjectTree', () => {
     expect(parent.className + count.className).toMatch(/gap-|ml-/)
   })
 
+  it('注销按钮的定位上下文是机器行本身，不是整棵子树', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    const btn = container.querySelector('[aria-label="注销"]')!
+    // 最近的 relative 祖先必须是机器行那一层，而不是包着子树的外层 div
+    const posParent = btn.closest('.relative')!
+    // 机器行内部不含目录行/任务行——用「不包含展开出来的目录行」来钉住这一点
+    expect(posParent.querySelector('[data-testid="workspace-row"]')).toBeNull()
+  })
+
   it('树独立滚动，底部入口不在滚动区内', () => {
     const { container } = render(<ProjectTree {...props()} />)
     const scroller = container.querySelector('[data-testid="tree-scroll"]')!

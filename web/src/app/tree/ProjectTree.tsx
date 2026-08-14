@@ -305,38 +305,44 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
                 return (
-                  <div key={mKey} className="group relative">
-                    <button
-                      type="button"
-                      aria-disabled={problem !== '' || undefined}
-                      aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
-                      onClick={problem !== '' ? undefined : () => toggle(mKey)}
-                      className={cn(ROW_CLASS, 'hover:bg-accent/60')}
-                      style={{ paddingLeft: 8 + 16 }}
-                    >
-                      {hasChildren && problem === '' ? (
-                        <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
-                      ) : (
-                        <span className="size-4 shrink-0" />
-                      )}
-                      <HardDrive className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
-                      {problem !== '' && <DisconnectedBadge />}
-                      {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
-                          机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
-                      <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
-                    </button>
-                    {onUnregister && (
+                  // 外层只负责分组，不再是定位祖先
+                  <div key={mKey}>
+                    {/* 定位上下文收在机器行这一层：注销的对象是「项目在这台机器上的位置」，
+                        按钮必须长在它作用的那一行上。挂在外层时 top-1/2 会以整棵子树
+                        （实测 578px）为基准，把按钮放到列表正中间 */}
+                    <div className="group relative">
                       <button
                         type="button"
-                        aria-label="注销"
-                        onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
-                        className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                        aria-disabled={problem !== '' || undefined}
+                        aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
+                        onClick={problem !== '' ? undefined : () => toggle(mKey)}
+                        className={cn(ROW_CLASS, 'hover:bg-accent/60')}
+                        style={{ paddingLeft: 8 + 16 }}
                       >
-                        <Trash2 className="size-3.5" />
+                        {hasChildren && problem === '' ? (
+                          <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
+                        ) : (
+                          <span className="size-4 shrink-0" />
+                        )}
+                        <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
+                        {problem !== '' && <DisconnectedBadge />}
+                        {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
+                            机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
+                        <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                       </button>
-                    )}
-
+                      {onUnregister && (
+                        <button
+                          type="button"
+                          aria-label="注销"
+                          onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
+                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
                       <p
                         className="break-words pb-1 pr-2 text-[11px] text-destructive"
@@ -357,6 +363,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           <div key={base.key}>
                             <button
                               type="button"
+                              data-testid="workspace-row"
                               aria-current={dSelected ? 'true' : undefined}
                               onClick={() => onSelectDir(base)}
                               className={cn(ROW_CLASS, 'hover:bg-accent/60', dSelected && 'bg-sidebar-accent font-medium')}
@@ -390,7 +397,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           </div>
                         )
                       })}
-                  </div>
+                    </div>
                 )
               })}
           </div>
