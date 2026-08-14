@@ -385,9 +385,97 @@ dependency-free scripted demo). Readiness checks and caveats:
 
 ## Upgrading
 
+Upgrades are triggered by you; there is no scheduled auto-update. By default **each
+executor machine downloads from GitHub itself**: the coordinator looks up the version
+once, downloads a few hundred bytes of `checksums.txt`, and sends down the tag and
+sha256. A multi-machine upgrade thus moves tens of bytes between coordinator and executor
+machines instead of a 20MB binary per machine — over a cloud relay that difference is
+decisive.
+
+Integrity is enforced by the **coordinator-supplied** sha256: the executor machine
+compares it after downloading, so a poisoned local proxy or mirror is caught on the spot
+(the checksum and the asset travel two separate trust paths).
+
+When an executor machine genuinely has no egress, fall back to download-then-push with
+`--push`. If the remote agentd is too old to understand self-pull, the fallback to push
+is **automatic** — nothing for you to manage.
+
+```bash
+handoff upgrade                       # survey: list every machine's version and verdict
+handoff upgrade --now                 # upgrade every machine that's behind (remotes first, this machine last)
+handoff upgrade --now --target devbox # upgrade one machine
+handoff upgrade --rollback            # roll this machine back to <binary>.prev
+```
+
+Two safety gates: a machine with active tasks (`running` / `waiting_answer`) refuses to
+upgrade by default (`--force` overrides); a machine whose agentd is unmanaged refuses,
+and `--force` does **not** override — run `handoff service install` on that machine
+first. Upgrades never roll back automatically; the old binary stays at `<path>.prev`.
+
+All three platforms self-update, Windows included — replacement is "rename the old
+binary to `.prev`, move the new one in", which is exactly the operation Windows permits
+on a running exe.
+
+The CLI checks for a new version in the background at most once a day, prints one line
+on stderr if there is one, and never replaces itself.
+
 ## Session Recovery
 
+The coordinator holds no state (it all lives in the executor machine's agentd), so a
+crashed session, a network drop, and a takeover from another machine are all the same
+two moves:
+
+```bash
+handoff tasks                      # list all tasks and their states
+handoff show <task>                # snapshot: state + unhandled tickets + event history
+```
+
+Clear the `pending_tickets`, then act by state: `running` keeps waiting for events,
+`waiting_review` goes into review.
+
 ## Troubleshooting
+
+Logs live on the executor machine: the agentd main log is `~/.handoff/agentd.log`
+(`HANDOFF_LOG_LEVEL=debug` lowers the level); the task directory
+`~/.handoff/tasks/<task-id>/` holds `render.log` (the live model view — what `attach`
+reads) and `serve.log` (executor output; the authority for after-the-fact evidence),
+among others.
+
+| Symptom | Cause and action |
+|------|-----------|
+| A command returns 404 "task not found" | You passed a short id. Every command takes the full UUID; get it from `handoff tasks` |
+| `continue` / `done` returns 409 | The task is not in pending review. `handoff show` for the real state |
+| `reply` returns 502 / you receive `delivery_failed` | The ruling was persisted but the executor never got it. `handoff resume <task>` redelivers idempotently |
+| Task frozen at `running` but `attach` shows the model finished long ago | The turn ending was lost in a disconnect window. `handoff resume <task>` reconciles it back; if it can't decide, add `--force` to close out (keeps the session — unlike `stop`, which kills it) |
+| `wait` never returns | Usually there is simply no event yet (normal); reconnect logs on stderr are normal too. Unattended, add `--timeout` |
+| `wait` errors out immediately | 401 = tokens differ between the two machines; 1008 = the task id doesn't exist. Fix it first — retrying won't heal it |
+| Commands for a remote task report "task not found" | You forgot `--target`, so the command hit the local agentd. Check `addr=` on stderr |
+| `dispatch` reports a dirty work tree | The task repo has uncommitted changes; commit or stash (dirty changes would contaminate the task branch) |
+| `dispatch` returns 400 "baseline commit does not exist in the task repo" | Your local commit isn't pushed. `git push` and retry |
+| Dispatch says the executor is `not found in $PATH`, but it runs fine in your terminal | agentd's PATH differs from your terminal's. At startup it auto-completes the PATH (login shell + common install dirs) — search the log for the PATH-completion line; if that still doesn't cover it, add the directory to `path_dirs` and restart agentd |
+| The executor reports `resource temporarily unavailable` | You hit the process fence (the anti-runaway-fork guard), not a code bug. Reduce parallelism; details are in the task directory's `shim.log` |
+| agentd won't start, data directory locked | An agentd is already running. Reuse it; to upgrade, stop the old one before starting the new |
+| `upgrade --now` fails or hangs | The default is executor-machine self-pull, so the cause is on the remote side. `handoff status --target <name>` and read `update.pull_state`: `stage` is how far it got, `error` is the verbatim reason (proxy unreachable / sha256 mismatch / self-check failed). If the machine has no egress, use `handoff upgrade --now --push` |
+
+**macOS: after downloading from the Releases page, "cannot be opened because the developer cannot be verified"**
+
+The published darwin assets are Developer ID-signed and notarized, but a bare
+command-line tool cannot carry an embedded notarization ticket (Apple's stapler only
+supports .app / .dmg / .pkg), so the first run needs the network to let the system check
+with Apple. Offline, it gets blocked. Fix: retry online, or strip the quarantine flag by
+hand:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/handoff
+```
+
+Installing via `curl | bash` never hits this — curl doesn't set the quarantine flag.
+
+**Windows: "Windows protected your PC"**
+
+The Windows binaries carry no Authenticode signature (that requires purchasing an OV/EV
+certificate), so SmartScreen flags an unknown publisher. Fix: click "More info" → "Run
+anyway". You can verify the download's sha256 against `checksums.txt` first.
 
 ## Uninstall
 
