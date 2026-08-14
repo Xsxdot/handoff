@@ -70,11 +70,142 @@ Building from source requires Go 1.26+ (older toolchains can auto-download it wi
 go build -o handoff . && sudo mv handoff /usr/local/bin/
 ```
 
-## Quick Start
+## Quick Start (local machine, 5 minutes)
+
+**1. Initialize the configuration.** `handoff init` detects which executors are installed
+on this machine and generates `~/.handoff/config.yaml` through a short Q&A (including a
+random token). Re-run it any time to change the configuration — each question defaults to
+the current value, so pressing Enter all the way through keeps everything as is.
+
+```bash
+handoff init
+```
+
+**2. Put agentd under service management.** agentd is the resident service (task state
+machine + executor lifecycle management). Hand it to launchd / systemd so it restarts on
+crash and starts on boot:
+
+```bash
+handoff service install
+handoff service status
+```
+
+If you picked the executor-machine role in `init`, it offers to install the service right
+there — answer y and it's done. **An unmanaged agentd does not come back after a reboot**,
+and its PATH depends on whichever shell started it — "first dispatch after reboot says the
+executor is not installed" is usually exactly this. Once managed, Ctrl-C won't kill it (it
+gets pulled right back up); to stop it, use `handoff service uninstall`.
+
+**A machine that only coordinates does not need a local agentd**: dispatch, `wait`,
+`reply`, `diff`, and `attach` all talk directly to the target machine's agentd. The first
+time you dispatch a new project, the CLI also registers the project locally (for the local
+project tree shown by `handoff project ls`); if there is no local agentd, that hop is
+skipped automatically with a notice — the dispatch itself is unaffected.
+
+**3. Dispatch your first task.** From your project directory (the work tree must be clean):
+
+```bash
+handoff dispatch --prompt "Change the install command in the README to brew"   # small task, no plan file
+handoff dispatch --new-worktree plan.md                                        # real plan, executed in its own worktree
+```
+
+The first line on stdout is the task JSON; its `.id` is the `<task>` every later command
+takes (the full UUID — short ids are not supported).
+
+**4. Wait for events, make the calls.**
+
+```bash
+handoff wait <task> --notify              # block until the next event that needs you (desktop notification on macOS)
+handoff reply <task> --ticket <id> --approve                                      # grant permission
+handoff reply <task> --ticket <id> --deny --reason "no global package installs"    # deny (always give a reason)
+handoff reply <task> --ticket <id> --answer "use pgx, not gorm"                    # answer a question
+```
+
+**5. Review and wrap up.** After `completed`, the task enters pending review:
+
+```bash
+handoff diff <task>                       # git diff + commit list
+handoff run <task> go test ./...          # run verification commands inside the task repo
+handoff continue <task> "make it 3 retries"   # not satisfied: follow-up in the same session, context preserved
+handoff done <task> --note "accepted"         # satisfied: archive and reclaim the executor
+```
+
+To watch the executor live at any moment: `handoff attach <task>`.
+
+> When the coordinator is an AI session, none of this needs memorizing: installation
+> already set up the handoff skill for all four agents (Claude Code / opencode / grok /
+> codex), and the AI drives the whole loop by the discipline written in the skill. One
+> capability difference: Claude Code and grok have background-task wake-up, so they can
+> keep a long `wait --follow` subscription; opencode and codex don't, and the skill steers
+> them to foreground blocking `wait` calls, one turn at a time.
 
 ## Connecting a Remote Executor Machine
 
+Coordinator machine and executor machine are joined by one direct WebSocket connection
+(the coordinator dials out). The only requirement: **the coordinator machine can reach the
+executor machine's agentd port**. Pick a connectivity option by environment:
+
+- **Same LAN / intranet**: connect directly; put the intranet IP in `targets`.
+- **Across networks**: use Tailscale, WireGuard, or a similar overlay to pull both
+  machines into one virtual network; put the virtual interface IP in `targets`.
+- **Cloud relay**: coming soon — two machines that can't share a network will connect
+  through a relay.
+
+The executor machine's `listen` has three settings:
+
+- **`127.0.0.1:7777` (default)**: local machine only. Keep the default for local-only use.
+- **A single interface IP (e.g. Tailscale's `100.x.y.z:7777`)**: exposes agentd on that
+  one interface only — a smaller attack surface than `0.0.0.0`. agentd automatically adds
+  an auxiliary `127.0.0.1:<same port>` listener, so local commands always go over
+  loopback and don't wobble with the interface's state. Known limitation: while that IP is
+  absent (a restart while the overlay tool is down, or booting before it), agentd fails to
+  start; under service management, launchd/systemd keeps re-launching it until the IP
+  returns and it comes up on its own.
+- **`0.0.0.0:7777`**: all interfaces; accepts remote dispatch from any direction.
+
+**Security red line: before exposing agentd on an interface (the latter two settings),
+confirm the machine is not directly exposed to the public internet.** agentd is plaintext
+HTTP/WS with Bearer-token auth and no TLS: on the public internet the token can be
+intercepted in transit, and holding the token equals dispatching arbitrary code execution
+on the executor machine. Home/office networks (behind NAT) and virtual overlay networks
+are the intended places to run `0.0.0.0`; a cloud host with a public IP should not be an
+executor machine at this stage (or firewall the port down to the intranet/overlay
+segment) — wait for the cloud relay.
+
 ## Remote Executor Machine
+
+Three steps to send work to another machine:
+
+**1. Executor machine**: install handoff, install an executor (e.g. opencode) with its
+model credentials configured, then `handoff init` + `handoff service install`.
+
+**2. Pair from your machine**: copy the token from the executor machine's
+`~/.handoff/config.yaml` into the `targets` section of the same file on your machine:
+
+```yaml
+targets:
+  devbox:
+    addr: "192.168.x.x:7777"
+    token: "<the executor machine's token>"
+    user: "<remote ssh username>"    # omit if same as your local username; pull uses it over ssh
+```
+
+**3. Dispatch**:
+
+```bash
+git push                                  # required before remote dispatch — handoff never ships code; code travels through git
+handoff dispatch --target devbox --new-worktree plan.md
+```
+
+The first dispatch to a machine registers the project automatically (cloning if needed)
+under the executor machine's configured `repo_root` — you never tell handoff where the
+code lives. Dispatch branches off your local HEAD as the baseline: an unpushed commit is
+rejected with a 400, and uncommitted local changes are stopped with a prompt (pass
+`--allow-dirty` if you've confirmed they're unrelated).
+
+When the task ends, the remote task branch syncs back to your local repo automatically
+(`sync.auto`; or manually with `handoff pull <task>`) — **fetch only, no merge**. Merging
+into the mainline is your review decision.
 
 ## Command Reference
 
