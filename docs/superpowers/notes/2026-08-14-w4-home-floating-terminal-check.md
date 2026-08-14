@@ -125,6 +125,8 @@ web/src/app/workbench/FloatingNewPane.tsx       （删除）
 
 教训：走查记录漏记这处有意偏离本身就是问题——「以后有意偏离必须写进走查记录，不写就等于没发生」。本次把它补记进来。
 
+清单项「选中/悬停」两态随后对齐了 ProjectTree 的既有约定——选中 `bg-sidebar-accent`、悬停 `hover:bg-accent/60`（原型是 `.home-dock-item.active` 用 `--sidebar-selected`、`.home-dock-item:hover` 用 `--sidebar-hover`，本仓对应 bg-sidebar-accent / hover:bg-accent/60），避免两态同色分不出当前终端。
+
 修正后四条命令仍全绿（本次重跑，真实数字见下）：
 
 ```

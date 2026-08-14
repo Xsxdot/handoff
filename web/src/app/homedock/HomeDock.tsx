@@ -88,7 +88,7 @@ export function HomeDock({ dock, renderTab, onKill }: {
                   type="button"
                   onClick={() => focusTab(tab.id)}
                   className={`flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12px] text-popover-foreground ${
-                    isActive ? 'bg-accent' : 'hover:bg-accent'
+                    isActive ? 'bg-sidebar-accent' : 'hover:bg-accent/60'
                   }`}
                 >
                   <SquareTerminal className="size-3.5 shrink-0" />
