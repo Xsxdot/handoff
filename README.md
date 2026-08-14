@@ -479,10 +479,41 @@ anyway". You can verify the download's sha256 against `checksums.txt` first.
 
 ## Uninstall
 
+```bash
+handoff service uninstall
+rm ~/.local/bin/handoff
+rm -rf ~/.handoff        # includes config, task data and logs — delete only once you're sure
+```
+
 ## Coming Soon
+
+- **Cloud relay**: coordinator and executor machines that can't share a network connect
+  through a cloud relay.
+- **Desktop app**: view and operate tasks in a GUI, not just the CLI.
 
 ## Documentation
 
+- Design doc — architecture, protocol, error handling (Chinese):
+  [docs/superpowers/specs/2026-08-07-handoff-design.md](docs/superpowers/specs/2026-08-07-handoff-design.md)
+- The handoff skill for AI coordinators (Chinese):
+  [skills/handoff/SKILL.md](skills/handoff/SKILL.md) — the skill is embedded in the
+  binary and synced to every local agent on install and upgrade, so versions never drift
+- systemd manual deployment template:
+  [deploy/handoff-agentd.service](deploy/handoff-agentd.service) (note that
+  `KillMode=process` in the template is a hard requirement: it guarantees restarting
+  agentd doesn't kill running executors)
+- Contributing — how to run locally, which gates to pass before submitting (Chinese):
+  [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy and threat model (Chinese; **report vulnerabilities through the private
+  channel, not a public issue**): [SECURITY.md](SECURITY.md)
+
 ## Links
 
+- [Linux Do](https://linux.do) — a sincere, friendly, united, professional developer
+  community
+- [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) — handoff's default executor; this is
+  a referral link, sign up through it and we each get $5 of credit
+
 ## License
+
+[Apache License 2.0](LICENSE)
