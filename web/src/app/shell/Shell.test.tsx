@@ -8,11 +8,10 @@
 // 的路由行为；/tasks/:id 深链承接。
 //
 // 注意：本文件依赖 Task 12-15 的组件（BoardOverlay / TicketsOverlay /
-// useGlobalTickets / SettingsPage / FloatingNewPane），在那些任务落地前无法运行，
-// 属预期的全期红。
+// useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import type { ProjectTreeResp, Task } from '../../api/types'
 
@@ -29,9 +28,32 @@ vi.mock('../../api/client', async () => {
     fetchPtySessions: vi.fn(),
     fetchMachines: vi.fn(),
     deletePtySession: vi.fn(),
+    createPtySession: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession, createPtySession } = await import('../../api/client')
+// xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
+// 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
+const termInstance = {
+  cols: 100,
+  rows: 30,
+  open: vi.fn(),
+  write: vi.fn(),
+  writeln: vi.fn(),
+  clear: vi.fn(),
+  focus: vi.fn(),
+  dispose: vi.fn(),
+  loadAddon: vi.fn(),
+  onData: vi.fn(),
+  onResize: vi.fn(),
+}
+vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstance }) }))
+vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() } }) }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return { onContextLoss: vi.fn(), dispose: vi.fn() } }) }))
+
+const connectPty = vi.fn()
+vi.mock('../../api/pty', () => ({ connectPty: (...a: unknown[]) => connectPty(...a) }))
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 const t1: Task = {
@@ -111,6 +133,15 @@ const tree: ProjectTreeResp = {
   unowned: [],
 }
 
+beforeAll(() => {
+  // jsdom 没有 ResizeObserver，而 home 浮窗里的 TerminalTab 用它跟随容器尺寸
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+})
+
 beforeEach(() => {
   vi.mocked(fetchTasks).mockResolvedValue([t1])
   vi.mocked(fetchProjectTree).mockResolvedValue(tree)
@@ -145,6 +176,13 @@ beforeEach(() => {
     ],
   })
   vi.mocked(deletePtySession).mockResolvedValue({ ok: true })
+  // 建会话成功：home 浮窗里 TerminalTab 挂载后靠它拿到 sessionId 回报给 dock
+  vi.mocked(createPtySession).mockResolvedValue({
+    id: 'new-1', machine: '', base_path: '~', base_kind: 'home', shell: '',
+    created_at: '', cols: 100, rows: 30, attached: 0, pid: 0,
+    foreground: false, bytes_out: 0,
+  })
+  connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
 })
 
 function renderShell(path = '/') {
@@ -248,6 +286,43 @@ describe('Shell 三栏外框', () => {
     const jump = await screen.findByRole('button', { name: '跳到该任务' })
     fireEvent.click(jump)
     await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3'))
+  })
+
+  it('home 终端不进中央 tab 条', async () => {
+    renderShell()
+    // 从悬浮入口新建一个 home 终端
+    fireEvent.click(await screen.findByLabelText('home 基准终端'))
+    fireEvent.click(screen.getByRole('button', { name: /新终端/ }))
+    // 浮窗出现，内容渲染在浮窗里
+    expect(screen.getByTestId('home-window-title')).toBeInTheDocument()
+    // 中央 tab 条上不应出现它——home 终端不挂在任何目录上
+    expect(screen.queryByRole('tab', { name: /home/ })).toBeNull()
+  })
+
+  it('恢复时 home 会话进浮窗、工作树会话进中央', async () => {
+    vi.mocked(fetchPtySessions).mockResolvedValue({
+      sessions: [
+        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false },
+        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false },
+      ],
+    })
+    renderShell()
+
+    // home 那条：圆钮角标出现 1
+    expect(await screen.findByTestId('home-badge')).toHaveTextContent('1')
+    // 且浮窗没有被自动弹出——恢复是后台动作
+    expect(screen.queryByTestId('home-window-title')).toBeNull()
+
+    // 工作树那条：不该计进 home 角标
+    expect(screen.getByTestId('home-badge')).not.toHaveTextContent('2')
+  })
+
+  it('对端不支持 PTY 时不渲染圆钮——说实话而不是给个死按钮', async () => {
+    vi.mocked(fetchMachines).mockResolvedValue({
+      machines: [{ name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: false }],
+    })
+    renderShell()
+    await waitFor(() => expect(screen.queryByLabelText('home 基准终端')).toBeNull())
   })
 })
 
