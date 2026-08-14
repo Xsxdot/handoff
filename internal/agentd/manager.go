@@ -1422,7 +1422,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(ev.Text),
+		Fingerprint: permFingerprintFor(ev),
 	}); err != nil {
 		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
 		// 工单没建成，waiting_answer 是虚假状态（无任何可答项），回迁 running
@@ -1656,7 +1656,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	m.apMu.Unlock()
 
 	if d.Approve {
-		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason, "approver")
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, permFingerprintFor(ev), d.Reason, "approver")
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
@@ -1683,12 +1683,19 @@ func (m *Manager) clearApproverState(taskID string) {
 	if had {
 		m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 			"task", taskID, "reason", truncateRunes(guidance, 80))
-		if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		// Publish 而不是只落库（B91）：这条事件是可操作唤醒——审核者拿到的
+		// reply 返回是 {"ok":true}，不叫醒的话他永远不知道那句 reason 空转了，
+		// 唯一的补救动作（把话写进 continue）也就无从发生。progress /
+		// approver_decision 不唤醒的先例不适用：那些没有审核者动作可做，这条有。
+		evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
 			denyGuidancePayload{
 				Reason: guidance,
 				Cause:  "回合在拒绝原因下发前终结（Done/stop/result），未送达 executor",
-			}); err != nil {
+			})
+		if err != nil {
 			m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+		} else {
+			m.hub.Publish(evt)
 		}
 	}
 }
@@ -1718,17 +1725,20 @@ func (m *Manager) countApproverFail(taskID string) {
 // 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
 //
 // 参数：
+//   - fp: 调用方用 permFingerprintFor(ev) 算好的裁决指纹——本函数只收权限描述
+//     文本串、拿不到 ev.Perm，不在函数内重新猜域；键从建单就对齐 reuseDecision，
+//     审批者路径的工单才进得了复用面（B91 §7）
 //   - source: 这次批准的来源，取 "approver"（廉价模型审批者实时裁决）或
 //     "reuse"（命中本任务内既有人工批准自动复用，B57②）。日志里必须区分：
 //     复用路径若打「审批者自动批准」会把人引向一条根本没发生的裁决链去排查。
-func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason, source string) {
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, reason, source string) {
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
 		"perm", permID, "source", source, "reason", truncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(permission),
+		Fingerprint: fp,
 	}); err != nil {
 		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
 		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
@@ -1814,6 +1824,44 @@ func permFingerprint(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// permFingerprintFor 计算一次权限请求的裁决指纹，是所有建单/查询点的唯一入口。
+//
+// 域规则（B91）：
+//   - Perm.Command 非空 → 命令域：sha256("cmd\x00" + command)。同一条命令被
+//     opencode 以 external_directory 与 bash 两种 kind 各发一次时（双胞胎工单，
+//     见 B91 spec §1.1），两次算出同一指纹，第二次得以复用首次的人工批准。
+//   - Command 为空但 Paths 非空 → 路径域：sha256("paths\x00" + Tool + "\x00" +
+//     排序后的 Paths)。治的是「同一个目录被每个子 agent 各问一次」——子 agent
+//     前缀只加在 Text 上（opencode adapter.go 的 permission.asked 归一化处），
+//     Perm 不带它，所以路径域天然忽略前缀。Tool 进指纹是硬要求，理由见函数体。
+//   - 都为空（Perm 为 nil，或提取不出结构的 fail-closed 类）→ 全文域：
+//     沿用 B57 的权限描述全文指纹，行为不变。
+//
+// 三个域各带自己的前缀做隔离，文本相同也永不相撞，杜绝「某段权限描述全文恰好
+// 等于另一条命令文本」这类伪命中。
+//
+// 注意：写入（建单）与查询（reuseDecision）必须都走本函数——两边规则不一致
+// 会让复用静默失效，那正是 B91 要修的缺陷形态。
+func permFingerprintFor(ev executor.AdapterEvent) string {
+	if ev.Perm != nil {
+		if ev.Perm.Command != "" {
+			return permFingerprint("cmd\x00" + ev.Perm.Command)
+		}
+		if len(ev.Perm.Paths) > 0 {
+			// 拷贝后排序，不原地改 ev.Perm.Paths——该切片来自 adapter，
+			// 排序它会让调用方看到的顺序被本函数悄悄改掉
+			paths := append([]string(nil), ev.Perm.Paths...)
+			sort.Strings(paths)
+			// Tool 必须进指纹：edit 与 external_directory 对同一路径含义不同
+			// （写这个文件 vs 授权越界访问这个目录），裸路径合并等于把两种
+			// 授权当成一件事。NUL 作分隔符——路径不可能含 NUL，杜绝
+			// ["a","b/c"] 与 ["a/b","c"] 这类拼接歧义
+			return permFingerprint("paths\x00" + ev.Perm.Tool + "\x00" + strings.Join(paths, "\x00"))
+		}
+	}
+	return permFingerprint(ev.Text)
+}
+
 // reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
 // 放行并返回 true，调用方不得再走升级人工那套。
 //
@@ -1827,7 +1875,7 @@ func permFingerprint(text string) string {
 //     错误地复用是安全事故，两个方向的代价不对称
 //   - 只复用 allow、只在同任务内复用：见 spec §3.3/§3.4
 func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketID string) bool {
-	fp := permFingerprint(ev.Text)
+	fp := permFingerprintFor(ev)
 	prior, err := m.st.FindReusableGrant(taskID, fp)
 	if err != nil {
 		m.log.Warn("查询可复用裁决失败，照常升级人工", "task", taskID,
@@ -1853,7 +1901,9 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 		// 审计事件失败不阻断放行：executor 正阻塞等应答，为一条审计把它挂死
 		// 是更坏的结果；Error 日志已留痕
 	}
-	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text,
+	// 复用 fp 而不是重算：同一个 ev 算两遍 sha256 没有意义，且两处一旦不同步
+	// 就会写出与查询键不一致的工单——正是 B91 要修的那类缺陷
+	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, fp,
 		"复用工单 "+prior.ID+" 的人工批准", "reuse")
 	return true
 }
@@ -1953,9 +2003,13 @@ func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string
 // 提问到达前就终结了，审核者说的话无处送达，必须留痕让审核者知道用 continue
 // 自己把话带上（B50）。
 func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
-		denyGuidancePayload{Reason: guidance, Cause: cause.Error()}); err != nil {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		denyGuidancePayload{Reason: guidance, Cause: cause.Error()})
+	if err != nil {
 		m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+	} else {
+		// 同 clearApproverState 处的理由（B91）：可操作唤醒，不是纯审计
+		m.hub.Publish(evt)
 	}
 	m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 		"task", taskID, "reason", truncateRunes(guidance, 80), "cause", cause)

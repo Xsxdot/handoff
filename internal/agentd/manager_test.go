@@ -2124,3 +2124,280 @@ func TestHandleSpendNilIsNoop(t *testing.T) {
 		t.Fatalf("空 Spend 不应产生账目，实得 %+v", got.Cumulative)
 	}
 }
+
+// TestPermFingerprintForDomains 验证 B91 指纹换键的域规则：
+// 有命令 → 命令域（跨 gate kind 相等）；无命令 → 全文域（B57 原行为）；
+// 两域之间即使文本相同也永不相撞（cmd\x00 前缀隔离）。
+func TestPermFingerprintForDomains(t *testing.T) {
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	extDir := executor.AdapterEvent{
+		Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}
+	bash := executor.AdapterEvent{
+		Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	if permFingerprintFor(extDir) != permFingerprintFor(bash) {
+		t.Fatal("同命令的 external_directory 与 bash 形态指纹应相等（命令域）")
+	}
+
+	// 全文域现在只兜底两种：Perm 为 nil，或 Command 与 Paths 皆空（提取不出
+	// 结构的 fail-closed 类）。带 Paths 的纯路径请求已改走路径域，见
+	// TestPermFingerprintForPathDomain（B91 §3.5）。
+	pure := executor.AdapterEvent{
+		Text: "edit: probe.md",
+		Perm: &executor.PermRequest{Tool: executor.PermToolWrite},
+	}
+	if permFingerprintFor(pure) != permFingerprint("edit: probe.md") {
+		t.Fatal("Command 与 Paths 皆空时应退回全文指纹（B57 原行为）")
+	}
+	nilPerm := executor.AdapterEvent{Text: "看不懂的权限描述"}
+	if permFingerprintFor(nilPerm) != permFingerprint("看不懂的权限描述") {
+		t.Fatal("Perm 为 nil 时应退回全文指纹")
+	}
+
+	// 域隔离：全文域算出的指纹与命令域算同一串文本的指纹不同
+	same := "echo hi"
+	textDomain := executor.AdapterEvent{Text: same}
+	cmdDomain := executor.AdapterEvent{Text: "bash: " + same, Perm: &executor.PermRequest{Command: same}}
+	if permFingerprintFor(textDomain) == permFingerprintFor(cmdDomain) {
+		t.Fatal("命令域与全文域相撞，cmd\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermFingerprintForPathDomain 验证 B91 spec §3.5 路径域：同路径同 Tool
+// 跨子 agent 前缀相等、Paths 顺序无关、Tool 不同则不等。
+func TestPermFingerprintForPathDomain(t *testing.T) {
+	dir := "/var/folders/xc/hpx9c9w153j7tvphw53lc8qr0000gn/T/opencode/*"
+
+	// 主 agent 与子 agent 的同一个目录请求：Text 带前缀，Perm 相同
+	main := executor.AdapterEvent{
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	child := executor.AdapterEvent{
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	if permFingerprintFor(main) != permFingerprintFor(child) {
+		t.Fatal("同路径同 Tool 应跨子 agent 前缀相等（路径域忽略 Text）")
+	}
+
+	// Paths 顺序无关
+	ab := executor.AdapterEvent{Text: "x", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/a", "/b"}}}
+	ba := executor.AdapterEvent{Text: "y", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/b", "/a"}}}
+	if permFingerprintFor(ab) != permFingerprintFor(ba) {
+		t.Fatal("Paths 顺序不同应算同一指纹（排序后拼接）")
+	}
+
+	// Tool 不同则不等：edit 与 external_directory 对同一路径含义不同
+	edit := executor.AdapterEvent{Text: "z", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{dir}}}
+	if permFingerprintFor(edit) == permFingerprintFor(main) {
+		t.Fatal("同路径不同 Tool 必须算不同指纹——写文件与越界目录授权不是一件事")
+	}
+
+	// 命令域优先于路径域：同时带命令与路径时走命令域
+	both := executor.AdapterEvent{
+		Text: "external_directory: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x", Paths: []string{dir}},
+	}
+	onlyCmd := executor.AdapterEvent{
+		Text: "bash: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x"},
+	}
+	if permFingerprintFor(both) != permFingerprintFor(onlyCmd) {
+		t.Fatal("有命令时必须走命令域，路径不参与")
+	}
+
+	// 三域互不相撞
+	empty := executor.AdapterEvent{Text: "external_directory: " + dir}
+	if permFingerprintFor(empty) == permFingerprintFor(main) {
+		t.Fatal("全文域与路径域相撞，paths\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermissionReusePathAcrossSubagents 验证端到端：主 agent 批过的目录，
+// 子 agent 再问时自动放行零唤醒。复刻任务 d912b23a seq 678/679 的真机形态。
+func TestPermissionReusePathAcrossSubagents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	dir := "/var/folders/xc/abc/T/opencode/*"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1",
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2",
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("子 agent 的同目录请求未复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}
+
+// TestPermissionReuseAcrossGateKinds 验证 B91 主场景：external_directory 形态
+// 的命令获人工 allow 且送达后，同命令的 bash 形态到达 → 自动放行零唤醒。
+// 复刻 B89 任务 4356d318 seq 630/631 的真机形态。
+func TestPermissionReuseAcrossGateKinds(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	// 第一次：external_directory 形态升级人工 → 批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：bash 形态、同一条命令、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("跨 kind 复用未命中，仍有 %d 张挂起工单：%+v", len(pending), pending)
+	}
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseCommandMismatch 验证只差一个字符的命令不复用、照常升级。
+func TestPermissionReuseCommandMismatch(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: rm -rf /tmp/a",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/a"},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: rm -rf /tmp/b",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/b"},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("不同命令不该复用，期望 1 张挂起工单，实得 %d", len(pending))
+	}
+}
+
+// TestPermissionReuseFromApproverGrant 验证审批者（廉价模型）自动批准的工单
+// 同样是复用先例——approvePermission 触点漏换指纹键会静默缩窄复用面（spec §7）。
+func TestPermissionReuseFromApproverGrant(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "go test ./..."
+	ev1 := executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/x"}},
+	}
+	// 审批者路径直接批准（建单+allow+送达一条龙）
+	m.approvePermission("T1", "T1:p1", "p1", ev1.Text, permFingerprintFor(ev1), "低危命令", "approver")
+
+	// bash 形态同命令到达 → 应命中复用
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("审批者先例未参与复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}
+
+// TestDenyGuidanceDroppedWakesOnTurnEnd 验证 B91：回合终结时挂着的拒绝原因
+// 被丢弃，事件必须 Publish 唤醒 wait——只落库的话审核者拿着 reply 的
+// {"ok":true} 永远不知道裁决空转了。
+func TestDenyGuidanceDroppedWakesOnTurnEnd(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.apMu.Lock()
+	m.denyGuidance["T1"] = "别删，先 git mv 归档"
+	m.apMu.Unlock()
+	m.clearApproverState("T1")
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clearApproverState 丢弃拒绝原因后没有 Publish，wait 不会醒")
+	}
+}
+
+// TestDenyGuidanceDroppedWakesOnSendFailure 验证 Send 失败路径（helper）同样唤醒。
+func TestDenyGuidanceDroppedWakesOnSendFailure(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.appendGuidanceDropped("T1", "换个姿势重试", errors.New("send: broken pipe"))
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("appendGuidanceDropped 没有 Publish，wait 不会醒")
+	}
+}

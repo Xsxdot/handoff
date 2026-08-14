@@ -511,7 +511,47 @@ function ToolCall({ icon: Icon, label, detail, done = true }) {
   );
 }
 
+// B83 累计用量：同一个 meta 框里两种视图，切换按钮在右上角。
+// 数字刻意让它们加得起来——输入 + 缓存输入 + 输出 = 总量，否则原型会教出错的心智模型。
+const CUMULATIVE = { total: 3425000, input: 1182400, cachedInput: 2058900, output: 183700, cost: 4.2 };
+
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+
+function TuiMeta({ costMode }) {
+  const [view, setView] = useState('context');
+  const est = costMode === 'est';
+  // 估算值必须看得出是估算：codex 不自报花费，由 handoff 按牌价乘出来。
+  // 和 grok/claudecode/opencode 的自报值长得一样，就是在暗示一个它没有的精度。
+  const cost = est
+    ? <span className="usage-est">≈${CUMULATIVE.cost.toFixed(2)}<em>估算</em></span>
+    : <span>${CUMULATIVE.cost.toFixed(2)}</span>;
+
+  return (
+    <div className="tui-meta">
+      <strong>
+        OpenCode CLI v1.18.15
+        <button type="button" className="usage-toggle" onClick={() => setView(view === 'context' ? 'usage' : 'context')}>
+          {view === 'context' ? '累计用量' : '当前占用'}
+        </button>
+      </strong>
+      <span>Model:</span><span>gpt-5-codex</span>
+      {view === 'context' && (<><span>Context:</span><span>144,390 / 1,048,576 tokens (14%)</span></>)}
+
+      {/* 用量行整行铺开（跨掉标签列），「累计」并进内容里当前缀。
+          关在第二列时内容宽度正好卡满、多一位数字就折行；跨列后腾出约 16% 余量，
+          而行数和框高都不变——切换视图时下面的正文不会跳。 */}
+      {view === 'usage' && (
+        <span className="usage-line">
+          <b>累计</b> {fmtTokens(CUMULATIVE.total)} · 输入 {fmtTokens(CUMULATIVE.input)} · 缓存 {fmtTokens(CUMULATIVE.cachedInput)} · 输出 {fmtTokens(CUMULATIVE.output)} · {cost}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function TaskTui({ activeTask, setActiveTask }) {
+  // 原型专用脚手架：真实控制台里没有这个开关，两种花费形态取决于执行器自己报不报。
+  const [costMode, setCostMode] = useState('est');
   const [approvalState, setApprovalState] = useState(null);
   const [draft, setDraft] = useState('');
   const [sentPrompt, setSentPrompt] = useState('');
@@ -536,10 +576,12 @@ function TaskTui({ activeTask, setActiveTask }) {
 
   return (
     <div className="tui-surface">
-      <div className="tui-meta">
-        <strong>{isApproval ? 'Codex CLI v0.18.1' : 'OpenCode CLI v1.18.15'}</strong>
-        <span>Model: gpt-5-codex</span>
-        <span>Context: 144,390 tokens (14%)</span>
+      <TuiMeta costMode={costMode} />
+      <div className="usage-scaffold">
+        <small>原型：花费来源</small>
+        {[['est', 'codex 估算'], ['real', 'grok 自报']].map(([k, label]) => (
+          <button key={k} type="button" className={costMode === k ? 'on' : ''} onClick={() => setCostMode(k)}>{label}</button>
+        ))}
       </div>
       <div className="tui-scroll">
         <div className="speaker user">user</div>
