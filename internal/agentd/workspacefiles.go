@@ -1,13 +1,20 @@
-// 本文件实现「按工作树寻址」的文件接口：目录列举、读文件与写文件。
+// 本文件实现「按工作树寻址」的文件接口：目录列举、读文件、写文件、条目
+// 操作（建/复制/改名/删）与文件夹内查找。
 //
 // 职责：
 //   - resolveWorkspace：白名单闸门——只有 GET /api/projects/tree 探测得出的
 //     工作树路径才被接受
-//   - handleWorkspaceDir / handleWorkspaceFile / handleWorkspaceFileWrite：
-//     三个端点的 HTTP 层（写文件只解请求体 + 映射错误，判断力全在 WriteFile）
+//   - handleWorkspaceDir / handleWorkspaceFile / handleWorkspaceFileWrite /
+//     handleWorkspaceEntryCreate / handleWorkspaceEntryCopy /
+//     handleWorkspaceEntryRename / handleWorkspaceEntryDelete /
+//     handleWorkspaceSearch：八个端点的 HTTP 层（写文件只解请求体 + 映射错误，
+//     判断力全在 WriteFile；条目操作与搜索同样只做解参 + 映射错误，判断力全在
+//     CreateEntry/CopyEntry/RenameEntry/DeleteEntry/SearchInDir）
 //
 // 边界：
-//   - 写接口只在单个已存在文件上做原子替换：不建目录、不删任何东西
+//   - 写文件只在单个已存在文件上做原子替换，不建目录、不删任何东西；条目
+//     操作能建、能删、能改名、能复制（单层名，不出当前目录），查找在目录内
+//     扫文本行——全部只落在本机**已探测到**的工作树内部，越过边界一律 4xx
 //   - 不接受任意路径。**这是参数校验，不是安全边界**：控制台会话在能力上
 //     等价于主令牌（auth 中间件让两者落在同一个 mux 上，其中包含
 //     POST /api/tasks/{id}/run 的 sh -c），白名单挡不住任何有心人。它存在的
@@ -25,6 +32,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -267,4 +275,214 @@ func (s *Server) handleWorkspaceFileWrite(w http.ResponseWriter, r *http.Request
 	s.log.Info("工作树写文件完成", "root", root, "rel", rel,
 		"bytes", res.Size, "sha256", shortHash(res.SHA256))
 	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: res.SHA256, Size: res.Size})
+}
+
+// writeEntryError 把条目操作/查找的错误映射成 HTTP 应答（四个 entry 端点 +
+// search 端点共用）。
+//
+// 文案策略与写文件端点同一纪律：被拒的哨兵错误（ErrEntryExists /
+// ErrEntryNotFound / ErrBadEntryName / ErrPathEscape / ErrGitDirWrite）**原样透传
+// err.Error()**——这些哨兵文案本身就带目标细节（如「不允许写入 .git 目录:
+// ".git"」），吞成「操作失败」只会让用户回来问。4xx 一律 Warn（被拒不是 agentd
+// 出故障），5xx 才 Error。
+func (s *Server) writeEntryError(w http.ResponseWriter, root, rel string, err error) {
+	switch {
+	case errors.Is(err, ErrEntryExists):
+		s.log.Warn("工作树条目操作被拒：目标已存在", "root", root, "rel", rel, "status", http.StatusConflict)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrEntryNotFound), errors.Is(err, fs.ErrNotExist):
+		s.log.Warn("工作树条目操作被拒：目标不存在", "root", root, "rel", rel, "status", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrBadEntryName):
+		s.log.Warn("工作树条目操作被拒：名字不合法", "root", root, "rel", rel, "status", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrPathEscape):
+		s.log.Warn("工作树条目操作被拒：路径逃逸", "root", root, "rel", rel, "status", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrGitDirWrite):
+		s.log.Warn("工作树条目操作被拒：命中 .git", "root", root, "rel", rel, "status", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	default:
+		s.log.Error("工作树条目操作失败", "root", root, "rel", rel, "status", http.StatusInternalServerError, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "操作失败"})
+	}
+}
+
+// handleWorkspaceEntryCreate 处理 POST /api/workspaces/entry?path=&rel=[&machine=]。
+//
+// 在工作树的 rel 目录下新建一个空文件或空目录（B107 文件树右键菜单「新建」）。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 新条目所在父目录的相对路径；省略或空串表示工作树根
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
+//
+// 请求体：proto.CreateWorkspaceEntryReq（name 为单层名，kind 为 "file" 或 "dir"）。
+// 响应：200 返回新建条目的 proto.DirEntry。
+func (s *Server) handleWorkspaceEntryCreate(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	rel := r.URL.Query().Get("rel")
+	s.log.Info("工作树新建条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	var req proto.CreateWorkspaceEntryReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("工作树新建条目请求体解析失败", "root", root, "rel", rel, "status", http.StatusBadRequest, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	entry, err := CreateEntry(root, rel, req.Name, req.Kind)
+	if err != nil {
+		s.writeEntryError(w, root, rel, err)
+		return
+	}
+	s.log.Info("工作树新建条目完成", "root", root, "rel", rel, "name", req.Name, "kind", req.Kind)
+	writeJSON(w, http.StatusOK, entry)
+}
+
+// handleWorkspaceEntryCopy 处理 POST /api/workspaces/entry/copy?path=&rel=[&machine=]。
+//
+// 在工作树内复制 rel 条目（B107 文件树右键菜单「复制」），副本按
+// "foo copy 1" / "foo copy 2" 计数命名，目录连同其内容递归复制。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 待复制条目的相对路径（空串即工作树根，按非法名拒绝）
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
+//
+// 响应：200 返回副本的 proto.DirEntry。
+func (s *Server) handleWorkspaceEntryCopy(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	rel := r.URL.Query().Get("rel")
+	s.log.Info("工作树复制条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	entry, err := CopyEntry(root, rel)
+	if err != nil {
+		s.writeEntryError(w, root, rel, err)
+		return
+	}
+	s.log.Info("工作树复制条目完成", "root", root, "rel", rel, "copy", entry.Name)
+	writeJSON(w, http.StatusOK, entry)
+}
+
+// handleWorkspaceEntryRename 处理 PATCH /api/workspaces/entry?path=&rel=[&machine=]。
+//
+// 把工作树内的 rel 条目改名为请求体里的 new_name（B107 文件树右键菜单「重命名」，
+// 单层名，本期不做跨目录移动）。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 待改名条目的相对路径
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
+//
+// 请求体：proto.RenameWorkspaceEntryReq。响应：200 返回改名后条目的 proto.DirEntry。
+func (s *Server) handleWorkspaceEntryRename(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	rel := r.URL.Query().Get("rel")
+	s.log.Info("工作树改名条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	var req proto.RenameWorkspaceEntryReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("工作树改名条目请求体解析失败", "root", root, "rel", rel, "status", http.StatusBadRequest, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	entry, err := RenameEntry(root, rel, req.NewName)
+	if err != nil {
+		s.writeEntryError(w, root, rel, err)
+		return
+	}
+	s.log.Info("工作树改名条目完成", "root", root, "rel", rel, "new_name", req.NewName)
+	writeJSON(w, http.StatusOK, entry)
+}
+
+// handleWorkspaceEntryDelete 处理 DELETE /api/workspaces/entry?path=&rel=[&machine=]。
+//
+// 删除工作树内的 rel 条目（B107 文件树右键菜单「删除」），目录连同其内容一并删；
+// 不做回收站，理由见 DeleteEntry 函数头。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 待删除条目的相对路径（空串即工作树根，按非法名拒绝）
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
+//
+// 响应：200 返回 {"ok": true}。
+func (s *Server) handleWorkspaceEntryDelete(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	rel := r.URL.Query().Get("rel")
+	s.log.Info("工作树删除条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	if err := DeleteEntry(root, rel); err != nil {
+		s.writeEntryError(w, root, rel, err)
+		return
+	}
+	s.log.Info("工作树删除条目完成", "root", root, "rel", rel)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleWorkspaceSearch 处理 GET /api/workspaces/search?path=&rel=&q=&limit=[&machine=]。
+//
+// 在工作树内（默认整棵）按关键词全文搜索命中行（B107 文件树右键菜单「在文件夹
+// 内查找」），三条护栏（命中数上限/超时/跳过生成物目录）都在 SearchInDir 内部。
+//
+// 参数（查询串）：
+//   - path: 工作树绝对路径（必须命中白名单，否则 400）
+//   - rel: 搜索范围（相对工作树根的目录）；省略或空串表示整棵工作树
+//   - q: 关键词（必须非空，否则 400）
+//   - limit: 命中数上限；省略取默认，非法数字 400，超出上限收敛
+//   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
+//
+// 响应：200 返回 proto.SearchResult。
+func (s *Server) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	rel := r.URL.Query().Get("rel")
+	s.log.Info("工作树搜索请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "q", q, "machine", r.URL.Query().Get("machine"))
+	root, ok := s.workspaceRootOrErr(w, r)
+	if !ok {
+		return
+	}
+	if q == "" {
+		s.log.Warn("工作树搜索缺关键词", "root", root, "rel", rel, "status", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 q 参数"})
+		return
+	}
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			s.log.Warn("工作树搜索 limit 不是数字", "root", root, "rel", rel, "status", http.StatusBadRequest, "limit", raw)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit 必须是数字"})
+			return
+		}
+		limit = n
+	}
+	res, err := SearchInDir(r.Context(), root, rel, q, limit)
+	if err != nil {
+		s.writeEntryError(w, root, rel, err)
+		return
+	}
+	s.log.Info("工作树搜索完成", "root", root, "rel", rel, "q", q, "hits", len(res.Hits), "truncated", res.Truncated)
+	writeJSON(w, http.StatusOK, res)
 }

@@ -26,7 +26,9 @@ export type TabContent =
   //
   // 为什么可选而不是必填：tab 先出现、会话后建立——用户点「终端」的那一刻
   // 界面就该有反应，不能等一次网络往返。会话建成后由 TerminalTab 回填。
-  | { kind: 'terminal'; seq: number; sessionId?: string }
+  // rel 是终端要起的工作树子目录（空串/缺席 = 工作树根），右键「在终端中
+  // 打开」时带上，其余入口不带。
+  | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string }
   // file 的 draft / baseSha 是**草稿寄存**，不是文件内容本身。
   //
   // 为什么必须放在这里：WorkbenchPage 只渲染 activeTab，切到别的 tab 会把 FileTab

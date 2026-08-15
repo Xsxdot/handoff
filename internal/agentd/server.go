@@ -222,6 +222,11 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
+//   - POST /api/workspaces/entry        工作树内新建条目（同上白名单，请求体含 name/kind）
+//   - POST /api/workspaces/entry/copy   复制工作树内条目（副本计数命名，目录递归）
+//   - PATCH /api/workspaces/entry       改名工作树内条目（请求体含 new_name）
+//   - DELETE /api/workspaces/entry      删除工作树内条目（目录连同内容一并删）
+//   - GET  /api/workspaces/search       工作树内按关键词搜索命中行（含 limit/超时/跳过生成物护栏）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器）
 //   - GET  /ws/events                   事件流（补发 + 实时）
@@ -263,6 +268,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
+	mux.HandleFunc("POST /api/workspaces/entry", s.handleWorkspaceEntryCreate)
+	mux.HandleFunc("POST /api/workspaces/entry/copy", s.handleWorkspaceEntryCopy)
+	mux.HandleFunc("PATCH /api/workspaces/entry", s.handleWorkspaceEntryRename)
+	mux.HandleFunc("DELETE /api/workspaces/entry", s.handleWorkspaceEntryDelete)
+	mux.HandleFunc("GET /api/workspaces/search", s.handleWorkspaceSearch)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)

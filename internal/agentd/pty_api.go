@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,13 +51,19 @@ func (s *Server) sessionEnv() []string {
 	return ptyhost.ResolveEnvForward(names, base, s.log)
 }
 
-// resolvePtyBase 把请求里的 base_kind/base_path 归一化成实际 cwd。
+// resolvePtyBase 把请求里的 base_kind/base_path/rel 归一化成实际 cwd。
 //
 // **这是参数校验，不是安全边界。** 控制台会话在能力上等价于主令牌
 // （POST /api/tasks/{id}/run 就是 sh -c，见 spec §1），白名单挡不住任何有心人
 // ——终端里一条 `cd ~` 就出去了。它存在的唯一理由是：防止前端传一个打错的
 // 路径、让 shell 起在文件系统某个莫名其妙的角落。因此失败是 400（参数错），
 // 不是 403（没权限）。
+//
+// rel 是相对工作树根的子目录：空串 = 根，否则在词汇层把 rel 限定在 root 之内
+// 并确认它真的存在且是目录。这里**不用 os.OpenRoot** 做内核级 jail：与
+// Task 1-3 的 CreateEntry 等不同，那些是文件写入的内核边界，这里是纯参数
+// 校验（终端起在哪个目录本就由用户全权决定，一条 `cd ~` 就出去了），
+// 词汇层校验只是为了不让打错的 rel 把 shell 起在角落。
 func (s *Server) resolvePtyBase(r *http.Request, req proto.CreatePtySessionReq) (path, kind string, err error) {
 	if req.BaseKind == "home" {
 		home, herr := os.UserHomeDir()
@@ -73,6 +80,21 @@ func (s *Server) resolvePtyBase(r *http.Request, req proto.CreatePtySessionReq) 
 		return "", "", errors.New("base_path " + filepath.Clean(req.BasePath) +
 			" 不是本机已探测到的工作树，请从工作树列表里选一个")
 	}
+	if req.Rel != "" {
+		clean := filepath.Clean(req.Rel)
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return "", "", errors.New("rel " + req.Rel + " 必须是指向工作树内目录的相对路径")
+		}
+		dir := filepath.Join(root, clean)
+		st, serr := os.Stat(dir)
+		if serr != nil {
+			return "", "", errors.New("rel " + req.Rel + " 不存在或不可访问: " + serr.Error())
+		}
+		if !st.IsDir() {
+			return "", "", errors.New("rel " + req.Rel + " 不是目录，终端的 cwd 必须是目录")
+		}
+		return dir, "workspace", nil
+	}
 	return root, "workspace", nil
 }
 
@@ -88,12 +110,12 @@ func (s *Server) handleCreatePtySession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.log.Info("建终端会话请求", "base_kind", req.BaseKind, "base_path", req.BasePath,
-		"size", req.Cols, "rows", req.Rows)
+		"rel", req.Rel, "size", req.Cols, "rows", req.Rows)
 
 	base, kind, err := s.resolvePtyBase(r, req)
 	if err != nil {
 		s.log.Warn("建终端会话：基准目录不合法", "base_kind", req.BaseKind,
-			"base_path", req.BasePath, "cause", err)
+			"base_path", req.BasePath, "rel", req.Rel, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

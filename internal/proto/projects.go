@@ -150,6 +150,19 @@ type DirListResult struct {
 	Entries []DirEntry `json:"entries"`
 }
 
+// SearchHit 是搜索命中的一行（GET /api/workspaces/search）。
+type SearchHit struct {
+	Rel  string `json:"rel"`
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// SearchResult 是搜索的完整结论。
+type SearchResult struct {
+	Hits      []SearchHit `json:"hits"`
+	Truncated bool        `json:"truncated"`
+}
+
 // FileRead 是一次文件读取的完整结论（GET /api/workspaces/file 的响应体）。
 //
 // 为什么是结构体而不是继续返回一个 content 字符串：写回需要知道「这份内容完不
@@ -167,6 +180,17 @@ type FileRead struct {
 	Truncated bool   `json:"truncated,omitempty"` // 超过 1 MiB，只返回开头
 	Binary    bool   `json:"binary,omitempty"`    // 前 8 KiB 出现 NUL 字节
 	SHA256    string `json:"sha256,omitempty"`
+}
+
+// CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体。
+type CreateWorkspaceEntryReq struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "file" 或 "dir"
+}
+
+// RenameWorkspaceEntryReq 是 PATCH /api/workspaces/entry 的请求体。
+type RenameWorkspaceEntryReq struct {
+	NewName string `json:"new_name"`
 }
 
 // FileWriteReq 是 PUT /api/workspaces/file 的请求体。

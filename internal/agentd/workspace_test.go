@@ -1179,3 +1179,356 @@ func mustWriteFile(t *testing.T, path, content string) {
 		t.Fatalf("写文件 %s: %v", path, err)
 	}
 }
+
+func TestCreateEntryFileAndDir(t *testing.T) {
+	repo := t.TempDir()
+	got, err := CreateEntry(repo, "", "handler.go", "file")
+	if err != nil {
+		t.Fatalf("建文件: %v", err)
+	}
+	if got.Name != "handler.go" || got.IsDir {
+		t.Fatalf("返回项不对: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "handler.go")); err != nil {
+		t.Fatalf("文件没落盘: %v", err)
+	}
+	if _, err := CreateEntry(repo, "", "internal", "dir"); err != nil {
+		t.Fatalf("建目录: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(repo, "internal"))
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("目录没落盘: %v", err)
+	}
+}
+
+func TestCreateEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "a.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, parent, entry, kind string
+		want                      error
+	}{
+		{"同名", "", "a.go", "file", ErrEntryExists},
+		{"名字含斜杠", "", "x/y.go", "file", ErrBadEntryName},
+		{"名字为空", "", "", "file", ErrBadEntryName},
+		{"名字是点点", "", "..", "dir", ErrBadEntryName},
+		{"父目录逃逸", "..", "a.go", "file", ErrPathEscape},
+		{"命中 git 目录", ".git", "config", "file", ErrGitDirWrite},
+		{"父目录不存在", "nope", "a.go", "file", ErrEntryNotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := CreateEntry(repo, c.parent, c.entry, c.kind)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("要 %v，得到 %v", c.want, err)
+			}
+		})
+	}
+}
+
+func TestRenameEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "old.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "old.go", "new.go"); err != nil {
+		t.Fatalf("改名: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.go")); err != nil {
+		t.Fatalf("新名字不在: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "old.go")); !os.IsNotExist(err) {
+		t.Fatal("旧名字还在")
+	}
+	if _, err := CreateEntry(repo, "", "taken.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "new.go", "taken.go"); !errors.Is(err, ErrEntryExists) {
+		t.Fatal("撞名应当被拒")
+	}
+	if _, err := RenameEntry(repo, "new.go", "a/b.go"); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("新名字含斜杠应当被拒（本期不做跨目录移动）")
+	}
+	if _, err := RenameEntry(repo, ".git", "x"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("改名 .git 应当被拒")
+	}
+}
+
+func TestDeleteEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "gone.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "gone.go"); err != nil {
+		t.Fatalf("删文件: %v", err)
+	}
+	// 非空目录也要能删
+	if _, err := CreateEntry(repo, "", "d", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateEntry(repo, "d", "inner.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "d"); err != nil {
+		t.Fatalf("删非空目录: %v", err)
+	}
+	if err := DeleteEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("删不存在的应当 ErrEntryNotFound")
+	}
+	if err := DeleteEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("删 .git 应当被拒")
+	}
+	if err := DeleteEntry(repo, ""); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("删工作树根本身应当被拒")
+	}
+}
+
+func TestEntryOpsSymlinkEscape(t *testing.T) {
+	// 与 TestReadFileSymlinkEscape 同款手法：仓库内放一个指向仓库外的链接，
+	// 四个动作都必须被 os.OpenRoot 挡下，而不是顺着链接操作到仓库外
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "link")); err != nil {
+		t.Skipf("本平台建不了符号链接: %v", err)
+	}
+	if _, err := CreateEntry(repo, "link", "new.txt", "file"); err == nil {
+		t.Fatal("经链接在仓库外建文件竟然成功了")
+	}
+	if err := DeleteEntry(repo, "link/victim.txt"); err == nil {
+		t.Fatal("经链接删仓库外文件竟然成功了")
+	}
+	// RenameEntry 与 CopyEntry 的 rel 逃逸拦截不在 cleanEntryRel（那层只做词汇
+	// 层 Clean），而在 os.Root 对链接的实际解析——root.Stat 顺着 link 解析到
+	// 仓库外报 "path escapes from parent"，两处都应落 ErrPathEscape
+	if _, err := RenameEntry(repo, "link/victim.txt", "y.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接改名仓库外文件应当 ErrPathEscape，得到: %v", err)
+	}
+	if _, err := CopyEntry(repo, "link/victim.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接复制仓库外文件应当 ErrPathEscape，得到: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim.txt")); err != nil {
+		t.Fatal("仓库外的文件被动了")
+	}
+}
+
+func TestCopyEntryNaming(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "foo.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第一次复制: %v", err)
+	}
+	if first.Name != "foo copy.go" {
+		t.Fatalf("第一份副本要叫 %q，得到 %q", "foo copy.go", first.Name)
+	}
+	second, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第二次复制: %v", err)
+	}
+	if second.Name != "foo copy 2.go" {
+		t.Fatalf("第二份副本要叫 %q，得到 %q", "foo copy 2.go", second.Name)
+	}
+	// 内容要真的复制过去
+	b, err := os.ReadFile(filepath.Join(repo, "foo copy.go"))
+	if err != nil || string(b) != "package main" {
+		t.Fatalf("副本内容不对: %q %v", b, err)
+	}
+	// 无扩展名
+	if err := os.WriteFile(filepath.Join(repo, "Makefile"), []byte("all:"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "Makefile")
+	if err != nil || got.Name != "Makefile copy" {
+		t.Fatalf("无扩展名副本要叫 %q，得到 %q（err=%v）", "Makefile copy", got.Name, err)
+	}
+}
+
+func TestCopyEntryDirRecursive(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "d", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "d", "sub", "x.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "d")
+	if err != nil {
+		t.Fatalf("复制目录: %v", err)
+	}
+	if got.Name != "d copy" || !got.IsDir {
+		t.Fatalf("目录副本不对: %+v", got)
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "d copy", "sub", "x.go"))
+	if err != nil || string(b) != "x" {
+		t.Fatalf("递归内容没复制过去: %q %v", b, err)
+	}
+	// 带点的目录名整体当 base，不拆扩展名（spec §3.4，Mac Finder 同款）
+	if err := os.MkdirAll(filepath.Join(repo, "a.b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.b", "inner.go"), []byte("i"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dotted, err := CopyEntry(repo, "a.b")
+	if err != nil {
+		t.Fatalf("复制带点目录: %v", err)
+	}
+	if dotted.Name != "a.b copy" {
+		t.Fatalf("带点目录副本要叫 %q，得到 %q", "a.b copy", dotted.Name)
+	}
+}
+
+func TestCopyEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := CopyEntryRejectHelper(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("复制不存在的应当 ErrEntryNotFound")
+	}
+	if _, err := CopyEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("复制 .git 应当被拒")
+	}
+	if _, err := CopyEntry(repo, "../x"); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸路径应当被拒")
+	}
+}
+
+// CopyEntryRejectHelper 建一个 .git 目录，让上面的 .git 用例有东西可撞。
+func CopyEntryRejectHelper(repo string) error {
+	return os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
+}
+
+func TestSearchInDirHitsAndSkips(t *testing.T) {
+	repo := t.TempDir()
+	mk := func(rel, body string) {
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a.go", "package main\nfunc needle() {}\n")
+	mk("sub/b.go", "// needle 在注释里\n")
+	mk(".git/config", "needle\n")
+	mk("node_modules/c.js", "needle\n")
+
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	rels := map[string]bool{}
+	for _, h := range got.Hits {
+		rels[h.Rel] = true
+	}
+	if !rels["a.go"] || !rels["sub/b.go"] {
+		t.Fatalf("正常文件没命中: %+v", got.Hits)
+	}
+	if rels[".git/config"] || rels["node_modules/c.js"] {
+		t.Fatalf(".git / node_modules 必须被跳过: %+v", got.Hits)
+	}
+	// 行号从 1 起
+	for _, h := range got.Hits {
+		if h.Rel == "a.go" && h.Line != 2 {
+			t.Fatalf("行号要从 1 起算，needle 在第 2 行，得到 %d", h.Line)
+		}
+	}
+}
+
+func TestSearchInDirLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != 10 {
+		t.Fatalf("limit=10 要恰好 10 条，得到 %d", len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("撞到上限必须标 Truncated——否则「10 条」会被读成「只有 10 处」")
+	}
+}
+
+func TestSearchInDirScopeAndRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "only"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "only", "in.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "out.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "only", "needle", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) != 1 || got.Hits[0].Rel != "only/in.txt" {
+		t.Fatalf("范围没生效: %+v", got.Hits)
+	}
+	if _, err := SearchInDir(context.Background(), repo, "", "", 0); err == nil {
+		t.Fatal("空关键词应当被拒")
+	}
+	if _, err := SearchInDir(context.Background(), repo, "../x", "needle", 0); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸范围应当被拒")
+	}
+}
+
+func TestSearchInDirDefaultLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchDefaultLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != searchDefaultLimit {
+		t.Fatalf("limit<=0 时默认取 %d，得到 %d", searchDefaultLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过默认上限必须标 Truncated")
+	}
+}
+
+func TestSearchInDirLimitCapped(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchMaxLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", searchMaxLimit*10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) > searchMaxLimit {
+		t.Fatalf("limit 超过 %d 要收敛到 %d，得到 %d", searchMaxLimit, searchMaxLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过收敛后的上限必须标 Truncated")
+	}
+}

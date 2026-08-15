@@ -287,6 +287,7 @@ export function Shell() {
                             base={base}
                             seq={c.seq}
                             sessionId={c.sessionId}
+                            rel={c.rel}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
                             onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
@@ -334,6 +335,7 @@ export function Shell() {
             base={wb.base}
             taskId={currentTaskId}
             onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
+            onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
           />
         </div>
       )}

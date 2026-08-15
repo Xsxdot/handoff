@@ -324,6 +324,131 @@ func TestWorkspaceFileWriteConflict(t *testing.T) {
 	}
 }
 
+// doJSON 发一个带 token 的任意方法请求（body 非空时按原文发送，空串发 nil body）
+// 到 env.ts 并返回状态码与响应体。path 已含查询串，直接 env.ts.URL+path。
+func doJSON(t *testing.T, env *testAgentdEnv, method, path string, body string) (int, []byte) {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, env.ts.URL+path, reader)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	return resp.StatusCode, got
+}
+
+// TestWorkspaceEntryEndpoints 走完整 HTTP 链路钉住条目建/改名/复制/删的四条
+// 端点：成功、撞名 409、非法名 400、删不存在 404 逐条断言。
+func TestWorkspaceEntryEndpoints(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+
+	// 建
+	code, body := doJSON(t, env, http.MethodPost,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=",
+		`{"name":"a.go","kind":"file"}`)
+	if code != http.StatusOK {
+		t.Fatalf("建文件要 200，得到 %d: %s", code, body)
+	}
+	// 撞名 → 409
+	code, _ = doJSON(t, env, http.MethodPost,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=",
+		`{"name":"a.go","kind":"file"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("撞名要 409，得到 %d", code)
+	}
+	// 名字含斜杠 → 400
+	code, _ = doJSON(t, env, http.MethodPost,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=",
+		`{"name":"x/y.go","kind":"file"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("非法名字要 400，得到 %d", code)
+	}
+	// 改名
+	code, _ = doJSON(t, env, http.MethodPatch,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=a.go",
+		`{"new_name":"b.go"}`)
+	if code != http.StatusOK {
+		t.Fatalf("改名要 200，得到 %d", code)
+	}
+	// 复制
+	code, _ = doJSON(t, env, http.MethodPost,
+		"/api/workspaces/entry/copy?path="+url.QueryEscape(repo)+"&rel=b.go", "")
+	if code != http.StatusOK {
+		t.Fatalf("复制要 200，得到 %d", code)
+	}
+	// 删
+	code, _ = doJSON(t, env, http.MethodDelete,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=b.go", "")
+	if code != http.StatusOK {
+		t.Fatalf("删除要 200，得到 %d", code)
+	}
+	// 删不存在的 → 404
+	code, _ = doJSON(t, env, http.MethodDelete,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=b.go", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("删不存在的要 404，得到 %d", code)
+	}
+}
+
+// TestWorkspaceEntryRejectsUnlistedPath 钉住条目端点同样只认白名单工作树。
+func TestWorkspaceEntryRejectsUnlistedPath(t *testing.T) {
+	env, _ := wsFilesFixture(t)
+	other := t.TempDir()
+	code, _ := doJSON(t, env, http.MethodDelete,
+		"/api/workspaces/entry?path="+url.QueryEscape(other)+"&rel=x", "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("非白名单工作树要 400，得到 %d", code)
+	}
+}
+
+// TestWorkspaceSearchEndpoint 钉住搜索端点：命中返回 200 带结果，空关键词 400。
+func TestWorkspaceSearchEndpoint(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	if err := os.WriteFile(filepath.Join(repo, "s.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, body := doJSON(t, env, http.MethodGet,
+		"/api/workspaces/search?path="+url.QueryEscape(repo)+"&rel=&q=needle", "")
+	if code != http.StatusOK {
+		t.Fatalf("搜索要 200，得到 %d: %s", code, body)
+	}
+	if !strings.Contains(string(body), "s.go") {
+		t.Fatalf("响应里没有命中项: %s", body)
+	}
+	code, _ = doJSON(t, env, http.MethodGet,
+		"/api/workspaces/search?path="+url.QueryEscape(repo)+"&rel=&q=", "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("空关键词要 400，得到 %d", code)
+	}
+}
+
+// TestWorkspaceEntryErrorTextPassthrough 钉住中文错误原文必须透传：删 .git 的
+// 响应要能看到「.git」，不许被吞成「操作失败」。
+func TestWorkspaceEntryErrorTextPassthrough(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, body := doJSON(t, env, http.MethodDelete,
+		"/api/workspaces/entry?path="+url.QueryEscape(repo)+"&rel=.git", "")
+	if !strings.Contains(string(body), ".git") {
+		t.Fatalf("错误原文没透传: %s", body)
+	}
+}
+
 // TestWorkspaceFileWriteStatusMap 逐条钉住错误到状态码的映射。
 func TestWorkspaceFileWriteStatusMap(t *testing.T) {
 	env, repo := wsFilesFixture(t)

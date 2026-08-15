@@ -388,6 +388,20 @@ export interface DirListResult {
   entries: DirEntry[]
 }
 
+// SearchHit 是搜索命中的一行（GET /api/workspaces/search）。
+export interface SearchHit {
+  rel: string
+  line: number
+  text: string
+}
+
+// SearchResult 是搜索的完整结论；truncated 为真表示结果被截断
+// （撞到条数上限或超时，服务端只返回了已有部分）。
+export interface SearchResult {
+  hits: SearchHit[]
+  truncated: boolean
+}
+
 // PtySession 是一个 PTY 终端会话（W4 PTY 终端 spec §3.1）。
 //
 // exit_code 缺席 = 会话还活着（Go 侧是 *int + omitempty）。不要写

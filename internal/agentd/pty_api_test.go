@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -137,5 +140,41 @@ func TestStatusReportsPtySupported(t *testing.T) {
 	}
 	if *st.PtySupported != (runtime.GOOS != "windows") {
 		t.Errorf("pty_supported = %v，与平台不符（GOOS=%s）", *st.PtySupported, runtime.GOOS)
+	}
+}
+
+func TestResolvePtyBaseWithRel(t *testing.T) {
+	env, repo := wsFilesFixture(t)
+	s := env.srv
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "agentd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/pty/sessions", nil)
+
+	got, kind, err := s.resolvePtyBase(r, proto.CreatePtySessionReq{BasePath: repo, Rel: "internal/agentd"})
+	if err != nil {
+		t.Fatalf("子目录应当可用: %v", err)
+	}
+	if got != filepath.Join(repo, "internal", "agentd") || kind != "workspace" {
+		t.Fatalf("cwd 不对: %q kind=%q", got, kind)
+	}
+
+	// rel 为空 = 工作树根，保持既有行为
+	got, _, err = s.resolvePtyBase(r, proto.CreatePtySessionReq{BasePath: repo})
+	if err != nil || got != repo {
+		t.Fatalf("空 rel 要回到工作树根: %q %v", got, err)
+	}
+
+	if _, _, err := s.resolvePtyBase(r, proto.CreatePtySessionReq{BasePath: repo, Rel: "../.."}); err == nil {
+		t.Fatal("逃逸的 rel 应当被拒")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "f.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.resolvePtyBase(r, proto.CreatePtySessionReq{BasePath: repo, Rel: "f.go"}); err == nil {
+		t.Fatal("rel 指向文件应当被拒——终端的 cwd 必须是目录")
+	}
+	if _, _, err := s.resolvePtyBase(r, proto.CreatePtySessionReq{BasePath: repo, Rel: "nope"}); err == nil {
+		t.Fatal("不存在的 rel 应当被拒")
 	}
 }

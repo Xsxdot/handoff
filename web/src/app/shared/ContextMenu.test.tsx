@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ContextMenu } from './ContextMenu'
 
@@ -57,5 +58,50 @@ describe('ContextMenu', () => {
   it('打开时焦点落到第一项', () => {
     render(<ContextMenu x={10} y={20} items={items} onClose={vi.fn()} />)
     expect(screen.getByRole('menuitem', { name: '注销' })).toHaveFocus()
+  })
+
+  it('分隔线渲染成 separator 且不可聚焦', async () => {
+    render(<ContextMenu x={10} y={10} onClose={() => {}} items={[
+      { label: '甲', onSelect: () => {} },
+      { separator: true },
+      { label: '乙', onSelect: () => {} },
+    ]} />)
+    expect(screen.getByRole('separator')).toBeInTheDocument()
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+  })
+
+  it('置灰项不可点，并把理由挂在 title 上', async () => {
+    const onSelect = vi.fn()
+    render(<ContextMenu x={10} y={10} onClose={() => {}} items={[
+      { label: '甲', onSelect: () => {} },
+      { label: 'Reveal in Finder', onSelect, disabled: true, disabledReason: '远程目录无法在本机的访达中打开' },
+    ]} />)
+    const item = screen.getByRole('menuitem', { name: /Reveal in Finder/ })
+    expect(item).toBeDisabled()
+    expect(item).toHaveAttribute('title', '远程目录无法在本机的访达中打开')
+    await userEvent.click(item)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('初始焦点落在首个可用项上（首项置灰时跳过它）', () => {
+    render(<ContextMenu x={10} y={10} onClose={() => {}} items={[
+      { label: '灰的', onSelect: () => {}, disabled: true, disabledReason: 'x' },
+      { label: '能点的', onSelect: () => {} },
+    ]} />)
+    expect(screen.getByRole('menuitem', { name: '能点的' })).toHaveFocus()
+  })
+
+  it('上下键在可用项之间循环，跳过分隔线与置灰项', async () => {
+    render(<ContextMenu x={10} y={10} onClose={() => {}} items={[
+      { label: '甲', onSelect: () => {} },
+      { separator: true },
+      { label: '灰的', onSelect: () => {}, disabled: true, disabledReason: 'x' },
+      { label: '乙', onSelect: () => {} },
+    ]} />)
+    expect(screen.getByRole('menuitem', { name: '甲' })).toHaveFocus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(screen.getByRole('menuitem', { name: '乙' })).toHaveFocus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(screen.getByRole('menuitem', { name: '甲' })).toHaveFocus()
   })
 })
