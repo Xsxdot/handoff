@@ -19,6 +19,8 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,7 +129,7 @@ func TestWatchdogFiresOnceOnStall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// tick 10ms 注入（测试参数），stallTimeout 极小 = 事件必然超阈值
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 等第一条 stalled 落库（首轮触发）
 	eventually(t, 2*time.Second, "stalled 事件已落库", func() bool {
@@ -177,7 +179,7 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	seedCompletedTask(t, st, "task-done")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string) {}, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 
@@ -205,7 +207,7 @@ func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 第一轮：stalled 触发一次
 	eventually(t, 2*time.Second, "首条 stalled 已落库", func() bool {
@@ -243,7 +245,7 @@ func TestWatchdogCatchesZeroEventTask(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	eventually(t, 2*time.Second, "零事件任务 stalled 已落库", func() bool {
 		return len(stalledEvents(t, st, "task-silent")) == 1
@@ -524,5 +526,107 @@ func TestMismatchVerdict(t *testing.T) {
 					tc.state, tc.latest.Type, now.Sub(tc.latest.CreatedAt), got, tc.want)
 			}
 		})
+	}
+}
+
+// TestScanStateMismatchTransitsAndAudits（B97 Task 3）：失配任务（最新事件 failed、
+// 状态却非终态）被迁到 failed，且挂起工单已被作废——证明走的是 transit 而非裸
+// UpdateTaskState（裸改状态不会触发终态收口），且留下一条 progress 审计，文本含
+// 原始 failed 事件的 seq。
+func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
+	// 用真实 Manager 的 transit 包装：白盒测试能调 m.transit，最忠实地复刻
+	// cmd/agentd.go 的 mgr.MismatchTransit() 接线（终态收口挂在 transit 内部）
+	m, st, hub, _ := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	// 追加一条 failed 事件作为最新事件（事件年龄 ≥ minAge=time.Nanosecond 恒成立）
+	fevt, err := st.AppendEvent("t1", proto.EventTypeFailed, failedPayload{FailReason: "对账失败"})
+	if err != nil {
+		t.Fatalf("AppendEvent(failed): %v", err)
+	}
+	seq := fevt.Seq
+	// 造一张挂起工单：若扫描走 transit，终态收口会把它作废
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "t1:p1", TaskID: "t1", Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	transit := func(id string, to proto.TaskState, reason string) error {
+		return m.transit(id, to, reason)
+	}
+	// startedAt 早于事件（护栏「本次启动之后」放行），minAge 足够小（事件必够老）
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, transit, discardLogger())
+
+	assertState(t, st, "t1", proto.TaskStateFailed)
+
+	// 挂起工单已被作废（transit 的终态收口生效 → 证明走的是 transit 不是裸改状态）
+	pending, err := st.PendingTickets("t1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("失配任务迁移后挂起工单应被作废（走 transit 收口），实际 %d 张", len(pending))
+	}
+
+	// 审计：存在一条 progress 事件，payload 文本含原始 failed 事件 seq；
+	// 且不应补第二条 failed 事件（审计用 progress 而非重复 failed）
+	evs, err := st.EventsFrom("t1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	foundAudit := false
+	failedCount := 0
+	for _, ev := range evs {
+		switch ev.Type {
+		case proto.EventTypeFailed:
+			failedCount++
+		case proto.EventTypeProgress:
+			if strings.Contains(string(ev.Payload), strconv.FormatInt(seq, 10)) {
+				foundAudit = true
+			}
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("缺少含原始 failed 事件 seq=%d 的 progress 审计事件", seq)
+	}
+	if failedCount != 1 {
+		t.Fatalf("不应补第二条 failed 事件，实际 %d 条", failedCount)
+	}
+}
+
+// TestScanStateMismatchLeavesHealthyTaskAlone（B97 Task 3）：turn_failed + waiting_review
+// 是健康终态（正等着协调者裁决，挂三天都正常），扫描必须一根手指都不碰——transit
+// 不被调用、状态不动、事件数不变。
+func TestScanStateMismatchLeavesHealthyTaskAlone(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-healthy")
+	// turn_failed 事件作为最新事件：mismatchVerdict 判 false（latest 不是 failed）
+	if _, err := st.AppendEvent("task-healthy", proto.EventTypeTurnFailed,
+		failedPayload{FailReason: "回合失败"}); err != nil {
+		t.Fatalf("AppendEvent(turn_failed): %v", err)
+	}
+	before, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(before): %v", err)
+	}
+
+	called := 0
+	transit := func(id string, to proto.TaskState, reason string) error {
+		called++
+		return nil
+	}
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, transit, discardLogger())
+
+	if called != 0 {
+		t.Fatalf("健康任务不应触发迁移回调，实际调用 %d 次", called)
+	}
+	assertState(t, st, "task-healthy", proto.TaskStateWaitingReview)
+
+	after, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(after): %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("健康任务事件数应不变（无审计、无新事件），期望 %d 条，实际 %d 条", len(before), len(after))
 	}
 }

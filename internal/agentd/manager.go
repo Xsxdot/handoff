@@ -2864,6 +2864,18 @@ func (m *Manager) transitBestEffort(taskID string, to proto.TaskState, reason st
 	}
 }
 
+// MismatchTransit 返回失配对账扫描（watchdog.scanStateMismatch）的迁移回调包装。
+//
+// 为什么需要导出：watchdog.go 与 manager.go 同包，扫描本可以直接调 m.transit；
+// 但看门狗的接线点在 cmd/agentd.go（agentd 包外），transit 未导出无法从包外引用，
+// 于是经这个导出方法把「把任务迁到 failed 并做终态收口」的能力交给 cmd 接线。
+// 终态收口（挂起工单作废 + 审计留痕，B63）仍挂在 transit 内部，扫描只负责判定。
+func (m *Manager) MismatchTransit() func(taskID string, to proto.TaskState, reason string) error {
+	return func(taskID string, to proto.TaskState, reason string) error {
+		return m.transit(taskID, to, reason)
+	}
+}
+
 // restorer 是「agentd 重启后重建执行」的可选 adapter 能力（opencode 实现）。
 //
 // 为什么不用类型断言外的方案：executor.Adapter 是 Task 3 定稿的五动作契约，
