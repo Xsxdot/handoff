@@ -416,3 +416,16 @@ func TestRosterIntervalIsOneSecond(t *testing.T) {
 		t.Fatalf("rosterInterval 应为 1s，实为 %v", rosterInterval)
 	}
 }
+
+// BenchmarkRosterSampleReal 测单次采样（enumProcs + 合并 + 序列化 + 落盘）在真机上的
+// 真实耗时，用于核算 1s 采样间隔下本功能对每任务的常驻开销占比。用真实 enumProcs，
+// 不打桩——这条要测的正是真机上的进程枚举开销（见 ledger「实测数据」小节）。
+func BenchmarkRosterSampleReal(b *testing.B) {
+	dir := b.TempDir()
+	s := &rosterSampler{path: rosterPath(filepath.Join(dir, "proc.json"))}
+	l := slog.New(slog.NewTextHandler(io.Discard, nil))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.sample(l)
+	}
+}
