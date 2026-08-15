@@ -24,6 +24,8 @@ import type {
   FileWriteReq,
   FileWriteResp,
   MachinesResp,
+  PatchProjectReq,
+  ProjectLocation,
   ProjectTreeResp,
   PtySession,
   PtySessionsResp,
@@ -120,6 +122,15 @@ function postJSON<T>(path: string, body: unknown): Promise<T> {
 function putJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// patchJSON 以 JSON body 发起 PATCH 请求。
+function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -272,6 +283,14 @@ export function deleteProject(name: string, machine?: string): Promise<{ ok: boo
     `/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
+}
+
+// patchProject 改一个项目位置的引用名或路径（PATCH /api/projects/{name}）。
+//
+// req 的 new_name/path 均可选但不能都空；name 是**当前**引用名（旧名）——
+// 改名也是按旧名寻址这条资源。machine 为目标机器名，省略或空串 = 本机。
+export function patchProject(name: string, req: PatchProjectReq, machine?: string): Promise<ProjectLocation> {
+  return patchJSON<ProjectLocation>(`/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`, req)
 }
 
 // fetchPtySessions 列终端会话（GET /api/pty/sessions）。
