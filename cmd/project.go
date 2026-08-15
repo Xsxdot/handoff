@@ -15,8 +15,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,11 +27,21 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
 
 // projectAddPath 是 --path：目标机上已有的那份代码的路径（省略则让它自己 clone）。
 var projectAddPath string
+
+// project ls 的展示开关（W3a）：
+//   - projectTree / projectTreeAll：三层树形输出（单机 / ?scope=all 跨机）
+//   - projectTreeJSON：树形路径下输出 JSON
+var (
+	projectTree     bool
+	projectTreeAll  bool
+	projectTreeJSON bool
+)
 
 // localOriginURL 读当前目录仓库的 origin 地址；不是 git 仓库或没有 origin 时返回空串。
 //
@@ -185,7 +197,34 @@ var projectLsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		locs, err := client.New(addr, token).ProjectList(cmd.Context())
+		c := client.New(addr, token)
+		// --tree / --all 走项目树（三层、带探测）。不带 --tree 的输出是 B62 的
+		// 契约（扁平位置表 + 状态列），一个字符都不许改——本分支原样保留
+		if projectTree || projectTreeAll {
+			var resp *proto.ProjectTreeResp
+			if projectTreeAll {
+				resp, err = c.ProjectTreeAll(cmd.Context())
+			} else {
+				resp, err = c.ProjectTree(cmd.Context())
+			}
+			if err != nil {
+				return err
+			}
+			if projectTreeJSON {
+				b, err := json.Marshal(resp)
+				if err != nil {
+					return fmt.Errorf("序列化项目树: %w", err)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(b))
+				return nil
+			}
+			renderProjectTree(cmd.OutOrStdout(), resp)
+			if projectTreeAll {
+				renderMachinesTail(cmd.OutOrStdout(), resp)
+			}
+			return nil
+		}
+		locs, err := c.ProjectList(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -200,6 +239,77 @@ var projectLsCmd = &cobra.Command{
 		}
 		return tw.Flush()
 	},
+}
+
+// renderProjectTree 打印三层项目树：project → location → workspace。
+//
+// 形态：
+//
+//	handoff  (a1b2c3d4e5f60718)  git@github.com:x/handoff.git
+//	  本机  /Users/dev/handoff
+//	    * main  482aab1  /Users/dev/handoff
+//	      w1  9e12a3b  ~/.handoff/worktrees/w1  [任务工作树]
+//	  devbox  /home/dev/handoff  ← 探测失败：路径不存在
+//
+// 探测失败的 location 照常打印，带人话原因——「登记还在、目录已失效」必须可见。
+func renderProjectTree(w io.Writer, resp *proto.ProjectTreeResp) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, p := range resp.Projects {
+		fmt.Fprintf(tw, "%s  (%s)  %s\n", p.Name, p.ProjectID, p.OriginURL)
+		for _, l := range p.Locations {
+			machine := l.Machine
+			if machine == "" {
+				machine = "本机" // 空串是线格式，人看的是「本机」
+			}
+			if l.ProbeError != "" {
+				fmt.Fprintf(tw, "  %s  %s  ← 探测失败：%s\n", machine, l.Path, firstLineOf(l.ProbeError))
+				continue
+			}
+			fmt.Fprintf(tw, "  %s  %s\n", machine, l.Path)
+			for _, ws := range l.Workspaces {
+				marker := " "
+				if ws.IsMain {
+					marker = "*"
+				}
+				suffix := ""
+				if ws.Managed {
+					suffix = "  [任务工作树]"
+				}
+				branch := ws.Branch
+				if branch == "" {
+					branch = "(detached)" // detached 时 branch 为空串，UI 靠 head 显示
+				}
+				fmt.Fprintf(tw, "    %s %s  %s  %s%s\n", marker, branch, ws.Head, ws.Path, suffix)
+			}
+		}
+	}
+	// 算不出 project_id 的脏行：诚实列出，不吞、也不塞进某个项目里
+	for _, u := range resp.Unowned {
+		fmt.Fprintf(tw, "%s  (未归属)\n", u)
+	}
+	_ = tw.Flush()
+}
+
+// renderMachinesTail 打印 --all 的机器应答情况。缺席必须可见：
+// 没答上来的机器逐台列出带原因，不能让「某台机器没了」只剩一串少了的行。
+func renderMachinesTail(w io.Writer, resp *proto.ProjectTreeResp) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "机器应答情况：")
+	for _, m := range resp.Machines {
+		name := m.Name
+		if name == "" {
+			name = "本机"
+		}
+		if m.Ok {
+			fmt.Fprintf(w, "  %s  应答正常（快照 %s）\n", name, m.FetchedAt.Local().Format("15:04:05"))
+			continue
+		}
+		reason := m.Error
+		if reason == "" {
+			reason = "未知原因"
+		}
+		fmt.Fprintf(w, "  %s  未应答：%s\n", name, firstLineOf(reason))
+	}
 }
 
 // projectRmCmd 注销一条位置。
@@ -223,6 +333,9 @@ var projectRmCmd = &cobra.Command{
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPath, "path", "",
 		"目标机上已有的那份代码的路径（仅与 --target 连用；省略则由那台机器 clone 到它的 repo_root/<名字>）")
+	projectLsCmd.Flags().BoolVar(&projectTree, "tree", false, "以三层项目树输出（project → location → workspace，现场探测工作树）")
+	projectLsCmd.Flags().BoolVar(&projectTreeAll, "all", false, "跨机汇总所有机器上的项目树（配合 --tree 使用）")
+	projectLsCmd.Flags().BoolVar(&projectTreeJSON, "json", false, "树形输出改为单行 JSON（配合 --tree/--all 使用）")
 	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd)
 	rootCmd.AddCommand(projectCmd)
 }

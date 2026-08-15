@@ -24,7 +24,7 @@ func stubStillAlive(t *testing.T) {
 func TestStopPropagatesStillAlive(t *testing.T) {
 	stubStillAlive(t)
 	a := New(nil)
-	r := newRunState("t-still-alive", t.TempDir(), t.TempDir())
+	r := a.newRunState("t-still-alive", t.TempDir(), t.TempDir())
 	r.proc = &Proc{Handle: prochost.Handle{PID: 4242}}
 	a.mu.Lock()
 	a.runs["t-still-alive"] = r

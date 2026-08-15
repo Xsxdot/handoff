@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "name": "internal",
+      "is_dir": true
+    },
+    {
+      "name": "go.mod",
+      "is_dir": false,
+      "size": 1284
+    }
+  ]
+}

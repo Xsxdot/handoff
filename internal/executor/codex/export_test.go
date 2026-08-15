@@ -11,6 +11,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // WriteServeInfoForTest 暴露 writeProcInfo，供 proc.json 回环测试。
@@ -114,7 +115,7 @@ func RejectedTurnQuestionForTest(r []string) string { return rejectedTurnQuestio
 // NewAdapterWithRunForTest 造一个带运行态的 adapter（不起进程、不连 WS）。
 func NewAdapterWithRunForTest(taskID string) (*Adapter, *runState) {
 	a := New(quietTestLogger())
-	r := newRunState(taskID, "", "")
+	r := a.newRunState(taskID, "", "")
 	a.mu.Lock()
 	a.runs[taskID] = r
 	a.mu.Unlock()
@@ -169,4 +170,9 @@ func SwapLookPathForTest(fn func(string) (string, error)) func() {
 	old := lookPath
 	lookPath = fn
 	return func() { lookPath = old }
+}
+
+// ParseTokenUsageForTest 暴露 token 用量解析，供 codex_test 包用真实报文断言。
+func ParseTokenUsageForTest(params json.RawMessage) (*proto.Usage, bool) {
+	return parseTokenUsage(params)
 }

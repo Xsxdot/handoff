@@ -83,6 +83,22 @@ type Config struct {
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（PathDirs 同款）。
 	Proxy        string `yaml:"proxy,omitempty"`
+	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
+	//
+	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
+	// launchd / ssh-agent **按会话注入**，不来自任何 dotfile，因此 login shell
+	// 的 rc 链**无法**像恢复 PATH 那样把它恢复出来。agentd 以服务形态托管时，
+	// 终端里的 ssh / git push 会因此全部失败。
+	//
+	// 三态语义（**不要**在 Load 里填默认值）：
+	//   nil        → 用内置默认清单 ptyhost.DefaultEnvForward()（当前是 SSH_AUTH_SOCK）
+	//   非 nil     → 完全以配置为准
+	//   []（显式） → 一个都不转发
+	// 一旦 Load 把默认值填进结构体，下一次 Save 就会把 env_forward 落进
+	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
+	//
+	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
+	EnvForward   []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -94,18 +110,60 @@ type Config struct {
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
+	// 合并 B102：main 侧 bbf16034 删除了 update.*（agentd 不再自动更新），w4 侧
+	// 因旧配置兼容仍保留字段并打 WarnDeprecated；w4 侧 config_test.go 的
+	// TestUpdateDefaults 等用例依赖该字段，这里取 w4 侧保留。
+	// Update 是自动更新配置。Auto 默认 true，Interval 默认 6h。
+	Update UpdateConfig
 	// Env 是 agent（executor）名 → env 文件名的映射：该 agent 启动时注入该文件里的
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
 	Env map[string]string
 	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
+	// Web 是浏览器控制台相关配置。
+	Web WebConfig
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
 // 同步到本地仓库。Auto 默认 true；关闭后仍可用 handoff pull 手动同步。
 type SyncConfig struct {
 	Auto bool
+}
+
+// UpdateConfig 是**已废弃**的自动更新配置。
+//
+// B59 取消了 agentd 的定时自更新循环：升级改由操作者一条 handoff upgrade
+// 触发，二进制由本机下载后推送给远端。这两个字段因此不再有任何效果。
+//
+// **为什么保留字段而不是删掉**：配置是 KnownFields(true) 严格解析的，未知键
+// 让 agentd **启动失败**。v0.1.0 的首次运行会把这两个键写进 config.yaml，
+// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来——正是这个设计要消灭
+// 的那类失配的最狠形态（B59 spec D7）。
+//
+// 取值非默认时由 WarnDeprecated 打一条 Warn：用户把 auto 设成 false 是有
+// 意图的，悄悄让它失效等于骗人。
+type UpdateConfig struct {
+	Auto     bool
+	Interval time.Duration
+}
+
+// WarnDeprecated 对已废弃且被显式改过的配置打一条 Warn。
+//
+// 参数：
+//   - log: 日志器（agentd 启动时传自己的）
+//
+// 注意：
+//   - 默认值不打。绝大多数机器都是默认值，每次启动打一条无从处置的 Warn，
+//     只会让人学会忽略日志——而那是比不打更糟的结果
+func (c *Config) WarnDeprecated(log *slog.Logger) {
+	if !c.Update.Auto {
+		log.Warn("配置 update.auto 已废弃且不再有效果：agentd 不再自动更新，升级请在审核者机器上跑 handoff upgrade --now")
+	}
+	if c.Update.Interval != 6*time.Hour {
+		log.Warn("配置 update.interval 已废弃且不再有效果：agentd 不再定时检查版本",
+			"配置值", c.Update.Interval)
+	}
 }
 
 // ApproverConfig 描述审批链的廉价模型审批者。
@@ -139,6 +197,18 @@ type ExecutorConfig struct {
 // 多出一行提示而解析错乱。
 type TerminalConfig struct {
 	Auto bool
+}
+
+// WebConfig 是浏览器控制台相关配置。
+//
+// AllowedHosts 是 Host 白名单的扩展项——回环地址（127.0.0.1 / localhost / ::1）
+// 与 Listen 的 host 恒在白名单内，无需重复配置。它为将来的域名/中转场景预留：
+// agentd 部署在 handoff.example.com 后面时，不配这一项所有请求都会被 403。
+//
+// yaml:"allowed_hosts"：strict 解码器（KnownFields）按 tag 匹配键名，
+// 不加 tag 时 yaml.v3 会把它映射成 allowedhosts（同 RepoRoot 的处理）。
+type WebConfig struct {
+	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，
@@ -203,6 +273,7 @@ func Load(path string) (*Config, error) {
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
+		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
 		ProcFence: ProcFenceConfig{
 			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
 			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
@@ -333,6 +404,16 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	// update.interval 只在启用自动更新时校验：没启用的东西写错不该拦启动，
+	// 与 approver 那组的处置保持一致。
+	//
+	// 为什么非正值必须拦：0 会让更新循环的 ticker 每个 tick 都立刻到期，
+	// 退化成忙轮询，几秒钟打满 GitHub 匿名限流（60 次/小时），此后所有
+	// 版本检查一起失败——症状是「自动更新莫名其妙不工作了」，根因却在
+	// 一行配置上。省略该键走默认 6h 是正常用法。
+	if c.Update.Auto && c.Update.Interval <= 0 {
+		return fmt.Errorf("update.interval 必须为正时长（当前 %s）；省略该键即用默认 6h", c.Update.Interval)
+	}
 	return nil
 }
 
@@ -358,7 +439,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

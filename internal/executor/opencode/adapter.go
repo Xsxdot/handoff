@@ -177,10 +177,11 @@ type runState struct {
 	stopOnce    sync.Once
 	closeOnce   sync.Once
 	renderPath  string
-	emitMu      sync.Mutex // 保护 evCh 的写入与关闭（订阅 goroutine 与 idle 定时器 goroutine 共写）
-	evClosed    bool       // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
-	turnMu      sync.Mutex // 保护以下回合累积状态（订阅 goroutine 与 idle 定时器 goroutine 共访）
-	idleGen     uint64     // idle 去抖代次：任何回合推进都自增，使在途的候选 idle 失效
+	frames      *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	emitMu      sync.Mutex        // 保护 evCh 的写入与关闭（订阅 goroutine 与 idle 定时器 goroutine 共写）
+	evClosed    bool              // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
+	turnMu      sync.Mutex        // 保护以下回合累积状态（订阅 goroutine 与 idle 定时器 goroutine 共访）
+	idleGen     uint64            // idle 去抖代次：任何回合推进都自增，使在途的候选 idle 失效
 	idleTimer   *time.Timer
 	startCommit string // 本回合起点 commit（兜底分类的基线，每回合结束后刷新）
 	// 回合文本按 part 分段保存而非拼成一个字符串：服务端会修订同一个 part 的
@@ -262,6 +263,12 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		permSession:     map[string]string{},
 		seenQuestionIDs: map[string]bool{},
 	}
+	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
+	fw, err := turn.WriterFor(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.runs[taskID] = r
@@ -359,6 +366,9 @@ func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API,
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
 	r.api = api
 	r.handle = handle
+	if err := r.frames.BeginTurn("dispatch"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
+	}
 	a.log.Info("adapter 启动运行", "task", r.taskID, "task_dir", r.taskDir, "workdir", r.repoPath)
 	defer func() {
 		if err != nil {
@@ -455,6 +465,9 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	case <-r.stopCh:
 		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能续接", taskID)
 	default:
+	}
+	if err := r.frames.BeginTurn("send"); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
 	a.log.Info("adapter 收到续接指令", "task", taskID, "text", turn.TruncateRunes(text, 80))
 	defer func() {
@@ -1375,6 +1388,19 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 // 文本全部丢弃、idle 走空回合分支永不分类，任务静默挂死（A-3）。回合缓冲由
 // mapIdle 在分类后清空即可，不需要第二个清空信号。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
+	// 模型名与用量就在这一帧的 info 里——此前只解了 id 与 role。
+	// 零值帧由 parseMessageUsage 内部跳过，否则界面会在每条新消息开头闪回 0。
+	if model, u, ok := parseMessageUsage(props); ok && (model != "" || u != nil) {
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
+	// 累计消耗：同一帧还带这条消息的 cost 与产出侧 token。与上面的当前占用
+	// 是两个口径——上面只算输入侧，这里连产出一起算，且 reasoning 要相加。
+	//
+	// opencode 的消息帧频率极高（一条消息推几十次），**这里刻意不打任何日志**——
+	// 入账的 Debug 已经由 handleSpend 统一打了，adapter 再打就是双份刷屏。
+	if e, ok := parseMessageSpend(props); ok {
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	}
 	var msg struct {
 		Info struct {
 			ID   string `json:"id"`
@@ -1434,7 +1460,12 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 		r.lastAssistantMsgID = p.MessageID
 	}
 	// 类型揭晓：把该 part 暂存的增量按真实类型落地或丢弃（A-5）
-	a.flushPending(r, key, isText)
+	// 注意：user 消息里的 text part 不是模型正文，按非文本处置（沿用 isText 的既有语义）
+	pendingType := p.Type
+	if p.Type == "text" && r.userMsgs[p.MessageID] {
+		pendingType = "user-text"
+	}
+	a.flushPending(r, key, pendingType)
 	if !isText {
 		return // reasoning/tool/step-start 等非文本 part 与 user 消息文本不参与累积
 	}
@@ -1453,20 +1484,60 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 	a.setPartText(r, key, p.Text)
 }
 
+// partFrameKind 是 part 类型到帧类型的归类结果。
+type partFrameKind int
+
+const (
+	kindSkip      partFrameKind = iota // 不产帧
+	kindText                           // 产 text 帧
+	kindReasoning                      // 产 reasoning 帧
+)
+
+// frameKind 把 opencode 的 part 类型归类成帧类型。
+//
+// 为什么 tool 归到 kindSkip：tool part 的**文本增量**是工具入参的流式拼装，
+// 不是给人读的内容；工具调用本身由 mapToolPart 以完整的 tool_call 帧上报，
+// 在这里再产一路会出现同一次调用两种形态。
+//
+// 未知类型一律 kindSkip：opencode 上游加了新 part 类型时，宁可少一种帧，
+// 也不要把它猜成正文——猜错就是把非正文内容当模型输出展示。
+func frameKind(partType string) partFrameKind {
+	switch partType {
+	case "text":
+		return kindText
+	case "reasoning":
+		return kindReasoning
+	default:
+		return kindSkip
+	}
+}
+
 // flushPending 在 part 类型揭晓时处置它的暂存增量：是文本就落地进回合，
 // 不是就整段丢弃（reasoning/tool 的增量绝不能进回合与 render.log）。
-func (a *Adapter) flushPending(r *runState, key string, isText bool) {
+//
+// W4a：丢弃前先按真实类型分流出一路帧——reasoning 的暂存增量落 reasoning 帧，
+// 其余照旧整段丢弃。回合与 render.log 的走向一字不改。
+//
+// 为什么参数从 isText bool 换成 partType string：bool 分不出 reasoning 与
+// tool，而这两者的帧处置不同（前者产帧、后者不产）。
+func (a *Adapter) flushPending(r *runState, key, partType string) {
 	buf, ok := r.pendingDelta[key]
 	if !ok {
 		return
 	}
 	delete(r.pendingDelta, key)
 	r.pendingBytes -= len(buf)
-	if !isText {
-		a.log.Debug("暂存增量所属 part 非文本，整段丢弃", "task", r.taskID, "bytes", len(buf))
+	switch frameKind(partType) {
+	case kindText:
+		a.setPartText(r, key, r.partSeen[key]+buf)
 		return
+	case kindReasoning:
+		if err := r.frames.Reasoning(key, buf); err != nil {
+			a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
 	}
-	a.setPartText(r, key, r.partSeen[key]+buf)
+	a.log.Debug("暂存增量所属 part 非文本，不进回合", "task", r.taskID,
+		"type", partType, "bytes", len(buf))
 }
 
 // mapPartDelta 处理 message.part.delta：field=text 的流式增量。
@@ -1518,6 +1589,13 @@ func (a *Adapter) mapPartDelta(r *runState, props json.RawMessage) {
 		r.pendingBytes += len(pd.Delta)
 	default:
 		// 已知非 text part（reasoning/tool）的增量：不累积、不进 render.log
+		// （隔离一行不改）。W4a 在此**额外**分流出一路结构化帧：
+		// reasoning 落 reasoning 帧，tool 与未知类型不产帧（见 frameKind）
+		if frameKind(r.partTypes[key]) == kindReasoning {
+			if err := r.frames.Reasoning(key, pd.Delta); err != nil {
+				a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+			}
+		}
 	}
 }
 
@@ -1745,6 +1823,13 @@ func (a *Adapter) setPartText(r *runState, key, text string) {
 	}
 	if err := r.appendRender(render); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
+	}
+	// 与 render.log 同源同增量：帧流与实况流对同一段文本给出一致的切分
+	// 快照被修订、非追加的那一路不产帧：帧流只追加，无法表达改写历史
+	if old == "" || strings.HasPrefix(text, old) {
+		if err := r.frames.Text(key, render); err != nil {
+			a.log.Warn("写 text 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
 	}
 	a.maybeProgress(r)
 }

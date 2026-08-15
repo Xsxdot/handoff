@@ -114,6 +114,43 @@ takes (the full UUID — short ids are not supported).
 
 **4. Wait for events, make the calls.**
 
+### 浏览器控制台
+
+```bash
+handoff console                 # 打开系统浏览器（自动换一次性 ticket）
+handoff console --print-url     # 只打印兑换 URL，不打开浏览器
+handoff sessions                # 列出已建立的浏览器会话
+handoff sessions revoke <id>    # 吊销一个会话（手机丢失时用它）
+```
+
+**机制**：`console` 用主令牌向 agentd 换一张 **60 秒、一次性**的 ticket，
+浏览器打开该 URL 后 agentd 原子消费它，下发一个 httpOnly cookie 会话（默认 30 天，
+滑动续期），此后 `/api` 与 `/ws` 全部路由都用这个 cookie。
+
+**长期凭据永远不进 URL**——URL 里只有那张一次性 ticket。
+
+**Host 白名单**：agentd 只接受 Host 为 `127.0.0.1` / `localhost` / `::1` /
+配置的 `listen` 地址的请求。放到域名后面时必须配：
+
+```yaml
+web:
+  allowed_hosts:
+    - handoff.example.com
+```
+
+不配的表现是**全部请求 403**，agentd 日志里有 `Host 不在白名单`。
+
+**桌面壳接线契约**（壳内零凭据逻辑）：
+
+1. 探测本机 agentd 是否在监听；
+2. 执行 `handoff console --print-url`，**stdout 恰好一行，就是 URL**；
+3. `loadURL(那一行)`。
+
+壳不读 `config.yaml`、不碰主令牌、不实现任何鉴权代码。会话过期时页面返回 401，
+壳重跑第 2、3 步即可，用户无感。
+
+## 配置（~/.handoff/config.yaml）
+
 ```bash
 handoff wait <task> --notify              # block until the next event that needs you (desktop notification on macOS)
 handoff reply <task> --ticket <id> --approve                                      # grant permission
@@ -188,6 +225,32 @@ targets:
     addr: "192.168.x.x:7777"
     token: "<the executor machine's token>"
     user: "<remote ssh username>"    # omit if same as your local username; pull uses it over ssh
+```
+
+完整的 `~/.handoff/config.yaml` 样例：
+
+```yaml
+approver:                     # 分级审批链的廉价模型审批者
+  executor: opencode          # 空=不启用审批链（权限请求直接升级人工审核者）
+  model: cheap/model          # 审批者模型；空=用执行者自身默认
+  timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
+  blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
+    - "kubectl .*delete"
+executor:                     # dispatch 未显式指定执行者时的缺省
+  default: opencode
+  model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
+terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
+  auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
+sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
+  auto: true                  # 关闭后仍可用 handoff pull 手动同步
+env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
+  opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
+  claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
+repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
+path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才加，不需要就别写这个键
+web:                          # 浏览器控制台 Host 白名单
+  allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
+    - handoff.example.com
 ```
 
 **3. Dispatch**:

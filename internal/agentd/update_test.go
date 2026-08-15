@@ -74,6 +74,10 @@ func newUpdateServer(t *testing.T, st *store.Store, managed bool) (*Server, *[]s
 func post(t *testing.T, srv *Server, query string, body []byte) (int, proto.UpdateError, proto.UpdateResp) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/update?"+query, bytes.NewReader(body))
+	// httptest.NewRequest 的默认 Host 是 example.com，会被 hostGuard 在鉴权前
+	// 403 掉（W3 的 Host 白名单）。本组用例测的是换版的两道闸，不是白名单，
+	// 因此显式给一个回环 Host 让请求走到 handler。
+	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer tk")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)

@@ -114,7 +114,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		a.log.Info("冷恢复新 app-server 就绪", "task", taskID, "new_port", proc.Port)
 	}
 
-	r := newRunState(taskID, taskDir, repoPath)
+	r := a.newRunState(taskID, taskDir, repoPath)
 	r.proc = proc
 	r.threadID = threadID
 	if _, c, _, gerr := turn.GitTurnStatus(repoPath, ""); gerr == nil {

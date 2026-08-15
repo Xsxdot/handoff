@@ -160,6 +160,9 @@ type Client struct {
 	baseURL string
 	token   string
 	hc      *http.Client
+	// extraHeaders 是每个请求都要带的附加头（目前只有 agentd→agentd 的防环标记）。
+	// nil 表示没有附加头，生产上的审核者客户端恒为 nil。
+	extraHeaders map[string]string
 	// WS 断线重连的退避区间与「这次连接算健康」的存活门槛（见 WaitEvent）。
 	// 测试经 NewWithWSTiming 注入毫秒级值，生产一律用包级默认。
 	wsInitialBackoff time.Duration
@@ -208,6 +211,16 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 	}
 }
 
+// MarkForwarded 返回一个副本，其后续请求都带上 X-Handoff-Forwarded: 1。
+//
+// 用途：agentd 扇出到别的 agentd 时必须带这个标记，让对端不再向外扇出——
+// 一跳封顶，A→B→A 不可能成环。审核者 CLI **不要**用它。
+func (c *Client) MarkForwarded() *Client {
+	cp := *c
+	cp.extraHeaders = map[string]string{"X-Handoff-Forwarded": "1"}
+	return &cp
+}
+
 // log 返回运行时 slog.Default()。
 //
 // 为什么不用包级 var：cli 命令在 RunE 里才 logx.Setup + slog.SetDefault，包级 var
@@ -231,6 +244,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -631,6 +647,82 @@ func (c *Client) ProjectList(ctx context.Context) ([]proto.ProjectLocation, erro
 	return locs, nil
 }
 
+// ProjectTree 取项目树（GET /api/projects/tree）。
+//
+// 注意：本方法只取**单机**树。跨机汇总是 agentd 侧的事（它对每台取单机树再合并），
+// 客户端拿汇总请打 ?scope=all 的那条路径，由 agentd 负责扇出。
+func (c *Client) ProjectTree(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ProjectTreeAll 取跨机汇总的项目树（GET /api/projects/tree?scope=all）。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝扇出。
+func (c *Client) ProjectTreeAll(ctx context.Context) (*proto.ProjectTreeResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/projects/tree?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求项目树(全机器): %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("项目树(全机器)", resp)
+	}
+	var out proto.ProjectTreeResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析项目树(全机器)响应: %w", err)
+	}
+	return &out, nil
+}
+
+// Machines 列出本机视角的全部机器与探活结果（GET /api/machines）。
+func (c *Client) Machines(ctx context.Context) (*proto.MachinesResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/machines", nil)
+	if err != nil {
+		return nil, fmt.Errorf("机器列表请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("机器列表", resp)
+	}
+	var out proto.MachinesResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析机器列表响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ListTasksAll 取跨机汇总的任务列表（GET /api/tasks?scope=all），
+// 远端任务读镜像快照、带 machine 名，机器应答情况在信封的 machines 栏。
+//
+// 注意：本方法不带转发标记——那是 agentd 之间的标记，CLI 用了会让本机拒绝汇总。
+func (c *Client) ListTasksAll(ctx context.Context) (*proto.TasksResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/tasks?scope=all", nil)
+	if err != nil {
+		return nil, fmt.Errorf("任务汇总请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("任务汇总", resp)
+	}
+	var out proto.TasksResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析任务汇总响应: %w", err)
+	}
+	return &out, nil
+}
+
 // ProjectRemove 注销一条项目位置。
 //
 // 注意：
@@ -832,6 +924,64 @@ func (c *Client) Run(ctx context.Context, taskID, cmd string) (stdout string, ex
 	return out.Stdout, out.ExitCode, nil
 }
 
+// IssueAuthTicket 请求 agentd 签发一次性 ticket，返回可直接打开的兑换 URL。
+//
+// 参数：
+//   - deviceName: 设备展示名，纯展示，服务端会净化控制字符
+//
+// 返回：
+//   - 兑换 URL 与过期时刻
+//   - 连不上 agentd 时返回带诊断提示的错误（不退化成一句裸的 dial 失败）
+func (c *Client) IssueAuthTicket(ctx context.Context, deviceName string) (*proto.AuthTicketResp, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/auth/tickets",
+		map[string]string{"device_name": deviceName})
+	if err != nil {
+		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("签发 ticket", resp)
+	}
+	var out proto.AuthTicketResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析签发响应: %w", err)
+	}
+	return &out, nil
+}
+
+// ListSessions 列出 agentd 上的全部浏览器会话（含已吊销）。
+func (c *Client) ListSessions(ctx context.Context) ([]proto.SessionInfo, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/auth/sessions", nil)
+	if err != nil {
+		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("列出会话", resp)
+	}
+	var out []proto.SessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析会话列表: %w", err)
+	}
+	return out, nil
+}
+
+// RevokeSession 吊销指定会话。
+//
+// 返回：
+//   - 404 时错误里含服务端原文「会话不存在或已吊销」
+func (c *Client) RevokeSession(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/auth/sessions/"+url.PathEscape(id), nil)
+	if err != nil {
+		return fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("吊销会话", resp)
+	}
+	return nil
+}
+
 // doStream 发送带 Bearer token 的流式 GET 请求，返回不关闭 body 的响应。
 //
 // 为什么不能复用 do：do 不做任何读体/超时假设，但它没有专门的流式语义——
@@ -888,6 +1038,49 @@ func (c *Client) RenderStream(ctx context.Context, taskID string,
 		return nil, 0, c.httpError("render 流", resp)
 	}
 	size, _ := strconv.ParseInt(resp.Header.Get("X-Handoff-Render-Size"), 10, 64)
+	return resp.Body, size, nil
+}
+
+// FramesStream 打开任务的结构化回合帧（frames.jsonl）流式读取。
+//
+// 参数：
+//   - taskID: 目标任务
+//   - offset: 起始字节偏移；>0 时优先于 tail（用于断线续传）
+//   - tail:   从尾部回溯的字节数（offset<=0 时生效；两者都为 0 时由服务端取默认值）
+//   - follow: 是否在到达文件尾后继续等待增量
+//
+// 返回：
+//   - 流（调用方负责 Close，每行一个 proto.Frame 的 JSON）、响应开始时的文件
+//     字节数、错误
+//
+// 注意：
+//   - 与 RenderStream 一样**不设读超时**：follow 模式下长时间无输出是正常的
+//   - 服务端保证只在完整行边界切，但调用方仍应按行缓冲——中间设备可能在
+//     任意字节处切包
+func (c *Client) FramesStream(ctx context.Context, taskID string,
+	offset, tail int64, follow bool) (io.ReadCloser, int64, error) {
+	q := url.Values{}
+	if offset > 0 {
+		q.Set("offset", strconv.FormatInt(offset, 10))
+	} else if tail > 0 {
+		q.Set("tail", strconv.FormatInt(tail, 10))
+	}
+	if follow {
+		q.Set("follow", "1")
+	}
+	path := "/api/tasks/" + taskID + "/frames"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	resp, err := c.doStream(ctx, http.MethodGet, path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("frames 流请求: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, 0, c.httpError("frames 流", resp)
+	}
+	size, _ := strconv.ParseInt(resp.Header.Get("X-Handoff-Frames-Size"), 10, 64)
 	return resp.Body, size, nil
 }
 
@@ -1002,6 +1195,14 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
 	}
+	// 附加头（agentd→agentd 的防环标记）同样带进 WS 握手：
+	// streamOnce 不走 do，这里补一遍，让 MarkForwarded 的镜像连接从拨号起就带标记
+	for k, v := range c.extraHeaders {
+		if opts.HTTPHeader == nil {
+			opts.HTTPHeader = http.Header{}
+		}
+		opts.HTTPHeader.Set(k, v)
+	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()
@@ -1059,6 +1260,29 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 			return err
 		}
 	}
+}
+
+// StreamEventsOnce 建立一次事件流连接，把收到的每一帧交给 onEvent，直到连接
+// 断开或 ctx 取消。**不读写任何 cursor 文件，不做重连**。
+//
+// 参数：
+//   - taskID: 任务 id（必须是完整 UUID）
+//   - fromSeq: 起始 seq（开区间）；调用方自己持有水位
+//   - onEvent: 每帧回调；返回错误即中止本次连接
+//
+// 为什么必须有这个「无 cursor」变体：FollowEvents / WaitEvent 把水位存在
+// ~/.handoff/cursor-<task>，那是**审核者本机**的状态。agentd 做事件镜像时
+// 跑在同一台机器上，若复用带 cursor 的路径，agentd 的镜像与人手敲的
+// handoff wait 会互相推进对方的水位——一方吃掉另一方的事件，且极难归因。
+// 镜像的水位属于 mirror_events 表，不属于文件系统。
+//
+// 注意：单次连接、不重连。退避与重连策略由调用方（镜像订阅循环）决定，
+// 它的节奏（300ms→×2→10s）与审核者 CLI 的（1s→60s）刻意不同。
+func (c *Client) StreamEventsOnce(ctx context.Context, taskID string, fromSeq int64,
+	onEvent func(proto.Event) error) error {
+	c.log().Debug("镜像事件流建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
+	// readDeadline 返回零值 = 不设读超时：镜像是常驻订阅，长时间无事件是正常态
+	return c.streamOnce(ctx, taskID, fromSeq, func() time.Time { return time.Time{} }, onEvent)
 }
 
 // waitOnce 建立一次 WS 连接并消费事件，直到返回首个可动作事件或连接失败。
@@ -1387,4 +1611,29 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 	c.log().Debug("cursor 写入", "task", taskID, "path", p, "seq", seq)
 	c.sweepStaleCursorTemps(filepath.Dir(p), taskID)
 	return nil
+}
+
+// 合并 B102：w4 侧在此处新增的 cursorTempTTL / sweepStaleCursorTemps 与 main 侧
+// cursorgc.go 里同名实现重复（main 侧 glob 用 taskID+"-*.tmp"，与 writeCursor
+// 的 CreateTemp(filepath.Base(p)+"-*.tmp") 命名一致，w4 侧误写成 "cursor-"+taskID），
+// 这里取 main 侧的实现并删掉 w4 侧重复定义；PtySessions 是 w4 侧独有的纯新增，保留。
+
+// PtySessions 取对端的**单机**终端会话列表（GET /api/pty/sessions）。
+//
+// 供本机 agentd 的 ?scope=all 扇出使用，调用方应先 MarkForwarded()——
+// 否则对端会再扇出一轮，一跳封顶的约定就破了。
+func (c *Client) PtySessions(ctx context.Context) (*proto.PtySessionsResp, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/pty/sessions", nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求终端会话列表: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("终端会话列表", resp)
+	}
+	var out proto.PtySessionsResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析终端会话列表响应: %w", err)
+	}
+	return &out, nil
 }

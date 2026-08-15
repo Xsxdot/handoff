@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>W4b 结构化回合时间线 · 形态验收基准</title>
+<!--
+  W4b 形态验收基准（方案二：线性时间线）
+
+  职责：
+    - 固定 W4b 的最终页面形态，供真实页面开发完成后逐项对照验收
+    - 覆盖 spec §11 列出的全部形态要点：回合分隔与锚点、思维链默认折叠、
+      工具卡三种状态、截断提示、事件打断标记、坏行提示、切回原始视图
+
+  边界：
+    - 不是真实实现，不连任何接口；帧数据是照 W4a 契约写死的模拟数据
+    - 不追求像素级还原 shadcn 主题，只固定信息层级与交互形态
+    - 「加载更早」只演示交互与滚动补偿，不做真实分页
+-->
+<style>
+:root{
+  --bg:#fff; --fg:#0f1115; --muted:#6b7280; --line:#e5e7eb; --panel:#fafafa; --card:#fff;
+  --think:#7c3aed; --think-bg:#f5f3ff; --tool:#0369a1; --tool-bg:#f0f9ff;
+  --ok:#15803d; --err:#b91c1c; --warn:#b45309; --evt-bg:#fffbeb; --code-bg:#f3f4f6;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0b0d11; --fg:#e6e8ec; --muted:#9aa3af; --line:#232830; --panel:#12151b; --card:#12151b;
+    --think:#a78bfa; --think-bg:#1c1830; --tool:#38bdf8; --tool-bg:#0e1c28;
+    --ok:#4ade80; --err:#f87171; --warn:#fbbf24; --evt-bg:#241d0e; --code-bg:#171b22;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:20px 20px 60px}
+.crumb{color:var(--muted);font-size:12px;margin-bottom:14px}
+
+/* 面板外壳 */
+.panel{border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.phead{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.phead h2{font-size:14px;margin:0;display:flex;align-items:center;gap:6px}
+.spacer{flex:1}
+.badge{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);
+  color:var(--muted)}
+.badge.live{color:var(--ok);border-color:var(--ok)}
+.switch{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer}
+
+/* 锚点条 */
+.anchors{display:flex;align-items:center;gap:6px;padding:8px 14px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);font-size:12px}
+.anchors .lbl{color:var(--muted)}
+.anchor{border:1px solid var(--line);background:var(--card);color:var(--fg);
+  border-radius:5px;padding:2px 9px;cursor:pointer;font-size:12px}
+.anchor:hover{border-color:var(--tool);color:var(--tool)}
+.anchors .hint{color:var(--muted);font-size:11px;margin-left:auto}
+
+/* 坏行提示 */
+.badlines{margin:0;padding:7px 14px;background:var(--evt-bg);
+  border-bottom:1px solid var(--line);font-size:12px;color:var(--warn)}
+
+.scroll{height:520px;overflow:auto;padding:12px 14px}
+
+.earlier{display:flex;justify-content:center;margin-bottom:10px}
+.earlier button{border:1px dashed var(--line);background:transparent;color:var(--muted);
+  border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px}
+.earlier button:hover{color:var(--fg);border-color:var(--fg)}
+.earlier.done button{cursor:default;opacity:.55}
+
+/* 线性时间线 */
+.lin{display:grid;grid-template-columns:22px 1fr;gap:0 10px}
+.gut{color:var(--muted);font-size:12px;text-align:center;padding-top:5px;line-height:1.4}
+.cell{min-width:0}
+.turnsep{grid-column:1/-1;display:flex;align-items:center;gap:10px;
+  margin:16px 0 8px;font-size:11.5px;color:var(--muted);scroll-margin-top:8px}
+.turnsep:first-child{margin-top:0}
+.turnsep .bar{flex:1;height:1px;background:var(--line)}
+.turnsep b{color:var(--fg);font-weight:600}
+
+.text{white-space:pre-wrap;margin:4px 0 8px}
+.text code{background:var(--code-bg);border-radius:3px;padding:1px 4px;
+  font-family:var(--mono);font-size:12.5px}
+.text pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;
+  padding:8px 10px;overflow:auto;font-family:var(--mono);font-size:12px;margin:6px 0}
+
+.think{border-left:2px solid var(--think);background:var(--think-bg);
+  border-radius:0 6px 6px 0;padding:5px 10px;margin:5px 0}
+.think .lbl{color:var(--think);font-size:12px;cursor:pointer;user-select:none;
+  display:inline-flex;gap:5px;align-items:center}
+.think .content{white-space:pre-wrap;color:var(--muted);margin-top:6px;
+  font-size:12.5px;display:none}
+.think.open .content{display:block}
+
+.tool{border:1px solid var(--line);background:var(--card);border-radius:8px;
+  margin:7px 0;overflow:hidden}
+.tool .hd{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;
+  user-select:none;font-size:13px}
+.tool .nm{font-family:var(--mono);color:var(--tool);font-weight:600;flex:none}
+.tool .arg{color:var(--muted);font-family:var(--mono);font-size:12px;flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid var(--line);flex:none}
+.st.ok{color:var(--ok);border-color:var(--ok)}
+.st.err{color:var(--err);border-color:var(--err)}
+.st.run{color:var(--muted)}
+.st.gone{color:var(--warn);border-color:var(--warn)}
+.tool .bd{display:none;border-top:1px solid var(--line);background:var(--tool-bg)}
+.tool.open .bd{display:block}
+.io{padding:8px 10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;
+  word-break:break-word}
+.io+.io{border-top:1px dashed var(--line)}
+.cap{color:var(--muted);font-size:11px;display:block;margin-bottom:4px;
+  font-family:-apple-system,sans-serif}
+.trunc{color:var(--warn);font-size:11px;margin-top:6px;
+  font-family:-apple-system,sans-serif}
+.unknown{border:1px dashed var(--line);border-radius:6px;padding:5px 10px;margin:6px 0;
+  font-size:12px;color:var(--muted);cursor:pointer}
+.unknown pre{display:none;margin:6px 0 0;font-family:var(--mono);font-size:11.5px;
+  white-space:pre-wrap}
+.unknown.open pre{display:block}
+
+.evt{background:var(--evt-bg);border:1px solid var(--line);border-radius:6px;
+  padding:5px 10px;margin:7px 0;font-size:12.5px}
+.evt .t{color:var(--muted);font-size:11px;margin-left:6px}
+
+.raw{font-family:var(--mono);font-size:12px;white-space:pre-wrap;color:var(--muted)}
+.legend{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.9}
+.legend b{color:var(--fg)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb">任务看板 › w4a-frames · <span style="font-family:var(--mono)">8205ef68</span> › 回合时间线</div>
+
+  <div class="panel">
+    <div class="phead">
+      <h2>👁 回合时间线</h2>
+      <span class="badge live" id="follow">跟随中</span>
+      <span class="badge" id="size">已加载 24.6 KB</span>
+      <span class="spacer"></span>
+      <label class="switch"><input type="checkbox" id="rawtoggle"> 原始 render.log</label>
+    </div>
+
+    <div class="anchors" id="anchors"></div>
+    <p class="badlines" id="badlines">⚠ 2 行无法解析，已跳过（其余帧不受影响）</p>
+
+    <div class="scroll" id="scroll"></div>
+  </div>
+
+  <div class="legend">
+    <b>验收要点</b>（对照 spec §11）<br>
+    ① 回合分隔线 + 顶部锚点，锚点明确标注只覆盖已加载范围<br>
+    ② 思维链默认折叠成一行摘要，点开才展开<br>
+    ③ 工具卡三种状态：<span style="color:var(--ok)">成功</span> /
+       <span style="color:var(--err)">失败</span> /
+       <span style="color:var(--warn)">未返回</span>（executor 半路死掉，不是「进行中」）<br>
+    ④ 超长输出显示截断提示，带原始字节数<br>
+    ⑤ 事件是不可操作的打断标记，审批入口只在工单区<br>
+    ⑥ 坏行跳过并计数，不让整条时间线白屏<br>
+    ⑦ 未知帧类型渲染成中性条目，可展开看原始 JSON<br>
+    ⑧ 「加载更早」prepend 后补偿滚动位置，用户视线不被弹走<br>
+    ⑨ 正文只渲染代码围栏与行内 code，其余纯文本
+  </div>
+</div>
+
+<script>
+// ── 模拟帧：字段严格照 W4a 契约
+//    seq / ts / turn / type / part / delta / tool / input / output /
+//    status / truncated / bytes / ref_seq / event / reason
+const EARLY = [
+ {seq:1,turn:1,type:'turn_start',reason:'dispatch',ts:'12:56:23'},
+ {seq:2,turn:1,type:'reasoning',part:'r1',delta:'计划要求 Task 4 必须在改 adapter 之前完成——它是给 Task 5-8 兜底的黄金基线。\n先确认四个 adapter 当前往 render.log 里各写了什么，逐字节基线才有意义。\ncodex 那边没有真实抓包，硬造 JSON 会被 TestSpikeFixturesAreRealCaptures 拦下，所以它不录基线。'},
+ {seq:3,turn:1,type:'text',part:'t1',delta:'我先读完整个计划，再从 Task 1 的契约落地开始。'},
+ {seq:4,turn:1,type:'tool_call',part:'p03',tool:'read',input:'{"path":"docs/superpowers/plans/2026-08-12-w4a-structured-turn-frames.md"}'},
+ {seq:5,turn:1,type:'tool_result',part:'p03',status:'ok',truncated:true,bytes:141882,
+  output:'# W4a 结构化回合流 Implementation Plan\n\n## Global Constraints\n\n- 只加不改：四个 adapter 的 render.log 产物必须逐字节不变\n- 思维链绝不进回合正文（turn.ParseTrailer 的输入）\n- 不引入新的第三方依赖，不动 go.mod\n\n…（已截断）…\n\n### Task 12: 收口自检\n- [ ] Step 7: 确认无 golden 被 -update 重录'},
+ {seq:6,turn:1,type:'tool_call',part:'p04',tool:'grep',input:'{"pattern":"AppendRender","glob":"internal/executor/**/*.go"}'},
+ {seq:7,turn:1,type:'tool_result',part:'p04',status:'ok',
+  output:'internal/executor/claudecode/adapter.go:412\ninternal/executor/opencode/adapter.go:588\ninternal/executor/codex/adapter.go:701\ninternal/executor/grok/adapter.go:266'},
+];
+const LATER = [
+ {seq:8,turn:1,type:'reasoning',part:'r2',delta:'四家都直接调 AppendRender，说明写入点是分散的。\n黄金基线必须一家一份，不能合成一个通用测试——那会掩盖各家差异。'},
+ {seq:9,turn:1,type:'tool_call',part:'p06',tool:'write',input:'{"path":"internal/executor/turn/frames.go"}'},
+ {seq:10,turn:1,type:'tool_result',part:'p06',status:'ok',output:'已写入 4193 字节'},
+ {seq:11,turn:1,type:'tool_call',part:'p07',tool:'bash',input:'{"cmd":"go test ./internal/executor/turn/ -run TestFrameWriter -v"}'},
+ {seq:12,turn:1,type:'tool_result',part:'p07',status:'error',
+  output:'--- FAIL: TestFrameWriterResumesSeq (0.00s)\n    frames_test.go:88: seq = 1, want 4\nFAIL\nFAIL\tgithub.com/xushixin/handoff/internal/executor/turn\t0.212s'},
+ {seq:13,turn:1,type:'text',part:'t2',delta:'续号没从文件尾恢复，我漏了回扫。修法是从文件尾回扫 64KB 找最后一个完整行：\n\n```go\nfunc resumeSeq(f *os.File) int64 {\n\t// 从尾部回扫 framesResumeScan 字节，取最后一个完整行的 seq\n\tif off, err := f.Seek(-framesResumeScan, io.SeekEnd); err == nil {\n\t\treturn lastSeqAfter(f, off) + 1\n\t}\n\treturn 1\n}\n```\n\n注意 `framesResumeScan` 是 `64<<10`，不是行数。'},
+ {seq:14,turn:1,type:'tool_call',part:'p09',tool:'bash',input:'{"cmd":"go build ./... && go vet ./..."}'},
+ // event 帧的 ref_seq 指向 events 表的库级 seq，与帧的任务内 seq 是两套编号
+ {seq:15,turn:1,type:'event',ref_seq:88,event:'permission_request',ts:'12:57:33'},
+ {seq:16,turn:2,type:'turn_start',reason:'send',ts:'13:02:10'},
+ {seq:17,turn:2,type:'reasoning',part:'r3',delta:'审核者批了读取 skill 目录。回到续号问题，把回扫接上。'},
+ // part 只在回合内唯一：这里 turn 2 重新从 p02 起，与 turn 1 的 p02 不是同一次调用
+ {seq:18,turn:2,type:'tool_call',part:'p02',tool:'edit',input:'{"path":"internal/executor/turn/frames.go","old":"seq: 0,","new":"seq: resumeSeq(f),"}'},
+ {seq:19,turn:2,type:'tool_result',part:'p02',status:'ok',output:'已应用 1 处修改'},
+ {seq:20,turn:2,type:'checkpoint',note:'未来新增的帧类型'},
+ {seq:21,turn:2,type:'tool_call',part:'p04',tool:'bash',input:'{"cmd":"go test ./internal/... ./cmd/..."}'},
+ {seq:22,turn:2,type:'tool_result',part:'p04',status:'ok',
+  output:'ok  \tgithub.com/xushixin/handoff/internal/agentd\t1.204s\nok  \tgithub.com/xushixin/handoff/internal/executor/turn\t0.198s\nok  \tgithub.com/xushixin/handoff/internal/executor/claudecode\t0.402s\n…（已截断）…\nok  \tgithub.com/xushixin/handoff/cmd\t0.881s'},
+ {seq:23,turn:3,type:'turn_start',reason:'send',ts:'13:20:44'},
+ {seq:24,turn:3,type:'text',part:'t4',delta:'Task 1-4 完成，全量测试绿。render.log 黄金基线三份（claude / opencode / grok），codex 按计划不录。'},
+ {seq:25,turn:3,type:'tool_call',part:'p02',tool:'bash',input:'{"cmd":"go test ./internal/executor/... -race"}'},
+];
+
+let loaded = LATER.slice();      // 默认只加载尾部
+let earlierLoaded = false;
+const TASK_STATE = 'waiting_review';   // 决定未配对工具卡显示「未返回」而非「进行中」
+
+const ICON={read:'📄',grep:'🔎',write:'✎',edit:'✎',bash:'▸'};
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const argOf=f=>{try{const o=JSON.parse(f.input);return o.path||o.cmd||o.pattern||f.input}
+                catch(e){return f.input}};
+
+// codeText —— 只渲染三段围栏与行内 code，其余纯文本；围栏未闭合按纯文本降级
+function codeText(s){
+  const parts=s.split(/```/);
+  if(parts.length<3) return inlineCode(esc(s));          // 未闭合：降级
+  return parts.map((p,i)=>{
+    if(i%2===1){
+      const nl=p.indexOf('\n');
+      return `<pre>${esc(nl>=0?p.slice(nl+1):p)}</pre>`;
+    }
+    return inlineCode(esc(p));
+  }).join('');
+}
+const inlineCode=s=>s.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+
+function statusOf(call,res){
+  if(res) return res.status==='ok'
+    ? '<span class="st ok">成功</span>' : '<span class="st err">失败</span>';
+  return (TASK_STATE==='running'||TASK_STATE==='waiting_answer')
+    ? '<span class="st run">进行中</span>'
+    : '<span class="st gone">未返回</span>';
+}
+const truncNote=f=>f.truncated
+  ? `<div class="trunc">⚠ 已截断（原始 ${f.bytes.toLocaleString()} 字节，保留头 4KB + 尾 4KB）</div>`
+  : '';
+
+function render(){
+  const raw=document.getElementById('rawtoggle').checked;
+  document.getElementById('anchors').style.display=raw?'none':'';
+  document.getElementById('badlines').style.display=raw?'none':'';
+  const sc=document.getElementById('scroll');
+  if(raw){ sc.innerHTML=`<div class="raw">${esc(RAW)}</div>`; return; }
+
+  // 配对键是 (turn, part)：part 只在回合内唯一，不带 turn 会让不同回合串台
+  const res={}; loaded.forEach(f=>{if(f.type==='tool_result')res[f.turn+'/'+f.part]=f});
+  let h=`<div class="earlier${earlierLoaded?' done':''}">
+    <button id="earlierBtn">${earlierLoaded?'已到最早一帧':'↑ 加载更早'}</button></div><div class="lin">`;
+
+  loaded.forEach(f=>{
+    if(f.type==='turn_start'){
+      const why=f.reason==='dispatch'?'派发':'续发指令';
+      h+=`<div class="turnsep" id="turn-${f.turn}"><span class="bar"></span>
+        <b>回合 ${f.turn}</b> · ${why} · ${f.ts}<span class="bar"></span></div>`;
+      return;
+    }
+    if(f.type==='tool_result') return;
+    let icon='',inner='';
+    if(f.type==='reasoning'){
+      icon='🧠';
+      inner=`<div class="think" data-t="think"><span class="lbl">思维链 · ${f.delta.length} 字 ▾</span>
+        <div class="content">${esc(f.delta)}</div></div>`;
+    } else if(f.type==='text'){
+      icon='💬'; inner=`<div class="text">${codeText(f.delta)}</div>`;
+    } else if(f.type==='tool_call'){
+      const r=res[f.turn+'/'+f.part]; icon=ICON[f.tool]||'⚙';
+      inner=`<div class="tool" data-t="tool"><div class="hd">
+          <span class="nm">${f.tool}</span><span class="arg">${esc(argOf(f))}</span>
+          ${statusOf(f,r)}<span style="color:var(--muted)">▾</span></div>
+        <div class="bd"><div class="io"><span class="cap">输入</span>${esc(f.input)}</div>
+          ${r?`<div class="io"><span class="cap">输出</span>${esc(r.output)}${truncNote(r)}</div>`
+             :`<div class="io"><span class="cap">输出</span><span style="color:var(--warn)">executor 已不在，此调用没有回音</span></div>`}
+        </div></div>`;
+    } else if(f.type==='event'){
+      icon='🎫';
+      inner=`<div class="evt">权限工单：读取 skill 目录 — 等待审核者裁决
+        <span class="t">${f.ts} · 裁决入口在下方工单区</span></div>`;
+    } else {
+      icon='❓';
+      inner=`<div class="unknown" data-t="unk">未知帧类型 <b>${esc(f.type)}</b>（本前端版本尚不认识，已原样保留）▾
+        <pre>${esc(JSON.stringify(f,null,2))}</pre></div>`;
+    }
+    h+=`<div class="gut">${icon}</div><div class="cell">${inner}</div>`;
+  });
+  sc.innerHTML=h+'</div>';
+
+  const turns=[...new Set(loaded.filter(f=>f.type==='turn_start').map(f=>f.turn))];
+  document.getElementById('anchors').innerHTML=
+    `<span class="lbl">回合</span>`+
+    turns.map(t=>`<button class="anchor" data-go="${t}">${t}</button>`).join('')+
+    `<span class="hint">${earlierLoaded?'已覆盖全部回合':'仅覆盖已加载范围，更早的需先加载'}</span>`;
+}
+
+const RAW=`⏺ 我先读完整个计划，再从 Task 1 的契约落地开始。
+⏺ read(docs/superpowers/plans/2026-08-12-w4a-structured-turn-frames.md)
+  ⎿  # W4a 结构化回合流 Implementation Plan …（已截断）…
+⏺ grep(AppendRender)
+  ⎿  internal/executor/claudecode/adapter.go:412
+     internal/executor/opencode/adapter.go:588
+⏺ write(internal/executor/turn/frames.go)
+  ⎿  已写入 4193 字节
+⏺ bash(go test ./internal/executor/turn/ -run TestFrameWriter -v)
+  ⎿  --- FAIL: TestFrameWriterResumesSeq (0.00s)
+     frames_test.go:88: seq = 1, want 4
+⏺ 续号没从文件尾恢复，我漏了回扫。
+⏺ edit(internal/executor/turn/frames.go)
+  ⎿  已应用 1 处修改
+⏺ Task 1-4 完成，全量测试绿。`;
+
+document.getElementById('rawtoggle').onchange=render;
+document.addEventListener('click',e=>{
+  const go=e.target.closest('[data-go]');
+  if(go){ document.getElementById('turn-'+go.dataset.go)
+            ?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  if(e.target.id==='earlierBtn'&&!earlierLoaded){
+    // prepend 后按 scrollHeight 差值补偿滚动位置，用户视线不被弹走
+    const sc=document.getElementById('scroll'), before=sc.scrollHeight, top=sc.scrollTop;
+    earlierLoaded=true; loaded=EARLY.concat(LATER); render();
+    sc.scrollTop=top+(sc.scrollHeight-before);
+    return;
+  }
+  const t=e.target.closest('[data-t]');
+  if(t) t.classList.toggle('open');
+});
+render();
+</script>
+</body>
+</html>

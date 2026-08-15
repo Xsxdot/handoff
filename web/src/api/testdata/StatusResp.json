@@ -1,0 +1,37 @@
+{
+  "version": {
+    "version": "v0.1.0",
+    "revision": "482aab1f9e12a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+    "time": "2026-08-11T10:00:00Z",
+    "modified": false,
+    "go": "go1.26.1"
+  },
+  "listen": "127.0.0.1:7777",
+  "data_dir": "/home/dev/.handoff",
+  "started_at": "2026-08-11T10:30:00+08:00",
+  "executors": [
+    "claude",
+    "opencode"
+  ],
+  "default_executor": "opencode",
+  "task_counts": {
+    "completed": 3,
+    "failed": 0,
+    "pending": 0,
+    "running": 1,
+    "waiting_answer": 0,
+    "waiting_review": 0
+  },
+  "active": [
+    {
+      "id": "7ec762e7-3bd2-412c-a39c-e4cf8b4057ad",
+      "name": "W1 前端地基",
+      "state": "running",
+      "executor": "opencode",
+      "repo_path": "/home/dev/handoff",
+      "live": "alive",
+      "note": ""
+    }
+  ],
+  "pty_supported": true
+}

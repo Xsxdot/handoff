@@ -73,6 +73,7 @@ const (
 	adapterEventQuestion   = "question"
 	adapterEventProgress   = "progress"
 	adapterEventResult     = "result"
+	adapterEventUsage      = "usage"
 )
 
 // errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
@@ -142,6 +143,9 @@ type Manager struct {
 	// m.adapterFor），包级 var 拿不到实例。而既有的所有 NewManager 调用点
 	// 不必改——nil 就是「用真的那个」
 	sweepProcs func(taskID string)
+	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
+	usageMu   sync.Mutex
+	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
 }
 
 // sweep 调用清扫，走测试缝或真实实现。
@@ -1398,6 +1402,12 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 			m.log.Warn("执行结果事件缺 Result", "task", taskID)
 		}
 		m.handleResult(taskID, ev)
+	case adapterEventUsage:
+		// 不打 Info：用量事件频率高（claudecode 一个回合几百条），
+		// 每条都打入口日志就是刷屏。首次落库的日志在 handleUsage 里打。
+		// 两条通道各走各的：Usage 走当前占用，Spend 走累计账本，绝不交叉。
+		m.handleUsage(taskID, ev)
+		m.handleSpend(taskID, ev)
 	default:
 		m.log.Warn("未知 adapter 事件", "task", taskID, "type", ev.Type)
 	}
@@ -1485,7 +1495,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(ev.Text),
+		Fingerprint: permFingerprintFor(ev),
 	}); err != nil {
 		m.log.Error("创建权限工单失败", "task", taskID, "perm", ev.PermissionID, "ticket", ticketID, "cause", err)
 		// 工单没建成，waiting_answer 是虚假状态（无任何可答项），回迁 running
@@ -1719,7 +1729,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	m.apMu.Unlock()
 
 	if d.Approve {
-		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, d.Reason, "approver")
+		m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, permFingerprintFor(ev), d.Reason, "approver")
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
@@ -1746,12 +1756,19 @@ func (m *Manager) clearApproverState(taskID string) {
 	if had {
 		m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 			"task", taskID, "reason", truncateRunes(guidance, 80))
-		if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		// Publish 而不是只落库（B91）：这条事件是可操作唤醒——审核者拿到的
+		// reply 返回是 {"ok":true}，不叫醒的话他永远不知道那句 reason 空转了，
+		// 唯一的补救动作（把话写进 continue）也就无从发生。progress /
+		// approver_decision 不唤醒的先例不适用：那些没有审核者动作可做，这条有。
+		evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
 			denyGuidancePayload{
 				Reason: guidance,
 				Cause:  "回合在拒绝原因下发前终结（Done/stop/result），未送达 executor",
-			}); err != nil {
+			})
+		if err != nil {
 			m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+		} else {
+			m.hub.Publish(evt)
 		}
 	}
 }
@@ -1781,17 +1798,20 @@ func (m *Manager) countApproverFail(taskID string) {
 // 状态机不必经过 waiting_answer（那是「有未决人工事项」的语义，此处没有）。
 //
 // 参数：
+//   - fp: 调用方用 permFingerprintFor(ev) 算好的裁决指纹——本函数只收权限描述
+//     文本串、拿不到 ev.Perm，不在函数内重新猜域；键从建单就对齐 reuseDecision，
+//     审批者路径的工单才进得了复用面（B91 §7）
 //   - source: 这次批准的来源，取 "approver"（廉价模型审批者实时裁决）或
 //     "reuse"（命中本任务内既有人工批准自动复用，B57②）。日志里必须区分：
 //     复用路径若打「审批者自动批准」会把人引向一条根本没发生的裁决链去排查。
-func (m *Manager) approvePermission(taskID, ticketID, permID, permission, reason, source string) {
+func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, reason, source string) {
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
 		"perm", permID, "source", source, "reason", truncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: permFingerprint(permission),
+		Fingerprint: fp,
 	}); err != nil {
 		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
 		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
@@ -1877,6 +1897,44 @@ func permFingerprint(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// permFingerprintFor 计算一次权限请求的裁决指纹，是所有建单/查询点的唯一入口。
+//
+// 域规则（B91）：
+//   - Perm.Command 非空 → 命令域：sha256("cmd\x00" + command)。同一条命令被
+//     opencode 以 external_directory 与 bash 两种 kind 各发一次时（双胞胎工单，
+//     见 B91 spec §1.1），两次算出同一指纹，第二次得以复用首次的人工批准。
+//   - Command 为空但 Paths 非空 → 路径域：sha256("paths\x00" + Tool + "\x00" +
+//     排序后的 Paths)。治的是「同一个目录被每个子 agent 各问一次」——子 agent
+//     前缀只加在 Text 上（opencode adapter.go 的 permission.asked 归一化处），
+//     Perm 不带它，所以路径域天然忽略前缀。Tool 进指纹是硬要求，理由见函数体。
+//   - 都为空（Perm 为 nil，或提取不出结构的 fail-closed 类）→ 全文域：
+//     沿用 B57 的权限描述全文指纹，行为不变。
+//
+// 三个域各带自己的前缀做隔离，文本相同也永不相撞，杜绝「某段权限描述全文恰好
+// 等于另一条命令文本」这类伪命中。
+//
+// 注意：写入（建单）与查询（reuseDecision）必须都走本函数——两边规则不一致
+// 会让复用静默失效，那正是 B91 要修的缺陷形态。
+func permFingerprintFor(ev executor.AdapterEvent) string {
+	if ev.Perm != nil {
+		if ev.Perm.Command != "" {
+			return permFingerprint("cmd\x00" + ev.Perm.Command)
+		}
+		if len(ev.Perm.Paths) > 0 {
+			// 拷贝后排序，不原地改 ev.Perm.Paths——该切片来自 adapter，
+			// 排序它会让调用方看到的顺序被本函数悄悄改掉
+			paths := append([]string(nil), ev.Perm.Paths...)
+			sort.Strings(paths)
+			// Tool 必须进指纹：edit 与 external_directory 对同一路径含义不同
+			// （写这个文件 vs 授权越界访问这个目录），裸路径合并等于把两种
+			// 授权当成一件事。NUL 作分隔符——路径不可能含 NUL，杜绝
+			// ["a","b/c"] 与 ["a/b","c"] 这类拼接歧义
+			return permFingerprint("paths\x00" + ev.Perm.Tool + "\x00" + strings.Join(paths, "\x00"))
+		}
+	}
+	return permFingerprint(ev.Text)
+}
+
 // reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
 // 放行并返回 true，调用方不得再走升级人工那套。
 //
@@ -1890,7 +1948,7 @@ func permFingerprint(text string) string {
 //     错误地复用是安全事故，两个方向的代价不对称
 //   - 只复用 allow、只在同任务内复用：见 spec §3.3/§3.4
 func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketID string) bool {
-	fp := permFingerprint(ev.Text)
+	fp := permFingerprintFor(ev)
 	prior, err := m.st.FindReusableGrant(taskID, fp)
 	if err != nil {
 		m.log.Warn("查询可复用裁决失败，照常升级人工", "task", taskID,
@@ -1916,7 +1974,9 @@ func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketI
 		// 审计事件失败不阻断放行：executor 正阻塞等应答，为一条审计把它挂死
 		// 是更坏的结果；Error 日志已留痕
 	}
-	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text,
+	// 复用 fp 而不是重算：同一个 ev 算两遍 sha256 没有意义，且两处一旦不同步
+	// 就会写出与查询键不一致的工单——正是 B91 要修的那类缺陷
+	m.approvePermission(taskID, ticketID, ev.PermissionID, ev.Text, fp,
 		"复用工单 "+prior.ID+" 的人工批准", "reuse")
 	return true
 }
@@ -2016,9 +2076,13 @@ func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string
 // 提问到达前就终结了，协调者说的话无处送达，必须留痕让协调者知道用 continue
 // 自己把话带上（B50）。
 func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
-		denyGuidancePayload{Reason: guidance, Cause: cause.Error()}); err != nil {
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDenyGuidanceDropped,
+		denyGuidancePayload{Reason: guidance, Cause: cause.Error()})
+	if err != nil {
 		m.log.Error("追加 deny_guidance_dropped 事件失败", "task", taskID, "cause", err)
+	} else {
+		// 同 clearApproverState 处的理由（B91）：可操作唤醒，不是纯审计
+		m.hub.Publish(evt)
 	}
 	m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
 		"task", taskID, "reason", truncateRunes(guidance, 80), "cause", cause)
@@ -2464,6 +2528,92 @@ func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
 		return
 	}
 	m.hub.Publish(evt)
+}
+
+// handleUsage 落 executor 报回的实际模型名与 context 占用。
+//
+// 与 handleProgress 的区别：**只写任务字段，不追加事件行、不广播**。
+// 用量刷新频率高（claudecode 一个回合几百条 assistant 消息），进事件日志会淹没
+// 审核者真正要看的 permission/question/completed；界面靠详情轮询自然拿到，
+// 不需要事件推送。
+//
+// 去重是写库风暴的唯一防线：与内存里上一次的三元组全等就直接返回。
+// agentd 重启后内存态为空，首帧必写一次，这是可接受的代价。
+//
+// 落库失败仅 Warn：用量属可修复的辅助字段，与 executor_session 同级，
+// 不影响主流程。
+func (m *Manager) handleUsage(taskID string, ev executor.AdapterEvent) {
+	tokens, window := 0, (*int)(nil)
+	if ev.Usage != nil {
+		tokens = ev.Usage.ContextTokens
+		window = ev.Usage.ContextWindow
+	}
+	if m.takeUsageUnchanged(taskID, ev.ActualModel, tokens, window) {
+		return
+	}
+	if err := m.st.SetTaskUsage(taskID, ev.ActualModel, tokens, window); err != nil {
+		m.log.Warn("落库任务用量失败", "task", taskID, "model", ev.ActualModel,
+			"tokens", tokens, "cause", err)
+		return
+	}
+	m.log.Info("任务用量已更新", "task", taskID, "model", ev.ActualModel,
+		"tokens", tokens, "window", window)
+}
+
+// takeUsageUnchanged 判定这次上报与上一次是否完全相同（相同返回 true，
+// 调用方据此跳过打库），并在不同的情况下就地记下新值。
+//
+// 为什么把窗口也纳入比较：不报窗口的执行者每次都传 nil，只比模型名与分子会让
+// 「窗口首次到达」这一帧被误判成重复而丢掉。
+func (m *Manager) takeUsageUnchanged(taskID, model string, tokens int, window *int) bool {
+	key := fmt.Sprintf("%s|%d|%v", model, tokens, derefOrNil(window))
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	if m.lastUsage == nil {
+		m.lastUsage = map[string]string{}
+	}
+	if m.lastUsage[taskID] == key {
+		return true
+	}
+	m.lastUsage[taskID] = key
+	return false
+}
+
+// derefOrNil 把 *int 摊平成可比较的展示值：nil 记作 -1（真实窗口必然 > 0，
+// 不会与之相撞）。
+func derefOrNil(p *int) int {
+	if p == nil {
+		return -1
+	}
+	return *p
+}
+
+// handleSpend 把 executor 报回的「本次新增消耗」记进账本。
+//
+// 与 handleUsage 的区别（**两条通道必须互不干扰**）：
+//   - handleUsage 走 SetTaskUsage，**整体覆盖** (model, tokens, window) 三元组，
+//     描述「当前占用」；
+//   - 本方法走 UpsertSpend，按幂等键**覆盖单行**后求和，描述「累计消耗」。
+//
+// 拿任何一条的值去写另一条，都会产生一个不报错、只是数字错的故障。
+//
+// 与 handleUsage 相同的两点：**只写库，不追加事件行、不广播**（频率同样高，
+// 进事件日志会淹没审核者真正要看的 permission/question/completed）；
+// 落库失败仅 Warn（用量属可修复的辅助字段，不影响主流程）。
+//
+// 幂等不做内存去重：内存态在 agentd 重启后为空，首帧必写一次——对「当前占用」
+// 无害（覆盖成同值），对「累计」就是重复计数。所以幂等只能落在库里。
+func (m *Manager) handleSpend(taskID string, ev executor.AdapterEvent) {
+	if ev.Spend == nil {
+		return
+	}
+	if err := m.st.UpsertSpend(taskID, *ev.Spend); err != nil {
+		m.log.Warn("记任务消耗失败", "task", taskID, "key", ev.Spend.Key, "cause", err)
+		return
+	}
+	m.log.Debug("任务消耗已入账", "task", taskID, "key", ev.Spend.Key,
+		"input", ev.Spend.InputTokens, "cached", ev.Spend.CachedTokens,
+		"output", ev.Spend.OutputTokens, "cost_state", ev.Spend.CostState)
 }
 
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进

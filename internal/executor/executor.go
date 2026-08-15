@@ -160,7 +160,7 @@ func NormalizePermTool(raw string) string {
 // ——审核主路径常以 question 收尾、result 永不出现，progress 是会话 id 到达
 // manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
-	Type         string // "permission" | "question" | "progress" | "result"
+	Type         string // "permission" | "question" | "progress" | "result" | "usage"
 	PermissionID string // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
 	// QuestionID 是 Type=question 时 executor 侧提问请求的**原生**稳定 id
 	// （如 opencode 的 que_xxx）。manager 按其派生 ticket id 使其幂等——
@@ -176,6 +176,18 @@ type AdapterEvent struct {
 	// manager 据此 fail-closed 升级人工（看不懂的请求交给人）。
 	Perm   *PermRequest
 	Result *Result // Type=result 时有效
+	// ActualModel 是 executor 报回的**实际**模型名；空=本帧没带模型信息。
+	// 与 Task.Model（dispatch 的入参）是两件事，manager 落 task.ActualModel。
+	ActualModel string
+	// Usage 是当前 context 占用快照；nil=本帧没带用量。
+	// 语义见 proto.Usage：只描述占用不描述消耗，且绝不用 0 冒充「没有」。
+	Usage *proto.Usage
+	// Spend 是这一次调用/回合**新增**的消耗；nil = 本帧不带消耗信息。
+	//
+	// 与 Usage 的区别：Usage 是「当前占用」的快照（后到的覆盖先到的），
+	// Spend 是「新增消耗」的账目（按 Key 覆盖后**求和**）。数量级完全不同，
+	// 一个帧可以两者都带，但**绝不能互相赋值**。
+	Spend *proto.SpendEntry
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。

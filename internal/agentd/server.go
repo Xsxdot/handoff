@@ -43,6 +43,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 )
 
 // recentEventsLimit 是任务详情接口返回的最近事件条数上限。
@@ -84,6 +85,9 @@ type Server struct {
 	// 供测试注入小阈值复现「重放截断」「缓冲越限」两条边界路径（生产恒为默认值）。
 	replayLimit int
 	liveLimit   int
+	// sessionRecheck 是 WS 连接上会话复验的周期（defaultSessionRecheck 的实例副本），
+	// 供测试注入毫秒级值验证「吊销后被踢」（生产恒为默认值）。
+	sessionRecheck time.Duration
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
 	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
@@ -97,6 +101,9 @@ type Server struct {
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
+	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
+	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
+	pty *ptyhost.Host
 }
 
 // NewServer 创建 agentd 服务端。
@@ -126,14 +133,16 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	inst := release.NewInstaller(log, tr)
 	s := &Server{
-		cfg:         cfg,
-		st:          st,
-		hub:         NewHub(),
-		log:         log,
-		startedAt:   time.Now(),
-		replayLimit: eventReplayLimit,
-		liveLimit:   liveBufferLimit,
-		pull:        newPullTracker(),
+		cfg:            cfg,
+		st:             st,
+		hub:            NewHub(),
+		log:            log,
+		startedAt:      time.Now(),
+		replayLimit:    eventReplayLimit,
+		liveLimit:      liveBufferLimit,
+		pull:           newPullTracker(),
+		sessionRecheck: defaultSessionRecheck,
+		pty:            ptyhost.New(log),
 	}
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
@@ -145,6 +154,8 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 			return inst.FetchByTag(ctx, release.DefaultRepo, tag, goos, goarch, wantSum)
 		},
 	}
+	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
+	s.registerEventFrameHook()
 	return s
 }
 
@@ -188,7 +199,7 @@ func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
 }
 
-// Handler 返回带 Bearer 鉴权中间件的完整路由，便于 httptest 直接挂载。
+// Handler 返回带 Host 白名单 + 鉴权两层中间件的完整路由，便于 httptest 直接挂载。
 //
 // 路由（Go 1.22+ 方法路由）：
 //   - GET  /api/status                    agentd 可用性与身份
@@ -203,12 +214,22 @@ func (s *Server) SetManager(m *Manager) {
 //   - POST /api/tasks/{id}/reclaim       回收单个终态任务的 managed worktree
 //   - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表）
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
+//   - GET  /api/tasks/{id}/frames      结构化回合帧（frames.jsonl）流式读取（W4b/TUI 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
+//   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
+//   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - GET  /ws/events                   事件流（补发 + 实时）
+//   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
+//   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
+//   - GET  /api/auth/sessions           列出会话（含已吊销）
+//   - DELETE /api/auth/sessions/{id}    吊销指定会话
+//   - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie
+//   - GET  /console                     兑换 ticket → Set-Cookie → 302 到 /（无主令牌/cookie 凭据）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -216,29 +237,58 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reclaim", s.handleReclaimList)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
-	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
-	mux.HandleFunc("POST /api/tasks/{id}/reply", s.handleReply)
-	mux.HandleFunc("POST /api/tasks/{id}/continue", s.handleContinue)
-	mux.HandleFunc("POST /api/tasks/{id}/done", s.handleDone)
-	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStop)
+	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
+	//（W3a §5.1 透明路由，见 taskroute.go）。render 是流式也走同一条搬运。
+	// 合并 B102：main 侧按原样注册、w4 侧统一用 byTask 包一层并新增 frames，
+	// 这里取 w4 侧——byTask 对本地任务与原样注册行为一致（taskroute.go 第 1 条
+	// 判定「本机有就交给 handler」），w4 的跨机透明路由与 frames 都要保住；
+	// main 独有的 reclaim 是 main 侧新增能力（B 侧仅存在于本机），保留原样注册。
+	mux.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
+	mux.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
+	mux.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
+	mux.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))
+	mux.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
 	mux.HandleFunc("POST /api/tasks/{id}/reclaim", s.handleReclaim)
-	mux.HandleFunc("POST /api/tasks/{id}/resume", s.handleResume)
-	mux.HandleFunc("GET /api/tasks/{id}/diff", s.handleTaskDiff)
-	mux.HandleFunc("GET /api/tasks/{id}/render", s.handleTaskRender)
-	mux.HandleFunc("GET /api/tasks/{id}/file", s.handleTaskFile)
-	mux.HandleFunc("POST /api/tasks/{id}/run", s.handleTaskRun)
+	mux.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
+	mux.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
+	mux.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
+	mux.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
+	mux.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
+	mux.HandleFunc("POST /api/tasks/{id}/run", s.byTask(s.handleTaskRun))
 	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)
 	mux.HandleFunc("GET /api/projects", s.handleProjectList)
+	mux.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
+	mux.HandleFunc("GET /api/machines", s.handleMachines)
+	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
+	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
+	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
+	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
+	mux.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("GET /ws/events", s.handleEvents)
-	return s.auth(mux)
+	mux.HandleFunc("GET /ws/pty", s.handlePtyWS)
+	mux.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
+	mux.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+
+	// /console 是唯一不经主令牌/cookie 的路由——ticket 本身就是它的凭据，
+	// 因此它挂在 auth 之外、hostGuard 之内。Go 1.22 的 mux 按精确度选择，
+	// "GET /console" 胜过 "/"
+	root := http.NewServeMux()
+	root.Handle("/", s.auth(mux))
+	root.HandleFunc("GET /console", s.handleConsole)
+
+	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
+	return s.hostGuard(root)
 }
 
-// auth 是 Bearer token 鉴权中间件，包住全部路由。
+// auth 是 Bearer token 或 cookie 会话鉴权中间件，包住全部路由。
 //
-// 鉴权失败（无 token / token 不匹配）统一返回 401，并打 Warn 记录来源地址——
-// 这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
+// 鉴权失败（无 token / token 不匹配 / cookie 会话无效）统一返回 401，并打 Warn
+// 记录来源地址——这是排查「谁在扫本地端口」与「配对端 token 未同步」的第一线索。
 //
 // 为什么这里做空 token 拒绝（L-2）：subtle.ConstantTimeCompare("","")==1，
 // 配置 token 为空时空 token 请求会通过鉴权——今天只因 net/http 的
@@ -247,6 +297,10 @@ func (s *Server) Handler() http.Handler {
 // 在鉴权边界 fail-closed：cfg.Token 为空 → 拒绝一切请求并打 Error，提示
 // 配置问题。选在这里而非 NewServer/启动时：这是 fail-open 真正发生的边界，
 // 一个位置同时覆盖 HTTP 与 WS 全路由，任何嵌入方（含测试）都逃不掉。
+//
+// 为什么在 Bearer 之外加 cookie 分支：浏览器里 `new WebSocket()` 只能继承
+// 页面已有的 cookie，设不了 Authorization 请求头——CLI 的主令牌路径在浏览器
+// 里走不通，必须允许 cookie 会话鉴权。
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token == "" {
@@ -255,13 +309,22 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 			return
 		}
-		token, ok := bearerToken(r)
-		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
-			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+		// 先 Bearer：CLI 是最高频的调用方，且这条路径不碰库
+		if token, ok := bearerToken(r); ok &&
+			subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) == 1 {
+			next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{})))
+			return
+		}
+		// 后 cookie：浏览器 new WebSocket() 设不了请求头，只能走这条
+		sess, reason := s.sessionFromRequest(r)
+		if sess == nil {
+			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method,
+				"path", r.URL.Path, "reason", reason)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		s.refreshSession(sess)
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{session: sess.ID})))
 	})
 }
 
@@ -300,6 +363,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp.Update.Pull = &yes
 		resp.Update.PullState = s.pull.snapshot()
 	}
+	ptyOK := s.pty.Supported()
+	resp.PtySupported = &ptyOK
+	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
+	if s.pty != nil {
+		n := len(s.pty.List())
+		resp.PtySessions = &n
+	}
 	s.log.Info("状态查询完成", "active", len(resp.Active), "executors", len(resp.Executors))
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -322,6 +392,7 @@ func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("足迹体检请求完成", "rows", len(resp.Rows))
+	resp.Pty = s.ptyFootprint()
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -409,6 +480,11 @@ func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err err
 // 不回答「该不该有人听」——那条判据在 status 侧（unattended）。
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
+	if r.URL.Query().Get("scope") == "all" && !isForwarded(r) {
+		// 跨机汇总信封（镜像快照，不现场扇出）；带转发头时降级为本机
+		writeJSON(w, http.StatusOK, s.tasksAll(r.Context()))
+		return
+	}
 	tasks, err := s.st.ListTasks()
 	if err != nil {
 		s.log.Error("查询任务列表失败", "cause", err)
@@ -420,16 +496,38 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		tasks = []proto.Task{}
 	}
 	// 拼装 API 视图：附上「有几个人在听」这条只有 hub 知道的运行态
+	idx := s.projectIndex()
 	views := make([]proto.TaskView, 0, len(tasks))
 	unattended := 0
+	owned := 0
 	for _, t := range tasks {
+		t.ProjectID = idx.projectIDOf(t.RepoPath) // 读时 join，不落库
+		if t.ProjectID != "" {
+			owned++
+		}
 		w := s.hub.Watchers(t.ID)
 		if w == 0 && !isTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
 			unattended++
 		}
 		views = append(views, proto.TaskView{Task: t, Watchers: w})
 	}
-	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended)
+	// ?project= 过滤：在盖注解之后、写响应之前做；过滤后可能为空，
+	// 空数组是正确答案，不是 404
+	pid := r.URL.Query().Get("project")
+	if pid != "" {
+		filtered := views[:0]
+		for _, v := range views {
+			if v.ProjectID == pid {
+				filtered = append(filtered, v)
+			}
+		}
+		views = filtered
+		if views == nil {
+			views = []proto.TaskView{}
+		}
+	}
+	s.log.Info("任务列表完成", "tasks", len(views), "unattended", unattended,
+		"owned", owned, "project", pid, "filtered", len(views))
 	writeJSON(w, http.StatusOK, views)
 }
 
@@ -472,6 +570,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		events = []proto.Event{}
 	}
 	watchers := s.hub.Watchers(taskID)
+	task.ProjectID = s.projectIndex().projectIDOf(task.RepoPath) // 读时 join，不落库
 	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
 		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
@@ -786,6 +885,9 @@ type projectAddRequest struct {
 // handleProjectAdd 登记一个项目（必要时先克隆）。
 func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("project add 请求", "method", r.Method, "path", r.URL.Path)
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
 	if s.mgr == nil {
 		s.log.Warn("project add 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
@@ -831,6 +933,9 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.log.Info("project remove 请求", "name", name)
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
 	if s.mgr == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
@@ -1139,7 +1244,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	content, err := ReadFile(repo, rel)
+	res, err := ReadFile(repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1160,6 +1265,14 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
 		}
 		return
+	}
+	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
+	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里
+	// 之后 ReadFile 的返回才是保真的，在线编辑那条线才敢把内容存回磁盘。
+	// 本端点的响应体因此逐字节不变，handoff fetch 行为零变更
+	content := res.Content
+	if res.Truncated {
+		content += truncatedNotice(res.Size)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
 }
@@ -1261,6 +1374,10 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     弃——排空器与所有写出并发运行，订阅通道从握手完成到连接关闭永不写满。
 //   - 重放用 EventsFromAsc（截断尾部、缺口可凭更大 cursor 续拉），而非 EventsFrom
 //     （截最旧、cursor 越过缺口永不补齐，见 store 包两方法的语义说明）
+//   - **镜像任务同形**：本机 tasks 表没有、但 mirror_tasks 有的任务，从
+//     mirror_events 重放历史，活事件由镜像订阅经同一个 Hub 送来。对浏览器
+//     协议完全同形（帧就是带 seq 的 Event），ws.ts 无感——这正是「浏览器
+//     永远只连本机一条 WS」的兑现处
 //   - 任务归档（done）时 hub 会关闭本连接的订阅，此处以 StatusNormalClosure +
 //     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
 //     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
@@ -1294,18 +1411,27 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 永远不会来，旧实现会让 wait 无限阻塞（与「还没有事件」无法区分，P0-2 根因）。
 	// 以 PolicyViolation（1008）close 码关闭连接：语义是「你的请求本身非法」而非
 	// 网络断连，客户端据此判定永久失败立即报错，而不是把它当瞬时故障无限退避重连
+	mirrored := false
 	if _, err := s.st.GetTask(taskID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("WS 订阅任务不存在", "task", taskID, "remote_addr", r.RemoteAddr)
-			if cerr := conn.Close(websocket.StatusPolicyViolation, "task not found"); cerr != nil {
-				// 连接已断时 Close 失败不影响结论——客户端侧按断线走退避重连，
-				// 若再次拨号仍会走到本分支被关闭
-				s.log.Warn("WS 关闭任务不存在连接失败", "task", taskID, "err", cerr)
+			// 本机没有：可能是镜像任务（远端的活，本机订着它的事件）。命中则本
+			// 连接从 mirror_events 重放历史，活事件由镜像订阅经同一个 Hub 送来
+			if _, ok, mErr := s.st.MirrorTaskTarget(taskID); mErr == nil && ok {
+				mirrored = true
+				s.log.Info("WS 订阅镜像任务", "task", taskID, "from_seq", fromSeq)
+			} else {
+				s.log.Warn("WS 订阅任务不存在", "task", taskID, "remote_addr", r.RemoteAddr)
+				if cerr := conn.Close(websocket.StatusPolicyViolation, "task not found"); cerr != nil {
+					// 连接已断时 Close 失败不影响结论——客户端侧按断线走退避重连，
+					// 若再次拨号仍会走到本分支被关闭
+					s.log.Warn("WS 关闭任务不存在连接失败", "task", taskID, "err", cerr)
+				}
+				return
 			}
+		} else {
+			s.log.Error("WS 校验任务失败", "task", taskID, "cause", err)
 			return
 		}
-		s.log.Error("WS 校验任务失败", "task", taskID, "cause", err)
-		return
 	}
 
 	sent := 0
@@ -1315,6 +1441,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// 连接关闭（含对端断开）时该 ctx 取消，作为写循环退出信号
 	ctx := conn.CloseRead(r.Context())
+
+	// 会话身份的连接必须周期性复验：Hub 只按 taskID 路由、不持有会话身份，
+	// 吊销一个会话不会自动断开它已经建立的 WS，而手机丢失场景下
+	// 「吊销了但还连着」不可接受。Bearer（CLI）连接不受影响
+	if id := identityFrom(r.Context()); id.session != "" {
+		go s.watchSession(ctx, conn, id.session, taskID)
+	}
 
 	// 先订阅再补发：见函数头的「为什么先订阅后补发」——重放期间的事件必须被捕获
 	ch, cancel := s.hub.Subscribe(taskID)
@@ -1378,9 +1511,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// 阶段一：补发历史事件（from_seq 之后按 seq 升序的最旧 limit 条，截断在尾部）
-	replays, err := s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
+	// 镜像任务（本机 tasks 表没有、mirror_tasks 有）从 mirror_events 重放，
+	// 语义与本机 EventsFromAsc 一致（开区间、截尾部、可凭更大 cursor 续拉）。
+	var replays []proto.Event
+	if mirrored {
+		replays, err = s.st.MirrorEventsFrom(taskID, fromSeq, s.replayLimit)
+	} else {
+		replays, err = s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
+	}
 	if err != nil {
-		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "cause", err)
+		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "mirrored", mirrored, "cause", err)
 		return
 	}
 	// 重放覆盖 (fromSeq, maxReplayed]；maxReplayed 同时是「实时去重分界线」：
