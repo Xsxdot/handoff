@@ -1360,6 +1360,20 @@ func TestCopyEntryDirRecursive(t *testing.T) {
 	if err != nil || string(b) != "x" {
 		t.Fatalf("递归内容没复制过去: %q %v", b, err)
 	}
+	// 带点的目录名整体当 base，不拆扩展名（spec §3.4，Mac Finder 同款）
+	if err := os.MkdirAll(filepath.Join(repo, "a.b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.b", "inner.go"), []byte("i"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dotted, err := CopyEntry(repo, "a.b")
+	if err != nil {
+		t.Fatalf("复制带点目录: %v", err)
+	}
+	if dotted.Name != "a.b copy" {
+		t.Fatalf("带点目录副本要叫 %q，得到 %q", "a.b copy", dotted.Name)
+	}
 }
 
 func TestCopyEntryRejects(t *testing.T) {

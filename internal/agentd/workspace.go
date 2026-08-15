@@ -1838,7 +1838,8 @@ func DeleteEntry(repo, rel string) error {
 //
 // 命名规则（spec §3.4）：文件用 filepath.Ext 把 base 与扩展名拆开，候选依次是
 // `base copy<ext>`、`base copy 2<ext>` …… 到 `base copy 99<ext>`；目录不拆扩展名，
-// 整体当 base。每个候选用 root.Stat 探测，第一个不存在的就是目标。
+// 整体当 base（如 `a.b` 目录 → `a.b copy`，与 Mac Finder 同款，拆了会得到
+// `a copy.b` 这种错误形态）。isDir 决定是否拆。
 //
 // 为什么封顶 99：候选名是给人读的（Mac 文件系统的复制命名同款），无限试探只会
 // 在「全被占用」的场景白白做几十上百次 Stat，且名字本身会越来越难读。封顶后
@@ -1846,15 +1847,17 @@ func DeleteEntry(repo, rel string) error {
 //
 // 返回：目标名（与 source 同目录）与试过的候选数；root.Stat 出现逃逸以外的
 // 意外错误时直接透传。
-func copyEntryName(root *os.Root, repo, source string) (string, int, error) {
+func copyEntryName(root *os.Root, repo, source string, isDir bool) (string, int, error) {
 	base := filepath.Base(source)
-	ext := filepath.Ext(base)
-	if len(base) == len(ext) { // 隐藏文件等"整个名字都是扩展名"的形态不拆
-		ext = ""
-	}
-	nameBase := base
-	if ext != "" {
-		nameBase = base[:len(base)-len(ext)]
+	nameBase, ext := base, ""
+	if !isDir {
+		ext = filepath.Ext(base)
+		if len(base) == len(ext) { // 隐藏文件等"整个名字都是扩展名"的形态不拆
+			ext = ""
+		}
+		if ext != "" {
+			nameBase = base[:len(base)-len(ext)]
+		}
 	}
 	for i := 1; i <= 99; i++ {
 		var name string
@@ -1983,7 +1986,8 @@ func copyEntryDir(root *os.Root, repo, src, dst string) (entries, bytes int64, e
 
 // CopyEntry 复制工作树内一个条目（B107 文件树右键菜单），目录连同其内容一并
 // 递归复制。副本名按「foo copy.go、foo copy 2.go …… 到 foo copy 99.go」的规则
-// 取第一个未被占用的（命名细节与 99 上限的理由见 copyEntryName doc）。
+// 取第一个未被占用的；目录整体当 base 不拆扩展名（`a.b` → `a.b copy`）。
+// 命名细节与 99 上限的理由见 copyEntryName doc。
 //
 // 路径遏制与 CreateEntry/RenameEntry/DeleteEntry 同一红线：全部写操作经
 // os.OpenRoot 的内核级 jail（理由见 1543 行注释），符号链接等特殊文件不复制、
@@ -2015,7 +2019,8 @@ func CopyEntry(repo, rel string) (proto.DirEntry, error) {
 		log().Warn("条目复制命中 .git 被拒绝", "repo", repo, "path", cleaned)
 		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
 	}
-	if _, err := root.Stat(cleaned); err != nil {
+	fi, err := root.Stat(cleaned)
+	if err != nil {
 		if rootErrIsEscape(err) {
 			log().Warn("条目复制路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
@@ -2027,16 +2032,11 @@ func CopyEntry(repo, rel string) (proto.DirEntry, error) {
 		log().Warn("条目复制检查目标失败", "repo", repo, "path", cleaned, "cause", err)
 		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
 	}
-	target, tried, err := copyEntryName(root, repo, cleaned)
+	target, tried, err := copyEntryName(root, repo, cleaned, fi.IsDir())
 	if err != nil {
 		return proto.DirEntry{}, err
 	}
 	log().Info("条目复制选定副本名", "repo", repo, "path", cleaned, "target", target, "tried", tried)
-	fi, err := root.Stat(cleaned)
-	if err != nil {
-		log().Warn("条目复制读取源信息失败", "repo", repo, "path", cleaned, "cause", err)
-		return proto.DirEntry{}, fmt.Errorf("读取条目 %s: %w", filepath.Join(repo, cleaned), err)
-	}
 	var entries, copied int64
 	if fi.IsDir() {
 		entries, copied, err = copyEntryDir(root, repo, cleaned, target)
