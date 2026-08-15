@@ -1152,6 +1152,53 @@ func TestStopEndsRunningTask(t *testing.T) {
 	}
 }
 
+// TestStopTransitsBeforeEvent 钉死顺序：事件落库那一刻，状态必须已经就位。
+// 反过来（先事件后状态）一旦第二步失败，就留下「事件说终结了、状态还是 running」
+// 的破损中间态——协调者对它做任何操作都会被状态机拒，只能干等到 2h stalled。
+//
+// 断言机制：store 钩子同步触发于事件 INSERT 成功之后、AppendEvent 返回之前。钩子
+// 不得回调 store（契约），所以钩子只把事件塞进 channel、随后阻塞在 release 上；
+// 主 goroutine 收到通知时 AppendEvent 尚未返回（旧实现里 transit 还没跑），此刻读
+// 到的状态必然是旧值 running——旧实现断言必失败，新实现（transit 先执行完毕）必通过。
+func TestStopTransitsBeforeEvent(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "t-stop-before-event", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	fired := make(chan proto.Event, 1)
+	release := make(chan struct{})
+	st.SetEventHook(func(e proto.Event) {
+		fired <- e
+		<-release
+	})
+
+	go func() {
+		m.Stop(context.Background(), task.ID)
+	}()
+
+	var gotType proto.EventType
+	select {
+	case e := <-fired:
+		gotType = e.Type
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待 stop 的 failed 事件落库超时")
+	}
+	// 放行钩子：GetTask 期间 Stop 停在 AppendEvent 内，读到的状态就是事件落库瞬间的状态
+	defer close(release)
+	if gotType != proto.EventTypeFailed {
+		t.Fatalf("stop 首个事件应为 failed，实际 %s", gotType)
+	}
+	cur, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateFailed {
+		t.Fatalf("failed 事件落库瞬间状态应为 %s，实际 %s（先事件后状态 = 破损中间态）",
+			proto.TaskStateFailed, cur.State)
+	}
+}
+
 // TestStopOnTerminalTaskRejected 验证已终结任务重复 stop 返回状态冲突而不是崩掉。
 func TestStopOnTerminalTaskRejected(t *testing.T) {
 	m, st, _, _ := newTestManager(t)

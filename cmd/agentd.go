@@ -183,8 +183,14 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
+		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
+		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
+		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
+		// 会让这些合法的迁移在首轮就被误判成失配
+		wdStart := time.Now()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
-			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs, logger)
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs,
+			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，
 		// 让浏览器只连本机一条 WS 也能看到远端任务的实时事件。没有远程机器就
