@@ -66,9 +66,9 @@ func rosterPath(infoPath string) string {
 //     周期落盘，而不是清扫时现算
 //   - visited 集合是必需的：真实快照里 pid 1 的 ppid 是 0 或 1（自环），且快照
 //     是非原子的，两条记录之间可能出现看起来成环的形态。没有它会死循环
-//   - 本函数刻意不打日志：它每 15s 被调用一次、且是纯函数，日志放在调用方
-//     （shim 的周期落盘）边界上记一次入参与结论即可，这里再记等于同一件事
-//     写两遍并按周期刷屏
+//   - 本函数刻意不打日志：它每个采样间隔（`rosterInterval`，现为 1s）被调用
+//     一次、且是纯函数，日志放在调用方（shim 的周期落盘）边界上记一次入参与
+//     结论即可，这里再记等于同一件事写两遍并按周期刷屏
 func descendantsOf(root int, procs []procEntry) []rosterEntry {
 	if root <= 0 || len(procs) == 0 {
 		return nil
@@ -198,9 +198,11 @@ func writeRosterBytes(path string, b []byte) error {
 //
 // 为什么临时文件放同目录：rename 只有在同一文件系统内才是原子的。
 //
-// 注意：本函数不打日志。它每 15s 被调用一次，成功路径打日志就是按周期刷屏；
-// 失败由调用方（shim 的周期落盘）统一记一条 Warn 并继续——名册写不出去只
-// 意味着这一轮没有第二段清扫，不值得中断任务。
+// 注意：本函数不打日志。它每个采样间隔（`rosterInterval`，现为 1s）被调用一次，
+// 成功路径打日志就是按周期刷屏；失败由调用方统一记一条 Warn 并继续——名册写
+// 不出去只意味着这一轮没有第二段清扫，不值得中断任务。
+// 现状说明：`writeRoster` 现在是 `writeRosterBytes` 的入口包装，生产路径由
+// `rosterSampler.sample` 按采样间隔调用。
 func writeRoster(path string, entries []rosterEntry) error {
 	if path == "" {
 		return fmt.Errorf("名册路径为空")

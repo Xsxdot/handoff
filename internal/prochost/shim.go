@@ -318,8 +318,16 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 		l.Warn("序列化后代名册失败，本轮跳过出生登记", "cause", err)
 		return
 	}
+	cost := time.Since(start)
 	if s.last != nil && bytes.Equal(b, s.last) {
-		l.Debug("后代名册未变，跳过落盘", "count", len(entries), "cost", time.Since(start))
+		// 内容未变是稳态常态，机器变慢时这一路径才最常走——耗时超标在这里也必须能
+		// Warn 出来，否则「名册把机器拖慢」这一信号在稳态下永不出现
+		if cost > rosterInterval/2 {
+			l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
+				"cost", cost, "interval", rosterInterval)
+			return
+		}
+		l.Debug("后代名册未变，跳过落盘", "count", len(entries), "cost", cost)
 		return
 	}
 	if err := writeRosterBytes(s.path, b); err != nil {
@@ -328,7 +336,6 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 	}
 	s.last = b
 	s.writes++
-	cost := time.Since(start)
 	if cost > rosterInterval/2 {
 		// 采样耗时逼近间隔意味着「名册把机器拖慢了」——这是必须能被看见的事，
 		// 否则它只会表现为一台莫名其妙变慢的机器

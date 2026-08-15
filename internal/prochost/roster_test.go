@@ -162,8 +162,8 @@ func TestMergeRosterKeepsEscapedDescendant(t *testing.T) {
 	prev := []rosterEntry{{PID: 200, StartedAt: 1000}, {PID: 300, StartedAt: 1100}}
 	// 第二轮：工具壳已退出，300 被 reparent 给 launchd（ppid=1），闭包走不到它
 	procs := []procEntry{
-		{PID: 100, PPID: 1, PGID: 100, StartedAt: 900},   // shim
-		{PID: 300, PPID: 1, PGID: 200, StartedAt: 1100},  // 逃逸后代，仍活着
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: 900},  // shim
+		{PID: 300, PPID: 1, PGID: 200, StartedAt: 1100}, // 逃逸后代，仍活着
 	}
 	cur := descendantsOf(100, procs) // 本轮闭包为空
 	got := mergeRoster(prev, cur, procs)

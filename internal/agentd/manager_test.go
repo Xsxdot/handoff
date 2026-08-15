@@ -2553,8 +2553,9 @@ func TestSweepAfterStopRetriesWhileExecutorAlive(t *testing.T) {
 		}
 		return nil
 	}
+	orig := sweepRetryGap
 	sweepRetryGap = time.Millisecond // 测试缝，避免真等 200ms
-	defer func() { sweepRetryGap = 200 * time.Millisecond }()
+	defer func() { sweepRetryGap = orig }()
 	m.sweepAfterStop("t1")
 	if calls != 3 {
 		t.Fatalf("ErrExecutorAlive 必须重试到成功或用尽，calls=%d", calls)
@@ -2565,8 +2566,9 @@ func TestSweepAfterStopGivesUpAfterBoundedRetries(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
 	calls := 0
 	m.sweepProcs = func(taskID string) error { calls++; return prochost.ErrExecutorAlive }
+	orig := sweepRetryGap
 	sweepRetryGap = time.Millisecond
-	defer func() { sweepRetryGap = 200 * time.Millisecond }()
+	defer func() { sweepRetryGap = orig }()
 	m.sweepAfterStop("t1")
 	if calls != sweepRetryAttempts {
 		t.Fatalf("重试必须有界，calls=%d want=%d", calls, sweepRetryAttempts)
