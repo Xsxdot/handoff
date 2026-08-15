@@ -57,7 +57,7 @@ const (
 	// 与 EventTypeCompleted 的关系：两者是**同一个状态迁移**（都进 waiting_review），
 	// 所以消费端对它俩的行为必须一致，只是一个成功一个失败。
 	EventTypeTurnFailed EventType = "turn_failed"
-	EventTypeStalled           EventType = "stalled"
+	EventTypeStalled    EventType = "stalled"
 	// EventTypeDeliveryFailed 表示协调者的应答已落库但没能送达 executor。
 	//
 	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，

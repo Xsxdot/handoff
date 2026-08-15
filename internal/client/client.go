@@ -1465,9 +1465,10 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				// 是同一个状态迁移（都进 waiting_review），所以行为也必须与
 				// completed 一致——投递、不收流。
 				//
-				// 旧实现在这里把回合失败也收了流，还打「任务已失败」并以 0 退出，
-				// 而任务其实好端端等着审（B100）。更糟的是它与 completed 行为相反，
-				// 两个后果完全相同的事件走了两条路。
+				// 旧实现的回合失败落的是 failed 类型，于是 follow 在这里把它当
+				// 任务终结收了流，还打「任务已失败」并以 0 退出，而任务其实好端端
+				// 等着审（B100）。更糟的是它与 completed 行为相反，两个后果完全
+				// 相同的事件走了两条路。
 				c.log().Info("follow 结束：任务已终结", "task", taskID, "seq", ev.Seq)
 				return errStopStream
 			}

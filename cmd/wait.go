@@ -225,25 +225,17 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 			"建议设为大于 %s（如 %s）", idle, stall, stall, stall+time.Hour)
 }
 
-// autoSyncAfterWait 在任务结束事件（completed/failed）到达后，把远程任务分支
-// 同步到本地仓库。
+// autoSyncAfterWait 在任务进入等待审核的事件（completed/turn_failed）或任务
+// 终结（failed）到达后，把远程任务分支同步到本地仓库。
 //
 // 参数：
-//   - ev: 刚返回的事件；只有 completed/failed 触发（回合中途的 permission/
-//     question/progress 不触发——那时活还没干完）
+//   - ev: 刚返回的事件；只有 completed/turn_failed/failed 触发（回合中途的
+//     permission/question/progress 不触发——那时活还没干完）
 //
 // 注意：
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
 //     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
-//   - failed 也同步：失败恰恰是最需要把代码拉到本地翻的时候
-// shouldAutoSync 判断这类事件要不要触发自动同步。
-//
-// 为什么 turn_failed 也要：任务此刻在 waiting_review，协调者马上就要 diff 审代码，
-// 而失败恰恰是最需要把代码拉到本地翻的时候。
-func shouldAutoSync(t proto.EventType) bool {
-	return t == proto.EventTypeCompleted || t == proto.EventTypeFailed || t == proto.EventTypeTurnFailed
-}
-
+//   - 失败（含回合失败）也同步：失败恰恰是最需要把代码拉到本地翻的时候
 func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
@@ -266,6 +258,14 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 		return
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), syncMessage(res))
+}
+
+// shouldAutoSync 判断这类事件要不要触发自动同步。
+//
+// 为什么 turn_failed 也要：任务此刻在 waiting_review，协调者马上就要 diff 审代码，
+// 而失败恰恰是最需要把代码拉到本地翻的时候。
+func shouldAutoSync(t proto.EventType) bool {
+	return t == proto.EventTypeCompleted || t == proto.EventTypeFailed || t == proto.EventTypeTurnFailed
 }
 
 // notifyEvent 发 macOS 系统通知提醒协调者事件已到达（--notify 的兜底实现）。
