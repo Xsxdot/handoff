@@ -52,6 +52,16 @@
    - `go.mod` **自动合成正确**（`module github.com/Xsxdot/handoff`）
    - 另有 **57 个文件仍 import `github.com/xushixin/handoff`**，需机械改名
 
+> **勘误（08-15 10:10，实测推翻）**：下面这份「14 个文件」的清单是**错的**——我做试合并时用的是
+> 本地那个陈旧的 `w4-delivery` 引用（`de1173c06`），不是 `origin/w4-delivery`（`84013dd79`）。
+> 执行者在真基线上实测到的是 **21 个文件**，多出的 7 个是
+> `internal/agentd/manager.go`、`manager_test.go`、`workspace_minor_test.go`、
+> `internal/executor/codex/adapter.go`、`codex/export_test.go`、
+> `internal/executor/grok/adapter.go`、`grok/export_test.go`（共 8 块）。
+> **这 7 个正是 B92/B93/B99 三条修复所在的区域，口径要收紧**：它们里面 main 侧与 w4 侧分歧的地方
+> 一律以 **main 侧**为准（w4 线分叉早于这三条修复，取 w4 侧等于回退它们），
+> w4 侧只有纯新增部分才叠加。判据是 Task 2 Step 4 那七条点名用例。
+
 冲突文件清单（这就是本次全部的人工判断面）：
 
 | 文件 | 冲突块 | 预判性质 |
