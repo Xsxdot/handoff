@@ -6,8 +6,8 @@ package agentd
 import (
 	"context"
 	"io"
-	"net"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"

@@ -55,12 +55,12 @@ func TestReconcileExecutorGone(t *testing.T) {
 			}
 			hasFailed := false
 			for _, e := range evs {
-				if e.Type == proto.EventTypeFailed {
+				if e.Type == proto.EventTypeTurnFailed {
 					hasFailed = true
 				}
 			}
 			if hasFailed != c.wantEvent {
-				t.Fatalf("failed 事件 = %v，期望 %v", hasFailed, c.wantEvent)
+				t.Fatalf("turn_failed 事件 = %v，期望 %v", hasFailed, c.wantEvent)
 			}
 		})
 	}
@@ -79,12 +79,12 @@ func TestReconcileExecutorGoneIdempotent(t *testing.T) {
 	}
 	n := 0
 	for _, e := range evs {
-		if e.Type == proto.EventTypeFailed {
+		if e.Type == proto.EventTypeTurnFailed {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Fatalf("failed 事件应只有 1 条（幂等），实际 %d", n)
+		t.Fatalf("turn_failed 事件应只有 1 条（幂等），实际 %d", n)
 	}
 }
 
@@ -130,12 +130,12 @@ func TestMediateReconcilesOnEventsClosed(t *testing.T) {
 	}
 	found := false
 	for _, e := range evs {
-		if e.Type == proto.EventTypeFailed {
+		if e.Type == proto.EventTypeTurnFailed {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("应产出 failed 事件说明 executor 终结")
+		t.Fatalf("应产出 turn_failed 事件说明 executor 已不在（任务收 waiting_review，未终结）")
 	}
 }
 
@@ -457,5 +457,39 @@ func TestReconcileExecutorGoneSweepsAfterTransit(t *testing.T) {
 
 	if stateAtSweep != proto.TaskStateWaitingReview {
 		t.Fatalf("清扫必须发生在状态迁移之后，清扫时状态为 %s", stateAtSweep)
+	}
+}
+
+// TestReconcileExecutorGoneEmitsTurnFailed 钉死 B100 补漏：对账路径落的必须是
+// turn_failed 而不是 failed。
+//
+// 为什么：本函数迁的是 **waiting_review**（recoverTransit），任务**没有终结**——
+// executor 死了但代码还在，值得让协调者 diff 完再决定 continue 还是 done。
+// 落 failed 会让 wait --follow 收流、打「任务已终结」并以 0 退出，把一个正等着
+// 裁决的任务报成死的。B100 首轮漏了这条：审核者 spec §1.1 的四生产者表把这一行
+// 误填成「任务落 failed」，没去看 recoverTransit 的实际迁移目标。
+func TestReconcileExecutorGoneEmitsTurnFailed(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
+
+	got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	if got != proto.TaskStateWaitingReview {
+		t.Fatalf("对账应收 waiting_review，实际 %s", got)
+	}
+	evs, err := st.EventsFromAsc("t1", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last proto.Event
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed || e.Type == proto.EventTypeTurnFailed {
+			last = e
+		}
+	}
+	if last.Type == proto.EventTypeFailed {
+		t.Fatal("对账落了 failed：任务此刻在 waiting_review，没有终结，follow 会据此假报任务已死")
+	}
+	if last.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("对账应落 turn_failed，实际 %q", last.Type)
 	}
 }

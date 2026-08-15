@@ -159,10 +159,18 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	// 走不到 transit 的终态分支，但「executor 已死 ⇒ 挂起工单不可能再被回答」的
 	// 语义与终态一致，审计痕迹也该一致
 	voidTicketsWithAudit(st, taskID, reason, log)
-	// 对账路径没有 git 实况可带（executor 已不在，查不了回合起点）
-	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
+	// 对账路径没有 git 实况可带（executor 已不在，查不了回合起点）。
+	//
+	// 类型是 turn_failed 而不是 failed（B100 补漏）：本函数迁的是
+	// **waiting_review**（下面的 recoverTransit），任务**没有终结**——executor 死了
+	// 但代码还在，值得让协调者 diff 完再决定 continue 还是 done。落 failed 会让
+	// wait --follow 收流、打「任务已终结」并以 0 退出，把一个正等着裁决的任务
+	// 报成死的。B100 首轮漏了这条：它的 spec 把这一行误记成「任务落 failed」，
+	// 没去看 recoverTransit 的实际迁移目标（见 watchdog.go 里 transitFailedWithEvent
+	// 的注释，那里明写着「reconcileExecutorGone 收的是 waiting_review」）。
+	evt, err := st.AppendEvent(taskID, proto.EventTypeTurnFailed, newFailedPayload(reason, "", ""))
 	if err != nil {
-		log.Error("对账追加 failed 事件失败，不迁移状态", "task", taskID, "cause", err)
+		log.Error("对账追加 turn_failed 事件失败，不迁移状态", "task", taskID, "cause", err)
 		sweep(taskID) // 状态没迁成不代表 executor 还活着，残留照收
 		return cur.State
 	}

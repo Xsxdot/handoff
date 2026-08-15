@@ -131,12 +131,12 @@ func TestResumeWhenExecutorGone(t *testing.T) {
 	}
 	hasFailed := false
 	for _, ev := range evs {
-		if ev.Type == proto.EventTypeFailed {
+		if ev.Type == proto.EventTypeTurnFailed {
 			hasFailed = true
 		}
 	}
 	if !hasFailed {
-		t.Error("应留下 failed 事件说明为何进入审核（否则协调者不知道发生了什么）")
+		t.Error("应留下 turn_failed 事件说明为何进入审核（否则协调者不知道发生了什么）")
 	}
 }
 

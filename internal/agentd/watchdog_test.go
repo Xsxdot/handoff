@@ -339,7 +339,8 @@ func TestRecoverOnStartup(t *testing.T) {
 		t.Fatal("终态任务不应被探活")
 	}
 
-	// failed 事件断言：running 与 waiting_answer 各追加一条，原因固定
+	// turn_failed 事件断言：running 与 waiting_answer 各追加一条，原因固定。
+	// 是 turn_failed 不是 failed——两个任务都收在 waiting_review（见上面的 assertState），没有终结（B100 补漏）
 	for _, id := range []string{"task-dead-run", "task-dead-wa"} {
 		evs, err := st.EventsFrom(id, 0, 100)
 		if err != nil {
@@ -347,12 +348,12 @@ func TestRecoverOnStartup(t *testing.T) {
 		}
 		var failed []proto.Event
 		for _, ev := range evs {
-			if ev.Type == proto.EventTypeFailed {
+			if ev.Type == proto.EventTypeTurnFailed {
 				failed = append(failed, ev)
 			}
 		}
 		if len(failed) != 1 {
-			t.Fatalf("任务 %s 期望 1 条 failed 事件，实际 %d 条", id, len(failed))
+			t.Fatalf("任务 %s 期望 1 条 turn_failed 事件，实际 %d 条", id, len(failed))
 		}
 		var pl failedPayload
 		if err := json.Unmarshal(failed[0].Payload, &pl); err != nil {
