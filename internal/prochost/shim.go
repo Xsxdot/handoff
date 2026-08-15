@@ -24,6 +24,7 @@
 package prochost
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,13 +42,17 @@ const SentinelPrefix = `"type":"handoff_exit"`
 
 // rosterInterval 是后代名册的采样间隔。
 //
-// 为什么是 15s：名册的陈旧度上界就是它——间隔内出生并在下次快照前逃逸的进程
-// 会漏记（由 B73 的围栏兜底，只吃预算不致命）。再密下去每次都要全量枚举进程表
-// （数千条）且对回收成功率没有实质提升：真正堆积的是长命的编译/测试进程，
-// 它们活得远比 15s 长。
+// 为什么是 1s（B103 从 15s 下调）：名册现在是累积的（mergeRoster），漏记只可能
+// 发生在「工具壳的整个存活窗口内一次都没采到」。executor 的 Bash 工具壳往往只活
+// 约 1 秒（grok 把每条命令 setsid 成新会话后立刻返回），15s 的 tick 几乎必然错过
+// 它——08-15 实测 450 个 `sleep 900` 一个都没进名册。1s 把这个窗口压到最小。
 //
-// 是变量而非常量：测试要把它调到毫秒级，否则每条周期用例都真等 15s。
-var rosterInterval = 15 * time.Second
+// 代价是每秒一次全进程表枚举。可接受的依据：enumProcs 走 sysctl/procfs，**不 fork**
+// （procenum.go 的硬约束），所以它在「机器已经 fork 不动」时仍然可用，也不会自我
+// 加剧；并且内容未变时不落盘，稳态下没有磁盘写入。
+//
+// 是变量而非常量：测试要把它调到毫秒级，否则每条周期用例都真等 1s。
+var rosterInterval = time.Second
 
 // RunShim 是 shim 进程的入口：读 spec、持锁、拉起 executor、收尸写哨兵。
 //
@@ -147,7 +152,10 @@ func RunShim(specPath string) error {
 	rosterDone := make(chan struct{})
 	go func() {
 		defer close(rosterDone)
-		snapshotRoster(l, spec.InfoPath)
+		// 同一个 sampler 跨轮复用：它持有上一轮的序列化结果，"内容未变则不写"
+		// 依赖这份状态；每轮新建一个等于关掉这个优化
+		sampler := &rosterSampler{path: rosterPath(spec.InfoPath)}
+		sampler.sample(l)
 		tk := time.NewTicker(rosterInterval)
 		defer tk.Stop()
 		for {
@@ -155,7 +163,7 @@ func RunShim(specPath string) error {
 			case <-stopRoster:
 				return
 			case <-tk.C:
-				snapshotRoster(l, spec.InfoPath)
+				sampler.sample(l)
 			}
 		}
 	}()
@@ -265,30 +273,82 @@ func envKeys(env []string) []string {
 	return keys
 }
 
-// snapshotRoster 采一次后代名册并落盘。
+// rosterSampler 持有名册的采样状态：路径与上一轮落盘的字节。
 //
-// 参数：
-//   - l: 已带 lock 字段的日志入口
-//   - infoPath: adapter 的 proc.json 路径，名册与它同目录
+// 为什么要有状态：名册现在每秒采一次，稳态下内容根本不变；把上一轮的序列化
+// 结果留着比一比，就能把「每秒一次原子写 + rename」降成「变了才写」。
+// 2000 进程的任务名册约 60KB，不做这件事就是每秒几十 KB 的无谓 I/O。
 //
-// 注意：**任何一步失败都只打日志、不中断 shim**。名册写不出去只意味着这一轮
-// 没有第二段清扫（残留由围栏兜底），为它杀掉正在干活的 executor 是本末倒置。
-func snapshotRoster(l *slog.Logger, infoPath string) {
-	path := rosterPath(infoPath)
-	if path == "" {
+// 边界：本类型不负责启停节奏（那是 RunShim 里的 ticker），也不做任何存活判定
+// 与信号发送（那是 footprint.go 的事）。
+type rosterSampler struct {
+	path   string
+	last   []byte // 上一轮落盘的序列化结果；nil 表示还没写过
+	writes int    // 实际落盘次数，仅供测试断言「未变则不写」
+}
+
+// sample 采一轮名册：枚举进程、与上一轮合并、必要时落盘。
+//
+// 参数：l 为日志器；本方法所有失败都只记日志并返回，不中断任务——名册写不出去
+// 只意味着这一轮没有第二段清扫的依据，不值得让任务失败。
+//
+// 注意：周期日志一律 Debug 级（每秒一次，Info 会把任务日志刷满）；只有单次采样
+// 耗时超过间隔一半时才升 Warn——那意味着采样本身开始拖累这台机器，是必须看见的事。
+func (s *rosterSampler) sample(l *slog.Logger) {
+	if s.path == "" {
 		l.Warn("无 info_path，无法落盘后代名册，本任务不做出生登记")
 		return
 	}
+	start := time.Now()
 	procs, err := enumProcsFn()
 	if err != nil {
 		l.Warn("枚举进程失败，本轮跳过出生登记", "cause", err)
 		return
 	}
-	entries := descendantsOf(os.Getpid(), procs)
-	if err := writeRoster(path, entries); err != nil {
-		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", path, "cause", err)
+	prev, err := readRoster(s.path)
+	if err != nil {
+		// 名册损坏：这一轮从空名册重建，不能因此放弃采样——否则一次损坏会让
+		// 这个任务此后永远没有名册
+		l.Warn("读回上一轮名册失败，本轮从空名册重建", "path", s.path, "cause", err)
+		prev = nil
+	}
+	entries := mergeRoster(prev, descendantsOf(os.Getpid(), procs), procs)
+	b, err := marshalRoster(entries)
+	if err != nil {
+		l.Warn("序列化后代名册失败，本轮跳过出生登记", "cause", err)
 		return
 	}
-	// Debug 级：这是每 15s 一次的周期日志，Info 会把任务日志刷满
-	l.Debug("后代名册已更新", "path", path, "count", len(entries))
+	cost := time.Since(start)
+	if s.last != nil && bytes.Equal(b, s.last) {
+		// 内容未变是稳态常态，机器变慢时这一路径才最常走——耗时超标在这里也必须能
+		// Warn 出来，否则「名册把机器拖慢」这一信号在稳态下永不出现
+		if cost > rosterInterval/2 {
+			l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
+				"cost", cost, "interval", rosterInterval)
+			return
+		}
+		l.Debug("后代名册未变，跳过落盘", "count", len(entries), "cost", cost)
+		return
+	}
+	if err := writeRosterBytes(s.path, b); err != nil {
+		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", s.path, "cause", err)
+		return
+	}
+	s.last = b
+	s.writes++
+	if cost > rosterInterval/2 {
+		// 采样耗时逼近间隔意味着「名册把机器拖慢了」——这是必须能被看见的事，
+		// 否则它只会表现为一台莫名其妙变慢的机器
+		l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
+			"cost", cost, "interval", rosterInterval)
+		return
+	}
+	l.Debug("后代名册已更新", "path", s.path, "count", len(entries), "cost", cost)
+}
+
+// snapshotRoster 采一轮名册（无状态入口，仅供不需要跨轮比对的调用方使用）。
+//
+// 参数：l 为日志器；infoPath 为 proc.json 路径（名册与它同目录）
+func snapshotRoster(l *slog.Logger, infoPath string) {
+	(&rosterSampler{path: rosterPath(infoPath)}).sample(l)
 }

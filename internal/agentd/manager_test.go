@@ -34,6 +34,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
@@ -2063,11 +2064,12 @@ func TestHandleResultSweepsProcsOnFail(t *testing.T) {
 	m, taskID := newManagerWithRunningTask(t)
 	var swept []string
 	var sweptAtSeq int64
-	m.sweepProcs = func(id string) {
+	m.sweepProcs = func(id string) error {
 		swept = append(swept, id)
 		if ev, err := m.st.LatestEvent(taskID); err == nil {
 			sweptAtSeq = ev.Seq
 		}
+		return nil
 	}
 
 	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: false, FailReason: "opencode 事件流意外中断"}})
@@ -2095,7 +2097,7 @@ func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
 	// 所以「回合结束但 executor 还活着」不会被误杀——这条保护是既有的
 	m, taskID := newManagerWithRunningTask(t)
 	var swept []string
-	m.sweepProcs = func(id string) { swept = append(swept, id) }
+	m.sweepProcs = func(id string) error { swept = append(swept, id); return nil }
 
 	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: true, Branch: "b", CommitHash: "c"}})
 
@@ -2500,5 +2502,75 @@ func TestDenyGuidanceDroppedWakesOnSendFailure(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("appendGuidanceDropped 没有 Publish，wait 不会醒")
+	}
+}
+
+func TestSweepReturnsExecutorAliveToCaller(t *testing.T) {
+	m, _, _, _ := newTestManager(t) // newTestManager 实际返回 4 个值，其余三个忽略
+	m.sweepProcs = func(taskID string) error { return prochost.ErrExecutorAlive }
+	if err := m.sweep("t1"); !errors.Is(err, prochost.ErrExecutorAlive) {
+		t.Fatalf("sweep 必须把 ErrExecutorAlive 透传给调用方，got=%v", err)
+	}
+}
+
+func TestDoneSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	// 构造一个处于 waiting_review 的任务（Done 的状态门禁；沿用 reconcile_test.go
+	// 里 mustCreateTask 造 waiting_review 任务的同款方式）
+	id := "sweep-done"
+	mustCreateTask(t, st, &proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStateWaitingReview})
+	if err := m.Done(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Done 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestStopSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	id := "sweep-stop"
+	createRunningTask(t, st, id)
+	if _, err := m.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Stop 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestSweepAfterStopRetriesWhileExecutorAlive(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error {
+		calls++
+		if calls < 3 {
+			return prochost.ErrExecutorAlive
+		}
+		return nil
+	}
+	orig := sweepRetryGap
+	sweepRetryGap = time.Millisecond // 测试缝，避免真等 200ms
+	defer func() { sweepRetryGap = orig }()
+	m.sweepAfterStop("t1")
+	if calls != 3 {
+		t.Fatalf("ErrExecutorAlive 必须重试到成功或用尽，calls=%d", calls)
+	}
+}
+
+func TestSweepAfterStopGivesUpAfterBoundedRetries(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error { calls++; return prochost.ErrExecutorAlive }
+	orig := sweepRetryGap
+	sweepRetryGap = time.Millisecond
+	defer func() { sweepRetryGap = orig }()
+	m.sweepAfterStop("t1")
+	if calls != sweepRetryAttempts {
+		t.Fatalf("重试必须有界，calls=%d want=%d", calls, sweepRetryAttempts)
 	}
 }

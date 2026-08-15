@@ -137,24 +137,61 @@ type Manager struct {
 	mu       sync.Mutex
 	stopping map[string]struct{}
 	// sweepProcs 是「清扫某任务残留进程」的测试缝。**生产路径恒为 nil**，
-	// 由 sweep 方法退回 m.SweepTaskProcs；非测试代码不得赋值。
+	// 由 sweep 方法退回 m.sweepTaskProcsOnce；非测试代码不得赋值。
 	//
-	// 为什么用可空字段而不是包级 var：清扫是 Manager 的方法（要 m.cfg、m.log、
-	// m.adapterFor），包级 var 拿不到实例。而既有的所有 NewManager 调用点
-	// 不必改——nil 就是「用真的那个」
-	sweepProcs func(taskID string)
+	// 为什么返回 error（B103）：Done/Stop 要对 ErrExecutorAlive 做有界重试，
+	// 而 ErrExecutorAlive 恰恰是最容易让这条修复静默失效的竞态——存活锁的释放
+	// 依赖 shim 真正退出，它落后于 stopExecutor 返回。吞掉它就是 B93 犯过的错：
+	// 宣称「终态即清扫」，实际每次都被拒，直到 B103 排查才发现。
+	sweepProcs func(taskID string) error
 	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
 	usageMu   sync.Mutex
 	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
 }
 
 // sweep 调用清扫，走测试缝或真实实现。
-func (m *Manager) sweep(taskID string) {
+//
+// 返回：prochost.Sweep 的错误；ErrExecutorAlive 表示执行者仍活着（调用方可重试）
+func (m *Manager) sweep(taskID string) error {
 	if m.sweepProcs != nil {
-		m.sweepProcs(taskID)
-		return
+		return m.sweepProcs(taskID)
 	}
-	m.SweepTaskProcs(taskID)
+	return m.sweepTaskProcsOnce(taskID)
+}
+
+// sweepRetryAttempts / sweepRetryGap 是终态清扫对 ErrExecutorAlive 的重试参数。
+//
+// 是变量而非常量：测试要把间隔调到毫秒级，否则每条用例都真等 600ms。
+var (
+	sweepRetryAttempts = 3
+	sweepRetryGap      = 200 * time.Millisecond
+)
+
+// sweepAfterStop 在停完 executor 之后清扫这个任务留下的逃逸后代。
+//
+// 参数：taskID 为已停 executor 的任务
+//
+// 为什么必须在 stopExecutor 之后：prochost.Sweep 在存活锁仍被持有时直接拒绝
+// （ErrExecutorAlive）——杀活着的执行者是 Kill 的职责，两者风险模型不同。
+//
+// 为什么必须重试而不是一次拒绝就算了：存活锁的释放依赖 shim 进程真正退出，
+// 它落后于 stopExecutor 返回，中间有一个真实窗口。一次被拒就放弃，这条修复
+// 在生产上会静默失效——B93 就是这么错的（宣称「终态即清扫」，实测每次都被
+// ErrExecutorAlive 拒掉，直到 B103 排查才发现，中间隔了一整轮验收）。
+//
+// 注意：重试用尽打 Warn 而不是 Info。它意味着「executor 该死没死、逃逸后代
+// 大概率残留」，是需要人看见的事。
+func (m *Manager) sweepAfterStop(taskID string) {
+	for i := 0; i < sweepRetryAttempts; i++ {
+		if err := m.sweep(taskID); !errors.Is(err, prochost.ErrExecutorAlive) {
+			return
+		}
+		if i < sweepRetryAttempts-1 {
+			time.Sleep(sweepRetryGap)
+		}
+	}
+	m.log.Warn("终态清扫放弃：存活锁始终未释放，逃逸后代可能残留",
+		"task", taskID, "attempts", sweepRetryAttempts, "gap", sweepRetryGap)
 }
 
 // NewManager 创建任务管理器。
@@ -1134,6 +1171,11 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	} else {
 		m.stopExecutor(taskID, ad)
 	}
+	// 终态清扫（B103）：Kill 只够着 shim 那个进程组，executor 的 Bash 工具
+	// setsid 出去的后代（`cmd &` 这类）不在组内——不在这里扫，它们会在 launchd
+	// 名下一直活到自然退出。必须在 worktree 清理之前：还活着的进程把 cwd 钉在
+	// 工作树里，会让 git worktree remove 失败
+	m.sweepAfterStop(taskID)
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
 	//
@@ -1208,6 +1250,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	} else {
 		m.stopExecutor(taskID, ad)
 	}
+
+	// 终态清扫（B103）：stop 的语义是「别跑了」，那就该包括 Bash 工具 setsid
+	// 出去的后代——它们不在 shim 的进程组里，Kill 够不着
+	m.sweepAfterStop(taskID)
 
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
@@ -2723,7 +2769,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// （scanTaskProcs）仍是有价值的冗余，但兜的不是这条路径，而是
 	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
 	// 的真实缺口（另见 B97）。
-	m.sweep(taskID)
+	_ = m.sweep(taskID)
 }
 
 // transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑
