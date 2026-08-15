@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/spf13/cobra"
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/spf13/cobra"
 )
 
 // sessionsCmd 列出浏览器会话。

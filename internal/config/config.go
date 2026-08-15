@@ -82,7 +82,7 @@ type Config struct {
 	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 proxy: "" 写进
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（PathDirs 同款）。
-	Proxy        string `yaml:"proxy,omitempty"`
+	Proxy string `yaml:"proxy,omitempty"`
 	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
 	//
 	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由

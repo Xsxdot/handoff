@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 )
 
 // dialPty 建一条 /ws/pty 连接并断言首帧是 attached。

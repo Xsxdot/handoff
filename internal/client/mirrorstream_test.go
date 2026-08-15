@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 )
 
 // TestStreamEventsOnceDeliversAndNoCursor 断言：两条事件都被交付给 onEvent，

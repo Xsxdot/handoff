@@ -1274,12 +1274,12 @@ func ReadFile(repo, rel string) (proto.FileRead, error) {
 	if len(b) > maxRunOutput {
 		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
 			"size", fi.Size(), "limit", maxRunOutput)
-	// 合并 B102：main 侧在 ReadFile 里拼截断提示并返回 string，w4 侧改签名为
-	// proto.FileRead 并设 Truncated 标志、由端点层各自决定要不要拼提示。这里取
-	// w4 侧——合并后的 server.go handleTaskFile 按 w4 契约读 res.Truncated +
-	// truncatedNotice(res.Size)，main 侧那几行与 FileRead 签名不匹配。
-	out.Truncated = true
-	b = b[:maxRunOutput]
+		// 合并 B102：main 侧在 ReadFile 里拼截断提示并返回 string，w4 侧改签名为
+		// proto.FileRead 并设 Truncated 标志、由端点层各自决定要不要拼提示。这里取
+		// w4 侧——合并后的 server.go handleTaskFile 按 w4 契约读 res.Truncated +
+		// truncatedNotice(res.Size)，main 侧那几行与 FileRead 签名不匹配。
+		out.Truncated = true
+		b = b[:maxRunOutput]
 	}
 	out.Content = string(b)
 	out.Binary = isBinaryPrefix(b)

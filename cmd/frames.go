@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/spf13/cobra"
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/spf13/cobra"
 )
 
 var (

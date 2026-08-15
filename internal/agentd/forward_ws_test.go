@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 )
 
 // 端到端：浏览器 → 本机 agentd → 远端 agentd → 远端 ptyhost，字节双向透传。

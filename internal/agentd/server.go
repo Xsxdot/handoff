@@ -40,10 +40,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
-	"github.com/Xsxdot/handoff/internal/ptyhost"
 )
 
 // recentEventsLimit 是任务详情接口返回的最近事件条数上限。

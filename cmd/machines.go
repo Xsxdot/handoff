@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/spf13/cobra"
 )
 
 // machinesJSON 是 machines 的 --json 开关。
