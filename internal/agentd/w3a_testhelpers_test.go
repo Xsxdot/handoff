@@ -26,6 +26,7 @@ type testAgentdEnv struct {
 	srv   *Server
 	ts    *httptest.Server
 	st    *store.Store
+	mgr   *Manager // 由用例注入（SetManager 装配后填充）
 	token string
 }
 

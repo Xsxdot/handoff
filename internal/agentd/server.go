@@ -223,6 +223,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
+//   - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
@@ -263,6 +264,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	mux.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	mux.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
@@ -954,6 +956,8 @@ func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 //   - store.ErrNotFound → 404：登记名不存在
 //   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
 //     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
+//   - store.ErrProjectDuplicate → 409：改名/改路径撞上已被占用的名字或路径
+//     （handleProjectPatch 直接透传 store 的冲突哨兵，映射集中在这一处）
 //   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
 //   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
 //     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
@@ -967,6 +971,9 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrProjectAlreadyExists):
 		s.log.Warn("项目登记操作被拒：已存在", "name", name, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, store.ErrProjectDuplicate):
+		s.log.Warn("项目登记操作被拒：名字或路径已被占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
