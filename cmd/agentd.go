@@ -197,10 +197,6 @@ var agentdCmd = &cobra.Command{
 			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
 		}
 
-		// update.auto / update.interval 已废弃（B59）：字段保留只为了旧配置能
-		// 继续加载，取值非默认时打条 Warn，让改动过的人知道它已不再有效果
-		cfg.WarnDeprecated(logger)
-
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
 		listenAddrs := []string{cfg.Listen}
