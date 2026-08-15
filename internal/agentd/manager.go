@@ -1259,12 +1259,19 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
 
 	// Stop 是协调者主动中止：无 git 实况可带（不是回合收尾）
+	//
+	// 先迁状态、后追加事件（B97）：failed 事件一落库就可被 WS 重放读到，状态必须
+	// 先就位，否则协调者在一个仍 running 的任务上看到 failed 事件会操作它、却被
+	// 状态机拒。反转的代价是失败形态从「状态错」变成「状态对、事件缺」：transit
+	// 失败时不追加事件，任务停在旧状态可重试；崩在两步之间留下的是「failed 但缺
+	// 一条 failed 事件」，show 出来仍可裁决——旧形态「事件说终结了、状态还是
+	// running」只会让协调者干等到 2h 看门狗（handleResult 函数头的同一条理由）。
+	if err := m.transit(taskID, proto.TaskStateFailed, "stop"); err != nil {
+		return false, err
+	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload("协调者主动中止（handoff stop）", "", ""))
 	if err != nil {
 		return false, fmt.Errorf("追加中止事件: %w", err)
-	}
-	if err := m.transit(taskID, proto.TaskStateFailed, "stop"); err != nil {
-		return false, err
 	}
 	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
 	m.clearApproverState(taskID)

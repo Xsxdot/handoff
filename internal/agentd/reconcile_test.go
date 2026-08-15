@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/prochost"
@@ -103,6 +104,51 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 	}
 	if len(pend) != 0 {
 		t.Fatalf("挂起工单应被作废，实际剩 %d", len(pend))
+	}
+}
+
+// TestReconcileTransitsBeforeEvent 同上，对 reconcileExecutorGone：turn_failed
+// 事件落库那一刻，状态必须已迁到 waiting_review——reconcileExecutorGone 迁的不是
+// failed（任务未终结，executor 死了代码还在，等协调者 diff 完裁决），是 waiting_review。
+//
+// 断言机制与 TestStopTransitsBeforeEvent 同款：钩子同步触发于 INSERT 之后、AppendEvent
+// 返回之前；钩子阻塞住 AppendEvent，主 goroutine 收到通知时（旧实现里 recoverTransit
+// 还没跑）读到的状态必然是 running，旧实现断言必失败，新实现必通过。
+func TestReconcileTransitsBeforeEvent(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: t.TempDir(), State: proto.TaskStateRunning})
+
+	fired := make(chan proto.Event, 1)
+	release := make(chan struct{})
+	st.SetEventHook(func(e proto.Event) {
+		fired <- e
+		<-release
+	})
+
+	go func() {
+		reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	}()
+
+	var gotType proto.EventType
+	select {
+	case e := <-fired:
+		gotType = e.Type
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待对账的 turn_failed 事件落库超时")
+	}
+	// 放行钩子：GetTask 期间 reconcileExecutorGone 停在 AppendEvent 内，读到的就是
+	// 事件落库瞬间的状态
+	defer close(release)
+	if gotType != proto.EventTypeTurnFailed {
+		t.Fatalf("对账首个事件应为 turn_failed，实际 %s", gotType)
+	}
+	cur, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateWaitingReview {
+		t.Fatalf("turn_failed 事件落库瞬间状态应为 %s，实际 %s（先事件后状态 = 破损中间态）",
+			proto.TaskStateWaitingReview, cur.State)
 	}
 }
 
