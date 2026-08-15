@@ -84,6 +84,12 @@ var (
 	// ErrBranchIdentityMismatch 表示 git 报告成功，但工作区实际所在的分支
 	// 不是我们请求的那个（B76：worktree add -b 被 DWIM 顶替）。
 	ErrBranchIdentityMismatch = errors.New("工作区分支与请求不符")
+
+	// 以下三个是文件树条目操作（B107：建/改名/删）的拒绝面。文案就是 HTTP 层
+	// 原样吐给用户的中文，每条都要能独立读懂。
+	ErrEntryExists   = errors.New("目标已存在")
+	ErrEntryNotFound = errors.New("目标不存在")
+	ErrBadEntryName  = errors.New("名字不合法")
 )
 
 // 执行护栏：
@@ -1532,4 +1538,285 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// 为什么条目的全部写操作都经 os.OpenRoot(repo) 返回的 *os.Root：ReadFile 的路径
+// 逃逸防御（workspace.go:1203-1208）已论证「先校验、后打开」的两步式存在 TOCTOU
+// 窗口——恶意 executor 经 run 完全能在校验与打开之间把中间组件换成指向仓库外的
+// 链接。这里的三写操作（建/改名/删）比读更危险，复用同一个内核级 jail：每个
+// 动作的路径解析都在单次系统调用内由内核完成，无窗口。
+
+// cleanEntryRel 归一化条目操作的目标相对路径并做词汇层逃逸检查。
+//
+// 与 ReadFile/WriteFile/ListDir 相同的第 1 道红线（Clean 后绝对路径或残留 ..
+// 前缀一律拒绝，ErrPathEscape）；"." 归一成 ""（表示工作树根）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（供日志定位）
+//   - rel: 待归一化的相对路径
+//
+// 返回：
+//   - 归一化后的相对路径（"." 归为空串）
+//   - ErrPathEscape: rel 逃逸出工作树
+func cleanEntryRel(repo, rel string) (string, error) {
+	cleaned := filepath.Clean(rel)
+	if filepath.IsAbs(cleaned) || cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		log().Warn("条目操作路径逃逸被拒绝", "repo", repo, "path", rel)
+		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+	}
+	if cleaned == "." {
+		return "", nil
+	}
+	return cleaned, nil
+}
+
+// validateEntryName 校验新条目名：空、.、..、含 / 或 \ 一律 ErrBadEntryName
+// （单层名，本期不做跨目录操作）。
+func validateEntryName(repo, name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		log().Warn("条目名字不合法被拒绝", "repo", repo, "name", name)
+		return fmt.Errorf("%w: %q", ErrBadEntryName, name)
+	}
+	return nil
+}
+
+// statEntry 从工作树现取一条目的 proto.DirEntry（Name/IsDir/Size 取自磁盘实况）。
+//
+// 为什么不凭入参拼：name 入参只保证「未逃逸」，磁盘实况才是建/改名后的事实
+// 来源（如目录 size 恒 0，见 proto.DirEntry 的文档约定）。
+func statEntry(root *os.Root, repo, target string) (proto.DirEntry, error) {
+	fi, err := root.Stat(target)
+	if err != nil {
+		return proto.DirEntry{}, fmt.Errorf("读取条目 %s: %w", filepath.Join(repo, target), err)
+	}
+	e := proto.DirEntry{Name: fi.Name(), IsDir: fi.IsDir()}
+	if !fi.IsDir() {
+		e.Size = fi.Size()
+	}
+	return e, nil
+}
+
+// CreateEntry 在工作树内新建一个空文件或空目录（B107 文件树右键菜单）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - parentRel: 目标所在父目录的相对路径；空串与 "." 都表示工作树根
+//   - name: 新条目名（单层名，不得含 / 或 \）
+//   - kind: "file" 或 "dir"
+//
+// 返回：
+//   - proto.DirEntry: 新建条目的信息（Name/IsDir/Size 取自磁盘实况，非入参拼装）
+//   - ErrBadEntryName: name 非法（空 / . / .. / 含分隔符），或 parentRel 不是目录
+//   - ErrPathEscape: parentRel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标落在工作树根的 .git 下
+//   - ErrEntryNotFound: parentRel 不存在
+//   - ErrEntryExists: 目标已存在
+func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
+	log().Info("新建工作树条目", "repo", repo, "parent", parentRel, "name", name, "kind", kind)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	parent, err := cleanEntryRel(repo, parentRel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if err := validateEntryName(repo, name); err != nil {
+		return proto.DirEntry{}, err
+	}
+	target := filepath.Join(parent, name)
+	if isGitPath(target) {
+		log().Warn("新建条目命中 .git 被拒绝", "repo", repo, "path", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, target)
+	}
+	if parent != "" {
+		pfi, err := root.Stat(parent)
+		if err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目父目录逃逸被拒绝", "repo", repo, "path", parent, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, parent)
+			}
+			if os.IsNotExist(err) {
+				log().Warn("新建条目父目录不存在", "repo", repo, "path", parent, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, parent)
+			}
+			return proto.DirEntry{}, fmt.Errorf("检查父目录 %s: %w", filepath.Join(repo, parent), err)
+		}
+		if !pfi.IsDir() {
+			log().Warn("新建条目父目录不是目录", "repo", repo, "path", parent, "mode", pfi.Mode().String())
+			return proto.DirEntry{}, fmt.Errorf("%w: 父目录 %q 不是目录", ErrBadEntryName, parent)
+		}
+	}
+	if _, err := root.Stat(target); err == nil {
+		log().Warn("新建条目目标已存在", "repo", repo, "path", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryExists, target)
+	} else if rootErrIsEscape(err) {
+		log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+	}
+	if kind == "dir" {
+		if err := root.Mkdir(target, 0o755); err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			return proto.DirEntry{}, fmt.Errorf("建目录 %s: %w", filepath.Join(repo, target), err)
+		}
+	} else {
+		f, err := root.Create(target)
+		if err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			return proto.DirEntry{}, fmt.Errorf("建文件 %s: %w", filepath.Join(repo, target), err)
+		}
+		// 建的是空文件，立刻关掉即可
+		if err := f.Close(); err != nil {
+			return proto.DirEntry{}, fmt.Errorf("关闭文件 %s: %w", filepath.Join(repo, target), err)
+		}
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	log().Info("新建条目完成", "repo", repo, "path", target, "kind", kind)
+	return e, nil
+}
+
+// RenameEntry 给工作树内一个条目改名（B107 文件树右键菜单）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待改名条目的相对路径
+//   - newName: 新名字（单层名，不得含 / 或 \——本期不做跨目录移动）
+//
+// 返回：
+//   - proto.DirEntry: 改名后条目的信息（Name/IsDir/Size 取自磁盘实况）
+//   - ErrBadEntryName: newName 非法（空 / . / .. / 含分隔符），或 rel 是工作树根
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+//   - ErrEntryExists: 新名字已存在
+func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
+	log().Info("改名工作树条目", "repo", repo, "path", rel, "new_name", newName)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if cleaned == "" {
+		log().Warn("条目改名目标是工作树根被拒绝", "repo", repo, "path", rel)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrBadEntryName, rel)
+	}
+	if err := validateEntryName(repo, newName); err != nil {
+		return proto.DirEntry{}, err
+	}
+	if isGitPath(cleaned) {
+		log().Warn("条目改名命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	target := filepath.Join(filepath.Dir(cleaned), newName)
+	if _, err := root.Stat(cleaned); err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("条目改名目标不存在", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	if _, err := root.Stat(target); err == nil {
+		log().Warn("条目改名撞名被拒绝", "repo", repo, "path", cleaned, "target", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryExists, target)
+	} else if rootErrIsEscape(err) {
+		log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+	}
+	if err := root.Rename(cleaned, target); err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+		}
+		return proto.DirEntry{}, fmt.Errorf("改名 %s → %s: %w", filepath.Join(repo, cleaned), filepath.Join(repo, target), err)
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目改名完成", "repo", repo, "path", cleaned, "new_path", target)
+	return e, nil
+}
+
+// DeleteEntry 删除工作树内一个条目（B107 文件树右键菜单），目录连同其内容一并删。
+//
+// 不做回收站：git 能救已跟踪文件（checkout / restore 一条命令），却救不了未跟踪
+// 文件——新建即删除的落盘即永久，这正是「误删会弄丢东西」的全部理由，与凭据
+// 强弱无关（控制台会话的权限本来就是主令牌等价，见 isGitPath 的 why）；这道闸
+// 该挡的是「一次误操作就把数据/仓库弄坏」。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待删除条目的相对路径
+//
+// 返回：
+//   - ErrBadEntryName: rel 是工作树根（空串 / "."）
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+func DeleteEntry(repo, rel string) error {
+	log().Info("删除工作树条目", "repo", repo, "path", rel)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return err
+	}
+	if cleaned == "" {
+		log().Warn("删除工作树根本身被拒绝", "repo", repo, "path", rel)
+		return fmt.Errorf("%w: %q", ErrBadEntryName, rel)
+	}
+	if isGitPath(cleaned) {
+		log().Warn("删除条目命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	fi, err := root.Stat(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("删除条目路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("删除条目不存在", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		return fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	kind := "file"
+	if fi.IsDir() {
+		kind = "dir"
+		err = root.RemoveAll(cleaned)
+	} else {
+		err = root.Remove(cleaned)
+	}
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("删除条目路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		return fmt.Errorf("删除条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	log().Info("删除条目完成", "repo", repo, "path", cleaned, "kind", kind)
+	return nil
 }

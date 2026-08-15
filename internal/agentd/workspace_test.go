@@ -1179,3 +1179,130 @@ func mustWriteFile(t *testing.T, path, content string) {
 		t.Fatalf("写文件 %s: %v", path, err)
 	}
 }
+
+func TestCreateEntryFileAndDir(t *testing.T) {
+	repo := t.TempDir()
+	got, err := CreateEntry(repo, "", "handler.go", "file")
+	if err != nil {
+		t.Fatalf("建文件: %v", err)
+	}
+	if got.Name != "handler.go" || got.IsDir {
+		t.Fatalf("返回项不对: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "handler.go")); err != nil {
+		t.Fatalf("文件没落盘: %v", err)
+	}
+	if _, err := CreateEntry(repo, "", "internal", "dir"); err != nil {
+		t.Fatalf("建目录: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(repo, "internal"))
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("目录没落盘: %v", err)
+	}
+}
+
+func TestCreateEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "a.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, parent, entry, kind string
+		want                      error
+	}{
+		{"同名", "", "a.go", "file", ErrEntryExists},
+		{"名字含斜杠", "", "x/y.go", "file", ErrBadEntryName},
+		{"名字为空", "", "", "file", ErrBadEntryName},
+		{"名字是点点", "", "..", "dir", ErrBadEntryName},
+		{"父目录逃逸", "..", "a.go", "file", ErrPathEscape},
+		{"命中 git 目录", ".git", "config", "file", ErrGitDirWrite},
+		{"父目录不存在", "nope", "a.go", "file", ErrEntryNotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := CreateEntry(repo, c.parent, c.entry, c.kind)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("要 %v，得到 %v", c.want, err)
+			}
+		})
+	}
+}
+
+func TestRenameEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "old.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "old.go", "new.go"); err != nil {
+		t.Fatalf("改名: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.go")); err != nil {
+		t.Fatalf("新名字不在: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "old.go")); !os.IsNotExist(err) {
+		t.Fatal("旧名字还在")
+	}
+	if _, err := CreateEntry(repo, "", "taken.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "new.go", "taken.go"); !errors.Is(err, ErrEntryExists) {
+		t.Fatal("撞名应当被拒")
+	}
+	if _, err := RenameEntry(repo, "new.go", "a/b.go"); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("新名字含斜杠应当被拒（本期不做跨目录移动）")
+	}
+	if _, err := RenameEntry(repo, ".git", "x"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("改名 .git 应当被拒")
+	}
+}
+
+func TestDeleteEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "gone.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "gone.go"); err != nil {
+		t.Fatalf("删文件: %v", err)
+	}
+	// 非空目录也要能删
+	if _, err := CreateEntry(repo, "", "d", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateEntry(repo, "d", "inner.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "d"); err != nil {
+		t.Fatalf("删非空目录: %v", err)
+	}
+	if err := DeleteEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("删不存在的应当 ErrEntryNotFound")
+	}
+	if err := DeleteEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("删 .git 应当被拒")
+	}
+	if err := DeleteEntry(repo, ""); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("删工作树根本身应当被拒")
+	}
+}
+
+func TestEntryOpsSymlinkEscape(t *testing.T) {
+	// 与 TestReadFileSymlinkEscape 同款手法：仓库内放一个指向仓库外的链接，
+	// 三个动作都必须被 os.OpenRoot 挡下，而不是顺着链接操作到仓库外
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "link")); err != nil {
+		t.Skipf("本平台建不了符号链接: %v", err)
+	}
+	if _, err := CreateEntry(repo, "link", "new.txt", "file"); err == nil {
+		t.Fatal("经链接在仓库外建文件竟然成功了")
+	}
+	if err := DeleteEntry(repo, "link/victim.txt"); err == nil {
+		t.Fatal("经链接删仓库外文件竟然成功了")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim.txt")); err != nil {
+		t.Fatal("仓库外的文件被动了")
+	}
+}
