@@ -1461,9 +1461,14 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				return err
 			}
 			if ev.Type == proto.EventTypeFailed {
-				// failed 事件收流，交还协调者处置（回合失败已迁 waiting_review，可 continue，
-				// 但 continue 后需要重新挂 follow）；completed 不收流——一轮结束后订阅继续活着
-				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
+				// 只有**任务终结**才收流。回合失败走 turn_failed，它与 completed
+				// 是同一个状态迁移（都进 waiting_review），所以行为也必须与
+				// completed 一致——投递、不收流。
+				//
+				// 旧实现在这里把回合失败也收了流，还打「任务已失败」并以 0 退出，
+				// 而任务其实好端端等着审（B100）。更糟的是它与 completed 行为相反，
+				// 两个后果完全相同的事件走了两条路。
+				c.log().Info("follow 结束：任务已终结", "task", taskID, "seq", ev.Seq)
 				return errStopStream
 			}
 			return nil
