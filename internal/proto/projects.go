@@ -182,6 +182,17 @@ type FileRead struct {
 	SHA256    string `json:"sha256,omitempty"`
 }
 
+// CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体。
+type CreateWorkspaceEntryReq struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "file" 或 "dir"
+}
+
+// RenameWorkspaceEntryReq 是 PATCH /api/workspaces/entry 的请求体。
+type RenameWorkspaceEntryReq struct {
+	NewName string `json:"new_name"`
+}
+
 // FileWriteReq 是 PUT /api/workspaces/file 的请求体。
 //
 // BaseSHA256 必填：它是调用方**读到那一版**的哈希，服务端拿它与磁盘现状比对，
