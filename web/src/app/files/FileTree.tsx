@@ -58,9 +58,9 @@ interface MenuEntry {
   name: string
 }
 
-// NameDlg 描述当前打开的命名弹层。
-//   - create-*：target/dirOf 都是父目录，成功后刷新那一层
-//   - rename：target 是条目自身，dirOf 是它的父目录（改完刷新父层）
+// NameDlg 描述当前打开的命名弹层；dirOf 是成功后要刷新的那一层。
+//   - create-*：建在 target 目录里，刷新该目录本身
+//   - rename：条目改名的落点是它的父层（列表里挂着该条目的那一层）
 interface NameDlg {
   mode: 'create-file' | 'create-dir' | 'rename'
   dirOf: string
@@ -88,6 +88,13 @@ interface SearchState {
 // dirOf 返回四个「文件夹类」动作的落点：目录行用自身 rel，文件行用父 rel。
 function dirOf(rel: string, isDir: boolean): string {
   return isDir ? rel : rel.split('/').slice(0, -1).join('/')
+}
+
+// parentOf 返回条目所在的那一层（父目录）。对文件与目录一致——删/改名/复制
+// 之后这条目在**父层**的列表里，要刷新的是那一层而不是条目自身（目录的自身
+// 是它的子层，刷新它看不见被删/被改名/被复制的条目）。
+function parentOf(rel: string): string {
+  return rel.split('/').slice(0, -1).join('/')
 }
 
 export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeProps) {
@@ -169,7 +176,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
     setDeleteError('')
     try {
       await deleteWorkspaceEntry(base.path, deleteTarget.rel, base.machine)
-      dirs.reload(dirOf(deleteTarget.rel, deleteTarget.isDir))
+      dirs.reload(parentOf(deleteTarget.rel))
       setDeleteTarget(null)
     } catch (err) {
       setDeleteError(errorMessage(err))
@@ -178,10 +185,10 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
     }
   }
 
-  const copyEntry = async (rel: string, isDir: boolean) => {
+  const copyEntry = async (rel: string) => {
     try {
       await copyWorkspaceEntry(base.path, rel, base.machine)
-      dirs.reload(dirOf(rel, isDir))
+      dirs.reload(parentOf(rel))
     } catch (err) {
       setOpError(errorMessage(err))
     }
@@ -224,10 +231,10 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
       { label: '在终端中打开', onSelect: () => onOpenTerminal(dOf) },
       { label: '在文件夹中查找', onSelect: () => openSearch(dOf) },
       { separator: true },
-      { label: '复制', onSelect: () => void copyEntry(entry.rel, entry.isDir) },
+      { label: '复制', onSelect: () => void copyEntry(entry.rel) },
       {
         label: '重命名',
-        onSelect: () => setNameDlg({ mode: 'rename', dirOf: dOf, target: entry.rel, name: entry.name }),
+        onSelect: () => setNameDlg({ mode: 'rename', dirOf: parentOf(entry.rel), target: entry.rel, name: entry.name }),
       },
       {
         label: '删除',

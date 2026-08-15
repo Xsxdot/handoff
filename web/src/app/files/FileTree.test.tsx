@@ -244,6 +244,57 @@ describe('FileTree', () => {
     expect(screen.getByText(/名字不能包含/)).toBeInTheDocument()
   })
 
+  it('删除目录后刷新的是父层，不是目录自身', async () => {
+    // 回归锚：目录条目挂在父层列表里，删掉它要刷新父层（rel==''），
+    // 刷新目录自身只会让被删条目在新列表里 404
+    const calls: string[] = []
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_p: string, rel?: string) => {
+      calls.push(rel ?? '')
+      if (!rel) return dir([{ name: 'internal', is_dir: true }])
+      return dir([])
+    })
+    vi.mocked(deleteWorkspaceEntry).mockResolvedValue({ ok: true })
+    renderTree()
+    await userEvent.pointer({ target: await screen.findByText('internal'), keys: '[MouseRight]' })
+    await userEvent.click(screen.getByRole('menuitem', { name: '删除' }))
+    await userEvent.click(screen.getByRole('button', { name: '删除' }))
+    // 挂载时取过根层一次，删除成功后应再次刷新根层
+    await waitFor(() => expect(calls.filter((r) => r === '')).toHaveLength(2))
+    expect(calls.filter((r) => r === 'internal')).toHaveLength(0)
+  })
+
+  it('重命名目录后刷新的是父层，不是目录自身', async () => {
+    const calls: string[] = []
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_p: string, rel?: string) => {
+      calls.push(rel ?? '')
+      if (!rel) return dir([{ name: 'internal', is_dir: true }])
+      return dir([])
+    })
+    vi.mocked(renameWorkspaceEntry).mockResolvedValue({ name: 'internal2', is_dir: true, size: 0 })
+    renderTree()
+    await userEvent.pointer({ target: await screen.findByText('internal'), keys: '[MouseRight]' })
+    await userEvent.click(screen.getByRole('menuitem', { name: '重命名' }))
+    await userEvent.type(screen.getByLabelText('名称'), 'internal2')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(calls.filter((r) => r === '')).toHaveLength(2))
+    expect(calls.filter((r) => r === 'internal')).toHaveLength(0)
+  })
+
+  it('复制目录后刷新的是父层，不是目录自身', async () => {
+    const calls: string[] = []
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_p: string, rel?: string) => {
+      calls.push(rel ?? '')
+      if (!rel) return dir([{ name: 'internal', is_dir: true }])
+      return dir([])
+    })
+    vi.mocked(copyWorkspaceEntry).mockResolvedValue({ name: 'internal copy', is_dir: true, size: 0 })
+    renderTree()
+    await userEvent.pointer({ target: await screen.findByText('internal'), keys: '[MouseRight]' })
+    await userEvent.click(screen.getByRole('menuitem', { name: '复制' }))
+    await waitFor(() => expect(calls.filter((r) => r === '')).toHaveLength(2))
+    expect(calls.filter((r) => r === 'internal')).toHaveLength(0)
+  })
+
   it('右键目录「在终端中打开」回调父目录自身 rel', async () => {
     const { onOpenTerminal } = renderTree()
     await userEvent.pointer({ target: await screen.findByText('internal'), keys: '[MouseRight]' })
