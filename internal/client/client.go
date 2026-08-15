@@ -216,9 +216,20 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 // 用途：agentd 扇出到别的 agentd 时必须带这个标记，让对端不再向外扇出——
 // 一跳封顶，A→B→A 不可能成环。审核者 CLI **不要**用它。
 func (c *Client) MarkForwarded() *Client {
-	cp := *c
-	cp.extraHeaders = map[string]string{"X-Handoff-Forwarded": "1"}
-	return &cp
+	// 合并 B102：main 侧给 Client 加了 cursorRootOnce（sync.Once），w4 侧的
+	// MarkForwarded 是整体拷贝——整体拷贝会把 lock 一起复制，go vet 的
+	// copylocks 会拒。这里改为逐字段构造并重置 Once：镜像连接是独立实例，
+	// 游标根缓存让它自己解析一次即可。
+	cp := &Client{
+		baseURL:          c.baseURL,
+		token:            c.token,
+		hc:               c.hc,
+		extraHeaders:     map[string]string{"X-Handoff-Forwarded": "1"},
+		wsInitialBackoff: c.wsInitialBackoff,
+		wsMaxBackoff:     c.wsMaxBackoff,
+		wsStableAfter:    c.wsStableAfter,
+	}
+	return cp
 }
 
 // log 返回运行时 slog.Default()。

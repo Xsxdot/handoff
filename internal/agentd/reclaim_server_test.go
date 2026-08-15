@@ -49,6 +49,10 @@ func TestHandleReclaimDirtyReturns409WithReason(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+id+"/reclaim",
 		strings.NewReader(`{"force":false}`))
+	// httptest.NewRequest 的默认 Host 是 example.com，会被 hostGuard 在鉴权前
+	// 403 掉（W3 的 Host 白名单）。本组用例测的是 reclaim 的判定，不是白名单，
+	// 因此显式给一个回环 Host 让请求走到 handler（与 update_test.go 同款处理）。
+	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer test")
 	s.Handler().ServeHTTP(rec, req)
 
@@ -71,6 +75,7 @@ func TestHandleReclaimNonTerminalReturns409NotTerminal(t *testing.T) {
 	s, id := newServerWithRunningTask(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+id+"/reclaim", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer test")
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -87,6 +92,7 @@ func TestHandleReclaimUnknownTaskReturns404(t *testing.T) {
 	s, _ := newServerWithDirtyWorktree(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks/no-such/reclaim", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer test")
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -98,6 +104,7 @@ func TestHandleReclaimListReturnsRows(t *testing.T) {
 	s, id := newServerWithDirtyWorktree(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/reclaim", nil)
+	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer test")
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
