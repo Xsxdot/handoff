@@ -487,6 +487,12 @@ func TestMismatchVerdict(t *testing.T) {
 			want:   false,
 		},
 		{
+			name:   "事件年龄恰等于 minAge→true（>= 边界）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-minAge)},
+			want:   true,
+		},
+		{
 			name:   "3 最新事件是progress（历史上有failed）→false",
 			state:  proto.TaskStateRunning,
 			latest: &proto.Event{Type: proto.EventTypeProgress, CreatedAt: now.Add(-60 * time.Second)},
@@ -594,8 +600,9 @@ func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
 }
 
 // TestScanStateMismatchLeavesHealthyTaskAlone（B97 Task 3）：turn_failed + waiting_review
-// 是健康终态（正等着协调者裁决，挂三天都正常），扫描必须一根手指都不碰——transit
-// 不被调用、状态不动、事件数不变。
+// 是健康态（任务正等着协调者裁决，挂三天都正常），扫描一根手指都不许碰——transit
+// 不被调用、状态不动、事件数不变。判 false 的直接原因是最新事件类型是 turn_failed
+// 而非 failed（waiting_review 不是终态，终态只有 completed/failed）。
 func TestScanStateMismatchLeavesHealthyTaskAlone(t *testing.T) {
 	st := newTestStore(t)
 	hub := NewHub()

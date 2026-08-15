@@ -7,7 +7,7 @@
 //     的破损中间态补迁 failed（B97 Task 3 保险丝）
 //   - RecoverOnStartup：agentd 启动时对 running/waiting_answer/waiting_review 任务
 //     逐个探测执行器存活（spec §8「agentd 崩溃后重启恢复」）；running/waiting_answer
-//     不存活 → failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
+//     不存活 → turn_failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
 //     → 保持现状（本就是待审核终态，不追加事件不迁状态）；存活（含 waiting_review）
 //     → 重建 SSE 订阅继续消费
 //
@@ -440,14 +440,14 @@ func transitFailedWithEvent(st *store.Store, hub *Hub, taskID, reason string, lo
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
 // 对全部 running/waiting_answer/waiting_review 任务调用 probe 探测执行器存活——
-//   - running/waiting_answer 不存活：追加 failed 事件（原因固定为「agentd 重启后
+//   - running/waiting_answer 不存活：追加 turn_failed 事件（原因固定为「agentd 重启后
 //     执行器已不在」）并迁移 waiting_review，交协调者裁决（失败现场留在事件里，
 //     协调者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
 //     VoidPendingTickets 的语义），事件照常广播，启动期无人订阅则由客户端凭
 //     seq cursor 补拉
 //   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待协调者
-//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 failed 事件或再迁
-//     状态只会产生噪音，**不**复用 running/waiting_answer 的 failed 迁移路径
+//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 turn_failed 事件或再迁
+//     状态只会产生噪音，**不**复用 running/waiting_answer 的 turn_failed 迁移路径
 //   - 存活（含 waiting_review）：重建 SSE 订阅继续消费——重建动作由 probe 闭包
 //     内部完成（见 seam 说明），本函数只记录结论日志；waiting_review 存活时
 //     同样重建，续接依赖的会话上下文（opencode serve 进程与 SSE 会话）才不至于
