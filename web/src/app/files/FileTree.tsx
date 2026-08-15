@@ -140,7 +140,16 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
     // 阻止浏览器原生菜单，换成这份；Shift+F10 与 ContextMenu 键也派发
     // 这个事件，键盘用户走的是同一条路
     e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY, entry: { rel, isDir: entry.is_dir, name: entry.name } })
+    let x = e.clientX
+    let y = e.clientY
+    // 键盘触发的右键事件坐标是 (0,0)，直接拿去菜单会钉在左上角；此时改用
+    // 被右键行的 DOM 中心做落点。鼠标触发路径坐标非零，保持不变
+    if (x === 0 && y === 0) {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+      x = rect.left + rect.width / 2
+      y = rect.top + rect.height / 2
+    }
+    setMenu({ x, y, entry: { rel, isDir: entry.is_dir, name: entry.name } })
   }
 
   // submitName 是命名弹层的提交：按模式发对应请求，成功后只刷新那一层。

@@ -324,7 +324,7 @@ func (s *Server) handleWorkspaceEntryCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rel := r.URL.Query().Get("rel")
-	s.log.Info("工作树新建条目请求", "method", r.Method, "path", r.URL.Path, "rel", rel, "machine", r.URL.Query().Get("machine"))
+	s.log.Info("工作树新建条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
 	root, ok := s.workspaceRootOrErr(w, r)
 	if !ok {
 		return
@@ -351,7 +351,7 @@ func (s *Server) handleWorkspaceEntryCreate(w http.ResponseWriter, r *http.Reque
 //
 // 参数（查询串）：
 //   - path: 工作树绝对路径（必须命中白名单，否则 400）
-//   - rel: 待复制条目的相对路径（空串即工作树根，按不存在拒绝）
+//   - rel: 待复制条目的相对路径（空串即工作树根，按非法名拒绝）
 //   - machine: 可选，转发到指定机器（复用 forwardIfRequested）
 //
 // 响应：200 返回副本的 proto.DirEntry。
@@ -360,7 +360,7 @@ func (s *Server) handleWorkspaceEntryCopy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	rel := r.URL.Query().Get("rel")
-	s.log.Info("工作树复制条目请求", "method", r.Method, "path", r.URL.Path, "rel", rel, "machine", r.URL.Query().Get("machine"))
+	s.log.Info("工作树复制条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
 	root, ok := s.workspaceRootOrErr(w, r)
 	if !ok {
 		return
@@ -390,7 +390,7 @@ func (s *Server) handleWorkspaceEntryRename(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rel := r.URL.Query().Get("rel")
-	s.log.Info("工作树改名条目请求", "method", r.Method, "path", r.URL.Path, "rel", rel, "machine", r.URL.Query().Get("machine"))
+	s.log.Info("工作树改名条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
 	root, ok := s.workspaceRootOrErr(w, r)
 	if !ok {
 		return
@@ -426,7 +426,7 @@ func (s *Server) handleWorkspaceEntryDelete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rel := r.URL.Query().Get("rel")
-	s.log.Info("工作树删除条目请求", "method", r.Method, "path", r.URL.Path, "rel", rel, "machine", r.URL.Query().Get("machine"))
+	s.log.Info("工作树删除条目请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "machine", r.URL.Query().Get("machine"))
 	root, ok := s.workspaceRootOrErr(w, r)
 	if !ok {
 		return
@@ -458,7 +458,7 @@ func (s *Server) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query().Get("q")
 	rel := r.URL.Query().Get("rel")
-	s.log.Info("工作树搜索请求", "method", r.Method, "path", r.URL.Path, "rel", rel, "q", q, "machine", r.URL.Query().Get("machine"))
+	s.log.Info("工作树搜索请求", "method", r.Method, "path", r.URL.Query().Get("path"), "rel", rel, "q", q, "machine", r.URL.Query().Get("machine"))
 	root, ok := s.workspaceRootOrErr(w, r)
 	if !ok {
 		return

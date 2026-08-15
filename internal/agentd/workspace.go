@@ -1572,10 +1572,11 @@ func cleanEntryRel(repo, rel string) (string, error) {
 	return cleaned, nil
 }
 
-// validateEntryName 校验新条目名：空、.、..、含 / 或 \ 一律 ErrBadEntryName
-// （单层名，本期不做跨目录操作）。
+// validateEntryName 校验新条目名：空、.、..、含 / 或 \、含 NUL 字节一律
+// ErrBadEntryName（单层名，本期不做跨目录操作）。
 func validateEntryName(repo, name string) error {
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) ||
+		strings.ContainsRune(name, 0) {
 		log().Warn("条目名字不合法被拒绝", "repo", repo, "name", name)
 		return fmt.Errorf("%w: %q", ErrBadEntryName, name)
 	}
@@ -1627,6 +1628,10 @@ func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
 	}
 	if err := validateEntryName(repo, name); err != nil {
 		return proto.DirEntry{}, err
+	}
+	if kind != "file" && kind != "dir" {
+		log().Warn("新建条目未知类型被拒绝", "repo", repo, "kind", kind)
+		return proto.DirEntry{}, fmt.Errorf("%w: 未知的条目类型 %q", ErrBadEntryName, kind)
 	}
 	target := filepath.Join(parent, name)
 	if isGitPath(target) {
@@ -1731,6 +1736,10 @@ func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
 		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
 	}
 	target := filepath.Join(filepath.Dir(cleaned), newName)
+	if isGitPath(target) {
+		log().Warn("条目改名命中 .git 被拒绝", "repo", repo, "target", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, target)
+	}
 	if _, err := root.Stat(cleaned); err != nil {
 		if rootErrIsEscape(err) {
 			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
@@ -1996,10 +2005,12 @@ func copyEntryDir(root *os.Root, repo, src, dst string) (entries, bytes int64, e
 //
 // 参数：
 //   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
-//   - rel: 待复制条目的相对路径（空串与 "." 表示工作树根）
+//   - rel: 待复制条目的相对路径（空串与 "." 都表示工作树根，按 ErrBadEntryName
+//     拒绝——复制整棵工作树没有意义，落点必然撞已存在的副本名）
 //
 // 返回：
 //   - proto.DirEntry: 复制后条目的信息（Name/IsDir/Size 取自磁盘实况）
+//   - ErrBadEntryName: rel 是工作树根（空串 / "."）
 //   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
 //   - ErrGitDirWrite: 目标是 .git 下的条目
 //   - ErrEntryNotFound: rel 不存在
@@ -2015,6 +2026,10 @@ func CopyEntry(repo, rel string) (proto.DirEntry, error) {
 	cleaned, err := cleanEntryRel(repo, rel)
 	if err != nil {
 		return proto.DirEntry{}, err
+	}
+	if cleaned == "" {
+		log().Warn("条目复制目标是工作树根被拒绝", "repo", repo, "path", rel)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrBadEntryName, rel)
 	}
 	if isGitPath(cleaned) {
 		log().Warn("条目复制命中 .git 被拒绝", "repo", repo, "path", cleaned)

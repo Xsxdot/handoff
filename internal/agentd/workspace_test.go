@@ -1287,7 +1287,7 @@ func TestDeleteEntry(t *testing.T) {
 
 func TestEntryOpsSymlinkEscape(t *testing.T) {
 	// 与 TestReadFileSymlinkEscape 同款手法：仓库内放一个指向仓库外的链接，
-	// 三个动作都必须被 os.OpenRoot 挡下，而不是顺着链接操作到仓库外
+	// 四个动作都必须被 os.OpenRoot 挡下，而不是顺着链接操作到仓库外
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1301,6 +1301,15 @@ func TestEntryOpsSymlinkEscape(t *testing.T) {
 	}
 	if err := DeleteEntry(repo, "link/victim.txt"); err == nil {
 		t.Fatal("经链接删仓库外文件竟然成功了")
+	}
+	// RenameEntry 与 CopyEntry 的 rel 逃逸拦截不在 cleanEntryRel（那层只做词汇
+	// 层 Clean），而在 os.Root 对链接的实际解析——root.Stat 顺着 link 解析到
+	// 仓库外报 "path escapes from parent"，两处都应落 ErrPathEscape
+	if _, err := RenameEntry(repo, "link/victim.txt", "y.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接改名仓库外文件应当 ErrPathEscape，得到: %v", err)
+	}
+	if _, err := CopyEntry(repo, "link/victim.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接复制仓库外文件应当 ErrPathEscape，得到: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "victim.txt")); err != nil {
 		t.Fatal("仓库外的文件被动了")
