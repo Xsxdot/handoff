@@ -13,3 +13,4 @@ prototypes/**/dist/
 
 # B95 形态确认用的 fork 副本（临时工作区，不入库；回流见 finishing-a-development-branch）
 prototypes/b95-project-edit/
+prototypes/b107-file-tree-menu/
