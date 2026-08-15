@@ -21,6 +21,7 @@ export interface DirEntriesApi {
   errorOf: (rel: string) => string | undefined
   ensure: (rel: string) => void
   refresh: () => void
+  reload: (rel: string) => void
 }
 
 export function useDirEntries(base: BaseDir | null): DirEntriesApi {
@@ -73,6 +74,19 @@ export function useDirEntries(base: BaseDir | null): DirEntriesApi {
     load('')
   }, [load])
 
+  // reload 强制重取一层：清掉该层的 loaded 标记再走一遍 load。
+  //
+  // 与 ensure 的分工：ensure 是「已取过就空转」——建/改名/复制/删除后目标层
+  // 很可能已在内存里，ensure 会直接返回旧数据；reload 是「操作成功后才刷新
+  // 这一层」的实现基础，别的层不动。
+  const reload = useCallback(
+    (rel: string) => {
+      loaded.current.delete(rel)
+      load(rel)
+    },
+    [load],
+  )
+
   // 为什么经 ref 读取而不是闭包 entries/errors：entriesOf/errorOf 依赖 entries 的
   // 话，某层响应回来一更新 state，dirs 对象引用就变，FileTree 的挂载 effect
   // 会把 expanded 清空、把正在展开的目录折叠掉。所以这里只依赖 ref，引用稳定。
@@ -82,7 +96,7 @@ export function useDirEntries(base: BaseDir | null): DirEntriesApi {
   // 为什么 useMemo 包一层：FileTree 的 useEffect 依赖 dirs 引用，不包的话每次
   // 渲染都产生新对象，effect 会无限重跑（base 没变也触发）
   return useMemo(
-    () => ({ entriesOf, errorOf, ensure: load, refresh }),
-    [entriesOf, errorOf, load, refresh],
+    () => ({ entriesOf, errorOf, ensure: load, refresh, reload }),
+    [entriesOf, errorOf, load, refresh, reload],
   )
 }

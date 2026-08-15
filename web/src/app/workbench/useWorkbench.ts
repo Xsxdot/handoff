@@ -65,7 +65,7 @@ export interface WorkbenchApi {
   // 哪怕焦点在右边。不传组号时 openTab 会退回 `wb.active`，于是「点哪个 + 都开在
   // 焦点组」——这是走查里真实撞到的偏差，不是理论问题。
   open: (c: TabContent, b?: BaseDir, group?: number) => void
-  openTerminal: (b?: BaseDir, group?: number) => void
+  openTerminal: (b?: BaseDir, group?: number, rel?: string) => void
   close: (group: number, tabId: string) => void
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
@@ -112,8 +112,12 @@ export function useWorkbench(): WorkbenchApi {
   )
 
   const openTerminal = useCallback(
-    (b?: BaseDir, group?: number) =>
-      mutate((w) => openTab(w, { kind: 'terminal', seq: nextTerminalSeq(w) }, group), b),
+    (b?: BaseDir, group?: number, rel?: string) =>
+      mutate((w) => {
+        const seq = nextTerminalSeq(w)
+        // rel 只在显式给时写进 tab 内容，缺省与旧形态逐字节一致（去重键、标题都不看它）
+        return openTab(w, rel ? { kind: 'terminal', seq, rel } : { kind: 'terminal', seq }, group)
+      }, b),
     [mutate],
   )
 

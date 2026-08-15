@@ -18,6 +18,7 @@ import type {
   CreateProjectResp,
   CreatePtySessionReq,
   DiffResult,
+  DirEntry,
   DirListResult,
   FileRead,
   FileResult,
@@ -33,6 +34,7 @@ import type {
   ReplyResult,
   ResumeResult,
   RunResult,
+  SearchResult,
   StatusResp,
   StopResult,
   Task,
@@ -265,6 +267,57 @@ export function writeWorkspaceFile(
   machine?: string,
 ): Promise<FileWriteResp> {
   return putJSON<FileWriteResp>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`, req)
+}
+
+// createWorkspaceEntry 在工作树内新建一个空文件或空目录（POST /api/workspaces/entry）。
+//
+// rel 是父目录的相对路径（空串 = 工作树根）；name 必须是单层名，kind 取 'file' | 'dir'。
+// 撞名 409、名字含 / 400，错误原文都在 ApiError.message 里。
+export function createWorkspaceEntry(
+  path: string,
+  rel: string,
+  name: string,
+  kind: 'file' | 'dir',
+  machine?: string,
+): Promise<DirEntry> {
+  return postJSON<DirEntry>(`/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`, { name, kind })
+}
+
+// copyWorkspaceEntry 把工作树内 rel 条目复制一份到同级（POST /api/workspaces/entry/copy）。
+//
+// 副本名由服务端按「foo copy.go / foo copy 2.go」规则计算并返回，前端不参与命名。
+export function copyWorkspaceEntry(path: string, rel: string, machine?: string): Promise<DirEntry> {
+  return postJSON<DirEntry>(`/api/workspaces/entry/copy?${workspaceQuery(path, rel, machine)}`, {})
+}
+
+// renameWorkspaceEntry 把工作树内 rel 条目改名为单层 newName（PATCH /api/workspaces/entry）。
+// 不做跨目录移动：newName 含 / 由服务端 400。
+export function renameWorkspaceEntry(
+  path: string,
+  rel: string,
+  newName: string,
+  machine?: string,
+): Promise<DirEntry> {
+  return patchJSON<DirEntry>(`/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`, {
+    new_name: newName,
+  })
+}
+
+// deleteWorkspaceEntry 删除工作树内 rel 条目（DELETE /api/workspaces/entry），
+// 目录连同内容一并删，服务端不做回收站。
+export function deleteWorkspaceEntry(path: string, rel: string, machine?: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// searchWorkspace 在工作树 rel 子树内按关键词搜索命中行（GET /api/workspaces/search）。
+// q 必须非空（空词服务端 400）；hits 命中 rel 含 scope 前缀、line 从 1 起。
+export function searchWorkspace(path: string, rel: string, q: string, machine?: string): Promise<SearchResult> {
+  return request<SearchResult>(
+    `/api/workspaces/search?${workspaceQuery(path, rel, machine)}&q=${encodeURIComponent(q)}`,
+  )
 }
 
 // createProject 登记一个项目位置（POST /api/projects）。

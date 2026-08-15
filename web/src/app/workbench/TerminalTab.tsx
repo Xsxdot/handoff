@@ -32,6 +32,8 @@ export interface TerminalTabProps {
   seq: number
   // sessionId 缺席 = 这个 tab 还没有会话，挂载时建一个。
   sessionId?: string
+  // rel 是终端要起的工作树子目录；空串/缺席 = 工作树根。
+  rel?: string
   // onSession 把新建会话的 id 交回上层写进 TabContent。必须回报：
   // 不回报的话切一次 tab 就会再建一个会话，用户每切一次多留一个 shell。
   onSession: (id: string) => void
@@ -42,11 +44,20 @@ export interface TerminalTabProps {
 // home 基准的 path 是字面量 '~'，**不是**服务端认识的路径（useWorkbench 里
 // 早有这条纪律）。base_kind=home 时服务端用它自己的 $HOME，所以这里发空串，
 // 免得将来有人把 '~' 当路径去 stat。
-function ptyBase(base: BaseDir): { base_kind: string; base_path: string } {
-  return { base_kind: base.kind, base_path: base.kind === 'home' ? '' : base.path }
+//
+// rel 只在 workspace 基准确有语义：home 的 cwd 由服务端决定，不往上带。
+// rel 为空/undefined 时返回的对象与历史形态**逐字节一致**（不加 rel 键），
+// 建会话的既有断言与行为不得受影响。
+function ptyBase(base: BaseDir, rel?: string): { base_kind: string; base_path: string; rel?: string } {
+  const out: { base_kind: string; base_path: string; rel?: string } = {
+    base_kind: base.kind,
+    base_path: base.kind === 'home' ? '' : base.path,
+  }
+  if (rel && base.kind === 'workspace') out.rel = rel
+  return out
 }
 
-export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProps) {
+export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
@@ -94,7 +105,7 @@ export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProp
       let id = sessionId
       if (!id) {
         const created = await createPtySession(
-          { ...ptyBase(base), cols: term.cols, rows: term.rows },
+          { ...ptyBase(base, rel), cols: term.cols, rows: term.rows },
           base.machine,
         )
         if (disposed) {
@@ -150,9 +161,10 @@ export function TerminalTab({ base, seq, sessionId, onSession }: TerminalTabProp
       handle?.close()
       term.dispose()
     }
-    // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端
+    // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
+    // rel 参与身份：改 rel 就该在新的子目录里重建会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, base.key, base.machine])
+  }, [sessionId, base.key, base.machine, rel])
 
   return (
     <div className="flex h-full flex-col">
