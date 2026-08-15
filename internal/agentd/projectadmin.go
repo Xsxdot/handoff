@@ -655,5 +655,9 @@ func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("project patch 完成", "old_name", name, "new_name", loc.Name,
 		"old_path", cur.Path, "new_path", loc.Path)
+	// 与 handleProjectAdd/persistProject 对齐：登记返回前也填「有效」，两个端点
+	// 都返回 proto.ProjectLocation，行为应一致（改 path 场景新目录刚过
+	// EnsureRepoUsable，填「有效」语义成立）。
+	loc.Status = projectStatusOK
 	writeJSON(w, http.StatusOK, loc)
 }

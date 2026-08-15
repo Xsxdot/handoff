@@ -236,6 +236,7 @@ export function ProjectEditDialog({ open, project, onClose, onDone }: ProjectEdi
                   }
                   aria-label={`${machineLabel(loc.machine)} 引用名`}
                   placeholder="引用名"
+                  disabled={submitting}
                   className={INPUT_CLASS}
                 />
                 <input
@@ -248,6 +249,7 @@ export function ProjectEditDialog({ open, project, onClose, onDone }: ProjectEdi
                   }
                   aria-label={`${machineLabel(loc.machine)} 路径`}
                   placeholder="粘贴本机已有目录路径"
+                  disabled={submitting}
                   className={INPUT_CLASS}
                 />
               </div>

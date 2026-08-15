@@ -160,6 +160,31 @@ func TestUpdateProjectLocationChangesPath(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectLocationEmptyBothFieldsIsNoop 验证两个字段都为空时是空操作
+// （spec §3.1「双空=空操作」）：直接返回当前记录、不发 UPDATE、project_id 不变。
+func TestUpdateProjectLocationEmptyBothFieldsIsNoop(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "", "")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 双空: %v", err)
+	}
+	if got.Name != "handoff" || got.Path != "/w/handoff" {
+		t.Fatalf("双空应返回当前记录不变: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("双空后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("双空后再取: %v", err)
+	}
+	if back.Name != "handoff" || back.Path != "/w/handoff" || back.ProjectID != a.ProjectID {
+		t.Fatalf("库里记录应原样（未发 UPDATE）: %+v", back)
+	}
+}
+
 // TestUpdateProjectLocationRejectsDuplicateName 新名字已被别的位置占用 →
 // ErrProjectDuplicate（上层映射 409）。
 func TestUpdateProjectLocationRejectsDuplicateName(t *testing.T) {

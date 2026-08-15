@@ -121,6 +121,7 @@ func TestProjectEditRequiresAtLeastOneField(t *testing.T) {
 // TestProjectEditTargetResolvesRemote 断言带 --target devbox 时请求打到
 // targets 表里 devbox 的地址，而不是本机。
 func TestProjectEditTargetResolvesRemote(t *testing.T) {
+	resetProjectEditFlags(t)
 	var hits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)

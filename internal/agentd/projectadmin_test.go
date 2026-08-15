@@ -404,6 +404,33 @@ func TestProjectPatchRenames(t *testing.T) {
 	}
 }
 
+// TestProjectPatchChangesPath 改 path 成功：响应里 project_id 不变，Path 指向
+// 新目录。repo2 本身是主仓，归并主工作树后就是它自己；断言兼容 EvalSymlinks
+// 后的等价性（照 TestRegisterProjectExisting 的风格）。
+func TestProjectPatchChangesPath(t *testing.T) {
+	env := newPatchTestEnv(t)
+	const origin = "git@github.com:Xsxdot/handoff.git"
+	repo := initGitRepoWithOrigin(t, origin)
+	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+		t.Fatalf("登记: %v", err)
+	}
+	repo2 := initGitRepoWithOrigin(t, origin)
+	var loc proto.ProjectLocation
+	patchJSON(t, env, "/api/projects/handoff",
+		map[string]string{"path": repo2}, http.StatusOK, &loc)
+	if loc.Path == "" {
+		t.Fatal("响应 Path 不应为空")
+	}
+	if loc.ProjectID != projectid.FromOrigin(origin) {
+		t.Fatalf("ProjectID = %q, want %q", loc.ProjectID, projectid.FromOrigin(origin))
+	}
+	want, _ := filepath.EvalSymlinks(repo2)
+	got, _ := filepath.EvalSymlinks(loc.Path)
+	if got != want {
+		t.Fatalf("改 path 后应指向新目录: got %s, want %s", loc.Path, repo2)
+	}
+}
+
 // TestProjectPatchRejectsDifferentOrigin 是本 task 的正身：把 path 改到一个 origin
 // 不同的仓库 → 400，且报文说明「那是另一个项目」。没有这条校验，「编辑 path」就成
 // 了一条不声不响把登记指向另一个仓库的路径：project_id 还是旧的，磁盘上却是别的项目。
