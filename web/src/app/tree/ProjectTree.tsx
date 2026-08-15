@@ -35,7 +35,7 @@ import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, 
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
-import { ContextMenu } from './ContextMenu'
+import { ContextMenu } from '../shared/ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
