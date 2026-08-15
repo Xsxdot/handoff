@@ -751,6 +751,42 @@ func (c *Client) ProjectRemove(ctx context.Context, name string) error {
 	return nil
 }
 
+// PatchProject 改一条项目位置的引用名与/或路径。
+//
+// 参数：
+//   - name: 当前引用名（URL 路径定位那条登记）
+//   - newName: 新引用名（空串=不改名）
+//   - path: 新路径（空串=不改路径）
+//
+// 返回：
+//   - 更新后的位置记录
+//   - newName 与 path 都为空返回错误（服务端会拒，本地先拦）
+//   - 登记不存在返回 404 错误；新名字非法或新路径是另一个项目返回 400 错误；
+//     新名字已被别的登记占用返回 409 错误
+func (c *Client) PatchProject(ctx context.Context, name, newName, path string) (proto.ProjectLocation, error) {
+	// 只带非空字段：空串字段不带，服务端以「缺字段=不改这个字段」判定改动面
+	body := map[string]any{}
+	if newName != "" {
+		body["new_name"] = newName
+	}
+	if path != "" {
+		body["path"] = path
+	}
+	resp, err := c.do(ctx, http.MethodPatch, "/api/projects/"+url.PathEscape(name), body)
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("project edit 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return proto.ProjectLocation{}, c.httpError("project edit", resp)
+	}
+	var loc proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&loc); err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("解析 project edit 响应: %w", err)
+	}
+	return loc, nil
+}
+
 // Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。
 //
 // 注意：

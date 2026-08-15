@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree } from './ProjectTree'
 
@@ -33,6 +33,7 @@ function props(over: {
   onOpenSettings?: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
+  onEdit?: (project: ProjectNode) => void
 } = {}) {
   const tree: ProjectTreeResp = {
     projects: [{
@@ -63,6 +64,9 @@ function props(over: {
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
     onUnregister: 'onUnregister' in over ? over.onUnregister : vi.fn(),
+    // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
+    // 编辑入口」的分支
+    onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
   }
   return p
 }
@@ -376,6 +380,32 @@ describe('ProjectTree', () => {
     expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
   })
 
+  it('右键机器行弹出菜单，含「编辑」「注销」两项', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit: vi.fn() })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.getByRole('menuitem', { name: '编辑' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
+  it('点菜单「编辑」把所在的 project 交给 onEdit', () => {
+    const onEdit = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑' }))
+    expect(onEdit).toHaveBeenCalledTimes(1)
+    const p = onEdit.mock.calls[0][0] as ProjectNode
+    expect(p.project_id).toBe('p1')
+    expect(p.name).toBe('handoff')
+    expect(p.locations).toHaveLength(1)
+  })
+
+  it('未传 onEdit 时菜单不出现「编辑」项', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit: undefined })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.queryByRole('menuitem', { name: '编辑' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
   it('菜单里点「注销」进既有确认弹层，文案不变', () => {
     const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
     fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
@@ -383,8 +413,8 @@ describe('ProjectTree', () => {
     expect(screen.getByText(/只解除登记，不删除磁盘上的代码/)).toBeInTheDocument()
   })
 
-  it('未传 onUnregister 时右键不弹菜单——没有可做的操作', () => {
-    const { container } = render(<ProjectTree {...props({ onUnregister: undefined })} />)
+  it('未传 onUnregister 与 onEdit 时右键不弹菜单——没有可做的操作', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: undefined, onEdit: undefined })} />)
     fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
     expect(screen.queryByRole('menu')).toBeNull()
   })

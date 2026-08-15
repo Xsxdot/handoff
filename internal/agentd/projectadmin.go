@@ -16,8 +16,11 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -538,4 +541,123 @@ func (m *Manager) UnregisterProject(ctx context.Context, name string) error {
 	}
 	m.log.Info("项目位置已注销（磁盘仓库未动）", "name", name, "path", loc.Path)
 	return nil
+}
+
+// projectPatchRequest 是 PATCH /api/projects/{name} 的请求体。
+//
+// 两个字段都可选，但不能都为空：new_name 改引用名，path 改本机路径（两个改动
+// 可以同时发生，也可各自独立）。
+type projectPatchRequest struct {
+	NewName string `json:"new_name"`
+	Path    string `json:"path"`
+}
+
+// handleProjectPatch 改一条项目位置的引用名与/或 path。
+//
+// 顺序（handler 级判定，**不许调换**）：
+//  1. 解析 body；两个字段都空 → 400
+//  2. 按 name 取当前记录；不存在 → 404
+//  3. 若要改 name：复用登记时那套 validateProjectName 校验；不合法 → 400。
+//     new_name 与当前 name 相同 → 当作没改这个字段（spec §3.3），传给 store 空串
+//  4. 若要改 path：对新目录做与登记同款的检查（inspectRepoDir 现读 origin），
+//     算 projectid.FromOrigin(origin)：
+//     - 与当前 project_id 不同 → 400（该目录是另一个项目）
+//     - 相同且 new path 与当前 path 是同一位置（sameLocation）→ 当作没改这个字段
+//  5. store.UpdateProjectLocation；ErrProjectDuplicate → 409（writeProjectError）、
+//     ErrNotFound → 404
+//  6. 返回更新后的记录
+//
+// 注意：
+//   - 本机与远程都能改：先 forwardIfRequested，显式 ?machine= 的请求本机只做搬运
+//   - 改 path 的两条校验（origin 一致 + 非同一位置）保证「编辑 path」永远不把登记
+//     静默指向另一个仓库：project_id 由 origin 派生，磁盘上换了仓库而身份不变是
+//     比不给编辑危险得多的脏状态（本 handler 的正身）
+func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req projectPatchRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("project patch 请求体解析失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "请求体必须是 JSON {new_name, path}"})
+		return
+	}
+	// 进入处理：明确本次要改哪些字段
+	s.log.Info("project patch 请求", "name", name,
+		"change_name", req.NewName != "", "new_name", req.NewName,
+		"change_path", req.Path != "", "path", req.Path)
+	if req.NewName == "" && req.Path == "" {
+		s.log.Warn("project patch 被拒：两个字段都为空", "name", name,
+			"cause", "new_name 与 path 不能都为空")
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "new_name 与 path 不能都为空"})
+		return
+	}
+	cur, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("project patch 被拒：项目不存在", "name", name, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Error("project patch 读取项目失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	// 改 name：复用登记时那套校验；new_name 与当前相同视为没改
+	newName := req.NewName
+	if newName != "" {
+		if newName == cur.Name {
+			newName = ""
+		} else if err := validateProjectName(newName); err != nil {
+			s.log.Warn("project patch 被拒：新名字非法", "name", name,
+				"new_name", req.NewName, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	// 改 path：与登记同款的三步检查（inspectRepoDir 内部 EnsureRepoUsable →
+	// MainWorktreeRoot → 现读 origin），project_id 由 origin 派生，必须与当前一致
+	newPath := req.Path
+	if newPath != "" {
+		root, origin, ierr := s.mgr.inspectRepoDir(r.Context(), newPath)
+		if ierr != nil {
+			s.log.Warn("project patch 被拒：新路径不是可用的仓库",
+				"name", name, "path", newPath, "cause", ierr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": ierr.Error()})
+			return
+		}
+		if pid := projectid.FromOrigin(origin); pid != cur.ProjectID {
+			s.log.Warn("project patch 被拒：新路径属于另一个项目",
+				"name", name, "path", root, "origin", origin,
+				"current_project_id", cur.ProjectID, "cause", "该目录是另一个项目（origin 不同）")
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "该目录是另一个项目（origin 不同），请注销后重新添加"})
+			return
+		}
+		// 同一位置（归并后）视为没改这个字段——与登记幂等的语义一致
+		if sameLocation(cur.Path, root) {
+			newPath = ""
+		} else {
+			newPath = root
+		}
+	}
+	loc, err := s.st.UpdateProjectLocation(name, newName, newPath)
+	if err != nil {
+		s.writeProjectError(w, name, err)
+		return
+	}
+	s.log.Info("project patch 完成", "old_name", name, "new_name", loc.Name,
+		"old_path", cur.Path, "new_path", loc.Path)
+	// 与 handleProjectAdd/persistProject 对齐：登记返回前也填「有效」，两个端点
+	// 都返回 proto.ProjectLocation，行为应一致（改 path 场景新目录刚过
+	// EnsureRepoUsable，填「有效」语义成立）。
+	loc.Status = projectStatusOK
+	writeJSON(w, http.StatusOK, loc)
 }

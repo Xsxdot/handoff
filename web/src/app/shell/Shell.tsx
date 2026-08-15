@@ -19,7 +19,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
@@ -28,6 +28,7 @@ import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
+import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseOfTask, ProjectTree } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
@@ -58,6 +59,8 @@ export function Shell() {
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  // editProject 是正在被编辑的项目（右键菜单「编辑」传入）；null = 弹层关闭。
+  const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
   const ptySupport = usePtySupport()
@@ -248,6 +251,7 @@ export function Shell() {
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onAddProject={() => setWizardOpen(true)}
+            onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
           />
         )}
@@ -405,6 +409,13 @@ export function Shell() {
         open={wizardOpen}
         machines={machinesState.data?.machines ?? []}
         onClose={() => setWizardOpen(false)}
+        onDone={() => treeState.refresh()}
+      />
+
+      <ProjectEditDialog
+        open={editProject !== null}
+        project={editProject}
+        onClose={() => setEditProject(null)}
         onDone={() => treeState.refresh()}
       />
     </div>

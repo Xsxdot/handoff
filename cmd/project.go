@@ -5,6 +5,7 @@
 //   - project add：把 cwd 登记为本机位置；--target 时一并登记到那台机器
 //   - project ls：列出位置，并显示每条的实际状态（登记与磁盘漂移时看得见）
 //   - project rm：注销位置
+//   - project edit：改一条位置的引用名与/或路径（不动 project_id）
 //
 // 边界：
 //   - 不自己 ssh、不自己 clone：clone 由目标机上的 agentd 执行，用它自己的 git 凭据
@@ -330,12 +331,59 @@ var projectRmCmd = &cobra.Command{
 	},
 }
 
+// projectEditName / projectEditPath 是 project edit 的两个可选改动。
+var (
+	projectEditName string
+	projectEditPath string
+)
+
+// projectEditCmd 改一条位置的引用名与/或路径。
+//
+// 使用方式：
+//
+//	handoff project edit <名字> --name <新引用名>                  # 只改名
+//	handoff project edit <名字> --path <新路径>                    # 只改路径
+//	handoff project edit <名字> --name <新引用名> --path <新路径>   # 两个都改
+//	handoff project edit <名字> --name <新引用名> --target devbox   # 在 devbox 上改
+var projectEditCmd = &cobra.Command{
+	Use:   "edit <名字>",
+	Short: "改一条项目位置的引用名与/或路径",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// 两个可选改动都缺时本地就拦：错误在发请求前暴露，不白打一趟网络
+		if projectEditName == "" && projectEditPath == "" {
+			return fmt.Errorf("project edit 需要至少一个改动：--name <新引用名> 或 --path <新路径>")
+		}
+		addr, token, err := TargetEndpoint()
+		if err != nil {
+			return err
+		}
+		loc, err := client.New(addr, token).PatchProject(cmd.Context(), args[0], projectEditName, projectEditPath)
+		if err != nil {
+			return err
+		}
+		parts := []string{}
+		if projectEditName != "" {
+			parts = append(parts, "新名字 "+loc.Name)
+		}
+		if projectEditPath != "" {
+			parts = append(parts, "新路径 "+loc.Path)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "已更新 %s：%s\n", args[0], strings.Join(parts, "，"))
+		return nil
+	},
+}
+
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPath, "path", "",
 		"目标机上已有的那份代码的路径（仅与 --target 连用；省略则由那台机器 clone 到它的 repo_root/<名字>）")
 	projectLsCmd.Flags().BoolVar(&projectTree, "tree", false, "以三层项目树输出（project → location → workspace，现场探测工作树）")
 	projectLsCmd.Flags().BoolVar(&projectTreeAll, "all", false, "跨机汇总所有机器上的项目树（配合 --tree 使用）")
 	projectLsCmd.Flags().BoolVar(&projectTreeJSON, "json", false, "树形输出改为单行 JSON（配合 --tree/--all 使用）")
-	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd)
+	projectEditCmd.Flags().StringVar(&projectEditName, "name", "",
+		"新的引用名（省略=不改名；与 --path 至少给一个）")
+	projectEditCmd.Flags().StringVar(&projectEditPath, "path", "",
+		"新的路径（省略=不改路径；与 --name 至少给一个）")
+	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd, projectEditCmd)
 	rootCmd.AddCommand(projectCmd)
 }

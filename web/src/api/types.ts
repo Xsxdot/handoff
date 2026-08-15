@@ -177,6 +177,13 @@ export interface CreateProjectReq {
   path?: string
 }
 
+// PatchProjectReq 是 PATCH /api/projects/{name} 的请求体。B95。
+// 两个字段都可选、不能都空：new_name 改引用名，path 改路径。
+export interface PatchProjectReq {
+  new_name?: string
+  path?: string
+}
+
 export interface AuthTicketResp {
   url: string
   expires_at: string

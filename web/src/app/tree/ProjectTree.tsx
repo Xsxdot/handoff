@@ -55,6 +55,7 @@ export interface ProjectTreeProps {
   onOpenSettings: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
+  onEdit?: (project: ProjectNode) => void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -168,7 +169,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -198,8 +199,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
   // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
-  // null = 没有菜单打开
-  const [menu, setMenu] = useState<{ x: number; y: number; name: string; machine: string } | null>(null)
+  // null = 没有菜单打开。project 一并记下：编辑弹层要以**整个项目**为输入，
+  // 而菜单锚在机器行——闭包里只有 loc，得把所在 project 一起带进菜单状态。
+  const [menu, setMenu] = useState<{ x: number; y: number; name: string; machine: string; project: ProjectNode } | null>(null)
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -323,13 +325,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                       className="group relative"
                       data-testid="machine-row"
                       onContextMenu={
-                        onUnregister
+                        onUnregister || onEdit
                           ? (e) => {
                               // 阻止浏览器原生菜单，换成我们这份。
                               // Shift+F10 与 ContextMenu 键也派发这个事件，
                               // 所以键盘用户走的是同一条路，不需要额外快捷键
                               e.preventDefault()
-                              setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine })
+                              setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine, project })
                             }
                           : undefined
                       }
@@ -527,13 +529,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            {
-              label: '注销',
-              danger: true,
-              // 走的仍是既有的确认弹层，一字不改——右键只是换了个入口，
-              // 不是换一条注销路径
-              onSelect: () => setUnregisterTarget({ name: menu.name, machine: menu.machine }),
-            },
+            // 「编辑」排在「注销」前；onEdit 没传就不给这个入口
+            // （与 onUnregister 的「没传就不给操作」一致）
+            ...(onEdit
+              ? [{ label: '编辑', onSelect: () => onEdit(menu.project) }]
+              : []),
+            ...(onUnregister
+              ? [
+                  {
+                    label: '注销',
+                    danger: true,
+                    // 走的仍是既有的确认弹层，一字不改——右键只是换了个入口，
+                    // 不是换一条注销路径
+                    onSelect: () => setUnregisterTarget({ name: menu.name, machine: menu.machine }),
+                  },
+                ]
+              : []),
           ]}
         />
       )}
