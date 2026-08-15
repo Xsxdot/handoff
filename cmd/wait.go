@@ -236,11 +236,19 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
 //     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
 //   - failed 也同步：失败恰恰是最需要把代码拉到本地翻的时候
+// shouldAutoSync 判断这类事件要不要触发自动同步。
+//
+// 为什么 turn_failed 也要：任务此刻在 waiting_review，协调者马上就要 diff 审代码，
+// 而失败恰恰是最需要把代码拉到本地翻的时候。
+func shouldAutoSync(t proto.EventType) bool {
+	return t == proto.EventTypeCompleted || t == proto.EventTypeFailed || t == proto.EventTypeTurnFailed
+}
+
 func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
 	}
-	if ev.Type != proto.EventTypeCompleted && ev.Type != proto.EventTypeFailed {
+	if !shouldAutoSync(ev.Type) {
 		return
 	}
 	if !loadCLIConfig().Sync.Auto {
