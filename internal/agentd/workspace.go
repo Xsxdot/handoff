@@ -1616,6 +1616,7 @@ func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
 	log().Info("新建工作树条目", "repo", repo, "parent", parentRel, "name", name, "kind", kind)
 	root, err := os.OpenRoot(repo)
 	if err != nil {
+		log().Warn("新建条目打开工作树失败", "repo", repo, "path", parentRel, "cause", err)
 		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
 	}
 	defer root.Close()
@@ -1642,6 +1643,7 @@ func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
 				log().Warn("新建条目父目录不存在", "repo", repo, "path", parent, "cause", err)
 				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, parent)
 			}
+			log().Warn("新建条目父目录检查失败", "repo", repo, "path", parent, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("检查父目录 %s: %w", filepath.Join(repo, parent), err)
 		}
 		if !pfi.IsDir() {
@@ -1662,6 +1664,7 @@ func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
 				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
 				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
 			}
+			log().Warn("新建条目建目录失败", "repo", repo, "path", target, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("建目录 %s: %w", filepath.Join(repo, target), err)
 		}
 	} else {
@@ -1671,15 +1674,18 @@ func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
 				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
 				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
 			}
+			log().Warn("新建条目建文件失败", "repo", repo, "path", target, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("建文件 %s: %w", filepath.Join(repo, target), err)
 		}
 		// 建的是空文件，立刻关掉即可
 		if err := f.Close(); err != nil {
+			log().Warn("新建条目关闭文件失败", "repo", repo, "path", target, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("关闭文件 %s: %w", filepath.Join(repo, target), err)
 		}
 	}
 	e, err := statEntry(root, repo, target)
 	if err != nil {
+		log().Warn("新建条目读取结果失败", "repo", repo, "path", target, "cause", err)
 		return proto.DirEntry{}, err
 	}
 	log().Info("新建条目完成", "repo", repo, "path", target, "kind", kind)
@@ -1704,6 +1710,7 @@ func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
 	log().Info("改名工作树条目", "repo", repo, "path", rel, "new_name", newName)
 	root, err := os.OpenRoot(repo)
 	if err != nil {
+		log().Warn("条目改名打开工作树失败", "repo", repo, "path", rel, "cause", err)
 		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
 	}
 	defer root.Close()
@@ -1732,6 +1739,7 @@ func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
 			log().Warn("条目改名目标不存在", "repo", repo, "path", cleaned, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
 		}
+		log().Warn("条目改名检查目标失败", "repo", repo, "path", cleaned, "cause", err)
 		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	if _, err := root.Stat(target); err == nil {
@@ -1746,10 +1754,12 @@ func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
 			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
 			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
 		}
+		log().Warn("条目改名执行失败", "repo", repo, "path", cleaned, "target", target, "cause", err)
 		return proto.DirEntry{}, fmt.Errorf("改名 %s → %s: %w", filepath.Join(repo, cleaned), filepath.Join(repo, target), err)
 	}
 	e, err := statEntry(root, repo, target)
 	if err != nil {
+		log().Warn("条目改名读取结果失败", "repo", repo, "path", target, "cause", err)
 		return proto.DirEntry{}, err
 	}
 	log().Info("条目改名完成", "repo", repo, "path", cleaned, "new_path", target)
@@ -1776,6 +1786,7 @@ func DeleteEntry(repo, rel string) error {
 	log().Info("删除工作树条目", "repo", repo, "path", rel)
 	root, err := os.OpenRoot(repo)
 	if err != nil {
+		log().Warn("删除条目打开工作树失败", "repo", repo, "path", rel, "cause", err)
 		return fmt.Errorf("打开工作树 %s: %w", repo, err)
 	}
 	defer root.Close()
@@ -1801,6 +1812,7 @@ func DeleteEntry(repo, rel string) error {
 			log().Warn("删除条目不存在", "repo", repo, "path", cleaned, "cause", err)
 			return fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
 		}
+		log().Warn("删除条目检查失败", "repo", repo, "path", cleaned, "cause", err)
 		return fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	kind := "file"
@@ -1815,6 +1827,7 @@ func DeleteEntry(repo, rel string) error {
 			log().Warn("删除条目路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
 			return fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
 		}
+		log().Warn("删除条目执行失败", "repo", repo, "path", cleaned, "kind", kind, "cause", err)
 		return fmt.Errorf("删除条目 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	log().Info("删除条目完成", "repo", repo, "path", cleaned, "kind", kind)
