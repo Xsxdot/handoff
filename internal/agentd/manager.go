@@ -137,24 +137,26 @@ type Manager struct {
 	mu       sync.Mutex
 	stopping map[string]struct{}
 	// sweepProcs 是「清扫某任务残留进程」的测试缝。**生产路径恒为 nil**，
-	// 由 sweep 方法退回 m.SweepTaskProcs；非测试代码不得赋值。
+	// 由 sweep 方法退回 m.sweepTaskProcsOnce；非测试代码不得赋值。
 	//
-	// 为什么用可空字段而不是包级 var：清扫是 Manager 的方法（要 m.cfg、m.log、
-	// m.adapterFor），包级 var 拿不到实例。而既有的所有 NewManager 调用点
-	// 不必改——nil 就是「用真的那个」
-	sweepProcs func(taskID string)
+	// 为什么返回 error（B103）：Done/Stop 要对 ErrExecutorAlive 做有界重试，
+	// 而 ErrExecutorAlive 恰恰是最容易让这条修复静默失效的竞态——存活锁的释放
+	// 依赖 shim 真正退出，它落后于 stopExecutor 返回。吞掉它就是 B93 犯过的错：
+	// 宣称「终态即清扫」，实际每次都被拒，直到 B103 排查才发现。
+	sweepProcs func(taskID string) error
 	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
 	usageMu   sync.Mutex
 	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
 }
 
 // sweep 调用清扫，走测试缝或真实实现。
-func (m *Manager) sweep(taskID string) {
+//
+// 返回：prochost.Sweep 的错误；ErrExecutorAlive 表示执行者仍活着（调用方可重试）
+func (m *Manager) sweep(taskID string) error {
 	if m.sweepProcs != nil {
-		m.sweepProcs(taskID)
-		return
+		return m.sweepProcs(taskID)
 	}
-	m.SweepTaskProcs(taskID)
+	return m.sweepTaskProcsOnce(taskID)
 }
 
 // NewManager 创建任务管理器。
@@ -2723,7 +2725,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// （scanTaskProcs）仍是有价值的冗余，但兜的不是这条路径，而是
 	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
 	// 的真实缺口（另见 B97）。
-	m.sweep(taskID)
+	_ = m.sweep(taskID)
 }
 
 // transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑

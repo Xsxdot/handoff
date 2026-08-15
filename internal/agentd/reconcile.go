@@ -221,50 +221,58 @@ type footprinter interface {
 	ProcHandle(taskID, taskDir string) (prochost.Handle, error)
 }
 
-// SweepTaskProcs 清扫一个任务的残留进程，best-effort。
-//
-// 参数：taskID 为目标任务
-//
-// 注意：
-//   - 无返回值：调用方全都处在收尾路径上，清扫成败不该反过来影响那件事
-//   - 只有「确实有残留但我们没敢动」才发事件提示人工；成功与无残留只进日志。
-//     这是尊重 stopExecutor 已经想清楚过的事——「其余失败五花八门，全发事件
-//     等于把协调者淹了，那样这条提示就没人看了」
-//   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
-//     不是给外部当通用 API 用
-func (m *Manager) SweepTaskProcs(taskID string) {
+func (m *Manager) sweepTaskProcsOnce(taskID string) error {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("清扫解析执行者失败", "task", taskID, "cause", err)
-		return
+		return err
 	}
 	fp, ok := ad.(footprinter)
 	if !ok {
 		m.log.Debug("adapter 不支持进程句柄，跳过清扫", "task", taskID)
-		return
+		return nil
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	h, err := fp.ProcHandle(taskID, taskDir)
 	if err != nil {
 		m.log.Error("清扫取进程句柄失败", "task", taskID, "dir", taskDir, "cause", err)
-		return
+		return err
 	}
 	killed, verdict, err := prochost.Sweep(h)
 	switch {
 	case errors.Is(err, prochost.ErrExecutorAlive):
 		// 竞态：判死与清扫之间 executor 又被认为活着。不是错误，交给正常路径
 		m.log.Info("清扫时执行者仍存活，交由常规回收路径", "task", taskID, "pid", h.PID)
+		return err
 	case err != nil:
 		m.log.Error("清扫失败", "task", taskID, "pid", h.PID, "cause", err)
 		m.notifyOrphanRisk(taskID, fmt.Sprintf(
 			"残留进程清扫失败（pid=%d，原因：%v），请先 handoff footprint 确认再人工处理", h.PID, err))
+		return err
 	case verdict != prochost.VerdictOK:
 		m.log.Warn("清扫放弃", "task", taskID, "pid", h.PID, "verdict", string(verdict))
 		m.notifyOrphanRisk(taskID, fmt.Sprintf(
 			"残留进程未清扫（判定：%s），请先 handoff footprint 确认再人工处理", verdict))
+		return nil
 	case killed > 0:
 		m.log.Info("残留进程已清扫", "task", taskID, "pid", h.PID, "killed", killed)
+		return nil
 	default:
 		m.log.Info("无残留进程", "task", taskID, "pid", h.PID)
+		return nil
 	}
+}
+
+// SweepTaskProcs 清扫一个任务的残留进程，best-effort。
+//
+// 参数：taskID 为目标任务
+//
+// 注意：
+//   - 无返回值是刻意的：它的调用方（watchdog、RecoverOnStartup、reconcileExecutorGone）
+//     全都处在收尾路径上，清扫成败不该反过来影响那件事
+//   - 需要知道清扫结果的调用方（Done/Stop 的有界重试）走 sweepTaskProcsOnce
+//   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
+//     不是给外部当通用 API 用
+func (m *Manager) SweepTaskProcs(taskID string) {
+	_ = m.sweep(taskID)
 }
