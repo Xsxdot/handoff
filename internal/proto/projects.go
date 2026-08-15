@@ -150,6 +150,19 @@ type DirListResult struct {
 	Entries []DirEntry `json:"entries"`
 }
 
+// SearchHit 是搜索命中的一行（GET /api/workspaces/search）。
+type SearchHit struct {
+	Rel  string `json:"rel"`
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// SearchResult 是搜索的完整结论。
+type SearchResult struct {
+	Hits      []SearchHit `json:"hits"`
+	Truncated bool        `json:"truncated"`
+}
+
 // FileRead 是一次文件读取的完整结论（GET /api/workspaces/file 的响应体）。
 //
 // 为什么是结构体而不是继续返回一个 content 字符串：写回需要知道「这份内容完不

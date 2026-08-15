@@ -1396,3 +1396,88 @@ func TestCopyEntryRejects(t *testing.T) {
 func CopyEntryRejectHelper(repo string) error {
 	return os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
 }
+
+func TestSearchInDirHitsAndSkips(t *testing.T) {
+	repo := t.TempDir()
+	mk := func(rel, body string) {
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a.go", "package main\nfunc needle() {}\n")
+	mk("sub/b.go", "// needle 在注释里\n")
+	mk(".git/config", "needle\n")
+	mk("node_modules/c.js", "needle\n")
+
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	rels := map[string]bool{}
+	for _, h := range got.Hits {
+		rels[h.Rel] = true
+	}
+	if !rels["a.go"] || !rels["sub/b.go"] {
+		t.Fatalf("正常文件没命中: %+v", got.Hits)
+	}
+	if rels[".git/config"] || rels["node_modules/c.js"] {
+		t.Fatalf(".git / node_modules 必须被跳过: %+v", got.Hits)
+	}
+	// 行号从 1 起
+	for _, h := range got.Hits {
+		if h.Rel == "a.go" && h.Line != 2 {
+			t.Fatalf("行号要从 1 起算，needle 在第 2 行，得到 %d", h.Line)
+		}
+	}
+}
+
+func TestSearchInDirLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != 10 {
+		t.Fatalf("limit=10 要恰好 10 条，得到 %d", len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("撞到上限必须标 Truncated——否则「10 条」会被读成「只有 10 处」")
+	}
+}
+
+func TestSearchInDirScopeAndRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "only"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "only", "in.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "out.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "only", "needle", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) != 1 || got.Hits[0].Rel != "only/in.txt" {
+		t.Fatalf("范围没生效: %+v", got.Hits)
+	}
+	if _, err := SearchInDir(context.Background(), repo, "", "", 0); err == nil {
+		t.Fatal("空关键词应当被拒")
+	}
+	if _, err := SearchInDir(context.Background(), repo, "../x", "needle", 0); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸范围应当被拒")
+	}
+}

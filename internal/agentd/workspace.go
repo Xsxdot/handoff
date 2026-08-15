@@ -22,6 +22,7 @@
 package agentd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -2060,4 +2061,172 @@ func CopyEntry(repo, rel string) (proto.DirEntry, error) {
 	log().Info("条目复制完成", "repo", repo, "path", cleaned, "target", target,
 		"entries", entries, "bytes", copied)
 	return e, nil
+}
+
+// 搜索护栏（B107 文件树右键菜单「在文件夹内查找」）。
+//
+// 为什么需要条数护栏：结果面板是给人扫的，几千条命中没人会读，只会把响应体
+// 与渲染撑爆；撞顶必须标 Truncated，否则「返回了 200 条」会被读成「全仓只有
+// 200 处」，用户以为已经看完了全部命中。
+// 为什么需要超时护栏：全仓遍历要扫几十万个文件，一次搜索不该无限占用 HTTP
+// handler；到点带着已有结果返回，不把超时当错误。
+const (
+	searchDefaultLimit = 200
+	searchMaxLimit     = 1000
+	searchTimeout      = 10 * time.Second
+)
+
+// searchSkipDirs 是不进入的目录名（任意层级命中即跳过整棵子树）。
+//
+// 为什么跳过这些目录：.git 是版本元数据，node_modules/vendor/dist/target 是
+// 依赖与构建产物——它们不承载「人想找的代码」，遍历只会拖慢每次搜索。
+var searchSkipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": true, "dist": true, "target": true}
+
+// searchHitTextMax 是命中行文本的截断长度。
+// 为什么截断：结果面板一行放不下整行，且超长行多半是压缩/生成产物。
+const searchHitTextMax = 300
+
+// searchMaxLine 是逐行扫描的单行上限（1 MiB）。
+// 为什么设上限：bufio.Scanner 默认 64 KiB 就会报 ErrTooLong，1 MiB 放宽到
+// 「绝大多数源码行都够用」，同时防止把一条压缩巨行整个读进内存。
+const searchMaxLine = 1 << 20
+
+// searchBinaryProbe 是二进制判定的探测长度。
+// 为什么只探 512 字节：搜索是只读扫描，判「是不是文本」不需要像在线编辑那样
+// 读 8 KiB；真正的文本文件不会在头部塞 NUL，512 对源码/配置零误判。
+const searchBinaryProbe = 512
+
+// errSearchStop 是 fs.WalkDir 提前结束的信号：命中数达上限或超时到点。
+// 调用方据此返回已有结果并标 Truncated，不把提前结束当成错误透传。
+var errSearchStop = errors.New("搜索提前结束")
+
+// SearchInDir 在工作树某个目录内全文搜索关键词，返回命中的行
+// （B107 文件树右键菜单「在文件夹内查找」）。
+//
+// 参数：
+//   - ctx: 控制搜索生命周期；内部叠加 searchTimeout 作为兜底上限
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 搜索范围（相对工作树根的目录）；"" 与 "." 都表示整棵工作树
+//   - query: 关键词，空串直接报错
+//   - limit: 命中数上限；<=0 取 searchDefaultLimit，>searchMaxLimit 收敛到它
+//
+// 返回：
+//   - proto.SearchResult：Hits 的 Rel 含 scope 前缀、Line 从 1 起、Text 是匹配
+//     行原文（超过 searchHitTextMax 截断）；Truncated=true 表示撞到命中数上限
+//     或超时，此时 Hits 是已扫到的部分结论——必须把「只看到这些」与「总共就
+//     这些」分开，用户才知道要收窄范围
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//
+// 路径遏制与 ReadFile/ListDir 同一红线：遍历经 os.OpenRoot 的内核级 jail
+// （root.FS() 做 fs.WalkDir），不落回 filepath.Join(repo, rel) 后的包级 os
+// 调用（理由见本文件 1543 行注释）。
+//
+// 三条护栏（每条的为什么见对应常量/变量注释）：
+//   - 命中数：达 limit 立即停止并标 Truncated
+//   - 超时：searchTimeout 到点带已有结果返回，不把超时当错误
+//   - 跳过生成物：searchSkipDirs 命中的目录任意层级即跳整棵子树
+func SearchInDir(ctx context.Context, repo, rel, query string, limit int) (proto.SearchResult, error) {
+	scope, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.SearchResult{}, err
+	}
+	if query == "" {
+		log().Warn("搜索空关键词被拒绝", "repo", repo, "scope", scope)
+		return proto.SearchResult{}, fmt.Errorf("空关键词")
+	}
+	if limit <= 0 {
+		limit = searchDefaultLimit
+	} else if limit > searchMaxLimit {
+		limit = searchMaxLimit
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.SearchResult{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
+	defer cancel()
+	walkRoot := scope
+	if walkRoot == "" {
+		walkRoot = "."
+	}
+	log().Info("文件夹内搜索开始", "repo", repo, "scope", scope, "query", query,
+		"limit", limit, "timeout", searchTimeout)
+
+	res := proto.SearchResult{Hits: []proto.SearchHit{}}
+	start := time.Now()
+	scanned := 0
+	werr := fs.WalkDir(root.FS(), walkRoot, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if searchSkipDirs[d.Name()] {
+				log().Debug("搜索跳过目录", "repo", repo, "dir", p)
+				return fs.SkipDir
+			}
+			return nil
+		}
+		scanned++
+		if scanned%100 == 0 && ctx.Err() != nil {
+			return errSearchStop
+		}
+		if !d.Type().IsRegular() {
+			return nil // 符号链接与其他特殊文件不搜索
+		}
+		f, err := root.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		head := make([]byte, searchBinaryProbe)
+		n, _ := io.ReadFull(f, head)
+		if bytes.IndexByte(head[:n], 0) >= 0 {
+			return nil // 二进制文件不搜索
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), searchMaxLine)
+		line := 0
+		for sc.Scan() {
+			line++
+			text := sc.Text()
+			if !strings.Contains(text, query) {
+				continue
+			}
+			res.Hits = append(res.Hits, proto.SearchHit{
+				Rel:  filepath.ToSlash(p),
+				Line: line,
+				Text: truncateRunes(text, searchHitTextMax),
+			})
+			if len(res.Hits) >= limit {
+				return errSearchStop
+			}
+		}
+		if err := sc.Err(); err != nil {
+			// 行长超过 searchMaxLine（压缩产物常见）：本文件扫不完，跳过不打断整次搜索
+			log().Debug("搜索跳过超长行文件", "repo", repo, "path", p, "cause", err)
+		}
+		return nil
+	})
+	if werr != nil && !errors.Is(werr, errSearchStop) {
+		log().Error("搜索遍历失败", "repo", repo, "scope", scope, "cause", werr)
+		return proto.SearchResult{}, fmt.Errorf("搜索遍历 %s: %w", filepath.Join(repo, scope), werr)
+	}
+	if errors.Is(werr, errSearchStop) {
+		res.Truncated = true
+		if ctx.Err() != nil {
+			log().Warn("搜索超时，返回已扫到的部分结果", "repo", repo, "scope", scope,
+				"query", query, "hits", len(res.Hits), "scanned", scanned, "timeout", searchTimeout)
+		} else {
+			log().Info("搜索命中数达上限，返回部分结果", "repo", repo, "scope", scope,
+				"query", query, "hits", len(res.Hits), "scanned", scanned, "limit", limit)
+		}
+	}
+	log().Info("搜索完成", "repo", repo, "scope", scope, "query", query,
+		"hits", len(res.Hits), "scanned", scanned, "elapsed_ms", time.Since(start).Milliseconds())
+	return res, nil
 }
