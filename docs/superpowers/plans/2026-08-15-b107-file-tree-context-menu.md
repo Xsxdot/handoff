@@ -200,7 +200,12 @@ Expected: FAIL，`undefined: CreateEntry`
 要点（**逐条都是硬要求**）：
 
 1. 三个函数**都**先 `root, err := os.OpenRoot(repo)`，`defer root.Close()`，之后**只**用 `root.*` 方法；
-2. `rel` / `parentRel` 先 `filepath.Clean`，绝对路径或以 `..` 开头 → `ErrPathEscape`；`"."` 归一成 `""`；
+2. `rel` / `parentRel` 先 `filepath.Clean`，绝对路径或以 `..` 开头 → `ErrPathEscape`。
+   **归一方向是 `""` → `"."`，不是反过来**（审核者 08-15 实测更正本 plan 的原文）：
+   `os.Root` 的方法**不接受空串**——`r.Stat("")` 返回 `statat : empty path`，
+   而 `r.Stat(".")` 正常返回工作树根。所以「工作树根」在对外契约里是空串 `rel=`，
+   但**每次调 `root.*` 之前必须转成 `"."`**。`filepath.Clean("")` 恰好就返回 `"."`，
+   所以做法是先 Clean 再判逃逸，别在 Clean 之后又把 `"."` 改回空串；
 3. `isGitPath` 对**最终目标路径**判定（`CreateEntry` 判 `parentRel + name`，另两个判 `rel`）→ `ErrGitDirWrite`；
 4. `name` 走统一校验：空 / `.` / `..` / 含 `/` 或 `\` → `ErrBadEntryName`；`DeleteEntry` 的 `rel` 为空串也给 `ErrBadEntryName`（不许删工作树根）；
 5. 存在性：`root.Stat(target)` 成功 → `ErrEntryExists`（建与改名）；失败且 `os.IsNotExist` → `ErrEntryNotFound`（改名与删）；
