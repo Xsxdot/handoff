@@ -43,8 +43,16 @@ var nicRefreshGap = 5 * time.Second
 //
 // 返回：地址的字符串形式（IPv6 不带方括号也不带 zone）；枚举失败时返回 nil
 //
-// 为什么不过滤链路本地地址：它们同样是「这台机器的地址」，用它访问本机是正当的。
-// 名单里多几条本机自己的地址不扩大攻击面——见 allowedHosts 的安全论证。
+// 为什么剔除 **IPv6 链路本地**（fe80::/10）：它们作为 Host **根本用不了**——
+// 访问 fe80 地址必须带 zone（`fe80::1%en0`），而 `net.IP.String()` 不带 zone，
+// 存进白名单的是一个永远不会被任何请求命中的字符串。真机实测一台 Mac 上有
+// **20 条** fe80 地址，把启动日志那行白名单撑到没法读——而那行正是排查跨机
+// 403 的第一现场。剔除它们不损失任何可达性。
+//
+// IPv4 链路本地（169.254/16）保留：它不需要 zone，用它访问本机是正当的。
+//
+// 为什么不进一步只留「公网/内网可路由」的：那要引入一套子网判断，而多留几条
+// 本机自己的地址并不扩大攻击面——见 allowedHosts 的安全论证。
 func localIPs() []string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -55,6 +63,9 @@ func localIPs() []string {
 		ipnet, ok := a.(*net.IPNet)
 		if !ok || ipnet.IP == nil || ipnet.IP.IsLoopback() {
 			continue
+		}
+		if ipnet.IP.To4() == nil && ipnet.IP.IsLinkLocalUnicast() {
+			continue // fe80::，没有 zone 就命中不了，进名单只是噪音
 		}
 		out = append(out, strings.ToLower(ipnet.IP.String()))
 	}

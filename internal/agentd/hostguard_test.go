@@ -6,6 +6,7 @@ package agentd
 import (
 	"context"
 	"io"
+	"net"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -273,5 +274,43 @@ func TestAllowedHostsMergesNICOnlyUnderWildcardListen(t *testing.T) {
 	srvFixed, _, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "127.0.0.1:7777"})
 	if _, ok := srvFixed.allowedHosts()["100.73.238.21"]; ok {
 		t.Fatal("绑定具体地址时不该并入其它网卡 IP——那超出了 B104 的授权范围")
+	}
+}
+
+// TestLocalIPsSkipsIPv6LinkLocal 钉死「fe80:: 不进名单」。
+//
+// 为什么要钉：真机上一台 Mac 有 20 条 fe80 地址，它们作为 Host 永远命中不了
+// （没有 zone），却会把启动日志那行白名单撑到读不了——而那行是排查跨机 403 的
+// 第一现场。这条用例用真实网卡跑：本机必然有 fe80 地址，没有的话它自己会跳过。
+func TestLocalIPsSkipsIPv6LinkLocal(t *testing.T) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("本机枚举网卡失败，跳过: %v", err)
+	}
+	hasLinkLocalV6 := false
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP != nil && n.IP.To4() == nil && n.IP.IsLinkLocalUnicast() {
+			hasLinkLocalV6 = true
+			break
+		}
+	}
+	if !hasLinkLocalV6 {
+		t.Skip("本机没有 IPv6 链路本地地址，这条用例无从验证")
+	}
+	for _, ip := range localIPs() {
+		p := net.ParseIP(ip)
+		if p != nil && p.To4() == nil && p.IsLinkLocalUnicast() {
+			t.Fatalf("localIPs 返回了 IPv6 链路本地地址 %s，它作为 Host 永远命中不了", ip)
+		}
+	}
+	// 同时确认没把 IPv4 一起误杀：本机至少该有一个非回环 IPv4
+	v4 := 0
+	for _, ip := range localIPs() {
+		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			v4++
+		}
+	}
+	if v4 == 0 {
+		t.Fatal("localIPs 一个非回环 IPv4 都没返回，过滤过头了")
 	}
 }
