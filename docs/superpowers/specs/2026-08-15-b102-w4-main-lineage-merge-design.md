@@ -84,7 +84,7 @@
 
 ## 3. 交付物
 
-一条 `integration/w4-main` 分支，从 `main` 起，合入 `origin/w4-delivery`，满足 §6 的验收。
+一条 `integration/w4-main-r2` 分支，从 `main` 起，合入 `origin/w4-delivery`，满足 §6 的验收。
 
 **不合并进 `main`。** 按全局纪律，合并进主线是审核者的决定，executor 只交分支。
 

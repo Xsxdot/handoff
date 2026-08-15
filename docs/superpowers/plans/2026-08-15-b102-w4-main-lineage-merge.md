@@ -19,7 +19,7 @@
 
 > **For agentic workers:** 本计划的执行方式由上面的「执行纪律」段落规定。步骤用 `- [ ]` 复选框便于跟踪。
 
-**Goal:** 产出一条 `integration/w4-main` 分支，把 `origin/w4-delivery`（控制台全套）合进 `main`（B92/B93/B99 修复 + 发布链路），两边能力一个不丢，Go 与前端全绿，控制台端点在真进程上可达。
+**Goal:** 产出一条 `integration/w4-main-r2` 分支，把 `origin/w4-delivery`（控制台全套）合进 `main`（B92/B93/B99 修复 + 发布链路），两边能力一个不丢，Go 与前端全绿，控制台端点在真进程上可达。
 
 **Architecture:** 一次 `git merge`，14 个文件冲突、23 个冲突块，外加 57 个文件的机械改名。合并方向、冲突口径、撞号处置见 spec：`docs/superpowers/specs/2026-08-15-b102-w4-main-lineage-merge-design.md`（本分支起点已含该文件，**开工前先完整读一遍**）。
 
@@ -35,7 +35,7 @@
 - **两边已有的日志调用一条都不能丢。** 合并后 `internal/agentd/`、`internal/executor/`、
   `internal/manager*` 里出现在冲突块两侧的每一条 `s.log.*` / `a.log.*` / `m.log.*` 调用都要在。
   本计划不新增日志：这是一次合并，没有新增 I/O、没有新增行为，新增日志只会制造噪音。
-- **不合并进 `main`，不 `git push` 到 `main`，不动任何 tag。** 只交 `integration/w4-main` 分支。
+- **不合并进 `main`，不 `git push` 到 `main`，不动任何 tag。** 只交 `integration/w4-main-r2` 分支。
 - **不改任何功能行为。** 发现的 bug 追加到 `docs/superpowers/backlog.md` 记账，不顺手修。
 - **不动 `~/.handoff`**（这台机器正在服役的 agentd 数据目录）。Task 5 的冒烟必须用临时目录与临时端口。
 - **不删除任何一条 backlog 条目**，包括看起来重复的。
@@ -56,7 +56,7 @@
 
 **Interfaces:**
 - Consumes: 无（第一个 task）
-- Produces: 一条能通过 `go build ./...` 的 `integration/w4-main` 分支；后续所有 task 都在它之上
+- Produces: 一条能通过 `go build ./...` 的 `integration/w4-main-r2` 分支；后续所有 task 都在它之上
 
 - [ ] **Step 1: 确认现场，并取到对面分支**
 
@@ -64,13 +64,13 @@
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-git branch --show-current                # 期望 integration/w4-main
+git branch --show-current                # 期望 integration/w4-main-r2
 git log --oneline -1                     # 期望 85f8e825d 或其后代
 git fetch --all --prune
 git rev-parse origin/w4-delivery         # 期望 84013dd7950023990dc5c67b87d844644bdd2d3d
 ```
 
-分支名不是 `integration/w4-main`，或 `origin/w4-delivery` 取不到：**停下发工单**，不要将就着开工。
+分支名不是 `integration/w4-main-r2`，或 `origin/w4-delivery` 取不到：**停下发工单**，不要将就着开工。
 
 - [ ] **Step 2: 起合并，确认冲突面与预期一致**
 
@@ -422,7 +422,7 @@ git commit -m "merge(b102): 冒烟通过——三个控制台端点均非 405；
 - [ ] **Step 5: 最终自检**
 
 ```bash
-git log --oneline main..integration/w4-main
+git log --oneline main..integration/w4-main-r2
 git status --short          # 期望干净
 grep -rn "github.com/xushixin/handoff" --include="*.go" . ; echo "残留: $?"
 go build ./... && go vet ./... && go test -count=1 ./... 2>&1 | grep -cE "^(FAIL|--- FAIL)"
