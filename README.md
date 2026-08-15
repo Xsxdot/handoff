@@ -241,7 +241,7 @@ executor:                     # dispatch 未显式指定执行者时的缺省
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
 terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
   auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
-sync:                         # 任务结束（completed/failed）后自动同步远程任务分支到本地
+sync:                         # 任务终结（failed）或回合失败（turn_failed）后自动同步远程任务分支到本地
   auto: true                  # 关闭后仍可用 handoff pull 手动同步
 env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
   opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
@@ -306,10 +306,11 @@ Global flags: `--agentd http://127.0.0.1:7777` (agentd address), `--target <name
 ## Task States and Events
 
 Task state machine: `pending` → `running` → (`waiting_answer` ⇄ `running`) →
-`waiting_review` → archived (`completed`). **A turn that ends in failure also goes to
-`waiting_review`** — the executor session is still alive with full context, so you can
-retry with `continue`. Only `stop`, or an executor failing to start, lands the task in
-`failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require
+`waiting_review` → archived (`completed`). **A turn that ends in failure (the
+`turn_failed` event) also goes to `waiting_review`** — the task is still alive and the
+executor session keeps its full context, so you can retry with `continue`. Only `stop`,
+a watchdog kill, or the executor no longer being present lands the task in `failed`
+(terminal; re-dispatch to continue). **Both `continue` and `done` require
 `waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.
 
 `wait` is woken by these events:
@@ -318,7 +319,9 @@ retry with `continue`. Only `stop`, or an executor failing to start, lands the t
 |------|------|------|
 | `permission_request` | executor asks for authorization | `reply --approve` / `--deny --reason` |
 | `question` | executor has a requirements question | `reply --answer` |
-| `completed` / `failed` | a turn finished / a turn ended in failure | both go to review: `diff` for evidence, then `continue` or `done` |
+| `completed` | a turn finished | goes to review: `diff` for evidence, then `continue` or `done` |
+| `turn_failed` | a turn failed, but the task is still alive in `waiting_review` | goes to review: `diff` for evidence, then `continue` to retry |
+| `failed` | terminal: the task ended (`stop`, watchdog kill, executor gone) | the task is over — re-dispatch to continue; `reclaim` cleans up the worktree |
 | `archived` | task archived by done (payload carries the note) | the task is truly over |
 | `delivery_failed` | a reply was persisted but never reached the executor | `handoff resume <task>` to redeliver |
 | `stalled` | watchdog: no output for a long time | `attach`/`show` to judge long-running vs stuck |
