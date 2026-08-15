@@ -2077,17 +2077,18 @@ func TestHandleResultSweepsProcsOnFail(t *testing.T) {
 	if len(swept) != 1 || swept[0] != taskID {
 		t.Fatalf("失败分支应清扫一次，实际 %v", swept)
 	}
-	// 清扫必须在 failed 事件之后：事件先落库，审核者的 wait 才第一时间醒；
+	// 清扫必须在 turn_failed 事件之后：事件先落库，审核者的 wait 才第一时间醒；
 	// 清扫是 best-effort 的善后，不该挡在唤醒前面
 	ev, err := m.st.LatestEvent(taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Type != proto.EventTypeFailed {
-		t.Fatalf("最新事件应为 failed，实际 %s", ev.Type)
+	// B100：回合失败（非终结）落的是 turn_failed 而不是 failed——断言随新契约更新
+	if ev.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("最新事件应为 turn_failed，实际 %s", ev.Type)
 	}
 	if sweptAtSeq != ev.Seq {
-		t.Fatalf("清扫时最新事件 seq=%d，failed 事件 seq=%d —— 清扫跑在事件之前了", sweptAtSeq, ev.Seq)
+		t.Fatalf("清扫时最新事件 seq=%d，turn_failed 事件 seq=%d —— 清扫跑在事件之前了", sweptAtSeq, ev.Seq)
 	}
 }
 
@@ -2103,6 +2104,63 @@ func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
 
 	if len(swept) != 1 {
 		t.Fatalf("成功分支也应清扫一次，实际 %v", swept)
+	}
+}
+
+// TestHandleResultEmitsTurnFailedOnTurnFailure 钉死 B100 的正身：回合失败落的是
+// turn_failed 而不是 failed，且任务此刻是 waiting_review（活着，可 continue）。
+func TestHandleResultEmitsTurnFailedOnTurnFailure(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	m.handleResult(taskID, executor.AdapterEvent{
+		Type:   "result",
+		Result: &executor.Result{OK: false, FailReason: "回合异常终止: boom"},
+	})
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	last := evs[len(evs)-1]
+	if last.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("回合失败应落 turn_failed，实际 %s", last.Type)
+	}
+	if last.Type == proto.EventTypeFailed {
+		t.Fatal("回合失败落成 failed，会让 follow 误判任务终结")
+	}
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("读任务失败: %v", err)
+	}
+	if task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("回合失败后任务应在 waiting_review，实际 %s", task.State)
+	}
+}
+
+// TestStopEmitsFailed 防止 Task 2 改过头：协调者主动中止仍然是**任务终结**，
+// 必须继续落 failed，否则 follow 再也收不了流。
+func TestStopEmitsFailed(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	if _, err := m.Stop(context.Background(), taskID); err != nil {
+		t.Fatalf("stop 失败: %v", err)
+	}
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed {
+			found = true
+		}
+		if e.Type == proto.EventTypeTurnFailed {
+			t.Fatal("stop 落了 turn_failed，它是任务终结不是回合失败")
+		}
+	}
+	if !found {
+		t.Fatal("stop 没有落 failed 事件")
+	}
+	task, _ := m.st.GetTask(taskID)
+	if task.State != proto.TaskStateFailed {
+		t.Fatalf("stop 后任务应是 failed，实际 %s", task.State)
 	}
 }
 

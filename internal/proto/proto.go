@@ -44,7 +44,20 @@ const (
 	EventTypeProgress          EventType = "progress"
 	EventTypeCompleted         EventType = "completed"
 	EventTypeFailed            EventType = "failed"
-	EventTypeStalled           EventType = "stalled"
+	// EventTypeTurnFailed 表示**一个回合**失败了，而任务**仍然活着**——
+	// handleResult 在发这条之前已经把任务迁到 waiting_review，协调者一个
+	// continue 就能接着干。
+	//
+	// 为什么必须与 EventTypeFailed 分开而不是共用一个类型加个字段：
+	// 客户端要据此决定「要不要收流、要不要报任务终结」，而这是一个封闭取值的
+	// 判断，不能靠 fail_reason 的散文去猜（那是十来处各自措辞、改一句文案就能
+	// 静默改掉客户端行为的东西）。分成两个类型还有一个好处：**旧客户端遇到未知
+	// 类型会当普通事件继续跟随**，于是它不再假终态退出——bug 对旧 CLI 自动消失。
+	//
+	// 与 EventTypeCompleted 的关系：两者是**同一个状态迁移**（都进 waiting_review），
+	// 所以消费端对它俩的行为必须一致，只是一个成功一个失败。
+	EventTypeTurnFailed EventType = "turn_failed"
+	EventTypeStalled    EventType = "stalled"
 	// EventTypeDeliveryFailed 表示协调者的应答已落库但没能送达 executor。
 	//
 	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，

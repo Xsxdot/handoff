@@ -2739,7 +2739,10 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		voidTicketsWithAudit(m.st, taskID, voidReason, m.log)
 		m.log.Warn("回合以失败收尾", "task", taskID, "reason", r.FailReason,
 			"branch", r.Branch, "commit", r.CommitHash, "void_reason", voidReason)
-		evt, err = m.st.AppendEvent(taskID, proto.EventTypeFailed,
+		// 类型是 turn_failed 而不是 failed：上面 transitToReview 已经把任务迁到
+		// waiting_review，它**没有终结**。发 failed 会让 wait --follow 打出
+		// 「任务已失败」并以 0 退出，而此时任务好端端等着审（B100 两次真机实测）。
+		evt, err = m.st.AppendEvent(taskID, proto.EventTypeTurnFailed,
 			newFailedPayload(r.FailReason, r.Branch, r.CommitHash))
 	}
 	if err != nil {

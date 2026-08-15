@@ -111,6 +111,55 @@ func TestFollowDoesNotExitOnCompleted(t *testing.T) {
 	}
 }
 
+// TestFollowDoesNotStopOnTurnFailed 是 B100 的正身：回合失败不是任务终结，
+// follow 必须继续跟随，后续事件仍要能投递到调用方。
+func TestFollowDoesNotStopOnTurnFailed(t *testing.T) {
+	evs := []proto.Event{
+		{Seq: 1, TaskID: "t1", Type: proto.EventTypeTurnFailed},
+		{Seq: 2, TaskID: "t1", Type: proto.EventTypeQuestion},
+	}
+	done := make(chan struct{})
+	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-done })
+	t.Cleanup(func() { close(done) })
+
+	seen := make(chan int64, 4)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		_ = client.New(ts.URL, "").FollowEvents(ctx, "t1", false, 0,
+			func(ev *proto.Event) error { seen <- ev.Seq; return nil }, nil)
+	}()
+	for _, want := range []int64{1, 2} {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("交付 seq = %d, want %d", got, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("未等到 seq %d —— follow 在 turn_failed 后被掐断了", want)
+		}
+	}
+}
+
+// TestFollowStopsOnFailed 防止 Task 3 改过头：真终态仍要收流。
+func TestFollowStopsOnFailed(t *testing.T) {
+	evs := []proto.Event{
+		{Seq: 1, TaskID: "t1", Type: proto.EventTypeFailed},
+		{Seq: 2, TaskID: "t1", Type: proto.EventTypeProgress},
+	}
+	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })
+
+	var got []int64
+	err := client.New(ts.URL, "").FollowEvents(t.Context(), "t1", false, 0,
+		func(ev *proto.Event) error { got = append(got, ev.Seq); return nil }, nil)
+	if err != nil {
+		t.Fatalf("FollowEvents = %v, want nil（failed 是正常终结）", err)
+	}
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("failed 之后 follow 应收流，实际交付 %v", got)
+	}
+}
+
 // TestFollowIdleCountsProgressFrames 是 §2.2 的核心断言：
 // **只有 progress 帧流入时不得触发空闲超时。**
 //
