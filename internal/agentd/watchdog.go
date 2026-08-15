@@ -455,3 +455,35 @@ func recoverTransit(st *store.Store, taskID string, cur proto.TaskState) error {
 	}
 	return st.UpdateTaskState(taskID, proto.TaskStateWaitingReview)
 }
+
+// mismatchVerdict 判断一个任务是否处于「有 failed 事件、状态却非终态」的破损中间态。
+//
+// 参数：
+//   - state: 任务当前状态
+//   - latest: 该任务的最新一条事件（nil 表示没有事件）
+//   - now: 当前时刻（测试注入）
+//   - startedAt: 本次 agentd 启动时刻
+//   - minAge: 事件最小年龄（防抢，生产取 30s）
+//
+// 返回：true 表示应当把状态补成 failed
+func mismatchVerdict(state proto.TaskState, latest *proto.Event, now, startedAt time.Time, minAge time.Duration) bool {
+	// 判据（四条同时满足才算失配）：
+	//   1. 状态非终态：终态任务上的 failed 事件是合法的收官记录，不存在失配
+	//   2. 最新一条事件是 failed：只看最新一条，不是「历史上出现过」——
+	//      failed 之后还有 progress/turn_failed 说明任务在继续干，没破损
+	//   3. 事件年龄 ≥ minAge：防抢。Stop/对账正常执行时也会短暂处在
+	//      「已落 failed 事件、还没迁状态」的中间态，给它们留出收尾窗口
+	//   4. 事件产生于本次 agentd 启动之后：B100 之前的历史数据里存在合法的
+	//      failed + waiting_review（对账失败交协调者裁决），没这条护栏，
+	//      升级后会把正等着裁决的存量任务直接判死
+	//
+	// 本判据依赖 failed 只用于任务终结（B100 及其补漏才使之成立）——谁再让
+	// failed 用于非终态，这个扫描会当场开始误伤。
+	//
+	// 也兜不住「续接回合正常完成但结果被吞」：库里只有 stalled，扫描无从知道
+	// 回合其实跑过。本条是保险丝不是根治。
+	return !state.IsTerminal() &&
+		latest != nil && latest.Type == proto.EventTypeFailed &&
+		now.Sub(latest.CreatedAt) >= minAge &&
+		!latest.CreatedAt.Before(startedAt)
+}

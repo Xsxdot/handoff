@@ -447,3 +447,82 @@ func TestRecoverOnStartupKeepsDeadWaitingReview(t *testing.T) {
 		}
 	}
 }
+
+// TestMismatchVerdict 覆盖 mismatchVerdict 失配判据的六条护栏（B97 Task 2），
+// 逐条对应 spec §6 第 2 点的判据。
+//
+//  1. 最新事件 failed + running + 事件 60s 前 → true
+//  2. 同上但事件只有 10s → false（防抢：Stop/对账正常执行时也会短暂处在中间态）
+//  3. 最新事件是 progress（历史上有 failed）→ false
+//  4. 最新事件是 turn_failed + waiting_review → false
+//     这是**防误伤的正身**：turn_failed + waiting_review 是健康态，任务正等着
+//     协调者裁决，挂三天都正常，扫描一根手指都不许碰
+//  5. failed 事件产生于 agentd 启动之前 → false
+//     为什么：B100 之前的历史数据里存在**合法的** failed + waiting_review，
+//     没这条护栏，升级后会把正等着裁决的存量任务直接判死
+//  6. 任务已是终态（failed 与 completed 两态都覆盖）→ false
+func TestMismatchVerdict(t *testing.T) {
+	now := time.Now()
+	startedAt := now.Add(-time.Hour)
+	minAge := 30 * time.Second
+
+	cases := []struct {
+		name   string
+		state  proto.TaskState
+		latest *proto.Event
+		want   bool
+	}{
+		{
+			name:   "1 最新事件failed+running+60s前→true",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   true,
+		},
+		{
+			name:   "2 事件仅10s→false（防抢）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-10 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "3 最新事件是progress（历史上有failed）→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeProgress, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "4 turn_failed+waiting_review→false（防误伤正身）",
+			state:  proto.TaskStateWaitingReview,
+			latest: &proto.Event{Type: proto.EventTypeTurnFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "5 failed事件产生于agentd启动之前→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: startedAt.Add(-time.Hour)},
+			want:   false,
+		},
+		{
+			name:   "6a 已是failed终态→false",
+			state:  proto.TaskStateFailed,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "6b 已是completed终态→false",
+			state:  proto.TaskStateCompleted,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mismatchVerdict(tc.state, tc.latest, now, startedAt, minAge)
+			if got != tc.want {
+				t.Fatalf("mismatchVerdict(state=%s, latest.type=%v, latest.age=%s) = %v, want %v",
+					tc.state, tc.latest.Type, now.Sub(tc.latest.CreatedAt), got, tc.want)
+			}
+		})
+	}
+}
