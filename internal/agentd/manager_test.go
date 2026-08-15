@@ -2512,3 +2512,63 @@ func TestSweepReturnsExecutorAliveToCaller(t *testing.T) {
 		t.Fatalf("sweep 必须把 ErrExecutorAlive 透传给调用方，got=%v", err)
 	}
 }
+
+func TestDoneSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	// 构造一个处于 waiting_review 的任务（Done 的状态门禁；沿用 reconcile_test.go
+	// 里 mustCreateTask 造 waiting_review 任务的同款方式）
+	id := "sweep-done"
+	mustCreateTask(t, st, &proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStateWaitingReview})
+	if err := m.Done(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Done 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestStopSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	id := "sweep-stop"
+	createRunningTask(t, st, id)
+	if _, err := m.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Stop 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestSweepAfterStopRetriesWhileExecutorAlive(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error {
+		calls++
+		if calls < 3 {
+			return prochost.ErrExecutorAlive
+		}
+		return nil
+	}
+	sweepRetryGap = time.Millisecond // 测试缝，避免真等 200ms
+	defer func() { sweepRetryGap = 200 * time.Millisecond }()
+	m.sweepAfterStop("t1")
+	if calls != 3 {
+		t.Fatalf("ErrExecutorAlive 必须重试到成功或用尽，calls=%d", calls)
+	}
+}
+
+func TestSweepAfterStopGivesUpAfterBoundedRetries(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error { calls++; return prochost.ErrExecutorAlive }
+	sweepRetryGap = time.Millisecond
+	defer func() { sweepRetryGap = 200 * time.Millisecond }()
+	m.sweepAfterStop("t1")
+	if calls != sweepRetryAttempts {
+		t.Fatalf("重试必须有界，calls=%d want=%d", calls, sweepRetryAttempts)
+	}
+}

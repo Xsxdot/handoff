@@ -159,6 +159,41 @@ func (m *Manager) sweep(taskID string) error {
 	return m.sweepTaskProcsOnce(taskID)
 }
 
+// sweepRetryAttempts / sweepRetryGap 是终态清扫对 ErrExecutorAlive 的重试参数。
+//
+// 是变量而非常量：测试要把间隔调到毫秒级，否则每条用例都真等 600ms。
+var (
+	sweepRetryAttempts = 3
+	sweepRetryGap      = 200 * time.Millisecond
+)
+
+// sweepAfterStop 在停完 executor 之后清扫这个任务留下的逃逸后代。
+//
+// 参数：taskID 为已停 executor 的任务
+//
+// 为什么必须在 stopExecutor 之后：prochost.Sweep 在存活锁仍被持有时直接拒绝
+// （ErrExecutorAlive）——杀活着的执行者是 Kill 的职责，两者风险模型不同。
+//
+// 为什么必须重试而不是一次拒绝就算了：存活锁的释放依赖 shim 进程真正退出，
+// 它落后于 stopExecutor 返回，中间有一个真实窗口。一次被拒就放弃，这条修复
+// 在生产上会静默失效——B93 就是这么错的（宣称「终态即清扫」，实测每次都被
+// ErrExecutorAlive 拒掉，直到 B103 排查才发现，中间隔了一整轮验收）。
+//
+// 注意：重试用尽打 Warn 而不是 Info。它意味着「executor 该死没死、逃逸后代
+// 大概率残留」，是需要人看见的事。
+func (m *Manager) sweepAfterStop(taskID string) {
+	for i := 0; i < sweepRetryAttempts; i++ {
+		if err := m.sweep(taskID); !errors.Is(err, prochost.ErrExecutorAlive) {
+			return
+		}
+		if i < sweepRetryAttempts-1 {
+			time.Sleep(sweepRetryGap)
+		}
+	}
+	m.log.Warn("终态清扫放弃：存活锁始终未释放，逃逸后代可能残留",
+		"task", taskID, "attempts", sweepRetryAttempts, "gap", sweepRetryGap)
+}
+
 // NewManager 创建任务管理器。
 //
 // 参数：
@@ -1136,6 +1171,11 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	} else {
 		m.stopExecutor(taskID, ad)
 	}
+	// 终态清扫（B103）：Kill 只够着 shim 那个进程组，executor 的 Bash 工具
+	// setsid 出去的后代（`cmd &` 这类）不在组内——不在这里扫，它们会在 launchd
+	// 名下一直活到自然退出。必须在 worktree 清理之前：还活着的进程把 cwd 钉在
+	// 工作树里，会让 git worktree remove 失败
+	m.sweepAfterStop(taskID)
 	// worktree 清理（Stop 之后、err 已定型不覆盖）：agentd 管理的 worktree 随任务
 	// 完成删除，释放磁盘并防止「每个任务一个残留目录」的无界堆积。
 	//
@@ -1210,6 +1250,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	} else {
 		m.stopExecutor(taskID, ad)
 	}
+
+	// 终态清扫（B103）：stop 的语义是「别跑了」，那就该包括 Bash 工具 setsid
+	// 出去的后代——它们不在 shim 的进程组里，Kill 够不着
+	m.sweepAfterStop(taskID)
 
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
 	// 抢在收口之前把单清空，导致 stop 路径永远拿不到 tickets_voided 审计事件。
