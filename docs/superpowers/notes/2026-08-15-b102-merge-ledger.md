@@ -89,3 +89,10 @@
 - `internal/proto/contract_fixture_test.go:204/221/314` 有 3 处 "xushixin" 样本值（SSH clone URL 与设备名），属 w4 契约 fixture 有意保留，不改。
 - Task 1 取舍注释未全覆盖（manager.go 指纹、adapter.go emit 拆分的取舍点无内联「合并 B102」注释）。
 - Task 3 审查 minor 3 条（B86-B90 排版扶正、编号说明措辞、待验证空白取 main 版）。
+
+## 整分支终审与收尾
+
+- **终审结论**：OVERALL PASS。7 条验收判据全过（零残留改名、Go 全绿、前端全绿、w4 18 文件 + ptyhost + web 完整、七条点名用例 PASS、三端点 200、backlog 合表合规）。无 major。
+- **终审发现项（已修）**：16 个 .go 文件 gofmt 被合并弄脏（import 排序/对齐/注释缩进，纯格式，无逻辑差异）。修复 commit `57dc9141`（gofmt -w 收口），范围复审 PASS。
+- **终审 minor（只记账，未修）**：contract_fixture_test.go 3 处 "xushixin" fixture 样本值（有意保留）；manager.go/adapter.go 取舍点缺内联注释；vite build chunk 体积警告；2 处既有 exhaustive-deps eslint-disable。
+- **终态**：`go build && go vet && go test -count=1 ./...` 0 FAIL（多轮复跑稳定）；前端三件套全绿；工作树干净。
