@@ -1833,3 +1833,231 @@ func DeleteEntry(repo, rel string) error {
 	log().Info("删除条目完成", "repo", repo, "path", cleaned, "kind", kind)
 	return nil
 }
+
+// copyEntryName 为源条目挑一个未被占用的副本名（B107 文件树右键菜单）。
+//
+// 命名规则（spec §3.4）：文件用 filepath.Ext 把 base 与扩展名拆开，候选依次是
+// `base copy<ext>`、`base copy 2<ext>` …… 到 `base copy 99<ext>`；目录不拆扩展名，
+// 整体当 base。每个候选用 root.Stat 探测，第一个不存在的就是目标。
+//
+// 为什么封顶 99：候选名是给人读的（Mac 文件系统的复制命名同款），无限试探只会
+// 在「全被占用」的场景白白做几十上百次 Stat，且名字本身会越来越难读。封顶后
+// 全部占用按 ErrEntryExists 拒掉，明确告诉用户手动清一清。
+//
+// 返回：目标名（与 source 同目录）与试过的候选数；root.Stat 出现逃逸以外的
+// 意外错误时直接透传。
+func copyEntryName(root *os.Root, repo, source string) (string, int, error) {
+	base := filepath.Base(source)
+	ext := filepath.Ext(base)
+	if len(base) == len(ext) { // 隐藏文件等"整个名字都是扩展名"的形态不拆
+		ext = ""
+	}
+	nameBase := base
+	if ext != "" {
+		nameBase = base[:len(base)-len(ext)]
+	}
+	for i := 1; i <= 99; i++ {
+		var name string
+		if i == 1 {
+			name = nameBase + " copy" + ext
+		} else {
+			name = nameBase + fmt.Sprintf(" copy %d", i) + ext
+		}
+		target := filepath.Join(filepath.Dir(source), name)
+		if _, err := root.Stat(target); err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("条目复制命名探测逃逸被拒绝", "repo", repo, "path", source, "candidate", target, "cause", err)
+				return "", i, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			if os.IsNotExist(err) {
+				return target, i, nil
+			}
+			log().Warn("条目复制命名探测失败", "repo", repo, "path", source, "candidate", target, "cause", err)
+			return "", i, fmt.Errorf("探测副本名 %s: %w", filepath.Join(repo, target), err)
+		}
+	}
+	log().Warn("条目复制候选名全部被占用", "repo", repo, "path", source)
+	return "", 99, fmt.Errorf("%w: %q 的副本名到 copy 99 已全被占用", ErrEntryExists, source)
+}
+
+// copyEntryFile 把 root 内的一个普通文件复制到目标路径（同为 root 内相对路径）。
+//
+// 权限用源文件的 Stat().Mode() 经 root.Chmod 补上——root.Create 只带 0o666 &
+// umask，源文件的可执行位等权限位会丢，丢了是静默故障（与 atomicReplace 的
+// perm 语义同款）。
+func copyEntryFile(root *os.Root, repo, src, dst string) (bytes int64, err error) {
+	sfi, err := root.Stat(src)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, src)
+		}
+		return 0, fmt.Errorf("读取源文件 %s: %w", filepath.Join(repo, src), err)
+	}
+	srcF, err := root.Open(src)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, src)
+		}
+		return 0, fmt.Errorf("打开源文件 %s: %w", filepath.Join(repo, src), err)
+	}
+	defer srcF.Close()
+	dstF, err := root.Create(dst)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, dst)
+		}
+		return 0, fmt.Errorf("创建副本 %s: %w", filepath.Join(repo, dst), err)
+	}
+	defer dstF.Close()
+	n, err := io.Copy(dstF, srcF)
+	if err != nil {
+		return 0, fmt.Errorf("复制 %s → %s: %w", filepath.Join(repo, src), filepath.Join(repo, dst), err)
+	}
+	if err := root.Chmod(dst, sfi.Mode().Perm()); err != nil {
+		return 0, fmt.Errorf("补副本权限 %s: %w", filepath.Join(repo, dst), err)
+	}
+	return n, nil
+}
+
+// copyEntryDir 把 root 内的一个目录连同全部内容递归复制到目标路径。
+//
+// 为什么整段都在 root.FS() 上走：os.Root 的 FS 是相对根目录的文件系统视图，
+// WalkDir 产出的每条路径（含根目录本身）都以 "/" 为分隔符、可以原样喂回 root
+// 的 Open/Mkdir/Stat——从 src 到 dst 的目标相对路径也只在相对路径之间拼（Rel +
+// Join），中途不得落回绝对路径，一旦把哪一段换成 filepath.Join(rootPath, rel)
+// 就绕过了内核级 jail，这条红线的理由见本文件 1543 行注释。
+func copyEntryDir(root *os.Root, repo, src, dst string) (entries, bytes int64, err error) {
+	if err := root.Mkdir(dst, 0o755); err != nil {
+		if rootErrIsEscape(err) {
+			return 0, 0, fmt.Errorf("%w: %q", ErrPathEscape, dst)
+		}
+		return 0, 0, fmt.Errorf("建副本目录 %s: %w", filepath.Join(repo, dst), err)
+	}
+	entries = 1
+	counted := 0
+	werr := fs.WalkDir(root.FS(), src, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		counted++
+		if counted%200 == 0 {
+			log().Debug("目录复制进度", "repo", repo, "path", src, "visited", counted)
+		}
+		if p == src {
+			return nil // 根目录已在上面 Mkdir
+		}
+		relPart, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, relPart)
+		if d.IsDir() {
+			if err := root.Mkdir(target, 0o755); err != nil {
+				if rootErrIsEscape(err) {
+					return fmt.Errorf("%w: %q", ErrPathEscape, target)
+				}
+				return fmt.Errorf("建副本目录 %s: %w", filepath.Join(repo, target), err)
+			}
+			entries++
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			// 符号链接（WalkDir 不跟随）与其他特殊文件：不复制链接、也不让整次
+			// 复制失败，跳过并留痕
+			log().Warn("目录复制跳过非普通文件", "repo", repo, "path", p, "mode", d.Type().String())
+			return nil
+		}
+		n, err := copyEntryFile(root, repo, p, target)
+		if err != nil {
+			return err
+		}
+		entries++
+		bytes += n
+		return nil
+	})
+	if werr != nil {
+		return 0, 0, fmt.Errorf("递归复制 %s: %w", filepath.Join(repo, src), werr)
+	}
+	return entries, bytes, nil
+}
+
+// CopyEntry 复制工作树内一个条目（B107 文件树右键菜单），目录连同其内容一并
+// 递归复制。副本名按「foo copy.go、foo copy 2.go …… 到 foo copy 99.go」的规则
+// 取第一个未被占用的（命名细节与 99 上限的理由见 copyEntryName doc）。
+//
+// 路径遏制与 CreateEntry/RenameEntry/DeleteEntry 同一红线：全部写操作经
+// os.OpenRoot 的内核级 jail（理由见 1543 行注释），符号链接等特殊文件不复制、
+// 只跳过并 Warn，绝不在递归途中落回绝对路径。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待复制条目的相对路径（空串与 "." 表示工作树根）
+//
+// 返回：
+//   - proto.DirEntry: 复制后条目的信息（Name/IsDir/Size 取自磁盘实况）
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+//   - ErrEntryExists: 副本名到 copy 99 已全部被占用
+func CopyEntry(repo, rel string) (proto.DirEntry, error) {
+	log().Info("复制工作树条目", "repo", repo, "path", rel)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		log().Warn("条目复制打开工作树失败", "repo", repo, "path", rel, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if isGitPath(cleaned) {
+		log().Warn("条目复制命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	if _, err := root.Stat(cleaned); err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目复制路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("条目复制目标不存在", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		log().Warn("条目复制检查目标失败", "repo", repo, "path", cleaned, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	target, tried, err := copyEntryName(root, repo, cleaned)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目复制选定副本名", "repo", repo, "path", cleaned, "target", target, "tried", tried)
+	fi, err := root.Stat(cleaned)
+	if err != nil {
+		log().Warn("条目复制读取源信息失败", "repo", repo, "path", cleaned, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("读取条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	var entries, copied int64
+	if fi.IsDir() {
+		entries, copied, err = copyEntryDir(root, repo, cleaned, target)
+	} else {
+		entries = 1
+		copied, err = copyEntryFile(root, repo, cleaned, target)
+	}
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目复制路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		log().Warn("条目复制执行失败", "repo", repo, "path", cleaned, "target", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		log().Warn("条目复制读取结果失败", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目复制完成", "repo", repo, "path", cleaned, "target", target,
+		"entries", entries, "bytes", copied)
+	return e, nil
+}

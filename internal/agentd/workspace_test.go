@@ -1306,3 +1306,79 @@ func TestEntryOpsSymlinkEscape(t *testing.T) {
 		t.Fatal("仓库外的文件被动了")
 	}
 }
+
+func TestCopyEntryNaming(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "foo.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第一次复制: %v", err)
+	}
+	if first.Name != "foo copy.go" {
+		t.Fatalf("第一份副本要叫 %q，得到 %q", "foo copy.go", first.Name)
+	}
+	second, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第二次复制: %v", err)
+	}
+	if second.Name != "foo copy 2.go" {
+		t.Fatalf("第二份副本要叫 %q，得到 %q", "foo copy 2.go", second.Name)
+	}
+	// 内容要真的复制过去
+	b, err := os.ReadFile(filepath.Join(repo, "foo copy.go"))
+	if err != nil || string(b) != "package main" {
+		t.Fatalf("副本内容不对: %q %v", b, err)
+	}
+	// 无扩展名
+	if err := os.WriteFile(filepath.Join(repo, "Makefile"), []byte("all:"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "Makefile")
+	if err != nil || got.Name != "Makefile copy" {
+		t.Fatalf("无扩展名副本要叫 %q，得到 %q（err=%v）", "Makefile copy", got.Name, err)
+	}
+}
+
+func TestCopyEntryDirRecursive(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "d", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "d", "sub", "x.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "d")
+	if err != nil {
+		t.Fatalf("复制目录: %v", err)
+	}
+	if got.Name != "d copy" || !got.IsDir {
+		t.Fatalf("目录副本不对: %+v", got)
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "d copy", "sub", "x.go"))
+	if err != nil || string(b) != "x" {
+		t.Fatalf("递归内容没复制过去: %q %v", b, err)
+	}
+}
+
+func TestCopyEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := CopyEntryRejectHelper(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("复制不存在的应当 ErrEntryNotFound")
+	}
+	if _, err := CopyEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("复制 .git 应当被拒")
+	}
+	if _, err := CopyEntry(repo, "../x"); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸路径应当被拒")
+	}
+}
+
+// CopyEntryRejectHelper 建一个 .git 目录，让上面的 .git 用例有东西可撞。
+func CopyEntryRejectHelper(repo string) error {
+	return os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
+}
