@@ -1183,15 +1183,17 @@ function StatusBar({ selectedDirectory, currentView }) {
 
 // HomeDock —— 右下角悬浮入口 + home 基准终端的独立浮窗。
 //
-// 形态要点（这是本次要确认的东西）：
-//   - 圆钮点开是一张**小面板**，列出「从这里开过的」终端，并能新建；
-//     它是清单入口，不是内容容器。
+// 形态要点：
+//   - 圆钮**一下直达**：没有中间那层清单面板。B90 定稿时有一张小面板，
+//     08-15 走查（B94①）翻案删掉了——它列的东西与浮窗自己的 tab 条完全重复，
+//     等于把「打开终端」做成了两段式。
+//   - 圆钮三分支：浮窗开着 → 收起；一个终端都没有 → 新建；否则 → 唤回上次那个。
 //   - 终端跑在**一个浮窗**里，浮窗内含 tab 条切换多个终端。浮窗可拖、可拉伸，
 //     与中央工作区完全无关（中央 tab 条上不会出现它们）。
 //   - 浮窗右上角是「收起」不是「关闭」：会话留着，重开还在原样。
 //     只有 tab 上的 × 才真的杀掉会话——与 PTY 既有口径一致。
+//     圆钮上的角标是这条口径的可见证据：收起后数字不变。
 function HomeDock() {
-  const [dockOpen, setDockOpen] = useState(false);
   const [winOpen, setWinOpen] = useState(false);
   const [seq, setSeq] = useState(2);
   const [tabs, setTabs] = useState([
@@ -1208,13 +1210,15 @@ function HomeDock() {
     setTabs((current) => [...current, { id, label: `bash · home ${seq + 1}` }]);
     setActive(id);
     setWinOpen(true);
-    setDockOpen(false);
   };
 
-  const focusTab = (id) => {
-    setActive(id);
+  // onFab —— 圆钮的三分支。顺序有意义：先判「浮窗在不在眼前」，
+  // 否则用户点它想收起时会又新开一个。
+  const onFab = () => {
+    if (winOpen) { setWinOpen(false); return; }
+    if (tabs.length === 0) { openTerminal(); return; }
+    setActive(active ?? tabs[tabs.length - 1].id);
     setWinOpen(true);
-    setDockOpen(false);
   };
 
   const killTab = (id) => {
@@ -1243,31 +1247,11 @@ function HomeDock() {
         />
       )}
 
-      {dockOpen ? (
-        <div className="home-dock-panel">
-          <header>
-            <span><House size={13} />home 基准</span>
-            <button type="button" aria-label="收起面板" onClick={() => setDockOpen(false)}><X size={13} /></button>
-          </header>
-          <p className="home-dock-hint">不挂在任何项目上，与中央工作区互不影响。</p>
-          <div className="home-dock-list">
-            {tabs.length === 0 && <p className="home-dock-empty">还没有开过终端</p>}
-            {tabs.map((tab) => (
-              <button key={tab.id} type="button" className={`home-dock-item ${tab.id === active && winOpen ? 'active' : ''}`} onClick={() => focusTab(tab.id)}>
-                <SquareTerminal size={13} />
-                <span>{tab.label}</span>
-                <span className="home-dock-live"><StatusDot /></span>
-              </button>
-            ))}
-          </div>
-          <button type="button" className="home-dock-new" onClick={openTerminal}><Plus size={14} />新终端<kbd>⌘T</kbd></button>
-        </div>
-      ) : (
-        <button type="button" className="home-dock-fab" aria-label="home 基准终端" onClick={() => setDockOpen(true)}>
-          <Plus size={19} />
-          {tabs.length > 0 && <span className="home-dock-badge">{tabs.length}</span>}
-        </button>
-      )}
+      {/* 角标留着：它是「收起不杀」这条口径唯一看得见的证据——收起后数字不变 */}
+      <button type="button" className="home-dock-fab" aria-label="home 基准终端" onClick={onFab}>
+        <Plus size={19} />
+        {tabs.length > 0 && <span className="home-dock-badge">{tabs.length}</span>}
+      </button>
     </>
   );
 }
