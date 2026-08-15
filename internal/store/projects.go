@@ -140,6 +140,58 @@ func (s *Store) DeleteProjectLocation(name string) error {
 	return nil
 }
 
+// UpdateProjectLocation 改一条位置登记的引用名与/或路径。
+//
+// 参数：
+//   - name: 当前引用名（定位用）
+//   - newName: 新引用名；空串表示不改
+//   - newPath: 新路径；空串表示不改
+//
+// 返回：更新后的记录；
+//   - ErrNotFound：name 不存在
+//   - ErrProjectDuplicate：新名字或新路径已被占用
+func (s *Store) UpdateProjectLocation(name, newName, newPath string) (proto.ProjectLocation, error) {
+	// 两个字段都为空是合法的空操作：直接返回当前记录，不发 UPDATE。
+	if newName == "" && newPath == "" {
+		return s.GetProjectLocationByName(name)
+	}
+	var sets []string
+	var args []any
+	if newName != "" {
+		sets = append(sets, "name = ?")
+		args = append(args, newName)
+	}
+	if newPath != "" {
+		sets = append(sets, "path = ?")
+		args = append(args, newPath)
+	}
+	args = append(args, name)
+	res, err := s.db.ExecContext(context.Background(),
+		`UPDATE project_locations SET `+strings.Join(sets, ", ")+` WHERE name = ?`, args...)
+	if err != nil {
+		// 判断方式与 CreateProjectLocation 那段保持一致：modernc.org/sqlite
+		// 的约束错误只有文本可判。Update 场景撞的是 name 的 UNIQUE 或 path 的
+		// UNIQUE（path 无 PRIMARY KEY 语义，但保险起见一并判断）。
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+			strings.Contains(err.Error(), "PRIMARY KEY constraint failed") {
+			return proto.ProjectLocation{}, fmt.Errorf("%w: name=%s newName=%s newPath=%s: %v",
+				ErrProjectDuplicate, name, newName, newPath, err)
+		}
+		return proto.ProjectLocation{}, fmt.Errorf("更新项目位置 %s: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("更新项目位置 %s 后取影响行数: %w", name, err)
+	}
+	if n == 0 {
+		return proto.ProjectLocation{}, fmt.Errorf("项目 %s: %w", name, ErrNotFound)
+	}
+	if newName != "" {
+		return s.GetProjectLocationByName(newName)
+	}
+	return s.GetProjectLocationByName(name)
+}
+
 // ActiveTasksByRepoPath 返回仓库路径为 repoPath 的全部非终态任务。
 //
 // 参数：

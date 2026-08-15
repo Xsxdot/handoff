@@ -111,6 +111,85 @@ func TestProjectLocationNameAndPathAreUnique(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectLocationRenames 改名成功，且 project_id 不变——
+// 身份由 origin 算出，改名不许动它，否则任务与工作树会与项目失联。
+func TestUpdateProjectLocationRenames(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "handoff-renamed", "")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 改名: %v", err)
+	}
+	if got.Name != "handoff-renamed" || got.Path != "/w/handoff" {
+		t.Fatalf("改名的记录不对: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("改名后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff-renamed")
+	if err != nil {
+		t.Fatalf("改名后再按新名字取: %v", err)
+	}
+	if back.ProjectID != a.ProjectID {
+		t.Fatalf("库里的 project_id 也变了: got %s want %s", back.ProjectID, a.ProjectID)
+	}
+}
+
+// TestUpdateProjectLocationChangesPath 改路径成功，project_id 同样不变。
+func TestUpdateProjectLocationChangesPath(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "", "/w/handoff-new")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 改路径: %v", err)
+	}
+	if got.Name != "handoff" || got.Path != "/w/handoff-new" {
+		t.Fatalf("改路径的记录不对: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("改路径后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("改路径后再取: %v", err)
+	}
+	if back.ProjectID != a.ProjectID {
+		t.Fatalf("库里的 project_id 也变了: got %s want %s", back.ProjectID, a.ProjectID)
+	}
+}
+
+// TestUpdateProjectLocationRejectsDuplicateName 新名字已被别的位置占用 →
+// ErrProjectDuplicate（上层映射 409）。
+func TestUpdateProjectLocationRejectsDuplicateName(t *testing.T) {
+	st := newProjectStore(t)
+	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+	mustCreateLoc(t, st, "other", "/w/other", "git@github.com:Xsxdot/tk.git")
+
+	_, err := st.UpdateProjectLocation("handoff", "other", "")
+	if !errors.Is(err, ErrProjectDuplicate) {
+		t.Fatalf("改名撞别的位置的名字应 ErrProjectDuplicate，got %v", err)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("撞名后原记录应还在: %v", err)
+	}
+	if back.Name != "handoff" || back.Path != "/w/handoff" {
+		t.Fatalf("撞名后原记录应保持原样: %+v", back)
+	}
+}
+
+// TestUpdateProjectLocationNotFound 不存在的名字 → ErrNotFound。
+func TestUpdateProjectLocationNotFound(t *testing.T) {
+	st := newProjectStore(t)
+
+	_, err := st.UpdateProjectLocation("no-such-project", "new", "/w/new")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的名字应 ErrNotFound，got %v", err)
+	}
+}
+
 // TestMigrateReposToProjectLocations 验证旧 repos 表迁入新表：算出 project_id、
 // 同 origin 多行保留 created_at 最早的一条、迁完 DROP 掉旧表。
 func TestMigrateReposToProjectLocations(t *testing.T) {
