@@ -80,7 +80,16 @@ export function Shell() {
   })
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
   // 确认之后要先删会话、再关那个 tab
-  const [closingPty, setClosingPty] = useState<{ group: number; tabId: string; sessionId: string } | null>(null)
+  //
+  // 为什么连 machine 一起留（B96）：删会话要指名机器，而「该删哪台」是**这个
+  // 会话**的属性——它建在哪台机器上就该往哪台删。以前这里在确认时现读
+  // `wb.base?.machine`（**当前选中**基准的机器），两者只是因为「工作台按基准
+  // 分持、切基准会整组换掉」才恰好相等；那是一条没写下来的隐含前提，一旦弹层
+  // 开着时基准被换走就会拿 A 的机器名去删 B 的会话。与下面的 closingHome 对齐：
+  // 它一直就是把 machine 存下来的
+  const [closingPty, setClosingPty] = useState<
+    { group: number; tabId: string; sessionId: string; machine: string } | null
+  >(null)
   const [closeBusy, setCloseBusy] = useState(false)
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
@@ -121,7 +130,8 @@ export function Shell() {
       return false
     }
     if (c.kind !== 'terminal' || !c.sessionId) return true
-    setClosingPty({ group, tabId, sessionId: c.sessionId })
+    // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
+    setClosingPty({ group, tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
     setCloseError('')
     setClosingBusyProc(null)
     // 问一句「它现在忙不忙」，只用于加重措辞，**不阻塞弹层出现**
@@ -152,7 +162,7 @@ export function Shell() {
     if (!closingPty) return
     setCloseBusy(true)
     setCloseError('')
-    if (await killPtySession(closingPty.sessionId, wb.base?.machine || undefined, setCloseError)) {
+    if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
       wb.close(closingPty.group, closingPty.tabId)
       setClosingPty(null)
     }
