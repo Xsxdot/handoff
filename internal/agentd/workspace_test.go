@@ -1490,3 +1490,45 @@ func TestSearchInDirScopeAndRejects(t *testing.T) {
 		t.Fatal("逃逸范围应当被拒")
 	}
 }
+
+func TestSearchInDirDefaultLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchDefaultLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != searchDefaultLimit {
+		t.Fatalf("limit<=0 时默认取 %d，得到 %d", searchDefaultLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过默认上限必须标 Truncated")
+	}
+}
+
+func TestSearchInDirLimitCapped(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchMaxLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", searchMaxLimit*10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) > searchMaxLimit {
+		t.Fatalf("limit 超过 %d 要收敛到 %d，得到 %d", searchMaxLimit, searchMaxLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过收敛后的上限必须标 Truncated")
+	}
+}
