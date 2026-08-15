@@ -540,8 +540,8 @@ func TestMismatchVerdict(t *testing.T) {
 // UpdateTaskState（裸改状态不会触发终态收口），且留下一条 progress 审计，文本含
 // 原始 failed 事件的 seq。
 func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
-	// 用真实 Manager 的 transit 包装：白盒测试能调 m.transit，最忠实地复刻
-	// cmd/agentd.go 的 mgr.MismatchTransit() 接线（终态收口挂在 transit 内部）
+	// 直接用生产接线 m.MismatchTransit()（与 cmd/agentd.go:193 同一接线点，
+	// 终态收口挂在 transit 内部）
 	m, st, hub, _ := newTestManager(t)
 	createRunningTask(t, st, "t1")
 	// 追加一条 failed 事件作为最新事件（事件年龄 ≥ minAge=time.Nanosecond 恒成立）
@@ -556,11 +556,8 @@ func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
 		t.Fatalf("CreateTicket: %v", err)
 	}
 
-	transit := func(id string, to proto.TaskState, reason string) error {
-		return m.transit(id, to, reason)
-	}
 	// startedAt 早于事件（护栏「本次启动之后」放行），minAge 足够小（事件必够老）
-	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, transit, discardLogger())
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, m.MismatchTransit(), discardLogger())
 
 	assertState(t, st, "t1", proto.TaskStateFailed)
 
