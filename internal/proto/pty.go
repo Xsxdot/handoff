@@ -44,8 +44,10 @@ type PtySessionsResp struct {
 type CreatePtySessionReq struct {
 	BasePath string `json:"base_path"`
 	BaseKind string `json:"base_kind"`
-	Cols     int    `json:"cols"`
-	Rows     int    `json:"rows"`
+	// Rel 是相对 BasePath 的子目录，空串=工作树根；BaseKind=home 时忽略。
+	Rel  string `json:"rel"`
+	Cols int    `json:"cols"`
+	Rows int    `json:"rows"`
 }
 
 // /ws/pty 的 text 帧类型。binary 帧恒为 PTY 原始字节，不走 JSON。
