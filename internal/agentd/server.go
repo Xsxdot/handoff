@@ -274,6 +274,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/workspaces/entry", s.handleWorkspaceEntryRename)
 	mux.HandleFunc("DELETE /api/workspaces/entry", s.handleWorkspaceEntryDelete)
 	mux.HandleFunc("GET /api/workspaces/search", s.handleWorkspaceSearch)
+	// 注意：reveal 故意不接 forwardIfRequested——转发正是这个端点要拒绝的那件事
+	mux.HandleFunc("POST /api/workspaces/reveal", s.handleWorkspaceReveal)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	mux.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
