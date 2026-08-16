@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +16,11 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
-// newRevealServer 起一个带单个已登记项目（目录里有 a.txt）的 agentd，返回
-// server 与已被白名单认可的工作树目录。照抄 wsFilesFixture 的既有做法：
-// newTestAgentdEnv + initGitRepoWithOrigin + CreateProjectLocation。
-func newRevealServer(t *testing.T) (*Server, string) {
+// newRevealEnv 起一个带单个已登记项目（目录里有 a.txt）的 agentd，返回完整
+// 测试环境（env.ts.URL 可走 mux + hostGuard + auth 全链路）与已被白名单认可
+// 的工作树目录。照抄 wsFilesFixture 的既有做法：newTestAgentdEnv +
+// initGitRepoWithOrigin + CreateProjectLocation。
+func newRevealEnv(t *testing.T) (*testAgentdEnv, string) {
 	t.Helper()
 	env := newTestAgentdEnv(t)
 	repo := initGitRepoWithOrigin(t, "git@github.com:x/demo.git")
@@ -29,6 +31,14 @@ func newRevealServer(t *testing.T) (*Server, string) {
 	}); err != nil {
 		t.Fatalf("CreateProjectLocation: %v", err)
 	}
+	return env, repo
+}
+
+// newRevealServer 同 newRevealEnv，但只返回 server 与工作树目录，给直调
+// handleWorkspaceReveal 的白盒用例用。
+func newRevealServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	env, repo := newRevealEnv(t)
 	return env.srv, repo
 }
 
@@ -44,7 +54,8 @@ func revealCapture(t *testing.T) (*string, func()) {
 	return &got, func() { revealOpener = prev }
 }
 
-// revealReq 造一条指向 root 的 reveal 请求。remote 为空时用回环地址。
+// revealReq 造一条指向 root 的 reveal 请求。remote 为空时用回环地址（127.0.0.1:54321）
+// ——要测空串 RemoteAddr 必须先构造后手动覆盖 r.RemoteAddr。
 func revealReq(root, rel, machine, remote string) *http.Request {
 	u := "/api/workspaces/reveal?path=" + root + "&rel=" + rel
 	if machine != "" {
@@ -116,6 +127,29 @@ func TestRevealRejectsNonLoopback(t *testing.T) {
 	s.handleWorkspaceReveal(w, revealReq(root, "a.txt", "", "100.73.238.21:54321"))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("状态码 %d，期望 409；body=%s", w.Code, w.Body.String())
+	}
+	if *got != "" {
+		t.Fatalf("被拒的请求居然执行了 open：%q", *got)
+	}
+}
+
+// TestRevealRejectsUnparseableRemote 钉住 isLoopbackAddr 的 fail-closed 语义：
+// RemoteAddr 判不出来（空串、非 IP 形态）时**拒绝**而不是放行。若无此用例，
+// 把返回值变异成 `ip == nil || ip.IsLoopback()`（fail-open）仍会全绿。
+// revealReq 对空串 remote 有回环 fallback，这里先构造再手动覆盖 RemoteAddr。
+func TestRevealRejectsUnparseableRemote(t *testing.T) {
+	s, root := newRevealServer(t)
+	got, restore := revealCapture(t)
+	defer restore()
+
+	for _, remote := range []string{"", "@", "unix"} {
+		w := httptest.NewRecorder()
+		r := revealReq(root, "a.txt", "", "")
+		r.RemoteAddr = remote // 绕过 revealReq 的空串 fallback
+		s.handleWorkspaceReveal(w, r)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("RemoteAddr=%q 状态码 %d，期望 409；body=%s", remote, w.Code, w.Body.String())
+		}
 	}
 	if *got != "" {
 		t.Fatalf("被拒的请求居然执行了 open：%q", *got)
@@ -197,5 +231,50 @@ func TestRevealOpenFails(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	if !strings.Contains(body["error"], "kLSNoExecutableErr") {
 		t.Fatalf("错误原文被吞了：%q", body["error"])
+	}
+}
+
+// TestRevealRouteHappyPath 走 env.ts.URL 完整路由栈（mux + hostGuard + auth）
+// 钉住 reveal 的路由注册：POST /api/workspaces/reveal?path=&rel= 正常返回 200
+// 并真的执行 open。若 server.go 里注册行被删，这里会 404。
+func TestRevealRouteHappyPath(t *testing.T) {
+	env, repo := newRevealEnv(t)
+	got, restore := revealCapture(t)
+	defer restore()
+
+	code, body := doJSON(t, env, http.MethodPost,
+		"/api/workspaces/reveal?path="+url.QueryEscape(repo)+"&rel=a.txt", "")
+	if code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200；体 = %s", code, body)
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(repo, "a.txt"))
+	if *got != want {
+		t.Fatalf("open 收到 %q，期望 %q", *got, want)
+	}
+}
+
+// TestRevealRouteRejectsMachine 走完整路由栈钉住 ?machine= 拒绝分支：400。
+func TestRevealRouteRejectsMachine(t *testing.T) {
+	env, repo := newRevealEnv(t)
+	got, restore := revealCapture(t)
+	defer restore()
+
+	code, body := doJSON(t, env, http.MethodPost,
+		"/api/workspaces/reveal?path="+url.QueryEscape(repo)+"&rel=a.txt&machine=devbox", "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, want 400；体 = %s", code, body)
+	}
+	if *got != "" {
+		t.Fatalf("被拒的请求居然执行了 open：%q", *got)
+	}
+}
+
+// TestRevealRouteRejectsGet 顺手钉住方法路由：GET 打同一 URL 应得 405。
+func TestRevealRouteRejectsGet(t *testing.T) {
+	env, repo := newRevealEnv(t)
+	code, body := doJSON(t, env, http.MethodGet,
+		"/api/workspaces/reveal?path="+url.QueryEscape(repo)+"&rel=a.txt", "")
+	if code != http.StatusMethodNotAllowed {
+		t.Fatalf("状态码 = %d, want 405；体 = %s", code, body)
 	}
 }
