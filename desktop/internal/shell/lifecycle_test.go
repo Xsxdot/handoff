@@ -60,6 +60,24 @@ func TestEnsureRunningInstallsWhenAbsent(t *testing.T) {
 	}
 }
 
+// 已安装但没在运行：必须 Install。Installed 不等于 Running——launchd/systemd
+// 的「已装未跑 / 崩溃循环 / 手动 stop」都是真实且常见的状态，此时 EnsureRunning
+// 必须重新托管拉起，不能因为单元文件存在就跳过。
+func TestEnsureRunningInstallsWhenInstalledButStopped(t *testing.T) {
+	f := &fakeManager{status: service.Status{Installed: true}}
+	withManager(t, f, nil)
+	spec := service.Spec{BinPath: "/usr/local/bin/handoff", ConfigPath: "/c.yaml", LogPath: "/l.log"}
+	if err := EnsureRunning(slog.Default(), spec); err != nil {
+		t.Fatalf("EnsureRunning 报错: %v", err)
+	}
+	if !f.installed {
+		t.Fatal("agentd 已装未跑却没有重新 Install 拉起")
+	}
+	if f.gotSpec != spec {
+		t.Fatalf("传给 Install 的 Spec = %+v, want %+v", f.gotSpec, spec)
+	}
+}
+
 // 平台不支持（Windows）：把原因原样带出来，不许吞、不许 panic。
 func TestEnsureRunningSurfacesUnsupportedPlatform(t *testing.T) {
 	withManager(t, nil, errors.New("暂不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成"))

@@ -41,8 +41,13 @@ func TestNormalizeProjectDirRejectsFile(t *testing.T) {
 	}
 }
 
+// 取消/空输入：报文必须锁死「没有选择任何目录」。这是 picker 的核心卖点
+// （报文区分取消/不存在/选到文件），且 TrimSpace 必须先于空检查——
+// 一旦顺序反了，全空格的取消输入会落到「路径不存在」分支，语义就错了。
 func TestNormalizeProjectDirRejectsEmpty(t *testing.T) {
 	if _, err := NormalizeProjectDir("   "); err == nil {
 		t.Fatal("空输入却没报错")
+	} else if !strings.Contains(err.Error(), "没有选择任何目录") {
+		t.Fatalf("报文不是取消语义，实际 = %q", err)
 	}
 }

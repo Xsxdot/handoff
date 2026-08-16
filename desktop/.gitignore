@@ -3,7 +3,8 @@ bin
 frontend/dist
 frontend/node_modules
 build/linux/appimage/build
-build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+# 裸 `go build`（无参数）在 desktop 根产生的产物，约 15MB，曾残留过
+desktop
 # Mobile generated (per-machine; overlays hold absolute paths)
 build/ios/xcode/overlay.json
 build/ios/xcode/gen/

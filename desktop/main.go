@@ -126,8 +126,10 @@ func main() {
 
 // specFor 组装托管 agentd 所需的路径。
 //
-// BinPath 取当前可执行文件所在目录旁的 handoff——薄壳与 CLI 用同一份二进制是
-// W5b-2 内嵌方案的前提（spec §5.2）。取不到时退回 PATH 上的 handoff。
+// 本轮策略：直接用 PATH 上的 handoff（BinPath 裸名，launchd 侧由 W5b-2
+// 的内嵌与释出方案补齐绝对路径与 EvalSymlinks）。真机走查若 agentd 未装
+// 会经 EnsureRunning 走 Install，此时 launchd 解析不了相对路径——这是
+// 已明示的 W5b-2 承接项（spec §5.2），不在本轮解决。
 func specFor(_ shell.Endpoint) service.Spec {
 	// 具体路径策略在 W5b-2 内嵌二进制时才完整；本轮先用 PATH 上的 handoff，
 	// 并在日志里说清，避免它悄悄变成一个隐藏约定
