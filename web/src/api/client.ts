@@ -320,6 +320,18 @@ export function searchWorkspace(path: string, rel: string, q: string, machine?: 
   )
 }
 
+// revealInFinder 在**本机**访达中显示工作树内 rel 条目（POST /api/workspaces/reveal）。
+// rel 可为空串（揭示工作树根）。
+//
+// **故意没有 machine 参数**：远程条目不可能在本机访达里打开，端点对 ?machine=
+// 一律 400。签名不给这个参数，就没有人能不小心传它。
+export function revealInFinder(path: string, rel: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/workspaces/reveal?${workspaceQuery(path, rel)}`,
+    { method: 'POST' },
+  )
+}
+
 // createProject 登记一个项目位置（POST /api/projects）。
 //
 // 参数：

@@ -91,6 +91,38 @@ func TestMachinesUnreachableHasNilCapability(t *testing.T) {
 	}
 }
 
+// TestLocalMachineReportsRevealSupported 断言本机探活会带上 reveal 能力位，
+// 且它等于当前平台的实际支持度（不是恒 true）。
+func TestLocalMachineReportsRevealSupported(t *testing.T) {
+	env := newTestAgentdEnv(t)
+	mgr, _, _, _ := newTestManager(t)
+	env.srv.SetManager(mgr)
+	m := env.srv.localMachine()
+	if m.RevealSupported == nil {
+		t.Fatal("本机探活没带 reveal_supported，前端三态门会退化成一律放行")
+	}
+	if *m.RevealSupported != revealSupportedOS {
+		t.Fatalf("reveal_supported=%v，与平台实际支持度 %v 不符", *m.RevealSupported, revealSupportedOS)
+	}
+}
+
+// TestFillFromStatusCarriesRevealSupported 断言远程机器的能力位被原样搬运，
+// 包括 nil——探到了但对端没这个字段，结论就是「没上报」。
+func TestFillFromStatusCarriesRevealSupported(t *testing.T) {
+	yes := true
+	var m proto.Machine
+	fillFromStatus(&m, &proto.StatusResp{RevealSupported: &yes})
+	if m.RevealSupported == nil || !*m.RevealSupported {
+		t.Fatalf("true 没被搬运过来：%v", m.RevealSupported)
+	}
+
+	var m2 proto.Machine
+	fillFromStatus(&m2, &proto.StatusResp{})
+	if m2.RevealSupported != nil {
+		t.Fatalf("对端没上报时应保持 nil，实际 %v", *m2.RevealSupported)
+	}
+}
+
 // getMachines 带 Bearer 请求 /api/machines 并解出响应。
 func getMachines(t *testing.T, e *testAgentdEnv) proto.MachinesResp {
 	t.Helper()

@@ -231,6 +231,11 @@ describe('PtySession 契约', () => {
     const status = statusFixture as StatusResp
     expect(status.pty_supported).toBe(true)
   })
+
+  it('StatusResp：reveal_supported 已上报', () => {
+    const status = statusFixture as StatusResp
+    expect(status.reveal_supported).toBe(true)
+  })
 })
 
 describe('文件读写的契约', () => {
