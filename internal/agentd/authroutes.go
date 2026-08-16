@@ -189,8 +189,9 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 
 // writeTicketError 输出兑换失败的说明。
 //
-// 为什么是 text/plain 而不是一张 HTML 错误页：本轮 agentd 尚未托管任何前端，
-// 纯文本既够用，又完全没有 HTML 注入面。
+// 为什么是 text/plain 而不是一张 HTML 错误页：纯文本既够用，又完全没有 HTML 注入面。
+// （W5a 之后 agentd 确实托管前端了，但那不构成把这里换成 HTML 的理由——
+// 这条路径处理的是**无效凭据**，此时给的东西越简单越好。）
 func (s *Server) writeTicketError(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
