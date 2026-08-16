@@ -90,3 +90,23 @@ func TestConsoleTicketRouteNotShadowed(t *testing.T) {
 		t.Errorf("/console 无 ticket 却返回 200，疑似被 SPA handler 抢走")
 	}
 }
+
+// 承重：方法错配在完整路由栈里必须保持 405，不能被 SPA 吞成 200 HTML，
+// 也不能被前缀分派压成 404。
+//
+// 这条与 webhandler_test.go 的 TestSPARejectsNonGet 不是同一件事：那个是
+// SPA handler 自己拒非 GET；这条走 ts.URL 全栈，验证「只注册了 POST 的真实
+// API 路由」被 GET 打时，ServeMux 的方法裁决一路传到响应。
+func TestApiMethodMismatchStays405(t *testing.T) {
+	ts, cookie := consoleTestEnv(t)
+	resp := getWithCookie(t, ts, "/api/workspaces/reveal", cookie)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET 打 POST-only 路由状态码 = %d，want 405", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(strings.ToLower(string(b)), "<html") {
+		t.Errorf("405 响应体被回落成 HTML，body = %q", b)
+	}
+}

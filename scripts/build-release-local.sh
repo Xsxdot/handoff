@@ -10,6 +10,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
+# snapshot 取一次工作区状态指纹，用于构建前后比对。
+snapshot() {
+  git -C "$ROOT" status --porcelain --untracked-files=normal | sort
+}
+BEFORE="$(snapshot)"
+
 echo "==> 构建前端"
 cd "$ROOT/web"
 npm ci
@@ -27,11 +33,11 @@ CGO_ENABLED=0 go build -trimpath -tags embedweb -ldflags "-s -w" -o "$OUT/handof
 echo "==> 带标签跑 webui 测试（确认产物真进去了，不是空壳）"
 CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
 
-echo "==> 自检：工作区不能因为构建而变脏"
-if ! git -C "$ROOT" diff --quiet || \
-   [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal | grep -v '^?? internal/webui/dist/' || true)" ]; then
-  echo "构建让工作区变脏了——这会破坏 dispatch 的干净工作区前置条件" >&2
-  git -C "$ROOT" status --short >&2
+echo "==> 自检：构建不得改变工作区状态"
+AFTER="$(snapshot)"
+if [ "$BEFORE" != "$AFTER" ]; then
+  echo "构建改变了工作区状态——这会破坏 dispatch 的干净工作区前置条件" >&2
+  diff <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") >&2 || true
   exit 1
 fi
 
