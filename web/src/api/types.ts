@@ -140,6 +140,19 @@ export interface MachineStatus {
   error: string
 }
 
+// TasksResp 是 GET /api/tasks?scope=all 的跨机汇总信封（W3a §5.3）。
+//
+// 与 ProjectTreeResp / PtySessionsResp 不同，这里的 machines 不是可选的：
+// 汇总端点恒返回它（每台 target 都有一行，答不上来的那台 ok=false 带原因）。
+// 不带 scope=all 的 GET /api/tasks 是另一种形状——裸数组，不走本类型。
+//
+// tasks 里远端条目的 machine 由本机 agentd 盖章，本机条目为空串；数据取自
+// 镜像快照，新旧看对应 machines 行的 fetched_at。
+export interface TasksResp {
+  machines: MachineStatus[]
+  tasks: Task[]
+}
+
 // ProjectTreeResp 是 GET /api/projects/tree 的响应；
 // machines 仅在 ?scope=all 时出现。
 export interface ProjectTreeResp {

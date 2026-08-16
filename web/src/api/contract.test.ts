@@ -30,6 +30,7 @@ import ptySessionsRespFixture from './testdata/PtySessionsResp.json'
 import sessionFixture from './testdata/SessionInfo.json'
 import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
+import tasksRespFixture from './testdata/TasksResp.json'
 import ticketFixture from './testdata/Ticket.json'
 import frameFixture from './testdata/Frame.json'
 import {
@@ -51,6 +52,7 @@ import {
   type SessionInfo,
   type StatusResp,
   type Task,
+  type TasksResp,
   type Ticket,
 } from './types'
 
@@ -132,6 +134,20 @@ describe('契约 fixture 与 TS 类型', () => {
 })
 
 describe('W3a 契约', () => {
+  // 任务流（useTasks）就吃这个信封。钉两件事：远端条目带 machine 章、
+  // 答不上来的机器在 machines 里 ok=false 带原因——后者是「看板上的空
+  // 到底是没任务还是没拉到」的唯一区分依据。
+  it('TasksResp 信封：远端任务带 machine 章，失联机器 ok=false 带原因', () => {
+    const resp = tasksRespFixture as TasksResp
+    expect(Array.isArray(resp.tasks)).toBe(true)
+    expect(resp.machines.map((m) => m.name)).toEqual(['', 'devbox'])
+    const down = resp.machines.find((m) => m.name === 'devbox')!
+    expect(down.ok).toBe(false)
+    expect(down.error).not.toBe('')
+    const remote = resp.tasks.find((t) => t.machine !== '')
+    expect(remote?.machine).toBe('devbox')
+  })
+
   it('ProjectTreeResp 的字段与类型一致', () => {
     const resp: ProjectTreeResp = projectTreeFixture
     expect(Array.isArray(resp.projects)).toBe(true)
