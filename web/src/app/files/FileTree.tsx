@@ -13,9 +13,9 @@
 //     path 白名单参数，服务端错误原文透传到弹层/面板，不吞成「操作失败」
 //   - 搜索是两层：顶部输入框是**对已列举内容的前端过滤**（不发请求）；
 //     右键「在文件夹中查找」才是对服务端发请求的内容搜索，结果进独立面板
-//   - Reveal in Finder 恒置灰：本机与远程都灰。为什么本机也灰——本期不做
-//     任何一半形态（只做本机那半会留下「本机能点远程不能点」的割裂），且
-//     它依赖 B108 尚未裁决的 Electron 去留前提
+//   - Reveal in Finder 只在「浏览器与 agentd 同在一台 macOS 上」时可点，
+//     其余三种情形各给一条不同的置灰理由（B108，spec §4.3）。远程那条是
+//     结构性的：在 mac-02 上 open -R 会在**没人看着**的桌面上弹窗
 //
 // 角标语义（不得含糊）：数据来自 `handoff diff` = `git diff base...HEAD`，只反映
 // 已提交的改动。tooltip 写「相对基线已改动」，不写「工作区已修改」——后者是
@@ -27,6 +27,7 @@ import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
   renameWorkspaceEntry,
+  revealInFinder,
   searchWorkspace,
 } from '../../api/client'
 import type { DirEntry, SearchHit } from '../../api/types'
@@ -49,6 +50,9 @@ export interface FileTreeProps {
   // onOpenTerminal 让「在终端中打开」走既有的建终端能力，传的是子目录 rel
   //（空串 = 工作树根）。
   onOpenTerminal: (rel: string) => void
+  // revealSupported 是本机 agentd 的「在访达中显示」平台能力位，三态。
+  // null = 对端没上报，此时**放行**而不是禁用（见 useMachineCaps 的三态纪律）。
+  revealSupported: boolean | null
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -97,7 +101,16 @@ function parentOf(rel: string): string {
   return rel.split('/').slice(0, -1).join('/')
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeProps) {
+// isLoopbackHost 判断页面自己是不是从回环加载的。
+//
+// 已知不解的边缘：SSH 端口转发下 localhost 指向远程 agentd，这里会误判为本机，
+// Finder 开在远程桌面。无解（隧道在设计上就是要让远程看起来像本地），后果也
+// 有限——弹一个窗，而且是用户自己搭的隧道。如实记着，不假装挡住了。
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+}
+
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -203,6 +216,17 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
     }
   }
 
+  // revealEntry 在本机访达中显示条目。失败原文透传到 opError 面板——服务端
+  // 的四条拒绝理由都写得比前端能猜的准，不要吞成「操作失败」。
+  const revealEntry = async (rel: string) => {
+    setMenu(null)
+    try {
+      await revealInFinder(base.path, rel)
+    } catch (err) {
+      setOpError(errorMessage(err))
+    }
+  }
+
   const openSearch = (dOf: string) => {
     setMenu(null)
     setSearch({ dirOf: dOf, q: '', hits: null, truncated: false, busy: false, error: '' })
@@ -221,13 +245,22 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
     }
   }
 
-  // revealReason 是 Reveal in Finder 的置灰理由：本机与远程说两件不同的事。
-  const revealReason = base.machine
-    ? `远程目录无法在本机的访达中打开（machine: ${base.machine}）`
-    : '暂未实现'
+  // revealReason 返回 Reveal in Finder 的置灰理由，空串表示可点。
+  // 三条互斥的理由按代价从低到高判：machine 是纯前端已知，hostname 也是，
+  // 平台位要等 /api/machines 回来——最后判它，免得能力表还没到就先灰一下再亮。
+  const revealReason = (() => {
+    if (base.machine) return `远程目录无法在本机的访达中打开（machine: ${base.machine}）`
+    // Host 白名单不止回环（B104 会把本机网卡 IP 也放进来），所以「不是远程目录」
+    // 不等于「浏览器和 agentd 在同一台机器上」。这里用页面自己的 host 判。
+    if (!isLoopbackHost(window.location.hostname)) {
+      return '你在通过网络访问这台 agentd，访达会开在 agentd 那台机器上'
+    }
+    if (revealSupported === false) return '这台机器的系统不支持在访达中显示（仅 macOS）'
+    return ''
+  })()
 
   // menuItems 按 spec §6.2 分组：文件夹类动作都落在 dirOf 上，条目类动作
-  // 落在自身，折叠文件夹只给目录行，Reveal in Finder 恒置灰。
+  // 落在自身，折叠文件夹只给目录行，Reveal in Finder 只在同机 macOS 时可点。
   const menuItems = (entry: MenuEntry): ContextMenuEntry[] => {
     const dOf = dirOf(entry.rel, entry.isDir)
     const clipboard = (text: string) => () => {
@@ -277,8 +310,8 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal }: FileTreeP
         : []),
       {
         label: 'Reveal in Finder',
-        onSelect: () => {},
-        disabled: true,
+        onSelect: () => void revealEntry(entry.rel),
+        disabled: revealReason !== '',
         disabledReason: revealReason,
       },
     ]

@@ -336,6 +336,7 @@ export function Shell() {
             taskId={currentTaskId}
             onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
             onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
+            revealSupported={caps.reveal('')}
           />
         </div>
       )}
