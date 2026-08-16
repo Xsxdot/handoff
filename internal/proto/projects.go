@@ -113,6 +113,10 @@ type Machine struct {
 	// 消费方（控制台）据此决定终端入口画什么。**nil 不许当 false 用**：
 	// 那会让老版本 agentd 上的终端入口凭空消失，而它其实可能是能用的。
 	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
+	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
+	RevealSupported *bool `json:"reveal_supported,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。

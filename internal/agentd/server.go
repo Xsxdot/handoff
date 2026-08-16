@@ -227,6 +227,7 @@ func (s *Server) SetManager(m *Manager) {
 //   - PATCH /api/workspaces/entry       改名工作树内条目（请求体含 new_name）
 //   - DELETE /api/workspaces/entry      删除工作树内条目（目录连同内容一并删）
 //   - GET  /api/workspaces/search       工作树内按关键词搜索命中行（含 limit/超时/跳过生成物护栏）
+//   - POST /api/workspaces/reveal       在本机访达中显示工作树内条目（不支持 ?machine= 转发）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器）
 //   - GET  /ws/events                   事件流（补发 + 实时）
@@ -377,6 +378,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK
+	revealOK := revealSupportedOS
+	resp.RevealSupported = &revealOK
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())

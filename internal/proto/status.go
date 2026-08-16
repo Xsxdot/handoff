@@ -193,6 +193,18 @@ type StatusResp struct {
 	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
 	PtySupported *bool `json:"pty_supported,omitempty"`
 
+	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
+	//
+	// 三态与 PtySupported 逐字相同：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（只有 macOS 有 `open -R` 这个语义）
+	//   true      = 支持
+	//
+	// 注意：这只是**平台**支持度。真能不能揭示还要看调用方是不是从回环来的
+	//（远程浏览器点了会在 agentd 那台机器的桌面上弹窗，没人看得见），那一层
+	// 由端点自己判，不进能力位——它是每请求的属性，不是机器的属性。
+	RevealSupported *bool `json:"reveal_supported,omitempty"`
+
 	// PtySessions 是当前活着的终端会话数。指针 + omitempty，与 Proc 同一纪律：
 	// nil = 对端没上报，渲染时整行不打印；0 = 确实一个都没有。
 	//

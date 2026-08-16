@@ -337,6 +337,7 @@ func activeTaskSample(taskID string) ActiveTask {
 // 注意 TaskCounts 六个状态键恒存在：键缺了要能当场暴露（0 与缺键对消费方是两回事）。
 func statusSample(now time.Time, taskID string) StatusResp {
 	ptyOK := true
+	revealOK := true
 	return StatusResp{
 		Version:         buildSample(),
 		Listen:          "127.0.0.1:7777",
@@ -354,7 +355,8 @@ func statusSample(now time.Time, taskID string) StatusResp {
 		},
 		Active: []ActiveTask{activeTaskSample(taskID)},
 		// 放在 Active 之后：能力位与运行时数据分开，一眼能看出它是 agentd 上报的。
-		PtySupported: &ptyOK,
+		PtySupported:    &ptyOK,
+		RevealSupported: &revealOK,
 	}
 }
 
