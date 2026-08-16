@@ -749,16 +749,40 @@ Expected: `TestConsoleRouteRegistered` FAIL（404，路由未注册）
 在 `internal/agentd/server.go` 的路由注册处，向**内层 `mux`** 注册 SPA handler（不是 `root`）：
 
 ```go
+	// /api 与 /ws 的未命中兜底：**必须显式注册，不能指望 mux 自动兜住**。
+	//
+	// Go 1.22 的 ServeMux 确实按模式精确度选择，但「更精确的模式胜出」
+	// 只在那个模式**存在**时才成立。agentd 目前注册的 40 条 /api 路由
+	// 全是精确路径或带 {id} 的参数路径，**没有一条 "/api/" 前缀兜底**。
+	// 因此在补上下面这两行之前，GET /api/no-such 唯一匹配得上的是 "/"，
+	// 会直接进 SPA handler 拿到 200 HTML——正是本 plan 标为承重的失败模式：
+	// 前端把 HTML 喂给 JSON.parse，报错与真实原因完全无关。
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "接口不存在"})
+	})
+	mux.HandleFunc("/ws/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "接口不存在"})
+	})
+
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//
 	// 挂内层 mux 而不是 root：控制台页面本身要求 cookie，走 s.auth；
 	// /console 是唯一免鉴权入口（ticket 本身就是它的凭据），它注册在 root 上。
-	//
-	// Go 1.22 的 ServeMux 按模式精确度选择，"/api/..."、"/ws/..." 这些
-	// 更长的前缀天然胜过 "/"，因此 /api 未命中会落到 API 自己的 404，
-	// **不会**被这里回落成 HTML——那条边界是承重的，见 webhandler.go 的文件头。
 	mux.Handle("/", newSPAHandler(webui.FS(), s.log))
 ```
+
+> **实现者注意**：上面两条兜底注册是本 task 的必要组成，不是可选项。
+>
+> 派发前已核实的仓库现状（Go 1.26.1，本机实跑确认）：
+> - `/api` 侧共 **40 条**注册，全为精确路径或带 `{id}` 的参数路径，**无 `/api/` 兜底**
+> - `/ws` 侧只有两条：`GET /ws/events` 与 `GET /ws/pty`，均为**方法 + 精确路径**
+>
+> 因此新增 `/ws/` 兜底不会抢走它们——更精确的路径模式胜出，且那两条还带方法限定。
+> 但仍请注册前自行复核一遍（`grep -oE 'mux\.Handle(Func)?\("[A-Z]* ?/ws[^"]*"' internal/agentd/*.go`），
+> **不要因为 plan 这么写就当成已验证事实**；若发现已存在同名模式，不要重复注册
+> （Go 的 mux 对同一模式重复注册会 panic），改为确认它返回的是 JSON。
+>
+> `writeJSON(w http.ResponseWriter, status int, v any)` 是本包既有函数（`server.go:1714`），直接用。
 
 并在 agentd 启动日志处补一行嵌入状态（放在既有的启动完成日志附近）：
 
