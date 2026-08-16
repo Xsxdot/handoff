@@ -355,7 +355,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if s.cfg.Token == "" {
 			s.log.Error("token 未配置，拒绝一切请求（fail-closed）：请在配置中设置 token 后重启 agentd",
 				"remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			writeUnauthorized(w, r)
 			return
 		}
 		// 先 Bearer：CLI 是最高频的调用方，且这条路径不碰库
@@ -369,7 +369,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if sess == nil {
 			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method,
 				"path", r.URL.Path, "reason", reason)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			writeUnauthorized(w, r)
 			return
 		}
 		s.refreshSession(sess)
@@ -384,6 +384,49 @@ func (s *Server) auth(next http.Handler) http.Handler {
 //   - ok: 头部存在且前缀为 "Bearer "（token 本身可为空，由调用方与配置比较）
 func bearerToken(r *http.Request) (string, bool) {
 	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// unauthorizedPage 是浏览器直接访问 agentd 而没有会话 cookie 时看到的页面。
+//
+// 为什么不直接返回裸 JSON 401：浏览器会把它当成一段纯文本显示，用户看到的是
+// 一个孤零零的 {"error":"未授权"}，无从判断是自己没登录、还是服务坏了。
+// 说明页把「怎么拿入口」直接写出来，是这里唯一不会把人引向错误排查方向的做法。
+const unauthorizedPage = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>handoff：需要登录</title></head>
+<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.7">
+<h1>需要登录</h1>
+<p>agentd 工作正常，但这个浏览器还没有有效会话。控制台入口需要一张一次性 ticket。</p>
+<h2>怎么拿入口</h2>
+<ul>
+<li>命令行：<code>handoff console</code>，它会签一张 ticket 并给出可直接打开的链接。</li>
+<li>桌面端：直接打开 handoff 桌面应用，它会自动完成这一步。</li>
+</ul>
+</body></html>
+`
+
+// wantsHTML 报告请求方是否更希望拿到 HTML。
+//
+// 判据刻意从严：只有 Accept 里**显式**出现 text/html 才算。浏览器地址栏发起的
+// 导航一定带它；而 fetch/XHR、CLI、`*/*` 都不带，会走原有 JSON 分支——
+// 那些调用方的错误处理都按 JSON 写的，给它们 HTML 会让整条错误链失效。
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
+// writeUnauthorized 按调用方偏好输出 401。
+//
+// 注意：无论走哪个分支，**状态码恒为 401**。不要因为返回了 HTML 就改成 200，
+// 那会让监控与前端的鉴权拦截器同时失效。
+func writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, unauthorizedPage)
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 }
 
 // handleStatus 返回本 agentd 的可用性与身份信息（handoff status 的数据源）。
