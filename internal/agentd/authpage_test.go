@@ -40,6 +40,9 @@ func TestUnauthenticatedHTMLGetsGuidancePage(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("Content-Type = %q，want text/html", ct)
 	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("说明页 Cache-Control = %q，want no-store（401 页面不该被缓存）", cc)
+	}
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), "handoff console") {
 		t.Errorf("说明页没写清怎么拿入口，body = %q", b)

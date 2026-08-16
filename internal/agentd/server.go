@@ -411,7 +411,7 @@ const unauthorizedPage = `<!doctype html>
 // 导航一定带它；而 fetch/XHR、CLI、`*/*` 都不带，会走原有 JSON 分支——
 // 那些调用方的错误处理都按 JSON 写的，给它们 HTML 会让整条错误链失效。
 func wantsHTML(r *http.Request) bool {
-	return strings.Contains(r.Header.Get("Accept"), "text/html")
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
 }
 
 // writeUnauthorized 按调用方偏好输出 401。

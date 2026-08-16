@@ -96,13 +96,18 @@ func TestSPARejectsNonGet(t *testing.T) {
 	}
 }
 
-// 目录穿越必须被拒。fs.FS 本身不接受 .. ，但回落逻辑不能把它变成 200。
+// 目录穿越必须被拒。fs.FS 本身不接受 .. ，但回落逻辑不能把它变成 200
+// 直达真实文件。断言「回落成 index.html 而非真实文件」：只有这个断言能咬住
+// 「穿越没被挡、直接伺服了真实文件」的回归。
 func TestSPARejectsTraversal(t *testing.T) {
 	h := newSPAHandler(spaTestFS(), testLogger(t))
 	resp := spaGet(t, h, "/../../etc/passwd")
 	b, _ := io.ReadAll(resp.Body)
 	if string(b) == "console.log(1)" {
 		t.Fatal("穿越请求拿到了真实文件")
+	}
+	if string(b) != "<!doctype html><div id=root></div>" {
+		t.Errorf("穿越请求未回落 index.html，实际 = %q", b)
 	}
 }
 
