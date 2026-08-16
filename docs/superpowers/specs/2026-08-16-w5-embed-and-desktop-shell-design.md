@@ -49,12 +49,19 @@ Electron 于 2026-08-11 连同 Orca 一起封存（ADR-0009，在归档分支 `a
 | 约束 | 值 |
 |---|---|
 | agentd / CLI 构建 | `CGO_ENABLED=0`，交叉编译矩阵**不变** |
-| 薄壳框架 | Wails（Go）。版本 v2 还是 v3-beta 见 §4.2，**必须实跑后定，不凭文档拍** |
-| Linux 基线 | Ubuntu 22.04 / Debian 12（`webkit2gtk-4.1`） |
-| 前端构建命令 | `npm ci` + `npm run build`（= `tsc -b && vite build`），产物在 `web/dist/` |
+| 薄壳框架 | **Wails v3（beta.8）**——2026-08-16 P1 探针实跑后裁决，见 §4.2 |
+| Linux 基线 | Ubuntu 22.04 / Debian 12（`webkit2gtk-4.1`），**薄壳的 Linux 构建必须显式 `-tags gtk3`**（见下方注） |
+| 前端构建命令（控制台，交付物①） | `npm ci` + `npm run build`（= `tsc -b && vite build`），产物在 `web/dist/` |
+| 前端构建入口（薄壳自带前端） | **必须走 Wails 的 Taskfile**，不得裸调 `npm run build`——v3 的 vite 插件依赖 binding 生成器先产出 bindings |
 | embed 构建标签 | `embedweb` |
 | 二进制释出落点 | `~/.local/bin/handoff`，与 `install.sh` 同一路径 |
 | 资产命名 | 不得与 `install.sh` / 自更新的既有契约冲突（`release.yml:8` 头部注释已警告） |
+
+> **`-tags gtk3` 是承重的，不是可选优化。** Wails v3 的**默认** Linux 后端已经是
+> `gtk4 + webkitgtk-6.0`（`pkg/application/linux_cgo.go:17`），要求 GTK ≥ 4.14，Ubuntu 22.04 上没有；
+> `webkit2gtk-4.1` 只有在 `-tags gtk3` 下才走（`linux_cgo_gtk3.go:18`）。
+> 漏掉这个 tag 的症状是：CI 在新发行版上构建通过，而 22.04 用户拿到的包跑不起来，
+> 且差异不体现在任何一次代码提交里——与 §6.2 锁 `ubuntu-22.04` 而非 `ubuntu-latest` 属同一类陷阱。
 
 ---
 
@@ -112,7 +119,10 @@ SPA handler 挂**内层 `mux`**（即 `s.auth` 之后），不挂 `root`。理�
 
 - Linux 上**两家用的是同一个 webview**（WebKitGTK），同样撞 4.0/4.1 ABI 分裂，同样必须「在要支持的最老发行版上构建」。
 - 打包能力平手：deb / rpm / AppImage 两家都有。
-- 三平台都要原生 runner，交叉编译都不可行。
+- ~~三平台都要原生 runner，交叉编译都不可行。~~ **2026-08-16 P1 探针证伪，作废。**
+  实测只有 Linux 成立：Windows 产物能从 macOS 直接交叉编译（`CGO_ENABLED=0` + `-H windowsgui`），
+  Linux 因 webkit2gtk 走 cgo 而不能。详见 §6.2 与[探针报告 §4](2026-08-16-w5b-p1-wails-probe-report.md)。
+  这条作废**不影响本节的选型结论**——它原本就是「两家平手」的项，作废后依然平手。
 
 **真正的差别在于薄壳并不只是「开个窗口」**——它必须完成鉴权握手：读 `~/.handoff/config.yaml` 拿监听地址与主令牌 → `POST /api/auth/tickets` → 打开 `/console?ticket=…`。
 
@@ -125,11 +135,23 @@ Tauri 唯一明显更强的是生态成熟度与自动更新——但**自动更
 
 **记账**：Tauri v2 已 GA，Wails v3 在 2026-08 仍是 beta（桌面 API 已稳定）。这是选 Wails 付出的代价，明确记录，不粉饰。
 
-### 4.2 Wails 版本：v2 还是 v3
+### 4.2 Wails 版本：裁决为 **v3（beta.8）**
 
-**不在本文裁决，必须实跑后定。** v3 的多窗口与 Go services 模型更贴合，但 2026-08 仍是 beta；v2 稳定但架构较老。
+**2026-08-16 P1 探针实跑后裁决**，完整证据见[探针报告](2026-08-16-w5b-p1-wails-probe-report.md)。
 
-判据（按重要性）：三平台能否都构建出可运行产物 > 原生目录对话框是否可用 > 托盘/菜单是否可用 > 打包器产物是否合格。plan 的第一个 task 就是这个探针，**探针不过不进入后续 task**。
+**决定性理由只有一条：v2 没有可用的系统托盘。**
+`pkg/menu/tray.go` 里 `TrayMenu` 类型和 `internal/menumanager` 的整套管理逻辑都在，但
+`options.App` 没有 Tray 字段、menumanager 之外**零调用者**、三平台 frontend 实现里**没有任何托盘渲染代码**——
+是一段死代码，不是「多写点胶水就能接上」。而 §4.3 把托盘定为承重（关窗不停 agentd 之后，
+它是用户唯一还能找回这个程序的入口）。v3 有三平台各自的原生托盘实现，实测在 macOS 上
+能创建出带真实屏幕矩形的 `NSStatusItem`。
+
+macOS 上 v3 的四项（构建 / 应用菜单 / 原生目录对话框 / 托盘）**全过**。
+
+**代价照旧记账**：v3 仍是 beta（beta.8）。**退路不是「退回 v2 裸用」**——v2 满足不了 §4.3——
+而是「v2 + 第三方 systray 库」，即给薄壳引入一个 Wails 之外的原生依赖。这条写进 plan 的风险栏。
+
+**仍未验的（不许当成通过）**：Linux 与 Windows 的构建与运行、托盘的视觉确认。见探针报告 §6 与本文 §8。
 
 ### 4.3 启动序列
 
@@ -224,11 +246,21 @@ Tauri 唯一明显更强的是生态成熟度与自动更新——但**自动更
 
 ### 6.2 薄壳的三条原生 runner
 
-| 平台 | runner | 产物 |
-|---|---|---|
-| Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**） | AppImage + deb |
-| macOS | `macos-latest`（搭现有签名公证 job） | 签名公证过的 `.app` / dmg |
-| Windows | `windows-latest` | 安装包 |
+| 平台 | runner | 产物 | 为什么是原生 runner |
+|---|---|---|---|
+| Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**），构建带 `-tags gtk3` | AppImage + deb | **编译就必须原生**：webkit2gtk 经 cgo，`CGO_ENABLED=0` 交叉编译编不过（实测） |
+| macOS | `macos-latest`（搭现有签名公证 job） | 签名公证过的 `.app` / dmg | **签名与公证只能在 macOS 上做**，与能否交叉编译无关 |
+| Windows | `windows-latest` | 安装包 | **编译不需要它**（实测可从 macOS 交叉编出 GUI exe），保留它是为了**运行验证**与安装包制作 |
+
+关于 Windows 那一行：P1 探针实测 `GOOS=windows CGO_ENABLED=0 go build -tags production -ldflags="-w -s -H windowsgui"`
+在 macOS 上直接产出 10.3MB PE32+ GUI exe（少了 `-H windowsgui` 会得到 console 子系统的 exe，会弹黑框）。
+但**「能编出来」不等于「能跑」**——该产物没有在 Windows 上运行过。
+因此本表**保留** Windows runner：拿到真机运行证据之前不要把它去掉。
+
+另记：Wails v3 自带官方交叉编译方案 `internal/commands/build_assets/docker/Dockerfile.cross`
+（Zig + macOS SDK + 内置 mingw，覆盖 darwin/linux/windows × amd64/arm64）。
+它的 Linux 基线是 Debian 13 + GTK4，与本文 §2 锁的 22.04 基线**不一致**，
+所以**不直接采用**，只作为将来若要收敛 runner 数量时的备选，且届时必须重验 §2 基线。
 
 Linux 必须锁 `ubuntu-22.04` 而非 `ubuntu-latest`：AppImage 要「在最老的目标发行版上构建」，`ubuntu-latest` 会随 GitHub 滚动，某天静默把 glibc 基线抬高，症状是老发行版用户突然跑不起来——且这个变化不会体现在任何一次代码提交里。
 
@@ -255,12 +287,17 @@ Linux 必须锁 `ubuntu-22.04` 而非 `ubuntu-latest`：AppImage 要「在最老
 
 以下四条**不能靠推理或读文档拍板**，plan 里各自是独立 task，探针不过就不进入依赖它的后续 task：
 
-| # | 探什么 | 在哪探 | 不过的后果 |
-|---|---|---|---|
-| P1 | Wails v2/v3 能否在三平台各构建出可运行产物；原生目录对话框、托盘、菜单是否可用 | mac + Linux（Ubuntu 22.04）+ Windows | 选型作废，退回重裁 |
-| P2 | 从 `.app` 释出到 `~/.local/bin/` 的**已公证**二进制能否通过 Gatekeeper | 真 mac | §5.4 的签名顺序方案作废，须改为 bundle 内运行 |
-| P3 | AppImage 在非 Ubuntu 发行版（至少 Fedora 40+、Arch）能否运行 | 真 Linux | Linux 基线判断有误，须重定 |
-| P4 | 薄壳拉起 agentd 后，关闭薄壳窗口时执行者是否存活 | 任一平台 | §4.3 的承重属性被破坏，须改进程组处理 |
+**P1 已于 2026-08-16 完成 mac 半边**（详见[探针报告](2026-08-16-w5b-p1-wails-probe-report.md)），
+它裁决了 §4.2 的选型，并推翻了 §4.1、§2 的两处表述。Linux / Windows 半边仍未验，逐项状态见下表。
+
+| # | 探什么 | 在哪探 | 不过的后果 | 状态 |
+|---|---|---|---|---|
+| P1-mac | v3 能否构建出可运行产物；原生目录对话框、托盘、菜单是否可用 | 真 mac | 选型作废，退回重裁 | ✅ **过**（构建 15.5s / 9.0MB；对话框实测弹出；托盘有真实 `NSStatusItem` 矩形）。托盘的**视觉**确认仍欠 |
+| P1-linux | 同上，且构建须带 `-tags gtk3` | Linux（Ubuntu 22.04） | 选型作废，退回重裁 | ⛔ **未验**：本机 Docker Hub 不可达、且无 Linux 机器。探针 `Dockerfile.linux-probe` 已写好待跑 |
+| P1-win | 交叉编出的 exe 能否运行；托盘/对话框是否可用 | 真 Windows | §6.2 的 Windows 行须改回原生构建 | ⛔ **未验**：无 Windows 机器。**编译侧已过** |
+| P2 | 从 `.app` 释出到 `~/.local/bin/` 的**已公证**二进制能否通过 Gatekeeper | 真 mac | §5.4 的签名顺序方案作废，须改为 bundle 内运行 | ⛔ 未验（需真实 Developer ID + 向 Apple 提交公证，属外部可见操作，须用户授权） |
+| P3 | AppImage 在非 Ubuntu 发行版（至少 Fedora 40+、Arch）能否运行 | 真 Linux | Linux 基线判断有误，须重定 | ⛔ 未验（同 P1-linux） |
+| P4 | 薄壳拉起 agentd 后，关闭薄壳窗口时执行者是否存活 | 任一平台 | §4.3 的承重属性被破坏，须改进程组处理 | ⛔ 未验（须薄壳实现到能拉起 agentd）。**注**：探针只验证了「关掉最后一个窗口时薄壳进程本身不退」，那不是 P4 |
 
 P4 尤其重要：它是 B36/B59 一路保护下来的招牌属性，薄壳是第一个可能破坏它的新宿主。
 
