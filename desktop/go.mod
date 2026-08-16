@@ -2,7 +2,10 @@ module github.com/Xsxdot/handoff/desktop
 
 go 1.26.1
 
-require github.com/wailsapp/wails/v3 v3.0.0-beta.8
+require (
+	github.com/Xsxdot/handoff v0.0.0-00010101000000-000000000000
+	github.com/wailsapp/wails/v3 v3.0.0-beta.8
+)
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect
@@ -13,6 +16,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/Xsxdot/handoff => ../
