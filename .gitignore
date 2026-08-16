@@ -14,3 +14,6 @@ prototypes/**/dist/
 # B95 形态确认用的 fork 副本（临时工作区，不入库；回流见 finishing-a-development-branch）
 prototypes/b95-project-edit/
 prototypes/b107-file-tree-menu/
+
+# 前端构建产物经 embedweb 标签嵌入，不入库（npm run build 的落盘目标）
+internal/webui/dist/

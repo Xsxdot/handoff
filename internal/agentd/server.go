@@ -43,6 +43,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/webui"
 	"github.com/coder/websocket"
 )
 
@@ -237,13 +238,18 @@ func (s *Server) SetManager(m *Manager) {
 //   - DELETE /api/auth/sessions/{id}    吊销指定会话
 //   - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie
 //   - GET  /console                     兑换 ticket → Set-Cookie → 302 到 /（无主令牌/cookie 凭据）
+//   - GET/HEAD /（含深链接）             控制台 SPA 兜底：命中文件发文件，否则回落 index.html
+//     （/api、/ws 的未命中经前缀分派保持原生 404/405，不被 SPA 吞掉，见下方注册处）
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/status", s.handleStatus)
-	mux.HandleFunc("GET /api/footprint", s.handleFootprint)
-	mux.HandleFunc("GET /api/reclaim", s.handleReclaimList)
-	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
-	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
+	// api 持有全部 /api 与 /ws 路由（无兜底）。未命中的 /api、/ws 请求经下面
+	// 的 mux 前缀分派回到这里，由 ServeMux 保持原样的 404 / 405，而不是被
+	// SPA 兜底回落成 HTML（为什么必须这样，见 SPA 注册处的注释）。
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/status", s.handleStatus)
+	api.HandleFunc("GET /api/footprint", s.handleFootprint)
+	api.HandleFunc("GET /api/reclaim", s.handleReclaimList)
+	api.HandleFunc("GET /api/tasks", s.handleListTasks)
+	api.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
 	//（W3a §5.1 透明路由，见 taskroute.go）。render 是流式也走同一条搬运。
 	// 合并 B102：main 侧按原样注册、w4 侧统一用 byTask 包一层并新增 frames，
@@ -257,44 +263,61 @@ func (s *Server) Handler() http.Handler {
 	// s.mgr.Reclaim 的 store.ErrNotFound → 404，什么也回收不了；包上 byTask 才
 	// 会把请求转发到真正持有那个 worktree 的机器。「资源只在本机」恰恰是
 	// **要转发**的论据，不是不转发的论据。
-	mux.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
-	mux.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
-	mux.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
-	mux.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))
-	mux.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
-	mux.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
-	mux.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
-	mux.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
-	mux.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
-	mux.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
-	mux.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
-	mux.HandleFunc("POST /api/tasks/{id}/run", s.byTask(s.handleTaskRun))
-	mux.HandleFunc("POST /api/projects", s.handleProjectAdd)
-	mux.HandleFunc("GET /api/projects", s.handleProjectList)
-	mux.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
-	mux.HandleFunc("GET /api/machines", s.handleMachines)
-	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
-	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
-	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
-	mux.HandleFunc("POST /api/workspaces/entry", s.handleWorkspaceEntryCreate)
-	mux.HandleFunc("POST /api/workspaces/entry/copy", s.handleWorkspaceEntryCopy)
-	mux.HandleFunc("PATCH /api/workspaces/entry", s.handleWorkspaceEntryRename)
-	mux.HandleFunc("DELETE /api/workspaces/entry", s.handleWorkspaceEntryDelete)
-	mux.HandleFunc("GET /api/workspaces/search", s.handleWorkspaceSearch)
+	api.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
+	api.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
+	api.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
+	api.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))
+	api.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
+	api.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
+	api.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
+	api.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
+	api.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
+	api.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
+	api.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
+	api.HandleFunc("POST /api/tasks/{id}/run", s.byTask(s.handleTaskRun))
+	api.HandleFunc("POST /api/projects", s.handleProjectAdd)
+	api.HandleFunc("GET /api/projects", s.handleProjectList)
+	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
+	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
+	api.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
+	api.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
+	api.HandleFunc("POST /api/workspaces/entry", s.handleWorkspaceEntryCreate)
+	api.HandleFunc("POST /api/workspaces/entry/copy", s.handleWorkspaceEntryCopy)
+	api.HandleFunc("PATCH /api/workspaces/entry", s.handleWorkspaceEntryRename)
+	api.HandleFunc("DELETE /api/workspaces/entry", s.handleWorkspaceEntryDelete)
+	api.HandleFunc("GET /api/workspaces/search", s.handleWorkspaceSearch)
 	// 注意：reveal 故意不接 forwardIfRequested——转发正是这个端点要拒绝的那件事
-	mux.HandleFunc("POST /api/workspaces/reveal", s.handleWorkspaceReveal)
-	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
-	mux.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
-	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
-	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
-	mux.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
-	mux.HandleFunc("POST /api/update", s.handleUpdate)
-	mux.HandleFunc("GET /ws/events", s.handleEvents)
-	mux.HandleFunc("GET /ws/pty", s.handlePtyWS)
-	mux.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
-	mux.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
-	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	api.HandleFunc("POST /api/workspaces/reveal", s.handleWorkspaceReveal)
+	api.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	api.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
+	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
+	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
+	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
+	api.HandleFunc("POST /api/update", s.handleUpdate)
+	api.HandleFunc("GET /ws/events", s.handleEvents)
+	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
+	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
+	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
+	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
+	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
+
+	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
+	//
+	// 挂内层 mux 而不是 root：控制台页面本身要求 cookie，走 s.auth；
+	// /console 是唯一免鉴权入口（ticket 本身就是它的凭据），它注册在 root 上。
+	//
+	// 为什么 /api、/ws 必须在这里显式分派给 api，而不是让 SPA 兜底吞掉未命中：
+	// ServeMux 的 "/" 通配只会输给**已注册**的更长前缀——`GET /api/status` 这类
+	// 是精确叶子，拦不住 `/api/no-such-endpoint`，后者会一路落到 "/" 被回落成
+	// HTML，前端把 HTML 喂给 JSON.parse，报错与真实原因完全无关。把 /api/、/ws/
+	// 前缀转给无兜底的 api 子 mux，未命中就保持 ServeMux 的原生裁决：路径不认
+	// 识 → 404，路径认识但方法不对 → 405。这条边界是承重的，见 webhandler.go
+	// 的文件头。
+	mux := http.NewServeMux()
+	mux.Handle("/api/", api)
+	mux.Handle("/ws/", api)
+	mux.Handle("/", newSPAHandler(webui.FS(), s.log))
 
 	// /console 是唯一不经主令牌/cookie 的路由——ticket 本身就是它的凭据，
 	// 因此它挂在 auth 之外、hostGuard 之内。Go 1.22 的 mux 按精确度选择，
@@ -303,6 +326,10 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/", s.auth(mux))
 	root.HandleFunc("GET /console", s.handleConsole)
 
+	// 这份二进制有没有前端，是「控制台打不开」时第一个要排除的可能。
+	// 不打这一行的话，运维只能靠猜：是构建时漏了 -tags embedweb，
+	// 还是运行时路由坏了，两者现象完全一样。
+	s.log.Info("控制台前端", "embedded", webui.Embedded())
 	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
 	return s.hostGuard(root)
 }
@@ -328,7 +355,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if s.cfg.Token == "" {
 			s.log.Error("token 未配置，拒绝一切请求（fail-closed）：请在配置中设置 token 后重启 agentd",
 				"remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			writeUnauthorized(w, r)
 			return
 		}
 		// 先 Bearer：CLI 是最高频的调用方，且这条路径不碰库
@@ -342,7 +369,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if sess == nil {
 			s.log.Warn("鉴权失败", "remote_addr", r.RemoteAddr, "method", r.Method,
 				"path", r.URL.Path, "reason", reason)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
+			writeUnauthorized(w, r)
 			return
 		}
 		s.refreshSession(sess)
@@ -357,6 +384,49 @@ func (s *Server) auth(next http.Handler) http.Handler {
 //   - ok: 头部存在且前缀为 "Bearer "（token 本身可为空，由调用方与配置比较）
 func bearerToken(r *http.Request) (string, bool) {
 	return strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// unauthorizedPage 是浏览器直接访问 agentd 而没有会话 cookie 时看到的页面。
+//
+// 为什么不直接返回裸 JSON 401：浏览器会把它当成一段纯文本显示，用户看到的是
+// 一个孤零零的 {"error":"未授权"}，无从判断是自己没登录、还是服务坏了。
+// 说明页把「怎么拿入口」直接写出来，是这里唯一不会把人引向错误排查方向的做法。
+const unauthorizedPage = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>handoff：需要登录</title></head>
+<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.7">
+<h1>需要登录</h1>
+<p>agentd 工作正常，但这个浏览器还没有有效会话。控制台入口需要一张一次性 ticket。</p>
+<h2>怎么拿入口</h2>
+<ul>
+<li>命令行：<code>handoff console</code>，它会签一张 ticket 并给出可直接打开的链接。</li>
+<li>桌面端：直接打开 handoff 桌面应用，它会自动完成这一步。</li>
+</ul>
+</body></html>
+`
+
+// wantsHTML 报告请求方是否更希望拿到 HTML。
+//
+// 判据刻意从严：只有 Accept 里**显式**出现 text/html 才算。浏览器地址栏发起的
+// 导航一定带它；而 fetch/XHR、CLI、`*/*` 都不带，会走原有 JSON 分支——
+// 那些调用方的错误处理都按 JSON 写的，给它们 HTML 会让整条错误链失效。
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+}
+
+// writeUnauthorized 按调用方偏好输出 401。
+//
+// 注意：无论走哪个分支，**状态码恒为 401**。不要因为返回了 HTML 就改成 200，
+// 那会让监控与前端的鉴权拦截器同时失效。
+func writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, unauthorizedPage)
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "未授权"})
 }
 
 // handleStatus 返回本 agentd 的可用性与身份信息（handoff status 的数据源）。

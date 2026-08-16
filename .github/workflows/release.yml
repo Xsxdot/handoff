@@ -45,6 +45,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，两个必须同步；写死 '24' 而非 lts/*
+      # 或省略：让构建结果随时间漂移、静默变化是 release 流水线不能接受的事。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端并放进 embed 目录
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          # 产物缺 index.html 时必须当场失败：让它继续跑下去只会得到一个
+          # 编译通过但页面 404 的二进制，而那要等到用户手上才暴露
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+
       - name: 交叉编译并打包
         env:
           GOOS: ${{ matrix.goos }}
@@ -62,6 +81,7 @@ jobs:
             BIN=handoff
           fi
           go build -trimpath \
+            -tags embedweb \
             -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
             -o "${BIN}" .
           if [ "${GOOS}" = "windows" ]; then
@@ -69,6 +89,21 @@ jobs:
           else
             tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" "${BIN}"
           fi
+      # 这道门是承重的：go:embed 一个只有 index.html 的空壳目录也能编译通过，
+      # 光看「go build 成功」不代表前端真的进去了。这里直接以原生平台跑带标签
+      # 的 webui 测试，确认嵌入的是真产物。
+      #
+      # 为什么显式置空 GOOS/GOARCH：matrix 的 GOOS/GOARCH 只挂在上面「交叉编译
+      # 并打包」那个 step 的 env 上，本 step 默认不继承；但一旦有人把 matrix env
+      # 提升成 job 级，本 step 就会继承 GOOS=linux/windows，`go test` 会去交叉
+      # 编译测试二进制再试图在本平台执行，当场 exec format error。显式置空让
+      # 本 step 永远在 runner 原生平台跑（go 把空 GOOS/GOARCH 视为宿主平台），
+      # 而不是依赖 env 作用域这种脆弱的巧合。测试只读嵌入内容，与交叉编译无关。
+      - name: 验证产物真的含前端
+        env:
+          GOOS: ''
+          GOARCH: ''
+        run: CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_${{ matrix.goos }}_${{ matrix.goarch }}
@@ -102,6 +137,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，两个必须同步（理由同 build-unix）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端并放进 embed 目录
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          # 产物缺 index.html 时必须当场失败：让它继续跑下去只会得到一个
+          # 编译通过但页面 404 的二进制，而那要等到用户手上才暴露
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+      # 前端必须在这之前构建好：前端经 go:embed 编进二进制（-tags embedweb），
+      # 一旦签名（codesign 改字节）或公证之后才补嵌，签名/票据就与最终字节不符。
+      # 所以前端构建排在「构建、签名、公证并打包」之前是硬顺序，不是风格选择。
 
       # secrets 缺失即硬失败，不产出未签名资产。
       # 这与 super-dev 的策略相反（它未配置时仍出未签名包，那是给 desktop 的
@@ -174,6 +229,7 @@ jobs:
             # 目录名带 arch、文件名固定 handoff：tar 里的文件名是与 install.sh
             # 及 extractBinary 的契约，不能带 arch 后缀
             GOOS=darwin GOARCH="$arch" go build -trimpath \
+              -tags embedweb \
               -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
               -o "build/${arch}/handoff" .
             # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
@@ -243,6 +299,11 @@ jobs:
             # 打包必须在签名之后：签名会改字节，先算校验和再签就全错
             tar czf "handoff_${TAG}_darwin_${arch}.tar.gz" -C "build/${arch}" handoff
           done
+      # 承重门（理由同 build-unix）：go:embed 一个只有 index.html 的空壳目录也能
+      # 编译通过，光看构建成功不代表前端进去了。darwin job 本就在原生平台跑，
+      # 无 matrix 交叉编译，go test 直接以 runner 原生架构执行。
+      - name: 验证产物真的含前端
+        run: CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_darwin
