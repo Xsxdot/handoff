@@ -8,8 +8,10 @@
 //   - POST /api/auth/logout       吊销当前 cookie 会话并清除 cookie
 //
 // 边界：
-//   - **不托管前端**：/console 的 302 目标固定为 /，本轮 agentd 尚未 embed 任何页面，
-//     / 返回 404 是预期结果。不得为了「让页面别 404」而塞占位首页
+//   - **本文件不负责 / 上有什么**：302 的目标固定是 /，至于 / 返回什么由
+//     server.go 挂在 / 上的 SPA handler（webui）决定。W5a 之后 / 伺服的是真实控制台；
+//     不带 embedweb 标签构建时是一份说明用途的 stub 页。两种情况本文件都不需要知道，
+//     也不得为了迁就其中一种去改 302 的目标
 //   - 不判断 Host（hostguard.go 已在更外层做完），不做会话续期（auth.go 的事）
 //   - 不读 X-Forwarded-Proto：cookie 的 Secure 与 URL 的 scheme 只按 r.TLS 判定，
 //     因为上游可能是一台不可信中转，让它决定安全属性方向是反的
@@ -181,7 +183,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		Secure: r.TLS != nil,
 		MaxAge: int(time.Until(sess.ExpiresAt).Seconds()),
 	})
-	// 302 到 /：本轮不托管前端，/ 返回 404 是预期结果（cookie 此时已设好）
+	// 302 到 /：cookie 此时已设好，/ 上是控制台还是 stub 说明页由 webui 决定，与本处无关
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
