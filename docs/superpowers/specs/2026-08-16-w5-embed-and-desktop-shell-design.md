@@ -184,7 +184,35 @@ macOS 上 v3 的四项（构建 / 应用菜单 / 原生目录对话框 / 托盘�
 
 **遗留的不对称，与 B108 一致**：薄壳跑在人所在的机器上，选出来的是**本机**路径。给远程开发机加项目时这个路径没有意义，远程仍然只能粘贴。这与 B108「Reveal in Finder 只做本机半边」是同一个不对称，已被接受。
 
-### 4.6 版本错配
+### 4.6 Windows 薄壳的定位：**待用户裁决**，W5b 先不做
+
+写 plan 时核实 §4.3 的启动序列，发现 Windows 这一路在架构上是断的。三条实证：
+
+| 事实 | 出处 |
+|---|---|
+| `service.New` 对 Windows **直接返回错误**，不返回 Manager | `internal/service/service.go:76`，报文：「暂不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成（backlog B37），托管起来也跑不了任务」 |
+| B37（prochost 的 Windows 实现）是 **🚫 已评估·暂不做** | backlog B37，附[成本清单](2026-08-10-handoff-windows-port-cost.md)。不做的依据是一次真机探路 + 一次全仓静态扫描 |
+| `handoff` 二进制本身**能**为 Windows 编译 | 实测 `GOOS=windows CGO_ENABLED=0 go build .` 出 28.8MB exe |
+
+于是 §4.3 的三分支在 Windows 上第二支走不通：「有配置、agentd 没跑 → 复用 `internal/service` 装并拉起」
+拿不到 Manager。更根本的是，即使 agentd 起来了，**Windows 上也跑不了任务**（B37）——
+那么 Windows 薄壳唯一说得通的形态是**纯协调者**：本机 agentd 只做控制台伺服与远程汇总，
+执行全部落在远程 target 上。这与「双击就能用」的默认心智不同，也牵动首次引导的分支设计。
+
+**这不是能在 plan 里顺手定的事**，它决定 §6.2 的 Windows runner、§6.3 的 Windows 安装包、
+§4.4 引导的分支数量都要不要做。三个候选：
+
+| 选项 | 含义 |
+|---|---|
+| A（W5b 当前采用的假设） | **Windows 薄壳暂不做**，W5b 只出 macOS + Linux 资产。与 B37「已评估·暂不做」一致 |
+| B | 做 Windows 薄壳，但明确定位为**纯协调者**，引导里就不出现「本机执行」这一支 |
+| C | 先做 B37（Windows prochost），再谈薄壳 |
+
+**W5b 按 A 推进**，理由是 A 与仓库既有决策（B37）一致，且选 A 不会浪费任何工作——
+薄壳代码本身是跨平台的，将来若改选 B，增量只是构建链与引导分支，不需要返工已写的部分。
+**这条假设需要用户确认**；确认前不要把 Windows 资产写进 release 流水线。
+
+### 4.7 版本错配
 
 前端由 agentd 伺服，薄壳只是窗口 + 引导 + 对话框。因此薄壳与 agentd 版本不一致时**基本无害**：用户看到的界面永远来自 agentd 自己那一份。这是把薄壳做薄换来的红利，应当保持——**不要往薄壳里放业务逻辑**。
 
@@ -250,7 +278,7 @@ macOS 上 v3 的四项（构建 / 应用菜单 / 原生目录对话框 / 托盘�
 |---|---|---|---|
 | Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**），构建带 `-tags gtk3` | AppImage + deb | **编译就必须原生**：webkit2gtk 经 cgo，`CGO_ENABLED=0` 交叉编译编不过（实测） |
 | macOS | `macos-latest`（搭现有签名公证 job） | 签名公证过的 `.app` / dmg | **签名与公证只能在 macOS 上做**，与能否交叉编译无关 |
-| Windows | `windows-latest` | 安装包 | **编译不需要它**（实测可从 macOS 交叉编出 GUI exe），保留它是为了**运行验证**与安装包制作 |
+| Windows | `windows-latest` | 安装包 | **编译不需要它**（实测可从 macOS 交叉编出 GUI exe），保留它是为了**运行验证**与安装包制作。⚠ **整行按 §4.6 暂缓**，用户裁决 Windows 定位前不要接进流水线 |
 
 关于 Windows 那一行：P1 探针实测 `GOOS=windows CGO_ENABLED=0 go build -tags production -ldflags="-w -s -H windowsgui"`
 在 macOS 上直接产出 10.3MB PE32+ GUI exe（少了 `-H windowsgui` 会得到 console 子系统的 exe，会弹黑框）。
