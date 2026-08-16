@@ -14,6 +14,7 @@
 - 2026-08-16 Task 5（前端构建接进 release）完成，commit 092a3b5b。**发现 Task 1 遗留缺陷并修复**：webui_test.go 缺 build tag，带 embedweb 标签跑 `go test ./internal/webui/...`（release 流水线的验证门）会跑 TestStubFSHasHonestIndex 断言 Embedded()==false 必然失败。拆出 stub_test.go（//go:build !embedweb）放该用例，webui_test.go 只留 TestFSNeverNil。审查 APPROVED（审查员变异验证：删掉 stub_test.go 的 tag → 带标签 test FAIL「默认构建不应报告已嵌入前端」，证明 tag 必要；空壳门真实性验证：dist 只放 index.html → embed_test FAIL「嵌入产物只有 1 个文件」，证明验证步骤不空跑）。scripts/build-release-local.sh 端到端通过（19M 产物、工作区干净）；release.yml 既有步骤一字未动（61+/0-）。协调者独立复核：yaml 合法、grep tags embedweb=5、GOOS/GOARCH 置空方案实测可跑、无标签 go build/go test 全绿。Minor 记账 3 条：M17 build-unix 验证步骤在「交叉编译并打包」后而非前（功能等价仍挡在 upload 前，仅省 fail-fast 收益）；M18 脚本脏检查 grep 豁免空转（dist 已被 ignore 不会出现在 porcelain，防御性写法无害）；M19 Node 版本「同一来源」靠注释约定而非字面单一来源（.nvmrc 与 CI 各硬编码 24）。
 - 2026-08-16 终审（相对 5a4031be 完整 diff）：清单 9 项中 8 项直接 PASS，第 2 项（脚本自检）因 ledger 未提交临时失败，提交后即绿。Minor triage 19 条：修 4 条（M1/M4/M14/M16），其余留。新发现 1 条承重（ledger Task 5 行 + M17-M19 未提交）。终裁 NEEDS-FIX。修复波一次完成：ca7e46b6（M14 ToLower 加固、M16 no-store 断言、M4 穿越断言改回落 index.html、M1 声明位置注释）+ fe2bfcfd（ledger 补 Task 5 行 + M17/M18/M19）。范围复审 APPROVED（M4 新断言经变异验证：删 path.Clean 仍绿属测试环境固有、回落改 404 会红，钉的是「穿越必须回落 index.html」行为契约；M16 删除服务端 no-store 行即红；提交信息与内容相符）。
 - 2026-08-16 协调者两处补修（评审指出）完成，commit 858f66ab。**补修 1（计划自己的错）**：scripts/build-release-local.sh 末尾自检原为「工作区绝对干净」，仓库本来就有未提交改动（如正在写的 ledger）时构建没碰过它们却会误报，诱使人藏文件骗过检查（曾逼出把 ledger mv 出仓库的坏命令）。改为构建前后 snapshot 比对（BEFORE 在 trap 后取一次、末尾取 AFTER 比对，diff 显示差异），语义回到「构建不得改变工作区状态」。协调者独立实跑两场景：干净树通过、带未提交 ledger 改动通过（旧写法必误报的场景）。**补修 2**：webroute_test.go 补 TestApiMethodMismatchStays405——GET 打只注册了 POST 的 /api/workspaces/reveal 应保持 405（前缀分派关键收益）且响应体非 HTML；注释说明与 TestSPARejectsNonGet 的区别（SPA 自拒 vs 完整路由栈方法裁决）。协调者独立变异验证：注释掉 `mux.Handle("/api/", api)` → 用例红（200 want 405）；还原变绿。复审 APPROVED。Minor 记账 2 条：M20 脚本末尾「工作区干净」文案在新语义下略不准（实为「状态未变」）；M21 新用例只查 `<html` 未查 `<!doctype html`（405 为原生纯文本 body，`<html` 判定已足够）。
+- 2026-08-16 修 M9 + M20（评审收尾指出），commit 498451a6。M9：webhandler.go 文件头注释「/api、/ws 由路由层用更精确的模式抢走（Go 1.22 精确前缀优先）」是不实说法——它源自计划里的错误断言，「更精确的模式胜出」只在那个模式存在时才成立，而当时 /api/ 前缀模式并不存在（B109 记录过同型失效模式：被推翻的说法留在文中，下一个人照着重推出同样的错误结论）。改为描述真实机制（前缀分派 mux.Handle("/api/", api) 到无兜底子 mux → 原生 404/405），并写明「为什么不能只靠模式精确度」：agentd 的 /api 路由全是精确路径或带 {id} 参数路径、没有 /api/ 前缀模式，无前缀分派时 GET /api/no-such 唯一匹配的是 "/"。点名 TestUnknownAPIPathStaysJSON 与 TestApiMethodMismatchStays405 两道门。M20：脚本末尾「工作区干净」→「工作区状态未变」。全量闸门绿（build/vet/gofmt 无输出、31 包 go test 通过）。M9/M20 已修闭环。
 
 ## 变异验证记录
 
@@ -45,7 +46,7 @@ Task 5（审查员记录，commit 092a3b5b）：
 - M6: serveIndex 区分 ErrNotExist 与其他错误双文案，轻微多做但更可诊断。
 - M7: spaGet 返回 body 未 Close 且 ReadAll 忽略错误，httptest 场景无实际泄漏。
 - M8: 计划 Task 3 变异 2（注册目标 mux→root）按字面不可行：注册处 root 先于声明是编译错；挪到 root 声明后又是重复 "/" panic。ServeMux 里 `GET /console` 靠模式精确度天然胜过 "/"，变异 2 在任何设计下都不成立。
-- M9: webhandler.go:9-10 注释「/api、/ws 由路由层用更精确的模式抢走（精确前缀优先）」措辞与真实机制（Task 3 的 /api/、/ws/ 前缀分派）不符，建议对齐。
+- M9: webhandler.go 文件头注释「/api、/ws 由路由层用更精确的模式抢走（精确前缀优先）」与真实机制不符——**已修**（commit 498451a6，改为前缀分派机制描述 + 为什么不能只靠模式精确度 + 点名两道测试门）。
 - M10: TestUnknownAPIPathStaysJSON 命名理想化——实际 body 是原生 text/plain 404 非 JSON，断言正确。
 - M11: server.go:317 中间层 mux 命名泛（相对 root/api），靠注释承载职责。
 - M12: TestConsoleTicketRouteNotShadowed 敏感性弱——/console 被删且 SPA 仍在 auth 内时无 cookie 请求 401 仍非 200，测试照样绿；只咬复合情形。
@@ -56,5 +57,5 @@ Task 5（审查员记录，commit 092a3b5b）：
 - M17: build-unix 验证步骤在「交叉编译并打包」后而非需求字面的「打包前」，功能等价（仍挡在 upload-artifact 前），仅损失 ~10s fail-fast。
 - M18: 脚本脏检查的 `grep -v '^?? internal/webui/dist/'` 空转（dist 已被 ignore 不会出现在 porcelain），防御性写法无害。
 - M19: Node 版本「同一来源」靠注释约定而非字面单一来源，.nvmrc 与 CI 各硬编码 24，与需求字面一致。
-- M20: scripts/build-release-local.sh 末尾「工作区干净」文案在新语义（前后比对）下略不准，实为「状态未变」，不影响逻辑。
+- M20: scripts/build-release-local.sh 末尾「工作区干净」文案在新语义（前后比对）下略不准，实为「状态未变」——**已修**（commit 498451a6，改为「工作区状态未变」）。
 - M21: TestApiMethodMismatchStays405 只查 `<html` 未查 `<!doctype html`，与既有用例严格度略不一致；405 为原生纯文本 body，`<html` 判定已足够。
