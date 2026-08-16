@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { ApiError, writeWorkspaceFile } from './client'
+import { ApiError, fetchTasks, writeWorkspaceFile } from './client'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -14,6 +14,42 @@ function stubFetch(status: number, body: unknown) {
     ),
   )
 }
+
+describe('fetchTasks', () => {
+  // 这条钉的是「看板能看见远端机器上正在跑的任务」这件事本身：不带 scope=all
+  // 时 agentd 只回本机任务，跨机任务（含唯一一条 running）永远进不了看板。
+  it('必须带 ?scope=all —— 否则远端机器的任务在看板上完全不存在', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ machines: [], tasks: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchTasks()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/tasks?scope=all')
+  })
+
+  it('拆信封返回裸任务数组，远端任务带 machine 章', async () => {
+    stubFetch(200, {
+      machines: [{ name: '', ok: true }, { name: 'mac-02', ok: true }],
+      tasks: [
+        { id: 'a', state: 'completed', machine: '' },
+        { id: 'b', state: 'running', machine: 'mac-02' },
+      ],
+    })
+    const tasks = await fetchTasks()
+    expect(tasks.map((t) => t.id)).toEqual(['a', 'b'])
+    expect(tasks[1].machine).toBe('mac-02')
+  })
+
+  // 兜底：信封里 tasks 缺失/为 null 时给 []，否则看板会把「加载失败」和
+  // 「一条任务都没有」混成同一种空白。
+  it('tasks 缺失时返回空数组而不是 null', async () => {
+    stubFetch(200, { machines: [] })
+    await expect(fetchTasks()).resolves.toEqual([])
+  })
+})
 
 describe('writeWorkspaceFile', () => {
   it('成功时返回新哈希与新大小', async () => {

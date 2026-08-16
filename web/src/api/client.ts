@@ -39,6 +39,7 @@ import type {
   StopResult,
   Task,
   TaskDetail,
+  TasksResp,
 } from './types'
 
 // ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
@@ -143,9 +144,21 @@ export function fetchStatus(): Promise<StatusResp> {
   return request<StatusResp>('/api/status')
 }
 
-// fetchTasks 取全部任务（GET /api/tasks；空列表返回 [] 而非 null）。
+// fetchTasks 取全部任务（GET /api/tasks?scope=all），拆掉信封只交出任务数组。
+//
+// 为什么恒带 scope=all 而不是留个可选参数：控制台是「本机 agentd 是唯一入口」
+// 模型下的**跨机**看板——左栏计数按 machine 归集、看板卡片印「本机 / mac-02」、
+// 筛选器有机器下拉，整条前端链路本就是按跨机写的。只有这一处取数据时退回了
+// 本机视角，结果是远端机器上跑的任务在界面上根本不存在（看板「进行中」恒空、
+// 树上远端计数恒 0、也就无从点开它的 TUI）。留成可选参数等于把这个坑留着。
+//
+// 代价为零：scope=all 由 agentd 从本机镜像快照拼（tasksfanout.go），**不现场
+// 扇出远端**，所以 2.5s 轮询的快慢与远端可达性解耦，和只查本机一样便宜。
+//
+// 信封里的 machines（每台机器的快照新旧）本函数丢弃：任务流的消费方只要任务。
+// 机器可达性另有 useMachines / 树流的同名字段负责，这里再抄一份只会有两份漂移。
 export function fetchTasks(): Promise<Task[]> {
-  return request<Task[]>('/api/tasks')
+  return request<TasksResp>('/api/tasks?scope=all').then((r) => r.tasks ?? [])
 }
 
 // fetchTaskDetail 取任务详情（GET /api/tasks/{id}）：任务 + 待办工单 + 最近事件，

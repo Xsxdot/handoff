@@ -285,16 +285,27 @@ func machinesSample() MachinesResp {
 // tasksRespSample 返回 TasksResp（?scope=all）的代表性样本。
 //
 // 一台成功一台失败：失败那台照样占一行且带原文，这正是 §5.3 的硬约束。
-// tasks 里给一条本机任务（machine 空串）——远端条目形状同构，只是 machine
-// 由汇总方盖上 target 名。
+// tasks 里本机与远端各一条：远端那条的 machine 由汇总方盖上 target 名。
+//
+// 为什么样本里必须有远端条目而不能只留一条本机任务（曾经如此）：这个信封存在
+// 的全部理由就是「让跨机任务在一份列表里出现」，而 machine 章是消费方分辨它们
+// 的唯一依据。样本里没有远端条目，前端契约测试就无从断言这一栏，跨机任务被整片
+// 漏掉时没有任何一层会变红——控制台看板就这样空了一整轮。
 func tasksRespSample(now time.Time, taskID string) TasksResp {
+	remote := taskSample(now, "9c1f0b47-2f5a-4a6e-8f3b-5d7c1e2a4b90")
+	remote.Machine = "devbox"
+	remote.State = "waiting_review"
+	remote.Name = "B12 远端派发"
 	return TasksResp{
 		Machines: []MachineStatus{
 			{Name: "", Ok: true, FetchedAt: now, Error: ""},
 			{Name: "devbox", Ok: false, FetchedAt: now,
 				Error: "dial tcp 10.0.0.8:7777: connect: connection refused"},
 		},
-		Tasks: []TaskView{{Task: taskSample(now, taskID), Watchers: 1}},
+		Tasks: []TaskView{
+			{Task: taskSample(now, taskID), Watchers: 1},
+			{Task: remote, Watchers: 0},
+		},
 	}
 }
 
