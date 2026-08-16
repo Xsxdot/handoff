@@ -1,0 +1,312 @@
+# W5 打包与发布：agentd 托管前端 + 桌面薄壳（B111）
+
+> 上游：[Web 控制台总方案](2026-08-11-web-console-master-design.md) §表格把 W5 定义为「`go:embed` + 桌面薄壳」。
+> 本文是 W5 的完整设计，并**修正总方案里两处已经过期的前提**（见 §1.2）。
+
+---
+
+## 1. 背景与范围
+
+### 1.1 W5 实际要做什么
+
+总方案给 W5 标的是「接线 / 小」。这个判断**一半成立、一半已经不成立**：
+
+- **「发布」那半边确实已经做完了**，而且不是被 W 线做的——B54 系列（Release 流水线 / `install.sh` / 自更新）、B59（操作者触发更新 + skill 随二进制分发）、B86（CI 验证门 + 签名公证 + Apache-2.0）、B87（proxy + 执行机自拉）。W5 不需要重做任何一件。
+- **「薄壳」那半边不是小活**，见 §1.2。
+
+W5 实际的三个交付物：
+
+| # | 交付物 | 量级 |
+|---|--------|------|
+| ① | agentd 用 `go:embed` 托管前端，`/` 伺服控制台 | 小，真接线 |
+| ② | 桌面薄壳 `handoff-desktop`（Wails，三平台） | 大 |
+| ③ | 构建链：前端构建接进 release、薄壳三平台原生 runner + 签名公证 + 资产 | 中 |
+
+### 1.2 修正两处过期前提
+
+**这一节存在的理由**：B109 记录过一次「已被证伪并标注作废的安全前提，两天后又被原样复述进新 spec」。下面两条是总方案里**当时正确、现在过期**的表述，在这里显式作废，避免后续 spec 再复述。
+
+**① 「薄壳选型（Tauri vs 裸 Electron）届时裁决」（总方案 §282）——选项集已变。**
+Electron 于 2026-08-11 连同 Orca 一起封存（ADR-0009，在归档分支 `archive/desktop-console-2026-08-11` 上），2026-08-16 用户重申「不用翻 electron」。但**封存的是 Electron 这个选型，不是整个薄壳**——ADR-0009 的原话是「agentd 托管的 Web UI，**外加薄壳**」。2026-08-16 裁决：**薄壳要做，用 Wails**（理由见 §4.1）。
+
+**② 「Linux 执行机不需要壳，薄壳只出 macOS/Windows 资产」——作废。**
+这条是本次 brainstorm 中间产生的错误推论，源于把「Linux 执行机」当成了 Linux 用户的全部。用户 2026-08-16 明确：**相当一部分用户的桌面就是 Linux**。薄壳出三平台资产。
+（仍然成立的是另一半：**agentd 与 CLI 本体保持 `CGO_ENABLED=0` 全平台交叉编译，一行不动**，见 §3.1。）
+
+### 1.3 当前状态（已核实，非推断）
+
+- `internal/agentd/authroutes.go:11` 写着「**不托管前端**：/console 的 302 目标固定为 /，本轮 agentd 尚未 embed 任何页面」。因此 ticket 换完 cookie 后 302 到 `/` **目前是 404**，前端只能靠 Vite dev server 跑。
+- `internal/agentd/server.go:303-307`：`root.Handle("/", s.auth(mux))`、`root.HandleFunc("GET /console", …)`、最外层 `s.hostGuard(root)`。即 `/console` 在 auth 之外、hostGuard 之内，其余全在 auth 之内。
+- `.github/workflows/release.yml`：三个 job（linux/windows 交叉编译、macOS 签名公证、Release 组装）**没有一个跑 `npm`**，CI 完全不构建前端。
+- `handoff` 二进制：`agentd` 是同一个二进制的子命令（`cmd/agentd.go:52`）；release 同款 flags 构建出来 **18MB，gzip 后 7.0MB**。
+- `install.sh:22`：安装落点是 `~/.local/bin/handoff`（可用 `HANDOFF_INSTALL_DIR` 覆盖）。
+- `cmd/init.go:43`：`newInteractivePrompter` 是 `var` 测试缝，`askAll` / `defaultRole` / `listenPreset` / `executorOptions` / `roleOptions` 均为接 `prompter` 接口的逻辑，**与 TUI 已解耦**。
+
+---
+
+## 2. 全局约束
+
+| 约束 | 值 |
+|---|---|
+| agentd / CLI 构建 | `CGO_ENABLED=0`，交叉编译矩阵**不变** |
+| 薄壳框架 | Wails（Go）。版本 v2 还是 v3-beta 见 §4.2，**必须实跑后定，不凭文档拍** |
+| Linux 基线 | Ubuntu 22.04 / Debian 12（`webkit2gtk-4.1`） |
+| 前端构建命令 | `npm ci` + `npm run build`（= `tsc -b && vite build`），产物在 `web/dist/` |
+| embed 构建标签 | `embedweb` |
+| 二进制释出落点 | `~/.local/bin/handoff`，与 `install.sh` 同一路径 |
+| 资产命名 | 不得与 `install.sh` / 自更新的既有契约冲突（`release.yml:8` 头部注释已警告） |
+
+---
+
+## 3. 交付物①：agentd 托管前端
+
+### 3.1 embed 的缺席问题（最重要的一条）
+
+`go:embed` 指向不存在的目录是**编译期错误**。CI 不构建前端、开发者本地也不一定构建，因此「产物缺席时怎么办」必须先裁决，否则 `go build` 与 `go test ./...` 会被整片打挂。
+
+**裁决：用 build tag，两份实现，构建产物全部 gitignore。**
+
+（`web/dist/` **已经**被 `web/.gitignore:11` 忽略，本文只需新增 `internal/webui/dist/`。）
+
+新包 `internal/webui`：
+
+| 文件 | 构建标签 | 内容 |
+|---|---|---|
+| `embed.go` | `//go:build embedweb` | `//go:embed all:dist` → 真实 `fs.FS` |
+| `stub.go` | `//go:build !embedweb` | 返回一个只含单页说明的 `fs.FS` |
+
+stub 页必须**诚实**——写明「此二进制未嵌入前端构建产物，请用 release 版，或开发时跑 `npm run dev` 走 Vite」，不是空白页也不是假装正常的页面。
+
+**为什么不选「提交占位产物到仓库」**：那样一跑 `npm run build` 工作区就变脏，而 **handoff 自己的 `dispatch` 硬要求工作区干净**（脏改动会被污染进任务分支）。用 W5 砸自己派发流程的脚，不划算。
+
+**为什么不选「把真实产物提交进仓库」**：每次前端改动都产生巨大且无法审阅的 diff。
+
+代价是两条代码路径，但 stub 侧只有几行，且 `//go:build` 让二者永不同时编译。
+
+### 3.2 路由与 SPA 回落
+
+SPA handler 挂**内层 `mux`**（即 `s.auth` 之后），不挂 `root`。理由：控制台页面本身应当要求 cookie；`/console` 仍是唯一免鉴权入口，ticket 本身就是它的凭据。
+
+闭环：`/console?ticket=…` → 原子消费 ticket → Set-Cookie → 302 到 `/` → 此时已有 cookie → auth 放行 → SPA 送达。
+
+回落规则：
+
+1. 请求路径命中 embed FS 里的**真实文件** → 直接伺服，带正确 Content-Type。vite 产物文件名带 hash，可给长缓存（`immutable`）。
+2. 否则回落 `index.html`，**必须 `no-cache`**（否则换版后浏览器拿着旧 index 引用已不存在的 hash 资源，表现为白屏）。
+3. **`/api/*` 未命中绝不回落 HTML**，仍走原有 API 404/405。否则前端把 HTML 当 JSON 解析，报错会面目全非——这是排查成本极高的一类错。
+4. `/ws`、`/console` 由 Go 1.22 `ServeMux` 的精确前缀优先天然让路，不需要额外判断。
+
+### 3.3 未鉴权访问 `/` 的表现
+
+现状是裸 401。**决定：对 `Accept: text/html` 的请求返回一个最小说明页**（HTTP 状态仍是 401），写清怎么拿入口（`handoff console` 或从桌面端打开）。非 HTML 请求维持原样。
+
+理由：桌面端与浏览器都会撞到这个路径，一个裸 401 会让用户以为坏了。这是本文范围内唯一一处「顺手做」的增量，成本是一个静态字符串。
+
+---
+
+## 4. 交付物②：桌面薄壳 `handoff-desktop`
+
+### 4.1 为什么是 Wails 而不是 Tauri
+
+两家在**关键代价上是平手**，这一点必须先说清楚，否则后人会以为选 Wails 是因为 Linux 更好做：
+
+- Linux 上**两家用的是同一个 webview**（WebKitGTK），同样撞 4.0/4.1 ABI 分裂，同样必须「在要支持的最老发行版上构建」。
+- 打包能力平手：deb / rpm / AppImage 两家都有。
+- 三平台都要原生 runner，交叉编译都不可行。
+
+**真正的差别在于薄壳并不只是「开个窗口」**——它必须完成鉴权握手：读 `~/.handoff/config.yaml` 拿监听地址与主令牌 → `POST /api/auth/tickets` → 打开 `/console?ticket=…`。
+
+- Go 方案：直接 `import github.com/Xsxdot/handoff/internal/...`，配置解析与 ticket 逻辑**零新增代码**，且与 agentd 永不漂移。
+- Rust 方案：要么重写一份（两份实现必然漂移），要么 shell out 调 CLI（多一层进程与错误面）。
+
+附带：B86 的 macOS 签名公证链现在签的就是 Go 二进制，Wails 产物离它更近；维护者审 diff 时不需要多读一门语言。
+
+Tauri 唯一明显更强的是生态成熟度与自动更新——但**自动更新 handoff 已有自己的一套（B59），重复了**。
+
+**记账**：Tauri v2 已 GA，Wails v3 在 2026-08 仍是 beta（桌面 API 已稳定）。这是选 Wails 付出的代价，明确记录，不粉饰。
+
+### 4.2 Wails 版本：v2 还是 v3
+
+**不在本文裁决，必须实跑后定。** v3 的多窗口与 Go services 模型更贴合，但 2026-08 仍是 beta；v2 稳定但架构较老。
+
+判据（按重要性）：三平台能否都构建出可运行产物 > 原生目录对话框是否可用 > 托盘/菜单是否可用 > 打包器产物是否合格。plan 的第一个 task 就是这个探针，**探针不过不进入后续 task**。
+
+### 4.3 启动序列
+
+薄壳启动后按顺序判断，三个分支：
+
+| 现状 | 动作 |
+|---|---|
+| 没有配置 | 图形化首次引导（§4.4） |
+| 有配置、agentd 没跑 | 复用 `internal/service` 装并拉起，再连 |
+| agentd 在跑 | 直接握手连接 |
+
+**关窗口不停 agentd。** 理由是承重的：执行者不能随关窗陪葬（这正是 B36 setsid、B59 V3 验收所保护的招牌属性）。托盘常驻，托盘菜单提供「打开控制台 / 停止 agentd / 退出」。
+
+**薄壳绝不把 agentd 内嵌进自己的进程。** 三条理由任一都足够：agentd 必须活过薄壳；agentd 必须能在无 GUI 机器上裸跑；B59 的更新机制假设 agentd 是 service 托管的。
+
+### 4.4 图形化首次引导
+
+复用 `cmd` 中已与 TUI 解耦的纯逻辑（`defaultRole` / `listenPreset` / `executorOptions` / `roleOptions`，见 §1.3），只替换 UI 层。**不重构 `init`**，也不动 TUI 路径——CLI 的 `handoff init` 保持现状。
+
+引导覆盖 `handoff init` 的同一批决策：角色（协调者 / 执行机）、监听地址、执行者探测结果、是否装 service、target 配对。
+
+### 4.5 目录选择器（顺带收口 B110）
+
+用 Wails 的原生目录对话框，通过 binding 暴露给前端；新建项目时可选择目录而非只能粘贴路径。
+
+**为什么走薄壳而不是 agentd 端点**（这一条在 brainstorm 中被 Linux 需求反转过，记下来避免后人重走）：
+最初倾向做成 agentd 端点（复用 B108 `open -R` 那套回环校验 + 三态能力位），好处是普通浏览器里也能用。但**agentd 弹原生框在三平台要三套实现**（macOS `osascript` / Windows PowerShell / Linux `zenity` 或 `kdialog`），而 **Linux 那套还依赖 zenity/kdialog 装没装**，不可靠。Wails 自带跨平台原生对话框，一套解决。
+
+**降级**：非薄壳环境（普通浏览器）用 B107/B108 已建立的三态能力位（`*bool` + `omitempty`；`nil` = 对端没上报，**不得当成 false**；前端 `null → 放行`）灰掉，理由文案写「需要桌面端」。
+
+**遗留的不对称，与 B108 一致**：薄壳跑在人所在的机器上，选出来的是**本机**路径。给远程开发机加项目时这个路径没有意义，远程仍然只能粘贴。这与 B108「Reveal in Finder 只做本机半边」是同一个不对称，已被接受。
+
+### 4.6 版本错配
+
+前端由 agentd 伺服，薄壳只是窗口 + 引导 + 对话框。因此薄壳与 agentd 版本不一致时**基本无害**：用户看到的界面永远来自 agentd 自己那一份。这是把薄壳做薄换来的红利，应当保持——**不要往薄壳里放业务逻辑**。
+
+---
+
+## 5. 内嵌 `handoff` 二进制
+
+### 5.1 裁决：内嵌
+
+薄壳内嵌对应平台的 `handoff` 二进制。三条理由：
+
+1. **它是 §4.3 的逻辑后果。** 既然薄壳负责拉起 agentd，「机器上没有二进制」就必然是第一个分支。不内嵌的话这个分支只能弹「请先去装 CLI」，「双击就能用」当场破功。
+2. **代价不成比例地小。** 18MB（打包压缩后约 +7MB），且那个平台的二进制在同一条流水线里本来就在编，零额外构建成本。
+3. **首次启动不能押在联网上，本项目有实证。** B59 验收记录：本机 `github.com:443` **连续两次 75s 超时**而 `api.github.com` 正常。首次启动才去下载，等于把「能不能用」押在一条被记录过会断的链路上，且失败时机恰好是用户第一次打开。
+
+### 5.2 释出到哪：`~/.local/bin/handoff`
+
+**与 `install.sh` 同一落点**，不是 app bundle 内部，也不是私有目录。
+
+理由：释出到私有位置会造成**最难排查的那类错配**——桌面端用的 `handoff` 和用户命令行敲的 `handoff` 是两个版本，B59 更新了一个另一个不知道。同一落点则是一份二进制、CLI 与桌面端共用、B59 更新一次两边同时受益；launchd plist 指向的也是这个稳定路径，不会因为用户移动或删除 `.app` 而断。
+
+### 5.3 释出规则：绝不覆盖用户已有的安装
+
+| 现状 | 动作 |
+|---|---|
+| 已有且能跑（`~/.local/bin/handoff` 或 PATH 上） | 直接用，**不释出** |
+| 没有 | 释出内嵌的那份，`chmod 0755` |
+| 已有但比内嵌的旧 | **提示，不自动换** |
+
+第三条的理由：换版要重启 agentd。复用 B59 已有的闸一语义（有活跃任务时拒绝换版，并给出可复制的强制命令），不要另造一套。
+
+### 5.4 macOS 签名顺序（承重）
+
+释出到 `~/.local/bin/` 的二进制**脱离了 `.app` bundle 的签名覆盖**，Gatekeeper 可能拦。
+
+缓解办法：内嵌的必须是**已单独签名并公证过**的那份 handoff（B86 本来就在签它）。于是 CI 顺序变为：
+
+```
+签 handoff → 嵌进薄壳 → 签 + 公证薄壳 bundle
+```
+
+**这条不能靠推理拍板，必须真机探针**（§8）。
+
+### 5.5 一条已知的连带后果
+
+`release.yml:167` 的注释指出：macOS 上 `CGO_ENABLED=0` 是承重的——开了 CGO 会让产物动态链接系统库并被打上构建机的最低系统版本约束，二进制会在更老的 macOS 上拒绝启动，而症状要等到用户机器上才出现。
+
+**薄壳必须开 CGO**（Wails 绑 WKWebView），因此**薄壳会带上最低 macOS 版本约束**。这是无法避免的，但必须：①在 Release 说明里写清薄壳的最低 macOS 版本；②**不要因此去动 handoff 本体的 `CGO_ENABLED=0`**——那一行保护的是 CLI/agentd，与薄壳无关。
+
+---
+
+## 6. 交付物③：构建链与分发
+
+### 6.1 前端构建接进 release
+
+在需要 embed 的构建步骤前插入 `npm ci && npm run build`，产物喂给 `go build -tags embedweb`。
+
+注意 `npm run build` 已包含 `tsc -b`，类型错误会直接让 release 失败——这是想要的行为。
+
+### 6.2 薄壳的三条原生 runner
+
+| 平台 | runner | 产物 |
+|---|---|---|
+| Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**） | AppImage + deb |
+| macOS | `macos-latest`（搭现有签名公证 job） | 签名公证过的 `.app` / dmg |
+| Windows | `windows-latest` | 安装包 |
+
+Linux 必须锁 `ubuntu-22.04` 而非 `ubuntu-latest`：AppImage 要「在最老的目标发行版上构建」，`ubuntu-latest` 会随 GitHub 滚动，某天静默把 glibc 基线抬高，症状是老发行版用户突然跑不起来——且这个变化不会体现在任何一次代码提交里。
+
+### 6.3 资产命名
+
+不得与 `install.sh` 及自更新的既有契约冲突。薄壳资产用**独立前缀**（如 `handoff-desktop_*`），确保 `install.sh` 的资产匹配逻辑不会误抓到薄壳包。
+
+---
+
+## 7. 非目标
+
+| 不做 | 理由 |
+|---|---|
+| 薄壳自更新 | B59 已有操作者触发的机制；AppImage/deb 自更新是另一个泥潭。薄壳只检查版本并提示 |
+| 扩到 `webkit2gtk-4.0`（RHEL/Alma/Rocky 8-9、Ubuntu 20.04、Fedora ≤39） | 4.0 是退役路线（soup2），长期逆着上游走。记 backlog，触发条件：出现真实 RHEL 系用户报不能用 |
+| 远程机的目录选择器 | 与 B108 同一不对称，本质无解（需要远程机上有 GUI 宿主） |
+| 重构 `handoff init` 的 TUI | 逻辑已解耦，只需补 UI 层。动 TUI 是范围外 |
+| 把 agentd 内嵌进薄壳进程 | 见 §4.3 的三条理由 |
+| 移动端布局 | 仍留给 W6 |
+
+---
+
+## 8. 必须真机探针的项
+
+以下四条**不能靠推理或读文档拍板**，plan 里各自是独立 task，探针不过就不进入依赖它的后续 task：
+
+| # | 探什么 | 在哪探 | 不过的后果 |
+|---|---|---|---|
+| P1 | Wails v2/v3 能否在三平台各构建出可运行产物；原生目录对话框、托盘、菜单是否可用 | mac + Linux（Ubuntu 22.04）+ Windows | 选型作废，退回重裁 |
+| P2 | 从 `.app` 释出到 `~/.local/bin/` 的**已公证**二进制能否通过 Gatekeeper | 真 mac | §5.4 的签名顺序方案作废，须改为 bundle 内运行 |
+| P3 | AppImage 在非 Ubuntu 发行版（至少 Fedora 40+、Arch）能否运行 | 真 Linux | Linux 基线判断有误，须重定 |
+| P4 | 薄壳拉起 agentd 后，关闭薄壳窗口时执行者是否存活 | 任一平台 | §4.3 的承重属性被破坏，须改进程组处理 |
+
+P4 尤其重要：它是 B36/B59 一路保护下来的招牌属性，薄壳是第一个可能破坏它的新宿主。
+
+---
+
+## 9. 验收标准
+
+**交付物①**
+- 未带 `embedweb` 标签时 `go build ./...` / `go test ./...` 全绿，且 agentd 启动后 `/` 返回诚实的 stub 说明页
+- 带 `embedweb` 标签时 `/console?ticket=…` → Set-Cookie → 302 → `/` 返回真实控制台，页面可用
+- 深链接（如 `/tasks/<id>`）刷新后仍正确回落 `index.html`
+- `/api/<不存在的路径>` 返回 JSON 错误而非 HTML
+- 无 cookie 访问 `/` 返回 401 + 说明页（HTML 请求）
+
+**交付物②**
+- 三平台各自：干净机器上双击 → 引导 → agentd 起来 → 控制台可用，**全程不碰命令行**
+- 关闭薄壳窗口后，正在跑的任务的执行者存活（P4）
+- 新建项目时目录选择器可用；普通浏览器里该入口灰掉且理由文案正确
+- 已装 handoff 的机器上，薄壳**不覆盖**已有二进制
+
+**交付物③**
+- release 流水线产出三平台薄壳资产 + 原有 CLI 资产，`install.sh` 不误抓薄壳包
+- macOS 薄壳通过 `codesign --verify --strict` 与公证校验（与 B86 现有门同等严格）
+- AppImage 在至少两个非 Ubuntu 发行版上可运行（P3）
+
+---
+
+## 10. 分期：两份 plan，不是一份
+
+三个交付物不是一个不可分的整体。**交付物① 自己就能独立上线并产生价值**（agentd 从此能托管控制台，不再依赖 Vite dev server），而它与薄壳之间没有任何依赖方向——薄壳只是打开一个 URL，那个 URL 由 agentd 伺服，与 agentd 是否 embed 无关（dev 环境下薄壳照样可以指向 Vite）。
+
+因此拆成两份 plan：
+
+| Plan | 内容 | 可独立交付 |
+|---|---|---|
+| **W5a** | 交付物① 全部 + §6.1 前端构建接进 release | 是。做完就能 `handoff console` 直接用，不再需要 Vite |
+| **W5b** | 交付物② 全部 + §6.2/§6.3 薄壳 runner 与资产 + §5 内嵌二进制 | 是。依赖 W5a 已落地（薄壳打开的控制台应当来自 embed 版） |
+
+W5a 先做还有一个实际好处：它小、风险低，能先把「前端构建接进 CI」这条链路跑通并验证，W5b 再在已验证的链路上加薄壳，而不是两件新事一起上。
+
+W5b 的第一个 task 必须是 §8 的 P1 探针。
+
+---
+
+## 11. 后续分出的 backlog
+
+- 扩到 `webkit2gtk-4.0`（触发条件见 §7）
+- 薄壳自更新（若用户实际反馈「提示了但懒得手动更新」）
+- B110 由本文 §4.5 收口，完成后应在 backlog 标注其来源
