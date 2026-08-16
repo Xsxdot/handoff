@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestStartWritesPromptBeforeWaitingReady 钉住 Start 的关键时序：**prompt 必须先于
@@ -139,6 +139,7 @@ func TestStartProcKillsShimWhenFIFOReaderNeverReady(t *testing.T) {
 	go func() { _ = victim.Wait(); close(reaped) }()
 	t.Cleanup(func() { _ = victim.Process.Kill(); <-reaped })
 
+	stubClaudeLookup(t)
 	old := startProcHost
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {
 		return prochost.Handle{PID: victim.Process.Pid, LockPath: lockPath}, nil

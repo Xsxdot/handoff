@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/agentd"
 )
 
 // lockTestLogger 返回丢弃所有输出的 logger，免得单测日志灌进测试输出。

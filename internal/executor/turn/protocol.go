@@ -13,7 +13,7 @@
 //
 // 为什么 prompt 模板与 ParseTrailer 必须同包：教模型协议的 prompt 与解析协议的
 // 代码是同一契约的两半，分居两处必然出现「改纪律只改一半」的漂移——两个 executor
-// 的审核者会看到不一样的东西。
+// 的协调者会看到不一样的东西。
 package turn
 
 import (
@@ -38,7 +38,7 @@ type Trailer struct {
 // 与 text/template 语法不冲突（不含 {{ ），可直接放在字面文本中。
 const promptTemplate = `你是 handoff 任务 {{.TaskID}} 的执行者，按下方实现计划执行。铁律：
 1. 提问纪律：任何需要人决策的问题，输出单行 JSON {"ask":"<问题>"}
-   然后结束本回合。审核者的回答会作为下一条消息发给你。
+   然后结束本回合。协调者的回答会作为下一条消息发给你。
    禁止自行假设，禁止用其它格式提问。
 2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），
    然后输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}

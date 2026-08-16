@@ -78,7 +78,7 @@ export function BoardPage({ tasksState, tree, onOpenTask }: BoardPageProps) {
   const projectNameOf = (id: string) => projects.find((p) => p.project_id === id)?.name ?? ''
 
   return (
-    <main className="flex w-full flex-col gap-3 p-3">
+    <main className="flex h-full w-full min-h-0 flex-col gap-3 p-3">
       {sessionExpired && <SessionExpiredBanner />}
       {disconnected && !sessionExpired && <DisconnectedBanner message={errorText} />}
 
@@ -96,7 +96,7 @@ export function BoardPage({ tasksState, tree, onOpenTask }: BoardPageProps) {
             taskCounts={taskCounts}
             taskCount={filtered.length}
           />
-          <div className="flex flex-1 items-stretch gap-3 overflow-x-auto pb-2">
+          <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto pb-2">
             {BOARD_COLUMNS.map((col) => (
               <BoardColumn
                 key={col}
@@ -126,12 +126,13 @@ function BoardColumn({
   projectNameOf: (projectId: string) => string
 }) {
   return (
-    <section className="flex w-64 shrink-0 flex-col rounded-lg border bg-background/60">
+    <section className="flex min-h-0 w-64 shrink-0 flex-col rounded-lg border bg-background/60">
       <header className="flex items-center justify-between border-b px-3 py-2">
         <h2 className="text-sm font-medium">{COLUMN_LABELS[column]}</h2>
         <Badge variant="secondary">{tasks.length}</Badge>
       </header>
-      <div className="flex flex-1 flex-col gap-2 p-2">
+      {/* 列头在滚动区之外：列名与计数要始终可见，否则滚到一半就不知道这是哪一列 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
         {tasks.length === 0 ? (
           <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>
         ) : (

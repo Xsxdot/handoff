@@ -23,18 +23,22 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/release"
 )
 
 // releaseChecker 查最新发布。生产实现是 *release.Client。
@@ -50,6 +54,9 @@ type releaseChecker interface {
 type releaseFetcher interface {
 	Fetch(ctx context.Context, rel release.Release, destDir string) (string, error)
 	FetchArchive(ctx context.Context, rel release.Release, goos, goarch string) ([]byte, string, error)
+	// FetchChecksum 只下 checksums.txt 取某平台的 sha256，供自拉模式下发。
+	// 不下资产——这正是自拉的省流量点
+	FetchChecksum(ctx context.Context, rel release.Release, goos, goarch string) (string, error)
 }
 
 // agentdPeer 是 upgrade 需要的 agentd 能力子集。
@@ -59,16 +66,24 @@ type releaseFetcher interface {
 type agentdPeer interface {
 	Status(ctx context.Context) (*proto.StatusResp, error)
 	PushUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool) (*proto.UpdateResp, error)
+	PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error)
 	RestartAgentd(ctx context.Context, force bool) (*proto.UpdateResp, error)
-	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration) error
+	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
 }
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
-	newReleaseChecker = func() releaseChecker { return release.NewClient() }
-	newReleaseFetcher = func() releaseFetcher { return release.NewInstaller(slog.Default()) }
-	activateBinary    = release.Activate
-	rollbackBinary    = release.Rollback
+	newReleaseChecker = func() releaseChecker {
+		// 每次调用重新 loadCLIConfig：这两个缝在测试里会被整体替换，生产路径上
+		// 一条命令最多调一两次，重读一次 YAML 的代价远小于把配置提到包级变量后
+		// 与 --config 标志的求值时序纠缠
+		return release.NewClient(proxyTransport(loadCLIConfig()))
+	}
+	newReleaseFetcher = func() releaseFetcher {
+		return release.NewInstaller(slog.Default(), proxyTransport(loadCLIConfig()))
+	}
+	activateBinary = release.Activate
+	rollbackBinary = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它
 	// 就能整套替身化远端，而不必起真实 HTTP 服务
 	newAgentdClient = func(ep Endpoint) agentdPeer { return client.New(ep.Addr, ep.Token) }
@@ -92,14 +107,17 @@ var (
 	}
 )
 
-// upgradeWaitTimeout / upgradeWaitInterval 是换版后等新进程上线的时限与轮询间隔。
+// upgradeWaitTimeoutPull / upgradeWaitTimeoutPush / upgradeWaitInterval 是换版后
+// 等新进程上线的时限与轮询间隔。
 //
-// 60s 的依据：systemd Restart=always 的默认 RestartSec 是 100ms，
-// launchd KeepAlive 是立即拉起；60s 给足了慢机器加载与 SQLite 打开的余量，
-// 又不至于让一台真的起不来的机器把操作者晾太久。
+// 自拉模式下对端要下 20MB（慢网 + 代理下几分钟很正常），放宽到 10min，
+// 且 WaitVersion 在 pull 模式会读对端 pull_state，真失败时立刻中止、不会干等满。
+// 推送模式二进制已经在对端、换版是秒级动作，维持 60s——一次真起不来的换版
+// 不该让操作者晾 10 分钟。
 const (
-	upgradeWaitTimeout  = 60 * time.Second
-	upgradeWaitInterval = 2 * time.Second
+	upgradeWaitTimeoutPull = 10 * time.Minute
+	upgradeWaitTimeoutPush = 60 * time.Second
+	upgradeWaitInterval    = 2 * time.Second
 )
 
 var (
@@ -107,6 +125,7 @@ var (
 	upgradeNow      bool
 	upgradeRollback bool
 	upgradeForce    bool
+	upgradePush     bool
 )
 
 // machineState 是一台机器巡检后的状态。
@@ -126,8 +145,15 @@ type machineState struct {
 	// 讲成「它非托管」，并据此给出一条注定白折腾的处置建议——B64 就是这么来的。
 	// 与同结构里 ActiveTask.Watchers *int 是同一条纪律。
 	Managed *bool
-	Busy    int
-	Err     error
+	// Pull 是对端上报的「支持自拉换版」。
+	//
+	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd），与「对端说 false」
+	// 是两回事。老 agentd 收到 mode=pull 会当成纯重启并回 200，据此以为受理了
+	// 就会干等到超时报一句误导性的「已换版但新进程未上线」。与同结构里的
+	// Managed *bool 同款纪律
+	Pull *bool
+	Busy int
+	Err  error
 }
 
 // currentBinary 返回当前二进制的真实路径。
@@ -143,6 +169,33 @@ func currentBinary() (string, error) {
 		return resolved, nil
 	}
 	return exe, nil
+}
+
+// proxyTransport 按配置造更新链路用的 HTTP transport。
+//
+// 参数：
+//   - cfg: 已加载的配置
+//
+// 返回：
+//   - 配了代理的 *http.Transport；**未配代理或配置有问题时返回 nil**，
+//     调用方把 nil 直接传给 release.NewClient/NewInstaller 即为标准库默认行为
+//
+// 注意：
+//   - 坏代理走到这里只可能是绕过了 config.Load 的校验（那里已经硬拒过一道）。
+//     此时降级为不用代理并打 Error，而不是 panic 或让整条命令失败——
+//     升级链路本身不该因为一个附属设置而彻底不可用
+func proxyTransport(cfg *config.Config) http.RoundTripper {
+	if cfg == nil || cfg.Proxy == "" {
+		return nil
+	}
+	tr, err := proxycfg.Transport(cfg.Proxy)
+	if err != nil {
+		slog.Default().Error("代理配置无法使用，本次出网不走代理",
+			"proxy", proxycfg.Redact(cfg.Proxy), "cause", err)
+		return nil
+	}
+	slog.Default().Info("更新链路使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	return tr
 }
 
 // outcome 是一台机器本次处理的结果分类。
@@ -212,10 +265,31 @@ var upgradeCmd = &cobra.Command{
 			return !states[i].Ep.Local && states[j].Ep.Local
 		})
 
+		// checksums.txt 对一个 release 只下一次，多台机器共用同一份内容
+		//（按各自平台取自己那行）。每台机器各下一次会把自拉省下的流量
+		// 还回去一部分，还平白多几次 GitHub 请求——而它有 60 次/小时/IP 的限流。
+		// 缓存键是 goos/goarch：不同平台的校验和本来就不同，必须各下一次
+		sumCache := map[string]string{}
+		var sumMu sync.Mutex
+		sumFor := func(ctx context.Context, goos, goarch string) (string, error) {
+			key := goos + "/" + goarch
+			sumMu.Lock()
+			defer sumMu.Unlock()
+			if s, ok := sumCache[key]; ok {
+				return s, nil
+			}
+			s, err := newReleaseFetcher().FetchChecksum(ctx, rel, goos, goarch)
+			if err != nil {
+				return "", err
+			}
+			sumCache[key] = s
+			return s, nil
+		}
+
 		var ok, skip, fail int
 		for i := range states {
 			recordOrder(states[i].Ep.Name)
-			switch states[i].process(ctx, cmd, rel) {
+			switch states[i].process(ctx, cmd, rel, sumFor) {
 			case outcomeOK:
 				ok++
 			case outcomeSkip:
@@ -254,6 +328,7 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 		if st.Update != nil {
 			managed := st.Update.Managed
 			ms.Managed = &managed
+			ms.Pull = st.Update.Pull
 		}
 		// 活跃口径：running + waiting_answer（waiting_review 可能挂几天，不计入）
 		for _, a := range st.Active {
@@ -344,7 +419,7 @@ func (ms *machineState) isLatest(latest string) bool {
 // 结论来自 classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
 // busy 闸不在 classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
 // ——否则会对一台已是最新的忙机器建议 --force，而那条命令跑完只会说「已是最新」。
-func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel release.Release) outcome {
+func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	out := cmd.OutOrStdout()
 	name := ms.Ep.Name
 	peer := newAgentdClient(ms.Ep)
@@ -409,7 +484,7 @@ func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel rel
 	if ms.Ep.Local {
 		return ms.localUpgrade(ctx, out, peer, rel)
 	}
-	return ms.remoteUpgrade(ctx, out, peer, rel)
+	return ms.remoteUpgrade(ctx, out, peer, rel, sumFor)
 }
 
 // swapAndTell 只换本机文件、不触发重启，并如实说明「为什么要你自己重启」。
@@ -486,7 +561,7 @@ func (ms *machineState) localUpgrade(ctx context.Context, out io.Writer, peer ag
 // 当前进程是旧二进制，它内嵌的是**旧 skill**；新 skill 在刚换上去的那个
 // 文件里。所以是 exec 新二进制，不是直接调用本进程的 skill.Install。失败
 // 不算升级失败：二进制已经换好了，但必须说出来——悄悄留一份旧 skill，它会
-// 按已经变了的规则主动误导审核者。
+// 按已经变了的规则主动误导协调者。
 func (ms *machineState) syncSkill(ctx context.Context, out io.Writer, target string) {
 	if outStr, err := execSkillInstall(ctx, target); err != nil {
 		fmt.Fprintf(out, "         注意 skill 同步失败，请手动跑 %s skill install：%s\n",
@@ -494,47 +569,86 @@ func (ms *machineState) syncSkill(ctx context.Context, out io.Writer, target str
 	}
 }
 
-// remoteUpgrade 远端的完整升级路径：按远端平台下载 → 推送 → 轮询确认上线。
-func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer agentdPeer, rel release.Release) outcome {
+// remoteUpgrade 远端的完整升级路径。
+//
+// 两条路：对端支持自拉（且未 --push）时只下发 tag+sha256，20MB 由执行机自己下；
+// 否则按本机下载 + 推送的老路走。选路判据是 ms.Pull——nil（老 agentd）一律降级
+// 推送，因为老 agentd 会把 mode=pull 当成纯重启并回 200。
+func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer agentdPeer,
+	rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	name := ms.Ep.Name
 	parts := strings.SplitN(ms.Platform, "/", 2)
 	if len(parts) != 2 {
 		fmt.Fprintf(out, "%-8s 失败   对端上报的平台 %q 格式非法\n", name, ms.Platform)
 		return outcomeFail
 	}
-	slog.Default().Info("下载远端平台资产", "name", name, "platform", ms.Platform, "tag", rel.Tag)
-	tgz, sum, err := newReleaseFetcher().FetchArchive(ctx, rel, parts[0], parts[1])
-	if err != nil {
-		slog.Default().Error("下载远端资产失败", "name", name, "cause", err)
-		fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
-		return outcomeFail
+
+	usePull := !upgradePush && ms.Pull != nil && *ms.Pull
+	slog.Default().Info("选择换版分发模式", "name", name, "platform", ms.Platform,
+		"pull_capable", ms.Pull != nil && *ms.Pull, "force_push", upgradePush, "use_pull", usePull)
+
+	var resp *proto.UpdateResp
+	var err error
+	if usePull {
+		sum, serr := sumFor(ctx, parts[0], parts[1])
+		if serr != nil {
+			slog.Default().Error("取校验和失败", "name", name, "cause", serr)
+			fmt.Fprintf(out, "%-8s 失败   %s\n", name, serr)
+			return outcomeFail
+		}
+		slog.Default().Info("下发自拉换版请求", "name", name, "tag", rel.Tag, "sha256", sum)
+		resp, err = peer.PullUpdate(ctx, rel.Tag, sum, upgradeForce)
+	} else {
+		slog.Default().Info("下载远端平台资产", "name", name, "platform", ms.Platform, "tag", rel.Tag)
+		tgz, sum, ferr := newReleaseFetcher().FetchArchive(ctx, rel, parts[0], parts[1])
+		if ferr != nil {
+			slog.Default().Error("下载远端资产失败", "name", name, "cause", ferr)
+			fmt.Fprintf(out, "%-8s 失败   %s\n", name, ferr)
+			return outcomeFail
+		}
+		slog.Default().Info("下载完成，推送换版请求", "name", name, "tag", rel.Tag, "bytes", len(tgz))
+		resp, err = peer.PushUpdate(ctx, rel.Tag, sum, tgz, upgradeForce)
 	}
-	slog.Default().Info("下载完成，推送换版请求", "name", name, "tag", rel.Tag, "bytes", len(tgz))
-	resp, err := peer.PushUpdate(ctx, rel.Tag, sum, tgz, upgradeForce)
+
 	if err != nil {
 		var rej *client.UpdateRejected
 		if errors.As(err, &rej) {
 			slog.Default().Warn("换版被拒", "name", name, "reason", rej.Reason, "detail", rej.Msg)
 			fmt.Fprintf(out, "%-8s 跳过   %s\n", name, rej.Msg)
-			// 处置建议对症：busy 能 --force 越过，unmanaged 不能
+			// 处置建议必须对症：三种拒绝的出路完全不同
 			switch rej.Reason {
 			case proto.UpdateReasonBusy:
 				fmt.Fprintf(out, "         handoff upgrade --now --target %s --force\n", name)
 			case proto.UpdateReasonUnmanaged:
 				fmt.Fprintf(out, "         先在该机器上 handoff service install\n")
+			case proto.UpdateReasonPullInProgress:
+				// 不给 --force：它不越过这一条（两个自拉会写坏同一个临时文件）
+				fmt.Fprintf(out, "         等它跑完，或 handoff status --target %s 看 pull_state\n", name)
 			}
 			return outcomeSkip
 		}
-		slog.Default().Error("推送换版失败", "name", name, "cause", err)
+		slog.Default().Error("发起换版失败", "name", name, "use_pull", usePull, "cause", err)
 		fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
 		return outcomeFail
 	}
-	slog.Default().Info("换版已受理，等待新版本上线", "name", name, "version", resp.Version, "prev", resp.Prev)
-	if err := peer.WaitVersion(ctx, rel.Tag, upgradeWaitTimeout, upgradeWaitInterval); err != nil {
-		// 轮询超时是最要紧的一条：报「已换版但新进程未上线」，绝不含糊成「升级完成」
-		slog.Default().Error("等待新版本上线超时", "name", name, "prev", resp.Prev, "cause", err)
-		fmt.Fprintf(out, "%-8s 失败   已换版但新进程未在 %ds 内上线\n", name, int(upgradeWaitTimeout.Seconds()))
-		fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", resp.Prev)
+
+	waitTimeout := upgradeWaitTimeoutPull
+	if !usePull {
+		waitTimeout = upgradeWaitTimeoutPush
+	}
+	slog.Default().Info("换版已受理，等待新版本上线", "name", name,
+		"version", resp.Version, "prev", resp.Prev, "accepted", resp.Accepted)
+	if err := peer.WaitVersion(ctx, rel.Tag, waitTimeout, upgradeWaitInterval, usePull); err != nil {
+		// 自拉与推送的失败措辞必须不同：推送模式下二进制已经在对端了，
+		// 提 prev 与回滚是对的；自拉模式下可能连下载都没成，提回滚是误导
+		slog.Default().Error("等待新版本上线失败", "name", name, "use_pull", usePull, "cause", err)
+		if usePull {
+			fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
+			fmt.Fprintf(out, "         handoff status --target %s 看 pull_state 拿完整原因\n", name)
+		} else {
+			fmt.Fprintf(out, "%-8s 失败   已换版但新进程未在 %s 内上线\n", name, waitTimeout)
+			fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", resp.Prev)
+		}
 		return outcomeFail
 	}
 	slog.Default().Info("新版本已上线", "name", name, "version", rel.Tag)
@@ -558,5 +672,7 @@ func init() {
 	upgradeCmd.Flags().BoolVar(&upgradeNow, "now", false, "升级所有落后的机器（含本机；--target 时只升那一台）")
 	upgradeCmd.Flags().BoolVar(&upgradeRollback, "rollback", false, "换回本机上一版（<二进制>.prev，不支持 --target）")
 	upgradeCmd.Flags().BoolVar(&upgradeForce, "force", false, "越过活跃任务闸（**不越过非托管闸**）")
+	upgradeCmd.Flags().BoolVar(&upgradePush, "push", false,
+		"强制由本机下载并推送二进制（默认让执行机自己下；执行机出不了网时用它）")
 	rootCmd.AddCommand(upgradeCmd)
 }

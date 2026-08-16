@@ -4,7 +4,7 @@
 //   - 查任务拿到 target/仓库路径/分支，换算出 ssh 形式的远程地址并 fetch 到本地同名分支
 //
 // 边界：
-//   - 只 fetch，不 checkout、不合并（合并是审核者的决定）
+//   - 只 fetch，不 checkout、不合并（合并是协调者的决定）
 //   - 本机任务（无 target）无需同步：代码本来就在同一台机器上
 package cmd
 
@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/localsync"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/localsync"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // pullCmd 把指定任务的远程分支同步到本地。
@@ -75,7 +75,7 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 	})
 }
 
-// syncMessage 把同步结果压成一行给审核者看的中文说明。
+// syncMessage 把同步结果压成一行给协调者看的中文说明。
 func syncMessage(res localsync.Result) string {
 	if res.Created {
 		return fmt.Sprintf("已同步分支 %s（本地新建）", res.Branch)

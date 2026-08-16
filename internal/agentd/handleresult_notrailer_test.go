@@ -1,5 +1,6 @@
 // handleresult_notrailer_test.go —— handleResult 的 !OK 分支把 git 实况透传进
-// failed 事件、作废理由由 result 侧提供而非硬编码（B74 的 agentd 侧落地）。
+// turn_failed 事件、作废理由由 result 侧提供而非硬编码（B74 的 agentd 侧落地；
+// B100 后回合失败事件由 failed 改为 turn_failed，payload 构造器未换）。
 //
 // 依赖 main 上已有的两块：voidTicketsWithAudit（B63）会产 tickets_voided 审计
 // 事件，本文件直接断言它的 Reason 字段；newFailedPayload（B73）带 ProcUsage，
@@ -11,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // lastEventOfType 取任务最后一条指定类型的事件；没有则 t.Fatal。
@@ -40,16 +41,16 @@ func TestFailedPayloadCarriesGitTruth(t *testing.T) {
 		VoidReason: executor.VoidReasonTurnDiscipline,
 	}})
 
-	ev := lastEventOfType(t, m, "t1", string(proto.EventTypeFailed))
+	ev := lastEventOfType(t, m, "t1", string(proto.EventTypeTurnFailed))
 	var p failedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.Branch != "handoff/T1" {
-		t.Fatalf("branch 未透传到 failed payload，got %q", p.Branch)
+		t.Fatalf("branch 未透传到 turn_failed payload，got %q", p.Branch)
 	}
 	if p.CommitHash != "abc1234def" {
-		t.Fatalf("commit 未透传到 failed payload，got %q", p.CommitHash)
+		t.Fatalf("commit 未透传到 turn_failed payload，got %q", p.CommitHash)
 	}
 }
 
@@ -60,9 +61,9 @@ func TestFailedPayloadOmitsGitTruthWhenAbsent(t *testing.T) {
 		OK: false, FailReason: "executor 进程退出 code=1",
 	}})
 
-	ev := lastEventOfType(t, m, "t2", string(proto.EventTypeFailed))
+	ev := lastEventOfType(t, m, "t2", string(proto.EventTypeTurnFailed))
 	raw := string(ev.Payload)
-	// omitempty 必须真的生效：绝大多数 failed（崩溃、看门狗判死）没有 git 实况，
+	// omitempty 必须真的生效：绝大多数回合失败（崩溃、看门狗判死）没有 git 实况，
 	// 空字段出现在 payload 里会让下游以为「查过 git 且分支是空」
 	if strings.Contains(raw, `"branch"`) || strings.Contains(raw, `"commit"`) {
 		t.Fatalf("无 git 实况时不该出现 branch/commit 字段: %s", raw)

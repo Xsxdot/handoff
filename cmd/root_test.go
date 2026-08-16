@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 const testToken = "test-token"
@@ -97,6 +97,63 @@ targets:
 		_, _, err := TargetEndpoint()
 		if err == nil || !strings.Contains(err.Error(), "token") {
 			t.Fatalf("token 为空应报错, got %v", err)
+		}
+	})
+}
+
+// TestTargetEndpointLocalRewrite 覆盖 B85 的确定性改写：本机模式下 host 非
+// loopback（单网卡 IP / 通配）一律改拨 127.0.0.1 同端口；显式 --agentd 不改写。
+func TestTargetEndpointLocalRewrite(t *testing.T) {
+	resetFlags(t)
+	targetName = ""
+
+	t.Run("单网卡 IP 改拨 loopback", func(t *testing.T) {
+		configPath = writeTestConfig(t, "listen: \"100.64.0.5:9999\"\ntoken: \"tok\"\n")
+		rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+		addr, _, err := TargetEndpoint()
+		if err != nil {
+			t.Fatalf("TargetEndpoint: %v", err)
+		}
+		if addr != "http://127.0.0.1:9999" {
+			t.Fatalf("addr=%q, want http://127.0.0.1:9999（单网卡档靠辅助监听兜底）", addr)
+		}
+	})
+
+	t.Run("通配也改拨 loopback", func(t *testing.T) {
+		configPath = writeTestConfig(t, "listen: \"0.0.0.0:9999\"\ntoken: \"tok\"\n")
+		rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+		addr, _, err := TargetEndpoint()
+		if err != nil {
+			t.Fatalf("TargetEndpoint: %v", err)
+		}
+		if addr != "http://127.0.0.1:9999" {
+			t.Fatalf("addr=%q, want http://127.0.0.1:9999（拨 0.0.0.0 能通只是协议栈宽容）", addr)
+		}
+	})
+
+	t.Run("显式 --agentd 不改写", func(t *testing.T) {
+		configPath = writeTestConfig(t, "listen: \"100.64.0.5:9999\"\ntoken: \"tok\"\n")
+		if err := rootCmd.PersistentFlags().Set("agentd", "http://100.64.0.5:9999"); err != nil {
+			t.Fatalf("Set agentd flag: %v", err)
+		}
+		addr, _, err := TargetEndpoint()
+		if err != nil {
+			t.Fatalf("TargetEndpoint: %v", err)
+		}
+		if addr != "http://100.64.0.5:9999" {
+			t.Fatalf("addr=%q, 显式 --agentd 指明了端点就该照拨", addr)
+		}
+	})
+
+	t.Run("Endpoints 本机行同样改写", func(t *testing.T) {
+		configPath = writeTestConfig(t, "listen: \"100.64.0.5:9999\"\ntoken: \"tok\"\n")
+		rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+		eps, err := Endpoints("")
+		if err != nil {
+			t.Fatalf("Endpoints: %v", err)
+		}
+		if eps[0].Addr != "http://127.0.0.1:9999" {
+			t.Fatalf("本机行 addr=%q, want http://127.0.0.1:9999（与 TargetEndpoint 同口径）", eps[0].Addr)
 		}
 	})
 }

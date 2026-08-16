@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // TestSSHHostFromTarget 覆盖 target → ssh 目标的换算共用函数（pull 专用）：
@@ -77,7 +77,7 @@ func TestRunAttachStreamsToStdout(t *testing.T) {
 }
 
 // TestRunAttachRemoteNeedsNoSSH 钉死跨平台收益：
-// 远程 target 不再拼 ssh 命令——复用 agentd 连接即可，因此 Windows 审核者也能用。
+// 远程 target 不再拼 ssh 命令——复用 agentd 连接即可，因此 Windows 协调者也能用。
 func TestRunAttachRemoteNeedsNoSSH(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/render") {

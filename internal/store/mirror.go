@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // MirrorTask 是 mirror_tasks 的一行：远端任务的快照副本 + 路由信息。

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // tasksAllFixture 是 fake agentd 对 GET /api/tasks?scope=all 的固定响应。

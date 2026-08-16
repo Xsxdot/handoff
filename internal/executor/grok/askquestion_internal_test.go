@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestAskQuestionTextRendersQuestionsAndOptions(t *testing.T) {
@@ -41,7 +41,7 @@ func TestAskQuestionTextEmptyOnGarbage(t *testing.T) {
 // TestFinishTurnEmptyTextEmitsFailedResult 兜底分支的空文本守卫。
 //
 // 旧实现在无新提交时 emit question 携带回合文本，文本为空时产出的是一张**空工单**
-// ——审核者收到一个没有内容的问题，除了瞎猜什么也做不了。零文本是故障，按故障报。
+// ——协调者收到一个没有内容的问题，除了瞎猜什么也做不了。零文本是故障，按故障报。
 func TestFinishTurnEmptyTextEmitsFailedResult(t *testing.T) {
 	a := New(nil)
 	r := &runState{taskID: "t1", sessionID: "sess-1",
@@ -56,7 +56,7 @@ func TestFinishTurnEmptyTextEmitsFailedResult(t *testing.T) {
 			t.Fatalf("零文本且无新提交应产出失败结果，实际 %s %+v", ev.Type, ev.Result)
 		}
 		if ev.Result.FailReason == "" {
-			t.Fatalf("FailReason 必须写清现场，否则审核者不知道发生了什么")
+			t.Fatalf("FailReason 必须写清现场，否则协调者不知道发生了什么")
 		}
 	default:
 		t.Fatalf("零文本回合应产出事件")

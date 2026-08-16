@@ -33,8 +33,37 @@ export interface Task {
   repo_dirty_count: number
   repo_dirty_files: string
   done_note: string    // 归档时审核者留的完成说明（handoff done --note）；""=未留说明或归档于该功能之前
+  actual_model?: string   // executor 报回的实际模型名；缺省=还没报（与入参 model 不是一回事）
+  usage?: Usage           // 当前 context 占用；缺省=还没有任何一次模型调用完成
+  cumulative?: Cumulative  // 累计消耗；缺省=还没有账目，或本次是列表读取
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
+}
+
+// Usage 是任务当前的 context 占用。
+// context_window 缺省表示该 executor 不在协议里报窗口（claudecode / opencode），
+// 此时只显绝对值——前端绝不自己猜分母。
+export interface Usage {
+  context_tokens: number
+  context_window?: number
+}
+
+// Cost 是累计花费及其可信度。
+// state 为 'partial' 时 ticks 只是**已知部分**的和，是下界不是总额。
+export interface Cost {
+  ticks: number   // 1 USD = 10^10 ticks
+  state: 'reported' | 'estimated' | 'partial' | 'unknown'
+}
+
+// Cumulative 是任务的累计消耗。
+// 与 Usage 是两个口径：Usage 是「现在占用多少」，本结构是「一共烧了多少」。
+// 只在任务详情（GetTask）里有，列表接口不带。
+export interface Cumulative {
+  input_tokens: number   // 未命中缓存的输入
+  cached_tokens: number  // 命中缓存的输入
+  output_tokens: number  // 含 reasoning
+  total_tokens: number   // 三项之和，后端算好
+  cost?: Cost            // 缺省=还没有任何花费信息
 }
 
 export interface Event {
@@ -133,6 +162,10 @@ export interface Machine {
   // pty_supported 三态：缺席/null = 对端没上报（**不是**不支持），
   // false = 平台明确不支持，true = 支持。
   pty_supported?: boolean | null
+  // reveal_supported 三态同 pty_supported：缺席/null = 对端没上报（**不是**不支持）。
+  // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
+  // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
+  reveal_supported?: boolean | null
 }
 
 export interface MachinesResp {
@@ -149,6 +182,13 @@ export interface MachinesResp {
 export interface CreateProjectReq {
   origin_url?: string
   name?: string
+  path?: string
+}
+
+// PatchProjectReq 是 PATCH /api/projects/{name} 的请求体。B95。
+// 两个字段都可选、不能都空：new_name 改引用名，path 改路径。
+export interface PatchProjectReq {
+  new_name?: string
   path?: string
 }
 
@@ -197,6 +237,7 @@ export interface StatusResp {
   active: ActiveTask[]
   // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
   pty_supported?: boolean
+  reveal_supported?: boolean
 }
 
 // taskDetail 是 GET /api/tasks/{id} 的响应体（任务 + 待办工单 + 最近事件）。
@@ -257,6 +298,36 @@ export interface DiffResult {
 // fileResult 是 file 接口的响应体。
 export interface FileResult {
   content: string
+}
+
+// FileRead 是 GET /api/workspaces/file 的响应体（proto.FileRead 的镜像）。
+//
+// sha256 只在**完整且是文本**时有值。空值即「这文件不可编辑」——前端拿它当
+// 三态判据，不要另外按扩展名猜二进制，那必然与服务端分叉。
+export interface FileRead {
+  content: string
+  size: number
+  truncated?: boolean
+  binary?: boolean
+  sha256?: string
+}
+
+// FileWriteReq 是 PUT /api/workspaces/file 的请求体。
+export interface FileWriteReq {
+  content: string
+  base_sha256: string
+}
+
+// FileWriteResp 是写入成功的响应；sha256 直接当下一次写入的 base_sha256。
+export interface FileWriteResp {
+  sha256: string
+  size: number
+}
+
+// FileConflictResp 是 409 的响应体，current 是磁盘现状。
+export interface FileConflictResp {
+  error: string
+  current: FileRead
 }
 
 // resumeResult 是 resume 接口的响应体（RecoverReport 的镜像）。
@@ -324,6 +395,20 @@ export interface DirEntry {
 // DirListResult 是 GET /api/workspaces/dir 的响应体；entries 永不为 null。
 export interface DirListResult {
   entries: DirEntry[]
+}
+
+// SearchHit 是搜索命中的一行（GET /api/workspaces/search）。
+export interface SearchHit {
+  rel: string
+  line: number
+  text: string
+}
+
+// SearchResult 是搜索的完整结论；truncated 为真表示结果被截断
+// （撞到条数上限或超时，服务端只返回了已有部分）。
+export interface SearchResult {
+  hits: SearchHit[]
+  truncated: boolean
 }
 
 // PtySession 是一个 PTY 终端会话（W4 PTY 终端 spec §3.1）。

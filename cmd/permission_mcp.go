@@ -60,7 +60,7 @@ type rpcResponse struct {
 // handoff 直接拿它当 PermissionID）。
 var askToolDefinition = map[string]any{
 	"name":        "ask",
-	"description": "Ask the handoff reviewer for permission to run a tool.",
+	"description": "Ask the handoff coordinator for permission to run a tool.",
 	"inputSchema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -173,7 +173,7 @@ func askDecision(params json.RawMessage, sockPath string) string {
 	}
 
 	// 无限重试：agentd 重启期间 socket 会短暂消失，同一 tool_use_id 重连重登记
-	// 后由 manager 侧 ticket 幂等去重，审核者不会被同一请求唤醒两次
+	// 后由 manager 侧 ticket 幂等去重，协调者不会被同一请求唤醒两次
 	for attempt := 1; ; attempt++ {
 		decision, err := exchange(sockPath, askFrame)
 		if err == nil {

@@ -3,11 +3,13 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -123,7 +126,7 @@ func TestFetchArchiveHonorsRequestedPlatform(t *testing.T) {
 	})
 	defer closeFn()
 
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	got, gotSum, err := i.FetchArchive(context.Background(), rel, "linux", "amd64")
 	if err != nil {
 		t.Fatalf("FetchArchive: %v", err)
@@ -148,7 +151,7 @@ func TestFetchArchiveDoesNotSelfCheck(t *testing.T) {
 	})
 	defer closeFn()
 
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if _, _, err := i.FetchArchive(context.Background(), rel, "linux", "amd64"); err != nil {
 		t.Fatalf("FetchArchive 不该自检，却失败了: %v", err)
 	}
@@ -157,7 +160,7 @@ func TestFetchArchiveDoesNotSelfCheck(t *testing.T) {
 // TestInstallArchiveRejectsBadSum 锁住 agentd 侧那道「传输完整性」校验。
 func TestInstallArchiveRejectsBadSum(t *testing.T) {
 	dir := t.TempDir()
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	_, err := i.InstallArchive(tgzWith(t, "#!/bin/sh\necho v1\n"), strings.Repeat("0", 64), "v1", dir)
 	if err == nil {
 		t.Fatal("sha256 不符必须拒绝")
@@ -173,7 +176,7 @@ func TestInstallArchiveSelfChecks(t *testing.T) {
 	dir := t.TempDir()
 	body := tgzWith(t, "#!/bin/sh\necho v-WRONG\n")
 	s := sha256.Sum256(body)
-	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i := NewInstaller(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	_, err := i.InstallArchive(body, hex.EncodeToString(s[:]), "v9.9.9", dir)
 	if err == nil {
 		t.Fatal("version 首行对不上目标 tag 必须拒绝")
@@ -190,7 +193,7 @@ func TestFetchHappyPath(t *testing.T) {
 	// 自检跑的是 `<新二进制> version`，首行必须等于 tag
 	rel := serveRelease(t, tag, "#!/bin/sh\necho "+tag+"\n", false)
 	dir := t.TempDir()
-	p, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	p, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -217,7 +220,7 @@ func TestFetchRejectsBadChecksum(t *testing.T) {
 	tag := "v9.9.9"
 	rel := serveRelease(t, tag, "#!/bin/sh\necho "+tag+"\n", true)
 	dir := t.TempDir()
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err == nil {
 		t.Fatal("checksum 不匹配应报错")
 	}
@@ -239,7 +242,7 @@ func TestFetchRejectsFailedSelfCheck(t *testing.T) {
 	tag := "v9.9.9"
 	rel := serveRelease(t, tag, "#!/bin/sh\necho v0.0.1-wrong\n", false)
 	dir := t.TempDir()
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, dir)
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, dir)
 	if err == nil {
 		t.Fatal("自检版本对不上应报错")
 	}
@@ -255,7 +258,7 @@ func TestFetchRejectsFailedSelfCheck(t *testing.T) {
 // 本平台没有资产：在下载之前就报错。
 func TestFetchMissingPlatformAsset(t *testing.T) {
 	rel := Release{Tag: "v9.9.9", Assets: []Asset{{Name: ChecksumsName, URL: "http://x/c"}}}
-	_, err := NewInstaller(quietLog()).Fetch(context.Background(), rel, t.TempDir())
+	_, err := NewInstaller(quietLog(), nil).Fetch(context.Background(), rel, t.TempDir())
 	if err == nil {
 		t.Fatal("缺本平台资产应报错")
 	}
@@ -351,5 +354,397 @@ func TestActivateUnwritableDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "写权限") {
 		t.Fatalf("报错应点明是目录写权限问题，得到: %v", err)
+	}
+}
+
+// makeZip 造一个含单个指定文件名的 zip。
+//
+// 参数：
+//   - name: 包内文件名（用来覆盖 handoff.exe 与「包里没有目标文件」两种情形）
+//   - content: 文件内容
+func makeZip(t *testing.T, name string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("建 zip 条目失败: %v", err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatalf("写 zip 条目失败: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("关闭 zip 失败: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// Windows 资产是 zip，包内是 handoff.exe，两者都要认。
+func TestExtractBinaryReadsZip(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	format, err := extractBinary(makeZip(t, "handoff.exe", []byte("BINARY")), dest)
+	if err != nil {
+		t.Fatalf("解 zip 失败: %v", err)
+	}
+	if format != "zip" {
+		t.Fatalf("format = %q，期望 zip", format)
+	}
+	b, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("读解出的文件失败: %v", err)
+	}
+	if string(b) != "BINARY" {
+		t.Fatalf("解出的内容 = %q，期望 BINARY", b)
+	}
+}
+
+// darwin/linux 资产仍是 tar.gz，包内是 handoff。
+func TestExtractBinaryReadsTarGz(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	format, err := extractBinary(makeTarGz(t, "#!/bin/sh\necho hi\n"), dest)
+	if err != nil {
+		t.Fatalf("解 tar.gz 失败: %v", err)
+	}
+	if format != "tar.gz" {
+		t.Fatalf("format = %q，期望 tar.gz", format)
+	}
+}
+
+// 格式按魔数判定，不按调用方传的平台——所以「两者都不是」必须有明确报文，
+// 否则症状会是一句无从下手的 gzip 解析错误。
+func TestExtractBinaryRejectsUnknownFormat(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	_, err := extractBinary([]byte("not an archive at all"), dest)
+	if err == nil {
+		t.Fatal("无法识别的格式应当报错")
+	}
+	if !strings.Contains(err.Error(), "既不是 gzip 也不是 zip") {
+		t.Fatalf("报文应说清两种格式都不匹配，实得 %v", err)
+	}
+}
+
+// tgzNamed 造一个含单个指定文件名的 tar.gz。
+//
+// 与既有的 tgzWith 的区别只在于文件名可指定：tgzWith 把名字写死成 handoff，
+// 测不了「包里没有目标文件」这一支。
+func tgzNamed(t *testing.T, name, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// 包里没有可执行文件时两种格式都要报错，不能留一个空文件在目标路径上。
+func TestExtractBinaryRejectsArchiveWithoutBinary(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	if _, err := extractBinary(makeZip(t, "README.txt", []byte("x")), dest); err == nil {
+		t.Fatal("zip 里没有 handoff.exe 时应当报错")
+	}
+	if _, err := extractBinary(tgzNamed(t, "README.txt", "x"), dest); err == nil {
+		t.Fatal("tar.gz 里没有 handoff 时应当报错")
+	}
+}
+
+// Windows 上临时文件必须以 .exe 结尾：selfCheck 要 exec 它跑 version，
+// 没有该后缀的文件在 Windows 上起不来——症状是「自检失败」，真因是文件名。
+func TestTempNameHasExeSuffixOnWindows(t *testing.T) {
+	if got := tempName("v1.2.3", "windows"); got != ".handoff.new-v1.2.3.exe" {
+		t.Fatalf("windows: tempName = %q，期望 .handoff.new-v1.2.3.exe", got)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := tempName("v1.2.3", goos); got != ".handoff.new-v1.2.3" {
+			t.Fatalf("%s: tempName = %q，期望 .handoff.new-v1.2.3", goos, got)
+		}
+	}
+}
+
+// 前两次 500、第三次 200：get 必须重试并最终成功。
+// 重试会真睡退避，所以先把 downloadRetryBase 压到毫秒级，测完恢复。
+func TestGetRetriesOnServerError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("hello retry"))
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog(), nil)
+	got, err := i.get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("get 应当在前两次 500 后重试成功，却报错: %v", err)
+	}
+	if !bytes.Equal(got, []byte("hello retry")) {
+		t.Fatalf("正文 = %q，期望 hello retry", got)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3（首次 + 2 次重试）", attempts)
+	}
+}
+
+// 前两次请求被对端直接掐断、第三次正常：传输层错误必须触发重试。
+//
+// 为什么不能用 5xx 代替：5xx 是**有响应**的失败，走 httpStatusError 分支；
+// 这里掐断连接是**没有响应**的失败，客户端拿到的是 EOF / connection reset
+// 之类的 *url.Error，走的是 isRetryable 的 default 分支。两条分支互相不能
+// 代表——本改动的起因（真机上的 "unexpected EOF"、"i/o timeout"）恰恰都
+// 落在后者，一旦 default 被改成 return false，这四条状态码测试照样全绿，
+// 线上却退化回一次抖动即失败。
+func TestGetRetriesOnTransportError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("httptest server 应支持 Hijacker")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("Hijack 失败: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.Write([]byte("hello retry"))
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog(), nil)
+	got, err := i.get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("前两次连接被掐断应当重试后成功，却报错: %v", err)
+	}
+	if !bytes.Equal(got, []byte("hello retry")) {
+		t.Fatalf("正文 = %q，期望 hello retry", got)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3（首次 + 2 次重试）", attempts)
+	}
+}
+
+// 404 是一次性错误，不该重试。
+// 这是约束测试：当前实现无重试，红期也会过，但锁住「4xx 不可重试」。
+func TestGetDoesNotRetryOnClientError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.NotFound(w, nil)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog(), nil)
+	if _, err := i.get(context.Background(), srv.URL); err == nil {
+		t.Fatal("404 应当报错")
+	}
+	if attempts != 1 {
+		t.Fatalf("请求次数 = %d，期望 1（4xx 不可重试）", attempts)
+	}
+}
+
+// 三次全 500：重试耗尽后必须失败，且报错点明尝试次数。
+func TestGetFailsAfterRetriesExhausted(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = time.Millisecond
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	i := NewInstaller(quietLog(), nil)
+	_, err := i.get(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("三次全 500 应当报错")
+	}
+	if !strings.Contains(err.Error(), "尝试 3 次") {
+		t.Fatalf("报错应点明尝试次数，实得: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", attempts)
+	}
+}
+
+// ctx 取消必须立刻中断退避，不能真等 2s→4s 的整段退避。
+// 故意把退避设成 2s 起步：若实现不尊重 ctx，本测试会真睡 6 秒——这正是它锁的行为。
+func TestGetCancelStopsBackoff(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	old := downloadRetryBase
+	downloadRetryBase = 2 * time.Second
+	t.Cleanup(func() { downloadRetryBase = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	i := NewInstaller(quietLog(), nil)
+	_, err := i.get(ctx, srv.URL)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消后应返回 context.Canceled，实得: %v", err)
+	}
+	if elapsed >= 1*time.Second {
+		t.Fatalf("取消后用了 %v 才返回，说明退避没被 ctx 打断", elapsed)
+	}
+}
+
+// countingRT 数一共发了几个请求，并把全部请求转给内部的真实 transport。
+type countingRT struct {
+	n    int
+	base http.RoundTripper
+}
+
+func (c *countingRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.n++
+	return c.base.RoundTrip(r)
+}
+
+// 传进来的 transport 必须真的被用上——否则代理配了等于没配，
+// 而症状是"配了代理还是连不上"，没人会想到是接线断了。
+func TestInstallerUsesGivenTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+	rt := &countingRT{base: http.DefaultTransport}
+	i := NewInstaller(quietLog(), rt)
+	if _, err := i.get(context.Background(), srv.URL); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rt.n != 1 {
+		t.Fatalf("传入的 transport 未被使用，请求数 = %d", rt.n)
+	}
+}
+
+func TestClientUsesGivenTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v9.9.9","assets":[]}`))
+	}))
+	defer srv.Close()
+	rt := &countingRT{base: http.DefaultTransport}
+	c := NewClient(rt)
+	c.APIBase = srv.URL
+	if _, err := c.Latest(context.Background()); err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if rt.n != 1 {
+		t.Fatalf("传入的 transport 未被使用，请求数 = %d", rt.n)
+	}
+}
+
+// nil transport 必须与改造前行为一致（默认 transport，认环境变量）。
+func TestNilTransportKeepsDefault(t *testing.T) {
+	if NewInstaller(quietLog(), nil).HTTP.Transport != nil {
+		t.Error("nil 应保持 http.Client 的零值 Transport（即 http.DefaultTransport）")
+	}
+	if NewClient(nil).HTTP.Transport != nil {
+		t.Error("nil 应保持 http.Client 的零值 Transport（即 http.DefaultTransport）")
+	}
+}
+
+// 资产下载地址是确定性的，不需要查 API 就能拼出来。
+// 这是 agentd 自拉不打 api.github.com 的前提（后者有 60 次/小时/IP 匿名限流，
+// 而多台执行机很可能共用一个代理出口 IP）。
+func TestAssetURL(t *testing.T) {
+	got := AssetURL("Xsxdot/handoff", "v0.2.3", "handoff_v0.2.3_linux_amd64.tar.gz")
+	want := "https://github.com/Xsxdot/handoff/releases/download/v0.2.3/handoff_v0.2.3_linux_amd64.tar.gz"
+	if got != want {
+		t.Errorf("AssetURL = %q，期望 %q", got, want)
+	}
+}
+
+// FetchChecksum 只下 checksums.txt，**不下资产**——自拉模式下协调者靠它
+// 拿 sha256 下发，20MB 的资产由执行机自己去下。
+func TestFetchChecksumDownloadsOnlyChecksums(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Write([]byte("abc123  handoff_v1.0.0_linux_amd64.tar.gz\n"))
+	}))
+	defer srv.Close()
+	rel := Release{Tag: "v1.0.0", Assets: []Asset{
+		{Name: "handoff_v1.0.0_linux_amd64.tar.gz", URL: srv.URL + "/asset"},
+		{Name: ChecksumsName, URL: srv.URL + "/checksums"},
+	}}
+	sum, err := NewInstaller(quietLog(), nil).FetchChecksum(context.Background(), rel, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("FetchChecksum: %v", err)
+	}
+	if sum != "abc123" {
+		t.Errorf("sum = %q，期望 abc123", sum)
+	}
+	if len(paths) != 1 || paths[0] != "/checksums" {
+		t.Errorf("只应请求 checksums，实得 %v", paths)
+	}
+}
+
+// FetchByTag 拼 URL 自己下，并用**传进来的** sum 校验（协调者下发的那个）。
+func TestFetchByTagVerifiesGivenSum(t *testing.T) {
+	payload := []byte("fake-archive")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer srv.Close()
+	i := NewInstaller(quietLog(), nil)
+	i.DownloadBase = srv.URL // 测试缝：把 github.com 换成本地服务
+
+	got, err := i.FetchByTag(context.Background(), "o/r", "v1.0.0", "linux", "amd64",
+		hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatalf("FetchByTag: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("下到的字节不对")
+	}
+
+	// sum 不符必须失败——这是「协调者下发 sum」这条信任链的落点：
+	// agentd 侧的代理/镜像被投毒时就在这里被抓住
+	if _, err := i.FetchByTag(context.Background(), "o/r", "v1.0.0", "linux", "amd64",
+		strings.Repeat("0", 64)); err == nil {
+		t.Error("sha256 不符时 FetchByTag 必须失败")
 	}
 }

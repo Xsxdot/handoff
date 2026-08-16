@@ -113,6 +113,10 @@ type Machine struct {
 	// 消费方（控制台）据此决定终端入口画什么。**nil 不许当 false 用**：
 	// 那会让老版本 agentd 上的终端入口凭空消失，而它其实可能是能用的。
 	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
+	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
+	RevealSupported *bool `json:"reveal_supported,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。
@@ -148,4 +152,75 @@ type DirEntry struct {
 // Entries 永不为 nil：空目录返回 []，前端 `.map` 不需要判空。
 type DirListResult struct {
 	Entries []DirEntry `json:"entries"`
+}
+
+// SearchHit 是搜索命中的一行（GET /api/workspaces/search）。
+type SearchHit struct {
+	Rel  string `json:"rel"`
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// SearchResult 是搜索的完整结论。
+type SearchResult struct {
+	Hits      []SearchHit `json:"hits"`
+	Truncated bool        `json:"truncated"`
+}
+
+// FileRead 是一次文件读取的完整结论（GET /api/workspaces/file 的响应体）。
+//
+// 为什么是结构体而不是继续返回一个 content 字符串：写回需要知道「这份内容完不
+// 完整、是不是文本、基线哈希是多少」，而这三件事只有读的那一刻知道。让调用方
+// 二次判断（比如按扩展名猜二进制）必然与服务端分叉成「前端说能编辑、后端说不能」。
+//
+// SHA256 只在**完整且是文本**时才有值。它唯一的用途是当写入前置条件，而
+// Binary / Truncated 两种情况本来就不许写——**空值即「这文件不可编辑」**，
+// 前端不必再判一次，后端也不必为一个注定被拒的写入算哈希。
+//
+// Size 是磁盘真实大小，不是 len(Content)：截断时两者不同，而用户要看到的是真实大小。
+type FileRead struct {
+	Content   string `json:"content"`
+	Size      int64  `json:"size"`
+	Truncated bool   `json:"truncated,omitempty"` // 超过 1 MiB，只返回开头
+	Binary    bool   `json:"binary,omitempty"`    // 前 8 KiB 出现 NUL 字节
+	SHA256    string `json:"sha256,omitempty"`
+}
+
+// CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体。
+type CreateWorkspaceEntryReq struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "file" 或 "dir"
+}
+
+// RenameWorkspaceEntryReq 是 PATCH /api/workspaces/entry 的请求体。
+type RenameWorkspaceEntryReq struct {
+	NewName string `json:"new_name"`
+}
+
+// FileWriteReq 是 PUT /api/workspaces/file 的请求体。
+//
+// BaseSHA256 必填：它是调用方**读到那一版**的哈希，服务端拿它与磁盘现状比对，
+// 不一致就 409。空串一律判为不匹配——没读过就想写，正是覆盖别人改动的场景。
+type FileWriteReq struct {
+	Content    string `json:"content"`
+	BaseSHA256 string `json:"base_sha256"`
+}
+
+// FileWriteResp 是写入成功后的响应。
+//
+// SHA256 是**新内容**的哈希，调用方直接拿它当下一次写入的 base_sha256，
+// 不需要为了拿新基线再读一次。
+type FileWriteResp struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+// FileConflictResp 是 409 的响应体。
+//
+// 带上 Current（磁盘现状的完整读取结论）是为了让冲突界面一次成型：用户要在
+// 「放弃我的改动」和「用我的内容覆盖」之间选，两个动作都需要磁盘现状——前者
+// 要它的正文，后者要它的哈希当新基线。分两次请求会在两次之间再开一个窗口。
+type FileConflictResp struct {
+	Error   string   `json:"error"`
+	Current FileRead `json:"current"`
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestServeSpecPutsPasswordInEnvNotArgv 钉死安全边界：

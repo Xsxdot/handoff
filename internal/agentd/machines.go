@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // machineProbeBudget 是整轮扇出探活的总预算。
@@ -93,6 +93,8 @@ func (s *Server) localMachine() proto.Machine {
 	// 只在 handleStatus 组装 HTTP 响应时才有；本机的平台支持度只有这里知道。
 	ptyOK := s.pty.Supported()
 	m.PtySupported = &ptyOK
+	revealOK := revealSupportedOS
+	m.RevealSupported = &revealOK
 	return m
 }
 
@@ -132,6 +134,7 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 
 	// 能力位原样搬运，包括 nil：探到了但对端没这个字段，结论就是「没上报」
 	m.PtySupported = st.PtySupported
+	m.RevealSupported = st.RevealSupported
 }
 
 // handleMachines 处理 GET /api/machines。

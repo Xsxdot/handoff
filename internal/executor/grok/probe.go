@@ -12,7 +12,7 @@ package grok
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Probe 只读探测 grok serve 是否仍存活（manager 的 prober 可选接口）。
@@ -32,7 +32,7 @@ func (a *Adapter) Probe(req executor.ProbeReq) (executor.ProbeOutcome, error) {
 		a.log.Info("grok 探活：serve 存活", "task", req.TaskID, "port", proc.Port)
 		return executor.ProbeOutcome{Alive: true}, nil
 	}
-	// Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导
+	// Note 是判死后直接呈给协调者的一句话理由，写着一个已经不存在的概念等于误导
 	note := fmt.Sprintf("grok serve 已不在（进程 pid %d，端口 %d 无应答）", proc.Handle.PID, proc.Port)
 	a.log.Info("grok 探活：serve 已不在", "task", req.TaskID, "port", proc.Port)
 	return executor.ProbeOutcome{Alive: false, Note: note}, nil

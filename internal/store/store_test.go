@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // TestTaskLifecycle 覆盖 Create→Get 回读一致、合法状态链、非法迁移拒绝与字段白名单。
@@ -417,7 +417,7 @@ func TestWorkdirFallsBackToRepoPath(t *testing.T) {
 
 // TestAnswerTicketRefreshesTaskUpdatedAt 验证回答工单会刷新所属任务的 updated_at
 // （P1-15a 二次告警的活动信号）：看门狗凭 updated_at 前进判定「stalled 之后有
-// 回复」，回答必须推进它，否则「已 stalled → 审核者回答 → executor 仍死」永远
+// 回复」，回答必须推进它，否则「已 stalled → 协调者回答 → executor 仍死」永远
 // 不再告警。
 func TestAnswerTicketRefreshesTaskUpdatedAt(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
@@ -864,5 +864,284 @@ func TestDoneNoteRoundTrip(t *testing.T) {
 	}
 	if got.DoneNote != "改完了登录页，两个用例补齐" {
 		t.Fatalf("done_note 没读回来: %q", got.DoneNote)
+	}
+}
+
+// TestSetTaskUsageWritesAndRestoresNil 覆盖三件事：写入回读一致、空值语义是
+// 「不更新」而非「清空」、0/空列还原成 nil（绝不冒充 0）。
+func TestSetTaskUsageWritesAndRestoresNil(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.CreateTask(&proto.Task{
+		ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// 新任务：三列都是零值 → Usage 必须是 nil，ActualModel 必须是空串
+	got, err := s.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Usage != nil {
+		t.Fatalf("零值任务的 Usage 应为 nil，得到 %+v", got.Usage)
+	}
+	if got.ActualModel != "" {
+		t.Fatalf("零值任务的 ActualModel 应为空串，得到 %q", got.ActualModel)
+	}
+
+	// 带分母写入
+	win := 258400
+	if err := s.SetTaskUsage("t1", "gpt-5.6-sol", 24668, &win); err != nil {
+		t.Fatalf("SetTaskUsage: %v", err)
+	}
+	got, _ = s.GetTask("t1")
+	if got.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("ActualModel = %q，期望 gpt-5.6-sol", got.ActualModel)
+	}
+	if got.Usage == nil || got.Usage.ContextTokens != 24668 {
+		t.Fatalf("ContextTokens 回读不一致: %+v", got.Usage)
+	}
+	if got.Usage.ContextWindow == nil || *got.Usage.ContextWindow != 258400 {
+		t.Fatalf("ContextWindow 回读不一致: %+v", got.Usage)
+	}
+
+	// 空值 = 不更新（不是清空）：只更新分子，模型名与分母必须原样保留
+	if err := s.SetTaskUsage("t1", "", 30000, nil); err != nil {
+		t.Fatalf("SetTaskUsage 二次: %v", err)
+	}
+	got, _ = s.GetTask("t1")
+	if got.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("空模型名不该清空既有值，得到 %q", got.ActualModel)
+	}
+	if got.Usage.ContextWindow == nil || *got.Usage.ContextWindow != 258400 {
+		t.Fatalf("nil 分母不该清空既有值: %+v", got.Usage)
+	}
+	if got.Usage.ContextTokens != 30000 {
+		t.Fatalf("分子应更新为 30000，得到 %d", got.Usage.ContextTokens)
+	}
+}
+
+// TestUsageWithoutWindowStaysNil 覆盖不报分母的执行者（claudecode/opencode）：
+// 有分子无分母时 ContextWindow 必须是 nil，界面据此不显示百分比。
+func TestUsageWithoutWindowStaysNil(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.CreateTask(&proto.Task{
+		ID: "t2", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := s.SetTaskUsage("t2", "k3-256k", 121801, nil); err != nil {
+		t.Fatalf("SetTaskUsage: %v", err)
+	}
+	got, _ := s.GetTask("t2")
+	if got.Usage == nil || got.Usage.ContextTokens != 121801 {
+		t.Fatalf("分子回读不一致: %+v", got.Usage)
+	}
+	if got.Usage.ContextWindow != nil {
+		t.Fatalf("无分母时 ContextWindow 必须是 nil，得到 %d", *got.Usage.ContextWindow)
+	}
+}
+
+// TestUpsertSpendOverwritesByKey 验幂等的核心语义：同键覆盖、异键累加。
+func TestUpsertSpendOverwritesByKey(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{
+		ID: "t-spend", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// 同一个 key 报两次，第二次值更大（opencode 流式增长的形态）
+	if err := s.UpsertSpend("t-spend", proto.SpendEntry{
+		Key: "k1", InputTokens: 10, CachedTokens: 20, OutputTokens: 5,
+		CostTicks: 100, CostState: proto.CostReported}); err != nil {
+		t.Fatalf("UpsertSpend(k1 第一次): %v", err)
+	}
+	if err := s.UpsertSpend("t-spend", proto.SpendEntry{
+		Key: "k1", InputTokens: 30, CachedTokens: 40, OutputTokens: 7,
+		CostTicks: 300, CostState: proto.CostReported}); err != nil {
+		t.Fatalf("UpsertSpend(k1 第二次): %v", err)
+	}
+	if err := s.UpsertSpend("t-spend", proto.SpendEntry{
+		Key: "k2", InputTokens: 1, CachedTokens: 2, OutputTokens: 3,
+		CostTicks: 50, CostState: proto.CostReported}); err != nil {
+		t.Fatalf("UpsertSpend(k2): %v", err)
+	}
+
+	c, err := s.TaskCumulative("t-spend")
+	if err != nil {
+		t.Fatalf("TaskCumulative: %v", err)
+	}
+	if c == nil {
+		t.Fatal("TaskCumulative 返回了 nil，want 累计值")
+	}
+	if c.InputTokens != 31 || c.CachedTokens != 42 || c.OutputTokens != 10 || c.TotalTokens != 83 {
+		t.Fatalf("token 求和不对: %+v", c)
+	}
+	if c.Cost == nil {
+		t.Fatal("Cost 为 nil，want 有值")
+	}
+	if *c.Cost != (proto.Cost{Ticks: 350, State: proto.CostReported}) {
+		t.Fatalf("Cost = %+v, want {350 reported}", *c.Cost)
+	}
+}
+
+// TestTaskCumulativeCostStates 表驱动验证花费状态的归约规则：从「全自报」
+// 到「全缺席」的五档。proto.Cost 无指针字段，可直接 != 比较。
+func TestTaskCumulativeCostStates(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []proto.SpendEntry
+		want    *proto.Cost
+	}{
+		{
+			name: "没有任何账目", entries: nil, want: nil,
+		},
+		{
+			name: "全部自报",
+			entries: []proto.SpendEntry{
+				{Key: "a", InputTokens: 1, CostTicks: 100, CostState: proto.CostReported},
+				{Key: "b", InputTokens: 1, CostTicks: 200, CostState: proto.CostReported},
+			},
+			want: &proto.Cost{Ticks: 300, State: proto.CostReported},
+		},
+		{
+			name: "含估算",
+			entries: []proto.SpendEntry{
+				{Key: "a", InputTokens: 1, CostTicks: 100, CostState: proto.CostReported},
+				{Key: "b", InputTokens: 1, CostTicks: 200, CostState: proto.CostEstimated},
+			},
+			want: &proto.Cost{Ticks: 300, State: proto.CostEstimated},
+		},
+		{
+			name: "有已知也有缺席——是下界",
+			entries: []proto.SpendEntry{
+				{Key: "a", InputTokens: 1, CostTicks: 100, CostState: proto.CostReported},
+				{Key: "b", InputTokens: 1, CostTicks: 0, CostState: proto.CostUnknown},
+			},
+			want: &proto.Cost{Ticks: 100, State: proto.CostPartial},
+		},
+		{
+			name: "全部缺席——绝不能是 $0.00",
+			entries: []proto.SpendEntry{
+				{Key: "a", InputTokens: 1, CostTicks: 0, CostState: proto.CostUnknown},
+				{Key: "b", InputTokens: 1, CostTicks: 0, CostState: proto.CostUnknown},
+			},
+			want: &proto.Cost{Ticks: 0, State: proto.CostUnknown},
+		},
+		{
+			name: "估算与缺席同时——按缺席（漏账比不准要紧）",
+			entries: []proto.SpendEntry{
+				{Key: "a", InputTokens: 1, CostTicks: 100, CostState: proto.CostEstimated},
+				{Key: "b", InputTokens: 1, CostTicks: 0, CostState: proto.CostUnknown},
+			},
+			want: &proto.Cost{Ticks: 100, State: proto.CostPartial},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+			if err != nil {
+				t.Fatalf("Open 失败: %v", err)
+			}
+			defer s.Close()
+
+			now := time.Now().UTC()
+			if err := s.CreateTask(&proto.Task{
+				ID: "t-cost", RepoPath: "/r", State: proto.TaskStateRunning,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			for _, e := range tc.entries {
+				if err := s.UpsertSpend("t-cost", e); err != nil {
+					t.Fatalf("UpsertSpend(%s): %v", e.Key, err)
+				}
+			}
+
+			c, err := s.TaskCumulative("t-cost")
+			if err != nil {
+				t.Fatalf("TaskCumulative: %v", err)
+			}
+			if tc.want == nil {
+				if c != nil {
+					t.Fatalf("want nil Cumulative，得到 %+v", c)
+				}
+				return
+			}
+			if c == nil || c.Cost == nil {
+				t.Fatalf("want Cost %+v，得到 %+v", tc.want, c)
+			}
+			if *c.Cost != *tc.want {
+				t.Fatalf("Cost = %+v, want %+v", *c.Cost, *tc.want)
+			}
+		})
+	}
+}
+
+// TestGetTaskFillsCumulativeListDoesNot 单读带累计、列表刻意不带。
+func TestGetTaskFillsCumulativeListDoesNot(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{
+		ID: "t-cum", RepoPath: "/r", State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := s.UpsertSpend("t-cum", proto.SpendEntry{
+		Key: "k", InputTokens: 7, CostTicks: 10, CostState: proto.CostReported}); err != nil {
+		t.Fatalf("UpsertSpend: %v", err)
+	}
+
+	got, err := s.GetTask("t-cum")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Cumulative == nil {
+		t.Fatal("GetTask 的 Cumulative 为 nil，want 填充")
+	}
+	if got.Cumulative.InputTokens != 7 {
+		t.Fatalf("Cumulative.InputTokens = %d, want 7", got.Cumulative.InputTokens)
+	}
+
+	tasks, err := s.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatal("ListTasks 为空")
+	}
+	for _, tk := range tasks {
+		if tk.Cumulative != nil {
+			t.Fatalf("ListTasks 不应填充 Cumulative，得到 %+v", tk.Cumulative)
+		}
 	}
 }

@@ -40,7 +40,7 @@ const fenceReserveFloor = 200
 // fenceWatermarkRatio 是「贴着上限」的判定线：达到参考上限的九成即为高水位。
 //
 // 为什么是九成而不是满：满了才告警等于没告警——那时已经在撞墙了。九成留出
-// 的余量足够审核者收到事件、看一眼、决定要不要收敛。
+// 的余量足够协调者收到事件、看一眼、决定要不要收敛。
 const fenceWatermarkRatio = 0.9
 
 // procLimitFn 是读系统上限的测试缝（与 enumProcsFn 同款路数）。
@@ -85,7 +85,7 @@ func SetFencePolicy(disabled bool, reserveRatio float64) {
 //
 // 取法是「贴天花板留救护车道」，不是「给 executor 节流」：保留额只要够
 // agentd/sshd/登录 shell 活着即可。压得更低不增加安全性，只会让 executor 更
-// 早撞墙、让审核者更容易把配额问题误判成代码问题——一个会误导的防护比没有
+// 早撞墙、让协调者更容易把配额问题误判成代码问题——一个会误导的防护比没有
 // 防护更糟。
 func fenceLimit() (int, error) {
 	if fenceDisabled {

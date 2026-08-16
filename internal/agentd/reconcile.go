@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - reconcileExecutorGone：「executor 已不在」这一事实的唯一收尾实现，
-//     三个到达口（启动探活 / 事件通道关闭 / 审核者动作撞上失配）共用
+//     三个到达口（启动探活 / 事件通道关闭 / 协调者动作撞上失配）共用
 //
 // 边界：
 //   - 不探活：本文件只负责「已经知道 executor 没了之后怎么办」，
@@ -16,10 +16,10 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // noteStopping 标记「接下来这次事件通道关闭是我们自己发起的」。
@@ -82,7 +82,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		// 唯独「已发 SIGKILL 但复核仍存活」要惊动人：这是唯一一种不提示就会
 		// 留下长期孤儿的失败（B20 现场存活了 11.5 小时，正是因为完全静默）。
 		// 其余 Stop 失败五花八门（ctx 取消、内部状态不一致），全发事件等于
-		// 把审核者淹了，那样这条提示就没人看了。
+		// 把协调者淹了，那样这条提示就没人看了。
 		if errors.Is(err, prochost.ErrStillAlive) {
 			m.notifyOrphanRisk(taskID, fmt.Sprintf(
 				"executor 进程可能残留（已发 SIGKILL 但复核仍存活），"+
@@ -99,7 +99,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
 	if rerr := rp.Reap(taskID, taskDir); rerr != nil {
 		m.log.Error("兜底回收失败，留事件提示人工", "task", taskID, "cause", rerr)
-		// 给审核者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
+		// 给协调者的是「下一步做什么」，不是「出了什么错」——旧文案让人去
 		// tmux kill-session，那个命令现在不存在了，照做只会更困惑
 		m.notifyOrphanRisk(taskID, fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
 			"再 handoff stop %s 回收（原因：%v）", taskID, rerr))
@@ -112,7 +112,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 //
 // 参数：
 //   - taskID: 目标任务
-//   - text: 面向审核者的正文；给的必须是「下一步做什么」而不是「出了什么错」
+//   - text: 面向协调者的正文；给的必须是「下一步做什么」而不是「出了什么错」
 //
 // 注意：
 //   - 追加失败只记日志、不返回错误：调用方全都处在归档/中止的收尾路径上，
@@ -124,7 +124,7 @@ func (m *Manager) notifyOrphanRisk(taskID, text string) {
 		return
 	}
 	m.hub.Publish(evt)
-	m.log.Info("已向审核者发出 executor 残留提示", "task", taskID)
+	m.log.Info("已向协调者发出 executor 残留提示", "task", taskID)
 }
 
 // reconcileExecutorGone 收尾一个 executor 已不在的任务。
@@ -138,7 +138,7 @@ func (m *Manager) notifyOrphanRisk(taskID, text string) {
 // 过的任务同样可能有残留（那次 Kill 正因锁已释放而空转）。2026-08-12 事故里两个
 // 任务最终都停在 waiting_review，恰好是提前返回会跳过的形态。
 //
-// 顺序：状态收尾在前、清扫在后。审核者的工作流（任务进 waiting_review）不受
+// 顺序：状态收尾在前、清扫在后。协调者的工作流（任务进 waiting_review）不受
 // 清扫成败影响——清扫失败只上报，绝不回头改状态。
 func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	log *slog.Logger, sweep func(taskID string)) proto.TaskState {
@@ -159,22 +159,71 @@ func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	// 走不到 transit 的终态分支，但「executor 已死 ⇒ 挂起工单不可能再被回答」的
 	// 语义与终态一致，审计痕迹也该一致
 	voidTicketsWithAudit(st, taskID, reason, log)
-	// 对账路径没有 git 实况可带（executor 已不在，查不了回合起点）
-	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
-	if err != nil {
-		log.Error("对账追加 failed 事件失败，不迁移状态", "task", taskID, "cause", err)
-		sweep(taskID) // 状态没迁成不代表 executor 还活着，残留照收
+	// 先迁状态、后追加事件（B97）：turn_failed 事件一落库就可被 WS 重放读到，状态
+	// 必须先就位，否则协调者看到 turn_failed 后立刻 continue/done 会被状态机 409
+	// 拒。反转的代价是失败形态从「状态错」变成「状态对、事件缺」：迁失败就不追加
+	// 事件，任务停在旧状态可重试；崩在两步之间留下的是「waiting_review 但缺一条
+	// turn_failed」，协调者 show 出来仍可裁决——旧形态「事件说回合失败、状态还是
+	// running」只会让操作被拒、干等到 2h 看门狗（handleResult / transitFailedWithEvent
+	// 函数头的同一条理由）。
+	if err := recoverTransit(st, taskID, cur.State); err != nil {
+		log.Error("对账迁移 waiting_review 失败，不追加 turn_failed 事件", "task", taskID, "cause", err)
+		sweep(taskID)
 		return cur.State
 	}
-	if err := recoverTransit(st, taskID, cur.State); err != nil {
-		log.Error("对账迁移 waiting_review 失败", "task", taskID, "cause", err)
-		sweep(taskID)
+	// 对账路径没有 git 实况可带（executor 已不在，查不了回合起点）。
+	//
+	// 类型是 turn_failed 而不是 failed（B100 补漏）：本函数迁的是
+	// **waiting_review**（上面的 recoverTransit），任务**没有终结**——executor 死了
+	// 但代码还在，值得让协调者 diff 完再决定 continue 还是 done。落 failed 会让
+	// wait --follow 收流、打「任务已终结」并以 0 退出，把一个正等着裁决的任务
+	// 报成死的。B100 首轮漏了这条：它的 spec 把这一行误记成「任务落 failed」，
+	// 没去看 recoverTransit 的实际迁移目标（见 watchdog.go 里 transitFailedWithEvent
+	// 的注释，那里明写着「reconcileExecutorGone 收的是 waiting_review」）。
+	evt, err := st.AppendEvent(taskID, proto.EventTypeTurnFailed, newFailedPayload(reason, "", ""))
+	if err != nil {
+		log.Error("对账追加 turn_failed 事件失败（状态已迁 waiting_review）", "task", taskID, "cause", err)
+		sweep(taskID) // 事件没发成不代表 executor 还活着，残留照收
 		return cur.State
 	}
 	hub.Publish(evt)
 	log.Info("对账完成", "task", taskID, "from", cur.State, "to", proto.TaskStateWaitingReview)
 	sweep(taskID)
 	return proto.TaskStateWaitingReview
+}
+
+// TaskProcCount 数一个任务名下当前有几个进程。
+//
+// 参数：taskID 为完整任务 id
+//
+// 返回：(n, ok)。**ok 为 false 时 n 无意义**，调用方必须什么都不做——
+// 取不到句柄、adapter 不支持、Footprint 判定不可信（Verdict 非 OK）都归此类。
+// 把「量不出来」当成「超了」会误杀，当成「没超」会让告警的置位状态错乱。
+//
+// 导出是因为 watchdog 的接线点在 cmd/agentd.go（与 SweepTaskProcs 同理），
+// 不是给外部当通用 API 用。
+func (m *Manager) TaskProcCount(taskID string) (int, bool) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Debug("点名解析执行者失败", "task", taskID, "cause", err)
+		return 0, false
+	}
+	fp, ok := ad.(footprinter)
+	if !ok {
+		m.log.Debug("adapter 不支持进程句柄，跳过点名", "task", taskID)
+		return 0, false
+	}
+	h, err := fp.ProcHandle(taskID, filepath.Join(m.cfg.DataDir, "tasks", taskID))
+	if err != nil {
+		m.log.Debug("点名取进程句柄失败", "task", taskID, "cause", err)
+		return 0, false
+	}
+	members, v, err := prochost.Footprint(h)
+	if err != nil || v != prochost.VerdictOK {
+		m.log.Debug("点名读数不可信", "task", taskID, "verdict", string(v), "cause", err)
+		return 0, false
+	}
+	return len(members), true
 }
 
 // footprinter 是「交出任务进程句柄」的可选 adapter 能力（四个真实 adapter 均实现，
@@ -187,50 +236,58 @@ type footprinter interface {
 	ProcHandle(taskID, taskDir string) (prochost.Handle, error)
 }
 
-// SweepTaskProcs 清扫一个任务的残留进程，best-effort。
-//
-// 参数：taskID 为目标任务
-//
-// 注意：
-//   - 无返回值：调用方全都处在收尾路径上，清扫成败不该反过来影响那件事
-//   - 只有「确实有残留但我们没敢动」才发事件提示人工；成功与无残留只进日志。
-//     这是尊重 stopExecutor 已经想清楚过的事——「其余失败五花八门，全发事件
-//     等于把审核者淹了，那样这条提示就没人看了」
-//   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
-//     不是给外部当通用 API 用
-func (m *Manager) SweepTaskProcs(taskID string) {
+func (m *Manager) sweepTaskProcsOnce(taskID string) error {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("清扫解析执行者失败", "task", taskID, "cause", err)
-		return
+		return err
 	}
 	fp, ok := ad.(footprinter)
 	if !ok {
 		m.log.Debug("adapter 不支持进程句柄，跳过清扫", "task", taskID)
-		return
+		return nil
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	h, err := fp.ProcHandle(taskID, taskDir)
 	if err != nil {
 		m.log.Error("清扫取进程句柄失败", "task", taskID, "dir", taskDir, "cause", err)
-		return
+		return err
 	}
 	killed, verdict, err := prochost.Sweep(h)
 	switch {
 	case errors.Is(err, prochost.ErrExecutorAlive):
 		// 竞态：判死与清扫之间 executor 又被认为活着。不是错误，交给正常路径
 		m.log.Info("清扫时执行者仍存活，交由常规回收路径", "task", taskID, "pid", h.PID)
+		return err
 	case err != nil:
 		m.log.Error("清扫失败", "task", taskID, "pid", h.PID, "cause", err)
 		m.notifyOrphanRisk(taskID, fmt.Sprintf(
 			"残留进程清扫失败（pid=%d，原因：%v），请先 handoff footprint 确认再人工处理", h.PID, err))
+		return err
 	case verdict != prochost.VerdictOK:
 		m.log.Warn("清扫放弃", "task", taskID, "pid", h.PID, "verdict", string(verdict))
 		m.notifyOrphanRisk(taskID, fmt.Sprintf(
 			"残留进程未清扫（判定：%s），请先 handoff footprint 确认再人工处理", verdict))
+		return nil
 	case killed > 0:
 		m.log.Info("残留进程已清扫", "task", taskID, "pid", h.PID, "killed", killed)
+		return nil
 	default:
 		m.log.Info("无残留进程", "task", taskID, "pid", h.PID)
+		return nil
 	}
+}
+
+// SweepTaskProcs 清扫一个任务的残留进程，best-effort。
+//
+// 参数：taskID 为目标任务
+//
+// 注意：
+//   - 无返回值是刻意的：它的调用方（watchdog、RecoverOnStartup、reconcileExecutorGone）
+//     全都处在收尾路径上，清扫成败不该反过来影响那件事
+//   - 需要知道清扫结果的调用方（Done/Stop 的有界重试）走 sweepTaskProcsOnce
+//   - 导出是因为 RecoverOnStartup 的接线点在 cmd/agentd.go（与 ResumeTask 同理），
+//     不是给外部当通用 API 用
+func (m *Manager) SweepTaskProcs(taskID string) {
+	_ = m.sweep(taskID)
 }

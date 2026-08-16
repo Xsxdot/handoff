@@ -11,6 +11,8 @@ package release
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -23,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -33,6 +36,18 @@ import (
 // 出错的响应不该把内存吃光。
 const maxAssetBytes = 100 << 20
 
+// downloadRetryMax 是单个 URL 的总尝试次数上限（首次 + 2 次重试）。
+//
+// 瞬时网络故障（EOF、连接重置、超时）绝大多数在几秒内自愈，3 次覆盖
+// 「抖动一下」的常见情形；再多只会把清晰的失败拖成更久的沉默。
+var downloadRetryMax = 3
+
+// downloadRetryBase 是首次重试前的等待，之后指数翻倍（2s → 4s）。
+//
+// 连续失败说明网络持续不稳，退避给服务端喘息空间、避免故障高峰期加剧压力。
+// 做成 var 而非常量，是为了测试里能改成毫秒级，否则一个跑 6 秒的单测会被后人删掉。
+var downloadRetryBase = 2 * time.Second
+
 // selfCheckTimeout 是新二进制自检的时间上限。
 //
 // `handoff version` 不读配置不联网，正常是毫秒级；10s 只是防止一个坏掉的
@@ -42,7 +57,21 @@ const selfCheckTimeout = 10 * time.Second
 // TempName 返回某版本的临时文件名。
 //
 // 前导点让它在目录列表里不显眼；带上 tag 使多次尝试不同版本时互不覆盖。
-func TempName(tag string) string { return ".handoff.new-" + tag }
+// Windows 上追加 .exe——selfCheck 要 exec 这个临时文件跑 version，
+// 没有该后缀的文件在 Windows 上起不来。
+func TempName(tag string) string { return tempName(tag, runtime.GOOS) }
+
+// tempName 是 TempName 的可测实现，平台由调用方给定。
+//
+// 拆出这一层的唯一理由是可测性：判据写死成 runtime.GOOS 时，
+// 「Windows 上带 .exe」这条行为在非 Windows 的 CI 上永远测不到。
+func tempName(tag, goos string) string {
+	name := ".handoff.new-" + tag
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return name
+}
 
 // PrevPath 返回某目标路径对应的旧二进制留存路径。
 func PrevPath(target string) string { return target + ".prev" }
@@ -51,11 +80,22 @@ func PrevPath(target string) string { return target + ".prev" }
 type Installer struct {
 	HTTP *http.Client
 	Log  *slog.Logger
+	// DownloadBase 是资产下载根，默认 release.DownloadBase。
+	// 存在的唯一理由是可测性：不覆盖它，FetchByTag 的测试必须真的打 github.com
+	DownloadBase string
 }
 
 // NewInstaller 构造默认 installer（10 分钟超时，覆盖慢网下的 20MB 下载）。
-func NewInstaller(log *slog.Logger) *Installer {
-	return &Installer{HTTP: &http.Client{Timeout: 10 * time.Minute}, Log: log}
+//
+// 参数：
+//   - log: 日志入口
+//   - tr: HTTP transport；**nil = 用标准库默认**（认 HTTPS_PROXY 等环境变量）
+func NewInstaller(log *slog.Logger, tr http.RoundTripper) *Installer {
+	return &Installer{
+		HTTP:         &http.Client{Timeout: 10 * time.Minute, Transport: tr},
+		Log:          log,
+		DownloadBase: DownloadBase,
+	}
 }
 
 // FetchArchive 按指定平台下载资产并校验完整性，返回字节与期望哈希。
@@ -110,6 +150,89 @@ func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch 
 	return tgz, want, nil
 }
 
+// FetchChecksum 只下载 checksums.txt 并解出某平台资产的期望哈希。
+//
+// 参数：
+//   - ctx: 上下文
+//   - rel: 目标发布（需要它的 Assets 里有 checksums.txt 的 URL）
+//   - goos / goarch: 目标机器的平台
+//
+// 返回：
+//   - 该平台资产的 sha256（十六进制小写）
+//   - 错误：缺 checksums 资产、下载失败、文件里没有该资产的行
+//
+// 注意：
+//   - **不下资产**。这正是自拉模式的省流量点：协调者只下几百字节的 checksums，
+//     20MB 的资产由执行机自己去下（spec §5.5）
+//   - 一次 upgrade --now 涉及多台机器时，调用方应当只调一次并缓存——
+//     同一个 release 的 checksums.txt 对所有平台是同一份
+func (i *Installer) FetchChecksum(ctx context.Context, rel Release, goos, goarch string) (string, error) {
+	ck, ok := rel.Checksums()
+	if !ok {
+		i.Log.Error("发布没有校验和文件，无法校验完整性", "tag", rel.Tag, "asset", ChecksumsName)
+		return "", fmt.Errorf("发布 %s 没有 %s，无法校验完整性", rel.Tag, ChecksumsName)
+	}
+	i.Log.Info("下载校验和文件", "tag", rel.Tag, "url", ck.URL)
+	sums, err := i.get(ctx, ck.URL)
+	if err != nil {
+		i.Log.Error("下载校验和文件失败", "tag", rel.Tag, "url", ck.URL, "cause", err)
+		return "", fmt.Errorf("下载 %s: %w", ChecksumsName, err)
+	}
+	sum, err := sumFor(string(sums), AssetName(rel.Tag, goos, goarch))
+	if err != nil {
+		i.Log.Error("校验和文件里没有该平台的行", "tag", rel.Tag,
+			"platform", goos+"/"+goarch, "cause", err)
+		return "", err
+	}
+	i.Log.Info("取得校验和", "tag", rel.Tag, "platform", goos+"/"+goarch, "sha256", sum)
+	return sum, nil
+}
+
+// FetchByTag 按 tag 拼出下载地址、下载资产并用**给定的** sha256 校验。
+//
+// 参数：
+//   - ctx: 上下文
+//   - repo: owner/name
+//   - tag: 目标版本
+//   - goos / goarch: 本机平台
+//   - wantSum: 期望的 sha256（十六进制小写）。自拉模式下**来自协调者下发**
+//
+// 返回：
+//   - 资产原文（tar.gz / zip 字节，未解包）
+//   - 错误：下载失败、sha256 不符
+//
+// 注意：
+//   - 与 FetchArchive 的区别是**不需要 Release 对象、不查 API**：地址由
+//     AssetURL 确定性拼出，wantSum 由调用方给。这让执行机完全不碰
+//     api.github.com（避开 60 次/小时/IP 的匿名限流）
+//   - wantSum 由调用方给而不是自己去取 checksums，是刻意的：校验和与资产
+//     走两条不同的信任路径，本机代理/镜像被投毒时才抓得住（spec §5.5）。
+//     **别"优化"成自己下 checksums**
+//   - 不重试：完整性失败重试只会重下同一份坏数据（spec §4.7）
+func (i *Installer) FetchByTag(ctx context.Context, repo, tag, goos, goarch, wantSum string) ([]byte, error) {
+	base := i.DownloadBase
+	if base == "" {
+		base = DownloadBase
+	}
+	name := AssetName(tag, goos, goarch)
+	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", base, repo, tag, name)
+
+	i.Log.Info("开始下载资产", "tag", tag, "platform", goos+"/"+goarch, "asset", name, "url", url)
+	b, err := i.get(ctx, url)
+	if err != nil {
+		i.Log.Error("下载资产失败", "tag", tag, "url", url, "cause", err)
+		return nil, fmt.Errorf("下载 %s: %w", name, err)
+	}
+	got := sha256.Sum256(b)
+	if hex.EncodeToString(got[:]) != wantSum {
+		i.Log.Error("资产校验不通过", "tag", tag, "asset", name,
+			"want", wantSum, "got", hex.EncodeToString(got[:]), "bytes", len(b))
+		return nil, fmt.Errorf("sha256 校验不通过（期望 %s，实得 %s）", wantSum, hex.EncodeToString(got[:]))
+	}
+	i.Log.Info("资产校验通过", "tag", tag, "asset", name, "sha256", wantSum, "bytes", len(b))
+	return b, nil
+}
+
 // InstallArchive 校验、解包、自检一份已下载的资产，返回可供 Activate 的临时文件路径。
 //
 // 参数：
@@ -141,11 +264,15 @@ func (i *Installer) InstallArchive(tgz []byte, wantSum, wantTag, destDir string)
 			i.Log.Warn("清理临时文件失败", "path", tmp, "cause", err)
 		}
 	}
-	if err := extractBinary(tgz, tmp); err != nil {
+	format, err := extractBinary(tgz, tmp)
+	if err != nil {
 		cleanup()
 		i.Log.Error("安装被拒：解包失败", "tag", wantTag, "path", tmp, "cause", err)
 		return "", fmt.Errorf("解包 %s: %w", wantTag, err)
 	}
+	// 装的到底是 zip 还是 tar.gz 是排查「资产格式与平台不符」时的第一个问题，
+	// 而它此前只能靠资产名去猜
+	i.Log.Info("归档解包完成", "tag", wantTag, "format", format, "path", tmp)
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		cleanup()
 		i.Log.Error("安装被拒：置可执行位失败", "tag", wantTag, "path", tmp, "cause", err)
@@ -183,21 +310,88 @@ func (i *Installer) Fetch(ctx context.Context, rel Release, destDir string) (str
 	return i.InstallArchive(tgz, sum, rel.Tag, destDir)
 }
 
-// get 取一个 URL 的全部内容，带大小上限。
+// httpStatusError 是响应状态码非 200 的错误，带上状态码供重试判定用。
+type httpStatusError struct{ code int }
+
+func (e httpStatusError) Error() string { return fmt.Sprintf("返回 %d", e.code) }
+
+// get 取一个 URL 的全部内容，带大小上限，失败时按策略重试。
+//
+// 重试策略：
+//   - 总尝试次数上限 downloadRetryMax（3 次）：首次 + 2 次重试
+//   - 退避间隔从 downloadRetryBase（2s）开始指数翻倍：第 2 次尝试前等 2s，
+//     第 3 次尝试前等 4s
+//
+// 可重试的失败：
+//   - 传输层错误（Do / 读响应体失败）：超时、连接被拒、连接重置、EOF——
+//     这一类大概率是瞬时网络抖动，几秒内能自愈
+//   - HTTP 5xx 与 429：服务端过载或暂时不可用，缓一缓再问是合理的
+//
+// 不可重试的失败：
+//   - 4xx（429 除外）：404 表示「这个版本没有这个资产」，是确定性的缺失，
+//     重试一百次还是 404，只会把一句清晰的错误拖成更久的沉默；
+//     同理，请求构造错误（URL 非法等）也是确定性的，重试没有意义
+//
+// 所以这里把重试留给「大概率会自愈」的失败，剩下的尽快如实报错——
+// 重试不是无脑重复，区分的关键不是次数，而是失败的性质。
 func (i *Installer) get(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	var lastErr error
+	for attempt := 1; attempt <= downloadRetryMax; attempt++ {
+		body, err := i.getOnce(ctx, req)
+		if err == nil {
+			if attempt > 1 {
+				i.Log.Info("下载重试成功", "url", url, "attempt", attempt)
+			}
+			return body, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			// 不可重试的失败（如 404）只发生一次，如实原样返回。
+			// 套上「尝试 N 次仍失败」等于把事实上的 1 次说成 3 次，且把确定性的
+			// 缺失错说成「重试后仍未自愈」，会让排障者去查网络而不是资产清单。
+			return nil, err
+		}
+		if attempt >= downloadRetryMax {
+			break
+		}
+		backoff := downloadRetryBase << uint(attempt-1)
+		i.Log.Warn("下载失败，即将重试", "url", url, "attempt", attempt, "backoff", backoff, "cause", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return nil, fmt.Errorf("尝试 %d 次仍失败: %w", downloadRetryMax, lastErr)
+}
+
+// getOnce 执行单次请求：Do + 读响应体。非 200 返回带状态码的 httpStatusError。
+func (i *Installer) getOnce(ctx context.Context, req *http.Request) ([]byte, error) {
 	resp, err := i.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("返回 %d", resp.StatusCode)
+		return nil, httpStatusError{code: resp.StatusCode}
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes))
+}
+
+// isRetryable 判断一次失败是否值得重试。
+//
+// 传输层错误（Do / 读响应体失败）视为瞬时故障，一律可重试；
+// 状态码错误只重试 429 与 5xx——4xx 是确定性的，重试只是把清晰的错误拖成沉默。
+func isRetryable(err error) bool {
+	var se httpStatusError
+	if errors.As(err, &se) {
+		return se.code == http.StatusTooManyRequests || se.code >= 500
+	}
+	return true
 }
 
 // sumFor 从 checksums.txt 里取某个资产的期望哈希。
@@ -217,9 +411,50 @@ func sumFor(body, name string) (string, error) {
 	return "", fmt.Errorf("%s 里没有 %s 的校验和", ChecksumsName, name)
 }
 
-// extractBinary 从 tar.gz 里取出名为 handoff 的文件写到 dest。
-func extractBinary(tgz []byte, dest string) error {
-	gz, err := gzip.NewReader(strings.NewReader(string(tgz)))
+// gzipMagic / zipMagic 是两种归档的文件头。
+var (
+	gzipMagic = []byte{0x1f, 0x8b}
+	zipMagic  = []byte{'P', 'K', 0x03, 0x04}
+)
+
+// binaryNames 是归档内可接受的可执行文件名。
+//
+// Windows 资产里是 handoff.exe，其余平台是 handoff。两个都认而不按平台分派，
+// 理由同 extractBinary：判据来自归档本身，不来自调用方对平台的声明。
+var binaryNames = map[string]bool{"handoff": true, "handoff.exe": true}
+
+// extractBinary 从归档里取出 handoff 可执行文件写到 dest。
+//
+// 参数：
+//   - data: 归档原文（tar.gz 或 zip）
+//   - dest: 落点路径
+//
+// 返回：
+//   - format: 实际识别出的格式（"tar.gz" / "zip"），供调用方打进日志
+//   - 错误：格式不认、解包失败、包内没有可执行文件
+//
+// 注意：
+//   - 格式**按魔数判定，不按调用方传入的平台**。传平台会制造第二个真相来源，
+//     一旦它与实际字节不符，报错会指向错误的方向；字节才是权威。这条选择的
+//     额外好处是 InstallArchive / Fetch / FetchArchive 三个签名都不用动
+func extractBinary(data []byte, dest string) (string, error) {
+	switch {
+	case bytes.HasPrefix(data, gzipMagic):
+		return "tar.gz", extractFromTarGz(data, dest)
+	case bytes.HasPrefix(data, zipMagic):
+		return "zip", extractFromZip(data, dest)
+	default:
+		head := data
+		if len(head) > 4 {
+			head = head[:4]
+		}
+		return "", fmt.Errorf("无法识别的归档格式：既不是 gzip 也不是 zip（前 %d 字节 %x）", len(head), head)
+	}
+}
+
+// extractFromTarGz 从 tar.gz 里取出可执行文件写到 dest。
+func extractFromTarGz(data []byte, dest string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("gzip: %w", err)
 	}
@@ -228,24 +463,50 @@ func extractBinary(tgz []byte, dest string) error {
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return fmt.Errorf("包里没有名为 handoff 的文件")
+			return errors.New("包里没有名为 handoff / handoff.exe 的文件")
 		}
 		if err != nil {
 			return fmt.Errorf("tar: %w", err)
 		}
-		if filepath.Base(h.Name) != "handoff" || h.Typeflag != tar.TypeReg {
+		if !binaryNames[filepath.Base(h.Name)] || h.Typeflag != tar.TypeReg {
 			continue
 		}
-		f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if _, err := io.Copy(f, io.LimitReader(tr, maxAssetBytes)); err != nil {
-			return err
-		}
-		return nil
+		return writeExtracted(tr, dest)
 	}
+}
+
+// extractFromZip 从 zip 里取出可执行文件写到 dest。
+func extractFromZip(data []byte, dest string) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("zip: %w", err)
+	}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || !binaryNames[filepath.Base(f.Name)] {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("zip 打开 %s: %w", f.Name, err)
+		}
+		defer rc.Close()
+		return writeExtracted(rc, dest)
+	}
+	return errors.New("包里没有名为 handoff / handoff.exe 的文件")
+}
+
+// writeExtracted 把归档条目的内容写到 dest，带大小上限。
+//
+// 抽出来是因为两种格式的写盘部分完全一样，而这段恰好是唯一会在磁盘上
+// 留下痕迹的地方——只有一处，出问题时也只需要看一处。
+func writeExtracted(r io.Reader, dest string) error {
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, io.LimitReader(r, maxAssetBytes))
+	return err
 }
 
 // selfCheck 跑新二进制的 version 子命令，要求首行等于期望 tag。
@@ -283,6 +544,10 @@ func (i *Installer) selfCheck(path, wantTag string) error {
 //   - 两次 rename 都是同目录内操作，因而是原子的。中途失败最坏的结果是
 //     「旧的已挪到 .prev、新的还没就位」——此时目标路径暂时缺失，
 //     所以第二次 rename 失败时会把 .prev 挪回来
+//   - **两次 rename 的顺序在 Windows 上是承重的**：Windows 允许 rename 一个
+//     正在运行的 exe，但不允许覆盖或删除它。所以「先把旧的挪走、再把新的挪进来」
+//     恰好就是 Windows 自更新的标准手法。**不要**把它「优化」成先删后写——
+//     那在 unix 上照样绿，在 Windows 上当场炸
 func Activate(newPath, target string) (string, error) {
 	dir := filepath.Dir(target)
 	// 先探一次写权限：直接 rename 得到的是扁平的 permission denied，

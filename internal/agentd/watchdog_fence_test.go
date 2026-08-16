@@ -2,16 +2,18 @@ package agentd
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
-// 越线时对每个活跃任务发一次，且只发一次——事件风暴会把审核者的
+// 越线时对每个活跃任务发一次，且只发一次——事件风暴会把协调者的
 // 会话刷爆，反而淹掉真正要处置的工单。
 func TestResourcePressureFiresOnceOnRisingEdge(t *testing.T) {
 	st, hub := newTestStoreHub(t) // 复用 watchdog_test.go 既有骨架
@@ -144,4 +146,9 @@ func assertEventCount(t *testing.T, st *store.Store, taskID string, typ proto.Ev
 	if got != want {
 		t.Fatalf("任务 %s 期望 %d 条 %s 事件，实际 %d 条", taskID, want, typ, got)
 	}
+}
+
+// testLogger 返回丢弃输出的 logger（与 watchdog_test.go 的 discardLogger 同款）。
+func testLogger(t *testing.T) *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

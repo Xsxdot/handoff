@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // mirrorDiscoveryTick 是发现轮询间隔（§6.1）。慢对账靠它补漏「不伴随事件的

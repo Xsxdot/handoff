@@ -11,7 +11,7 @@
 // 或 ssh -t <host> tmux attach（远程）。tmux 拆除后实况改由 agentd 落盘 +
 // 流式吐出，attach 退化成一个普通 HTTP 客户端——顺带拿到三个收益：
 // 远程不再需要 ssh（复用 agentd 连接与鉴权，配置里的 user 字段对 attach 不再必要）、
-// Windows 审核者可用（syscall.Exec 在 Windows 上直接返回 EWINDOWS）、
+// Windows 协调者可用（syscall.Exec 在 Windows 上直接返回 EWINDOWS）、
 // 断线可凭已收字节数续传。
 package cmd
 
@@ -26,11 +26,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // attachAll 表示从头播放全部实况（--all）；默认只从尾部回溯 attachDefaultTail。
@@ -70,7 +70,7 @@ var attachCmd = &cobra.Command{
 // 为什么只服务 pull：attach 已改为走 agentd 的 render 流（复用 agentd 连接与
 // 鉴权），不再拼 ssh；只有 pull 仍需要把 Targets[target] 换算成 ssh 目标来做
 // git-over-ssh 同步。user 字段让 ssh 用户名可配置——本机用户名与远程不一致
-// （如本机 xushixin 连远端 sycm）时，裸 host 的 ssh 会直接 Permission denied。
+// （如本机 alice 连远端 sycm）时，裸 host 的 ssh 会直接 Permission denied。
 func sshHostFromTarget(t config.Target) string {
 	host := t.Addr
 	if i := strings.IndexByte(host, ':'); i >= 0 {

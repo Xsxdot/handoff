@@ -283,52 +283,6 @@ func TestSweepAndFootprintAgree(t *testing.T) {
 	}
 }
 
-// TestCountGroupCountsOnlyItsOwnGroup 断言：只数同组成员，无关进程不计入。
-func TestCountGroupCountsOnlyItsOwnGroup(t *testing.T) {
-	stubProcs(t, []procEntry{
-		{PID: 300, PGID: 300, StartedAt: t0},     // 组长（PTY 里的 shell）
-		{PID: 301, PGID: 300, StartedAt: t0 + 1}, // 它起的命令
-		{PID: 302, PGID: 300, StartedAt: t0 + 2},
-		{PID: 400, PGID: 400, StartedAt: t0}, // 无关
-	})
-	n, err := CountGroup(300)
-	if err != nil {
-		t.Fatalf("不该出错: %v", err)
-	}
-	if n != 3 {
-		t.Fatalf("同组成员应为 3，实得 %d", n)
-	}
-}
-
-// TestCountGroupEmptyGroupIsZeroNotError 断言：组里一个都没有是 0 而不是错误
-// （会话刚退出、进程刚被收走都会走到这里）。
-func TestCountGroupEmptyGroupIsZeroNotError(t *testing.T) {
-	stubProcs(t, []procEntry{{PID: 400, PGID: 400, StartedAt: t0}})
-	n, err := CountGroup(300)
-	if err != nil || n != 0 {
-		t.Fatalf("空组应当是 (0, nil)，实得 (%d, %v)", n, err)
-	}
-}
-
-// TestCountGroupPropagatesEnumFailure 断言：枚举失败必须上抛，
-// **不能降级成 0**——0 会被渲染成「没有残留」，那是个假结论。
-func TestCountGroupPropagatesEnumFailure(t *testing.T) {
-	orig := enumProcsFn
-	enumProcsFn = func() ([]procEntry, error) { return nil, errNotSupported }
-	t.Cleanup(func() { enumProcsFn = orig })
-	if _, err := CountGroup(300); err == nil {
-		t.Fatalf("枚举失败必须上抛")
-	}
-}
-
-// stubProcs 把进程枚举替换成固定结果（沿用本文件既有的 enumProcsFn 接缝）。
-func stubProcs(t *testing.T, procs []procEntry) {
-	t.Helper()
-	orig := enumProcsFn
-	enumProcsFn = func() ([]procEntry, error) { return procs, nil }
-	t.Cleanup(func() { enumProcsFn = orig })
-}
-
 // Start 必须把名册路径记进 Handle：Sweep 在 agentd 进程里跑，它只有 proc.json
 // 反序列化出来的 Handle，没有 spec，推不出任务目录。这个字段是两个进程之间
 // 唯一的交接点，漏填的表现是「第二段清扫永远静默地不干活」。
@@ -507,7 +461,7 @@ func TestFootprintIncludesRosterMembers(t *testing.T) {
 }
 
 // 与 Sweep 同一条红线：出生时刻对不上的名册成员**不计入**足迹。
-// 数字上多算一个只是难看，但它会让审核者以为残留还在、去追一个不存在的东西。
+// 数字上多算一个只是难看，但它会让协调者以为残留还在、去追一个不存在的东西。
 func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 	dir := t.TempDir()
 	roster := filepath.Join(dir, RosterFileName)
@@ -525,4 +479,50 @@ func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 		t.Fatalf("Footprint: %v", err)
 	}
 	assertMembers(t, members, []int{100})
+}
+
+// TestCountGroupCountsOnlyItsOwnGroup 断言：只数同组成员，无关进程不计入。
+func TestCountGroupCountsOnlyItsOwnGroup(t *testing.T) {
+	stubProcs(t, []procEntry{
+		{PID: 300, PGID: 300, StartedAt: t0},     // 组长（PTY 里的 shell）
+		{PID: 301, PGID: 300, StartedAt: t0 + 1}, // 它起的命令
+		{PID: 302, PGID: 300, StartedAt: t0 + 2},
+		{PID: 400, PGID: 400, StartedAt: t0}, // 无关
+	})
+	n, err := CountGroup(300)
+	if err != nil {
+		t.Fatalf("不该出错: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("同组成员应为 3，实得 %d", n)
+	}
+}
+
+// TestCountGroupEmptyGroupIsZeroNotError 断言：组里一个都没有是 0 而不是错误
+// （会话刚退出、进程刚被收走都会走到这里）。
+func TestCountGroupEmptyGroupIsZeroNotError(t *testing.T) {
+	stubProcs(t, []procEntry{{PID: 400, PGID: 400, StartedAt: t0}})
+	n, err := CountGroup(300)
+	if err != nil || n != 0 {
+		t.Fatalf("空组应当是 (0, nil)，实得 (%d, %v)", n, err)
+	}
+}
+
+// TestCountGroupPropagatesEnumFailure 断言：枚举失败必须上抛，
+// **不能降级成 0**——0 会被渲染成「没有残留」，那是个假结论。
+func TestCountGroupPropagatesEnumFailure(t *testing.T) {
+	orig := enumProcsFn
+	enumProcsFn = func() ([]procEntry, error) { return nil, errNotSupported }
+	t.Cleanup(func() { enumProcsFn = orig })
+	if _, err := CountGroup(300); err == nil {
+		t.Fatalf("枚举失败必须上抛")
+	}
+}
+
+// stubProcs 把进程枚举替换成固定结果（沿用本文件既有的 enumProcsFn 接缝）。
+func stubProcs(t *testing.T, procs []procEntry) {
+	t.Helper()
+	orig := enumProcsFn
+	enumProcsFn = func() ([]procEntry, error) { return procs, nil }
+	t.Cleanup(func() { enumProcsFn = orig })
 }

@@ -4,7 +4,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // initRepo 建一个带首提交的临时仓库，返回路径与首提交 hash。

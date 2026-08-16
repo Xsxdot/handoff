@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // newAdapterWithFakeGit 造一个带真实 git 事实源的兜底分类环境。

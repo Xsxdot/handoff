@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // worktreeProbeTimeout 是单次探测的上限。

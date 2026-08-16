@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // frames 每行原样输出一帧 JSON：它是 TUI 与脚本的数据源，不做人类友好格式化。

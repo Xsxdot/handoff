@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // machinesFixture 是 fake agentd 对 GET /api/machines 的固定响应。

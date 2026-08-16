@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // runCmd 在任务仓库执行一条审阅命令并输出合并结果。
@@ -43,7 +43,7 @@ var runCmd = &cobra.Command{
 func init() {
 	// 关闭 flag 穿插解析（P1-13）：`handoff run T1 go test -v ./...` 中任务名后的
 	// -v/-race/-run 是审阅命令自身的参数，必须原样进入 args[1:]；cobra 默认的
-	// Interspersed 会把它们当 handoff 的未知 flag 直接报错，审核者最主要的验证
+	// Interspersed 会把它们当 handoff 的未知 flag 直接报错，协调者最主要的验证
 	// 动作不可用。SetInterspersed(false) 让解析在首个位置参数（任务名）处停止，
 	// 之后全部按位置参数透传；--agentd/--target 等 handoff 自有 flag 需写在任务名之前
 	runCmd.Flags().SetInterspersed(false)

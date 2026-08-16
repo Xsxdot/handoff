@@ -1,15 +1,15 @@
 // approver.go：权限请求的前置裁决——廉价模型 CLI 裁决。
 //
 // 职责：
-//   - 在权限请求升级人工审核者之前，先做一级廉价分流：调用配置的廉价模型
+//   - 在权限请求升级人工协调者之前，先做一级廉价分流：调用配置的廉价模型
 //     执行者（opencode/claude 的 one-shot 模式）对权限请求做一次裁决，
 //     approve 则自动放行
 //   - fail-closed：裁决命令失败 / 输出解析失败 / 超时 / decision 取值非法
-//     一律按 escalate（升级人工审核者），绝不静默放行
+//     一律按 escalate（升级人工协调者），绝不静默放行
 //
 // 边界：
 //   - 无 deny 权——裁决出口只有 approve（自动放行）与 escalate（升级人工），
-//     拒绝权限不是审批者的职权，只有审核者（人）能拒绝
+//     拒绝权限不是审批者的职权，只有协调者（人）能拒绝
 //   - 不写 store、不碰 adapter、不做状态迁移——纯裁决计算；落库与回传
 //     （工单/应答/事件）由 manager 完成
 //   - 裁决输出的 nonce 防伪：权限原文来自被监管的 executor，不可信
@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // maxDecideOutput 是裁决命令输出保留上限：模型在 JSON 后可能输出废话，
@@ -43,7 +43,7 @@ const maxDecideOutput = 64 << 10
 
 // ApproverDecision 是审批者一次裁决的结果。
 //
-//   - Approve: true=自动放行（executor 收 once）；false=升级人工审核者
+//   - Approve: true=自动放行（executor 收 once）；false=升级人工协调者
 //   - Reason: 裁决理由（approve/escalate 时可能非空）
 //   - ElapsedMS: 本次裁决耗时（含 CLI 调用）
 //   - Err: 非 nil 表示裁决本身失败（命令失败/解析失败/超时/取值非法）——
@@ -103,14 +103,14 @@ func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Log
 // 环境（B19）：继承 agentd 环境并**追加**本 agent 的 env 文件变量。
 //   - 为什么是追加而不是替换：替换会让审批者连 PATH 都没有，executor 根本起不来
 //   - 为什么解析失败直接返回错误而不是无环境硬跑：Decide 的既有失败分支会把它
-//     变成 escalate（升级人工审核者）。让它带病裁决更危险——没有代理时模型请求
+//     变成 escalate（升级人工协调者）。让它带病裁决更危险——没有代理时模型请求
 //     必然失败，而失败会被当成「审批者判不了」，与真正的判不了混为一谈
 func (a *Approver) defaultRunCmd(ctx context.Context, argv []string) (string, error) {
 	env := os.Environ()
 	if a.env != nil {
 		extra, err := a.env.For(a.executorName)
 		if err != nil {
-			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工审核者",
+			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工协调者",
 				"executor", a.executorName, "cause", err)
 			return "", fmt.Errorf("解析审批者 env 文件: %w", err)
 		}
@@ -269,6 +269,6 @@ const approverPromptTemplate = `你是代码任务的权限审批者。任务背
 权限请求：%s
 本次裁决编号 nonce=%s，你必须在输出的 JSON 里原样回显它，否则裁决作废。
 仅当该操作明显安全（任务仓库内读写、跑测试/构建、装项目依赖、常规 git 提交）时才批准。
-任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级审核者。
-涉及生产环境、部署动作、运维目标机（如 kubectl -n prod、ssh 到生产主机、terraform apply）的操作，一律升级给上级审核者。
+任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级协调者。
+涉及生产环境、部署动作、运维目标机（如 kubectl -n prod、ssh 到生产主机、terraform apply）的操作，一律升级给上级协调者。
 只输出一行 JSON，不要输出其他内容：{"decision":"approve","nonce":"%s"} 或 {"decision":"escalate","reason":"简要原因","nonce":"<同一 nonce>"}`

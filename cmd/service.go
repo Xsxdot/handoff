@@ -17,12 +17,18 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/service"
 )
+
+// osExecutable 是取当前二进制路径的缝。测试换成一个稳定路径，避免
+// go test 自己的缓存二进制被 isEphemeralBin 拒掉，把 install 用例带崩。
+var osExecutable = os.Executable
 
 // newServiceManager 是构造平台 Manager 的缝，测试替换它注入 fake。
 var newServiceManager = service.New
@@ -42,13 +48,20 @@ var serviceCmd = &cobra.Command{
 // 注意：
 //   - BinPath 必须经 EvalSymlinks 解析。装在 ~/.local/bin/handoff 的二进制
 //     常常是个 symlink；单元里写 symlink，换版换掉链接目标后单元还指着旧的
+//   - go run 的 os.Executable 落在编译缓存里。launchd 加载那种路径会
+//     Bootstrap failed: 5: Input/output error，缓存一清服务也死。必须换成
+//     已安装的稳定二进制，找不到就硬拒，不能把临时路径写进单元。
 func resolveSpec(cfgPath string) (service.Spec, error) {
-	exe, err := os.Executable()
+	exe, err := osExecutable()
 	if err != nil {
 		return service.Spec{}, fmt.Errorf("取当前可执行文件路径: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
+	}
+	exe, err = resolveServiceBinFrom(exe, durableBinCandidates())
+	if err != nil {
+		return service.Spec{}, err
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -167,4 +180,100 @@ var serviceStatusCmd = &cobra.Command{
 func init() {
 	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd)
 	rootCmd.AddCommand(serviceCmd)
+}
+
+// isEphemeralBin 判断路径是不是 go run / go test 的编译缓存，或落在临时目录里。
+//
+// 这类路径不能写进 launchd/systemd：管理器下次拉起时文件多半已经没了，
+// macOS 上 launchctl bootstrap 还会直接报 Input/output error（exit 5）。
+func isEphemeralBin(path string) bool {
+	if path == "" {
+		return true
+	}
+	slashed := filepath.ToSlash(path)
+	// go run / go test：目录名是 go-build 或 go-build<数字>，不能只认 /go-build/。
+	for _, part := range strings.Split(slashed, "/") {
+		if strings.HasPrefix(part, "go-build") {
+			return true
+		}
+	}
+	// macOS 的 TempDir 是 /var/folders/.../T，Linux 常见是 /tmp；两边都要认。
+	var tmps []string
+	if tmp := os.TempDir(); tmp != "" {
+		tmps = append(tmps, tmp)
+	}
+	tmps = append(tmps, "/tmp", "/var/tmp")
+	for _, tmp := range tmps {
+		tmpSlash := strings.TrimRight(filepath.ToSlash(tmp), "/")
+		if tmpSlash == "" || tmpSlash == "/" {
+			continue
+		}
+		if strings.HasPrefix(slashed, tmpSlash+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveServiceBinFrom 把当前可执行文件收成可以写进服务单元的稳定路径。
+//
+// 参数：
+//   - exe: 已经 EvalSymlinks 过的当前进程路径
+//   - candidates: 本机可能装过 handoff 的稳定路径，按优先序
+//
+// 返回：
+//   - 可托管的绝对路径
+//   - 当前是临时文件且找不到已安装二进制时的错误
+//
+// 注意：宁可拒绝，也不把 go-build 缓存写进 plist。现场用 go run . init
+// 代装服务时，那条路径就是用户日志里的
+// Library/Caches/go-build/.../handoff。
+func resolveServiceBinFrom(exe string, candidates []string) (string, error) {
+	if exe != "" && !isEphemeralBin(exe) {
+		slog.Debug("服务二进制使用当前进程", "bin", exe)
+		return exe, nil
+	}
+	slog.Warn("当前二进制是临时编译产物，不能交给进程管理器", "exe", exe)
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		resolved := c
+		if r, err := filepath.EvalSymlinks(c); err == nil {
+			resolved = r
+		}
+		if resolved == exe || isEphemeralBin(resolved) {
+			continue
+		}
+		if !regularFileExists(resolved) {
+			continue
+		}
+		slog.Info("改用已安装的 handoff 二进制托管", "bin", resolved, "rejected", exe)
+		return resolved, nil
+	}
+	return "", fmt.Errorf("当前二进制是 go run / 编译缓存里的临时文件（%s），不能写进服务单元。请用安装好的 handoff 执行 service install，或先 go build -o ~/.local/bin/handoff .", exe)
+}
+
+// regularFileExists 判断 path 是已存在的普通文件。目录或打不开都当没有。
+func regularFileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+// durableBinCandidates 返回本机可能装过 handoff 的稳定路径，按优先序。
+//
+// install.sh 默认落点是 ~/.local/bin；HANDOFF_INSTALL_DIR 覆盖那个目录。
+// PATH 上的 handoff 放最后：开发机上它有时仍指向一份临时文件。
+func durableBinCandidates() []string {
+	var out []string
+	if dir := os.Getenv("HANDOFF_INSTALL_DIR"); dir != "" {
+		out = append(out, filepath.Join(dir, "handoff"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		out = append(out, filepath.Join(home, ".local", "bin", "handoff"))
+	}
+	if p, err := exec.LookPath("handoff"); err == nil {
+		out = append(out, p)
+	}
+	return out
 }

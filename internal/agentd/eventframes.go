@@ -24,8 +24,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // eventFrameHook 返回一个「事件落库后写 event 引用帧」的回调。

@@ -16,8 +16,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // tasksAll 汇总本机与全部镜像任务为 §5.3 信封。

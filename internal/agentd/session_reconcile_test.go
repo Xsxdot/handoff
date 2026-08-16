@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // fakeReconciler 是一个可编程的对账 adapter 桩。
@@ -65,7 +65,7 @@ func TestRecoverStuckFallsThroughToReconcile(t *testing.T) {
 		t.Fatalf("报告应体现对账结果，got %+v", rep)
 	}
 	if rep.Note == "没有卡在半路的应答，无需恢复" {
-		t.Fatal("不应再回旧文案——那正是 B38 里审核者撞上的死路")
+		t.Fatal("不应再回旧文案——那正是 B38 里协调者撞上的死路")
 	}
 }
 

@@ -17,8 +17,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // Reconcile 把断连期间错过的回合终态补回事件流。
@@ -145,7 +145,7 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 // 工具 part 的消息 14/14 后面紧跟的都是 user 消息（或就是会话尾），零反例——
 // 「工具报错模型会自己重试、回合不结束」的担心被数据否掉。更重要的代码佐证：
 // 实时路径 adapter.go:1236-1241 早就把「回合因权限被拒而终止」当作回合结束并转成
-// question 唤醒审核者（rejectedTurnQuestion，adapter.go:482-488）——row4 不是
+// question 唤醒协调者（rejectedTurnQuestion，adapter.go:482-488）——row4 不是
 // 新发明，是让对账口径与实时路径对齐。
 //
 // row6 为什么是窄兜底且判已结束：真实 payload 里 completed 的消息几乎总带 finish
@@ -179,7 +179,7 @@ func reconcileTurnEnded(msg *SessionMessage) (bool, string) {
 // 分类**复用** turn.ParseTrailer——与 mapIdle 走同一套判据，于是以提问收尾的
 // 回合会正确地还原成 question 工单，而不是一条假的「做完了」。
 //
-// 返回：事件本身，以及一句给审核者看的结论。
+// 返回：事件本身，以及一句给协调者看的结论。
 func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor.AdapterEvent, string) {
 	// 会话被 abort（row3）：走 question 而不是 result{OK:false}。
 	//
@@ -201,7 +201,7 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 		if msg.Text != "" {
 			text += "回合原文：\n" + turn.TailRunes(msg.Text, 1000)
 		}
-		a.log.Warn("对账发现回合被 abort，转提问交审核者裁决",
+		a.log.Warn("对账发现回合被 abort，转提问交协调者裁决",
 			"task", r.taskID, "msg", msg.ID)
 		return executor.AdapterEvent{Type: "question", SessionID: r.session,
 				Text: turn.ClampQuestion(text)},
@@ -217,15 +217,15 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 			"补回了一条断连期间丢失的失败结果"
 	}
 	// 工具被拒/报错而终（row4）：实时路径把「回合因权限被拒而终止」转成 question
-	// 唤醒审核者（rejectedTurnQuestion，adapter.go:1236-1241），对账补发必须同形——
-	// 这里没有实时路径的 turnRejected 清单，但工具 error 本身就是要告诉审核者的结论。
+	// 唤醒协调者（rejectedTurnQuestion，adapter.go:1236-1241），对账补发必须同形——
+	// 这里没有实时路径的 turnRejected 清单，但工具 error 本身就是要告诉协调者的结论。
 	// 文本取消息文本（可能是空：纯工具消息无 text），有文本则带原文
 	if msg.ToolStatus == "error" {
 		text := "断连期间该回合以工具被拒或工具报错告终"
 		if msg.Text != "" {
 			text += "，回合原文：\n" + turn.TailRunes(msg.Text, 1000)
 		}
-		a.log.Warn("对账发现回合以工具错误告终，转提问交审核者裁决",
+		a.log.Warn("对账发现回合以工具错误告终，转提问交协调者裁决",
 			"task", r.taskID, "msg", msg.ID)
 		return executor.AdapterEvent{Type: "question", SessionID: r.session,
 				Text: turn.ClampQuestion(text)},
@@ -242,8 +242,8 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 				Summary: t.Summary, SessionID: r.session}}, "补回了一条断连期间丢失的完成结果"
 	}
 	// 无协议 trailer：不走 mapIdle 的 git 兜底（那套依赖 startCommit 基线，而
-	// 断连期间基线已失去意义）。交审核者裁决，把回合原文给他
-	a.log.Warn("对账发现回合无协议 trailer，转提问交审核者裁决",
+	// 断连期间基线已失去意义）。交协调者裁决，把回合原文给他
+	a.log.Warn("对账发现回合无协议 trailer，转提问交协调者裁决",
 		"task", r.taskID, "msg", msg.ID)
 	return executor.AdapterEvent{Type: "question", SessionID: r.session,
 		Text: turn.ClampQuestion("agentd 断连期间该回合已结束，但未输出协议结论。" +

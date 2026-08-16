@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // mustTaskWithTicket 造一个指定状态的任务，并挂一张未回答的 gate 工单。
@@ -50,7 +50,7 @@ func voidedEvents(t *testing.T, st *store.Store, taskID string) []proto.Event {
 	return got
 }
 
-// 终态迁移必须作废剩余工单并留痕：否则审核者接管时会被引去 reply 一个必然 404 的 id。
+// 终态迁移必须作废剩余工单并留痕：否则协调者接管时会被引去 reply 一个必然 404 的 id。
 func TestTransitToTerminalVoidsPendingTickets(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
 	mustTaskWithTicket(t, st, "T-void", proto.TaskStateWaitingReview)

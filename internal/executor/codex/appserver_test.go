@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/executor/codex"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -268,7 +268,7 @@ func TestKnownServerRequestIsHandedToHandlerAndReplyIsDeferred(t *testing.T) {
 		t.Fatal("服务端请求没有上抛到 handler")
 	}
 
-	// 模拟审核者慢裁决
+	// 模拟协调者慢裁决
 	time.Sleep(200 * time.Millisecond)
 	if err := cli.Reply(json.RawMessage(reqID), map[string]any{"decision": "accept"}); err != nil {
 		t.Fatalf("reply: %v", err)

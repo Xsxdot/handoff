@@ -29,13 +29,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // looseTempDir 建一个测试用临时目录，收尾时尽力删除、删不掉也不判用例失败。
@@ -404,13 +405,13 @@ func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("adapter.Start 失败后 managed worktree 应被补偿清理，仍有: %v", entries)
 	}
-	// 任务落 failed：审核者仍能经 tasks 看到失败现场（PlanPath 等已落库）
+	// 任务落 failed：协调者仍能经 tasks 看到失败现场（PlanPath 等已落库）
 	tasks, err := st.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
-		t.Fatalf("任务应落 failed 供审核者查看, got %+v", tasks)
+		t.Fatalf("任务应落 failed 供协调者查看, got %+v", tasks)
 	}
 }
 
@@ -766,7 +767,7 @@ func TestTransitToReviewAnswerRaceConverges(t *testing.T) {
 		if completed != 1 {
 			t.Fatalf("第 %d 轮 completed 事件数=%d, want 1", i, completed)
 		}
-		// 收敛断言 4：终态为 waiting_review（事件已交割给审核者）或 running（应答后到，
+		// 收敛断言 4：终态为 waiting_review（事件已交割给协调者）或 running（应答后到，
 		// executor 被重新唤醒续跑，属正常语义而非卡死）；绝不静默停在等待者已应答的空转态
 		cur, err := st.GetTask(taskID)
 		if err != nil {
@@ -908,7 +909,7 @@ func TestRelayAnswer(t *testing.T) {
 
 // TestWaiterCanceledOnTaskEnd 覆盖 P1-2 的 ctx 取消半段：任务执行终结（adapter
 // 事件通道关闭）后，挂起的应答等待 goroutine 必须被取消并从 hub 等待表移除——
-// 旧实现 waitPermission 用 context.Background() 永久挂死（审核者不再回答即泄漏）。
+// 旧实现 waitPermission 用 context.Background() 永久挂死（协调者不再回答即泄漏）。
 //
 // 为什么事件通道关闭是唯一取消时机：result → waiting_review 后任务仍活，回答
 // 晚于 result 到达是合法流程（见 mediate 的 why 注释），只有「执行终结」才
@@ -1014,7 +1015,7 @@ func TestPermissionReplaySkipsDuplicates(t *testing.T) {
 		t.Fatalf("重放后 state=%s, want waiting_answer（不重复迁移）", cur.State)
 	}
 
-	// 一次应答 → 恰好一次 RespondPermission（不重复唤醒审核者/executor）
+	// 一次应答 → 恰好一次 RespondPermission（不重复唤醒协调者/executor）
 	hub.NotifyAnswer("t1:perm-1", "allow")
 	eventually(t, 2*time.Second, "executor 收到恰一次应答", func() bool {
 		return len(ad.permsRec()) == 1
@@ -1058,7 +1059,7 @@ func TestPlanSummaryFromContent(t *testing.T) {
 
 // TestPermissionTicketKeepsFullText 验证权限工单存全文、事件 payload 截断。
 // why：旧实现在 adapter 侧就把描述截到 200 字，工单里存的本身就是截断版——
-// 审核者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
+// 协调者无论怎么查都看不到完整命令，等于让他批准自己没看全的命令。
 func TestPermissionTicketKeepsFullText(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
 	task := &proto.Task{ID: "T-full", RepoPath: t.TempDir(), Executor: "fake",
@@ -1106,7 +1107,7 @@ func TestStopEndsRunningTask(t *testing.T) {
 	task := &proto.Task{ID: "T-stop", RepoPath: t.TempDir(), Executor: "fake",
 		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	mustCreateTask(t, st, task)
-	// 造一个挂起工单：stop 后它必须被作废，否则审核者仍会看到可操作项，
+	// 造一个挂起工单：stop 后它必须被作废，否则协调者仍会看到可操作项，
 	// 一 reply 就打进已死会话（与 handleResult 失败分支同一条理由）
 	if _, err := st.CreateTicket(&proto.Ticket{ID: "T-stop:p1", TaskID: "T-stop", Kind: "gate",
 		Request: []byte(`{"kind":"gate","permission":"bash: ls"}`), CreatedAt: time.Now()}); err != nil {
@@ -1148,6 +1149,53 @@ func TestStopEndsRunningTask(t *testing.T) {
 	// 否则 stop 与 done 两条终态路径的痕迹不一致，而痕迹不一致正是 B63 要修的东西
 	if evs := voidedEvents(t, st, task.ID); len(evs) != 1 {
 		t.Errorf("stop 后 tickets_voided = %d 条，期望 1 条", len(evs))
+	}
+}
+
+// TestStopTransitsBeforeEvent 钉死顺序：事件落库那一刻，状态必须已经就位。
+// 反过来（先事件后状态）一旦第二步失败，就留下「事件说终结了、状态还是 running」
+// 的破损中间态——协调者对它做任何操作都会被状态机拒，只能干等到 2h stalled。
+//
+// 断言机制：store 钩子同步触发于事件 INSERT 成功之后、AppendEvent 返回之前。钩子
+// 不得回调 store（契约），所以钩子只把事件塞进 channel、随后阻塞在 release 上；
+// 主 goroutine 收到通知时 AppendEvent 尚未返回（旧实现里 transit 还没跑），此刻读
+// 到的状态必然是旧值 running——旧实现断言必失败，新实现（transit 先执行完毕）必通过。
+func TestStopTransitsBeforeEvent(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "t-stop-before-event", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	fired := make(chan proto.Event, 1)
+	release := make(chan struct{})
+	st.SetEventHook(func(e proto.Event) {
+		fired <- e
+		<-release
+	})
+
+	go func() {
+		m.Stop(context.Background(), task.ID)
+	}()
+
+	var gotType proto.EventType
+	select {
+	case e := <-fired:
+		gotType = e.Type
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待 stop 的 failed 事件落库超时")
+	}
+	// 放行钩子：GetTask 期间 Stop 停在 AppendEvent 内，读到的状态就是事件落库瞬间的状态
+	defer close(release)
+	if gotType != proto.EventTypeFailed {
+		t.Fatalf("stop 首个事件应为 failed，实际 %s", gotType)
+	}
+	cur, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateFailed {
+		t.Fatalf("failed 事件落库瞬间状态应为 %s，实际 %s（先事件后状态 = 破损中间态）",
+			proto.TaskStateFailed, cur.State)
 	}
 }
 
@@ -1639,7 +1687,7 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 }
 
 // TestPermissionReuseSkipsSecondTicket 验证 B57②：同一任务内同一权限描述
-// 第二次到达时不再建工单、不再叫醒审核者，而是复用首次的人工批准自动放行。
+// 第二次到达时不再建工单、不再叫醒协调者，而是复用首次的人工批准自动放行。
 func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
 	m, st, _, ad := newTestManager(t)
 	mustCreateTask(t, st, &proto.Task{
@@ -1649,7 +1697,7 @@ func TestPermissionReuseSkipsSecondTicket(t *testing.T) {
 
 	permText := "external_directory: /Users/x/go/pkg/mod/github.com/coder/websocket@v1.8.15/*"
 
-	// 第一次：升级人工 → 审核者批准 → 送达
+	// 第一次：升级人工 → 协调者批准 → 送达
 	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
 		Type: "permission", PermissionID: "p1", Text: permText,
 	}, "T1:p1")
@@ -1748,7 +1796,7 @@ func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
 		t.Fatalf("工单 id = %q，期望 T1:que_ff", pending[0].ID)
 	}
 
-	// 事件也只该有一条 question——重放不该再唤醒审核者一次
+	// 事件也只该有一条 question——重放不该再唤醒协调者一次
 	evs, err := st.EventsFromAsc("T1", 0, 100)
 	if err != nil {
 		t.Fatalf("EventsFromAsc: %v", err)
@@ -1765,7 +1813,7 @@ func TestQuestionTicketIdempotentOnReplay(t *testing.T) {
 }
 
 // TestQuestionReissueAfterAnswerCreatesNewTicket 钉住三岔的第三条：opencode 的
-// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，审核者答错一次
+// 「答复没对上选项 → 重发工单」用的是同一个 reqID。若无脑幂等，协调者答错一次
 // 之后就再也答不了，任务停在 waiting_answer 直到 stall 超时——比 B58 本身严重。
 func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
@@ -1793,7 +1841,7 @@ func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
 		t.Fatalf("重发后挂起工单 %d 张，期望 1（新单）：%+v", len(pending), pending)
 	}
 	if pending[0].ID == "T1:que_ff" {
-		t.Fatal("重发复用了已答工单的 id，审核者将无法作答")
+		t.Fatal("重发复用了已答工单的 id，协调者将无法作答")
 	}
 }
 
@@ -2015,5 +2063,619 @@ func TestWorktreeCleanupFailureHintPointsToReclaim(t *testing.T) {
 	}
 	if !strings.Contains(got, "contains modified or untracked files") {
 		t.Fatalf("提示必须带真因，实得：%s", got)
+	}
+}
+
+// TestDispatchBaseBranchNameYieldsRequestedBranch 是 B76 的端到端守门人：
+// --base 给分支名（且该分支在任务仓库里只有远程跟踪 ref）时，任务必须开在
+// --new-branch 请求的分支上，且 BaseCommit 落库为 40 位 sha。
+func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
+	clone := initClonedRepo(t, "shared-base")
+	wantBase := gitOut(t, clone, "rev-parse", "upstream/shared-base")
+	m := compensateOnlyManager(t)
+	pid := registerTestProject(t, m, clone)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
+		NewBranch: "feat/wanted", Base: "shared-base",
+	})
+	if err != nil {
+		t.Fatalf("派发应成功: %v", err)
+	}
+	if task.Branch != "feat/wanted" {
+		t.Fatalf("任务分支应为请求的那个, got %q", task.Branch)
+	}
+	// BaseCommit 的注释契约是「40 位 sha」，B76 之前它存的是 --base 原文
+	if task.BaseCommit != wantBase {
+		t.Fatalf("BaseCommit 应为解析后的 sha: got %q, want %q", task.BaseCommit, wantBase)
+	}
+	// 分支确实建在任务仓库里，且指向 base 的尖端
+	if got := gitOut(t, clone, "rev-parse", "refs/heads/feat/wanted"); got != wantBase {
+		t.Fatalf("新分支应从解析后的起点开出: branch=%s base=%s", got, wantBase)
+	}
+}
+
+// newManagerWithRunningTask 组装一个带 running 任务的 manager（真实 store + hub +
+// 可控 adapter），返回 (m, taskID)。handleResult 的清扫断言需要一个已运行的任务。
+func newManagerWithRunningTask(t *testing.T) (*Manager, string) {
+	t.Helper()
+	m, st, _, _ := newTestManager(t)
+	createRunningTask(t, st, "sweep-task")
+	return m, "sweep-task"
+}
+
+func TestHandleResultSweepsProcsOnFail(t *testing.T) {
+	// why：executor 报告自己死了是主路径，而 SweepTaskProcs 的三个既有调用方
+	// 全是「事后发现 executor 不在了」的补救路径。主路径不清扫，2100 个
+	// setsid 逃逸出去的后代就一直挂到审核者手动 done（B93 事故实录）
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	var sweptAtSeq int64
+	m.sweepProcs = func(id string) error {
+		swept = append(swept, id)
+		if ev, err := m.st.LatestEvent(taskID); err == nil {
+			sweptAtSeq = ev.Seq
+		}
+		return nil
+	}
+
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: false, FailReason: "opencode 事件流意外中断"}})
+
+	if len(swept) != 1 || swept[0] != taskID {
+		t.Fatalf("失败分支应清扫一次，实际 %v", swept)
+	}
+	// 清扫必须在 turn_failed 事件之后：事件先落库，审核者的 wait 才第一时间醒；
+	// 清扫是 best-effort 的善后，不该挡在唤醒前面
+	ev, err := m.st.LatestEvent(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// B100：回合失败（非终结）落的是 turn_failed 而不是 failed——断言随新契约更新
+	if ev.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("最新事件应为 turn_failed，实际 %s", ev.Type)
+	}
+	if sweptAtSeq != ev.Seq {
+		t.Fatalf("清扫时最新事件 seq=%d，turn_failed 事件 seq=%d —— 清扫跑在事件之前了", sweptAtSeq, ev.Seq)
+	}
+}
+
+func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
+	// why：executor 正常收尾同样会留下 setsid 逃逸的后代。Sweep 遇到 executor
+	// 仍存活会返回 ErrExecutorAlive 并自行放弃（reconcile.go 的 switch 第一支），
+	// 所以「回合结束但 executor 还活着」不会被误杀——这条保护是既有的
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) error { swept = append(swept, id); return nil }
+
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{OK: true, Branch: "b", CommitHash: "c"}})
+
+	if len(swept) != 1 {
+		t.Fatalf("成功分支也应清扫一次，实际 %v", swept)
+	}
+}
+
+// TestHandleResultEmitsTurnFailedOnTurnFailure 钉死 B100 的正身：回合失败落的是
+// turn_failed 而不是 failed，且任务此刻是 waiting_review（活着，可 continue）。
+func TestHandleResultEmitsTurnFailedOnTurnFailure(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	m.handleResult(taskID, executor.AdapterEvent{
+		Type:   "result",
+		Result: &executor.Result{OK: false, FailReason: "回合异常终止: boom"},
+	})
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	last := evs[len(evs)-1]
+	if last.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("回合失败应落 turn_failed，实际 %s", last.Type)
+	}
+	if last.Type == proto.EventTypeFailed {
+		t.Fatal("回合失败落成 failed，会让 follow 误判任务终结")
+	}
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("读任务失败: %v", err)
+	}
+	if task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("回合失败后任务应在 waiting_review，实际 %s", task.State)
+	}
+}
+
+// TestStopEmitsFailed 防止 Task 2 改过头：协调者主动中止仍然是**任务终结**，
+// 必须继续落 failed，否则 follow 再也收不了流。
+func TestStopEmitsFailed(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	if _, err := m.Stop(context.Background(), taskID); err != nil {
+		t.Fatalf("stop 失败: %v", err)
+	}
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed {
+			found = true
+		}
+		if e.Type == proto.EventTypeTurnFailed {
+			t.Fatal("stop 落了 turn_failed，它是任务终结不是回合失败")
+		}
+	}
+	if !found {
+		t.Fatal("stop 没有落 failed 事件")
+	}
+	task, _ := m.st.GetTask(taskID)
+	if task.State != proto.TaskStateFailed {
+		t.Fatalf("stop 后任务应是 failed，实际 %s", task.State)
+	}
+}
+
+// TestHandleUsageWritesTaskFieldsWithoutEvents 覆盖 usage 事件的两条契约：
+// ①落到任务字段上；②**不**产生任何事件行——用量刷新频率高（claudecode 一个回合
+// 几百条 assistant 消息），进事件日志会淹掉审核者真正要看的 permission/question。
+func TestHandleUsageWritesTaskFieldsWithoutEvents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{
+		ID: "u1", RepoPath: t.TempDir(), State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	before, err := st.EventsFrom("u1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+
+	win := 258400
+	m.handleEvent(context.Background(), "u1", executor.AdapterEvent{
+		Type: "usage", ActualModel: "gpt-5.6-sol",
+		Usage: &proto.Usage{ContextTokens: 24668, ContextWindow: &win},
+	})
+
+	task, err := st.GetTask("u1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.ActualModel != "gpt-5.6-sol" {
+		t.Fatalf("ActualModel = %q，期望 gpt-5.6-sol", task.ActualModel)
+	}
+	if task.Usage == nil || task.Usage.ContextTokens != 24668 {
+		t.Fatalf("Usage 未落库: %+v", task.Usage)
+	}
+	after, _ := st.EventsFrom("u1", 0, 100)
+	if len(after) != len(before) {
+		t.Fatalf("usage 事件不该产生事件行，前 %d 条后 %d 条", len(before), len(after))
+	}
+}
+
+// TestHandleUsageDedupesRepeatedValues 覆盖去重：同值连续多次只打库一次。
+// 这是写库风暴的唯一防线——claudecode 每条 assistant 消息都带 usage。
+func TestHandleUsageDedupesRepeatedValues(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{
+		ID: "u2", RepoPath: t.TempDir(), State: proto.TaskStateRunning,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	ev := executor.AdapterEvent{Type: "usage", ActualModel: "k3-256k",
+		Usage: &proto.Usage{ContextTokens: 121801}}
+	m.handleEvent(context.Background(), "u2", ev)
+	first, _ := st.GetTask("u2")
+	firstUpdated := first.UpdatedAt
+
+	// 同值再来两次：updated_at 不该再动（说明没打库）
+	m.handleEvent(context.Background(), "u2", ev)
+	m.handleEvent(context.Background(), "u2", ev)
+	again, _ := st.GetTask("u2")
+	if !again.UpdatedAt.Equal(firstUpdated) {
+		t.Fatalf("同值重复不该再打库，updated_at 从 %v 变成 %v", firstUpdated, again.UpdatedAt)
+	}
+
+	// 值变了就必须落库
+	ev2 := executor.AdapterEvent{Type: "usage", ActualModel: "k3-256k",
+		Usage: &proto.Usage{ContextTokens: 130000}}
+	m.handleEvent(context.Background(), "u2", ev2)
+	changed, _ := st.GetTask("u2")
+	if changed.Usage.ContextTokens != 130000 {
+		t.Fatalf("值变化后应落库，得到 %d", changed.Usage.ContextTokens)
+	}
+}
+
+// TestHandleSpendWritesLedger 验 Spend 事件落进账本，且不碰当前占用三元组。
+func TestHandleSpendWritesLedger(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-spend", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+
+	// 先落一次当前占用（B80 通道）
+	m.handleUsage(task.ID, executor.AdapterEvent{
+		Type: "usage", ActualModel: "m1",
+		Usage: &proto.Usage{ContextTokens: 999},
+	})
+	// 再落一条累计账目（B83 通道）
+	m.handleSpend(task.ID, executor.AdapterEvent{
+		Type: "usage",
+		Spend: &proto.SpendEntry{Key: "k1", InputTokens: 10, CachedTokens: 20,
+			OutputTokens: 5, CostTicks: 100, CostState: proto.CostReported},
+	})
+
+	got, err := m.st.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// 累计写进去了
+	if got.Cumulative == nil || got.Cumulative.InputTokens != 10 {
+		t.Fatalf("累计应落库，实得 %+v", got.Cumulative)
+	}
+	// 当前占用没被累计通道冲掉——这是两条通道必须互不干扰的证据
+	if got.ActualModel != "m1" || got.Usage == nil || got.Usage.ContextTokens != 999 {
+		t.Fatalf("累计通道不得影响当前占用，实得 model=%q usage=%+v",
+			got.ActualModel, got.Usage)
+	}
+}
+
+// TestHandleSpendNilIsNoop 验没有 Spend 的帧不写库、不报错。
+func TestHandleSpendNilIsNoop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	task := &proto.Task{ID: "T-spend2", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	mustCreateTask(t, st, task)
+	m.handleSpend(task.ID, executor.AdapterEvent{Type: "usage"})
+	got, err := m.st.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Cumulative != nil {
+		t.Fatalf("空 Spend 不应产生账目，实得 %+v", got.Cumulative)
+	}
+}
+
+// TestPermFingerprintForDomains 验证 B91 指纹换键的域规则：
+// 有命令 → 命令域（跨 gate kind 相等）；无命令 → 全文域（B57 原行为）；
+// 两域之间即使文本相同也永不相撞（cmd\x00 前缀隔离）。
+func TestPermFingerprintForDomains(t *testing.T) {
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	extDir := executor.AdapterEvent{
+		Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}
+	bash := executor.AdapterEvent{
+		Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	if permFingerprintFor(extDir) != permFingerprintFor(bash) {
+		t.Fatal("同命令的 external_directory 与 bash 形态指纹应相等（命令域）")
+	}
+
+	// 全文域现在只兜底两种：Perm 为 nil，或 Command 与 Paths 皆空（提取不出
+	// 结构的 fail-closed 类）。带 Paths 的纯路径请求已改走路径域，见
+	// TestPermFingerprintForPathDomain（B91 §3.5）。
+	pure := executor.AdapterEvent{
+		Text: "edit: probe.md",
+		Perm: &executor.PermRequest{Tool: executor.PermToolWrite},
+	}
+	if permFingerprintFor(pure) != permFingerprint("edit: probe.md") {
+		t.Fatal("Command 与 Paths 皆空时应退回全文指纹（B57 原行为）")
+	}
+	nilPerm := executor.AdapterEvent{Text: "看不懂的权限描述"}
+	if permFingerprintFor(nilPerm) != permFingerprint("看不懂的权限描述") {
+		t.Fatal("Perm 为 nil 时应退回全文指纹")
+	}
+
+	// 域隔离：全文域算出的指纹与命令域算同一串文本的指纹不同
+	same := "echo hi"
+	textDomain := executor.AdapterEvent{Text: same}
+	cmdDomain := executor.AdapterEvent{Text: "bash: " + same, Perm: &executor.PermRequest{Command: same}}
+	if permFingerprintFor(textDomain) == permFingerprintFor(cmdDomain) {
+		t.Fatal("命令域与全文域相撞，cmd\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermFingerprintForPathDomain 验证 B91 spec §3.5 路径域：同路径同 Tool
+// 跨子 agent 前缀相等、Paths 顺序无关、Tool 不同则不等。
+func TestPermFingerprintForPathDomain(t *testing.T) {
+	dir := "/var/folders/xc/hpx9c9w153j7tvphw53lc8qr0000gn/T/opencode/*"
+
+	// 主 agent 与子 agent 的同一个目录请求：Text 带前缀，Perm 相同
+	main := executor.AdapterEvent{
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	child := executor.AdapterEvent{
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}
+	if permFingerprintFor(main) != permFingerprintFor(child) {
+		t.Fatal("同路径同 Tool 应跨子 agent 前缀相等（路径域忽略 Text）")
+	}
+
+	// Paths 顺序无关
+	ab := executor.AdapterEvent{Text: "x", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/a", "/b"}}}
+	ba := executor.AdapterEvent{Text: "y", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{"/b", "/a"}}}
+	if permFingerprintFor(ab) != permFingerprintFor(ba) {
+		t.Fatal("Paths 顺序不同应算同一指纹（排序后拼接）")
+	}
+
+	// Tool 不同则不等：edit 与 external_directory 对同一路径含义不同
+	edit := executor.AdapterEvent{Text: "z", Perm: &executor.PermRequest{Tool: "edit", Paths: []string{dir}}}
+	if permFingerprintFor(edit) == permFingerprintFor(main) {
+		t.Fatal("同路径不同 Tool 必须算不同指纹——写文件与越界目录授权不是一件事")
+	}
+
+	// 命令域优先于路径域：同时带命令与路径时走命令域
+	both := executor.AdapterEvent{
+		Text: "external_directory: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x", Paths: []string{dir}},
+	}
+	onlyCmd := executor.AdapterEvent{
+		Text: "bash: rm -rf /x",
+		Perm: &executor.PermRequest{Tool: "bash", Command: "rm -rf /x"},
+	}
+	if permFingerprintFor(both) != permFingerprintFor(onlyCmd) {
+		t.Fatal("有命令时必须走命令域，路径不参与")
+	}
+
+	// 三域互不相撞
+	empty := executor.AdapterEvent{Text: "external_directory: " + dir}
+	if permFingerprintFor(empty) == permFingerprintFor(main) {
+		t.Fatal("全文域与路径域相撞，paths\\x00 前缀隔离失效")
+	}
+}
+
+// TestPermissionReusePathAcrossSubagents 验证端到端：主 agent 批过的目录，
+// 子 agent 再问时自动放行零唤醒。复刻任务 d912b23a seq 678/679 的真机形态。
+func TestPermissionReusePathAcrossSubagents(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	dir := "/var/folders/xc/abc/T/opencode/*"
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1",
+		Text: "external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2",
+		Text: "[子 agent: Task 1 审查（双裁决） (@general subagent)] external_directory: " + dir,
+		Perm: &executor.PermRequest{Tool: "external_directory", Paths: []string{dir}},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("子 agent 的同目录请求未复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}
+
+// TestPermissionReuseAcrossGateKinds 验证 B91 主场景：external_directory 形态
+// 的命令获人工 allow 且送达后，同命令的 bash 形态到达 → 自动放行零唤醒。
+// 复刻 B89 任务 4356d318 seq 630/631 的真机形态。
+func TestPermissionReuseAcrossGateKinds(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "rm node_modules && cd /w && git worktree remove /tmp/b89-base --force"
+
+	// 第一次：external_directory 形态升级人工 → 批准 → 送达
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/tmp"}},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	// 第二次：bash 形态、同一条命令、不同 perm id
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("跨 kind 复用未命中，仍有 %d 张挂起工单：%+v", len(pending), pending)
+	}
+	if perms := ad.permsRec(); len(perms) == 0 || perms[len(perms)-1] != "p2:once" {
+		t.Fatalf("RespondPermission 实参 = %v，期望末条 p2:once", perms)
+	}
+}
+
+// TestPermissionReuseCommandMismatch 验证只差一个字符的命令不复用、照常升级。
+func TestPermissionReuseCommandMismatch(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: rm -rf /tmp/a",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/a"},
+	}, "T1:p1")
+	if err := st.AnswerTicket("T1:p1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	m.markDelivered("T1", "T1:p1")
+
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: rm -rf /tmp/b",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "rm -rf /tmp/b"},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("不同命令不该复用，期望 1 张挂起工单，实得 %d", len(pending))
+	}
+}
+
+// TestPermissionReuseFromApproverGrant 验证审批者（廉价模型）自动批准的工单
+// 同样是复用先例——approvePermission 触点漏换指纹键会静默缩窄复用面（spec §7）。
+func TestPermissionReuseFromApproverGrant(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	cmd := "go test ./..."
+	ev1 := executor.AdapterEvent{
+		Type: "permission", PermissionID: "p1", Text: "external_directory: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd, Paths: []string{"/x"}},
+	}
+	// 审批者路径直接批准（建单+allow+送达一条龙）
+	m.approvePermission("T1", "T1:p1", "p1", ev1.Text, permFingerprintFor(ev1), "低危命令", "approver")
+
+	// bash 形态同命令到达 → 应命中复用
+	m.escalatePermission(context.Background(), "T1", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p2", Text: "bash: " + cmd,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}, "T1:p2")
+
+	pending, err := st.PendingTickets("T1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("审批者先例未参与复用，挂起工单 %d 张，期望 0", len(pending))
+	}
+}
+
+// TestDenyGuidanceDroppedWakesOnTurnEnd 验证 B91：回合终结时挂着的拒绝原因
+// 被丢弃，事件必须 Publish 唤醒 wait——只落库的话审核者拿着 reply 的
+// {"ok":true} 永远不知道裁决空转了。
+func TestDenyGuidanceDroppedWakesOnTurnEnd(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.apMu.Lock()
+	m.denyGuidance["T1"] = "别删，先 git mv 归档"
+	m.apMu.Unlock()
+	m.clearApproverState("T1")
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clearApproverState 丢弃拒绝原因后没有 Publish，wait 不会醒")
+	}
+}
+
+// TestDenyGuidanceDroppedWakesOnSendFailure 验证 Send 失败路径（helper）同样唤醒。
+func TestDenyGuidanceDroppedWakesOnSendFailure(t *testing.T) {
+	m, st, hub, _ := newTestManager(t)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	ch, cancel := hub.Subscribe("T1")
+	defer cancel()
+
+	m.appendGuidanceDropped("T1", "换个姿势重试", errors.New("send: broken pipe"))
+
+	select {
+	case e := <-ch:
+		if e.Type != proto.EventTypeDenyGuidanceDropped {
+			t.Fatalf("收到事件类型 %s，期望 deny_guidance_dropped", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("appendGuidanceDropped 没有 Publish，wait 不会醒")
+	}
+}
+
+func TestSweepReturnsExecutorAliveToCaller(t *testing.T) {
+	m, _, _, _ := newTestManager(t) // newTestManager 实际返回 4 个值，其余三个忽略
+	m.sweepProcs = func(taskID string) error { return prochost.ErrExecutorAlive }
+	if err := m.sweep("t1"); !errors.Is(err, prochost.ErrExecutorAlive) {
+		t.Fatalf("sweep 必须把 ErrExecutorAlive 透传给调用方，got=%v", err)
+	}
+}
+
+func TestDoneSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	// 构造一个处于 waiting_review 的任务（Done 的状态门禁；沿用 reconcile_test.go
+	// 里 mustCreateTask 造 waiting_review 任务的同款方式）
+	id := "sweep-done"
+	mustCreateTask(t, st, &proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStateWaitingReview})
+	if err := m.Done(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Done 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestStopSweepsProcsAfterStop(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	var got []string
+	m.sweepProcs = func(taskID string) error { got = append(got, taskID); return nil }
+	id := "sweep-stop"
+	createRunningTask(t, st, id)
+	if _, err := m.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("Stop 必须在停完 executor 后清扫一次，got=%v", got)
+	}
+}
+
+func TestSweepAfterStopRetriesWhileExecutorAlive(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error {
+		calls++
+		if calls < 3 {
+			return prochost.ErrExecutorAlive
+		}
+		return nil
+	}
+	orig := sweepRetryGap
+	sweepRetryGap = time.Millisecond // 测试缝，避免真等 200ms
+	defer func() { sweepRetryGap = orig }()
+	m.sweepAfterStop("t1")
+	if calls != 3 {
+		t.Fatalf("ErrExecutorAlive 必须重试到成功或用尽，calls=%d", calls)
+	}
+}
+
+func TestSweepAfterStopGivesUpAfterBoundedRetries(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	calls := 0
+	m.sweepProcs = func(taskID string) error { calls++; return prochost.ErrExecutorAlive }
+	orig := sweepRetryGap
+	sweepRetryGap = time.Millisecond
+	defer func() { sweepRetryGap = orig }()
+	m.sweepAfterStop("t1")
+	if calls != sweepRetryAttempts {
+		t.Fatalf("重试必须有界，calls=%d want=%d", calls, sweepRetryAttempts)
 	}
 }

@@ -5,7 +5,9 @@ package agentd
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,9 +17,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 const hostTestToken = "host-test-token"
@@ -163,4 +165,152 @@ func mustWSTask(t *testing.T, st *store.Store) string {
 // wsURL 把 httptest 的 http:// 前缀换成 ws://。
 func wsURL(ts *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(ts.URL, "http")
+}
+
+// stubLocalIPs 把网卡枚举换成固定返回，并在用例结束时还原。
+//
+// 返回：一个指向调用计数的指针，用于断言「域名不触发重新枚举」
+func stubLocalIPs(t *testing.T, ips ...string) *int {
+	t.Helper()
+	orig := localIPsFn
+	calls := 0
+	localIPsFn = func() []string { calls++; return ips }
+	t.Cleanup(func() { localIPsFn = orig })
+	return &calls
+}
+
+// TestIsWildcardListenRecognizesShortForm 钉死 `0.0.0` 这种少一段的写法也算通配。
+//
+// 为什么要专门钉：mac-02 的生产配置里就是 `listen: 0.0.0:7777`，net 库把它当成
+// 合法 host 解析。认不出它，B104 的修复对真实现场无效。
+func TestIsWildcardListenRecognizesShortForm(t *testing.T) {
+	for _, in := range []string{"", ":7777", "0.0.0.0:7777", "0.0.0:7777", "[::]:7777"} {
+		if !isWildcardListen(in) {
+			t.Fatalf("isWildcardListen(%q) = false，期望 true", in)
+		}
+	}
+	for _, in := range []string{"192.168.1.9:7777", "example.com:7777"} {
+		if isWildcardListen(in) {
+			t.Fatalf("isWildcardListen(%q) = true，期望 false", in)
+		}
+	}
+}
+
+// TestHostGuardAllowsLocalNICUnderWildcardListen 钉死 B104 的主症状：
+// 监听通配地址时，用本机网卡 IP 访问不该再吃 403。
+func TestHostGuardAllowsLocalNICUnderWildcardListen(t *testing.T) {
+	stubLocalIPs(t, "100.73.238.21")
+	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "0.0.0:7777"})
+	if resp := doWithHost(t, ts, "100.73.238.21:7777", "Bearer "+hostTestToken); resp.StatusCode != http.StatusOK {
+		t.Fatalf("本机网卡 IP 的状态码 = %d，期望 200", resp.StatusCode)
+	}
+}
+
+// TestHostGuardStillRejectsDomainUnderWildcardListen 钉死「放宽没有放宽错东西」：
+// 通配监听下，rebinding 用的域名仍然必须被挡——这正是本防线的对象。
+func TestHostGuardStillRejectsDomainUnderWildcardListen(t *testing.T) {
+	calls := stubLocalIPs(t, "100.73.238.21")
+	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "0.0.0:7777"})
+	atStart := *calls
+	resp := doWithHost(t, ts, "evil.com", "Bearer "+hostTestToken)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("域名 Host 的状态码 = %d，期望 403", resp.StatusCode)
+	}
+	// 域名不该触发网卡重新枚举：否则攻击者用随机域名就能刷出无限次 syscall
+	if *calls != atStart {
+		t.Fatalf("域名 Host 触发了 %d 次额外的网卡枚举，期望 0", *calls-atStart)
+	}
+}
+
+// TestHostGuardRescansNICWhenIPHostMisses 钉死运行期自愈：
+// agentd 起来之后才拿到的地址（VPN 上线、Tailscale 刚接入）不该需要重启才生效。
+func TestHostGuardRescansNICWhenIPHostMisses(t *testing.T) {
+	// 间隔必须在**第一次**未命中之前就置零：那一次未命中会把 nextScan 推到
+	// 未来，之后再改间隔也追不回来（这正是限流该有的行为）
+	origGap := nicRefreshGap
+	nicRefreshGap = 0
+	t.Cleanup(func() { nicRefreshGap = origGap })
+
+	stubLocalIPs(t) // 构造时机器上还没有这个地址
+	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "0.0.0:7777"})
+	if resp := doWithHost(t, ts, "10.1.2.3:7777", "Bearer "+hostTestToken); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("地址还不存在时状态码 = %d，期望 403", resp.StatusCode)
+	}
+	// 地址上线
+	stubLocalIPs(t, "10.1.2.3")
+	if resp := doWithHost(t, ts, "10.1.2.3:7777", "Bearer "+hostTestToken); resp.StatusCode != http.StatusOK {
+		t.Fatalf("地址上线后状态码 = %d，期望 200（应重新枚举网卡）", resp.StatusCode)
+	}
+}
+
+// TestHostGuardRejectionCarriesActionableHint 钉死 403 文案给的是「下一步做什么」。
+//
+// 为什么值得一条用例：跨机访问被挡是这条判据最常见的**正当**失败，而从控制台上
+// 它只显示成「已断开」——文案是排查者唯一能拿到的线索。
+func TestHostGuardRejectionCarriesActionableHint(t *testing.T) {
+	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "127.0.0.1:7777"})
+	resp := doWithHost(t, ts, "evil.com", "Bearer "+hostTestToken)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	if !strings.Contains(string(b), "web.allowed_hosts") {
+		t.Fatalf("403 文案未给出可操作提示，body=%s", b)
+	}
+}
+
+// TestAllowedHostsMergesNICOnlyUnderWildcardListen 钉死**构造时**就并入网卡 IP。
+//
+// 为什么单独钉这一条：摘掉构造时那段合并，端到端用例仍然全绿——因为未命中时的
+// 运行期重扫会把它补回来。也就是说构造时合并对「能不能访问」是冗余的，它买到的
+// 是启动日志里那行白名单（排查这类 403 的第一现场）与首个请求不必走重扫。
+// 冗余不等于不该有，但**没有用例钉住的冗余会被下一个人当成死代码删掉**。
+func TestAllowedHostsMergesNICOnlyUnderWildcardListen(t *testing.T) {
+	stubLocalIPs(t, "100.73.238.21")
+	srvWild, _, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "0.0.0:7777"})
+	if _, ok := srvWild.allowedHosts()["100.73.238.21"]; !ok {
+		t.Fatal("通配监听时构造出的白名单应含本机网卡 IP")
+	}
+	srvFixed, _, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken, Listen: "127.0.0.1:7777"})
+	if _, ok := srvFixed.allowedHosts()["100.73.238.21"]; ok {
+		t.Fatal("绑定具体地址时不该并入其它网卡 IP——那超出了 B104 的授权范围")
+	}
+}
+
+// TestLocalIPsSkipsIPv6LinkLocal 钉死「fe80:: 不进名单」。
+//
+// 为什么要钉：真机上一台 Mac 有 20 条 fe80 地址，它们作为 Host 永远命中不了
+// （没有 zone），却会把启动日志那行白名单撑到读不了——而那行是排查跨机 403 的
+// 第一现场。这条用例用真实网卡跑：本机必然有 fe80 地址，没有的话它自己会跳过。
+func TestLocalIPsSkipsIPv6LinkLocal(t *testing.T) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("本机枚举网卡失败，跳过: %v", err)
+	}
+	hasLinkLocalV6 := false
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP != nil && n.IP.To4() == nil && n.IP.IsLinkLocalUnicast() {
+			hasLinkLocalV6 = true
+			break
+		}
+	}
+	if !hasLinkLocalV6 {
+		t.Skip("本机没有 IPv6 链路本地地址，这条用例无从验证")
+	}
+	for _, ip := range localIPs() {
+		p := net.ParseIP(ip)
+		if p != nil && p.To4() == nil && p.IsLinkLocalUnicast() {
+			t.Fatalf("localIPs 返回了 IPv6 链路本地地址 %s，它作为 Host 永远命中不了", ip)
+		}
+	}
+	// 同时确认没把 IPv4 一起误杀：本机至少该有一个非回环 IPv4
+	v4 := 0
+	for _, ip := range localIPs() {
+		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			v4++
+		}
+	}
+	if v4 == 0 {
+		t.Fatal("localIPs 一个非回环 IPv4 都没返回，过滤过头了")
+	}
 }

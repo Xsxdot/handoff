@@ -40,17 +40,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/rawtap"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/rawtap"
-	"github.com/xushixin/handoff/internal/executor/turn"
 )
 
 // 心跳节流与权限描述防失控参数：
 //   - progressThrottle：progress 事件节流，每任务至多每 30s 一条，防止高频文本增量
 //     刷爆事件库（与 opencode 同值）
 //   - permTextHardLimit：权限描述的**防失控**硬上限（64KB，与 opencode 同值）。
-//     不是给审核者看的展示上限——AdapterEvent.Text 是黑名单扫描、模型审批与工单
+//     不是给协调者看的展示上限——AdapterEvent.Text 是黑名单扫描、模型审批与工单
 //     全文的唯一真相源，展示截断由 manager 的 permEventText() 负责；本上限只防
 //     失控输出（grok adapter 曾在此翻车：危险片段落在 200 字符截断之后被静默放行）
 const (
@@ -109,9 +109,21 @@ type runState struct {
 	startCommit  string // 本回合起点 commit（git 兜底分类的基线，每回合结束后刷新）
 	turnEnded    bool   // 本回合是否已收尾（handoff_exit code=0 判断用）
 	exitHandled  bool   // 哨兵已处理（mapExit）：streamLoop 退出时不得再补一条失败 result
-	ready        chan struct{}
-	readyOnce    sync.Once
-	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
+	// ctxWindow 是 result 行 modelUsage 里取到的窗口上限（0=还没拿到）。
+	// 为什么要暂存而不是当场 emit：窗口与分子来自**不同的帧**——分子在每条
+	// assistant 消息里，窗口只在回合收尾的 result 行里。当场单发一条 usage 会
+	// 把 manager 已落库的 model/tokens 三元组整体覆盖成空（B80 硬约束），
+	// 所以窗口挂在这，随下一条 assistant 消息的分子一起走。
+	ctxWindow int
+	// actualModel 是已知的实际模型名（init 行或 assistant 消息带来），
+	// result 行 modelUsage 多键匹配窗口时优先用它（0 值语义见 ctxWindow）。
+	actualModel string
+	// prevCostUSD 是**本进程内**上一次 result 行的 total_cost_usd，用于把
+	// 进程累计花费差分成本轮花费（见 parseResultSpend）。0 = 本进程还没有回合。
+	prevCostUSD float64
+	ready       chan struct{}
+	readyOnce   sync.Once
+	startOffset int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -306,7 +318,7 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 // Send 往同一会话续发指令（fifo 续接：上下文完整保留）。
 //
 // 参数：
-//   - text: 审核者的回答/修改指令，原样透传，不得加工
+//   - text: 协调者的回答/修改指令，原样透传，不得加工
 //
 // 注意：
 //   - 进程不在（fifo 无读端，O_NONBLOCK 打开失败）时包装 executor.ErrTaskNotRunning
@@ -341,7 +353,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	return nil
 }
 
-// RespondPermission 把审核者的权限裁决回发到 perm.sock。
+// RespondPermission 把协调者的权限裁决回发到 perm.sock。
 //
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 还原后的裸 tool_use_id）
@@ -374,7 +386,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	}
 	behavior, msg := "allow", ""
 	if decision != "once" {
-		behavior, msg = "deny", "审核者拒绝了本次操作"
+		behavior, msg = "deny", "协调者拒绝了本次操作"
 	}
 	return r.perm.Respond(permID, behavior, msg)
 }
@@ -518,6 +530,13 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 		r.session = m.SessionID
 		r.markReady()
 		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: m.SessionID, Text: "会话就绪"})
+		// init 行就带实际模型名，比第一条 assistant 消息早。
+		// result 行的 model 是 null，别去那儿取。
+		if m.Model != "" {
+			a.log.Info("claude 实际模型", "task", r.taskID, "model", m.Model)
+			r.actualModel = m.Model
+			a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: m.Model})
+		}
 	case m.Type == "system":
 		// thinking_tokens 等系统副消息：仅留痕
 		a.log.Debug("system 消息跳过", "task", r.taskID, "subtype", m.Subtype)
@@ -569,6 +588,19 @@ func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
 // why（text 块不重复追加 render.log）：render.log 已由 text_delta 增量写过，
 // 整块再写会出两遍正文；这里只累积进 turnBuf 供分类用。
 func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
+	// 模型名与用量与 content 同级，就在这条消息里——此前整块丢弃。
+	// 每条 assistant 消息都带，manager 侧靠去重防写库风暴。
+	// 窗口在 result 行才到（r.ctxWindow），这里把它挂到分子上一起发。
+	if model, u, ok := parseAssistantUsage(msg); ok && (model != "" || u != nil) {
+		if model != "" {
+			r.actualModel = model
+		}
+		if u != nil && r.ctxWindow > 0 {
+			w := r.ctxWindow
+			u.ContextWindow = &w
+		}
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
 	var m struct {
 		Content []struct {
 			Type  string          `json:"type"`
@@ -670,6 +702,25 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 // mapResult 处理回合收尾：result.result 是最后一条 assistant 正文，正是
 // turn.ParseTrailer 的输入；subtype!=success 时按失败处理（带 claude.log 尾部）。
 func (a *Adapter) mapResult(r *runState, m streamMsg) {
+	// 窗口只在 result 行出现，先取再走回合收尾；只存不发（硬约束见 runState.ctxWindow）。
+	w, confident := pickModelUsageWindow(m.ModelUsage, r.actualModel)
+	if !confident {
+		a.log.Warn("claude result 多模型且都匹配不上已知模型，取了任意一个的窗口",
+			"task", r.taskID, "window", w)
+	}
+	r.ctxWindow = w
+	// 累计消耗：result 行同时带本轮 token 与进程累计花费，差分成本轮账目。
+	// 与上面的窗口是两回事——窗口进 Usage（当前占用），这里进 Spend（累计消耗）。
+	if e, next, ok := parseResultSpend(m, r.prevCostUSD); ok {
+		if m.TotalCostUSD < r.prevCostUSD {
+			a.log.Warn("claude 花费基线陈旧，本轮按当前值入账",
+				"task", r.taskID, "prev", r.prevCostUSD, "now", m.TotalCostUSD)
+		}
+		r.prevCostUSD = next
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	} else {
+		a.log.Debug("claude result 行不带可入账的消耗，跳过", "task", r.taskID, "uuid", m.UUID)
+	}
 	if m.Subtype != "success" || m.IsError {
 		tail := claudeLogTail(r.taskDir)
 		a.log.Error("claude 回合异常结束", "task", r.taskID, "subtype", m.Subtype, "stderr_tail", tail)
@@ -709,10 +760,10 @@ func (a *Adapter) mapResult(r *runState, m streamMsg) {
 //
 // why（兜底分类规则）：回合结束但 turn.ParseTrailer 判 none。此时拿 git 实况裁决：
 //   - 相对回合起点有新 commit → 发 result{OK:false}（B74）。**不替模型宣布完成**：
-//     模型没说完成，handoff 就不说。翻转不给审核者加任何一次操作——OK 与 !OK
+//     模型没说完成，handoff 就不说。翻转不给协调者加任何一次操作——OK 与 !OK
 //     都落 waiting_review，done 与 continue 在那里都合法；变的只是事件从
 //     「已完成，摘要如下」变成「有新提交，但模型未按纪律宣布完成」。
-//   - 没有新 commit / git 查询失败 → 把回合全文交审核者裁决（question），流程不卡死；
+//   - 没有新 commit / git 查询失败 → 把回合全文交协调者裁决（question），流程不卡死；
 //     其中零文本回合没有内容可问，是故障报告，转 result{OK:false}。
 func (a *Adapter) fallbackClassify(r *runState, text string) {
 	a.log.Warn("回合未输出协议 trailer，走 git 兜底", "task", r.taskID,
@@ -722,12 +773,12 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 		if err != nil {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
-		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
-		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		a.log.Info("兜底判定无新提交，转提问交协调者裁决", "task", r.taskID, "has_new", hasNew)
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，协调者收到一个
 		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle、
 		// grok finishTurn 的空回合处置对称）
 		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
 				Result: &executor.Result{OK: false, SessionID: r.session,
 					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
@@ -739,7 +790,7 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
-	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交审核者裁决",
+	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交协调者裁决",
 		"task", r.taskID, "branch", branch, "commit", commit)
 	a.emit(r, executor.AdapterEvent{Type: "result",
 		Result: turn.NoTrailerResult(r.session, branch, commit, text)})
@@ -777,7 +828,7 @@ func (a *Adapter) mapExit(r *runState, m streamMsg) {
 func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
 	text, req := permTextAndRequest(ask.ToolName, ask.Input)
 	if strings.TrimSpace(text) == "" {
-		a.log.Warn("claude 权限请求无可读描述，按未说明权限交审核者",
+		a.log.Warn("claude 权限请求无可读描述，按未说明权限交协调者",
 			"task", r.taskID, "perm", ask.ToolUseID)
 		text = "claude 未提供可读描述（tool_use_id " + ask.ToolUseID + "），请 handoff attach 查看现场"
 	}

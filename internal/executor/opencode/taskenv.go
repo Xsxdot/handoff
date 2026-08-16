@@ -11,7 +11,7 @@
 //     internal/executor/turn 共享包，本文件不再持有
 //
 // 为什么 permission 是「静态分级」而非全 ask（2026-08-08 dogfooding 修正）：
-// 一期曾把 edit/bash 全部设为 ask，真实派发时审核者被 ls/grep/编辑测试文件
+// 一期曾把 edit/bash 全部设为 ask，真实派发时协调者被 ls/grep/编辑测试文件
 // 这类初级请求连环唤醒，审批噪音让审核流形同虚设——这恰是用户交互式用
 // opencode 时不存在的问题（用户在场且全局配置宽松）。修正后的分层：
 //   - edit: allow —— 在任务分支上改代码是派发的目的本身，diff 审核兜底；
@@ -24,7 +24,7 @@
 //   - webfetch/external_directory: ask —— 外访与越出工作区仍逐次确认。
 //
 // 这是三级审批链的第 0 层（静态规则）；第 1 层（廉价模型审批者）见二期 spec，
-// 第 2 层是审核者/用户本人。
+// 第 2 层是协调者/用户本人。
 package opencode
 
 import (
@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // 文件名常量：任务目录内生成的物料文件名，路径由 WriteTaskEnv 拼接。

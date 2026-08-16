@@ -14,13 +14,13 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // ErrNoProcHeadroom 表示进程余量已耗尽，本次开工被拒。
 //
 // 路由层靠 errors.Is 认它并返回 400——这是环境问题不是请求格式问题，
-// 但 4xx 能让审核者立刻知道「不用重试，先腾地方」。
+// 但 4xx 能让协调者立刻知道「不用重试，先腾地方」。
 var ErrNoProcHeadroom = errors.New("进程余量不足")
 
 // admissionFn 是余量判读的测试缝。**生产路径恒为 prochost.CheckAdmission**。
@@ -42,7 +42,7 @@ var admissionFn = prochost.CheckAdmission
 // 与 spec §3.4 的一处有意偏离：spec 写「`used ≥ 0.9L`：放行，但 stderr 警告
 // + 事件记录」。这里只打服务端 Warn 日志，**不在准入闸里发事件**——高水位事件
 // 由 Task 6 的看门狗统一按「越线沿一次」发射。若准入闸也发，一轮密集派发会
-// 产生 N 条重复事件，把审核者的会话刷爆，反而淹掉真正要处置的工单。审核者
+// 产生 N 条重复事件，把协调者的会话刷爆，反而淹掉真正要处置的工单。协调者
 // 得到的信息量不减（同一条 `resource_pressure` 事件），噪声大减。
 func checkProcHeadroom(op string) error {
 	a := admissionFn()

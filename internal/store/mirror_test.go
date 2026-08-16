@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // openTestStore 打开一个临时库并注册清理（package store 白盒测试的本地辅助）。

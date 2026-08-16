@@ -5,15 +5,15 @@ import (
 	_ "embed"
 	"os"
 
-	"github.com/xushixin/handoff/cmd"
+	"github.com/Xsxdot/handoff/cmd"
 )
 
-// skillContent 是给 AI 审核者的 skill 全文，编译期嵌进二进制。
+// skillContent 是给 AI 协调者的 skill 全文，编译期嵌进二进制。
 //
 // 为什么必须在 main 包做：go:embed 不能引用父目录，而 cmd 在子目录里。
 //
 // 为什么内嵌而不是走 npm/独立文件：skill 版本 == 二进制版本，**结构上不可能
-// 漂移**——而漂移正是要解决的病根（旧 skill 会按已经变了的规则主动误导审核者）。
+// 漂移**——而漂移正是要解决的病根（旧 skill 会按已经变了的规则主动误导协调者）。
 // 用一条会漂移的分发通道去修漂移，自相矛盾（B59 spec D5）。
 //
 //go:embed skills/handoff/SKILL.md

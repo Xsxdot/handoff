@@ -17,8 +17,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // resumeForce 对应 --force：对账判不出来时仍强制收口到待审核。
@@ -28,7 +28,7 @@ var resumeForce bool
 //
 // 使用方式：handoff resume <task> [--force]
 //
-// 两类卡死都走这条命令，审核者不必自行诊断是哪一类：
+// 两类卡死都走这条命令，协调者不必自行诊断是哪一类：
 //   - 应答已落库但没送到 executor（reply 拿到 502）→ 重投
 //   - agentd 与 executor 断连期间回合已完结、终态事件丢失（B38）→ 会话对账补发
 //

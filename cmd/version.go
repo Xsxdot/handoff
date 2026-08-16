@@ -16,9 +16,9 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // versionUnknown 是非 release 构建（本地 go build / go run / 测试二进制）的首行取值。

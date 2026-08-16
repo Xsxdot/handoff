@@ -9,8 +9,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // newProjectStore 开一个临时库，供本文件的用例共用。
@@ -40,8 +40,8 @@ func mustCreateLoc(t *testing.T, st *Store, name, path, origin string) proto.Pro
 // TestProjectLocationCRUD 覆盖增查列删的正常路径。
 func TestProjectLocationCRUD(t *testing.T) {
 	st := newProjectStore(t)
-	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:xushixin/handoff.git")
-	mustCreateLoc(t, st, "tk", "/w/tk", "git@github.com:xushixin/tk.git")
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+	mustCreateLoc(t, st, "tk", "/w/tk", "git@github.com:Xsxdot/tk.git")
 
 	got, err := st.GetProjectLocationByName("handoff")
 	if err != nil {
@@ -75,11 +75,11 @@ func TestProjectLocationCRUD(t *testing.T) {
 // 第二次登记（哪怕换了名字和路径）必须被拒。
 func TestProjectLocationPrimaryKeyEnforcesOneLocationPerProject(t *testing.T) {
 	st := newProjectStore(t)
-	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:xushixin/handoff.git")
+	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
 	dup := proto.ProjectLocation{
-		ProjectID: projectid.FromOrigin("https://github.com/xushixin/handoff"),
+		ProjectID: projectid.FromOrigin("https://github.com/Xsxdot/handoff"),
 		Name:      "handoff-again", Path: "/w/handoff-again",
-		OriginURL: "https://github.com/xushixin/handoff", CreatedAt: time.Now(),
+		OriginURL: "https://github.com/Xsxdot/handoff", CreatedAt: time.Now(),
 	}
 	if err := st.CreateProjectLocation(&dup); !errors.Is(err, ErrProjectDuplicate) {
 		t.Fatalf("同 origin 的第二个位置应被主键拒绝，got %v", err)
@@ -91,7 +91,7 @@ func TestProjectLocationPrimaryKeyEnforcesOneLocationPerProject(t *testing.T) {
 // 路径唯一是因为两个不同项目不能声称在同一个目录。
 func TestProjectLocationNameAndPathAreUnique(t *testing.T) {
 	st := newProjectStore(t)
-	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:xushixin/handoff.git")
+	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
 
 	sameName := proto.ProjectLocation{
 		ProjectID: projectid.FromOrigin("git@github.com:other/handoff.git"),
@@ -111,6 +111,110 @@ func TestProjectLocationNameAndPathAreUnique(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectLocationRenames 改名成功，且 project_id 不变——
+// 身份由 origin 算出，改名不许动它，否则任务与工作树会与项目失联。
+func TestUpdateProjectLocationRenames(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "handoff-renamed", "")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 改名: %v", err)
+	}
+	if got.Name != "handoff-renamed" || got.Path != "/w/handoff" {
+		t.Fatalf("改名的记录不对: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("改名后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff-renamed")
+	if err != nil {
+		t.Fatalf("改名后再按新名字取: %v", err)
+	}
+	if back.ProjectID != a.ProjectID {
+		t.Fatalf("库里的 project_id 也变了: got %s want %s", back.ProjectID, a.ProjectID)
+	}
+}
+
+// TestUpdateProjectLocationChangesPath 改路径成功，project_id 同样不变。
+func TestUpdateProjectLocationChangesPath(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "", "/w/handoff-new")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 改路径: %v", err)
+	}
+	if got.Name != "handoff" || got.Path != "/w/handoff-new" {
+		t.Fatalf("改路径的记录不对: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("改路径后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("改路径后再取: %v", err)
+	}
+	if back.ProjectID != a.ProjectID {
+		t.Fatalf("库里的 project_id 也变了: got %s want %s", back.ProjectID, a.ProjectID)
+	}
+}
+
+// TestUpdateProjectLocationEmptyBothFieldsIsNoop 验证两个字段都为空时是空操作
+// （spec §3.1「双空=空操作」）：直接返回当前记录、不发 UPDATE、project_id 不变。
+func TestUpdateProjectLocationEmptyBothFieldsIsNoop(t *testing.T) {
+	st := newProjectStore(t)
+	a := mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+
+	got, err := st.UpdateProjectLocation("handoff", "", "")
+	if err != nil {
+		t.Fatalf("UpdateProjectLocation 双空: %v", err)
+	}
+	if got.Name != "handoff" || got.Path != "/w/handoff" {
+		t.Fatalf("双空应返回当前记录不变: %+v", got)
+	}
+	if got.ProjectID != a.ProjectID {
+		t.Fatalf("双空后 project_id 变了: got %s want %s", got.ProjectID, a.ProjectID)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("双空后再取: %v", err)
+	}
+	if back.Name != "handoff" || back.Path != "/w/handoff" || back.ProjectID != a.ProjectID {
+		t.Fatalf("库里记录应原样（未发 UPDATE）: %+v", back)
+	}
+}
+
+// TestUpdateProjectLocationRejectsDuplicateName 新名字已被别的位置占用 →
+// ErrProjectDuplicate（上层映射 409）。
+func TestUpdateProjectLocationRejectsDuplicateName(t *testing.T) {
+	st := newProjectStore(t)
+	mustCreateLoc(t, st, "handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git")
+	mustCreateLoc(t, st, "other", "/w/other", "git@github.com:Xsxdot/tk.git")
+
+	_, err := st.UpdateProjectLocation("handoff", "other", "")
+	if !errors.Is(err, ErrProjectDuplicate) {
+		t.Fatalf("改名撞别的位置的名字应 ErrProjectDuplicate，got %v", err)
+	}
+	back, err := st.GetProjectLocationByName("handoff")
+	if err != nil {
+		t.Fatalf("撞名后原记录应还在: %v", err)
+	}
+	if back.Name != "handoff" || back.Path != "/w/handoff" {
+		t.Fatalf("撞名后原记录应保持原样: %+v", back)
+	}
+}
+
+// TestUpdateProjectLocationNotFound 不存在的名字 → ErrNotFound。
+func TestUpdateProjectLocationNotFound(t *testing.T) {
+	st := newProjectStore(t)
+
+	_, err := st.UpdateProjectLocation("no-such-project", "new", "/w/new")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的名字应 ErrNotFound，got %v", err)
+	}
+}
+
 // TestMigrateReposToProjectLocations 验证旧 repos 表迁入新表：算出 project_id、
 // 同 origin 多行保留 created_at 最早的一条、迁完 DROP 掉旧表。
 func TestMigrateReposToProjectLocations(t *testing.T) {
@@ -126,9 +230,9 @@ func TestMigrateReposToProjectLocations(t *testing.T) {
 		t.Fatalf("建旧表: %v", err)
 	}
 	rows := []struct{ name, path, origin, created string }{
-		{"handoff", "/w/handoff", "git@github.com:xushixin/handoff.git", "2026-01-01T00:00:00Z"},
-		{"handoff-wt", "/w/handoff-wt", "https://github.com/xushixin/handoff", "2026-02-01T00:00:00Z"},
-		{"tk", "/w/tk", "git@github.com:xushixin/tk.git", "2026-01-15T00:00:00Z"},
+		{"handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git", "2026-01-01T00:00:00Z"},
+		{"handoff-wt", "/w/handoff-wt", "https://github.com/Xsxdot/handoff", "2026-02-01T00:00:00Z"},
+		{"tk", "/w/tk", "git@github.com:Xsxdot/tk.git", "2026-01-15T00:00:00Z"},
 	}
 	for _, r := range rows {
 		if _, err := old.Exec(`INSERT INTO repos VALUES (?, ?, ?, ?)`,
@@ -203,18 +307,18 @@ func TestMigrateReposToProjectLocationsRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("建新表: %v", err)
 	}
 	if _, err := old.Exec(`INSERT INTO repos VALUES (?, ?, ?, ?)`,
-		"tk", "/w/tk", "git@github.com:xushixin/tk.git", "2026-01-01T00:00:00Z"); err != nil {
+		"tk", "/w/tk", "git@github.com:Xsxdot/tk.git", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("塞 tk 行: %v", err)
 	}
 	if _, err := old.Exec(`INSERT INTO repos VALUES (?, ?, ?, ?)`,
-		"handoff", "/w/handoff", "git@github.com:xushixin/handoff.git", "2026-01-15T00:00:00Z"); err != nil {
+		"handoff", "/w/handoff", "git@github.com:Xsxdot/handoff.git", "2026-01-15T00:00:00Z"); err != nil {
 		t.Fatalf("塞 handoff 行: %v", err)
 	}
 	// 预占 handoff 的 project_id：迁移插它必撞主键（错误出现在第二行，
 	// 第一行 tk 已经成功插入——正好验证「失败前的行被回滚」）。
 	if _, err := old.Exec(`INSERT INTO project_locations VALUES (?, ?, ?, ?, ?)`,
-		projectid.FromOrigin("git@github.com:xushixin/handoff.git"), "handoff-pre",
-		"/w/handoff-pre", "git@github.com:xushixin/handoff.git", "2026-01-01T00:00:00Z"); err != nil {
+		projectid.FromOrigin("git@github.com:Xsxdot/handoff.git"), "handoff-pre",
+		"/w/handoff-pre", "git@github.com:Xsxdot/handoff.git", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("预占 project_id: %v", err)
 	}
 	old.Close()

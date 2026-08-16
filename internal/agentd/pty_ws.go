@@ -18,9 +18,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/ptyhost"
 )
 
 // handlePtyWS 处理 GET /ws/pty?session=<id>&since=<n>[&machine=]。

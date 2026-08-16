@@ -19,7 +19,7 @@ package executor
 //   - Pending: 重新上报的悬而未决权限请求数。**opencode 恒为 0**：它的消息流
 //     里 tool part 只有 callID 没有权限 id，应答端点要求真实 id、伪造即 404，
 //     故建出的工单批了也送不回去——宁可不建
-//   - Note: 一句话结论，直接给审核者看
+//   - Note: 一句话结论，直接给协调者看
 type ReconcileOutcome struct {
 	TurnEnded bool
 	Emitted   int

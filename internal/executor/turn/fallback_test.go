@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestNoTrailerResultIsNotOK(t *testing.T) {
@@ -57,7 +57,7 @@ func TestNoTrailerFailReasonClampsLongBody(t *testing.T) {
 	long := strings.Repeat("长", 5000)
 	reason := NoTrailerFailReason("b", "c", long)
 	if len([]rune(reason)) > 400 {
-		t.Fatalf("失败原因未截断，长度 %d 符文——它会进事件 payload 与审核者视野",
+		t.Fatalf("失败原因未截断，长度 %d 符文——它会进事件 payload 与协调者视野",
 			len([]rune(reason)))
 	}
 }

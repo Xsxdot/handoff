@@ -21,8 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // progressThrottle 与 opencode/grok 同值：防高频增量刷爆事件库。
@@ -43,6 +44,7 @@ const (
 	ntfThreadStatus      = "thread/status/changed"
 	ntfRateLimits        = "account/rateLimits/updated"
 	ntfServerReqResolved = "serverRequest/resolved"
+	ntfTokenUsage        = "thread/tokenUsage/updated"
 
 	reqCommandApproval     = "item/commandExecution/requestApproval"
 	reqFileChangeApproval  = "item/fileChange/requestApproval"
@@ -102,7 +104,7 @@ func deltaFrameKind(method string) deltaKind {
 //
 // networkAccess 为 true 是 2026-08-09 用户的明确决定（spec §2.2）：executor 跑在
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
-// 且实证拒网**不产工单**，属于审核者不知情的哑失败。
+// 且实证拒网**不产工单**，属于协调者不知情的哑失败。
 func sandboxPolicy() map[string]any {
 	return map[string]any{
 		"type":                "workspaceWrite",
@@ -165,6 +167,13 @@ type runState struct {
 	renderBuf    strings.Builder
 	lastProgress time.Time
 	askedViaTool bool
+
+	// spendBase 是累计消耗的回合基线（B83）。与 usage 的当前占用是两个口径，
+	// 共用同一条 thread/tokenUsage/updated 通知但取不同字段，别混。
+	spendBase spendBase
+	// pricingWarned 是「模型不在牌价表」的 Warn 已打标记：同模型只打一次，
+	// 否则每回合刷一条。
+	pricingWarned bool
 }
 
 // newRunState 建一条运行态。
@@ -307,19 +316,29 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		// Model 是本 thread **实际**使用的模型（如 "gpt-5.6-sol"）。
+		// 它就在我们已经在读的这一帧的顶层，此前被整块丢弃。
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil || out.Thread.ID == "" {
 		return fmt.Errorf("codex thread/start 未返回 threadId: %s", res)
 	}
 	r.threadID = out.Thread.ID
 	a.log.Info("codex 会话已建立", "task", r.taskID, "thread", r.threadID)
+	// 在会话就绪之后补发实际模型名：init 帧里没带，thread/start 的顶层才有
+	if out.Model != "" {
+		// 牌价估算要用实际模型名，而 emit 之后这个值就没别处留存了。
+		r.spendBase.Model = out.Model
+		a.log.Info("codex 实际模型", "task", r.taskID, "model", out.Model)
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: out.Model})
+	}
 	return nil
 }
 
 // startTurn 发起一个回合。
 //
 // 参数：
-//   - text: 回合输入原文（首轮是渲染后的 plan 提示词，续接时是审核者原话）
+//   - text: 回合输入原文（首轮是渲染后的 plan 提示词，续接时是协调者原话）
 //
 // 注意：**四个安全参数每回合重钉一遍**（spec §5.1 步骤 6）——安全姿态因此与
 // thread 的历史状态和恢复路径完全无关。
@@ -388,6 +407,21 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	// 事件通道已关闭 = 这条运行态已被 fatal 路径判死。此时开新回合是最坏的
+	// 结果：turn/start 发得出去、模型真的会跑，但产出的一切事件都会在 emit 里
+	// 被 evClosed 短路丢弃，任务停在 running 直到 2h 看门狗（B92 在 grok 上实测）。
+	//
+	// 加在 Send 而不是 startTurn：startTurn 也被首轮启动路径调用，那时通道当然
+	// 没关，加在那里是给热路径平白多一把锁。
+	//
+	// 返回 ErrTaskNotRunning 而不是自定义错误：manager 的四级恢复阶梯以
+	// errors.Is(err, ErrTaskNotRunning) 为触发条件，会尝试冷恢复重建运行态。
+	r.emitMu.Lock()
+	closed := r.evClosed
+	r.emitMu.Unlock()
+	if closed {
+		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("codex 续接回合", "task", taskID, "thread", r.threadID)
 	if err := r.frames.BeginTurn("send"); err != nil {
@@ -487,9 +521,38 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	}
 }
 
-// emitFailed 产出失败终局并关闭事件通道（一次性语义，后到者被丢弃）。
-func (a *Adapter) emitFailed(r *runState, reason string) {
-	a.log.Error("codex 任务失败", "task", r.taskID, "reason", reason)
+// emitTurnFailed 产出一个**回合级**失败终局，**不关闭事件通道**。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 为什么不关通道：回合失败 ≠ codex app-server 完了，进程还活着，协调者一个
+// continue 就能接着干——那正是 continue 的用途。以前这里一律 closeEvents，
+// 于是 Send→startTurn 在同一个 runstate 上开新回合，新回合的一切事件在 emit
+// 里被 evClosed 短路静默丢弃，manager 的 mediate 循环也早已随通道关闭退出，
+// 任务停在 running 直到 2h 看门狗落 stalled（而 stalled 只唤醒不修复）。
+// 这是 grok 上实测到并已修复的 B92，codex 结构相同。
+//
+// 一次性语义不受影响：跨回合的去重不需要（finishTurn 每回合只调一次，
+// 各 case 互斥），与 fatal 路径之间的去重仍由 evClosed 承担。
+func (a *Adapter) emitTurnFailed(r *runState, reason string) {
+	a.log.Error("codex 回合失败", "task", r.taskID, "reason", reason)
+	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
+		Result: &executor.Result{OK: false, SessionID: r.threadID, FailReason: reason}})
+}
+
+// emitFatal 产出**执行级**失败终局并关闭事件通道。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 用于连接已断、进程已死、登录态失效——这条运行态真的不可用了，必须关通道让
+// manager 的 mediate 循环退出走对账。登录态失效也归这里：判回合级的话 continue
+// 会开一个立刻又失败的新回合，变成人肉重试循环（见 reqAuthRefresh 处那句
+// 「登录态失效重试一万次也不会好」）。
+//
+// 一次性语义：断开处置与进程判死两条路径可能同时到达，closeEvents 的幂等保证
+// 只有先到者生效，后到者的 emit 被 evClosed 丢弃，不会双重终结。
+func (a *Adapter) emitFatal(r *runState, reason string) {
+	a.log.Error("codex 执行终结", "task", r.taskID, "reason", reason)
 	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 		Result: &executor.Result{OK: false, SessionID: r.threadID, FailReason: reason}})
 	r.closeEvents()
@@ -551,7 +614,7 @@ func (r *runState) appendRenderDelta(s string) {
 	}
 }
 
-// noteAskedViaTool 标记本回合已通过原生提问工具向审核者递过问题。
+// noteAskedViaTool 标记本回合已通过原生提问工具向协调者递过问题。
 func (r *runState) noteAskedViaTool() {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
@@ -616,7 +679,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 
 	switch status {
 	case "failed":
-		a.emitFailed(r, "回合失败: "+firstNonEmpty(errMsg, "codex 未给出原因"))
+		a.emitTurnFailed(r, "回合失败: "+firstNonEmpty(errMsg, "codex 未给出原因"))
 		return
 	case "interrupted":
 		r.emitMu.Lock()
@@ -626,7 +689,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 			a.log.Info("回合被主动中断，跳过失败处置", "task", r.taskID)
 			return
 		}
-		a.emitFailed(r, "回合被中断（非 handoff 发起）: "+errMsg)
+		a.emitTurnFailed(r, "回合被中断（非 handoff 发起）: "+errMsg)
 		return
 	}
 
@@ -658,9 +721,9 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
 		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它
 		// 宣布（B74）：发 result{OK:false}，git 实况留在结构化字段，
-		// 审核者在 waiting_review 里看一眼再决定 done 还是 continue。
+		// 协调者在 waiting_review 里看一眼再决定 done 还是 continue。
 		if hasNew {
-			a.log.Warn("回合无收尾协议但有新提交，转失败交审核者裁决",
+			a.log.Warn("回合无收尾协议但有新提交，转失败交协调者裁决",
 				"task", r.taskID, "branch", branch, "commit", commit)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 				Result: turn.NoTrailerResult(r.threadID, branch, commit, text)})
@@ -674,7 +737,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 		}
 		// 空文本守卫：零文本是故障报告，不是问题
 		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.threadID,
 				Result: &executor.Result{OK: false, SessionID: r.threadID,
 					FailReason: "回合结束但零文本产出；executor 仍在线，可 continue 续接重试",
@@ -689,7 +752,7 @@ func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
 // onClosed 是连接终止的唯一处置入口。
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
-// 此时必须**不**产出失败结果——审核者看到的失败原因是假的。
+// 此时必须**不**产出失败结果——协调者看到的失败原因是假的。
 //
 // 为什么挂起表非空就直接终结、不再尝试重连：按最保守路径实现（spec §8）——
 // 假设未决权限在重连后不会重发。重连成功反而更危险：adapter 会以为一切正常，
@@ -709,7 +772,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if n := r.voidAll(); n > 0 {
 		a.log.Error("codex 连接断开且有未决权限，任务无法继续",
 			"task", r.taskID, "voided", n, "cause", cause)
-		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		a.emitFatal(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
 		return
 	}
 	a.log.Warn("codex 连接断开，无未决权限", "task", r.taskID, "cause", cause)
@@ -717,7 +780,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if r.proc != nil {
 		logTail = r.proc.LogTail()
 	}
-	a.emitFailed(r, fmt.Sprintf("codex 连接断开: %v；serve 日志尾部: %s", cause, logTail))
+	a.emitFatal(r, fmt.Sprintf("codex 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
 // handler 把传输层回调翻译成 handoff 语义。
@@ -751,7 +814,7 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 		it, ok := parseItemNotification(params)
 		if !ok {
 			// 解析失败会导致后续 fileChange 权限门 fail-closed 升级人工，
-			// 审核者需要能查到原因（items.go 的约定）
+			// 协调者需要能查到原因（items.go 的约定）
 			a.log.Debug("codex item 通知解析失败，跳过", "method", method, "params_len", len(params))
 			return
 		}
@@ -772,6 +835,8 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			a.log.Debug("codex 收到无对应回合的 turn/completed，忽略", "task", r.taskID)
 			return
 		}
+		// 回合边界：把本回合最后看到的 total 推进为下一个回合的基线。
+		r.spendBase = r.spendBase.commit()
 		status, errMsg := parseTurnCompleted(params)
 		a.finishTurn(r, status, errMsg, r.takeTurnText())
 	case method == ntfThreadStatus || method == ntfRateLimits:
@@ -785,6 +850,32 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			if itemID, ok := r.dropByReqID(string(p.RequestID)); ok {
 				a.log.Info("codex 权限请求已被别处了结，摘掉挂起项",
 					"task", r.taskID, "perm", itemID)
+			}
+		}
+	case method == ntfTokenUsage:
+		// 这条通知排在 turn/completed 之前到达，回合结束时数据已在手。
+		// turn/completed 的报文里没有任何用量字段，别去那儿找。
+		if u, ok := parseTokenUsage(params); ok {
+			a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
+		} else {
+			a.log.Debug("codex 用量通知解析失败，跳过", "task", r.taskID)
+		}
+		// 累计消耗：同一帧的 total 做回合级差分。取 total 不取 last——
+		// 上面那行当前占用恰好相反。
+		if e, next, ok := parseTurnSpend(params, r.spendBase); ok {
+			if next.pending.Input < r.spendBase.Input {
+				a.log.Warn("codex 用量计数器疑似归零，本回合按当前值全量入账",
+					"task", r.taskID, "base_input", r.spendBase.Input,
+					"now_input", next.pending.Input)
+			}
+			r.spendBase = next
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+			// 模型不在牌价表是用户看不到花费的唯一原因，日志里必须能查到；
+			// 同一个模型只 Warn 一次，否则每回合刷一条。
+			if e.CostState == proto.CostUnknown && !r.pricingWarned {
+				r.pricingWarned = true
+				a.log.Warn("codex 模型不在牌价表，本任务不显示花费",
+					"task", r.taskID, "model", r.spendBase.Model)
 			}
 		}
 	default:
@@ -879,7 +970,7 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 	case reqPermissionsApproval:
 		// 一律 fail-closed（spec §5.4）：这是「模型申请把沙箱放宽一截」，等价于
 		// acceptForSession。**绝不做成可批准的权限门**——能被批准的「放宽沙箱」
-		// 正是 §2.1 安全论证赖以成立的那道边界。回一份空 profile，只让审核者知情。
+		// 正是 §2.1 安全论证赖以成立的那道边界。回一份空 profile，只让协调者知情。
 		a.log.Warn("codex 申请放宽沙箱，已拒绝（fail-closed）", "task", r.taskID,
 			"params", string(params))
 		if err := r.cli.Reply(reqID, map[string]any{
@@ -898,7 +989,7 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 		// 并回显真因——登录态失效重试一万次也不会好。
 		a.log.Error("codex 请求补令牌，登录态已失效", "task", r.taskID, "params", string(params))
 		_ = r.cli.ReplyError(reqID, -32601, "handoff 不代管 codex 登录态")
-		a.emitFailed(r, "codex 登录态失效，请在 executor 机重新 `codex login`")
+		a.emitFatal(r, "codex 登录态失效，请在 executor 机重新 `codex login`")
 		return true
 
 	case reqUserInput:
@@ -910,9 +1001,9 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 			return true
 		}
 		text := userInputText(qs)
-		a.log.Info("codex 提问已转交审核者", "task", r.taskID, "item", itemID,
+		a.log.Info("codex 提问已转交协调者", "task", r.taskID, "item", itemID,
 			"question_count", len(qs))
-		// 立即应答：回调在读循环上，等审核者会卡死整条连接
+		// 立即应答：回调在读循环上，等协调者会卡死整条连接
 		if err := r.cli.Reply(reqID, userInputReply(qs)); err != nil {
 			a.log.Error("回发提问应答失败", "task", r.taskID, "item", itemID, "cause", err)
 		}

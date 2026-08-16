@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 func drain(t *testing.T, ch <-chan executor.AdapterEvent, d time.Duration) []executor.AdapterEvent {

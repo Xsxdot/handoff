@@ -18,11 +18,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/selfupdate"
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/selfupdate"
 )
 
 const (
@@ -72,6 +73,11 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		StallTimeout:    m.cfg.StallTimeout.String(),
 		TaskCounts:      map[string]int{},
 		Active:          []proto.ActiveTask{},
+	}
+	// B85：单网卡监听时把 loopback 辅址外露给消费方；Listen 保持 cfg.Listen
+	// 不变——它是身份/配对语义，不该变成列表
+	if cls, aux := config.ClassifyListen(m.cfg.Listen); cls == config.ListenSingle {
+		resp.ListenAux = aux
 	}
 	// 六个状态的键恒存在：缺键与零值对消费方是两回事
 	for _, s := range []proto.TaskState{

@@ -12,7 +12,7 @@ package opencode
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Probe 只读探测 opencode serve 是否仍存活（manager 的 prober 可选接口）。
@@ -25,7 +25,7 @@ import (
 //
 // 返回：
 //   - Alive=true：serve 仍在
-//   - Alive=false + Note：已判死，Note 给审核者看
+//   - Alive=false + Note：已判死，Note 给协调者看
 //   - err != nil：探不出结论（proc.json 缺失/损坏），调用方按 unknown 处理
 func (a *Adapter) Probe(req executor.ProbeReq) (executor.ProbeOutcome, error) {
 	si, err := readProcInfo(req.TaskDir)
@@ -39,7 +39,7 @@ func (a *Adapter) Probe(req executor.ProbeReq) (executor.ProbeOutcome, error) {
 			"shim_pid", si.Handle.PID, "port", si.Port)
 		return executor.ProbeOutcome{Alive: true}, nil
 	}
-	// Note 是判死后直接呈给审核者的一句话理由，写着一个已经不存在的概念等于误导
+	// Note 是判死后直接呈给协调者的一句话理由，写着一个已经不存在的概念等于误导
 	note := fmt.Sprintf("opencode serve 已不在（进程 pid %d，端口 %d）", si.Handle.PID, si.Port)
 	a.log.Info("opencode 探活：serve 已不在", "task", req.TaskID,
 		"shim_pid", si.Handle.PID, "port", si.Port)

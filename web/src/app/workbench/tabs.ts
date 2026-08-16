@@ -26,8 +26,18 @@ export type TabContent =
   //
   // 为什么可选而不是必填：tab 先出现、会话后建立——用户点「终端」的那一刻
   // 界面就该有反应，不能等一次网络往返。会话建成后由 TerminalTab 回填。
-  | { kind: 'terminal'; seq: number; sessionId?: string }
-  | { kind: 'file'; rel: string }
+  // rel 是终端要起的工作树子目录（空串/缺席 = 工作树根），右键「在终端中
+  // 打开」时带上，其余入口不带。
+  | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string }
+  // file 的 draft / baseSha 是**草稿寄存**，不是文件内容本身。
+  //
+  // 为什么必须放在这里：WorkbenchPage 只渲染 activeTab，切到别的 tab 会把 FileTab
+  // 整个卸载掉。草稿活在组件 state 里的话，「点一下隔壁终端再切回来」改的字就全没了。
+  // 沿用终端 tab 回写 sessionId 的同一条路（setTabContent）。
+  //
+  // 两个字段一起存：只存 draft 不存 baseSha，切回来之后就不知道这份草稿是从哪一版
+  // 改出来的，保存时只能瞎猜一个基线
+  | { kind: 'file'; rel: string; draft?: string; baseSha?: string }
   | { kind: 'tui'; taskId: string }
 
 export interface Tab {
@@ -62,6 +72,8 @@ export const EMPTY_WORKBENCH: Workbench = { groups: [{ tabs: [], activeId: null 
 export function dedupKey(c: TabContent): string | null {
   switch (c.kind) {
     case 'file':
+      // 草稿不参与去重：draft 是**同一份文件**的编辑中间态，不是打开目标的组成部分。
+      // 同一 rel 的 tab 无论脏不脏都是同一个目标，去重键只看 rel
       return `file:${c.rel}`
     case 'tui':
       return `tui:${c.taskId}`
@@ -174,11 +186,18 @@ export function activateTab(wb: Workbench, group: number, tabId: string): Workbe
   return next
 }
 
-// setTabContent 把一个 tab 的内容原地换掉（空白 tab 选了种类时用）。
+// setTabContent 把一个 tab 的内容原地换掉（空白 tab 选了种类、终端回写会话 id、
+// 文件回写草稿都走它）。
+//
+// **它只换内容，不动 activeId / active。** 这两件事曾经焊在一起，代价是任何一次
+// 后台回写都变成一次导航：FileTab 在**卸载时**回写草稿（Shell 的 onDraftChange），
+// 于是用户点开一个空白 tab → FileTab 卸载 → 回写 → 焦点被拽回刚离开的文件 tab，
+// 表现为「点不进新标签页」。干净文件也一样（回调无条件触发），终端的 onSession
+// 同一条路。切 tab 有专门的 activateTab，调用方需要时自己调。
 //
 // 边界情形：选中的目标已经在别的 tab 里打开了。此时正确的行为是激活那个 tab
 // 并把这个空白 tab 关掉——否则用户会得到两个标着同一个文件的 tab，其中一个
-// 是刚才的空白页。
+// 是刚才的空白页。**这一支保留激活**：它是用户刚做完一次选择动作，跳过去是他要的。
 export function setTabContent(wb: Workbench, group: number, tabId: string, content: TabContent): Workbench {
   const key = dedupKey(content)
   if (key !== null) {
@@ -195,8 +214,6 @@ export function setTabContent(wb: Workbench, group: number, tabId: string, conte
   const idx = next.groups[gi].tabs.findIndex((t) => t.id === tabId)
   if (idx === -1) return wb
   next.groups[gi].tabs[idx] = { id: tabId, content }
-  next.groups[gi].activeId = tabId
-  next.active = gi
   return next
 }
 

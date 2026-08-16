@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // statusBusyEvent 构造一条 session.status（status.type=busy，回合进行中信号）。
@@ -38,7 +38,7 @@ func statusBusyEvent() string {
 //
 // 场景（handoff 主路径：提问 → reply → continue 的多回合）：
 //   - 回合一：executor 干完活提交了新 commit 但忘了输出 trailer → 兜底判 result
-//   - 回合二：审核者追问，executor 只用散文回答、没有任何新提交 → 必须判 question
+//   - 回合二：协调者追问，executor 只用散文回答、没有任何新提交 → 必须判 question
 //
 // 修复前 startCommit 只在 startRun 捕获一次，回合二仍与 run 起点比较，
 // hasNew 恒为 true，于是带着回合一的 commit hash 谎报 completed。
@@ -65,7 +65,7 @@ func TestFallbackBaselineRefreshedPerTurn(t *testing.T) {
 	}
 	turn1Commit := first.Result.CommitHash
 
-	// 回合二：没有任何新提交，同样无 trailer → 必须判 question 交审核者裁决
+	// 回合二：没有任何新提交，同样无 trailer → 必须判 question 交协调者裁决
 	fs.push(partUpdatedEvent("msg-a2", "prt-a2", "我确认了一下，不需要改动"))
 	fs.push(statusBusyEvent())
 	fs.push(statusIdleEvent())
@@ -89,7 +89,7 @@ func TestFallbackBaselineRefreshedPerTurn(t *testing.T) {
 // 产出带 trailer 的最终文本 → 真正的 idle。
 //
 // 修复前任何 idle 都立即分类：中途那次 idle 会把「我先看看代码」当成一个完整回合，
-// 若此时 repo 已有新提交更会误报 completed —— 审核者据此执行 done，Stop 会在
+// 若此时 repo 已有新提交更会误报 completed —— 协调者据此执行 done，Stop 会在
 // opencode 仍在干活时杀掉 tmux 会话。
 //
 // 修复后 idle 只是「候选回合结束」，需静默 idleGrace 才生效；宽限期内任何新增

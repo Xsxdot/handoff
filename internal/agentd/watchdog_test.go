@@ -19,11 +19,13 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // discardLogger 返回丢弃输出的 logger，保证测试输出干净（与 hub_test 的 TestMain 同款）。
@@ -75,7 +77,7 @@ func seedCompletedTask(t *testing.T, st *store.Store, id string) {
 	}
 }
 
-// seedWaitingReviewTask 创建任务并迁到 waiting_review（审核者审阅中，executor
+// seedWaitingReviewTask 创建任务并迁到 waiting_review（协调者审阅中，executor
 // 可能还活着等续接指令，也可能已不在）。
 func seedWaitingReviewTask(t *testing.T, st *store.Store, id string) {
 	t.Helper()
@@ -127,7 +129,7 @@ func TestWatchdogFiresOnceOnStall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// tick 10ms 注入（测试参数），stallTimeout 极小 = 事件必然超阈值
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 等第一条 stalled 落库（首轮触发）
 	eventually(t, 2*time.Second, "stalled 事件已落库", func() bool {
@@ -177,7 +179,7 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	seedCompletedTask(t, st, "task-done")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 
@@ -189,7 +191,7 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	}
 }
 
-// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在审核者回答后
+// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在协调者回答后
 // 仍无新事件产出（executor 假死），下一轮 tick 必须二次触发 stalled——这是最需要
 // 二次告警的场景（旧实现「只发一次」裁决后永远不再告警）；而无活动时依旧只发一次
 // 不刷屏。
@@ -205,14 +207,14 @@ func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 第一轮：stalled 触发一次
 	eventually(t, 2*time.Second, "首条 stalled 已落库", func() bool {
 		return len(stalledEvents(t, st, "task-reply")) == 1
 	})
 
-	// 模拟审核者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
+	// 模拟协调者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
 	if err := st.AnswerTicket("task-reply:t1", "allow"); err != nil {
 		t.Fatalf("AnswerTicket: %v", err)
 	}
@@ -243,7 +245,7 @@ func TestWatchdogCatchesZeroEventTask(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	eventually(t, 2*time.Second, "零事件任务 stalled 已落库", func() bool {
 		return len(stalledEvents(t, st, "task-silent")) == 1
@@ -269,7 +271,7 @@ func TestWatchdogCatchesZeroEventTask(t *testing.T) {
 // TestRecoverOnStartupVoidsPendingTickets（P1-16）：探活失败的 dead 任务，其挂起
 // 工单被作废——attach 的 pending_tickets 不再出现无法操作的挂起项（executor 已不
 // 在，一操作就撞 P0-5）；answer 置为 VoidAnswer 留审计痕迹，且该任务仍迁移
-// waiting_review 交审核者裁决。
+// waiting_review 交协调者裁决。
 func TestRecoverOnStartupVoidsPendingTickets(t *testing.T) {
 	st := newTestStore(t)
 	hub := NewHub()
@@ -310,7 +312,7 @@ func TestRecoverOnStartup(t *testing.T) {
 	st := newTestStore(t)
 	hub := NewHub()
 
-	// 探活恒 false：running 与 waiting_answer 任务都要转 failed 交审核者裁决
+	// 探活恒 false：running 与 waiting_answer 任务都要转 failed 交协调者裁决
 	seedRunningTask(t, st, "task-dead-run")
 	seedWaitingAnswerTask(t, st, "task-dead-wa")
 	// 探活恒 true：任务保持 running 不动
@@ -339,7 +341,8 @@ func TestRecoverOnStartup(t *testing.T) {
 		t.Fatal("终态任务不应被探活")
 	}
 
-	// failed 事件断言：running 与 waiting_answer 各追加一条，原因固定
+	// turn_failed 事件断言：running 与 waiting_answer 各追加一条，原因固定。
+	// 是 turn_failed 不是 failed——两个任务都收在 waiting_review（见上面的 assertState），没有终结（B100 补漏）
 	for _, id := range []string{"task-dead-run", "task-dead-wa"} {
 		evs, err := st.EventsFrom(id, 0, 100)
 		if err != nil {
@@ -347,12 +350,12 @@ func TestRecoverOnStartup(t *testing.T) {
 		}
 		var failed []proto.Event
 		for _, ev := range evs {
-			if ev.Type == proto.EventTypeFailed {
+			if ev.Type == proto.EventTypeTurnFailed {
 				failed = append(failed, ev)
 			}
 		}
 		if len(failed) != 1 {
-			t.Fatalf("任务 %s 期望 1 条 failed 事件，实际 %d 条", id, len(failed))
+			t.Fatalf("任务 %s 期望 1 条 turn_failed 事件，实际 %d 条", id, len(failed))
 		}
 		var pl failedPayload
 		if err := json.Unmarshal(failed[0].Payload, &pl); err != nil {
@@ -377,7 +380,7 @@ func TestRecoverOnStartup(t *testing.T) {
 
 // TestRecoverOnStartupRebuildsWaitingReview 覆盖 agentd 重启后 waiting_review 任务
 // 的续接恢复：executor 存活（probe=true）时必须重建订阅与中介循环（即被探活），
-// 但**不改任务状态**——waiting_review 是审核者裁决的落点，就该留在原地等人；也不得
+// 但**不改任务状态**——waiting_review 是协调者裁决的落点，就该留在原地等人；也不得
 // 追加任何事件。旧实现显式跳过 waiting_review（「是人的节奏」），续接上下文随
 // agentd 进程消亡而丢失，continue 永久失败。
 func TestRecoverOnStartupRebuildsWaitingReview(t *testing.T) {
@@ -444,5 +447,190 @@ func TestRecoverOnStartupKeepsDeadWaitingReview(t *testing.T) {
 		if ev.Type == proto.EventTypeFailed {
 			t.Fatalf("waiting_review 任务 executor 不在也不得追加 failed 事件: seq=%d", ev.Seq)
 		}
+	}
+}
+
+// TestMismatchVerdict 覆盖 mismatchVerdict 失配判据的六条护栏（B97 Task 2），
+// 逐条对应 spec §6 第 2 点的判据。
+//
+//  1. 最新事件 failed + running + 事件 60s 前 → true
+//  2. 同上但事件只有 10s → false（防抢：Stop/对账正常执行时也会短暂处在中间态）
+//  3. 最新事件是 progress（历史上有 failed）→ false
+//  4. 最新事件是 turn_failed + waiting_review → false
+//     这是**防误伤的正身**：turn_failed + waiting_review 是健康态，任务正等着
+//     协调者裁决，挂三天都正常，扫描一根手指都不许碰
+//  5. failed 事件产生于 agentd 启动之前 → false
+//     为什么：B100 之前的历史数据里存在**合法的** failed + waiting_review，
+//     没这条护栏，升级后会把正等着裁决的存量任务直接判死
+//  6. 任务已是终态（failed 与 completed 两态都覆盖）→ false
+func TestMismatchVerdict(t *testing.T) {
+	now := time.Now()
+	startedAt := now.Add(-time.Hour)
+	minAge := 30 * time.Second
+
+	cases := []struct {
+		name   string
+		state  proto.TaskState
+		latest *proto.Event
+		want   bool
+	}{
+		{
+			name:   "1 最新事件failed+running+60s前→true",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   true,
+		},
+		{
+			name:   "2 事件仅10s→false（防抢）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-10 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "事件年龄恰等于 minAge→true（>= 边界）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-minAge)},
+			want:   true,
+		},
+		{
+			name:   "3 最新事件是progress（历史上有failed）→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeProgress, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "4 turn_failed+waiting_review→false（防误伤正身）",
+			state:  proto.TaskStateWaitingReview,
+			latest: &proto.Event{Type: proto.EventTypeTurnFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "5 failed事件产生于agentd启动之前→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: startedAt.Add(-time.Hour)},
+			want:   false,
+		},
+		{
+			name:   "6a 已是failed终态→false",
+			state:  proto.TaskStateFailed,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "6b 已是completed终态→false",
+			state:  proto.TaskStateCompleted,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mismatchVerdict(tc.state, tc.latest, now, startedAt, minAge)
+			if got != tc.want {
+				t.Fatalf("mismatchVerdict(state=%s, latest.type=%v, latest.age=%s) = %v, want %v",
+					tc.state, tc.latest.Type, now.Sub(tc.latest.CreatedAt), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanStateMismatchTransitsAndAudits（B97 Task 3）：失配任务（最新事件 failed、
+// 状态却非终态）被迁到 failed，且挂起工单已被作废——证明走的是 transit 而非裸
+// UpdateTaskState（裸改状态不会触发终态收口），且留下一条 progress 审计，文本含
+// 原始 failed 事件的 seq。
+func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
+	// 直接用生产接线 m.MismatchTransit()（与 cmd/agentd.go:193 同一接线点，
+	// 终态收口挂在 transit 内部）
+	m, st, hub, _ := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	// 追加一条 failed 事件作为最新事件（事件年龄 ≥ minAge=time.Nanosecond 恒成立）
+	fevt, err := st.AppendEvent("t1", proto.EventTypeFailed, failedPayload{FailReason: "对账失败"})
+	if err != nil {
+		t.Fatalf("AppendEvent(failed): %v", err)
+	}
+	seq := fevt.Seq
+	// 造一张挂起工单：若扫描走 transit，终态收口会把它作废
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "t1:p1", TaskID: "t1", Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	// startedAt 早于事件（护栏「本次启动之后」放行），minAge 足够小（事件必够老）
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, m.MismatchTransit(), discardLogger())
+
+	assertState(t, st, "t1", proto.TaskStateFailed)
+
+	// 挂起工单已被作废（transit 的终态收口生效 → 证明走的是 transit 不是裸改状态）
+	pending, err := st.PendingTickets("t1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("失配任务迁移后挂起工单应被作废（走 transit 收口），实际 %d 张", len(pending))
+	}
+
+	// 审计：存在一条 progress 事件，payload 文本含原始 failed 事件 seq；
+	// 且不应补第二条 failed 事件（审计用 progress 而非重复 failed）
+	evs, err := st.EventsFrom("t1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	foundAudit := false
+	failedCount := 0
+	for _, ev := range evs {
+		switch ev.Type {
+		case proto.EventTypeFailed:
+			failedCount++
+		case proto.EventTypeProgress:
+			if strings.Contains(string(ev.Payload), strconv.FormatInt(seq, 10)) {
+				foundAudit = true
+			}
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("缺少含原始 failed 事件 seq=%d 的 progress 审计事件", seq)
+	}
+	if failedCount != 1 {
+		t.Fatalf("不应补第二条 failed 事件，实际 %d 条", failedCount)
+	}
+}
+
+// TestScanStateMismatchLeavesHealthyTaskAlone（B97 Task 3）：turn_failed + waiting_review
+// 是健康态（任务正等着协调者裁决，挂三天都正常），扫描一根手指都不许碰——transit
+// 不被调用、状态不动、事件数不变。判 false 的直接原因是最新事件类型是 turn_failed
+// 而非 failed（waiting_review 不是终态，终态只有 completed/failed）。
+func TestScanStateMismatchLeavesHealthyTaskAlone(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-healthy")
+	// turn_failed 事件作为最新事件：mismatchVerdict 判 false（latest 不是 failed）
+	if _, err := st.AppendEvent("task-healthy", proto.EventTypeTurnFailed,
+		failedPayload{FailReason: "回合失败"}); err != nil {
+		t.Fatalf("AppendEvent(turn_failed): %v", err)
+	}
+	before, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(before): %v", err)
+	}
+
+	called := 0
+	transit := func(id string, to proto.TaskState, reason string) error {
+		called++
+		return nil
+	}
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, transit, discardLogger())
+
+	if called != 0 {
+		t.Fatalf("健康任务不应触发迁移回调，实际调用 %d 次", called)
+	}
+	assertState(t, st, "task-healthy", proto.TaskStateWaitingReview)
+
+	after, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(after): %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("健康任务事件数应不变（无审计、无新事件），期望 %d 条，实际 %d 条", len(before), len(after))
 	}
 }

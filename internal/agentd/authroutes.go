@@ -30,8 +30,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // deviceNameMaxRunes 是设备名的展示长度上限。

@@ -3,8 +3,8 @@ package grok_test
 import (
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 )
 
 func TestResumeWithoutSessionIDIsNotAlive(t *testing.T) {

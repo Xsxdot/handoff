@@ -1,7 +1,7 @@
 // 本文件实现 handoff continue 子命令：向任务续发修改指令。
 //
 // 职责：
-//   - 把审核者的修改指令经 client.Continue 原样透传给 executor（同一会话续接，
+//   - 把协调者的修改指令经 client.Continue 原样透传给 executor（同一会话续接，
 //     上下文完整保留；任务必须处于 waiting_review）
 //   - 成功时单行输出 {"ok":true}（供上层脚本解析）
 //
@@ -12,8 +12,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // continueCmd 向任务续发修改指令，要求任务处于 waiting_review。

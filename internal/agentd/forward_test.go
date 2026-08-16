@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/config"
 )
 
 // TestForwardProjectAddToNamedMachine 断言：带 ?machine= 的登记请求被原样搬到

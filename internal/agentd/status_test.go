@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // probeStub 是一个可控探活结论的假 adapter，用来在服务端测试里制造三态现场。
@@ -171,7 +171,7 @@ func TestStatusProbeAlive(t *testing.T) {
 	}
 }
 
-// 探活为 dead 时 Live=dead 且 Note 原样带出（审核者靠它判断怎么处置）。
+// 探活为 dead 时 Live=dead 且 Note 原样带出（协调者靠它判断怎么处置）。
 func TestStatusProbeDead(t *testing.T) {
 	env := newStatusEnv(t, &probeStub{alive: false, note: "tmux 会话 handoff-abcdef01 不存在"})
 	env.seedRunningTask(t, "T-dead")
@@ -342,5 +342,39 @@ func TestFootprintAllReportsVerdict(t *testing.T) {
 	}
 	if resp.Rows[0].Verdict == "" {
 		t.Fatal("Verdict 不得为空——判不出结论也要如实说，不能只给一个 0")
+	}
+}
+
+// Listen 为单网卡 IP 时 ListenAux 必须给出 loopback 变体；Listen 保持
+// cfg.Listen 不变（身份/配对语义，消费方不该看到列表）。loopback 配置恒为空。
+func TestStatusListenAux(t *testing.T) {
+	cfg := &config.Config{
+		Token:    testToken,
+		DataDir:  t.TempDir(),
+		Listen:   "100.64.0.5:7777",
+		Executor: config.ExecutorConfig{Default: "stub"},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := newTestEnvWithCfg(t, cfg, logger)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"stub": &probeStub{alive: true}}, cfg, nil, nil, logger)
+
+	st, err := mgr.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Listen != "100.64.0.5:7777" {
+		t.Fatalf("Listen=%q, 应保持 cfg.Listen 原值", st.Listen)
+	}
+	if st.ListenAux != "127.0.0.1:7777" {
+		t.Fatalf("ListenAux=%q, want 127.0.0.1:7777", st.ListenAux)
+	}
+
+	loop, err := newTestManager(t).Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if loop.ListenAux != "" {
+		t.Fatalf("loopback 配置 ListenAux=%q, 应为空", loop.ListenAux)
 	}
 }

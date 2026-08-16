@@ -18,9 +18,15 @@ import type {
   CreateProjectResp,
   CreatePtySessionReq,
   DiffResult,
+  DirEntry,
   DirListResult,
+  FileRead,
   FileResult,
+  FileWriteReq,
+  FileWriteResp,
   MachinesResp,
+  PatchProjectReq,
+  ProjectLocation,
   ProjectTreeResp,
   PtySession,
   PtySessionsResp,
@@ -28,38 +34,46 @@ import type {
   ReplyResult,
   ResumeResult,
   RunResult,
+  SearchResult,
   StatusResp,
   StopResult,
   Task,
   TaskDetail,
 } from './types'
 
-// ApiError 携带 HTTP 状态码与 agentd 返回的 error 字段（读不到时给兜底文案）。
+// ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
+//
+// 为什么要留 body：409 的响应体除了 error 还带着 current（磁盘现状），冲突界面
+// 的两个出口都要用它——「放弃我的改动」要它的正文，「用我的内容覆盖」要它的
+// 哈希当新基线。只留一个 message 就得为了拿现状再发一次请求，而两次请求之间
+// 又是一个新窗口。
 //
 // 参数：
 //   - status: HTTP 状态码；0 表示请求根本没到 agentd（网络/反代层失败）
 //   - message: 人类可读的原因
+//   - body: 已解析的响应体；解析不出时为 undefined
 export class ApiError extends Error {
   readonly status: number
+  readonly body: unknown
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
-// bodyOrError 从非 2xx 响应里提取 agentd 的 {"error": "…"} 原文；读不到时回退
-// 到「状态码 + 状态文本」兜底文案。
-async function bodyOrError(resp: Response): Promise<string> {
-  let detail = ''
+// bodyOrError 从非 2xx 响应里提取 agentd 的 {"error": "…"} 原文与完整响应体；
+// 读不到时回退到「状态码 + 状态文本」兜底文案。
+async function bodyOrError(resp: Response): Promise<{ detail: string; body: unknown }> {
   try {
     const body = (await resp.json()) as { error?: string }
-    detail = body.error ?? ''
+    return { detail: body.error ?? '', body }
   } catch {
-    // 响应体不是 JSON 时保留空 detail，用兜底文案
+    // 响应体不是 JSON 时用兜底文案，body 留 undefined
+    return { detail: '', body: undefined }
   }
-  return detail || `agentd 返回 ${resp.status} ${resp.statusText}`
 }
 
 // parseResponse 统一处理一次 fetch 的完成态：非 2xx 抛 ApiError（原文透传），
@@ -69,7 +83,8 @@ async function parseResponse<T>(resp: Response): Promise<T> {
     throw new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie')
   }
   if (!resp.ok) {
-    throw new ApiError(resp.status, await bodyOrError(resp))
+    const { detail, body } = await bodyOrError(resp)
+    throw new ApiError(resp.status, detail || `agentd 返回 ${resp.status} ${resp.statusText}`, body)
   }
   return (await resp.json()) as T
 }
@@ -100,6 +115,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// putJSON 以 JSON body 发起 PUT 请求。
+function putJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// patchJSON 以 JSON body 发起 PATCH 请求。
+function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -207,15 +240,96 @@ function workspaceQuery(path: string, rel?: string, machine?: string): string {
 // fetchWorkspaceDir 列举工作树内一层目录（GET /api/workspaces/dir）。
 //
 // path 必须是 GET /api/projects/tree 给出的某个 Workspace.path 原样值——
-// agentd 侧按等值比对做白名单，任意路径返回 403（spec §7.1）。
+// agentd 侧按等值比对做白名单，任意路径返回 400（spec §7.1）。
 export function fetchWorkspaceDir(path: string, rel?: string, machine?: string): Promise<DirListResult> {
   return request<DirListResult>(`/api/workspaces/dir?${workspaceQuery(path, rel, machine)}`)
 }
 
 // fetchWorkspaceFile 读工作树内单个文件（GET /api/workspaces/file）。
-// 语义与 fetchTaskFile 一致，只是寻址从任务改为工作树。
-export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileResult> {
-  return request<FileResult>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
+//
+// 返回的是完整 FileRead 而不是只有 content：写回需要 sha256 当基线，
+// 三态展示需要 binary / truncated / size。
+export function fetchWorkspaceFile(path: string, rel: string, machine?: string): Promise<FileRead> {
+  return request<FileRead>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`)
+}
+
+// writeWorkspaceFile 写回工作树内单个文件（PUT /api/workspaces/file）。
+//
+// 参数：
+//   - req.base_sha256: **上一次读到那一版**的哈希；对不上时抛 409 的 ApiError，
+//     其 body 是 FileConflictResp（带磁盘现状）
+//
+// 注意：成功返回的 sha256 就是下一次写入的 base_sha256，不需要再读一次
+export function writeWorkspaceFile(
+  path: string,
+  rel: string,
+  req: FileWriteReq,
+  machine?: string,
+): Promise<FileWriteResp> {
+  return putJSON<FileWriteResp>(`/api/workspaces/file?${workspaceQuery(path, rel, machine)}`, req)
+}
+
+// createWorkspaceEntry 在工作树内新建一个空文件或空目录（POST /api/workspaces/entry）。
+//
+// rel 是父目录的相对路径（空串 = 工作树根）；name 必须是单层名，kind 取 'file' | 'dir'。
+// 撞名 409、名字含 / 400，错误原文都在 ApiError.message 里。
+export function createWorkspaceEntry(
+  path: string,
+  rel: string,
+  name: string,
+  kind: 'file' | 'dir',
+  machine?: string,
+): Promise<DirEntry> {
+  return postJSON<DirEntry>(`/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`, { name, kind })
+}
+
+// copyWorkspaceEntry 把工作树内 rel 条目复制一份到同级（POST /api/workspaces/entry/copy）。
+//
+// 副本名由服务端按「foo copy.go / foo copy 2.go」规则计算并返回，前端不参与命名。
+export function copyWorkspaceEntry(path: string, rel: string, machine?: string): Promise<DirEntry> {
+  return postJSON<DirEntry>(`/api/workspaces/entry/copy?${workspaceQuery(path, rel, machine)}`, {})
+}
+
+// renameWorkspaceEntry 把工作树内 rel 条目改名为单层 newName（PATCH /api/workspaces/entry）。
+// 不做跨目录移动：newName 含 / 由服务端 400。
+export function renameWorkspaceEntry(
+  path: string,
+  rel: string,
+  newName: string,
+  machine?: string,
+): Promise<DirEntry> {
+  return patchJSON<DirEntry>(`/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`, {
+    new_name: newName,
+  })
+}
+
+// deleteWorkspaceEntry 删除工作树内 rel 条目（DELETE /api/workspaces/entry），
+// 目录连同内容一并删，服务端不做回收站。
+export function deleteWorkspaceEntry(path: string, rel: string, machine?: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/workspaces/entry?${workspaceQuery(path, rel, machine)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// searchWorkspace 在工作树 rel 子树内按关键词搜索命中行（GET /api/workspaces/search）。
+// q 必须非空（空词服务端 400）；hits 命中 rel 含 scope 前缀、line 从 1 起。
+export function searchWorkspace(path: string, rel: string, q: string, machine?: string): Promise<SearchResult> {
+  return request<SearchResult>(
+    `/api/workspaces/search?${workspaceQuery(path, rel, machine)}&q=${encodeURIComponent(q)}`,
+  )
+}
+
+// revealInFinder 在**本机**访达中显示工作树内 rel 条目（POST /api/workspaces/reveal）。
+// rel 可为空串（揭示工作树根）。
+//
+// **故意没有 machine 参数**：远程条目不可能在本机访达里打开，端点对 ?machine=
+// 一律 400。签名不给这个参数，就没有人能不小心传它。
+export function revealInFinder(path: string, rel: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/api/workspaces/reveal?${workspaceQuery(path, rel)}`,
+    { method: 'POST' },
+  )
 }
 
 // createProject 登记一个项目位置（POST /api/projects）。
@@ -234,6 +348,14 @@ export function deleteProject(name: string, machine?: string): Promise<{ ok: boo
     `/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
+}
+
+// patchProject 改一个项目位置的引用名或路径（PATCH /api/projects/{name}）。
+//
+// req 的 new_name/path 均可选但不能都空；name 是**当前**引用名（旧名）——
+// 改名也是按旧名寻址这条资源。machine 为目标机器名，省略或空串 = 本机。
+export function patchProject(name: string, req: PatchProjectReq, machine?: string): Promise<ProjectLocation> {
+  return patchJSON<ProjectLocation>(`/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`, req)
 }
 
 // fetchPtySessions 列终端会话（GET /api/pty/sessions）。

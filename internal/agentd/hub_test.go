@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestMain 把默认 logger 指向丢弃输出，保证测试输出干净（hub 内部日志点不在本包断言输出）。

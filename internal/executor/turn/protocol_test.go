@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 func TestRenderPromptEmbedsTaskIDAndPlan(t *testing.T) {

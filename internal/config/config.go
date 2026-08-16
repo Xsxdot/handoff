@@ -3,6 +3,7 @@
 // 职责：
 //   - 读取 ~/.handoff/config.yaml（或指定路径）并解析为 Config
 //   - 首次运行（文件不存在）时生成默认配置与随机 Token 并写盘
+//   - 旧文件顶层 update 段先剥再严格解码，避免 KnownFields 拒启动
 //   - 提供 DefaultPath 默认配置路径
 //
 // 边界：
@@ -23,6 +24,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,9 +47,9 @@ type Config struct {
 	// 那台机器上还没有该项目时，agentd 会把仓库 clone 到这里，实际落点为
 	// RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos。
 	//
-	// 为什么放顶层而不是放进 Target：Target 是在**审核者本地**被读取的
+	// 为什么放顶层而不是放进 Target：Target 是在**协调者本地**被读取的
 	//（见 cmd/pull.go 的 cfg.Targets[task.Target]），放那儿会让「仓库放哪」
-	// 变成审核者的本地状态，换一台审核机接管就得重配。放顶层的语义是
+	// 变成协调者的本地状态，换一台协调者机接管就得重配。放顶层的语义是
 	// 「每台执行机自己决定它的仓库放在哪」。
 	// yaml:"repo_root"：strict 解码器（KnownFields）按 tag 匹配键名，不加 tag 时
 	// yaml.v3 会把 RepoRoot 映射成 reporoot，与 README/设计文档里的 repo_root 不符。
@@ -63,6 +65,24 @@ type Config struct {
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（B59 spec D7 同款，方向相反）。
 	PathDirs []string `yaml:"path_dirs,omitempty"`
+	// Proxy 是 handoff **自身**出网时使用的代理地址，形如 http://host:port、
+	// https://host:port、socks5://host:port、socks5h://host:port。
+	// 空 = 不配，沿用 HTTPS_PROXY/HTTP_PROXY/NO_PROXY 环境变量（现行为不变）。
+	//
+	// 作用范围只有两处：更新链路的 HTTP 出网（查 release、下资产）与 agentd 的
+	// git clone/fetch。**不作用于协调者↔agentd 链路**——那是 LAN/loopback 地址，
+	// 代理化轻则每次请求多绕一跳，重则 socks5 代理解析不了 100.x.y.z 直接断链，
+	// 而这条链路的可达性是 handoff 的命根子。也**不作用于 executor**：executor
+	// 的出网归 env 段（B19），两者故障域不交叉——代理挂了只影响升级，不影响任务执行。
+	//
+	// 为什么放顶层而不是放进 Target：它描述的是「**这台机器**怎么出网」，
+	// 与 RepoRoot / PathDirs 同一个道理。
+	//
+	// omitempty 是硬要求，不是风格：配置以 KnownFields(true) 严格解析，未知键让
+	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 proxy: "" 写进
+	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
+	//（PathDirs 同款）。
+	Proxy string `yaml:"proxy,omitempty"`
 	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
 	//
 	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
@@ -82,7 +102,7 @@ type Config struct {
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
-	//（二期前的现行为：权限请求直接走人工审核者）。
+	//（二期前的现行为：权限请求直接走人工协调者）。
 	Approver ApproverConfig
 	// Executor 是任务的缺省执行者选择配置。
 	Executor ExecutorConfig
@@ -90,16 +110,14 @@ type Config struct {
 	Terminal TerminalConfig
 	// Sync 是任务结束后自动同步远程任务分支到本地的配置。
 	Sync SyncConfig
-	// Update 是自动更新配置。Auto 默认 true，Interval 默认 6h。
-	Update UpdateConfig
 	// Env 是 agent（executor）名 → env 文件名的映射：该 agent 启动时注入该文件里的
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
 	Env map[string]string
-	// Web 是浏览器控制台相关配置。
-	Web WebConfig
 	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
+	// Web 是浏览器控制台相关配置。
+	Web WebConfig
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
@@ -108,48 +126,13 @@ type SyncConfig struct {
 	Auto bool
 }
 
-// UpdateConfig 是**已废弃**的自动更新配置。
-//
-// B59 取消了 agentd 的定时自更新循环：升级改由操作者一条 handoff upgrade
-// 触发，二进制由本机下载后推送给远端。这两个字段因此不再有任何效果。
-//
-// **为什么保留字段而不是删掉**：配置是 KnownFields(true) 严格解析的，未知键
-// 让 agentd **启动失败**。v0.1.0 的首次运行会把这两个键写进 config.yaml，
-// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来——正是这个设计要消灭
-// 的那类失配的最狠形态（B59 spec D7）。
-//
-// 取值非默认时由 WarnDeprecated 打一条 Warn：用户把 auto 设成 false 是有
-// 意图的，悄悄让它失效等于骗人。
-type UpdateConfig struct {
-	Auto     bool
-	Interval time.Duration
-}
-
-// WarnDeprecated 对已废弃且被显式改过的配置打一条 Warn。
-//
-// 参数：
-//   - log: 日志器（agentd 启动时传自己的）
-//
-// 注意：
-//   - 默认值不打。绝大多数机器都是默认值，每次启动打一条无从处置的 Warn，
-//     只会让人学会忽略日志——而那是比不打更糟的结果
-func (c *Config) WarnDeprecated(log *slog.Logger) {
-	if !c.Update.Auto {
-		log.Warn("配置 update.auto 已废弃且不再有效果：agentd 不再自动更新，升级请在审核者机器上跑 handoff upgrade --now")
-	}
-	if c.Update.Interval != 6*time.Hour {
-		log.Warn("配置 update.interval 已废弃且不再有效果：agentd 不再定时检查版本",
-			"配置值", c.Update.Interval)
-	}
-}
-
 // ApproverConfig 描述审批链的廉价模型审批者。
 //
 // 参数语义：
 //   - Executor：审批者执行者名（如 opencode/claude/grok）；空=不启用审批链
 //   - Model：审批者模型名；空=用执行者自身默认模型
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
-//   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工审核者
+//   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者
 type ApproverConfig struct {
 	Executor  string
 	Model     string
@@ -212,6 +195,20 @@ type Target struct {
 type ProcFenceConfig struct {
 	Disabled     bool    `yaml:"disabled"`
 	ReserveRatio float64 `yaml:"reserve_ratio"`
+	// TaskBudget 是**单个任务**名下的进程数告警线，超过即发一次
+	// task_proc_pressure 事件唤醒审核者。0 = 关掉这一档。
+	//
+	// 为什么不是把围栏值调小：RLIMIT_NPROC 的内核判定是「该 uid 当前进程总数
+	// 是否超过调用者软限」，不是「这棵进程树的后代数」。给每个 shim 装 300 的
+	// 效果是「uid 总数一过 300 所有 shim 一起 fork 失败」，第二个任务会被第一个
+	// 饿死——表达不了每任务额度，只能换成 watchdog 按任务点名（B93 spec §2.2）
+	TaskBudget int `yaml:"task_budget"`
+	// TaskHardLimit 是单个任务的进程数硬上限，超过即强制清扫并落 failed。
+	// 0 = 关掉这一档。
+	//
+	// 两档的分工：TaskBudget 是「叫醒人」，TaskHardLimit 是「不等人了」。
+	// 只有一档要么太吵（每次都杀）要么太晚（人没醒机器就没了）。
+	TaskHardLimit int `yaml:"task_hard_limit"`
 }
 
 // Load 加载配置：文件不存在时返回带默认值的 Config 并自动生成随机 Token 写盘。
@@ -221,10 +218,11 @@ type ProcFenceConfig struct {
 //
 // 返回：
 //   - 解析后的配置；文件不存在时返回默认配置
-//   - 错误信息：读/解析/写盘失败时返回
+//   - 错误信息：读/解析/校验失败时返回。剥 update 后回写失败不返回错误
 //
 // 注意：
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
+//   - 旧文件的顶层 update 必须先剥再 KnownFields，否则 v0.1.x 机器升级即砖
 func Load(path string) (*Config, error) {
 	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
 	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
@@ -235,13 +233,22 @@ func Load(path string) (*Config, error) {
 		Executor: ExecutorConfig{Default: "opencode"},
 		Terminal: TerminalConfig{Auto: false},
 		Sync:     SyncConfig{Auto: true},
-		Update:   UpdateConfig{Auto: true, Interval: 6 * time.Hour},
-		Targets:  map[string]Target{},
-		Env:      map[string]string{},
+		ProcFence: ProcFenceConfig{
+			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
+			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
+			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
+			// 默认（400/1200），显式写 0 覆盖为 0。
+			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
+		},
+		Targets: map[string]Target{},
+		Env:     map[string]string{},
 	}
 	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
 	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
 	firstRun := false
+	// stripped 表示这次从已有文件剥掉了废弃的顶层 update。必须提到 switch
+	// 外面：validate 通过后才回写，校验失败的脏配置不该被我们「修好」落盘。
+	stripped := false
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -251,6 +258,19 @@ func Load(path string) (*Config, error) {
 	case err != nil:
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	default:
+		// 必须先剥顶层 update 再 KnownFields：v0.1.x 写过的旧文件里仍有
+		// 这段死配置，直接严格解码会把整个 agentd 卡在启动上。
+		var cleaned []byte
+		var serr error
+		cleaned, stripped, serr = stripDeprecatedTopLevel(b)
+		if serr != nil {
+			log().Error("配置解析失败", "path", path, "cause", serr)
+			return nil, fmt.Errorf("解析配置 %s: %w", path, serr)
+		}
+		if stripped {
+			log().Warn("配置 update 段已废弃，已忽略并将从文件删除", "path", path)
+			b = cleaned
+		}
 		if uerr := decodeStrict(b, cfg); uerr != nil {
 			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
@@ -270,6 +290,21 @@ func Load(path string) (*Config, error) {
 	if cfg.ProcFence.ReserveRatio <= 0 || cfg.ProcFence.ReserveRatio >= 1 {
 		cfg.ProcFence.ReserveRatio = 0.1
 	}
+	// 负数是配置写错，归零 = 关掉这一档；0 本身是合法的「关掉」，原样保留。
+	// 注意与 ReserveRatio 的兜底不同：那个用「越界就取默认」是因为 0 对它无意义，
+	// 而 TaskBudget/TaskHardLimit 的 0 是「不启用该档」的显式表达，不能改回默认。
+	if cfg.ProcFence.TaskBudget < 0 {
+		cfg.ProcFence.TaskBudget = 0
+	}
+	if cfg.ProcFence.TaskHardLimit < 0 {
+		cfg.ProcFence.TaskHardLimit = 0
+	}
+	// 硬上限低于告警线是自相矛盾的配置（还没告警就先杀了），抬到告警线。
+	// 只在两档都启用时校正——有一档是 0 说明用户刻意只要另一档
+	if cfg.ProcFence.TaskBudget > 0 && cfg.ProcFence.TaskHardLimit > 0 &&
+		cfg.ProcFence.TaskHardLimit < cfg.ProcFence.TaskBudget {
+		cfg.ProcFence.TaskHardLimit = cfg.ProcFence.TaskBudget
+	}
 	if firstRun {
 		if werr := save(path, cfg); werr != nil {
 			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
@@ -280,6 +315,20 @@ func Load(path string) (*Config, error) {
 		log().Error("配置校验失败", "path", path, "cause", verr)
 		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
 	}
+	if cfg.Proxy != "" {
+		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
+		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	}
+	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
+	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
+	// 把整台机器卡死在升级后的第一秒。
+	if stripped && !firstRun {
+		if werr := save(path, cfg); werr != nil {
+			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
+		} else {
+			log().Info("已从配置文件删除废弃 update 段", "path", path)
+		}
+	}
 	return cfg, nil
 }
 
@@ -287,11 +336,18 @@ func Load(path string) (*Config, error) {
 //
 // 为什么 stalltimeout 必须为正：它是「running 任务多久没动静就算卡住」的阈值。
 // 写成 0 或负数时，看门狗会在**每个** running 任务的首个 tick 上判定 stalled，
-// 审核者被一批凭空的 stalled 事件叫醒，而任务其实好好的。省略该键走默认值
+// 协调者被一批凭空的 stalled 事件叫醒，而任务其实好好的。省略该键走默认值
 // （2h）是正常用法，只有显式写了非正值才是配置错误。
 func (c *Config) validate() error {
 	if c.StallTimeout <= 0 {
 		return fmt.Errorf("stalltimeout 必须为正时长（当前 %s）；省略该键即用默认 2h", c.StallTimeout)
+	}
+	// 坏代理必须在启动期硬拒。运行期容错的后果是：后台更新检查那条路径的纪律
+	// 是「任何一步失败都静默跳过」（它挂在每条命令上，自己不能成为故障源），
+	// 于是一个拼错的代理表现为**什么都不发生**，可以存在数月而无人察觉。
+	// 与 approver.blacklist 的正则在启动期编译校验是同一条纪律。
+	if err := proxycfg.Validate(c.Proxy); err != nil {
+		return err
 	}
 	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
 	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
@@ -306,16 +362,6 @@ func (c *Config) validate() error {
 				return fmt.Errorf("approver.blacklist[%d] 非法正则 %q: %w", i, r, err)
 			}
 		}
-	}
-	// update.interval 只在启用自动更新时校验：没启用的东西写错不该拦启动，
-	// 与 approver 那组的处置保持一致。
-	//
-	// 为什么非正值必须拦：0 会让更新循环的 ticker 每个 tick 都立刻到期，
-	// 退化成忙轮询，几秒钟打满 GitHub 匿名限流（60 次/小时），此后所有
-	// 版本检查一起失败——症状是「自动更新莫名其妙不工作了」，根因却在
-	// 一行配置上。省略该键走默认 6h 是正常用法。
-	if c.Update.Auto && c.Update.Interval <= 0 {
-		return fmt.Errorf("update.interval 必须为正时长（当前 %s）；省略该键即用默认 6h", c.Update.Interval)
 	}
 	return nil
 }
@@ -342,9 +388,56 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/update{auto,interval}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
+}
+
+// stripDeprecatedTopLevel 删掉已废弃的顶层键，返回剥过的 yaml 和是否剥到了东西。
+//
+// 为什么在 KnownFields 之前做：v0.1.x 写过 update 段的机器升级后，直接严格
+// 解码会拒启动。剥掉再解码，旧文件能起，其它未知键仍硬拒。只剥顶层，
+// 不走进 targets / env，避免误伤嵌套里碰巧叫 update 的键。
+func stripDeprecatedTopLevel(b []byte) (out []byte, stripped bool, err error) {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return b, false, nil
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		return nil, false, err
+	}
+	// yaml.Unmarshal 通常得到 DocumentNode，真正的 mapping 在 Content[0]。
+	mapping := &root
+	if root.Kind == yaml.DocumentNode {
+		if len(root.Content) == 0 {
+			return b, false, nil
+		}
+		mapping = root.Content[0]
+	}
+	if mapping.Kind != yaml.MappingNode {
+		return b, false, nil
+	}
+	stripped = removeMapKey(mapping, "update")
+	if !stripped {
+		return b, false, nil
+	}
+	out, err = yaml.Marshal(&root)
+	return out, true, err
+}
+
+// removeMapKey 从 MappingNode 顶层切掉名为 key 的那一对（Content 是
+// key/value 交错）。只动这一层，不递归。
+func removeMapKey(n *yaml.Node, key string) bool {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			n.Content = append(n.Content[:i], n.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultPath 返回默认配置文件路径（~/.handoff/config.yaml）。

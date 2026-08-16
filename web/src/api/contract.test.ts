@@ -18,6 +18,10 @@ import dirListFixture from './testdata/DirListResult.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
+import fileConflictRespFixture from './testdata/FileConflictResp.json'
+import fileReadFixture from './testdata/FileRead.json'
+import fileWriteReqFixture from './testdata/FileWriteReq.json'
+import fileWriteRespFixture from './testdata/FileWriteResp.json'
 import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
 import projectTreeFixture from './testdata/ProjectTreeResp.json'
@@ -34,6 +38,10 @@ import {
   type BuildInfo,
   type DirListResult,
   type Event,
+  type FileConflictResp,
+  type FileRead,
+  type FileWriteReq,
+  type FileWriteResp,
   type Frame,
   type MachinesResp,
   type ProjectLocation,
@@ -55,7 +63,7 @@ describe('契约 fixture 与 TS 类型', () => {
     expect(task.branch).toBe('handoff/w1-web-scaffold')
     expect(task.created_at).toMatch(/^2026-08-11T/)
     expect(task.worktree_managed).toBe(true)
-    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files']) {
+    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage']) {
       expect(Object.keys(task)).toContain(key)
     }
   })
@@ -153,6 +161,15 @@ describe('W3a 契约', () => {
     expect(typeof t.machine).toBe('string')
     expect(typeof t.project_id).toBe('string')
   })
+
+  it('Task 的 usage：分子必填、分母可选', () => {
+    const t: Task = taskFixture
+    expect(t.actual_model).toBe('gpt-5.6-sol')
+    expect(t.usage?.context_tokens).toBe(24668)
+    // 分母在 fixture 里有值；不报窗口的 executor 会让这个键整个缺席，
+    // 而不是给 0——那是「如实缺席」的线格式约定
+    expect(t.usage?.context_window).toBe(258400)
+  })
 })
 
 describe('W4a 帧契约', () => {
@@ -213,5 +230,40 @@ describe('PtySession 契约', () => {
   it('StatusResp：pty_supported 已上报', () => {
     const status = statusFixture as StatusResp
     expect(status.pty_supported).toBe(true)
+  })
+
+  it('StatusResp：reveal_supported 已上报', () => {
+    const status = statusFixture as StatusResp
+    expect(status.reveal_supported).toBe(true)
+  })
+})
+
+describe('文件读写的契约', () => {
+  it('FileRead：可编辑文本形态——sha256 有值、非截断非二进制', () => {
+    const fr: FileRead = fileReadFixture
+    expect(typeof fr.content).toBe('string')
+    expect(typeof fr.size).toBe('number')
+    expect(typeof fr.sha256).toBe('string')
+    // omitempty 的边界：可编辑常态下 truncated/binary 必须**缺席**（缺键不是 false）
+    expect('truncated' in fileReadFixture).toBe(false)
+    expect('binary' in fileReadFixture).toBe(false)
+  })
+
+  it('FileWriteReq / FileWriteResp：请求带 base_sha256，响应带新哈希', () => {
+    const req: FileWriteReq = fileWriteReqFixture
+    expect(typeof req.content).toBe('string')
+    expect(typeof req.base_sha256).toBe('string')
+    const resp: FileWriteResp = fileWriteRespFixture
+    expect(typeof resp.sha256).toBe('string')
+    expect(typeof resp.size).toBe('number')
+  })
+
+  it('FileConflictResp：409 体带磁盘现状 current', () => {
+    const c: FileConflictResp = fileConflictRespFixture
+    expect(c.error).toBe('文件已被改动')
+    expect(typeof c.current).toBe('object')
+    expect(typeof c.current.content).toBe('string')
+    expect(typeof c.current.sha256).toBe('string')
+    expect(typeof c.current.size).toBe('number')
   })
 })

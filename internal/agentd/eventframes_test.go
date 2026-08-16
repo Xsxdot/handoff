@@ -3,20 +3,13 @@ package agentd
 import (
 	"bufio"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/turn"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
-
-func testLogger(t *testing.T) *slog.Logger {
-	t.Helper()
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 func TestEventFrameHookWritesRefFrame(t *testing.T) {
 	dataDir := t.TempDir()

@@ -1,7 +1,9 @@
 # 推 tag 时构建并发布 handoff。
 #
 # 触发：git push origin vX.Y.Z
-# 产出：四个平台的 handoff_<tag>_<os>_<arch>.tar.gz + 一个 checksums.txt
+# 产出：六个平台（darwin/arm64、darwin/amd64、linux/amd64、linux/arm64、
+#       windows/amd64、windows/arm64）的资产：Windows 出 zip、其余出 tar.gz，
+#       外加一个 checksums.txt
 #
 # 资产命名与 ldflags 注入路径是与 install.sh / 自更新的契约，
 # 由仓库根的 release_workflow_test.go 钉住，改这里必须同步改那边与消费方。
@@ -16,19 +18,27 @@ permissions:
   contents: write # gh release create 要写 Releases
 
 jobs:
-  build:
+  # 发布前必须过与 PR 同一套验证门。复用而非复制：写两份定义必然漂移，
+  # 且方向总是这边更松——推 tag 时没人盯着它。
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  build-unix:
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
       matrix:
+        # darwin 两项不在这里：它们要签名与公证，在 build-darwin 里构建。
+        # 那两项也不用矩阵——合并成一个 zip 一次提交公证能省一轮 1-3 分钟的等待。
         include:
-          - goos: darwin
+          - goos: linux
+            goarch: amd64
+          - goos: linux
             goarch: arm64
-          - goos: darwin
+          - goos: windows
             goarch: amd64
-          - goos: linux
-            goarch: amd64
-          - goos: linux
+          - goos: windows
             goarch: arm64
     steps:
       - uses: actions/checkout@v4
@@ -43,20 +53,209 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+          # Windows 出 zip 且包内是 handoff.exe；其余出 tar.gz 且包内是 handoff。
+          # 这四处（这里、internal/release.archiveExt、install.sh、install.ps1）
+          # 是同一个契约，改一处必须四处同步。
+          if [ "${GOOS}" = "windows" ]; then
+            BIN=handoff.exe
+          else
+            BIN=handoff
+          fi
           go build -trimpath \
-            -ldflags "-s -w -X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=${TAG}" \
-            -o handoff .
-          tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" handoff
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o "${BIN}" .
+          if [ "${GOOS}" = "windows" ]; then
+            zip -q "handoff_${TAG}_${GOOS}_${GOARCH}.zip" "${BIN}"
+          else
+            tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" "${BIN}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: |
+            handoff_*.tar.gz
+            handoff_*.zip
+          if-no-files-found: error
+
+  # darwin 资产必须在 macOS runner 上构建：codesign 与 notarytool 只在那儿有。
+  #
+  # 签名买的是且仅是「从 Releases 页面用浏览器下载」那条路径——浏览器打
+  # com.apple.quarantine，归档工具把它传播到解出的文件上，Gatekeeper 才会介入。
+  # curl | bash 这条主路径本来就不受影响（curl 不打 quarantine）。
+  #
+  # 裸 CLI 无法 staple 公证票据（stapler 只支持 .app/.dmg/.pkg），票据存在
+  # Apple 服务端按 cdhash 匹配，用户联网时校验通过。这是固有限制不是配置问题。
+  build-darwin:
+    needs: verify
+    runs-on: macos-latest
+    env:
+      # 两个 arch 在同一个 job 里构建，不用矩阵：合并成一个 zip 一次提交公证，
+      # 省一轮 1-3 分钟的等待。这个变量也是平台清单契约测试读的那一处。
+      DARWIN_ARCHES: arm64 amd64
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # secrets 缺失即硬失败，不产出未签名资产。
+      # 这与 super-dev 的策略相反（它未配置时仍出未签名包，那是给 desktop 的
+      # 兼容退路）。handoff 不需要那条退路：打 tag 只有仓库所有者会做，而一个
+      # 静默发出去的未签名版本是会在几个月后咬人的陷阱——症状出现在用户机器上。
+      - name: 检查签名凭据齐备
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT; do
+            if [ -z "${!v:-}" ]; then missing="${missing} ${v}"; fi
+          done
+          if [ -n "$missing" ]; then
+            printf '缺少签名 secret：%s\n未签名的 release 不发。\n' "$missing" >&2
+            exit 1
+          fi
+          echo "签名凭据齐备"
+
+      # App Store Connect API Key 只能以文件路径传给 notarytool。
+      - name: 写 App Store Connect API Key
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 600 "$key_path"
+          # 只确认私钥文件头形态，不打印密钥正文
+          head -n 1 "$key_path" | grep -q 'BEGIN PRIVATE KEY' || {
+            echo "APPLE_API_KEY_CONTENT 不像是一份 .p8 私钥" >&2; exit 1; }
+          echo "APPLE_API_KEY_PATH=${key_path}" >> "$GITHUB_ENV"
+
+      - name: 导入签名证书到临时钥匙串
+        run: |
+          set -euo pipefail
+          cert_path="${RUNNER_TEMP}/certificate.p12"
+          keychain_path="${RUNNER_TEMP}/handoff-build.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          # Secrets 存的是 openssl base64 -A 的单行内容
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+          # 让 codesign 能在无 UI 提示下使用私钥
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" \
+            $(security list-keychains -d user | sed 's/"//g')
+          security find-identity -v -p codesigning "$keychain_path" \
+            | grep -F "$APPLE_SIGNING_IDENTITY" > /dev/null || {
+              echo "钥匙串里找不到 APPLE_SIGNING_IDENTITY" >&2; exit 1; }
+          rm -f "$cert_path"
+
+      - name: 构建、签名、公证并打包
+        env:
+          # macOS 上 CGO 默认是开的。开了会让产物动态链接系统库并被打上构建机的
+          # 最低系统版本约束——二进制会在更老的 macOS 上拒绝启动，而这个症状要
+          # 等到用户机器上才出现。这一行在 ubuntu 上是冗余，在这里是承重的。
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          for arch in $DARWIN_ARCHES; do
+            mkdir -p "build/${arch}"
+            # 目录名带 arch、文件名固定 handoff：tar 里的文件名是与 install.sh
+            # 及 extractBinary 的契约，不能带 arch 后缀
+            GOOS=darwin GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+              -o "build/${arch}/handoff" .
+            # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" "build/${arch}/handoff"
+            codesign --verify --strict --verbose=2 "build/${arch}/handoff"
+          done
+
+          # 两个 arch 打进同一个 zip 一次提交：notarytool 接受 zip 内多个 Mach-O，
+          # 合并提交省一轮 1-3 分钟的等待
+          ditto -c -k --keepParent build notarize.zip
+          xcrun notarytool submit notarize.zip \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary.log
+          # notarytool 在 status 为 Invalid 时仍可能退 0，光看退出码不够
+          grep -q 'status: Accepted' /tmp/notary.log || {
+            echo "公证未被接受：" >&2; cat /tmp/notary.log >&2; exit 1; }
+
+          for arch in $DARWIN_ARCHES; do
+            bin="build/${arch}/handoff"
+            # 这道门验四件事：签名有效、签发者是 Developer ID、硬化运行时已开
+            # （公证的前置条件）、以及**这份即将被打包的文件**在 Apple 那边查得到
+            # 公证票据。
+            codesign -dv --verbose=4 "$bin" 2>/tmp/codesign.log || {
+              echo "codesign -dv 失败（${arch}）：" >&2; cat /tmp/codesign.log >&2; exit 1; }
+            grep -q 'Authority=Developer ID Application' /tmp/codesign.log || {
+              echo "签发者不是 Developer ID Application（${arch}）：" >&2
+              cat /tmp/codesign.log >&2; exit 1; }
+            # flags 里的 runtime 就是 --options runtime 的落地证据
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign.log || {
+              echo "硬化运行时未开（${arch}），公证会被拒：" >&2
+              cat /tmp/codesign.log >&2; exit 1; }
+
+            # spctl 能评估裸 CLI，但**只有** `-t open --context
+            # context:primary-signature` 这一种喂法。`-t exec` 只认 app bundle，
+            # 喂裸 Mach-O 会被类型检查当场挡掉，报 "the code is valid but does
+            # not seem to be an app"——2026-08-13 先踩过一次，当时误判成「spctl
+            # 对 CLI 整体不适用」而把这道门整个撤了。`-t open` 是 Apple 给
+            # 非 app 内容准备的评估入口，同日在真机上对 v0.2.2 的 darwin/arm64
+            # 资产实测：accepted，source=Notarized Developer ID。
+            #
+            # 为什么值得单列一道门：上面 notarytool 的 `status: Accepted` 只证明
+            # **提交上去的那份**过了公证，而这里验的是**即将被 tar 进资产的这个
+            # 文件**能按 cdhash 在 Apple 那边查到票据。中间任何一次重签、改字节、
+            # 拿错文件，都会让两者分叉，而分叉的代价是用户机器上的一次弹窗。
+            #
+            # 票据发布到 Apple 边缘有传播延迟，所以重试而不是一次定生死。
+            ok=0
+            for attempt in 1 2 3; do
+              if spctl -a -vvv -t open --context context:primary-signature "$bin" \
+                   >/tmp/spctl.log 2>&1; then
+                ok=1; break
+              fi
+              echo "spctl 第 ${attempt} 次未通过（${arch}），20s 后重试：" >&2
+              cat /tmp/spctl.log >&2
+              sleep 20
+            done
+            [ "$ok" = 1 ] || {
+              echo "公证票据在本机查不到（${arch}）：" >&2; cat /tmp/spctl.log >&2; exit 1; }
+            grep -q 'source=Notarized Developer ID' /tmp/spctl.log || {
+              echo "评估通过但来源不是 Notarized Developer ID（${arch}）：" >&2
+              cat /tmp/spctl.log >&2; exit 1; }
+            echo "公证票据校验通过（${arch}）"
+
+            # 打包必须在签名之后：签名会改字节，先算校验和再签就全错
+            tar czf "handoff_${TAG}_darwin_${arch}.tar.gz" -C "build/${arch}" handoff
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff_darwin
           path: handoff_*.tar.gz
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build-unix, build-darwin]
     runs-on: ubuntu-latest
     steps:
+      # checkout 必须排在 download 之前：两者写同一个工作目录，后执行的
+      # checkout 可能清掉先下载好的内容。这里要读 CHANGELOG，所以必须 checkout。
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -65,9 +264,30 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
+          # checksums 必须在签名之后算——签名会改字节。这里对下载下来的
+          # 成品资产统一算，天然满足这个顺序，不要把它挪到构建 job 里去
           # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
-          sha256sum handoff_*.tar.gz > checksums.txt
+          sha256sum handoff_*.tar.gz handoff_*.zip > checksums.txt
           cat checksums.txt
+      - name: 从 CHANGELOG 抽取本版说明
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # 抽取 "## [<tag>]" 到下一个 "## " 之前的内容。
+          # 抽不到不算失败——一次格式失误不该把整条发布卡死；但必须打警告，
+          # 否则「CHANGELOG 承重」这个设计会在无人察觉中失效
+          awk -v tag="## [${TAG}]" '
+            index($0, tag) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md || true
+          if [ -s notes.md ]; then
+            echo "NOTES_ARG=--notes-file=notes.md" >> "$GITHUB_ENV"
+            echo "已从 CHANGELOG.md 抽到 ${TAG} 的说明"
+          else
+            echo "NOTES_ARG=--generate-notes" >> "$GITHUB_ENV"
+            echo "警告：CHANGELOG.md 里没有 ${TAG} 的小节，回落成自动生成的 commit 列表" >&2
+          fi
       - name: 建 Release 并上传资产
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,5 +296,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            dist/handoff_*.tar.gz dist/checksums.txt
+            "${NOTES_ARG}" \
+            dist/handoff_*.tar.gz dist/handoff_*.zip dist/checksums.txt

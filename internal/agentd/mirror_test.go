@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // TestMirrorDiscoverOnceSubscribesActiveTasks 断言一轮发现即：

@@ -4,7 +4,7 @@
 //   - 派发前的工作区准备：PrepareWorkspace 按分支×worktree 两个正交维度准备任务
 //     工作区（脏工作区一律拒绝；new-worktree 免脏检查）——PrepareBranch 是其
 //     原地+自动分支的过渡薄包装
-//   - 审核者审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
+//   - 审阅素材：Diff（基准分支到 HEAD 的差异 + 提交列表）、
 //     ReadFile（读仓库内文件）、ListDir（列举工作树内一层目录）、
 //     RunCmd（远程跑测试/lint 等审阅命令）
 //   - 派发前的基线决议：ResolveBaseline 一次算出「校验结论 + 新分支起点 +
@@ -13,7 +13,7 @@
 // 边界：
 //   - 全部操作是「分支准备 + 只读审阅」：绝不代 executor 写代码/提交，
 //     executor 的改动必须经它自己的 commit 落进任务分支
-//   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由审核者决定
+//   - 不解析审阅命令的语义：run 跑什么、diff 怎么审由协调者决定
 //   - git 全部经 exec.Command("git","-C",repo,...) 执行，不拼接 shell
 //   - 每条命令都有超时/输出护栏：工作区准备/清理一组 git 调用上限
 //     WorkspaceGitTimeout=2min（pre-checkout hook / credential 交互提示会挂死 git，
@@ -22,11 +22,15 @@
 package agentd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -37,8 +41,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 )
 
 // 错误定义：
@@ -48,7 +53,7 @@ import (
 //   - ErrPathNotDir：请求列举的路径不是目录（ListDir 只服务目录）
 //   - ErrNotRegularFile：请求的文件路径指向管道/设备等特殊文件（不可读）
 //   - ErrRepoUnusable：git 探活本身失败（仓库路径不存在/不是 git 仓库/权限等），
-//     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要审核者先解决
+//     与 ErrDirtyWorktree 的「仓库可用但状态不干净」区分——前者需要协调者先解决
 //     仓库本身的问题，后者一条 git 命令即可清理（server 层映射见 writeDispatchError）
 //   - ErrBadBaseBranch：diff 的基准分支参数非法（以 "-" 开头，会被 git 解释为
 //     选项而非 rev——git 参数注入面）
@@ -65,9 +70,27 @@ var (
 	ErrBadWorkspaceReq = errors.New("工作区参数非法")
 	ErrWorkdirBusy     = errors.New("目标工作目录已被活跃任务占用")
 
+	// 以下五个是在线编辑（B81）的拒绝面。文案就是 HTTP 层原样吐给用户的中文，
+	// 所以每条都要能独立读懂——「操作失败」帮不上任何人
+	ErrGitDirWrite   = errors.New("不允许写入 .git 目录")
+	ErrSymlinkTarget = errors.New("目标是符号链接，不支持在线编辑")
+	ErrBinaryFile    = errors.New("二进制文件不支持在线编辑")
+	ErrFileTooLarge  = errors.New("文件超过 1 MB，不支持在线编辑")
+	ErrBaseMismatch  = errors.New("文件已被改动")
+
 	// ErrBaseCommitMissing 表示审核者本地的基线提交在任务仓库中不存在，
 	// 且 fetch 后仍补不回来——远程仓库落后于本地，派发出去的活会建在错误的基准上。
 	ErrBaseCommitMissing = errors.New("基线提交在任务仓库中不存在")
+
+	// ErrBranchIdentityMismatch 表示 git 报告成功，但工作区实际所在的分支
+	// 不是我们请求的那个（B76：worktree add -b 被 DWIM 顶替）。
+	ErrBranchIdentityMismatch = errors.New("工作区分支与请求不符")
+
+	// 以下三个是文件树条目操作（B107：建/改名/删）的拒绝面。文案就是 HTTP 层
+	// 原样吐给用户的中文，每条都要能独立读懂。
+	ErrEntryExists   = errors.New("目标已存在")
+	ErrEntryNotFound = errors.New("目标不存在")
+	ErrBadEntryName  = errors.New("名字不合法")
 )
 
 // 执行护栏：
@@ -95,7 +118,7 @@ func log() *slog.Logger { return slog.Default() }
 // quotaNote 把一次进程创建失败翻译成归因文案；与配额无关时返回空串。
 //
 // 为什么在 agentd 侧包一层而不是四处直接调 prochost.ExplainForkFailure：
-// 归因文案要同时进日志和进返回给审核者的 error，收在一处才不会两边写法漂移。
+// 归因文案要同时进日志和进返回给协调者的 error，收在一处才不会两边写法漂移。
 func quotaNote(err error) string {
 	note, _ := prochost.ExplainForkFailure(err)
 	return note
@@ -125,6 +148,55 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 			"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
 	}
 	return outBuf.String(), errBuf.String(), err
+}
+
+// gitProxy 是本机出网 git（clone/fetch）使用的代理地址，由 agentd bootstrap
+// 经 SetGitProxy 注入一次。
+//
+// 为什么是包级变量而不是把 proxy 串进签名：ResolveBaseline 等函数是包级函数，
+// 调用链上大部分环节与网络无关，把 proxy 串进每个签名会污染一大片无关代码。
+// 这与本包 log() 用运行时取值而非依赖注入是同一个权衡。
+var gitProxy string
+
+// SetGitProxy 设置出网 git 使用的代理，由 agentd bootstrap 调用一次。
+//
+// 参数：
+//   - proxy: 代理地址；空串 = 不用代理
+//
+// 注意：
+//   - 只影响 clone / fetch 两处出网操作，本地 git 操作（rev-parse/status/
+//     worktree/diff…）一律不带代理——它们根本不出网，带上只会平白多一个配置
+//   - 非并发安全：只在启动期调用一次。测试里改它必须串行
+func SetGitProxy(proxy string) { gitProxy = proxy }
+
+// gitNetArgs 在 git 参数前插入代理参数。
+//
+// 代理参数必须排在子命令**之前**：git 的 -c 是全局选项，放到子命令后面
+// git 会把它当成子命令的参数并直接报错。
+func gitNetArgs(args ...string) []string {
+	p := proxycfg.GitArgs(gitProxy)
+	if len(p) == 0 {
+		return args
+	}
+	return append(p, args...)
+}
+
+// gitRunNet 执行**会出网**的 git 操作（clone / fetch），自动带上代理参数。
+//
+// 参数与返回同 gitRun。
+//
+// 注意：
+//   - 只有 clone 与 fetch 该用它。给本地操作用不会出错，但会让「哪些操作出网」
+//     这个信息从代码里消失，下一个人就无从判断代理配错会影响哪些功能
+//   - git 的 http.proxy 对 ssh:// 与 git@host:path 的 remote **无效**。
+//     SSH remote 要走代理得配 ssh 的 ProxyCommand，那会动到用户的 ssh 配置面，
+//     不在 handoff 职责内；README 给出改用 HTTPS remote（insteadOf）的解法
+func gitRunNet(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+	if gitProxy != "" {
+		log().Info("git 出网操作将走代理", "repo", repo, "args", args,
+			"proxy", proxycfg.Redact(gitProxy))
+	}
+	return gitRun(ctx, repo, gitNetArgs(args...)...)
 }
 
 // PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
@@ -323,6 +395,14 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 			ws.NewBranchTip = recordNewBranchTip(ctx, req.Repo, branch)
 		}
 	}
+	// 守卫（B76）：三条路径统一在此核对，因为它们都已把结果收敛进 ws
+	if verr := verifyBranchIdentity(ctx, ws.WorkDir, ws.Branch); verr != nil {
+		log().Error("工作区分支身份核对失败，回滚并拒发", "task", req.TaskID,
+			"want", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed, "cause", verr)
+		rollbackWorkspace(ctx, req.Repo, ws)
+		return Workspace{}, verr
+	}
+	log().Info("工作区分支身份核对通过", "task", req.TaskID, "branch", ws.Branch)
 	log().Info("工作区准备完成", "task", req.TaskID, "branch", ws.Branch, "workdir", ws.WorkDir, "managed", ws.Managed)
 	// ctx 超时与 git 报错的错误文本很像（都是 "signal: killed" 一类），
 	// 不显式记录一条就无法在日志里区分「命令自己失败」与「被我们掐断」
@@ -354,6 +434,64 @@ func checkoutInWorktree(ctx context.Context, workDir, branch, base string, isExi
 		return fmt.Errorf("git -C %s %v: %s: %w", workDir, args, strings.TrimSpace(stderr), err)
 	}
 	return nil
+}
+
+// verifyBranchIdentity 核对工作区实际所在分支是否就是决议出的分支。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - workDir: 已建好的工作区目录
+//   - want: 第 2 层决议出的分支名
+//
+// 返回：不符或读取失败时返回包 ErrBranchIdentityMismatch 的错误，文本同时
+// 含请求分支与实到分支。
+//
+// 为什么需要这道核对：git 的退出码只说明「命令没报错」，不说明「它做了你要
+// 的事」。B76 里 `worktree add -b X <dir> <base>` 在 base 只有远程跟踪 ref 时
+// 被 DWIM 顶替成「检出 base」，丢掉 X 且退出码为 0——要的分支与实到分支从来
+// 没被比对过，这是结构性空白，不是某一次 git 行为的补丁。
+func verifyBranchIdentity(ctx context.Context, workDir, want string) error {
+	out, stderr, err := gitRun(ctx, workDir, "branch", "--show-current")
+	got := strings.TrimSpace(out)
+	if err != nil {
+		return fmt.Errorf("%w: 读取工作区 %s 的当前分支失败（请求分支 %s）: %s",
+			ErrBranchIdentityMismatch, workDir, want, strings.TrimSpace(stderr))
+	}
+	if got != want {
+		return fmt.Errorf("%w: 请求分支 %s，git 实际给出 %s（工作区 %s）",
+			ErrBranchIdentityMismatch, want, got, workDir)
+	}
+	return nil
+}
+
+// rollbackWorkspace 在 PrepareWorkspace 内部失败时回滚已建的工作区。
+//
+// 为什么不能交给 manager 的补偿 defer：那个 defer 用的是 PrepareWorkspace 的
+// **返回值** ws，失败时它是零值，WorkDir 为空，compensateWorkspace 会直接返回。
+// 所以 PrepareWorkspace 自己建的东西必须自己收。
+func rollbackWorkspace(ctx context.Context, repo string, ws Workspace) {
+	if ws.WorkDir == "" {
+		return
+	}
+	if ws.Managed {
+		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+			log().Error("回滚 managed worktree 失败，需人工清理", "repo", repo,
+				"workdir", ws.WorkDir, "cause", err)
+			return
+		}
+		log().Info("已回滚 managed worktree", "repo", repo, "workdir", ws.WorkDir)
+		return
+	}
+	if ws.PrevRef == "" {
+		log().Warn("无 PrevRef 可复原，工作区停在当前 ref", "workdir", ws.WorkDir)
+		return
+	}
+	if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+		log().Error("回滚切回原 ref 失败，需人工处理", "workdir", ws.WorkDir,
+			"prev_ref", ws.PrevRef, "stderr", strings.TrimSpace(stderr), "cause", err)
+		return
+	}
+	log().Info("已回滚至原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
 }
 
 // EnsureRepoUsable 校验 repo 确实是一个可用的 git 仓库。
@@ -623,13 +761,75 @@ type Baseline struct {
 	Fetched bool
 }
 
-// ResolveBaseline 决议任务的基线：校验审核者本地基线在任务仓库中可用，并给出
+// resolveCommit 把任意 commit-ish（分支名/tag/sha）解析成 40 位提交号。
+//
+// 参数：
+//   - ctx: 控制本次 git 调用的生命周期
+//   - repo: 任务仓库路径
+//   - rev: 待解析的起点原文（用户的 --base 或决议出的基线）
+//
+// 返回：
+//   - 40 位 sha；解析不出或歧义时返回包 ErrBadWorkspaceReq 的错误（server 映射 400）
+//
+// 为什么起点必须以 sha 形态交给 git（B76）：给分支名会触发 DWIM——base 只有
+// origin/<name> 时，`worktree add -b X <dir> <base>` 会忽略显式的 -b、开出
+// 名为 <base> 的分支，且退出码为 0。传 sha 让 DWIM 从原理上无从发生。
+//
+// 注意：^{commit} 的剥离是必需的：rev 可能是 annotated tag，裸解析给的是
+// tag 对象而不是提交。rev-parse 本身不做「远程跟踪分支简写」的 DWIM，这里
+// 手动补一次唯一匹配（与 git checkout 的 guess_remote 同语义），保证
+// --base <只有远程跟踪 ref 的分支> 的用户语义不变；多个远端同时同名时视为
+// 歧义拒发，错误文本列出全部候选 ref 并给出出路（用带远端前缀的全名或 sha）——
+// 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的协调者引向
+// 错误排查方向。
+func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	sha := strings.TrimSpace(out)
+	if err == nil && sha != "" {
+		log().Info("起点已解析为提交号", "repo", repo, "base", rev, "sha", sha)
+		return sha, nil
+	}
+	// rev-parse 不 DWIM：base 分支只以 refs/remotes/*/<rev> 存在时上面的调用取不到
+	// （B76 的触发前提正是这种仓库）。按 git checkout 的 guess 语义补一次「唯一
+	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。
+	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+rev)
+	var cands []string
+	for _, line := range strings.Split(matches, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			cands = append(cands, line)
+		}
+	}
+	// 多于一棵远端同时有这个分支名：歧义，拒发（git 同样不猜）。歧义不是
+	// 「不存在」——起点明明在，让协调者去 git push 是把他引向错误方向（fork
+	// 工作流 origin+upstream 同名分支会真实撞上）；出路是给带远端前缀的全名
+	// 或直接给 sha，两者 resolveCommit 都认。
+	if len(cands) > 1 {
+		log().Warn("起点解析歧义：多棵远端都有同名分支，拒绝派发",
+			"repo", repo, "base", rev, "cands", cands)
+		return "", fmt.Errorf("%w: 起点 %s 在多个远端同时存在（%s）；"+
+			"请改用带远端前缀的全名（如 --base upstream/%s）或直接给 40 位 sha",
+			ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
+	}
+	if len(cands) == 1 {
+		if mout, _, e := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
+			sha = strings.TrimSpace(mout)
+			log().Info("起点已解析为提交号（远程跟踪分支）", "repo", repo, "base", rev, "sha", sha, "ref", cands[0])
+			return sha, nil
+		}
+	}
+	log().Warn("起点解析失败，拒绝派发", "repo", repo, "base", rev,
+		"stderr", strings.TrimSpace(truncateRunes(stderr, 300)))
+	return "", fmt.Errorf("%w: 起点 %s 在任务仓库中不存在"+
+		"（若它是你本地的分支，先 git push 再派发；或换一个起点）", ErrBadWorkspaceReq, rev)
+}
+
+// ResolveBaseline 决议任务的基线：校验协调者本地基线在任务仓库中可用，并给出
 // 新分支应当使用的起点与「任务仓库比它多出多少提交」。
 //
 // 参数：
 //   - ctx: 上层上下文；fetch 阶段内部叠加 FetchTimeout
 //   - repo: 任务仓库路径
-//   - sha: 审核者本地 HEAD 的 40 位十六进制提交号；空=未提供（--no-sync-check
+//   - sha: 协调者本地 HEAD 的 40 位十六进制提交号；空=未提供（--no-sync-check
 //     或调用方 cwd 不是 git 仓库），此时起点退回任务仓库当前 HEAD
 //
 // 返回：
@@ -659,7 +859,7 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 		log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
 		fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 		defer cancel()
-		_, stderr, ferr := gitRun(fctx, repo, "fetch", "--all", "--prune")
+		_, stderr, ferr := gitRunNet(fctx, repo, "fetch", "--all", "--prune")
 		if ferr != nil {
 			log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
 				"stderr", truncateRunes(stderr, 500), "cause", ferr)
@@ -775,7 +975,7 @@ func Diff(repo, baseBranch string) (string, error) {
 //  1. 仓库远端默认分支（refs/remotes/origin/HEAD 符号引用，如 origin/main）
 //  2. 本地 main
 //  3. 本地 master
-//  4. 都没有 → 空串（由路由层报错，提示审核者显式 --base）
+//  4. 都没有 → 空串（由路由层报错，提示协调者显式 --base）
 //
 // 为什么需要这个兜底链：任务仓库的分支名不可预知（main/master/dev 皆可能），
 // 派发时并未记录基准分支名，diff 必须从仓库自身推导出合理默认。
@@ -790,6 +990,212 @@ func resolveBaseBranch(repo string) string {
 	}
 	log().Warn("无法确定基准分支，diff 需要显式 base", "repo", repo)
 	return ""
+}
+
+// binaryProbeBytes 是二进制判定的探测长度：前 8 KiB 内出现 NUL 字节即判为二进制。
+//
+// 判据抄自 orca 的 relay 文件通道（BINARY_PROBE_BYTES = 8192）。它朴素、无依赖，
+// 且对源码/配置/文案这类真正需要在线编辑的东西零误判——真正的文本文件不会在
+// 头 8 KiB 里塞 NUL。
+const binaryProbeBytes = 8192
+
+// isBinaryPrefix 判定一段内容的开头是否含 NUL 字节。
+//
+// 参数：
+//   - b: 已读到的内容（可能已被 maxRunOutput 截断）
+//
+// 返回：前 min(len(b), 8192) 字节内出现 0x00 为真
+func isBinaryPrefix(b []byte) bool {
+	if len(b) > binaryProbeBytes {
+		b = b[:binaryProbeBytes]
+	}
+	return bytes.IndexByte(b, 0) >= 0
+}
+
+// isGitPath 判定一个已 Clean 的相对路径是否落在工作树根的 .git 下。
+//
+// 为什么要挡：`.git` 在 worktree 里是个几十字节的指针文件（内容 `gitdir: <路径>`），
+// 改它能把整个工作树重指向别处；在主仓库里 `.git/config` 写进 core.pager /
+// core.sshCommand / hooksPath，就是下一次任何 git 操作时的任意命令执行，改 HEAD、
+// 删 index 也都能直接搞坏仓库。
+//
+// 这不是提权（控制台会话本来就与主令牌等价，见 spec §1.1），是「一次误操作就把
+// 仓库弄坏」——正是那条参数校验闸门该挡的东西。
+//
+// 只挡工作树**根下**的 .git：嵌套子模块不在本期范围。前缀相同的 .gitignore /
+// .gitattributes 不受影响。
+//
+// 参数：
+//   - cleaned: 已经 filepath.Clean 过的相对路径
+func isGitPath(cleaned string) bool {
+	return cleaned == ".git" || strings.HasPrefix(cleaned, ".git"+string(filepath.Separator))
+}
+
+// atomicReplace 用同目录临时文件 + rename 原子替换目标文件。
+//
+// 为什么做原子替换（而不是像 orca 那样对用户文件裸 WriteFile）：executor 就在
+// 同一个工作树里跑，裸覆盖有一个窗口能让它读到半截文件。orca 的编辑对象通常
+// 没有一个高频读者在旁边，我们有。
+//
+// 为什么**不** fsync：工作树在 git 管着，掉电丢一次编辑不是灾难，而每次保存
+// fsync 的代价在远程机上更明显。orca 只对自己的状态文件做 fsync——那些丢了
+// 没有第二份，工作树文件不是。
+//
+// 参数：
+//   - root: 已打开的工作树 Root（全程不出根）
+//   - cleaned: 目标文件的相对路径
+//   - data: 新内容
+//   - perm: 目标文件原有的权限位（保留可执行位，丢了是静默故障）
+func atomicReplace(root *os.Root, cleaned string, data []byte, perm fs.FileMode) error {
+	tmp := filepath.Join(filepath.Dir(cleaned),
+		fmt.Sprintf(".%s.%d.%d.tmp", filepath.Base(cleaned), os.Getpid(), time.Now().UnixNano()))
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return fmt.Errorf("创建临时文件 %s: %w", tmp, err)
+	}
+	// 任何没走到 rename 的路径（含 panic）都要把 tmp 删掉：留一个 .foo.tmp
+	// 在工作树里会进 git status，下一次 dispatch 的「工作区必须干净」检查会直接拒发
+	committed := false
+	defer func() {
+		if !committed {
+			_ = f.Close()
+			if err := root.Remove(tmp); err != nil {
+				log().Warn("清理临时文件失败", "tmp", tmp, "cause", err)
+			}
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写临时文件 %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件 %s: %w", tmp, err)
+	}
+	if err := root.Rename(tmp, cleaned); err != nil {
+		return fmt.Errorf("替换文件 %s: %w", cleaned, err)
+	}
+	committed = true
+	return nil
+}
+
+// WriteFile 用新内容原子替换工作树内一个已存在的文本文件，带基线哈希前置条件。
+//
+// 冲突保护的整个机制就是这个前置条件：调用方把它**读到那一版**的 sha256 带回来，
+// 本函数比对磁盘现状，不一致就拒绝并把现状带回去。为什么不用 mtime：executor 在
+// 工作树里频繁跑 git 操作，checkout/rebase 会动 mtime 但不动内容，用 mtime 会把
+// 大量无害情况报成冲突。
+//
+// **已知窗口，如实记录**：第 6 步读哈希与第 9 步 rename 之间不是原子的。executor
+// 恰好在这个窗口里写同一个文件，本函数检测不到，结果是它的改动被覆盖。加锁解决
+// 不了——锁只挡得住 agentd 自己的并发写，executor 直接动文件系统，根本不经过这里。
+// 窗口从「整个编辑时长」缩到「一次读 + 一次 rename」，是这条路能拿到的全部。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 相对工作树根的路径
+//   - content: 新内容
+//   - baseSHA256: 调用方读到那一版的 sha256 十六进制串；空串一律判为不匹配
+//
+// 返回：
+//   - err == nil：res 是**新内容**的结论（SHA256 可直接当下一次的基线，Size 是新大小）
+//   - errors.Is(err, ErrBaseMismatch)：res 是**磁盘现状**（含正文与现状哈希），
+//     给调用方省一次往返
+//   - 其余错误：res 是零值
+//   - 错误取值：ErrPathEscape / ErrGitDirWrite / ErrSymlinkTarget / ErrPathIsDir /
+//     ErrNotRegularFile / ErrBinaryFile / ErrFileTooLarge / ErrBaseMismatch /
+//     fs.ErrNotExist（含 %w 链）
+func WriteFile(repo, rel, content, baseSHA256 string) (proto.FileRead, error) {
+	cleaned := filepath.Clean(rel)
+	if rel == "" || cleaned == "." || filepath.IsAbs(cleaned) ||
+		cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		log().Warn("文件写入路径逃逸被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+	}
+	if isGitPath(cleaned) {
+		log().Warn("文件写入命中 .git 被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrGitDirWrite, rel)
+	}
+	// 新内容也受同一个上限约束。理由对称：读不回来的东西就不该写得进去，
+	// 否则存一次之后这个文件自己就变成不可编辑的了
+	if len(content) > maxRunOutput {
+		log().Warn("写入内容超过上限被拒绝", "repo", repo, "path", rel,
+			"bytes", len(content), "limit", maxRunOutput)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrFileTooLarge, rel)
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.FileRead{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+
+	// Lstat 而不是 Stat：要看到符号链接本身。原子替换的 rename 会把链接换成普通
+	// 文件，语义悄悄就变了——与其猜用户想改链接还是改目标，不如拒掉并说清楚
+	fi, err := root.Lstat(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("文件写入路径逃逸被拒绝", "repo", repo, "path", rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		}
+		return proto.FileRead{}, fmt.Errorf("检查文件 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		log().Warn("文件写入目标是符号链接被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrSymlinkTarget, rel)
+	case fi.IsDir():
+		log().Warn("文件写入目标是目录被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathIsDir, rel)
+	case !fi.Mode().IsRegular():
+		log().Warn("文件写入目标不是普通文件被拒绝", "repo", repo, "path", rel,
+			"mode", fi.Mode().String())
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
+	}
+
+	// 复用 ReadFile 而不是另写一遍读取：「这文件能不能编辑」的判据必须由**同一段
+	// 代码**在读侧和写侧给出。两边各判一次，早晚会分叉成「前端说能编辑、后端说不能」
+	cur, err := ReadFile(repo, cleaned)
+	if err != nil {
+		return proto.FileRead{}, err
+	}
+	// 这两种情况下 cur.SHA256 必然是空值，下面的比对必定不通过——但要在这里用
+	// **说得清的理由**拒掉，而不是让它掉进一个「哈希对不上」的 409，
+	// 那会让用户以为「文件被谁改了」
+	if cur.Binary {
+		log().Warn("文件写入目标是二进制被拒绝", "repo", repo, "path", rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrBinaryFile, rel)
+	}
+	if cur.Truncated {
+		log().Warn("文件写入目标超过读取上限被拒绝", "repo", repo, "path", rel, "size", cur.Size)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrFileTooLarge, rel)
+	}
+	if cur.SHA256 != baseSHA256 {
+		log().Warn("文件写入基线不匹配", "repo", repo, "path", rel,
+			"base", shortHash(baseSHA256), "current", shortHash(cur.SHA256))
+		return cur, fmt.Errorf("%w: %q", ErrBaseMismatch, rel)
+	}
+
+	log().Info("开始原子替换文件", "repo", repo, "path", rel, "bytes", len(content))
+	if err := atomicReplace(root, cleaned, []byte(content), fi.Mode().Perm()); err != nil {
+		log().Error("文件写入失败", "repo", repo, "path", rel, "cause", err)
+		return proto.FileRead{}, err
+	}
+	sum := sha256.Sum256([]byte(content))
+	res := proto.FileRead{
+		Content: content,
+		Size:    int64(len(content)),
+		SHA256:  hex.EncodeToString(sum[:]),
+	}
+	log().Info("文件写入完成", "repo", repo, "path", rel,
+		"bytes", res.Size, "sha256", shortHash(res.SHA256))
+	return res, nil
+}
+
+// shortHash 取哈希前 8 位供日志用。全量 64 位十六进制串在日志里既占地方又没人读，
+// 而排障时要的只是「这两个是不是同一个」。
+func shortHash(h string) string {
+	if len(h) <= 8 {
+		return h
+	}
+	return h[:8]
 }
 
 // ReadFile 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
@@ -811,6 +1217,9 @@ func resolveBaseBranch(repo string) string {
 // 与 RunCmd 的输出截断语义一致：返回开头、不整读内存，64MiB 大文件不会把 agentd 读挂。
 // 截断而非拒绝：fetch 的用途是看文件开头（审阅上下文），1MiB 对源文件足够；
 // 大文件多为生成物/数据文件，拒绝会让审核者误以为路径有误。
+// 截断提示不再由本函数拼接，改由端点层按各自契约决定（handleTaskFile 拼、
+// handleWorkspaceFile 不拼）——本函数返回的是保真的读，在线编辑那条线才敢把
+// 内容原样存回磁盘。
 //
 // 非普通文件（目录/管道/设备等）一律拒绝：目录给 ErrPathIsDir（400 语义），
 // 其余特殊文件 read 语义不可控（可能无限输出或永久阻塞），给 ErrNotRegularFile。
@@ -820,19 +1229,20 @@ func resolveBaseBranch(repo string) string {
 //   - rel: 相对仓库根的路径（如 cmd/foo.go）
 //
 // 返回：
-//   - 文件内容（超过 1MiB 时截断为开头 1MiB）
+//   - proto.FileRead{Content, Size, Truncated, Binary, SHA256}，其中 SHA256 仅当
+//     !Binary && !Truncated 时有值
 //   - err: 路径逃逸（含符号链接逃逸）返回 ErrPathEscape；目录返回 ErrPathIsDir；
 //     其他特殊文件返回 ErrNotRegularFile；文件不存在返回 *fs.PathError（含 %w 链）
-func ReadFile(repo, rel string) (string, error) {
+func ReadFile(repo, rel string) (proto.FileRead, error) {
 	cleaned := filepath.Clean(rel)
 	if rel == "" || cleaned == "." || filepath.IsAbs(cleaned) ||
 		cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
-		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
 	}
 	root, err := os.OpenRoot(repo)
 	if err != nil {
-		return "", fmt.Errorf("打开任务仓库 %s: %w", repo, err)
+		return proto.FileRead{}, fmt.Errorf("打开任务仓库 %s: %w", repo, err)
 	}
 	defer root.Close()
 	// 以 O_NONBLOCK 打开（why）：没有写端的 FIFO 会让 openat 本身一直挂住，
@@ -845,36 +1255,49 @@ func ReadFile(repo, rel string) (string, error) {
 		if rootErrIsEscape(err) {
 			// 符号链接逃逸在 OpenRoot 层被内核拒绝：与词汇层逃逸同一语义
 			log().Warn("文件读取路径逃逸被拒绝", "repo", repo, "path", rel)
-			return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathEscape, rel)
 		}
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
 	if !fi.Mode().IsRegular() {
 		log().Warn("文件读取目标不是普通文件", "repo", repo, "path", rel, "mode", fi.Mode().String())
 		if fi.IsDir() {
-			return "", fmt.Errorf("%w: %q", ErrPathIsDir, rel)
+			return proto.FileRead{}, fmt.Errorf("%w: %q", ErrPathIsDir, rel)
 		}
-		return "", fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
+		return proto.FileRead{}, fmt.Errorf("%w: %q", ErrNotRegularFile, rel)
 	}
 	// 只读 maxRunOutput+1 字节：多出的 1 字节用于判定「是否超限」，
 	// 不额外多一次 Stat 也能得到截断结论（真实大小取已打开的 f.Stat）
 	b, err := io.ReadAll(io.LimitReader(f, int64(maxRunOutput)+1))
 	if err != nil {
-		return "", fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
+		return proto.FileRead{}, fmt.Errorf("读取文件 %s: %w", filepath.Join(repo, cleaned), err)
 	}
+	out := proto.FileRead{Size: fi.Size()}
 	if len(b) > maxRunOutput {
 		log().Warn("文件超过读取上限，内容已截断", "repo", repo, "path", rel,
 			"size", fi.Size(), "limit", maxRunOutput)
-		// 截断必须带可见标记：无标记时审核者会把第 1MiB 处当成文件末尾去推理，
-		// 而那既不是末行、也没有任何提示说明后面还有内容
-		return string(b[:maxRunOutput]) + truncatedNotice(fi.Size()), nil
+		// 合并 B102：main 侧在 ReadFile 里拼截断提示并返回 string，w4 侧改签名为
+		// proto.FileRead 并设 Truncated 标志、由端点层各自决定要不要拼提示。这里取
+		// w4 侧——合并后的 server.go handleTaskFile 按 w4 契约读 res.Truncated +
+		// truncatedNotice(res.Size)，main 侧那几行与 FileRead 签名不匹配。
+		out.Truncated = true
+		b = b[:maxRunOutput]
 	}
-	return string(b), nil
+	out.Content = string(b)
+	out.Binary = isBinaryPrefix(b)
+	// 哈希只在「完整且是文本」时才算：它唯一的用途是当写入的前置条件，
+	// 而截断内容当基线等于允许把文件截断后存回去，二进制本来就不许写。
+	// 空值在契约上就是「这文件不可编辑」，前后端共用这一个判据
+	if !out.Binary && !out.Truncated {
+		sum := sha256.Sum256(b)
+		out.SHA256 = hex.EncodeToString(sum[:])
+	}
+	return out, nil
 }
 
 // ListDir 列举工作树内某个目录的**直接子项**，不递归。
@@ -1010,8 +1433,8 @@ func (b *runOutputBuffer) Write(p []byte) (int, error) {
 
 // RunCmd 在任务仓库内执行一条审阅命令（sh -c），合并 stdout+stderr 有界回收 1MB。
 //
-// 这是审核者主动发起的只读审阅动作（跑测试/lint），不走审批门——
-// 命令语义（跑什么、看什么）由审核者决定，agentd 只负责执行与回收。
+// 这是协调者主动发起的只读审阅动作（跑测试/lint），不走审批门——
+// 命令语义（跑什么、看什么）由协调者决定，agentd 只负责执行与回收。
 //
 // 参数：
 //   - ctx: 上层上下文（HTTP 请求取消会终止命令）
@@ -1116,4 +1539,709 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// 为什么条目的全部写操作都经 os.OpenRoot(repo) 返回的 *os.Root：ReadFile 的路径
+// 逃逸防御（workspace.go:1203-1208）已论证「先校验、后打开」的两步式存在 TOCTOU
+// 窗口——恶意 executor 经 run 完全能在校验与打开之间把中间组件换成指向仓库外的
+// 链接。这里的三写操作（建/改名/删）比读更危险，复用同一个内核级 jail：每个
+// 动作的路径解析都在单次系统调用内由内核完成，无窗口。
+
+// cleanEntryRel 归一化条目操作的目标相对路径并做词汇层逃逸检查。
+//
+// 与 ReadFile/WriteFile/ListDir 相同的第 1 道红线（Clean 后绝对路径或残留 ..
+// 前缀一律拒绝，ErrPathEscape）；"." 归一成 ""（表示工作树根）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（供日志定位）
+//   - rel: 待归一化的相对路径
+//
+// 返回：
+//   - 归一化后的相对路径（"." 归为空串）
+//   - ErrPathEscape: rel 逃逸出工作树
+func cleanEntryRel(repo, rel string) (string, error) {
+	cleaned := filepath.Clean(rel)
+	if filepath.IsAbs(cleaned) || cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		log().Warn("条目操作路径逃逸被拒绝", "repo", repo, "path", rel)
+		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
+	}
+	if cleaned == "." {
+		return "", nil
+	}
+	return cleaned, nil
+}
+
+// validateEntryName 校验新条目名：空、.、..、含 / 或 \、含 NUL 字节一律
+// ErrBadEntryName（单层名，本期不做跨目录操作）。
+func validateEntryName(repo, name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) ||
+		strings.ContainsRune(name, 0) {
+		log().Warn("条目名字不合法被拒绝", "repo", repo, "name", name)
+		return fmt.Errorf("%w: %q", ErrBadEntryName, name)
+	}
+	return nil
+}
+
+// statEntry 从工作树现取一条目的 proto.DirEntry（Name/IsDir/Size 取自磁盘实况）。
+//
+// 为什么不凭入参拼：name 入参只保证「未逃逸」，磁盘实况才是建/改名后的事实
+// 来源（如目录 size 恒 0，见 proto.DirEntry 的文档约定）。
+func statEntry(root *os.Root, repo, target string) (proto.DirEntry, error) {
+	fi, err := root.Stat(target)
+	if err != nil {
+		return proto.DirEntry{}, fmt.Errorf("读取条目 %s: %w", filepath.Join(repo, target), err)
+	}
+	e := proto.DirEntry{Name: fi.Name(), IsDir: fi.IsDir()}
+	if !fi.IsDir() {
+		e.Size = fi.Size()
+	}
+	return e, nil
+}
+
+// CreateEntry 在工作树内新建一个空文件或空目录（B107 文件树右键菜单）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - parentRel: 目标所在父目录的相对路径；空串与 "." 都表示工作树根
+//   - name: 新条目名（单层名，不得含 / 或 \）
+//   - kind: "file" 或 "dir"
+//
+// 返回：
+//   - proto.DirEntry: 新建条目的信息（Name/IsDir/Size 取自磁盘实况，非入参拼装）
+//   - ErrBadEntryName: name 非法（空 / . / .. / 含分隔符），或 parentRel 不是目录
+//   - ErrPathEscape: parentRel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标落在工作树根的 .git 下
+//   - ErrEntryNotFound: parentRel 不存在
+//   - ErrEntryExists: 目标已存在
+func CreateEntry(repo, parentRel, name, kind string) (proto.DirEntry, error) {
+	log().Info("新建工作树条目", "repo", repo, "parent", parentRel, "name", name, "kind", kind)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		log().Warn("新建条目打开工作树失败", "repo", repo, "path", parentRel, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	parent, err := cleanEntryRel(repo, parentRel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if err := validateEntryName(repo, name); err != nil {
+		return proto.DirEntry{}, err
+	}
+	if kind != "file" && kind != "dir" {
+		log().Warn("新建条目未知类型被拒绝", "repo", repo, "kind", kind)
+		return proto.DirEntry{}, fmt.Errorf("%w: 未知的条目类型 %q", ErrBadEntryName, kind)
+	}
+	target := filepath.Join(parent, name)
+	if isGitPath(target) {
+		log().Warn("新建条目命中 .git 被拒绝", "repo", repo, "path", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, target)
+	}
+	if parent != "" {
+		pfi, err := root.Stat(parent)
+		if err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目父目录逃逸被拒绝", "repo", repo, "path", parent, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, parent)
+			}
+			if os.IsNotExist(err) {
+				log().Warn("新建条目父目录不存在", "repo", repo, "path", parent, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, parent)
+			}
+			log().Warn("新建条目父目录检查失败", "repo", repo, "path", parent, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("检查父目录 %s: %w", filepath.Join(repo, parent), err)
+		}
+		if !pfi.IsDir() {
+			log().Warn("新建条目父目录不是目录", "repo", repo, "path", parent, "mode", pfi.Mode().String())
+			return proto.DirEntry{}, fmt.Errorf("%w: 父目录 %q 不是目录", ErrBadEntryName, parent)
+		}
+	}
+	if _, err := root.Stat(target); err == nil {
+		log().Warn("新建条目目标已存在", "repo", repo, "path", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryExists, target)
+	} else if rootErrIsEscape(err) {
+		log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+	}
+	if kind == "dir" {
+		if err := root.Mkdir(target, 0o755); err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			log().Warn("新建条目建目录失败", "repo", repo, "path", target, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("建目录 %s: %w", filepath.Join(repo, target), err)
+		}
+	} else {
+		f, err := root.Create(target)
+		if err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("新建条目路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+				return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			log().Warn("新建条目建文件失败", "repo", repo, "path", target, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("建文件 %s: %w", filepath.Join(repo, target), err)
+		}
+		// 建的是空文件，立刻关掉即可
+		if err := f.Close(); err != nil {
+			log().Warn("新建条目关闭文件失败", "repo", repo, "path", target, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("关闭文件 %s: %w", filepath.Join(repo, target), err)
+		}
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		log().Warn("新建条目读取结果失败", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	log().Info("新建条目完成", "repo", repo, "path", target, "kind", kind)
+	return e, nil
+}
+
+// RenameEntry 给工作树内一个条目改名（B107 文件树右键菜单）。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待改名条目的相对路径
+//   - newName: 新名字（单层名，不得含 / 或 \——本期不做跨目录移动）
+//
+// 返回：
+//   - proto.DirEntry: 改名后条目的信息（Name/IsDir/Size 取自磁盘实况）
+//   - ErrBadEntryName: newName 非法（空 / . / .. / 含分隔符），或 rel 是工作树根
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+//   - ErrEntryExists: 新名字已存在
+func RenameEntry(repo, rel, newName string) (proto.DirEntry, error) {
+	log().Info("改名工作树条目", "repo", repo, "path", rel, "new_name", newName)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		log().Warn("条目改名打开工作树失败", "repo", repo, "path", rel, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if cleaned == "" {
+		log().Warn("条目改名目标是工作树根被拒绝", "repo", repo, "path", rel)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrBadEntryName, rel)
+	}
+	if err := validateEntryName(repo, newName); err != nil {
+		return proto.DirEntry{}, err
+	}
+	if isGitPath(cleaned) {
+		log().Warn("条目改名命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	target := filepath.Join(filepath.Dir(cleaned), newName)
+	if isGitPath(target) {
+		log().Warn("条目改名命中 .git 被拒绝", "repo", repo, "target", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, target)
+	}
+	if _, err := root.Stat(cleaned); err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("条目改名目标不存在", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		log().Warn("条目改名检查目标失败", "repo", repo, "path", cleaned, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	if _, err := root.Stat(target); err == nil {
+		log().Warn("条目改名撞名被拒绝", "repo", repo, "path", cleaned, "target", target)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryExists, target)
+	} else if rootErrIsEscape(err) {
+		log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+	}
+	if err := root.Rename(cleaned, target); err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目改名路径逃逸被拒绝", "repo", repo, "path", target, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, target)
+		}
+		log().Warn("条目改名执行失败", "repo", repo, "path", cleaned, "target", target, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("改名 %s → %s: %w", filepath.Join(repo, cleaned), filepath.Join(repo, target), err)
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		log().Warn("条目改名读取结果失败", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目改名完成", "repo", repo, "path", cleaned, "new_path", target)
+	return e, nil
+}
+
+// DeleteEntry 删除工作树内一个条目（B107 文件树右键菜单），目录连同其内容一并删。
+//
+// 不做回收站：git 能救已跟踪文件（checkout / restore 一条命令），却救不了未跟踪
+// 文件——新建即删除的落盘即永久，这正是「误删会弄丢东西」的全部理由，与凭据
+// 强弱无关（控制台会话的权限本来就是主令牌等价，见 isGitPath 的 why）；这道闸
+// 该挡的是「一次误操作就把数据/仓库弄坏」。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待删除条目的相对路径
+//
+// 返回：
+//   - ErrBadEntryName: rel 是工作树根（空串 / "."）
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+func DeleteEntry(repo, rel string) error {
+	log().Info("删除工作树条目", "repo", repo, "path", rel)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		log().Warn("删除条目打开工作树失败", "repo", repo, "path", rel, "cause", err)
+		return fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return err
+	}
+	if cleaned == "" {
+		log().Warn("删除工作树根本身被拒绝", "repo", repo, "path", rel)
+		return fmt.Errorf("%w: %q", ErrBadEntryName, rel)
+	}
+	if isGitPath(cleaned) {
+		log().Warn("删除条目命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	fi, err := root.Stat(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("删除条目路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("删除条目不存在", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		log().Warn("删除条目检查失败", "repo", repo, "path", cleaned, "cause", err)
+		return fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	kind := "file"
+	if fi.IsDir() {
+		kind = "dir"
+		err = root.RemoveAll(cleaned)
+	} else {
+		err = root.Remove(cleaned)
+	}
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("删除条目路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		log().Warn("删除条目执行失败", "repo", repo, "path", cleaned, "kind", kind, "cause", err)
+		return fmt.Errorf("删除条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	log().Info("删除条目完成", "repo", repo, "path", cleaned, "kind", kind)
+	return nil
+}
+
+// copyEntryName 为源条目挑一个未被占用的副本名（B107 文件树右键菜单）。
+//
+// 命名规则（spec §3.4）：文件用 filepath.Ext 把 base 与扩展名拆开，候选依次是
+// `base copy<ext>`、`base copy 2<ext>` …… 到 `base copy 99<ext>`；目录不拆扩展名，
+// 整体当 base（如 `a.b` 目录 → `a.b copy`，与 Mac Finder 同款，拆了会得到
+// `a copy.b` 这种错误形态）。isDir 决定是否拆。
+//
+// 为什么封顶 99：候选名是给人读的（Mac 文件系统的复制命名同款），无限试探只会
+// 在「全被占用」的场景白白做几十上百次 Stat，且名字本身会越来越难读。封顶后
+// 全部占用按 ErrEntryExists 拒掉，明确告诉用户手动清一清。
+//
+// 返回：目标名（与 source 同目录）与试过的候选数；root.Stat 出现逃逸以外的
+// 意外错误时直接透传。
+func copyEntryName(root *os.Root, repo, source string, isDir bool) (string, int, error) {
+	base := filepath.Base(source)
+	nameBase, ext := base, ""
+	if !isDir {
+		ext = filepath.Ext(base)
+		if len(base) == len(ext) { // 隐藏文件等"整个名字都是扩展名"的形态不拆
+			ext = ""
+		}
+		if ext != "" {
+			nameBase = base[:len(base)-len(ext)]
+		}
+	}
+	for i := 1; i <= 99; i++ {
+		var name string
+		if i == 1 {
+			name = nameBase + " copy" + ext
+		} else {
+			name = nameBase + fmt.Sprintf(" copy %d", i) + ext
+		}
+		target := filepath.Join(filepath.Dir(source), name)
+		if _, err := root.Stat(target); err != nil {
+			if rootErrIsEscape(err) {
+				log().Warn("条目复制命名探测逃逸被拒绝", "repo", repo, "path", source, "candidate", target, "cause", err)
+				return "", i, fmt.Errorf("%w: %q", ErrPathEscape, target)
+			}
+			if os.IsNotExist(err) {
+				return target, i, nil
+			}
+			log().Warn("条目复制命名探测失败", "repo", repo, "path", source, "candidate", target, "cause", err)
+			return "", i, fmt.Errorf("探测副本名 %s: %w", filepath.Join(repo, target), err)
+		}
+	}
+	log().Warn("条目复制候选名全部被占用", "repo", repo, "path", source)
+	return "", 99, fmt.Errorf("%w: %q 的副本名到 copy 99 已全被占用", ErrEntryExists, source)
+}
+
+// copyEntryFile 把 root 内的一个普通文件复制到目标路径（同为 root 内相对路径）。
+//
+// 权限用源文件的 Stat().Mode() 经 root.Chmod 补上——root.Create 只带 0o666 &
+// umask，源文件的可执行位等权限位会丢，丢了是静默故障（与 atomicReplace 的
+// perm 语义同款）。
+func copyEntryFile(root *os.Root, repo, src, dst string) (bytes int64, err error) {
+	sfi, err := root.Stat(src)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, src)
+		}
+		return 0, fmt.Errorf("读取源文件 %s: %w", filepath.Join(repo, src), err)
+	}
+	srcF, err := root.Open(src)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, src)
+		}
+		return 0, fmt.Errorf("打开源文件 %s: %w", filepath.Join(repo, src), err)
+	}
+	defer srcF.Close()
+	dstF, err := root.Create(dst)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			return 0, fmt.Errorf("%w: %q", ErrPathEscape, dst)
+		}
+		return 0, fmt.Errorf("创建副本 %s: %w", filepath.Join(repo, dst), err)
+	}
+	defer dstF.Close()
+	n, err := io.Copy(dstF, srcF)
+	if err != nil {
+		return 0, fmt.Errorf("复制 %s → %s: %w", filepath.Join(repo, src), filepath.Join(repo, dst), err)
+	}
+	if err := root.Chmod(dst, sfi.Mode().Perm()); err != nil {
+		return 0, fmt.Errorf("补副本权限 %s: %w", filepath.Join(repo, dst), err)
+	}
+	return n, nil
+}
+
+// copyEntryDir 把 root 内的一个目录连同全部内容递归复制到目标路径。
+//
+// 为什么整段都在 root.FS() 上走：os.Root 的 FS 是相对根目录的文件系统视图，
+// WalkDir 产出的每条路径（含根目录本身）都以 "/" 为分隔符、可以原样喂回 root
+// 的 Open/Mkdir/Stat——从 src 到 dst 的目标相对路径也只在相对路径之间拼（Rel +
+// Join），中途不得落回绝对路径，一旦把哪一段换成 filepath.Join(rootPath, rel)
+// 就绕过了内核级 jail，这条红线的理由见本文件 1543 行注释。
+func copyEntryDir(root *os.Root, repo, src, dst string) (entries, bytes int64, err error) {
+	if err := root.Mkdir(dst, 0o755); err != nil {
+		if rootErrIsEscape(err) {
+			return 0, 0, fmt.Errorf("%w: %q", ErrPathEscape, dst)
+		}
+		return 0, 0, fmt.Errorf("建副本目录 %s: %w", filepath.Join(repo, dst), err)
+	}
+	entries = 1
+	counted := 0
+	werr := fs.WalkDir(root.FS(), src, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		counted++
+		if counted%200 == 0 {
+			log().Debug("目录复制进度", "repo", repo, "path", src, "visited", counted)
+		}
+		if p == src {
+			return nil // 根目录已在上面 Mkdir
+		}
+		relPart, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, relPart)
+		if d.IsDir() {
+			if err := root.Mkdir(target, 0o755); err != nil {
+				if rootErrIsEscape(err) {
+					return fmt.Errorf("%w: %q", ErrPathEscape, target)
+				}
+				return fmt.Errorf("建副本目录 %s: %w", filepath.Join(repo, target), err)
+			}
+			entries++
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			// 符号链接（WalkDir 不跟随）与其他特殊文件：不复制链接、也不让整次
+			// 复制失败，跳过并留痕
+			log().Warn("目录复制跳过非普通文件", "repo", repo, "path", p, "mode", d.Type().String())
+			return nil
+		}
+		n, err := copyEntryFile(root, repo, p, target)
+		if err != nil {
+			return err
+		}
+		entries++
+		bytes += n
+		return nil
+	})
+	if werr != nil {
+		return 0, 0, fmt.Errorf("递归复制 %s: %w", filepath.Join(repo, src), werr)
+	}
+	return entries, bytes, nil
+}
+
+// CopyEntry 复制工作树内一个条目（B107 文件树右键菜单），目录连同其内容一并
+// 递归复制。副本名按「foo copy.go、foo copy 2.go …… 到 foo copy 99.go」的规则
+// 取第一个未被占用的；目录整体当 base 不拆扩展名（`a.b` → `a.b copy`）。
+// 命名细节与 99 上限的理由见 copyEntryName doc。
+//
+// 路径遏制与 CreateEntry/RenameEntry/DeleteEntry 同一红线：全部写操作经
+// os.OpenRoot 的内核级 jail（理由见 1543 行注释），符号链接等特殊文件不复制、
+// 只跳过并 Warn，绝不在递归途中落回绝对路径。
+//
+// 参数：
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 待复制条目的相对路径（空串与 "." 都表示工作树根，按 ErrBadEntryName
+//     拒绝——复制整棵工作树没有意义，落点必然撞已存在的副本名）
+//
+// 返回：
+//   - proto.DirEntry: 复制后条目的信息（Name/IsDir/Size 取自磁盘实况）
+//   - ErrBadEntryName: rel 是工作树根（空串 / "."）
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//   - ErrGitDirWrite: 目标是 .git 下的条目
+//   - ErrEntryNotFound: rel 不存在
+//   - ErrEntryExists: 副本名到 copy 99 已全部被占用
+func CopyEntry(repo, rel string) (proto.DirEntry, error) {
+	log().Info("复制工作树条目", "repo", repo, "path", rel)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		log().Warn("条目复制打开工作树失败", "repo", repo, "path", rel, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+	cleaned, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	if cleaned == "" {
+		log().Warn("条目复制目标是工作树根被拒绝", "repo", repo, "path", rel)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrBadEntryName, rel)
+	}
+	if isGitPath(cleaned) {
+		log().Warn("条目复制命中 .git 被拒绝", "repo", repo, "path", cleaned)
+		return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrGitDirWrite, cleaned)
+	}
+	fi, err := root.Stat(cleaned)
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目复制路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		if os.IsNotExist(err) {
+			log().Warn("条目复制目标不存在", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrEntryNotFound, cleaned)
+		}
+		log().Warn("条目复制检查目标失败", "repo", repo, "path", cleaned, "cause", err)
+		return proto.DirEntry{}, fmt.Errorf("检查条目 %s: %w", filepath.Join(repo, cleaned), err)
+	}
+	target, tried, err := copyEntryName(root, repo, cleaned, fi.IsDir())
+	if err != nil {
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目复制选定副本名", "repo", repo, "path", cleaned, "target", target, "tried", tried)
+	var entries, copied int64
+	if fi.IsDir() {
+		entries, copied, err = copyEntryDir(root, repo, cleaned, target)
+	} else {
+		entries = 1
+		copied, err = copyEntryFile(root, repo, cleaned, target)
+	}
+	if err != nil {
+		if rootErrIsEscape(err) {
+			log().Warn("条目复制路径逃逸被拒绝", "repo", repo, "path", cleaned, "cause", err)
+			return proto.DirEntry{}, fmt.Errorf("%w: %q", ErrPathEscape, cleaned)
+		}
+		log().Warn("条目复制执行失败", "repo", repo, "path", cleaned, "target", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	e, err := statEntry(root, repo, target)
+	if err != nil {
+		log().Warn("条目复制读取结果失败", "repo", repo, "path", target, "cause", err)
+		return proto.DirEntry{}, err
+	}
+	log().Info("条目复制完成", "repo", repo, "path", cleaned, "target", target,
+		"entries", entries, "bytes", copied)
+	return e, nil
+}
+
+// 搜索护栏（B107 文件树右键菜单「在文件夹内查找」）。
+//
+// 为什么需要条数护栏：结果面板是给人扫的，几千条命中没人会读，只会把响应体
+// 与渲染撑爆；撞顶必须标 Truncated，否则「返回了 200 条」会被读成「全仓只有
+// 200 处」，用户以为已经看完了全部命中。
+// 为什么需要超时护栏：全仓遍历要扫几十万个文件，一次搜索不该无限占用 HTTP
+// handler；到点带着已有结果返回，不把超时当错误。
+const (
+	searchDefaultLimit = 200
+	searchMaxLimit     = 1000
+	searchTimeout      = 10 * time.Second
+)
+
+// searchSkipDirs 是不进入的目录名（任意层级命中即跳过整棵子树）。
+//
+// 为什么跳过这些目录：.git 是版本元数据，node_modules/vendor/dist/target 是
+// 依赖与构建产物——它们不承载「人想找的代码」，遍历只会拖慢每次搜索。
+var searchSkipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": true, "dist": true, "target": true}
+
+// searchHitTextMax 是命中行文本的截断长度。
+// 为什么截断：结果面板一行放不下整行，且超长行多半是压缩/生成产物。
+const searchHitTextMax = 300
+
+// searchMaxLine 是逐行扫描的单行上限（1 MiB）。
+// 为什么设上限：bufio.Scanner 默认 64 KiB 就会报 ErrTooLong，1 MiB 放宽到
+// 「绝大多数源码行都够用」，同时防止把一条压缩巨行整个读进内存。
+const searchMaxLine = 1 << 20
+
+// searchBinaryProbe 是二进制判定的探测长度。
+// 为什么只探 512 字节：搜索是只读扫描，判「是不是文本」不需要像在线编辑那样
+// 读 8 KiB；真正的文本文件不会在头部塞 NUL，512 对源码/配置零误判。
+const searchBinaryProbe = 512
+
+// errSearchStop 是 fs.WalkDir 提前结束的信号：命中数达上限或超时到点。
+// 调用方据此返回已有结果并标 Truncated，不把提前结束当成错误透传。
+var errSearchStop = errors.New("搜索提前结束")
+
+// SearchInDir 在工作树某个目录内全文搜索关键词，返回命中的行
+// （B107 文件树右键菜单「在文件夹内查找」）。
+//
+// 参数：
+//   - ctx: 控制搜索生命周期；内部叠加 searchTimeout 作为兜底上限
+//   - repo: 工作树绝对路径（调用方必须已过白名单闸门，本函数不做白名单判定）
+//   - rel: 搜索范围（相对工作树根的目录）；"" 与 "." 都表示整棵工作树
+//   - query: 关键词，空串直接报错
+//   - limit: 命中数上限；<=0 取 searchDefaultLimit，>searchMaxLimit 收敛到它
+//
+// 返回：
+//   - proto.SearchResult：Hits 的 Rel 含 scope 前缀、Line 从 1 起、Text 是匹配
+//     行原文（超过 searchHitTextMax 截断）；Truncated=true 表示撞到命中数上限
+//     或超时，此时 Hits 是已扫到的部分结论——必须把「只看到这些」与「总共就
+//     这些」分开，用户才知道要收窄范围
+//   - ErrPathEscape: rel 逃逸出工作树（含符号链接逃逸）
+//
+// 路径遏制与 ReadFile/ListDir 同一红线：遍历经 os.OpenRoot 的内核级 jail
+// （root.FS() 做 fs.WalkDir），不落回 filepath.Join(repo, rel) 后的包级 os
+// 调用（理由见本文件 1543 行注释）。
+//
+// 三条护栏（每条的为什么见对应常量/变量注释）：
+//   - 命中数：达 limit 立即停止并标 Truncated
+//   - 超时：searchTimeout 到点带已有结果返回，不把超时当错误
+//   - 跳过生成物：searchSkipDirs 命中的目录任意层级即跳整棵子树
+func SearchInDir(ctx context.Context, repo, rel, query string, limit int) (proto.SearchResult, error) {
+	scope, err := cleanEntryRel(repo, rel)
+	if err != nil {
+		return proto.SearchResult{}, err
+	}
+	if query == "" {
+		log().Warn("搜索空关键词被拒绝", "repo", repo, "scope", scope)
+		return proto.SearchResult{}, fmt.Errorf("空关键词")
+	}
+	if limit <= 0 {
+		limit = searchDefaultLimit
+	} else if limit > searchMaxLimit {
+		limit = searchMaxLimit
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return proto.SearchResult{}, fmt.Errorf("打开工作树 %s: %w", repo, err)
+	}
+	defer root.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
+	defer cancel()
+	walkRoot := scope
+	if walkRoot == "" {
+		walkRoot = "."
+	}
+	log().Info("文件夹内搜索开始", "repo", repo, "scope", scope, "query", query,
+		"limit", limit, "timeout", searchTimeout)
+
+	res := proto.SearchResult{Hits: []proto.SearchHit{}}
+	start := time.Now()
+	scanned := 0
+	werr := fs.WalkDir(root.FS(), walkRoot, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if searchSkipDirs[d.Name()] {
+				log().Debug("搜索跳过目录", "repo", repo, "dir", p)
+				return fs.SkipDir
+			}
+			return nil
+		}
+		scanned++
+		if scanned%100 == 0 && ctx.Err() != nil {
+			return errSearchStop
+		}
+		if !d.Type().IsRegular() {
+			return nil // 符号链接与其他特殊文件不搜索
+		}
+		f, err := root.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		head := make([]byte, searchBinaryProbe)
+		n, _ := io.ReadFull(f, head)
+		if bytes.IndexByte(head[:n], 0) >= 0 {
+			return nil // 二进制文件不搜索
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), searchMaxLine)
+		line := 0
+		for sc.Scan() {
+			line++
+			text := sc.Text()
+			if !strings.Contains(text, query) {
+				continue
+			}
+			res.Hits = append(res.Hits, proto.SearchHit{
+				Rel:  filepath.ToSlash(p),
+				Line: line,
+				Text: truncateRunes(text, searchHitTextMax),
+			})
+			if len(res.Hits) >= limit {
+				return errSearchStop
+			}
+		}
+		if err := sc.Err(); err != nil {
+			// 行长超过 searchMaxLine（压缩产物常见）：本文件扫不完，跳过不打断整次搜索
+			log().Debug("搜索跳过超长行文件", "repo", repo, "path", p, "cause", err)
+		}
+		return nil
+	})
+	if werr != nil && !errors.Is(werr, errSearchStop) {
+		log().Error("搜索遍历失败", "repo", repo, "scope", scope, "cause", werr)
+		return proto.SearchResult{}, fmt.Errorf("搜索遍历 %s: %w", filepath.Join(repo, scope), werr)
+	}
+	if errors.Is(werr, errSearchStop) {
+		res.Truncated = true
+		if ctx.Err() != nil {
+			log().Warn("搜索超时，返回已扫到的部分结果", "repo", repo, "scope", scope,
+				"query", query, "hits", len(res.Hits), "scanned", scanned, "timeout", searchTimeout)
+		} else {
+			log().Info("搜索命中数达上限，返回部分结果", "repo", repo, "scope", scope,
+				"query", query, "hits", len(res.Hits), "scanned", scanned, "limit", limit)
+		}
+	}
+	log().Info("搜索完成", "repo", repo, "scope", scope, "query", query,
+		"hits", len(res.Hits), "scanned", scanned, "elapsed_ms", time.Since(start).Milliseconds())
+	return res, nil
 }

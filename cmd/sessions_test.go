@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestRenderSessionsStripsControlChars 钉死 spec §6：设备名里的 ANSI 转义序列

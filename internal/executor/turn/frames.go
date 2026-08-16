@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // FramesFileName 是任务目录内帧文件的固定名字。

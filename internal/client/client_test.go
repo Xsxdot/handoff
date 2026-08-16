@@ -25,14 +25,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 const testToken = "test-token"
@@ -355,7 +355,7 @@ func TestReplyRoundTrip(t *testing.T) {
 
 // TestReplyRelayFailureSurfacesReason 覆盖 P0-5 的客户端可见性：回答已落库但
 // executor 侧递送失败（无等待者且 manager 未注入，应答未回传 executor）时
-// agentd 返回 502，client.Reply 的错误信息必须携带状态码与 reason——审核者在
+// agentd 返回 502，client.Reply 的错误信息必须携带状态码与 reason——协调者在
 // CLI 立即看到「executor 没收到」及原因，而不是只有远端 agentd.log 一行。
 func TestReplyRelayFailureSurfacesReason(t *testing.T) {
 	env := newTestClientEnv(t)
@@ -598,7 +598,7 @@ func TestDoneNoteSavedTrue(t *testing.T) {
 
 // TestDoneOldAgentdReportsNotSaved 是旧 agentd 兼容的钉子：响应里**没有**
 // note_saved 字段时必须按 false 处理，否则「说明丢了」会变成哑失败——
-// 审核者以为留了话，其实没留（与 stop 的 worktree_removed 同一模式）。
+// 协调者以为留了话，其实没留（与 stop 的 worktree_removed 同一模式）。
 func TestDoneOldAgentdReportsNotSaved(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))

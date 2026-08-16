@@ -5,6 +5,7 @@
 //   - project add：把 cwd 登记为本机位置；--target 时一并登记到那台机器
 //   - project ls：列出位置，并显示每条的实际状态（登记与磁盘漂移时看得见）
 //   - project rm：注销位置
+//   - project edit：改一条位置的引用名与/或路径（不动 project_id）
 //
 // 边界：
 //   - 不自己 ssh、不自己 clone：clone 由目标机上的 agentd 执行，用它自己的 git 凭据
@@ -16,17 +17,19 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // projectAddPath 是 --path：目标机上这份代码的落点。
@@ -118,28 +121,57 @@ var projectAddCmd = &cobra.Command{
 //     非空时已存在就登记它、不存在就 clone 到它）
 //
 // 返回：
-//   - 错误：任一跳失败即返回；**不回滚另一跳**（登记是幂等的，重跑即可）
+//   - 错误：任一跳失败即返回（本机跳「够不着」除外，见「注意」）；
+//     **不回滚另一跳**（登记是幂等的，重跑即可）
 //
 // 注意：
 //   - --target 的语义是「本机与那台机器**一起**登记」，不是「只登记那台机器」：
-//     项目身份是从 cwd 算的，本机位置已知且免费，刻意不登它只会让本机项目树缺一行
+//     项目身份是从 cwd 算的，本机位置已知，登它一并补上本机项目树那一行
 //   - 本机永远不 clone（它已经有 cwd 这份了）；远程不给 path 时由它自己 clone
 //   - 两跳的「成功」状态行走 cmd.ErrOrStderr()：dispatch 的自动登记路径调用本函数，
 //     stdout 必须保持「第一行是任务 JSON」的既有契约（上层脚本按行解析），
 //     任何额外输出都不能污染 stdout
+//   - **本机那一跳连不上时降级、不失败**：纯协调者机（不跑 agentd）上本机 agentd
+//     本就不存在，而本机位置只是「顺带补上的免费信息」（spec §6.2），让它否决
+//     整次派发是把记账动作摆在了主线之上。判据只认 client.ErrUnreachable
+//     ——拿到了响应的失败（409/400/500）仍然致命，那是真冲突。
+//     两跳都做不成（无 --target 且本机连不上）时仍然报错
 func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remotePath string) error {
 	localAddr, localToken, err := LocalEndpoint()
 	if err != nil {
 		return err
 	}
+	// remoteName 默认取调用方给的名字（可空，由目标机从 origin 末段自行派生）；
+	// 本机那一跳成功时改用它归一后的名字，让两台机器上的引用名一致
+	remoteName := name
 	local, err := client.New(localAddr, localToken).ProjectAdd(cmd.Context(), client.ProjectAddOpts{
 		OriginURL: origin, Name: name, Path: localPath,
 	})
-	if err != nil {
+	switch {
+	case err == nil:
+		remoteName = local.Name
+		fmt.Fprintf(cmd.ErrOrStderr(), "本机 %s → %s\n", local.Name, local.Path)
+	case errors.Is(err, client.ErrUnreachable):
+		// 本机没有 agentd 是纯协调者机的正常形态（spec §1.3）：本机那一行位置
+		// 记录是「顺带补上的免费信息」，它不免费的时候就不该否决整次登记。
+		// 但两跳都做不成时必须报错——那时候「成功」是假的。
+		if targetName == "" {
+			return fmt.Errorf("本机没有 agentd（%s 连不上），且未指定 --target：两跳都无处登记。"+
+				"在本机 handoff service install 起一个，或用 --target <执行机> 登到那台机器上", localAddr)
+		}
+		slog.Warn("本机 agentd 够不着，跳过本机登记",
+			"addr", localAddr, "origin", origin, "target", targetName, "cause", err)
+		// 走 stderr：dispatch 的 stdout 是「第一行任务 JSON」的既有契约。
+		// 两行缺一不可——只说「跳过了」，人不知道后果，也不知道怎么补
+		fmt.Fprintf(cmd.ErrOrStderr(), "本机 没有 agentd（%s 连不上），跳过本机登记\n", localAddr)
+		fmt.Fprintln(cmd.ErrOrStderr(), "     本机项目树会缺这一行；本机起了 agentd 之后重跑 handoff project add 补上")
+	default:
+		// 拿到了响应的失败（409 位置冲突 / 400 origin 不符 / 500）一律致命：
+		// 那是真冲突，咽下去就是往位置表里写脏登记
 		return fmt.Errorf("登记到本机: %w", err)
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "本机 %s → %s\n", local.Name, local.Path)
 	if targetName == "" {
+		slog.Info("项目登记完成", "origin", origin, "scope", "仅本机")
 		return nil
 	}
 	addr, token, err := TargetEndpoint()
@@ -152,12 +184,13 @@ func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remote
 		fmt.Fprintf(cmd.ErrOrStderr(), "正在让 %s 落地项目 %s（首次需要 clone，可能较慢）…\n", targetName, origin)
 	}
 	remote, err := client.New(addr, token).ProjectAdd(cmd.Context(), client.ProjectAddOpts{
-		OriginURL: origin, Name: local.Name, Path: remotePath,
+		OriginURL: origin, Name: remoteName, Path: remotePath,
 	})
 	if err != nil {
 		return fmt.Errorf("登记到 %s: %w", targetName, err)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s %s → %s\n", targetName, remote.Name, remote.Path)
+	slog.Info("项目登记完成", "origin", origin, "target", targetName, "remote_path", remote.Path)
 	return nil
 }
 
@@ -304,12 +337,59 @@ var projectRmCmd = &cobra.Command{
 	},
 }
 
+// projectEditName / projectEditPath 是 project edit 的两个可选改动。
+var (
+	projectEditName string
+	projectEditPath string
+)
+
+// projectEditCmd 改一条位置的引用名与/或路径。
+//
+// 使用方式：
+//
+//	handoff project edit <名字> --name <新引用名>                  # 只改名
+//	handoff project edit <名字> --path <新路径>                    # 只改路径
+//	handoff project edit <名字> --name <新引用名> --path <新路径>   # 两个都改
+//	handoff project edit <名字> --name <新引用名> --target devbox   # 在 devbox 上改
+var projectEditCmd = &cobra.Command{
+	Use:   "edit <名字>",
+	Short: "改一条项目位置的引用名与/或路径",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// 两个可选改动都缺时本地就拦：错误在发请求前暴露，不白打一趟网络
+		if projectEditName == "" && projectEditPath == "" {
+			return fmt.Errorf("project edit 需要至少一个改动：--name <新引用名> 或 --path <新路径>")
+		}
+		addr, token, err := TargetEndpoint()
+		if err != nil {
+			return err
+		}
+		loc, err := client.New(addr, token).PatchProject(cmd.Context(), args[0], projectEditName, projectEditPath)
+		if err != nil {
+			return err
+		}
+		parts := []string{}
+		if projectEditName != "" {
+			parts = append(parts, "新名字 "+loc.Name)
+		}
+		if projectEditPath != "" {
+			parts = append(parts, "新路径 "+loc.Path)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "已更新 %s：%s\n", args[0], strings.Join(parts, "，"))
+		return nil
+	},
+}
+
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPath, "path", "",
 		"目标机上的落点（仅与 --target 连用）：已存在则登记它，不存在则 clone 到它；省略则 clone 到那台机器的 repo_root/<名字>")
 	projectLsCmd.Flags().BoolVar(&projectTree, "tree", false, "以三层项目树输出（project → location → workspace，现场探测工作树）")
 	projectLsCmd.Flags().BoolVar(&projectTreeAll, "all", false, "跨机汇总所有机器上的项目树（配合 --tree 使用）")
 	projectLsCmd.Flags().BoolVar(&projectTreeJSON, "json", false, "树形输出改为单行 JSON（配合 --tree/--all 使用）")
-	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd)
+	projectEditCmd.Flags().StringVar(&projectEditName, "name", "",
+		"新的引用名（省略=不改名；与 --path 至少给一个）")
+	projectEditCmd.Flags().StringVar(&projectEditPath, "path", "",
+		"新的路径（省略=不改路径；与 --name 至少给一个）")
+	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd, projectEditCmd)
 	rootCmd.AddCommand(projectCmd)
 }

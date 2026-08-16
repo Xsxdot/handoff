@@ -1,4 +1,4 @@
-// Package client 是 handoff 审核者侧对 agentd 的唯一拨号方：任务列表、attach 现场恢复、
+// Package client 是 handoff 协调者侧对 agentd 的唯一拨号方：任务列表、attach 现场恢复、
 // ticket 应答（reply）、wait 事件等待（WS + cursor 断线续拉）与审阅命令（diff/fetch/run）。
 //
 // 职责：
@@ -8,8 +8,8 @@
 //   - 断线指数退避重连（1s→2s→…→60s），覆盖本机 agentd 重启、网络抖动等场景
 //
 // 边界：
-//   - 无业务判断：不解析事件 payload 语义、不做审批决策——「答什么」由审核者（人/上层）
-//     决定后经 Reply 原样透传，审批策略在审核者脑中，本包只保证传输可靠与语义透明
+//   - 无业务判断：不解析事件 payload 语义、不做审批决策——「答什么」由协调者（人/上层）
+//     决定后经 Reply 原样透传，审批策略在协调者脑中，本包只保证传输可靠与语义透明
 //   - 不持久化除 cursor 外的任何状态：任务/事件/工单数据全部实时向 agentd 查询
 package client
 
@@ -31,8 +31,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // 常量说明：
@@ -102,7 +102,7 @@ func isPermanent(err error) bool {
 	return errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation
 }
 
-// isDeliverable 判定一个事件类型是否该唤醒审核者。
+// isDeliverable 判定一个事件类型是否该唤醒协调者。
 //
 // 可交付 = 全部类型 − {progress, approver_decision, approver_disabled, tickets_voided}。
 //
@@ -115,7 +115,7 @@ func isPermanent(err error) bool {
 //
 // tickets_voided（B63）加入的理由与前两类略有不同：它同样只入库不 Publish，但它
 // 的产生时刻**恰好压在 completed/failed 上**——终态迁移的同一次调用里。可交付就
-// 意味着一次性 wait 有机会拿它收手，审核者看到的是「作废了 1 张单」而不是任务成败。
+// 意味着一次性 wait 有机会拿它收手，协调者看到的是「作废了 1 张单」而不是任务成败。
 //
 // 注意：all=true 时调用方不使用本谓词，全量交付——排障需要看到审计事件。
 func isDeliverable(t proto.EventType) bool {
@@ -145,7 +145,7 @@ var errStopStream = errors.New("stream stopped by callback")
 var errArchived = errors.New("任务已归档")
 
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
-// 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，审核者恢复现场的关键数据源。
+// 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，协调者恢复现场的关键数据源。
 type AttachInfo struct {
 	Task           proto.TaskView `json:"task"`
 	PendingTickets []proto.Ticket `json:"pending_tickets"`
@@ -216,9 +216,20 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 // 用途：agentd 扇出到别的 agentd 时必须带这个标记，让对端不再向外扇出——
 // 一跳封顶，A→B→A 不可能成环。审核者 CLI **不要**用它。
 func (c *Client) MarkForwarded() *Client {
-	cp := *c
-	cp.extraHeaders = map[string]string{"X-Handoff-Forwarded": "1"}
-	return &cp
+	// 合并 B102：main 侧给 Client 加了 cursorRootOnce（sync.Once），w4 侧的
+	// MarkForwarded 是整体拷贝——整体拷贝会把 lock 一起复制，go vet 的
+	// copylocks 会拒。这里改为逐字段构造并重置 Once：镜像连接是独立实例，
+	// 游标根缓存让它自己解析一次即可。
+	cp := &Client{
+		baseURL:          c.baseURL,
+		token:            c.token,
+		hc:               c.hc,
+		extraHeaders:     map[string]string{"X-Handoff-Forwarded": "1"},
+		wsInitialBackoff: c.wsInitialBackoff,
+		wsMaxBackoff:     c.wsMaxBackoff,
+		wsStableAfter:    c.wsStableAfter,
+	}
+	return cp
 }
 
 // log 返回运行时 slog.Default()。
@@ -251,7 +262,22 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.hc.Do(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		// ctx 取消/超时不算「够不着」：它们同样从 hc.Do 的错误返回出来，但含义是
+		// 「人按了 Ctrl-C」或「主动限时到了」，不是「那台机器不在」。混进
+		// ErrUnreachable 会让调用方的降级分支在用户中断之后继续往下走。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		// Debug 而非 Warn：status 轮询这类热路径会连续撞这里（upgrade 换版后每秒一次），
+		// 在这一层打 Warn 会把真正需要注意的失败淹掉。这次够不着是致命还是可降级，
+		// 只有调用方知道——由它决定要不要升级成 Warn（见 cmd/project.go 的降级点）。
+		c.log().Debug("agentd 请求未拿到响应",
+			"method", method, "path", path, "url", c.baseURL, "cause", err)
+		return nil, fmt.Errorf("%w: %s %s: %w", ErrUnreachable, method, path, err)
+	}
+	return resp, nil
 }
 
 // httpError 把非 2xx 响应转成错误，并按状态码分级记录日志。
@@ -280,6 +306,18 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 // 能收到 404 说明 TCP 通、HTTP 正常、Bearer 已经通过，三件事都被证明了。
 // CLI 据此输出降级结论并退 0，而不是把一台完全能用的机器判成失败。
 var ErrStatusUnsupported = errors.New("对端 agentd 不支持 /api/status")
+
+// ErrUnreachable 表示这次请求**一个 HTTP 响应都没拿到**——TCP 拨不通、连接被拒、
+// DNS 解析失败或读写中断，对端在不在都无从判断。
+//
+// why（必须是可判别的哨兵）：调用方要区分「对端不在」与「对端拒绝了这次请求」。
+// 后者（400/409/500）拿到了响应，说明 agentd 在、Bearer 通过、语义上真的冲突了，
+// 绝不能当成「机器不在」咽下去——那是往登记表里写脏数据。这个区分只有 client
+// 知道；让调用方去 grep 错误文本里的 "connection refused" 是把 Go 的错误措辞与
+// 平台差异变成契约。同 ErrStatusUnsupported 的理由。
+//
+// **不包含 ctx 取消与超时**（见 do 里的注释）。
+var ErrUnreachable = errors.New("对端 agentd 够不着")
 
 // ErrFootprintUnsupported 表示对端 agentd 太旧，没有 /api/footprint。
 //
@@ -468,7 +506,7 @@ func (c *Client) ListTasks(ctx context.Context) ([]proto.TaskView, error) {
 }
 
 // Attach 获取任务的完整现场快照（任务 + 待办工单 + 最近事件），
-// 是审核者恢复会话现场（pending_tickets）的数据源。
+// 是协调者恢复会话现场（pending_tickets）的数据源。
 //
 // 参数：
 //   - taskID: 任务 ID；任务不存在时返回 404 错误
@@ -494,7 +532,7 @@ func (c *Client) Attach(ctx context.Context, taskID string) (*AttachInfo, error)
 //   - taskID: 工单所属任务 ID
 //   - ticketID: 待回答的工单 ID
 //   - answer: 应答原文，原样透传给 agentd（如 "allow" / "deny: 原因" / 任意文本），
-//     语义由上层（审核者/manager）决定，本包不做解释
+//     语义由上层（协调者/manager）决定，本包不做解释
 //
 // 注意：
 //   - 工单不存在、已回答（不可重复回答）或不属于该任务时返回错误
@@ -533,7 +571,7 @@ type DispatchOpts struct {
 	Base        string
 	Worktree    string
 	NewWorktree bool
-	// BaseCommit 是审核者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
+	// BaseCommit 是协调者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
 }
@@ -726,6 +764,42 @@ func (c *Client) ProjectRemove(ctx context.Context, name string) error {
 	return nil
 }
 
+// PatchProject 改一条项目位置的引用名与/或路径。
+//
+// 参数：
+//   - name: 当前引用名（URL 路径定位那条登记）
+//   - newName: 新引用名（空串=不改名）
+//   - path: 新路径（空串=不改路径）
+//
+// 返回：
+//   - 更新后的位置记录
+//   - newName 与 path 都为空返回错误（服务端会拒，本地先拦）
+//   - 登记不存在返回 404 错误；新名字非法或新路径是另一个项目返回 400 错误；
+//     新名字已被别的登记占用返回 409 错误
+func (c *Client) PatchProject(ctx context.Context, name, newName, path string) (proto.ProjectLocation, error) {
+	// 只带非空字段：空串字段不带，服务端以「缺字段=不改这个字段」判定改动面
+	body := map[string]any{}
+	if newName != "" {
+		body["new_name"] = newName
+	}
+	if path != "" {
+		body["path"] = path
+	}
+	resp, err := c.do(ctx, http.MethodPatch, "/api/projects/"+url.PathEscape(name), body)
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("project edit 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return proto.ProjectLocation{}, c.httpError("project edit", resp)
+	}
+	var loc proto.ProjectLocation
+	if err := json.NewDecoder(resp.Body).Decode(&loc); err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("解析 project edit 响应: %w", err)
+	}
+	return loc, nil
+}
+
 // Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。
 //
 // 注意：
@@ -812,7 +886,7 @@ func (c *Client) Stop(ctx context.Context, taskID string) (worktreeRemoved bool,
 //
 // 返回：
 //   - 恢复结果 JSON 原文（重投条数、对账结果、executor 是否已不在、收尾状态与结论），
-//     原样输出给审核者
+//     原样输出给协调者
 //   - executor 仍不可用（502）或任务已终结（409）等情况返回错误；502 时响应体
 //     里仍带着本次已重投成功的条数，错误信息中包含它
 func (c *Client) Resume(ctx context.Context, taskID string, force bool) (string, error) {
@@ -862,7 +936,7 @@ func (c *Client) Diff(ctx context.Context, taskID, base string) (string, error) 
 	return out.Diff, nil
 }
 
-// Fetch 读取任务仓库内相对路径文件的内容（审核者取上下文用）。
+// Fetch 读取任务仓库内相对路径文件的内容（协调者取上下文用）。
 //
 // 注意：
 //   - 路径逃出仓库（如 ../ 前缀或绝对路径）返回错误；文件不存在返回 404 错误
@@ -1082,8 +1156,8 @@ func (c *Client) FramesStream(ctx context.Context, taskID string,
 //   - 因此每条可动作事件恰好交付一次（不重），cursor 之后的事件断线后一条不丢（不丢）
 //
 // 为什么 progress 不唤醒：progress 是高频、无需人工动作的状态播报（如「正在运行」），
-// 若用它唤醒，wait 会在每次进度变化时把审核者叫醒做无意义的一次「看-忽略」；
-// 审核者只需在真正需要决策的事件（question/permission_request/completed/failed/stalled）
+// 若用它唤醒，wait 会在每次进度变化时把协调者叫醒做无意义的一次「看-忽略」；
+// 协调者只需在真正需要决策的事件（question/permission_request/completed/failed/stalled）
 // 到达时被唤醒。需要全量事件流时显式传 all=true。
 //
 // 永久性失败（不重试）：握手 400/401/403（配置错误）与任务不存在（PolicyViolation
@@ -1377,8 +1451,8 @@ func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq in
 //   - ctx.Err() / 永久失败（401、任务不存在）: 原样返回
 //
 // cursor 语义（与 WaitEvent 的差别，取舍已在 spec §2.4 记录并接受）：
-//   - cursor 仍只在**交付**事件时推进，但「交付」不再等价于「审核者看过了」
-//     ——事件可能在审核者正忙时流入。此刻会话若崩溃，该事件不会再重放
+//   - cursor 仍只在**交付**事件时推进，但「交付」不再等价于「协调者看过了」
+//     ——事件可能在协调者正忙时流入。此刻会话若崩溃，该事件不会再重放
 //   - 接受这个回退的理由：事件流本就不是权威，工单在 agentd 侧持久，
 //     pending_tickets 才是权威清单。醒来先 show 这条纪律因此从建议变成必须
 //   - 断线续拉起点（fromSeq）则按**任何帧**推进：已经收到的帧没有再补发的必要，
@@ -1423,7 +1497,7 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				return nil // 审计类与 progress 不交付；口径与 waitOnce 共用 isDeliverable，避免两处漂移
 			}
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {
-				// cursor 写失败不吞事件：先把事件交给审核者（宁可下次重投，不可这次丢）
+				// cursor 写失败不吞事件：先把事件交给协调者（宁可下次重投，不可这次丢）
 				c.log().Warn("cursor 写盘失败", "task", taskID, "seq", ev.Seq, "cause", werr)
 			}
 			// 任务归档后游标再无用处：立刻回收，不等 TTL。与 WaitEvent 同一条
@@ -1436,8 +1510,15 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 				return err
 			}
 			if ev.Type == proto.EventTypeFailed {
-				// failed 是任务终态；completed 不是——那只是一轮结束，continue 之后还有事件
-				c.log().Info("follow 结束：任务已失败", "task", taskID, "seq", ev.Seq)
+				// 只有**任务终结**才收流。回合失败走 turn_failed，它与 completed
+				// 是同一个状态迁移（都进 waiting_review），所以行为也必须与
+				// completed 一致——投递、不收流。
+				//
+				// 旧实现的回合失败落的是 failed 类型，于是 follow 在这里把它当
+				// 任务终结收了流，还打「任务已失败」并以 0 退出，而任务其实好端端
+				// 等着审（B100）。更糟的是它与 completed 行为相反，两个后果完全
+				// 相同的事件走了两条路。
+				c.log().Info("follow 结束：任务已终结", "task", taskID, "seq", ev.Seq)
 				return errStopStream
 			}
 			return nil
@@ -1488,8 +1569,8 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 
 // cursorPath 返回任务 cursor 文件路径（<游标根>/<agentd 命名空间>/<taskID>）。
 //
-// 为什么放用户主目录而非配置 DataDir：cursor 是审核者侧的本地状态，
-// 与配置/数据库文件位置解耦；即使 DataDir 被移动，审核者已看过的进度也不重投。
+// 为什么放用户主目录而非配置 DataDir：cursor 是协调者侧的本地状态，
+// 与配置/数据库文件位置解耦；即使 DataDir 被移动，协调者已看过的进度也不重投。
 // 该决策保留，cursordir.go 只是让这个根在不可写时可以降级。
 //
 // 为什么要 agentd 这一层：文件名只按 taskID 时，两台 agentd 上碰巧同 ID 的
@@ -1516,7 +1597,7 @@ func (c *Client) readCursor(taskID string) int64 {
 //
 // 为什么要把「文件不存在」与其它错误分开：文件不存在是每个任务第一次 wait 的
 // 常态，报它等于每次都喊狼来了；而权限被拒与内容损坏意味着游标存在却用不了，
-// 后果是静默从 0 重放全部历史事件——审核者会看到一串早就处理过的旧事件，
+// 后果是静默从 0 重放全部历史事件——协调者会看到一串早就处理过的旧事件，
 // 却没有任何一条信息指向真正的原因。这是 B75 现场的成因。
 func (c *Client) readCursorWithDiag(taskID string) (seq int64, reported bool) {
 	p, err := c.cursorPath(taskID)
@@ -1597,6 +1678,11 @@ func (c *Client) writeCursor(taskID string, seq int64) error {
 	c.sweepStaleCursorTemps(filepath.Dir(p), taskID)
 	return nil
 }
+
+// 合并 B102：w4 侧在此处新增的 cursorTempTTL / sweepStaleCursorTemps 与 main 侧
+// cursorgc.go 里同名实现重复（main 侧 glob 用 taskID+"-*.tmp"，与 writeCursor
+// 的 CreateTemp(filepath.Base(p)+"-*.tmp") 命名一致，w4 侧误写成 "cursor-"+taskID），
+// 这里取 main 侧的实现并删掉 w4 侧重复定义；PtySessions 是 w4 侧独有的纯新增，保留。
 
 // PtySessions 取对端的**单机**终端会话列表（GET /api/pty/sessions）。
 //

@@ -272,37 +272,6 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 		fmt.Errorf("%w: pgid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
 
-// CountGroup 数出进程组 pgid 当前有多少个属于本 uid 的成员。
-//
-// 参数：pgid 为进程组 id（PTY 会话里就是 shell 自己的 pid，因为它 setsid 后
-// 是组长）
-//
-// 返回：成员数；枚举失败时上抛错误（**不降级成 0**——0 会被渲染成「没有残留」，
-// 那是个我们并没有得出的结论）
-//
-// 注意：
-//   - 与 Footprint 不同，这里**没有启动时刻校验**。Footprint 面对的是可能已死的
-//     shim，pid 复用是真实风险；本函数的调用方仍然持有组长进程（会话活着、
-//     *os.Process 未被回收），此时组长的 pid 不可能被复用，多一道校验只会
-//     要求调用方额外记一个内核时间戳
-//   - 因此**只能对仍存活的组调用**。对已退出的会话调用它，数出来的东西没有身份
-//   - 只读，绝不发信号
-func CountGroup(pgid int) (int, error) {
-	procs, err := enumProcsFn()
-	if err != nil {
-		log().Error("进程组计数失败", "pgid", pgid, "cause", err)
-		return 0, err
-	}
-	n := 0
-	for _, p := range procs {
-		if p.PGID == pgid {
-			n++
-		}
-	}
-	log().Debug("进程组计数完成", "pgid", pgid, "members", n)
-	return n, nil
-}
-
 // rosterKill 执行第二段清扫：按出生名册点名回收 setsid 逃逸的后代。
 //
 // 参数：
@@ -358,6 +327,37 @@ func rosterKill(h Handle, procs []procEntry) (killed int) {
 	log().Info("点名回收完成", "pid", h.PID, "roster_total", len(entries),
 		"killed", killed, "skipped_reused", skipped)
 	return killed
+}
+
+// CountGroup 数出进程组 pgid 当前有多少个属于本 uid 的成员。
+//
+// 参数：pgid 为进程组 id（PTY 会话里就是 shell 自己的 pid，因为它 setsid 后
+// 是组长）
+//
+// 返回：成员数；枚举失败时上抛错误（**不降级成 0**——0 会被渲染成「没有残留」，
+// 那是个我们并没有得出的结论）
+//
+// 注意：
+//   - 与 Footprint 不同，这里**没有启动时刻校验**。Footprint 面对的是可能已死的
+//     shim，pid 复用是真实风险；本函数的调用方仍然持有组长进程（会话活着、
+//     *os.Process 未被回收），此时组长的 pid 不可能被复用，多一道校验只会
+//     要求调用方额外记一个内核时间戳
+//   - 因此**只能对仍存活的组调用**。对已退出的会话调用它，数出来的东西没有身份
+//   - 只读，绝不发信号
+func CountGroup(pgid int) (int, error) {
+	procs, err := enumProcsFn()
+	if err != nil {
+		log().Error("进程组计数失败", "pgid", pgid, "cause", err)
+		return 0, err
+	}
+	n := 0
+	for _, p := range procs {
+		if p.PGID == pgid {
+			n++
+		}
+	}
+	log().Debug("进程组计数完成", "pgid", pgid, "members", n)
+	return n, nil
 }
 
 // UIDUsage 报告当前 uid 的进程占用与上限。

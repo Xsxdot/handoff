@@ -37,7 +37,7 @@ func classifyLocalDirty(porcelain string) (tracked, untracked []string) {
 			continue
 		}
 		path := strings.TrimSpace(line[3:])
-		// 重命名/拷贝形如 "R  old -> new"：审核者关心改动落在哪个新路径上
+		// 重命名/拷贝形如 "R  old -> new"：协调者关心改动落在哪个新路径上
 		if i := strings.LastIndex(path, " -> "); i >= 0 {
 			path = path[i+len(" -> "):]
 		}
@@ -51,7 +51,7 @@ func classifyLocalDirty(porcelain string) (tracked, untracked []string) {
 }
 
 // dirtyListLimit 是提示里最多列出的文件数。列全了会把有用信息挤出视线，
-// 而审核者只需要「哪一类文件脏了」就够决定下一步。
+// 而协调者只需要「哪一类文件脏了」就够决定下一步。
 const dirtyListLimit = 5
 
 // formatDirtyList 把文件名列表拼成一行给人读；超过 dirtyListLimit 截断并补计数。

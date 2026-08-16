@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // treeFanoutBudget 是整轮扇出的总预算（§5.2：短于任何调用方超时）。

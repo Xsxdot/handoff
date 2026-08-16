@@ -51,7 +51,7 @@ const (
 //   - Alive: 是否拿到了可用的运行态。false 时其余字段除 Note 外均为空
 //   - Mode: ResumeMode* 之一；Alive=false 时为空串
 //   - SessionID: 恢复后实际生效的会话 id。fresh 时是新 id，manager 据此落库
-//   - Note: 一句话结论，manager 转成事件文本或错误信息给审核者看
+//   - Note: 一句话结论，manager 转成事件文本或错误信息给协调者看
 type ResumeOutcome struct {
 	Alive     bool
 	Mode      string

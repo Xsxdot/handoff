@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 func TestProjectIndexLookup(t *testing.T) {

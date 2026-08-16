@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // readFrames 读出 taskDir 下 frames.jsonl 的全部帧。

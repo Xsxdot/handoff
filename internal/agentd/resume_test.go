@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 锁定「应答已落库但未送达 executor」这一卡死态的三条恢复路径：
-//     重投成功回 running、executor 已不在则交审核者、无卡死则空操作
+//     重投成功回 running、executor 已不在则交协调者、无卡死则空操作
 //
 // 边界：
 //   - 白盒测试（package agentd）：直接驱动 manager，不经 HTTP；
@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // stuckTicket 造出「应答已落库但未送达 executor」的卡死现场：
@@ -50,7 +50,7 @@ func stuckTicket(t *testing.T, st *store.Store, taskID, ticketID, kind, answer s
 // 重新投递给 executor，并在成功后把任务放回 running。
 //
 // 这是 P0-5 的主路径：reply 返回 502 后工单已被消耗，attach 看不到挂起项，
-// reply/continue/done 三条路全封死——在此之前审核者没有任何自助恢复手段。
+// reply/continue/done 三条路全封死——在此之前协调者没有任何自助恢复手段。
 func TestResumeRedeliversUndeliveredAnswer(t *testing.T) {
 	mgr, st, _, ad := newTestManager(t)
 	const taskID = "task-resume-ok"
@@ -85,11 +85,11 @@ func TestResumeRedeliversUndeliveredAnswer(t *testing.T) {
 	}
 }
 
-// TestResumeWhenExecutorGone 验证 executor 已不在时，恢复操作把任务交给审核者
+// TestResumeWhenExecutorGone 验证 executor 已不在时，恢复操作把任务交给协调者
 // （failed 事件 + waiting_review + 挂起工单作废），而不是让它继续卡在 waiting_answer。
 //
 // 修复前这条路只有「运维重启 agentd 让 RecoverOnStartup 探活」一种走法，
-// 审核者在 CLI 上无路可走。
+// 协调者在 CLI 上无路可走。
 func TestResumeWhenExecutorGone(t *testing.T) {
 	mgr, st, _, ad := newTestManager(t)
 	ad.setRespondErr(fmt.Errorf("模拟 executor 已退出: %w", executor.ErrTaskNotRunning))
@@ -116,7 +116,7 @@ func TestResumeWhenExecutorGone(t *testing.T) {
 		t.Fatalf("GetTask: %v", err)
 	}
 	if task.State != proto.TaskStateWaitingReview {
-		t.Errorf("executor 已不在时应交审核者（waiting_review），实际 %s", task.State)
+		t.Errorf("executor 已不在时应交协调者（waiting_review），实际 %s", task.State)
 	}
 	pending, err := st.PendingTickets(taskID)
 	if err != nil {
@@ -131,17 +131,17 @@ func TestResumeWhenExecutorGone(t *testing.T) {
 	}
 	hasFailed := false
 	for _, ev := range evs {
-		if ev.Type == proto.EventTypeFailed {
+		if ev.Type == proto.EventTypeTurnFailed {
 			hasFailed = true
 		}
 	}
 	if !hasFailed {
-		t.Error("应留下 failed 事件说明为何进入审核（否则审核者不知道发生了什么）")
+		t.Error("应留下 turn_failed 事件说明为何进入审核（否则协调者不知道发生了什么）")
 	}
 }
 
 // TestResumeTransientFailureKeepsRetryable 验证瞬时失败（executor 还活着但调用
-// 出错）时，任务保持 waiting_answer 且应答仍标记为未送达——审核者可以再 resume
+// 出错）时，任务保持 waiting_answer 且应答仍标记为未送达——协调者可以再 resume
 // 一次，不会因为一次失败就被判定成「executor 已死」而误入审核。
 func TestResumeTransientFailureKeepsRetryable(t *testing.T) {
 	mgr, st, _, ad := newTestManager(t)
@@ -152,7 +152,7 @@ func TestResumeTransientFailureKeepsRetryable(t *testing.T) {
 
 	rep, err := mgr.RecoverStuck(taskID, false)
 	if err == nil {
-		t.Fatal("瞬时失败应返回错误，让审核者知道这次没成功")
+		t.Fatal("瞬时失败应返回错误，让协调者知道这次没成功")
 	}
 	if rep != nil && rep.ExecutorGone {
 		t.Error("瞬时失败不得判定为 executor 已死")

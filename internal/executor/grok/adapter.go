@@ -29,18 +29,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 const (
 	progressThrottle = 30 * time.Second // 与 opencode 同值：防高频增量刷爆事件库
-	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给审核者看的上限）。
+	// permTextHardLimit 是权限描述的**防失控**硬上限（不是给协调者看的上限）。
 	//
 	// adapter 发出的 AdapterEvent.Text 是权限描述的唯一真相源，manager 拿它做三件事：
 	//   - shouldConsultApprover 的黑名单正则扫描（命中即跳过审批者升级人工）
 	//   - 第 1 层模型审批者 Decide 的输入
-	//   - 权限工单里保存的全文（审核者裁决的依据）
+	//   - 权限工单里保存的全文（协调者裁决的依据）
 	// 展示用的短截断由 manager 的 permEventText() 单独负责，只作用于事件 payload，
 	// 且带显式截断标记。**在 adapter 层提前砍短会让黑名单只扫到截断前缀，危险片段
 	// 落在其后即静默放行**——这是 B6 修掉过的根因，不能在此复活。64KB 只防失控输出。
@@ -96,9 +97,17 @@ type runState struct {
 	acc          *turnAccumulator
 	lastProgress time.Time
 	rejected     []string // 本回合被拒的权限描述（perm.go 写入，回合收尾交代）
-	// askedViaTool 记「本回合已经通过原生 ask_user_question 给审核者递过问题」。
+	// askedViaTool 记「本回合已经通过原生 ask_user_question 给协调者递过问题」。
 	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
 	askedViaTool bool
+
+	// ctxWindow 是当前模型的上下文窗口上限，由 _x.ai/models/update 带来（0=未知）。
+	// 为什么要暂存：分子与分母来自**不同的帧**——窗口在会话建立后立刻到，
+	// 占用在每次模型调用后到。只发分子的话分母永远补不上
+	//（manager 的「nil=不更新」保护的是已落库的值，不是从没落过库的值）。
+	ctxWindow int
+	// actualModel 是 grok 报回的实际模型名（同上，随用量一起发出去）。
+	actualModel string
 
 	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
 	textPart string            // 本回合正文/思维链的 part 标识
@@ -110,7 +119,7 @@ type runState struct {
 // pendingPerm 是挂起表中一条待裁决的权限请求。
 //
 // reqID 是应答回发必需的 ACP 请求 id；desc 是给人看的权限描述——RespondPermission
-// 拒绝时用它记入被拒清单（用 toolCallId 会让审核者看到一串不透明 id，等于没说清
+// 拒绝时用它记入被拒清单（用 toolCallId 会让协调者看到一串不透明 id，等于没说清
 // 模型刚才想干什么）。
 type pendingPerm struct {
 	reqID json.RawMessage
@@ -267,6 +276,20 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if r == nil {
 		return fmt.Errorf("任务 %s 无运行态: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	// 事件通道已关闭 = 这条运行态已被 fatal 路径判死。此时开新回合是最坏的
+	// 结果：session/prompt 发得出去、模型真的会跑，但产出的一切事件都会在
+	// emit 里被 evClosed 短路丢弃，任务停在 running 直到 2h 看门狗（B92）。
+	//
+	// 返回 ErrTaskNotRunning 而不是自定义错误：manager 的四级恢复阶梯以
+	// errors.Is(err, ErrTaskNotRunning) 为触发条件，会尝试冷恢复重建运行态
+	// ——正是这种情况下该做的事。一个明确的错误哪怕语义不完美，也比无声
+	// 无息好一个数量级。
+	r.emitMu.Lock()
+	closed := r.evClosed
+	r.emitMu.Unlock()
+	if closed {
+		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
+	}
 	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
 	if err := r.frames.BeginTurn("send"); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
@@ -364,12 +387,37 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	}
 }
 
-// emitFailed 产出失败终局并关闭事件通道。
+// emitTurnFailed 产出一个**回合级**失败终局，**不关闭事件通道**。
 //
-// 一次性语义：断开处置、看门狗判死、回合异常三条路径都可能同时到达，
-// closeEvents 保证只有先到者生效，后到者被丢弃，不会双重终结。
-func (a *Adapter) emitFailed(r *runState, reason string) {
-	a.log.Error("grok 任务失败", "task", r.taskID, "reason", reason)
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 为什么不关通道：回合失败 ≠ 这个 executor 完了。serve 进程还活着，协调者
+// 一个 continue 就能接着干——那正是 continue 的用途。以前这里一律 closeEvents，
+// 于是 Send 在同一个 runstate 上开新回合，新回合的一切事件在 emit 里被 evClosed
+// 短路静默丢弃，manager 的 mediate 循环也早已随通道关闭退出，任务停在 running
+// 直到 2h 看门狗落 stalled（而 stalled 只唤醒不修复）。B92 根因报告的对照组：
+// 3 个 grok 任务 failed 后全哑火，3 个 opencode 任务 failed 后全被 continue
+// 救活——差异就在这一行，opencode/claudecode 都不因回合失败关通道。
+//
+// 一次性语义不受影响：跨回合的去重不需要（finishTurn 每回合只调一次，
+// 两条分支互斥），与 fatal 路径之间的去重仍由 evClosed 承担。
+func (a *Adapter) emitTurnFailed(r *runState, reason string) {
+	a.log.Error("grok 回合失败", "task", r.taskID, "reason", reason)
+	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
+		Result: &executor.Result{OK: false, SessionID: r.sessionID, FailReason: reason}})
+}
+
+// emitFatal 产出**执行级**失败终局并关闭事件通道。
+//
+// 参数：reason 为给协调者看的失败原因原文
+//
+// 用于连接已断或进程已死——这条运行态真的不可用了，必须关通道让 manager 的
+// mediate 循环退出走对账。
+//
+// 一次性语义：断开处置与看门狗判死两条路径可能同时到达，closeEvents 的幂等
+// 保证只有先到者生效，后到者的 emit 被 evClosed 丢弃，不会双重终结。
+func (a *Adapter) emitFatal(r *runState, reason string) {
+	a.log.Error("grok 执行终结", "task", r.taskID, "reason", reason)
 	a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 		Result: &executor.Result{OK: false, SessionID: r.sessionID, FailReason: reason}})
 	r.closeEvents()
@@ -386,7 +434,7 @@ func (r *runState) closeEvents() {
 	close(r.evCh)
 }
 
-// noteAskedViaTool 标记本回合已通过原生提问工具向审核者递过问题。
+// noteAskedViaTool 标记本回合已通过原生提问工具向协调者递过问题。
 func (r *runState) noteAskedViaTool() {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
@@ -458,18 +506,32 @@ func (a *Adapter) awaitTurn(r *runState, ch <-chan ACPResult) {
 // finishTurn 处理一个回合的终局：按 stopReason 与 trailer 分类产出事件。
 //
 // 为什么 stopReason != end_turn 一律判失败：那意味着回合没跑完（拒答、达到
-// 上限、被取消），此时模型的产出不可信，交审核者比替它猜测安全。
+// 上限、被取消），此时模型的产出不可信，交协调者比替它猜测安全。
 func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 	if res.Err != nil {
-		a.emitFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
+		a.emitTurnFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
 		return
 	}
 	var out struct {
-		StopReason string `json:"stopReason"`
+		StopReason string          `json:"stopReason"`
+		Meta       json.RawMessage `json:"_meta"` // 整回合的 usage 与 costUsdTicks（B83）
 	}
 	_ = json.Unmarshal(res.Result, &out)
+	// 累计消耗要**先于** stopReason 判定记账：回合没跑完（拒答、超限、被取消）
+	// 这些 token 也已经烧掉了，漏记就成了系统性少算。
+	// 注意这与 onUsageNotification 取的是**两套口径**、缓存算法相反（见 spend.go 文件头）。
+	// 解析失败**有意不记日志**：awaitTurn 每回合都跑，失败只是这条没入账，不构成告警。
+	if len(out.Meta) > 0 {
+		if e, ok := parseTurnMetaSpend(out.Meta); ok {
+			if e.CostState == proto.CostUnknown {
+				a.log.Info("grok 本回合没有花费戳（pool/OAuth 路径或 cost_is_partial），"+
+					"token 照常入账、花费记未知", "task", r.taskID, "prompt", e.Key)
+			}
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+		}
+	}
 	if out.StopReason != "end_turn" {
-		a.emitFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
+		a.emitTurnFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
 		return
 	}
 	// 本回合有被拒权限时优先交代：模型被拒后可能悄悄绕路，人不知情
@@ -501,15 +563,15 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
 		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它
 		// 宣布（B74）：发 result{OK:false}，git 实况留在结构化字段，
-		// 审核者在 waiting_review 里看一眼再决定 done 还是 continue。
+		// 协调者在 waiting_review 里看一眼再决定 done 还是 continue。
 		if hasNew {
-			a.log.Warn("回合无收尾协议但有新提交，转失败交审核者裁决",
+			a.log.Warn("回合无收尾协议但有新提交，转失败交协调者裁决",
 				"task", r.taskID, "branch", branch, "commit", commit)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: turn.NoTrailerResult(r.sessionID, branch, commit, text)})
 			return
 		}
-		// 本回合已经通过原生提问工具给过审核者一个问题时，兜底闭嘴：兜底的职责是
+		// 本回合已经通过原生提问工具给过协调者一个问题时，兜底闭嘴：兜底的职责是
 		// 「别让回合静默结束」，那个诉求已经满足了。真机 47c36ab9 实测，此处补的
 		// 第二张工单内容是「已调用一次提问工具；本回合结束。」——不是问题，回答它
 		// 等于把废话灌回模型。
@@ -518,11 +580,11 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 				"task", r.taskID)
 			return
 		}
-		// 空文本守卫：文本为空时 question 产出的是一张空工单，审核者收到一个
+		// 空文本守卫：文本为空时 question 产出的是一张空工单，协调者收到一个
 		// 没有内容的问题。零文本是故障报告，不是问题（与 opencode mapIdle
 		// 的空回合处置对称）
 		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交审核者", "task", r.taskID)
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 				Result: &executor.Result{OK: false, SessionID: r.sessionID,
 					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
@@ -537,11 +599,11 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 // onClosed 是 ACP 连接终止的唯一处置入口。
 //
 // 先判主动停止：Stop 置位 stopping 后才关连接，读循环随之退出并回调本函数，
-// 此时必须**不**产出失败结果——审核者看到的失败原因是假的（真实是用户主动停）。
+// 此时必须**不**产出失败结果——协调者看到的失败原因是假的（真实是用户主动停）。
 //
 // 为什么挂起表非空就直接终结、不再尝试重连：实测重连后 grok 不会重发未决的
 // 权限请求，那次工具调用已永久卡死。重连成功反而更危险——adapter 会以为一切
-// 正常，而任务再也不会前进。宁可立刻转 failed 让审核者 continue 重开一轮。
+// 正常，而任务再也不会前进。宁可立刻转 failed 让协调者 continue 重开一轮。
 func (a *Adapter) onClosed(r *runState, cause error) {
 	r.emitMu.Lock()
 	stopping := r.stopping
@@ -551,7 +613,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 		a.log.Info("ACP 连接已主动关闭，跳过失败处置", "task", r.taskID)
 		return
 	}
-	// 连接断了这条运行态就永远不可用了（事件通道随 emitFailed 一起关掉），
+	// 连接断了这条运行态就永远不可用了（事件通道随 emitFatal 一起关掉），
 	// 必须摘掉它——否则它以「陈运行态」的身份继续占着 runs 表：Send 会 lookup
 	// 到它、拿一条死连接去发指令；Resume 的冷恢复互斥以「runs 表里有条目」为
 	// 判据，会把这具僵尸当成「恢复进行中」而拒绝恢复。两条路都被挡死，
@@ -560,7 +622,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if n := r.voidAllPending(); n > 0 {
 		a.log.Error("ACP 连接断开且有未决权限，任务无法继续",
 			"task", r.taskID, "voided", n, "cause", cause)
-		a.emitFailed(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
+		a.emitFatal(r, fmt.Sprintf("权限应答通道中断（%d 个未决请求作废），需重新发起一轮", n))
 		return
 	}
 	a.log.Warn("ACP 连接断开，无未决权限", "task", r.taskID, "cause", cause)
@@ -568,7 +630,7 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	if r.proc != nil {
 		logTail = r.proc.LogTail()
 	}
-	a.emitFailed(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
+	a.emitFatal(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
 // updateKind 是 ACP sessionUpdate 的帧归类。
@@ -817,10 +879,28 @@ type acpHandler struct {
 	r *runState
 }
 
+// OnNotify 分流对方通知。
+//
+// 三类：session/update（正文与工具调用，原有链路）、_x.ai/session_notification
+// （用量）、_x.ai/models/update（模型名与窗口）。其余私有通知继续忽略。
+//
+// 为什么这里要认 _x.ai/*：grok 把用量放在私有通知上，标准的 session/update
+// 变体一个都不带计数。此前这个函数的第一行是 `if method != "session/update"
+// { return }`，私有通知在那里就没了——它们压根到不了 feedRaw。
 func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
-	if method != "session/update" {
-		return
+	switch method {
+	case "session/update":
+		h.onSessionUpdate(params)
+	case "_x.ai/session_notification":
+		h.onUsageNotification(params)
+	case "_x.ai/models/update":
+		h.onModelsUpdate(params)
 	}
+}
+
+// onSessionUpdate 是原 OnNotify 的正文链路，一字未改，只是从早返回后的直线
+// 变成 switch 的一个分支。
+func (h *acpHandler) onSessionUpdate(params json.RawMessage) {
 	h.r.turnMu.Lock()
 	raw := append([]byte(`{"method":"session/update","params":`), append(params, '}')...)
 	h.r.acc.feedRaw(raw)
@@ -840,6 +920,41 @@ func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
 	}
 	h.r.turnMu.Unlock()
 	h.a.flushRender(h.r)
+}
+
+// onUsageNotification 处理 _x.ai/session_notification：只有 response_completed
+// 会产出用量，其余（turn_completed 等）一律忽略——理由见 parseResponseCompleted。
+func (h *acpHandler) onUsageNotification(params json.RawMessage) {
+	u, ok := parseResponseCompleted(params)
+	if !ok {
+		return // 不是 response_completed，或没有有效数字：静默跳过，不是错误
+	}
+	h.r.turnMu.Lock()
+	if h.r.ctxWindow > 0 {
+		w := h.r.ctxWindow
+		u.ContextWindow = &w
+	}
+	model := h.r.actualModel
+	h.r.turnMu.Unlock()
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+}
+
+// onModelsUpdate 处理 _x.ai/models/update：记下模型名与窗口，供后续用量帧带上。
+func (h *acpHandler) onModelsUpdate(params json.RawMessage) {
+	model, window, ok := parseModelsUpdate(params)
+	if !ok {
+		h.a.log.Debug("grok 模型通知解析失败，跳过", "task", h.r.taskID)
+		return
+	}
+	h.r.turnMu.Lock()
+	changed := h.r.actualModel != model || h.r.ctxWindow != window
+	h.r.actualModel, h.r.ctxWindow = model, window
+	h.r.turnMu.Unlock()
+	if changed {
+		h.a.log.Info("grok 实际模型", "task", h.r.taskID, "model", model, "window", window)
+	}
+	// 模型名先单发一次：回合还没开始就能显示，不必等第一次模型调用完成
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model})
 }
 
 func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
@@ -863,7 +978,7 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 	}
 	text = turn.TruncateMarked(text, permTextHardLimit)
 	// 挂起登记同时存 desc：RespondPermission 拒绝时把它记入被拒清单，而不是让
-	// 审核者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
+	// 协调者看到一串 toolCallId（被拒清单的意义是「模型刚才想干什么、被挡了」）
 	h.r.notePending(p.ToolCall.ToolCallID, reqID, text)
 	req := permRequestFromToolCall(p.ToolCall)
 	if req == nil {
@@ -886,7 +1001,7 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 //
 // 应答形态见 askQuestionReply：形状错了不会挂死，但会被 grok 判为工具执行失败报回
 // 模型（2026-08-09 真机两轮实测），模型要么重问一遍、要么把「工具报错了」写进回合
-// 文本——两种都会脏掉审核者看到的工单。
+// 文本——两种都会脏掉协调者看到的工单。
 func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 	// 先解阻塞：任何解析失败都不能挡住这一步
 	if err := h.r.cli.Reply(reqID, askQuestionReply()); err != nil {
@@ -896,11 +1011,11 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 
 	text := askQuestionText(params)
 	if text == "" {
-		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报审核者",
+		h.a.log.Warn("提问请求解析不出内容，已解阻塞但无法上报协调者",
 			"task", h.r.taskID)
 		return
 	}
-	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交审核者",
+	h.a.log.Info("grok 走了交互提问工具（绕开回合协议），已转交协调者",
 		"task", h.r.taskID)
 	// 记在回合上：收尾兜底据此不再把回合叙述补成第二张工单
 	h.r.noteAskedViaTool()
@@ -928,7 +1043,7 @@ func (h *acpHandler) OnAskQuestion(reqID, params json.RawMessage) {
 // 为什么选 skip_interview：它对应「用户跳过这轮问答」，grok 收到后给模型的提示是
 // 「用户没有作答，按你自己的判断继续，或换个问题问」——正是 handoff 想要的语义。
 // handoff 的提问真相源是回合 trailer 的 {"ask":…}，本通道只负责**立刻解阻塞**，
-// 不承担作答（作答走审核者工单，答案在下一回合以 prompt 送进来）。选 accepted 就
+// 不承担作答（作答走协调者工单，答案在下一回合以 prompt 送进来）。选 accepted 就
 // 得在这里同步憋出一份 answers，会让 ACP 请求阻塞到人回话为止——那正是 §4.2.3
 // 要避免的挂死形态。
 //

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 func TestTruncateMarkedAppendsMarkerOnlyWhenTruncated(t *testing.T) {
@@ -48,7 +48,7 @@ func TestClampQuestionPointsAtRenderLog(t *testing.T) {
 		t.Errorf("截断后必须指明全文去处，尾部为 %q", turn.TailRunes(got, 80))
 	}
 	// 反向断言：不得退化成 TruncateMarked 的通用尾缀——那会丢掉 render.log 指路，
-	// 而 question 的全文不在工单里，审核者将无处可查（见 ClampQuestion 的注释）。
+	// 而 question 的全文不在工单里，协调者将无处可查（见 ClampQuestion 的注释）。
 	if strings.HasSuffix(got, executor.TruncationMarker) {
 		t.Error("ClampQuestion 不得复用 TruncateMarked 的尾缀")
 	}

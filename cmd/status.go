@@ -20,11 +20,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/buildinfo"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/skill"
 )
 
 // statusJSONOut 对应 --json。
@@ -101,6 +101,10 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 	fmt.Fprintf(w, "版本     %s\n", describeBuild(st.Version))
 	fmt.Fprintf(w, "本地     %s\n", compareBuild(cli, st.Version))
 	fmt.Fprintf(w, "数据     %s   已运行 %s\n", st.DataDir, humanUptime(st.StartedAt))
+	// 只在有辅助监听时打这一行：两档常规配置的输出保持不变（B85）
+	if st.ListenAux != "" {
+		fmt.Fprintf(w, "监听     %s（辅 %s）\n", st.Listen, st.ListenAux)
+	}
 	fmt.Fprintf(w, "执行者   %s\n", strings.Join(markDefault(st.Executors, st.DefaultExecutor), "  "))
 	if u := st.Update; u != nil && !u.Managed {
 		// 非托管的后果要在这里说清楚：handoff upgrade 会硬拒绝这台机器，
@@ -108,7 +112,7 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 		fmt.Fprintf(w, "更新     agentd 非托管启动，换版会被拒绝（--force 也不越过）\n")
 		fmt.Fprintf(w, "         处置 在该机器上 handoff service install\n")
 	}
-	// 只在**本机**查 skill：skill 服务于审核者，审核者在本机；对着远端
+	// 只在**本机**查 skill：skill 服务于协调者，协调者在本机；对着远端
 	// agentd 报本机的 skill 状态会让人以为那台机器上装了什么
 	if targetName == "" && skillContent != "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -245,7 +249,7 @@ func markDefault(names []string, def string) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if n == def {
-			out = append(out, n+"(缺省)")
+			out = append(out, n+"(默认)")
 			continue
 		}
 		out = append(out, n)
@@ -293,7 +297,7 @@ func liveText(a proto.ActiveTask) string {
 //     pending / running / waiting_answer 三者之一
 //
 // 为什么判据写死而不做成配置：这三个状态里事件随时会来，没人听等于事件掉地上；
-// 而 waiting_review 是在等审核者裁决，挂几天都正常，本就不需要有人盯着。把它
+// 而 waiting_review 是在等协调者裁决，挂几天都正常，本就不需要有人盯着。把它
 // 也算进来，这条标记会天天亮，一周之内就没人再看它了——误报是诊断标记最贵的
 // 失败模式。终态同理。
 func unattended(a proto.ActiveTask) bool {

@@ -5,7 +5,7 @@
 //   - 按序完成 bootstrap：config.Load → logx.Setup + slog.SetDefault →
 //     pathenv.Apply（PATH 补全，先于一切 fork 子进程）→ store.Open → agentd.NewServer
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
-//   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒审核者
+//   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒协调者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
 //   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
@@ -24,22 +24,23 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/claudecode"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/pathenv"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/envfile"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/claudecode"
-	"github.com/xushixin/handoff/internal/executor/codex"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/executor/grok"
-	"github.com/xushixin/handoff/internal/executor/opencode"
-	"github.com/xushixin/handoff/internal/logx"
-	"github.com/xushixin/handoff/internal/pathenv"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/store"
-	"github.com/xushixin/handoff/internal/toolchain"
 )
 
 // agentdCmd 启动本地 agentd 服务。
@@ -135,6 +136,13 @@ var agentdCmd = &cobra.Command{
 			return fmt.Errorf("构造权限判据网关: %w", err)
 		}
 
+		// git 出网代理必须在任何 clone/fetch 之前注入。放在 NewServer 之前而不是
+		// 之后：自动登记（B62）的 clone 可能在服务起来后的第一个请求就发生
+		agentd.SetGitProxy(cfg.Proxy)
+		if cfg.Proxy != "" {
+			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
+		}
+
 		srv := agentd.NewServer(cfg, st, logger)
 		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
 		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -159,10 +167,13 @@ var agentdCmd = &cobra.Command{
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
 		srv.SetManager(mgr)
+		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
+		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
+		agentd.SetTaskProcCounter(mgr.TaskProcCount)
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
-		// 任务转 failed/waiting_review 交审核者裁决。探活与「重建订阅」封装在同一个
+		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
 		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
@@ -172,7 +183,14 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
-		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout, logger)
+		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
+		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
+		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
+		// 会让这些合法的迁移在首轮就被误判成失配
+		wdStart := time.Now()
+		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs,
+			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，
 		// 让浏览器只连本机一条 WS 也能看到远端任务的实时事件。没有远程机器就
@@ -185,13 +203,24 @@ var agentdCmd = &cobra.Command{
 			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
 		}
 
-		// update.auto / update.interval 已废弃（B59）：字段保留只为了旧配置能
-		// 继续加载，取值非默认时打条 Warn，让改动过的人知道它已不再有效果
-		cfg.WarnDeprecated(logger)
-
-		logger.Info("agentd 服务启动", "addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
+		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
+		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
+		listenAddrs := []string{cfg.Listen}
+		var listenAux string
+		if cls, aux := config.ClassifyListen(cfg.Listen); cls == config.ListenSingle {
+			listenAux = aux
+			listenAddrs = append(listenAddrs, aux)
+		}
+		startAttrs := []any{"addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
 			"proc_fence_disabled", cfg.ProcFence.Disabled,
-			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio)
+			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio,
+			"proc_fence_task_budget", cfg.ProcFence.TaskBudget,
+			"proc_fence_task_hard_limit", cfg.ProcFence.TaskHardLimit}
+		// 无辅助监听时不打 listen_aux 字段：两档常规配置的启动日志保持不变
+		if listenAux != "" {
+			startAttrs = append(startAttrs, "listen_aux", listenAux)
+		}
+		logger.Info("agentd 服务启动", startAttrs...)
 
 		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
 		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /
@@ -205,12 +234,12 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel)
+		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
 	},
 }
 
 // logExecutorDetection 把四家 executor 的探测结果成表写进启动日志，并对
-// 「缺省执行者没找到」打一条带处置的 WARN。
+// 「默认执行者没找到」打一条带处置的 WARN。
 //
 // 参数：
 //   - log: 日志入口
@@ -239,7 +268,7 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 			continue
 		}
 		if r.State == toolchain.StateMissing {
-			log.Warn("缺省执行者未找到，派发到本机的任务会失败",
+			log.Warn("默认执行者未找到，派发到本机的任务会失败",
 				"executor", r.Name,
 				"处置", "在本机装上它，或把它所在目录写进 config.yaml 的 path_dirs")
 		}
@@ -297,5 +326,5 @@ var executorFlag string
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖缺省执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+		"覆盖默认执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }

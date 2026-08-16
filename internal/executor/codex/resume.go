@@ -22,8 +22,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 const (
@@ -42,7 +42,7 @@ const (
 //
 // 返回：
 //   - Alive=true：进程存活或已重起、WS 已重连、thread 已载入、事件流已重建
-//   - Alive=false：判不可恢复，调用方据此转 failed 交审核者。**这不是错误**，
+//   - Alive=false：判不可恢复，调用方据此转 failed 交协调者。**这不是错误**，
 //     err 恒为 nil 的路径很多，调用方不要靠 err 判别
 func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error) {
 	taskID, taskDir, repoPath, threadID := req.TaskID, req.TaskDir, req.RepoPath, req.SessionID
@@ -159,7 +159,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 				Note: fmt.Sprintf("载入原 thread 失败：%v", err)}, nil
 		}
 		// 第 4 级：原 thread 载不进，新开一个。上下文断了，manager 会据 Mode=fresh
-		// 播报给审核者——这一条必须让人知道，它决定下一条指令要不要重述背景
+		// 播报给协调者——这一条必须让人知道，它决定下一条指令要不要重述背景
 		a.log.Warn("thread/resume 失败，降级新开会话", "task", taskID, "cause", err)
 		if nerr := a.openThreadOnConn(ctx, r, repoPath, req.Model); nerr != nil {
 			_ = cli.Close()
@@ -265,7 +265,7 @@ func (a *Adapter) watchdog(r *runState) {
 		}
 		a.log.Error("codex app-server 已判死", "task", r.taskID, "port", r.proc.Port)
 		a.dropIf(r.taskID, r)
-		a.emitFailed(r, "codex app-server 进程已退出；serve 日志尾部: "+r.proc.LogTail())
+		a.emitFatal(r, "codex app-server 进程已退出；serve 日志尾部: "+r.proc.LogTail())
 		return
 	}
 }

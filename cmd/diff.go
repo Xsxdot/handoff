@@ -1,7 +1,7 @@
 // 本文件实现 handoff diff 子命令：取任务分支相对基准分支的审阅素材（git diff + 提交列表）。
 //
 // 职责：
-//   - 调 client.Diff 拉取 diff 文本并原文输出到 stdout（审核者阅读/管道分析用）
+//   - 调 client.Diff 拉取 diff 文本并原文输出到 stdout（协调者阅读/管道分析用）
 //
 // 边界：
 //   - 不做 diff 语义判断；基准分支可经 --base 指定，缺省由 agentd 按仓库默认分支推导
@@ -10,8 +10,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 var diffBase string

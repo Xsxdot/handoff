@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 探测四家 executor 的状态并成表打印
-//   - 按角色分支问 11 组问题，把答案写进 config.yaml
+//   - 按角色分支问配置问题，把答案写进 config.yaml
 //   - 末尾打印本机 token 与现成的配对 yaml 片段
 //
 // 边界：
@@ -12,39 +12,55 @@
 //     托管是「重启后 agentd 还回得来」的唯一保障，只留一行提示的触达率不够（B71）。
 //     Linux 上非 root 时一律不代跑，只打印 sudo 命令
 //   - **不阻断任何选择**：探测结果只影响默认值与标注；没装任何 executor 也能配完
-//     （纯审核者机的正常情况），选了「未登录」的执行者只警告不拦
+//     （纯协调者机的正常情况），选了「未登录」的执行者只警告不拦
 //   - stdin 非 tty 时一问不问：init 会被 install.sh 经管道调起，问了没人答，
 //     卡住比不问糟得多
 package cmd
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/pathenv"
-	"github.com/xushixin/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/pathenv"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // initStdinIsTTY 判断 stdin 是不是终端。测试替换它以覆盖两条分支。
 var initStdinIsTTY = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
-// 角色取值。init 先问角色，再按角色决定后面问什么。
+// newInteractivePrompter 是 TTY 问答的构造缝。生产返回 huh；测试在
+// runInitWith 里换成脚本化——huh 要真终端，CI 没有，不换就会挂死。
+var newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
+	return newHuhPrompter()
+}
+
+// 角色取值写入 Select 的 Value，也是配置语义上的角色名。
 const (
-	roleExecutor = 1 // 执行机：跑 agentd 与 executor
-	roleReviewer = 2 // 审核者机：派发与审阅
-	roleBoth     = 3
+	roleExecutor    = "executor"    // 执行机：跑 agentd 与 executor
+	roleCoordinator = "coordinator" // 协调者机：派发与审阅
+	roleBoth        = "both"
+)
+
+// 监听三档的 Select Value。写入 listen 的是档位对应的地址，不是这些词。
+const (
+	listenLoopback = "loopback" // 127.0.0.1:7777
+	listenAll      = "all"      // 0.0.0.0:7777
+	listenCustom   = "custom"   // 再走 Input
+)
+
+const (
+	listenLoopbackAddr = "127.0.0.1:7777"
+	listenAllAddr      = "0.0.0.0:7777"
 )
 
 // initCmd 交互式配置本机。
@@ -55,8 +71,13 @@ var initCmd = &cobra.Command{
 		p := effectiveConfigPath()
 		out := cmd.OutOrStdout()
 
-		// config.Load 在文件不存在时会生成 token 并写盘，正好作为「当前值」的基线：
-		// 已存在则读回实际值（幂等的前提），不存在则拿到一份带默认值的新配置
+		// 必须在 Load 之前 stat：Load 发现文件不存在会按出厂值写盘，事后
+		// 永远「存在」。出厂 listen 和用户选过「仅本机」都是 127.0.0.1:7777，
+		// 只能靠「这次 init 之前文件在不在」区分首次执行机（预选所有网卡）
+		// 和重跑保 loopback。
+		_, statErr := os.Stat(p)
+		cfgExisted := statErr == nil
+
 		cfg, err := config.Load(p)
 		if err != nil {
 			return fmt.Errorf("加载配置 %s: %w", p, err)
@@ -76,33 +97,47 @@ var initCmd = &cobra.Command{
 		results := toolchain.Detect()
 		printDetection(out, results, added)
 
-		if !initStdinIsTTY() {
+		tty := initStdinIsTTY()
+		slog.Info("init 进入问答", "tty", tty)
+		if !tty {
 			// 非交互降级：只探测 + 写出厂默认，明确告诉用户下一步做什么
 			fmt.Fprintln(out, "\n未交互配置（stdin 不是终端），已写入默认配置。")
 			fmt.Fprintf(out, "请在终端里运行 handoff init 完成配置：%s\n", p)
 			if err := config.Save(p, cfg); err != nil {
 				return err
 			}
+			slog.Info("init 已写盘", "path", p, "role", "")
 			printPairing(out, cfg)
 			return nil
 		}
 
-		r := bufio.NewReader(cmd.InOrStdin())
-		isExec, err := askAll(out, r, cfg, results)
+		// 生产走 huh；测试把 newInteractivePrompter 换成脚本化（见 runInitWith）。
+		// askAll 与 maybeInstallService 必须共用同一个 prompter：各自再
+		// new 一次会各包一层，后续答案会被提前吃掉。
+		pr := newInteractivePrompter(cmd.InOrStdin(), out)
+		isExec, role, err := askAll(out, pr, cfg, results, cfgExisted)
 		if err != nil {
+			// 取消和问答失败都不得写盘：半截答案比取消本身更糟。
+			if errors.Is(err, errPromptCanceled) {
+				slog.Warn("init 已取消，不写盘", "path", p)
+			} else {
+				slog.Error("init 问答失败，不写盘", "path", p, "cause", err)
+			}
 			return err
 		}
 		if err := config.Save(p, cfg); err != nil {
 			return err
 		}
+		slog.Info("init 已写盘", "path", p, "role", role)
 		fmt.Fprintf(out, "\n已写入 %s\n", p)
 		printPairing(out, cfg)
-		maybeInstallService(out, r, isExec, p)
+		fmt.Fprintln(out, "init 可随时重跑，默认取当前配置，一路回车即保持不变。")
+		maybeInstallService(out, pr, isExec, p)
 		return nil
 	},
 }
 
-// printDetection 打印四家 executor 的探测表。
+// printDetection 打印四家 executor 的探测表，再打一段与执行者无关的 env 提示。
 //
 // 参数：
 //   - w: 输出目标
@@ -112,6 +147,7 @@ var initCmd = &cobra.Command{
 // 注意：
 //   - 工具的所在目录若来自 addedDirs，要在该行下面说明清楚——用户在自己 shell 里
 //     `which` 不到它，不解释的话这张表看起来就是错的
+//   - claude 的 keychain 说明保留；不再按「探到了哪家」写代理专文
 func printDetection(w io.Writer, rs []toolchain.Result, addedDirs []string) {
 	fmt.Fprintln(w, "本机 executor 探测：")
 	for _, r := range rs {
@@ -130,13 +166,9 @@ func printDetection(w io.Writer, rs []toolchain.Result, addedDirs []string) {
 			fmt.Fprintln(w, "\n  claude 的登录凭据存在系统 Keychain 里，本机判据够不着，所以只报「登录态未知」。")
 			fmt.Fprintln(w, "  想确认是否可用，自己跑一次 claude -p \"hi\" 看有没有输出。")
 		}
-		if r.Name == "codex" && r.State != toolchain.StateMissing {
-			// B30：漏配代理的症状极具迷惑性，探到 codex 就提醒一次（只提醒，不问）
-			fmt.Fprintln(w, "\n  codex 若需代理才能连 OpenAI，请在 config.yaml 的 env 段配 codex: codex.env。")
-			fmt.Fprintln(w, "  漏配的症状是会话建得起来、状态 running、一个 token 不产，只有 serve.log 里刷")
-			fmt.Fprintln(w, "  failed to refresh available models。")
-		}
 	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "执行者若需要代理、私有 registry 或额外 PATH，把变量写进 ~/.handoff/env/<名字>.env，再在 config.yaml 的 env 段挂上（如 codex: codex.env）。init 不创建、不修改这些文件。")
 }
 
 // coveredBy 返回 path 所在目录——当且仅当那个目录是本次 PATH 补全新增的；
@@ -159,23 +191,34 @@ func coveredBy(path string, added []string) string {
 
 // askAll 按角色分支问完全部问题，就地改写 cfg。
 //
+// 参数：
+//   - w: 面向用户的说明文字（非问答本身）
+//   - p: 问答通道（TTY 是 huh，测试是脚本化）
+//   - cfg: 就地改写
+//   - rs: 探测结果，只影响默认值与警告
+//   - cfgExisted: Load 之前文件是否已在。决定监听预选，见 listenPreset
+//
 // 返回：
 //   - isExec: 本机角色是否包含执行机（决定 init 之后要不要追问托管）
-//   - 错误：问答或改写失败
-func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Result) (bool, error) {
-	fmt.Fprintln(w, "\n以下每一问直接回车即取方括号里的当前值。")
+//   - role: 选中的角色 Value，供写盘日志
+//   - 错误：问答失败（脚本化路径几乎不返回错；huh 取消会走这里）
+func askAll(w io.Writer, p prompter, cfg *config.Config, rs []toolchain.Result, cfgExisted bool) (bool, string, error) {
+	fmt.Fprintln(w, "\n以下每一问直接回车即保留预选项。")
 
-	// 1. 角色。探到就绪 executor 则默认「执行机」
-	defRole := roleReviewer
-	if toolchain.FirstReady(rs) != "" {
-		defRole = roleExecutor
+	if runtime.GOOS == "windows" {
+		// 产品输出：用户必须当场知道为什么只有一个选项，否则会以为是 bug
+		fmt.Fprintln(w, "\n注意：Windows 上 handoff 只能当协调者——agentd 的进程承载层在非 unix 平台尚未实现（backlog B37），执行机角色跑不起来。")
+		slog.Info("Windows 平台：角色选项限定为协调者", "reason", "agentd 进程承载层未实现（B37）")
 	}
-	role := askInt(w, r, "这台机器的角色 1=执行机 2=审核者机 3=两者", defRole)
+	defRole := defaultRole(cfg, cfgExisted, rs, runtime.GOOS)
+	role, err := p.Select("这台机器的角色", roleOptions(runtime.GOOS), defRole)
+	if err != nil {
+		return false, "", err
+	}
 	isExec := role == roleExecutor || role == roleBoth
-	isReviewer := role == roleReviewer || role == roleBoth
+	isCoord := role == roleCoordinator || role == roleBoth
 
 	if isExec {
-		// 2-3. 缺省执行者与模型
 		defExec := cfg.Executor.Default
 		if defExec == "" {
 			if first := toolchain.FirstReady(rs); first != "" {
@@ -184,45 +227,202 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 				defExec = "opencode"
 			}
 		}
-		cfg.Executor.Default = askString(w, r, "缺省执行者 executor.default", defExec)
+		cfg.Executor.Default, err = p.Select("默认执行者", executorOptions(rs), defExec)
+		if err != nil {
+			return false, role, err
+		}
 		warnIfNotReady(w, rs, cfg.Executor.Default)
-		cfg.Executor.Model = askString(w, r, "执行者模型 executor.model（空=用执行者自身默认）", cfg.Executor.Model)
+		cfg.Executor.Model, err = p.Input("执行者模型（空=用执行者自身默认）", cfg.Executor.Model)
+		if err != nil {
+			return false, role, err
+		}
 
-		// 4. 监听地址
-		fmt.Fprintln(w, "  提示：要被外机访问需改成 0.0.0.0:7777")
-		cfg.Listen = askString(w, r, "监听地址 listen", cfg.Listen)
+		if err := askListen(p, cfg, cfgExisted, isExec); err != nil {
+			return false, role, err
+		}
 
-		// 5. 仓库落点
-		cfg.RepoRoot = askString(w, r, "项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
+		cfg.RepoRoot, err = p.Input("项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
+		if err != nil {
+			return false, role, err
+		}
 
-		// 6. 审批链
-		cfg.Approver.Executor = askString(w, r, "审批链执行者 approver.executor（空=不启用，权限请求直接找人）", cfg.Approver.Executor)
+		approverOpts := append([]promptOption{{Value: "", Label: "不启用（权限直接找人）"}}, executorOptions(rs)...)
+		cfg.Approver.Executor, err = p.Select("审批链执行者", approverOpts, cfg.Approver.Executor)
+		if err != nil {
+			return false, role, err
+		}
 		if cfg.Approver.Executor != "" {
-			cfg.Approver.Model = askString(w, r, "审批链模型 approver.model（空=用执行者自身默认）", cfg.Approver.Model)
+			cfg.Approver.Model, err = p.Input("审批链模型（空=用执行者自身默认）", cfg.Approver.Model)
+			if err != nil {
+				return false, role, err
+			}
 		}
 	}
 
-	// 7-8. 自动更新（两种角色都要）
-	cfg.Update.Auto = askBool(w, r, "启用自动更新 update.auto", cfg.Update.Auto)
-	if cfg.Update.Auto {
-		cfg.Update.Interval = askDuration(w, r, "检查频率 update.interval", cfg.Update.Interval)
+	if isCoord {
+		cfg.Sync.Auto, err = p.Confirm("任务结束自动同步远程分支到本地 sync.auto", cfg.Sync.Auto)
+		if err != nil {
+			return false, role, err
+		}
+		if err := askTargets(w, p, cfg); err != nil {
+			return false, role, err
+		}
 	}
-
-	if isReviewer {
-		// 9. 任务结束自动同步分支
-		cfg.Sync.Auto = askBool(w, r, "任务结束自动同步远程分支到本地 sync.auto", cfg.Sync.Auto)
-		// 10. targets 配对，循环添加
-		askTargets(w, r, cfg)
-	}
-	return isExec, nil
+	return isExec, role, nil
 }
+
+// roleOptions 按平台给出可选角色。
+//
+// 参数：
+//   - goos: 目标平台。参数化而非直接读 runtime.GOOS 是为了可测——
+//     判据写死则 Windows 分支在 linux 的 CI 上永远测不到
+//
+// 返回：
+//   - 角色选项列表
+//
+// 注意：
+//   - Windows 上只有协调者。agentd 的进程承载层在非 unix 平台全部返回
+//     not implemented（backlog B37），选执行机要一路走到 service install
+//     才撞墙——不给这个选项比给一个走不通的选项诚实
+func roleOptions(goos string) []promptOption {
+	if goos == "windows" {
+		return []promptOption{{Value: roleCoordinator, Label: "协调者"}}
+	}
+	return []promptOption{
+		{Value: roleExecutor, Label: "执行机"},
+		{Value: roleCoordinator, Label: "协调者"},
+		{Value: roleBoth, Label: "两者"},
+	}
+}
+
+// defaultRole 挑角色预选项。
+//
+// 配置不记角色，只能从已有字段反推：有 targets 说明做过协调者；
+// listen 不是 loopback 说明跑过执行机。推不出时：探到就绪执行者 → 执行机，
+// 否则协调者。Windows 上无条件返回协调者，见 roleOptions。
+func defaultRole(cfg *config.Config, cfgExisted bool, rs []toolchain.Result, goos string) string {
+	// 预选项必须落在 roleOptions 给出的列表里：Windows 上那个列表只有协调者，
+	// 预选成执行机会让 huh 拿一个不在列表里的值去匹配，选中项落空
+	if goos == "windows" {
+		return roleCoordinator
+	}
+	if cfgExisted {
+		hasTargets := len(cfg.Targets) > 0
+		kind := listenKind(cfg.Listen)
+		hasRemoteListen := kind == listenAll || kind == listenCustom
+		switch {
+		case hasTargets && hasRemoteListen:
+			return roleBoth
+		case hasTargets:
+			return roleCoordinator
+		case hasRemoteListen:
+			return roleExecutor
+		}
+	}
+	if toolchain.FirstReady(rs) != "" {
+		return roleExecutor
+	}
+	return roleCoordinator
+}
+
+// executorOptions 把四家探测结果编成 Select 选项。没装的也留在列表里——
+// 探测只影响旁注和 warnIfNotReady，不阻断选择。
+func executorOptions(rs []toolchain.Result) []promptOption {
+	opts := make([]promptOption, 0, len(rs))
+	for _, r := range rs {
+		opts = append(opts, promptOption{
+			Value: r.Name,
+			Label: fmt.Sprintf("%s（%s）", r.Name, r.State.String()),
+		})
+	}
+	return opts
+}
+
+// askListen 问监听三档。探到的网卡 IP 不主动写进 listen——绑单网卡时本机 CLI
+// 靠 loopback 辅助监听兜底（B85），但 DHCP / Tailscale 一变（IP 不在）agentd
+// 依旧起不来，预选仍只给 loopback / 全网卡两档，单网卡留给手填。IP 只出现在
+// 配对片段。
+func askListen(p prompter, cfg *config.Config, cfgExisted, isExec bool) error {
+	preset := listenPreset(cfg.Listen, cfgExisted, isExec)
+	slog.Debug("init 监听预选", "listen", cfg.Listen, "cfg_existed", cfgExisted, "preset", preset)
+	choice, err := p.Select("监听地址", []promptOption{
+		{Value: listenLoopback, Label: "仅本机（127.0.0.1:7777）"},
+		{Value: listenAll, Label: "所有网卡（0.0.0.0:7777）"},
+		{Value: listenCustom, Label: "手填（如绑单个网卡 IP，本机命令自动走辅助监听）"},
+	}, preset)
+	if err != nil {
+		return err
+	}
+	switch choice {
+	case listenLoopback:
+		cfg.Listen = listenLoopbackAddr
+	case listenAll:
+		cfg.Listen = listenAllAddr
+	default:
+		cfg.Listen, err = p.Input("监听地址 listen", cfg.Listen)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listenPreset 决定监听 Select 的光标停在哪一档。
+//
+// 为什么看「文件事先是否存在」而不是看当前 listen 字符串：
+// config.Load 会把缺文件写成 127.0.0.1:7777，和用户选过「仅本机」是同一个值。
+// 首次执行机要预选所有网卡（否则协调者连不上）；重跑时同一字符串必须保住 loopback。
+func listenPreset(listen string, cfgExisted, isExec bool) string {
+	kind := listenKind(listen)
+	if kind == listenLoopback && !cfgExisted && isExec {
+		return listenAll
+	}
+	return kind
+}
+
+// listenKind 把当前 listen 归到三档之一。
+//
+// 0.0.0.0:7788 这类「通配但端口不是 7777」必须归手填：所有网卡那一档写死
+// 0.0.0.0:7777，预选它会把人配好的端口冲掉，破坏幂等。
+func listenKind(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listenCustom
+	}
+	switch host {
+	case "0.0.0.0", "::":
+		if port != "7777" {
+			return listenCustom
+		}
+		return listenAll
+	case "127.0.0.1", "::1":
+		if port != "7777" {
+			return listenCustom
+		}
+		return listenLoopback
+	default:
+		return listenCustom
+	}
+}
+
+// initGOOS / initGeteuid 是 maybeInstallService 里那道平台门的测试缝。
+//
+// 为什么必须是缝：托管路径在 macOS（launchd，用户级）与 Linux（systemd，要 root）
+// 上行为**相反**——前者当场装，后者只打一行 sudo 提示就返回。直接读
+// runtime.GOOS 的话，一套用例只能覆盖跑测试的那个平台，另一条分支在该平台上
+// 恒不成立：开发机是 macOS，于是「答 y 必须真的调 Install」在 Linux CI 上
+// 必然失败（2026-08-13 实测三条），而 Linux 那条真行为反倒从来没人验过。
+var (
+	initGOOS    = func() string { return runtime.GOOS }
+	initGeteuid = os.Geteuid
+)
 
 // maybeInstallService 在执行机上追问是否现在把 agentd 交给进程管理器托管，
 // 答 y 则就地代跑。
 //
 // 参数：
 //   - w: 面向用户的输出
-//   - r: 问答输入
+//   - p: 问答通道（与 askAll 共用同一实例）
 //   - isExec: 本机角色是否包含执行机
 //   - cfgPath: 配置路径（传给服务单元）
 //
@@ -235,18 +435,24 @@ func askAll(w io.Writer, r *bufio.Reader, cfg *config.Config, rs []toolchain.Res
 //   - why 要追问而不是只提示：托管是「机器重启后 agentd 还回得来」的唯一保障，
 //     它此前只是最后一行提示——B71 现场那台就是这么变成手工拉起的，重启后
 //     PATH 全靠运气
-func maybeInstallService(w io.Writer, r *bufio.Reader, isExec bool, cfgPath string) {
+func maybeInstallService(w io.Writer, p prompter, isExec bool, cfgPath string) {
 	if !isExec {
-		// 审核者机不跑 agentd，托管对它没有意义
+		// 协调者机不跑 agentd，托管对它没有意义
 		return
 	}
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+	if initGOOS() == "linux" && initGeteuid() != 0 {
 		fmt.Fprintln(w, "\n下一步   sudo handoff service install")
 		fmt.Fprintln(w, "         systemd 单元要写 /etc/systemd/system，需要 root，init 不替你 sudo。")
 		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
 		return
 	}
-	if !askBool(w, r, "\n现在把 agentd 交给本机进程管理器托管", true) {
+	ok, err := p.Confirm("\n现在把 agentd 交给本机进程管理器托管", true)
+	if err != nil {
+		// 配置已经写盘，附属问答失败不能让 init 退非零
+		fmt.Fprintf(w, "托管追问失败：%v\n", err)
+		return
+	}
+	if !ok {
 		fmt.Fprintln(w, "\n下一步   handoff service install")
 		fmt.Fprintln(w, "         没有托管的 agentd 在机器重启后不会自己回来。")
 		return
@@ -278,7 +484,7 @@ func warnIfNotReady(w io.Writer, rs []toolchain.Result, name string) {
 }
 
 // askTargets 循环添加远程执行机配对，回车即结束。
-func askTargets(w io.Writer, r *bufio.Reader, cfg *config.Config) {
+func askTargets(w io.Writer, p prompter, cfg *config.Config) error {
 	if cfg.Targets == nil {
 		cfg.Targets = map[string]config.Target{}
 	}
@@ -289,14 +495,26 @@ func askTargets(w io.Writer, r *bufio.Reader, cfg *config.Config) {
 		}
 	}
 	for {
-		name := askString(w, r, "\n新增远程执行机名字（直接回车结束）", "")
+		name, err := p.Input("\n新增远程执行机名字（直接回车结束）", "")
+		if err != nil {
+			return err
+		}
 		if name == "" {
-			return
+			return nil
 		}
 		t := cfg.Targets[name]
-		t.Addr = askString(w, r, "  地址 addr（形如 100.73.238.21:7777）", t.Addr)
-		t.Token = askString(w, r, "  令牌 token（对方 handoff init 末尾会打出来）", t.Token)
-		t.User = askString(w, r, "  ssh 用户名 user（attach/pull 要用）", t.User)
+		t.Addr, err = p.Input("  地址 addr（形如 100.73.238.21:7777）", t.Addr)
+		if err != nil {
+			return err
+		}
+		t.Token, err = p.Input("  令牌 token（对方 handoff init 末尾会打出来）", t.Token)
+		if err != nil {
+			return err
+		}
+		t.User, err = p.Input("  ssh 用户名 user（attach/pull 要用）", t.User)
+		if err != nil {
+			return err
+		}
 		cfg.Targets[name] = t
 	}
 }
@@ -306,87 +524,13 @@ func askTargets(w io.Writer, r *bufio.Reader, cfg *config.Config) {
 // why 直接给 yaml 片段而不是只报 token：配对是最容易配错的一步（键名、缩进、
 // 地址形态），给一段能直接粘的比让用户照着文档拼强得多。
 func printPairing(w io.Writer, cfg *config.Config) {
-	fmt.Fprintln(w, "\n本机 token 与配对片段（贴到审核者机的 config.yaml 里）：")
+	fmt.Fprintln(w, "\n本机 token 与配对片段（贴到协调者机的 config.yaml 里）：")
 	fmt.Fprintln(w, "\ntargets:")
 	fmt.Fprintf(w, "  <给这台机器起个名字>:\n")
-	fmt.Fprintf(w, "    addr: \"%s\"\n", pairAddr(cfg.Listen))
+	fmt.Fprintf(w, "    addr: \"%s\"\n", advertiseAddr(cfg.Listen))
 	fmt.Fprintf(w, "    token: \"%s\"\n", cfg.Token)
 	fmt.Fprintf(w, "    user: \"%s\"\n", os.Getenv("USER"))
-	fmt.Fprintln(w, "\n  注意：addr 里的地址要换成审核者机能连到的实际 IP。")
-}
-
-// pairAddr 把 listen 里的 0.0.0.0 换成占位提示，免得用户直接粘一个连不上的地址。
-func pairAddr(listen string) string {
-	if strings.HasPrefix(listen, "0.0.0.0:") {
-		return "<本机IP>:" + strings.TrimPrefix(listen, "0.0.0.0:")
-	}
-	return listen
-}
-
-// ask 打印提示并读一行；空行返回空串（调用方据此取默认值）。
-func ask(w io.Writer, r *bufio.Reader, prompt, def string) string {
-	if def != "" {
-		fmt.Fprintf(w, "%s [%s]: ", prompt, def)
-	} else {
-		fmt.Fprintf(w, "%s []: ", prompt)
-	}
-	line, err := r.ReadString('\n')
-	if err != nil && line == "" {
-		// stdin 提前结束（脚本喂的答案用完了）：当作全部取默认，不报错。
-		// 这样测试与真实的「Ctrl-D 提前结束」都能走到写盘
-		fmt.Fprintln(w)
-		return ""
-	}
-	return strings.TrimSpace(line)
-}
-
-// askString 读一个字符串，空行取默认。
-func askString(w io.Writer, r *bufio.Reader, prompt, def string) string {
-	if v := ask(w, r, prompt, def); v != "" {
-		return v
-	}
-	return def
-}
-
-// askInt 读一个整数，空行或解析失败取默认。
-func askInt(w io.Writer, r *bufio.Reader, prompt string, def int) int {
-	v := ask(w, r, prompt, strconv.Itoa(def))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		fmt.Fprintf(w, "  «%s» 不是数字，取默认 %d\n", v, def)
-		return def
-	}
-	return n
-}
-
-// askBool 读 y/n，空行取默认。
-func askBool(w io.Writer, r *bufio.Reader, prompt string, def bool) bool {
-	d := "n"
-	if def {
-		d = "y"
-	}
-	v := strings.ToLower(ask(w, r, prompt+" (y/n)", d))
-	if v == "" {
-		return def
-	}
-	return v == "y" || v == "yes"
-}
-
-// askDuration 读一个时长，空行或解析失败取默认。
-func askDuration(w io.Writer, r *bufio.Reader, prompt string, def time.Duration) time.Duration {
-	v := ask(w, r, prompt, def.String())
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		fmt.Fprintf(w, "  «%s» 不是合法时长（如 6h / 30m），取默认 %s\n", v, def)
-		return def
-	}
-	return d
+	fmt.Fprintln(w, "\n  注意：addr 里的地址要换成协调者机能连到的实际 IP。")
 }
 
 func init() { rootCmd.AddCommand(initCmd) }

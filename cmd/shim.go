@@ -10,8 +10,8 @@
 package cmd
 
 import (
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/prochost"
 )
 
 // shimSpecPath 是 --spec 的绑定变量。

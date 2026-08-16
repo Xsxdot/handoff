@@ -19,22 +19,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
-import { usePtySupport } from '../data/usePtySupport'
+import { useMachineCaps } from '../data/useMachineCaps'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
+import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseOfTask, ProjectTree } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
 import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
-import { FloatingNewPane } from '../workbench/FloatingNewPane'
+import { HomeDock } from '../homedock/HomeDock'
+import { useHomeDock } from '../homedock/useHomeDock'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import type { TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
@@ -57,23 +59,54 @@ export function Shell() {
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  // editProject 是正在被编辑的项目（右键菜单「编辑」传入）；null = 弹层关闭。
+  const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
+  const caps = useMachineCaps()
+  // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
+  const dock = useHomeDock()
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
-  // openTerminal：它不会把用户的选中目录拽走
-  const ptyRestore = usePtyRestore(wb.restoreTerminal)
-  const ptySupport = usePtySupport()
+  // openTerminal：它不会把用户的选中目录拽走。
+  // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。
+  // 不分流的话，Task 4 之后会出现「新建的在浮窗、刷新后恢复的却在中央」
+  // 这种自相矛盾的状态。
+  //
+  // 用 adopt 而不是 newTerminal：adopt 不打开浮窗、不抢焦点——页面一加载
+  // 就弹出浮窗，等于替用户点了一下
+  const ptyRestore = usePtyRestore((b, sessionId) => {
+    if (b.kind === 'home') {
+      dock.adopt({ id: sessionId, seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+      return
+    }
+    wb.restoreTerminal(b, sessionId)
+  })
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
   // 确认之后要先删会话、再关那个 tab
-  const [closingPty, setClosingPty] = useState<{ group: number; tabId: string; sessionId: string } | null>(null)
+  //
+  // 为什么连 machine 一起留（B96）：删会话要指名机器，而「该删哪台」是**这个
+  // 会话**的属性——它建在哪台机器上就该往哪台删。以前这里在确认时现读
+  // `wb.base?.machine`（**当前选中**基准的机器），两者只是因为「工作台按基准
+  // 分持、切基准会整组换掉」才恰好相等；那是一条没写下来的隐含前提，一旦弹层
+  // 开着时基准被换走就会拿 A 的机器名去删 B 的会话。与下面的 closingHome 对齐：
+  // 它一直就是把 machine 存下来的
+  const [closingPty, setClosingPty] = useState<
+    { group: number; tabId: string; sessionId: string; machine: string } | null
+  >(null)
   const [closeBusy, setCloseBusy] = useState(false)
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
+  // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
+  // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
+  const [closingDirtyFile, setClosingDirtyFile] = useState<{ group: number; tabId: string; rel: string } | null>(null)
+  // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
+  // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
+  const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
 
   // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
   const ptyNote = (machine: string): string => {
-    if (ptySupport.supported(machine) === false) {
+    if (caps.pty(machine) === false) {
       return machine === ''
         ? '本机 agentd 运行在不支持 PTY 的平台上，终端不可用。'
         : `机器 ${machine} 的 agentd 运行在不支持 PTY 的平台上，终端不可用。`
@@ -90,8 +123,18 @@ export function Shell() {
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
   const beforeCloseTab = (c: TabContent, group: number, tabId: string): boolean => {
+    // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
+    // 与终端那条分支同一个理由——不可逆操作先问一句。
+    //
+    // 为什么只拦有草稿的：干净文件关了随时能再开，拦它只会让每次关 tab 都多一次
+    // 点击，纯打扰。草稿才是磁盘上没有第二份的东西
+    if (c.kind === 'file' && c.draft !== undefined) {
+      setClosingDirtyFile({ group, tabId, rel: c.rel })
+      return false
+    }
     if (c.kind !== 'terminal' || !c.sessionId) return true
-    setClosingPty({ group, tabId, sessionId: c.sessionId })
+    // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
+    setClosingPty({ group, tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
     setCloseError('')
     setClosingBusyProc(null)
     // 问一句「它现在忙不忙」，只用于加重措辞，**不阻塞弹层出现**
@@ -101,21 +144,59 @@ export function Shell() {
     return false
   }
 
+  // killPtySession 删一个服务端终端会话，失败时把原文交给 onError 呈现。
+  // 中央 tab 的确认关闭与浮窗 tab 的 × 共用：两处都不许吞错误——点了 × 以为
+  // 会话关了，服务端却还留着一个 shell。返回是否删成功
+  const killPtySession = async (
+    sessionId: string,
+    machine: string | undefined,
+    onError: (msg: string) => void,
+  ): Promise<boolean> => {
+    try {
+      await deletePtySession(sessionId, machine)
+      return true
+    } catch (err) {
+      onError(errorMessage(err))
+      return false
+    }
+  }
+
   const confirmClosePty = async () => {
     if (!closingPty) return
     setCloseBusy(true)
     setCloseError('')
-    try {
-      await deletePtySession(closingPty.sessionId, wb.base?.machine || undefined)
+    if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
       wb.close(closingPty.group, closingPty.tabId)
       setClosingPty(null)
-    } catch (err) {
-      // 删失败**不关 tab**：关掉就等于把一个还活着的会话从视野里抹掉，
-      // 而它仍在占着进程。原文照抄给用户
-      setCloseError(errorMessage(err))
-    } finally {
-      setCloseBusy(false)
     }
+    // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
+    // 而它仍在占着进程（错误已由 killPtySession 塞进 ConfirmDialog）
+    setCloseBusy(false)
+  }
+
+  const confirmCloseHome = async () => {
+    if (!closingHome) return
+    setCloseBusy(true)
+    setCloseError('')
+    if (await killPtySession(closingHome.sessionId, closingHome.machine || undefined, setCloseError)) {
+      dock.closeTab(closingHome.id)
+      setClosingHome(null)
+    }
+    setCloseBusy(false)
+  }
+
+  // killHomeSession 是浮窗 tab × 的入口：找到会话、进确认弹层。为什么不吞错误：
+  // 失败被吞掉的话，用户以为会话关了、实际服务端还留着一个 shell
+  const killHomeSession = (id: string) => {
+    const tab = dock.tabs.find((t) => t.id === id)
+    if (!tab) return
+    if (!tab.sessionId) {
+      // 会话还没建成（比如刚点完新终端立刻点 ×），没有可删的东西，直接移掉
+      dock.closeTab(id)
+      return
+    }
+    setCloseError('')
+    setClosingHome({ id, sessionId: tab.sessionId, machine: tab.machine })
   }
 
   const onUnregister = async (name: string, machine: string) => {
@@ -147,7 +228,10 @@ export function Shell() {
 
   return (
     <div className="flex h-dvh bg-background">
-      <aside role="complementary" className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-r bg-sidebar">
+      {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
+          min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
+          overflow-y-auto 不会生效，树会把父容器撑高、footer 照样被顶出去 */}
+      <aside role="complementary" className="flex min-h-0 w-[260px] shrink-0 flex-col border-r bg-sidebar">
         {treeState.sessionExpired && <SessionExpiredBanner />}
         {treeState.disconnected && !treeState.sessionExpired && (
           <DisconnectedBanner message={treeState.errorText} compact />
@@ -167,6 +251,7 @@ export function Shell() {
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onAddProject={() => setWizardOpen(true)}
+            onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
           />
         )}
@@ -202,6 +287,7 @@ export function Shell() {
                             base={base}
                             seq={c.seq}
                             sessionId={c.sessionId}
+                            rel={c.rel}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
                             onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
@@ -209,7 +295,27 @@ export function Shell() {
                         )
                       }
                       case 'file':
-                        return <FileTab base={base} rel={c.rel} />
+                        return (
+                          <FileTab
+                            base={base}
+                            rel={c.rel}
+                            initial={
+                              c.draft !== undefined && c.baseSha !== undefined
+                                ? { draft: c.draft, baseSha: c.baseSha }
+                                : undefined
+                            }
+                            // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
+                            // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
+                            onDraftChange={(d) =>
+                              wb.setContent(group, tabId, {
+                                kind: 'file',
+                                rel: c.rel,
+                                draft: d?.draft,
+                                baseSha: d?.baseSha,
+                              })
+                            }
+                          />
+                        )
                       case 'tui':
                         return <TuiTab taskId={c.taskId} />
                       default:
@@ -229,12 +335,28 @@ export function Shell() {
             base={wb.base}
             taskId={currentTaskId}
             onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
+            onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
+            revealSupported={caps.reveal('')}
           />
         </div>
       )}
 
-      {/* 本机明确不支持时不渲染这个按钮：置灰控件承诺「以后能用」 */}
-      {ptySupport.supported('') !== false && <FloatingNewPane onNewTerminal={() => wb.openTerminal(HOME_BASE)} />}
+      {/* home 终端走独立浮窗，不进 wb 的 tab 组——它不挂在任何目录上，
+          塞进按目录组织的容器里就会跟着目录切换走 */}
+      {caps.pty('') !== false && (
+        <HomeDock
+          dock={dock}
+          onKill={killHomeSession}
+          renderTab={(t) => (
+            <TerminalTab
+              base={HOME_BASE}
+              seq={t.seq}
+              sessionId={t.sessionId}
+              onSession={(id) => dock.setSession(t.id, id)}
+            />
+          )}
+        />
+      )}
 
       {overlay === 'board' && (
         <BoardOverlay
@@ -253,7 +375,7 @@ export function Shell() {
       )}
 
       <ConfirmDialog
-        open={closingPty !== null}
+        open={closingPty !== null || closingHome !== null}
         title="关闭终端会话"
         description={
           '关闭会终止这个终端会话，里面正在运行的命令会被一并结束。\n' +
@@ -264,14 +386,39 @@ export function Shell() {
         destructive
         busy={closeBusy}
         error={closeError}
-        onConfirm={() => void confirmClosePty()}
-        onCancel={() => setClosingPty(null)}
+        onConfirm={() => void (closingPty ? confirmClosePty() : confirmCloseHome())}
+        onCancel={() => { setClosingPty(null); setClosingHome(null) }}
+      />
+
+      <ConfirmDialog
+        open={closingDirtyFile !== null}
+        title="关闭未保存的文件"
+        description={
+          `${closingDirtyFile?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
+          // 文案要点明「切 tab 不丢」：Task 8 刚让草稿在切走时回写进 tab 内容，
+          // 用户不知道这件事，误以为必须二选一。切走是零成本的
+          '只是想看别的东西的话直接切到别的 tab——草稿会留着。'
+        }
+        confirmLabel="不保存，关闭"
+        destructive
+        onConfirm={() => {
+          if (closingDirtyFile) wb.close(closingDirtyFile.group, closingDirtyFile.tabId)
+          setClosingDirtyFile(null)
+        }}
+        onCancel={() => setClosingDirtyFile(null)}
       />
 
       <AddProjectWizard
         open={wizardOpen}
         machines={machinesState.data?.machines ?? []}
         onClose={() => setWizardOpen(false)}
+        onDone={() => treeState.refresh()}
+      />
+
+      <ProjectEditDialog
+        open={editProject !== null}
+        project={editProject}
+        onClose={() => setEditProject(null)}
         onDone={() => treeState.refresh()}
       />
     </div>

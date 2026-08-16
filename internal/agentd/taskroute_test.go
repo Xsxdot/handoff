@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // taskDetailWire 是对 GET /api/tasks/{id} 响应线格式的独立断言（白盒测试侧）。

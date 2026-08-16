@@ -5,10 +5,10 @@
 
 package turn
 
-import "github.com/xushixin/handoff/internal/executor"
+import "github.com/Xsxdot/handoff/internal/executor"
 
-// QuestionTextLimit 是交给审核者的回合文本上限。兜底分类会把整个回合原文当
-// question 发出，一个失控的长回合会直接灌进工单行与审核者终端；全文始终在
+// QuestionTextLimit 是交给协调者的回合文本上限。兜底分类会把整个回合原文当
+// question 发出，一个失控的长回合会直接灌进工单行与协调者终端；全文始终在
 // 任务目录的 render.log 里，截断不丢证据。
 //
 // 为什么导出：opencode 的 regression_group_a_test.go 直接断言这个上限，
@@ -50,9 +50,9 @@ func TailRunes(s string, n int) string {
 //
 // 为什么**不能**复用 TruncateMarked：两者的「全文在哪」不同，尾缀因此必须不同。
 //   - TruncateMarked 用于 permission 文本，全文在工单里（B6 契约：工单存全文、
-//     事件截断），审核者 `handoff show` 就能拿到，`…（已截断）` 足够；
+//     事件截断），协调者 `handoff show` 就能拿到，`…（已截断）` 足够；
 //   - 本函数用于 question 文本，全文**不在工单里**，只在任务目录的 render.log。
-//     不指路 = 审核者拿到半截文本且不知道去哪找全文，证据链断掉。
+//     不指路 = 协调者拿到半截文本且不知道去哪找全文，证据链断掉。
 //
 // 这段尾缀是逐字从 opencode 现有实现搬来的，opencode 的
 // regression_group_a_test.go 断言 `strings.Contains(ev.Text, "render.log")`，

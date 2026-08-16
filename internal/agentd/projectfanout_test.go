@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestBuildTreeAllMergesAndReportsAbsence 是 §5.3 硬约束的核心断言：

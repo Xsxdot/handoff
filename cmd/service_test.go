@@ -8,10 +8,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/service"
+	"github.com/Xsxdot/handoff/internal/service"
 )
 
 // fakeManager 是可编排的 service.Manager。
@@ -43,6 +44,11 @@ func withFakeManager(t *testing.T, f *fakeManager) {
 // runService 跑一次 service 子命令，返回合并输出与错误。
 func runService(t *testing.T, cfgPath string, args ...string) (string, error) {
 	t.Helper()
+	// go test 自己的二进制在编译缓存里，resolveSpec 会当临时文件拒掉。
+	// 这里换成一个看起来像安装产物的路径，只测 CLI 行为，不碰真文件。
+	oldExe := osExecutable
+	osExecutable = func() (string, error) { return "/usr/local/bin/handoff", nil }
+	t.Cleanup(func() { osExecutable = oldExe })
 	resetFlags(t)
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
@@ -122,5 +128,67 @@ func TestServiceUninstallIsIdempotent(t *testing.T) {
 	withFakeManager(t, &fakeManager{})
 	if _, err := runService(t, writeStatusConfig(t), "uninstall"); err != nil {
 		t.Fatalf("uninstall 不应报错: %v", err)
+	}
+}
+
+func TestIsEphemeralBin(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/Users/x/Library/Caches/go-build/44/44109cc-d/handoff", true},
+		{"/tmp/go-build123/b001/exe/handoff", true},
+		{"/Users/x/.cache/go-build/ab/abcd/handoff", true},
+		{"/Users/x/.local/bin/handoff", false},
+		{"/usr/local/bin/handoff", false},
+		{"/opt/homebrew/bin/handoff", false},
+	}
+	for _, c := range cases {
+		if got := isEphemeralBin(c.path); got != c.want {
+			t.Errorf("isEphemeralBin(%q)=%v，want %v", c.path, got, c.want)
+		}
+	}
+}
+
+// go run 的缓存路径不能写进服务单元；有已安装的手持二进制时改用它。
+func TestResolveServiceBinFallsBackFromGoBuildCache(t *testing.T) {
+	// 候选不能落在 t.TempDir：那是临时目录，会被 isEphemeralBin 跳过。
+	// 用仓库内一份真实文件充当「已安装二进制」，测的是选型，不是安装。
+	durable, err := filepath.Abs("service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveServiceBinFrom("/Users/x/Library/Caches/go-build/44/aa-d/handoff", []string{durable})
+	if err != nil {
+		t.Fatalf("有已安装二进制时应回退，得到: %v", err)
+	}
+	want := durable
+	if r, err := filepath.EvalSymlinks(durable); err == nil {
+		want = r
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// 没有任何可托管的稳定二进制时必须硬拒，不能把缓存路径写进 plist。
+func TestResolveServiceBinRejectsGoBuildWithoutFallback(t *testing.T) {
+	_, err := resolveServiceBinFrom("/Users/x/Library/Caches/go-build/44/aa-d/handoff", nil)
+	if err == nil {
+		t.Fatal("没有稳定二进制时应拒绝")
+	}
+	if !strings.Contains(err.Error(), "临时") && !strings.Contains(err.Error(), "go run") {
+		t.Fatalf("错误应说明是临时编译产物，得到: %v", err)
+	}
+}
+
+// 已经是安装目录里的二进制，原样返回。
+func TestResolveServiceBinKeepsDurablePath(t *testing.T) {
+	got, err := resolveServiceBinFrom("/Users/x/.local/bin/handoff", nil)
+	if err != nil {
+		t.Fatalf("稳定路径不应报错: %v", err)
+	}
+	if got != "/Users/x/.local/bin/handoff" {
+		t.Fatalf("got %q", got)
 	}
 }

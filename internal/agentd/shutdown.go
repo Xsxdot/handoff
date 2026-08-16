@@ -93,30 +93,48 @@ func (s *Shutdown) Reason() string {
 	return s.reason
 }
 
-// Serve 在 srv.Addr 上监听并阻塞，直到停机或监听失败。
+// Serve 绑定 addrs 上的全部监听并阻塞，直到停机或任一监听失败。
 //
 // 参数：
-//   - srv: 已配置好 Addr 与 Handler 的 HTTP 服务
+//   - srv: 已配置好 Handler 的 HTTP 服务；addrs 为空时回退用 srv.Addr（单监听）
 //   - cleanup: 停机时跑一次的清理闭包（关数据库、释放锁等）。**由调用方决定顺序**
+//   - addrs: 监听地址列表（B85 双监听：主地址 + 可选的 loopback 辅址）
 //
 // 返回：
 //   - nil 表示优雅关停完成（进程应 exit 0，管理器据此重新拉起）
-//   - 非 nil 表示监听/启动失败（进程应 exit 1）
-func (s *Shutdown) Serve(srv *http.Server, cleanup func()) error {
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		// 端口被占是最常见的启动失败，报文里带上地址，别让用户去日志里找
-		return fmt.Errorf("监听 %s: %w", srv.Addr, err)
+//   - 非 nil 表示监听/启动失败（进程应 exit 1）。**任一地址绑不上都是启动失败**
+//     （B85 决策：辅助监听与主监听同等对待，「第三档 = 两个监听都在」恒成立）
+func (s *Shutdown) Serve(srv *http.Server, cleanup func(), addrs ...string) error {
+	if len(addrs) == 0 {
+		addrs = []string{srv.Addr}
 	}
-	return s.serveWithListener(ln, srv, cleanup)
+	lns := make([]net.Listener, 0, len(addrs))
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			// 已绑上的要收回：错误退出前不放掉，端口会占到进程结束，
+			// 下一次启动尝试（管理器拉起）反而被自己挡住
+			for _, held := range lns {
+				held.Close()
+			}
+			// 端口被占是最常见的启动失败，报文里带上地址，别让用户去日志里找
+			return fmt.Errorf("监听 %s: %w", a, err)
+		}
+		s.log.Debug("监听建立", "addr", ln.Addr().String())
+		lns = append(lns, ln)
+	}
+	return s.serveWithListeners(lns, srv, cleanup)
 }
 
-// serveWithListener 是 Serve 的可测形态：监听器由调用方给。
+// serveWithListeners 是 Serve 的可测形态：监听器由调用方给。
 //
-// 拆出来的理由：单测要在一个随机可用端口上跑（net.Listen ":0"），而 Serve
-// 从 srv.Addr 里取地址、拿不到实际分配的端口。测试拿着 listener 才能知道
+// 拆出来的理由：单测要在随机可用端口上跑（net.Listen ":0"），而 Serve
+// 从地址串里取地址、拿不到实际分配的端口。测试拿着 listener 才能知道
 // 该往哪儿探活。
-func (s *Shutdown) serveWithListener(ln net.Listener, srv *http.Server, cleanup func()) error {
+//
+// 多 listener 挂同一个 http.Server：net/http 自己追踪所有经 Serve 注入的
+// listener，srv.Shutdown 会把它们全部关掉——优雅关停无需感知监听个数。
+func (s *Shutdown) serveWithListeners(lns []net.Listener, srv *http.Server, cleanup func()) error {
 	// 信号与进程内触发汇到同一个 Shutdown 上：signal.Notify 收到就转成一次 Trigger
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -129,19 +147,22 @@ func (s *Shutdown) serveWithListener(ln net.Listener, srv *http.Server, cleanup 
 		s.Trigger("signal:" + sig.String())
 	}()
 
-	errCh := make(chan error, 1)
-	go func() {
-		// Serve 正常收到 Shutdown 时返回 ErrServerClosed，那是预期信号不是错误
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
+	// 缓冲 = listener 数：每个 serve goroutine 恰好投递一次，谁都不会阻塞在投递上
+	errCh := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func(ln net.Listener) {
+			// Serve 正常收到 Shutdown 时返回 ErrServerClosed，那是预期信号不是错误
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+				return
+			}
+			errCh <- nil
+		}(ln)
+	}
 
 	select {
 	case err := <-errCh:
-		// 还没触发停机，Serve 就自己返回了——这是真失败
+		// 还没触发停机，就有 Serve 返回了——第一个事件定性，不等其余
 		if err != nil {
 			s.log.Error("HTTP 服务异常退出", "cause", err)
 			return fmt.Errorf("HTTP 服务: %w", err)

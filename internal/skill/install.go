@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 写基准副本到 <home>/.handoff/skill/SKILL.md
-//   - 给**存在的** agent 目录建软链指向基准副本
+//   - 在**存在的** agent 目录里各写一份副本
 //   - 返回每个落点的实际处置，供命令层如实打印
 //
 // 边界：
@@ -11,7 +11,7 @@
 //     造一个 ~/.codex，下次那台机器真装了 codex 时会拿到我们凭空造的半截结构
 //   - 不含 go:embed：内容与 home 都是入参，测试给临时目录与任意字符串即可，
 //     不需要构建产物
-//   - 不装到远端：skill 服务于审核者，审核者在本机（spec 非目标）
+//   - 不装到远端：skill 服务于协调者，协调者在本机（spec 非目标）
 package skill
 
 import (
@@ -22,7 +22,7 @@ import (
 
 // 落点状态。
 const (
-	StateInstalled = "installed" // 本次已写入/已建链
+	StateInstalled = "installed" // 本次已写入副本
 	StateSkipped   = "skipped"   // agent 目录不存在，跳过（Note 说明理由）
 	StateInSync    = "in_sync"   // 内容与当前二进制内嵌的一致
 	StateStale     = "stale"     // 存在但内容不一致
@@ -49,7 +49,7 @@ var agentDirs = []string{
 	".grok/skills",
 }
 
-// skillDirName 是软链在各家 skills 目录下的名字。
+// skillDirName 是落点目录在各家 skills 目录下的名字。
 const skillDirName = "handoff"
 
 // fileName 是基准副本里的文件名。
@@ -57,8 +57,12 @@ const fileName = "SKILL.md"
 
 // BasePath 返回基准副本目录。
 //
-// 为什么用副本而不是让四家都软链到仓库：仓库切分支/移动时四个 agent 会
-// 一起失效。代价是改动后要重新同步，而这正由 upgrade 与一行安装自动完成。
+// 为什么四家各存一份副本、而不是软链到这里或软链到仓库：软链到仓库会在仓库
+// 切分支/移动时让四个 agent 一起失效；软链到基准副本看似便宜，买到的
+// 「改一处生效四处」却是零收益——内容来自 go:embed，Install 每次运行本来
+// 就全量重写所有落点，没人手改基准副本（手改了也会被 Status 判成 stale）。
+// 而它的代价是实打实的：Windows 上建目录软链需要管理员特权，非特权时四个
+// 落点全部装不上，症状还是静默半残（B84）。副本形态全平台一条路径。
 func BasePath(home string) string { return filepath.Join(home, ".handoff", "skill") }
 
 // Install 把 content 装到本机。
@@ -92,21 +96,26 @@ func Install(content, home string) ([]Site, error) {
 			})
 			continue
 		}
-		link := filepath.Join(dir, skillDirName)
+		site := filepath.Join(dir, skillDirName)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			sites = append(sites, Site{Path: link, State: StateSkipped, Note: "创建目录失败: " + err.Error()})
+			sites = append(sites, Site{Path: site, State: StateSkipped, Note: "创建目录失败: " + err.Error()})
 			continue
 		}
-		// 先删再建：目标可能是上一次装的软链，也可能是手工放的实体目录
-		if err := os.RemoveAll(link); err != nil {
-			sites = append(sites, Site{Path: link, State: StateSkipped, Note: "清理旧落点失败: " + err.Error()})
+		// 先删再建：目标可能是上一次装的软链（老形态），也可能是手工放的实体目录。
+		// RemoveAll 对软链只摘链、不动链指向的基准副本——迁移正是靠这条语义
+		if err := os.RemoveAll(site); err != nil {
+			sites = append(sites, Site{Path: site, State: StateSkipped, Note: "清理旧落点失败: " + err.Error()})
 			continue
 		}
-		if err := os.Symlink(base, link); err != nil {
-			sites = append(sites, Site{Path: link, State: StateSkipped, Note: "建软链失败: " + err.Error()})
+		if err := os.MkdirAll(site, 0o755); err != nil {
+			sites = append(sites, Site{Path: site, State: StateSkipped, Note: "创建落点目录失败: " + err.Error()})
 			continue
 		}
-		sites = append(sites, Site{Path: link, State: StateInstalled})
+		if err := os.WriteFile(filepath.Join(site, fileName), []byte(content), 0o644); err != nil {
+			sites = append(sites, Site{Path: site, State: StateSkipped, Note: "写落点副本失败: " + err.Error()})
+			continue
+		}
+		sites = append(sites, Site{Path: site, State: StateInstalled})
 	}
 	return sites, nil
 }

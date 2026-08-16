@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // newServerWithDirtyWorktree 造一个 server+manager+真 git 仓库，任务为终态 +
@@ -49,7 +49,9 @@ func TestHandleReclaimDirtyReturns409WithReason(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+id+"/reclaim",
 		strings.NewReader(`{"force":false}`))
-	// httptest 默认 Host=example.com，会被 web-console 的 hostGuard 在鉴权前 403。
+	// httptest.NewRequest 的默认 Host 是 example.com，会被 hostGuard 在鉴权前
+	// 403 掉（W3 的 Host 白名单）。本组用例测的是 reclaim 的判定，不是白名单，
+	// 因此显式给一个回环 Host 让请求走到 handler（与 update_test.go 同款处理）。
 	req.Host = "127.0.0.1:7777"
 	req.Header.Set("Authorization", "Bearer test")
 	s.Handler().ServeHTTP(rec, req)

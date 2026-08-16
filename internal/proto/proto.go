@@ -44,33 +44,46 @@ const (
 	EventTypeProgress          EventType = "progress"
 	EventTypeCompleted         EventType = "completed"
 	EventTypeFailed            EventType = "failed"
-	EventTypeStalled           EventType = "stalled"
-	// EventTypeDeliveryFailed 表示审核者的应答已落库但没能送达 executor。
+	// EventTypeTurnFailed 表示**一个回合**失败了，而任务**仍然活着**——
+	// handleResult 在发这条之前已经把任务迁到 waiting_review，协调者一个
+	// continue 就能接着干。
+	//
+	// 为什么必须与 EventTypeFailed 分开而不是共用一个类型加个字段：
+	// 客户端要据此决定「要不要收流、要不要报任务终结」，而这是一个封闭取值的
+	// 判断，不能靠 fail_reason 的散文去猜（那是十来处各自措辞、改一句文案就能
+	// 静默改掉客户端行为的东西）。分成两个类型还有一个好处：**旧客户端遇到未知
+	// 类型会当普通事件继续跟随**，于是它不再假终态退出——bug 对旧 CLI 自动消失。
+	//
+	// 与 EventTypeCompleted 的关系：两者是**同一个状态迁移**（都进 waiting_review），
+	// 所以消费端对它俩的行为必须一致，只是一个成功一个失败。
+	EventTypeTurnFailed EventType = "turn_failed"
+	EventTypeStalled    EventType = "stalled"
+	// EventTypeDeliveryFailed 表示协调者的应答已落库但没能送达 executor。
 	//
 	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，
-	// 而工单已被消耗、不再出现在挂起项里——若只写日志，审核者这边完全无感，
-	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒审核者去执行 handoff resume。
+	// 而工单已被消耗、不再出现在挂起项里——若只写日志，协调者这边完全无感，
+	// 任务会一直挂到看门狗超时。作为事件产出才能唤醒协调者去执行 handoff resume。
 	EventTypeDeliveryFailed EventType = "delivery_failed"
 	// EventTypeApproverDecision 表示分级审批链中廉价模型审批者对权限请求的裁决
-	// 结果（approve/escalate/error）。只入库做审计（show 可见），不唤醒审核者——
+	// 结果（approve/escalate/error）。只入库做审计（show 可见），不唤醒协调者——
 	// approve 路径已自动放行、escalate 路径由紧随其后的 permission_request 唤醒。
 	EventTypeApproverDecision EventType = "approver_decision"
 	// EventTypeApproverDisabled 表示本任务连续多次裁决失败（fail-closed），审批链
-	// 已停用，后续权限请求一律直接升级人工审核者，不再浪费一次注定失败的裁决调用。
+	// 已停用，后续权限请求一律直接升级人工协调者，不再浪费一次注定失败的裁决调用。
 	EventTypeApproverDisabled EventType = "approver_disabled"
 	// EventTypePermissionReuse 表示一次权限请求命中了本任务内**同一权限描述**的
-	// 既有人工批准，被自动放行而没有再次叫醒审核者（B57②）。
+	// 既有人工批准，被自动放行而没有再次叫醒协调者（B57②）。
 	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
 	EventTypePermissionReuse EventType = "permission_reuse"
-	// EventTypeDenyGuidanceRelayed 表示审核者拒绝时给出的原因已作为一条消息
+	// EventTypeDenyGuidanceRelayed 表示协调者拒绝时给出的原因已作为一条消息
 	// 下发给 executor（B50）。
 	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
-	// 就终结了。审核者据此知道要用 continue 自己把话带上。
+	// 就终结了。协调者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
 	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
 	//
-	// 为什么必须留痕：pending_tickets 是审核者接管陌生会话时「我还欠哪些没答」
+	// 为什么必须留痕：pending_tickets 是协调者接管陌生会话时「我还欠哪些没答」
 	// 的权威清单，工单凭空消失与工单凭空挂着一样难排查——show 里要能回答
 	// 「那张单是何时、因为什么被作废的」。
 	//
@@ -88,11 +101,106 @@ const (
 	EventTypeArchived EventType = "archived"
 	// EventTypeResourcePressure 表示执行机的进程余量已达高水位（参考上限的九成）。
 	//
-	// 为什么必须是一类**唤醒**事件而不只是日志：日志在执行机上，审核者手边
-	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让审核者
+	// 为什么必须是一类**唤醒**事件而不只是日志：日志在执行机上，协调者手边
+	// 没有；而这条告警的全部价值就在于「在第一条 fork 失败出现之前」让协调者
 	// 知道要收敛。2026-08-12 事故里没有任何前兆，第一个信号就是整机瘫痪。
 	EventTypeResourcePressure EventType = "resource_pressure"
+	// EventTypeTaskProcPressure 是**单个任务**的进程数越线告警。
+	//
+	// 与 EventTypeResourcePressure 的分工：后者说「这台机器快满了」（uid 级），
+	// 前者说「是这个任务在吃」（任务级）。事故复盘时前者才能定位到人。
+	EventTypeTaskProcPressure EventType = "task_proc_pressure"
 )
+
+// Usage 是任务当前的 context 占用快照。
+//
+// 「当前占用」= 最后一次模型调用的输入侧（含缓存命中），**不是**回合或会话的
+// 累加。两者差别巨大：实测一个 4 次模型调用的 grok 回合，累加值是真实占用的
+// 4 倍，且工具调用越多越离谱，长回合会超过 100%（探针笔记 §4.2）。
+//
+// 边界：本结构只描述「占用」，不描述「消耗」。累计 token 与花费是另一个口径，
+// 将来以新增字段的形式加进来，形状不变、不需要重新设计。
+type Usage struct {
+	// ContextTokens 是当前 context 占用的 token 数。永远 > 0——取不到时整个
+	// Usage 为 nil，不用 0 冒充「没用 token」（B69/B70 纪律）。
+	ContextTokens int `json:"context_tokens"`
+	// ContextWindow 是该模型的上下文窗口上限（百分比的分母）。
+	// nil = 该 executor 不在协议里报窗口（claudecode / opencode），此时界面
+	// 只显绝对值。**绝不由 handoff 猜**：猜错是静默错误，百分比照常显示只是错的。
+	ContextWindow *int `json:"context_window,omitempty"`
+}
+
+// CostState 是花费的可信度。
+//
+// 取值范围**分两级**：单条账目（SpendEntry / ledger 行）只可能是
+// CostReported / CostEstimated / CostUnknown；CostPartial 只在**求和之后**
+// 产生（部分行有花费、部分行没有），任何 adapter 都不会产出它。
+// 别去找「哪个 adapter 报 partial」——没有。
+type CostState string
+
+const (
+	// CostReported：执行器自报了花费且完整。
+	CostReported CostState = "reported"
+	// CostEstimated：执行器不报花费，由 handoff 按 API 牌价估算（只有 codex）。
+	CostEstimated CostState = "estimated"
+	// CostPartial：**仅聚合级**。有已知部分，但有调用没拿到花费——所以它是
+	// **下界**，真实值只会更高。展示时必须能读出这一点。
+	CostPartial CostState = "partial"
+	// CostUnknown：一次都没拿到。展示成「—」，**绝不是 $0.00**：
+	// 花费的缺席意味着 "unreported or incomplete, never free"。
+	CostUnknown CostState = "unknown"
+)
+
+// Cost 是累计花费及其可信度。
+//
+// 注意：State 为 CostPartial 时，Ticks 只是**已知部分**的和，是下界不是总额。
+type Cost struct {
+	// Ticks 是花费，单位 1 USD = 10^10 ticks。
+	//
+	// 为什么用整数 ticks 而不是浮点美元：grok 原生就给 ticks，且它的文档明说
+	// 浮点求和对不上服务端的账。统一整数累加，只在展示的最后一步转美元。
+	Ticks int64 `json:"ticks"`
+	// State 见 CostState 的注释。CostUnknown 时 Ticks 恒为 0。
+	State CostState `json:"state"`
+}
+
+// Cumulative 是任务的累计消耗快照。
+//
+// 与 Usage 的区别（**改错了不会报错，只会显示错的数**）：Usage 描述
+// 「现在占用多少 context」（最后一次模型调用的输入侧），本结构描述
+// 「这个任务一共烧了多少」（跨全部调用累加）。两者数量级差几倍到几十倍，
+// 不要因为字段名像就互相赋值。
+//
+// 边界：本结构由 Store.TaskCumulative 对 task_usage_ledger 求和产出，
+// 只在**单任务读取**时填充；列表接口不填（见 Store.ListTasks 的注释）。
+type Cumulative struct {
+	// InputTokens 是未命中缓存的输入（口径见 Store.UpsertSpend 的注释）。
+	InputTokens int `json:"input_tokens"`
+	// CachedTokens 是命中缓存的输入（读缓存 + 写缓存）。
+	CachedTokens int `json:"cached_tokens"`
+	// OutputTokens 是模型产出，含 reasoning。
+	OutputTokens int `json:"output_tokens"`
+	// TotalTokens 是上面三项之和，由 store 算好，前端不再自己加。
+	TotalTokens int `json:"total_tokens"`
+	// Cost 是累计花费；nil = 还没有任何一条账目带花费信息。
+	Cost *Cost `json:"cost,omitempty"`
+}
+
+// SpendEntry 是一条待入账的消耗（adapter 产出，store 消费）。
+//
+// Key 必须在同一个任务内**稳定且唯一**——它是幂等的全部依据。同 Key 重复上报
+// 按**覆盖**处理（不是累加），所以流式增长的值可以放心重复报：
+// opencode 对同一条 message 会随生成推很多次、id 相同而 tokens 在涨，
+// 覆盖天然取到最终值；重复推同值则是无操作。
+type SpendEntry struct {
+	Key          string
+	InputTokens  int
+	CachedTokens int
+	OutputTokens int
+	CostTicks    int64
+	// CostState 只能是 CostReported / CostEstimated / CostUnknown 三者之一。
+	CostState CostState
+}
 
 // Task 表示一个 handoff 任务。
 //
@@ -136,10 +244,22 @@ type Task struct {
 	// 「等 N 处」）；服务端截断后的展示用字段，与 PlanSummary 同形，不供程序消费
 	//（要精确条数请读 RepoDirtyCount）。
 	RepoDirtyFiles string `json:"repo_dirty_files"`
-	// DoneNote 是归档时审核者留下的完成说明（handoff done --note）；空串=未留说明
+	// DoneNote 是归档时协调者留下的完成说明（handoff done --note）；空串=未留说明
 	// 或该任务归档于本功能上线之前。它回答的是「这次到底做完了什么、为什么放行」——
 	// 归档之后除了一个 completed 状态位，此前没有任何地方记录这件事。
 	DoneNote string `json:"done_note"`
+	// ActualModel 是 executor 报回的**实际**模型名；空=执行者还没报（回合未
+	// 开始）或该任务跑在不报模型名的旧版执行者上。
+	//
+	// 它与 Model 是两件事：Model 是 dispatch --model 发下去的**入参**（常为空，
+	// 意思是「用执行者自己的默认」），ActualModel 是执行者实际在用的那个。
+	// 二者不一致时以 ActualModel 为准，界面不并列显示。
+	ActualModel string `json:"actual_model,omitempty"`
+	// Usage 是当前 context 占用；nil=还没有任何一次模型调用完成。
+	Usage *Usage `json:"usage,omitempty"`
+	// Cumulative 是任务的累计消耗；nil = 没有任何账目（或本次是列表读取，
+	// 列表不填充——见 Store.ListTasks）。与 Usage 是两个口径，别混。
+	Cumulative *Cumulative `json:"cumulative,omitempty"`
 	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
 	//
 	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，
@@ -159,8 +279,8 @@ type Task struct {
 
 // MaxDoneNoteBytes 是归档说明的字节上限。
 //
-// 为什么超限要报错而不是截断：B6 的教训正是「静默截断让审核者盲信自己看到的是
-// 全文」。审核者写了 6KB 说明、系统悄悄存 4KB，比直接拒绝糟糕得多。
+// 为什么超限要报错而不是截断：B6 的教训正是「静默截断让协调者盲信自己看到的是
+// 全文」。协调者写了 6KB 说明、系统悄悄存 4KB，比直接拒绝糟糕得多。
 // 取值 4096：比一句话说明宽出两个数量级，同时挡住「把整个 diff 粘进来」的误用。
 const MaxDoneNoteBytes = 4096
 
@@ -195,7 +315,7 @@ func (t *Task) Workdir() string {
 // 注意：Watchers 是服务端应答那一刻的快照，不做任何时效承诺。
 type TaskView struct {
 	Task
-	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// Watchers 是当前订阅该任务事件流的连接数（几个协调者在听）。
 	// 0 不一定是异常：waiting_review 与终态本来就不需要有人盯，判据见
 	// handoff status 的 unattended。
 	Watchers int `json:"watchers"`
@@ -226,11 +346,11 @@ type Ticket struct {
 	CreatedAt  time.Time       `json:"created_at"`
 	AnsweredAt *time.Time      `json:"answered_at"`
 	// DeliveredAt 是应答送达 executor 的时刻；非 nil 才代表 executor 真的收到了。
-	// 与 AnsweredAt 分开记录：「审核者已裁决」与「裁决已送达」是两件事实，
+	// 与 AnsweredAt 分开记录：「协调者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
 	DeliveredAt *time.Time `json:"delivered_at"`
 	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
-	// 它让「审核者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
+	// 它让「协调者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
 	// ask 工单不参与复用，留空。
 	Fingerprint string `json:"fingerprint"`
 }

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/client"
 )
 
 func boolPtr(b bool) *bool { return &b }

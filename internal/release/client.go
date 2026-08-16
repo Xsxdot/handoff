@@ -24,9 +24,8 @@ import (
 
 // DefaultRepo 是 Release 所在的 GitHub 仓库。
 //
-// 注意 owner 是 Xsxdot，与 go.mod 的 module path（github.com/xushixin/handoff）
-// 不一致——这是已知的 backlog B55，只影响 `go install`，不影响本条下载链。
-// **不要"顺手统一"**：改 module path 等于全仓 import 重写。
+// 注意 go.mod 的 module path（github.com/Xsxdot/handoff）已与 GitHub owner
+// 一致：`go install github.com/Xsxdot/handoff@latest` 与下载链指向同一个仓库。
 const DefaultRepo = "Xsxdot/handoff"
 
 // DefaultAPIBase 是 GitHub REST API 的根。
@@ -34,6 +33,11 @@ const DefaultRepo = "Xsxdot/handoff"
 // D11：自动更新链路一律打 GitHub 原生 URL，不走自有域名——域名过期、DNS 故障、
 // 重定向规则改错，任何一样都会让所有机器的自动更新一起哑掉。
 const DefaultAPIBase = "https://api.github.com"
+
+// DownloadBase 是 release 资产的下载根（GitHub 的确定性地址）。
+//
+// D11 同理：自动更新链路一律打 GitHub 原生地址，不走自有域名。
+const DownloadBase = "https://github.com"
 
 // ChecksumsName 是校验和文件名，与 .github/workflows/release.yml 产出一致。
 const ChecksumsName = "checksums.txt"
@@ -50,6 +54,18 @@ type Release struct {
 	Assets []Asset
 }
 
+// archiveExt 返回某平台的归档扩展名。
+//
+// Windows 用 zip 而非 tar.gz：zip 在资源管理器里双击即开，而 tar.gz 必须敲
+// 命令行；且 Expand-Archive 存在于每一个 PowerShell，tar.exe 只有 Win10
+// 1803+ 才有。手动下载是 Windows 用户的常见路径，这个差异值得多一种格式。
+func archiveExt(goos string) string {
+	if goos == "windows" {
+		return ".zip"
+	}
+	return ".tar.gz"
+}
+
 // AssetName 拼装某平台的资产名。
 //
 // 参数：
@@ -62,14 +78,15 @@ type Release struct {
 // 注意：
 //   - 格式必须与 .github/workflows/release.yml 里的产出**逐字一致**。
 //     不一致的症状是查得到版本但下不到东西，且每轮重试
+//   - 扩展名按平台分（见 archiveExt），install.sh / install.ps1 两边也依赖这条
 func AssetName(tag, goos, goarch string) string {
-	return fmt.Sprintf("handoff_%s_%s_%s.tar.gz", tag, goos, goarch)
+	return fmt.Sprintf("handoff_%s_%s_%s%s", tag, goos, goarch, archiveExt(goos))
 }
 
 // AssetFor 取本平台的资产。
 //
 // 返回：
-//   - 资产与是否找到。找不到说明这次发布没出这个平台（例如 Windows，B37 未支持）
+//   - 资产与是否找到。找不到说明这次发布漏了某平台
 func (r Release) AssetFor(goos, goarch string) (Asset, bool) {
 	want := AssetName(r.Tag, goos, goarch)
 	for _, a := range r.Assets {
@@ -97,13 +114,20 @@ type Client struct {
 	Repo    string
 }
 
-// NewClient 构造默认 client：30s 超时，打 GitHub 官方端点。
+// NewClient 构造 release 查询 client：30s 超时，打 GitHub 官方端点。
 //
-// 30s 而不是更长：查版本是一个可以失败的后台动作（失败就等下一个 interval），
-// 卡住一个 goroutine 几分钟没有任何好处。
-func NewClient() *Client {
+// 参数：
+//   - tr: HTTP transport；**nil = 用标准库默认**（认 HTTPS_PROXY 等环境变量），
+//     与本参数加入前的行为一字不差。要走配置里的代理，传 proxycfg.Transport 的产物
+//
+// 注意：
+//   - 本包不读 handoff 配置（见 package 注释），所以收的是造好的 transport
+//     而不是配置字符串——这条边界是刻意的，别"顺手"改成传 *config.Config
+//   - 30s 而不是更长：查版本是一个可以失败的后台动作（失败就等下一个 interval），
+//     卡住一个 goroutine 几分钟没有任何好处
+func NewClient(tr http.RoundTripper) *Client {
 	return &Client{
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP:    &http.Client{Timeout: 30 * time.Second, Transport: tr},
 		APIBase: DefaultAPIBase,
 		Repo:    DefaultRepo,
 	}
@@ -170,6 +194,24 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 
 // CurrentPlatform 返回当前进程的 goos/goarch，便于调用方少写两个 runtime 引用。
 func CurrentPlatform() (string, string) { return runtime.GOOS, runtime.GOARCH }
+
+// AssetURL 拼一个 release 资产的下载地址。
+//
+// 参数：
+//   - repo: owner/name，如 Xsxdot/handoff
+//   - tag: 版本号，形如 v0.2.3
+//   - name: 资产文件名，用 AssetName 生成
+//
+// 返回：
+//   - 完整下载地址
+//
+// 注意：
+//   - GitHub 的这个地址是**确定性**的，不需要先查 API 就能拼出来。agentd
+//     自拉时用的正是它——api.github.com 有 60 次/小时/IP 的匿名限流，
+//     而多台执行机很可能共用一个代理出口 IP，走 API 迟早互相打架
+func AssetURL(repo, tag, name string) string {
+	return fmt.Sprintf("%s/%s/releases/download/%s/%s", DownloadBase, repo, tag, name)
+}
 
 // firstLine 取多行文本的第一行，用作错误摘要。
 func firstLine(s string) string {

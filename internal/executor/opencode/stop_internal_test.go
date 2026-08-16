@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestStopPropagatesStillAlive 验证 opencode 的保留-重试机制在**新的** Kill

@@ -11,7 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // openTestStore 打开一个临时库并注册清理，同时返回库文件路径（供白盒断言旁路开库）。

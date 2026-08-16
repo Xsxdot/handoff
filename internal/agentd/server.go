@@ -36,13 +36,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
+	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/ptyhost"
-	"github.com/xushixin/handoff/internal/release"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 // recentEventsLimit 是任务详情接口返回的最近事件条数上限。
@@ -89,6 +90,14 @@ type Server struct {
 	sessionRecheck time.Duration
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
+	pull *pullTracker
+	// pullBaseCtx 是后台自拉的基准上下文。
+	//
+	// **绝不能用 r.Context()**：handler 一返回它就被取消，下载会在受理后的
+	// 下一毫秒当场断掉。总时限由 Installer 的 HTTP 超时（10min）兜底。
+	// NewServer 拿不到 agentd 的生命周期 ctx，留 nil 由 runPull 退到 context.Background()
+	pullBaseCtx context.Context
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
@@ -108,7 +117,21 @@ type Server struct {
 //   - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在
 //     slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer
 func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
-	inst := release.NewInstaller(log)
+	// 出网 transport 按配置里的代理造。坏值不阻断启动（config.Load 已经硬拒过
+	// 一道，走到这儿只可能是绕过了它），降级为不用代理并打 Error——
+	// agentd 不该因为一个附属设置而起不来
+	var tr http.RoundTripper
+	if cfg.Proxy != "" {
+		t, err := proxycfg.Transport(cfg.Proxy)
+		if err != nil {
+			log.Error("代理配置无法使用，自拉换版将不走代理",
+				"proxy", proxycfg.Redact(cfg.Proxy), "cause", err)
+		} else {
+			tr = t
+			log.Info("自拉换版将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
+		}
+	}
+	inst := release.NewInstaller(log, tr)
 	s := &Server{
 		cfg:            cfg,
 		st:             st,
@@ -117,6 +140,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		startedAt:      time.Now(),
 		replayLimit:    eventReplayLimit,
 		liveLimit:      liveBufferLimit,
+		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		pty:            ptyhost.New(log),
 	}
@@ -125,6 +149,10 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		Executable: resolvedExecutable,
 		Install:    inst.InstallArchive,
 		Activate:   release.Activate,
+		Platform:   release.CurrentPlatform,
+		FetchByTag: func(ctx context.Context, tag, goos, goarch, wantSum string) ([]byte, error) {
+			return inst.FetchByTag(ctx, release.DefaultRepo, tag, goos, goarch, wantSum)
+		},
 	}
 	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
 	s.registerEventFrameHook()
@@ -193,7 +221,15 @@ func (s *Server) SetManager(m *Manager) {
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
+//   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
+//   - POST /api/workspaces/entry        工作树内新建条目（同上白名单，请求体含 name/kind）
+//   - POST /api/workspaces/entry/copy   复制工作树内条目（副本计数命名，目录递归）
+//   - PATCH /api/workspaces/entry       改名工作树内条目（请求体含 new_name）
+//   - DELETE /api/workspaces/entry      删除工作树内条目（目录连同内容一并删）
+//   - GET  /api/workspaces/search       工作树内按关键词搜索命中行（含 limit/超时/跳过生成物护栏）
+//   - POST /api/workspaces/reveal       在本机访达中显示工作树内条目（不支持 ?machine= 转发）
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
+//   - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器）
 //   - GET  /ws/events                   事件流（补发 + 实时）
 //   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
@@ -210,6 +246,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
 	//（W3a §5.1 透明路由，见 taskroute.go）。render 是流式也走同一条搬运。
+	// 合并 B102：main 侧按原样注册、w4 侧统一用 byTask 包一层并新增 frames，
+	// 这里取 w4 侧——byTask 对本地任务与原样注册行为一致（taskroute.go 第 1 条
+	// 判定「本机有就交给 handler」），w4 的跨机透明路由与 frames 都要保住。
+	//
+	// **reclaim 也包 byTask**（08-16 合并 w4-delivery → web-console 时改）。
+	// 此前 w4 侧刻意让它原样注册，理由记作「reclaim 仅存在于本机」——那条理由
+	// 站不住：reclaim 回收的是 **managed worktree**，而 worktree 就落在任务实际
+	// 跑过的那台机器的盘上。原样注册时，在 A 机器上回收 B 机器的任务只会撞
+	// s.mgr.Reclaim 的 store.ErrNotFound → 404，什么也回收不了；包上 byTask 才
+	// 会把请求转发到真正持有那个 worktree 的机器。「资源只在本机」恰恰是
+	// **要转发**的论据，不是不转发的论据。
 	mux.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
 	mux.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
 	mux.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
@@ -228,7 +275,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/machines", s.handleMachines)
 	mux.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	mux.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
+	mux.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
+	mux.HandleFunc("POST /api/workspaces/entry", s.handleWorkspaceEntryCreate)
+	mux.HandleFunc("POST /api/workspaces/entry/copy", s.handleWorkspaceEntryCopy)
+	mux.HandleFunc("PATCH /api/workspaces/entry", s.handleWorkspaceEntryRename)
+	mux.HandleFunc("DELETE /api/workspaces/entry", s.handleWorkspaceEntryDelete)
+	mux.HandleFunc("GET /api/workspaces/search", s.handleWorkspaceSearch)
+	// 注意：reveal 故意不接 forwardIfRequested——转发正是这个端点要拒绝的那件事
+	mux.HandleFunc("POST /api/workspaces/reveal", s.handleWorkspaceReveal)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
+	mux.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
 	mux.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	mux.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	mux.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
@@ -322,8 +378,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.StartedAt = s.startedAt
+	// pull 能力位与自拉状态由 Server 装配而不是 Manager：它们的持有者是
+	// Server（换版 handler 在这里），Manager 不该为了填两个字段而反向依赖它
+	if resp.Update != nil {
+		yes := true
+		resp.Update.Pull = &yes
+		resp.Update.PullState = s.pull.snapshot()
+	}
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK
+	revealOK := revealSupportedOS
+	resp.RevealSupported = &revealOK
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())
@@ -578,11 +643,11 @@ type replyResult struct {
 //
 // 为什么中继失败返回 502 而非回滚工单：
 //   - 502 的语义是「回答已被接受，但上游（executor）递送失败」，与 502 Bad
-//     Gateway 一致——agentd 是审核者与 executor 之间的网关。不用 409：
+//     Gateway 一致——agentd 是协调者与 executor 之间的网关。不用 409：
 //     409 表达「当前状态不允许该操作」（状态机语义），而这里回答本身已被接受
-//   - 不回滚工单：应答已落库是「审核者裁决过」的持久审计事实，回滚会让已答
+//   - 不回滚工单：应答已落库是「协调者裁决过」的持久审计事实，回滚会让已答
 //     工单重新出现在 pending 而裁决记录消失；且中继失败的典型场景（executor
-//     不在运行）下回滚只是把问题推迟到下一次 reply，审核者拿到 502 + reason
+//     不在运行）下回滚只是把问题推迟到下一次 reply，协调者拿到 502 + reason
 //     即可凭看门狗 stalled / 下次 agentd 重启的恢复路径处置
 //
 // 为什么中继失败时任务保持 waiting_answer 不回迁 running：executor 并未收到
@@ -639,7 +704,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走
 	// RelayAnswer 自愈中继，把应答直接回传 executor——否则回答已落库但
 	// executor 永远阻塞（工单已答、二次 reply 404、done 409，不可恢复）。
-	// relayed=false 即「回答已落库但 executor 侧递送失败」，交给审核者的是
+	// relayed=false 即「回答已落库但 executor 侧递送失败」，交给协调者的是
 	// 502 + reason 而非只有一行 agentd.log（P0-5）
 	relayed := true
 	reason := ""
@@ -661,7 +726,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 
 	if !relayed {
 		// 中继失败：回答已落库但 executor 未收到（why 与状态处理见函数头）。
-		// 非 2xx 让 CLI 非零退出并展示 reason，审核者立即知道 executor 没拿到，
+		// 非 2xx 让 CLI 非零退出并展示 reason，协调者立即知道 executor 没拿到，
 		// 而不是只能去远端 agentd.log 里翻一行日志。
 		// 同时落一条 delivery_failed 事件：502 只回给「当前这次 reply」的调用方，
 		// 而事件是持久的——换个会话接管、或此刻根本没人盯着终端时，仍能从
@@ -735,7 +800,7 @@ type dispatchRequest struct {
 	Base        string `json:"base"`
 	Worktree    string `json:"worktree"`
 	NewWorktree bool   `json:"new_worktree"`
-	// BaseCommit 是审核者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
+	// BaseCommit 是协调者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
 }
 
@@ -774,21 +839,21 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //
 // 映射规则：
 //   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
-//     审核者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
+//     协调者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
 //   - ErrWorkdirBusy → 409：目标工作目录已被一个非终态任务占用（含 waiting_review），
 //     与 ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
 //     两条出路（done/stop 它，或改用 --new-worktree）
-//   - ErrBaseCommitMissing → 400：任务仓库落后于审核者本地基线，拒发并带 git push
+//   - ErrBaseCommitMissing → 400：任务仓库落后于协调者本地基线，拒发并带 git push
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
 //   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
 //   - ErrProjectNotRegistered → 400：project_id / project_name 在本机位置表里查不到，
-//     报文自带本机已登记清单——审核者拿到即可行动（换名字，或先 handoff project add）；
+//     报文自带本机已登记清单——协调者拿到即可行动（换名字，或先 handoff project add）；
 //     本机 CLI 收到这条会自动补登记后重发（B62）
 //   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
-//     err.Error()（含真因如 exec: "opencode": executable file not found），审核者拿到
+//     err.Error()（含真因如 exec: "opencode": executable file not found），协调者拿到
 //     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
 //   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可
@@ -916,6 +981,8 @@ func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 //   - store.ErrNotFound → 404：登记名不存在
 //   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
 //     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
+//   - store.ErrProjectDuplicate → 409：改名/改路径撞上已被占用的名字或路径
+//     （handleProjectPatch 直接透传 store 的冲突哨兵，映射集中在这一处）
 //   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
 //   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
 //     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
@@ -929,6 +996,9 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrProjectAlreadyExists):
 		s.log.Warn("项目登记操作被拒：已存在", "name", name, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, store.ErrProjectDuplicate):
+		s.log.Warn("项目登记操作被拒：名字或路径已被占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
@@ -1021,6 +1091,18 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("归档说明超长（%d 字节，上限 %d）", len(req.Note), proto.MaxDoneNoteBytes)})
 		return
 	}
+	// done 幂等：agentd 被压垮时（B93 事故），第一次 done 的请求已落库但响应
+	// 读超时，审核者的自然反应是重发，而重发拿到的 409 看起来像「状态不对」。
+	// 客户端分不清「超时 = 请求没到」和「超时 = 请求到了但响应没回来」——
+	// 这是只有服务端才有的信息，只能在这里解决。
+	//
+	// **判据要严**：只有 completed 转 200。其余非 waiting_review 的状态仍然
+	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
+	// 失去「我操作错了」这个信号。
+	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
+		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
+		return
+	}
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
@@ -1069,7 +1151,7 @@ func parseForce(r *http.Request) bool {
 // handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答，
 // 以及（B38）断连窗口内丢失的回合终态对账补发。
 //
-// 这是 reply 返回 502 之后审核者唯一的自助出口——在它之前，工单已被消耗、
+// 这是 reply 返回 502 之后协调者唯一的自助出口——在它之前，工单已被消耗、
 // 任务停在 waiting_answer，reply 得 404、continue/done 得 409，CLI 上无路可走
 // （详见 Manager.RecoverStuck 的 why）。
 //
@@ -1082,7 +1164,7 @@ func parseForce(r *http.Request) bool {
 // 响应：
 //   - 200 + RecoverReport：包含重投条数、对账结果、executor 是否已不在、收尾状态与结论
 //   - 502 + RecoverReport：executor 仍在但这次没打通，可稍后重试（报告一并回传，
-//     让审核者看到已经重投成功了几条）
+//     让协调者看到已经重投成功了几条）
 //   - 404 任务不存在；409 任务已终结
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
@@ -1144,7 +1226,7 @@ func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo strin
 //   - base: 查询参数，基准分支名；缺省时按仓库默认分支推导（resolveBaseBranch）
 //
 // 注意：
-//   - diff 是审核者主动发起的只读审阅，不做状态门禁——running 中即可看实时进度
+//   - diff 是协调者主动发起的只读审阅，不做状态门禁——running 中即可看实时进度
 func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("diff 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
@@ -1164,7 +1246,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	diff, err := Diff(repo, base)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
-			// base 是审核者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
+			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
 			// 服务故障，400 明确告知（与 ErrPathEscape 同款映射）
 			s.log.Warn("diff 基准分支非法被拒绝", "task", taskID, "base", base)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
@@ -1177,7 +1259,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
 }
 
-// handleTaskFile 返回任务仓库内指定文件的内容（审核者取上下文用）。
+// handleTaskFile 返回任务仓库内指定文件的内容（协调者取上下文用）。
 //
 // 参数：
 //   - path: 查询参数，相对仓库根的路径（必须）；逃逸出仓库的路径返回 400
@@ -1194,7 +1276,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	content, err := ReadFile(repo, rel)
+	res, err := ReadFile(repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1216,6 +1298,14 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
+	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里
+	// 之后 ReadFile 的返回才是保真的，在线编辑那条线才敢把内容存回磁盘。
+	// 本端点的响应体因此逐字节不变，handoff fetch 行为零变更
+	content := res.Content
+	if res.Truncated {
+		content += truncatedNotice(res.Size)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
 }
 
@@ -1232,8 +1322,8 @@ type runResponse struct {
 
 // handleTaskRun 在任务仓库执行一条审阅命令（sh -c），返回合并输出与退出码。
 //
-// 注意：这是审核者主动发起的只读审阅动作（跑测试/lint），**不走审批门**——
-// 命令由审核者指定并经 sh 执行，agentd 只负责执行、限时（10min 超时被杀，退出码
+// 注意：这是协调者主动发起的只读审阅动作（跑测试/lint），**不走审批门**——
+// 命令由协调者指定并经 sh 执行，agentd 只负责执行、限时（10min 超时被杀，退出码
 // 124）与回收。命令非零退出同样返回 200，退出码在响应体中表达。
 func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
@@ -1283,7 +1373,7 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务当前状态不允许该操作"})
 	case errors.Is(err, executor.ErrTaskNotRunning):
 		// 为什么映射 409 而非 500：executor 运行态随 agentd 重启（或进程死亡）丢失，
-		// 是「可预期、可行动」的状态而非内部故障——审核者需要的是「重新派发」的
+		// 是「可预期、可行动」的状态而非内部故障——协调者需要的是「重新派发」的
 		// 明确指引，而不是被扁平 500 挡在门外（resume 的 executor_gone=false 已表明
 		// 会话上下文还在，缺的只是恢复路径）
 		s.log.Warn("manager 操作遇执行器运行态已丢失", "task", taskID, "op", op, "cause", err)
@@ -1308,7 +1398,7 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //   - **为什么先订阅后补发**：重放写循环可能因 TCP 背压阻塞任意久，若先重放后订阅，
 //     窗口期内 Publish 的事件订阅者为零、被 hub 直接丢弃。丢的是 question/
 //     permission_request 这类一次性唤醒事件：任务随即进入 waiting_answer 不再产出
-//     事件，客户端连接健康不会重连（WaitEvent 只在连接出错时重连），审核者永远
+//     事件，客户端连接健康不会重连（WaitEvent 只在连接出错时重连），协调者永远
 //     不被唤醒，executor 阻塞到看门狗兜底。先订阅 + 排空器全程消费 + seq 归并去重后，
 //     窗口期事件既不丢也不重。
 //   - **为什么排空器覆盖整个连接生命周期**：任何一次事件写出都可能因背压阻塞任意久，

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/grok"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // TestGrokSpecKeepsSecretOutOfArgv 钉死安全边界（与 opencode 同源）：

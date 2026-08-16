@@ -4,14 +4,14 @@
 //   - 调 client.Fetch 拉取仓库内相对路径文件并原文输出到 stdout
 //
 // 边界：
-//   - 不修改文件；路径由审核者指定，逃逸路径由 agentd 拒绝
+//   - 不修改文件；路径由协调者指定，逃逸路径由 agentd 拒绝
 package cmd
 
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // fetchCmd 输出任务仓库内指定文件的内容。

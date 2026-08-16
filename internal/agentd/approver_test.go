@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // newTestApprover 构造带注入 runCmd 的 Approver（裁决输出 out、错误 err）。
@@ -227,7 +227,7 @@ func countEvents(evs []proto.Event, typ proto.EventType) int {
 
 // TestApproverApprovesPermissionWithoutWaking 验证 approve 路径：
 // 工单自动应答+送达（审计闭环）、只留 approver_decision 审计事件（不产生
-// permission_request 唤醒审核者）、executor 真收到 once。
+// permission_request 唤醒协调者）、executor 真收到 once。
 func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
 	m, st, fk := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"approve","reason":"跑测试"}`, nil)
 	task := mustApproverDispatch(t, m)
@@ -238,7 +238,7 @@ func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
 	if tk.Answer == nil || *tk.Answer != "allow" || tk.DeliveredAt == nil {
 		t.Fatalf("approve 应自动应答精确 allow 并标记送达: %+v", tk)
 	}
-	// 断言 2：approver_decision 事件在，permission_request 事件不在（不唤醒审核者）
+	// 断言 2：approver_decision 事件在，permission_request 事件不在（不唤醒协调者）
 	evs := mustEvents(t, st, task.ID)
 	if !hasEvent(evs, proto.EventTypeApproverDecision) || hasEvent(evs, proto.EventTypePermissionRequest) {
 		t.Fatalf("approve 只留审计事件，不发 permission_request: %v", evs)
@@ -250,7 +250,7 @@ func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
 }
 
 // TestApproverEscalateFallsThroughToReviewer 验证 escalate 路径：
-// 完整走既有中介流程（waiting_answer + permission_request 唤醒审核者），
+// 完整走既有中介流程（waiting_answer + permission_request 唤醒协调者），
 // approver_decision 审计事件同时保留。
 func TestApproverEscalateFallsThroughToReviewer(t *testing.T) {
 	m, st, _ := newTestManagerWithApproverOut(t, approverStep("run tests"), `{"decision":"escalate","reason":"拿不准"}`, nil)
@@ -263,7 +263,7 @@ func TestApproverEscalateFallsThroughToReviewer(t *testing.T) {
 	}
 }
 
-// TestApproverBlacklistSkipsApprover 验证黑名单命中时直接升级人工审核者，
+// TestApproverBlacklistSkipsApprover 验证黑名单命中时直接升级人工协调者，
 // 审批者 runCmd 绝不被调用（fake 脚本权限文本命中内置 sudo 规则）。
 func TestApproverBlacklistSkipsApprover(t *testing.T) {
 	m, st, _ := newTestManagerWithApproverFunc(t, approverStep("Bash: sudo rm -rf /"),
@@ -272,15 +272,15 @@ func TestApproverBlacklistSkipsApprover(t *testing.T) {
 			return "", nil
 		})
 	task := mustApproverDispatch(t, m)
-	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer) // 直接升级审核者
+	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer) // 直接升级协调者
 }
 
 // TestApproverFailClosedCountsAndDisables 验证 fail-closed + 连续失败禁用：
-// 裁决恒错时每个权限都升级审核者（fail-closed），但审批者只被调 3 次即停用，
+// 裁决恒错时每个权限都升级协调者（fail-closed），但审批者只被调 3 次即停用，
 // 第 4 个权限直接升级不再调用（防对已损坏审批者命令的重试风暴）。
 //
 // 为什么直接驱动 handlePermission 而非 fake 脚本：fake 的 Permission 步骤会阻塞
-// 等 RespondPermission，而 fail-closed 路径无人应答（升级审核者），脚本跑不完；
+// 等 RespondPermission，而 fail-closed 路径无人应答（升级协调者），脚本跑不完；
 // 白盒直驱四个权限事件精确复现「4 请求 / 3 次审批调用」。
 // callCount 用 atomic：裁决在 consultApprover goroutine 里递增、测试 goroutine
 // 读取，普通 int 是 data race（-race 稳定复现，P1-5）。
@@ -298,7 +298,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
 	task := mustApproverDispatch(t, m)
 
-	// 前 3 个权限请求：审批者各裁决一次且全部失败（fail-closed 升级审核者）
+	// 前 3 个权限请求：审批者各裁决一次且全部失败（fail-closed 升级协调者）
 	for _, perm := range []string{"p1", "p2", "p3"} {
 		m.handlePermission(context.Background(), task.ID,
 			executor.AdapterEvent{Type: "permission", PermissionID: perm, Text: "something",
@@ -316,7 +316,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	m.handlePermission(context.Background(), task.ID,
 		executor.AdapterEvent{Type: "permission", PermissionID: "p4", Text: "something",
 			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
-	waitCondition(t, "第 4 个权限也升级审核者", func() bool {
+	waitCondition(t, "第 4 个权限也升级协调者", func() bool {
 		return countEvents(mustEvents(t, st, task.ID), proto.EventTypePermissionRequest) == 4
 	})
 	if callCount.Load() != 3 {
@@ -328,7 +328,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 		t.Fatalf("连续失败 3 次应记 approver_disabled")
 	}
 	if countEvents(evs, proto.EventTypePermissionRequest) != 4 {
-		t.Fatalf("4 个权限请求都应升级审核者，得到 %d", countEvents(evs, proto.EventTypePermissionRequest))
+		t.Fatalf("4 个权限请求都应升级协调者，得到 %d", countEvents(evs, proto.EventTypePermissionRequest))
 	}
 }
 
@@ -373,7 +373,7 @@ func TestRelayAnswerRelaysApproverAllowAsOnce(t *testing.T) {
 
 // TestApproverConcurrentTaskEndOnlyAudits 验证审批链异步化的窗口防护（P1-1）：
 // 裁决（最长 60s）期间 executor 死亡 → handleResult 已把任务落 waiting_review，
-// 随后审批者判 escalate 也不得重建工单/唤醒审核者——只留 approver_decision 审计
+// 随后审批者判 escalate 也不得重建工单/唤醒协调者——只留 approver_decision 审计
 // 事件，避免「状态 waiting_review 却带 pending 权限工单」的 U-1/U-3 矛盾形态回归。
 func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
@@ -415,7 +415,7 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 
 // TestApproverTruncatedPermissionEscalates 验证含截断标记的权限请求不交给廉价
 // 模型（P1-3）：截断说明「看到的命令不完整」，危险片段可能落在 200 字符之外，
-// 黑名单与模型都不可信——fail-closed 的直接延伸，升级人工审核者。
+// 黑名单与模型都不可信——fail-closed 的直接延伸，升级人工协调者。
 func TestApproverTruncatedPermissionEscalates(t *testing.T) {
 	perm := "Bash: go test ./... " + executor.TruncationMarker
 	var calls atomic.Int64
@@ -432,20 +432,20 @@ func TestApproverTruncatedPermissionEscalates(t *testing.T) {
 	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
 	evs := mustEvents(t, st, task.ID)
 	if !hasEvent(evs, proto.EventTypePermissionRequest) {
-		t.Fatalf("含截断标记的权限应直接升级人工审核者（permission_request）: %v", evs)
+		t.Fatalf("含截断标记的权限应直接升级人工协调者（permission_request）: %v", evs)
 	}
 }
 
 // TestApprovePermissionAdapterForFailureNotesDeliveryFailed 验证 approvePermission
 // 的 adapterFor 失败分支产出 delivery_failed 事件（P1-4）：工单已被 AnswerTicket
-// 消耗（answer IS NULL 守卫失效），若不产出事件，executor 仍阻塞而审核者完全无感，
+// 消耗（answer IS NULL 守卫失效），若不产出事件，executor 仍阻塞而协调者完全无感，
 // 只能等 2h 看门狗——必须与紧邻的 RespondPermission 失败分支一致走
 // NoteDeliveryFailed。
 func TestApprovePermissionAdapterForFailureNotesDeliveryFailed(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	// 任务 executor 用未注册名，让 approvePermission 的 adapterFor 解析失败
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "ghost", State: proto.TaskStateRunning})
-	m.approvePermission("t1", "t1:p1", "p1", "x", "reason", "approver")
+	m.approvePermission("t1", "t1:p1", "p1", "x", "", "reason", "approver")
 	evs := mustEvents(t, st, "t1")
 	if !hasEvent(evs, proto.EventTypeDeliveryFailed) {
 		t.Fatalf("adapterFor 失败应产出 delivery_failed 事件（P1-4）: %v", evs)

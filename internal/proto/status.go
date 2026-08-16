@@ -67,7 +67,7 @@ type ActiveTask struct {
 	Live     string `json:"live"` // LiveAlive / LiveDead / LiveUnknown
 	Note     string `json:"note"` // 判死或判不出的一句话理由；alive 时为空
 
-	// Watchers 是当前订阅该任务事件流的连接数（几个审核者在听）。
+	// Watchers 是当前订阅该任务事件流的连接数（几个协调者在听）。
 	//
 	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd），与「确实是 0」
 	// 是两回事。猜一个 0 就是在制造假阳性——与 Live 三态用 unknown 而不猜死
@@ -97,20 +97,70 @@ type ProcUsage struct {
 //   - Managed: 当前 agentd 进程是不是被进程管理器（systemd / launchd）拉起的。
 //     **false 时换版被硬拒绝**——换完 exit(0) 之后没人拉起，这台机器上就此
 //     没有 agentd 在跑，且没有任何信号告诉任何人。`--force` 也不越过这一条
+//   - Pull: 本 agentd 支持「自拉换版」（POST /api/update?mode=pull）
+//   - PullState: 最近一次自拉的状态；nil = 本进程还没自拉过，或上一次已成功
+//     （成功的终点是重启，状态随进程一起消失）
 //
 // 为什么没有「待命版本」了：B59 取消了「下载完等空闲窗口再换」的自主决策，
 // 换版由操作者一条命令触发并当场完成，中间不存在待命态（见 B59 spec D1）。
 type UpdateStatus struct {
 	Managed bool `json:"managed"`
+
+	// Pull 表示对端支持自拉换版。
+	//
+	// 为什么是指针：nil 表示**对端没给这个字段**（老 agentd 不上报），与
+	// 「对端说 false」是两回事。这条区分是选路判据——老 agentd 收到
+	// mode=pull + 空 body 会掉进「纯重启」分支并回 200，CLI 若据此以为
+	// 受理了，就会干等到超时报「已换版但新进程未上线」，一次纯误导。
+	// 与同结构族里 BuildInfo.Platform 空串、ActiveTask.Watchers *int 同款纪律。
+	Pull *bool `json:"pull,omitempty"`
+
+	// PullState 是最近一次自拉换版的状态，仅存内存、不落盘。
+	//
+	// 为什么没有 done 态：成功路径的终点是**进程重启**，状态自然消失——
+	// 而那时 status 报的版本号已经变了，调用方靠版本号就能确认。一个落盘的
+	// done 会在下次启动时变成误导性的陈旧数据。失败时进程不重启，状态留在
+	// 内存里可查，这正是需要它的场合。
+	PullState *PullState `json:"pull_state,omitempty"`
 }
+
+// PullState 是一次自拉换版的进度与结局。
+type PullState struct {
+	Tag   string `json:"tag"`
+	Stage string `json:"stage"` // PullStage* 之一
+	// Error 是 Stage=failed 时的原文。**必须带原文**：调用方拿到它才能
+	// 直接看到 "proxyconnect tcp: dial tcp 127.0.0.1:1080: connection refused"
+	// 这种一眼定位的信息，而不是一句「版本仍是 X」
+	Error     string    `json:"error,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// 自拉的阶段取值。
+//
+// 只有三个：没有 "done"（见 UpdateStatus.PullState 的注释——成功的终点是重启），
+// 也没有单独的 "verifying"（sha256 比对与解包后自检都发生在 installing 内部）。
+// **不要为了让阶段看起来更完整而加一个实现从不产出的取值**——消费方会写死
+// 代码去处理它，而那段代码永远不会被执行，也永远不会被测到。
+const (
+	PullStageDownloading = "downloading"
+	PullStageInstalling  = "installing"
+	PullStageFailed      = "failed"
+)
 
 // StatusResp 是 GET /api/status 的响应。
 //
 // 注意：TaskCounts 的六个状态键恒存在，计数为零也出现——缺键与零值对消费方
 // 是两回事。
 type StatusResp struct {
-	Version         BuildInfo      `json:"version"`
-	Listen          string         `json:"listen"`
+	Version BuildInfo `json:"version"`
+	Listen  string    `json:"listen"`
+
+	// ListenAux 是 loopback 辅助监听地址（B85）：Listen 为单网卡 IP 时 agentd
+	// 额外监听 "127.0.0.1:<同端口>"，本机 CLI 的确定性改写拨的就是它。
+	// 空 = 无辅助监听（Listen 为 loopback/通配，或对端是老 agentd）。
+	ListenAux string `json:"listen_aux,omitempty"`
+
 	DataDir         string         `json:"data_dir"`
 	StartedAt       time.Time      `json:"started_at"`
 	Executors       []string       `json:"executors"`
@@ -123,7 +173,7 @@ type StatusResp struct {
 	//
 	// 为什么要外露：wait --follow 的 --timeout 若不大于它，两个计时器同时到点时
 	// 客户端的 124 会抢在 agentd 的 stalled 前面退出进程，把一次带 last_seq 和
-	// idle 时长的**诊断**降级成一句「我没收到东西」——审核者拿到的信息严格更少。
+	// idle 时长的**诊断**降级成一句「我没收到东西」——协调者拿到的信息严格更少。
 	StallTimeout string `json:"stall_timeout,omitempty"`
 
 	// Update 是自动更新状态。**指针 + omitempty**：老版本 agentd 不发这个字段，
@@ -142,6 +192,18 @@ type StatusResp struct {
 	//   true      = 支持
 	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
 	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
+	//
+	// 三态与 PtySupported 逐字相同：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（只有 macOS 有 `open -R` 这个语义）
+	//   true      = 支持
+	//
+	// 注意：这只是**平台**支持度。真能不能揭示还要看调用方是不是从回环来的
+	//（远程浏览器点了会在 agentd 那台机器的桌面上弹窗，没人看得见），那一层
+	// 由端点自己判，不进能力位——它是每请求的属性，不是机器的属性。
+	RevealSupported *bool `json:"reveal_supported,omitempty"`
 
 	// PtySessions 是当前活着的终端会话数。指针 + omitempty，与 Proc 同一纪律：
 	// nil = 对端没上报，渲染时整行不打印；0 = 确实一个都没有。

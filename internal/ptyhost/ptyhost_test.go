@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/ptyhost"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 )
 
 func testHost(t *testing.T) *ptyhost.Host {

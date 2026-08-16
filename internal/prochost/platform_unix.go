@@ -51,7 +51,7 @@ func isLockContended(err error) bool {
 //
 // 为什么 stderr 单独开一个通道而不是沿用「全 nil 即 detach」：shim 用 slog 记
 // 「围栏已安装 / 撞墙归因」等关键行，slog 默认写 stderr；全 nil 会把它们一并丢进
-// /dev/null，撞墙时审核者在任务目录里什么都读不到。
+// /dev/null，撞墙时协调者在任务目录里什么都读不到。
 //
 // 为什么用 Setsid 而不是让子进程自己调 setsid(2)：子进程被 fork 出来时若已是
 // 进程组组长，setsid(2) 会返回 EPERM。由父进程在 SysProcAttr 里声明最干净，

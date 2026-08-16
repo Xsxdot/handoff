@@ -28,15 +28,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/permgate"
-	"github.com/xushixin/handoff/internal/projectid"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/projectid"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // newTestGate 造一个只带内置黑名单的判据网关（agentd_test 包的统一装配）。
@@ -286,6 +286,21 @@ func TestFullLoop(t *testing.T) {
 		t.Fatalf("续接后 completed payload=%v, want commit=def456", cm)
 	}
 
+	// 收到 completed 的那一刻状态就必须已经是 waiting_review——这是 handleResult
+	// 「迁移 → 追加事件 → 广播」那条顺序的对外承诺。下面的 Done 紧跟着发，正是
+	// 协调者脚本的真实形态；承诺一旦破了，它就会拿到 409。
+	//
+	// why 这里也要单独断一次（步骤 3 已断过一次）：步骤 3 的 wait 是**首次**连接，
+	// 步骤 4 是重连后的历史重放路径——事件从 store 直接读出，一落库就可见，和实时
+	// 订阅完全是两条路。2026-08-13 CI 实测炸的就是这一条。
+	info, err = env.cli.Attach(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if info.Task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("续接后 completed 到达时 state=%s, want waiting_review（事件先于状态可见）", info.Task.State)
+	}
+
 	// 5. 归档：done → 任务 completed 且 fake 收到 Stop
 	if _, err := env.cli.Done(context.Background(), task.ID, ""); err != nil {
 		t.Fatalf("Done: %v", err)
@@ -335,7 +350,7 @@ func TestFullLoopDeny(t *testing.T) {
 }
 
 // TestRecoverMidTask 是 spec §7 会话恢复的验收测试：
-// fake 停在 Question 阻塞（executor 侧原地等待）→ 新建 client（模拟没有任何前文的全新审核者
+// fake 停在 Question 阻塞（executor 侧原地等待）→ 新建 client（模拟没有任何前文的全新协调者
 // 会话）→ ListTasks 看到任务处于 waiting_answer → Attach 拿到 pending_tickets[0] 即未答提问
 // → Reply 后流程继续走完。凭两条命令即可完整重建现场。
 func TestRecoverMidTask(t *testing.T) {
@@ -355,7 +370,7 @@ func TestRecoverMidTask(t *testing.T) {
 	}
 	questionTicket := payloadMap(t, ev)["ticket_id"].(string)
 
-	// 全新审核者会话：新 client，与前面的 wait/reply 调用完全无关
+	// 全新协调者会话：新 client，与前面的 wait/reply 调用完全无关
 	recoverCli := client.New(env.ts.URL, testToken)
 
 	// tasks：看到任务且状态为 waiting_answer（正在等人回答）
@@ -411,7 +426,7 @@ func TestRecoverMidTask(t *testing.T) {
 	}
 }
 
-// TestReviewRoutes 覆盖审核者三条审阅命令的端到端链路（client → server → workspace → git）：
+// TestReviewRoutes 覆盖协调者三条审阅命令的端到端链路（client → server → workspace → git）：
 // dispatch 已把仓库切到任务分支 → 模拟 executor 提交 → diff 可见新文件与提交主题；
 // fetch 可读文件内容且逃逸路径被拒；run 返回输出与退出码。
 func TestReviewRoutes(t *testing.T) {
@@ -473,7 +488,7 @@ func TestReviewRoutes(t *testing.T) {
 	}
 }
 
-// TestPermissionImmediateVisible 覆盖 P1-2 时序修复：审核者收到权限事件后
+// TestPermissionImmediateVisible 覆盖 P1-2 时序修复：协调者收到权限事件后
 // **立即** attach 与 reply（不 sleep），状态与挂起项必须已就位——
 // 旧实现「先 Publish 后置 waiting_answer/注册 waiter」，事件到达瞬间状态可能
 // 还是 running；reply 会走「无等待者 → 自愈中继」而 resumeIfIdle 看不到
@@ -496,7 +511,7 @@ func TestPermissionImmediateVisible(t *testing.T) {
 		t.Fatalf("事件后立即 attach state=%s, want waiting_answer（时序修复后立即可见）", info.Task.State)
 	}
 	if len(info.PendingTickets) != 1 {
-		t.Fatalf("pending_tickets=%d, want 1（审核者必须立刻看到挂起项）", len(info.PendingTickets))
+		t.Fatalf("pending_tickets=%d, want 1（协调者必须立刻看到挂起项）", len(info.PendingTickets))
 	}
 
 	// 立即 reply：等待者已注册 → 走正常唤醒，任务回 running、executor 收到
@@ -515,7 +530,7 @@ func TestPermissionImmediateVisible(t *testing.T) {
 }
 
 // TestDispatchDirtyWorktree409 覆盖 P1-14：脏工作区 dispatch 返回 409 + 可读
-// 原因（审核者一条 git 命令即可修复），不再扁平化为「派发任务失败」的 500；
+// 原因（协调者一条 git 命令即可修复），不再扁平化为「派发任务失败」的 500；
 // 清理后恢复正常派发。
 func TestDispatchDirtyWorktree409(t *testing.T) {
 	env := newIntegEnv(t, nil)
@@ -619,7 +634,7 @@ func (startFailAdapter) Stop(string) error { return nil }
 // TestDispatchExecutorStartFailureReturnsReason 覆盖修复 3：executor 启动失败
 // （如 tmux 不在 PATH）时，dispatch 不能只回扁平「派发任务失败」的 500——executor
 // 依赖缺失是环境问题而非 agentd 内部故障，响应体必须带上真因（exec: "tmux":
-// executable file not found），否则审核者只能去 agentd.log 里翻一行 exec 错误，
+// executable file not found），否则协调者只能去 agentd.log 里翻一行 exec 错误，
 // 完全没有可行动信息。
 func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -657,11 +672,11 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 }
 
 // TestResumeRoute 端到端验证「应答没送到 executor → delivery_failed 唤醒 →
-// resume 解开」的完整闭环：真实 HTTP 路由 + 真实 client，走审核者实际的动作序列。
+// resume 解开」的完整闭环：真实 HTTP 路由 + 真实 client，走协调者实际的动作序列。
 //
 // 这是 P0-5 的收口验收。注意这里复现的是**更隐蔽的那个变体**：等待者还在时
 // reply 返回 200（应答确实落库了、也确实唤醒了等待者），投递失败发生在
-// waitPermission 内部——审核者拿不到任何错误码，工单却已被消耗、attach 无挂起项、
+// waitPermission 内部——协调者拿不到任何错误码，工单却已被消耗、attach 无挂起项、
 // executor 仍原地阻塞。所以恢复操作必须配一个可见信号，否则没人知道要去 resume。
 func TestResumeRoute(t *testing.T) {
 	env := newIntegEnv(t, []fake.Step{{Permission: "bash: go test ./..."}})
@@ -675,7 +690,7 @@ func TestResumeRoute(t *testing.T) {
 		t.Fatalf("有等待者时 reply 本身应成功（应答已落库）: %v", err)
 	}
 
-	// 可见信号：投递失败必须产出 delivery_failed 事件唤醒审核者
+	// 可见信号：投递失败必须产出 delivery_failed 事件唤醒协调者
 	var failedEv *proto.Event
 	eventually(t, 2*time.Second, "产出 delivery_failed 事件", func() bool {
 		evs, err := env.st.EventsFromAsc(task.ID, 0, 100)
@@ -691,7 +706,7 @@ func TestResumeRoute(t *testing.T) {
 		return false
 	})
 	if hint, _ := payloadMap(t, failedEv)["hint"].(string); !strings.Contains(hint, "resume") {
-		t.Errorf("delivery_failed 事件应告诉审核者该执行 resume，实际 hint=%q", hint)
+		t.Errorf("delivery_failed 事件应告诉协调者该执行 resume，实际 hint=%q", hint)
 	}
 
 	// 卡死现场：工单已被消耗，attach 看不到挂起项

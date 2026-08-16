@@ -13,7 +13,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // TestSendClosedConnCarriesNotRunning 连接已关闭时 Send 必须带 ErrTaskNotRunning。

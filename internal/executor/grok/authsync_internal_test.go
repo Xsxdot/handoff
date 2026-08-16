@@ -184,9 +184,23 @@ func TestResetAuthLinkNoWindowOnFailure(t *testing.T) {
 	// 注入点必须让 Symlink 失败而 Remove 仍能成功——否则旧的两步实现在第一步
 	// 就被挡住，窗口根本不会被走到，用例形同虚设。超长 target 触发
 	// ENAMETOOLONG，而目录保持可写。
-	tooLong := "/" + strings.Repeat("a", 2000)
+	//
+	// 长度必须**同时**越过两个平台的上限：macOS 的软链目标上限是 PATH_MAX
+	// 1024，Linux 是 4096。原先取 2000 只越过了 macOS，Linux 上 Symlink
+	// **成功**，注入当场失效——报错推迟到后面 ReadFile 跟链解析时才发生，
+	// 表现为一句莫名其妙的「原文件应仍在: file name too long」。取 8192
+	// 是为了在两边都稳稳落在 ENAMETOOLONG 上。
+	tooLong := "/" + strings.Repeat("a", 8192)
 
 	resetAuthLink(link, tooLong, slog.Default())
+
+	// 先证注入真的生效：link 必须还是普通文件。少了这条，哪天上限又变了，
+	// Symlink 悄悄成功会让整个用例退化成「读一个软链」的无关断言
+	if fi, err := os.Lstat(link); err != nil {
+		t.Fatalf("Lstat 任务侧文件: %v", err)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("注入失效：Symlink 竟然成功了，本用例要验的失败路径根本没被走到")
+	}
 
 	got, err := os.ReadFile(link)
 	if err != nil {

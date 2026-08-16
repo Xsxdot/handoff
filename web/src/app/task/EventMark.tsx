@@ -10,11 +10,15 @@ import { CircleDot } from 'lucide-react'
 import { formatFull } from '../lib/format'
 
 // EVENT_LABEL 是已知事件类型的中文标签。未知类型原样显示类型名，不吞掉。
+// B100：failed 已收窄为「任务终结」；回合失败走 turn_failed（任务此刻仍在
+// waiting_review，等协调者 continue 接着干），两者都要画出来，别把回合失败
+// 错标成任务终结。
 const EVENT_LABEL: Record<string, string> = {
   permission_request: '权限工单：等待审核者裁决',
   question: '提问工单：等待审核者回答',
   completed: '一轮结束，进入待审',
   failed: '任务失败',
+  turn_failed: '回合失败',
   delivery_failed: '裁决已落库但没送到 executor',
   stalled: '看门狗：长时间无产出',
 }

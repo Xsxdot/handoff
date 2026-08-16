@@ -6,15 +6,15 @@
 //     （agentd 建的）已删则如实告知，用户自带 worktree / 原地模式则说明保留
 //
 // 边界：
-//   - 不删任务分支（那是审核者的工作成果，审阅/回滚仍可切回分支）
-//   - 不做「停完再重派」：重派是独立决定，由审核者显式 dispatch
+//   - 不删任务分支（那是协调者的工作成果，审阅/回滚仍可切回分支）
+//   - 不做「停完再重派」：重派是独立决定，由协调者显式 dispatch
 package cmd
 
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
 )
 
 // stopCmd 中止指定任务。

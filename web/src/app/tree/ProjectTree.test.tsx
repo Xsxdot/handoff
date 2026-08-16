@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree } from './ProjectTree'
 
@@ -33,6 +33,7 @@ function props(over: {
   onOpenSettings?: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
+  onEdit?: (project: ProjectNode) => void
 } = {}) {
   const tree: ProjectTreeResp = {
     projects: [{
@@ -60,7 +61,12 @@ function props(over: {
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onAddProject: over.onAddProject ?? vi.fn(),
-    onUnregister: over.onUnregister ?? vi.fn(),
+    // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
+    // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
+    onUnregister: 'onUnregister' in over ? over.onUnregister : vi.fn(),
+    // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
+    // 编辑入口」的分支
+    onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
   }
   return p
 }
@@ -101,6 +107,19 @@ describe('ProjectTree', () => {
     expect(screen.getByText(/connection refused/)).toBeInTheDocument()
     fireEvent.click(row)
     expect(screen.queryByText('main')).toBeNull()
+  })
+
+  it('探测失败的位置渲染 failed 基调的连接态圆点', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'alpha',
+        locations: [{ machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: 'dial tcp timeout', workspaces: [] }],
+      }],
+      unowned: [],
+    }
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    expect(screen.getByText('已断开')).toBeInTheDocument()
+    expect(document.querySelector('.bg-state-failed')).not.toBeNull()
   })
 
   it('probe_error 只影响该 location，不炸整棵树', () => {
@@ -201,9 +220,12 @@ describe('ProjectTree', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
     // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
-    expect(screen.getByRole('button', { name: /^工单$/ })).toBeInTheDocument()
+    const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
+    expect(ticketBtn).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
-    expect(screen.queryByText('0')).not.toBeInTheDocument()
+    // 角标只在 ticketCount>0 时渲染。不能靠 queryByText('0')：RowCounts 改图标形态后
+    // 目录行会把值为 0 的计数渲染成可见的「0」，这里按角标自己的 token 查
+    expect(ticketBtn.querySelector('.bg-state-intervention')).toBeNull()
   })
 
   it('工单数大于 0 时显示角标并可点开', () => {
@@ -322,7 +344,8 @@ describe('ProjectTree', () => {
       task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
     ]
     const { container } = render(<ProjectTree {...p} />)
-    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(1)
+    // 2 个 active：本机行一个连接态圆点 + 任务行 running 一个
+    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(2)
     expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
   })
 
@@ -331,5 +354,86 @@ describe('ProjectTree', () => {
     const badge = screen.getByText('3')
     expect(badge.className).toContain('bg-state-intervention')
     expect(container.innerHTML).not.toContain('bg-amber-500')
+  })
+
+  it('「项目 N」的标签与数字之间有间隔，数字更浅', () => {
+    render(<ProjectTree {...props()} />)
+    const count = screen.getByTestId('project-count')
+    // 数字与标签必须是两个可区分的元素，且数字带独立的浅色类
+    expect(count.className).toMatch(/text-muted-foreground|opacity/)
+    // 间隔靠父容器的 gap 或数字自身的 margin，两者取一即可
+    const parent = count.parentElement!
+    expect(parent.className + count.className).toMatch(/gap-|ml-/)
+  })
+
+  it('机器行右端只剩计数，没有常驻的注销按钮压在上面', () => {
+    // why：absolute right-2 的注销按钮与同一行右端的 RowCounts 抢位置。
+    // 08-14 只修了垂直（定位上下文从 578px 子树收进机器行），水平仍然重叠
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    expect(container.querySelector('[aria-label="注销"]')).toBeNull()
+  })
+
+  it('右键机器行弹出菜单，含「注销」', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    const row = container.querySelector('[data-testid="machine-row"]')!
+    fireEvent.contextMenu(row)
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
+  it('右键机器行弹出菜单，含「编辑」「注销」两项', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit: vi.fn() })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.getByRole('menuitem', { name: '编辑' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
+  it('点菜单「编辑」把所在的 project 交给 onEdit', () => {
+    const onEdit = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑' }))
+    expect(onEdit).toHaveBeenCalledTimes(1)
+    const p = onEdit.mock.calls[0][0] as ProjectNode
+    expect(p.project_id).toBe('p1')
+    expect(p.name).toBe('handoff')
+    expect(p.locations).toHaveLength(1)
+  })
+
+  it('未传 onEdit 时菜单不出现「编辑」项', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn(), onEdit: undefined })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.queryByRole('menuitem', { name: '编辑' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
+  it('菜单里点「注销」进既有确认弹层，文案不变', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: '注销' }))
+    expect(screen.getByText(/只解除登记，不删除磁盘上的代码/)).toBeInTheDocument()
+  })
+
+  it('未传 onUnregister 与 onEdit 时右键不弹菜单——没有可做的操作', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: undefined, onEdit: undefined })} />)
+    fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('树独立滚动，底部入口不在滚动区内', () => {
+    const { container } = render(<ProjectTree {...props()} />)
+    const scroller = container.querySelector('[data-testid="tree-scroll"]')!
+    expect(scroller.className).toMatch(/overflow-y-auto/)
+    expect(scroller.className).toMatch(/min-h-0/) // 缺这句 overflow 在 flex 子项里不生效
+    // 「添加项目」必须在滚动容器之外
+    const addBtn = screen.getByRole('button', { name: /添加项目/ })
+    expect(scroller.contains(addBtn)).toBe(false)
+  })
+
+  it('项目图标带取色标记，同名项目刷新后同色', () => {
+    const { unmount } = render(<ProjectTree {...props()} />)
+    const first = document.querySelector('[data-project-color]')!.getAttribute('data-project-color')
+    unmount()
+    render(<ProjectTree {...props()} />)
+    expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
   })
 })

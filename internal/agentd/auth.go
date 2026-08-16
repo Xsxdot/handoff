@@ -21,7 +21,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 const (

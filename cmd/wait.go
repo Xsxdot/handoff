@@ -3,7 +3,7 @@
 // 职责：
 //   - 调用 client.WaitEvent（progress 不唤醒、断线自动退避重连、cursor 续拉），
 //     事件到达时把完整事件 JSON 单行输出到 stdout（供上层脚本解析）
-//   - --notify：事件到达时发 macOS 系统通知（spec §7 风险#4 的兜底：审核者会话
+//   - --notify：事件到达时发 macOS 系统通知（spec §7 风险#4 的兜底：协调者会话
 //     不在时提醒其重新拉起），失败仅 Warn 不影响主流程
 //   - 收到 SIGINT（Ctrl+C）时由进程默认行为终止，WaitEvent 随 ctx 取消退出
 //   - 任务结束事件到达时自动同步远程任务分支到本地（输出走 stderr，不污染
@@ -16,8 +16,8 @@
 //     ——stdout 每行是一次会话唤醒，逐条重放会把一次重连变成 N 次唤醒
 //
 // 边界：
-//   - 不做事件语义判断与审批（审批在审核者脑中），事件原样输出
-//   - 不覆盖「审核者会话被关闭」：Monitor 是会话级的，会话没了订阅就没了，
+//   - 不做事件语义判断与审批（审批在协调者脑中），事件原样输出
+//   - 不覆盖「协调者会话被关闭」：Monitor 是会话级的，会话没了订阅就没了，
 //     本命令给不出任何补救（spec §7.2 明确接受的边界）
 package cmd
 
@@ -33,10 +33,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/logx"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。
@@ -225,22 +225,22 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 			"建议设为大于 %s（如 %s）", idle, stall, stall, stall+time.Hour)
 }
 
-// autoSyncAfterWait 在任务结束事件（completed/failed）到达后，把远程任务分支
-// 同步到本地仓库。
+// autoSyncAfterWait 在任务进入等待审核的事件（completed/turn_failed）或任务
+// 终结（failed）到达后，把远程任务分支同步到本地仓库。
 //
 // 参数：
-//   - ev: 刚返回的事件；只有 completed/failed 触发（回合中途的 permission/
-//     question/progress 不触发——那时活还没干完）
+//   - ev: 刚返回的事件；只有 completed/turn_failed/failed 触发（回合中途的
+//     permission/question/progress 不触发——那时活还没干完）
 //
 // 注意：
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
-//     唤醒审核者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
-//   - failed 也同步：失败恰恰是最需要把代码拉到本地翻的时候
+//     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
+//   - 失败（含回合失败）也同步：失败恰恰是最需要把代码拉到本地翻的时候
 func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
 	}
-	if ev.Type != proto.EventTypeCompleted && ev.Type != proto.EventTypeFailed {
+	if !shouldAutoSync(ev.Type) {
 		return
 	}
 	if !loadCLIConfig().Sync.Auto {
@@ -260,7 +260,15 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 	fmt.Fprintln(cmd.ErrOrStderr(), syncMessage(res))
 }
 
-// notifyEvent 发 macOS 系统通知提醒审核者事件已到达（--notify 的兜底实现）。
+// shouldAutoSync 判断这类事件要不要触发自动同步。
+//
+// 为什么 turn_failed 也要：任务此刻在 waiting_review，协调者马上就要 diff 审代码，
+// 而失败恰恰是最需要把代码拉到本地翻的时候。
+func shouldAutoSync(t proto.EventType) bool {
+	return t == proto.EventTypeCompleted || t == proto.EventTypeFailed || t == proto.EventTypeTurnFailed
+}
+
+// notifyEvent 发 macOS 系统通知提醒协调者事件已到达（--notify 的兜底实现）。
 //
 // 参数：
 //   - ev: WaitEvent 返回的事件（client 返回指针，nil 由调用方保证不会传入）
@@ -290,7 +298,7 @@ func notifyEvent(ev *proto.Event) {
 //   - sum: 对账结果
 //
 // 返回：
-//   - 序列化失败时返回错误——写不出摘要就等于审核者不知道自己错过了什么，
+//   - 序列化失败时返回错误——写不出摘要就等于协调者不知道自己错过了什么，
 //     必须让 follow 停下而不是继续跑一个没人看得见的循环
 //
 // 注意：严格一行。stdout 是「每行一个 JSON 对象」的契约，上层（Monitor）按行

@@ -17,7 +17,7 @@ package agentd
 import (
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // projectIndex 是 归一化路径 → project_id 的等值索引。

@@ -1,7 +1,7 @@
-// usePtySupport —— 每台机器的 PTY 能力位（spec §5.5）。
+// useMachineCaps —— 每台机器的能力位（PTY / 在访达中显示，spec §5.5）。
 //
-// 职责：加载时拉一次 GET /api/machines，把 pty_supported 整理成
-// 「机器名 → true / false / null」的查询函数。
+// 职责：加载时拉一次 GET /api/machines，把 pty_supported / reveal_supported
+// 整理成「机器名 → true / false / null」的查询函数。
 //
 // 边界：
 //   - 只读能力位，不管会话
@@ -15,15 +15,17 @@ import { useEffect, useRef, useState } from 'react'
 import { fetchMachines } from '../../api/client'
 import { errorMessage } from '../lib/format'
 
-export interface PtySupport {
-  // supported 返回 null 表示**不知道**：没拉到、机器不在列表里、或对端没上报。
+export interface MachineCaps {
+  // pty / reveal 返回 null 表示**不知道**：没拉到、机器不在列表里、或对端没上报。
   // 调用方对 null 的正确反应是「照常放行，出了错再说实话」，不是「禁用」。
-  supported: (machine: string) => boolean | null
+  pty: (machine: string) => boolean | null
+  reveal: (machine: string) => boolean | null
   error: string
 }
 
-export function usePtySupport(): PtySupport {
-  const [map, setMap] = useState<Record<string, boolean> | null>(null)
+export function useMachineCaps(): MachineCaps {
+  const [ptyMap, setPtyMap] = useState<Record<string, boolean> | null>(null)
+  const [revealMap, setRevealMap] = useState<Record<string, boolean> | null>(null)
   const [error, setError] = useState('')
   // ranRef 与 cancelledRef 配对：ranRef 管「只跑一次」，cancelledRef 管「结果
   // 还要不要」，两者都必须跨 effect run，缺一不可。用局部变量是错的——上一轮
@@ -41,16 +43,19 @@ export function usePtySupport(): PtySupport {
       fetchMachines()
         .then((resp) => {
           if (cancelledRef.current) return
-          const next: Record<string, boolean> = {}
+          const nextPty: Record<string, boolean> = {}
+          const nextReveal: Record<string, boolean> = {}
           for (const m of resp.machines) {
             // 只收明确上报的：缺席/null 不进表，查询时自然落到 null
-            if (typeof m.pty_supported === 'boolean') next[m.name] = m.pty_supported
+            if (typeof m.pty_supported === 'boolean') nextPty[m.name] = m.pty_supported
+            if (typeof m.reveal_supported === 'boolean') nextReveal[m.name] = m.reveal_supported
           }
-          setMap(next)
+          setPtyMap(nextPty)
+          setRevealMap(nextReveal)
         })
         .catch((err: unknown) => {
           if (cancelledRef.current) return
-          console.warn('拉取机器能力位失败，PTY 三态门降级为一律放行', err)
+          console.warn('拉取机器能力位失败，能力位三态门降级为一律放行', err)
           setError(errorMessage(err))
         })
     }
@@ -60,7 +65,8 @@ export function usePtySupport(): PtySupport {
   }, [])
 
   return {
-    supported: (machine: string) => (map && machine in map ? map[machine] : null),
+    pty: (machine: string) => (ptyMap && machine in ptyMap ? ptyMap[machine] : null),
+    reveal: (machine: string) => (revealMap && machine in revealMap ? revealMap[machine] : null),
     error,
   }
 }

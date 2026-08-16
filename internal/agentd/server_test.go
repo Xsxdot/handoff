@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
-	"github.com/xushixin/handoff/internal/agentd"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/fake"
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
 )
 
 const testToken = "test-token"
@@ -454,12 +454,12 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 // 场景：无等待者（agentd 重启后等待 goroutine 已消亡）且 adapter 无该任务运行态
 // （executor 已不在）——回答落库后中继必失败。断言：
 //   - 502 + {"ok":true,"relayed":false,"reason":...}，reason 含失败原因，
-//     审核者在 CLI 立即看到 executor 没收到（而非只有 agentd.log 一行）
+//     协调者在 CLI 立即看到 executor 没收到（而非只有 agentd.log 一行）
 //   - 任务保持 waiting_answer 不回迁 running：executor 未收到应答、未恢复执行，
 //     标 running 是虚假状态；waiting_answer 保留下次 agentd 重启时
 //     RecoverOnStartup 的探活恢复路径
 //   - 回答已落库不可回滚：二次 reply 404（与「回滚为未应答」方案的区别所在——
-//     应答是「审核者裁决过」的持久审计事实）
+//     应答是「协调者裁决过」的持久审计事实）
 func TestReplyRelayFailureReturns502(t *testing.T) {
 	env := newTestEnv(t)
 	now := time.Now().UTC()
@@ -570,7 +570,7 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 // TestContinueErrTaskNotRunningReturns409 覆盖 agentd 重启后 waiting_review 任务
 // 续接失败的映射：Continue 遇到 executor.ErrTaskNotRunning（executor 运行态已随
 // 进程消亡丢失，agentd 可能重启过）必须回带可行动文本的 409，而不是扁平 500——
-// 审核者据此得知「重新派发」，而不是被内部错误挡在外面。
+// 协调者据此得知「重新派发」，而不是被内部错误挡在外面。
 func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	env := newTestEnv(t)
 	now := time.Now().UTC()
@@ -606,7 +606,7 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 //
 // 覆盖场景（旧实现必失败）：旧代码「先重放后订阅」，重放被背压阻塞期间 Publish 的
 // question 无订阅者、被 hub 直接丢弃——任务随即进入 waiting_answer 不再产出事件，
-// 客户端连接健康不会重连，审核者永远不被唤醒。新实现「先订阅后重放」，重放期间的
+// 客户端连接健康不会重连，协调者永远不被唤醒。新实现「先订阅后重放」，重放期间的
 // 实时事件由排空器收集、按 seq 归并补出。
 //
 // 判定逻辑（确定性优先，不依赖机器 TCP 缓冲大小与调度速度）：
@@ -862,10 +862,21 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 // newDoneEnv 组装一个挂了 manager、且有一个 waiting_review 任务的测试环境。
 func newDoneEnv(t *testing.T, taskID string) *testEnv {
 	t.Helper()
+	return newDoneEnvWithState(t, taskID, proto.TaskStateWaitingReview)
+}
+
+// newDoneEnvWithState 同 newDoneEnv，但任务初始状态由调用方指定。
+//
+// 为什么直接设初始状态而不是建完再 UpdateTaskState 硬迁：pending / waiting_answer
+// 从 waiting_review 直迁是被迁移表拒绝的（CanTransit 返回 false），硬迁会拿
+// ErrBadTransit，等于造不出来。done 幂等测试需要「其余状态仍拒绝」这条边界的
+// 全覆盖，所以状态从 CreateTask 那一刻就定死。
+func newDoneEnvWithState(t *testing.T, taskID string, state proto.TaskState) *testEnv {
+	t.Helper()
 	env := newTestEnv(t)
 	now := time.Now().UTC()
 	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "fake", RepoPath: "/repo",
-		Executor: "fake", State: proto.TaskStateWaitingReview,
+		Executor: "fake", State: state,
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -953,5 +964,65 @@ func TestDoneRejectsOversizeNote(t *testing.T) {
 	}
 	if got.State != proto.TaskStateWaitingReview {
 		t.Fatalf("被拒的归档不该改状态，得到 %s", got.State)
+	}
+}
+
+// TestDoneIsIdempotentOnCompleted 断言任务已 completed 时重发 done 返回 200 且
+// 响应体与首次逐字节相同。
+func TestDoneIsIdempotentOnCompleted(t *testing.T) {
+	// why：事故里 done 第一次返回 read: operation timed out，但请求其实已落库；
+	// 重发拿到 409，看起来像「状态不对」。客户端分不清「超时 = 请求没到」和
+	// 「超时 = 请求到了但响应没回来」——这是服务端才有的信息
+	env := newDoneEnv(t, "task-done-idem")
+
+	first := env.post(t, "/api/tasks/task-done-idem/done", `{"note":"收口"}`)
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("首次 done 应 200，实际 %d", first.StatusCode)
+	}
+	second := env.post(t, "/api/tasks/task-done-idem/done", `{"note":"收口"}`)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("重发 done 应 200（幂等），实际 %d：%s", second.StatusCode, readAllBody(t, second))
+	}
+	b1, _ := io.ReadAll(first.Body)
+	b2, _ := io.ReadAll(second.Body)
+	if string(b1) != string(b2) {
+		t.Fatalf("重发的响应体应与首次相同\n首次: %s\n重发: %s", b1, b2)
+	}
+}
+
+// readAllBody 读完一个响应体并返回文本，测试辅助（已 close 的 body 由调用方负责）。
+func readAllBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读响应体: %v", err)
+	}
+	return string(b)
+}
+
+// TestDoneStillRejectsNonReviewStates 断言幂等只覆盖 completed 这一种，其余状态
+// 一律维持 409。
+func TestDoneStillRejectsNonReviewStates(t *testing.T) {
+	// why：幂等只覆盖 completed 这一种。其余状态仍要 409——放行等于让 done
+	// 变成万能收口，审核者会失去「我操作错了」这个信号
+	for _, state := range []proto.TaskState{
+		proto.TaskStateRunning,
+		proto.TaskStateWaitingAnswer,
+		proto.TaskStateFailed,
+		proto.TaskStatePending,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			taskID := "task-done-reject-" + string(state)
+			// waiting_answer / pending 不能从 waiting_review 直迁（CanTransit
+			// 拒绝），所以初始状态就建在目标 state 上，不做硬迁
+			env := newDoneEnvWithState(t, taskID, state)
+			resp := env.post(t, "/api/tasks/"+taskID+"/done", `{}`)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("%s 状态下 done 应 409，实际 %d", state, resp.StatusCode)
+			}
+		})
 	}
 }

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestListTasksCarriesWatchers 验证 /api/tasks 的每个任务都带 watchers，

@@ -30,7 +30,7 @@ func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 	}
 	readJSON(t, settingsPath, &settings)
 	if len(settings.Permissions.Deny) != 0 {
-		t.Errorf("deny 必须留空（黑名单归 manager 升级审核者），实际 %v", settings.Permissions.Deny)
+		t.Errorf("deny 必须留空（黑名单归 manager 升级协调者），实际 %v", settings.Permissions.Deny)
 	}
 	for _, want := range []string{"Write", "Edit", "Bash(rm:*)", "Bash(sudo:*)", "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)"} {
 		if !contains(settings.Permissions.Ask, want) {

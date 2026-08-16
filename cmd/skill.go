@@ -6,15 +6,16 @@
 //
 // 边界：
 //   - 不含安装逻辑本身（在 internal/skill）：本层只做参数、打印与退出码
-//   - 不装到远端：skill 服务于审核者，审核者在本机
+//   - 不装到远端：skill 服务于协调者，协调者在本机
 package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
+	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/skill"
 )
 
 // skillContent 是 main 包用 go:embed 注入的 SKILL.md 全文。
@@ -28,7 +29,7 @@ func SetSkillContent(s string) { skillContent = s }
 
 var skillCmd = &cobra.Command{
 	Use:   "skill",
-	Short: "查看或安装给 AI 审核者的 handoff skill",
+	Short: "查看或安装给 AI 协调者的 handoff skill",
 	Long: "不带参数报告各落点是否与当前二进制内嵌的 skill 一致。\n" +
 		"skill install 把内嵌版本装到本机各家 agent（Claude Code / codex / opencode / grok）。\n" +
 		"安装与升级会自动调用它，正常不需要手工跑。",
@@ -67,6 +68,18 @@ var skillInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// 逐个落点数出结论：安装是个「部分成功」的操作，只把表打给人看，
+		// 事后排查（比如「为什么这台机器的 codex 没有 skill」）就没有任何痕迹
+		var installed, skipped int
+		for _, s := range sites {
+			if s.State == skill.StateSkipped {
+				skipped++
+				slog.Warn("skill 落点跳过", "path", s.Path, "reason", s.Note)
+				continue
+			}
+			installed++
+		}
+		slog.Info("skill 安装完成", "home", home, "installed", installed, "skipped", skipped)
 		out := cmd.OutOrStdout()
 		for _, s := range sites {
 			fmt.Fprintf(out, "%-8s %s%s\n", skillStateText(s.State), s.Path, noteSuffix(s))

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestBacklogSummaryLineIsSingleJSON(t *testing.T) {
@@ -35,6 +35,6 @@ func TestBacklogSummaryLineIsSingleJSON(t *testing.T) {
 		t.Fatalf("type = %v, want %q", got["type"], client.BacklogSummaryType)
 	}
 	if _, ok := got["actionable"]; !ok {
-		t.Fatal("摘要行必须带 actionable——那是审核者唯一能直接据以 reply 的字段")
+		t.Fatal("摘要行必须带 actionable——那是协调者唯一能直接据以 reply 的字段")
 	}
 }

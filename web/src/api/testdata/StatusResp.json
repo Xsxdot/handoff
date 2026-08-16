@@ -33,5 +33,6 @@
       "note": ""
     }
   ],
-  "pty_supported": true
+  "pty_supported": true,
+  "reveal_supported": true
 }

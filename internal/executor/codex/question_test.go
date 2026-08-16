@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 const userInputParams = `{"itemId":"tool-1","threadId":"t","turnId":"u","questions":[
   {"id":"q1","header":"选择方案","question":"用 A 还是 B？",
    "options":[{"label":"A","description":"简单"},{"label":"B","description":"通用"}]}]}`
 
-// 问题正文必须含问题与选项，审核者据此裁决
+// 问题正文必须含问题与选项，协调者据此裁决
 func TestUserInputTextRendersQuestionAndOptions(t *testing.T) {
 	itemID, qs, ok := codex.ParseUserInputForTest([]byte(userInputParams))
 	if !ok || itemID != "tool-1" || len(qs) != 1 {
@@ -59,7 +59,7 @@ func TestSecretQuestionIsNotRelayed(t *testing.T) {
 		t.Fatalf("机密问题正文不得进事件库:\n%s", txt)
 	}
 	if !strings.Contains(txt, "API Key") {
-		t.Fatalf("应保留标题让审核者知情:\n%s", txt)
+		t.Fatalf("应保留标题让协调者知情:\n%s", txt)
 	}
 }
 

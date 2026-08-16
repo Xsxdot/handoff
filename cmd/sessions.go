@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // sessionsCmd 列出浏览器会话。

@@ -24,7 +24,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // ErrTaskNotRunning 表示任务在本 adapter 里没有运行态：executor 已终结、
@@ -33,7 +33,7 @@ import (
 // 实现方在 Send / RespondPermission / Stop 遇到这种情况时必须包装本哨兵错误
 // （fmt.Errorf("...: %w", executor.ErrTaskNotRunning)），调用方据此区分
 // 「executor 已经不在」与「executor 还在但这次调用失败了」——两者的处置完全
-// 不同：前者应把任务交审核者裁决，后者应保持可重试。上层禁止靠错误文本判别。
+// 不同：前者应把任务交协调者裁决，后者应保持可重试。上层禁止靠错误文本判别。
 var ErrTaskNotRunning = errors.New("任务不在运行中")
 
 // TruncationMarker 是文本截断的显式标记，追加在截断文本末尾（如权限描述里的
@@ -42,7 +42,7 @@ var ErrTaskNotRunning = errors.New("任务不在运行中")
 // 契约：executor 侧截断时必须以本常量收尾（opencode 的 truncateMarked），
 // manager 侧据此 fail-closed——权限文本含本标记说明「审核/裁决者看到的是截断
 // 后的不完整命令」，危险片段可能落在截断之外，黑名单与廉价模型都不可信，必须
-// 升级人工审核者。
+// 升级人工协调者。
 //
 // 注意（B6 起）：权限描述在 executor 侧只受 64KB 防失控硬上限约束，常规长度
 // 不再触发本标记——只有真的超了 64KB 才会出现它。事件 payload 的短展示由
@@ -74,7 +74,7 @@ type Result struct {
 	Branch     string // executor 工作分支名（如 handoff/T1）
 	CommitHash string // 回合收尾 commit 的哈希
 	SessionID  string // executor 会话标识（如 opencode session id），供续接与归档
-	Summary    string // 执行摘要（给审核者看的完成说明）
+	Summary    string // 执行摘要（给协调者看的完成说明）
 	OK         bool   // true=正常完成；false=失败（见 FailReason）
 	FailReason string // OK=false 时的失败原因/日志尾部
 	// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。
@@ -153,14 +153,14 @@ func NormalizePermTool(raw string) string {
 //     等待人工裁决
 //   - question:   提问，Text 为问题原文；等待人工回答
 //   - progress:   进度播报（可选心跳），Text 为进度文本；只入库不阻塞
-//   - result:     回合终态，Result 有效；之后是否续接由审核者决定
+//   - result:     回合终态，Result 有效；之后是否续接由协调者决定
 //
 // SessionID 可携带于任意事件（含 progress）：manager 收到非空 SessionID 时落
 // task.ExecutorSession（空则忽略，向后兼容）。progress 带它是「会话就绪」信号
 // ——审核主路径常以 question 收尾、result 永不出现，progress 是会话 id 到达
 // manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
-	Type         string // "permission" | "question" | "progress" | "result"
+	Type         string // "permission" | "question" | "progress" | "result" | "usage"
 	PermissionID string // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
 	// QuestionID 是 Type=question 时 executor 侧提问请求的**原生**稳定 id
 	// （如 opencode 的 que_xxx）。manager 按其派生 ticket id 使其幂等——
@@ -176,6 +176,18 @@ type AdapterEvent struct {
 	// manager 据此 fail-closed 升级人工（看不懂的请求交给人）。
 	Perm   *PermRequest
 	Result *Result // Type=result 时有效
+	// ActualModel 是 executor 报回的**实际**模型名；空=本帧没带模型信息。
+	// 与 Task.Model（dispatch 的入参）是两件事，manager 落 task.ActualModel。
+	ActualModel string
+	// Usage 是当前 context 占用快照；nil=本帧没带用量。
+	// 语义见 proto.Usage：只描述占用不描述消耗，且绝不用 0 冒充「没有」。
+	Usage *proto.Usage
+	// Spend 是这一次调用/回合**新增**的消耗；nil = 本帧不带消耗信息。
+	//
+	// 与 Usage 的区别：Usage 是「当前占用」的快照（后到的覆盖先到的），
+	// Spend 是「新增消耗」的账目（按 Key 覆盖后**求和**）。数量级完全不同，
+	// 一个帧可以两者都带，但**绝不能互相赋值**。
+	Spend *proto.SpendEntry
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。
@@ -188,7 +200,7 @@ type AdapterEvent struct {
 //
 // 边界：
 //   - 实现方不写 store、不做审批判断（见包级边界说明），「批不批」由 manager
-//     根据审核者（人）的应答决定后经本接口回传
+//     根据协调者（人）的应答决定后经本接口回传
 type Adapter interface {
 	// Start 异步启动任务执行并立即返回。
 	//

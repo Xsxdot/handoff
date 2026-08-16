@@ -15,7 +15,7 @@ package client
 import (
 	"encoding/json"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // BacklogSummaryType 是摘要行的 type 取值。
@@ -47,7 +47,7 @@ type BacklogSummary struct {
 	// Stale 是间隙内工单已被消费（审批链答掉或被作废）的事件条数——补 reply 会 404。
 	Stale int `json:"stale"`
 
-	// Actionable 是当前仍待处置的工单**全量**，每张带完整 Request 原文，审核者
+	// Actionable 是当前仍待处置的工单**全量**，每张带完整 Request 原文，协调者
 	// 可直接据此 reply --ticket <id>。
 	//
 	// 注意它**不限于间隙内**：断网前你就看见过、但一直没答的工单也在里面。
@@ -86,7 +86,7 @@ func computeBacklog(taskID string, fromSeq int64, snap *AttachInfo) *BacklogSumm
 
 	missed, stale := 0, 0
 	for _, ev := range snap.RecentEvents {
-		// 口径与流过滤共用 isDeliverable：数的是「本该唤醒审核者的事件」
+		// 口径与流过滤共用 isDeliverable：数的是「本该唤醒协调者的事件」
 		if ev.Seq <= fromSeq || !isDeliverable(ev.Type) {
 			continue
 		}

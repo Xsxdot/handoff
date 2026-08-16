@@ -14,9 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
-	"github.com/xushixin/handoff/internal/client"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // tasksAllFlag 是 tasks 的 --all 开关。

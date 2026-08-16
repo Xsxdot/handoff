@@ -10,7 +10,7 @@ package opencode
 import (
 	"fmt"
 
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // Reap 在没有内存运行态时按 proc.json 兜底回收 executor 侧资源。
@@ -19,7 +19,7 @@ import (
 //
 // 为什么不再有「确定性命名兜底」：旧实现在 proc.json 缺失时退到 tmux 会话名
 // handoff-<id8>，因为会话名可由 taskID 推导。锁+pid 无法从 taskID 推导，
-// proc.json 缺失就是真的无据可查——如实报错交审核者，不猜。
+// proc.json 缺失就是真的无据可查——如实报错交协调者，不猜。
 //
 // 返回：Handle 对应的进程本就不在时返回 nil——目标是「确保它没了」，
 // 不是「确保我杀了它」。

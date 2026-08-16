@@ -28,16 +28,19 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, Trash2, WifiOff,
+  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
+import { ContextMenu } from '../shared/ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
+import { RowCounts } from './RowCounts'
+import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 
 export interface ProjectTreeProps {
@@ -52,6 +55,7 @@ export interface ProjectTreeProps {
   onOpenSettings: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
+  onEdit?: (project: ProjectNode) => void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -70,18 +74,6 @@ function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | u
 
 // ROW_CLASS 是所有行的基础样式；选中态 / hover 态在其上叠加。
 const ROW_CLASS = 'flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[13px]'
-
-// RowCounts 渲染一行右侧的计数（项目/机器行 目录·运行·待处理；目录行 运行·待处理）。
-function RowCounts({ text, title }: { text: string; title: string }) {
-  return (
-    <span
-      className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground"
-      title={title}
-    >
-      {text}
-    </span>
-  )
-}
 
 // Arrow 是展开箭头所在的可点 span——必须是 span 而不是 button，避免与行 button 嵌套。
 function Arrow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -177,7 +169,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -206,6 +198,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   }, [])
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
+  // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
+  // null = 没有菜单打开。project 一并记下：编辑弹层要以**整个项目**为输入，
+  // 而菜单锚在机器行——闭包里只有 loc，得把所在 project 一起带进菜单状态。
+  const [menu, setMenu] = useState<{ x: number; y: number; name: string; machine: string; project: ProjectNode } | null>(null)
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -234,7 +230,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   }
 
   return (
-    <div className="py-2">
+    // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
+    // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
+    // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
+    <div className="flex min-h-0 flex-1 flex-col py-2">
+      {/* 第一段：不滚——任务看板入口 + 搜索框 + 「项目 N」 */}
       <button
         type="button"
         onClick={onOpenBoard}
@@ -269,10 +269,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
         </label>
       </div>
 
-      <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      {/* 数字紧跟标签、比标签浅一档——形态基准是原型的
+          .sidebar-section-title span { margin-left:3px; color:#969696; font-weight:500 } */}
+      <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>项目</span>
-        <span data-testid="project-count">{filtered.projectCount}</span>
+        <span data-testid="project-count" className="font-normal text-muted-foreground/70">
+          {filtered.projectCount}
+        </span>
       </div>
+
+      {/* 第二段：只有它滚 */}
+      <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
       {filtered.projects.map((project) => {
         const pKey = `p:${project.project_id}`
@@ -292,9 +299,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
               ) : (
                 <span className="size-4 shrink-0" />
               )}
-              <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+              {/* 项目身份色：让整棵树不至于只有一个灰。取色只依赖 project_id，
+                  与列表顺序无关（见 projectColor.ts 的边界说明） */}
+              <FolderGit2
+                data-project-color={projectColorClass(project.project_id)}
+                className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
+              />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              <RowCounts text={`${pCounts.dirs}·${pCounts.running}·${pCounts.pending}`} title="目录·运行·待处理" />
+              <RowCounts dirs={pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
             </button>
 
             {pOpen &&
@@ -305,36 +317,54 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
                 return (
-                  <div key={mKey} className="group relative">
-                    <button
-                      type="button"
-                      aria-disabled={problem !== '' || undefined}
-                      aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
-                      onClick={problem !== '' ? undefined : () => toggle(mKey)}
-                      className={cn(ROW_CLASS, 'hover:bg-accent/60')}
-                      style={{ paddingLeft: 8 + 16 }}
+                  // 外层只负责分组，不再是定位祖先
+                  <div key={mKey}>
+                    {/* 定位上下文收在机器行这一层：右键菜单按鼠标坐标 fixed 定位，
+                        不依赖它；但目录行/任务行仍不该进这个分组容器 */}
+                    <div
+                      className="group relative"
+                      data-testid="machine-row"
+                      onContextMenu={
+                        onUnregister || onEdit
+                          ? (e) => {
+                              // 阻止浏览器原生菜单，换成我们这份。
+                              // Shift+F10 与 ContextMenu 键也派发这个事件，
+                              // 所以键盘用户走的是同一条路，不需要额外快捷键
+                              e.preventDefault()
+                              setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine, project })
+                            }
+                          : undefined
+                      }
                     >
-                      {hasChildren && problem === '' ? (
-                        <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
-                      ) : (
-                        <span className="size-4 shrink-0" />
-                      )}
-                      <HardDrive className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
-                      {problem !== '' && <DisconnectedBadge />}
-                      <RowCounts text={`${mCounts.dirs}·${mCounts.running}·${mCounts.pending}`} title="目录·运行·待处理" />
-                    </button>
-                    {onUnregister && (
                       <button
                         type="button"
-                        aria-label="注销"
-                        onClick={() => setUnregisterTarget({ name: loc.name, machine: loc.machine })}
-                        className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground group-hover:inline-flex hover:text-destructive"
+                        aria-disabled={problem !== '' || undefined}
+                        aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
+                        onClick={problem !== '' ? undefined : () => toggle(mKey)}
+                        className={cn(ROW_CLASS, 'hover:bg-accent/60')}
+                        style={{ paddingLeft: 8 + 16 }}
                       >
-                        <Trash2 className="size-3.5" />
+                        {hasChildren && problem === '' ? (
+                          <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
+                        ) : (
+                          <span className="size-4 shrink-0" />
+                        )}
+                        <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+                        {/* 连接态用与任务状态同一套圆点：一个界面里两套"绿点"含义不同会更糊涂。
+                            probe_error 非空 = 这个位置探测失败 = 机器当前不可达 */}
+                        <StateDot tone={loc.probe_error !== '' ? 'failed' : 'active'} />
+                        <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
+                        {problem !== '' && <DisconnectedBadge />}
+                        {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
+                            机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
+                        <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                       </button>
-                    )}
-
+                      {/* 注销入口在右键菜单里，不在行内。
+                          行内 absolute 按钮与同一行右端的 RowCounts 抢位置——
+                          08-14 修过一次垂直居中（定位上下文从 578px 子树收进本行），
+                          但水平方向两者都要右端，改不出不重叠的排法 */}
+                    </div>
+                    {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
                       <p
                         className="break-words pb-1 pr-2 text-[11px] text-destructive"
@@ -355,6 +385,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           <div key={base.key}>
                             <button
                               type="button"
+                              data-testid="workspace-row"
                               aria-current={dSelected ? 'true' : undefined}
                               onClick={() => onSelectDir(base)}
                               className={cn(ROW_CLASS, 'hover:bg-accent/60', dSelected && 'bg-sidebar-accent font-medium')}
@@ -367,7 +398,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                                 <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
                               )}
                               <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
-                              <RowCounts text={`${under.running}·${under.pending}`} title="运行·待处理" />
+                              <RowCounts running={under.running} pending={under.pending} />
                             </button>
 
                             {wsTasks.map((t) => (
@@ -388,7 +419,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           </div>
                         )
                       })}
-                  </div>
+                    </div>
                 )
               })}
           </div>
@@ -423,7 +454,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
       {filtered.isEmpty && searching && (
         <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
+      </div>
 
+      {/* 第三段：钉在底部 */}
       {/* 底部三入口：添加项目占主位，工单与设置收在右侧图标区（spec §3.2）。
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了 */}
       <div className="mt-1 flex items-center gap-1 border-t px-2 pt-2">
@@ -487,6 +520,32 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
             setUnregisterTarget(null)
             setUnregisterError('')
           }}
+        />
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            // 「编辑」排在「注销」前；onEdit 没传就不给这个入口
+            // （与 onUnregister 的「没传就不给操作」一致）
+            ...(onEdit
+              ? [{ label: '编辑', onSelect: () => onEdit(menu.project) }]
+              : []),
+            ...(onUnregister
+              ? [
+                  {
+                    label: '注销',
+                    danger: true,
+                    // 走的仍是既有的确认弹层，一字不改——右键只是换了个入口，
+                    // 不是换一条注销路径
+                    onSelect: () => setUnregisterTarget({ name: menu.name, machine: menu.machine }),
+                  },
+                ]
+              : []),
+          ]}
         />
       )}
     </div>

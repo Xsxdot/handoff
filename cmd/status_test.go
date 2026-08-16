@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // writeStatusConfig 写一份最小可用配置，返回路径。
@@ -189,7 +189,7 @@ func TestStatusFallsBackToRevisionWhenNoVersion(t *testing.T) {
 
 // TestUnattendedJudgement 钉死 §3.3 的异常判据。
 //
-// 为什么必须写死而不是「watchers==0 就报警」：waiting_review 等审核者裁决，
+// 为什么必须写死而不是「watchers==0 就报警」：waiting_review 等协调者裁决，
 // 挂几天都正常，把它算进来这条标记就会天天亮，变成没人再看的狼来了。
 func TestUnattendedJudgement(t *testing.T) {
 	zero, one := 0, 1
@@ -397,6 +397,26 @@ func TestRenderStatusShowsPerTaskProcs(t *testing.T) {
 	renderStatus(&nilBuf, "http://x", proto.BuildInfo{}, st)
 	if strings.Contains(nilBuf.String(), "进程") {
 		t.Fatalf("Procs=nil 时不该追加进程数:\n%s", nilBuf.String())
+	}
+}
+
+// 有辅助监听时 status 文本带「监听」行；没有时不出现——两档常规配置输出不变。
+func TestRenderStatusShowsListenAux(t *testing.T) {
+	var buf bytes.Buffer
+	renderStatus(&buf, "http://127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
+		Listen: "100.64.0.5:7777", ListenAux: "127.0.0.1:7777",
+		TaskCounts: map[string]int{},
+	})
+	if !strings.Contains(buf.String(), "监听     100.64.0.5:7777（辅 127.0.0.1:7777）") {
+		t.Fatalf("输出缺监听行：\n%s", buf.String())
+	}
+
+	buf.Reset()
+	renderStatus(&buf, "http://127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
+		Listen: "127.0.0.1:7777", TaskCounts: map[string]int{},
+	})
+	if strings.Contains(buf.String(), "监听") {
+		t.Fatalf("无辅助监听时不该有监听行：\n%s", buf.String())
 	}
 }
 

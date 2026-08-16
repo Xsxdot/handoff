@@ -14,10 +14,11 @@
 package buildinfo
 
 import (
+	"regexp"
 	"runtime"
 	"runtime/debug"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // readBuildInfo 是 debug.ReadBuildInfo 的测试缝（与各 adapter 的进程启动缝
@@ -32,12 +33,39 @@ var readBuildInfo = debug.ReadBuildInfo
 //
 // 注入方式（见 .github/workflows/release.yml，路径必须逐字一致）：
 //
-//	-ldflags "-X github.com/xushixin/handoff/internal/buildinfo.releaseVersion=v0.1.0"
+//	-ldflags "-X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=v0.1.0"
 //
 // why（注入而不是运行时读 tag）：二进制跑起来时身边没有 git 仓库可读；
 // vcs.revision 只有 commit 没有版本，而「哪个版本更新」是自动更新唯一
-// 能回答的问题。本地 go build 不注入，值为空——调用方据此判定非 release 构建。
+// 能回答的问题。本地 go build 不注入，值为空——此时退回模块版本（见
+// moduleReleaseVersion），两者都拿不到才判定为非 release 构建。
 var releaseVersion string
+
+// releaseTagRe 匹配 release tag 形态的版本号（vX.Y.Z，三段皆为数字）。
+//
+// why（必须卡这么死）：这是「模块版本能不能当 release 版本号用」的唯一判据，
+// 放宽任何一档都会造成真实回归——见 moduleReleaseVersion 的注释。
+var releaseTagRe = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
+// moduleReleaseVersion 从构建信息里取模块版本，仅当它是 release tag 形态时返回，
+// 否则返回空串。
+//
+// why（为什么需要这条回落）：`go install github.com/Xsxdot/handoff@v0.2.3` 是
+// 一条对外承诺的安装路径，而它永远不经过 release.yml 的 -X 注入。没有回落的话，
+// 这样装的二进制版本恒为 unknown，升级巡检会永远劝它「需要升级」。
+//
+// why（为什么只认 vX.Y.Z）：Main.Version 还有另外两种取值，认了就会出错——
+//   - 仓库内 go build 得到 "(devel)"：认了它，status 会拿 "(devel)" 顶掉
+//     revision 展示，而本地构建恰恰只有 revision 有排障价值
+//   - `@main` 之类得到 v0.0.0-<时间>-<sha> 伪版本：它在语义上恒小于任何真实
+//     tag，认了就等于把开发版说成「比最新 release 旧的 release」，
+//     巡检会据此劝人升级到一个他本来就领先的版本
+func moduleReleaseVersion(bi *debug.BuildInfo) string {
+	if bi == nil || !releaseTagRe.MatchString(bi.Main.Version) {
+		return ""
+	}
+	return bi.Main.Version
+}
 
 // Read 返回当前二进制的构建标识。
 //
@@ -56,7 +84,13 @@ func Read() (proto.BuildInfo, bool) {
 		// 与 debug.ReadBuildInfo 能否读到无关
 		return proto.BuildInfo{Version: releaseVersion, Platform: platform}, false
 	}
-	out := proto.BuildInfo{Go: bi.GoVersion, Version: releaseVersion, Platform: platform}
+	// 注入值优先：两者同时存在时（打了 tag 的 release 在模块内构建），注入的
+	// 才是这次发布的真身
+	version := releaseVersion
+	if version == "" {
+		version = moduleReleaseVersion(bi)
+	}
+	out := proto.BuildInfo{Go: bi.GoVersion, Version: version, Platform: platform}
 	for _, s := range bi.Settings {
 		switch s.Key {
 		case "vcs.revision":

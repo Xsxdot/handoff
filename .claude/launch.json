@@ -30,6 +30,36 @@
         "--strictPort"
       ],
       "port": 5280
+    },
+    {
+      "name": "prototype-b81",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/xushixin/workspace/handoff/.claude/worktrees/parallel-handoff-planning-ed00d0/prototypes/desktop-console",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5281",
+        "--strictPort"
+      ],
+      "port": 5281
+    },
+    {
+      "name": "b107-prototype",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/private/tmp/claude-501/-Users-xushixin-workspace-handoff--claude-worktrees-parallel-handoff-planning-ed00d0/3e792921-61ab-4dd1-a4e5-18f1880090d7/scratchpad/w4/prototypes/b107-file-tree-menu",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5283",
+        "--strictPort"
+      ],
+      "port": 5283
     }
   ]
 }

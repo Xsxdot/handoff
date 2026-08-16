@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/proto"
 )
 
 // seedTasksEnv 造一台带本地任务、镜像任务与 targets 的本机。

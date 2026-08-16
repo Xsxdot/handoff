@@ -17,7 +17,7 @@
 //     诉求经事件（progress「会话就绪」/ Result.SessionID）或返回值交给 manager 落库
 //   - 不做任务状态机迁移：6 状态迁移完全由 manager 负责，本层只产事件、收指令
 //   - 不重试、不决策：SSE 解析宽容（未知事件 Debug 跳过、绝不 panic）；
-//     trailer 缺失时兜底只做「是否有新提交」的事实裁决，没有新提交就交审核者
+//     trailer 缺失时兜底只做「是否有新提交」的事实裁决，没有新提交就交协调者
 //
 // 事件映射以真实 SSE 样本为准（spike3/spike5，opencode 1.18.15 serve 模式）：
 //   - 文本载体：模型文本走 message.part.updated（properties.part.type=text，
@@ -49,8 +49,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // 看门狗与节流参数：
@@ -77,8 +77,8 @@ const (
 //     运行态的后台重试节奏与放弃上限（A-10）。保留是为了「还有机会回收孤儿
 //     serve」，不是为了永久驻留——不重试就只剩内存与 lookup 阴影，不设上限则
 //     runs 表只增不减。放弃时打 Error 交人工清理
-//   - permTextHardLimit：权限描述的**防失控**硬上限（不是给审核者看的上限）。
-//     全文经工单交给审核者，事件 payload 由 manager 侧另行截断——两者是不同的
+//   - permTextHardLimit：权限描述的**防失控**硬上限（不是给协调者看的上限）。
+//     全文经工单交给协调者，事件 payload 由 manager 侧另行截断——两者是不同的
 //     关注点：工单要「看得全」，事件要「唤醒消息短」。64KB 只防失控输出。
 //   - pendingDeltaLimit：类型未知的 part 增量暂存上限（见 mapPartDelta）。
 //     超限即丢弃并 Warn，防止服务端只发 delta 不发 part.updated 时无界增长
@@ -193,7 +193,7 @@ type runState struct {
 	partSnap  map[string]bool   // messageID+partID -> 是否收到过非空全量快照
 	// partTypes/userMsgs 是「这个 part/消息是什么」的会话级事实，不随回合边界
 	// 失效（A-4）：第一回合登记的 reasoning part 若在回合结束时被遗忘，它后续的
-	// 增量会被当成模型输出，思维链直接变成面向审核者的提问。
+	// 增量会被当成模型输出，思维链直接变成面向协调者的提问。
 	partTypes map[string]string // messageID+partID -> part 类型（delta 无类型字段，靠它识别非 text 增量）
 	userMsgs  map[string]bool   // messageID -> user 消息（其文本 part 不进回合）
 	// pendingDelta 暂存「类型尚未揭示」的 part 增量（A-5）：part.updated 先于
@@ -203,7 +203,7 @@ type runState struct {
 	// permText/turnRejected 支撑「被拒权限终止回合」的识别（2026-08-08 实测 P0）：
 	// opencode 收到 reject 会直接终结回合，最后一条消息只有 error 状态的 tool
 	// part、零文本，idle 时回合文本为空。仅凭「空回合」无法区分它与「会话瞬时
-	// 空闲」——前者必须唤醒审核者（否则任务挂死到看门狗），后者必须忽略（否则
+	// 空闲」——前者必须唤醒协调者（否则任务挂死到看门狗），后者必须忽略（否则
 	// 每次批准都塞一条无意义提问）。故显式记录本回合发生过的拒绝。
 	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
 	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
@@ -213,15 +213,15 @@ type runState struct {
 	//
 	// pendingQuestionID / pendingQuestions: 当前挂起的请求及其问题结构。工具
 	// 阻塞保证同一任务至多一个挂起请求，故用单值而非 map。Send 据此分流：
-	// 有挂起请求就把审核者的答复打到 reply 端点，没有才发新 prompt。
+	// 有挂起请求就把协调者的答复打到 reply 端点，没有才发新 prompt。
 	// seenQuestionIDs: 已上报过的 requestID。question 事件不像 permission 那样
 	// 带幂等 id 给 manager 派生 ticket，SSE 重放的去重只能在本层做。
 	pendingQuestionID string
 	pendingQuestions  []QuestionInfo
 	seenQuestionIDs   map[string]bool
 	// askedViaTool 是回合级取走式标记（B49 §4.4）：本回合已通过 question 工具
-	// 问过审核者。mapIdle 判出 trailer ask 时取走它并抑制那张工单——否则同一
-	// 回合会给审核者两张单（grok 那次 askedViaTool 踩过的同一个坑）
+	// 问过协调者。mapIdle 判出 trailer ask 时取走它并抑制那张工单——否则同一
+	// 回合会给协调者两张单（grok 那次 askedViaTool 踩过的同一个坑）
 	askedViaTool bool
 	pendingBytes int       // pendingDelta 的总字节数（上限见 pendingDeltaLimit）
 	lastProgress time.Time // 上次发 progress 的时刻（节流）
@@ -448,11 +448,11 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 // Send 向同一会话续发指令（原生续接：上下文完整保留）。
 //
 // 参数：
-//   - text: 审核者的回答/修改指令，原样透传，不得加工
+//   - text: 协调者的回答/修改指令，原样透传，不得加工
 //
 // 注意：
 //   - stopCh 已关（Stop 已介入，运行态可能因 kill 失败被保留）时拒绝发送：
-//     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让审核者
+//     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让协调者
 //     看到「任务不在运行」的明确错误
 //   - 有挂起的 question 请求时不发 prompt，改把答复回填给该请求（B49）：
 //     question 工具阻塞时回合并未结束，发 prompt 会开出第二个回合
@@ -477,7 +477,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 			a.log.Info("adapter 续接指令已发送", "task", taskID, "session", r.session)
 		}
 	}()
-	// 提问分流（B49）：有挂起的 question 请求时，审核者的答复必须打到 reply
+	// 提问分流（B49）：有挂起的 question 请求时，协调者的答复必须打到 reply
 	// 端点而不是发新 prompt——question 工具阻塞时回合还在跑，再发 prompt 会
 	// 开出第二个回合，而阻塞的工具依然等不到应答
 	if reqID, qs := r.takePendingQuestionSnapshot(); reqID != "" {
@@ -491,7 +491,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // 返回：请求 id 与问题结构；无挂起请求时 id 为空串
 //
 // 为什么只读不清：答复可能折算失败或被服务端拒绝，那两条路都要重发工单并
-// **保留**挂起请求——提前清掉，审核者的下一次答复就无处可投，任务重新死锁。
+// **保留**挂起请求——提前清掉，协调者的下一次答复就无处可投，任务重新死锁。
 // 清除只发生在应答成功之后（见 replyPendingQuestion）。
 func (r *runState) takePendingQuestionSnapshot() (string, []QuestionInfo) {
 	r.turnMu.Lock()
@@ -507,16 +507,16 @@ func (r *runState) clearPendingQuestion() {
 	r.pendingQuestions = nil
 }
 
-// replyPendingQuestion 把审核者的答复折算并回填给 opencode 的 question 工具。
+// replyPendingQuestion 把协调者的答复折算并回填给 opencode 的 question 工具。
 //
 // 参数：
 //   - reqID/qs: 挂起请求的 id 与问题结构
-//   - text: 审核者答复原文
+//   - text: 协调者答复原文
 //
 // 返回：
-//   - nil: 应答成功，或答复折算不了/被服务端拒绝而已重发工单（两者对审核者
+//   - nil: 应答成功，或答复折算不了/被服务端拒绝而已重发工单（两者对协调者
 //     都不是错误，是「再答一次」）
-//   - 非 nil: 网络/服务端故障等真错误，冒泡给审核者终端
+//   - 非 nil: 网络/服务端故障等真错误，冒泡给协调者终端
 //
 // 注意：
 //   - 折算失败**不触达服务端**：猜一个最接近的选项会让模型按错误前提继续干活
@@ -525,7 +525,7 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 
 	answers, perr := parseQuestionAnswers(qs, text)
 	if perr != nil {
-		a.log.Warn("答复无法折算成选项，重发工单请审核者再答",
+		a.log.Warn("答复无法折算成选项，重发工单请协调者再答",
 			"task", r.taskID, "request", reqID, "cause", perr)
 		// 重发也填同一个 reqID：由 manager 统一判定「这是重放还是重发」，
 		// adapter 侧留空等于把判断拆到两个地方，manager 那份判据永不触发
@@ -538,7 +538,7 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 		"request", reqID, "answers", answers)
 	if err := r.api.ReplyQuestion(ctx, reqID, answers); err != nil {
 		if errors.Is(err, ErrCustomAnswerRejected) {
-			a.log.Warn("opencode 不接受该自定义答案，重发工单请审核者改填选项",
+			a.log.Warn("opencode 不接受该自定义答案，重发工单请协调者改填选项",
 				"task", r.taskID, "request", reqID, "cause", err)
 			a.emit(r, executor.AdapterEvent{Type: "question", QuestionID: reqID,
 				Text: turn.ClampQuestion("opencode 不接受自定义答案，请改填编号或选项原文。\n\n" +
@@ -552,7 +552,7 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 	return nil
 }
 
-// RespondPermission 把审核者的权限裁决转发给 opencode server。
+// RespondPermission 把协调者的权限裁决转发给 opencode server。
 //
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 的 ticket id
@@ -580,7 +580,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		}
 	}()
 	// 应答必须发回权限请求所在的会话：子会话的权限发给父会话 opencode 不认，
-	// 审核者的批准落不了地，任务照样挂死（B52）
+	// 协调者的批准落不了地，任务照样挂死（B52）
 	sess := r.session
 	r.sessMu.RLock()
 	mapped, known := r.permSession[permID]
@@ -590,7 +590,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	} else {
 		// 进程内表，agentd 重启后为空；此时只能退回父会话。若该权限来自子
 		// agent，这次应答会被 opencode 拒（4xx），错误会经 httpError 一路回到
-		// 审核者终端——是响的，不是静默的
+		// 协调者终端——是响的，不是静默的
 		a.log.Warn("权限应答未在会话映射表里找到该 permID，退回父会话应答",
 			"task", taskID, "perm", permID, "session", sess)
 	}
@@ -631,7 +631,7 @@ func (r *runState) takeTurnRejected() []string {
 
 // takeAskedViaTool 取走「本回合已通过 question 工具提问」的标记（读后即清）。
 //
-// 返回：本回合是否已通过工具问过审核者
+// 返回：本回合是否已通过工具问过协调者
 //
 // 为什么必须取走式：标记的生命周期是一个回合。常驻会让下一回合的真 trailer
 // 提问被误抑制，任务停在 running 无人知晓——那正是 B49 要消灭的形态。
@@ -643,10 +643,10 @@ func (r *runState) takeAskedViaTool() bool {
 	return asked
 }
 
-// rejectedTurnQuestion 组装「回合因权限被拒而终止」交给审核者的提问文本。
+// rejectedTurnQuestion 组装「回合因权限被拒而终止」交给协调者的提问文本。
 //
 // why（必须是 question 而不是 result/failed）：任务没失败也没完成，它只是停在
-// 半路等人指路。question 让任务进 waiting_answer，审核者可直接续发指令（换个
+// 半路等人指路。question 让任务进 waiting_answer，协调者可直接续发指令（换个
 // 方式做/跳过这步/收尾提交），会话上下文完整保留——这与 fallbackClassify
 // 「流程不卡死」的取向一致。
 func rejectedTurnQuestion(rejected []string) string {
@@ -785,7 +785,7 @@ func (r *runState) subscribeLoop(a *Adapter) {
 		// P1-10b：/event 无重放语义，断连间隙服务端产出的事件永久丢失。
 		// B38 起，回合终态那半边由对账补回；权限请求那半边补不回来——消息流的
 		// tool part 只有 callID 没有权限 id，应答端点要求真实 id、伪造即 404，
-		// 故仍保留本告警，它是审核者知道「可能需要 attach 人工兜底」的唯一信号
+		// 故仍保留本告警，它是协调者知道「可能需要 attach 人工兜底」的唯一信号
 		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），"+
 			"若任务卡在等待决策请 handoff attach 查看或 handoff resume --force 收口",
 			"task", r.taskID, "session", r.session)
@@ -798,7 +798,7 @@ func (r *runState) subscribeLoop(a *Adapter) {
 	}
 	if !r.handle.Alive() {
 		// 看门狗判定 serve 死亡后已取消 runCtx：订阅随连接断开而退出，
-		// 此处产出 failed 结果，让审核者看到死亡现场（serve.log 尾部——
+		// 此处产出 failed 结果，让协调者看到死亡现场（serve.log 尾部——
 		// serve 所在窗格已随命令退出关闭，capture-pane 读不到，P1-8）
 		tail := turn.TailRunes(r.handle.LogTail(), 200)
 		a.log.Error("opencode serve 已退出", "task", r.taskID, "stderr_tail", tail)
@@ -809,7 +809,7 @@ func (r *runState) subscribeLoop(a *Adapter) {
 		// 回收残留会话：serve 死后第二窗口（tail -f render.log）会一直吊着
 		// 执行者进程不回收就成孤儿（shim 的锁与子进程占资源）；
 		// Kill 幂等，后续 Stop 再 kill 也安全。证据不丢——serve.log/render.log
-		// 在磁盘上，审核者照常读文件
+		// 在磁盘上，协调者照常读文件
 		if kerr := r.handle.Kill(); kerr != nil {
 			a.log.Warn("serve 死亡后回收执行者进程失败", "task", r.taskID, "cause", kerr)
 		}
@@ -1010,12 +1010,12 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 		a.mapPermissionAsked(r, ev.Properties)
 	case ev.Type == "permission.replied":
 		// 应答回显：approve/reject 后服务端回发 replied；若把它当新权限，
-		// 审核者的 respond 会被当成再次询问，权限流程死循环——必须忽略
+		// 协调者的 respond 会被当成再次询问，权限流程死循环——必须忽略
 		a.log.Debug("permission.replied 应答回显，忽略", "task", r.taskID, "type", ev.Type)
 	case ev.Type == "question.asked":
 		a.mapQuestionAsked(r, ev.Properties)
 	case ev.Type == "question.replied", ev.Type == "question.rejected":
-		// 应答回显：与 permission.replied 同因——把回显当成新提问，审核者的
+		// 应答回显：与 permission.replied 同因——把回显当成新提问，协调者的
 		// 答复会被当作再次提问，流程死循环
 		a.log.Debug("question 应答回显，忽略", "task", r.taskID, "type", ev.Type)
 	case ev.Type == "message.updated":
@@ -1041,7 +1041,7 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 }
 
 // taskScopedEvents 是「必须归属到某个会话才能处理」的事件类型集合：它们都会
-// 改变某个任务的回合状态或直接产出面向审核者的工单。其余类型（server.connected、
+// 改变某个任务的回合状态或直接产出面向协调者的工单。其余类型（server.connected、
 // heartbeat、catalog.updated、plugin.added 等）是服务器级广播，本就不带 sessionID。
 var taskScopedEvents = map[string]bool{
 	"permission.asked":     true,
@@ -1079,7 +1079,7 @@ var taskScopedEvents = map[string]bool{
 //
 // why 仍然保留校验（不能改成一律放行）：校验存在的理由是防止跨任务串台。
 // 缺 sessionID 的任务级事件更不能 fail-open——一条无归属的 permission.asked
-// 会被当成本任务的审批门，审核者的批准动作会发到错误的会话。
+// 会被当成本任务的审批门，协调者的批准动作会发到错误的会话。
 func (a *Adapter) acceptForeign(r *runState, ev sseEvent, sessionID string) bool {
 	if !taskScopedEvents[ev.Type] {
 		return true // 服务器级广播事件：本就不带会话，交给下游的 default 分支跳过
@@ -1165,14 +1165,14 @@ func (a *Adapter) resolveChildSession(r *runState, sessionID string) (title stri
 	return "", false
 }
 
-// emitOwnershipFailure 把一次归属判定失败播报给审核者。
+// emitOwnershipFailure 把一次归属判定失败播报给协调者。
 //
 // 参数：
 //   - sessionID: 判定失败的会话 id（可能为空串）
 //   - reason:    失败原因短语，进 progress 文本
 //
 // why：丢弃一条审批请求意味着 opencode 在等一个永远不会到来的决策，而 serve
-// 活着、看门狗不触发——只写日志的话审核者在 handoff 里完全看不见。progress
+// 活着、看门狗不触发——只写日志的话协调者在 handoff 里完全看不见。progress
 // 只入库不阻塞，是把这件事送到 handoff show 事件历史的最轻通道。
 func (a *Adapter) emitOwnershipFailure(r *runState, sessionID, reason string) {
 	if sessionID == "" {
@@ -1223,19 +1223,19 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		text += ": " + strings.Join(pa.Patterns, " ")
 	}
 	// 描述下限（A-2）：三种真实形态（缺 permission / 缺 metadata.command /
-	// 缺 patterns）都会拼出空串。空描述意味着审核者被要求批准一个空白行——
+	// 缺 patterns）都会拼出空串。空描述意味着协调者被要求批准一个空白行——
 	// 宁可给出「未提供描述 + 权限 id」，让他知道要去 handoff attach 里看现场
 	if strings.TrimSpace(text) == "" {
-		a.log.Warn("permission.asked 无可读描述，按未说明权限交审核者",
+		a.log.Warn("permission.asked 无可读描述，按未说明权限交协调者",
 			"task", r.taskID, "perm", pa.ID)
 		text = "opencode 未提供权限描述（id " + pa.ID + "），请 handoff attach 查看现场"
 	}
-	// 子会话归属与标注（B52）。permSession 决定应答发往哪个会话；前缀让审核者
+	// 子会话归属与标注（B52）。permSession 决定应答发往哪个会话；前缀让协调者
 	// 一眼看出这条审批来自子 agent——子 agent 的越权与主 agent 的越权含义不同。
 	//
 	// why 前缀必须加在空描述兜底之后：前缀本身非空，先加前缀会让上面那段
 	// 「描述为空就给兜底文本」的判空永远为假，真正空描述的请求就变成一条只有
-	// 前缀的工单，审核者仍然看不到要批什么。
+	// 前缀的工单，协调者仍然看不到要批什么。
 	permSess := pa.SessionID
 	if permSess == "" {
 		permSess = r.session
@@ -1336,11 +1336,11 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 	r.seenQuestionIDs[qa.ID] = true
 
 	text := renderQuestionTicket(qa.Questions)
-	// 描述下限：questions 为空或全无正文时，渲染结果对审核者没有信息量。
+	// 描述下限：questions 为空或全无正文时，渲染结果对协调者没有信息量。
 	// 与 mapPermissionAsked 的空描述兜底同理——宁可给出「未提供内容 + 请求 id」，
 	// 让他知道要去 handoff attach 里看现场，也不能静默丢弃（丢了就是死锁）
 	if len(qa.Questions) == 0 {
-		a.log.Warn("question.asked 无问题内容，按未说明提问交审核者",
+		a.log.Warn("question.asked 无问题内容，按未说明提问交协调者",
 			"task", r.taskID, "request", qa.ID)
 		text = "opencode 提出了一个空提问（id " + qa.ID + "），请 handoff attach 查看现场后作答"
 	}
@@ -1366,7 +1366,7 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 	// 不再重复出单。Task 5 消费它
 	r.askedViaTool = true
 
-	a.log.Info("收到 executor 提问，转工单交审核者", "task", r.taskID,
+	a.log.Info("收到 executor 提问，转工单交协调者", "task", r.taskID,
 		"request", qa.ID, "session", qSess, "is_child", qSess != r.session,
 		"question_count", len(qa.Questions))
 	a.emit(r, executor.AdapterEvent{
@@ -1388,6 +1388,19 @@ func (a *Adapter) mapQuestionAsked(r *runState, props json.RawMessage) {
 // 文本全部丢弃、idle 走空回合分支永不分类，任务静默挂死（A-3）。回合缓冲由
 // mapIdle 在分类后清空即可，不需要第二个清空信号。
 func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
+	// 模型名与用量就在这一帧的 info 里——此前只解了 id 与 role。
+	// 零值帧由 parseMessageUsage 内部跳过，否则界面会在每条新消息开头闪回 0。
+	if model, u, ok := parseMessageUsage(props); ok && (model != "" || u != nil) {
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
+	// 累计消耗：同一帧还带这条消息的 cost 与产出侧 token。与上面的当前占用
+	// 是两个口径——上面只算输入侧，这里连产出一起算，且 reasoning 要相加。
+	//
+	// opencode 的消息帧频率极高（一条消息推几十次），**这里刻意不打任何日志**——
+	// 入账的 Debug 已经由 handleSpend 统一打了，adapter 再打就是双份刷屏。
+	if e, ok := parseMessageSpend(props); ok {
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	}
 	var msg struct {
 		Info struct {
 			ID   string `json:"id"`
@@ -1613,11 +1626,11 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 // why（去抖而非见 idle 即分类）：idle 是 opencode 的会话状态信号，不等于「模型
 // 这一轮说完了」——工具调用间隙、权限等待期间都可能出现瞬时 idle。见 idle 即
 // 分类会把半截回合当成完整回合：命中 git 兜底时更会因「仓库里已有新提交」谎报
-// completed，审核者据此执行 done，Stop 就在 opencode 仍在干活时杀掉了执行者进程。
+// completed，协调者据此执行 done，Stop 就在 opencode 仍在干活时杀掉了执行者进程。
 //
 // 宽限期内任何回合推进（新增文本、非 idle 状态、下一条 idle）都会自增 idleGen，
 // 使在途的候选失效——真正的回合结束后不会再有事件，宽限期自然走完。代价是回合
-// 分类延迟 idleGrace，相对审核者分钟级的往返可忽略。
+// 分类延迟 idleGrace，相对协调者分钟级的往返可忽略。
 func (a *Adapter) scheduleIdle(r *runState, raw json.RawMessage) {
 	r.idleGen++
 	gen := r.idleGen
@@ -1663,7 +1676,7 @@ func (r *runState) cancelPendingIdle() {
 // ask/finish/none，none 走 git 实况兜底（why 见 fallbackClassify）。分类后清空
 // 回合缓冲。
 //
-// 空回合（无累积文本）不再静默跳过：零文本转失败结果交审核者（B21）——idle 但
+// 空回合（无累积文本）不再静默跳过：零文本转失败结果交协调者（B21）——idle 但
 // 无文本说明文本流没被本层接住（事件结构变化/增量对账失败）或供应商流中断，
 // 这是「任务可能静默挂死」的观测点，必须产事件而非 Debug 静默。被拒终止的
 // 空回合例外，它走 question（有内容可问，见下文）。props 为触发 idle 的
@@ -1673,9 +1686,9 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	if strings.TrimSpace(text) == "" {
 		// 被拒终止的回合：opencode 收到 reject 直接终结回合，只留 error 状态的
 		// tool part、零文本。旧实现在此静默 return，任务停在 running 直到 2h
-		// 看门狗（2026-08-08 真实派发实测的 P0）——必须转 question 唤醒审核者
+		// 看门狗（2026-08-08 真实派发实测的 P0）——必须转 question 唤醒协调者
 		if rejected := r.takeTurnRejected(); len(rejected) > 0 {
-			a.log.Warn("回合因权限被拒终止且无文本产出，转提问交审核者裁决",
+			a.log.Warn("回合因权限被拒终止且无文本产出，转提问交协调者裁决",
 				"task", r.taskID, "rejected", rejected)
 			a.emit(r, executor.AdapterEvent{
 				Type: "question", Text: turn.ClampQuestion(rejectedTurnQuestion(rejected)),
@@ -1686,7 +1699,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			r.captureStartCommit(a)
 			return
 		}
-		// 零文本回合转失败结果交审核者（B21）：旧实现在此静默 return，任务停在
+		// 零文本回合转失败结果交协调者（B21）：旧实现在此静默 return，任务停在
 		// running 直到 2h 看门狗。
 		//
 		// 为什么是 result{OK:false} 而不是 question：上面「被拒终止」那条走
@@ -1694,7 +1707,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		// 故障报告——result{OK:false} 的语义才对得上，且 FailReason 能把现场
 		// 写清楚。manager 的 handleResult 对 OK=false 的既有处置（作废挂起工单 →
 		// failed 事件 → 落 waiting_review）正是我们要的，continue 立刻可用
-		a.log.Warn("idle 但回合无文本，转失败结果交审核者", "task", r.taskID,
+		a.log.Warn("idle 但回合无文本，转失败结果交协调者", "task", r.taskID,
 			"event", turn.TailRunes(string(raw), 120))
 		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
 			OK: false,
@@ -1714,8 +1727,8 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	kind, t := turn.ParseTrailer(text)
 	switch kind {
 	case "ask":
-		// 回合级去重（B49 §4.4）：本回合已通过 question 工具问过审核者时，
-		// 回合末的 trailer ask 多半是同一个问题的复述——出第二张单会让审核者
+		// 回合级去重（B49 §4.4）：本回合已通过 question 工具问过协调者时，
+		// 回合末的 trailer ask 多半是同一个问题的复述——出第二张单会让协调者
 		// 面对两份措辞不同的同一件事（grok 那次 askedViaTool 踩过的同一个坑）。
 		// 兜底通道存在的目的是「保证回合不静默结束」，工具已经问过时该诉求
 		// 已经满足
@@ -1746,10 +1759,10 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 //
 // why（兜底分类规则）：回合结束但 turn.ParseTrailer 判 none。此时拿 git 实况裁决：
 //   - 相对回合起点有新 commit → 发 result{OK:false}（B74）。**不替模型宣布完成**：
-//     模型没说完成，handoff 就不说。翻转不给审核者加任何一次操作——OK 与 !OK
+//     模型没说完成，handoff 就不说。翻转不给协调者加任何一次操作——OK 与 !OK
 //     都落 waiting_review，done 与 continue 在那里都合法；变的只是事件从
 //     「已完成，摘要如下」变成「有新提交，但模型未按纪律宣布完成」。
-//   - 没有新 commit / git 查询失败 → 把回合全文交审核者裁决（question），流程不卡死。
+//   - 没有新 commit / git 查询失败 → 把回合全文交协调者裁决（question），流程不卡死。
 func (a *Adapter) fallbackClassify(r *runState, text string) {
 	a.log.Warn("回合未输出协议 trailer，走 git 兜底", "task", r.taskID,
 		"turn_tail", turn.TailRunes(text, 120))
@@ -1758,11 +1771,11 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 		if err != nil {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
-		a.log.Info("兜底判定无新提交，转提问交审核者裁决", "task", r.taskID, "has_new", hasNew)
+		a.log.Info("兜底判定无新提交，转提问交协调者裁决", "task", r.taskID, "has_new", hasNew)
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
-	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交审核者裁决",
+	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交协调者裁决",
 		"task", r.taskID, "branch", branch, "commit", commit)
 	a.emit(r, executor.AdapterEvent{Type: "result",
 		Result: turn.NoTrailerResult(r.session, branch, commit, text)})

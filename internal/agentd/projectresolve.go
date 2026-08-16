@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // ErrProjectNotRegistered 表示派发请求指向的项目在本机没有位置。
@@ -36,7 +36,7 @@ var ErrProjectNotRegistered = errors.New("项目未登记")
 
 // locationLines 把位置表压成「名字 → 路径」的一行串，供拒绝报文使用。
 //
-// 报文必须带得走「本机登记了什么」——远程派发时审核者读不到执行机的
+// 报文必须带得走「本机登记了什么」——远程派发时协调者读不到执行机的
 // agentd.log，一句干巴巴的「未登记」等于让他去猜。
 func locationLines(entries []proto.ProjectLocation) string {
 	if len(entries) == 0 {

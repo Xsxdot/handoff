@@ -39,7 +39,7 @@ func TestLatestParsesTagAndAssets(t *testing.T) {
 	  {"name":"handoff_v0.2.0_linux_amd64.tar.gz","browser_download_url":"https://example/d2"},
 	  {"name":"checksums.txt","browser_download_url":"https://example/c"}]}`
 	srv := fakeAPI(t, body, 200)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	rel, err := c.Latest(context.Background())
 	if err != nil {
@@ -70,7 +70,7 @@ func TestAssetForMissingPlatform(t *testing.T) {
 // 限流/服务端错误必须带上状态码——「查版本失败」不带码等于没法判断是限流还是挂了。
 func TestLatestSurfacesHTTPStatus(t *testing.T) {
 	srv := fakeAPI(t, `{"message":"API rate limit exceeded"}`, 403)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	_, err := c.Latest(context.Background())
 	if err == nil {
@@ -87,19 +87,37 @@ func TestLatestSurfacesHTTPStatus(t *testing.T) {
 // 下载一个名为 handoff__darwin_arm64.tar.gz 的东西，永远失败且永远重试。
 func TestLatestRejectsEmptyTag(t *testing.T) {
 	srv := fakeAPI(t, `{"tag_name":"","assets":[]}`, 200)
-	c := NewClient()
+	c := NewClient(nil)
 	c.APIBase = srv.URL
 	if _, err := c.Latest(context.Background()); err == nil {
 		t.Fatal("空 tag 应报错")
 	}
 }
 
+// AssetName 的扩展名是与 release.yml 的契约。Windows 出 zip 而非 tar.gz：
+// zip 在资源管理器里双击即开，且 Expand-Archive 人人都有，tar.exe 只有
+// Win10 1803+ 才有。改这里必须同步改 workflow 与两个 install 脚本。
+func TestAssetNameExtensionPerOS(t *testing.T) {
+	for _, c := range []struct{ goos, goarch, want string }{
+		{"darwin", "arm64", "handoff_v1.2.3_darwin_arm64.tar.gz"},
+		{"darwin", "amd64", "handoff_v1.2.3_darwin_amd64.tar.gz"},
+		{"linux", "amd64", "handoff_v1.2.3_linux_amd64.tar.gz"},
+		{"linux", "arm64", "handoff_v1.2.3_linux_arm64.tar.gz"},
+		{"windows", "amd64", "handoff_v1.2.3_windows_amd64.zip"},
+		{"windows", "arm64", "handoff_v1.2.3_windows_arm64.zip"},
+	} {
+		if got := AssetName("v1.2.3", c.goos, c.goarch); got != c.want {
+			t.Errorf("AssetName(v1.2.3, %s, %s) = %q，期望 %q", c.goos, c.goarch, got, c.want)
+		}
+	}
+}
+
 // 默认仓库与端点不能被改掉——它们是硬约束。
 func TestDefaults(t *testing.T) {
 	if DefaultRepo != "Xsxdot/handoff" {
-		t.Errorf("DefaultRepo=%q，GitHub owner 是 Xsxdot（go.mod 里的 xushixin 是 B55，不影响这条链）", DefaultRepo)
+		t.Errorf("DefaultRepo=%q，GitHub owner 是 Xsxdot", DefaultRepo)
 	}
-	c := NewClient()
+	c := NewClient(nil)
 	if c.APIBase != DefaultAPIBase || c.Repo != DefaultRepo {
 		t.Errorf("NewClient 默认值不对: %+v", c)
 	}

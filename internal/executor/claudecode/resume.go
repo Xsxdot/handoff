@@ -15,7 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/xushixin/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // Resume 恢复 agentd 重启前已在执行的任务（manager 的 restorer 可选接口）。
@@ -31,7 +31,7 @@ import (
 //     SessionID 是落库的 claude 会话 id）
 //
 // 返回：
-//   - Alive=false 时调用方（manager）把任务转 failed 交审核者裁决（保守优于静默）
+//   - Alive=false 时调用方（manager）把任务转 failed 交协调者裁决（保守优于静默）
 //   - err: 重建失败（proc.json 缺失/损坏、SessionID 为空），视为不可恢复
 //
 // 注意：

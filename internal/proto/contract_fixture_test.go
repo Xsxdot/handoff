@@ -79,6 +79,10 @@ func TestContractFixtures(t *testing.T) {
 		{"PtySessionsResp", ptySessionsRespSample(now)},
 		{"Frame", frameSample(now)},
 		{"DirListResult", dirListSample()},
+		{"FileRead", fileReadSample()},
+		{"FileWriteReq", fileWriteReqSample()},
+		{"FileWriteResp", fileWriteRespSample()},
+		{"FileConflictResp", fileConflictSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -125,6 +129,10 @@ func buildSample() BuildInfo {
 }
 
 // taskSample 返回 Task 的代表性样本（running 的 managed-worktree 任务）。
+//
+// sampleCtxWindow 是 fixture 用的窗口上限；单独取变量只因为 Go 不能对字面量取址。
+var sampleCtxWindow = 258400
+
 func taskSample(now time.Time, taskID string) Task {
 	return Task{
 		ID:              taskID,
@@ -146,8 +154,13 @@ func taskSample(now time.Time, taskID string) Task {
 		BaseAhead:       1,
 		RepoDirtyCount:  2,
 		RepoDirtyFiles:  "web/package.json, internal/proto/proto.go 等 2 处",
-		Machine:         "",
-		ProjectID:       "a1b2c3d4e5f60718",
+		// B80：给非零值才能把线格式钉进 fixture（两个字段都带 omitempty）。
+		// context_window 给值是为了钉住「有分母」的形状；无分母时该键缺席，
+		// 由 web 侧的 Usage 可选字段与 TaskHeader 测试覆盖。
+		ActualModel: "gpt-5.6-sol",
+		Usage:       &Usage{ContextTokens: 24668, ContextWindow: &sampleCtxWindow},
+		Machine:     "",
+		ProjectID:   "a1b2c3d4e5f60718",
 	}
 }
 
@@ -324,6 +337,7 @@ func activeTaskSample(taskID string) ActiveTask {
 // 注意 TaskCounts 六个状态键恒存在：键缺了要能当场暴露（0 与缺键对消费方是两回事）。
 func statusSample(now time.Time, taskID string) StatusResp {
 	ptyOK := true
+	revealOK := true
 	return StatusResp{
 		Version:         buildSample(),
 		Listen:          "127.0.0.1:7777",
@@ -341,7 +355,8 @@ func statusSample(now time.Time, taskID string) StatusResp {
 		},
 		Active: []ActiveTask{activeTaskSample(taskID)},
 		// 放在 Active 之后：能力位与运行时数据分开，一眼能看出它是 agentd 上报的。
-		PtySupported: &ptyOK,
+		PtySupported:    &ptyOK,
+		RevealSupported: &revealOK,
 	}
 }
 
@@ -409,6 +424,43 @@ func dirListSample() DirListResult {
 		Entries: []DirEntry{
 			{Name: "internal", IsDir: true},
 			{Name: "go.mod", IsDir: false, Size: 1284},
+		},
+	}
+}
+
+// fileReadSample 返回 FileRead 的代表性样本（可编辑文本：非截断非二进制，有 sha256）。
+func fileReadSample() FileRead {
+	return FileRead{
+		Content: "module handoff\n\ngo 1.26.1\n",
+		Size:    29,
+		SHA256:  "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	}
+}
+
+// fileWriteReqSample 返回 FileWriteReq 的代表性样本（带 base_sha256）。
+func fileWriteReqSample() FileWriteReq {
+	return FileWriteReq{
+		Content:    "module handoff\n\ngo 1.26.1\n",
+		BaseSHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	}
+}
+
+// fileWriteRespSample 返回 FileWriteResp 的代表性样本。
+func fileWriteRespSample() FileWriteResp {
+	return FileWriteResp{
+		SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		Size:   29,
+	}
+}
+
+// fileConflictSample 返回 FileConflictResp 的代表性样本（带磁盘现状 current）。
+func fileConflictSample() FileConflictResp {
+	return FileConflictResp{
+		Error: "文件已被改动",
+		Current: FileRead{
+			Content: "module handoff\n",
+			Size:    15,
+			SHA256:  "8b1a9953c4611296a827abf8c47804d7",
 		},
 	}
 }

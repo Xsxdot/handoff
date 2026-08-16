@@ -25,7 +25,7 @@ export interface BoardOverlayProps {
 
 export function BoardOverlay({ tasksState, tree, onOpenTask, onClose }: BoardOverlayProps) {
   return (
-    <Overlay title="任务看板" onClose={onClose} wide>
+    <Overlay title="任务看板" onClose={onClose} wide tall>
       <BoardPage
         tasksState={tasksState}
         tree={tree}

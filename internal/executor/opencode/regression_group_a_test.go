@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // bareLimit 是本文件里构造超长文本的长度（远超权限描述 64KB 防失控硬上限，
@@ -39,7 +39,7 @@ func permissionAskedRawEvent(id string) string {
 }
 
 // TestPermissionTextNeverBlank 验证 A-2 的下限：权限描述拼不出内容时，
-// 交给审核者的文本仍能标识这是哪一次审批，而不是一个空白行。
+// 交给协调者的文本仍能标识这是哪一次审批，而不是一个空白行。
 func TestPermissionTextNeverBlank(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-perm-blank", t.TempDir(), t.TempDir())
@@ -48,7 +48,7 @@ func TestPermissionTextNeverBlank(t *testing.T) {
 
 	ev := waitEventType(t, ch, "permission")
 	if strings.TrimSpace(ev.Text) == "" {
-		t.Fatal("权限描述为空：审核者被要求批准一个空白行")
+		t.Fatal("权限描述为空：协调者被要求批准一个空白行")
 	}
 	if !strings.Contains(ev.Text, "per_blank") {
 		t.Errorf("无描述时应至少给出权限 id 供定位, got %q", ev.Text)
@@ -56,7 +56,7 @@ func TestPermissionTextNeverBlank(t *testing.T) {
 }
 
 // TestPermissionTextMarksTruncation 验证 A-2 的上限：超长命令（超过 64KB 防失控
-// 硬上限）被截断时必须带可见标记——否则审核者会以为自己看到的就是完整命令。
+// 硬上限）被截断时必须带可见标记——否则协调者会以为自己看到的就是完整命令。
 func TestPermissionTextMarksTruncation(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-perm-long", t.TempDir(), t.TempDir())
@@ -66,13 +66,13 @@ func TestPermissionTextMarksTruncation(t *testing.T) {
 
 	ev := waitEventType(t, ch, "permission")
 	if !strings.Contains(ev.Text, "已截断") {
-		t.Errorf("超长权限描述被静默截断，审核者无从得知: %q", ev.Text)
+		t.Errorf("超长权限描述被静默截断，协调者无从得知: %q", ev.Text)
 	}
 }
 
 // TestReasoningTypeSurvivesTurnBoundary 验证 A-4：part 的类型是「这个 part
 // 是什么」的事实，不随回合结束失效。第一回合登记的 reasoning part 若在回合
-// 边界后被遗忘，它后续的增量会被当模型输出，思维链直接变成面向审核者的提问。
+// 边界后被遗忘，它后续的增量会被当模型输出，思维链直接变成面向协调者的提问。
 func TestReasoningTypeSurvivesTurnBoundary(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-parttype", t.TempDir(), t.TempDir())
@@ -126,7 +126,7 @@ func TestServeLogTailRedactsPassword(t *testing.T) {
 
 // TestDeltaBeforePartTypeKnownIsNotText 验证 A-5：part 类型未知时不得默认按
 // 文本累积。「part.updated 总是先于 delta 到达」只是 spike5 的观测属性，
-// SSE 跨重连没有顺序保证——赌错方向就是把思维链交给审核者。
+// SSE 跨重连没有顺序保证——赌错方向就是把思维链交给协调者。
 func TestDeltaBeforePartTypeKnownIsNotText(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-delta-first", t.TempDir(), t.TempDir())
@@ -165,7 +165,7 @@ func TestRevisedSnapshotReplacesInsteadOfDuplicating(t *testing.T) {
 // 缺 sessionID 的 permission.asked 不能被当成本任务的审批工单静默放行。
 //
 // 多任务并发时 /event 是全服务器广播流，一条无归属的审批请求被每个任务都当成
-// 自己的，审核者会看到重复且归属错误的审批门。
+// 自己的，协调者会看到重复且归属错误的审批门。
 func TestPermissionWithoutSessionIsNotSilentlyTrusted(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-noses", t.TempDir(), t.TempDir())
@@ -360,7 +360,7 @@ func TestRetainedRunGivesUpAfterMaxAttempts(t *testing.T) {
 	t.Fatal("kill 恒失败的运行态永久驻留 runs 表")
 }
 
-// TestQuestionTextIsBounded 验证交给审核者的回合文本有上限：兜底分类会把
+// TestQuestionTextIsBounded 验证交给协调者的回合文本有上限：兜底分类会把
 // 整个回合原文塞进 question，一个 20 万字符的回合会直接灌进工单行与终端。
 // 全文始终在任务目录的 render.log 里，截断不丢证据。
 func TestQuestionTextIsBounded(t *testing.T) {

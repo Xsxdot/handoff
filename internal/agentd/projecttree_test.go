@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestBuildLocalTreeGroupsAndProbes 断言：按 project_id 分组、单机每项目恒 1 个

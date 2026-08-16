@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // 存活锁被持有且无死亡哨兵 → 存活。
@@ -66,7 +66,7 @@ func TestProbeSessionAliveButProcessExited(t *testing.T) {
 		t.Fatal("哨兵已出现，即使锁还被持有也必须判死")
 	}
 	if got.Note == "" {
-		t.Fatal("判死必须带一句话理由给审核者看")
+		t.Fatal("判死必须带一句话理由给协调者看")
 	}
 }
 

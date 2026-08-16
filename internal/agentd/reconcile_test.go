@@ -11,10 +11,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/prochost"
-	"github.com/xushixin/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // quietLog 返回丢弃所有输出的日志器（对账函数白盒测试用）。
@@ -55,12 +56,12 @@ func TestReconcileExecutorGone(t *testing.T) {
 			}
 			hasFailed := false
 			for _, e := range evs {
-				if e.Type == proto.EventTypeFailed {
+				if e.Type == proto.EventTypeTurnFailed {
 					hasFailed = true
 				}
 			}
 			if hasFailed != c.wantEvent {
-				t.Fatalf("failed 事件 = %v，期望 %v", hasFailed, c.wantEvent)
+				t.Fatalf("turn_failed 事件 = %v，期望 %v", hasFailed, c.wantEvent)
 			}
 		})
 	}
@@ -79,12 +80,12 @@ func TestReconcileExecutorGoneIdempotent(t *testing.T) {
 	}
 	n := 0
 	for _, e := range evs {
-		if e.Type == proto.EventTypeFailed {
+		if e.Type == proto.EventTypeTurnFailed {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Fatalf("failed 事件应只有 1 条（幂等），实际 %d", n)
+		t.Fatalf("turn_failed 事件应只有 1 条（幂等），实际 %d", n)
 	}
 }
 
@@ -103,6 +104,51 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 	}
 	if len(pend) != 0 {
 		t.Fatalf("挂起工单应被作废，实际剩 %d", len(pend))
+	}
+}
+
+// TestReconcileTransitsBeforeEvent 同上，对 reconcileExecutorGone：turn_failed
+// 事件落库那一刻，状态必须已迁到 waiting_review——reconcileExecutorGone 迁的不是
+// failed（任务未终结，executor 死了代码还在，等协调者 diff 完裁决），是 waiting_review。
+//
+// 断言机制与 TestStopTransitsBeforeEvent 同款：钩子同步触发于 INSERT 之后、AppendEvent
+// 返回之前；钩子阻塞住 AppendEvent，主 goroutine 收到通知时（旧实现里 recoverTransit
+// 还没跑）读到的状态必然是 running，旧实现断言必失败，新实现必通过。
+func TestReconcileTransitsBeforeEvent(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: t.TempDir(), State: proto.TaskStateRunning})
+
+	fired := make(chan proto.Event, 1)
+	release := make(chan struct{})
+	st.SetEventHook(func(e proto.Event) {
+		fired <- e
+		<-release
+	})
+
+	go func() {
+		reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	}()
+
+	var gotType proto.EventType
+	select {
+	case e := <-fired:
+		gotType = e.Type
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待对账的 turn_failed 事件落库超时")
+	}
+	// 放行钩子：GetTask 期间 reconcileExecutorGone 停在 AppendEvent 内，读到的就是
+	// 事件落库瞬间的状态
+	defer close(release)
+	if gotType != proto.EventTypeTurnFailed {
+		t.Fatalf("对账首个事件应为 turn_failed，实际 %s", gotType)
+	}
+	cur, err := st.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateWaitingReview {
+		t.Fatalf("turn_failed 事件落库瞬间状态应为 %s，实际 %s（先事件后状态 = 破损中间态）",
+			proto.TaskStateWaitingReview, cur.State)
 	}
 }
 
@@ -130,12 +176,12 @@ func TestMediateReconcilesOnEventsClosed(t *testing.T) {
 	}
 	found := false
 	for _, e := range evs {
-		if e.Type == proto.EventTypeFailed {
+		if e.Type == proto.EventTypeTurnFailed {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("应产出 failed 事件说明 executor 终结")
+		t.Fatalf("应产出 turn_failed 事件说明 executor 已不在（任务收 waiting_review，未终结）")
 	}
 }
 
@@ -230,7 +276,7 @@ func TestStopExecutorFallsBackToReap(t *testing.T) {
 
 // TestStopExecutorEmitsEventWhenReapFails 信号对称：回收不掉必须留事件。
 // worktree 清理失败会发 progress 提示人工，executor 停不掉却完全静默——
-// 审核者根本无从知道有残留（B20 的第二个可改点）。
+// 协调者根本无从知道有残留（B20 的第二个可改点）。
 func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	ad := &reapAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
 		reapErr: errors.New("进程组回收失败")}
@@ -254,9 +300,9 @@ func TestStopExecutorEmitsEventWhenReapFails(t *testing.T) {
 	}
 }
 
-// TestStopExecutorNotifiesOnStillAlive 验证 Stop 报「进程仍存活」时，审核者
+// TestStopExecutorNotifiesOnStillAlive 验证 Stop 报「进程仍存活」时，协调者
 // 能在事件流里看到人工提示——B47 的全部意义就在这一条。改动前这里只有一行
-// Error 日志进 agentd.log，审核者的终端上什么都不会出现。
+// Error 日志进 agentd.log，协调者的终端上什么都不会出现。
 func TestStopExecutorNotifiesOnStillAlive(t *testing.T) {
 	ad := &stopErrAdapter{
 		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
@@ -284,7 +330,7 @@ func TestStopExecutorNotifiesOnStillAlive(t *testing.T) {
 }
 
 // TestStopExecutorStaysQuietOnOtherErrors 验证其它 Stop 失败**不**发事件：
-// 全发等于把审核者淹了，那样这条提示就没人看了。
+// 全发等于把协调者淹了，那样这条提示就没人看了。
 func TestStopExecutorStaysQuietOnOtherErrors(t *testing.T) {
 	ad := &stopErrAdapter{
 		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
@@ -368,8 +414,8 @@ func TestContinueColdResumesAndRetriesSend(t *testing.T) {
 }
 
 // TestContinueColdResumeEmitsProgressEvent 冷恢复/降级必须产出事件而不只是日志。
-// fresh 尤其重要：上下文断了是审核者需要知道的事实——它直接决定下一条指令
-// 要不要重述背景。只写日志等于让审核者在不知情的前提下继续对话。
+// fresh 尤其重要：上下文断了是协调者需要知道的事实——它直接决定下一条指令
+// 要不要重述背景。只写日志等于让协调者在不知情的前提下继续对话。
 func TestContinueColdResumeEmitsProgressEvent(t *testing.T) {
 	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
 		outcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeFresh,
@@ -411,7 +457,7 @@ func TestContinueUnrecoverableFallsBackToReview(t *testing.T) {
 		t.Fatalf("不可恢复应返回错误")
 	}
 	if !strings.Contains(err.Error(), "会话数据已不在磁盘上") {
-		t.Fatalf("错误应带 Outcome.Note 让审核者知道为什么: %v", err)
+		t.Fatalf("错误应带 Outcome.Note 让协调者知道为什么: %v", err)
 	}
 	cur, _ := st.GetTask("t1")
 	if cur.State != proto.TaskStateWaitingReview {
@@ -457,5 +503,39 @@ func TestReconcileExecutorGoneSweepsAfterTransit(t *testing.T) {
 
 	if stateAtSweep != proto.TaskStateWaitingReview {
 		t.Fatalf("清扫必须发生在状态迁移之后，清扫时状态为 %s", stateAtSweep)
+	}
+}
+
+// TestReconcileExecutorGoneEmitsTurnFailed 钉死 B100 补漏：对账路径落的必须是
+// turn_failed 而不是 failed。
+//
+// 为什么：本函数迁的是 **waiting_review**（recoverTransit），任务**没有终结**——
+// executor 死了但代码还在，值得让协调者 diff 完再决定 continue 还是 done。
+// 落 failed 会让 wait --follow 收流、打「任务已终结」并以 0 退出，把一个正等着
+// 裁决的任务报成死的。B100 首轮漏了这条：审核者 spec §1.1 的四生产者表把这一行
+// 误填成「任务落 failed」，没去看 recoverTransit 的实际迁移目标。
+func TestReconcileExecutorGoneEmitsTurnFailed(t *testing.T) {
+	st := newTestStore(t)
+	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
+
+	got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	if got != proto.TaskStateWaitingReview {
+		t.Fatalf("对账应收 waiting_review，实际 %s", got)
+	}
+	evs, err := st.EventsFromAsc("t1", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last proto.Event
+	for _, e := range evs {
+		if e.Type == proto.EventTypeFailed || e.Type == proto.EventTypeTurnFailed {
+			last = e
+		}
+	}
+	if last.Type == proto.EventTypeFailed {
+		t.Fatal("对账落了 failed：任务此刻在 waiting_review，没有终结，follow 会据此假报任务已死")
+	}
+	if last.Type != proto.EventTypeTurnFailed {
+		t.Fatalf("对账应落 turn_failed，实际 %q", last.Type)
 	}
 }

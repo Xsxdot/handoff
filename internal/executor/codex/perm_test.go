@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor"
-	"github.com/xushixin/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
 )
 
 // 裁决映射：只有 once 放行，其余一律 decline（fail-closed）
@@ -123,7 +123,7 @@ func TestPermTableTakeAndVoid(t *testing.T) {
 	}
 }
 
-// 被拒清单交给审核者的是描述而不是不透明 id
+// 被拒清单交给协调者的是描述而不是不透明 id
 func TestRejectedTurnQuestionShowsDescription(t *testing.T) {
 	tb := codex.NewPermTableForTest()
 	tb.NoteRejectedForTest("运行 rm -rf /etc")

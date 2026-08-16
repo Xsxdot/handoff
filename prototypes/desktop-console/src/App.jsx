@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -27,7 +27,6 @@ import {
   FolderOpen,
   Folders,
   GitBranch,
-  Globe2,
   HardDrive,
   House,
   KeyRound,
@@ -38,8 +37,6 @@ import {
   Monitor,
   MoreHorizontal,
   Network,
-  PanelBottomClose,
-  PanelBottomOpen,
   PanelRight,
   Play,
   Plus,
@@ -180,6 +177,23 @@ const codeByFile = {
     ['26', '    return len(g.peers)'],
     ['27', '}'],
   ],
+  'fixtures.json': [
+    ['1', '{'],
+    ['2', '  "peers": ['],
+    ['3', '    {"id": 1, "addr": "10.0.0.11:7946", "zone": "a"},'],
+    ['4', '    {"id": 2, "addr": "10.0.0.12:7946", "zone": "a"},'],
+    ['5', '    {"id": 3, "addr": "10.0.0.13:7946", "zone": "b"},'],
+    ['6', '    {"id": 4, "addr": "10.0.0.14:7946", "zone": "b"},'],
+    ['7', '    {"id": 5, "addr": "10.0.0.15:7946", "zone": "c"},'],
+  ],
+};
+
+// fileKinds 只登记「不是普通可编辑文本」的文件。
+// 没登记的一律按可编辑文本处理，这与真实实现的判定方向一致：
+// agentd 是在读到内容之后才知道它是二进制/超限的，不靠扩展名猜。
+const fileKinds = {
+  'logo.png': { kind: 'binary', size: '48.2 KB' },
+  'fixtures.json': { kind: 'truncated', size: '3.2 MB' },
 };
 
 const fileRows = [
@@ -201,7 +215,26 @@ const fileRows = [
   { name: 'go.mod', type: 'file', depth: 0 },
   { name: 'README.md', type: 'file', depth: 0 },
   { name: 'Makefile', type: 'file', depth: 0, modified: true },
+  // 这两条不是装饰：点开它们才能看到 B81 的另外两种读取结果（二进制 / 超限截断）
+  { name: 'fixtures.json', type: 'file', depth: 0 },
+  { name: 'logo.png', type: 'file', depth: 0 },
 ];
+
+// filePaths 从 fileRows 的缩进结构还原每个文件的目录路径，供编辑器面包屑用。
+// 写死一份对照表也能跑，但那样每加一个文件就要同步改两处——让树自己说话。
+const filePaths = (() => {
+  const stack = [];
+  const paths = {};
+  for (const row of fileRows) {
+    stack.length = row.depth;
+    if (row.type === 'folder') {
+      stack[row.depth] = row.name;
+      continue;
+    }
+    paths[row.name] = stack.slice(0, row.depth);
+  }
+  return paths;
+})();
 
 function IconButton({ label, children, className = '', ...props }) {
   return (
@@ -478,20 +511,47 @@ function ToolCall({ icon: Icon, label, detail, done = true }) {
   );
 }
 
-function highlightGo(line) {
-  const tokenPattern = /(\s*\/\/.*$|".*?"|\b(?:func|defer|for|range|var|go|if|nil|close|return|type|struct|make|chan|error)\b|\b\d+\b)/g;
-  return line.split(tokenPattern).filter(Boolean).map((part, index) => {
-    const value = part.trim();
-    let className = '';
-    if (value.startsWith('//')) className = 'token-comment';
-    else if (value.startsWith('"')) className = 'token-string';
-    else if (/^\d+$/.test(value)) className = 'token-number';
-    else if (/^(func|defer|for|range|var|go|if|nil|close|return|type|struct|make|chan|error)$/.test(value)) className = 'token-keyword';
-    return <span className={className} key={`${index}-${part}`}>{part}</span>;
-  });
+// B83 累计用量：同一个 meta 框里两种视图，切换按钮在右上角。
+// 数字刻意让它们加得起来——输入 + 缓存输入 + 输出 = 总量，否则原型会教出错的心智模型。
+const CUMULATIVE = { total: 3425000, input: 1182400, cachedInput: 2058900, output: 183700, cost: 4.2 };
+
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+
+function TuiMeta({ costMode }) {
+  const [view, setView] = useState('context');
+  const est = costMode === 'est';
+  // 估算值必须看得出是估算：codex 不自报花费，由 handoff 按牌价乘出来。
+  // 和 grok/claudecode/opencode 的自报值长得一样，就是在暗示一个它没有的精度。
+  const cost = est
+    ? <span className="usage-est">≈${CUMULATIVE.cost.toFixed(2)}<em>估算</em></span>
+    : <span>${CUMULATIVE.cost.toFixed(2)}</span>;
+
+  return (
+    <div className="tui-meta">
+      <strong>
+        OpenCode CLI v1.18.15
+        <button type="button" className="usage-toggle" onClick={() => setView(view === 'context' ? 'usage' : 'context')}>
+          {view === 'context' ? '累计用量' : '当前占用'}
+        </button>
+      </strong>
+      <span>Model:</span><span>gpt-5-codex</span>
+      {view === 'context' && (<><span>Context:</span><span>144,390 / 1,048,576 tokens (14%)</span></>)}
+
+      {/* 用量行整行铺开（跨掉标签列），「累计」并进内容里当前缀。
+          关在第二列时内容宽度正好卡满、多一位数字就折行；跨列后腾出约 16% 余量，
+          而行数和框高都不变——切换视图时下面的正文不会跳。 */}
+      {view === 'usage' && (
+        <span className="usage-line">
+          <b>累计</b> {fmtTokens(CUMULATIVE.total)} · 输入 {fmtTokens(CUMULATIVE.input)} · 缓存 {fmtTokens(CUMULATIVE.cachedInput)} · 输出 {fmtTokens(CUMULATIVE.output)} · {cost}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function TaskTui({ activeTask, setActiveTask }) {
+  // 原型专用脚手架：真实控制台里没有这个开关，两种花费形态取决于执行器自己报不报。
+  const [costMode, setCostMode] = useState('est');
   const [approvalState, setApprovalState] = useState(null);
   const [draft, setDraft] = useState('');
   const [sentPrompt, setSentPrompt] = useState('');
@@ -516,10 +576,12 @@ function TaskTui({ activeTask, setActiveTask }) {
 
   return (
     <div className="tui-surface">
-      <div className="tui-meta">
-        <strong>{isApproval ? 'Codex CLI v0.18.1' : 'OpenCode CLI v1.18.15'}</strong>
-        <span>Model: gpt-5-codex</span>
-        <span>Context: 144,390 tokens (14%)</span>
+      <TuiMeta costMode={costMode} />
+      <div className="usage-scaffold">
+        <small>原型：花费来源</small>
+        {[['est', 'codex 估算'], ['real', 'grok 自报']].map(([k, label]) => (
+          <button key={k} type="button" className={costMode === k ? 'on' : ''} onClick={() => setCostMode(k)}>{label}</button>
+        ))}
       </div>
       <div className="tui-scroll">
         <div className="speaker user">user</div>
@@ -578,70 +640,190 @@ function TaskTui({ activeTask, setActiveTask }) {
   );
 }
 
-function CodeEditor({ selectedFile }) {
+// FileEditor 是 B81「工作树文件写回」的形态载体。
+//
+// 它刻意长得**朴素**：没有行号、没有语法高亮、没有代码折叠。真实实现是一个
+// 裸 textarea（spec §6.2），原型比真实实现好看只会让验收时的对照失真。
+//
+// 三种读取结果对应 spec §2 的 FileRead 三个分支，点左边文件树就能分别看到：
+//   - 文本：可编辑，有脏标记、保存按钮、⌘S
+//   - 二进制：只读，说明为什么不给编辑
+//   - 超限截断：只读，说明看到的只是开头一段
+//
+// 冲突条有**两个入口、一套出口**：保存时撞 409（reason=save），和重开文件时发现
+// 草稿基线已过期（reason=stale-draft）。用户面对的是同一个问题，所以不发明第二套
+// 逻辑。「用我的内容覆盖」带二次确认，理由见 AGENTS.md：我们没有 watcher，
+// 冲突只在保存那一刻才暴露，用户在此之前从没被警告过。
+//
+// 底部两个「原型：…」按钮是**原型专用开关**，真实实现里没有这些东西——
+// 它们存在的唯一理由是让两条冲突路径都能被点出来看，否则最重要的形态没法验。
+function FileEditor({ selectedFile }) {
+  const meta = fileKinds[selectedFile] || { kind: 'text' };
   const rows = codeByFile[selectedFile] || codeByFile['transport_test.go'];
+  const diskText = useMemo(() => rows.map(([, line]) => line).join('\n'), [rows]);
+
+  const [draft, setDraft] = useState(diskText);
+  const [base, setBase] = useState(diskText); // 上次读到/保存成功的内容，等价于 baseSHA256
+  // null = 无冲突；否则 { reason: 'save' | 'stale-draft', confirming: 是否在二次确认 }
+  const [conflict, setConflict] = useState(null);
+  const [staleOnDisk, setStaleOnDisk] = useState(false); // 原型开关
+  const [notice, setNotice] = useState('');
+
+  // 换文件等于换一份 base：草稿、冲突态、提示全部重置。
+  // 真实实现里草稿是按 tab 存的，切 tab 不会丢——那是 spec §7 的事，
+  // 原型只有一个编辑器，不模拟多草稿。
+  useEffect(() => {
+    setDraft(diskText);
+    setBase(diskText);
+    setConflict(null);
+    setStaleOnDisk(false);
+    setNotice('');
+  }, [selectedFile, diskText]);
+
+  const dirty = draft !== base;
+  // 执行者「改动后」的磁盘内容：多一行，好让放弃改动这条出口看得出效果
+  const remoteText = `// ← 执行者在你编辑期间改了这个文件（原型模拟）\n${base}`;
+
+  function save() {
+    if (staleOnDisk) {
+      // 对应 409：服务端算出的 sha256 与我们上送的 baseSHA256 不一致
+      setConflict({ reason: 'save', confirming: false });
+      setNotice('');
+      return;
+    }
+    setBase(draft);
+    setConflict(null);
+    setNotice('已保存');
+  }
+
+  // 模拟「带着草稿重开这个文件」：真实实现里草稿连 baseSha 一起存在 localStorage，
+  // 重开时拿它和磁盘现在的 sha256 一比，不等就是过期草稿。原型只有一个编辑器、
+  // 没有 tab 与刷新，所以给一个按钮把这一刻直接摆出来
+  function reopenWithStaleDraft() {
+    setConflict({ reason: 'stale-draft', confirming: false });
+    setNotice('');
+  }
+
+  function overwrite() {
+    // 对应「拿 current.sha256 当新 base 重发一次」——不是「跳过校验」。
+    // 这一步只有在二次确认之后才会走到
+    setBase(draft);
+    setConflict(null);
+    setStaleOnDisk(false);
+    setNotice('已用你的内容覆盖执行者的改动');
+  }
+
+  function discard() {
+    setDraft(remoteText);
+    setBase(remoteText);
+    setConflict(null);
+    setStaleOnDisk(false);
+    setNotice('已放弃改动，载入磁盘版本');
+  }
+
+  function onKeyDown(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+      event.preventDefault(); // 否则触发浏览器的「保存网页」
+      if (dirty) save();
+    }
+  }
+
   return (
     <div className="editor-surface">
-      <div className="editor-breadcrumb">internal <ChevronRight size={12} /> cluster <ChevronRight size={12} /><FileCode2 size={13} /><span>{selectedFile}</span></div>
-      <div className="code-scroll">
-        {rows.map(([number, line]) => {
-          const lineNumber = Number(number);
-          const highlight = selectedFile === 'transport_test.go' && lineNumber >= 78 && lineNumber <= 94;
-          return (
-            <div className={`code-line ${highlight ? 'highlight' : ''}`} key={`${selectedFile}-${number}`}>
-              <span className="line-number">{number}</span>
-              <code>{line ? highlightGo(line) : ' '}</code>
-            </div>
-          );
-        })}
-      </div>
-      <div className="editor-status"><span>Go</span><span>行 78–94, 已修改</span><span>UTF-8</span><span>LF</span></div>
-    </div>
-  );
-}
-
-function BrowserPreview() {
-  return (
-    <div className="browser-surface">
-      <div className="browser-address"><Globe2 size={14} /><span>http://localhost:5173</span><RefreshCw size={13} /></div>
-      <div className="browser-page">
-        <span className="preview-kicker">super-debug / integration/b2-b3</span>
-        <h2>Transport health</h2>
-        <p>Local preview from devbox-01</p>
-        <div className="preview-list">
-          <span><StatusDot />Peer manager <b>Healthy</b></span>
-          <span><StatusDot />Drain queue <b>Healthy</b></span>
-          <span><StatusDot tone="attention" />Snapshot <b>Needs approval</b></span>
+      <div className="editor-bar">
+        <div className="editor-breadcrumb">
+          {(filePaths[selectedFile] || []).map((segment) => (
+            <span key={segment}>{segment}<ChevronRight size={12} /></span>
+          ))}
+          <FileCode2 size={13} /><span>{selectedFile}</span>
         </div>
+        {meta.kind === 'text' ? (
+          <div className="editor-bar-actions">
+            {dirty && <span className="dirty-flag">● 未保存</span>}
+            <button className="save-button" type="button" disabled={!dirty} onClick={save}>
+              <Save size={13} />保存<kbd>⌘S</kbd>
+            </button>
+          </div>
+        ) : (
+          <span className="readonly-flag"><LockKeyhole size={12} />只读</span>
+        )}
       </div>
-    </div>
-  );
-}
 
-function ShellPanel({ open, setOpen }) {
-  return (
-    <section className={`shell-panel ${open ? '' : 'collapsed'}`}>
-      <header>
-        <div className="shell-tabs"><button className="active" type="button">终端</button><button type="button">问题</button><button type="button">输出</button><button type="button">调试控制台</button></div>
-        <div className="shell-actions"><span>bash</span><IconButton label={open ? '收起终端' : '展开终端'} onClick={() => setOpen((value) => !value)}>{open ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}</IconButton><IconButton label="更多"><MoreHorizontal size={15} /></IconButton></div>
-      </header>
-      {open && (
-        <div className="shell-output">
-          <p><strong>devbox-01:~/workspace/super-debug/integration/b2-b3$</strong> go test ./internal/cluster -run DropPeer -count=50 -race</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/transport&nbsp;&nbsp;&nbsp;&nbsp; 12.851s</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/cluster&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 18.237s</p>
-          <p>PASS</p>
-          <p>ok&nbsp;&nbsp;&nbsp; github.com/super-debug/transport&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 0.698s</p>
-          <p><strong>devbox-01:~/workspace/super-debug/integration/b2-b3$</strong> <span className="cursor" /></p>
+      {conflict && (
+        <div className="editor-conflict">
+          <TriangleAlert size={15} />
+          <div>
+            <strong>
+              {conflict.reason === 'stale-draft'
+                ? '本地草稿基于的版本已经变了。'
+                : '文件已在磁盘上变了（很可能是 executor 改的）。'}
+            </strong>
+            {conflict.confirming && (
+              <span className="conflict-warn">覆盖会丢掉磁盘上那一版的改动，不可撤销。</span>
+            )}
+          </div>
+          {conflict.confirming ? (
+            <>
+              <button type="button" className="conflict-ghost" onClick={() => setConflict({ ...conflict, confirming: false })}>取消</button>
+              <button type="button" className="conflict-danger" onClick={overwrite}>确认覆盖</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="conflict-ghost" onClick={discard}>放弃我的改动，载入磁盘版本</button>
+              <button type="button" className="conflict-danger" onClick={() => setConflict({ ...conflict, confirming: true })}>用我的内容覆盖</button>
+            </>
+          )}
         </div>
       )}
-    </section>
+
+      {meta.kind === 'text' && (
+        <textarea
+          className="editor-textarea"
+          value={draft}
+          spellCheck={false}
+          onChange={(event) => { setDraft(event.target.value); setNotice(''); }}
+          onKeyDown={onKeyDown}
+        />
+      )}
+
+      {meta.kind === 'binary' && (
+        <div className="editor-blocked">
+          <TriangleAlert size={22} />
+          <strong>二进制文件，不支持在线编辑</strong>
+          <p>前 8 KiB 里出现了 NUL 字节，agentd 不会把它当文本返回，因此也拒绝写回。</p>
+          <span>{selectedFile} · {meta.size}</span>
+        </div>
+      )}
+
+      {meta.kind === 'truncated' && (
+        <div className="editor-truncated">
+          <div className="truncated-banner"><TriangleAlert size={14} />文件 {meta.size}，超过 1 MiB 上限，只显示开头一段且不支持编辑</div>
+          <pre>{diskText}</pre>
+          <div className="truncated-tail">===== 内容已截断 =====</div>
+        </div>
+      )}
+
+      <div className="editor-status">
+        <span>{meta.kind === 'text' ? 'Go' : meta.kind === 'binary' ? 'PNG' : 'JSON'}</span>
+        <span>{dirty ? '有未保存改动' : notice || '与磁盘一致'}</span>
+        <span>UTF-8</span>
+        <span>LF</span>
+        {meta.kind === 'text' && (
+          <button type="button" className={`proto-toggle ${staleOnDisk ? 'armed' : ''}`} onClick={() => setStaleOnDisk((value) => !value)}>
+            {staleOnDisk ? '原型：磁盘已变，下次保存会冲突' : '原型：模拟执行者改动此文件'}
+          </button>
+        )}
+        {meta.kind === 'text' && staleOnDisk && (
+          <button type="button" className="proto-toggle" onClick={reopenWithStaleDraft}>
+            原型：模拟带草稿重开此文件
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
-function Workspace({ activeTask, setActiveTask, selectedFile, setSelectedFile }) {
-  const [rightTab, setRightTab] = useState('editor');
-  const [shellOpen, setShellOpen] = useState(true);
+function Workspace({ activeTask, setActiveTask, selectedFile }) {
   return (
     <main className="workspace">
       <section className="tab-group tui-group">
@@ -654,13 +836,11 @@ function Workspace({ activeTask, setActiveTask, selectedFile, setSelectedFile })
       </section>
       <section className="tab-group editor-group">
         <div className="tab-strip editor-tabs">
-          <Tab active={rightTab === 'editor'} icon={FileCode2} label={selectedFile} modified onClick={() => setRightTab('editor')} />
-          <Tab active={rightTab === 'browser'} icon={Globe2} label="localhost:5173" onClick={() => setRightTab('browser')} />
+          <Tab active icon={FileCode2} label={selectedFile} modified />
           <IconButton label="新建标签"><Plus size={15} /></IconButton>
         </div>
         <div className="right-group-body">
-          {rightTab === 'editor' ? <CodeEditor selectedFile={selectedFile} /> : <BrowserPreview />}
-          <ShellPanel open={shellOpen} setOpen={setShellOpen} />
+          <FileEditor key={selectedFile} selectedFile={selectedFile} />
         </div>
       </section>
     </main>
@@ -1001,6 +1181,134 @@ function StatusBar({ selectedDirectory, currentView }) {
   );
 }
 
+// HomeDock —— 右下角悬浮入口 + home 基准终端的独立浮窗。
+//
+// 形态要点：
+//   - 圆钮**一下直达**：没有中间那层清单面板。B90 定稿时有一张小面板，
+//     08-15 走查（B94①）翻案删掉了——它列的东西与浮窗自己的 tab 条完全重复，
+//     等于把「打开终端」做成了两段式。
+//   - 圆钮三分支：浮窗开着 → 收起；一个终端都没有 → 新建；否则 → 唤回上次那个。
+//   - 终端跑在**一个浮窗**里，浮窗内含 tab 条切换多个终端。浮窗可拖、可拉伸，
+//     与中央工作区完全无关（中央 tab 条上不会出现它们）。
+//   - 浮窗右上角是「收起」不是「关闭」：会话留着，重开还在原样。
+//     只有 tab 上的 × 才真的杀掉会话——与 PTY 既有口径一致。
+//     圆钮上的角标是这条口径的可见证据：收起后数字不变。
+function HomeDock() {
+  const [winOpen, setWinOpen] = useState(false);
+  const [seq, setSeq] = useState(2);
+  const [tabs, setTabs] = useState([
+    { id: 't1', label: 'bash · home' },
+    { id: 't2', label: 'bash · home 2' },
+  ]);
+  const [active, setActive] = useState('t1');
+  const [pos, setPos] = useState({ x: 300, y: 150 });
+  const [size, setSize] = useState({ w: 620, h: 340 });
+
+  const openTerminal = () => {
+    const id = `t${seq + 1}`;
+    setSeq(seq + 1);
+    setTabs((current) => [...current, { id, label: `bash · home ${seq + 1}` }]);
+    setActive(id);
+    setWinOpen(true);
+  };
+
+  // onFab —— 圆钮的三分支。顺序有意义：先判「浮窗在不在眼前」，
+  // 否则用户点它想收起时会又新开一个。
+  const onFab = () => {
+    if (winOpen) { setWinOpen(false); return; }
+    if (tabs.length === 0) { openTerminal(); return; }
+    setActive(active ?? tabs[tabs.length - 1].id);
+    setWinOpen(true);
+  };
+
+  const killTab = (id) => {
+    setTabs((current) => {
+      const next = current.filter((tab) => tab.id !== id);
+      if (id === active && next.length) setActive(next[0].id);
+      if (!next.length) setWinOpen(false);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      {winOpen && tabs.length > 0 && (
+        <HomeWindow
+          tabs={tabs}
+          active={active}
+          pos={pos}
+          size={size}
+          onPos={setPos}
+          onSize={setSize}
+          onActivate={setActive}
+          onNew={openTerminal}
+          onKill={killTab}
+          onCollapse={() => setWinOpen(false)}
+        />
+      )}
+
+      {/* 角标留着：它是「收起不杀」这条口径唯一看得见的证据——收起后数字不变 */}
+      <button type="button" className="home-dock-fab" aria-label="home 基准终端" onClick={onFab}>
+        <Plus size={19} />
+        {tabs.length > 0 && <span className="home-dock-badge">{tabs.length}</span>}
+      </button>
+    </>
+  );
+}
+
+// HomeWindow —— home 终端的浮窗本体：标题栏（可拖）+ tab 条 + 内容 + 右下拉伸角。
+function HomeWindow({ tabs, active, pos, size, onPos, onSize, onActivate, onNew, onKill, onCollapse }) {
+  // drag/resize 共用：按下记起点，移动算增量，抬起解绑。原型里做成真的可拖，
+  // 是因为「这窗口到底碍不碍事」只有拖过才知道。
+  const grab = (event, apply) => {
+    event.preventDefault();
+    const sx = event.clientX;
+    const sy = event.clientY;
+    const move = (e) => apply(e.clientX - sx, e.clientY - sy);
+    const up = () => document.removeEventListener('pointermove', move);
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+  };
+
+  const onTitleDown = (event) => {
+    const from = { ...pos };
+    grab(event, (dx, dy) => onPos({ x: Math.max(8, from.x + dx), y: Math.max(8, from.y + dy) }));
+  };
+
+  const onCornerDown = (event) => {
+    const from = { ...size };
+    grab(event, (dx, dy) => onSize({ w: Math.max(360, from.w + dx), h: Math.max(200, from.h + dy) }));
+  };
+
+  return (
+    <section className="home-window" style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}>
+      <header className="home-window-title" onPointerDown={onTitleDown}>
+        <span><House size={13} />home</span>
+        <span className="home-window-spacer" />
+        <button type="button" aria-label="收起（会话保留）" title="收起（会话保留）" onClick={onCollapse}><ChevronDown size={14} /></button>
+      </header>
+      <div className="home-window-tabs">
+        {tabs.map((tab) => (
+          <span key={tab.id} className={`home-window-tab ${tab.id === active ? 'active' : ''}`}>
+            <button type="button" onClick={() => onActivate(tab.id)}><SquareTerminal size={12} />{tab.label}</button>
+            <button type="button" className="tab-kill" aria-label={`关闭 ${tab.label}`} title="关闭并结束会话" onClick={() => onKill(tab.id)}><X size={11} /></button>
+          </span>
+        ))}
+        <button type="button" className="home-window-add" aria-label="新终端" onClick={onNew}><Plus size={13} /></button>
+      </div>
+      <div className="home-window-body">
+        <p><span className="term-prompt">~</span> ssh devbox-01</p>
+        <p>Last login: Sun Aug  9 14:12:03 2026 from 100.73.238.21</p>
+        <p><span className="term-prompt">~</span> handoff status</p>
+        <p>agentd   http://127.0.0.1:7777   可用</p>
+        <p>任务     3 个活跃</p>
+        <p><span className="term-prompt">~</span> <span className="term-caret" /></p>
+      </div>
+      <span className="home-window-corner" onPointerDown={onCornerDown} aria-hidden="true" />
+    </section>
+  );
+}
+
 export function App() {
   const [currentView, setCurrentView] = useState('workbench');
   const [projects, setProjects] = useState(projectRows);
@@ -1039,6 +1347,7 @@ export function App() {
         </main>
       )}
       <StatusBar selectedDirectory={selectedDirectory} currentView={currentView} />
+      <HomeDock />
     </div>
   );
 }

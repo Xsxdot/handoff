@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 )
 
 func TestWriteTaskEnvGeneratesPinnedPermissionConfig(t *testing.T) {

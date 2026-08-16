@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xushixin/handoff/internal/config"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // testToken 是白盒测试的固定访问令牌（与 server_test.go 的同名常量同值不同包）。
@@ -26,6 +26,7 @@ type testAgentdEnv struct {
 	srv   *Server
 	ts    *httptest.Server
 	st    *store.Store
+	mgr   *Manager // 由用例注入（SetManager 装配后填充）
 	token string
 }
 

@@ -1,11 +1,13 @@
-// watchdog.go —— 任务级卡住看门狗与 agentd 启动恢复。
+// watchdog.go —— 任务级卡住看门狗、失配对账扫描与 agentd 启动恢复。
 //
 // 职责：
 //   - RunWatchdog：周期扫描 running/waiting_answer 任务，最新事件早于 stallTimeout
-//     判定卡住，追加 stalled 事件并广播，唤醒审核者裁决（spec §8「任务级超时看门狗」）
+//     判定卡住，追加 stalled 事件并广播，唤醒协调者裁决（spec §8「任务级超时看门狗」）；
+//     每轮另做失配对账扫描（scanStateMismatch），把「最新事件已 failed、状态却非终态」
+//     的破损中间态补迁 failed（B97 Task 3 保险丝）
 //   - RecoverOnStartup：agentd 启动时对 running/waiting_answer/waiting_review 任务
 //     逐个探测执行器存活（spec §8「agentd 崩溃后重启恢复」）；running/waiting_answer
-//     不存活 → failed 事件 + 迁移 waiting_review 交审核者裁决；waiting_review 不存活
+//     不存活 → turn_failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
 //     → 保持现状（本就是待审核终态，不追加事件不迁状态）；存活（含 waiting_review）
 //     → 重建 SSE 订阅继续消费
 //
@@ -24,8 +26,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/xushixin/handoff/internal/proto"
-	"github.com/xushixin/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // watchdogTick 是 RunWatchdog 的生产扫描间隔（一分钟）。
@@ -35,17 +37,53 @@ import (
 // 扫描开销（全表 ListTasks + 每任务 LatestEvent）极低。
 const watchdogTick = time.Minute
 
-// stalledPayload 是 stalled 事件的 payload，供审核者快速判断卡了多久、卡在哪个事件后。
+// mismatchScanMinAge 是失配对账扫描的事件最小年龄（防抢）。
+// 为什么 30s：§2 那两处（Stop/reconcile）正常执行时也会短暂处在「事件已落、状态未迁」
+// 的中间态，扫描冲进去会把人家正在做的事搅了。30s 足够走完这两条路径上的任何正常窗口。
+const mismatchScanMinAge = 30 * time.Second
+
+// MismatchScanMinAge 是失配对账扫描的事件最小年龄（供 cmd 接线）。
+const MismatchScanMinAge = mismatchScanMinAge
+
+// stateMismatchTransit 是失配对账扫描的「迁移」回调：把任务状态迁到 failed。
+// 生产由 cmd/agentd.go 传 mgr.transit 的包装（与 sweep 的 mgr.SweepTaskProcs 接线同款）；
+// 终态收口（挂起工单作废 + 审计留痕，B63）挂在 Manager.transit 内部，扫描自己绝不做迁移。
+type stateMismatchTransit func(taskID string, to proto.TaskState, reason string) error
+
+// stalledPayload 是 stalled 事件的 payload，供协调者快速判断卡了多久、卡在哪个事件后。
 type stalledPayload struct {
 	LastSeq int64  `json:"last_seq"` // 卡住判定时刻的最新事件 seq（事发锚点）；零事件任务无事件可锚，记 0
 	Idle    string `json:"idle"`     // 空闲时长（如 "3h2m5s"，秒粒度）
 }
 
-// resourcePressurePayload 是高水位事件的载荷：审核者要靠这两个数字判断
+// resourcePressurePayload 是高水位事件的载荷：协调者要靠这两个数字判断
 // 该不该收敛，只说「压力大」没有任何操作价值。
 type resourcePressurePayload struct {
 	Used  int `json:"used"`
 	Limit int `json:"limit"`
+}
+
+// taskProcPressurePayload 是任务级进程越线事件的载荷。
+//
+// 与 resourcePressurePayload 分开而不是复用：那个是机器级（used/limit 都是 uid
+// 维度），这个是任务级，两者叠在一起时审核者要能一眼分清是谁在吃。
+type taskProcPressurePayload struct {
+	Used   int `json:"used"`
+	Budget int `json:"budget"`
+}
+
+// taskProcCountFn 是「数某任务名下有几个进程」的测试缝。
+// **生产路径恒为 Manager.TaskProcCount**（接线在 cmd/agentd.go），
+// 非测试代码不得赋值。
+var taskProcCountFn func(taskID string) (int, bool)
+
+// SetTaskProcCounter 注入「数某任务名下进程数」的实现，由 agentd 启动时调用一次。
+//
+// 参数：fn 为按任务 ID 返回 (进程数, 是否可信) 的实现，生产恒传 Manager.TaskProcCount。
+//
+// 注意：测试直接赋包级 taskProcCountFn 即可，不需要走本函数。
+func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
+	taskProcCountFn = fn
 }
 
 // RunWatchdog 启动任务卡住看门狗并持续运行，直到 ctx 取消。
@@ -56,28 +94,40 @@ type resourcePressurePayload struct {
 //   - st: 持久化存储（任务列表与最新事件的数据源）
 //   - hub: 实时路由（stalled 事件广播）
 //   - stallTimeout: 判定「卡住」的空闲时长（最新事件距今超过它即触发）
+//   - budget: 任务级进程数告警线，<=0 表示该档关闭（见 scanTaskProcs）
+//   - hardLimit: 任务级进程数硬上限，<=0 表示该档关闭（见 scanTaskProcs）
+//   - sweep: 清扫某任务残留进程的入口（接线传 mgr.SweepTaskProcs）
+//   - startedAt: 本次 agentd 启动时刻（失配对账扫描的护栏之一，见 mismatchVerdict）
+//   - minAge: 失配对账扫描的事件最小年龄（生产取 MismatchScanMinAge）
+//   - transit: 失配对账扫描的「迁移」回调（接线传 mgr.MismatchTransit）
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 扫描间隔固定为 watchdogTick（每分钟）；测试需要注入短间隔时直接调用
 //     同包的 runWatchdog 并传入 tick 参数
 //   - 每轮扫描对 running/waiting_answer 任务判定；同一任务在 stalled 之后若无
-//     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如审核者 reply）
+//     活动（新事件或 task.UpdatedAt 前进）不会重复触发，有活动（如协调者 reply）
 //     且 executor 仍无事件产出时下一轮会二次触发（「只发一次」按活动裁决，
 //     设计见 scanStalled 的函数头 P1-15a）
 //   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
-//     给每个活跃任务发一条 resource_pressure 事件唤醒审核者收敛
-func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, log *slog.Logger) {
-	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, log)
+//     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛；再按任务点名
+//     进程数（见 scanTaskProcs），两档处置——告警线只唤醒，硬上限直接清扫
+//   - 每轮另做失配对账扫描（见 scanStateMismatch）：把「最新事件 failed 但状态
+//     非终态」的破损中间态补迁 failed，经 transit 回调走终态收口
+func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, sweep func(string), startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, sweep, startedAt, minAge, transit, log)
 }
 
 // runWatchdog 是看门狗的实现骨架：tick 间隔可注入（生产固定一分钟，
 // 测试注入 10ms），其余语义与 RunWatchdog 一致。
-func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, log *slog.Logger) {
+func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, sweep func(string), startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	log.Info("看门狗启动", "tick", tick, "stall_timeout", stallTimeout)
 	pressure := false
+	// 任务级进程告警的置位状态跨 tick 存活（与 pressure 同理由：不用包级变量，
+	// 那会让两个 agentd 实例互相踩状态）
+	taskFired := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -85,7 +135,9 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 			return
 		case <-ticker.C:
 			scanStalled(st, hub, stallTimeout, log)
+			scanStateMismatch(st, hub, startedAt, minAge, transit, log)
 			pressure = scanPressure(st, hub, pressure, log)
+			scanTaskProcs(st, hub, budget, hardLimit, taskFired, sweep, log)
 		}
 	}
 }
@@ -93,10 +145,10 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 // scanStalled 扫描一轮：对 running/waiting_answer 任务判定是否卡住并触发 stalled。
 //
 // 为什么只扫 running/waiting_answer：pending 尚在启动中（无事件正常）、
-// waiting_review 卡住说明审核者还没处理（那是人的节奏，不归看门狗）、
+// waiting_review 卡住说明协调者还没处理（那是人的节奏，不归看门狗）、
 // completed/failed 已终结；只有「executor 应该在干活」的状态才是卡住判定对象。
-// waiting_answer 卡住正是「审批挂起过夜」场景——executor 等审核者答复等太久，
-// 值得再发一条 stalled 把审核者拽回来。
+// waiting_answer 卡住正是「审批挂起过夜」场景——executor 等协调者答复等太久，
+// 值得再发一条 stalled 把协调者拽回来。
 //
 // 活动基线（P1-15 重新设计）：
 //   - 最新事件时间；零事件任务（建好后从未产出事件，即「静默挂起」）以
@@ -107,7 +159,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 // 该 stalled 之后出现过活动（task.UpdatedAt 前进）才允许重发。为什么以
 // UpdatedAt 变化为二次触发的准绳：reply 回程的 AnswerTicket 会刷新任务的
 // updated_at（见 store.AnswerTicket），resumeIfIdle 回迁 running 也会刷新——
-// 正是「已 stalled → 审核者回答 → executor 仍然死着」这个最需要二次告警的
+// 正是「已 stalled → 协调者回答 → executor 仍然死着」这个最需要二次告警的
 // 场景（旧实现永远不再告警）；而普通无活动状态下 updated_at 停在 stalled
 // 事件之前，每轮扫描照旧跳过，不产生事件风暴。新 stalled 事件落库时间晚于
 // 当时 updated_at，下一轮自然回到「不重发」分支。
@@ -171,6 +223,57 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 	log.Debug("看门狗扫描完成", "checked", checked, "fired", fired)
 }
 
+// scanStateMismatch 扫描一轮失配任务：最新事件是 failed、状态却非终态（判据见
+// mismatchVerdict，三条护栏缺一不可），则经 transit 回调把状态补成 failed。
+//
+// 为什么必须复用 transit 而不裸调 UpdateTaskState：终态迁移的挂起工单作废与审计留痕
+// （B63）挂在 Manager.transit 上，绕过它就只改了状态、留下一堆永远不会被回答的工单。
+// 迁移失败只记 Error 不重试——下一轮 tick 自然再扫。
+//
+// 不补第二条 failed 事件（会重复），改为追加一条 progress 审计：说明这是对账修的、
+// 原始事件的 seq 是多少。状态凭空变了却没有痕迹，比不修更难排查。
+//
+// 不清扫进程、不杀 executor：那是 SweepTaskProcs 的职责，且能走到这一步说明 executor
+// 早已被判死，清扫在别的路径上已经做过。
+func scanStateMismatch(st *store.Store, hub *Hub, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("失配对账读取任务列表失败", "cause", err)
+		return
+	}
+	now := time.Now()
+	for _, t := range tasks {
+		latest, err := st.LatestEvent(t.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue // 零事件任务：没有 failed 事件，不是失配对象
+		}
+		if err != nil {
+			log.Error("失配对账读取任务最新事件失败", "task", t.ID, "cause", err)
+			continue
+		}
+		if !mismatchVerdict(t.State, latest, now, startedAt, minAge) {
+			continue
+		}
+		age := now.Sub(latest.CreatedAt)
+		// 每次动手必有一条 Warn（instrumenting-code）：含 taskID、原始事件 seq、原状态、事件年龄
+		log.Warn("失配对账：任务最新事件是 failed 但状态非终态，补迁 failed",
+			"task", t.ID, "seq", latest.Seq, "state", t.State, "event_age", age.Round(time.Second).String())
+		if terr := transit(t.ID, proto.TaskStateFailed, "mismatch-scan"); terr != nil {
+			log.Error("失配对账补迁 failed 失败，下一轮再试", "task", t.ID, "cause", terr)
+			continue
+		}
+		// 审计事件：progress，文本含原始事件 seq（不补第二条 failed 事件）
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeProgress, progressPayload{
+			Text: fmt.Sprintf("失配对账：任务状态已补正为 failed（对账前的 failed 事件 seq=%d）", latest.Seq),
+		})
+		if aerr != nil {
+			log.Error("失配对账追加审计事件失败", "task", t.ID, "seq", latest.Seq, "cause", aerr)
+			continue
+		}
+		hub.Publish(evt)
+	}
+}
+
 // scanPressure 判读一次进程余量，越线沿时给每个活跃任务发一条高水位事件。
 //
 // 参数：
@@ -182,7 +285,7 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 //
 // 三条语义：
 //   - 越线（!active && NearFull）：对每个活跃任务发一次，置位
-//   - 已置位且仍在高水位：不重发。事件风暴会把审核者的会话刷爆，
+//   - 已置位且仍在高水位：不重发。事件风暴会把协调者的会话刷爆，
 //     反而淹掉真正要处置的工单
 //   - 回落到水位线以下：复位，下次越线可再发
 //
@@ -230,16 +333,121 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 	return true
 }
 
+// scanTaskProcs 按任务点名进程数，两档处置。
+//
+// 参数：
+//   - budget: 告警线，<=0 表示该档关闭
+//   - hardLimit: 硬上限，<=0 表示该档关闭
+//   - fired: 每任务的告警置位状态，由调用方持有并跨轮传递（**不用包级变量**，
+//     那会让两个 agentd 实例互相踩状态——沿用 scanPressure 的同一条理由）
+//   - sweep: 清扫某任务残留进程的入口
+//
+// 三条语义（与 scanPressure 同构）：
+//   - 越线且未置位：发一次 task_proc_pressure 并置位
+//   - 仍越线且已置位：不重发。事件风暴会把协调者的会话刷爆
+//   - 回落到预算以下：复位，下次越线可再发
+//
+// 硬上限档是本仓库第一次让 agentd 在无人裁决的情况下杀进程，所以：读数不可信
+// 一律什么都不做；理由里必须写上 used 与 hardLimit 两个真实数字，让审核者
+// 事后能判断杀得对不对。
+func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
+	fired map[string]bool, sweep func(string), log *slog.Logger) {
+	// 两档都关 = 完全不启用。这里直接返回而不是往下走到「数了但不处置」——
+	// Footprint 每次都要枚举全系统进程表，白数是实打实的开销
+	if budget <= 0 && hardLimit <= 0 {
+		return
+	}
+	if taskProcCountFn == nil {
+		return
+	}
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("任务进程点名读取任务列表失败", "cause", err)
+		return
+	}
+	for _, t := range tasks {
+		// 终态任务已经不会再 fork 任何东西。用 IsTerminal 取反而不是枚举活跃态：
+		// 新增状态时这里自动跟上
+		if t.State.IsTerminal() {
+			continue
+		}
+		n, ok := taskProcCountFn(t.ID)
+		if !ok {
+			continue // 数不出来就什么都不做，连置位状态都不动
+		}
+		if hardLimit > 0 && n > hardLimit {
+			log.Error("任务进程数超过硬上限，强制回收", "task", t.ID, "used", n, "hard_limit", hardLimit)
+			sweep(t.ID)
+			reason := fmt.Sprintf("任务进程数 %d 超过硬上限 %d，已强制回收", n, hardLimit)
+			if err := transitFailedWithEvent(st, hub, t.ID, reason, log); err != nil {
+				log.Error("强制回收后落 failed 失败", "task", t.ID, "cause", err)
+			}
+			delete(fired, t.ID)
+			continue
+		}
+		if budget <= 0 {
+			continue
+		}
+		if n <= budget {
+			if fired[t.ID] {
+				log.Info("任务进程数已回落到预算以下", "task", t.ID, "used", n, "budget", budget)
+			}
+			delete(fired, t.ID)
+			continue
+		}
+		if fired[t.ID] {
+			continue // 仍越线，已告警过，不重发
+		}
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeTaskProcPressure,
+			taskProcPressurePayload{Used: n, Budget: budget})
+		if aerr != nil {
+			log.Error("追加任务进程越线事件失败", "task", t.ID, "cause", aerr)
+			continue // 没发出去就不置位，下一轮重试
+		}
+		// 必须广播：只落库的话审核者要主动 show 才看得见，等于没告警（B91 先例）
+		hub.Publish(evt)
+		fired[t.ID] = true
+		log.Warn("任务进程数超过预算，已告警", "task", t.ID, "used", n, "budget", budget)
+	}
+}
+
+// transitFailedWithEvent 把任务迁移到 failed 终态、追加带理由的 failed 事件并广播。
+//
+// 参数：reason 进事件 payload（硬上限分支必须带 used/hardLimit 真实数字，
+// 这是不可逆动作，审核者事后要能判断杀得对不对）
+//
+// 顺序是「先迁状态 → 追加事件 → 广播」：与 handleResult 一致——事件一落库就
+// 可被 WS 重放读到，状态必须先就位，否则审核者在一个仍 running 的任务上
+// 看到 failed 事件会困惑（handleResult 函数头的同一条理由）。
+//
+// 为什么不用 reconcileExecutorGone：那个收的是 waiting_review（executor 死了
+// 交协调者裁决），本函数是终态 failed——进程失控的强制回收没有「继续」选项。
+func transitFailedWithEvent(st *store.Store, hub *Hub, taskID, reason string, log *slog.Logger) error {
+	if err := st.UpdateTaskState(taskID, proto.TaskStateFailed); err != nil {
+		return err
+	}
+	// 终态迁移统一作废挂起工单并留痕（B63）：进程失控的强制回收同样适用。
+	// 排在 failed 事件之前：LatestEvent 锚定 failed，审核者看事件流不会被
+	// 审计噪音挡住终点
+	voidTicketsWithAudit(st, taskID, reason, log)
+	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
+	if err != nil {
+		return err
+	}
+	hub.Publish(evt)
+	return nil
+}
+
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
 // 对全部 running/waiting_answer/waiting_review 任务调用 probe 探测执行器存活——
-//   - running/waiting_answer 不存活：追加 failed 事件（原因固定为「agentd 重启后
-//     执行器已不在」）并迁移 waiting_review，交审核者裁决（失败现场留在事件里，
-//     审核者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
+//   - running/waiting_answer 不存活：追加 turn_failed 事件（原因固定为「agentd 重启后
+//     执行器已不在」）并迁移 waiting_review，交协调者裁决（失败现场留在事件里，
+//     协调者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
 //     VoidPendingTickets 的语义），事件照常广播，启动期无人订阅则由客户端凭
 //     seq cursor 补拉
-//   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待审核者
-//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 failed 事件或再迁
-//     状态只会产生噪音，**不**复用 running/waiting_answer 的 failed 迁移路径
+//   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待协调者
+//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 turn_failed 事件或再迁
+//     状态只会产生噪音，**不**复用 running/waiting_answer 的 turn_failed 迁移路径
 //   - 存活（含 waiting_review）：重建 SSE 订阅继续消费——重建动作由 probe 闭包
 //     内部完成（见 seam 说明），本函数只记录结论日志；waiting_review 存活时
 //     同样重建，续接依赖的会话上下文（opencode serve 进程与 SSE 会话）才不至于
@@ -267,7 +475,7 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 //   - waiting_answer 任务迁移 waiting_review 需经 running 两跳（waiting_answer→
 //     waiting_review 直接迁移不在 6 状态迁移表中，见 recoverTransit）
 //   - 探活本身无副作用：waiting_review 任务无论 probe 结果如何都不改状态，
-//     状态由审核者动作（continue/done）驱动
+//     状态由协调者动作（continue/done）驱动
 func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 	sweep func(taskID string), log *slog.Logger) error {
 	tasks, err := st.ListTasks()
@@ -286,18 +494,18 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		}
 		if t.State == proto.TaskStateWaitingReview {
 			// waiting_review 本来就是待审核终态：executor 不在不追加事件、不迁移
-			// 状态——审核者裁决（continue 重派 / done 归档）才是它该走的路。
+			// 状态——协调者裁决（continue 重派 / done 归档）才是它该走的路。
 			//
 			// 但**残留进程照收**：那条理由说的是状态与事件噪音，不是资源。
 			// 2026-08-12 事故里两个任务最终正停在这个状态，若跟着一起跳过，
 			// 清扫会在最该工作的场景里恰好不工作
 			kept++
-			log.Info("waiting_review 任务 executor 已不在，保持现状等审核者裁决", "task", t.ID, "alive", false)
+			log.Info("waiting_review 任务 executor 已不在，保持现状等协调者裁决", "task", t.ID, "alive", false)
 			sweep(t.ID)
 			continue
 		}
 		failed++
-		log.Info("执行器已不在，任务转 waiting_review 交审核者", "task", t.ID, "alive", false, "state", t.State)
+		log.Info("执行器已不在，任务转 waiting_review 交协调者", "task", t.ID, "alive", false, "state", t.State)
 		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log, sweep)
 	}
 	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)
@@ -318,4 +526,36 @@ func recoverTransit(st *store.Store, taskID string, cur proto.TaskState) error {
 		}
 	}
 	return st.UpdateTaskState(taskID, proto.TaskStateWaitingReview)
+}
+
+// mismatchVerdict 判断一个任务是否处于「有 failed 事件、状态却非终态」的破损中间态。
+//
+// 参数：
+//   - state: 任务当前状态
+//   - latest: 该任务的最新一条事件（nil 表示没有事件）
+//   - now: 当前时刻（测试注入）
+//   - startedAt: 本次 agentd 启动时刻
+//   - minAge: 事件最小年龄（防抢，生产取 30s）
+//
+// 返回：true 表示应当把状态补成 failed
+func mismatchVerdict(state proto.TaskState, latest *proto.Event, now, startedAt time.Time, minAge time.Duration) bool {
+	// 判据（四条同时满足才算失配）：
+	//   1. 状态非终态：终态任务上的 failed 事件是合法的收官记录，不存在失配
+	//   2. 最新一条事件是 failed：只看最新一条，不是「历史上出现过」——
+	//      failed 之后还有 progress/turn_failed 说明任务在继续干，没破损
+	//   3. 事件年龄 ≥ minAge：防抢。Stop/对账正常执行时也会短暂处在
+	//      「已落 failed 事件、还没迁状态」的中间态，给它们留出收尾窗口
+	//   4. 事件产生于本次 agentd 启动之后：B100 之前的历史数据里存在合法的
+	//      failed + waiting_review（对账失败交协调者裁决），没这条护栏，
+	//      升级后会把正等着裁决的存量任务直接判死
+	//
+	// 本判据依赖 failed 只用于任务终结（B100 及其补漏才使之成立）——谁再让
+	// failed 用于非终态，这个扫描会当场开始误伤。
+	//
+	// 也兜不住「续接回合正常完成但结果被吞」：库里只有 stalled，扫描无从知道
+	// 回合其实跑过。本条是保险丝不是根治。
+	return !state.IsTerminal() &&
+		latest != nil && latest.Type == proto.EventTypeFailed &&
+		now.Sub(latest.CreatedAt) >= minAge &&
+		!latest.CreatedAt.Before(startedAt)
 }

@@ -2,15 +2,14 @@
 package config_test
 
 import (
-	"bytes"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/xushixin/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGeneratesDefaultsAndToken(t *testing.T) {
@@ -112,7 +111,7 @@ func TestLoadEmptyFileKeepsDefaults(t *testing.T) {
 // 立即报错，而不是带着一个必然误判的值启动。
 //
 // 缺陷形态：无校验时 stalltimeout=0 会让看门狗在**每个** running 任务的首个
-// tick 上判定 stalled——审核者会被一批凭空的 stalled 事件叫醒，而任务其实好好的。
+// tick 上判定 stalled——协调者会被一批凭空的 stalled 事件叫醒，而任务其实好好的。
 func TestLoadRejectsNonPositiveStallTimeout(t *testing.T) {
 	for _, v := range []string{"0s", "-5m"} {
 		p := filepath.Join(t.TempDir(), "config.yaml")
@@ -261,6 +260,23 @@ func TestUnknownKeyErrorMentionsEnv(t *testing.T) {
 	}
 }
 
+// 未知字段的报错不得再把 update 列进已知键清单：字段已删除，
+// 清单再写 update{auto,interval} 会让人以为还能配。
+func TestUnknownFieldMessageOmitsUpdate(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("nonsense_key: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应报错")
+	}
+	if strings.Contains(err.Error(), "update{auto,interval}") {
+		t.Fatalf("已知键清单不得再列 update{auto,interval}: %v", err)
+	}
+}
+
 // TestLoadParsesWebAllowedHosts 验证 web.allowed_hosts 在严格解码下按 tag 正确解析：
 // allowed_hosts（snake_case）能解出一个元素，而不是 yaml.v3 默认映射的 allowedhosts。
 func TestLoadParsesWebAllowedHosts(t *testing.T) {
@@ -277,138 +293,68 @@ func TestLoadParsesWebAllowedHosts(t *testing.T) {
 	}
 }
 
-// 没写 update 段时必须落在出厂默认上。
-//
-// why 单独钉一例：Load 用的是「字面量预置默认 + yaml 覆盖式解码」，
-// 新加的段一旦忘了写进那个字面量，表现就是 Auto=false、Interval=0——
-// 自动更新静默不工作，且没有任何报错。
-func TestUpdateDefaults(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !cfg.Update.Auto {
-		t.Error("update.auto 默认应为 true")
-	}
-	if cfg.Update.Interval != 6*time.Hour {
-		t.Errorf("update.interval 默认应为 6h，得到 %s", cfg.Update.Interval)
-	}
-}
-
-// 显式写了就以写的为准。
-func TestUpdateExplicit(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 30m\n"
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Update.Auto {
-		t.Error("显式 auto: false 未生效")
-	}
-	if cfg.Update.Interval != 30*time.Minute {
-		t.Errorf("interval=%s，期望 30m", cfg.Update.Interval)
-	}
-}
-
-// 启用自动更新却给了非正 interval：必须在启动期拦下。
-//
-// why：0 会让更新循环退化成忙轮询，每个 tick 都立刻到期，把 GitHub API
-// 的匿名限流（60 次/小时）几秒钟打满，然后所有版本检查一起失败。
-// 这和 stalltimeout 必须为正是同一类问题，处置也保持一致：显式写错才拦，
-// 省略该键走默认值是正常用法。
-func TestUpdateIntervalMustBePositiveWhenAuto(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: true\n  interval: 0s\n"
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := config.Load(p); err == nil {
-		t.Fatal("interval=0 且 auto=true 时应报错")
-	} else if !strings.Contains(err.Error(), "update.interval") {
-		t.Fatalf("报错应点名 update.interval，得到: %v", err)
-	}
-}
-
-// 关掉自动更新时不校验 interval——没启用的东西写错不该拦启动。
-func TestUpdateIntervalNotCheckedWhenAutoOff(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	body := "listen: 127.0.0.1:7777\nupdate:\n  auto: false\n  interval: 0s\n"
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := config.Load(p); err != nil {
-		t.Fatalf("auto=false 时不应校验 interval，却报错: %v", err)
-	}
-}
-
-// 未知字段的报错必须把 update 列进已知键清单。
-//
-// why：那条消息是用户唯一能看到的「支持哪些键」的清单。漏了 update，
-// 用户配了正确的键、看到「不支持」的报错，会去删掉本来对的配置。
-func TestUnknownFieldMessageListsUpdate(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(p, []byte("nonsense_key: 1\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := config.Load(p)
-	if err == nil {
-		t.Fatal("未知键应报错")
-	}
-	if !strings.Contains(err.Error(), "update{auto,interval}") {
-		t.Fatalf("已知键清单里缺 update{auto,interval}: %v", err)
-	}
-}
-
 // TestLoadAcceptsDeprecatedUpdateKeys 是这次删除里唯一不能出错的一条。
 //
 // why：配置是 KnownFields(true) 严格解析的——未知键让 agentd **启动失败**。
-// v0.1.0 首次运行会把 update.auto / update.interval 写进 config.yaml，
-// 直接删字段等于让所有装过 v0.1.0 的机器升级后起不来，正是这个设计要
-// 消灭的那类失配的最狠形态。
+// v0.1.x 首次运行会把 update.auto / update.interval 写进 config.yaml，
+// 直接删字段再严格解码等于让所有旧机器升级后起不来。必须先剥顶层
+// update 再解码，并回写把死键从磁盘清掉。
 func TestLoadAcceptsDeprecatedUpdateKeys(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	os.WriteFile(p, []byte("token: tk\nupdate:\n  auto: false\n  interval: 12h\n"), 0o600)
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: tk\nupdate:\n  auto: false\n  interval: 12h\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := config.Load(p)
 	if err != nil {
-		t.Fatalf("含 update 键的旧配置必须能正常加载: %v", err)
+		t.Fatalf("含 update 键的旧配置必须能加载: %v", err)
 	}
-	if cfg.Update.Auto {
-		t.Fatal("字段值仍应被解出来（只是不再有效果）")
+	if cfg.Token != "tk" {
+		t.Fatalf("剥键不得伤 token，得到 %q", cfg.Token)
 	}
-}
-
-// TestWarnDeprecatedFiresOnNonDefault：取值非默认时必须 Warn。
-// 用户把 auto 设成 false 是有意图的，悄悄让它失效等于骗人。
-func TestWarnDeprecatedFiresOnNonDefault(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	(&config.Config{Update: config.UpdateConfig{Auto: false, Interval: 6 * time.Hour}}).WarnDeprecated(log)
-	if !strings.Contains(buf.String(), "update.auto") {
-		t.Fatalf("非默认值必须 Warn:\n%s", buf.String())
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "update") {
+		t.Fatalf("Load 必须回写并丢掉 update 段:\n%s", body)
 	}
 }
 
-// TestWarnDeprecatedSilentOnDefault：默认值不打——绝大多数机器都是默认值，
-// 每次启动打一条无从处置的 Warn，只会让人学会忽略日志。
-func TestWarnDeprecatedSilentOnDefault(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	(&config.Config{Update: config.UpdateConfig{Auto: true, Interval: 6 * time.Hour}}).WarnDeprecated(log)
-	if buf.Len() != 0 {
-		t.Fatalf("默认值不该打 Warn:\n%s", buf.String())
+func TestLoadFreshFileHasNoUpdateKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := config.Load(p); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "update") {
+		t.Fatalf("首次生成的配置不得含 update:\n%s", body)
+	}
+}
+
+func TestLoadStripUpdateDoesNotBlockOnSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: tk\nupdate:\n  auto: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// chmod 文件本身，不是目录：macOS 上 WriteFile 仍能截断已有 0600 文件，
+	// 目录 0500 挡不住回写，用例会假绿。0444 才让 Save 真正失败。
+	if err := os.Chmod(p, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("回写失败不得阻断启动: %v", err)
+	}
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "update") {
+		t.Fatalf("回写应失败，磁盘上仍须留着 update 段:\n%s", body)
 	}
 }
 
@@ -444,6 +390,94 @@ func TestPathDirsRoundTripAndOmitEmpty(t *testing.T) {
 	if len(got.PathDirs) != 1 || got.PathDirs[0] != "/opt/tools/bin" {
 		t.Errorf("path_dirs = %v，期望 [/opt/tools/bin]", got.PathDirs)
 	}
+}
+
+// 缺省值：不禁用、保留比 0.1。这两个默认值是安全侧的——不写配置的用户
+// 也应该被围栏保护。
+func TestProcFenceDefaults(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n")
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.ProcFence.Disabled {
+		t.Fatalf("默认不应禁用围栏")
+	}
+	if cfg.ProcFence.ReserveRatio != 0.1 {
+		t.Fatalf("默认保留比应为 0.1，得到 %v", cfg.ProcFence.ReserveRatio)
+	}
+}
+
+// 显式配置生效。
+func TestProcFenceExplicit(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n"+
+		"proc_fence:\n  disabled: true\n  reserve_ratio: 0.25\n")
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if !cfg.ProcFence.Disabled || cfg.ProcFence.ReserveRatio != 0.25 {
+		t.Fatalf("显式配置未生效: %+v", cfg.ProcFence)
+	}
+}
+
+func TestProcFenceTaskLimitsDefaults(t *testing.T) {
+	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProcFence.TaskBudget != 400 {
+		t.Fatalf("TaskBudget 默认应为 400，实际 %d", cfg.ProcFence.TaskBudget)
+	}
+	if cfg.ProcFence.TaskHardLimit != 1200 {
+		t.Fatalf("TaskHardLimit 默认应为 1200，实际 %d", cfg.ProcFence.TaskHardLimit)
+	}
+}
+
+func TestProcFenceTaskLimitsSanitized(t *testing.T) {
+	// why：0 是「关掉这一档」的合法表达，必须原样保留，不能被兜底改回默认值；
+	// 负数是配置写错，归零（= 关掉）而不是取绝对值
+	for _, c := range []struct {
+		name                 string
+		yaml                 string
+		wantBudget, wantHard int
+	}{
+		{"零表示关掉，原样保留", "proc_fence:\n  task_budget: 0\n  task_hard_limit: 0\n", 0, 0},
+		{"负数归零", "proc_fence:\n  task_budget: -5\n  task_hard_limit: -1\n", 0, 0},
+		{"硬上限小于告警线时抬到告警线", "proc_fence:\n  task_budget: 400\n  task_hard_limit: 100\n", 400, 400},
+		{"正常值原样", "proc_fence:\n  task_budget: 200\n  task_hard_limit: 800\n", 200, 800},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n"+c.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ProcFence.TaskBudget != c.wantBudget || cfg.ProcFence.TaskHardLimit != c.wantHard {
+				t.Fatalf("got (%d,%d) want (%d,%d)",
+					cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, c.wantBudget, c.wantHard)
+			}
+		})
+	}
+}
+
+func TestProcFenceTaskLimitsYamlKeys(t *testing.T) {
+	// why：不加 yaml tag 时 yaml.v3 会把 TaskBudget 映射成 taskbudget，
+	// 与 README 里写的 task_budget 对不上——同一个坑 ReserveRatio 已经踩过一次
+	var pf config.ProcFenceConfig
+	if err := yaml.Unmarshal([]byte("task_budget: 7\ntask_hard_limit: 9\n"), &pf); err != nil {
+		t.Fatal(err)
+	}
+	if pf.TaskBudget != 7 || pf.TaskHardLimit != 9 {
+		t.Fatalf("yaml key 未按 snake_case 映射：%+v", pf)
+	}
+}
+
+// loadFromString 把 yaml 字符串写进临时 config.yaml 再 Load。
+func loadFromString(t *testing.T, body string) (*config.Config, error) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("写配置: %v", err)
+	}
+	return config.Load(p)
 }
 
 // env_forward 能被读进来，且**未配置时绝不落盘**。
@@ -490,43 +524,6 @@ func TestEnvForwardRoundTripAndOmitEmpty(t *testing.T) {
 	}
 }
 
-// 缺省值：不禁用、保留比 0.1。这两个默认值是安全侧的——不写配置的用户
-// 也应该被围栏保护。
-func TestProcFenceDefaults(t *testing.T) {
-	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n")
-	if err != nil {
-		t.Fatalf("加载失败: %v", err)
-	}
-	if cfg.ProcFence.Disabled {
-		t.Fatalf("默认不应禁用围栏")
-	}
-	if cfg.ProcFence.ReserveRatio != 0.1 {
-		t.Fatalf("默认保留比应为 0.1，得到 %v", cfg.ProcFence.ReserveRatio)
-	}
-}
-
-// 显式配置生效。
-func TestProcFenceExplicit(t *testing.T) {
-	cfg, err := loadFromString(t, "listen: 127.0.0.1:7777\ntoken: t\n"+
-		"proc_fence:\n  disabled: true\n  reserve_ratio: 0.25\n")
-	if err != nil {
-		t.Fatalf("加载失败: %v", err)
-	}
-	if !cfg.ProcFence.Disabled || cfg.ProcFence.ReserveRatio != 0.25 {
-		t.Fatalf("显式配置未生效: %+v", cfg.ProcFence)
-	}
-}
-
-// loadFromString 把 yaml 字符串写进临时 config.yaml 再 Load。
-func loadFromString(t *testing.T, body string) (*config.Config, error) {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatalf("写配置: %v", err)
-	}
-	return config.Load(p)
-}
-
 // TestLoadFillsRepoRootDefault 验证 repo_root 未配置时补 <DataDir>/repos，
 // 且配置里写了的值不被覆盖。
 //
@@ -566,5 +563,68 @@ func TestLoadFillsRepoRootDefault(t *testing.T) {
 	}
 	if cfg2.RepoRoot != "/srv/code" {
 		t.Fatalf("显式 repo_root 被覆盖了: %q", cfg2.RepoRoot)
+	}
+}
+
+func TestProxyParsedAndValidated(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("proxy: socks5://127.0.0.1:1080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("加载: %v", err)
+	}
+	if cfg.Proxy != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %q，期望 socks5://127.0.0.1:1080", cfg.Proxy)
+	}
+}
+
+// 坏代理必须在**启动期**被拒。运行期容错会让它表现为"后台更新检查什么都不发生"，
+// 而那条路径的纪律是失败静默跳过，于是错误配置可以数月无人察觉。
+func TestLoadRejectsBadProxy(t *testing.T) {
+	for _, bad := range []string{"socks4://h:1080", "127.0.0.1:1080", "http://"} {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte("proxy: \""+bad+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := config.Load(p); err == nil {
+			t.Errorf("proxy=%q 应拒绝加载", bad)
+		}
+	}
+}
+
+// 旧版本兼容契约：未配置时 proxy 键不得落盘，否则旧 agentd 的 KnownFields
+// 读到未知键就再也起不来（与 path_dirs 同款教训）。
+func TestProxyOmitEmptyOnSave(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if _, err := config.Load(p); err != nil { // 首次运行写盘
+		t.Fatalf("首次加载: %v", err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "proxy") {
+		t.Errorf("未配置时 proxy 不得落盘，实得:\n%s", b)
+	}
+}
+
+// 未知键的错误提示必须把 proxy 列进"支持的键"，否则用户配对了却被拒时无从判断。
+func TestUnknownKeyErrorMentionsProxy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("nosuchkey: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("未知键应被拒")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("错误文本应列出 proxy，实得 %q", err)
 	}
 }

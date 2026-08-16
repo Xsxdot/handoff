@@ -1,0 +1,24 @@
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { RowCounts } from './RowCounts'
+
+describe('RowCounts', () => {
+  it('项目/机器行：三段各带语义与数字', () => {
+    render(<RowCounts dirs={2} running={1} pending={3} />)
+    expect(screen.getByTitle('开发目录')).toHaveTextContent('2')
+    expect(screen.getByTitle('运行中的 handoff')).toHaveTextContent('1')
+    expect(screen.getByTitle('需要处理')).toHaveTextContent('3')
+  })
+
+  it('目录行：省略 dirs 时不渲染目录段', () => {
+    render(<RowCounts running={1} pending={0} />)
+    expect(screen.queryByTitle('开发目录')).toBeNull()
+    expect(screen.getByTitle('运行中的 handoff')).toHaveTextContent('1')
+    expect(screen.getByTitle('需要处理')).toHaveTextContent('0')
+  })
+
+  it('计数为 0 也渲染，不省略', () => {
+    render(<RowCounts dirs={0} running={0} pending={0} />)
+    expect(screen.getByTitle('开发目录')).toHaveTextContent('0')
+  })
+})
