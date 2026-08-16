@@ -41,4 +41,4 @@ if [ "$BEFORE" != "$AFTER" ]; then
   exit 1
 fi
 
-echo "OK：产物 $( du -h "$OUT/handoff" | cut -f1 )，工作区干净"
+echo "OK：产物 $( du -h "$OUT/handoff" | cut -f1 )，工作区状态未变"

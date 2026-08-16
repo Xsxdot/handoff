@@ -6,10 +6,17 @@
 //   - 按「文件名是否带 hash」决定缓存策略。
 //
 // 边界：
-//   - **不处理 /api、/ws、/console**。那三条由路由层用更精确的模式抢走
-//     （Go 1.22 ServeMux 精确前缀优先），本 handler 只兜未知路径。
-//     这个边界是承重的：若 /api 未命中回落成 HTML，前端会把 HTML 当 JSON
-//     解析，报错信息与真实原因完全无关，排查成本极高。
+//   - **不处理 /api、/ws、/console**。/api 与 /ws 由路由层用前缀分派收走：
+//     server.go 注册 `mux.Handle("/api/", api)` 与 `mux.Handle("/ws/", api)`，
+//     api 是无兜底的子 mux，未命中由 ServeMux 给出原生裁决——路径不认识 → 404，
+//     路径认识但方法不对 → 405。/console 注册在 root，本 handler 只兜未知路径。
+//   - 为什么不能只靠「模式精确度」：agentd 的 /api 路由全是精确路径
+//     （如 GET /api/status）或带 {id} 的参数路径，**没有** /api/ 前缀模式。
+//     ServeMux 的 "/" 通配只会输给**已注册**的更长前缀，所以没有前缀分派时
+//     GET /api/no-such 唯一匹配得上的就是 "/"，会被这里回落成 HTML——
+//     前端把 HTML 喂给 JSON.parse，报错信息与真实原因完全无关，排查成本极高。
+//     TestUnknownAPIPathStaysJSON（未命中保持非 HTML 4xx）与
+//     TestApiMethodMismatchStays405（方法错配保持 405）是钉住这条的两道门。
 //   - 不做鉴权。本 handler 挂在 s.auth 之内，到这里的请求已经通过鉴权。
 package agentd
 
