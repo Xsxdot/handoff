@@ -19,7 +19,11 @@ type fakeManager struct {
 	gotSpec    service.Spec
 }
 
-func (f *fakeManager) Install(s service.Spec) error    { f.installed = true; f.gotSpec = s; return f.installErr }
+func (f *fakeManager) Install(s service.Spec) error {
+	f.installed = true
+	f.gotSpec = s
+	return f.installErr
+}
 func (f *fakeManager) Uninstall() error                { return nil }
 func (f *fakeManager) Status() (service.Status, error) { return f.status, f.statusErr }
 func (f *fakeManager) Kind() string                    { return "fake" }

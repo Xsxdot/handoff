@@ -5,8 +5,7 @@ frontend/node_modules
 build/linux/appimage/build
 # 裸 `go build`（无参数）在 desktop 根产生的产物，约 15MB，曾残留过
 desktop
-# Mobile generated (per-machine; overlays hold absolute paths)
-build/ios/xcode/overlay.json
-build/ios/xcode/gen/
-build/android/overlay.json
-build/android/gen/
+# macOS 构建产物：wails3 generate icons 会在每次构建时从 build/appicon.icon
+# 重新生成，属产物不该入库（输入源 build/appicon.icon / build/appicon.png 已跟踪）
+build/darwin/Assets.car
+build/darwin/icons.icns

@@ -27,7 +27,12 @@ tasks:
       - sh: npm version
         msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
     cmds:
-      - npm install
+      # 用 npm ci 而不是 npm install：ci 从 package-lock.json 精确安装、绝不改写 lock，
+      # install 会在 npm 认为 lock 与 package.json 不一致时改写 lock，让构建一跑就脏掉
+      # 已跟踪的 package-lock.json（handoff dispatch 硬要求本地工作区干净，脏了就拒发）。
+      # 副作用是要求 package-lock.json 存在且与 package.json 同步；不满足时 ci 会直接报错，
+      # 逼着开发者先修 lock 而不是让 install 悄悄改。
+      - npm ci
 
   install:frontend:deps:bun:
     dir: frontend
