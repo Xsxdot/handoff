@@ -25,6 +25,13 @@
 
 **Tech Stack:** Go 1.26 / Wails v3.0.0-beta.8 / 既有的 `internal/{config,client,service}`。
 
+**范围提醒（给被派发来的执行者）：你负责 Task 1–6。Task 7 是审核者本地做的真机 GUI 走查，
+不在你的范围内。** 做完 Task 6 即交付，不要因为「计划里还有一个 task」而去补它。
+
+**工具链前置：** 本计划需要 `wails3`（`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8`）、
+Node/npm、以及 macOS 上的 Xcode 命令行工具。**缺哪个就发工单问审核者，不要自行安装全局软件包**
+（`go install` 落在 `~/go/bin`，属可自行安装；`brew install` 之类改动全局环境的，一律先问）。
+
 ## Global Constraints
 
 以下每条都是**精确值**，每个 task 的需求都隐含包含本节：
@@ -1129,7 +1136,13 @@ git commit -m "feat(desktop): 装配启动序列、托盘与目录选择器绑�
 
 ## Task 7: 真机走查（P4 在内）
 
-**Files:** 无代码改动。产出是走查记录，写进 `docs/superpowers/plans/2026-08-16-w5b1-desktop-shell-core.md` 的本节末尾。
+> **⚠ 如果你是被派发来执行这份计划的执行者：本 task 不在你的范围内，做完 Task 6 就算全部完成。**
+> 本 task 由审核者在自己的机器上做。原因是它要求**有人看着图形界面**——
+> 托盘图标长什么样、原生目录框有没有弹出来、窗口关掉之后托盘还在不在，
+> 这些在 ssh + tmux 里看不到，而「看不到就写通过」正是这份计划最不能接受的事。
+> 做完 Task 6 请直接进入交付，**不要**为了「补齐」而声称走查过了。
+
+**Files:** 无代码改动。产出是走查记录，写进本节末尾。
 
 **这个 task 不能由 subagent 自称完成**——它要求真的启动一个 agentd、真的跑一个任务、
 真的关掉窗口再看进程。**没有真机证据就报 BLOCKED，不要写「应该没问题」。**
