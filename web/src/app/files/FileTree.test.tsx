@@ -38,7 +38,11 @@ const {
   revealInFinder,
 } = await import('../../api/client')
 
+let restoreHostname: (() => void) | null = null
+
 afterEach(() => {
+  restoreHostname?.()
+  restoreHostname = null
   vi.mocked(fetchWorkspaceDir).mockReset()
   vi.mocked(fetchTaskDiff).mockReset()
   vi.mocked(createWorkspaceEntry).mockReset()
@@ -64,14 +68,14 @@ function dir(entries: { name: string; is_dir: boolean }[]) {
   return { entries: entries.map((e) => ({ ...e, size: 0 })) }
 }
 
-// stubHostname 临时替换 window.location.hostname，返回还原函数。
+// stubHostname 临时替换 window.location.hostname，由 afterEach 统一还原。
 // jsdom 默认 hostname 是 'localhost'，本批用例正靠它当「本机」用；stub 时
 // 换成一个克隆体再覆盖 hostname，不动原宿主对象，还原即换回。
-function stubHostname(host: string): () => void {
+function stubHostname(host: string): void {
   const original = window.location
   const stub = { ...original, hostname: host }
   Object.defineProperty(window, 'location', { configurable: true, get: () => stub })
-  return () => {
+  restoreHostname = () => {
     Object.defineProperty(window, 'location', { configurable: true, get: () => original })
   }
 }
@@ -222,13 +226,12 @@ describe('FileTree', () => {
 
   it('通过网络访问 agentd：置灰，理由说访达会开在 agentd 那台机器上', async () => {
     // location.hostname stub 成 '100.73.238.21'，base.machine 传 ''，revealSupported 传 true
-    const restore = stubHostname('100.73.238.21')
+    stubHostname('100.73.238.21')
     renderTree({ revealSupported: true })
     await userEvent.pointer({ target: await screen.findByText('go.mod'), keys: '[MouseRight]' })
     const item = screen.getByRole('menuitem', { name: /Reveal in Finder/ })
     expect(item).toBeDisabled()
     expect(item.getAttribute('title')).toContain('你在通过网络访问这台 agentd，访达会开在 agentd 那台机器上')
-    restore()
   })
 
   it('平台不支持：置灰，理由说仅 macOS', async () => {
@@ -240,14 +243,13 @@ describe('FileTree', () => {
   })
 
   it('本机 + macOS：可点，点了调 revealInFinder', async () => {
-    const restore = stubHostname('localhost')
+    stubHostname('localhost')
     renderTree({ revealSupported: true })
     await userEvent.pointer({ target: await screen.findByText('go.mod'), keys: '[MouseRight]' })
     const item = screen.getByRole('menuitem', { name: /Reveal in Finder/ })
     expect(item).not.toBeDisabled()
     await userEvent.click(item)
     expect(revealInFinder).toHaveBeenCalledWith(base.path, 'go.mod')
-    restore()
   })
 
   it('能力位为 null 时照常放行（三态门不禁用）', async () => {
@@ -259,12 +261,11 @@ describe('FileTree', () => {
 
   it('reveal 失败时把服务端原文透传到面板', async () => {
     vi.mocked(revealInFinder).mockRejectedValue(new Error('你在通过网络访问这台 agentd，访达会开在 agentd 那台机器上'))
-    const restore = stubHostname('localhost')
+    stubHostname('localhost')
     renderTree({ revealSupported: true })
     await userEvent.pointer({ target: await screen.findByText('go.mod'), keys: '[MouseRight]' })
     await userEvent.click(screen.getByRole('menuitem', { name: /Reveal in Finder/ }))
     expect(await screen.findByText(/通过网络访问这台 agentd/)).toBeInTheDocument()
-    restore()
   })
 
   it('删除确认必须点名「未跟踪的文件删除后无法恢复」', async () => {
