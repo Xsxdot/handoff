@@ -162,6 +162,10 @@ export interface Machine {
   // pty_supported 三态：缺席/null = 对端没上报（**不是**不支持），
   // false = 平台明确不支持，true = 支持。
   pty_supported?: boolean | null
+  // reveal_supported 三态同 pty_supported：缺席/null = 对端没上报（**不是**不支持）。
+  // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
+  // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
+  reveal_supported?: boolean | null
 }
 
 export interface MachinesResp {
@@ -229,6 +233,7 @@ export interface StatusResp {
   active: ActiveTask[]
   // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
   pty_supported?: boolean
+  reveal_supported?: boolean
 }
 
 // taskDetail 是 GET /api/tasks/{id} 的响应体（任务 + 待办工单 + 最近事件）。

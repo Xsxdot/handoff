@@ -23,7 +23,7 @@ import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
-import { usePtySupport } from '../data/usePtySupport'
+import { useMachineCaps } from '../data/useMachineCaps'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
@@ -63,7 +63,7 @@ export function Shell() {
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
-  const ptySupport = usePtySupport()
+  const caps = useMachineCaps()
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
@@ -106,7 +106,7 @@ export function Shell() {
 
   // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
   const ptyNote = (machine: string): string => {
-    if (ptySupport.supported(machine) === false) {
+    if (caps.pty(machine) === false) {
       return machine === ''
         ? '本机 agentd 运行在不支持 PTY 的平台上，终端不可用。'
         : `机器 ${machine} 的 agentd 运行在不支持 PTY 的平台上，终端不可用。`
@@ -342,7 +342,7 @@ export function Shell() {
 
       {/* home 终端走独立浮窗，不进 wb 的 tab 组——它不挂在任何目录上，
           塞进按目录组织的容器里就会跟着目录切换走 */}
-      {ptySupport.supported('') !== false && (
+      {caps.pty('') !== false && (
         <HomeDock
           dock={dock}
           onKill={killHomeSession}
