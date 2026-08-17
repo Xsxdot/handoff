@@ -38,7 +38,7 @@ import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
-import type { TabContent } from '../workbench/tabs'
+import { MAX_GROUPS, type TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -258,7 +258,7 @@ export function Shell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} />}
+        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} canSplit={wb.wb.groups.length < MAX_GROUPS} />}
         <main className="min-h-0 flex-1">
           <Routes>
             <Route

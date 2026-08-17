@@ -244,6 +244,15 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
   })
 
+  it('连点两次分屏得到三栏，按钮随即 disabled', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(3))
+    expect(screen.getByRole('button', { name: '分屏' })).toBeDisabled()
+  })
+
   it('/settings 整页替换中央，左栏仍在', async () => {
     renderShell('/settings')
     await waitFor(() => expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument())
