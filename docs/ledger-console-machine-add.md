@@ -86,3 +86,11 @@
 ## 完成
 
 全部 7 个 task 完成 + 终审通过。分支终点 HEAD。
+
+## 审核复修（审核意见两连修）
+
+- 审核方已在独立检出复验交付；要求修两项。
+- commit 4f74a127（2 文件）：
+  1. gofmt -l 曾报 internal/agentd/server.go（插入 cfg atomic.Pointer 后 mgr 字段对齐未跟上）→ `gofmt -w` 校正
+  2. swapConf 落盘顺序调换：原 Store→Save→失败回滚，Store 到 Save 失败间的窗口会让并发读者读到从未落盘、随即消失的机器；改为 Save 成功才 Store，失败时内存未曾改变，无需回滚。同步：删回滚行、doc 注释改「落盘成功才换快照，失败时内存未曾改变」、测试改名 TestSwapConfKeepsSnapshotOnSaveFailure（断言不变）
+- 复核验证（协调者本人复跑）：`gofmt -l .` 空输出；`go test ./internal/agentd/ -run 'TestConfSnapshot|TestSwapConf|TestAddMachine|TestDeleteMachine|TestValidateAddMachine|TestAddAndRemoveMachine' -race -count=1` PASS；`go test ./... -count=1` 全绿
