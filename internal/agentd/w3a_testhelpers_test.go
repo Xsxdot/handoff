@@ -40,12 +40,20 @@ func newTestAgentdEnv(t *testing.T) *testAgentdEnv {
 // newTestAgentdEnvWithCfg 同 newTestAgentdEnv，但注入自定义配置与日志器。
 func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *testAgentdEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	// 先落一份真实配置再注入路径：handler 层写操作（如新增开发机）经 swapConf
+	// 落盘时要求 cfgPath 非空，且该路径上已存在一份可覆盖的配置
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("准备配置失败: %v", err)
+	}
+	st, err := store.Open(filepath.Join(dir, "handoff.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := NewServer(cfg, st, logger)
+	srv.SetConfigPath(cfgPath)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &testAgentdEnv{srv: srv, ts: ts, st: st, token: cfg.Token}

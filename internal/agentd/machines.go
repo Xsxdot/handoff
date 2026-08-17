@@ -14,6 +14,9 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
@@ -140,5 +143,67 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 // handleMachines 处理 GET /api/machines。
 func (s *Server) handleMachines(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("机器列表请求", "remote_addr", r.RemoteAddr)
+	writeJSON(w, http.StatusOK, s.probeMachines(r.Context()))
+}
+
+// addMachineProbeBudget 是新增开发机时那一次可达性探测的时限。
+//
+// 比整轮扇出的 machineProbeBudget 宽松：这里是用户点了「添加」在等结果，
+// 一次往返慢一点可以接受，误判成不可达才是真的坏体验。
+const addMachineProbeBudget = 5 * time.Second
+
+// handleAddMachine 处理 POST /api/machines。
+//
+// 流程：反序列化 → 校验 → （非 force 时）可达性探测 → 落库 → 返回新列表。
+//
+// 状态码：
+//   - 400 请求体不合法，或探测不通（体内带探测失败原文，供前端原样展示）
+//   - 409 同名开发机已存在
+//   - 500 落盘失败
+//
+// 注意：响应体是 proto.MachinesResp，其中的 proto.Machine 没有 Token 字段
+// ——令牌只进不出，这条由类型本身保证。
+func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
+	var req proto.AddMachineReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("新增开发机：请求体无法解析", "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	// 先做纯校验：地址粘错时不必浪费一次 5 秒探测
+	if err := validateAddMachine(req, s.conf().Targets); err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, ErrMachineExists) {
+			code = http.StatusConflict
+		}
+		s.log.Warn("新增开发机：校验未通过", "name", req.Name, "addr", req.Addr, "cause", err)
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	if !req.Force {
+		ctx, cancel := context.WithTimeout(r.Context(), addMachineProbeBudget)
+		defer cancel()
+		s.log.Info("新增开发机：开始可达性探测", "name", req.Name, "addr", req.Addr)
+		if _, err := client.New(req.Addr, req.Token).Status(ctx); err != nil {
+			// 原文回给前端：绝大多数失败是地址或令牌粘错，原文是唯一能让人
+			// 一眼看出「是连不上还是没授权」的东西
+			s.log.Warn("新增开发机：探测不通", "name", req.Name, "addr", req.Addr, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("探测 %s 失败：%v", req.Addr, err),
+			})
+			return
+		}
+		s.log.Info("新增开发机：探测通过", "name", req.Name, "addr", req.Addr)
+	}
+	if err := s.addMachine(req); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, ErrMachineExists) {
+			code = http.StatusConflict
+		}
+		s.log.Error("新增开发机失败", "name", req.Name, "cause", err)
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("新增开发机成功", "name", req.Name, "addr", req.Addr, "force", req.Force)
 	writeJSON(w, http.StatusOK, s.probeMachines(r.Context()))
 }
