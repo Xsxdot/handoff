@@ -220,13 +220,44 @@ Expected：`gofmt -l` 无输出；vet 干净；测试全过。
 
 **若测试数量比搬迁前少**，说明有用例在搬迁中丢了——回去找，不要放行。搬迁前先记下基线：`go test ./cmd/... -count=1 -v 2>&1 | grep -c "^=== RUN"`。
 
-- [ ] **Step 6: 手工确认 CLI 行为没变**
+- [ ] **Step 6: 用例集合比对，确认搬迁没丢东西**
 
-Run:
+> **本步骤原为「手工跑一次 `handoff init` 确认行为没变」，2026-08-17 派发中作废并替换。**
+> 原因：`cmd/init.go:100` 取 `initStdinIsTTY()`，管道进来的 stdin 不是 TTY，会走 102 行的
+> **非交互降级分支**——打一句「未交互配置」、`config.Save` 写盘、return，`askAll` 与
+> `maybeInstallService` 根本不被调用。喂进去的换行送给了一段压根不读它们的代码路径，
+> 想验的「问答顺序与默认值」一个字都验不到。
+>
+> **更要紧：不要想办法给它一个真 TTY。** 走到交互分支的尽头是 `cmd/init.go:449`
+> `p.Confirm("现在把 agentd 交给本机进程管理器托管", true)`——默认值 **true**，空行取默认，
+> 于是 `installService` 会在**执行机上**装一个 launchd 单元指向那份临时配置。
+> 而执行机上正跑着派发本任务的那个 agentd。这不是「验证」，这是改承重墙。
+
+搬迁前先在基线上取一份用例清单（已经搬完才想起这步，就在基线 commit 上开个临时 worktree 补取，**不要跳过**）：
+
 ```bash
-printf '\n\n\n\n\n\n\n' | go run . init --config /tmp/w5b2-probe/config.yaml
+go test ./cmd/... -count=1 -v 2>&1 | grep "^--- PASS\|^--- FAIL" | sort > /tmp/w5b2-before.txt
 ```
-Expected：与搬迁前同样的问答顺序与默认值，最后写出配置。（用临时路径，**不要碰 `~/.handoff`**。）
+
+搬迁后跑两处的全部用例：
+
+```bash
+go test ./cmd/... ./internal/initflow/... -count=1 -v 2>&1 | grep "^--- PASS\|^--- FAIL" | sort > /tmp/w5b2-after.txt
+```
+
+逐条比对用例名集合：
+
+```bash
+diff <(sed 's/^--- //' /tmp/w5b2-before.txt | awk '{print $2}' | sort) \
+     <(sed 's/^--- //' /tmp/w5b2-after.txt  | awk '{print $2}' | sort)
+```
+
+Expected：**用例名集合完全一致，且 after 侧无 `--- FAIL`**。少一条就是搬迁中丢了用例，回去找。
+两份清单的行数与 diff 的实际输出贴进 ledger。
+
+**为什么这样比手工跑 CLI 更强**：`askAll` 的问答顺序与那四个默认值本来就有单元覆盖
+（`cmd/init_test.go:140/670/702`、`cmd/init_role_test.go` 全部），它们走 `prompter` 接口的
+脚本化实现、不依赖 TTY——那才是「行为没变」的真判据。
 
 - [ ] **Step 7: Commit**
 
@@ -1036,7 +1067,17 @@ Expected: 构建通过，测试全过，`gofmt -l` 无输出。
 
 - [ ] **Step 5: 真机走查（macOS）**
 
-用**临时 HOME** 模拟一台没配过的机器，**绝不碰 `~/.handoff`**：
+> ⚠ **如果你是被派发来执行这份计划的执行者：本步骤不在你的范围内，跳过它，在 ledger 里记一行「留审核者」即可。**
+>
+> 两条理由，都不是形式主义：
+> 1. **走查要有人看着一个图形向导并逐题作答**，这件事你做不了。
+> 2. **答完向导会走到 `shell.EnsureRunning`，它会在跑着的这台执行机上装 launchd 单元。**
+>    而这台机器上正跑着派发本任务的那个 agentd。把它的托管指向一份临时 HOME 里的配置，
+>    等于把手伸进承重墙。**不要为了「让这一步变绿」而想办法绕过去。**
+>
+> 本步骤由审核者在自己的机器上做。
+
+（审核者执行）用**临时 HOME** 模拟一台没配过的机器，**绝不碰 `~/.handoff`**：
 
 ```bash
 cd desktop && wails3 task build
