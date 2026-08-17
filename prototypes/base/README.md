@@ -9,7 +9,7 @@
 | 页面 | 对应功能 | 来源路由 | 确认状态 |
 |------|---------|---------|---------|
 | index.html | 工作台（三栏 + TUI tab 当前形态 + 看板/工单弹层） | / | 未确认 |
-| （fork: tui-redesign/index.html） | TUI tab 对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer + ctx/累计用量页头） | /（TUI tab） | 确认中 |
+| （fork: tui-redesign/index.html） | TUI tab 对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer + ctx/累计用量页头） | /（TUI tab） | 已确认 |
 | pages/settings.html | 设置页（开发机/常规/Env） | /settings | 未确认 |
 
 镜像基准：web/src/app/shell/Shell.tsx（三栏）、workbench/TuiTab.tsx（中央 TUI 现状）、
