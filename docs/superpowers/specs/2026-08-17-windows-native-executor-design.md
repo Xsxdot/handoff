@@ -518,12 +518,25 @@ shim 侧再 `+1`（4.4.3 的 off-by-one，shim 自己也在 job 里）。
 （与 procenum 的 Toolhelp32 实现同一条）。实现时必须在 Windows 上对这一档打一条
 明确的启动期 Warn，说明该告警档在本平台不生效——静默缺席正是本文档反复在防的东西。
 
-### 11.7 待确认：opencode 的登录态
+### 11.7 已解决：opencode 的登录态不构成阻塞
 
-executor 探测报 `opencode: 已安装，未登录`。用户告知 opencode 有免费模型足够测试，
-但「未登录」是否影响 serve 起来后真正跑一个回合，尚未验证——本轮撞在 prochost 的
-墙上，还没走到那一步。**这是 B37 实现完成后第一个要验的东西**，若它需要交互式登录，
-验收门会被卡住，需要提前准备凭据方案。
+起草时把这一条列为「可能卡住验收门的未知数」。**同日已在真机验掉，结论是不阻塞。**
+
+- **免费模型不需要登录就可用。** `opencode models` 在未登录状态下列出 8 个模型
+  （`opencode/deepseek-v4-flash-free`、`opencode/hy3-free`、`opencode/nemotron-3-ultra-free`
+  等），provider 为 `opencode` 自带，无需 `opencode providers login`。
+- **`opencode serve` 在 Windows 上正常工作**，也就是 handoff 的 opencode adapter
+  实际走的那条路：`opencode serve --port 45999 --hostname 127.0.0.1` 起得来，
+  `GET /config` 返回 200，stdout 打出 `opencode server listening on …`。
+  adapter 的就绪探测（`probeHTTP`）因此有理由通过。
+- **`opencode run` 在非交互 ssh 会话下会失败**（约 2 秒后 `EUNKNOWN: unknown error, read`，
+  疑似 stdin 相关）。**这不影响本轮**——handoff 从不调 `run`，它只用 `serve`。
+  但排障时若有人手工用 `run` 复现问题，会被这个无关的失败带偏，故记在这里。
+
+**连带发现（不进本轮范围）**：`internal/toolchain/detect.go:83` 把 opencode 的登录判据
+写成 `.local/share/opencode/auth.json`，那是 unix 路径。Windows 上 opencode 不用这个
+落点，所以探测恒报「未登录」——**是误报**。而且在只用免费模型时「登录」本就不是必要
+条件，这条探测在 Windows 上是双重失真。登记为 backlog 派生项。
 
 ### 11.8 顺带发现的文案缺陷（记账，不进本轮）
 
