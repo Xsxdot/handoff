@@ -1474,7 +1474,12 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	}
 	ctx, cancel := context.WithTimeout(ctx, RunCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
+	sh, serr := runShell()
+	if serr != nil {
+		log().Error("run 命令的 shell 解析失败", "repo", repo, "cause", serr)
+		return "", -1, serr
+	}
+	cmd := exec.CommandContext(ctx, sh, "-c", cmdline)
 	cmd.Dir = repo
 	// 命令设为独立进程组组长：超时/取消时按组回收，孙进程不留孤儿（见 workspace_procgroup_unix.go）
 	setProcGroup(cmd)
