@@ -77,3 +77,36 @@ func TestProbeWorkspacesBadDirDegrades(t *testing.T) {
 		t.Fatalf("失败时不该有工作树：%+v", ws)
 	}
 }
+
+// TestWorkspaceCreatedAt 验证主工作树与链接工作树各自都能取到创建时间。
+//
+// 为什么要建真仓库：本函数读的是 git worktree add 写下的
+// .git/worktrees/<名>/gitdir，用手工造的目录结构测等于在测自己写的假数据。
+func TestWorkspaceCreatedAt(t *testing.T) {
+	main := initGitRepo(t)
+	linked := filepath.Join(t.TempDir(), "wt")
+	gitAt(t, main, "worktree", "add", "-b", "feat", linked)
+
+	ws, probeErr := probeWorkspaces(context.Background(), main, "")
+	if probeErr != "" {
+		t.Fatalf("探测失败: %s", probeErr)
+	}
+	if len(ws) != 2 {
+		t.Fatalf("期望 2 个工作树，实得 %d", len(ws))
+	}
+	for _, w := range ws {
+		if w.CreatedAt.IsZero() {
+			t.Errorf("工作树 %s 的 CreatedAt 是零值，期望取到真实时间（is_main=%v）", w.Path, w.IsMain)
+		}
+	}
+}
+
+// TestWorkspaceCreatedAtMissingIsZero 验证取不到时留零值而不是报错。
+//
+// 这是 spec §1.3 的诚实降级：整棵项目树不该因为一个 stat 失败就 500。
+func TestWorkspaceCreatedAtMissingIsZero(t *testing.T) {
+	got := workspaceCreatedAt(filepath.Join(t.TempDir(), "不存在"), true)
+	if !got.IsZero() {
+		t.Errorf("不存在的路径应得零值，实得 %v", got)
+	}
+}

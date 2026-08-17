@@ -15,6 +15,7 @@ package agentd
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,6 +64,11 @@ func probeWorkspaces(ctx context.Context, dir, managedRoot string) ([]proto.Work
 		return []proto.Workspace{}, msg
 	}
 	ws := parseWorktreePorcelain(out, managedRoot)
+	// 创建时间在解析之后单独补：porcelain 输出里没有这个信息，只能落到文件系统上问。
+	// 每个工作树一次 stat（毫秒级），与已经付出的一次 git 子进程相比可忽略
+	for i := range ws {
+		ws[i].CreatedAt = workspaceCreatedAt(ws[i].Path, ws[i].IsMain)
+	}
 	log().Debug("工作区探测完成", "dir", dir, "worktrees", len(ws))
 	return ws, ""
 }
@@ -140,4 +146,55 @@ func underRoot(path, root string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// workspaceCreatedAt 取一个工作树的创建时间；取不到返回零值。
+//
+// 参数：
+//   - path: 工作树根的绝对路径
+//   - isMain: 是否主工作树（决定去哪个文件上问）
+//
+// 返回：创建时间；任何一步失败都返回零值，**不返回 error**——调用方要的是
+// 一个可展示的字段，不是一个能让整棵树 500 的错误。
+//
+// 主工作树看 <path>/.git：仓库初始化时建出来，之后不再重建。
+// 链接工作树看 <公共目录>/worktrees/<名>/gitdir：git worktree add 写一次就不再动。
+// 刻意都不 stat 工作树目录本身——它的 mtime 会随着往里写代码变化，那是「最近
+// 动过」不是「什么时候建的」。
+func workspaceCreatedAt(path string, isMain bool) time.Time {
+	dotGit := filepath.Join(path, ".git")
+	fi, err := os.Stat(dotGit)
+	if err != nil {
+		// 探测与 stat 之间工作树被 git worktree remove 掉是正常竞态，
+		// 不是故障——只 Debug，不 Warn
+		log().Debug("取工作树创建时间失败，留零值", "path", path, "cause", err)
+		return time.Time{}
+	}
+	if isMain {
+		return fi.ModTime()
+	}
+	// 链接工作树的 .git 是**一个文件**，内容形如 "gitdir: /主仓库/.git/worktrees/名"。
+	// 它自己的 mtime 不可靠（git 会在 prune/repair 时重写它），要顺着它指到管理目录
+	// 里的 gitdir 文件上——那个才是只写一次的。
+	if fi.IsDir() {
+		// 少见但真实：有人手工把工作树的 .git 做成了目录。此时没有可跟的指针，
+		// 就用它自己的时间，比留零值有信息
+		return fi.ModTime()
+	}
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		log().Debug("读工作树 .git 指针失败，留零值", "path", path, "cause", err)
+		return time.Time{}
+	}
+	adminDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+	if adminDir == "" {
+		log().Debug("工作树 .git 指针为空，留零值", "path", path)
+		return time.Time{}
+	}
+	gi, err := os.Stat(filepath.Join(adminDir, "gitdir"))
+	if err != nil {
+		log().Debug("取工作树管理目录时间失败，留零值", "path", path, "admin_dir", adminDir, "cause", err)
+		return time.Time{}
+	}
+	return gi.ModTime()
 }

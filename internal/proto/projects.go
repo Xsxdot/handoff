@@ -30,6 +30,19 @@ type Workspace struct {
 	// Managed 表示该工作树是 agentd 自建的任务工作树（路径落在 agentd 的
 	// worktree 根下）。UI 据此区分「任务工作树」与「人手开的工作树」。
 	Managed bool `json:"managed"`
+	// CreatedAt 是这个工作树被建出来的时间；零值 = 取不到。
+	//
+	// 取法分两种：
+	//   - 主工作树：stat <path>/.git
+	//   - 链接工作树：stat <git 公共目录>/worktrees/<名>/gitdir
+	//
+	// 为什么链接工作树不 stat 工作树目录本身：那个目录的 mtime 会随着往里写
+	// 代码变化，排出来的是「最近动过」而不是「什么时候建的」。gitdir 这个文件
+	// 由 git worktree add 写一次之后就不再动，是唯一稳定的创建时间证据。
+	//
+	// 为什么取不到时留零值而不是报错：整棵项目树不该因为一个 stat 失败就 500。
+	// 消费方（控制台排序）把零值当「最旧」处理。
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ProjectLocationNode 是一个项目在**一台**机器上的位置（项目树的中间层）。

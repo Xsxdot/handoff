@@ -112,6 +112,9 @@ export interface Workspace {
   head: string      // 短 sha
   is_main: boolean
   managed: boolean  // true = agentd 自建的任务工作树
+  // created_at 是工作树的创建时间（RFC3339Nano）。零值时间 = agentd 取不到，
+  // 排序时当「最旧」处理，见 sortWorkspaces。
+  created_at: string
 }
 
 // ProjectLocationNode 是一个项目在一台机器上的位置。
