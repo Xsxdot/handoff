@@ -285,6 +285,24 @@ func maybeNotifyUpdate(cmd *cobra.Command) {
 	if cmd.Name() == updateCheckCmd.Name() || cmd.Name() == upgradeCmd.Name() {
 		return
 	}
+	// 配置文件不存在直接 return，不 Load、不生成、不落盘。
+	//
+	// 这是 version.go 那份「这条命令不读配置文件、必须在没有 config.yaml 的
+	// 机器上跑通」契约的兜底，也贴合本函数「绝不能成为故障源」的注释约定：
+	// 一台还没配置的机器上「有新版本可升级」的提示本就无意义。
+	//
+	// 为什么必须拦在 Load 之前：config.Load 在文件不存在时会 firstRun 落盘
+	//（生成随机 token + 默认配置）。若这里照常 Load，那么任何东西跑一次
+	// `handoff version`——脚本、包管理器、监控、CI、桌面壳探测——都会在
+	// 用户真实的 ~/.handoff 留下一份从未与任何 agentd 配过对的 config.yaml，
+	// 此后 shell.Resolve 永远判「已配置」，图形向导再也不会出现。
+	// 桌面的 SIGKILL 复验是最先撞上这条契约的调用方，但洞在根命令的钩子，
+	// 不在桌面壳，隔离任何一个调用方都堵不住其余。
+	if _, err := os.Stat(effectiveConfigPath()); os.IsNotExist(err) {
+		return
+	} else if err != nil {
+		return
+	}
 	cfg, err := config.Load(effectiveConfigPath())
 	if err != nil {
 		return
