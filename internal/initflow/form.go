@@ -15,7 +15,6 @@ package initflow
 
 import (
 	"fmt"
-	"log/slog"
 	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -205,13 +204,6 @@ func Form(cfg *config.Config, rs []toolchain.Result, goos string, cfgExisted boo
 	roleDefault := DefaultRole(cfg, cfgExisted, rs, goos)
 
 	var roleNotice string
-	if goos == "windows" {
-		// 产品输出：用户必须当场知道为什么只有一个选项，否则会以为是 bug。
-		// 桌面端没有终端可看 Notice，这条日志是唯一能事后确认「这台机器为什么
-		// 只给了一个角色」的地方。
-		slog.Info("Windows 平台：角色选项限定为协调者", "reason", "agentd 进程承载层未实现（B37）")
-		roleNotice = "注意：Windows 上 handoff 只能当协调者——agentd 的进程承载层在非 unix 平台尚未实现（backlog B37），执行机角色跑不起来。"
-	}
 
 	execDef := cfg.Executor.Default
 	if execDef == "" {
