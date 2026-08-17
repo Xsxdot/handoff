@@ -1,0 +1,242 @@
+<!doctype html>
+<!--
+  工作台（/）—— 镜像真实控制台的三栏 + 中央 TUI tab 当前形态（重做前基准）。
+  中央内容按 TuiTab.tsx 现状还原：任务头行 + 回合时间线（内滚）+ 事件流（内滚）
+  + 审阅取证（waiting_review）+ 底部推进任务表单。看板/工单为 <dialog> 弹层。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 工作台</title>
+<link rel="stylesheet" href="shared/styles.css">
+<style>
+  /* TUI tab 当前形态的私有样式：四个堆叠的盒子，各自内滚 */
+  .tui { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .tui-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .tui-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 16px; }
+  .panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .panel h2 { margin: 0; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .panel .head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .scrollbox { height: 384px; overflow-y: auto; border-radius: 6px; background: #f5f5f580; padding: 12px; }
+  .scrollbox.short { height: auto; max-height: 320px; }
+  .turnchips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+  .turnchips button { border: 1px solid var(--border); background: none; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+  .turn-sep { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted-foreground); margin-top: 8px; }
+  .turn-sep::before, .turn-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+  .blk { margin: 6px 0; font-size: 13px; line-height: 1.6; }
+  .blk.thinking { border: 1px solid #e9d5ff; background: #faf5ff; border-radius: 6px; padding: 6px 10px; color: #7e22ce; font-size: 12px; cursor: pointer; }
+  .blk.tool { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; }
+  .blk.event { border: 1px solid #fde68a; background: #fffbeb; border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--amber); }
+  .evlist { display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: 12px; }
+  .evlist li { border-bottom: 1px solid var(--border); padding: 4px 0; list-style: none; }
+  .evlist .ev-top { display: flex; gap: 8px; } .evlist .ev-top time { margin-left: auto; }
+  .rtabs { display: flex; gap: 4px; }
+  .rtabs .rtab { border: none; background: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--muted-foreground); }
+  .rtabs .rtab.active { background: var(--primary); color: var(--primary-foreground); }
+  pre.raw { margin: 0; max-height: 320px; overflow: auto; background: #f5f5f580; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.5; font-family: var(--font-mono); white-space: pre-wrap; word-break: break-all; }
+  .advance { border-top: 1px solid var(--border); padding: 12px; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">handoff</div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label">本机</div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item selected">└ 7a8334f4（工作树）</a>
+        <a class="tree-item tree-task">● B93 基准评测 opencode-qwen</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">mac-02</div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="footer">
+      <a id="openBoard">看板</a>
+      <a id="openTickets">工单 <span class="badge">2</span></a>
+      <a href="pages/settings.html">设置</a>
+      <a>＋ 添加项目</a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="breadcrumb">本机 / handoff / worktrees / 7a8334f4</div>
+    <div class="tabbar">
+      <button class="tab active" aria-current="page">TUI · 7a8334f4</button>
+      <button class="tab">终端 1</button>
+      <button class="tab">README.md</button>
+      <button class="tab-add">＋</button>
+    </div>
+
+    <main class="content">
+      <div class="tui">
+        <div class="tui-head">
+          <strong>B93 基准评测 opencode-qwen</strong>
+          <span class="mono dim">handoff-7a8334f4</span>
+          <span class="badge amber">Review</span>
+          <span style="margin-left:auto" class="badge">实时</span>
+        </div>
+
+        <div class="tui-body">
+          <!-- 回合时间线：现状 = 固定高内滚盒子 -->
+          <section class="panel">
+            <div class="head-row">
+              <h2>☰ 回合时间线</h2>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span class="badge solid">跟随中</span>
+                <button class="btn sm">原始正文</button>
+              </div>
+            </div>
+            <div class="turnchips">
+              <span class="dim">回合</span>
+              <button>1</button>
+              <span style="margin-left:auto" class="dim">仅覆盖已加载范围，更早的需先加载</span>
+            </div>
+            <div class="scrollbox">
+              <div class="turn-sep"><span><b>回合 1</b> · 派发</span></div>
+              <div class="blk event">⏱ progress · 2026/8/17 14:28:46 —— PASS。收尾前做最后一次全量回归取证。</div>
+              <div class="blk thinking">▸ 思维链 · 207 字</div>
+              <div class="blk thinking">▸ 思维链 · 446 字</div>
+              <div class="blk">B93 全部完成。7 个 commit（6 task + 终审修复波），全量回归 29 包 0 FAIL，工作区干净，未 push。ledger 含变异测试记录与真机复验交接说明（spec §5.8 由审核者执行）。</div>
+              <div class="blk tool">{"branch":"bench/b93-opencode-qwen","commit":"4e3de5ef2500b2aa10d8e4e9bf5fad3ba69c8894","summary":"B93 三缺口全落地…"}</div>
+              <div class="blk event">◉ 一轮结束，进入待审 · 2026/8/17 14:31:40</div>
+            </div>
+          </section>
+
+          <!-- 事件流：现状 = 原始 #seq/type/JSON 列表 -->
+          <section class="panel">
+            <div class="head-row">
+              <h2>📡 事件流</h2>
+              <div style="display:flex;gap:8px;align-items:center"><span class="dim" style="font-size:12px">58 条</span><span class="badge solid">open</span></div>
+            </div>
+            <ul class="evlist scrollbox short" style="margin:0;padding:8px">
+              <li><div class="ev-top"><span class="dim">#23</span><span>progress</span><time class="dim">2026/8/17 11:16:46</time></div><p style="margin:2px 0 0">会话就绪</p></li>
+              <li><div class="ev-top"><span class="dim">#24</span><span>progress</span><time class="dim">2026/8/17 11:17:34</time></div><p style="margin:2px 0 0">Plan</p></li>
+              <li><div class="ev-top"><span class="dim">#25</span><span>progress</span><time class="dim">2026/8/17 11:27:14</time></div><p style="margin:2px 0 0">anch head. Let me quickly verify the key coordinates from the plan's fact table before dispatching…</p></li>
+              <li><div class="ev-top"><span class="dim">#26</span><span>permission_request</span><time class="dim">2026/8/17 11:27:28</time></div><p style="margin:2px 0 0">external_directory: /tmp/*</p></li>
+              <li><div class="ev-top"><span class="dim">#27</span><span>permission_request</span><time class="dim">2026/8/17 11:33:07</time></div><p style="margin:2px 0 0">[子 agent: Task 1 审查双裁决 (@general subagent)] external_directory: rm -rf /var/folders/hx/…（已截断）</p></li>
+              <li><div class="ev-top"><span class="dim">#28</span><span>permission_reuse</span><time class="dim">2026/8/17 11:34:13</time></div><p style="margin:2px 0 0">[子 agent: Task 1 审查双裁决 (@general subagent)] bash: rm -rf /var/folders/hx/…（已截断）</p></li>
+            </ul>
+          </section>
+
+          <!-- 审阅取证：现状 = 三个子 tab + 裸 pre -->
+          <section class="panel">
+            <h2>⚖ 审阅取证</h2>
+            <div class="rtabs">
+              <button class="rtab active" data-tab="diff">改动</button>
+              <button class="rtab" data-tab="run">跑命令</button>
+              <button class="rtab" data-tab="file">读文件</button>
+            </div>
+            <div class="rpanel" data-panel="diff">
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input class="input mono" placeholder="基准分支（默认按仓库默认分支推导）">
+                <button class="btn sm">加载</button>
+              </div>
+              <pre class="raw">diff --git a/README.md b/README.md
+index 14579132d..99c4d5010 100644
+--- a/README.md
++++ b/README.md
+@@ -247,7 +247,8 @@ Task state machine: `pending` → `running` → (`waiting_answer` ⇄ `running`)
+ `waiting_review`** — the executor session is still alive with full context, so you can
+ retry with `continue`. Only `stop`, or an executor failing to start, lands the task in
+ `failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require
+-`waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.
++`waiting_review`** (except `done` on an already-`completed` task, which is idempotent
++and returns 200); any other state returns 409. When in doubt, `handoff show` first.</pre>
+            </div>
+            <div class="rpanel" data-panel="run" hidden>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input class="input mono" placeholder="例如：go test ./...">
+                <button class="btn sm primary">运行</button>
+              </div>
+              <p class="dim" style="font-size:12px;margin:0">在任务工作树执行（非零退出也是 200，退出码在响应里；10 分钟超时退出码 124）。</p>
+            </div>
+            <div class="rpanel" data-panel="file" hidden>
+              <div style="display:flex;gap:8px">
+                <input class="input mono" placeholder="相对仓库根路径，如 internal/proto/proto.go">
+                <button class="btn sm primary">读取</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 推进任务：现状 = 底部表单盒子 -->
+        <div class="advance">
+          <section class="panel">
+            <h2>▷ 推进任务</h2>
+            <label class="dim" style="font-size:12px">修改指令（回给模型，让它继续改）</label>
+            <textarea class="input mono" rows="2" placeholder="例如：把审批理由改为 deny: xxx，再跑一遍测试…"></textarea>
+            <button class="btn primary" disabled style="justify-content:center">↩ 续发修改</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn">✓ 完成任务</button>
+              <button class="btn danger">□ 停止任务</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="filetree">
+    <div class="ft-head">文件 · 7a8334f4</div>
+    <div class="ft-item">cmd/</div>
+    <div class="ft-item">internal/</div>
+    <div class="ft-item">web/</div>
+    <div class="ft-item">docs/</div>
+    <div class="ft-item">README.md</div>
+    <div class="ft-item">main.go</div>
+  </aside>
+</div>
+
+<!-- 看板弹层（形态占位） -->
+<dialog id="boardDialog">
+  <div style="padding:20px;width:720px;max-width:90vw">
+    <h3 style="margin:0 0 12px">看板</h3>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">Running</div><p style="margin:6px 0 0;font-size:13px">（空）</p></div>
+      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">Review</div><p style="margin:6px 0 0;font-size:13px">B93 基准评测 opencode-qwen</p></div>
+      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">终态</div><p style="margin:6px 0 0;font-size:13px">B92 grok continue 修复</p></div>
+    </div>
+    <div style="margin-top:14px;text-align:right"><button class="btn" id="closeBoard">关闭</button></div>
+  </div>
+</dialog>
+
+<!-- 工单弹层（形态占位） -->
+<dialog id="ticketsDialog">
+  <div style="padding:20px;width:560px;max-width:90vw">
+    <h3 style="margin:0 0 12px">工单</h3>
+    <div class="card" style="padding:10px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:center"><span class="badge amber">permission</span><span style="font-size:13px">external_directory: /tmp/*</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="btn sm primary">允许</button><button class="btn sm">拒绝</button></div>
+    </div>
+    <div style="text-align:right"><button class="btn" id="closeTickets">关闭</button></div>
+  </div>
+</dialog>
+
+<script>
+  // 看板/工单弹层：原生 dialog，镜像真实 Shell 的 overlay 行为（同时只开一个）
+  const board = document.getElementById('boardDialog');
+  const tickets = document.getElementById('ticketsDialog');
+  document.getElementById('openBoard').addEventListener('click', () => board.showModal());
+  document.getElementById('closeBoard').addEventListener('click', () => board.close());
+  document.getElementById('openTickets').addEventListener('click', () => tickets.showModal());
+  document.getElementById('closeTickets').addEventListener('click', () => tickets.close());
+
+  // 审阅取证子 tab 切换
+  document.querySelectorAll('.rtab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.rtab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.rpanel').forEach(p => p.hidden = true);
+      tab.classList.add('active');
+      document.querySelector(`.rpanel[data-panel="${tab.dataset.tab}"]`).hidden = false;
+    });
+  });
+</script>
+</body>
+</html>
