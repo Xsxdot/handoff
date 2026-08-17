@@ -301,6 +301,8 @@ export function Shell() {
                 <WorkbenchPage
                   api={wb}
                   onAddProject={() => setWizardOpen(true)}
+                  tree={treeState.data}
+                  tasks={tasks}
                   terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
                   onBeforeClose={beforeCloseTab}
                   renderContent={(c, base, group, tabId) => {

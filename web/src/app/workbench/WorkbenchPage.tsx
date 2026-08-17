@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 按当前基准目录渲染一到三组 tab 与它们之间可拖拽的分隔条
-//   - 空白 tab 的种类选择、以及「选了种类之后要不要再选目标」的分流
+//   - 空白 tab 的种类选择与任务选择器的生命周期
 //   - 没有 tab / 没有基准目录时的两种空态
 //
 // 边界：
@@ -12,15 +12,16 @@
 //
 // 「选了种类之后」的分流（spec §2.2.1）：
 //   - 终端：直接就位，序号由 tabs.ts 算
-//   - 文件：需要再选一个文件。本期不做独立的文件选择器——右栏文件树就是
-//     那个选择器，所以这里给一句指路，不造第二个入口
-//   - 任务 TUI：需要再选一个任务。同理指向左栏该目录下的任务行
+//   - 新文件：Task 10 接入创建流程
+//   - 任务 TUI：打开任务选择器，在当前项目内挑选任务
 import { Fragment, useState, type ReactNode } from 'react'
 import { MIN_PANE_PX, nextTerminalSeq, type TabContent } from './tabs'
 import { BlankTab, type PickKind } from './BlankTab'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
+import { TaskPickerDialog } from './TaskPickerDialog'
+import type { ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
 
 export interface WorkbenchPageProps {
@@ -35,16 +36,11 @@ export interface WorkbenchPageProps {
   // onBeforeClose 返回 false = 这次关闭由上层接管（要先弹确认、先删服务端会话）。
   // 返回 true 或不提供 = 直接关。
   onBeforeClose?: (c: TabContent, tabId: string) => boolean
-}
-
-// PICK_HINT 是「种类选好了但还缺一个目标」时的指路文案。
-//
-// 为什么只指路不弹选择器：右栏文件树本身就是文件选择器，左栏任务行本身就是
-// 任务选择器。再造一个模态选择器等于同一件事有两个入口，而且那个入口还得
-// 自己再实现一遍目录列举与任务列表。
-export const PICK_HINT: Record<Exclude<PickKind, 'terminal'>, string> = {
-  file: '在右侧文件树里点一个文件，它会在这里打开。',
-  tui: '在左侧该目录下点一个任务，它的 TUI 会在这里打开。',
+  // tree / tasks 只为任务选择器而收。中央区自己不消费它们——这是刻意的
+  // 转手：选择器的生命周期属于某个具体 tab，挂在 Shell 上就得再往下传一个
+  // 「现在是哪个 tab 在等」，那个状态本来就该住在这里。
+  tree: ProjectTreeResp | null
+  tasks: Task[]
 }
 
 export function WorkbenchPage({
@@ -53,36 +49,32 @@ export function WorkbenchPage({
   renderContent,
   terminalUnavailable,
   onBeforeClose,
+  tree,
+  tasks,
 }: WorkbenchPageProps) {
   const { base, wb } = api
-  // awaiting 记「哪个空白 tab 已经选了种类、正在等目标」。
-  // 它是本组件的本地 UI 状态，**不进 TabContent**：TabContent 多一支就等于
-  // 承认了第四种 tab，与「只有三种 tab」的硬约束冲突。tab 被关掉后这里会残留
-  // 一条键，无害——下一个 tab 的 id 是新的，不会命中。
-  const [awaiting, setAwaiting] = useState<Record<string, Exclude<PickKind, 'terminal'>>>({})
+  // picking 记「哪个空白 tab 正在选任务」。null = 弹层关闭。
+  // 这个状态只是弹层的开关，tab 本身仍是空白 tab；选择结果回调后再原地换内容。
+  const [picking, setPicking] = useState<{ group: number; tabId: string } | null>(null)
 
   if (!base) return <EmptyWorkbench onAddProject={onAddProject} />
 
-  // 选了种类之后：终端直接就位；文件与 TUI 缺目标，把该 tab 停在提示态
   const pick = (group: number, tabId: string, kind: PickKind) => {
     if (kind === 'terminal') {
       if (terminalUnavailable) return
       api.setContent(group, tabId, { kind: 'terminal', seq: nextTerminalSeq(wb) })
       return
     }
-    setAwaiting((prev) => ({ ...prev, [tabId]: kind }))
+    if (kind === 'tui') {
+      setPicking({ group, tabId })
+      return
+    }
+    // newfile 在 Task 10 接上；此刻先留空。
   }
-
-  const back = (tabId: string) =>
-    setAwaiting((prev) => {
-      const next = { ...prev }
-      delete next[tabId]
-      return next
-    })
 
   // startFromEmpty 处理「组里一个 tab 都没有」时直接在空态面板上选种类：
   // 此时没有可原地改内容的 tab，终端直接开一个，其余先开一个空白 tab
-  // 承接（用户随即会在它上面看到指路）。
+  // 承接（用户随即会在它上面点「打开任务」或「新建文件」）。
   //
   // group 必须显式传：分屏后被清空的那一组仍然渲染这块空态面板，而焦点很可能
   // 在另一组上。不传的话新 tab 会开到焦点组去，用户点的是这一侧却在那一侧长出
@@ -99,7 +91,7 @@ export function WorkbenchPage({
   return (
     // gap 去掉了：分隔线不再靠 gap-px 透出背景色，而是 GroupDivider 这个真实元素——
     // 它要能被鼠标抓住、被键盘聚焦，那都不是背景色能做到的
-    <div className="flex h-full min-h-0 bg-border">
+    <div className="relative flex h-full min-h-0 bg-border">
       {wb.groups.map((g, gi) => {
         const activeTab = g.tabs.find((t) => t.id === g.activeId) ?? null
         return (
@@ -152,8 +144,6 @@ export function WorkbenchPage({
                     key={activeTab.id}
                     base={base}
                     onPick={(k) => pick(gi, activeTab.id, k)}
-                    hint={awaiting[activeTab.id] ? PICK_HINT[awaiting[activeTab.id]] : undefined}
-                    onBack={() => back(activeTab.id)}
                     terminalUnavailable={terminalUnavailable}
                   />
                 ) : (
@@ -164,6 +154,19 @@ export function WorkbenchPage({
           </Fragment>
         )
       })}
+      {picking !== null && base !== null && (
+        <TaskPickerDialog
+          open
+          base={base}
+          tree={tree}
+          tasks={tasks}
+          onPick={(taskId) => {
+            api.setContent(picking.group, picking.tabId, { kind: 'tui', taskId })
+            setPicking(null)
+          }}
+          onClose={() => setPicking(null)}
+        />
+      )}
     </div>
   )
 }

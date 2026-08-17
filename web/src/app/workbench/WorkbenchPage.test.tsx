@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { WorkbenchPage } from './WorkbenchPage'
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { WorkbenchPage as ActualWorkbenchPage, type WorkbenchPageProps } from './WorkbenchPage'
 import { BlankTab } from './BlankTab'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
+import type { ProjectTreeResp, Task } from '../../api/types'
+import { useWorkbench } from './useWorkbench'
 import { EMPTY_WORKBENCH, openTab, splitGroup } from './tabs'
+
+type TestWorkbenchPageProps = Omit<WorkbenchPageProps, 'tree' | 'tasks'> &
+  Partial<Pick<WorkbenchPageProps, 'tree' | 'tasks'>>
+
+function WorkbenchPage(props: TestWorkbenchPageProps) {
+  return <ActualWorkbenchPage {...props} tree={props.tree ?? null} tasks={props.tasks ?? []} />
+}
 
 const base: BaseDir = {
   key: '/w/b2-b3',
@@ -12,6 +21,55 @@ const base: BaseDir = {
   label: 'b2-b3',
   projectName: 'handoff',
   machine: '',
+}
+
+const pickerTree: ProjectTreeResp = {
+  projects: [
+    {
+      project_id: 'project-1',
+      origin_url: '',
+      name: 'handoff',
+      locations: [
+        {
+          machine: '',
+          name: 'handoff',
+          path: '/r',
+          workspaces: [
+            { path: base.path, branch: 'b2-b3', head: 'abc', is_main: false, managed: false, created_at: '' },
+          ],
+          probe_error: '',
+        },
+      ],
+    },
+  ],
+  unowned: [],
+}
+
+function pickerTask(id: string, name: string, projectId = 'project-1'): Task {
+  return {
+    id,
+    target: '',
+    repo_path: '/r',
+    branch: 'b2-b3',
+    plan_path: '',
+    plan_summary: '',
+    executor_session: '',
+    state: 'running',
+    created_at: '2026-08-18T00:00:00Z',
+    updated_at: '2026-08-18T00:00:00Z',
+    name,
+    executor: '',
+    model: '',
+    work_dir: base.path,
+    worktree_managed: false,
+    base_commit: '',
+    base_ahead: 0,
+    repo_dirty_count: 0,
+    repo_dirty_files: '',
+    done_note: '',
+    machine: '',
+    project_id: projectId,
+  }
 }
 
 function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
@@ -34,18 +92,18 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
 }
 
 describe('BlankTab', () => {
-  it('列出三项且只有三项：新终端 / 打开文件 / 打开任务 TUI', () => {
+  it('列出三项且只有三项：新终端 / 新建文件 / 打开任务', () => {
     render(<BlankTab base={base} onPick={vi.fn()} />)
     expect(screen.getByRole('button', { name: /新终端/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /打开文件/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /打开任务 TUI/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /新建文件/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /打开任务/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button')).toHaveLength(3)
   })
 
   it('带快捷键提示', () => {
     render(<BlankTab base={base} onPick={vi.fn()} />)
     expect(screen.getByText('⌘T')).toBeInTheDocument()
-    expect(screen.getByText('⌘⇧O')).toBeInTheDocument()
+    expect(screen.getByText('⌘N')).toBeInTheDocument()
     expect(screen.getByText('⌘⇧A')).toBeInTheDocument()
   })
 
@@ -68,14 +126,14 @@ describe('BlankTab', () => {
     expect(onPick).toHaveBeenCalledWith('terminal')
   })
 
-  it('印在面板上的快捷键是真能按的（⌘T / ⌘⇧O / ⌘⇧A）', () => {
+  it('印在面板上的快捷键是真能按的（⌘T / ⌘N / ⌘⇧A）', () => {
     const onPick = vi.fn()
     const { container } = render(<BlankTab base={base} onPick={onPick} />)
     const panel = container.firstElementChild as HTMLElement
     fireEvent.keyDown(panel, { key: 't', metaKey: true })
-    fireEvent.keyDown(panel, { key: 'o', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(panel, { key: 'n', metaKey: true })
     fireEvent.keyDown(panel, { key: 'a', metaKey: true, shiftKey: true })
-    expect(onPick.mock.calls.map((c) => c[0])).toEqual(['terminal', 'file', 'tui'])
+    expect(onPick.mock.calls.map((c) => c[0])).toEqual(['terminal', 'newfile', 'tui'])
   })
 
   // 走查回归：上面那条用例把按键直接打在面板元素上，绕过了「面板有没有焦点」，
@@ -93,20 +151,11 @@ describe('BlankTab', () => {
     expect(onPick).toHaveBeenCalledWith('terminal')
   })
 
-  it('从「等目标」态点返回选择后，面板重新拿回焦点', () => {
-    const { container, rerender } = render(
-      <BlankTab base={base} onPick={vi.fn()} hint="在右侧文件树里点一个文件" onBack={vi.fn()} />,
-    )
-    expect(document.activeElement).not.toBe(container.firstElementChild)
-    rerender(<BlankTab base={base} onPick={vi.fn()} />)
-    expect(document.activeElement).toBe(container.firstElementChild)
-  })
-
-  it('home 基准下 ⌘⇧O 不生效——隐藏项不能被快捷键绕过', () => {
+  it('home 基准下 ⌘N 不生效——隐藏项不能被快捷键绕过', () => {
     const home: BaseDir = { key: '~', kind: 'home', path: '~', label: 'home', projectName: '', machine: '' }
     const onPick = vi.fn()
     const { container } = render(<BlankTab base={home} onPick={onPick} />)
-    fireEvent.keyDown(container.firstElementChild as HTMLElement, { key: 'o', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(container.firstElementChild as HTMLElement, { key: 'n', metaKey: true })
     expect(onPick).not.toHaveBeenCalled()
   })
 
@@ -117,18 +166,6 @@ describe('BlankTab', () => {
     expect(onPick).not.toHaveBeenCalled()
   })
 
-  it('hint 非空时换成指路 + 返回选择，不再列三项', () => {
-    render(<BlankTab base={base} onPick={vi.fn()} hint="在右侧文件树里点一个文件" onBack={vi.fn()} />)
-    expect(screen.getByText('在右侧文件树里点一个文件')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /新终端/ })).not.toBeInTheDocument()
-  })
-
-  it('点返回选择回到三项', () => {
-    const onBack = vi.fn()
-    render(<BlankTab base={base} onPick={vi.fn()} hint="随便什么提示" onBack={onBack} />)
-    fireEvent.click(screen.getByRole('button', { name: '返回选择' }))
-    expect(onBack).toHaveBeenCalled()
-  })
 })
 
 describe('WorkbenchPage', () => {
@@ -277,6 +314,80 @@ describe('WorkbenchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /新终端/ }))
     expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'terminal', seq: 1 })
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it('空白 tab 点「打开任务」弹出选择器，选中后原地变成 TUI tab', () => {
+    const setContent = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    const id = wb.groups[0].tabs[0].id
+    render(
+      <WorkbenchPage
+        api={api({ wb, setContent })}
+        tree={pickerTree}
+        tasks={[pickerTask('T1', '任务一')]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /打开任务/ }))
+    expect(screen.getByRole('dialog', { name: '选择要打开的任务' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /任务一/ }))
+    expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'tui', taskId: 'T1' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('选中的任务已在别的 tab 里开着时，激活那个并关掉这个空白 tab', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(base))
+    act(() => result.current.open({ kind: 'tui', taskId: 'T1' }))
+    act(() => result.current.open({ kind: 'blank' }))
+    const existingId = result.current.wb.groups[0].tabs[0].id
+    const blankId = result.current.wb.groups[0].tabs[1].id
+
+    render(
+      <WorkbenchPage
+        api={result.current}
+        tree={pickerTree}
+        tasks={[pickerTask('T1', '任务一')]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /打开任务/ }))
+    act(() => fireEvent.click(screen.getByRole('button', { name: /任务一/ })))
+
+    expect(result.current.wb.groups[0].tabs.map((t) => t.id)).toEqual([existingId])
+    expect(result.current.wb.groups[0].tabs.map((t) => t.id)).not.toContain(blankId)
+    expect(result.current.wb.groups[0].activeId).toBe(existingId)
+  })
+
+  it('空组面板点「打开任务」先开一个空白 tab 承接，再弹选择器', () => {
+    const open = vi.fn()
+    const { rerender } = render(
+      <WorkbenchPage
+        api={api({ open })}
+        tree={pickerTree}
+        tasks={[pickerTask('T1', '任务一')]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /打开任务/ }))
+    expect(open).toHaveBeenCalledWith({ kind: 'blank' }, undefined, 0)
+
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    rerender(
+      <WorkbenchPage
+        api={api({ wb })}
+        tree={pickerTree}
+        tasks={[pickerTask('T1', '任务一')]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /打开任务/ }))
+    expect(screen.getByRole('dialog', { name: '选择要打开的任务' })).toBeInTheDocument()
   })
 
   it('终端不可用时选择面板不列终端项，改说一句实话', () => {

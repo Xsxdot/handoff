@@ -12,27 +12,22 @@
 // 为什么中央区在没有 tab 时也渲染它：中央区域一块死掉的空白会让人以为
 // 「这里还没做好」，而它其实是整个工作台的起点。
 import { useEffect, useRef } from 'react'
-import { FileText, Bot, TerminalSquare } from 'lucide-react'
+import { Bot, FilePlus, TerminalSquare } from 'lucide-react'
 import type { BaseDir } from './useWorkbench'
 
 // PickKind 是用户能选的三种 tab。与 TabContent 的三种正式种类一一对应。
-export type PickKind = 'terminal' | 'file' | 'tui'
+export type PickKind = 'terminal' | 'newfile' | 'tui'
 
 // PICK_ITEMS 是选择面板的三项。顺序与原型/Orca 一致：终端在最上（最常用）。
 export const PICK_ITEMS: { kind: PickKind; label: string; hotkey: string; icon: typeof TerminalSquare }[] = [
   { kind: 'terminal', label: '新终端', hotkey: '⌘T', icon: TerminalSquare },
-  { kind: 'file', label: '打开文件', hotkey: '⌘⇧O', icon: FileText },
-  { kind: 'tui', label: '打开任务 TUI', hotkey: '⌘⇧A', icon: Bot },
+  { kind: 'newfile', label: '新建文件', hotkey: '⌘N', icon: FilePlus },
+  { kind: 'tui', label: '打开任务', hotkey: '⌘⇧A', icon: Bot },
 ]
 
 export interface BlankTabProps {
   base: BaseDir
   onPick: (k: PickKind) => void
-  // hint 非空表示「种类已选好，但目标还没选」。此时换成一句指路 + 返回按钮。
-  // 这个中间态**不进 TabContent**：TabContent 只有三种正式种类加一个 blank，
-  // 多一支就等于承认了第四种 tab，与 spec 的硬约束冲突
-  hint?: string
-  onBack?: () => void
   // terminalUnavailable 非空 = 这台机器不能开终端，附带原因原文。
   // 此时**不渲染**终端项，改在面板底部说一句实话——置灰控件承诺「以后能用」，
   // 用户会反复点它（W3b §0 既有纪律）。
@@ -48,12 +43,12 @@ function hotkeyOf(e: React.KeyboardEvent): PickKind | null {
   if (!e.metaKey) return null
   const k = e.key.toLowerCase()
   if (k === 't' && !e.shiftKey) return 'terminal'
-  if (k === 'o' && e.shiftKey) return 'file'
+  if (k === 'n' && !e.shiftKey) return 'newfile'
   if (k === 'a' && e.shiftKey) return 'tui'
   return null
 }
 
-export function BlankTab({ base, onPick, hint, onBack, terminalUnavailable }: BlankTabProps) {
+export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
   // home 基准只留终端（spec §2.6）；终端不可用时把它摘掉，两条过滤叠加
   const items = (base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS).filter(
     (i) => i.kind !== 'terminal' || !terminalUnavailable,
@@ -64,12 +59,10 @@ export function BlankTab({ base, onPick, hint, onBack, terminalUnavailable }: Bl
   // 实测面板开出来后 activeElement 仍是 body，于是印在面板上的 ⌘T 按下去没反应。
   // 键盘处理本身是对的（手动聚焦后 ⌘T 正常开终端），缺的只是这一次 focus()。
   //
-  // 依赖 hint 而不是空数组：从「已选种类、正在等目标」按返回退回选择态时，
-  // 面板要重新拿回焦点，否则退回来之后快捷键又是死的。
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!hint) panelRef.current?.focus()
-  }, [hint])
+    panelRef.current?.focus()
+  }, [])
 
   // 快捷键接在**这个面板自己身上**（容器可聚焦 + 挂载自动聚焦），不是 window 级监听。
   // 理由：分屏时可能有两个空白面板同时在屏上，window 级监听会让一次 ⌘T 开出两个终端；
@@ -81,16 +74,6 @@ export function BlankTab({ base, onPick, hint, onBack, terminalUnavailable }: Bl
     if (!items.some((i) => i.kind === kind)) return
     e.preventDefault()
     onPick(kind)
-  }
-  if (hint) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-        <p className="max-w-sm text-sm text-muted-foreground">{hint}</p>
-        <button type="button" onClick={onBack} className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent">
-          返回选择
-        </button>
-      </div>
-    )
   }
   return (
     // tabIndex={-1} 让容器能被上面那次 focus() 聚焦但不进 Tab 序：快捷键必须挂在
