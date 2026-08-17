@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_WORKBENCH,
   activateTab,
@@ -6,6 +6,7 @@ import {
   dedupKey,
   nextTerminalSeq,
   openTab,
+  resizeGroups,
   setTabContent,
   splitGroup,
   tabTitle,
@@ -102,6 +103,21 @@ describe('closeTab', () => {
     expect(wb.groups[0].tabs[0].content).toEqual({ kind: 'file', rel: 'a.go' })
   })
 
+  it('三组时关空最右一组，焦点接替相邻组而不是跳回最左，sizes 重新等分', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
+    wb = splitGroup(wb)
+    wb = openTab(wb, { kind: 'file', rel: 'b.go' }, 1)
+    wb = splitGroup(wb)
+    wb = openTab(wb, { kind: 'file', rel: 'c.go' }, 2)
+    const cId = wb.groups[2].tabs[0].id
+
+    wb = closeTab(wb, 2, cId)
+
+    expect(wb.groups).toHaveLength(2)
+    expect(wb.active).toBe(1)
+    expect(wb.sizes).toEqual([1, 1])
+  })
+
   it('单组时关掉最后一个 tab，组保留但变空', () => {
     let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
     wb = closeTab(wb, 0, wb.groups[0].tabs[0].id)
@@ -170,13 +186,64 @@ describe('setTabContent', () => {
 })
 
 describe('splitGroup', () => {
-  it('第一次分屏产生第二组并激活它；已经两组时是空操作', () => {
+  it('连续分屏到三组封顶，第四次是空操作', () => {
     let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
     wb = splitGroup(wb)
     expect(wb.groups).toHaveLength(2)
     expect(wb.active).toBe(1)
+    wb = splitGroup(wb)
+    expect(wb.groups).toHaveLength(3)
+    expect(wb.active).toBe(2)
+    // 到顶时原样返回同一个对象引用：调用方据此可以跳过一次无谓的 setState
     const again = splitGroup(wb)
-    expect(again.groups).toHaveLength(2)
+    expect(again).toBe(wb)
+  })
+
+  it('每次分屏后 sizes 与 groups 等长且等分', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
+    expect(wb.sizes).toEqual([1])
+    wb = splitGroup(wb)
+    expect(wb.sizes).toEqual([1, 1])
+    wb = splitGroup(wb)
+    expect(wb.sizes).toEqual([1, 1, 1])
+  })
+})
+
+describe('resizeGroups', () => {
+  // 两栏起手：sizes 是 [1, 1]，总和 2，各占一半
+  const twoGroups = () => splitGroup(openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' }))
+
+  it('分隔条右移，左栏变宽右栏变窄，权重总和不变', () => {
+    const wb = resizeGroups(twoGroups(), 0, 0.1, 0.2)
+    expect(wb.sizes[0]).toBeCloseTo(1.2)
+    expect(wb.sizes[1]).toBeCloseTo(0.8)
+    expect(wb.sizes[0] + wb.sizes[1]).toBeCloseTo(2)
+  })
+
+  it('拖过头时夹在 minRatio，不把一栏压成一条缝', () => {
+    // 从各占 0.5 出发想推 0.9 过去，右栏会变成 -0.4——必须被夹回 0.2
+    const wb = resizeGroups(twoGroups(), 0, 0.9, 0.2)
+    const total = wb.sizes[0] + wb.sizes[1]
+    expect(wb.sizes[1] / total).toBeCloseTo(0.2)
+    expect(wb.sizes[0] / total).toBeCloseTo(0.8)
+  })
+
+  it('已经贴着下限还继续往同一方向拖，是空操作（返回同一个对象）', () => {
+    const wb = resizeGroups(twoGroups(), 0, 0.9, 0.2)
+    expect(resizeGroups(wb, 0, 0.5, 0.2)).toBe(wb)
+  })
+
+  it('容器窄到两栏都放不下 minRatio 时，拒绝改动而不是算出负宽度', () => {
+    const wb = twoGroups()
+    expect(resizeGroups(wb, 0, 0.1, 0.6)).toBe(wb)
+  })
+
+  it('越界的 dividerIndex 是空操作并留下一条 warn', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const wb = twoGroups()
+    expect(resizeGroups(wb, 1, 0.1, 0.2)).toBe(wb)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })
 
