@@ -333,6 +333,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
 	api.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
 	api.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
+	api.HandleFunc("GET /api/tasks/{id}/plan", s.byTask(s.handleTaskPlan))
 	api.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
 	api.HandleFunc("GET /api/tasks/{id}/branches", s.byTask(s.handleTaskBranches))
 	api.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))

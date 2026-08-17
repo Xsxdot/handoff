@@ -12,15 +12,20 @@ describe('StateDot', () => {
     expect(container.firstChild).toHaveClass('bg-state-intervention')
   })
 
-  it('running / completed 是绿点，failed 是红点，pending 是灰点', () => {
+  it('running 绿、failed 红，completed 是灰点——不与 running 撞色', () => {
     const { container: a } = render(<StateDot tone="active" />)
     expect(a.firstChild).toHaveClass('bg-state-active')
-    const { container: d } = render(<StateDot tone="done" />)
-    expect(d.firstChild).toHaveClass('bg-state-active')
     const { container: f } = render(<StateDot tone="failed" />)
     expect(f.firstChild).toHaveClass('bg-state-failed')
+    const { container: d } = render(<StateDot tone="done" />)
+    expect(d.firstChild).toHaveClass('bg-muted-foreground/45')
+    // 左栏树里只有一个点可看，已完成绝不能再是绿的
+    expect(d.firstChild).not.toHaveClass('bg-state-active')
+  })
+
+  it('pending 是空心圈：还没开始，点还没被填上', () => {
     const { container: i } = render(<StateDot tone="idle" />)
-    expect(i.firstChild).toHaveClass('bg-muted-foreground/40')
+    expect(i.firstChild).toHaveClass('border-muted-foreground/50')
   })
 })
 

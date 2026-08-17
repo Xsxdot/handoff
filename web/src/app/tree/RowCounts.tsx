@@ -20,20 +20,28 @@ export interface RowCountsProps {
 export function RowCounts({ dirs, running, pending }: RowCountsProps) {
   return (
     <span className="ml-auto flex shrink-0 items-center gap-[7px] font-mono text-[9.5px] tabular-nums text-muted-foreground">
+      {/* 目录数 0 也照常显示：它是这一行的固有属性（「这里有几个开发目录」），
+          恒在才能横向比较 */}
       {dirs !== undefined && (
         <span title="开发目录" className="flex items-center gap-0.5">
           <Folders className="size-3" />
           {dirs}
         </span>
       )}
-      <span title="运行中的 handoff" className="flex items-center gap-0.5">
-        <Activity className="size-3" />
-        {running}
-      </span>
-      <span title="需要处理" className="flex items-center gap-0.5">
-        <TriangleAlert className="size-3" />
-        {pending}
-      </span>
+      {/* 运行中 / 需要处理为 0 时整段不渲染。这两个数是**信号**不是属性：
+          一屏几十行清一色的 `0 0` 会把真有事的那几行淹掉，有数字才亮才抓得住眼 */}
+      {running > 0 && (
+        <span title="运行中的 handoff" className="flex items-center gap-0.5">
+          <Activity className="size-3" />
+          {running}
+        </span>
+      )}
+      {pending > 0 && (
+        <span title="需要处理" className="flex items-center gap-0.5">
+          <TriangleAlert className="size-3" />
+          {pending}
+        </span>
+      )}
     </span>
   )
 }

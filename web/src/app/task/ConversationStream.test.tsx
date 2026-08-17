@@ -5,12 +5,46 @@ import { describe, expect, it, vi } from 'vitest'
 import { ConversationStream, type ConversationStreamHandle } from './ConversationStream'
 import type { Block } from './frames'
 
+// 派发指令气泡走 GET /api/tasks/{id}/plan：这批用例默认「没有归档指令」
+// （reject），需要它的用例自己 mockResolvedValue
+vi.mock('../../api/client', async () => {
+  const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
+  return { ...actual, fetchTaskPlan: vi.fn().mockRejectedValue(new Error('没有归档派发指令')) }
+})
+const { fetchTaskPlan } = await import('../../api/client')
+
 const noop = () => {}
 const base = {
-  taskId: 't1', taskState: 'waiting_review',
+  taskId: 't1', taskState: 'waiting_review', taskCreatedAt: '2026-08-17T11:16:00Z',
   badLines: 0, startOffset: 0, atCap: false, error: null,
   loadingEarlier: false, onLoadEarlier: noop, onRetry: noop, active: false,
 }
+
+describe('ConversationStream 的派发指令气泡', () => {
+  it('流开头渲染派发指令，身份是「派发指令」并带 plan 文件名', async () => {
+    vi.mocked(fetchTaskPlan).mockResolvedValueOnce({
+      name: 'b119.md', content: '按 plan 逐 task 实现', size: 20,
+    })
+    render(<ConversationStream {...base} blocks={[]} />)
+    expect(await screen.findByText('按 plan 逐 task 实现')).toBeInTheDocument()
+    expect(screen.getByText(/派发指令 · b119\.md/)).toBeInTheDocument()
+  })
+
+  it('只加载了帧尾部时不画它——那条气泡属于最早那一刻，不属于当前这一段', async () => {
+    vi.mocked(fetchTaskPlan).mockResolvedValueOnce({
+      name: 'b119.md', content: '按 plan 逐 task 实现', size: 20,
+    })
+    render(<ConversationStream {...base} startOffset={4096} blocks={[]} />)
+    await Promise.resolve()
+    expect(screen.queryByText('按 plan 逐 task 实现')).toBeNull()
+  })
+
+  it('取不到派发指令时会话流照常渲染，不弹错', async () => {
+    render(<ConversationStream {...base} blocks={[]} />)
+    expect(await screen.findByText(/等待模型输出/)).toBeInTheDocument()
+    expect(screen.queryByText(/派发指令/)).toBeNull()
+  })
+})
 
 describe('ConversationStream', () => {
   it('回合分隔线带序号与起因；send 回合渲染审核者气泡', () => {

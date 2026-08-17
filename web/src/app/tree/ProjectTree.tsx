@@ -28,7 +28,7 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
@@ -37,6 +37,7 @@ import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { ContextMenu } from '../shared/ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
+import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks } from './archived'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
@@ -180,6 +181,21 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   const filtered = useMemo(() => filterTree(tree, tasks, query), [tree, tasks, query])
   const searching = filtered.query !== ''
 
+  // 「已结束」分组的数据源：目录已被回收的终态任务（见 archived.ts 文件头）。
+  // 入参是**原树 tree** 而不是 filtered.projects——裁剪过的树会把被搜索过滤掉的
+  // 目录当成「已不在」，正常任务会突然涌进这个分组。
+  const archived = useMemo(() => archivedTasks(tree, tasks), [tree, tasks])
+  // openArchived：**空集 = 全部收起**，取向与 collapsed 刚好相反。
+  // 这个分组是历史堆积（实测单台机器 60 条），默认展开会把正在做的活挤出视口。
+  const [openArchived, setOpenArchived] = useState<Set<string>>(new Set())
+  const toggleArchived = (key: string) =>
+    setOpenArchived((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+
   // ⌘K / Ctrl+K 聚焦搜索框。
   //
   // 刻意挂在**冒泡阶段**（addEventListener 第三参不传 true），不是捕获阶段。
@@ -218,6 +234,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
 
   const taskName = (t: Task) => t.name || t.plan_summary || '（无名称）'
+
+  // archivedBase 给「已结束」任务挑一个打开时的基准目录：该位置的**主目录**。
+  // 它们自己的工作目录已被回收，用主目录至少能落在同一个仓库上；连主目录都没有
+  // （整台机器探测失败）时返回 null，由 Shell 回退到当前选中目录。
+  //
+  // 刻意从原树 tree 里找而不是用渲染闭包里的 loc：搜索期间 loc.workspaces 是
+  // 裁剪过的，主目录可能不在里面。
+  const archivedBase = (project: ProjectNode, machine: string): BaseDir | null => {
+    const loc = tree.projects
+      .find((p) => p.project_id === project.project_id)
+      ?.locations.find((l) => l.machine === machine)
+    const main = loc?.workspaces.find((ws) => ws.is_main)
+    return main ? workspaceBase(project, machine, main) : null
+  }
 
   // wsCounts 统计一个工作树目录下的运行/待处理任务（目录行只显示这两个数）。
   // 计数与列出的任务共用 tasksOfWorkspace 一个口径，原地任务不会被算漏。
@@ -316,6 +346,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 const problem = locationProblem(loc, tree.machines)
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
+                const aKey = archivedKey(project.project_id, loc.machine)
+                // 搜索期间分组内也跟着按任务名过滤：搜到了却埋在几十条历史里等于没搜到
+                const aTasks = (archived.get(aKey) ?? []).filter(
+                  (t) => !searching || taskName(t).toLowerCase().includes(filtered.query),
+                )
+                // 搜索命中时自动展开（与 expanded() 旁路 collapsed 同一条理由），
+                // 但没命中时不跟着展开——历史堆积不该反客为主
+                const aOpen = openArchived.has(aKey) || (searching && aTasks.length > 0)
                 return (
                   // 外层只负责分组，不再是定位祖先
                   <div key={mKey}>
@@ -419,6 +457,42 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           </div>
                         )
                       })}
+
+                    {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
+                        目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的
+                        「不静默少一条」在任务这一层的兑现） */}
+                    {problem === '' && mOpen && aTasks.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          data-testid="archived-row"
+                          aria-expanded={aOpen}
+                          title={ARCHIVED_TITLE}
+                          onClick={() => toggleArchived(aKey)}
+                          className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                          style={{ paddingLeft: 8 + 32 }}
+                        >
+                          <Arrow open={aOpen} onToggle={() => toggleArchived(aKey)} />
+                          <Archive className="size-3.5 shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
+                          <span className="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums">{aTasks.length}</span>
+                        </button>
+                        {aOpen &&
+                          aTasks.map((t) => (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => onOpenTask(archivedBase(project, loc.machine), t.id)}
+                              className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
+                              style={{ paddingLeft: 8 + 48 }}
+                            >
+                              <span className="size-4 shrink-0" />
+                              <StateDot tone={stateTone(t.state)} />
+                              <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
+                            </button>
+                          ))}
+                      </div>
+                    )}
                     </div>
                 )
               })}

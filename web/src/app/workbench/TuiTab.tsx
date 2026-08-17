@@ -78,6 +78,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
             ref={streamRef}
             taskId={taskId}
             taskState={s.detail.task.state}
+            taskCreatedAt={s.detail.task.created_at}
             blocks={blocks}
             badLines={badLines}
             startOffset={startOffset}

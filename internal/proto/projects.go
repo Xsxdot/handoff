@@ -138,13 +138,19 @@ type TasksResp struct {
 
 // DirEntry 是工作树目录列举里的一项（GET /api/workspaces/dir）。
 //
-// 只有三个字段是刻意的：文件浏览需要的是「这一层有什么、哪些能展开、多大」，
-// 而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按 mtime 猜改动，
-// 那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被 omitempty 省略。
+// 字段是刻意克制的：文件浏览需要的是「这一层有什么、哪些能展开、多大、哪些
+// 不归 git 管」，而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按
+// mtime 猜改动，那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被
+// omitempty 省略。
 type DirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size,omitempty"`
+	// Ignored 表示该条目被 .gitignore 排除（判据是 git check-ignore，不是前端
+	// 猜后缀）。false 会被 omitempty 省略——**缺键 = 未被忽略**，不代表「没查过」：
+	// 查不出来时（git 不可用、目录不是仓库）服务端一律按未忽略返回并打日志，
+	// 宁可少标一个，也不把源码标成垃圾。
+	Ignored bool `json:"ignored,omitempty"`
 }
 
 // DirListResult 是 GET /api/workspaces/dir 的响应体。
@@ -184,6 +190,21 @@ type FileRead struct {
 	Truncated bool   `json:"truncated,omitempty"` // 超过 1 MiB，只返回开头
 	Binary    bool   `json:"binary,omitempty"`    // 前 8 KiB 出现 NUL 字节
 	SHA256    string `json:"sha256,omitempty"`
+}
+
+// TaskPlan 是 GET /api/tasks/{id}/plan 的响应：**派发当刻交给 executor 的指令原文**。
+//
+// 它就是 agentd 归档在任务目录里的那份 plan/prompt（dispatch 的 plan 文件，
+// prompt-only 派发时是 prompt.md；两者都有时是拼好的那一份）。控制台把它当
+// 「第一条审核者消息」展示——在此之前，界面上唯一能看到的只有一个截断的
+// plan_summary，「这个任务当初到底被要求做什么」无处可查。
+//
+// Size 是磁盘真实大小，不是 len(Content)：截断时两者不同，用户要看到的是真实大小。
+type TaskPlan struct {
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	Size      int64  `json:"size"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体。
