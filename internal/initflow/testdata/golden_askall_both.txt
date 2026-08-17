@@ -1,0 +1,10 @@
+out|以下每一问直接回车即保留预选项。
+select|这台机器的角色|def=executor|opts=executor=执行机;coordinator=协调者;both=两者
+select|默认执行者|def=opencode|opts=opencode=opencode（就绪）;claude=claude（已安装，登录态未知）;grok=grok（没装）;codex=codex（已安装，未登录）
+input|执行者模型（空=用执行者自身默认）|def=
+select|监听地址|def=all|opts=loopback=仅本机（127.0.0.1:7777）;all=所有网卡（0.0.0.0:7777）;custom=手填（如绑单个网卡 IP，本机命令自动走辅助监听）
+input|项目落点根目录 repo_root（自动登记时 clone 到这里）|def=
+select|审批链执行者|def=|opts==不启用（权限直接找人）;opencode=opencode（就绪）;claude=claude（已安装，登录态未知）;grok=grok（没装）;codex=codex（已安装，未登录）
+confirm|任务结束自动同步远程分支到本地 sync.auto|def=false
+input|
+新增远程执行机名字（直接回车结束）|def=

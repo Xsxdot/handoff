@@ -1,0 +1,5 @@
+out|以下每一问直接回车即保留预选项。
+select|这台机器的角色|def=executor|opts=executor=执行机;coordinator=协调者;both=两者
+confirm|任务结束自动同步远程分支到本地 sync.auto|def=false
+input|
+新增远程执行机名字（直接回车结束）|def=
