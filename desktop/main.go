@@ -65,7 +65,13 @@ func main() {
 					"（图形化首次引导将在后续版本提供）")
 			return
 		}
-		if err := shell.EnsureRunning(logger, specFor(ep)); err != nil {
+		spec, err := specFor(ep)
+		if err != nil {
+			logger.Error("解析 agentd 二进制路径失败", "cause", err)
+			showError(app, "无法定位 handoff", err.Error())
+			return
+		}
+		if err := shell.EnsureRunning(logger, spec); err != nil {
 			logger.Error("确保 agentd 运行失败", "cause", err)
 			showError(app, "无法启动 agentd", err.Error())
 			return
@@ -126,15 +132,16 @@ func main() {
 
 // specFor 组装托管 agentd 所需的路径。
 //
-// 本轮策略：直接用 PATH 上的 handoff（BinPath 裸名，launchd 侧由 W5b-2
-// 的内嵌与释出方案补齐绝对路径与 EvalSymlinks）。真机走查若 agentd 未装
-// 会经 EnsureRunning 走 Install，此时 launchd 解析不了相对路径——这是
-// 已明示的 W5b-2 承接项（spec §5.2），不在本轮解决。
-func specFor(_ shell.Endpoint) service.Spec {
-	// 具体路径策略在 W5b-2 内嵌二进制时才完整；本轮先用 PATH 上的 handoff，
-	// 并在日志里说清，避免它悄悄变成一个隐藏约定
-	slog.Info("本轮用 PATH 上的 handoff 托管 agentd；内嵌与释出策略见 W5b-2")
-	return service.Spec{BinPath: "handoff"}
+// 为什么必须绝对路径：launchd/systemd 都解析不了相对路径，BinPath 给相对名
+// 会把 agentd 装成一个永远起不来的 service，而且症状只在用户机器上出现。
+// 因此这里统一交给 shell.ResolveBinPath 解析，失败就向用户报错，绝不回退。
+func specFor(_ shell.Endpoint) (service.Spec, error) {
+	bin, err := shell.ResolveBinPath("")
+	if err != nil {
+		return service.Spec{}, err
+	}
+	slog.Info("已定位 agentd 二进制", "bin", bin)
+	return service.Spec{BinPath: bin}, nil
 }
 
 // showError 用原生对话框呈现错误。
