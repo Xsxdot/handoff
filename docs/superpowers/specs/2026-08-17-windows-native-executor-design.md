@@ -378,3 +378,133 @@ CI 的 `GOOS=windows` 门从 `go build ./...` 升级为 `go vet ./...`。
 | `procenum` 的 Toolhelp32 实现（足迹观测） | 回收职责已由 job 承担（3.2），缺席只损失足迹展示；`CreateToolhelp32Snapshot` 符号就位，真需要看足迹时再做 |
 | codex 在 Windows 上的真机验收 | 本轮注册但未验（7.3），补一次 e2e 即可转「已验」 |
 | grok on Windows | 沿用清单 2.4：`os.Symlink` 需特权，保持已知限制、不修 |
+
+---
+
+## 十一、真机基线实测（2026-08-17，Windows Server 2025）
+
+在一台全新云 Windows（Server 2025 Datacenter 10.0.26100 / PowerShell 5.1 / zh-CN）
+上把环境搭到「差 B37 就能接活」，并跑到现状的墙前。**以下全部是实测，不是推理**，
+其中四条订正或补充了本文档前面的内容。
+
+### 11.1 环境（已就绪）
+
+| 组件 | 落点 | 备注 |
+|---|---|---|
+| Git for Windows 2.55.0.4 | `C:\Program Files\Git` | 完整版；`bin\sh.exe` 存在，正是 §6 定位器的第一条兜底路径 |
+| opencode CLI v1.18.18 | `C:\Tools\opencode\opencode.exe` | 官方 `opencode-windows-x64.zip`，与桌面 GUI `opencode-desktop-win-x64.exe` 并列发布 |
+| handoff | `C:\Tools\handoff\handoff.exe` | 本分支 `GOOS=windows` 交叉编译（GitHub 对该机 IP 429，install.ps1 走不通） |
+| 机器级 PATH | `…;C:\Program Files\Git\cmd;C:\Tools\opencode;C:\Tools\handoff` | **刻意不含 `Git\bin`**，与默认安装一致，好让 `sh.exe` 定位器的兜底分支将来能被真正测到 |
+| agentd 常驻 | 计划任务 `handoff-agentd`（S4U / RunLevel Highest / AtStartup） | 见 F1 |
+
+### 11.2 基线行为（符合预期的部分）
+
+- agentd 在 Windows 上正常启动：配置自动生成、SQLite、启动恢复、看门狗、HTTP 服务全通
+- **五个 executor 全部注册**（claude / codex / fake / grok / opencode），印证 §7.3
+  要做的事——claude 与 grok 现在会一路放行到运行期才炸
+- `fake` 派发**全链路成功**：`git worktree add`、分支创建、基线 commit、状态机流转全对
+- `opencode` 派发**在预期位置撞墙**，文案诚实：
+  `启动 executor 失败: prochost: 本平台的进程承载尚未实现（A 期只提供骨架，见 B 期计划）`
+- **失败补偿路径在 Windows 上完整走通**：managed worktree 被删、本次新建分支被删。
+  注意这**不构成 E2 已解决的证据**——本次没有任何执行者进程起来过，自然没人钉住
+  cwd，与 6.1 的分析一致
+- DataDir 单实例：如期打出「本平台不支持文件锁，agentd 单实例保护未生效」
+
+### 11.3 F1（实证 §4.5）：sshd 的会话 job 确实连坐
+
+经 ssh 用 `Start-Process` 拉起的 agentd，**会话内可见 1 个进程，会话结束后新会话
+里 0 个**。Windows OpenSSH 把会话进程放进自己的 job，会话一断整组收掉。
+
+这是 §4.5 那条机制的直接实证（只是换成 sshd 而非 Task Scheduler），
+**`CREATE_BREAKAWAY_FROM_JOB` 是真承重，不是保险起见**。
+
+改用计划任务（S4U 登录类型，无需存密码）后 agentd 跨会话存活，D4 的常驻方案成立。
+开发期纪律：**不要经 ssh 直接起 agentd**，一律走计划任务，否则会话一断就没了。
+
+### 11.4 F2（订正清单 1.3）：`$SHELL` 在 Windows 上不是「没有」，是被 sshd 设成了 cmd.exe
+
+清单 1.3 写「Windows 上没有 `$SHELL`，整段降级为一条 Warn」。**实测相反**：
+
+```
+SHELL(process) = [c:\windows\system32\cmd.exe]     ← Windows OpenSSH 注入
+SHELL(machine) = []
+SHELL(user)    = []
+```
+
+于是 `pathenv` 不降级，而是真去跑 `cmd.exe -l -i -c …`。cmd 不认这些参数，直接打
+欢迎横幅，输出经 `filepath.SplitList` 变成**一个"目录"**被追加进 agentd 的 PATH：
+
+```
+msg="已补全 PATH" login_shell="[Microsoft Windows [Version 10.0.26100.33158]\r\n
+(c) Microsoft Corporation…administrator@… C:\\Users\\administrator>]"
+```
+
+`appendDir` 只对 `ExtraDirs` 与 `knownDirs` 做 `dirExists` 校验，**登录 shell 来源
+不校验**，所以垃圾条目直接进了 PATH。
+
+后果分两种启动形态，都要记住：
+
+- **经 ssh 起**（开发期常见）：PATH 被污染 + 每次启动白等一次 cmd 执行
+- **经计划任务起**（生产形态）：`SHELL` 不存在，如清单所说降级为一条 Warn
+
+修法有两条，本轮取第一条：`loginShellDirs` 在 Windows 上直接跳过（Windows 没有
+「登录 shell 的 rc 链」这个概念，这个来源在该平台上本就无意义）。第二条（给登录
+shell 来源也加 `dirExists` 校验）是更普适的加固，但它把一个平台不适用问题伪装成
+数据清洗问题，不如直接不跑。
+
+### 11.5 F3：项目名派生只切 `/` 不切 `\`
+
+origin 为本地路径 `C:\work\probe-origin.git` 时，派生出的项目名是
+`\work\probe-origin`，撞上校验：
+
+```
+项目名 "\\work\\probe-origin" 含路径特征字符（/ \ :），会让克隆落点跑到 repo_root 之外
+```
+
+导致自动登记失败、dispatch 400。把 remote 改成正斜杠 `C:/work/probe-origin.git`
+后一切正常——**根因确认：名字派生按 `/` 取末段，不认 Windows 分隔符**。
+
+影响面：只在 origin 是本地路径时触发；执行机从真实远端（https/ssh URL）clone 时
+不会踩。因此**不进本轮承重范围**，但要登记为 backlog 派生项，并在验收剧本里避开
+本地路径 remote。
+
+### 11.6 F4（订正 3.2）：围栏「白捡」只对了一半
+
+3.2 说围栏是白捡的——**安装**确实是（job 结构体多填一个 `ActiveProcessLimit`），
+但**策略值算不出来**。实测日志：
+
+```
+WARN 读不到系统进程上限，本次不设围栏  cause=本平台不支持进程枚举
+WARN 算不出进程围栏值，本次不设围栏    cause=本平台不支持进程枚举
+```
+
+`applyFencePolicy` → `fenceLimit()` 依赖 `procLimit()`，而那是 procenum 的一部分。
+所以「不做 procenum」与「做围栏」在现有代码里是耦合的。
+
+**解法不是回头去做 procenum，而是承认模型不适用**：`reserve_ratio` 那套算法的前提
+是「存在一个每用户进程数上限，我们保留其中一部分」——**Windows 上没有这个东西**
+（进程数受内存与句柄约束，不存在 `RLIMIT_NPROC` 式的每用户硬上限）。因此 Windows
+上的围栏值应当**直接取配置的 `proc_fence.task_budget`**（默认 400），跳过
+「系统上限 × 保留比例」这一步，并在日志里说明本平台不做比例保留。
+
+这需要 `fenceLimit()` 分平台，属本轮范围内的实现细节，工作量小但**不能漏**——漏了
+的表现就是上面那两条 WARN，即围栏静默缺席。
+
+### 11.7 待确认：opencode 的登录态
+
+executor 探测报 `opencode: 已安装，未登录`。用户告知 opencode 有免费模型足够测试，
+但「未登录」是否影响 serve 起来后真正跑一个回合，尚未验证——本轮撞在 prochost 的
+墙上，还没走到那一步。**这是 B37 实现完成后第一个要验的东西**，若它需要交互式登录，
+验收门会被卡住，需要提前准备凭据方案。
+
+### 11.8 顺带发现的文案缺陷（记账，不进本轮）
+
+`agentd` 启动日志连着两行自相矛盾：
+
+```
+WARN 本平台不支持文件锁，agentd 单实例保护未生效
+INFO 已取得数据目录单实例锁
+```
+
+第二行在锁不支持时不该说「已取得」。`LockFileEx` 落地后这对矛盾会自动消失，
+但若将来还有其它不支持文件锁的平台，这句仍会误导。
