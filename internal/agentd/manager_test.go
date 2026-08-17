@@ -2091,8 +2091,7 @@ func TestHandleResultSweepsProcsOnFail(t *testing.T) {
 
 func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
 	// why：executor 正常收尾同样会留下 setsid 逃逸的后代。Sweep 遇到 executor
-	// 仍存活会返回 ErrExecutorAlive 并自行放弃（reconcile.go 的 switch 第一支），
-	// 所以「回合结束但 executor 还活着」不会被误杀——这条保护是既有的
+	// 仍存活会降级为名册点名，executor 本体不会被误杀但逃逸后代会被收。
 	m, taskID := newManagerWithRunningTask(t)
 	var swept []string
 	m.sweepProcs = func(id string) { swept = append(swept, id) }
@@ -2101,5 +2100,84 @@ func TestHandleResultSweepsProcsOnSuccess(t *testing.T) {
 
 	if len(swept) != 1 {
 		t.Fatalf("成功分支也应清扫一次，实际 %v", swept)
+	}
+}
+
+// TestTransitToTerminalSweeps 钉住 B119 的不变式：清扫挂在终态迁移这一个点上，
+// 而不是散落在各条终态路径里。B63 的工单作废已经因为同样的理由挂在这里——
+// B93 的清扫是同一个错误的下一次复发（只加在 handleResult，Stop 路径漏了）。
+func TestTransitToTerminalSweeps(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	if err := m.transit(taskID, proto.TaskStateFailed, "test"); err != nil {
+		t.Fatalf("transit: %v", err)
+	}
+	if len(swept) != 1 || swept[0] != taskID {
+		t.Fatalf("迁入终态应清扫一次该任务，实得 %v", swept)
+	}
+}
+
+// TestTransitToNonTerminalDoesNotSweep 反向守门：非终态迁移不得触发清扫，
+// 否则每次 running→waiting_review 都要枚举一遍进程表。
+func TestTransitToNonTerminalDoesNotSweep(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	if err := m.transit(taskID, proto.TaskStateWaitingReview, "test"); err != nil {
+		t.Fatalf("transit: %v", err)
+	}
+	if len(swept) != 0 {
+		t.Fatalf("非终态迁移不该清扫，实得 %v", swept)
+	}
+}
+
+// TestStopSweepsViaTransit 与 TestDoneSweepsViaTransit 是本 task 的目的本身：
+// 光测 transit 不够——B93 的清扫在单元测试里也是绿的，漏的是「Stop 这条路径根本
+// 没接上」。这两条从真实入口进，钉住的是接线而不是函数体。
+func TestStopSweepsViaTransit(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	if _, err := m.Stop(context.Background(), taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(swept) != 1 || swept[0] != taskID {
+		t.Fatalf("stop 落终态应清扫一次，实得 %v", swept)
+	}
+}
+
+func TestDoneSweepsViaTransit(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	seedWaitingReviewTask(t, st, "done-sweep")
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	if err := m.Done(context.Background(), "done-sweep", "验收通过"); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	if len(swept) != 1 || swept[0] != "done-sweep" {
+		t.Fatalf("done 归档应清扫一次，实得 %v", swept)
+	}
+}
+
+// TestTransitIdempotentDoesNotSweepTwice 幂等分支（当前状态已是目标状态）在
+// UpdateTaskState 之前就 return，不得重复清扫——与工单作废同款语义。
+func TestTransitIdempotentDoesNotSweepTwice(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	var swept []string
+	m.sweepProcs = func(id string) { swept = append(swept, id) }
+
+	if err := m.transit(taskID, proto.TaskStateFailed, "test"); err != nil {
+		t.Fatalf("首次 transit: %v", err)
+	}
+	if err := m.transit(taskID, proto.TaskStateFailed, "test again"); err != nil {
+		t.Fatalf("重复 transit 应幂等返回 nil: %v", err)
+	}
+	if len(swept) != 1 {
+		t.Fatalf("重复迁入同一终态只该清扫一次，实得 %d 次：%v", len(swept), swept)
 	}
 }
