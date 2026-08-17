@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -35,6 +36,38 @@ func TestForwardProjectAddToNamedMachine(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte("manager 未就绪")) {
 		t.Errorf("远端报错原文必须原样透传，实得 %s", body)
+	}
+}
+
+// TestForwardPreservesHandoffHeaders 断言：流式端点依赖的 X-Handoff-* 响应头
+// 穿过 agentd 反代后仍可见；Content-Length 等本地重编码相关头不在此契约内。
+func TestForwardPreservesHandoffHeaders(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("X-Handoff-Frames-Size", "1725")
+		w.Header().Set("X-Handoff-Render-Size", "2048")
+		_, _ = w.Write([]byte("ok\n"))
+	}))
+	t.Cleanup(remote.Close)
+
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req, _ := http.NewRequest(http.MethodPost,
+		local.ts.URL+"/api/projects?machine=devbox", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("X-Handoff-Frames-Size"); got != "1725" {
+		t.Fatalf("X-Handoff-Frames-Size = %q，期望原样透传 1725", got)
+	}
+	if got := resp.Header.Get("X-Handoff-Render-Size"); got != "2048" {
+		t.Fatalf("X-Handoff-Render-Size = %q，期望原样透传 2048", got)
 	}
 }
 

@@ -3,7 +3,7 @@
 // 职责：
 //   - 判定一个请求是否要转发（显式 ?machine= / 按任务 id 路由都走这里的搬运）
 //   - 原样搬运：方法、路径、请求体、查询参数（去掉路由用的 machine）
-//   - 原样回送：状态码、Content-Type、响应体一律不改写
+//   - 原样回送：状态码、Content-Type、X-Handoff-* 响应头、响应体一律不改写
 //   - 防环：转发请求带 X-Handoff-Forwarded: 1，带此头的请求一律本机处理
 //
 // 边界：
@@ -105,6 +105,16 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name, addr, t
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+	// 只透传 agentd 自己定义的元数据头；Content-Length 等响应头交给本机
+	// net/http 重新编码，否则流式响应的 chunked 传输可能与上游长度冲突。
+	for key, values := range resp.Header {
+		if !strings.HasPrefix(http.CanonicalHeaderKey(key), "X-Handoff-") {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
 	}
 	w.WriteHeader(resp.StatusCode)
 	n, cerr := io.Copy(w, resp.Body)
