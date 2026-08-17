@@ -345,6 +345,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
+	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	api.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	api.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)

@@ -207,3 +207,26 @@ func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("新增开发机成功", "name", req.Name, "addr", req.Addr, "force", req.Force)
 	writeJSON(w, http.StatusOK, s.probeMachines(r.Context()))
 }
+
+// handleDeleteMachine 处理 DELETE /api/machines/{name}。
+//
+// 状态码：
+//   - 404 该名字不存在
+//   - 500 落盘失败
+//
+// 注意：删除只改本机配置里的 targets，**不去动对端**——对端 agentd 与其
+// 上正在跑的任务与本操作无关，删的只是「本机记得这台机器」这件事。
+func (s *Server) handleDeleteMachine(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := s.removeMachine(name); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, ErrMachineNotFound) {
+			code = http.StatusNotFound
+		}
+		s.log.Warn("删除开发机失败", "name", name, "cause", err)
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("删除开发机成功", "name", name)
+	writeJSON(w, http.StatusOK, s.probeMachines(r.Context()))
+}

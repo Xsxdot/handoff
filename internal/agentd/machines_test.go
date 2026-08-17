@@ -200,6 +200,40 @@ func TestAddMachineBadAddr(t *testing.T) {
 	}
 }
 
+// deleteMachine 带 Bearer 发一次删除请求。
+func deleteMachine(t *testing.T, e *testAgentdEnv, name string) (int, string) {
+	t.Helper()
+	hr, _ := http.NewRequest(http.MethodDelete, e.ts.URL+"/api/machines/"+name, nil)
+	hr.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func TestDeleteMachine(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	if code, body := postMachine(t, e, proto.AddMachineReq{
+		Name: "box", Addr: "127.0.0.1:1", Token: "t", Force: true,
+	}); code != http.StatusOK {
+		t.Fatalf("准备数据失败: %d %s", code, body)
+	}
+	if code, body := deleteMachine(t, e, "box"); code != http.StatusOK {
+		t.Fatalf("删除应成功，实际 %d %s", code, body)
+	}
+	for _, m := range getMachines(t, e).Machines {
+		if m.Name == "box" {
+			t.Fatal("删除后列表里仍有 box")
+		}
+	}
+	if code, _ := deleteMachine(t, e, "box"); code != http.StatusNotFound {
+		t.Fatalf("删除不存在的机器应返回 404，实际 %d", code)
+	}
+}
+
 // getMachines 带 Bearer 请求 /api/machines 并解出响应。
 func getMachines(t *testing.T, e *testAgentdEnv) proto.MachinesResp {
 	t.Helper()
