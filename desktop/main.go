@@ -1,9 +1,12 @@
 // 本文件是桌面薄壳的入口：装配窗口、托盘与启动序列。
 //
-// 职责：只做装配与错误呈现。
+// 职责：只做装配与错误呈现，外加 Wails 事件收发（向导问答的传输层）。
 // 边界：
 //   - **不放业务逻辑**。定位、握手、生命周期、路径校验全在 internal/shell，
 //     那里不 import Wails，因而可以用普通 go test 覆盖
+//   - **首次引导的问题集与默认值属于 internal/initflow**。main.go 只装配
+//     wizard-question / wizard-answer / wizard-notice 的收发通道，不在
+//     这里加任何问题、不定义任何默认值
 //   - **不在退出路径上停 agentd**（spec §4.3 承重）
 //   - 托盘只有「打开控制台」「退出」两项。**不做「停止 agentd」**：
 //     service.Manager 没有 Stop，用 Uninstall 冒充是错的语义
@@ -12,21 +15,63 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/desktop/internal/embedbin"
 	"github.com/Xsxdot/handoff/desktop/internal/shell"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/initflow"
 	"github.com/Xsxdot/handoff/internal/service"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// logger 是包级日志入口。main() 里装配成 TextHandler 写 stderr；
+// 包级小函数（readInstalledVersion 等）复用同一实例，避免混用默认 logger
+// 导致日志格式不统一。
+var logger = slog.Default()
+
+// wizAnswers 是 wizard-answer 事件的唯一收件箱。
+//
+// **回调只在装配处注册一次**（见 main）：绝不能在每次 Ask 里注册——每问注册
+// 会累积 handler，第 N 问收到 N 份答案，谁先抢到还不确定，第一问之后的答案
+// 全部错位。
+var wizAnswers = make(chan string, 1)
+
+// wizMu/wizActive 防重入：一个向导进行中时，再次从托盘打开控制台不另起一个
+// AskAll，否则两份问答在同一个页面上互相覆盖。
+var (
+	wizMu     sync.Mutex
+	wizActive bool
+)
+
+// runtimeReadyCh 在前端运行时挂载（WindowRuntimeReady）后关闭。
+//
+// 首个 wizard-question 必须等它：webview 加载完成前发出的 Go 事件会被
+// Wails 事件模板里 `if(window._wails&&window._wails.dispatchWailsEvent)`
+// 的守卫静默丢弃（见 Wails 源码 inlineEventJS），早发等于把第一题吞掉，
+// 向导从此卡在空白页。所以向导 goroutine 先等这个 channel 再发问。
+var runtimeReadyCh = make(chan struct{})
+
+// closeRuntimeReady 保证只 close 一次：WindowRuntimeReady 若重发，
+// 直接 close 一个已关闭的 channel 会 panic。
+var closeRuntimeReady sync.Once
+
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("桌面薄壳启动")
 
 	app := application.New(application.Options{
@@ -57,12 +102,11 @@ func main() {
 			return
 		}
 		if state == shell.StateUnconfigured {
-			// 首次引导是 W5b-2 的范围。在它做出来之前，这里必须给一条
-			// 能自救的指引，而不是一个空白窗口
-			logger.Info("这台机器还没配置过 handoff")
-			showError(app, "还没有配置 handoff",
-				"请先在终端执行 handoff init 完成配置，然后重新打开本应用。\n"+
-					"（图形化首次引导将在后续版本提供）")
+			// 释出决策先行（同步），再亮出向导页。释出失败不阻断向导——
+			// 见 releaseEmbedded 的注释。
+			releaseEmbedded(app)
+			win.Show()
+			startWizard(app, win)
 			return
 		}
 		spec, err := specFor(ep)
@@ -121,6 +165,30 @@ func main() {
 		app.Event.Emit("project-dir-picked", dir)
 	})
 
+	// wizard-answer 只注册一次（承重）：若在每次 Ask 里注册，第 N 问会累积
+	// N 份 handler，第 N 问收到 N 份答案。这里收敛成把值送进唯一收件箱，
+	// 由 wailsTransport.Ask 逐个取走。
+	app.Event.On("wizard-answer", func(ev *application.CustomEvent) {
+		s, ok := ev.Data.(string)
+		if !ok {
+			// 前端 emit 的必是字符串；真不是就跳过，不 panic
+			logger.Error("wizard-answer 载荷不是字符串，跳过", "type", fmt.Sprintf("%T", ev.Data))
+			return
+		}
+		select {
+		case wizAnswers <- s:
+		default:
+			// 满箱说明这份答案没有对应的等待者（多半是向导已取消），
+			// 丢弃它防止污染下一次向导
+			logger.Warn("wizard-answer 到达但无人在等待，丢弃")
+		}
+	})
+
+	// 前端运行时挂载后才发得出向导问题：见 runtimeReadyCh 的注释
+	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+		closeRuntimeReady.Do(func() { close(runtimeReadyCh) })
+	})
+
 	go openConsole()
 
 	if err := app.Run(); err != nil {
@@ -128,6 +196,202 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info("薄壳正常退出；agentd 未被触碰")
+}
+
+// wailsTransport 是 shell.Transport 的 Wails 侧实现：Ask 经 app.Event 发题、
+// 阻塞等前端答案；Notice 转发面向用户的说明文字。
+//
+// 为什么放 main.go：internal/shell 约定不 import Wails（才能普通 go test 覆盖），
+// 这套收发恰好是 Wails 专有的，只能留在装配层。
+type wailsTransport struct {
+	app     *application.App
+	answers chan string
+	ctx     context.Context
+}
+
+func (t *wailsTransport) Ask(q shell.Question) (string, error) {
+	t.app.Event.Emit("wizard-question", q)
+	select {
+	case <-t.ctx.Done():
+		// ctx 取消（用户关窗）由 EventPrompter 映射成 initflow.ErrCanceled，
+		// 上层据此决定不写盘
+		return "", t.ctx.Err()
+	case s := <-t.answers:
+		return s, nil
+	}
+}
+
+func (t *wailsTransport) Notice(line string) {
+	t.app.Event.Emit("wizard-notice", line)
+}
+
+// readInstalledVersion 从既有 handoff 二进制里读版本号，供释出决策用。
+// 返回 stdout 首行去空白；任何失败或首行是 unknown 都判不出（空串）——
+// 与 shell.DecideRelease 的保守约定一致：判不出就偏保守，用用户已有的。
+func readInstalledVersion(path string) string {
+	out, err := exec.Command(path, "version").Output()
+	if err != nil {
+		logger.Debug("读取已有 handoff 版本失败，按判不出处理", "bin", path, "cause", err)
+		return ""
+	}
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if line == "" || line == "unknown" {
+		logger.Debug("已有 handoff 版本判不出", "bin", path, "raw", line)
+		return ""
+	}
+	return line
+}
+
+// releaseEmbedded 在首次引导走向导之前，按三态决策处理内嵌二进制（spec §5.3）。
+//
+// 任何失败都不阻断向导：释出不是引导的前提，用户仍可继续用已有的安装或
+// 手动装——所以这里只记日志/发提示，不回传错误。
+func releaseEmbedded(app *application.App) {
+	existing, err := shell.ResolveBinPath("")
+	if err != nil {
+		existing = ""
+		logger.Debug("本机没有既有 handoff 安装", "cause", err)
+	}
+	existVer := ""
+	if existing != "" {
+		existVer = readInstalledVersion(existing)
+	}
+	decision := shell.DecideRelease(existing, existVer, embedbin.Version)
+	logger.Info("释出决策", "decision", decision, "existing", existing,
+		"existing_version", existVer, "embedded_version", embedbin.Version)
+	switch decision {
+	case shell.DecisionInstall:
+		if !embedbin.Available() {
+			// 开发构建的正常情况：没内嵌就不释出，直接走向导
+			logger.Info("本次构建未内嵌 handoff 二进制，跳过释出", "reason", "开发构建未带 -tags embedbin")
+			return
+		}
+		rc, err := embedbin.Open()
+		if err != nil {
+			logger.Error("打开内嵌二进制失败，不阻断向导", "cause", err)
+			return
+		}
+		defer rc.Close()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Error("取不到用户主目录，无法释出，不阻断向导", "cause", err)
+			return
+		}
+		dst := filepath.Join(home, ".local", "bin", "handoff")
+		if err := shell.ReleaseBinary(dst, rc); err != nil {
+			logger.Error("释出内嵌二进制失败，不阻断向导", "dst", dst, "cause", err)
+			return
+		}
+		logger.Info("已释出内嵌 handoff 二进制", "dst", dst)
+	case shell.DecisionUseExisting:
+		logger.Debug("直接使用既有 handoff 安装，不释出", "bin", existing)
+	case shell.DecisionNotifyOutdated:
+		logger.Info("既有 handoff 比内嵌旧，只提示不自动替换", "bin", existing,
+			"existing_version", existVer, "embedded_version", embedbin.Version)
+		app.Event.Emit("wizard-notice", fmt.Sprintf(
+			"检测到已有 handoff 版本 %s 比内嵌的 %s 旧，为不影响正在运行的任务，未自动替换。可稍后手动 handoff upgrade。",
+			existVer, embedbin.Version))
+	}
+}
+
+// startWizard 起 goroutine 跑首次引导：经 EventPrompter 驱动 initflow.AskAll，
+// 成功才写盘；取消一律不写盘。
+//
+// 承重：AskAll 返回错误时**绝不 config.Save**。半截答案落盘会造出一份
+// 「配过但配错」的配置，下次启动 Resolve 会认为这台机器已配置，用户再也
+// 回不到向导。
+func startWizard(app *application.App, win *application.WebviewWindow) {
+	wizMu.Lock()
+	if wizActive {
+		wizMu.Unlock()
+		logger.Warn("首次配置向导已在运行，忽略重复打开")
+		return
+	}
+	wizActive = true
+	wizMu.Unlock()
+
+	wizCtx, wizCancel := context.WithCancel(context.Background())
+	// 用户关窗 = 取消向导。薄壳继续常驻托盘，配置未落盘，重开即重配。
+	win.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		logger.Info("向导窗口关闭，取消首次配置")
+		wizCancel()
+	})
+
+	tr := &wailsTransport{app: app, answers: wizAnswers, ctx: wizCtx}
+	p := shell.NewEventPrompter(wizCtx, tr)
+	w := shell.NewNoticeWriter(tr)
+
+	go func() {
+		defer func() {
+			wizMu.Lock()
+			wizActive = false
+			wizMu.Unlock()
+		}()
+		// 等前端运行时挂载再发第一问：webview 加载完成前的 Go 事件会被
+		// window._wails 未就绪守卫静默丢弃，早发等于把第一题吞掉。
+		select {
+		case <-runtimeReadyCh:
+		case <-wizCtx.Done():
+			return
+		}
+
+		cfg, err := config.Load(config.DefaultPath())
+		if err != nil {
+			logger.Error("加载配置失败，不进入问答", "path", config.DefaultPath(), "cause", err)
+			return
+		}
+		// 桌面壳也要探测工具链：AskAll 里 ExecutorOptions(nil) 会是空选项列表，
+		// 用户选执行者时前端渲染空 select，EventPrompter 会拒绝一切非空答案——
+		// 这是必要适配，不是可选项。
+		results := toolchain.Detect()
+		// isExec 不用于 GUI 托管（与 CLI 的 MaybeInstallService 追问不同步，
+		// 这是有意为之）：首次引导的 agentd 托管由后面的 EnsureRunning 统一
+		// 走 service 路径，避免图形向导里再弹一轮托管问题。只留 role 写盘日志用。
+		isExec, role, err := initflow.AskAll(w, p, cfg, results, false)
+		_ = isExec
+		if err != nil {
+			// 承重：AskAll 出错绝不写盘。取消或问答失败都等于放弃本次配置
+			if errors.Is(err, initflow.ErrCanceled) {
+				logger.Info("首次配置已取消，不写盘", "path", config.DefaultPath())
+				tr.Notice("已取消，未保存任何配置。关闭窗口重新打开即可重新配置。")
+			} else {
+				logger.Error("首次配置问答失败，不写盘", "path", config.DefaultPath(), "cause", err)
+			}
+			return
+		}
+		if err := config.Save(config.DefaultPath(), cfg); err != nil {
+			logger.Error("保存配置失败", "path", config.DefaultPath(), "cause", err)
+			tr.Notice("保存配置失败：" + err.Error())
+			return
+		}
+		logger.Info("首次配置已写盘", "path", config.DefaultPath(), "role", role)
+		app.Event.Emit("wizard-done")
+
+		ep := shell.Endpoint{Addr: cfg.Listen, Token: cfg.Token}
+		spec, err := specFor(ep)
+		if err != nil {
+			logger.Error("解析 agentd 二进制路径失败", "cause", err)
+			showError(app, "无法定位 handoff", err.Error())
+			return
+		}
+		if err := shell.EnsureRunning(logger, spec); err != nil {
+			logger.Error("确保 agentd 运行失败", "cause", err)
+			showError(app, "无法启动 agentd", err.Error())
+			return
+		}
+		// 向导可能跑了很久，openConsole 入口的 30s 上下文早已过期，这里另起一个
+		ictx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		url, err := shell.ConsoleURL(ictx, ep, shell.DefaultDeviceName())
+		if err != nil {
+			logger.Error("握手失败", "cause", err)
+			showError(app, "无法连接 agentd", err.Error())
+			return
+		}
+		// 不打 url：里面带一次性凭据
+		logger.Info("加载控制台")
+		win.SetURL(url)
+	}()
 }
 
 // specFor 组装托管 agentd 所需的路径。
@@ -140,7 +404,7 @@ func specFor(_ shell.Endpoint) (service.Spec, error) {
 	if err != nil {
 		return service.Spec{}, err
 	}
-	slog.Info("已定位 agentd 二进制", "bin", bin)
+	logger.Info("已定位 agentd 二进制", "bin", bin)
 	return service.Spec{BinPath: bin}, nil
 }
 
