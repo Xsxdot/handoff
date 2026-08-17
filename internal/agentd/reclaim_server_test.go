@@ -29,7 +29,8 @@ func newServerWithDirtyWorktree(t *testing.T) (*Server, string) {
 		t.Fatalf("造脏：%v", err)
 	}
 	id := seedTerminalTask(t, m, repo, wt, "f-srv1", proto.TaskStateFailed, true)
-	srv := &Server{cfg: &config.Config{Token: "test"}, st: st, hub: hub, log: m.log, mgr: m}
+	srv := &Server{st: st, hub: hub, log: m.log, mgr: m}
+	srv.cfg.Store(&config.Config{Token: "test"})
 	return srv, id
 }
 
@@ -40,7 +41,8 @@ func newServerWithRunningTask(t *testing.T) (*Server, string) {
 	repo := initGitRepo(t)
 	wt := newWorktree(t, repo, "wt-srv2", "f-srv2")
 	id := seedTerminalTask(t, m, repo, wt, "f-srv2", proto.TaskStateRunning, true)
-	srv := &Server{cfg: &config.Config{Token: "test"}, st: st, hub: hub, log: m.log, mgr: m}
+	srv := &Server{st: st, hub: hub, log: m.log, mgr: m}
+	srv.cfg.Store(&config.Config{Token: "test"})
 	return srv, id
 }
 

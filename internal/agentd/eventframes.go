@@ -62,6 +62,6 @@ func eventFrameHook(dataDir string, log *slog.Logger) func(proto.Event) {
 // manager.go / reconcile.go / watchdog.go，逐点补一行既啰嗦，又留下
 // 「以后新增调用点忘了补」的失效模式。钩子自动覆盖现有与未来的全部调用点。
 func (s *Server) registerEventFrameHook() {
-	s.st.SetEventHook(eventFrameHook(s.cfg.DataDir, s.log))
-	s.log.Info("事件帧钩子已注册", "datadir", s.cfg.DataDir)
+	s.st.SetEventHook(eventFrameHook(s.conf().DataDir, s.log))
+	s.log.Info("事件帧钩子已注册", "datadir", s.conf().DataDir)
 }

@@ -42,7 +42,8 @@ func newTestServerWithManager(t *testing.T) (*Server, *Manager, *store.Store) {
 	t.Helper()
 	mgr, st, hub, _ := newTestManager(t)
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir()}
-	srv := &Server{cfg: cfg, st: st, hub: hub, log: mgr.log, mgr: mgr}
+	srv := &Server{st: st, hub: hub, log: mgr.log, mgr: mgr}
+	srv.cfg.Store(cfg)
 	return srv, mgr, st
 }
 

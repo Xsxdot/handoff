@@ -47,7 +47,7 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 	if name == "" || isForwarded(r) {
 		return false
 	}
-	t, ok := s.cfg.Targets[name]
+	t, ok := s.conf().Targets[name]
 	if !ok {
 		s.log.Warn("转发被拒：机器名未在配置中定义", "machine", name, "path", r.URL.Path)
 		writeJSON(w, http.StatusBadRequest, map[string]string{

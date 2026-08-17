@@ -35,7 +35,7 @@ const wsDialBudget = 10 * time.Second
 // 本地已经升级成 101，只能发一个 close——前端看到的是「连上了又断了」，
 // 会一直重连；而 502 才让它知道是本机与目标机之间的问题（与 forwardTo 一致）。
 func (s *Server) forwardWS(w http.ResponseWriter, r *http.Request, machine string) {
-	t, ok := s.cfg.Targets[machine]
+	t, ok := s.conf().Targets[machine]
 	if !ok {
 		s.log.Warn("WS 转发被拒：机器名未在配置中定义", "machine", machine, "path", r.URL.Path)
 		writeJSON(w, http.StatusBadRequest, map[string]string{

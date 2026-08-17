@@ -40,7 +40,7 @@ func (s *Server) buildLocalTree(ctx context.Context) (proto.ProjectTreeResp, err
 		s.log.Error("项目树：查询位置表失败", "cause", err)
 		return proto.ProjectTreeResp{}, err
 	}
-	managedRoot := filepath.Join(s.cfg.DataDir, "worktrees")
+	managedRoot := filepath.Join(s.conf().DataDir, "worktrees")
 
 	resp := proto.ProjectTreeResp{Projects: []proto.ProjectNode{}, Unowned: []string{}}
 	byID := map[string]int{} // project_id → resp.Projects 下标

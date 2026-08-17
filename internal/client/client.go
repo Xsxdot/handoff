@@ -232,6 +232,33 @@ func (c *Client) MarkForwarded() *Client {
 	return cp
 }
 
+// NoRedirect 返回一个副本，其 HTTP 客户端不跟随重定向。
+//
+// 用途：可达性探测必须只认给定的地址（计划约束：探测请求不跟随任何跳转，
+// 否则恶意/被劫持的对端可用 302 把带 Authorization 的请求引到别处）。
+// 只影响本副本，不触碰共享的 hc——forward/fanout 等既有路径行为不变。
+//
+// 为什么逐字段构造而不是整体拷贝：整体拷贝会把 cursorRootOnce 一起复制，
+// go vet 的 copylocks 会拒（与 MarkForwarded 同款修正）。本副本是独立实例，
+// 游标缓存让它自己解析一次即可。
+func (c *Client) NoRedirect() *Client {
+	cp := &Client{
+		baseURL: c.baseURL,
+		token:   c.token,
+		hc: &http.Client{
+			Transport: c.hc.Transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		extraHeaders:     c.extraHeaders,
+		wsInitialBackoff: c.wsInitialBackoff,
+		wsMaxBackoff:     c.wsMaxBackoff,
+		wsStableAfter:    c.wsStableAfter,
+	}
+	return cp
+}
+
 // log 返回运行时 slog.Default()。
 //
 // 为什么不用包级 var：cli 命令在 RunE 里才 logx.Setup + slog.SetDefault，包级 var

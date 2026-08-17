@@ -54,8 +54,8 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 	}
 
 	machines := []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}}
-	names := make([]string, 0, len(s.cfg.Targets))
-	for name := range s.cfg.Targets {
+	names := make([]string, 0, len(s.conf().Targets))
+	for name := range s.conf().Targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)

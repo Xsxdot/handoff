@@ -14,6 +14,7 @@
 // 「基线提交在任务仓库中不存在……请先在本地 git push」），必须原文透传，不得
 // 吞成一句「操作失败」——那些消息里带着解法。
 import type {
+  AddMachineReq,
   CreateProjectReq,
   CreateProjectResp,
   CreatePtySessionReq,
@@ -238,6 +239,27 @@ export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
 // 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
 export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
+}
+
+// addMachine 新增一台远程开发机（POST /api/machines）。
+//
+// 参数：
+//   - req: 机器名、地址、令牌、ssh 用户；force=true 跳过可达性探测
+//
+// 返回：新的机器列表（与 fetchMachines 同结构）
+//
+// 注意：后端在 force 未置时会做一次可达性探测，探不通抛 ApiError(400)，
+// message 即探测失败原文——调用方应原样展示给用户，那是判断「连不上」
+// 还是「没授权」的唯一线索。
+export function addMachine(req: AddMachineReq): Promise<MachinesResp> {
+  return postJSON<MachinesResp>('/api/machines', req)
+}
+
+// deleteMachine 删除一台远程开发机（DELETE /api/machines/{name}）。
+//
+// 注意：机器名可能含需要转义的字符，必须 encodeURIComponent。
+export function deleteMachine(name: string): Promise<MachinesResp> {
+  return request<MachinesResp>(`/api/machines/${encodeURIComponent(name)}`, { method: 'DELETE' })
 }
 
 // workspaceQuery 拼两个工作树接口共用的查询串。

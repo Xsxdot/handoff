@@ -49,7 +49,7 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r) // 两处都没有：让 handler 给出与今天一致的 404
 			return
 		}
-		t, defined := s.cfg.Targets[target]
+		t, defined := s.conf().Targets[target]
 		if !defined {
 			// 镜像里记着一台配置里已经没有的机器：如实报告，别假装 404
 			s.log.Warn("任务路由：镜像指向的机器已不在配置中",

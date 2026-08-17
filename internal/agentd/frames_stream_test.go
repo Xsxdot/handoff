@@ -28,7 +28,7 @@ func newTestServerWithTask(t *testing.T) (*Server, string) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	taskID := "t-frames"
 	if err := env.st.CreateTask(&proto.Task{
-		ID: taskID, RepoPath: filepath.Join(env.srv.cfg.DataDir, "tasks", taskID),
+		ID: taskID, RepoPath: filepath.Join(env.srv.conf().DataDir, "tasks", taskID),
 		State: proto.TaskStateRunning,
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -115,7 +115,7 @@ func TestHandleTaskFramesMissingFileReturns200(t *testing.T) {
 // offset 落在半行中间时，客户端收到的第一行必须是完整可解析的。
 func TestHandleTaskFramesAlignsHalfLineOffset(t *testing.T) {
 	srv, taskID := newTestServerWithTask(t)
-	dir := filepath.Join(srv.cfg.DataDir, "tasks", taskID)
+	dir := filepath.Join(srv.conf().DataDir, "tasks", taskID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("建任务目录: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestStartsAtLineStart(t *testing.T) {
 // alignToLineStart 会把第一条完整行吞掉——本测试钉住这个真实场景。
 func TestHandleTaskFramesFreshReadKeepsFirstFrame(t *testing.T) {
 	srv, taskID := newTestServerWithTask(t)
-	dir := filepath.Join(srv.cfg.DataDir, "tasks", taskID)
+	dir := filepath.Join(srv.conf().DataDir, "tasks", taskID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("建任务目录: %v", err)
 	}

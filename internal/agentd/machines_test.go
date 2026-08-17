@@ -1,11 +1,13 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -120,6 +122,124 @@ func TestFillFromStatusCarriesRevealSupported(t *testing.T) {
 	fillFromStatus(&m2, &proto.StatusResp{})
 	if m2.RevealSupported != nil {
 		t.Fatalf("对端没上报时应保持 nil，实际 %v", *m2.RevealSupported)
+	}
+}
+
+// postMachine 带 Bearer 发一次新增请求，返回状态码与响应体原文。
+func postMachine(t *testing.T, e *testAgentdEnv, req proto.AddMachineReq) (int, string) {
+	t.Helper()
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("序列化请求失败: %v", err)
+	}
+	hr, err := http.NewRequest(http.MethodPost, e.ts.URL+"/api/machines", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	hr.Header.Set("Authorization", "Bearer "+testToken)
+	hr.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+// 地址不可达时必须 400 并带上探测失败原文，且不得落库。
+func TestAddMachineUnreachableRejected(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	// 127.0.0.1:1 上不会有服务
+	code, body := postMachine(t, e, proto.AddMachineReq{
+		Name: "box", Addr: "127.0.0.1:1", Token: "t",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("期望 400，实际 %d，体=%s", code, body)
+	}
+	if !strings.Contains(body, "探测 127.0.0.1:1 失败") {
+		t.Fatalf("响应应带探测失败原文，实际 %s", body)
+	}
+	if got := getMachines(t, e); len(got.Machines) != 1 {
+		t.Fatalf("探测失败不该落库，机器数应仍为 1（本机），实际 %d", len(got.Machines))
+	}
+}
+
+// force=true 跳过探测直接落库。
+func TestAddMachineForceSkipsProbe(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	code, body := postMachine(t, e, proto.AddMachineReq{
+		Name: "box", Addr: "127.0.0.1:1", Token: "t", Force: true,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，体=%s", code, body)
+	}
+	if strings.Contains(body, "\"t\"") || strings.Contains(body, "token") {
+		t.Fatalf("响应体不得包含令牌，实际 %s", body)
+	}
+	names := map[string]bool{}
+	for _, m := range getMachines(t, e).Machines {
+		names[m.Name] = true
+	}
+	if !names["box"] {
+		t.Fatal("force 之后机器列表里应有 box")
+	}
+}
+
+// 重名返回 409。
+func TestAddMachineDuplicateConflict(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	req := proto.AddMachineReq{Name: "box", Addr: "127.0.0.1:1", Token: "t", Force: true}
+	if code, body := postMachine(t, e, req); code != http.StatusOK {
+		t.Fatalf("首次新增应成功，实际 %d %s", code, body)
+	}
+	if code, _ := postMachine(t, e, req); code != http.StatusConflict {
+		t.Fatalf("重名应返回 409，实际 %d", code)
+	}
+}
+
+// 地址不合法返回 400，且不做探测（快速失败）。
+func TestAddMachineBadAddr(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	if code, _ := postMachine(t, e, proto.AddMachineReq{Name: "box", Addr: "nope", Token: "t"}); code != http.StatusBadRequest {
+		t.Fatalf("非法地址应返回 400，实际 %d", code)
+	}
+}
+
+// deleteMachine 带 Bearer 发一次删除请求。
+func deleteMachine(t *testing.T, e *testAgentdEnv, name string) (int, string) {
+	t.Helper()
+	hr, err := http.NewRequest(http.MethodDelete, e.ts.URL+"/api/machines/"+name, nil)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	hr.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func TestDeleteMachine(t *testing.T) {
+	e := newTestAgentdEnv(t)
+	if code, body := postMachine(t, e, proto.AddMachineReq{
+		Name: "box", Addr: "127.0.0.1:1", Token: "t", Force: true,
+	}); code != http.StatusOK {
+		t.Fatalf("准备数据失败: %d %s", code, body)
+	}
+	if code, body := deleteMachine(t, e, "box"); code != http.StatusOK {
+		t.Fatalf("删除应成功，实际 %d %s", code, body)
+	}
+	for _, m := range getMachines(t, e).Machines {
+		if m.Name == "box" {
+			t.Fatal("删除后列表里仍有 box")
+		}
+	}
+	if code, _ := deleteMachine(t, e, "box"); code != http.StatusNotFound {
+		t.Fatalf("删除不存在的机器应返回 404，实际 %d", code)
 	}
 }
 

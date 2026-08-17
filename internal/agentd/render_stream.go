@@ -54,7 +54,7 @@ func (s *Server) handleTaskRender(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.taskRepoOrErr(w, taskID); !ok {
 		return // taskRepoOrErr 已写 404
 	}
-	renderPath := filepath.Join(s.cfg.DataDir, "tasks", taskID, "render.log")
+	renderPath := filepath.Join(s.conf().DataDir, "tasks", taskID, "render.log")
 
 	size := renderSize(renderPath)
 	offset, err := renderStartOffset(r, size)
