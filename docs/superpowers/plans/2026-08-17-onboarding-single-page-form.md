@@ -254,8 +254,11 @@ func TestFormKeysAndOrder(t *testing.T) {
 		got = append(got, f.Key)
 	}
 	want := []string{
-		"role", "listen_preset", "listen",
-		"executor_default", "executor_model", "repo_root",
+		// 顺序 = 今天 AskAll 的实际提问顺序（initflow.go:72-129）。
+		// askListen 是在 executor_model **之后**调用的——把监听排到执行者
+		// 前面会让 CLI 顺序变化，直接违反全局约束第一条。
+		"role", "executor_default", "executor_model",
+		"listen_preset", "listen", "repo_root",
 		"approver_executor", "approver_model", "sync_auto",
 	}
 	if len(got) != len(want) {
@@ -401,10 +404,10 @@ type Option struct {
 | Key | Title（逐字） | Options | Default | Apply 写回 |
 |---|---|---|---|---|
 | `role` | `这台机器的角色` | `RoleOptions(goos)` | `DefaultRole(cfg, cfgExisted, rs, goos)` | 不写回（调用方用它算 isExec） |
-| `listen_preset` | `监听地址` | 三档，Value/Label 直接复用 `initflow.go:207-211` 的字面量 | `ListenPreset(cfg.Listen, cfgExisted, isExecOf(role))` | `loopback` → `cfg.Listen = listenLoopbackAddr`；`all` → `listenAllAddr`；`custom` → 不写，交给 `listen` |
-| `listen` | `监听地址 listen` | — | `cfg.Listen` | `cfg.Listen` |
 | `executor_default` | `默认执行者` | `ExecutorOptions(rs)` | `cfg.Executor.Default`，空则 `toolchain.FirstReady(rs)`，再空则 `"opencode"` | `cfg.Executor.Default` |
 | `executor_model` | `执行者模型（空=用执行者自身默认）` | — | `cfg.Executor.Model` | `cfg.Executor.Model` |
+| `listen_preset` | `监听地址` | 三档，Value/Label 直接复用 `initflow.go:207-211` 的字面量 | `ListenPreset(cfg.Listen, cfgExisted, isExecOf(role))` | `loopback` → `cfg.Listen = listenLoopbackAddr`；`all` → `listenAllAddr`；`custom` → 不写，交给 `listen` |
+| `listen` | `监听地址 listen` | — | `cfg.Listen` | `cfg.Listen` |
 | `repo_root` | `项目落点根目录 repo_root（自动登记时 clone 到这里）` | — | `cfg.RepoRoot` | `cfg.RepoRoot` |
 | `approver_executor` | `审批链执行者` | `{Value:"", Label:"不启用（权限直接找人）"}` 打头，其后接 `ExecutorOptions(rs)` | `cfg.Approver.Executor` | `cfg.Approver.Executor` |
 | `approver_model` | `审批链模型（空=用执行者自身默认）` | — | `cfg.Approver.Model` | `cfg.Approver.Model` |

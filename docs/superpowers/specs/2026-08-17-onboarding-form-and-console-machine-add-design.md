@@ -131,10 +131,10 @@ func Apply(cfg *config.Config, fields []Field, answers map[string]string) error
 | Key | Kind | Roles | Advanced | ShowWhen | 写回 |
 |---|---|---|---|---|---|
 | `role` | select | — | 否 | — | 不落配置（决定 isExec/isCoord，由调用方使用） |
-| `listen_preset` | select | executor, both | 否 | — | 不落配置（选 custom 才有下一项） |
-| `listen` | input | executor, both | 否 | `listen_preset == "custom"` | `cfg.Listen` |
 | `executor_default` | select | executor, both | 是 | — | `cfg.Executor.Default` |
 | `executor_model` | input | executor, both | 是 | — | `cfg.Executor.Model` |
+| `listen_preset` | select | executor, both | 否 | — | 不落配置（选 custom 才有下一项） |
+| `listen` | input | executor, both | 否 | `listen_preset == "custom"` | `cfg.Listen` |
 | `repo_root` | input | executor, both | 是 | — | `cfg.RepoRoot` |
 | `approver_executor` | select | executor, both | 是 | — | `cfg.Approver.Executor` |
 | `approver_model` | input | executor, both | 是 | `approver_executor` NonEmpty | `cfg.Approver.Model` |
