@@ -15,6 +15,7 @@
 // 吞成一句「操作失败」——那些消息里带着解法。
 import type {
   AddMachineReq,
+  BranchesResult,
   CreateProjectReq,
   CreateProjectResp,
   CreatePtySessionReq,
@@ -172,6 +173,11 @@ export function fetchTaskDetail(id: string): Promise<TaskDetail> {
 export function fetchTaskDiff(id: string, base?: string): Promise<DiffResult> {
   const q = base ? `?base=${encodeURIComponent(base)}` : ''
   return request<DiffResult>(`/api/tasks/${encodeURIComponent(id)}/diff${q}`)
+}
+
+// fetchTaskBranches 取任务仓库的本地分支列表（审阅栏基准下拉的数据源）。
+export function fetchTaskBranches(id: string): Promise<BranchesResult> {
+  return request<BranchesResult>(`/api/tasks/${encodeURIComponent(id)}/branches`)
 }
 
 // fetchTaskFile 读任务仓库内单个文件（GET /api/tasks/{id}/file?path=）。

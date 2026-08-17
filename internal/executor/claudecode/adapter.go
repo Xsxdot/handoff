@@ -196,7 +196,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	sessionID := uuid.NewString()
 	sockPath := filepath.Join(req.TaskDir, sockFileName)
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
-	if err := r.frames.BeginTurn("dispatch"); err != nil {
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
 	}
 	r.textPart = r.frames.NextPart()
@@ -343,7 +343,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	if r.proc == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
-	if err := r.frames.BeginTurn("send"); err != nil {
+	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
 	r.textPart = r.frames.NextPart()

@@ -320,6 +320,13 @@ export interface DiffResult {
   diff: string
 }
 
+// BranchesResult 是 GET /api/tasks/{id}/branches 的响应：本地分支名 + 推导默认。
+// default 为空串 = 推导不出，前端下拉退化为仅「自动推导」项。
+export interface BranchesResult {
+  branches: string[]
+  default: string
+}
+
 // fileResult 是 file 接口的响应体。
 export interface FileResult {
   content: string
@@ -405,6 +412,8 @@ export interface Frame {
   ref_seq?: number
   event?: string
   reason?: string
+  // turn_start（send）携带的审核者指令原文；dispatch 与旧帧缺席
+  instructions?: string
 }
 
 // DirEntry 是 GET /api/workspaces/dir 列举出的一项。

@@ -60,6 +60,27 @@
         "--strictPort"
       ],
       "port": 5283
+    },
+    {
+      "name": "prototype-static",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8931", "--directory", "prototypes"],
+      "port": 8931
+    },
+    {
+      "name": "tui-web-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/xushixin/workspace/handoff/.claude/worktrees/tool-call-issues-fix-0125fb/web",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5290",
+        "--strictPort"
+      ],
+      "port": 5290
     }
   ]
 }

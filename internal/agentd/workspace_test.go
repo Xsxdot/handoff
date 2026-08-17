@@ -184,6 +184,31 @@ func TestDiffShowsCommits(t *testing.T) {
 	}
 }
 
+// TestBranches 验证分支列表按名称返回本地分支，且不含 HEAD 指针。
+func TestBranches(t *testing.T) {
+	repo := initTestRepo(t)
+	// 加一个特性分支
+	gitAt(t, repo, "branch", "feature/x")
+	got, err := Branches(repo)
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	want := map[string]bool{"feature/x": false}
+	for _, b := range got {
+		if _, ok := want[b]; ok {
+			want[b] = true
+		}
+		if strings.HasPrefix(b, "-") || b == "" {
+			t.Errorf("非法分支名混入：%q", b)
+		}
+	}
+	for b, seen := range want {
+		if !seen {
+			t.Errorf("缺少分支 %s（得到 %v）", b, got)
+		}
+	}
+}
+
 // TestDiffRejectsDashPrefixedBase 覆盖 L-4：以 "-" 开头的 base 会被 git 解释为
 // 选项而非 rev（如 --output=... 让 git 把 diff 写到任意路径，git 参数注入），
 // Diff 必须拒绝（ErrBadBaseBranch）且不得让 git 真正执行到写文件——

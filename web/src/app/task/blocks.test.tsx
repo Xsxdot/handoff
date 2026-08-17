@@ -8,8 +8,10 @@ import type { ToolBlock } from './frames'
 import { TextBlock } from './TextBlock'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
-import { EventMark } from './EventMark'
 import { UnknownBlock } from './UnknownBlock'
+import { EventChip } from './EventChip'
+import { UserInstructionBlock } from './UserInstructionBlock'
+import { DeliverySummaryCard } from './DeliverySummaryCard'
 
 const tool = (o: Partial<ToolBlock>): ToolBlock => ({
   kind: 'tool', key: 'f1', turn: 1,
@@ -44,13 +46,13 @@ describe('ThinkingBlock', () => {
 describe('ToolCard', () => {
   it('默认折叠：显示工具名与参数摘要，输入输出不可见', () => {
     render(<ToolCard block={tool({})} taskState="completed" />)
-    expect(screen.getByText('bash')).toBeInTheDocument()
+    expect(screen.getByText('跑命令')).toBeInTheDocument()
     expect(screen.queryByText('ok\t0.2s')).not.toBeInTheDocument()
   })
 
   it('展开后能看到输入与输出', () => {
     render(<ToolCard block={tool({})} taskState="completed" />)
-    fireEvent.click(screen.getByRole('button', { name: /bash/ }))
+    fireEvent.click(screen.getByRole('button', { name: /跑命令/ }))
     // 入参「go test ./...」既出现在折叠态的参数摘要里，也出现在展开后的输入区，
     // 用 getAllByText 断言展开态确实多渲染了一份
     expect(screen.getAllByText(/go test \.\/\.\.\./).length).toBeGreaterThan(0)
@@ -75,40 +77,56 @@ describe('ToolCard', () => {
 
   it('截断提示带原始字节数', () => {
     render(<ToolCard block={tool({ outputTruncated: true, outputBytes: 141882 })} taskState="completed" />)
-    fireEvent.click(screen.getByRole('button', { name: /bash/ }))
+    fireEvent.click(screen.getByRole('button', { name: /跑命令/ }))
     expect(screen.getByText(/141882/)).toBeInTheDocument()
     expect(screen.getByText(/已截断/)).toBeInTheDocument()
   })
 })
 
-describe('EventMark', () => {
-  it('是不可操作的标记：没有任何按钮', () => {
-    const { container } = render(<EventMark event="permission_request" ts="2026-08-12T10:31:02+08:00" />)
-    expect(container.querySelectorAll('button')).toHaveLength(0)
-    expect(screen.getByText(/权限工单/)).toBeInTheDocument()
+describe('ToolCard 工具名中文化', () => {
+  const mk = (toolName: string) => ({
+    kind: 'tool', key: 'k1', turn: 1, tool: toolName, input: 'x', inputTruncated: false,
+    inputBytes: 0, status: 'ok', output: '', outputTruncated: false, outputBytes: 0,
+  }) as ToolBlock
+  it('已知工具名映射为中文', () => {
+    render(<ToolCard block={mk('commandExecution')} taskState="waiting_review" />)
+    expect(screen.getByText('跑命令')).toBeInTheDocument()
   })
-
-  it('明确指向工单面板，不在时间线里开第二个审批入口', () => {
-    render(<EventMark event="permission_request" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
+  it('未知工具名原样透出', () => {
+    render(<ToolCard block={mk('someNewTool')} taskState="waiting_review" />)
+    expect(screen.getByText('someNewTool')).toBeInTheDocument()
   })
+})
 
-  it('提问工单同样指向工单面板', () => {
-    render(<EventMark event="question" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
+describe('EventChip', () => {
+  it('白名单事件渲染人话短语', () => {
+    render(<EventChip event="completed" ts="2026-08-17T10:00:00Z" />)
+    expect(screen.getByText(/一轮结束，进入待审/)).toBeInTheDocument()
   })
+  it('未知事件原样透出', () => {
+    render(<EventChip event="mystery_event" ts="2026-08-17T10:00:00Z" />)
+    expect(screen.getByText(/mystery_event/)).toBeInTheDocument()
+  })
+  it.each(['approver_decision', 'permission_reuse', 'progress'])('后台审计噪声不渲染（%s）', (event) => {
+    render(<EventChip event={event} ts="2026-08-17T10:00:00Z" />)
+    expect(screen.queryByText(event)).not.toBeInTheDocument()
+  })
+})
 
-  it.each(['completed', 'failed', 'delivery_failed', 'stalled', 'some_new_event'])(
-    '无可裁决物的事件（%s）不挂「裁决入口」指引',
-    (event) => {
-      render(<EventMark event={event} ts="2026-08-12T10:31:02+08:00" />)
-      expect(screen.queryByText(/工单面板/)).not.toBeInTheDocument()
-    },
-  )
+describe('UserInstructionBlock', () => {
+  it('渲染审核者身份行与指令原文', () => {
+    render(<UserInstructionBlock text="补上变异测试记录" ts="2026-08-17T14:20:00Z" />)
+    expect(screen.getByText(/审核者/)).toBeInTheDocument()
+    expect(screen.getByText('补上变异测试记录')).toBeInTheDocument()
+  })
+})
 
-  it('未知事件名原样显示，不吞掉', () => {
-    render(<EventMark event="some_new_event" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/some_new_event/)).toBeInTheDocument()
+describe('DeliverySummaryCard', () => {
+  it('渲染命中的字段，缺席字段不渲染行', () => {
+    render(<DeliverySummaryCard delivery={{ branch: 'bench/b93', summary: '全落地' }} />)
+    expect(screen.getByText('bench/b93')).toBeInTheDocument()
+    expect(screen.getByText('全落地')).toBeInTheDocument()
+    expect(screen.queryByText('commit')).not.toBeInTheDocument()
   })
 })
 

@@ -992,6 +992,28 @@ func resolveBaseBranch(repo string) string {
 	return ""
 }
 
+// Branches 列出仓库的本地分支名（refname:short，字母序）。
+//
+// 供审阅栏「改动」的基准分支下拉用：协调者从列表里选，不手填。
+// 只列本地分支——diff 的 base 语义是本地 rev，远端跟踪分支由默认推导覆盖。
+//
+// 返回：分支名切片（可能为空，如空仓库）；git 失败返回错误（stderr 在 err 里）。
+func Branches(repo string) ([]string, error) {
+	out, _, err := gitRun(context.Background(), repo, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		log().Error("列分支失败", "repo", repo, "cause", err)
+		return nil, fmt.Errorf("git for-each-ref: %w", err)
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		if b := strings.TrimSpace(line); b != "" {
+			branches = append(branches, b)
+		}
+	}
+	log().Debug("列分支完成", "repo", repo, "count", len(branches))
+	return branches, nil
+}
+
 // binaryProbeBytes 是二进制判定的探测长度：前 8 KiB 内出现 NUL 字节即判为二进制。
 //
 // 判据抄自 orca 的 relay 文件通道（BINARY_PROBE_BYTES = 8192）。它朴素、无依赖，

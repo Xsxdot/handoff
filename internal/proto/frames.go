@@ -40,7 +40,7 @@ const (
 //   - tool_call:          Part + Tool + Input（可能 Truncated，Bytes 为原始长度）
 //   - tool_result:        Part + Status + Output（同上）
 //   - event:              RefSeq + Event
-//   - turn_start:         Reason（"dispatch" 或 "send"）
+//   - turn_start:         Reason + Instructions（send 时）
 type Frame struct {
 	// Seq 是任务内单调递增的帧号，从 1 开始。与 Event.Seq 无关（见文件头）。
 	Seq int64 `json:"seq"`
@@ -82,4 +82,9 @@ type Frame struct {
 	// "send"（Adapter.Send）。不细分"续接"与"回答提问"——Send 是单一方法，
 	// adapter 分不出来，编出来的区分是假的。
 	Reason string `json:"reason,omitempty"`
+	// Instructions 是 turn_start（reason=send）携带的审核者指令原文——
+	// continue 的修改指令或 reply 的应答文本。前端靠它渲染「审核者气泡」。
+	// dispatch 回合恒为空；旧帧无此字段（前端按缺席处理，向后兼容）。
+	// 不截断：这是人写的指令，长度天然有限；截了反而丢审阅依据。
+	Instructions string `json:"instructions,omitempty"`
 }

@@ -334,6 +334,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
 	api.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
 	api.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
+	api.HandleFunc("GET /api/tasks/{id}/branches", s.byTask(s.handleTaskBranches))
 	api.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
 	api.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
 	api.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
@@ -1392,6 +1393,27 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
+}
+
+// handleTaskBranches 返回任务仓库的本地分支名列表与推导出的默认基准分支。
+//
+// 供前端审阅栏的基准下拉用（spec 2026-08-17 §6.2）。只读，不做状态门禁。
+// default 为空表示推导不出（前端下拉退化为仅「自动推导」项）。
+func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	s.log.Info("branches 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
+	repo, ok := s.taskRepoOrErr(w, taskID)
+	if !ok {
+		return
+	}
+	branches, err := Branches(repo)
+	if err != nil {
+		s.log.Error("列分支失败", "task", taskID, "repo", repo, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	s.log.Info("branches 完成", "task", taskID, "count", len(branches))
+	writeJSON(w, http.StatusOK, map[string]any{"branches": branches, "default": resolveBaseBranch(repo)})
 }
 
 // handleTaskFile 返回任务仓库内指定文件的内容（协调者取上下文用）。

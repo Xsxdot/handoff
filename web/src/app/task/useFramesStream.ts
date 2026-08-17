@@ -34,6 +34,8 @@ export interface FramesStream {
   badLines: number
   // startOffset 是已加载区间的起始字节偏移；0 表示已到文件头，「加载更早」应消失
   startOffset: number
+  // sizeUnknown 表示服务端未回送文件大小；此时 startOffset=0 不是「已到文件头」
+  sizeUnknown: boolean
   // error 是流错误的人类可读原因；非 null 时面板显示错误条 + 重试
   error: string | null
   // active 表示是否仍在跟随（流未结束）
@@ -51,12 +53,14 @@ export interface FramesStream {
 //   - 坏行        → badLines（面板顶部计数）
 //   - 帧数到顶    → atCap（面板停用「加载更早」并提示）
 //   - 流结束      → active=false（面板把「跟随中」换成「已结束」）
+//   - 大小头缺失  → sizeUnknown（面板说明当前只显示尾部窗口）
 // 少任何一条，界面上就会出现「看着正常、其实不是」的状态——那是最坏的一种。
 
 export function useFramesStream(taskId: string | undefined): FramesStream {
   const [frames, setFrames] = useState<Frame[]>([])
   const [badLines, setBadLines] = useState(0)
   const [startOffset, setStartOffset] = useState(0)
+  const [sizeUnknown, setSizeUnknown] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [active, setActive] = useState(true)
   // loadingEarlier 表示一次回翻正在进行中（loadEarlier 里置位，finally 复位）
@@ -71,6 +75,7 @@ export function useFramesStream(taskId: string | undefined): FramesStream {
     setFrames([])
     setBadLines(0)
     setStartOffset(0)
+    setSizeUnknown(false)
     setError(null)
     setActive(true)
 
@@ -101,11 +106,13 @@ export function useFramesStream(taskId: string | undefined): FramesStream {
         }
         const hdr = resp.headers.get('X-Handoff-Frames-Size')
         const total = hdr !== null && hdr !== '' ? Number(hdr) : null
+        const hasKnownSize = total !== null && Number.isFinite(total)
+        setSizeUnknown(!hasKnownSize)
         // 文件大小本身不对外暴露（没有界面用它，YAGNI），只用来推起始偏移。
         // tail=pageBytes 时服务端的起点就是 max(0, size - pageBytes)（再向后对齐到
         // 下一个换行）。没有专门的响应头告诉我们起点，但它可以从 size 推出来，
         // 用来判断「还有没有更早的」——推小了只会多请求一次，不会漏。
-        setStartOffset(total === null ? 0 : Math.max(0, total - pageBytes))
+        setStartOffset(hasKnownSize && total !== null ? Math.max(0, total - pageBytes) : 0)
         if (!resp.body) {
           setError('响应没有可读流（浏览器不支持 ReadableStream？）')
           setActive(false)
@@ -245,6 +252,7 @@ export function useFramesStream(taskId: string | undefined): FramesStream {
     frames,
     badLines,
     startOffset,
+    sizeUnknown,
     error,
     active,
     atCap: frames.length >= maxLoadedFrames,

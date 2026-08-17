@@ -366,7 +366,7 @@ func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API,
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
 	r.api = api
 	r.handle = handle
-	if err := r.frames.BeginTurn("dispatch"); err != nil {
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
 	}
 	a.log.Info("adapter 启动运行", "task", r.taskID, "task_dir", r.taskDir, "workdir", r.repoPath)
@@ -466,7 +466,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能续接", taskID)
 	default:
 	}
-	if err := r.frames.BeginTurn("send"); err != nil {
+	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
 	a.log.Info("adapter 收到续接指令", "task", taskID, "text", turn.TruncateRunes(text, 80))
