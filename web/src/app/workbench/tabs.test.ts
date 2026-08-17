@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_WORKBENCH,
+  MAX_GROUPS,
   MIN_PANE_PX,
   activateTab,
   availablePaneWidth,
   closeTab,
   dedupKey,
+  isAlreadyOpen,
   nextTerminalSeq,
   openTab,
   resizeGroups,
   setTabContent,
   splitGroup,
+  splitGroupAt,
   tabTitle,
   type Workbench,
 } from './tabs'
@@ -211,6 +214,43 @@ describe('splitGroup', () => {
   })
 })
 
+describe('splitGroupAt', () => {
+  it('在指定下标处插入空栏并聚焦它', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    wb = splitGroupAt(wb, 0)
+    expect(wb.groups).toHaveLength(2)
+    expect(wb.groups[0].tabs).toHaveLength(0)   // 新栏插在最前
+    expect(wb.groups[1].tabs).toHaveLength(1)   // 原来那栏被推到后面
+    expect(wb.active).toBe(0)
+  })
+
+  it('插到末尾等价于 splitGroup', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    expect(splitGroupAt(wb, wb.groups.length)).toEqual(splitGroup(wb))
+  })
+
+  it('下标越界时夹到合法范围，不抛错', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    expect(splitGroupAt(wb, -5).groups).toHaveLength(2)
+    expect(splitGroupAt(wb, 99).groups).toHaveLength(2)
+    expect(splitGroupAt(wb, -5).groups[0].tabs).toHaveLength(0)
+    expect(splitGroupAt(wb, 99).groups[1].tabs).toHaveLength(0)
+  })
+
+  it('已到 MAX_GROUPS 时原样返回同一个对象', () => {
+    let wb = EMPTY_WORKBENCH
+    while (wb.groups.length < MAX_GROUPS) wb = splitGroup(wb)
+    expect(splitGroupAt(wb, 1)).toBe(wb)
+  })
+
+  it('sizes 与 groups 等长这条不变式在插入后仍成立', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    wb = splitGroupAt(wb, 0)
+    wb = splitGroupAt(wb, 1)
+    expect(wb.sizes).toHaveLength(wb.groups.length)
+  })
+})
+
 describe('resizeGroups', () => {
   // 两栏起手：sizes 是 [1, 1]，总和 2，各占一半
   const twoGroups = () => splitGroup(openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' }))
@@ -323,5 +363,19 @@ describe('终端 tab 的会话身份', () => {
     let wb = EMPTY_WORKBENCH
     wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
     expect(nextTerminalSeq(wb)).toBe(2)
+  })
+})
+
+describe('isAlreadyOpen', () => {
+  it('认得出另一组里已经开着的同身份 tab', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    wb = splitGroup(wb)
+    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T1' })).toBe(true)
+    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T2' })).toBe(false)
+  })
+
+  it('永不去重的内容恒为 false——没有会话的终端本来就该开出第二个', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
+    expect(isAlreadyOpen(wb, { kind: 'terminal', seq: 2 })).toBe(false)
   })
 })

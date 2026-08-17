@@ -15,14 +15,16 @@
               "branch": "main",
               "head": "482aab1",
               "is_main": true,
-              "managed": false
+              "managed": false,
+              "created_at": "0001-01-01T00:00:00Z"
             },
             {
               "path": "/home/dev/.handoff/worktrees/w1",
               "branch": "handoff/w1-web-scaffold",
               "head": "9e12a3b",
               "is_main": false,
-              "managed": true
+              "managed": true,
+              "created_at": "0001-01-01T00:00:00Z"
             }
           ],
           "probe_error": ""

@@ -110,6 +110,30 @@ describe('FileTree', () => {
     await waitFor(() => expect(screen.getByText('Makefile')).toBeInTheDocument())
   })
 
+  it('refreshKey 变化只重取根目录，不把已展开的层全部刷新', async () => {
+    const calls: string[] = []
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_path, rel) => {
+      calls.push(rel ?? '')
+      if (!rel) return dir([{ name: 'internal', is_dir: true }])
+      return dir([{ name: 'server.go', is_dir: false }])
+    })
+    const props = {
+      base,
+      taskId: null,
+      onOpenFile: vi.fn(),
+      onOpenTerminal: vi.fn(),
+      revealSupported: true,
+    }
+    const { rerender } = render(<FileTree {...props} refreshKey={0} />)
+    await waitFor(() => expect(screen.getByText('internal')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('internal'))
+    await waitFor(() => expect(screen.getByText('server.go')).toBeInTheDocument())
+
+    rerender(<FileTree {...props} refreshKey={1} />)
+    await waitFor(() => expect(calls.filter((rel) => rel === '').length).toBe(2))
+    expect(calls.filter((rel) => rel === 'internal')).toHaveLength(1)
+  })
+
   it('点文件回调相对路径', async () => {
     vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'Makefile', is_dir: false }]))
     const onOpenFile = vi.fn()

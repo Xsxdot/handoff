@@ -76,7 +76,7 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 func (s *Server) localMachine() proto.Machine {
 	m := proto.Machine{
 		Name: "", Addr: s.conf().Listen, Reachable: true,
-		Executors: []string{}, ProbeMs: 0,
+		Executors: []string{}, ProbeMs: 0, ScratchRoot: s.scratchRoot(),
 	}
 	if s.mgr == nil {
 		// manager 未注入时本机确实答不出运行数据，但它显然“在”——
@@ -91,6 +91,9 @@ func (s *Server) localMachine() proto.Machine {
 		return m
 	}
 	fillFromStatus(&m, st)
+	// Manager.Status 不持有 Server 的附属能力字段；本机的 scratch 路径必须在
+	// 投影完成后再补回来，否则 fillFromStatus 会用空的 StatusResp 字段把它擦掉。
+	m.ScratchRoot = s.scratchRoot()
 
 	// 本机能力位就地填：localMachine 直调 mgr.Status()，不走 HTTP，而能力位
 	// 只在 handleStatus 组装 HTTP 响应时才有；本机的平台支持度只有这里知道。
@@ -138,6 +141,7 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 	// 能力位原样搬运，包括 nil：探到了但对端没这个字段，结论就是「没上报」
 	m.PtySupported = st.PtySupported
 	m.RevealSupported = st.RevealSupported
+	m.ScratchRoot = st.ScratchRoot
 }
 
 // handleMachines 处理 GET /api/machines。

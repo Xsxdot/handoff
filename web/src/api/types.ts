@@ -112,6 +112,9 @@ export interface Workspace {
   head: string      // 短 sha
   is_main: boolean
   managed: boolean  // true = agentd 自建的任务工作树
+  // created_at 是工作树的创建时间（RFC3339Nano）。零值时间 = agentd 取不到，
+  // 排序时当「最旧」处理，见 sortWorkspaces。
+  created_at: string
 }
 
 // ProjectLocationNode 是一个项目在一台机器上的位置。
@@ -179,6 +182,9 @@ export interface Machine {
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
   reveal_supported?: boolean | null
+  // scratch_root 是这台机器的草稿区路径，探活时从对端 StatusResp 投影。
+  // 缺席 = 不支持临时文件（老 agentd 或目录建不出来），前端不渲染入口。
+  scratch_root?: string
 }
 
 export interface MachinesResp {
@@ -260,6 +266,8 @@ export interface StatusResp {
   default_executor: string
   task_counts: Record<string, number>
   active: ActiveTask[]
+  // scratch_root 是草稿区绝对路径；缺席 = 这台 agentd 不支持临时文件。
+  scratch_root?: string
   // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
   pty_supported?: boolean
   reveal_supported?: boolean

@@ -20,7 +20,7 @@
 // 角标语义（不得含糊）：数据来自 `handoff diff` = `git diff base...HEAD`，只反映
 // 已提交的改动。tooltip 写「相对基线已改动」，不写「工作区已修改」——后者是
 // git status 的语义，这里给不出来。
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ChevronDown, ChevronRight, CircleSlash, FileText, FolderClosed, FolderOpen, RefreshCw, Search, X,
 } from 'lucide-react'
@@ -96,6 +96,12 @@ export interface FileTreeProps {
   // revealSupported 是本机 agentd 的「在访达中显示」平台能力位，三态。
   // null = 对端没上报，此时**放行**而不是禁用（见 useMachineCaps 的三态纪律）。
   revealSupported: boolean | null
+  // refreshKey 变化时重取根目录一层。调用方（Shell）在中央区新建文件之后
+  // 递增它——不刷新的话用户刚建的文件在右栏看不见，会以为没建成。
+  //
+  // 用 reload('') 而不是 refresh()：新文件建在根上，只有那一层需要重取；
+  // refresh 会丢掉全部已展开层的缓存，用户展开的目录会全部塌回去。
+  refreshKey?: number
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -153,9 +159,10 @@ function isLoopbackHost(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported }: FileTreeProps) {
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
+  const firstRef = useRef(true)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [query, setQuery] = useState('')
   // menu：右键菜单当前打开的坐标与被右键条目
@@ -181,6 +188,15 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     setOpError('')
     dirs.ensure('')
   }, [base.key, dirs])
+
+  useEffect(() => {
+    // 首次挂载不重取：那一层由树自己的 ensure 负责，这里再来一次是白打一个请求
+    if (firstRef.current) {
+      firstRef.current = false
+      return
+    }
+    dirs.reload('')
+  }, [refreshKey, dirs])
 
   const toggle = (rel: string) => {
     dirs.ensure(rel)

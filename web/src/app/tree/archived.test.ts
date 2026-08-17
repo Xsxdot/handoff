@@ -16,8 +16,8 @@ function tree(): ProjectTreeResp {
             path: '/repo',
             probe_error: '',
             workspaces: [
-              { path: '/repo', branch: 'main', head: 'aaaaaaa', is_main: true, managed: false },
-              { path: '/wt/live', branch: 'feat', head: 'bbbbbbb', is_main: false, managed: true },
+              { path: '/repo', branch: 'main', head: 'aaaaaaa', is_main: true, managed: false, created_at: '' },
+              { path: '/wt/live', branch: 'feat', head: 'bbbbbbb', is_main: false, managed: true, created_at: '' },
             ],
           },
           {

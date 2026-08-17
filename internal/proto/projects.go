@@ -30,6 +30,22 @@ type Workspace struct {
 	// Managed 表示该工作树是 agentd 自建的任务工作树（路径落在 agentd 的
 	// worktree 根下）。UI 据此区分「任务工作树」与「人手开的工作树」。
 	Managed bool `json:"managed"`
+	// CreatedAt 是这个工作树被建出来的时间；零值 = 取不到。
+	//
+	// 取法：stat <git 公共目录>/worktrees/<名>/gitdir。那个文件由
+	// git worktree add 写一次之后就不再动，是唯一稳定的创建时间证据。
+	// 刻意不 stat 工作树目录本身——它的 mtime 会随着往里写代码变化，
+	// 排出来的是「最近动过」而不是「什么时候建的」。
+	//
+	// **主工作树恒为零值**：它没有 worktrees/<名>/gitdir，而 .git 目录的 mtime
+	// 是「最后一次在里面增删条目」不是创建时间（实测一个 08-07 建的仓库报出
+	// 08-18）。准确的答案要文件系统 birthtime，Go 标准库不给。消费方（控制台
+	// 排序）把主工作树钉在第一位、不参与比较，这个值没有消费者——如实留零值，
+	// 好过报一个自信的错值。
+	//
+	// 为什么取不到时留零值而不是报错：整棵项目树不该因为一个 stat 失败就 500。
+	// 消费方把零值当「最旧」处理。
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ProjectLocationNode 是一个项目在**一台**机器上的位置（项目树的中间层）。
@@ -117,6 +133,10 @@ type Machine struct {
 	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`
+
+	// ScratchRoot 是这台机器的草稿区路径，探活时从它的 StatusResp 投影而来。
+	// 空串（omitempty 后为缺席）= 这台机器不支持临时文件，前端不渲染入口。
+	ScratchRoot string `json:"scratch_root,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。

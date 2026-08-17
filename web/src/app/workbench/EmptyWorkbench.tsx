@@ -22,7 +22,7 @@ export function EmptyWorkbench({ onAddProject }: { onAddProject: () => void }) {
       {/* 这里的快捷键是「选中目录之后能用什么」的预告：没有基准目录时它们无处可去，
           所以写成「选中目录后」，而不是印一行按了没反应的键 */}
       <p className="font-mono text-[11px] text-muted-foreground">
-        选中目录后：⌘T 新终端 · ⌘⇧O 打开文件 · ⌘⇧A 打开任务 TUI
+        选中目录后：⌘T 新终端 · ⌘N 新建文件 · ⌘⇧A 打开任务
       </p>
     </div>
   )

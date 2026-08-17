@@ -1,6 +1,6 @@
 // useHomeDock —— home 基准终端的状态。
 //
-// 职责：持有一组 home 终端 tab、当前激活项、浮窗的开合与几何。
+// 职责：持有一组 home 浮窗 tab（终端或临时文件）、当前激活项、浮窗的开合与几何。
 //
 // 边界（这是它存在的全部理由）：
 //   - **与 useWorkbench 完全独立**。home 终端不挂在任何目录上，而中央工作区的
@@ -14,9 +14,13 @@ import { useCallback, useRef, useState } from 'react'
 
 export interface HomeTab {
   id: string // 客户端生成的 tab 身份（不是服务端 sessionId）
-  seq: number // 第几个终端，用于标题 'bash · home N'
+  kind: 'terminal' | 'file'
+  seq: number // 第几个浮窗 tab，用于终端标题 'bash · home N'
   sessionId?: string // 服务端会话 id；建成之前是 undefined
   machine: string // '' = 本机
+  rel?: string // file tab 在 scratch 根下的相对路径
+  draft?: string // file tab 的未保存内容；不设表示组件尚未改动
+  baseSha?: string // draft 对应的服务端版本
 }
 
 export interface HomeDockApi {
@@ -25,10 +29,14 @@ export interface HomeDockApi {
   windowOpen: boolean
   geom: { x: number; y: number; w: number; h: number }
   newTerminal: (machine?: string) => void // 建 tab、激活它、打开浮窗
+  // newFile 收进一个已经由调用方建好的 scratch 文件，不在 hook 内发请求。
+  newFile: (rel: string) => void
   activate: (id: string) => void // 激活并打开浮窗
   collapse: () => void // 收起浮窗，**不动 tabs**
   closeTab: (id: string) => void // 从列表移除；杀会话由调用方负责
   setSession: (id: string, sessionId: string) => void
+  // setDraft 把文件 tab 的草稿寄存在 tab 上；null 清除草稿快照。
+  setDraft: (id: string, d: { draft: string; baseSha: string } | null) => void
   setGeom: (g: Partial<{ x: number; y: number; w: number; h: number }>) => void
   adopt: (t: HomeTab) => void // 恢复既有会话时把它收进来
 }
@@ -51,7 +59,15 @@ export function useHomeDock(): HomeDockApi {
 
   const newTerminal = useCallback((machine?: string) => {
     const id = `h${++tabIdCounter.current}`
-    const tab: HomeTab = { id, seq: ++seqCounter.current, machine: machine ?? '' }
+    const tab: HomeTab = { id, kind: 'terminal', seq: ++seqCounter.current, machine: machine ?? '' }
+    setTabs((prev) => [...prev, tab])
+    setActiveId(id)
+    setWindowOpen(true)
+  }, [])
+
+  const newFile = useCallback((rel: string) => {
+    const id = `h${++tabIdCounter.current}`
+    const tab: HomeTab = { id, kind: 'file', rel, seq: ++seqCounter.current, machine: '' }
     setTabs((prev) => [...prev, tab])
     setActiveId(id)
     setWindowOpen(true)
@@ -90,6 +106,18 @@ export function useHomeDock(): HomeDockApi {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sessionId } : t)))
   }, [])
 
+  const setDraft = useCallback((id: string, d: { draft: string; baseSha: string } | null) => {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? d === null
+            ? { ...t, draft: undefined, baseSha: undefined }
+            : { ...t, draft: d.draft, baseSha: d.baseSha }
+          : t,
+      ),
+    )
+  }, [])
+
   const setGeom = useCallback((g: Partial<{ x: number; y: number; w: number; h: number }>) => {
     setGeomState((prev) => {
       const next = { ...prev, ...g }
@@ -115,5 +143,19 @@ export function useHomeDock(): HomeDockApi {
     setActiveId((prev) => prev ?? t.id)
   }, [])
 
-  return { tabs, activeId, windowOpen, geom, newTerminal, activate, collapse, closeTab, setSession, setGeom, adopt }
+  return {
+    tabs,
+    activeId,
+    windowOpen,
+    geom,
+    newTerminal,
+    newFile,
+    activate,
+    collapse,
+    closeTab,
+    setSession,
+    setDraft,
+    setGeom,
+    adopt,
+  }
 }

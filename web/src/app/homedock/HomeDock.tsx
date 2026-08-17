@@ -11,16 +11,19 @@
 //   - 不持有 tabs / 浮窗开合 / 几何任何状态，全部从 dock（useHomeDock 的返回值）读；
 //     dock.activeId 可能为 null，仅影响激活项高亮，不能假定它非空
 //   - onKill 只向上抛 id，真的删服务端会话是调用方的事
+//   - 临时文件入口放在浮窗 tab 条而不是 FAB：FAB 的职责是开/收，另加清单会把
+//     已经删掉的第二层导航重新请回来
 
 import type { ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import { HomeWindow } from './HomeWindow'
 import type { HomeDockApi, HomeTab } from './useHomeDock'
 
-export function HomeDock({ dock, renderTab, onKill }: {
+export function HomeDock({ dock, renderTab, onKill, onNewFile }: {
   dock: HomeDockApi
   renderTab: (t: HomeTab) => ReactNode
   onKill: (id: string) => void
+  onNewFile?: () => void
 }) {
   // FAB 是「开/收」开关，一次点击直达终端，中间不再隔一层清单面板。
   //
@@ -53,6 +56,7 @@ export function HomeDock({ dock, renderTab, onKill }: {
           onGeom={dock.setGeom}
           onActivate={dock.activate}
           onNew={() => dock.newTerminal()}
+          onNewFile={onNewFile}
           onKill={onKill}
           onCollapse={dock.collapse}
           renderTab={renderTab}
