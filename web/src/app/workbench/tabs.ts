@@ -90,6 +90,19 @@ function evenSizes(n: number): number[] {
   return Array.from({ length: n }, () => 1)
 }
 
+// availablePaneWidth 返回中央区各栏实际可以瓜分的宽度。
+//
+// 参数：
+//   - parentWidth: 外层 flex 容器的布局宽度（包含分隔条）
+//   - separatorWidths: 容器内所有分隔条的实际宽度
+//
+// 返回：扣除分隔条后的可分配宽度；如果布局数据异常导致结果为负，返回 0，
+// 让调用方走「量不到宽度」的退化路径，而不是把负数传给比例换算。
+export function availablePaneWidth(parentWidth: number, separatorWidths: number[]): number {
+  const separatorWidth = separatorWidths.reduce((total, width) => total + width, 0)
+  return Math.max(0, parentWidth - separatorWidth)
+}
+
 // dedupKey 返回一个 tab 内容的去重键；返回 null 表示这种内容**永不去重**。
 //
 // 终端分两种情况：

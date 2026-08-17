@@ -66,6 +66,7 @@ export function Shell() {
   const caps = useMachineCaps()
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
+  const split = wb.split
   // ⌘D 分屏。
   //
   // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
@@ -85,11 +86,11 @@ export function Shell() {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.key.toLowerCase() !== 'd') return
       e.preventDefault()
-      wb.split()
+      split()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [wb])
+  }, [split])
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
   // openTerminal：它不会把用户的选中目录拽走。
   // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。

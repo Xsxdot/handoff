@@ -10,9 +10,11 @@
 //   - 不持有宽度状态：宽度的唯一真相在 Workbench.sizes
 //
 // 为什么量的是 parentElement 的宽度：分隔条自己只有 5px，换算比例要的是**容器**
-// 宽度，而容器就是它和各栏共同的那个 flex 父节点。在事件里现量而不是存进 state：
-// 窗口 resize、左右栏的显隐都会改容器宽，存下来的值随时会过期。
+// 宽度，而容器就是它和各栏共同的那个 flex 父节点。但 parentElement 的宽度还包含
+// 所有分隔条，必须先扣掉它们，才是各栏真正瓜分的可分配宽度。在事件里现量而不是
+// 存进 state：窗口 resize、左右栏的显隐都会改容器宽，存下来的值随时会过期。
 import { useRef } from 'react'
+import { availablePaneWidth } from './tabs'
 
 // KEY_STEP 是键盘每次调整的比例。2% 在 740px 的中央区里约合 15px，
 // 连按可达且不会一步跨过整栏。
@@ -29,7 +31,15 @@ export function GroupDivider({ onResize }: GroupDividerProps) {
   // 拖拽中的起点：上一次派发位置的 clientX 与容器宽度。null = 没在拖
   const drag = useRef<{ lastX: number; width: number } | null>(null)
 
-  const containerWidthOf = (el: HTMLElement): number => el.parentElement?.getBoundingClientRect().width ?? 0
+  const containerWidthOf = (el: HTMLElement): number => {
+    const parent = el.parentElement
+    if (!parent) return 0
+    const separatorWidths = Array.from(
+      parent.querySelectorAll<HTMLElement>('[role="separator"]'),
+      (separator) => separator.getBoundingClientRect().width,
+    )
+    return availablePaneWidth(parent.getBoundingClientRect().width, separatorWidths)
+  }
 
   return (
     <div

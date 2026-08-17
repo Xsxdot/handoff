@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_WORKBENCH,
+  MIN_PANE_PX,
   activateTab,
+  availablePaneWidth,
   closeTab,
   dedupKey,
   nextTerminalSeq,
@@ -244,6 +246,22 @@ describe('resizeGroups', () => {
     expect(resizeGroups(wb, 1, 0.1, 0.2)).toBe(wb)
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+
+  it('三栏拖到底时，扣除两条 5px 分隔条后被挤栏仍至少 240px', () => {
+    const containerWidth = 1060
+    const paneWidth = availablePaneWidth(containerWidth, [5, 5])
+    expect(paneWidth).toBe(1050)
+
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
+    wb = splitGroup(wb)
+    wb = splitGroup(wb)
+    wb = resizeGroups(wb, 1, 1, MIN_PANE_PX / paneWidth)
+
+    const total = wb.sizes.reduce((a, b) => a + b, 0)
+    const squeezedPanePx = (wb.sizes[2] / total) * paneWidth
+    expect(squeezedPanePx).toBeGreaterThanOrEqual(MIN_PANE_PX)
+    expect(squeezedPanePx).toBeCloseTo(MIN_PANE_PX)
   })
 })
 
