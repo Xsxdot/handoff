@@ -53,7 +53,7 @@ func (s *Server) handleTaskFrames(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.taskRepoOrErr(w, taskID); !ok {
 		return // taskRepoOrErr 已写 404
 	}
-	framesPath := filepath.Join(s.cfg.DataDir, "tasks", taskID, turn.FramesFileName)
+	framesPath := filepath.Join(s.conf().DataDir, "tasks", taskID, turn.FramesFileName)
 
 	size := renderSize(framesPath)
 	offset, err := renderStartOffset(r, size)

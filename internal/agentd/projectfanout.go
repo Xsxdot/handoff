@@ -39,8 +39,8 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		out.Machines = []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}}
 	}
 
-	names := make([]string, 0, len(s.cfg.Targets))
-	for name := range s.cfg.Targets {
+	names := make([]string, 0, len(s.conf().Targets))
+	for name := range s.conf().Targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -58,7 +58,7 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			t := s.cfg.Targets[name]
+			t := s.conf().Targets[name]
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
 			tree, err := client.New(t.Addr, t.Token).MarkForwarded().ProjectTree(fanCtx)
 			if err != nil {

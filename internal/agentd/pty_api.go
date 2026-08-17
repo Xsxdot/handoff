@@ -44,7 +44,7 @@ const ptyFanoutBudget = 3 * time.Second
 func (s *Server) sessionEnv() []string {
 	base := append([]string{}, os.Environ()...)
 	base = append(base, "TERM=xterm-256color", "COLORTERM=truecolor")
-	names := s.cfg.EnvForward
+	names := s.conf().EnvForward
 	if names == nil {
 		names = ptyhost.DefaultEnvForward()
 	}
@@ -172,8 +172,8 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		Sessions: local,
 		Machines: []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}},
 	}
-	names := make([]string, 0, len(s.cfg.Targets))
-	for name := range s.cfg.Targets {
+	names := make([]string, 0, len(s.conf().Targets))
+	for name := range s.conf().Targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -191,7 +191,7 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			t := s.cfg.Targets[name]
+			t := s.conf().Targets[name]
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
 			resp, err := client.New(t.Addr, t.Token).MarkForwarded().PtySessions(ctx)
 			if err != nil {

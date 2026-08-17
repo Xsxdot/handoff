@@ -37,11 +37,11 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 	ctx, cancel := context.WithTimeout(ctx, machineProbeBudget)
 	defer cancel()
 
-	out := make([]proto.Machine, 0, len(s.cfg.Targets)+1)
+	out := make([]proto.Machine, 0, len(s.conf().Targets)+1)
 	out = append(out, s.localMachine())
 
-	names := make([]string, 0, len(s.cfg.Targets))
-	for name := range s.cfg.Targets {
+	names := make([]string, 0, len(s.conf().Targets))
+	for name := range s.conf().Targets {
 		names = append(names, name)
 	}
 	sort.Strings(names) // 顺序稳定：UI 列表不该每次刷新都跳
@@ -72,7 +72,7 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 // 自己的健康状态也一起拖垮，且毫无必要）。
 func (s *Server) localMachine() proto.Machine {
 	m := proto.Machine{
-		Name: "", Addr: s.cfg.Listen, Reachable: true,
+		Name: "", Addr: s.conf().Listen, Reachable: true,
 		Executors: []string{}, ProbeMs: 0,
 	}
 	if s.mgr == nil {
@@ -100,7 +100,7 @@ func (s *Server) localMachine() proto.Machine {
 
 // probeRemote 探活一台远程机器。
 func (s *Server) probeRemote(ctx context.Context, name string) proto.Machine {
-	t := s.cfg.Targets[name]
+	t := s.conf().Targets[name]
 	m := proto.Machine{Name: name, Addr: t.Addr, Executors: []string{}}
 	start := time.Now()
 	// 注意：token 只进请求头，绝不进日志

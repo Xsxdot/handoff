@@ -144,6 +144,7 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
+		srv.SetConfigPath(p)
 		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
 		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)

@@ -71,7 +71,7 @@ func (s *Server) resolveWorkspace(ctx context.Context, path string) (string, boo
 			return want, true
 		}
 	}
-	managedRoot := filepath.Join(s.cfg.DataDir, "worktrees")
+	managedRoot := filepath.Join(s.conf().DataDir, "worktrees")
 	for _, l := range locs {
 		if l.ProjectID == "" {
 			continue

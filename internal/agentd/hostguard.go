@@ -186,7 +186,7 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 func (s *Server) hostAllowlist() *hostAllowlist {
 	return &hostAllowlist{
 		set:      s.allowedHosts(),
-		wildcard: isWildcardListen(s.cfg.Listen),
+		wildcard: isWildcardListen(s.conf().Listen),
 		log:      s.log,
 	}
 }
@@ -202,25 +202,25 @@ func (s *Server) hostAllowlist() *hostAllowlist {
 // 写通道。**能任意伪造 Host 的非浏览器客户端本来就不受 rebinding 约束**，那一层
 // 从来是由凭据兜底的（见本文件头「边界」第二条）。
 func (s *Server) allowedHosts() map[string]struct{} {
-	out := make(map[string]struct{}, len(loopbackHosts)+len(s.cfg.Web.AllowedHosts)+1)
+	out := make(map[string]struct{}, len(loopbackHosts)+len(s.conf().Web.AllowedHosts)+1)
 	for _, h := range loopbackHosts {
 		out[h] = struct{}{}
 	}
 	// cfg.Listen 的 host：agentd 监听在 192.168.x.x 时，用该地址访问是正当的。
 	// 通配地址除外——0.0.0.0 / :: 不是可用于访问的 Host，放进白名单没有意义，
 	// 还会让「监听全网卡」意外变成「接受一个叫 0.0.0.0 的域名」。
-	if h := strings.ToLower(hostOnly(s.cfg.Listen)); h != "" && !isWildcardListen(s.cfg.Listen) {
+	if h := strings.ToLower(hostOnly(s.conf().Listen)); h != "" && !isWildcardListen(s.conf().Listen) {
 		out[h] = struct{}{}
 	}
 	// 监听通配地址时补上本机网卡的非回环 IP（B104）：「监听全网卡 + 被远程协调者
 	// 用 IP 访问」是 handoff 最标准的远程执行机形态，而它以前每台都要手工补一行
 	// 配置才能被控制台看见，失败信号还只是一个 403——从控制台上只显示「已断开」。
-	if isWildcardListen(s.cfg.Listen) {
+	if isWildcardListen(s.conf().Listen) {
 		for _, ip := range localIPsFn() {
 			out[ip] = struct{}{}
 		}
 	}
-	for _, h := range s.cfg.Web.AllowedHosts {
+	for _, h := range s.conf().Web.AllowedHosts {
 		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
 			out[h] = struct{}{}
 		}

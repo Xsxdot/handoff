@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -71,12 +72,22 @@ const maxUpdateBytes = 100 << 20
 
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
-// 并发安全：所有字段只读（构造后不变），hub 自身线程安全，无需额外加锁。
+// 并发安全：**除 cfg 外**所有字段只读（构造后不变），hub 自身线程安全。
+// cfg 是可变的——控制台增删开发机会整体换掉它（写时复制），因此一律经
+// s.conf() 读取；**禁止再引入直接持有 *config.Config 的字段**，那会让
+// 同样的错误从编译错误退化成静默竞态。
 type Server struct {
-	cfg *config.Config
-	st  *store.Store
-	hub *Hub
-	log *slog.Logger
+	cfg atomic.Pointer[config.Config]
+	// cfgMu 只序列化写入方（swapConf）。读取方走 atomic 快照，不加锁。
+	// 它防的是「两个写入方各自读到同一份旧配置、后写者覆盖前写者」的丢更新。
+	cfgMu sync.Mutex
+	// cfgPath 是配置文件路径，写配置时落盘用。由 SetConfigPath 注入
+	//（与 mgr 同款：NewServer 有 50 个调用点，改签名的代价远大于收益）。
+	// 未注入时 swapConf 直接报错，绝不猜一个路径写下去。
+	cfgPath string
+	st      *store.Store
+	hub     *Hub
+	log     *slog.Logger
 	mgr *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
@@ -134,7 +145,6 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	inst := release.NewInstaller(log, tr)
 	s := &Server{
-		cfg:            cfg,
 		st:             st,
 		hub:            NewHub(),
 		log:            log,
@@ -145,6 +155,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		sessionRecheck: defaultSessionRecheck,
 		pty:            ptyhost.New(log),
 	}
+	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
 		Executable: resolvedExecutable,
@@ -198,6 +209,60 @@ func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
 func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
+}
+
+// conf 返回当前配置快照。
+//
+// 返回的指针在调用方持有期间恒定：写入方永不原地修改 Config，只整体换新，
+// 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
+func (s *Server) conf() *config.Config { return s.cfg.Load() }
+
+// SetConfigPath 注入配置文件路径，供写配置时落盘。
+//
+// 参数：
+//   - p: 配置文件绝对路径；空串表示不允许写配置（swapConf 会报错）
+//
+// 注意：与 SetManager 同款的构造后注入，必须在 Handler 开始服务前调用。
+func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
+
+// swapConf 以写时复制的方式修改配置并落盘。
+//
+// 参数：
+//   - mutate: 在一份可安全修改的副本上施加改动；返回非 nil 则整体中止，
+//     既不换快照也不落盘
+//
+// 返回：
+//   - mutate 的错误、或落盘错误；成功时 nil
+//
+// 注意：
+//   - 落盘失败会**回滚内存快照**。内存与磁盘不一致会让「加了机器、重启后
+//     消失」这种最难查的现象出现，宁可整个操作失败
+//   - 只深拷贝 Targets 这一层。其余字段在 agentd 运行期不可变，共享是安全的
+func (s *Server) swapConf(mutate func(*config.Config) error) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+
+	old := s.conf()
+	next := *old
+	next.Targets = make(map[string]config.Target, len(old.Targets)+1)
+	for k, v := range old.Targets {
+		next.Targets[k] = v
+	}
+	if err := mutate(&next); err != nil {
+		return err
+	}
+	if s.cfgPath == "" {
+		s.log.Error("未注入配置文件路径，拒绝写配置")
+		return errors.New("agentd 未注入配置文件路径，无法写配置")
+	}
+	s.cfg.Store(&next)
+	if err := config.Save(s.cfgPath, &next); err != nil {
+		s.cfg.Store(old) // 磁盘没写成，内存也不能算数
+		s.log.Error("配置落盘失败，已回滚内存快照", "path", s.cfgPath, "cause", err)
+		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
+	}
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets))
+	return nil
 }
 
 // Handler 返回带 Host 白名单 + 鉴权两层中间件的完整路由，便于 httptest 直接挂载。
@@ -352,7 +417,7 @@ func (s *Server) Handler() http.Handler {
 // 里走不通，必须允许 cookie 会话鉴权。
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.Token == "" {
+		if s.conf().Token == "" {
 			s.log.Error("token 未配置，拒绝一切请求（fail-closed）：请在配置中设置 token 后重启 agentd",
 				"remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 			writeUnauthorized(w, r)
@@ -360,7 +425,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		// 先 Bearer：CLI 是最高频的调用方，且这条路径不碰库
 		if token, ok := bearerToken(r); ok &&
-			subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) == 1 {
+			subtle.ConstantTimeCompare([]byte(token), []byte(s.conf().Token)) == 1 {
 			next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{})))
 			return
 		}
