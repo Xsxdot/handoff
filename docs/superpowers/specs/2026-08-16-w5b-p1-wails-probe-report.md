@@ -172,13 +172,60 @@ Ubuntu 22.04 上没有这个版本的 GTK4。
 而 Ubuntu 22.04 用户拿到的包跑不起来——且这个差异不体现在任何一次代码提交里
 （与 §6.2 锁 `ubuntu-22.04` 而非 `ubuntu-latest` 是同一类陷阱）。
 
+### 5.1 实机验证（2026-08-17 补，此前只是读源码）
+
+上面那段原本**只是读 Wails 源码得出的推断**。Docker Hub 恢复后在真容器里跑了一遍，
+结论成立，且多出两条只有实跑才会暴露的东西。
+
+环境：`Ubuntu 22.04.5 LTS` / `go1.26.1 linux/arm64` / `webkit2gtk-4.1 2.50.4` / `gtk+-3.0 3.24.33`，
+被构建对象是 W5b-1 交付的 `desktop/` 模块本体（非玩具工程）。
+
+| 构建 | 退出码 | 结果 |
+|---|---|---|
+| A：`CGO_ENABLED=1 go build ./...`（无 tag） | **1** | `# [pkg-config --cflags -- glib-2.0 glib-2.0 gtk4 webkitgtk-6.0 gio-unix-2.0 …]` → `No package 'gtk4' found` / `No package 'webkitgtk-6.0' found` |
+| B：`CGO_ENABLED=1 go build -tags gtk3 ./` | **0** | 产物 16,282,592 字节 |
+
+B 的产物 `ldd` 确认链到的**就是** 22.04 基线那套，不是 GTK4：
+
+```
+libwebkit2gtk-4.1.so.0        => /lib/aarch64-linux-gnu/libwebkit2gtk-4.1.so.0
+libgtk-3.so.0                 => /lib/aarch64-linux-gnu/libgtk-3.so.0
+libjavascriptcoregtk-4.1.so.0 => /lib/aarch64-linux-gnu/libjavascriptcoregtk-4.1.so.0
+```
+
+**新发现 ①：`-tags gtk3` 同样作用于「装 wails3 工具」这一步，不只是构建产物。**
+镜像第一次构建就挂在这里：
+
+```
+> go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+# [pkg-config --cflags  -- gtk4 webkitgtk-6.0]
+No package 'gtk4' found
+exit code 1
+```
+
+必须写成 `go install -tags gtk3 …`。这条比构建期漏 tag **更早**卡住 CI，
+而且报错发生在「准备工具」阶段，与「薄壳代码有问题」长得很像，很容易查错方向。
+W5b-3 的 Linux runner 必须带上它。
+
+**新发现 ②：`build/linux/nfpm/nfpm.yaml` 里 gtk3 的运行时依赖是注释掉的。**
+该文件 53-66 行有一段现成的 `depends`（`gtk3` / `webkit2gtk-4.1`），
+但整段被注释。既然产物实际链的是 webkit2gtk-4.1，deb/rpm 就必须声明这套依赖——
+否则包在干净机器上装得上、跑不起来。这是 W5b-3 的事，记在这里免得漏。
+
+### 5.2 这次**没有**验的（边界）
+
+容器里没有显示服务，所以**只验了构建，没验运行**。Linux 上托盘长什么样、
+原生目录对话框是否可用、AppImage 在非 Ubuntu 发行版能否跑，
+全部仍未验——不得因为「构建过了」就宣称 Linux 那半边通过。
+
 ---
 
 ## 6. 未验项（不许当成通过）
 
 | # | 未验的事 | 卡在哪 | 怎么补 |
 |---|---|---|---|
-| P1-Linux | v3 在 Ubuntu 22.04 上能否 `-tags gtk3` 构建、能否运行、托盘/对话框是否可用 | 本机 **Docker Hub 不可达**（`registry-1.docker.io` 20s 超时、http 000），且没有 Linux 机器 | 有 Linux 机器后跑仓库里的 `Dockerfile.linux-probe`（已写好），或直接在真机上跑 |
+| ~~P1-Linux（构建）~~ | ~~v3 在 Ubuntu 22.04 上能否 `-tags gtk3` 构建~~ | — | **已验，2026-08-17，见 §5.1**：A 无 tag 退出码 1、B 带 tag 退出码 0 且链到 webkit2gtk-4.1 |
+| P1-Linux（运行） | 构建出的 Linux 产物能否**运行**，托盘/原生对话框在 Linux 桌面上是否可用 | 容器**没有显示服务**，只能验构建；本机仍无 Linux 桌面 | 真 Linux 桌面上跑一次 §5.1 的 B 产物 |
 | P1-Windows | 交叉编译出的 exe 能否运行、托盘/对话框是否可用 | 无 Windows 机器 | 真机或 CI 的 `windows-latest` |
 | P1-托盘视觉 | 托盘图标与菜单的**观感** | 本机无 Screen Recording 权限 | 人工看一眼，或授权后截图 |
 | P2 | 从 `.app` 释出到 `~/.local/bin/` 的已公证二进制能否过 Gatekeeper | 需要真实 Developer ID 签名与**向 Apple 提交公证**（外部可见操作，需用户授权） | 用户授权后在 CI 或本机做 |

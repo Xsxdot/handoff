@@ -329,7 +329,7 @@ import `cmd` 会把整个 CLI（cobra + 全部 31 个子命令及其注册副作
 
 | 平台 | runner | 产物 | 为什么是原生 runner |
 |---|---|---|---|
-| Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**），构建带 `-tags gtk3` | AppImage + deb | **编译就必须原生**：webkit2gtk 经 cgo，`CGO_ENABLED=0` 交叉编译编不过（实测） |
+| Linux | `ubuntu-22.04`（锁定，**不用 `ubuntu-latest`**），**装工具与构建两步都带 `-tags gtk3`** | AppImage + deb | **编译就必须原生**：webkit2gtk 经 cgo，`CGO_ENABLED=0` 交叉编译编不过（实测） |
 | macOS | `macos-latest`（搭现有签名公证 job） | 签名公证过的 `.app` / dmg | **签名与公证只能在 macOS 上做**，与能否交叉编译无关 |
 | Windows | `windows-latest` | 安装包 | **编译不需要它**（实测可从 macOS 交叉编出 GUI exe），保留它是为了**运行验证**与安装包制作。⚠ **整行按 §4.6 暂缓**，用户裁决 Windows 定位前不要接进流水线 |
 
@@ -342,6 +342,14 @@ import `cmd` 会把整个 CLI（cobra + 全部 31 个子命令及其注册副作
 （Zig + macOS SDK + 内置 mingw，覆盖 darwin/linux/windows × amd64/arm64）。
 它的 Linux 基线是 Debian 13 + GTK4，与本文 §2 锁的 22.04 基线**不一致**，
 所以**不直接采用**，只作为将来若要收敛 runner 数量时的备选，且届时必须重验 §2 基线。
+
+**Linux runner 的两处实测约束**（2026-08-17 容器探针，见[探针报告](2026-08-16-w5b-p1-wails-probe-report.md) §5.1）：
+
+1. **装 `wails3` 工具那一步也要带 tag**：`go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8`。
+   不带的话在 22.04 上直接 `No package 'gtk4' found` 退出 1——卡点在准备工具阶段，比构建期更早，
+   报错却和「薄壳代码有问题」长得很像。
+2. **`build/linux/nfpm/nfpm.yaml` 的 `depends` 段目前整段被注释**（53-66 行，内含现成的 `gtk3` / `webkit2gtk-4.1`）。
+   产物实际链的就是这套库，deb/rpm 必须声明它们，否则包在干净机器上装得上、跑不起来。
 
 Linux 必须锁 `ubuntu-22.04` 而非 `ubuntu-latest`：AppImage 要「在最老的目标发行版上构建」，`ubuntu-latest` 会随 GitHub 滚动，某天静默把 glibc 基线抬高，症状是老发行版用户突然跑不起来——且这个变化不会体现在任何一次代码提交里。
 
@@ -374,7 +382,8 @@ Linux 必须锁 `ubuntu-22.04` 而非 `ubuntu-latest`：AppImage 要「在最老
 | # | 探什么 | 在哪探 | 不过的后果 | 状态 |
 |---|---|---|---|---|
 | P1-mac | v3 能否构建出可运行产物；原生目录对话框、托盘、菜单是否可用 | 真 mac | 选型作废，退回重裁 | ✅ **过**（构建 15.5s / 9.0MB；对话框实测弹出；托盘有真实 `NSStatusItem` 矩形）。托盘的**视觉**确认仍欠 |
-| P1-linux | 同上，且构建须带 `-tags gtk3` | Linux（Ubuntu 22.04） | 选型作废，退回重裁 | ⛔ **未验**：本机 Docker Hub 不可达、且无 Linux 机器。探针 `Dockerfile.linux-probe` 已写好待跑 |
+| P1-linux（构建） | v3 能否在 Ubuntu 22.04 上构建，且须带 `-tags gtk3` | Ubuntu 22.04 容器 | 选型作废，退回重裁 | ✅ **过**（2026-08-17）：无 tag 退出码 1（`No package 'gtk4' found`），带 tag 退出码 0、产物 16.3MB 且 `ldd` 链到 `libwebkit2gtk-4.1` + `libgtk-3`。被构建的是 W5b-1 交付的真实 `desktop/` 模块。详见探针报告 §5.1 |
+| P1-linux（运行） | 产物能否运行；托盘 / 原生对话框在 Linux 桌面上是否可用 | 真 Linux 桌面 | Linux 那半边的可用性无依据 | ⛔ **未验**：容器无显示服务，只能验构建。**不得因为构建过了就当 Linux 通过** |
 | P1-win | 交叉编出的 exe 能否运行；托盘/对话框是否可用 | 真 Windows | §6.2 的 Windows 行须改回原生构建 | ⛔ **未验**：无 Windows 机器。**编译侧已过** |
 | P2 | 从 `.app` 释出到 `~/.local/bin/` 的**已公证**二进制能否通过 Gatekeeper | 真 mac | §5.4 的签名顺序方案作废，须改为 bundle 内运行 | ⛔ 未验（需真实 Developer ID + 向 Apple 提交公证，属外部可见操作，须用户授权） |
 | P3 | AppImage 在非 Ubuntu 发行版（至少 Fedora 40+、Arch）能否运行 | 真 Linux | Linux 基线判断有误，须重定 | ⛔ 未验（同 P1-linux） |
