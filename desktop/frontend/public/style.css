@@ -109,3 +109,88 @@ body {
     font-size: 13px;
     line-height: 1.5;
 }
+
+/* ---- 单页表单布局 ---- */
+
+#question form {
+    display: flex;
+    flex-direction: column;
+}
+
+.field {
+    margin-bottom: 16px;
+}
+
+.field:last-child {
+    margin-bottom: 0;
+}
+
+.field-title {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.field .notice {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 间距交给 .field 统一管理，控件自身不再往下挤 */
+#question .field select,
+#question .field input[type="text"] {
+    margin-bottom: 0;
+}
+
+#question .field input[type="checkbox"] {
+    margin: 0;
+}
+
+/* 高级设置：默认折叠的 details */
+#question details.advanced {
+    margin-bottom: 16px;
+    padding: 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+#question details.advanced summary {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    outline: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#question details.advanced[open] summary {
+    margin-bottom: 12px;
+}
+
+/* 校验/保存失败的错误提示：在按钮上方 */
+.wizard-error {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 77, 77, 0.4);
+    border-radius: 8px;
+    background: rgba(255, 77, 77, 0.12);
+    color: #ffb4b4;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 完成按钮不占满整行 */
+#question form > button[type="submit"] {
+    align-self: flex-start;
+}
