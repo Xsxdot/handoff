@@ -29,6 +29,30 @@ const DOT_CLS: Record<ToolState, string> = {
   gone: 'border border-amber-500 bg-transparent',
 }
 
+// TOOL_LABEL 把各家 adapter 的工具名翻成中文。未知名字原样透出（契约会演进，
+// 前端比后端旧是常态——与 eventPhrase 同一条纪律）。
+// 名单来源：codex（commandExecution/fileChange）、claude（Bash/Read/Edit/Write/
+// Grep/Glob）、opencode 与 grok 的常见工具名；四家帧质量走查时按需补。
+const TOOL_LABEL: Record<string, string> = {
+  commandExecution: '跑命令',
+  fileChange: '文件变更',
+  Bash: '跑命令',
+  bash: '跑命令',
+  Read: '读文件',
+  read: '读文件',
+  Edit: '改文件',
+  edit: '改文件',
+  Write: '写文件',
+  write: '写文件',
+  Grep: '搜索',
+  grep: '搜索',
+  Glob: '找文件',
+  glob: '找文件',
+  webSearch: '搜网页',
+  todowrite: '记待办',
+  todoread: '看待办',
+}
+
 // argSummary 从工具入参里挑一行可读摘要。
 //
 // 只读已知形状的字段，其余回退原文；绝不因为解析失败而吞掉整张卡
@@ -70,7 +94,7 @@ export function ToolCard({ block, taskState }: { block: ToolBlock; taskState: st
           <span className={cn('size-[7px] rounded-full', DOT_CLS[st])} />
         </span>
         <span className="shrink-0 font-medium text-foreground">
-          {block.tool || '(未知工具)'}
+          {TOOL_LABEL[block.tool] ?? (block.tool || '(未知工具)')}
         </span>
         <span className="min-w-0 flex-1 truncate font-mono">{argSummary(block.input)}</span>
         <span className="shrink-0 text-[11px]">{STATE_LABEL[st]}</span>

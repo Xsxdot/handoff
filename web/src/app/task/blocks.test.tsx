@@ -46,13 +46,13 @@ describe('ThinkingBlock', () => {
 describe('ToolCard', () => {
   it('默认折叠：显示工具名与参数摘要，输入输出不可见', () => {
     render(<ToolCard block={tool({})} taskState="completed" />)
-    expect(screen.getByText('bash')).toBeInTheDocument()
+    expect(screen.getByText('跑命令')).toBeInTheDocument()
     expect(screen.queryByText('ok\t0.2s')).not.toBeInTheDocument()
   })
 
   it('展开后能看到输入与输出', () => {
     render(<ToolCard block={tool({})} taskState="completed" />)
-    fireEvent.click(screen.getByRole('button', { name: /bash/ }))
+    fireEvent.click(screen.getByRole('button', { name: /跑命令/ }))
     // 入参「go test ./...」既出现在折叠态的参数摘要里，也出现在展开后的输入区，
     // 用 getAllByText 断言展开态确实多渲染了一份
     expect(screen.getAllByText(/go test \.\/\.\.\./).length).toBeGreaterThan(0)
@@ -77,9 +77,24 @@ describe('ToolCard', () => {
 
   it('截断提示带原始字节数', () => {
     render(<ToolCard block={tool({ outputTruncated: true, outputBytes: 141882 })} taskState="completed" />)
-    fireEvent.click(screen.getByRole('button', { name: /bash/ }))
+    fireEvent.click(screen.getByRole('button', { name: /跑命令/ }))
     expect(screen.getByText(/141882/)).toBeInTheDocument()
     expect(screen.getByText(/已截断/)).toBeInTheDocument()
+  })
+})
+
+describe('ToolCard 工具名中文化', () => {
+  const mk = (toolName: string) => ({
+    kind: 'tool', key: 'k1', turn: 1, tool: toolName, input: 'x', inputTruncated: false,
+    inputBytes: 0, status: 'ok', output: '', outputTruncated: false, outputBytes: 0,
+  }) as ToolBlock
+  it('已知工具名映射为中文', () => {
+    render(<ToolCard block={mk('commandExecution')} taskState="waiting_review" />)
+    expect(screen.getByText('跑命令')).toBeInTheDocument()
+  })
+  it('未知工具名原样透出', () => {
+    render(<ToolCard block={mk('someNewTool')} taskState="waiting_review" />)
+    expect(screen.getByText('someNewTool')).toBeInTheDocument()
   })
 })
 
