@@ -9,6 +9,8 @@
 
 - 2026-08-17 Task 2（事件驱动 Prompter）完成，commit dc9c1ac7。审查双 APPROVED。实现者适配：newTestConfig 返回 `&config.Config{}` 需补 import config；AskAll 协调者分支实际问 3 个问题（角色 Select + sync.auto Confirm + targets Input 空答结束），answers 为 `["coordinator","true",""]`（plan 原稿只有 2 个，plan 明示按实际数补齐、不许改 AskAll）。Minor 记账 2 条：M22 无用例喂非法 Select 答案，变异测试不生效（把非法答案静默取 def 现有 6 条用例全查不出来，可后续补非法值用例）；M23 `cd desktop && go test ./...` 根包因 `go:embed all:frontend/dist` 前端未构建 setup failed——父提交 149ad5eb 上完全相同，既有环境问题非本 task 引入（对应 W5b-1 记账 M5）。
 
+- 2026-08-17 Task 3（embedbin 双形态）完成，commit e3419b7d。审查双 APPROVED。带标签侧编译失败实测 `pattern handoff: no matching files found`（缺席即编译期失败的前提实证）；假产物 1000 字节被 1MB 门槛拦下、已删、工作区干净。审查裁决 embed.go 的 Open 对 embed.FS.Open 失败 panic 合理（go:embed 编译期保证，与 webui.FS 对不可达分支 panic 的先例一致，不改）。Minor 记账 3 条：M24 stub.go 导出了 plan 未要求的 ErrNotEmbedded 哨兵错误（良性增量，调用方可 errors.Is，可改回内联错误）；M25 embed_test.go 的 defer rc.Close() 未检查 Close 错误（测试场景可接受）；M26 .gitignore 的 `handoff` 模式同时匹配同名目录（无实害）。
+
 ## Minor 总账
 
 （终审统一 triage）
