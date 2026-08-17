@@ -91,6 +91,9 @@ func (s *Server) localMachine() proto.Machine {
 		return m
 	}
 	fillFromStatus(&m, st)
+	// Manager.Status 不持有 Server 的附属能力字段；本机的 scratch 路径必须在
+	// 投影完成后再补回来，否则 fillFromStatus 会用空的 StatusResp 字段把它擦掉。
+	m.ScratchRoot = s.scratchRoot()
 
 	// 本机能力位就地填：localMachine 直调 mgr.Status()，不走 HTTP，而能力位
 	// 只在 handleStatus 组装 HTTP 响应时才有；本机的平台支持度只有这里知道。
