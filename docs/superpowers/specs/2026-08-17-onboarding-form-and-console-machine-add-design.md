@@ -185,13 +185,15 @@ Windows 特判从函数开头的 `if` 变成 `role` 字段的 `Notice`（文案�
   → toolchain.Detect()
   → cfg := config.Defaults()      不落盘（W5b-2 已确立）
   → initflow.Form(cfg, rs, goos, false)
-  → 经 binding 一次性交给前端：字段表 + 默认值
+  → 一次性交给前端：字段表 + 默认值（事件 wizard-form）
   ── 前端渲染整页，本地按 Roles/ShowWhen 实时显隐 ──
   → 用户点「完成」，回传 answers map[string]string
   → initflow.Apply(cfg副本, fields, answers)
   → 校验通过 → config.Save(path, cfg) → EnsureRunning → 握手 → 控制台
   → 校验失败 → 把错误回给前端定位到具体字段，不落盘
 ```
+
+**通道用事件，不是 Wails binding。** 核实发现本项目**没有注册任何 binding**（`desktop/frontend/bindings/` 下只有 Wails 自身的内部文件），今天的向导全走 `Events.Emit` / `Events.On`。所以本次只把事件的**形状**从「一问一答」（`wizard-ask` ⇄ `wizard-answer`）换成「一次交表 + 一次回传」（`wizard-form` → `wizard-submit`），不引入 binding 这套新机制。
 
 **判据不变**（W5b-2 已钉住）：向导未成功完成时，磁盘上不得留下会让 `shell.Resolve` 判为「已配置」的文件。落盘只发生在 `Apply` 成功之后。
 
@@ -302,7 +304,8 @@ DELETE /api/machines/{name}   删除
 
 **`initflow`**
 
-- 字段表金样：用 `ScriptedPrompter` 跑完一整轮，把**提问文本与顺序**逐字录下来，改造前后比对必须完全一致（每个角色各一份：coordinator / executor / both；外加 `goos=windows` 一份）。
+- 字段表金样：用 `ScriptedPrompter` 跑完一整轮，把**提问文本与顺序**逐字录下来，改造前后比对必须完全一致（每个角色各一份：coordinator / executor / both）。
+  - **Windows 那一档不进金样**：改造前的 `AskAll` 在函数内部读 `runtime.GOOS`，没有注入点，在 macOS 上录不出 Windows 的提问序列；硬要录就得先改签名，那等于「改造后再录」。它改由 `Form(cfg, rs, "windows", false)` 的直接用例覆盖（角色只有协调者一档，且必须带 `Notice`）。
 - `Visible` 的矩阵用例：角色 × ShowWhen 的组合，含「切角色后残留答案不影响判定」。
 - `Apply` 的校验用例：Select 答案越界被拒、Confirm 非法值被拒、不可见字段的残留答案被忽略。
 
