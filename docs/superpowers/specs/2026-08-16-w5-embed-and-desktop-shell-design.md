@@ -40,7 +40,7 @@ Electron 于 2026-08-11 连同 Orca 一起封存（ADR-0009，在归档分支 `a
 - `.github/workflows/release.yml`：三个 job（linux/windows 交叉编译、macOS 签名公证、Release 组装）**没有一个跑 `npm`**，CI 完全不构建前端。
 - `handoff` 二进制：`agentd` 是同一个二进制的子命令（`cmd/agentd.go:52`）；release 同款 flags 构建出来 **18MB，gzip 后 7.0MB**。
 - `install.sh:22`：安装落点是 `~/.local/bin/handoff`（可用 `HANDOFF_INSTALL_DIR` 覆盖）。
-- `cmd/init.go:43`：`newInteractivePrompter` 是 `var` 测试缝，`askAll` / `defaultRole` / `listenPreset` / `executorOptions` / `roleOptions` 均为接 `prompter` 接口的逻辑，**与 TUI 已解耦**。
+- `cmd/init.go:43`：`newInteractivePrompter` 是 `var` 测试缝，`askAll` / `defaultRole` / `listenPreset` / `executorOptions` / `roleOptions` 均为接 `prompter` 接口的逻辑，**与 TUI 已解耦**——但**七个标识符无一导出**，`package cmd` 外够不着，所以「解耦」不等于「薄壳能复用」，见 §4.4.1。
 
 ---
 
@@ -181,9 +181,50 @@ macOS 上 v3 的四项（构建 / 应用菜单 / 原生目录对话框 / 托盘�
 
 ### 4.4 图形化首次引导
 
-复用 `cmd` 中已与 TUI 解耦的纯逻辑（`defaultRole` / `listenPreset` / `executorOptions` / `roleOptions`，见 §1.3），只替换 UI 层。**不重构 `init`**，也不动 TUI 路径——CLI 的 `handoff init` 保持现状。
-
 引导覆盖 `handoff init` 的同一批决策：角色（协调者 / 执行机）、监听地址、执行者探测结果、是否装 service、target 配对。
+
+~~复用 `cmd` 中已与 TUI 解耦的纯逻辑（`defaultRole` / `listenPreset` / `executorOptions` / `roleOptions`，见 §1.3），只替换 UI 层。**不重构 `init`**，也不动 TUI 路径。~~
+**上面这段作废**——写 W5b-2 plan 时核实，它描述的复用路径不存在。原文保留以免后人再照着它排一次。
+
+#### 4.4.1 实证：那批逻辑够不着
+
+§1.3 说这些逻辑「已与 TUI 解耦」是**对的**——它们不碰终端，只依赖 `config.Config`、`toolchain.Result` 和 `runtime.GOOS`。但解耦 ≠ 可复用：它们全都封在 `package cmd` 里且**一个都没导出**。
+
+| 标识符 | 位置 | 导出？ |
+|---|---|---|
+| `prompter`（Select/Input/Confirm 接口） | `cmd/prompter.go:37` | 否 |
+| `promptOption` | `cmd/prompter.go:30` | 否 |
+| `askAll`（68 行，问答编排） | `cmd/init.go:205` | 否 |
+| `roleOptions` / `defaultRole` / `executorOptions` / `listenPreset`（合计 51 行） | `cmd/init.go:287/303/330/375` | 否 |
+
+`cmd` 包也没有任何可用的导出包装（`grep -n "^func [A-Z]" cmd/init.go cmd/prompter.go` 无输出）。唯一已导出的相关件是 `internal/toolchain` 的 `Detect()` 与 `Result`（`detect.go:101`/`62`）——**工具链探测那半边可以直接复用，问答那半边不能**。
+
+#### 4.4.2 为什么不能靠「就地导出」绕过
+
+最省事的想法是把这七个改成导出名、让 `desktop/` 模块 import `cmd`。**这条路被否掉**，依据是 `cmd` 的包级副作用规模：
+
+```
+cmd 包里 init() 函数数量: 31
+注册到 rootCmd 的命令数: 31
+```
+
+import `cmd` 会把整个 CLI（cobra + 全部 31 个子命令及其注册副作用）链进桌面壳。为了 134 行纯函数付这个代价不成比例，而且它把「薄壳要薄」（§4.7）这条主张从内部拆掉了。
+
+#### 4.4.3 三个选项与本 plan 采用的假设
+
+| 选项 | 含义 | 代价 |
+|---|---|---|
+| A | 就地导出，薄壳 import `cmd` | 已否 —— 见 §4.4.2 |
+| **B（W5b-2 采用）** | 把这 134 行纯逻辑下沉到 `internal/initflow`，`cmd/init.go` 改为薄调用方 | 违反原文「不重构 `init`」的字面 |
+| C | 薄壳自己重写一套引导问答 | 正是 §4.4 想避免的漂移：两套 role 默认值、两套 listen 预设，改一边忘一边 |
+
+**按 B 推进**，理由是它保住了原文的**意图**（单一事实来源、不动 TUI 路径、行为不变），只是原文以为这个意图不需要动 `cmd` 而已。下沉面很窄，可核实：
+
+- 生产调用点**只有一处**（`cmd/init.go:118`），其余全是测试；
+- 被移动的代码不依赖 cobra、不依赖终端，`cmd/init_test.go` / `init_role_test.go` 随之迁移即可；
+- `roleCoordinator` / `roleExecutor` 两个常量一并下沉。
+
+**若用户不接受 B**，回落到 C 并接受漂移风险；这条假设与 §4.6 的 Windows 假设一样，做完要回来确认。
 
 ### 4.5 目录选择器（顺带收口 B110）
 
