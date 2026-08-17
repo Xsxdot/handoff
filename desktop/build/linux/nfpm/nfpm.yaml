@@ -24,24 +24,30 @@ contents:
   - src: "./build/linux/handoff-desktop.desktop"
     dst: "/usr/share/applications/handoff-desktop.desktop"
 
-# Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
+# 依赖必须与构建 tag 一致。本项目按 spec §2 锁 Ubuntu 22.04 基线，薄壳用
+# -tags gtk3 构建，实际链的是 libwebkit2gtk-4.1 + libgtk-3（P1-linux 探针
+# 的 ldd 实测）。这里原本是 Wails 模板默认的 GTK4 + WebKitGTK 6.0 那套，
+# 与实际产物对不上：包会声明一组它根本不用的依赖，在 22.04 上连装都装不上，
+# 而症状要等到用户机器上才出现。
+#
+# 改构建 tag 时必须同步改这里——这两处是同一个契约的两半。
 depends:
-  - libgtk-4-1
-  - libwebkitgtk-6.0-4
+  - libgtk-3-0
+  - libwebkit2gtk-4.1-0
 
 # Distribution-specific overrides for different package formats
 overrides:
   # RPM packages for Fedora / RHEL / AlmaLinux / Rocky Linux
   rpm:
     depends:
-      - gtk4
-      - webkitgtk6.0
+      - gtk3
+      - webkit2gtk4.1
 
   # Arch Linux packages
   archlinux:
     depends:
-      - gtk4
-      - webkitgtk-6.0
+      - gtk3
+      - webkit2gtk-4.1
 
 # scripts section to ensure desktop database is updated after install
 scripts:
@@ -50,21 +56,10 @@ scripts:
   # preremove: "./build/linux/nfpm/scripts/preremove.sh"
   # postremove: "./build/linux/nfpm/scripts/postremove.sh"
 
-# If you build your app with -tags gtk3 (legacy WebKit2GTK 4.1 stack — supported through v3.0.x, removed in v3.1),
-# replace the depends/overrides above with these:
-#
-# depends:
-#   - libgtk-3-0
-#   - libwebkit2gtk-4.1-0
-# overrides:
-#   rpm:
-#     depends:
-#       - gtk3
-#       - webkit2gtk4.1
-#   archlinux:
-#     depends:
-#       - gtk3
-#       - webkit2gtk-4.1
+# 上面的 depends/overrides 已经是 gtk3（WebKit2GTK 4.1）那套——Wails 模板
+# 原本在这里放的「若用 -tags gtk3 就换成以下内容」的备选块已删除：它与生效
+# 配置内容相同，留着等于同一份依赖有两处声明，改一处忘一处就会静静地不一致。
+# 若将来基线抬到 GTK4 + WebKitGTK 6.0，改上面那份，并同步改构建 tag。
 #
 # replaces:
 #   - foobar
