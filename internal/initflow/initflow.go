@@ -328,7 +328,9 @@ func MaybeInstallService(w io.Writer, p Prompter, isExec bool, cfgPath string) {
 	fmt.Fprintln(w)
 	if InstallService == nil {
 		// 调用方没注入安装入口（桌面壳未接线时的兜底）：不 panic，
-		// 照「托管失败不阻断」处置
+		// 照「托管失败不阻断」处置。薄壳走不到此分支——这条路理论上不该
+		// 被走到，真有人从桌面侧调了它即设计被违反的信号，现场只剩日志能说明。
+		slog.Warn("initflow.MaybeInstallService 被调用但没有安装入口", "cfg_path", cfgPath)
 		fmt.Fprintln(w, "没有可用的服务安装入口，稍后单独重跑 handoff service install 即可。")
 		fmt.Fprintln(w, "没有托管的 agentd 在机器重启后不会自己回来。")
 		return

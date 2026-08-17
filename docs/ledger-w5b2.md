@@ -21,8 +21,7 @@
 
 ## Minor 总账
 
-- **已修**：M20（见下）、M22（见下）。
-- **升级处理中**：M20 InstallService==nil 兜底只打印不记日志 → 补 slog.Warn 带 cfgPath（薄壳走不到此分支，正是「理论上不该被走到」的路，将来真被调用即设计被违反的信号，现场只剩日志能说明）；M22 Select 非法答案无用例 → 补一条喂非法值断言返回错误的用例（plan 定 Select 拒非法值为承重，承重行为没测试正是变异能悄悄改掉的）。
+- **已修**：M20 → 已修（slog.Warn 带 cfg_path，见本次 commit）；M22 → 已修（新增 TestEventPrompterSelectRejectsUnknownAnswer，见本次 commit）。
 - **已认可不动**：M19、M21、M23（协调者复核认可定级）。
 - 其余留终审统一 triage（M24-M37）。
 

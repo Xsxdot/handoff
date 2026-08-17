@@ -91,6 +91,18 @@ func TestEventPrompterCancelMapsToErrCanceled(t *testing.T) {
 	}
 }
 
+// plan 把「Select 答案不在选项里必须报错」定为承重（防止把非法值写进
+// config.yaml）。承重行为必须被测试钉住——变异测试把那个 for 循环换成
+// return ans, nil，现有用例全绿，只有喂非法值的用例能拦住它。
+func TestEventPrompterSelectRejectsUnknownAnswer(t *testing.T) {
+	tr := &fakeTransport{answers: []string{"不存在这个值"}}
+	p := shell.NewEventPrompter(context.Background(), tr)
+	_, err := p.Select("角色", []initflow.Option{{Value: "executor", Label: "执行机"}, {Value: "coordinator", Label: "协调者"}}, "executor")
+	if err == nil {
+		t.Fatal("答案不在选项集合里必须返回错误")
+	}
+}
+
 // AskAll 写给 io.Writer 的说明文字在 GUI 里不能凭空丢掉：
 // warnIfNotReady 之类的警告是用户必须看到的。
 func TestNoticeWriterForwardsNonBlankLines(t *testing.T) {
