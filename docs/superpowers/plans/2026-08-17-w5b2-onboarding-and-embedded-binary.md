@@ -1137,19 +1137,31 @@ W5a 与 W5b-1 都在这里栽过：构建产物让工作区变脏，而 handoff 
 d=$(mktemp -d) && git clone -q --branch "$(git rev-parse --abbrev-ref HEAD)" . "$d/wc" && cd "$d/wc" && git log --oneline -1
 ```
 
-- [ ] **Step 2: 默认构建路径**
+- [ ] **Step 2: 默认构建路径（构建前端**之前**能跑的部分）**
 
 ```bash
-go build ./... && go test ./... && (cd desktop && go build ./... && go test ./...)
+go build ./... && go test ./... && (cd desktop && go test ./internal/...)
 ```
 Expected: 全过。**不带任何标签**——这证明没内嵌产物的机器上仓库是健康的。
 
-- [ ] **Step 3: 薄壳构建 + 洁净判据**
+> **注意 `desktop` 根包此时跑不了，这是预期，不是缺陷。** `main.go:25` 的
+> `//go:embed all:frontend/dist` 指向构建产物，干净检出上该目录不存在，
+> 裸跑会报 `pattern all:frontend/dist: no matching files found` /
+> `FAIL github.com/Xsxdot/handoff/desktop [setup failed]`。
+> 这是 W5b-1 明确接受并写进 `desktop/README.md:32` 的行为（产物不入库，
+> 因为一提交进去就会在构建后变成 `D`，撞上 dispatch 的干净检查）。
+> 所以本步只跑 `./internal/...`（不依赖 dist），根包留到 Step 3 构建完前端之后。
+> **不要为了让这一步能跑而去提交 dist 占位文件**——那正是 W5b-1 试过并被判死的路。
+
+- [ ] **Step 3: 构建前端，然后跑完整的 desktop 模块 + 洁净判据**
 
 ```bash
-cd desktop && wails3 task build && cd .. && git status --porcelain
+cd desktop && wails3 task build && go build ./... && go test ./... -count=1 && cd .. && git status --porcelain
 ```
-Expected: `git status --porcelain` **输出为空**。
+Expected: 构建成功、`desktop` 根包此时**能**编译与测试、且 `git status --porcelain` **输出为空**。
+
+这一步同时验了两件事：dist 生成后根包的 embed 能解析（Step 2 的失败确实只是产物缺席），
+以及构建没有弄脏工作区（W5a/W5b-1 两次栽过的那个坑）。
 
 - [ ] **Step 4: 把实际输出贴进 ledger**
 
