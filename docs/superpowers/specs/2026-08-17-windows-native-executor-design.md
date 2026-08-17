@@ -303,9 +303,14 @@ plan9/js 就没实现了）。现在我们要的**正是** windows-only 实现�
 `platform_windows.go` 用文件名后缀是对的，而：
 
 - `platform_other.go`：`//go:build !unix` → `//go:build !unix && !windows`
-- `fence_other.go`：`//go:build !darwin && !linux` → `+ && !windows`
 
 这是那条注释预留的演进路径，不是推翻它。
+
+**`fence_other.go` 的 tag 不动**（起草时误判为要收紧，此处订正）。Windows 的围栏
+不经 `setNprocLimit`，而是走 4.1 的进程容器钩子（job 的 `ActiveProcessLimit`），
+所以 `setNprocLimit` / `getNprocLimit` 在 Windows 上保持 `errFenceNotSupported`
+是正确的——前者无调用方，后者只服务 `ExplainForkFailure` 的 EAGAIN 归因，而
+Windows 上根本不产生 EAGAIN。不需要 `fence_windows.go`。
 
 ### 7.6 日志
 
@@ -483,12 +488,35 @@ WARN 算不出进程围栏值，本次不设围栏    cause=本平台不支持�
 
 **解法不是回头去做 procenum，而是承认模型不适用**：`reserve_ratio` 那套算法的前提
 是「存在一个每用户进程数上限，我们保留其中一部分」——**Windows 上没有这个东西**
-（进程数受内存与句柄约束，不存在 `RLIMIT_NPROC` 式的每用户硬上限）。因此 Windows
-上的围栏值应当**直接取配置的 `proc_fence.task_budget`**（默认 400），跳过
-「系统上限 × 保留比例」这一步，并在日志里说明本平台不做比例保留。
+（进程数受内存与句柄约束，不存在 `RLIMIT_NPROC` 式的每用户硬上限）。
 
-这需要 `fenceLimit()` 分平台，属本轮范围内的实现细节，工作量小但**不能漏**——漏了
-的表现就是上面那两条 WARN，即围栏静默缺席。
+**围栏值取 `proc_fence.task_hard_limit`（默认 1200），不是 `task_budget`。** 两档
+分工在 `config.go:209` 写明：`TaskBudget` 是「叫醒人」的告警线，`TaskHardLimit` 是
+「不等人了」的硬上限。job 的 `ActiveProcessLimit` 是**内核强制的硬上限**，拿告警线
+去填它，等于把一条本该只发一次事件的警告变成硬失败——语义错配。而
+`TaskHardLimit`（每任务硬上限）与 job（每执行者树）本就是同一个语义，用 job 实现它
+甚至比现有的 roster 事后清扫更强：内核当场拒绝 fork，不用等下一次采样。
+
+`TaskHardLimit == 0` 是「不启用该档」的合法表达，此时**仍然建 job**（`KILL_ON_JOB_CLOSE`
+承重），只是不设 `ActiveProcessLimit`。
+
+接线：`SetFencePolicy` 目前只带 `disabled` 与 `reserveRatio`（`cmd/agentd.go:71`），
+需要补上 `taskHardLimit`；`applyFencePolicy` 在 agentd 侧算好写进 `spec.NprocLimit`，
+shim 侧再 `+1`（4.4.3 的 off-by-one，shim 自己也在 job 里）。
+
+### 11.6.1 连带发现：`TaskBudget` 告警档在 Windows 上同样静默失效
+
+`RunWatchdog`（`cmd/agentd.go:193`）拿 `TaskBudget` / `TaskHardLimit` 走 roster 做
+每任务进程计数，而 roster 就是 procenum。所以不做 procenum 时，**静默失效的不止围栏，
+还有整个「每任务进程预算」档**。
+
+其中 `TaskHardLimit` 由上面的 job 方案接管（而且更强），但 **`TaskBudget` 这个告警线
+无法用 job 实现**——它要的是「数到 400 就叫醒人」，而 job 只能「到 1200 就拒绝」，
+中间没有回调。计数能力只有 procenum 能给。
+
+因此 `TaskBudget` 告警在 Windows 上记为**已知限制**：本轮不做，登记进第二批
+（与 procenum 的 Toolhelp32 实现同一条）。实现时必须在 Windows 上对这一档打一条
+明确的启动期 Warn，说明该告警档在本平台不生效——静默缺席正是本文档反复在防的东西。
 
 ### 11.7 待确认：opencode 的登录态
 
