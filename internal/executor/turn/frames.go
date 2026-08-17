@@ -132,11 +132,13 @@ func WriterFor(taskDir string, log *slog.Logger) (*FrameWriter, error) {
 // BeginTurn 开启新回合：turn 自增、part 计数归零，并写一条 turn_start 帧。
 //
 // reason 只应是 "dispatch"（Adapter.Start）或 "send"（Adapter.Send）。
+// instructions 是 send 时的指令/应答原文（dispatch 传 ""）——写进帧供前端
+// 渲染审核者气泡；日志里只记长度不记原文，避免把长指令刷进日志。
 //
 // 为什么 turn 自增与 turn_start 的写入必须在同一个临界区：SSE reader 是跨回合
 // 长命的，上一回合的尾包可能正与 Send 并发。若先放锁再写 turn_start，并发帧
 // 会带着新 turn 号排在 turn_start **之前**落盘，前端把正文画到回合分隔线上面。
-func (w *FrameWriter) BeginTurn(reason string) error {
+func (w *FrameWriter) BeginTurn(reason, instructions string) error {
 	if w == nil {
 		return nil
 	}
@@ -144,8 +146,8 @@ func (w *FrameWriter) BeginTurn(reason string) error {
 	defer w.mu.Unlock()
 	w.turn++
 	w.nextPart = 0
-	w.log.Info("回合开始", "turn", w.turn, "reason", reason)
-	return w.appendLocked(proto.Frame{Type: proto.FrameTurnStart, Reason: reason})
+	w.log.Info("回合开始", "turn", w.turn, "reason", reason, "instructions_len", len(instructions))
+	return w.appendLocked(proto.Frame{Type: proto.FrameTurnStart, Reason: reason, Instructions: instructions})
 }
 
 // NextPart 分配一个回合内唯一的 part 标识（p01、p02…）。

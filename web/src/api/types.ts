@@ -405,6 +405,8 @@ export interface Frame {
   ref_seq?: number
   event?: string
   reason?: string
+  // turn_start（send）携带的审核者指令原文；dispatch 与旧帧缺席
+  instructions?: string
 }
 
 // DirEntry 是 GET /api/workspaces/dir 列举出的一项。

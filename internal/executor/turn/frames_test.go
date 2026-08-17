@@ -36,13 +36,39 @@ func readFrames(t *testing.T, taskDir string) []proto.Frame {
 	return out
 }
 
+// TestBeginTurnCarriesInstructions 验证 send 回合的 turn_start 帧携带指令原文，
+// dispatch 回合不带（omitempty 缺席）。
+func TestBeginTurnCarriesInstructions(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewFrameWriter(dir, nil)
+	if err != nil {
+		t.Fatalf("NewFrameWriter: %v", err)
+	}
+	if err := w.BeginTurn("dispatch", ""); err != nil {
+		t.Fatalf("BeginTurn dispatch: %v", err)
+	}
+	if err := w.BeginTurn("send", "把审批理由改为 deny，再跑一遍测试"); err != nil {
+		t.Fatalf("BeginTurn send: %v", err)
+	}
+	frames := readFrames(t, dir)
+	if len(frames) != 2 {
+		t.Fatalf("期望 2 帧，得到 %d", len(frames))
+	}
+	if frames[0].Instructions != "" {
+		t.Errorf("dispatch 帧不应带 instructions，得到 %q", frames[0].Instructions)
+	}
+	if frames[1].Instructions != "把审批理由改为 deny，再跑一遍测试" {
+		t.Errorf("send 帧 instructions 不符：%q", frames[1].Instructions)
+	}
+}
+
 func TestFrameWriterWritesEachType(t *testing.T) {
 	dir := t.TempDir()
 	w, err := NewFrameWriter(dir, nil)
 	if err != nil {
 		t.Fatalf("NewFrameWriter: %v", err)
 	}
-	if err := w.BeginTurn("dispatch"); err != nil {
+	if err := w.BeginTurn("dispatch", ""); err != nil {
 		t.Fatalf("BeginTurn: %v", err)
 	}
 	if err := w.Reasoning("p01", "先看看测试"); err != nil {
@@ -91,9 +117,9 @@ func TestFrameWriterWritesEachType(t *testing.T) {
 func TestFrameWriterTurnIncrements(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := NewFrameWriter(dir, nil)
-	_ = w.BeginTurn("dispatch")
+	_ = w.BeginTurn("dispatch", "")
 	_ = w.Text("p01", "第一轮")
-	_ = w.BeginTurn("send")
+	_ = w.BeginTurn("send", "")
 	_ = w.Text("p01", "第二轮")
 
 	frames := readFrames(t, dir)
@@ -113,9 +139,9 @@ func TestFrameWriterTurnIncrements(t *testing.T) {
 func TestFrameWriterResumesSeqAndTurn(t *testing.T) {
 	dir := t.TempDir()
 	w1, _ := NewFrameWriter(dir, nil)
-	_ = w1.BeginTurn("dispatch")
+	_ = w1.BeginTurn("dispatch", "")
 	_ = w1.Text("p01", "重启前")
-	_ = w1.BeginTurn("send")
+	_ = w1.BeginTurn("send", "")
 
 	w2, err := NewFrameWriter(dir, nil)
 	if err != nil {
@@ -138,7 +164,7 @@ func TestFrameWriterResumesSeqAndTurn(t *testing.T) {
 func TestFrameWriterTruncatesToolFields(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := NewFrameWriter(dir, nil)
-	_ = w.BeginTurn("dispatch")
+	_ = w.BeginTurn("dispatch", "")
 	big := strings.Repeat("x", FrameFieldHead+FrameFieldTail+1000)
 	_ = w.ToolResult("p01", "ok", big)
 
@@ -192,7 +218,7 @@ func TestFrameWriterConcurrentWritesKeepSeqDense(t *testing.T) {
 // nil 接收者安全：构造失败时 adapter 直接持有 nil，调用点不必到处判空。
 func TestFrameWriterNilReceiverIsNoop(t *testing.T) {
 	var w *FrameWriter
-	if err := w.BeginTurn("dispatch"); err != nil {
+	if err := w.BeginTurn("dispatch", ""); err != nil {
 		t.Errorf("nil.BeginTurn 应返回 nil，实得 %v", err)
 	}
 	if err := w.Text("p01", "x"); err != nil {
@@ -206,7 +232,7 @@ func TestFrameWriterNilReceiverIsNoop(t *testing.T) {
 func TestFrameWriterNextPartIsUniqueWithinTurn(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := NewFrameWriter(dir, nil)
-	_ = w.BeginTurn("dispatch")
+	_ = w.BeginTurn("dispatch", "")
 	a, b := w.NextPart(), w.NextPart()
 	if a == b {
 		t.Fatalf("同回合内 NextPart 应互不相同，两次都是 %q", a)
@@ -225,7 +251,7 @@ func TestWriterForSharesSingleSeqAllocator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriterFor(adapter): %v", err)
 	}
-	if err := adapter.BeginTurn("dispatch"); err != nil {
+	if err := adapter.BeginTurn("dispatch", ""); err != nil {
 		t.Fatalf("BeginTurn: %v", err)
 	}
 	if err := adapter.Text("p01", "a"); err != nil {
@@ -272,7 +298,7 @@ func TestWriterForSharesSingleSeqAllocator(t *testing.T) {
 func TestBeginTurnOrdersTurnStartBeforeConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := WriterFor(dir, nil)
-	_ = w.BeginTurn("dispatch")
+	_ = w.BeginTurn("dispatch", "")
 
 	// 模拟 SSE 流的多 goroutine 写入撞上 Send 的 BeginTurn
 	done := make(chan struct{})
@@ -282,7 +308,7 @@ func TestBeginTurnOrdersTurnStartBeforeConcurrentWrites(t *testing.T) {
 			_ = w.Text("p01", "x")
 		}
 	}()
-	_ = w.BeginTurn("send")
+	_ = w.BeginTurn("send", "")
 	<-done
 
 	frames := readFrames(t, dir)

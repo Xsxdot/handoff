@@ -196,7 +196,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		return err
 	}
-	if err := r.frames.BeginTurn("dispatch"); err != nil {
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
 	r.textPart = r.frames.NextPart()
@@ -291,7 +291,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
-	if err := r.frames.BeginTurn("send"); err != nil {
+	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
 	r.textPart = r.frames.NextPart()
