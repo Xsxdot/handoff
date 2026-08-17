@@ -38,7 +38,7 @@ import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
 import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
-import type { TabContent } from '../workbench/tabs'
+import { MAX_GROUPS, type TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -66,6 +66,31 @@ export function Shell() {
   const caps = useMachineCaps()
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
+  const split = wb.split
+  // ⌘D 分屏。
+  //
+  // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
+  // 空白面板」，window 级会让一次 ⌘T 开出两个终端（BlankTab.tsx:75）。⌘D 没有这个
+  // 问题——它只作用于当前焦点组，全局唯一。
+  //
+  // **只认 metaKey，绝不接 ctrlKey**：Ctrl+D 在终端里是 EOF，绑上去等于让用户
+  // 没法退出 shell。这与 BlankTab.tsx:44 已确立的口径一致（本控制台只在 macOS 用，
+  // 将来上 Windows 时这两处要一起改，而且要另选一个不撞 EOF 的键）。
+  //
+  // 必须 preventDefault：macOS 浏览器的 ⌘D 是「加入书签」，不拦会在分屏的同时弹
+  // 书签面板。不排除输入框——⌘D 在 input/textarea 里没有默认语义，排除它只会让
+  // 「光标在 Composer 里时 ⌘D 不好使」变成一个要解释的例外。
+  //
+  // 冒泡阶段监听（第三参不传 true），与 ProjectTree 的 ⌘K 同一条让位次序。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.key.toLowerCase() !== 'd') return
+      e.preventDefault()
+      split()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [split])
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
   // openTerminal：它不会把用户的选中目录拽走。
   // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。
@@ -258,7 +283,7 @@ export function Shell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} />}
+        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} canSplit={wb.wb.groups.length < MAX_GROUPS} />}
         <main className="min-h-0 flex-1">
           <Routes>
             <Route

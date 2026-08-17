@@ -51,16 +51,57 @@ export interface TabGroup {
   activeId: string | null
 }
 
-// Workbench 是一个基准目录下的全部 tab：一组或两组，外加「哪一组是焦点」。
+// MAX_GROUPS 是中央区最多能分出的栏数。
 //
-// 为什么最多两组：原型就是左右两组（左 TUI、右编辑器），再多的分屏在 1280px
-// 宽度下每列都窄到没法读代码。真需要时改这里的不变式，而不是改调用方。
+// 为什么是 3 而不是「无限」：1280px 宽度下减去左树 260 与文件树 280，中央区
+// 只剩 740px；三栏时每栏 ~245px，刚够放下一个 tab 标题加关闭按钮（这也是
+// MIN_PANE_PX 的来源）。第四栏必然要靠横向滚动或折叠 tab 条才能存在，那是
+// 另一个形态问题，不是把这个数字改大就能解决的。
+export const MAX_GROUPS = 3
+
+// MIN_PANE_PX 是单栏的最小宽度：拖拽时两侧都夹在它之上，不允许把一栏压成一条缝。
+export const MIN_PANE_PX = 240
+
+// Workbench 是一个基准目录下的全部 tab：一到 MAX_GROUPS 组，外加「哪一组是焦点」
+// 与各组的宽度权重。
 export interface Workbench {
   groups: TabGroup[]
   active: number
+  // sizes 是各栏的宽度权重，与 groups **等长**（这条不变式所有改组数的函数都要维持），
+  // 渲染时作为 flexGrow 用。
+  //
+  // 为什么是相对权重不是像素：容器宽度会随窗口大小、随左右两栏的显隐变化，存像素
+  // 等于每次 resize 都要重算一遍，还要处理「加起来不等于容器宽」这种对不上的状态。
+  sizes: number[]
 }
 
-export const EMPTY_WORKBENCH: Workbench = { groups: [{ tabs: [], activeId: null }], active: 0 }
+export const EMPTY_WORKBENCH: Workbench = {
+  groups: [{ tabs: [], activeId: null }],
+  active: 0,
+  sizes: [1],
+}
+
+// evenSizes 返回 n 等分的权重数组。
+//
+// 组数一变（分屏、关空一组）就调它重置，**不做「从当前栏借一半」**：借了之后
+// 关掉该还给谁？还原主还是均摊？两种都能自圆其说，于是就有了第三种状态。
+// 等分是唯一不需要记「这份宽度是从谁那儿来的」的规则。
+function evenSizes(n: number): number[] {
+  return Array.from({ length: n }, () => 1)
+}
+
+// availablePaneWidth 返回中央区各栏实际可以瓜分的宽度。
+//
+// 参数：
+//   - parentWidth: 外层 flex 容器的布局宽度（包含分隔条）
+//   - separatorWidths: 容器内所有分隔条的实际宽度
+//
+// 返回：扣除分隔条后的可分配宽度；如果布局数据异常导致结果为负，返回 0，
+// 让调用方走「量不到宽度」的退化路径，而不是把负数传给比例换算。
+export function availablePaneWidth(parentWidth: number, separatorWidths: number[]): number {
+  const separatorWidth = separatorWidths.reduce((total, width) => total + width, 0)
+  return Math.max(0, parentWidth - separatorWidth)
+}
 
 // dedupKey 返回一个 tab 内容的去重键；返回 null 表示这种内容**永不去重**。
 //
@@ -89,6 +130,7 @@ function cloneWorkbench(wb: Workbench): Workbench {
   return {
     groups: wb.groups.map((g) => ({ tabs: [...g.tabs], activeId: g.activeId })),
     active: wb.active,
+    sizes: [...wb.sizes],
   }
 }
 
@@ -169,7 +211,10 @@ export function closeTab(wb: Workbench, group: number, tabId: string): Workbench
   }
   if (g.tabs.length === 0 && next.groups.length > 1) {
     next.groups.splice(gi, 1)
-    next.active = 0
+    // 焦点接替**相邻**组，不是写死回第 0 组。两组时 min(gi, 0) 恒等于 0，所以这个
+    // 写死一直没暴露；三栏时它会让焦点从被关掉的最右栏莫名跳到最左边。
+    next.active = Math.min(gi, next.groups.length - 1)
+    next.sizes = evenSizes(next.groups.length)
   } else if (next.active >= next.groups.length) {
     next.active = next.groups.length - 1
   }
@@ -217,12 +262,66 @@ export function setTabContent(wb: Workbench, group: number, tabId: string, conte
   return next
 }
 
-// splitGroup 开启左右分屏；已经是两组时是空操作。新组为空并成为焦点。
+// splitGroup 再开一栏；已经到 MAX_GROUPS 时**原样返回同一个对象**（调用方可据此
+// 跳过一次无谓的 setState）。新栏为空并成为焦点，宽度重置为等分。
+//
+// 新栏 push 到末尾而不是插在当前栏右边：`(group 下标, tabId)` 是全代码库定位一个
+// tab 的方式，而 Shell 的 closingPty / closingDirtyFile 在确认弹层打开期间把这个
+// 下标**存进了 state**。紧邻插入会让后面所有组的下标 +1，于是弹层里存着的下标指向
+// 别的组——点「确认关闭」关掉的是另一栏的 tab。见 spec §1.2。
 export function splitGroup(wb: Workbench): Workbench {
-  if (wb.groups.length >= 2) return wb
+  if (wb.groups.length >= MAX_GROUPS) return wb
   const next = cloneWorkbench(wb)
   next.groups.push({ tabs: [], activeId: null })
   next.active = next.groups.length - 1
+  next.sizes = evenSizes(next.groups.length)
+  return next
+}
+
+// resizeGroups 把第 dividerIndex 个分隔条左右两栏的宽度重新分配。
+//
+// 参数：
+//   - dividerIndex: 分隔条下标，左邻是 groups[dividerIndex]、右邻是 [dividerIndex+1]
+//   - delta: 本次位移占容器宽度的**比例**，正数 = 分隔条右移（左栏变宽）
+//   - minRatio: 单栏允许的最小占比，由调用方用 MIN_PANE_PX / 容器宽度算好传进来
+//
+// 为什么 minRatio 由调用方算：容器宽度只有 DOM 知道。纯函数拿到的是无量纲比例，
+// 测试里直接给 0.2 就能断言夹紧行为，不用 mock 布局。
+//
+// 无事可做时**返回原对象**（引用相等），调用方可据此跳过一次 setState：拖拽是
+// 高频事件，贴着下限还在拖时不该每帧都重渲染一次整个中央区。
+export function resizeGroups(
+  wb: Workbench,
+  dividerIndex: number,
+  delta: number,
+  minRatio: number,
+): Workbench {
+  const i = dividerIndex
+  const j = dividerIndex + 1
+  if (i < 0 || j >= wb.sizes.length || wb.sizes.length !== wb.groups.length) {
+    // 不变式被破坏才会走到这里（渲染层的分隔条数量恒等于 groups.length - 1）。
+    // 静默返回会让「拖了没反应」查无对证，留一条带上下文的 warn
+    console.warn('分隔条下标越界或栏宽数量不匹配，本次拖拽忽略', {
+      dividerIndex,
+      groups: wb.groups.length,
+      sizes: wb.sizes.length,
+    })
+    return wb
+  }
+  const total = wb.sizes.reduce((a, b) => a + b, 0)
+  const left = wb.sizes[i] / total
+  const right = wb.sizes[j] / total
+  const min = Math.max(0, minRatio)
+  // 两栏加起来都容不下两个下限：容器已经窄到没有可分配的空间，此时任何夹紧规则
+  // 都会算出自相矛盾的结果。拒绝改动，交给容器横向滚动（spec §2.3）
+  if (min * 2 > left + right) return wb
+  let d = delta
+  if (left + d < min) d = min - left
+  if (right - d < min) d = right - min
+  if (d === 0) return wb
+  const next = cloneWorkbench(wb)
+  next.sizes[i] = (left + d) * total
+  next.sizes[j] = (right - d) * total
   return next
 }
 

@@ -21,6 +21,7 @@ import {
   closeTab,
   nextTerminalSeq,
   openTab,
+  resizeGroups,
   setTabContent,
   splitGroup,
   type TabContent,
@@ -70,6 +71,10 @@ export interface WorkbenchApi {
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
   split: () => void
+  // resize 调整第 dividerIndex 条分隔条两侧的栏宽。三个参数逐字透传给
+  // tabs.ts 的 resizeGroups——这里不做夹紧也不认识像素，只负责把它接到当前基准的
+  // Workbench 上。
+  resize: (dividerIndex: number, delta: number, minRatio: number) => void
   // restoreTerminal 把一个**已存在于服务端**的会话恢复成 tab。
   //
   // 与 openTerminal 的关键差别：它**不切换当前基准**。页面加载时可能一次恢复
@@ -128,6 +133,11 @@ export function useWorkbench(): WorkbenchApi {
     [mutate],
   )
   const split = useCallback(() => mutate(splitGroup), [mutate])
+  const resize = useCallback(
+    (dividerIndex: number, delta: number, minRatio: number) =>
+      mutate((w) => resizeGroups(w, dividerIndex, delta, minRatio)),
+    [mutate],
+  )
 
   // restoreTerminal 不走 mutate：mutate 在给了显式基准时会 select 过去，而恢复
   // 是后台动作，不该把用户的选中态拽走。它只在 byBase 里按目标基准写入。
@@ -139,5 +149,5 @@ export function useWorkbench(): WorkbenchApi {
     })
   }, [])
 
-  return { base, wb, select, open, openTerminal, close, activate, setContent, split, restoreTerminal }
+  return { base, wb, select, open, openTerminal, close, activate, setContent, split, resize, restoreTerminal }
 }

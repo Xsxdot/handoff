@@ -7,10 +7,22 @@
 //   - 只显示不导航。三段都不可点——上级（项目、开发机）在这套 IA 里不是可以
 //     「进入」的东西，做成链接会承诺一个不存在的页面
 //   - 未选中目录时不渲染（由 Shell 判断）
+//   - 右侧分屏按钮到 MAX_GROUPS 栏时置灰而不是隐藏——见按钮上的注释
 import { ChevronRight, Columns2 } from 'lucide-react'
+import { MAX_GROUPS } from '../workbench/tabs'
 import type { BaseDir } from '../workbench/useWorkbench'
 
-export function Breadcrumb({ base, onSplit }: { base: BaseDir; onSplit: () => void }) {
+export function Breadcrumb({
+  base,
+  onSplit,
+  canSplit,
+}: {
+  base: BaseDir
+  onSplit: () => void
+  // canSplit=false 时按钮置灰。**不是**隐藏：按钮消失会让人以为分屏功能没了，
+  // 置灰 + title 才回答了真正的问题「为什么点了没反应」——已经到顶了
+  canSplit: boolean
+}) {
   // home 基准不属于任何项目/机器，只显示一段
   const segments =
     base.kind === 'home'
@@ -31,8 +43,10 @@ export function Breadcrumb({ base, onSplit }: { base: BaseDir; onSplit: () => vo
       <button
         type="button"
         aria-label="分屏"
+        title={canSplit ? '分屏（⌘D）' : `最多 ${MAX_GROUPS} 栏`}
+        disabled={!canSplit}
         onClick={onSplit}
-        className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
       >
         <Columns2 className="size-4" />
       </button>
