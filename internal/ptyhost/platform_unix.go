@@ -51,9 +51,39 @@ func startPty(shell, cwd string, env []string, cols, rows int) (*os.File, *exec.
 	return f, cmd, nil
 }
 
+// withFd 在持有 *os.File 引用计数的前提下，把裸 fd 交给 fn 做 ioctl。
+//
+// 参数：f 为目标文件；fn 收到的 fd 只在回调期间有效，**不得**存下来事后再用。
+//
+// 返回：fn 自身的错误；文件已关闭（或取不到 SyscallConn）时返回该失败本身。
+//
+// 为什么不能直接用 f.Fd()：Fd() 不加引用计数地读出 fd 号，与并发的 f.Close()
+// 构成数据竞争——而 ptyhost.reap 在 shell 退出的那一刻正是这么关主端的，
+// 于是「取快照」「调尺寸」与「会话自然退出」一撞就中。真实危害比竞争本身更
+// 隐蔽：拿到的 fd 号可能在 ioctl 发出前已被内核回收并重新分配给别的文件，
+// ioctl 就打到了不相干的 fd 上。SyscallConn().Control 会先 incref，文件已关闭
+// 时直接返回错误而不执行 fn，正好对上本包「读不到就当读不到」的语义。
+func withFd(f *os.File, fn func(fd uintptr) error) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var inner error
+	if err := rc.Control(func(fd uintptr) { inner = fn(fd) }); err != nil {
+		return err
+	}
+	return inner
+}
+
 // resizePty 调整伪终端尺寸，内核随即向前台进程组发 SIGWINCH。
+//
+// 这里自己发 TIOCSWINSZ 而不用 pty.Setsize：后者走的是 f.Fd()（creack/pty
+// v1.1.24 的 ioctl.go 只用阻塞路径），会话退出时与 reap 的 Close 撞成数据竞争。
 func resizePty(f *os.File, cols, rows int) error {
-	return pty.Setsize(f, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	ws := unix.Winsize{Col: uint16(cols), Row: uint16(rows)}
+	return withFd(f, func(fd uintptr) error {
+		return unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &ws)
+	})
 }
 
 // terminatePty 向整个进程组发 SIGTERM。
@@ -108,8 +138,17 @@ func waitExitCode(cmd *exec.Cmd) int {
 //
 // 注意：调用方要的通常不是 pgid 本身，而是「它是否 != shell 自己的 pid」——
 // 相等意味着 shell 在等提示符（没有前台命令），不等意味着有个命令正跑在前台。
+//
+// 「shell 已退出」这一支正是靠 withFd 兜住的：fd 已被 reap 关掉时 Control
+// 不会执行回调，直接返回错误，于是走到 false，而不是拿一个悬空的 fd 号去
+// ioctl（见 withFd 的注释）。
 func foregroundPgid(ptmx *os.File) (int, bool) {
-	pgid, err := unix.IoctlGetInt(int(ptmx.Fd()), unix.TIOCGPGRP)
+	var pgid int
+	err := withFd(ptmx, func(fd uintptr) error {
+		var e error
+		pgid, e = unix.IoctlGetInt(int(fd), unix.TIOCGPGRP)
+		return e
+	})
 	if err != nil || pgid <= 0 {
 		return 0, false
 	}

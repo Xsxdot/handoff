@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -217,4 +218,103 @@ func TestCloseRemovesSession(t *testing.T) {
 	if err := h.Close(s.ID); err != ptyhost.ErrNoSession {
 		t.Fatalf("重复 Close 的错误 = %v，期望 ErrNoSession", err)
 	}
+}
+
+// waitExited 轮询到会话落 exit_code 为止，用于「让 shell 在并发压力下自然退出」
+// 这类用例。超时即 Fatal——等不到退出说明压测本身出了问题，继续断言没有意义。
+func waitExited(t *testing.T, h *ptyhost.Host, id string) {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		if g, ok := h.Get(id); ok && g.ExitCode != nil {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("等待 shell 退出超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// 取快照与会话自然退出并发：不得有数据竞争。
+//
+// 为什么是回归用例：reap 在 shell 退出时关掉 PTY 主端这个 *os.File，而
+// snapshot 要在同一个 fd 上做 TIOCGPGRP 读前台进程组。用裸 fd 号
+// （os.File.Fd()）取 fd 是没有引用计数的，与并发的 Close 就是数据竞争，
+// -race 下必现；不带 -race 时后果更隐蔽——ioctl 打到一个已被回收、可能
+// 已被别的 goroutine 重新分配出去的 fd 号上。
+//
+// 本用例的价值只在 `go test -race` 下体现，裸跑必过。
+func TestSnapshotDuringShellExitIsRaceFree(t *testing.T) {
+	h := testHost(t)
+	s := testOpen(t, h)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				h.Get(s.ID) // 内部走 snapshot → foregroundPgid(s.f)
+			}
+		}()
+	}
+	defer func() { close(stop); wg.Wait() }()
+
+	_ = h.Write(s.ID, []byte("exit 0\n"))
+	waitExited(t, h, s.ID)
+}
+
+// 调尺寸与会话自然退出并发：不得有数据竞争。
+//
+// 与上一条同源：resizePty 的 TIOCSWINSZ 同样要拿到 fd。Resize 只在锁外读过
+// 一次 exited 标志，那之后 reap 随时可能把 fd 关掉——所以「退出前检查过」
+// 挡不住这个竞争，必须让取 fd 这一步自己持有引用。
+//
+// 每次交替两个尺寸：Resize 只在协商结果与当前值不同时才真去 ioctl，
+// 固定尺寸会让这个用例一次都碰不到 resizePty。
+func TestResizeDuringShellExitIsRaceFree(t *testing.T) {
+	h := testHost(t)
+	s := testOpen(t, h)
+	a, err := h.Attach(s.ID, 0)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer a.Detach()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				_ = a.Resize(100, 30)
+			} else {
+				_ = a.Resize(120, 40)
+			}
+		}
+	}()
+	defer func() { close(stop); wg.Wait() }()
+
+	// 订阅者必须持续排空，否则 shell 写收尾输出时会阻塞、迟迟不退出
+	go func() {
+		for range a.Out {
+		}
+	}()
+
+	_ = h.Write(s.ID, []byte("exit 0\n"))
+	waitExited(t, h, s.ID)
 }
