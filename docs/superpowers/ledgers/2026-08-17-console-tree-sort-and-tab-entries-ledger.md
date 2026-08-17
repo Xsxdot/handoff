@@ -8,3 +8,4 @@
 | 2026-08-18 | Task 4 | 0 | 完成；spec 符合性与代码质量双裁决通过；同步既有 GlobalTickets 测试夹具 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test -- src/app/overlay/useGlobalTickets.test.ts src/app/overlay/TicketsOverlay.test.tsx && npm run lint && npm run typecheck` |
 | 2026-08-18 | Task 5 | 0 | 完成；spec 符合性与代码质量双裁决通过；同步 ProjectTree 既有调用夹具 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck` |
 | 2026-08-18 | Task 6 | 0 | 完成；spec 符合性与代码质量双裁决通过；同步 WorkbenchPage/测试 API 夹具 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck` |
+| 2026-08-18 | Task 7 | 0 | 完成；spec 符合性与代码质量双裁决通过；终态口径按 board/columns.ts 校准 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test -- src/app/workbench/TaskPickerDialog.test.tsx && npm run typecheck` |
