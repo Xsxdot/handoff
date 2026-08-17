@@ -184,7 +184,7 @@ var agentdCmd = &cobra.Command{
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
-			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs, logger)
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim, logger)
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
