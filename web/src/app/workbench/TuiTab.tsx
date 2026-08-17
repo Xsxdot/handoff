@@ -15,7 +15,7 @@ import { useTaskSession } from '../task/useTaskSession'
 import { useFramesStream } from '../task/useFramesStream'
 import { buildBlocks, turnsOf } from '../task/frames'
 import { TuiHeader } from '../task/TuiHeader'
-import { ConversationStream } from '../task/ConversationStream'
+import { ConversationStream, type ConversationStreamHandle } from '../task/ConversationStream'
 import { ReviewSidePanel } from '../task/ReviewSidePanel'
 import { Composer } from '../task/Composer'
 import { DebugDrawer } from '../task/DebugDrawer'
@@ -23,10 +23,11 @@ import { DebugDrawer } from '../task/DebugDrawer'
 // TuiTab 渲染一个任务的对话式 TUI；对外签名保持不变，Shell 无需知道内部重排。
 export function TuiTab({ taskId }: { taskId: string }) {
   const s = useTaskSession(taskId)
-  const { frames, badLines, startOffset, error, atCap, loadingEarlier, loadEarlier, retry } =
+  const { frames, badLines, startOffset, error, active, atCap, loadingEarlier, loadEarlier, retry } =
     useFramesStream(taskId)
   const blocks = useMemo(() => buildBlocks(frames), [frames])
   const turns = useMemo(() => turnsOf(frames), [frames])
+  const streamRef = useRef<ConversationStreamHandle>(null)
 
   const [reviewOpen, setReviewOpen] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
@@ -59,7 +60,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
         task={s.detail.task}
         turns={turns}
         turnsPartial={startOffset > 0}
-        onJumpTurn={(t) => document.getElementById(`turn-${taskId}-${t}`)?.scrollIntoView({ block: 'start' })}
+        onJumpTurn={(t) => streamRef.current?.jumpToTurn(t)}
         reviewAvailable={inReview}
         reviewOpen={reviewOpen}
         onToggleReview={() => (reviewOpen ? closeReview() : setReviewOpen(true))}
@@ -74,6 +75,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1">
           <ConversationStream
+            ref={streamRef}
             taskId={taskId}
             taskState={s.detail.task.state}
             blocks={blocks}
@@ -84,6 +86,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
             loadingEarlier={loadingEarlier}
             onLoadEarlier={loadEarlier}
             onRetry={retry}
+            active={active}
           />
         </div>
         {inReview && reviewOpen && <ReviewSidePanel taskId={taskId} onClose={closeReview} />}

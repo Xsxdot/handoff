@@ -3,18 +3,21 @@
 // 职责：
 //   - 渲染块序列：回合分隔（send 回合接审核者气泡）、正文（末尾 trailer 拆
 //     交付卡）、思维链、工具行、事件行、未知块
-//   - 唯一滚动区：跟随滚动（stickBottom）、加载更早 + prepend 补偿
+//   - 唯一滚动区：跟随滚动（stickBottom）、近顶自动加载更早 + prepend 补偿、回合跳转
 //   - 坏行/帧上限/错误提示以流内元数据行呈现
+//   - 连续工具块折叠与运行中状态提示
 //
 // 边界：
 //   - 不取数：frames 流由 TuiTab 持有（页头回合下拉与本组件共享 turns），
 //     本组件只吃 blocks 与流状态 props
 //   - 不含原始视图切换：原始 render.log 在调试抽屉（spec §2.5）
 //   - 回合锚点 id 约定 `turn-${taskId}-${turn}`，TuiHeader 跳转靠它
-import { useLayoutEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import type { Block } from './frames'
 import { extractDelivery } from './delivery'
+import { groupBlocks, type ToolGroupBlock } from './streamGroups'
 import { TextBlock } from './TextBlock'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
@@ -42,17 +45,50 @@ export interface ConversationStreamProps {
   loadingEarlier: boolean
   onLoadEarlier: () => void
   onRetry: () => void
+  active: boolean
+}
+
+export interface ConversationStreamHandle {
+  jumpToTurn(turn: number): void
+}
+
+// ToolGroupRow 渲染一组折叠的连续工具行：一行摘要，点开平铺原行。
+function ToolGroupRow({ group, taskState }: { group: ToolGroupBlock; taskState: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="my-1 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 py-0.5 text-muted-foreground hover:text-foreground"
+      >
+        <span className={cn('w-3.5 shrink-0 text-center transition-transform', open && 'rotate-90')}>▸</span>
+        执行了 {group.tools.length} 步操作
+        {group.failed > 0 && <span className="text-destructive">（{group.failed} 失败）</span>}
+        {group.pending > 0 && <span className="text-amber-600 dark:text-amber-500">（{group.pending} 未回音）</span>}
+      </button>
+      {open && (
+        <div className="ml-[7px] border-l-2 border-border pl-3">
+          {group.tools.map((t) => <ToolCard key={t.key} block={t} taskState={taskState} />)}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ConversationStream 渲染一个任务的会话流。滚动补偿与跟随逻辑整体平移自
 // TimelinePanel（useLayoutEffect + prependRef 的实现原样保留，注释见彼处 git 史）。
-export function ConversationStream({
+export const ConversationStream = forwardRef<ConversationStreamHandle, ConversationStreamProps>(function ConversationStream({
   taskId, taskState, blocks, badLines, startOffset, atCap, error,
-  loadingEarlier, onLoadEarlier, onRetry,
-}: ConversationStreamProps) {
+  loadingEarlier, onLoadEarlier, onRetry, active,
+}, ref) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
   const prependRef = useRef<number | null>(null)
+  const pendingTurnRef = useRef<number | null>(null)
+  const lastFrameAtRef = useRef(Date.now())
+  const [now, setNow] = useState(Date.now())
+  const items = useMemo(() => groupBlocks(blocks), [blocks])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -69,16 +105,67 @@ export function ConversationStream({
     }
   }, [blocks])
 
+  const handleLoadEarlier = () => {
+    if (startOffset <= 0 || atCap || loadingEarlier) return
+    prependRef.current = scrollRef.current?.scrollHeight ?? 0
+    onLoadEarlier()
+  }
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
     stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < stickThreshold
+    if (el.scrollTop < 200 && startOffset > 0 && !atCap && !loadingEarlier) {
+      handleLoadEarlier()
+    }
   }
 
-  const handleLoadEarlier = () => {
-    prependRef.current = scrollRef.current?.scrollHeight ?? 0
-    onLoadEarlier()
-  }
+  useImperativeHandle(ref, () => ({
+    jumpToTurn(turn: number) {
+      const anchor = document.getElementById(`turn-${taskId}-${turn}`)
+      if (anchor) {
+        // 先停用跟底再滚动，避免新帧在 scrollIntoView 后把用户重新拽到底部。
+        stickBottom.current = false
+        anchor.scrollIntoView?.({ block: 'start' })
+        pendingTurnRef.current = null
+        return
+      }
+      pendingTurnRef.current = turn
+      // 锚点尚未加载时先回翻一页；后续由 blocks/加载状态 effect 接力检查。
+      handleLoadEarlier()
+    },
+  }), [handleLoadEarlier, taskId])
+
+  useEffect(() => {
+    const pendingTurn = pendingTurnRef.current
+    if (pendingTurn === null) return
+    const anchor = document.getElementById(`turn-${taskId}-${pendingTurn}`)
+    if (anchor) {
+      pendingTurnRef.current = null
+      // 与 jumpToTurn 一致，先解除跟底再执行跳转，避免竞态把滚动位置拉回末尾。
+      stickBottom.current = false
+      anchor.scrollIntoView?.({ block: 'start' })
+      return
+    }
+    if (startOffset <= 0 || atCap) {
+      // 到文件头或帧上限仍没有锚点时放弃：下拉只承诺已加载范围，不能假装跳到了目标。
+      pendingTurnRef.current = null
+      return
+    }
+    if (!loadingEarlier) handleLoadEarlier()
+  }, [atCap, blocks, handleLoadEarlier, loadingEarlier, startOffset, taskId])
+
+  useEffect(() => {
+    lastFrameAtRef.current = Date.now()
+  }, [blocks])
+
+  useEffect(() => {
+    if (taskState !== 'running') return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [taskState])
+
+  const staleSeconds = Math.max(0, Math.floor((now - lastFrameAtRef.current) / 1000))
 
   return (
     <div ref={scrollRef} onScroll={onScroll} className="h-full min-h-0 overflow-y-auto">
@@ -108,10 +195,10 @@ export function ConversationStream({
           </p>
         )}
 
-        {blocks.length === 0 && error === null ? (
+        {items.length === 0 && error === null ? (
           <p className="text-sm text-muted-foreground">等待模型输出…（frames.jsonl 尚为空属正常）</p>
         ) : (
-          blocks.map((b) => {
+          items.map((b) => {
             switch (b.kind) {
               case 'turn':
                 return (
@@ -148,6 +235,12 @@ export function ConversationStream({
                 return <ThinkingBlock key={b.key} text={b.text} />
               case 'tool':
                 return <ToolCard key={b.key} block={b} taskState={taskState} />
+              case 'toolGroup':
+                // 组内有未回音工具且任务在跑：正在发生的事不能折起来，整组平铺。
+                if (b.pending > 0 && taskState === 'running') {
+                  return b.tools.map((t) => <ToolCard key={t.key} block={t} taskState={taskState} />)
+                }
+                return <ToolGroupRow key={b.key} group={b} taskState={taskState} />
               case 'event':
                 return <EventChip key={b.key} event={b.event} ts={b.ts} />
               case 'unknown':
@@ -155,7 +248,18 @@ export function ConversationStream({
             }
           })
         )}
+
+        {taskState === 'running' && active && (
+          <div className="my-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="size-[7px] shrink-0 animate-pulse rounded-full bg-green-600" />
+            模型工作中…
+            {staleSeconds >= 15 && <span>（已 {staleSeconds}s 没有新输出）</span>}
+          </div>
+        )}
+        {taskState === 'waiting_answer' && (
+          <MetaRow glyph="⚠" tone="warn">等待工单裁决——入口在左栏底部的工单面板</MetaRow>
+        )}
       </div>
     </div>
   )
-}
+})

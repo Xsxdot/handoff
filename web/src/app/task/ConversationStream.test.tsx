@@ -1,14 +1,15 @@
 // ConversationStream.test.tsx —— 会话流渲染：回合分隔/指令气泡/交付卡/提示行。
-import { render, screen } from '@testing-library/react'
+import { createRef } from 'react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { ConversationStream } from './ConversationStream'
+import { ConversationStream, type ConversationStreamHandle } from './ConversationStream'
 import type { Block } from './frames'
 
 const noop = () => {}
 const base = {
   taskId: 't1', taskState: 'waiting_review',
   badLines: 0, startOffset: 0, atCap: false, error: null,
-  loadingEarlier: false, onLoadEarlier: noop, onRetry: noop,
+  loadingEarlier: false, onLoadEarlier: noop, onRetry: noop, active: false,
 }
 
 describe('ConversationStream', () => {
@@ -54,5 +55,42 @@ describe('ConversationStream', () => {
     render(<ConversationStream {...base} blocks={[]} error="连接断了" />)
     expect(screen.getByRole('alert')).toHaveTextContent('连接断了')
     expect(screen.getByRole('button', { name: /重试/ })).toBeInTheDocument()
+  })
+
+  it('连续 ≥3 工具块折叠成组行，点开平铺', () => {
+    const tools = ['a', 'b', 'c'].map((k) => ({
+      kind: 'tool', key: k, turn: 1, tool: 'commandExecution', input: `cmd-${k}`,
+      inputTruncated: false, inputBytes: 0, status: 'ok', output: '',
+      outputTruncated: false, outputBytes: 0,
+    })) as Block[]
+    render(<ConversationStream {...base} blocks={tools} />)
+    const row = screen.getByRole('button', { name: /执行了 3 步操作/ })
+    expect(screen.queryByText('cmd-a')).not.toBeInTheDocument()
+    fireEvent.click(row)
+    expect(screen.getByText('cmd-a')).toBeInTheDocument()
+  })
+
+  it('组内含失败时摘要标红失败数', () => {
+    const mk = (k: string, status: string) => ({
+      kind: 'tool', key: k, turn: 1, tool: 'x', input: k, inputTruncated: false,
+      inputBytes: 0, status, output: '', outputTruncated: false, outputBytes: 0,
+    }) as Block
+    render(<ConversationStream {...base} blocks={[mk('a', 'ok'), mk('b', 'error'), mk('c', 'ok')]} />)
+    expect(screen.getByText(/1 失败/)).toBeInTheDocument()
+  })
+
+  it('running 且流活跃时显示运行中指示', () => {
+    render(<ConversationStream {...base} blocks={[]} taskState="running" active />)
+    expect(screen.getByText(/模型工作中/)).toBeInTheDocument()
+  })
+
+  it('jumpToTurn 对未加载回合触发回翻', () => {
+    const onLoadEarlier = vi.fn()
+    const ref = createRef<ConversationStreamHandle>()
+    render(
+      <ConversationStream {...base} ref={ref} blocks={[]} startOffset={100} onLoadEarlier={onLoadEarlier} />,
+    )
+    ref.current!.jumpToTurn(1)
+    expect(onLoadEarlier).toHaveBeenCalled()
   })
 })
