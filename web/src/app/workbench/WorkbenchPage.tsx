@@ -22,9 +22,11 @@ import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, type DropZone } from './paneDrop'
+import { createUntitledFile } from './newFile'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
 import { cn } from '@/lib/utils'
+import { errorMessage } from '../lib/format'
 
 export interface WorkbenchPageProps {
   api: WorkbenchApi
@@ -43,6 +45,9 @@ export interface WorkbenchPageProps {
   // 「现在是哪个 tab 在等」，那个状态本来就该住在这里。
   tree: ProjectTreeResp | null
   tasks: Task[]
+  // onFileCreated 在新建文件成功后触发，让右栏文件树把新文件显示出来。
+  // 可选：没有右栏时（home 基准）不需要它
+  onFileCreated?: () => void
 }
 
 export function WorkbenchPage({
@@ -53,11 +58,15 @@ export function WorkbenchPage({
   onBeforeClose,
   tree,
   tasks,
+  onFileCreated,
 }: WorkbenchPageProps) {
   const { base, wb } = api
   // picking 记「哪个空白 tab 正在选任务」。null = 弹层关闭。
   // 这个状态只是弹层的开关，tab 本身仍是空白 tab；选择结果回调后再原地换内容。
   const [picking, setPicking] = useState<{ group: number; tabId: string } | null>(null)
+  // newFileError 是建文件失败的原文（409 撞名、磁盘满、白名单拒绝）。
+  // 显示在中央区顶部而不是弹层：它不需要用户做决定，只需要被看见
+  const [newFileError, setNewFileError] = useState('')
   // dragOver 记「指针现在悬在哪一栏的哪个区」，只用于高亮。null = 没有拖放在进行
   const [dragOver, setDragOver] = useState<{ group: number; zone: DropZone } | null>(null)
 
@@ -73,7 +82,15 @@ export function WorkbenchPage({
       setPicking({ group, tabId })
       return
     }
-    // newfile 在 Task 10 接上；此刻先留空。
+    if (kind === 'newfile') {
+      setNewFileError('')
+      void createUntitledFile(base)
+        .then((rel) => {
+          api.setContent(group, tabId, { kind: 'file', rel })
+          onFileCreated?.()
+        })
+        .catch((err: unknown) => setNewFileError(errorMessage(err)))
+    }
   }
 
   // startFromEmpty 处理「组里一个 tab 都没有」时直接在空态面板上选种类：
@@ -137,6 +154,11 @@ export function WorkbenchPage({
     // gap 去掉了：分隔线不再靠 gap-px 透出背景色，而是 GroupDivider 这个真实元素——
     // 它要能被鼠标抓住、被键盘聚焦，那都不是背景色能做到的
     <div className="relative flex h-full min-h-0 bg-border">
+      {newFileError !== '' && (
+        <p className="absolute inset-x-0 top-0 z-20 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+          新建文件失败：{newFileError}
+        </p>
+      )}
       {wb.groups.map((g, gi) => {
         const activeTab = g.tabs.find((t) => t.id === g.activeId) ?? null
         return (

@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, createEvent, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { WorkbenchPage as ActualWorkbenchPage, type WorkbenchPageProps } from './WorkbenchPage'
 import { BlankTab } from './BlankTab'
+import { createUntitledFile } from './newFile'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import { useWorkbench } from './useWorkbench'
 import { EMPTY_WORKBENCH, openTab, splitGroup } from './tabs'
+
+vi.mock('./newFile', () => ({ createUntitledFile: vi.fn() }))
 
 type TestWorkbenchPageProps = Omit<WorkbenchPageProps, 'tree' | 'tasks'> &
   Partial<Pick<WorkbenchPageProps, 'tree' | 'tasks'>>
@@ -362,6 +365,38 @@ describe('WorkbenchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /任务一/ }))
     expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'tui', taskId: 'T1' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('点「新建文件」建出 untitled-1.md 并原地变成 file tab', async () => {
+    vi.mocked(createUntitledFile).mockResolvedValueOnce('untitled-1.md')
+    const setContent = vi.fn()
+    const onFileCreated = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    const id = wb.groups[0].tabs[0].id
+    render(
+      <WorkbenchPage
+        api={api({ wb, setContent })}
+        onAddProject={vi.fn()}
+        onFileCreated={onFileCreated}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /新建文件/ }))
+    await waitFor(() => {
+      expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'file', rel: 'untitled-1.md' })
+    })
+    expect(onFileCreated).toHaveBeenCalledOnce()
+  })
+
+  it('建文件失败时把 agentd 的原文显示出来，不吞成「操作失败」', async () => {
+    vi.mocked(createUntitledFile).mockRejectedValueOnce(new Error('草稿区不可写：磁盘已满'))
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    render(<WorkbenchPage api={api({ wb })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /新建文件/ }))
+    expect(await screen.findByText('新建文件失败：草稿区不可写：磁盘已满')).toBeInTheDocument()
+    expect(screen.queryByText('操作失败')).not.toBeInTheDocument()
   })
 
   it('选中的任务已在别的 tab 里开着时，激活那个并关掉这个空白 tab', () => {

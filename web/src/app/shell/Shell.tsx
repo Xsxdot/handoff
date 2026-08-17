@@ -59,6 +59,10 @@ export function Shell() {
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  // fileTreeNonce 是右栏刷新的触发器。中央区新建文件后递增它。
+  // 用计数器而不是把 FileTree 的 refresh 传上来：那会把中央区与右栏焊死，
+  // 而它们现在互不认识
+  const [fileTreeNonce, setFileTreeNonce] = useState(0)
   // editProject 是正在被编辑的项目（右键菜单「编辑」传入）；null = 弹层关闭。
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
@@ -303,6 +307,7 @@ export function Shell() {
                   onAddProject={() => setWizardOpen(true)}
                   tree={treeState.data}
                   tasks={tasks}
+                  onFileCreated={() => setFileTreeNonce((n) => n + 1)}
                   terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
                   onBeforeClose={beforeCloseTab}
                   renderContent={(c, base, group, tabId) => {
@@ -363,6 +368,7 @@ export function Shell() {
         <div className="w-[280px] shrink-0">
           <FileTree
             base={wb.base}
+            refreshKey={fileTreeNonce}
             taskId={currentTaskId}
             onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
             onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
