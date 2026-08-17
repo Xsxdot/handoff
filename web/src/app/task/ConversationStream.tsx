@@ -12,7 +12,7 @@
 //     本组件只吃 blocks 与流状态 props
 //   - 不含原始视图切换：原始 render.log 在调试抽屉（spec §2.5）
 //   - 回合锚点 id 约定 `turn-${taskId}-${turn}`，TuiHeader 跳转靠它
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { Block } from './frames'
@@ -105,11 +105,11 @@ export const ConversationStream = forwardRef<ConversationStreamHandle, Conversat
     }
   }, [blocks])
 
-  const handleLoadEarlier = () => {
+  const handleLoadEarlier = useCallback(() => {
     if (startOffset <= 0 || atCap || loadingEarlier) return
     prependRef.current = scrollRef.current?.scrollHeight ?? 0
     onLoadEarlier()
-  }
+  }, [atCap, loadingEarlier, onLoadEarlier, startOffset])
 
   const onScroll = () => {
     const el = scrollRef.current
@@ -161,6 +161,7 @@ export const ConversationStream = forwardRef<ConversationStreamHandle, Conversat
 
   useEffect(() => {
     if (taskState !== 'running') return
+    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [taskState])
