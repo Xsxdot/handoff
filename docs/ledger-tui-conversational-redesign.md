@@ -15,3 +15,4 @@
 - 2026-08-17 Task 4 完成，commit 0cf7a504：事件白名单映射与未知事件原样透出，delivery trailer best-effort 提取且失败不吞正文；`npx vitest run src/app/task/eventPhrase.test.ts src/app/task/delivery.test.ts` PASS（7 tests）；spec/质量双裁决通过。
 - 2026-08-17 Task 5 第 1 轮完成，commit 45823aa8：新增统一 MetaRow/EventChip/UserInstructionBlock/DeliverySummaryCard，turn 块承载 instructions，ThinkingBlock/ToolCard 改为元数据行；目标测试 PASS（48 tests）。
 - 2026-08-17 Task 5 第 1 轮修复：typecheck 首跑报 `frames.test.ts(6,10): error TS2300: Duplicate identifier 'buildBlocks'`，移除新增的重复 import；修复后 task 全测 PASS（113 tests）、`npm run typecheck` PASS；lint 0 errors、仓库既有 10 warnings。
+- 2026-08-17 Task 6 第 1 轮完成，commit 92a983a0：ConversationStream 接管唯一滚动区、prepend 补偿、回合锚点、交付卡与流内提示；目标测试初次因标题 emoji 与精确文本查询同节点失败，拆分展示节点后修复；task 全测 PASS（118 tests）、`npm run typecheck` PASS、lint 0 errors/既有 10 warnings。

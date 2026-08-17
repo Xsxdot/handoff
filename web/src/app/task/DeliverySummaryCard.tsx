@@ -9,7 +9,7 @@ import type { Delivery } from './delivery'
 export function DeliverySummaryCard({ delivery }: { delivery: Delivery }) {
   return (
     <div className="my-3 rounded-lg border bg-sidebar p-3 text-sm">
-      <div className="mb-1.5 font-semibold">✅ 交付摘要</div>
+      <div className="mb-1.5 font-semibold"><span aria-hidden="true">✅ </span><span>交付摘要</span></div>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[13px]">
         {delivery.branch && (
           <>
