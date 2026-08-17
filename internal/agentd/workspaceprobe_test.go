@@ -78,10 +78,15 @@ func TestProbeWorkspacesBadDirDegrades(t *testing.T) {
 	}
 }
 
-// TestWorkspaceCreatedAt 验证主工作树与链接工作树各自都能取到创建时间。
+// TestWorkspaceCreatedAt 验证链接工作树取得到创建时间、主工作树如实留零值。
 //
 // 为什么要建真仓库：本函数读的是 git worktree add 写下的
 // .git/worktrees/<名>/gitdir，用手工造的目录结构测等于在测自己写的假数据。
+//
+// 为什么主工作树期望零值而不是某个时间：`.git` 目录的 mtime 是「最后一次在
+// 里面增删条目」而不是创建时间（实测一个 08-07 建的仓库报出 08-18）。排序把
+// 主工作树钉在第一位、不参与比较，这个值没有消费者——如实说不知道，好过报
+// 一个自信的错值。详见 workspaceCreatedAt 的注释。
 func TestWorkspaceCreatedAt(t *testing.T) {
 	main := initGitRepo(t)
 	linked := filepath.Join(t.TempDir(), "wt")
@@ -95,17 +100,37 @@ func TestWorkspaceCreatedAt(t *testing.T) {
 		t.Fatalf("期望 2 个工作树，实得 %d", len(ws))
 	}
 	for _, w := range ws {
-		if w.CreatedAt.IsZero() {
-			t.Errorf("工作树 %s 的 CreatedAt 是零值，期望取到真实时间（is_main=%v）", w.Path, w.IsMain)
+		if w.IsMain {
+			if !w.CreatedAt.IsZero() {
+				t.Errorf("主工作树 %s 的 CreatedAt 应为零值（.git 目录 mtime 不是创建时间），实得 %v", w.Path, w.CreatedAt)
+			}
+			continue
 		}
+		if w.CreatedAt.IsZero() {
+			t.Errorf("链接工作树 %s 的 CreatedAt 是零值，期望从 gitdir 取到真实时间", w.Path)
+		}
+	}
+}
+
+// TestWorkspaceCreatedAtMainIsZero 单独钉住「主工作树恒零值」这条。
+//
+// 与上面那个用例分开写，是因为这条是**刻意的取舍**而不是实现细节：把它
+// 混在「探测出两个工作树」的断言里，将来有人改实现时会以为只是顺带的。
+func TestWorkspaceCreatedAtMainIsZero(t *testing.T) {
+	main := initGitRepo(t)
+	if got := workspaceCreatedAt(main, true); !got.IsZero() {
+		t.Errorf("主工作树应恒返回零值，实得 %v", got)
 	}
 }
 
 // TestWorkspaceCreatedAtMissingIsZero 验证取不到时留零值而不是报错。
 //
 // 这是 spec §1.3 的诚实降级：整棵项目树不该因为一个 stat 失败就 500。
+//
+// isMain 必须传 false：主工作树那一支不经 stat 就直接返回零值，用它来测
+// 「stat 失败」等于什么都没测——用例会因为走错分支而永远绿。
 func TestWorkspaceCreatedAtMissingIsZero(t *testing.T) {
-	got := workspaceCreatedAt(filepath.Join(t.TempDir(), "不存在"), true)
+	got := workspaceCreatedAt(filepath.Join(t.TempDir(), "不存在"), false)
 	if !got.IsZero() {
 		t.Errorf("不存在的路径应得零值，实得 %v", got)
 	}

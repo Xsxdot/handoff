@@ -114,6 +114,7 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     setContent: vi.fn(),
     split: vi.fn(),
     splitAt: vi.fn(),
+    openInNewPane: vi.fn(),
     closeById: vi.fn(),
     resize: vi.fn(),
     restoreTerminal: vi.fn(),
@@ -589,6 +590,19 @@ describe('拖放投放区', () => {
     dropAt(section, 10, dt('T1', null))
     expect(hook.result.current.wb.groups).toHaveLength(2)
     expect(hook.result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+
+  it('拖一个已经开着的任务到边缘：不分屏，激活已有的那个——不能留下空栏', () => {
+    // 走查实测的缺陷：先 splitAt 再 open，openTab 的跨组去重会把已有 tab 在
+    // 原栏激活，刚分出来的新栏空在那儿。用户要的是「分屏并打开」，
+    // 拿到一个空栏比不分屏更糟。
+    const { hook, section, rerender } = setup()
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'T1' }))
+    rerender()
+    layout(section, 400)
+    dropAt(section, 390, dt('T1', null))
+    expect(hook.result.current.wb.groups).toHaveLength(1)
+    expect(hook.result.current.wb.groups.flatMap((g) => g.tabs)).toHaveLength(1)
   })
 
   it('已到三栏时拖边缘退化成在这栏开 tab，不是无效投放', () => {

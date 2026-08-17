@@ -159,6 +159,19 @@ function findByKey(wb: Workbench, key: string): [number, string] | null {
   return null
 }
 
+// isAlreadyOpen 判断某个内容是否已经在**任意一栏**里开着。
+//
+// 存在的理由是「分屏并打开」这个复合动作：openTab 的跨组去重会把已有的那个
+// 在它**原来那一栏**激活，所以先分屏再 openTab 会留下一个空栏——用户要的是
+// 分屏并打开，拿到一个空栏比不分屏更糟。调用方据此决定要不要分那一刀。
+//
+// 永不去重的内容（dedupKey 返回 null，如没有会话的终端）恒返回 false：
+// 它们本来就该开出第二个。
+export function isAlreadyOpen(wb: Workbench, c: TabContent): boolean {
+  const key = dedupKey(c)
+  return key !== null && findByKey(wb, key) !== null
+}
+
 // openTab 在指定组（默认当前焦点组）开一个 tab 并激活它。
 //
 // 同身份的 tab 已存在时**不重复打开**：激活已有的那个，哪怕它在另一组

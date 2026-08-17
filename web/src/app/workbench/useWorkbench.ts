@@ -23,6 +23,7 @@ import {
   openTab,
   resizeGroups,
   setTabContent,
+  isAlreadyOpen,
   splitGroup,
   splitGroupAt,
   type TabContent,
@@ -96,9 +97,19 @@ export interface WorkbenchApi {
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
   split: () => void
-  // splitAt 在指定位置插入一栏（0 = 最左）。拖放分屏用它；⌘D 与面包屑按钮
-  // 仍走 split（末尾追加）。
+  // splitAt 在指定位置插入一栏（0 = 最左）。⌘D 与面包屑按钮仍走 split（末尾追加）。
   splitAt: (index: number) => void
+  // openInNewPane 在 index 处插入一栏并把内容开在其中——「分屏并打开」这个
+  // 复合动作的唯一实现（拖放投放到边缘走它）。
+  //
+  // 内容已经在别处开着时**不分屏**，只激活已有的那个。为什么这条必须做在这里
+  // 而不是让调用方先 splitAt 再 open：openTab 的跨组去重会把已有的那个在它
+  // **原来那一栏**激活，于是刚分出来的新栏空在那儿——用户要的是「分屏并打开」，
+  // 拿到一个空栏比不分屏更糟（实测走查发现）。两步分开写就必然漏掉这一支，
+  // 因为调用方手上没有目标基准的 Workbench（跨基准拖放时尤其如此）。
+  //
+  // index 越界或已到 MAX_GROUPS 时退化为「在焦点栏打开」，不抛错。
+  openInNewPane: (c: TabContent, index: number, b?: BaseDir) => void
   // closeById 按 tab id 关闭，自己反查它在哪一组。
   //
   // 为什么要有它：组下标只在一次事件内可靠。确认弹层打开期间用户可能分屏、
@@ -168,6 +179,19 @@ export function useWorkbench(): WorkbenchApi {
   )
   const split = useCallback(() => mutate(splitGroup), [mutate])
   const splitAt = useCallback((index: number) => mutate((w) => splitGroupAt(w, index)), [mutate])
+  const openInNewPane = useCallback(
+    (c: TabContent, index: number, b?: BaseDir) =>
+      mutate((w) => {
+        // 已经开着就只激活它，不分屏——见接口注释里那条「空栏比不分屏更糟」
+        if (isAlreadyOpen(w, c)) return openTab(w, c)
+        const split = splitGroupAt(w, index)
+        // splitGroupAt 到上限时原样返回同一个对象，此时没有新栏可开，
+        // 退回焦点栏（传 undefined 让 openTab 用 w.active）
+        if (split === w) return openTab(split, c)
+        return openTab(split, c, Math.max(0, Math.min(index, split.groups.length - 1)))
+      }, b),
+    [mutate],
+  )
   const closeById = useCallback(
     (tabId: string) =>
       mutate((w) => {
@@ -195,5 +219,5 @@ export function useWorkbench(): WorkbenchApi {
     })
   }, [])
 
-  return { base, wb, select, open, openTerminal, close, closeById, activate, setContent, split, splitAt, resize, restoreTerminal }
+  return { base, wb, select, open, openTerminal, close, closeById, activate, setContent, split, splitAt, openInNewPane, resize, restoreTerminal }
 }

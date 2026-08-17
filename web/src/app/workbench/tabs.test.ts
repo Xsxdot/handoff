@@ -7,6 +7,7 @@ import {
   availablePaneWidth,
   closeTab,
   dedupKey,
+  isAlreadyOpen,
   nextTerminalSeq,
   openTab,
   resizeGroups,
@@ -362,5 +363,19 @@ describe('终端 tab 的会话身份', () => {
     let wb = EMPTY_WORKBENCH
     wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
     expect(nextTerminalSeq(wb)).toBe(2)
+  })
+})
+
+describe('isAlreadyOpen', () => {
+  it('认得出另一组里已经开着的同身份 tab', () => {
+    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    wb = splitGroup(wb)
+    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T1' })).toBe(true)
+    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T2' })).toBe(false)
+  })
+
+  it('永不去重的内容恒为 false——没有会话的终端本来就该开出第二个', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
+    expect(isAlreadyOpen(wb, { kind: 'terminal', seq: 2 })).toBe(false)
   })
 })

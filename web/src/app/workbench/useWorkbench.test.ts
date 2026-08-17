@@ -152,3 +152,33 @@ describe('restoreTerminal', () => {
     expect(seqs).toEqual([1, 2])
   })
 })
+
+describe('openInNewPane', () => {
+  it('内容没开过时：插入新栏并把它开在新栏里', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, 1))
+    expect(result.current.wb.groups).toHaveLength(2)
+    expect(result.current.wb.groups[1].tabs).toHaveLength(1)
+    expect(result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+
+  it('内容已在别的栏开着时**不分屏**，只激活已有的那个', () => {
+    // 走查实测的缺陷：先 splitAt 再 open 会因为跨组去重把已有 tab 在原栏激活，
+    // 新分出来的栏空在那儿——用户要的是「分屏并打开」，空栏比不分屏更糟
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.open({ kind: 'tui', taskId: 'T1' }))
+    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, 1))
+    expect(result.current.wb.groups).toHaveLength(1)
+    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
+  })
+
+  it('下标越界时夹到末尾，不抛错', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, Number.MAX_SAFE_INTEGER))
+    expect(result.current.wb.groups).toHaveLength(2)
+    expect(result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+})

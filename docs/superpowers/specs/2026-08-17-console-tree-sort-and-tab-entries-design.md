@@ -59,18 +59,23 @@ W4 控制台上线后暴露的四个形态问题，彼此独立，合成一份�
 ```go
 // CreatedAt 是这个工作树被建出来的时间。零值 = 取不到（见下）。
 //
-// 取法分两种：
-//   - 主工作树：stat <path>/.git
-//   - 链接工作树：stat <主仓库 git 公共目录>/worktrees/<名>/gitdir
-//
-// 为什么链接工作树不 stat 工作树目录本身：那个目录的 mtime 会随着往里写代码
-// 变化，排出来的是"最近动过"而不是"什么时候建的"。gitdir 这个文件由
+// 取法：stat <主仓库 git 公共目录>/worktrees/<名>/gitdir。这个文件由
 // git worktree add 写一次之后就不再动，是唯一稳定的创建时间证据。
+// 刻意不 stat 工作树目录本身：那个目录的 mtime 会随着往里写代码变化，
+// 排出来的是"最近动过"而不是"什么时候建的"。
+//
+// 主工作树恒零值，见下方修订说明。
 //
 // 取不到时留零值而不是报错：整棵项目树不该因为一个 stat 失败就 500，
 // 前端把零值当"最旧"处理即可（spec §8 的诚实展示在这一层的兑现）。
 CreatedAt time.Time `json:"created_at"`
 ```
+
+> **修订（2026-08-18，实现后验收发现）**：本节初稿写的是「主工作树：stat `<path>/.git`，仓库初始化时建出来，之后不再重建」。这条推理**是错的**——它对目录的*存在性*成立，对*mtime* 不成立：目录 mtime 会在里面增删条目时更新，而 git 一直在干这事（FETCH_HEAD、新 ref、packed-refs、`worktrees/` 下增删）。真机实测：一个 08-07 建的仓库报出 08-18，差 11 天。
+>
+> 准确的答案要文件系统 birthtime，Go 标准库不给（darwin 有 `Birthtimespec`，Linux 得 statx），要按平台走 syscall。
+>
+> **结论：主工作树恒返回零值。** 排序把主工作树钉在第一位、不参与比较（§1.1），`metricsOf` 对它根本不会被调用，这个值没有消费者——如实说「不知道」好过报一个自信的错值。真有消费者时再上平台相关的 birthtime，那时它有真实依据。
 
 实现落在 [`probeWorkspaces`](../../../internal/agentd/workspaceprobe.go)：`git worktree list --porcelain` 已经给出每个工作树的 path 与是否主工作树，在组装 `proto.Workspace` 时补一次 stat。stat 失败只 Debug 不 Warn——探测期间工作树被 `git worktree remove` 掉是正常竞态。
 

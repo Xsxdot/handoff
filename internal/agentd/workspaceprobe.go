@@ -154,14 +154,28 @@ func underRoot(path, root string) bool {
 //   - path: 工作树根的绝对路径
 //   - isMain: 是否主工作树（决定去哪个文件上问）
 //
-// 返回：创建时间；任何一步失败都返回零值，**不返回 error**——调用方要的是
-// 一个可展示的字段，不是一个能让整棵树 500 的错误。
+// 返回：创建时间；取不到（含主工作树，见下）返回零值，**不返回 error**——
+// 调用方要的是一个可展示的字段，不是一个能让整棵树 500 的错误。
 //
-// 主工作树看 <path>/.git：仓库初始化时建出来，之后不再重建。
-// 链接工作树看 <公共目录>/worktrees/<名>/gitdir：git worktree add 写一次就不再动。
-// 刻意都不 stat 工作树目录本身——它的 mtime 会随着往里写代码变化，那是「最近
-// 动过」不是「什么时候建的」。
+// 链接工作树看 <公共目录>/worktrees/<名>/gitdir：git worktree add 写一次就不再动，
+// 是唯一稳定的创建时间证据。刻意不 stat 工作树目录本身——它的 mtime 会随着往里
+// 写代码变化，那是「最近动过」不是「什么时候建的」。
+//
+// **主工作树一律返回零值**，因为拿不到可信的创建时间：
+//   - `.git` 目录的 mtime 不是创建时间，而是「最后一次在里面增删条目」的时间。
+//     git 一直在干这事（FETCH_HEAD、新 ref、packed-refs、worktrees/ 下增删），
+//     实测一个 08-07 建的仓库报出 08-18——差 11 天。
+//   - 文件系统的 birthtime 才是准的，但 Go 标准库不给，要按平台走 syscall
+//     （darwin 有 Birthtimespec，Linux 得 statx）。
+//
+// 零值在这里不是缺陷而是诚实：排序把主工作树**钉在第一位、不参与比较**
+// （见 web 侧 sortWorkspaces），metricsOf 对它根本不会被调用，所以这个值
+// 没有消费者。与其报一个自信的错值，不如如实说「不知道」。真需要时再上
+// 平台相关的 birthtime，那时它有真实依据。
 func workspaceCreatedAt(path string, isMain bool) time.Time {
+	if isMain {
+		return time.Time{}
+	}
 	dotGit := filepath.Join(path, ".git")
 	fi, err := os.Stat(dotGit)
 	if err != nil {
@@ -170,16 +184,14 @@ func workspaceCreatedAt(path string, isMain bool) time.Time {
 		log().Debug("取工作树创建时间失败，留零值", "path", path, "cause", err)
 		return time.Time{}
 	}
-	if isMain {
-		return fi.ModTime()
-	}
 	// 链接工作树的 .git 是**一个文件**，内容形如 "gitdir: /主仓库/.git/worktrees/名"。
 	// 它自己的 mtime 不可靠（git 会在 prune/repair 时重写它），要顺着它指到管理目录
 	// 里的 gitdir 文件上——那个才是只写一次的。
 	if fi.IsDir() {
 		// 少见但真实：有人手工把工作树的 .git 做成了目录。此时没有可跟的指针，
-		// 就用它自己的时间，比留零值有信息
-		return fi.ModTime()
+		// 与主工作树同因——目录 mtime 说明不了创建时间，如实留零值
+		log().Debug("工作树的 .git 是目录而非指针文件，无稳定创建时间可取，留零值", "path", path)
+		return time.Time{}
 	}
 	data, err := os.ReadFile(dotGit)
 	if err != nil {

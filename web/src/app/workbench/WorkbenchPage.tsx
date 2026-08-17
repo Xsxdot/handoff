@@ -50,6 +50,11 @@ export interface WorkbenchPageProps {
   onFileCreated?: () => void
 }
 
+// END_INDEX 表示「插到末尾」：跨基准拖放时中央区不知道目标基准有几栏
+// （那套 tab 组住在 useWorkbench 的 byBase 里），传一个必然越界的下标，
+// 由 splitGroupAt 夹到合法范围。
+const END_INDEX = Number.MAX_SAFE_INTEGER
+
 export function WorkbenchPage({
   api,
   onAddProject,
@@ -127,16 +132,14 @@ export function WorkbenchPage({
     // from 为 null = 未归属任务，它没有自己的目录，用当前基准开——与在左栏
     // 点它的行为一致（Shell 的 openTaskTui 也是这条回退）
     if (from !== null && from.key !== base.key) {
+      // 带显式基准的 open / openInNewPane 内部会先 select 过去，一步到位
       if (zone === 'center') {
-        // 带显式基准的 open 内部会先 select 过去，一步到位
         api.open(content, from)
         return
       }
-      // 边缘投放退化成「末尾新开一栏」。三步必须按这个顺序：select 同步更新
-      // useWorkbench 的 baseRef，所以后两步落在**新基准**的那套 tab 组上
-      api.select(from)
-      api.split()
-      api.open(content)
+      // 边缘投放退化成「末尾新开一栏」。END_INDEX 是个必然越界的大数，
+      // openInNewPane 会把它夹到目标基准的末尾——那套 tab 组有几栏只有它知道
+      api.openInNewPane(content, END_INDEX, from)
       return
     }
     if (zone === 'center') {
@@ -144,10 +147,12 @@ export function WorkbenchPage({
       return
     }
     // 插在左边时新栏就占据 group 这个下标，原来那栏被推到 group+1；
-    // 插在右边时新栏是 group+1。两种情况下「新栏的下标」都等于插入位置
-    const at = zone === 'left' ? group : group + 1
-    api.splitAt(at)
-    api.open(content, undefined, at)
+    // 插在右边时新栏是 group+1。两种情况下「新栏的下标」都等于插入位置。
+    //
+    // 走 openInNewPane 而不是 splitAt + open 两步：这个任务可能**已经在别的栏
+    // 开着**，此时 openTab 的跨组去重会把它在原栏激活，先分出来的新栏就空在
+    // 那儿——用户要的是「分屏并打开」，拿到一个空栏比不分屏更糟（走查实测）
+    api.openInNewPane(content, zone === 'left' ? group : group + 1)
   }
 
   return (
