@@ -128,8 +128,14 @@ func TestFillFromStatusCarriesRevealSupported(t *testing.T) {
 // postMachine 带 Bearer 发一次新增请求，返回状态码与响应体原文。
 func postMachine(t *testing.T, e *testAgentdEnv, req proto.AddMachineReq) (int, string) {
 	t.Helper()
-	b, _ := json.Marshal(req)
-	hr, _ := http.NewRequest(http.MethodPost, e.ts.URL+"/api/machines", bytes.NewReader(b))
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("序列化请求失败: %v", err)
+	}
+	hr, err := http.NewRequest(http.MethodPost, e.ts.URL+"/api/machines", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
 	hr.Header.Set("Authorization", "Bearer "+testToken)
 	hr.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(hr)
@@ -151,7 +157,7 @@ func TestAddMachineUnreachableRejected(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("期望 400，实际 %d，体=%s", code, body)
 	}
-	if !strings.Contains(body, "error") || len(body) < 20 {
+	if !strings.Contains(body, "探测 127.0.0.1:1 失败") {
 		t.Fatalf("响应应带探测失败原文，实际 %s", body)
 	}
 	if got := getMachines(t, e); len(got.Machines) != 1 {
@@ -203,7 +209,10 @@ func TestAddMachineBadAddr(t *testing.T) {
 // deleteMachine 带 Bearer 发一次删除请求。
 func deleteMachine(t *testing.T, e *testAgentdEnv, name string) (int, string) {
 	t.Helper()
-	hr, _ := http.NewRequest(http.MethodDelete, e.ts.URL+"/api/machines/"+name, nil)
+	hr, err := http.NewRequest(http.MethodDelete, e.ts.URL+"/api/machines/"+name, nil)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
 	hr.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := http.DefaultClient.Do(hr)
 	if err != nil {

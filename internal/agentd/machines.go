@@ -184,7 +184,7 @@ func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), addMachineProbeBudget)
 		defer cancel()
 		s.log.Info("新增开发机：开始可达性探测", "name", req.Name, "addr", req.Addr)
-		if _, err := client.New(req.Addr, req.Token).Status(ctx); err != nil {
+		if _, err := client.New(req.Addr, req.Token).NoRedirect().Status(ctx); err != nil {
 			// 原文回给前端：绝大多数失败是地址或令牌粘错，原文是唯一能让人
 			// 一眼看出「是连不上还是没授权」的东西
 			s.log.Warn("新增开发机：探测不通", "name", req.Name, "addr", req.Addr, "cause", err)

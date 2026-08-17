@@ -1,3 +1,5 @@
+// 本文件白盒测试 Server 的配置读写：并发读快照、落盘失败回滚、
+// 新增/删除开发机的领域逻辑（validateAddMachine / addMachine / removeMachine）。
 package agentd
 
 import (
@@ -94,7 +96,6 @@ func TestSwapConfRollbackOnSaveFailure(t *testing.T) {
 	if got := len(s.conf().Targets); got != before {
 		t.Fatalf("落盘失败后内存未回滚：期望 %d 台，实际 %d 台", before, got)
 	}
-	_ = os.Remove("")
 }
 
 // mutate 返回错误时不得落盘、不得换快照。
@@ -149,7 +150,7 @@ func TestAddAndRemoveMachine(t *testing.T) {
 	}
 	got, ok := s.conf().Targets["box"]
 	if !ok || got.Addr != "10.0.0.1:7777" || got.Token != "secret" || got.User != "me" {
-		t.Fatalf("落库内容不对: %+v ok=%v", got, ok)
+		t.Fatalf("落库内容不对: addr=%q user=%q token_set=%v ok=%v", got.Addr, got.User, got.Token != "", ok)
 	}
 	// 落盘后重新读文件，必须还在（否则重启即丢）
 	reloaded, err := config.Load(s.cfgPath)
