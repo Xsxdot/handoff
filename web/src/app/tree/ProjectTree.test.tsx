@@ -41,8 +41,8 @@ function props(over: {
       locations: [{
         machine: '', name: 'handoff', path: '/w', probe_error: '',
         workspaces: [
-          { path: '/w', branch: 'main', head: 'abc', is_main: true, managed: false },
-          { path: '/w/b2-b3', branch: over.branch ?? 'integration/b2-b3', head: 'def', is_main: false, managed: true },
+          { path: '/w', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+          { path: '/w/b2-b3', branch: over.branch ?? 'integration/b2-b3', head: 'def', is_main: false, managed: true, created_at: '' },
         ],
       }],
     }],
@@ -88,7 +88,7 @@ describe('ProjectTree', () => {
           project_id: 'p1', origin_url: '', name: 'alpha',
           locations: [{
             machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: '',
-            workspaces: [{ path: '/srv/a', branch: 'main', head: 'abc', is_main: true, managed: false }],
+            workspaces: [{ path: '/srv/a', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' }],
           }],
         },
       ],

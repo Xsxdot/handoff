@@ -17,10 +17,10 @@ describe('聚合计数', () => {
   it('目录数 = 该项目所有机器下的 workspace 总数', () => {
     const project = { project_id: 'p1', origin_url: '', name: 'alpha', locations: [
       { machine: '', name: 'alpha', path: '/a', probe_error: '', workspaces: [
-        { path: '/a', branch: 'main', head: 'abc', is_main: true, managed: false },
-        { path: '/a-wt', branch: 'feat', head: 'def', is_main: false, managed: true } ] },
+        { path: '/a', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+        { path: '/a-wt', branch: 'feat', head: 'def', is_main: false, managed: true, created_at: '' } ] },
       { machine: 'devbox', name: 'alpha', path: '/srv/a', probe_error: '', workspaces: [
-        { path: '/srv/a', branch: 'main', head: 'abc', is_main: true, managed: false } ] },
+        { path: '/srv/a', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' } ] },
     ] }
     expect(countsForProject([], project).dirs).toBe(3)
     expect(countsForMachine([], project, 'devbox').dirs).toBe(1)

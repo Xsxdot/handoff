@@ -76,7 +76,7 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 func (s *Server) localMachine() proto.Machine {
 	m := proto.Machine{
 		Name: "", Addr: s.conf().Listen, Reachable: true,
-		Executors: []string{}, ProbeMs: 0,
+		Executors: []string{}, ProbeMs: 0, ScratchRoot: s.scratchRoot(),
 	}
 	if s.mgr == nil {
 		// manager 未注入时本机确实答不出运行数据，但它显然“在”——
@@ -138,6 +138,7 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 	// 能力位原样搬运，包括 nil：探到了但对端没这个字段，结论就是「没上报」
 	m.PtySupported = st.PtySupported
 	m.RevealSupported = st.RevealSupported
+	m.ScratchRoot = st.ScratchRoot
 }
 
 // handleMachines 处理 GET /api/machines。

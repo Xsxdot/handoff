@@ -161,7 +161,13 @@ type StatusResp struct {
 	// 空 = 无辅助监听（Listen 为 loopback/通配，或对端是老 agentd）。
 	ListenAux string `json:"listen_aux,omitempty"`
 
-	DataDir         string         `json:"data_dir"`
+	DataDir string `json:"data_dir"`
+	// ScratchRoot 是草稿区的绝对路径（<DataDir>/scratch），控制台浮窗的临时文件
+	// 落在这里。**缺席 = 这台机器不支持临时文件**（老 agentd，或目录建不出来）。
+	//
+	// 与 PtySupported 那种能力位的三态纪律不同：那里 nil 要按「不知道，放行」处理，
+	// 而这里缺的是一个**路径**——没有路径就没法发请求，放行只会换来一次必然 400。
+	ScratchRoot     string         `json:"scratch_root,omitempty"`
 	StartedAt       time.Time      `json:"started_at"`
 	Executors       []string       `json:"executors"`
 	DefaultExecutor string         `json:"default_executor"`

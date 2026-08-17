@@ -25,8 +25,8 @@ const tree: ProjectTreeResp = {
       locations: [{
         machine: '', name: 'handoff', path: '/w', probe_error: '',
         workspaces: [
-          { path: '/w', branch: 'main', head: 'a', is_main: true, managed: false },
-          { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'b', is_main: false, managed: true },
+          { path: '/w', branch: 'main', head: 'a', is_main: true, managed: false, created_at: '' },
+          { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'b', is_main: false, managed: true, created_at: '' },
         ],
       }],
     },
@@ -34,7 +34,7 @@ const tree: ProjectTreeResp = {
       project_id: 'p2', origin_url: '', name: 'nova',
       locations: [{
         machine: 'devbox', name: 'nova', path: '/srv/n', probe_error: '',
-        workspaces: [{ path: '/srv/n', branch: 'main', head: 'c', is_main: true, managed: false }],
+        workspaces: [{ path: '/srv/n', branch: 'main', head: 'c', is_main: true, managed: false, created_at: '' }],
       }],
     },
   ],

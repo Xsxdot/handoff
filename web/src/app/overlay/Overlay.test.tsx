@@ -39,7 +39,7 @@ const tree = {
           name: 'handoff',
           path: '/w',
           probe_error: '',
-          workspaces: [{ path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc', is_main: false, managed: false }],
+          workspaces: [{ path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc', is_main: false, managed: false, created_at: '' }],
         },
       ],
     },

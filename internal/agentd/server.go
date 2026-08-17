@@ -526,6 +526,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.PtySupported = &ptyOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
+	resp.ScratchRoot = s.scratchRoot()
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())

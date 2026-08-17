@@ -130,6 +130,10 @@ type Machine struct {
 	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`
+
+	// ScratchRoot 是这台机器的草稿区路径，探活时从它的 StatusResp 投影而来。
+	// 空串（omitempty 后为缺席）= 这台机器不支持临时文件，前端不渲染入口。
+	ScratchRoot string `json:"scratch_root,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。

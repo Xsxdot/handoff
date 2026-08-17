@@ -122,8 +122,8 @@ const tree: ProjectTreeResp = {
           name: 'handoff',
           path: '/r/handoff',
           workspaces: [
-            { path: '/r/handoff', branch: '主目录', head: 'abc1234', is_main: true, managed: false },
-            { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc1234', is_main: false, managed: true },
+            { path: '/r/handoff', branch: '主目录', head: 'abc1234', is_main: true, managed: false, created_at: '' },
+            { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc1234', is_main: false, managed: true, created_at: '' },
           ],
           probe_error: '',
         },
