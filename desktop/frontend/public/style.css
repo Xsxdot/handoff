@@ -190,6 +190,22 @@ body {
     user-select: text;
 }
 
+/* 一般提示横幅（如检测到旧版已装 handoff）：非阻塞信息，用中性色系与
+   阻塞性错误 .wizard-error 区分开。挂在 #notices 里的 div 上，避开
+   #notices p 的通用规则、让本类自己掌控间距与配色。 */
+.wizard-notice {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
 /* 完成按钮不占满整行 */
 #question form > button[type="submit"] {
     align-self: flex-start;

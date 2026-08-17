@@ -8,11 +8,13 @@ import {Events} from "@wailsio/runtime";
 //   - 依据字段数据（roles / show_when / default_when / advanced）计算显隐与
 //     默认值，**不内嵌任何字段名的分支规则**——规则真相只在 Go 侧 initflow
 //   - 收集答案并在提交时带上每个当前可见字段（含折叠区里没碰过的字段，取默认值）
+//   - 监听 wizard-notice：把一般提示（如检测到旧版已装 handoff）作为非阻塞信息
+//     横幅显示在表单顶部——提示随时可能到达（甚至早于表单），独立于表单内容渲染、
+//     不清空已填内容
 //
 // 边界：
 //   - 不校验答案：合法性校验与写盘都在 Go 侧 Apply，本文件只负责把选/填的值送回去
 //   - 不做持久化：全部状态都在内存，关窗重开即重来
-//   - 不监听 wizard-notice：Go 侧已不再发该事件
 
 // === 类型：与 internal/initflow 的 Field/Cond 一一对应 ===
 // 键名是**对外契约**：Go 侧已加 json tag（value/label 等），改名等于改协议。
@@ -70,6 +72,13 @@ function visible(f: Field, ans: Record<string, string>): boolean {
 
 // === 渲染 ===
 const box = document.getElementById("question")!;
+
+// wizard-notice 横幅容器：独立于表单内容区，因为提示随时可能到达（甚至早于
+// wizard-form），不能被 redraw 重建或清掉。复用 index.html 里现成的 #notices
+// （此前闲置），并挪到表单区上方，让横幅显示在表单顶部；无提示时隐藏不占位。
+const notices = document.getElementById("notices")!;
+box.before(notices);
+notices.hidden = true;
 
 let fields: Field[] = [];
 let answers: Record<string, string> = {};
@@ -175,7 +184,11 @@ function redraw() {
     if (lastError) {
         const err = document.createElement("p");
         err.className = "wizard-error";
+        // 错误原文 + 出路提示：Go 侧校验/保存失败后向导已终结（见
+        // wizard-error 回调注释），按钮保持禁用，唯一出路是关窗重开。
         err.textContent = lastError;
+        err.appendChild(document.createElement("br"));
+        err.appendChild(document.createTextNode("配置未保存，请关闭窗口后重新打开以重试。"));
         form.appendChild(err);
     }
 
@@ -233,8 +246,23 @@ Events.On("wizard-form", (ev: {data: Field[]}) => {
 
 Events.On("wizard-error", (ev: {data: string}) => {
     lastError = ev.data;
-    submitted = false;  // 允许用户修正后重试
-    redraw();           // 重绘不清空已填内容：answers/touched 原样保留
+    // Go 侧 ApplyAnswers / Save 失败后向导流程已终结：无人再读 wizard-submit
+    // 通道，此时恢复按钮只会让下一次「完成」把消息发进没人接收的通道、被静默
+    // 丢弃，页面看似冻结。所以 submitted 保持 true、按钮保持禁用，提示文案已
+    // 写明唯一出路——关窗重开。重绘不清空已填内容：answers/touched 原样保留。
+    redraw();
+});
+
+// wizard-notice 可能在任何时刻到达（wizard-form 之前/期间/之后），是一站式
+// 启动提示（如检测到旧版 handoff），非阻塞信息：不触发重绘、不清空已填内容。
+// 新 notice 覆盖旧的、不累积。
+Events.On("wizard-notice", (ev: {data: string}) => {
+    notices.innerHTML = "";
+    const banner = document.createElement("div");
+    banner.className = "wizard-notice";
+    banner.textContent = ev.data;
+    notices.appendChild(banner);
+    notices.hidden = false;
 });
 
 Events.On("wizard-done", () => {
