@@ -92,6 +92,10 @@ describe('EventChip', () => {
     render(<EventChip event="mystery_event" ts="2026-08-17T10:00:00Z" />)
     expect(screen.getByText(/mystery_event/)).toBeInTheDocument()
   })
+  it.each(['approver_decision', 'permission_reuse', 'progress'])('后台审计噪声不渲染（%s）', (event) => {
+    render(<EventChip event={event} ts="2026-08-17T10:00:00Z" />)
+    expect(screen.queryByText(event)).not.toBeInTheDocument()
+  })
 })
 
 describe('UserInstructionBlock', () => {

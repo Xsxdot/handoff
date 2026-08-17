@@ -9,8 +9,10 @@ import { eventPhrase } from './eventPhrase'
 import { MetaRow } from './meta'
 
 // EventChip 渲染一行事件。event 是帧的事件类型名，ts 是帧时间戳（RFC3339）。
+// eventPhrase 返回 null 的纯噪声事件不渲染；原始事件由调试抽屉保留。
 export function EventChip({ event, ts }: { event: string; ts: string }) {
   const p = eventPhrase(event)
+  if (p === null) return null
   return (
     <MetaRow glyph={p.tone === 'warn' ? '⚠' : '◇'} tone={p.tone}>
       <span className="min-w-0 flex-1 break-words">

@@ -23,3 +23,5 @@
 - 2026-08-17 Task 10 第 1 轮 RED：按计划新增 DebugDrawer 测试；`npx vitest run src/app/task/DebugDrawer.test.tsx` 原始失败为 `Failed to resolve import "./DebugDrawer" ... Does the file exist?`。
 - 2026-08-17 Task 10 第 1 轮完成，commit 范围为本分支最终总装提交（含本 ledger，哈希以 `git log HEAD` 为准）：DebugDrawer 默认展示封顶原始事件，原始正文页签按需挂 RenderPanel；TuiTab 总装 ConversationStream/TuiHeader/ReviewSidePanel/Composer/DebugDrawer，清理六个旧件并迁移 EventChip 测试；DebugDrawer 2 tests PASS，`npm run typecheck` PASS，`npm test` 56 files/551 tests PASS，`npm run lint` 0 errors/10 existing warnings，`go test ./...` PASS；spec/质量双裁决通过。
 - 2026-08-17 Task 11 按计划跳过：Task 11 留给审核者真机执行。
+- 2026-08-17 真机反馈修复第 1 轮 RED：为 `approver_decision`、`permission_reuse`、`progress` 新增 `eventPhrase`/`EventChip` 过滤测试；定向测试原始失败为 4 failures，现有实现仍原样透出噪声。
+- 2026-08-17 真机反馈修复第 1 轮 typecheck 修复：生产实现已转绿后，`npm run typecheck` 原始失败为 `eventPhrase.test.ts` 7 处 `possibly 'null'`，对已知白名单断言补非空收窄；修复后 `npx vitest run src/app/task/` 15 files/118 tests PASS，`npm run typecheck` PASS；spec/质量双裁决通过。commit 范围：`b2fb2493..HEAD`。

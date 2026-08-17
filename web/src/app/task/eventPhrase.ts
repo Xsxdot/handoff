@@ -3,7 +3,8 @@
 // 职责：会话流内联事件行（EventChip）的文案与色调。
 // 边界：
 //   - 输入是帧的 event 类型名（W4a 刻意冗余在帧里），不查 events 表
-//   - 白名单外的类型**原样透出**，不吞——契约会演进，前端比后端旧是常态
+//   - 后台审计噪声返回 null，由会话流过滤；原始事件仍在调试抽屉，不算吞数据
+//   - 过滤白名单外的类型**原样透出**，不吞——契约会演进，前端比后端旧是常态
 //   - 文案沿自原 EventMark 的 EVENT_LABEL（B100 的 failed/turn_failed 区分保留）
 
 // EventPhrase 是一条事件的展示：text 文案 + tone 色调（warn 用琥珀）。
@@ -25,7 +26,11 @@ const PHRASES: Record<string, EventPhrase> = {
   stalled: { text: '看门狗：长时间无产出', tone: 'warn' },
 }
 
-// eventPhrase 返回事件的人话展示；未知类型原样透出（info 色调）。
-export function eventPhrase(event: string): EventPhrase {
+// QUIET_EVENTS 是只对会话流隐藏的后台审计事件；调试抽屉仍从原始 events 列表展示它们。
+const QUIET_EVENTS = new Set(['approver_decision', 'permission_reuse', 'progress'])
+
+// eventPhrase 返回事件的人话展示；后台审计噪声返回 null；未知类型原样透出（info 色调）。
+export function eventPhrase(event: string): EventPhrase | null {
+  if (QUIET_EVENTS.has(event)) return null
   return PHRASES[event] ?? { text: event, tone: 'info' }
 }
