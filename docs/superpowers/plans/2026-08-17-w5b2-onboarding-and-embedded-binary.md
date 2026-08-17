@@ -1077,6 +1077,11 @@ ledger 里记「与 spec §4.4 的有意偏离 + 上述理由」，别让它看�
 
 **不要在 `Ask` 里注册事件回调**——每问注册一次会累积 handler，第 N 问会收到 N 份答案。这是本 task 最容易踩的 bug，实现完请自己回头确认注册只发生一次。
 
+> **原 plan 漏了一件事（交付时由执行者补上，记此存档）：桌面壳也必须自己跑 `toolchain.Detect()`。**
+> `AskAll` 的执行者选项来自传入的 `[]toolchain.Result`；传 `nil` 会让 `ExecutorOptions(nil)`
+> 返回空选项列表，向导里「默认执行者」那一问就没有任何可选项。CLI 侧是在
+> `cmd/init.go` 里先 `toolchain.Detect()` 再传进去的，桌面侧必须做同样的事。
+
 - [ ] **Step 2: 改写 `StateUnconfigured` 分支**
 
 释出二进制那一步：`embedbin.Available()` 为 false 时（开发构建）**不是错误**——记一条 Info 说明本次构建未内嵌，继续走向导；用户机器上的 release 构建才带标签。
