@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
@@ -67,8 +68,18 @@ var agentdCmd = &cobra.Command{
 		slog.SetDefault(logger)
 
 		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
-		// 这两个包级值，晚一步就会有任务在默认策略下开工
-		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio)
+		// 这些包级值，晚一步就会有任务在默认策略下开工
+		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio,
+			cfg.ProcFence.TaskHardLimit)
+		// TaskBudget 告警档依赖 roster 计数（RunWatchdog → procenum），而 Windows 上
+		// procenum 未实现。job 的 ActiveProcessLimit 能接管 TaskHardLimit（硬上限），
+		// 但接管不了「数到 N 就叫醒人」——job 只会在上限处拒绝，中间没有回调。
+		// 静默缺席正是本项目反复在防的东西，所以这里必须留一条明说的 Warn。
+		if runtime.GOOS == "windows" && cfg.ProcFence.TaskBudget > 0 {
+			logger.Warn("本平台不支持进程枚举，每任务进程预算告警档不生效",
+				"task_budget", cfg.ProcFence.TaskBudget,
+				"note", "硬上限档由 Job Object 接管，仍然生效")
+		}
 
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
