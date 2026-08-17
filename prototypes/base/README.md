@@ -8,9 +8,15 @@
 
 | 页面 | 对应功能 | 来源路由 | 确认状态 |
 |------|---------|---------|---------|
-| index.html | 工作台（三栏 + TUI tab 当前形态 + 看板/工单弹层） | / | 未确认 |
-| （fork: tui-redesign/index.html） | TUI tab 对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer + ctx/累计用量页头） | /（TUI tab） | 已确认 |
+| index.html | 工作台（三栏 + TUI tab 对话式形态 + 看板/工单弹层） | / | 已确认 |
 | pages/settings.html | 设置页（开发机/常规/Env） | /settings | 未确认 |
 
-镜像基准：web/src/app/shell/Shell.tsx（三栏）、workbench/TuiTab.tsx（中央 TUI 现状）、
-settings/SettingsPage.tsx。生成日期 2026-08-17。
+TUI tab 的对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer +
+ctx/累计用量页头）经 fork 副本 `tui-redesign/` 走查确认，真实前端落地并真机验收后
+已于 2026-08-17 回流进 index.html；同批回流的还有确认之后新增的形态：连续工具行
+折成「执行了 N 步操作」、工具名中文化、运行中指示、加载更早/回合跳转的边界提示。
+fork 副本不入库，已完成使命。
+
+镜像基准：web/src/app/shell/Shell.tsx（三栏）、workbench/TuiTab.tsx 与
+task/{TuiHeader,ConversationStream,ToolCard,streamGroups,ReviewSidePanel,Composer,
+DebugDrawer}.tsx（中央 TUI）、settings/SettingsPage.tsx。生成日期 2026-08-17。

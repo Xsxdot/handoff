@@ -1,8 +1,11 @@
 <!doctype html>
 <!--
-  工作台（/）—— 镜像真实控制台的三栏 + 中央 TUI tab 当前形态（重做前基准）。
-  中央内容按 TuiTab.tsx 现状还原：任务头行 + 回合时间线（内滚）+ 事件流（内滚）
-  + 审阅取证（waiting_review）+ 底部推进任务表单。看板/工单为 <dialog> 弹层。
+  工作台（/）—— 镜像真实控制台的三栏 + 中央 TUI tab 当前形态。
+  TUI 已完成对话式重构（2026-08-17）：整个 tab 只有一个滚动区，事件人话化内联，
+  原始数据收进「调试」抽屉，waiting_review 时右侧滑出审阅栏，底部对话式 composer。
+  镜像的实现：web/src/app/task/{TuiHeader,ConversationStream,ToolCard,streamGroups,
+  ReviewSidePanel,Composer,DebugDrawer}.tsx 与 workbench/TuiTab.tsx。
+  看板/工单为 <dialog> 弹层，不单独成页。
 -->
 <html lang="zh-CN">
 <head>
@@ -11,34 +14,181 @@
 <title>handoff 控制台 · 工作台</title>
 <link rel="stylesheet" href="shared/styles.css">
 <style>
-  /* TUI tab 当前形态的私有样式：四个堆叠的盒子，各自内滚 */
+  /* ---------- 整体骨架：头 / (流 + 审阅栏) / composer ---------- */
   .tui { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  /* 页头两行：第一行身份 + 动作；第二行遥测（模型/回合/时长/ctx），小字浅色 */
   .tui-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px;
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 14px 7px; border-bottom: 1px solid var(--border);
   }
-  .tui-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 16px; }
-  .panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-  .panel h2 { margin: 0; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
-  .panel .head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-  .scrollbox { height: 384px; overflow-y: auto; border-radius: 6px; background: #f5f5f580; padding: 12px; }
-  .scrollbox.short { height: auto; max-height: 320px; }
-  .turnchips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
-  .turnchips button { border: 1px solid var(--border); background: none; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
-  .turn-sep { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted-foreground); margin-top: 8px; }
+  .tui-head .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .tui-head .title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tui-head .telemetry { font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tui-head .telemetry .sep { opacity: .5; }
+  .tui-main { flex: 1; min-height: 0; display: flex; }
+
+  /* ---------- 会话流：唯一滚动区，限宽居中 ---------- */
+  .stream-wrap { flex: 1; min-width: 0; overflow-y: auto; }
+  .stream { max-width: 760px; margin: 0 auto; padding: 20px 24px 32px; }
+  .stream .load-earlier { display: flex; justify-content: center; margin-bottom: 12px; }
+
+  .turn-sep {
+    display: flex; align-items: center; gap: 10px;
+    margin: 22px 0 14px; font-size: 12px; color: var(--muted-foreground);
+  }
+  .turn-sep:first-child { margin-top: 0; }
   .turn-sep::before, .turn-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
-  .blk { margin: 6px 0; font-size: 13px; line-height: 1.6; }
-  .blk.thinking { border: 1px solid #e9d5ff; background: #faf5ff; border-radius: 6px; padding: 6px 10px; color: #7e22ce; font-size: 12px; cursor: pointer; }
-  .blk.tool { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px; }
-  .blk.event { border: 1px solid #fde68a; background: #fffbeb; border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--amber); }
-  .evlist { display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: 12px; }
-  .evlist li { border-bottom: 1px solid var(--border); padding: 4px 0; list-style: none; }
-  .evlist .ev-top { display: flex; gap: 8px; } .evlist .ev-top time { margin-left: auto; }
-  .rtabs { display: flex; gap: 4px; }
-  .rtabs .rtab { border: none; background: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--muted-foreground); }
-  .rtabs .rtab.active { background: var(--primary); color: var(--primary-foreground); }
-  pre.raw { margin: 0; max-height: 320px; overflow: auto; background: #f5f5f580; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.5; font-family: var(--font-mono); white-space: pre-wrap; word-break: break-all; }
-  .advance { border-top: 1px solid var(--border); padding: 12px; }
+  .turn-sep b { color: var(--foreground); font-weight: 600; }
+
+  /* 审核者指令：对话里「我方」的气泡，右对齐区分方向 */
+  .msg-user {
+    /* width:fit-content + margin-left:auto 才真正靠右：block 盒子 width:auto 时
+       margin-left:auto 会解析成 0，气泡看起来像从左边铺开 */
+    width: fit-content; max-width: 78%;
+    margin: 12px 0 12px auto;
+    background: var(--muted); border-radius: 12px 12px 2px 12px;
+    padding: 8px 12px; font-size: 13px; line-height: 1.6;
+  }
+  .msg-user .who { text-align: right; font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px; }
+
+  /* 模型正文：不装盒子，就是正文 */
+  .msg-model { margin: 10px 0; font-size: 13.5px; line-height: 1.7; }
+  .msg-model p { margin: 0 0 8px; }
+  .msg-model code { font-family: var(--font-mono); font-size: 12px; background: var(--muted); padding: 1px 4px; border-radius: 4px; }
+
+  /* ---- 非正文元素的统一语言：左对齐浅色元数据行 ----
+     思维链 / 工具行 / 生命周期事件全部同一形态（12px、同一左轨、行首小符号），
+     区别只在行首符号与可展开与否。会话里有「表面」的只剩：审核者气泡、
+     模型正文、交付摘要卡——主次一眼可分 */
+  .meta-line { margin: 5px 0; font-size: 12px; color: var(--muted-foreground); }
+  .meta-line > summary, .meta-line > .line {
+    cursor: default; list-style: none;
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 2px 0; line-height: 1.5;
+  }
+  details.meta-line > summary { cursor: pointer; }
+  details.meta-line > summary:hover { color: var(--foreground); }
+  .meta-line .glyph { flex-shrink: 0; width: 14px; text-align: center; }
+  .meta-line .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; margin: 0 3.5px; }
+  .meta-line .dot.fail { background: var(--destructive); }
+  .meta-line .dot.busy { background: var(--amber); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .meta-line .name { font-weight: 500; color: var(--foreground); white-space: nowrap; flex-shrink: 0; }
+  .meta-line .arg { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta-line .chev { margin-left: auto; flex-shrink: 0; font-size: 11px; opacity: 0; }
+  details.meta-line > summary:hover .chev { opacity: 1; }
+  .meta-line .body {
+    margin: 4px 0 4px 7px; padding: 6px 12px; border-left: 2px solid var(--border);
+    font-size: 12.5px; line-height: 1.7; color: var(--muted-foreground);
+  }
+  .meta-line .body.mono { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; }
+  .meta-line.warn, .meta-line.warn .name { color: var(--amber); }
+
+  /* 工具折组：连续 ≥3 条工具行折成一行摘要，点开平铺原行。
+     真机走查发现执行器动辄连发十几条命令，逐行平铺会把正文淹掉 */
+  .tool-group { margin: 5px 0; font-size: 12px; }
+  .tool-group > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; color: var(--muted-foreground);
+  }
+  .tool-group > summary:hover { color: var(--foreground); }
+  .tool-group > summary .caret { width: 14px; text-align: center; flex-shrink: 0; transition: transform .12s; }
+  .tool-group[open] > summary .caret { transform: rotate(90deg); }
+  .tool-group .fail { color: var(--destructive); }
+  .tool-group .members { margin-left: 7px; padding-left: 12px; border-left: 2px solid var(--border); }
+
+  /* 运行中指示：几十秒没有新输出时会补一句「已 N 秒」，避免界面看着像死了 */
+  .running-line { margin: 8px 0; font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 8px; }
+  /* display:flex 会盖掉 UA 的 [hidden]{display:none}，必须自己再声明一次 */
+  .running-line[hidden] { display: none; }
+  .running-line .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 1.2s infinite; }
+
+  /* 交付摘要卡：模型报工的结构化收尾 */
+  .delivery {
+    margin: 12px 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    background: var(--sidebar); font-size: 13px;
+  }
+  .delivery .d-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .delivery dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 12.5px; }
+  .delivery dt { color: var(--muted-foreground); }
+  .delivery dd { margin: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+
+  /* ---------- 审阅栏：右侧滑出 ---------- */
+  .review {
+    width: 44%; min-width: 400px; max-width: 620px;
+    border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0;
+    background: var(--background);
+  }
+  .review.hidden { display: none; }
+  .review .r-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .review .r-head .rtab { border: none; background: none; padding: 5px 12px; border-radius: 6px; font-size: 12.5px; cursor: pointer; color: var(--muted-foreground); }
+  .review .r-head .rtab.active { background: var(--muted); color: var(--foreground); font-weight: 500; }
+  .review .r-head .close { margin-left: auto; border: none; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 14px; padding: 4px; }
+  .review .r-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
+
+  /* diff：按文件分组，行级着色 */
+  .dstat { font-size: 12px; color: var(--muted-foreground); margin-bottom: 8px; }
+  details.dfile { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  details.dfile summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--sidebar); font-family: var(--font-mono); font-size: 12px; }
+  details.dfile summary .plus { color: var(--green); } details.dfile summary .minus { color: var(--destructive); }
+  details.dfile summary .chev { margin-left: auto; color: var(--muted-foreground); font-size: 11px; }
+  .dlines { font-family: var(--font-mono); font-size: 12px; line-height: 1.55; overflow-x: auto; }
+  .dline { padding: 0 10px; white-space: pre; }
+  .dline.hunk { color: var(--muted-foreground); background: var(--sidebar); padding: 2px 10px; }
+  .dline.add { background: #f0fdf4; color: #166534; }
+  .dline.del { background: #fef2f2; color: #991b1b; }
+
+  .r-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .r-out { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 50vh; overflow-y: auto; }
+
+  /* ---------- composer ---------- */
+  .composer { border-top: 1px solid var(--border); padding: 10px 14px 12px; }
+  .composer .inner { max-width: 760px; margin: 0 auto; }
+  .composer .hint { font-size: 12px; color: var(--muted-foreground); margin-bottom: 6px; }
+  .composer .box {
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px 6px;
+    display: flex; flex-direction: column; gap: 6px; background: var(--background);
+  }
+  .composer .box:focus-within { border-color: #a3a3a3; }
+  .composer textarea {
+    border: none; resize: none; outline: none; font-family: var(--font-sans);
+    font-size: 13px; line-height: 1.6; min-height: 40px; background: transparent; color: var(--foreground);
+  }
+  .composer .actions { display: flex; align-items: center; gap: 8px; }
+  .composer .actions .spacer { flex: 1; }
+  .composer .stop { color: var(--destructive); background: none; border: none; font-size: 12px; cursor: pointer; padding: 4px 6px; }
+
+  /* context 占用小表：模型名旁的一眼读数，点开看累计账目 */
+  .ctx-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted-foreground); cursor: pointer; list-style: none;
+  }
+  .ctx-chip .bar { width: 56px; height: 5px; border-radius: 3px; background: var(--muted); overflow: hidden; }
+  .ctx-chip .bar i { display: block; height: 100%; width: 21%; background: var(--green); }
+  .usage-pop {
+    position: absolute; left: 0; top: 30px; z-index: 10; width: 260px;
+    background: var(--background); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.08); font-size: 12px;
+  }
+  .usage-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+  .usage-pop dt { color: var(--muted-foreground); }
+  .usage-pop dd { margin: 0; font-family: var(--font-mono); text-align: right; }
+  .usage-pop .sec { font-weight: 600; margin: 6px 0 4px; font-size: 12px; }
+  .usage-pop .sec:first-child { margin-top: 0; }
+
+  /* 回合下拉：回合数本身就是跳转入口，不再单设按钮 */
+  .turn-pop {
+    position: absolute; left: 0; top: 22px; z-index: 10; min-width: 200px;
+    background: var(--background); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
+  }
+  .turn-pop a { display: block; padding: 5px 10px; font-size: 12px; border-radius: 5px; text-decoration: none; color: var(--foreground); }
+  .turn-pop a:hover { background: var(--muted); }
+  .turn-pop p { margin: 2px 0 0; padding: 4px 10px; font-size: 11px; color: var(--muted-foreground); }
+
+  .hbtn { border: 1px solid var(--border); background: var(--background); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .hbtn:hover { background: var(--muted); }
+  .hbtn.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
 </style>
 </head>
 <body>
@@ -76,108 +226,257 @@
 
     <main class="content">
       <div class="tui">
+        <!-- 薄页头：两行。第一行身份 + 动作；第二行遥测 -->
         <div class="tui-head">
-          <strong>B93 基准评测 opencode-qwen</strong>
-          <span class="mono dim">handoff-7a8334f4</span>
-          <span class="badge amber">Review</span>
-          <span style="margin-left:auto" class="badge">实时</span>
+          <div class="row">
+            <span class="title">B93 基准评测 opencode-qwen</span>
+            <span class="badge amber">待审阅</span>
+            <span style="margin-left:auto"></span>
+            <button class="hbtn on" id="reviewToggle">审阅栏</button>
+            <button class="hbtn" id="debugBtn">调试</button>
+          </div>
+          <div class="row telemetry">
+            <span>opencode · qwen3-coder</span>
+            <span class="sep">·</span>
+            <details style="position:relative">
+              <summary style="list-style:none;cursor:pointer" title="跳转回合">回合 2 ▾</summary>
+              <div class="turn-pop">
+                <a href="#turn-1" onclick="this.closest('details').open=false">回合 1 · 派发 11:16</a>
+                <a href="#turn-2" onclick="this.closest('details').open=false">回合 2 · 续发指令 14:20</a>
+                <!-- 锚点只覆盖已加载范围，必须写出来——不假装是全量目录；
+                     跳更早的回合时会一边回翻加载一边跳 -->
+                <p>仅列出已加载回合；更早的回合会边跳边加载</p>
+              </div>
+            </details>
+            <span class="sep">·</span>
+            <span>已运行 3 小时 14 分</span>
+            <span class="sep">·</span>
+            <!-- context 占用：executor 报了 context_window 才显示百分比条；
+                 只报绝对值时退化成 "ctx 41.2k"。点开是两口径的完整账目 -->
+            <details style="position:relative">
+              <summary class="ctx-chip">
+                <span class="bar"><i></i></span>
+                <span>ctx 41.2k / 200k</span>
+              </summary>
+              <div class="usage-pop">
+                <div class="sec">当前占用</div>
+                <dl><dt>context</dt><dd>41,236 / 200,000（21%）</dd></dl>
+                <div class="sec">累计消耗</div>
+                <dl>
+                  <dt>输入</dt><dd>182.4k</dd>
+                  <dt>缓存命中</dt><dd>1.21M</dd>
+                  <dt>输出</dt><dd>96.8k</dd>
+                  <dt>合计</dt><dd>1.49M</dd>
+                  <dt>花费</dt><dd>$0.38 <span class="dim" style="font-family:var(--font-sans)">（估算）</span></dd>
+                </dl>
+              </div>
+            </details>
+          </div>
         </div>
 
-        <div class="tui-body">
-          <!-- 回合时间线：现状 = 固定高内滚盒子 -->
-          <section class="panel">
-            <div class="head-row">
-              <h2>☰ 回合时间线</h2>
-              <div style="display:flex;gap:8px;align-items:center">
-                <span class="badge solid">跟随中</span>
-                <button class="btn sm">原始正文</button>
+        <div class="tui-main">
+          <!-- 会话流：唯一的滚动区 -->
+          <div class="stream-wrap">
+            <div class="stream">
+              <!-- 滚到近顶会自动回翻；按钮是显式入口，到文件头后两者一起消失 -->
+              <div class="load-earlier"><button class="btn sm">↑ 加载更早</button></div>
+
+              <div class="turn-sep" id="turn-1"><span><b>回合 1</b> · 派发 · 11:16</span></div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>已派发给 opencode（默认模型），工作树 7a8334f4</div></div>
+
+              <div class="msg-model"><p>收到计划。先核对计划事实表里的关键坐标，再建 ledger 和 todo，然后派发 Task 1。</p></div>
+
+              <details class="meta-line">
+                <summary><span class="glyph">▸</span>思维链 · 207 字<span class="chev">展开</span></summary>
+                <div class="body">计划要求六个 task 顺序执行，每个 task 结束做双裁决。先确认分支头与 fact table 的 commit 一致，避免在旧基线上开工……</div>
+              </details>
+
+              <details class="meta-line">
+                <summary><span class="dot"></span><span class="name">读文件</span><span class="arg">docs/plans/b93-plan.md</span><span class="chev">展开</span></summary>
+                <div class="body mono"># B93 实现计划
+Task 1: 终态即清扫 …
+Task 2: watchdog 按任务两档点名 …（其余 180 行）</div>
+              </details>
+
+              <!-- 连续工具行折成一组；组内有失败的在摘要行点出来 -->
+              <details class="tool-group">
+                <summary><span class="caret">▸</span>执行了 4 步操作<span class="fail">（1 失败）</span></summary>
+                <div class="members">
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">npm ci</span><span class="chev">展开</span></summary>
+                    <div class="body mono">added 412 packages in 18s</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot fail"></span><span class="name">跑命令</span><span class="arg">npm test</span><span class="chev">展开</span></summary>
+                    <div class="body mono">Error: EPERM: operation not permitted, mkdir '/var/folders/…/T/…/client'</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">改文件</span><span class="arg">internal/agentd/task.go</span><span class="chev">展开</span></summary>
+                    <div class="body mono">@@ done 幂等：completed 任务重复 done 返回 200</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">go test ./... —— 通过，29 包</span><span class="chev">展开</span></summary>
+                    <div class="body mono">ok  github.com/xsx/handoff/internal/agentd  1.24s
+…（29 包全部 ok，0 FAIL）</div>
+                  </details>
+                </div>
+              </details>
+
+              <div class="meta-line warn"><div class="line"><span class="glyph">⚠</span><span class="name">权限请求</span><span class="arg">external_directory /tmp/*</span>—— 已在工单裁决（允许）</div></div>
+
+              <div class="msg-model"><p>Task 1 实现完成并通过双裁决，commit <code>a41f8c2</code>。继续 Task 2。</p></div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>回合 1 结束，进入待审 · 11:31</div></div>
+
+              <div class="turn-sep" id="turn-2"><span><b>回合 2</b> · 续发指令 · 14:20</span></div>
+
+              <div class="msg-user">
+                <div class="who">审核者 · 14:20</div>
+                ledger 里补上变异测试的记录，然后做最后一次全量回归取证再收尾。
               </div>
-            </div>
-            <div class="turnchips">
-              <span class="dim">回合</span>
-              <button>1</button>
-              <span style="margin-left:auto" class="dim">仅覆盖已加载范围，更早的需先加载</span>
-            </div>
-            <div class="scrollbox">
-              <div class="turn-sep"><span><b>回合 1</b> · 派发</span></div>
-              <div class="blk event">⏱ progress · 2026/8/17 14:28:46 —— PASS。收尾前做最后一次全量回归取证。</div>
-              <div class="blk thinking">▸ 思维链 · 207 字</div>
-              <div class="blk thinking">▸ 思维链 · 446 字</div>
-              <div class="blk">B93 全部完成。7 个 commit（6 task + 终审修复波），全量回归 29 包 0 FAIL，工作区干净，未 push。ledger 含变异测试记录与真机复验交接说明（spec §5.8 由审核者执行）。</div>
-              <div class="blk tool">{"branch":"bench/b93-opencode-qwen","commit":"4e3de5ef2500b2aa10d8e4e9bf5fad3ba69c8894","summary":"B93 三缺口全落地…"}</div>
-              <div class="blk event">◉ 一轮结束，进入待审 · 2026/8/17 14:31:40</div>
-            </div>
-          </section>
 
-          <!-- 事件流：现状 = 原始 #seq/type/JSON 列表 -->
-          <section class="panel">
-            <div class="head-row">
-              <h2>📡 事件流</h2>
-              <div style="display:flex;gap:8px;align-items:center"><span class="dim" style="font-size:12px">58 条</span><span class="badge solid">open</span></div>
-            </div>
-            <ul class="evlist scrollbox short" style="margin:0;padding:8px">
-              <li><div class="ev-top"><span class="dim">#23</span><span>progress</span><time class="dim">2026/8/17 11:16:46</time></div><p style="margin:2px 0 0">会话就绪</p></li>
-              <li><div class="ev-top"><span class="dim">#24</span><span>progress</span><time class="dim">2026/8/17 11:17:34</time></div><p style="margin:2px 0 0">Plan</p></li>
-              <li><div class="ev-top"><span class="dim">#25</span><span>progress</span><time class="dim">2026/8/17 11:27:14</time></div><p style="margin:2px 0 0">anch head. Let me quickly verify the key coordinates from the plan's fact table before dispatching…</p></li>
-              <li><div class="ev-top"><span class="dim">#26</span><span>permission_request</span><time class="dim">2026/8/17 11:27:28</time></div><p style="margin:2px 0 0">external_directory: /tmp/*</p></li>
-              <li><div class="ev-top"><span class="dim">#27</span><span>permission_request</span><time class="dim">2026/8/17 11:33:07</time></div><p style="margin:2px 0 0">[子 agent: Task 1 审查双裁决 (@general subagent)] external_directory: rm -rf /var/folders/hx/…（已截断）</p></li>
-              <li><div class="ev-top"><span class="dim">#28</span><span>permission_reuse</span><time class="dim">2026/8/17 11:34:13</time></div><p style="margin:2px 0 0">[子 agent: Task 1 审查双裁决 (@general subagent)] bash: rm -rf /var/folders/hx/…（已截断）</p></li>
-            </ul>
-          </section>
+              <details class="meta-line">
+                <summary><span class="glyph">▸</span>思维链 · 446 字<span class="chev">展开</span></summary>
+                <div class="body">审核者要求补变异测试记录。ledger 目前只有六个 task 的完成行，需要追加变异测试三条各自的自红验证……收尾前的全量回归要覆盖全部 29 包……</div>
+              </details>
 
-          <!-- 审阅取证：现状 = 三个子 tab + 裸 pre -->
-          <section class="panel">
-            <h2>⚖ 审阅取证</h2>
-            <div class="rtabs">
-              <button class="rtab active" data-tab="diff">改动</button>
+              <details class="tool-group">
+                <summary><span class="caret">▸</span>执行了 3 步操作</summary>
+                <div class="members">
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">文件变更</span><span class="arg">update docs/ledger/b93.md</span><span class="chev">展开</span></summary>
+                    <div class="body mono">+变异测试：三条各自红，恢复后全绿</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">go test ./... —— 通过，29 包，0 FAIL</span><span class="chev">展开</span></summary>
+                    <div class="body mono">ok  github.com/xsx/handoff/internal/agentd  1.19s
+…（全量回归，29 包 0 FAIL）</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">git commit -m "chore: 更新执行 ledger"</span><span class="chev">展开</span></summary>
+                    <div class="body mono">[bench/b93-opencode-qwen 4e3de5e] chore: 更新执行 ledger</div>
+                  </details>
+                </div>
+              </details>
+
+              <div class="msg-model">
+                <p>B93 全部完成。7 个 commit（6 task + 终审修复波），全量回归 29 包 0 FAIL，工作区干净，未 push。ledger 含变异测试记录与真机复验交接说明（spec §5.8 由审核者执行）。</p>
+              </div>
+
+              <!-- 模型报工的结构化 trailer，解析成交付摘要卡而不是裸 JSON -->
+              <div class="delivery">
+                <div class="d-title">✅ 交付摘要</div>
+                <dl>
+                  <dt>分支</dt><dd>bench/b93-opencode-qwen</dd>
+                  <dt>commit</dt><dd>4e3de5e</dd>
+                  <dt>摘要</dt><dd style="font-family:var(--font-sans);font-size:12.5px">B93 三缺口全落地：终态即清扫、watchdog 按任务两档点名、done 幂等；全回归绿，变异三条各自红</dd>
+                </dl>
+              </div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>回合 2 结束，进入待审 · 14:31 —— 右侧审阅栏取证，或在下方下指令</div></div>
+
+              <!-- running 态才出现；十几秒没有新输出时补一句时长，避免界面看着像死了 -->
+              <div class="running-line" hidden><span class="dot"></span>模型工作中…<span>（已 24s 没有新输出）</span></div>
+            </div>
+          </div>
+
+          <!-- 审阅栏：waiting_review 滑出 -->
+          <aside class="review" id="reviewPanel">
+            <div class="r-head">
+              <button class="rtab active" data-tab="diff">改动 <span class="dim">3 文件</span></button>
               <button class="rtab" data-tab="run">跑命令</button>
               <button class="rtab" data-tab="file">读文件</button>
+              <button class="close" id="reviewClose" title="收起">✕</button>
             </div>
-            <div class="rpanel" data-panel="diff">
-              <div style="display:flex;gap:8px;margin-bottom:8px">
-                <input class="input mono" placeholder="基准分支（默认按仓库默认分支推导）">
-                <button class="btn sm">加载</button>
+            <div class="r-body">
+              <div class="rp" data-panel="diff">
+                <!-- 基准分支：从仓库分支列表里选，不手填；选中即重算。
+                     老 agentd 没有 /branches 时退化成只有「自动推导」一项 -->
+                <div class="r-row" style="align-items:center">
+                  <label class="dim" style="font-size:12px;flex-shrink:0">基准</label>
+                  <select class="input mono" style="flex:1">
+                    <option value="">自动推导（main）</option>
+                    <option>main</option>
+                    <option>w4-main</option>
+                    <option>release/v0.9</option>
+                  </select>
+                </div>
+                <div class="dstat">相对 <span class="mono">main</span> · 3 个文件 · <span style="color:var(--green)">+21</span> <span style="color:var(--destructive)">−4</span></div>
+
+                <details class="dfile" open>
+                  <summary><span>README.md</span><span class="plus">+2</span><span class="minus">−1</span><span class="chev">收起</span></summary>
+                  <div class="dlines">
+<div class="dline hunk">@@ -247,7 +247,8 @@ Task state machine</div>
+<div class="dline"> retry with `continue`. Only `stop`, or an executor failing to start, lands the task in</div>
+<div class="dline"> `failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require</div>
+<div class="dline del">-`waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.</div>
+<div class="dline add">+`waiting_review`** (except `done` on an already-`completed` task, which is idempotent</div>
+<div class="dline add">+and returns 200); any other state returns 409. When in doubt, `handoff show` first.</div>
+                  </div>
+                </details>
+
+                <details class="dfile">
+                  <summary><span>internal/agentd/task.go</span><span class="plus">+15</span><span class="minus">−3</span><span class="chev">展开</span></summary>
+                  <div class="dlines">
+<div class="dline hunk">@@ -118,9 +118,21 @@ func (s *Server) handleDone(…)</div>
+<div class="dline add">+// done 幂等：completed 任务重复 done 返回 200，不再 409</div>
+<div class="dline add">+if task.State == proto.StateCompleted {</div>
+<div class="dline add">+    writeJSON(w, http.StatusOK, doneResp{AlreadyDone: true})</div>
+<div class="dline add">+    return</div>
+<div class="dline add">+}</div>
+                  </div>
+                </details>
+
+                <details class="dfile">
+                  <summary><span>docs/ledger/b93.md</span><span class="plus">+4</span><span class="minus">−0</span><span class="chev">展开</span></summary>
+                  <div class="dlines">
+<div class="dline add">+Task 6 完成：done 幂等 + 全量回归 29 包 0 FAIL（commit 4e3de5e）</div>
+<div class="dline add">+变异测试：三条各自红，恢复后全绿</div>
+                  </div>
+                </details>
               </div>
-              <pre class="raw">diff --git a/README.md b/README.md
-index 14579132d..99c4d5010 100644
---- a/README.md
-+++ b/README.md
-@@ -247,7 +247,8 @@ Task state machine: `pending` → `running` → (`waiting_answer` ⇄ `running`)
- `waiting_review`** — the executor session is still alive with full context, so you can
- retry with `continue`. Only `stop`, or an executor failing to start, lands the task in
- `failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require
--`waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.
-+`waiting_review`** (except `done` on an already-`completed` task, which is idempotent
-+and returns 200); any other state returns 409. When in doubt, `handoff show` first.</pre>
-            </div>
-            <div class="rpanel" data-panel="run" hidden>
-              <div style="display:flex;gap:8px;margin-bottom:8px">
-                <input class="input mono" placeholder="例如：go test ./...">
-                <button class="btn sm primary">运行</button>
+
+              <div class="rp" data-panel="run" hidden>
+                <div class="r-row">
+                  <input class="input mono" id="runInput" placeholder="在任务工作树跑一条命令，如 go test ./...">
+                  <button class="btn sm primary" id="runBtn">运行</button>
+                </div>
+                <div id="runResult" hidden>
+                  <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="badge solid">退出码 0</span><span class="dim" style="font-size:12px">2.4s</span></div>
+                  <div class="r-out">ok  github.com/xsx/handoff/internal/agentd  1.19s
+ok  github.com/xsx/handoff/internal/proto   0.31s
+…（mock 输出）</div>
+                </div>
               </div>
-              <p class="dim" style="font-size:12px;margin:0">在任务工作树执行（非零退出也是 200，退出码在响应里；10 分钟超时退出码 124）。</p>
-            </div>
-            <div class="rpanel" data-panel="file" hidden>
-              <div style="display:flex;gap:8px">
-                <input class="input mono" placeholder="相对仓库根路径，如 internal/proto/proto.go">
-                <button class="btn sm primary">读取</button>
+
+              <div class="rp" data-panel="file" hidden>
+                <div class="r-row">
+                  <input class="input mono" id="fileInput" placeholder="相对仓库根路径，如 internal/agentd/task.go">
+                  <button class="btn sm primary" id="fileBtn">读取</button>
+                </div>
+                <div class="r-out" id="fileResult" hidden>// task.go —— 任务状态机与推进接口（mock 内容）
+func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div>
               </div>
             </div>
-          </section>
+          </aside>
         </div>
 
-        <!-- 推进任务：现状 = 底部表单盒子 -->
-        <div class="advance">
-          <section class="panel">
-            <h2>▷ 推进任务</h2>
-            <label class="dim" style="font-size:12px">修改指令（回给模型，让它继续改）</label>
-            <textarea class="input mono" rows="2" placeholder="例如：把审批理由改为 deny: xxx，再跑一遍测试…"></textarea>
-            <button class="btn primary" disabled style="justify-content:center">↩ 续发修改</button>
-            <div style="display:flex;gap:8px">
-              <button class="btn">✓ 完成任务</button>
-              <button class="btn danger">□ 停止任务</button>
+        <!-- composer：对话式收口 -->
+        <div class="composer">
+          <div class="inner">
+            <div class="hint">这一轮已干完，等你裁决——下修改指令让它继续，或完成归档。</div>
+            <div class="box">
+              <textarea id="composerText" rows="2" placeholder="下修改指令，回给模型让它继续改…（Enter 发送，Shift+Enter 换行）"></textarea>
+              <div class="actions">
+                <button class="stop" id="stopBtn">停止任务</button>
+                <span class="spacer"></span>
+                <button class="btn sm" id="doneBtn">✓ 完成任务</button>
+                <button class="btn sm primary" id="sendBtn">↑ 续发修改</button>
+              </div>
             </div>
-          </section>
+            <p class="dim" id="sendFeedback" style="font-size:12px;margin:6px 0 0" hidden>已续发指令（mock），任务回到 running。</p>
+          </div>
         </div>
       </div>
     </main>
@@ -193,6 +492,44 @@ index 14579132d..99c4d5010 100644
     <div class="ft-item">main.go</div>
   </aside>
 </div>
+
+<!-- 调试抽屉：原始事件 + 原始正文，日常不可见，排查 adapter 时用 -->
+<dialog id="debugDialog">
+  <div style="padding:16px;width:760px;max-width:92vw">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <h3 style="margin:0;font-size:15px">调试数据</h3>
+      <span class="dim" style="font-size:12px">帧渲染出问题时，用原始数据区分「渲染错了」还是「采集错了」</span>
+      <button class="btn sm" id="debugClose" style="margin-left:auto">关闭</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button class="rtab active" data-dtab="events" style="border:1px solid var(--border);background:var(--muted);border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer">原始事件流（58 条）</button>
+      <button class="rtab" data-dtab="render" style="border:1px solid var(--border);background:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer">原始正文 render.log</button>
+    </div>
+    <div class="dp" data-dpanel="events">
+      <div class="r-out" style="max-height:60vh">#23 progress        2026/8/17 11:16:46  会话就绪
+#24 progress        2026/8/17 11:17:34  Plan
+#26 permission_request  11:27:28  external_directory: /tmp/*
+#28 permission_reuse    11:34:13  [子 agent: Task 1 审查双裁决] bash: rm -rf /var/…（已截断）</div>
+    </div>
+    <div class="dp" data-dpanel="render" hidden>
+      <div class="r-out" style="max-height:60vh">[2026-08-17T11:16:46] session ready
+[2026-08-17T11:17:34] # Plan
+…（render.log 原文，mock）</div>
+    </div>
+  </div>
+</dialog>
+
+<!-- 完成/停止确认（不可逆操作仍要确认，但入口收敛在 composer） -->
+<dialog id="confirmDialog">
+  <div style="padding:20px;width:420px;max-width:90vw">
+    <h3 style="margin:0 0 8px;font-size:15px" id="confirmTitle">完成任务？</h3>
+    <p class="dim" style="font-size:13px;margin:0 0 14px" id="confirmDesc">任务将归档为 completed 并回收执行器。此操作不可撤销。</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn sm" id="confirmCancel">取消</button>
+      <button class="btn sm primary" id="confirmOk">确认</button>
+    </div>
+  </div>
+</dialog>
 
 <!-- 看板弹层（形态占位） -->
 <dialog id="boardDialog">
@@ -228,15 +565,74 @@ index 14579132d..99c4d5010 100644
   document.getElementById('openTickets').addEventListener('click', () => tickets.showModal());
   document.getElementById('closeTickets').addEventListener('click', () => tickets.close());
 
-  // 审阅取证子 tab 切换
-  document.querySelectorAll('.rtab').forEach(tab => {
+  // 审阅栏开合：waiting_review 才有入口，人手动收起后不再抢开
+  const reviewPanel = document.getElementById('reviewPanel');
+  const reviewToggle = document.getElementById('reviewToggle');
+  function setReview(open) {
+    reviewPanel.classList.toggle('hidden', !open);
+    reviewToggle.classList.toggle('on', open);
+  }
+  reviewToggle.addEventListener('click', () => setReview(reviewPanel.classList.contains('hidden')));
+  document.getElementById('reviewClose').addEventListener('click', () => setReview(false));
+
+  // 审阅栏子 tab
+  document.querySelectorAll('.r-head .rtab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.rtab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.rpanel').forEach(p => p.hidden = true);
+      document.querySelectorAll('.r-head .rtab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.rp').forEach(p => p.hidden = true);
       tab.classList.add('active');
-      document.querySelector(`.rpanel[data-panel="${tab.dataset.tab}"]`).hidden = false;
+      document.querySelector(`.rp[data-panel="${tab.dataset.tab}"]`).hidden = false;
     });
   });
+
+  // 跑命令 / 读文件（mock 反馈）
+  document.getElementById('runBtn').addEventListener('click', () => {
+    if (document.getElementById('runInput').value.trim() === '') return;
+    document.getElementById('runResult').hidden = false;
+  });
+  document.getElementById('fileBtn').addEventListener('click', () => {
+    if (document.getElementById('fileInput').value.trim() === '') return;
+    document.getElementById('fileResult').hidden = false;
+  });
+
+  // 调试抽屉
+  const debugDialog = document.getElementById('debugDialog');
+  document.getElementById('debugBtn').addEventListener('click', () => debugDialog.showModal());
+  document.getElementById('debugClose').addEventListener('click', () => debugDialog.close());
+  document.querySelectorAll('[data-dtab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('[data-dtab]').forEach(t => t.style.background = 'none');
+      document.querySelectorAll('.dp').forEach(p => p.hidden = true);
+      tab.style.background = 'var(--muted)';
+      document.querySelector(`.dp[data-dpanel="${tab.dataset.dtab}"]`).hidden = false;
+    });
+  });
+
+  // composer：发送 / 完成 / 停止。完成与停止不可逆，仍走确认弹层
+  const confirmDialog = document.getElementById('confirmDialog');
+  const confirmTitle = document.getElementById('confirmTitle');
+  const confirmDesc = document.getElementById('confirmDesc');
+  document.getElementById('sendBtn').addEventListener('click', () => {
+    const t = document.getElementById('composerText');
+    if (t.value.trim() === '') return;
+    document.getElementById('sendFeedback').hidden = false;   // mock：不真发请求
+    t.value = '';
+  });
+  document.getElementById('composerText').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('sendBtn').click(); }
+  });
+  document.getElementById('doneBtn').addEventListener('click', () => {
+    confirmTitle.textContent = '完成任务？';
+    confirmDesc.textContent = '任务将归档为 completed 并回收执行器。worktree 由 agentd 管理时会被删除。此操作不可撤销。';
+    confirmDialog.showModal();
+  });
+  document.getElementById('stopBtn').addEventListener('click', () => {
+    confirmTitle.textContent = '停止任务？';
+    confirmDesc.textContent = '将停止执行器、作废全部挂起工单，并把任务置为 failed。此操作不可撤销。';
+    confirmDialog.showModal();
+  });
+  document.getElementById('confirmCancel').addEventListener('click', () => confirmDialog.close());
+  document.getElementById('confirmOk').addEventListener('click', () => confirmDialog.close());
 </script>
 </body>
 </html>
