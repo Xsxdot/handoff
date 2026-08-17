@@ -189,7 +189,12 @@ func main() {
 		closeRuntimeReady.Do(func() { close(runtimeReadyCh) })
 	})
 
-	go openConsole()
+	// 启动序列必须等应用就绪后再跑：showError 经 app.Dialog → InvokeSync →
+	// a.impl.isOnMainThread()，而 a.impl 由 app.Run() 初始化——ApplicationStarted
+	// 之前走到 showError（如握手 401）会 nil deref panic（实测复现）。
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		go openConsole()
+	})
 
 	if err := app.Run(); err != nil {
 		logger.Error("薄壳运行失败", "cause", err)
@@ -335,18 +340,13 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 			return
 		}
 
-		// 承重（回滚 firstRun 写盘）：config.Load 在文件不存在时会自动生成默认
-		// 配置写盘（含随机 token、loopback 监听）。取消向导时若不删掉这份文件，
-		// 下次启动 Resolve 会认为已配置，向导将永远不再出现。因此先记下文件
-		// 原本是否存在，出错时据此回滚。
+		// 首次引导不调 config.Load：Load 在文件不存在时会 firstRun 写盘
+		//（生成 token + 默认配置落盘），向导中途崩溃/被杀/取消都会留下这份
+		// 文件，下次启动 Resolve 判「已配置」，用户回不到向导（真机 SIGKILL
+		// 复现过，回滚法依赖进程还活着封不死）。Defaults 是无副作用入口，
+		// 问答期间磁盘上不存在任何会让 Resolve 误判的文件，成功后才 Save。
 		path := config.DefaultPath()
-		_, statErr := os.Stat(path)
-		existed := statErr == nil
-		cfg, err := config.Load(path)
-		if err != nil {
-			logger.Error("加载配置失败，不进入问答", "path", path, "cause", err)
-			return
-		}
+		cfg := config.Defaults()
 		// 桌面壳也要探测工具链：AskAll 里 ExecutorOptions(nil) 会是空选项列表，
 		// 用户选执行者时前端渲染空 select，EventPrompter 会拒绝一切非空答案——
 		// 这是必要适配，不是可选项。
@@ -357,19 +357,14 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 		isExec, role, err := initflow.AskAll(w, p, cfg, results, false)
 		_ = isExec
 		if err != nil {
-			// 承重：AskAll 出错绝不写盘。取消或问答失败都等于放弃本次配置
+			// 承重：AskAll 出错绝不写盘。取消或问答失败都等于放弃本次配置。
+			// Defaults 无副作用（从未落盘），此处无需回滚；半截答案随进程丢弃，
+			// 下次启动 Resolve 仍判未配置，重开即可重新进入向导。
 			if errors.Is(err, initflow.ErrCanceled) {
 				logger.Info("首次配置已取消，不写盘", "path", path)
 				tr.Notice("已取消，未保存任何配置。关闭窗口重新打开即可重新配置。")
 			} else {
 				logger.Error("首次配置问答失败，不写盘", "path", path, "cause", err)
-			}
-			// 回滚 config.Load 的 firstRun 写盘：文件原本不存在，这次 Load 却已把
-			// 默认配置写下。不删则下次启动被判为已配置，向导永不再现。
-			if !existed {
-				if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-					logger.Warn("回滚首次运行写盘的默认配置失败", "path", path, "cause", rerr)
-				}
 			}
 			return
 		}
