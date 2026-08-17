@@ -85,6 +85,12 @@ let answers: Record<string, string> = {};
 let touched = new Set<string>();  // 用户手动改过的字段：重绘后不再按 defaultOf 覆盖
 let lastError = "";
 let submitted = false;
+// advancedOpen 记住「高级设置」的展开状态。
+//
+// redraw 每次都整体重建 DOM，而 <details> 的展开状态是 DOM 上的，不带着它
+// 走就会丢：在折叠区里改任何一个 select（比如选审批链执行者）都会触发重绘，
+// 面板当场收起来、还得再点开一次。真机走查实测撞到过。
+let advancedOpen = false;
 
 // 渲染单个字段：标题、说明（notice 在控件上方）、控件。
 function fieldNode(f: Field): HTMLElement {
@@ -172,6 +178,8 @@ function redraw() {
     if (hasAdvanced) {
         const det = document.createElement("details");
         det.className = "advanced";
+        det.open = advancedOpen;
+        det.addEventListener("toggle", () => { advancedOpen = det.open; });
         const sum = document.createElement("summary");
         sum.textContent = "高级设置";
         det.appendChild(sum);
