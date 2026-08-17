@@ -17,10 +17,15 @@
 
 - 2026-08-17 Task 6（向导界面）完成，commit 631faf2c。审查双 APPROVED。wails3 不在 PATH，用 `~/go/bin/wails3`（v3.0.0-beta.8）+ `PATH="$HOME/go/bin:$PATH"` 前缀（generate:icons 子任务裸调 wails3）。事件 payload 形状 `{data:T}` 成立（读 node_modules events.d.ts 确认 WailsEvent.data 为真实字段）；Go 侧 Question{Kind,Title,Default,Options} 与前端 interface 字段名完全一致。style.css 精简重写（保留设计令牌、删模板 DOM 样式、新增向导卡片样式）；Inter-Medium.ttf 无引用已删。审查发现 tsconfig 与 TS 4.9 不兼容是模板遗留（W5b-1 的 cfa527c3），Task 6 未触碰，构建管线只跑 vite 不查类型；审查用兼容配置单独跑 tsc 零错误。Minor 记账 4 条：M34 wizard.ts:49-52 input 的 Enter keydown 回调不检查 btn.disabled，首次 emit 后到下一问 re-render 的窗口内再按 Enter 会二次 Emit 可能错位（窗口极小，建议补 `if (btn.disabled) return;`）；M35 wizard-done 文案「配置完成，正在启动 agentd…」后半句是对 Go 侧行为的推断，若启动时序不同文案失真（建议终审确认或用纯「配置完成」）；M36 confirm 恒返回 "true"/"false" 永不发空串，空答落默认只在 input 上走到（预选即默认，与 CLI 语义等价）；M37 Events.Emit 未 await（fire-and-forget，一问一答场景够用）。
 
+- 2026-08-17 Task 7（装配进启动序列）完成，commit 7fa8d7d6。协调者独立复核通过（不采信自述）：四个事件名逐字一致、wizard-answer 的 On 注册计数为 1、未调 MaybeInstallService、ExecutorOptions(nil) 会被空列表问题由桌面壳自行 toolchain.Detect() 解决（此点 plan 漏列，实现者补上）。实现者适配清单：①必须 toolchain.Detect() 并传入 AskAll（否则执行机分支渲染空 select、EventPrompter 拒绝一切非空答案）；②wizard-answer 的 payload 类型断言 `ev.Data.(string)`，非串跳过不 panic；③WindowRuntimeReady 事件（events.Common.WindowRuntimeReady）先等前端运行时挂载再发第一问——webview 加载完成前的 Go 事件会被 `window._wails` 未就绪守卫静默丢弃，早发等于吞掉第一题；④win.OnWindowEvent(WindowClosing) 调 wizCancel 实现关窗即取消；⑤wizMu/wizActive 防重入（托盘重复打开不另起 AskAll）；⑥isExec 不用（GUI 托管由 EnsureRunning 统一走 service 路径）。真机走查（macOS 临时 HOME）：实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通；**不再重跑**——走完向导会调 EnsureRunning，而 launchd label dev.gosuper.handoff.agentd 是固定值（backlog B71），在此执行机上装会和派发本任务的 agentd 抢同一 label 与 DataDir；上次未出事只因 EnsureRunning 遇到「已在运行」直接返回（W5b-1 刻意设计）。现场已核：临时 HOME 下无 Library/LaunchAgents/，真 plist 未改（mtime 8/13），agentd 连续运行未重启，无损害。剩余走查（逐题前进的人工观察）由协调者在自己机器补。**与 spec §4.4 的有意偏离**：spec 把「是否装 service」列入向导要覆盖的决策，GUI 没问。理由：CLI 里答「否」用户还能自己跑 agentd；薄壳答「否」就没有 agentd 可连、应用当场没用——一个「否」会让程序不能工作的问题不该问。main.go 注释已说明，这里记账。
+
 ## Minor 总账
 
-（终审统一 triage）
+- **已修**：M20（见下）、M22（见下）。
+- **升级处理中**：M20 InstallService==nil 兜底只打印不记日志 → 补 slog.Warn 带 cfgPath（薄壳走不到此分支，正是「理论上不该被走到」的路，将来真被调用即设计被违反的信号，现场只剩日志能说明）；M22 Select 非法答案无用例 → 补一条喂非法值断言返回错误的用例（plan 定 Select 拒非法值为承重，承重行为没测试正是变异能悄悄改掉的）。
+- **已认可不动**：M19、M21、M23（协调者复核认可定级）。
+- 其余留终审统一 triage（M24-M37）。
 
 ## 真机走查
 
-（Task 7 完成后逐条记录）
+- 2026-08-17 macOS 临时 HOME：实现者成功跑通一次，临时 HOME 下写出有效 config.yaml、向导端到端走通。按协调者指示**不再重跑**（launchd label 固定值 B71，会在派发本任务的机器上与运行中 agentd 抢 label/DataDir；上次未出事只因 EnsureRunning 遇「已在运行」直接返回）。逐题前进的人工观察由协调者在自己机器补。
