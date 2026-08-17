@@ -8,7 +8,6 @@ import type { ToolBlock } from './frames'
 import { TextBlock } from './TextBlock'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
-import { EventMark } from './EventMark'
 import { UnknownBlock } from './UnknownBlock'
 import { EventChip } from './EventChip'
 import { UserInstructionBlock } from './UserInstructionBlock'
@@ -81,37 +80,6 @@ describe('ToolCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /bash/ }))
     expect(screen.getByText(/141882/)).toBeInTheDocument()
     expect(screen.getByText(/已截断/)).toBeInTheDocument()
-  })
-})
-
-describe('EventMark', () => {
-  it('是不可操作的标记：没有任何按钮', () => {
-    const { container } = render(<EventMark event="permission_request" ts="2026-08-12T10:31:02+08:00" />)
-    expect(container.querySelectorAll('button')).toHaveLength(0)
-    expect(screen.getByText(/权限工单/)).toBeInTheDocument()
-  })
-
-  it('明确指向工单面板，不在时间线里开第二个审批入口', () => {
-    render(<EventMark event="permission_request" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
-  })
-
-  it('提问工单同样指向工单面板', () => {
-    render(<EventMark event="question" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/工单面板/)).toBeInTheDocument()
-  })
-
-  it.each(['completed', 'failed', 'delivery_failed', 'stalled', 'some_new_event'])(
-    '无可裁决物的事件（%s）不挂「裁决入口」指引',
-    (event) => {
-      render(<EventMark event={event} ts="2026-08-12T10:31:02+08:00" />)
-      expect(screen.queryByText(/工单面板/)).not.toBeInTheDocument()
-    },
-  )
-
-  it('未知事件名原样显示，不吞掉', () => {
-    render(<EventMark event="some_new_event" ts="2026-08-12T10:31:02+08:00" />)
-    expect(screen.getByText(/some_new_event/)).toBeInTheDocument()
   })
 })
 

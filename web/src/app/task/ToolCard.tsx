@@ -32,7 +32,7 @@ const DOT_CLS: Record<ToolState, string> = {
 // argSummary 从工具入参里挑一行可读摘要。
 //
 // 只读已知形状的字段，其余回退原文；绝不因为解析失败而吞掉整张卡
-// （与 EventsPanel.eventSummary 同一条纪律）。
+// （与调试抽屉的 eventSummary 同一条纪律）。
 function argSummary(input: string): string {
   try {
     const o = JSON.parse(input) as Record<string, unknown>

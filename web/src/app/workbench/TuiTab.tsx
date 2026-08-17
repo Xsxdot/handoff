@@ -1,28 +1,48 @@
-// TuiTab —— 桌面端 TUI（spec §2.3）。
+// TuiTab —— 桌面端 TUI（spec 2026-08-17 对话式重构）。
 //
-// 职责：把一个任务会话按原型的单栏纵向流渲染出来——会话正文在上，指令输入框
-// 固定在底部；任务进 waiting_review 后，审阅取证接在正文末尾。
+// 职责：总装页头（TuiHeader）/ 主区（ConversationStream + ReviewSidePanel）/
+// Composer / DebugDrawer；持有 frames 流（页头回合下拉与会话流共享）与
+// 审阅栏开合状态。
 //
-// 边界：
-//   - **不含 TicketsPanel**。工单裁决收敛到全局工单弹层（spec §5.2）：一张工单
-//     可能属于任何一个任务，藏在某个 tab 里就等于要求人先猜对是哪个任务
-//   - 不含返回看板链接与页头：那是面包屑与左栏的事
-//   - 不自己取数：全部经 useTaskSession
-//
-// 关于「TUI 的终局是一个 agent」（spec §2.3 末段）：本组件对外只依赖一个
-// taskId，但内部布局不假设「必须有 task」——将来以 home 为基准开一个不绑任务的
-// agent 会话时，替换的是数据源，不是这套布局。
-import { Badge } from '@/components/ui/badge'
+// 状态联动（spec §5）：
+//   - waiting_review 进入时审阅栏自动滑出；人手动收起后本 tab 内记住不再自动开
+//   - running / waiting_answer / 终态：审阅栏隐藏
+// 边界（沿旧 TuiTab）：不含 TicketsPanel（全局工单弹层）；不含面包屑；
+// 会话数据全部经 useTaskSession / useFramesStream。
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
 import { useTaskSession } from '../task/useTaskSession'
-import { TaskHeader } from '../task/TaskHeader'
-import { TimelinePanel } from '../task/TimelinePanel'
-import { EventsPanel } from '../task/EventsPanel'
-import { ReviewPanel } from '../task/ReviewPanel'
-import { AdvanceActions } from '../task/AdvanceActions'
+import { useFramesStream } from '../task/useFramesStream'
+import { buildBlocks, turnsOf } from '../task/frames'
+import { TuiHeader } from '../task/TuiHeader'
+import { ConversationStream } from '../task/ConversationStream'
+import { ReviewSidePanel } from '../task/ReviewSidePanel'
+import { Composer } from '../task/Composer'
+import { DebugDrawer } from '../task/DebugDrawer'
 
+// TuiTab 渲染一个任务的对话式 TUI；对外签名保持不变，Shell 无需知道内部重排。
 export function TuiTab({ taskId }: { taskId: string }) {
   const s = useTaskSession(taskId)
+  const { frames, badLines, startOffset, error, atCap, loadingEarlier, loadEarlier, retry } =
+    useFramesStream(taskId)
+  const blocks = useMemo(() => buildBlocks(frames), [frames])
+  const turns = useMemo(() => turnsOf(frames), [frames])
+
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [debugOpen, setDebugOpen] = useState(false)
+  // reviewDismissed 记「人手动收起过」：waiting_review 里自动开一次，人收起后
+  // 不再抢开；离开 review 态重置，下次进入再自动开
+  const reviewDismissed = useRef(false)
+
+  const state = s.detail?.task.state
+  useEffect(() => {
+    if (state === 'waiting_review') {
+      if (!reviewDismissed.current) setReviewOpen(true)
+    } else {
+      setReviewOpen(false)
+      reviewDismissed.current = false
+    }
+  }, [state])
 
   if (s.detail === null) {
     if (s.loadError) return <LoadFailed message={s.loadError} onRetry={s.refresh} />
@@ -30,32 +50,50 @@ export function TuiTab({ taskId }: { taskId: string }) {
     return <p className="p-4 text-sm text-muted-foreground">正在加载任务…</p>
   }
 
-  // waiting_review 才挂 ReviewPanel：它是「这一轮干完了，你来验」的自然延续，
-  // 不是常驻侧栏。任务还在跑时挂着它，等于邀请人去 diff 一个半成品
   const inReview = s.detail.task.state === 'waiting_review'
+  const closeReview = () => { setReviewOpen(false); reviewDismissed.current = true }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-        <TaskHeader task={s.detail.task} compact />
-        <div className="ml-auto flex items-center gap-2">
-          {s.disconnected && <Badge variant="destructive">已断开</Badge>}
-          {s.wsStatus === 'open' && <Badge variant="outline">实时</Badge>}
+      <TuiHeader
+        task={s.detail.task}
+        turns={turns}
+        turnsPartial={startOffset > 0}
+        onJumpTurn={(t) => document.getElementById(`turn-${taskId}-${t}`)?.scrollIntoView({ block: 'start' })}
+        reviewAvailable={inReview}
+        reviewOpen={reviewOpen}
+        onToggleReview={() => (reviewOpen ? closeReview() : setReviewOpen(true))}
+        onOpenDebug={() => setDebugOpen(true)}
+        wsStatus={s.wsStatus}
+        disconnected={s.disconnected}
+      />
+
+      {s.sessionExpired && <SessionExpiredBanner />}
+      {s.disconnected && !s.sessionExpired && <DisconnectedBanner message={s.disconnectReason} />}
+
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1">
+          <ConversationStream
+            taskId={taskId}
+            taskState={s.detail.task.state}
+            blocks={blocks}
+            badLines={badLines}
+            startOffset={startOffset}
+            atCap={atCap}
+            error={error}
+            loadingEarlier={loadingEarlier}
+            onLoadEarlier={loadEarlier}
+            onRetry={retry}
+          />
         </div>
+        {inReview && reviewOpen && <ReviewSidePanel taskId={taskId} onClose={closeReview} />}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-3">
-        {s.sessionExpired && <SessionExpiredBanner />}
-        {s.disconnected && !s.sessionExpired && <DisconnectedBanner message={s.disconnectReason} />}
-        <TimelinePanel taskId={taskId} taskState={s.detail.task.state} />
-        <EventsPanel events={s.events} status={s.wsStatus} error={s.wsError} />
-        {inReview && <ReviewPanel taskId={taskId} />}
-      </div>
+      <Composer task={s.detail.task} disabled={s.disconnected} onChanged={s.refresh} />
 
-      {/* 指令输入框固定在底部——原型的形态判据之一 */}
-      <div className="border-t p-3">
-        <AdvanceActions task={s.detail.task} disabled={s.disconnected} onChanged={s.refresh} />
-      </div>
+      {debugOpen && (
+        <DebugDrawer taskId={taskId} events={s.events} status={s.wsStatus} error={s.wsError} onClose={() => setDebugOpen(false)} />
+      )}
     </div>
   )
 }

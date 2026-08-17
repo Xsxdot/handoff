@@ -19,4 +19,7 @@
 - 2026-08-17 Task 7 第 1 轮完成，commit 952326fa：UsageChip/TuiHeader 实现两行页头、ctx/累计账目弹出、回合下拉与动作状态；首测仅因现有 `formatTokens(200000)` 实际输出 `200.0k` 而非计划示例 `200k` 失败，断言按既有格式化函数对齐；task 全测 PASS（122 tests）、`npm run typecheck` PASS、lint 0 errors/既有 10 warnings。
 - 2026-08-17 Task 8 第 1 轮完成，commit 79ff726f：DiffView 按文件分组着色并在解析失败时裸文本回退，ReviewSidePanel 接入 branch/diff/run/file；首测发现总计与文件组各有 `+1`，将脆弱 `getByText` 改为精确 `getAllByText`；task 全测 PASS（126 tests）、`npm run typecheck` PASS、lint 0 errors/既有 10 warnings。
 - 2026-08-17 Task 9 第 1 轮 RED：按计划新增 Composer 交互测试；`npx vitest run src/app/task/Composer.test.tsx` 原始失败为 `Failed to resolve import "./Composer" ... Does the file exist?`。
-- 2026-08-17 Task 9 第 1 轮完成，commit 71b71a40：Composer 按 AdvanceActions 状态机实现续发/完成/停止/恢复与强制收口，Enter 发送、Shift+Enter 换行、断线禁用且保留输入；6 tests PASS；spec/质量双裁决通过。
+- 2026-08-17 Task 9 第 1 轮完成，commit e82fd37b：Composer 按 AdvanceActions 状态机实现续发/完成/停止/恢复与强制收口，Enter 发送、Shift+Enter 换行、断线禁用且保留输入；6 tests PASS；spec/质量双裁决通过。
+- 2026-08-17 Task 10 第 1 轮 RED：按计划新增 DebugDrawer 测试；`npx vitest run src/app/task/DebugDrawer.test.tsx` 原始失败为 `Failed to resolve import "./DebugDrawer" ... Does the file exist?`。
+- 2026-08-17 Task 10 第 1 轮完成，commit 范围为本分支最终总装提交（含本 ledger，哈希以 `git log HEAD` 为准）：DebugDrawer 默认展示封顶原始事件，原始正文页签按需挂 RenderPanel；TuiTab 总装 ConversationStream/TuiHeader/ReviewSidePanel/Composer/DebugDrawer，清理六个旧件并迁移 EventChip 测试；DebugDrawer 2 tests PASS，`npm run typecheck` PASS，`npm test` 56 files/551 tests PASS，`npm run lint` 0 errors/10 existing warnings，`go test ./...` PASS；spec/质量双裁决通过。
+- 2026-08-17 Task 11 按计划跳过：Task 11 留给审核者真机执行。
