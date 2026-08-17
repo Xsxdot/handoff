@@ -28,3 +28,16 @@
 ## 真机走查
 
 - 2026-08-17 macOS 临时 HOME：实现者成功跑通一次，临时 HOME 下写出有效 config.yaml、向导端到端走通。按协调者指示**不再重跑**（launchd label 固定值 B71，会在派发本任务的机器上与运行中 agentd 抢 label/DataDir；上次未出事只因 EnsureRunning 遇「已在运行」直接返回）。逐题前进的人工观察由协调者在自己机器补。
+
+## Task 8 干净检出验收门（协调者本机执行）
+
+在 commit 35b675c5 上干净检出（mktemp + git clone），实际输出：
+
+- Step 2（构建前端前，协调者修正版）：`go build ./...` OK；`go test ./...` 32 个包 ok、无 FAIL（coordinator 修正原步骤：干净检出上 main.go 的 `//go:embed all:frontend/dist` 指向构建产物，`cd desktop && go test ./...` 必然报 no matching files found——这是 W5b-1 写进 desktop/README.md:32 的既定行为，不是缺陷，故 Step 2 只测根模块 + desktop 的 internal）；`cd desktop && go test ./internal/...` 两包 ok（embedbin、shell）。
+- Step 3（构建前端后）：`cd desktop && PATH="$HOME/go/bin:$PATH" ~/go/bin/wails3 task build` 成功（vite built + go build -tags production 出 bin/handoff-desktop）；`go build ./...` OK（仅 macOS 链接器警告：object built for macOS 26 vs linked 11，无害）；`go test ./... -count=1` 全过（desktop 根包 no test files、embedbin/shell ok）。
+- **洁净判据**：`git status --porcelain` **输出为空（0 行）**。通过。
+- 未提交 dist 占位文件（W5b-1 试过并被判死的路，不重走）。
+
+## 收尾
+
+- 2026-08-17 协调者升级 Minor M20/M22 并处理，commit 35b675c5：M20 → MaybeInstallService 的 InstallService==nil 分支补 `slog.Warn(..., "cfg_path", cfgPath)`（薄壳走不到此分支，是「理论上不该被走到」的路，将来真被调用即设计被违反的信号，现场只剩日志能说明）；M22 → 新增 TestEventPrompterSelectRejectsUnknownAnswer（喂非法值断言返回错误，钉住 plan 定为承重的「Select 拒非法值」行为——变异把 for 循环换成 return ans, nil 现有用例全绿，只有它能拦住）。同时删除孤儿文件 desktop/frontend/"Inter Font License.txt"（字体已删，许可成悬空资产）。M19/M21/M23 协调者认可定级不动。
