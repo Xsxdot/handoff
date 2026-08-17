@@ -61,3 +61,8 @@ func createInputChannel(path string) error { return errNotImplemented }
 func waitInputReader(path string, timeout time.Duration) (time.Duration, error) {
 	return 0, errNotImplemented
 }
+
+// installProcessContainer 本平台无实现。
+//
+// 实际不可达：本平台的 spawnDetached 同样返回未实现，shim 根本起不来。
+func installProcessContainer(int) error { return errNotImplemented }

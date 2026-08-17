@@ -3,7 +3,8 @@
 // 职责：
 //   - 持有存活锁（整个生命周期），作为 prochost.Alive 的唯一判据
 //   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时以 O_RDWR 持有 FIFO 读端
-//   - 在 spawn executor 之前安装进程围栏（RLIMIT_NPROC），executor 全树继承
+//   - 在 spawn executor 之前安装进程容器（unix=RLIMIT_NPROC，Windows=Job Object），
+//     executor 全树继承
 //   - spawn 真正的 executor，把它的 pid 记进 child.pid
 //   - wait 子进程，退出后向 stdout 追加 handoff_exit 哨兵
 //
@@ -11,7 +12,7 @@
 //   - 不认识 executor 协议、不解析输出：只做搬运与收尸
 //   - 不写任务状态、不连 agentd：shim 与 agentd 之间只有文件（锁、child.pid、日志）
 //   - 不写 proc.json：那是 adapter 的独占文件，双写者会丢更新（见 recordChildPID）
-//   - 不决定围栏值取多少：那是 prochost 策略层（fence.go）的事，shim 只负责装
+//   - 不决定围栏值取多少：那是 prochost 策略层（fence.go）的事，shim 只负责安装容器
 //
 // 为什么必须有 shim（而不是 agentd 直接 detach executor）：退出哨兵需要一个
 // 常驻父进程 waitpid 才能拿到。agentd 重启后，reparent 给 init 的 executor
@@ -95,16 +96,16 @@ func RunShim(specPath string) error {
 		defer stderr.Close()
 	}
 
-	// 围栏必须在 spawn 之前装：rlimit 随 fork 继承，装晚一步 executor 就在
-	// 围栏外面了。装不上不阻断——防护装置故障不该变成拒绝服务
-	if spec.NprocLimit > 0 {
-		if ferr := setNprocLimit(spec.NprocLimit); ferr != nil {
-			l.Warn("安装进程围栏失败，本任务无围栏保护", "limit", spec.NprocLimit, "cause", ferr)
-		} else {
-			l.Info("进程围栏已安装", "limit", spec.NprocLimit)
-		}
-	} else {
-		l.Info("本任务未设进程围栏", "reason", "spec 未下发围栏值")
+	// 进程容器必须在 spawn 之前装：unix 的 rlimit 随 fork 继承、Windows 的 job
+	// 成员身份随 CreateProcess 继承，装晚一步执行者就在容器外面了。
+	//
+	// **两个平台的失败语义刻意不同**，由各自的实现决定，不要在这里统一：
+	// unix 上容器只是围栏，装不上仍可跑（Warn 后返回 nil）；Windows 上容器是
+	// job，而 job 是 killGroup 唯一的回收手段，建不起来就必须硬失败——否则
+	// 这个任务将永远杀不干净。
+	if cerr := installProcessContainer(spec.NprocLimit); cerr != nil {
+		l.Error("安装进程容器失败，放弃拉起执行者", "limit", spec.NprocLimit, "cause", cerr)
+		return fmt.Errorf("安装进程容器: %w", cerr)
 	}
 
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
