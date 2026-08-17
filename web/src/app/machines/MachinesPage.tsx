@@ -285,8 +285,9 @@ function AddMachineForm({
         </label>
 
         <div className="flex flex-col gap-1 text-sm">
-          {/* 令牌用密码型输入框：令牌仅随本次请求发送，后端不回显、不落盘，
-              也不写进任何日志。这个输入不落任何持久化，提交即随请求体发走。 */}
+          {/* 令牌用密码型输入框：令牌随请求体发送并随开发机配置落盘到 agentd
+              配置文件（增删机器的写操作本来就要改配置）；后端不回显它，也不会
+              把它写进任何日志。本输入框只在提交时作为请求体发走，不留本地持久化。 */}
           <label htmlFor="machine-token" className="font-medium">令牌</label>
           <input
             id="machine-token"
