@@ -13,6 +13,8 @@
 
 - 2026-08-17 Task 4（三态释出逻辑）完成，commit 3636cdfb。审查双 APPROVED。实现者决策：版本比较另写 compareVersion/parseVersion（internal/selfupdate 的 cmpVersion 未导出，不值得为此改导出面；语义与 clicheck.go 逐行一致，无第三方依赖）；「existing 空 + embedVer 空」走 DecisionInstall（没有既有安装则承重不适用，embedbin 不可用由调用方查 Available() 兜底）；os.Lstat 检查悬空符号链接（Stat 会跟随悬空链返回 ENOENT 放行 rename 覆盖链接本身）；chmod 在 rename 前避免「已可见但无权限」窗口。调试中自己修了一个 compareVersion 方向写反的 bug（cmp>=0 → UseExisting、cmp<0 → NotifyOutdated）。Minor 记账 4 条：M27 existing 非空 + embedVer 空 → UseExisting 分支无直接测试覆盖（逻辑正确）；M28 TOCTOU：Lstat 检查与 Rename 之间并发新建 dst 会被 Unix rename 静默覆盖（桌面单机上下文可忽略）；M29 release.go 注释「本模块可 import 根模块 internal 包」表述稍绕（desktop 是独立 module 需 require/replace，起决定作用的是「cmpVersion 未导出」）；M30 已存在分支同时 logger.Error + 返回错误轻微重复（符合项目惯例）。
 
+- 2026-08-17 Task 5（绝对二进制路径）完成，commit 67e9b774。审查双 APPROVED。审查用临时 dist 桩验证 main.go 编译通过后已删。Minor 记账 3 条：M31 binpath.go:88 `filepath.Abs(real)` 的 error 未包候选路径（Abs 出错实际不可达）；M32 审查发现工作区残留 `desktop/desktop` 二进制（实现者桩构建产物，已被 .gitignore 忽略），协调者已删；M33 建议补「显式传目录路径必须报错」用例（plan 逐字测试块之外，真实场景 `~/.local/bin` 恰命中此分支，极廉价，需 plan 所有者认可）。
+
 ## Minor 总账
 
 （终审统一 triage）
