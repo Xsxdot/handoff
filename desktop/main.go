@@ -1,12 +1,12 @@
 // 本文件是桌面薄壳的入口：装配窗口、托盘与启动序列。
 //
-// 职责：只做装配与错误呈现，外加 Wails 事件收发（向导问答的传输层）。
+// 职责：只做装配与错误呈现，外加 Wails 事件收发（向导表单的传输层）。
 // 边界：
 //   - **不放业务逻辑**。定位、握手、生命周期、路径校验全在 internal/shell，
 //     那里不 import Wails，因而可以用普通 go test 覆盖
-//   - **首次引导的问题集与默认值属于 internal/initflow**。main.go 只装配
-//     wizard-question / wizard-answer / wizard-notice 的收发通道，不在
-//     这里加任何问题、不定义任何默认值
+//   - **首次引导的字段表与校验属于 internal/initflow**。main.go 只装配
+//     wizard-form / wizard-submit / wizard-error 的收发通道，不在
+//     这里加任何字段、不定义任何默认值
 //   - **不在退出路径上停 agentd**（spec §4.3 承重）
 //   - 托盘只有「打开控制台」「退出」两项。**不做「停止 agentd」**：
 //     service.Manager 没有 Stop，用 Uninstall 冒充是错的语义
@@ -15,13 +15,13 @@ package main
 import (
 	"context"
 	"embed"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +29,7 @@ import (
 	"github.com/Xsxdot/handoff/desktop/internal/embedbin"
 	"github.com/Xsxdot/handoff/desktop/internal/shell"
 	"github.com/Xsxdot/handoff/internal/config"
-	"github.com/Xsxdot/handoff/internal/initflow"
+	"github.com/Xsxdot/handoff/internal/pathenv"
 	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -44,15 +44,8 @@ var assets embed.FS
 // 导致日志格式不统一。
 var logger = slog.Default()
 
-// wizAnswers 是 wizard-answer 事件的唯一收件箱。
-//
-// **回调只在装配处注册一次**（见 main）：绝不能在每次 Ask 里注册——每问注册
-// 会累积 handler，第 N 问收到 N 份答案，谁先抢到还不确定，第一问之后的答案
-// 全部错位。
-var wizAnswers = make(chan string, 1)
-
 // wizMu/wizActive 防重入：一个向导进行中时，再次从托盘打开控制台不另起一个
-// AskAll，否则两份问答在同一个页面上互相覆盖。
+// 表单流程，否则两份交表在同一个页面上互相覆盖。
 var (
 	wizMu     sync.Mutex
 	wizActive bool
@@ -60,10 +53,10 @@ var (
 
 // runtimeReadyCh 在前端运行时挂载（WindowRuntimeReady）后关闭。
 //
-// 首个 wizard-question 必须等它：webview 加载完成前发出的 Go 事件会被
+// 首个 wizard-form 必须等它：webview 加载完成前发出的 Go 事件会被
 // Wails 事件模板里 `if(window._wails&&window._wails.dispatchWailsEvent)`
-// 的守卫静默丢弃（见 Wails 源码 inlineEventJS），早发等于把第一题吞掉，
-// 向导从此卡在空白页。所以向导 goroutine 先等这个 channel 再发问。
+// 的守卫静默丢弃（见 Wails 源码 inlineEventJS），早发等于把整张表单吞掉，
+// 向导从此卡在空白页。所以向导 goroutine 先等这个 channel 再发表单。
 var runtimeReadyCh = make(chan struct{})
 
 // closeRuntimeReady 保证只 close 一次：WindowRuntimeReady 若重发，
@@ -165,26 +158,7 @@ func main() {
 		app.Event.Emit("project-dir-picked", dir)
 	})
 
-	// wizard-answer 只注册一次（承重）：若在每次 Ask 里注册，第 N 问会累积
-	// N 份 handler，第 N 问收到 N 份答案。这里收敛成把值送进唯一收件箱，
-	// 由 wailsTransport.Ask 逐个取走。
-	app.Event.On("wizard-answer", func(ev *application.CustomEvent) {
-		s, ok := ev.Data.(string)
-		if !ok {
-			// 前端 emit 的必是字符串；真不是就跳过，不 panic
-			logger.Error("wizard-answer 载荷不是字符串，跳过", "type", fmt.Sprintf("%T", ev.Data))
-			return
-		}
-		select {
-		case wizAnswers <- s:
-		default:
-			// 满箱说明这份答案没有对应的等待者（多半是向导已取消），
-			// 丢弃它防止污染下一次向导
-			logger.Warn("wizard-answer 到达但无人在等待，丢弃")
-		}
-	})
-
-	// 前端运行时挂载后才发得出向导问题：见 runtimeReadyCh 的注释
+	// 前端运行时挂载后才发得出向导表单：见 runtimeReadyCh 的注释
 	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		closeRuntimeReady.Do(func() { close(runtimeReadyCh) })
 	})
@@ -201,33 +175,6 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info("薄壳正常退出；agentd 未被触碰")
-}
-
-// wailsTransport 是 shell.Transport 的 Wails 侧实现：Ask 经 app.Event 发题、
-// 阻塞等前端答案；Notice 转发面向用户的说明文字。
-//
-// 为什么放 main.go：internal/shell 约定不 import Wails（才能普通 go test 覆盖），
-// 这套收发恰好是 Wails 专有的，只能留在装配层。
-type wailsTransport struct {
-	app     *application.App
-	answers chan string
-	ctx     context.Context
-}
-
-func (t *wailsTransport) Ask(q shell.Question) (string, error) {
-	t.app.Event.Emit("wizard-question", q)
-	select {
-	case <-t.ctx.Done():
-		// ctx 取消（用户关窗）由 EventPrompter 映射成 initflow.ErrCanceled，
-		// 上层据此决定不写盘
-		return "", t.ctx.Err()
-	case s := <-t.answers:
-		return s, nil
-	}
-}
-
-func (t *wailsTransport) Notice(line string) {
-	t.app.Event.Emit("wizard-notice", line)
 }
 
 // readInstalledVersion 从既有 handoff 二进制里读版本号，供释出决策用。
@@ -306,10 +253,10 @@ func releaseEmbedded(app *application.App) {
 	}
 }
 
-// startWizard 起 goroutine 跑首次引导：经 EventPrompter 驱动 initflow.AskAll，
-// 成功才写盘；取消一律不写盘。
+// startWizard 起 goroutine 跑首次引导：一次性交表（wizard-form → wizard-submit），
+// 校验通过才写盘；取消或校验失败一律不落盘。
 //
-// 承重：AskAll 返回错误时**绝不 config.Save**。半截答案落盘会造出一份
+// 承重：ApplyAnswers 或 Save 返回错误时**绝不落盘**。半截答案落盘会造出一份
 // 「配过但配错」的配置，下次启动 Resolve 会认为这台机器已配置，用户再也
 // 回不到向导。
 func startWizard(app *application.App, win *application.WebviewWindow) {
@@ -329,58 +276,70 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 		wizCancel()
 	})
 
-	tr := &wailsTransport{app: app, answers: wizAnswers, ctx: wizCtx}
-	p := shell.NewEventPrompter(wizCtx, tr)
-	w := shell.NewNoticeWriter(tr)
-
 	go func() {
 		defer func() {
 			wizMu.Lock()
 			wizActive = false
 			wizMu.Unlock()
 		}()
-		// 等前端运行时挂载再发第一问：webview 加载完成前的 Go 事件会被
-		// window._wails 未就绪守卫静默丢弃，早发等于把第一题吞掉。
+
+		// 等前端运行时挂载再发第一笔：webview 加载完成前的 Go 事件会被
+		// window._wails 未就绪守卫静默丢弃（W5b-2 已验）。
 		select {
 		case <-runtimeReadyCh:
 		case <-wizCtx.Done():
 			return
 		}
 
-		// 首次引导不调 config.Load：Load 在文件不存在时会 firstRun 写盘
-		//（生成 token + 默认配置落盘），向导中途崩溃/被杀/取消都会留下这份
-		// 文件，下次启动 Resolve 判「已配置」，用户回不到向导（真机 SIGKILL
-		// 复现过，回滚法依赖进程还活着封不死）。Defaults 是无副作用入口，
-		// 问答期间磁盘上不存在任何会让 Resolve 误判的文件，成功后才 Save。
+		// 首次引导不调 config.Load：Load 在文件不存在时会 firstRun 写盘，向导中途
+		// 崩溃/被杀/取消都会留下文件，下次启动 Resolve 判「已配置」（W5b-2 缺陷 A）。
+		// Defaults 是无副作用入口，问答期间磁盘上不存在任何会让 Resolve 误判的文件。
 		path := config.DefaultPath()
 		cfg := config.Defaults()
-		// 桌面壳也要探测工具链：AskAll 里 ExecutorOptions(nil) 会是空选项列表，
-		// 用户选执行者时前端渲染空 select，EventPrompter 会拒绝一切非空答案——
-		// 这是必要适配，不是可选项。
+
+		// 先补 PATH 再探测：双击启动的 GUI 继承 launchd 的默认 PATH
+		//（/usr/bin:/bin:/usr/sbin:/sbin），四家 executor 全部装在它之外，
+		// 不补就会全部报「未安装」——而「双击就能用」正是薄壳的立项理由。
+		pathenv.Apply(wizCtx, pathenv.Options{}, logger)
 		results := toolchain.Detect()
-		// isExec 不用于 GUI 托管（与 CLI 的 MaybeInstallService 追问不同步，
-		// 这是有意为之）：首次引导的 agentd 托管由后面的 EnsureRunning 统一
-		// 走 service 路径，避免图形向导里再弹一轮托管问题。只留 role 写盘日志用。
-		isExec, role, err := initflow.AskAll(w, p, cfg, results, false)
-		_ = isExec
-		if err != nil {
-			// 承重：AskAll 出错绝不写盘。取消或问答失败都等于放弃本次配置。
-			// Defaults 无副作用（从未落盘），此处无需回滚；半截答案随进程丢弃，
-			// 下次启动 Resolve 仍判未配置，重开即可重新进入向导。
-			if errors.Is(err, initflow.ErrCanceled) {
-				logger.Info("首次配置已取消，不写盘", "path", path)
-				tr.Notice("已取消，未保存任何配置。关闭窗口重新打开即可重新配置。")
-			} else {
-				logger.Error("首次配置问答失败，不写盘", "path", path, "cause", err)
+		logger.Info("工具链探测完成", "count", len(results))
+
+		fields := shell.BuildForm(cfg, results, runtime.GOOS)
+		logger.Info("首次配置表已生成", "fields", len(fields))
+
+		// wizard-submit 监听必须先于 wizard-form 发出注册：否则前端秒填秒交时
+		// Go 侧还没监听，事件直接丢。waitAnswers 内部注册监听并返回结果通道，
+		// 注册完成后才轮到下面的 Emit。
+		answersCh := waitAnswers(wizCtx, app)
+		app.Event.Emit("wizard-form", fields)
+
+		var answers map[string]string
+		select {
+		case ans := <-answersCh:
+			// 载荷非对象时 waitAnswers 送 nil：与取消同等处理。
+			// 不判空的话 nil map 会被 Apply 当作「无答案」放行、默认配置落盘，
+			// 一个畸形 wizard-submit 就静默宣告配置成功（承重，必须不落盘）。
+			if ans == nil {
+				logger.Warn("wizard-submit 载荷异常，按取消处理")
+				return
 			}
-			return
+			answers = ans
+		case <-wizCtx.Done():
+			logger.Info("首次配置被取消", "cause", wizCtx.Err())
+			return // 承重：不落盘
+		}
+
+		if err := shell.ApplyAnswers(cfg, fields, answers); err != nil {
+			logger.Error("首次配置答案校验失败", "cause", err)
+			app.Event.Emit("wizard-error", err.Error())
+			return // 承重：不落盘
 		}
 		if err := config.Save(path, cfg); err != nil {
 			logger.Error("保存配置失败", "path", path, "cause", err)
-			tr.Notice("保存配置失败：" + err.Error())
+			app.Event.Emit("wizard-error", "保存配置失败："+err.Error())
 			return
 		}
-		logger.Info("首次配置已写盘", "path", path, "role", role)
+		logger.Info("首次配置已写盘", "path", path, "role", answers["role"])
 		app.Event.Emit("wizard-done")
 
 		ep := shell.Endpoint{Addr: cfg.Listen, Token: cfg.Token}
@@ -408,6 +367,39 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 		logger.Info("加载控制台")
 		win.SetURL(url)
 	}()
+}
+
+// waitAnswers 注册 wizard-submit 监听并返回结果通道。
+//
+// 必须在 Emit("wizard-form") 之前调用：监听先就绪，前端即使秒填秒交也不会丢事件。
+// 载荷是 JS 对象，Wails 按 JSON 解码成 map[string]interface{}（不是 map[string]string），
+// 逐值转字符串；结构不符时记日志并返回 nil（调用方按取消处理，不落盘）。
+func waitAnswers(wizCtx context.Context, app *application.App) <-chan map[string]string {
+	ch := make(chan map[string]string, 1)
+	app.Event.On("wizard-submit", func(ev *application.CustomEvent) {
+		raw, ok := ev.Data.(map[string]interface{})
+		if !ok {
+			logger.Error("wizard-submit 载荷不是对象", "type", fmt.Sprintf("%T", ev.Data))
+			// 与成功路径同用 select/default：有效答案已占满缓冲时畸形载荷
+			// 若裸送 ch <- nil 会永久阻塞 Wails 事件回调（goroutine 泄漏）。
+			select {
+			case ch <- nil:
+			default:
+				logger.Warn("wizard-submit 载荷异常但已有答案，丢弃")
+			}
+			return
+		}
+		answers := make(map[string]string, len(raw))
+		for k, v := range raw {
+			answers[k] = fmt.Sprint(v)
+		}
+		select {
+		case ch <- answers:
+		default:
+			logger.Warn("wizard-submit 到达但已有答案，丢弃重复提交")
+		}
+	})
+	return ch
 }
 
 // specFor 组装托管 agentd 所需的路径。
