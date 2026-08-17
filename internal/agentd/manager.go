@@ -1202,7 +1202,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
 	} else {
-		m.stopExecutor(taskID, ad)
+		// Stop 是协调者主动敲的：executor 杀不掉也要把任务落 failed 并作废工单
+		// ——人已经决定不要这个任务了。与 ForceReclaim 相反（那条是 watchdog
+		// 自动触发，没收掉就不能宣布收掉，见 forcereclaim.go）。
+		_ = m.stopExecutor(taskID, ad)
 	}
 
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
@@ -2554,25 +2557,13 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
 	m.clearApproverState(taskID)
 	m.hub.Publish(evt)
-	// 回合结束即清扫这一回合留下的孤儿后代。
+	// 回合结束（非终态）也清扫这一回合留下的逃逸后代：不必等到任务终结才收。
+	// 与 transit 的终态清扫不重复——那条管终态，这条管回合边界。
+	// executor 此时通常仍存活（serve 常驻模型），走 Sweep 的降级路径只做名册
+	// 点名（B119 §2.1），executor 本体不会被误杀。
 	//
 	// 放在 Publish 之后：事件先落库并广播，审核者的 wait 第一时间醒；清扫是
-	// best-effort 的善后（SweepTaskProcs 内部每个失败分支都只记日志或发
-	// orphan_risk，从不返回错误），不该挡在唤醒前面。
-	//
-	// 成功分支也清扫：executor 正常收尾同样可能留下 setsid 逃逸的后代
-	// （opencode 的 Bash 工具把每条命令都 setsid 成新会话）。executor 本体
-	// 不会被误杀——Sweep 遇到它仍存活会返回 ErrExecutorAlive 并自行放弃。
-	//
-	// 与 B92 的关系（B92 的根因在本改动之后被推翻，这里记下修正后的事实）：
-	// 曾以为存在「failed 事件落库但状态没迁移」的缺口，若成立则本调用在那条
-	// 路径上不会执行。排查用日志与 DB 证伪了它——handleResult 的迁移一直是
-	// 正确的，B92 的真因是 grok 在回合失败时关掉了事件通道，导致 continue 的
-	// 续接回合事件被静默丢弃（已修，见 internal/executor/grok 的 emitTurnFailed）。
-	// 所以本调用在回合失败时**会**正常触发。watchdog 的每任务点名
-	// （scanTaskProcs）仍是有价值的冗余，但兜的不是这条路径，而是
-	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
-	// 的真实缺口（另见 B97）。
+	// best-effort 善后，不该挡在唤醒前面。
 	m.sweep(taskID)
 }
 
@@ -2643,6 +2634,14 @@ func (m *Manager) transit(taskID string, to proto.TaskState, reason string) erro
 	// 幂等分支（cur.State == to）在上面已经 return，不会重复作废。
 	if to.IsTerminal() {
 		voidTicketsWithAudit(m.st, taskID, reason, m.log)
+		// 终态即清扫（B119）：与上面的工单作废同一个理由——挂在这里才能覆盖
+		// **将来新增的**终态路径。B93 把清扫只加在 handleResult 末尾，Stop 这条
+		// 终态路径就漏了，标题写的「落终态即清扫」实际只做到了「回合终态」。
+		//
+		// 排在作废之后：作废是协调者可见的状态语义，清扫是 best-effort 善后
+		// （SweepTaskProcs 每个失败分支只记日志或发 orphan_risk，从不返回错误），
+		// 不该挡在语义收口前面。
+		m.sweep(taskID)
 	}
 	return nil
 }
