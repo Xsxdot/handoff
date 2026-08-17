@@ -9,7 +9,7 @@ const noop = () => {}
 const base = {
   taskId: 't1', taskState: 'waiting_review',
   badLines: 0, startOffset: 0, atCap: false, error: null,
-  loadingEarlier: false, onLoadEarlier: noop, onRetry: noop, active: false,
+  loadingEarlier: false, onLoadEarlier: noop, onRetry: noop, active: false, sizeUnknown: false,
 }
 
 describe('ConversationStream', () => {
@@ -42,6 +42,12 @@ describe('ConversationStream', () => {
     expect(screen.getByText(/handoff frames/)).toBeInTheDocument()
     rerender(<ConversationStream {...base} blocks={[]} />)
     expect(screen.getByText(/等待模型输出/)).toBeInTheDocument()
+  })
+
+  it('帧文件大小未知时如实提示当前只显示尾部窗口', () => {
+    render(<ConversationStream {...base} blocks={[]} sizeUnknown />)
+    expect(screen.getByText(/无法确定更早的边界/)).toBeInTheDocument()
+    expect(screen.getByText(/最后 64KB/)).toBeInTheDocument()
   })
 
   it('startOffset>0 显示加载更早，点击回调', () => {

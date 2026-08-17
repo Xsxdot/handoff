@@ -23,7 +23,7 @@ import { DebugDrawer } from '../task/DebugDrawer'
 // TuiTab 渲染一个任务的对话式 TUI；对外签名保持不变，Shell 无需知道内部重排。
 export function TuiTab({ taskId }: { taskId: string }) {
   const s = useTaskSession(taskId)
-  const { frames, badLines, startOffset, error, active, atCap, loadingEarlier, loadEarlier, retry } =
+  const { frames, badLines, startOffset, sizeUnknown, error, active, atCap, loadingEarlier, loadEarlier, retry } =
     useFramesStream(taskId)
   const blocks = useMemo(() => buildBlocks(frames), [frames])
   const turns = useMemo(() => turnsOf(frames), [frames])
@@ -81,6 +81,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
             blocks={blocks}
             badLines={badLines}
             startOffset={startOffset}
+            sizeUnknown={sizeUnknown}
             atCap={atCap}
             error={error}
             loadingEarlier={loadingEarlier}

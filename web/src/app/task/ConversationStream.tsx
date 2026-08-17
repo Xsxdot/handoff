@@ -40,6 +40,7 @@ export interface ConversationStreamProps {
   blocks: Block[]
   badLines: number
   startOffset: number
+  sizeUnknown: boolean
   atCap: boolean
   error: string | null
   loadingEarlier: boolean
@@ -79,7 +80,7 @@ function ToolGroupRow({ group, taskState }: { group: ToolGroupBlock; taskState: 
 // ConversationStream 渲染一个任务的会话流。滚动补偿与跟随逻辑整体平移自
 // TimelinePanel（useLayoutEffect + prependRef 的实现原样保留，注释见彼处 git 史）。
 export const ConversationStream = forwardRef<ConversationStreamHandle, ConversationStreamProps>(function ConversationStream({
-  taskId, taskState, blocks, badLines, startOffset, atCap, error,
+  taskId, taskState, blocks, badLines, startOffset, sizeUnknown, atCap, error,
   loadingEarlier, onLoadEarlier, onRetry, active,
 }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -187,6 +188,11 @@ export const ConversationStream = forwardRef<ConversationStreamHandle, Conversat
         {atCap && (
           <MetaRow glyph="◇">
             已加载帧数到上限，不再往前加载——更早的内容请用 <span className="font-mono">handoff frames</span> 回看
+          </MetaRow>
+        )}
+        {sizeUnknown && (
+          <MetaRow glyph="⚠" tone="warn">
+            agentd 未返回 X-Handoff-Frames-Size，无法确定更早的边界；当前只显示了最后 64KB
           </MetaRow>
         )}
         {error && (
