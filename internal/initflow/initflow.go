@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -48,86 +49,73 @@ const (
 	listenAllAddr      = "0.0.0.0:7777"
 )
 
-// AskAll 按角色分支问完全部问题，就地改写 cfg。
+// AskAll 按字段表逐项提问并把答案写回 cfg。
 //
 // 参数：
-//   - w: 面向用户的说明文字（非问答本身）
-//   - p: 问答通道（TTY 是 huh，测试是脚本化）
-//   - cfg: 就地改写
-//   - rs: 探测结果，只影响默认值与警告
-//   - cfgExisted: Load 之前文件是否已在。决定监听预选，见 ListenPreset
+//   - w: 产品输出（前言与字段的 Notice）；桌面壳不走这条路径
+//   - p: 问答实现（生产 TTY 走 huh，测试走脚本化实现）
+//   - cfg: 就地写回；出错时不保证未被部分修改，调用方**绝不可**在出错后落盘
+//   - rs: 工具链探测结果，决定执行者选项与默认值
+//   - cfgExisted: 配置文件是否已存在，影响监听预设的默认档
 //
 // 返回：
-//   - isExec: 本机角色是否包含执行机（决定 init 之后要不要追问托管）
-//   - role: 选中的角色 Value，供写盘日志
-//   - 错误：问答失败（脚本化路径几乎不返回错；huh 取消会走这里）
+//   - isExec: 本机是否承担执行机角色（调用方据此决定后续是否装 service）
+//   - role: 角色答案原文
+//   - err: 用户取消或校验失败
+//
+// 注意：提问顺序即 Form 返回的切片顺序。想改问什么、问的顺序、默认值，
+// 改 form.go，**不要改本函数**——本函数只负责把表渲染成一问一答。
 func AskAll(w io.Writer, p Prompter, cfg *config.Config, rs []toolchain.Result, cfgExisted bool) (bool, string, error) {
-	fmt.Fprintln(w, "\n以下每一问直接回车即保留预选项。")
+	fmt.Fprintln(w, "\n以下每一问直接回车即保留预选项。") // CLI 专有前言，不进字段表
 
-	if runtime.GOOS == "windows" {
-		// 产品输出：用户必须当场知道为什么只有一个选项，否则会以为是 bug
-		fmt.Fprintln(w, "\n注意：Windows 上 handoff 只能当协调者——agentd 的进程承载层在非 unix 平台尚未实现（backlog B37），执行机角色跑不起来。")
-		slog.Info("Windows 平台：角色选项限定为协调者", "reason", "agentd 进程承载层未实现（B37）")
-	}
-	defRole := DefaultRole(cfg, cfgExisted, rs, runtime.GOOS)
-	role, err := p.Select("这台机器的角色", RoleOptions(runtime.GOOS), defRole)
-	if err != nil {
-		return false, "", err
-	}
-	isExec := role == RoleExecutor || role == RoleBoth
-	isCoord := role == RoleCoordinator || role == RoleBoth
-
-	if isExec {
-		defExec := cfg.Executor.Default
-		if defExec == "" {
-			if first := toolchain.FirstReady(rs); first != "" {
-				defExec = first
-			} else {
-				defExec = "opencode"
-			}
+	fields := Form(cfg, rs, runtime.GOOS, cfgExisted)
+	answers := make(map[string]string, len(fields))
+	for _, f := range fields {
+		if !Visible(f, answers) {
+			continue
 		}
-		cfg.Executor.Default, err = p.Select("默认执行者", ExecutorOptions(rs), defExec)
+		if f.Notice != "" {
+			fmt.Fprintln(w, "\n"+f.Notice)
+		}
+		ans, err := askField(p, f, answers)
 		if err != nil {
-			return false, role, err
+			return false, answers["role"], err
 		}
-		warnIfNotReady(w, rs, cfg.Executor.Default)
-		cfg.Executor.Model, err = p.Input("执行者模型（空=用执行者自身默认）", cfg.Executor.Model)
-		if err != nil {
-			return false, role, err
-		}
-
-		if err := askListen(p, cfg, cfgExisted, isExec); err != nil {
-			return false, role, err
-		}
-
-		cfg.RepoRoot, err = p.Input("项目落点根目录 repo_root（自动登记时 clone 到这里）", cfg.RepoRoot)
-		if err != nil {
-			return false, role, err
-		}
-
-		approverOpts := append([]Option{{Value: "", Label: "不启用（权限直接找人）"}}, ExecutorOptions(rs)...)
-		cfg.Approver.Executor, err = p.Select("审批链执行者", approverOpts, cfg.Approver.Executor)
-		if err != nil {
-			return false, role, err
-		}
-		if cfg.Approver.Executor != "" {
-			cfg.Approver.Model, err = p.Input("审批链模型（空=用执行者自身默认）", cfg.Approver.Model)
-			if err != nil {
-				return false, role, err
-			}
+		answers[f.Key] = ans
+		// CLI 专有的答后提示：选了没装/未登录的执行者时警告一句（只警告不拦）。
+		// 它不进字段表——字段表描述的是「问什么」，这是「答完之后往终端写什么」，
+		// 桌面端不需要（选项标签里已经带着就绪状态）。
+		if f.Key == "executor_default" {
+			warnIfNotReady(w, rs, ans)
 		}
 	}
-
-	if isCoord {
-		cfg.Sync.Auto, err = p.Confirm("任务结束自动同步远程分支到本地 sync.auto", cfg.Sync.Auto)
-		if err != nil {
-			return false, role, err
-		}
-		if err := askTargets(w, p, cfg); err != nil {
-			return false, role, err
-		}
+	if err := Apply(cfg, fields, answers); err != nil {
+		return false, answers["role"], err
 	}
-	return isExec, role, nil
+	role := answers["role"]
+	return role == RoleExecutor || role == RoleBoth, role, nil
+}
+
+// askField 按 Kind 把一个字段分派给 Prompter。
+//
+// 默认值走 DefaultOf 而不是 f.Default：监听预设要跟着刚答完的角色翻档。
+// Confirm 的答案统一编码成 "true"/"false" 字符串：字段表是同构的，
+// 让答案 map 保持 map[string]string 才能被前端原样回传。
+func askField(p Prompter, f Field, answers map[string]string) (string, error) {
+	def := DefaultOf(f, answers)
+	switch f.Kind {
+	case KindSelect:
+		return p.Select(f.Title, f.Options, def)
+	case KindInput:
+		return p.Input(f.Title, def)
+	case KindConfirm:
+		v, err := p.Confirm(f.Title, def == "true")
+		if err != nil {
+			return "", err
+		}
+		return strconv.FormatBool(v), nil
+	}
+	return "", fmt.Errorf("未知的字段类型 %q（字段 %s）", f.Kind, f.Key)
 }
 
 // RoleOptions 按平台给出可选角色。
@@ -195,35 +183,6 @@ func ExecutorOptions(rs []toolchain.Result) []Option {
 		})
 	}
 	return opts
-}
-
-// askListen 问监听三档。探到的网卡 IP 不主动写进 listen——绑单网卡时本机 CLI
-// 靠 loopback 辅助监听兜底（B85），但 DHCP / Tailscale 一变（IP 不在）agentd
-// 依旧起不来，预选仍只给 loopback / 全网卡两档，单网卡留给手填。IP 只出现在
-// 配对片段。
-func askListen(p Prompter, cfg *config.Config, cfgExisted, isExec bool) error {
-	preset := ListenPreset(cfg.Listen, cfgExisted, isExec)
-	slog.Debug("init 监听预选", "listen", cfg.Listen, "cfg_existed", cfgExisted, "preset", preset)
-	choice, err := p.Select("监听地址", []Option{
-		{Value: listenLoopback, Label: "仅本机（127.0.0.1:7777）"},
-		{Value: listenAll, Label: "所有网卡（0.0.0.0:7777）"},
-		{Value: listenCustom, Label: "手填（如绑单个网卡 IP，本机命令自动走辅助监听）"},
-	}, preset)
-	if err != nil {
-		return err
-	}
-	switch choice {
-	case listenLoopback:
-		cfg.Listen = listenLoopbackAddr
-	case listenAll:
-		cfg.Listen = listenAllAddr
-	default:
-		cfg.Listen, err = p.Input("监听地址 listen", cfg.Listen)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ListenPreset 决定监听 Select 的光标停在哪一档。
@@ -358,40 +317,4 @@ func warnIfNotReady(w io.Writer, rs []toolchain.Result, name string) {
 		return
 	}
 	fmt.Fprintf(w, "  ⚠ %s 不在已知的四家里（opencode/claude/grok/codex），派发时会报未注册。\n", name)
-}
-
-// askTargets 循环添加远程执行机配对，回车即结束。
-func askTargets(w io.Writer, p Prompter, cfg *config.Config) error {
-	if cfg.Targets == nil {
-		cfg.Targets = map[string]config.Target{}
-	}
-	if len(cfg.Targets) > 0 {
-		fmt.Fprintf(w, "\n已配对 %d 台远程执行机：\n", len(cfg.Targets))
-		for name, t := range cfg.Targets {
-			fmt.Fprintf(w, "  %-12s %s  user=%s\n", name, t.Addr, t.User)
-		}
-	}
-	for {
-		name, err := p.Input("\n新增远程执行机名字（直接回车结束）", "")
-		if err != nil {
-			return err
-		}
-		if name == "" {
-			return nil
-		}
-		t := cfg.Targets[name]
-		t.Addr, err = p.Input("  地址 addr（形如 100.73.238.21:7777）", t.Addr)
-		if err != nil {
-			return err
-		}
-		t.Token, err = p.Input("  令牌 token（对方 handoff init 末尾会打出来）", t.Token)
-		if err != nil {
-			return err
-		}
-		t.User, err = p.Input("  ssh 用户名 user（attach/pull 要用）", t.User)
-		if err != nil {
-			return err
-		}
-		cfg.Targets[name] = t
-	}
 }

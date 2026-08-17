@@ -16,9 +16,9 @@ func TestFormKeysAndOrder(t *testing.T) {
 		got = append(got, f.Key)
 	}
 	want := []string{
-		"role", "listen_preset", "listen",
-		"executor_default", "executor_model", "repo_root",
-		"approver_executor", "approver_model", "sync_auto",
+		"role", "executor_default", "executor_model",
+		"listen_preset", "listen",
+		"repo_root", "approver_executor", "approver_model", "sync_auto",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("字段数不对：期望 %v，实际 %v", want, got)

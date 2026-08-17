@@ -242,18 +242,21 @@ func Form(cfg *config.Config, rs []toolchain.Result, goos string, cfgExisted boo
 		}}
 	}
 
+	// 注意字段顺序就是 CLI 的提问顺序，必须与改造前 AskAll 的提问顺序一致
+	// （role → 默认执行者 → 执行者模型 → 监听 → repo_root → 审批链 → sync.auto）：
+	// 金样锁的就是它，桌面前端按 advanced 分组渲染、不依赖切片原始顺序。
 	return []Field{
 		{Key: "role", Kind: KindSelect, Title: "这台机器的角色",
 			Default: roleDefault, Options: RoleOptions(goos), Notice: roleNotice},
-		listenField,
-		{Key: "listen", Kind: KindInput, Title: "监听地址 listen",
-			Default: cfg.Listen, Roles: []string{RoleExecutor, RoleBoth},
-			ShowWhen: &Cond{Key: "listen_preset", Equal: listenCustom}},
 		{Key: "executor_default", Kind: KindSelect, Title: "默认执行者",
 			Default: execDef, Options: ExecutorOptions(rs), Roles: []string{RoleExecutor, RoleBoth},
 			Advanced: true},
 		{Key: "executor_model", Kind: KindInput, Title: "执行者模型（空=用执行者自身默认）",
 			Default: cfg.Executor.Model, Roles: []string{RoleExecutor, RoleBoth}, Advanced: true},
+		listenField,
+		{Key: "listen", Kind: KindInput, Title: "监听地址 listen",
+			Default: cfg.Listen, Roles: []string{RoleExecutor, RoleBoth},
+			ShowWhen: &Cond{Key: "listen_preset", Equal: listenCustom}},
 		{Key: "repo_root", Kind: KindInput, Title: "项目落点根目录 repo_root（自动登记时 clone 到这里）",
 			Default: cfg.RepoRoot, Roles: []string{RoleExecutor, RoleBoth}, Advanced: true},
 		{Key: "approver_executor", Kind: KindSelect, Title: "审批链执行者",
