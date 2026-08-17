@@ -1,6 +1,7 @@
 package agentd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,8 +9,10 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -22,7 +25,10 @@ func newAdminServer(t *testing.T) *Server {
 		Listen:  "127.0.0.1:0",
 		Token:   "t",
 		DataDir: dir,
-		Targets: map[string]config.Target{},
+		// StallTimeout 必须有正时长：config.Load 重读时校验要求 >0，
+		// TestAddAndRemoveMachine 会从文件重新加载
+		StallTimeout: 2 * time.Hour,
+		Targets:      map[string]config.Target{},
 	}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatalf("准备配置失败: %v", err)
@@ -104,5 +110,62 @@ func TestSwapConfMutateErrorAborts(t *testing.T) {
 	}
 	if len(s.conf().Targets) != 0 {
 		t.Fatal("mutate 失败后不该换快照")
+	}
+}
+
+func TestValidateAddMachine(t *testing.T) {
+	existing := map[string]config.Target{"dup": {Addr: "1.2.3.4:7777", Token: "t"}}
+	cases := []struct {
+		name    string
+		req     proto.AddMachineReq
+		wantErr bool
+		isDup   bool
+	}{
+		{"正常", proto.AddMachineReq{Name: "box", Addr: "10.0.0.1:7777", Token: "t"}, false, false},
+		{"名字为空", proto.AddMachineReq{Name: "", Addr: "10.0.0.1:7777", Token: "t"}, true, false},
+		{"名字含空格", proto.AddMachineReq{Name: "my box", Addr: "10.0.0.1:7777", Token: "t"}, true, false},
+		{"重名", proto.AddMachineReq{Name: "dup", Addr: "10.0.0.1:7777", Token: "t"}, true, true},
+		{"地址缺端口", proto.AddMachineReq{Name: "box", Addr: "10.0.0.1", Token: "t"}, true, false},
+		{"令牌为空", proto.AddMachineReq{Name: "box", Addr: "10.0.0.1:7777", Token: ""}, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateAddMachine(c.req, existing)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("wantErr=%v，实际 %v", c.wantErr, err)
+			}
+			if c.isDup && !errors.Is(err, ErrMachineExists) {
+				t.Fatalf("重名应可被 errors.Is(ErrMachineExists) 识别，实际 %v", err)
+			}
+		})
+	}
+}
+
+func TestAddAndRemoveMachine(t *testing.T) {
+	s := newAdminServer(t)
+	req := proto.AddMachineReq{Name: "box", Addr: "10.0.0.1:7777", Token: "secret", User: "me"}
+	if err := s.addMachine(req); err != nil {
+		t.Fatalf("新增失败: %v", err)
+	}
+	got, ok := s.conf().Targets["box"]
+	if !ok || got.Addr != "10.0.0.1:7777" || got.Token != "secret" || got.User != "me" {
+		t.Fatalf("落库内容不对: %+v ok=%v", got, ok)
+	}
+	// 落盘后重新读文件，必须还在（否则重启即丢）
+	reloaded, err := config.Load(s.cfgPath)
+	if err != nil {
+		t.Fatalf("重读配置失败: %v", err)
+	}
+	if _, ok := reloaded.Targets["box"]; !ok {
+		t.Fatal("配置文件里没有新增的机器")
+	}
+	if err := s.removeMachine("box"); err != nil {
+		t.Fatalf("删除失败: %v", err)
+	}
+	if _, ok := s.conf().Targets["box"]; ok {
+		t.Fatal("删除后仍在内存里")
+	}
+	if err := s.removeMachine("box"); !errors.Is(err, ErrMachineNotFound) {
+		t.Fatalf("删除不存在的机器应返回 ErrMachineNotFound，实际 %v", err)
 	}
 }

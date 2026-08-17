@@ -215,6 +215,22 @@ type FileWriteResp struct {
 	Size   int64  `json:"size"`
 }
 
+// AddMachineReq 是 POST /api/machines 的请求体。
+//
+// **Token 只进不出**：本结构仅用于反序列化请求。任何响应体、任何日志
+// 都不得包含它——proto.Machine 从设计之初就没有 Token 字段，这条性质
+// 必须保持。
+//
+// Force=true 跳过可达性探测直接落库，用于「对端临时离线但确认地址无误」
+// 的场景；默认 false，让粘错的地址或令牌当场暴露。
+type AddMachineReq struct {
+	Name  string `json:"name"`
+	Addr  string `json:"addr"`
+	Token string `json:"token"`
+	User  string `json:"user"`
+	Force bool   `json:"force"`
+}
+
 // FileConflictResp 是 409 的响应体。
 //
 // 带上 Current（磁盘现状的完整读取结论）是为了让冲突界面一次成型：用户要在
