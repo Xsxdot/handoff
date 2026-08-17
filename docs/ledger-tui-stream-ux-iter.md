@@ -15,3 +15,4 @@
 - 2026-08-17 Task 5 终审完成，commit 范围 `f08c27fa..f791d3fb`：相对基线完整 diff 复审通过；终审修复回翻回调稳定性与运行中本地时钟，最终全量 57 files/566 tests、typecheck 通过、lint 0 errors/10 既有 warnings；真机走查留给审核者执行，不算 BLOCKED。
 - 2026-08-17 返工缺陷 A 完成，commit 范围 `f85d70b0..0ff92dda`：forwardTo 仅透传 X-Handoff-* 响应头并新增跨机回归；RED 原始失败为 `X-Handoff-Frames-Size = ""`，修复后 Forward 测试通过，`gofmt -l .` 无输出。
 - 2026-08-17 返工缺陷 B 完成，commit 范围 `df1c7c9f..125ca995`：useFramesStream 增加 sizeUnknown，ConversationStream 如实提示缺失边界并接线 TuiTab；2 files/12 tests、typecheck 通过，旧版 agentd 的静默降级已改为可见状态。
+- 2026-08-17 返工缺陷 C 完成，commit 范围 `fdc0b34b..87545633`：groupBlocks 过滤 quiet event 与空 text/thinking，保留有内容块和 unknown 的分隔语义；RED 原始失败为 5 个流单元而非 1 组，修复后 task 测试 17 files/134 tests、typecheck 通过。
