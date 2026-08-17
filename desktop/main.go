@@ -335,9 +335,16 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 			return
 		}
 
-		cfg, err := config.Load(config.DefaultPath())
+		// 承重（回滚 firstRun 写盘）：config.Load 在文件不存在时会自动生成默认
+		// 配置写盘（含随机 token、loopback 监听）。取消向导时若不删掉这份文件，
+		// 下次启动 Resolve 会认为已配置，向导将永远不再出现。因此先记下文件
+		// 原本是否存在，出错时据此回滚。
+		path := config.DefaultPath()
+		_, statErr := os.Stat(path)
+		existed := statErr == nil
+		cfg, err := config.Load(path)
 		if err != nil {
-			logger.Error("加载配置失败，不进入问答", "path", config.DefaultPath(), "cause", err)
+			logger.Error("加载配置失败，不进入问答", "path", path, "cause", err)
 			return
 		}
 		// 桌面壳也要探测工具链：AskAll 里 ExecutorOptions(nil) 会是空选项列表，
@@ -352,19 +359,26 @@ func startWizard(app *application.App, win *application.WebviewWindow) {
 		if err != nil {
 			// 承重：AskAll 出错绝不写盘。取消或问答失败都等于放弃本次配置
 			if errors.Is(err, initflow.ErrCanceled) {
-				logger.Info("首次配置已取消，不写盘", "path", config.DefaultPath())
+				logger.Info("首次配置已取消，不写盘", "path", path)
 				tr.Notice("已取消，未保存任何配置。关闭窗口重新打开即可重新配置。")
 			} else {
-				logger.Error("首次配置问答失败，不写盘", "path", config.DefaultPath(), "cause", err)
+				logger.Error("首次配置问答失败，不写盘", "path", path, "cause", err)
+			}
+			// 回滚 config.Load 的 firstRun 写盘：文件原本不存在，这次 Load 却已把
+			// 默认配置写下。不删则下次启动被判为已配置，向导永不再现。
+			if !existed {
+				if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+					logger.Warn("回滚首次运行写盘的默认配置失败", "path", path, "cause", rerr)
+				}
 			}
 			return
 		}
-		if err := config.Save(config.DefaultPath(), cfg); err != nil {
-			logger.Error("保存配置失败", "path", config.DefaultPath(), "cause", err)
+		if err := config.Save(path, cfg); err != nil {
+			logger.Error("保存配置失败", "path", path, "cause", err)
 			tr.Notice("保存配置失败：" + err.Error())
 			return
 		}
-		logger.Info("首次配置已写盘", "path", config.DefaultPath(), "role", role)
+		logger.Info("首次配置已写盘", "path", path, "role", role)
 		app.Event.Emit("wizard-done")
 
 		ep := shell.Endpoint{Addr: cfg.Listen, Token: cfg.Token}

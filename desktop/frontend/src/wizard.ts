@@ -51,6 +51,7 @@ function render(q: Question) {
     box.appendChild(btn);
 
     function submit() {
+        if (btn.disabled) return;   // 已提交过：下一问 render 会重建，这里拦双发
         btn.disabled = true;          // 防重复提交：一问一答，多发一次会错位
         Events.Emit("wizard-answer", read());
     }

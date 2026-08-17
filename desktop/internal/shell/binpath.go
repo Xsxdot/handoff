@@ -51,15 +51,22 @@ func ResolveBinPath(explicit string) (string, error) {
 		return "", fmt.Errorf("找不到 handoff 二进制，尝试过的路径：无")
 	}
 	var tried []string
+	// lastErr 记下最后一个候选的具体失败原因：全部候选都失败时把它带上，
+	// 否则用户把路径写错成目录只会看到笼统的「找不到可用」，排错成本高。
+	var lastErr error
 	for _, c := range candidates {
 		tried = append(tried, c)
 		abs, err := resolveOne(c)
 		if err != nil {
 			// 继续试下一个候选；所有候选都失败时在下面统一报错
+			lastErr = err
 			continue
 		}
 		slog.Debug("已解析 agentd 二进制绝对路径", "bin", abs)
 		return abs, nil
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("找不到可用的 handoff 二进制，尝试过：%s；%w", tried, lastErr)
 	}
 	return "", fmt.Errorf("找不到可用的 handoff 二进制，尝试过：%s", tried)
 }

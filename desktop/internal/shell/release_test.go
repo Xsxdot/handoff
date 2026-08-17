@@ -25,6 +25,9 @@ func TestDecideReleaseThreeStates(t *testing.T) {
 		// 猜错的代价不对称——不覆盖最坏是用户少了个新特性，
 		// 覆盖错了是把用户手装的二进制换掉。
 		{"已有但版本判不出就直接用", "/home/u/.local/bin/handoff", "", "v1.2.0", shell.DecisionUseExisting},
+		// 内嵌版本判不出（开发构建未注入）也必须偏保守：不知道内嵌的多新，
+		// 就不能假设覆盖旧版安全，直接用用户的。
+		{"已有但内嵌版本判不出就偏保守直接用", "/home/u/.local/bin/handoff", "v1.1.0", "", shell.DecisionUseExisting},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

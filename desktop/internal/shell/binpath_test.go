@@ -56,3 +56,16 @@ func TestResolveBinPathFollowsSymlink(t *testing.T) {
 		t.Errorf("符号链接没有被解开：%q", got)
 	}
 }
+
+// 把路径写成目录（如 ~/.local/bin 本身）也必须报错：Stat 会通过、
+// 但不是常规文件。真实场景「用户把路径写错成目录」恰命中此分支。
+func TestResolveBinPathRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := shell.ResolveBinPath(dir)
+	if err == nil {
+		t.Fatal("目录路径必须报错")
+	}
+	if !strings.Contains(err.Error(), "不是常规文件") {
+		t.Errorf("报错应说明不是常规文件，实际：%v", err)
+	}
+}
