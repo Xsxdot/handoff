@@ -26,6 +26,7 @@ function props(over: {
   selectedKey?: string | null
   ticketCount?: number
   inPlaceTask?: boolean
+  ticketsByDir?: Map<string, number>
   onSelectDir?: (b: BaseDir) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
   onOpenBoard?: () => void
@@ -55,6 +56,7 @@ function props(over: {
     tree, tasks,
     selectedKey: over.selectedKey ?? null,
     ticketCount: over.ticketCount ?? 0,
+    ticketsByDir: over.ticketsByDir ?? new Map(),
     onSelectDir: over.onSelectDir ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
@@ -72,6 +74,46 @@ function props(over: {
 }
 
 describe('ProjectTree', () => {
+  it('目录行按工单 → 任务 → 时间排序，主工作树恒第一', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'handoff',
+        locations: [{
+          machine: '', name: 'handoff', path: '/r', probe_error: '',
+          workspaces: [
+            { path: '/r/main', branch: 'main', head: 'a', is_main: true, managed: false, created_at: '2020-01-01T00:00:00Z' },
+            { path: '/r/quiet', branch: 'quiet', head: 'b', is_main: false, managed: true, created_at: '2026-08-17T00:00:00Z' },
+            { path: '/r/busy', branch: 'busy', head: 'c', is_main: false, managed: true, created_at: '2020-01-01T00:00:00Z' },
+            { path: '/r/blocked', branch: 'blocked', head: 'd', is_main: false, managed: true, created_at: '2020-01-02T00:00:00Z' },
+          ],
+        }],
+      }],
+      unowned: [],
+    }
+    const tasks = [
+      task({ id: 'B1', project_id: 'p1', machine: '', work_dir: '/r/busy', state: 'running', name: 'busy 1' }),
+      task({ id: 'B2', project_id: 'p1', machine: '', work_dir: '/r/busy', state: 'running', name: 'busy 2' }),
+      task({ id: 'A1', project_id: 'p1', machine: '', work_dir: '/r/blocked', state: 'waiting_answer', name: 'blocked' }),
+    ]
+    render(
+      <ProjectTree
+        tree={tree}
+        tasks={tasks}
+        selectedKey={null}
+        ticketCount={1}
+        ticketsByDir={new Map([['/r/blocked', 1]])}
+        onSelectDir={vi.fn()}
+        onOpenTask={vi.fn()}
+        onOpenBoard={vi.fn()}
+        onOpenTickets={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByTestId('workspace-row').map((row) => row.textContent?.replace(/\d+$/, ''))).toEqual([
+      'main', 'blocked', 'busy', 'quiet',
+    ])
+  })
+
   it('层级是 项目 → 机器 → 目录 → 任务', () => {
     render(<ProjectTree {...props({ inPlaceTask: true })} />)
     expect(screen.getByText('handoff')).toBeInTheDocument()
@@ -97,7 +139,7 @@ describe('ProjectTree', () => {
     }
     render(
       <ProjectTree
-        tree={tree} tasks={[]} selectedKey={null} ticketCount={0}
+        tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
         onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
@@ -117,7 +159,7 @@ describe('ProjectTree', () => {
       }],
       unowned: [],
     }
-    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
     expect(screen.getByText('已断开')).toBeInTheDocument()
     expect(document.querySelector('.bg-state-failed')).not.toBeNull()
   })
@@ -138,7 +180,7 @@ describe('ProjectTree', () => {
     }
     render(
       <ProjectTree
-        tree={tree} tasks={[]} selectedKey={null} ticketCount={0}
+        tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
         onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
@@ -152,7 +194,7 @@ describe('ProjectTree', () => {
     const tasks = [task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
     render(
       <ProjectTree
-        tree={tree} tasks={tasks} selectedKey={null} ticketCount={0}
+        tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
         onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
@@ -247,7 +289,7 @@ describe('ProjectTree', () => {
     const onOpenTask = vi.fn()
     const tree: ProjectTreeResp = { projects: [], unowned: [] }
     const tasks = [task({ id: 'U1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
-    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} onSelectDir={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
     fireEvent.click(screen.getByText('游离任务'))
     expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
   })

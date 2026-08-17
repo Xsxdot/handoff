@@ -270,6 +270,7 @@ export function Shell() {
             tasks={tasks}
             selectedKey={wb.base?.key ?? null}
             ticketCount={tickets.count}
+            ticketsByDir={tickets.byWorkDir}
             onSelectDir={wb.select}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}

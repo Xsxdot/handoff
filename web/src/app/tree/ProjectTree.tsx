@@ -31,6 +31,7 @@ import {
   Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
+import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
@@ -49,6 +50,10 @@ export interface ProjectTreeProps {
   tasks: Task[]
   selectedKey: string | null            // 当前选中目录的 BaseDir.key
   ticketCount: number                   // 挂起工单总数，0 时不显示角标
+  // ticketsByDir 是「目录绝对路径 → 挂起工单张数」，来自 useGlobalTickets。
+  // 只用于目录行排序，不显示在界面上——工单数已经由 ticketCount 角标在
+  // 底部说了一次，行上再说一遍是噪音。
+  ticketsByDir: Map<string, number>
   onSelectDir: (base: BaseDir) => void
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
@@ -170,7 +175,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -256,6 +261,33 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
     return {
       running: under.filter((t) => t.state === 'running').length,
       pending: under.filter((t) => t.state === 'waiting_answer' || t.state === 'waiting_review').length,
+    }
+  }
+
+  // wsMetrics 给一个目录行算出三个排序键。
+  //
+  // 工单归集：ticketsByDir 的键是任务的 work_dir，而原地模式任务的 work_dir
+  // 是空串——它们的工单在那张表里没有键。这里按 is_main 把它们补回来，判据与
+  // tasksOfWorkspace 完全一致（work_dir 为空归主目录），两处不会分叉。
+  const wsMetrics = (project: ProjectNode, machine: string, ws: Workspace): WorkspaceMetrics => {
+    const under = tasksOfWorkspace(tasks, project, machine, ws)
+    let tickets = ticketsByDir.get(ws.path) ?? 0
+    if (ws.is_main) {
+      // 原地模式任务的工单：它们在 byWorkDir 里没有键，逐个从任务侧找回来。
+      // 只有主目录走这一支，与 tasksOfWorkspace 的回退口径对齐
+      for (const t of tasks) {
+        if (t.work_dir === '' && t.project_id === project.project_id && t.machine === machine) {
+          tickets += ticketsByDir.get('') ?? 0
+          break
+        }
+      }
+    }
+    return {
+      tickets,
+      tasks: under.filter(
+        (t) => t.state === 'running' || t.state === 'waiting_answer' || t.state === 'waiting_review',
+      ).length,
+      createdAt: ws.created_at ?? '',
     }
   }
 
@@ -414,7 +446,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
 
                     {problem === '' &&
                       mOpen &&
-                      loc.workspaces.map((ws) => {
+                      sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws)).map((ws) => {
                         const base = workspaceBase(project, loc.machine, ws)
                         const dSelected = selectedKey === base.key
                         const under = wsCounts(project, loc.machine, ws)
