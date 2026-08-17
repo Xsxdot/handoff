@@ -12,7 +12,7 @@ describe('useMachineCaps', () => {
   it('三态原样转达：true / false / 没上报', async () => {
     fetchMachines.mockResolvedValue({
       machines: [
-        { name: '', pty_supported: true },
+        { name: '', pty_supported: true, scratch_root: '/data/scratch' },
         { name: 'winbox', pty_supported: false },
         { name: 'oldbox' }, // 老 agentd：字段缺席
       ],
@@ -22,6 +22,8 @@ describe('useMachineCaps', () => {
     expect(result.current.pty('winbox')).toBe(false)
     // 缺席必须是 null 而不是 false：老 agentd 很可能是支持的，只是没上报
     expect(result.current.pty('oldbox')).toBeNull()
+    expect(result.current.scratchRoot('')).toBe('/data/scratch')
+    expect(result.current.scratchRoot('oldbox')).toBe('')
   })
 
   it('还没拉到、或机器不在列表里，一律 null（不猜）', async () => {

@@ -36,7 +36,12 @@ import {
 // `integration/b2-b3` 这样的分支），没有分支（detached）时退回目录名。
 export interface BaseDir {
   key: string
-  kind: 'workspace' | 'home'
+  // kind 三种：workspace 是 git 工作树，home 只用于浮窗终端，scratch 是 agentd
+  // 的草稿区，只被浮窗里的 file tab 用来发文件请求。
+  //
+  // scratch 刻意不伪装成 workspace：它不是 git 工作树，不该被左栏选中、也不该
+  // 有右栏文件树。把它标成 workspace 是一句半年后会骗到人的谎。
+  kind: 'workspace' | 'home' | 'scratch'
   path: string
   label: string
   projectName: string
@@ -55,6 +60,25 @@ export const HOME_BASE: BaseDir = {
   label: 'home',
   projectName: '',
   machine: '',
+}
+
+// scratchBase 把一台机器的草稿区路径做成浮窗文件 tab 使用的基准。
+//
+// 参数：
+//   - root: agentd 上报的草稿区绝对路径
+//   - machine: 机器名；空串表示本机
+//
+// 返回：不进入 byBase 的草稿区基准，只供 FileTab 读取路径与机器名发文件请求。
+// 注意：草稿区不是可选中的基准目录，左栏和面包屑都不会展示它。
+export function scratchBase(root: string, machine: string): BaseDir {
+  return {
+    key: `scratch:${machine}:${root}`,
+    kind: 'scratch',
+    path: root,
+    label: '临时',
+    projectName: '',
+    machine,
+  }
 }
 
 export interface WorkbenchApi {

@@ -12,3 +12,4 @@
 | 2026-08-18 | Task 8 | 0 | 完成；spec 符合性与代码质量双裁决通过；删除 PICK_HINT/awaiting/hint/onBack，接通任务选择器并同步空态快捷键文案 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck`；定向 `src/app/workbench/ src/app/shell/` 160 tests PASS |
 | 2026-08-18 | Task 9 | 0 | 完成；spec 符合性与代码质量双裁决通过；新增边缘/中间投放纯函数，三处任务行拖源与跨基准投放接线 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck`；拖放定向 41 tests PASS；`git diff --check` |
 | 2026-08-18 | Task 10 | 0 | 完成；spec 符合性与代码质量双裁决通过；新增文件先列举挑号、中央 file tab 接线、错误原文与右栏根层刷新 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck`；Task 10 定向 74 tests PASS；`git diff --check` |
+| 2026-08-18 | Task 11 | 0 | 完成；spec 符合性与代码质量双裁决通过；浮窗支持临时文件 tab、草稿寄存、scratch 能力隐藏入口与关闭确认分流 | `HEAD^..HEAD`（本 task 提交） | `cd web && npm run test && npm run lint && npm run typecheck`；Task 11 定向 33 tests PASS；`git diff --check` |

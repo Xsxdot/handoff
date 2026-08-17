@@ -49,7 +49,8 @@ function hotkeyOf(e: React.KeyboardEvent): PickKind | null {
 }
 
 export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
-  // home 基准只留终端（spec §2.6）；终端不可用时把它摘掉，两条过滤叠加
+  // home 基准只留终端（spec §2.6）；scratch 从不会被选中、也不会渲染 BlankTab，
+  // 因而不需要在这里增加第三套入口；终端不可用时把它摘掉，两条过滤叠加
   const items = (base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS).filter(
     (i) => i.kind !== 'terminal' || !terminalUnavailable,
   )
@@ -87,6 +88,7 @@ export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
     >
       <p className="text-xs text-muted-foreground">
         基准目录 <span className="font-mono text-foreground">{base.label}</span>
+        {/* scratch 只服务浮窗 file tab，不会成为当前选中的 BlankTab 基准。 */}
         {base.kind === 'home' && '（不挂在任何项目上）'}
       </p>
       <ul className="flex w-full max-w-xs flex-col gap-1">

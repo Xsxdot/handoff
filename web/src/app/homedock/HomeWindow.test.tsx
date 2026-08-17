@@ -3,13 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { HomeWindow } from './HomeWindow'
 
 const tabs = [
-  { id: 'a', seq: 1, machine: '' },
-  { id: 'b', seq: 2, machine: '' },
+  { id: 'a', kind: 'terminal' as const, seq: 1, machine: '' },
+  { id: 'b', kind: 'terminal' as const, seq: 2, machine: '' },
 ]
 const geom = { x: 100, y: 100, w: 600, h: 300 }
 const base = () => ({
   tabs, activeId: 'a', geom,
-  onGeom: vi.fn(), onActivate: vi.fn(), onNew: vi.fn(),
+  onGeom: vi.fn(), onActivate: vi.fn(), onNew: vi.fn(), onNewFile: vi.fn(),
   onKill: vi.fn(), onCollapse: vi.fn(),
   renderTab: (t: { id: string }) => <div data-testid={`content-${t.id}`} />,
 })
@@ -64,7 +64,7 @@ describe('HomeWindow', () => {
     const onNew = vi.fn()
     render(
       <HomeWindow
-        tabs={[{ id: 'a', seq: 1, machine: '' }]}
+        tabs={[{ id: 'a', kind: 'terminal', seq: 1, machine: '' }]}
         activeId="a"
         geom={{ x: 0, y: 0, w: 600, h: 300 }}
         onGeom={vi.fn()}
@@ -78,5 +78,31 @@ describe('HomeWindow', () => {
     fireEvent.click(screen.getByLabelText('新终端'))
     expect(onNew).toHaveBeenCalledTimes(1)
     expect(onNew.mock.calls[0]).toHaveLength(0)
+  })
+
+  it('tab 条上有「新终端」与「新建临时文件」两个入口', () => {
+    const p = base()
+    render(<HomeWindow {...p} />)
+    fireEvent.click(screen.getByLabelText('新建临时文件'))
+    expect(p.onNewFile).toHaveBeenCalledTimes(1)
+    expect(p.onNewFile.mock.calls[0]).toHaveLength(0)
+    expect(screen.getByLabelText('新终端')).toBeInTheDocument()
+  })
+
+  it('file 种类的 tab 标题显示文件名而不是 bash · home N', () => {
+    render(
+      <HomeWindow
+        {...base()}
+        tabs={[{ id: 'f', kind: 'file', rel: 'untitled-1.md', seq: 1, machine: '' }]}
+        activeId="f"
+        renderTab={() => <div />}
+      />,
+    )
+    expect(screen.getByText('untitled-1.md', { selector: 'button' })).toBeInTheDocument()
+    expect(screen.queryByText(/bash · home/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /关闭 untitled-1\.md/ })).toHaveAttribute(
+      'title',
+      '关闭（文件保留在草稿区）',
+    )
   })
 })

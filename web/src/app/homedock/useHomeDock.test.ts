@@ -61,8 +61,42 @@ describe('useHomeDock', () => {
   it('adopt 收编既有会话，但不抢焦点也不弹窗', () => {
     // why：恢复是后台动作。页面一加载就弹出浮窗，等于替用户点了一下
     const { result } = renderHook(() => useHomeDock())
-    act(() => result.current.adopt({ id: 'r1', seq: 1, sessionId: 's1', machine: '' }))
+    act(() => result.current.adopt({ id: 'r1', kind: 'terminal', seq: 1, sessionId: 's1', machine: '' }))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.windowOpen).toBe(false)
+  })
+
+  it('newFile 建出一个 file 种类的 tab 并激活它、打开浮窗', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() => result.current.newFile('untitled-1.md'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.tabs[0]).toMatchObject({ kind: 'file', rel: 'untitled-1.md' })
+    expect(result.current.activeId).toBe(result.current.tabs[0].id)
+    expect(result.current.windowOpen).toBe(true)
+  })
+
+  it('终端与文件共用同一个只增不减的 seq 计数器，不会撞号', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() => result.current.newTerminal())
+    act(() => result.current.newFile('untitled-1.md'))
+    act(() => result.current.newTerminal())
+    expect(result.current.tabs.map((t) => t.seq)).toEqual([1, 2, 3])
+  })
+
+  it('setDraft 把草稿寄存到 tab 上，切走再切回来还在', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() => result.current.newFile('untitled-1.md'))
+    const fileId = result.current.tabs[0].id
+    act(() => result.current.newTerminal())
+    act(() => result.current.setDraft(fileId, { draft: '临时内容', baseSha: 'sha-1' }))
+    expect(result.current.tabs.find((t) => t.id === fileId)).toMatchObject({
+      draft: '临时内容',
+      baseSha: 'sha-1',
+    })
+    act(() => result.current.activate(fileId))
+    expect(result.current.tabs.find((t) => t.id === fileId)).toMatchObject({
+      draft: '临时内容',
+      baseSha: 'sha-1',
+    })
   })
 })

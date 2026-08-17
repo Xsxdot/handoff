@@ -37,7 +37,8 @@ import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
-import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import { createUntitledFile } from '../workbench/newFile'
 import { MAX_GROUPS, type TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
@@ -68,6 +69,10 @@ export function Shell() {
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
   const caps = useMachineCaps()
+  // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
+  // 浮窗里的入口不渲染。
+  const scratchRoot = caps.scratchRoot('')
+  const [scratchError, setScratchError] = useState('')
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
   const split = wb.split
@@ -105,7 +110,7 @@ export function Shell() {
   // 就弹出浮窗，等于替用户点了一下
   const ptyRestore = usePtyRestore((b, sessionId) => {
     if (b.kind === 'home') {
-      dock.adopt({ id: sessionId, seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+      dock.adopt({ id: sessionId, kind: 'terminal', seq: dock.tabs.length + 1, sessionId, machine: b.machine })
       return
     }
     wb.restoreTerminal(b, sessionId)
@@ -131,6 +136,9 @@ export function Shell() {
   // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
   // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
   const [closingDirtyFile, setClosingDirtyFile] = useState<{ tabId: string; rel: string } | null>(null)
+  // closingDirtyHome 记「哪个浮窗文件 tab 有草稿、正在等确认」。它不复用
+  // closingDirtyFile：浮窗 tab 不在 wb 里，确认后必须调 dock.closeTab。
+  const [closingDirtyHome, setClosingDirtyHome] = useState<{ id: string; rel: string } | null>(null)
   // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
   // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
   const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
@@ -221,6 +229,15 @@ export function Shell() {
   const killHomeSession = (id: string) => {
     const tab = dock.tabs.find((t) => t.id === id)
     if (!tab) return
+    if (tab.kind === 'file') {
+      if (tab.draft !== undefined) {
+        setClosingDirtyHome({ id, rel: tab.rel ?? '未命名' })
+      } else {
+        // 文件 tab 关闭只卸载编辑器，草稿区里的文件仍保留在磁盘上。
+        dock.closeTab(id)
+      }
+      return
+    }
     if (!tab.sessionId) {
       // 会话还没建成（比如刚点完新终端立刻点 ×），没有可删的东西，直接移掉
       dock.closeTab(id)
@@ -228,6 +245,16 @@ export function Shell() {
     }
     setCloseError('')
     setClosingHome({ id, sessionId: tab.sessionId, machine: tab.machine })
+  }
+
+  // newScratchFile 建一个草稿区文件并把它收进浮窗。
+  // 建文件是一次 POST，所以放在 Shell 而不是 useHomeDock（那个 hook 不发请求）。
+  const newScratchFile = () => {
+    if (scratchRoot === '') return
+    setScratchError('')
+    void createUntitledFile(scratchBase(scratchRoot, ''))
+      .then((rel) => dock.newFile(rel))
+      .catch((err: unknown) => setScratchError(errorMessage(err)))
   }
 
   const onUnregister = async (name: string, machine: string) => {
@@ -364,6 +391,7 @@ export function Shell() {
         </main>
       </div>
 
+      {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
       {wb.base && wb.base.kind === 'workspace' && (
         <div className="w-[280px] shrink-0">
           <FileTree
@@ -383,15 +411,35 @@ export function Shell() {
         <HomeDock
           dock={dock}
           onKill={killHomeSession}
-          renderTab={(t) => (
-            <TerminalTab
-              base={HOME_BASE}
-              seq={t.seq}
-              sessionId={t.sessionId}
-              onSession={(id) => dock.setSession(t.id, id)}
-            />
-          )}
+          onNewFile={scratchRoot === '' ? undefined : newScratchFile}
+          renderTab={(t) =>
+            t.kind === 'file' ? (
+              <FileTab
+                base={scratchBase(scratchRoot, t.machine)}
+                rel={t.rel ?? ''}
+                initial={
+                  t.draft !== undefined && t.baseSha !== undefined
+                    ? { draft: t.draft, baseSha: t.baseSha }
+                    : undefined
+                }
+                onDraftChange={(d) => dock.setDraft(t.id, d)}
+              />
+            ) : (
+              <TerminalTab
+                base={HOME_BASE}
+                seq={t.seq}
+                sessionId={t.sessionId}
+                onSession={(id) => dock.setSession(t.id, id)}
+              />
+            )
+          }
         />
+      )}
+
+      {scratchError !== '' && (
+        <p role="alert" className="fixed right-5 bottom-24 z-40 rounded border border-destructive/30 bg-background px-3 py-1.5 text-xs text-destructive shadow">
+          临时文件失败：{scratchError}
+        </p>
       )}
 
       {overlay === 'board' && (
@@ -427,10 +475,10 @@ export function Shell() {
       />
 
       <ConfirmDialog
-        open={closingDirtyFile !== null}
+        open={closingDirtyFile !== null || closingDirtyHome !== null}
         title="关闭未保存的文件"
         description={
-          `${closingDirtyFile?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
+          `${closingDirtyFile?.rel ?? closingDirtyHome?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
           // 文案要点明「切 tab 不丢」：Task 8 刚让草稿在切走时回写进 tab 内容，
           // 用户不知道这件事，误以为必须二选一。切走是零成本的
           '只是想看别的东西的话直接切到别的 tab——草稿会留着。'
@@ -439,9 +487,11 @@ export function Shell() {
         destructive
         onConfirm={() => {
           if (closingDirtyFile) wb.closeById(closingDirtyFile.tabId)
+          if (closingDirtyHome) dock.closeTab(closingDirtyHome.id)
           setClosingDirtyFile(null)
+          setClosingDirtyHome(null)
         }}
-        onCancel={() => setClosingDirtyFile(null)}
+        onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
       />
 
       <AddProjectWizard
