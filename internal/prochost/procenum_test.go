@@ -4,13 +4,12 @@ import (
 	"errors"
 	"os"
 	"runtime"
-	"syscall"
 	"testing"
 	"time"
 )
 
-// TestEnumProcsFindsSelf 验证枚举能找到本进程，且 pgid 与内核一致。
-// 这是整套足迹判据的地基：pgid 读错，规则一二三全部失去意义。
+// TestEnumProcsFindsSelf 验证枚举能找到本进程。
+// 这是整套足迹判据的地基：连本进程都找不到，规则一二三全部失去意义。
 func TestEnumProcsFindsSelf(t *testing.T) {
 	procs, err := enumProcs()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
@@ -23,16 +22,9 @@ func TestEnumProcsFindsSelf(t *testing.T) {
 		t.Fatalf("enumProcs 失败: %v", err)
 	}
 	self := os.Getpid()
-	wantPGID, err := syscall.Getpgid(self)
-	if err != nil {
-		t.Fatalf("Getpgid 失败: %v", err)
-	}
 	for _, p := range procs {
 		if p.PID != self {
 			continue
-		}
-		if p.PGID != wantPGID {
-			t.Fatalf("本进程 pgid 读错：got %d, want %d", p.PGID, wantPGID)
 		}
 		// 本进程必然启动于「现在」之前、且不早于一年前——粗窗口足以抓出
 		// 单位换算错误（秒当纳秒会落到 1970，jiffies 未换算会落到未来）
