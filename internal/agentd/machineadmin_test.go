@@ -1,4 +1,4 @@
-// 本文件白盒测试 Server 的配置读写：并发读快照、落盘失败回滚、
+// 本文件白盒测试 Server 的配置读写：并发读快照、落盘失败快照不变、
 // 新增/删除开发机的领域逻辑（validateAddMachine / addMachine / removeMachine）。
 package agentd
 
@@ -74,8 +74,9 @@ func TestConfSnapshotConcurrent(t *testing.T) {
 	}
 }
 
-// 落盘失败时内存快照必须回滚，否则重启后配置凭空消失。
-func TestSwapConfRollbackOnSaveFailure(t *testing.T) {
+// 落盘失败时内存快照保持不变：先落盘成功才换快照，失败时内存未曾改变，
+// 绝无「内存有、磁盘没有」的窗口。
+func TestSwapConfKeepsSnapshotOnSaveFailure(t *testing.T) {
 	s := newAdminServer(t)
 	// 把配置路径指到一个不可写的位置：父路径里夹了一个普通文件，
 	// MkdirAll 建不出目录（ENOTDIR），Save 必失败——父目录「不存在」不够，
@@ -94,7 +95,7 @@ func TestSwapConfRollbackOnSaveFailure(t *testing.T) {
 		t.Fatal("落盘应当失败")
 	}
 	if got := len(s.conf().Targets); got != before {
-		t.Fatalf("落盘失败后内存未回滚：期望 %d 台，实际 %d 台", before, got)
+		t.Fatalf("落盘失败后内存快照应保持不变：期望 %d 台，实际 %d 台", before, got)
 	}
 }
 

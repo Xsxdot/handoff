@@ -88,7 +88,7 @@ type Server struct {
 	st      *store.Store
 	hub     *Hub
 	log     *slog.Logger
-	mgr *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	mgr     *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -235,8 +235,7 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 //   - mutate 的错误、或落盘错误；成功时 nil
 //
 // 注意：
-//   - 落盘失败会**回滚内存快照**。内存与磁盘不一致会让「加了机器、重启后
-//     消失」这种最难查的现象出现，宁可整个操作失败
+//   - 落盘成功才换快照；落盘失败时内存未曾改变——绝无「内存有、磁盘没有」的窗口
 //   - 只深拷贝 Targets 这一层。其余字段在 agentd 运行期不可变，共享是安全的
 func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	s.cfgMu.Lock()
@@ -255,12 +254,11 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		s.log.Error("未注入配置文件路径，拒绝写配置")
 		return errors.New("agentd 未注入配置文件路径，无法写配置")
 	}
-	s.cfg.Store(&next)
 	if err := config.Save(s.cfgPath, &next); err != nil {
-		s.cfg.Store(old) // 磁盘没写成，内存也不能算数
-		s.log.Error("配置落盘失败，已回滚内存快照", "path", s.cfgPath, "cause", err)
+		s.log.Error("配置落盘失败，内存快照未变更", "path", s.cfgPath, "cause", err)
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
+	s.cfg.Store(&next)
 	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets))
 	return nil
 }
