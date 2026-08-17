@@ -1042,6 +1042,29 @@ StateUnconfigured
 
 **承重：`AskAll` 返回错误时绝不 `config.Save`。** 半截答案落盘会造出一份「配过但配错」的配置，而下次启动时 `Resolve` 会认为这台机器已配置，用户再也回不到向导——这个坑比取消本身糟得多。
 
+### ⚠ 必须接上 `initflow.InstallService`（2026-08-17 派发中补，原 plan 漏了）
+
+Task 1 交付时发现 `MaybeInstallService` 要调的 `installService` 住在 `cmd/service.go`，
+直接搬会造成 `initflow → cmd` 循环依赖。交付的解法是留一个函数变量
+`var initflow.InstallService func(w io.Writer, cfgPath string) error`，由 `cmd/service.go`
+的 `init()` 注入。CLI 侧因此照常工作。
+
+**但薄壳不 import `cmd`**（那正是 §4.4.2 的全部理由），所以在桌面这条路上
+`initflow.InstallService` 是 `nil`。交付已做了不 panic 的兜底，会打印
+「没有可用的服务安装入口，稍后单独重跑 handoff service install 即可」——
+**而这恰好是 W5b-2 的主场景**：一台干净机器，用户装桌面端就是为了不必去敲命令行。
+向导问完「要不要托管」再回一句「你自己去命令行装吧」，等于把这一期的价值原地抵消。
+
+所以装配时**必须**注入这个缝，指向薄壳自己的安装入口（复用 W5b-1 的
+`desktop/internal/shell/lifecycle.go`，它已持有 `newManager = service.New`）：
+
+- 在 `desktop/internal/shell` 里加一个 `func InstallService(w io.Writer, cfgPath string) error`，
+  内部走 `internal/service` 装单元（与 `EnsureRunning` 共用同一条路径，**不要另写一套**）。
+- 在 `main.go` 装配处赋值：`initflow.InstallService = shell.InstallService`。
+- 加一条测试钉住：**`initflow.InstallService` 在薄壳装配后不得为 nil**。
+  这条门的意义是防回归——将来有人重构装配顺序时，缝断掉的症状是「向导走完但 agentd
+  没被托管」，而那要等到用户重启机器才暴露。
+
 - [ ] **Step 1: 实现 Wails 侧的 `Transport`**
 
 在 `main.go` 里实现 Task 2 的 `shell.Transport`：
