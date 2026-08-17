@@ -11,7 +11,7 @@ const { useGlobalTickets } = await import('./useGlobalTickets')
 
 afterEach(() => vi.mocked(fetchTaskDetail).mockReset())
 
-const waiting = (id: string) => ({ id, state: 'waiting_answer', name: id }) as unknown as Task
+const waiting = (id: string, work_dir = '') => ({ id, state: 'waiting_answer', name: id, work_dir }) as unknown as Task
 const running = (id: string) => ({ id, state: 'running', name: id }) as unknown as Task
 
 describe('useGlobalTickets', () => {
@@ -55,5 +55,33 @@ describe('useGlobalTickets', () => {
     // 任务流每 2.5s 换一个新数组，但 waiting_answer 的 id 集合没变
     rerender({ ts: [waiting('A'), running('B')] })
     expect(fetchTaskDetail).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('byWorkDir', () => {
+  it('按 work_dir 归集工单张数，一个任务多张工单要累加', async () => {
+    vi.mocked(fetchTaskDetail).mockImplementation(async (id: string) => {
+      if (id === 'T1') return { pending_tickets: [{ id: 'K1' }, { id: 'K2' }] } as never
+      return { pending_tickets: [{ id: 'K3' }] } as never
+    })
+    const { result } = renderHook(() => useGlobalTickets([
+      waiting('T1', '/r/a'),
+      waiting('T2', '/r/b'),
+    ]))
+    await waitFor(() => expect(result.current.byWorkDir.get('/r/a')).toBe(2))
+    expect(result.current.byWorkDir.get('/r/b')).toBe(1)
+  })
+
+  it('空 work_dir 的任务不进表——它归主目录，而这里不知道谁是主目录', async () => {
+    vi.mocked(fetchTaskDetail).mockResolvedValue({ pending_tickets: [{ id: 'K1' }] } as never)
+    const { result } = renderHook(() => useGlobalTickets([waiting('T1')]))
+    await waitFor(() => expect(result.current.count).toBe(1))
+    expect(result.current.byWorkDir.size).toBe(0)
+  })
+
+  it('没有挂起工单时是空表，不是 undefined', () => {
+    const { result } = renderHook(() => useGlobalTickets([running('B')]))
+    expect(result.current.byWorkDir).toBeInstanceOf(Map)
+    expect(result.current.byWorkDir.size).toBe(0)
   })
 })
