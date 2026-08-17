@@ -27,9 +27,12 @@ import (
 var ErrCanceled = errors.New("已取消")
 
 // Option 是 Select 的一项。Value 写入配置，Label 给人看。
+//
+// json tag 是**对外契约**：桌面壳把字段表整体序列化给前端，前端按这些
+// 小写键名取值。改名等于改协议，必须同步改 desktop/frontend/src/wizard.ts。
 type Option struct {
-	Value string
-	Label string
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 // Prompter 是 init 问答的唯一入口。生产 TTY 走 huh（cmd/init_huh.go）；
