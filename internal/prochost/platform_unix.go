@@ -25,6 +25,9 @@ import (
 // lockSupported 标记本平台是否真的能加锁。
 const lockSupported = true
 
+// defaultFenceHardLimitMode 见 fence.go：本平台走 reserve_ratio，不用 TaskHardLimit。
+const defaultFenceHardLimitMode = false
+
 // flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。
 //
 // 注意：锁挂在「打开的文件描述」上而不是路径上。两个后果——同一进程内两次
