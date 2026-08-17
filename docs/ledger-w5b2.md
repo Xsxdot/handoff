@@ -15,6 +15,8 @@
 
 - 2026-08-17 Task 5（绝对二进制路径）完成，commit 67e9b774。审查双 APPROVED。审查用临时 dist 桩验证 main.go 编译通过后已删。Minor 记账 3 条：M31 binpath.go:88 `filepath.Abs(real)` 的 error 未包候选路径（Abs 出错实际不可达）；M32 审查发现工作区残留 `desktop/desktop` 二进制（实现者桩构建产物，已被 .gitignore 忽略），协调者已删；M33 建议补「显式传目录路径必须报错」用例（plan 逐字测试块之外，真实场景 `~/.local/bin` 恰命中此分支，极廉价，需 plan 所有者认可）。
 
+- 2026-08-17 Task 6（向导界面）完成，commit 631faf2c。审查双 APPROVED。wails3 不在 PATH，用 `~/go/bin/wails3`（v3.0.0-beta.8）+ `PATH="$HOME/go/bin:$PATH"` 前缀（generate:icons 子任务裸调 wails3）。事件 payload 形状 `{data:T}` 成立（读 node_modules events.d.ts 确认 WailsEvent.data 为真实字段）；Go 侧 Question{Kind,Title,Default,Options} 与前端 interface 字段名完全一致。style.css 精简重写（保留设计令牌、删模板 DOM 样式、新增向导卡片样式）；Inter-Medium.ttf 无引用已删。审查发现 tsconfig 与 TS 4.9 不兼容是模板遗留（W5b-1 的 cfa527c3），Task 6 未触碰，构建管线只跑 vite 不查类型；审查用兼容配置单独跑 tsc 零错误。Minor 记账 4 条：M34 wizard.ts:49-52 input 的 Enter keydown 回调不检查 btn.disabled，首次 emit 后到下一问 re-render 的窗口内再按 Enter 会二次 Emit 可能错位（窗口极小，建议补 `if (btn.disabled) return;`）；M35 wizard-done 文案「配置完成，正在启动 agentd…」后半句是对 Go 侧行为的推断，若启动时序不同文案失真（建议终审确认或用纯「配置完成」）；M36 confirm 恒返回 "true"/"false" 永不发空串，空答落默认只在 input 上走到（预选即默认，与 CLI 语义等价）；M37 Events.Emit 未 await（fire-and-forget，一问一答场景够用）。
+
 ## Minor 总账
 
 （终审统一 triage）
