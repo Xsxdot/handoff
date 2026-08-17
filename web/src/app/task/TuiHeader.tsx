@@ -86,7 +86,7 @@ export function TuiHeader({
                 ))}
                 {/* 锚点只覆盖已加载范围，必须写出来——不假装是全量目录 */}
                 {turnsPartial && (
-                  <p className="px-2.5 py-1 text-[11px]">仅覆盖已加载范围，更早的需先加载</p>
+                  <p className="px-2.5 py-1 text-[11px]">仅列出已加载回合；更早的回合会边跳边加载</p>
                 )}
               </div>
             )}

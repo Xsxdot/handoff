@@ -40,6 +40,11 @@ describe('TuiHeader', () => {
     fireEvent.click(screen.getByRole('button', { name: /回合 1/ }))
     expect(onJumpTurn).toHaveBeenCalledWith(1)
   })
+  it('turnsPartial 时下拉给出自动加载提示', () => {
+    render(<TuiHeader {...base} turnsPartial />)
+    fireEvent.click(screen.getByRole('button', { name: /回合 2/ }))
+    expect(screen.getByText(/边跳边加载/)).toBeInTheDocument()
+  })
   it('非 review 态不显示审阅栏按钮；无 usage 不渲染 ctx', () => {
     render(<TuiHeader {...base} reviewAvailable={false} task={{ ...task, usage: undefined } as Task} />)
     expect(screen.queryByRole('button', { name: /审阅栏/ })).not.toBeInTheDocument()
