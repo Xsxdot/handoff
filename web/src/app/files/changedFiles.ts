@@ -20,45 +20,75 @@ import { fetchTaskDiff } from '../../api/client'
 const RENAME_FROM = 'rename from '
 const RENAME_TO = 'rename to '
 
-// parseChangedFiles 解析 diff 正文，返回改动过的仓库相对路径集合。
+// ChangeStatus 是一个路径相对基线的改动类别。
+//
+// 判据全部来自 diff 的块内头行，不猜：`new file mode`=新增、`deleted file mode`=
+// 删除、`rename from/to` 两侧分别当删除与新增，其余一律 modified。
+export type ChangeStatus = 'added' | 'modified' | 'deleted'
+
+// headPaths 从 `diff --git a/<路径> b/<路径>` 头行取出两侧路径。
+//
+// 路径可能含空格，所以不能按空格切；改为找 ` b/` 这个分隔点，左右两段分别
+// 剥掉 `a/` 与 `b/` 前缀。取不出来时返回空数组（调用方跳过该行）。
+function headPaths(line: string): string[] {
+  const rest = line.slice('diff --git '.length)
+  const sep = rest.indexOf(' b/')
+  if (sep < 0) return []
+  const left = rest.slice(0, sep)
+  const right = rest.slice(sep + 1)
+  const out: string[] = []
+  if (left.startsWith('a/')) out.push(left.slice(2))
+  if (right.startsWith('b/')) out.push(right.slice(2))
+  return out
+}
+
+// parseChangedFiles 解析 diff 正文，返回「相对路径 → 改动类别」的映射。
 //
 // 参数：
 //   - diff: `GET /api/tasks/{id}/diff` 返回的正文（可能为空串）
 //
-// 返回：相对路径集合。解析不出任何头行时返回空集合，不抛异常。
-export function parseChangedFiles(diff: string): Set<string> {
-  const out = new Set<string>()
+// 返回：路径到 ChangeStatus 的映射。解析不出任何头行时返回空映射，不抛异常。
+//
+// 注意：类别是**块内后置修正**——先按头行把两侧记为 modified，块里再出现
+// `new file mode` / `deleted file mode` / rename 行时覆盖。git 的输出顺序保证
+// 这些行一定跟在自己的头行之后，所以覆盖不会串到别的文件上。
+export function parseChangedFiles(diff: string): Map<string, ChangeStatus> {
+  const out = new Map<string, ChangeStatus>()
+  // block 是当前 diff 块涉及的路径（新增/删除时两侧同名，重命名时是一对）
+  let block: string[] = []
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
-      // 头行形如 `diff --git a/<路径> b/<路径>`。路径可能含空格，所以不能按空格
-      // 切；改为找 ` b/` 这个分隔点，左右两段分别剥掉 `a/` 与 `b/` 前缀。
-      const rest = line.slice('diff --git '.length)
-      const sep = rest.indexOf(' b/')
-      if (sep < 0) continue
-      const left = rest.slice(0, sep)
-      const right = rest.slice(sep + 1)
-      if (left.startsWith('a/')) out.add(left.slice(2))
-      if (right.startsWith('b/')) out.add(right.slice(2))
+      block = headPaths(line)
+      for (const p of block) out.set(p, 'modified')
       continue
     }
-    if (line.startsWith(RENAME_FROM)) out.add(line.slice(RENAME_FROM.length))
-    else if (line.startsWith(RENAME_TO)) out.add(line.slice(RENAME_TO.length))
+    if (line.startsWith('new file mode')) {
+      for (const p of block) out.set(p, 'added')
+      continue
+    }
+    if (line.startsWith('deleted file mode')) {
+      for (const p of block) out.set(p, 'deleted')
+      continue
+    }
+    // 重命名：旧路径在树上已经不存在（按删除），新路径是这次才出现的（按新增）
+    if (line.startsWith(RENAME_FROM)) out.set(line.slice(RENAME_FROM.length), 'deleted')
+    else if (line.startsWith(RENAME_TO)) out.set(line.slice(RENAME_TO.length), 'added')
   }
   return out
 }
 
-// useChangedFiles 取「这个目录上挂着的任务」的改动集合。
+// useChangedFiles 取「这个目录上挂着的任务」的改动映射。
 //
 // 参数：
 //   - taskId: 目录上正在执行的任务 id；为 null 表示这个目录没有任务
 //
-// 返回：改动过的相对路径集合。没有任务、或取 diff 失败时都返回空集合——
+// 返回：路径 → ChangeStatus 的映射。没有任务、或取 diff 失败时都返回空映射——
 // 角标是装饰，缺了不影响文件树可用，所以失败静默降级，不弹错误。
-export function useChangedFiles(taskId: string | null): Set<string> {
-  const [files, setFiles] = useState<Set<string>>(() => new Set())
+export function useChangedFiles(taskId: string | null): Map<string, ChangeStatus> {
+  const [files, setFiles] = useState<Map<string, ChangeStatus>>(() => new Map())
   useEffect(() => {
     if (!taskId) {
-      setFiles(new Set())
+      setFiles(new Map())
       return
     }
     let cancelled = false
@@ -67,7 +97,7 @@ export function useChangedFiles(taskId: string | null): Set<string> {
         if (!cancelled) setFiles(parseChangedFiles(r.diff))
       })
       .catch(() => {
-        if (!cancelled) setFiles(new Set())
+        if (!cancelled) setFiles(new Map())
       })
     return () => {
       cancelled = true

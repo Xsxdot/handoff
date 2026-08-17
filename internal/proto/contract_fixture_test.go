@@ -79,6 +79,7 @@ func TestContractFixtures(t *testing.T) {
 		{"PtySessionsResp", ptySessionsRespSample(now)},
 		{"Frame", frameSample(now)},
 		{"DirListResult", dirListSample()},
+		{"TaskPlan", taskPlanSample()},
 		{"FileRead", fileReadSample()},
 		{"FileWriteReq", fileWriteReqSample()},
 		{"FileWriteResp", fileWriteRespSample()},
@@ -430,12 +431,24 @@ func frameSample(now time.Time) Frame {
 // dirListSample 返回 DirListResult 的代表性样本。
 //
 // 一目录一文件覆盖 Size 的 omitempty 边界：目录不带 size 键，普通文件带。
+// 第三项是被 .gitignore 排除的文件，覆盖 Ignored 的 true 分支——未忽略的两项
+// 同时钉住「false 被省略成缺键」这条契约。
 func dirListSample() DirListResult {
 	return DirListResult{
 		Entries: []DirEntry{
 			{Name: "internal", IsDir: true},
 			{Name: "go.mod", IsDir: false, Size: 1284},
+			{Name: "coverage.out", IsDir: false, Size: 40960, Ignored: true},
 		},
+	}
+}
+
+// taskPlanSample 返回 TaskPlan 的代表性样本（未截断：truncated 键被省略）。
+func taskPlanSample() TaskPlan {
+	return TaskPlan{
+		Name:    "b119-dispatch.md",
+		Content: "# 执行纪律\n\n按 plan 逐 task 实现。\n",
+		Size:    36,
 	}
 }
 

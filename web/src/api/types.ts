@@ -320,6 +320,17 @@ export interface DiffResult {
   diff: string
 }
 
+// TaskPlan 是 GET /api/tasks/{id}/plan 的响应：派发当刻交给 executor 的指令原文。
+//
+// size 是磁盘真实大小而非 content.length：truncated 为真时两者不同，
+// 要显示给人看的是真实大小。
+export interface TaskPlan {
+  name: string
+  content: string
+  size: number
+  truncated?: boolean
+}
+
 // BranchesResult 是 GET /api/tasks/{id}/branches 的响应：本地分支名 + 推导默认。
 // default 为空串 = 推导不出，前端下拉退化为仅「自动推导」项。
 export interface BranchesResult {
@@ -424,6 +435,11 @@ export interface DirEntry {
   name: string
   is_dir: boolean
   size?: number
+  // ignored 为真表示被 .gitignore 排除（服务端跑的是 git check-ignore）。
+  // 与 size 同理：false 被 omitempty 省略，**缺键 = 未被忽略**。服务端查不出来
+  // 时也一律不带这个键（fail open），所以前端不能把缺席读成「一定不是垃圾」，
+  // 只能读成「没有理由把它弱化」——正是弱化展示该有的保守方向。
+  ignored?: boolean
 }
 
 // DirListResult 是 GET /api/workspaces/dir 的响应体；entries 永不为 null。

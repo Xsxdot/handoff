@@ -68,10 +68,25 @@ export function errorMessage(err: unknown): string {
   return String(err)
 }
 
-// formatTokens 把 token 数格式化成人眼可读的短串：千位以上用 k 并保留一位小数。
+// TOKEN_UNITS 是 token 缩写的进位档，1000 一档（token 不是字节，用十进制而非 1024）。
+const TOKEN_UNITS = ['k', 'M', 'B']
+
+// formatTokens 把 token 数格式化成人眼可读的短串：千位以上逐档缩写并保留一位小数。
+//
+// 为什么要升到 M/B 而不是一路 k 到底：累计消耗动辄上千万 token，`9489.2k` 这种
+// 读数要在心里数一遍位数才知道是九百万还是九十万；`9.5M` 一眼就是。
+//
+// 边界：升档判据用**四舍五入后**的值，否则 999950 会显示成 `1000.0k`——
+// 一个永远不该出现的读数（那已经是 1.0M 了）。
 export function formatTokens(n: number): string {
   if (n < 1000) return String(n)
-  return `${(n / 1000).toFixed(1)}k`
+  let v = n / 1000
+  let i = 0
+  while (Number(v.toFixed(1)) >= 1000 && i < TOKEN_UNITS.length - 1) {
+    v /= 1000
+    i++
+  }
+  return `${v.toFixed(1)}${TOKEN_UNITS[i]}`
 }
 
 // formatExecutorLine 组装任务详情页「执行器」行的整行文案。
@@ -131,7 +146,7 @@ export function formatCost(cost: Cost): { text: string; hint: string } {
 // formatCumulativeLine 组装「累计用量」视图的整行文案（不含「累计」前缀，
 // 前缀由 TaskHeader 单独渲染成弱化样式）。
 //
-//   1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20
+//   1.2M · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20
 //
 // 没有累计数据时返回空串，由调用方决定不渲染这一行。
 // 花费缺席时只显四项 token——不知道花了多少钱，不代表不知道烧了多少 token。

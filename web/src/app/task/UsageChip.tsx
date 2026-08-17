@@ -4,13 +4,38 @@
 // 边界：
 //   - executor 没报 context_window 时只显绝对值——前端**不猜分母**（现有纪律）
 //   - usage 与 cumulative 都缺席时整体不渲染（返回 null）：没有账目不画空表
-import { useState } from 'react'
+//   - 关闭方式与仓库既有浮层一致（Dropdown / ContextMenu）：点外部、按 Esc。
+//     它浮在会话流上方，只能靠再点一次同一个小按钮关掉的话，一不小心就挡着正文
+import { useEffect, useRef, useState } from 'react'
 import type { Cumulative, Usage } from '../../api/types'
 import { formatCost, formatTokens } from '../lib/format'
 
 // UsageChip 渲染 ctx 读数。usage=当前占用，cumulative=累计消耗，均可缺席。
 export function UsageChip({ usage, cumulative }: { usage?: Usage; cumulative?: Cumulative }) {
   const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLSpanElement>(null)
+
+  // 点外部 / Esc 关闭。挂在 mousedown 而不是 click：click 要等按键抬起，
+  // 期间浮层还盖在你正要点的东西上面，点击会先被浮层吃掉一次。
+  //
+  // 注意这个 effect 必须在下面的 `return null` 之前——早退在它后面的话，
+  // 账目从有到无的那一帧 hook 数量会变，React 直接报错。
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
   if (!usage && !cumulative) return null
 
   const pct = usage?.context_window
@@ -18,9 +43,10 @@ export function UsageChip({ usage, cumulative }: { usage?: Usage; cumulative?: C
     : null
 
   return (
-    <span className="relative">
+    <span ref={rootRef} className="relative">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1.5 hover:text-foreground"
       >

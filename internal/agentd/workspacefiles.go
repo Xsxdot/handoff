@@ -149,6 +149,9 @@ func (s *Server) handleWorkspaceDir(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// 忽略标注在列举之后单独做：ListDir 是纯文件系统操作（还被建/删/改名复用），
+	// 而「归不归 git 管」要问 git。失败只降级不影响这次列举（见 markIgnored）
+	markIgnored(r.Context(), root, rel, entries)
 	s.log.Info("工作树目录列举完成", "root", root, "rel", rel, "entries", len(entries))
 	writeJSON(w, http.StatusOK, proto.DirListResult{Entries: entries})
 }
