@@ -613,6 +613,28 @@ func TestProxyOmitEmptyOnSave(t *testing.T) {
 	}
 }
 
+// Defaults 必须零磁盘副作用：firstRun 写盘是 Load 的职责，Defaults 是
+// 给桌面壳首次引导用的不落盘入口。若它写盘，向导中途 SIGKILL/崩溃后磁盘上
+// 会留下 config.yaml，下次启动 Resolve 判「已配置」，用户回不到向导
+// （该缺陷已在真机 SIGKILL 复现，回滚法封不死——进程死了就没有回滚）。
+func TestDefaultsWritesNothingToDisk(t *testing.T) {
+	// 隔离 HOME：Defaults 不应在真实 ~/.handoff 附近留下任何东西
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Defaults()
+	if cfg.Token == "" {
+		t.Fatal("Defaults 应生成随机 token")
+	}
+	if _, err := os.Stat(config.DefaultPath()); !os.IsNotExist(err) {
+		t.Fatalf("Defaults 不得写盘：DefaultPath()=%s 已存在", config.DefaultPath())
+	}
+	// 二次调用也应幂等、无副作用。校验成功性由 Defaults 自身的契约覆盖：
+	// 它内部 validate 失败即 panic，能走到这里说明出厂默认已通过校验。
+	cfg2 := config.Defaults()
+	if cfg2.Token == "" {
+		t.Fatal("二次调用 Defaults 也应生成随机 token")
+	}
+}
+
 // 未知键的错误提示必须把 proxy 列进"支持的键"，否则用户配对了却被拒时无从判断。
 func TestUnknownKeyErrorMentionsProxy(t *testing.T) {
 	dir := t.TempDir()

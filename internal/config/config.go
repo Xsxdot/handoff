@@ -223,26 +223,11 @@ type ProcFenceConfig struct {
 // 注意：
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
 //   - 旧文件的顶层 update 必须先剥再 KnownFields，否则 v0.1.x 机器升级即砖
+//
+// 与 Defaults 的分工：Load 在文件不存在时会生成 token 并把默认配置写盘（firstRun），
+// 这是给 CLI/agentd 用的；桌面壳的首次引导走 Defaults（见其 doc 注释）。
 func Load(path string) (*Config, error) {
-	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
-	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
-	// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
-	cfg := &Config{
-		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
-		Approver: ApproverConfig{Timeout: 60 * time.Second},
-		Executor: ExecutorConfig{Default: "opencode"},
-		Terminal: TerminalConfig{Auto: false},
-		Sync:     SyncConfig{Auto: true},
-		ProcFence: ProcFenceConfig{
-			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
-			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
-			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
-			// 默认（400/1200），显式写 0 覆盖为 0。
-			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
-		},
-		Targets: map[string]Target{},
-		Env:     map[string]string{},
-	}
+	cfg := newDefaultConfig()
 	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
 	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
 	firstRun := false
@@ -276,6 +261,61 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
 	}
+	applyComputedDefaults(cfg)
+	if firstRun {
+		if werr := save(path, cfg); werr != nil {
+			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
+		}
+		log().Info("首次运行，已生成配置", "path", path)
+	}
+	if verr := cfg.validate(); verr != nil {
+		log().Error("配置校验失败", "path", path, "cause", verr)
+		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+	}
+	if cfg.Proxy != "" {
+		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
+		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	}
+	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
+	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
+	// 把整台机器卡死在升级后的第一秒。
+	if stripped && !firstRun {
+		if werr := save(path, cfg); werr != nil {
+			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
+		} else {
+			log().Info("已从配置文件删除废弃 update 段", "path", path)
+		}
+	}
+	return cfg, nil
+}
+
+// newDefaultConfig 构造出厂默认配置（不落盘）。
+//
+// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
+// （如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
+// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
+func newDefaultConfig() *Config {
+	return &Config{
+		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
+		Approver: ApproverConfig{Timeout: 60 * time.Second},
+		Executor: ExecutorConfig{Default: "opencode"},
+		Terminal: TerminalConfig{Auto: false},
+		Sync:     SyncConfig{Auto: true},
+		ProcFence: ProcFenceConfig{
+			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
+			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
+			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
+			// 默认（400/1200），显式写 0 覆盖为 0。
+			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
+		},
+		Targets: map[string]Target{},
+		Env:     map[string]string{},
+	}
+}
+
+// applyComputedDefaults 补算依赖实际值才能定的默认项，必须在解码之后调用：
+// repo_root 派生自 DataDir 与 ProcFence 的越界兜底都依赖已解析的配置内容。
+func applyComputedDefaults(cfg *Config) {
 	// repo_root 的默认值必须在解码之后补，不能预置在初始字面量里：
 	// 它派生自 DataDir，而 DataDir 本身可能被配置文件改写。
 	//
@@ -305,31 +345,24 @@ func Load(path string) (*Config, error) {
 		cfg.ProcFence.TaskHardLimit < cfg.ProcFence.TaskBudget {
 		cfg.ProcFence.TaskHardLimit = cfg.ProcFence.TaskBudget
 	}
-	if firstRun {
-		if werr := save(path, cfg); werr != nil {
-			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
-		}
-		log().Info("首次运行，已生成配置", "path", path)
-	}
+}
+
+// Defaults 返回一份「出厂默认 + 随机 token」的配置，**不落盘**。
+//
+// 与 Load 的分工：Load 在文件不存在时会生成 token 并把默认配置写盘（firstRun），
+// 这是给 CLI/agentd 用的。桌面壳的首次引导不能调 Load——向导问答中途崩溃、
+// 被杀或取消时，磁盘上绝不允许出现会让 Resolve 判为「已配置」的 config.yaml
+// （SIGKILL 实测原样复现过这个坑，且回滚法依赖进程还活着，封不死）。Defaults
+// 只构造内存里的配置，落盘由调用方在问答成功后一次性 config.Save。
+func Defaults() *Config {
+	cfg := newDefaultConfig()
+	cfg.Token = randToken()
+	applyComputedDefaults(cfg)
 	if verr := cfg.validate(); verr != nil {
-		log().Error("配置校验失败", "path", path, "cause", verr)
-		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+		// 出厂默认必然合法；真走到这里说明默认字面量写错了
+		panic("config: 出厂默认校验失败: " + verr.Error())
 	}
-	if cfg.Proxy != "" {
-		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
-		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
-	}
-	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
-	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
-	// 把整台机器卡死在升级后的第一秒。
-	if stripped && !firstRun {
-		if werr := save(path, cfg); werr != nil {
-			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
-		} else {
-			log().Info("已从配置文件删除废弃 update 段", "path", path)
-		}
-	}
-	return cfg, nil
+	return cfg
 }
 
 // validate 校验取值域，把「能解析但必然误动作」的配置挡在启动之前。

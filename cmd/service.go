@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/initflow"
 	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -178,6 +179,9 @@ var serviceStatusCmd = &cobra.Command{
 }
 
 func init() {
+	// 把托管追问的代跑入口接上 initflow 的缝：init 与 handoff service install
+	// 必须走同一条代码路径（B71），否则两处托管行为会各自演化。
+	initflow.InstallService = installService
 	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd)
 	rootCmd.AddCommand(serviceCmd)
 }

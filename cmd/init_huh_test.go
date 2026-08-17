@@ -8,12 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/initflow"
 	"github.com/charmbracelet/x/ansi"
 )
 
 // 预选第二项时，三项必须同时出现在 View 里。v1 的 YOffset=selected 会裁掉第一项。
 func TestHuhSelectShowsAllOptionsWhenDefaultIsNotFirst(t *testing.T) {
-	view := renderHuhSelect(t, "这台机器的角色", []promptOption{
+	view := renderHuhSelect(t, "这台机器的角色", []initflow.Option{
 		{Value: "executor", Label: "执行机"},
 		{Value: "coordinator", Label: "协调者"},
 		{Value: "both", Label: "两者"},
@@ -28,7 +29,7 @@ func TestHuhSelectShowsAllOptionsWhenDefaultIsNotFirst(t *testing.T) {
 }
 
 // renderHuhSelect 走与生产 Select 相同的构造，再取 View。不 Run，避免要真终端。
-func renderHuhSelect(t *testing.T, title string, options []promptOption, def string) string {
+func renderHuhSelect(t *testing.T, title string, options []initflow.Option, def string) string {
 	t.Helper()
 	value := def
 	sel := newHuhSelect(title, options, &value)
