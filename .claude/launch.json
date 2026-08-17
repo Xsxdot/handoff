@@ -60,6 +60,12 @@
         "--strictPort"
       ],
       "port": 5283
+    },
+    {
+      "name": "prototype-static",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8931", "--directory", "prototypes"],
+      "port": 8931
     }
   ]
 }
