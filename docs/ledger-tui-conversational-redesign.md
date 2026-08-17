@@ -13,3 +13,5 @@
 - 2026-08-17 Task 3 第 1 轮未裁决：新增测试与实现契约冲突——测试要求 `files[0].lines[0]` 为 hunk，但 DiffLine 注释要求保留 `index/---/+++/Binary` 头部为 ctx；当前实现保留头部，`npx vitest run src/app/task/diff.test.ts` 仅「行类型标注正确」失败。等待协调者裁决，不提交。
 - 2026-08-17 Task 3 第 2 轮修复完成，commit 121799fb：按协调者裁决跳过 `index `、`--- `、`+++ ` 三类纯噪声头部，保留其余头部为 ctx；`npx vitest run src/app/task/diff.test.ts` PASS（5 tests）。spec/质量双裁决通过。
 - 2026-08-17 Task 4 完成，commit 0cf7a504：事件白名单映射与未知事件原样透出，delivery trailer best-effort 提取且失败不吞正文；`npx vitest run src/app/task/eventPhrase.test.ts src/app/task/delivery.test.ts` PASS（7 tests）；spec/质量双裁决通过。
+- 2026-08-17 Task 5 第 1 轮完成，commit 45823aa8：新增统一 MetaRow/EventChip/UserInstructionBlock/DeliverySummaryCard，turn 块承载 instructions，ThinkingBlock/ToolCard 改为元数据行；目标测试 PASS（48 tests）。
+- 2026-08-17 Task 5 第 1 轮修复：typecheck 首跑报 `frames.test.ts(6,10): error TS2300: Duplicate identifier 'buildBlocks'`，移除新增的重复 import；修复后 task 全测 PASS（113 tests）、`npm run typecheck` PASS；lint 0 errors、仓库既有 10 warnings。

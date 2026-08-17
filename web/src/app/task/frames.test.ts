@@ -64,6 +64,15 @@ describe('scanLines 半行与坏行', () => {
   })
 })
 
+it('turn_start 的 instructions 进 turn 块（缺席时为空串）', () => {
+  const blocks = buildBlocks([
+    { seq: 1, ts: '2026-08-17T10:00:00Z', turn: 1, type: 'turn_start', reason: 'dispatch' },
+    { seq: 2, ts: '2026-08-17T10:00:00Z', turn: 2, type: 'turn_start', reason: 'send', instructions: '补测试' },
+  ] as import('../../api/types').Frame[])
+  expect(blocks[0]).toMatchObject({ kind: 'turn', instructions: '' })
+  expect(blocks[1]).toMatchObject({ kind: 'turn', reason: 'send', instructions: '补测试' })
+})
+
 import { buildBlocks, toolState, turnsOf, type ToolBlock } from './frames'
 import type { Frame } from '../../api/types'
 

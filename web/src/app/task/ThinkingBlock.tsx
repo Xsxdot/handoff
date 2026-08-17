@@ -1,33 +1,27 @@
-// ThinkingBlock —— 时间线上的思维链块。
+// ThinkingBlock —— 思维链的折叠行（元数据行语言）。
 //
-// 职责：默认折叠成一行摘要（🧠 思维链 · N 字），点开才展开全文
-// 边界：
-//   - 不做任何加工：思维链是模型的原始推理，改写或摘要都会让它失去证据价值
-//   - 默认折叠是刻意的：审阅时先看「说了什么 / 做了什么」，思维链是需要时才下钻
-//     的深层证据；默认展开会把因果链淹掉
+// 职责：默认一行「思维链 · N 字」，点开是左边线引文块。
+// 边界：思维链绝不混入正文（W4a 纪律）；不做 markdown 渲染，原文展示。
 import { useState } from 'react'
-import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-// ThinkingBlock 渲染一段思维链。
-//
-// 参数：text 已按 part 合并好的完整思维链
+// ThinkingBlock 渲染一段已合并的思维链增量。text 为完整思维链文本。
 export function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-r-md border-l-2 border-violet-400 bg-violet-500/5 px-2.5 py-1.5">
+    <div className="my-1 text-xs text-muted-foreground">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-xs text-violet-600 hover:underline dark:text-violet-400"
+        className="flex items-center gap-2 py-0.5 hover:text-foreground"
       >
-        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-        <Brain className="size-3.5" />
-        思维链 · {text.length} 字
+        <span className={cn('w-3.5 shrink-0 text-center transition-transform', open && 'rotate-90')}>▸</span>
+        思维链 · {[...text].length} 字
       </button>
       {open && (
-        <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+        <div className="ml-[7px] whitespace-pre-wrap break-words border-l-2 border-border py-1 pl-3 leading-relaxed">
           {text}
-        </p>
+        </div>
       )}
     </div>
   )

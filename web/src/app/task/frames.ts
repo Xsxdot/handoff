@@ -83,7 +83,7 @@ export function scanLines(buffered: string, chunk: string): ScanResult {
 // 它比 Frame 高一层：多条 delta 帧合成一个 text/thinking 块，一对 tool_call +
 // tool_result 合成一张 tool 卡。渲染层只认识 Block，不再碰 Frame。
 export type Block =
-  | { kind: 'turn'; key: string; turn: number; reason: string; ts: string }
+  | { kind: 'turn'; key: string; turn: number; reason: string; ts: string; instructions: string }
   | { kind: 'text'; key: string; turn: number; text: string }
   | { kind: 'thinking'; key: string; turn: number; text: string }
   | {
@@ -153,7 +153,7 @@ export function buildBlocks(frames: Frame[]): Block[] {
 
     switch (fr.type) {
       case 'turn_start':
-        blocks.push({ kind: 'turn', key, turn, reason: fr.reason ?? '', ts: fr.ts })
+        blocks.push({ kind: 'turn', key, turn, reason: fr.reason ?? '', ts: fr.ts, instructions: fr.instructions ?? '' })
         break
       case 'tool_call': {
         const k = `${turn}/${fr.part ?? ''}`

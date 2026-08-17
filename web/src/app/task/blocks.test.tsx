@@ -10,6 +10,9 @@ import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
 import { EventMark } from './EventMark'
 import { UnknownBlock } from './UnknownBlock'
+import { EventChip } from './EventChip'
+import { UserInstructionBlock } from './UserInstructionBlock'
+import { DeliverySummaryCard } from './DeliverySummaryCard'
 
 const tool = (o: Partial<ToolBlock>): ToolBlock => ({
   kind: 'tool', key: 'f1', turn: 1,
@@ -109,6 +112,34 @@ describe('EventMark', () => {
   it('未知事件名原样显示，不吞掉', () => {
     render(<EventMark event="some_new_event" ts="2026-08-12T10:31:02+08:00" />)
     expect(screen.getByText(/some_new_event/)).toBeInTheDocument()
+  })
+})
+
+describe('EventChip', () => {
+  it('白名单事件渲染人话短语', () => {
+    render(<EventChip event="completed" ts="2026-08-17T10:00:00Z" />)
+    expect(screen.getByText(/一轮结束，进入待审/)).toBeInTheDocument()
+  })
+  it('未知事件原样透出', () => {
+    render(<EventChip event="mystery_event" ts="2026-08-17T10:00:00Z" />)
+    expect(screen.getByText(/mystery_event/)).toBeInTheDocument()
+  })
+})
+
+describe('UserInstructionBlock', () => {
+  it('渲染审核者身份行与指令原文', () => {
+    render(<UserInstructionBlock text="补上变异测试记录" ts="2026-08-17T14:20:00Z" />)
+    expect(screen.getByText(/审核者/)).toBeInTheDocument()
+    expect(screen.getByText('补上变异测试记录')).toBeInTheDocument()
+  })
+})
+
+describe('DeliverySummaryCard', () => {
+  it('渲染命中的字段，缺席字段不渲染行', () => {
+    render(<DeliverySummaryCard delivery={{ branch: 'bench/b93', summary: '全落地' }} />)
+    expect(screen.getByText('bench/b93')).toBeInTheDocument()
+    expect(screen.getByText('全落地')).toBeInTheDocument()
+    expect(screen.queryByText('commit')).not.toBeInTheDocument()
   })
 })
 
