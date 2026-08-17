@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
 )
@@ -68,6 +70,95 @@ func TestForwardPreservesHandoffHeaders(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-Handoff-Render-Size"); got != "2048" {
 		t.Fatalf("X-Handoff-Render-Size = %q，期望原样透传 2048", got)
+	}
+}
+
+// TestForwardStreamsChunks 断言：上游分两段写并在中间等待时，第一段会先穿过
+// agentd 到达客户端，而不是被 forwardTo 等到响应结束后才一起回送。
+func TestForwardStreamsChunks(t *testing.T) {
+	allowSecond := make(chan struct{})
+	secondWritten := make(chan struct{})
+	var allowSecondOnce sync.Once
+	defer allowSecondOnce.Do(func() { close(allowSecond) })
+
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("上游 ResponseWriter 不支持 Flush")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("first"))
+		flusher.Flush()
+
+		<-allowSecond
+		_, _ = w.Write([]byte("second"))
+		flusher.Flush()
+		close(secondWritten)
+	}))
+	t.Cleanup(remote.Close)
+
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req, _ := http.NewRequest(http.MethodPost,
+		local.ts.URL+"/api/projects?machine=devbox", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+
+	respCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	var resp *http.Response
+	select {
+	case err := <-errCh:
+		t.Fatalf("请求失败: %v", err)
+	case resp = <-respCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("上游首段写出后，转发端仍未回送响应头")
+	}
+	defer resp.Body.Close()
+
+	first := make([]byte, len("first"))
+	readFirstErr := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, first)
+		readFirstErr <- err
+	}()
+	select {
+	case err := <-readFirstErr:
+		if err != nil {
+			t.Fatalf("读取首段失败: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("首段未在上游写出第二段前到达客户端")
+	}
+	if got := string(first); got != "first" {
+		t.Fatalf("首段 = %q，期望 %q", got, "first")
+	}
+	select {
+	case <-secondWritten:
+		t.Fatal("读取首段时上游已经写出了第二段")
+	default:
+	}
+
+	allowSecondOnce.Do(func() { close(allowSecond) })
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取尾段失败: %v", err)
+	}
+	if got := string(rest); got != "second" {
+		t.Fatalf("尾段 = %q，期望 %q", got, "second")
 	}
 }
 

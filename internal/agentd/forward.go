@@ -3,7 +3,8 @@
 // 职责：
 //   - 判定一个请求是否要转发（显式 ?machine= / 按任务 id 路由都走这里的搬运）
 //   - 原样搬运：方法、路径、请求体、查询参数（去掉路由用的 machine）
-//   - 原样回送：状态码、Content-Type、X-Handoff-* 响应头、响应体一律不改写
+//   - 原样回送：状态码、Content-Type、X-Handoff-* 响应头、响应体一律不改写，
+//     响应体按上游块边界及时回送
 //   - 防环：转发请求带 X-Handoff-Forwarded: 1，带此头的请求一律本机处理
 //
 // 边界：
@@ -117,7 +118,44 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name, addr, t
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	n, cerr := io.Copy(w, resp.Body)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		// 先把响应头推出去；follow 流可能在下一段数据前空闲很久。
+		flusher.Flush()
+	}
+
+	var n int64
+	var cerr error
+	if flusher == nil {
+		// 理论上 agentd 的 ResponseWriter 支持 Flush；接口不支持时仍沿用
+		// io.Copy，避免把转发层绑定到某个具体 ResponseWriter 实现。
+		n, cerr = io.Copy(w, resp.Body)
+	} else {
+		buf := make([]byte, 32*1024)
+		for {
+			nr, rerr := resp.Body.Read(buf)
+			if nr > 0 {
+				nw, werr := w.Write(buf[:nr])
+				n += int64(nw)
+				if werr != nil {
+					cerr = werr
+					break
+				}
+				if nw != nr {
+					cerr = io.ErrShortWrite
+					break
+				}
+				// 每段都刷新，避免小的 delta 被 net/http 缓冲成一批。
+				flusher.Flush()
+			}
+			if rerr != nil {
+				if rerr != io.EOF {
+					cerr = rerr
+				}
+				break
+			}
+		}
+	}
 	if cerr != nil {
 		// 头已经写出去了，改不了状态码，只能记账
 		s.log.Warn("转发响应回送中断", "machine", name, "written", n, "cause", cerr)
