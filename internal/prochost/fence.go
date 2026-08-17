@@ -77,11 +77,14 @@ var getNprocLimitFn = getNprocLimit
 //
 // 参数：
 //   - disabled: true 时完全不装围栏（逃生开关）
-//   - reserveRatio: 保留额占系统上限的比例（只在 unix 的比例模式下生效）
+//   - reserveRatio: 保留额占系统上限的比例；不在 (0,1) 区间时保留默认值 0.1
+//     （只在 unix 的比例模式下生效）
 //   - taskHardLimit: 每任务进程数硬上限（只在 Windows 的硬上限模式下生效；0=不启用）
 //
 // 注意：shim 是独立进程、从不调用本函数，它拿到的围栏值来自 spec.NprocLimit
 // （agentd 侧 applyFencePolicy 算好后下发），所以本函数只影响 agentd 侧的计算。
+// 本函数只改包级策略，不会影响已经拉起的 shim——它们的围栏在 fork 那一刻就定死了，
+// 改策略只对之后启动的任务生效。
 func SetFencePolicy(disabled bool, reserveRatio float64, taskHardLimit int) {
 	fenceDisabled = disabled
 	if reserveRatio > 0 && reserveRatio < 1 {

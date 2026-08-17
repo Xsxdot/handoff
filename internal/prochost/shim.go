@@ -156,17 +156,7 @@ func RunShim(specPath string) error {
 		// 同一个 sampler 跨轮复用：它持有上一轮的序列化结果，"内容未变则不写"
 		// 依赖这份状态；每轮新建一个等于关掉这个优化
 		sampler := &rosterSampler{path: rosterPath(spec.InfoPath)}
-		sampler.sample(l)
-		tk := time.NewTicker(rosterInterval)
-		defer tk.Stop()
-		for {
-			select {
-			case <-stopRoster:
-				return
-			case <-tk.C:
-				sampler.sample(l)
-			}
-		}
+		runRosterSampling(stopRoster, sampler, l)
 	}()
 
 	code := 0
@@ -288,6 +278,30 @@ type rosterSampler struct {
 	writes int    // 实际落盘次数，仅供测试断言「未变则不写」
 }
 
+// runRosterSampling 驱动后代名册的首次采样与周期采样。
+//
+// 参数：stop 为执行者退出时关闭的停止信号；sampler 为跨轮复用的采样器；l 为日志器。
+//
+// 注意：sample 返回 false 表示本平台永久不支持进程枚举，此时只记一条 Info 并退出；
+// 其它错误返回 true，仍按周期重试，因为 unix 上的 sysctl/procfs 可能只是本轮读取失败。
+func runRosterSampling(stop <-chan struct{}, sampler *rosterSampler, l *slog.Logger) {
+	if !sampler.sample(l) {
+		return
+	}
+	tk := time.NewTicker(rosterInterval)
+	defer tk.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tk.C:
+			if !sampler.sample(l) {
+				return
+			}
+		}
+	}
+}
+
 // sample 采一轮名册：枚举进程、与上一轮合并、必要时落盘。
 //
 // 参数：l 为日志器；本方法所有失败都只记日志并返回，不中断任务——名册写不出去
@@ -295,16 +309,22 @@ type rosterSampler struct {
 //
 // 注意：周期日志一律 Debug 级（每秒一次，Info 会把任务日志刷满）；只有单次采样
 // 耗时超过间隔一半时才升 Warn——那意味着采样本身开始拖累这台机器，是必须看见的事。
-func (s *rosterSampler) sample(l *slog.Logger) {
+//
+// 返回：true 继续按周期采样；false 表示本平台永久不支持进程枚举，调用方应停止循环。
+func (s *rosterSampler) sample(l *slog.Logger) bool {
 	if s.path == "" {
 		l.Warn("无 info_path，无法落盘后代名册，本任务不做出生登记")
-		return
+		return true
 	}
 	start := time.Now()
 	procs, err := enumProcsFn()
 	if err != nil {
+		if errors.Is(err, errNotSupported) {
+			l.Info("本平台不做后代名册采样，回收由进程容器承担", "cause", err)
+			return false
+		}
 		l.Warn("枚举进程失败，本轮跳过出生登记", "cause", err)
-		return
+		return true
 	}
 	prev, err := readRoster(s.path)
 	if err != nil {
@@ -317,7 +337,7 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 	b, err := marshalRoster(entries)
 	if err != nil {
 		l.Warn("序列化后代名册失败，本轮跳过出生登记", "cause", err)
-		return
+		return true
 	}
 	cost := time.Since(start)
 	if s.last != nil && bytes.Equal(b, s.last) {
@@ -326,14 +346,14 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 		if cost > rosterInterval/2 {
 			l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
 				"cost", cost, "interval", rosterInterval)
-			return
+			return true
 		}
 		l.Debug("后代名册未变，跳过落盘", "count", len(entries), "cost", cost)
-		return
+		return true
 	}
 	if err := writeRosterBytes(s.path, b); err != nil {
 		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", s.path, "cause", err)
-		return
+		return true
 	}
 	s.last = b
 	s.writes++
@@ -342,9 +362,10 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 		// 否则它只会表现为一台莫名其妙变慢的机器
 		l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
 			"cost", cost, "interval", rosterInterval)
-		return
+		return true
 	}
 	l.Debug("后代名册已更新", "path", s.path, "count", len(entries), "cost", cost)
+	return true
 }
 
 // snapshotRoster 采一轮名册（无状态入口，仅供不需要跨轮比对的调用方使用）。
