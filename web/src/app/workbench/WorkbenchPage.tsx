@@ -34,7 +34,7 @@ export interface WorkbenchPageProps {
   terminalUnavailable?: string
   // onBeforeClose 返回 false = 这次关闭由上层接管（要先弹确认、先删服务端会话）。
   // 返回 true 或不提供 = 直接关。
-  onBeforeClose?: (c: TabContent, group: number, tabId: string) => boolean
+  onBeforeClose?: (c: TabContent, tabId: string) => boolean
 }
 
 // PICK_HINT 是「种类选好了但还缺一个目标」时的指路文案。
@@ -128,7 +128,7 @@ export function WorkbenchPage({
                 onActivate={api.activate}
                 onClose={(g, id) => {
                   const tab = wb.groups[g]?.tabs.find((t) => t.id === id)
-                  if (tab && onBeforeClose && !onBeforeClose(tab.content, g, id)) return
+                  if (tab && onBeforeClose && !onBeforeClose(tab.content, id)) return
                   api.close(g, id)
                 }}
                 onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}

@@ -262,20 +262,31 @@ export function setTabContent(wb: Workbench, group: number, tabId: string, conte
   return next
 }
 
-// splitGroup 再开一栏；已经到 MAX_GROUPS 时**原样返回同一个对象**（调用方可据此
-// 跳过一次无谓的 setState）。新栏为空并成为焦点，宽度重置为等分。
+// splitGroupAt 在 index 处插入一个空栏并聚焦它；已到 MAX_GROUPS 时**原样返回
+// 同一个对象**（调用方可据此跳过一次无谓的 setState）。宽度重置为等分。
 //
-// 新栏 push 到末尾而不是插在当前栏右边：`(group 下标, tabId)` 是全代码库定位一个
-// tab 的方式，而 Shell 的 closingPty / closingDirtyFile 在确认弹层打开期间把这个
-// 下标**存进了 state**。紧邻插入会让后面所有组的下标 +1，于是弹层里存着的下标指向
-// 别的组——点「确认关闭」关掉的是另一栏的 tab。见 spec §1.2。
-export function splitGroup(wb: Workbench): Workbench {
+// 参数：
+//   - index: 新栏插在哪个位置（0 = 最左）。越界时夹到 [0, groups.length]
+// 返回：插入后的新 Workbench；达到 MAX_GROUPS 时返回原对象。
+//
+// 关于「插入会不会打乱谁的下标」：曾经不能这么做——Shell 把 (组下标, tabId)
+// 存进了确认弹层的 state，中间插入会让存着的下标指向别的栏。那条耦合已经在
+// 本 task 里拔掉了（Shell 改为按 tabId 反查），所以插入现在是安全的。
+// **如果你在别处又看到有人把组下标存进跨事件的 state，那是在把这个坑挖回来。**
+export function splitGroupAt(wb: Workbench, index: number): Workbench {
   if (wb.groups.length >= MAX_GROUPS) return wb
   const next = cloneWorkbench(wb)
-  next.groups.push({ tabs: [], activeId: null })
-  next.active = next.groups.length - 1
+  const at = Math.max(0, Math.min(index, next.groups.length))
+  next.groups.splice(at, 0, { tabs: [], activeId: null })
+  next.active = at
   next.sizes = evenSizes(next.groups.length)
   return next
+}
+
+// splitGroup 在末尾再开一栏。⌘D 与面包屑的分屏按钮走它，行为与本函数存在
+// 之前逐字节一致。
+export function splitGroup(wb: Workbench): Workbench {
+  return splitGroupAt(wb, wb.groups.length)
 }
 
 // resizeGroups 把第 dividerIndex 个分隔条左右两栏的宽度重新分配。

@@ -24,6 +24,7 @@ import {
   resizeGroups,
   setTabContent,
   splitGroup,
+  splitGroupAt,
   type TabContent,
   type Workbench,
 } from './tabs'
@@ -71,6 +72,15 @@ export interface WorkbenchApi {
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
   split: () => void
+  // splitAt 在指定位置插入一栏（0 = 最左）。拖放分屏用它；⌘D 与面包屑按钮
+  // 仍走 split（末尾追加）。
+  splitAt: (index: number) => void
+  // closeById 按 tab id 关闭，自己反查它在哪一组。
+  //
+  // 为什么要有它：组下标只在一次事件内可靠。确认弹层打开期间用户可能分屏、
+  // 关栏，等他点「确认」时存下来的下标已经指向别的栏了——那会关掉另一栏的
+  // tab。tabId 在整个 workbench 内唯一（nextTabId 保证），反查是确定的。
+  closeById: (tabId: string) => void
   // resize 调整第 dividerIndex 条分隔条两侧的栏宽。三个参数逐字透传给
   // tabs.ts 的 resizeGroups——这里不做夹紧也不认识像素，只负责把它接到当前基准的
   // Workbench 上。
@@ -133,6 +143,18 @@ export function useWorkbench(): WorkbenchApi {
     [mutate],
   )
   const split = useCallback(() => mutate(splitGroup), [mutate])
+  const splitAt = useCallback((index: number) => mutate((w) => splitGroupAt(w, index)), [mutate])
+  const closeById = useCallback(
+    (tabId: string) =>
+      mutate((w) => {
+        const gi = w.groups.findIndex((g) => g.tabs.some((t) => t.id === tabId))
+        // 找不到是正常情形：确认弹层还开着时这个 tab 被别的路径关掉了。
+        // 空操作，不抛错——弹层的「确认」按钮不该因此炸掉
+        if (gi === -1) return w
+        return closeTab(w, gi, tabId)
+      }),
+    [mutate],
+  )
   const resize = useCallback(
     (dividerIndex: number, delta: number, minRatio: number) =>
       mutate((w) => resizeGroups(w, dividerIndex, delta, minRatio)),
@@ -149,5 +171,5 @@ export function useWorkbench(): WorkbenchApi {
     })
   }, [])
 
-  return { base, wb, select, open, openTerminal, close, activate, setContent, split, resize, restoreTerminal }
+  return { base, wb, select, open, openTerminal, close, closeById, activate, setContent, split, splitAt, resize, restoreTerminal }
 }

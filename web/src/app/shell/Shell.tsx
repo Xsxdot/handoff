@@ -106,7 +106,7 @@ export function Shell() {
     }
     wb.restoreTerminal(b, sessionId)
   })
-  // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
+  // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与 tab id 都要留着：
   // 确认之后要先删会话、再关那个 tab
   //
   // 为什么连 machine 一起留（B96）：删会话要指名机器，而「该删哪台」是**这个
@@ -116,15 +116,17 @@ export function Shell() {
   // 开着时基准被换走就会拿 A 的机器名去删 B 的会话。与下面的 closingHome 对齐：
   // 它一直就是把 machine 存下来的
   const [closingPty, setClosingPty] = useState<
-    { group: number; tabId: string; sessionId: string; machine: string } | null
+    { tabId: string; sessionId: string; machine: string } | null
   >(null)
+  // 只存 tabId 不存组下标：组下标在确认弹层打开期间会因为分屏/关栏而失效，
+  // 而 tabId 在整个 workbench 内唯一。关闭走 wb.closeById 自己反查。
   const [closeBusy, setCloseBusy] = useState(false)
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
   // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
   // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
-  const [closingDirtyFile, setClosingDirtyFile] = useState<{ group: number; tabId: string; rel: string } | null>(null)
+  const [closingDirtyFile, setClosingDirtyFile] = useState<{ tabId: string; rel: string } | null>(null)
   // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
   // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
   const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
@@ -147,19 +149,19 @@ export function Shell() {
   // 这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
-  const beforeCloseTab = (c: TabContent, group: number, tabId: string): boolean => {
+  const beforeCloseTab = (c: TabContent, tabId: string): boolean => {
     // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
     // 与终端那条分支同一个理由——不可逆操作先问一句。
     //
     // 为什么只拦有草稿的：干净文件关了随时能再开，拦它只会让每次关 tab 都多一次
     // 点击，纯打扰。草稿才是磁盘上没有第二份的东西
     if (c.kind === 'file' && c.draft !== undefined) {
-      setClosingDirtyFile({ group, tabId, rel: c.rel })
+      setClosingDirtyFile({ tabId, rel: c.rel })
       return false
     }
     if (c.kind !== 'terminal' || !c.sessionId) return true
     // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
-    setClosingPty({ group, tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
+    setClosingPty({ tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
     setCloseError('')
     setClosingBusyProc(null)
     // 问一句「它现在忙不忙」，只用于加重措辞，**不阻塞弹层出现**
@@ -191,7 +193,7 @@ export function Shell() {
     setCloseBusy(true)
     setCloseError('')
     if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
-      wb.close(closingPty.group, closingPty.tabId)
+      wb.closeById(closingPty.tabId)
       setClosingPty(null)
     }
     // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
@@ -428,7 +430,7 @@ export function Shell() {
         confirmLabel="不保存，关闭"
         destructive
         onConfirm={() => {
-          if (closingDirtyFile) wb.close(closingDirtyFile.group, closingDirtyFile.tabId)
+          if (closingDirtyFile) wb.closeById(closingDirtyFile.tabId)
           setClosingDirtyFile(null)
         }}
         onCancel={() => setClosingDirtyFile(null)}

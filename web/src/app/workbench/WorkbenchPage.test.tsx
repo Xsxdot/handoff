@@ -25,6 +25,8 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     activate: vi.fn(),
     setContent: vi.fn(),
     split: vi.fn(),
+    splitAt: vi.fn(),
+    closeById: vi.fn(),
     resize: vi.fn(),
     restoreTerminal: vi.fn(),
     ...overrides,
