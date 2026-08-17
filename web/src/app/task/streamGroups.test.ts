@@ -12,6 +12,9 @@ function tool(key: string, status: string | null = 'ok'): Block {
   }
 }
 const text = (key: string): Block => ({ kind: 'text', key, turn: 1, text: '正文' })
+const quietEvent = (key: string, event = 'progress'): Block => ({
+  kind: 'event', key, turn: 1, event, ts: '2026-08-17T00:00:00Z',
+})
 
 describe('groupBlocks', () => {
   it('连续 ≥3 个工具块折成一组，计数正确', () => {
@@ -32,5 +35,15 @@ describe('groupBlocks', () => {
   it('组 key 取首个成员 key，稳定不随重渲染变化', () => {
     const items = groupBlocks([tool('f9'), tool('f10'), tool('f11')])
     expect((items[0] as { key: string }).key).toBe('g-f9')
+  })
+  it('忽略不可见 event，夹在工具之间仍折成一个组且不输出 event', () => {
+    const items = groupBlocks([tool('a'), quietEvent('e1'), tool('b'), quietEvent('e2'), tool('c')])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'toolGroup' })
+    expect((items[0] as { tools: Block[] }).tools.map((t) => t.key)).toEqual(['a', 'b', 'c'])
+  })
+  it('有正文的 text 仍打断连续工具块', () => {
+    const items = groupBlocks([tool('a'), text('body'), tool('b')])
+    expect(items.map((i) => i.kind)).toEqual(['tool', 'text', 'tool'])
   })
 })
