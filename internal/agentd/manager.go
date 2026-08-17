@@ -1202,7 +1202,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
 	} else {
-		m.stopExecutor(taskID, ad)
+		// Stop 是协调者主动敲的：executor 杀不掉也要把任务落 failed 并作废工单
+		// ——人已经决定不要这个任务了。与 ForceReclaim 相反（那条是 watchdog
+		// 自动触发，没收掉就不能宣布收掉，见 forcereclaim.go）。
+		_ = m.stopExecutor(taskID, ad)
 	}
 
 	// 挂起工单的作废交由 transit 的终态收口统一完成（B63）——在这里再做一遍会
