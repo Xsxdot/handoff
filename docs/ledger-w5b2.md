@@ -21,9 +21,10 @@
 
 ## Minor 总账
 
-- **已修**：M20 → 已修（slog.Warn 带 cfg_path，见本次 commit）；M22 → 已修（新增 TestEventPrompterSelectRejectsUnknownAnswer，见本次 commit）。
+- **已修**：M20、M22（commit 35b675c5）、M27、M33、M34（commit f389a017，终审修复波）。
 - **已认可不动**：M19、M21、M23（协调者复核认可定级）。
-- 其余留终审统一 triage（M24-M37）。
+- **终审 triage 后留**：M24（ErrNotEmbedded 哨兵良性增量）、M25（embed_test Close 未查错）、M26（gitignore 匹配同名目录）、M28（TOCTOU 桌面单机可忽略）、M29（release.go 注释表述绕）、M30（日志与错误轻微重复符合惯例）、M31（Abs error 不可达）、M32（工作区残留已删）、M35（wizard-done 文案此刻准确）、M36（confirm 恒发布尔等价语义）、M37（Emit 不 await 够用）。
+- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）。
 
 ## 真机走查
 
@@ -41,3 +42,12 @@
 ## 收尾
 
 - 2026-08-17 协调者升级 Minor M20/M22 并处理，commit 35b675c5：M20 → MaybeInstallService 的 InstallService==nil 分支补 `slog.Warn(..., "cfg_path", cfgPath)`（薄壳走不到此分支，是「理论上不该被走到」的路，将来真被调用即设计被违反的信号，现场只剩日志能说明）；M22 → 新增 TestEventPrompterSelectRejectsUnknownAnswer（喂非法值断言返回错误，钉住 plan 定为承重的「Select 拒非法值」行为——变异把 for 循环换成 return ans, nil 现有用例全绿，只有它能拦住）。同时删除孤儿文件 desktop/frontend/"Inter Font License.txt"（字体已删，许可成悬空资产）。M19/M21/M23 协调者认可定级不动。
+
+## 终审
+
+- 2026-08-17 整分支终审（相对 92656f00 完整 diff，15 commit）。承重项 7/8 PASS、全局约束 10/10 PASS、spec 符合性 PASS、代码质量 PASS。**承重项 #2 FAIL——关键缺陷**：`config.Load`（config.go:308-312）在文件不存在（firstRun）时会 save() 写默认配置（随机 token）；startWizard 在 AskAll 前调 Load 即落盘，用户取消/问答失败后文件仍在，下次启动 Resolve stat 命中 → StateConfigured → **向导永不再现**。实现避开了 config.Save 却漏了 Load 的 firstRun 写盘副作用。真机走查没拦住的原因：验收 ④「中途关窗后无 config.yaml」从未被跑（走查只跑成功路径，成功路径上 Save 覆盖看不出问题）。结论 NEEDS-FIX，一次性修复波。
+- 2026-08-17 修复波 commit f389a017，范围复审 APPROVED。修复 1（承重）：startWizard 在 Load 前 os.Stat 记 existed，AskAll 出错分支 `!existed` 时 os.Remove 回滚 firstRun 写盘，成功路径 Save 不受影响；Load 错误分支不回滚判定可接受（firstRun 写盘失败时文件要么没写成→stat 不存在→向导重现，要么半写→Resolve 走 Load 错误分支显示显式错误，都不会静默判已配置）。修复 2（M34）wizard.ts submit 加 `if (btn.disabled) return;` 拦双发。修复 3（M33）补 TestResolveBinPathRejectsDirectory，配套把 binpath.go 的 lastErr 拼进最终错误让「不是常规文件」文案透传（复审裁决必要且无害）。修复 4（M27）三态表补 embedVer 空 → UseExisting 子用例。探针验证：Load firstRun 写盘确认 → os.Remove → stat 不存在，探针文件已删。新发现 Minor 1 条：M38 binpath.go 多候选全失败只透传最后一个候选的原因（可 errors.Join 汇总，非必须）。
+
+## 结论
+
+W5b-2 全部 8 task + 终审修复波完成，分支 handoff/w5b2-onboarding 终裁 APPROVED。所有承重项通过：绝不覆盖用户已有安装 / 取消不写盘（含 firstRun 回滚）/ wizard-answer 只注册一次 / launchd 绝对路径 / CLI 行为不变 / 内嵌缺席即编译期失败 / shell 与 embedbin 不 import Wails / 不内嵌 agentd 不停 agentd。
