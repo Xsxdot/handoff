@@ -237,6 +237,20 @@ import `cmd` 会把整个 CLI（cobra + 全部 31 个子命令及其注册副作
 
 **遗留的不对称，与 B108 一致**：薄壳跑在人所在的机器上，选出来的是**本机**路径。给远程开发机加项目时这个路径没有意义，远程仍然只能粘贴。这与 B108「Reveal in Finder 只做本机半边」是同一个不对称，已被接受。
 
+---
+
+> **2026-08-17 实测：本节「通过 binding 暴露给前端」的前提不成立，B110 已搁置。**
+>
+> Go 侧其实已经做完了（`desktop/main.go` 监听 `pick-project-dir` → 弹原生对话框 → `NormalizeProjectDir` → 回传 `project-dir-picked`/`project-dir-error`）。**卡在前端够不着它**，三条实测：
+>
+> 1. 薄壳用 `win.SetURL()` 把窗口导航到 **agentd 伺服的 `http://127.0.0.1:7777/...`**，而 Wails 运行时由**它自己的资源服务器**在 `/wails/runtime.js` 上提供。实测该路径在 agentd 上返回 **HTTP 200 + `text/html`**（SPA 回落的 `index.html`），`import` 它必然语法错误 → 控制台页面上没有 `window._wails`，**既没有 binding 也没有事件通道**。
+> 2. **连 `ExecJS` 都不能用来搭桥**：其实现是 `if w.runtimeLoaded { 执行 } else { 塞进 pendingJS 队列 }`（`webview_window.go:658`）。运行时没加载就静默排队。实测：Go 侧日志确认注入调用发生，页面毫无反应、无报错。
+> 3. 试过的替代路 **A（资源处理器反代 agentd 使其同源）也不成立**：Wails 资源服务器走自定义 scheme `wails://`，同源之后 `location.host` 后面没有真正的 TCP 服务器，而控制台的 `wsUrl()` 由 `location` 推导（`web/src/api/ws.ts:72`），事件流当场断。要救得改共享的 `ws.ts` 去认桌面端专有的 agentd 地址，外加代理侧的鉴权注入与跨 scheme cookie 转译——成本与耦合都超出「顺带收口」的定位。
+>
+> 尚未探的候选：**B** Wails 页面套 iframe 装控制台 + postMessage（风险：跨源 iframe 里控制台会话 cookie 可能被 WKWebView 的第三方 cookie 策略拦）；**C** 回退 agentd 端点弹框（三平台三套，Linux 押 zenity/kdialog）；**D** 控制台把「请求选目录」写进 agentd，薄壳作为普通 agentd 客户端轮询到就弹框再写回结果（不碰 webview 任何机制，最稳，但要加 API 面）。
+>
+> 现状：新建项目仍只能粘贴路径。交付物②的验收条目「新建项目时目录选择器可用」**据此下调**，B110 回 backlog 单独排。
+
 ### 4.6 Windows 薄壳的定位：**待用户裁决**，W5b 先不做
 
 写 plan 时核实 §4.3 的启动序列，发现 Windows 这一路在架构上是断的。三条实证：
