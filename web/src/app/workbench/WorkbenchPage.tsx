@@ -15,14 +15,16 @@
 //   - 新文件：Task 10 接入创建流程
 //   - 任务 TUI：打开任务选择器，在当前项目内挑选任务
 import { Fragment, useState, type ReactNode } from 'react'
-import { MIN_PANE_PX, nextTerminalSeq, type TabContent } from './tabs'
+import { MAX_GROUPS, MIN_PANE_PX, nextTerminalSeq, type TabContent } from './tabs'
 import { BlankTab, type PickKind } from './BlankTab'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
+import { DRAG_BASE_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, type DropZone } from './paneDrop'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
+import { cn } from '@/lib/utils'
 
 export interface WorkbenchPageProps {
   api: WorkbenchApi
@@ -56,6 +58,8 @@ export function WorkbenchPage({
   // picking 记「哪个空白 tab 正在选任务」。null = 弹层关闭。
   // 这个状态只是弹层的开关，tab 本身仍是空白 tab；选择结果回调后再原地换内容。
   const [picking, setPicking] = useState<{ group: number; tabId: string } | null>(null)
+  // dragOver 记「指针现在悬在哪一栏的哪个区」，只用于高亮。null = 没有拖放在进行
+  const [dragOver, setDragOver] = useState<{ group: number; zone: DropZone } | null>(null)
 
   if (!base) return <EmptyWorkbench onAddProject={onAddProject} />
 
@@ -88,6 +92,47 @@ export function WorkbenchPage({
     api.open({ kind: 'blank' }, undefined, group)
   }
 
+  // onDropTask 处理一次任务拖放。
+  //
+  // 参数：
+  //   - group: 落在哪一栏
+  //   - zone: 落在该栏的哪个区
+  //   - taskId: 拖来的任务
+  //   - from: 该任务所属的基准目录；null = 未归属任务（用当前基准开）
+  //
+  // 跨基准拖放（from 与当前基准不是同一个）时**位置语义退化**：工作台整体切到
+  // from，边缘投放变成「在末尾新开一栏」。理由是 group 这个下标是在**当前**
+  // 基准的 tab 组里算的，切过去之后那一套组已经换了一批（byBase 那张 Map），
+  // 下标不再指任何东西。硬要保留位置就得先切基准、等重渲染、再重新命中投放区，
+  // 那是两帧之后的事，而拖放在落下的那一刻就要给出结果（spec §3.4）。
+  const onDropTask = (group: number, zone: DropZone, taskId: string, from: BaseDir | null) => {
+    const content: TabContent = { kind: 'tui', taskId }
+    // from 为 null = 未归属任务，它没有自己的目录，用当前基准开——与在左栏
+    // 点它的行为一致（Shell 的 openTaskTui 也是这条回退）
+    if (from !== null && from.key !== base.key) {
+      if (zone === 'center') {
+        // 带显式基准的 open 内部会先 select 过去，一步到位
+        api.open(content, from)
+        return
+      }
+      // 边缘投放退化成「末尾新开一栏」。三步必须按这个顺序：select 同步更新
+      // useWorkbench 的 baseRef，所以后两步落在**新基准**的那套 tab 组上
+      api.select(from)
+      api.split()
+      api.open(content)
+      return
+    }
+    if (zone === 'center') {
+      api.open(content, undefined, group)
+      return
+    }
+    // 插在左边时新栏就占据 group 这个下标，原来那栏被推到 group+1；
+    // 插在右边时新栏是 group+1。两种情况下「新栏的下标」都等于插入位置
+    const at = zone === 'left' ? group : group + 1
+    api.splitAt(at)
+    api.open(content, undefined, at)
+  }
+
   return (
     // gap 去掉了：分隔线不再靠 gap-px 透出背景色，而是 GroupDivider 这个真实元素——
     // 它要能被鼠标抓住、被键盘聚焦，那都不是背景色能做到的
@@ -107,11 +152,57 @@ export function WorkbenchPage({
               />
             )}
             <section
-              className="flex min-w-0 flex-col bg-background"
+              className="relative flex min-w-0 flex-col bg-background"
+              onDragOver={(e) => {
+                // 没有我们的数据类型就不接管：让浏览器按默认行为处理，
+                // 否则从别处拖进来的东西会显示成「可以放在这里」却什么也不发生
+                if (!e.dataTransfer.types.includes(DRAG_TASK_MIME)) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'copy'
+                const r = e.currentTarget.getBoundingClientRect()
+                const zone = dropZoneAt(e.clientX - r.left, r.width, wb.groups.length < MAX_GROUPS)
+                setDragOver({ group: gi, zone })
+              }}
+              onDragLeave={(e) => {
+                // 只在真的离开这一栏时清高亮：拖过子元素边界也会触发 dragleave，
+                // 不加这个判断高亮会疯狂闪烁
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                setDragOver((prev) => (prev?.group === gi ? null : prev))
+              }}
+              onDrop={(e) => {
+                if (!e.dataTransfer.types.includes(DRAG_TASK_MIME)) return
+                const taskId = e.dataTransfer.getData(DRAG_TASK_MIME)
+                setDragOver(null)
+                if (taskId === '') return
+                e.preventDefault()
+                const r = e.currentTarget.getBoundingClientRect()
+                const zone = dropZoneAt(e.clientX - r.left, r.width, wb.groups.length < MAX_GROUPS)
+                const from = readDragBase(e.dataTransfer.getData(DRAG_BASE_MIME))
+                onDropTask(gi, zone, taskId, from)
+              }}
               // flexBasis 必须显式给 0：默认的 auto 会让内容宽度参与分配，
               // 于是 sizes 的权重被内容多少带偏，拖出来的比例对不上
               style={{ flexGrow: wb.sizes[gi] ?? 1, flexBasis: 0 }}
             >
+              {dragOver?.group === gi && (
+                <div
+                  aria-hidden="true"
+                  data-testid={`drop-${dragOver.zone}`}
+                  className={cn(
+                    'pointer-events-none absolute inset-0 z-10',
+                    dragOver.zone === 'center' && 'ring-2 ring-inset ring-primary/60',
+                  )}
+                >
+                  {dragOver.zone !== 'center' && (
+                    <span
+                      className={cn(
+                        'absolute inset-y-0 w-[3px] bg-primary',
+                        dragOver.zone === 'left' ? 'left-0' : 'right-0',
+                      )}
+                    />
+                  )}
+                </div>
+              )}
               <TabBar
                 group={gi}
                 tabs={g.tabs}

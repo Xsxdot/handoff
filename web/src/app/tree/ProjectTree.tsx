@@ -17,6 +17,11 @@
 //   - 未归属任务没有基准目录，中央以当前选中目录开它的 TUI tab；一个都没选中时
 //     由 Shell 提示先选目录
 //
+// 拖放（W4 §3）：任务行可拖进中央区。拖到某一栏的边缘 = 在那一侧分出新栏
+// 并在其中打开；拖到栏中间 = 在那一栏开一个 tab。数据用自定义 MIME，从别处
+// 拖进来的东西不会被误判。拖动不影响点击——HTML5 拖放只在真的拖起来之后
+// 才吞掉 click。
+//
 // 任务挂到目录的依据是 Task.work_dir 与 Workspace.path 路径等值（纯前端 join，
 // 不需要新接口）。work_dir 为空表示原地模式，挂到主目录——与 proto.Task.Workdir()
 // 的回退语义一致。
@@ -44,6 +49,7 @@ import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
+import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 export interface ProjectTreeProps {
   tree: ProjectTreeResp
@@ -475,6 +481,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               <button
                                 key={t.id}
                                 type="button"
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                                  e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
+                                  e.dataTransfer.effectAllowed = 'copy'
+                                }}
                                 onClick={() => onOpenTask(base, t.id)}
                                 className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
                                 style={{ paddingLeft: 8 + 48 }}
@@ -514,6 +526,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             <button
                               key={t.id}
                               type="button"
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                                e.dataTransfer.setData(
+                                  DRAG_BASE_MIME,
+                                  JSON.stringify(archivedBase(project, loc.machine)),
+                                )
+                                e.dataTransfer.effectAllowed = 'copy'
+                              }}
                               onClick={() => onOpenTask(archivedBase(project, loc.machine), t.id)}
                               className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
                               style={{ paddingLeft: 8 + 48 }}
@@ -539,6 +560,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             <button
               key={t.id}
               type="button"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                e.dataTransfer.setData(DRAG_BASE_MIME, 'null')
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
               onClick={() => onOpenTask(null, t.id)}
               className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
               style={{ paddingLeft: 8 + 48 }}

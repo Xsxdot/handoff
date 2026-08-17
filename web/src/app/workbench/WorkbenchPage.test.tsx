@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { WorkbenchPage as ActualWorkbenchPage, type WorkbenchPageProps } from './WorkbenchPage'
 import { BlankTab } from './BlankTab'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
@@ -70,6 +70,33 @@ function pickerTask(id: string, name: string, projectId = 'project-1'): Task {
     machine: '',
     project_id: projectId,
   }
+}
+
+// dt 造一个够用的 DataTransfer 替身。
+// jsdom 里 fireEvent.drop 的 dataTransfer 是我们自己塞进去的普通对象，
+// 只要有 types / getData 两样，被测代码就跑得动。
+function dt(taskId: string, from: BaseDir | null) {
+  const data: Record<string, string> = {
+    'text/handoff-task': taskId,
+    'text/handoff-base': JSON.stringify(from),
+  }
+  return { types: Object.keys(data), getData: (k: string) => data[k] ?? '', dropEffect: '' }
+}
+
+function dropAt(el: Element, clientX: number, dataTransfer: ReturnType<typeof dt>) {
+  // jsdom 的 fireEvent.drop 不接受 clientX 初始化值；先造事件再写入属性，
+  // 让 React 的 DragEvent 读到真实偏移量。
+  const event = createEvent.drop(el, { dataTransfer })
+  Object.defineProperty(event, 'clientX', { value: clientX })
+  fireEvent(el, event)
+}
+
+// layout 给一个元素钉死 getBoundingClientRect。
+// jsdom 里所有元素的宽高都是 0，不钉的话 dropZoneAt 恒返回 center，
+// 三个投放区的用例会全部「通过」却什么也没测到。
+function layout(el: Element, width: number) {
+  el.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, right: width, bottom: 400, width, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
 }
 
 function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
@@ -470,5 +497,86 @@ describe('分屏分隔条', () => {
     const panes = screen.getAllByRole('tablist').map((tl) => tl.closest('section') as HTMLElement)
     expect(panes[0]).toHaveStyle({ flexGrow: '3' })
     expect(panes[1]).toHaveStyle({ flexGrow: '1' })
+  })
+})
+
+describe('拖放投放区', () => {
+  // 这些用例共用一个已选中基准、单栏、栏宽 400px 的工作台。
+  // 400px 宽下边缘区是 min(100, 120) = 100px。
+  const setup = () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.select(base))
+    const view = render(
+      <WorkbenchPage
+        api={hook.result.current}
+        tree={pickerTree}
+        tasks={[]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    return {
+      hook,
+      section: view.container.querySelector('section') as HTMLElement,
+      rerender: () =>
+        view.rerender(
+          <WorkbenchPage
+            api={hook.result.current}
+            tree={pickerTree}
+            tasks={[]}
+            onAddProject={vi.fn()}
+            renderContent={() => <div>内容</div>}
+          />,
+        ),
+    }
+  }
+
+  it('拖到栏中间：在那一栏开 tab，不分屏', () => {
+    const { hook, section } = setup()
+    layout(section, 400)
+    dropAt(section, 200, dt('T1', null))
+    expect(hook.result.current.wb.groups).toHaveLength(1)
+    expect(hook.result.current.wb.groups[0].tabs.at(-1)?.content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+
+  it('拖到右边缘：在右边分出新栏并在其中打开', () => {
+    const { hook, section } = setup()
+    layout(section, 400)
+    dropAt(section, 390, dt('T1', null))
+    expect(hook.result.current.wb.groups).toHaveLength(2)
+    expect(hook.result.current.wb.groups[1].tabs).toHaveLength(1)
+    expect(hook.result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+
+  it('拖到左边缘：新栏插在左边，原来那栏被推到右边', () => {
+    const { hook, section } = setup()
+    layout(section, 400)
+    dropAt(section, 10, dt('T1', null))
+    expect(hook.result.current.wb.groups).toHaveLength(2)
+    expect(hook.result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+
+  it('已到三栏时拖边缘退化成在这栏开 tab，不是无效投放', () => {
+    const { hook, section, rerender } = setup()
+    act(() => {
+      hook.result.current.split()
+      hook.result.current.split()
+    })
+    rerender()
+    layout(section, 400)
+    dropAt(section, 390, dt('T1', null))
+    expect(hook.result.current.wb.groups).toHaveLength(3)
+    // 落在了被拖到的那一栏，而不是什么都没发生。
+    expect(hook.result.current.wb.groups.flatMap((g) => g.tabs)).toHaveLength(1)
+  })
+
+  it('没有 handoff MIME 的拖放被忽略——从别处拖进来的东西不该开出 tab', () => {
+    const { hook, section } = setup()
+    layout(section, 400)
+    const foreign = { types: ['text/plain'], getData: () => 'https://example.com', dropEffect: '' }
+    const event = createEvent.drop(section, { dataTransfer: foreign })
+    Object.defineProperty(event, 'clientX', { value: 200 })
+    fireEvent(section, event)
+    expect(hook.result.current.wb.groups.flatMap((g) => g.tabs)).toHaveLength(0)
   })
 })
