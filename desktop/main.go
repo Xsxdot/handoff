@@ -233,8 +233,25 @@ func (t *wailsTransport) Notice(line string) {
 // readInstalledVersion 从既有 handoff 二进制里读版本号，供释出决策用。
 // 返回 stdout 首行去空白；任何失败或首行是 unknown 都判不出（空串）——
 // 与 shell.DecideRelease 的保守约定一致：判不出就偏保守，用用户已有的。
+//
+// 为什么要隔离 HOME：handoff CLI 每条命令跑完会经 PersistentPostRun 触发
+// maybeNotifyUpdate → config.Load，而 Load 在配置文件不存在时会 firstRun
+// 写盘（生成 config.yaml + 随机 token）。若子进程继承桌面壳的 HOME，首次
+// 引导期间这一下就把 config.yaml 写进了目标目录——SIGKILL/崩溃后文件仍在，
+// 下次启动 Resolve 判「已配置」，向导永不再现（真机实测过）。把子进程的
+// HOME 指到一个一次性临时目录，firstRun 写盘就落在那里，目标 HOME 干净。
 func readInstalledVersion(path string) string {
-	out, err := exec.Command(path, "version").Output()
+	// 一次性临时 HOME：隔离 CLI 的 firstRun 写盘等副作用，用完即删
+	tmp, err := os.MkdirTemp("", "handoff-version-probe-*")
+	if err != nil {
+		logger.Warn("创建版本探测临时目录失败，按判不出处理", "cause", err)
+		return ""
+	}
+	defer os.RemoveAll(tmp)
+
+	cmd := exec.Command(path, "version")
+	cmd.Env = append(os.Environ(), "HOME="+tmp)
+	out, err := cmd.Output()
 	if err != nil {
 		logger.Debug("读取已有 handoff 版本失败，按判不出处理", "bin", path, "cause", err)
 		return ""
