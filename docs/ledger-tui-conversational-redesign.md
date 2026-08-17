@@ -16,3 +16,4 @@
 - 2026-08-17 Task 5 第 1 轮完成，commit 45823aa8：新增统一 MetaRow/EventChip/UserInstructionBlock/DeliverySummaryCard，turn 块承载 instructions，ThinkingBlock/ToolCard 改为元数据行；目标测试 PASS（48 tests）。
 - 2026-08-17 Task 5 第 1 轮修复：typecheck 首跑报 `frames.test.ts(6,10): error TS2300: Duplicate identifier 'buildBlocks'`，移除新增的重复 import；修复后 task 全测 PASS（113 tests）、`npm run typecheck` PASS；lint 0 errors、仓库既有 10 warnings。
 - 2026-08-17 Task 6 第 1 轮完成，commit 92a983a0：ConversationStream 接管唯一滚动区、prepend 补偿、回合锚点、交付卡与流内提示；目标测试初次因标题 emoji 与精确文本查询同节点失败，拆分展示节点后修复；task 全测 PASS（118 tests）、`npm run typecheck` PASS、lint 0 errors/既有 10 warnings。
+- 2026-08-17 Task 7 第 1 轮完成，commit 396745b7：UsageChip/TuiHeader 实现两行页头、ctx/累计账目弹出、回合下拉与动作状态；首测仅因现有 `formatTokens(200000)` 实际输出 `200.0k` 而非计划示例 `200k` 失败，断言按既有格式化函数对齐；task 全测 PASS（122 tests）、`npm run typecheck` PASS、lint 0 errors/既有 10 warnings。
