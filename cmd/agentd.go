@@ -156,11 +156,15 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
-		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
-		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
+		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
+				if runtime.GOOS == "windows" {
+					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/codex/fake）", executorFlag)
+				}
 				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
@@ -357,7 +361,8 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | codex | fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
+// codex | fake（脚本演示）；Windows 上 claude/grok 不注册。
 var executorFlag string
 
 func init() {

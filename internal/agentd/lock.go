@@ -83,7 +83,12 @@ func AcquireDataDirLock(dataDir string, log *slog.Logger) (*DataDirLock, error) 
 		log.Error("获取单实例锁失败", "path", path, "cause", err)
 		return nil, err
 	}
-	log.Info("已取得数据目录单实例锁", "data_dir", dataDir, "path", path)
+	if prochost.LockSupported() {
+		log.Info("已取得数据目录单实例锁", "data_dir", dataDir, "path", path)
+	} else {
+		log.Info("数据目录锁文件已就位，但本平台不提供互斥保护",
+			"data_dir", dataDir, "path", path)
+	}
 	return &DataDirLock{l: l, log: log}, nil
 }
 

@@ -203,10 +203,12 @@ func killGroup(pid int) error {
 func killProc(pid int) error {
 	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {
+		log().Error("打开单个进程句柄失败", "pid", pid, "cause", err)
 		return fmt.Errorf("打开进程 %d: %w", pid, err)
 	}
 	defer windows.CloseHandle(h)
 	if err := windows.TerminateProcess(h, 1); err != nil {
+		log().Error("终止单个进程失败", "pid", pid, "cause", err)
 		return fmt.Errorf("终止进程 %d: %w", pid, err)
 	}
 	log().Info("已终止单个进程", "pid", pid)
@@ -214,8 +216,12 @@ func killProc(pid int) error {
 }
 
 // createInputChannel / waitInputReader 见文件头：只在 claude 路径上，本轮不做。
-func createInputChannel(path string) error { return errNotImplemented }
+func createInputChannel(path string) error {
+	log().Error("Windows 输入通道尚未实现", "path", path)
+	return errNotImplemented
+}
 
 func waitInputReader(path string, timeout time.Duration) (time.Duration, error) {
+	log().Error("Windows 输入通道尚未实现", "path", path, "timeout", timeout)
 	return 0, errNotImplemented
 }

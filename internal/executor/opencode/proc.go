@@ -185,10 +185,13 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 			// 就绪超时：读 serve.log 尾部（serve 的 stderr）带进错误，这是
 			// 「为什么没起来」的第一手证据（如端口被占、config 解析失败）。
 			stderrTail := serveLogTail(p.ServeLogPath)
-			l.Error("opencode serve 就绪超时", "port", port, "shim_pid", handle.PID,
+			// bin 必须进错误文本：Windows 上桌面 GUI 与 CLI 同名，LookPath 可能
+			// 解析到 OpenCode.exe（桌面版），它起来不会 listen 这个端口，症状就是
+			// 这里超时。只说「超时」会让人去查端口和配置，而真因是解析错了文件。
+			l.Error("opencode serve 就绪超时", "port", port, "shim_pid", handle.PID, "bin", bin,
 				"stderr_tail", stderrTail)
 			_ = p.Kill() // 清理残留，避免半启动进程占着端口
-			return nil, fmt.Errorf("opencode serve 就绪超时（10s）: %s", stderrTail)
+			return nil, fmt.Errorf("opencode serve 就绪超时（10s，bin=%s）: %s", bin, stderrTail)
 		case <-time.After(serveProbeInterval):
 		}
 	}
