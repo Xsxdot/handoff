@@ -17,8 +17,19 @@
 
 ## 真机走查（Task 6）
 
+- 2026-08-17 Task 6（端到端验收）完成。Step 1 全量测试两模块全绿、Step 2 SIGKILL 不留痕判据通过、Step 5 ledger 落盘；Step 3 真机双击走查与 Step 4 控制台配对回归因本环境无 GUI 会话记**未决**（见下）。
+
 - 2026-08-17 本执行环境无 GUI 会话（无窗口服务器/辅助功能授权），**Step 3 真机双击走查与 Step 4 控制台配对回归无法在本环境完成**，记为**未决**，需在协调者有授权的机器上人工走查。按 W5b-2 先例（"不要留成已完成"）。
   - 待走查项：①首次配置页四家 executor 探测与登录态正确；②默认值已填、不改直接点完成走通；③切角色时区块显隐正确、无 executor 的机器上协调者改执行机时监听预设自动翻「所有网卡」（手动改过则不翻）；④「高级设置」折叠状态下提交后配置里那些字段仍是默认值；⑤完成后进入控制台；⑥页面无远程配对段。
   - 另注意：完成向导会走 EnsureRunning，launchd label 固定值（B71）会与运行中的 agentd 抢 label/DataDir，**不在执行机上重跑完成路径**。
 - Step 2 判据复验（SIGKILL 不留痕）已在执行机完成：`wails3 task build` 出新薄壳 + 根模块 `go build` 新 CLI 到临时目录；`PATH=$FIX:$PATH HOME=$TH ./bin/handoff-desktop` → 8s 后 `kill -9`：日志 `existing=/private/.../tmp.iAMkOEg8zj/handoff`（确认解析到新构建而非已安装 CLI）、`$TH/.handoff` **整个不存在**、进程已退出。**判据通过**。未覆盖 `~/.local/bin/handoff`（未带 embedbin tag 的构建 releaseEmbedded 走 use-existing 分支，安全）。
 - Step 1 全量测试：根模块 `go test ./...` 与 `cd desktop && go test ./...` 全绿，`gofmt -l .` 两模块空输出。
+
+## 终审
+
+- 2026-08-17 整分支终审（相对 312b25a5 完整 diff，13 commit / 14 文件）。承重 8/8 PASS（金样改造前录且只删配对两行、CLI 提问逐字不变、落盘只在校验成功后、shell 不 import Wails、前端不内嵌字段名分支、无终端语言、无构建产物入库、gofmt 两模块空）、全局约束全 PASS、spec 符合性 PASS、代码质量 PASS。终审裁决 APPROVED，遗留 2 项 minor：M8 wizard-error 后前端置 submitted=false 邀请「重试」，但 Go 侧失败后向导已终结、重试的 wizard-submit 会被静默丢弃（页面看似冻结）；M9 releaseEmbedded 仍 emit wizard-notice 但前端已不监听（提示静默丢失），且 wizard.ts 文件头注释「Go 侧已不再发该事件」与实际不符。真机 GUI 走查按 ledger 记为未决（需人工 GUI 会话）。
+- 2026-08-17 终审修复波 commit 8fbfffd2，范围复审 APPROVED。修复 1（M8）：wizard-error 回调删 submitted=false，按钮保持禁用，错误下注明「配置未保存，请关闭窗口后重新打开以重试」（answers/touched 仍保留）。修复 2（M9）：前端新增 wizard-notice 监听，渲染成非阻塞信息横幅（覆盖式、独立于 redraw、不清空内容），复用闲置的 #notices 容器，文件头注释修正；Go 侧 releaseEmbedded 的 emit 保持现状。Go 侧未动。构建成功、tsc 零错误、两模块测试无 FAIL。记账 M4/M5/M6/M7 全部确认非阻塞不动；M3 随 M9 修复消解（前端已接住 wizard-notice）。
+
+## 结论
+
+B113 首次配置改单页表单全部 6 task + 终审修复波完成，分支 feat/onboarding-single-page-form 终裁 APPROVED。承重项全部通过：金样改造前录制且只删配对两行 / CLI 的 handoff init 提问逐字不变 / 落盘只发生在校验成功之后（含畸形 submit 按取消处理）/ shell 不 import Wails / 前端不内嵌字段名分支 / 无终端语言 / 无构建产物入库 / gofmt 两模块空。真机双击走查与控制台配对回归记未决，需协调者在有授权的机器上人工完成。
