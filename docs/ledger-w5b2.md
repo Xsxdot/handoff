@@ -24,11 +24,14 @@
 - **已修**：M20、M22（commit 35b675c5）、M27、M33、M34（commit f389a017，终审修复波）。
 - **已认可不动**：M19、M21、M23（协调者复核认可定级）。
 - **终审 triage 后留**：M24（ErrNotEmbedded 哨兵良性增量）、M25（embed_test Close 未查错）、M26（gitignore 匹配同名目录）、M28（TOCTOU 桌面单机可忽略）、M29（release.go 注释表述绕）、M30（日志与错误轻微重复符合惯例）、M31（Abs error 不可达）、M32（工作区残留已删）、M35（wizard-done 文案此刻准确）、M36（confirm 恒发布尔等价语义）、M37（Emit 不 await 够用）。
-- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）；M39 readInstalledVersion 的 HOME= 隔离在 Windows 上不生效（stdlib 读 USERPROFILE，W5b 不出 Windows 资产，留后续）。
+- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）。M39（原 readInstalledVersion HOME 隔离的 Windows 问题）随该隔离整体回退而**撤销**，见终审后收尾段。
 
 ## 真机走查
 
-- 2026-08-17 macOS 临时 HOME：~~实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通~~ **结论纠正（协调者指示）**：那份 config.yaml 正是 firstRun 写盘产生的，**证明不了向导走完**。正确表述：**向导窗口起来了；逐题走完未被证实**。按协调者指示不再重跑向导（launchd label 固定值 B71，会在派发本任务的机器上与运行中 agentd 抢 label/DataDir；上次未出事只因 EnsureRunning 遇「已在运行」直接返回）。逐题前进的人工观察由协调者在自己机器补。
+- 2026-08-17 macOS 临时 HOME：~~实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通~~ **结论纠正（协调者指示）**：那份 config.yaml 正是 firstRun 写盘产生的，**证明不了向导走完**。正确表述：**向导窗口起来了；逐题走完未被证实**。
+  - 验收 ①窗口显示向导 ②问题能逐个前进 ③答完后配置写进临时 HOME —— **待人工在有授权的机器上走查（记为未决）**：协调者本机无辅助功能/屏幕录制授权（`osascript` 返 -1719、`screencapture` 返 `could not create image from display`），驱动不了也看不到窗口。不要留成已完成。
+  - 验收 ④中途关窗不留 config.yaml —— 已由 SIGKILL 复验覆盖并通过（见下「终审后协调者收尾指示」第 5 条审计者独立复验）。
+  - 另注意：launchd label 固定值 B71，走查会与派发本任务的机器上的运行中 agentd 抢 label/DataDir，故不在执行机上重跑向导。
 
 ## Task 8 干净检出验收门（协调者本机执行）
 
@@ -58,16 +61,19 @@ W5b-2 全部 8 task + 终审修复波完成，分支 handoff/w5b2-onboarding 终
 
 - 复现（修复前 commit 9e332d78 之前）：temp HOME 起向导不答 → `kill -9` → `$TH/.handoff/config.yaml` 仍在且 token 非空（实测确认，含 `update/cli-check.json`）。
 - 修复 commit 9e332d78：config 包抽出 `newDefaultConfig()`/`applyComputedDefaults(cfg)`，Load 复用（行为等价，现有测试全绿证明），新增 `Defaults() *Config`（出厂默认 + 随机 token + 计算默认值 + validate，**零磁盘副作用**）；startWizard 改调 `config.Defaults()`，删除 os.Stat/existed/os.Remove 回滚段。desktop/main.go 同时修缺陷 B（见下）。
-- **第三处泄漏（实现者实测挖出）**：startWizard 改完后 SIGKILL 实测仍失败——`readInstalledVersion` 用 `exec.Command(path, "version")` 探测既有 handoff 版本，而 handoff CLI 每条命令跑完有 PersistentPostRun → maybeNotifyUpdate → config.Load → firstRun 写盘，子进程继承桌面壳的 HOME，把 config.yaml 写进目标目录。修复 commit f489d3d7：版本探测子进程隔离 HOME（`os.MkdirTemp` + `cmd.Env = append(os.Environ(), "HOME="+tmp)` + defer RemoveAll），firstRun 写盘落在一次性临时目录。
-- **修复后 SIGKILL 实测（commit f489d3d7 的 bin）**：temp HOME 起向导不答 → `kill -9` → `$TH` 下 `find -type f` **空**，无 config.yaml。通过。
-- 新测试：`config_test.go` TestDefaultsWritesNothingToDisk（t.Setenv HOME 隔离，断言 DefaultPath() 不存在 + 二次调用幂等）。
+- **第三处泄漏（实现者实测挖出）**：startWizard 改完后 SIGKILL 实测仍失败——`readInstalledVersion` 用 `exec.Command(path, "version")` 探测既有 handoff 版本，而 handoff CLI 每条命令跑完有 PersistentPostRun → maybeNotifyUpdate → config.Load，子进程继承桌面壳的 HOME，把 config.yaml 写进目标目录。
+  - **根因不在桌面壳**：根命令钩子无条件走 firstRun 写盘，违背 `cmd/version.go` 文件头「不读配置文件、必须能在没有 config.yaml 的机器上跑通」的契约。桌面壳只是第一个撞上的调用方；任何东西（脚本/包管理器/监控/CI）跑一次 `handoff version` 都会在真实 `~/.handoff` 留下一份从未配过对的 config.yaml，此后 Resolve 判「已配置」、向导永不再现。
+  - **第一版修法（commit f489d3d7）已回退**：原给 `readInstalledVersion` 的探测子进程套临时 HOME（`os.MkdirTemp` + `cmd.Env=append(...,"HOME="+tmp)` + defer RemoveAll）。回退理由（协调者裁定 + 实现者确认）：①对其他调用方（脚本/CI/监控）无效，洞在 CLI 钩子；②`defer os.RemoveAll` 在 SIGKILL 下不执行，只把残留从 config.yaml 换成越堆越多的孤儿临时目录（复验实测留下过 `handoff-version-probe-2416771840`，手工删除）；③会蒙住 CLI 侧这条契约的回归信号。
+  - **最终修复（commit 03fa22e）**：`maybeNotifyUpdate` 在 `config.Load` 之前先 `os.Stat(effectiveConfigPath())`，配置文件不存在直接 return（未配置的机器上「有新版本可升级」提示本就无意义，也符合该函数「绝不能成为故障源」的注释约定）。`config.Load` 的 firstRun 行为一字不动——status/tasks 等真需要配置的命令在自己的 RunE 里 Load，首次生成在那里是合理的。`desktop/main.go` 的 readInstalledVersion 恢复为原样 exec `handoff version`。
+  - **回归用例**：`cmd/version_test.go` 新增 `TestVersionCreatesNothingInEmptyHome`——隔离临时 HOME 下跑 version，命令成功、首行仍是版本号，且事后整个 `.handoff` 不存在（含 update/）。单独放到修复前的 21a73aa7 上跑 FAIL（报「根命令钩子把 firstRun 写盘带进了 version」），修复后 PASS，确实抓得住本 bug。
+- **修复后 SIGKILL 实测（commit 03fa22e，审核者在自有机器独立复验）**：`go build` CLI 到临时目录 + `wails3 task build` 薄壳，`PATH="$THEIRBIN:$PATH" HOME="$TH" ./bin/handoff-desktop` → 8s 后 `kill -9`：日志 `释出决策 ... existing=/private/var/folders/.../tmp.PB1O1lxqVh/handoff`（确认解析到构建的 CLI 而非 `~/.local/bin/handoff`）；`$TH/.handoff` **整个不存在**；无 `handoff-version-probe-*` 孤儿目录。判据通过。/ 注：不在执行机上覆盖 `~/.local/bin/handoff`——那是运行中 agentd 用的二进制，macOS `com.apple.provenance` 会让就地覆盖后的二进制被 SIGKILL，覆盖即砖；复验改在审核者自有机器用 PATH 前置进行。
 
 **修复 B（W5b-1 遗留，本轮暴露）：早期失败时 panic 不是弹对话框**。`go openConsole()` 起在 `app.Run()` 之前，失败足够早时（握手 401）showError → app.Dialog → InvokeSync → a.impl.isOnMainThread()，而 a.impl 由 app.Run() 初始化 → nil deref。
 
 - 复现（修复前）：temp HOME 放 WRONGTOKEN config.yaml 二次启动 → 401 → `panic: runtime error: invalid memory address or nil pointer dereference` at application.go:967（main.go:126 showError → main.go:192 go openConsole）。
 - 修复（9e332d78）：`go openConsole()` 换成 `app.Event.OnApplicationEvent(events.Common.ApplicationStarted, ...)` 后再起 goroutine。平台映射已核实：darwin `Mac.ApplicationDidFinishLaunching→Common.ApplicationStarted`（events_common_darwin.go:8）、linux `Linux.ApplicationStartup→`（events_common_linux.go:8）、windows `Windows.ApplicationStarted→`（events_common_windows.go:9）；a.impl 在 Run() 内初始化（application.go:659）恒先于 ApplicationStarted 发出，showError 路径安全。
-- **修复后实测（9e332d78 + f489d3d7 的 bin）**：同 401 场景 → 进程存活不 panic，日志 `ERROR 握手失败 cause="向 agentd … 状态码 401"`（走 showError 对话框路径）。通过。
+- **修复后实测（9e332d78 及其后的 bin，401 修复不受 readInstalledVersion 回退影响）**：同 401 场景 → 进程存活不 panic，日志 `ERROR 握手失败 cause="向 agentd … 状态码 401"`（走 showError 对话框路径）。通过。
 
 **ledger 走查结论纠正**：见上方「真机走查」段（原「写出有效 config.yaml、向导端到端走通」证明不了向导走完，已改为「向导窗口起来了；逐题走完未被证实」）。
 
-复审（f489d3d7 后）双裁决 APPROVED：Load 重构行为等价逐段核对、Defaults() 零副作用、A-2 的 exec dedupEnv（保留最后一次出现值，append 覆盖有效）实测确认、平台事件映射核实闭合、无夹带改动、gofmt/vet/测试全绿。新发现 Minor：M39 readInstalledVersion 的 `HOME=` 隔离在 Windows 上不生效（Go stdlib os.UserHomeDir 读 USERPROFILE 而非 HOME，os/file.go:606-612），建议 Windows 分支同时覆盖 USERPROFILE——W5b 不出 Windows 资产（spec §4.6 选项 A），留后续。
+复审（最终修复 03fa22e 后）双裁决 APPROVED：Load 重构行为等价逐段核对、Defaults() 零副作用、maybeNotifyUpdate 的存在性守卫符合「自己绝不能成为故障源」约定且 config.Load firstRun 行为未动、平台事件映射（修复 B）核实闭合、readInstalledVersion 回退后无夹带、gofmt/vet/全量测试（32 包）全绿。~~M39 readInstalledVersion 的 HOME= 隔离在 Windows 不生效~~ **M39 撤销**：该隔离已整体回退，M39 无对象，不再记账。
