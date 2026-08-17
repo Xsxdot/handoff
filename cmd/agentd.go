@@ -294,13 +294,38 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 // 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
 // （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
 func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
-	return map[string]executor.Adapter{
+	return adaptersFor(runtime.GOOS, logger)
+}
+
+// adaptersFor 按平台裁剪 executor 注册表。
+//
+// 参数：goos 取 runtime.GOOS；抽成参数是为了让 Windows 分支能在 mac/linux 的 CI 上测到。
+//
+// 为什么在注册层拒绝而不是等 Start 报错：status 会如实显示这台机器支持哪些执行器，
+// 协调者派发前就看得见，而不是任务跑到一半转 failed。对 claude 尤其重要——它的
+// Start 第一步是建 AF_UNIX 裁决 socket，而 Go 在 Windows 10 1803+ 支持 AF_UNIX，
+// socket 可能真的建得起来，然后走到输入通道才炸，留下一个 socket 建了、进程没起、
+// 清理路径没人走过的半启动状态。与其让它走到那里，不如在门口就不放行。
+//
+// codex 照常注册但**记为「未验」而非「支持」**：它与 opencode 同为零 unix-ism，
+// 没有已知阻断，不注册是对它的诬告；但本轮验收门只跑 opencode，codex 在 Windows
+// 上一次都没跑过。
+func adaptersFor(goos string, logger *slog.Logger) map[string]executor.Adapter {
+	ads := map[string]executor.Adapter{
 		"opencode": opencode.New(logger),
-		"claude":   claudecode.New(logger),
-		"grok":     grok.New(logger),
 		"codex":    codex.New(logger),
 		"fake":     fake.New(nil),
 	}
+	if goos == "windows" {
+		logger.Warn("本平台不注册部分执行器",
+			"skipped", []string{"claude", "grok"},
+			"claude_reason", "输入通道（命名管道）与 AF_UNIX 裁决 socket 未实现（B37 第二批）",
+			"grok_reason", "taskenv 用 os.Symlink，Windows 上需要特权")
+		return ads
+	}
+	ads["claude"] = claudecode.New(logger)
+	ads["grok"] = grok.New(logger)
+	return ads
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
