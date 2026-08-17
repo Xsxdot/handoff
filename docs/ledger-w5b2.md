@@ -24,11 +24,11 @@
 - **已修**：M20、M22（commit 35b675c5）、M27、M33、M34（commit f389a017，终审修复波）。
 - **已认可不动**：M19、M21、M23（协调者复核认可定级）。
 - **终审 triage 后留**：M24（ErrNotEmbedded 哨兵良性增量）、M25（embed_test Close 未查错）、M26（gitignore 匹配同名目录）、M28（TOCTOU 桌面单机可忽略）、M29（release.go 注释表述绕）、M30（日志与错误轻微重复符合惯例）、M31（Abs error 不可达）、M32（工作区残留已删）、M35（wizard-done 文案此刻准确）、M36（confirm 恒发布尔等价语义）、M37（Emit 不 await 够用）。
-- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）。
+- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）；M39 readInstalledVersion 的 HOME= 隔离在 Windows 上不生效（stdlib 读 USERPROFILE，W5b 不出 Windows 资产，留后续）。
 
 ## 真机走查
 
-- 2026-08-17 macOS 临时 HOME：实现者成功跑通一次，临时 HOME 下写出有效 config.yaml、向导端到端走通。按协调者指示**不再重跑**（launchd label 固定值 B71，会在派发本任务的机器上与运行中 agentd 抢 label/DataDir；上次未出事只因 EnsureRunning 遇「已在运行」直接返回）。逐题前进的人工观察由协调者在自己机器补。
+- 2026-08-17 macOS 临时 HOME：~~实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通~~ **结论纠正（协调者指示）**：那份 config.yaml 正是 firstRun 写盘产生的，**证明不了向导走完**。正确表述：**向导窗口起来了；逐题走完未被证实**。按协调者指示不再重跑向导（launchd label 固定值 B71，会在派发本任务的机器上与运行中 agentd 抢 label/DataDir；上次未出事只因 EnsureRunning 遇「已在运行」直接返回）。逐题前进的人工观察由协调者在自己机器补。
 
 ## Task 8 干净检出验收门（协调者本机执行）
 
@@ -51,3 +51,23 @@
 ## 结论
 
 W5b-2 全部 8 task + 终审修复波完成，分支 handoff/w5b2-onboarding 终裁 APPROVED。所有承重项通过：绝不覆盖用户已有安装 / 取消不写盘（含 firstRun 回滚）/ wizard-answer 只注册一次 / launchd 绝对路径 / CLI 行为不变 / 内嵌缺席即编译期失败 / shell 与 embedbin 不 import Wails / 不内嵌 agentd 不停 agentd。
+
+## 终审后协调者收尾指示（3 项，全部完成）
+
+**修复 A（承重）：firstRun 回滚只覆盖了一条路径，未封死**。终审抓到的修法（AskAll 出错时 os.Remove）只在「进程还活着且走到那个 return」时执行；kill -9/崩溃/托盘退出都不经过它，原缺陷以「崩溃」为触发条件原样成立。协调者裁定方向：**向导路径干脆不调 config.Load**，在 config 包加不落盘入口 `Defaults()`。
+
+- 复现（修复前 commit 9e332d78 之前）：temp HOME 起向导不答 → `kill -9` → `$TH/.handoff/config.yaml` 仍在且 token 非空（实测确认，含 `update/cli-check.json`）。
+- 修复 commit 9e332d78：config 包抽出 `newDefaultConfig()`/`applyComputedDefaults(cfg)`，Load 复用（行为等价，现有测试全绿证明），新增 `Defaults() *Config`（出厂默认 + 随机 token + 计算默认值 + validate，**零磁盘副作用**）；startWizard 改调 `config.Defaults()`，删除 os.Stat/existed/os.Remove 回滚段。desktop/main.go 同时修缺陷 B（见下）。
+- **第三处泄漏（实现者实测挖出）**：startWizard 改完后 SIGKILL 实测仍失败——`readInstalledVersion` 用 `exec.Command(path, "version")` 探测既有 handoff 版本，而 handoff CLI 每条命令跑完有 PersistentPostRun → maybeNotifyUpdate → config.Load → firstRun 写盘，子进程继承桌面壳的 HOME，把 config.yaml 写进目标目录。修复 commit f489d3d7：版本探测子进程隔离 HOME（`os.MkdirTemp` + `cmd.Env = append(os.Environ(), "HOME="+tmp)` + defer RemoveAll），firstRun 写盘落在一次性临时目录。
+- **修复后 SIGKILL 实测（commit f489d3d7 的 bin）**：temp HOME 起向导不答 → `kill -9` → `$TH` 下 `find -type f` **空**，无 config.yaml。通过。
+- 新测试：`config_test.go` TestDefaultsWritesNothingToDisk（t.Setenv HOME 隔离，断言 DefaultPath() 不存在 + 二次调用幂等）。
+
+**修复 B（W5b-1 遗留，本轮暴露）：早期失败时 panic 不是弹对话框**。`go openConsole()` 起在 `app.Run()` 之前，失败足够早时（握手 401）showError → app.Dialog → InvokeSync → a.impl.isOnMainThread()，而 a.impl 由 app.Run() 初始化 → nil deref。
+
+- 复现（修复前）：temp HOME 放 WRONGTOKEN config.yaml 二次启动 → 401 → `panic: runtime error: invalid memory address or nil pointer dereference` at application.go:967（main.go:126 showError → main.go:192 go openConsole）。
+- 修复（9e332d78）：`go openConsole()` 换成 `app.Event.OnApplicationEvent(events.Common.ApplicationStarted, ...)` 后再起 goroutine。平台映射已核实：darwin `Mac.ApplicationDidFinishLaunching→Common.ApplicationStarted`（events_common_darwin.go:8）、linux `Linux.ApplicationStartup→`（events_common_linux.go:8）、windows `Windows.ApplicationStarted→`（events_common_windows.go:9）；a.impl 在 Run() 内初始化（application.go:659）恒先于 ApplicationStarted 发出，showError 路径安全。
+- **修复后实测（9e332d78 + f489d3d7 的 bin）**：同 401 场景 → 进程存活不 panic，日志 `ERROR 握手失败 cause="向 agentd … 状态码 401"`（走 showError 对话框路径）。通过。
+
+**ledger 走查结论纠正**：见上方「真机走查」段（原「写出有效 config.yaml、向导端到端走通」证明不了向导走完，已改为「向导窗口起来了；逐题走完未被证实」）。
+
+复审（f489d3d7 后）双裁决 APPROVED：Load 重构行为等价逐段核对、Defaults() 零副作用、A-2 的 exec dedupEnv（保留最后一次出现值，append 覆盖有效）实测确认、平台事件映射核实闭合、无夹带改动、gofmt/vet/测试全绿。新发现 Minor：M39 readInstalledVersion 的 `HOME=` 隔离在 Windows 上不生效（Go stdlib os.UserHomeDir 读 USERPROFILE 而非 HOME，os/file.go:606-612），建议 Windows 分支同时覆盖 USERPROFILE——W5b 不出 Windows 资产（spec §4.6 选项 A），留后续。
