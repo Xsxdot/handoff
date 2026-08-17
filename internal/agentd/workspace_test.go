@@ -1557,3 +1557,57 @@ func TestSearchInDirLimitCapped(t *testing.T) {
 		t.Fatal("命中数超过收敛后的上限必须标 Truncated")
 	}
 }
+
+// TestRemoveManagedWorktreeRetries 钉住重试语义。
+//
+// 为什么改函数内部而不是调用点：实际有四个调用点（workspace.go 的派发失败补偿、
+// manager.go 的 done/stop/失配三处），改函数一处覆盖全部，也不会漏掉将来新增的。
+//
+// 为什么不去等子进程：child.pid 虽然有，但用 pid 等存活会重新引入 pid 复用误判
+// ——那正是整个 prochost 用文件锁而非 pid 判存活的原因。
+func TestRemoveManagedWorktreeRetries(t *testing.T) {
+	oldAttempts, oldBackoff := removeWorktreeAttempts, removeWorktreeBackoff
+	t.Cleanup(func() { removeWorktreeAttempts, removeWorktreeBackoff = oldAttempts, oldBackoff })
+	removeWorktreeAttempts, removeWorktreeBackoff = 3, time.Millisecond
+
+	calls := 0
+	oldRun := worktreeRemoveFn
+	t.Cleanup(func() { worktreeRemoveFn = oldRun })
+	worktreeRemoveFn = func(ctx context.Context, repo, workdir string) (string, error) {
+		calls++
+		if calls < 3 {
+			return "fatal: 'x' contains modified or untracked files", errors.New("exit 128")
+		}
+		return "", nil
+	}
+
+	if err := RemoveManagedWorktree(context.Background(), "/repo", "/wt"); err != nil {
+		t.Fatalf("第三次应成功：%v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("应重试到成功为止：calls=%d want=3", calls)
+	}
+}
+
+// TestRemoveManagedWorktreeExhausted 钉住耗尽后仍返回错误（调用方据此只 Warn 不阻断）。
+func TestRemoveManagedWorktreeExhausted(t *testing.T) {
+	oldAttempts, oldBackoff := removeWorktreeAttempts, removeWorktreeBackoff
+	t.Cleanup(func() { removeWorktreeAttempts, removeWorktreeBackoff = oldAttempts, oldBackoff })
+	removeWorktreeAttempts, removeWorktreeBackoff = 2, time.Millisecond
+
+	calls := 0
+	oldRun := worktreeRemoveFn
+	t.Cleanup(func() { worktreeRemoveFn = oldRun })
+	worktreeRemoveFn = func(ctx context.Context, repo, workdir string) (string, error) {
+		calls++
+		return "被占用", errors.New("exit 128")
+	}
+
+	err := RemoveManagedWorktree(context.Background(), "/repo", "/wt")
+	if err == nil {
+		t.Fatal("耗尽后必须返回错误")
+	}
+	if calls != 2 {
+		t.Fatalf("应按 removeWorktreeAttempts 次数重试：calls=%d want=2", calls)
+	}
+}

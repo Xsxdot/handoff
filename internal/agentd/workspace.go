@@ -714,6 +714,29 @@ func recordNewBranchTip(ctx context.Context, repo, branch string) string {
 	return tip
 }
 
+// removeWorktreeAttempts / removeWorktreeBackoff 是删 worktree 的重试参数。
+//
+// 为什么需要重试：Kill 的复核判据是 shim 的存活锁，而执行者子进程是被 job 的
+// KILL_ON_JOB_CLOSE 连坐杀掉的。shim 拆解时「锁释放」与「连坐」是两个并列后果，
+// 内核不保证顺序——于是存在一个窗口：Alive() 已转 false，而执行者仍活着，它的
+// cwd 正是这棵 worktree（Windows 上等于一个不带 FILE_SHARE_DELETE 的目录句柄）。
+//
+// unix 上第一次就会成功（允许删除作为他人 cwd 的目录），重试是零代价；统一启用
+// 是为了避免出现一条只在 Windows 上走过的路径。
+//
+// 是变量而非常量：测试要把它们调到毫秒级，否则每条用例都真等几秒。
+var (
+	removeWorktreeAttempts = 5
+	removeWorktreeBackoff  = 400 * time.Millisecond
+)
+
+// worktreeRemoveFn 是单次 git worktree remove 的测试缝。
+// **生产路径恒为下面的默认值**，非测试代码不得赋值。
+var worktreeRemoveFn = func(ctx context.Context, repo, workdir string) (string, error) {
+	_, stderr, err := gitRun(ctx, repo, "worktree", "remove", workdir)
+	return stderr, err
+}
+
 // RemoveManagedWorktree 删除 agentd 管理的 worktree（git -C repo worktree remove workdir）。
 //
 // 参数：
@@ -721,21 +744,45 @@ func recordNewBranchTip(ctx context.Context, repo, branch string) string {
 //   - repo: 主仓库路径
 //   - workdir: 待删除的 worktree 路径（必须为 Managed=true 的工作区）
 //
+// 返回：error 非 nil 表示重试耗尽仍未删掉；调用方按现状只 Warn 不阻断。
+//
 // 注意：
 //   - 只删工作树不删分支（spec：任务分支保留供审阅/回滚）
 //   - workdir 带未提交改动时 git 拒绝删除（错误带 stderr 原文返回）；是否降级
 //     由调用方（Done 归档）决定——本函数不做清理性降级
+//   - 失败会重试若干次，见 removeWorktreeAttempts 的注释
 func RemoveManagedWorktree(ctx context.Context, repo, workdir string) error {
 	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
 	defer cancel()
-	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir, "timeout", WorkspaceGitTimeout)
-	if _, stderr, err := gitRun(ctx, repo, "worktree", "remove", workdir); err != nil {
-		log().Error("删除 managed worktree 失败", "repo", repo, "workdir", workdir,
-			"stderr", truncateRunes(stderr, 300), "cause", err)
-		return fmt.Errorf("git worktree remove %s: %s: %w", workdir, strings.TrimSpace(stderr), err)
+	log().Info("删除 managed worktree", "repo", repo, "workdir", workdir,
+		"timeout", WorkspaceGitTimeout, "attempts", removeWorktreeAttempts)
+	var lastStderr string
+	var lastErr error
+	for i := 1; i <= removeWorktreeAttempts; i++ {
+		stderr, err := worktreeRemoveFn(ctx, repo, workdir)
+		if err == nil {
+			log().Info("managed worktree 已删除", "repo", repo, "workdir", workdir, "attempt", i)
+			return nil
+		}
+		lastStderr, lastErr = stderr, err
+		if i < removeWorktreeAttempts {
+			// 常见成因是执行者进程还没被内核收干净、cwd 句柄仍钉着这棵树；
+			// 退一步等它散场，比当场放弃留一棵残树划算
+			log().Warn("删除 managed worktree 失败，稍后重试", "repo", repo, "workdir", workdir,
+				"attempt", i, "of", removeWorktreeAttempts,
+				"stderr", truncateRunes(stderr, 300), "cause", err)
+			select {
+			case <-ctx.Done():
+				log().Error("删除 managed worktree 被取消", "repo", repo, "workdir", workdir,
+					"attempt", i, "cause", ctx.Err())
+				return fmt.Errorf("git worktree remove %s: %w", workdir, ctx.Err())
+			case <-time.After(removeWorktreeBackoff):
+			}
+		}
 	}
-	log().Info("managed worktree 已删除", "repo", repo, "workdir", workdir)
-	return nil
+	log().Error("删除 managed worktree 失败（重试耗尽）", "repo", repo, "workdir", workdir,
+		"attempts", removeWorktreeAttempts, "stderr", truncateRunes(lastStderr, 300), "cause", lastErr)
+	return fmt.Errorf("git worktree remove %s: %s: %w", workdir, strings.TrimSpace(lastStderr), lastErr)
 }
 
 // FetchTimeout 是基线缺失时补拉远端的时长上限。
