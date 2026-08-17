@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { WorkbenchPage } from './WorkbenchPage'
 import { BlankTab } from './BlankTab'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
-import { EMPTY_WORKBENCH, openTab } from './tabs'
+import { EMPTY_WORKBENCH, openTab, splitGroup } from './tabs'
 
 const base: BaseDir = {
   key: '/w/b2-b3',
@@ -25,6 +25,7 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     activate: vi.fn(),
     setContent: vi.fn(),
     split: vi.fn(),
+    resize: vi.fn(),
     restoreTerminal: vi.fn(),
     ...overrides,
   }
@@ -311,5 +312,50 @@ describe('WorkbenchPage', () => {
     render(<WorkbenchPage api={api({ wb, close })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />)
     fireEvent.click(screen.getByRole('button', { name: '关闭 bash · b2-b3' }))
     expect(close).toHaveBeenCalledWith(0, id)
+  })
+})
+
+describe('分屏分隔条', () => {
+  const twoGroups = () => splitGroup(openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' }))
+
+  it('单组时没有分隔条', () => {
+    render(<WorkbenchPage api={api()} onAddProject={vi.fn()} renderContent={() => null} />)
+    expect(screen.queryByRole('separator')).not.toBeInTheDocument()
+  })
+
+  it('两组之间有一条分隔条，三组有两条', () => {
+    const { unmount } = render(
+      <WorkbenchPage api={api({ wb: twoGroups() })} onAddProject={vi.fn()} renderContent={() => null} />,
+    )
+    expect(screen.getAllByRole('separator')).toHaveLength(1)
+    unmount()
+
+    render(
+      <WorkbenchPage api={api({ wb: splitGroup(twoGroups()) })} onAddProject={vi.fn()} renderContent={() => null} />,
+    )
+    expect(screen.getAllByRole('separator')).toHaveLength(2)
+  })
+
+  it('分隔条按 → 键调宽左栏，按 ← 键调窄', () => {
+    const resize = vi.fn()
+    render(
+      <WorkbenchPage api={api({ wb: twoGroups(), resize })} onAddProject={vi.fn()} renderContent={() => null} />,
+    )
+    const sep = screen.getByRole('separator')
+
+    fireEvent.keyDown(sep, { key: 'ArrowRight' })
+    // jsdom 的 getBoundingClientRect 恒为 0，量不到容器宽度时 minRatio 传 0
+    expect(resize).toHaveBeenLastCalledWith(0, 0.02, 0)
+
+    fireEvent.keyDown(sep, { key: 'ArrowLeft' })
+    expect(resize).toHaveBeenLastCalledWith(0, -0.02, 0)
+  })
+
+  it('各栏按 sizes 的权重铺开', () => {
+    const wb = { ...twoGroups(), sizes: [3, 1] }
+    render(<WorkbenchPage api={api({ wb })} onAddProject={vi.fn()} renderContent={() => null} />)
+    const panes = screen.getAllByRole('tablist').map((tl) => tl.closest('section') as HTMLElement)
+    expect(panes[0]).toHaveStyle({ flexGrow: '3' })
+    expect(panes[1]).toHaveStyle({ flexGrow: '1' })
   })
 })

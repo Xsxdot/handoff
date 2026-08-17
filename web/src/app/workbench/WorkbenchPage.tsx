@@ -1,7 +1,7 @@
 // WorkbenchPage —— 中央内容承载区。
 //
 // 职责：
-//   - 按当前基准目录渲染一组或两组 tab（tab 条 + 激活 tab 的内容）
+//   - 按当前基准目录渲染一到三组 tab 与它们之间可拖拽的分隔条
 //   - 空白 tab 的种类选择、以及「选了种类之后要不要再选目标」的分流
 //   - 没有 tab / 没有基准目录时的两种空态
 //
@@ -15,10 +15,11 @@
 //   - 文件：需要再选一个文件。本期不做独立的文件选择器——右栏文件树就是
 //     那个选择器，所以这里给一句指路，不造第二个入口
 //   - 任务 TUI：需要再选一个任务。同理指向左栏该目录下的任务行
-import { useState, type ReactNode } from 'react'
-import { nextTerminalSeq, type TabContent } from './tabs'
+import { Fragment, useState, type ReactNode } from 'react'
+import { MIN_PANE_PX, nextTerminalSeq, type TabContent } from './tabs'
 import { BlankTab, type PickKind } from './BlankTab'
 import { EmptyWorkbench } from './EmptyWorkbench'
+import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
 
@@ -96,52 +97,71 @@ export function WorkbenchPage({
   }
 
   return (
-    <div className="flex h-full min-h-0 gap-px bg-border">
+    // gap 去掉了：分隔线不再靠 gap-px 透出背景色，而是 GroupDivider 这个真实元素——
+    // 它要能被鼠标抓住、被键盘聚焦，那都不是背景色能做到的
+    <div className="flex h-full min-h-0 bg-border">
       {wb.groups.map((g, gi) => {
         const activeTab = g.tabs.find((t) => t.id === g.activeId) ?? null
         return (
-          <section key={gi} className="flex min-w-0 flex-1 flex-col bg-background">
-            <TabBar
-              group={gi}
-              tabs={g.tabs}
-              activeId={g.activeId}
-              baseLabel={base.label}
-              onActivate={api.activate}
-              onClose={(g, id) => {
-                const tab = wb.groups[g]?.tabs.find((t) => t.id === id)
-                if (tab && onBeforeClose && !onBeforeClose(tab.content, g, id)) return
-                api.close(g, id)
-              }}
-              onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
-            />
-            {/*
-              两处 BlankTab 的 key 必须区分开。它们在三元的相邻分支上，同类型同位置，
-              React 默认会把「空组面板」原地复用成「空白 tab 面板」——DOM 节点不换，
-              于是面板的「挂载即聚焦」不会重跑，点了 + 之后焦点还留在 + 按钮上，
-              印在面板上的 ⌘T 按下去没反应（走查实测）。给出各自的身份，让它真的重挂。
-            */}
-            <div className="min-h-0 flex-1 overflow-auto">
-              {activeTab === null ? (
-                <BlankTab
-                  key={`empty-${gi}`}
-                  base={base}
-                  onPick={(k) => startFromEmpty(gi, k)}
-                  terminalUnavailable={terminalUnavailable}
-                />
-              ) : activeTab.content.kind === 'blank' ? (
-                <BlankTab
-                  key={activeTab.id}
-                  base={base}
-                  onPick={(k) => pick(gi, activeTab.id, k)}
-                  hint={awaiting[activeTab.id] ? PICK_HINT[awaiting[activeTab.id]] : undefined}
-                  onBack={() => back(activeTab.id)}
-                  terminalUnavailable={terminalUnavailable}
-                />
-              ) : (
-                renderContent(activeTab.content, base, gi, activeTab.id)
-              )}
-            </div>
-          </section>
+          <Fragment key={gi}>
+            {gi > 0 && (
+              <GroupDivider
+                onResize={(delta, containerWidth) =>
+                  // 最小栏宽是像素量，换成比例才能进纯函数。量不到宽度（jsdom、
+                  // 尚未布局完成）时传 0：宁可这一次不夹紧，也不要因为除以 0 得到
+                  // Infinity 而让拖拽整个失灵
+                  api.resize(gi - 1, delta, containerWidth > 0 ? MIN_PANE_PX / containerWidth : 0)
+                }
+              />
+            )}
+            <section
+              className="flex min-w-0 flex-col bg-background"
+              // flexBasis 必须显式给 0：默认的 auto 会让内容宽度参与分配，
+              // 于是 sizes 的权重被内容多少带偏，拖出来的比例对不上
+              style={{ flexGrow: wb.sizes[gi] ?? 1, flexBasis: 0 }}
+            >
+              <TabBar
+                group={gi}
+                tabs={g.tabs}
+                activeId={g.activeId}
+                baseLabel={base.label}
+                onActivate={api.activate}
+                onClose={(g, id) => {
+                  const tab = wb.groups[g]?.tabs.find((t) => t.id === id)
+                  if (tab && onBeforeClose && !onBeforeClose(tab.content, g, id)) return
+                  api.close(g, id)
+                }}
+                onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
+              />
+              {/*
+                两处 BlankTab 的 key 必须区分开。它们在三元的相邻分支上，同类型同位置，
+                React 默认会把「空组面板」原地复用成「空白 tab 面板」——DOM 节点不换，
+                于是面板的「挂载即聚焦」不会重跑，点了 + 之后焦点还留在 + 按钮上，
+                印在面板上的 ⌘T 按下去没反应（走查实测）。给出各自的身份，让它真的重挂。
+              */}
+              <div className="min-h-0 flex-1 overflow-auto">
+                {activeTab === null ? (
+                  <BlankTab
+                    key={`empty-${gi}`}
+                    base={base}
+                    onPick={(k) => startFromEmpty(gi, k)}
+                    terminalUnavailable={terminalUnavailable}
+                  />
+                ) : activeTab.content.kind === 'blank' ? (
+                  <BlankTab
+                    key={activeTab.id}
+                    base={base}
+                    onPick={(k) => pick(gi, activeTab.id, k)}
+                    hint={awaiting[activeTab.id] ? PICK_HINT[awaiting[activeTab.id]] : undefined}
+                    onBack={() => back(activeTab.id)}
+                    terminalUnavailable={terminalUnavailable}
+                  />
+                ) : (
+                  renderContent(activeTab.content, base, gi, activeTab.id)
+                )}
+              </div>
+            </section>
+          </Fragment>
         )
       })}
     </div>

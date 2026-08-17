@@ -80,6 +80,22 @@ describe('useWorkbench', () => {
     expect(result.current.base).toBeNull()
     expect(result.current.wb.groups[0].tabs).toHaveLength(0)
   })
+
+  it('resize 只改当前基准的栏宽，切走再切回来比例还在', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.open({ kind: 'file', rel: 'a.go' }))
+    act(() => result.current.split())
+    act(() => result.current.resize(0, 0.1, 0.2))
+    const widened = result.current.wb.sizes[0]
+    expect(widened).toBeGreaterThan(result.current.wb.sizes[1])
+
+    act(() => result.current.select(wsB))
+    expect(result.current.wb.sizes).toEqual([1])
+
+    act(() => result.current.select(wsA))
+    expect(result.current.wb.sizes[0]).toBeCloseTo(widened)
+  })
 })
 
 describe('restoreTerminal', () => {
