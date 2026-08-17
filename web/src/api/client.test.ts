@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { ApiError, fetchTasks, writeWorkspaceFile } from './client'
+import { addMachine, ApiError, deleteMachine, fetchTasks, writeWorkspaceFile } from './client'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -79,4 +79,25 @@ describe('writeWorkspaceFile', () => {
       writeWorkspaceFile('/w/b2-b3', '.git/config', { content: 'x', base_sha256: 'old' }),
     ).rejects.toThrow('不允许写入 .git 目录')
   })
+})
+
+it('addMachine 以 JSON 体 POST 到 /api/machines', async () => {
+  const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ machines: [] }), { status: 200 }),
+  )
+  await addMachine({ name: 'box', addr: '10.0.0.1:7777', token: 't', user: 'me' })
+  const [path, init] = spy.mock.calls[0]
+  expect(path).toBe('/api/machines')
+  expect(init?.method).toBe('POST')
+  expect(JSON.parse(String(init?.body))).toMatchObject({ name: 'box', addr: '10.0.0.1:7777' })
+  spy.mockRestore()
+})
+
+it('deleteMachine 对机器名做 URL 编码', async () => {
+  const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ machines: [] }), { status: 200 }),
+  )
+  await deleteMachine('my box')
+  expect(spy.mock.calls[0][0]).toBe('/api/machines/my%20box')
+  spy.mockRestore()
 })

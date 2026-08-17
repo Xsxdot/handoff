@@ -185,6 +185,18 @@ export interface MachinesResp {
   machines: Machine[]
 }
 
+// AddMachineReq 是 POST /api/machines 的请求体。
+//
+// token 只进不出：后端接受它，但 Machine 类型没有对应字段，任何响应里
+// 都不会回显。force=true 跳过后端的可达性探测（对端临时离线时用）。
+export interface AddMachineReq {
+  name: string
+  addr: string
+  token: string
+  user: string
+  force?: boolean
+}
+
 // CreateProjectReq 是 POST /api/projects 的请求体。B62 spec §6.3。
 // 形态由 path / 路径是否存在 / origin_url 是否非空共同决定：
 //   - path 有且目录已存在 → 登记已有仓（origin_url 可省，省则 agentd 现读 origin）
