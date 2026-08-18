@@ -500,6 +500,71 @@ func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 	assertMembers(t, members, []int{100})
 }
 
+// TestSweepKillsMarkOnlyMembers 钉住 Sweep 与 Footprint 报的是同一批：
+// 标记独有的成员必须真的被杀，否则 handoff footprint 数出来的就是句空话（B70）。
+func TestSweepKillsMarkOnlyMembers(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 200, PGID: 200, StartedAt: 1200}, // 标记独有
+	}, nil)
+	stubAlive(t, false)
+	stubKillGroup(t, nil)
+	killedPIDs := stubKillProc(t)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return pid == 200, nil }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	if _, _, err := Sweep(h); err != nil {
+		t.Fatalf("清扫不应报错：%v", err)
+	}
+	if !containsPID(*killedPIDs, 200) {
+		t.Fatalf("标记独有的成员 200 未被回收：killed=%v", *killedPIDs)
+	}
+}
+
+// TestMarkKillReverifiesBeforeSignal 钉住发信号前必须复验标记。
+//
+// 枚举与发信号之间进程可能已退出且 pid 被复用；标记是活读的，
+// 复验一次的成本是一个 syscall，而误杀的代价是打掉用户的 shell（B47）。
+func TestMarkKillReverifiesBeforeSignal(t *testing.T) {
+	procs := []procEntry{{PID: 200, PGID: 200, StartedAt: 1200}}
+	killedPIDs := stubKillProc(t)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	calls := 0
+	attributesFn = func(pid int, cred TaskCred) (bool, error) {
+		calls++
+		// 第一次（筛选）命中，第二次（杀前复验）不再命中 ⇒ pid 已易主
+		return calls == 1, nil
+	}
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	killed := markKill(h, procs)
+	if killed != 0 || len(*killedPIDs) != 0 {
+		t.Fatalf("复验不通过时不得发信号：killed=%d pids=%v", killed, *killedPIDs)
+	}
+	if calls != 2 {
+		t.Fatalf("应恰好复验一次：attributes 调用 %d 次", calls)
+	}
+}
+
+// TestMarkKillSkipsWhenUnsupported 钉住平台不支持时安静返回 0，不影响前两段。
+func TestMarkKillSkipsWhenUnsupported(t *testing.T) {
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+
+	killedPIDs := stubKillProc(t)
+	killed := markKill(Handle{PID: 100, StartedAt: 1000, TaskID: "t1"},
+		[]procEntry{{PID: 200, StartedAt: 1200}})
+	if killed != 0 || len(*killedPIDs) != 0 {
+		t.Fatalf("不支持时不得发信号：killed=%d pids=%v", killed, *killedPIDs)
+	}
+}
+
 // TestFootprintIncludesMarkOnlyMembers 钉住本条需求的核心价值：
 // 标记判据要捞回 pgid 与 roster 都看不见的那批进程。
 func TestFootprintIncludesMarkOnlyMembers(t *testing.T) {
