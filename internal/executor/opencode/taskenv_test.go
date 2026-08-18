@@ -233,3 +233,40 @@ func TestExternalDirectoryIsAsk(t *testing.T) {
 		t.Fatalf("external_directory 必须是 ask，实得 %q——这是 opencode 侧唯一的越界写入拦截点（B27）", got)
 	}
 }
+
+// TestBashRulesAskOnTee 钉住 B151 的 opencode 半边。
+//
+// 真机基线（2026-08-18，任务 4feb3766）：`echo oc-tee-probe | tee /tmp/b151-oc-tee.txt`
+// **零权限请求、文件实写 13 字节**——opencode 的 external_directory 对管道后的写命令
+// 是盲的，而静态表末尾是 "*": "allow"，于是它连 permgate 都到不了。
+//
+// 为什么是宽模式 "*tee*" 而不是 "*tee /*" 那种锚定形态：落点可以被标志隔开
+// （tee -a /tmp/x）、被引号包住、跟在管道后也可以不跟，锚定形态要枚举四五条还留缝。
+// 而 tee 在构建/测试流里本就低频，误伤的代价只是一次 Consult，不是拦截。
+// 这与重定向那四条的取舍方向不同，是因为那边要避开高频的 2>&1。
+func TestBashRulesAskOnTee(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	if got := cfg.Permission.Bash["*tee*"]; got != "ask" {
+		t.Fatalf(`模式 "*tee*" = %q，期望 ask——少了它，| tee /tmp/x 零请求实写（B151）`, got)
+	}
+	// 兜底 allow 必须还在：本轮只补漏，不反转整张表（B150 已并入 B151 并记明理由）
+	if got := cfg.Permission.Bash["*"]; got != "allow" {
+		t.Fatalf(`兜底模式 "*" = %q，期望 allow——本轮不反转静态表`, got)
+	}
+}

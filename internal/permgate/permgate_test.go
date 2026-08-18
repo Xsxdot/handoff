@@ -158,3 +158,59 @@ func TestJudgeBashNoPathsUnchanged(t *testing.T) {
 		t.Fatalf("黑名单命令 Action = %v，期望 Escalate", v.Action)
 	}
 }
+
+// TestJudgeBashWriteArgEscalate 钉住 B151 主修：落点在参数位的写命令越界，
+// 必须升级人工，而不是落 Consult 交廉价模型。
+//
+// 真机基线（2026-08-18，claude 任务 b0327cd8）：这两条当时都判成
+// `交审批者 黑名单未命中`——本用例就是那条基线的反面。
+func TestJudgeBashWriteArgEscalate(t *testing.T) {
+	wd := t.TempDir()
+	scope := Scope{Workdir: wd}
+	g := newTestGate(t)
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"管道后的 tee 写到 /tmp", "echo x | tee /tmp/b151-probe.txt"},
+		{"tee 追加到家目录", "echo x | tee -a ~/.zshrc"},
+		{"cp 到仓库外", "cp go.mod /tmp/b151-cp.txt"},
+		{"mv 到仓库外", "mv go.mod /etc/go.mod"},
+		{"dd 写到仓库外", "dd if=/dev/zero of=/tmp/b151-dd.bin"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Text: "Bash: " + c.cmd, Command: c.cmd}, scope)
+			if v.Action != Escalate {
+				t.Fatalf("Action = %v，期望 Escalate（reason=%q）", v.Action, v.Reason)
+			}
+			if !strings.Contains(v.Reason, "目标路径越出任务范围") {
+				t.Fatalf("Reason = %q，必须逐字复用越界文案", v.Reason)
+			}
+		})
+	}
+}
+
+// TestJudgeBashWriteArgInScopeFallsBack 误伤面：落点在工作区内、或压根不是写命令时，
+// 必须落回命令判据。少了这条，每次 `go test | tee out.log` 都要叫人。
+func TestJudgeBashWriteArgInScopeFallsBack(t *testing.T) {
+	wd := t.TempDir()
+	scope := Scope{Workdir: wd}
+	g := newTestGate(t)
+	cases := []string{
+		"go test ./... | tee out.log",
+		"cp a.txt b.txt",
+		"cp go.mod " + wd + "/copy.mod",
+		"echo x | tee /dev/null",
+		"ls /usr/bin/tee",
+		`git commit -m "cp a /etc/x"`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Text: "Bash: " + cmd, Command: cmd}, scope)
+			if v.Action == Escalate {
+				t.Fatalf("不该升级：Action = %v，reason = %q", v.Action, v.Reason)
+			}
+		})
+	}
+}
