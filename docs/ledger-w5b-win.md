@@ -62,4 +62,29 @@ Task 3 里把 `wantCount` 改成 5，并在改动处留一行注释说明原因�
   needs 断言红；runs-on 换 ubuntu→RunsOn 断言红），还原后恢复绿。
   全量 `go test ./... -count=1` 0 FAIL、gofmt 干净、vet 干净。
   协调者复验：根模块与 desktop 模块全量 0 FAIL、目标测试 PASS、gofmt/vet 干净。
-  审查与提交待执行。
+  **审查通过、已提交 `4337321d`**。独立审查 subagent 双裁决：通过；审查者亲手抽验
+  变异 1/2/4 全红，无假门、无多做。
+
+- 2026-08-19 **整分支终审完成**。终审 subagent 通读 `8ba4e333..HEAD` 完整 diff，
+  交叉一致性实测全对齐（releaseVersion= 注入点 5 处、EXTRA_TAGS/EXTRA_LDFLAGS/
+  embedbin.Version 各 3、ARCH=amd64 剥离注释后 1；三个桌面 job 形态一致；
+  约束文件未动；go:embed 固定名未破）。裁决：**通过**，无严重项；记 4 处次要
+  注释/doc 问题，全部建议修：
+  - M1 binpath.go ResolveBinPath doc 的平台区分（已有）
+  - M2 release.yml release 注释「两个薄壳 job」→「三个」
+  - N1 release_workflow_test.go 注入路径注释的释出落点按平台表述
+  - N2 release.yml windows job 顶部 SmartScreen 理由收紧（未签名 zip 内 exe
+    同样触发，选 zip 的真实理由是省 makensis 与 webview2 引导器依赖）
+  一次修复 subagent 全量修完 4 处，范围复审 subagent 裁决**修复范围通过**
+  （无夹带、无断言污染、措辞与实现一致）。
+  修复提交：`e606f320`。
+
+- 2026-08-19 **全部完成，提交序列**：
+  - `e6cac7b1` Task 1 CLI 落点按平台走
+  - `623a6973` Task 2 build-desktop-windows job
+  - `4337321d` Task 3 契约门跟上三个薄壳 job（含 wantCount 4→5）
+  - `e606f320` 终审四项注释/doc 修正
+  终验：根模块 33 包 + desktop 模块全量 `go test ./... -count=1` 0 FAIL；
+  gofmt（排除 web/ 与 desktop/frontend/）无输出；go vet 两个模块干净；
+  `GOOS=windows GOARCH=amd64 go build -tags production ./...` 退出 0；
+  `git status --porcelain` 空。
