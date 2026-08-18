@@ -236,12 +236,12 @@ Windows 上它返回 nil 但什么都没做——这类函数把「没问题」�
 
 | # | 内容 | 判据 |
 |---|---|---|
-| 1 | 注册面 | `handoff status` 列出 claude / codex / fake / grok / opencode；agentd 日志中有 grok 的符号链接能力探测记录 |
+| 1 | 注册面 | `handoff status` 列出 claude / codex / fake / grok / opencode。**探测成功是静默的**：`adaptersForWithProbe` 只在能力不足、跳过注册 grok 时打 Warn，成功路径不打日志（避免每次启动一条无信息量的 Info）。因此判据就是「grok 出现在列表里」——它出现即证明探针跑过且通过 |
 | 2 | claude 全链路 | dispatch → 权限门拦截产工单 → `reply --approve` 放行 → `completed` |
 | 3 | **多轮投递不 EOF** | `continue` 至少两次，每次都被响应 |
 | 4 | `deny` 路径 | 拒绝后模型收到理由；目标文件未被改动 |
 | 5 | 活过 agentd 重启 | 杀 agentd 并确认其 pid 消失后，shim 与 claude 的 pid 不变地存活；新 agentd 启动日志 `recovered=1` |
-| 6 | `done` 零残留 | 进程、managed worktree、任务目录三样都清干净 |
+| 6 | `done` 零残留 | 进程与 managed worktree 两样清干净。**任务目录按设计保留**（`Manager.Done` 无删除任务目录的步骤，全仓非测试代码零处 `RemoveAll` 打到 `tasks/`）：`claude.log` / `out.jsonl` / `render.log` 是归档任务的取证材料。08-18 订正——原判据「任务目录也清掉」抄自 handoff skill 文档对 `done` 的描述，与实现不符 |
 | 7 | grok 全链路 | 同第 2 条，外加确认 auth 软链真的建成（`Get-Item` 看到 ReparsePoint） |
 | 8 | codex 全链路（B123） | 五动作走完：dispatch → 权限门 → completed → continue 同会话续接 → done |
 
