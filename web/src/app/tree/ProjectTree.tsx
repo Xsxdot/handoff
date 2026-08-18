@@ -50,6 +50,8 @@ import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { TreePrefsMenu } from './TreePrefsMenu'
+import { loadPrefs, savePrefs, sortProjects, splitHiddenProjects, splitIdleWorkspaces, type TreePrefs } from './treePrefs'
 
 export interface ProjectTreeProps {
   tree: ProjectTreeResp
@@ -186,6 +188,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  // 显示偏好：初值从 localStorage 读一次（惰性初始化，不要每次渲染都读）。
+  // 改动统一走 updatePrefs——落盘与 setState 必须成对，分开写迟早漏一处
+  const [prefs, setPrefs] = useState<TreePrefs>(() => loadPrefs())
+  const updatePrefs = (next: TreePrefs) => {
+    setPrefs(next)
+    savePrefs(next)
+  }
+  // 「已隐藏 N 个目录」的展开状态：**刻意不落盘**——它是一次性的「我现在想看看」，
+  // 不是长期设定。键用机器节点 key
+  const [openHiddenDirs, setOpenHiddenDirs] = useState<Set<string>>(new Set())
+  const toggleHiddenDirs = (key: string) =>
+    setOpenHiddenDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   const searchRef = useRef<HTMLInputElement>(null)
 
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
@@ -240,6 +259,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
   // 折起来的布局立刻回来，搜索不破坏布局。
   const expanded = (key: string) => searching || !collapsed.has(key)
+
+  // 搜索期间旁路「隐藏」类偏好：搜到了却被偏好过滤掉，等于搜索坏了。
+  // 排序不旁路——排序不会让东西消失，跟着当前档反而更连贯
+  const projectSplit = searching
+    ? { shown: filtered.projects, hiddenCount: 0 }
+    : splitHiddenProjects(filtered.projects, (p) => p.project_id, prefs.hiddenProjects)
+  // 项目的「最近活动」= 该项目下任务 updated_at 的最大值；一条任务都没有时为空串
+  const lastActivity = (projectID: string) =>
+    tasks.reduce((max, t) => (t.project_id === projectID && t.updated_at > max ? t.updated_at : max), '')
+  const orderedProjects = sortProjects(
+    projectSplit.shown,
+    (p) => {
+      const c = countsForProject(tasks, p)
+      return { active: c.running + c.pending, updatedAt: lastActivity(p.project_id), name: p.name }
+    },
+    prefs.projectSort,
+  )
 
   const unassigned = filtered.unassignedTasks
   const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
@@ -336,14 +372,26 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>项目</span>
         <span data-testid="project-count" className="font-normal text-muted-foreground/70">
-          {filtered.projectCount}
+          {orderedProjects.length}
+        </span>
+        {/* 藏了东西就必须说一声：偏好可以让它不占地方，但不能让人以为它不存在 */}
+        {projectSplit.hiddenCount > 0 && (
+          <span className="font-normal normal-case text-muted-foreground/70">· 已隐藏 {projectSplit.hiddenCount}</span>
+        )}
+        <span className="ml-auto">
+          {/* 菜单吃的是**原树**的项目，不是过滤后的：藏起来的项目要能勾回来 */}
+          <TreePrefsMenu
+            prefs={prefs}
+            projects={tree.projects.map((p) => ({ project_id: p.project_id, name: p.name }))}
+            onChange={updatePrefs}
+          />
         </span>
       </div>
 
       {/* 第二段：只有它滚 */}
       <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
-      {filtered.projects.map((project) => {
+      {orderedProjects.map((project) => {
         const pKey = `p:${project.project_id}`
         const pOpen = expanded(pKey)
         const pCounts = countsForProject(tasks, project)
@@ -444,9 +492,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       </p>
                     )}
 
-                    {problem === '' &&
-                      mOpen &&
-                      sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws)).map((ws) => {
+                    {problem === '' && mOpen && (() => {
+                      const sorted = sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws))
+                      const split = splitIdleWorkspaces(
+                        sorted,
+                        (ws) => {
+                          const c = wsCounts(project, loc.machine, ws)
+                          return {
+                            isMain: ws.is_main,
+                            selected: selectedKey === ws.path,
+                            active: c.running + c.pending,
+                          }
+                        },
+                        // 搜索期间不折叠，理由同项目隐藏
+                        prefs.hideIdleWorktrees && !searching,
+                      )
+                      const renderWorkspace = (ws: Workspace) => {
                         const base = workspaceBase(project, loc.machine, ws)
                         const dSelected = selectedKey === base.key
                         const under = wsCounts(project, loc.machine, ws)
@@ -494,7 +555,30 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             ))}
                           </div>
                         )
-                      })}
+                      }
+                      const hiddenOpen = openHiddenDirs.has(mKey)
+                      return (
+                        <>
+                          {split.shown.map(renderWorkspace)}
+                          {split.hidden.length > 0 && (
+                            <>
+                              <button
+                                type="button"
+                                data-testid="hidden-dirs-row"
+                                aria-expanded={hiddenOpen}
+                                onClick={() => toggleHiddenDirs(mKey)}
+                                className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                                style={{ paddingLeft: 8 + 32 }}
+                              >
+                                <Arrow open={hiddenOpen} onToggle={() => toggleHiddenDirs(mKey)} />
+                                <span className="min-w-0 flex-1 truncate">已隐藏 {split.hidden.length} 个目录</span>
+                              </button>
+                              {hiddenOpen && split.hidden.map(renderWorkspace)}
+                            </>
+                          )}
+                        </>
+                      )
+                    })()}
 
                     {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
                         目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的

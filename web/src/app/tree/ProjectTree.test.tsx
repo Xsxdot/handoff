@@ -1,8 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree } from './ProjectTree'
+
+beforeEach(() => localStorage.clear())
 
 function task(over: Partial<Task>): Task {
   return {
@@ -483,5 +485,49 @@ describe('ProjectTree', () => {
     unmount()
     render(<ProjectTree {...props()} />)
     expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
+  })
+})
+
+describe('显示偏好', () => {
+  it('取消勾选项目后它不在树上，「项目 N」旁说明已隐藏几个', () => {
+    render(<ProjectTree {...props({})} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /handoff/ }))
+    expect(within(screen.getByTestId('tree-scroll')).queryByText('handoff')).toBeNull()
+    expect(screen.getByTestId('project-count')).toHaveTextContent('0')
+    expect(screen.getByText(/已隐藏 1/)).toBeInTheDocument()
+  })
+
+  it('开「隐藏无活跃任务的工作树」后，没有活跃任务的目录收进「已隐藏」行，点开还能看到', () => {
+    // 默认树里 /w 是主目录（豁免），/w/b2-b3 挂着一条 running 任务。
+    // 把那条任务改成 done，它就成了空闲目录
+    const p = props({})
+    const tasks = p.tasks.map((t) => ({ ...t, state: 'done' }))
+    render(<ProjectTree {...p} tasks={tasks} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
+    expect(screen.queryByText('integration/b2-b3')).toBeNull()
+    fireEvent.click(screen.getByText(/已隐藏 1 个目录/))
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+
+  it('主工作树与当前选中目录不会被折叠', () => {
+    const p = props({ selectedKey: '/w/b2-b3' })
+    const tasks = p.tasks.map((t) => ({ ...t, state: 'done' }))
+    render(<ProjectTree {...p} tasks={tasks} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
+    expect(screen.getByText('main')).toBeInTheDocument()          // 主目录
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument() // 选中目录
+    expect(screen.queryByText(/已隐藏/)).toBeNull()
+  })
+
+  it('搜索期间旁路隐藏偏好：藏起来的项目照样能被搜出来', () => {
+    render(<ProjectTree {...props({})} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /handoff/ }))
+    expect(within(screen.getByTestId('tree-scroll')).queryByText('handoff')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: 'handoff' } })
+    expect(within(screen.getByTestId('tree-scroll')).getByText('handoff')).toBeInTheDocument()
   })
 })
