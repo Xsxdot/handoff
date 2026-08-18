@@ -61,8 +61,29 @@ case executor.PermToolBash:
 不是人。`permgate_test.go` 里 `Tool: bash` 且带 `Paths` 的用例是 **0 条**——这不是有意取舍，
 是断了一截没人发现。
 
-因此 opencode 侧的定性是：**越界被 opencode 自己检出并送到了 handoff，是 handoff 把
-「人来判」降级成了「廉价模型判」**。与 claude 侧「零权限请求直接写成功」不是同一件事。
+### 2.2.1 但 `external_directory` 只认路径参数，不认重定向落点（08-18 真机探针）
+
+上一节写完后跑了探针（任务 `a0ad5f6e`，mac-02 + opencode 1.18.18，分支 `probe/b134-redirect`），
+结论**推翻了「opencode 至少检出了越界」这个乐观前提**：
+
+| 命令 | 权限请求 | 结果 |
+|---|---|---|
+| `echo handoff-b134-probe > /tmp/handoff-b134-probe.txt` | **一条都没有** | 文件写成：`-rw-r--r-- 19 Aug 18 15:53`，内容 `handoff-b134-probe` |
+| `ls -l /tmp/handoff-b134-probe.txt; cat /tmp/handoff-b134-probe.txt` | `external_directory` 命中 | 升级人工 |
+
+两条独立证据：审核者用 `handoff run` 直接 `ls`/`cat` 到了那个文件；执行者自己的回合报告也写
+「第 1 步执行时…没有（被要求授权）」「成功」。
+
+**所以 opencode 的越界检测只解析「作为参数出现的路径」，不解析「重定向落点」。** 同一个路径，
+读它要授权、写它不要。
+
+因此 opencode 侧的定性要写两条，不是一条：
+
+1. **重定向落点是盲区**——与 claude 同款，「零权限请求直接写成功」（§4.2 修）
+2. **检出的那部分被降级**——`external_directory` 确实检出的越界（路径参数形态）送到 handoff 后，
+   被 `Judge` 丢掉 `Paths`，从「人来判」降级成「廉价模型判」（§4.1 修）
+
+两条互不覆盖，都要修。
 
 ### 2.3 permgate 的判据覆盖面远小于它看上去的样子
 
@@ -91,8 +112,16 @@ behavior, msg = "deny", "协调者拒绝了本次操作"   // 协调者真正的
 
 - **grok**：ACP `session/request_permission` 的应答是 `outcome:{outcome:"selected", optionId}`，无消息字段
 - **codex**：`{decision: "approve"|"decline"}`，无消息字段
-- **opencode**：`POST /session/:id/permissions/:permID`，今天只发 `{"response": "reject"}`；
-  **能否多带一个字段未验**，列为探针项
+- **opencode**：**能带，但不在 handoff 走的那个端点上**（08-18 探针实证，读 opencode 1.18.18 二进制）。
+  它内部有两代接口：handoff 用的老端点 `POST /session/{sessionID}/permissions/{permissionID}`
+  的服务端处理器只读 `payload.response`——
+
+      fG = I.fn("SessionHttpApi.permissionRespond")(function*(Y){
+        … V.reply({requestID: Y.params.permissionID, reply: Y.payload.response})   // 到此为止
+
+  多带的字段会被静默丢弃。带 message 的是**新端点** `POST /permission/{requestID}/reply`，
+  其 body schema 为 `PermissionReplyBody = {reply, message?: string}`（opencode 自己的 TUI
+  就是这么拼的：`{requestID, reply, ...message?}`）。**迁端点是另一件事**，见 §9
 
 grok/codex 各有 `noteRejected` + `rejectedTurnQuestion`，但那条是**发给协调者**的被拒清单，
 不是发给模型的，不能拿来顶替。
@@ -132,22 +161,25 @@ case executor.PermToolBash:
 纯 `bash` 门类（非 `external_directory`）本来就不带路径，`go build ./...` 是绝大多数情形。
 在这里 fail-closed 等于把每条命令都升级人工，那是 §3 明确排除的反转。
 
-### 4.2 补充：重定向落点的自有判据（条件项）
+### 4.2 重定向落点的自有判据
 
-opencode 的 `external_directory` 是否对**重定向形态**（`echo x > /etc/f`）发请求，今天没有证据
-——已入库的真机样本是 `cd` 越界形态。这决定要不要补一层 handoff 自己的判据，所以**由探针先定**
-（见 §7 Task 1）。
+**探针已定：opencode 不对重定向形态发请求（§2.2.1），本节必须实现。**
 
-- **探针结论为「会发」** → §4.1 已经足够，本节不实现，把结论写进 spec 与 backlog
-- **探针结论为「不会发」** → 实现 `internal/permgate/redirect.go`：
-  - `RedirectTargets(cmd string) []string`：从命令原文摘出重定向落点。识别 `>`、`>>`、`>|`、
-    `n>`、`n>>`、`&>`、`&>>`；**排除 fd 复制**（`>&` 后跟数字或 `-`，如 `2>&1`、`>&-`）；
-    落点取到空白或 `| ; & ) \n` 为止，剥掉成对引号
-  - 在 `judgeBash` 的第 1 步把它的返回值并进待判路径集合
-  - 同步给 opencode 的 `bashPermissionRules` 加 ask 模式，让这类命令进得来：
-    `"*>/*"`、`"*> /*"`、`"*>~*"`、`"*> ~*"`（`>>` 形态被 `>` 形态覆盖，无需另写）
-  - **不用 `"*>*"`**：它会命中 `2>&1`，而 `go test ./... 2>&1 | tail` 是高频写法，
-    每条都送 `Consult` 在没配审批者的部署上等于升级人工
+实现 `internal/permgate/redirect.go`：
+
+- `RedirectTargets(cmd string) []string`：从命令原文摘出重定向落点。识别 `>`、`>>`、`>|`、
+  `n>`、`n>>`、`&>`、`&>>`；**排除 fd 复制**（`>&` 后跟数字或 `-`，如 `2>&1`、`>&-`）；
+  落点取到空白或 `| ; & ) \n` 为止，剥掉成对引号
+- 在 `judgeBash` 的第 1 步把它的返回值并进待判路径集合，与 `req.Paths` 同等对待
+
+同步给 opencode 的 `bashPermissionRules` 加 ask 模式，否则这类命令根本进不来：
+
+    "*>/*"、"*> /*"、"*>~*"、"*> ~*"
+
+（`>>` 形态被 `>` 形态覆盖，无需另写。）
+
+**为什么不用 `"*>*"`**：它会命中 `2>&1`，而 `go test ./... 2>&1 | tail` 是高频写法，
+每条都送 `Consult`，在没配审批者的部署上等于升级人工。
 
 **为什么摘落点用命令原文而不是 `StripQuoted` 后的文本**：落点常被引号包住
 （`echo x > "/etc/foo"`），剥完就没了。
@@ -188,7 +220,7 @@ DenyReasonInBand() bool
 | adapter | `DenyReasonInBand` | 实现 |
 |---|---|---|
 | **claude** | `true` | `behavior, msg = "deny", reason`；`reason` 为空时回退既有常量（协调者没给理由时不能送一句空的） |
-| **opencode** | 探针定 | 探针证实 `POST /permissions/:id` 接受额外字段则 `true` 并带上，否则 `false` 保持现状 |
+| **opencode** | `false` | 老端点丢弃额外字段（§2.5 已实证）；带 message 要迁到 `/permission/{requestID}/reply`，本轮不做，拆行（§9） |
 | **grok** | `false` | 原生协议无字段，保留 B50 挂起注入 |
 | **codex** | `false` | 同上 |
 | **fake** | 可注入 | 测试要能两条路都覆盖，默认 `false` |
@@ -219,16 +251,19 @@ Publish 唤醒继续保留。
   预期频率极低（模型主动写工作区外是异常行为），且这正是 B27 立的规矩。
 - 无配置项变更、无存储 schema 变更、无 CLI 契约变更。
 
-## 7. 实现顺序与探针
+## 7. 探针结论（已完成，2026-08-18）
 
-**Task 1 必须是探针**，两条结论都是后续 task 的前提，猜错的代价是整份实现建在错的判据上：
+两条探针在写 plan 之前由审核者跑完，结论已回填进 §2.2.1 与 §2.5，**实现期不再有条件分支**。
 
-1. **opencode 的 `external_directory` 对重定向形态是否发请求**——决定 §4.2 做不做
-2. **opencode 的 `POST /session/:id/permissions/:permID` 是否接受额外字段**——决定 §5.2 里 opencode 那格
+任务 `a0ad5f6e-0496-491c-a7ab-63d3f828ae44`，mac-02 + opencode 1.18.18，分支 `probe/b134-redirect`，
+起点 `93852acba`。任务已 `stop`，`/tmp/handoff-b134-probe.txt` 已清理。
 
-探针形态：起一个隔离 DataDir + 非默认端口的 agentd 实例（**不碰本机 `~/.handoff`**，
-不重启生产 agentd），派一个 opencode 任务让它执行 `echo probe > /tmp/handoff-b134-probe.txt`，
-读事件流看有没有 `external_directory` 门类以及 `metadata.directories` 的取值。
+1. **opencode 对重定向形态不发权限请求** —— `echo … > /tmp/…` 零权限请求、文件写成；
+   同一路径改以参数形态出现（`ls`/`cat`）则 `external_directory` 命中。两条独立证据：
+   审核者 `handoff run` 直接取到文件，执行者回合报告自述「没有（被要求授权）」「成功」。
+   → §4.2 必须实现
+2. **opencode 老端点丢弃额外字段** —— 服务端处理器只读 `payload.response`；带 `message` 的
+   是新端点 `/permission/{requestID}/reply`。→ §5.2 opencode 落 `false`，迁端点拆行
 
 ## 8. 验收判据
 
@@ -247,7 +282,6 @@ Publish 唤醒继续保留。
 
 以下步骤要驱动 handoff 自身（起 agentd、派子任务、调 CLI），与 B 版执行纪律块直接冲突（B126）：
 
-- §7 的两条探针
 - B134 真机复验：opencode 任务执行越界重定向，确认落 `Escalate` 且 agentd 日志为 WARN 级
   `权限判定：升级人工 … reason="目标路径越出任务范围: …"`
 - B137 真机复验：claude 任务的权限请求被 `reply --deny --reason "<可辨识文本>"` 拒绝后，
@@ -263,3 +297,8 @@ Publish 唤醒继续保留。
 2. **permgate 判据覆盖面**（§2.3）——`judgeCommand` 永不 AutoAllow，导致判据只覆盖执行器
    静态表已决定要 ask 的那一小撮；B115 的自指令收口在 claude 上今天空转
 3. **写路径参数类命令的路径判据**（§4.3）——`tee`/`cp`/`mv`/`ln`/`install`/`dd`
+4. **opencode 权限应答迁到新端点**——从 `POST /session/{id}/permissions/{permID}`（只收
+   `response`）迁到 `POST /permission/{requestID}/reply`（收 `{reply, message?}`），
+   拒绝理由即可同帧送达。收益明确，但要评估两件事：老版本 opencode 是否有这个路由
+   （代码里存在 `protocol === "v1"` 的分支，说明 opencode 自己在做协议版本兼容），
+   以及新端点不带 sessionID 之后 B52「应答必须发回权限请求所在的会话」那条约束是否自然消解
