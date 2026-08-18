@@ -265,6 +265,13 @@ When the task ends, the remote task branch syncs back to your local repo automat
 (`sync.auto`; or manually with `handoff pull <task>`) — **fetch only, no merge**. Merging
 into the mainline is your review decision.
 
+`pull` fetches a git bundle over agentd's HTTP API and fetches it into your local repo —
+**it needs neither ssh on the executor machine nor a POSIX login shell on the remote**. If
+the remote agentd is too old (no `GET /api/tasks/{id}/bundle`; it returns 404), `pull`
+automatically falls back to the old ssh path — that path still needs the executor machine
+to be ssh-able with a POSIX login shell (Windows' cmd.exe does not qualify). The client
+log states which path this run used.
+
 ## Command Reference
 
 | Command | Purpose | Key flags |
