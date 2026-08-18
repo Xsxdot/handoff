@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { DESKTOP_TOP_INSET, isDesktopShell, topInset } from './desktopShell'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DESKTOP_TOP_INSET, isDesktopShell, requestTitlebarZoom, topInset } from './desktopShell'
 
 describe('desktopShell', () => {
   it('UA 带薄壳标记时判为桌面壳，并让出顶部拖动区', () => {
@@ -18,5 +18,28 @@ describe('desktopShell', () => {
     // why：薄壳显式把 ApplicationNameForUserAgent 设成 handoff-desktop。
     // 认 wails.io 会把任何 Wails 应用都算成自己，判据要认自己的名字
     expect(isDesktopShell('Mozilla/5.0 wails.io')).toBe(false)
+  })
+})
+
+describe('requestTitlebarZoom', () => {
+  const bridge = () => (window as unknown as { webkit?: unknown })
+
+  afterEach(() => {
+    delete bridge().webkit
+  })
+
+  it('桥在时发出 Wails 的双击消息', () => {
+    // why：双击标题栏最大化在 Wails 里是 JS 实现的（drag.ts 发
+    // wails:drag:doubleclick，Go 侧才 handleTitlebarDoubleClick）。外链页面没有
+    // 运行时，这条得我们自己发——消息字符串写错就是静默失效，所以钉住它
+    const postMessage = vi.fn()
+    bridge().webkit = { messageHandlers: { external: { postMessage } } }
+    expect(requestTitlebarZoom()).toBe(true)
+    expect(postMessage).toHaveBeenCalledWith('wails:drag:doubleclick')
+  })
+
+  it('桥不在时安静返回 false，不抛异常', () => {
+    // 浏览器里打开控制台就是这条路径：双击顶栏本来也没有语义，不能因此炸掉页面
+    expect(requestTitlebarZoom()).toBe(false)
   })
 })

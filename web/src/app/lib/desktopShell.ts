@@ -33,3 +33,31 @@ export function isDesktopShell(ua: string = navigator.userAgent): boolean {
 export function topInset(ua?: string): number {
   return isDesktopShell(ua ?? navigator.userAgent) ? DESKTOP_TOP_INSET : 0
 }
+
+// WebkitBridge 是 WKWebView 注入的消息通道。Wails 在 webview 的
+// userContentController 上注册了名为 external 的 handler
+//（webview_window_darwin.go:55），它是**挂在整个 webview 上的、不是挂在某个
+// 页面上**——所以控制台这个外链页面同样够得着，哪怕 Wails 的 JS 运行时没注入。
+interface WebkitBridge {
+  webkit?: { messageHandlers?: { external?: { postMessage: (msg: string) => void } } }
+}
+
+// requestTitlebarZoom 请求薄壳把窗口在「最大化 / 还原」之间切换，返回是否发出去了。
+//
+// 为什么需要它：**双击标题栏最大化在 Wails 里是 JS 实现的，不是原生的**。
+// 运行时的 drag.ts 收到 dblclick 后发 `wails:drag:doubleclick`，Go 侧
+// （webview_window.go 的消息分发）才调 handleTitlebarDoubleClick；原生的
+// handleLeftMouseDown 里那句 `if (event.clickCount != 1) return` 就是专门给它让路的。
+// 外链页面没有运行时 → 没人发这条消息 → 双击顶栏没反应（走查实测）。
+//
+// **这里用的是 Wails 的内部协议**（handler 名 external + 消息字符串常量），
+// 不是公开 API。升级 Wails 时若这两样改了，双击会**静默失效**——不会报错、
+// 不会崩，只是没反应；届时回到 drag.ts 与 webview_window.go 对一下这两个名字。
+// 之所以敢用：它是纯锦上添花的手势，绿色按钮与窗口菜单始终能做同一件事。
+export function requestTitlebarZoom(): boolean {
+  const bridge = window as unknown as WebkitBridge
+  const post = bridge.webkit?.messageHandlers?.external?.postMessage
+  if (!post) return false
+  post.call(bridge.webkit!.messageHandlers!.external, 'wails:drag:doubleclick')
+  return true
+}

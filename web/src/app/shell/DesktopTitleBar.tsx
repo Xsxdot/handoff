@@ -11,14 +11,19 @@
 //   Electron 的 -webkit-app-region 命中测试，而控制台在薄壳里是外链页面，
 //   Wails 运行时不注入。
 //
-//   **往这里放任何按钮 = 放一个点不动的按钮。** 要加交互，先改
-//   desktop/main.go 的 InvisibleTitleBarHeight，并接受窗口不能拖。
+//   **往这里放任何按钮 = 放一个按下就变成拖窗口的按钮。** 事件本身到得了页面
+//   （那两个 addLocalMonitorForEvents 每条路径都 return event，不吞事件），但
+//   第一次按下当场被 performWindowDrag 拿去开拖动会话，点击语义就没了。要加
+//   交互，先改 desktop/main.go 的 InvisibleTitleBarHeight，并接受窗口不能拖。
+//
+//   例外是双击：原生那段刻意用 `clickCount != 1` 给它让路，所以双击最大化
+//   补得上（见 requestTitlebarZoom），它也是这里唯一的交互。
 //
 // 边界：
 //   - 只在薄壳里渲染（由 Shell 判断 isDesktopShell），浏览器里根本不挂
 //   - 不持有状态；base 为 null（还没选目录）时只显示应用名
 import { BreadcrumbSegments } from './Breadcrumb'
-import { DESKTOP_TOP_INSET } from '../lib/desktopShell'
+import { DESKTOP_TOP_INSET, requestTitlebarZoom } from '../lib/desktopShell'
 import type { BaseDir } from '../workbench/useWorkbench'
 
 // TRAFFIC_LIGHTS_WIDTH 是左边留给红黄绿三个按钮的宽度（px）。
@@ -39,6 +44,10 @@ export function DesktopTitleBar({ base }: { base: BaseDir | null }) {
       // 这也正是 Finder 那类原生窗口的做法：同色调 + 一根发丝线
       className="relative flex shrink-0 select-none items-center border-b bg-sidebar"
       style={{ height: DESKTOP_TOP_INSET }}
+      // 双击标题栏最大化/还原：这个手势在 Wails 里是 JS 实现的，运行时没注入
+      // 就没人发那条消息，双击于是没反应（走查实测）。这里自己补上——桥是通的，
+      // 详见 requestTitlebarZoom 的注释（含它用了内部协议、会静默失效的代价）
+      onDoubleClick={() => requestTitlebarZoom()}
     >
       {/* 绝对定位居中：像原生标题栏那样把路径摆在窗口正中，而不是从交通灯右边
           起头——那个起点既不对齐左栏文字也不对齐中栏，看着是浮着的。
