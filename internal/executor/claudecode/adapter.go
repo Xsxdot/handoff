@@ -360,7 +360,8 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 还原后的裸 tool_use_id）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
-//   - reason: 协调者给出的拒绝理由；本 task 先收下，Task 5 接入 Claude 原生消息字段
+//   - reason: 协调者给出的拒绝理由；decision 为 reject 且理由非空时，经
+//     permDecision.Message 与裁决同帧送达模型（见下方 DenyReasonInBand）
 //
 // 注意：
 //   - decision 取值**除 once 外一律 deny**：不认识的裁决绝不当成放行
@@ -390,19 +391,20 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	behavior, msg := "allow", ""
 	if decision != "once" {
 		behavior = "deny"
+		withReason := false
 		// 理由与裁决同帧：msg 会作为 tool_result 正文当场回给模型（perm.go 的
 		// Message → cmd/permission_mcp.go），模型在同一个回合里就知道该怎么改。
 		// 走带外注入的话，实测要迟到整整一个回合，中间那段空窗模型会自行发挥
 		// （B137 来源：B128 真机验收 seq32→seq33）
 		if r := strings.TrimSpace(reason); r != "" {
-			msg = turn.DenyGuidanceText(r)
+			msg, withReason = turn.DenyGuidanceText(r), true
 		} else {
 			// 协调者没给理由：送一句空的比送通用句更差，模型会以为理由缺失是异常
 			msg = "协调者拒绝了本次操作"
 		}
+		a.log.Info("claude 回发拒绝裁决", "task", taskID, "perm", permID,
+			"with_reason", withReason)
 	}
-	a.log.Info("claude 回发拒绝裁决", "task", taskID, "perm", permID,
-		"with_reason", msg != "协调者拒绝了本次操作")
 	return r.perm.Respond(permID, behavior, msg)
 }
 

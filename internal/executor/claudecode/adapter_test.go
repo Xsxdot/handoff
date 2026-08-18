@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +98,11 @@ func TestNotRunningWrapsSentinel(t *testing.T) {
 // 后把回发的裁决读出来。脚手架沿用 perm_test.go 既有的 newPermServer + dialAsk，
 // 不另起一套 mock。
 func respondAndRead(t *testing.T, decision, reason string) (behavior, message string) {
+	return respondAndReadWithLogger(t, decision, reason,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func respondAndReadWithLogger(t *testing.T, decision, reason string, logger *slog.Logger) (behavior, message string) {
 	t.Helper()
 	// macOS Unix socket 路径上限很短；工作区测试临时目录本身已含长的测试名，
 	// 即使缩短文件名也可能在 bind 前失败。短目录放在当前包下并由测试清理。
@@ -112,7 +119,7 @@ func respondAndRead(t *testing.T, decision, reason string) (behavior, message st
 	}
 	defer srv.Close()
 
-	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := New(logger)
 	a.runs["T1"] = &runState{
 		taskID: "T1", perm: srv,
 		evCh: make(chan executor.AdapterEvent, 4), stopCh: make(chan struct{}),
@@ -136,6 +143,16 @@ func respondAndRead(t *testing.T, decision, reason string) (behavior, message st
 		t.Fatalf("读裁决: %v", err)
 	}
 	return got.Behavior, got.Message
+}
+
+// TestRespondPermissionApprovalDoesNotLogDeny 审批通过只应回发 allow，不能污染拒绝日志。
+// 这是日志分支回归测试：拒绝日志若仍在 deny 分支外，本用例会在现状下失败。
+func TestRespondPermissionApprovalDoesNotLogDeny(t *testing.T) {
+	var logs bytes.Buffer
+	_, _ = respondAndReadWithLogger(t, "once", "", slog.New(slog.NewTextHandler(&logs, nil)))
+	if strings.Contains(logs.String(), "claude 回发拒绝裁决") {
+		t.Fatalf("批准不应产生拒绝裁决日志，实际日志：%s", logs.String())
+	}
 }
 
 // TestRespondPermissionCarriesReason 钉住 B137 主修：协调者的理由必须原样进

@@ -12,3 +12,4 @@
 - [Task 5 / 双裁决通过] spec 符合：turn.DenyGuidanceText 为唯一渲染点，claude 拒绝理由与裁决同帧、空理由回退通用句并自报能力位，manager 带外出口共用正文；质量：socket 日志不抄理由原文，B128 seq32→seq33 与 B50/B91 注释保留；验证：turn+claudecode 全包通过，agentd `TMPDIR=/tmp go test -p=1` 全包通过；并行 agentd 首次 WS 单测超时后单测与串行复跑通过；commit range：bac53f9b..HEAD（本 task 提交）。
 - [Task 6 / 双裁决通过] spec 符合：denyReasonInBander 为可选接口，解析失败保守回退，claude 能力位时跳过带外挂起，其余 adapter 保持 B50；质量：两处调用均走封装，跳过日志含 task/perm，README 双语补充越界落点；验证：新增两条 manager 分支测试与 agentd `TMPDIR=/tmp go test -p=1` 全包通过；commit range：8cf0a327..HEAD（本 task 提交）。
 - [终审 / 通过] 范围：c34ecc04..8efc1fd6 完整 diff；spec 与代码质量复核无待修项；验证：沙箱外 `TMPDIR=/tmp go test ./... -count=1 -p=1`、`go build ./...`、`go vet ./...` 均退出 0，`git diff --check` 通过，工作区干净；无需修复波次。
+- [计划缺陷修复 / 不计修复轮次] 修正 claude 批准误记拒绝日志：回归测试先复现，随后将日志移入 deny 分支并改用显式 `withReason`，同步过期 doc；验证：`TMPDIR=/tmp go test ./internal/executor/claudecode/ -count=1`、`TMPDIR=/tmp go build ./...`、`TMPDIR=/tmp go vet ./...` 均退出 0；commit range：28e5c69d..HEAD（本修复提交）。
