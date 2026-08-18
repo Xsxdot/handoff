@@ -92,10 +92,18 @@ if !ok || homeErr != nil {
 
 **不新增分支、不新增状态、不新增字段。**
 
-**可测性**：`Detect()` 目前直接读 `runtime.GOOS` 之外的三个 seam（`userHomeDir` / `lookPath` / `statFile`）。
-按本仓库既有形状（[`internal/agentd/runshell.go:104`](../../../internal/agentd/runshell.go) 的
-`resolveRunShell(runtime.GOOS, exec.LookPath, statFile)`）把平台作为参数传给一个内部函数，
-`Detect()` 作为薄包装传 `runtime.GOOS`。**不要**引入构建标签分文件——那会让 macOS 上跑不到 Windows 分支。
+**可测性**：`toolchain` 包已经有三个包级探测缝（`lookPath` / `statFile` / `userHomeDir`，
+见 `detect.go` 顶部），测试用 `withStubs` 一次性替换。**平台判据加成第四个同款包级缝**：
+
+```go
+var goos = runtime.GOOS
+```
+
+不采用 `runshell.go` 那种「把 goos 当参数传进内部函数」的形状——那是另一个包的既有形状，
+而本包自己的形状就是包级缝 + `withStubs`。跟本包走，测试改动最小、读起来最一致。
+
+**不要**引入构建标签分文件——那会让 macOS 上根本跑不到 Windows 分支，而本条本来就欠真机验证，
+再让单测也覆盖不到就等于零证据。
 
 **grok 与 codex 不动**：`~/.grok/auth.json` 与 `~/.codex/auth.json` 在 Windows 上同样成立，
 无证据表明它们错，不要顺手一起改。
@@ -198,7 +206,11 @@ if model == "" && execName == m.cfg.Executor.Default {
 - **B121** 的平台条件加中文注释解释 why（Windows 上 opencode 不用 XDG 落点，没有可靠判据就如实报未知），
   并指向 `claude` 那条既有先例。
 - **B120** 的分隔符集合加一句注释说明为何加 `\` 安全（git URL 不含反斜杠）。
-- 四条都不新增函数级日志——它们都在已有日志点的覆盖范围内，加了只是噪音。
+- **除 B82 外三条一律不新增日志**，这是刻意的，不是遗漏：
+  - `internal/toolchain`（B121）的包注释把「不打日志」写成了包边界——它是一组纯取值函数，
+    探测结果由调用方成表打印，在这里打日志只会给 `init` 的输出制造噪音。**照这条边界办，别破例。**
+  - `projectNameFromURL`（B120）是纯函数，调用方 `projectadmin.go` 已有登记失败的日志。
+  - B101 改的是一个赋值条件，它所在的 `Dispatch` 路径已有完整日志覆盖。
 
 ## 7. 验收判据
 
