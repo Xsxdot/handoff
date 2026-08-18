@@ -61,12 +61,13 @@ MODIFIED=false
 [ "$DIRTY_COUNT" != "0" ] && MODIFIED=true
 
 echo "==> 构建 $GOOS/$GOARCH  版本 $STAMP  提交 ${REV:0:12} ($COMMIT_TIME)  modified=$MODIFIED"
-# 三个注入点缺一不可：releaseVersion 填「版本号」这一格（自动戳给不出），
-# releaseRevision / releaseModified 则是**纠正**自动戳——它非空但指向主工作树。
+# 四个注入点缺一不可：releaseVersion 填「版本号」这一格（自动戳给不出），
+# releaseRevision / releaseModified / releaseTime 则是**纠正**自动戳——它非空
+# 但指向主工作树。status 把 revision 与时刻并排显示，只纠正一个会自相矛盾。
 B=github.com/Xsxdot/handoff/internal/buildinfo
 CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
   -trimpath \
-  -ldflags "-s -w -X $B.releaseVersion=$STAMP -X $B.releaseRevision=$REV -X $B.releaseModified=$MODIFIED" \
+  -ldflags "-s -w -X $B.releaseVersion=$STAMP -X $B.releaseRevision=$REV -X $B.releaseModified=$MODIFIED -X $B.releaseTime=$COMMIT_TIME" \
   -o "$OUT" .
 
 echo "==> 自检：注入的提交号必须真的进了产物"

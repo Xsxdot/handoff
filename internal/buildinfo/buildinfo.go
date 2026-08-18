@@ -46,7 +46,9 @@ var releaseVersion string
 //
 // 注入方式（见 scripts/build-deploy.sh）：
 //
-//	-ldflags "-X ...buildinfo.releaseRevision=<40 位 sha> -X ...buildinfo.releaseModified=true"
+//	-ldflags "-X ...buildinfo.releaseRevision=<40 位 sha> \
+//	          -X ...buildinfo.releaseModified=true \
+//	          -X ...buildinfo.releaseTime=<RFC3339 提交时刻>"
 //
 // why（为什么自动戳需要纠正）：`go build` 在 **linked git worktree** 里读的是
 // **主工作树**的 HEAD 与脏状态，不是当前 worktree 的。同一份源码的对照实测：
@@ -63,6 +65,7 @@ var releaseVersion string
 var (
 	releaseRevision string
 	releaseModified string
+	releaseTime     string
 )
 
 // releaseTagRe 匹配 release tag 形态的版本号（vX.Y.Z，三段皆为数字）。
@@ -131,6 +134,11 @@ func Read() (proto.BuildInfo, bool) {
 	if releaseRevision != "" {
 		out.Revision = releaseRevision
 		out.Modified = releaseModified == "true"
+		// 时刻单独判空：它与 revision 同为「自动戳会指错」的字段，handoff status
+		// 把两者并排显示，只纠正一个会得到一行自相矛盾的输出。
+		if releaseTime != "" {
+			out.Time = releaseTime
+		}
 	}
 	return out, true
 }

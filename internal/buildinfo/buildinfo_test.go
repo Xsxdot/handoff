@@ -255,20 +255,24 @@ func TestReadFillsPlatform(t *testing.T) {
 // 克隆构建才戳出真实值（B146 实测）。兜底语义（空才用注入值）在这里恒不生效，
 // 所以优先级写反了等于没修。
 func TestReadInjectedRevisionOverridesAutoStamp(t *testing.T) {
-	oldRead, oldRev, oldMod := readBuildInfo, releaseRevision, releaseModified
+	oldRead, oldRev, oldMod, oldTime := readBuildInfo, releaseRevision, releaseModified, releaseTime
 	readBuildInfo = func() (*debug.BuildInfo, bool) {
 		return &debug.BuildInfo{
 			GoVersion: "go1.26.1",
 			Settings: []debug.BuildSetting{
 				// 自动戳：主工作树的状态，非空且是脏的
 				{Key: "vcs.revision", Value: "c32a1f8b19980fe8ae7b150ca7135aa5f030a8d1"},
+				{Key: "vcs.time", Value: "2026-08-18T05:59:36Z"},
 				{Key: "vcs.modified", Value: "true"},
 			},
 		}, true
 	}
 	releaseRevision = "85c1e2322a086e237f63261f7b9ea3e05f2733e4"
 	releaseModified = "false"
-	t.Cleanup(func() { readBuildInfo, releaseRevision, releaseModified = oldRead, oldRev, oldMod })
+	releaseTime = "2026-08-18T08:17:40Z"
+	t.Cleanup(func() {
+		readBuildInfo, releaseRevision, releaseModified, releaseTime = oldRead, oldRev, oldMod, oldTime
+	})
 
 	got, ok := Read()
 	if !ok {
@@ -280,11 +284,15 @@ func TestReadInjectedRevisionOverridesAutoStamp(t *testing.T) {
 	if got.Modified {
 		t.Fatal("注入 releaseModified=false 时不得沿用自动戳的 modified=true——那正是凭空多出来的「带未提交改动」")
 	}
+	// 时刻与 revision 在 handoff status 里并排显示，只纠正一个会得到自相矛盾的一行
+	if got.Time != "2026-08-18T08:17:40Z" {
+		t.Fatalf("注入的提交时刻必须覆盖自动戳，实得 Time=%q", got.Time)
+	}
 }
 
 // 不注入时行为必须与改动前逐字节一致：自动戳原样透出。
 func TestReadWithoutInjectionKeepsAutoStamp(t *testing.T) {
-	oldRead, oldRev, oldMod := readBuildInfo, releaseRevision, releaseModified
+	oldRead, oldRev, oldMod, oldTime := readBuildInfo, releaseRevision, releaseModified, releaseTime
 	readBuildInfo = func() (*debug.BuildInfo, bool) {
 		return &debug.BuildInfo{
 			GoVersion: "go1.26.1",
@@ -294,8 +302,10 @@ func TestReadWithoutInjectionKeepsAutoStamp(t *testing.T) {
 			},
 		}, true
 	}
-	releaseRevision, releaseModified = "", ""
-	t.Cleanup(func() { readBuildInfo, releaseRevision, releaseModified = oldRead, oldRev, oldMod })
+	releaseRevision, releaseModified, releaseTime = "", "", ""
+	t.Cleanup(func() {
+		readBuildInfo, releaseRevision, releaseModified, releaseTime = oldRead, oldRev, oldMod, oldTime
+	})
 
 	got, _ := Read()
 	if got.Revision != "c32a1f8b19980fe8ae7b150ca7135aa5f030a8d1" || !got.Modified {
