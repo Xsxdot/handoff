@@ -1002,20 +1002,42 @@ func (h Handle) cred() TaskCred {
 
 - [ ] **Step 5: 四个 adapter 填凭据**
 
-四处各加两个字段。**四处改法完全相同**，逐一列出（不要跳过任何一处，也不要假设它们长得一样——四个文件组装 `Env` 的写法本来就不同）：
+**注意 `prochost.Spec` 不是在 adapter 的 `Start` 里构造的**，而是在只吃基本类型的
+helper 里（opencode/codex/grok 各自的 `serveSpec`、claudecode 的 `startProc`）。
+所以填法是**在 helper 返回之后赋值**，不是给 helper 加参数：
 
-`internal/executor/claudecode/proc.go:178` 的 `prochost.Spec{...}` 里加：
-```go
-		TaskID:   req.Task.ID,
-		MarkRoot: prochost.ResolveMarkRoot(req.Task.WorkDir, req.Task.WorktreeManaged),
-```
-`internal/executor/codex/proc.go:218`、`internal/executor/grok/proc.go:264`、
-`internal/executor/opencode/proc.go:217` 三处的 `prochost.Spec{...}` 里加**同样两行**。
+1. **`Spec.TaskID` 多数情况不用改签名。** 例如 opencode 的
+   `StartServe(ctx, repoPath, taskID, taskDir, configPath, env, log)` 里 `taskID`
+   已经是参数，在 `spec := serveSpec(...)` 之后直接加一行：
+   ```go
+   	spec.TaskID = taskID
+   ```
+   其余三家逐个看入口函数：已有 `taskID`（或等价物）就直接用；确实没有，才给那个
+   入口函数加一个 `taskID string` 参数。
 
-为此需要把 Task 1 的 `resolveMarkRoot` **导出**为 `ResolveMarkRoot`（adapter 在包外）。同步改 Task 1 的实现与测试里的名字。
+2. **`Spec.MarkRoot` 只给入口函数加一个参数。** 入口函数指 adapter 的 `Start`
+   直接调的那个：opencode/codex/grok 是各自的 `StartServe`，claudecode 是
+   `startProc`（给 `StartProcReq` 加一个 `MarkRoot` 字段即可）。在同一个调用点：
+   ```go
+   	spec.MarkRoot = markRoot
+   ```
+   值在 adapter 的 `Start` 里算——那里 `req.Task` 在作用域内：
+   ```go
+   	prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged)
+   ```
 
-> 注意 `req.Task.WorkDir` 为空时表示原地模式（工作区即 RepoPath），此时
-> `WorktreeManaged` 必然为 false，`ResolveMarkRoot` 返回空串——正确。
+3. **明确不要做的：不要给 `serveSpec` 本身加参数。** 它是纯 spec 构造器，改它的
+   签名会连带 churn 掉一批已有断言测试（如 opencode 的
+   `TestServeSpecPutsPasswordInEnvNotArgv`），而收益为零——构造之后赋值效果完全一样。
+
+4. **别漏 resume 路径**：`internal/executor/claudecode/resume.go:114` 也构造
+   `StartProcReq`，同样要填这两个值，否则恢复出来的执行者没有归属凭据。
+
+为此需要把 Task 1 的 `resolveMarkRoot` **导出**为 `ResolveMarkRoot`（adapter 在包外）。
+同步改 Task 1 的实现与测试里的名字。
+
+> `req.Task.Workdir()` 在 `WorkDir` 为空时回退 `RepoPath`（原地模式），而原地模式下
+> `WorktreeManaged` 必为 false，`ResolveMarkRoot` 因此返回空串——正确，不必额外判空。
 
 - [ ] **Step 6: 跑测试确认通过**
 
