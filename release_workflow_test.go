@@ -75,14 +75,17 @@ func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
 	//
 	// 这个数字是「workflow 里编 CLI 的地方有几处」的代理，**加构建点就要同步加**。
 	// W5b-3 之前是 2（build-unix / build-darwin）；两个薄壳 job 各自也要编一份
-	// CLI 嵌进壳里（那份会被释出到 ~/.local/bin/handoff，用户敲 handoff version
-	// 看到的就是它），所以现在是 4：
+	// CLI 嵌进壳里（那份会被释出到本平台的约定落点——Windows 是
+	// %LOCALAPPDATA%\Programs\handoff\handoff.exe，其余是 ~/.local/bin/handoff——
+	// 用户敲 handoff version 看到的就是它）；W5b-4 增了 build-desktop-windows
+	// 薄壳 job，构建点从 4 个变 5 个，所以现在是 5：
 	//
 	//   build-unix · build-darwin · build-desktop-linux · build-desktop-darwin
+	//   · build-desktop-windows
 	//
 	// 漏掉薄壳那两处的症状最阴：壳能装能跑，但它释出的 CLI 自称 unknown，
 	// 自更新永远认为自己已是最新。
-	const wantCount = 4
+	const wantCount = 5
 	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != wantCount {
 		t.Fatalf("workflow 应恰好含 %d 处注入路径 %q，实得 %d 处", wantCount, want, n)
 	}
@@ -350,6 +353,13 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 		t.Fatalf("darwin 薄壳必须在 macOS runner 上构建，实得 runs-on=%q", dar.RunsOn)
 	}
 
+	if win, ok := jobs["build-desktop-windows"]; !ok {
+		t.Fatal("release.yml 缺 build-desktop-windows job")
+	} else if !strings.HasPrefix(win.RunsOn, "windows") {
+		t.Fatalf("windows 薄壳必须在 Windows runner 上构建（generate:syso 与 "+
+			"Taskfile 里按 platforms 分支的清理命令只有原生跑才走到），实得 runs-on=%q", win.RunsOn)
+	}
+
 	wf := stripYAMLComments(readWorkflow(t))
 	// 逐条带期望出现次数，而不是 Contains。
 	//
@@ -362,10 +372,13 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 		want string
 		n    int
 	}{
-		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略。两个 job 各一次。
-		{"EXTRA_TAGS=embedbin", 2},
-		{"EXTRA_LDFLAGS=", 2},
-		{"desktop/internal/embedbin.Version=", 2},
+		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略。三个 job 各一次。
+		{"EXTRA_TAGS=embedbin", 3},
+		{"EXTRA_LDFLAGS=", 3},
+		{"desktop/internal/embedbin.Version=", 3},
+		// ARCH=amd64 不传的话 wails3 取宿主架构，runner 换代那天会静默产出一个
+		// 名字叫 amd64、实际是 arm64 的资产——CI 全绿，用户下载后才发现跑不起来。
+		{"ARCH=amd64", 1},
 		// 装 wails3 这一步本身也要带 gtk3，否则在 22.04 上卡在准备工具阶段。仅 linux。
 		{"go install -tags gtk3", 1},
 		// 内嵌的那份 CLI 必须在嵌进去之前单独签名：嵌进去之后它就只是
@@ -383,7 +396,7 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 	if !ok {
 		t.Fatal("release.yml 缺 release job")
 	}
-	for _, dep := range []string{"build-desktop-linux", "build-desktop-darwin"} {
+	for _, dep := range []string{"build-desktop-linux", "build-desktop-darwin", "build-desktop-windows"} {
 		if !needsSet(rel.Needs)[dep] {
 			t.Fatalf("release 的 needs 里没有 %q —— 它会在薄壳 artifact 上传完成前起跑，"+
 				"checksums 的通配匹配不到文件而失败，且失败是时序相关的", dep)

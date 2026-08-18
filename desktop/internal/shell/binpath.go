@@ -19,7 +19,8 @@ import (
 //
 // 参数：
 //   - explicit: 调用方显式指定的路径。非空时用它，空时依次尝试
-//     ~/.local/bin/handoff 和 PATH 上的 handoff
+//     %LOCALAPPDATA%\Programs\handoff\handoff.exe（Windows）或
+//     ~/.local/bin/handoff（其余平台），再试 PATH 上的 handoff
 //
 // 返回：
 //   - 解过符号链接的绝对路径
@@ -34,10 +35,14 @@ func ResolveBinPath(explicit string) (string, error) {
 	if explicit != "" {
 		candidates = append(candidates, explicit)
 	} else {
-		if home, err := os.UserHomeDir(); err != nil {
-			slog.Warn("取不到用户主目录，跳过 ~/.local/bin/handoff 候选", "cause", err)
+		// 第一候选是本平台的约定落点（Unix 是 ~/.local/bin/handoff，
+		// Windows 是 %LOCALAPPDATA%\Programs\handoff\handoff.exe）。
+		// 顺序承重：它必须排在 PATH 之前，否则用户 PATH 上另有一个旧版
+		// handoff 时，薄壳会挑中那个旧的去托管 agentd。
+		if p, err := DefaultCLIPath(); err != nil {
+			slog.Warn("算不出约定落点，跳过该候选", "cause", err)
 		} else {
-			candidates = append(candidates, filepath.Join(home, ".local", "bin", "handoff"))
+			candidates = append(candidates, p)
 		}
 		// LookPath 的返回值可能是相对路径（PATH 里的相对项），需要留给下面的
 		// 绝对路径化去收口

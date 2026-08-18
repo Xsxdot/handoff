@@ -8,6 +8,29 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc4] - 2026-08-19
+
+**预发布。** 同样标成 prerelease，不改变 `releases/latest`。
+
+本轮补上**Windows 桌面薄壳**，三平台桌面资产至此打全：
+
+- 新增资产 `handoff-desktop_<tag>_windows_amd64.zip`，里面是可直接双击的
+  `handoff-desktop.exe`。**未签名**（macOS 那份有签名与公证），双击会触发
+  SmartScreen，属已知代价。
+- 薄壳释出内嵌 CLI 的落点改为按平台走：Windows 落
+  `%LOCALAPPDATA%\Programs\handoff\handoff.exe`，与 `install.ps1` 的
+  `Get-HandoffInstallDir` 逐字一致；其余平台仍是 `~/.local/bin/handoff`。
+  两边对不上的后果不是报错，而是「桌面端用的 handoff 和命令行敲的是两个
+  版本」——属最难排查的一类错配。
+- 补回 `desktop/build/windows/` 构建资产。此前它被整个删掉过，后果不是
+  「Windows 没打包」，而是 `build` / `package` / `run` 三个入口在 Windows 上
+  一律报 `task windows:build not found`。
+
+Windows 真机（Server 2025 / AMD64）已验到：释出决策、落点、释出的 CLI
+可执行（`handoff.exe version` 报 `windows/amd64`）、首次向导的工具链探测与
+配置表生成。**托盘外观与菜单、关窗行为、首次向导的三步交互尚未走查**，
+那需要交互式桌面。
+
 ## [v0.3.0-rc3] - 2026-08-18
 
 **预发布，只为在真实 runner 上把三平台资产一次性打全。** 同样标成 prerelease，
