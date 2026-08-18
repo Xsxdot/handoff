@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,16 +94,24 @@ func TestHandleTaskBundleFull(t *testing.T) {
 	}
 }
 
-// 空区间：204，且不带包体——这是「本地已是最新」，不是失败。
-func TestHandleTaskBundleEmptyRange(t *testing.T) {
+// 承重：区间为空时端点**不回 204**，而是返回一个照样带 ref 的包。
+//
+// 判据必须落到「包里真的有那个 ref」——只断言 200 的话，一个不含 ref 的包也能
+// 蒙混过去，而客户端的本地分支引用正是靠包里这个 ref 建出来的（B143 真机验收）。
+func TestHandleTaskBundleEmptyRangeStillCarriesRef(t *testing.T) {
 	env, taskID, repo, _ := newBundleEnv(t, "feat/x")
+	head := headSHAForTest(t, repo, "feat/x")
 
-	resp, body := getBundle(t, env, taskID, headSHAForTest(t, repo, "feat/x"))
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("空区间应为 204，实得 %d，体 %s", resp.StatusCode, body)
+	resp, body := getBundle(t, env, taskID, head)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("空区间应放宽后回 200，实得 %d，体 %s", resp.StatusCode, body)
 	}
-	if len(body) != 0 {
-		t.Errorf("204 不该有包体，实得 %d 字节", len(body))
+	tmp := filepath.Join(t.TempDir(), "widened.bundle")
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		t.Fatalf("落盘: %v", err)
+	}
+	if heads := bundleHeads(t, tmp); heads["refs/heads/feat/x"] != head {
+		t.Fatalf("包里应含 refs/heads/feat/x 且指向 %s，实得 %v", head, heads)
 	}
 }
 

@@ -1429,8 +1429,9 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 //
 // 响应：
 //   - 200 application/octet-stream，带 Content-Length
-//   - 204 区间为空，本地已是最新（**不是失败**：git bundle create 对空区间会
-//     报错，而空区间天天发生——连着 pull 两次就是）
+//   - **没有 204**：区间为空时 BundleRange 自动放宽区间（§5.2），照样产出一个
+//     带 ref 的包。客户端的本地分支引用是 fetch 的副产品，短路掉 fetch 就会让
+//     「已是最新」在协调者手上什么都没有的情况下打出来
 //   - 400 任务无分支 / have 在任务仓库中不存在 / 参数以 - 开头
 //   - 404 任务不存在（byTask 已处理）
 //   - 500 git 失败
@@ -1457,11 +1458,6 @@ func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	path, err := BundleRange(r.Context(), task.RepoPath, have, task.Branch)
 	switch {
-	case errors.Is(err, ErrEmptyRange):
-		// 空区间是预期形态，Info 说明它不是失败——否则运维看到 204 会去翻错误日志
-		s.log.Info("bundle 区间为空，回 204", "task", taskID, "have", have, "branch", task.Branch)
-		w.WriteHeader(http.StatusNoContent)
-		return
 	case errors.Is(err, ErrHaveMissing), errors.Is(err, ErrBadBaseBranch):
 		// have 与 branch 都由请求侧决定，属请求问题不是服务故障（与 diff 的
 		// ErrBadBaseBranch 同款映射）

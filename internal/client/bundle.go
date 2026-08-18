@@ -36,13 +36,12 @@ var ErrBundleUnsupported = errors.New("对端 agentd 不支持 /api/tasks/{id}/b
 //   - have:   协调者本地已有的基线提交；空串请求全量包
 //
 // 返回：
-//   - rc:    bundle 字节流，**调用方负责 Close**；empty 为 true 时是 nil
-//   - empty: 对端回了 204，即 have..branch 为空区间，本地已是最新
-//   - err:   404 → ErrBundleUnsupported（对端过旧，调用方应回落）；其余为故障
+//   - rc:  bundle 字节流，**调用方负责 Close**
+//   - err: 404 → ErrBundleUnsupported（对端过旧，调用方应回落）；其余为故障
 //
 // 注意：
 //   - 成功路径**不能** defer resp.Body.Close()：Body 就是返回给调用方的 rc
-func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser, bool, error) {
+func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser, error) {
 	path := "/api/tasks/" + url.PathEscape(taskID) + "/bundle"
 	if have != "" {
 		path += "?have=" + url.QueryEscape(have)
@@ -50,24 +49,28 @@ func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser
 	c.log().Debug("请求任务 bundle", "task", taskID, "have", have)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("bundle 请求: %w", err)
+		return nil, fmt.Errorf("bundle 请求: %w", err)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
 		c.log().Debug("bundle 响应就绪", "task", taskID, "content_length", resp.ContentLength)
-		return resp.Body, false, nil
+		return resp.Body, nil
 	case http.StatusNoContent:
+		// 防御分支：服务端保证区间永不为空（放宽到 <branch>~1..<branch>），所以
+		// 这里不该被走到。真收到 204 说明对端是那个短命的中间版本——如实报错，
+		// **不要**沉默地当成「已是最新」：那正是 B143 真机验收抓到的静默倒退，
+		// 客户端会在本地根本没有该分支引用的情况下报成功
 		resp.Body.Close()
-		c.log().Debug("对端报区间为空，本地已是最新", "task", taskID, "have", have)
-		return nil, true, nil
+		c.log().Warn("对端返回 204（空区间），本实现的服务端不应产生它", "task", taskID, "have", have)
+		return nil, fmt.Errorf("对端返回 204 空区间响应：该版本不产出带 ref 的包，本地分支引用无法建立")
 	case http.StatusNotFound:
 		// 不走 httpError：它会打 Warn 并造出一个普通错误，而这里的 404 是一条
 		// 有用的结论，不是异常（与 Status 的 ErrStatusUnsupported 同款处置）
 		resp.Body.Close()
 		c.log().Debug("对端 agentd 不支持 bundle 端点，按版本过旧处理", "task", taskID)
-		return nil, false, ErrBundleUnsupported
+		return nil, ErrBundleUnsupported
 	default:
 		defer resp.Body.Close()
-		return nil, false, c.httpError("取 bundle", resp)
+		return nil, c.httpError("取 bundle", resp)
 	}
 }

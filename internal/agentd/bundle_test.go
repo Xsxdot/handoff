@@ -81,14 +81,75 @@ func TestBundleRangeFull(t *testing.T) {
 	}
 }
 
-// 空区间是**预期形态**，必须是 ErrEmptyRange 而不是 git 的失败原文。
-// 这条是承重的：不识别它，第二次 pull 就变成一个 500。
-func TestBundleRangeEmpty(t *testing.T) {
+// 承重：区间为空时**不放弃**，放宽后照样产出一个带 ref 的包。
+//
+// 为什么这条是承重的：客户端的本地分支引用是 git fetch 的副产品。服务端若在
+// 这里短路，客户端就会拿到「已是最新」而手上根本没有那个分支（B143 真机验收
+// 实测到的静默倒退）。判据必须落到「包里真的有那个 ref」，而不只是「没报错」。
+func TestBundleRangeEmptyWidens(t *testing.T) {
 	repo, _ := newBundleRepo(t)
 	head := headSHAForTest(t, repo, "feat/x")
-	_, err := BundleRange(context.Background(), repo, head, "feat/x")
-	if !errors.Is(err, ErrEmptyRange) {
-		t.Fatalf("空区间应返回 ErrEmptyRange，实得 %v", err)
+
+	path, err := BundleRange(context.Background(), repo, head, "feat/x")
+	if err != nil {
+		t.Fatalf("空区间不该失败，应放宽区间：%v", err)
+	}
+	defer os.Remove(path)
+
+	heads := bundleHeads(t, path)
+	if heads["refs/heads/feat/x"] != head {
+		t.Fatalf("包里应含 refs/heads/feat/x 且指向 %s，实得 %v", head, heads)
+	}
+}
+
+// 边界：分支 tip 是根提交（没有 ~1）时退回全量包，同样带 ref。
+func TestBundleRangeEmptyRootCommit(t *testing.T) {
+	repo := t.TempDir()
+	gitForTest(t, repo, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(repo, "only.txt"), []byte("only\n"), 0o644); err != nil {
+		t.Fatalf("写 only.txt: %v", err)
+	}
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "-m", "root")
+	gitForTest(t, repo, "branch", "feat/root")
+	head := headSHAForTest(t, repo, "feat/root")
+
+	path, err := BundleRange(context.Background(), repo, head, "feat/root")
+	if err != nil {
+		t.Fatalf("根提交的空区间应退回全量包，实得 %v", err)
+	}
+	defer os.Remove(path)
+
+	if heads := bundleHeads(t, path); heads["refs/heads/feat/root"] != head {
+		t.Fatalf("全量包里应含 refs/heads/feat/root 且指向 %s，实得 %v", head, heads)
+	}
+}
+
+// bundleHeads 读出 bundle 里携带的 ref → sha 映射。
+func bundleHeads(t *testing.T, path string) map[string]string {
+	t.Helper()
+	out, err := exec.Command("git", "bundle", "list-heads", path).Output()
+	if err != nil {
+		t.Fatalf("git bundle list-heads: %v", err)
+	}
+	m := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			m[f[1]] = f[0]
+		}
+	}
+	return m
+}
+
+// gitForTest 在 repo 里跑一条 git，失败即 t.Fatal。
+func gitForTest(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	c := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	c.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

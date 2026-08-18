@@ -21,12 +21,9 @@ func TestBundleOK(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	rc, empty, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "abc123")
+	rc, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "abc123")
 	if err != nil {
 		t.Fatalf("Bundle: %v", err)
-	}
-	if empty {
-		t.Fatal("200 时 empty 应为 false")
 	}
 	defer rc.Close()
 	got, _ := io.ReadAll(rc)
@@ -35,19 +32,22 @@ func TestBundleOK(t *testing.T) {
 	}
 }
 
-// 204：empty 为 true，rc 为 nil，err 为 nil——这是「已是最新」，不是失败。
-func TestBundleEmpty(t *testing.T) {
+// 204 是防御分支：本实现的服务端保证区间永不为空，所以收到 204 必须**如实报错**。
+//
+// 为什么不能当成「已是最新」：那样客户端会在本地根本没有该分支引用的情况下报成功
+// ——正是 B143 真机验收抓到的静默倒退。204 只可能来自那个短命的中间版本。
+func TestBundleNoContentIsAnError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()
 
-	rc, empty, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
-	if err != nil {
-		t.Fatalf("204 不该是错误，实得 %v", err)
+	rc, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+	if err == nil {
+		t.Fatal("204 必须报错，不能被当成「已是最新」")
 	}
-	if !empty {
-		t.Error("204 时 empty 应为 true")
+	if errors.Is(err, ErrBundleUnsupported) {
+		t.Errorf("204 不是「对端过旧」这一结论，不该翻成 ErrBundleUnsupported：%v", err)
 	}
 	if rc != nil {
 		t.Error("204 时不该返回可读流")
@@ -62,7 +62,7 @@ func TestBundleUnsupported(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+	_, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
 	if !errors.Is(err, ErrBundleUnsupported) {
 		t.Fatalf("404 应翻成 ErrBundleUnsupported，实得 %v", err)
 	}
@@ -76,7 +76,7 @@ func TestBundleOtherStatusIsNotUnsupported(t *testing.T) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(`{"error":"boom"}`))
 		}))
-		_, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+		_, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
 		ts.Close()
 		if err == nil {
 			t.Errorf("状态码 %d 应返回错误", status)

@@ -80,23 +80,24 @@ func TestSyncViaBundleReportsHTTPError(t *testing.T) {
 	}
 }
 
-// 204：合成「已是最新」的结果，不报错、不 fetch。
-func TestSyncViaBundleEmptyRange(t *testing.T) {
+// 204 必须报错，不能被当成「已是最新」。
+//
+// 承重：服务端已保证区间永不为空（放宽到 <branch>~1..<branch>），所以 204 只可能
+// 来自那个短命的中间版本。把它当成功会让「已是最新」在本地根本没有该分支引用的
+// 情况下打出来——这正是 B143 真机验收抓到的静默倒退，判据就守在这里。
+func TestSyncViaBundleNoContentIsAnError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()
 	repo, base := newPullRepo(t)
 
-	res, err := syncViaBundle(context.Background(), ts.URL, "tok", "task-1", base, "feat/x", repo)
-	if err != nil {
-		t.Fatalf("204 不该是错误：%v", err)
+	_, err := syncViaBundle(context.Background(), ts.URL, "tok", "task-1", base, "feat/x", repo)
+	if err == nil {
+		t.Fatal("204 必须报错")
 	}
-	if res.Created || res.Commits != 0 {
-		t.Errorf("空区间应是「已是最新」，实得 %+v", res)
-	}
-	if res.Branch != "feat/x" {
-		t.Errorf("Branch 应回填为 feat/x，实得 %q", res.Branch)
+	if errorsIsBundleUnsupported(err) {
+		t.Errorf("204 不是「对端过旧」这一结论：%v", err)
 	}
 }
 

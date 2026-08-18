@@ -127,14 +127,13 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 //     那会弄脏协调者的工作区，而干净工作区是 dispatch 的前置条件
 //   - 包拿到了但 fetch 失败时如实报错、不回落：包已到手说明 HTTP 这条路是通的，
 //     失败在 git 侧（如缺前置对象），换 ssh 重来只会掩盖它
+//   - **没有「空区间」这条分支**：服务端保证包里一定带 ref（放宽区间，spec §5.2），
+//     所以「有没有新提交」由 localsync.Fetch 的 Result 如实反映，本地分支引用
+//     则总是被 fetch 建出来——与 ssh 老路逐字一致
 func syncViaBundle(ctx context.Context, addr, token, taskID, have, branch, localRepo string) (localsync.Result, error) {
-	rc, empty, err := client.New(addr, token).Bundle(ctx, taskID, have)
+	rc, err := client.New(addr, token).Bundle(ctx, taskID, have)
 	if err != nil {
 		return localsync.Result{}, err
-	}
-	if empty {
-		slog.Default().Info("远端无新提交，本地已是最新", "task", taskID, "branch", branch)
-		return localsync.Result{Branch: branch}, nil
 	}
 	defer rc.Close()
 

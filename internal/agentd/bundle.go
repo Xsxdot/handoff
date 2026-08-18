@@ -18,13 +18,6 @@ import (
 	"strings"
 )
 
-// ErrEmptyRange 表示 <have>..<branch> 区间里没有任何提交。
-//
-// 为什么必须是可判别的哨兵：`git bundle create` 对空区间是**失败**
-// （fatal: Refusing to create empty bundle.），而这个情形天天发生——连着 pull
-// 两次、或任务没产生新提交就是。不把它与真故障分开，第二次 pull 就变成一个 500。
-var ErrEmptyRange = errors.New("提交区间为空，无需生成 bundle")
-
 // ErrHaveMissing 表示调用方声明的 have 提交在任务仓库中不存在。
 //
 // 为什么响亮失败而不是悄悄退回全量：客户端只会回传任务记录里的 BaseCommit，
@@ -43,12 +36,15 @@ var ErrHaveMissing = errors.New("have 提交在任务仓库中不存在")
 //
 // 返回：
 //   - path: 生成的临时文件路径。**调用方负责 os.Remove**，本函数不回收
-//   - err:  ErrEmptyRange（区间为空，属预期形态）/ ErrHaveMissing（have 不存在）/
-//     ErrBadBaseBranch（参数以 - 开头或分支名为空）/ 其余为真故障
+//   - err:  ErrHaveMissing（have 不存在）/ ErrBadBaseBranch（参数以 - 开头或
+//     分支名为空）/ 其余为真故障。**不会因为「没有新提交」而失败**——见下
 //
 // 注意：
 //   - 临时文件落 OS 临时目录，绝不落进 repo——那会让 dispatch 的干净工作区校验误报
 //   - 不设体积上限：一个会拒绝合法全量包的上限，是把能用的路径改成坏的
+//   - **区间为空时会自动放宽**（§5.2）：git 拒绝造空包，而调用方需要的不只是
+//     对象、还有包里那个 ref——客户端的本地分支引用是 fetch 的副产品。放宽到
+//     <branch>~1..<branch> 让包一定含 ref，客户端因此一行都不用改
 func BundleRange(ctx context.Context, repo, have, branch string) (string, error) {
 	// git 会把以 - 开头的参数解释为选项：这是参数注入面，与 Diff 的 base 同源，
 	// 所以复用同一个哨兵（ErrBadBaseBranch），调用方的 400 映射也就统一了
@@ -74,8 +70,9 @@ func BundleRange(ctx context.Context, repo, have, branch string) (string, error)
 		revRange = have + ".." + branch
 	}
 
-	// 先数提交数再决定要不要造包：空区间对 git bundle create 是失败而非空包，
-	// 而空区间是常态。判据用 rev-list --count 的数字，**不匹配 stderr 文案**
+	// 先数提交数：空区间对 git bundle create 是**失败**（Refusing to create empty
+	// bundle），而它确实会发生——分支 tip 从 have 可达时就是，实践中即「任务一个
+	// 提交都没产生」。判据用 rev-list --count 的数字，**不匹配 stderr 文案**
 	//（那是英文、随 git 版本变，把预期形态的判据建在字符串比较上）
 	out, _, err := gitRun(ctx, repo, "rev-list", "--count", revRange)
 	if err != nil {
@@ -83,8 +80,10 @@ func BundleRange(ctx context.Context, repo, have, branch string) (string, error)
 		return "", fmt.Errorf("git rev-list --count %s: %w", revRange, err)
 	}
 	if strings.TrimSpace(out) == "0" {
-		log().Info("bundle 区间为空，无需生成", "repo", repo, "range", revRange)
-		return "", ErrEmptyRange
+		revRange, err = widenEmptyRange(ctx, repo, branch)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	f, err := os.CreateTemp("", "handoff-bundle-*.bundle")
@@ -111,4 +110,35 @@ func BundleRange(ctx context.Context, repo, have, branch string) (string, error)
 	}
 	log().Info("bundle 生成完成", "repo", repo, "range", revRange, "bytes", fi.Size())
 	return path, nil
+}
+
+// widenEmptyRange 在提交区间为空时给出一个**一定能造出包**的替代区间。
+//
+// 参数：repo 任务主仓库；branch 任务分支名
+//
+// 返回：可直接交给 git bundle create 的 rev 区间；分支 tip 是根提交时返回 branch
+// 本身（全量包）。
+//
+// 为什么不能就此返回「无需生成」：客户端要的不只是对象，还有**包里那个 ref**。
+// 本地分支引用是 `git fetch <分支>:<分支>` 的副产品，不是「有新提交」的副产品——
+// ssh 老路无条件 fetch 所以 ref 总会建出来；bundle 路径若在这里短路，客户端就会
+// 拿到一句「已是最新」而手上根本没有那个分支（B143 真机验收实测）。
+//
+// 为什么是放宽区间而不是「让客户端自己建 ref」：后者要新增一个协议头、一块客户端
+// 逻辑，还要本设计自己发明一条「本地 ref 指向别处怎么办」的策略——而 git 的 fetch
+// 语义本来就有答案（非快进即失败），ssh 老路一直照此行事。放宽区间让 fetch 该怎样
+// 就怎样，代价只是多传一个提交的对象（几百字节），而客户端已有这些对象、fetch 是
+// 无操作。
+func widenEmptyRange(ctx context.Context, repo, branch string) (string, error) {
+	// 分支 tip 有父提交：退一格，包里就一定含 ref 且只多带这一个提交的对象
+	if _, _, err := gitProbe(ctx, repo, "rev-parse", "--verify", branch+"~1"); err == nil {
+		widened := branch + "~1.." + branch
+		log().Info("bundle 区间为空，放宽一格以保证包内含 ref",
+			"repo", repo, "branch", branch, "range", widened)
+		return widened, nil
+	}
+	// 根提交没有 ~1：退回全量包。此时全量就是那一个根提交，本身也很小
+	log().Info("bundle 区间为空且分支 tip 是根提交，退回全量包",
+		"repo", repo, "branch", branch)
+	return branch, nil
 }
