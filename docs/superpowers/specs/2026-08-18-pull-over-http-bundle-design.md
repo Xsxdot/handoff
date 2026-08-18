@@ -154,10 +154,32 @@ git cat-file -e <sha>^{commit}
 `have..branch` 为空区间时 `git bundle create` **不是成功产出空包，而是失败**，
 报 `Refusing to create empty bundle.`。
 
-而这个情况会**天天发生**——连着 pull 两次、或任务没产生新提交就是。
+**08-18 真机验收修正了这里的一句错话**：原文写的是「连着 pull 两次就会撞空区间」，
+**不成立**。`have` 取的是 `task.BaseCommit`，永远不是分支 tip，所以第二次 pull
+送的还是同一个 base，区间照样非空——实测第二、第三次 pull 都照样下载了那个
+531 字节的薄包，从未回 204。空区间**只在任务一个提交都没产生时**发生（真机验收
+里的任务 `209628dc` 正是这种）。204 的处置仍然必要，但触发条件比原文窄得多。
 
 处置：服务端识别该情形，返回 **204 No Content**；客户端据此合成
-`localsync.Result{Created: false, NewCommits: 0}`，报「本地已是最新」。
+`localsync.Result{Created: false, NewCommits: 0}`，报「本地已是最新」，
+**并且必须保证本地分支引用存在**——见 §5.1。
+
+### 5.1 204 也必须把本地分支引用建出来（08-18 真机验收发现）
+
+初版实现在 204 时直接短路返回，不调 `localsync.Fetch`，于是**本地分支引用根本
+没被创建**，而输出仍是「已是最新」。实测：pull 任务 `209628dc` 报「已同步分支
+tmp/wintest-g（新增 0 个提交）」，随后 `git rev-parse --verify tmp/wintest-g`
+报 `Needed a single revision`——协调者手上什么都没有。
+
+这是相对 ssh 老路的**静默行为倒退**。纯 git 对照实测：目标仓库没有该 ref、
+且没有任何新提交时，`git fetch <远端> <分支>:<分支>` **照样把 ref 建出来**
+（空区间用例里 `feat/zero` fetch 后指向 `60c9680`）。
+
+修法：服务端在 204（以及 200）响应上带一个 `X-Handoff-Branch-Head: <sha>` 头；
+客户端收到 204 时，若本地尚无该分支引用，就用这个 sha 建出来。空区间意味着
+分支 tip 从 `have` 可达，所以**客户端一定已经有这个对象**，不需要再取任何数据。
+拿不到该头（对端是更早的中间版本）时，如实报「远端无新提交，但本地尚无该分支
+引用」，不要谎称已是最新。
 
 识别方式：先跑 `git rev-list --count <have>..<branch>`，为 0 直接返回 204，
 不去调 `bundle create`。**不要靠匹配 stderr 文案判断**——那是英文文案，随 git
