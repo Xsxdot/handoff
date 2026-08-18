@@ -16,6 +16,7 @@
 import type {
   AddMachineReq,
   BranchesResult,
+  CreateWorktreeReq,
   CreateProjectReq,
   CreateProjectResp,
   CreatePtySessionReq,
@@ -29,6 +30,7 @@ import type {
   MachinesResp,
   PatchProjectReq,
   ProjectLocation,
+  ProjectBranchesResp,
   ProjectTreeResp,
   PtySession,
   PtySessionsResp,
@@ -43,6 +45,7 @@ import type {
   TaskDetail,
   TaskPlan,
   TasksResp,
+  Workspace,
 } from './types'
 
 // ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
@@ -406,6 +409,23 @@ export function deleteProject(name: string, machine?: string): Promise<{ ok: boo
 // 改名也是按旧名寻址这条资源。machine 为目标机器名，省略或空串 = 本机。
 export function patchProject(name: string, req: PatchProjectReq, machine?: string): Promise<ProjectLocation> {
   return patchJSON<ProjectLocation>(`/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`, req)
+}
+
+// fetchProjectBranches 列项目位置的本地分支（GET /api/projects/{name}/branches）。
+//
+// name 是**登记名**（ProjectLocationNode.name），不是 ProjectNode.name——后者取的是
+// 该项目下首条登记的名字，跨机时两者可能不同，用错会寻址到别的位置或 404。
+// machine 省略或空串 = 本机。
+export function fetchProjectBranches(name: string, machine?: string): Promise<ProjectBranchesResp> {
+  return request<ProjectBranchesResp>(`/api/projects/${encodeURIComponent(name)}/branches${machineQuery(machine)}`)
+}
+
+// createWorktree 在项目位置上新建一棵工作树（POST /api/projects/{name}/worktrees）。
+//
+// 返回的 Workspace 与项目树上那一条同口径，可直接拿去组装 BaseDir 选中，
+// 不必等下一轮树刷新。name 的取值同 fetchProjectBranches。
+export function createWorktree(name: string, req: CreateWorktreeReq, machine?: string): Promise<Workspace> {
+  return postJSON<Workspace>(`/api/projects/${encodeURIComponent(name)}/worktrees${machineQuery(machine)}`, req)
 }
 
 // fetchPtySessions 列终端会话（GET /api/pty/sessions）。

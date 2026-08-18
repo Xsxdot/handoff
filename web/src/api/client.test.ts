@@ -1,5 +1,13 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { addMachine, ApiError, deleteMachine, fetchTasks, writeWorkspaceFile } from './client'
+import {
+  addMachine,
+  ApiError,
+  createWorktree,
+  deleteMachine,
+  fetchProjectBranches,
+  fetchTasks,
+  writeWorkspaceFile,
+} from './client'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -100,4 +108,24 @@ it('deleteMachine 对机器名做 URL 编码', async () => {
   await deleteMachine('my box')
   expect(spy.mock.calls[0][0]).toBe('/api/machines/my%20box')
   spy.mockRestore()
+})
+
+describe('建树接口', () => {
+  it('fetchProjectBranches 按登记名寻址并带上 machine', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ branches: [], default: 'main', worktree_root: '/d/manual' }), { status: 200 }),
+    )
+    await fetchProjectBranches('my repo', 'mac-02')
+    expect(spy.mock.calls[0][0]).toBe('/api/projects/my%20repo/branches?machine=mac-02')
+    spy.mockRestore()
+  })
+
+  it('createWorktree 本机时不带 machine 参数', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ path: '/d/manual/feat-x' }), { status: 200 }),
+    )
+    await createWorktree('handoff', { mode: 'new_branch', branch: 'feat/x', base: 'main' })
+    expect(spy.mock.calls[0][0]).toBe('/api/projects/handoff/worktrees')
+    spy.mockRestore()
+  })
 })
