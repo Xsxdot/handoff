@@ -178,6 +178,25 @@ func waitEvent(t *testing.T, st *store.Store, taskID string, typ proto.EventType
 	})
 }
 
+// waitApproverIdle 等待审批链的裁决 goroutine 全部退出。
+//
+// consultApprover 是 handlePermission 用 go 起的独立 goroutine，它的 ticket 登记
+// （markApproverInflight）在 handlePermission 内**同步**完成，注销则在 goroutine
+// 的 defer 里、晚于它可能做的一切建工单/发事件/回传动作。所以「apInflight 空」
+// 是这条链彻底跑完的唯一完整信号。
+//
+// 断言「某件事没有发生」时必须等这个，等状态或等某个事件都不够：那些条件在
+// goroutine 还剩几行没跑完时就已经成立，此刻读到的「没发生」可能只是「还没轮到
+// 发生」——真回归会被判成通过。
+func waitApproverIdle(t *testing.T, m *Manager) {
+	t.Helper()
+	eventually(t, 3*time.Second, "审批链裁决结束", func() bool {
+		m.apMu.Lock()
+		defer m.apMu.Unlock()
+		return len(m.apInflight) == 0
+	})
+}
+
 // waitCondition 轮询等待条件成立。
 func waitCondition(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
@@ -394,6 +413,11 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	m.handlePermission(context.Background(), task.ID,
 		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x",
 			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
+	// 等的是审批链跑完，不是状态到位：waiting_review 由 runCmd 里的 handleResult
+	// 落下，此刻 Decide 甚至还没返回，approver_decision 与后面的分流全在后头。
+	// 原先等 waitTaskState 就读事件，等于在裁决半途拍快照——正面断言
+	// （应留 approver_decision）会偶发假红，反面断言（不应建工单）会假绿。
+	waitApproverIdle(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
 
 	// 断言：不产生 permission_request、不新建挂起工单、状态保持 waiting_review

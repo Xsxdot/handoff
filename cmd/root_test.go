@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -34,15 +37,46 @@ func writeTestConfig(t *testing.T, content string) string {
 	return p
 }
 
-// resetFlags 恢复包级 flag 状态（agentdURL/targetName/configPath 与 --agentd 的
-// Changed 标记），保证用例之间互不污染。
+// resetFlags 在用例结束时把**整棵命令树**的 flag 复位，保证用例之间互不污染。
+//
+// 为什么是整棵树而不是列举几个变量（B132）：cobra 的 flag 值绑定在包级变量上
+// （如 cmd/dispatch.go 顶部那 13 个 dispatchXxx），一次 rootCmd.Execute 把值写进去
+// 之后就一直留着。本函数原先只还原 agentdURL/targetName/configPath 三个，于是
+// 跑过 `dispatch --project proj1` 的用例会把 dispatchProject 泄漏给后续所有用例——
+// 表现为整包 `go test ./cmd/ -count=2` 稳定失败（第二遍开局就带着上一遍的残留），
+// 而 -count=1 与单跑该用例都正常，极难归因。
+//
+// 按名字列举治不住这个：新增一个 flag 就要记得回来加一行，而**忘了不会报错**，
+// 只会在几个月后变成一条偶发的红。所以改成按构造复位——遍历 rootCmd 及其全部
+// 子命令，把每个 flag 设回 DefValue 并清 Changed。本包无 slice 类型 flag，
+// Set(DefValue) 是幂等替换而非追加；将来若引入 slice flag，这里要另行处理。
+//
+// 顺序上先整树复位、再还原调用方保存的三个值：调用方是直接改变量（不走 flag
+// 解析）来构造场景的，它们期望的是「我改之前的样子」，而不是 flag 默认值。
 func resetFlags(t *testing.T) {
 	t.Helper()
 	oldAgentd, oldTarget, oldConfig := agentdURL, targetName, configPath
 	t.Cleanup(func() {
+		resetCommandTree(rootCmd)
 		agentdURL, targetName, configPath = oldAgentd, oldTarget, oldConfig
-		rootCmd.PersistentFlags().Lookup("agentd").Changed = false
 	})
+}
+
+// resetCommandTree 把 cmd 及其全部子命令的 flag 值设回 DefValue 并清 Changed。
+//
+// 边界：只动 flag 状态，不碰命令的 args/输出流（那些由各用例自己的 t.Cleanup
+// 还原）。Set 的错误被忽略——DefValue 是 pflag 自己生成的合法字面量，设不回去
+// 说明 flag 定义本身有问题，不该由测试 helper 兜底。
+func resetCommandTree(c *cobra.Command) {
+	reset := func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	}
+	c.Flags().VisitAll(reset)
+	c.PersistentFlags().VisitAll(reset)
+	for _, sub := range c.Commands() {
+		resetCommandTree(sub)
+	}
 }
 
 // TestTargetEndpointLocalAuth 覆盖本机模式（无 --target）：
