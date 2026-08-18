@@ -196,13 +196,16 @@ func (g *Gate) judgeFileWrite(req Request, scope Scope) Verdict {
 // 参数：req 为结构化请求（用 Command 与 Paths），scope 为任务范围
 // 返回：Escalate（任一落点越界或归一化失败），否则 judgeCommand 的结果
 //
-// 落点有两个来源，同等对待：
+// 落点有三个来源，同等对待：
 //   - req.Paths —— executor 自己检出的越界目录。opencode 的 external_directory
 //     bash 形态把它填在这里（opencode/adapter_test.go 有同名断言钉住），
 //     但**此前被本函数的前身整个丢弃**，越界因此从「人来判」降级成「廉价模型判」
 //   - RedirectTargets(req.Command) —— handoff 自己从命令原文摘的重定向落点。
 //     不能只靠前者：2026-08-18 真机探针实测 opencode 只解析「作为参数出现的
 //     路径」，`echo x > /tmp/f` 零权限请求直接写成功（spec §2.2.1）
+//   - WriteArgTargets(req.Command) —— handoff 从写命令参数位摘的落点（B151）。
+//     claude 的 bash 请求 Paths 恒为空，opencode 对管道后的 tee 也检不出，这一路
+//     是唯一兜底
 //
 // 为什么路径判据前置于命令判据：越界是确定性事实，而 judgeCommand 最好的结果
 // 也只是 Consult。放在后面会让「越界」被稀释成廉价模型的一次裁决。
@@ -211,7 +214,20 @@ func (g *Gate) judgeFileWrite(req Request, scope Scope) Verdict {
 // 纯 bash 门类本来就不带路径，`go build ./...` 是绝大多数情形；在这里 fail-closed
 // 等于把每条命令都升级人工，那是 spec §3 明确排除的反转。
 func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
-	targets := append(append([]string(nil), req.Paths...), RedirectTargets(req.Command)...)
+	// 落点有三个来源，判定规则完全一致，合并后走同一个循环：
+	//   - req.Paths：executor 自己检出的（opencode 的 external_directory）
+	//   - RedirectTargets：handoff 从重定向语法里摘的（B134）
+	//   - WriteArgTargets：handoff 从写命令参数位摘的（B151）——claude 的 bash
+	//     请求 Paths 恒为空，opencode 对管道后的 tee 也检不出，这一路是唯一兜底
+	targets := append([]string(nil), req.Paths...)
+	targets = append(targets, RedirectTargets(req.Command)...)
+	targets = append(targets, WriteArgTargets(req.Command)...)
+	if n := len(targets); n > 0 {
+		g.log.Debug("命令落点已汇总", "count", n,
+			"from_executor", len(req.Paths),
+			"from_redirect", len(RedirectTargets(req.Command)),
+			"from_write_args", len(WriteArgTargets(req.Command)))
+	}
 	for _, p := range targets {
 		if IsDiscardTarget(p) {
 			g.log.Debug("命令落点是丢弃设备，跳过范围判定", "path", p)
