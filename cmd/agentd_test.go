@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,6 +36,33 @@ func TestAdapterRegistryHasAllExecutors(t *testing.T) {
 				names = append(names, n)
 			}
 			t.Fatalf("adapter 注册表缺 %s，实际注册: %v", want, names)
+		}
+	}
+}
+
+// TestAdaptersForRegistersClaudeOnAllPlatforms 钉住 B128 的核心结论：
+// claude 不再按平台拒绝。
+func TestAdaptersForRegistersClaudeOnAllPlatforms(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ads := adaptersForWithProbe(goos, slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+		if _, ok := ads["claude"]; !ok {
+			t.Fatalf("goos=%s 时 claude 未注册", goos)
+		}
+	}
+}
+
+// TestAdaptersForSkipsGrokWhenSymlinkUnavailable 钉住 grok 走能力探测：
+// 探测目录不可用时必须不注册，而不是注册了等运行期炸。
+func TestAdaptersForSkipsGrokWhenSymlinkUnavailable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	ads := adaptersForWithProbe("windows", slog.New(slog.NewTextHandler(io.Discard, nil)), missing)
+	if _, ok := ads["grok"]; ok {
+		t.Fatalf("符号链接不可用时 grok 仍被注册")
+	}
+	// 其余执行器不受影响：一个执行器不可用不该拖垮整张注册表
+	for _, name := range []string{"opencode", "codex", "claude", "fake"} {
+		if _, ok := ads[name]; !ok {
+			t.Fatalf("%s 被误伤，未注册", name)
 		}
 	}
 }
@@ -128,27 +156,6 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 
 	if strings.Contains(buf.String(), "level=WARN") {
 		t.Errorf("缺省是 fake 时不该 WARN，实得:\n%s", buf.String())
-	}
-}
-
-// TestAdaptersForWindowsExcludesUnsupported 钉住 Windows 上的诚实拒绝。
-//
-// 为什么在注册层而不是 Start 里报错：handoff status 会如实显示这台机器支持哪些
-// 执行器，协调者在派发前就看得见，而不是任务跑到一半转 failed。
-//
-// claude：输入通道（命名管道）与 AF_UNIX 裁决 socket 都不在本轮范围。
-// grok：taskenv 用 os.Symlink，Windows 上需 SeCreateSymbolicLinkPrivilege。
-func TestAdaptersForWindowsExcludesUnsupported(t *testing.T) {
-	got := adaptersFor("windows", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, name := range []string{"claude", "grok"} {
-		if _, ok := got[name]; ok {
-			t.Errorf("Windows 上不应注册 %s", name)
-		}
-	}
-	for _, name := range []string{"opencode", "codex", "fake"} {
-		if _, ok := got[name]; !ok {
-			t.Errorf("Windows 上应注册 %s", name)
-		}
 	}
 }
 
