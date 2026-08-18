@@ -145,3 +145,18 @@ func equalInts(a, b []int) bool {
 	}
 	return true
 }
+
+// FallbackKind 报告任务标记归属不可用时，进程归属实际靠什么判定。
+//
+// 返回：给人读的判据名称，用于启动日志。
+//
+// 为什么要有这个函数而不是在调用处写死一句话：启动日志原本硬写「退回 pgid +
+// 名册采样」，那是 unix 的形态。Windows 上根本没有 pgid，B122 之后实际靠的是
+// Job Object 成员表——一条在半数机器上事实错误的 WARN，恰恰出现在操作者排查
+// 足迹问题时第一眼会看的地方。判据归谁知道，文案就该由谁给。
+func FallbackKind() string {
+	if containerSampleFn != nil {
+		return "进程容器成员表"
+	}
+	return "pgid + 名册采样"
+}

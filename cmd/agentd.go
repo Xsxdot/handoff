@@ -74,8 +74,9 @@ var agentdCmd = &cobra.Command{
 		if supported, reason := prochost.MarkCapability(); supported {
 			logger.Info("任务标记归属可用，进程归属不依赖采样时机")
 		} else {
-			logger.Warn("任务标记归属不可用，进程归属退回 pgid + 名册采样",
+			logger.Warn("任务标记归属不可用，进程归属退回其它判据",
 				"reason", reason,
+				"fallback", prochost.FallbackKind(),
 				"note", "Windows 上这是预期形态：回收由 Job Object 进程容器承担")
 		}
 

@@ -58,3 +58,20 @@ func TestMembersPathBesideInfoPath(t *testing.T) {
 		t.Fatal("infoPath 为空时应返回空串（与 rosterPath 同款降级）")
 	}
 }
+
+// 启动日志里的判据名称必须跟着平台走：Windows 上没有 pgid，
+// 硬写「pgid + 名册采样」是一条在半数机器上事实错误的 WARN。
+func TestFallbackKindFollowsPlatform(t *testing.T) {
+	saved := containerSampleFn
+	defer func() { containerSampleFn = saved }()
+
+	containerSampleFn = nil
+	if got := FallbackKind(); got != "pgid + 名册采样" {
+		t.Errorf("无进程容器时应报 pgid + 名册采样，实际 %q", got)
+	}
+
+	containerSampleFn = func() ([]int, error) { return []int{1}, nil }
+	if got := FallbackKind(); got != "进程容器成员表" {
+		t.Errorf("有进程容器时应报成员表，实际 %q", got)
+	}
+}
