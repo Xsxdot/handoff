@@ -20,6 +20,17 @@ import (
 	"github.com/Xsxdot/handoff/internal/release"
 )
 
+// 推送模式的等待超时必须给 Windows 的重启节奏留余量。
+//
+// Windows 上计划任务的重复触发最坏空窗接近 60 秒；旧值 60 秒正好压在线上，
+// 会让换版表现为间歇性失败。
+func TestUpgradeWaitTimeoutPushLeavesRoomForWindowsRepetition(t *testing.T) {
+	const windowsWorstCaseGap = 60 * time.Second
+	if upgradeWaitTimeoutPush < 2*windowsWorstCaseGap {
+		t.Fatalf("推送超时 %v 不足 Windows 最坏空窗 %v 的两倍；Windows 换版靠计划任务每分钟重复触发拉起，余量不足会让换版间歇性失败", upgradeWaitTimeoutPush, windowsWorstCaseGap)
+	}
+}
+
 // fakeMachine 是一台被完全替身化的机器：既不联网也不动任何真实文件。
 //
 // 用指针（map[string]*fakeMachine）：fake peer 的 PushUpdate 要把 pushed
