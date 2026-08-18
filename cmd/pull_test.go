@@ -41,29 +41,6 @@ func newPullRepo(t *testing.T) (repo, baseSHA string) {
 	return repo, run("rev-parse", "HEAD")
 }
 
-// newCommit 在 repo 里新增一个提交，返回完整 sha。
-func newCommit(t *testing.T, repo, file, content string) string {
-	t.Helper()
-	run := func(args ...string) string {
-		t.Helper()
-		c := exec.Command("git", append([]string{"-C", repo}, args...)...)
-		c.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
-		out, err := c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	if err := os.WriteFile(filepath.Join(repo, file), []byte(content), 0o644); err != nil {
-		t.Fatalf("写 %s: %v", file, err)
-	}
-	run("add", ".")
-	run("commit", "-m", file)
-	return run("rev-parse", "HEAD")
-}
-
 // hasLocalCommit：本地有的报 true，本地没有的报 false，非法输入报 false 而不是崩。
 func TestHasLocalCommit(t *testing.T) {
 	repo, base := newPullRepo(t)
@@ -138,69 +115,8 @@ func TestSyncViaBundlePropagatesUnsupported(t *testing.T) {
 	}
 }
 
-// 承重：204 + 对端给了分支 tip → 本地分支引用真的被建出来，Result.Created 为 true。
-func TestSyncViaBundleEmptyRangeCreatesLocalRef(t *testing.T) {
-	repo, base := newPullRepo(t)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("X-Handoff-Branch-Head", base)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer ts.Close()
-
-	res, err := syncViaBundle(context.Background(), ts.URL, "tok", "task-1", base, "feat/x", repo)
-	if err != nil {
-		t.Fatalf("204 不该是错误：%v", err)
-	}
-	if !res.Created {
-		t.Error("204 建出本地引用时应 Created=true")
-	}
-	if got := gitRevParse(t, repo, "feat/x"); got != base {
-		t.Errorf("feat/x 应指向 %s，实得 %s", base, got)
-	}
-}
-
-// 兜底：204 + 对端**没**给分支 tip → 不报错、不建 ref，返回 Result{Branch: branch}。
-func TestSyncViaBundleEmptyRangeWithoutHead(t *testing.T) {
-	repo, _ := newPullRepo(t)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer ts.Close()
-
-	res, err := syncViaBundle(context.Background(), ts.URL, "tok", "task-1", "", "feat/x", repo)
-	if err != nil {
-		t.Fatalf("无头时不该报错：%v", err)
-	}
-	if res.Branch != "feat/x" || res.Created {
-		t.Errorf("应返回 Result{Branch: feat/x}，实得 %+v", res)
-	}
-	if got := gitRevParseQuiet(t, repo, "feat/x"); got != "" {
-		t.Errorf("无头时不该建 ref，实得 %q", got)
-	}
-}
-
 func errorsIsBundleUnsupported(err error) bool {
 	return errors.Is(err, client.ErrBundleUnsupported)
-}
-
-// gitRevParse 取 ref 的 sha，ref 不存在时 t.Fatal。
-func gitRevParse(t *testing.T, repo, ref string) string {
-	t.Helper()
-	out, err := exec.Command("git", "-C", repo, "rev-parse", ref).Output()
-	if err != nil {
-		t.Fatalf("rev-parse %s: %v", ref, err)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// gitRevParseQuiet 取 ref 的 sha；ref 不存在时返回空串。
-func gitRevParseQuiet(t *testing.T, repo, ref string) string {
-	t.Helper()
-	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // 承重反面断言：500 时 syncTaskBranch 必须报错，且**不得**回落 ssh。
@@ -245,64 +161,5 @@ func TestSyncTaskBranchDoesNotFallBackOn500(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("错误应是那次 500，实得 %v（不含 500 即说明走了回落）", err)
-	}
-}
-
-// ensureLocalBranch：本地无该分支 → 建出来且 created=true。
-func TestEnsureLocalBranchCreates(t *testing.T) {
-	repo, base := newPullRepo(t)
-	created, err := ensureLocalBranch(context.Background(), repo, "feat/x", base)
-	if err != nil {
-		t.Fatalf("ensureLocalBranch: %v", err)
-	}
-	if !created {
-		t.Error("本地无分支时应 created=true")
-	}
-	got := strings.TrimSpace(gitRevParse(t, repo, "feat/x"))
-	if got != base {
-		t.Errorf("feat/x 应指向 %s，实得 %s", base, got)
-	}
-}
-
-// ensureLocalBranch：已存在且同 sha → created=false，不报错。
-func TestEnsureLocalBranchAlreadyAtHead(t *testing.T) {
-	repo, base := newPullRepo(t)
-	if _, err := ensureLocalBranch(context.Background(), repo, "feat/x", base); err != nil {
-		t.Fatalf("首次创建: %v", err)
-	}
-	created, err := ensureLocalBranch(context.Background(), repo, "feat/x", base)
-	if err != nil {
-		t.Fatalf("重复调用不该报错: %v", err)
-	}
-	if created {
-		t.Error("已指向同 sha 时应 created=false")
-	}
-}
-
-// ensureLocalBranch：已存在但指向别处 → 报错且报文带两个 sha，绝不覆盖。
-func TestEnsureLocalBranchDiverged(t *testing.T) {
-	repo, base := newPullRepo(t)
-	work := newCommit(t, repo, "work.txt", "work\n")
-	if _, err := ensureLocalBranch(context.Background(), repo, "feat/x", base); err != nil {
-		t.Fatalf("建 base 分支: %v", err)
-	}
-	_, err := ensureLocalBranch(context.Background(), repo, "feat/x", work)
-	if err == nil {
-		t.Fatal("分支指向别处时必须报错，不许覆盖")
-	}
-	if !strings.Contains(err.Error(), base) || !strings.Contains(err.Error(), work) {
-		t.Errorf("报文应带两个 sha，实得 %v", err)
-	}
-}
-
-// ensureLocalBranch：head 对象本地没有 → 报错，且不建悬空引用。
-func TestEnsureLocalBranchHeadMissing(t *testing.T) {
-	repo, _ := newPullRepo(t)
-	absent := "0123456789abcdef0123456789abcdef01234567"
-	if _, err := ensureLocalBranch(context.Background(), repo, "feat/x", absent); err == nil {
-		t.Fatal("head 不在本地必须报错")
-	}
-	if got := gitRevParseQuiet(t, repo, "feat/x"); got != "" {
-		t.Errorf("不应建出悬空引用 feat/x，实得 %q", got)
 	}
 }

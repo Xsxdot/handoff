@@ -21,10 +21,8 @@ import (
 // ErrEmptyRange 表示 <have>..<branch> 区间里没有任何提交。
 //
 // 为什么必须是可判别的哨兵：`git bundle create` 对空区间是**失败**
-// （fatal: Refusing to create empty bundle.）。空区间只在任务一个提交都没产生时
-// 发生——have 是任务记录的 BaseCommit 而不是分支 tip，重复 pull 送的还是同一个
-// 基线，区间照样非空（B143 真机验收已实测第二、三次 pull 都下载同一个薄包）。
-// 不把它与真故障分开，这种任务的 pull 就会变成一个 500。
+// （fatal: Refusing to create empty bundle.），而这个情形天天发生——连着 pull
+// 两次、或任务没产生新提交就是。不把它与真故障分开，第二次 pull 就变成一个 500。
 var ErrEmptyRange = errors.New("提交区间为空，无需生成 bundle")
 
 // ErrHaveMissing 表示调用方声明的 have 提交在任务仓库中不存在。
