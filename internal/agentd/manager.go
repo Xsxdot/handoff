@@ -1565,18 +1565,29 @@ func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permg
 		m.log.Info("权限判定：交审批者", "task", taskID, "perm", ev.PermissionID,
 			"tool", ev.Perm.Tool, "reason", v.Reason, "rule", v.Rule)
 	default:
-		// 越界写与结构缺失用 Warn 而非 Info：这两类正是「本该被静默通过、
-		// 现在被拦下」的事件，是本次改动的全部价值，必须在日志里一眼可见
-		lvl := slog.LevelInfo
-		if v.Rule == "" {
-			lvl = slog.LevelWarn
-		}
+		lvl := escalateLogLevel(v.Rule)
 		m.log.Log(context.Background(), lvl, "权限判定：升级人工",
 			"task", taskID, "perm", ev.PermissionID, "tool", ev.Perm.Tool,
 			"paths", ev.Perm.Paths, "workdir", scope.Workdir, "task_dir", scope.TaskDir,
 			"reason", v.Reason, "rule", v.Rule)
 	}
 	return v
+}
+
+// escalateLogLevel 决定「权限判定：升级人工」这条日志的级别。
+//
+// 参数：rule 为 Verdict.Rule（黑名单命中时是规则原文，自指令时是
+// permgate.RuleSelfCommand，其余情形为空）
+//
+// 为什么不是一律 Info：Warn 这一档留给「本该被静默通过、现在被拦下」的事件，
+// 那是每次收口改动的全部价值所在，必须在日志里一眼可见。今天有两类——
+// 越界写与结构缺失（Rule 为空，B27 那一批）、自指令（B115）。黑名单命中
+// 走 Info，因为它改动前后都会被拦，不是新增的信号。
+func escalateLogLevel(rule string) slog.Level {
+	if rule == "" || rule == permgate.RuleSelfCommand {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
 }
 
 // autoAllowPermission 自动放行一次权限请求：不建工单、不发事件、不改状态，
