@@ -269,8 +269,13 @@ Windows 上它返回 nil 但什么都没做——这类函数把「没问题」�
 | 4 | ⚠️ | **拦截成立**：Write 越界被真拦，`out.jsonl` 的 tool_result 为 `is_error:true`、`non_execution_kind: permission-rule`。**两个判据均未达成**，根因是两处既有缺陷，非本条引入——见 B137（理由迟到一整回合）与 B134（`Bash` 全量 allow 可绕过路径门禁） |
 | 5 | ✅ | 杀 agentd pid 2264 → 确认 `PID 2264 GONE`，而 shim 4552 / claude 4888 / 裁决 MCP 4960 三个 pid 与启动时间原样存活 → 新 agentd 启动日志 `recovered=1 failed=0 waiting_review_kept=2`、`alive=true state=waiting_answer`、`resume_seq=2053 resume_turn=4`。随后一条裁决穿过新 agentd → 存活的 shim → 命名管道送达模型，模型回 `post-restart-ok` |
 | 6 | ✅ | `done` 后 `ALIVE_PIDS=`（三个进程全清）、`WORKTREE=False`。任务目录按设计保留，见 §10 第 6 条订正说明 |
-| 7 | ⛔ | **被 B135 阻塞，未验证**。dispatch 直接 500：`grok 未登录或凭据已失效 … ACP 错误 -32000: Authentication required`。已排除「缺默认模型」这一更省事的解释（传 `--model deepseek-v4-pro` 后同样失败），并取到物证：任务级 `grokhome/config.toml` 实际只含 `[ui] [models] [permission] [cli] [marketplace]`，用户 `~/.grok/config.toml` 里的 `[model.deepseek-v4-pro]` provider 定义块不在其中 |
+| 7 | ✅ | **B135 修复后于 08-18 补验通过**。同一条 dispatch（不传 `--model`）此前 500 `Authentication required`，修复后直接进 `running`。四项物证：①任务级 `grokhome/config.toml` 含 `[model.deepseek-v4-pro]` / `[model.deepseek-v4-flash]`；②`default = "deepseek-v4-pro"`——没传 `--model`，该值由权威配置兜底；③`auth.json` 属性 `Archive, ReparsePoint`，`Target` 指向 `C:\Users\administrator\.grok\auth.json`；④权限门产工单 → `--approve` → `completed` → `done` 后 worktree 已删、grok 进程已回收。**一项如实记未达成**：放行后 grok 的 `write` 工具报 `IO Error: unhandled`，目标文件未创建；同轮对照实验证明工作区**内**的写入同样失败（审核者独立 `Test-Path` 核实两处均为 False），故这是 grok 自身在 Windows 上落不了盘，与本条修复无关，另记 B139 |
 | 8 | ✅ | 任务 `009c3eb0`（B123）：dispatch → 权限门 4 次拦截并全部 `--approve` → `completed` → `continue` 同会话续接（`executor_session` `01a013b0-f149-7e51-b733-50491fbf7c62` 贯穿两回合，agentd 日志有 `codex 续接回合`）→ `done`（worktree 已删、codex app-server 已回收）。**注意**：该机 codex 的模型名是 `deepseek-v4-pro`，传 mac-02 惯用的 `gpt-5.6-luna` 会被 provider 顶回 |
 
-结论：claude（承重验收门）与 codex 全链路已验；grok 因既有缺陷 B135 未验，B128 待
-B135 修复后补验第 7 条。
+结论：八条判据 1/2/3/5/6/7/8 通过，第 4 条部分通过（拦截成立，两个判据受既有缺陷
+B137 / B134 影响）。第 7 条由 B135 修复后于同日补验通过。
+
+验收过程另立三条：B138（grok 首个请求不走 `[models] default`，每个任务白烧一次
+400）、B139（grok 的 `write` 工具在 Windows 上完全不能写文件——它能跑命令、能读，
+但落不了盘，故 **grok 在 Windows 上暂不可用于任何写代码的任务**）。两条都不是本条
+引入，也都不影响 claude 与 codex。
