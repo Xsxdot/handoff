@@ -14,6 +14,14 @@ describe('formatTokens', () => {
   it('千位以下显示原值', () => {
     expect(formatTokens(999)).toBe('999')
   })
+  it('百万以上升到 M、十亿以上升到 B', () => {
+    expect(formatTokens(9_489_200)).toBe('9.5M')
+    expect(formatTokens(1_000_000)).toBe('1.0M')
+    expect(formatTokens(2_300_000_000)).toBe('2.3B')
+  })
+  it('四舍五入后满 1000 的直接升档，不出现 1000.0k', () => {
+    expect(formatTokens(999_950)).toBe('1.0M')
+  })
 })
 
 describe('formatExecutorLine', () => {
@@ -88,7 +96,7 @@ describe('formatCumulativeLine', () => {
   } }
   it('五项齐全时按原型顺序排列', () => {
     expect(formatCumulativeLine(base as never))
-      .toBe('1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20')
+      .toBe('1.2M · 输入 340.2k · 缓存 820.5k · 输出 39.3k · ≈$4.20')
   })
   it('没有累计时返回空串，由调用方决定不渲染', () => {
     expect(formatCumulativeLine({} as never)).toBe('')
@@ -96,6 +104,6 @@ describe('formatCumulativeLine', () => {
   it('没有花费信息时只显四项 token', () => {
     const noCost = { cumulative: { ...base.cumulative, cost: undefined } }
     expect(formatCumulativeLine(noCost as never))
-      .toBe('1200.0k · 输入 340.2k · 缓存 820.5k · 输出 39.3k')
+      .toBe('1.2M · 输入 340.2k · 缓存 820.5k · 输出 39.3k')
   })
 })

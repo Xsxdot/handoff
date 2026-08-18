@@ -20,8 +20,8 @@ function projectNode(): ProjectNode {
         name: 'handoff',
         path: '/w',
         workspaces: [
-          { path: '/w', branch: 'main', head: 'abc', is_main: true, managed: false },
-          { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'def', is_main: false, managed: true },
+          { path: '/w', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+          { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'def', is_main: false, managed: true, created_at: '' },
         ],
         probe_error: '',
       },

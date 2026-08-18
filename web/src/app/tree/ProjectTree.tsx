@@ -17,6 +17,11 @@
 //   - 未归属任务没有基准目录，中央以当前选中目录开它的 TUI tab；一个都没选中时
 //     由 Shell 提示先选目录
 //
+// 拖放（W4 §3）：任务行可拖进中央区。拖到某一栏的边缘 = 在那一侧分出新栏
+// 并在其中打开；拖到栏中间 = 在那一栏开一个 tab。数据用自定义 MIME，从别处
+// 拖进来的东西不会被误判。拖动不影响点击——HTML5 拖放只在真的拖起来之后
+// 才吞掉 click。
+//
 // 任务挂到目录的依据是 Task.work_dir 与 Workspace.path 路径等值（纯前端 join，
 // 不需要新接口）。work_dir 为空表示原地模式，挂到主目录——与 proto.Task.Workdir()
 // 的回退语义一致。
@@ -28,26 +33,33 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
+import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { ContextMenu } from '../shared/ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
+import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks } from './archived'
 import { stateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
+import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 export interface ProjectTreeProps {
   tree: ProjectTreeResp
   tasks: Task[]
   selectedKey: string | null            // 当前选中目录的 BaseDir.key
   ticketCount: number                   // 挂起工单总数，0 时不显示角标
+  // ticketsByDir 是「目录绝对路径 → 挂起工单张数」，来自 useGlobalTickets。
+  // 只用于目录行排序，不显示在界面上——工单数已经由 ticketCount 角标在
+  // 底部说了一次，行上再说一遍是噪音。
+  ticketsByDir: Map<string, number>
   onSelectDir: (base: BaseDir) => void
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
@@ -169,7 +181,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -179,6 +191,21 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
   const filtered = useMemo(() => filterTree(tree, tasks, query), [tree, tasks, query])
   const searching = filtered.query !== ''
+
+  // 「已结束」分组的数据源：目录已被回收的终态任务（见 archived.ts 文件头）。
+  // 入参是**原树 tree** 而不是 filtered.projects——裁剪过的树会把被搜索过滤掉的
+  // 目录当成「已不在」，正常任务会突然涌进这个分组。
+  const archived = useMemo(() => archivedTasks(tree, tasks), [tree, tasks])
+  // openArchived：**空集 = 全部收起**，取向与 collapsed 刚好相反。
+  // 这个分组是历史堆积（实测单台机器 60 条），默认展开会把正在做的活挤出视口。
+  const [openArchived, setOpenArchived] = useState<Set<string>>(new Set())
+  const toggleArchived = (key: string) =>
+    setOpenArchived((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   // ⌘K / Ctrl+K 聚焦搜索框。
   //
@@ -219,6 +246,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
 
   const taskName = (t: Task) => t.name || t.plan_summary || '（无名称）'
 
+  // archivedBase 给「已结束」任务挑一个打开时的基准目录：该位置的**主目录**。
+  // 它们自己的工作目录已被回收，用主目录至少能落在同一个仓库上；连主目录都没有
+  // （整台机器探测失败）时返回 null，由 Shell 回退到当前选中目录。
+  //
+  // 刻意从原树 tree 里找而不是用渲染闭包里的 loc：搜索期间 loc.workspaces 是
+  // 裁剪过的，主目录可能不在里面。
+  const archivedBase = (project: ProjectNode, machine: string): BaseDir | null => {
+    const loc = tree.projects
+      .find((p) => p.project_id === project.project_id)
+      ?.locations.find((l) => l.machine === machine)
+    const main = loc?.workspaces.find((ws) => ws.is_main)
+    return main ? workspaceBase(project, machine, main) : null
+  }
+
   // wsCounts 统计一个工作树目录下的运行/待处理任务（目录行只显示这两个数）。
   // 计数与列出的任务共用 tasksOfWorkspace 一个口径，原地任务不会被算漏。
   const wsCounts = (project: ProjectNode, machine: string, ws: Workspace) => {
@@ -226,6 +267,33 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
     return {
       running: under.filter((t) => t.state === 'running').length,
       pending: under.filter((t) => t.state === 'waiting_answer' || t.state === 'waiting_review').length,
+    }
+  }
+
+  // wsMetrics 给一个目录行算出三个排序键。
+  //
+  // 工单归集：ticketsByDir 的键是任务的 work_dir，而原地模式任务的 work_dir
+  // 是空串——它们的工单在那张表里没有键。这里按 is_main 把它们补回来，判据与
+  // tasksOfWorkspace 完全一致（work_dir 为空归主目录），两处不会分叉。
+  const wsMetrics = (project: ProjectNode, machine: string, ws: Workspace): WorkspaceMetrics => {
+    const under = tasksOfWorkspace(tasks, project, machine, ws)
+    let tickets = ticketsByDir.get(ws.path) ?? 0
+    if (ws.is_main) {
+      // 原地模式任务的工单：它们在 byWorkDir 里没有键，逐个从任务侧找回来。
+      // 只有主目录走这一支，与 tasksOfWorkspace 的回退口径对齐
+      for (const t of tasks) {
+        if (t.work_dir === '' && t.project_id === project.project_id && t.machine === machine) {
+          tickets += ticketsByDir.get('') ?? 0
+          break
+        }
+      }
+    }
+    return {
+      tickets,
+      tasks: under.filter(
+        (t) => t.state === 'running' || t.state === 'waiting_answer' || t.state === 'waiting_review',
+      ).length,
+      createdAt: ws.created_at ?? '',
     }
   }
 
@@ -316,6 +384,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                 const problem = locationProblem(loc, tree.machines)
                 const hasChildren = loc.workspaces.length > 0
                 const mCounts = countsForMachine(tasks, project, loc.machine)
+                const aKey = archivedKey(project.project_id, loc.machine)
+                // 搜索期间分组内也跟着按任务名过滤：搜到了却埋在几十条历史里等于没搜到
+                const aTasks = (archived.get(aKey) ?? []).filter(
+                  (t) => !searching || taskName(t).toLowerCase().includes(filtered.query),
+                )
+                // 搜索命中时自动展开（与 expanded() 旁路 collapsed 同一条理由），
+                // 但没命中时不跟着展开——历史堆积不该反客为主
+                const aOpen = openArchived.has(aKey) || (searching && aTasks.length > 0)
                 return (
                   // 外层只负责分组，不再是定位祖先
                   <div key={mKey}>
@@ -376,7 +452,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
 
                     {problem === '' &&
                       mOpen &&
-                      loc.workspaces.map((ws) => {
+                      sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws)).map((ws) => {
                         const base = workspaceBase(project, loc.machine, ws)
                         const dSelected = selectedKey === base.key
                         const under = wsCounts(project, loc.machine, ws)
@@ -405,6 +481,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                               <button
                                 key={t.id}
                                 type="button"
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                                  e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
+                                  e.dataTransfer.effectAllowed = 'copy'
+                                }}
                                 onClick={() => onOpenTask(base, t.id)}
                                 className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
                                 style={{ paddingLeft: 8 + 48 }}
@@ -419,6 +501,51 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
                           </div>
                         )
                       })}
+
+                    {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
+                        目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的
+                        「不静默少一条」在任务这一层的兑现） */}
+                    {problem === '' && mOpen && aTasks.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          data-testid="archived-row"
+                          aria-expanded={aOpen}
+                          title={ARCHIVED_TITLE}
+                          onClick={() => toggleArchived(aKey)}
+                          className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                          style={{ paddingLeft: 8 + 32 }}
+                        >
+                          <Arrow open={aOpen} onToggle={() => toggleArchived(aKey)} />
+                          <Archive className="size-3.5 shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
+                          <span className="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums">{aTasks.length}</span>
+                        </button>
+                        {aOpen &&
+                          aTasks.map((t) => (
+                            <button
+                              key={t.id}
+                              type="button"
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                                e.dataTransfer.setData(
+                                  DRAG_BASE_MIME,
+                                  JSON.stringify(archivedBase(project, loc.machine)),
+                                )
+                                e.dataTransfer.effectAllowed = 'copy'
+                              }}
+                              onClick={() => onOpenTask(archivedBase(project, loc.machine), t.id)}
+                              className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
+                              style={{ paddingLeft: 8 + 48 }}
+                            >
+                              <span className="size-4 shrink-0" />
+                              <StateDot tone={stateTone(t.state)} />
+                              <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
+                            </button>
+                          ))}
+                      </div>
+                    )}
                     </div>
                 )
               })}
@@ -433,6 +560,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, onSelectDir
             <button
               key={t.id}
               type="button"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                e.dataTransfer.setData(DRAG_BASE_MIME, 'null')
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
               onClick={() => onOpenTask(null, t.id)}
               className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
               style={{ paddingLeft: 8 + 48 }}

@@ -25,6 +25,12 @@ export interface GlobalTicket {
 export interface GlobalTickets {
   items: GlobalTicket[]
   count: number
+  // byWorkDir 是「目录绝对路径 → 挂起工单张数」，供左栏目录行排序用。
+  //
+  // 空 work_dir 的任务**不进这张表**：它们按原地模式归主目录，而这里不知道
+  // 哪个是主目录（那要看项目树）。归集主目录那一步由 ProjectTree 做——它手上
+  // 有 ws.is_main，判据与 tasksOfWorkspace 一致，两处不会分叉。
+  byWorkDir: Map<string, number>
   refresh: () => void
 }
 
@@ -68,5 +74,17 @@ export function useGlobalTickets(tasks: Task[]): GlobalTickets {
 
   const refresh = useCallback(() => setNonce((n) => n + 1), [])
 
-  return { items, count: items.length, refresh }
+  // 从 items 派生而不是在取详情时顺手累加：items 是这个 hook 的单一真相，
+  // 两份状态各自累加迟早会对不上（一次失败的详情请求只丢它自己那份，
+  // 而累加器不知道该减掉多少）。
+  const byWorkDir = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const { task } of items) {
+      if (task.work_dir === '') continue
+      m.set(task.work_dir, (m.get(task.work_dir) ?? 0) + 1)
+    }
+    return m
+  }, [items])
+
+  return { items, count: items.length, byWorkDir, refresh }
 }

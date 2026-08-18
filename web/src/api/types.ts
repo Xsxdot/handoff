@@ -112,6 +112,9 @@ export interface Workspace {
   head: string      // 短 sha
   is_main: boolean
   managed: boolean  // true = agentd 自建的任务工作树
+  // created_at 是工作树的创建时间（RFC3339Nano）。零值时间 = agentd 取不到，
+  // 排序时当「最旧」处理，见 sortWorkspaces。
+  created_at: string
 }
 
 // ProjectLocationNode 是一个项目在一台机器上的位置。
@@ -179,6 +182,9 @@ export interface Machine {
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
   reveal_supported?: boolean | null
+  // scratch_root 是这台机器的草稿区路径，探活时从对端 StatusResp 投影。
+  // 缺席 = 不支持临时文件（老 agentd 或目录建不出来），前端不渲染入口。
+  scratch_root?: string
 }
 
 export interface MachinesResp {
@@ -260,6 +266,8 @@ export interface StatusResp {
   default_executor: string
   task_counts: Record<string, number>
   active: ActiveTask[]
+  // scratch_root 是草稿区绝对路径；缺席 = 这台 agentd 不支持临时文件。
+  scratch_root?: string
   // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
   pty_supported?: boolean
   reveal_supported?: boolean
@@ -318,6 +326,17 @@ export interface RunResult {
 // diffResult 是 diff 接口的响应体。
 export interface DiffResult {
   diff: string
+}
+
+// TaskPlan 是 GET /api/tasks/{id}/plan 的响应：派发当刻交给 executor 的指令原文。
+//
+// size 是磁盘真实大小而非 content.length：truncated 为真时两者不同，
+// 要显示给人看的是真实大小。
+export interface TaskPlan {
+  name: string
+  content: string
+  size: number
+  truncated?: boolean
 }
 
 // BranchesResult 是 GET /api/tasks/{id}/branches 的响应：本地分支名 + 推导默认。
@@ -424,6 +443,11 @@ export interface DirEntry {
   name: string
   is_dir: boolean
   size?: number
+  // ignored 为真表示被 .gitignore 排除（服务端跑的是 git check-ignore）。
+  // 与 size 同理：false 被 omitempty 省略，**缺键 = 未被忽略**。服务端查不出来
+  // 时也一律不带这个键（fail open），所以前端不能把缺席读成「一定不是垃圾」，
+  // 只能读成「没有理由把它弱化」——正是弱化展示该有的保守方向。
+  ignored?: boolean
 }
 
 // DirListResult 是 GET /api/workspaces/dir 的响应体；entries 永不为 null。

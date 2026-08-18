@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
 import dirListFixture from './testdata/DirListResult.json'
+import taskPlanFixture from './testdata/TaskPlan.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
 import eventFixture from './testdata/Event.json'
@@ -52,6 +53,7 @@ import {
   type SessionInfo,
   type StatusResp,
   type Task,
+  type TaskPlan,
   type TasksResp,
   type Ticket,
 } from './types'
@@ -216,13 +218,31 @@ describe('W4a 帧契约', () => {
 describe('DirListResult 契约', () => {
   it('目录项不带 size，普通文件带 size', () => {
     const resp: DirListResult = dirListFixture
-    expect(resp.entries).toHaveLength(2)
+    expect(resp.entries).toHaveLength(3)
     const [dir, file] = resp.entries
     expect(dir.is_dir).toBe(true)
     // 目录的 size 被 omitempty 省略：缺键而不是 0
     expect(dir.size).toBeUndefined()
     expect(file.is_dir).toBe(false)
     expect(file.size).toBe(1284)
+  })
+
+  it('ignored 只在被忽略时出现：未忽略的条目是缺键而不是 false', () => {
+    const resp: DirListResult = dirListFixture
+    const [dir, file, ignored] = resp.entries
+    expect(ignored.ignored).toBe(true)
+    expect('ignored' in dir).toBe(false)
+    expect('ignored' in file).toBe(false)
+  })
+})
+
+describe('TaskPlan 契约', () => {
+  it('派发指令原文带文件名与真实大小；未截断时 truncated 缺席', () => {
+    const plan: TaskPlan = taskPlanFixture
+    expect(plan.name).toBe('b119-dispatch.md')
+    expect(plan.content).toContain('执行纪律')
+    expect(plan.size).toBe(36)
+    expect('truncated' in plan).toBe(false)
   })
 })
 

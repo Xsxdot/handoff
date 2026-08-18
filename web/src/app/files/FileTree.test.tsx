@@ -64,7 +64,7 @@ beforeEach(() => {
   )
 })
 
-function dir(entries: { name: string; is_dir: boolean }[]) {
+function dir(entries: { name: string; is_dir: boolean; ignored?: boolean }[]) {
   return { entries: entries.map((e) => ({ ...e, size: 0 })) }
 }
 
@@ -108,6 +108,30 @@ describe('FileTree', () => {
     expect(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('Makefile')).toBeInTheDocument())
+  })
+
+  it('refreshKey 变化只重取根目录，不把已展开的层全部刷新', async () => {
+    const calls: string[] = []
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_path, rel) => {
+      calls.push(rel ?? '')
+      if (!rel) return dir([{ name: 'internal', is_dir: true }])
+      return dir([{ name: 'server.go', is_dir: false }])
+    })
+    const props = {
+      base,
+      taskId: null,
+      onOpenFile: vi.fn(),
+      onOpenTerminal: vi.fn(),
+      revealSupported: true,
+    }
+    const { rerender } = render(<FileTree {...props} refreshKey={0} />)
+    await waitFor(() => expect(screen.getByText('internal')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('internal'))
+    await waitFor(() => expect(screen.getByText('server.go')).toBeInTheDocument())
+
+    rerender(<FileTree {...props} refreshKey={1} />)
+    await waitFor(() => expect(calls.filter((rel) => rel === '').length).toBe(2))
+    expect(calls.filter((rel) => rel === 'internal')).toHaveLength(1)
   })
 
   it('点文件回调相对路径', async () => {
@@ -184,7 +208,7 @@ describe('FileTree', () => {
     expect(screen.getByText('ok.txt')).toBeInTheDocument()
   })
 
-  it('文件图标着强调色，文件夹图标保持次要灰', async () => {
+  it('未改动的文件与文件夹图标同为次要灰——颜色只留给状态', async () => {
     vi.mocked(fetchWorkspaceDir).mockResolvedValue(
       dir([
         { name: 'src', is_dir: true },
@@ -194,7 +218,8 @@ describe('FileTree', () => {
     render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
     const fileIcon = await screen.findByTestId('file-icon')
     const dirIcon = screen.getByTestId('dir-icon')
-    expect(fileIcon.getAttribute('class')).toMatch(/text-file-accent/)
+    expect(fileIcon.getAttribute('class')).toMatch(/text-muted-foreground/)
+    expect(fileIcon.getAttribute('class')).not.toMatch(/text-file-accent/)
     expect(dirIcon.getAttribute('class')).toMatch(/text-muted-foreground/)
   })
 
@@ -205,6 +230,50 @@ describe('FileTree', () => {
     const mark = await screen.findByText('M')
     expect(mark.className).toMatch(/text-state-intervention-text/)
     expect(mark.className).not.toMatch(/amber-\d/)
+  })
+
+  it('新增文件：文件名与角标都走新增色，字母是 A', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'new.go', is_dir: false }]))
+    vi.mocked(fetchTaskDiff).mockResolvedValue({
+      diff: ['diff --git a/new.go b/new.go', 'new file mode 100644'].join('\n'),
+    })
+    render(<FileTree base={base} taskId="T1" onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
+    const mark = await screen.findByText('A')
+    expect(mark.className).toMatch(/text-state-active/)
+    expect(screen.getByText('new.go').className).toMatch(/text-state-active/)
+  })
+
+  it('有改动时文件图标跟着状态染色', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'a.go', is_dir: false }]))
+    vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: 'diff --git a/a.go b/a.go' })
+    render(<FileTree base={base} taskId="T1" onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
+    await screen.findByText('M')
+    const icon = screen.getByTestId('file-icon')
+    expect(icon.getAttribute('class')).toMatch(/text-state-intervention-text/)
+  })
+
+  it('被 .gitignore 排除的条目弱化显示，文件与目录都带 ⊘ 说明', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(
+      dir([
+        { name: 'node_modules', is_dir: true, ignored: true },
+        { name: 'coverage.out', is_dir: false, ignored: true },
+        { name: 'main.go', is_dir: false },
+      ]),
+    )
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
+    await waitFor(() => expect(screen.getByText('main.go')).toBeInTheDocument())
+    expect(screen.getByText('node_modules').className).toMatch(/italic/)
+    expect(screen.getByText('coverage.out').className).toMatch(/italic/)
+    // 未被忽略的文件保持正常字重与颜色
+    expect(screen.getByText('main.go').className).not.toMatch(/italic/)
+    expect(screen.getAllByTitle(/被 \.gitignore 排除/)).toHaveLength(2)
+  })
+
+  it('条目没有 ignored 键时按未忽略渲染——缺席不等于「查过且是垃圾」', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'main.go', is_dir: false }]))
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
+    await waitFor(() => expect(screen.getByText('main.go')).toBeInTheDocument())
+    expect(screen.queryByTitle(/被 \.gitignore 排除/)).toBeNull()
   })
 
   it('目录行的菜单有「折叠文件夹」，文件行没有', async () => {

@@ -12,21 +12,24 @@ function dock(over: Partial<{ tabs: HomeTab[]; windowOpen: boolean }> = {}) {
     windowOpen: false,
     geom: { x: 0, y: 0, w: 600, h: 300 },
     newTerminal: vi.fn(),
+    newFile: vi.fn(),
     activate: vi.fn(),
     collapse: vi.fn(),
     closeTab: vi.fn(),
     setSession: vi.fn(),
+    setDraft: vi.fn(),
     setGeom: vi.fn(),
     adopt: vi.fn(),
     ...over,
   }
 }
 
-const TAB_A: HomeTab = { id: 'a', seq: 1, machine: '' }
-const TAB_B: HomeTab = { id: 'b', seq: 2, machine: '' }
+const TAB_A: HomeTab = { id: 'a', kind: 'terminal', seq: 1, machine: '' }
+const TAB_B: HomeTab = { id: 'b', kind: 'terminal', seq: 2, machine: '' }
 const props = (d: ReturnType<typeof dock>) => ({
   dock: d,
   onKill: vi.fn(),
+  onNewFile: vi.fn(),
   renderTab: () => <div data-testid="term" />,
 })
 
@@ -95,6 +98,14 @@ describe('HomeDock', () => {
   it('浮窗开着时圆钮仍在——它是开合开关，不是只在收起时出现', () => {
     const d = dock({ tabs: [TAB_A], windowOpen: true, activeId: 'a' } as never)
     render(<HomeDock {...props(d)} />)
+    expect(screen.getByLabelText('home 基准终端')).toBeInTheDocument()
+  })
+
+  it('scratch 能力可用时把「新建临时文件」入口放在浮窗 tab 条，不放 FAB', () => {
+    const p = props(dock({ tabs: [TAB_A], windowOpen: true, activeId: 'a' } as never))
+    render(<HomeDock {...p} />)
+    fireEvent.click(screen.getByLabelText('新建临时文件'))
+    expect(p.onNewFile).toHaveBeenCalledOnce()
     expect(screen.getByLabelText('home 基准终端')).toBeInTheDocument()
   })
 })

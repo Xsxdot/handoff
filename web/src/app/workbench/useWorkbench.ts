@@ -21,8 +21,11 @@ import {
   closeTab,
   nextTerminalSeq,
   openTab,
+  resizeGroups,
   setTabContent,
+  isAlreadyOpen,
   splitGroup,
+  splitGroupAt,
   type TabContent,
   type Workbench,
 } from './tabs'
@@ -34,7 +37,12 @@ import {
 // `integration/b2-b3` 这样的分支），没有分支（detached）时退回目录名。
 export interface BaseDir {
   key: string
-  kind: 'workspace' | 'home'
+  // kind 三种：workspace 是 git 工作树，home 只用于浮窗终端，scratch 是 agentd
+  // 的草稿区，只被浮窗里的 file tab 用来发文件请求。
+  //
+  // scratch 刻意不伪装成 workspace：它不是 git 工作树，不该被左栏选中、也不该
+  // 有右栏文件树。把它标成 workspace 是一句半年后会骗到人的谎。
+  kind: 'workspace' | 'home' | 'scratch'
   path: string
   label: string
   projectName: string
@@ -55,6 +63,25 @@ export const HOME_BASE: BaseDir = {
   machine: '',
 }
 
+// scratchBase 把一台机器的草稿区路径做成浮窗文件 tab 使用的基准。
+//
+// 参数：
+//   - root: agentd 上报的草稿区绝对路径
+//   - machine: 机器名；空串表示本机
+//
+// 返回：不进入 byBase 的草稿区基准，只供 FileTab 读取路径与机器名发文件请求。
+// 注意：草稿区不是可选中的基准目录，左栏和面包屑都不会展示它。
+export function scratchBase(root: string, machine: string): BaseDir {
+  return {
+    key: `scratch:${machine}:${root}`,
+    kind: 'scratch',
+    path: root,
+    label: '临时',
+    projectName: '',
+    machine,
+  }
+}
+
 export interface WorkbenchApi {
   base: BaseDir | null
   wb: Workbench
@@ -70,6 +97,29 @@ export interface WorkbenchApi {
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
   split: () => void
+  // splitAt 在指定位置插入一栏（0 = 最左）。⌘D 与面包屑按钮仍走 split（末尾追加）。
+  splitAt: (index: number) => void
+  // openInNewPane 在 index 处插入一栏并把内容开在其中——「分屏并打开」这个
+  // 复合动作的唯一实现（拖放投放到边缘走它）。
+  //
+  // 内容已经在别处开着时**不分屏**，只激活已有的那个。为什么这条必须做在这里
+  // 而不是让调用方先 splitAt 再 open：openTab 的跨组去重会把已有的那个在它
+  // **原来那一栏**激活，于是刚分出来的新栏空在那儿——用户要的是「分屏并打开」，
+  // 拿到一个空栏比不分屏更糟（实测走查发现）。两步分开写就必然漏掉这一支，
+  // 因为调用方手上没有目标基准的 Workbench（跨基准拖放时尤其如此）。
+  //
+  // index 越界或已到 MAX_GROUPS 时退化为「在焦点栏打开」，不抛错。
+  openInNewPane: (c: TabContent, index: number, b?: BaseDir) => void
+  // closeById 按 tab id 关闭，自己反查它在哪一组。
+  //
+  // 为什么要有它：组下标只在一次事件内可靠。确认弹层打开期间用户可能分屏、
+  // 关栏，等他点「确认」时存下来的下标已经指向别的栏了——那会关掉另一栏的
+  // tab。tabId 在整个 workbench 内唯一（nextTabId 保证），反查是确定的。
+  closeById: (tabId: string) => void
+  // resize 调整第 dividerIndex 条分隔条两侧的栏宽。三个参数逐字透传给
+  // tabs.ts 的 resizeGroups——这里不做夹紧也不认识像素，只负责把它接到当前基准的
+  // Workbench 上。
+  resize: (dividerIndex: number, delta: number, minRatio: number) => void
   // restoreTerminal 把一个**已存在于服务端**的会话恢复成 tab。
   //
   // 与 openTerminal 的关键差别：它**不切换当前基准**。页面加载时可能一次恢复
@@ -128,6 +178,36 @@ export function useWorkbench(): WorkbenchApi {
     [mutate],
   )
   const split = useCallback(() => mutate(splitGroup), [mutate])
+  const splitAt = useCallback((index: number) => mutate((w) => splitGroupAt(w, index)), [mutate])
+  const openInNewPane = useCallback(
+    (c: TabContent, index: number, b?: BaseDir) =>
+      mutate((w) => {
+        // 已经开着就只激活它，不分屏——见接口注释里那条「空栏比不分屏更糟」
+        if (isAlreadyOpen(w, c)) return openTab(w, c)
+        const split = splitGroupAt(w, index)
+        // splitGroupAt 到上限时原样返回同一个对象，此时没有新栏可开，
+        // 退回焦点栏（传 undefined 让 openTab 用 w.active）
+        if (split === w) return openTab(split, c)
+        return openTab(split, c, Math.max(0, Math.min(index, split.groups.length - 1)))
+      }, b),
+    [mutate],
+  )
+  const closeById = useCallback(
+    (tabId: string) =>
+      mutate((w) => {
+        const gi = w.groups.findIndex((g) => g.tabs.some((t) => t.id === tabId))
+        // 找不到是正常情形：确认弹层还开着时这个 tab 被别的路径关掉了。
+        // 空操作，不抛错——弹层的「确认」按钮不该因此炸掉
+        if (gi === -1) return w
+        return closeTab(w, gi, tabId)
+      }),
+    [mutate],
+  )
+  const resize = useCallback(
+    (dividerIndex: number, delta: number, minRatio: number) =>
+      mutate((w) => resizeGroups(w, dividerIndex, delta, minRatio)),
+    [mutate],
+  )
 
   // restoreTerminal 不走 mutate：mutate 在给了显式基准时会 select 过去，而恢复
   // 是后台动作，不该把用户的选中态拽走。它只在 byBase 里按目标基准写入。
@@ -139,5 +219,5 @@ export function useWorkbench(): WorkbenchApi {
     })
   }, [])
 
-  return { base, wb, select, open, openTerminal, close, activate, setContent, split, restoreTerminal }
+  return { base, wb, select, open, openTerminal, close, closeById, activate, setContent, split, splitAt, openInNewPane, resize, restoreTerminal }
 }

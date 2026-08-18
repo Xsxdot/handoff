@@ -122,8 +122,8 @@ const tree: ProjectTreeResp = {
           name: 'handoff',
           path: '/r/handoff',
           workspaces: [
-            { path: '/r/handoff', branch: '主目录', head: 'abc1234', is_main: true, managed: false },
-            { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc1234', is_main: false, managed: true },
+            { path: '/r/handoff', branch: '主目录', head: 'abc1234', is_main: true, managed: false, created_at: '' },
+            { path: '/w/b2-b3', branch: 'integration/b2-b3', head: 'abc1234', is_main: false, managed: true, created_at: '' },
           ],
           probe_error: '',
         },
@@ -242,6 +242,37 @@ describe('Shell 三栏外框', () => {
     fireEvent.click(await screen.findByText('integration/b2-b3'))
     fireEvent.click(screen.getByRole('button', { name: '分屏' }))
     await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
+  })
+
+  it('连点两次分屏得到三栏，按钮随即 disabled', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(3))
+    expect(screen.getByRole('button', { name: '分屏' })).toBeDisabled()
+  })
+
+  it('⌘D 分屏，并拦掉浏览器的「加入书签」', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+
+    const ev = new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true, cancelable: true })
+    window.dispatchEvent(ev)
+
+    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('Ctrl+D 不分屏：终端里那是 EOF，抢走会毁掉终端', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+
+    const ev = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true })
+    window.dispatchEvent(ev)
+
+    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(1))
+    expect(ev.defaultPrevented).toBe(false)
   })
 
   it('/settings 整页替换中央，左栏仍在', async () => {

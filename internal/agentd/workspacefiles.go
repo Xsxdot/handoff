@@ -31,11 +31,40 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// scratchDirName 是草稿区在 DataDir 下的目录名。
+const scratchDirName = "scratch"
+
+// scratchRoot 返回草稿区的绝对路径；不可用时返回空串。
+//
+// 草稿区是控制台右下角浮窗「临时文件」的落点：一个不属于任何 git 工作树、
+// 也不在 project_locations 表里的受管目录（spec §5.1）。
+//
+// 返回空串的两种情形都不是故障：DataDir 没配出来，或目录建不出来（磁盘满、
+// 权限）。此时闸门那一支恒不命中、StatusResp 里这个字段缺席、前端入口不渲染
+// ——整条链路对「草稿区不可用」是收敛的，不会有任何一处拿着空路径去发请求。
+//
+// 每次调用都 MkdirAll 而不是启动时建一次：目录可能在 agentd 运行期间被人删掉，
+// 而 MkdirAll 对已存在的目录是零成本的 stat。
+func (s *Server) scratchRoot() string {
+	dataDir := s.conf().DataDir
+	if dataDir == "" {
+		return ""
+	}
+	root := filepath.Join(dataDir, scratchDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		// 只 Warn 不 Error：草稿区是附属功能，建不出来不该让人以为 agentd 坏了
+		s.log.Warn("草稿区目录建立失败，临时文件功能不可用", "path", root, "cause", err)
+		return ""
+	}
+	return filepath.Clean(root)
+}
 
 // resolveWorkspace 判定 path 是否是本机**已探测到**的某个工作树。
 //
@@ -57,6 +86,17 @@ import (
 //   - ok: 命中白名单为真
 func (s *Server) resolveWorkspace(ctx context.Context, path string) (string, bool) {
 	want := filepath.Clean(path)
+	// 草稿区是这道闸门的第二个入口。它不是 git 工作树，也不在 project_locations
+	// 表里，所以下面按登记表比对与现场探测两段都命中不了它（spec §5.1）。
+	//
+	// 放在最前面短路：这是一次纯字符串比较，比读一次数据库便宜；而草稿区的请求
+	// 频率与工作树同量级（浮窗里每存一次就是一次 PUT）。
+	//
+	// 只放行它**自己**，不放行父目录或子目录：子目录经 rel 参数访问，走的是
+	// 各端点内部已有的路径逃逸校验，不需要在闸门这一层多开一个口子。
+	if root := s.scratchRoot(); root != "" && want == root {
+		return root, true
+	}
 	locs, err := s.st.ListProjectLocations()
 	if err != nil {
 		// 读不出位置表时**拒绝**而不是放行：闸门坏了要关上，不能敞开
@@ -149,6 +189,9 @@ func (s *Server) handleWorkspaceDir(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// 忽略标注在列举之后单独做：ListDir 是纯文件系统操作（还被建/删/改名复用），
+	// 而「归不归 git 管」要问 git。失败只降级不影响这次列举（见 markIgnored）
+	markIgnored(r.Context(), root, rel, entries)
 	s.log.Info("工作树目录列举完成", "root", root, "rel", rel, "entries", len(entries))
 	writeJSON(w, http.StatusOK, proto.DirListResult{Entries: entries})
 }

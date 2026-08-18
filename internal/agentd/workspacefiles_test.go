@@ -5,10 +5,12 @@ package agentd
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -85,6 +88,61 @@ func TestWorkspaceDirListsWhitelistedPath(t *testing.T) {
 	}
 	if !found["internal"] || !found["go.mod"] {
 		t.Errorf("列举结果 = %v, want 含 internal 与 go.mod", names)
+	}
+}
+
+// TestScratchRootWhitelisted 验证草稿区命中白名单闸门，且闸门外的路径仍被拒。
+//
+// 这是 spec §5.1 的核心断言：scratch 不在 project_locations 表里、也不是 git
+// 工作树，两段既有比对都命中不了它，所以必须有专门的一支——而那一支绝不能
+// 顺手把别的路径也放进来。
+func TestScratchRootWhitelisted(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken, DataDir: t.TempDir()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := env.srv
+	root := s.scratchRoot()
+	if root == "" {
+		t.Fatal("scratchRoot 为空，草稿区应当在启动时建好")
+	}
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		t.Fatalf("草稿区目录不存在或不是目录: %v", err)
+	}
+	if got, ok := s.resolveWorkspace(context.Background(), root); !ok || got != root {
+		t.Errorf("草稿区未命中白名单: got=%q ok=%v", got, ok)
+	}
+	// 闸门不能顺手放行草稿区的**父目录**或**子目录**：只有它自己是入口
+	if _, ok := s.resolveWorkspace(context.Background(), filepath.Dir(root)); ok {
+		t.Error("草稿区的父目录不该命中白名单")
+	}
+	if _, ok := s.resolveWorkspace(context.Background(), filepath.Join(root, "sub")); ok {
+		t.Error("草稿区的子目录不该命中白名单（子目录经 rel 参数访问，不是独立入口）")
+	}
+}
+
+// TestScratchEntryRoundTrip 验证草稿区下建文件 → 列举 → 写 → 读一条链路全通。
+//
+// 复用的是既有六个文件端点，不是新端点——这个用例存在的意义就是证明「复用」
+// 这个决定成立：scratch 不是 git 仓库，而 ListDir 对 git 只是尽力而为。
+func TestScratchEntryRoundTrip(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken, DataDir: t.TempDir()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	root := env.srv.scratchRoot()
+
+	if _, err := CreateEntry(root, "", "untitled-1.md", "file"); err != nil {
+		t.Fatalf("在草稿区建文件失败: %v", err)
+	}
+	entries, err := ListDir(root, "")
+	if err != nil {
+		t.Fatalf("列举草稿区失败（scratch 不是 git 仓库，但列举不该因此失败）: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name == "untitled-1.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("列举结果里没有刚建的文件，实得 %+v", entries)
 	}
 }
 

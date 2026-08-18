@@ -18,14 +18,23 @@
 import { type StateTone, stateLabel, stateTone } from './columns'
 import { cn } from '@/lib/utils'
 
-// DOT_CLASS 是基调到圆点底色的映射。
-// done 与 active 共用绿色：原型里「已完成」和「进行中」都是绿点，
-// 区分靠列与文案，不靠点的颜色。
+// DOT_CLASS 是基调到圆点样式的映射。
+//
+// 四种「填充状态」把生命周期排成一条线，一眼能读出走到哪了：
+//   idle（未开始）  空心圈——还没填上
+//   active（进行中）实心绿
+//   intervention   实心琥珀
+//   done（已完成）  实心灰——事情办完了，不该再抢眼
+//   failed         实心红
+//
+// 原型里 done 与 active 共用绿色，靠所在列与文案区分。在看板上成立，在**左栏
+// 树**里不成立：那里没有列、任务名旁边只有一个点，进行中与已完成长得一模一样。
+// 改灰之后两者当场分得开，而绿色仍然只属于「此刻真的在跑」。
 const DOT_CLASS: Record<StateTone, string> = {
-  idle: 'bg-muted-foreground/40',
+  idle: 'border-[1.5px] border-muted-foreground/50',
   active: 'bg-state-active',
   intervention: 'bg-state-intervention',
-  done: 'bg-state-active',
+  done: 'bg-muted-foreground/45',
   failed: 'bg-state-failed',
 }
 

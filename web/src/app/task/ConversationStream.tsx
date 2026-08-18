@@ -23,6 +23,7 @@ import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
 import { EventChip } from './EventChip'
 import { UserInstructionBlock } from './UserInstructionBlock'
+import { useTaskPlan } from './useTaskPlan'
 import { DeliverySummaryCard } from './DeliverySummaryCard'
 import { UnknownBlock } from './UnknownBlock'
 import { MetaRow } from './meta'
@@ -37,6 +38,8 @@ const stickThreshold = 40
 export interface ConversationStreamProps {
   taskId: string
   taskState: string
+  // taskCreatedAt 是派发时刻，用作会话流顶部那条派发指令气泡的时间戳
+  taskCreatedAt: string
   blocks: Block[]
   badLines: number
   startOffset: number
@@ -80,9 +83,13 @@ function ToolGroupRow({ group, taskState }: { group: ToolGroupBlock; taskState: 
 // ConversationStream 渲染一个任务的会话流。滚动补偿与跟随逻辑整体平移自
 // TimelinePanel（useLayoutEffect + prependRef 的实现原样保留，注释见彼处 git 史）。
 export const ConversationStream = forwardRef<ConversationStreamHandle, ConversationStreamProps>(function ConversationStream({
-  taskId, taskState, blocks, badLines, startOffset, sizeUnknown, atCap, error,
+  taskId, taskState, taskCreatedAt, blocks, badLines, startOffset, sizeUnknown, atCap, error,
   loadingEarlier, onLoadEarlier, onRetry, active,
 }, ref) {
+  // 派发指令：任务的第一条「审核者消息」。turn_start 帧的 instructions 在
+  // dispatch 那一回合恒为空串（见 internal/executor/turn/frames.go），所以它
+  // 不在 blocks 里，只能单独取
+  const plan = useTaskPlan(taskId)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
   const prependRef = useRef<number | null>(null)
@@ -178,6 +185,20 @@ export const ConversationStream = forwardRef<ConversationStreamHandle, Conversat
               {loadingEarlier ? '加载中…' : '↑ 加载更早'}
             </Button>
           </div>
+        )}
+
+        {/* 派发指令气泡只在**流的开头**出现：startOffset>0 意味着当前只加载了
+            帧文件的尾部，此刻把派发指令画在顶上等于谎报时间顺序——它属于最早
+            那一刻，不属于「你现在看到的这一段」。回翻到头后它自然出现。
+            sizeUnknown 时 startOffset=0 并不代表已到文件头（服务端没回大小头，
+            见 useFramesStream），同样不画 */}
+        {plan !== null && startOffset === 0 && !sizeUnknown && plan.content !== '' && (
+          <UserInstructionBlock
+            text={plan.content}
+            ts={taskCreatedAt}
+            label="派发指令"
+            extra={plan.truncated ? `${plan.name}（已截断）` : plan.name}
+          />
         )}
 
         {badLines > 0 && (

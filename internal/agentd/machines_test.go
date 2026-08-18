@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -96,7 +97,8 @@ func TestMachinesUnreachableHasNilCapability(t *testing.T) {
 // TestLocalMachineReportsRevealSupported 断言本机探活会带上 reveal 能力位，
 // 且它等于当前平台的实际支持度（不是恒 true）。
 func TestLocalMachineReportsRevealSupported(t *testing.T) {
-	env := newTestAgentdEnv(t)
+	env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken, DataDir: t.TempDir()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mgr, _, _, _ := newTestManager(t)
 	env.srv.SetManager(mgr)
 	m := env.srv.localMachine()
@@ -105,6 +107,10 @@ func TestLocalMachineReportsRevealSupported(t *testing.T) {
 	}
 	if *m.RevealSupported != revealSupportedOS {
 		t.Fatalf("reveal_supported=%v，与平台实际支持度 %v 不符", *m.RevealSupported, revealSupportedOS)
+	}
+	wantScratch := filepath.Join(env.srv.conf().DataDir, "scratch")
+	if m.ScratchRoot != wantScratch {
+		t.Fatalf("本机探活的 scratch_root=%q，want %q", m.ScratchRoot, wantScratch)
 	}
 }
 

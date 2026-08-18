@@ -37,8 +37,9 @@ import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
-import { HOME_BASE, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
-import type { TabContent } from '../workbench/tabs'
+import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import { createUntitledFile } from '../workbench/newFile'
+import { MAX_GROUPS, type TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -59,13 +60,46 @@ export function Shell() {
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  // fileTreeNonce 是右栏刷新的触发器。中央区新建文件后递增它。
+  // 用计数器而不是把 FileTree 的 refresh 传上来：那会把中央区与右栏焊死，
+  // 而它们现在互不认识
+  const [fileTreeNonce, setFileTreeNonce] = useState(0)
   // editProject 是正在被编辑的项目（右键菜单「编辑」传入）；null = 弹层关闭。
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
   const caps = useMachineCaps()
+  // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
+  // 浮窗里的入口不渲染。
+  const scratchRoot = caps.scratchRoot('')
+  const [scratchError, setScratchError] = useState('')
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
+  const split = wb.split
+  // ⌘D 分屏。
+  //
+  // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
+  // 空白面板」，window 级会让一次 ⌘T 开出两个终端（BlankTab.tsx:75）。⌘D 没有这个
+  // 问题——它只作用于当前焦点组，全局唯一。
+  //
+  // **只认 metaKey，绝不接 ctrlKey**：Ctrl+D 在终端里是 EOF，绑上去等于让用户
+  // 没法退出 shell。这与 BlankTab.tsx:44 已确立的口径一致（本控制台只在 macOS 用，
+  // 将来上 Windows 时这两处要一起改，而且要另选一个不撞 EOF 的键）。
+  //
+  // 必须 preventDefault：macOS 浏览器的 ⌘D 是「加入书签」，不拦会在分屏的同时弹
+  // 书签面板。不排除输入框——⌘D 在 input/textarea 里没有默认语义，排除它只会让
+  // 「光标在 Composer 里时 ⌘D 不好使」变成一个要解释的例外。
+  //
+  // 冒泡阶段监听（第三参不传 true），与 ProjectTree 的 ⌘K 同一条让位次序。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.key.toLowerCase() !== 'd') return
+      e.preventDefault()
+      split()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [split])
   // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
   // openTerminal：它不会把用户的选中目录拽走。
   // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。
@@ -76,12 +110,12 @@ export function Shell() {
   // 就弹出浮窗，等于替用户点了一下
   const ptyRestore = usePtyRestore((b, sessionId) => {
     if (b.kind === 'home') {
-      dock.adopt({ id: sessionId, seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+      dock.adopt({ id: sessionId, kind: 'terminal', seq: dock.tabs.length + 1, sessionId, machine: b.machine })
       return
     }
     wb.restoreTerminal(b, sessionId)
   })
-  // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与所在位置都要留着：
+  // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与 tab id 都要留着：
   // 确认之后要先删会话、再关那个 tab
   //
   // 为什么连 machine 一起留（B96）：删会话要指名机器，而「该删哪台」是**这个
@@ -91,15 +125,20 @@ export function Shell() {
   // 开着时基准被换走就会拿 A 的机器名去删 B 的会话。与下面的 closingHome 对齐：
   // 它一直就是把 machine 存下来的
   const [closingPty, setClosingPty] = useState<
-    { group: number; tabId: string; sessionId: string; machine: string } | null
+    { tabId: string; sessionId: string; machine: string } | null
   >(null)
+  // 只存 tabId 不存组下标：组下标在确认弹层打开期间会因为分屏/关栏而失效，
+  // 而 tabId 在整个 workbench 内唯一。关闭走 wb.closeById 自己反查。
   const [closeBusy, setCloseBusy] = useState(false)
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
   // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
   // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
-  const [closingDirtyFile, setClosingDirtyFile] = useState<{ group: number; tabId: string; rel: string } | null>(null)
+  const [closingDirtyFile, setClosingDirtyFile] = useState<{ tabId: string; rel: string } | null>(null)
+  // closingDirtyHome 记「哪个浮窗文件 tab 有草稿、正在等确认」。它不复用
+  // closingDirtyFile：浮窗 tab 不在 wb 里，确认后必须调 dock.closeTab。
+  const [closingDirtyHome, setClosingDirtyHome] = useState<{ id: string; rel: string } | null>(null)
   // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
   // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
   const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
@@ -122,19 +161,19 @@ export function Shell() {
   // 这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
-  const beforeCloseTab = (c: TabContent, group: number, tabId: string): boolean => {
+  const beforeCloseTab = (c: TabContent, tabId: string): boolean => {
     // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
     // 与终端那条分支同一个理由——不可逆操作先问一句。
     //
     // 为什么只拦有草稿的：干净文件关了随时能再开，拦它只会让每次关 tab 都多一次
     // 点击，纯打扰。草稿才是磁盘上没有第二份的东西
     if (c.kind === 'file' && c.draft !== undefined) {
-      setClosingDirtyFile({ group, tabId, rel: c.rel })
+      setClosingDirtyFile({ tabId, rel: c.rel })
       return false
     }
     if (c.kind !== 'terminal' || !c.sessionId) return true
     // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
-    setClosingPty({ group, tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
+    setClosingPty({ tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
     setCloseError('')
     setClosingBusyProc(null)
     // 问一句「它现在忙不忙」，只用于加重措辞，**不阻塞弹层出现**
@@ -166,7 +205,7 @@ export function Shell() {
     setCloseBusy(true)
     setCloseError('')
     if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
-      wb.close(closingPty.group, closingPty.tabId)
+      wb.closeById(closingPty.tabId)
       setClosingPty(null)
     }
     // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
@@ -190,6 +229,15 @@ export function Shell() {
   const killHomeSession = (id: string) => {
     const tab = dock.tabs.find((t) => t.id === id)
     if (!tab) return
+    if (tab.kind === 'file') {
+      if (tab.draft !== undefined) {
+        setClosingDirtyHome({ id, rel: tab.rel ?? '未命名' })
+      } else {
+        // 文件 tab 关闭只卸载编辑器，草稿区里的文件仍保留在磁盘上。
+        dock.closeTab(id)
+      }
+      return
+    }
     if (!tab.sessionId) {
       // 会话还没建成（比如刚点完新终端立刻点 ×），没有可删的东西，直接移掉
       dock.closeTab(id)
@@ -197,6 +245,16 @@ export function Shell() {
     }
     setCloseError('')
     setClosingHome({ id, sessionId: tab.sessionId, machine: tab.machine })
+  }
+
+  // newScratchFile 建一个草稿区文件并把它收进浮窗。
+  // 建文件是一次 POST，所以放在 Shell 而不是 useHomeDock（那个 hook 不发请求）。
+  const newScratchFile = () => {
+    if (scratchRoot === '') return
+    setScratchError('')
+    void createUntitledFile(scratchBase(scratchRoot, ''))
+      .then((rel) => dock.newFile(rel))
+      .catch((err: unknown) => setScratchError(errorMessage(err)))
   }
 
   const onUnregister = async (name: string, machine: string) => {
@@ -245,6 +303,7 @@ export function Shell() {
             tasks={tasks}
             selectedKey={wb.base?.key ?? null}
             ticketCount={tickets.count}
+            ticketsByDir={tickets.byWorkDir}
             onSelectDir={wb.select}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
@@ -258,7 +317,7 @@ export function Shell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} />}
+        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} canSplit={wb.wb.groups.length < MAX_GROUPS} />}
         <main className="min-h-0 flex-1">
           <Routes>
             <Route
@@ -273,6 +332,9 @@ export function Shell() {
                 <WorkbenchPage
                   api={wb}
                   onAddProject={() => setWizardOpen(true)}
+                  tree={treeState.data}
+                  tasks={tasks}
+                  onFileCreated={() => setFileTreeNonce((n) => n + 1)}
                   terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
                   onBeforeClose={beforeCloseTab}
                   renderContent={(c, base, group, tabId) => {
@@ -329,10 +391,12 @@ export function Shell() {
         </main>
       </div>
 
+      {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
       {wb.base && wb.base.kind === 'workspace' && (
         <div className="w-[280px] shrink-0">
           <FileTree
             base={wb.base}
+            refreshKey={fileTreeNonce}
             taskId={currentTaskId}
             onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
             onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
@@ -347,15 +411,35 @@ export function Shell() {
         <HomeDock
           dock={dock}
           onKill={killHomeSession}
-          renderTab={(t) => (
-            <TerminalTab
-              base={HOME_BASE}
-              seq={t.seq}
-              sessionId={t.sessionId}
-              onSession={(id) => dock.setSession(t.id, id)}
-            />
-          )}
+          onNewFile={scratchRoot === '' ? undefined : newScratchFile}
+          renderTab={(t) =>
+            t.kind === 'file' ? (
+              <FileTab
+                base={scratchBase(scratchRoot, t.machine)}
+                rel={t.rel ?? ''}
+                initial={
+                  t.draft !== undefined && t.baseSha !== undefined
+                    ? { draft: t.draft, baseSha: t.baseSha }
+                    : undefined
+                }
+                onDraftChange={(d) => dock.setDraft(t.id, d)}
+              />
+            ) : (
+              <TerminalTab
+                base={HOME_BASE}
+                seq={t.seq}
+                sessionId={t.sessionId}
+                onSession={(id) => dock.setSession(t.id, id)}
+              />
+            )
+          }
         />
+      )}
+
+      {scratchError !== '' && (
+        <p role="alert" className="fixed right-5 bottom-24 z-40 rounded border border-destructive/30 bg-background px-3 py-1.5 text-xs text-destructive shadow">
+          临时文件失败：{scratchError}
+        </p>
       )}
 
       {overlay === 'board' && (
@@ -391,10 +475,10 @@ export function Shell() {
       />
 
       <ConfirmDialog
-        open={closingDirtyFile !== null}
+        open={closingDirtyFile !== null || closingDirtyHome !== null}
         title="关闭未保存的文件"
         description={
-          `${closingDirtyFile?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
+          `${closingDirtyFile?.rel ?? closingDirtyHome?.rel ?? ''} 还有未保存的改动，关掉就没了。\n` +
           // 文案要点明「切 tab 不丢」：Task 8 刚让草稿在切走时回写进 tab 内容，
           // 用户不知道这件事，误以为必须二选一。切走是零成本的
           '只是想看别的东西的话直接切到别的 tab——草稿会留着。'
@@ -402,10 +486,12 @@ export function Shell() {
         confirmLabel="不保存，关闭"
         destructive
         onConfirm={() => {
-          if (closingDirtyFile) wb.close(closingDirtyFile.group, closingDirtyFile.tabId)
+          if (closingDirtyFile) wb.closeById(closingDirtyFile.tabId)
+          if (closingDirtyHome) dock.closeTab(closingDirtyHome.id)
           setClosingDirtyFile(null)
+          setClosingDirtyHome(null)
         }}
-        onCancel={() => setClosingDirtyFile(null)}
+        onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
       />
 
       <AddProjectWizard

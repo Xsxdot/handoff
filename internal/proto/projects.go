@@ -30,6 +30,22 @@ type Workspace struct {
 	// Managed 表示该工作树是 agentd 自建的任务工作树（路径落在 agentd 的
 	// worktree 根下）。UI 据此区分「任务工作树」与「人手开的工作树」。
 	Managed bool `json:"managed"`
+	// CreatedAt 是这个工作树被建出来的时间；零值 = 取不到。
+	//
+	// 取法：stat <git 公共目录>/worktrees/<名>/gitdir。那个文件由
+	// git worktree add 写一次之后就不再动，是唯一稳定的创建时间证据。
+	// 刻意不 stat 工作树目录本身——它的 mtime 会随着往里写代码变化，
+	// 排出来的是「最近动过」而不是「什么时候建的」。
+	//
+	// **主工作树恒为零值**：它没有 worktrees/<名>/gitdir，而 .git 目录的 mtime
+	// 是「最后一次在里面增删条目」不是创建时间（实测一个 08-07 建的仓库报出
+	// 08-18）。准确的答案要文件系统 birthtime，Go 标准库不给。消费方（控制台
+	// 排序）把主工作树钉在第一位、不参与比较，这个值没有消费者——如实留零值，
+	// 好过报一个自信的错值。
+	//
+	// 为什么取不到时留零值而不是报错：整棵项目树不该因为一个 stat 失败就 500。
+	// 消费方把零值当「最旧」处理。
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ProjectLocationNode 是一个项目在**一台**机器上的位置（项目树的中间层）。
@@ -117,6 +133,10 @@ type Machine struct {
 	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`
+
+	// ScratchRoot 是这台机器的草稿区路径，探活时从它的 StatusResp 投影而来。
+	// 空串（omitempty 后为缺席）= 这台机器不支持临时文件，前端不渲染入口。
+	ScratchRoot string `json:"scratch_root,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。
@@ -138,13 +158,19 @@ type TasksResp struct {
 
 // DirEntry 是工作树目录列举里的一项（GET /api/workspaces/dir）。
 //
-// 只有三个字段是刻意的：文件浏览需要的是「这一层有什么、哪些能展开、多大」，
-// 而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按 mtime 猜改动，
-// 那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被 omitempty 省略。
+// 字段是刻意克制的：文件浏览需要的是「这一层有什么、哪些能展开、多大、哪些
+// 不归 git 管」，而 mtime / mode / owner 都会诱导前端做它不该做的判断（比如按
+// mtime 猜改动，那是 diff 的活）。Size 只对普通文件有意义，目录恒 0 并被
+// omitempty 省略。
 type DirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size,omitempty"`
+	// Ignored 表示该条目被 .gitignore 排除（判据是 git check-ignore，不是前端
+	// 猜后缀）。false 会被 omitempty 省略——**缺键 = 未被忽略**，不代表「没查过」：
+	// 查不出来时（git 不可用、目录不是仓库）服务端一律按未忽略返回并打日志，
+	// 宁可少标一个，也不把源码标成垃圾。
+	Ignored bool `json:"ignored,omitempty"`
 }
 
 // DirListResult 是 GET /api/workspaces/dir 的响应体。
@@ -184,6 +210,21 @@ type FileRead struct {
 	Truncated bool   `json:"truncated,omitempty"` // 超过 1 MiB，只返回开头
 	Binary    bool   `json:"binary,omitempty"`    // 前 8 KiB 出现 NUL 字节
 	SHA256    string `json:"sha256,omitempty"`
+}
+
+// TaskPlan 是 GET /api/tasks/{id}/plan 的响应：**派发当刻交给 executor 的指令原文**。
+//
+// 它就是 agentd 归档在任务目录里的那份 plan/prompt（dispatch 的 plan 文件，
+// prompt-only 派发时是 prompt.md；两者都有时是拼好的那一份）。控制台把它当
+// 「第一条审核者消息」展示——在此之前，界面上唯一能看到的只有一个截断的
+// plan_summary，「这个任务当初到底被要求做什么」无处可查。
+//
+// Size 是磁盘真实大小，不是 len(Content)：截断时两者不同，用户要看到的是真实大小。
+type TaskPlan struct {
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	Size      int64  `json:"size"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体。

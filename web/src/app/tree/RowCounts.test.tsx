@@ -14,10 +14,15 @@ describe('RowCounts', () => {
     render(<RowCounts running={1} pending={0} />)
     expect(screen.queryByTitle('开发目录')).toBeNull()
     expect(screen.getByTitle('运行中的 handoff')).toHaveTextContent('1')
-    expect(screen.getByTitle('需要处理')).toHaveTextContent('0')
   })
 
-  it('计数为 0 也渲染，不省略', () => {
+  it('运行中 / 需要处理为 0 时整段不渲染', () => {
+    render(<RowCounts dirs={0} running={0} pending={0} />)
+    expect(screen.queryByTitle('运行中的 handoff')).toBeNull()
+    expect(screen.queryByTitle('需要处理')).toBeNull()
+  })
+
+  it('目录数为 0 仍渲染，不跟着省略', () => {
     render(<RowCounts dirs={0} running={0} pending={0} />)
     expect(screen.getByTitle('开发目录')).toHaveTextContent('0')
   })

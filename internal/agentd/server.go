@@ -333,6 +333,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
 	api.HandleFunc("POST /api/tasks/{id}/reclaim", s.byTask(s.handleReclaim))
 	api.HandleFunc("POST /api/tasks/{id}/resume", s.byTask(s.handleResume))
+	api.HandleFunc("GET /api/tasks/{id}/plan", s.byTask(s.handleTaskPlan))
 	api.HandleFunc("GET /api/tasks/{id}/diff", s.byTask(s.handleTaskDiff))
 	api.HandleFunc("GET /api/tasks/{id}/branches", s.byTask(s.handleTaskBranches))
 	api.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
@@ -525,6 +526,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.PtySupported = &ptyOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
+	resp.ScratchRoot = s.scratchRoot()
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())

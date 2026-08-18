@@ -20,8 +20,10 @@
 // 角标语义（不得含糊）：数据来自 `handoff diff` = `git diff base...HEAD`，只反映
 // 已提交的改动。tooltip 写「相对基线已改动」，不写「工作区已修改」——后者是
 // git status 的语义，这里给不出来。
-import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, File, FolderClosed, FolderOpen, RefreshCw, Search, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import {
+  ChevronDown, ChevronRight, CircleSlash, FileText, FolderClosed, FolderOpen, RefreshCw, Search, X,
+} from 'lucide-react'
 import {
   copyWorkspaceEntry,
   createWorkspaceEntry,
@@ -34,13 +36,54 @@ import type { DirEntry, SearchHit } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { errorMessage } from '../lib/format'
 import { ContextMenu, type ContextMenuEntry } from '../shared/ContextMenu'
-import { useChangedFiles } from './changedFiles'
+import { useChangedFiles, type ChangeStatus } from './changedFiles'
 import { useDirEntries, type DirEntriesApi } from './useDirEntries'
 import { EntryNameDialog } from './EntryNameDialog'
+import { cn } from '@/lib/utils'
 import { DeleteEntryDialog } from './DeleteEntryDialog'
 
-// CHANGED_TITLE 是 M 角标的 tooltip。措辞是 spec §4 的硬要求，不要改写。
+// CHANGED_TITLE 是改动角标 tooltip 的**后半句**。措辞是 spec §4 的硬要求，
+// 不要改写；类别词只作为前缀拼在它前面（见 CHANGE_STYLE.title）。
 const CHANGED_TITLE = '相对基线已改动（git diff base...HEAD，不含工作区未提交的编辑）'
+
+// IGNORED_NAME / IGNORED_TITLE 是「被 .gitignore 排除」的弱化样式与说明。
+//
+// 斜体 + 半透明而不是直接藏起来：构建产物、缓存目录是**真实存在**的东西，
+// 偶尔要点进去看一眼；藏掉等于把文件树和磁盘上的实情对不上。弱化到一眼扫过
+// 时不占注意力，就够了。
+const IGNORED_NAME = 'italic text-muted-foreground/70'
+const IGNORED_TITLE = '被 .gitignore 排除（git check-ignore 判定，不归 git 跟踪）'
+
+// IgnoredMark 是行尾那个 ⊘。title 挂在外层 span 而不是图标上——lucide 的
+// 组件不接受 title 属性，而 tooltip 是这个符号唯一的解释来源，不能省。
+function IgnoredMark() {
+  return (
+    <span title={IGNORED_TITLE} className="ml-auto flex shrink-0 items-center">
+      <CircleSlash className="size-3 text-muted-foreground/60" />
+    </span>
+  )
+}
+
+// CHANGE_STYLE 把改动类别映射成「文件名颜色 + 角标字母 + tooltip 前缀」。
+//
+// 为什么文件名也着色而不是只留一个角标：角标钉在行尾，长文件名截断后它离名字
+// 十万八千里，扫一列名字看不出哪些是这次改的。颜色让「改没改、是新增还是修改」
+// 落在名字本身上。
+//
+// 配色仍走状态 token（新增=绿 / 修改=琥珀 / 删除=红），不引裸色值——同一个界面
+// 里两种绿或两种橙看起来像 bug，这条规矩全仓一致。
+const CHANGE_STYLE: Record<ChangeStatus, { name: string; badge: string; letter: string; title: string }> = {
+  added: { name: 'text-state-active', badge: 'text-state-active', letter: 'A', title: `新增文件 · ${CHANGED_TITLE}` },
+  modified: {
+    name: 'text-state-intervention-text',
+    badge: 'text-state-intervention-text',
+    letter: 'M',
+    title: CHANGED_TITLE,
+  },
+  // 删除的文件通常已不在列举结果里，这一档只在「diff 说删了、磁盘上还在」
+  // （工作区未提交的恢复）时出现——真出现时必须看得出来，不能悄悄当未改动
+  deleted: { name: 'text-destructive', badge: 'text-destructive', letter: 'D', title: `已删除 · ${CHANGED_TITLE}` },
+}
 
 export interface FileTreeProps {
   base: BaseDir
@@ -53,6 +96,12 @@ export interface FileTreeProps {
   // revealSupported 是本机 agentd 的「在访达中显示」平台能力位，三态。
   // null = 对端没上报，此时**放行**而不是禁用（见 useMachineCaps 的三态纪律）。
   revealSupported: boolean | null
+  // refreshKey 变化时重取根目录一层。调用方（Shell）在中央区新建文件之后
+  // 递增它——不刷新的话用户刚建的文件在右栏看不见，会以为没建成。
+  //
+  // 用 reload('') 而不是 refresh()：新文件建在根上，只有那一层需要重取；
+  // refresh 会丢掉全部已展开层的缓存，用户展开的目录会全部塌回去。
+  refreshKey?: number
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -110,9 +159,10 @@ function isLoopbackHost(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported }: FileTreeProps) {
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
+  const firstRef = useRef(true)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [query, setQuery] = useState('')
   // menu：右键菜单当前打开的坐标与被右键条目
@@ -138,6 +188,15 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     setOpError('')
     dirs.ensure('')
   }, [base.key, dirs])
+
+  useEffect(() => {
+    // 首次挂载不重取：那一层由树自己的 ensure 负责，这里再来一次是白打一个请求
+    if (firstRef.current) {
+      firstRef.current = false
+      return
+    }
+    dirs.reload('')
+  }, [refreshKey, dirs])
 
   const toggle = (rel: string) => {
     dirs.ensure(rel)
@@ -441,7 +500,8 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <p className="truncate px-3 py-1 font-mono text-[11px] text-muted-foreground">{base.label}</p>
+          {/* 根标题与条目行同一档字号：它是这列的表头，比条目还小会显得是脚注 */}
+          <p className="truncate px-3 py-1 font-mono text-xs text-muted-foreground">{base.label}</p>
           <DirLevel
             dirs={dirs}
             rel=""
@@ -501,27 +561,38 @@ interface LevelProps {
   onToggle: (rel: string) => void
   onOpenFile: (rel: string) => void
   onContextMenu: (e: React.MouseEvent, entry: DirEntry, rel: string) => void
-  changed: Set<string>
+  changed: Map<string, ChangeStatus>
   query: string
 }
+
+// ENTRY_ROW 是文件行与目录行共用的一套排版。
+//
+// 13px / py-1（行高约 26px）而不是原来的 12px / py-0.5（约 18px）：右栏是要
+// 长时间扫读的一列名字，行挨得太紧时层级缩进与状态色都糊在一起。gap-2 与
+// size-4 的图标是同一件事的两半——图标小半档、间距紧半档，整列就显得毛糙。
+const ENTRY_ROW = 'flex w-full items-center gap-2 py-1 pr-3 text-left text-[13px] hover:bg-accent'
+
+// INDENT_STEP 是每层的缩进步长。16px 对应「子项的箭头正好落在父项图标下方」，
+// 12px 时相邻两层几乎看不出差别。
+const INDENT_STEP = 16
 
 // DirLevel 渲染一层目录：加载中 / 该层失败 / 条目列表三种形态。
 function DirLevel(props: LevelProps) {
   const { dirs, rel, depth, query } = props
   const entries = dirs.entriesOf(rel)
   const error = dirs.errorOf(rel)
-  const pad = { paddingLeft: `${12 + depth * 12}px` }
+  const pad = { paddingLeft: `${12 + depth * INDENT_STEP}px` }
 
   if (error !== undefined) {
     return (
-      <p className="py-1 pr-3 text-[11px] text-destructive" style={pad}>
+      <p className="py-1 pr-3 text-xs text-destructive" style={pad}>
         {error}
       </p>
     )
   }
   if (entries === undefined) {
     return (
-      <p className="py-1 pr-3 text-[11px] text-muted-foreground" style={pad}>
+      <p className="py-1 pr-3 text-xs text-muted-foreground" style={pad}>
         正在列举…
       </p>
     )
@@ -554,21 +625,33 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
           type="button"
           onClick={() => onToggle(rel)}
           onContextMenu={(e) => onContextMenu(e, entry, rel)}
-          className="flex w-full items-center gap-1.5 py-0.5 pr-3 text-left text-xs hover:bg-accent"
+          className={ENTRY_ROW}
           style={pad}
         >
-          {open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+          {/* 箭头装在固定宽的格子里，文件行用同宽的空格子占位——两者的图标因此
+              落在同一条竖线上。之前文件图标靠 ml-3 凑，与目录图标差 6px，
+              层级看起来是歪的 */}
+          <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+            {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          </span>
           {open ? (
-            <FolderOpen data-testid="dir-icon" className="size-3.5 shrink-0 text-muted-foreground" />
+            <FolderOpen data-testid="dir-icon" className="size-4 shrink-0 text-muted-foreground" />
           ) : (
-            <FolderClosed data-testid="dir-icon" className="size-3.5 shrink-0 text-muted-foreground" />
+            <FolderClosed data-testid="dir-icon" className="size-4 shrink-0 text-muted-foreground" />
           )}
-          <span className="truncate">{entry.name}</span>
+          <span className={cn('truncate', entry.ignored && IGNORED_NAME)}>{entry.name}</span>
+          {entry.ignored && <IgnoredMark />}
         </button>
         {open && <DirLevel {...rest} rel={rel} depth={depth + 1} />}
       </li>
     )
   }
+
+  // 改动类别决定整行的颜色（图标 + 文件名 + 角标）与角标字母；未改动的文件
+  // 保持默认前景色
+  const status = changed.get(rel)
+  const style = status ? CHANGE_STYLE[status] : null
+  const ignored = entry.ignored === true
 
   return (
     <li>
@@ -576,20 +659,26 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
         type="button"
         onClick={() => onOpenFile(rel)}
         onContextMenu={(e) => onContextMenu(e, entry, rel)}
-        className="flex w-full items-center gap-1.5 py-0.5 pr-3 text-left text-xs hover:bg-accent"
+        className={ENTRY_ROW}
         style={pad}
       >
-        {/* 文件着强调色、文件夹保持灰——原型正是靠这个对比让右栏不显得平
-            （.file-row > svg:nth-of-type(2) { color: var(--blue) }） */}
-        <File data-testid="file-icon" className="ml-3 size-3.5 shrink-0 text-file-accent" />
-        <span className="truncate">{entry.name}</span>
-        {/* 用状态 token 而非裸 amber：同一个界面里两种橙看起来像 bug
-            ——这条规矩 ProjectTree 的工单角标已经在守，这里补齐 */}
-        {changed.has(rel) && (
-          <span title={CHANGED_TITLE} className="ml-auto shrink-0 font-mono text-[10px] text-state-intervention-text">
-            M
+        <span className="size-4 shrink-0" />
+        {/* 图标统一走次要灰，颜色留给「状态」说话：改动行整行同色，未改动行
+            全灰。原型给文件图标定的那个蓝（--file-accent）在这里退场——它与
+            新增绿/修改琥珀同时出现时，一行两三种颜色，反而看不出哪个要紧 */}
+        <FileText
+          data-testid="file-icon"
+          className={cn('size-4 shrink-0', style ? style.name : 'text-muted-foreground')}
+        />
+        <span className={cn('truncate', style?.name, ignored && IGNORED_NAME)}>{entry.name}</span>
+        {style && (
+          <span title={style.title} className={cn('ml-auto shrink-0 text-[10px] font-semibold', style.badge)}>
+            {style.letter}
           </span>
         )}
+        {/* 被忽略的文件不可能同时有 diff 状态（git 不跟踪它），所以这两个角标
+            不会打架，各自都能用 ml-auto 占右端 */}
+        {ignored && <IgnoredMark />}
       </button>
     </li>
   )

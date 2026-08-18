@@ -41,6 +41,7 @@ import type {
   StopResult,
   Task,
   TaskDetail,
+  TaskPlan,
   TasksResp,
 } from './types'
 
@@ -173,6 +174,14 @@ export function fetchTaskDetail(id: string): Promise<TaskDetail> {
 export function fetchTaskDiff(id: string, base?: string): Promise<DiffResult> {
   const q = base ? `?base=${encodeURIComponent(base)}` : ''
   return request<DiffResult>(`/api/tasks/${encodeURIComponent(id)}/diff${q}`)
+}
+
+// fetchTaskPlan 取派发当刻交给 executor 的指令原文（GET /api/tasks/{id}/plan）。
+//
+// 404 有三种含义（任务不存在 / 老任务没归档 / 归档文件被删），调用方一律按
+// 「没有可展示的派发指令」处理：这条数据是**补充**，缺了不影响会话流本身。
+export function fetchTaskPlan(id: string): Promise<TaskPlan> {
+  return request<TaskPlan>(`/api/tasks/${encodeURIComponent(id)}/plan`)
 }
 
 // fetchTaskBranches 取任务仓库的本地分支列表（审阅栏基准下拉的数据源）。
