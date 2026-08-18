@@ -1,15 +1,20 @@
 # 原型站说明
 
 真实前端（`web/`）的形态镜像基准站。页面清单、导航结构、布局骨架与真实控制台对齐，
-内容为代表性占位（B93 任务）。fork 副本做交互细化时以本目录为起点。
+内容为代表性占位。fork 副本做交互细化时以本目录为起点。
 
-真实前端只有两条路由（工作台 `/` 与设置 `/settings`），看板与工单是工作台内的弹层，
-不单独成页；中央工作台的三种 tab（终端/文件/TUI）中，TUI tab 是任务会话主视图。
+## 路由
+
+真实前端的路由都挂在 `web/src/app/shell/Shell.tsx` 的 `<Routes>` 下。看板与工单是
+工作台内的 `<dialog>` 弹层，不单独成页；中央工作台的三种 tab（终端/文件/TUI）中，
+TUI tab 是任务会话主视图。
 
 | 页面 | 对应功能 | 来源路由 | 确认状态 |
 |------|---------|---------|---------|
-| index.html | 工作台（三栏 + TUI tab 对话式形态 + 看板/工单弹层） | / | 已确认 |
-| pages/settings.html | 设置页（开发机/常规/Env） | /settings | 未确认 |
+| index.html | 工作台（三栏 + TUI tab 对话式形态 + 看板/工单/偏好/建树弹层 + home 悬浮窗） | `*` | 已确认 |
+| pages/settings.html | 设置页（开发机/常规/Env） | `/settings` | 未确认 |
+| （未建页） | 任务深链：按任务 id 直接打开它的 TUI | `/tasks/:id` | — |
+| （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |
 
 TUI tab 的对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer +
 ctx/累计用量页头）经 fork 副本 `tui-redesign/` 走查确认，真实前端落地并真机验收后
@@ -17,25 +22,46 @@ ctx/累计用量页头）经 fork 副本 `tui-redesign/` 走查确认，真实�
 折成「执行了 N 步操作」、工具名中文化、运行中指示、加载更早/回合跳转的边界提示。
 fork 副本不入库，已完成使命。
 
-镜像基准：web/src/app/shell/Shell.tsx（三栏）、workbench/TuiTab.tsx 与
-task/{TuiHeader,ConversationStream,ToolCard,streamGroups,ReviewSidePanel,Composer,
-DebugDrawer}.tsx（中央 TUI）、settings/SettingsPage.tsx。生成日期 2026-08-17。
+## 镜像基准
 
-## 覆盖边界（2026-08-18 核对，B106）
+`web/src/app/` 下：`shell/Shell.tsx`（三栏与路由）、`tree/{ProjectTree,TreePrefsMenu,NewWorktreeDialog}.tsx`
+（左栏）、`board/{BoardPage,columns}.ts(x)`（看板）、`homedock/`（home 悬浮窗）、
+`workbench/TuiTab.tsx` 与 `task/{TuiHeader,ConversationStream,ToolCard,streamGroups,
+ReviewSidePanel,Composer,DebugDrawer}.tsx`（中央 TUI）、`settings/SettingsPage.tsx`。
 
-base 是**快照，不是全量镜像**。今天它覆盖的是工作台与 TUI；下列区域尚未纳入。
-对照时不要把「base 里没有」读成「真实前端没有」——那正是 desktop-console 退役前
-反复咬人的那种错。
+**本轮全量刷新日期：2026-08-18（B131）。** 上一版生成于 2026-08-17。
 
-| 区域 | 真实前端现状 | base |
+## 覆盖边界（2026-08-18 核对，B131 刷新后）
+
+base 是**快照，不是全量镜像**。对照时不要把「base 里没有」读成「真实前端没有」——
+那正是 desktop-console 退役前反复咬人的那种错。
+
+本轮补上的（上一版的四个缺口已全部纳入）：
+
+| 区域 | 真实前端来源 | base |
 |------|------------|------|
-| 左栏项目树搜索（含 ⌘K 聚焦、`filterTree`） | 有：`web/src/app/tree/{ProjectTree.tsx,search.ts}` | ❌ 未覆盖 |
-| 看板卡片干预态（琥珀边框 + 左侧竖条） | 有：`web/src/app/board/{BoardPage.tsx,columns.ts}` | ❌ 未覆盖（base 里看板只有入口按钮 `openBoard`） |
-| 左栏显示偏好菜单、新建工作树弹层、机器行 hover 入口 | 有（2026-08-18 新增） | ❌ 未覆盖 |
-| 桌面壳面包屑、悬浮窗、看板入口下移到底部图标区 | 有（2026-08-18 新增） | ❌ 未覆盖 |
+| 左栏顶部搜索（⌘K 聚焦，过滤项目/机器/任务） | `tree/{ProjectTree,search}.ts(x)` | ✅ 已覆盖 |
+| 显示偏好菜单（隐藏无活跃任务的工作树／排序方式／逐项目勾选） | `tree/TreePrefsMenu.tsx`、`treePrefs.ts` | ✅ 已覆盖 |
+| 机器行 hover 动作入口（新建工作树／更多） | `tree/ProjectTree.tsx` | ✅ 已覆盖 |
+| 新建工作树弹层（开发目录／新建分支或检出已有／分支名／基线） | `tree/NewWorktreeDialog.tsx` | ✅ 已覆盖 |
+| 看板卡片干预态（琥珀左竖条；`waiting_answer` 的「等你答复」只出现一次） | `board/{BoardPage,columns}.ts(x)` | ✅ 已覆盖 |
+| 看板四列与状态机映射（等待执行／进行中／Review／完成，failed 视觉区分且不带干预标记） | `board/columns.ts`（vitest 钉死） | ✅ 已覆盖 |
+| 底部图标区（看板／工单／设置／home／添加项目并列） | `shell/Shell.tsx` | ✅ 已覆盖 |
+| home 基准终端悬浮窗（tab 条 + 新建 + 收起保留会话） | `homedock/` | ✅ 已覆盖 |
+| 桌面壳面包屑 | `shell/Shell.tsx` 的 `<Breadcrumb>` | ✅ 已覆盖（薄壳里不画这一行，base 按浏览器形态画） |
 
-全量刷新**刻意推迟**到前端这一波改动收敛之后：08-18 当天前端就有十余个提交在改左栏与
-桌面壳，此时刷 base 等于对着移动靶画像，当天就旧。已记为 backlog **B131**。
+仍未覆盖的：
+
+| 区域 | 真实前端来源 | base |
+|------|------------|------|
+| 添加项目向导（多步：选机器／填 origin／落点校验） | `projects/AddProjectWizard.tsx` | ❌ 未覆盖（底部图标区只有入口） |
+| 终端 tab 与文件 tab 的内部形态 | `workbench/{TerminalTab,FileTab}.tsx` | ❌ 未覆盖（tab 条有，内容只画了 TUI tab） |
+| 设置页三块的字段级形态 | `settings/SettingsPage.tsx` | ⚠️ 页在，内容为占位，确认状态「未确认」 |
+
+**刷新时机**：本项目不设常设的同步机制（B131 评估后明确不做）。约定是——
+**要 brainstorm 前端形态之前跑一次刷新**，而不是定期刷。理由是漂移的代价按次收，
+而这份资产每周只用一两次，维持一套「什么时候刷、由谁刷、怎么判定漂移」的流程
+比它要防的问题更贵。
 
 ## 同级目录的状态
 
@@ -44,6 +70,6 @@ base 是**快照，不是全量镜像**。今天它覆盖的是工作台与 TUI�
 - `w4b-timeline/` —— 功能 fork 副本，非基准。
 
 注：`prototypes/.gitignore` 已声明「只有 `base/` 入库，其余子目录是 fork 副本不入库」。
-上面两个目录是该声明之前就跟踪进来的遗留文件，本次**只做状态标注、不取消跟踪**——
+上面两个目录是该声明之前就跟踪进来的遗留文件，**只做状态标注、不取消跟踪**——
 `desktop-console/AGENTS.md` 里有「Confirmed product and visual decisions」的决策记录，
 untrack 会把它埋进历史，考古成本反而更高。

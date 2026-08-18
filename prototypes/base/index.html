@@ -194,24 +194,50 @@
 <body>
 <div class="app-shell">
   <aside class="sidebar">
-    <div class="brand">handoff</div>
+    <div class="brand">
+      <span>handoff</span>
+      <!-- 显示偏好：真实前端是 IconMenu，勾选项与单选项混排 -->
+      <button class="icon-btn" id="prefsBtn" title="显示偏好">☰</button>
+    </div>
+    <!-- 顶部搜索：真实前端 ⌘K 聚焦到这里，过滤项目/机器/任务 -->
+    <div class="tree-search">
+      <input class="input sm" id="treeSearch" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
     <div class="tree">
       <div class="tree-group">
-        <div class="tree-label">本机</div>
+        <!-- 机器行 hover 才露出动作入口；不可达的机器不给「新建工作树」 -->
+        <div class="tree-label machine-row">
+          <span>本机</span>
+          <span class="row-actions">
+            <button class="icon-btn xs" id="newWtBtn" title="新建工作树">＋</button>
+            <button class="icon-btn xs" title="更多">⋯</button>
+          </span>
+        </div>
         <a class="tree-item">handoff</a>
         <a class="tree-item selected">└ 7a8334f4（工作树）</a>
         <a class="tree-item tree-task">● B93 基准评测 opencode-qwen</a>
+        <!-- 「已隐藏 N 个目录」：受显示偏好里的「隐藏无活跃任务的工作树」影响 -->
+        <a class="tree-item dim-item">已隐藏 3 个目录</a>
       </div>
       <div class="tree-group">
-        <div class="tree-label">mac-02</div>
+        <div class="tree-label machine-row">
+          <span>mac-02</span>
+          <span class="row-actions">
+            <button class="icon-btn xs" title="新建工作树">＋</button>
+            <button class="icon-btn xs" title="更多">⋯</button>
+          </span>
+        </div>
         <a class="tree-item">gokit</a>
       </div>
     </div>
-    <div class="footer">
-      <a id="openBoard">看板</a>
-      <a id="openTickets">工单 <span class="badge">2</span></a>
-      <a href="pages/settings.html">设置</a>
-      <a>＋ 添加项目</a>
+    <!-- 底部图标区：08-18 把看板从左栏顶部挪到这里，与工单、设置并列 -->
+    <div class="dock">
+      <button class="dock-btn" id="openBoard" title="任务看板">▦<span class="dot amber"></span></button>
+      <button class="dock-btn" id="openTickets" title="工单">✉<span class="badge dock-badge">2</span></button>
+      <a class="dock-btn" href="pages/settings.html" title="设置">⚙</a>
+      <button class="dock-btn" id="openHome" title="home 基准终端">▭</button>
+      <button class="dock-btn" title="添加项目">＋</button>
     </div>
   </aside>
 
@@ -531,14 +557,37 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
   </div>
 </dialog>
 
-<!-- 看板弹层（形态占位） -->
+<!-- 看板弹层（形态占位）。列与状态机的映射是硬契约：
+     pending→等待执行；running/waiting_answer→进行中；waiting_review→Review；
+     completed/failed→完成（failed 视觉区分且**不带**干预标记） -->
 <dialog id="boardDialog">
-  <div style="padding:20px;width:720px;max-width:90vw">
-    <h3 style="margin:0 0 12px">看板</h3>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">Running</div><p style="margin:6px 0 0;font-size:13px">（空）</p></div>
-      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">Review</div><p style="margin:6px 0 0;font-size:13px">B93 基准评测 opencode-qwen</p></div>
-      <div class="card" style="padding:10px"><div class="dim" style="font-size:12px">终态</div><p style="margin:6px 0 0;font-size:13px">B92 grok continue 修复</p></div>
+  <div style="padding:20px;width:860px;max-width:92vw">
+    <h3 style="margin:0 0 12px">任务看板</h3>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input class="input sm" style="flex:1" placeholder="按标题/项目筛选（每次打开都重置）">
+      <button class="btn sm">全部机器</button>
+      <button class="btn sm">全部状态</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">等待执行</div>
+        <div class="bcard">B96 CLI 契约小修</div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">进行中</div>
+        <div class="bcard">B94 web 控制台打磨</div>
+        <!-- waiting_answer：干预标记 + 「等你答复」，后者只出现一次 -->
+        <div class="bcard intervene">B95 grok 权限门<br><span class="badge amber">等你答复</span></div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">Review</div>
+        <div class="bcard intervene">B93 基准评测 opencode-qwen<br><span class="badge amber">待审阅</span></div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">完成</div>
+        <div class="bcard">B92 grok continue 修复</div>
+        <div class="bcard failed">B91 审批噪音（失败）</div>
+      </div>
     </div>
     <div style="margin-top:14px;text-align:right"><button class="btn" id="closeBoard">关闭</button></div>
   </div>
@@ -556,6 +605,60 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
   </div>
 </dialog>
 
+<!-- 显示偏好（真实前端是左栏顶部的 IconMenu：勾选项 + 单选项 + 分组标题混排） -->
+<dialog id="prefsDialog">
+  <div style="padding:16px;width:280px">
+    <div class="dim" style="font-size:12px;margin-bottom:6px">显示</div>
+    <label style="display:block;font-size:13px;margin-bottom:10px">
+      <input type="checkbox" checked> 隐藏无活跃任务的工作树
+    </label>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">排序方式</div>
+    <label style="display:block;font-size:13px"><input type="radio" name="sort" checked> 活跃优先</label>
+    <label style="display:block;font-size:13px"><input type="radio" name="sort"> 名称</label>
+    <label style="display:block;font-size:13px;margin-bottom:10px"><input type="radio" name="sort"> 最近活动</label>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">项目 · 2</div>
+    <div style="display:flex;gap:8px;margin-bottom:6px">
+      <button class="btn sm">全选</button><button class="btn sm">全不选</button>
+    </div>
+    <label style="display:block;font-size:13px"><input type="checkbox" checked> handoff</label>
+    <label style="display:block;font-size:13px"><input type="checkbox" checked> gokit</label>
+    <div style="margin-top:14px;text-align:right"><button class="btn sm" id="closePrefs">关闭</button></div>
+  </div>
+</dialog>
+
+<!-- 新建工作树弹层（机器行 hover 入口进入） -->
+<dialog id="newWtDialog">
+  <form id="newWtForm" style="padding:20px;width:460px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px">新建工作树</h3>
+    <label style="display:block;font-size:13px;margin-bottom:4px">开发目录</label>
+    <input class="input" value="~/workspace/handoff" style="margin-bottom:10px">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <label style="font-size:13px"><input type="radio" name="br" checked> 新建分支</label>
+      <label style="font-size:13px"><input type="radio" name="br"> 检出已有分支</label>
+    </div>
+    <label style="display:block;font-size:13px;margin-bottom:4px">分支名</label>
+    <input class="input mono" placeholder="feat/xxx" style="margin-bottom:10px">
+    <label style="display:block;font-size:13px;margin-bottom:4px">基线</label>
+    <input class="input mono" value="handoff/web-console" style="margin-bottom:14px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn sm" id="closeNewWt">取消</button>
+      <button type="submit" class="btn sm primary">创建</button>
+    </div>
+    <p class="dim" id="newWtFeedback" style="font-size:12px;margin:10px 0 0" hidden>已创建（mock），数据未真正发送。</p>
+  </form>
+</dialog>
+
+<!-- home 基准终端悬浮窗（桌面壳形态；可收起，会话保留） -->
+<div class="homedock" id="homedock" hidden>
+  <div class="hd-bar">
+    <button class="tab active" style="padding:2px 8px">bash · home 1</button>
+    <button class="icon-btn xs" title="新建">＋</button>
+    <span style="flex:1"></span>
+    <button class="icon-btn xs" id="hideHome" title="收起（会话保留）">－</button>
+  </div>
+  <div class="hd-body">$ handoff status --target mac-02<br>agentd  可用 · 执行者 claude codex grok opencode</div>
+</div>
+
 <script>
   // 看板/工单弹层：原生 dialog，镜像真实 Shell 的 overlay 行为（同时只开一个）
   const board = document.getElementById('boardDialog');
@@ -563,6 +666,20 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
   document.getElementById('openBoard').addEventListener('click', () => board.showModal());
   document.getElementById('closeBoard').addEventListener('click', () => board.close());
   document.getElementById('openTickets').addEventListener('click', () => tickets.showModal());
+  // 显示偏好 / 新建工作树 / home 悬浮窗：同为原生 dialog 与 hidden 切换，零依赖
+  const prefs = document.getElementById('prefsDialog');
+  document.getElementById('prefsBtn').addEventListener('click', () => prefs.showModal());
+  document.getElementById('closePrefs').addEventListener('click', () => prefs.close());
+  const newWt = document.getElementById('newWtDialog');
+  document.getElementById('newWtBtn').addEventListener('click', () => newWt.showModal());
+  document.getElementById('closeNewWt').addEventListener('click', () => newWt.close());
+  document.getElementById('newWtForm').addEventListener('submit', (e) => {
+    e.preventDefault(); // 原型不连后端
+    document.getElementById('newWtFeedback').hidden = false;
+  });
+  const home = document.getElementById('homedock');
+  document.getElementById('openHome').addEventListener('click', () => { home.hidden = !home.hidden; });
+  document.getElementById('hideHome').addEventListener('click', () => { home.hidden = true; });
   document.getElementById('closeTickets').addEventListener('click', () => tickets.close());
 
   // 审阅栏开合：waiting_review 才有入口，人手动收起后不再抢开

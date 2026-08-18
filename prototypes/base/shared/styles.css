@@ -134,3 +134,56 @@ dialog::backdrop { background: rgba(0,0,0,.3); }
 
 .mono { font-family: var(--font-mono); }
 .dim { color: var(--muted-foreground); }
+
+/* ---- 2026-08-18 刷新（B131）：左栏搜索、显示偏好、机器行动作、底部图标区 ---- */
+.sidebar .brand { display: flex; align-items: center; justify-content: space-between; }
+.icon-btn {
+  border: none; background: none; cursor: pointer; color: var(--muted-foreground);
+  padding: 2px 6px; border-radius: 4px; font-size: 13px;
+}
+.icon-btn:hover { background: var(--muted); color: var(--foreground); }
+.icon-btn.xs { padding: 0 4px; font-size: 12px; }
+.tree-search { padding: 6px 8px; display: flex; align-items: center; gap: 6px; }
+.tree-search .input { flex: 1; }
+.kbd {
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
+}
+/* 机器行的动作入口只在 hover 时出现——常驻会让左栏变成按钮墙 */
+.machine-row { display: flex; align-items: center; justify-content: space-between; }
+.machine-row .row-actions { visibility: hidden; display: flex; gap: 2px; }
+.machine-row:hover .row-actions { visibility: visible; }
+.sidebar .dim-item { color: var(--muted-foreground); font-size: 12px; }
+.dock {
+  display: flex; align-items: center; gap: 2px;
+  border-top: 1px solid var(--border); padding: 6px 8px;
+}
+.dock-btn {
+  position: relative; border: none; background: none; cursor: pointer;
+  color: var(--muted-foreground); padding: 5px 8px; border-radius: 6px;
+  font-size: 14px; text-decoration: none; line-height: 1;
+}
+.dock-btn:hover { background: var(--muted); color: var(--foreground); }
+.dock-btn .dot {
+  position: absolute; top: 3px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+}
+.dock-btn .dot.amber { background: var(--amber); }
+.dock-badge { position: absolute; top: -2px; right: -2px; font-size: 10px; padding: 0 4px; }
+/* 看板卡片的干预态：琥珀左竖条 + 边框。failed 保持红色、且不带干预标记 */
+.bcard { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px; }
+.bcard.intervene { border-color: var(--amber); border-left: 3px solid var(--amber); }
+.bcard.failed { border-color: var(--destructive); }
+/* home 悬浮窗：桌面壳里的基准终端，可收起（会话保留） */
+.homedock {
+  position: fixed; right: 20px; bottom: 20px; width: 420px;
+  background: var(--background); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+.homedock .hd-bar {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.homedock .hd-body {
+  font-family: var(--font-mono); font-size: 12px; padding: 10px;
+  height: 140px; overflow: auto; color: var(--muted-foreground);
+}
