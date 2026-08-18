@@ -13,22 +13,24 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
-// 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
+// 注册表必须认识始终可用的执行者名：dispatch --executor <name> 的路由前提。
 //
-// 为什么每个名字都要断言而不是只断言数量：B2（claude）与 B3（grok）是并行开发的
-// 两条分支，各自往注册表里加了一行，合并时 cmd/agentd.go 这一处必然冲突——手工
-// 解冲突时漏掉任一行都不会编译报错，症状要拖到「派发时报未注册」才暴露。
-func TestAdapterRegistryHasAllExecutors(t *testing.T) {
+// 为什么每个始终可用名字都要断言而不是只断言数量：漏掉任一行都不会编译报错，
+// 症状要拖到「派发时报未注册」才暴露。grok 是否存在由符号链接能力决定，
+// 由 TestAdaptersForSkipsGrokWhenSymlinkUnavailable 单独覆盖。
+func TestAdapterRegistryHasAlwaysAvailableExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	for _, want := range []string{"opencode", "claude", "grok", "codex", "fake"} {
+	for _, want := range []string{"opencode", "claude", "codex", "fake"} {
 		if _, ok := ads[want]; !ok {
 			names := make([]string, 0, len(ads))
 			for n := range ads {
@@ -36,6 +38,47 @@ func TestAdapterRegistryHasAllExecutors(t *testing.T) {
 			}
 			t.Fatalf("adapter 注册表缺 %s，实际注册: %v", want, names)
 		}
+	}
+}
+
+// TestAdaptersForRegistersClaudeOnAllPlatforms 钉住 B128 的核心结论：
+// claude 不再按平台拒绝。
+func TestAdaptersForRegistersClaudeOnAllPlatforms(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ads := adaptersForWithProbe(goos, slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+		if _, ok := ads["claude"]; !ok {
+			t.Fatalf("goos=%s 时 claude 未注册", goos)
+		}
+	}
+}
+
+// TestAdaptersForSkipsGrokWhenSymlinkUnavailable 钉住 grok 走能力探测：
+// 探测目录不可用时必须不注册，而不是注册了等运行期炸。
+func TestAdaptersForSkipsGrokWhenSymlinkUnavailable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	ads := adaptersForWithProbe("windows", slog.New(slog.NewTextHandler(io.Discard, nil)), missing)
+	if _, ok := ads["grok"]; ok {
+		t.Fatalf("符号链接不可用时 grok 仍被注册")
+	}
+	// 其余执行器不受影响：一个执行器不可用不该拖垮整张注册表
+	for _, name := range []string{"opencode", "codex", "claude", "fake"} {
+		if _, ok := ads[name]; !ok {
+			t.Fatalf("%s 被误伤，未注册", name)
+		}
+	}
+}
+
+// TestAdaptersForRegistersGrokWhenSymlinkAvailable 钉住 grok 注册表的正向接线：
+// 防止实现行被删掉而现有测试仍全绿的静默回归，问题会拖到派发时才暴露。
+// Windows 上没有符号链接权限时跳过；这不是 grok 注册逻辑失败。
+func TestAdaptersForRegistersGrokWhenSymlinkAvailable(t *testing.T) {
+	probeDir := t.TempDir()
+	if supported, reason := grok.SymlinkCapability(probeDir); !supported {
+		t.Skipf("本机不具备符号链接能力，跳过 grok 正向注册测试: %s", reason)
+	}
+	ads := adaptersForWithProbe("windows", slog.New(slog.NewTextHandler(io.Discard, nil)), probeDir)
+	if _, ok := ads["grok"]; !ok {
+		t.Fatalf("符号链接能力可用时 grok 未注册；实现行被删掉会造成静默回归")
 	}
 }
 
@@ -131,33 +174,12 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 	}
 }
 
-// TestAdaptersForWindowsExcludesUnsupported 钉住 Windows 上的诚实拒绝。
-//
-// 为什么在注册层而不是 Start 里报错：handoff status 会如实显示这台机器支持哪些
-// 执行器，协调者在派发前就看得见，而不是任务跑到一半转 failed。
-//
-// claude：输入通道（命名管道）与 AF_UNIX 裁决 socket 都不在本轮范围。
-// grok：taskenv 用 os.Symlink，Windows 上需 SeCreateSymbolicLinkPrivilege。
-func TestAdaptersForWindowsExcludesUnsupported(t *testing.T) {
-	got := adaptersFor("windows", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, name := range []string{"claude", "grok"} {
-		if _, ok := got[name]; ok {
-			t.Errorf("Windows 上不应注册 %s", name)
-		}
-	}
-	for _, name := range []string{"opencode", "codex", "fake"} {
+// TestAdaptersForAlwaysAvailableKeepsAll 钉住平台能力探测不误伤始终可用的执行器。
+func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
+	got := adaptersForWithProbe("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	for _, name := range []string{"opencode", "claude", "codex", "fake"} {
 		if _, ok := got[name]; !ok {
-			t.Errorf("Windows 上应注册 %s", name)
-		}
-	}
-}
-
-// TestAdaptersForUnixKeepsAll 钉住非 Windows 平台一个都不能少。
-func TestAdaptersForUnixKeepsAll(t *testing.T) {
-	got := adaptersFor("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, name := range []string{"opencode", "claude", "grok", "codex", "fake"} {
-		if _, ok := got[name]; !ok {
-			t.Errorf("darwin 上应注册 %s", name)
+			t.Errorf("应注册 %s", name)
 		}
 	}
 }

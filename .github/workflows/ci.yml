@@ -54,7 +54,9 @@ jobs:
       - name: install.sh 单测
         run: bash install_test.sh
 
-  powershell:
+  # windows：Windows runner 上的运行期验证。install.ps1 的 PowerShell 单测 +
+  # Go 侧真正需要 Windows 内核语义的那些包。
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,3 +69,12 @@ jobs:
       - name: install.ps1 单测（PowerShell 7）
         shell: pwsh
         run: .\install_test.ps1
+      # Go 侧此前在 Windows 上一行测试都没跑过：命名管道中继、匿名管道不 EOF、
+      # 管道名抢占防护、AF_UNIX 往返，全是运行期行为，在 Linux/macOS runner 上
+      # 写多少单测都碰不到。交叉编译门禁只防编译期回归，防不住运行期语义错配
+      # （B128 实证：syscall.O_NONBLOCK 在 Windows 上有定义、编译得过、运行期必炸）。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Windows 运行期单测
+        run: go test ./internal/prochost/... ./internal/executor/claudecode/... -count=1
