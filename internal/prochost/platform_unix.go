@@ -171,6 +171,22 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 	}
 }
 
+// writeInputChannel 往 FIFO 投递字节（见 WriteInputChannel 的文档）。
+//
+// O_NONBLOCK 不是性能选择而是语义选择：没有它，打开写端会一直阻塞到出现读端，
+// 「执行者已不在」就变成「永远等下去」。
+func writeInputChannel(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return fmt.Errorf("打开输入通道 %s（读端可能已不在）: %w", path, err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写输入通道 %s: %w", path, err)
+	}
+	return nil
+}
+
 // installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的
 // 「进程容器」里，使执行者全树继承其约束。
 //

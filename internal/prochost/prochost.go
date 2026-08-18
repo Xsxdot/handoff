@@ -235,7 +235,7 @@ func Kill(h Handle) error {
 	return fmt.Errorf("%w: pid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
 
-// CreateInputChannel 幂等创建输入通道（unix 为 0600 命名管道）。
+// CreateInputChannel 幂等创建输入通道（unix 为 0600 命名管道，Windows 由平台实现）。
 //
 // 参数：path 为通道路径（通常是 <taskDir>/in.fifo）
 //
@@ -243,7 +243,6 @@ func Kill(h Handle) error {
 //   - 已存在且确实是命名管道 → nil（复用）
 //   - 已存在但是普通文件/目录 → 错误（残留物会让 shim 的 O_RDWR 打开语义完全改变，
 //     必须显式失败而不是静默当管道用）
-//   - Windows → not implemented（A 期）
 func CreateInputChannel(path string) error { return createInputChannel(path) }
 
 // WaitInputReader 等待输入通道上出现读端（shim 已执行到持有 FIFO 那一步）。
@@ -260,6 +259,24 @@ func CreateInputChannel(path string) error { return createInputChannel(path) }
 // 返回：等待耗时（调用方记日志）与错误。非「无读者」类错误立即返回，不重试。
 func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) {
 	return waitInputReader(path, timeout)
+}
+
+// WriteInputChannel 往输入通道投递一段字节。
+//
+// 参数：
+//   - path: 通道路径（与 Spec.InputCh 同一个值）
+//   - data: 原样投递的字节，本函数不加工、不追加换行
+//
+// 返回：读端不在、通道不存在、写失败时返回错误。
+//
+// 注意：
+//   - **「打不开即读端不在」是承重语义**：unix 上以 O_WRONLY|O_NONBLOCK 打开，
+//     读端未就绪时 POSIX 规定直接失败（ENXIO）；Windows 上 CreateFile 打不开
+//     管道名报 ERROR_FILE_NOT_FOUND。两边都是调用方判定「执行者已不在」的依据，
+//     实现不得改成阻塞等待或静默成功
+//   - 本函数不做 JSON 序列化：那是 adapter 的协议知识，prochost 只搬字节
+func WriteInputChannel(path string, data []byte) error {
+	return writeInputChannel(path, data)
 }
 
 // Start 以 detached 方式拉起 shim，由 shim 承载 spec 描述的执行者进程。

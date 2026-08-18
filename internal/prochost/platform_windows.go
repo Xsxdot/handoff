@@ -225,3 +225,8 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 	log().Error("Windows 输入通道尚未实现", "path", path, "timeout", timeout)
 	return 0, errNotImplemented
 }
+
+func writeInputChannel(path string, data []byte) error {
+	log().Error("Windows 输入通道尚未实现", "path", path, "bytes", len(data))
+	return errNotImplemented
+}

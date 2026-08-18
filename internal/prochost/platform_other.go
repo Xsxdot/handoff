@@ -62,6 +62,8 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 	return 0, errNotImplemented
 }
 
+func writeInputChannel(path string, data []byte) error { return errNotImplemented }
+
 // installProcessContainer 本平台无实现。
 //
 // 实际不可达：本平台的 spawnDetached 同样返回未实现，shim 根本起不来。
