@@ -266,11 +266,11 @@ Windows 上它返回 nil 但什么都没做——这类函数把「没问题」�
 | 1 | ✅ | `handoff status --target win-b37` 执行者行：`claude codex fake grok opencode(默认)`。grok 出现即证明符号链接能力探针通过 |
 | 2 | ✅ | 任务 `96a8020d`：dispatch → 权限门产工单 → `reply --approve` → `completed` |
 | 3 | ✅ | 同任务连续第 2、3 轮均送达模型并被响应；agentd 重启后第 4 轮仍送达（见第 5 条） |
-| 4 | ⚠️ | **拦截成立**：Write 越界被真拦，`out.jsonl` 的 tool_result 为 `is_error:true`、`non_execution_kind: permission-rule`。**两个判据均未达成**，根因是两处既有缺陷，非本条引入——见 B129（理由迟到一整回合）与 B130（`Bash` 全量 allow 可绕过路径门禁） |
+| 4 | ⚠️ | **拦截成立**：Write 越界被真拦，`out.jsonl` 的 tool_result 为 `is_error:true`、`non_execution_kind: permission-rule`。**两个判据均未达成**，根因是两处既有缺陷，非本条引入——见 B129（理由迟到一整回合）与 B134（`Bash` 全量 allow 可绕过路径门禁） |
 | 5 | ✅ | 杀 agentd pid 2264 → 确认 `PID 2264 GONE`，而 shim 4552 / claude 4888 / 裁决 MCP 4960 三个 pid 与启动时间原样存活 → 新 agentd 启动日志 `recovered=1 failed=0 waiting_review_kept=2`、`alive=true state=waiting_answer`、`resume_seq=2053 resume_turn=4`。随后一条裁决穿过新 agentd → 存活的 shim → 命名管道送达模型，模型回 `post-restart-ok` |
 | 6 | ✅ | `done` 后 `ALIVE_PIDS=`（三个进程全清）、`WORKTREE=False`。任务目录按设计保留，见 §10 第 6 条订正说明 |
-| 7 | ⛔ | **被 B131 阻塞，未验证**。dispatch 直接 500：`grok 未登录或凭据已失效 … ACP 错误 -32000: Authentication required`。已排除「缺默认模型」这一更省事的解释（传 `--model deepseek-v4-pro` 后同样失败），并取到物证：任务级 `grokhome/config.toml` 实际只含 `[ui] [models] [permission] [cli] [marketplace]`，用户 `~/.grok/config.toml` 里的 `[model.deepseek-v4-pro]` provider 定义块不在其中 |
+| 7 | ⛔ | **被 B135 阻塞，未验证**。dispatch 直接 500：`grok 未登录或凭据已失效 … ACP 错误 -32000: Authentication required`。已排除「缺默认模型」这一更省事的解释（传 `--model deepseek-v4-pro` 后同样失败），并取到物证：任务级 `grokhome/config.toml` 实际只含 `[ui] [models] [permission] [cli] [marketplace]`，用户 `~/.grok/config.toml` 里的 `[model.deepseek-v4-pro]` provider 定义块不在其中 |
 | 8 | ✅ | 任务 `009c3eb0`（B123）：dispatch → 权限门 4 次拦截并全部 `--approve` → `completed` → `continue` 同会话续接（`executor_session` `01a013b0-f149-7e51-b733-50491fbf7c62` 贯穿两回合，agentd 日志有 `codex 续接回合`）→ `done`（worktree 已删、codex app-server 已回收）。**注意**：该机 codex 的模型名是 `deepseek-v4-pro`，传 mac-02 惯用的 `gpt-5.6-luna` 会被 provider 顶回 |
 
-结论：claude（承重验收门）与 codex 全链路已验；grok 因既有缺陷 B131 未验，B128 待
-B131 修复后补验第 7 条。
+结论：claude（承重验收门）与 codex 全链路已验；grok 因既有缺陷 B135 未验，B128 待
+B135 修复后补验第 7 条。
