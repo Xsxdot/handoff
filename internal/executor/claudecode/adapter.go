@@ -360,12 +360,13 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 还原后的裸 tool_use_id）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//   - reason: 协调者给出的拒绝理由；本 task 先收下，Task 5 接入 Claude 原生消息字段
 //
 // 注意：
 //   - decision 取值**除 once 外一律 deny**：不认识的裁决绝不当成放行
 //     （与 manager 侧 gateDecision「allow 之外一律 reject」同一条纪律）
 //   - 找不到挂起请求（进程已死 / 请求已被重试替换）时按 ErrTaskNotRunning 处置
-func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)

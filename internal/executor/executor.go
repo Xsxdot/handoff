@@ -1,7 +1,8 @@
 // Package executor 定义 handoff 的 executor 挂载契约：Adapter 接口与事件/结果类型。
 //
 // 职责：
-//   - 定义「五动作」Adapter 契约：Start / Events / Send / RespondPermission / Stop
+//   - 定义「五动作」Adapter 契约：Start / Events / Send / RespondPermission / Stop；
+//     RespondPermission 应答权限门，decision 取 "once" 或 "reject"，reject 时可带协调者理由
 //   - 定义 AdapterEvent（permission/question/progress/result 四类）与 Result 数据结构
 //   - 为不同 executor（opencode、Claude Code、grok）预留统一挂载点，实现方只实现本契约
 //
@@ -235,7 +236,11 @@ type Adapter interface {
 	//   - permID: 权限请求 id（与事件中的 PermissionID 一致；manager 的 ticket id
 	//     经 taskID:permID 命名空间化，此处传裸 permID，不得传命名空间化 id）
 	//   - decision: "once"（批准本次）或 "reject"（拒绝）
-	RespondPermission(ctx context.Context, taskID, permID, decision string) error
+	//   - reason: decision 为 "reject" 时协调者给出的原因；批准时忽略，可为空。
+	//     原生协议带得了消息的 adapter 应把它与裁决同帧送达模型，并实现
+	//     manager 侧的 DenyReasonInBand 可选接口；带不了的忽略即可，
+	//     manager 会退回带外注入（B50）
+	RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error
 
 	// Stop 终止任务执行并回收 executor 侧资源，事件通道随即关闭。
 	Stop(taskID string) error

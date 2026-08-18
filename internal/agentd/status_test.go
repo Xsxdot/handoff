@@ -33,7 +33,7 @@ type probeStub struct {
 func (p *probeStub) Start(ctx context.Context, req executor.StartReq) error { return nil }
 func (p *probeStub) Events(taskID string) <-chan executor.AdapterEvent      { return nil }
 func (p *probeStub) Send(ctx context.Context, taskID, text string) error    { return nil }
-func (p *probeStub) RespondPermission(ctx context.Context, taskID, permID, decision string) error {
+func (p *probeStub) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error {
 	return nil
 }
 func (p *probeStub) Stop(taskID string) error { return nil }
@@ -263,7 +263,7 @@ type plainStub struct{}
 func (p *plainStub) Start(ctx context.Context, req executor.StartReq) error { return nil }
 func (p *plainStub) Events(taskID string) <-chan executor.AdapterEvent      { return nil }
 func (p *plainStub) Send(ctx context.Context, taskID, text string) error    { return nil }
-func (p *plainStub) RespondPermission(ctx context.Context, taskID, permID, decision string) error {
+func (p *plainStub) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error {
 	return nil
 }
 func (p *plainStub) Stop(taskID string) error { return nil }

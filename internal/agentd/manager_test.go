@@ -104,7 +104,7 @@ func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
 	return nil
 }
 
-func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision string) error {
+func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.respondErr != nil {
@@ -376,7 +376,7 @@ func (a *failStartAdapter) Events(string) <-chan executor.AdapterEvent {
 }
 
 func (a *failStartAdapter) Send(context.Context, string, string) error { return nil }
-func (a *failStartAdapter) RespondPermission(context.Context, string, string, string) error {
+func (a *failStartAdapter) RespondPermission(context.Context, string, string, string, string) error {
 	return nil
 }
 

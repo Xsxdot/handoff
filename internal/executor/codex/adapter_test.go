@@ -187,7 +187,7 @@ func TestActionsCarryNotRunningSentinel(t *testing.T) {
 	if err := a.Send(ctx, "nope", "hi"); !isNotRunning(err) {
 		t.Fatalf("Send: %v", err)
 	}
-	if err := a.RespondPermission(ctx, "nope", "p", "once"); !isNotRunning(err) {
+	if err := a.RespondPermission(ctx, "nope", "p", "once", ""); !isNotRunning(err) {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	if err := a.Stop("nope"); !isNotRunning(err) {

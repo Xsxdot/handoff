@@ -1418,7 +1418,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err != nil {
 			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 		}
-		if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+		if err := ad.RespondPermission(actx, taskID, permID, decision, reason); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
 		// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
@@ -1716,7 +1716,7 @@ func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent) {
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
-	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once"); err != nil {
+	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once", ""); err != nil {
 		m.log.Warn("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
 			"task", taskID, "perm", ev.PermissionID, "cause", err)
 		return
@@ -1950,7 +1950,7 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
-	if err := ad.RespondPermission(actx, taskID, permID, "once"); err != nil {
+	if err := ad.RespondPermission(actx, taskID, permID, "once", ""); err != nil {
 		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "source", source, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -2234,7 +2234,7 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
 		return
 	}
-	if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+	if err := ad.RespondPermission(actx, taskID, permID, decision, reason); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由协调者裁决。
 		// 工单未标记送达，协调者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)

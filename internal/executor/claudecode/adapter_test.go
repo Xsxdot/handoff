@@ -77,7 +77,7 @@ func TestNotRunningWrapsSentinel(t *testing.T) {
 	if err := a.Send(t.Context(), "no-such-task", "x"); !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Errorf("Send 应包装 ErrTaskNotRunning，实际 %v", err)
 	}
-	if err := a.RespondPermission(t.Context(), "no-such-task", "p", "once"); !errors.Is(err, executor.ErrTaskNotRunning) {
+	if err := a.RespondPermission(t.Context(), "no-such-task", "p", "once", ""); !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Errorf("RespondPermission 应包装 ErrTaskNotRunning，实际 %v", err)
 	}
 	if err := a.Stop("no-such-task"); !errors.Is(err, executor.ErrTaskNotRunning) {

@@ -8,3 +8,4 @@
 - [Task 1 / 双裁决通过] spec 符合：覆盖重定向形态、引号状态、~ 展开、fd 复制/关闭排除、/dev 丢弃识别；质量：纯函数、中文 why 注释、无新增依赖；测试：沙箱内指定环境变量运行通过；commit range：c34ecc04..HEAD（本 task 提交）。
 - [Task 2 / 双裁决通过] spec 符合：bash 先判 req.Paths 与自摘重定向落点，越界复用既有文案并升级，干净落回 judgeCommand；质量：三条 Debug 均带 path，归一化失败带 cause，越界日志去重说明完整；测试：internal/permgate 全包通过；commit range：4732a591..HEAD（本 task 提交）。
 - [Task 3 / 双裁决通过] spec 符合：四条绝对路径/家目录重定向模式为 ask，未加入 `*>*`；质量：why 注释与逐条生成配置断言同步，保留 external_directory=ask；测试：internal/executor/opencode 全包通过；commit range：db4f1b94..HEAD（本 task 提交）。
+- [Task 4 / 双裁决通过] spec 符合：Adapter 五实现、manager 四调用点、测试 stub 全部同步 reason；fake 记录 Reason 且未实现可选能力位；质量：协议无消息字段/老端点丢字段 why 完整，go.mod/go.sum 未改；验证：go build/go vet 通过，fake、claudecode、codex、grok、opencode 与沙箱外 TMPDIR=/tmp 的 agentd 全包通过。待复核：工作区 TMPDIR 下全量 Go 测试另有计划预列的 root TestInstallScriptUnits 与 cmd TestProjectAddRejectsNonRepo 假红，未修改其文件；commit range：359b0263..HEAD（本 task 提交）。
