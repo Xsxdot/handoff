@@ -8,10 +8,14 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
-## [v0.3.0-rc1] - 2026-08-18
+## [v0.3.0-rc2] - 2026-08-18
 
 **预发布，只为在真实 runner 上验证发布流水线。** 它被标成 prerelease，因此
 不会改变 `releases/latest`——`install.sh` 与 agentd 自更新都不会拉到它。
+
+> v0.3.0-rc1 未产出 release：它在验证门就红了（`internal/agentd` 的八条
+> Reveal in Finder 用例默认取宿主平台，在 ubuntu runner 上一律撞 501）。
+> 那是本分支第一次在 Linux 上跑 CI 才暴露出来的既有问题，已在 rc2 修掉。
 
 本轮流水线第一次产出**桌面端资产**（`handoff-desktop_*`），与既有的 CLI 资产
 （`handoff_*`）互不干扰；后者的命名、校验和与自更新契约保持不变。
