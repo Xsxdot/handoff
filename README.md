@@ -41,15 +41,10 @@ Windows (amd64 / arm64, PowerShell):
 irm https://handoff.gosuper.dev/install.ps1 | iex
 ```
 
-**On Windows, handoff can only act as coordinator** — dispatching, reviewing, ruling on
-permissions, and `upgrade`-ing remote machines all work, but the machine itself cannot be
-an executor machine: the process-hosting layer agentd depends on is not yet implemented on
-non-unix platforms (backlog B37). The dispatch target must be a macOS or Linux executor
-machine. If you want a Windows box to execute, install WSL2 and set up handoff plus an
-executor inside it following the Linux steps (for the coordinator machine to reach WSL2,
-forward the agentd port in from the Windows host, or put WSL2 directly on a virtual
-network like Tailscale). Also note that `wait --notify` desktop notifications exist only
-on macOS; on Windows the wake-up channel is `wait`'s stdout.
+On Windows, handoff can act as either a coordinator or an executor machine. The available
+executors and the grok symlink capability check are summarized in the Executor Notes below.
+`wait --notify` desktop notifications exist only on macOS; on Windows the wake-up channel is
+`wait`'s stdout.
 
 The script installs the binary to `~/.local/bin/handoff` (on Windows,
 `%LOCALAPPDATA%\Programs\handoff\handoff.exe`) — no sudo, no administrator rights.
@@ -420,6 +415,15 @@ instead of asking again.
 
 `--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `fake` (a
 dependency-free scripted demo). Readiness checks and caveats:
+
+Windows 执行机上四个执行器的现状：
+
+| 执行器 | 状态 | 说明 |
+|---|---|---|
+| opencode | 可用 | B37 真机验收通过 |
+| codex | 可用 | B123 真机验收通过 |
+| claude | 可用 | 输入通道走命名管道 + 中继，裁决 socket 走 AF_UNIX（Windows 原生支持） |
+| grok | 取决于部署形态 | 需要创建符号链接的权限：agentd 以管理员身份运行，或开启开发者模式。agentd 启动时会探测并在日志里说明 |
 
 - **opencode**: install [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) on the executor
   machine with model credentials configured (this is a referral link: sign up through it

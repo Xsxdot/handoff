@@ -14,3 +14,4 @@
 - 2026-08-18 Task 5（Windows CI 运行期单测）完成，spec 符合性与代码质量双裁决通过；本机无 PyYAML，YAML 未本地校验，由 CI 首跑兜底。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：Go 完工六门全绿；Windows 运行期单测未在本机执行。
 - 2026-08-18 Task 6（claude/grok 注册层）完成，spec 符合性与代码质量双裁决通过；删除与新契约冲突的既有 Windows 排除测试，改由能力探测测试覆盖。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：定向 cmd/grok 测试通过；完工六门全绿（含 Windows amd64/arm64 交叉编译与 amd64 vet）。
 - 2026-08-18 Task 7（AF_UNIX socket 适配说明与超长路径错误）完成，spec 符合性与代码质量双裁决通过。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：超长路径定向测试通过；完工六门全绿（含 Windows amd64/arm64 交叉编译与 amd64 vet）。
+- 2026-08-18 Task 8（README Windows 执行器状态同步）完成，spec 符合性与代码质量双裁决通过；同步安装说明与 Executor Notes 表格。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：README 定位与 `git diff --check` 通过；随后执行全分支终审门禁。
