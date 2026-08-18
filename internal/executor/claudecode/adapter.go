@@ -365,12 +365,14 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 还原后的裸 tool_use_id）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//   - reason: 协调者给出的拒绝理由；decision 为 reject 且理由非空时，经
+//     permDecision.Message 与裁决同帧送达模型（见下方 DenyReasonInBand）
 //
 // 注意：
 //   - decision 取值**除 once 外一律 deny**：不认识的裁决绝不当成放行
 //     （与 manager 侧 gateDecision「allow 之外一律 reject」同一条纪律）
 //   - 找不到挂起请求（进程已死 / 请求已被重试替换）时按 ErrTaskNotRunning 处置
-func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
@@ -393,10 +395,31 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	}
 	behavior, msg := "allow", ""
 	if decision != "once" {
-		behavior, msg = "deny", "协调者拒绝了本次操作"
+		behavior = "deny"
+		withReason := false
+		// 理由与裁决同帧：msg 会作为 tool_result 正文当场回给模型（perm.go 的
+		// Message → cmd/permission_mcp.go），模型在同一个回合里就知道该怎么改。
+		// 走带外注入的话，实测要迟到整整一个回合，中间那段空窗模型会自行发挥
+		// （B137 来源：B128 真机验收 seq32→seq33）
+		if r := strings.TrimSpace(reason); r != "" {
+			msg, withReason = turn.DenyGuidanceText(r), true
+		} else {
+			// 协调者没给理由：送一句空的比送通用句更差，模型会以为理由缺失是异常
+			msg = "协调者拒绝了本次操作"
+		}
+		a.log.Info("claude 回发拒绝裁决", "task", taskID, "perm", permID,
+			"with_reason", withReason)
 	}
 	return r.perm.Respond(permID, behavior, msg)
 }
+
+// DenyReasonInBand 表明本 adapter 把拒绝理由与裁决同帧送达模型。
+//
+// 返回恒为 true：理由进 permDecision.Message，经裁决 socket 回到
+// cmd/permission_mcp.go，再作为 tool_result 正文当场交给模型。
+//
+// manager 据此跳过 B50 的带外挂起注入——两条路都走会让模型被同一条理由说两遍。
+func (a *Adapter) DenyReasonInBand() bool { return true }
 
 // Stop 终止任务执行：停 socket 受理 → 回收执行者进程组 → 事件通道关闭 → 注销运行态。
 //

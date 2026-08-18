@@ -49,6 +49,7 @@ type PermCall struct {
 	TaskID   string
 	PermID   string
 	Decision string
+	Reason   string // 协调者的拒绝理由；批准时为空
 }
 
 // taskRun 是单个任务的 fake 运行状态：脚本队列 + 事件通道 + 阻塞点。
@@ -181,21 +182,21 @@ func (f *Fake) Send(_ context.Context, taskID, text string) error {
 }
 
 // RespondPermission 记录实参并解除对应任务的 Permission 步骤阻塞。
-func (f *Fake) RespondPermission(_ context.Context, taskID, permID, decision string) error {
+func (f *Fake) RespondPermission(_ context.Context, taskID, permID, decision, reason string) error {
 	f.mu.Lock()
 	err := f.permErr
 	f.mu.Unlock()
 	if err != nil {
-		f.log().Debug("fake 注入 RespondPermission 错误", "task", taskID, "perm", permID, "cause", err)
+		f.log().Debug("fake 注入 RespondPermission 错误", "task", taskID, "perm", permID, "reason", reason, "cause", err)
 		return err
 	}
 	r := f.runner(taskID)
-	f.log().Debug("fake 收到 RespondPermission", "task", taskID, "perm", permID, "decision", decision)
+	f.log().Debug("fake 收到 RespondPermission", "task", taskID, "perm", permID, "decision", decision, "reason", reason)
 	f.mu.Lock()
-	f.perms = append(f.perms, PermCall{TaskID: taskID, PermID: permID, Decision: decision})
+	f.perms = append(f.perms, PermCall{TaskID: taskID, PermID: permID, Decision: decision, Reason: reason})
 	f.mu.Unlock()
 	select {
-	case r.permCh <- PermCall{TaskID: taskID, PermID: permID, Decision: decision}:
+	case r.permCh <- PermCall{TaskID: taskID, PermID: permID, Decision: decision, Reason: reason}:
 	default:
 	}
 	return nil

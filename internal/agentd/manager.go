@@ -61,6 +61,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -1454,12 +1455,10 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err != nil {
 			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 		}
-		if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+		if err := ad.RespondPermission(actx, taskID, permID, decision, reason); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
-		// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
-		// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
-		m.noteDenyGuidance(taskID, reason)
+		m.noteDenyGuidanceUnlessInBand(taskID, permID, reason)
 		m.markDelivered(taskID, ticketID)
 		return nil
 	case "ask":
@@ -1752,7 +1751,7 @@ func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent) {
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
-	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once"); err != nil {
+	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once", ""); err != nil {
 		m.log.Warn("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
 			"task", taskID, "perm", ev.PermissionID, "cause", err)
 		return
@@ -1910,7 +1909,11 @@ func (m *Manager) respondLateDecision(taskID, ticketID, permID, decision, state 
 	} else {
 		actx, acancel := unaryCtx(context.Background())
 		defer acancel()
-		if rerr := ad.RespondPermission(actx, taskID, permID, "reject"); rerr != nil {
+		// reason 传空串是有意的：本次 reject 不是对操作本身的否定，只是裁决
+		// 晚于回合边界。带理由的下发（turn.DenyGuidanceText）会缀上「不要重复
+		// 发起同一请求」，那句话在这里是错的指导——这条恰恰是可以重来的。
+		// 空串让 adapter 回退到通用句，与本路径改动前的行为逐字一致。
+		if rerr := ad.RespondPermission(actx, taskID, permID, "reject", ""); rerr != nil {
 			m.log.Warn("裁决晚到：回传 reject 失败（多为 executor 已退出）",
 				"task", taskID, "ticket", ticketID, "cause", rerr)
 		} else {
@@ -2030,7 +2033,7 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
-	if err := ad.RespondPermission(actx, taskID, permID, "once"); err != nil {
+	if err := ad.RespondPermission(actx, taskID, permID, "once", ""); err != nil {
 		m.log.Error("审批者批准：回传 executor 失败", "task", taskID, "perm", permID, "source", source, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
@@ -2235,14 +2238,15 @@ func (m *Manager) takeDenyGuidance(taskID string) string {
 
 // relayDenyGuidance 把协调者的拒绝原因作为一条普通消息下发给 executor，开新回合。
 //
+// 正文渲染与 claude 的同帧送达共用 turn.DenyGuidanceText，两条路措辞必须一致。
+//
 // 注意：
 //   - **不得触碰状态机**：本分支不建工单，落 waiting_answer 会造出「等你回答却
 //     零挂起工单」的死形态（reply/continue/done 三条路全封死）。任务保持 running
 //   - Send 失败只记 Error + 审计事件：executor 此刻没有在等任何应答，
 //     发不出去不会让任何东西挂死，协调者可用 continue 自己把话带上
 func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string) {
-	text := "你请求的操作已被协调者拒绝。原因：" + guidance +
-		"\n请据此调整做法后继续，不要重复发起同一请求。"
+	text := turn.DenyGuidanceText(guidance)
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("下发拒绝原因：解析执行者失败", "task", taskID, "cause", err)
@@ -2314,16 +2318,14 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
 		return
 	}
-	if err := ad.RespondPermission(actx, taskID, permID, decision); err != nil {
+	if err := ad.RespondPermission(actx, taskID, permID, decision, reason); err != nil {
 		// executor 侧可能已不在（进程被杀）：记录错误并保持现状，交由协调者裁决。
 		// 工单未标记送达，协调者可用 handoff resume 重投（见 RecoverStuck）
 		m.log.Error("回应权限失败", "task", taskID, "perm", permID, "decision", decision, "cause", err)
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
-	// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
-	// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
-	m.noteDenyGuidance(taskID, reason)
+	m.noteDenyGuidanceUnlessInBand(taskID, permID, reason)
 	m.markDelivered(taskID, ticketID)
 }
 
@@ -3062,6 +3064,51 @@ type reaper interface {
 // serve 端持有）行为不变。
 type volatilePermitter interface {
 	PermissionsVolatile() bool
+}
+
+// denyReasonInBander 表示该 adapter 能把拒绝理由与裁决同帧送达模型
+// （claude：理由进 permDecision.Message，作为 tool_result 正文当场回给模型）。
+//
+// 不实现本接口的 adapter（grok/codex 的原生协议没有消息字段，opencode 走的
+// 老端点会丢弃额外字段，见 spec §2.5）行为不变，仍走 B50 的带外挂起注入。
+type denyReasonInBander interface {
+	DenyReasonInBand() bool
+}
+
+// denyReasonDelivered 判断本任务的 executor 是否已把拒绝理由同帧送达。
+//
+// 参数：taskID 为任务 id
+// 返回：true 表示理由已到模型手里
+//
+// 注意：返回 true 时调用方**不得**再 noteDenyGuidance——两条路都走会让模型
+// 被同一条理由说两遍。解析 adapter 失败时保守返回 false：宁可多说一遍，
+// 也不能让理由一句都没送到。
+func (m *Manager) denyReasonDelivered(taskID string) bool {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Warn("判定拒绝理由送达方式时解析执行者失败，按带外注入处置",
+			"task", taskID, "cause", err)
+		return false
+	}
+	d, ok := ad.(denyReasonInBander)
+	return ok && d.DenyReasonInBand()
+}
+
+// noteDenyGuidanceUnlessInBand 按 executor 的送达能力决定要不要挂起拒绝理由。
+//
+// 参数：taskID / permID 用于日志定位；reason 为协调者给出的原因
+//
+// executor 已把理由与裁决同帧送达时直接返回：再挂一份会让模型先在 tool_result
+// 里读到理由、下一条 question 时又被同一条理由砸一次。
+func (m *Manager) noteDenyGuidanceUnlessInBand(taskID, permID, reason string) {
+	if m.denyReasonDelivered(taskID) {
+		m.log.Debug("拒绝理由已与裁决同帧送达，跳过带外挂起",
+			"task", taskID, "perm", permID)
+		return
+	}
+	// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
+	// 正在终结的回合；挂起到下一条 question 到达时再下发
+	m.noteDenyGuidance(taskID, reason)
 }
 
 // ResumeTask 恢复 agentd 重启前已在执行的任务：探测执行器存活；存活则经 adapter

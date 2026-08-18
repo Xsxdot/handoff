@@ -83,6 +83,9 @@ type chanAdapter struct {
 	// respondErr 非 nil 时 RespondPermission/Send 直接返回它（模拟 executor
 	// 已退出或调用失败），供恢复操作的失败分支断言
 	respondErr error
+	// denyInBand 让本 adapter 可选地自报「拒绝理由已与裁决同帧送达」，
+	// 供 B137 的两条分支各测一次
+	denyInBand bool
 }
 
 // setRespondErr 设置（或用 nil 清除）RespondPermission/Send 的注入错误。
@@ -90,6 +93,20 @@ func (a *chanAdapter) setRespondErr(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.respondErr = err
+}
+
+// setDenyReasonInBand 设置本 adapter 自报的同帧送达能力（默认 false）。
+func (a *chanAdapter) setDenyReasonInBand(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.denyInBand = v
+}
+
+// DenyReasonInBand 实现 manager 的同名可选接口。
+func (a *chanAdapter) DenyReasonInBand() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.denyInBand
 }
 
 func (a *chanAdapter) Start(_ context.Context, req executor.StartReq) error {
@@ -110,7 +127,7 @@ func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
 	return nil
 }
 
-func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision string) error {
+func (a *chanAdapter) RespondPermission(_ context.Context, _ string, permID, decision, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.respondErr != nil {
@@ -424,7 +441,7 @@ func (a *failStartAdapter) Events(string) <-chan executor.AdapterEvent {
 }
 
 func (a *failStartAdapter) Send(context.Context, string, string) error { return nil }
-func (a *failStartAdapter) RespondPermission(context.Context, string, string, string) error {
+func (a *failStartAdapter) RespondPermission(context.Context, string, string, string, string) error {
 	return nil
 }
 
@@ -2010,6 +2027,41 @@ func TestDenyGuidanceConsumedOnce(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("第二条 question 应正常出单，挂起工单 %d 张", len(pending))
+	}
+}
+
+// TestDenyGuidanceSkippedWhenInBand 钉住能力位真的被用上：adapter 自报同帧送达
+// 时不得再挂起带外注入，否则模型先在 tool_result 里读到理由、下一条 question
+// 时又被同一条理由砸一次。
+func TestDenyGuidanceSkippedWhenInBand(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	ad.setDenyReasonInBand(true)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidanceUnlessInBand("T1", "perm-1", "别删，先 git mv 归档")
+
+	if got := m.takeDenyGuidance("T1"); got != "" {
+		t.Fatalf("挂起的理由 = %q，期望空——adapter 已同帧送达，不该再挂一份", got)
+	}
+}
+
+// TestDenyGuidanceKeptWhenNotInBand B50 的既有行为不许回归：adapter 不自报同帧
+// 送达时仍必须挂起，否则理由一句都到不了模型手里。
+func TestDenyGuidanceKeptWhenNotInBand(t *testing.T) {
+	m, st, _, ad := newTestManager(t)
+	ad.setDenyReasonInBand(false)
+	mustCreateTask(t, st, &proto.Task{
+		ID: "T1", RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	m.noteDenyGuidanceUnlessInBand("T1", "perm-1", "别删，先 git mv 归档")
+
+	if got := m.takeDenyGuidance("T1"); got != "别删，先 git mv 归档" {
+		t.Fatalf("挂起的理由 = %q，B50 的既有行为不许回归", got)
 	}
 }
 

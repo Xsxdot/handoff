@@ -3,6 +3,7 @@ package permgate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,71 @@ func TestJudgeNormalizationFailureEscalates(t *testing.T) {
 		Paths: []string{filepath.Join(f, "..", "..", "outside.go")}}, Scope{Workdir: work})
 	if v.Action == AutoAllow {
 		t.Fatalf("越出 Workdir 的路径不得自动放行，实得 %s（%s）", v.Action, v.Reason)
+	}
+}
+
+// TestJudgeBashPathsEscalate 钉住 B134 主修：bash 请求的落点越界必须升级人工，
+// 而不是落到 Consult 交廉价模型。落点有两个来源，都要覆盖。
+func TestJudgeBashPathsEscalate(t *testing.T) {
+	wd := t.TempDir()
+	scope := Scope{Workdir: wd}
+	g := newTestGate(t)
+	cases := []struct {
+		name string
+		req  Request
+	}{
+		{"executor 检出的越界目录", Request{
+			Tool: "bash", Text: "external_directory: ls /etc", Command: "ls /etc",
+			Paths: []string{"/etc"}}},
+		{"handoff 自己摘的重定向落点", Request{
+			Tool: "bash", Text: "Bash: echo x > /etc/hosts", Command: "echo x > /etc/hosts"}},
+		{"追加写到家目录", Request{
+			Tool: "bash", Text: "Bash: echo x >> ~/.zshrc", Command: "echo x >> ~/.zshrc"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := g.Judge(c.req, scope)
+			if v.Action != Escalate {
+				t.Fatalf("Action = %v，期望 Escalate（reason=%q）", v.Action, v.Reason)
+			}
+			if !strings.Contains(v.Reason, "目标路径越出任务范围") {
+				t.Fatalf("Reason = %q，必须逐字复用 judgeFileWrite 的越界文案", v.Reason)
+			}
+		})
+	}
+}
+
+// TestJudgeBashInScopeFallsBack 落点全部在范围内时必须落回命令判据，
+// 而不是因为「有落点」就升级——否则每次往工作区里写日志都叫人。
+func TestJudgeBashInScopeFallsBack(t *testing.T) {
+	wd := t.TempDir()
+	scope := Scope{Workdir: wd}
+	g := newTestGate(t)
+	cases := []Request{
+		{Tool: "bash", Text: "Bash: echo x > out.txt", Command: "echo x > out.txt"},
+		{Tool: "bash", Text: "Bash: go test ./... > " + wd + "/log", Command: "go test ./... > " + wd + "/log"},
+		{Tool: "bash", Text: "Bash: go test ./... > /dev/null", Command: "go test ./... > /dev/null"},
+		{Tool: "bash", Text: "Bash: go test ./... 2>&1", Command: "go test ./... 2>&1"},
+	}
+	for _, req := range cases {
+		t.Run(req.Command, func(t *testing.T) {
+			if v := g.Judge(req, scope); v.Action != Consult {
+				t.Fatalf("Action = %v（reason=%q），期望 Consult——落点合法就该落回命令判据",
+					v.Action, v.Reason)
+			}
+		})
+	}
+}
+
+// TestJudgeBashNoPathsUnchanged 无落点的 bash 请求必须与改动前逐字同判：
+// 本 task 不许顺带改变绝大多数命令的走向。
+func TestJudgeBashNoPathsUnchanged(t *testing.T) {
+	g := newTestGate(t)
+	scope := Scope{Workdir: t.TempDir()}
+	if v := g.Judge(Request{Tool: "bash", Text: "Bash: go build ./...", Command: "go build ./..."}, scope); v.Action != Consult {
+		t.Fatalf("无害命令 Action = %v，期望 Consult", v.Action)
+	}
+	if v := g.Judge(Request{Tool: "bash", Text: "Bash: rm -rf /", Command: "rm -rf /"}, scope); v.Action != Escalate {
+		t.Fatalf("黑名单命令 Action = %v，期望 Escalate", v.Action)
 	}
 }

@@ -676,7 +676,7 @@ func (startFailAdapter) Events(string) <-chan executor.AdapterEvent {
 }
 
 func (startFailAdapter) Send(context.Context, string, string) error { return nil }
-func (startFailAdapter) RespondPermission(context.Context, string, string, string) error {
+func (startFailAdapter) RespondPermission(context.Context, string, string, string, string) error {
 	return nil
 }
 

@@ -1,12 +1,21 @@
 package claudecode
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // 事件映射：init → progress 带 SessionID
@@ -77,11 +86,107 @@ func TestNotRunningWrapsSentinel(t *testing.T) {
 	if err := a.Send(t.Context(), "no-such-task", "x"); !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Errorf("Send 应包装 ErrTaskNotRunning，实际 %v", err)
 	}
-	if err := a.RespondPermission(t.Context(), "no-such-task", "p", "once"); !errors.Is(err, executor.ErrTaskNotRunning) {
+	if err := a.RespondPermission(t.Context(), "no-such-task", "p", "once", ""); !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Errorf("RespondPermission 应包装 ErrTaskNotRunning，实际 %v", err)
 	}
 	if err := a.Stop("no-such-task"); !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Errorf("Stop 应包装 ErrTaskNotRunning，实际 %v", err)
+	}
+}
+
+// respondAndRead 起裁决 socket、装好 runState、发一条 ask，调 RespondPermission
+// 后把回发的裁决读出来。脚手架沿用 perm_test.go 既有的 newPermServer + dialAsk，
+// 不另起一套 mock。
+func respondAndRead(t *testing.T, decision, reason string) (behavior, message string) {
+	return respondAndReadWithLogger(t, decision, reason,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func respondAndReadWithLogger(t *testing.T, decision, reason string, logger *slog.Logger) (behavior, message string) {
+	t.Helper()
+	// macOS Unix socket 路径上限很短；工作区测试临时目录本身已含长的测试名，
+	// 即使缩短文件名也可能在 bind 前失败。短目录放在当前包下并由测试清理。
+	sockDir, err := os.MkdirTemp(".", "p")
+	if err != nil {
+		t.Fatalf("创建短 socket 目录: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "p")
+	asked := make(chan permAsk, 1)
+	srv, err := newPermServer(sock, slog.Default(), func(ask permAsk) { asked <- ask })
+	if err != nil {
+		t.Fatalf("newPermServer: %v", err)
+	}
+	defer srv.Close()
+
+	a := New(logger)
+	a.runs["T1"] = &runState{
+		taskID: "T1", perm: srv,
+		evCh: make(chan executor.AdapterEvent, 4), stopCh: make(chan struct{}),
+	}
+	conn := dialAsk(t, sock, "toolu_1", "Bash", `{"command":"rm -rf x"}`)
+	defer conn.Close()
+	select {
+	case <-asked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("2s 内未收到 ask")
+	}
+
+	if err := a.RespondPermission(context.Background(), "T1", "toolu_1", decision, reason); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	var got struct {
+		Behavior string `json:"behavior"`
+		Message  string `json:"message"`
+	}
+	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&got); err != nil {
+		t.Fatalf("读裁决: %v", err)
+	}
+	return got.Behavior, got.Message
+}
+
+// TestRespondPermissionApprovalDoesNotLogDeny 审批通过只应回发 allow，不能污染拒绝日志。
+// 这是日志分支回归测试：拒绝日志若仍在 deny 分支外，本用例会在现状下失败。
+func TestRespondPermissionApprovalDoesNotLogDeny(t *testing.T) {
+	var logs bytes.Buffer
+	_, _ = respondAndReadWithLogger(t, "once", "", slog.New(slog.NewTextHandler(&logs, nil)))
+	if strings.Contains(logs.String(), "claude 回发拒绝裁决") {
+		t.Fatalf("批准不应产生拒绝裁决日志，实际日志：%s", logs.String())
+	}
+}
+
+// TestRespondPermissionCarriesReason 钉住 B137 主修：协调者的理由必须原样进
+// permDecision.Message，而不是被换成一句通用话。通道早就是通的
+// （perm.go 的 Message 字段 → cmd/permission_mcp.go 回给模型），
+// 此前断在 adapter 把它写死成常量。
+func TestRespondPermissionCarriesReason(t *testing.T) {
+	const reason = "别删，先 git mv 归档"
+	behavior, message := respondAndRead(t, "reject", reason)
+	if behavior != "deny" {
+		t.Fatalf("behavior = %q，期望 deny", behavior)
+	}
+	if want := turn.DenyGuidanceText(reason); message != want {
+		t.Fatalf("message = %q，期望 %q", message, want)
+	}
+}
+
+// TestRespondPermissionEmptyReasonFallsBack 协调者没给理由时不能送一句空的：
+// 空 message 会让模型以为「理由缺失」本身是异常，通用句才是对的兜底。
+func TestRespondPermissionEmptyReasonFallsBack(t *testing.T) {
+	behavior, message := respondAndRead(t, "reject", "   ")
+	if behavior != "deny" {
+		t.Fatalf("behavior = %q，期望 deny", behavior)
+	}
+	if message != "协调者拒绝了本次操作" {
+		t.Fatalf("message = %q，期望回退到通用句", message)
+	}
+}
+
+// TestDenyReasonInBand claude 必须自报「理由已同帧送达」，否则 manager 会再走
+// 一遍带外注入，模型被同一条理由说两遍。
+func TestDenyReasonInBand(t *testing.T) {
+	if !New(nil).DenyReasonInBand() {
+		t.Fatal("claude adapter 必须返回 true")
 	}
 }
 

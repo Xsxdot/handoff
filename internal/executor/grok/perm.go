@@ -107,12 +107,13 @@ func (a *Adapter) PermissionsVolatile() bool { return true }
 //   - taskID: 目标任务
 //   - permID: 权限请求 id（即 ACP 的 toolCallId，裸值不带命名空间前缀）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//   - reason: ACP 的 outcome 只有 optionId，带不了消息，本 adapter 忽略（spec §2.5）
 //
 // 返回：
 //   - 任务不在运行中、或挂起表查不到该 permID 时，包装 executor.ErrTaskNotRunning
 //     ——两者都意味着「executor 侧那次请求已经不在了」，调用方据此转失败交协调者，
 //     而不是当作可重试的瞬时错误
-func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, _ string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		a.log.Warn("权限应答时任务不在运行中", "task", taskID, "perm", permID)

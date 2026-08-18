@@ -57,3 +57,19 @@ func TestEventsLiveAfterStart(t *testing.T) {
 		t.Fatal("Stop 后事件通道未关闭")
 	}
 }
+
+// TestFakeRecordsDenyReason 钉住 reason 一路传到 adapter：契约加了形参却在中途
+// 丢掉，是这类改动最典型的失败形态，且不会有任何编译错误提示。
+func TestFakeRecordsDenyReason(t *testing.T) {
+	f := New(nil)
+	if err := f.RespondPermission(context.Background(), "T1", "perm-1", "reject", "别删，先 git mv 归档"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	perms := f.Perms()
+	if len(perms) != 1 {
+		t.Fatalf("实参记录 %d 条，期望 1", len(perms))
+	}
+	if perms[0].Reason != "别删，先 git mv 归档" {
+		t.Fatalf("Reason = %q，期望原样记录", perms[0].Reason)
+	}
+}
