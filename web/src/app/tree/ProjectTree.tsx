@@ -302,16 +302,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
     // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
     <div className="flex min-h-0 flex-1 flex-col py-2">
-      {/* 第一段：不滚——任务看板入口 + 搜索框 + 「项目 N」 */}
-      <button
-        type="button"
-        onClick={onOpenBoard}
-        className={cn(ROW_CLASS, 'mb-1 hover:bg-accent/60')}
-        style={{ paddingLeft: 8 }}
-      >
-        <LayoutGrid className="size-4 shrink-0 text-muted-foreground" />
-        <span>任务看板</span>
-      </button>
+      {/* 第一段：不滚——搜索框 + 「项目 N」。
+          任务看板入口不在这里，它和工单、设置一起收在底部图标区：三者都是
+          「离开这棵树去别处看」的全局入口，散在一头一尾会让人以为它们是两类
+          东西，而顶部那一整行也把搜索框往下压了一格 */}
 
       {/* 搜索框与「项目 N」——形态基准是原型左栏的 sidebar-search +
           sidebar-section-title。N 跟随过滤，搜索时它就是「找到几个」的
@@ -590,7 +584,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       </div>
 
       {/* 第三段：钉在底部 */}
-      {/* 底部三入口：添加项目占主位，工单与设置收在右侧图标区（spec §3.2）。
+      {/* 底部四入口：添加项目占主位，看板 / 工单 / 设置收在右侧图标区。
+          三个图标是同一类东西——都是「离开这棵树去别处看」的全局入口，
+          所以摆在一起（看板原先单独钉在顶部，那个位置让它看起来像是树的一部分）。
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了 */}
       <div className="mt-1 flex items-center gap-1 border-t px-2 pt-2">
         <button
@@ -603,7 +599,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         </button>
         <button
           type="button"
+          aria-label="任务看板"
+          title="任务看板"
+          onClick={onOpenBoard}
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+        >
+          <LayoutGrid className="size-4" />
+        </button>
+        <button
+          type="button"
           aria-label="工单"
+          title="工单"
           onClick={onOpenTickets}
           className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >
@@ -619,6 +625,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         <button
           type="button"
           aria-label="设置"
+          title="设置"
           onClick={onOpenSettings}
           className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >

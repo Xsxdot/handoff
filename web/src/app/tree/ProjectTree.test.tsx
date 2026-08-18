@@ -250,17 +250,23 @@ describe('ProjectTree', () => {
     expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
-  it('顶部有任务看板入口，且不再有开发机入口', () => {
+  it('任务看板入口在底部图标区，不在顶部；也没有开发机入口', () => {
+    // why：看板 / 工单 / 设置是同一类东西——都是「离开这棵树去别处看」的全局
+    // 入口。看板原先单独钉在顶部，那个位置让它看起来像是树的一部分
     const onOpenBoard = vi.fn()
-    render(<ProjectTree {...props({ onOpenBoard })} />)
-    fireEvent.click(screen.getByRole('button', { name: /任务看板/ }))
+    const { container } = render(<ProjectTree {...props({ onOpenBoard })} />)
+    const board = screen.getByRole('button', { name: /任务看板/ })
+    const footer = container.querySelector('.border-t')
+    expect(footer?.contains(board)).toBe(true)
+    fireEvent.click(board)
     expect(onOpenBoard).toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: '开发机' })).not.toBeInTheDocument()
   })
 
-  it('底部三个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
+  it('底部四个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /任务看板/ })).toBeInTheDocument()
     // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
     const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
     expect(ticketBtn).toBeInTheDocument()
