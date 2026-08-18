@@ -52,7 +52,16 @@
 **Files:**
 - Create: `internal/prochost/taskmark.go`
 - Create: `internal/prochost/taskmark_other.go`
+- Create: `internal/prochost/taskmark_darwin.go`（**桩**，Task 2 替换）
+- Create: `internal/prochost/taskmark_linux.go`（**桩**，Task 3 替换）
+- Modify: `internal/prochost/prochost.go`（`Spec` 加 `TaskID` / `MarkRoot` 两个字段）
 - Test: `internal/prochost/taskmark_test.go`
+
+> **为什么 Task 1 就要碰这些**：`taskmark.go` 里 `attributesFn = attributes` 引用的
+> `attributes` 只在平台文件里定义，而 `applyTaskMark` 要读 `Spec.TaskID`——
+> 只建 `taskmark_other.go`（build tag `!darwin && !linux`）的话，本任务在 darwin
+> 与 linux 上**根本编译不过**。所以两个平台桩与两个 Spec 字段是 Task 1 的编译前置，
+> 必须一起落，它们都不改变任何行为。
 
 **Interfaces:**
 - Consumes: 无（本任务是地基）
@@ -139,7 +148,39 @@ func TestMarkMembersSkipsPerPIDFailure(t *testing.T) {
 Run: `go test ./internal/prochost/ -run TestMarkMembers -count=1`
 Expected: FAIL，`undefined: TaskCred` / `undefined: markMembers` / `undefined: attributesFn`
 
-- [ ] **Step 3: 写 `taskmark_other.go`**
+- [ ] **Step 3: 写 `Spec` 的两个字段与两个平台桩（编译前置）**
+
+在 `internal/prochost/prochost.go` 的 `Spec` 里，紧跟 `NprocLimit` 之后加两个字段
+（注释原文见 Task 4 Step 3，此处一次写到位，Task 4 不再重复加）：
+
+```go
+	TaskID   string `json:"task_id,omitempty"`
+	MarkRoot string `json:"mark_root,omitempty"`
+```
+
+再落两个平台桩。`internal/prochost/taskmark_darwin.go`：
+
+```go
+//go:build darwin
+
+// taskmark_darwin.go —— darwin 的任务标记实现。
+//
+// **本文件当前是 Task 1 为满足编译而落的桩**，真实实现由 Task 2 整体替换
+// （含本文件头注释）。桩期间 darwin 上标记判据不参与，归属退回 pgid + roster。
+package prochost
+
+func attributes(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+```
+
+`internal/prochost/taskmark_linux.go` 同构，build tag 换成 `//go:build linux`，
+文件头注释里的 Task 2 换成 Task 3。
+
+**桩必须返回 `errNotSupported`，绝不能返回 `(false, nil)`。** 差别是承重的：
+`errNotSupported` 的含义是「这条判据不可用」，调用方据此降级回 pgid + roster——
+那是 spec §8 设计好的一档；而 `(false, nil)` 的含义是「读到了，且这个进程不属于
+本任务」，那是一个我们并没有得出的结论，会让 `Sweep` 无声地漏杀。
+
+- [ ] **Step 4: 写 `taskmark_other.go`**
 
 ```go
 //go:build !darwin && !linux
@@ -157,7 +198,7 @@ package prochost
 func attributes(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
 ```
 
-- [ ] **Step 4: 写 `taskmark.go`**
+- [ ] **Step 5: 写 `taskmark.go`**
 
 ```go
 // taskmark.go —— 任务标记：不依赖采样时机的进程归属判据（平台无关契约）。
@@ -299,12 +340,12 @@ var filepathEvalSymlinks = filepath.EvalSymlinks
 本文件的 import 是 `"os"` 与 `"path/filepath"`（`os` 供 Task 7 的
 `MarkCapability` 用，`path/filepath` 供上面的测试缝用）。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [ ] **Step 6: 跑测试确认通过**
 
 Run: `go test ./internal/prochost/ -run TestMarkMembers -count=1`
 Expected: PASS（3 个用例）
 
-- [ ] **Step 6: 加关键节点日志**
+- [ ] **Step 7: 加关键节点日志**
 
 本任务的日志点已内联在 Step 4 的代码里，逐条核对：
 - `markMembers` 单 pid 读失败 → `log().Debug("读任务标记失败，跳过该进程", "pid", …, "cause", err)`
@@ -313,14 +354,14 @@ Expected: PASS（3 个用例）
 
 确认没有用 `fmt.Printf`：`grep -n "fmt.Print" internal/prochost/taskmark*.go` 应无输出。
 
-- [ ] **Step 7: 加注释**
+- [ ] **Step 8: 加注释**
 
 确认 Step 4 的文件头注释（职责 + 边界）已写；`TaskCred` 两个字段各自的零值语义已写；`markMembers` 的 `supported=false ≠ 空集` 已写；`resolveMarkRoot` 的符号链接解析原因已写；`applyTaskMark` 的「为什么在 Start」已写。
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add internal/prochost/taskmark.go internal/prochost/taskmark_other.go internal/prochost/taskmark_test.go
+git add internal/prochost/taskmark.go internal/prochost/taskmark_other.go internal/prochost/taskmark_darwin.go internal/prochost/taskmark_linux.go internal/prochost/prochost.go internal/prochost/taskmark_test.go
 git commit -m "feat(prochost): 任务标记的平台契约与降级路径"
 ```
 
@@ -329,7 +370,7 @@ git commit -m "feat(prochost): 任务标记的平台契约与降级路径"
 ## Task 2: darwin 实现（cwd + 偏移量运行期自检）
 
 **Files:**
-- Create: `internal/prochost/taskmark_darwin.go`
+- Modify: `internal/prochost/taskmark_darwin.go`（**整体替换 Task 1 落的桩**，含文件头注释）
 - Test: `internal/prochost/taskmark_darwin_test.go`
 
 **Interfaces:**
@@ -629,7 +670,7 @@ git commit -m "feat(prochost): darwin 按 cwd 归属，含偏移量运行期自�
 ## Task 3: linux 实现（environ）
 
 **Files:**
-- Create: `internal/prochost/taskmark_linux.go`
+- Modify: `internal/prochost/taskmark_linux.go`（**整体替换 Task 1 落的桩**，含文件头注释）
 - Test: `internal/prochost/taskmark_linux_test.go`
 
 **Interfaces:**
@@ -892,9 +933,9 @@ func TestHandleCredProjection(t *testing.T) {
 Run: `go test ./internal/prochost/ -run 'TestApplyTaskMark|TestResolveMarkRoot|TestHandleCred' -count=1`
 Expected: FAIL，`unknown field TaskID in struct literal of type Spec`
 
-- [ ] **Step 3: 加 `Spec` 与 `Handle` 字段**
+- [ ] **Step 3: 补 `Handle` 字段（`Spec` 的两个字段 Task 1 已加，此处只核对）**
 
-在 `internal/prochost/prochost.go` 的 `Spec` 里，紧跟 `NprocLimit` 之后加：
+`Spec` 的 `TaskID` / `MarkRoot` 已在 Task 1 Step 3 落地，**核对注释是否为下面这段原文，缺什么补什么，不要重复添加字段**：
 
 ```go
 	// TaskID 是本任务的 UUID，Start 据它注入 HANDOFF_TASK_ID 环境变量，
@@ -961,20 +1002,42 @@ func (h Handle) cred() TaskCred {
 
 - [ ] **Step 5: 四个 adapter 填凭据**
 
-四处各加两个字段。**四处改法完全相同**，逐一列出（不要跳过任何一处，也不要假设它们长得一样——四个文件组装 `Env` 的写法本来就不同）：
+**注意 `prochost.Spec` 不是在 adapter 的 `Start` 里构造的**，而是在只吃基本类型的
+helper 里（opencode/codex/grok 各自的 `serveSpec`、claudecode 的 `startProc`）。
+所以填法是**在 helper 返回之后赋值**，不是给 helper 加参数：
 
-`internal/executor/claudecode/proc.go:178` 的 `prochost.Spec{...}` 里加：
-```go
-		TaskID:   req.Task.ID,
-		MarkRoot: prochost.ResolveMarkRoot(req.Task.WorkDir, req.Task.WorktreeManaged),
-```
-`internal/executor/codex/proc.go:218`、`internal/executor/grok/proc.go:264`、
-`internal/executor/opencode/proc.go:217` 三处的 `prochost.Spec{...}` 里加**同样两行**。
+1. **`Spec.TaskID` 多数情况不用改签名。** 例如 opencode 的
+   `StartServe(ctx, repoPath, taskID, taskDir, configPath, env, log)` 里 `taskID`
+   已经是参数，在 `spec := serveSpec(...)` 之后直接加一行：
+   ```go
+   	spec.TaskID = taskID
+   ```
+   其余三家逐个看入口函数：已有 `taskID`（或等价物）就直接用；确实没有，才给那个
+   入口函数加一个 `taskID string` 参数。
 
-为此需要把 Task 1 的 `resolveMarkRoot` **导出**为 `ResolveMarkRoot`（adapter 在包外）。同步改 Task 1 的实现与测试里的名字。
+2. **`Spec.MarkRoot` 只给入口函数加一个参数。** 入口函数指 adapter 的 `Start`
+   直接调的那个：opencode/codex/grok 是各自的 `StartServe`，claudecode 是
+   `startProc`（给 `StartProcReq` 加一个 `MarkRoot` 字段即可）。在同一个调用点：
+   ```go
+   	spec.MarkRoot = markRoot
+   ```
+   值在 adapter 的 `Start` 里算——那里 `req.Task` 在作用域内：
+   ```go
+   	prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged)
+   ```
 
-> 注意 `req.Task.WorkDir` 为空时表示原地模式（工作区即 RepoPath），此时
-> `WorktreeManaged` 必然为 false，`ResolveMarkRoot` 返回空串——正确。
+3. **明确不要做的：不要给 `serveSpec` 本身加参数。** 它是纯 spec 构造器，改它的
+   签名会连带 churn 掉一批已有断言测试（如 opencode 的
+   `TestServeSpecPutsPasswordInEnvNotArgv`），而收益为零——构造之后赋值效果完全一样。
+
+4. **别漏 resume 路径**：`internal/executor/claudecode/resume.go:114` 也构造
+   `StartProcReq`，同样要填这两个值，否则恢复出来的执行者没有归属凭据。
+
+为此需要把 Task 1 的 `resolveMarkRoot` **导出**为 `ResolveMarkRoot`（adapter 在包外）。
+同步改 Task 1 的实现与测试里的名字。
+
+> `req.Task.Workdir()` 在 `WorkDir` 为空时回退 `RepoPath`（原地模式），而原地模式下
+> `WorktreeManaged` 必为 false，`ResolveMarkRoot` 因此返回空串——正确，不必额外判空。
 
 - [ ] **Step 6: 跑测试确认通过**
 
