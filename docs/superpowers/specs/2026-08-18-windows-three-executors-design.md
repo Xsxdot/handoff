@@ -152,19 +152,29 @@ B37 已经把 shim 从「平台中立」变成「需要一个平台钩子」（J
 
 探针实测 `Close()` 后文件已被删除，与 unix 行为一致。无需为 Windows 增加清理逻辑。
 
-### 5.3 安全边界的论证依据要改（含一条待验前置）
+### 5.3 安全边界的论证依据要改（边界本身已实测成立）
 
 `perm.go` 文件头现在写着：
 
 > 为什么用 unix socket 而不是 agentd 的 HTTP 口：被监管的 executor 不该拿到 agentd token；socket 文件落在 0700 的任务目录内，**权限即边界**，且无需分配端口。
 
-Windows 上没有 POSIX 权限位（探针实测 `mode=Srw-rw-rw-`），这句在 Windows 上是**假的**。边界实际由任务目录的 NTFS ACL 继承提供。注释必须改写成分平台表述——这是安全论证，写错的代价不是文档不准确。
+Windows 上没有 POSIX 权限位（探针实测 `mode=Srw-rw-rw-`），这句在 Windows 上是**假的**。边界实际由任务目录的 NTFS ACL 继承提供。
 
-**待验前置（本轮未验，不得假设）**：任务目录（`<DataDir>/tasks/<id>/`）的 NTFS ACL 是否真的只授权当前用户与 SYSTEM/Administrators。原计划在 Windows 机器上取 `Get-Acl` 实测，因该机被账户锁定反复打断（见 §9）未能取到。**实现阶段必须先验这一条**：若 ACL 不足以构成边界，需要在创建任务目录时显式设 ACL，那是本条范围内的追加工作。
+**该边界已实测成立**（Windows Server 2025 build 26100，`Get-Acl "$env:USERPROFILE\.handoff\tasks"`）：
+
+```text
+NT AUTHORITY\SYSTEM            = FullControl
+BUILTIN\Administrators         = FullControl
+IZQPFBDZJZ8GQFZ\Administrator  = FullControl
+```
+
+只有这三条，**没有 `Users`、没有 `Everyone`**——效果等价于 unix 侧的 0700（属主 + root + SYSTEM）。边界成立，**无需在创建任务目录时显式设 ACL**。
+
+但注释仍必须改成分平台表述：论证的依据换了（权限位 → NTFS ACL 继承）。这是安全论证，留着一句在该平台上为假的话，代价不是文档不准确——是下一个人会据此以为已经验过。
 
 ### 5.4 路径长度
 
-AF_UNIX 的 `sun_path` 上限 108 字节。探针路径 65 字节无问题；真实路径形如 `C:\Users\<user>\.handoff\tasks\<uuid>\perm.sock` 约 86 字节，够但不宽裕。`perm_test.go:171` 已有注释记载 unix 侧踩过这个坑（「长临时路径超 unix sun_path 上限」）。
+AF_UNIX 的 `sun_path` 上限 108 字节。探针路径 65 字节无问题；真实路径实测 **84 字节**（`C:\Users\administrator\.handoff\tasks\<uuid>\perm.sock`），够但不宽裕。`perm_test.go:171` 已有注释记载 unix 侧踩过这个坑（「长临时路径超 unix sun_path 上限」）。
 
 要求：Windows 上若 DataDir 被配到深路径导致超限，必须给出一条明确指出「socket 路径过长」的错误，而不是把 `net.Listen` 的原始错误直接抛给用户。
 
@@ -241,7 +251,7 @@ Windows 上它返回 nil 但什么都没做——这类函数把「没问题」�
 
 ## 11. 已知边界
 
-1. **Windows 机器可用性是本条的外部依赖。** 该机（47.80.243.155）在设计期间因 Administrator 账户被公网爆破反复锁定（B127），可用窗口仅约一分钟，导致 §5.3 的 ACL 前置未能实测。实现与验收阶段必须先收安全组暴露面，否则真机验收无法进行。
-2. **§5.3 的 NTFS ACL 未验**，是本条唯一带未知的前置，已在该节标注。
+1. **Windows 机器可用性是本条的外部依赖。** 该机（47.80.243.155）因 Administrator 账户被公网爆破反复锁定（B127），可用窗口仅约一分钟——设计期间靠后台重试循环等窗口才取到 §5.3 与 §5.4 的实测数据。**实现与验收阶段必须先收安全组暴露面**，否则第 10 节那八条剧本一条都跑不完。
+2. 环境事实（08-18 实测，供实现与验收参考）：OS 为 Windows Server 2025 Datacenter build 10.0.26100.0；claude CLI 2.1.233 已装在 `C:\Users\administrator\.local\bin\claude.exe`；`handoff-agentd` 计划任务存在但处于 `Ready`（未运行），验收前需拉起。
 3. `procenum` 在 Windows 上仍未实现（B122），与本条无关但会影响 Windows 上的每任务进程计数告警档——不要在本条里顺手做。
 4. 本条不覆盖 Linux：三个执行器在 Linux 上本就注册，无平台缝。
