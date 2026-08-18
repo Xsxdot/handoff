@@ -60,6 +60,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -2155,14 +2156,15 @@ func (m *Manager) takeDenyGuidance(taskID string) string {
 
 // relayDenyGuidance 把协调者的拒绝原因作为一条普通消息下发给 executor，开新回合。
 //
+// 正文渲染与 claude 的同帧送达共用 turn.DenyGuidanceText，两条路措辞必须一致。
+//
 // 注意：
 //   - **不得触碰状态机**：本分支不建工单，落 waiting_answer 会造出「等你回答却
 //     零挂起工单」的死形态（reply/continue/done 三条路全封死）。任务保持 running
 //   - Send 失败只记 Error + 审计事件：executor 此刻没有在等任何应答，
 //     发不出去不会让任何东西挂死，协调者可用 continue 自己把话带上
 func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string) {
-	text := "你请求的操作已被协调者拒绝。原因：" + guidance +
-		"\n请据此调整做法后继续，不要重复发起同一请求。"
+	text := turn.DenyGuidanceText(guidance)
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("下发拒绝原因：解析执行者失败", "task", taskID, "cause", err)
