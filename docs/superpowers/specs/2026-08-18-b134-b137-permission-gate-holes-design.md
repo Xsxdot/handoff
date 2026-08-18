@@ -203,13 +203,20 @@ case executor.PermToolBash:
 //   - reason:   decision 为 reject 时协调者给出的原因；批准时忽略，可为空
 RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error
 
-// DenyReasonInBand 表明本 adapter 能把拒绝理由与裁决同帧送达模型。
-// 返回 true 时 manager 不再挂起带外注入（B50），避免同一条理由被说两遍。
-DenyReasonInBand() bool
 ```
 
-`DenyReasonInBand` 照 `PermissionsVolatile()` 的成例做成能力位——同一个接口里已有这个形状，
-不引入新概念。
+`DenyReasonInBand` **不加进 `Adapter` 主接口**，做成可选接口 + 类型断言，与 `PermissionsVolatile`
+的真实形状一致（后者也不在 `Adapter` 上，是 `internal/agentd/manager.go:2983` 的
+`volatilePermitter` 接口，只有 grok 与 codex 实现）：
+
+```go
+// internal/agentd/manager.go，紧邻 volatilePermitter
+type denyReasonInBander interface {
+    DenyReasonInBand() bool
+}
+```
+
+好处是不实现它的 adapter 一行都不用改，本轮只有 claude 实现它。
 
 **这个能力位不是装饰**：manager 在 `waitPermission` 与 `RelayAnswer` 两处调用
 `noteDenyGuidance` 之前必须先问它，返回 true 就跳过挂起。漏了这一步，claude 上模型会
