@@ -213,7 +213,8 @@ logger.GetLogger().WithEntryName("permgate").Warnf(
 | `cd ~/handoff` / `go test ./handoff/...` / `rm -rf handoff` | **不**命中（第 2 步候选为空 / basename 不是 handoff） |
 | `cd handoff && make` | **不**命中（`&` 切段，`make` 不在本段） |
 | `handoff foo`（未来新子命令） | `Escalate`（§3.3 第 3 条，安全默认） |
-| `handoff --help` | `Escalate`（安全默认的已知代价，可接受） |
+| `handoff --help` / 裸 `handoff` | **不**命中——第 2 步「候选词元」跳过 `-` 开头的 flag，全是 flag 时候选为空。比原设想更好：无害调用不产噪音 |
+| `echo handoff dispatch` | `Escalate`（已知误伤：`echo` 后的词元同样进候选。代价只是一次人工点击，不值得为它引入命令语义解析） |
 | `handoff run T1 handoff show` | `Escalate`（变更名单优先，不被 `show` 救回） |
 
 回归证据要求：`go test ./internal/permgate/ ./internal/agentd/` 全绿，
