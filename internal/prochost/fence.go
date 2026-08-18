@@ -29,7 +29,22 @@ var errFenceNotSupported = errors.New("本平台不支持进程围栏")
 var (
 	fenceDisabled     bool
 	fenceReserveRatio = 0.1
+	// fenceTaskHardLimit 是每任务进程数硬上限（config.proc_fence.task_hard_limit）。
+	// 只在 fenceHardLimitMode 下使用；0 = 不启用该档。
+	fenceTaskHardLimit int
 )
+
+// fenceHardLimitMode 决定围栏值的来源，由平台常量初始化，测试可覆盖。
+//
+// false（unix）：系统上限 × 保留比例，围栏是「每用户进程数」的一部分。
+// true（Windows）：直接取 TaskHardLimit。理由见 spec 11.6——Windows 没有每用户
+// 进程数上限这个概念，没有东西可供「保留一部分」；而 job 的 ActiveProcessLimit
+// 与 TaskHardLimit 本就是同一个语义（每任务硬上限），用它实现甚至比现有的
+// roster 事后清扫更强：内核当场拒绝 fork，不用等下一次采样。
+//
+// **不取 TaskBudget**：那是「叫醒人」的告警线（config.go:209），拿它去填一个内核
+// 强制的硬上限，等于把一条本该只发事件的警告变成硬失败。
+var fenceHardLimitMode = defaultFenceHardLimitMode
 
 // fenceReserveFloor 是保留额的下限。
 //
@@ -63,16 +78,22 @@ var getNprocLimitFn = getNprocLimit
 // 参数：
 //   - disabled: true 时完全不装围栏（逃生开关）
 //   - reserveRatio: 保留额占系统上限的比例；不在 (0,1) 区间时保留默认值 0.1
+//     （只在 unix 的比例模式下生效）
+//   - taskHardLimit: 每任务进程数硬上限（只在 Windows 的硬上限模式下生效；0=不启用）
 //
-// 注意：本函数只改包级策略，不会影响已经拉起的 shim——它们的围栏在 fork 那
-// 一刻就定死了，改策略只对之后启动的任务生效。
-func SetFencePolicy(disabled bool, reserveRatio float64) {
+// 注意：shim 是独立进程、从不调用本函数，它拿到的围栏值来自 spec.NprocLimit
+// （agentd 侧 applyFencePolicy 算好后下发），所以本函数只影响 agentd 侧的计算。
+// 本函数只改包级策略，不会影响已经拉起的 shim——它们的围栏在 fork 那一刻就定死了，
+// 改策略只对之后启动的任务生效。
+func SetFencePolicy(disabled bool, reserveRatio float64, taskHardLimit int) {
 	fenceDisabled = disabled
 	if reserveRatio > 0 && reserveRatio < 1 {
 		fenceReserveRatio = reserveRatio
 	}
+	fenceTaskHardLimit = taskHardLimit
 	log().Info("进程围栏策略已设定", "disabled", fenceDisabled,
-		"reserve_ratio", fenceReserveRatio)
+		"reserve_ratio", fenceReserveRatio, "task_hard_limit", taskHardLimit,
+		"hard_limit_mode", fenceHardLimitMode)
 }
 
 // fenceLimit 算出应安装的围栏值 L。
@@ -90,6 +111,10 @@ func SetFencePolicy(disabled bool, reserveRatio float64) {
 func fenceLimit() (int, error) {
 	if fenceDisabled {
 		return 0, nil
+	}
+	if fenceHardLimitMode {
+		// 不碰 procLimit：本平台读不到系统上限，碰了就等于围栏静默缺席
+		return fenceTaskHardLimit, nil
 	}
 	limit, err := procLimitFn()
 	if err != nil {

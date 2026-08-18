@@ -10,12 +10,14 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -57,6 +59,19 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// TestMarkCapabilityReported 钉住启动期必须播报归属能力——
+// 静默缺席正是 B37 反复在防的东西：能力没了而日志一个字不说，
+// 排障时会一路怀疑到别处去。
+func TestMarkCapabilityReported(t *testing.T) {
+	supported, reason := prochost.MarkCapability()
+	if !supported && reason == "" {
+		t.Fatalf("不支持时必须给出理由，否则日志等于没说")
+	}
+	if supported && reason != "" {
+		t.Fatalf("支持时不该带理由：%q", reason)
 	}
 }
 
@@ -113,5 +128,36 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 
 	if strings.Contains(buf.String(), "level=WARN") {
 		t.Errorf("缺省是 fake 时不该 WARN，实得:\n%s", buf.String())
+	}
+}
+
+// TestAdaptersForWindowsExcludesUnsupported 钉住 Windows 上的诚实拒绝。
+//
+// 为什么在注册层而不是 Start 里报错：handoff status 会如实显示这台机器支持哪些
+// 执行器，协调者在派发前就看得见，而不是任务跑到一半转 failed。
+//
+// claude：输入通道（命名管道）与 AF_UNIX 裁决 socket 都不在本轮范围。
+// grok：taskenv 用 os.Symlink，Windows 上需 SeCreateSymbolicLinkPrivilege。
+func TestAdaptersForWindowsExcludesUnsupported(t *testing.T) {
+	got := adaptersFor("windows", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, name := range []string{"claude", "grok"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("Windows 上不应注册 %s", name)
+		}
+	}
+	for _, name := range []string{"opencode", "codex", "fake"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("Windows 上应注册 %s", name)
+		}
+	}
+}
+
+// TestAdaptersForUnixKeepsAll 钉住非 Windows 平台一个都不能少。
+func TestAdaptersForUnixKeepsAll(t *testing.T) {
+	got := adaptersFor("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, name := range []string{"opencode", "claude", "grok", "codex", "fake"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("darwin 上应注册 %s", name)
+		}
 	}
 }

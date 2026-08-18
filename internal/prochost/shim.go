@@ -3,7 +3,8 @@
 // 职责：
 //   - 持有存活锁（整个生命周期），作为 prochost.Alive 的唯一判据
 //   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时以 O_RDWR 持有 FIFO 读端
-//   - 在 spawn executor 之前安装进程围栏（RLIMIT_NPROC），executor 全树继承
+//   - 在 spawn executor 之前安装进程容器（unix=RLIMIT_NPROC，Windows=Job Object），
+//     executor 全树继承
 //   - spawn 真正的 executor，把它的 pid 记进 child.pid
 //   - wait 子进程，退出后向 stdout 追加 handoff_exit 哨兵
 //
@@ -11,7 +12,7 @@
 //   - 不认识 executor 协议、不解析输出：只做搬运与收尸
 //   - 不写任务状态、不连 agentd：shim 与 agentd 之间只有文件（锁、child.pid、日志）
 //   - 不写 proc.json：那是 adapter 的独占文件，双写者会丢更新（见 recordChildPID）
-//   - 不决定围栏值取多少：那是 prochost 策略层（fence.go）的事，shim 只负责装
+//   - 不决定围栏值取多少：那是 prochost 策略层（fence.go）的事，shim 只负责安装容器
 //
 // 为什么必须有 shim（而不是 agentd 直接 detach executor）：退出哨兵需要一个
 // 常驻父进程 waitpid 才能拿到。agentd 重启后，reparent 给 init 的 executor
@@ -95,16 +96,16 @@ func RunShim(specPath string) error {
 		defer stderr.Close()
 	}
 
-	// 围栏必须在 spawn 之前装：rlimit 随 fork 继承，装晚一步 executor 就在
-	// 围栏外面了。装不上不阻断——防护装置故障不该变成拒绝服务
-	if spec.NprocLimit > 0 {
-		if ferr := setNprocLimit(spec.NprocLimit); ferr != nil {
-			l.Warn("安装进程围栏失败，本任务无围栏保护", "limit", spec.NprocLimit, "cause", ferr)
-		} else {
-			l.Info("进程围栏已安装", "limit", spec.NprocLimit)
-		}
-	} else {
-		l.Info("本任务未设进程围栏", "reason", "spec 未下发围栏值")
+	// 进程容器必须在 spawn 之前装：unix 的 rlimit 随 fork 继承、Windows 的 job
+	// 成员身份随 CreateProcess 继承，装晚一步执行者就在容器外面了。
+	//
+	// **两个平台的失败语义刻意不同**，由各自的实现决定，不要在这里统一：
+	// unix 上容器只是围栏，装不上仍可跑（Warn 后返回 nil）；Windows 上容器是
+	// job，而 job 是 killGroup 唯一的回收手段，建不起来就必须硬失败——否则
+	// 这个任务将永远杀不干净。
+	if cerr := installProcessContainer(spec.NprocLimit); cerr != nil {
+		l.Error("安装进程容器失败，放弃拉起执行者", "limit", spec.NprocLimit, "cause", cerr)
+		return fmt.Errorf("安装进程容器: %w", cerr)
 	}
 
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
@@ -155,17 +156,7 @@ func RunShim(specPath string) error {
 		// 同一个 sampler 跨轮复用：它持有上一轮的序列化结果，"内容未变则不写"
 		// 依赖这份状态；每轮新建一个等于关掉这个优化
 		sampler := &rosterSampler{path: rosterPath(spec.InfoPath)}
-		sampler.sample(l)
-		tk := time.NewTicker(rosterInterval)
-		defer tk.Stop()
-		for {
-			select {
-			case <-stopRoster:
-				return
-			case <-tk.C:
-				sampler.sample(l)
-			}
-		}
+		runRosterSampling(stopRoster, sampler, l)
 	}()
 
 	code := 0
@@ -287,6 +278,30 @@ type rosterSampler struct {
 	writes int    // 实际落盘次数，仅供测试断言「未变则不写」
 }
 
+// runRosterSampling 驱动后代名册的首次采样与周期采样。
+//
+// 参数：stop 为执行者退出时关闭的停止信号；sampler 为跨轮复用的采样器；l 为日志器。
+//
+// 注意：sample 返回 false 表示本平台永久不支持进程枚举，此时只记一条 Info 并退出；
+// 其它错误返回 true，仍按周期重试，因为 unix 上的 sysctl/procfs 可能只是本轮读取失败。
+func runRosterSampling(stop <-chan struct{}, sampler *rosterSampler, l *slog.Logger) {
+	if !sampler.sample(l) {
+		return
+	}
+	tk := time.NewTicker(rosterInterval)
+	defer tk.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tk.C:
+			if !sampler.sample(l) {
+				return
+			}
+		}
+	}
+}
+
 // sample 采一轮名册：枚举进程、与上一轮合并、必要时落盘。
 //
 // 参数：l 为日志器；本方法所有失败都只记日志并返回，不中断任务——名册写不出去
@@ -294,16 +309,22 @@ type rosterSampler struct {
 //
 // 注意：周期日志一律 Debug 级（每秒一次，Info 会把任务日志刷满）；只有单次采样
 // 耗时超过间隔一半时才升 Warn——那意味着采样本身开始拖累这台机器，是必须看见的事。
-func (s *rosterSampler) sample(l *slog.Logger) {
+//
+// 返回：true 继续按周期采样；false 表示本平台永久不支持进程枚举，调用方应停止循环。
+func (s *rosterSampler) sample(l *slog.Logger) bool {
 	if s.path == "" {
 		l.Warn("无 info_path，无法落盘后代名册，本任务不做出生登记")
-		return
+		return true
 	}
 	start := time.Now()
 	procs, err := enumProcsFn()
 	if err != nil {
+		if errors.Is(err, errNotSupported) {
+			l.Info("本平台不做后代名册采样，回收由进程容器承担", "cause", err)
+			return false
+		}
 		l.Warn("枚举进程失败，本轮跳过出生登记", "cause", err)
-		return
+		return true
 	}
 	prev, err := readRoster(s.path)
 	if err != nil {
@@ -316,7 +337,7 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 	b, err := marshalRoster(entries)
 	if err != nil {
 		l.Warn("序列化后代名册失败，本轮跳过出生登记", "cause", err)
-		return
+		return true
 	}
 	cost := time.Since(start)
 	if s.last != nil && bytes.Equal(b, s.last) {
@@ -325,14 +346,14 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 		if cost > rosterInterval/2 {
 			l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
 				"cost", cost, "interval", rosterInterval)
-			return
+			return true
 		}
 		l.Debug("后代名册未变，跳过落盘", "count", len(entries), "cost", cost)
-		return
+		return true
 	}
 	if err := writeRosterBytes(s.path, b); err != nil {
 		l.Warn("落盘后代名册失败，本轮跳过出生登记", "path", s.path, "cause", err)
-		return
+		return true
 	}
 	s.last = b
 	s.writes++
@@ -341,9 +362,10 @@ func (s *rosterSampler) sample(l *slog.Logger) {
 		// 否则它只会表现为一台莫名其妙变慢的机器
 		l.Warn("后代名册采样耗时偏高", "path", s.path, "count", len(entries),
 			"cost", cost, "interval", rosterInterval)
-		return
+		return true
 	}
 	l.Debug("后代名册已更新", "path", s.path, "count", len(entries), "cost", cost)
+	return true
 }
 
 // snapshotRoster 采一轮名册（无状态入口，仅供不需要跨轮比对的调用方使用）。

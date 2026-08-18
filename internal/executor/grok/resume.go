@@ -116,7 +116,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		}
 		a.log.Info("serve 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "session", sessionID)
-		newProc, err := startServe(context.Background(), repoPath, taskID,
+		newProc, err := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
 			taskDir, req.Model, req.Env, a.log)
 		if err != nil {
 			// 起不来是可预期现场（配额/凭据过期），按不可恢复处理而非错误

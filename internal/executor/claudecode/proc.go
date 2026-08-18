@@ -81,6 +81,7 @@ type StartProcReq struct {
 	SettingsPath string
 	MCPPath      string
 	Env          []string
+	MarkRoot     string
 	Resume       bool
 }
 
@@ -181,6 +182,8 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 		InputCh: fifoPath, LockPath: lockPath, InfoPath: infoPath,
 		Sentinel: true, // claude 没有 HTTP 探活面，哨兵是唯一可靠的死亡信号
 	}
+	spec.TaskID = req.TaskID
+	spec.MarkRoot = req.MarkRoot
 	l.Info("启动 claude 执行者", "bin", bin, "repo", req.RepoPath, "resume", req.Resume)
 	handle, err := startProcHost(spec, selfExe)
 	if err != nil {

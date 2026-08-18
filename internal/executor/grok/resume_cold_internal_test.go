@@ -30,7 +30,7 @@ func writeDeadServeInfo(t *testing.T, dir string) {
 }
 
 // startServeFn 是 startServe 缝的类型别名（func 字面量不支持 ... 占位）。
-type startServeFn = func(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error)
+type startServeFn = func(ctx context.Context, repoPath, taskID, markRoot, taskDir, model string, env []string, log *slog.Logger) (*Proc, error)
 
 // swapStartServe 替换包级 startServe 执行点，返回恢复函数。
 func swapStartServe(fn startServeFn) func() {
@@ -61,7 +61,7 @@ func TestResumeColdDisallowedStaysDead(t *testing.T) {
 func TestResumeColdRestartFailureIsNotAnError(t *testing.T) {
 	dir := t.TempDir()
 	writeDeadServeInfo(t, dir)
-	restore := swapStartServe(func(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
+	restore := swapStartServe(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
 		return nil, errors.New("配额耗尽")
 	})
 	defer restore()
@@ -84,7 +84,7 @@ func TestResumeColdRestartFailureIsNotAnError(t *testing.T) {
 // 两个 serve 抢同一个会话是数据损坏级别的后果。
 func TestResumeColdMutualExclusion(t *testing.T) {
 	var starts int32
-	restore := swapStartServe(func(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
+	restore := swapStartServe(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
 		atomic.AddInt32(&starts, 1)
 		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
 		return nil, errors.New("测试不真起进程")

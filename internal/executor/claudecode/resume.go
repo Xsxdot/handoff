@@ -118,7 +118,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			SessionID: req.SessionID, Model: req.Model,
 			SettingsPath: filepath.Join(req.TaskDir, settingsFileName),
 			MCPPath:      filepath.Join(req.TaskDir, mcpFileName),
-			Env:          req.Env, Resume: true,
+			Env:          req.Env, MarkRoot: req.MarkRoot, Resume: true,
 		}, a.log)
 		if err != nil {
 			a.log.Warn("冷恢复重起 claude 失败，判不可恢复", "task", req.TaskID, "cause", err)

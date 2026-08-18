@@ -64,6 +64,21 @@ type Spec struct {
 	// spec.json 被旧版 shim 读到时该字段被忽略（旧 shim 不认识），新版 shim
 	// 读到升级前的 spec.json 得到 0 则跳过安装——两个方向都不会出事。
 	NprocLimit int `json:"nproc_limit,omitempty"`
+
+	// TaskID 是本任务的 UUID，Start 据它注入 HANDOFF_TASK_ID 环境变量，
+	// 并回填进 Handle 供归属判定使用。
+	//
+	// omitempty + 零值语义：为空则不注入、不参与归属判定。旧版 shim 读到新版
+	// spec.json 会忽略该字段；新版 shim 读到旧 spec.json 得到空串则判据不参与——
+	// 两个方向都不会出事，与 NprocLimit 同款滚动升级纪律。
+	TaskID string `json:"task_id,omitempty"`
+
+	// MarkRoot 是 cwd 归属判据的比对根（已解析符号链接的绝对路径）。
+	//
+	// **只在托管 worktree 形态下由调用方填写**：空串即本任务不启用 cwd 归属。
+	// 把「仅托管 worktree 可杀」编码进数据而不是运行时再判一次，是为了让这条
+	// 边界没有「某处忘了检查」的可能。
+	MarkRoot string `json:"mark_root,omitempty"`
 }
 
 // Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc.json。
@@ -96,6 +111,23 @@ type Handle struct {
 	// 跳过第二段清扫（只做 pgid 那段），与 StartedAt 缺失时降级为只上报是
 	// 同一条纪律——老任务不会因为升级就被动手。
 	RosterPath string `json:"roster_path,omitempty"`
+
+	// TaskID / MarkRoot 是归属判定的凭据，由 Start 从 Spec 原样带过来。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这两个字段，读出空串即
+	// 跳过标记判据、只走 pgid + roster——与 StartedAt / RosterPath 缺失时同一条
+	// 纪律，老任务不会因为升级就被动手。
+	TaskID   string `json:"task_id,omitempty"`
+	MarkRoot string `json:"mark_root,omitempty"`
+}
+
+// cred 把 Handle 投影成一次归属判定所需的凭据。
+//
+// 为什么要单独一层而不是让判据直接吃 Handle：判据只需要这两个字段，
+// 传整个 Handle 会让 taskmark.go 依赖 PID/LockPath 这些与它无关的东西，
+// 单测也得构造无关字段。
+func (h Handle) cred() TaskCred {
+	return TaskCred{TaskID: h.TaskID, MarkRoot: h.MarkRoot}
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -248,6 +280,9 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	specPath := filepath.Join(filepath.Dir(spec.InfoPath), "spec.json")
 	applyFencePolicy(&spec)
+	applyTaskMark(&spec)
+	log().Debug("任务标记凭据已就位", "task_id", spec.TaskID,
+		"mark_root", spec.MarkRoot, "env_injected", spec.TaskID != "")
 	b, err := json.Marshal(spec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("序列化 spec: %w", err)
@@ -294,5 +329,7 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		LockPath:   spec.LockPath,
 		StartedAt:  startedAt,
 		RosterPath: roster,
+		TaskID:     spec.TaskID,
+		MarkRoot:   spec.MarkRoot,
 	}, nil
 }

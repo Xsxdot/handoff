@@ -118,23 +118,16 @@ func askField(p Prompter, f Field, answers map[string]string) (string, error) {
 	return "", fmt.Errorf("未知的字段类型 %q（字段 %s）", f.Kind, f.Key)
 }
 
-// RoleOptions 按平台给出可选角色。
+// RoleOptions 返回本平台可选的角色列表。
 //
-// 参数：
-//   - goos: 目标平台。参数化而非直接读 runtime.GOOS 是为了可测——
-//     判据写死则 Windows 分支在 linux 的 CI 上永远测不到
+// 参数：goos 取 runtime.GOOS；抽成参数是为了让平台分支在任意 CI 上测得到
+// （判据写死则 Windows 分支在 linux 的 CI 上永远测不到）。
 //
-// 返回：
-//   - 角色选项列表
+// 返回：角色选项列表。
 //
-// 注意：
-//   - Windows 上只有协调者。agentd 的进程承载层在非 unix 平台全部返回
-//     not implemented（backlog B37），选执行机要一路走到 service install
-//     才撞墙——不给这个选项比给一个走不通的选项诚实
+// 注意：B37 之前 Windows 只给协调者，因为 agentd 的进程承载层在该平台全是
+// not implemented。进程承载层落地后三个角色一律可选，本函数不再分平台。
 func RoleOptions(goos string) []Option {
-	if goos == "windows" {
-		return []Option{{Value: RoleCoordinator, Label: "协调者"}}
-	}
 	return []Option{
 		{Value: RoleExecutor, Label: "执行机"},
 		{Value: RoleCoordinator, Label: "协调者"},
@@ -146,13 +139,8 @@ func RoleOptions(goos string) []Option {
 //
 // 配置不记角色，只能从已有字段反推：有 targets 说明做过协调者；
 // listen 不是 loopback 说明跑过执行机。推不出时：探到就绪执行者 → 执行机，
-// 否则协调者。Windows 上无条件返回协调者，见 RoleOptions。
+// 否则协调者。
 func DefaultRole(cfg *config.Config, cfgExisted bool, rs []toolchain.Result, goos string) string {
-	// 预选项必须落在 RoleOptions 给出的列表里：Windows 上那个列表只有协调者，
-	// 预选成执行机会让 huh 拿一个不在列表里的值去匹配，选中项落空
-	if goos == "windows" {
-		return RoleCoordinator
-	}
 	if cfgExisted {
 		hasTargets := len(cfg.Targets) > 0
 		kind := listenKind(cfg.Listen)

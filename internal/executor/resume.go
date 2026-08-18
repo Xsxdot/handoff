@@ -23,6 +23,7 @@ package executor
 //     值绝不进日志，要打只打 key 名
 //   - Model: 冷恢复重起进程时的模型名（serve.json/claude.json 都没存它，
 //     只有 task.Model 有）
+//   - MarkRoot: 已解析的托管 worktree 根；冷恢复重起进程时复用原归属凭据
 //   - Cold: true=允许冷恢复（进程已死时重起进程 + 载入原会话）；
 //     false=只热重连，进程不在即判不可恢复
 type ResumeReq struct {
@@ -32,6 +33,7 @@ type ResumeReq struct {
 	SessionID string
 	Env       []string
 	Model     string
+	MarkRoot  string
 	Cold      bool
 }
 

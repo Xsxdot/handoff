@@ -43,11 +43,14 @@ jobs:
           fi
       - name: Windows 交叉编译门禁
         # agentd 在 Windows 上跑不起来（B37），但协调者路径必须能编译——
-        # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过
+        # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过。
+        # B37 起追加 vet：build 只看非测试代码，测试文件里的 unix-ism 同样能把
+        # Windows 之路堵死，而那正是 B37 落地后最容易被静默弄坏的地方。
         run: |
           set -euo pipefail
           GOOS=windows GOARCH=amd64 go build ./...
           GOOS=windows GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
       - name: install.sh 单测
         run: bash install_test.sh
 

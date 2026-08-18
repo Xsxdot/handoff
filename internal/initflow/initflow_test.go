@@ -93,15 +93,16 @@ func TestListenPreset(t *testing.T) {
 	}
 }
 
-// Windows 上选执行机会一路走到 service install 才撞墙（agentd 的进程承载层
-// 在非 unix 平台返回 not implemented，B37）。不如在这里就不给这个选项。
-func TestRoleOptionsWindowsOnlyCoordinator(t *testing.T) {
+// B37 落地后 Windows 与其它平台一样开放三个角色。
+func TestRoleOptionsWindowsHasAllThree(t *testing.T) {
 	got := RoleOptions("windows")
-	if len(got) != 1 {
-		t.Fatalf("Windows 上应只有一个角色选项，实得 %d 个: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("Windows 上应有三个角色选项，实得 %d 个: %+v", len(got), got)
 	}
-	if got[0].Value != RoleCoordinator {
-		t.Fatalf("Windows 上唯一的角色应是协调者，实得 %q", got[0].Value)
+	for i, want := range []string{RoleExecutor, RoleCoordinator, RoleBoth} {
+		if got[i].Value != want {
+			t.Fatalf("Windows 第 %d 个角色应为 %q，实得 %q", i, want, got[i].Value)
+		}
 	}
 }
 
@@ -114,15 +115,37 @@ func TestRoleOptionsUnixHasAllThree(t *testing.T) {
 	}
 }
 
-// 预选项必须落在 RoleOptions 给出的列表里，否则 huh 拿一个不在列表里的
-// 默认值去匹配，选中项会落空——B83 刚踩过一次同类问题。
-func TestDefaultRoleOnWindowsIgnoresProbe(t *testing.T) {
+// Windows 解禁后，默认角色也应遵循探测结果，不再无条件退回协调者。
+func TestDefaultRoleOnWindowsUsesProbe(t *testing.T) {
 	rs := []toolchain.Result{{Name: "opencode", State: toolchain.StateReady}}
-	if got := DefaultRole(&config.Config{}, false, rs, "windows"); got != RoleCoordinator {
-		t.Fatalf("Windows 预选角色应为协调者，实得 %q", got)
+	if got := DefaultRole(&config.Config{}, false, rs, "windows"); got != RoleExecutor {
+		t.Fatalf("Windows 预选角色应为执行机，实得 %q", got)
 	}
-	// 同样的输入在 darwin 上仍应预选执行机——证明上一条不是因为探测结果为空
+	// 非 Windows 的同样输入继续预选执行机，证明平台不再分支。
 	if got := DefaultRole(&config.Config{}, false, rs, "darwin"); got != RoleExecutor {
 		t.Fatalf("darwin 预选角色应为执行机，实得 %q", got)
+	}
+}
+
+// TestRoleOptionsWindowsHasExecutor 钉住 Windows 执行机角色已解禁。
+//
+// B37 之前 Windows 只给协调者，因为 prochost 在该平台全是 not implemented；
+// 进程承载层落地后，那个限制连同它的提示文案一起失效。
+func TestRoleOptionsWindowsHasExecutor(t *testing.T) {
+	got := RoleOptions("windows")
+	if len(got) != 3 {
+		t.Fatalf("Windows 上应有三个角色选项，got=%d: %+v", len(got), got)
+	}
+	want := map[string]bool{RoleExecutor: false, RoleCoordinator: false, RoleBoth: false}
+	for _, o := range got {
+		if _, ok := want[o.Value]; !ok {
+			t.Errorf("出现预期外的角色 %q", o.Value)
+		}
+		want[o.Value] = true
+	}
+	for v, seen := range want {
+		if !seen {
+			t.Errorf("缺少角色 %q", v)
+		}
 	}
 }

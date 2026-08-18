@@ -149,7 +149,7 @@ var startProcHost = prochost.Start
 //     命中 protectedEnvKeys 的条目会被 handoff 自身注入覆盖并打 WARN
 //
 // 返回：就绪的 Proc；任一步失败返回错误（错误携带脱敏后的 serve.log 尾部）
-func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -203,6 +203,8 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, model string, en
 		return nil, fmt.Errorf("取自身可执行路径: %w", err)
 	}
 	spec := serveSpec(repoPath, taskDir, model, port, secret, env)
+	spec.TaskID = taskID
+	spec.MarkRoot = markRoot
 	spec.Argv[0] = bin
 	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
 	if err := writeProcInfo(taskDir, &procInfo{

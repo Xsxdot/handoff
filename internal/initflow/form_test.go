@@ -30,18 +30,23 @@ func TestFormKeysAndOrder(t *testing.T) {
 	}
 }
 
-// Windows 上角色只有协调者一档，且必须带解释文案。
-func TestFormWindowsRoleLimited(t *testing.T) {
+// B37 落地后 Windows 角色选项与其它平台一致，且不再带失效的限制文案。
+func TestFormWindowsRoleAvailable(t *testing.T) {
 	cfg, rs := goldenFixture()
 	for _, f := range Form(cfg, rs, "windows", false) {
 		if f.Key != "role" {
 			continue
 		}
-		if len(f.Options) != 1 || f.Options[0].Value != RoleCoordinator {
-			t.Fatalf("Windows 上角色应只有协调者，实际 %+v", f.Options)
+		if len(f.Options) != 3 {
+			t.Fatalf("Windows 上角色应有三个选项，实际 %+v", f.Options)
 		}
-		if f.Notice == "" {
-			t.Fatal("Windows 上必须解释为什么只有一个选项，否则用户会以为是 bug")
+		for _, want := range []string{RoleExecutor, RoleCoordinator, RoleBoth} {
+			if !optionContains(f.Options, want) {
+				t.Fatalf("Windows 上角色选项缺少 %q，实际 %+v", want, f.Options)
+			}
+		}
+		if f.Notice != "" {
+			t.Fatalf("Windows 上不应再有失效的限制文案，实际 %q", f.Notice)
 		}
 		return
 	}

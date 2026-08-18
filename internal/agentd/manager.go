@@ -1059,7 +1059,8 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
 		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
-		Env: envKVs, Model: task.Model, Cold: true,
+		Env: envKVs, Model: task.Model,
+		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
 	})
 	if err != nil {
 		m.log.Error("恢复失败", "task", taskID, "cause", err)
@@ -2970,7 +2971,8 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
-		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model, Cold: false,
+		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model,
+		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
 	})
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)

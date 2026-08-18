@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
@@ -67,8 +68,25 @@ var agentdCmd = &cobra.Command{
 		slog.SetDefault(logger)
 
 		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
-		// 这两个包级值，晚一步就会有任务在默认策略下开工
-		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio)
+		// 这些包级值，晚一步就会有任务在默认策略下开工
+		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio,
+			cfg.ProcFence.TaskHardLimit)
+		// TaskBudget 告警档依赖 roster 计数（RunWatchdog → procenum），而 Windows 上
+		// procenum 未实现。job 的 ActiveProcessLimit 能接管 TaskHardLimit（硬上限），
+		// 但接管不了「数到 N 就叫醒人」——job 只会在上限处拒绝，中间没有回调。
+		// 静默缺席正是本项目反复在防的东西，所以这里必须留一条明说的 Warn。
+		if runtime.GOOS == "windows" && cfg.ProcFence.TaskBudget > 0 {
+			logger.Warn("本平台不支持进程枚举，每任务进程预算告警档不生效",
+				"task_budget", cfg.ProcFence.TaskBudget,
+				"note", "硬上限档由 Job Object 接管，仍然生效")
+		}
+		if supported, reason := prochost.MarkCapability(); supported {
+			logger.Info("任务标记归属可用，进程归属不依赖采样时机")
+		} else {
+			logger.Warn("任务标记归属不可用，进程归属退回 pgid + 名册采样",
+				"reason", reason,
+				"note", "Windows 上这是预期形态：回收由 Job Object 进程容器承担")
+		}
 
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
@@ -145,11 +163,15 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
-		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
-		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
+		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
+				if runtime.GOOS == "windows" {
+					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/codex/fake）", executorFlag)
+				}
 				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
@@ -283,13 +305,38 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 // 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
 // （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
 func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
-	return map[string]executor.Adapter{
+	return adaptersFor(runtime.GOOS, logger)
+}
+
+// adaptersFor 按平台裁剪 executor 注册表。
+//
+// 参数：goos 取 runtime.GOOS；抽成参数是为了让 Windows 分支能在 mac/linux 的 CI 上测到。
+//
+// 为什么在注册层拒绝而不是等 Start 报错：status 会如实显示这台机器支持哪些执行器，
+// 协调者派发前就看得见，而不是任务跑到一半转 failed。对 claude 尤其重要——它的
+// Start 第一步是建 AF_UNIX 裁决 socket，而 Go 在 Windows 10 1803+ 支持 AF_UNIX，
+// socket 可能真的建得起来，然后走到输入通道才炸，留下一个 socket 建了、进程没起、
+// 清理路径没人走过的半启动状态。与其让它走到那里，不如在门口就不放行。
+//
+// codex 照常注册但**记为「未验」而非「支持」**：它与 opencode 同为零 unix-ism，
+// 没有已知阻断，不注册是对它的诬告；但本轮验收门只跑 opencode，codex 在 Windows
+// 上一次都没跑过。
+func adaptersFor(goos string, logger *slog.Logger) map[string]executor.Adapter {
+	ads := map[string]executor.Adapter{
 		"opencode": opencode.New(logger),
-		"claude":   claudecode.New(logger),
-		"grok":     grok.New(logger),
 		"codex":    codex.New(logger),
 		"fake":     fake.New(nil),
 	}
+	if goos == "windows" {
+		logger.Warn("本平台不注册部分执行器",
+			"skipped", []string{"claude", "grok"},
+			"claude_reason", "输入通道（命名管道）与 AF_UNIX 裁决 socket 未实现（B37 第二批）",
+			"grok_reason", "taskenv 用 os.Symlink，Windows 上需要特权")
+		return ads
+	}
+	ads["claude"] = claudecode.New(logger)
+	ads["grok"] = grok.New(logger)
+	return ads
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
@@ -321,7 +368,8 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | codex | fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
+// codex | fake（脚本演示）；Windows 上 claude/grok 不注册。
 var executorFlag string
 
 func init() {

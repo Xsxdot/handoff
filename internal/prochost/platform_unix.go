@@ -25,6 +25,9 @@ import (
 // lockSupported 标记本平台是否真的能加锁。
 const lockSupported = true
 
+// defaultFenceHardLimitMode 见 fence.go：本平台走 reserve_ratio，不用 TaskHardLimit。
+const defaultFenceHardLimitMode = false
+
 // flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。
 //
 // 注意：锁挂在「打开的文件描述」上而不是路径上。两个后果——同一进程内两次
@@ -166,4 +169,27 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的
+// 「进程容器」里，使执行者全树继承其约束。
+//
+// 参数：nprocLimit 为围栏值（执行者树的进程数上限）；<=0 表示不设围栏。
+//
+// 返回：error 非 nil 时 shim 必须放弃拉起执行者。
+//
+// unix 的容器就是 RLIMIT_NPROC——rlimit 随 fork 继承，所以装在 shim 上等于装在
+// 整棵树上。**装不上不阻断**：防护装置故障不该变成拒绝服务，这是 B73 定的语义，
+// 本次泛化不改变它（与 Windows 侧相反，见 platform_windows.go 的同名函数）。
+func installProcessContainer(nprocLimit int) error {
+	if nprocLimit <= 0 {
+		log().Info("本任务未设进程围栏", "reason", "spec 未下发围栏值")
+		return nil
+	}
+	if err := setNprocLimit(nprocLimit); err != nil {
+		log().Warn("安装进程围栏失败，本任务无围栏保护", "limit", nprocLimit, "cause", err)
+		return nil
+	}
+	log().Info("进程围栏已安装", "limit", nprocLimit)
+	return nil
 }
