@@ -100,11 +100,11 @@ func newTestWindows(t *testing.T, runOut string, runErr error) (*windowsManager,
 			// （schtasks /V /FO CSV）与该 PID 是否存活（tasklist）。测试默认
 			// 让这两问都答“在跑”，否则每个 Install 用例都要等满复核窗口才失败
 			joined := strings.Join(args, " ")
-			if name == "schtasks" && strings.Contains(joined, "/FO CSV") {
-				return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Running\",\"4242\"\n"), runErr
-			}
-			if name == "tasklist" {
-				return []byte("handoff.exe 4242 Console 1 40,000 K\n"), nil
+			// Install 末尾的复核会走 Status()，它读 schtasks 的详细输出并找
+			// SCHED_S_TASK_RUNNING(267009)。默认让它答“在跑”，否则每个
+			// Install 用例都要等满复核窗口才失败
+			if name == "schtasks" && strings.Contains(joined, "/FO LIST") {
+				return []byte("TaskName: \\handoff-agentd\r\nLast Result: 267009\r\n"), runErr
 			}
 			return []byte(runOut), runErr
 		},
@@ -174,17 +174,19 @@ func TestWindowsInstallRollsBackOnCreateFailure(t *testing.T) {
 	}
 }
 
-// Status 的 Running 必须按 PID 复核，不能按镜像名。
-func TestWindowsStatusVerifiesByPID(t *testing.T) {
-	var tasklistFilter string
+// Running 判据必须是 SCHED_S_TASK_RUNNING(267009) 这个**数值**，
+// 不能是 Status 列的文本、也不能是 PID。
+//
+// 三条都是 2026-08-18 真机实测钉下来的：schtasks 的 28 个字段里根本没有 PID 列；
+// 字段名与 Status 取值都会随系统语言变化（中文机器是「正在运行」）；而进程侧
+// 区分不开 agentd 与操作者正在敲的 handoff CLI（同一个镜像名，tasklist 不给命令行）。
+func TestWindowsStatusUsesLocaleProofRunningCode(t *testing.T) {
+	var queried string
 	m, _, _ := newTestWindows(t, "", nil)
 	m.run = func(name string, args ...string) ([]byte, error) {
-		joined := strings.Join(args, " ")
-		if name == "schtasks" {
-			return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Running\",\"4242\"\n"), nil
-		}
-		tasklistFilter = joined
-		return []byte("handoff.exe                   4242 Console      1     40,000 K\n"), nil
+		queried = name + " " + strings.Join(args, " ")
+		// 真机原文的形状：字段名英文，值里带 267009
+		return []byte("TaskName:      \\handoff-agentd\r\nStatus:        Running\r\nLast Result:   267009\r\n"), nil
 	}
 	st, err := m.Status()
 	if err != nil {
@@ -193,11 +195,42 @@ func TestWindowsStatusVerifiesByPID(t *testing.T) {
 	if !st.Installed || !st.Running {
 		t.Fatalf("应报已装且在跑，实际 %+v", st)
 	}
-	if !strings.Contains(tasklistFilter, "PID eq 4242") {
-		t.Errorf("复核判据必须是 PID，实际 tasklist 参数: %q", tasklistFilter)
+	if strings.Contains(queried, "tasklist") {
+		t.Error("不得再走 tasklist：agentd 与 handoff CLI 同名，按镜像名判定必然假阳性")
 	}
-	if strings.Contains(tasklistFilter, "IMAGENAME") {
-		t.Error("不得按镜像名复核：会把操作者正在敲的 handoff CLI 也数进去")
+}
+
+// 中文系统上字段名与 Status 取值都会本地化，判据仍须成立——
+// 这条是「换一台机器就静默失效」的防线。
+func TestWindowsStatusWorksOnLocalizedOutput(t *testing.T) {
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(string, ...string) ([]byte, error) {
+		return []byte("任务名:    \\handoff-agentd\r\n状态:      正在运行\r\n上次结果:  267009\r\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Running {
+		t.Fatal("中文输出下 Running 判据必须照样成立（判的是数值 267009，不是文本）")
+	}
+}
+
+// 任务注册了但没在跑（上次结果是真实退出码）时，Running 必须为 false。
+func TestWindowsStatusNotRunningWhenExited(t *testing.T) {
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(string, ...string) ([]byte, error) {
+		return []byte("TaskName:      \\handoff-agentd\r\nStatus:        Ready\r\nLast Result:   0\r\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Installed {
+		t.Fatal("查得到就是已装")
+	}
+	if st.Running {
+		t.Fatal("上次结果不是 267009 时不得报在跑")
 	}
 }
 
@@ -272,11 +305,9 @@ func TestWindowsInstallFailsWhenProcessNeverAppears(t *testing.T) {
 	// tasklist 查不到那个 pid：模拟起来即死（二进制路径错、端口被占、配置读不出）
 	m.run = func(name string, args ...string) ([]byte, error) {
 		joined := strings.Join(args, " ")
-		if name == "schtasks" && strings.Contains(joined, "/FO CSV") {
-			return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Ready\",\"0\"\n"), nil
-		}
-		if name == "tasklist" {
-			return []byte("信息: 没有运行的任务匹配指定标准。\n"), nil
+		if name == "schtasks" && strings.Contains(joined, "/FO LIST") {
+			// 起来即死：上次结果是真实退出码而不是 SCHED_S_TASK_RUNNING
+			return []byte("TaskName: \\handoff-agentd\r\nLast Result: 1\r\n"), nil
 		}
 		return []byte("SUCCESS"), nil
 	}

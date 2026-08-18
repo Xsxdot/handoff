@@ -14,14 +14,12 @@ package service
 
 import (
 	"bytes"
-	"encoding/csv"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -300,56 +298,49 @@ func (m *windowsManager) Uninstall() error {
 
 // Status 查询任务是否注册且在跑。
 //
-// Running 必须按 PID 复核，而不能按镜像名；否则操作者正在运行的 handoff CLI
-// 会被误计为 agentd。没注册时返回零值状态和 nil，因为「没装」是正常答案。
+// **Running 判据是 schtasks 的「上次结果」等于 SCHED_S_TASK_RUNNING(267009)**，
+// 不是 PID、也不是 Status 列的文本。三条理由，都是 2026-08-18 真机实测得来的：
+//
+//   - **schtasks 根本不给 PID。** `/Query /V /FO CSV` 的 28 个字段里没有任何一列
+//     是进程号（起草时以为有，那是事实错误）。按 PID 复核在这里不可能实现
+//   - **列名与 Status 列的取值都会本地化。** 英文机器是 `Status: Running`，
+//     中文机器是「正在运行」；按列名或按文本匹配都会在换一台机器时静默失效。
+//     而 267009 是个数值常量，跨语言不变
+//   - **进程侧也区分不开。** tasklist 不给命令行，而 agentd 与操作者正在敲的
+//     handoff CLI 是同一个镜像名——按镜像名判定在 Status 被 CLI 调用时必然
+//     假阳性（调用者自己就是一个 handoff.exe）
+//
+// 由此接受一个明确的局限：本判据信任 schtasks 的运行态记录。D8 记录过它会与
+// 现实分叉，但那个分叉的根因是手搓托管套了 cmd.exe（schtasks 只跟踪外层）；
+// 本实现的 Command 直接指向 handoff.exe，同日实测 schtasks 报 Running 时
+// 进程确实在、agentd 的 HTTP 面也确实在应答。
 func (m *windowsManager) Status() (Status, error) {
-	out, err := m.run("schtasks", "/Query", "/TN", WindowsTaskName, "/V", "/FO", "CSV")
+	out, err := m.run("schtasks", "/Query", "/TN", WindowsTaskName, "/V", "/FO", "LIST")
 	if err != nil {
 		m.log.Debug("查询计划任务未命中（未装时属正常）", "output", strings.TrimSpace(string(out)))
 		return Status{}, nil
 	}
 	s := Status{Installed: true, Detail: firstLine(string(out))}
-	pid := pidFromQueryCSV(string(out))
-	if pid <= 0 {
-		m.log.Warn("计划任务已注册但读不到 PID，Running 判为 false", "task", WindowsTaskName)
-		return s, nil
-	}
-	tout, terr := m.run("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/NH")
-	if terr != nil {
-		m.log.Warn("按 PID 复核进程失败，Running 判为 false", "pid", pid, "cause", terr)
-		return s, nil
-	}
-	s.Running = strings.Contains(string(tout), strconv.Itoa(pid))
+	s.Running = taskIsRunning(string(out))
 	m.log.Debug("计划任务状态", "task", WindowsTaskName,
-		"installed", s.Installed, "running", s.Running, "pid", pid)
+		"installed", s.Installed, "running", s.Running)
 	return s, nil
 }
 
-// pidFromQueryCSV 从 schtasks /Query /V /FO CSV 输出里取 PID 列。
+// schedTaskRunning 是 Win32 的 SCHED_S_TASK_RUNNING（0x41301），schtasks 在
+// 「上次结果」一栏用它表示任务此刻正在运行。
 //
-// 按列名而不是固定列号查找，因为列数会随 Windows 版本变化；返回 0 表示没有
-// 读到可用 PID，调用方据此把 Running 判为 false 而不是猜值。
-func pidFromQueryCSV(out string) int {
-	r := csv.NewReader(strings.NewReader(out))
-	r.FieldsPerRecord = -1
-	records, err := r.ReadAll()
-	if err != nil || len(records) < 2 {
-		return 0
-	}
-	idx := -1
-	for i, h := range records[0] {
-		h = strings.TrimPrefix(h, "\ufeff")
-		if strings.EqualFold(strings.TrimSpace(h), "PID") {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 || idx >= len(records[1]) {
-		return 0
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(records[1][idx]))
-	if err != nil {
-		return 0
-	}
-	return pid
+// 用十进制字面量而不是 0x41301：schtasks 的输出就是十进制。
+const schedTaskRunning = "267009"
+
+// taskIsRunning 判断 schtasks 的详细输出是否表示任务正在运行。
+//
+// 参数：out 为 `schtasks /Query /V /FO LIST` 的原文
+//
+// 为什么是子串匹配而不是解析字段：字段名会随系统语言变化（英文
+// `Last Result`、中文「上次结果」），按名字取值等于把判据绑死在一种语言上。
+// 而 267009 这个数值只会出现在「上次结果」里——它既不是时间戳也不是路径，
+// 误命中其它字段的可能性可以忽略。
+func taskIsRunning(out string) bool {
+	return strings.Contains(out, schedTaskRunning)
 }
