@@ -58,6 +58,7 @@ import (
 	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/permgate"
@@ -110,6 +111,8 @@ type Manager struct {
 	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
+	// discipline 按 executor 名裁出该次派发要注入的纪律块（B129）。
+	discipline *discipline.Resolver
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
 	// 权限请求直接升级人工协调者）。构造后只读。
 	approver *Approver
@@ -209,9 +212,12 @@ func (m *Manager) sweepAfterStop(taskID string) {
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
 func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
+	disc := discipline.NewResolver(discipline.Dir(cfg.DataDir), cfg.Discipline, log)
+	disc.Preflight()
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,
 		env:          envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
+		discipline:   disc,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
 		apDisabled:   map[string]bool{},

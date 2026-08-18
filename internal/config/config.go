@@ -114,6 +114,16 @@ type Config struct {
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
 	Env map[string]string
+	// Discipline 是 executor 名 → 纪律块文件名的映射：派发该 executor 的任务时，
+	// 把该文件的内容作为「执行纪律」注入首回合 prompt。文件名必须是
+	// <DataDir>/discipline/ 下的纯文件名（含路径分隔符会被拒绝）。
+	//
+	// 三档语义（与 Env 刻意不同的是第三档）：有非空值用该文件；显式空串关闭注入；
+	// 未出现该键用内置默认。Env 在未出现该键时是不注入。
+	//
+	// 为什么第三档不同：env 内容是机器特有的，猜错不如不猜；纪律块内容是 handoff
+	// 通用的，不给默认等于让用户退回人工粘贴到 plan 头部（见 B129 spec §2.4）。
+	Discipline map[string]string
 	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
 	// Web 是浏览器控制台相关配置。
@@ -308,8 +318,9 @@ func newDefaultConfig() *Config {
 			// 默认（400/1200），显式写 0 覆盖为 0。
 			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
 		},
-		Targets: map[string]Target{},
-		Env:     map[string]string{},
+		Targets:    map[string]Target{},
+		Env:        map[string]string{},
+		Discipline: map[string]string{},
 	}
 }
 
@@ -421,7 +432,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }
