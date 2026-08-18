@@ -14,6 +14,7 @@
 package prochost
 
 import (
+	"os"
 	"path/filepath"
 )
 
@@ -131,3 +132,21 @@ func ResolveMarkRoot(dir string, managed bool) string {
 
 // filepathEvalSymlinks 是 filepath.EvalSymlinks 的测试缝：单测要构造解析失败。
 var filepathEvalSymlinks = filepath.EvalSymlinks
+
+// MarkCapability 报告本平台是否具备任务标记归属能力。
+//
+// 返回：
+//   - supported: 是否可用
+//   - reason: 不可用的原因（供启动期日志直接呈现）；可用时为空串
+//
+// 为什么要单独一个导出函数而不是让 agentd 自己试：能力判定的依据在包内
+// （平台实现 + darwin 的运行期自检），暴露一个明确的问句比让调用方
+// 拿一个假 pid 去试要诚实得多。
+func MarkCapability() (supported bool, reason string) {
+	// 用本进程当探针：它一定存在，且凭据给足以便走到平台实现里。
+	_, err := attributesFn(os.Getpid(), TaskCred{TaskID: "capability-probe", MarkRoot: os.TempDir()})
+	if err != nil && isNotSupported(err) {
+		return false, "本平台不支持任务标记归属"
+	}
+	return true, ""
+}

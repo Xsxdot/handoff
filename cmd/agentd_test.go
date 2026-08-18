@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -58,6 +59,19 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// TestMarkCapabilityReported 钉住启动期必须播报归属能力——
+// 静默缺席正是 B37 反复在防的东西：能力没了而日志一个字不说，
+// 排障时会一路怀疑到别处去。
+func TestMarkCapabilityReported(t *testing.T) {
+	supported, reason := prochost.MarkCapability()
+	if !supported && reason == "" {
+		t.Fatalf("不支持时必须给出理由，否则日志等于没说")
+	}
+	if supported && reason != "" {
+		t.Fatalf("支持时不该带理由：%q", reason)
 	}
 }
 

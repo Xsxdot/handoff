@@ -80,6 +80,13 @@ var agentdCmd = &cobra.Command{
 				"task_budget", cfg.ProcFence.TaskBudget,
 				"note", "硬上限档由 Job Object 接管，仍然生效")
 		}
+		if supported, reason := prochost.MarkCapability(); supported {
+			logger.Info("任务标记归属可用，进程归属不依赖采样时机")
+		} else {
+			logger.Warn("任务标记归属不可用，进程归属退回 pgid + 名册采样",
+				"reason", reason,
+				"note", "Windows 上这是预期形态：回收由 Job Object 进程容器承担")
+		}
 
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何

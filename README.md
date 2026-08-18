@@ -499,6 +499,21 @@ handoff show <task>                # snapshot: state + unhandled tickets + event
 Clear the `pending_tickets`, then act by state: `running` keeps waiting for events,
 `waiting_review` goes into review.
 
+### 进程归属的平台差异
+
+handoff 判断「这个进程属于哪个任务」有三条来源：进程组（pgid）、后代名册
+（采样得来）、任务标记。前两条对采样时机敏感——工具壳只活一两秒时会漏；
+任务标记不依赖时机，但各平台强度不同：
+
+| 平台 | 标记判据 | 边界 |
+|---|---|---|
+| Linux | 注入的 `HANDOFF_TASK_ID` 环境变量 | 全部任务形态可用；依赖执行者透传环境变量 |
+| macOS | 进程的工作目录是否在任务 worktree 内 | **仅 `--new-worktree` 的托管任务**启用；进程 `cd` 出任务目录后脱钩 |
+| Windows | 不适用 | 回收由 Job Object 进程容器承担，内核连坐，不需要事后判定 |
+
+macOS 上不带 `--new-worktree` 的任务不启用该判据：那时任务跑在共享主仓里，
+用户自己的编辑器与 shell 也在那个目录下，按工作目录归属会把它们一起清掉。
+
 ## Troubleshooting
 
 Logs live on the executor machine: the agentd main log is `~/.handoff/agentd.log`
