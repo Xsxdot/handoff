@@ -6,7 +6,7 @@
 
 ## 1. 目标与非目标
 
-**目标**：把 backlog 从 markdown 总账搬进 home agentd store，成为带子任务、
+**目标**：把 backlog 从 markdown 总账搬进中心账本库，成为带子任务、
 阻塞边、自定义状态、工作流/派发模板双聚合的一等实体；事件镜像把跨机 task 事件
 汇成账本单流；看板作为不说谎的注意力平面；CLI + 节点执行器支撑主会话按工作流
 驱动推进；账本单流多路 wait 支撑「全程一个 wait」。
@@ -14,12 +14,15 @@
 **非目标**（蓝图二期以后）：事件自动触发、群聊、富评论、上下文文档实体化、
 蓝图 goal、自动合 main、executor 写账、agentd 自主唤醒协调者。
 
-## 2. 数据模型（home agentd store / SQLite）
+## 2. 数据模型（中心账本库 PG/MySQL，单机回退 SQLite）
 
-> 待敲定：具体 DDL 与索引。以下为定案的结构性决策：
+> 待敲定：具体 DDL 与索引；**中心库选型（PG 还是 MySQL）**——倾向 PG
+> （LISTEN/NOTIFY 可做事件推送，多路 wait 免轮询；MySQL 则事件消费走短周期
+> 轮询），以用户实际已有的中心库为准。以下为定案的结构性决策：
 
-- **建表受 home 开关控制**：work_items/workflows/dispatch_templates 等表只建在
-  home agentd（协调者本机）；执行机 agentd 永不建。
+- **账本表只存在于中心账本库**（或单机回退模式的本机 SQLite）；执行机 agentd
+  的 store 永不建这些表，执行机不持有账本库凭据。账本持久化收在 store 接口
+  后面，SQL 方言差异（占位符、upsert、通知机制）在该层吸收。
 - `work_items`：id（**沿用 B 号连续编**，全部记忆/skill/commit 都用 B 号指代，
   换前缀会断上下文）、title、status、priority（仅展示/排序）、project、
   parent_id、workflow_id + 版本、spec_ref、plan_ref、driver lease（会话标识 +
@@ -38,16 +41,17 @@
 - 正交标记不落列：`blocked`（全部 blocker 达「已完成」才解除；blocker 终止 →
   下游打等人）与 `等人`（带 reason 枚举）均从边表 + 事件流推导，查询时计算。
 
-## 3. 事件镜像（home agentd 新子系统）
+## 3. 事件镜像（协调机 agentd 新子系统）
 
-- home agentd 订阅各 target agentd 的 `/ws/events`，把挂账 task 的事件写入
-  `work_item_events`；断线用既有 cursor 续拉语义补齐，恢复后去重（按来源
-  target + 原 seq 幂等）。
+- 镜像者（任一协调机 agentd，由**账本库 lease 仲裁单实例**）订阅各 target 的
+  `/ws/events`，把挂账 task 的事件写入 `work_item_events`；断线用既有 cursor
+  续拉语义补齐；写入按（来源 target, task, 原 seq）幂等，**镜像 cursor 落
+  账本库**——任意协调机接任镜像者后接续，不丢不重。
 - 镜像滞后/断链落显式状态，看板卡片标「事件流滞后」。
 - 工单（permission_request/question）随镜像入流，是「等人」显性化的数据源。
 
-> 待敲定：镜像订阅的生命周期管理（挂账即订阅 or 常订全量过滤）、home 重启后的
-> 补拉窗口。
+> 待敲定：镜像订阅的生命周期管理（挂账即订阅 or 常订全量过滤）、lease 时长与
+> 抢占语义、镜像者切换/重启后的补拉窗口。
 
 ## 4. CLI
 
@@ -86,7 +90,7 @@
   顺序按 done 时序。
 - 审阅 task 的生命周期由执行器收口（裁决落账后自动 `done` 归档），不留孤儿。
 
-## 6. Web 看板（home agentd 托管 Web UI）
+## 6. Web 看板（任一协调机 agentd 托管，读同一账本库）
 
 > 待敲定：与 web-console 现有页面的关系（新页 or 重构）；一键动作确认交互。
 
@@ -124,7 +128,8 @@
 > 整功能验收 / 合 main；② 审阅 fail 3 轮封顶转「等人」可复现，回合数从事件流
 > 可审计；③ blocker 终止不解锁下游、下游得「等人」标记可复现；④ 杀掉主会话，
 > 看板在 task 判 failed 后亮「状态冲突」而非报假账；⑤ 多路 wait 在 wait 挂起
-> 期间新派发的 task 事件不漏（对照 home 账本单流 seq）；⑥ 两个会话并发 dispatch
+> 期间新派发的 task 事件不漏（对照账本库单流 seq）；⑥ 两个会话并发 dispatch
 > 同一 item，恰一个成功；⑦ 镜像断链 → 看板亮「事件流滞后」，恢复后按来源 seq
 > 幂等补齐；⑧ 迁移后抽查字段无损、B 号映射可反查；⑨ 看板与 CLI 对同一账本
-> 读写一致。
+> 读写一致；⑩ 双协调机指向同一账本库：A 机认领派发，B 机看板实时可见并可接续
+> 驱动，镜像 lease 从 A 切到 B 后事件不丢不重。
