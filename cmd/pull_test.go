@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // newPullRepo 建一个本地仓库（只有 base 提交），返回路径与 base sha。
@@ -56,14 +58,12 @@ func TestHasLocalCommit(t *testing.T) {
 	}
 }
 
-// 承重反面断言：对端回 500 时必须报错，且**不得**回落 ssh。
+// syncViaBundle 把 HTTP 错误如实往上抛：不自己吞掉，也不自己降级。
 //
-// 少了这条，把「其它错误也回落」写回去照样能过——那会把一次真失败伪装成
-// 「老路也能跑」，正是 spec §6 要守住的东西。
-// 判据：ssh 回落必然去拨一个 ssh 主机；测试里那个 target 的 Addr 指向本测试
-// 的 httptest 服务器，ssh 过去必然失败且报文里带 ssh 的痕迹。所以断言错误里
-// **有 500 的痕迹、没有 ssh 的痕迹**。
-func TestSyncViaBundleDoesNotFallBackOn500(t *testing.T) {
+// 注意：这一层**不守回落纪律**——syncViaBundle 结构上不可能去 ssh，对它断言
+// 「没有 ssh 痕迹」是恒真的。回落纪律（仅 404 回落）由
+// TestSyncTaskBranchDoesNotFallBackOn500 守在 syncTaskBranch 上。
+func TestSyncViaBundleReportsHTTPError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"git 炸了"}`))
@@ -77,9 +77,6 @@ func TestSyncViaBundleDoesNotFallBackOn500(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("错误应带上 500 的事实，实得 %v", err)
-	}
-	if strings.Contains(err.Error(), "ssh") || strings.Contains(err.Error(), "Host key") {
-		t.Errorf("500 不该触发 ssh 回落，实得 %v", err)
 	}
 }
 
@@ -120,4 +117,49 @@ func TestSyncViaBundlePropagatesUnsupported(t *testing.T) {
 
 func errorsIsBundleUnsupported(err error) bool {
 	return errors.Is(err, client.ErrBundleUnsupported)
+}
+
+// 承重反面断言：500 时 syncTaskBranch 必须报错，且**不得**回落 ssh。
+//
+// 为什么必须打在 syncTaskBranch 上而不是 syncViaBundle 上：回落分支根本不在
+// syncViaBundle 里——它结构上就不可能去 ssh，对它断言「没有 ssh 痕迹」是恒真的，
+// 把「其它错误也回落」写回 syncTaskBranch 照样能过。
+//
+// 判据不依赖 ssh 的报错文案：真回落了的话返回的错误要么是 localsync.Fetch 的
+// fetch 错误、要么是 nil，两种都不含「500」。所以「err 非空且带 500」这一条
+// 就足以把回落挡在外面，且不需要真的去拨一个 ssh 主机（那会让用例依赖本机
+// 有没有跑 sshd，是不稳定判据）。
+func TestSyncTaskBranchDoesNotFallBackOn500(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"git 炸了"}`))
+	}))
+	defer ts.Close()
+
+	repo, base := newPullRepo(t)
+	t.Chdir(repo)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Defaults()
+	cfg.Token = "tok"
+	cfg.Targets = map[string]config.Target{
+		"box": {Addr: strings.TrimPrefix(ts.URL, "http://"), Token: "tok", User: "nobody"},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("准备配置: %v", err)
+	}
+	old := configPath
+	configPath = cfgPath
+	t.Cleanup(func() { configPath = old })
+
+	_, err := syncTaskBranch(context.Background(), &proto.Task{
+		ID: "task-1", Target: "box", RepoPath: "/remote/repo",
+		Branch: "feat/x", BaseCommit: base,
+	})
+	if err == nil {
+		t.Fatal("500 必须报错，不得回落 ssh 之后当成功")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("错误应是那次 500，实得 %v（不含 500 即说明走了回落）", err)
+	}
 }
