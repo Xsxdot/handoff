@@ -271,6 +271,8 @@ export function WorkbenchPage({
                   api.close(g, id)
                 }}
                 onNew={newIn}
+                onSplit={(g) => api.splitAt(g + 1)}
+                canSplit={wb.groups.length < MAX_GROUPS}
               />
               {/*
                 两处 BlankTab 的 key 必须区分开。它们在三元的相邻分支上，同类型同位置，

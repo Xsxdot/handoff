@@ -237,20 +237,23 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /go.mod/ })).toBeInTheDocument())
   })
 
-  it('面包屑的分屏按钮把中央分成两组', async () => {
+  it('tab 条右端的分屏按钮把中央分成两组', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
     await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
+    // 分屏按钮跟着 tab 条走：分完之后每一栏各有一个
+    expect(screen.getAllByRole('button', { name: '分屏' })).toHaveLength(2)
   })
 
-  it('连点两次分屏得到三栏，按钮随即 disabled', async () => {
+  it('连点两次分屏得到三栏，按钮随即全部 disabled', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
-    fireEvent.click(screen.getByRole('button', { name: '分屏' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
     await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(3))
-    expect(screen.getByRole('button', { name: '分屏' })).toBeDisabled()
+    // 置灰而不是隐藏：按钮消失会让人以为分屏功能没了
+    for (const b of screen.getAllByRole('button', { name: '分屏' })) expect(b).toBeDisabled()
   })
 
   it('⌘D 分屏，并拦掉浏览器的「加入书签」', async () => {

@@ -26,7 +26,7 @@ import { useTasks } from '../data/useTasks'
 import { useMachineCaps } from '../data/useMachineCaps'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
-import { topInset } from '../lib/desktopShell'
+import { isDesktopShell } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
@@ -40,13 +40,14 @@ import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { MAX_GROUPS, type TabContent } from '../workbench/tabs'
+import { type TabContent } from '../workbench/tabs'
 import { usePtyRestore } from '../workbench/usePtyRestore'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
 import { Breadcrumb } from './Breadcrumb'
+import { DesktopTitleBar } from './DesktopTitleBar'
 
 // OverlayKind 是当前打开的弹层。同时只允许一个（spec §0）：两个叠在一起时
 // Esc 该关哪个会变得含糊。
@@ -285,12 +286,16 @@ export function Shell() {
     return under.find((t) => t.state === 'running')?.id ?? under[0]?.id ?? null
   }, [tasks, wb.base])
 
+  // 薄壳里窗口顶部那 28px 是 AppKit 的隐形拖动区（左键被拿去拖窗口，传不到
+  // 页面）。与其空着，不如让它承担面包屑那一行的展示职责——面包屑本来就零
+  // 交互，落在吞点击的区域里零代价，页面反而省下原来那一整行。
+  // 浏览器里 desktop 为 false，这条不渲染，布局与从前一模一样。
+  const desktop = isDesktopShell()
+
   return (
-    // paddingTop 只在桌面薄壳里非 0：那边窗口没有系统标题栏，顶部 28px 是 AppKit
-    // 的隐形拖动区，落在里面的左键会被拿去拖窗口而不传给页面。不让出这条空白，
-    // 左栏顶部的控件就会「看得见点不动」，交通灯也会压在标题上（见 desktopShell.ts）。
-    // box-border（Tailwind 默认）保证 h-dvh 仍是**总高**，让位不会把页面撑出滚动条。
-    <div className="flex h-dvh bg-background" style={{ paddingTop: topInset() }}>
+    <div className="flex h-dvh flex-col bg-background">
+      {desktop && <DesktopTitleBar base={wb.base} />}
+      <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
           min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
           overflow-y-auto 不会生效，树会把父容器撑高、footer 照样被顶出去 */}
@@ -322,7 +327,9 @@ export function Shell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {wb.base && <Breadcrumb base={wb.base} onSplit={wb.split} canSplit={wb.wb.groups.length < MAX_GROUPS} />}
+        {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
+            两处都画就是把一行重复了两遍 */}
+        {wb.base && !desktop && <Breadcrumb base={wb.base} />}
         <main className="min-h-0 flex-1">
           <Routes>
             <Route
@@ -409,6 +416,7 @@ export function Shell() {
           />
         </div>
       )}
+      </div>
 
       {/* home 终端走独立浮窗，不进 wb 的 tab 组——它不挂在任何目录上，
           塞进按目录组织的容器里就会跟着目录切换走 */}
