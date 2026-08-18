@@ -617,11 +617,103 @@ jobs:
           path: ${{ runner.temp }}/handoff-desktop_*.zip
           if-no-files-found: error
 
+  # 薄壳的 windows 资产。放在 windows runner 上而不是从 Linux 交叉编译：
+  # wails3 的 generate:syso 要把图标与清单编进资源，且 windows/Taskfile.yml
+  # 里 `powershell Remove-item *.syso` 与 `rm -f *.syso` 是按 platforms 分支的
+  # ——原生跑才走到 Windows 那条，交叉编译时走的是另一条、等于没验。
+  #
+  # 只发 zip，不发 NSIS 安装器：未签名的安装器会撞 SmartScreen，还要多引入
+  # makensis 与 webview2 引导器两个依赖；zip 里就是一个可直接双击的 exe，
+  # 与 darwin 的 .zip 同形态。build/windows/nsis/ 留在仓库里是为了本地
+  # `wails3 task windows:package` 能跑，**CI 不跑它**。
+  build-desktop-windows:
+    needs: verify
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Windows 不需要 gtk3 那类构建标签（那是 linux 上 webkit2gtk 的事）
+      - name: 装 wails3
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 输出文件名必须是 handoff（无扩展名）——embed.go 里写死 //go:embed handoff。
+      # 改成 handoff.exe 会让下一步在编译期直接失败。它是不是 PE 可执行文件与
+      # 文件名无关，释出到磁盘时才补 .exe（见 shell.DefaultCLIPath）。
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # ARCH=amd64 必须显式传：不传时 wails3 取宿主架构，runner 换成 arm64
+      # 的那天会静默产出一个名字叫 amd64、实际是 arm64 的资产。
+      #
+      # 变量名承重：Taskfile 只认 EXTRA_TAGS / EXTRA_LDFLAGS，传 GO_FLAGS 会被
+      # 静默忽略，编出一个 embedbin.Available() 走 stub、根本不含内嵌 CLI 的
+      # 薄壳，而这要到用户双击之后才暴露。
+      - name: 构建薄壳
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          wails3 task windows:build \
+            ARCH=amd64 \
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      # 落点是 RUNNER_TEMP 而不是仓库根：资产是产物，留在工作树里会被下一步的
+      # 干净检查当成污染。
+      - name: 打包为发布资产
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $exe = 'desktop/bin/handoff-desktop.exe'
+          if (-not (Test-Path $exe)) { throw "薄壳产物不存在：$exe" }
+          $out = Join-Path $env:RUNNER_TEMP "handoff-desktop_${tag}_windows_amd64.zip"
+          Compress-Archive -Path $exe -DestinationPath $out -Force
+          Get-Item $out | Format-List Name, Length
+
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_windows
+          path: ${{ runner.temp }}/handoff-desktop_*.zip
+          if-no-files-found: error
+
   release:
-    # 四个构建 job 都要等：不把两个薄壳 job 列进来，release 会在它们上传完
+    # 五个构建 job 都要等：不把两个薄壳 job 列进来，release 会在它们上传完
     # artifact 之前就起跑，下面 checksums 那步的 handoff-desktop_* 通配匹配不到
     # 文件而失败——而且这个失败是时序相关的，重跑可能就过了。
-    needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin]
+    needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin, build-desktop-windows]
     runs-on: ubuntu-latest
     steps:
       # checkout 必须排在 download 之前：两者写同一个工作目录，后执行的
