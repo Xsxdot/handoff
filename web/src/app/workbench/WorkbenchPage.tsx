@@ -66,9 +66,11 @@ export function WorkbenchPage({
   onFileCreated,
 }: WorkbenchPageProps) {
   const { base, wb } = api
-  // picking 记「哪个空白 tab 正在选任务」。null = 弹层关闭。
-  // 这个状态只是弹层的开关，tab 本身仍是空白 tab；选择结果回调后再原地换内容。
-  const [picking, setPicking] = useState<{ group: number; tabId: string } | null>(null)
+  // picking 记「谁正在选任务」。null = 弹层关闭。
+  //
+  // tabId 为 null = 这次是从 tab 条的 + 菜单发起的，还没有承接它的 tab，选完
+  // 直接在 group 里新开一个；非 null = 某个空白 tab 在等，选完原地换内容。
+  const [picking, setPicking] = useState<{ group: number; tabId: string | null } | null>(null)
   // newFileError 是建文件失败的原文（409 撞名、磁盘满、白名单拒绝）。
   // 显示在中央区顶部而不是弹层：它不需要用户做决定，只需要被看见
   const [newFileError, setNewFileError] = useState('')
@@ -96,6 +98,32 @@ export function WorkbenchPage({
         })
         .catch((err: unknown) => setNewFileError(errorMessage(err)))
     }
+  }
+
+  // newIn 处理 tab 条上的 + 菜单：选中种类后**直接开出对应的 tab**，
+  // 不再先落一个空白 tab 让用户在页面中间再选一次。
+  //
+  // 与 pick 的分工：pick 是「已经有一个空白 tab 在这儿了，把它变成什么」，
+  // 走 setContent 原地改；newIn 手上没有 tab，走 open 新开一个。
+  const newIn = (group: number, kind: PickKind) => {
+    if (kind === 'terminal') {
+      if (terminalUnavailable) return
+      api.openTerminal(base, group)
+      return
+    }
+    if (kind === 'tui') {
+      // 先弹选择器、选中了才开 tab：任务没选定之前开一个 tab 出来，用户按 Esc
+      // 取消后会留下一个空壳
+      setPicking({ group, tabId: null })
+      return
+    }
+    setNewFileError('')
+    void createUntitledFile(base)
+      .then((rel) => {
+        api.open({ kind: 'file', rel }, undefined, group)
+        onFileCreated?.()
+      })
+      .catch((err: unknown) => setNewFileError(errorMessage(err)))
   }
 
   // startFromEmpty 处理「组里一个 tab 都没有」时直接在空态面板上选种类：
@@ -234,14 +262,15 @@ export function WorkbenchPage({
                 group={gi}
                 tabs={g.tabs}
                 activeId={g.activeId}
-                baseLabel={base.label}
+                base={base}
+                terminalUnavailable={terminalUnavailable}
                 onActivate={api.activate}
                 onClose={(g, id) => {
                   const tab = wb.groups[g]?.tabs.find((t) => t.id === id)
                   if (tab && onBeforeClose && !onBeforeClose(tab.content, id)) return
                   api.close(g, id)
                 }}
-                onNew={(g) => api.open({ kind: 'blank' }, undefined, g)}
+                onNew={newIn}
               />
               {/*
                 两处 BlankTab 的 key 必须区分开。它们在三元的相邻分支上，同类型同位置，
@@ -279,7 +308,10 @@ export function WorkbenchPage({
           tree={tree}
           tasks={tasks}
           onPick={(taskId) => {
-            api.setContent(picking.group, picking.tabId, { kind: 'tui', taskId })
+            const content: TabContent = { kind: 'tui', taskId }
+            // tabId 为 null = 从 + 菜单发起，没有等着被改写的 tab，新开一个
+            if (picking.tabId === null) api.open(content, undefined, picking.group)
+            else api.setContent(picking.group, picking.tabId, content)
             setPicking(null)
           }}
           onClose={() => setPicking(null)}

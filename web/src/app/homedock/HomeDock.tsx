@@ -59,6 +59,8 @@ export function HomeDock({ dock, renderTab, onKill, onNewFile }: {
           onNewFile={onNewFile}
           onKill={onKill}
           onCollapse={dock.collapse}
+          maximized={dock.maximized}
+          onToggleMaximize={dock.toggleMaximize}
           renderTab={renderTab}
         />
       )}

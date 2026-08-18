@@ -217,17 +217,64 @@ describe('WorkbenchPage', () => {
     expect(screen.getByRole('button', { name: /新终端/ })).toBeInTheDocument()
   })
 
-  it('点 + 开一个空白 tab，开在这条 tab 条自己的组里', () => {
+  it('点 + 弹菜单列出三种去处，不再先落一个空白 tab', () => {
     const open = vi.fn()
     render(<WorkbenchPage api={api({ open })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />)
     fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
-    expect(open).toHaveBeenCalledWith({ kind: 'blank' }, undefined, 0)
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.getByRole('menuitem', { name: /新终端/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /新建文件/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /打开任务/ })).toBeInTheDocument()
+  })
+
+  it('+ 菜单选「新终端」，终端开在这条 tab 条自己的组里', () => {
+    const openTerminal = vi.fn()
+    render(
+      <WorkbenchPage api={api({ openTerminal })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    expect(openTerminal).toHaveBeenCalledWith(base, 0)
+  })
+
+  it('+ 菜单选「打开任务」先弹选择器，选中后才开 tab（取消不留空壳）', () => {
+    const open = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
+    render(
+      <WorkbenchPage
+        api={api({ wb, open })}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+        tree={pickerTree}
+        tasks={[pickerTask('T1', '任务一')]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /打开任务/ }))
+    // 选中之前不开 tab：用户按 Esc 取消后不该留下一个空壳
+    expect(open).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /任务一/ }))
+    expect(open).toHaveBeenCalledWith({ kind: 'tui', taskId: 'T1' }, undefined, 0)
+  })
+
+  it('机器开不了终端时，+ 菜单里没有终端项（不置灰）', () => {
+    render(
+      <WorkbenchPage
+        api={api()}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+        terminalUnavailable="这台机器没有 PTY 能力"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    expect(screen.queryByRole('menuitem', { name: /新终端/ })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /新建文件/ })).toBeInTheDocument()
   })
 
   // 走查回归：分屏后焦点在右组，点**左**组的 + 必须开在左组。
   // 原实现的 onNew 丢掉了 TabBar 传来的组号，openTab 退回 wb.active，于是
   // 「点哪个 + 都开在焦点组」。
-  it('分屏时点非焦点组的 +，新 tab 开在被点的那一组', () => {
+  it('分屏时点非焦点组的 +，新 tab 开在被点的那一组', async () => {
     const open = vi.fn()
     let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
     wb = { ...wb, groups: [...wb.groups, { tabs: [], activeId: null }], active: 1 }
@@ -236,8 +283,12 @@ describe('WorkbenchPage', () => {
     )
     const plus = screen.getAllByRole('button', { name: '新建标签页' })
     expect(plus).toHaveLength(2)
+    vi.mocked(createUntitledFile).mockResolvedValueOnce('untitled-1.md')
     fireEvent.click(plus[0])
-    expect(open).toHaveBeenCalledWith({ kind: 'blank' }, undefined, 0)
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建文件/ }))
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith({ kind: 'file', rel: 'untitled-1.md' }, undefined, 0),
+    )
   })
 
   // 同一个偏差的另一半：空组的种类选择面板也得把组号带上。

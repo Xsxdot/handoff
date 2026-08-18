@@ -1,7 +1,7 @@
 // FileTree —— 右栏文件树（spec §4）。
 //
 // 职责：
-//   - 头部（文件 / 刷新 / 折叠全部）+ 搜索框 + 根标题 + 可展开的树体
+//   - 头部（文件 / 刷新）+ 搜索框 + 根标题 + 可展开的树体
 //   - 点文件 → 回调相对路径，由中央开 file tab
 //   - 右键菜单：新建/改名/复制/删除/在文件夹中查找/在终端中打开，外加
 //     复制路径、复制相对路径、折叠文件夹三条纯前端项（spec §6.2）
@@ -380,24 +380,14 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     <aside className="flex h-full min-h-0 flex-col border-l bg-background">
       <div className="flex items-center gap-1 border-b px-3 py-2">
         <span className="text-sm font-medium">文件</span>
-        <div className="ml-auto flex items-center gap-0.5">
-          <button
-            type="button"
-            aria-label="刷新"
-            onClick={dirs.refresh}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <RefreshCw className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            aria-label="折叠全部"
-            onClick={() => setExpanded(new Set())}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <ChevronDown className="size-3.5" />
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-label="刷新"
+          onClick={dirs.refresh}
+          className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <RefreshCw className="size-3.5" />
+        </button>
       </div>
 
       {opError !== '' && (

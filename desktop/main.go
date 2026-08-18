@@ -39,6 +39,16 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// desktopTopInset 是无标题栏窗口顶部那条隐形拖动区的高度（点）。
+//
+// 承重：与前端 DESKTOP_TOP_INSET 必须一致。这条区域内的左键会被 AppKit 拿去
+// 拖窗口、不传给页面，前端不让出等高的空白就会出现「看得见点不动」的控件。
+const desktopTopInset = 28
+
+// userAgentTag 是附在 webview UA 末尾的标记，前端据此判断自己跑在桌面壳里。
+// 改它要同步改 web/src/app/lib/desktopShell.ts。
+const userAgentTag = "handoff-desktop"
+
 // logger 是包级日志入口。main() 里装配成 TextHandler 写 stderr；
 // 包级小函数（readInstalledVersion 等）复用同一实例，避免混用默认 logger
 // 导致日志格式不统一。
@@ -82,6 +92,25 @@ func main() {
 		Width:  1200,
 		Height: 800,
 		URL:    "/",
+		Mac: application.MacWindow{
+			// 去掉那条系统标题栏：它是浅灰的、与控制台自身的深色顶栏割裂，
+			// 而且白占一条横向边框。MacTitleBarHidden 把内容顶到窗口最上沿，
+			// 红黄绿三个按钮保留（不能用 Frameless——那连关窗按钮都没了）。
+			TitleBar: application.MacTitleBarHidden,
+			// 标题栏没了就没有可拖动的地方，窗口会挪不动。这条给回顶部 28px 的
+			// 原生拖动区（native 层实现，不依赖 Wails 运行时注入——控制台是外链
+			// 页面，拿不到 --wails-draggable）。
+			//
+			// 代价：这 28px 会吞掉页面的左键点击，所以前端必须让出同高的空白，
+			// 两个数字要一起改（web/src/app/lib/desktopShell.ts 的 DESKTOP_TOP_INSET）。
+			InvisibleTitleBarHeight: desktopTopInset,
+			WebviewPreferences: application.MacWebviewPreferences{
+				// 前端靠 UA 里这个后缀认出「我跑在桌面壳里」，据此让出上面那 28px。
+				// 控制台是外链页面，Wails 运行时不会注入，UA 是唯一不用改握手协议
+				// 就能传出去的信号。
+				ApplicationNameForUserAgent: userAgentTag,
+			},
+		},
 	})
 
 	openConsole := func() {

@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { useHomeDock } from './useHomeDock'
+import { defaultGeom, useHomeDock } from './useHomeDock'
 
 describe('useHomeDock', () => {
   it('新建终端：进列表、被激活、浮窗打开', () => {
@@ -98,5 +98,68 @@ describe('useHomeDock', () => {
       draft: '临时内容',
       baseSha: 'sha-1',
     })
+  })
+})
+
+describe('defaultGeom', () => {
+  it('面积占视口四分之一：宽高各取一半', () => {
+    const g = defaultGeom(1200, 800)
+    expect(g.w).toBe(600)
+    expect(g.h).toBe(400)
+  })
+
+  it('右下角贴着悬浮球：右沿与球右沿齐平，下沿在球正上方', () => {
+    // why：浮窗是从右下角那颗球里长出来的。开在偏左上会让人找不到它和刚点的
+    // 那颗球之间的关系（走查原话：「很奇怪」）
+    const g = defaultGeom(1200, 800)
+    expect(g.x + g.w).toBe(1200 - 20) // 球 right-5
+    expect(g.y + g.h).toBe(800 - 44 - 44 - 8) // 球 bottom-11 + size-11 + 缝
+  })
+
+  it('顶部让位（桌面薄壳）时不会钻进窗口拖动区', () => {
+    // 视口很矮时 y 会被顶到下界，那个下界必须含让位量，否则标题栏抓不住
+    const g = defaultGeom(1200, 300, 28)
+    expect(g.y).toBeGreaterThanOrEqual(28 + 8)
+  })
+
+  it('视口小到装不下半屏时被最小尺寸兜住，且不出左上边界', () => {
+    const g = defaultGeom(500, 300)
+    expect(g.w).toBe(360) // 半屏 250 比 MIN_W 小，抬到 MIN_W
+    expect(g.h).toBe(200) // 半屏 150 比 MIN_H 小，抬到 MIN_H
+    expect(g.x).toBeGreaterThanOrEqual(8)
+    expect(g.y).toBeGreaterThanOrEqual(8)
+  })
+})
+
+describe('useHomeDock maximize', () => {
+  it('切换最大化不改写 geom——还原要回到用户自己摆的位置', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() => result.current.setGeom({ x: 120, y: 90, w: 500, h: 300 }))
+    const before = result.current.geom
+    act(() => result.current.toggleMaximize())
+    expect(result.current.maximized).toBe(true)
+    expect(result.current.geom).toEqual(before)
+    act(() => result.current.toggleMaximize())
+    expect(result.current.maximized).toBe(false)
+    expect(result.current.geom).toEqual(before)
+  })
+})
+
+describe('浮窗首次打开才定位', () => {
+  it('几何在**打开那一刻**按视口算，不是挂载时算', () => {
+    // why：挂载时页面还没定稿（实测控制台首帧 innerWidth 只有几百 px），
+    // 那时算出来的浮窗会被最小尺寸兜成 360×200 钉在左上角——正是要修的毛病
+    const { result } = renderHook(() => useHomeDock())
+    window.innerWidth = 1600
+    window.innerHeight = 900
+    act(() => result.current.newTerminal())
+    expect(result.current.geom).toEqual(defaultGeom(1600, 900))
+  })
+
+  it('用户摆过之后再打开，不把他摆的位置冲掉', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() => result.current.setGeom({ x: 200, y: 150, w: 500, h: 300 }))
+    act(() => result.current.newTerminal())
+    expect(result.current.geom).toEqual({ x: 200, y: 150, w: 500, h: 300 })
   })
 })

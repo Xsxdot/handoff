@@ -19,6 +19,8 @@ function dock(over: Partial<{ tabs: HomeTab[]; windowOpen: boolean }> = {}) {
     setSession: vi.fn(),
     setDraft: vi.fn(),
     setGeom: vi.fn(),
+    maximized: false,
+    toggleMaximize: vi.fn(),
     adopt: vi.fn(),
     ...over,
   }
@@ -101,10 +103,11 @@ describe('HomeDock', () => {
     expect(screen.getByLabelText('home 基准终端')).toBeInTheDocument()
   })
 
-  it('scratch 能力可用时把「新建临时文件」入口放在浮窗 tab 条，不放 FAB', () => {
+  it('scratch 能力可用时把「新建临时文件」放进浮窗 tab 条的 + 菜单，不放 FAB', () => {
     const p = props(dock({ tabs: [TAB_A], windowOpen: true, activeId: 'a' } as never))
     render(<HomeDock {...p} />)
-    fireEvent.click(screen.getByLabelText('新建临时文件'))
+    fireEvent.click(screen.getByLabelText('新建'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建临时文件/ }))
     expect(p.onNewFile).toHaveBeenCalledOnce()
     expect(screen.getByLabelText('home 基准终端')).toBeInTheDocument()
   })

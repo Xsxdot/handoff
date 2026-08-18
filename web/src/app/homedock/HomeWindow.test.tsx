@@ -56,9 +56,9 @@ describe('HomeWindow', () => {
     expect(p.onGeom).toHaveBeenCalledWith(expect.objectContaining({ w: 630, h: 320 }))
   })
 
-  it('点 + 调 onNew 时不传任何实参——传了就会变成 machine', () => {
-    // why：onClick={onNew} 会把 MouseEvent 当第一个实参喂进
-    // useHomeDock.newTerminal(machine?: string)，HomeTab.machine 存成事件对象，
+  it('菜单里选「新终端」时不给 onNew 传任何实参——传了就会变成 machine', () => {
+    // why：onSelect={onNew} 会把参数直接喂进
+    // useHomeDock.newTerminal(machine?: string)，HomeTab.machine 存成非字符串，
     // 关会话时拼出 ?machine=[object Object] 当场炸。
     // TS 拦不住：(machine?: string) => void 对 () => void 是合法赋值
     const onNew = vi.fn()
@@ -75,18 +75,58 @@ describe('HomeWindow', () => {
         renderTab={() => <div />}
       />,
     )
-    fireEvent.click(screen.getByLabelText('新终端'))
+    fireEvent.click(screen.getByLabelText('新建'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     expect(onNew).toHaveBeenCalledTimes(1)
     expect(onNew.mock.calls[0]).toHaveLength(0)
   })
 
-  it('tab 条上有「新终端」与「新建临时文件」两个入口', () => {
+  it('tab 条上只有一个「新建」图标，两种去处在菜单里', () => {
+    // why：两个相邻的小图标（+ 与文件）分不清哪个是哪个，合成一个菜单后
+    // 「新建什么」由文字说清楚
     const p = base()
     render(<HomeWindow {...p} />)
-    fireEvent.click(screen.getByLabelText('新建临时文件'))
+    expect(screen.queryByLabelText('新建临时文件')).toBeNull()
+    fireEvent.click(screen.getByLabelText('新建'))
+    expect(screen.getByRole('menuitem', { name: /新终端/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建临时文件/ }))
     expect(p.onNewFile).toHaveBeenCalledTimes(1)
     expect(p.onNewFile.mock.calls[0]).toHaveLength(0)
-    expect(screen.getByLabelText('新终端')).toBeInTheDocument()
+  })
+
+  it('onNewFile 缺省时菜单里没有临时文件项，不置灰', () => {
+    render(
+      <HomeWindow
+        {...base()}
+        onNewFile={undefined}
+      />,
+    )
+    fireEvent.click(screen.getByLabelText('新建'))
+    expect(screen.getByRole('menuitem', { name: /新终端/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /新建临时文件/ })).toBeNull()
+  })
+
+  it('最大化后铺满视口、收起拉伸角，再点还原回到原来的 geom', () => {
+    // why：铺满时若还留着拉伸角，拉一下就会造出「既不是全屏也不是 geom」的中间态
+    const p = { ...base(), maximized: false, onToggleMaximize: vi.fn() }
+    const { rerender, container } = render(<HomeWindow {...p} />)
+    fireEvent.click(screen.getByLabelText('最大化'))
+    expect(p.onToggleMaximize).toHaveBeenCalledTimes(1)
+
+    rerender(<HomeWindow {...p} maximized />)
+    const win = container.querySelector('section') as HTMLElement
+    expect(win.style.left).toBe('8px')
+    expect(win.style.right).toBe('8px')
+    expect(win.style.width).toBe('auto')
+    expect(screen.queryByTestId('home-window-corner')).toBeNull()
+    // 铺满时拖标题栏不该改几何
+    fireEvent.pointerDown(screen.getByTestId('home-window-title'), { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 25 })
+    fireEvent.pointerUp(document)
+    expect(p.onGeom).not.toHaveBeenCalled()
+
+    rerender(<HomeWindow {...p} maximized={false} />)
+    expect((container.querySelector('section') as HTMLElement).style.width).toBe('600px')
   })
 
   it('file 种类的 tab 标题显示文件名而不是 bash · home N', () => {

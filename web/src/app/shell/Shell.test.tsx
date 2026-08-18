@@ -321,9 +321,11 @@ describe('Shell 三栏外框', () => {
 
   it('home 终端不进中央 tab 条', async () => {
     renderShell()
-    // 从悬浮入口新建一个 home 终端
+    // 从悬浮入口新建一个 home 终端：零会话时点圆钮直接开一个
     fireEvent.click(await screen.findByLabelText('home 基准终端'))
-    fireEvent.click(screen.getByRole('button', { name: /新终端/ }))
+    // 再从浮窗 tab 条的 + 菜单开第二个，确认它同样不会漏进中央
+    fireEvent.click(screen.getByLabelText('新建'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     // 浮窗出现，内容渲染在浮窗里
     expect(screen.getByTestId('home-window-title')).toBeInTheDocument()
     // 中央 tab 条上不应出现它——home 终端不挂在任何目录上
@@ -377,8 +379,9 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     const ta = await screen.findByRole('textbox', { name: 'go.mod' })
     fireEvent.change(ta, { target: { value: 'module handoff\nx' } })
 
-    // 点 + 开一个空白 tab：激活它让 FileTab 卸载回写草稿，内容就此带上 draft
+    // 从 + 菜单开一个新终端：激活它让 FileTab 卸载回写草稿，内容就此带上 draft
     fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
 
     // 点 tab 条上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
     fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))

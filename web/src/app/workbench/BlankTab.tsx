@@ -48,12 +48,22 @@ function hotkeyOf(e: React.KeyboardEvent): PickKind | null {
   return null
 }
 
-export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
-  // home 基准只留终端（spec §2.6）；scratch 从不会被选中、也不会渲染 BlankTab，
-  // 因而不需要在这里增加第三套入口；终端不可用时把它摘掉，两条过滤叠加
-  const items = (base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS).filter(
+// pickItemsFor 过滤出某个基准目录下真正能选的种类。
+//
+// 两条过滤叠加：home 基准只留终端（spec §2.6）——scratch 从不会被选中、也不会
+// 渲染 BlankTab，因而不需要第三套入口；终端不可用时把它摘掉（**不置灰**：置灰
+// 是在承诺「以后能用」，用户会反复点它，W3b §0 既有纪律）。
+//
+// 导出是为了让 tab 条上的 + 菜单与本面板用同一份判断——两处分别写就会出现
+// 「面板里没有终端、+ 菜单里却有」。
+export function pickItemsFor(base: BaseDir, terminalUnavailable?: string) {
+  return (base.kind === 'home' ? PICK_ITEMS.filter((i) => i.kind === 'terminal') : PICK_ITEMS).filter(
     (i) => i.kind !== 'terminal' || !terminalUnavailable,
   )
+}
+
+export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
+  const items = pickItemsFor(base, terminalUnavailable)
 
   // 挂载即聚焦。**不能用 `autoFocus`**：React 只对表单元素实现它，写在普通 div 上
   // 只会落成一个 `autofocus` 属性，而该属性对动态插入的非表单元素不生效——走查里

@@ -1,0 +1,22 @@
+import { describe, expect, it } from 'vitest'
+import { DESKTOP_TOP_INSET, isDesktopShell, topInset } from './desktopShell'
+
+describe('desktopShell', () => {
+  it('UA 带薄壳标记时判为桌面壳，并让出顶部拖动区', () => {
+    const ua = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 handoff-desktop'
+    expect(isDesktopShell(ua)).toBe(true)
+    expect(topInset(ua)).toBe(DESKTOP_TOP_INSET)
+  })
+
+  it('普通浏览器一律不让位——页面不该无端多出一条空白', () => {
+    const ua = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Chrome/140 Safari/605.1.15'
+    expect(isDesktopShell(ua)).toBe(false)
+    expect(topInset(ua)).toBe(0)
+  })
+
+  it('默认的 wails.io UA 不算薄壳标记', () => {
+    // why：薄壳显式把 ApplicationNameForUserAgent 设成 handoff-desktop。
+    // 认 wails.io 会把任何 Wails 应用都算成自己，判据要认自己的名字
+    expect(isDesktopShell('Mozilla/5.0 wails.io')).toBe(false)
+  })
+})

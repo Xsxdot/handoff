@@ -26,6 +26,7 @@ import { useTasks } from '../data/useTasks'
 import { useMachineCaps } from '../data/useMachineCaps'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
+import { topInset } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
@@ -285,7 +286,11 @@ export function Shell() {
   }, [tasks, wb.base])
 
   return (
-    <div className="flex h-dvh bg-background">
+    // paddingTop 只在桌面薄壳里非 0：那边窗口没有系统标题栏，顶部 28px 是 AppKit
+    // 的隐形拖动区，落在里面的左键会被拿去拖窗口而不传给页面。不让出这条空白，
+    // 左栏顶部的控件就会「看得见点不动」，交通灯也会压在标题上（见 desktopShell.ts）。
+    // box-border（Tailwind 默认）保证 h-dvh 仍是**总高**，让位不会把页面撑出滚动条。
+    <div className="flex h-dvh bg-background" style={{ paddingTop: topInset() }}>
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
           min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
           overflow-y-auto 不会生效，树会把父容器撑高、footer 照样被顶出去 */}
