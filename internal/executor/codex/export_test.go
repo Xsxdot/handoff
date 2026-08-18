@@ -28,6 +28,14 @@ func RenderStartPromptForTest(req executor.StartReq) string {
 	return prompt
 }
 
+func ThreadStartParamsForTest(cwd, model, developerInstructions string) map[string]any {
+	return buildThreadStartParams(cwd, model, developerInstructions)
+}
+
+func ThreadResumeParamsForTest(threadID, repoPath, developerInstructions string) map[string]any {
+	return buildThreadResumeParams(threadID, repoPath, developerInstructions)
+}
+
 // ServeSpecForTest 暴露 serveSpec，供 codex_test 包做 argv/env 断言。
 func ServeSpecForTest(repoPath, taskDir string, port int, env []string) prochost.Spec {
 	return serveSpec(repoPath, taskDir, port, env)

@@ -253,7 +253,8 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model); err != nil {
+	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model,
+		developerInstructionsFor(req.Discipline)); err != nil {
 		return err
 	}
 
@@ -292,11 +293,56 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	return nil
 }
 
+// buildThreadStartParams 构造 thread/start 的入参。
+//
+// 抽成函数是为了让测试与生产代码用同一份字面量；下次增加安全参数时，
+// 两处各写一份必然漏改一处。developerInstructions 是 codex 协议直收的持久
+// 指令通道，协议铁律与执行纪律放在这里才能跨回合常驻。
+func buildThreadStartParams(cwd, model, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"cwd":               cwd,
+		"sandbox":           "workspace-write",
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if model != "" {
+		params["model"] = model
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// buildThreadResumeParams 构造 thread/resume 的入参。恢复路径也必须重传
+// developerInstructions，否则恢复后常驻纪律会消失。
+func buildThreadResumeParams(threadID, repoPath, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"threadId":          threadID,
+		"cwd":               repoPath,
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// developerInstructionsFor 拼出常驻指令：协议铁律在前，执行纪律在后。
+func developerInstructionsFor(disciplineBlock string) string {
+	if strings.TrimSpace(disciplineBlock) == "" {
+		return turn.ProtocolRules
+	}
+	return turn.ProtocolRules + "\n\n" + strings.TrimSpace(disciplineBlock)
+}
+
 // openThread 完成握手与会话建立：initialize → initialized → thread/start。
 //
 // 单独抽出：登录态失效那条路径要能在不起进程的情况下被测到。
-func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string) error {
-	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model)
+func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model, developerInstructions string) error {
+	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model,
+		"dev_instr_bytes", len(developerInstructions))
 	if _, err := r.cli.Call(ctx, methodInitialize, map[string]any{
 		"clientInfo":   map[string]any{"name": "handoff", "version": "1"},
 		"capabilities": map[string]any{"experimentalApi": true},
@@ -307,15 +353,7 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		return fmt.Errorf("codex initialized 通知: %w", err)
 	}
 
-	params := map[string]any{
-		"cwd":               cwd,
-		"sandbox":           "workspace-write",
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": "user",
-	}
-	if model != "" {
-		params["model"] = model
-	}
+	params := buildThreadStartParams(cwd, model, developerInstructions)
 	res, err := r.cli.Call(ctx, methodThreadStart, params)
 	if err != nil {
 		// 凭据问题重试一万次也不会好，给可操作指引（spec §8）
