@@ -518,12 +518,25 @@ shim 侧再 `+1`（4.4.3 的 off-by-one，shim 自己也在 job 里）。
 （与 procenum 的 Toolhelp32 实现同一条）。实现时必须在 Windows 上对这一档打一条
 明确的启动期 Warn，说明该告警档在本平台不生效——静默缺席正是本文档反复在防的东西。
 
-### 11.7 待确认：opencode 的登录态
+### 11.7 已解决：opencode 的登录态不构成阻塞
 
-executor 探测报 `opencode: 已安装，未登录`。用户告知 opencode 有免费模型足够测试，
-但「未登录」是否影响 serve 起来后真正跑一个回合，尚未验证——本轮撞在 prochost 的
-墙上，还没走到那一步。**这是 B37 实现完成后第一个要验的东西**，若它需要交互式登录，
-验收门会被卡住，需要提前准备凭据方案。
+起草时把这一条列为「可能卡住验收门的未知数」。**同日已在真机验掉，结论是不阻塞。**
+
+- **免费模型不需要登录就可用。** `opencode models` 在未登录状态下列出 8 个模型
+  （`opencode/deepseek-v4-flash-free`、`opencode/hy3-free`、`opencode/nemotron-3-ultra-free`
+  等），provider 为 `opencode` 自带，无需 `opencode providers login`。
+- **`opencode serve` 在 Windows 上正常工作**，也就是 handoff 的 opencode adapter
+  实际走的那条路：`opencode serve --port 45999 --hostname 127.0.0.1` 起得来，
+  `GET /config` 返回 200，stdout 打出 `opencode server listening on …`。
+  adapter 的就绪探测（`probeHTTP`）因此有理由通过。
+- **`opencode run` 在非交互 ssh 会话下会失败**（约 2 秒后 `EUNKNOWN: unknown error, read`，
+  疑似 stdin 相关）。**这不影响本轮**——handoff 从不调 `run`，它只用 `serve`。
+  但排障时若有人手工用 `run` 复现问题，会被这个无关的失败带偏，故记在这里。
+
+**连带发现（不进本轮范围）**：`internal/toolchain/detect.go:83` 把 opencode 的登录判据
+写成 `.local/share/opencode/auth.json`，那是 unix 路径。Windows 上 opencode 不用这个
+落点，所以探测恒报「未登录」——**是误报**。而且在只用免费模型时「登录」本就不是必要
+条件，这条探测在 Windows 上是双重失真。登记为 backlog 派生项。
 
 ### 11.8 顺带发现的文案缺陷（记账，不进本轮）
 
@@ -536,3 +549,83 @@ INFO 已取得数据目录单实例锁
 
 第二行在锁不支持时不该说「已取得」。`LockFileEx` 落地后这对矛盾会自动消失，
 但若将来还有其它不支持文件锁的平台，这句仍会误导。
+
+---
+
+## 十二、真机验收记录（2026-08-18，Windows Server 2025）
+
+在 11.1 那台机器上部署 `feat/b37-windows-native-executor`（`0bdc4e1c`）交叉编译的
+二进制，按第九节剧本逐条执行。**以下是审核者亲自跑到结果的记录，非采信执行者自述。**
+
+### 12.1 通过项（8/10）
+
+| # | 剧本项 | 证据 |
+|---|---|---|
+| 1 | 干净机器接入 | 前置检查八条全 PASS（含「`sh` 不在 PATH」这条刻意保持默认安装形态） |
+| 3 | dispatch → opencode 跑完 | 任务进 `waiting_review`，`HELLO.md` 已建并提交（`f24effe`），`executor_session` 已建立 |
+| 4 | **重启 agentd，executor 存活** | 杀 agentd(6112) 并**确认其消失**后，shim(5700) 与 opencode(5152) **pid 不变地存活**；新 agentd(5024) 起来后 `启动恢复完成 recovered=1`。日志实证 `shim 已拉起（已脱离父 job）`——`CREATE_BREAKAWAY_FROM_JOB` 成功 |
+| 5 | stop 只杀 shim，job 连坐 | stop 后 shim 与 opencode **一并消失**，只剩 agentd；`managed worktree 已删除` |
+| 7 | DataDir 单实例 | 第二个 agentd 被拒绝启动，文案含 `handoff status` 指引 |
+| 8 | run 走 Git 的 `sh` | `ls -la \| head -5 && echo PIPE_OK && cat HELLO.md` 全部正常，输出为 unix 风格权限位 |
+| 9 | done 后无残留 | worktree 目录清空、`git worktree list` 干净、零残留 opencode 进程 |
+| 10 | claude/grok 不可用 | `status` 只列 `codex fake opencode`；派发二者均 400 且列出可用执行器 |
+
+启动日志四条新行全部就位且正确：`hard_limit_mode=true task_hard_limit=1200`、
+`本平台不支持进程枚举，每任务进程预算告警档不生效 task_budget=400`、
+`本平台不注册部分执行器 skipped="[claude grok]"`、以及**不再出现**那句自相矛盾的
+「本平台不支持文件锁」。
+
+11.4 的 pathenv 修复也在真条件下验掉：会话里 `SHELL=c:\windows\system32\cmd.exe`
+时日志为 `PATH 无需补全`，不再把 cmd 欢迎横幅当目录塞进 PATH。
+
+### 12.2 未验项（2/10，如实记账）
+
+- **第 2 条（`init` 选执行机角色）**：`huh` TUI 经 ssh 驱不动（既有已知限制），
+  只有 `RoleOptions("windows")` 的单测覆盖。**真机 TUI 未走过。**
+- **第 6 条（围栏 `ActiveProcessLimit` 与 `+1` 换算）**：验证它需要真的扇出
+  1200+ 进程把机器推到上限，风险与收益不成比例。**未测。** 现有证据只到
+  「围栏值算得出来且下发了」（日志 `task_hard_limit=1200 hard_limit_mode=true`），
+  没有证据表明内核真的在该值处拒绝 fork。
+
+### 12.3 验收暴露的缺陷
+
+**`shim.log` 被 WARN 刷屏（已发回修复）。** roster 采样循环每秒调一次
+`enumProcs`，而 Windows 上它恒定返回「不支持」，于是每个任务的 `shim.log` 每秒
+追加一条 WARN——单任务每天约 8.6 万行，把围栏、撞墙归因、退出哨兵这些真正有用
+的行全淹掉。修法要求是「识别永久不支持后打一条 Info 并**停止该循环**」，而不是
+降级成 Debug（那只是把噪音藏起来，循环仍在空转）。
+
+另有两处注释回退，**根因是本 spec 配套 plan 里我给的替换文本**顶掉了原有正确
+注释（`SetFencePolicy` 的「不影响已拉起的 shim」与 `reserveRatio` 的取值域说明），
+已一并发回补上。
+
+### 12.4 返修复验（2026-08-18，同一台机器）
+
+修复提交 `409c3c35` 交叉编译后就地换版，重跑一次 opencode 任务，取证如下：
+
+- **刷屏已止。** 整轮任务（dispatch → 模型干完 → `waiting_review`）结束时
+  `shim.log` **共 4 行**：进程容器已安装、shim 拉起执行者、执行者已启动，
+  以及一条 Info `本平台不做后代名册采样，回收由进程容器承担
+  cause=本平台不支持进程枚举`。含「名册/枚举」的行**恰好 1 条**——采样循环
+  确实停了，不是降级成 Debug 藏起来了。
+- 任务本身正常收尾：`ROSTER_OK.md` 已建并提交（`fb6efc44`），
+  `done` 后 worktree 已清理、零残留 opencode 进程——12.1 第 5/9 条在新二进制上
+  再次成立。
+- 两处被顶掉的注释已恢复原文。
+
+至此 12.3 的缺陷全部关闭；12.2 的两项仍如实记为未验。
+
+### 12.5 一条方法论教训
+
+第 4 条验收连做了三次才有效，前两次都产出了**假 PASS**：
+
+1. 第一次用 `Stop-ScheduledTask` 停 agentd——它只停计划任务的 `cmd` 壳，
+   agentd 进程根本没死，而脚本看到 opencode 还活着就报了 PASS。
+2. 第二次改为按父进程名找 agentd，但那时 `cmd` 已退出、`Get-Process` 查不到名字，
+   于是 `Stop-Process -Id $null` 什么都没杀，脚本**再次**报 PASS。
+
+两次的共同形态是：**脚本只断言了「幸存者还在」，没有断言「该死的确实死了」。**
+第三次加上「杀完必须确认 agentd 的 pid 已消失，否则 ABORT」才拿到可信结论。
+
+这条教训对后续所有真机验收都适用：**验「A 死后 B 还活着」时，必须先证明 A 真的
+死了**，否则「什么都没发生」与「属性成立」在输出上完全一样。
