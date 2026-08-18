@@ -340,6 +340,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     }
   }
 
+  // 右键菜单状态只保存机器名；这里按机器名找回同一 location，复用机器行的可达性判据，
+  // 避免断开机器仍出现一个必然失败的建树入口，同时不影响编辑与注销。
+  const menuLocation = menu ? menu.project.locations.find((l) => l.machine === menu.machine) : undefined
+  const menuProblem = menuLocation ? locationProblem(menuLocation, tree.machines) : ''
+
   return (
     // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
@@ -783,7 +788,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            ...(onWorktreeCreated
+            ...(onWorktreeCreated && menuLocation && menuProblem === ''
               ? [{
                   label: '新建工作树',
                   // hover 出现的 + 按钮对键盘/触屏不友好，右键是它的等价通道，

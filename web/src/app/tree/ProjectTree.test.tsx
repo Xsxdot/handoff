@@ -553,6 +553,22 @@ describe('机器行新建工作树', () => {
     expect(screen.queryByRole('button', { name: '新建工作树' })).toBeNull()
   })
 
+  it('机器不可达时右键菜单不给新建工作树，但保留编辑与注销', () => {
+    const p = props({})
+    const tree = {
+      ...p.tree,
+      projects: [{
+        ...p.tree.projects[0],
+        locations: [{ ...p.tree.projects[0].locations[0], probe_error: 'ssh 超时' }],
+      }],
+    }
+    render(<ProjectTree {...p} tree={tree} onWorktreeCreated={vi.fn()} />)
+    fireEvent.contextMenu(screen.getByTestId('machine-row'))
+    expect(screen.queryByRole('menuitem', { name: '新建工作树' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '编辑' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+  })
+
   it('点 + 开弹层；右键菜单里也有同一个入口', () => {
     render(<ProjectTree {...props({})} onWorktreeCreated={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: '新建工作树' }))
