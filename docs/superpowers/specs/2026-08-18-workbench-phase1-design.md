@@ -27,15 +27,34 @@
   换前缀会断上下文）、title、status、priority（仅展示/排序）、project、
   parent_id、workflow_id + 版本、spec_ref、plan_ref、driver lease（会话标识 +
   心跳时间）、验收记录、时间戳。
-- `work_item_deps`：blocker_id → blocked_id。写入时单事务读全图做环检测（含
-  parent 树与 dep 边混合成环、祖先-后代间挂 dep）。
+- `work_item_relations`（原 deps 泛化）：`from → to` + `type` 枚举
+  {blocks / discovered_from（发现自）/ split_from（拆分自）/ relates（关联）}。
+  环检测与 blocked 衍生态**只对 blocks 生效**；写入时单事务读全图判定（含
+  parent 树与 blocks 边混合成环、祖先-后代间挂边）。全部关系类型双向可查——
+  「由此发现→B142」这类考古链是真实总账的高频写法。
+- **验收结构化**：work_items 加 `acceptance_criteria`（判据文本）；验收结果落
+  事件类型 `acceptance_recorded`（含 `verified_on_real_machine` bool + 证据
+  文本）。「已完成(已验)」与「已完成(待真机验)」是真实存在的正交维度，必须
+  可表达、可过滤，不压进状态列。
+- **终止态带 reason 枚举**：取消 / 废弃 / 搁置（可复活）。真实总账有 4 条
+  🗄️ shelved 与 1 条 🧊，迁移需要此语义。
+- **spec_ref 归一化**（相对 docs/superpowers/ 的规范路径），支撑「按 spec 聚合」
+  的派生批次视图。**spec 不实体化**——批次有两种真实形态：刻意的 epic（父子树
+  已覆盖）与平级条目共享一份 spec（如 B4–B9），后者靠 spec_ref 聚合表达；实体化
+  会与父工作项、四期 goal 形成三个重叠分组概念，且 B 号与 spec 已现多对多苗头。
+  批次公共验收注记挂在聚合视图层（或父 item），此裁决写死防实现自作主张建表。
 - `work_item_tasks`：`(work_item_id, target, task_id, 用途)` 弱引用表——账本侧
   指向 task 的唯一通道；task 表只加 opaque `work_item_id` 标签列（不设 FK）。
 - `work_item_events`：append-only 单流，独立 seq（沿用 events 表模式）。事件类型：
   状态转移（带 actor + CAS 前值）、派发（含模板版本 + 纪律块 hash 快照）、审阅
-  裁决、合并记录、note、**镜像 task 事件**（保留来源 target 与原 seq）。
+  裁决、合并记录、`acceptance_recorded`、**comment**（原 note 升级：body +
+  引用 item id 列表——写入时自动落 relations 关联边；`kind` 子类 {普通/更正}
+  承接「变更痕迹」文化；附件字段预留空数组，二期填）、**镜像 task 事件**
+  （保留来源 target 与原 seq）。
 - `workflows`：状态机形状，**不可变版本化**（edit 产生新版本，item 钉版本，
-  旧 item 显式迁移）。
+  旧 item 显式迁移）。**默认 feature 工作流出厂自带「已出 spec」插入状态**——
+  对齐用户真实生命周期 💡→📋→🔨→✅ 的 📋 关口（人审 spec 是三个人工位之一），
+  顺便示范插入机制。
 - `dispatch_templates`：带版本；executor 类型、纪律块（引用 + hash）、prompt
   模板、目标机、分支策略、**per-target 模型覆盖**。
 - 正交标记不落列：`blocked`（全部 blocker 达「已完成」才解除；blocker 终止 →
@@ -94,12 +113,27 @@
 
 > 待敲定：与 web-console 现有页面的关系（新页 or 重构）；一键动作确认交互。
 
-- 列 = 工作流状态（骨架 + 自定义）；「等人」单列/高亮；blocked 徽标；多项目
-  过滤；**「未挂账」泳道**收裸 dispatch 的孤儿 task。
-- 卡片：**实时 join 关联 task 状态**，账面与实况矛盾亮「状态冲突」徽标；
-  pending 工单上卡片；driver lease 缺失（无会话在驱动）提示；事件流滞后标记。
-- 详情：timeline、子任务树 rollup（父状态独立驱动）、阻塞图、task 跳转。
+**信息优先级原则（设计约束，用户反馈的直接教训）**：界面主角是知识流
+（spec 批次、验收状态、引用关系、评论），**lease/镜像/CAS 类保真信号默认沉默、
+异常才显形**（驱动正常不显示，只亮「无驱动会话」；镜像收敛为健康小点，断链才
+展开告警）。
+
+- 看板/**列表双视图**：看板列 = 工作流状态（骨架 + 插入）；列表复刻 markdown
+  总账列（ID/标题/状态/验收/优先级/Spec/备注）+「含归档」过滤——领活与考古
+  入口。「等人」横贯顶部高亮条；blocked 徽标；多项目过滤；「未挂账」收为一行
+  摘要点开展开（异常态不常驻占位）。
+- 卡片主信息：优先级、**spec 徽标（点开批次视图：同 spec_ref 全部条目 + 批次
+  公共验收注记）**、已完成态的「已验/待真机验」徽标；异常徽标（等人/状态冲突/
+  blocked/工单）。**实时 join 关联 task 状态**，账面与实况矛盾亮「状态冲突」。
+- 详情抽屉：状态流水线、**验收区（判据 + 已验开关 + 证据摘要）**、**关系区
+  （阻塞/发现自/拆分自/关联，双向）**、子任务树 rollup（父状态独立驱动）、
+  关联 task 跳转、**分层 timeline**（评论=气泡主视觉，系统事件=浅色 meta 行，
+  镜像 task 事件折叠成组，全部/评论/裁决/系统过滤）、评论框（`#B142` 引用自动
+  成关系边，双向可见）。
 - 一键动作（人工插手通道）：转移状态、按节点派发——调用与主会话同一节点执行器。
+- **流程管理页**（独立页，不塞 settings）：工作流 / 派发模板两个 tab，各自
+  版本列表 +「N 个 item 钉在 vX」+ 显式迁移动作；模板详情含 per-target 模型
+  覆盖、纪律块正文与 hash、版本取证（哪次派发用了哪版）。
 
 ## 7. 主会话驱动（行为规约，落到 handoff skill 改写）
 
@@ -115,7 +149,11 @@
 
 1. 迁移前对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
 2. backlog.md 未完成条目入库为 open item，历史 done 条目归档入库（只读）；
-   **B 号→item id 映射表落库**，历史考古接得上。
+   **B 号→item id 映射表落库**，历史考古接得上。状态映射表：💡→待办、
+   📋→已出 spec、🔨→进行中、✅done(已验)→已完成+已验、done(待真机验)→
+   已完成+待验、🗄️/🧊→终止(搁置·可复活)；「验收」列→acceptance_criteria+
+   验收事件；「变更痕迹/备注」→首条 comment；「见 B17/由 B115 发现」类引用
+   尽力解析为 relations（解析不了的保留在 comment 原文里）。
 3. backlog.md 顶部加冻结注记；**全局 skill（~/.claude 下 product-backlog）与
    CLAUDE.md §4 同一批次切换为指针**——先切 skill 再冻结文件，避免其他在途
    worktree 的旧 skill 副本继续追加。
