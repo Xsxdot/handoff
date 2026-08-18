@@ -530,6 +530,16 @@ func TestInstallPs1IsBOMFreeASCII(t *testing.T) {
 // 写错（少一层目录、通配符位置不对）时**照样绿**，那是一道假门。check-attr
 // 问的是 git 自己「这个路径最终生效的属性是什么」。
 func TestToolRewrittenFilesPinnedToLF(t *testing.T) {
+	// 这一读**不是**多余的：断言本身走 `git check-attr` 子进程，Go 的测试缓存
+	// 只登记本进程打开过的文件，看不见子进程读了什么。不读一次 .gitattributes，
+	// 改它就不会让缓存失效——`go test`（不带 -count=1）会拿旧的 PASS 交差。
+	//
+	// 这不是推演：本用例第一版没有这一读，三条变异（删 go.mod 声明、把 bindings
+	// 模式写少一层、把 go.sum 改成 -text）跑出来**全是绿的**，输出 "ok (cached)"，
+	// 当场证明那是一道假门。os.ReadFile 把它登记成输入后，变异才抓得住。
+	if _, err := os.ReadFile(".gitattributes"); err != nil {
+		t.Fatalf("读 .gitattributes 失败: %v", err)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("环境里没有 git，跳过（CI 上一定有）")
 	}
