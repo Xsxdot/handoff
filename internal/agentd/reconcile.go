@@ -269,6 +269,18 @@ func (m *Manager) sweepTaskProcsOnce(taskID string) error {
 		// 不是取消这个信号——见 prochost/footprint.go 该哨兵的注释。
 		m.log.Info("执行者存活，已降级为点名回收", "task", taskID, "pid", h.PID, "killed", killed)
 		return err
+	case errors.Is(err, prochost.ErrNotSupported):
+		// 本平台没有进程枚举 → 名册点名这条路本来就走不通，但**回收并没有缺席**：
+		// Windows 上由 Job Object 的 KILL_ON_JOB_CLOSE 连坐收掉整棵树（实测连
+		// bash→bash→sleep 这样的孙进程都收得掉）。所以这既不是失败、也没有残留，
+		// 不能唤醒协调者。
+		//
+		// 改前它落进下面的 err != nil 分支，于是每个任务收尾都推一条「残留进程
+		// 清扫失败，请先 handoff footprint 确认再人工处理」——而 footprint 在这些
+		// 平台上依赖的正是同一个缺失的能力，回答不了它自己提出的问题（B148）。
+		m.log.Info("本平台不做名册清扫，回收由进程容器承担",
+			"task", taskID, "pid", h.PID, "cause", err)
+		return nil
 	case err != nil:
 		m.log.Error("清扫失败", "task", taskID, "pid", h.PID, "cause", err)
 		m.notifyOrphanRisk(taskID, fmt.Sprintf(

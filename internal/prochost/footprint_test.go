@@ -1,10 +1,13 @@
 package prochost
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -634,7 +637,7 @@ func TestMarkKillReverifiesBeforeSignal(t *testing.T) {
 func TestMarkKillSkipsWhenUnsupported(t *testing.T) {
 	oldAttr := attributesFn
 	t.Cleanup(func() { attributesFn = oldAttr })
-	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
 
 	killedPIDs := stubKillProc(t)
 	killed := markKill(Handle{PID: 100, StartedAt: 1000, TaskID: "t1"},
@@ -703,7 +706,7 @@ func TestFootprintDegradesWhenMarkUnsupported(t *testing.T) {
 
 	oldAttr := attributesFn
 	t.Cleanup(func() { attributesFn = oldAttr })
-	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
 
 	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
 	members, v, err := Footprint(h)
@@ -746,7 +749,7 @@ func TestCountGroupEmptyGroupIsZeroNotError(t *testing.T) {
 // **不能降级成 0**——0 会被渲染成「没有残留」，那是个假结论。
 func TestCountGroupPropagatesEnumFailure(t *testing.T) {
 	orig := enumProcsFn
-	enumProcsFn = func() ([]procEntry, error) { return nil, errNotSupported }
+	enumProcsFn = func() ([]procEntry, error) { return nil, ErrNotSupported }
 	t.Cleanup(func() { enumProcsFn = orig })
 	if _, err := CountGroup(300); err == nil {
 		t.Fatalf("枚举失败必须上抛")
@@ -759,4 +762,45 @@ func stubProcs(t *testing.T, procs []procEntry) {
 	orig := enumProcsFn
 	enumProcsFn = func() ([]procEntry, error) { return procs, nil }
 	t.Cleanup(func() { enumProcsFn = orig })
+}
+
+// 进程枚举失败要分两档记：平台不支持是**预期形态**（Debug），真故障才是 Error。
+//
+// 背景（B144）：非 darwin/linux 上 enumProcs 恒定返回 ErrNotSupported。改前
+// 一律按 Error 打，Windows 执行机上每次 handoff status 都在 agentd 日志里刷两条
+// 红字，把真正的枚举故障淹在噪音里。
+func TestLogEnumFailureTiersByCause(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		want    slog.Level
+		notWant slog.Level
+	}{
+		{"平台不支持降为 Debug", ErrNotSupported, slog.LevelDebug, slog.LevelError},
+		{"真故障仍是 Error", errors.New("/proc 读取失败"), slog.LevelError, slog.LevelDebug},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+			old := slog.Default()
+			slog.SetDefault(slog.New(h))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			logEnumFailure("足迹枚举失败", tc.err, "pid", 4242)
+
+			out := buf.String()
+			if !strings.Contains(out, "level="+tc.want.String()) {
+				t.Fatalf("应按 %s 记，实得：%s", tc.want, out)
+			}
+			if strings.Contains(out, "level="+tc.notWant.String()) {
+				t.Fatalf("不应按 %s 记，实得：%s", tc.notWant, out)
+			}
+			// 无论哪一档，cause 与上下文都必须在——降级的是档位，不是信息量
+			for _, want := range []string{"cause=", "pid=4242"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("日志应含 %q，实得：%s", want, out)
+				}
+			}
+		})
+	}
 }

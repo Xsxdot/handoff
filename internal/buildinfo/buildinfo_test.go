@@ -247,3 +247,68 @@ func TestReadFillsPlatform(t *testing.T) {
 		t.Fatalf("Platform = %q，期望 %q", bi.Platform, want)
 	}
 }
+
+// 注入的 revision 必须**覆盖**自动戳，而不是只在自动戳为空时兜底。
+//
+// 为什么这条是承重的：linked git worktree 里 go build 的自动戳非空但**指向
+// 主工作树**——同一份源码，worktree 构建戳出主工作树的 HEAD 与脏状态，独立
+// 克隆构建才戳出真实值（B146 实测）。兜底语义（空才用注入值）在这里恒不生效，
+// 所以优先级写反了等于没修。
+func TestReadInjectedRevisionOverridesAutoStamp(t *testing.T) {
+	oldRead, oldRev, oldMod, oldTime := readBuildInfo, releaseRevision, releaseModified, releaseTime
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			GoVersion: "go1.26.1",
+			Settings: []debug.BuildSetting{
+				// 自动戳：主工作树的状态，非空且是脏的
+				{Key: "vcs.revision", Value: "c32a1f8b19980fe8ae7b150ca7135aa5f030a8d1"},
+				{Key: "vcs.time", Value: "2026-08-18T05:59:36Z"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+		}, true
+	}
+	releaseRevision = "85c1e2322a086e237f63261f7b9ea3e05f2733e4"
+	releaseModified = "false"
+	releaseTime = "2026-08-18T08:17:40Z"
+	t.Cleanup(func() {
+		readBuildInfo, releaseRevision, releaseModified, releaseTime = oldRead, oldRev, oldMod, oldTime
+	})
+
+	got, ok := Read()
+	if !ok {
+		t.Fatal("Read 应返回 ok=true")
+	}
+	if got.Revision != "85c1e2322a086e237f63261f7b9ea3e05f2733e4" {
+		t.Fatalf("注入值必须覆盖自动戳，实得 Revision=%q", got.Revision)
+	}
+	if got.Modified {
+		t.Fatal("注入 releaseModified=false 时不得沿用自动戳的 modified=true——那正是凭空多出来的「带未提交改动」")
+	}
+	// 时刻与 revision 在 handoff status 里并排显示，只纠正一个会得到自相矛盾的一行
+	if got.Time != "2026-08-18T08:17:40Z" {
+		t.Fatalf("注入的提交时刻必须覆盖自动戳，实得 Time=%q", got.Time)
+	}
+}
+
+// 不注入时行为必须与改动前逐字节一致：自动戳原样透出。
+func TestReadWithoutInjectionKeepsAutoStamp(t *testing.T) {
+	oldRead, oldRev, oldMod, oldTime := readBuildInfo, releaseRevision, releaseModified, releaseTime
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			GoVersion: "go1.26.1",
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "c32a1f8b19980fe8ae7b150ca7135aa5f030a8d1"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+		}, true
+	}
+	releaseRevision, releaseModified, releaseTime = "", "", ""
+	t.Cleanup(func() {
+		readBuildInfo, releaseRevision, releaseModified, releaseTime = oldRead, oldRev, oldMod, oldTime
+	})
+
+	got, _ := Read()
+	if got.Revision != "c32a1f8b19980fe8ae7b150ca7135aa5f030a8d1" || !got.Modified {
+		t.Fatalf("未注入时应原样透出自动戳，实得 Revision=%q Modified=%v", got.Revision, got.Modified)
+	}
+}

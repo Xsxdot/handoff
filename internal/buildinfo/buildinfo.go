@@ -41,6 +41,33 @@ var readBuildInfo = debug.ReadBuildInfo
 // moduleReleaseVersion），两者都拿不到才判定为非 release 构建。
 var releaseVersion string
 
+// releaseRevision / releaseModified 是构建时由 ldflags 注入的 VCS 状态，
+// 用于**纠正** debug.ReadBuildInfo 的自动戳。
+//
+// 注入方式（见 scripts/build-deploy.sh）：
+//
+//	-ldflags "-X ...buildinfo.releaseRevision=<40 位 sha> \
+//	          -X ...buildinfo.releaseModified=true \
+//	          -X ...buildinfo.releaseTime=<RFC3339 提交时刻>"
+//
+// why（为什么自动戳需要纠正）：`go build` 在 **linked git worktree** 里读的是
+// **主工作树**的 HEAD 与脏状态，不是当前 worktree 的。同一份源码的对照实测：
+// 从 worktree 构建戳出 `c32a1f8b1998 / modified=true`，从独立克隆构建同一提交
+// 戳出 `85c1e2322a08 / modified=false`——前者恰是主工作树当时的状态。这个仓库
+// 几乎所有开发都在 worktree 里做，于是「戳是错的」是常态；而 version / status /
+// upgrade 三处都读它，部署上去的 agentd 会自报一个不对应任何提交的版本，还可能
+// 凭空带上「带未提交改动」（B146）。
+//
+// why（为什么不能像 releaseVersion 那样只做兜底）：自动戳**不为空**，它只是
+// 不对。兜底逻辑（空才用注入值）在这里恒不生效，所以注入值必须**优先**。
+//
+// 不注入时二者为空，行为与改动前逐字节一致。
+var (
+	releaseRevision string
+	releaseModified string
+	releaseTime     string
+)
+
 // releaseTagRe 匹配 release tag 形态的版本号（vX.Y.Z，三段皆为数字）。
 //
 // why（必须卡这么死）：这是「模块版本能不能当 release 版本号用」的唯一判据，
@@ -100,6 +127,17 @@ func Read() (proto.BuildInfo, bool) {
 		case "vcs.modified":
 			// go 把它序列化成字符串 "true"/"false"，不是布尔
 			out.Modified = s.Value == "true"
+		}
+	}
+	// 注入值优先覆盖自动戳：worktree 构建时自动戳非空但指向主工作树，
+	// 见 releaseRevision 的注释。两者都不注入时本段无操作。
+	if releaseRevision != "" {
+		out.Revision = releaseRevision
+		out.Modified = releaseModified == "true"
+		// 时刻单独判空：它与 revision 同为「自动戳会指错」的字段，handoff status
+		// 把两者并排显示，只纠正一个会得到一行自相矛盾的输出。
+		if releaseTime != "" {
+			out.Time = releaseTime
 		}
 	}
 	return out, true

@@ -126,7 +126,7 @@ func cwdReadable() bool {
 //
 // 返回：
 //   - true: 该进程的 cwd 落在 cred.MarkRoot 之内
-//   - errNotSupported: 本机自检未通过（见 cwdReadable），调用方应降级
+//   - ErrNotSupported: 本机自检未通过（见 cwdReadable），调用方应降级
 //   - 其它错误: 该 pid 读不到（多为刚退出），调用方跳过该条
 //
 // 注意：cred.MarkRoot 为空即一律不命中——「仅托管 worktree 可杀」在这里落地。
@@ -136,7 +136,7 @@ func attributes(pid int, cred TaskCred) (bool, error) {
 		return false, nil
 	}
 	if !cwdReadable() {
-		return false, errNotSupported
+		return false, ErrNotSupported
 	}
 	cwd, err := cwdOf(pid)
 	if err != nil {

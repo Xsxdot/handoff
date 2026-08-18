@@ -2,7 +2,7 @@
 
 // procenum_other.go —— 非 darwin/linux 的空实现。
 //
-// 一律返回 errNotSupported 而不是空集：调用方必须据此降级为「未知」，
+// 一律返回 ErrNotSupported 而不是空集：调用方必须据此降级为「未知」，
 // 而不是渲染出一个 0 让人误以为足迹是空的（见 procenum.go 的 why）。
 //
 // **Windows 上这个缺席的含义与其它平台不同，别照字面理解**：进程回收职责已由
@@ -13,6 +13,6 @@
 // 详见 spec 2026-08-17-windows-native-executor-design.md 的 3.2 与 11.6.1。
 package prochost
 
-func enumProcs() ([]procEntry, error) { return nil, errNotSupported }
+func enumProcs() ([]procEntry, error) { return nil, ErrNotSupported }
 
-func procLimit() (int, error) { return 0, errNotSupported }
+func procLimit() (int, error) { return 0, ErrNotSupported }

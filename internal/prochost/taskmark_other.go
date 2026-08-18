@@ -2,7 +2,7 @@
 
 // taskmark_other.go —— 非 darwin/linux 的任务标记空实现。
 //
-// 一律返回 errNotSupported 而不是 false：false 的含义是「读到了，且不属于」，
+// 一律返回 ErrNotSupported 而不是 false：false 的含义是「读到了，且不属于」，
 // 与「这个平台我们读不了」是两回事——后者必须让调用方降级为 pgid + roster，
 // 而不是据此认定进程不属于任务（那会让清扫漏掉真正的残留）。
 //
@@ -10,4 +10,4 @@
 // 不需要事后判定。
 package prochost
 
-func attributes(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+func attributes(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
