@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -38,7 +39,7 @@ func TestWindowsTaskXMLContent(t *testing.T) {
 	for _, want := range []string{
 		"<Interval>PT1M</Interval>",
 		"<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
-		"<LogonTrigger>",
+		"<BootTrigger>",
 		"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
 		"<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
 		`<Command>C:\Users\u\.local\bin\handoff.exe</Command>`,
@@ -95,10 +96,22 @@ func newTestWindows(t *testing.T, runOut string, runErr error) (*windowsManager,
 		mkdirAll:     func(string, os.FileMode) error { return nil },
 		run: func(name string, args ...string) ([]byte, error) {
 			calls = append(calls, name+" "+strings.Join(args, " "))
+			// Install 末尾的复核会走 Status()，它要问两个东西：任务的 PID
+			// （schtasks /V /FO CSV）与该 PID 是否存活（tasklist）。测试默认
+			// 让这两问都答“在跑”，否则每个 Install 用例都要等满复核窗口才失败
+			joined := strings.Join(args, " ")
+			if name == "schtasks" && strings.Contains(joined, "/FO CSV") {
+				return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Running\",\"4242\"\n"), runErr
+			}
+			if name == "tasklist" {
+				return []byte("handoff.exe 4242 Console 1 40,000 K\n"), nil
+			}
 			return []byte(runOut), runErr
 		},
 		writeFile: func(p string, b []byte, _ uint32) error { written[p] = b; return nil },
 		remove:    func(p string) error { delete(written, p); return nil },
+		// 不真的睡：复核窗口是 5 秒，真睡会让本包单测从毫秒级变成分钟级
+		sleep: func(time.Duration) {},
 	}
 	return m, &calls, &written
 }
@@ -109,9 +122,11 @@ func TestWindowsInstallSequence(t *testing.T) {
 	if err := m.Install(Spec{BinPath: `C:\bin\handoff.exe`, ConfigPath: `C:\c.yaml`}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	want := []string{"/Delete", "/Create", "/Query"}
-	if len(*calls) != len(want) {
-		t.Fatalf("调用次数应为 %d，实际 %d: %v", len(want), len(*calls), *calls)
+	// 前四条的顺序是承重的：先删旧（同名任务在时 /Create 会失败）、再建、
+	// 再复核注册、最后**启动**。启动那一条曾经整个缺失，见下面的专项测试
+	want := []string{"/Delete", "/Create", "/Query", "/Run"}
+	if len(*calls) < len(want) {
+		t.Fatalf("调用条数不足 %d，实际 %d: %v", len(want), len(*calls), *calls)
 	}
 	for i, w := range want {
 		if !strings.Contains((*calls)[i], w) {
@@ -226,4 +241,64 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Install 必须真的把服务启动起来，而不是建完任务就返回。
+//
+// Manager 接口对 Install 的约定是「生成单元、写盘、加载、启动，并复核真的起来了」。
+// launchd 靠 plist 的 RunAtLoad 在 bootstrap 时自动拉起；而 Windows 的 BootTrigger
+// 要等下次开机、LogonTrigger 要等下次登录——少了 /Run，install 会「成功」返回而
+// agentd 从未运行。2026-08-18 真机对照时发现的实缺陷，这条测试是它的防线。
+func TestWindowsInstallActuallyStartsService(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "SUCCESS", nil)
+	if err := m.Install(Spec{BinPath: `C:\bin\handoff.exe`}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	var ran bool
+	for _, c := range *calls {
+		if strings.Contains(c, "/Run") {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Fatalf("Install 必须调 schtasks /Run 启动任务，否则 agentd 要等下次开机才起来。实际调用: %v", *calls)
+	}
+}
+
+// 启动了但进程没起来，Install 必须失败——报「安装成功」会让操作者
+// 去查一个并不存在的服务。
+func TestWindowsInstallFailsWhenProcessNeverAppears(t *testing.T) {
+	m, _, _ := newTestWindows(t, "SUCCESS", nil)
+	// tasklist 查不到那个 pid：模拟起来即死（二进制路径错、端口被占、配置读不出）
+	m.run = func(name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if name == "schtasks" && strings.Contains(joined, "/FO CSV") {
+			return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Ready\",\"0\"\n"), nil
+		}
+		if name == "tasklist" {
+			return []byte("信息: 没有运行的任务匹配指定标准。\n"), nil
+		}
+		return []byte("SUCCESS"), nil
+	}
+	err := m.Install(Spec{BinPath: `C:\bin\handoff.exe`, LogPath: `C:\logs\agentd.log`})
+	if err == nil {
+		t.Fatal("进程从未出现时 Install 必须报错，不能报安装成功")
+	}
+	// 报文要把日志路径给出来——那是操作者下一步唯一能看的东西
+	if !strings.Contains(err.Error(), `C:\logs\agentd.log`) {
+		t.Errorf("报文应指向日志路径，实际: %v", err)
+	}
+}
+
+// 触发器必须是 BootTrigger：执行机是无人值守服务器，LogonTrigger 意味着
+// 重启后要等有人 RDP 登录 agentd 才起来，而那可能永远不发生。
+func TestWindowsTaskXMLUsesBootTriggerNotLogon(t *testing.T) {
+	m := &windowsManager{log: testLogger()}
+	body := m.taskXML(Spec{BinPath: `C:\bin\handoff.exe`}, "u")
+	if strings.Contains(body, "LogonTrigger") {
+		t.Error("不得用 LogonTrigger：无人值守服务器上没有交互登录，agentd 将永不自启")
+	}
+	if !strings.Contains(body, "<BootTrigger>") {
+		t.Errorf("必须用 BootTrigger:\n%s", body)
+	}
 }

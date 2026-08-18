@@ -23,13 +23,27 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
 // WindowsTaskName 是计划任务的名字，同时也是 XML 文件名的主干。
 const WindowsTaskName = "handoff-agentd"
 
-// windowsManager 是 Windows 实现。七个字段是测试缝。
+// installVerifyInterval / installVerifyAttempts 是 Install 复核「agentd 真的
+// 起来了」的轮询节奏，合计 installVerifyWindow。
+//
+// 为什么轮询而不是睡一个固定值：schtasks /Run 只把启动请求交给计划任务服务，
+// 返回时进程往往还没起来。常见机器上百毫秒即可，负载高时要几秒——固定睡值
+// 要么白等要么误判。与 prochost 的 killVerifyBackoff 同一条纪律：异步生效的
+// 动作必须复核，且复核要给够窗口。
+const (
+	installVerifyInterval = 500 * time.Millisecond
+	installVerifyAttempts = 10
+	installVerifyWindow   = installVerifyInterval * installVerifyAttempts
+)
+
+// windowsManager 是 Windows 实现。八个字段是测试缝。
 type windowsManager struct {
 	log          *slog.Logger
 	localAppData string
@@ -38,6 +52,9 @@ type windowsManager struct {
 	run          func(string, ...string) ([]byte, error)
 	writeFile    func(string, []byte, uint32) error
 	remove       func(string) error
+	// sleep 是复核轮询的等待缝：测试注入空实现，避免为了走完复核窗口
+	// 真的睡 5 秒（那会让 service 包的单测从毫秒级变成分钟级）
+	sleep func(time.Duration)
 }
 
 // newWindows 构造生产用的 Windows manager。
@@ -60,6 +77,7 @@ func newWindows(log *slog.Logger) *windowsManager {
 			return os.WriteFile(path, data, os.FileMode(perm))
 		},
 		remove: os.Remove,
+		sleep:  time.Sleep,
 	}
 }
 
@@ -93,9 +111,15 @@ func esc(s string) string {
 //
 // 参数：spec 是要托管的 agentd 描述；user 是运行身份。
 // 返回：XML 全文（落盘前由 toUTF16LE 转码）。
-// 注意：重复触发与 IgnoreNew 一起模拟 KeepAlive，LogonTrigger 对标 RunAtLoad，
-// 电池设置避免任务静默不启动，ExecutionTimeLimit 为零避免长跑 agentd 被掐掉，
-// Command 直接指向 handoff.exe 以确保 schtasks 能跟踪真正的 agentd。
+// 注意：重复触发与 IgnoreNew 一起模拟 KeepAlive，电池设置避免任务静默不启动，
+// ExecutionTimeLimit 为零避免长跑 agentd 被掐掉，Command 直接指向 handoff.exe
+// 以确保 schtasks 能跟踪真正的 agentd。
+//
+// **触发器用 BootTrigger 而不是 LogonTrigger**（08-18 真机对照后改正）。
+// 执行机是无人值守的服务器，平时没有任何交互登录会话——LogonTrigger 意味着
+// 机器重启后 agentd 要等到有人 RDP 登录才会起来，而那可能永远不发生。
+// win-b37 上手搓的那份托管用的正是 BootTrigger + S4U，已长期实证可行。
+// S4U 拿到的是无网络凭据的令牌，对 agentd 够用（它只需本地资源与出站连接）。
 func (m *windowsManager) taskXML(spec Spec, user string) string {
 	args := "agentd"
 	if spec.ConfigPath != "" {
@@ -105,10 +129,10 @@ func (m *windowsManager) taskXML(spec Spec, user string) string {
 	b.WriteString(`<?xml version="1.0" encoding="UTF-16"?>` + "\n")
 	b.WriteString(`<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">` + "\n")
 	b.WriteString("  <RegistrationInfo>\n    <Description>handoff agentd</Description>\n  </RegistrationInfo>\n")
-	b.WriteString("  <Triggers>\n    <LogonTrigger>\n      <Enabled>true</Enabled>\n")
+	b.WriteString("  <Triggers>\n    <BootTrigger>\n      <Enabled>true</Enabled>\n")
 	b.WriteString("      <Repetition>\n        <Interval>PT1M</Interval>\n")
 	b.WriteString("        <Duration>P365D</Duration>\n        <StopAtDurationEnd>false</StopAtDurationEnd>\n")
-	b.WriteString("      </Repetition>\n    </LogonTrigger>\n  </Triggers>\n")
+	b.WriteString("      </Repetition>\n    </BootTrigger>\n  </Triggers>\n")
 	b.WriteString("  <Principals>\n    <Principal id=\"Author\">\n")
 	b.WriteString("      <UserId>" + esc(user) + "</UserId>\n")
 	b.WriteString("      <LogonType>S4U</LogonType>\n      <RunLevel>HighestAvailable</RunLevel>\n")
@@ -219,8 +243,38 @@ func (m *windowsManager) Install(spec Spec) error {
 		m.log.Error("任务已建但复核失败", "cause", qerr, "output", strings.TrimSpace(string(out)))
 		return fmt.Errorf("任务已建但复核不到（检查 %s）: %w", spec.LogPath, qerr)
 	}
-	m.log.Info("Windows 计划任务安装完成", "task", WindowsTaskName)
-	return nil
+
+	// 建完任务必须**立刻启动它**。Manager 接口对 Install 的约定是「生成单元、
+	// 写盘、加载、启动，并复核真的起来了」——launchd 靠 plist 里的 RunAtLoad
+	// 在 bootstrap 时自动拉起，systemd 由 install 顺带 start。
+	// 而 Windows 的 BootTrigger 要等下一次开机、LogonTrigger 要等下一次登录，
+	// 两者都不会在 install 当下启动任何东西。少了这一步，install 会「成功」
+	// 返回而 agentd 从未运行——那正是 Install 契约里最不能省的一半。
+	if out, rerr := m.run("schtasks", "/Run", "/TN", WindowsTaskName); rerr != nil {
+		m.log.Error("任务已建但启动失败", "cause", rerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("任务已建但启动失败: %s（%w）", strings.TrimSpace(string(out)), rerr)
+	}
+
+	// 复核「真的在跑」，而不是「注册上了」。/Run 只是把请求交给计划任务服务，
+	// 二进制路径错、端口被占、配置读不出来都会让它起来即死——那种情况下
+	// 报「安装成功」，操作者会去查一个并不存在的服务。
+	// 轮询而不是睡一个固定值：进程拉起通常在百毫秒内，慢的机器上要几秒。
+	var last Status
+	for i := 0; i < installVerifyAttempts; i++ {
+		m.sleep(installVerifyInterval)
+		st, serr := m.Status()
+		if serr == nil && st.Running {
+			m.log.Info("Windows 计划任务安装完成并已运行",
+				"task", WindowsTaskName, "probe", i+1)
+			return nil
+		}
+		last = st
+	}
+	m.log.Error("任务已启动但复核窗口内未见进程存活",
+		"task", WindowsTaskName, "window", installVerifyWindow,
+		"installed", last.Installed, "detail", last.Detail)
+	return fmt.Errorf("任务已建并已触发，但 %s 内未复核到 agentd 进程存活（检查 %s）",
+		installVerifyWindow, spec.LogPath)
 }
 
 // Uninstall 删任务并删 XML。本来就没装时返回 nil。
