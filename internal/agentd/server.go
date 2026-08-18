@@ -1336,6 +1336,13 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 // 为什么独立于 taskRepoOrErr：diff / branches 两个端点除了工作区路径还要读
 // 任务的 BaseCommit（B65），而另外三个调用点只关心路径。拆开后既不动它们的
 // 签名，也不必让它们承担一个用不到的返回值。
+//
+// 返回的是 task.Workdir() 而非 task.RepoPath（为什么 diff/fetch/run 必须在
+// Workdir 而非主仓库：worktree 任务的 executor cwd 与分支 HEAD 都在 Workdir，
+// 主仓库的 HEAD 停在派发前的位置——diff 相对基准、fetch 看工作区文件、run 跑
+// 测试都必须落在 executor 真正干活的目录，否则审阅的是错误的代码状态）。
+//
+// 供 diff/fetch/run 三条审阅路由共用——它们只关心任务指向的仓库，不依赖状态机。
 func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool) {
 	task, err := s.st.GetTask(taskID)
 	if err != nil {
