@@ -64,6 +64,21 @@ type Spec struct {
 	// spec.json 被旧版 shim 读到时该字段被忽略（旧 shim 不认识），新版 shim
 	// 读到升级前的 spec.json 得到 0 则跳过安装——两个方向都不会出事。
 	NprocLimit int `json:"nproc_limit,omitempty"`
+
+	// TaskID 是本任务的 UUID，Start 据它注入 HANDOFF_TASK_ID 环境变量，
+	// 并回填进 Handle 供归属判定使用。
+	//
+	// omitempty + 零值语义：为空则不注入、不参与归属判定。旧版 shim 读到新版
+	// spec.json 会忽略该字段；新版 shim 读到旧 spec.json 得到空串则判据不参与——
+	// 两个方向都不会出事，与 NprocLimit 同款滚动升级纪律。
+	TaskID string `json:"task_id,omitempty"`
+
+	// MarkRoot 是 cwd 归属判据的比对根（已解析符号链接的绝对路径）。
+	//
+	// **只在托管 worktree 形态下由调用方填写**：空串即本任务不启用 cwd 归属。
+	// 把「仅托管 worktree 可杀」编码进数据而不是运行时再判一次，是为了让这条
+	// 边界没有「某处忘了检查」的可能。
+	MarkRoot string `json:"mark_root,omitempty"`
 }
 
 // Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc.json。
