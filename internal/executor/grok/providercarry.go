@@ -19,6 +19,10 @@
 package grok
 
 import (
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -121,4 +125,53 @@ func defaultValue(line string) (string, bool) {
 		return "", false
 	}
 	return rest, true
+}
+
+// authorityConfigPath 返回权威配置路径 ~/.grok/config.toml。
+//
+// 单开一个函数而不是在调用点拼路径：与 authsync.go 的 authorityAuthPath 同样
+// 的理由——两处各拼一遍，将来改动时漏掉一处就会读错文件。
+func authorityConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("解析用户主目录: %w", err)
+	}
+	return filepath.Join(home, ".grok", configFileName), nil
+}
+
+// loadAuthorityProviderConfig 读权威 config.toml 并抽出可搬运部分。
+//
+// 参数：
+//   - log: 日志入口；nil 时退回 slog.Default()
+//
+// 返回：抽取结果。
+//
+// **本函数不返回 error**，这是刻意的：搬运是增强不是必需。权威配置不存在
+// （用内建 provider 的人就是这样）、读不动、或压根没有自定义 provider，三种
+// 情况都按「无操作」继续，失败原因经日志留痕。让一个可选文件拖垮派发是错的。
+//
+// 日志纪律：只打路径、段名与条数，绝不打段内容——[model.*] 段里有 api_key。
+func loadAuthorityProviderConfig(log *slog.Logger) carryResult {
+	if log == nil {
+		log = slog.Default()
+	}
+	path, err := authorityConfigPath()
+	if err != nil {
+		log.Warn("解析权威 grok 配置路径失败，任务 home 不带自定义 provider", "cause", err)
+		return carryResult{}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Debug("未发现权威 grok 配置，任务 home 不带自定义 provider", "path", path)
+		} else {
+			log.Warn("读权威 grok 配置失败，任务 home 不带自定义 provider", "path", path, "cause", err)
+		}
+		return carryResult{}
+	}
+	res := extractProviderConfig(string(b))
+	if len(res.SectionNames) == 0 && res.DefaultModel == "" {
+		log.Debug("权威 grok 配置无自定义 provider 与 default", "path", path)
+	}
+	return res
 }
