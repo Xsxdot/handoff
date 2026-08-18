@@ -613,8 +613,12 @@ Expected: `gofmt -l` 无输出；三条命令全部退 0。**任何一条不过�
 - [ ] **Step 2: 对着分支起点看一遍完整 diff**
 
 ```bash
-git diff <分支起点>..HEAD
+# 分支起点 = 本任务第一个提交的父提交（本分支从 origin/handoff/web-console 开出）
+BASE=$(git log --format=%H --reverse origin/handoff/web-console..HEAD | head -1)^
+git diff $BASE..HEAD
 ```
+
+取不到 `origin/handoff/web-console` 时退回：`git diff $(git log --format=%H --reverse HEAD | sed -n '1p')^..HEAD` 之外，直接用 `git log --oneline` 数出本轮的三个提交、取最早那个的父提交也行。
 
 逐项确认：
 
