@@ -10,6 +10,7 @@
 package permgate
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -115,6 +116,8 @@ func StripQuoted(s string) string {
 // 返回：Consult 或 Escalate；本函数**永不返回 AutoAllow**
 //
 // 规则（逐条判定）：
+//   - 剥离引号后仍是 handoff 自指令 → Escalate（身份越权，与危险性无关）
+//   - 原文是自指令且含执行包装器   → Escalate（`sh -c "handoff dispatch"`）
 //   - 剥离引号字面量后仍命中黑名单 → Escalate（真危险，无论引号与否）
 //   - 原文命中且含执行包装器       → Escalate（引号内内容将被执行，不给
 //     降级口子——`sh -c "rm -rf /"` 剥完虽干净，但内容正是要执行的）
@@ -128,6 +131,18 @@ func StripQuoted(s string) string {
 // 未枚举到的引号绕过形态最坏也只落到廉价模型手上；而执行包装器与 eval 两条
 // 把「内容将被执行/不可见」的形态恢复硬拦，不给绕过留口子。
 func (g *Gate) judgeCommand(s string) Verdict {
+	// 自指令判据前置于黑名单：这是身份越权，与命令本身危不危险无关。
+	// 引号处理与下方黑名单逐条同构——剥完引号还在的是真调用，只在引号内
+	// 出现的（commit message）降级落回黑名单链
+	if hit, sub := IsSelfCommand(StripQuoted(s)); hit {
+		return g.selfCmdVerdict(sub, "剥离引号字面量后仍是自指令调用")
+	}
+	// 包装器把 handoff 放在引号边界内时，strings.Fields 会得到 `"handoff`；
+	// 这里只把引号替换为空格以恢复词元边界，不在纯判据里引入引号语义。
+	if hit, sub := IsSelfCommand(selfCmdTokenText(s)); hit && HasExecWrapper(s) {
+		return g.selfCmdVerdict(sub, "自指令藏在执行包装器的引号里，内容将被执行")
+	}
+
 	hit, rule := g.match(s)
 	if h2, r2 := g.match(StripQuoted(s)); h2 {
 		return Verdict{Action: Escalate, Reason: "剥离引号字面量后仍命中黑名单", Rule: r2}
@@ -147,4 +162,25 @@ func (g *Gate) judgeCommand(s string) Verdict {
 			Reason: "仅引号内字面量命中黑名单，降级交审批者裁决", Rule: rule}
 	}
 	return Verdict{Action: Consult, Reason: "黑名单未命中"}
+}
+
+// selfCmdVerdict 构造自指令裁决，并在 permgate 侧留一条 Debug 现场。
+//
+// 参数：sub 为命中的子命令名，why 为命中路径（真调用 / 藏在包装器里）
+//
+// 注意：这里只打 Debug，权威的 Warn 一条落在 agentd 的 judgePermission——
+// 那里才拿得到 task id 与 permission id，能把这条判定关联到具体任务。
+// 两处都打 Warn 会让同一件事在日志里出现两遍。
+func (g *Gate) selfCmdVerdict(sub, why string) Verdict {
+	g.log.Debug("命中 handoff 自指令判据", "subcommand", sub, "why", why)
+	return Verdict{
+		Action: Escalate,
+		Reason: fmt.Sprintf("executor 试图调用 handoff 变更命令 %s（%s）", sub, why),
+		Rule:   RuleSelfCommand,
+	}
+}
+
+// selfCmdTokenText 为包装器路径恢复被引号粘连的词元边界。
+func selfCmdTokenText(s string) string {
+	return strings.NewReplacer(`"`, " ", `'`, " ").Replace(s)
 }

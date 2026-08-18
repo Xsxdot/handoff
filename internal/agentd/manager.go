@@ -136,6 +136,21 @@ type Manager struct {
 	// （apMu 之外单独用 mu 保护）。why 见 reconcile.go 的 noteStopping。
 	mu       sync.Mutex
 	stopping map[string]struct{}
+	// sweepOwned 是「本任务的终态清扫已被 Done/Stop 认领」的标记（与 stopping 共用 mu）。
+	//
+	// 为什么需要它：终态清扫有两个都成立、且位置不能互换的挂点——
+	//   - Done/Stop 就地扫（B103）：**必须早于 worktree 删除**，还活着的进程把
+	//     cwd 钉在工作树里会让 git worktree remove 失败；这条还带有界重试，
+	//     等存活锁释放
+	//   - transit 终态分支扫（B119）：挂在唯一的终态收口，才能覆盖**将来新增的**
+	//     终态路径；B93 只加在 handleResult，Stop 那条就漏了
+	// 两条并存会让 Done/Stop 扫两遍。本标记在 Done/Stop **入口**置位、由 transit
+	// 的终态分支检查并清位，于是「顺序保证」与「兜底覆盖」都留住，每条路径只扫一次。
+	//
+	// 为什么置位在入口而不是清扫之后：两条路径的先后是相反的——Done 是
+	// transit→sweepAfterStop，Stop 是 sweepAfterStop→transit。只有入口这个点
+	// 对两者都早于各自的 transit。
+	sweepOwned map[string]struct{}
 	// sweepProcs 是「清扫某任务残留进程」的测试缝。**生产路径恒为 nil**，
 	// 由 sweep 方法退回 m.sweepTaskProcsOnce；非测试代码不得赋值。
 	//
@@ -194,6 +209,29 @@ func (m *Manager) sweepAfterStop(taskID string) {
 		"task", taskID, "attempts", sweepRetryAttempts, "gap", sweepRetryGap)
 }
 
+// noteSweepOwned 认领本任务的终态清扫：调用方保证自己会调 sweepAfterStop，
+// transit 的终态分支据此跳过兜底清扫。必须在调用方自己的 transit 之前调用。
+//
+// 参数：taskID 为目标任务
+func (m *Manager) noteSweepOwned(taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sweepOwned[taskID] = struct{}{}
+}
+
+// consumeSweepOwned 检查并清除认领标记，返回是否命中（命中即本轮不必兜底清扫）。
+//
+// 为什么检查即清除：标记只在 Done/Stop 的一次调用内有意义。用完就删让 map 不随
+// 任务数无界增长；万一 transit 没走到终态（迁移失败提前返回），残留的那一条会在
+// 该任务下次落终态时被消费掉。
+func (m *Manager) consumeSweepOwned(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sweepOwned[taskID]
+	delete(m.sweepOwned, taskID)
+	return ok
+}
+
 // NewManager 创建任务管理器。
 //
 // 参数：
@@ -218,6 +256,7 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 		denyGuidance: map[string]string{},
 		aaCount:      map[string]int{},
 		stopping:     map[string]struct{}{},
+		sweepOwned:   map[string]struct{}{},
 	}
 }
 
@@ -1115,6 +1154,9 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 //     原样重试；反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done
 //     对已 completed 的任务返回 409，协调者补不回来
 func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
+	// 认领终态清扫：本路径末尾自己调 sweepAfterStop（带有界重试、且早于 worktree
+	// 删除），transit 的兜底清扫据此跳过。见 sweepOwned 字段注释。
+	m.noteSweepOwned(taskID)
 	m.log.Info("done 进入", "task", taskID)
 	defer func() {
 		if err != nil {
@@ -1227,6 +1269,8 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由执行者进程兜底，不能因为「停不掉进程」就让任务永远卡在 running
 func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
+	// 认领终态清扫，理由同 Done。见 sweepOwned 字段注释。
+	m.noteSweepOwned(taskID)
 	m.log.Info("stop 进入", "task", taskID)
 	defer func() {
 		if err != nil {
@@ -1249,7 +1293,10 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	if aerr != nil {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", aerr)
 	} else {
-		m.stopExecutor(taskID, ad)
+		// Stop 是协调者主动敲的：executor 杀不掉也要把任务落 failed 并作废工单
+		// ——人已经决定不要这个任务了。与 ForceReclaim 相反（那条是 watchdog
+		// 自动触发，没收掉就不能宣布收掉，见 forcereclaim.go）。
+		_ = m.stopExecutor(taskID, ad)
 	}
 
 	// 终态清扫（B103）：stop 的语义是「别跑了」，那就该包括 Bash 工具 setsid
@@ -1626,18 +1673,29 @@ func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permg
 		m.log.Info("权限判定：交审批者", "task", taskID, "perm", ev.PermissionID,
 			"tool", ev.Perm.Tool, "reason", v.Reason, "rule", v.Rule)
 	default:
-		// 越界写与结构缺失用 Warn 而非 Info：这两类正是「本该被静默通过、
-		// 现在被拦下」的事件，是本次改动的全部价值，必须在日志里一眼可见
-		lvl := slog.LevelInfo
-		if v.Rule == "" {
-			lvl = slog.LevelWarn
-		}
+		lvl := escalateLogLevel(v.Rule)
 		m.log.Log(context.Background(), lvl, "权限判定：升级人工",
 			"task", taskID, "perm", ev.PermissionID, "tool", ev.Perm.Tool,
 			"paths", ev.Perm.Paths, "workdir", scope.Workdir, "task_dir", scope.TaskDir,
 			"reason", v.Reason, "rule", v.Rule)
 	}
 	return v
+}
+
+// escalateLogLevel 决定「权限判定：升级人工」这条日志的级别。
+//
+// 参数：rule 为 Verdict.Rule（黑名单命中时是规则原文，自指令时是
+// permgate.RuleSelfCommand，其余情形为空）
+//
+// 为什么不是一律 Info：Warn 这一档留给「本该被静默通过、现在被拦下」的事件，
+// 那是每次收口改动的全部价值所在，必须在日志里一眼可见。今天有两类——
+// 越界写与结构缺失（Rule 为空，B27 那一批）、自指令（B115）。黑名单命中
+// 走 Info，因为它改动前后都会被拦，不是新增的信号。
+func escalateLogLevel(rule string) slog.Level {
+	if rule == "" || rule == permgate.RuleSelfCommand {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
 }
 
 // autoAllowPermission 自动放行一次权限请求：不建工单、不发事件、不改状态，
@@ -2761,15 +2819,17 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// 随任务无界增长；任务被续接时从干净状态重新评估（P2-5）
 	m.clearApproverState(taskID)
 	m.hub.Publish(evt)
-	// 回合结束即清扫这一回合留下的孤儿后代。
+	// 回合结束（非终态）也清扫这一回合留下的逃逸后代：不必等到任务终结才收。
+	// 与 transit 的终态清扫不重复——那条管终态，这条管回合边界。
+	// executor 此时通常仍存活（serve 常驻模型），走 Sweep 的降级路径只做名册
+	// 点名（B119 §2.1），executor 本体不会被误杀。
 	//
 	// 放在 Publish 之后：事件先落库并广播，审核者的 wait 第一时间醒；清扫是
-	// best-effort 的善后（SweepTaskProcs 内部每个失败分支都只记日志或发
-	// orphan_risk，从不返回错误），不该挡在唤醒前面。
+	// best-effort 的善后（Sweep 内部每个失败分支都只记日志或发 orphan_risk），
+	// 不该挡在唤醒前面。
 	//
 	// 成功分支也清扫：executor 正常收尾同样可能留下 setsid 逃逸的后代
-	// （opencode 的 Bash 工具把每条命令都 setsid 成新会话）。executor 本体
-	// 不会被误杀——Sweep 遇到它仍存活会返回 ErrExecutorAlive 并自行放弃。
+	// （opencode 的 Bash 工具把每条命令都 setsid 成新会话）。
 	//
 	// 与 B92 的关系（B92 的根因在本改动之后被推翻，这里记下修正后的事实）：
 	// 曾以为存在「failed 事件落库但状态没迁移」的缺口，若成立则本调用在那条
@@ -2850,6 +2910,22 @@ func (m *Manager) transit(taskID string, to proto.TaskState, reason string) erro
 	// 幂等分支（cur.State == to）在上面已经 return，不会重复作废。
 	if to.IsTerminal() {
 		voidTicketsWithAudit(m.st, taskID, reason, m.log)
+		// 终态即清扫（B119）：与上面的工单作废同一个理由——挂在这里才能覆盖
+		// **将来新增的**终态路径。B93 把清扫只加在 handleResult 末尾，Stop 这条
+		// 终态路径就漏了，标题写的「落终态即清扫」实际只做到了「回合终态」。
+		//
+		// 排在作废之后：作废是协调者可见的状态语义，清扫是 best-effort 善后
+		// （SweepTaskProcs 每个失败分支只记日志或发 orphan_risk，从不返回错误），
+		// 不该挡在语义收口前面。
+		//
+		// 抑制标记（见 sweptForTerminal 的字段注释）：Done/Stop 已经就地扫过——
+		// 它们必须早于 worktree 删除、且带有界重试，本处再扫一遍只是白扫。
+		// 本分支管的是**其余**终态路径，那才是 B119 要补的缺口。
+		if m.consumeSweepOwned(taskID) {
+			m.log.Debug("终态清扫已由 Done/Stop 就地完成，跳过", "task", taskID, "to", to)
+		} else {
+			m.sweep(taskID)
+		}
 	}
 	return nil
 }

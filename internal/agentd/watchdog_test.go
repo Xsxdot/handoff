@@ -129,7 +129,7 @@ func TestWatchdogFiresOnceOnStall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// tick 10ms 注入（测试参数），stallTimeout 极小 = 事件必然超阈值
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 等第一条 stalled 落库（首轮触发）
 	eventually(t, 2*time.Second, "stalled 事件已落库", func() bool {
@@ -179,7 +179,7 @@ func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
 	seedCompletedTask(t, st, "task-done")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 
@@ -207,7 +207,7 @@ func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	// 第一轮：stalled 触发一次
 	eventually(t, 2*time.Second, "首条 stalled 已落库", func() bool {
@@ -245,7 +245,7 @@ func TestWatchdogCatchesZeroEventTask(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string) {}, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
 
 	eventually(t, 2*time.Second, "零事件任务 stalled 已落库", func() bool {
 		return len(stalledEvents(t, st, "task-silent")) == 1

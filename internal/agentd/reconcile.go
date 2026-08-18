@@ -64,16 +64,19 @@ func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
 //   - taskID: 目标任务
 //   - ad: 已解析的 adapter（调用方已做 adapterFor）
 //
+// 返回：
+//   - nil：executor 已停止，或已通过 reaper 兜底回收
+//   - 非 nil：停止或兜底回收失败；调用方据此决定是否可以宣布任务已回收
+//
 // 注意：
 //   - 调用前必须已 noteStopping（本函数会关掉事件通道，mediate 随之退出）
-//   - 任何失败都不中断调用方（归档/中止本身已经达成）；回收不掉时留 progress
-//     事件提示人工——与 worktree 清理失败的信号对称。B20 现场的孤儿存活 11.5
-//     小时，正是因为完全静默、没人知道它在
-func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
+//   - Stop/Done 等人工主动收尾可以忽略返回值；ForceReclaim 必须据此保持活跃态，
+//     不能把「executor 未停」写成成功
+func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) error {
 	m.noteStopping(taskID)
 	err := ad.Stop(taskID)
 	if err == nil {
-		return
+		return nil
 	}
 	if !errors.Is(err, executor.ErrTaskNotRunning) {
 		// executor 还在，只是这次没停掉：兜底回收对它无意义——
@@ -88,12 +91,12 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 				"executor 进程可能残留（已发 SIGKILL 但复核仍存活），"+
 					"请先 handoff status 确认，再 handoff stop %s 回收（原因：%v）", taskID, err))
 		}
-		return
+		return err
 	}
 	rp, ok := ad.(reaper)
 	if !ok {
 		m.log.Warn("executor 无内存运行态且 adapter 不支持兜底回收", "task", taskID, "cause", err)
-		return
+		return err
 	}
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	m.log.Info("executor 无内存运行态，按恢复凭据兜底回收", "task", taskID)
@@ -103,9 +106,10 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) {
 		// tmux kill-session，那个命令现在不存在了，照做只会更困惑
 		m.notifyOrphanRisk(taskID, fmt.Sprintf("executor 进程可能残留，请先 handoff status 确认，"+
 			"再 handoff stop %s 回收（原因：%v）", taskID, rerr))
-		return
+		return rerr
 	}
 	m.log.Info("按恢复凭据兜底回收成功", "task", taskID)
+	return nil
 }
 
 // notifyOrphanRisk 追加一条「executor 可能残留」的 progress 事件并广播。
@@ -256,8 +260,14 @@ func (m *Manager) sweepTaskProcsOnce(taskID string) error {
 	killed, verdict, err := prochost.Sweep(h)
 	switch {
 	case errors.Is(err, prochost.ErrExecutorAlive):
-		// 竞态：判死与清扫之间 executor 又被认为活着。不是错误，交给正常路径
-		m.log.Info("清扫时执行者仍存活，交由常规回收路径", "task", taskID, "pid", h.PID)
+		// executor 仍存活 → Sweep 降级为只做名册点名（B119 §2.1）。改前这里打的是
+		// 「交由常规回收路径」，而对失控任务而言那条路径并不存在；现在报告实际
+		// 回收数，0 与非 0 都是有意义的结论。
+		//
+		// 仍把 ErrExecutorAlive 原样返回：sweepAfterStop 依赖它做有界重试（B103），
+		// 等存活锁释放后才做得了完整的组清扫。B119 改的是「alive 不算失败」的语义，
+		// 不是取消这个信号——见 prochost/footprint.go 该哨兵的注释。
+		m.log.Info("执行者存活，已降级为点名回收", "task", taskID, "pid", h.PID, "killed", killed)
 		return err
 	case err != nil:
 		m.log.Error("清扫失败", "task", taskID, "pid", h.PID, "cause", err)

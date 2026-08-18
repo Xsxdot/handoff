@@ -265,10 +265,15 @@ func parseDecision(out, nonce string, elapsedMS int64) ApproverDecision {
 // 实测 9 条误命中里 4 条出自它（`go test ./internal/prod/...` 这类），已删除；
 // 该语义改由模型承担——正则分不出 `go test ./internal/prod/...` 与
 // `kubectl -n prod delete deploy/api`，模型分得出。
+//
+// 2026-08-18 增补自指令一行（B115）：这**不是**主判据——自指令由 permgate
+// 的 selfcmd.go 判成 Escalate，根本走不到审批者这里。加它是兜底：万一判据
+// 漏了某种形态落到 Consult，模型还有一次机会拦下。
 const approverPromptTemplate = `你是代码任务的权限审批者。任务背景：%s
 权限请求：%s
 本次裁决编号 nonce=%s，你必须在输出的 JSON 里原样回显它，否则裁决作废。
 仅当该操作明显安全（任务仓库内读写、跑测试/构建、装项目依赖、常规 git 提交）时才批准。
 任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级协调者。
 涉及生产环境、部署动作、运维目标机（如 kubectl -n prod、ssh 到生产主机、terraform apply）的操作，一律升级给上级协调者。
+涉及调用 handoff 自身 CLI 变更任务状态的操作（如 dispatch/continue/done/reply/run），一律升级给上级协调者。
 只输出一行 JSON，不要输出其他内容：{"decision":"approve","nonce":"%s"} 或 {"decision":"escalate","reason":"简要原因","nonce":"<同一 nonce>"}`

@@ -233,25 +233,26 @@ func rosterMembers(h Handle, procs []procEntry) []int {
 	return out
 }
 
-// ErrExecutorAlive 表示执行者仍然活着，Sweep 不适用。
+// ErrExecutorAlive 表示执行者仍然活着，Sweep 已降级为只做名册点名（跳过组清扫）。
+//
+// **不是「什么都没做」**：此时返回的 killed 是段②实际回收的逃逸后代数，可以非 0。
 //
 // 调用方靠 errors.Is 判别，禁止按错误文本判——与 ErrLockHeld / ErrStillAlive 同款。
-var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 不适用")
+var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 降级为点名回收")
 
-// Sweep 回收一个**已死**执行者留下的残留后代。
+// Sweep 回收一个执行者留下的残留后代（执行者仍存活时降级为只做名册点名）。
 //
 // 参数：h 为任务的进程句柄（来自 proc.json）
 //
 // 返回：
-//   - killed: 发信号时组内通过身份校验的成员数（0 表示没动手）
+//   - killed: 实际发出信号回收的成员数（0 表示没动手）
 //   - v: 判定结论；非 VerdictOK 时必然 killed == 0
-//   - err: 执行者仍存活（ErrExecutorAlive）、枚举失败、或已发信号但复核仍存活
-//     （ErrStillAlive）
+//   - err: 执行者仍存活（ErrExecutorAlive，此时段②已执行、killed 可非 0）、枚举失败、
+//     或已发信号但复核仍存活（ErrStillAlive）
 //
 // 注意：
-//   - **前提是执行者已死**。存活锁仍被持有时直接拒绝——杀活着的执行者是 Kill
-//     的职责，两者风险模型不同（Kill 以「锁在」为发信号的前提，Sweep 以「锁不在」
-//     为前提并逐个校验成员身份），互相代劳会把 Kill 那条纪律绕过去
+//   - **存活时降级**：存活锁仍被持有时跳过组清扫（杀活着的执行者是 Kill 的职责），
+//     但名册点名照做。两者风险模型不同，互相代劳会把 Kill 那条纪律绕过去
 //   - 判定为放弃（leader_reuse / no_credential）**不是错误**，是正常结论：
 //     调用方据 v 决定是否上报人工，不该按 err != nil 判
 //   - 与 Kill 一致：发完 SIGKILL 必须复核，复核窗口走完仍存活返回 ErrStillAlive
@@ -262,8 +263,21 @@ var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 不适用")
 //     名册缺失或平台不支持时各自自动降级，不影响其它来源。
 func Sweep(h Handle) (killed int, v Verdict, err error) {
 	if aliveFn(h) {
-		log().Warn("执行者仍存活，拒绝清扫", "pid", h.PID, "lock", h.LockPath)
-		return 0, VerdictOK, ErrExecutorAlive
+		// 执行者存活时**只跳过段①**，不整体放弃：段①按 pgid 整组发信号，会连
+		// executor 本体一起端掉；段②按出生名册逐个点名，每条成员自带 pid+出生
+		// 时刻双重凭据，杀的是 setsid 逃逸出去的后代，与 executor 死活无关。
+		//
+		// 改前两段一起放弃，使得「回合结束收掉逃逸后代」这个唯一目的从未达成
+		// （B119：生产日志 118 次拒绝、真正跑完的清扫仅 34 次）。
+		procs, eerr := enumProcsFn()
+		if eerr != nil {
+			log().Error("降级清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+			return 0, VerdictNoCredential, eerr
+		}
+		n := rosterKill(h, procs)
+		log().Info("执行者存活，跳过组清扫，转入点名回收",
+			"pid", h.PID, "lock", h.LockPath, "killed", n)
+		return n, VerdictOK, ErrExecutorAlive
 	}
 	procs, eerr := enumProcsFn()
 	if eerr != nil {
@@ -345,6 +359,14 @@ func rosterKill(h Handle, procs []procEntry) (killed int) {
 	}
 	var skipped int
 	for _, e := range entries {
+		if e.PID == h.PID {
+			// 段②降级执行时（executor 仍存活）新出现的误杀面：名册理论上只记
+			// 后代、不含 executor 本体，但这道判据成本为零，而代价是杀掉一个
+			// 活着的 executor——正是跳过段①所要避免的事。判据用 h.PID 而非
+			// 名册内容，不依赖名册的正确性。
+			log().Warn("名册含执行者本体，跳过", "pid", e.PID)
+			continue
+		}
 		started, ok := live[e.PID]
 		if !ok {
 			continue // 早就退了：常态，不是异常

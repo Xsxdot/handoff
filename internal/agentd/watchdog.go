@@ -96,7 +96,8 @@ func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
 //   - stallTimeout: 判定「卡住」的空闲时长（最新事件距今超过它即触发）
 //   - budget: 任务级进程数告警线，<=0 表示该档关闭（见 scanTaskProcs）
 //   - hardLimit: 任务级进程数硬上限，<=0 表示该档关闭（见 scanTaskProcs）
-//   - sweep: 清扫某任务残留进程的入口（接线传 mgr.SweepTaskProcs）
+//   - reclaim: 强制回收入口（接线传 mgr.ForceReclaim）；返回非 nil 表示 executor
+//     没停掉，此时任务不落终态
 //   - startedAt: 本次 agentd 启动时刻（失配对账扫描的护栏之一，见 mismatchVerdict）
 //   - minAge: 失配对账扫描的事件最小年龄（生产取 MismatchScanMinAge）
 //   - transit: 失配对账扫描的「迁移」回调（接线传 mgr.MismatchTransit）
@@ -111,16 +112,16 @@ func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
 //     设计见 scanStalled 的函数头 P1-15a）
 //   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
 //     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛；再按任务点名
-//     进程数（见 scanTaskProcs），两档处置——告警线只唤醒，硬上限直接清扫
+//     进程数（见 scanTaskProcs），两档处置——告警线只唤醒，硬上限走强制回收
 //   - 每轮另做失配对账扫描（见 scanStateMismatch）：把「最新事件 failed 但状态
 //     非终态」的破损中间态补迁 failed，经 transit 回调走终态收口
-func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, sweep func(string), startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
-	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, sweep, startedAt, minAge, transit, log)
+func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, reclaim, startedAt, minAge, transit, log)
 }
 
 // runWatchdog 是看门狗的实现骨架：tick 间隔可注入（生产固定一分钟，
 // 测试注入 10ms），其余语义与 RunWatchdog 一致。
-func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, sweep func(string), startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	log.Info("看门狗启动", "tick", tick, "stall_timeout", stallTimeout)
@@ -128,6 +129,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 	// 任务级进程告警的置位状态跨 tick 存活（与 pressure 同理由：不用包级变量，
 	// 那会让两个 agentd 实例互相踩状态）
 	taskFired := map[string]bool{}
+	taskReclaimFailed := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -137,7 +139,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 			scanStalled(st, hub, stallTimeout, log)
 			scanStateMismatch(st, hub, startedAt, minAge, transit, log)
 			pressure = scanPressure(st, hub, pressure, log)
-			scanTaskProcs(st, hub, budget, hardLimit, taskFired, sweep, log)
+			scanTaskProcs(st, hub, budget, hardLimit, taskFired, taskReclaimFailed, reclaim, log)
 		}
 	}
 }
@@ -340,7 +342,9 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 //   - hardLimit: 硬上限，<=0 表示该档关闭
 //   - fired: 每任务的告警置位状态，由调用方持有并跨轮传递（**不用包级变量**，
 //     那会让两个 agentd 实例互相踩状态——沿用 scanPressure 的同一条理由）
-//   - sweep: 清扫某任务残留进程的入口
+//   - reclaimFailed: 每任务的强制回收失败边沿状态，由调用方持有并跨轮传递；
+//     与 fired 分开，因为两者的回落判据不同
+//   - reclaim: 强制回收入口；返回非 nil 表示 executor 没停掉，此时任务不落终态
 //
 // 三条语义（与 scanPressure 同构）：
 //   - 越线且未置位：发一次 task_proc_pressure 并置位
@@ -351,7 +355,8 @@ func scanPressure(st *store.Store, hub *Hub, active bool, log *slog.Logger) bool
 // 一律什么都不做；理由里必须写上 used 与 hardLimit 两个真实数字，让审核者
 // 事后能判断杀得对不对。
 func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
-	fired map[string]bool, sweep func(string), log *slog.Logger) {
+	fired, reclaimFailed map[string]bool,
+	reclaim func(taskID, reason string) error, log *slog.Logger) {
 	// 两档都关 = 完全不启用。这里直接返回而不是往下走到「数了但不处置」——
 	// Footprint 每次都要枚举全系统进程表，白数是实打实的开销
 	if budget <= 0 && hardLimit <= 0 {
@@ -377,12 +382,21 @@ func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
 		}
 		if hardLimit > 0 && n > hardLimit {
 			log.Error("任务进程数超过硬上限，强制回收", "task", t.ID, "used", n, "hard_limit", hardLimit)
-			sweep(t.ID)
 			reason := fmt.Sprintf("任务进程数 %d 超过硬上限 %d，已强制回收", n, hardLimit)
-			if err := transitFailedWithEvent(st, hub, t.ID, reason, log); err != nil {
-				log.Error("强制回收后落 failed 失败", "task", t.ID, "cause", err)
+			if err := reclaim(t.ID, reason); err != nil {
+				// 没收掉就不落终态：任务留在活跃集，下一轮继续点名重试。改前
+				// 无论成败都落 failed，之后 IsTerminal 直接跳过它——一个仍被
+				// 监控的失控任务变成了不再被监控的失控任务（B119 §1.4）。
+				//
+				// 边沿触发：每分钟一条会把协调者淹了，而这条提示恰恰是要被看见的。
+				if !reclaimFailed[t.ID] {
+					reclaimFailed[t.ID] = true
+					emitReclaimFailed(st, hub, t.ID, n, hardLimit, err, log)
+				}
+				continue
 			}
 			delete(fired, t.ID)
+			delete(reclaimFailed, t.ID)
 			continue
 		}
 		if budget <= 0 {
@@ -411,31 +425,23 @@ func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
 	}
 }
 
-// transitFailedWithEvent 把任务迁移到 failed 终态、追加带理由的 failed 事件并广播。
+// emitReclaimFailed 在强制回收失败时向协调者发一条可见提示。
 //
-// 参数：reason 进事件 payload（硬上限分支必须带 used/hardLimit 真实数字，
-// 这是不可逆动作，审核者事后要能判断杀得对不对）
+// 参数：taskID / used / hardLimit / cause 全部进文案——审核者要据此判断该不该
+// 人工上机处理；log 为本模块日志入口。
 //
-// 顺序是「先迁状态 → 追加事件 → 广播」：与 handleResult 一致——事件一落库就
-// 可被 WS 重放读到，状态必须先就位，否则审核者在一个仍 running 的任务上
-// 看到 failed 事件会困惑（handleResult 函数头的同一条理由）。
-//
-// 为什么不用 reconcileExecutorGone：那个收的是 waiting_review（executor 死了
-// 交协调者裁决），本函数是终态 failed——进程失控的强制回收没有「继续」选项。
-func transitFailedWithEvent(st *store.Store, hub *Hub, taskID, reason string, log *slog.Logger) error {
-	if err := st.UpdateTaskState(taskID, proto.TaskStateFailed); err != nil {
-		return err
-	}
-	// 终态迁移统一作废挂起工单并留痕（B63）：进程失控的强制回收同样适用。
-	// 排在 failed 事件之前：LatestEvent 锚定 failed，审核者看事件流不会被
-	// 审计噪音挡住终点
-	voidTicketsWithAudit(st, taskID, reason, log)
-	evt, err := st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
+// 注意：调用方负责边沿去重（见 scanTaskProcs 的 reclaimFailed）。本函数不改
+// 任务状态——回收失败时任务必须留在活跃集里继续被点名。
+func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit int, cause error, log *slog.Logger) {
+	text := fmt.Sprintf("强制回收失败：任务进程数 %d 超过硬上限 %d，但 executor 未能停止（原因：%v）。"+
+		"任务保持活跃并将每轮重试，请用 handoff status %s 确认后人工处理", used, hardLimit, cause, taskID)
+	evt, err := st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
 	if err != nil {
-		return err
+		log.Error("追加强制回收失败提示事件失败", "task", taskID, "cause", err)
+		return
 	}
 	hub.Publish(evt)
-	return nil
+	log.Warn("已向协调者发出强制回收失败提示", "task", taskID, "used", used, "hard_limit", hardLimit)
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：

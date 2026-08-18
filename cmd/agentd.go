@@ -212,7 +212,7 @@ var agentdCmd = &cobra.Command{
 		// 会让这些合法的迁移在首轮就被误判成失配
 		wdStart := time.Now()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
-			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.SweepTaskProcs,
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
 			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，

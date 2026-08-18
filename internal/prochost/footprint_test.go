@@ -197,21 +197,100 @@ func TestStartRecordsStartedAt(t *testing.T) {
 	}
 }
 
-// TestSweepRefusesWhenExecutorAlive 锁仍被持有时 Sweep 必须拒绝执行且不发信号。
+// TestSweepAliveSkipsGroupPhaseButStillRosterKills 验证 executor 存活时的降级形态：
+// 段①（按 pgid 整组杀）必须跳过——它会连 executor 本体一起端掉；段②（按出生名册
+// 点名）照常执行——每条成员自带 pid+出生时刻双重凭据，与 executor 的死活无关。
 //
-// 杀活着的执行者是 Kill 的职责。两者风险模型不同，互相代劳就会把 Kill 那条
-// 「不确认存活就绝不发信号」的纪律绕过去。
-func TestSweepRefusesWhenExecutorAlive(t *testing.T) {
-	stubEnum(t, []procEntry{{PID: 101, PGID: 100, StartedAt: t0 + 1}}, nil)
-	stubAlive(t, true)
-	n := stubKillGroup(t, nil)
-
-	_, _, err := Sweep(h())
-	if !errors.Is(err, ErrExecutorAlive) {
-		t.Fatalf("执行者存活时应返回 ErrExecutorAlive，got %v", err)
+// 这条是 B119 的核心：改前两段一起放弃，导致「回合结束收掉 setsid 逃逸后代」这个
+// 唯一目的从未达成（生产日志 118 次拒绝，真正跑完的清扫仅 34 次）。
+func TestSweepAliveSkipsGroupPhaseButStillRosterKills(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{
+		{PID: 501, StartedAt: 5100},
+		{PID: 502, StartedAt: 5200},
+	}); err != nil {
+		t.Fatalf("造名册: %v", err)
 	}
-	if *n != 0 {
-		t.Fatalf("执行者存活却发了 %d 次信号", *n)
+	stubAlive(t, true)
+	killed := stubKillProc(t)
+	groupN := stubKillGroup(t, nil)
+	stubEnum(t, []procEntry{
+		{PID: 501, PPID: 1, PGID: 501, StartedAt: 5100},
+		{PID: 502, PPID: 1, PGID: 502, StartedAt: 5200},
+	}, nil)
+
+	n, v, err := Sweep(Handle{PID: 100, StartedAt: t0, RosterPath: roster})
+	if !errors.Is(err, ErrExecutorAlive) {
+		t.Fatalf("执行者存活时应返回 ErrExecutorAlive 表示段①跳过，got %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 ok，实得 %s", v)
+	}
+	if n != 2 {
+		t.Fatalf("段②应回收 2 个名册成员，实得 %d", n)
+	}
+	if len(*killed) != 2 {
+		t.Fatalf("应逐个发信号回收 2 条，实得 %v", *killed)
+	}
+	if *groupN != 0 {
+		t.Fatalf("执行者存活时绝不能按组杀，实得组信号 %d 次", *groupN)
+	}
+}
+
+// TestSweepAliveNeverSignalsExecutorItself 是本次唯一新增的误杀面的守门用例：
+// 段②降级执行后，若名册里因任何原因含有 executor 本体的 pid，逐个发信号就会
+// 杀掉一个活着的 executor——这正是段①被跳过所要避免的事。判据是 h.PID，
+// 不依赖名册内容的正确性。
+func TestSweepAliveNeverSignalsExecutorItself(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(dir, RosterFileName)
+	if err := writeRoster(roster, []rosterEntry{
+		{PID: 100, StartedAt: t0},   // executor 本体
+		{PID: 501, StartedAt: 5100}, // 正常逃逸后代
+	}); err != nil {
+		t.Fatalf("造名册: %v", err)
+	}
+	stubAlive(t, true)
+	killed := stubKillProc(t)
+	stubKillGroup(t, nil)
+	stubEnum(t, []procEntry{
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: t0},
+		{PID: 501, PPID: 1, PGID: 501, StartedAt: 5100},
+	}, nil)
+
+	n, _, err := Sweep(Handle{PID: 100, StartedAt: t0, RosterPath: roster})
+	if !errors.Is(err, ErrExecutorAlive) {
+		t.Fatalf("应返回 ErrExecutorAlive，got %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("应只回收 501 这一条，实得 %d", n)
+	}
+	for _, pid := range *killed {
+		if pid == 100 {
+			t.Fatalf("对 executor 本体 pid=100 发了信号，名单 %v", *killed)
+		}
+	}
+}
+
+// TestSweepAliveWithoutRosterIsNoop 覆盖降级路径的下界：没有名册（升级前建的任务、
+// 或 shim 还没来得及落第一次名册就死了）时段②无事可做，段①仍被跳过——结论必须是
+// 「回收 0 个」而不是 panic 或误判为失败。
+func TestSweepAliveWithoutRosterIsNoop(t *testing.T) {
+	stubAlive(t, true)
+	killed := stubKillProc(t)
+	groupN := stubKillGroup(t, nil)
+	stubEnum(t, []procEntry{{PID: 101, PGID: 100, StartedAt: t0 + 1}}, nil)
+
+	n, v, err := Sweep(Handle{PID: 100, StartedAt: t0}) // RosterPath 为空
+	if !errors.Is(err, ErrExecutorAlive) {
+		t.Fatalf("应返回 ErrExecutorAlive，got %v", err)
+	}
+	if v != VerdictOK || n != 0 {
+		t.Fatalf("无名册时应回收 0 个且 verdict ok，实得 n=%d v=%s", n, v)
+	}
+	if len(*killed) != 0 || *groupN != 0 {
+		t.Fatalf("无名册时不该发任何信号，实得逐个 %v / 组 %d 次", *killed, *groupN)
 	}
 }
 
