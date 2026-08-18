@@ -171,6 +171,33 @@ To watch the executor live at any moment: `handoff attach <task>`.
 > keep a long `wait --follow` subscription; opencode and codex don't, and the skill steers
 > them to foreground blocking `wait` calls, one turn at a time.
 
+### Waiting for another task to be archived
+
+When a second session's work depends on a task you are still reviewing, that session needs
+one thing only: to know when the task was really archived. `--until-done` is that latch.
+
+```bash
+handoff wait <task> --until-done --timeout 3h
+```
+
+While it waits it prints nothing — `question`, `permission_request` and `completed` all
+pass by silently — and it never advances the coordinator's cursor, so the session actually
+reviewing the task still receives every event. Only once you run `handoff done` does the
+latch print a single line, the raw `archived` event, and exit 0.
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | Archived. stdout is the raw `archived` JSON; `payload.note` carries the note from `done` |
+| `124` | The total wait budget elapsed and the task is still not archived |
+| `1` | The dependency failed, or auth / task id / protocol error |
+
+`--timeout` here is a **total** budget, not an idle one: intermediate frames deliberately
+do not extend it, otherwise a task nobody ever archives could keep the latch alive forever.
+
+The latch only wakes you up — it never dispatches the follow-up work. The original task
+still needs its own coordinator to answer tickets, review `completed` and archive it
+explicitly; do not reach for this instead of a `wait --follow` review subscription.
+
 ## Connecting a Remote Executor Machine
 
 Coordinator machine and executor machine are joined by one direct WebSocket connection
@@ -280,7 +307,7 @@ log states which path this run used.
 | `handoff service install\|uninstall\|status` | Put agentd under launchd / systemd management | — |
 | `handoff agentd` | Run agentd in the foreground (development/debugging; day-to-day use goes through service) | `--executor=opencode\|claude\|grok\|codex\|fake` (default opencode) |
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
-| `handoff wait <task>` | Block until the next event that needs you | `--follow` (keep subscribing until the task ends); `--notify`; `--timeout <duration>`; `--no-sync` |
+| `handoff wait <task>` | Block until the next event that needs you (`--until-done` waits silently for the archive instead) | `--follow` (keep subscribing until the task ends); `--until-done` (dependency latch, prints only the `archived` event; mutually exclusive with `--follow`); `--notify`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget, `--until-done` = total budget); `--no-sync` |
 | `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
 | `handoff diff <task>` | git diff + commit list (defaults to the task's own base commit, falling back to the repo's default branch) | `--base <rev>` |
 | `handoff fetch <task> <file>` | Read a single file from the task repo | — |

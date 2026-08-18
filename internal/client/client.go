@@ -84,18 +84,35 @@ func isPermanentStatus(code int) bool {
 	return false
 }
 
+// httpStatusError 保留 agentd 非 2xx 响应的状态码，让长驻调用能区分
+// “重试可能恢复”的 5xx 与“请求本身不会自愈”的 4xx。
+type httpStatusError struct {
+	op   string
+	code int
+	body string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s: 状态码 %d: %s", e.op, e.code, e.body)
+}
+
 // isPermanent 判定错误是否属于「重试无意义」的永久性失败。
 //
 // 判定来源：
 //   - waitOnce 显式构造的 permanentError（握手状态码 400/401/403 等配置类错误）
 //   - WS 对端以 StatusPolicyViolation（1008）关闭——服务端「任务不存在」的约定
 //     close code（打错 task-id 的永久配置错误，见 server.go handleEvents）
+//   - httpStatusError 携带 4xx 状态码（长驻等待的 Attach 快照被 401/403/404 拒绝）
 //
 // 为什么正常关闭（1000）/GoingAway（1001）不在此列：agentd 重启、主动断开等
 // 瞬时场景都会先关连接，重连即可恢复；只有对端明示「你的请求本身非法」才该退出。
 func isPermanent(err error) bool {
 	var pe *permanentError
 	if errors.As(err, &pe) {
+		return true
+	}
+	var he *httpStatusError
+	if errors.As(err, &he) && isPermanentStatus(he.code) {
 		return true
 	}
 	var ce websocket.CloseError
@@ -324,7 +341,8 @@ func (c *Client) httpError(op string, resp *http.Response) error {
 	} else {
 		c.log().Warn("agentd 请求被拒", "op", op, "status", resp.StatusCode, "body", string(b))
 	}
-	return fmt.Errorf("%s: 状态码 %d: %s", op, resp.StatusCode, strings.TrimSpace(string(b)))
+	body := strings.TrimSpace(string(b))
+	return &httpStatusError{op: op, code: resp.StatusCode, body: body}
 }
 
 // ErrStatusUnsupported 表示对端 agentd 不认识 /api/status（版本早于该端点引入）。
@@ -1302,10 +1320,10 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 		}
 		return fmt.Errorf("WS 拨号失败: %w", err)
 	}
-	c.log().Info("WS 连接建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
+	c.log().Debug("WS 连接建立", "addr", c.baseURL, "task", taskID, "from_seq", fromSeq)
 	defer func() {
 		conn.CloseNow()
-		c.log().Info("WS 连接关闭", "addr", c.baseURL, "task", taskID)
+		c.log().Debug("WS 连接关闭", "addr", c.baseURL, "task", taskID)
 	}()
 
 	for {
