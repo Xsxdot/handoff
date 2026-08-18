@@ -81,6 +81,14 @@ const (
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
 	// 就终结了。协调者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
+	// EventTypeApprovalDropped 表示审批者的裁决没能下发给 executor——裁决回来时
+	// 回合已经结束（任务离开 running/waiting_answer）。agentd 已代为回了一个
+	// 干净的 reject，本事件说明「那条裁决去哪了」。
+	//
+	// 与 deny_guidance_dropped 是同一根因（回合结束即无下发通道）的 approve 方向，
+	// 但后果更重：拒绝原因丢了只是少一段指导，批准丢了会让 executor 那条请求
+	// 悬到自行 abort，**打断的是下一个回合**（08-17 实测两次同型）。
+	EventTypeApprovalDropped EventType = "approval_dropped"
 	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
 	//
 	// 为什么必须留痕：pending_tickets 是协调者接管陌生会话时「我还欠哪些没答」
@@ -223,6 +231,12 @@ type Task struct {
 	Executor string `json:"executor"`
 	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
 	Model string `json:"model"`
+	// Discipline 是本任务实际注入的纪律块来源标注（如「内置:single-context」）。
+	// 该列后加、不回填、不编造——老任务为空。
+	//
+	// 为什么要落进 Task 而不只是日志：配置化把纪律块从 plan 文件里拿走后，
+	// 写 plan 的人再也看不见它，dispatch 必须当场回显；CLI 拿到的就是这个对象。
+	Discipline string `json:"discipline,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`

@@ -127,6 +127,10 @@ type pendingPerm struct {
 	desc  string
 }
 
+func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
+	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
+}
+
 // Start 异步启动执行并立即返回。
 //
 // 步骤：物料与 serve（StartServe）→ ACP 连接 → initialize → session/new →
@@ -195,9 +199,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	prompt, err := renderStartPrompt(taskID, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("grok 未注入纪律块", "task", taskID)
+	} else {
+		a.log.Info("grok 纪律块已注入 prompt", "task", taskID, "bytes", len(req.Discipline))
 	}
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)

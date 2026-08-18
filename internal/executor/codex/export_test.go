@@ -19,6 +19,27 @@ func WriteServeInfoForTest(p *Proc) error {
 	return writeProcInfo(p.TaskDir, &procInfo{Handle: p.Handle, Port: p.Port})
 }
 
+// RenderStartPromptForTest exposes the same prompt helper used by Start.
+func RenderStartPromptForTest(req executor.StartReq) string {
+	prompt, err := renderStartPrompt(req.Task.ID, req.PlanContent, req.Discipline)
+	if err != nil {
+		panic(err)
+	}
+	return prompt
+}
+
+func ThreadStartParamsForTest(cwd, model, developerInstructions string) map[string]any {
+	return buildThreadStartParams(cwd, model, developerInstructions)
+}
+
+func ThreadResumeParamsForTest(threadID, repoPath, developerInstructions string) map[string]any {
+	return buildThreadResumeParams(threadID, repoPath, developerInstructions)
+}
+
+func SandboxPolicyForTest(taskTmpDir string) map[string]any { return sandboxPolicy(taskTmpDir) }
+func TaskTmpDirForTest(taskDir string) string               { return taskTmpDir(taskDir) }
+func TmpEnvKVsForTest(taskTmpDir string) []string           { return tmpEnvKVs(taskTmpDir) }
+
 // ServeSpecForTest 暴露 serveSpec，供 codex_test 包做 argv/env 断言。
 func ServeSpecForTest(repoPath, taskDir string, port int, env []string) prochost.Spec {
 	return serveSpec(repoPath, taskDir, port, env)

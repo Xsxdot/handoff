@@ -95,6 +95,7 @@ type opencodeConfig struct {
 //   - taskID: 任务 ID，写入 prompt 标题行
 //   - model: 任务级模型覆盖（dispatch --model 折算而来）；空则回退环境变量
 //   - planContent: 实现计划全文，原样嵌入 prompt 的「实现计划」段
+//   - disciplineBlock: 唯一来自 StartReq 的纪律块正文；taskenv 不自行解析
 //
 // 返回：
 //   - configPath: 生成的 opencode.json 路径
@@ -104,7 +105,7 @@ type opencodeConfig struct {
 // 注意：
 //   - 重复调用幂等覆盖：同名文件会被新内容覆盖，调用方可安全重试
 //   - 配置经结构体 marshal、prompt 经 text/template 渲染，均非字符串拼接
-func WriteTaskEnv(taskDir, taskID, model, planContent string) (configPath, promptPath string, err error) {
+func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (configPath, promptPath string, err error) {
 	start := time.Now()
 	configPath = filepath.Join(taskDir, configFileName)
 	promptPath = filepath.Join(taskDir, promptFileName)
@@ -153,7 +154,7 @@ func WriteTaskEnv(taskDir, taskID, model, planContent string) (configPath, promp
 		return configPath, promptPath, fmt.Errorf("序列化 opencode 配置: %w", err)
 	}
 
-	promptContent, err := turn.RenderPrompt(taskID, planContent)
+	promptContent, err := turn.RenderPrompt(taskID, planContent, disciplineBlock)
 	if err != nil {
 		return configPath, promptPath, err
 	}

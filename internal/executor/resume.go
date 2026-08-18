@@ -26,15 +26,18 @@ package executor
 //   - MarkRoot: 已解析的托管 worktree 根；冷恢复重起进程时复用原归属凭据
 //   - Cold: true=允许冷恢复（进程已死时重起进程 + 载入原会话）；
 //     false=只热重连，进程不在即判不可恢复
+//   - Discipline: 按执行者裁出的执行纪律块正文；恢复路径也必须带上，避免
+//     codex 的常驻 developerInstructions 在恢复后消失
 type ResumeReq struct {
-	TaskID    string
-	TaskDir   string
-	RepoPath  string
-	SessionID string
-	Env       []string
-	Model     string
-	MarkRoot  string
-	Cold      bool
+	TaskID     string
+	TaskDir    string
+	RepoPath   string
+	SessionID  string
+	Env        []string
+	Discipline string
+	Model      string
+	MarkRoot   string
+	Cold       bool
 }
 
 // 恢复实际走到的级别（ResumeOutcome.Mode 的取值）。

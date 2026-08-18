@@ -1030,6 +1030,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, errEnvResolveFailed):
 		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	case errors.Is(err, errDisciplineResolveFailed):
+		s.log.Error("dispatch 被拒：纪律块解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		s.log.Error("派发任务失败", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "派发任务失败"})

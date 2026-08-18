@@ -314,9 +314,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent)
+	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("opencode 未注入纪律块", "task", req.Task.ID)
+	} else {
+		a.log.Info("opencode 纪律块已注入 prompt", "task", req.Task.ID, "bytes", len(req.Discipline))
 	}
 	// serve 的工作目录（cwd）取 task.Workdir()：worktree 任务的 executor 必须在
 	// worktree 里跑（分支 HEAD 在那里），主仓库 HEAD 停在派发前位置；原地模式

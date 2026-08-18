@@ -67,6 +67,10 @@ type StartReq struct {
 	PlanContent string
 	TaskDir     string
 	Env         []string
+	// Discipline 是按执行者裁出的执行纪律块正文（B129）；空表示不注入。
+	// 实现方必须把它作为第三个参数传给 turn.RenderPrompt，这是对所有 adapter
+	// 的统一要求，放在契约上而非各 adapter 的构造参数上，理由同 Env。
+	Discipline string
 }
 
 // Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。

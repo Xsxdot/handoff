@@ -31,6 +31,31 @@ func TestLoadGeneratesDefaultsAndToken(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsDisciplineSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("discipline:\n  codex: mine.md\n  grok: \"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Discipline["codex"] != "mine.md" {
+		t.Errorf("codex = %q, want mine.md", cfg.Discipline["codex"])
+	}
+	v, ok := cfg.Discipline["grok"]
+	if !ok || v != "" {
+		t.Errorf("grok 的显式空串必须被保留（它表示关闭注入），实得 %q ok=%v", v, ok)
+	}
+}
+
+func TestDefaultsHasEmptyDisciplineMap(t *testing.T) {
+	if c := config.Defaults(); c.Discipline == nil {
+		t.Fatal("Discipline 必须初始化为空 map，与 Env 一致")
+	}
+}
+
 // TestLoadParsesTargets 验证合法配置（已知键）正常解析：token 与 targets 表。
 // 此 fixture 全部为已知键——严格解析（L-1）下必须保持可加载，是回归基线。
 func TestLoadParsesTargets(t *testing.T) {

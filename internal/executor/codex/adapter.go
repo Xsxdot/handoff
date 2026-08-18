@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -106,13 +107,39 @@ func deltaFrameKind(method string) deltaKind {
 // networkAccess 为 true 是 2026-08-09 用户的明确决定（spec §2.2）：executor 跑在
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
 // 且实证拒网**不产工单**，属于协调者不知情的哑失败。
-func sandboxPolicy() map[string]any {
+
+// taskTmpDir 返回任务专属临时目录（<taskDir>/tmp）。
+//
+// TaskDir 位于 <DataDir>/tasks/<id>，因此该目录在工作区之外。把 TMPDIR 指进
+// 仓库会让「非 git 目录应报错」用例的临时目录落入仓库，git 命令正常成功而假红。
+func taskTmpDir(taskDir string) string { return filepath.Join(taskDir, "tmp") }
+
+// tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。
+//
+// writableRoots 是开门，环境变量是走门；两者缺一不可。GOCACHE 单独放子目录，
+// 让清理临时文件时不会误删构建缓存，同时消除跨任务缓存污染。
+func tmpEnvKVs(taskTmp string) []string {
+	return []string{
+		"TMPDIR=" + taskTmp,
+		"GOTMPDIR=" + taskTmp,
+		"GOCACHE=" + filepath.Join(taskTmp, "gocache"),
+	}
+}
+
+// sandboxPolicy 的 taskTmp 为空时保持历史行为，不新增可写域；非空时只开放
+// 任务专属目录。/tmp 与 $TMPDIR 是跨任务共享目录，保持排除可避免并发任务互相
+// 看见或覆盖临时文件。
+func sandboxPolicy(taskTmp string) map[string]any {
+	roots := []any{}
+	if taskTmp != "" {
+		roots = append(roots, taskTmp)
+	}
 	return map[string]any{
 		"type":                "workspaceWrite",
 		"networkAccess":       true,
 		"excludeSlashTmp":     true,
 		"excludeTmpdirEnvVar": true,
-		"writableRoots":       []any{},
+		"writableRoots":       roots,
 	}
 }
 
@@ -198,6 +225,10 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 	return r
 }
 
+func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
+	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
+}
+
 // Start 异步启动执行并立即返回。
 //
 // 步骤：StartServe → Dial → initialize + initialized → thread/start →
@@ -216,9 +247,17 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
+	taskTmp := taskTmpDir(req.TaskDir)
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
+		return fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
+	}
+	a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
+	env := append(append([]string{}, req.Env...), tmpEnvKVs(taskTmp)...)
+
 	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
 		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
-		req.TaskDir, req.Env, a.log)
+		req.TaskDir, env, a.log)
 	if err != nil {
 		return err
 	}
@@ -249,13 +288,19 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model); err != nil {
+	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model,
+		developerInstructionsFor(req.Discipline)); err != nil {
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	prompt, err := renderStartPrompt(taskID, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("codex 未注入纪律块", "task", taskID)
+	} else {
+		a.log.Info("codex 纪律块已注入 prompt", "task", taskID, "bytes", len(req.Discipline))
 	}
 
 	a.mu.Lock()
@@ -283,11 +328,56 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	return nil
 }
 
+// buildThreadStartParams 构造 thread/start 的入参。
+//
+// 抽成函数是为了让测试与生产代码用同一份字面量；下次增加安全参数时，
+// 两处各写一份必然漏改一处。developerInstructions 是 codex 协议直收的持久
+// 指令通道，协议铁律与执行纪律放在这里才能跨回合常驻。
+func buildThreadStartParams(cwd, model, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"cwd":               cwd,
+		"sandbox":           "workspace-write",
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if model != "" {
+		params["model"] = model
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// buildThreadResumeParams 构造 thread/resume 的入参。恢复路径也必须重传
+// developerInstructions，否则恢复后常驻纪律会消失。
+func buildThreadResumeParams(threadID, repoPath, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"threadId":          threadID,
+		"cwd":               repoPath,
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// developerInstructionsFor 拼出常驻指令：协议铁律在前，执行纪律在后。
+func developerInstructionsFor(disciplineBlock string) string {
+	if strings.TrimSpace(disciplineBlock) == "" {
+		return turn.ProtocolRules
+	}
+	return turn.ProtocolRules + "\n\n" + strings.TrimSpace(disciplineBlock)
+}
+
 // openThread 完成握手与会话建立：initialize → initialized → thread/start。
 //
 // 单独抽出：登录态失效那条路径要能在不起进程的情况下被测到。
-func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string) error {
-	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model)
+func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model, developerInstructions string) error {
+	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model,
+		"dev_instr_bytes", len(developerInstructions))
 	if _, err := r.cli.Call(ctx, methodInitialize, map[string]any{
 		"clientInfo":   map[string]any{"name": "handoff", "version": "1"},
 		"capabilities": map[string]any{"experimentalApi": true},
@@ -298,15 +388,7 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		return fmt.Errorf("codex initialized 通知: %w", err)
 	}
 
-	params := map[string]any{
-		"cwd":               cwd,
-		"sandbox":           "workspace-write",
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": "user",
-	}
-	if model != "" {
-		params["model"] = model
-	}
+	params := buildThreadStartParams(cwd, model, developerInstructions)
 	res, err := r.cli.Call(ctx, methodThreadStart, params)
 	if err != nil {
 		// 凭据问题重试一万次也不会好，给可操作指引（spec §8）
@@ -355,7 +437,7 @@ func (a *Adapter) startTurn(r *runState, text string) error {
 	ch, err := r.cli.CallAsync(methodTurnStart, map[string]any{
 		"threadId":          r.threadID,
 		"cwd":               r.repoPath,
-		"sandboxPolicy":     sandboxPolicy(),
+		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir)),
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
 		"input":             []any{map[string]any{"type": "text", "text": text}},

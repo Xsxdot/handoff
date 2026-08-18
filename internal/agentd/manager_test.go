@@ -75,10 +75,11 @@ func newTestGate(t *testing.T) *permgate.Gate {
 // chanAdapter 是测试用空操作 adapter：事件通道由测试直接控制（模拟 executor 侧事件流），
 // 并记录 RespondPermission/Send 实参供断言（答案侧是否真正回传 executor）。
 type chanAdapter struct {
-	mu    sync.Mutex
-	evCh  chan executor.AdapterEvent
-	perms []string
-	sends []string
+	mu        sync.Mutex
+	evCh      chan executor.AdapterEvent
+	lastStart executor.StartReq
+	perms     []string
+	sends     []string
 	// respondErr 非 nil 时 RespondPermission/Send 直接返回它（模拟 executor
 	// 已退出或调用失败），供恢复操作的失败分支断言
 	respondErr error
@@ -91,8 +92,13 @@ func (a *chanAdapter) setRespondErr(err error) {
 	a.respondErr = err
 }
 
-func (a *chanAdapter) Start(context.Context, executor.StartReq) error { return nil }
-func (a *chanAdapter) Events(string) <-chan executor.AdapterEvent     { return a.evCh }
+func (a *chanAdapter) Start(_ context.Context, req executor.StartReq) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastStart = req
+	return nil
+}
+func (a *chanAdapter) Events(string) <-chan executor.AdapterEvent { return a.evCh }
 
 func (a *chanAdapter) Send(_ context.Context, _ string, text string) error {
 	a.mu.Lock()
@@ -121,6 +127,18 @@ func (a *chanAdapter) permsRec() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.perms...)
+}
+
+// recordedPerms 返回已记录的 RespondPermission 实参（副本）；供带 goroutine
+// 的审批链测试使用，避免直接读取 perms 形成竞态。
+func (a *chanAdapter) recordedPerms() []string {
+	return a.permsRec()
+}
+
+func (a *chanAdapter) lastStartReq() executor.StartReq {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastStart
 }
 
 // sendsRec 返回已记录的 Send 实参（副本）。
@@ -231,6 +249,36 @@ func TestDispatchPromptOnly(t *testing.T) {
 	}
 	if task.Name == "" {
 		t.Fatalf("name 应从 prompt 派生: %q", task.Name)
+	}
+}
+
+func TestDispatchPassesDisciplineAndRecordsSource(t *testing.T) {
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": ad}, "codex")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "做点事"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if got := ad.lastStartReq().Discipline; !strings.Contains(got, "在本会话内自己逐 task 实现") {
+		t.Errorf("StartReq.Discipline 没拿到单上下文版，实得前 40 字：%.40s", got)
+	}
+	if task.Discipline != "内置:single-context" {
+		t.Errorf("task.Discipline = %q", task.Discipline)
+	}
+	evs, err := st.EventsFromAsc(task.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("读取事件: %v", err)
+	}
+	var found bool
+	for _, e := range evs {
+		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "纪律块") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("事件流里没有纪律块回显，handoff show 将看不见档位")
 	}
 }
 

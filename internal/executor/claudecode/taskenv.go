@@ -103,6 +103,7 @@ type mcpServer struct {
 //   - planContent: 实现计划全文，原样嵌入 prompt
 //   - sockPath: 本任务的权限裁决 socket 路径（perm.go 监听它）
 //   - handoffBin: handoff 二进制绝对路径，作为裁决 MCP server 的启动命令
+//   - disciplineBlock: 唯一来自 StartReq 的纪律块正文；taskenv 不自行解析
 //
 // 返回：
 //   - settingsPath / mcpPath: 生成的两个配置文件路径
@@ -112,7 +113,7 @@ type mcpServer struct {
 // 注意：
 //   - 重复调用幂等覆盖，Start 失败重试可安全重来
 //   - 两个配置文件都是 0600：mcp.json 泄露 socket 路径即泄露裁决入口
-func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (settingsPath, mcpPath, promptText string, err error) {
+func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (settingsPath, mcpPath, promptText string, err error) {
 	log := slog.Default()
 	settingsPath = filepath.Join(taskDir, settingsFileName)
 	mcpPath = filepath.Join(taskDir, mcpFileName)
@@ -147,7 +148,7 @@ func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (se
 		return settingsPath, mcpPath, "", fmt.Errorf("写 %s: %w", mcpPath, err)
 	}
 
-	promptText, err = turn.RenderPrompt(taskID, planContent)
+	promptText, err = turn.RenderPrompt(taskID, planContent, disciplineBlock)
 	if err != nil {
 		log.Error("claude 渲染 prompt 失败", "task", taskID, "cause", err)
 		return settingsPath, mcpPath, "", fmt.Errorf("渲染 prompt: %w", err)

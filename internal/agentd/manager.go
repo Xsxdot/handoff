@@ -58,6 +58,7 @@ import (
 	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/permgate"
@@ -94,6 +95,10 @@ var errExecutorStartFailed = errors.New("启动 executor 失败")
 // 扁平的「派发任务失败」，真因被吞——这正是 B16 的根因，不能再犯一次。
 var errEnvResolveFailed = errors.New("解析 env 文件失败")
 
+// errDisciplineResolveFailed 表示纪律块文件不可用（文件名非法/读不到/超限）。
+// 与 errEnvResolveFailed 并列，让 server 层把真因回显给协调者而不是扁平成 500。
+var errDisciplineResolveFailed = errors.New("纪律块解析失败")
+
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
@@ -110,6 +115,8 @@ type Manager struct {
 	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
+	// discipline 按 executor 名裁出该次派发要注入的纪律块（B129）。
+	discipline *discipline.Resolver
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
 	// 权限请求直接升级人工协调者）。构造后只读。
 	approver *Approver
@@ -247,9 +254,12 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
 func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
+	disc := discipline.NewResolver(discipline.Dir(cfg.DataDir), cfg.Discipline, log)
+	disc.Preflight()
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,
 		env:          envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, log),
+		discipline:   disc,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
 		apDisabled:   map[string]bool{},
@@ -494,6 +504,13 @@ type approverDecisionPayload struct {
 	ElapsedMS  int64  `json:"elapsed_ms"`
 }
 
+// approvalDroppedPayload 是 approval_dropped 事件的 payload。
+type approvalDroppedPayload struct {
+	TicketID string `json:"ticket_id"`
+	Decision string `json:"decision"` // 审批者原本的裁决：approve / escalate / error
+	State    string `json:"state"`    // 裁决回来时任务已处的状态
+}
+
 // approverDisabledPayload 是 approver_disabled 事件的 payload：任务级审批链
 // 因连续失败被停用的原因。
 type approverDisabledPayload struct {
@@ -612,6 +629,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	envKVs, err := m.env.For(execName)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errEnvResolveFailed, err)
+	}
+	// 纪律块裁决与 env 解析同段：失败是配置问题，此刻还没有落库/建树副作用，
+	// 拒发是干净的。
+	discBlock, err := m.discipline.For(execName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errDisciplineResolveFailed, err)
 	}
 
 	// 内容合成：plan 解码后作为主体；prompt 非空时——
@@ -760,6 +783,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Name:            name,
 		Executor:        execName,
 		Model:           model,
+		Discipline:      discBlock.Source,
 		WorkDir:         ws.WorkDir,
 		WorktreeManaged: ws.Managed,
 		// 基线随创建期一并入库（此刻已由 ResolveBaseline 决议完毕），
@@ -796,7 +820,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
-	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir, Env: envKVs}); err != nil {
+	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
+		TaskDir: taskDir, Env: envKVs, Discipline: discBlock.Text}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -816,6 +841,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("读取派发后的任务: %w", err)
 	}
+	task.Discipline = discBlock.Source
+	// 派发回显：纪律块配置化之后，写 plan 的人再也看不到它躺在 plan 头部了。
+	if discBlock.Source != "" {
+		m.appendProgress(taskID, "纪律块: "+discBlock.Source)
+	}
+	m.log.Info("纪律块已注入", "task", taskID, "executor", execName,
+		"source", discBlock.Source, "bytes", len(discBlock.Text))
 	go m.mediate(taskID)
 	return task, nil
 }
@@ -1094,11 +1126,15 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
 	}
+	discBlock, derr := m.discipline.For(execName)
+	if derr != nil {
+		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
 		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
-		Env: envKVs, Model: task.Model,
+		Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
 	})
 	if err != nil {
@@ -1823,8 +1859,15 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		return
 	}
 	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
-		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，仅留审计事件",
+		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，回 reject 并留审计事件",
 			"task", taskID, "ticket", ticketID, "decision", decision, "state", cur.State)
+		// B117：不建工单/不唤醒/不消耗答案守卫这三条 P1-1 原意一字不改，
+		// 但**必须应答**——不答等于让 executor 侧那条请求悬着，codex 实测悬 8.5 分钟后
+		// 自行 Rejected("approval request aborted")，打断的是下一个回合。
+		// 一律回 reject 而不是照裁决放行：任务此刻已在 waiting_review（语义是「等协调者」），
+		// 放行等于让 executor 在无人看管时继续改工作区。命令没跑成可以 continue 重跑，
+		// 回合被打死不能。
+		m.respondLateDecision(taskID, ticketID, ev.PermissionID, decision, string(cur.State))
 		return
 	}
 
@@ -1845,6 +1888,43 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// respondLateDecision 处置「裁决晚于回合边界」：回一个干净的 reject，并留一条
+// 协调者可见事件说明那条裁决的去向。
+//
+// 参数：
+//   - decision: 审批者原本的裁决（approve/escalate/error），只进事件不影响回传值
+//   - state: 重读到的任务状态，进事件供协调者判断当时发生了什么
+//
+// 注意：
+//   - 回传失败不改变任务状态。最常见成因就是 executor 已经不在了，
+//     那正是这条路径的常态之一，不该因此把任务推向 failed
+//   - 事件 Publish 而不是只落库：协调者需要知道「有一条批准空转了、
+//     该 continue 重跑」，这与 deny_guidance_dropped 的可操作性理由相同
+func (m *Manager) respondLateDecision(taskID, ticketID, permID, decision, state string) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Warn("裁决晚到：任务运行态已不在，无法回传",
+			"task", taskID, "ticket", ticketID, "cause", err)
+	} else {
+		actx, acancel := unaryCtx(context.Background())
+		defer acancel()
+		if rerr := ad.RespondPermission(actx, taskID, permID, "reject"); rerr != nil {
+			m.log.Warn("裁决晚到：回传 reject 失败（多为 executor 已退出）",
+				"task", taskID, "ticket", ticketID, "cause", rerr)
+		} else {
+			m.log.Info("裁决晚到：已回传 reject，回合可正常收尾",
+				"task", taskID, "ticket", ticketID)
+		}
+	}
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeApprovalDropped,
+		approvalDroppedPayload{TicketID: ticketID, Decision: decision, State: state})
+	if aerr != nil {
+		m.log.Error("追加 approval_dropped 事件失败", "task", taskID, "ticket", ticketID, "cause", aerr)
+		return
+	}
+	m.hub.Publish(evt)
 }
 
 // clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled/denyGuidance）。
@@ -3043,11 +3123,15 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
 	}
+	discBlock, derr := m.discipline.For(execName)
+	if derr != nil {
+		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
-		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model,
+		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
 	})
 	if err != nil {

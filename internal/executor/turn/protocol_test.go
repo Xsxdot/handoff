@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderPromptEmbedsTaskIDAndPlan(t *testing.T) {
-	got, err := turn.RenderPrompt("T1", "第一步：改 foo.go")
+	got, err := turn.RenderPrompt("T1", "第一步：改 foo.go", "")
 	if err != nil {
 		t.Fatalf("RenderPrompt 出错: %v", err)
 	}
@@ -16,6 +16,48 @@ func TestRenderPromptEmbedsTaskIDAndPlan(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt 缺少 %q\n实际:\n%s", want, got)
 		}
+	}
+}
+
+func TestRenderPromptEmbedsDisciplineBlock(t *testing.T) {
+	out, err := turn.RenderPrompt("T1", "计划正文", "# 执行纪律\n自己逐 task 实现")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "自己逐 task 实现") {
+		t.Error("纪律块正文未出现")
+	}
+	if !strings.Contains(out, "--- 执行纪律（先读这段，再读计划）---") {
+		t.Error("纪律块小标题未出现")
+	}
+	iRules := strings.Index(out, "提问纪律")
+	iDisc := strings.Index(out, "自己逐 task 实现")
+	iPlan := strings.Index(out, "--- 实现计划 ---")
+	if !(iRules < iDisc && iDisc < iPlan) {
+		t.Errorf("顺序错：铁律=%d 纪律=%d 计划=%d", iRules, iDisc, iPlan)
+	}
+}
+
+func TestRenderPromptWithoutDisciplineHasNoMarker(t *testing.T) {
+	out, err := turn.RenderPrompt("T1", "计划正文", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "执行纪律") {
+		t.Error("空纪律块不该留下任何小标题")
+	}
+	if !strings.Contains(out, "--- 实现计划 ---") || !strings.Contains(out, "计划正文") {
+		t.Error("原有结构被破坏")
+	}
+}
+
+func TestProtocolRulesMatchesTemplate(t *testing.T) {
+	out, err := turn.RenderPrompt("T1", "x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, turn.ProtocolRules) {
+		t.Fatal("ProtocolRules 与模板已漂移")
 	}
 }
 
