@@ -1,3 +1,7 @@
+// NewWorktreeDialog.test.tsx —— 新建工作树弹层的交互测试。
+//
+// 职责：验证分支加载、占用置灰、提交回调与原文错误展示。
+// 边界：不测试后端 git 行为；agentd 核心测试位于 internal/agentd。
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { NewWorktreeDialog } from './NewWorktreeDialog'

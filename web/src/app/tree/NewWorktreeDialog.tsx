@@ -20,6 +20,7 @@ import type { ProjectBranchesResp, Workspace } from '../../api/types'
 import { Button } from '@/components/ui/button'
 import { errorMessage } from '../lib/format'
 
+/** 新建工作树弹层的输入；登记名用于寻址，机器名用于选择目标位置。 */
 export interface NewWorktreeDialogProps {
   open: boolean
   // projectName 是**登记名**（ProjectLocationNode.name）。跨机时它与 ProjectNode.name
@@ -50,6 +51,7 @@ function baseOptions(data: ProjectBranchesResp): string[] {
   return names
 }
 
+/** 加载目标机器的分支并提交一棵手工工作树。 */
 export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreated }: NewWorktreeDialogProps) {
   const [mode, setMode] = useState<'new_branch' | 'existing_branch'>('new_branch')
   const [branch, setBranch] = useState('')

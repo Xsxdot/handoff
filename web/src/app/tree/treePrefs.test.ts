@@ -1,3 +1,7 @@
+// treePrefs.test.ts —— 左栏偏好持久化与纯函数规则的单元测试。
+//
+// 职责：用最小的手写数据验证排序、隐藏和空闲目录折叠。
+// 边界：不挂载 React 树；组件装配测试位于 ProjectTree.test.tsx。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_PREFS, PREFS_KEY, loadPrefs, savePrefs,

@@ -1,3 +1,7 @@
+// manualworktree_test.go —— 手工工作树核心的行为测试。
+//
+// 职责：覆盖建树成功路径、请求拒绝与落点规则。
+// 边界：不测试 HTTP 路由；接口层测试位于 projectadmin_test.go。
 package agentd
 
 import (

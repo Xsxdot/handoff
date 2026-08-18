@@ -12,6 +12,7 @@ import { SlidersHorizontal } from 'lucide-react'
 import { IconMenu, type IconMenuItem } from '../lib/IconMenu'
 import type { ProjectSort, TreePrefs } from './treePrefs'
 
+/** TreePrefsMenu 的输入；projects 必须是未经过隐藏过滤的全量项目。 */
 export interface TreePrefsMenuProps {
   prefs: TreePrefs
   projects: { project_id: string; name: string }[]
@@ -25,6 +26,7 @@ const SORT_LABELS: { value: ProjectSort; label: string }[] = [
   { value: 'recent', label: '最近活动' },
 ]
 
+/** 把偏好选项渲染为左栏项目标题旁的 IconMenu。 */
 export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps) {
   const hidden = new Set(prefs.hiddenProjects)
   const items: IconMenuItem[] = [
