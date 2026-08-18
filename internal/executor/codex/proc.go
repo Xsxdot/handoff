@@ -122,7 +122,7 @@ var startProcHost = prochost.Start
 //
 // 注意：**没有 model 参数**（与 grok 不同）——codex 的模型选择是协议级的
 // （thread/start 的 model 字段），不经启动描述。
-func StartServe(ctx context.Context, repoPath, taskID, taskDir string, env []string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir string, env []string, log *slog.Logger) (*Proc, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -159,6 +159,8 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir string, env []str
 		return nil, fmt.Errorf("取自身可执行路径: %w", err)
 	}
 	spec := serveSpec(repoPath, taskDir, port, env)
+	spec.TaskID = taskID
+	spec.MarkRoot = markRoot
 	spec.Argv[0] = bin
 	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
 	if err := writeProcInfo(taskDir, &procInfo{

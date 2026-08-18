@@ -102,7 +102,8 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		}
 		a.log.Info("app-server 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "thread", threadID)
-		newProc, serr := startServe(context.Background(), repoPath, taskID, taskDir, req.Env, a.log)
+		newProc, serr := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
+			taskDir, req.Env, a.log)
 		if serr != nil {
 			// 起不来是可预期现场（未登录/端口占用），按不可恢复处理而非错误
 			a.log.Warn("冷恢复重起 app-server 失败，判不可恢复", "task", taskID, "cause", serr)

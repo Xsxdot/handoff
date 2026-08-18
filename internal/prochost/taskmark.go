@@ -107,7 +107,7 @@ func applyTaskMark(spec *Spec) {
 	spec.Env = append(spec.Env, TaskMarkEnvKey+"="+spec.TaskID)
 }
 
-// resolveMarkRoot 把一个工作目录路径归一成可用于 cwd 比对的形态。
+// ResolveMarkRoot 把一个工作目录路径归一成可用于 cwd 比对的形态。
 //
 // 参数：dir 为任务工作区目录；managed 表示它是否为 agentd 托管的 worktree
 //
@@ -116,7 +116,7 @@ func applyTaskMark(spec *Spec) {
 // 注意：**必须做符号链接解析**。内核返回的 cwd 是解析后的（macOS 上
 // /var/... 会变成 /private/var/...），直接拿未解析的路径去比会得到一个
 // 看起来很干净的假阴性——判据静默失效而没有任何报错。
-func resolveMarkRoot(dir string, managed bool) string {
+func ResolveMarkRoot(dir string, managed bool) string {
 	if !managed || dir == "" {
 		return ""
 	}

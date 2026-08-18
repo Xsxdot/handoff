@@ -111,6 +111,23 @@ type Handle struct {
 	// 跳过第二段清扫（只做 pgid 那段），与 StartedAt 缺失时降级为只上报是
 	// 同一条纪律——老任务不会因为升级就被动手。
 	RosterPath string `json:"roster_path,omitempty"`
+
+	// TaskID / MarkRoot 是归属判定的凭据，由 Start 从 Spec 原样带过来。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这两个字段，读出空串即
+	// 跳过标记判据、只走 pgid + roster——与 StartedAt / RosterPath 缺失时同一条
+	// 纪律，老任务不会因为升级就被动手。
+	TaskID   string `json:"task_id,omitempty"`
+	MarkRoot string `json:"mark_root,omitempty"`
+}
+
+// cred 把 Handle 投影成一次归属判定所需的凭据。
+//
+// 为什么要单独一层而不是让判据直接吃 Handle：判据只需要这两个字段，
+// 传整个 Handle 会让 taskmark.go 依赖 PID/LockPath 这些与它无关的东西，
+// 单测也得构造无关字段。
+func (h Handle) cred() TaskCred {
+	return TaskCred{TaskID: h.TaskID, MarkRoot: h.MarkRoot}
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -263,6 +280,9 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	specPath := filepath.Join(filepath.Dir(spec.InfoPath), "spec.json")
 	applyFencePolicy(&spec)
+	applyTaskMark(&spec)
+	log().Debug("任务标记凭据已就位", "task_id", spec.TaskID,
+		"mark_root", spec.MarkRoot, "env_injected", spec.TaskID != "")
 	b, err := json.Marshal(spec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("序列化 spec: %w", err)
@@ -309,5 +329,7 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 		LockPath:   spec.LockPath,
 		StartedAt:  startedAt,
 		RosterPath: roster,
+		TaskID:     spec.TaskID,
+		MarkRoot:   spec.MarkRoot,
 	}, nil
 }

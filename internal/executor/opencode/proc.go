@@ -105,7 +105,7 @@ var startProcHost = prochost.Start
 // 注意：
 //   - 端口选择存在 TOCTOU 竞态（见 freePort），MVP 接受
 //   - 就绪超时后自动 Kill 清理残留进程，避免半启动进程占着端口
-func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 	l := log.With("task", taskID)
 	port, err := freePort()
 	if err != nil {
@@ -149,6 +149,8 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 		return nil, fmt.Errorf("取自身可执行路径: %w", err)
 	}
 	spec := serveSpec(repoPath, taskDir, configPath, port, password, env)
+	spec.TaskID = taskID
+	spec.MarkRoot = markRoot
 	spec.Argv[0] = bin
 	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
 	if err := writeProcInfo(taskDir, &procInfo{

@@ -43,6 +43,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/google/uuid"
 )
 
@@ -243,6 +244,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		SettingsPath: settingsPath,
 		MCPPath:      mcpPath,
 		Env:          req.Env,
+		MarkRoot:     prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
 	}, a.log)
 	if err != nil {
 		rollback()

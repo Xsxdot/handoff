@@ -31,6 +31,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -144,7 +145,9 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := startServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
+		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
+		req.TaskDir, req.Task.Model, req.Env, a.log)
 	if err != nil {
 		return err
 	}

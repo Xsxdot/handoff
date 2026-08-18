@@ -51,6 +51,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
 // 看门狗与节流参数：
@@ -320,7 +321,9 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	// serve 的工作目录（cwd）取 task.Workdir()：worktree 任务的 executor 必须在
 	// worktree 里跑（分支 HEAD 在那里），主仓库 HEAD 停在派发前位置；原地模式
 	// Workdir() 回退 RepoPath，行为与一期一致
-	proc, err := startServe(ctx, req.Task.Workdir(), req.Task.ID, req.TaskDir, configPath, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), req.Task.ID,
+		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
+		req.TaskDir, configPath, req.Env, a.log)
 	if err != nil {
 		return err
 	}
