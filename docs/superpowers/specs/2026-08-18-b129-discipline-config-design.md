@@ -152,8 +152,10 @@ B93 那类跨 executor 评测（同一份 plan 比不同模型）要求首条消
 - `dispatch` 的 **stderr** 回显一行：`纪律块: single-context（内置）`
   （stdout 有「单行任务 JSON」契约，人读信息一律走 stderr）
 - agentd 侧 Info 日志带 executor 名与 `Block.Source`
-- 落进任务的**首条 progress 事件 payload**（字段 `discipline`，值取 `Block.Source`），
-  使 `handoff show` 可见。不新增事件类型——档位是任务的属性，不是独立发生的事
+- `ad.Start` 成功后经现成的 `m.appendProgress(taskID, text)` 落一条 progress 事件
+  （文案 `纪律块: <Block.Source>`），使 `handoff show` 可见。
+  **不新增事件类型、不改 payload 结构**——`progressPayload` 只有一个 `Text` 字段且被
+  五处共用，为这件事加字段是无谓的侵入
 
 **明确不做：机器检测 plan 与纪律块的冲突。** 这是 handoff 自己的仓库，plan 正文里
 `handoff` 一词遍地都是（B105 那份尤甚），naive grep 噪音必然爆炸；而「这行是验收步骤
