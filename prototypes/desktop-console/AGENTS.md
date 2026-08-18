@@ -1,3 +1,25 @@
+> # ⚠️ 已退役（2026-08-18，B106）
+>
+> **本目录不是形态权威。不要照它写计划、也不要照它改真实前端。**
+>
+> 形态基准已迁至 `prototypes/base/`——真实前端 `web/` 的镜像，由 `prototype-site` 生成与刷新。
+> 需要 fork 做新形态时也从 base 起步（见 `prototyping-in-brainstorm`）。
+>
+> 本目录保留为**历史资产**：设计决策与走查截图有考古价值，但**已知至少三处与真实前端不符**——
+>
+> 1. **Finder 目录选择器**：原型有，真实前端按 spec §9 与 `AddProjectWizard.test.tsx` 的断言
+>    刻意没有。B95 派发中途因此被咬——按本原型写的 plan §3.6 被执行者当场驳回。
+> 2. **B94 的四条交互修复只回流了第 ① 条**：注销菜单压计数、tab 焦点被回写抢走、关 home
+>    终端时 machine 传成事件对象，这三条从未同步过来。
+> 3. **右键菜单背景全透明**：`.row-context-menu` 用了 `--surface` / `--line` / `--hover` /
+>    `--text` 四个本目录 `:root` 里**根本没定义**的变量（真名是 `--border` / `--sidebar-hover`
+>    / `--red`，面色直接写 `#ffffff`），实测 `getComputedStyle` 返回 `rgba(0, 0, 0, 0)`，
+>    菜单下面的文件树整片透出来。**这条与前两条性质不同**：不是「落后于真实前端」，
+>    而是**从未成立过**——真实前端 `ContextMenu.tsx` 用的是 Tailwind 的 `bg-popover`，一直是好的。
+>
+> 换句话说：一个没人对照真实前端校准过的原型，既会给出过时的形态，也会给出从未成立的形态。
+> 这正是它被退役的原因。
+
 # Prototype Instructions
 
 Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
