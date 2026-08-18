@@ -129,6 +129,12 @@ func jobProcessIDs() ([]int, error) {
 	return nil, fmt.Errorf("Job Object 成员数超过 %d，放弃", maxSlots)
 }
 
+// init 把容器采样缝指向 Job Object 实现。
+//
+// 容器能力是平台编译时就确定的事实，放在 init 中注册后，shim 的调用方无需记得
+// 先做一次平台初始化。
+func init() { containerSampleFn = jobProcessIDs }
+
 // installProcessContainer 建 Job Object、设限制、把 shim 自己放进去。
 //
 // 参数：nprocLimit 为围栏值（执行者树的进程数上限）；<=0 表示不设进程数上限。

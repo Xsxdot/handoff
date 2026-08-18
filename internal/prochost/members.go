@@ -10,8 +10,10 @@ package prochost
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // MembersFileName 是容器成员快照的文件名（与 proc.json 同目录）。
@@ -76,4 +78,70 @@ func writeMembers(path string, snap memberSnapshot) error {
 		return fmt.Errorf("落盘成员快照 %s: %w", path, err)
 	}
 	return nil
+}
+
+// containerSampleFn 是容器成员采样的平台缝。
+//
+// nil 表示本平台没有进程容器（unix），采样循环据此退出；Windows 的平台原语在
+// init 中把它设为 jobProcessIDs。包级 var 让采样逻辑的测试不依赖真实 Job Object。
+var containerSampleFn func() ([]int, error)
+
+// membersSampler 持有成员快照的采样状态：路径与上一轮落盘的内容。
+//
+// 保留上一轮结果是为了在成员稳定时跳过原子写，避免每秒一次无意义的 I/O。
+type membersSampler struct {
+	path    string
+	last    []int
+	hasLast bool
+	writes  int // 实际落盘次数，仅供测试断言「未变则不写」
+}
+
+// sample 采一次容器成员并按需落盘。
+//
+// 参数：l 为日志器。
+// 返回：是否继续周期采样。false 只表示本平台永久没有进程容器；单次查询或
+// 落盘失败都返回 true，因为下一轮可能恢复。
+func (s *membersSampler) sample(l *slog.Logger) bool {
+	if containerSampleFn == nil {
+		l.Info("本平台无进程容器，不做成员采样")
+		return false
+	}
+	if s.path == "" {
+		l.Warn("无 info_path，无法落盘成员快照，本任务不做容器计数")
+		return false
+	}
+	pids, err := containerSampleFn()
+	if err != nil {
+		l.Warn("查询容器成员失败，本轮跳过", "path", s.path, "cause", err)
+		return true
+	}
+	if s.hasLast && equalInts(s.last, pids) {
+		l.Debug("容器成员未变，跳过落盘", "count", len(pids))
+		return true
+	}
+	if err := writeMembers(s.path, memberSnapshot{PIDs: pids, SampledAt: time.Now().UnixNano()}); err != nil {
+		l.Warn("落盘成员快照失败，本轮跳过", "path", s.path, "cause", err)
+		return true
+	}
+	s.last = append(s.last[:0], pids...)
+	s.hasLast = true
+	s.writes++
+	l.Debug("成员快照已落盘", "count", len(pids), "path", s.path)
+	return true
+}
+
+// equalInts 判断两个 PID 表是否逐项相等。
+//
+// 不排序、不去重：Job Object 返回的成员顺序由内核给定，保留原始序列可避免
+// 不必要的分配，也不抹掉潜在的顺序变化信号。
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

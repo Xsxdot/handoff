@@ -156,6 +156,14 @@ func RunShim(specPath string) error {
 	rosterDone := make(chan struct{})
 	go func() {
 		defer close(rosterDone)
+		// 有进程容器的平台（Windows）走容器成员表，没有的走 pgid 出生登记。
+		// 两条路互斥：容器表由内核维护，进程退出即移除，比采样式名册更强，
+		// 有它就不需要名册那套时间下界校验。
+		if containerSampleFn != nil {
+			sampler := &membersSampler{path: membersPath(spec.InfoPath)}
+			runContainerSampling(stopRoster, sampler, l)
+			return
+		}
 		// 同一个 sampler 跨轮复用：它持有上一轮的序列化结果，"内容未变则不写"
 		// 依赖这份状态；每轮新建一个等于关掉这个优化
 		sampler := &rosterSampler{path: rosterPath(spec.InfoPath)}
@@ -296,6 +304,30 @@ func runRosterSampling(stop <-chan struct{}, sampler *rosterSampler, l *slog.Log
 	for {
 		select {
 		case <-stop:
+			return
+		case <-tk.C:
+			if !sampler.sample(l) {
+				return
+			}
+		}
+	}
+}
+
+// runContainerSampling 驱动容器成员的首次采样与周期采样。
+//
+// 参数：stop 为执行者退出时关闭的停止信号；sampler 为跨轮复用的采样器；l 为日志器。
+// sample 返回 false 表示本平台没有进程容器，只记一条 Info 并退出；其它失败继续重试。
+func runContainerSampling(stop <-chan struct{}, sampler *membersSampler, l *slog.Logger) {
+	if !sampler.sample(l) {
+		return
+	}
+	tk := time.NewTicker(rosterInterval)
+	defer tk.Stop()
+	for {
+		select {
+		case <-stop:
+			// 最后采一次，使快照接近执行者死亡时刻的成员表。
+			sampler.sample(l)
 			return
 		case <-tk.C:
 			if !sampler.sample(l) {
