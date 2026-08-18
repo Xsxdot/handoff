@@ -15,3 +15,4 @@
 - 2026-08-18 Task 6（claude/grok 注册层）完成，spec 符合性与代码质量双裁决通过；删除与新契约冲突的既有 Windows 排除测试，改由能力探测测试覆盖。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：定向 cmd/grok 测试通过；完工六门全绿（含 Windows amd64/arm64 交叉编译与 amd64 vet）。
 - 2026-08-18 Task 7（AF_UNIX socket 适配说明与超长路径错误）完成，spec 符合性与代码质量双裁决通过。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：超长路径定向测试通过；完工六门全绿（含 Windows amd64/arm64 交叉编译与 amd64 vet）。
 - 2026-08-18 Task 8（README Windows 执行器状态同步）完成，spec 符合性与代码质量双裁决通过；同步安装说明与 Executor Notes 表格。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：README 定位与 `git diff --check` 通过；随后执行全分支终审门禁。
+- 2026-08-18 终审修复（注册表旧测试无条件要求 grok）完成；按 grok 运行期能力探测语义改为只无条件断言 opencode/claude/codex/fake，范围复审待提交后执行。Commit 范围：`HEAD^..HEAD`（终审修复提交）。

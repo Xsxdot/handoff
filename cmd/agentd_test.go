@@ -22,14 +22,14 @@ import (
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
-// 注册表必须认识全部执行者名：dispatch --executor <name> 的路由前提。
+// 注册表必须认识始终可用的执行者名：dispatch --executor <name> 的路由前提。
 //
-// 为什么每个名字都要断言而不是只断言数量：B2（claude）与 B3（grok）是并行开发的
-// 两条分支，各自往注册表里加了一行，合并时 cmd/agentd.go 这一处必然冲突——手工
-// 解冲突时漏掉任一行都不会编译报错，症状要拖到「派发时报未注册」才暴露。
-func TestAdapterRegistryHasAllExecutors(t *testing.T) {
+// 为什么每个始终可用名字都要断言而不是只断言数量：漏掉任一行都不会编译报错，
+// 症状要拖到「派发时报未注册」才暴露。grok 是否存在由符号链接能力决定，
+// 由 TestAdaptersForSkipsGrokWhenSymlinkUnavailable 单独覆盖。
+func TestAdapterRegistryHasAlwaysAvailableExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	for _, want := range []string{"opencode", "claude", "grok", "codex", "fake"} {
+	for _, want := range []string{"opencode", "claude", "codex", "fake"} {
 		if _, ok := ads[want]; !ok {
 			names := make([]string, 0, len(ads))
 			for n := range ads {
@@ -159,12 +159,12 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 	}
 }
 
-// TestAdaptersForUnixKeepsAll 钉住非 Windows 平台一个都不能少。
-func TestAdaptersForUnixKeepsAll(t *testing.T) {
-	got := adaptersFor("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, name := range []string{"opencode", "claude", "grok", "codex", "fake"} {
+// TestAdaptersForAlwaysAvailableKeepsAll 钉住平台能力探测不误伤始终可用的执行器。
+func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
+	got := adaptersForWithProbe("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	for _, name := range []string{"opencode", "claude", "codex", "fake"} {
 		if _, ok := got[name]; !ok {
-			t.Errorf("darwin 上应注册 %s", name)
+			t.Errorf("应注册 %s", name)
 		}
 	}
 }
