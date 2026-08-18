@@ -384,9 +384,12 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           # 独立前缀 handoff-desktop_：install.sh 与自更新都是精确拼
-          # handoff_<tag>_<平台> 取 CLI 资产，前缀不同就不会被误抓
-          mv desktop/bin/*.AppImage "handoff-desktop_${TAG}_linux_amd64.AppImage"
-          mv desktop/bin/*.deb      "handoff-desktop_${TAG}_linux_amd64.deb"
+          # handoff_<tag>_<平台> 取 CLI 资产，前缀不同就不会被误抓。
+          # 落点是 RUNNER_TEMP 而**不是仓库根**：资产是产物，留在工作树里会被
+          # 下一步的干净检查当成污染（实测 git status --porcelain 会把它们列成
+          # 未跟踪文件，job 挂在自己刚产出的东西上）。
+          mv desktop/bin/*.AppImage "${RUNNER_TEMP}/handoff-desktop_${TAG}_linux_amd64.AppImage"
+          mv desktop/bin/*.deb      "${RUNNER_TEMP}/handoff-desktop_${TAG}_linux_amd64.deb"
 
       # 干净检查：构建产物不得入库（W5b-1 在这里栽过一次）
       - name: 确认工作区干净
@@ -400,7 +403,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: handoff-desktop_linux
-          path: handoff-desktop_*
+          path: ${{ runner.temp }}/handoff-desktop_*
           if-no-files-found: error
 
   # 薄壳的 darwin 资产必须在 macOS runner 上构建：codesign 与 notarytool
@@ -552,8 +555,10 @@ jobs:
             --sign "$APPLE_SIGNING_IDENTITY" "$app"
           codesign --verify --strict --verbose=2 "$app"
 
-          ditto -c -k --keepParent "$app" notarize-desktop.zip
-          xcrun notarytool submit notarize-desktop.zip \
+          # 两个 zip 都落 RUNNER_TEMP 而**不是仓库根**：它们是产物，留在工作树里
+          # 会被后面的干净检查当成污染，job 挂在自己刚产出的东西上。
+          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/notarize-desktop.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/notarize-desktop.zip" \
             --key "$APPLE_API_KEY_PATH" \
             --key-id "$APPLE_API_KEY" \
             --issuer "$APPLE_API_ISSUER" \
@@ -565,8 +570,8 @@ jobs:
 
           # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
           xcrun stapler staple "$app"
-          rm -f notarize-desktop.zip
-          ditto -c -k --keepParent "$app" "handoff-desktop_${TAG}_darwin_arm64.zip"
+          rm -f "${RUNNER_TEMP}/notarize-desktop.zip"
+          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.zip"
 
       # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
       # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
@@ -609,7 +614,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: handoff-desktop_darwin
-          path: handoff-desktop_*.zip
+          path: ${{ runner.temp }}/handoff-desktop_*.zip
           if-no-files-found: error
 
   release:
