@@ -402,12 +402,15 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 // 所有 agentd 自更新拉到的版本。
 func TestPrereleaseTagsAreNotPublishedAsLatest(t *testing.T) {
 	wf := stripYAMLComments(readWorkflow(t))
-	if !strings.Contains(wf, "--prerelease") {
-		t.Fatal("release job 从不传 --prerelease —— rc/beta tag 会被标成 Latest，" +
-			"install.sh 与 agentd 自更新会立刻拉到它")
+	// 计数而不是 Contains：多出来的那一处若是无条件加的，正式版也会被标成
+	// 预发布、永远发不出 latest——那是反方向的同一个坑，而 Contains 查不出来
+	//（变异复验实测：保留条件那处、另加一处无条件的，Contains 版本仍然绿）。
+	if n := strings.Count(wf, "--prerelease"); n != 1 {
+		t.Fatalf("release job 里 --prerelease 应恰好出现 1 次，实得 %d 次。"+
+			"0 次意味着 rc/beta tag 会被标成 Latest（install.sh 与 agentd 自更新会立刻拉到它）；"+
+			"多于 1 次通常意味着有一处是无条件加的，正式版也会被标成预发布", n)
 	}
-	// 光有这个 flag 不够，它必须是**按 tag 形态条件加上**的：写死上去会让
-	// 正式版也永远发不出 latest，那是反方向的同一个坑。
+	// 而且它必须是**按 tag 形态条件加上**的。
 	if !strings.Contains(wf, `*-*) args+=(--prerelease) ;;`) {
 		t.Fatal("--prerelease 必须按 tag 是否含连字符条件添加，否则正式版也会被标成预发布")
 	}
