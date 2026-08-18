@@ -351,19 +351,29 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 	}
 
 	wf := stripYAMLComments(readWorkflow(t))
-	for _, want := range []string{
-		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略
-		"EXTRA_TAGS=embedbin",
-		"EXTRA_LDFLAGS=",
-		"desktop/internal/embedbin.Version=",
-		// 装 wails3 这一步本身也要带 gtk3，否则在 22.04 上卡在准备工具阶段
-		"go install -tags gtk3",
+	// 逐条带期望出现次数，而不是 Contains。
+	//
+	// 为什么：两个薄壳 job 各自传一次 EXTRA_TAGS/EXTRA_LDFLAGS，用 Contains 的话
+	// 「只改对一处、另一处漏改」照样绿——本文件顶上的
+	// TestWorkflowInjectsVersionAtModulePath 早就吃过这个亏，这里不该再犯。
+	// 这条不是推演出来的：本测试第一版就是 Contains，变异复验（把 linux 那处
+	// 的 EXTRA_TAGS 改回 GO_FLAGS）测试仍绿，当场证明那是一道假门。
+	for _, c := range []struct {
+		want string
+		n    int
+	}{
+		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略。两个 job 各一次。
+		{"EXTRA_TAGS=embedbin", 2},
+		{"EXTRA_LDFLAGS=", 2},
+		{"desktop/internal/embedbin.Version=", 2},
+		// 装 wails3 这一步本身也要带 gtk3，否则在 22.04 上卡在准备工具阶段。仅 linux。
+		{"go install -tags gtk3", 1},
 		// 内嵌的那份 CLI 必须在嵌进去之前单独签名：嵌进去之后它就只是
-		// go:embed 的字节块，再没有任何机会给它签名
-		"--sign \"$APPLE_SIGNING_IDENTITY\" desktop/internal/embedbin/handoff",
+		// go:embed 的字节块，再没有任何机会给它签名。仅 darwin。
+		{"--sign \"$APPLE_SIGNING_IDENTITY\" desktop/internal/embedbin/handoff", 1},
 	} {
-		if !strings.Contains(wf, want) {
-			t.Fatalf("薄壳 job 缺承重旋钮 %q", want)
+		if got := strings.Count(wf, c.want); got != c.n {
+			t.Fatalf("薄壳 job 的承重旋钮 %q 应出现 %d 次，实得 %d 次", c.want, c.n, got)
 		}
 	}
 
