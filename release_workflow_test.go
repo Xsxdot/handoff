@@ -8,6 +8,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -508,6 +509,56 @@ func TestInstallPs1IsBOMFreeASCII(t *testing.T) {
 			t.Fatalf("install.ps1 第 %d 行含非 ASCII 字节 0x%02x —— 无 BOM 时 "+
 				"PS 5.1 会按 cp936 解码它，GBK 前导字节会吞掉后面的 ASCII 字符。"+
 				"这个文件只能写英文（原委见其文件头）", line, c)
+		}
+	}
+}
+
+// TestToolRewrittenFilesPinnedToLF 钉住 .gitattributes 里那几条 eol=lf 声明。
+//
+// 为什么承重：go mod tidy、gofmt、wails3 generate bindings 这些工具**一律写 LF**，
+// 而 Windows 上 git 默认 core.autocrlf=true 会把这些文件检出成 CRLF。于是构建
+// 过程中任何一次重写都把工作树改回 LF、被 git 判成「已修改」，而 `git diff`
+// 是**空的**（只有一行 "LF will be replaced by CRLF"）。症状看起来像依赖或
+// 生成物变了，实际一个字符都没变。
+//
+// 这不是理论顾虑：2026-08-19 rc4 的 build-desktop-windows 就栽在这里——薄壳
+// 编译成功、13.4MB 的 zip 都打出来了，却挂在自己末尾那道「工作区干净」检查上。
+// 已在 Windows Server 2025 真机复现：干净克隆后只跑一次 go mod tidy，
+// git status 立刻报 ` M desktop/go.mod`。
+//
+// 断言走 `git check-attr` 而不是对 .gitattributes 做字符串匹配：后者在模式
+// 写错（少一层目录、通配符位置不对）时**照样绿**，那是一道假门。check-attr
+// 问的是 git 自己「这个路径最终生效的属性是什么」。
+func TestToolRewrittenFilesPinnedToLF(t *testing.T) {
+	// 这一读**不是**多余的：断言本身走 `git check-attr` 子进程，Go 的测试缓存
+	// 只登记本进程打开过的文件，看不见子进程读了什么。不读一次 .gitattributes，
+	// 改它就不会让缓存失效——`go test`（不带 -count=1）会拿旧的 PASS 交差。
+	//
+	// 这不是推演：本用例第一版没有这一读，三条变异（删 go.mod 声明、把 bindings
+	// 模式写少一层、把 go.sum 改成 -text）跑出来**全是绿的**，输出 "ok (cached)"，
+	// 当场证明那是一道假门。os.ReadFile 把它登记成输入后，变异才抓得住。
+	if _, err := os.ReadFile(".gitattributes"); err != nil {
+		t.Fatalf("读 .gitattributes 失败: %v", err)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("环境里没有 git，跳过（CI 上一定有）")
+	}
+	paths := []string{
+		"go.mod", "go.sum",
+		"desktop/go.mod", "desktop/go.sum",
+		"desktop/frontend/bindings/github.com/wailsapp/wails/v3/internal/eventcreate.ts",
+		"desktop/frontend/bindings/github.com/wailsapp/wails/v3/internal/eventdata.d.ts",
+	}
+	for _, p := range paths {
+		out, err := exec.Command("git", "check-attr", "eol", "--", p).Output()
+		if err != nil {
+			t.Fatalf("git check-attr %s 失败: %v", p, err)
+		}
+		// 形如 "go.mod: eol: lf"
+		if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, ": eol: lf") {
+			t.Fatalf("%s 必须由 .gitattributes 钉成 eol=lf，实得 %q。\n"+
+				"少了它，Windows 上任何一次工具重写都会让「工作区干净」检查挂在一个"+
+				"内容毫无变化的文件上（git diff 为空），排错成本极高", p, got)
 		}
 	}
 }

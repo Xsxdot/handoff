@@ -20,6 +20,25 @@
 internal/executor/**/testdata/*.jsonl  -text
 internal/executor/**/testdata/*.json   -text
 
+# 构建期会被工具重写的文件：这些工具一律写 LF，而 Windows 上 git 默认
+# core.autocrlf=true 把它们检出成 CRLF。于是构建过程中任何一次重写都把工作树
+# 改回 LF、被 git 判成「已修改」——而 `git diff` 是**空的**，只有一行
+# "LF will be replaced by CRLF the next time Git touches it"。症状看起来像依赖
+# 或生成物变了，实际一个字符都没变。
+#
+# 2026-08-19 rc4 的 build-desktop-windows 就栽在这里：薄壳编译成功、zip 都打
+# 出来了（13.4MB），却挂在自己末尾那道「工作区干净」检查上，报三个文件被改。
+# 已在 win-b37 真机复现：干净克隆后只跑一次 `go mod tidy`，git status 立刻
+# 报 ` M desktop/go.mod` 而 diff 为空。
+#
+# eol=lf 让工作树在 Windows 上也保持 LF，与工具产出逐字节一致。对 Unix 侧无
+# 影响（本来就是 LF）。由 release_workflow_test.go 的
+# TestToolRewrittenFilesPinnedToLF 经 `git check-attr` 钉着。
+go.mod              text eol=lf
+go.sum              text eol=lf
+# wails3 generate bindings 每次构建都重生成（仓库里只跟踪了这两个），同样写 LF
+desktop/frontend/bindings/**/*.ts   text eol=lf
+
 # 安装脚本：install.sh 由 Linux/macOS 的 sh 执行，CRLF 会让它整个跑不起来
 #（shebang 后带 \r 时报 "bad interpreter"）。install.ps1 反过来必须保留
 # 它自己的 BOM 与换行形态，由 release_workflow_test.go 的两条用例钉着。

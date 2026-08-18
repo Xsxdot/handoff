@@ -8,6 +8,22 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc5] - 2026-08-19
+
+**预发布。** 内容与 rc4 相同（见下一节），外加一处 CI 修复。
+
+> **v0.3.0-rc4 未产出 Release**：`build-desktop-windows` 挂了，但不是构建失败
+> ——薄壳编译成功、13.4MB 的 zip 都打出来了，挂在自己末尾那道「工作区干净」
+> 检查上，报 `desktop/go.mod` 与两个 `desktop/frontend/bindings/*.ts` 被改。
+> 根因是换行：`go mod tidy` 与 `wails3 generate bindings` 一律写 LF，而
+> Windows 上 git 默认 `core.autocrlf=true` 把这些文件检出成 CRLF，构建期一
+> 重写就被判成改过——而 `git diff` 是**空的**，只有一行「LF will be replaced
+> by CRLF」，看起来像依赖变了，实际一个字符都没变。已在 Windows Server 2025
+> 真机复现与验证修复：`.gitattributes` 把这几类文件钉成 `eol=lf` 后，干净克隆
+> 上跑 `go mod tidy` 工作区保持干净。新增 `TestToolRewrittenFilesPinnedToLF`
+> 钉住它（断言走 `git check-attr`，并让用例自己读一次 `.gitattributes`——
+> 否则 Go 的测试缓存看不见子进程读了什么，这道门变异复验时全绿，是假门）。
+
 ## [v0.3.0-rc4] - 2026-08-19
 
 **预发布。** 同样标成 prerelease，不改变 `releases/latest`。
