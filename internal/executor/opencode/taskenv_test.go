@@ -270,3 +270,45 @@ func TestBashRulesAskOnTee(t *testing.T) {
 		t.Fatalf(`兜底模式 "*" = %q，期望 allow——本轮不反转静态表`, got)
 	}
 }
+
+// TestBashRulesAskOnParamWriteCommands 钉住 B151 的第二轮：ln / install / dd
+// 也必须落 ask，理由与 tee 同族。
+//
+// 真机基线（2026-08-18，任务 64569d7f）：整个任务只产生 **1 次**权限请求
+// （`mv probe-mv.txt /tmp/x` 经 external_directory 检出），而
+// `ln -s /etc/hosts /tmp/b151-ln`、`install -m 644 x /tmp/b151-install.txt`、
+// `dd if=/dev/zero of=/tmp/b151-dd.bin` **三条零权限请求、文件全部实写**。
+// 也就是说 opencode 的 external_directory 只认 cp/mv 两个。
+//
+// 为什么带空格锚定而不是裸包含：`"*ln*"` 会被 `grep alnum` 这类命令命中，
+// 平白送进审批链；tee 那条敢裸包含是因为 "tee" 作为子串罕见。
+func TestBashRulesAskOnParamWriteCommands(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	for _, p := range []string{"ln *", "* ln *", "install *", "* install *", "dd *", "* dd *"} {
+		if got := cfg.Permission.Bash[p]; got != "ask" {
+			t.Fatalf("模式 %q = %q，期望 ask——少一条就是一条静默放行的越界写通道（B151）", p, got)
+		}
+	}
+	// 裸包含模式会误伤（"ln" 是常见子串），不许出现
+	for _, p := range []string{"*ln*", "*dd*"} {
+		if _, ok := cfg.Permission.Bash[p]; ok {
+			t.Fatalf("不得含裸包含模式 %q——它会命中 grep alnum 这类无关命令", p)
+		}
+	}
+}

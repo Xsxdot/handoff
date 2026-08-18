@@ -89,7 +89,25 @@ var bashPermissionRules = map[string]string{
 	// 被引号包住，锚定要枚举四五条还留缝；tee 在构建/测试流里低频，误伤只是一次
 	// Consult。送进来之后由 permgate 的 WriteArgTargets 给确定性裁决（B151）。
 	"*tee*": "ask",
-	"*":     "allow",
+	// ln / install / dd：与 tee 同一族——落点在参数位，而 opencode 的
+	// external_directory **检不出它们**。2026-08-18 真机任务 64569d7f 逐条实测：
+	// 同一批命令里只有 `mv probe.txt /tmp/x` 触发了 external_directory
+	// （paths=[/tmp] → 升人工），`ln -s /etc/hosts /tmp/b151-ln`、
+	// `install -m 644 x /tmp/b151-install.txt`、`dd if=/dev/zero of=/tmp/b151-dd.bin`
+	// **三条零权限请求、文件全部实写**（软链、17 字节、8 字节，事后在 /tmp 肉眼确认）。
+	// 即 opencode 只认 cp/mv 两个，其余同族命令一律静默放行。
+	//
+	// 每条给两个形态：`x *` 拦直接调用，`* x *` 拦复合命令与管道后的嵌入。
+	// 不用 "*ln*" 这种裸包含模式——"ln" 是极常见的子串（`grep alnum` 就会命中），
+	// 带空格锚定才不会把无关命令拖进审批链；tee 那条敢裸包含是因为 "tee" 罕见。
+	// 送进来之后由 permgate 的 WriteArgTargets 给确定性裁决（B151）。
+	"ln *":        "ask",
+	"* ln *":      "ask",
+	"install *":   "ask",
+	"* install *": "ask",
+	"dd *":        "ask",
+	"* dd *":      "ask",
+	"*":           "allow",
 }
 
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成
