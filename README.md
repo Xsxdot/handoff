@@ -416,6 +416,9 @@ escalates straight to the human. Within one task, a byte-identical permission re
 a human already approved is reused automatically (recorded as a `permission_reuse` event)
 instead of asking again.
 
+Write targets outside the task's workspace — including shell redirect targets such as
+`echo x > ~/.zshrc` — always escalate to the human, never to the approver.
+
 ## Executor Notes
 
 `--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `fake` (a

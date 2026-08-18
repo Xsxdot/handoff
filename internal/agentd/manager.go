@@ -1422,9 +1422,7 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err := ad.RespondPermission(actx, taskID, permID, decision, reason); err != nil {
 			return fmt.Errorf("中继权限应答: %w", err)
 		}
-		// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
-		// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
-		m.noteDenyGuidance(taskID, reason)
+		m.noteDenyGuidanceUnlessInBand(taskID, permID, reason)
 		m.markDelivered(taskID, ticketID)
 		return nil
 	case "ask":
@@ -2243,9 +2241,7 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		m.NoteDeliveryFailed(taskID, ticketID, err)
 		return
 	}
-	// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
-	// 正在终结的回合；挂起到下一条 question 到达时再下发（见 noteDenyGuidance 的 why）
-	m.noteDenyGuidance(taskID, reason)
+	m.noteDenyGuidanceUnlessInBand(taskID, permID, reason)
 	m.markDelivered(taskID, ticketID)
 }
 
@@ -2984,6 +2980,51 @@ type reaper interface {
 // serve 端持有）行为不变。
 type volatilePermitter interface {
 	PermissionsVolatile() bool
+}
+
+// denyReasonInBander 表示该 adapter 能把拒绝理由与裁决同帧送达模型
+// （claude：理由进 permDecision.Message，作为 tool_result 正文当场回给模型）。
+//
+// 不实现本接口的 adapter（grok/codex 的原生协议没有消息字段，opencode 走的
+// 老端点会丢弃额外字段，见 spec §2.5）行为不变，仍走 B50 的带外挂起注入。
+type denyReasonInBander interface {
+	DenyReasonInBand() bool
+}
+
+// denyReasonDelivered 判断本任务的 executor 是否已把拒绝理由同帧送达。
+//
+// 参数：taskID 为任务 id
+// 返回：true 表示理由已到模型手里
+//
+// 注意：返回 true 时调用方**不得**再 noteDenyGuidance——两条路都走会让模型
+// 被同一条理由说两遍。解析 adapter 失败时保守返回 false：宁可多说一遍，
+// 也不能让理由一句都没送到。
+func (m *Manager) denyReasonDelivered(taskID string) bool {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Warn("判定拒绝理由送达方式时解析执行者失败，按带外注入处置",
+			"task", taskID, "cause", err)
+		return false
+	}
+	d, ok := ad.(denyReasonInBander)
+	return ok && d.DenyReasonInBand()
+}
+
+// noteDenyGuidanceUnlessInBand 按 executor 的送达能力决定要不要挂起拒绝理由。
+//
+// 参数：taskID / permID 用于日志定位；reason 为协调者给出的原因
+//
+// executor 已把理由与裁决同帧送达时直接返回：再挂一份会让模型先在 tool_result
+// 里读到理由、下一条 question 时又被同一条理由砸一次。
+func (m *Manager) noteDenyGuidanceUnlessInBand(taskID, permID, reason string) {
+	if m.denyReasonDelivered(taskID) {
+		m.log.Debug("拒绝理由已与裁决同帧送达，跳过带外挂起",
+			"task", taskID, "perm", permID)
+		return
+	}
+	// 拒绝原因挂起（B50）：executor 收 reject 会当场终结回合，此刻 Send 会撞上
+	// 正在终结的回合；挂起到下一条 question 到达时再下发
+	m.noteDenyGuidance(taskID, reason)
 }
 
 // ResumeTask 恢复 agentd 重启前已在执行的任务：探测执行器存活；存活则经 adapter
