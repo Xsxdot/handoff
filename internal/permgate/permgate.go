@@ -219,14 +219,16 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 	//   - RedirectTargets：handoff 从重定向语法里摘的（B134）
 	//   - WriteArgTargets：handoff 从写命令参数位摘的（B151）——claude 的 bash
 	//     请求 Paths 恒为空，opencode 对管道后的 tee 也检不出，这一路是唯一兜底
+	redirects := RedirectTargets(req.Command)
+	writeArgs := WriteArgTargets(req.Command)
 	targets := append([]string(nil), req.Paths...)
-	targets = append(targets, RedirectTargets(req.Command)...)
-	targets = append(targets, WriteArgTargets(req.Command)...)
+	targets = append(targets, redirects...)
+	targets = append(targets, writeArgs...)
 	if n := len(targets); n > 0 {
 		g.log.Debug("命令落点已汇总", "count", n,
 			"from_executor", len(req.Paths),
-			"from_redirect", len(RedirectTargets(req.Command)),
-			"from_write_args", len(WriteArgTargets(req.Command)))
+			"from_redirect", len(redirects),
+			"from_write_args", len(writeArgs))
 	}
 	for _, p := range targets {
 		if IsDiscardTarget(p) {
