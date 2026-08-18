@@ -1429,8 +1429,9 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 //
 // 响应：
 //   - 200 application/octet-stream，带 Content-Length
-//   - 204 区间为空，本地已是最新（**不是失败**：git bundle create 对空区间会
-//     报错，而空区间天天发生——连着 pull 两次就是）
+//   - 204 区间为空（have 是 BaseCommit 而不是分支 tip，所以重复 pull 不会撞空
+//     区间；空区间只在任务一个提交都没产生时发生）。响应带 X-Handoff-Branch-Head，
+//     客户端据此保证本地分支引用存在——不是失败，但也不是「本地已是最新」
 //   - 400 任务无分支 / have 在任务仓库中不存在 / 参数以 - 开头
 //   - 404 任务不存在（byTask 已处理）
 //   - 500 git 失败
@@ -1454,12 +1455,26 @@ func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务尚无分支，无可同步"})
 		return
 	}
+	// 分支 tip 先取好：204 与 200 都要带出去。客户端拿到 204 时要用它把本地
+	// 分支引用建出来——have 是 BaseCommit 不是分支 tip，空区间时协调者手上
+	// 可能什么都没有（B143 真机验收）。取不到就降级：头缺失客户端有兜底，
+	// 不因这个头让请求失败
+	branchHead := ""
+	if out, _, err := gitProbe(r.Context(), task.RepoPath, "rev-parse", task.Branch); err == nil {
+		branchHead = strings.TrimSpace(out)
+		s.log.Debug("取到任务分支 tip", "task", taskID, "branch", task.Branch, "head", branchHead)
+	} else {
+		s.log.Warn("取任务分支 tip 失败，响应不带 X-Handoff-Branch-Head", "task", taskID, "branch", task.Branch, "cause", err)
+	}
 	start := time.Now()
 	path, err := BundleRange(r.Context(), task.RepoPath, have, task.Branch)
 	switch {
 	case errors.Is(err, ErrEmptyRange):
 		// 空区间是预期形态，Info 说明它不是失败——否则运维看到 204 会去翻错误日志
 		s.log.Info("bundle 区间为空，回 204", "task", taskID, "have", have, "branch", task.Branch)
+		if branchHead != "" {
+			w.Header().Set("X-Handoff-Branch-Head", branchHead)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case errors.Is(err, ErrHaveMissing), errors.Is(err, ErrBadBaseBranch):
@@ -1491,6 +1506,9 @@ func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	if branchHead != "" {
+		w.Header().Set("X-Handoff-Branch-Head", branchHead)
+	}
 	n, err := io.Copy(w, f)
 	if err != nil {
 		// 头已经发出去了，改不了状态码——只能把事实记下来。客户端会因为

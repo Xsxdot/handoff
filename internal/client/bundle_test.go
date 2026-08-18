@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// 200：包体原样交给调用方，empty 为 false。
+// 200：包体原样交给调用方，empty 为 false，branchHead 从头里取。
 func TestBundleOK(t *testing.T) {
 	want := []byte("PACK-fake-bundle-bytes")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -17,16 +17,20 @@ func TestBundleOK(t *testing.T) {
 			t.Errorf("have 应透传，实得 %q", got)
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Handoff-Branch-Head", "deadbeef")
 		_, _ = w.Write(want)
 	}))
 	defer ts.Close()
 
-	rc, empty, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "abc123")
+	rc, empty, branchHead, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "abc123")
 	if err != nil {
 		t.Fatalf("Bundle: %v", err)
 	}
 	if empty {
 		t.Fatal("200 时 empty 应为 false")
+	}
+	if branchHead != "deadbeef" {
+		t.Errorf("branchHead 应为 deadbeef，实得 %q", branchHead)
 	}
 	defer rc.Close()
 	got, _ := io.ReadAll(rc)
@@ -35,14 +39,16 @@ func TestBundleOK(t *testing.T) {
 	}
 }
 
-// 204：empty 为 true，rc 为 nil，err 为 nil——这是「已是最新」，不是失败。
+// 204：empty 为 true，rc 为 nil，err 为 nil——但 branchHead 要带出来，
+// 调用方据此建本地引用。
 func TestBundleEmpty(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Handoff-Branch-Head", "deadbeef")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()
 
-	rc, empty, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+	rc, empty, branchHead, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
 	if err != nil {
 		t.Fatalf("204 不该是错误，实得 %v", err)
 	}
@@ -51,6 +57,9 @@ func TestBundleEmpty(t *testing.T) {
 	}
 	if rc != nil {
 		t.Error("204 时不该返回可读流")
+	}
+	if branchHead != "deadbeef" {
+		t.Errorf("204 的 branchHead 应为 deadbeef，实得 %q", branchHead)
 	}
 }
 
@@ -62,7 +71,7 @@ func TestBundleUnsupported(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+	_, _, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
 	if !errors.Is(err, ErrBundleUnsupported) {
 		t.Fatalf("404 应翻成 ErrBundleUnsupported，实得 %v", err)
 	}
@@ -76,7 +85,7 @@ func TestBundleOtherStatusIsNotUnsupported(t *testing.T) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(`{"error":"boom"}`))
 		}))
-		_, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
+		_, _, _, err := New(ts.URL, "tok").Bundle(context.Background(), "t1", "")
 		ts.Close()
 		if err == nil {
 			t.Errorf("状态码 %d 应返回错误", status)

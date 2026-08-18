@@ -56,9 +56,9 @@ func getBundle(t *testing.T, env *testAgentdEnv, taskID, have string) (*http.Res
 	return resp, body
 }
 
-// 正常薄包：200 + octet-stream + Content-Length 与实际字节数一致。
+// 正常薄包：200 + octet-stream + Content-Length 与实际字节数一致，且带分支 tip 头。
 func TestHandleTaskBundleOK(t *testing.T) {
-	env, taskID, _, base := newBundleEnv(t, "feat/x")
+	env, taskID, repo, base := newBundleEnv(t, "feat/x")
 
 	resp, body := getBundle(t, env, taskID, base)
 	if resp.StatusCode != http.StatusOK {
@@ -72,6 +72,10 @@ func TestHandleTaskBundleOK(t *testing.T) {
 	}
 	if got := resp.Header.Get("Content-Length"); got != strconv.Itoa(len(body)) {
 		t.Errorf("Content-Length %q 与实际字节数 %d 不符", got, len(body))
+	}
+	wantHead := headSHAForTest(t, repo, "feat/x")
+	if got := resp.Header.Get("X-Handoff-Branch-Head"); got != wantHead {
+		t.Errorf("X-Handoff-Branch-Head 应为 %s，实得 %q", wantHead, got)
 	}
 }
 
@@ -92,7 +96,7 @@ func TestHandleTaskBundleFull(t *testing.T) {
 	}
 }
 
-// 空区间：204，且不带包体——这是「本地已是最新」，不是失败。
+// 空区间：204，且不带包体——不是失败，但要带分支 tip 头供客户端建本地引用。
 func TestHandleTaskBundleEmptyRange(t *testing.T) {
 	env, taskID, repo, _ := newBundleEnv(t, "feat/x")
 
@@ -102,6 +106,10 @@ func TestHandleTaskBundleEmptyRange(t *testing.T) {
 	}
 	if len(body) != 0 {
 		t.Errorf("204 不该有包体，实得 %d 字节", len(body))
+	}
+	wantHead := headSHAForTest(t, repo, "feat/x")
+	if got := resp.Header.Get("X-Handoff-Branch-Head"); got != wantHead {
+		t.Errorf("204 也应带 X-Handoff-Branch-Head，应为 %s，实得 %q", wantHead, got)
 	}
 }
 

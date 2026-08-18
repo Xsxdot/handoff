@@ -37,12 +37,15 @@ var ErrBundleUnsupported = errors.New("对端 agentd 不支持 /api/tasks/{id}/b
 //
 // 返回：
 //   - rc:    bundle 字节流，**调用方负责 Close**；empty 为 true 时是 nil
-//   - empty: 对端回了 204，即 have..branch 为空区间，本地已是最新
+//   - empty: 对端回了 204，即 have..branch 为空区间。注意这**不**代表本地已有
+//     这个分支引用——调用方须凭 branchHead 保证引用存在（B143 真机验收）
+//   - branchHead: 分支 tip 的完整 sha（X-Handoff-Branch-Head 头）；200 与 204
+//     都取。空串表示对端没给（更早的中间版本），调用方要有兜底
 //   - err:   404 → ErrBundleUnsupported（对端过旧，调用方应回落）；其余为故障
 //
 // 注意：
 //   - 成功路径**不能** defer resp.Body.Close()：Body 就是返回给调用方的 rc
-func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser, bool, error) {
+func (c *Client) Bundle(ctx context.Context, taskID, have string) (rc io.ReadCloser, empty bool, branchHead string, err error) {
 	path := "/api/tasks/" + url.PathEscape(taskID) + "/bundle"
 	if have != "" {
 		path += "?have=" + url.QueryEscape(have)
@@ -50,24 +53,25 @@ func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser
 	c.log().Debug("请求任务 bundle", "task", taskID, "have", have)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("bundle 请求: %w", err)
+		return nil, false, "", fmt.Errorf("bundle 请求: %w", err)
 	}
+	branchHead = resp.Header.Get("X-Handoff-Branch-Head")
 	switch resp.StatusCode {
 	case http.StatusOK:
-		c.log().Debug("bundle 响应就绪", "task", taskID, "content_length", resp.ContentLength)
-		return resp.Body, false, nil
+		c.log().Debug("bundle 响应就绪", "task", taskID, "content_length", resp.ContentLength, "branch_head", branchHead)
+		return resp.Body, false, branchHead, nil
 	case http.StatusNoContent:
 		resp.Body.Close()
-		c.log().Debug("对端报区间为空，本地已是最新", "task", taskID, "have", have)
-		return nil, true, nil
+		c.log().Debug("对端报区间为空，凭分支 tip 建引用", "task", taskID, "have", have, "branch_head", branchHead)
+		return nil, true, branchHead, nil
 	case http.StatusNotFound:
 		// 不走 httpError：它会打 Warn 并造出一个普通错误，而这里的 404 是一条
 		// 有用的结论，不是异常（与 Status 的 ErrStatusUnsupported 同款处置）
 		resp.Body.Close()
 		c.log().Debug("对端 agentd 不支持 bundle 端点，按版本过旧处理", "task", taskID)
-		return nil, false, ErrBundleUnsupported
+		return nil, false, "", ErrBundleUnsupported
 	default:
 		defer resp.Body.Close()
-		return nil, false, c.httpError("取 bundle", resp)
+		return nil, false, "", c.httpError("取 bundle", resp)
 	}
 }

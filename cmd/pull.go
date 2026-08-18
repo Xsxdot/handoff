@@ -118,7 +118,8 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 //   - localRepo:   本地仓库路径（fetch 的落点）
 //
 // 返回：
-//   - 同步结果；空区间时返回 Result{Branch: branch}（即「已是最新」）
+//   - 同步结果；空区间且对端给了分支 tip 时返回 Result{Branch: branch, Created: created}
+//     （本地分支引用已被保证存在）；对端没给 tip 时返回 Result{Branch: branch}
 //   - err 为 client.ErrBundleUnsupported 时表示对端过旧，**由调用方**决定回落；
 //     本函数自己不回落
 //
@@ -128,13 +129,27 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 //   - 包拿到了但 fetch 失败时如实报错、不回落：包已到手说明 HTTP 这条路是通的，
 //     失败在 git 侧（如缺前置对象），换 ssh 重来只会掩盖它
 func syncViaBundle(ctx context.Context, addr, token, taskID, have, branch, localRepo string) (localsync.Result, error) {
-	rc, empty, err := client.New(addr, token).Bundle(ctx, taskID, have)
+	rc, empty, branchHead, err := client.New(addr, token).Bundle(ctx, taskID, have)
 	if err != nil {
 		return localsync.Result{}, err
 	}
 	if empty {
-		slog.Default().Info("远端无新提交，本地已是最新", "task", taskID, "branch", branch)
-		return localsync.Result{Branch: branch}, nil
+		// 空区间不等于「本地已经有这个分支」——have 是 BaseCommit 而不是分支 tip，
+		// 一个提交都没产生的任务首次 pull 就会走到这里。老的 ssh 路径靠
+		// git fetch <分支>:<分支> 顺带把 ref 建出来，bundle 路径短路掉了 Fetch，
+		// 于是「已是最新」会在协调者手上什么都没有的情况下打出来（B143 真机验收）
+		if branchHead == "" {
+			slog.Default().Warn("远端无新提交，但对端未给出分支 tip，无法确认本地引用",
+				"task", taskID, "branch", branch)
+			return localsync.Result{Branch: branch}, nil
+		}
+		created, err := ensureLocalBranch(ctx, localRepo, branch, branchHead)
+		if err != nil {
+			return localsync.Result{}, err
+		}
+		slog.Default().Info("远端无新提交", "task", taskID, "branch", branch,
+			"head", branchHead, "ref_created", created)
+		return localsync.Result{Branch: branch, Created: created}, nil
 	}
 	defer rc.Close()
 
@@ -182,6 +197,50 @@ func hasLocalCommit(ctx context.Context, repo, sha string) bool {
 		return false
 	}
 	return true
+}
+
+// ensureLocalBranch 保证本地存在指向 head 的分支引用。
+//
+// 参数：repo 本地仓库；branch 分支名；head 完整 sha（**必须是本地已有的对象**）
+//
+// 返回：created 表示这次真的新建了引用；已存在且已指向 head 时为 false
+//
+// 为什么可以不取任何数据就建出来：走到这里意味着服务端判定 have..branch 为空，
+// 即分支 tip 从 have 可达，而 have 是客户端自己核实过本地有的提交——所以这个
+// 对象一定已经在本地对象库里。
+//
+// 边界：本地已有该分支但指向别处时**不覆盖**，报错交给协调者判断——静默改写
+// 协调者的分支引用是不能做的事。
+func ensureLocalBranch(ctx context.Context, repo, branch, head string) (bool, error) {
+	if repo == "" || branch == "" || head == "" {
+		return false, fmt.Errorf("参数不完整：repo=%q branch=%q head=%q", repo, branch, head)
+	}
+	// git 会把 - 开头的参数当选项（参数注入面，与 hasLocalCommit 同源拒绝）
+	if strings.HasPrefix(branch, "-") || strings.HasPrefix(head, "-") {
+		return false, fmt.Errorf("分支名/head 不允许以 - 开头：branch=%q head=%q", branch, head)
+	}
+	// 建 ref 之前先确认对象真的在本地：have 是客户端核实过本地有的提交，空区间
+	// 时 head 从 have 可达，正常必中；不中说明服务端给了个本仓库没有的 sha，
+	// 宁可在建之前报错，也不能建一个悬空引用
+	if err := exec.CommandContext(ctx, "git", "-C", repo, "cat-file", "-e", head+"^{commit}").Run(); err != nil {
+		slog.Default().Error("分支 tip 对象在本地不存在，拒绝建悬空引用", "repo", repo, "branch", branch, "head", head)
+		return false, fmt.Errorf("分支 tip 对象 %s 在本地不存在，拒绝建引用", head)
+	}
+	// 探现状：rev-parse --verify 非零退出是正常分支（本地还没有这个分支），
+	// 用 exec 直接跑、不记 ERROR（与 hasLocalCommit 同款做法）
+	out, err := exec.CommandContext(ctx, "git", "-C", repo, "rev-parse", "--verify", branch).Output()
+	if err == nil {
+		existing := strings.TrimSpace(string(out))
+		if existing == head {
+			return false, nil
+		}
+		return false, fmt.Errorf("本地分支 %s 已存在且指向 %s，与任务分支 tip %s 不同，拒绝覆盖", branch, existing, head)
+	}
+	if err := exec.CommandContext(ctx, "git", "-C", repo, "branch", branch, head).Run(); err != nil {
+		slog.Default().Error("创建本地分支失败", "repo", repo, "branch", branch, "head", head, "cause", err)
+		return false, fmt.Errorf("创建本地分支 %s 指向 %s: %w", branch, head, err)
+	}
+	return true, nil
 }
 
 // syncMessage 把同步结果压成一行给协调者看的中文说明。
