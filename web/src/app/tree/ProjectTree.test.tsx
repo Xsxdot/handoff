@@ -531,3 +531,34 @@ describe('显示偏好', () => {
     expect(within(screen.getByTestId('tree-scroll')).getByText('handoff')).toBeInTheDocument()
   })
 })
+
+describe('机器行新建工作树', () => {
+  it('传了 onWorktreeCreated 才给 + 按钮', () => {
+    const { rerender } = render(<ProjectTree {...props({})} onWorktreeCreated={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '新建工作树' })).toBeInTheDocument()
+    rerender(<ProjectTree {...props({})} />)
+    expect(screen.queryByRole('button', { name: '新建工作树' })).toBeNull()
+  })
+
+  it('机器不可达时不给这个入口', () => {
+    const p = props({})
+    const tree = {
+      ...p.tree,
+      projects: [{
+        ...p.tree.projects[0],
+        locations: [{ ...p.tree.projects[0].locations[0], probe_error: 'ssh 超时' }],
+      }],
+    }
+    render(<ProjectTree {...p} tree={tree} onWorktreeCreated={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: '新建工作树' })).toBeNull()
+  })
+
+  it('点 + 开弹层；右键菜单里也有同一个入口', () => {
+    render(<ProjectTree {...props({})} onWorktreeCreated={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '新建工作树' }))
+    expect(screen.getByRole('dialog', { name: '新建工作树' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.contextMenu(screen.getByTestId('machine-row'))
+    expect(screen.getByText('新建工作树')).toBeInTheDocument()
+  })
+})

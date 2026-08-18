@@ -30,7 +30,7 @@ import { isDesktopShell } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
-import { findBaseOfTask, ProjectTree } from '../tree/ProjectTree'
+import { findBaseOfTask, ProjectTree, workspaceBase } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -322,6 +322,12 @@ export function Shell() {
             onAddProject={() => setWizardOpen(true)}
             onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
+            onWorktreeCreated={(project, machine, ws) => {
+              // 先刷新树再选中：选中只改 useWorkbench 的 base，树上那一行要等
+              // 这次 refresh 回来才会出现，两件事都必须做
+              treeState.refresh()
+              wb.select(workspaceBase(project, machine, ws))
+            }}
           />
         )}
       </aside>

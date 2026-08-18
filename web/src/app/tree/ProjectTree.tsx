@@ -52,6 +52,7 @@ import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
 import { loadPrefs, savePrefs, sortProjects, splitHiddenProjects, splitIdleWorkspaces, type TreePrefs } from './treePrefs'
+import { NewWorktreeDialog } from './NewWorktreeDialog'
 
 export interface ProjectTreeProps {
   tree: ProjectTreeResp
@@ -70,6 +71,9 @@ export interface ProjectTreeProps {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  // onWorktreeCreated 建完树后回调，由 Shell 刷新树并把新目录选为当前基准目录。
+  // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
+  onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -183,7 +187,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -244,6 +248,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   }, [])
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
+  // 建树弹层的目标位置。project 与 loc 一起记：弹层要用 loc.name（登记名）寻址，
+  // 而回调要把 project 交回去组装 BaseDir
+  const [worktreeTarget, setWorktreeTarget] = useState<{ project: ProjectNode; loc: ProjectLocationNode } | null>(null)
   // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
   // null = 没有菜单打开。project 一并记下：编辑弹层要以**整个项目**为输入，
   // 而菜单锚在机器行——闭包里只有 loc，得把所在 project 一起带进菜单状态。
@@ -443,7 +450,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       className="group relative"
                       data-testid="machine-row"
                       onContextMenu={
-                        onUnregister || onEdit
+                        onUnregister || onEdit || onWorktreeCreated
                           ? (e) => {
                               // 阻止浏览器原生菜单，换成我们这份。
                               // Shift+F10 与 ContextMenu 键也派发这个事件，
@@ -475,12 +482,25 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         {problem !== '' && <DisconnectedBadge />}
                         {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
                             机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
-                        <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                        {/* hover 时让位给 + 按钮：两者都要行右端，让位是唯一
+                            不重叠的排法（此前的结论是「排不出来」，那是因为只
+                            试过叠加）。用 invisible 而不是 hidden——保留占位，
+                            行内其它元素不会因为 hover 左右位移 */}
+                        <span className={cn(onWorktreeCreated && problem === '' && 'group-hover:invisible')}>
+                          <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                        </span>
                       </button>
-                      {/* 注销入口在右键菜单里，不在行内。
-                          行内 absolute 按钮与同一行右端的 RowCounts 抢位置——
-                          08-14 修过一次垂直居中（定位上下文从 578px 子树收进本行），
-                          但水平方向两者都要右端，改不出不重叠的排法 */}
+                      {onWorktreeCreated && problem === '' && (
+                        <button
+                          type="button"
+                          aria-label="新建工作树"
+                          title="新建工作树"
+                          onClick={() => setWorktreeTarget({ project, loc })}
+                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                        >
+                          <Plus className="size-3.5" />
+                        </button>
+                      )}
                     </div>
                     {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
@@ -747,12 +767,33 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         />
       )}
 
+      {onWorktreeCreated && worktreeTarget && (
+        <NewWorktreeDialog
+          open
+          projectName={worktreeTarget.loc.name}
+          machine={worktreeTarget.loc.machine}
+          onClose={() => setWorktreeTarget(null)}
+          onCreated={(ws) => onWorktreeCreated(worktreeTarget.project, worktreeTarget.loc.machine, ws)}
+        />
+      )}
+
       {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            ...(onWorktreeCreated
+              ? [{
+                  label: '新建工作树',
+                  // hover 出现的 + 按钮对键盘/触屏不友好，右键是它的等价通道，
+                  // 走的是同一个弹层
+                  onSelect: () => {
+                    const loc = menu.project.locations.find((l) => l.machine === menu.machine)
+                    if (loc) setWorktreeTarget({ project: menu.project, loc })
+                  },
+                }]
+              : []),
             // 「编辑」排在「注销」前；onEdit 没传就不给这个入口
             // （与 onUnregister 的「没传就不给操作」一致）
             ...(onEdit
