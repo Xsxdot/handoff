@@ -1575,6 +1575,18 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	}
 	ctx, cancel := context.WithTimeout(ctx, RunCmdTimeout)
 	defer cancel()
+	// why 判在这里而不是在路由层按任务状态反推：目录缺失的原因不止「任务已归档」
+	// 一种——人手删、盘掉了、路径被改都会到这里。按状态反推只覆盖归档那一种，
+	// 其余场景会退回误导性报错；stat 是对真实原因的直接判据。
+	//
+	// why 必须排在 runShell() 之前：否则 Windows 上「找不到 sh」的错误会抢在
+	// 「工作树没了」前面报出来，又是一次指错方向。
+	if _, statErr := os.Stat(repo); statErr != nil {
+		log().Warn("run 被拒：工作目录不存在", "repo", repo,
+			"cmd", truncateRunes(cmdline, 200), "cause", statErr)
+		return "", -1, fmt.Errorf("%w（managed worktree 可能已被 done/stop 回收）: %s",
+			ErrWorkdirGone, repo)
+	}
 	sh, serr := runShell()
 	if serr != nil {
 		log().Error("run 命令的 shell 解析失败", "repo", repo, "cause", serr)

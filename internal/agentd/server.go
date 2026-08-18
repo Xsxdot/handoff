@@ -1532,8 +1532,8 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	}
 	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
-		if errors.Is(err, ErrNoProcHeadroom) {
-			s.log.Warn("run 被拒：进程余量不足", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
+		if errors.Is(err, ErrNoProcHeadroom) || errors.Is(err, ErrWorkdirGone) {
+			s.log.Warn("run 被拒", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
 			return
 		}
