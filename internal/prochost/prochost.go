@@ -346,7 +346,10 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 			"pid", pid, "spec", specPath)
 	}
 	roster := rosterPath(spec.InfoPath)
-	members := membersPath(spec.InfoPath)
+	members := ""
+	if containerSampleFn != nil {
+		members = membersPath(spec.InfoPath)
+	}
 	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
 		"started_at", startedAt, "roster", roster, "members", members)
 	return Handle{
