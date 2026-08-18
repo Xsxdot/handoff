@@ -213,6 +213,19 @@ func TestStartRecordsStartedAt(t *testing.T) {
 		t.Fatalf("Start 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = killGroup(hd.PID) })
+
+	// Windows 上读不到启动时刻，而且这是**刻意的**：那儿没有进程枚举
+	//（procenum_other.go 的注释写明「回收职责已由 Job Object 承担，缺的只是
+	// 足迹观测」），所以 Start 会打一条 warn 并把 StartedAt 留成 0。
+	// 这条用例验的是「时间下界判据的源头」，那套判据本身就只在 Unix 上成立；
+	// 在 Windows 上只断言 Start 确实拉起了进程，不去断言一个该平台不产出的值
+	//（也不写死 StartedAt==0：将来真给 Windows 补了枚举，这里不该因此翻红）。
+	if runtime.GOOS == "windows" {
+		if hd.PID <= 0 {
+			t.Fatalf("Start 应返回可用的 PID，got %d", hd.PID)
+		}
+		return
+	}
 	if hd.StartedAt <= 0 {
 		t.Fatalf("Start 未记录 StartedAt，got %d", hd.StartedAt)
 	}

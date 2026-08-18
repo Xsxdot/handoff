@@ -3,6 +3,7 @@ package prochost
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -152,7 +153,11 @@ func TestWriteRosterIsAtomicAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows 没有 POSIX 权限位：写盘时传的 0o600 只映射到只读属性，Stat 恒
+	// 回报 -rw-rw-rw-，断言 0600 等于断言一个该平台表达不了的东西。实际保护
+	// 在 NTFS ACL（任务目录位于用户 profile 之下）。原子性那半边（临时文件必须
+	// 已 rename 掉）与平台无关，上面那段对两边都有效。
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("名册权限应为 0600，实得 %v", fi.Mode().Perm())
 	}
 }
