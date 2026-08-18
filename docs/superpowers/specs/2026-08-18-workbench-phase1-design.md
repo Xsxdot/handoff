@@ -1,4 +1,4 @@
-# 工作台一期：工作项账本 + 看板 + 主会话驱动（spec 骨架 v2）
+# 工作台一期：任务卡账本 + 看板 + 主会话驱动（spec 骨架 v3）
 
 > 状态：骨架，经业务/领域双审阅修订，待与用户逐节敲定后充实为可派发 spec。
 > 上游蓝图：[2026-08-18-workbench-blueprint-design.md](2026-08-18-workbench-blueprint-design.md)
@@ -6,7 +6,7 @@
 
 ## 1. 目标与非目标
 
-**目标**：把 backlog 从 markdown 总账搬进中心账本库，成为带子任务、
+**目标**：把 backlog 从 markdown 总账搬进中心账本库，成为带合并/拆分、
 阻塞边、自定义状态、工作流/派发模板双聚合的一等实体；事件镜像把跨机 task 事件
 汇成账本单流；看板作为不说谎的注意力平面；CLI + 节点执行器支撑主会话按工作流
 驱动推进；账本单流多路 wait 支撑「全程一个 wait」。
@@ -23,43 +23,47 @@
 - **账本表只存在于中心账本库**（或单机回退模式的本机 SQLite）；执行机 agentd
   的 store 永不建这些表，执行机不持有账本库凭据。账本持久化收在 store 接口
   后面，SQL 方言差异（占位符、upsert、通知机制）在该层吸收。
-- `work_items`：id（**沿用 B 号连续编**，全部记忆/skill/commit 都用 B 号指代，
-  换前缀会断上下文）、title、status、priority（仅展示/排序）、project、
-  parent_id、workflow_id + 版本、spec_ref、plan_ref、driver lease（会话标识 +
-  心跳时间）、验收记录、时间戳。
-- `work_item_relations`（原 deps 泛化）：`from → to` + `type` 枚举
-  {blocks / discovered_from（发现自）/ split_from（拆分自）/ relates（关联）}。
-  环检测与 blocked 衍生态**只对 blocks 生效**；写入时单事务读全图判定（含
-  parent 树与 blocks 边混合成环、祖先-后代间挂边）。全部关系类型双向可查——
-  「由此发现→B142」这类考古链是真实总账的高频写法。
-- **验收结构化**：work_items 加 `acceptance_criteria`（判据文本）；验收结果落
-  事件类型 `acceptance_recorded`（含 `verified_on_real_machine` bool + 证据
-  文本）。「已完成(已验)」与「已完成(待真机验)」是真实存在的正交维度，必须
-  可表达、可过滤，不压进状态列。
+- `cards`（任务卡，蓝图 §3.1——**无类型身份，只有阶段与附件**）：id（**沿用
+  B 号连续编**，全部记忆/skill/commit 都用 B 号指代，换前缀会断上下文）、
+  title、status、priority（仅展示/排序）、project、parent_id、workflow_id +
+  版本、`attachments`（附件引用集：{kind: spec/plan/doc, path} 列表，路径归一
+  为相对 docs/superpowers/ 的规范形）、`acceptance_criteria`（判据文本，每卡
+  独立）、driver lease（会话标识 + 心跳时间）、时间戳。**不强制出 spec**——
+  spec 是否必须由工作流 gate 决定（见 workflows）。
+- `card_relations`：`from → to` + `type` 枚举 {blocks / merged_into（并入）/
+  discovered_from（发现自）/ split_from（拆分自）/ relates（关联）}。
+  环检测与 blocked 衍生态**只对 blocks 生效**；`merged_into` 派生**跟随**态
+  （被并卡显示状态 = 承载卡状态；一卡至多一条 merged_into，可解除=拆回）。
+  写入时单事务读全图判定（含 parent 树与 blocks 边混合成环）。全部关系类型
+  双向可查——「由此发现→B142」这类考古链是真实总账的高频写法。
+- **合并/拆分是账本域一等操作**：合并 = 建 merged_into + 承载卡收编显示
+  （「B4–B9 六条一份 spec」= 六卡并入承载卡，各自验收判据与已验记录保留）；
+  拆分 = 建子卡 + split_from。批内单条真机验不过 → 拆回恢复自主流转。
+  原「按 spec_ref 聚合的批次视图」设计**退役**——合并关系是更诚实的表达。
+- **验收结构化**：验收结果落事件类型 `acceptance_recorded`（含
+  `verified_on_real_machine` bool + 证据文本）。「已完成(已验)」与「已完成
+  (待真机验)」是真实存在的正交维度，必须可表达、可过滤，不压进状态列。
 - **终止态带 reason 枚举**：取消 / 废弃 / 搁置（可复活）。真实总账有 4 条
   🗄️ shelved 与 1 条 🧊，迁移需要此语义。
-- **spec_ref 归一化**（相对 docs/superpowers/ 的规范路径），支撑「按 spec 聚合」
-  的派生批次视图。**spec 不实体化**——批次有两种真实形态：刻意的 epic（父子树
-  已覆盖）与平级条目共享一份 spec（如 B4–B9），后者靠 spec_ref 聚合表达；实体化
-  会与父工作项、四期 goal 形成三个重叠分组概念，且 B 号与 spec 已现多对多苗头。
-  批次公共验收注记挂在聚合视图层（或父 item），此裁决写死防实现自作主张建表。
-- `work_item_tasks`：`(work_item_id, target, task_id, 用途)` 弱引用表——账本侧
-  指向 task 的唯一通道；task 表只加 opaque `work_item_id` 标签列（不设 FK）。
-- `work_item_events`：append-only 单流，独立 seq（沿用 events 表模式）。事件类型：
+- `card_tasks`：`(card_id, target, task_id, 用途)` 弱引用表——账本侧指向 task
+  的唯一通道；task 表只加 opaque `card_id` 标签列（不设 FK）。**plan 附件挂在
+  派发事件上**（一 spec 多 plan = 多次派发各带各的 plan）。
+- `card_events`：append-only 单流，独立 seq（沿用 events 表模式）。事件类型：
   状态转移（带 actor + CAS 前值）、派发（含模板版本 + 纪律块 hash 快照）、审阅
   裁决、合并记录、`acceptance_recorded`、**comment**（原 note 升级：body +
-  引用 item id 列表——写入时自动落 relations 关联边；`kind` 子类 {普通/更正}
+  引用卡 id 列表——写入时自动落 relations 关联边；`kind` 子类 {普通/更正}
   承接「变更痕迹」文化；附件字段预留空数组，二期填）、**镜像 task 事件**
   （保留来源 target 与原 seq）。
-- `workflows`：状态机形状，**不可变版本化**（edit 产生新版本，item 钉版本，
-  旧 item 显式迁移）。**默认 feature 工作流出厂自带「已出 spec」插入状态**——
-  对齐用户真实生命周期 💡→📋→🔨→✅ 的 📋 关口（人审 spec 是三个人工位之一），
-  顺便示范插入机制。
+- `workflows`：状态机形状，**不可变版本化**（edit 产生新版本，卡钉版本，
+  旧卡显式迁移）。转移可配 **gate 条件**（进「已出 spec」需 spec 附件非空、
+  进「待合并」需验收判据非空——政策而非本体，bug 流可以无门）。**默认
+  feature 工作流出厂自带「已出 spec」插入状态**——对齐用户真实生命周期
+  💡→📋→🔨→✅ 的 📋 关口（人审 spec 是三个人工位之一），顺便示范插入机制。
 - `dispatch_templates`：带版本；executor 类型、纪律块（引用 + hash）、prompt
   模板、目标机、分支策略、**per-target 模型覆盖**。
-- `decisions`（裁决项，蓝图 §3.6）：body、options（可选 json）、work_item_id
+- `decisions`（裁决项，蓝图 §3.6）：body、options（可选 json）、card_id
   （可空——项目级请示如「推不推汇流线」）、status {open/answered}、created_by
-  （会话标识）、answer + answered_by + 时间。开闭均落 work_item_events（挂项时）。
+  （会话标识）、answer + answered_by + 时间。开闭均落 card_events（挂项时）。
   open 裁决是看板「等人」面的一等数据源；答复消费 = 会话唤醒后查账，自动唤醒
   留三期。
 - 正交标记不落列：`blocked`（全部 blocker 达「已完成」才解除；blocker 终止 →
@@ -68,7 +72,7 @@
 ## 3. 事件镜像（协调机 agentd 新子系统）
 
 - 镜像者（任一协调机 agentd，由**账本库 lease 仲裁单实例**）订阅各 target 的
-  `/ws/events`，把挂账 task 的事件写入 `work_item_events`；断线用既有 cursor
+  `/ws/events`，把挂账 task 的事件写入 `card_events`；断线用既有 cursor
   续拉语义补齐；写入按（来源 target, task, 原 seq）幂等，**镜像 cursor 落
   账本库**——任意协调机接任镜像者后接续，不丢不重。
 - 镜像滞后/断链落显式状态，看板卡片标「事件流滞后」。
@@ -81,34 +85,36 @@
 
 > 待敲定：命令面最终命名与 flag；哪些动作要二次确认。
 
-- `handoff item add/list/show/update/close`：账本 CRUD；`list` 支持按状态/项目/
+- `handoff card add/list/show/update/close`：账本 CRUD；`list` 支持按状态/项目/
   blocked/等人 过滤（新会话领活前查账的入口）。骨架终态叫「已完成」，CLI 动作
   用 `close`，避免与 `handoff done` 撞名。
-- `handoff item link/unlink`：阻塞边（写入即环检测）。
-- `handoff item note <id> <text>`：记一笔。
-- `handoff item move <id> <status>`：CAS 状态转移（带前值校验，冲突干净失败）。
-- `handoff item dispatch <id> [--node <节点>]`：按模板拼装 prompt + 纪律块，走
+- `handoff card link/unlink`：阻塞边（写入即环检测）。
+- `handoff card merge <ids...> --into <承载卡>` / `unmerge <id>`：合并与拆回；
+  `split <id> <标题>`：拆子卡（自动挂 split_from）。
+- `handoff card note <id> <text>`：记一笔。
+- `handoff card move <id> <status>`：CAS 状态转移（带前值校验，冲突干净失败）。
+- `handoff card dispatch <id> [--node <节点>]`：按模板拼装 prompt + 纪律块，走
   现有 dispatch 通道；**派发即认领**（待办→进行中 的 CAS 就是 claim，第二个
   会话干净失败并提示「已被 X 认领」）；task 回链 + 模板版本快照落事件。
 - `handoff workflow ...` / `handoff template ...`：双聚合分开管理。
-- `handoff wait --item <id> [--subtree]`：**账本单流多路 wait**。订阅 item 子树
+- `handoff wait --card <id> [--subtree]`：**账本单流多路 wait**。订阅卡子树
   事件流（含镜像 task 事件），wait 挂起期间新派发的 task 天然进流；退出条件 =
-  子树全部 item 达骨架终态；progress 类事件不唤醒（沿用现有过滤语义）。
+  子树全部卡达骨架终态；progress 类事件不唤醒（沿用现有过滤语义）。
 - `handoff decision open/list/answer`：裁决项——主会话回合末落请示、用户答复、
   会话唤醒后读答复（`list --open` 是全局裁决收件箱）。
-- `handoff item export`：最薄 markdown 只读快照导出（逃生门）。
-- **executor 白名单不扩**：新增 item/workflow/template 命令均不进 B115 自指令
+- `handoff card export`：最薄 markdown 只读快照导出（逃生门）。
+- **executor 白名单不扩**：新增 card/workflow/template/decision 命令均不进 B115 自指令
   白名单，executor 永不写账。
 
 ## 5. 节点执行器（落码，不留 prose）
 
 一期新增的唯一「编排」构件，主会话/看板按钮共用（三期规则引擎复用）：
 
-- 输入：item + 节点定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
+- 输入：卡 + 节点定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
   落账、决定下一步。
 - **裁决 schema 与通道**（待敲定细节）：审阅 task 以约定格式返回 pass/fail +
   发现项；解析失败不猜，打「等人」（reason=裁决解析失败）。
-- **回合计数**：按 item × 节点粒度，从 work_item_events 推导（不存内存）；
+- **回合计数**：按 卡 × 节点粒度，从 card_events 推导（不存内存）；
   默认封顶 3 轮，超限打「等人」；人工插手（用户手动 continue/改裁决）是否重置
   计数：**重置**（人工介入视为新基线），落事件注明。
 - 合并节点：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；只合
@@ -126,13 +132,16 @@
 展开告警）。
 
 - 看板/**列表双视图**：看板列 = 工作流状态（骨架 + 插入）；列表复刻 markdown
-  总账列（ID/标题/状态/验收/优先级/Spec/备注）+「含归档」过滤——领活与考古
-  入口。「等人」横贯顶部高亮条 = 等人标记项 + **open 裁决卡（可就地答复，
-  文本或点选项）**；blocked 徽标；多项目过滤；「未挂账」收为一行摘要点开展开
-  （异常态不常驻占位）。
-- 卡片主信息：优先级、**spec 徽标（点开批次视图：同 spec_ref 全部条目 + 批次
-  公共验收注记）**、已完成态的「已验/待真机验」徽标；异常徽标（等人/状态冲突/
-  blocked/工单）。**实时 join 关联 task 状态**，账面与实况矛盾亮「状态冲突」。
+  总账列（ID/标题/状态/验收/优先级/附件/备注）+「含归档」过滤——领活与考古
+  入口，被并卡在列表显示「跟随 <承载卡>」。**「需要你」合一筛选**（蓝图
+  §3.6）：点击就地过滤出等人/裁决/冲突卡，项目级裁决在筛选态以细条出现在列区
+  上方；不设常驻横条，不弹层。blocked 徽标；多项目过滤；「未挂账」收为一行
+  摘要点开展开（异常态不常驻占位）。
+- 卡片主信息：优先级、附件徽标（▤ spec 等，指向 git 文件）、**承载卡「⊕ 并入
+  N」徽标（点开合并面板：各被并卡 + 各自验收状态 + 拆回动作）**、已完成态的
+  「已验/待真机验」徽标；异常徽标（⚖ 裁决/⛔ 等人/状态冲突/blocked/工单）。
+  被并卡不在看板单独成卡（列表与合并面板可见）。**实时 join 关联 task 状态**，
+  账面与实况矛盾亮「状态冲突」。
 - 详情抽屉：状态流水线、**验收区（判据 + 已验开关 + 证据摘要）**、**关系区
   （阻塞/发现自/拆分自/关联，双向）**、子任务树 rollup（父状态独立驱动）、
   关联 task 跳转、**分层 timeline**（评论=气泡主视觉，系统事件=浅色 meta 行，
@@ -140,12 +149,12 @@
   成关系边，双向可见）。
 - 一键动作（人工插手通道）：转移状态、按节点派发——调用与主会话同一节点执行器。
 - **流程管理页**（独立页，不塞 settings）：工作流 / 派发模板两个 tab，各自
-  版本列表 +「N 个 item 钉在 vX」+ 显式迁移动作；模板详情含 per-target 模型
+  版本列表 +「N 张卡钉在 vX」+ 显式迁移动作；模板详情含 per-target 模型
   覆盖、纪律块正文与 hash、版本取证（哪次派发用了哪版）。
 
 ## 7. 主会话驱动（行为规约，落到 handoff skill 改写）
 
-- 唤醒后先 `item show` + `decision list` 从账本重建现场（含未读答复），不信
+- 唤醒后先 `card show` + `decision list` 从账本重建现场（含未读答复），不信
   会话记忆。
 - **回合末结构化落账**（蓝图 §3.6 四分法）：完成项→状态/验收事件；更正→
   comment(kind=更正)；请示裁决→`decision open`；阻断需人工→等人标记。聊天
@@ -153,15 +162,16 @@
 - 派发前查账防重复开工；派发即认领；挂账本单流多路 wait。
 - 子任务完成 → 推「待审阅」→ 调节点执行器（审阅→裁决→continue 或合并→已完成）
   → 查阻塞图派下一个。
-- 全部完成 → 整功能验收（主会话亲自）→ 父 item 进「待合并」等用户合 main。
-- 验收后发现 bug：开新 item 挂关联，不 reopen。
+- 全部完成 → 整功能验收（主会话亲自）→ 父卡进「待合并」等用户合 main。
+- 验收后发现 bug：开新卡挂关联，不 reopen。
 - 出问题（等人标记、状态冲突）：协调、裁决、或转人工，全部动作落事件。
 
 ## 8. 存量迁移（按序执行）
 
 1. 迁移前对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
-2. backlog.md 未完成条目入库为 open item，历史 done 条目归档入库（只读）；
-   **B 号→item id 映射表落库**，历史考古接得上。状态映射表：💡→待办、
+2. backlog.md 未完成条目入库为 open 卡，历史 done 条目归档入库（只读，历史
+   共享 spec 的批次不重建合并关系，只保留 spec 附件引用——考古够用，别造史）；
+   **B 号→卡 id 映射表落库**，历史考古接得上。状态映射表：💡→待办、
    📋→已出 spec、🔨→进行中、✅done(已验)→已完成+已验、done(待真机验)→
    已完成+待验、🗄️/🧊→终止(搁置·可复活)；「验收」列→acceptance_criteria+
    验收事件；「变更痕迹/备注」→首条 comment；「见 B17/由 B115 发现」类引用
@@ -179,9 +189,11 @@
 > 可审计；③ blocker 终止不解锁下游、下游得「等人」标记可复现；④ 杀掉主会话，
 > 看板在 task 判 failed 后亮「状态冲突」而非报假账；⑤ 多路 wait 在 wait 挂起
 > 期间新派发的 task 事件不漏（对照账本库单流 seq）；⑥ 两个会话并发 dispatch
-> 同一 item，恰一个成功；⑦ 镜像断链 → 看板亮「事件流滞后」，恢复后按来源 seq
+> 同一张卡，恰一个成功；⑦ 镜像断链 → 看板亮「事件流滞后」，恢复后按来源 seq
 > 幂等补齐；⑧ 迁移后抽查字段无损、B 号映射可反查；⑨ 看板与 CLI 对同一账本
 > 读写一致；⑩ 双协调机指向同一账本库：A 机认领派发，B 机看板实时可见并可接续
 > 驱动，镜像 lease 从 A 切到 B 后事件不丢不重；⑪ 主会话回合末 `decision open`
-> 的请示在看板等人面可见并可答复，答复落 timeline，另一会话 `decision list`
-> 能读到答复。
+> 的请示在看板「需要你」面可见并可答复，答复落 timeline，另一会话
+> `decision list` 能读到答复；⑫ 合并三卡入承载卡后看板只剩承载卡流动、被并卡
+> 列表显示跟随，拆回一张后其恢复自主状态且验收记录无损；⑬ feature 流 gate：
+> 无 spec 附件时进「已出 spec」被拒且提示，挂附件后放行。
