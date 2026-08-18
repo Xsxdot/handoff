@@ -667,9 +667,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            "${NOTES_ARG}" \
+          args=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" "${NOTES_ARG}")
+          # 带连字符的 tag（v1.2.3-rc1 / -beta.2 之类）一律标成 prerelease。
+          #
+          # 承重：install.sh 与 agentd 自更新**都认 GitHub 的 releases/latest**
+          #（install.sh:75 解重定向、internal/release/client.go:158 打 API），
+          # 而 GitHub 只把「非 prerelease」的最新一版算作 latest。少了这一行，
+          # 一个本意只是验证流水线的 rc 会当场成为所有用户装到、所有 agentd
+          # 自更新拉到的版本——而这一步在 CI 的绿色里完全看不出来。
+          case "${GITHUB_REF_NAME}" in
+            *-*) args+=(--prerelease) ;;
+          esac
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}" \
             dist/handoff_*.tar.gz dist/handoff_*.zip \
             dist/handoff-desktop_* dist/checksums.txt

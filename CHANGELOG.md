@@ -8,6 +8,22 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc1] - 2026-08-18
+
+**预发布，只为在真实 runner 上验证发布流水线。** 它被标成 prerelease，因此
+不会改变 `releases/latest`——`install.sh` 与 agentd 自更新都不会拉到它。
+
+本轮流水线第一次产出**桌面端资产**（`handoff-desktop_*`），与既有的 CLI 资产
+（`handoff_*`）互不干扰；后者的命名、校验和与自更新契约保持不变。
+
+自 v0.2.3 以来积累的改动很多，完整说明留到正式版 v0.3.0 的小节里写。要点：
+
+- Web 控制台（任务看板、项目/工作树文件树、内嵌终端、机器与项目管理），
+  由 agentd 经 `go:embed` 托管，不再需要 Vite dev server。
+- 桌面薄壳 `handoff-desktop`：内嵌 CLI 并在首次启动时释出到 `~/.local/bin/handoff`、
+  图形化首次配置向导、托盘常驻；关掉窗口不影响正在跑的执行者。
+- Windows 执行机支持、`proxy` 配置项、按执行器注入的纪律配置。
+
 ## [Unreleased]
 
 ### 新增

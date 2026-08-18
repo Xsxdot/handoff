@@ -394,6 +394,25 @@ func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
 	}
 }
 
+// 预发布 tag 必须被标成 prerelease。
+//
+// 又一条「删了照样绿、只有用户遭殃」：install.sh 与 agentd 自更新都认
+// GitHub 的 releases/latest，而 GitHub 只把非 prerelease 的最新一版算作 latest。
+// 少了这个判断，一个本意只为验证流水线的 v0.3.0-rc1 会当场成为所有用户装到、
+// 所有 agentd 自更新拉到的版本。
+func TestPrereleaseTagsAreNotPublishedAsLatest(t *testing.T) {
+	wf := stripYAMLComments(readWorkflow(t))
+	if !strings.Contains(wf, "--prerelease") {
+		t.Fatal("release job 从不传 --prerelease —— rc/beta tag 会被标成 Latest，" +
+			"install.sh 与 agentd 自更新会立刻拉到它")
+	}
+	// 光有这个 flag 不够，它必须是**按 tag 形态条件加上**的：写死上去会让
+	// 正式版也永远发不出 latest，那是反方向的同一个坑。
+	if !strings.Contains(wf, `*-*) args+=(--prerelease) ;;`) {
+		t.Fatal("--prerelease 必须按 tag 是否含连字符条件添加，否则正式版也会被标成预发布")
+	}
+}
+
 // release notes 必须优先取自 CHANGELOG。
 //
 // 没有这条，CHANGELOG 就是个没人看也没人维护的摆设——而没人维护的文档
