@@ -69,16 +69,21 @@ ssh user@host "git-upload-pack 'C:/Users/administrator/.handoff/repos/handoff'"
 
 ```
 GET /api/tasks/{id}/bundle?have=<sha>
-→ 200 application/octet-stream   git bundle 的原始字节，流式
+→ 200 application/octet-stream   git bundle 的原始字节，带 Content-Length
 → 204 No Content                 have..branch 为空区间，本地已是最新
 ```
 
 服务端在**主仓库**（`task.RepoPath`）执行：
 
 ```sh
-git bundle create - <have>..<branch>   # 有 have：薄包
-git bundle create - <branch>           # 无 have：全量
+git bundle create <临时文件> <have>..<branch>   # 有 have：薄包
+git bundle create <临时文件> <branch>           # 无 have：全量
 ```
+
+**为什么先落临时文件而不是直接写进 `ResponseWriter`**：直接写的话，git 中途失败时
+响应头早已发出，客户端收到的是一个**截断的 200**——一次服务端故障被伪装成一个
+内容不完整的成功。先落盘则可以在失败时干净地返回 500，成功时带上 `Content-Length`。
+代价是服务端一次磁盘写，随即 `defer os.Remove`。
 
 **必须用 `RepoPath` 而不是 `Workdir()`**：worktree 是主仓的从属工作树，分支对象
 在主仓库里。`cmd/pull.go:56` 的现有注释已经写明这一点，新端点沿用同一判据——
@@ -199,6 +204,8 @@ mac-02 当前跑的是老 agentd（`console-optim-99c4ab16c`），没有这个�
 - **不设人为体积上限。** 一个会拒绝合法全量包的上限，是把能用的路径改成坏的。
   改为**两侧都记录字节数**，让异常可见。
 - 超时沿用 `localsync.FetchTimeout`（2 分钟）的量级；下载与 fetch 各自计时。
+- 服务端的临时文件同样落 OS 临时目录并 `defer os.Remove`——**不能落进任务仓库**，
+  那会让 `dispatch` 的干净工作区校验误报。
 - 临时文件落 **OS 临时目录**（`os.CreateTemp`），`defer os.Remove`。
   **绝不能落在本地仓库里**——那会把协调者的工作区弄脏，而干净工作区是
   `dispatch` 的前置条件。
