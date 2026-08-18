@@ -2181,3 +2181,27 @@ func TestTransitIdempotentDoesNotSweepTwice(t *testing.T) {
 		t.Fatalf("重复迁入同一终态只该清扫一次，实得 %d 次：%v", len(swept), swept)
 	}
 }
+
+// TestEscalateLogLevel 钉住「升级人工」日志的三档级别。
+//
+// Warn 这一档留给「改动前会被静默放行、现在被拦下」的事件：Rule 为空是
+// 越界写与结构缺失（B27），self-command 是自指令（B115）。黑名单命中走
+// Info，因为它改动前后都会被拦，不是新增的价值。
+func TestEscalateLogLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		rule string
+		want slog.Level
+	}{
+		{"结构缺失或越界写", "", slog.LevelWarn},
+		{"自指令", permgate.RuleSelfCommand, slog.LevelWarn},
+		{"黑名单命中", `\bsudo\b`, slog.LevelInfo},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := escalateLogLevel(c.rule); got != c.want {
+				t.Fatalf("escalateLogLevel(%q) = %v，期望 %v", c.rule, got, c.want)
+			}
+		})
+	}
+}

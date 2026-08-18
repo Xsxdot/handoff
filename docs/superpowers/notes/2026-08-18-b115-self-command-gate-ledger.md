@@ -1,0 +1,14 @@
+# B115 executor 自指令收口执行 ledger
+
+## 进度
+
+- Task 1 完成；commit `5aed8a26`（`feat(permgate): handoff 自指令纯判据——白名单放行只读，未知子命令默认拦`）。TDD 红灯原始输出：`internal/permgate/selfcmd_test.go:62:16: undefined: IsSelfCommand`；绿灯：`go test ./internal/permgate/ -run TestIsSelfCommand -v` 通过，表内 23 个子用例全绿；`go test ./internal/permgate/` 通过；`gofmt -l internal/permgate/` 无输出。双裁决：spec 符合、代码质量通过，0 轮修复。
+- Task 2 完成；commit `2f7615eb`（`feat(permgate): 自指令判据接进 judgeCommand，引号与包装器处理与黑名单同构`）。TDD 红灯原始输出：真调用与包装器调用均为 `consult`/`黑名单未命中`，Reason 缺少 `reply`；实现首轮后包装器用例仍为 `consult`/`黑名单未命中`，补充包装器引号词元边界处理后绿灯。`go test ./internal/permgate/ -v` 通过；`gofmt -l internal/permgate/` 无输出。双裁决：spec 符合、代码质量通过，1 轮修复。
+- Task 3 完成；commit `1e89e261`（`feat(agentd): 自指令拦截走 Warn 级日志，审批 prompt 补自指令兜底语义`）。TDD 红灯原始输出：`internal/agentd/manager_test.go:2202:14: undefined: escalateLogLevel`；绿灯：`go test ./internal/agentd/ -run TestEscalateLogLevel -v` 通过，3 个子用例全绿；prompt 文案用 `rg` 命中；`gofmt -l internal/agentd/` 无输出。`go test ./internal/agentd/` 原始失败：`TestMainWorktreeRootRejectsNonRepo`（`err = <nil>, want errors.Is(..., ErrRepoUnusable)`）、`TestRegisterProjectClaimRejectsNonRepoDest`（`err = <nil>, want errors.Is(..., ErrProjectAlreadyExists)`）、`TestRepoWorktreesFailsOnNonRepo`（`非 git 仓库应返回错误，实得 nil`）、`TestReclaimListDegradesPerRepo`（`不可达仓库的行必须标 unknown 而不是消失`）、`TestEnsureRepoUsableRejectsNonGitPath`（`非 git 目录 err = <nil>, want ErrRepoUnusable`）、`TestProjectAPIRejectsNonRepoWithReadableReason`（`响应体未带 git 原文`）为计划明确的配方副作用；另有未符合副作用判据的原始失败：`TestStatusFillsProcsForActiveTasks`（`活跃任务应带 Procs（取不到时也该留 nil，见下）`）、`TestFootprintAllCoversArchivedTasks`（`体检结果里没有已归档任务 T-archived（共 0 行）`）、`TestFootprintAllReportsVerdict`（`应至少有一行`）。未修改 status 相关代码。双裁决：spec 符合、代码质量通过，0 轮修复。
+
+## Task 4 总回归证据
+
+- Step 1 主模块：`TMPDIR=$PWD/.gotest_tmp GOTMPDIR=$PWD/.gotmp GOCACHE=$PWD/.gocache go test ./... -count=1` 退出码 1；25 个包 `ok`，4 个包失败：根包 `TestInstallScriptUnits`（`mktemp: mkstemp failed on /var/folders/xc/hpx9c9w153j7tvphw53lc8qr0000gn/T/tmp.tlwmdogTZd: Operation not permitted`）；`cmd` 的 `TestProjectAddRejectsNonRepo`（`panic: nil Context`）；`internal/agentd` 的上述 6 条配方副作用及 3 条 status 失败；`internal/prochost` 的 `TestStartRecordsStartedAt`（`Start 未记录 StartedAt，got 0`）、`TestEnumProcsFindsSelf`（`enumProcs 失败: sysctl kern.proc.uid: operation not permitted`）、`TestProcLimitPositive`（`procLimit 失败: sysctl kern.maxprocperuid: operation not permitted`）、`TestShimWritesRosterImmediately`（`10s 内没等到非空名册`）。
+- Step 2 race：`go test -race ./internal/agentd/ ./internal/permgate/` 退出码 1；`internal/permgate` `ok`，`internal/agentd` 失败仍为上述 6 条配方副作用与 3 条 status 失败，输出无 race 报告。
+- Step 3：`go vet ./...` 退出码 0、无输出；`gofmt -l .` 退出码 0、无输出。
+- Step 4 变异测试：①变更循环与白名单循环对调，翻红 `TestIsSelfCommand/相对路径` 与 `TestIsSelfCommand/白名单词塞进变更命令参数`；②未知默认 `return true, cand[0]` 改为 `return false, ""`，翻红 `TestIsSelfCommand/未知子命令` 与 `TestIsSelfCommand/showoff 不是 show`；③去掉 `splitSegments` 的 `|` 分隔符，翻红 `TestIsSelfCommand/管道隔段`。三处均已恢复，恢复后 `go test ./internal/permgate/ -count=1` 退出码 0。
