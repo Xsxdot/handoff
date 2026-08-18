@@ -280,6 +280,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源）
 //   - GET  /api/tasks/{id}/frames      结构化回合帧（frames.jsonl）流式读取（W4b/TUI 数据源）
 //   - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文）
+//   - GET  /api/tasks/{id}/bundle       任务分支的 git bundle（回程 pull，不经 ssh）
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
@@ -339,6 +340,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/tasks/{id}/render", s.byTask(s.handleTaskRender))
 	api.HandleFunc("GET /api/tasks/{id}/frames", s.byTask(s.handleTaskFrames))
 	api.HandleFunc("GET /api/tasks/{id}/file", s.byTask(s.handleTaskFile))
+	api.HandleFunc("GET /api/tasks/{id}/bundle", s.byTask(s.handleTaskBundle))
 	api.HandleFunc("POST /api/tasks/{id}/run", s.byTask(s.handleTaskRun))
 	api.HandleFunc("POST /api/projects", s.handleProjectAdd)
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
@@ -1417,6 +1419,83 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("diff 完成", "task", taskID, "base", base, "bytes", len(diff))
 	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
+}
+
+// handleTaskBundle 吐任务分支的 git bundle，供协调者 pull 时不经 ssh 取回改动。
+//
+// 请求：GET /api/tasks/{id}/bundle?have=<sha>
+//   - have 给了：生成 <have>..<branch> 的薄包（常态，通常几百字节）
+//   - have 空：  生成全量包（协调者手上没有基线时的罕见退路）
+//
+// 响应：
+//   - 200 application/octet-stream，带 Content-Length
+//   - **没有 204**：区间为空时 BundleRange 自动放宽区间（§5.2），照样产出一个
+//     带 ref 的包。客户端的本地分支引用是 fetch 的副产品，短路掉 fetch 就会让
+//     「已是最新」在协调者手上什么都没有的情况下打出来
+//   - 400 任务无分支 / have 在任务仓库中不存在 / 参数以 - 开头
+//   - 404 任务不存在（byTask 已处理）
+//   - 500 git 失败
+//
+// 注意：
+//   - 用 task.RepoPath（主仓库）而不是 Workdir()：worktree 是主仓的从属工作树，
+//     分支对象在主仓库里。这与 handleTaskDiff 不同，那个要的是工作树状态
+//   - 先把包落临时文件再整体发出，**不**把 git 的输出直接流进 ResponseWriter：
+//     直接流的话 git 中途失败时响应头早已发出，客户端收到的是一个截断的 200——
+//     一次服务端故障被伪装成内容不完整的成功
+func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	have := r.URL.Query().Get("have")
+	s.log.Info("bundle 请求", "method", r.Method, "path", r.URL.Path, "task", taskID, "have", have)
+	task, ok := s.taskOrErr(w, taskID)
+	if !ok {
+		return
+	}
+	if task.Branch == "" {
+		s.log.Warn("任务尚无分支，无可打包", "task", taskID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务尚无分支，无可同步"})
+		return
+	}
+	start := time.Now()
+	path, err := BundleRange(r.Context(), task.RepoPath, have, task.Branch)
+	switch {
+	case errors.Is(err, ErrHaveMissing), errors.Is(err, ErrBadBaseBranch):
+		// have 与 branch 都由请求侧决定，属请求问题不是服务故障（与 diff 的
+		// ErrBadBaseBranch 同款映射）
+		s.log.Warn("bundle 请求参数被拒", "task", taskID, "have", have, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	case err != nil:
+		s.log.Error("生成 bundle 失败", "task", taskID, "repo", task.RepoPath,
+			"branch", task.Branch, "have", have, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	defer os.Remove(path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		s.log.Error("打开生成的 bundle 失败", "task", taskID, "path", path, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		s.log.Error("读取 bundle 大小失败", "task", taskID, "path", path, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	n, err := io.Copy(w, f)
+	if err != nil {
+		// 头已经发出去了，改不了状态码——只能把事实记下来。客户端会因为
+		// 收到的字节数与 Content-Length 不符而失败，这是它该失败的方式
+		s.log.Error("发送 bundle 中断", "task", taskID, "sent", n, "total", fi.Size(), "cause", err)
+		return
+	}
+	s.log.Info("bundle 发送完成", "task", taskID, "branch", task.Branch, "have", have,
+		"bytes", n, "elapsed_ms", time.Since(start).Milliseconds())
 }
 
 // handleTaskBranches 返回任务仓库的本地分支名列表与推导出的默认基准分支。
