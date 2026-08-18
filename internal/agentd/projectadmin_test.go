@@ -867,3 +867,34 @@ func TestProjectBranchesUnknownProject(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+// TestProjectNameFromURLHandlesWindowsSeparators 覆盖本地路径 origin 的名字派生。
+//
+// why 这个用例存在：origin 为 Windows 本地路径（`C:\work\x.git`）时，派生名若不切
+// 反斜杠就会是 `\work\x`，撞上 validateProjectName 的「含 / \ : 拒收」，
+// 表现为自动登记失败、dispatch 400。
+func TestProjectNameFromURLHandlesWindowsSeparators(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"windows 本地路径", `C:\work\probe-origin.git`, "probe-origin"},
+		{"windows 本地路径带尾部反斜杠", `C:\work\probe-origin\`, "probe-origin"},
+		{"ssh scp 简写（回归）", "git@github.com:Xsxdot/handoff.git", "handoff"},
+		{"https（回归）", "https://github.com/Xsxdot/handoff", "handoff"},
+		{"https 带尾部斜杠（回归）", "https://github.com/Xsxdot/handoff/", "handoff"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := projectNameFromURL(c.in)
+			if got != c.want {
+				t.Fatalf("projectNameFromURL(%q) = %q，期望 %q", c.in, got, c.want)
+			}
+			// 派生名必须能过校验，否则自动登记依然会失败
+			if err := validateProjectName(got); err != nil {
+				t.Fatalf("派生名 %q 未通过 validateProjectName: %v", got, err)
+			}
+		})
+	}
+}

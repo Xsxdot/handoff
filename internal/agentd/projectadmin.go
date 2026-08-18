@@ -110,10 +110,14 @@ func projectOriginURL(ctx context.Context, repo string) (string, error) {
 // projectNameFromURL 从 git URL 末段派生缺省引用名（去掉 .git 后缀）。
 //
 // 例：git@github.com:Xsxdot/handoff.git → handoff
+//
+// why 分隔符集合里有反斜杠：origin 可以是 Windows 本地路径（`C:\work\x.git`）。
+// git URL 的四种形态（https/ssh/scp 简写/file）都不含反斜杠，把它加进集合
+// 对既有形态零影响，只有本地路径 origin 会走到这一支。
 func projectNameFromURL(url string) string {
-	s := strings.TrimRight(strings.TrimSpace(url), "/")
+	s := strings.TrimRight(strings.TrimSpace(url), `/\`)
 	s = strings.TrimSuffix(s, ".git")
-	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+	if i := strings.LastIndexAny(s, `/:\`); i >= 0 {
 		s = s[i+1:]
 	}
 	return s
