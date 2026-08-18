@@ -18,6 +18,25 @@ func TestAssetName(t *testing.T) {
 	}
 }
 
+// 薄壳资产用 handoff-desktop_ 前缀发布（release.yml 的 build-desktop-* 两个 job）。
+// 这条钉死 CLI 侧拼出的资产名永远不会撞上薄壳包——两边都改名才会失效，那时这条会红。
+//
+// 为什么值得单列一条：AssetName 的 doc 里已经写明「格式必须与 release.yml 的产出
+// 逐字一致，不一致的症状是查得到版本但下不到东西」。加了薄壳资产之后，这个格式
+// 又多了一个必须避开的邻居——而两者只差一个字符（handoff_ 与 handoff-desktop_），
+// 靠肉眼比对不可靠。
+func TestAssetNameNeverMatchesDesktopAsset(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		name := AssetName("v1.2.3", goos, "arm64")
+		if strings.HasPrefix(name, "handoff-desktop") {
+			t.Fatalf("CLI 资产名撞上薄壳前缀: %s", name)
+		}
+		if !strings.HasPrefix(name, "handoff_") {
+			t.Fatalf("CLI 资产名不再以 handoff_ 开头，install.sh 会取不到: %s", name)
+		}
+	}
+}
+
 // fakeAPI 返回一个假的 releases/latest 响应。
 func fakeAPI(t *testing.T, body string, code int) *httptest.Server {
 	t.Helper()

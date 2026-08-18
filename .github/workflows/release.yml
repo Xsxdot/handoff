@@ -613,7 +613,10 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build-unix, build-darwin]
+    # 四个构建 job 都要等：不把两个薄壳 job 列进来，release 会在它们上传完
+    # artifact 之前就起跑，下面 checksums 那步的 handoff-desktop_* 通配匹配不到
+    # 文件而失败——而且这个失败是时序相关的，重跑可能就过了。
+    needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin]
     runs-on: ubuntu-latest
     steps:
       # checkout 必须排在 download 之前：两者写同一个工作目录，后执行的
@@ -630,7 +633,10 @@ jobs:
           # checksums 必须在签名之后算——签名会改字节。这里对下载下来的
           # 成品资产统一算，天然满足这个顺序，不要把它挪到构建 job 里去
           # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
-          sha256sum handoff_*.tar.gz handoff_*.zip > checksums.txt
+          # 薄壳资产用 handoff-desktop_ 前缀，**不匹配** handoff_*（前缀后是 -
+          # 不是 _），所以既不会被 install.sh 与自更新误抓（那正是选这个前缀的
+          # 理由），也不会被自动收进来——必须显式列出，否则校验和缺一半
+          sha256sum handoff_*.tar.gz handoff_*.zip handoff-desktop_* > checksums.txt
           cat checksums.txt
       - name: 从 CHANGELOG 抽取本版说明
         run: |
@@ -660,4 +666,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             "${NOTES_ARG}" \
-            dist/handoff_*.tar.gz dist/handoff_*.zip dist/checksums.txt
+            dist/handoff_*.tar.gz dist/handoff_*.zip \
+            dist/handoff-desktop_* dist/checksums.txt
