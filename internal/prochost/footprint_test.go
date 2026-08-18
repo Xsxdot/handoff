@@ -103,6 +103,25 @@ func assertMembers(t *testing.T, got, want []int) {
 	}
 }
 
+func containsPID(pids []int, want int) bool {
+	for _, pid := range pids {
+		if pid == want {
+			return true
+		}
+	}
+	return false
+}
+
+func countPID(pids []int, want int) int {
+	n := 0
+	for _, pid := range pids {
+		if pid == want {
+			n++
+		}
+	}
+	return n
+}
+
 // stubEnum 把进程枚举换成脚本化的快照序列（最后一个快照会被重复使用）。
 //
 // 为什么需要序列而不是固定快照：Sweep 发完 SIGKILL 后要**复核**——再枚举一次并
@@ -479,6 +498,77 @@ func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 		t.Fatalf("Footprint: %v", err)
 	}
 	assertMembers(t, members, []int{100})
+}
+
+// TestFootprintIncludesMarkOnlyMembers 钉住本条需求的核心价值：
+// 标记判据要捞回 pgid 与 roster 都看不见的那批进程。
+func TestFootprintIncludesMarkOnlyMembers(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000}, // shim 自己
+		{PID: 101, PGID: 100, StartedAt: 1100}, // 同组，pgid 能看见
+		{PID: 200, PGID: 200, StartedAt: 1200}, // setsid 逃逸，只有标记看得见
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) {
+		return pid == 200 || pid == 101, nil
+	}
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, v, err := Footprint(h)
+	if err != nil || v != VerdictOK {
+		t.Fatalf("判定应通过：v=%v err=%v", v, err)
+	}
+	if !containsPID(members, 200) {
+		t.Fatalf("标记独有的成员 200 未被捞回：members=%v", members)
+	}
+	if countPID(members, 101) != 1 {
+		t.Fatalf("同时被 pgid 与标记命中的 101 必须去重，members=%v", members)
+	}
+}
+
+// TestFootprintMarkRespectsStartedAtFloor 钉住时间下界对标记成员照样施加——
+// 枚举与发信号之间的 pid 复用窗口，这道护栏不能因为换判据就撤（B47）。
+func TestFootprintMarkRespectsStartedAtFloor(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 300, PGID: 300, StartedAt: 500}, // 比 shim 还早
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return pid == 300, nil }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, _, _ := Footprint(h)
+	if containsPID(members, 300) {
+		t.Fatalf("比 shim 更早启动的进程不得因标记命中而入选：members=%v", members)
+	}
+}
+
+// TestFootprintDegradesWhenMarkUnsupported 钉住平台不支持时不影响既有两段。
+func TestFootprintDegradesWhenMarkUnsupported(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 101, PGID: 100, StartedAt: 1100},
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, v, err := Footprint(h)
+	if err != nil || v != VerdictOK {
+		t.Fatalf("平台不支持标记不该让判定失败：v=%v err=%v", v, err)
+	}
+	if !containsPID(members, 101) {
+		t.Fatalf("pgid 那段必须照常工作：members=%v", members)
+	}
 }
 
 // TestCountGroupCountsOnlyItsOwnGroup 断言：只数同组成员，无关进程不计入。

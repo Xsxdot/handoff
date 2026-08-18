@@ -1,7 +1,7 @@
 // footprint.go —— 任务进程足迹的身份校验与两个孪生原语。
 //
 // 职责：
-//   - classify：给定 Handle 与一次进程快照，判定「哪些进程属于这个任务」
+//   - classify：给定 Handle 与一次进程快照，判定 pgid 层「哪些进程属于这个任务」
 //   - Footprint（只数）/ Sweep（回收）：共用 classify，保证数出来的与被杀的是同一批
 //
 // 边界：
@@ -136,8 +136,9 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 // 注意：
 //   - **只读，绝不发信号**——它是 Sweep 的孪生只读版本，两者共用 classify
 //   - 对**存活中**与**已死亡**的执行者均可调用：判据随存活锁状态自动切换
-//   - **members 是两段并集**：pgid 组 + 出生名册里仍存活且身份吻合的逃逸后代。
-//     Sweep 现在也是两段（B72），报的数和杀的范围必须一致，否则 handoff footprint
+//   - **members 是三段并集**：pgid 组 + 出生名册里仍存活且身份吻合的逃逸后代 +
+//     任务标记命中的进程。第三段覆盖「壳活得太短、一次都没被采样到」的残留。
+//     Sweep 也必须同步三段，报的数和杀的范围必须一致，否则 handoff footprint
 //     就变成一句骗人的话（B70：宣称什么就得是什么）
 func Footprint(h Handle) (members []int, v Verdict, err error) {
 	procs, err := enumProcsFn()
@@ -146,6 +147,9 @@ func Footprint(h Handle) (members []int, v Verdict, err error) {
 		return nil, VerdictNoCredential, err
 	}
 	members, v = classify(h, procs, aliveFn(h))
+	byPgid := len(members)
+	var byRoster, byMark, markOnly int
+	markSupported := false
 	if v == VerdictOK {
 		// 第二段：名册里仍然存活且身份吻合的逃逸后代。判定放弃时不并入——
 		// 那时 members 必须为空是 classify 的契约，不能被这里破坏
@@ -154,14 +158,46 @@ func Footprint(h Handle) (members []int, v Verdict, err error) {
 			seen[p] = true
 		}
 		for _, p := range rosterMembers(h, procs) {
+			byRoster++
 			if !seen[p] {
 				members = append(members, p)
 				seen[p] = true
 			}
 		}
+		// 第三段：任务标记命中的进程。它不依赖采样时机，补足工具壳短命的盲区。
+		marked, supported := markMembers(h.cred(), procs)
+		markSupported = supported
+		for _, p := range marked {
+			// 标记读的是活状态，枚举与发信号之间仍有 pid 复用窗口；时间下界
+			// 对这条来源照样施加（B47 的教训不因换判据而失效）。
+			if startedAtOf(procs, p) < h.StartedAt {
+				continue
+			}
+			byMark++
+			if !seen[p] {
+				members = append(members, p)
+				seen[p] = true
+				markOnly++
+			}
+		}
 	}
-	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v), "members", len(members))
+	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v),
+		"members", len(members), "by_pgid", byPgid, "by_roster", byRoster,
+		"by_mark", byMark, "mark_only", markOnly, "mark_supported", markSupported)
 	return members, v, nil
+}
+
+// startedAtOf 在快照里查 pid 的启动时刻；查不到返回 0（会被时间下界排除）。
+//
+// 为什么返回 0 而不是报错：pid 来自同一份快照，查不到只可能是调用方传错，
+// 返回 0 会让它被下界规则挡掉——宁可漏一个也不放一个身份不明的进 members。
+func startedAtOf(procs []procEntry, pid int) int64 {
+	for _, p := range procs {
+		if p.PID == pid {
+			return p.StartedAt
+		}
+	}
+	return 0
 }
 
 // rosterMembers 按出生名册筛出仍然存活且身份吻合的后代 pid（只读，不发信号）。
