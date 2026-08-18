@@ -11,8 +11,8 @@
 //     都在），不引是零成本；而 Windows 的 stdlib syscall 里 CreateNamedPipe /
 //     LockFileEx / CreateJobObject 一个都没有，「只用 stdlib」的实际含义是在本仓库
 //     里重写一份 x/sys。同一条原则（用最小够用的东西）在两个平台导出相反结论
-//   - 输入通道（命名管道）不在本轮范围：它只在 claude 路径上，而 claude 在
-//     Windows 上根本不注册（见 cmd/agentd.go 的 defaultAdapters）
+//   - 输入通道的实现在 inputch_windows.go：那一块约 200 行（管道服务端、
+//     安全描述符、中继循环），与本文件的进程/锁/Job Object 是两件事
 package prochost
 
 import (
@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -29,9 +28,8 @@ import (
 
 // errNotImplemented 是本平台尚未实现的原语的统一返回。
 //
-// 本轮之后它只剩输入通道两个原语在用，且**实际不可达**：调用它们的唯一路径是
-// claude adapter，而 Windows 上 claude 不进注册表，dispatch 在门口就被拒了。
-// 这个不可达是被注册层挡出来的，不是碰巧——改注册表时要连带想到这里。
+// 输入通道落地后本平台已无 not-implemented 的原语，本变量保留给将来新增的
+// 平台缝使用——保留一个统一的返回值，好过每处各编一个错误。
 var errNotImplemented = errors.New("prochost: 本平台的进程承载尚未实现")
 
 // lockSupported 标记本平台是否真的能加锁。
@@ -213,15 +211,4 @@ func killProc(pid int) error {
 	}
 	log().Info("已终止单个进程", "pid", pid)
 	return nil
-}
-
-// createInputChannel / waitInputReader 见文件头：只在 claude 路径上，本轮不做。
-func createInputChannel(path string) error {
-	log().Error("Windows 输入通道尚未实现", "path", path)
-	return errNotImplemented
-}
-
-func waitInputReader(path string, timeout time.Duration) (time.Duration, error) {
-	log().Error("Windows 输入通道尚未实现", "path", path, "timeout", timeout)
-	return 0, errNotImplemented
 }

@@ -16,6 +16,7 @@ package prochost
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -169,6 +170,42 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// writeInputChannel 往 FIFO 投递字节（见 WriteInputChannel 的文档）。
+//
+// O_NONBLOCK 不是性能选择而是语义选择：没有它，打开写端会一直阻塞到出现读端，
+// 「执行者已不在」就变成「永远等下去」。
+func writeInputChannel(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return fmt.Errorf("打开输入通道 %s（读端可能已不在）: %w", path, err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写输入通道 %s: %w", path, err)
+	}
+	return nil
+}
+
+// openInputChannel 为子进程准备 stdin（见 shim.go 调用点）。
+//
+// 参数：path 为通道路径
+//
+// 返回：
+//   - r: 交给 cmd.Stdin 的读端
+//   - cleanup: 子进程退出后调用，释放本函数占用的资源
+//   - error: 非 nil 时 shim 必须放弃拉起执行者
+//
+// 注意：**O_RDWR 而不是 O_RDONLY 是承重的**。只读打开会在所有写端关闭时收到
+// EOF，执行者的 stdin 随即关闭；O_RDWR 让 shim 自己同时也是写端，FIFO 因此
+// 永不 EOF。这是旧 sh 脚本 `exec 3<> in.fifo` 的等价手法。
+func openInputChannel(path string) (io.ReadCloser, func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开输入通道 %s: %w", path, err)
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的

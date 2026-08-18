@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 持有存活锁（整个生命周期），作为 prochost.Alive 的唯一判据
-//   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时以 O_RDWR 持有 FIFO 读端
+//   - 打开 stdout/stderr 追加落盘文件；InputCh 非空时经 openInputChannel 准备子进程 stdin（平台各自实现）
 //   - 在 spawn executor 之前安装进程容器（unix=RLIMIT_NPROC，Windows=Job Object），
 //     executor 全树继承
 //   - spawn 真正的 executor，把它的 pid 记进 child.pid
@@ -19,9 +19,10 @@
 // 已经没法被 waitpid，「agentd 离线期间 executor 退出」的退出码就永远丢了——
 // 那正是恢复流程最需要知道的事。shim 用一个极轻的进程换回这个语义。
 //
-// 为什么 shim 以 O_RDWR 打开 FIFO：只读打开会在写端全部关闭时收到 EOF，
-// executor 的 stdin 随即关闭；O_RDWR 让 shim 自己同时是写端，FIFO 永不 EOF。
-// 这是旧 sh 脚本 `exec 3<> in.fifo` 的等价手法。
+// 为什么输入通道必须「永不 EOF」：读端一旦 EOF，executor 的 stdin 就关闭，
+// 它跑完第一条指令后再也收不到后续投递。unix 上靠 shim 以 O_RDWR 打开 FIFO
+// （自己同时是写端）保证，Windows 上靠 shim 攥着匿名管道写端保证——两边实现
+// 不同、契约相同，见 openInputChannel。
 package prochost
 
 import (
@@ -114,14 +115,16 @@ func RunShim(specPath string) error {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if spec.InputCh != "" {
-		// O_RDWR 而非 O_RDONLY：见文件头注释的 why（FIFO 永不 EOF）
-		fifo, ferr := os.OpenFile(spec.InputCh, os.O_RDWR, 0)
+		// 「永不 EOF」由平台实现各自保证：unix 靠 O_RDWR，Windows 靠 shim
+		// 攥着匿名管道写端。契约见 openInputChannel 的文档
+		in, cleanup, ferr := openInputChannel(spec.InputCh)
 		if ferr != nil {
 			l.Error("打开输入通道失败", "path", spec.InputCh, "cause", ferr)
 			return fmt.Errorf("打开输入通道 %s: %w", spec.InputCh, ferr)
 		}
-		defer fifo.Close()
-		cmd.Stdin = fifo
+		defer cleanup()
+		cmd.Stdin = in
+		l.Info("输入通道已就位", "path", spec.InputCh)
 	}
 
 	// env 只打 key 名：值可能含凭据（代理 URL 里的 user:pass、API key）

@@ -10,7 +10,17 @@
 //   - 不认识 claude 的消息格式：只处理本文件定义的两条线协议
 //
 // 为什么用 unix socket 而不是 agentd 的 HTTP 口：被监管的 executor 不该拿到
-// agentd token；socket 文件落在 0700 的任务目录内，权限即边界，且无需分配端口。
+// agentd token；socket 文件落在任务目录内，由**目录本身的访问控制**构成边界，
+// 且无需分配端口。
+//
+// 「访问控制」分平台：unix 上是任务目录的 0700 权限位；Windows 上没有 POSIX
+// 权限位（socket 文件的 mode 恒显示为 Srw-rw-rw-），边界由任务目录的 NTFS ACL
+// 继承提供。**这不是同一句话的两种说法**——换平台时要重新确认边界真的成立，
+// 不能因为 unix 上验过就假定 Windows 上也成立。
+//
+// AF_UNIX 在 Windows 10 1803+ / Server 2019+ 上原生可用，Go 的 net 包支持它
+// （src/net/unixsock_posix.go 的构建约束含 windows），B128 已在 Server 2025 上
+// 跨进程实测 Listen/Dial/双向收发全通，且 Close() 会自动删除 socket 文件。
 package claudecode
 
 import (
@@ -69,6 +79,13 @@ var newPermServerFn = newPermServer
 //   - 复用已存在的 socket 文件前会先删除（agentd 重启后残留），否则 bind 报
 //     address already in use
 func newPermServer(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
+	// AF_UNIX 的 sun_path 上限是 108 字节（含结尾 NUL），三大平台一致。
+	// 不在这里拦下的话，用户拿到的是 net.Listen 的原始错误，指不到真因。
+	// 上限取 107 是给结尾 NUL 留位。
+	const sunPathMax = 107
+	if len(sockPath) > sunPathMax {
+		return nil, fmt.Errorf("裁决 socket 路径过长（%d 字节，上限 %d）: %s——把 DataDir 配到更浅的位置", len(sockPath), sunPathMax, sockPath)
+	}
 	// 残留 socket 文件会让 bind 直接失败，而它恰恰是 agentd 重启后的常态
 	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
 		log.Error("清理残留 socket 失败", "sock", sockPath, "cause", err)

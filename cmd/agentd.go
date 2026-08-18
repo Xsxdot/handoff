@@ -303,39 +303,45 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 //
 // 抽成函数而非内联字面量：注册表是 dispatch --executor 路由的唯一真相，
 // 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
-// （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
+// （见 agentd_test.go 的 TestAdapterRegistryHasAlwaysAvailableExecutors）。
 func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
 	return adaptersFor(runtime.GOOS, logger)
 }
 
-// adaptersFor 按平台裁剪 executor 注册表。
+// claude 从 B128 起在所有平台注册：Windows 的输入通道（inputch_windows.go）
+// 与裁决 socket（AF_UNIX，Windows 原生支持）都已落地。
+// adaptersFor 按平台能力构造执行器注册表。
 //
-// 参数：goos 取 runtime.GOOS；抽成参数是为了让 Windows 分支能在 mac/linux 的 CI 上测到。
+// 参数：goos 为目标平台；logger 用于播报不注册的理由
 //
-// 为什么在注册层拒绝而不是等 Start 报错：status 会如实显示这台机器支持哪些执行器，
-// 协调者派发前就看得见，而不是任务跑到一半转 failed。对 claude 尤其重要——它的
-// Start 第一步是建 AF_UNIX 裁决 socket，而 Go 在 Windows 10 1803+ 支持 AF_UNIX，
-// socket 可能真的建得起来，然后走到输入通道才炸，留下一个 socket 建了、进程没起、
-// 清理路径没人走过的半启动状态。与其让它走到那里，不如在门口就不放行。
+// 返回：可用执行器的注册表。
 //
-// codex 照常注册但**记为「未验」而非「支持」**：它与 opencode 同为零 unix-ism，
-// 没有已知阻断，不注册是对它的诬告；但本轮验收门只跑 opencode，codex 在 Windows
-// 上一次都没跑过。
+// 注意：
+//   - **不注册必须有明确理由并打日志**：静默缺席会让用户以为是配置问题，
+//     而 dispatch 在门口被拒时只知道「没这个执行器」
+//   - grok 走**运行期能力探测**而不是按平台写死：它卡的是符号链接权限，
+//     而那是部署形态决定的（管理员 / 开发者模式），同一个 Windows 上装法
+//     不同结论就不同。写死等于把一台其实可用的机器判成不可用
 func adaptersFor(goos string, logger *slog.Logger) map[string]executor.Adapter {
+	return adaptersForWithProbe(goos, logger, os.TempDir())
+}
+
+// adaptersForWithProbe 是 adaptersFor 的可测形态：探测目录由调用方给。
+func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map[string]executor.Adapter {
 	ads := map[string]executor.Adapter{
 		"opencode": opencode.New(logger),
 		"codex":    codex.New(logger),
+		"claude":   claudecode.New(logger),
 		"fake":     fake.New(nil),
 	}
-	if goos == "windows" {
-		logger.Warn("本平台不注册部分执行器",
-			"skipped", []string{"claude", "grok"},
-			"claude_reason", "输入通道（命名管道）与 AF_UNIX 裁决 socket 未实现（B37 第二批）",
-			"grok_reason", "taskenv 用 os.Symlink，Windows 上需要特权")
-		return ads
+	if supported, reason := grok.SymlinkCapability(probeDir); supported {
+		ads["grok"] = grok.New(logger)
+	} else {
+		logger.Warn("不注册 grok：本机不具备创建符号链接的能力",
+			"reason", reason,
+			"note", "grok 用软链让 auth 文件只有一份权威副本，改成复制会让用户那份与任务那份静默漂移")
 	}
-	ads["claude"] = claudecode.New(logger)
-	ads["grok"] = grok.New(logger)
+	_ = goos // 平台不再直接决定注册面，保留参数是为了不改调用方与既有测试
 	return ads
 }
 
@@ -369,7 +375,7 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 }
 
 // executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
-// codex | fake（脚本演示）；Windows 上 claude/grok 不注册。
+// codex | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
 var executorFlag string
 
 func init() {
