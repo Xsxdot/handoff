@@ -333,3 +333,50 @@ func TestWindowsTaskXMLUsesBootTriggerNotLogon(t *testing.T) {
 		t.Errorf("必须用 BootTrigger:\n%s", body)
 	}
 }
+
+// 每分钟的重复触发必须挂在 TimeTrigger 上——这是 agentd 换版后被拉起的唯一依靠。
+//
+// 2026-08-18 win-b37 实测：重复挂 BootTrigger 时，`schtasks /Query /V` 的
+// Next Run Time 恒为 N/A，杀掉 agentd 后 150 秒没有被拉回。原因是 BootTrigger 的
+// 重复序列锚定开机时刻，任务在开机之后注册就永远不会激活它。
+// 这个缺陷在代码里看不出来（XML 完全合法、/Create 也成功），只能靠这条测试
+// 把「重复归谁」钉死。
+func TestWindowsTaskXMLRepetitionIsOnTimeTriggerNotBoot(t *testing.T) {
+	m := &windowsManager{log: testLogger()}
+	body := m.taskXML(Spec{BinPath: `C:\bin\handoff.exe`}, "u")
+
+	boot := between(t, body, "<BootTrigger>", "</BootTrigger>")
+	if strings.Contains(boot, "<Repetition>") {
+		t.Errorf("重复触发不得挂在 BootTrigger 上（锚定开机时刻，注册在开机之后就永不激活）:\n%s", body)
+	}
+
+	if !strings.Contains(body, "<TimeTrigger>") {
+		t.Fatalf("必须有 TimeTrigger 承载每分钟重复:\n%s", body)
+	}
+	tt := between(t, body, "<TimeTrigger>", "</TimeTrigger>")
+	if !strings.Contains(tt, "<Interval>PT1M</Interval>") {
+		t.Errorf("TimeTrigger 缺少 PT1M 重复:\n%s", tt)
+	}
+	if !strings.Contains(tt, "<StartBoundary>") {
+		t.Errorf("TimeTrigger 缺少 StartBoundary，调度器推算不出下一次运行:\n%s", tt)
+	}
+	// 有 Duration 就是有限重复：到期后任务静默失去自愈能力，且没有任何报错
+	if strings.Contains(tt, "<Duration>") {
+		t.Errorf("重复不得设 Duration（省略即无限重复），否则到期后静默失去自愈:\n%s", tt)
+	}
+}
+
+// between 取出 open 与 close 之间的片段；缺任一端直接 Fatal，避免断言落在空串上恒过。
+func between(t *testing.T, s, open, close string) string {
+	t.Helper()
+	i := strings.Index(s, open)
+	if i < 0 {
+		t.Fatalf("找不到 %q:\n%s", open, s)
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		t.Fatalf("找不到 %q:\n%s", close, s)
+	}
+	return rest[:j]
+}

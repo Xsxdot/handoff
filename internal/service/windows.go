@@ -127,10 +127,25 @@ func (m *windowsManager) taskXML(spec Spec, user string) string {
 	b.WriteString(`<?xml version="1.0" encoding="UTF-16"?>` + "\n")
 	b.WriteString(`<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">` + "\n")
 	b.WriteString("  <RegistrationInfo>\n    <Description>handoff agentd</Description>\n  </RegistrationInfo>\n")
-	b.WriteString("  <Triggers>\n    <BootTrigger>\n      <Enabled>true</Enabled>\n")
+	// 两个触发器分工明确，缺一不可：
+	//   BootTrigger —— 开机即起，不必等第一次重复到点
+	//   TimeTrigger —— 每分钟重复，配合 IgnoreNew 等价于 systemd 的 Restart=always
+	//
+	// 重复触发**必须**挂在 TimeTrigger 上，不能挂 BootTrigger（2026-08-18 实测）：
+	// BootTrigger 的重复序列锚定在开机那一刻，任务若在开机之后才注册，这条序列
+	// 在本次开机会话里从未激活过，`schtasks /Query /V` 的 Next Run Time 恒为 N/A，
+	// 杀掉 agentd 后 150 秒也没有被拉回。而 agentd 换版时是**正常退出 0**，
+	// RestartOnFailure 那类「失败才重启」的设定同样接不住——升级链的交接点就断在这里。
+	//
+	// StartBoundary 取一个固定的过去时刻（而非当前时间）：调度器会从它按间隔推算出
+	// 下一次运行，写死可以让 XML 对同一份 Spec 稳定可复现，测试才能钉住它。
+	// <Duration> 整个省掉即「无限重复」——写成有限值意味着到期后静默失去自愈能力。
+	b.WriteString("  <Triggers>\n    <BootTrigger>\n      <Enabled>true</Enabled>\n    </BootTrigger>\n")
+	b.WriteString("    <TimeTrigger>\n")
 	b.WriteString("      <Repetition>\n        <Interval>PT1M</Interval>\n")
-	b.WriteString("        <Duration>P365D</Duration>\n        <StopAtDurationEnd>false</StopAtDurationEnd>\n")
-	b.WriteString("      </Repetition>\n    </BootTrigger>\n  </Triggers>\n")
+	b.WriteString("        <StopAtDurationEnd>false</StopAtDurationEnd>\n      </Repetition>\n")
+	b.WriteString("      <StartBoundary>2020-01-01T00:00:00</StartBoundary>\n")
+	b.WriteString("      <Enabled>true</Enabled>\n    </TimeTrigger>\n  </Triggers>\n")
 	b.WriteString("  <Principals>\n    <Principal id=\"Author\">\n")
 	b.WriteString("      <UserId>" + esc(user) + "</UserId>\n")
 	b.WriteString("      <LogonType>S4U</LogonType>\n      <RunLevel>HighestAvailable</RunLevel>\n")
