@@ -303,7 +303,7 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 //
 // 抽成函数而非内联字面量：注册表是 dispatch --executor 路由的唯一真相，
 // 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
-// （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
+// （见 agentd_test.go 的 TestAdapterRegistryHasAlwaysAvailableExecutors）。
 func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
 	return adaptersFor(runtime.GOOS, logger)
 }

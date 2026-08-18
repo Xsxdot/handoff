@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
@@ -64,6 +65,20 @@ func TestAdaptersForSkipsGrokWhenSymlinkUnavailable(t *testing.T) {
 		if _, ok := ads[name]; !ok {
 			t.Fatalf("%s 被误伤，未注册", name)
 		}
+	}
+}
+
+// TestAdaptersForRegistersGrokWhenSymlinkAvailable 钉住 grok 注册表的正向接线：
+// 防止实现行被删掉而现有测试仍全绿的静默回归，问题会拖到派发时才暴露。
+// Windows 上没有符号链接权限时跳过；这不是 grok 注册逻辑失败。
+func TestAdaptersForRegistersGrokWhenSymlinkAvailable(t *testing.T) {
+	probeDir := t.TempDir()
+	if supported, reason := grok.SymlinkCapability(probeDir); !supported {
+		t.Skipf("本机不具备符号链接能力，跳过 grok 正向注册测试: %s", reason)
+	}
+	ads := adaptersForWithProbe("windows", slog.New(slog.NewTextHandler(io.Discard, nil)), probeDir)
+	if _, ok := ads["grok"]; !ok {
+		t.Fatalf("符号链接能力可用时 grok 未注册；实现行被删掉会造成静默回归")
 	}
 }
 
