@@ -83,6 +83,12 @@ var bashPermissionRules = map[string]string{
 	"*> /*": "ask", // > /abs、>> /abs 都含子串 "> /"
 	"*>~*":  "ask", // >~/x
 	"*> ~*": "ask", // > ~/x
+	// tee：落点在参数位，opencode 的 external_directory 对管道后的写命令检不出
+	// （2026-08-18 真机任务 4feb3766：`echo x | tee /tmp/y` 零权限请求、文件实写）。
+	// 用宽模式而不是 "*tee /*" 这种锚定形态：落点可以被标志隔开（tee -a /tmp/x）、
+	// 被引号包住，锚定要枚举四五条还留缝；tee 在构建/测试流里低频，误伤只是一次
+	// Consult。送进来之后由 permgate 的 WriteArgTargets 给确定性裁决（B151）。
+	"*tee*": "ask",
 	"*":     "allow",
 }
 
