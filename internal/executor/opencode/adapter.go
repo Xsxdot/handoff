@@ -566,10 +566,14 @@ func (a *Adapter) replyPendingQuestion(ctx context.Context, r *runState,
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 的 ticket id
 //     经 taskID:permID 命名空间化，此处为裸 permID，由 manager 还原后传入）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//   - reason: 本 adapter 忽略。handoff 走的老端点
+//     POST /session/{id}/permissions/{permID} 服务端只读 payload.response，
+//     多带的字段被静默丢弃；带 message 的是新端点 /permission/{requestID}/reply
+//     （2026-08-18 读 opencode 1.18.18 二进制实证，spec §2.5）。迁端点另计
 //
 // 注意：
 //   - stopCh 已关时拒绝转发：与 Send 同因（见 Send 注释），保留态不接新裁决
-func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, _ string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)

@@ -141,7 +141,7 @@ func (g *Gate) match(s string) (bool, string) {
 // 路由：
 //   - write / edit → 路径归属判定，**并且**对 Text 跑一次黑名单（路径本身
 //     可能命中，如 Write: /etc/sudoers）；两项是与关系
-//   - bash        → 对 Command 做命令类判定
+//   - bash        → 先判全部落点的范围归属，落点干净才做命令类判定
 //   - 其余        → 对 Text 做命令类判定
 //
 // 注意：
@@ -157,7 +157,7 @@ func (g *Gate) Judge(req Request, scope Scope) Verdict {
 	case executor.PermToolWrite, executor.PermToolEdit:
 		return g.judgeFileWrite(req, scope)
 	case executor.PermToolBash:
-		return g.judgeCommand(req.Command)
+		return g.judgeBash(req, scope)
 	default:
 		return g.judgeCommand(req.Text)
 	}
@@ -189,4 +189,47 @@ func (g *Gate) judgeFileWrite(req Request, scope Scope) Verdict {
 		g.log.Debug("写入路径在任务范围内", "path", p, "base", base)
 	}
 	return Verdict{Action: AutoAllow, Reason: "全部目标路径落在任务范围内"}
+}
+
+// judgeBash 判定命令类请求：先判落点范围，落点干净才落回命令判据。
+//
+// 参数：req 为结构化请求（用 Command 与 Paths），scope 为任务范围
+// 返回：Escalate（任一落点越界或归一化失败），否则 judgeCommand 的结果
+//
+// 落点有两个来源，同等对待：
+//   - req.Paths —— executor 自己检出的越界目录。opencode 的 external_directory
+//     bash 形态把它填在这里（opencode/adapter_test.go 有同名断言钉住），
+//     但**此前被本函数的前身整个丢弃**，越界因此从「人来判」降级成「廉价模型判」
+//   - RedirectTargets(req.Command) —— handoff 自己从命令原文摘的重定向落点。
+//     不能只靠前者：2026-08-18 真机探针实测 opencode 只解析「作为参数出现的
+//     路径」，`echo x > /tmp/f` 零权限请求直接写成功（spec §2.2.1）
+//
+// 为什么路径判据前置于命令判据：越界是确定性事实，而 judgeCommand 最好的结果
+// 也只是 Consult。放在后面会让「越界」被稀释成廉价模型的一次裁决。
+//
+// 为什么落点为空不 fail-closed（与 judgeFileWrite 的 len(Paths)==0 → Escalate 不同）：
+// 纯 bash 门类本来就不带路径，`go build ./...` 是绝大多数情形；在这里 fail-closed
+// 等于把每条命令都升级人工，那是 spec §3 明确排除的反转。
+func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
+	targets := append(append([]string(nil), req.Paths...), RedirectTargets(req.Command)...)
+	for _, p := range targets {
+		if IsDiscardTarget(p) {
+			g.log.Debug("命令落点是丢弃设备，跳过范围判定", "path", p)
+			continue
+		}
+		in, base, err := InScope(p, scope)
+		if err != nil {
+			g.log.Debug("命令落点归一化失败，按越界处置", "path", p, "cause", err)
+			return Verdict{Action: Escalate,
+				Reason: fmt.Sprintf("命令落点归一化失败 %q: %v", p, err)}
+		}
+		if !in {
+			// 越界只返回给 manager 打带 task/perm 的权威 WARN；这里不重复打日志。
+			// 文案逐字复用 judgeFileWrite：B27 的真机验收记录按这句话 grep 日志
+			return Verdict{Action: Escalate,
+				Reason: fmt.Sprintf("目标路径越出任务范围: %s", p)}
+		}
+		g.log.Debug("命令落点在任务范围内", "path", p, "base", base)
+	}
+	return g.judgeCommand(req.Command)
 }

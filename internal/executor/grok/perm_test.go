@@ -11,7 +11,7 @@ import (
 
 func TestRespondPermissionUnknownTaskIsNotRunning(t *testing.T) {
 	a := grok.New(nil)
-	err := a.RespondPermission(context.Background(), "no-such-task", "call-1", "once")
+	err := a.RespondPermission(context.Background(), "no-such-task", "call-1", "once", "")
 	if !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Fatalf("未知任务必须包装 ErrTaskNotRunning，得到 %v", err)
 	}
@@ -19,7 +19,7 @@ func TestRespondPermissionUnknownTaskIsNotRunning(t *testing.T) {
 
 func TestRespondPermissionUnknownPermIDIsNotRunning(t *testing.T) {
 	a, _ := grok.NewAdapterWithRunForTest("t1")
-	err := a.RespondPermission(context.Background(), "t1", "call-does-not-exist", "once")
+	err := a.RespondPermission(context.Background(), "t1", "call-does-not-exist", "once", "")
 	if !errors.Is(err, executor.ErrTaskNotRunning) {
 		t.Fatalf("挂起表查不到必须包装 ErrTaskNotRunning（executor 已不在），得到 %v", err)
 	}

@@ -194,7 +194,7 @@ func TestRejectedListShowsDescriptionNotID(t *testing.T) {
 		t.Fatal("未收到权限事件")
 	}
 
-	if err := a.RespondPermission(ctx, "t1", "c1", "reject"); err != nil {
+	if err := a.RespondPermission(ctx, "t1", "c1", "reject", ""); err != nil {
 		t.Fatalf("RespondPermission 失败: %v", err)
 	}
 	rej := r.RejectedForTest()

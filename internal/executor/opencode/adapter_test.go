@@ -471,7 +471,7 @@ func TestStartToPermissionFlow(t *testing.T) {
 		t.Errorf("权限描述=%q，应含命令文本", ev.Text)
 	}
 
-	if err := ad.RespondPermission(context.Background(), taskID, "perm-1", "once"); err != nil {
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-1", "once", ""); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	perms := fs.perms()
@@ -677,7 +677,7 @@ func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 		t.Fatalf("PermissionID=%q，期望 per-rej-1", ev.PermissionID)
 	}
 	// 协调者拒绝：adapter 回传 reject 后，opencode 侧回合随即终止（无文本产出）
-	if err := ad.RespondPermission(context.Background(), "task-reject-01", "per-rej-1", "reject"); err != nil {
+	if err := ad.RespondPermission(context.Background(), "task-reject-01", "per-rej-1", "reject", ""); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	fs.push(statusIdleEvent())
@@ -703,7 +703,7 @@ func TestApprovedPermissionEmptyTurnEmitsFailedResult(t *testing.T) {
 	ad, ch := startFakeRun(t, fs, "task-approve-01", t.TempDir(), t.TempDir())
 
 	waitEventType(t, ch, "permission")
-	if err := ad.RespondPermission(context.Background(), "task-approve-01", "per-ok-1", "once"); err != nil {
+	if err := ad.RespondPermission(context.Background(), "task-approve-01", "per-ok-1", "once", ""); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	fs.push(statusIdleEvent())
@@ -1083,7 +1083,7 @@ subDone:
 	if err := ad.Send(context.Background(), taskID, "继续"); err == nil {
 		t.Fatal("保留态不应接受 Send 续接指令")
 	}
-	if err := ad.RespondPermission(context.Background(), taskID, "perm-x", "once"); err == nil {
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-x", "once", ""); err == nil {
 		t.Fatal("保留态不应接受权限应答")
 	}
 
@@ -1650,7 +1650,7 @@ func TestRespondPermissionRoutesToChildSession(t *testing.T) {
 
 	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
 	waitEventType(t, ch, "permission")
-	if err := ad.RespondPermission(context.Background(), taskID, "perm-r", "once"); err != nil {
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-r", "once", ""); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	calls := fs.perms()
