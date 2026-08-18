@@ -99,6 +99,35 @@ func DialACP(ctx context.Context, wsURL string, h ACPHandler, log *slog.Logger) 
 	return c, nil
 }
 
+// initializeParams 组 ACP 握手参数（Start 与 Resume 共用）。
+//
+// 为什么单开一个函数：两条路径都要握手，字面量各抄一份就会漂移——改一处漏一处
+// 等于只修一半，而这里漏掉的那一半正是 B139 的成因面。
+//
+// **clientCapabilities.fs 必须声明 false**：ACP 里这两个开关的语义不是「我允许你
+// 读写文件」，而是「文件由客户端代读代写」。声明 true，agent 就把 write /
+// search_replace 的落盘改成回调客户端的 fs/write_text_file；而本客户端只处理
+// session/request_permission 与 _x.ai/ask_user_question，其余入站请求一律回
+// -32601 "unhandled"（见 readLoop）。于是每一次写文件都以
+//
+//	Tool `write` failed: IO Error: unhandled
+//
+// 告终，一个字节都不落盘——那句 "unhandled" 是本文件写的，不是 grok 的报错
+// （2026-08-18 在 macOS 与 win-b37 双向复现，B139）。
+//
+// 为什么不改成实现这两个方法：handoff 是无头协调者，没有编辑器缓冲区需要同步，
+// executor 与任务工作区本来就在同一台机器上——让 agent 自己落盘既短又对，
+// 代客读写只会凭空多出一条可失败的链路。
+func initializeParams() map[string]any {
+	return map[string]any{
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{
+			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
+			"terminal": false,
+		},
+	}
+}
+
 // Call 发起请求并阻塞等待响应。
 func (c *ACPClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	ch, err := c.CallAsync(method, params)

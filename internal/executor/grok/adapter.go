@@ -243,13 +243,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 // 地打到「凭据错误 → 可操作指引」这条路径。
 func (a *Adapter) openSession(ctx context.Context, r *runState, cwd string) error {
 	a.log.Info("grok ACP 会话建立中", "task", r.taskID, "cwd", cwd)
-	if _, err := r.cli.Call(ctx, "initialize", map[string]any{
-		"protocolVersion": 1,
-		"clientCapabilities": map[string]any{
-			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
-			"terminal": false,
-		},
-	}); err != nil {
+	if _, err := r.cli.Call(ctx, "initialize", initializeParams()); err != nil {
 		return fmt.Errorf("ACP initialize: %w", err)
 	}
 	newRes, err := r.cli.Call(ctx, "session/new", map[string]any{

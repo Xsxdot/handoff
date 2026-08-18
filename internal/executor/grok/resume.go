@@ -151,13 +151,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		return executor.ResumeOutcome{}, nil
 	}
 	r.cli = cli
-	if _, err := cli.Call(ctx, "initialize", map[string]any{
-		"protocolVersion": 1,
-		"clientCapabilities": map[string]any{
-			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
-			"terminal": false,
-		},
-	}); err != nil {
+	if _, err := cli.Call(ctx, "initialize", initializeParams()); err != nil {
 		_ = cli.Close()
 		a.log.Warn("重连后 initialize 失败，判不可恢复", "task", taskID, "cause", err)
 		return executor.ResumeOutcome{}, nil
