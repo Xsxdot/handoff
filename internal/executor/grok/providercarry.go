@@ -1,7 +1,8 @@
 // providercarry.go —— 从用户权威 grok 配置里搬运自定义 provider 定义。
 //
 // 职责：
-//   - 从 ~/.grok/config.toml 的文本里抽出 [model.*] 段与 [models] 的 default
+//   - 从 ~/.grok/config.toml 的文本里抽出 [model.*] 段与整个 [models] 段
+//     （default 单独摘出，因为它另有优先级；其余键原样搬走）
 //   - 只做文本切段，不解析 TOML、不改写任何字段值
 //
 // 边界：
@@ -36,6 +37,19 @@ type carryResult struct {
 	SectionNames []string
 	// DefaultModel 是 [models] 段里 default 的值；权威配置没写时为空串。
 	DefaultModel string
+	// ModelsExtra 是 [models] 段里 **default 以外**的全部行（原样字节，含注释），
+	// 每行以 \n 结尾、无尾随空行。default 被摘出去是因为它另有优先级
+	// （--model > 权威 default），由 WriteTaskEnv 自己写。
+	//
+	// 为什么要搬这些「辅助旋钮」：grok 的 [models] 不止 default，还有
+	// web_search / session_summary / image_description。它们各自决定一条辅助
+	// 链路用哪个模型，**没写就回落到内建的 grok-4.6**——在自定义 provider 的
+	// 机器上，那个模型名对端根本不认，请求带着当前模型的凭据打到对端 endpoint
+	// 后被 400 顶回（B138 真机实证）。只搬 default 等于把用户配好的旋钮丢掉，
+	// 让任务级 home 比权威配置更容易撞墙。
+	ModelsExtra string
+	// ModelsExtraKeys 是 ModelsExtra 里的键名，**仅供日志**（键名不是密钥）。
+	ModelsExtraKeys []string
 }
 
 // extractProviderConfig 从 config.toml 的内容里抽出可搬运部分。
@@ -51,13 +65,16 @@ type carryResult struct {
 // （extra_headers = { … }），不触发这条；用测试固化这个形态，不做更复杂的解析。
 func extractProviderConfig(content string) carryResult {
 	var (
-		res      carryResult
-		buf      strings.Builder
-		inModel  bool
-		inModels bool
+		res       carryResult
+		buf       strings.Builder
+		modelsBuf strings.Builder
+		inModel   bool
+		inModels  bool
 	)
 	for _, line := range strings.Split(content, "\n") {
+		isHeader := false
 		if name, ok := sectionHeader(line); ok {
+			isHeader = true
 			inModel = strings.HasPrefix(name, "model.")
 			inModels = name == "models"
 			if inModel {
@@ -69,13 +86,45 @@ func extractProviderConfig(content string) carryResult {
 			buf.WriteString(line)
 			buf.WriteString("\n")
 		case inModels:
+			// 段头不搬：任务级 config 里 [models] 只能出现一次，由 WriteTaskEnv 写。
+			if isHeader {
+				continue
+			}
 			if v, ok := defaultValue(line); ok {
 				res.DefaultModel = v
+				continue // default 另走优先级，不进 ModelsExtra
+			}
+			modelsBuf.WriteString(line)
+			modelsBuf.WriteString("\n")
+			if k := assignedKey(line); k != "" {
+				res.ModelsExtraKeys = append(res.ModelsExtraKeys, k)
 			}
 		}
 	}
 	res.ModelSections = buf.String()
+	// 去掉尾随空行：段末的空行会在生成的 config 里堆成一片空白，
+	// 而这段是拼进 [models] 中间的，多余空行没有任何信息量。
+	res.ModelsExtra = strings.TrimRight(modelsBuf.String(), "\n")
+	if res.ModelsExtra != "" {
+		res.ModelsExtra += "\n"
+	}
 	return res
+}
+
+// assignedKey 取一行 `key = value` 的键名；注释行、空行与非赋值行返回空串。
+//
+// 只用于日志：调用方据此打出「搬了哪些旋钮」，不参与任何搬运判定——搬运始终是
+// 整行原样复制，认不出键名也不影响正确性。
+func assignedKey(line string) string {
+	t := strings.TrimLeft(line, " \t")
+	if t == "" || strings.HasPrefix(t, "#") {
+		return ""
+	}
+	i := strings.Index(t, "=")
+	if i < 1 {
+		return ""
+	}
+	return strings.TrimSpace(t[:i])
 }
 
 // sectionHeader 判断一行是不是段头，是则返回段名。
@@ -170,8 +219,8 @@ func loadAuthorityProviderConfig(log *slog.Logger) carryResult {
 		return carryResult{}
 	}
 	res := extractProviderConfig(string(b))
-	if len(res.SectionNames) == 0 && res.DefaultModel == "" {
-		log.Debug("权威 grok 配置无自定义 provider 与 default", "path", path)
+	if len(res.SectionNames) == 0 && res.DefaultModel == "" && res.ModelsExtra == "" {
+		log.Debug("权威 grok 配置无自定义 provider 与 [models] 段", "path", path)
 	}
 	return res
 }

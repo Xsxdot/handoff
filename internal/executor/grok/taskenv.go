@@ -69,7 +69,8 @@ var allowRules = []string{}
 //
 // 参数：
 //   - taskDir: 任务工作目录（须已存在，由调用方保证）
-//   - model: 任务级模型；空则不写 [models] 段，用 grok 自身默认
+//   - model: 任务级模型；空则退回权威配置的 default，两者都空时不写 default
+//     （此时 [models] 段仍可能因搬来的辅助旋钮而存在）
 //
 // 返回：grokhome 目录路径；建目录或写文件失败时返回错误
 //
@@ -90,7 +91,8 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 			log.Info("grok 任务环境已生成", "home", homeDir, "model", model,
 				"provider_sections", len(carried.SectionNames),
 				"provider_names", carried.SectionNames,
-				"default_from", defaultFrom)
+				"default_from", defaultFrom,
+				"models_extra_keys", carried.ModelsExtraKeys)
 		}
 	}()
 
@@ -117,9 +119,16 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 	b.WriteString("# 由 handoff agentd 生成的任务级 grok 配置，勿手工编辑。\n\n")
 	b.WriteString("[ui]\n")
 	b.WriteString("permission_mode = \"default\"\n\n")
-	if defaultModel != "" {
+	// [models] 段：default 由上面的优先级决定，其余旋钮（web_search /
+	// session_summary / image_description 等）从权威配置原样搬来。
+	// 两者合成一段而不是各写一段——TOML 不允许同名表定义两次。
+	if defaultModel != "" || carried.ModelsExtra != "" {
 		b.WriteString("[models]\n")
-		fmt.Fprintf(&b, "default = %q\n\n", defaultModel)
+		if defaultModel != "" {
+			fmt.Fprintf(&b, "default = %q\n", defaultModel)
+		}
+		b.WriteString(carried.ModelsExtra) // 已归一化：每行带 \n、无尾随空行
+		b.WriteString("\n")
 	}
 	b.WriteString("[permission]\n")
 	b.WriteString("ask = [\n")

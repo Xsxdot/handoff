@@ -350,3 +350,60 @@ func TestWriteTaskEnvNeverLogsSecrets(t *testing.T) {
 		t.Errorf("日志应含段名以便排障，实际日志:\n%s", buf.String())
 	}
 }
+
+// TestWriteTaskEnvCarriesAuxiliaryModelKnobs 是 B138 的端到端断言：权威配置里
+// [models] 的辅助旋钮必须出现在任务级 config 里，且整份文件只能有一个 [models]
+// 段（TOML 不允许同名表定义两次，写重了 grok 直接解析失败）。
+//
+// 承重点在「只搬 default」曾经的代价：任务级 home 里 web_search / session_summary
+// 一律缺失 → grok 回落内建 grok-4.6 → 自定义 provider 400。
+func TestWriteTaskEnvCarriesAuxiliaryModelKnobs(t *testing.T) {
+	fakeAuthorityConfig(t, `[models]
+default = "deepseek-v4-pro"
+web_search = "deepseek-v4-flash"
+session_summary = "deepseek-v4-flash"
+
+[model.deepseek-v4-pro]
+model = "deepseek-v4-pro"
+base_url = "https://example.invalid/v1"
+`)
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+
+	for _, want := range []string{
+		`default = "deepseek-v4-pro"`,
+		`web_search = "deepseek-v4-flash"`,
+		`session_summary = "deepseek-v4-flash"`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("任务级 config 缺 %q，实际:\n%s", want, cfg)
+		}
+	}
+	if n := strings.Count(cfg, "[models]"); n != 1 {
+		t.Errorf("[models] 段出现 %d 次（必须恰好 1 次，重复定义会让 grok 解析失败），实际:\n%s", n, cfg)
+	}
+	// --model 传入时仍以它为准，辅助旋钮照搬不误——两件事互不干扰
+	home2, err := grok.WriteTaskEnv(t.TempDir(), "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b2, err := os.ReadFile(filepath.Join(home2, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2 := string(b2)
+	if !strings.Contains(cfg2, `default = "deepseek-v4-flash"`) {
+		t.Errorf("--model 应压过权威 default，实际:\n%s", cfg2)
+	}
+	if !strings.Contains(cfg2, `session_summary = "deepseek-v4-flash"`) {
+		t.Errorf("辅助旋钮不该因传了 --model 就丢失，实际:\n%s", cfg2)
+	}
+}
