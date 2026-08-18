@@ -11,10 +11,10 @@ import (
 	"testing"
 )
 
-// withStubs 替换三个探测缝，返回时自动还原。
-func withStubs(t *testing.T, home string, inPath map[string]bool, files map[string]bool) {
+// withStubs 替换四个探测缝（PATH 查找、文件存在、HOME、平台），返回时自动还原。
+func withStubs(t *testing.T, home string, inPath map[string]bool, files map[string]bool, platform string) {
 	t.Helper()
-	oldLook, oldStat, oldHome := lookPath, statFile, userHomeDir
+	oldLook, oldStat, oldHome, oldGOOS := lookPath, statFile, userHomeDir, goos
 	lookPath = func(name string) (string, error) {
 		if inPath[name] {
 			return "/usr/local/bin/" + name, nil
@@ -28,7 +28,8 @@ func withStubs(t *testing.T, home string, inPath map[string]bool, files map[stri
 		return os.ErrNotExist
 	}
 	userHomeDir = func() (string, error) { return home, nil }
-	t.Cleanup(func() { lookPath, statFile, userHomeDir = oldLook, oldStat, oldHome })
+	goos = platform
+	t.Cleanup(func() { lookPath, statFile, userHomeDir, goos = oldLook, oldStat, oldHome, oldGOOS })
 }
 
 // byName 从结果里取某一家，找不到直接失败。
@@ -45,7 +46,7 @@ func byName(t *testing.T, rs []Result, name string) Result {
 
 // 四家都没装：全部 StateMissing，且顺序稳定。
 func TestDetectAllMissing(t *testing.T) {
-	withStubs(t, "/home/u", nil, nil)
+	withStubs(t, "/home/u", nil, nil, "darwin")
 	rs := Detect()
 	if len(rs) != 4 {
 		t.Fatalf("应返回 4 项，得到 %d", len(rs))
@@ -63,7 +64,7 @@ func TestDetectAllMissing(t *testing.T) {
 
 // 装了但没凭证文件：StateNoCreds（claude 除外，见下一例）。
 func TestDetectInstalledWithoutCreds(t *testing.T) {
-	withStubs(t, "/home/u", map[string]bool{"opencode": true, "grok": true, "codex": true}, nil)
+	withStubs(t, "/home/u", map[string]bool{"opencode": true, "grok": true, "codex": true}, nil, "darwin")
 	rs := Detect()
 	for _, n := range []string{"opencode", "grok", "codex"} {
 		if got := byName(t, rs, n).State; got != StateNoCreds {
@@ -80,7 +81,7 @@ func TestDetectReadyUsesVerifiedCredPaths(t *testing.T) {
 		filepath.Join(home, ".grok/auth.json"):                 true,
 		filepath.Join(home, ".codex/auth.json"):                true,
 	}
-	withStubs(t, home, map[string]bool{"opencode": true, "grok": true, "codex": true}, files)
+	withStubs(t, home, map[string]bool{"opencode": true, "grok": true, "codex": true}, files, "darwin")
 	rs := Detect()
 	for _, n := range []string{"opencode", "grok", "codex"} {
 		r := byName(t, rs, n)
@@ -105,7 +106,7 @@ func TestDetectClaudeIsAlwaysAuthUnknownWhenInstalled(t *testing.T) {
 		filepath.Join(home, ".claude.json"):              true,
 		filepath.Join(home, ".claude/.credentials.json"): true,
 	}
-	withStubs(t, home, map[string]bool{"claude": true}, files)
+	withStubs(t, home, map[string]bool{"claude": true}, files, "darwin")
 	r := byName(t, Detect(), "claude")
 	if r.State != StateAuthUnknown {
 		t.Fatalf("claude 装了就应是 StateAuthUnknown，得到 %v", r.State)
@@ -120,7 +121,7 @@ func TestDetectClaudeIsAlwaysAuthUnknownWhenInstalled(t *testing.T) {
 
 // 没装的 claude 仍是 StateMissing，不是 StateAuthUnknown。
 func TestDetectClaudeMissing(t *testing.T) {
-	withStubs(t, "/home/u", nil, nil)
+	withStubs(t, "/home/u", nil, nil, "darwin")
 	if got := byName(t, Detect(), "claude").State; got != StateMissing {
 		t.Fatalf("没装的 claude 应为 StateMissing，得到 %v", got)
 	}
@@ -164,5 +165,49 @@ func TestStateStrings(t *testing.T) {
 		if got := s.String(); got != want {
 			t.Errorf("State(%d).String()=%q，期望 %q", s, got, want)
 		}
+	}
+}
+
+// TestDetectWindowsOpencodeAuthIsUnknown 覆盖 Windows 上的 opencode 登录判据。
+//
+// why：.local/share/opencode/auth.json 是 XDG 落点，Windows 上 opencode 不用它。
+// 拿一个在该平台不成立的路径去断言「未登录」是撒谎——如实报「查不了」。
+// 反过来 grok / codex 的 ~/.grok、~/.codex 在 Windows 上同样成立，必须仍按文件判定，
+// 这条断言是防止把三家一起误伤。
+func TestDetectWindowsOpencodeAuthIsUnknown(t *testing.T) {
+	home := "/home/u"
+	inPath := map[string]bool{"opencode": true, "grok": true, "codex": true}
+	files := map[string]bool{
+		filepath.Join(home, ".local/share/opencode/auth.json"): true, // 就算这个文件在，Windows 上也不该拿它当判据
+		filepath.Join(home, ".grok/auth.json"):                 true,
+	}
+	withStubs(t, home, inPath, files, "windows")
+
+	rs := Detect()
+	if got := byName(t, rs, "opencode").State; got != StateAuthUnknown {
+		t.Fatalf("windows 上 opencode 应为 StateAuthUnknown，实为 %v", got)
+	}
+	if got := byName(t, rs, "grok").State; got != StateReady {
+		t.Fatalf("windows 上 grok 凭证文件在，应为 StateReady，实为 %v", got)
+	}
+	if got := byName(t, rs, "codex").State; got != StateNoCreds {
+		t.Fatalf("windows 上 codex 凭证文件不在，应为 StateNoCreds，实为 %v", got)
+	}
+	// claude 不在 PATH 里（inPath 没给它），仍应是 StateMissing——
+	// 「没装」与「查不了」是两件事，本改动不得把它们混起来
+	if got := byName(t, rs, "claude").State; got != StateMissing {
+		t.Fatalf("windows 上 claude 未安装，应为 StateMissing，实为 %v", got)
+	}
+}
+
+// TestDetectDarwinOpencodeUnchanged 是回归：非 Windows 平台行为逐字不变。
+func TestDetectDarwinOpencodeUnchanged(t *testing.T) {
+	home := "/home/u"
+	inPath := map[string]bool{"opencode": true}
+	files := map[string]bool{filepath.Join(home, ".local/share/opencode/auth.json"): true}
+	withStubs(t, home, inPath, files, "darwin")
+
+	if got := byName(t, Detect(), "opencode").State; got != StateReady {
+		t.Fatalf("darwin 上凭证文件在，opencode 应为 StateReady，实为 %v", got)
 	}
 }
