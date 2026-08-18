@@ -112,6 +112,13 @@ type Handle struct {
 	// 同一条纪律——老任务不会因为升级就被动手。
 	RosterPath string `json:"roster_path,omitempty"`
 
+	// MembersPath 是进程容器成员快照（members.json）的路径。
+	//
+	// 只有具备进程容器的平台（Windows 的 Job Object）会填它并落盘；unix 上恒为空串，
+	// Footprint 因此自然落回 pgid + roster + 标记三段判据。升级前写下的 proc.json
+	// 没有此字段，读出空串即跳过容器来源，不会改变老任务的清扫语义。
+	MembersPath string `json:"members_path,omitempty"`
+
 	// TaskID / MarkRoot 是归属判定的凭据，由 Start 从 Spec 原样带过来。
 	//
 	// omitempty + 零值语义：升级前写下的 proc.json 没有这两个字段，读出空串即
@@ -339,14 +346,16 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 			"pid", pid, "spec", specPath)
 	}
 	roster := rosterPath(spec.InfoPath)
+	members := membersPath(spec.InfoPath)
 	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
-		"started_at", startedAt, "roster", roster)
+		"started_at", startedAt, "roster", roster, "members", members)
 	return Handle{
-		PID:        pid,
-		LockPath:   spec.LockPath,
-		StartedAt:  startedAt,
-		RosterPath: roster,
-		TaskID:     spec.TaskID,
-		MarkRoot:   spec.MarkRoot,
+		PID:         pid,
+		LockPath:    spec.LockPath,
+		StartedAt:   startedAt,
+		RosterPath:  roster,
+		MembersPath: members,
+		TaskID:      spec.TaskID,
+		MarkRoot:    spec.MarkRoot,
 	}, nil
 }
