@@ -96,6 +96,22 @@ EXTRA_TAGS=... → go build -tags production,embedbin ... # 正确
   `codesign --verify --strict` 通过 → `wails3 task package` → **不带 `--deep`** 签外层 →
   `codesign --verify --strict` 通过。产物 `go version -m` 显示 `-tags=production,embedbin`，
   注入的版本串在二进制里命中（`strings | grep -c` = 1）。
+- **变异复验六条全部翻红**（照 B86 立下的房规：CI 配置跑不了真 runner，就把每道门
+  故意打断、确认测试真的红。每条都确认变异真改到文件、跑完还原、工作区干净）：
+  ① linux 那处 `EXTRA_TAGS` 改回 `GO_FLAGS`（本轮真踩过的错）
+  ② linux 那处去掉 `EXTRA_LDFLAGS`
+  ③ 去掉装 wails3 的 `-tags gtk3`
+  ④ 内嵌 CLI 不再单独签名
+  ⑤ 薄壳 job 漏注入 CLI 版本路径
+  ⑥ `AssetName` 改成 `handoff-desktop_` 前缀（撞车检测）
+
+  **其中第①条第一次跑是绿的，当场抓出我自己刚写的那道门是假门**：
+  `TestDesktopJobsCarryLoadBearingFlags` 初版用 `strings.Contains`，而两个薄壳 job
+  各传一次 `EXTRA_TAGS`，改坏一处另一处还在，Contains 照样满足。这与本文件顶上
+  `TestWorkflowInjectsVersionAtModulePath` 注释里写的是同一个坑。已改为逐条带期望
+  出现次数（两个 job 各一次的记 2、单 job 的记 1），重跑六条全红。
+  **这条门若不做变异复验，会以「已验」的姿态一直假绿下去。**
+
 - **既有契约测试 `TestWorkflowInjectsVersionAtModulePath` 曾翻红并已正确收口**：
   它断言 workflow 恰含 **2** 处 CLI 版本注入，而两个薄壳 job 各自也要编一份 CLI 嵌进壳里，
   实得 4 处。这个数字是「编 CLI 的地方有几处」的代理，已改为 4 并在注释里写明是哪四处、
