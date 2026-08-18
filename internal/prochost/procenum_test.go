@@ -13,8 +13,8 @@ import (
 func TestEnumProcsFindsSelf(t *testing.T) {
 	procs, err := enumProcs()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		if !errors.Is(err, errNotSupported) {
-			t.Fatalf("非 darwin/linux 应返回 errNotSupported，got %v", err)
+		if !errors.Is(err, ErrNotSupported) {
+			t.Fatalf("非 darwin/linux 应返回 ErrNotSupported，got %v", err)
 		}
 		return
 	}
@@ -60,8 +60,8 @@ func TestEnumProcsFillsPPID(t *testing.T) {
 func TestProcLimitPositive(t *testing.T) {
 	n, err := procLimit()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		if !errors.Is(err, errNotSupported) {
-			t.Fatalf("非 darwin/linux 应返回 errNotSupported，got %v", err)
+		if !errors.Is(err, ErrNotSupported) {
+			t.Fatalf("非 darwin/linux 应返回 ErrNotSupported，got %v", err)
 		}
 		return
 	}

@@ -131,7 +131,7 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 // 返回：
 //   - members: 通过身份校验的成员 pid
 //   - v: 判定结论；非 VerdictOK 时 members 必然为空
-//   - err: 进程枚举失败（平台不支持时为 errNotSupported）
+//   - err: 进程枚举失败（平台不支持时为 ErrNotSupported）
 //
 // 注意：
 //   - **只读，绝不发信号**——它是 Sweep 的孪生只读版本，两者共用 classify
@@ -143,7 +143,7 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 func Footprint(h Handle) (members []int, v Verdict, err error) {
 	procs, err := enumProcsFn()
 	if err != nil {
-		log().Error("足迹枚举失败", "pid", h.PID, "cause", err)
+		logEnumFailure("足迹枚举失败", err, "pid", h.PID)
 		return nil, VerdictNoCredential, err
 	}
 	members, v = classify(h, procs, aliveFn(h))
@@ -271,7 +271,7 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 		// （B119：生产日志 118 次拒绝、真正跑完的清扫仅 34 次）。
 		procs, eerr := enumProcsFn()
 		if eerr != nil {
-			log().Error("降级清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+			logEnumFailure("降级清扫前枚举进程失败", eerr, "pid", h.PID)
 			return 0, VerdictNoCredential, eerr
 		}
 		n := rosterKill(h, procs)
@@ -281,7 +281,7 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 	}
 	procs, eerr := enumProcsFn()
 	if eerr != nil {
-		log().Error("清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+		logEnumFailure("清扫前枚举进程失败", eerr, "pid", h.PID)
 		return 0, VerdictNoCredential, eerr
 	}
 	members, v := classify(h, procs, false)
@@ -487,7 +487,7 @@ func CountGroup(pgid int) (int, error) {
 //
 // 返回：
 //   - used: 当前 uid 的进程数；limit: 每 uid 上限
-//   - err: 平台不支持（errNotSupported）或读取失败
+//   - err: 平台不支持（ErrNotSupported）或读取失败
 //
 // 注意：与 Footprint 共用同一次进程枚举的实现，但回答的是不同问题——
 // Footprint 问「这个任务占了多少」，本函数问「这台机器还剩多少」。
@@ -495,14 +495,39 @@ func CountGroup(pgid int) (int, error) {
 func UIDUsage() (used, limit int, err error) {
 	procs, err := enumProcsFn()
 	if err != nil {
-		log().Error("统计 uid 进程占用失败", "cause", err)
+		logEnumFailure("统计 uid 进程占用失败", err)
 		return 0, 0, err
 	}
 	limit, err = procLimit()
 	if err != nil {
-		log().Error("读取进程数上限失败", "cause", err)
+		// 与上面同一条纪律：平台没有这个原语是结论不是故障。Windows 上
+		// enumProcs 会先一步返回，走不到这里；但 procLimit 单独缺失的平台
+		// 组合是存在的，不能靠「反正到不了」来省这一档
+		logEnumFailure("读取进程数上限失败", err)
 		return len(procs), 0, err
 	}
 	log().Debug("uid 进程占用", "used", len(procs), "limit", limit)
 	return len(procs), limit, nil
+}
+
+// logEnumFailure 按「平台缺能力」还是「真故障」两档记录进程枚举失败。
+//
+// 参数：msg 为事件名；err 为 enumProcs 的返回；args 为附加键值对（不含 cause，
+// 本函数自己补）。
+//
+// 为什么不一律按 Error 打：非 darwin/linux 上 enumProcs 恒定返回
+// ErrNotSupported，那是**预期形态**而不是故障。按 Error 打的后果实测过——
+// Windows 执行机上每次 handoff status 都在 agentd 日志里刷两条红字
+// （足迹枚举失败 + 统计 uid 进程占用失败），把真正的枚举故障淹在噪音里
+// （B144）。同一档位的正确措辞见 shim.go 的名册采样分支。
+//
+// 注意：降档的只是**日志**，返回值与降级语义一概不变——调用方仍须把结论
+// 呈现为「未知」，绝不能回退成 0。
+func logEnumFailure(msg string, err error, args ...any) {
+	args = append(args, "cause", err)
+	if errors.Is(err, ErrNotSupported) {
+		log().Debug(msg+"：本平台不支持进程枚举，结论降级为未知", args...)
+		return
+	}
+	log().Error(msg, args...)
 }

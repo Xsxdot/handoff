@@ -117,7 +117,7 @@ func TestReadRosterMissingIsNotError(t *testing.T) {
 
 // 名册损坏必须**报错**而不是当成空名册：空名册意味着「确实没有后代」，
 // 损坏意味着「有后代但我读不出来」，两者对调用方是不同的决定（后者要打日志
-// 让人看见），这与 errNotSupported 不能退化成空集是同一条纪律。
+// 让人看见），这与 ErrNotSupported 不能退化成空集是同一条纪律。
 func TestReadRosterCorruptReportsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), RosterFileName)
 	if err := os.WriteFile(path, []byte("{不是 json"), 0o600); err != nil {

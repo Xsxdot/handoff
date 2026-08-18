@@ -23,7 +23,7 @@ func TestRosterSamplingStopsWhenProcEnumUnsupported(t *testing.T) {
 	calls := 0
 	enumProcsFn = func() ([]procEntry, error) {
 		calls++
-		return nil, errNotSupported
+		return nil, ErrNotSupported
 	}
 	s := &rosterSampler{path: filepath.Join(t.TempDir(), "roster.json")}
 	runRosterSampling(make(chan struct{}), s, slog.New(slog.NewTextHandler(io.Discard, nil)))

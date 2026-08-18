@@ -15,7 +15,7 @@ import (
 //
 // 返回：
 //   - 每个进程的 pid / pgid / 启动时刻（unix 纳秒）
-//   - sysctl 失败时返回错误；不返回 errNotSupported（本平台是支持的）
+//   - sysctl 失败时返回错误；不返回 ErrNotSupported（本平台是支持的）
 //
 // 注意：kinfo_proc 的 p_starttime 是 struct timeval（墙钟），直接换算 unix 纳秒。
 func enumProcs() ([]procEntry, error) {
