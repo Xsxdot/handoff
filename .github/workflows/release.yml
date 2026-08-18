@@ -310,6 +310,95 @@ jobs:
           path: handoff_*.tar.gz
           if-no-files-found: error
 
+  # 薄壳的 Linux 资产必须在原生 runner 上构建：webkit2gtk 经 cgo，
+  # CGO_ENABLED=0 交叉编译编不过（P1-linux 探针实测）。
+  # runner 锁 22.04 而非 ubuntu-latest：AppImage 要在最老的目标发行版上构建，
+  # latest 会随 GitHub 滚动、某天静默抬高 glibc 基线，而这个变化不体现在
+  # 任何一次提交里。
+  build-desktop-linux:
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-unix / build-darwin 一致
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 22.04 上只有 webkit2gtk-4.1 这一代；4.0 见 spec §7 的非目标
+      - name: 装系统依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      # 承重：装 wails3 这一步**本身**也要带 -tags gtk3。不带的话在 22.04 上
+      # 直接 `No package 'gtk4' found` 退出 1——卡点在准备工具阶段，比构建期
+      # 更早，报错却和「薄壳代码有问题」长得一模一样（P1-linux 探针实测）。
+      - name: 装 wails3
+        run: go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 薄壳内嵌的 handoff 必须是同一次流水线编出来的那份，且 CLI 保持
+      # CGO_ENABLED=0（既有约束，与薄壳开 CGO 互不影响）
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # linux:package 还会产出 rpm 与 archlinux 包，本流水线只发 AppImage 与 deb，
+      # 其余留在 desktop/bin/（已忽略）不管
+      - name: 构建薄壳并打包
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          # 两处 tag 缺一不可：gtk3 决定链哪一代 webkit，embedbin 决定
+          # embedbin.Available() 走真产物那一支
+          wails3 task linux:package \
+            GO_FLAGS="-tags gtk3,embedbin -ldflags=-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      - name: 重命名为发布资产名
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # 独立前缀 handoff-desktop_：install.sh 与自更新都是精确拼
+          # handoff_<tag>_<平台> 取 CLI 资产，前缀不同就不会被误抓
+          mv desktop/bin/*.AppImage "handoff-desktop_${TAG}_linux_amd64.AppImage"
+          mv desktop/bin/*.deb      "handoff-desktop_${TAG}_linux_amd64.deb"
+
+      # 干净检查：构建产物不得入库（W5b-1 在这里栽过一次）
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      # if-no-files-found: error 与既有 job 一致：静默上传一个空 artifact 会让
+      # release job 在收集资产时才暴露问题，那时已经离现场很远了
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_linux
+          path: handoff-desktop_*
+          if-no-files-found: error
+
   release:
     needs: [build-unix, build-darwin]
     runs-on: ubuntu-latest
