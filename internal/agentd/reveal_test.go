@@ -54,6 +54,24 @@ func revealCapture(t *testing.T) (*string, func()) {
 	return &got, func() { revealOpener = prev }
 }
 
+// revealPinSupported 把平台判据钉成「支持」，用例结束自动还原。
+//
+// 为什么每条要走到平台门之后的用例都必须钉：revealSupportedOS 默认取**宿主平台**，
+// 不钉的话这些用例在 macOS 上验的是真逻辑、在 Linux 上一律撞 501——包括那些
+// 本该断言 400/409/500 的拒绝分支，因为平台门排在它们前面。
+//
+// 2026-08-18 这件事真的发生了：本分支第一次在 ubuntu runner 上跑 CI，八条一起红。
+// 在此之前它们「一直是绿的」，只是因为一直只在 macOS 上跑过——这正是
+// revealSupportedOS 被写成 var 时注释里担心的那种「等于永远不测」的反面：
+// 默认值让一半分支只在某种宿主上才跑得到。平台相关的分支要么钉死判据，
+// 要么就是在赌 CI 跑在哪个 OS 上。
+func revealPinSupported(t *testing.T) {
+	t.Helper()
+	prev := revealSupportedOS
+	revealSupportedOS = true
+	t.Cleanup(func() { revealSupportedOS = prev })
+}
+
 // revealReq 造一条指向 root 的 reveal 请求。remote 为空时用回环地址（127.0.0.1:54321）
 // ——要测空串 RemoteAddr 必须先构造后手动覆盖 r.RemoteAddr。
 func revealReq(root, rel, machine, remote string) *http.Request {
@@ -70,6 +88,7 @@ func revealReq(root, rel, machine, remote string) *http.Request {
 }
 
 func TestRevealHappyPath(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	got, restore := revealCapture(t)
 	defer restore()
@@ -88,6 +107,7 @@ func TestRevealHappyPath(t *testing.T) {
 // TestRevealEmptyRel 断言空 rel 揭示工作树根本身——与 DeleteEntry 不同，
 // 揭示根是正当操作，不能照抄「空串按非法名拒」。
 func TestRevealEmptyRel(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	got, restore := revealCapture(t)
 	defer restore()
@@ -119,6 +139,7 @@ func TestRevealRejectsMachine(t *testing.T) {
 }
 
 func TestRevealRejectsNonLoopback(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	got, restore := revealCapture(t)
 	defer restore()
@@ -138,6 +159,7 @@ func TestRevealRejectsNonLoopback(t *testing.T) {
 // 把返回值变异成 `ip == nil || ip.IsLoopback()`（fail-open）仍会全绿。
 // revealReq 对空串 remote 有回环 fallback，这里先构造再手动覆盖 RemoteAddr。
 func TestRevealRejectsUnparseableRemote(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	got, restore := revealCapture(t)
 	defer restore()
@@ -175,6 +197,7 @@ func TestRevealUnsupportedPlatform(t *testing.T) {
 }
 
 func TestRevealPathEscape(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	got, restore := revealCapture(t)
 	defer restore()
@@ -192,6 +215,7 @@ func TestRevealPathEscape(t *testing.T) {
 // TestRevealSymlinkEscape 断言工作树内的符号链接指向树外时被拒——这是
 // EvalSymlinks 前缀校验存在的全部理由，纯字符串 Clean 挡不住它。
 func TestRevealSymlinkEscape(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o600); err != nil {
@@ -215,6 +239,7 @@ func TestRevealSymlinkEscape(t *testing.T) {
 
 // TestRevealOpenFails 断言 open 的失败原文透传，不吞成「操作失败」。
 func TestRevealOpenFails(t *testing.T) {
+	revealPinSupported(t)
 	s, root := newRevealServer(t)
 	prev := revealOpener
 	revealOpener = func(context.Context, string) error {
@@ -238,6 +263,7 @@ func TestRevealOpenFails(t *testing.T) {
 // 钉住 reveal 的路由注册：POST /api/workspaces/reveal?path=&rel= 正常返回 200
 // 并真的执行 open。若 server.go 里注册行被删，这里会 404。
 func TestRevealRouteHappyPath(t *testing.T) {
+	revealPinSupported(t)
 	env, repo := newRevealEnv(t)
 	got, restore := revealCapture(t)
 	defer restore()
