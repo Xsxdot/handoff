@@ -85,18 +85,33 @@ systemd 写 unit 完全同构。因为 `schtasks` 的命令行参数**表达不�
 | `launchctl bootstrap <domain> <path>` 加载 | `schtasks /Create /XML <path> /TN <TaskName> /F` |
 | `launchctl bootout <target>` 卸载 | `schtasks /Delete /TN <TaskName> /F` |
 | `launchctl print <target>` 复核 | `schtasks /Query /TN <TaskName> /XML` + 进程复核（§2.4） |
-| `KeepAlive=true`（exit 0 也拉起） | `<Repetition>` 每 1 分钟 + `MultipleInstancesPolicy=IgnoreNew`（§2.3） |
+| `KeepAlive=true`（exit 0 也拉起） | `<TimeTrigger>` 上每 1 分钟的 `<Repetition>` + `MultipleInstancesPolicy=IgnoreNew`（§2.3） |
 
 常量：`WindowsTaskName = "handoff-agentd"`，与 `LaunchdLabel` / `SystemdUnit` 并列。
 
 **XML 里四项承重配置，一条都不能少**：
 
-1. **`<Repetition><Interval>PT1M</Interval><Duration>P365D</Duration>`**
+1. **`<Repetition><Interval>PT1M</Interval>`（不带 `<Duration>`，即无限重复）**
    + **`<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>`**
    这两条合起来才等价于 `KeepAlive`：活着时重复触发被忽略，死了下次触发拉起。
    **任一缺失都会失效**——缺前者 = 永不重启（换版后服务无声消失）；
    缺后者 = 每分钟起一个新实例，全被 DataDir 锁挡下，日志里刷满锁冲突。
-2. **`<LogonTrigger>`**：登录时自启，对标 `RunAtLoad`。重复触发挂在这个触发器上。
+   写了有限的 `<Duration>` 则是第三种失效：到期后静默失去自愈能力，且毫无报错。
+2. **`<BootTrigger>` 管开机自启，`<TimeTrigger>` 承载那条每分钟的重复**——
+   两个触发器分工，缺一不可。
+
+   **重复触发绝不能挂在 `BootTrigger` 上**（08-18 win-b37 实测，见 §8）：
+   它的重复序列锚定开机那一刻，任务若在开机之后才注册，这条序列在本次开机
+   会话里从未激活，`schtasks /Query /V` 的 Next Run Time 恒为 `N/A`，
+   kill 掉 agentd 后 150 秒也没有被拉回。XML 完全合法、`/Create` 也成功——
+   这个缺陷只能靠真机 kill 一次或看 Next Run Time 才发现。
+
+   `TimeTrigger` 的 `<StartBoundary>` 写死一个过去时刻（不取当前时间），
+   调度器会据此推算下一次运行；写死才能让同一份 Spec 渲染出稳定可复现的 XML，
+   单测也才钉得住。
+
+   （原方案写的是 `<LogonTrigger>`，已推翻两次：先因「无人值守服务器上没有交互
+   登录，agentd 将永不自启」改成 BootTrigger，再因上述重复失效拆成两个触发器。）
 3. **`<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>`**
    + **`<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>`**
    两者默认值都是 `true`，笔记本上会让任务**根本不启动且不报错**。
@@ -154,11 +169,18 @@ schtasks 跟踪的直接就是 `handoff.exe`，这个分叉**理应消失**。
 
 - `Installed`：`schtasks /Query /TN <TaskName>` 成功即为 true。查不到是**正常答案**
   不是错误（与 launchd `print` 退 113 同款纪律）。
-- `Running`：读 `schtasks /Query /TN <TaskName> /V /FO CSV` 拿到状态**与 PID**，
-  再用 `tasklist /FI "PID eq <pid>"` 复核那个 pid 真的在。
-  **判据必须是 PID 不是镜像名**——`tasklist /FI "IMAGENAME eq handoff.exe"` 会把
-  操作者正在敲的 `handoff` CLI 也数进去，那是个稳定的假阳性
-  （协调者机器上尤其明显，CLI 几乎总在跑）。
+- `Running`：读 `schtasks /Query /TN <TaskName> /V /FO LIST`，判据是输出里有没有
+  **`267009`**（`SCHED_S_TASK_RUNNING`）这个数值。
+
+  **本条已被真机推翻重写两次，原文错在两处**（08-18 win-b37，见 §8）：
+  其一，`/V` 的 28 个字段里**根本没有 PID 列**——照原方案取 PID 恒得 0，
+  于是 `Running` 恒为 false，`Install` 的复核必然失败（而 agentd 其实活得好好的）。
+  其二，改用进程侧复核也不成立：agentd 与操作者正在敲的 `handoff` CLI **同一个镜像名**，
+  而 `tasklist` 不给命令行，两者区分不开。
+
+  改判 `267009` 是因为它**不随系统语言变化**：字段名（`Last Result` / 「上次结果」）
+  与状态取值（`Running` / 「正在运行」）都会本地化，按名字取值等于把判据绑死在
+  一种语言上；而这个数值既不是时间戳也不是路径，误命中其它字段的可能性可忽略。
 - `Detail`：取 `schtasks /Query` 输出摘要，供排障。
 
 **验收时要留意**：如果真机上 schtasks 状态与 pid 复核**从未分叉**，说明上面那条推理成立，
@@ -185,6 +207,30 @@ D8 的直接结论。`Uninstall` 的顺序：
 | **XML 必须是 UTF-16 LE + BOM** | `schtasks /Create /XML` 喂 UTF-8 会报一个与编码毫无关系的错 | `writeFile` 缝里做编码转换，单测断言 BOM 与编码 |
 | **`schtasks` 输出编码随系统码页** | 中文系统上 `run` 拿到的是 GBK 字节，塞进日志是乱码（同款坑已在读远端日志时踩过：`Get-Content` 默认按 ANSI 码页，中文日志全是乱码，看起来像日志写坏了，其实是读法错） | `Detail` 与错误报文里的原文按码页解码；拿不准就只取 ASCII 可读部分并标注，**不要静默丢弃非 ASCII 字节**——那会把真因抹掉 |
 | **`/Create` 需要的权限** | S4U 任务通常要管理员或「作为服务登录」权限 | 失败时**原样带上 schtasks 的 stderr**，不自己编处置建议（B64 的教训：编出来的处置建议会把人引向错误方向） |
+
+### 2.7 托管判据：闸二在 Windows 上问的是另一个问题
+
+**这一节是补写的——原 spec 整个漏掉了它，而 B142 的价值判据恰恰压在它身上**（见 §8）。
+
+换版接口的闸二用 `selfupdate.IsManaged` 判「换完版 exit(0) 之后还有没有人把 agentd
+拉起来」。它原本只认两条环境变量：systemd 注入的 `INVOCATION_ID`、launchd 注入的
+`XPC_SERVICE_NAME`。**Task Scheduler 对被它拉起的进程什么都不注入**，于是 Windows 上
+这两条恒不成立——`service install` 成功、agentd 确由计划任务托管，`status` 仍报
+「非托管启动」，`upgrade` 硬拒。装了服务闸二照样关着，B142 等于没做。
+
+**改法不是给 Windows 找一个等价的环境变量（没有），而是换一个问法**：
+
+> 不问「谁把我拉起来的」，问「计划任务在不在、它登记的是不是我这个二进制」。
+
+后者在 Windows 上问得出来（`schtasks /Query`），而且**它才是闸二真正要的那个保证**：
+本进程退出后会不会有人把同一个二进制拉回来。前者只是这个保证在 unix 上的一个代理。
+
+实现：`IsManaged` 增加平台钩子 `platformManaged`（默认恒 false，unix 行为一步不动），
+Windows 侧由 `service.UnitReferences` 回答。路径比对是承重的——从别的目录跑一个
+agentd（如临时工作树里的构建）时，任务指向的是另一个二进制，换版会换掉没人运行的
+那个文件而 `upgrade` 报成功。路径对不上就判否，正是闸二该拦的情形。
+
+---
 
 ---
 
@@ -436,5 +482,52 @@ B142 的验收要在 win-b37 上装真正的托管，而那台机器现在跑着
 | ~~1~~ | ~~`JOBOBJECT_BASIC_PROCESS_ID_LIST` 是否可用~~ | ✅ **08-18 已由真机探针解决**（§3.7）：结构体要手工声明，声明已验证可用，成员表行为符合预期。**§3 方案成立，plan 不再需要探针 task** |
 | ~~2~~ | ~~win-b37 上是否装有 Go~~ | ✅ **08-18 已确认：没装**。用户确认可装，列为验收前置步骤（§6.3 第 1 条） |
 | 3 | `schtasks /Create` 所需权限 | 失败时原样带 stderr，不编处置建议（§2.6） |
-| 4 | `<LogonTrigger>` 要求用户登录过一次 | 已知代价，记在 §2.1。出现「重启后无人登录」的部署形态时重新评估 SCM |
+| ~~4~~ | ~~`<LogonTrigger>` 要求用户登录过一次~~ | ✅ **已推翻**：无人值守服务器上「登录过一次」不是可接受代价而是致命缺陷，改 `BootTrigger` + `TimeTrigger`（§2.2 第 2 条） |
 | 5 | Windows 换版空窗最长约 1 分钟 | 已知代价（macOS 约 10 秒）。已跑的任务不受影响（executor detached，「活过 agentd 重启」是招牌属性）。`upgradeWaitTimeoutPush` 放宽到 120s 留一倍余量 |
+
+---
+
+## 八、真机验收记录（2026-08-18，win-b37）
+
+全部判据都在 win-b37 上真跑过。**四处被推翻，都不是执行者的问题——是这份 spec
+和据它写出的 plan 自己错了**，记在这里免得后人重走。
+
+### 8.1 结果
+
+| 判据 | 结果 |
+|---|---|
+| `service install` 成功、XML 落盘且是 UTF-16 | ✅ `probe=1`（第一次 500ms 轮询就复核到进程存活） |
+| `service status` 报已托管 | ✅ |
+| 手工 kill agentd → 1 分钟内被拉回 | ✅ **36 秒**（修正触发器之后；修正前 150 秒未拉回） |
+| 闸二走通 | ✅ `POST /api/update` 空 body（纯重启模式）返回 `{"ok":true,"restarted":true}`，agentd 退出 0，**45 秒**被拉回，pid 4516 → 664 |
+| `members.json` 有内容、成员变化时 `sampled_at` 推进 | ✅ 6 个 pid；稳定期刻意不重写（见 8.2 第 4 条） |
+| `task_proc_pressure` 事件 | ✅ `{"used":6,"budget":1}` |
+| `footprint` 成员数与手工点名一致 | ✅ 6 进程 = shim + opencode + powershell + PING + 2 conhost |
+| 启动日志里「预算告警档不生效」的 Warn 消失 | ✅ |
+
+**闸二为什么不用 `handoff upgrade --now` 验**：CLI 唯一的升级路径是装 GitHub release，
+而最新 release v0.2.3（08-13）**早于 Windows prochost 支持**（08-17），里面根本没有
+`platform_windows.go`。真跑一次等于往执行机上装一个在这个平台上跑不起来的二进制，
+既会把机器打趴，也不是对升级链的公平检验——失败会来自旧二进制而非链路。
+改用同一接口的纯重启模式（D8），它同样先过闸二再触发重启，验的是同一段链路。
+
+### 8.2 被推翻的四处
+
+1. **重复触发挂 `BootTrigger` 等于没挂**（§2.2 第 2 条）。判据在 kill 之前就摆着：
+   `Next Run Time: N/A`。这是最便宜的预检信号，代码里看不出来。
+2. **`schtasks /V` 没有 PID 列**（§2.4）。原方案的 `Running` 恒 false，`Install` 必然
+   失败——而 agentd 其实活得好好的。
+3. **`IsManaged` 整个被漏掉**（§2.7）。plan 的验收写了「走通闸二」，却没有任何 task
+   能让它成真。**判据与实现之间的漏洞，比实现错更贵**：执行者只能停下来问，
+   或者像这次一样，直到真机验收才暴露。
+4. **「`sampled_at` 在推进」这条判据本身写得不准**。成员表刻意「内容未变则不写」
+   （省掉每秒一次无意义 I/O），所以成员稳定时时间戳不动是**正确行为**。
+   正确的判据是「成员变化时才推进」——实测从 `…109380226100` 推进到 `…156381739100`。
+
+### 8.3 顺带确认
+
+- **schtasks 状态与现实未见分叉**（§2.4 留的那个观察项）：不套 `cmd.exe` 之后，
+  schtasks 跟踪的直接就是 `handoff.exe`，D8 那个分叉确实消失了。
+- 手搓那份任务的真相：`<BootTrigger />` 光杆一个 + `RestartOnFailure Count=3`。
+  它**也不会**在 agentd 退出 0 时拉起——所谓「长期跑通」只是开机能起，
+  升级交接那一环它从来没解决过。这台机器上没有可抄的先例。
