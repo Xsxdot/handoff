@@ -141,6 +141,22 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 //     Sweep 也必须同步三段，报的数和杀的范围必须一致，否则 handoff footprint
 //     就变成一句骗人的话（B70：宣称什么就得是什么）
 func Footprint(h Handle) (members []int, v Verdict, err error) {
+	// 有进程容器的平台（Windows 的 Job Object）由内核维护成员表，进程退出即移除，
+	// 因此比 pgid + 名册 + 标记三段判据更强，不需要时间下界校验。
+	// 读不到快照时落回三段判据：任务刚起、文件损坏或升级前没有容器来源都不应
+	// 被误读成「任务没有进程」，也不应让只读足迹查询直接报错。
+	if h.MembersPath != "" {
+		if snap, rerr := readMembers(h.MembersPath); rerr == nil {
+			log().Debug("足迹取自进程容器成员表", "pid", h.PID,
+				"members", len(snap.PIDs), "sampled_at", snap.SampledAt)
+			return snap.PIDs, VerdictOK, nil
+		} else {
+			// 任务刚起、shim 还没采过第一轮时读不到是预期形态，降到 Debug，
+			// 避免每个新任务开头刷一条假告警。
+			log().Debug("容器成员快照不可用，落回 pgid 判据", "pid", h.PID,
+				"path", h.MembersPath, "cause", rerr)
+		}
+	}
 	procs, err := enumProcsFn()
 	if err != nil {
 		logEnumFailure("足迹枚举失败", err, "pid", h.PID)

@@ -1,7 +1,7 @@
 // Package selfupdate 提供「能不能安全换版 / 要不要提示更新」的判据。
 //
 // 职责：
-//   - IsManaged：判断当前进程是不是被进程管理器（systemd / launchd）拉起的，
+//   - IsManaged：判断换完版 exit(0) 之后还有没有人把 agentd 拉起来，
 //     换版接口（POST /api/update）的闸二用它做硬拒绝判据
 //   - CLI 侧版本检查提示（clicheck.go）：每条命令跑完后提示有没有新版本
 //
@@ -11,7 +11,7 @@
 //   - 不 import internal/agentd（会成环）
 package selfupdate
 
-// IsManaged 判断当前进程是不是被进程管理器（systemd / launchd）拉起的。
+// IsManaged 判断换完版 exit(0) 之后还有没有人把 agentd 拉起来。
 //
 // 参数：
 //   - getenv: 取环境变量的函数（测试注入用；生产传 os.Getenv）
@@ -40,5 +40,15 @@ func IsManaged(getenv func(string) string) bool {
 	if v := getenv("XPC_SERVICE_NAME"); v != "" && v != "0" {
 		return true
 	}
-	return false
+	ok, _ := platformManaged()
+	return ok
 }
+
+// platformManaged 是平台特有的托管判据，返回 (是否托管, 判否的理由)。
+//
+// 默认实现恒为 false：unix 上环境变量判据已经够了，多一条只会多一个
+// fail-open 的口子。Windows 侧由 managed_windows.go 在 init 里换掉——
+// schtasks **不给被拉起的进程注入任何环境变量**，上面两条在那里恒不成立，
+// 少了这个钩子闸二就永远关着（2026-08-18 win-b37 实测：service install 成功、
+// agentd 确由计划任务拉起，status 仍报「非托管」，upgrade 硬拒）。
+var platformManaged = func() (bool, string) { return false, "" }

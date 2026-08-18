@@ -70,6 +70,71 @@ func isLockContended(err error) bool {
 // 持有就会出现「有人 defer Close 了它」的可能，而那等于当场杀掉执行者。
 var jobHandle windows.Handle
 
+// jobBasicProcessIDList 对应 Win32 的 JOBOBJECT_BASIC_PROCESS_ID_LIST。
+//
+// x/sys/windows 提供查询函数与 information class 常量，但没有定义这个结构体，
+// 因此这里手工声明与 Win32 布局一致的头部和变长数组。两个 DWORD 头合计 8 字节，
+// ULONG_PTR 在 32/64 位上都从偏移 8 开始，直接映射不会引入隐式 padding。
+type jobBasicProcessIDList struct {
+	NumberOfAssignedProcesses uint32
+	NumberOfProcessIdsInList  uint32
+	ProcessIdList             [1]uintptr
+}
+
+// jobProcessIDs 读取当前 shim 所属 Job Object 的成员 PID 表。
+//
+// 返回：成员 PID（含 shim 自己）；没有 job 句柄或查询失败时返回错误。
+// 注意：无句柄必须报错而不是返回空集，因为空集会被上层误读为「确实没有成员」。
+// 缓冲区按 ERROR_MORE_DATA 翻倍重试，不依赖内核是否回填所需长度；本函数只读，
+// 回收仍由 KILL_ON_JOB_CLOSE 连坐承担。
+func jobProcessIDs() ([]int, error) {
+	if jobHandle == 0 {
+		return nil, fmt.Errorf("当前进程没有 Job Object 句柄，读不到成员表")
+	}
+	const (
+		hdrSize  = unsafe.Sizeof(uint32(0)) * 2
+		slotSize = unsafe.Sizeof(uintptr(0))
+		maxSlots = 1 << 16
+	)
+	for slots := uintptr(64); slots <= maxSlots; slots *= 2 {
+		bufLen := hdrSize + slots*slotSize
+		buf := make([]byte, bufLen)
+		var retlen uint32
+		err := windows.QueryInformationJobObject(jobHandle,
+			windows.JobObjectBasicProcessIdList,
+			uintptr(unsafe.Pointer(&buf[0])), uint32(bufLen), &retlen)
+		if err != nil {
+			if err == windows.ERROR_MORE_DATA {
+				continue
+			}
+			log().Error("查询 Job Object 成员表失败", "slots", slots, "cause", err)
+			return nil, fmt.Errorf("QueryInformationJobObject: %w", err)
+		}
+		list := (*jobBasicProcessIDList)(unsafe.Pointer(&buf[0]))
+		n := list.NumberOfProcessIdsInList
+		if uintptr(n) > slots {
+			continue
+		}
+		out := make([]int, 0, n)
+		base := unsafe.Pointer(&list.ProcessIdList[0])
+		for i := uintptr(0); i < uintptr(n); i++ {
+			p := *(*uintptr)(unsafe.Pointer(uintptr(base) + i*slotSize))
+			out = append(out, int(p))
+		}
+		log().Debug("Job Object 成员表已读取", "members", len(out),
+			"assigned", list.NumberOfAssignedProcesses)
+		return out, nil
+	}
+	log().Error("Job Object 成员数超过上限，放弃读取", "max_slots", maxSlots)
+	return nil, fmt.Errorf("Job Object 成员数超过 %d，放弃", maxSlots)
+}
+
+// init 把容器采样缝指向 Job Object 实现。
+//
+// 容器能力是平台编译时就确定的事实，放在 init 中注册后，shim 的调用方无需记得
+// 先做一次平台初始化。
+func init() { containerSampleFn = jobProcessIDs }
+
 // installProcessContainer 建 Job Object、设限制、把 shim 自己放进去。
 //
 // 参数：nprocLimit 为围栏值（执行者树的进程数上限）；<=0 表示不设进程数上限。

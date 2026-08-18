@@ -20,6 +20,91 @@ const (
 
 func h() Handle { return Handle{PID: testShimPID, StartedAt: t0} }
 
+// 有容器快照时，Footprint 直接用它，不走 pgid 三段判据。
+func TestFootprintPrefersContainerSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	mp := filepath.Join(dir, MembersFileName)
+	if err := writeMembers(mp, memberSnapshot{PIDs: []int{501, 502}, SampledAt: 42}); err != nil {
+		t.Fatal(err)
+	}
+	enumCalled := false
+	saved := enumProcsFn
+	defer func() { enumProcsFn = saved }()
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalled = true
+		return nil, ErrNotSupported
+	}
+
+	members, v, err := Footprint(Handle{PID: 500, StartedAt: 1, MembersPath: mp})
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("容器来源可用时应判 OK，实际 %s", v)
+	}
+	if len(members) != 2 || members[0] != 501 || members[1] != 502 {
+		t.Fatalf("应返回容器成员 [501 502]，实际 %v", members)
+	}
+	if enumCalled {
+		t.Error("容器来源可用时不该再走进程枚举")
+	}
+}
+
+// 没有容器快照时，unix 的三段判据路径必须原样走一遍。
+func TestFootprintWithoutContainerKeepsUnixPath(t *testing.T) {
+	enumCalls := 0
+	savedEnum, savedAlive := enumProcsFn, aliveFn
+	defer func() { enumProcsFn, aliveFn = savedEnum, savedAlive }()
+	aliveFn = func(Handle) bool { return true }
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalls++
+		return []procEntry{
+			{PID: 600, PPID: 1, PGID: 600, StartedAt: 10},
+			{PID: 601, PPID: 600, PGID: 600, StartedAt: 20},
+		}, nil
+	}
+
+	members, v, err := Footprint(Handle{PID: 600, StartedAt: 10})
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 OK，实际 %s", v)
+	}
+	if enumCalls == 0 {
+		t.Fatal("无容器来源时必须走进程枚举")
+	}
+	if len(members) != 2 {
+		t.Fatalf("pgid 组应有 2 个成员，实际 %v", members)
+	}
+}
+
+// 快照损坏或读不到时落回三段判据，不是报错也不是返回空。
+func TestFootprintFallsBackWhenSnapshotUnreadable(t *testing.T) {
+	savedEnum, savedAlive := enumProcsFn, aliveFn
+	defer func() { enumProcsFn, aliveFn = savedEnum, savedAlive }()
+	aliveFn = func(Handle) bool { return true }
+	enumCalls := 0
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalls++
+		return []procEntry{{PID: 700, PPID: 1, PGID: 700, StartedAt: 10}}, nil
+	}
+
+	members, v, err := Footprint(Handle{
+		PID: 700, StartedAt: 10,
+		MembersPath: filepath.Join(t.TempDir(), "gone.json"),
+	})
+	if err != nil {
+		t.Fatalf("快照读不到时不该报错，应落回三段判据: %v", err)
+	}
+	if v != VerdictOK || len(members) != 1 {
+		t.Fatalf("应落回 pgid 判据得到 1 个成员，实际 v=%s members=%v", v, members)
+	}
+	if enumCalls == 0 {
+		t.Fatal("必须落回进程枚举")
+	}
+}
+
 // TestClassifyLockHeldCountsGroup 锁仍被持有 ⇒ 组长就是我们的 shim，正常计数。
 //
 // 这条守的是 status 的 per-task 计数：若规则一不看锁状态、一律把
@@ -408,6 +493,9 @@ func TestStartRecordsRosterPath(t *testing.T) {
 	want := filepath.Join(dir, RosterFileName)
 	if hd.RosterPath != want {
 		t.Fatalf("Handle.RosterPath 应为 %s，实得 %q", want, hd.RosterPath)
+	}
+	if containerSampleFn == nil && hd.MembersPath != "" {
+		t.Fatalf("无进程容器的平台 MembersPath 应为空，实得 %q", hd.MembersPath)
 	}
 }
 

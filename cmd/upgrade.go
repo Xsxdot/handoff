@@ -112,11 +112,13 @@ var (
 //
 // 自拉模式下对端要下 20MB（慢网 + 代理下几分钟很正常），放宽到 10min，
 // 且 WaitVersion 在 pull 模式会读对端 pull_state，真失败时立刻中止、不会干等满。
-// 推送模式二进制已经在对端、换版是秒级动作，维持 60s——一次真起不来的换版
-// 不该让操作者晾 10 分钟。
+// 推送模式二进制已经在对端，换版本身是秒级动作——但重启不一定是。
+// macOS/Linux 上管理器会很快拉回 exit 0 的进程；Windows 上只能靠计划任务每分钟
+// 的重复触发模拟，最坏空窗接近 60 秒。旧值 60s 恰好压在线上，取两倍余量；一次
+// 真起不来的推送换版让操作者多等 60 秒，可接受。
 const (
 	upgradeWaitTimeoutPull = 10 * time.Minute
-	upgradeWaitTimeoutPush = 60 * time.Second
+	upgradeWaitTimeoutPush = 120 * time.Second
 	upgradeWaitInterval    = 2 * time.Second
 )
 
