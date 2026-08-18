@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26（`net/http` ServeMux 路由模式、`log/slog`）、React 19 + TypeScript + Vite + Tailwind v4、vitest + @testing-library/react。
 
-**Spec:** [`docs/superpowers/specs/2026-08-18-b114-sidebar-prefs-and-new-worktree-design.md`](../specs/2026-08-18-b114-sidebar-prefs-and-new-worktree-design.md)（下称 spec；条款号如 §3.3 均指它）
+**Spec:** [`docs/superpowers/specs/2026-08-18-b130-sidebar-prefs-and-new-worktree-design.md`](../specs/2026-08-18-b130-sidebar-prefs-and-new-worktree-design.md)（下称 spec；条款号如 §3.3 均指它）
 
 ## Global Constraints
 
@@ -2351,7 +2351,7 @@ Run: `git diff --stat $(git merge-base HEAD origin/handoff/web-console)..HEAD`
 
 - [ ] **Step 4: 写 ledger**
 
-在 `docs/superpowers/ledgers/` 下新建 `ledger-b114-sidebar-prefs.md`，逐 task 一行，含 commit 范围、每次自动化验证的**实得输出**（不是"应该通过"）。spec §7 的 5-7 条（需肉眼看页面的三项）**如实标「未验：无浏览器」**，不许猜通过。
+在 `docs/superpowers/ledgers/` 下新建 `ledger-b130-sidebar-prefs.md`，逐 task 一行，含 commit 范围、每次自动化验证的**实得输出**（不是"应该通过"）。spec §7 的 5-7 条（需肉眼看页面的三项）**如实标「未验：无浏览器」**，不许猜通过。
 
 - [ ] **Step 5: Commit**
 

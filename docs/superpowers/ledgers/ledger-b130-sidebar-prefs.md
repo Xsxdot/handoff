@@ -1,4 +1,4 @@
-# B114 左栏偏好与手工工作树执行记录
+# B130 左栏偏好与手工工作树执行记录
 
 | Task | 状态 | Commit 范围 | 自动化验证实得输出 |
 |---|---|---|---|
@@ -13,3 +13,5 @@
 | 9 | 完成 | `332a28ff`：`ProjectTree.tsx`、`ProjectTree.test.tsx`、`Shell.tsx`、ledger | 预期失败：机器入口新增 2 个用例因找不到「新建工作树」按钮失败，既有 43 个通过；实现后 `npx vitest run src/app/tree/ProjectTree.test.tsx && npx tsc -b`：`1` 个文件、`45` 个测试通过；`npx vitest run && npx tsc -b && npx eslint .`：`69` 个文件、`736` 个测试通过，tsc exit 0，eslint `0 errors / 13 warnings`。 |
 | 10 | 完成 | 本收尾 commit（`docs(ledger): B114 执行记录`）：补齐 3 个测试文件头注释及 2 个新组件导出声明注释；终审 ledger | `gofmt -l . && go build ./... && go vet ./... && go test ./...`：exit 0，`gofmt -l .` 无输出；`cd web && npx tsc -b && npx eslint . && npx vitest run && npm run build`：exit 0，`69` 个文件、`736` 个测试通过，eslint `0 errors / 13 warnings`，Vite 构建成功（1931 modules）；`git diff --check` 无输出；`git diff -- internal/ | grep -n "RemoveAll"`、`grep -n "fmt\\.Printf"` 与前端 `grep -n "console\\.log"` 均无输出；spec §7 需要肉眼看页面的 3 项：未验：无浏览器。 |
 | 审核修复 | 完成 | 本提交：`ProjectTree` 右键新建工作树入口复用 `locationProblem`，新增断开机器下「无新建、保留编辑/注销」回归用例 | 红测：`npx vitest run src/app/tree/ProjectTree.test.tsx` 为 `46` 个中 `1` 个失败，实际出现断开机器的「新建工作树」；修复后目标测试 `46/46` 通过；`cd web && npx vitest run && npx tsc -b && npx eslint .`：`69` 个文件、`737` 个测试通过，tsc exit 0，eslint `0 errors / 13 warnings`。 |
+
+> **改号说明（合并时由协调者补）**：立项时在分支 `handoff/web-console` 上算 backlog max 得 B113，故取 B114。合并前实测发现 `handoff/web-console` 的 backlog 与 `main` 分叉——`main` 上 B114–B119 已被占用（B114 = 「派发纪律块必须按执行器能力分档」），全局 max 是 B128、B129 已被分支 `feat/b129-discipline-config` 认领，故本条改号为 **B130**，spec / plan / 本 ledger 三个文件一并改名。**分支名 `feat/b114-sidebar-prefs-and-new-worktree` 与实现期的提交信息保持原样不改写**：它们是既成历史，改写换不来任何可读性，反而与 mac-02 上那份仓库失配。

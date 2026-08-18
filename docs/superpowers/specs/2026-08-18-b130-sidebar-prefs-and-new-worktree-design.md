@@ -2,7 +2,7 @@
 
 日期：2026-08-18
 分支：`claude/project-settings-executor-create-7babb1`（基线 `handoff/web-console` @ `12c48fb0b`）
-backlog：B114
+backlog：B130
 状态：已评审通过，待实现
 
 ## 0. 这份 spec 解决什么
