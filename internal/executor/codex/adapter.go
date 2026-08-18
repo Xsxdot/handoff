@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -106,13 +107,39 @@ func deltaFrameKind(method string) deltaKind {
 // networkAccess 为 true 是 2026-08-09 用户的明确决定（spec §2.2）：executor 跑在
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
 // 且实证拒网**不产工单**，属于协调者不知情的哑失败。
-func sandboxPolicy() map[string]any {
+
+// taskTmpDir 返回任务专属临时目录（<taskDir>/tmp）。
+//
+// TaskDir 位于 <DataDir>/tasks/<id>，因此该目录在工作区之外。把 TMPDIR 指进
+// 仓库会让「非 git 目录应报错」用例的临时目录落入仓库，git 命令正常成功而假红。
+func taskTmpDir(taskDir string) string { return filepath.Join(taskDir, "tmp") }
+
+// tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。
+//
+// writableRoots 是开门，环境变量是走门；两者缺一不可。GOCACHE 单独放子目录，
+// 让清理临时文件时不会误删构建缓存，同时消除跨任务缓存污染。
+func tmpEnvKVs(taskTmp string) []string {
+	return []string{
+		"TMPDIR=" + taskTmp,
+		"GOTMPDIR=" + taskTmp,
+		"GOCACHE=" + filepath.Join(taskTmp, "gocache"),
+	}
+}
+
+// sandboxPolicy 的 taskTmp 为空时保持历史行为，不新增可写域；非空时只开放
+// 任务专属目录。/tmp 与 $TMPDIR 是跨任务共享目录，保持排除可避免并发任务互相
+// 看见或覆盖临时文件。
+func sandboxPolicy(taskTmp string) map[string]any {
+	roots := []any{}
+	if taskTmp != "" {
+		roots = append(roots, taskTmp)
+	}
 	return map[string]any{
 		"type":                "workspaceWrite",
 		"networkAccess":       true,
 		"excludeSlashTmp":     true,
 		"excludeTmpdirEnvVar": true,
-		"writableRoots":       []any{},
+		"writableRoots":       roots,
 	}
 }
 
@@ -220,9 +247,17 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
+	taskTmp := taskTmpDir(req.TaskDir)
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
+		return fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
+	}
+	a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
+	env := append(append([]string{}, req.Env...), tmpEnvKVs(taskTmp)...)
+
 	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
 		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
-		req.TaskDir, req.Env, a.log)
+		req.TaskDir, env, a.log)
 	if err != nil {
 		return err
 	}
@@ -402,7 +437,7 @@ func (a *Adapter) startTurn(r *runState, text string) error {
 	ch, err := r.cli.CallAsync(methodTurnStart, map[string]any{
 		"threadId":          r.threadID,
 		"cwd":               r.repoPath,
-		"sandboxPolicy":     sandboxPolicy(),
+		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir)),
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
 		"input":             []any{map[string]any{"type": "text", "text": text}},
