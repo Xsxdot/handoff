@@ -121,7 +121,7 @@ B103 那次探针观察到的「opencode 的工具仍卡在管道上等了 120 �
 | # | 决策 | 理由 |
 |---|---|---|
 | **D1** | **各平台用各自最强原语**，不追求判据统一 | 统一判据会让 Linux 白白降级到 macOS 的强度；Windows 那份（Job Object）已白捡完成。代价是两套读取实现与文档必须讲清每个平台的强度边界 |
-| **D2** | **Linux 用 environ**（判据源是 `HANDOFF_TASK_IDS`，见 §7.3/§7.4） | 抗 `cd`（构建脚本 `cd` 到别处再编译是常态）；并发下不依赖目录独占，两个任务指到同一个 `--worktree` 也不串；不带 `--new-worktree` 的任务在 Linux 上同样能准确归属与回收 |
+| **D2** | **Linux 用 environ**（判据源是 `HANDOFF_TASK_ID`，见 §7.3） | 抗 `cd`（构建脚本 `cd` 到别处再编译是常态）；并发下不依赖目录独占，两个任务指到同一个 `--worktree` 也不串；不带 `--new-worktree` 的任务在 Linux 上同样能准确归属与回收 |
 | **D3** | **macOS 用 cwd**，且**仅托管 worktree 允许驱动 Sweep** | environ 在 macOS 上对平台二进制不可读，cwd 是唯一穿过全部关卡的判据。但 cwd 会把 `cd` 进任务目录的人类 shell 归给任务，而 Sweep 是要发信号杀的——托管 worktree（`~/.handoff/worktrees/<id8>`）是 handoff 自建自删的目录，人类没有理由待在里面 |
 | **D4** | **不加新配置开关** | 危险的那一半（macOS cwd）已由 `MarkRoot` 是否填写把死，安全的那一半（Linux env）没有可信的假阳性路径。加开关等于加一条没人测的状态分支 |
 
@@ -139,7 +139,7 @@ B103 那次探针观察到的「opencode 的工具仍卡在管道上等了 120 �
 // 两个字段各自的零值都表示「对应判据不可用」，不是「判据通过」——
 // 这与 Handle 的 omitempty 降级纪律是同一条。
 type TaskCred struct {
-    // TaskID 是本任务的 UUID，Linux 判据在 HANDOFF_TASK_IDS 的成员里找它。
+    // TaskID 是本任务的 UUID，Linux 判据拿它与 HANDOFF_TASK_ID 比对。
     TaskID string
     // MarkRoot 是 cwd 判据的比对根，**已做符号链接解析**的绝对路径。
     // 空串表示本任务不允许用 cwd 归属（见 D3）。
@@ -156,11 +156,11 @@ func attributes(pid int, cred TaskCred) (bool, error)
 
 | 平台 | 读什么 | 强度边界 | 可否驱动 Sweep |
 |---|---|---|---|
-| Linux | `/proc/<pid>/environ` 里 `HANDOFF_TASK_IDS` 的成员是否含 `TaskID` | 抗 `cd`、抗目录共用、抗 setsid/reparent；依赖执行者透传 env | **全部任务形态** |
+| Linux | `/proc/<pid>/environ` 里的 `HANDOFF_TASK_ID` 是否等于 `TaskID` | 抗 `cd`、抗目录共用、抗 setsid/reparent；依赖执行者透传 env | **全部任务形态** |
 | macOS | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` 取 cwd，判它是否在 `MarkRoot` 之内 | 抗 setsid/reparent；**不抗 `cd`** | **仅托管 worktree** |
 | Windows | 返回 `errNotSupported` | 归属问题已由 B37 的 Job Object 从源头消解 | 不适用 |
 
-两个环境变量**三平台都注入**（§7.3）。macOS 上它们对平台二进制不可读、不作判据，但人工用 `ps -E` 排障时有用；Windows 上同理。
+`HANDOFF_TASK_ID` **三平台都注入**（§7.3）。macOS 上它对平台二进制不可读、不作判据，但人工用 `ps -E` 排障时有用；Windows 上同理。
 
 > **路径比对必须两侧都先 `filepath.EvalSymlinks`。** 内核返回的 cwd 是解析后的
 > （`/private/var/...`），而 agentd 手上的 worktree 路径可能是未解析的
@@ -185,7 +185,7 @@ cgo **不是选项**：本仓库依赖纯 Go 交叉编译（本会话即从 macO
 
 ```go
 // TaskID 是本任务的标记值（任务 UUID）。Linux 判据读 /proc/<pid>/environ，
-// 看 HANDOFF_TASK_IDS 的成员里有没有它（见 §7.3/§7.4）。
+// 拿它与其中的 HANDOFF_TASK_ID 比对（见 §7.3）。
 //
 // omitempty + 零值语义：升级前写下的 proc.json 没有这个字段，读出空串即跳过
 // 标记判据、只走 pgid + roster——与 RosterPath 缺失时同一条纪律，老任务不会
@@ -205,26 +205,35 @@ MarkRoot string `json:"mark_root,omitempty"`
 
 `StartedAt` 时间下界对标记成员**照样施加**：标记读的是活状态，枚举与发信号之间仍有 pid 复用窗口，B47 误杀 114 次的那条护栏不能因为换了判据就撤。
 
-### 7.3 注入点
+### 7.3 注入点：`prochost.Start`，不是各 adapter
 
-agentd 组装 `StartSpec.Env` 处注入**两个**变量：
+`Spec` 新增 `TaskID string`；`prochost.Start`（`prochost.go:248`）里紧挨着已有的
+`applyFencePolicy(&spec)` 加一句 `applyTaskMark(&spec)`，由它把
+`HANDOFF_TASK_ID=<task id>` 追加进 `spec.Env`。
 
-- `HANDOFF_TASK_IDS=<外层…>:<本任务>` —— **判据源**，按成员匹配（见 §7.4）。无外层时就只有本任务一个成员。
-- `HANDOFF_TASK_ID=<本任务>` —— 链末值，**不作判据**，只为人工 `ps -E` 排障时一眼看出「最内层是谁」。
+**为什么是这里而不是 agentd 组装 Env 的地方**：`Start` 是四个 adapter
+（`claudecode/proc.go:178`、`codex/proc.go:218`、`grok/proc.go:264`、
+`opencode/proc.go:217`，各自 `append(os.Environ(), …)` 的写法还不一样）的
+**唯一汇流点**。放在这里有两个好处：四个 adapter 零改动；`Handle.TaskID`
+与注入的环境变量出自**同一处赋值**，不可能对不上。第 250 行的
+`applyFencePolicy(&spec)` 就是「在 Start 里集中改写 spec」的现成先例。
 
-`Env` 是调用方合并好的完整列表（`prochost.go:36`「由调用方合并完毕，shim 原样使用不再追加」），shim 契约不变。
+`Env` 仍是调用方合并好的完整列表（`prochost.go:36`「由调用方合并完毕，shim
+原样使用不再追加」）——`applyTaskMark` 在 `Start` 里、即 shim 之前动手，
+不违反这条对 shim 的约定。
 
-`Footprint` / `Sweep` 签名不变，调用方（`reconcile.go:221/256`、`status.go:151/261`、pty 那条）零改动。
+`Footprint` / `Sweep` 签名不变，调用方（`reconcile.go:221/256`、
+`status.go:151/261`、pty 那条）零改动。
 
-### 7.4 任务套任务
+### 7.4 任务套任务：本轮不做，如实记边界
 
-B115 记着「审批链自动放行 `handoff dispatch`，executor 能派生新 executor」。真发生时，内层 shim 会在内层子树写入自己的 `HANDOFF_TASK_ID`，覆盖外层的值——于是外层清扫时看不见内层那棵树。
+B115 记着「审批链自动放行 `handoff dispatch`，executor 能派生新 executor」。真发生时，内层任务的 shim 会在内层子树写入自己的 `HANDOFF_TASK_ID`，覆盖外层的值——**外层清扫时看不见内层那棵树**。
 
-**本轮定为：判据源是链式值 `HANDOFF_TASK_IDS`，按成员匹配。** 内层 shim 组装 `Env` 时读取自己继承到的 `HANDOFF_TASK_IDS`，把本任务 id 追加上去而非覆盖；判定时任务只问「我的 id 在不在这个成员列表里」。于是外层与内层**同时**能看见内层子树。
+曾考虑注入链式值 `HANDOFF_TASK_IDS=<外层>:<内层>` 按成员匹配，**但那条在当前架构下传不过去**：shim 是 agentd 拉起的，而 agentd 是常驻守护进程、不是外层执行者的子进程（外层跑 `handoff dispatch` 只是个 HTTP 客户端），链根本到不了 agentd 手上。要做就得让 CLI 把自己的链塞进 dispatch 请求、agentd 存到任务上再拼——动 proto、任务表、CLI 三处。
 
-理由是内层子树是外层工作的产物，外层收尾时它若还活着就是泄漏；让外层看得见它，比让它变成没人认领的孤儿更符合本条需求的初衷。
+**本轮定为不做。** B115 在总账里是当**问题**记的、标高优待修，不是要支持的能力；为一个可能马上被关掉的行为先动协议，代价与收益不匹配。真要保留嵌套能力，那时连 B115 一起设计。
 
-分隔符用 `:`（任务 id 是 UUID，不含 `:`，无歧义）。链长无实际上限约束——嵌套超过两层在今天的产品形态里不存在，真出现时列表也只是长一点，判定仍是成员测试。
+记为已知边界（§12）。
 
 ---
 
@@ -291,6 +300,7 @@ B115 记着「审批链自动放行 `handoff dispatch`，executor 能派生新 e
 - **Linux + 真实执行者透传 env 尚未实测**：本轮 Linux 侧验的是 bash 派生孙进程。macOS 侧已用真实 opencode 验过那一跳（§4.3）。推断 Linux 同样成立的依据是 env 由 `execve` 传播、机制与额外 fd 不同，但**推断不是实测**。验收时应在那台机器上装 opencode 补掉，或如实记为未验。
 - **env 判据依赖执行者不清洗环境变量**：opencode 实测透传，其余三家（claude / grok / codex）未逐一验证。
 - **`syscall.Syscall6` 在 darwin 上是 deprecated 路径**：见 §6.1，失效时降级回今天的行为。
+- **任务套任务时外层看不见内层子树**：内层的 `HANDOFF_TASK_ID` 覆盖外层的值（§7.4）。本轮不做链式传递，理由与代价见 §7.4。今天这个形态不存在（B115 是当问题记的），但若 B115 决定保留嵌套能力，本条必须一并重开。
 
 ---
 
