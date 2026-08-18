@@ -1533,7 +1533,8 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
 		if errors.Is(err, ErrNoProcHeadroom) || errors.Is(err, ErrWorkdirGone) {
-			s.log.Warn("run 被拒", "task", taskID, "cmd", truncateRunes(req.Cmd, 200), "cause", err)
+			s.log.Warn("run 被拒", "task", taskID, "repo", repo,
+				"cmd", truncateRunes(req.Cmd, 200), "cause", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
 			return
 		}
