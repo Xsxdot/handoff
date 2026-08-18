@@ -8,16 +8,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // initGitRepoWithOrigin 造一个带初始提交且配好 origin 的仓库，返回路径。
@@ -730,5 +733,137 @@ func TestCloneToPathCleansUpOnFailure(t *testing.T) {
 	}
 	if _, serr := os.Stat(base); serr != nil {
 		t.Errorf("调用方原本就有的 %s 被误删了: %v", base, serr)
+	}
+}
+
+// registerWorktreeTestProject 在库里登记一个真仓库，返回登记名。
+// 建树接口按登记名寻址，所以用例必须有一条真的位置行，不能只造目录。
+func registerWorktreeTestProject(t *testing.T, st *store.Store, repo string) string {
+	t.Helper()
+	loc := &proto.ProjectLocation{
+		ProjectID: "p-worktree-test",
+		Name:      "demo",
+		Path:      repo,
+		OriginURL: "git@github.com:Xsxdot/demo.git",
+		CreatedAt: time.Now(),
+	}
+	if err := st.CreateProjectLocation(loc); err != nil {
+		t.Fatalf("登记项目: %v", err)
+	}
+	return loc.Name
+}
+
+// doWorktreeReq 发一条已带 Host 与 Bearer 的请求，返回 recorder。
+func doWorktreeReq(t *testing.T, s *Server, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Authorization", "Bearer test")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, r)
+	return rec
+}
+
+// TestProjectWorktreeCreateRejectsUnknownProject 验证项目不存在时是 404 而不是 500：
+// 500 会让界面把「名字打错了」显示成「服务端炸了」。
+func TestProjectWorktreeCreateRejectsUnknownProject(t *testing.T) {
+	s, _, _ := newTestServerWithManager(t)
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/nope/worktrees",
+		`{"mode":"new_branch","branch":"feat/x"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestProjectWorktreeCreateRejectsBadBody 验证坏请求体是 400 且报文说清要什么。
+func TestProjectWorktreeCreateRejectsBadBody(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees", "not json")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestProjectWorktreeCreateOK 验证成功路径：返回的是项目树口径的 Workspace，
+// 且落点真的在 <DataDir>/worktrees/manual 下。
+func TestProjectWorktreeCreateOK(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		`{"mode":"new_branch","branch":"feat/x","base":"main"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(rec.Body.Bytes(), &ws); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if ws.Branch != "feat/x" {
+		t.Fatalf("分支 = %q", ws.Branch)
+	}
+	wantRoot := ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
+	if !strings.HasPrefix(canonPath(ws.Path), canonPath(wantRoot)) {
+		t.Fatalf("落点 %q 不在 %q 下", ws.Path, wantRoot)
+	}
+}
+
+// TestProjectWorktreeCreateRejectsDuplicateBranch 验证请求类拒绝映射成 400 而非 500。
+func TestProjectWorktreeCreateRejectsDuplicateBranch(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	repo := initGitRepo(t)
+	gitAt(t, repo, "branch", "feat/dup")
+	name := registerWorktreeTestProject(t, st, repo)
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		`{"mode":"new_branch","branch":"feat/dup","base":"main"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "feat/dup") {
+		t.Fatalf("报文应含出问题的分支名: %s", rec.Body.String())
+	}
+}
+
+// TestProjectBranchesMarksOccupied 验证分支列表把「已被工作树检出」如实标出来——
+// 弹层据此置灰，标不出来用户就会选一个必然失败的分支。
+func TestProjectBranchesMarksOccupied(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	rec := doWorktreeReq(t, s, http.MethodGet, "/api/projects/"+name+"/branches", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp proto.ProjectBranchesResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if len(resp.Branches) == 0 {
+		t.Fatalf("至少应列出主分支")
+	}
+	// 主仓自己就检出着默认分支，它必须被标为已占用
+	var def *proto.ProjectBranch
+	for i := range resp.Branches {
+		if resp.Branches[i].Name == resp.Default {
+			def = &resp.Branches[i]
+		}
+	}
+	if def == nil || def.Worktree == "" {
+		t.Fatalf("默认分支应被主工作树占用, got %+v", resp.Branches)
+	}
+	if resp.WorktreeRoot == "" {
+		t.Fatalf("worktree_root 不能为空，界面要靠它回显落点")
+	}
+}
+
+// TestProjectBranchesUnknownProject 验证项目不存在时 404。
+func TestProjectBranchesUnknownProject(t *testing.T) {
+	s, _, _ := newTestServerWithManager(t)
+	if rec := doWorktreeReq(t, s, http.MethodGet, "/api/projects/nope/branches", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }

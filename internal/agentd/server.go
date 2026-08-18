@@ -358,6 +358,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/workspaces/reveal", s.handleWorkspaceReveal)
 	api.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	api.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
+	api.HandleFunc("GET /api/projects/{name}/branches", s.handleProjectBranches)
+	api.HandleFunc("POST /api/projects/{name}/worktrees", s.handleProjectWorktreeCreate)
 	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
