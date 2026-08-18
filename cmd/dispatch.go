@@ -261,6 +261,9 @@ var dispatchCmd = &cobra.Command{
 				"提示: 执行机仓库有 %d 处未提交改动，新工作树不含它们：%s\n",
 				task.RepoDirtyCount, task.RepoDirtyFiles)
 		}
+		if task.Discipline != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "纪律块:", task.Discipline)
+		}
 		b, err := json.Marshal(task)
 		if err != nil {
 			return fmt.Errorf("序列化任务: %w", err)

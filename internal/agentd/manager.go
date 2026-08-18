@@ -95,6 +95,10 @@ var errExecutorStartFailed = errors.New("启动 executor 失败")
 // 扁平的「派发任务失败」，真因被吞——这正是 B16 的根因，不能再犯一次。
 var errEnvResolveFailed = errors.New("解析 env 文件失败")
 
+// errDisciplineResolveFailed 表示纪律块文件不可用（文件名非法/读不到/超限）。
+// 与 errEnvResolveFailed 并列，让 server 层把真因回显给协调者而不是扁平成 500。
+var errDisciplineResolveFailed = errors.New("纪律块解析失败")
+
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
@@ -580,6 +584,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errEnvResolveFailed, err)
 	}
+	// 纪律块裁决与 env 解析同段：失败是配置问题，此刻还没有落库/建树副作用，
+	// 拒发是干净的。
+	discBlock, err := m.discipline.For(execName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errDisciplineResolveFailed, err)
+	}
 
 	// 内容合成：plan 解码后作为主体；prompt 非空时——
 	//   plan 非空：拼接为「附加指令」小节（为什么：prompt 是派发当刻的补充意图，
@@ -727,6 +737,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Name:            name,
 		Executor:        execName,
 		Model:           model,
+		Discipline:      discBlock.Source,
 		WorkDir:         ws.WorkDir,
 		WorktreeManaged: ws.Managed,
 		// 基线随创建期一并入库（此刻已由 ResolveBaseline 决议完毕），
@@ -763,7 +774,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
-	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent), TaskDir: taskDir, Env: envKVs}); err != nil {
+	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
+		TaskDir: taskDir, Env: envKVs, Discipline: discBlock.Text}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -783,6 +795,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("读取派发后的任务: %w", err)
 	}
+	task.Discipline = discBlock.Source
+	// 派发回显：纪律块配置化之后，写 plan 的人再也看不到它躺在 plan 头部了。
+	if discBlock.Source != "" {
+		m.appendProgress(taskID, "纪律块: "+discBlock.Source)
+	}
+	m.log.Info("纪律块已注入", "task", taskID, "executor", execName,
+		"source", discBlock.Source, "bytes", len(discBlock.Text))
 	go m.mediate(taskID)
 	return task, nil
 }
@@ -1061,11 +1080,15 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
 	}
+	discBlock, derr := m.discipline.For(execName)
+	if derr != nil {
+		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
 		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
-		Env: envKVs, Model: task.Model,
+		Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
 	})
 	if err != nil {
@@ -2973,11 +2996,15 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
 	}
+	discBlock, derr := m.discipline.For(execName)
+	if derr != nil {
+		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
-		SessionID: task.ExecutorSession, Env: envKVs, Model: task.Model,
+		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
 	})
 	if err != nil {

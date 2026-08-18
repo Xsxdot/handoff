@@ -223,6 +223,12 @@ type Task struct {
 	Executor string `json:"executor"`
 	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
 	Model string `json:"model"`
+	// Discipline 是本任务实际注入的纪律块来源标注（如「内置:single-context」）。
+	// 该列后加、不回填、不编造——老任务为空。
+	//
+	// 为什么要落进 Task 而不只是日志：配置化把纪律块从 plan 文件里拿走后，
+	// 写 plan 的人再也看不见它，dispatch 必须当场回显；CLI 拿到的就是这个对象。
+	Discipline string `json:"discipline,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`
