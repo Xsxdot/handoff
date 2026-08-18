@@ -1048,14 +1048,36 @@ func Diff(repo, baseBranch string) (string, error) {
 	return strings.Join(parts, "\n\n"), nil
 }
 
+// diffBaseFor 返回任务 diff 的缺省基准 rev：任务自己的 BaseCommit 优先，
+// 为空才按仓库推导。
+//
+// 为什么优先任务基线（B65）：按仓库默认分支推导会把「默认分支与任务分支之间的
+// 全部历史」也算进 diff——实测一个真实任务默认吐 26611 行而真实改动只有 3274 行，
+// 审核者第一眼拿到的素材被淹掉。任务记录里本来就有它建在哪个提交上（B35 起）。
+//
+// BaseCommit 为空**不是缺字段**：proto 注释写明「空=切已存在分支（没有起点这回事）
+// 或老任务」，所以退回推导链是正常分支，不是兜底。
+//
+// 返回空串表示两条路都取不到（非 git 仓库、既无 main 也无 master），
+// 由调用方报 400 并提示显式指定 base。
+func diffBaseFor(task *proto.Task, repo string) string {
+	if task != nil && task.BaseCommit != "" {
+		return task.BaseCommit
+	}
+	return resolveBaseBranch(repo)
+}
+
 // resolveBaseBranch 确定 diff 的默认基准分支，优先级：
 //  1. 仓库远端默认分支（refs/remotes/origin/HEAD 符号引用，如 origin/main）
 //  2. 本地 main
 //  3. 本地 master
 //  4. 都没有 → 空串（由路由层报错，提示协调者显式 --base）
 //
-// 为什么需要这个兜底链：任务仓库的分支名不可预知（main/master/dev 皆可能），
-// 派发时并未记录基准分支名，diff 必须从仓库自身推导出合理默认。
+// 为什么需要这个推导链：任务仓库的分支名不可预知（main/master/dev 皆可能）。
+//
+// 注意（B65 更正）：「派发时并未记录基准分支名」这句原文已经过时——B35 起任务
+// 记录里有 BaseCommit。缺省基准现在由 diffBaseFor 决定，本函数只负责
+// **没有任务基线时**的推导，不再是 diff 的唯一入口。
 func resolveBaseBranch(repo string) string {
 	if out, _, err := gitRun(context.Background(), repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil && strings.TrimSpace(out) != "" {
 		return strings.TrimSpace(out)

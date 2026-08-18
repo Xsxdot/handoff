@@ -242,7 +242,20 @@ handoff fetch <task> internal/foo/bar.go # 读任务仓库里的单个文件
 handoff run <task> go test ./...         # 在任务仓库执行命令（sh -c，10min 超时）
 ```
 
+`handoff diff` 默认用任务自己的基线提交，没有才按仓库默认分支推导。所以默认 diff
+就是这个任务的改动，不再含 base 分支与任务分支之间的历史。
+
 **`handoff run` 的参数顺序有坑**：handoff 自己的 flag 必须写在 `<task>` **之前**，任务名之后的一切（含 `-v`、`--race`）都原样透传给被执行的命令。
+
+**`handoff run` 的参数按个数分两档**：
+
+- **只给一个参数** = 一条 shell 命令原文，原样交给远端 `sh -c` 解析：
+  `handoff run T1 "cd web && npm test"`
+- **给多个参数** = argv，逐个做 shell 转义后再拼接。你敲的引号、空格、元字符
+  原样到达远端：`handoff run T1 grep -rn 'foo bar' .`
+
+B66 之前多参数形态是直接空格重拼的，`'foo bar'` 到远端会变成两个参数——静默失真，
+不报错。
 
 ```bash
 handoff run --target devbox T1 go test -race ./...   # ✅ --target 在任务名之前

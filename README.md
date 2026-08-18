@@ -280,9 +280,9 @@ into the mainline is your review decision.
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
 | `handoff wait <task>` | Block until the next event that needs you | `--follow` (keep subscribing until the task ends); `--notify`; `--timeout <duration>`; `--no-sync` |
 | `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
-| `handoff diff <task>` | git diff + commit list (review material) | `--base <branch>` |
+| `handoff diff <task>` | git diff + commit list (defaults to the task's own base commit, falling back to the repo's default branch) | `--base <rev>` |
 | `handoff fetch <task> <file>` | Read a single file from the task repo | — |
-| `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout) | handoff's own flags must come **before** the task id; everything after it is passed through verbatim |
+| `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout; one argument is a shell command, multiple arguments are shell-quoted) | handoff's own flags must come **before** the task id |
 | `handoff continue <task> "<instruction>"` | Send a follow-up change instruction (requires pending-review state; continues the same session) | — |
 | `handoff done <task>` | Archive the task and reclaim the executor (requires pending-review state) | `--note "<note>"` |
 | `handoff stop <task>` | Abort (stop the executor, void tickets, task ends failed) | — |

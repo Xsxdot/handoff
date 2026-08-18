@@ -16,6 +16,18 @@ import { DiffView } from './DiffView'
 
 type ReviewTab = 'diff' | 'run' | 'file'
 
+// autoBaseHint 返回「自动推导」项的括注文本。
+//
+// 为什么要分三态（B65）：diff 的缺省基准优先用任务自己的 base_commit，
+// 只有它为空才按仓库推导。若这里恒显示推导出的分支名，控制台会在有任务基线时
+// 显示一个 diff 根本没用的值——一个当场可见的谎。
+function autoBaseHint(branches: BranchesResult | null): string {
+  if (!branches) return ''
+  if (branches.task_base) return `（任务基线 ${branches.task_base.slice(0, 8)}）`
+  if (branches.default) return `（${branches.default}）`
+  return ''
+}
+
 // ReviewSidePanel 渲染审阅栏。onClose 由页头的开关与栏内 ✕ 共用。
 export function ReviewSidePanel({ taskId, onClose }: { taskId: string; onClose: () => void }) {
   const [tab, setTab] = useState<ReviewTab>('diff')
@@ -86,7 +98,7 @@ function DiffSection({ taskId }: { taskId: string }) {
           value={base}
           onChange={(e) => { setBase(e.target.value); void load(e.target.value) }}
         >
-          <option value="">自动推导{branches?.default ? `（${branches.default}）` : ''}</option>
+          <option value="">自动推导{autoBaseHint(branches)}</option>
           {branches?.branches.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
         {loading && <span>加载中…</span>}

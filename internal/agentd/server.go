@@ -1330,16 +1330,13 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rep)
 }
 
-// taskRepoOrErr 读取路径中的任务并返回其工作区目录；任务不存在（404）或没有
-// 工作区（400）时已写响应并返回 ok=false。
+// taskOrErr 读取路径中的任务并做门禁：任务不存在写 404、缺工作区路径写 400，
+// 两种情况都返回 ok=false（调用方直接 return 即可）。
 //
-// 返回的是 task.Workdir() 而非 task.RepoPath（为什么 diff/fetch/run 必须在
-// Workdir 而非主仓库：worktree 任务的 executor cwd 与分支 HEAD 都在 Workdir，
-// 主仓库的 HEAD 停在派发前的位置——diff 相对基准、fetch 看工作区文件、run 跑
-// 测试都必须落在 executor 真正干活的目录，否则审阅的是错误的代码状态）。
-//
-// 供 diff/fetch/run 三条审阅路由共用——它们只关心任务指向的仓库，不依赖状态机。
-func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool) {
+// 为什么独立于 taskRepoOrErr：diff / branches 两个端点除了工作区路径还要读
+// 任务的 BaseCommit（B65），而另外三个调用点只关心路径。拆开后既不动它们的
+// 签名，也不必让它们承担一个用不到的返回值。
+func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool) {
 	task, err := s.st.GetTask(taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1349,35 +1346,47 @@ func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo strin
 			s.log.Error("读取任务失败", "task", taskID, "cause", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		}
-		return "", false
+		return nil, false
 	}
-	workdir := task.Workdir()
-	if workdir == "" {
+	if task.Workdir() == "" {
 		s.log.Warn("任务缺少工作区路径", "task", taskID)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务没有工作区路径"})
+		return nil, false
+	}
+	return task, true
+}
+
+// taskRepoOrErr 读取路径中的任务并返回其工作区目录；任务不存在（404）或没有
+// 工作区路径（400）时已写好响应并返回 ok=false。
+func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool) {
+	task, ok := s.taskOrErr(w, taskID)
+	if !ok {
 		return "", false
 	}
-	return workdir, true
+	return task.Workdir(), true
 }
 
 // handleTaskDiff 返回任务分支相对基准分支的审阅素材（git diff + 提交列表）。
 //
 // 参数：
-//   - base: 查询参数，基准分支名；缺省时按仓库默认分支推导（resolveBaseBranch）
+//   - base: 查询参数，基准；缺省时优先用任务 BaseCommit，没有才按仓库推导
 //
 // 注意：
 //   - diff 是协调者主动发起的只读审阅，不做状态门禁——running 中即可看实时进度
 func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("diff 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
-	repo, ok := s.taskRepoOrErr(w, taskID)
+	task, ok := s.taskOrErr(w, taskID)
 	if !ok {
 		return
 	}
+	repo := task.Workdir()
 	base := r.URL.Query().Get("base")
 	if base == "" {
-		base = resolveBaseBranch(repo)
+		base = diffBaseFor(task, repo)
 	}
+	s.log.Info("diff 基准已确定", "task", taskID, "base", base,
+		"from_task_base", r.URL.Query().Get("base") == "" && task.BaseCommit != "")
 	if base == "" {
 		s.log.Warn("无法确定基准分支", "task", taskID, "repo", repo)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无法确定基准分支，请用 base 参数指定"})
@@ -1396,6 +1405,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
 	}
+	s.log.Info("diff 完成", "task", taskID, "base", base, "bytes", len(diff))
 	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
 }
 
@@ -1406,10 +1416,11 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("branches 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
-	repo, ok := s.taskRepoOrErr(w, taskID)
+	task, ok := s.taskOrErr(w, taskID)
 	if !ok {
 		return
 	}
+	repo := task.Workdir()
 	branches, err := Branches(repo)
 	if err != nil {
 		s.log.Error("列分支失败", "task", taskID, "repo", repo, "cause", err)
@@ -1417,7 +1428,11 @@ func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("branches 完成", "task", taskID, "count", len(branches))
-	writeJSON(w, http.StatusOK, map[string]any{"branches": branches, "default": resolveBaseBranch(repo)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"branches":  branches,
+		"default":   resolveBaseBranch(repo),
+		"task_base": task.BaseCommit,
+	})
 }
 
 // handleTaskFile 返回任务仓库内指定文件的内容（协调者取上下文用）。
