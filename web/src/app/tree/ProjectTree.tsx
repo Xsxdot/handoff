@@ -50,6 +50,9 @@ import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { TreePrefsMenu } from './TreePrefsMenu'
+import { loadPrefs, savePrefs, sortProjects, splitHiddenProjects, splitIdleWorkspaces, type TreePrefs } from './treePrefs'
+import { NewWorktreeDialog } from './NewWorktreeDialog'
 
 export interface ProjectTreeProps {
   tree: ProjectTreeResp
@@ -68,6 +71,9 @@ export interface ProjectTreeProps {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  // onWorktreeCreated 建完树后回调，由 Shell 刷新树并把新目录选为当前基准目录。
+  // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
+  onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -181,11 +187,28 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  // 显示偏好：初值从 localStorage 读一次（惰性初始化，不要每次渲染都读）。
+  // 改动统一走 updatePrefs——落盘与 setState 必须成对，分开写迟早漏一处
+  const [prefs, setPrefs] = useState<TreePrefs>(() => loadPrefs())
+  const updatePrefs = (next: TreePrefs) => {
+    setPrefs(next)
+    savePrefs(next)
+  }
+  // 「已隐藏 N 个目录」的展开状态：**刻意不落盘**——它是一次性的「我现在想看看」，
+  // 不是长期设定。键用机器节点 key
+  const [openHiddenDirs, setOpenHiddenDirs] = useState<Set<string>>(new Set())
+  const toggleHiddenDirs = (key: string) =>
+    setOpenHiddenDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   const searchRef = useRef<HTMLInputElement>(null)
 
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
@@ -225,6 +248,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   }, [])
   const [unregisterTarget, setUnregisterTarget] = useState<{ name: string; machine: string } | null>(null)
   const [unregisterError, setUnregisterError] = useState('')
+  // 建树弹层的目标位置。project 与 loc 一起记：弹层要用 loc.name（登记名）寻址，
+  // 而回调要把 project 交回去组装 BaseDir
+  const [worktreeTarget, setWorktreeTarget] = useState<{ project: ProjectNode; loc: ProjectLocationNode } | null>(null)
   // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
   // null = 没有菜单打开。project 一并记下：编辑弹层要以**整个项目**为输入，
   // 而菜单锚在机器行——闭包里只有 loc，得把所在 project 一起带进菜单状态。
@@ -240,6 +266,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
   // 折起来的布局立刻回来，搜索不破坏布局。
   const expanded = (key: string) => searching || !collapsed.has(key)
+
+  // 搜索期间旁路「隐藏」类偏好：搜到了却被偏好过滤掉，等于搜索坏了。
+  // 排序不旁路——排序不会让东西消失，跟着当前档反而更连贯
+  const projectSplit = searching
+    ? { shown: filtered.projects, hiddenCount: 0 }
+    : splitHiddenProjects(filtered.projects, (p) => p.project_id, prefs.hiddenProjects)
+  // 项目的「最近活动」= 该项目下任务 updated_at 的最大值；一条任务都没有时为空串
+  const lastActivity = (projectID: string) =>
+    tasks.reduce((max, t) => (t.project_id === projectID && t.updated_at > max ? t.updated_at : max), '')
+  const orderedProjects = sortProjects(
+    projectSplit.shown,
+    (p) => {
+      const c = countsForProject(tasks, p)
+      return { active: c.running + c.pending, updatedAt: lastActivity(p.project_id), name: p.name }
+    },
+    prefs.projectSort,
+  )
 
   const unassigned = filtered.unassignedTasks
   const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
@@ -297,6 +340,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     }
   }
 
+  // 右键菜单状态只保存机器名；这里按机器名找回同一 location，复用机器行的可达性判据，
+  // 避免断开机器仍出现一个必然失败的建树入口，同时不影响编辑与注销。
+  const menuLocation = menu ? menu.project.locations.find((l) => l.machine === menu.machine) : undefined
+  const menuProblem = menuLocation ? locationProblem(menuLocation, tree.machines) : ''
+
   return (
     // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
@@ -336,14 +384,26 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>项目</span>
         <span data-testid="project-count" className="font-normal text-muted-foreground/70">
-          {filtered.projectCount}
+          {orderedProjects.length}
+        </span>
+        {/* 藏了东西就必须说一声：偏好可以让它不占地方，但不能让人以为它不存在 */}
+        {projectSplit.hiddenCount > 0 && (
+          <span className="font-normal normal-case text-muted-foreground/70">· 已隐藏 {projectSplit.hiddenCount}</span>
+        )}
+        <span className="ml-auto">
+          {/* 菜单吃的是**原树**的项目，不是过滤后的：藏起来的项目要能勾回来 */}
+          <TreePrefsMenu
+            prefs={prefs}
+            projects={tree.projects.map((p) => ({ project_id: p.project_id, name: p.name }))}
+            onChange={updatePrefs}
+          />
         </span>
       </div>
 
       {/* 第二段：只有它滚 */}
       <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
-      {filtered.projects.map((project) => {
+      {orderedProjects.map((project) => {
         const pKey = `p:${project.project_id}`
         const pOpen = expanded(pKey)
         const pCounts = countsForProject(tasks, project)
@@ -395,7 +455,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       className="group relative"
                       data-testid="machine-row"
                       onContextMenu={
-                        onUnregister || onEdit
+                        onUnregister || onEdit || onWorktreeCreated
                           ? (e) => {
                               // 阻止浏览器原生菜单，换成我们这份。
                               // Shift+F10 与 ContextMenu 键也派发这个事件，
@@ -427,12 +487,25 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         {problem !== '' && <DisconnectedBadge />}
                         {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
                             机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
-                        <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                        {/* hover 时让位给 + 按钮：两者都要行右端，让位是唯一
+                            不重叠的排法（此前的结论是「排不出来」，那是因为只
+                            试过叠加）。用 invisible 而不是 hidden——保留占位，
+                            行内其它元素不会因为 hover 左右位移 */}
+                        <span className={cn(onWorktreeCreated && problem === '' && 'group-hover:invisible')}>
+                          <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                        </span>
                       </button>
-                      {/* 注销入口在右键菜单里，不在行内。
-                          行内 absolute 按钮与同一行右端的 RowCounts 抢位置——
-                          08-14 修过一次垂直居中（定位上下文从 578px 子树收进本行），
-                          但水平方向两者都要右端，改不出不重叠的排法 */}
+                      {onWorktreeCreated && problem === '' && (
+                        <button
+                          type="button"
+                          aria-label="新建工作树"
+                          title="新建工作树"
+                          onClick={() => setWorktreeTarget({ project, loc })}
+                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                        >
+                          <Plus className="size-3.5" />
+                        </button>
+                      )}
                     </div>
                     {/* 目录行、任务行留在外层，不进定位上下文 */}
                     {problem !== '' && (
@@ -444,9 +517,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       </p>
                     )}
 
-                    {problem === '' &&
-                      mOpen &&
-                      sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws)).map((ws) => {
+                    {problem === '' && mOpen && (() => {
+                      const sorted = sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws))
+                      const split = splitIdleWorkspaces(
+                        sorted,
+                        (ws) => {
+                          const c = wsCounts(project, loc.machine, ws)
+                          return {
+                            isMain: ws.is_main,
+                            selected: selectedKey === ws.path,
+                            active: c.running + c.pending,
+                          }
+                        },
+                        // 搜索期间不折叠，理由同项目隐藏
+                        prefs.hideIdleWorktrees && !searching,
+                      )
+                      const renderWorkspace = (ws: Workspace) => {
                         const base = workspaceBase(project, loc.machine, ws)
                         const dSelected = selectedKey === base.key
                         const under = wsCounts(project, loc.machine, ws)
@@ -494,7 +580,30 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             ))}
                           </div>
                         )
-                      })}
+                      }
+                      const hiddenOpen = openHiddenDirs.has(mKey)
+                      return (
+                        <>
+                          {split.shown.map(renderWorkspace)}
+                          {split.hidden.length > 0 && (
+                            <>
+                              <button
+                                type="button"
+                                data-testid="hidden-dirs-row"
+                                aria-expanded={hiddenOpen}
+                                onClick={() => toggleHiddenDirs(mKey)}
+                                className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                                style={{ paddingLeft: 8 + 32 }}
+                              >
+                                <Arrow open={hiddenOpen} onToggle={() => toggleHiddenDirs(mKey)} />
+                                <span className="min-w-0 flex-1 truncate">已隐藏 {split.hidden.length} 个目录</span>
+                              </button>
+                              {hiddenOpen && split.hidden.map(renderWorkspace)}
+                            </>
+                          )}
+                        </>
+                      )
+                    })()}
 
                     {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
                         目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的
@@ -663,12 +772,33 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         />
       )}
 
+      {onWorktreeCreated && worktreeTarget && (
+        <NewWorktreeDialog
+          open
+          projectName={worktreeTarget.loc.name}
+          machine={worktreeTarget.loc.machine}
+          onClose={() => setWorktreeTarget(null)}
+          onCreated={(ws) => onWorktreeCreated(worktreeTarget.project, worktreeTarget.loc.machine, ws)}
+        />
+      )}
+
       {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            ...(onWorktreeCreated && menuLocation && menuProblem === ''
+              ? [{
+                  label: '新建工作树',
+                  // hover 出现的 + 按钮对键盘/触屏不友好，右键是它的等价通道，
+                  // 走的是同一个弹层
+                  onSelect: () => {
+                    const loc = menu.project.locations.find((l) => l.machine === menu.machine)
+                    if (loc) setWorktreeTarget({ project: menu.project, loc })
+                  },
+                }]
+              : []),
             // 「编辑」排在「注销」前；onEdit 没传就不给这个入口
             // （与 onUnregister 的「没传就不给操作」一致）
             ...(onEdit

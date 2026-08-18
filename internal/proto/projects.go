@@ -27,8 +27,10 @@ type Workspace struct {
 	// Head 是短 sha。
 	Head   string `json:"head"`
 	IsMain bool   `json:"is_main"`
-	// Managed 表示该工作树是 agentd 自建的任务工作树（路径落在 agentd 的
-	// worktree 根下）。UI 据此区分「任务工作树」与「人手开的工作树」。
+	// Managed 表示该工作树落在 agentd 的数据区（<DataDir>/worktrees）下——
+	// 既包括任务自建树（worktrees/<id8>），也包括手工新建树（worktrees/manual/<名>）。
+	// 判据只看路径前缀，不区分二者：本字段没有任何行为消费者（回收只认终态任务
+	// 的记录、从不扫目录），为它加特例只会留下一个要读三处代码才懂的例外。
 	Managed bool `json:"managed"`
 	// CreatedAt 是这个工作树被建出来的时间；零值 = 取不到。
 	//
@@ -280,4 +282,38 @@ type AddMachineReq struct {
 type FileConflictResp struct {
 	Error   string   `json:"error"`
 	Current FileRead `json:"current"`
+}
+
+// ProjectBranch 是一个本地分支，带「是否已被工作树占用」。
+//
+// Worktree 为已检出该分支的工作树路径；空串 = 没有任何工作树占用它。
+// git 不允许同一分支被两个工作树同时检出，所以占用者就是「这个分支现在
+// 不能再开树」的全部原因——界面据此把选项置灰并说清是谁占着。
+type ProjectBranch struct {
+	Name     string `json:"name"`
+	Worktree string `json:"worktree"`
+}
+
+// ProjectBranchesResp 是 GET /api/projects/{name}/branches 的响应。
+//
+// 顶层形状（branches + default）与 /api/tasks/{id}/branches 一致，但 branches
+// 是对象数组而非字符串数组——多了占用信息，两者刻意不共用类型。
+type ProjectBranchesResp struct {
+	// Branches 永不为 nil（空仓库返回空数组）。
+	Branches []ProjectBranch `json:"branches"`
+	// Default 是推导出的基准分支；推导不出为空串。
+	Default string `json:"default"`
+	// WorktreeRoot 是手工新建工作树的落点根目录，供界面如实回显「会建在哪」。
+	// 界面只回显这个根，不自己拼完整路径——目录名的生成规则只有服务端一份。
+	WorktreeRoot string `json:"worktree_root"`
+}
+
+// CreateWorktreeReq 是 POST /api/projects/{name}/worktrees 的请求体。
+type CreateWorktreeReq struct {
+	// Mode 二选一："new_branch"（建新分支并开树）/ "existing_branch"（把已有分支开成一棵树）。
+	Mode string `json:"mode"`
+	// Branch 是要新建或要检出的分支名，必填。
+	Branch string `json:"branch"`
+	// Base 是新分支的起点，仅 new_branch 模式有意义；空串时由服务端推导。
+	Base string `json:"base"`
 }

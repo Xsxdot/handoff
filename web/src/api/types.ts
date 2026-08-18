@@ -164,6 +164,29 @@ export interface ProjectTreeResp {
   machines?: MachineStatus[]
 }
 
+// ProjectBranch 是一个本地分支；worktree 非空表示已被那个工作树检出，
+// 不能再开第二棵树（git 的硬约束，不是我们加的规矩）。
+export interface ProjectBranch {
+  name: string
+  worktree: string
+}
+
+// ProjectBranchesResp 是 GET /api/projects/{name}/branches 的响应。
+// 注意与 BranchesResult（/api/tasks/{id}/branches）不是同一类型：那边的
+// branches 是字符串数组，这边是带占用信息的对象数组。
+export interface ProjectBranchesResp {
+  branches: ProjectBranch[]
+  default: string
+  worktree_root: string
+}
+
+// CreateWorktreeReq 是 POST /api/projects/{name}/worktrees 的请求体。
+export interface CreateWorktreeReq {
+  mode: 'new_branch' | 'existing_branch'
+  branch: string
+  base: string
+}
+
 // Machine 是 GET /api/machines 的单台投影。W3a §4。
 export interface Machine {
   name: string              // ""=本机

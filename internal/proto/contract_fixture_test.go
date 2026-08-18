@@ -84,6 +84,8 @@ func TestContractFixtures(t *testing.T) {
 		{"FileWriteReq", fileWriteReqSample()},
 		{"FileWriteResp", fileWriteRespSample()},
 		{"FileConflictResp", fileConflictSample()},
+		{"ProjectBranchesResp", projectBranchesSample()},
+		{"CreateWorktreeReq", createWorktreeReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -487,4 +489,21 @@ func fileConflictSample() FileConflictResp {
 			SHA256:  "8b1a9953c4611296a827abf8c47804d7",
 		},
 	}
+}
+
+// projectBranchesSample 是分支列表响应的契约样本：一条被占用、一条空闲。
+func projectBranchesSample() ProjectBranchesResp {
+	return ProjectBranchesResp{
+		Branches: []ProjectBranch{
+			{Name: "main", Worktree: "/Users/dev/code/handoff"},
+			{Name: "feat/b114-sidebar-prefs", Worktree: ""},
+		},
+		Default:      "main",
+		WorktreeRoot: "/Users/dev/.handoff/worktrees/manual",
+	}
+}
+
+// createWorktreeReqSample 是建树请求的契约样本。
+func createWorktreeReqSample() CreateWorktreeReq {
+	return CreateWorktreeReq{Mode: "new_branch", Branch: "feat/b114-sidebar-prefs", Base: "main"}
 }

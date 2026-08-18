@@ -1,0 +1,14 @@
+{
+  "branches": [
+    {
+      "name": "main",
+      "worktree": "/Users/dev/code/handoff"
+    },
+    {
+      "name": "feat/b114-sidebar-prefs",
+      "worktree": ""
+    }
+  ],
+  "default": "main",
+  "worktree_root": "/Users/dev/.handoff/worktrees/manual"
+}

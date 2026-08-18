@@ -1,0 +1,5 @@
+{
+  "mode": "new_branch",
+  "branch": "feat/b114-sidebar-prefs",
+  "base": "main"
+}

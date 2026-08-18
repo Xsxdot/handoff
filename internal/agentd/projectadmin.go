@@ -838,3 +838,112 @@ func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
 	loc.Status = projectStatusOK
 	writeJSON(w, http.StatusOK, loc)
 }
+
+// handleProjectBranches 处理 GET /api/projects/{name}/branches[?machine=]。
+//
+// 列出该项目位置的本地分支，并标出每个分支是否已被某棵工作树检出——建树弹层
+// 的两个下拉都吃这份数据。
+//
+// 参数：
+//   - name（路径）: 项目登记名
+//   - machine（查询）: 可选，转发到指定机器
+//
+// 响应：200 proto.ProjectBranchesResp；项目不存在 404；列分支失败 500（原文透出）
+func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	s.log.Info("列项目分支请求", "name", name, "machine", r.URL.Query().Get("machine"))
+	loc, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("列项目分支被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "项目 " + name + " 未登记"})
+			return
+		}
+		s.log.Error("列项目分支失败：查询位置表", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	names, err := Branches(loc.Path)
+	if err != nil {
+		s.log.Error("列项目分支失败", "name", name, "repo", loc.Path, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	worktreesDir := filepath.Join(s.conf().DataDir, "worktrees")
+	// 占用表复用项目树那次探测的同一个函数，不另跑一遍 worktree list：
+	// 两处口径分叉时，界面置灰的分支与真能建的分支会对不上
+	existing, probeErr := probeWorkspaces(r.Context(), loc.Path, worktreesDir)
+	if probeErr != "" {
+		s.log.Warn("列项目分支：探测工作树失败，占用信息缺失", "name", name, "cause", probeErr)
+	}
+	byBranch := make(map[string]string, len(existing))
+	for _, ws := range existing {
+		if ws.Branch != "" {
+			byBranch[ws.Branch] = ws.Path
+		}
+	}
+	resp := proto.ProjectBranchesResp{
+		Branches:     make([]proto.ProjectBranch, 0, len(names)),
+		Default:      resolveBaseBranch(loc.Path),
+		WorktreeRoot: ManualWorktreeRoot(worktreesDir),
+	}
+	for _, b := range names {
+		resp.Branches = append(resp.Branches, proto.ProjectBranch{Name: b, Worktree: byBranch[b]})
+	}
+	s.log.Info("列项目分支完成", "name", name, "count", len(resp.Branches),
+		"default", resp.Default, "occupied", len(byBranch))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleProjectWorktreeCreate 处理 POST /api/projects/{name}/worktrees[?machine=]。
+//
+// 在该项目位置上开一棵不属于任何任务的工作树（spec §3.2）。
+//
+// 参数：
+//   - name（路径）: 项目登记名
+//   - machine（查询）: 可选，转发到指定机器
+//   - 请求体: proto.CreateWorktreeReq
+//
+// 响应：200 proto.Workspace；项目不存在 404；请求不合法 400；git 失败 500（原文透出）
+func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	var req proto.CreateWorktreeReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("建树请求体解析失败", "name", name, "status", http.StatusBadRequest, "cause", err)
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "请求体必须是 JSON {mode, branch, base}"})
+		return
+	}
+	s.log.Info("建树请求", "name", name, "machine", r.URL.Query().Get("machine"),
+		"mode", req.Mode, "branch", req.Branch, "base", req.Base)
+	loc, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("建树被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "项目 " + name + " 未登记"})
+			return
+		}
+		s.log.Error("建树失败：查询位置表", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	ws, err := CreateManualWorktree(r.Context(), loc.Path, filepath.Join(s.conf().DataDir, "worktrees"), req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrBadWorktreeReq) {
+			status = http.StatusBadRequest
+		}
+		s.log.Error("建树失败", "name", name, "repo", loc.Path, "mode", req.Mode,
+			"branch", req.Branch, "status", status, "cause", err)
+		writeJSON(w, status, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	s.log.Info("建树完成", "name", name, "dir", ws.Path, "branch", ws.Branch)
+	writeJSON(w, http.StatusOK, ws)
+}
