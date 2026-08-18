@@ -305,6 +305,17 @@ func TestResizeDuringShellExitIsRaceFree(t *testing.T) {
 			} else {
 				_ = a.Resize(120, 40)
 			}
+			// why 必须有这个间隔（B140）：尺寸每次都变，于是每轮都发一次
+			// TIOCSWINSZ，而每次 TIOCSWINSZ 都给前台进程组投一个 SIGWINCH。
+			// 不加间隔就是一条不间断的 SIGWINCH 流，shell 始终腾不出手处理
+			// 已经排在输入队列里的 `exit 0`，一直停在 read 上直到用例超时。
+			// 实测（16 个自旋进程压满 10 核，各 400 次迭代）：
+			//   本用例原样             3/400 红
+			//   去掉 resize 自旋       0/400
+			//   自旋但尺寸恒定不发 ioctl 0/400   ← 唯一变量就是发不发 ioctl
+			// 200µs 仍远密于任何真实客户端（拖拽窗口约 60 次/秒），
+			// 竞态窗口照旧覆盖，-race 也照旧能看到并发访问。
+			time.Sleep(200 * time.Microsecond)
 		}
 	}()
 	defer func() { close(stop); wg.Wait() }()
