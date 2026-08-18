@@ -147,7 +147,7 @@ func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (se
 		return settingsPath, mcpPath, "", fmt.Errorf("写 %s: %w", mcpPath, err)
 	}
 
-	promptText, err = turn.RenderPrompt(taskID, planContent)
+	promptText, err = turn.RenderPrompt(taskID, planContent, "")
 	if err != nil {
 		log.Error("claude 渲染 prompt 失败", "task", taskID, "cause", err)
 		return settingsPath, mcpPath, "", fmt.Errorf("渲染 prompt: %w", err)

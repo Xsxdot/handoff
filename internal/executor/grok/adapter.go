@@ -195,7 +195,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	prompt, err := turn.RenderPrompt(taskID, req.PlanContent, "")
 	if err != nil {
 		return err
 	}

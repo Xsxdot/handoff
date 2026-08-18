@@ -153,7 +153,7 @@ func WriteTaskEnv(taskDir, taskID, model, planContent string) (configPath, promp
 		return configPath, promptPath, fmt.Errorf("序列化 opencode 配置: %w", err)
 	}
 
-	promptContent, err := turn.RenderPrompt(taskID, planContent)
+	promptContent, err := turn.RenderPrompt(taskID, planContent, "")
 	if err != nil {
 		return configPath, promptPath, err
 	}
