@@ -7,7 +7,8 @@
 // 边界：
 //   - 不下载、不判断版本、不读 handoff 的配置文件：要什么路径由调用方在 Spec 里给全
 //   - 不负责重启策略之外的进程管理：拉起、崩溃重启都是管理器的事
-//   - 不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成（backlog B37）
+//   - 三个平台各一个实现：launchd（macOS）/ systemd（Linux）/ schtasks（Windows）。
+//     Windows 走计划任务而非 SCM 服务，理由见 windows.go 的文件头
 package service
 
 import (
@@ -75,8 +76,8 @@ func New(log *slog.Logger) (Manager, error) {
 	case "linux":
 		return newSystemd(log), nil
 	case "windows":
-		return nil, fmt.Errorf("暂不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成（backlog B37），托管起来也跑不了任务")
+		return newWindows(log), nil
 	default:
-		return nil, fmt.Errorf("不支持的平台 %s（仅 darwin/linux）", runtime.GOOS)
+		return nil, fmt.Errorf("不支持的平台 %s（仅 darwin/linux/windows）", runtime.GOOS)
 	}
 }

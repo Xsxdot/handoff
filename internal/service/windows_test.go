@@ -6,6 +6,8 @@
 package service
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -79,4 +81,149 @@ func TestWindowsTaskXMLEscapes(t *testing.T) {
 	if !strings.Contains(body, "&amp;") {
 		t.Errorf("未见转义后的 &amp;:\n%s", body)
 	}
+}
+
+// newTestWindows 造一个全缝替换的 windows manager，并返回记录调用的切片指针。
+func newTestWindows(t *testing.T, runOut string, runErr error) (*windowsManager, *[]string, *map[string][]byte) {
+	t.Helper()
+	calls := []string{}
+	written := map[string][]byte{}
+	m := &windowsManager{
+		log:          testLogger(),
+		localAppData: `C:\Users\u\AppData\Local`,
+		currentUser:  func() (string, error) { return `WIN-B37\Administrator`, nil },
+		mkdirAll:     func(string, os.FileMode) error { return nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			return []byte(runOut), runErr
+		},
+		writeFile: func(p string, b []byte, _ uint32) error { written[p] = b; return nil },
+		remove:    func(p string) error { delete(written, p); return nil },
+	}
+	return m, &calls, &written
+}
+
+// 安装要按删旧 → 写盘 → 建任务 → 复核的次序走。
+func TestWindowsInstallSequence(t *testing.T) {
+	m, calls, written := newTestWindows(t, "SUCCESS", nil)
+	if err := m.Install(Spec{BinPath: `C:\bin\handoff.exe`, ConfigPath: `C:\c.yaml`}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	want := []string{"/Delete", "/Create", "/Query"}
+	if len(*calls) != len(want) {
+		t.Fatalf("调用次数应为 %d，实际 %d: %v", len(want), len(*calls), *calls)
+	}
+	for i, w := range want {
+		if !strings.Contains((*calls)[i], w) {
+			t.Errorf("第 %d 条调用应含 %q，实际 %q", i+1, w, (*calls)[i])
+		}
+	}
+	xmlPath := `C:\Users\u\AppData\Local\handoff\handoff-agentd.xml`
+	if _, ok := (*written)[xmlPath]; !ok {
+		t.Fatalf("XML 没写到 %s，实际写了 %v", xmlPath, keysOf(*written))
+	}
+	if b := (*written)[xmlPath]; len(b) < 2 || b[0] != 0xFF || b[1] != 0xFE {
+		t.Error("落盘的 XML 不是 UTF-16LE BOM 开头，schtasks 会拒绝它")
+	}
+}
+
+// 建任务失败必须回滚，避免留下让人工误判安装状态的孤儿 XML。
+func TestWindowsInstallRollsBackOnCreateFailure(t *testing.T) {
+	calls := []string{}
+	written := map[string][]byte{}
+	m := &windowsManager{
+		log:          testLogger(),
+		localAppData: `C:\Users\u\AppData\Local`,
+		currentUser:  func() (string, error) { return "u", nil },
+		mkdirAll:     func(string, os.FileMode) error { return nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			calls = append(calls, joined)
+			if strings.Contains(joined, "/Create") {
+				return []byte("ERROR: Access is denied."), errors.New("exit status 1")
+			}
+			return []byte("SUCCESS"), nil
+		},
+		writeFile: func(p string, b []byte, _ uint32) error { written[p] = b; return nil },
+		remove:    func(p string) error { delete(written, p); return nil },
+	}
+	err := m.Install(Spec{BinPath: `C:\bin\handoff.exe`})
+	if err == nil {
+		t.Fatal("建任务失败时 Install 应该报错")
+	}
+	if !strings.Contains(err.Error(), "Access is denied") {
+		t.Errorf("报文必须带 schtasks 原文，实际: %v", err)
+	}
+	if len(written) != 0 {
+		t.Errorf("失败后必须回滚删除 XML，实际残留 %v", keysOf(written))
+	}
+}
+
+// Status 的 Running 必须按 PID 复核，不能按镜像名。
+func TestWindowsStatusVerifiesByPID(t *testing.T) {
+	var tasklistFilter string
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if name == "schtasks" {
+			return []byte("\"TaskName\",\"Status\",\"PID\"\n\"\\handoff-agentd\",\"Running\",\"4242\"\n"), nil
+		}
+		tasklistFilter = joined
+		return []byte("handoff.exe                   4242 Console      1     40,000 K\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Installed || !st.Running {
+		t.Fatalf("应报已装且在跑，实际 %+v", st)
+	}
+	if !strings.Contains(tasklistFilter, "PID eq 4242") {
+		t.Errorf("复核判据必须是 PID，实际 tasklist 参数: %q", tasklistFilter)
+	}
+	if strings.Contains(tasklistFilter, "IMAGENAME") {
+		t.Error("不得按镜像名复核：会把操作者正在敲的 handoff CLI 也数进去")
+	}
+}
+
+// 没装是正常答案不是错误。
+func TestWindowsStatusNotInstalledIsNotError(t *testing.T) {
+	m, _, _ := newTestWindows(t, "ERROR: The system cannot find the file specified.", errors.New("exit status 1"))
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("没装时 Status 不该报错: %v", err)
+	}
+	if st.Installed || st.Running {
+		t.Fatalf("没装时两个字段都该是 false，实际 %+v", st)
+	}
+}
+
+// 本来就没装时 Uninstall 返回 nil（幂等）。
+func TestWindowsUninstallIsIdempotent(t *testing.T) {
+	m, _, _ := newTestWindows(t, "ERROR: The system cannot find the file specified.", errors.New("exit status 1"))
+	m.remove = func(string) error { return os.ErrNotExist }
+	if err := m.Uninstall(); err != nil {
+		t.Fatalf("没装时 Uninstall 应返回 nil，实际 %v", err)
+	}
+}
+
+// 卸载不得依赖 schtasks /End，它只杀外层 cmd.exe。
+func TestWindowsUninstallDoesNotUseEnd(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "SUCCESS", nil)
+	if err := m.Uninstall(); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	for _, c := range *calls {
+		if strings.Contains(c, "/End") {
+			t.Errorf("不得用 schtasks /End，实际调用: %q", c)
+		}
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

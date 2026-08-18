@@ -14,13 +14,14 @@ package service
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 )
@@ -135,8 +136,166 @@ func (m *windowsManager) UnitPath() (string, error) {
 		}
 		return "", fmt.Errorf("取不到 %%LOCALAPPDATA%%，无法定位计划任务 XML 的落点")
 	}
-	return filepath.Join(m.localAppData, "handoff", WindowsTaskName+".xml"), nil
+	return windowsPathJoin(m.localAppData, "handoff", WindowsTaskName+".xml"), nil
 }
 
 // Kind 返回管理器种类。
 func (m *windowsManager) Kind() string { return "schtasks" }
+
+// windowsPathJoin 在所有宿主平台上都使用 Windows 分隔符。
+//
+// windows.go 不带 build tag，macOS/Linux 上的单测也会构造 Windows 路径；使用
+// 宿主机 filepath.Join 会在测试中生成混合分隔符，掩盖实际交给 schtasks 的路径。
+func windowsPathJoin(parts ...string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := strings.TrimRight(parts[0], `\/`)
+	for _, part := range parts[1:] {
+		part = strings.Trim(part, `\/`)
+		if part == "" {
+			continue
+		}
+		if out == "" {
+			out = part
+		} else {
+			out += `\` + part
+		}
+	}
+	return out
+}
+
+// windowsPathDir 返回 Windows 路径的父目录，供全平台测试调用注入的 mkdirAll。
+func windowsPathDir(path string) string {
+	i := strings.LastIndexAny(path, `/\`)
+	if i < 0 {
+		return "."
+	}
+	if i == 0 {
+		return path[:1]
+	}
+	return path[:i]
+}
+
+// Install 写 XML 并建任务，最后复核任务真的注册上了。
+//
+// 次序与其它平台一致：先清旧 → 写盘 → 建任务 → 复核。建任务失败时回滚删 XML，
+// 避免留下让人工误判安装状态的孤儿文件。
+func (m *windowsManager) Install(spec Spec) error {
+	path, err := m.UnitPath()
+	if err != nil {
+		return err
+	}
+	usr, err := m.currentUser()
+	if err != nil {
+		m.log.Error("取当前用户失败，无法确定计划任务的运行身份", "cause", err)
+		return fmt.Errorf("取当前用户: %w", err)
+	}
+	m.log.Info("安装 Windows 计划任务", "task", WindowsTaskName, "xml", path,
+		"bin", spec.BinPath, "user", usr)
+
+	if out, derr := m.run("schtasks", "/Delete", "/TN", WindowsTaskName, "/F"); derr != nil {
+		m.log.Debug("删除旧任务（未装时报错属正常）", "output", strings.TrimSpace(string(out)))
+	}
+
+	if err := m.mkdirAll(windowsPathDir(path), 0o755); err != nil {
+		m.log.Error("创建 XML 目录失败", "dir", windowsPathDir(path), "cause", err)
+		return fmt.Errorf("创建 %s: %w", windowsPathDir(path), err)
+	}
+	if err := m.writeFile(path, toUTF16LE(m.taskXML(spec, usr)), 0o644); err != nil {
+		m.log.Error("写计划任务 XML 失败", "path", path, "cause", err)
+		return fmt.Errorf("写 XML %s: %w", path, err)
+	}
+
+	if out, cerr := m.run("schtasks", "/Create", "/TN", WindowsTaskName, "/XML", path, "/F"); cerr != nil {
+		if rmErr := m.remove(path); rmErr != nil {
+			m.log.Error("回滚删除 XML 失败", "path", path, "cause", rmErr)
+		}
+		m.log.Error("建计划任务失败，已回滚", "cause", cerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("建计划任务失败: %s（%w）", strings.TrimSpace(string(out)), cerr)
+	}
+
+	if out, qerr := m.run("schtasks", "/Query", "/TN", WindowsTaskName); qerr != nil {
+		m.log.Error("任务已建但复核失败", "cause", qerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("任务已建但复核不到（检查 %s）: %w", spec.LogPath, qerr)
+	}
+	m.log.Info("Windows 计划任务安装完成", "task", WindowsTaskName)
+	return nil
+}
+
+// Uninstall 删任务并删 XML。本来就没装时返回 nil。
+//
+// 不使用 schtasks /End：它只杀外层 cmd.exe，无法保证 agentd 孙进程退出。任务
+// 删除先于进程回收，避免重复触发在一分钟内把已杀进程重新拉起。
+func (m *windowsManager) Uninstall() error {
+	path, err := m.UnitPath()
+	if err != nil {
+		return err
+	}
+	m.log.Info("卸载 Windows 计划任务", "task", WindowsTaskName)
+	if out, derr := m.run("schtasks", "/Delete", "/TN", WindowsTaskName, "/F"); derr != nil {
+		m.log.Debug("删除任务报错（未装时属正常）", "output", strings.TrimSpace(string(out)))
+	}
+	if err := m.remove(path); err != nil && !os.IsNotExist(err) {
+		m.log.Error("删除计划任务 XML 失败", "path", path, "cause", err)
+		return fmt.Errorf("删除 XML %s: %w", path, err)
+	}
+	m.log.Info("Windows 计划任务已卸载", "task", WindowsTaskName)
+	return nil
+}
+
+// Status 查询任务是否注册且在跑。
+//
+// Running 必须按 PID 复核，而不能按镜像名；否则操作者正在运行的 handoff CLI
+// 会被误计为 agentd。没注册时返回零值状态和 nil，因为「没装」是正常答案。
+func (m *windowsManager) Status() (Status, error) {
+	out, err := m.run("schtasks", "/Query", "/TN", WindowsTaskName, "/V", "/FO", "CSV")
+	if err != nil {
+		m.log.Debug("查询计划任务未命中（未装时属正常）", "output", strings.TrimSpace(string(out)))
+		return Status{}, nil
+	}
+	s := Status{Installed: true, Detail: firstLine(string(out))}
+	pid := pidFromQueryCSV(string(out))
+	if pid <= 0 {
+		m.log.Warn("计划任务已注册但读不到 PID，Running 判为 false", "task", WindowsTaskName)
+		return s, nil
+	}
+	tout, terr := m.run("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/NH")
+	if terr != nil {
+		m.log.Warn("按 PID 复核进程失败，Running 判为 false", "pid", pid, "cause", terr)
+		return s, nil
+	}
+	s.Running = strings.Contains(string(tout), strconv.Itoa(pid))
+	m.log.Debug("计划任务状态", "task", WindowsTaskName,
+		"installed", s.Installed, "running", s.Running, "pid", pid)
+	return s, nil
+}
+
+// pidFromQueryCSV 从 schtasks /Query /V /FO CSV 输出里取 PID 列。
+//
+// 按列名而不是固定列号查找，因为列数会随 Windows 版本变化；返回 0 表示没有
+// 读到可用 PID，调用方据此把 Running 判为 false 而不是猜值。
+func pidFromQueryCSV(out string) int {
+	r := csv.NewReader(strings.NewReader(out))
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil || len(records) < 2 {
+		return 0
+	}
+	idx := -1
+	for i, h := range records[0] {
+		h = strings.TrimPrefix(h, "\ufeff")
+		if strings.EqualFold(strings.TrimSpace(h), "PID") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || idx >= len(records[1]) {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(records[1][idx]))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
