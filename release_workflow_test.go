@@ -71,10 +71,20 @@ func modulePathFromGoMod(t *testing.T) string {
 // 期望值从 go.mod 派生，杜绝「模块改名后这里分叉」。
 func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
 	want := "-X " + modulePathFromGoMod(t) + "/internal/buildinfo.releaseVersion="
-	// Count 而不是 Contains：同一注入串在 build-unix 与 build-darwin 各出现
-	// 一次，只断言「至少一次」会放走「只改对一处、另一处漏改」的情况。
-	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != 2 {
-		t.Fatalf("workflow 应恰好含两处注入路径 %q，实得 %d 处", want, n)
+	// Count 而不是 Contains：断言「至少一次」会放走「只改对一处、别处漏改」。
+	//
+	// 这个数字是「workflow 里编 CLI 的地方有几处」的代理，**加构建点就要同步加**。
+	// W5b-3 之前是 2（build-unix / build-darwin）；两个薄壳 job 各自也要编一份
+	// CLI 嵌进壳里（那份会被释出到 ~/.local/bin/handoff，用户敲 handoff version
+	// 看到的就是它），所以现在是 4：
+	//
+	//   build-unix · build-darwin · build-desktop-linux · build-desktop-darwin
+	//
+	// 漏掉薄壳那两处的症状最阴：壳能装能跑，但它释出的 CLI 自称 unknown，
+	// 自更新永远认为自己已是最新。
+	const wantCount = 4
+	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != wantCount {
+		t.Fatalf("workflow 应恰好含 %d 处注入路径 %q，实得 %d 处", wantCount, want, n)
 	}
 }
 
