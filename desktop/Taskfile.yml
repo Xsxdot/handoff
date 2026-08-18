@@ -14,6 +14,10 @@ includes:
   common: ./build/Taskfile.yml
   darwin: ./build/darwin/Taskfile.yml
   linux: ./build/linux/Taskfile.yml
+  # 缺这一行的后果不是「Windows 没打包」，是 build / package / run 三个入口
+  # 在 Windows 上全部报 `task windows:build not found`——上面那三个任务是按
+  # {{.GOOS}} 分派的，includes 里没有 windows 就没有可分派的目标。
+  windows: ./build/windows/Taskfile.yml
 
 tasks:
   build:

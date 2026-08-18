@@ -196,7 +196,7 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   generate:icons:
-    summary: Generates Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms). Windows icon output is disabled with `-windowsfilename ""` because the windows platform scaffolding was removed.
+    summary: Generates Mac `.icns` and Windows `.ico` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
     run: once
     dir: build
     sources:
@@ -204,8 +204,15 @@ tasks:
       - "appicon.icon"
     generates:
       - "darwin/icons.icns"
+      - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin -windowsfilename ""
+      # -windowsfilename 此前被写成空串关掉 Windows 图标输出，理由是「windows
+      # platform scaffolding was removed」。scaffolding 已随本轮补回，这里必须
+      # 一起开回来：windows/Taskfile.yml 的 generate:syso 会读 build/windows/icon.ico
+      # 把图标编进资源，文件不在就整条构建断在准备阶段。
+      # 产物与 darwin/icons.icns 同性质（由 appicon.png 生成、已入 .gitignore），
+      # 不入库。
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin -windowsfilename windows/icon.ico
 
   dev:frontend:
     summary: Runs the frontend in development mode
