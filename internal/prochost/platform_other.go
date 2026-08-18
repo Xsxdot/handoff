@@ -27,6 +27,7 @@ package prochost
 
 import (
 	"errors"
+	"io"
 	"os"
 	"time"
 )
@@ -63,6 +64,10 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 }
 
 func writeInputChannel(path string, data []byte) error { return errNotImplemented }
+
+func openInputChannel(path string) (io.ReadCloser, func(), error) {
+	return nil, nil, errNotImplemented
+}
 
 // installProcessContainer 本平台无实现。
 //

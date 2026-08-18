@@ -76,3 +76,46 @@ func TestWriteInputChannelMissingPath(t *testing.T) {
 		t.Fatalf("通道不存在时投递竟然成功了")
 	}
 }
+
+// TestOpenInputChannelNeverEOFs 钉住整个输入通道设计的地基：
+// 写端来了又走之后，读端**不得** EOF。
+//
+// 这条不是形式主义——unix 上靠 shim 自己 O_RDWR 同时持有写端来保证，
+// Windows 上靠 shim 攥着匿名管道写端来保证，两边实现完全不同但契约相同。
+// 少了这条，症状是「执行者跑完第一条指令后再也不响应」，极难归因。
+func TestOpenInputChannelNeverEOFs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in.fifo")
+	if err := createInputChannel(path); err != nil {
+		t.Fatalf("建通道失败: %v", err)
+	}
+	r, cleanup, err := openInputChannel(path)
+	if err != nil {
+		t.Fatalf("打开输入通道失败: %v", err)
+	}
+	defer cleanup()
+
+	// 第一次投递：写端开了又关
+	if err := WriteInputChannel(path, []byte("one\n")); err != nil {
+		t.Fatalf("第一次投递失败: %v", err)
+	}
+	buf := make([]byte, 32)
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("第一次读失败: %v", err)
+	}
+	if got := string(buf[:n]); got != "one\n" {
+		t.Fatalf("第一次读到 %q，想要 %q", got, "one\n")
+	}
+
+	// 第二次投递：若上一次写端关闭导致了 EOF，这里会读到 io.EOF 而不是数据
+	if err := WriteInputChannel(path, []byte("two\n")); err != nil {
+		t.Fatalf("第二次投递失败: %v", err)
+	}
+	n, err = r.Read(buf)
+	if err != nil {
+		t.Fatalf("第二次读失败（写端关闭把读端 EOF 掉了）: %v", err)
+	}
+	if got := string(buf[:n]); got != "two\n" {
+		t.Fatalf("第二次读到 %q，想要 %q", got, "two\n")
+	}
+}

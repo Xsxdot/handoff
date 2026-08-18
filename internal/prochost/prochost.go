@@ -35,7 +35,7 @@ import (
 //   - Dir: 子进程工作目录（任务仓库）
 //   - Env: 完整环境变量（KEY=VALUE），由调用方合并完毕，shim 原样使用不再追加
 //   - Stdout/Stderr: 子进程输出的追加落盘路径；两者可指向同一文件
-//   - InputCh: 可选。非空时 shim 以 O_RDWR 持有该 FIFO 并作为子进程 stdin
+//   - InputCh: 可选。非空时 shim 经 openInputChannel 准备子进程 stdin（平台各自实现）
 //   - LockPath: shim 的存活锁路径
 //   - InfoPath: adapter 的 proc.json 路径。shim **不写它**（那是 adapter 的独占
 //     文件），只拿它的所在目录来放 spec.json 与 child.pid——见 shim.go recordChildPID
@@ -241,8 +241,8 @@ func Kill(h Handle) error {
 //
 // 返回：
 //   - 已存在且确实是命名管道 → nil（复用）
-//   - 已存在但是普通文件/目录 → 错误（残留物会让 shim 的 O_RDWR 打开语义完全改变，
-//     必须显式失败而不是静默当管道用）
+//   - 已存在但是普通文件/目录 → 错误（残留物会让平台输入通道语义完全改变，必须
+//     显式失败而不是静默当通道用）
 func CreateInputChannel(path string) error { return createInputChannel(path) }
 
 // WaitInputReader 等待输入通道上出现读端（shim 已执行到持有 FIFO 那一步）。

@@ -18,6 +18,7 @@ package prochost
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -229,4 +230,9 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 func writeInputChannel(path string, data []byte) error {
 	log().Error("Windows 输入通道尚未实现", "path", path, "bytes", len(data))
 	return errNotImplemented
+}
+
+func openInputChannel(path string) (io.ReadCloser, func(), error) {
+	log().Error("Windows 输入通道尚未实现", "path", path)
+	return nil, nil, errNotImplemented
 }

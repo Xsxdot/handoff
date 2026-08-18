@@ -16,6 +16,7 @@ package prochost
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -185,6 +186,26 @@ func writeInputChannel(path string, data []byte) error {
 		return fmt.Errorf("写输入通道 %s: %w", path, err)
 	}
 	return nil
+}
+
+// openInputChannel 为子进程准备 stdin（见 shim.go 调用点）。
+//
+// 参数：path 为通道路径
+//
+// 返回：
+//   - r: 交给 cmd.Stdin 的读端
+//   - cleanup: 子进程退出后调用，释放本函数占用的资源
+//   - error: 非 nil 时 shim 必须放弃拉起执行者
+//
+// 注意：**O_RDWR 而不是 O_RDONLY 是承重的**。只读打开会在所有写端关闭时收到
+// EOF，执行者的 stdin 随即关闭；O_RDWR 让 shim 自己同时也是写端，FIFO 因此
+// 永不 EOF。这是旧 sh 脚本 `exec 3<> in.fifo` 的等价手法。
+func openInputChannel(path string) (io.ReadCloser, func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开输入通道 %s: %w", path, err)
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的
