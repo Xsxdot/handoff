@@ -13,6 +13,7 @@
 //   - 分屏按钮**不在这里**，在每条 tab 条的右端（TabBar）：那里才知道
 //     「在哪一栏的右边分」，而且不受上面那条零交互约束
 import { ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import type { BaseDir } from '../workbench/useWorkbench'
 
 // breadcrumbSegments 把基准目录拆成要显示的几段。
@@ -34,14 +35,34 @@ export function Breadcrumb({ base }: { base: BaseDir }) {
 
 // BreadcrumbSegments 只画那几段文字，不带外框——外框由调用方给
 //（页面里是一整行，薄壳里是窗口顶部那条 28px）。
-export function BreadcrumbSegments({ base }: { base: BaseDir }) {
+//
+// tone 决定字重与字号：
+//   - 'row'（默认）：页面里那一行，末段加粗，它是这一行的主角
+//   - 'titlebar'：薄壳窗口顶部。**不加粗、字号再小半档**——原生标题栏是轻的，
+//     末段一条长分支名加粗之后会把整条带子压得很重（走查原话「有些丑」的另一半）
+export function BreadcrumbSegments({ base, tone = 'row' }: { base: BaseDir; tone?: 'row' | 'titlebar' }) {
   const segments = breadcrumbSegments(base)
+  const titlebar = tone === 'titlebar'
   return (
-    <nav aria-label="当前位置" className="flex min-w-0 items-center gap-1 text-xs">
+    <nav
+      aria-label="当前位置"
+      className={cn('flex min-w-0 items-center', titlebar ? 'gap-1.5 text-[11.5px]' : 'gap-1 text-xs')}
+    >
       {segments.map((s, i) => (
-        <span key={i} className="flex min-w-0 items-center gap-1">
-          {i > 0 && <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
-          <span className={i === segments.length - 1 ? 'truncate font-medium' : 'truncate text-muted-foreground'}>
+        <span key={i} className="flex min-w-0 items-center gap-1.5">
+          {i > 0 && (
+            <ChevronRight className={cn('shrink-0 text-muted-foreground', titlebar ? 'size-2.5' : 'size-3')} />
+          )}
+          <span
+            className={cn(
+              'truncate',
+              i === segments.length - 1
+                ? titlebar
+                  ? 'text-foreground'
+                  : 'font-medium'
+                : 'text-muted-foreground',
+            )}
+          >
             {s}
           </span>
         </span>
