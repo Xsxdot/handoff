@@ -1376,7 +1376,7 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 //   - onEvent: 每帧回调；返回错误即中止本次连接
 //
 // 为什么必须有这个「无 cursor」变体：FollowEvents / WaitEvent 把水位存在
-// ~/.handoff/cursor-<task>，那是**审核者本机**的状态。agentd 做事件镜像时
+// ~/.handoff/cursors/<agentd 地址>/<task>，那是**审核者本机**的状态。agentd 做事件镜像时
 // 跑在同一台机器上，若复用带 cursor 的路径，agentd 的镜像与人手敲的
 // handoff wait 会互相推进对方的水位——一方吃掉另一方的事件，且极难归因。
 // 镜像的水位属于 mirror_events 表，不属于文件系统。
@@ -1688,8 +1688,8 @@ func turnTailForLog(s string) string {
 // 下一次 wait 会把截断文本解析成 0（从头重投全部事件）；rename 保证读到的一定是
 // 完整内容——要么旧值要么新值，不存在中间态。
 //
-// 为什么临时文件必须唯一（L-3）：两个 wait 进程/goroutine 并发写同一
-// cursor-<task> 时，固定后缀的 <path>.tmp 会被两边同时打开/截断——先写完者
+// 为什么临时文件必须唯一（L-3）：两个 wait 进程/goroutine 并发写同一任务的
+// 游标文件时，固定后缀的 <path>.tmp 会被两边同时打开/截断——先写完者
 // rename 掉的是对方可能还没写完的共享文件，目标文件会短暂出现半截内容，对端
 // 恰好读到即「读到一半的 tmp」。CreateTemp 同目录生成 O_EXCL 唯一名，rename
 // 的始终是「自己写完整并关闭的文件」，并发读保证只看到完整旧值或完整新值。

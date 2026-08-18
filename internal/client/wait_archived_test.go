@@ -156,8 +156,11 @@ func TestWaitArchivedSkipsIntermediateEventsAndDoesNotTouchCursor(t *testing.T) 
 	if err != nil || got.Seq != archived.Seq {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".handoff", "cursor-t1")); !os.IsNotExist(err) {
-		t.Fatalf("B67 不得创建 cursor: %v", err)
+	// 断言整棵游标目录而不是某个具体文件：布局已改为
+	// ~/.handoff/cursors/<agentd 地址>/<task>，盯死旧的平铺路径
+	// ~/.handoff/cursor-<task> 会让这条隔离断言恒真——写了游标也照样通过。
+	if _, err := os.Stat(filepath.Join(home, ".handoff", "cursors")); !os.IsNotExist(err) {
+		t.Fatalf("B67 不得创建任何游标: %v", err)
 	}
 }
 
@@ -328,5 +331,42 @@ func TestWaitArchivedNormalCloseWithoutEventRechecksSnapshot(t *testing.T) {
 	got, err := New(ts.URL, "").WaitArchived(t.Context(), "t1")
 	if err != nil || got.Seq != 3 || attaches.Load() < 2 {
 		t.Fatalf("got=%+v err=%v attaches=%d", got, err, attaches.Load())
+	}
+}
+
+// TestWaitArchivedRepeatedNormalCloseBacksOff 钉住「正常关闭复查」这条路径也必须退避。
+//
+// 为什么需要它：errArchived（对端 1000 正常关闭）在门闩里不是成功证据，要回查
+// 快照才放行。若这条 continue 不走退避，一个仍可达、却反复以 1000 关闭而任务
+// 始终非终态的 agentd，会把门闩变成 Attach + 拨号的紧循环——压垮对端且刷爆日志，
+// 而门闩表面上还在「正常等待」。既有的 NormalCloseWithoutEventRechecksSnapshot
+// 只复查一次就拿到 archived，覆盖不到重复情形。
+func TestWaitArchivedRepeatedNormalCloseBacksOff(t *testing.T) {
+	var attaches atomic.Int32
+	ts := newWaitArchivedServer(t,
+		func() *AttachInfo {
+			attaches.Add(1)
+			// 永远非终态：正常关闭之后回查也拿不到 archived，门闩必须继续等
+			return snapshot("t1", proto.TaskStateRunning)
+		},
+		func(conn *websocket.Conn, _ *http.Request) {
+			_ = conn.Close(websocket.StatusNormalClosure, "task archived")
+		})
+
+	// 退避 50ms 封顶、稳定门槛设得极高（本轮连接必然算「不健康」，退避才会倍增）
+	c := NewWithWSTiming(ts.URL, "", 50*time.Millisecond, 50*time.Millisecond, time.Hour)
+	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+	defer cancel()
+
+	_, err := c.WaitArchived(ctx, "t1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("应因总时限到而结束，实得 %v", err)
+	}
+	// 400ms / 50ms = 8 轮上限，留一倍余量到 16。不退避时这里是几百上千。
+	if n := attaches.Load(); n > 16 {
+		t.Fatalf("正常关闭复查没有退避：400ms 内取了 %d 次快照（上限 16）", n)
+	}
+	if attaches.Load() < 2 {
+		t.Fatalf("至少应复查一次，实得 %d", attaches.Load())
 	}
 }

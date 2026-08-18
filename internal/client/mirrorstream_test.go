@@ -21,7 +21,13 @@ import (
 )
 
 // TestStreamEventsOnceDeliversAndNoCursor 断言：两条事件都被交付给 onEvent，
-// 且调用前后 ~/.handoff/cursor-<task> 都不存在。
+// 且调用前后**整棵游标目录 ~/.handoff/cursors/ 都不存在**。
+//
+// 为什么断言整棵目录而不是某个具体文件：游标布局已从平铺的
+// ~/.handoff/cursor-<task> 改为按 agentd 地址分命名空间的
+// ~/.handoff/cursors/<地址>/<task>。盯死一个具体路径的断言在改版之后不会翻红，
+// 只会变成恒真——它照样通过，哪怕被测代码真的写了游标。断言目录不存在则与
+// 布局无关：只要写了任何游标，那一层必然被创建。
 func TestStreamEventsOnceDeliversAndNoCursor(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	evs := []proto.Event{
@@ -47,9 +53,9 @@ func TestStreamEventsOnceDeliversAndNoCursor(t *testing.T) {
 	t.Cleanup(func() { ts.CloseClientConnections(); ts.Close() })
 
 	home := os.Getenv("HOME")
-	cursorPath := filepath.Join(home, ".handoff", "cursor-t1")
-	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
-		t.Fatalf("调用前 cursor 文件不该存在：%s", cursorPath)
+	cursorsDir := filepath.Join(home, ".handoff", "cursors")
+	if _, err := os.Stat(cursorsDir); !os.IsNotExist(err) {
+		t.Fatalf("调用前游标目录不该存在：%s", cursorsDir)
 	}
 
 	var got []proto.Event
@@ -70,7 +76,7 @@ func TestStreamEventsOnceDeliversAndNoCursor(t *testing.T) {
 	if got[1].Type != proto.EventTypeProgress {
 		t.Errorf("StreamEventsOnce 不过滤 progress：实得 %v", got[1].Type)
 	}
-	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
-		t.Errorf("调用后 cursor 文件必须仍不存在：%s", cursorPath)
+	if _, err := os.Stat(cursorsDir); !os.IsNotExist(err) {
+		t.Errorf("调用后游标目录必须仍不存在：%s", cursorsDir)
 	}
 }

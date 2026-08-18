@@ -65,10 +65,18 @@ func classifyArchivedSnapshot(taskID string, snap *AttachInfo) (*proto.Event, in
 //   - ErrArchivedEventMissing: 任务 completed 但 archived 事件缺失
 //   - 永久错误（4xx/1008）与 ctx 取消
 //
-// 边界：不读写 ~/.handoff/cursor-<task>，水位只留在进程内；等待期间不交付
+// 边界：不读写 ~/.handoff/cursors/ 下的任何游标，水位只留在进程内；等待期间不交付
 // question/permission_request/completed 等中间事件，也不触发任何远端状态变更。
 func (c *Client) WaitArchived(ctx context.Context, taskID string) (*proto.Event, error) {
 	backoff := c.wsInitialBackoff
+	// emptyRechecks 是「正常关闭后回查快照却什么都没拿到」的连续次数。
+	//
+	// 为什么不是一发现正常关闭就退避：归档恰好落在两次连接之间是常态，那一次
+	// 回查应当立刻做，让门闩保持秒级响应。但它也不能无条件立刻重来——一个仍
+	// 可达、却反复以 1000 关闭而任务始终非终态的对端，会把门闩变成 Attach +
+	// 拨号的紧循环（400ms 内实测 116 次快照），压垮对端且刷爆日志，而门闩表面
+	// 上还在「正常等待」。所以：第一次立刻复查，之后按同一套退避走。
+	emptyRechecks := 0
 	c.log().Debug("等待归档开始", "addr", c.baseURL, "task", taskID)
 
 	for attempt := 1; ; attempt++ {
@@ -110,6 +118,7 @@ func (c *Client) WaitArchived(ctx context.Context, taskID string) (*proto.Event,
 
 		var archived *proto.Event
 		var failed *proto.Event
+		seqBefore := fromSeq
 		started := time.Now()
 		streamErr := c.StreamEventsOnce(ctx, taskID, fromSeq, func(ev proto.Event) error {
 			// 只在内存推进水位：绝不调用 writeCursor。一旦落到磁盘，
@@ -147,9 +156,25 @@ func (c *Client) WaitArchived(ctx context.Context, taskID string) (*proto.Event,
 		}
 		if errors.Is(streamErr, errArchived) {
 			// 正常 close 只是线索，不是成功证据：对端也可能因为别的原因正常收尾。
-			// 立即回查权威快照，只有真实 archived 事件才允许门闩放行。
+			// 回查权威快照，只有真实 archived 事件才允许门闩放行。
+			//
+			// 本轮收到过帧就说明流是活的，空复查计数归零——紧循环的判据是
+			// 「一帧不收还反复正常关闭」，而不是「关闭过」。
+			if fromSeq != seqBefore {
+				emptyRechecks = 0
+			}
 			c.log().Debug("等待归档连接正常关闭，回查归档事件",
-				"task", taskID, "from_seq", fromSeq)
+				"task", taskID, "from_seq", fromSeq, "empty_rechecks", emptyRechecks)
+			if emptyRechecks == 0 {
+				emptyRechecks++
+				continue
+			}
+			emptyRechecks++
+			if err := waitArchivedRetry(ctx, &backoff,
+				c.wsInitialBackoff, c.wsMaxBackoff,
+				lived >= c.wsStableAfter); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if streamErr == nil {
