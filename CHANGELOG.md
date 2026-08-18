@@ -8,6 +8,47 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc3] - 2026-08-18
+
+**预发布，只为在真实 runner 上把三平台资产一次性打全。** 同样标成 prerelease，
+不改变 `releases/latest`。
+
+rc2 已验证到的：桌面端资产在 Linux 与 macOS 上构建通过，命名管道中继的关闭
+死锁修掉（Windows 运行期单测由 600s 超时降到 71s 跑完），`claudecode` 全绿。
+本轮修掉 rc2 剩下的两条 Windows 红，两条根因都在测试而非生产代码：
+
+- 名册与任务环境文件的 `0600` 权限断言：Windows 没有 POSIX 权限位，写盘传的
+  `0o600` 只映射到只读属性，`Stat` 恒回报 `-rw-rw-rw-`。生产代码两处都老老实实
+  传了 `0o600`，实际保护在 NTFS ACL（任务目录位于用户 profile 之下）。断言改为
+  平台自适应，Unix 侧仍钉着。
+- `TestStartRecordsStartedAt`：`procenum_other.go` 有意不在 Windows 实现进程
+  枚举（回收职责已由 Job Object 承担，缺的只是「足迹观测」），所以拿不到
+  `StartedAt`。Windows 上退化为断言 PID 已分配。
+
+另新增 `.gitattributes` 关掉基线文件与样本流的换行转换：Windows 上 git 默认
+`core.autocrlf=true`，会把逐字节比对的基线悄悄换成 CRLF，报文却长得像「渲染
+逻辑变了」。
+
+## [v0.3.0-rc2] - 2026-08-18
+
+**预发布，只为在真实 runner 上验证发布流水线。** 它被标成 prerelease，因此
+不会改变 `releases/latest`——`install.sh` 与 agentd 自更新都不会拉到它。
+
+> v0.3.0-rc1 未产出 release：它在验证门就红了（`internal/agentd` 的八条
+> Reveal in Finder 用例默认取宿主平台，在 ubuntu runner 上一律撞 501）。
+> 那是本分支第一次在 Linux 上跑 CI 才暴露出来的既有问题，已在 rc2 修掉。
+
+本轮流水线第一次产出**桌面端资产**（`handoff-desktop_*`），与既有的 CLI 资产
+（`handoff_*`）互不干扰；后者的命名、校验和与自更新契约保持不变。
+
+自 v0.2.3 以来积累的改动很多，完整说明留到正式版 v0.3.0 的小节里写。要点：
+
+- Web 控制台（任务看板、项目/工作树文件树、内嵌终端、机器与项目管理），
+  由 agentd 经 `go:embed` 托管，不再需要 Vite dev server。
+- 桌面薄壳 `handoff-desktop`：内嵌 CLI 并在首次启动时释出到 `~/.local/bin/handoff`、
+  图形化首次配置向导、托盘常驻；关掉窗口不影响正在跑的执行者。
+- Windows 执行机支持、`proxy` 配置项、按执行器注入的纪律配置。
+
 ## [Unreleased]
 
 ### 新增

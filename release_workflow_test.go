@@ -71,10 +71,20 @@ func modulePathFromGoMod(t *testing.T) string {
 // 期望值从 go.mod 派生，杜绝「模块改名后这里分叉」。
 func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
 	want := "-X " + modulePathFromGoMod(t) + "/internal/buildinfo.releaseVersion="
-	// Count 而不是 Contains：同一注入串在 build-unix 与 build-darwin 各出现
-	// 一次，只断言「至少一次」会放走「只改对一处、另一处漏改」的情况。
-	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != 2 {
-		t.Fatalf("workflow 应恰好含两处注入路径 %q，实得 %d 处", want, n)
+	// Count 而不是 Contains：断言「至少一次」会放走「只改对一处、别处漏改」。
+	//
+	// 这个数字是「workflow 里编 CLI 的地方有几处」的代理，**加构建点就要同步加**。
+	// W5b-3 之前是 2（build-unix / build-darwin）；两个薄壳 job 各自也要编一份
+	// CLI 嵌进壳里（那份会被释出到 ~/.local/bin/handoff，用户敲 handoff version
+	// 看到的就是它），所以现在是 4：
+	//
+	//   build-unix · build-darwin · build-desktop-linux · build-desktop-darwin
+	//
+	// 漏掉薄壳那两处的症状最阴：壳能装能跑，但它释出的 CLI 自称 unknown，
+	// 自更新永远认为自己已是最新。
+	const wantCount = 4
+	if n := strings.Count(stripYAMLComments(readWorkflow(t)), want); n != wantCount {
+		t.Fatalf("workflow 应恰好含 %d 处注入路径 %q，实得 %d 处", wantCount, want, n)
 	}
 }
 
@@ -306,6 +316,103 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 		if !strings.Contains(wf, want) {
 			t.Fatalf("build-darwin 缺关键步骤 %q", want)
 		}
+	}
+}
+
+// 薄壳两个 job 的承重旋钮不能被悄悄改掉。
+//
+// 这条与 TestDarwinJobSignsAndNotarizes 同类，守的是「改错之后 CI 照样全绿、
+// 只有用户遭殃」的东西。W5b-3 实现时真的踩到过其中第一条：计划写的是
+// `wails3 task package GO_FLAGS="-tags embedbin ..."`，而整个 Taskfile 根本不
+// 消费 GO_FLAGS——它只认 EXTRA_TAGS。传错不报错，构建照常成功，编出来的却是
+// 一个 embedbin.Available() 走 stub、根本不含内嵌 CLI 的薄壳，而这要到用户
+// 双击之后才暴露。--dry 实测：
+//
+//	GO_FLAGS=...   → go build -tags production ...
+//	EXTRA_TAGS=... → go build -tags production,embedbin ...
+//
+// 同理 EXTRA_LDFLAGS：缺了它 embedbin.Version 为空，DecideRelease 永远判不出
+// 内嵌版本，「已装的 CLI 比内嵌的旧」这条提示分支彻底失效。
+func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
+	jobs := releaseJobs(t)
+	lin, ok := jobs["build-desktop-linux"]
+	if !ok {
+		t.Fatal("release.yml 缺 build-desktop-linux job")
+	}
+	// AppImage 要在最老的目标发行版上构建。ubuntu-latest 会随 GitHub 滚动、
+	// 某天静默抬高 glibc 基线，而这个变化不体现在任何一次提交里。
+	if lin.RunsOn != "ubuntu-22.04" {
+		t.Fatalf("Linux 薄壳必须锁 ubuntu-22.04（不能用 ubuntu-latest），实得 runs-on=%q", lin.RunsOn)
+	}
+	if dar, ok := jobs["build-desktop-darwin"]; !ok {
+		t.Fatal("release.yml 缺 build-desktop-darwin job")
+	} else if !strings.HasPrefix(dar.RunsOn, "macos") {
+		t.Fatalf("darwin 薄壳必须在 macOS runner 上构建，实得 runs-on=%q", dar.RunsOn)
+	}
+
+	wf := stripYAMLComments(readWorkflow(t))
+	// 逐条带期望出现次数，而不是 Contains。
+	//
+	// 为什么：两个薄壳 job 各自传一次 EXTRA_TAGS/EXTRA_LDFLAGS，用 Contains 的话
+	// 「只改对一处、另一处漏改」照样绿——本文件顶上的
+	// TestWorkflowInjectsVersionAtModulePath 早就吃过这个亏，这里不该再犯。
+	// 这条不是推演出来的：本测试第一版就是 Contains，变异复验（把 linux 那处
+	// 的 EXTRA_TAGS 改回 GO_FLAGS）测试仍绿，当场证明那是一道假门。
+	for _, c := range []struct {
+		want string
+		n    int
+	}{
+		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略。两个 job 各一次。
+		{"EXTRA_TAGS=embedbin", 2},
+		{"EXTRA_LDFLAGS=", 2},
+		{"desktop/internal/embedbin.Version=", 2},
+		// 装 wails3 这一步本身也要带 gtk3，否则在 22.04 上卡在准备工具阶段。仅 linux。
+		{"go install -tags gtk3", 1},
+		// 内嵌的那份 CLI 必须在嵌进去之前单独签名：嵌进去之后它就只是
+		// go:embed 的字节块，再没有任何机会给它签名。仅 darwin。
+		{"--sign \"$APPLE_SIGNING_IDENTITY\" desktop/internal/embedbin/handoff", 1},
+	} {
+		if got := strings.Count(wf, c.want); got != c.n {
+			t.Fatalf("薄壳 job 的承重旋钮 %q 应出现 %d 次，实得 %d 次", c.want, c.n, got)
+		}
+	}
+
+	// 薄壳资产必须显式列进 release：handoff-desktop_ 不匹配 handoff_*
+	// （前缀后是 - 不是 _），不列就会漏出 checksums 与发布资产。
+	rel, ok := jobs["release"]
+	if !ok {
+		t.Fatal("release.yml 缺 release job")
+	}
+	for _, dep := range []string{"build-desktop-linux", "build-desktop-darwin"} {
+		if !needsSet(rel.Needs)[dep] {
+			t.Fatalf("release 的 needs 里没有 %q —— 它会在薄壳 artifact 上传完成前起跑，"+
+				"checksums 的通配匹配不到文件而失败，且失败是时序相关的", dep)
+		}
+	}
+	if !strings.Contains(wf, "handoff-desktop_*") {
+		t.Fatal("release job 没有显式收集 handoff-desktop_* —— 薄壳资产会漏出 checksums 与发布页")
+	}
+}
+
+// 预发布 tag 必须被标成 prerelease。
+//
+// 又一条「删了照样绿、只有用户遭殃」：install.sh 与 agentd 自更新都认
+// GitHub 的 releases/latest，而 GitHub 只把非 prerelease 的最新一版算作 latest。
+// 少了这个判断，一个本意只为验证流水线的 v0.3.0-rc1 会当场成为所有用户装到、
+// 所有 agentd 自更新拉到的版本。
+func TestPrereleaseTagsAreNotPublishedAsLatest(t *testing.T) {
+	wf := stripYAMLComments(readWorkflow(t))
+	// 计数而不是 Contains：多出来的那一处若是无条件加的，正式版也会被标成
+	// 预发布、永远发不出 latest——那是反方向的同一个坑，而 Contains 查不出来
+	//（变异复验实测：保留条件那处、另加一处无条件的，Contains 版本仍然绿）。
+	if n := strings.Count(wf, "--prerelease"); n != 1 {
+		t.Fatalf("release job 里 --prerelease 应恰好出现 1 次，实得 %d 次。"+
+			"0 次意味着 rc/beta tag 会被标成 Latest（install.sh 与 agentd 自更新会立刻拉到它）；"+
+			"多于 1 次通常意味着有一处是无条件加的，正式版也会被标成预发布", n)
+	}
+	// 而且它必须是**按 tag 形态条件加上**的。
+	if !strings.Contains(wf, `*-*) args+=(--prerelease) ;;`) {
+		t.Fatal("--prerelease 必须按 tag 是否含连字符条件添加，否则正式版也会被标成预发布")
 	}
 }
 

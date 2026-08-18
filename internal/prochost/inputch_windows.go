@@ -136,10 +136,28 @@ func openInputChannel(path string) (io.ReadCloser, func(), error) {
 		return nil, nil, fmt.Errorf("创建匿名管道: %w", err)
 	}
 	stop := make(chan struct{})
-	go relayPipe(srv, w, name, stop)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relayPipe(srv, w, name, stop)
+	}()
 	log().Info("Windows 输入通道已就位", "pipe", name, "path", path)
 	cleanup := func() {
 		close(stop)
+		// 承重，三步缺一不可，顺序也不能换：
+		//
+		//  1. CancelIoEx：管道是同步（无 FILE_FLAG_OVERLAPPED）创建的，中继
+		//     阻塞在 ConnectNamedPipe 里，而 stop 只在循环顶部被查——close(stop)
+		//     唤不醒它。同时 CloseHandle 对「有同步 I/O 挂起」的 handle 会**等**
+		//     那个 I/O 完成，于是关的人等 I/O、I/O 等客户端，互等到死。
+		//     实测：Windows CI 上 TestWindowsFirstInstanceRejectsSquatting 卡满
+		//     10 分钟，把整个包拖成 timeout panic（run 32149311654）。生产里的
+		//     形态是「没有执行者连上来时，关闭任务输入通道永久挂起」。
+		//  2. 等 done：中继真正退出前不能关 handle——它在出错路径上还会调
+		//     DisconnectNamedPipe，对已关闭的 handle 调等于 use-after-close。
+		//  3. 这时才 CloseHandle。
+		_ = windows.CancelIoEx(srv, nil)
+		<-done
 		_ = windows.CloseHandle(srv)
 		_ = w.Close()
 		_ = r.Close()
@@ -264,9 +282,21 @@ func relayPipe(srv windows.Handle, w *os.File, name string, stop <-chan struct{}
 		}
 		err := windows.ConnectNamedPipe(srv, nil)
 		if err != nil && err != windows.ERROR_PIPE_CONNECTED {
+			// ERROR_OPERATION_ABORTED 是 cleanup 调 CancelIoEx 的结果，属正常
+			// 收尾而非故障——按故障走会打一条误导的 Error，还会白等一个轮询间隔。
+			if err == windows.ERROR_OPERATION_ABORTED {
+				log().Info("输入通道中继被取消，退出", "pipe", name)
+				return
+			}
 			log().Error("受理输入通道客户端失败", "pipe", name, "cause", err)
 			_ = windows.DisconnectNamedPipe(srv)
-			time.Sleep(pipePollInterval)
+			// 退避也要能被 stop 打断：否则 cleanup 最坏要多等一个轮询间隔
+			select {
+			case <-stop:
+				log().Info("输入通道中继退出", "pipe", name)
+				return
+			case <-time.After(pipePollInterval):
+			}
 			continue
 		}
 		for {

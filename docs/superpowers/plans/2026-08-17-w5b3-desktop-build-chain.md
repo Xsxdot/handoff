@@ -34,75 +34,60 @@
 
 | 文件 | 责任 |
 |---|---|
-| `.github/workflows/release.yml`（改） | 新增 `build-desktop-linux` / `build-desktop-darwin` 两个 job；`release` job 收集薄壳资产 |
-| `desktop/build/linux/nfpm/nfpm.yaml`（改） | 依赖声明从 gtk4 那套换成 gtk3 那套 |
+| `.github/workflows/release.yml`（改） | 新增 `build-desktop-linux` / `build-desktop-darwin` 两个 job；`release` job 扩 `needs` 并收集薄壳资产 |
+| `desktop/.gitignore`（改） | 补 AppImage 打包在仓库树内落下的三个副产物，否则 job 的干净检查必挂 |
+| `desktop/build/linux/nfpm/nfpm.yaml`（**只读核对**） | 依赖已是 gtk3 那套（`c799c2b95` 已落），本轮不改 |
+| `internal/release/`（改） | 补一条钉死 CLI 资产名不撞薄壳前缀的用例 |
 | `docs/ledger-w5b3.md`（新） | 进度与未验项落账 |
+
+> **2026-08-18 协调者在基线上复核过全部判据，改了六处**（每处都在对应位置有说明块）：
+> ①Task 1 的改动已在基线完成，降级为只读核对，且原判据的 grep 模式会误伤正确配置；
+> ②Task 2 补 `.gitignore`，否则 AppImage 打包落在仓库树内的三个文件会让「工作区干净」当场失败；
+> ③Node 版本 20 → `'24'`（唯一来源是 `web/.nvmrc`）；
+> ④Task 3 的 `--deep` 理由是错的（内嵌 CLI 是 `go:embed` 字节块，不是 bundle 里的文件），已去掉并改写纪律；
+> ⑤Task 3 的钥匙串步骤改回照抄既有 build-darwin 那份，并补上 `status: Accepted` 与 spctl 两道公证门；
+> ⑥Task 4 补 `release` job 的 `needs` 扩展——原计划整份漏了它。
 
 ---
 
-## Task 1: 修正 nfpm 的依赖声明
+## Task 1: 核对 nfpm 的依赖声明（**改动已在基线上完成，本 task 只做核对**）
+
+> **2026-08-18 协调者基线复核后重写。** 本 task 原本要求把 nfpm 的 `depends`
+> 从 gtk4 那套改成 gtk3 那套。**该改动已经落在基线上了**（提交 `c799c2b95`
+> "fix(desktop): nfpm 依赖改为 gtk3 那套，与构建 tag 对齐"），所以原文的
+> Step 1（「Expected: 看到生效的 depends 是 gtk4」）在当前代码上**必然对不上**。
+> 不要因此以为自己看错了或仓库不对——照下面的核对步骤走即可，**本 task 不产生提交**。
+>
+> 原 Step 3 的判据**本身就是错的**，即使在正确的终态上也过不去：它 grep 的模式
+> 含 `gtk4` 与 `gtk-4`，而正确的 gtk3 配置里就有 `webkit2gtk4.1`（rpm）与
+> `libwebkit2gtk-4.1-0`（deb）——两者都含这个子串。照原判据执行会得出「还没清干净」
+> 的错误结论，进而可能把**正确的行**删掉。已改为只查真正的 gtk4 依赖名。
 
 **Files:**
-- Modify: `desktop/build/linux/nfpm/nfpm.yaml`
+- 只读核对：`desktop/build/linux/nfpm/nfpm.yaml`
 
 **Interfaces:**
 - Consumes: 无
-- Produces: 一份声明 gtk3 运行时依赖的 nfpm 配置，供 Task 2 的 deb 打包使用
+- Produces: 无（确认 Task 2 的 deb 打包所依赖的前提成立）
 
-**为什么单列**：这是一处**现存的错误配置**，不是新增功能。它独立于流水线改动，可以单独验证（`nfpm` 生成的包元数据里能直接看到依赖列表）。
+- [ ] **Step 1: 确认生效的是 gtk3 那套**
 
-> **spec §6.2 的说法需要更正**：那里写「`depends` 段目前整段被注释」。**实际不是**——`depends` 段是生效的，填的是 **gtk4 那套**（`libgtk-4-1` / `libwebkitgtk-6.0-4`，约 28-44 行），gtk3 那套躺在其下的注释块里。后果比「整段被注释」更糟：包会声明一组它根本不用的依赖，在 Ubuntu 22.04 上连装都装不上（那儿没有 `libgtk-4-1`）。
+Run: `sed -n '20,60p' desktop/build/linux/nfpm/nfpm.yaml`
+Expected: 生效的 `depends:` 是 `libgtk-3-0` / `libwebkit2gtk-4.1-0`；`overrides.rpm` 是 `gtk3` / `webkit2gtk4.1`；`overrides.archlinux` 是 `gtk3` / `webkit2gtk-4.1`
 
-- [ ] **Step 1: 确认当前生效的是哪一套**
+- [ ] **Step 2: 确认没有残留的 gtk4 依赖声明**
 
-Run: `sed -n '20,70p' desktop/build/linux/nfpm/nfpm.yaml`
-Expected: 看到生效的 `depends:` 是 `libgtk-4-1` / `libwebkitgtk-6.0-4`，且下方注释块里有 `libgtk-3-0` / `libwebkit2gtk-4.1-0`
+Run: `grep -nE "libgtk-4|libwebkitgtk-6|gtk4-|webkitgtk6" desktop/build/linux/nfpm/nfpm.yaml`
+Expected: **无输出**。注意判据只查 GTK4/WebKitGTK-6.0 的**依赖包名**，不要用会误伤 `webkit2gtk-4.1` 的宽泛模式。
 
-- [ ] **Step 2: 换成 gtk3 那套**
-
-把生效的 `depends` 与 `overrides` 段替换为注释块里给出的 gtk3 版本（注释块本身随之删除，避免留下两份互相矛盾的声明）：
-
-```yaml
-# 依赖必须与构建 tag 一致：本项目按 spec §2 锁 Ubuntu 22.04 基线，
-# 薄壳用 -tags gtk3 构建，实际链的是 libwebkit2gtk-4.1 + libgtk-3
-#（P1-linux 探针 ldd 实测）。声明成 gtk4 那套会让包在 22.04 上装不上，
-# 而症状要等到用户机器上才出现。改构建 tag 时必须同步改这里。
-depends:
-  - libgtk-3-0
-  - libwebkit2gtk-4.1-0
-overrides:
-  rpm:
-    depends:
-      - gtk3
-      - webkit2gtk4.1
-  archlinux:
-    depends:
-      - gtk3
-      - webkit2gtk-4.1
-```
-
-- [ ] **Step 3: 确认没有残留的 gtk4 声明**
-
-Run: `grep -n "gtk-4\|gtk4\|webkitgtk-6\|webkitgtk6" desktop/build/linux/nfpm/nfpm.yaml`
-Expected: **无输出**。有输出说明还有一处没换或注释块没删干净。
-
-- [ ] **Step 4: 确认 YAML 仍合法**
+- [ ] **Step 3: 确认 YAML 仍合法**
 
 Run: `python3 -c "import yaml,sys; d=yaml.safe_load(open('desktop/build/linux/nfpm/nfpm.yaml')); print(d['depends'])"`
 Expected: `['libgtk-3-0', 'libwebkit2gtk-4.1-0']`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: 不提交**
 
-```bash
-git add desktop/build/linux/nfpm/nfpm.yaml
-git commit -m "fix(desktop): nfpm 依赖改为 gtk3 那套，与构建 tag 对齐
-
-生效的 depends 之前是 gtk4（libgtk-4-1 / libwebkitgtk-6.0-4），而薄壳按
-spec §2 的 22.04 基线用 -tags gtk3 构建，实际链的是 libwebkit2gtk-4.1 +
-libgtk-3。声明错的后果是包在 22.04 上装都装不上，且症状要到用户机器上
-才出现。gtk3 那套本来就躺在下面的注释块里，扶正并删掉注释块，避免留下
-两份互相矛盾的声明。"
-```
+本 task 无改动，**不要**造一个空提交，也不要为了「让 task 有产出」去改动这个文件。ledger 里记一行「Task 1 已在基线完成（c799c2b95），本轮仅核对」。
 
 ---
 
@@ -111,13 +96,48 @@ libgtk-3。声明错的后果是包在 22.04 上装都装不上，且症状要�
 **Files:**
 - Modify: `.github/workflows/release.yml`
 
+**Files:**
+- Modify: `.github/workflows/release.yml`
+- Modify: `desktop/.gitignore`
+
 **Interfaces:**
-- Consumes: Task 1 修正后的 `nfpm.yaml`
+- Consumes: Task 1 核对过的 `nfpm.yaml`
 - Produces: 名为 `build-desktop-linux` 的 job，产出 artifact `handoff-desktop_linux`，内含 `handoff-desktop_${TAG}_linux_amd64.AppImage` 与 `handoff-desktop_${TAG}_linux_amd64.deb`
 
-- [ ] **Step 1: 写 job**
+- [ ] **Step 1: 先给 AppImage 打包的副产物补 `.gitignore`（否则本 job 的干净检查必挂）**
 
-在 `build-darwin` job 之后插入。逐条注释都要写清「为什么」：
+> **2026-08-18 协调者基线复核补入。** `wails3 task linux:package` 会在**仓库树内**
+> 落三个未被忽略的文件，job 末尾的 `git status --porcelain` 会当场非空、整个
+> job 失败——而症状看起来像「薄壳构建污染了工作区」，很容易被误判成代码问题。
+> 三个文件的来源都在 `desktop/build/linux/Taskfile.yml` 里写死：
+> `create:appimage` 的 `cp "{{.APP_BINARY}}" "{{.APP_NAME}}"` 与
+> `cp ../../appicon.png "{{.APP_NAME}}.png"` 落前两个，
+> `generate:dotdesktop` 的 `-outputfile .../build/linux/{{.APP_NAME}}.desktop` 落第三个。
+> 现有 `desktop/.gitignore` 只忽略了 `build/linux/appimage/build`（构建目录），漏了这三个。
+
+在 `desktop/.gitignore` 的 `build/linux/appimage/build` 一行之后追加：
+
+```gitignore
+# linux 打包副产物：create:appimage 会把二进制与图标 cp 进 appimage 目录，
+# generate:dotdesktop 会生成 .desktop 文件。三者都落在仓库树内，不忽略的话
+# 「构建后工作区干净」这条判据（W5b-1 起就是承重判据）必然失败。
+build/linux/appimage/handoff-desktop
+build/linux/appimage/handoff-desktop.png
+build/linux/handoff-desktop.desktop
+```
+
+Verify: `cd desktop && git check-ignore -q build/linux/appimage/handoff-desktop && git check-ignore -q build/linux/appimage/handoff-desktop.png && git check-ignore -q build/linux/handoff-desktop.desktop && echo OK`
+Expected: 打印 `OK`
+
+- [ ] **Step 2: 写 job**
+
+在 `build-darwin` job 之后插入。逐条注释都要写清「为什么」。
+
+> **注意两处已按基线修正**：①`node-version` 用 `'24'` 并带 npm 缓存，与既有
+> `build-unix` / `build-darwin` 一致——本仓库 Node 版本的唯一来源是 `web/.nvmrc`
+> （当前为 `24`），原计划写的 `20` 与之不符；②`wails3 task linux:package` 实际
+> 还会产出 rpm 与 archlinux 包（`create:rpm` / `create:aur`），本计划只取
+> AppImage 与 deb 发布，其余留在 `desktop/bin/`（已被忽略）不管即可。
 
 ```yaml
   # 薄壳的 Linux 资产必须在原生 runner 上构建：webkit2gtk 经 cgo，
@@ -133,9 +153,12 @@ libgtk-3。声明错的后果是包在 22.04 上装都装不上，且症状要�
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-unix / build-darwin 保持一致
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       # 22.04 上只有 webkit2gtk-4.1 这一代；4.0 见 spec §7 的非目标
       - name: 装系统依赖
@@ -196,37 +219,44 @@ libgtk-3。声明错的后果是包在 22.04 上装都装不上，且症状要�
           out="$(git status --porcelain)"
           test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
 
+      # if-no-files-found: error 与既有 job 一致：静默上传一个空 artifact
+      # 会让 release job 在收集资产时才暴露问题，那时已经离现场很远了
       - uses: actions/upload-artifact@v4
         with:
           name: handoff-desktop_linux
           path: handoff-desktop_*
+          if-no-files-found: error
 ```
 
-- [ ] **Step 2: 校验 YAML 合法**
+- [ ] **Step 3: 校验 YAML 合法**
 
 Run: `python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/release.yml')); print(list(d['jobs'].keys()))"`
 Expected: 输出的 job 列表里含 `build-desktop-linux`
 
-- [ ] **Step 3: 确认没有误碰既有 job**
+- [ ] **Step 4: 确认没有误碰既有 job**
 
 Run: `git diff .github/workflows/release.yml | grep -E "^-" | grep -v "^---" | head -20`
-Expected: **无输出**（本 task 只新增，不删改任何既有行）
+Expected: **无输出**（本 task 对 release.yml 只新增，不删改任何既有行；`.gitignore` 的追加不在此文件内）
 
-- [ ] **Step 4: 确认 deb 里的依赖是 gtk3 那套**
+- [ ] **Step 5: 确认 deb 里的依赖是 gtk3 那套**
 
 本地无法跑完整 job，但可以单独验证 nfpm 配置被正确消费——这一条留到 Task 5 的真实流水线跑通后确认，此处只记账。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add .github/workflows/release.yml
+git add .github/workflows/release.yml desktop/.gitignore
 git commit -m "ci(release): 新增 Linux 薄壳构建 job
 
 原生 runner 锁 ubuntu-22.04；装 wails3 与构建薄壳两步都带 -tags gtk3
 （不带则在准备工具阶段就 No package 'gtk4' found，报错像是代码问题）。
 内嵌的 handoff 由同一次流水线以 CGO_ENABLED=0 + embedweb 编出，薄壳自身
 开 CGO。资产用独立前缀 handoff-desktop_，避开 install.sh 与自更新的精确
-拼名。末尾有工作区干净检查。"
+拼名。末尾有工作区干净检查。
+
+同时给 AppImage 打包的三个副产物补 .gitignore：create:appimage 会把二进制
+与图标 cp 进仓库树内的 appimage 目录，generate:dotdesktop 会生成 .desktop
+文件，三者都不在忽略名单里，会让干净检查当场失败。"
 ```
 
 ---
@@ -248,6 +278,25 @@ git commit -m "ci(release): 新增 Linux 薄壳构建 job
 
 一旦先签 bundle 再补嵌，签名与最终字节就不符了（`release.yml:158` 的既有注释讲的是同一件事）。
 
+> **2026-08-18 协调者基线复核：原文对「内嵌」的机制描述是错的，已改。** 原 Step 1
+> 在签 bundle 那一步写着「`--deep` 是必要的：内嵌的 handoff 在 bundle 里，外层签名
+> 要覆盖到它」。**实际不是这样**——`desktop/internal/embedbin/embed.go` 用的是
+> `//go:embed handoff`，那份 CLI 是**编进薄壳可执行文件里的字节块**，不是 bundle
+> 里的一个文件。由此三条推论，都写进了下面的 job：
+>
+> 1. **`--deep` 在这里没有作用**，因为 bundle 里根本没有嵌套的代码项（`create:app`
+>    只放 `Contents/MacOS/handoff-desktop` + icns + Info.plist）。Apple 本身也已
+>    不建议用 `--deep` 签名。已去掉，外层只签 bundle 自己。
+> 2. **「先签内层」这条纪律不但成立，而且比原文更硬**：一旦嵌进去它就只是数据，
+>    之后**再没有任何机会**给它签名。顺序颠倒的后果不是「签名与字节不符」，是
+>    释出到 `~/.local/bin/handoff` 的那份**根本没有签名**。
+> 3. **公证覆盖不到它**：notary 服务只看得见提交物里的 Mach-O，看不见被 embed
+>    进另一个二进制的字节块，因此**这次提交不会为它登记票据**。它在用户机器上
+>    能否放行，取决于它的 cdhash 是否与 `build-darwin` 那条独立公证过的 CLI 资产
+>    一致（同样的 `-trimpath` + 同样的 ldflags + 同一个签名身份，理论上一致，
+>    **但从未实测**）。**这正是 P2 要验的东西**，Task 5 的 ledger 必须把这条机制
+>    写清楚，而不是笼统写一句「P2 未验」。
+
 - [ ] **Step 1: 写 job**
 
 ```yaml
@@ -267,11 +316,32 @@ git commit -m "ci(release): 新增 Linux 薄壳构建 job
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-darwin 保持一致
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: 装 wails3
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 与既有 build-darwin 同款的前置门：secrets 缺失即硬失败，不产出未签名
+      # 资产。一个静默发出去的未签名薄壳会在几个月后咬人，且症状出现在用户机器上。
+      - name: 检查签名凭据齐备
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT; do
+            if [ -z "${!v:-}" ]; then missing="${missing} ${v}"; fi
+          done
+          if [ -n "$missing" ]; then
+            printf '缺少签名 secret：%s\n未签名的 release 不发。\n' "$missing" >&2
+            exit 1
+          fi
+          echo "签名凭据齐备"
 
       # 第一步：编出 handoff 并**单独签名**。它会被释出到 ~/.local/bin/，
       # 脱离 bundle 的签名覆盖，Gatekeeper 单独校验它（spec §5.4）。
@@ -292,29 +362,53 @@ git commit -m "ci(release): 新增 Linux 薄壳构建 job
             -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
             -o desktop/internal/embedbin/handoff .
 
-      # 钥匙串装载：与既有 build-darwin 同款。抽成复合步骤会牵动那个已在
-      # 生产用的 job，风险大于收益，因此这里重复一次（两处必须同步改）。
-      - name: 装载签名证书
+      # App Store Connect API Key 只能以文件路径传给 notarytool（与既有 job 同款，
+      # 把路径经 GITHUB_ENV 传给后面的公证步骤）
+      - name: 写 App Store Connect API Key
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
           set -euo pipefail
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
-            eval "test -n \"\${$v:-}\"" || { echo "缺少 secret: $v" >&2; exit 1; }
-          done
-          keychain_path="$RUNNER_TEMP/desktop-signing.keychain-db"
-          cert_path="$RUNNER_TEMP/cert.p12"
+          key_path="${RUNNER_TEMP}/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 600 "$key_path"
+          # 只确认私钥文件头形态，不打印密钥正文
+          head -n 1 "$key_path" | grep -q 'BEGIN PRIVATE KEY' || {
+            echo "APPLE_API_KEY_CONTENT 不像是一份 .p8 私钥" >&2; exit 1; }
+          echo "APPLE_API_KEY_PATH=${key_path}" >> "$GITHUB_ENV"
+
+      # 钥匙串装载：**逐字照抄既有 build-darwin 的「导入签名证书到临时钥匙串」
+      # 步骤**（本文件内已在生产使用、已验证过的那一份），只改钥匙串文件名以免
+      # 与它撞名。抽成复合步骤会牵动那个已在生产用的 job，风险大于收益，因此
+      # 这里重复一次——**两处必须同步改**。
+      #
+      # 2026-08-18 协调者复核：原计划自己另写了一版，与既有实现有两处实质差异，
+      # 都已改回既有版本——①原版用空口令建钥匙串，既有版用 `openssl rand`
+      # 随机口令；②原版 `security list-keychain -d user -s "$keychain_path"`
+      # 会把用户搜索链**整个替换**成只剩这一个钥匙串，既有版把原有列表拼在后面
+      # （`$(security list-keychains -d user | sed 's/"//g')`），不会踢掉系统钥匙串。
+      - name: 导入签名证书到临时钥匙串
+        run: |
+          set -euo pipefail
+          cert_path="${RUNNER_TEMP}/desktop-certificate.p12"
+          keychain_path="${RUNNER_TEMP}/handoff-desktop-build.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          # Secrets 存的是 openssl base64 -A 的单行内容
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
-          security create-keychain -p "" "$keychain_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "" "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
           security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 -k "$keychain_path"
           # 让 codesign 能在无 UI 提示下使用私钥
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "" "$keychain_path" >/dev/null
-          security list-keychain -d user -s "$keychain_path"
+            -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" \
+            $(security list-keychains -d user | sed 's/"//g')
           security find-identity -v -p codesigning "$keychain_path" \
             | grep -F "$APPLE_SIGNING_IDENTITY" > /dev/null || {
               echo "钥匙串里找不到 APPLE_SIGNING_IDENTITY" >&2; exit 1; }
+          rm -f "$cert_path"
 
       - name: 签名内嵌的 handoff
         run: |
@@ -337,31 +431,66 @@ git commit -m "ci(release): 新增 Linux 薄壳构建 job
           wails3 task package \
             GO_FLAGS="-tags embedbin -ldflags=-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
 
-      # 第三步：签 + 公证 bundle。--deep 是必要的：内嵌的 handoff 在
-      # bundle 里，外层签名要覆盖到它。
+      # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
+      #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
+      # go:embed 进可执行文件的字节块、不是 bundle 里的文件，--deep 对它没有作用；
+      # Apple 本身也已不建议用 --deep 签名。
       - name: 签名并公证 bundle
-        env:
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
           set -euo pipefail
           app="desktop/bin/handoff-desktop.app"
-          codesign --force --deep --options runtime --timestamp \
+          TAG="${GITHUB_REF_NAME}"
+          # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
+          codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" "$app"
           codesign --verify --strict --verbose=2 "$app"
-          # App Store Connect API Key 只能以文件路径传给 notarytool
-          key_path="$RUNNER_TEMP/notary.p8"
-          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$key_path"
-          grep -q "BEGIN PRIVATE KEY" "$key_path" || {
-            echo "APPLE_API_KEY_CONTENT 不像是一份 .p8 私钥" >&2; exit 1; }
-          TAG="${GITHUB_REF_NAME}"
-          ditto -c -k --keepParent "$app" "handoff-desktop_${TAG}_darwin_arm64.zip"
-          xcrun notarytool submit "handoff-desktop_${TAG}_darwin_arm64.zip" \
-            --key "$key_path" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" \
-            --wait
+
+          ditto -c -k --keepParent "$app" "notarize-desktop.zip"
+          xcrun notarytool submit "notarize-desktop.zip" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary-desktop.log
+          # 承重：notarytool 在 status 为 Invalid 时**仍可能退 0**，光看退出码不够。
+          # 这条门是既有 build-darwin 已经踩出来的教训，薄壳这条路同样要有。
+          grep -q 'status: Accepted' /tmp/notary-desktop.log || {
+            echo "公证未被接受：" >&2; cat /tmp/notary-desktop.log >&2; exit 1; }
+
           # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
           xcrun stapler staple "$app"
-          rm -f "handoff-desktop_${TAG}_darwin_arm64.zip"
+          rm -f "notarize-desktop.zip"
           ditto -c -k --keepParent "$app" "handoff-desktop_${TAG}_darwin_arm64.zip"
+
+      # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
+      # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
+      # 注意喂法与 CLI 那条相反：app bundle 用 `-t exec`，裸 CLI 才用 `-t open`
+      #（既有 build-darwin 的长注释记着 2026-08-13 那次踩反了的经过）。
+      - name: 校验 bundle 的签名与票据
+        run: |
+          set -euo pipefail
+          app="desktop/bin/handoff-desktop.app"
+          codesign -dv --verbose=4 "$app" 2>/tmp/codesign-desktop.log || {
+            echo "codesign -dv 失败：" >&2; cat /tmp/codesign-desktop.log >&2; exit 1; }
+          grep -q 'Authority=Developer ID Application' /tmp/codesign-desktop.log || {
+            echo "签发者不是 Developer ID Application：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign-desktop.log || {
+            echo "硬化运行时未开，公证会被拒：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          # 票据发布到 Apple 边缘有传播延迟，所以重试而不是一次定生死
+          ok=0
+          for attempt in 1 2 3; do
+            if spctl -a -vvv -t exec "$app" >/tmp/spctl-desktop.log 2>&1; then ok=1; break; fi
+            echo "spctl 第 ${attempt} 次未通过，20s 后重试：" >&2
+            cat /tmp/spctl-desktop.log >&2
+            sleep 20
+          done
+          [ "$ok" = 1 ] || {
+            echo "公证票据在本机查不到：" >&2; cat /tmp/spctl-desktop.log >&2; exit 1; }
+          grep -q 'source=Notarized Developer ID' /tmp/spctl-desktop.log || {
+            echo "评估通过但来源不是 Notarized Developer ID：" >&2
+            cat /tmp/spctl-desktop.log >&2; exit 1; }
+          echo "bundle 签名与公证票据校验通过"
 
       - name: 确认工作区干净
         run: |
@@ -373,6 +502,7 @@ git commit -m "ci(release): 新增 Linux 薄壳构建 job
         with:
           name: handoff-desktop_darwin
           path: handoff-desktop_*.zip
+          if-no-files-found: error
 ```
 
 - [ ] **Step 2: 校验 YAML 合法**
@@ -438,7 +568,24 @@ echo "handoff_* 匹配到："; ls handoff_* 2>/dev/null
 ```
 Expected: 只列出 `handoff_v1_darwin_arm64.tar.gz`；`handoff-desktop_*` **不在其中**
 
-- [ ] **Step 2: 把薄壳资产扩进校验和与发布命令**
+- [ ] **Step 2: 先把两个新 job 接进 `release` 的 `needs`（漏了这条，前面全白做）**
+
+> **2026-08-18 协调者基线复核补入。原计划整份漏了这一步。** `release` job 现在是
+> `needs: [build-unix, build-darwin]`（`release.yml:314`）。不扩这个列表，GitHub
+> Actions 就会在这两个 job 一完成时立刻起 `release`——那时薄壳 job 多半还没上传
+> 完 artifact，`download-artifact` 拿不到薄壳资产，紧接着 Step 3 那条
+> `sha256sum ... handoff-desktop_*` 会因为**通配匹配不到文件**直接失败，整次发布
+> 挂在最后一步。而且这个失败是**时序相关**的，重跑可能就过了，属于最难查的一类。
+
+```yaml
+  release:
+    needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin]
+```
+
+Verify: `python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/release.yml')); print(d['jobs']['release']['needs'])"`
+Expected: 四个 job 名都在列表里
+
+- [ ] **Step 3: 把薄壳资产扩进校验和与发布命令**
 
 **下载步骤不用改**：现行 `download-artifact` 用的是 `path: dist` + `merge-multiple: true`，新 job 的 artifact 会自动落进 `dist/`。要改的只有两处通配：
 
@@ -458,7 +605,7 @@ Expected: 只列出 `handoff_v1_darwin_arm64.tar.gz`；`handoff-desktop_*` **不
 
 > **不要动 checksums 的计算时机。** 现行注释写明它必须在签名之后算（签名会改字节），对下载下来的成品统一算天然满足这个顺序——不要把它挪进构建 job。
 
-- [ ] **Step 3: 补一条回归，钉死「install.sh 不会误抓薄壳包」**
+- [ ] **Step 4: 补一条回归，钉死「install.sh 不会误抓薄壳包」**
 
 CLI 侧的资产名由 `internal/release.AssetName`（`client.go:83`）拼出，`install.sh:122` 与 `install.ps1` 拼的是同一格式。给 Go 侧补一条用例：
 
@@ -482,12 +629,12 @@ func TestAssetNameNeverMatchesDesktopAsset(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: 跑测试**
+- [ ] **Step 5: 跑测试**
 
 Run: `go test ./internal/release/ -count=1`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add .github/workflows/release.yml internal/release
@@ -495,7 +642,10 @@ git commit -m "ci(release): 薄壳资产接进发布与校验和
 
 handoff-desktop_* 不匹配既有的 handoff_* 通配，所以既不会被 install.sh
 与自更新误抓（那正是选这个前缀的理由），也不会被自动收进 checksums 与
-发布资产——必须显式列出。补一条用例钉死 CLI 资产名不会撞上薄壳前缀。"
+发布资产——必须显式列出。补一条用例钉死 CLI 资产名不会撞上薄壳前缀。
+
+release 的 needs 同时扩到四个 job：不扩的话它会在薄壳 artifact 上传完成
+之前就起跑，checksums 那步的通配匹配不到文件而失败，且失败是时序相关的。"
 ```
 
 ---
@@ -525,6 +675,14 @@ Expected: **零输出**
 | P3（AppImage 跨发行版） | ⛔ 未验 | 同上 |
 | P2（Gatekeeper 放行已释出的二进制） | ⛔ 未验 | 需真向 Apple 提交公证，属对外可见操作；按用户决定，流水线写好但不触发真发布 |
 | P1-win（运行） | ⛔ 未验 | 无 Windows 机器；Windows runner 按本计划范围**不接进流水线** |
+
+**P2 那一行必须写清具体机制，不能只写「未验」**（照抄 Task 3 开头那个说明块的结论）：
+内嵌的 CLI 是 `//go:embed handoff` 进薄壳可执行文件的**字节块**，不是 bundle 里的文件，
+所以 notary 服务这次提交**看不见它**、不会为它登记票据；它被释出到 `~/.local/bin/handoff`
+后能否过 Gatekeeper，取决于它的 cdhash 是否与 `build-darwin` 那条独立公证过的 CLI 资产
+一致（同 `-trimpath`、同 ldflags、同签名身份，理论上一致，**从未实测**）。
+P2 要验的就是这一条，验法是发版后在一台干净 mac 上装 `.app`、让它释出 CLI、
+再对释出的那份跑 `spctl -a -vvv -t open --context context:primary-signature ~/.local/bin/handoff`。
 
 **「流水线语法正确」不等于「流水线跑得通」**——本计划的所有 CI 改动都未经真实 runner 执行，这一条也要写进 ledger。
 

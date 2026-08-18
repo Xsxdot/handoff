@@ -6,11 +6,31 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// sleepCmd 返回一条「活若干秒」的命令，按平台给出可执行体与参数。
+//
+// 为什么不能写死 /bin/sh：Windows 上没有它，Start 会以
+// `exec: "/bin/sh": executable file not found in %PATH%` 直接失败。
+// 2026-08-18 本分支的 Windows 用例第一次在 CI 上跑（run 32149311654），
+// TestStartRecordsStartedAt 与 TestStartRecordsRosterPath 就是这么红的。
+//
+// Windows 侧用 ping 而不是 timeout：timeout.exe 在 stdin 被重定向时会直接
+// 报 "Input redirection is not supported" 退出，而 shim 一定会重定向 stdin，
+// 于是「用来占住几秒的进程」瞬间就没了，用例反而更难查。
+// ping 发 secs+1 个包、包间隔 1 秒，约等于睡 secs 秒。
+func sleepCmd(secs int) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", "ping", "-n", strconv.Itoa(secs + 1), "127.0.0.1"}
+	}
+	return "/bin/sh", []string{"-c", "sleep " + strconv.Itoa(secs)}
+}
 
 // 判据测试的固定基准：shim pid=100，启动于 t0。
 const (
@@ -262,21 +282,35 @@ func TestStartRecordsStartedAt(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	// selfExe 直接用 /bin/sh 顶替真 shim：本用例只验 StartedAt 有没有被填上，
+	// selfExe 直接用一条 sleep 命令顶替真 shim：本用例只验 StartedAt 有没有被填上，
 	// 不验 shim 行为（拿锁、读 spec.json 那些由 shim 自己的用例覆盖）
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = killGroup(hd.PID) })
+
+	// Windows 上读不到启动时刻，而且这是**刻意的**：那儿没有进程枚举
+	//（procenum_other.go 的注释写明「回收职责已由 Job Object 承担，缺的只是
+	// 足迹观测」），所以 Start 会打一条 warn 并把 StartedAt 留成 0。
+	// 这条用例验的是「时间下界判据的源头」，那套判据本身就只在 Unix 上成立；
+	// 在 Windows 上只断言 Start 确实拉起了进程，不去断言一个该平台不产出的值
+	//（也不写死 StartedAt==0：将来真给 Windows 补了枚举，这里不该因此翻红）。
+	if runtime.GOOS == "windows" {
+		if hd.PID <= 0 {
+			t.Fatalf("Start 应返回可用的 PID，got %d", hd.PID)
+		}
+		return
+	}
 	if hd.StartedAt <= 0 {
 		t.Fatalf("Start 未记录 StartedAt，got %d", hd.StartedAt)
 	}
@@ -477,15 +511,16 @@ func TestStartRecordsRosterPath(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}

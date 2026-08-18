@@ -3,6 +3,13 @@ bin
 frontend/dist
 frontend/node_modules
 build/linux/appimage/build
+# linux 打包副产物：create:appimage 把二进制与图标 cp 进 appimage 目录，
+# generate:dotdesktop 生成 .desktop 文件（两者都在 build/linux/Taskfile.yml 里写死）。
+# 三者都落在仓库树内，不忽略的话「构建后工作区干净」这条判据必然失败——
+# 而症状看起来像是薄壳构建污染了工作区，不像打包副产物没被忽略。
+build/linux/appimage/handoff-desktop
+build/linux/appimage/handoff-desktop.png
+build/linux/handoff-desktop.desktop
 # 裸 `go build`（无参数）在 desktop 根产生的产物，约 15MB，曾残留过
 desktop
 # macOS 构建产物：wails3 generate icons 会在每次构建时从 build/appicon.icon
