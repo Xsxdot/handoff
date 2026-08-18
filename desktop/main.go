@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -260,12 +259,11 @@ func releaseEmbedded(app *application.App) {
 			return
 		}
 		defer rc.Close()
-		home, err := os.UserHomeDir()
+		dst, err := shell.DefaultCLIPath()
 		if err != nil {
-			logger.Error("取不到用户主目录，无法释出，不阻断向导", "cause", err)
+			logger.Error("算不出 CLI 落点，无法释出，不阻断向导", "cause", err)
 			return
 		}
-		dst := filepath.Join(home, ".local", "bin", "handoff")
 		if err := shell.ReleaseBinary(dst, rc); err != nil {
 			logger.Error("释出内嵌二进制失败，不阻断向导", "dst", dst, "cause", err)
 			return
