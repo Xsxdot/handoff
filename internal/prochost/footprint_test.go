@@ -6,11 +6,31 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// sleepCmd 返回一条「活若干秒」的命令，按平台给出可执行体与参数。
+//
+// 为什么不能写死 /bin/sh：Windows 上没有它，Start 会以
+// `exec: "/bin/sh": executable file not found in %PATH%` 直接失败。
+// 2026-08-18 本分支的 Windows 用例第一次在 CI 上跑（run 32149311654），
+// TestStartRecordsStartedAt 与 TestStartRecordsRosterPath 就是这么红的。
+//
+// Windows 侧用 ping 而不是 timeout：timeout.exe 在 stdin 被重定向时会直接
+// 报 "Input redirection is not supported" 退出，而 shim 一定会重定向 stdin，
+// 于是「用来占住几秒的进程」瞬间就没了，用例反而更难查。
+// ping 发 secs+1 个包、包间隔 1 秒，约等于睡 secs 秒。
+func sleepCmd(secs int) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", "ping", "-n", strconv.Itoa(secs + 1), "127.0.0.1"}
+	}
+	return "/bin/sh", []string{"-c", "sleep " + strconv.Itoa(secs)}
+}
 
 // 判据测试的固定基准：shim pid=100，启动于 t0。
 const (
@@ -177,17 +197,18 @@ func TestStartRecordsStartedAt(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	// selfExe 直接用 /bin/sh 顶替真 shim：本用例只验 StartedAt 有没有被填上，
+	// selfExe 直接用一条 sleep 命令顶替真 shim：本用例只验 StartedAt 有没有被填上，
 	// 不验 shim 行为（拿锁、读 spec.json 那些由 shim 自己的用例覆盖）
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}
@@ -392,15 +413,16 @@ func TestStartRecordsRosterPath(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}

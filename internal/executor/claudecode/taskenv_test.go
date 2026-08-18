@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,14 +74,30 @@ func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 		t.Errorf("args 应携带任务 socket 路径，实际 %v", srv.Args)
 	}
 
-	// 含策略的文件必须 0600
-	for _, p := range []string{settingsPath, mcpPath} {
-		fi, err := os.Stat(p)
-		if err != nil {
-			t.Fatal(err)
+	// 含策略的文件必须 0600（mcp.json 泄露 socket 路径即泄露裁决入口）。
+	//
+	// Windows 例外，且不是「放宽要求」：那儿没有 POSIX 权限位，Go 的
+	// os.WriteFile(…, 0o600) 只映射到只读属性，Stat 回报的恒是 -rw-rw-rw-，
+	// 断言 0600 等于断言一个该平台表达不了的东西（2026-08-18 本分支的
+	// Windows 用例第一次在 CI 上跑就红在这里，run 32149311654）。
+	// 实际保护在 NTFS ACL：任务目录位于用户 profile 之下，默认只授权本用户
+	// 与管理员，继承给这两个文件。生产代码两处都老老实实传了 0o600，
+	// 在 Unix 上仍由下面这条断言钉着。
+	if runtime.GOOS == "windows" {
+		for _, p := range []string{settingsPath, mcpPath} {
+			if _, err := os.Stat(p); err != nil {
+				t.Fatalf("%s 应已生成: %v", filepath.Base(p), err)
+			}
 		}
-		if fi.Mode().Perm() != 0o600 {
-			t.Errorf("%s 权限应为 0600，实际 %v", filepath.Base(p), fi.Mode().Perm())
+	} else {
+		for _, p := range []string{settingsPath, mcpPath} {
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s 权限应为 0600，实际 %v", filepath.Base(p), fi.Mode().Perm())
+			}
 		}
 	}
 }

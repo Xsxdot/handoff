@@ -63,11 +63,23 @@ func withFakeLimit(t *testing.T, limit int, limitErr error) {
 }
 
 // withPolicy 临时改策略，恢复交给 t.Cleanup。
+//
+// **同时把 fenceHardLimitMode 钉成 false**：它由平台常量初始化
+// （defaultFenceHardLimitMode，Windows 上是 true），而所有用本 helper 的用例
+// 验的都是 reserve_ratio 那条路。不钉的话 fenceLimit 会在 Windows 上从
+// 硬上限档直接返回 fenceTaskHardLimit（默认 0），用例看到的是「围栏应为
+// 2400，得到 0」——像是算错了，实际是走了另一条分支。
+//
+// 2026-08-18 这件事真的发生了：本分支的 Windows 用例第一次在 CI 上跑
+// （run 32149311654），四条一起红。验硬上限档的
+// TestFenceLimitHardLimitMode / …IgnoresProcLimit 自己钉 true，两条路都测得到。
 func withPolicy(t *testing.T, disabled bool, ratio float64) {
 	t.Helper()
-	oldD, oldR := fenceDisabled, fenceReserveRatio
-	fenceDisabled, fenceReserveRatio = disabled, ratio
-	t.Cleanup(func() { fenceDisabled, fenceReserveRatio = oldD, oldR })
+	oldD, oldR, oldM := fenceDisabled, fenceReserveRatio, fenceHardLimitMode
+	fenceDisabled, fenceReserveRatio, fenceHardLimitMode = disabled, ratio, false
+	t.Cleanup(func() {
+		fenceDisabled, fenceReserveRatio, fenceHardLimitMode = oldD, oldR, oldM
+	})
 }
 
 // 正常机器：2666 的上限、10% 保留额 → 围栏 2400，救护车道 266。
