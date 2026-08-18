@@ -105,3 +105,37 @@ func TestWindowsCreateInputChannelIsNoop(t *testing.T) {
 		t.Fatalf("createInputChannel 之后读端不该就绪——服务端由 shim 建")
 	}
 }
+
+// TestWindowsWriteRightAfterReadinessProbe 钉住 B128 真机验收抓到的那个缺陷：
+// waitInputReader 的就绪探测本身是一次 CreateFile+Close，会消耗中继的一个
+// 受理周期；紧接着的投递若不处理 ERROR_PIPE_BUSY，就会在中继绕回
+// ConnectNamedPipe 之前失败，并被错误归因成「读端可能已不在」。
+//
+// 真机报文：投递首回合 prompt: 连接管道 …: All pipe instances are busy.
+//
+// 这个用例刻意**紧贴着探测之后立刻投递**，不加任何等待——加了等待就等于
+// 把要复现的窗口睡过去，测了个寂寞。
+func TestWindowsWriteRightAfterReadinessProbe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in.fifo")
+	r, cleanup, err := openInputChannel(path)
+	if err != nil {
+		t.Fatalf("打开输入通道失败: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := waitInputReader(path, 5*time.Second); err != nil {
+		t.Fatalf("等待读端就绪失败: %v", err)
+	}
+	// 探测刚消耗掉一个受理周期，这里立刻投递
+	if err := WriteInputChannel(path, []byte("right-after-probe\n")); err != nil {
+		t.Fatalf("紧接就绪探测之后投递失败（ERROR_PIPE_BUSY 未被正确重试）: %v", err)
+	}
+	buf := make([]byte, 64)
+	n, rerr := r.Read(buf)
+	if rerr != nil {
+		t.Fatalf("读失败: %v", rerr)
+	}
+	if got := string(buf[:n]); got != "right-after-probe\n" {
+		t.Fatalf("读到 %q，想要 %q", got, "right-after-probe\n")
+	}
+}

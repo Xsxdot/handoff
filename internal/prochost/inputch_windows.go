@@ -96,7 +96,7 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 // 「执行者已不在」的唯一依据，不得改成重试等待。
 func writeInputChannel(path string, data []byte) error {
 	name := pipeNameFor(path)
-	h, err := dialPipe(name)
+	h, err := dialPipeWaitBusy(name, pipeBusyBudget)
 	if err != nil {
 		return fmt.Errorf("连接管道 %s（通道 %s，读端可能已不在）: %w", name, path, err)
 	}
@@ -201,6 +201,47 @@ func dialPipe(name string) (windows.Handle, error) {
 	}
 	return windows.CreateFile(namePtr, windows.GENERIC_WRITE, 0, nil,
 		windows.OPEN_EXISTING, 0, 0)
+}
+
+// pipeBusyBudget 是 ERROR_PIPE_BUSY 的重试预算，见 dialPipeWaitBusy。
+//
+// 取 5s 而不是更短：中继绕回下一次 ConnectNamedPipe 通常是微秒级，5s 已经
+// 宽裕到只有「中继真的卡死」才会耗尽——而那种情况下失败正是我们要的。
+const pipeBusyBudget = 5 * time.Second
+
+// dialPipeWaitBusy 连接管道，遇到 ERROR_PIPE_BUSY 时在预算内重试。
+//
+// 参数：name 为管道全名；budget 为 busy 重试的总时长上限
+//
+// 返回：连上的句柄；预算耗尽或遇到其它错误时返回错误。
+//
+// 为什么必须有这一层（B128 真机验收实证）：Windows 命名管道的客户端协议要求
+// 撞到 ERROR_PIPE_BUSY 时等一个空闲实例再重试（标准做法是 WaitNamedPipe，
+// 但本项目所用的 x/sys/windows v0.47.0 未包装它，故用有界重试实现同一语义）。
+// 缺了它，首回合投递会直接失败——因为 waitInputReader 的就绪探测本身就是一次
+// CreateFile+Close，它会消耗掉中继的一个受理周期，紧接着的投递恰好落在中继
+// 绕回 ConnectNamedPipe 之前的窗口里。真机报文是：
+// "投递首回合 prompt: 连接管道 …（读端可能已不在）: All pipe instances are busy."
+//
+// 注意：**只对 ERROR_PIPE_BUSY 重试**。ERROR_FILE_NOT_FOUND 表示服务端根本
+// 不在，必须立刻失败——那是调用方判定「执行者已不在」的承重语义，用重试把它
+// 拖成超时会让一个死任务看起来像在忙。
+func dialPipeWaitBusy(name string, budget time.Duration) (windows.Handle, error) {
+	deadline := time.Now().Add(budget)
+	for {
+		h, err := dialPipe(name)
+		if err == nil {
+			return h, nil
+		}
+		if err != windows.ERROR_PIPE_BUSY {
+			return windows.InvalidHandle, err
+		}
+		if time.Now().After(deadline) {
+			return windows.InvalidHandle, fmt.Errorf(
+				"管道 %s 的实例在 %s 内始终忙（中继可能卡住）: %w", name, budget, err)
+		}
+		time.Sleep(pipePollInterval)
+	}
 }
 
 // relayPipe 循环受理客户端并把字节抄进匿名管道写端。
