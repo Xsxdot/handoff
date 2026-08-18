@@ -124,11 +124,11 @@ func quotaNote(err error) string {
 	return note
 }
 
-// gitRun 执行 git -C repo <args...>，返回 stdout 与 stderr。
+// gitExec 是 gitRun / gitProbe 的公共体：执行 git -C repo <args...>。
 //
-// 日志：调用前 Info（repo、args）、调用后 Info（耗时）；失败 Error 带 stderr
-// 原文——git 报错原文是排障必需品，不能只留包装后的 error 文本。
-func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+// quiet 只影响**失败时的日志级别**：false 记 Error（真故障），true 记 Debug
+// （预期内的探测未命中）。返回值语义与 quiet 无关。
+func gitExec(ctx context.Context, repo string, quiet bool, args ...string) (stdout, stderr string, err error) {
 	log().Info("git 调用", "repo", repo, "args", args)
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
@@ -144,10 +144,40 @@ func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr st
 				"note", note, "cause", err)
 			return outBuf.String(), errBuf.String(), fmt.Errorf("%s: %w", note, err)
 		}
-		log().Error("git 调用失败", "repo", repo, "args", args,
-			"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
+		if quiet {
+			log().Debug("git 探测未命中（预期内）", "repo", repo, "args", args,
+				"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
+		} else {
+			log().Error("git 调用失败", "repo", repo, "args", args,
+				"stderr", truncateRunes(errBuf.String(), 500), "cause", err)
+		}
 	}
 	return outBuf.String(), errBuf.String(), err
+}
+
+// gitRun 执行 git -C repo <args...>，返回 stdout 与 stderr。
+//
+// 日志：调用前 Info（repo、args）、调用后 Info（耗时）；失败 Error 带 stderr
+// 原文——git 报错原文是排障必需品，不能只留包装后的 error 文本。
+//
+// 用于**失败即故障**的调用（clone / fetch / worktree add / diff / log 等）。
+// 失败是预期内结果的探测型调用请用 gitProbe。
+func gitRun(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+	return gitExec(ctx, repo, false, args...)
+}
+
+// gitProbe 与 gitRun 相同，但把**非零退出**当成预期内的探测结果而非故障：
+// 失败记 Debug 不记 Error。返回值语义完全不变（调用方仍按 err != nil 判未命中）。
+//
+// 为什么需要它（B81）：探测型调用（rev-parse --verify --quiet、cat-file -e）的
+// 非零退出是**正常分支**——远程执行机只 fetch 出 origin/<name>、从不建本地分支，
+// 所以「本地同名分支不存在」是常态。经 gitRun 打成 ERROR 后，成功路径的日志里
+// 躺着 ERROR，与真故障无法区分；按 level=ERROR 过滤日志会捞出正常路径。
+//
+// 边界：只用于「失败是预期内结果」的调用。会真正出事的 git 调用仍走 gitRun。
+// 进程配额失败无论走哪个入口都仍是 Error。
+func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+	return gitExec(ctx, repo, true, args...)
 }
 
 // gitProxy 是本机出网 git（clone/fetch）使用的代理地址，由 agentd bootstrap
@@ -322,7 +352,7 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 	isExisting := req.Branch != "" // 仅 Branch 模式要求分支已存在
 	if isExisting {
 		// 分支存在性：rev-parse --verify --quiet refs/heads/<name>，非零即不存在
-		if out, _, err := gitRun(ctx, req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
+		if out, _, err := gitProbe(ctx, req.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+req.Branch); err != nil || strings.TrimSpace(out) == "" {
 			return Workspace{}, rejectWorkspace("分支 "+req.Branch+" 不存在", req)
 		}
 	}
@@ -514,7 +544,7 @@ func rollbackWorkspace(ctx context.Context, repo string, ws Workspace) {
 //   - ensureCleanWorktree 里原有的 ErrRepoUnusable 包装保留——它仍是 git status
 //     因其他原因失败时的兜底
 func EnsureRepoUsable(ctx context.Context, repo string) error {
-	_, stderr, err := gitRun(ctx, repo, "rev-parse", "--git-dir")
+	_, stderr, err := gitProbe(ctx, repo, "rev-parse", "--git-dir")
 	if err != nil {
 		log().Warn("dispatch 前置：任务仓库不可用，拒绝派发", "repo", repo,
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
@@ -830,7 +860,7 @@ type Baseline struct {
 // 歧义不是「不存在」，把它降级成 git push 建议会把 fork 工作流的协调者引向
 // 错误排查方向。
 func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
-	out, stderr, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	out, stderr, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	sha := strings.TrimSpace(out)
 	if err == nil && sha != "" {
 		log().Info("起点已解析为提交号", "repo", repo, "base", rev, "sha", sha)
@@ -858,7 +888,7 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 			ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
 	}
 	if len(cands) == 1 {
-		if mout, _, e := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
+		if mout, _, e := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
 			sha = strings.TrimSpace(mout)
 			log().Info("起点已解析为提交号（远程跟踪分支）", "repo", repo, "base", rev, "sha", sha, "ref", cands[0])
 			return sha, nil
@@ -960,7 +990,7 @@ func countAhead(ctx context.Context, repo, start string) int {
 // hasCommit 判断 sha 是否已在 repo 的对象库中（^{commit} 保证它确实是提交对象，
 // 而不是同名的 tree/blob）。
 func hasCommit(ctx context.Context, repo, sha string) bool {
-	_, _, err := gitRun(ctx, repo, "cat-file", "-e", sha+"^{commit}")
+	_, _, err := gitProbe(ctx, repo, "cat-file", "-e", sha+"^{commit}")
 	return err == nil
 }
 
@@ -1031,7 +1061,9 @@ func resolveBaseBranch(repo string) string {
 		return strings.TrimSpace(out)
 	}
 	for _, cand := range []string{"main", "master"} {
-		if _, _, err := gitRun(context.Background(), repo, "rev-parse", "--verify", "--quiet", cand); err == nil {
+		// 这里的未命中是正常分支（仓库可能既没有 main 也没有 master），走 gitProbe
+		// 才不会在成功路径上留 ERROR。
+		if _, _, err := gitProbe(context.Background(), repo, "rev-parse", "--verify", "--quiet", cand); err == nil {
 			return cand
 		}
 	}

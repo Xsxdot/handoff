@@ -64,7 +64,7 @@ func rejectWorktree(reason string, req proto.CreateWorktreeReq) error {
 // 判据是 rev-parse --verify --quiet refs/heads/<名> 有非空输出：--quiet 让
 // 「不存在」走退出码而不是 stderr，与 PrepareWorkspace 的判法保持一致。
 func manualBranchExists(ctx context.Context, repo, branch string) bool {
-	out, _, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	out, _, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
@@ -124,7 +124,7 @@ func CreateManualWorktree(ctx context.Context, repo, worktreesDir string, req pr
 		if base == "" {
 			return proto.Workspace{}, rejectWorktree("推导不出基准分支，请显式指定基线", req)
 		}
-		if _, _, err := gitRun(ctx, repo, "rev-parse", "--verify", "--quiet", base); err != nil {
+		if _, _, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", base); err != nil {
 			return proto.Workspace{}, rejectWorktree("基线 "+base+" 在仓库里不存在", req)
 		}
 	case "existing_branch":
