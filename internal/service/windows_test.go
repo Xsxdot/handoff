@@ -380,3 +380,53 @@ func between(t *testing.T, s, open, close string) string {
 	}
 	return rest[:j]
 }
+
+// 托管判据：任务没注册、或登记的是别的二进制，都必须判否（fail-closed）。
+//
+// 后一种不是假想：验收期间机器上同时存在 C:\Tools\handoff\handoff.exe（任务
+// 登记的）与临时工作树里的构建。跑后者时若判成托管，换版会换掉没人运行的
+// 那个文件，upgrade 报成功而机器上跑的还是旧版——静默且难查。
+func TestWindowsUnitReferencesJudgesByRegisteredBinary(t *testing.T) {
+	const listOut = `Folder: \
+HostName:      IZQPFBDZJZ8GQFZ
+TaskName:      \handoff-agentd
+Task To Run:   C:\Tools\handoff\handoff.exe agentd --config C:\Users\u\.handoff\config.yaml
+Last Result:   267009
+`
+	cases := []struct {
+		name    string
+		exe     string
+		runErr  error
+		want    bool
+		wantWhy string
+	}{
+		{name: "登记的就是本进程", exe: `C:\Tools\handoff\handoff.exe`, want: true},
+		{name: "大小写不同也算同一个", exe: `c:\tools\HANDOFF\Handoff.EXE`, want: true},
+		{name: "登记的是别的二进制", exe: `C:\b142test\handoff.exe`, want: false, wantWhy: "登记的不是本进程的二进制"},
+		{name: "任务没注册", exe: `C:\Tools\handoff\handoff.exe`, runErr: errors.New("ERROR: The system cannot find the file specified."), want: false, wantWhy: "未注册"},
+		{name: "拿不到自己的路径", exe: "  ", want: false, wantWhy: "拿不到本进程"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := &windowsManager{
+				log: testLogger(),
+				run: func(string, ...string) ([]byte, error) {
+					if c.runErr != nil {
+						return nil, c.runErr
+					}
+					return []byte(listOut), nil
+				},
+			}
+			got, why := m.unitReferences(c.exe)
+			if got != c.want {
+				t.Fatalf("判据错：want=%v got=%v why=%q", c.want, got, why)
+			}
+			if c.wantWhy != "" && !strings.Contains(why, c.wantWhy) {
+				t.Errorf("理由应说明 %q，实际 %q", c.wantWhy, why)
+			}
+			if c.want && why != "" {
+				t.Errorf("判是时理由应为空，实际 %q", why)
+			}
+		})
+	}
+}

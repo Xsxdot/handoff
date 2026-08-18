@@ -359,3 +359,42 @@ const schedTaskRunning = "267009"
 func taskIsRunning(out string) bool {
 	return strings.Contains(out, schedTaskRunning)
 }
+
+// UnitReferences 报告已注册的计划任务是否指向 exePath 这个二进制。
+//
+// 参数：
+//   - log: 日志入口
+//   - exePath: 调用方自己的可执行文件绝对路径（须先 EvalSymlinks）
+//
+// 返回：
+//   - true 表示「本进程退出后，计划任务会把同一个二进制重新拉起」
+//   - 第二个返回值是判否的理由原文，供调用方打日志；判是时为空
+//
+// 为什么问的是「任务指不指向我」而不是「谁把我拉起来的」：换版闸二真正
+// 要的保证是「我 exit(0) 之后还有人把我拉回来」。schtasks 不像 systemd /
+// launchd 那样给被拉起的进程注入任何环境变量，「谁拉起我」在 Windows 上
+// 根本问不出来；而「任务在不在、指的是不是我」既问得出，又恰好是那个保证。
+//
+// 顺带挡住一个真实的坑：从别的目录跑一个 agentd（如临时工作树里的构建），
+// 此时任务指向的是另一个二进制——换版会换掉没人运行的那个文件，upgrade
+// 报成功而机器上跑的还是旧版。路径对不上就判否，正是闸二该拦的情形。
+func UnitReferences(log *slog.Logger, exePath string) (bool, string) {
+	return newWindows(log).unitReferences(exePath)
+}
+
+func (m *windowsManager) unitReferences(exePath string) (bool, string) {
+	if strings.TrimSpace(exePath) == "" {
+		return false, "拿不到本进程的可执行文件路径"
+	}
+	out, err := m.run("schtasks", "/Query", "/TN", WindowsTaskName, "/V", "/FO", "LIST")
+	if err != nil {
+		return false, fmt.Sprintf("计划任务 %s 未注册（handoff service install 可装）", WindowsTaskName)
+	}
+	// 子串匹配而不是解析「Task To Run」字段：字段名随系统语言变化，按名字取值
+	// 等于把判据绑死在一种语言上（与 taskIsRunning 同一条纪律）。
+	// 大小写无关：Windows 路径本就大小写不敏感，注册时与运行时的写法可能不同。
+	if !strings.Contains(strings.ToLower(string(out)), strings.ToLower(exePath)) {
+		return false, fmt.Sprintf("计划任务 %s 登记的不是本进程的二进制（本进程 %s）", WindowsTaskName, exePath)
+	}
+	return true, ""
+}

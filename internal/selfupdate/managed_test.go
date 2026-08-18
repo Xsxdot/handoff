@@ -61,3 +61,33 @@ func TestIsManagedLaunchdPlaceholder(t *testing.T) {
 		t.Fatal("XPC_SERVICE_NAME=0 是占位值，必须判非托管")
 	}
 }
+
+// 平台钩子必须真的参与判断：Windows 上环境变量两条恒不成立，
+// 少了这一步闸二永远关着（2026-08-18 win-b37 实测）。
+func TestIsManagedConsultsPlatformHook(t *testing.T) {
+	saved := platformManaged
+	defer func() { platformManaged = saved }()
+
+	none := func(string) string { return "" }
+
+	platformManaged = func() (bool, string) { return true, "" }
+	if !IsManaged(none) {
+		t.Error("平台钩子判是时，IsManaged 必须为真——否则 Windows 上闸二永远关着")
+	}
+
+	platformManaged = func() (bool, string) { return false, "任务没注册" }
+	if IsManaged(none) {
+		t.Error("平台钩子判否且无环境变量时，必须 fail-closed")
+	}
+
+	// 环境变量判据不受钩子影响：unix 上的行为一步都不能动
+	platformManaged = func() (bool, string) { return false, "" }
+	if !IsManaged(func(k string) string {
+		if k == "INVOCATION_ID" {
+			return "abc"
+		}
+		return ""
+	}) {
+		t.Error("systemd 判据不该被平台钩子推翻")
+	}
+}
