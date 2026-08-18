@@ -255,16 +255,64 @@ func TestWindowsUninstallIsIdempotent(t *testing.T) {
 	}
 }
 
-// 卸载不得依赖 schtasks /End，它只杀外层 cmd.exe。
-func TestWindowsUninstallDoesNotUseEnd(t *testing.T) {
+// 卸载必须先 /End 停掉 agentd，再 /Delete 删任务——顺序是承重的。
+//
+// 这条测试取代了原来的「不得用 /End」（它编码的是 D8 时代的前提：手搓任务套了
+// `cmd.exe /c`，调度器跟踪的是 cmd，/End 只杀外层、agentd 孙进程原样活着）。
+// 本实现不套 cmd，任务的动作进程直接就是 handoff.exe，/End 精确命中；而且这是
+// 唯一能精确命中的办法——agentd 与操作者正在敲的 handoff CLI 同一个镜像名，
+// 按镜像名杀会把发出卸载命令的 CLI 自己一起杀掉。
+//
+// 2026-08-18 win-b37 实测漏了这一步的后果：任务与 XML 都删干净了，agentd 活过
+// 75 秒仍在，而 Uninstall 报的是「agentd 不再被自动拉起」；随后 install 又因为
+// 它占着 DataDir 锁而失败，机器停在一个「没托管、装不上、还在跑」的状态。
+func TestWindowsUninstallEndsBeforeDelete(t *testing.T) {
 	m, calls, _ := newTestWindows(t, "SUCCESS", nil)
 	if err := m.Uninstall(); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
-	for _, c := range *calls {
-		if strings.Contains(c, "/End") {
-			t.Errorf("不得用 schtasks /End，实际调用: %q", c)
+	endAt, delAt := -1, -1
+	for i, c := range *calls {
+		if strings.Contains(c, "/End") && endAt < 0 {
+			endAt = i
 		}
+		if strings.Contains(c, "/Delete") && delAt < 0 {
+			delAt = i
+		}
+	}
+	if endAt < 0 {
+		t.Fatalf("必须先 /End 停掉 agentd，否则它会变成没人托管也没人知道的孤儿进程；实际调用 %v", *calls)
+	}
+	if delAt < 0 {
+		t.Fatalf("必须 /Delete 删掉任务，实际调用 %v", *calls)
+	}
+	if endAt > delAt {
+		t.Errorf("顺序反了：先删任务，调度器就不再认识那个进程，agentd 会活下来。实际 %v", *calls)
+	}
+}
+
+// /End 失败（本来就没在跑）不得中断卸载：那会让「任务已删、XML 还在」半途而废。
+func TestWindowsUninstallIgnoresEndFailure(t *testing.T) {
+	calls := []string{}
+	m := &windowsManager{
+		log:          testLogger(),
+		localAppData: `C:\Users\u\AppData\Local`,
+		currentUser:  func() (string, error) { return "u", nil },
+		run: func(_ string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			calls = append(calls, joined)
+			if strings.Contains(joined, "/End") {
+				return []byte("ERROR: The system cannot find the file specified."), errors.New("exit status 1")
+			}
+			return []byte("SUCCESS"), nil
+		},
+		remove: func(string) error { return nil },
+	}
+	if err := m.Uninstall(); err != nil {
+		t.Fatalf("/End 失败不该让 Uninstall 失败，实际 %v", err)
+	}
+	if len(calls) < 2 || !strings.Contains(calls[1], "/Delete") {
+		t.Errorf("/End 失败后仍须继续删任务，实际调用 %v", calls)
 	}
 }
 

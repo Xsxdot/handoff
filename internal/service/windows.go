@@ -300,6 +300,24 @@ func (m *windowsManager) Uninstall() error {
 		return err
 	}
 	m.log.Info("卸载 Windows 计划任务", "task", WindowsTaskName)
+	// 先停再删，顺序不能倒：先删任务的话，调度器就不再认识那个进程，
+	// agentd 会活下来变成一个「没人托管、也没人知道它还在」的孤儿进程
+	// （2026-08-18 win-b37 实测：只删不停，agentd 活过 75 秒仍在，
+	// 而 Uninstall 报的是「agentd 不再被自动拉起」，读起来像已经停了；
+	// 随后的 install 又因为它占着 DataDir 锁而失败）。
+	//
+	// 为什么这里可以用 /End，而 spec §2.5 当初拒绝它：D8 那次 /End 只杀掉外层
+	// 是因为手搓任务套了 `cmd.exe /c`，调度器跟踪的是 cmd、agentd 是它的孙进程。
+	// 本实现不套 cmd（§2.2 第 4 条），任务的动作进程直接就是 handoff.exe，
+	// /End 精确命中。这也是唯一能精确命中的办法：agentd 与操作者正在敲的
+	// handoff CLI 同一个镜像名，按名字杀会连自己一起杀掉。
+	//
+	// agentd 若是手工起的（不由本任务拉起），/End 杀不到它——那是诚实的结果：
+	// 卸载摘掉的是托管，手工起的进程不归管理器处置。
+	if out, eerr := m.run("schtasks", "/End", "/TN", WindowsTaskName); eerr != nil {
+		m.log.Debug("停止任务报错（未装或本来就没在跑时属正常）",
+			"output", strings.TrimSpace(string(out)))
+	}
 	if out, derr := m.run("schtasks", "/Delete", "/TN", WindowsTaskName, "/F"); derr != nil {
 		m.log.Debug("删除任务报错（未装时属正常）", "output", strings.TrimSpace(string(out)))
 	}
