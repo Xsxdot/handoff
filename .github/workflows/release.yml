@@ -370,10 +370,14 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           npm --prefix frontend ci
-          # 两处 tag 缺一不可：gtk3 决定链哪一代 webkit，embedbin 决定
-          # embedbin.Available() 走真产物那一支
+          # 变量名承重：Taskfile 只认 EXTRA_TAGS / EXTRA_LDFLAGS，**不认 GO_FLAGS**
+          # ——传 GO_FLAGS 不会报错，会被静默忽略，编出一个没有 embedbin 标签的
+          # 薄壳（Available() 走 stub、内嵌 CLI 根本不在里面），而这要到用户双击
+          # 之后才暴露。gtk3 不用在这里传：linux 的 BUILD_FLAGS 本就写死了
+          # `-tags production,gtk3`，EXTRA_TAGS 是追加上去的。
           wails3 task linux:package \
-            GO_FLAGS="-tags gtk3,embedbin -ldflags=-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
 
       - name: 重命名为发布资产名
         run: |
@@ -397,6 +401,215 @@ jobs:
         with:
           name: handoff-desktop_linux
           path: handoff-desktop_*
+          if-no-files-found: error
+
+  # 薄壳的 darwin 资产必须在 macOS runner 上构建：codesign 与 notarytool
+  # 只在那儿有，且 Wails 绑 WKWebView 需要 CGO。
+  #
+  # 签名顺序承重（spec §5.4）：签 handoff → 嵌进薄壳 → 构建 → 签+公证 bundle。
+  # 内嵌的那份 CLI 会在首次启动时被释出到 ~/.local/bin/handoff，**脱离 bundle
+  # 的签名覆盖**、由 Gatekeeper 单独校验；而它是 //go:embed 进薄壳可执行文件的
+  # 字节块，一旦嵌进去就只是数据，**之后再没有任何机会给它签名**。所以顺序
+  # 颠倒的后果不是「签名与字节不符」，是释出的那份根本没签名。
+  build-desktop-darwin:
+    needs: verify
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-darwin 一致
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 装 wails3
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 与既有 build-darwin 同款的前置门：secrets 缺失即硬失败，不产出未签名
+      # 资产。一个静默发出去的未签名薄壳会在几个月后咬人，症状出现在用户机器上。
+      - name: 检查签名凭据齐备
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT; do
+            if [ -z "${!v:-}" ]; then missing="${missing} ${v}"; fi
+          done
+          if [ -n "$missing" ]; then
+            printf '缺少签名 secret：%s\n未签名的 release 不发。\n' "$missing" >&2
+            exit 1
+          fi
+          echo "签名凭据齐备"
+
+      # App Store Connect API Key 只能以文件路径传给 notarytool
+      - name: 写 App Store Connect API Key
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 600 "$key_path"
+          # 只确认私钥文件头形态，不打印密钥正文
+          head -n 1 "$key_path" | grep -q 'BEGIN PRIVATE KEY' || {
+            echo "APPLE_API_KEY_CONTENT 不像是一份 .p8 私钥" >&2; exit 1; }
+          echo "APPLE_API_KEY_PATH=${key_path}" >> "$GITHUB_ENV"
+
+      # 第一步：编出 handoff 并**单独签名**。理由见本 job 顶部的顺序说明。
+      # CLI 保持 CGO_ENABLED=0：开了 CGO 会让它带上构建机的最低系统版本约束，
+      # 在更老的 macOS 上拒绝启动。
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # 钥匙串装载：与既有 build-darwin 的同名步骤保持一致（随机口令、搜索链
+      # 追加而非整个替换），只改钥匙串与证书的文件名以免与它撞名。
+      # **两处必须同步改**——抽成复合步骤会牵动那个已在生产用的 job，
+      # 风险大于收益。
+      - name: 导入签名证书到临时钥匙串
+        run: |
+          set -euo pipefail
+          cert_path="${RUNNER_TEMP}/desktop-certificate.p12"
+          keychain_path="${RUNNER_TEMP}/handoff-desktop-build.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          # Secrets 存的是 openssl base64 -A 的单行内容
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+          # 让 codesign 能在无 UI 提示下使用私钥
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" \
+            $(security list-keychains -d user | sed 's/"//g')
+          security find-identity -v -p codesigning "$keychain_path" \
+            | grep -F "$APPLE_SIGNING_IDENTITY" > /dev/null || {
+              echo "钥匙串里找不到 APPLE_SIGNING_IDENTITY" >&2; exit 1; }
+          rm -f "$cert_path"
+
+      # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
+      - name: 签名内嵌的 handoff
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" desktop/internal/embedbin/handoff
+          codesign --verify --strict --verbose=2 desktop/internal/embedbin/handoff
+
+      # 第二步：把已签名的 handoff 嵌进薄壳并组装 bundle。
+      # 注意 `wails3 task build` 只出裸二进制，**`.app` 要靠 package 任务组装**
+      # ——只跑 build 会拿到一个陈旧的 .app。
+      - name: 构建薄壳 .app
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          # 变量名承重，理由同 linux job：Taskfile 认 EXTRA_TAGS / EXTRA_LDFLAGS，
+          # 传 GO_FLAGS 会被静默忽略，编出一个不含内嵌 CLI 的薄壳。
+          # EXTRA_LDFLAGS 是本仓库给 build/{darwin,linux}/Taskfile.yml 加的钩子
+          #（模板把 -ldflags 写死成 "-w -s"）；不注入 Version 的后果是
+          # DecideRelease 永远判不出内嵌版本，「已装的 CLI 更旧」这个提示分支失效。
+          wails3 task package \
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
+      #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
+      # go:embed 进可执行文件的字节块、不是 bundle 里的文件，--deep 对它没有
+      # 作用；Apple 本身也已不建议用 --deep 签名。
+      - name: 签名并公证 bundle
+        run: |
+          set -euo pipefail
+          app="desktop/bin/handoff-desktop.app"
+          TAG="${GITHUB_REF_NAME}"
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+          ditto -c -k --keepParent "$app" notarize-desktop.zip
+          xcrun notarytool submit notarize-desktop.zip \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary-desktop.log
+          # 承重：notarytool 在 status 为 Invalid 时**仍可能退 0**，光看退出码
+          # 不够。这道门是既有 build-darwin 已经踩出来的教训。
+          grep -q 'status: Accepted' /tmp/notary-desktop.log || {
+            echo "公证未被接受：" >&2; cat /tmp/notary-desktop.log >&2; exit 1; }
+
+          # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
+          xcrun stapler staple "$app"
+          rm -f notarize-desktop.zip
+          ditto -c -k --keepParent "$app" "handoff-desktop_${TAG}_darwin_arm64.zip"
+
+      # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
+      # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
+      # 注意喂法与 CLI 那条相反：app bundle 用 `-t exec`，裸 CLI 才用 `-t open`
+      #（既有 build-darwin 的长注释记着 2026-08-13 那次踩反了的经过）。
+      - name: 校验 bundle 的签名与票据
+        run: |
+          set -euo pipefail
+          app="desktop/bin/handoff-desktop.app"
+          codesign -dv --verbose=4 "$app" 2>/tmp/codesign-desktop.log || {
+            echo "codesign -dv 失败：" >&2; cat /tmp/codesign-desktop.log >&2; exit 1; }
+          grep -q 'Authority=Developer ID Application' /tmp/codesign-desktop.log || {
+            echo "签发者不是 Developer ID Application：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          # flags 里的 runtime 就是 --options runtime 的落地证据
+          grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign-desktop.log || {
+            echo "硬化运行时未开，公证会被拒：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          # 票据发布到 Apple 边缘有传播延迟，所以重试而不是一次定生死
+          ok=0
+          for attempt in 1 2 3; do
+            if spctl -a -vvv -t exec "$app" >/tmp/spctl-desktop.log 2>&1; then ok=1; break; fi
+            echo "spctl 第 ${attempt} 次未通过，20s 后重试：" >&2
+            cat /tmp/spctl-desktop.log >&2
+            sleep 20
+          done
+          [ "$ok" = 1 ] || {
+            echo "公证票据在本机查不到：" >&2; cat /tmp/spctl-desktop.log >&2; exit 1; }
+          grep -q 'source=Notarized Developer ID' /tmp/spctl-desktop.log || {
+            echo "评估通过但来源不是 Notarized Developer ID：" >&2
+            cat /tmp/spctl-desktop.log >&2; exit 1; }
+          echo "bundle 签名与公证票据校验通过"
+
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_darwin
+          path: handoff-desktop_*.zip
           if-no-files-found: error
 
   release:
