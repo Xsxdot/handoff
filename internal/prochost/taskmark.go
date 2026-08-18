@@ -91,7 +91,7 @@ func markMembers(cred TaskCred, procs []procEntry) (members []int, supported boo
 //
 // 为什么单独抽一个函数：darwin 的实现会在运行期自检失败后也退回这个语义
 // （见 taskmark_darwin.go 的偏移量自检），判别点集中在一处才不会漏。
-func isNotSupported(err error) bool { return err == errNotSupported }
+func isNotSupported(err error) bool { return err == ErrNotSupported }
 
 // applyTaskMark 把任务标记注入 spec.Env。
 //

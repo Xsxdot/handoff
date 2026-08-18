@@ -9,17 +9,23 @@
 //   - **实现一律不得 fork**（禁止 ps/lsof）：这套代码要在机器已经 fork 不动的时候
 //     仍然可用，否则它会在最需要它的那一刻恰好失灵——2026-08-12 devbox 整机 fork
 //     瘫痪时，所有基于 exec 的诊断手段全部失效，正是这条约束的由来
-//   - 非 darwin/linux 一律返回 errNotSupported，调用方据此降级，不猜值
+//   - 非 darwin/linux 一律返回 ErrNotSupported，调用方据此降级，不猜值
 package prochost
 
 import "errors"
 
-// errNotSupported 表示本平台没有进程枚举实现。
+// ErrNotSupported 表示本平台没有进程枚举实现。
 //
 // 为什么要显式区分而不是返回空集：空集意味着「确实一个进程都没有」，
 // 与「这个平台我们看不了」是两回事——后者必须让调用方降级为「未知」，
 // 而不是渲染出一个 0 让人以为足迹是空的。
-var errNotSupported = errors.New("本平台不支持进程枚举")
+//
+// **为什么导出**：跨包的调用方（agentd 的终态清扫）必须能把它与真正的清扫
+// 失败区分开。不导出时那边只能把 err 原文塞进用户可见的告警里，于是 Windows
+// 上每个任务收尾都报一次「残留进程清扫失败，请人工处理」——而那台机器的回收
+// 由 Job Object 连坐承担，根本没有残留（B148）。与 ptyhost.ErrNotSupported、
+// 本包 ErrExecutorAlive 同一形态：平台能力缺失是结论，不是故障。
+var ErrNotSupported = errors.New("本平台不支持进程枚举")
 
 // procEntry 是一个进程的足迹相关属性。
 //

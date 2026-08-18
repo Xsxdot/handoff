@@ -12,7 +12,7 @@ import (
 func TestMarkMembersUnsupportedReportsNotSupported(t *testing.T) {
 	old := attributesFn
 	defer func() { attributesFn = old }()
-	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, errNotSupported }
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
 
 	members, supported := markMembers(TaskCred{TaskID: "t1"}, []procEntry{{PID: 10}, {PID: 11}})
 	if supported {

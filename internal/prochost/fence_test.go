@@ -124,7 +124,7 @@ func TestFenceLimitDisabled(t *testing.T) {
 // 读数不可信时 Known=false，且 Full/NearFull 恒为 false——调用方据此
 // fail-open。为「量不出来」而拒绝派发，代价远大于收益。
 func TestCheckAdmissionUnknownFailsOpen(t *testing.T) {
-	withFakeProcs(t, 100, 0, errNotSupported)
+	withFakeProcs(t, 100, 0, ErrNotSupported)
 	withPolicy(t, false, 0.1)
 	a := CheckAdmission()
 	if a.Known {

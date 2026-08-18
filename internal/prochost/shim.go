@@ -322,7 +322,7 @@ func (s *rosterSampler) sample(l *slog.Logger) bool {
 	start := time.Now()
 	procs, err := enumProcsFn()
 	if err != nil {
-		if errors.Is(err, errNotSupported) {
+		if errors.Is(err, ErrNotSupported) {
 			l.Info("本平台不做后代名册采样，回收由进程容器承担", "cause", err)
 			return false
 		}

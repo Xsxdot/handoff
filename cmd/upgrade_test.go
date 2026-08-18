@@ -620,3 +620,37 @@ func TestChecksumFetchedOncePerRun(t *testing.T) {
 		t.Errorf("checksums 应只下一次，实得 %d 次", fetcher.checksumCalls)
 	}
 }
+
+// 巡检表里，没有 release 版本号的机器必须回落显示提交号，不能留一片空格。
+//
+// 背景（B147）：Version 只在 -ldflags 注入时才有值，手工 go build 的 agentd
+// 该字段为空。改前 win-b37 那一行版本列是空的，而 handoff status 明明报得出
+// revision——读表的人无从区分「没探到」与「没版本号」。
+func TestRenderCheckRowFallsBackToRevision(t *testing.T) {
+	var buf bytes.Buffer
+	renderCheckRow(&buf, machineState{
+		Ep:       Endpoint{Name: "win-b37"},
+		Agentd:   "",
+		Revision: "85c1e2322a086e237f63261f7b9ea3e05f2733e4",
+		Platform: "windows/amd64",
+	}, "v0.2.3")
+	out := buf.String()
+	if !strings.Contains(out, "85c1e2322a08") {
+		t.Fatalf("无 release 版本号时应回落显示提交号，实得：%q", out)
+	}
+	if strings.Contains(out, "85c1e2322a086e") {
+		t.Fatalf("提交号应截到 12 位，与 handoff status 同宽，实得：%q", out)
+	}
+}
+
+// 两者都没有时仍然留空——不能编一个假版本号出来。
+func TestRenderCheckRowNoVersionNoRevisionStaysBlank(t *testing.T) {
+	var buf bytes.Buffer
+	renderCheckRow(&buf, machineState{
+		Ep:       Endpoint{Name: "win-b37"},
+		Platform: "windows/amd64",
+	}, "v0.2.3")
+	if strings.Contains(buf.String(), "（非 release 构建）") {
+		t.Fatalf("没有提交号时不应渲染回落文案，实得：%q", buf.String())
+	}
+}
