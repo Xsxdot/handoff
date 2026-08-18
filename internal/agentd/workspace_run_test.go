@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,9 +63,17 @@ func TestRunCmdExistingWorkdirUnchanged(t *testing.T) {
 // 两者的处置完全相反——前者该换任务/重新派发，后者该去查 agentd。
 func TestTaskRunMissingWorkdirReturns400(t *testing.T) {
 	s, taskID := newTestServerWithTask(t) // 该任务的 RepoPath 指向一个不存在的目录
-	s.conf().Token = "test"               // doWorktreeReq 使用该固定 Bearer 值
 
-	rec := doWorktreeReq(t, s, http.MethodPost, "/api/tasks/"+taskID+"/run", `{"cmd":"echo x"}`)
+	// why 不复用 doWorktreeReq：它把 Bearer 写死成 "test"，而本助手建的服务器用
+	// testToken。改服务器的 token 去迁就助手要写 s.conf().Token = ...，那是在
+	// atomic.Pointer 持有的那份 config 上就地改字段，绕过 swapConf 的换配置纪律——
+	// 本用例不会 race，但这个形状会被照抄。自己拼请求更干净。
+	r := httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/run",
+		strings.NewReader(`{"cmd":"echo x"}`))
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("状态码应为 400，实为 %d，响应体 %s", rec.Code, rec.Body.String())
