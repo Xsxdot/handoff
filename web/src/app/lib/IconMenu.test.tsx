@@ -75,3 +75,61 @@ describe('IconMenu', () => {
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
   })
 })
+
+describe('扩展项', () => {
+  it('check 选中时渲染勾、未选中不渲染', () => {
+    render(
+      <IconMenu
+        label="偏好"
+        icon={<span>i</span>}
+        items={[
+          { key: 'a', label: '隐藏空闲', kind: 'check', checked: true, onSelect: vi.fn() },
+          { key: 'b', label: '别的开关', kind: 'check', checked: false, onSelect: vi.fn() },
+        ]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '偏好' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: /隐藏空闲/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitemcheckbox', { name: /别的开关/ })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('keepOpen 的项点完菜单还在', () => {
+    const onSelect = vi.fn()
+    render(
+      <IconMenu label="偏好" icon={<span>i</span>}
+        items={[{ key: 'a', label: '隐藏空闲', kind: 'check', checked: false, keepOpen: true, onSelect }]} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏空闲/ }))
+    expect(onSelect).toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('header 不可点', () => {
+    render(
+      <IconMenu label="偏好" icon={<span>i</span>}
+        items={[{ key: 'h', label: '显示', kind: 'header' }]} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '偏好' }))
+    expect(screen.queryByRole('menuitem', { name: '显示' })).toBeNull()
+    expect(screen.getByText('显示')).toBeInTheDocument()
+  })
+
+  it('radio 用 menuitemradio 角色', () => {
+    render(
+      <IconMenu label="偏好" icon={<span>i</span>}
+        items={[{ key: 'r', label: '活跃优先', kind: 'radio', checked: true, keepOpen: true, onSelect: vi.fn() }]} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '偏好' }))
+    expect(screen.getByRole('menuitemradio', { name: /活跃优先/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('不带 kind 的老用法照旧：点完就关', () => {
+    const onSelect = vi.fn()
+    render(<IconMenu label="操作" icon={<span>i</span>} items={[{ key: 'a', label: '关闭', onSelect }]} />)
+    fireEvent.click(screen.getByRole('button', { name: '操作' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '关闭' }))
+    expect(onSelect).toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+})

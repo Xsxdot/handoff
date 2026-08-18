@@ -12,15 +12,23 @@
 //     原地会被裁掉，只露出一条边
 //   - 不持有任何业务状态；items 每次渲染现给即可
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Check } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 export interface IconMenuItem {
   key: string
   label: string
+  // kind 决定这一项是什么：缺省 'action'（点了就关，老用法一字不改）、
+  // 'check' 独立开关、'radio' 单选组成员、'header' 不可点的分组标题。
+  kind?: 'action' | 'check' | 'radio' | 'header'
+  checked?: boolean   // check/radio 的选中态
+  // keepOpen=true 时点完不关菜单。连着调三个开关是常态，每点一次就关掉
+  // 等于逼人开三次。
+  keepOpen?: boolean
   icon?: ReactNode // 项左侧的图标；不给就只有文字
   hotkey?: string // 项右侧的快捷键提示，仅展示
-  onSelect: () => void
+  onSelect?: () => void   // header 不需要
 }
 
 export interface IconMenuProps {
@@ -100,34 +108,65 @@ export function IconMenu({ label, icon, items, className, dark = false }: IconMe
             // z-[60]：要盖住浮窗（z-40）与弹层（z-50）。菜单是瞬时的，
             // 盖在谁上面都只是这一下
             className={cn(
-              'fixed z-[60] min-w-40 rounded-md border p-1 shadow-lg',
+              'fixed z-[60] max-h-[min(60vh,420px)] min-w-40 overflow-y-auto rounded-md border p-1 shadow-lg',
               dark ? 'border-[#2b3542] bg-[#0c1622]' : 'bg-popover',
             )}
             style={{ left: pos.left, top: pos.top }}
           >
-            {items.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false)
-                  item.onSelect()
-                }}
-                className={cn(
-                  'flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs',
-                  dark ? 'text-[#d7dde5] hover:bg-[#1a2430]' : 'hover:bg-accent',
-                )}
-              >
-                {item.icon}
-                <span className="flex-1">{item.label}</span>
-                {item.hotkey !== undefined && (
-                  <span className={cn('font-mono text-[10px]', dark ? 'text-[#8e9bab]' : 'text-muted-foreground')}>
-                    {item.hotkey}
-                  </span>
-                )}
-              </button>
-            ))}
+            {items.map((item) => {
+              const kind = item.kind ?? 'action'
+              if (kind === 'header') {
+                return (
+                  <div
+                    key={item.key}
+                    className={cn(
+                      'px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide',
+                      dark ? 'text-[#8e9bab]' : 'text-muted-foreground',
+                    )}
+                  >
+                    {item.label}
+                  </div>
+                )
+              }
+              const role = kind === 'check' ? 'menuitemcheckbox' : kind === 'radio' ? 'menuitemradio' : 'menuitem'
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  role={role}
+                  aria-checked={kind === 'action' ? undefined : item.checked === true}
+                  onClick={() => {
+                    // keepOpen 的项不关菜单；关闭要排在 onSelect 之前，
+                    // 与改造前的次序保持一致（onSelect 可能自己再开别的层）
+                    if (!item.keepOpen) setOpen(false)
+                    item.onSelect?.()
+                  }}
+                  className={cn(
+                    'flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs',
+                    dark ? 'text-[#d7dde5] hover:bg-[#1a2430]' : 'hover:bg-accent',
+                  )}
+                >
+                  {/* 选中标记占等宽位：不占位的话，勾选状态一变行文字就左右跳 */}
+                  {kind !== 'action' && (
+                    <span className="flex size-3.5 shrink-0 items-center justify-center">
+                      {item.checked === true &&
+                        (kind === 'check' ? (
+                          <Check className="size-3.5" />
+                        ) : (
+                          <span className="size-1.5 rounded-full bg-current" />
+                        ))}
+                    </span>
+                  )}
+                  {item.icon}
+                  <span className="flex-1">{item.label}</span>
+                  {item.hotkey !== undefined && (
+                    <span className={cn('font-mono text-[10px]', dark ? 'text-[#8e9bab]' : 'text-muted-foreground')}>
+                      {item.hotkey}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>,
           document.body,
         )}
