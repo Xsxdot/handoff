@@ -48,7 +48,18 @@ Task 3 里把 `wantCount` 改成 5，并在改动处留一行注释说明原因�
   在 `build-desktop-darwin` 与 `release` 之间插入 `build-desktop-windows` job（96 行），
   `release` 的 needs 扩成 5 项、注释「四个构建 job」改「五个构建 job」。
   YAML 经 pyyaml 解析合法，jobs 键含 `build-desktop-windows`。
-  审查与提交待执行。
-  审查前 minor 记账（M 打头，终审 triage）：
+  **审查通过、已提交 `623a6973`**。独立审查 subagent 双裁决：通过，无修复项、无多做。
+  审查 minor 记账（终审 triage）：
   - M2: release job 注释第二句「不把**两个**薄壳 job 列进来」已过期——薄壳 job 现在是三个。
     计划只要求改「四个→五个构建 job」，未提这句，记下待终审统一处理。
+
+- 2026-08-19 **Task 3（契约测试跟上三个薄壳 job）实现完成**。实现 subagent 产出：
+  改 `release_workflow_test.go` 的 `TestDesktopJobsCarryLoadBearingFlags`（windows job 存在性 +
+  RunsOn 前缀断言；三条计数 2→3；新增 `{"ARCH=amd64", 1}`；needs 循环补 windows job），
+  并把 `TestWorkflowInjectsVersionAtModulePath` 的 `wantCount` 4→5（协调者确认的计划缺口，
+  注释留了「W5b-4 增了 build-desktop-windows 薄壳 job，构建点从 4 个变 5 个」）。
+  四条变异逐条复验全红（GO_FLAGS 替换→计数 3→2；删 ARCH 行→计数 1→0；删 needs→
+  needs 断言红；runs-on 换 ubuntu→RunsOn 断言红），还原后恢复绿。
+  全量 `go test ./... -count=1` 0 FAIL、gofmt 干净、vet 干净。
+  协调者复验：根模块与 desktop 模块全量 0 FAIL、目标测试 PASS、gofmt/vet 干净。
+  审查与提交待执行。
