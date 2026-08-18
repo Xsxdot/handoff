@@ -22,7 +22,7 @@ index 1..2 100644
 
 beforeEach(() => {
   vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: DIFF })
-  vi.mocked(fetchTaskBranches).mockResolvedValue({ branches: ['main', 'dev'], default: 'main' })
+  vi.mocked(fetchTaskBranches).mockResolvedValue({ branches: ['main', 'dev'], default: 'main', task_base: '' })
 })
 
 describe('ReviewSidePanel', () => {
@@ -52,5 +52,25 @@ describe('ReviewSidePanel', () => {
     await waitFor(() => expect(screen.getByText('a.md')).toBeInTheDocument())
     expect(screen.getByRole('option', { name: /自动推导/ })).toBeInTheDocument()
     expect(screen.getAllByRole('option')).toHaveLength(1)
+  })
+  it('自动推导括注：有任务基线时显示前 8 位 sha', async () => {
+    vi.mocked(fetchTaskBranches).mockResolvedValue({
+      branches: ['main'], default: 'main', task_base: '0123456789abcdef0123456789abcdef01234567',
+    })
+    render(<ReviewSidePanel taskId="t1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    expect(screen.getByRole('option', { name: '自动推导（任务基线 01234567）' })).toBeInTheDocument()
+  })
+  it('自动推导括注：无任务基线时退回分支名', async () => {
+    vi.mocked(fetchTaskBranches).mockResolvedValue({ branches: ['main'], default: 'main', task_base: '' })
+    render(<ReviewSidePanel taskId="t1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    expect(screen.getByRole('option', { name: '自动推导（main）' })).toBeInTheDocument()
+  })
+  it('自动推导括注：两者皆空时不带括注', async () => {
+    vi.mocked(fetchTaskBranches).mockResolvedValue({ branches: [], default: '', task_base: '' })
+    render(<ReviewSidePanel taskId="t1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    expect(screen.getByRole('option', { name: '自动推导' })).toBeInTheDocument()
   })
 })

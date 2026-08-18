@@ -362,11 +362,17 @@ export interface TaskPlan {
   truncated?: boolean
 }
 
-// BranchesResult 是 GET /api/tasks/{id}/branches 的响应：本地分支名 + 推导默认。
-// default 为空串 = 推导不出，前端下拉退化为仅「自动推导」项。
+// BranchesResult 是 GET /api/tasks/{id}/branches 的响应：本地分支名 + 推导默认
+// + 任务自己的基线。
+//
+// default 为空串 = 按仓库推导不出。
+// task_base 为空串 = 该任务没有记录基线（切已存在分支或老任务）。
+// 两者都非空时 diff 实际用的是 task_base——B65 之后这两个字段不是一回事，
+// 展示时别把 default 当成「diff 会用的基准」。
 export interface BranchesResult {
   branches: string[]
   default: string
+  task_base: string
 }
 
 // fileResult 是 file 接口的响应体。
