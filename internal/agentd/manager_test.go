@@ -129,6 +129,12 @@ func (a *chanAdapter) permsRec() []string {
 	return append([]string(nil), a.perms...)
 }
 
+// recordedPerms 返回已记录的 RespondPermission 实参（副本）；供带 goroutine
+// 的审批链测试使用，避免直接读取 perms 形成竞态。
+func (a *chanAdapter) recordedPerms() []string {
+	return a.permsRec()
+}
+
 func (a *chanAdapter) lastStartReq() executor.StartReq {
 	a.mu.Lock()
 	defer a.mu.Unlock()

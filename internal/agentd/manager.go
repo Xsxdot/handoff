@@ -465,6 +465,13 @@ type approverDecisionPayload struct {
 	ElapsedMS  int64  `json:"elapsed_ms"`
 }
 
+// approvalDroppedPayload 是 approval_dropped 事件的 payload。
+type approvalDroppedPayload struct {
+	TicketID string `json:"ticket_id"`
+	Decision string `json:"decision"` // 审批者原本的裁决：approve / escalate / error
+	State    string `json:"state"`    // 裁决回来时任务已处的状态
+}
+
 // approverDisabledPayload 是 approver_disabled 事件的 payload：任务级审批链
 // 因连续失败被停用的原因。
 type approverDisabledPayload struct {
@@ -1794,8 +1801,15 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		return
 	}
 	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
-		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，仅留审计事件",
+		m.log.Warn("审批者裁决期间任务已离开 running/waiting_answer，回 reject 并留审计事件",
 			"task", taskID, "ticket", ticketID, "decision", decision, "state", cur.State)
+		// B117：不建工单/不唤醒/不消耗答案守卫这三条 P1-1 原意一字不改，
+		// 但**必须应答**——不答等于让 executor 侧那条请求悬着，codex 实测悬 8.5 分钟后
+		// 自行 Rejected("approval request aborted")，打断的是下一个回合。
+		// 一律回 reject 而不是照裁决放行：任务此刻已在 waiting_review（语义是「等协调者」），
+		// 放行等于让 executor 在无人看管时继续改工作区。命令没跑成可以 continue 重跑，
+		// 回合被打死不能。
+		m.respondLateDecision(taskID, ticketID, ev.PermissionID, decision, string(cur.State))
 		return
 	}
 
@@ -1816,6 +1830,43 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		return
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
+}
+
+// respondLateDecision 处置「裁决晚于回合边界」：回一个干净的 reject，并留一条
+// 协调者可见事件说明那条裁决的去向。
+//
+// 参数：
+//   - decision: 审批者原本的裁决（approve/escalate/error），只进事件不影响回传值
+//   - state: 重读到的任务状态，进事件供协调者判断当时发生了什么
+//
+// 注意：
+//   - 回传失败不改变任务状态。最常见成因就是 executor 已经不在了，
+//     那正是这条路径的常态之一，不该因此把任务推向 failed
+//   - 事件 Publish 而不是只落库：协调者需要知道「有一条批准空转了、
+//     该 continue 重跑」，这与 deny_guidance_dropped 的可操作性理由相同
+func (m *Manager) respondLateDecision(taskID, ticketID, permID, decision, state string) {
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Warn("裁决晚到：任务运行态已不在，无法回传",
+			"task", taskID, "ticket", ticketID, "cause", err)
+	} else {
+		actx, acancel := unaryCtx(context.Background())
+		defer acancel()
+		if rerr := ad.RespondPermission(actx, taskID, permID, "reject"); rerr != nil {
+			m.log.Warn("裁决晚到：回传 reject 失败（多为 executor 已退出）",
+				"task", taskID, "ticket", ticketID, "cause", rerr)
+		} else {
+			m.log.Info("裁决晚到：已回传 reject，回合可正常收尾",
+				"task", taskID, "ticket", ticketID)
+		}
+	}
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeApprovalDropped,
+		approvalDroppedPayload{TicketID: ticketID, Decision: decision, State: state})
+	if aerr != nil {
+		m.log.Error("追加 approval_dropped 事件失败", "task", taskID, "ticket", ticketID, "cause", aerr)
+		return
+	}
+	m.hub.Publish(evt)
 }
 
 // clearApproverState 清理任务级审批链运行时状态（apFails/apDisabled/denyGuidance）。

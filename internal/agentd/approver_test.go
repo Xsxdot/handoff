@@ -413,6 +413,76 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	}
 }
 
+// TestLateApproverDecisionRespondsRejectAndPublishes 验证回合边界之后到达的审批裁决
+// 会回传一次干净 reject，并留下协调者可见的 approval_dropped 事件。
+func TestLateApproverDecisionRespondsRejectAndPublishes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		approve bool
+		state   proto.TaskState
+	}{
+		{"approve 晚到且任务已待审", true, proto.TaskStateWaitingReview},
+		{"escalate 晚到且任务已待审", false, proto.TaskStateWaitingReview},
+		{"approve 晚到且任务已归档", true, proto.TaskStateCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, ad, taskID := seedLateDecisionCase(t, tc.state)
+			m.consultApproverForTest(taskID, tc.approve, "tk-1", "perm-1")
+
+			var decisions []string
+			for _, p := range ad.recordedPerms() {
+				if strings.HasPrefix(p, "perm-1:") {
+					decisions = append(decisions, strings.TrimPrefix(p, "perm-1:"))
+				}
+			}
+			if len(decisions) != 1 || decisions[0] != "reject" {
+				t.Errorf("回传给 executor 的是 %v，必须恰好一次 reject", decisions)
+			}
+			evs, err := st.EventsFromAsc(taskID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, e := range evs {
+				if e.Type == proto.EventTypeApprovalDropped {
+					found = true
+				}
+			}
+			if !found {
+				t.Error("没有 approval_dropped 事件，协调者只能去 agentd.log 里翻")
+			}
+		})
+	}
+}
+
+// TestLateApproverDecisionDoesNotCreateTicket 保留 P1-1 的原意：边界之后不建工单。
+func TestLateApproverDecisionDoesNotCreateTicket(t *testing.T) {
+	m, st, _, taskID := seedLateDecisionCase(t, proto.TaskStateWaitingReview)
+	m.consultApproverForTest(taskID, false, "tk-1", "perm-1")
+	tks, err := st.PendingTickets(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tks) != 0 {
+		t.Fatalf("边界之后不得建工单，实得 %d 张", len(tks))
+	}
+}
+
+// TestLateDecisionRespondFailureDoesNotChangeState 确认 executor 已死时，reject
+// 回传失败不改变任务状态。
+func TestLateDecisionRespondFailureDoesNotChangeState(t *testing.T) {
+	m, st, ad, taskID := seedLateDecisionCase(t, proto.TaskStateCompleted)
+	ad.setRespondErr(errors.New("executor 已不在"))
+	m.consultApproverForTest(taskID, true, "tk-1", "perm-1")
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateCompleted {
+		t.Fatalf("回传失败不该改状态，实得 %s", task.State)
+	}
+}
+
 // TestApproverTruncatedPermissionEscalates 验证含截断标记的权限请求不交给廉价
 // 模型（P1-3）：截断说明「看到的命令不完整」，危险片段可能落在 200 字符之外，
 // 黑名单与模型都不可信——fail-closed 的直接延伸，升级人工协调者。

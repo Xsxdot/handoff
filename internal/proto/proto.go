@@ -81,6 +81,14 @@ const (
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
 	// 就终结了。协调者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
+	// EventTypeApprovalDropped 表示审批者的裁决没能下发给 executor——裁决回来时
+	// 回合已经结束（任务离开 running/waiting_answer）。agentd 已代为回了一个
+	// 干净的 reject，本事件说明「那条裁决去哪了」。
+	//
+	// 与 deny_guidance_dropped 是同一根因（回合结束即无下发通道）的 approve 方向，
+	// 但后果更重：拒绝原因丢了只是少一段指导，批准丢了会让 executor 那条请求
+	// 悬到自行 abort，**打断的是下一个回合**（08-17 实测两次同型）。
+	EventTypeApprovalDropped EventType = "approval_dropped"
 	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
 	//
 	// 为什么必须留痕：pending_tickets 是协调者接管陌生会话时「我还欠哪些没答」
