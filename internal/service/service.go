@@ -55,7 +55,7 @@ type Manager interface {
 	Uninstall() error
 	// Status 查询状态。「没装」是正常答案，不是错误。
 	Status() (Status, error)
-	// Kind 返回管理器种类："launchd" / "systemd"。
+	// Kind 返回管理器种类："launchd" / "systemd" / "schtasks"。
 	Kind() string
 	// UnitPath 返回单元文件的落点路径。
 	UnitPath() (string, error)
