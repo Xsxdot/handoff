@@ -74,7 +74,16 @@ var bashPermissionRules = map[string]string{
 	"*--force*":          "ask", // 各类强制开关（push --force / --force-with-lease 等）
 	"curl *":             "ask", // 外访直调
 	"wget *":             "ask", // 外访直调
-	"*":                  "allow",
+	// 重定向到绝对路径或家目录：opencode 自己不检出重定向落点（2026-08-18 真机
+	// 探针，spec §2.2.1——同一个路径，作为参数出现要授权、作为重定向落点不要），
+	// 不在这里把它们捞进来，permgate 的落点判据根本没机会跑。
+	// 四条而不是一条 "*>*"：后者会命中 2>&1，`go test ./... 2>&1 | tail` 是高频
+	// 写法，每条都送 Consult，在没配审批者的部署上等于升级人工。
+	"*>/*":  "ask", // >/abs、>>/abs 都含子串 ">/"
+	"*> /*": "ask", // > /abs、>> /abs 都含子串 "> /"
+	"*>~*":  "ask", // >~/x
+	"*> ~*": "ask", // > ~/x
+	"*":     "allow",
 }
 
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成

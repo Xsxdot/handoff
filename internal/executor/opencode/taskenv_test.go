@@ -124,6 +124,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	for _, pattern := range []string{
 		"*rm -rf*", "*rm -fr*", "rm *", "*sudo*",
 		"*git push*", "*git reset --hard*", "*--force*", "curl *", "wget *",
+		"*>/*", "*> /*", "*>~*", "*> ~*",
 	} {
 		if got := cfg.Permission.Bash[pattern]; got != "ask" {
 			t.Errorf("permission.bash[%q] = %q，期望 ask", pattern, got)
@@ -155,6 +156,38 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 	if !strings.Contains(string(again), newPlan) {
 		t.Errorf("重复调用应以新计划覆盖 prompt.md，实际不含 %q", newPlan)
+	}
+}
+
+// TestBashRulesRejectBareRedirectGlob 守住一条取舍：不许把重定向模式放宽成 "*>*"。
+//
+// "*>*" 会命中 2>&1，而 `go test ./... 2>&1 | tail` 是高频写法，每条都送 Consult；
+// 在没配审批者的部署上 Consult 会退化成升级人工，等于把审批回路淹掉。
+func TestBashRulesRejectBareRedirectGlob(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	if _, ok := cfg.Permission.Bash["*>*"]; ok {
+		t.Fatal(`bashPermissionRules 不得含 "*>*"——它会命中 2>&1，见本用例注释`)
+	}
+	for _, p := range []string{"*>/*", "*> /*", "*>~*", "*> ~*"} {
+		if got := cfg.Permission.Bash[p]; got != "ask" {
+			t.Fatalf("模式 %q = %q，期望 ask——少一条就是一条静默放行的重定向通道", p, got)
+		}
 	}
 }
 
