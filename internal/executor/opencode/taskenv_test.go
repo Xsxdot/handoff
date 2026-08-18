@@ -19,7 +19,7 @@ func TestTaskModelOverridesEnv(t *testing.T) {
 	quietLog(t)
 	t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
 	taskDir := t.TempDir()
-	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan")
+	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	quietLog(t)
 	t.Run("env 兜底", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	})
 	t.Run("都空则不写", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	const taskID = "T-2026-0001"
 	plan := "1. 实现 foo\n2. 修复 bar\n{\"ask\":\"要第三方库吗?\"}"
 
-	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan)
+	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan, "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 
 	newPlan := "改版后的计划：只做一件事"
-	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan); err != nil {
+	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan, ""); err != nil {
 		t.Fatalf("重复调用 WriteTaskEnv: %v", err)
 	}
 	again, err := os.ReadFile(promptPath)
@@ -158,6 +158,20 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 }
 
+func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
+	_, promptPath, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "计划正文", "# 执行纪律\n单上下文版内容")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "单上下文版内容") {
+		t.Fatalf("纪律块未进入 opencode prompt: %q", raw)
+	}
+}
+
 // TestExternalDirectoryIsAsk 锁死 B27 对 opencode 的真实拦截点。
 //
 // opencode 的越界写入不是靠 edit 的 ask 拦的（edit 是 allow、范围内写入
@@ -165,7 +179,7 @@ func TestWriteTaskEnv(t *testing.T) {
 // ~/.ssh/authorized_keys 就会连事件都不留。
 func TestExternalDirectoryIsAsk(t *testing.T) {
 	quietLog(t)
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}

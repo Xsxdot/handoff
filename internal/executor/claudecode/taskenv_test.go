@@ -10,7 +10,7 @@ import (
 
 func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 	dir := t.TempDir()
-	settingsPath, mcpPath, prompt, err := WriteTaskEnv(dir, "T-1", "计划正文", "/tmp/x/perm.sock", "/usr/local/bin/handoff")
+	settingsPath, mcpPath, prompt, err := WriteTaskEnv(dir, "T-1", "计划正文", "/tmp/x/perm.sock", "/usr/local/bin/handoff", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -77,13 +77,23 @@ func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 	}
 }
 
+func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
+	_, _, prompt, err := WriteTaskEnv(t.TempDir(), "T-1", "计划正文", "/tmp/perm.sock", "/bin/handoff", "# 执行纪律\n单上下文版内容")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "单上下文版内容") {
+		t.Fatalf("纪律块未进入 claude prompt: %q", prompt)
+	}
+}
+
 func TestWriteTaskEnvIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, _, err := WriteTaskEnv(dir, "T-1", "a", "/s", "/bin/handoff"); err != nil {
+	if _, _, _, err := WriteTaskEnv(dir, "T-1", "a", "/s", "/bin/handoff", ""); err != nil {
 		t.Fatal(err)
 	}
 	// 重复调用覆盖而非报错：Start 失败重试时必须能安全重来
-	if _, _, _, err := WriteTaskEnv(dir, "T-1", "b", "/s", "/bin/handoff"); err != nil {
+	if _, _, _, err := WriteTaskEnv(dir, "T-1", "b", "/s", "/bin/handoff", ""); err != nil {
 		t.Fatalf("重复调用应幂等: %v", err)
 	}
 }

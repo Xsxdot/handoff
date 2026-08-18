@@ -198,6 +198,10 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 	return r
 }
 
+func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
+	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
+}
+
 // Start 异步启动执行并立即返回。
 //
 // 步骤：StartServe → Dial → initialize + initialized → thread/start →
@@ -253,9 +257,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent, "")
+	prompt, err := renderStartPrompt(taskID, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("codex 未注入纪律块", "task", taskID)
+	} else {
+		a.log.Info("codex 纪律块已注入 prompt", "task", taskID, "bytes", len(req.Discipline))
 	}
 
 	a.mu.Lock()

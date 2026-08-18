@@ -23,6 +23,15 @@ func ServeSpecForTest(repoPath, taskDir, model string, port int, secret string, 
 	return serveSpec(repoPath, taskDir, model, port, secret, env)
 }
 
+// RenderStartPromptForTest exposes the same prompt helper used by Start.
+func RenderStartPromptForTest(req executor.StartReq) string {
+	prompt, err := renderStartPrompt(req.Task.ID, req.PlanContent, req.Discipline)
+	if err != nil {
+		panic(err)
+	}
+	return prompt
+}
+
 // NewTurnAccumulatorForTest 暴露回合累积器，供事件映射的纯逻辑断言
 // （不起进程、不连网络）。
 func NewTurnAccumulatorForTest() *turnAccumulator { return newTurnAccumulator() }

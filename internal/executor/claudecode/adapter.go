@@ -228,10 +228,15 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		rollback()
 		return fmt.Errorf("定位 handoff 二进制: %w", err)
 	}
-	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin)
+	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin, req.Discipline)
 	if err != nil {
 		rollback()
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("claude 未注入纪律块", "task", req.Task.ID)
+	} else {
+		a.log.Info("claude 纪律块已注入 prompt", "task", req.Task.ID, "bytes", len(req.Discipline))
 	}
 
 	// 3. 进程：Env 必须原样透传（见 StartProcReq.Env 的注意）
