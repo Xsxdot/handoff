@@ -2829,3 +2829,31 @@ func TestEscalateLogLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveModelOnlyAppliesToDefaultExecutor 钉死 executor.model 的语义。
+//
+// why：executor.model 是「缺省执行者的默认模型」，不是全局默认。以前不分执行者
+// 一律套上，配了 opencode 模型名的机器派 codex 时第一回合就 400。
+func TestResolveModelOnlyAppliesToDefaultExecutor(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &chanAdapter{}}, "opencode")
+	m.cfg.Executor.Model = "cheap/model"
+
+	cases := []struct {
+		name     string
+		reqModel string
+		execName string
+		want     string
+	}{
+		{"缺省执行者且未指定模型：套配置值", "", "opencode", "cheap/model"},
+		{"非缺省执行者且未指定模型：留空交给执行者自身默认", "", "codex", ""},
+		{"显式指定模型恒优先（缺省执行者）", "x/y", "opencode", "x/y"},
+		{"显式指定模型恒优先（非缺省执行者）", "x/y", "codex", "x/y"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := m.resolveModel(c.reqModel, c.execName); got != c.want {
+				t.Fatalf("resolveModel(%q, %q) = %q，期望 %q", c.reqModel, c.execName, got, c.want)
+			}
+		})
+	}
+}

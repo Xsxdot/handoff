@@ -308,6 +308,30 @@ func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error)
 	return name, ad, nil
 }
 
+// resolveModel 决定任务下发时用哪个模型名。空串表示「不指定，由执行者自身默认接管」。
+//
+// 优先级：任务级 req.Model > 缺省执行者的配置模型 > 空（执行者自身默认）。
+//
+// why 要判 execName == Default：cfg.Executor.Model 的语义是**缺省执行者**的默认模型，
+// 不是全局默认。以前不分执行者一律套上，于是配了 opencode 模型名的机器派 codex 时
+// 第一回合就被 provider 顶回 400。
+//
+// 边界：显式传 --executor 且它恰好等于 cfg.Executor.Default 时，**照样套配置模型**——
+// 语义与调用方有没有把名字显式写出来无关。（execName 来自 resolveExecutor，
+// 空的 req.Executor 在那里已被归一化成 Default，故这一个判断覆盖两条路径。）
+//
+// why 不做按执行者的模型映射表：那需要新配置键，会撞上「配了新键的机器跨版本回滚
+// 被严格解析拒启动」的老坑（B88）；而 --model 已经能覆盖非缺省执行者的场景。
+func (m *Manager) resolveModel(reqModel, execName string) string {
+	if reqModel != "" {
+		return reqModel
+	}
+	if execName == m.cfg.Executor.Default {
+		return m.cfg.Executor.Model
+	}
+	return ""
+}
+
 // registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
 func registeredNames(ads map[string]executor.Adapter) []string {
 	names := make([]string, 0, len(ads))
@@ -617,10 +641,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, err
 	}
-	model := req.Model
-	if model == "" {
-		model = m.cfg.Executor.Model // 配置级兜底；仍空则 executor 自身默认
-	}
+	model := m.resolveModel(req.Model, execName)
 
 	// env 注入（B19）：按 executor 名解析 env 文件。位置刻意排在最前段——早于建任务、
 	// 早于 ResolveBaseline 与 PrepareWorkspace。解析失败是配置问题，此刻还没有任何
