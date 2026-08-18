@@ -319,6 +319,71 @@ func TestDarwinJobSignsAndNotarizes(t *testing.T) {
 	}
 }
 
+// 薄壳两个 job 的承重旋钮不能被悄悄改掉。
+//
+// 这条与 TestDarwinJobSignsAndNotarizes 同类，守的是「改错之后 CI 照样全绿、
+// 只有用户遭殃」的东西。W5b-3 实现时真的踩到过其中第一条：计划写的是
+// `wails3 task package GO_FLAGS="-tags embedbin ..."`，而整个 Taskfile 根本不
+// 消费 GO_FLAGS——它只认 EXTRA_TAGS。传错不报错，构建照常成功，编出来的却是
+// 一个 embedbin.Available() 走 stub、根本不含内嵌 CLI 的薄壳，而这要到用户
+// 双击之后才暴露。--dry 实测：
+//
+//	GO_FLAGS=...   → go build -tags production ...
+//	EXTRA_TAGS=... → go build -tags production,embedbin ...
+//
+// 同理 EXTRA_LDFLAGS：缺了它 embedbin.Version 为空，DecideRelease 永远判不出
+// 内嵌版本，「已装的 CLI 比内嵌的旧」这条提示分支彻底失效。
+func TestDesktopJobsCarryLoadBearingFlags(t *testing.T) {
+	jobs := releaseJobs(t)
+	lin, ok := jobs["build-desktop-linux"]
+	if !ok {
+		t.Fatal("release.yml 缺 build-desktop-linux job")
+	}
+	// AppImage 要在最老的目标发行版上构建。ubuntu-latest 会随 GitHub 滚动、
+	// 某天静默抬高 glibc 基线，而这个变化不体现在任何一次提交里。
+	if lin.RunsOn != "ubuntu-22.04" {
+		t.Fatalf("Linux 薄壳必须锁 ubuntu-22.04（不能用 ubuntu-latest），实得 runs-on=%q", lin.RunsOn)
+	}
+	if dar, ok := jobs["build-desktop-darwin"]; !ok {
+		t.Fatal("release.yml 缺 build-desktop-darwin job")
+	} else if !strings.HasPrefix(dar.RunsOn, "macos") {
+		t.Fatalf("darwin 薄壳必须在 macOS runner 上构建，实得 runs-on=%q", dar.RunsOn)
+	}
+
+	wf := stripYAMLComments(readWorkflow(t))
+	for _, want := range []string{
+		// Taskfile 只认这两个变量名，传 GO_FLAGS 会被静默忽略
+		"EXTRA_TAGS=embedbin",
+		"EXTRA_LDFLAGS=",
+		"desktop/internal/embedbin.Version=",
+		// 装 wails3 这一步本身也要带 gtk3，否则在 22.04 上卡在准备工具阶段
+		"go install -tags gtk3",
+		// 内嵌的那份 CLI 必须在嵌进去之前单独签名：嵌进去之后它就只是
+		// go:embed 的字节块，再没有任何机会给它签名
+		"--sign \"$APPLE_SIGNING_IDENTITY\" desktop/internal/embedbin/handoff",
+	} {
+		if !strings.Contains(wf, want) {
+			t.Fatalf("薄壳 job 缺承重旋钮 %q", want)
+		}
+	}
+
+	// 薄壳资产必须显式列进 release：handoff-desktop_ 不匹配 handoff_*
+	// （前缀后是 - 不是 _），不列就会漏出 checksums 与发布资产。
+	rel, ok := jobs["release"]
+	if !ok {
+		t.Fatal("release.yml 缺 release job")
+	}
+	for _, dep := range []string{"build-desktop-linux", "build-desktop-darwin"} {
+		if !needsSet(rel.Needs)[dep] {
+			t.Fatalf("release 的 needs 里没有 %q —— 它会在薄壳 artifact 上传完成前起跑，"+
+				"checksums 的通配匹配不到文件而失败，且失败是时序相关的", dep)
+		}
+	}
+	if !strings.Contains(wf, "handoff-desktop_*") {
+		t.Fatal("release job 没有显式收集 handoff-desktop_* —— 薄壳资产会漏出 checksums 与发布页")
+	}
+}
+
 // release notes 必须优先取自 CHANGELOG。
 //
 // 没有这条，CHANGELOG 就是个没人看也没人维护的摆设——而没人维护的文档
