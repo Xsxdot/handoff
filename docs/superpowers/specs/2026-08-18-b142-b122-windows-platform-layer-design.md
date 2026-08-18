@@ -3,6 +3,7 @@
 > 状态：设计定稿，待 writing-plans
 > 来源：B142、B122（两条合并为一份 spec，理由见 §1.2）
 > 前置：B37（Windows 原生执行机）已 done；B144–B148 papercuts 已修
+> 前置探针：08-18 win-b37 真机 PASS（§3.7），§3 方案成立
 
 ---
 
@@ -280,16 +281,62 @@ job 成员表只给 pid 数组，**没有 StartedAt**。而 `roster.json` 的每
 | `UIDUsage` / `scanPressure` 整机档**不动** | 保持 `ErrNotSupported` 与降级 Warn，理由见 §1.3 |
 | `MarkCapability` 的那条 Warn **不动** | 「Windows 上这是预期形态：回收由 Job Object 进程容器承担」仍然正确 |
 
-### 3.7 一处不能假设的 API（前置探针）
+### 3.7 API 可用性：已由前置探针验证（08-18，win-b37 真机）
 
-`QueryInformationJobObject` 在 `x/sys/windows` 里有，但
-**`JOBOBJECT_BASIC_PROCESS_ID_LIST` 是变长结构，x/sys 是否定义了它未经确认**——
-很可能要手工声明并处理变长数组（先查一次拿所需长度，再按长度分配缓冲区重查）。
+起草时这是本 spec 最大的未决项——探针不过则整个 §3 要回落到 Toolhelp32 + ppid 闭包
+那条弱路。**08-18 已在 win-b37 上实跑验证，结论：方案成立。**
 
-**因此 plan 的第一个 task 必须是一个 Windows 编译 + 运行探针**，确认能真的拿到成员
-pid 表。探针不过则整个 §3 方案要换（回落到 Toolhelp32 + ppid 闭包那条弱路，
-且要重新评估 B122 是否还值得做），所以它必须排在最前，而不是写到一半才发现。
-形态与 B111.2 的 P1 Wails 探针一致：**第一个 task 产出的是结论，不是代码**。
+**静态结论**（x/sys v0.47.0）：
+
+| 需要的东西 | 有没有 |
+|---|---|
+| `QueryInformationJobObject` 函数 | ✅ 有（`zsyscall_windows.go`） |
+| `JobObjectBasicProcessIdList = 3` 常量 | ✅ 有（`types_windows.go:2602`） |
+| `JOBOBJECT_BASIC_PROCESS_ID_LIST` 结构体 | ❌ **没有，必须手工声明** |
+
+**手工声明（已验证可用，实现时直接照抄）**：
+
+```go
+// 尾部是变长数组：结构体只声明 1 个元素，实际长度由调用方分配的缓冲区决定。
+// 两个 uint32 合计 8 字节，其后 ULONG_PTR 在 64 位上按 8 字节对齐、恰好落在偏移 8，
+// 32 位上按 4 字节对齐同样落在偏移 8——两种位宽都没有隐式 padding，可以直接映射。
+type jobBasicProcessIDList struct {
+	NumberOfAssignedProcesses uint32
+	NumberOfProcessIdsInList  uint32
+	ProcessIdList             [1]uintptr
+}
+```
+
+**取长度的手法：翻倍重试，不要「先查长度再分配」。** `ERROR_MORE_DATA` 时 Win32
+**并不保证**把所需字节数写回 `retlen`（MSDN 对这个 information class 没有作出该承诺）。
+依赖一个没被承诺的返回值会得到一个在小规模下好使、进程一多就随机失败的东西。
+探针里用的是「估一个容量（64 槽），撞 `ERROR_MORE_DATA` 就翻倍，上限 65536」，已验证可用。
+另需一道护栏：内核报的 `NumberOfProcessIdsInList` 若超过已分配槽位，**不要按那个数去读**
+——翻倍重来，宁可多跑一轮也不越界读一段不属于我们的内存。
+
+**真机验证输出**（win-b37，Windows Server 2025）：
+
+```
+self_pid=1696
+step1_create_job=OK
+step2_assign_self=OK
+step3_query_before      pids=[1696]     assigned=1
+step4_spawn_child       child_pid=444
+step5_query_after_spawn pids=[1696 444] assigned=2
+step6_query_after_kill  pids=[1696]     assigned=1
+PROBE_RESULT=PASS
+```
+
+三条被这次实跑坐实的前提：
+
+1. **step2 通过 = 外层 job 允许嵌套。** 这是最值得盯的失败形态——探针经 ssh 运行，
+   而 Windows OpenSSH 会把整个会话放进一个 job（那正是 B37 里
+   `CREATE_BREAKAWAY_FROM_JOB` 承重的由来）。嵌套若被拒，§3.4 的前提当场崩塌。
+   实测可以嵌套。
+2. **step5 = job 成员表真的反映执行者树的构成**，spawn 出来的子进程 500ms 内出现。
+3. **step6 = 退出即从表中移除。** 这条是「Windows 侧不需要时间下界校验」的根据：
+   unix 的 roster 要靠 `StartedAt` 相等来防 pid 易主，而 job 成员表由内核维护，
+   进程一退出就不在表里，不存在「表里那个 pid 已经易主」的窗口。
 
 ---
 
@@ -324,10 +371,15 @@ pid 表。探针不过则整个 §3 方案要换（回落到 Toolhelp32 + ppid �
 | `Footprint` 容器前置分支 | 注入缝，断言「容器可用走容器、不可用落回三段」。**含反面断言：`supported=false` 时 unix 三段判据的调用序列不得改变** | 任何平台 |
 | `containerMembers` Windows 实现 | `//go:build windows`：真的建 job、spawn 子进程、查成员表、验证 pid 出现与消失 | **只能在 Windows 上** |
 
-**一个如实记录的缺口**：最后一行要求 win-b37 上装有 Go。**这一点尚未确认**。
-若没有，windows-only 单测就只剩 `GOOS=windows go build` / `go vet` 交叉验证这一档保障，
-spec 与 plan 都必须如实写明这个降级，不得假装测过。
-**验收前第一步就是确认这件事**（成本：一条 `go version`）。
+**win-b37 上目前没有 Go**（08-18 实测：`'go' is not recognized as an internal or external
+command`）。用户已确认可以装，**因此 windows-only 单测按「能真的跑」来设计，不做降级**。
+
+装 Go 是验收的前置步骤，写进验收清单第一条（§6.3）。若届时因故没装成，
+windows-only 单测降级为只做 `GOOS=windows go build` / `go vet` 交叉验证，
+**此时必须在验收记录里如实写明这个降级，不得假装测过**。
+
+顺带一提，探针本身**不需要**对端有 Go：交叉编译出 exe 传过去跑即可（08-18 就是这么做的）。
+同样的手法可以用在「想在真机上跑一段一次性验证」的任何场合。
 
 ---
 
@@ -370,7 +422,7 @@ B142 的验收要在 win-b37 上装真正的托管，而那台机器现在跑着
 
 **建议顺序**：
 
-1. 先确认 win-b37 上有没有 Go（§5 的缺口）
+1. **先在 win-b37 上装 Go**（08-18 实测没装；windows-only 单测要它才能跑，见 §5）
 2. `service install` 到一个**不同的任务名**上做冒烟，确认能起能停
 3. 冒烟过了再拆手搓那份、改回正式名 `handoff-agentd`
 4. 全程保留手搓那份的 XML 导出（`schtasks /Query /TN <旧名> /XML > backup.xml`）作回退
@@ -381,8 +433,8 @@ B142 的验收要在 win-b37 上装真正的托管，而那台机器现在跑着
 
 | # | 项 | 处置 |
 |---|---|---|
-| 1 | `JOBOBJECT_BASIC_PROCESS_ID_LIST` 在 x/sys/windows 里是否可用 | plan 第一个 task 做前置探针（§3.7）。不过则 §3 整体重设计 |
-| 2 | win-b37 上是否装有 Go | 验收第一步确认（§5）。没有则 windows-only 单测降级为只做交叉编译验证，并如实记账 |
+| ~~1~~ | ~~`JOBOBJECT_BASIC_PROCESS_ID_LIST` 是否可用~~ | ✅ **08-18 已由真机探针解决**（§3.7）：结构体要手工声明，声明已验证可用，成员表行为符合预期。**§3 方案成立，plan 不再需要探针 task** |
+| ~~2~~ | ~~win-b37 上是否装有 Go~~ | ✅ **08-18 已确认：没装**。用户确认可装，列为验收前置步骤（§6.3 第 1 条） |
 | 3 | `schtasks /Create` 所需权限 | 失败时原样带 stderr，不编处置建议（§2.6） |
 | 4 | `<LogonTrigger>` 要求用户登录过一次 | 已知代价，记在 §2.1。出现「重启后无人登录」的部署形态时重新评估 SCM |
 | 5 | Windows 换版空窗最长约 1 分钟 | 已知代价（macOS 约 10 秒）。已跑的任务不受影响（executor detached，「活过 agentd 重启」是招牌属性）。`upgradeWaitTimeoutPush` 放宽到 120s 留一倍余量 |
