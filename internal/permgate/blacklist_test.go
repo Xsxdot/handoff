@@ -137,3 +137,39 @@ func TestBlacklistScansFullCommand(t *testing.T) {
 		t.Fatalf("长命令尾部的 rm -rf 必须硬升级，实得 %s（%s）", v.Action, v.Reason)
 	}
 }
+
+// TestJudgeCommandSelfCommand 钉住自指令在 judgeCommand 里的四路出口。
+func TestJudgeCommandSelfCommand(t *testing.T) {
+	g := newTestGate(t) // blacklist_test.go 里既有的 helper，只带内置黑名单
+	cases := []struct {
+		name   string
+		in     string
+		action Action
+		rule   string
+	}{
+		{"真调用硬拦", "handoff dispatch plan.md", Escalate, RuleSelfCommand},
+		{"包装器藏引号里硬拦", `sh -c "handoff dispatch plan.md"`, Escalate, RuleSelfCommand},
+		{"commit message 降级不硬拦", `git commit -m "修 handoff dispatch 的判据"`, Consult, ""},
+		{"只读放行落回原链", "handoff tasks", Consult, ""},
+		{"无关命令行为不变", "go test ./...", Consult, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := g.judgeCommand(c.in)
+			if v.Action != c.action || v.Rule != c.rule {
+				t.Fatalf("judgeCommand(%q) = {%v, rule=%q, reason=%q}，期望 {%v, rule=%q}",
+					c.in, v.Action, v.Rule, v.Reason, c.action, c.rule)
+			}
+		})
+	}
+}
+
+// TestSelfCommandReasonCarriesSubcommand 钉住 Reason 里带得出子命令名——
+// 协调者在工单里要能一眼看懂拦的是什么，不必去翻判据源码。
+func TestSelfCommandReasonCarriesSubcommand(t *testing.T) {
+	g := newTestGate(t)
+	v := g.judgeCommand("handoff reply T1 --ticket X --approve")
+	if !strings.Contains(v.Reason, "reply") {
+		t.Fatalf("Reason 应含子命令名 reply，实得 %q", v.Reason)
+	}
+}
