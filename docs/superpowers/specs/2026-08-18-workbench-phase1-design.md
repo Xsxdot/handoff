@@ -1,74 +1,130 @@
-# 工作台一期：工作项账本 + 看板 + 主会话驱动（spec 骨架）
+# 工作台一期：工作项账本 + 看板 + 主会话驱动（spec 骨架 v2）
 
-> 状态：骨架，待与用户逐节敲定后充实为可派发 spec。
-> 上游蓝图：[2026-08-18-workbench-blueprint-design.md](2026-08-18-workbench-blueprint-design.md)。
+> 状态：骨架，经业务/领域双审阅修订，待与用户逐节敲定后充实为可派发 spec。
+> 上游蓝图：[2026-08-18-workbench-blueprint-design.md](2026-08-18-workbench-blueprint-design.md)
+> （账本宿主、双聚合、正交标记、对账规则等设计裁决见蓝图 §3，本文不重复论证）。
 
 ## 1. 目标与非目标
 
-**目标**：把 backlog 从 markdown 总账搬进 agentd store，成为带子任务、阻塞边、
-自定义状态、工作流配置的一等实体；给用户一个看板作为注意力平面；给主会话一套
-CLI 读写账本、按工作流驱动推进的能力；多路 wait 支撑「全程一个 wait」。
+**目标**：把 backlog 从 markdown 总账搬进 home agentd store，成为带子任务、
+阻塞边、自定义状态、工作流/派发模板双聚合的一等实体；事件镜像把跨机 task 事件
+汇成账本单流；看板作为不说谎的注意力平面；CLI + 节点执行器支撑主会话按工作流
+驱动推进；账本单流多路 wait 支撑「全程一个 wait」。
 
 **非目标**（蓝图二期以后）：事件自动触发、群聊、富评论、上下文文档实体化、
-蓝图 goal、自动合 main、agentd 自主唤醒协调者。
+蓝图 goal、自动合 main、executor 写账、agentd 自主唤醒协调者。
 
-## 2. 数据模型（agentd store / SQLite）
+## 2. 数据模型（home agentd store / SQLite）
 
-> 待敲定：表结构细节、ID 形态（沿用 B 号？新前缀？）、与现有 task 表的外键约束。
+> 待敲定：具体 DDL 与索引。以下为定案的结构性决策：
 
-- `work_items`：id、title、status、priority、project、parent_id（子任务树）、
-  workflow_id、spec_ref、plan_ref、创建/更新时间、验收记录。
-- `work_item_deps`：blocker_id → blocked_id 有向边；环检测在写入时拒绝。
-- `work_item_events`：append-only timeline（状态转移、派发、审阅结论、note）。
-- `workflows`：命名工作流；状态集合（骨架锚点 + 插入节点）、转移、派发模板
-  （executor、纪律块文本、prompt 模板、目标机、分支策略）。
-- `tasks` 加可选列 `work_item_id`。
-- 衍生态 `blocked` 查询时计算（存在未终态 blocker），不落库。
+- **建表受 home 开关控制**：work_items/workflows/dispatch_templates 等表只建在
+  home agentd（协调者本机）；执行机 agentd 永不建。
+- `work_items`：id（**沿用 B 号连续编**，全部记忆/skill/commit 都用 B 号指代，
+  换前缀会断上下文）、title、status、priority（仅展示/排序）、project、
+  parent_id、workflow_id + 版本、spec_ref、plan_ref、driver lease（会话标识 +
+  心跳时间）、验收记录、时间戳。
+- `work_item_deps`：blocker_id → blocked_id。写入时单事务读全图做环检测（含
+  parent 树与 dep 边混合成环、祖先-后代间挂 dep）。
+- `work_item_tasks`：`(work_item_id, target, task_id, 用途)` 弱引用表——账本侧
+  指向 task 的唯一通道；task 表只加 opaque `work_item_id` 标签列（不设 FK）。
+- `work_item_events`：append-only 单流，独立 seq（沿用 events 表模式）。事件类型：
+  状态转移（带 actor + CAS 前值）、派发（含模板版本 + 纪律块 hash 快照）、审阅
+  裁决、合并记录、note、**镜像 task 事件**（保留来源 target 与原 seq）。
+- `workflows`：状态机形状，**不可变版本化**（edit 产生新版本，item 钉版本，
+  旧 item 显式迁移）。
+- `dispatch_templates`：带版本；executor 类型、纪律块（引用 + hash）、prompt
+  模板、目标机、分支策略、**per-target 模型覆盖**。
+- 正交标记不落列：`blocked`（全部 blocker 达「已完成」才解除；blocker 终止 →
+  下游打等人）与 `等人`（带 reason 枚举）均从边表 + 事件流推导，查询时计算。
 
-## 3. CLI
+## 3. 事件镜像（home agentd 新子系统）
 
-> 待敲定：命令面拆分与命名；哪些动作要二次确认。
+- home agentd 订阅各 target agentd 的 `/ws/events`，把挂账 task 的事件写入
+  `work_item_events`；断线用既有 cursor 续拉语义补齐，恢复后去重（按来源
+  target + 原 seq 幂等）。
+- 镜像滞后/断链落显式状态，看板卡片标「事件流滞后」。
+- 工单（permission_request/question）随镜像入流，是「等人」显性化的数据源。
+
+> 待敲定：镜像订阅的生命周期管理（挂账即订阅 or 常订全量过滤）、home 重启后的
+> 补拉窗口。
+
+## 4. CLI
+
+> 待敲定：命令面最终命名与 flag；哪些动作要二次确认。
 
 - `handoff item add/list/show/update/close`：账本 CRUD；`list` 支持按状态/项目/
-  blocked 过滤（新会话领活前先查账的入口）。
-- `handoff item link <blocker> <blocked>` / `unlink`：阻塞边。
-- `handoff item note <id> <text>`:「记一笔」。
-- `handoff item move <id> <status>`：状态转移（校验工作流合法转移）。
-- `handoff item dispatch <id> [--node <节点>]`：按工作流派发模板拼装 prompt +
-  纪律块，走现有 dispatch 通道，task 回链 work_item_id。
-- `handoff workflow add/show/edit`：工作流配置管理。
-- `handoff wait --item <id> [--subtree]`：**多路 wait**，聚合工作项子树下全部
-  task 的事件为一条流（现状 `wait <task>` 单任务，需扩展）。
+  blocked/等人 过滤（新会话领活前查账的入口）。骨架终态叫「已完成」，CLI 动作
+  用 `close`，避免与 `handoff done` 撞名。
+- `handoff item link/unlink`：阻塞边（写入即环检测）。
+- `handoff item note <id> <text>`：记一笔。
+- `handoff item move <id> <status>`：CAS 状态转移（带前值校验，冲突干净失败）。
+- `handoff item dispatch <id> [--node <节点>]`：按模板拼装 prompt + 纪律块，走
+  现有 dispatch 通道；**派发即认领**（待办→进行中 的 CAS 就是 claim，第二个
+  会话干净失败并提示「已被 X 认领」）；task 回链 + 模板版本快照落事件。
+- `handoff workflow ...` / `handoff template ...`：双聚合分开管理。
+- `handoff wait --item <id> [--subtree]`：**账本单流多路 wait**。订阅 item 子树
+  事件流（含镜像 task 事件），wait 挂起期间新派发的 task 天然进流；退出条件 =
+  子树全部 item 达骨架终态；progress 类事件不唤醒（沿用现有过滤语义）。
+- `handoff item export`：最薄 markdown 只读快照导出（逃生门）。
+- **executor 白名单不扩**：新增 item/workflow/template 命令均不进 B115 自指令
+  白名单，executor 永不写账。
 
-## 4. Web 看板（agentd 托管 Web UI）
+## 5. 节点执行器（落码，不留 prose）
 
-> 待敲定：与现有 web-console 页面的关系（新页 or 重构）；一键动作的确认交互。
+一期新增的唯一「编排」构件，主会话/看板按钮共用（三期规则引擎复用）：
 
-- 列 = 工作流状态（骨架 + 自定义），卡片 = 工作项；blocked 徽标；多项目过滤。
-- 卡片详情：timeline、子任务树、阻塞图、关联 task 列表与跳转。
-- 一键动作（人工插手通道）：转移状态、按节点派发——与主会话驱动共用同一节点
-  定义。
+- 输入：item + 节点定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
+  落账、决定下一步。
+- **裁决 schema 与通道**（待敲定细节）：审阅 task 以约定格式返回 pass/fail +
+  发现项；解析失败不猜，打「等人」（reason=裁决解析失败）。
+- **回合计数**：按 item × 节点粒度，从 work_item_events 推导（不存内存）；
+  默认封顶 3 轮，超限打「等人」；人工插手（用户手动 continue/改裁决）是否重置
+  计数：**重置**（人工介入视为新基线），落事件注明。
+- 合并节点：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；只合
+  集成分支；冲突打「等人」，冲突文件清单 + 双方 commit 范围落 timeline；合并
+  顺序按 done 时序。
+- 审阅 task 的生命周期由执行器收口（裁决落账后自动 `done` 归档），不留孤儿。
 
-## 5. 主会话驱动（行为规约，落到 handoff skill 改写）
+## 6. Web 看板（home agentd 托管 Web UI）
 
-- 派发前查账（避免重复开工）；派发后挂多路 wait。
-- 子任务完成 → 触发审阅节点（派审阅执行者，结构化裁决 pass/fail + 发现项）。
-- fail → 自动 continue 带发现项，封顶 3 轮，超限转「等人」。
-- pass → 自动合入功能集成分支（冲突转「等人」），item 转 done，查阻塞图派下一个。
-- 全部 done → 整功能验收（主会话）→ 父 item 进「待合并」等用户合 main。
-- 每个动作落 work_item_events，用户随时可从看板接管。
+> 待敲定：与 web-console 现有页面的关系（新页 or 重构）；一键动作确认交互。
 
-## 6. 存量迁移
+- 列 = 工作流状态（骨架 + 自定义）；「等人」单列/高亮；blocked 徽标；多项目
+  过滤；**「未挂账」泳道**收裸 dispatch 的孤儿 task。
+- 卡片：**实时 join 关联 task 状态**，账面与实况矛盾亮「状态冲突」徽标；
+  pending 工单上卡片；driver lease 缺失（无会话在驱动）提示；事件流滞后标记。
+- 详情：timeline、子任务树 rollup（父状态独立驱动）、阻塞图、task 跳转。
+- 一键动作（人工插手通道）：转移状态、按节点派发——调用与主会话同一节点执行器。
 
-- backlog.md 未完成条目入库为 open 工作项；历史 done 条目归档入库（只读）。
-- 迁移前先对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
-- 迁移完成后 backlog.md 冻结（顶部加指针注记）；product-backlog skill、
-  CLAUDE.md §4 纪律块同步改写为指针。
+## 7. 主会话驱动（行为规约，落到 handoff skill 改写）
 
-## 7. 验收判据（骨架）
+- 唤醒后先 `item show` 从账本 + 事件流重建现场，不信会话记忆。
+- 派发前查账防重复开工；派发即认领；挂账本单流多路 wait。
+- 子任务完成 → 推「待审阅」→ 调节点执行器（审阅→裁决→continue 或合并→已完成）
+  → 查阻塞图派下一个。
+- 全部完成 → 整功能验收（主会话亲自）→ 父 item 进「待合并」等用户合 main。
+- 验收后发现 bug：开新 item 挂关联，不 reopen。
+- 出问题（等人标记、状态冲突）：协调、裁决、或转人工，全部动作落事件。
+
+## 8. 存量迁移（按序执行）
+
+1. 迁移前对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
+2. backlog.md 未完成条目入库为 open item，历史 done 条目归档入库（只读）；
+   **B 号→item id 映射表落库**，历史考古接得上。
+3. backlog.md 顶部加冻结注记；**全局 skill（~/.claude 下 product-backlog）与
+   CLAUDE.md §4 同一批次切换为指针**——先切 skill 再冻结文件，避免其他在途
+   worktree 的旧 skill 副本继续追加。
+4. 抽查 N 条历史条目字段无损 + 映射表可反查。
+
+## 9. 验收判据（骨架）
 
 > 待敲定：逐条真机判据。方向：
-> ① 标准例（1→2→(3∥4)→5）在真机上由主会话全程一个 wait 推完，人工只出现在
-> 审 spec / 整功能验收 / 合 main；② 审阅 fail 3 轮封顶转「等人」可复现；
-> ③ 看板与 CLI 对同一账本的读写一致；④ 迁移后抽查 N 条历史条目字段无损；
-> ⑤ 多路 wait 在子树内任意 task 出事件时唤醒且不漏（对照 journal）。
+> ① 标准例（1→2→(3∥4)→5）真机上主会话全程一个 wait 推完，人工只出现在审 spec /
+> 整功能验收 / 合 main；② 审阅 fail 3 轮封顶转「等人」可复现，回合数从事件流
+> 可审计；③ blocker 终止不解锁下游、下游得「等人」标记可复现；④ 杀掉主会话，
+> 看板在 task 判 failed 后亮「状态冲突」而非报假账；⑤ 多路 wait 在 wait 挂起
+> 期间新派发的 task 事件不漏（对照 home 账本单流 seq）；⑥ 两个会话并发 dispatch
+> 同一 item，恰一个成功；⑦ 镜像断链 → 看板亮「事件流滞后」，恢复后按来源 seq
+> 幂等补齐；⑧ 迁移后抽查字段无损、B 号映射可反查；⑨ 看板与 CLI 对同一账本
+> 读写一致。
