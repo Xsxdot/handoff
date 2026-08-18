@@ -75,9 +75,10 @@ func TestWorkflowInjectsVersionAtModulePath(t *testing.T) {
 	//
 	// 这个数字是「workflow 里编 CLI 的地方有几处」的代理，**加构建点就要同步加**。
 	// W5b-3 之前是 2（build-unix / build-darwin）；两个薄壳 job 各自也要编一份
-	// CLI 嵌进壳里（那份会被释出到 ~/.local/bin/handoff，用户敲 handoff version
-	// 看到的就是它）；W5b-4 增了 build-desktop-windows 薄壳 job，构建点从 4 个
-	// 变 5 个，所以现在是 5：
+	// CLI 嵌进壳里（那份会被释出到本平台的约定落点——Windows 是
+	// %LOCALAPPDATA%\Programs\handoff\handoff.exe，其余是 ~/.local/bin/handoff——
+	// 用户敲 handoff version 看到的就是它）；W5b-4 增了 build-desktop-windows
+	// 薄壳 job，构建点从 4 个变 5 个，所以现在是 5：
 	//
 	//   build-unix · build-darwin · build-desktop-linux · build-desktop-darwin
 	//   · build-desktop-windows

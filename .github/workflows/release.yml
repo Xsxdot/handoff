@@ -622,10 +622,12 @@ jobs:
   # 里 `powershell Remove-item *.syso` 与 `rm -f *.syso` 是按 platforms 分支的
   # ——原生跑才走到 Windows 那条，交叉编译时走的是另一条、等于没验。
   #
-  # 只发 zip，不发 NSIS 安装器：未签名的安装器会撞 SmartScreen，还要多引入
-  # makensis 与 webview2 引导器两个依赖；zip 里就是一个可直接双击的 exe，
-  # 与 darwin 的 .zip 同形态。build/windows/nsis/ 留在仓库里是为了本地
-  # `wails3 task windows:package` 能跑，**CI 不跑它**。
+  # 只发 zip，不发 NSIS 安装器：未签名安装器与 zip 里的 exe 一样会带 Mark of
+  # the Web、双击触发 SmartScreen，发 zip 并不能绕开它；选 zip 的理由是省掉
+  # makensis 与 webview2 引导器两个依赖，且 zip 里就是可直接双击的 exe，与
+  # darwin 的 .zip 同打包形态（darwin 资产另带签名+公证，Windows 资产未签名）。
+  # build/windows/nsis/ 留在仓库里是为了本地 `wails3 task windows:package`
+  # 能跑，**CI 不跑它**。
   build-desktop-windows:
     needs: verify
     runs-on: windows-latest
@@ -710,7 +712,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    # 五个构建 job 都要等：不把两个薄壳 job 列进来，release 会在它们上传完
+    # 五个构建 job 都要等：不把三个薄壳 job 列进来，release 会在它们上传完
     # artifact 之前就起跑，下面 checksums 那步的 handoff-desktop_* 通配匹配不到
     # 文件而失败——而且这个失败是时序相关的，重跑可能就过了。
     needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin, build-desktop-windows]

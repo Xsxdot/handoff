@@ -19,7 +19,8 @@ import (
 //
 // 参数：
 //   - explicit: 调用方显式指定的路径。非空时用它，空时依次尝试
-//     ~/.local/bin/handoff 和 PATH 上的 handoff
+//     %LOCALAPPDATA%\Programs\handoff\handoff.exe（Windows）或
+//     ~/.local/bin/handoff（其余平台），再试 PATH 上的 handoff
 //
 // 返回：
 //   - 解过符号链接的绝对路径
