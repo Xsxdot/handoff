@@ -198,6 +198,67 @@ chmod 755 ~/.local/bin        # 验完立刻改回来
 
 ---
 
+## 一个已经修掉的坑（留档以防复发）：控制台停在「需要登录」
+
+**症状**：双击应用，窗口出来了，但停在 agentd 的「需要登录」说明页。壳自己的日志
+一切正常——`鉴权握手成功`、`加载控制台` 都有。
+
+**判据在对端**，`~/.handoff/agentd.log` 里紧挨着这三行：
+
+```
+会话建立 session=…
+鉴权失败 remote_addr=… method=GET path=/ reason=无凭据    ← 几毫秒后
+```
+
+`消费 ticket 成功` + `会话建立` 说明兑换那一步是好的；紧跟的 `path=/ 无凭据`
+说明 302 回 `/` 那一跳**没带上 cookie**。
+
+**根因**：会话 cookie 曾是 `SameSite=Strict`。WKWebView 加载控制台走的是程序发起的
+顶层导航（Wails 的 `setURL`），没有同站发起方，WebKit 把 Strict cookie 扣下不发。
+已改为 `Lax`（`internal/agentd/authroutes.go` 的 `sessionCookie`）。
+
+**为什么值得留档**：
+
+- **只在 macOS 复现。** Chromium（Chrome、Windows 的 WebView2）在同样情形下认作同站
+  照发，所以 Windows 走查全绿也说明不了 macOS。跨平台的 webview 差异要各验各的
+- **cookie 在盘上是存着的**（`~/Library/HTTPStorages/dev.gosuper.handoff.desktop.binarycookies`
+  里能搜到 `handoff_session` 与 `127.0.0.1`），所以「存不住」是个死胡同，别往那查
+- 这是 W5a 让 agentd 托管前端之后才暴露的：那段 cookie 代码写于 `/` 还返回 404 的年代
+
+### 复现/回归用的隔离靶子
+
+不碰在跑的 agentd，二十行搭出来：
+
+```bash
+H=/tmp/hoff-test/home; rm -rf "$H"; mkdir -p "$H/.handoff"
+cat > "$H/.handoff/config.yaml" <<EOF
+listen: 127.0.0.1:7788
+token: $(openssl rand -hex 16)
+datadir: $H/.handoff
+repo_root: $H/.handoff/repos
+stalltimeout: 2h0m0s
+EOF
+HOME=$H ./handoff agentd --config "$H/.handoff/config.yaml" > /tmp/agentd.out 2>&1 &
+HOME=$H /Applications/handoff-desktop.app/Contents/MacOS/handoff-desktop
+```
+
+搭这个靶子踩过的两个坑，都会让结论反过来：
+
+- **`listen` 写 `localhost` 不行。** agentd 只绑 IPv4，WebKit 把 `localhost` 解析成
+  `::1`，那一跳连不上、根本不到 agentd——日志里既没有 401 也没有成功，看着像「通过了」
+- **别拿 `sessions.last_seen_at` 当「请求到达」的正面判据。** 它有 `lastSeenThrottle`
+  节流，新会话不会立刻推进，Lax 修好之后它照样是 0。要正面信号就在鉴权中间件里
+  临时加一行探针日志，红绿两侧用同一份探针跑
+
+**判据**（两个必须同时翻，只看其中一个都可能假绿）：
+
+| | Strict（应红） | Lax（应绿） |
+|---|---|---|
+| 已鉴权的 `/` 请求 | 0 | 1 |
+| `path=/ reason=无凭据` | 1 | 0 |
+
+---
+
 ## 已知且刻意如此（不要当缺陷上报）
 
 - **「带 --force 重试」对非闸一原因的失败点了也没用**（如网络不通、磁盘只读）。

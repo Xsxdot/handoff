@@ -224,7 +224,12 @@ func TestTicketToCookieHappyPath(t *testing.T) {
 	if got == nil {
 		t.Fatal("没有下发会话 cookie")
 	}
-	if !got.HttpOnly || got.SameSite != http.SameSiteStrictMode || got.Path != "/" {
+	// SameSite 必须是 Lax，不是 Strict。这条断言看着像放松了要求，实则相反——
+	// 它钉的是一个真机 bug 的修复：桌面薄壳（WKWebView）加载控制台走的是程序发起的
+	// 顶层导航，没有同站发起方，Strict 会被 WebKit 扣下，症状是 ticket 兑换成功、
+	// 紧跟的 302 到 / 却报「无凭据」，用户看到「需要登录」页。Chromium 不受影响，
+	// 所以只在 macOS 复现。改回 Strict 会让 macOS 桌面端再也进不去控制台。
+	if !got.HttpOnly || got.SameSite != http.SameSiteLaxMode || got.Path != "/" {
 		t.Errorf("cookie 属性不对: %+v", got)
 	}
 	if got.Secure {
@@ -470,7 +475,7 @@ func TestLogoutClearsSession(t *testing.T) {
 		if got == nil {
 			t.Fatal("没有下发删除 cookie")
 		}
-		if got.Path != "/" || !got.HttpOnly || got.SameSite != http.SameSiteStrictMode {
+		if got.Path != "/" || !got.HttpOnly || got.SameSite != http.SameSiteLaxMode {
 			t.Errorf("删除 cookie 属性与签发不一致: %+v", got)
 		}
 		if got.Secure {
@@ -503,4 +508,30 @@ func TestLogoutClearsSession(t *testing.T) {
 			t.Fatalf("状态码 = %d，期望 400", resp.StatusCode)
 		}
 	})
+}
+
+// TestSessionCookieAttrsStayInSync 钉死「下发与删除同源」这条不变量本身。
+//
+// 上面两个测试各自断言一端的属性，但它们是两处手写的常量——真正会出事的是
+// 有人只改一端。这里直接比对同一个构造函数的两次产物，属性漂了就红，
+// 且不依赖任何一端的字面值写对。
+func TestSessionCookieAttrsStayInSync(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatalf("构造请求: %v", err)
+	}
+	issued := sessionCookie(req, "tok", 3600)
+	deleted := sessionCookie(req, "", -1)
+
+	if issued.Name != deleted.Name || issued.Path != deleted.Path ||
+		issued.HttpOnly != deleted.HttpOnly || issued.SameSite != deleted.SameSite ||
+		issued.Secure != deleted.Secure {
+		t.Errorf("下发与删除 cookie 属性不一致:\n  下发 %+v\n  删除 %+v", issued, deleted)
+	}
+	if issued.SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v，必须是 Lax（见 sessionCookie 的注释：Strict 会让 macOS 桌面端进不去）", issued.SameSite)
+	}
+	if issued.Secure {
+		t.Error("明文请求下不得设置 Secure")
+	}
 }
