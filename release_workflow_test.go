@@ -672,7 +672,10 @@ func TestDarwinAppCarriesRealVersion(t *testing.T) {
 	// 但它与另一个 step 的相互作用没人管——契约测试只看了「这一步对不对」，
 	// 没看「这一步会不会把别的门弄挂」。凡是在 CI 里改仓库内被跟踪文件的步骤，
 	// 都要连着问一句：这个 job 有没有干净门？
-	restore := "git checkout -- desktop/build/darwin/Info.plist"
+	// 断言带上 -C "$GITHUB_WORKSPACE"：还原那一步的 working-directory 是
+	// desktop，而 git 的 pathspec 相对 cwd 解析，不锚定仓库根就会报
+	// 「did not match any file(s) known to git」——rc11 第二次发布挂在这里。
+	restore := `git -C "$GITHUB_WORKSPACE" checkout -- desktop/build/darwin/Info.plist`
 	if got := strings.Count(wf, restore); got != 1 {
 		t.Errorf("release.yml 里 %q 出现 %d 次，想要 1 次——"+
 			"plutil 改的是仓库里被跟踪的文件，不还原，末尾的「确认工作区干净」必挂", restore, got)

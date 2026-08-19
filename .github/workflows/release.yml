@@ -557,9 +557,15 @@ jobs:
           # 还原被上一步 plutil 改过的 Info.plist。**这一步是必需的，不是洁癖**：
           # 本 job 末尾有「确认工作区干净」的门，而 plutil 改的是仓库里被跟踪的
           # 文件——不还原，job 必定在那道门上失败（rc11 第一次就是这么挂的）。
+          #
           # 还原必须排在 package 之后：Info.plist 此时已经拷进 .app，改回源文件
           # 不影响产物。
-          git checkout -- desktop/build/darwin/Info.plist
+          #
+          # **必须带 -C "$GITHUB_WORKSPACE"**：本 step 的 working-directory 是
+          # desktop，而 git 的 pathspec 相对 cwd 解析，写成仓库根相对路径会报
+          # 「did not match any file(s) known to git」（rc11 第二次就是这么挂的）。
+          # 用 -C 锚定仓库根，路径就与上面 plutil 那步逐字一致，不必两处各写一套。
+          git -C "$GITHUB_WORKSPACE" checkout -- desktop/build/darwin/Info.plist
 
       # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
       #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
