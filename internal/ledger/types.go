@@ -61,22 +61,22 @@ type Attachment struct {
 
 // Card 任务卡。字段语义见 spec §2；零值时间用 IsZero 判空。
 type Card struct {
-	ID                 string
-	Title              string
-	Status             string
-	TerminateReason    string // 仅 Status==终止 时非空
-	Priority           string // 高|中|低
-	Project            string
-	ParentID           string
-	WorkflowName       string
-	WorkflowVersion    int
-	Attachments        []Attachment
-	AcceptanceCriteria string
-	BaseBranch         string // 空 = 继承祖先/项目主线（EffectiveBaseBranch 解析）
-	DriverSession      string
-	DriverHeartbeatAt  time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Status             string       `json:"status"`
+	TerminateReason    string       `json:"terminate_reason,omitempty"` // 仅 Status==终止 时非空
+	Priority           string       `json:"priority"`                   // 高|中|低
+	Project            string       `json:"project"`
+	ParentID           string       `json:"parent"`
+	WorkflowName       string       `json:"workflow"`
+	WorkflowVersion    int          `json:"workflow_version"`
+	Attachments        []Attachment `json:"attachments,omitempty"`
+	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"`
+	BaseBranch         string       `json:"base_branch,omitempty"` // 空 = 继承祖先/项目主线（EffectiveBaseBranch 解析）
+	DriverSession      string       `json:"driver_session,omitempty"`
+	DriverHeartbeatAt  time.Time    `json:"driver_heartbeat_at,omitempty"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
 // Relation 类型化关系边。
@@ -87,15 +87,15 @@ type Relation struct {
 
 // Event 账本单流事件。镜像事件三个 Source 字段非空，其余事件为空。
 type Event struct {
-	Seq          int64
-	CardID       string // 空 = 项目级事件（如项目级裁决）
-	Type         string
-	Actor        string
-	Payload      json.RawMessage
-	SourceTarget string
-	SourceTask   string
-	SourceSeq    int64
-	CreatedAt    time.Time
+	Seq          int64           `json:"seq"`
+	CardID       string          `json:"card_id"` // 空 = 项目级事件（如项目级裁决）
+	Type         string          `json:"type"`
+	Actor        string          `json:"actor"`
+	Payload      json.RawMessage `json:"payload"`
+	SourceTarget string          `json:"source_target,omitempty"`
+	SourceTask   string          `json:"source_task,omitempty"`
+	SourceSeq    int64           `json:"source_seq,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 // Gate workflow 转移进入某状态前的门条件。
@@ -121,26 +121,26 @@ type Workflow struct {
 
 // Decision 裁决项。CardID 空 = 项目级请示。
 type Decision struct {
-	ID         int64
-	CardID     string
-	Body       string
-	Options    []string
-	Status     string // open|answered
-	CreatedBy  string
-	Answer     string
-	AnsweredBy string
-	CreatedAt  time.Time
-	AnsweredAt time.Time
+	ID         int64     `json:"id"`
+	CardID     string    `json:"card_id,omitempty"`
+	Body       string    `json:"body"`
+	Options    []string  `json:"options,omitempty"`
+	Status     string    `json:"status"` // open|answered
+	CreatedBy  string    `json:"created_by"`
+	Answer     string    `json:"answer,omitempty"`
+	AnsweredBy string    `json:"answered_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	AnsweredAt time.Time `json:"answered_at,omitempty"`
 }
 
 // CardView = Card + 查询期计算的派生标记（不落列，spec §2）。
 type CardView struct {
 	Card
-	Blocked       bool
-	BlockedBy     []string // 未完成的 blocker
-	Following     string   // 非空 = merged_into 的承载卡 id（跟随态）
-	NeedsReason   string   // 非空 = 等人，值为 reason
-	OpenDecisions int
+	Blocked       bool     `json:"blocked"`
+	BlockedBy     []string `json:"blocked_by,omitempty"` // 未完成的 blocker
+	Following     string   `json:"following,omitempty"`  // 非空 = merged_into 的承载卡 id（跟随态）
+	NeedsReason   string   `json:"needs,omitempty"`      // 非空 = 等人，值为 reason
+	OpenDecisions int      `json:"open_decisions"`
 }
 
 // CardFilter ListCards 的过滤条件；零值 = 不过滤该维度。

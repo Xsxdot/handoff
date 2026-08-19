@@ -17,6 +17,13 @@ import (
 // appendEvent 在事务内落一条账本事件并（PG）推送通知。cardID 可空 =
 // 项目级事件。返回 seq。所有领域操作共用此入口，禁止绕过它裸 INSERT。
 func (s *Store) appendEvent(tx *sql.Tx, sink *eventSink, cardID, typ, actor string, payload any) (int64, error) {
+	return s.appendEventAt(tx, sink, cardID, typ, actor, payload, time.Now())
+}
+
+// appendEventAt 同 appendEvent，但由调用方给定事件时间——调用方需要把
+// 同一个时间戳回填进返回给上层的 Event，否则返回值的 CreatedAt 是零值，
+// 机器消费方（CLI stdout、Plan D 的 HTTP API）会读到 0001-01-01。
+func (s *Store) appendEventAt(tx *sql.Tx, sink *eventSink, cardID, typ, actor string, payload any, at time.Time) (int64, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return 0, fmt.Errorf("编码事件 payload: %w", err)
@@ -30,7 +37,7 @@ func (s *Store) appendEvent(tx *sql.Tx, sink *eventSink, cardID, typ, actor stri
 		// PG 用 RETURNING 拿 seq，并在同事务内 NOTIFY——提交即送达 LISTEN 端
 		err = tx.QueryRow(s.q(`INSERT INTO card_events (card_id, type, actor, payload, created_at)
 			VALUES (?,?,?,?,?) RETURNING seq`),
-			cid, typ, actor, string(raw), s.tval(time.Now())).Scan(&seq)
+			cid, typ, actor, string(raw), s.tval(at)).Scan(&seq)
 		if err == nil {
 			_, err = tx.Exec(`SELECT pg_notify('card_events', $1)`, fmt.Sprint(seq))
 		}
@@ -38,7 +45,7 @@ func (s *Store) appendEvent(tx *sql.Tx, sink *eventSink, cardID, typ, actor stri
 		var result sql.Result
 		result, err = tx.Exec(s.q(`INSERT INTO card_events (card_id, type, actor, payload, created_at)
 			VALUES (?,?,?,?,?)`),
-			cid, typ, actor, string(raw), s.tval(time.Now()))
+			cid, typ, actor, string(raw), s.tval(at))
 		if err == nil {
 			seq, err = result.LastInsertId()
 		}
@@ -149,11 +156,13 @@ func (s *Store) addComment(cardID, body, kind, actor, resetNode string) (Event, 
 		if resetNode != "" {
 			payload["human_reset_node"] = resetNode
 		}
-		seq, err := s.appendEvent(tx, sink, cardID, EvComment, actor, payload)
+		now := time.Now()
+		seq, err := s.appendEventAt(tx, sink, cardID, EvComment, actor, payload, now)
 		if err != nil {
 			return err
 		}
-		event = Event{Seq: seq, CardID: cardID, Type: EvComment, Actor: actor}
+		event = Event{Seq: seq, CardID: cardID, Type: EvComment, Actor: actor,
+			CreatedAt: now.UTC()}
 		raw, _ := json.Marshal(payload)
 		event.Payload = raw
 		return nil
