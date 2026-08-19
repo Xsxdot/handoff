@@ -113,3 +113,39 @@ func ledgerContainsAll(s string, parts ...string) bool {
 	}
 	return true
 }
+
+// 卡详情要带上该卡的裁决：抽屉是「卡的一切信息只在一处看」的那一处，
+// 挂卡的请示以前只在 timeline 里剩一行原文，候选项与答复入口都没有。
+func TestCardDetailCarriesDecisions(t *testing.T) {
+	lst, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lst.Close() })
+	if err := lst.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	card, err := lst.CreateCard(ledger.NewCard{Title: "有请示的卡", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lst.OpenDecision(card.ID, "就地重试还是直接退化？", []string{"重试三次", "立即退化"}, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lst.OpenDecision("", "项目级的那条不该串进来", nil, "t"); err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestAgentdEnv(t)
+	env.srv.SetLedger(lst)
+	code, body := ledgerGet(t, env, "/api/cards/"+card.ID)
+	if code != http.StatusOK {
+		t.Fatalf("detail status: %d %q", code, body)
+	}
+	if !ledgerContainsAll(body, `"decisions"`, "就地重试还是直接退化？", "立即退化") {
+		t.Fatalf("详情应含本卡裁决与候选项: %q", body)
+	}
+	if strings.Contains(body, "项目级的那条不该串进来") {
+		t.Fatalf("项目级裁决不该出现在卡详情里: %q", body)
+	}
+}

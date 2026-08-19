@@ -34,6 +34,7 @@ export interface CardDetail {
   events: LedgerEvent[]
   task_states: { Target: string; TaskID: string; Purpose: string; LastType: string; LastSeq: number }[]
   effective_base_branch: string
+  decisions: Decision[] | null
 }
 
 export interface LedgerEvent {

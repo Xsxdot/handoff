@@ -1,11 +1,73 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { fetchCardDetail, moveCard, noteCard } from '../../api/ledger'
-import type { CardDetail, LedgerEvent } from '../../api/ledger'
+import { answerDecision, fetchCardDetail, moveCard, noteCard } from '../../api/ledger'
+import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { boardColumns } from './columns'
 
 type Relation = { From: string; To: string; Type: string }
+
+// CardDecisions 是挂卡裁决的呈现与答复区。
+//
+// why 它必须在抽屉里而不是只躺在 timeline：请示的候选项与答复入口以前完全
+// 没有呈现面——卡上只显示一个「裁决 N」角标，点进抽屉也只在 timeline 里剩
+// 一行原文，看不到选什么、也没法答（2026-08-19 真机看到）。项目级裁决走顶部
+// 收件箱横幅，挂卡的走这里，两条路都能答复。
+//
+// 答复成功后调 onAnswered 让抽屉重取详情：答案要立刻落到这一处，不能等轮询。
+function CardDecisions({ decisions, onAnswered }: { decisions: Decision[]; onAnswered: () => void }) {
+  const [drafts, setDrafts] = useState<Record<number, string>>({})
+  const [busy, setBusy] = useState<number | null>(null)
+  const [error, setError] = useState('')
+  const submit = async (decision: Decision) => {
+    const text = (drafts[decision.id] ?? '').trim()
+    if (!text) return
+    setBusy(decision.id)
+    setError('')
+    try {
+      await answerDecision(decision.id, text)
+      setDrafts((current) => ({ ...current, [decision.id]: '' }))
+      onAnswered()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⚖ 裁决</h3>
+      {decisions.map((decision) => {
+        const open = decision.status === 'open'
+        return (
+          <div key={decision.id} className={`mb-1.5 rounded-md border px-2.5 py-2 text-xs ${open ? 'border-amber-200 bg-amber-50 text-amber-900' : ''}`}>
+            <div className="flex gap-2"><span className="font-mono shrink-0">#{decision.id}</span><span className="min-w-0 flex-1 break-words">{decision.body}</span></div>
+            {(decision.options ?? []).length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {(decision.options ?? []).map((option) => (
+                  <button key={option} type="button" disabled={!open} onClick={() => setDrafts((current) => ({ ...current, [decision.id]: option }))}
+                    className="rounded-full border px-2 py-0.5 text-[11px] disabled:opacity-60">{option}</button>
+                ))}
+              </div>
+            )}
+            {open ? (
+              <div className="mt-1.5 flex items-center gap-2">
+                <input value={drafts[decision.id] ?? ''} onChange={(event) => setDrafts((current) => ({ ...current, [decision.id]: event.target.value }))}
+                  placeholder="答复这条请示…" className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs" />
+                <button type="button" disabled={busy === decision.id || !(drafts[decision.id] ?? '').trim()} onClick={() => void submit(decision)}
+                  className="rounded border px-2 py-1 text-xs disabled:opacity-50">答复</button>
+              </div>
+            ) : (
+              <p className="mt-1.5 text-muted-foreground">已答复：{decision.answer}</p>
+            )}
+          </div>
+        )
+      })}
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+    </section>
+  )
+}
+
 type AnyRecord = Record<string, unknown>
 
 function record(value: unknown): AnyRecord {
@@ -248,6 +310,8 @@ export function CardDrawer({
                 {(detail.task_states ?? []).map((task) => <div key={`${task.Target}/${task.TaskID}`} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs"><span className="font-mono">{task.TaskID}</span><span>{task.Purpose}</span><span className="ml-auto text-muted-foreground">{task.LastType || '未知'}</span><span className="text-muted-foreground">{task.Target}</span></div>)}
               </section>
             )}
+
+            {(detail.decisions ?? []).length > 0 && <CardDecisions decisions={detail.decisions ?? []} onAnswered={load} />}
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">节点动作</h3>

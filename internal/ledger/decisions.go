@@ -91,8 +91,7 @@ func (s *Store) AnswerDecision(id int64, answer, answeredBy string) error {
 // ListDecisions openOnly=true 只列未答复（全局裁决收件箱）；false 全量按
 // 创建时间升序。
 func (s *Store) ListDecisions(openOnly bool) ([]Decision, error) {
-	query := `SELECT id, card_id, body, options, status, created_by, answer, answered_by, created_at, answered_at
-		FROM decisions`
+	query := decisionSelect
 	if openOnly {
 		query += ` WHERE status = 'open'`
 	}
@@ -101,6 +100,31 @@ func (s *Store) ListDecisions(openOnly bool) ([]Decision, error) {
 	if err != nil {
 		return nil, fmt.Errorf("列裁决: %w", err)
 	}
+	return scanDecisions(rows)
+}
+
+// decisionSelect 是裁决行的取列清单，两个查询共用，避免列序漂移。
+const decisionSelect = `SELECT id, card_id, body, options, status, created_by, answer, answered_by, created_at, answered_at
+		FROM decisions`
+
+// DecisionsOf 取一张卡上的全部裁决（含已答复的），按 id 升序。
+//
+// why 要按卡取而不是让调用方拉全表过滤：详情抽屉要在卡上就地看到请示正文、
+// 候选项并直接答复（「卡的一切信息只在抽屉一处看」），而裁决只增不删，全表
+// 会一直长。空 cardID 返回空切片而不是项目级裁决——项目级的入口是收件箱。
+func (s *Store) DecisionsOf(cardID string) ([]Decision, error) {
+	if cardID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(s.q(decisionSelect+` WHERE card_id = ? ORDER BY id ASC`), cardID)
+	if err != nil {
+		return nil, fmt.Errorf("取卡 %s 的裁决: %w", cardID, err)
+	}
+	return scanDecisions(rows)
+}
+
+// scanDecisions 把结果集扫成 Decision 切片；调用方负责 rows 的来源，本函数负责关闭。
+func scanDecisions(rows *sql.Rows) ([]Decision, error) {
 	defer rows.Close()
 	var out []Decision
 	for rows.Next() {

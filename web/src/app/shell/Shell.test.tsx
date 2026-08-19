@@ -295,6 +295,24 @@ describe('Shell 三栏外框', () => {
     expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
   })
 
+  // 停在 /cards 或 /flows 时，工作台挂在 path="*" 上根本没渲染——侧栏点任务
+  // 只改了工作台状态，中央还是看板，面包屑却已经跟着变了。真机实测踩到。
+  it('停在 /cards 时点左栏任务，中央换回工作台并开 TUI tab', async () => {
+    renderShell('/cards')
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
+  })
+
+  it('停在 /cards 时点左栏目录，中央换回工作台', async () => {
+    renderShell('/cards')
+    // 右栏文件树挂在 Routes 外面，光看它不区分；判据要钉中央区——
+    // 账本页的占位文案消失才说明路由真的换回了工作台
+    await waitFor(() => expect(screen.getByText(/正在读取账本/)).toBeInTheDocument())
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.queryByText(/正在读取账本/)).not.toBeInTheDocument())
+    expect(screen.getByText('文件')).toBeInTheDocument()
+  })
+
   it('顶部 tab 条已删除', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())

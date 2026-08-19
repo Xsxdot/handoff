@@ -184,9 +184,13 @@ func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {
 	events, _ := s.ledger.EventsFromAsc([]string{id}, 0, 500)
 	taskStates, _ := s.ledger.LatestTaskStates(id)
 	base, _ := s.ledger.EffectiveBaseBranch(id)
+	// 裁决随详情一起给：抽屉是「卡的一切信息只在一处看」的那一处，少了它
+	// 挂卡的请示在界面上只剩 timeline 里一行原文，看不到候选项也没法答复
+	decisions, _ := s.ledger.DecisionsOf(id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"card": card, "relations": relations, "events": events,
 		"task_states": taskStates, "effective_base_branch": base,
+		"decisions": decisions,
 	})
 }
 

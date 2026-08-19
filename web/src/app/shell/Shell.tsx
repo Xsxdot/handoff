@@ -17,7 +17,7 @@
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
 import { useEffect, useMemo, useState } from 'react'
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
@@ -64,6 +64,7 @@ export function Shell() {
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
   const wb = useWorkbench()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -83,6 +84,14 @@ export function Shell() {
     const projectDecisionCount = (decisionsState.data ?? []).filter((decision) => decision.card_id === '').length
     return cardCount + projectDecisionCount
   }, [cardsState.data, decisionsState.data])
+  // 未挂账 task = 账本里没有卡认领它的那些。任务看板降级为它们的兜底入口
+  // （工作项看板是主入口），所以这个集合同时喂给 dock 角标与看板的默认筛选。
+  // 账本还没读到时给 null——不过滤，宁可多显示也不能凭空藏任务。
+  const unlinkedTaskIds = useMemo(() => {
+    const summary = cardsState.data?.unlinked
+    if (!summary) return null
+    return new Set((summary.tasks ?? []).map((task) => task.task_id))
+  }, [cardsState.data])
   const caps = useMachineCaps()
   // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
   // 浮窗里的入口不渲染。
@@ -277,12 +286,29 @@ export function Shell() {
     treeState.refresh()
   }
 
+  // backToWorkbench 把中央区换回工作台。
+  //
+  // why 每个「改工作台状态」的入口都得先调它：工作台挂在 path="*" 上，停在
+  // /cards、/flows、/settings 时它根本没渲染。只改状态不换路由的后果是——
+  // 面包屑跟着变了，中央还是原来那一页，看着像点击没反应（2026-08-19 真机踩到）。
+  // 已在 / 上时不导航，避免往历史里塞无意义的同址条目。
+  const backToWorkbench = () => {
+    if (location.pathname !== '/') navigate('/')
+  }
+
+  // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
+  const selectDir = (base: BaseDir) => {
+    backToWorkbench()
+    wb.select(base)
+  }
+
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
   // 左栏任务行、看板卡片、/tasks/:id 深链、工单弹层的「跳到该任务」都走它。
   // 首参为 null（工单弹层、未归属任务）时先用树解析任务自己的目录；解析不出
   // （任务真的不在树上）才退回「当前选中目录」，一个都没选中则 wb.open 空操作。
   const openTaskTui = (base: BaseDir | null, taskId: string) => {
     setOverlay('none')
+    backToWorkbench()
     let target = base
     if (target === null && treeState.data) {
       target = findBaseOfTask(treeState.data, tasks, taskId)
@@ -327,11 +353,12 @@ export function Shell() {
             selectedKey={wb.base?.key ?? null}
             ticketCount={tickets.count}
             ticketsByDir={tickets.byWorkDir}
-            onSelectDir={wb.select}
+            onSelectDir={selectDir}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
             cardNeedsCount={cardNeedsCount}
+            unlinkedCount={unlinkedTaskIds?.size ?? 0}
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onAddProject={() => setWizardOpen(true)}
@@ -488,6 +515,7 @@ export function Shell() {
         <BoardOverlay
           tasksState={tasksState}
           tree={treeState.data}
+          unlinkedTaskIds={unlinkedTaskIds}
           onOpenTask={openTaskTui}
           onClose={() => setOverlay('none')}
         />

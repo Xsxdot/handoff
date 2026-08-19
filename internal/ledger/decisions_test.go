@@ -72,3 +72,30 @@ func TestDecisionLifecycle(t *testing.T) {
 		t.Fatalf("裁决事件: opened=%d answered=%d", opened, answered)
 	}
 }
+
+// 抽屉要在卡上就地看到并答复裁决，所以按卡取是一等查询——不能让调用方
+// 拉全表再自己过滤（裁决只增不删，全表会一直长）。
+func TestDecisionsOfCard(t *testing.T) {
+	s := seedStore(t)
+	a := mk(t, s, "甲")
+	b := mk(t, s, "乙")
+	if _, err := s.OpenDecision(a.ID, "甲卡的请示", []string{"选项一", "选项二"}, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenDecision(b.ID, "乙卡的请示", nil, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenDecision("", "项目级请示", nil, "t"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DecisionsOf(a.ID)
+	if err != nil {
+		t.Fatalf("按卡取裁决: %v", err)
+	}
+	if len(got) != 1 || got[0].Body != "甲卡的请示" {
+		t.Fatalf("只应返回该卡的裁决，得到 %+v", got)
+	}
+	if len(got[0].Options) != 2 {
+		t.Fatalf("候选项要带回来（抽屉要显示它们）: %+v", got[0].Options)
+	}
+}

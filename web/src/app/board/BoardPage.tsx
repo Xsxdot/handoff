@@ -20,6 +20,7 @@ import {
   isFailed,
   needsIntervention,
   stateToColumn,
+  unlinkedOnly,
   type BoardColumn,
 } from './columns'
 import { cn } from '@/lib/utils'
@@ -37,15 +38,20 @@ export interface BoardPageProps {
   tree: ProjectTreeResp | null
   // onOpenTask 的首参是任务所在目录（在树上 join 得到），null = 未归属或目录已不在
   onOpenTask: (base: BaseDir | null, taskId: string) => void
+  // unlinkedTaskIds 未挂账 task id 集合；null = 账本未就绪，此时不做未挂账过滤
+  unlinkedTaskIds?: Set<string> | null
 }
 
-export function BoardPage({ tasksState, tree, onOpenTask }: BoardPageProps) {
+export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, onOpenTask }: BoardPageProps) {
   const [filter, setFilter] = useState<BoardFilter>(EMPTY_FILTER)
+  // 默认只看未挂账：工作项看板（/cards）是主入口，本页降级为「账本管不到的
+  // task」的兜底。挂了卡的 task 在卡抽屉的「关联执行」区看，不在这里重复一遍。
+  const [onlyUnlinked, setOnlyUnlinked] = useState(true)
   const tasks = tasksState.data ?? []
   const { disconnected, sessionExpired, errorText } = tasksState
 
   const projects = tree?.projects ?? []
-  const filtered = applyFilter(tasks, filter, projects)
+  const filtered = applyFilter(onlyUnlinked ? unlinkedOnly(tasks, unlinkedTaskIds) : tasks, filter, projects)
 
   // openTask 反查任务所在目录再交出去。tree 为 null（树流还没到位）时 findBaseOfTask
   // 内部会访问 tree.projects 直接炸，所以先判空传 null；findBaseOfTask 本身返回 null
@@ -96,6 +102,10 @@ export function BoardPage({ tasksState, tree, onOpenTask }: BoardPageProps) {
             taskCounts={taskCounts}
             taskCount={filtered.length}
           />
+          <label className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <input type="checkbox" checked={onlyUnlinked} onChange={(event) => setOnlyUnlinked(event.target.checked)} />
+            只看未挂账（挂了卡的去工作项看板看）
+          </label>
           <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto pb-2">
             {BOARD_COLUMNS.map((col) => (
               <BoardColumn

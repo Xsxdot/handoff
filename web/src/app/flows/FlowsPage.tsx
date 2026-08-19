@@ -70,7 +70,7 @@ function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
         <dd className="font-mono">v{workflow.version}（当前 API 返回最新版）</dd>
       </dl>
       <p className="mt-3 border-l-2 pl-2 text-xs text-muted-foreground">
-        工作项会钉住创建时的工作流版本；迁移与版本编辑请执行 <code>handoff card workflow</code>。
+        工作项会钉住创建时的工作流版本；改形状用 <code>handoff workflow put</code>，把卡迁到新版用 <code>handoff workflow migrate</code>。
       </p>
     </section>
   )
@@ -126,7 +126,7 @@ function TemplateDetails({ template }: { template: TemplateWire }) {
         </pre>
       </details>
       <p className="mt-3 border-l-2 pl-2 text-xs text-muted-foreground">
-        派发会快照模板版本与纪律块 hash；历史取证与迁移请执行 <code>handoff dispatch</code>。
+        派发会快照模板版本与纪律块 hash；改模板用 <code>handoff template put</code>，某次派发用了哪版在卡的 dispatched 事件里。
       </p>
     </>
   )

@@ -67,6 +67,9 @@ export interface ProjectTreeProps {
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
   onOpenCards?: () => void
+  // unlinkedCount 未挂账 task 数，挂在任务看板按钮上——它现在是兜底入口，
+  // 有未挂账时才值得点开（主入口是工作项看板）
+  unlinkedCount?: number
   cardNeedsCount?: number
   onOpenTickets: () => void
   onOpenSettings: () => void
@@ -189,7 +192,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, cardNeedsCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -725,11 +728,16 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         <button
           type="button"
           aria-label="任务看板"
-          title="任务看板"
+          title="任务看板（未挂账兜底）"
           onClick={onOpenBoard}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >
           <LayoutGrid className="size-4" />
+          {unlinkedCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-muted-foreground px-1 text-center text-[10px] leading-4 text-background">
+              {unlinkedCount}
+            </span>
+          )}
         </button>
         <button
           type="button"
