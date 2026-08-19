@@ -267,3 +267,39 @@
   提交范围：`web/src/api/types.ts`、`web/src/api/client.ts`、`web/src/api/client.test.ts`、
   `web/src/app/settings/UpdatePage.tsx`、`UpdatePage.test.tsx` 与本 ledger；提交信息：
   `feat(web): 更新页支持一键升级执行机`。
+
+## 本期 Task 5：整分支终审
+
+- 全分支格式与静态检查：`gofmt -l .` 无输出、退出 0；`go vet ./...` 无输出、退出 0。
+- `go test ./...` 退出 1。`cmd`、`internal/agentd`、`internal/upgrade` 及其余非环境敏感包均通过；
+  失败逐条对照 Global Constraints，全部属于既有环境假红：
+  - `internal/client`：`TestCursorRootFallsBackToCwdWhenHomeUnwritable` 原文为
+    `根 = ".../001/.handoff/cursors"，want ".../002/.handoff/cursors"（应降级到 cwd）`；
+    `TestCursorRootErrorNamesBothPaths` 原文为 `两处都不可写时必须报错，不得静默`。
+  - `internal/config`：`TestLoadStripUpdateDoesNotBlockOnSaveFailure` 原文为
+    `回写应失败，磁盘上仍须留着 update 段`。
+  - `internal/executor/claudecode`：三个 `TestPermServer*` 原文均为
+    `裁决 socket 路径过长（114/115/116 字节，上限 107）`；`TestResumeContinuesFromOffset`
+    同样因 `perm.sock` 路径 115 字节而失败。
+  - `internal/executor/grok`：`TestSyncAuthKeepsTaskCopyWhenWriteFails` 原文为
+    `写回失败应返回错误`。
+  这些失败分别由沙箱 `/tmp` 的路径/只读限制与 root 身份触发，未修改其实现；与计划列出的
+  Global Constraints 假红清单逐项一致。
+- 前端终审：`cd web && npm run typecheck && npm test && npm run build` 通过；
+  `Test Files 81 passed (81)`、`Tests 802 passed (802)`；Vite `1944 modules transformed`，
+  产物 `dist/index.html 0.47 kB`、`dist/assets/index-D8NPat9H.js 901.32 kB`，仅有既有大 chunk warning。
+- 回归网：`git diff --stat 3addd708..HEAD -- cmd/upgrade_test.go` 无输出；完整 diff 与
+  `git diff --check 3addd708..HEAD` 无空白错误。未修改 `cmd/upgrade_test.go`。
+- 对照 spec §6.5 落点：不重写编排在 `internal/upgrade/machine.go:1-130` 与
+  `internal/upgrade/remote.go:1-232`，CLI 适配/渲染在 `cmd/upgrade.go:170-182,439-599`；
+  202/404/409/422/502 映射在 `internal/agentd/machineupgrade.go:215-231`；非托管永不强制
+  在 `internal/upgrade/remote.go:176-186`、`machineupgrade.go:192-205` 与
+  `web/src/app/settings/UpdatePage.tsx:264-286`；不造进度流在 `machineupgrade.go:242-262`
+  和 `UpdatePage.tsx:73-88`；本机不给按钮在 `UpdatePage.tsx:244-252,264-286`。
+- 终审发现并集中修复 1 项：端点预检阶段的 busy/非托管拒绝缺少闸日志；在
+  `internal/agentd/machineupgrade.go` 增加闸一、闸二及其它跳过结论的 `slog` 记录。
+  修复后定向复验：`go test ./internal/agentd/ -run TestMachineUpgrade -v` 7 条 PASS，
+  `go test ./cmd/ ./internal/upgrade/` PASS，`go vet ./...` 无输出。
+- 双裁决第 1 轮（含上述集中修复后的范围复审）：spec 符合，代码质量通过；无未决承重项。
+  提交范围：本 Task 5 ledger 与 `internal/agentd/machineupgrade.go`；待提交信息：
+  `chore(upgrade): 完成执行机一键升级终审`。

@@ -129,6 +129,17 @@ func (s *Server) handleMachineUpgrade(w http.ResponseWriter, r *http.Request) {
 			result := machineUpgradePreflight(m, rel.Tag, r.URL.Query().Get("force") == "1")
 			if result.Verdict != upgrade.VerdictNeedsUpgrade || result.Status != upgrade.StatusOK {
 				code := machineUpgradeStatusCode(result)
+				switch result.Verdict {
+				case upgrade.VerdictNeedsUpgrade:
+					s.log.Warn("闸一拒绝执行机升级", "name", name, "reason", result.Reason,
+						"forcible", result.Forcible)
+				case upgrade.VerdictUnmanaged:
+					s.log.Warn("闸二拒绝执行机升级", "name", name, "reason", result.Reason,
+						"forcible", result.Forcible)
+				default:
+					s.log.Info("跳过执行机升级", "name", name, "verdict", result.Verdict.String(),
+						"reason", result.Reason)
+				}
 				s.writeMachineUpgradeResult(w, code, m, result, false)
 				return
 			}
