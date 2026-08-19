@@ -97,6 +97,47 @@ $psi.EnvironmentVariables['PATH']        = 'C:\Windows\System32;C:\Windows'
 
 跑完看 `$root\local\Programs\handoff\handoff.exe` 是否生成。清理直接删 `$root`。
 
+## 走查前必须先确认：agentd 是不是 release 构建
+
+薄壳只是个壳，控制台页面是 **agentd 伺服的**。而 agentd 只有用
+`-tags embedweb` 构建时才含前端——默认标签构建出来的二进制里根本没有页面。
+
+这台机器上如果跑的是开发构建，走查第 1 项会看到窗口打开、但里面是这张页面：
+
+> **此二进制未嵌入前端构建产物** —— agentd 本身工作正常，只是这份二进制是用
+> 默认标签构建的，不含 Web 控制台。
+
+这**不是薄壳的缺陷**，握手全程正常（签票 200、消费 200）。判别办法：
+
+```powershell
+handoff status          # agentd 可用，但「版本」一栏是个 commit 短号而不是 vX.Y.Z
+```
+
+要真验控制台，得把 agentd 换成 Release 版二进制（`handoff_<tag>_windows_amd64.zip`
+里的那个），再重启计划任务。
+
+## 一个已经修掉的坑（rc7 修复）：双击快捷方式完全没反应
+
+rc6 上走查第 1 项会看到：**双击桌面快捷方式什么都不发生**，而
+`try-first-run.cmd` 却能正常打开向导。
+
+根因是竞态。薄壳在 `ApplicationStarted` 后约 110ms 就完成握手并调
+`win.SetURL()` 切到控制台外链，而此时窗口的 chromium 还没建出来。Wails
+v3.0.0-beta.8 的 `windowsWebviewWindow.setURL` 直接 `w.chromium.Navigate(url)`，
+**不判 chromium 是否已建好**（紧挨着的 `execJS` 判了）；上层 `SetURL` 只判
+`w.impl != nil`，而 `w.impl` 早在 `run()` 调 `setupChromium()` 之前就被赋值。
+
+失败形态最难认：**进程当场消失，没有 Go panic 栈**，stderr 只留一行
+`Failed to unregister class Chrome_WidgetWin_0`。agentd 侧的取证是 ticket
+一张张签发出去却**一张都没有被消费**——webview 从来没去请求那个 URL。
+
+**向导那条路径一直正常**，因为它本来就等 `WindowRuntimeReady`。「向导能开、
+快捷方式打不开」正是由此而来。修法是让控制台那条走同一个信号，且等待放在握手
+**之前**（ticket 只有 60 秒寿命）。
+
+如果这个现象在 rc7 之后重现，用桌面上的 `DEBUG-run-shell.cmd` 启动，看
+`shell-log.txt` 最后一行是不是停在「加载控制台」。
+
 ## 一个已经修掉的坑（rc6 修复，留档以防复发）
 
 rc5 上走查第 1 项时会看到：**每分钟弹一个终端窗口**，以及弹框

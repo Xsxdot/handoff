@@ -141,6 +141,19 @@ func main() {
 			showError(app, "无法启动 agentd", err.Error())
 			return
 		}
+		// **切外链之前必须等窗口的 webview 真的建好。** 顺序也是承重的：
+		// 等在握手**之前**，因为 ticket 只有 60 秒寿命——先握手再等，等待
+		// 本身就可能把票等过期。
+		//
+		// 不等的后果不是报错，是进程当场消失（Wails beta.8 的
+		// windowsWebviewWindow.setURL 不判 chromium 是否已建好，详见
+		// shell.AwaitWebviewReady 的注释）。首次配置向导那条路径一直没事，
+		// 因为它本来就等这同一个信号。
+		if err := shell.AwaitWebviewReady(ctx, runtimeReadyCh); err != nil {
+			logger.Error("窗口 webview 未就绪，放弃加载控制台", "cause", err)
+			showError(app, "窗口未能就绪", err.Error())
+			return
+		}
 		url, err := shell.ConsoleURL(ctx, ep, shell.DefaultDeviceName())
 		if err != nil {
 			logger.Error("握手失败", "cause", err)
@@ -156,7 +169,11 @@ func main() {
 	tray := app.SystemTray.New()
 	tray.SetLabel("handoff")
 	menu := app.Menu.New()
-	menu.Add("打开控制台").OnClick(func(*application.Context) { openConsole() })
+	// 放 goroutine 里跑，与 ApplicationStarted 那条一致：openConsole 里有网络
+	// 握手，还要等 webview 就绪（最长 30s）——在点击回调里同步跑等于把主线程
+	// 连同整个 UI 一起冻住。SetURL/Show 内部走 InvokeSync 派回主线程，从
+	// goroutine 调用本就是它们支持的形态。
+	menu.Add("打开控制台").OnClick(func(*application.Context) { go openConsole() })
 	menu.Add("退出（agentd 继续运行）").OnClick(func(*application.Context) {
 		// 只退薄壳。agentd 与它拉起的执行者继续跑，这是招牌属性
 		logger.Info("用户从托盘退出薄壳；agentd 不受影响")
