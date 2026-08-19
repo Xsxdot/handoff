@@ -110,7 +110,7 @@ async function parseResponse<T>(resp: Response): Promise<T> {
 // 注意：
 //   - 401 的 message 特意写明「重跑 handoff console 换新 cookie」——这是
 //     浏览器会话过期/被吊销时唯一可行动的动作，静默失败会让人无从下手
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
   try {
     resp = await fetch(path, { credentials: 'same-origin', ...init })
@@ -121,7 +121,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // postJSON 以 JSON body 发起 POST 请求。
-function postJSON<T>(path: string, body: unknown): Promise<T> {
+export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
