@@ -8,6 +8,37 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc7] - 2026-08-19
+
+**预发布。** 内容同 rc6，外加一处 Windows 桌面薄壳的真 bug 修复——由 rc6 的
+人工走查抓到，症状是**双击快捷方式完全没反应**。
+
+### 修复
+
+- **Windows：已配置的机器上双击薄壳，进程在约 1 秒后无声消失。** 薄壳在
+  `ApplicationStarted` 后约 110ms 就完成鉴权握手并调 `win.SetURL()` 切到控制台
+  外链，而此时窗口的 chromium 还没建出来。Wails v3.0.0-beta.8 的
+  `windowsWebviewWindow.setURL` 直接 `w.chromium.Navigate(url)`，**不判 chromium
+  是否已建好**（紧挨着的 `execJS` 判了）；上层 `SetURL` 只判 `w.impl != nil`，
+  而 `w.impl` 在 `webview_window.go:484` 就被赋值，**早于** `run()` 里调用
+  `setupChromium()`——「impl 有了、chromium 还没有」是一个真实存在的窗口期。
+
+  后果不是报错：进程当场消失，**没有 Go panic 栈**，stderr 只留下一行 Chromium
+  的 `Failed to unregister class Chrome_WidgetWin_0`，用户看到的就是「双击没
+  反应」。agentd 侧的取证是 ticket 一张张签发出去却**一张都没有被消费**——
+  webview 从来没去请求那个 URL。
+
+  **首次配置向导那条路径一直正常**，因为它本来就等 `WindowRuntimeReady`
+  （见 `runtimeReadyCh` 的注释）——「向导能开、桌面快捷方式打不开」正是由此
+  而来。现在控制台那条走同一个信号，且等待放在握手**之前**（ticket 只有 60 秒
+  寿命，先握手再等会把票等过期）。等不到就绪时**报错而不放行**：放行等于回到
+  那个无声消失的失败。
+
+  macOS 上同一段代码一直正常，所以这条只在 Windows 上显形。
+
+- **托盘「打开控制台」改为在 goroutine 里跑**：它含网络握手，现在还要等 webview
+  就绪（最长 30s），在点击回调里同步跑会把主线程连同整个 UI 冻住。
+
 ## [v0.3.0-rc6] - 2026-08-19
 
 **预发布。** 内容同 rc5，外加一处 Windows 托管判据的真 bug 修复——由 rc5 的

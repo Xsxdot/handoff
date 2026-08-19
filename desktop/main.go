@@ -169,7 +169,11 @@ func main() {
 	tray := app.SystemTray.New()
 	tray.SetLabel("handoff")
 	menu := app.Menu.New()
-	menu.Add("打开控制台").OnClick(func(*application.Context) { openConsole() })
+	// 放 goroutine 里跑，与 ApplicationStarted 那条一致：openConsole 里有网络
+	// 握手，还要等 webview 就绪（最长 30s）——在点击回调里同步跑等于把主线程
+	// 连同整个 UI 一起冻住。SetURL/Show 内部走 InvokeSync 派回主线程，从
+	// goroutine 调用本就是它们支持的形态。
+	menu.Add("打开控制台").OnClick(func(*application.Context) { go openConsole() })
 	menu.Add("退出（agentd 继续运行）").OnClick(func(*application.Context) {
 		// 只退薄壳。agentd 与它拉起的执行者继续跑，这是招牌属性
 		logger.Info("用户从托盘退出薄壳；agentd 不受影响")
