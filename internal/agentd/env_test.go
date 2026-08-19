@@ -321,3 +321,101 @@ func TestEnvFileWriteRejectsBadNameAndTooLarge(t *testing.T) {
 		t.Fatalf("超限 code = %d, want 400", code)
 	}
 }
+
+func TestEnvMappingSaveTranslatesTwoModes(t *testing.T) {
+	env, envDir := newEnvEnv(t, map[string]string{"opencode": "old.env"}, "opencode", "codex")
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "proxy.env"), []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp proto.EnvResp
+	code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: "codex", Mode: proto.EnvModeFile, File: "proxy.env"},
+		{Executor: "opencode", Mode: proto.EnvModeOff},
+	}}, &resp)
+	if code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	// 差异一：off 落盘必须是**键不存在**，不是空串
+	saved := env.srv.EnvMapping()
+	if _, ok := saved["opencode"]; ok {
+		t.Fatalf("off 档必须删键，实际 = %+v（空串是脏数据，会让 Resolver 读 <dir>/）", saved)
+	}
+	if saved["codex"] != "proxy.env" || len(saved) != 1 {
+		t.Fatalf("saved = %+v，想要只有 codex", saved)
+	}
+	// 保存后直接回最新状态，界面拿它刷新
+	got := map[string]string{}
+	for _, b := range resp.Bindings {
+		got[b.Executor] = b.Mode
+	}
+	if got["opencode"] != proto.EnvModeOff || got["codex"] != proto.EnvModeFile {
+		t.Fatalf("响应 = %+v", resp.Bindings)
+	}
+}
+
+func TestEnvMappingRejectsMissingFileAndBadMode(t *testing.T) {
+	env, _ := newEnvEnv(t, nil, "opencode")
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	var body map[string]string
+
+	// file 档指向不存在的文件：把错误挡在保存这一刻，好过三天后某次派发才炸
+	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: "opencode", Mode: proto.EnvModeFile, File: "gone.env"},
+	}}, &body); code != 400 {
+		t.Fatalf("缺文件 code = %d, want 400", code)
+	}
+	// file 档但文件名为空：绝不能落成空串
+	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: "opencode", Mode: proto.EnvModeFile, File: "  "},
+	}}, &body); code != 400 {
+		t.Fatalf("空文件名 code = %d, want 400", code)
+	}
+	// mode 非法
+	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: "opencode", Mode: "default"},
+	}}, &body); code != 400 {
+		t.Fatalf("非法 mode code = %d, want 400（env 没有 default 档）", code)
+	}
+	// executor 名为空
+	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: " ", Mode: proto.EnvModeOff},
+	}}, &body); code != 400 {
+		t.Fatalf("空 executor code = %d, want 400", code)
+	}
+}
+
+func TestEnvMappingHotReloadsWithoutRebuildingManager(t *testing.T) {
+	// 这条是整个 B158 的承重判据：改完映射**不重建 Manager**，
+	// manager 侧的 resolver 必须立即反映新值
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "proxy.env"), []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := env.mgr.env.For("opencode")
+	if err != nil || len(before) != 0 {
+		t.Fatalf("before = %v, err = %v，想要未配置时不注入", before, err)
+	}
+	var resp proto.EnvResp
+	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
+		{Executor: "opencode", Mode: proto.EnvModeFile, File: "proxy.env"},
+	}}, &resp); code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	after, err := env.mgr.env.For("opencode")
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if len(after) != 1 || after[0] != "A=1" {
+		t.Fatalf("after = %v，想要 [A=1]（不重启 agentd 就该生效）", after)
+	}
+}

@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -262,4 +264,85 @@ func (s *Server) handleEnvFileWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("env 写文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
 	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: sha, Size: size})
+}
+
+// handleEnvMapping 处理 PUT /api/env/mapping[?machine=]。
+//
+// 请求体 proto.EnvMappingReq：**整段替换**该机的 env 配置段。
+//
+// 响应：200 proto.EnvResp（保存后的最新状态，界面直接拿它刷新）
+//
+//	400 mode 非法 / executor 为空 / file 档文件名为空或指向不存在的文件
+//	503 manager 未就绪
+//
+// **两档翻译（与 discipline 错位，照抄必错）**：
+//
+//	off  → 配置里**删掉这个键**（不是写空串！空串会让 Resolver 走到「读
+//	     <dir>/」这种无意义路径，是纯粹的脏数据）
+//	file → 校验文件存在后写入文件名
+//
+// 为什么要校验「file 档的文件必须存在」：Resolver 的既定语义是「配了但读不到
+// = 派发失败」。把错误挡在保存这一刻，好过让它在三天后某次派发时炸出来。
+// 注意这只是保存时的一次性校验——文件仍可能事后被删，那时的失败仍由派发路径承担。
+func (s *Server) handleEnvMapping(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	if s.mgr == nil {
+		s.log.Warn("env 映射保存：manager 未就绪")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req proto.EnvMappingReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("env 映射保存：请求体无法解析")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	dir := envfile.Dir(s.conf().DataDir)
+	s.log.Info("env 映射保存请求", "bindings", len(req.Bindings), "dir", dir)
+
+	next := map[string]string{}
+	for _, b := range req.Bindings {
+		name := strings.TrimSpace(b.Executor)
+		if name == "" {
+			s.log.Warn("env 映射保存被拒：executor 名为空")
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "executor 名不能为空"})
+			return
+		}
+		switch b.Mode {
+		case proto.EnvModeOff:
+			// 不注入 = 配置里**不出现这个键**，什么都不写。
+		case proto.EnvModeFile:
+			file := strings.TrimSpace(b.File)
+			if file == "" {
+				s.log.Warn("env 映射保存被拒：file 档文件名为空", "executor", name)
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("%s 选了「指定文件」但没给文件名", name)})
+				return
+			}
+			if _, _, _, err := envfile.Read(dir, file); err != nil {
+				s.log.Warn("env 映射保存被拒：文件不可用", "executor", name, "file", file)
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("%s 指定的 env 文件不可用：%v", name, err)})
+				return
+			}
+			next[name] = file
+		default:
+			s.log.Warn("env 映射保存被拒：档位非法", "executor", name, "mode", b.Mode)
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("%s 的档位 %q 非法：只支持 file/off", name, b.Mode)})
+			return
+		}
+	}
+	if err := s.swapConf(func(c *config.Config) error {
+		c.Env = next
+		return nil
+	}); err != nil {
+		s.log.Error("env 映射落盘失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("env 映射已保存", "configured", len(next))
+	s.handleEnvGet(w, r) // 回最新状态，界面直接拿它刷新
 }
