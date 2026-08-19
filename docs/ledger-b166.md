@@ -126,3 +126,20 @@
 - 全量验证：`npm run typecheck` 通过；`npm test`：`Test Files 81 passed (81)`、`Tests 796 passed (796)`；`npm run build` 通过，`1944 modules transformed`，产物 `index-xnjDc_rI.css 48.03 kB`、`index-BzwGnVwc.js 898.87 kB`，仅有 Vite 的大 chunk warning。
 - 双裁决第 1 轮：spec 符合，更新导航接在 Env 文件之后并带琥珀点，桌面应用/同步状态在 204 时隐藏，执行机块始终只读，本机显示随桌面应用更新，远端只显示可升级状态；重新检查走 `fetchLatest(true)`，无修复轮次。
 - 提交范围：`web/src/app/settings/UpdatePage.tsx`、测试、`web/src/app/settings/SettingsPage.tsx` 与本 ledger，提交信息按计划为 `feat(web): 设置页新增更新分区`。
+
+## Task 9：整分支终审
+
+- 分支与提交：`feat/b166-update-surface`；相对起点 `3addd708` 共 9 个实现/修复提交（Task 0 无提交），当前终审修复待提交。
+- `gofmt -l .`：无输出；`go vet ./...`：无输出。
+- 根模块 `go test ./...`：命令退出码 1。实际汇总输出包含：`ok github.com/Xsxdot/handoff`、`ok github.com/Xsxdot/handoff/cmd`、`ok internal/agentd`；失败原文为 `TestCursorRootFallsBackToCwdWhenHomeUnwritable`、`TestCursorRootErrorNamesBothPaths`（`internal/client`），`TestLoadStripUpdateDoesNotBlockOnSaveFailure`（`internal/config`），`TestPermServerAskThenRespond`、`TestPermServerRespondUnknownID`、`TestPermServerReRegisterSameID`、`TestResumeContinuesFromOffset`（`internal/executor/claudecode`），`TestSyncAuthKeepsTaskCopyWhenWriteFails`（`internal/executor/grok`），最终 `FAIL`。本次改动未触及这些失败测试所在实现文件。
+- `cd desktop && gofmt -l . && go test ./internal/...`：gofmt 无输出；`embedbin` 为 `ok`，`TestSyncOnOpenOrderIsLoadBearing` 失败，原文为 `一切顺利时不该有错误：创建临时文件: open /tmp/.handoff-sync-1906946391: read-only file system`，最终 `FAIL github.com/Xsxdot/handoff/desktop/internal/shell`。按 Global Constraints 未运行 desktop 根包 Wails 编译。
+- `cd web && npm run typecheck && npm test && npm run build`：全部通过；`Test Files 81 passed (81)`、`Tests 796 passed (796)`；Vite `1944 modules transformed`，产物 `index-xnjDc_rI.css 48.03 kB`、`index-BzwGnVwc.js 898.87 kB`，仅有大 chunk warning。
+- 死代码复查命令无输出：`upgrade.html`、`openUpgradePanel`、`runRemoteUpgrade` 均无残留（排除 node_modules 与 docs）。
+- spec §6.1 落点：`internal/proto/desktop.go:1-46`、`internal/agentd/desktopstate.go:21-72`、`internal/client/desktop.go:15-31`、`desktop/internal/shell/report.go:17-74`、`desktop/main.go:453-505`；内存 TTL、单向 PUT、10s/30s 关系与失败退避注释均在代码中。
+- spec §6.2 落点：`internal/agentd/updatedownload.go:109-273`、`:278-356`；latest 缓存/刷新、平台资产名、sha256 校验删包、并发 409、下载目录清理、平台打开器与进度端点均已覆盖，`reveal` 边界说明在文件头。
+- spec §6.3 落点：`web/src/api/client.ts:179-194`、`web/src/app/data/useUpdate.ts:13-24`、`web/src/app/update/UpdateToasts.tsx:59-211`、`web/src/app/shell/Shell.tsx:456-457`；204/null、版本比较、三种提示、sessionStorage、下载状态与 home 236px 让位均已覆盖。
+- spec §6.4 落点：`web/src/app/settings/SettingsPage.tsx:28-98`、`web/src/app/settings/UpdatePage.tsx:29-190`；更新导航/琥珀点、无壳降级、桌面应用/同步状态/执行机三块、重新检查与本机只读边界均已覆盖。
+- spec §6.6 落点：`desktop/main.go:44-48`、`:216-334`、`desktop/frontend/vite.config.ts:10-16`；托盘图标、空标签、两项菜单、多页入口删除均已覆盖。
+- §9 日志与注释复查：agentd/薄壳新路径均使用 slog；下载开始、校验、跳过、打开器、清理均有日志；承重「不复用 reveal」「不做自我替换」「状态只在内存」说明已落在对应文件头。最终范围复审命令 `gofmt -l .`、`git diff --check 3addd708..HEAD`、死代码 grep 均无输出；除已记录环境/平台未验证项外无待修代码发现。
+- 未验证项：`desktop/main.go` 与托盘改动未经 Linux Wails 编译验证（缺 GTK/Wails 构建依赖）；macOS/Windows 真机菜单、图标、DMG 挂载与控制台下载走查未做；计划引用的 `prototypes/desktop-update/` 副本在仓库中不存在，未能逐像素对照。
+- 终审修复轮：补充 `desktop/main.go:100` 的 `trayLatest` 生命周期注释；修复后复跑静态范围检查与死代码 grep，均无输出。无第二轮修复波。

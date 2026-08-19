@@ -97,7 +97,7 @@ var (
 	trayMu      sync.Mutex
 	traySync    shell.SyncOutcome // 最近一次对账的结果，也是状态上报的数据源
 	traySyncErr error             // 最近一次同步失败的原因，也是状态上报的数据源
-	trayLatest  string            // 发现的新版 tag，空串表示没有
+	trayLatest  string            // 发现的新版 tag，空串表示没有；与上报状态共用启动生命周期，勿删
 	trayApp     *application.App
 	trayTray    *application.SystemTray
 )
