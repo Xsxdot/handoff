@@ -78,7 +78,9 @@ export function MachineEnv({ machine }: { machine: Machine }) {
     setBusy(true)
     setError('')
     try {
-      const nextBindings = bindings.map((binding) => decodeBinding(
+      // GET 返回的 bindings 还可能包含未注册但仍在配置里的 executor；整段替换时
+      // 保留这些隐藏配置，避免用户只改一个已注册 executor 就静默删掉旧映射。
+      const nextBindings = response.bindings.map((binding) => decodeBinding(
         binding.executor,
         edits[binding.executor] ?? bindingValue(binding),
       ))

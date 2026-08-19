@@ -18,3 +18,4 @@
 - 2026-08-19 Task 9 完成：抽出 BlockEditor、Discipline 409 改 conflict 布尔、前端 env 五个 API 函数；spec PASS / quality PASS，无修复轮；提交范围：ee378bd5..HEAD（Task 9）。
 - 2026-08-19 Task 10 完成：设置页 Env 文件分区，默认显示变量清单，正文按需编辑；spec PASS / quality PASS，无修复轮；验证：settings 18 tests、tsc、eslint 均通过；提交范围：bf8f3e8f..HEAD（Task 10）。
 - 2026-08-19 Task 11 完成：开发机详情新增 env 两档映射块并挂入详情页；spec PASS / quality PASS，无修复轮；验证：machines 21 tests、tsc、eslint 均通过；提交范围：f6d969ea..HEAD（Task 11）。
+- 2026-08-19 Task 12 完成：全分支终审修正隐藏映射保留与新增测试文件头；spec PASS / quality PASS，1 次统一修复轮；验证：gofmt 无输出，Go build/vet 通过，前端 770 tests、tsc、eslint（0 error）、build 通过；Go 全量测试仍有环境/基线失败（原始报错见本回合记录），红线自查发现仅既有 os.RemoveAll 命中；提交范围：2858d7be..HEAD（Task 12）。

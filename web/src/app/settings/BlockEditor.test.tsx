@@ -1,3 +1,4 @@
+// BlockEditor.test.tsx —— 共用正文编辑器的只读、保存与冲突态测试。
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

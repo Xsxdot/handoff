@@ -1,3 +1,4 @@
+// EnvPage.test.tsx —— Env 设置分区的变量清单、按需正文与断开降级测试。
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

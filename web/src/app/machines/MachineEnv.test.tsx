@@ -1,3 +1,4 @@
+// MachineEnv.test.tsx —— 开发机 Env 两档映射、保存编码与断开降级测试。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
