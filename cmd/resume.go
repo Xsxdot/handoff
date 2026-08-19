@@ -17,7 +17,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -42,11 +41,12 @@ var resumeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		report, err := client.New(addr, token).Resume(cmd.Context(), taskID, resumeForce)
+		defer cleanup()
+		report, err := c.Resume(cmd.Context(), taskID, resumeForce)
 		if err != nil {
 			return err
 		}

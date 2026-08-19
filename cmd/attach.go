@@ -48,11 +48,11 @@ var attachCmd = &cobra.Command{
 	Short: "进入任务 executor 的终端实况（无参时选择任务）",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		cli, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		cli := client.New(addr, token)
+		defer cleanup()
 		if len(args) == 1 {
 			// 有 task：连上任务的 render 实况流
 			return runAttach(cmd, cli, args[0])

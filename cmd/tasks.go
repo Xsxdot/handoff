@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
@@ -27,11 +26,11 @@ var tasksCmd = &cobra.Command{
 	Use:   "tasks",
 	Short: "列出全部任务（每行一个任务 JSON）",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		c := client.New(addr, token)
+		defer cleanup()
 		if tasksAllFlag {
 			resp, err := c.ListTasksAll(cmd.Context())
 			if err != nil {

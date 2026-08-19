@@ -10,7 +10,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -22,11 +21,12 @@ var fetchCmd = &cobra.Command{
 	Short: "输出任务仓库内文件的内容（审阅上下文）",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		content, err := client.New(addr, token).Fetch(cmd.Context(), args[0], args[1])
+		defer cleanup()
+		content, err := c.Fetch(cmd.Context(), args[0], args[1])
 		if err != nil {
 			return err
 		}

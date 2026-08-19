@@ -7,9 +7,12 @@ import { Plus } from 'lucide-react'
 export function EmptyWorkbench({ onAddProject }: { onAddProject: () => void }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-      <span className="flex size-10 items-center justify-center rounded-xl bg-[#10151b] text-base font-semibold text-white">
-        h
-      </span>
+      {/* 用品牌标志而不是首字母方块：空态是产品第一眼，字母 h 看起来像占位。 */}
+      <img
+        src="/handoff-mark.svg"
+        alt="handoff"
+        className="size-16"
+      />
       <p className="text-sm text-muted-foreground">从侧边栏选择一个目录开始</p>
       <button
         type="button"

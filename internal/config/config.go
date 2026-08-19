@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,6 +44,8 @@ type Config struct {
 	Listen  string
 	Token   string
 	DataDir string
+	// Relay 是 executor 出站 relay 配置；nil 表示不启用 relay 出站。
+	Relay *RelayConfig `yaml:"relay,omitempty"`
 	// RepoRoot 是自动登记（B62）的 clone 落点根目录：首次派发到某台机器、而
 	// 那台机器上还没有该项目时，agentd 会把仓库 clone 到这里，实际落点为
 	// RepoRoot/<登记名>。空=未配置，Load 会补 <DataDir>/repos。
@@ -142,6 +145,15 @@ type LedgerConfig struct {
 	DSN string `yaml:"dsn,omitempty"`
 }
 
+// RelayConfig describes the executor's outbound relay registration.
+// Credential is only sent during the WSS control exchange; it is separate from
+// the E2E key derived from Token.
+type RelayConfig struct {
+	URL        string `yaml:"url"`
+	Credential string `yaml:"credential"`
+	Node       string `yaml:"node"`
+}
+
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
 // 同步到本地仓库。Auto 默认 true；关闭后仍可用 handoff pull 手动同步。
 type SyncConfig struct {
@@ -197,9 +209,72 @@ type WebConfig struct {
 // User 为可选的 ssh 用户名（非空时 attach/pull 的 ssh 目标换算为 user@host，
 // 空=保持历史行为只用 host）。
 type Target struct {
-	Addr  string
-	Token string
-	User  string
+	Addr       string `yaml:"addr,omitempty"`
+	Token      string `yaml:"token,omitempty"` // relay 形态下额外用作 E2E PSK 源（HKDF 派生），relay 不可见。
+	User       string `yaml:"user,omitempty"`
+	Relay      string `yaml:"relay,omitempty"`      // relay WSS URL；与 Addr 互斥。
+	Credential string `yaml:"credential,omitempty"` // coordinator 的 CONNECT 凭证。
+	Node       string `yaml:"node,omitempty"`       // relay 上的 executor 节点名。
+}
+
+// IsRelay reports whether this target uses the relay form.
+func (t Target) IsRelay() bool { return t.Relay != "" }
+
+// Validate validates a target. Relay and direct targets are mutually exclusive:
+// relay targets require Relay, Credential, Node, and Token, while direct targets
+// require Addr.
+func (t Target) Validate() error {
+	if t.IsRelay() {
+		if err := validateRelayURL(t.Relay); err != nil {
+			return fmt.Errorf("target.relay: %w", err)
+		}
+		if t.Addr != "" {
+			return errors.New("target relay 与 addr 互斥")
+		}
+		if t.Credential == "" {
+			return errors.New("relay target credential 不能为空")
+		}
+		if t.Node == "" {
+			return errors.New("relay target node 不能为空")
+		}
+		if t.Token == "" {
+			return errors.New("relay target token 不能为空")
+		}
+		return nil
+	}
+	if t.Addr == "" {
+		return errors.New("direct target addr 不能为空")
+	}
+	return nil
+}
+
+// Validate validates the executor relay configuration. ws:// is accepted for
+// local tests; production deployments should use wss://.
+func (r *RelayConfig) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if err := validateRelayURL(r.URL); err != nil {
+		return fmt.Errorf("relay.url: %w", err)
+	}
+	if r.Credential == "" {
+		return errors.New("relay.credential 不能为空")
+	}
+	if r.Node == "" {
+		return errors.New("relay.node 不能为空")
+	}
+	return nil
+}
+
+func validateRelayURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("URL 无法解析: %w", err)
+	}
+	if (u.Scheme != "wss" && u.Scheme != "ws") || u.Host == "" {
+		return fmt.Errorf("URL 必须是 wss:// 或 ws://（当前 %q）", raw)
+	}
+	return nil
 }
 
 // ProcFenceConfig 描述 executor 进程围栏（RLIMIT_NPROC）的策略。
@@ -293,6 +368,9 @@ func Load(path string) (*Config, error) {
 	if verr := cfg.validate(); verr != nil {
 		log().Error("配置校验失败", "path", path, "cause", verr)
 		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+	}
+	if cfg.Relay != nil {
+		log().Info("relay egress configured", "url", cfg.Relay.URL, "node", cfg.Relay.Node)
 	}
 	if cfg.Proxy != "" {
 		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
@@ -405,6 +483,14 @@ func (c *Config) validate() error {
 	if err := proxycfg.Validate(c.Proxy); err != nil {
 		return err
 	}
+	if err := c.Relay.Validate(); err != nil {
+		return fmt.Errorf("relay 配置校验失败: %w", err)
+	}
+	for name, target := range c.Targets {
+		if err := target.Validate(); err != nil {
+			return fmt.Errorf("target %q 校验失败: %w", name, err)
+		}
+	}
 	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
 	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
 	if c.Approver.Executor != "" {
@@ -444,7 +530,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/ledger{dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

@@ -611,8 +611,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
 
                     {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
                         目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的
-                        「不静默少一条」在任务这一层的兑现） */}
-                    {problem === '' && mOpen && aTasks.length > 0 && (
+                        「不静默少一条」在任务这一层的兑现）。
+                        hideArchived 在搜索期间旁路：藏起来就搜不到，等于把兜底拆了。 */}
+                    {problem === '' && mOpen && aTasks.length > 0 && !(prefs.hideArchived && !searching) && (
                       <div>
                         <button
                           type="button"

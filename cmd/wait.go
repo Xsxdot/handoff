@@ -109,17 +109,24 @@ var waitCmd = &cobra.Command{
 			return fmt.Errorf("需要 task id 参数（或 --card 走账本多路 wait）")
 		}
 		taskID := args[0]
-		addr, token, err := TargetEndpoint()
+		// main 的 relay 改造把带 token 的 client 构造收进 newTargetClient()，
+		// 这里只还需要 addr 做日志与 pull 的落点，token 不再单独取
+		addr, _, err := TargetEndpoint()
 		if err != nil {
 			return err
 		}
+		cli, cleanup, err := newTargetClient()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
 		// 统一日志格式：wait 是长驻命令，stderr 日志是「为什么没唤醒」的唯一线索
 		slog.SetDefault(logx.Setup("cli", ""))
 		if waitUntilDone {
-			return runUntilDone(cmd, taskID, addr, token)
+			return runUntilDone(cmd, taskID, addr, cli)
 		}
 		if followFlag {
-			return runFollow(cmd, taskID, addr, token)
+			return runFollow(cmd, taskID, addr, cli)
 		}
 		// ——以下一次性路径与改动前完全一致——
 		ctx := cmd.Context()
@@ -131,7 +138,7 @@ var waitCmd = &cobra.Command{
 			defer cancel()
 		}
 
-		ev, err := client.New(addr, token).WaitEvent(ctx, taskID, false)
+		ev, err := cli.WaitEvent(ctx, taskID, false)
 		if err != nil {
 			if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
 				slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
@@ -151,7 +158,7 @@ var waitCmd = &cobra.Command{
 		// 任务结束后把远程任务分支拉到本地（B12）。
 		// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
 		// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
-		autoSyncAfterWait(cmd, addr, token, ev)
+		autoSyncAfterWait(cmd, cli, addr, ev)
 		return nil
 	},
 }
@@ -248,7 +255,7 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.D
 //   - 其他: 依赖 failed / 鉴权 / 任务不存在 / 协议异常（退出 1）
 //
 // 边界：不写审核者 cursor、不自动派发后续任务；等待期间 stdout 恒为空。
-func runUntilDone(cmd *cobra.Command, taskID, addr, token string) error {
+func runUntilDone(cmd *cobra.Command, taskID, addr string, cli *client.Client) error {
 	ctx := cmd.Context()
 	if waitTimeout > 0 {
 		var cancel context.CancelFunc
@@ -257,7 +264,7 @@ func runUntilDone(cmd *cobra.Command, taskID, addr, token string) error {
 	}
 	slog.Debug("等待依赖任务归档", "task", taskID, "addr", addr,
 		"timeout", waitTimeout.String())
-	ev, err := client.New(addr, token).WaitArchived(ctx, taskID)
+	ev, err := cli.WaitArchived(ctx, taskID)
 	if err != nil {
 		switch {
 		case waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded):
@@ -317,8 +324,7 @@ func writeEventLine(w io.Writer, ev *proto.Event) error {
 // 注意：
 //   - stdout 严格是「每事件一行 JSON」，任何人读信息一律走 stderr——上层
 //     （Monitor）按行解析，多打一行说明就会打断它
-func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
-	cli := client.New(addr, token)
+func runFollow(cmd *cobra.Command, taskID, addr string, cli *client.Client) error {
 	// 异步核对 --timeout 与对端 stalltimeout：status 要逐个探活，最坏 10 秒，
 	// 不能让一句告警把开始跟随这件事拖后
 	go warnIfTimeoutBelowStall(cmd.Context(), cli, waitTimeout)
@@ -332,7 +338,7 @@ func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
 				return err
 			}
 			// 每次遇到回合结束都同步一次：--follow 下一个任务会有多个 completed
-			autoSyncAfterWait(cmd, addr, token, ev)
+			autoSyncAfterWait(cmd, cli, addr, ev)
 			return nil
 		},
 		func(sum *client.BacklogSummary) error {
@@ -416,7 +422,7 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
 //     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
 //   - 失败（含回合失败）也同步：失败恰恰是最需要把代码拉到本地翻的时候
-func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
+func autoSyncAfterWait(cmd *cobra.Command, cli *client.Client, addr string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
 	}
@@ -427,7 +433,7 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 		slog.Debug("配置 sync.auto=false，跳过自动同步", "task", ev.TaskID)
 		return
 	}
-	info, err := client.New(addr, token).Attach(cmd.Context(), ev.TaskID)
+	info, err := cli.Attach(cmd.Context(), ev.TaskID)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "自动同步跳过：读取任务失败:", err)
 		return

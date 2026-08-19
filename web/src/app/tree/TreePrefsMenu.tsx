@@ -39,6 +39,14 @@ export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps)
       keepOpen: true,
       onSelect: () => onChange({ ...prefs, hideIdleWorktrees: !prefs.hideIdleWorktrees }),
     },
+    {
+      key: 'hide-archived',
+      label: '隐藏已结束分组',
+      kind: 'check',
+      checked: prefs.hideArchived,
+      keepOpen: true,
+      onSelect: () => onChange({ ...prefs, hideArchived: !prefs.hideArchived }),
+    },
     { key: 'h-sort', label: '排序方式', kind: 'header' },
     ...SORT_LABELS.map((s) => ({
       key: `sort-${s.value}`,
@@ -49,18 +57,8 @@ export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps)
       onSelect: () => onChange({ ...prefs, projectSort: s.value }),
     })),
     { key: 'h-projects', label: `项目 · ${projects.length}`, kind: 'header' },
-    {
-      key: 'all-on',
-      label: '全选',
-      keepOpen: true,
-      onSelect: () => onChange({ ...prefs, hiddenProjects: [] }),
-    },
-    {
-      key: 'all-off',
-      label: '全不选',
-      keepOpen: true,
-      onSelect: () => onChange({ ...prefs, hiddenProjects: projects.map((p) => p.project_id) }),
-    },
+    // 紧凑菜单里不放全选/全不选：项目本来就能逐项勾，两个动作项只会把名单
+    // 顶下去。批量开关留在设置页「常规」，那里有空间。
     ...projects.map((p) => ({
       key: `p-${p.project_id}`,
       label: p.name,

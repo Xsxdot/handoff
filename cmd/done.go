@@ -14,7 +14,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
@@ -38,11 +37,11 @@ var doneCmd = &cobra.Command{
 			return fmt.Errorf("--note 超长（%d 字节，上限 %d）；请精简后重试，不会自动截断",
 				len(doneNote), proto.MaxDoneNoteBytes)
 		}
-		addr, token, err := TargetEndpoint()
+		cli, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		cli := client.New(addr, token)
+		defer cleanup()
 		noteSaved, err := cli.Done(cmd.Context(), taskID, doneNote)
 		if err != nil {
 			return err
