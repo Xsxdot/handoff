@@ -54,15 +54,18 @@ type Mirror struct {
 	opt     Options
 	log     *slog.Logger
 
-	holding atomic.Bool
-	mu      sync.Mutex
-	subs    map[string]context.CancelFunc
-	conn    map[string]bool
-	ended   map[string]bool
-	wg      sync.WaitGroup
-	runMu   sync.Mutex
-	runStop context.CancelFunc
-	runDone chan struct{}
+	holding    atomic.Bool
+	mu         sync.Mutex
+	subs       map[string]context.CancelFunc
+	conn       map[string]bool
+	ended      map[string]bool
+	wg         sync.WaitGroup
+	wgMu       sync.Mutex
+	runMu      sync.Mutex
+	runStop    context.CancelFunc
+	runDone    chan struct{}
+	runStarted atomic.Bool
+	stopAsked  atomic.Bool
 }
 
 // New 构造。targets 用函数注入（config 可被 /api/machines 热改）。
@@ -102,12 +105,19 @@ func (m *Mirror) Run(ctx context.Context) {
 	m.runStop = runStop
 	m.runDone = runDone
 	m.runMu.Unlock()
+	m.runStarted.Store(true)
 	defer close(runDone)
 	defer runStop()
+	if m.stopAsked.Load() || runCtx.Err() != nil {
+		return
+	}
 	m.log.Info("账本镜像子系统启动", "holder", m.opt.Holder, "tick", m.opt.Tick, "lease_ttl", m.opt.LeaseTTL)
 	tick := time.NewTicker(m.opt.Tick)
 	defer tick.Stop()
 	for {
+		if runCtx.Err() != nil {
+			return
+		}
 		got, err := m.st.AcquireMirrorLease(m.opt.Holder, m.opt.LeaseTTL)
 		if err != nil {
 			m.log.Warn("lease 操作失败", "err", err)
@@ -134,16 +144,19 @@ func (m *Mirror) Run(ctx context.Context) {
 
 // Stop 等全部订阅 goroutine 退出。必须在账本库 Close 之前调用。
 func (m *Mirror) Stop() {
+	m.stopAsked.Store(true)
 	m.holding.Store(false)
 	m.runMu.Lock()
 	runStop, runDone := m.runStop, m.runDone
 	m.runMu.Unlock()
-	if runStop != nil {
+	if m.runStarted.Load() && runStop != nil {
 		runStop()
 	}
 	m.stopAllSubs("Stop")
+	m.wgMu.Lock()
 	m.wg.Wait()
-	if runDone != nil {
+	m.wgMu.Unlock()
+	if m.runStarted.Load() && runDone != nil {
 		<-runDone
 	}
 }
@@ -176,6 +189,9 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		}
 	}
 	for key, link := range want {
+		if ctx.Err() != nil {
+			return
+		}
 		if m.ended[key] {
 			continue
 		}
@@ -185,7 +201,9 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		subCtx, cancel := context.WithCancel(ctx)
 		m.subs[key] = cancel
 		target := targets[link.Target]
+		m.wgMu.Lock()
 		m.wg.Add(1)
+		m.wgMu.Unlock()
 		go m.subscribe(subCtx, link, target)
 		m.log.Info("起订", "sub", key)
 	}
