@@ -27,8 +27,10 @@ import (
 
 	"github.com/Xsxdot/handoff/desktop/internal/embedbin"
 	"github.com/Xsxdot/handoff/desktop/internal/shell"
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/pathenv"
+	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -130,16 +132,26 @@ func main() {
 			startWizard(app, win)
 			return
 		}
-		spec, err := specFor(ep)
-		if err != nil {
-			logger.Error("解析 agentd 二进制路径失败", "cause", err)
-			showError(app, "无法定位 handoff", err.Error())
+		// 对账与同步接在这里，在加载控制台**之前**。此刻窗口还没显示，
+		// 重启 agentd 全程不进用户视野——他只会觉得这次打开慢了几秒。
+		//
+		// 承重：无论 out.Err 是什么，下面加载控制台的代码都必须照常执行
+		//（spec D8）。同步失败只是少升一次级，阻断则是「双击打不开应用」。
+		out := shell.SyncOnOpen(ctx, openSyncDeps(ep))
+		switch {
+		case out.Err != nil && out.Plan == shell.SyncSkip:
+			// 这一支是 agentd 根本起不来或定位不到二进制——控制台加载不了，
+			// 必须停下并告诉用户。与同步失败不是一回事
+			logger.Error("agentd 不可用，无法加载控制台", "cause", out.Err)
+			showError(app, "无法启动 agentd", out.Err.Error())
 			return
-		}
-		if err := shell.EnsureRunning(logger, spec); err != nil {
-			logger.Error("确保 agentd 运行失败", "cause", err)
-			showError(app, "无法启动 agentd", err.Error())
-			return
+		case out.Err != nil:
+			// 同步没做成，但 agentd 在跑（只是版本旧）。如实记录，继续
+			logger.Warn("同步未完成，将用现有版本继续", "plan", out.Plan.String(), "cause", out.Err)
+			noteSyncFailed(out)
+		case out.Plan == shell.SyncBlocked:
+			logger.Info("有活跃任务，本次不同步", "busy", out.Busy)
+			noteSyncBlocked(out)
 		}
 		// **切外链之前必须等窗口的 webview 真的建好。** 顺序也是承重的：
 		// 等在握手**之前**，因为 ticket 只有 60 秒寿命——先握手再等，等待
@@ -220,6 +232,92 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info("薄壳正常退出；agentd 未被触碰")
+}
+
+// openSyncDeps 装配 SyncOnOpen 的生产依赖。
+//
+// 单独抽出来只为让 main.go 里的启动序列保持可读——所有「怎么做」都在
+// shell 包里，这里只回答「用哪个实现」。
+func openSyncDeps(ep shell.Endpoint) shell.OpenSyncDeps {
+	c := client.New(ep.Addr, ep.Token)
+	return shell.OpenSyncDeps{
+		EnsureRunning: func() error {
+			spec, err := specFor(ep)
+			if err != nil {
+				return err
+			}
+			return shell.EnsureRunning(logger, spec)
+		},
+		InstalledPath:    func() (string, error) { return shell.ResolveBinPath("") },
+		InstalledVersion: readInstalledVersion,
+		Busy: func(ctx context.Context) (int, error) {
+			st, err := c.Status(ctx)
+			if err != nil {
+				return 0, err
+			}
+			return len(st.Active), nil
+		},
+		EmbedVersion:   embedbin.Version,
+		EmbedAvailable: embedbin.Available(),
+		Sync: shell.SyncDeps{
+			OpenEmbedded: embedbin.Open,
+			Activate:     release.Activate,
+			SkillInstall: execSkillInstall,
+			RestartAgentd: func(ctx context.Context, force bool) error {
+				_, err := c.RestartAgentd(ctx, force)
+				return err
+			},
+		},
+		Wait: shell.WaitDeps{
+			Version: func(ctx context.Context) (string, error) {
+				st, err := c.Status(ctx)
+				if err != nil {
+					return "", err
+				}
+				return st.Version.Version, nil
+			},
+			Nudge: nudgeAgentd(ep),
+		},
+		Progress: emitSyncProgress,
+	}
+}
+
+// execSkillInstall 在指定二进制上跑 skill install。
+//
+// 必须 exec **新**二进制：skill 随二进制分发（B59），当前进程内嵌的是旧的。
+// hideConsole 是必需的——薄壳是 GUI 进程，不压这一下会在用户屏幕上闪黑窗口。
+func execSkillInstall(ctx context.Context, bin string) ([]byte, error) {
+	c := exec.CommandContext(ctx, bin, "skill", "install")
+	hideConsole(c)
+	return c.CombinedOutput()
+}
+
+// nudgeAgentd 催进程管理器把 agentd 拉起来。
+//
+// 复用 shell.EnsureRunning：它在 agentd 不在跑时会 Install + 拉起，Windows
+// 侧正是 schtasks /Run + 500ms 轮询复核（internal/service/windows.go:271），
+// 恰是这里要的动作。macOS 的 launchd KeepAlive 秒级自拉，催一次也无害。
+func nudgeAgentd(ep shell.Endpoint) func() error {
+	return func() error {
+		spec, err := specFor(ep)
+		if err != nil {
+			return err
+		}
+		return shell.EnsureRunning(logger, spec)
+	}
+}
+
+// emitSyncProgress 把同步阶段送给 UI。Task 9 之前先只记日志。
+func emitSyncProgress(stage string) { logger.Info("同步进度", "stage", stage) }
+
+// noteSyncFailed 记录一次失败的同步，供托盘展示。Task 10 之前先只记日志。
+func noteSyncFailed(out shell.SyncOutcome) {
+	logger.Warn("同步失败已记录", "plan", out.Plan.String(), "cause", out.Err)
+}
+
+// noteSyncBlocked 记录一次被闸一拦下的同步，供托盘展示。Task 10 之前先只记日志。
+func noteSyncBlocked(out shell.SyncOutcome) {
+	logger.Info("同步被闸一拦下已记录", "busy", out.Busy)
 }
 
 // readInstalledVersion 从既有 handoff 二进制里读版本号，供释出决策用。
