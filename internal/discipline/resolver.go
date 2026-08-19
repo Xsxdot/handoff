@@ -29,7 +29,8 @@ func Dir(dataDir string) string { return filepath.Join(dataDir, "discipline") }
 
 // Resolver 按 executor 名裁出该次派发要注入的纪律块。
 //
-// 无状态：每次 For 都重新读盘，因此多个实例之间不会发散。
+// 无状态：每次 For 都重新读盘并重新取映射，因此配置改动与文件改动有同一种
+// 时效——都在下一个任务生效，都不需要重启 agentd。
 type Resolver struct {
 	dir string            // 纪律块文件目录
 	m   map[string]string // executor 名 → 文件名（纯文件名，不含路径）
@@ -84,7 +85,7 @@ func (r *Resolver) For(executor string) (Block, error) {
 		r.log.Info("executor 显式关闭纪律块注入", "executor", executor)
 		return Block{}, nil
 	}
-	path, err := r.resolvePath(name)
+	path, err := resolvePath(r.dir, name)
 	if err != nil {
 		r.log.Error("纪律块文件名非法", "executor", executor, "name", name, "path", r.dir, "cause", err)
 		return Block{}, err
@@ -109,16 +110,23 @@ func (r *Resolver) For(executor string) (Block, error) {
 
 // resolvePath 把配置里的文件名换算为绝对路径，并拒绝一切非「纯文件名」的写法。
 //
+// 参数：
+//   - dir: 纪律块目录；name: 配置或请求里给的文件名
+//
+// 返回：
+//   - 绝对路径；名字非法时返回包装了 ErrBadName 的错误（文案保留目录路径，
+//     用户一眼能看出该把文件放哪）
+//
 // 为什么只收纯文件名：一杜绝路径穿越（../../etc 之类），二保证纪律块只有一个家、
 // 不会散落各处——运维找配置时只需要看一个目录（envfile.resolvePath 同款理由）。
-func (r *Resolver) resolvePath(name string) (string, error) {
+func resolvePath(dir, name string) (string, error) {
 	if strings.ContainsRune(name, filepath.Separator) || strings.ContainsRune(name, '/') {
-		return "", fmt.Errorf("纪律块文件名 %q 不能含路径分隔符：只支持 %s 下的纯文件名", name, r.dir)
+		return "", fmt.Errorf("%w: %q 不能含路径分隔符：只支持 %s 下的纯文件名", ErrBadName, name, dir)
 	}
-	if name == "." || name == ".." {
-		return "", fmt.Errorf("纪律块文件名 %q 非法：只支持 %s 下的纯文件名", name, r.dir)
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("%w: %q：只支持 %s 下的纯文件名", ErrBadName, name, dir)
 	}
-	return filepath.Join(r.dir, name), nil
+	return filepath.Join(dir, name), nil
 }
 
 // Preflight 读一遍所有被引用的纪律块文件，把问题以 WARN 暴露在启动日志里。
