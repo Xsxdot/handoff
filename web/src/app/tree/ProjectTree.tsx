@@ -33,7 +33,7 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, Ticket, WifiOff,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Ticket, WifiOff,
 } from 'lucide-react'
 import { filterTree } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
@@ -66,6 +66,8 @@ export interface ProjectTreeProps {
   onSelectDir: (base: BaseDir) => void
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
+  onOpenCards?: () => void
+  cardNeedsCount?: number
   onOpenTickets: () => void
   onOpenSettings: () => void
   onAddProject?: () => void
@@ -187,7 +189,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, cardNeedsCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -705,6 +707,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         >
           <Plus className="size-4 shrink-0" />
           <span>添加项目</span>
+        </button>
+        <button
+          type="button"
+          aria-label="工作项"
+          title="工作项"
+          onClick={onOpenCards}
+          className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+        >
+          <SquareKanban className="size-4" />
+          {cardNeedsCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-state-intervention px-1 text-center text-[10px] leading-4 text-white">
+              {cardNeedsCount}
+            </span>
+          )}
         </button>
         <button
           type="button"

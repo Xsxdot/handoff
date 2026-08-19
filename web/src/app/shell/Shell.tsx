@@ -19,11 +19,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
+import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
 import { useMachineCaps } from '../data/useMachineCaps'
+import { usePoll } from '../data/usePoll'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { isDesktopShell } from '../lib/desktopShell'
@@ -46,6 +48,9 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
+import { CardsPage } from '../cards/CardsPage'
+import { FlowsPage } from '../flows/FlowsPage'
+import { needsAttention } from '../cards/columns'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 
@@ -70,6 +75,14 @@ export function Shell() {
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
+  const cardsState = usePoll(fetchCards, 2500)
+  const decisionsState = usePoll(() => fetchDecisions(true), 2500)
+  const cardNeedsCount = useMemo(() => {
+    const cards = cardsState.data?.cards ?? []
+    const cardCount = cards.filter(needsAttention).length
+    const projectDecisionCount = (decisionsState.data ?? []).filter((decision) => decision.card_id === '').length
+    return cardCount + projectDecisionCount
+  }, [cardsState.data, decisionsState.data])
   const caps = useMachineCaps()
   // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
   // 浮窗里的入口不渲染。
@@ -317,6 +330,8 @@ export function Shell() {
             onSelectDir={wb.select}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
+            onOpenCards={() => navigate('/cards')}
+            cardNeedsCount={cardNeedsCount}
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onAddProject={() => setWizardOpen(true)}
@@ -338,6 +353,14 @@ export function Shell() {
         {wb.base && !desktop && <Breadcrumb base={wb.base} />}
         <main className="min-h-0 flex-1">
           <Routes>
+            <Route
+              path="/cards"
+              element={<CardsPage />}
+            />
+            <Route
+              path="/flows"
+              element={<FlowsPage />}
+            />
             <Route
               path="/settings"
               element={<SettingsPage onClose={() => navigate('/')} />}
