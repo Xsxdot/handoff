@@ -46,6 +46,23 @@ func EnsureRunning(log *slog.Logger, spec service.Spec) error {
 		return nil
 	}
 	log.Info("agentd 未在运行，准备托管拉起", "kind", m.Kind(), "installed", st.Installed, "bin", spec.BinPath)
+	// 已装就只启动，不重写单元定义。
+	//
+	// 承重的理由在 Windows：Install 会先 `schtasks /Delete /F` 再重建任务，
+	// 而本函数是换版路径上的常客（WaitAgentdBack 探不到新版本时会催一次），
+	// 于是「升级一次 = 计划任务被删了重建一次」，用户对任务定义做过的任何
+	// 修改和任务历史一并消失。Start 只触发、不重建。
+	if st.Installed {
+		serr := m.Start()
+		if serr == nil {
+			log.Info("agentd 已拉起（沿用既有单元定义）", "kind", m.Kind())
+			return nil
+		}
+		// 不直接返回错误：既有单元可能真的坏了（指向已被删除的二进制、定义被
+		// 改残），那种情况下重装才是对的自愈动作。降级为 Warn 后继续走 Install
+		// ——把「省一次重写」置于「agentd 拉不起来」之上是本末倒置
+		log.Warn("沿用既有单元拉起失败，改为重装", "kind", m.Kind(), "cause", serr)
+	}
 	if err := m.Install(spec); err != nil {
 		log.Error("托管 agentd 失败", "kind", m.Kind(), "bin", spec.BinPath, "cause", err)
 		return fmt.Errorf("托管并拉起 agentd: %w", err)

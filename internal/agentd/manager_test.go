@@ -192,7 +192,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger), st, hub
+	return NewManager(st, hub, ads, cfg, nil, nil, approver, newTestGate(t), logger), st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
@@ -407,7 +407,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
@@ -477,6 +477,82 @@ func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	}
 	if len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
 		t.Fatalf("任务应落 failed 供协调者查看, got %+v", tasks)
+	}
+}
+
+// TestManagerReadsLiveExecutorDefault 钉住：swapConf 改完缺省执行者后，
+// Manager 立即用新值解析 adapter，**不需要重建 Manager、不需要重启 agentd**。
+//
+// 为什么这条是承重的：m.cfg 存的是 NewManager 那一刻的 *config.Config 指针，
+// 而 swapConf 做的是 next := *old + s.cfg.Store(&next)——换的是新指针，
+// m.cfg 永远停在构造那一刻。B157/B158 的热更新走的是各自的取值函数旁路，
+// Executor.Default 没有那条旁路。
+func TestManagerReadsLiveExecutorDefault(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token: testToken, DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake", Model: "m-fake"},
+	}, discardLogger())
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	ads := map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}}
+	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
+		env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+	env.srv.SetManager(mgr) // 注入活配置就发生在这一刻
+
+	name, _, err := mgr.resolveExecutor("")
+	if err != nil || name != "fake" {
+		t.Fatalf("改之前 name = %q, err = %v，想要 fake", name, err)
+	}
+	if got := mgr.resolveModel("", "fake"); got != "m-fake" {
+		t.Fatalf("改之前 model = %q，想要 m-fake", got)
+	}
+
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		c.Executor = config.ExecutorConfig{Default: "opencode", Model: "m-oc"}
+		return nil
+	}); err != nil {
+		t.Fatalf("swapConf: %v", err)
+	}
+
+	name, _, err = mgr.resolveExecutor("")
+	if err != nil || name != "opencode" {
+		t.Fatalf("改之后 name = %q, err = %v，想要 opencode（Manager 必须读活配置）", name, err)
+	}
+	// model 跟着 default 一起换作用对象：现在 fake 不再是缺省，不该再套配置模型
+	if got := mgr.resolveModel("", "opencode"); got != "m-oc" {
+		t.Fatalf("改之后 opencode 的 model = %q，想要 m-oc", got)
+	}
+	if got := mgr.resolveModel("", "fake"); got != "" {
+		t.Fatalf("改之后 fake 的 model = %q，想要空串（它已不是缺省执行者）", got)
+	}
+}
+
+// TestStatusReportsLiveExecutorDefault 钉住 status.go 那两处读点。
+//
+// 漏改它的症状很隐蔽：保存成功、config.yaml 也对，但开发机列表上的「默认」
+// 标记来自 GET /api/status 的 default_executor，一直显示旧值——看起来像没保存成功。
+func TestStatusReportsLiveExecutorDefault(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token: testToken, DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake"},
+	}, discardLogger())
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	mgr := NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}},
+		env.srv.conf(), env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+	env.srv.SetManager(mgr)
+
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		c.Executor.Default = "opencode"
+		return nil
+	}); err != nil {
+		t.Fatalf("swapConf: %v", err)
+	}
+	var st proto.StatusResp
+	if code := env.getJSON(t, "/api/status", &st); code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	if st.DefaultExecutor != "opencode" {
+		t.Fatalf("default_executor = %q，想要 opencode", st.DefaultExecutor)
 	}
 }
 
@@ -1289,7 +1365,7 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake"},
 		Env:      map[string]string{"fake": "missing.env"},
 	}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 
 	// 先登记一个真实项目让解析通过：env 解析发生在任何 git 动作之前，
 	// 这条断言同时证明了「解析确实排在最前段」——若排到 git 动作之后，
@@ -1341,7 +1417,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 		Env:      map[string]string{"fake": "dev.env"},
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
@@ -1537,7 +1613,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return m, dataDir
 }
 
@@ -1682,7 +1758,7 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	return NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // TestCompensateKeepsBranchWhenWorktreeRemoveFails 验证 worktree 删不掉时

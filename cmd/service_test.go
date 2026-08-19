@@ -22,12 +22,15 @@ type fakeManager struct {
 	status     service.Status
 	statusErr  error
 	installed  *service.Spec
+	started    bool
+	startErr   error
 }
 
 func (f *fakeManager) Install(s service.Spec) error {
 	f.installed = &s
 	return f.installErr
 }
+func (f *fakeManager) Start() error                    { f.started = true; return f.startErr }
 func (f *fakeManager) Uninstall() error                { return f.uninstErr }
 func (f *fakeManager) Status() (service.Status, error) { return f.status, f.statusErr }
 func (f *fakeManager) Kind() string                    { return "fake" }

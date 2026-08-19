@@ -58,7 +58,9 @@ func newTestClientEnv(t *testing.T) *newTestEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	srv := agentd.NewServer(&config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &newTestEnv{srv: srv, ts: ts, st: st, home: home, token: testToken}
@@ -331,7 +333,7 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: env.token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil, nil,
+		nil, nil, nil,
 		gate,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)

@@ -51,7 +51,8 @@ import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
-import { loadPrefs, savePrefs, sortProjects, splitHiddenProjects, splitIdleWorkspaces, type TreePrefs } from './treePrefs'
+import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
+import { useTreePrefs } from './useTreePrefs'
 import { NewWorktreeDialog } from './NewWorktreeDialog'
 
 export interface ProjectTreeProps {
@@ -200,13 +201,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
-  // 显示偏好：初值从 localStorage 读一次（惰性初始化，不要每次渲染都读）。
-  // 改动统一走 updatePrefs——落盘与 setState 必须成对，分开写迟早漏一处
-  const [prefs, setPrefs] = useState<TreePrefs>(() => loadPrefs())
-  const updatePrefs = (next: TreePrefs) => {
-    setPrefs(next)
-    savePrefs(next)
-  }
+  // 显示偏好走共享层：设置页的「常规」分区改的是同一份，两处即时同步（B160 §4.3）
+  const [prefs, updatePrefs] = useTreePrefs()
   // 「已隐藏 N 个目录」的展开状态：**刻意不落盘**——它是一次性的「我现在想看看」，
   // 不是长期设定。键用机器节点 key
   const [openHiddenDirs, setOpenHiddenDirs] = useState<Set<string>>(new Set())

@@ -143,6 +143,27 @@ func (m *launchdManager) Install(spec Spec) error {
 	return nil
 }
 
+// Start 启动一个已 bootstrap 的服务，不重写 plist。
+//
+// kickstart 而不是 bootstrap：后者会加载单元定义（并在已加载时报错），
+// 而这里要的是「已经装好了，把它拉起来」。服务没注册时 kickstart 会失败，
+// 调用方据此回落到 Install。
+func (m *launchdManager) Start() error {
+	if out, err := m.run("launchctl", "kickstart", m.target()); err != nil {
+		m.log.Error("启动 launchd 服务失败", "label", LaunchdLabel,
+			"cause", err, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("启动 launchd 服务失败: %s（%w）", strings.TrimSpace(string(out)), err)
+	}
+	// 复核理由同 Install：kickstart 成功只说明请求被受理，起来即退出照样「成功」
+	if out, err := m.run("launchctl", "print", m.target()); err != nil {
+		m.log.Error("服务已触发但复核不到", "label", LaunchdLabel,
+			"cause", err, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("服务已触发但复核不到（可能起来即退出）: %w", err)
+	}
+	m.log.Info("launchd 服务已启动", "label", LaunchdLabel)
+	return nil
+}
+
 // Uninstall 卸载并删除 plist。本来就没装时返回 nil。
 func (m *launchdManager) Uninstall() error {
 	path, err := m.UnitPath()

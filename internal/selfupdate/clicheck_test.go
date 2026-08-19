@@ -113,3 +113,101 @@ func TestNotifyLineNumericOrder(t *testing.T) {
 		t.Fatal("v0.10.0 比 v0.9.0 新，应当提示")
 	}
 }
+
+// TestCompareVersionIsTheOnlyExportedComparator 钉住导出入口的存在与语义。
+//
+// 为什么要有这条：本函数历史上被写错过（B59 验收当场抓出反向提示——装了
+// v0.1.1 的机器被劝「有新版本 v0.1.0」，根因是没按三段整数比）。它现在有
+// 三个消费者（CLI 提示、桌面同步、桌面通知），错一次的代价乘以三。
+func TestCompareVersionIsTheOnlyExportedComparator(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"v0.1.0", "v0.1.1", -1, true},
+		{"v0.1.1", "v0.1.0", 1, true},
+		{"v0.1.0", "v0.1.0", 0, true},
+		// 字典序会把 v0.10.0 判成比 v0.9.0 旧——这条是本函数存在的理由
+		{"v0.10.0", "v0.9.0", 1, true},
+		{"v0.9.0", "v0.10.0", -1, true},
+		// 前缀 v 可有可无
+		{"0.2.0", "v0.1.0", 1, true},
+		// 形态不符一律 ok=false
+		{"v0.1", "v0.1.0", 0, false},
+		{"", "v0.1.0", 0, false},
+		{"v0.1.0", "rc10", 0, false},
+		{"v0.1.-1", "v0.1.0", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := CompareVersion(c.a, c.b)
+		if ok != c.ok {
+			t.Errorf("CompareVersion(%q,%q) ok = %v，想要 %v", c.a, c.b, ok, c.ok)
+			continue
+		}
+		if ok && got != c.want {
+			t.Errorf("CompareVersion(%q,%q) = %d，想要 %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestCompareVersionOrdersPrereleases 钉住预发布号的次序。
+//
+// 背景：本仓库发的每一个 rc（v0.3.0-rc8、v0.3.0-rc11…）此前对本函数都是
+// **不可比**的——parseVersion 要求严格三段整数，而 "0.3.0-rc11" 的第三段是
+// "0-rc11"。后果是所有 rc 构建上的版本比较一律判不出，桌面端的同步永远不
+// 触发、CLI 的更新提示对 rc 用户永远不出现。
+//
+// **不能照抄严格 semver。** semver 规定预发布标识符按 ASCII 字典序比，于是
+// "rc11" < "rc8"（因为 '1' < '8'）——正好和我们要的相反。本仓库的 tag 用的是
+// -rcN 而不是 semver 推荐的 -rc.N，所以标识符内部按「自然序」比：把数字段与
+// 非数字段拆开，数字段按数值比。这条偏离是刻意的，见 CompareVersion 的注释。
+func TestCompareVersionOrdersPrereleases(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		// 本仓库实际用的形态
+		{"v0.3.0-rc8", "v0.3.0-rc11", -1, true},
+		{"v0.3.0-rc11", "v0.3.0-rc8", 1, true},
+		{"v0.3.0-rc8", "v0.3.0-rc8", 0, true},
+		// 自然序 vs 字典序的分水岭：字典序会判 rc10 比 rc2 旧
+		{"v0.3.0-rc2", "v0.3.0-rc10", -1, true},
+		// 预发布一律早于同号正式版（semver 的核心规则，这条不偏离）
+		{"v0.3.0-rc11", "v0.3.0", -1, true},
+		{"v0.3.0", "v0.3.0-rc11", 1, true},
+		// 主版本号优先于预发布：rc 再新也压不过更高的正式版
+		{"v0.3.0-rc11", "v0.3.1", -1, true},
+		{"v0.4.0-rc1", "v0.3.9", 1, true},
+		// semver 推荐的点分形态也要认
+		{"v1.0.0-rc.1", "v1.0.0-rc.2", -1, true},
+		{"v1.0.0-alpha", "v1.0.0-beta", -1, true},
+		// 标识符个数不同：短的在前（semver 规则）
+		{"v1.0.0-rc", "v1.0.0-rc.1", -1, true},
+		// 构建元数据不参与比较（semver 规则）
+		{"v1.0.0+abc", "v1.0.0+xyz", 0, true},
+		{"v1.0.0-rc1+abc", "v1.0.0-rc1", 0, true},
+		// 正式版之间的既有行为不能变
+		{"v0.10.0", "v0.9.0", 1, true},
+		// 仍然不可比的：核心段不是三段整数
+		{"web-console-0c75a56c9", "v0.3.0", 0, false},
+		{"web-console-0c75a56c9+b161fix", "v0.3.0", 0, false},
+		{"rc10", "v0.1.0", 0, false},
+		{"v0.1", "v0.1.0", 0, false},
+		{"", "v0.1.0", 0, false},
+		{"v0.1.-1", "v0.1.0", 0, false},
+		// 预发布段为空（尾随 -）不算合法
+		{"v1.0.0-", "v1.0.0", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := CompareVersion(c.a, c.b)
+		if ok != c.ok {
+			t.Errorf("CompareVersion(%q,%q) ok = %v，想要 %v", c.a, c.b, ok, c.ok)
+			continue
+		}
+		if ok && got != c.want {
+			t.Errorf("CompareVersion(%q,%q) = %d，想要 %d", c.a, c.b, got, c.want)
+		}
+	}
+}

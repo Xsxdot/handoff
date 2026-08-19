@@ -30,6 +30,7 @@ vi.mock('../../api/client', async () => {
   return {
     ...actual,
     fetchDiscipline: vi.fn().mockResolvedValue({ dir: '/d', builtins: [], files: [], bindings: [] }),
+    fetchEnv: vi.fn().mockResolvedValue({ dir: '/d/env', files: [], bindings: [] }),
   }
 })
 
@@ -49,16 +50,17 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { name: '执行纪律' })).toBeInTheDocument()
   })
 
-  it('切到常规分区显示明确的空占位，而不是空白', () => {
+  it('切到常规分区显示当前浏览器范围说明', () => {
     render(<SettingsPage onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: '常规' }))
-    expect(screen.getByText(/本期没有可配置项/)).toBeInTheDocument()
+    expect(screen.getByText(/只保存在当前浏览器/)).toBeInTheDocument()
   })
 
-  it('切到 Env 文件分区说明本期不做', () => {
+  it('切到 Env 文件分区显示真实配置面', async () => {
     render(<SettingsPage onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Env 文件' }))
-    expect(screen.getByText(/本期不做/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Env 文件' })).toBeInTheDocument()
+    expect(await screen.findByText(/暂无用户文件/)).toBeInTheDocument()
   })
 
   it('返回工作台调 onClose', () => {

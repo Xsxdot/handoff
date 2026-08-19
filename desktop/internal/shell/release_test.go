@@ -20,7 +20,7 @@ func TestDecideReleaseThreeStates(t *testing.T) {
 		{"没有安装就释出", "", "", "v1.2.0", shell.DecisionInstall},
 		{"已有且更新就直接用", "/home/u/.local/bin/handoff", "v1.3.0", "v1.2.0", shell.DecisionUseExisting},
 		{"已有且同版就直接用", "/home/u/.local/bin/handoff", "v1.2.0", "v1.2.0", shell.DecisionUseExisting},
-		{"已有但更旧只提示", "/home/u/.local/bin/handoff", "v1.1.0", "v1.2.0", shell.DecisionNotifyOutdated},
+		{"已有但更旧只提示", "/home/u/.local/bin/handoff", "v1.1.0", "v1.2.0", shell.DecisionEmbeddedNewer},
 		// 判不出已有版本时必须偏保守：用它，不覆盖。
 		// 猜错的代价不对称——不覆盖最坏是用户少了个新特性，
 		// 覆盖错了是把用户手装的二进制换掉。

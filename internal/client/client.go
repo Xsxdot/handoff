@@ -221,12 +221,54 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 		hc: &http.Client{
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+				// Proxy 显式留空：协调者↔agentd 永不经代理（纪律见
+				// internal/proxycfg 包头——那是 LAN/loopback 地址，代理化轻则
+				// 多绕一跳、重则 socks5 解析不了 100.x.y.z 直接断链）。
+				//
+				// 零值本来就是 nil，写出来是因为**上一次它只是隐式成立**：
+				// WS 拨号那条路没交出这个 Transport，退回了带
+				// ProxyFromEnvironment 的 DefaultTransport，于是被代理回 503
+				// 且不报错（B161）。让纪律在代码里看得见，比省一行重要。
+				Proxy: nil,
 			},
 		},
 		wsInitialBackoff: initial,
 		wsMaxBackoff:     max,
 		wsStableAfter:    stableAfter,
 	}
+}
+
+// wsDialOptions 组装 WS 拨号选项：本 Client 自己的 http.Client + Bearer 头。
+//
+// **HTTPClient 必须显式给出，这是本函数存在的全部理由。** 不给时
+// coder/websocket 退回 http.DefaultClient，而 DefaultTransport 的 Proxy 是
+// http.ProxyFromEnvironment——WS 拨号会被送进 HTTP_PROXY/HTTPS_PROXY。这破的是
+// proxycfg 包头写死的那条纪律：「协调者↔agentd 那条链路永不走代理」。
+//
+// 实测症状（B161）：本机设了 HTTP_PROXY 且 NO_PROXY 不含执行机 IP 时，每次拨号
+// 都被代理回 503，follow 长连接永远建不起来，只剩每 6s 一次的 HTTP 对账兜底
+// ——**而且不报错**，看起来和「executor 正在长考」一模一样，极难发现。当时
+// curl 拨同一个地址是 101，因为 curl 对 http:// URL 只读小写 http_proxy。
+//
+// 顺带两点：c.hc 的 DialContext 已带 dialTimeout，不必再靠 DefaultClient；
+// c.hc.Timeout 恒为 0（只设 Transport），满足 coder/websocket 对
+// HTTPClient.Timeout 必须为零的硬要求。
+//
+// 单独抽成函数是为了可测：拿 HTTP_PROXY 环境变量做判据不可靠——
+// net/http 对它有 sync.Once 缓存，t.Setenv 很可能不生效，测试会因为
+// 「代理压根没被解析」而变绿，是典型的为错误理由通过。
+func (c *Client) wsDialOptions() *websocket.DialOptions {
+	opts := &websocket.DialOptions{HTTPClient: c.hc}
+	if c.token != "" {
+		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
+	}
+	for k, v := range c.extraHeaders {
+		if opts.HTTPHeader == nil {
+			opts.HTTPHeader = http.Header{}
+		}
+		opts.HTTPHeader.Set(k, v)
+	}
+	return opts
 }
 
 // MarkForwarded 返回一个副本，其后续请求都带上 X-Handoff-Forwarded: 1。
@@ -1297,18 +1339,9 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "http://"), "https://")
 	wsURL := wsScheme + "://" + host + "/ws/events?task=" + taskID +
 		"&from_seq=" + strconv.FormatInt(fromSeq, 10)
-	opts := &websocket.DialOptions{}
-	if c.token != "" {
-		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + c.token}}
-	}
-	// 附加头（agentd→agentd 的防环标记）同样带进 WS 握手：
-	// streamOnce 不走 do，这里补一遍，让 MarkForwarded 的镜像连接从拨号起就带标记
-	for k, v := range c.extraHeaders {
-		if opts.HTTPHeader == nil {
-			opts.HTTPHeader = http.Header{}
-		}
-		opts.HTTPHeader.Set(k, v)
-	}
+	// 附加头（agentd→agentd 的防环标记）由 wsDialOptions 一并带上：streamOnce
+	// 不走 do，若不补，MarkForwarded 的镜像连接从拨号起就丢了标记。
+	opts := c.wsDialOptions()
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dialCtx, wsURL, opts)
 	dialCancel()

@@ -562,3 +562,137 @@ func TestToolRewrittenFilesPinnedToLF(t *testing.T) {
 		}
 	}
 }
+
+// macOS 薄壳的交付形态是 DMG，而组装 DMG 的调用方式是承重的。
+//
+// **`package:dmg` 与 `create:dmg` 不能互换。** 前者的 deps 挂着
+// `package` → `build`（见 desktop/build/darwin/Taskfile.yml），会把流水线上一步
+// 刚签名并装订好票据的 `.app` 整个重建掉，最后塞进 DMG 的是一个全新的、未签名
+// 的 bundle。这条路上**没有任何一步会报错**：wails3 退 0、DMG 照常产出、
+// job 全绿，要到用户挂载 DMG 双击被 Gatekeeper 拦住才暴露，而那时资产已经发出去了。
+//
+// DMG 本身也必须签 + 公证 + 装订：里面的 .app 虽已装订，但 DMG 作为下载物同样
+// 带隔离属性，不装订的话首次挂载在离线机器上仍会被拦。
+func TestDarwinDesktopShipsStapledDMG(t *testing.T) {
+	wf := stripYAMLComments(readWorkflow(t))
+
+	// 只看**调用行**，不看提及。报错文案里出现 package:dmg 是正当的（那正是要
+	// 提醒的坑），禁的是真的去调它。第一版写成裸 Contains，被自己的 echo 文案
+	// 绊倒——门要对准行为，不是对准字符串。
+	var invokesDMG, invokesPackageDMG bool
+	for _, line := range strings.Split(wf, "\n") {
+		if !strings.Contains(line, "wails3 task") {
+			continue
+		}
+		if strings.Contains(line, "package:dmg") {
+			invokesPackageDMG = true
+		}
+		if strings.Contains(line, "create:dmg") {
+			invokesDMG = true
+		}
+	}
+	if invokesPackageDMG {
+		t.Fatal("不得调 package:dmg：它的 deps 会重建 .app，把已签名已装订的 bundle " +
+			"换成一个未签名的新 bundle，且全程不报错")
+	}
+	if !invokesDMG {
+		t.Fatal("darwin 薄壳 job 没有调 create:dmg，不会产出 DMG")
+	}
+	// **带次数，不用 Contains。** bundle 那步本来就有一处 stapler staple，
+	// 裸 Contains 的话「DMG 不装订」这条变异照样绿——第一版就是这么写的，
+	// 变异复验当场抓出来。同一份文件顶上的
+	// TestWorkflowInjectsVersionAtModulePath 早记过这个教训。
+	for _, c := range []struct {
+		want string
+		n    int
+	}{
+		{"xcrun stapler staple \"$app\"", 1},   // bundle 装订
+		{"xcrun stapler staple \"$dmg\"", 1},   // DMG 自己也要装订
+		{"xcrun stapler validate \"$dmg\"", 1}, // 装订后立刻复核，别等用户来发现
+		// 挂载产出的 DMG，复核里面那份 .app 的票据还在——这是 package:dmg
+		// 重建 bundle 的运行期兜底，测试之外的第二道保险
+		{"xcrun stapler validate \"$mnt/handoff-desktop.app\"", 1},
+		{"notary-dmg.log", 3}, // 提交 / 查状态 / 打印失败详情，各一次
+	} {
+		if got := strings.Count(wf, c.want); got != c.n {
+			t.Fatalf("DMG 承重步骤 %q 应出现 %d 次，实得 %d 次", c.want, c.n, got)
+		}
+	}
+	// notarytool 在 status 为 Invalid 时仍可能退 0——两轮公证都必须查状态串，
+	// 只查一轮等于放过另一轮。
+	if got := strings.Count(wf, "status: Accepted"); got < 3 {
+		t.Fatalf("每一轮公证都要查 'status: Accepted'（裸 CLI / bundle / DMG 共三轮），实得 %d 次", got)
+	}
+	// 交付的是 DMG，不再另发一份同内容的 zip
+	if strings.Contains(wf, "handoff-desktop_${TAG}_darwin_arm64.zip") {
+		t.Fatal("darwin 薄壳不该再发 zip：同一份 .app 出现两种资产会让用户不知道该下哪个")
+	}
+	if !strings.Contains(wf, "handoff-desktop_${TAG}_darwin_arm64.dmg") {
+		t.Fatal("darwin 薄壳资产名必须是 .dmg")
+	}
+}
+
+// TestDarwinAppCarriesRealVersion 钉住 .app 的版本号随 TAG 注入。
+//
+// 为什么需要这条门：Info.plist 里的版本是**签进 bundle 的静态文件**，不像
+// ldflags 那样构建时必然被注入。漏掉这一步不会有任何报错——wails3 照常打包、
+// 签名公证照常通过、DMG 照常产出——只有用户在访达「显示简介」里看到一个
+// 假版本号。而这正是他排查「我到底装的是哪个版本」时唯一会看的地方。
+//
+// 断言用精确串计数而不是 Contains：Contains 会被本文件里任何一处提到
+// plutil 的注释或 echo 文案蒙混过关（同一个坑本文件里已经吃过两次，见
+// TestDarwinDesktopShipsStapledDMG 的注释）。
+func TestDarwinAppCarriesRealVersion(t *testing.T) {
+	wf := readWorkflow(t)
+	plistPath := "desktop/build/darwin/Info.plist"
+	want := map[string]int{
+		`plutil -replace CFBundleShortVersionString -string "${TAG#v}" ` + plistPath: 1,
+		`plutil -replace CFBundleVersion -string "${TAG#v}" ` + plistPath:            1,
+	}
+	for s, n := range want {
+		if got := strings.Count(wf, s); got != n {
+			t.Errorf("release.yml 里 %q 出现 %d 次，想要 %d 次", s, got, n)
+		}
+	}
+	// 注入必须排在构建之前——排在之后等于没注入，而且同样不报错
+	iInject := strings.Index(wf, `plutil -replace CFBundleShortVersionString`)
+	// 当前 job 调的是 package；它的依赖会先执行 darwin build，再复制这份
+	// Info.plist 组装 .app。断言对准实际调用，而不是凭旧的 task 名猜。
+	iBuild := strings.Index(wf, `wails3 task package`)
+	if iInject < 0 || iBuild < 0 {
+		t.Fatalf("找不到注入步骤或构建步骤：inject=%d build=%d", iInject, iBuild)
+	}
+	if iInject > iBuild {
+		t.Error("版本注入排在了 package 之后，构建读到的还是旧值")
+	}
+
+	// **改了被跟踪的文件就必须还原**，否则本 job 末尾的「确认工作区干净」必挂。
+	//
+	// rc11 第一次发布就是栽在这里：注入步骤本身完全正确、上面几条断言全绿，
+	// 但它与另一个 step 的相互作用没人管——契约测试只看了「这一步对不对」，
+	// 没看「这一步会不会把别的门弄挂」。凡是在 CI 里改仓库内被跟踪文件的步骤，
+	// 都要连着问一句：这个 job 有没有干净门？
+	// 断言带上 -C "$GITHUB_WORKSPACE"：还原那一步的 working-directory 是
+	// desktop，而 git 的 pathspec 相对 cwd 解析，不锚定仓库根就会报
+	// 「did not match any file(s) known to git」——rc11 第二次发布挂在这里。
+	restore := `git -C "$GITHUB_WORKSPACE" checkout -- desktop/build/darwin/Info.plist`
+	if got := strings.Count(wf, restore); got != 1 {
+		t.Errorf("release.yml 里 %q 出现 %d 次，想要 1 次——"+
+			"plutil 改的是仓库里被跟踪的文件，不还原，末尾的「确认工作区干净」必挂", restore, got)
+	}
+	iRestore := strings.Index(wf, restore)
+	if iRestore < 0 {
+		return
+	}
+	if iRestore < iBuild {
+		t.Error("还原排在了 package 之前，package 组装 .app 时读到的就是被还原后的占位版本号")
+	}
+	// 还原必须排在那道干净门之前才有意义。取 package 之后的第一处干净检查。
+	rel := strings.Index(wf[iBuild:], `out="$(git status --porcelain)"`)
+	if rel < 0 {
+		t.Fatal("找不到 package 之后的「确认工作区干净」步骤")
+	}
+	if iClean := iBuild + rel; iRestore > iClean {
+		t.Error("还原排在了「确认工作区干净」之后，那道门还是会挂")
+	}
+}

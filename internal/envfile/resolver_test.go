@@ -20,7 +20,7 @@ func newTestResolver(t *testing.T, m map[string]string) (*Resolver, string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	return NewResolver(dir, m, quietLogger()), dir
+	return NewResolver(dir, Static(m), quietLogger()), dir
 }
 
 func TestDirIsUnderDataDir(t *testing.T) {
@@ -109,4 +109,43 @@ func TestPreflightDoesNotPanicOnBrokenFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	r.Preflight() // 不返回错误，问题只进日志
+}
+
+// TestResolverReadsLiveMapping 钉住热更新：映射函数返回值变了，For 立即反映，
+// 不需要重建 Resolver。这是控制台「保存后下一个任务即生效」的地基。
+func TestResolverReadsLiveMapping(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.env"), []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.env"), []byte("B=2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]string{"opencode": "a.env"}
+	r := NewResolver(dir, func() map[string]string { return m }, quietLogger())
+
+	got, err := r.For("opencode")
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if len(got) != 1 || got[0] != "A=1" {
+		t.Fatalf("got = %v，想要 [A=1]", got)
+	}
+
+	m = map[string]string{"opencode": "b.env"} // 模拟控制台改了配置
+	got, err = r.For("opencode")
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if len(got) != 1 || got[0] != "B=2" {
+		t.Fatalf("换映射后 got = %v，想要 [B=2]（Resolver 必须每次取活映射）", got)
+	}
+}
+
+// TestStaticWrapsFixedMapping 钉住 Static 助手：测试与不需要热更新的调用方用它。
+func TestStaticWrapsFixedMapping(t *testing.T) {
+	f := Static(map[string]string{"grok": "x.env"})
+	if f()["grok"] != "x.env" {
+		t.Fatalf("Static 没有原样透传映射")
+	}
 }

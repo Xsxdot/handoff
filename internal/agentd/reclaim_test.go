@@ -217,7 +217,7 @@ func newReclaimManager(t *testing.T) (*Manager, string) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return m, repo
 }
 

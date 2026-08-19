@@ -522,6 +522,18 @@ jobs:
             --sign "$APPLE_SIGNING_IDENTITY" desktop/internal/embedbin/handoff
           codesign --verify --strict --verbose=2 desktop/internal/embedbin/handoff
 
+      - name: 把 TAG 写进 Info.plist
+        # Info.plist 是签进 bundle 的静态文件，仓库里存的是占位值 0.1.0。
+        # 不在这里覆盖，发出去的每一份 .app 都自称 0.1.0——而这是用户排查
+        # 「我装的是哪个版本」时唯一会看的地方。漏掉不会有任何报错。
+        # ${TAG#v}: CFBundleShortVersionString 按苹果约定不带 v 前缀。
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          plutil -replace CFBundleShortVersionString -string "${TAG#v}" desktop/build/darwin/Info.plist
+          plutil -replace CFBundleVersion -string "${TAG#v}" desktop/build/darwin/Info.plist
+          plutil -p desktop/build/darwin/Info.plist | grep -E "CFBundle(Short)?Version"
+
       # 第二步：把已签名的 handoff 嵌进薄壳并组装 bundle。
       # 注意 `wails3 task build` 只出裸二进制，**`.app` 要靠 package 任务组装**
       # ——只跑 build 会拿到一个陈旧的 .app。
@@ -541,6 +553,19 @@ jobs:
           wails3 task package \
             EXTRA_TAGS=embedbin \
             EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+          # 还原被上一步 plutil 改过的 Info.plist。**这一步是必需的，不是洁癖**：
+          # 本 job 末尾有「确认工作区干净」的门，而 plutil 改的是仓库里被跟踪的
+          # 文件——不还原，job 必定在那道门上失败（rc11 第一次就是这么挂的）。
+          #
+          # 还原必须排在 package 之后：Info.plist 此时已经拷进 .app，改回源文件
+          # 不影响产物。
+          #
+          # **必须带 -C "$GITHUB_WORKSPACE"**：本 step 的 working-directory 是
+          # desktop，而 git 的 pathspec 相对 cwd 解析，写成仓库根相对路径会报
+          # 「did not match any file(s) known to git」（rc11 第二次就是这么挂的）。
+          # 用 -C 锚定仓库根，路径就与上面 plutil 那步逐字一致，不必两处各写一套。
+          git -C "$GITHUB_WORKSPACE" checkout -- desktop/build/darwin/Info.plist
 
       # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
       #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
@@ -568,10 +593,10 @@ jobs:
           grep -q 'status: Accepted' /tmp/notary-desktop.log || {
             echo "公证未被接受：" >&2; cat /tmp/notary-desktop.log >&2; exit 1; }
 
-          # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
+          # 装订票据后 .app 就能在离线机器上过 Gatekeeper。**这里不再打 zip**：
+          # 交付形态是 DMG（见下面那个 step），zip 会让同一份 .app 出现两种资产。
           xcrun stapler staple "$app"
           rm -f "${RUNNER_TEMP}/notarize-desktop.zip"
-          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.zip"
 
       # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
       # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
@@ -605,6 +630,52 @@ jobs:
             cat /tmp/spctl-desktop.log >&2; exit 1; }
           echo "bundle 签名与公证票据校验通过"
 
+      # DMG 是 macOS 上的交付形态：挂载后把 .app 拖进 Applications。发 zip 的话
+      # 用户多半就地在 ~/Downloads 里双击，那份 .app 带着隔离属性、被 Gatekeeper
+      # 路径随机化（App Translocation）挪到只读临时挂载点上跑；DMG 里那个
+      # Applications 快捷方式的存在就是为了把人推去做「搬出下载目录」这一步。
+      #
+      # **必须直接调 create:dmg，不能调 package:dmg。** 后者的 deps 挂着
+      # package → build，会把上一步刚签名并装订好票据的 .app 整个重建掉，最后
+      # 塞进 DMG 的是一个全新的、未签名的 bundle——这条路上没有任何报错，要到
+      # 用户挂载 DMG 双击打不开才发现。由 release_workflow_test.go 钉住。
+      #
+      # DMG 自己也要签 + 公证 + 装订：里面的 .app 虽已装订，但 DMG 作为下载物
+      # 同样带隔离属性，不装订的话首次挂载在离线机器上仍会被拦。
+      # 注意 DMG **不加 --options runtime**：硬化运行时是给可执行代码的，
+      # 磁盘映像不是代码。
+      - name: 打 DMG 并签名公证
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          wails3 task darwin:create:dmg
+          dmg="$(ls bin/*.dmg 2>/dev/null | head -1)"
+          test -n "$dmg" || { echo "create:dmg 没有产出 .dmg" >&2; ls -la bin >&2; exit 1; }
+
+          # 复核 DMG 里装的确实是那份已装订票据的 bundle，而不是被重建过的
+          mnt="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt" >/dev/null
+          xcrun stapler validate "$mnt/handoff-desktop.app" || {
+            echo "DMG 里的 .app 没有公证票据——多半是 package:dmg 把它重建了" >&2
+            hdiutil detach "$mnt" >/dev/null || true; exit 1; }
+          hdiutil detach "$mnt" >/dev/null
+
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary-dmg.log
+          # 同 bundle 那条：notarytool 在 Invalid 时仍可能退 0，必须查状态串
+          grep -q 'status: Accepted' /tmp/notary-dmg.log || {
+            echo "DMG 公证未被接受：" >&2; cat /tmp/notary-dmg.log >&2; exit 1; }
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          mv "$dmg" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.dmg"
+          echo "DMG 已签名、公证、装订"
+
       - name: 确认工作区干净
         run: |
           set -euo pipefail
@@ -614,7 +685,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: handoff-desktop_darwin
-          path: ${{ runner.temp }}/handoff-desktop_*.zip
+          path: ${{ runner.temp }}/handoff-desktop_*.dmg
           if-no-files-found: error
 
   # 薄壳的 windows 资产。放在 windows runner 上而不是从 Linux 交叉编译：

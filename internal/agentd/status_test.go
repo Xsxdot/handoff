@@ -84,7 +84,7 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": ad},
-		cfg, nil, nil, nil, logger)
+		cfg, nil, nil, nil, nil, logger)
 	env.srv.SetManager(mgr)
 	return &statusEnv{ts: env.ts, st: env.st, mgr: mgr}
 }
@@ -104,7 +104,7 @@ func newTestManager(t *testing.T) *agentd.Manager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
 	return agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": &probeStub{alive: true}},
-		cfg, nil, nil, nil, logger)
+		cfg, nil, nil, nil, nil, logger)
 }
 
 // seedTask 落一条指定状态的任务（executor 一律 "stub"，保证探活路由到 stub）。
@@ -357,7 +357,7 @@ func TestStatusListenAux(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"stub": &probeStub{alive: true}}, cfg, nil, nil, nil, logger)
+		map[string]executor.Adapter{"stub": &probeStub{alive: true}}, cfg, nil, nil, nil, nil, logger)
 
 	st, err := mgr.Status()
 	if err != nil {

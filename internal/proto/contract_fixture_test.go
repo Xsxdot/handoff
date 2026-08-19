@@ -88,6 +88,11 @@ func TestContractFixtures(t *testing.T) {
 		{"CreateWorktreeReq", createWorktreeReqSample()},
 		{"DisciplineResp", disciplineRespSample()},
 		{"DisciplineMappingReq", disciplineMappingReqSample()},
+		{"EnvResp", envRespSample()},
+		{"EnvKeysResp", envKeysRespSample()},
+		{"EnvMappingReq", envMappingReqSample()},
+		{"ExecutorDefaultResp", executorDefaultRespSample()},
+		{"ExecutorDefaultReq", executorDefaultReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -539,4 +544,53 @@ func disciplineMappingReqSample() DisciplineMappingReq {
 			{Executor: "opencode", Mode: "default", DefaultTier: "subagent"},
 		},
 	}
+}
+
+// envRespSample 返回 EnvResp 的代表性样本：两档各出现一次（off / file），
+// 并含一个未注册但配置里有的 executor。
+func envRespSample() EnvResp {
+	return EnvResp{
+		Dir: "/Users/dev/.handoff/env",
+		Files: []EnvFile{
+			{Name: "proxy.env", Size: 64,
+				SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
+		},
+		Bindings: []EnvBinding{
+			{Executor: "codex", Mode: "file", File: "proxy.env"},
+			{Executor: "opencode", Mode: "off"},
+		},
+	}
+}
+
+// envKeysRespSample 返回 EnvKeysResp 的代表性样本：一条普通、一条重复、
+// 一条空值（ValueBytes=0，omitempty 不适用于它，必须仍然出现在 JSON 里）。
+func envKeysRespSample() EnvKeysResp {
+	return EnvKeysResp{Keys: []EnvKey{
+		{Key: "HTTPS_PROXY", ValueBytes: 34},
+		{Key: "GOPROXY", ValueBytes: 21, Duplicate: true},
+		{Key: "EMPTY_ONE", ValueBytes: 0},
+	}}
+}
+
+// envMappingReqSample 返回 EnvMappingReq 的代表性样本。
+func envMappingReqSample() EnvMappingReq {
+	return EnvMappingReq{Bindings: []EnvBinding{
+		{Executor: "codex", Mode: "file", File: "proxy.env"},
+		{Executor: "opencode", Mode: "off"},
+	}}
+}
+
+// executorDefaultRespSample 返回 ExecutorDefaultResp 的代表性样本。
+func executorDefaultRespSample() ExecutorDefaultResp {
+	return ExecutorDefaultResp{
+		Default:   "opencode",
+		Model:     "opencode-go/deepseek-v4-flash",
+		Available: []string{"claude", "codex", "fake", "grok", "opencode"},
+	}
+}
+
+// executorDefaultReqSample 返回 ExecutorDefaultReq 的代表性样本：
+// model 刻意给空串——「不设默认模型」是常态取值，必须在线格式里出现过一次。
+func executorDefaultReqSample() ExecutorDefaultReq {
+	return ExecutorDefaultReq{Default: "codex", Model: ""}
 }

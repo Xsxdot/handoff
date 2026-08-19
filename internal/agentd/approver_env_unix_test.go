@@ -26,7 +26,7 @@ func newEnvApprover(t *testing.T, body string) *Approver {
 	if err := os.WriteFile(filepath.Join(dir, "a.env"), []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	res := envfile.NewResolver(dir, map[string]string{"opencode": "a.env"},
+	res := envfile.NewResolver(dir, envfile.Static(map[string]string{"opencode": "a.env"}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 5 * time.Second},
 		res, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -75,7 +75,7 @@ func TestApproverEnvFailureDoesNotRunCommand(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	res := envfile.NewResolver(dir, map[string]string{"opencode": "nope.env"},
+	res := envfile.NewResolver(dir, envfile.Static(map[string]string{"opencode": "nope.env"}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 5 * time.Second},
 		res, slog.New(slog.NewTextHandler(io.Discard, nil)))
