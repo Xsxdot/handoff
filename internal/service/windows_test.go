@@ -549,3 +549,45 @@ func TestWindowsStatusNotRunningOnPlainFailureCode(t *testing.T) {
 		t.Fatal("退出码 1（撞 DataDir 锁）必须判成没跑")
 	}
 }
+
+// Start 绝不能碰任务定义：不 /Delete、不 /Create、不写 XML。
+//
+// 这是 Start 存在的全部理由。此前「催 agentd 起来」只能走 Install，而 Windows
+// 的 Install 会先 `schtasks /Delete /F` 再重建——桌面端每换一次版就把用户改过的
+// 任务定义抹一次，任务历史也一并没了。
+func TestWindowsStartDoesNotRebuildTask(t *testing.T) {
+	m, calls, written := newTestWindows(t, "SUCCESS", nil)
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	joined := strings.Join(*calls, "\n")
+	for _, forbidden := range []string{"/Delete", "/Create"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("Start 调了 %s——它会重建任务定义。实际调用:\n%s", forbidden, joined)
+		}
+	}
+	if len(*written) != 0 {
+		t.Errorf("Start 写了文件，它不该碰 XML：%v", *written)
+	}
+	if !strings.Contains(joined, "/Run") {
+		t.Errorf("Start 没有触发任务。实际调用:\n%s", joined)
+	}
+}
+
+// 任务查不到时 Start 报错、且不代为安装。
+//
+// 调用方（desktop 的 EnsureRunning）正是靠这个错误决定回落到 Install 的；
+// 如果 Start 在这里自己装上，调用方就再也分不清「拉起了」和「重建了」。
+func TestWindowsStartFailsWhenTaskAbsent(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "错误: 系统找不到指定的任务。", errors.New("exit status 1"))
+	if err := m.Start(); err == nil {
+		t.Fatal("任务不存在却没报错")
+	}
+	joined := strings.Join(*calls, "\n")
+	if strings.Contains(joined, "/Create") {
+		t.Errorf("Start 在任务缺失时代为安装了。实际调用:\n%s", joined)
+	}
+	if strings.Contains(joined, "/Run") {
+		t.Errorf("Start 在查询失败后仍然触发了任务。实际调用:\n%s", joined)
+	}
+}

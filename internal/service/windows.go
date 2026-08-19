@@ -277,13 +277,25 @@ func (m *windowsManager) Install(spec Spec) error {
 	// 二进制路径错、端口被占、配置读不出来都会让它起来即死——那种情况下
 	// 报「安装成功」，操作者会去查一个并不存在的服务。
 	// 轮询而不是睡一个固定值：进程拉起通常在百毫秒内，慢的机器上要几秒。
+	return m.waitRunning("Windows 计划任务安装完成并已运行", spec.LogPath)
+}
+
+// waitRunning 轮询到任务真的在跑为止，供 Install 与 Start 共用。
+//
+// 参数：
+//   - okMsg: 复核通过时打的日志文案。由调用方给而不是写死——Install 与 Start
+//     是两件不同的事，走查清单按这行文案区分它们，合并会让判据失去分辨力
+//   - logPath: 复核不过时提示用户去看哪个日志
+//
+// 复核的是「进程真的存活」而不是「注册上了/触发了」：二进制路径错、端口被占、
+// 配置读不出来都会让它起来即死，那种情况下报成功，操作者会去查一个不存在的服务。
+func (m *windowsManager) waitRunning(okMsg, logPath string) error {
 	var last Status
 	for i := 0; i < installVerifyAttempts; i++ {
 		m.sleep(installVerifyInterval)
 		st, serr := m.Status()
 		if serr == nil && st.Running {
-			m.log.Info("Windows 计划任务安装完成并已运行",
-				"task", WindowsTaskName, "probe", i+1)
+			m.log.Info(okMsg, "task", WindowsTaskName, "probe", i+1)
 			return nil
 		}
 		last = st
@@ -291,8 +303,31 @@ func (m *windowsManager) Install(spec Spec) error {
 	m.log.Error("任务已启动但复核窗口内未见进程存活",
 		"task", WindowsTaskName, "window", installVerifyWindow,
 		"installed", last.Installed, "detail", last.Detail)
-	return fmt.Errorf("任务已建并已触发，但 %s 内未复核到 agentd 进程存活（检查 %s）",
-		installVerifyWindow, spec.LogPath)
+	// logPath 为空时不拼「检查 」——一个指向空白的排障提示比没有提示更糟
+	hint := ""
+	if logPath != "" {
+		hint = "（检查 " + logPath + "）"
+	}
+	return fmt.Errorf("任务已触发，但 %s 内未复核到 agentd 进程存活%s", installVerifyWindow, hint)
+}
+
+// Start 触发已安装的计划任务并复核进程真的起来了。
+//
+// 不写 XML、不 /Create、不 /Delete——这正是它存在的理由：此前每次「催 agentd
+// 起来」都走 Install，而 Windows 的 Install 会先 `schtasks /Delete /F` 再重建，
+// 于是每次换版都把任务定义恢复成默认值。
+//
+// 任务不存在时先在 /Query 这一步失败并返回错误，调用方据此回落到 Install。
+func (m *windowsManager) Start() error {
+	if out, qerr := m.run("schtasks", "/Query", "/TN", WindowsTaskName); qerr != nil {
+		return fmt.Errorf("计划任务 %s 查询不到，无法只启动: %s（%w）",
+			WindowsTaskName, strings.TrimSpace(string(out)), qerr)
+	}
+	m.log.Info("启动已安装的 Windows 计划任务（不重建定义）", "task", WindowsTaskName)
+	if out, rerr := m.run("schtasks", "/Run", "/TN", WindowsTaskName); rerr != nil {
+		return fmt.Errorf("启动计划任务失败: %s（%w）", strings.TrimSpace(string(out)), rerr)
+	}
+	return m.waitRunning("Windows 计划任务已启动", "")
 }
 
 // Uninstall 删任务并删 XML。本来就没装时返回 nil。

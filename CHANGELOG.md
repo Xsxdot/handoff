@@ -8,6 +8,79 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [Unreleased]
+
+_（下一版的改动记在这里。）_
+
+## [v0.3.1] - 2026-08-19
+
+### 修复
+
+- **换版不再重建 Windows 计划任务。** 桌面端每次把本机 agentd 换版后都会催进程
+  管理器把它拉起来，而这条路径此前只能走「安装」——Windows 上的安装是
+  `schtasks /Delete /F` 再重建，于是**升级一次，用户对 `handoff-agentd` 任务定义
+  做过的任何修改（触发器、运行身份、条件）连同任务历史一起被抹回默认**。
+  服务管理器新增「只启动、不改定义」的能力，已装的单元现在只触发不重建。
+
+  单元真的坏了（指向已被删除的二进制、定义被改残）时仍会回落到重装——
+  「少重写一次」不该凌驾于「agentd 起不来」之上。
+
+  macOS 与 Linux 同样受益（不再无谓 `bootout`/`bootstrap` 与 `daemon-reload`），
+  但那两边的重装本来就不破坏用户数据，Windows 才是这条修复的动机。
+
+## [v0.3.0] - 2026-08-19
+
+**0.3.0 正式版。** 这一版的主线是**桌面端**：Windows 与 macOS 各有一份原生薄壳，
+把控制台、首次配置、以及本机 agentd/CLI 的版本同步收进一个双击就能用的入口。
+从 v0.2.3 升级无需改配置。
+
+### 新增
+
+- **桌面端（Windows `.exe` / macOS `.dmg`）。** 托盘常驻，双击进控制台，首次运行
+  带三步配置向导。macOS 版已签名并公证。
+- **桌面端启动时会把本机的 agentd/CLI 同步到与自己同版。** 此前只有第一次运行会
+  释出内嵌的 CLI，之后换一份新的桌面端不会带动它——纯桌面端用户的 agentd 会一直
+  停在旧版且收不到任何信号。本机有活跃任务时自动跳过本次同步，不打断在跑的活。
+- **托盘「有新版 vX.Y.Z 可下载」**，点击打开 release 页面；与 CLI 侧共用同一份
+  24 小时缓存。
+- **托盘「升级执行机…」**：打开一个面板跑 `handoff upgrade --now`，逐行显示巡检表。
+- **`proxy` 配置项**：给 handoff 自身出网配代理，支持 `http` / `https` / `socks5` /
+  `socks5h`。作用于更新链路与 agentd 的 git clone/fetch；不作用于协调者↔agentd
+  链路与 executor（后者仍走 `env` 段）。空值时行为不变（沿用 `HTTPS_PROXY` 等环境变量）。
+- **`handoff upgrade --push`**：强制由本机下载并推送二进制。
+
+### 变更
+
+- **`handoff upgrade --now` 默认改为让执行机自己下载**：协调者只下发 tag 与 sha256。
+  一次多机升级的跨机流量从每台 20MB 降到几十字节。对端 agentd 过旧时自动降级为
+  推送，无需干预。
+- `/api/update` 新增 `mode` 查询参数（`pull` / `push`）。省略时行为与此前一字不变。
+- `/api/status` 的 `update` 段新增 `pull`（能力位）与 `pull_state`（自拉进度与失败原文）。
+- macOS 薄壳的资产从 `.zip` 换成 `.dmg`。
+
+### 修复
+
+- **macOS 桌面端打开控制台停在「需要登录」。** 会话 cookie 是 `SameSite=Strict`，
+  而薄壳加载控制台走的是**程序发起**的顶层导航、没有同站发起方，WebKit 会把这类
+  cookie 扣下不发——症状是 ticket 兑换成功、紧跟的跳转却报「无凭据」。已降为 `Lax`：
+  只对顶层 GET 导航放行，写操作走 POST/DELETE，跨站一样带不上。Chromium
+  （Chrome / Windows 的 WebView2）不受影响，所以这个问题只在 macOS 出现。
+- **版本比较认预发布号了**（`v0.3.0-rc8` < `v0.3.0-rc11` < `v0.3.0`）。此前本仓库发的
+  每一个 rc 对比较器都是不可比的，后果是 rc 构建上的同步与更新提示一律失效。
+- **`.app` 的版本号不再写死成 `0.1.0`**，改为随 tag 注入。
+- **`go install` 装出来的二进制不再自称 `unknown`**，改为回落到模块版本。此前
+  `upgrade --check` 会陷入「劝你升级 → 升完仍是 unknown → 继续劝」的死循环。
+- Windows：双击薄壳进程在约 1 秒后无声消失；`service status` 长期误报「已安装但
+  未运行」；spawn 子进程时闪控制台窗口。
+- macOS：`.app` 图标发灰、字形偏小、带投影。
+
+### 已知限制
+
+- **agentd 的版本被你手上这份安装包钉住。** 桌面端只把本机同步到与自己同版，要升到
+  更新的版本得换安装包——托盘的「有新版可下载」就是这个提醒。
+- **已装 CLI 的版本号不是 `vX.Y.Z` 形态时同步不触发**（例如自行 `go build` 的开发
+  构建）。这是刻意的保守行为：判不出新旧就不覆盖你手上的东西。
+
 ## [v0.3.0-rc12] - 2026-08-19
 
 **预发布。** 版本比较认预发布号了——rc 构建上的同步与更新提示此前一律失效。
@@ -274,31 +347,6 @@ rc2 已验证到的：桌面端资产在 Linux 与 macOS 上构建通过，命�
 - 桌面薄壳 `handoff-desktop`：内嵌 CLI 并在首次启动时释出到 `~/.local/bin/handoff`、
   图形化首次配置向导、托盘常驻；关掉窗口不影响正在跑的执行者。
 - Windows 执行机支持、`proxy` 配置项、按执行器注入的纪律配置。
-
-## [Unreleased]
-
-### 新增
-
-- `proxy` 配置项：给 handoff 自身出网配代理，支持 `http` / `https` / `socks5` /
-  `socks5h`。作用于更新链路与 agentd 的 git clone/fetch；不作用于协调者↔agentd
-  链路与 executor（后者仍走 `env` 段）。空值时行为不变（沿用 `HTTPS_PROXY` 等环境变量）。
-- `handoff upgrade --push`：强制由本机下载并推送二进制。
-
-### 变更
-
-- `handoff upgrade --now` 默认改为**让执行机自己下载**：协调者只下发 tag 与
-  sha256。一次多机升级的跨机流量从每台 20MB 降到几十字节。对端 agentd 过旧时
-  自动降级为推送，无需干预。
-- `/api/update` 新增 `mode` 查询参数（`pull` / `push`）。省略时行为与此前一字不变。
-- `/api/status` 的 `update` 段新增 `pull`（能力位）与 `pull_state`（自拉进度与失败原文）。
-### 修复
-
-- `go install` 装出来的二进制不再自称 `unknown`，改为回落到模块版本。这条路径
-  永远不经过 release 流水线的 ldflags 注入，此前版本恒为空，`upgrade --check`
-  会一直劝「需要升级」——而升级后仍是 unknown，仍旧劝，是个没有出口的循环。
-  只认 `vX.Y.Z` 形态：仓库内 `go build` 的 `(devel)` 与 `@main` 的
-  `v0.0.0-<时间>-<sha>` 伪版本都不算，前者会顶掉更有排障价值的 revision 展示，
-  后者恒小于任何真实 tag，会把开发版说成「比最新 release 旧的 release」。
 
 ## [v0.2.3] - 2026-08-13
 
