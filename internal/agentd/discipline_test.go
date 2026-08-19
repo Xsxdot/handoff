@@ -110,3 +110,83 @@ func TestDisciplineGetOnMissingDirReturnsEmptyFiles(t *testing.T) {
 		t.Fatalf("Files = %+v, want 空", got.Files)
 	}
 }
+
+func TestDisciplineFileReadWriteRoundTrip(t *testing.T) {
+	env, dir := newDisciplineEnv(t, nil, "codex")
+
+	var wrote proto.FileWriteResp
+	code := env.putJSON(t, "/api/discipline/file?name=mine.md",
+		proto.FileWriteReq{Content: "纪律正文\n"}, &wrote)
+	if code != http.StatusOK {
+		t.Fatalf("新建 code = %d", code)
+	}
+	var read proto.FileRead
+	if code := env.getJSON(t, "/api/discipline/file?name=mine.md", &read); code != http.StatusOK {
+		t.Fatalf("读 code = %d", code)
+	}
+	if read.Content != "纪律正文\n" || read.SHA256 != wrote.SHA256 {
+		t.Fatalf("读回 = %q / %s，写入回的是 %s", read.Content, read.SHA256, wrote.SHA256)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mine.md")); err != nil {
+		t.Fatalf("落盘: %v", err)
+	}
+}
+
+func TestDisciplineFileNewOnExistingIs409(t *testing.T) {
+	env, dir := newDisciplineEnv(t, nil, "codex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mine.md"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]string
+	code := env.putJSON(t, "/api/discipline/file?name=mine.md",
+		proto.FileWriteReq{Content: "new"}, &body)
+	if code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", code)
+	}
+}
+
+func TestDisciplineFileBaseMismatchIs409WithCurrent(t *testing.T) {
+	env, dir := newDisciplineEnv(t, nil, "codex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mine.md"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var conflict proto.FileConflictResp
+	code := env.putJSON(t, "/api/discipline/file?name=mine.md",
+		proto.FileWriteReq{Content: "new", BaseSHA256: "deadbeef"}, &conflict)
+	if code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", code)
+	}
+	if conflict.Current.Content != "hello\n" {
+		t.Fatalf("409 必须带磁盘现状，得到 %q", conflict.Current.Content)
+	}
+}
+
+func TestDisciplineFileRejectsBadNameAndOversize(t *testing.T) {
+	env, _ := newDisciplineEnv(t, nil, "codex")
+	var body map[string]string
+	if code := env.putJSON(t, "/api/discipline/file?name=sub%2Fx.md",
+		proto.FileWriteReq{Content: "x"}, &body); code != http.StatusBadRequest {
+		t.Errorf("含分隔符 code = %d, want 400", code)
+	}
+	big := strings.Repeat("x", 64*1024+1)
+	if code := env.putJSON(t, "/api/discipline/file?name=big.md",
+		proto.FileWriteReq{Content: big}, &body); code != http.StatusBadRequest {
+		t.Errorf("超限 code = %d, want 400", code)
+	}
+}
+
+func TestDisciplineFileReadMissingIs404(t *testing.T) {
+	env, _ := newDisciplineEnv(t, nil, "codex")
+	var body map[string]string
+	if code := env.getJSON(t, "/api/discipline/file?name=nope.md", &body); code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404", code)
+	}
+}

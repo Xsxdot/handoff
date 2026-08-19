@@ -14,6 +14,9 @@
 package agentd
 
 import (
+	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
@@ -97,4 +100,96 @@ func (s *Server) disciplineBindings() []proto.DisciplineBinding {
 		out = append(out, b)
 	}
 	return out
+}
+
+// handleDisciplineFileRead 处理 GET /api/discipline/file?name=[&machine=]。
+//
+// 响应：200 proto.FileRead / 400 名字非法 / 404 文件不存在。
+// 注意：内置两版**不走这条**——它们的全文已随 GET /api/discipline 一并交出。
+func (s *Server) handleDisciplineFileRead(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	dir := discipline.Dir(s.conf().DataDir)
+	s.log.Info("纪律块读文件请求", "dir", dir, "name", name)
+
+	content, sha, size, err := discipline.Read(dir, name)
+	if err != nil {
+		switch {
+		case errors.Is(err, discipline.ErrBadName):
+			s.log.Warn("纪律块读文件被拒：名字非法", "name", name, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case errors.Is(err, fs.ErrNotExist):
+			s.log.Warn("纪律块读文件：目标不存在", "dir", dir, "name", name, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "纪律块文件不存在"})
+		default:
+			s.log.Error("纪律块读文件失败", "dir", dir, "name", name, "cause", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取纪律块文件失败"})
+		}
+		return
+	}
+	s.log.Info("纪律块读文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
+	writeJSON(w, http.StatusOK, proto.FileRead{Content: content, Size: size, SHA256: sha})
+}
+
+// handleDisciplineFileWrite 处理 PUT /api/discipline/file?name=[&machine=]。
+//
+// 请求体 proto.FileWriteReq：base_sha256 为空串 = 新建（目标必须不存在）。
+//
+// 响应：200 FileWriteResp / 400 名字非法或超限 / 409 撞名或冲突（带磁盘现状）。
+//
+// 注意：**中文错误原文原样透传**，不吞成「操作失败」——用户看到「不能含路径
+// 分隔符：只支持 …/discipline 下的纯文件名」能立刻改对（沿工作树写文件的纪律）。
+func (s *Server) handleDisciplineFileWrite(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	dir := discipline.Dir(s.conf().DataDir)
+
+	var req proto.FileWriteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("纪律块写文件请求体解析失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	// 正文可能有几十 KB，日志只记长度不记内容。
+	s.log.Info("纪律块写文件请求", "dir", dir, "name", name,
+		"bytes", len(req.Content), "base", shortHash(req.BaseSHA256))
+
+	sha, size, err := discipline.Write(dir, name, req.Content, req.BaseSHA256)
+	if err != nil {
+		switch {
+		case errors.Is(err, discipline.ErrBadName), errors.Is(err, discipline.ErrTooLarge):
+			s.log.Warn("纪律块写文件被拒", "name", name, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case errors.Is(err, discipline.ErrExists):
+			s.log.Warn("纪律块写文件被拒：撞名", "dir", dir, "name", name, "cause", err)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		case errors.Is(err, discipline.ErrBaseMismatch):
+			// 409 的 body 带磁盘现状：界面据此提供「重新加载」，绝不静默覆盖。
+			cur, curSHA, curSize, rerr := discipline.Read(dir, name)
+			if rerr != nil {
+				s.log.Error("纪律块写文件冲突后读现状失败", "name", name, "cause", rerr)
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				return
+			}
+			s.log.Warn("纪律块写文件冲突", "dir", dir, "name", name,
+				"base", shortHash(req.BaseSHA256), "current", shortHash(curSHA), "cause", err)
+			writeJSON(w, http.StatusConflict, proto.FileConflictResp{
+				Error:   "纪律块文件已被改动",
+				Current: proto.FileRead{Content: cur, Size: curSize, SHA256: curSHA},
+			})
+		case errors.Is(err, fs.ErrNotExist):
+			s.log.Warn("纪律块写文件：目标在编辑期间被删", "dir", dir, "name", name, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "纪律块文件不存在"})
+		default:
+			s.log.Error("纪律块写文件失败", "dir", dir, "name", name, "cause", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "写入纪律块文件失败"})
+		}
+		return
+	}
+	s.log.Info("纪律块写文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
+	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: sha, Size: size})
 }

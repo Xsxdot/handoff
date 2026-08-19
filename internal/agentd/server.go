@@ -361,6 +361,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
+	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
+	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
