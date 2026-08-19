@@ -114,6 +114,28 @@ func (s *Store) ClaimCard(id, to, expect, session string) error {
 	})
 }
 
+// ReleaseCard 释放驱动租约（幂等；只动自己持有的那份）。
+//
+// 参数：id 卡号；session 租约持有者标识，与 ClaimCard 传的同一个。
+// 非持有者调用是无操作而不是报错——回滚路径不该因为竞态再抛一次错。
+//
+// why 需要它：派发失败时回滚只退状态会把卡留在「待办但有主」。驱动身份
+// 带 pid，同一个人换个进程重试会被自己的旧租约挡住，要等满 5 分钟 TTL
+// 才动得了（2026-08-19 真机踩到：远端缺分支导致派发 400，重试即撞）。
+func (s *Store) ReleaseCard(id, session string) error {
+	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		result, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_heartbeat_at = ?
+			WHERE id = ? AND driver_session = ?`), s.tval(time.Time{}), id, session)
+		if err != nil {
+			return fmt.Errorf("释放驱动租约: %w", err)
+		}
+		if n, err := result.RowsAffected(); err == nil && n > 0 {
+			log().Info("驱动租约已释放", "card", id, "session", session)
+		}
+		return nil
+	})
+}
+
 // getWorkflowTx 事务内取指定版本工作流（Move 的 gate 判定必须与写同事务）。
 func (s *Store) getWorkflowTx(tx *sql.Tx, name string, version int) (Workflow, error) {
 	row := tx.QueryRow(s.q(`SELECT name, version, definition, created_at FROM workflows

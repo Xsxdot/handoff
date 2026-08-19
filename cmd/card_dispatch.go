@@ -153,6 +153,7 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 	).Replace(tpl.Def.Prompt)
 	prompt := string(discipline) + "\n\n---\n\n" + body
 
+	reviewBase := ""
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
 	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
 	// 第二轮——2026-08-19 真机实测 fatal: a branch named ... already exists）
@@ -163,11 +164,24 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 		if err != nil {
 			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
 		}
-		branch, existingBranch = "", work
+		// 审阅每轮开一条指向工作分支当前提交的一次性分支。三个约束叠出这个形态：
+		// ① 不能复用固定名 cards/<卡>-review——第二轮撞名，判据② 的 3 轮封顶
+		//    走不到第二轮；② 不能直接检出工作分支——实现任务的工作树还占着它，
+		//    git 不许两个工作树检出同一分支；③ 审阅要看的是工作分支的代码，
+		//    所以起点必须是它的当前提交（base=work）
+		round, err := st.ReviewRounds(c.ID)
+		if err != nil {
+			return zero, fmt.Errorf("审阅轮取轮次: %w", err)
+		}
+		branch = fmt.Sprintf("%s/%s-review-%d", tpl.Def.BranchPrefix, c.ID, round+1)
+		reviewBase = work
 	}
 	base, err := st.EffectiveBaseBranch(c.ID)
 	if err != nil {
 		return zero, fmt.Errorf("取有效基线: %w", err)
+	}
+	if reviewBase != "" {
+		base = reviewBase // 审阅分支从工作分支的当前提交开，不是从基线开
 	}
 	model := ""
 	if tpl.Def.ModelByTarget != nil {
@@ -246,7 +260,10 @@ var cardDispatchCmd = &cobra.Command{
 		result, err := dispatchViaTemplate(st, card, cardDispatchTemplate, cardDispatchTarget,
 			cardDispatchPlan, cardDispatchDiscipline, actor)
 		if err != nil {
+			// 回滚要连租约一起退：只退状态会把卡留在「待办但有主」，
+			// 驱动身份带 pid，本人换个进程重试都会被自己挡住（见 ReleaseCard）
 			_ = st.MoveCard(id, card.Status, ledger.StatusDoing, actor)
+			_ = st.ReleaseCard(id, ledgerSession())
 			return err
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)

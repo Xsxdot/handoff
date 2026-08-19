@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,5 +67,52 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(show, "dispatched") || !strings.Contains(show, "discipline_hash") {
 		t.Fatalf("快照事件缺失: %q", show)
+	}
+}
+
+// 派发失败必须连驱动租约一起退：只退状态会让卡停在「待办但有主」，
+// 而驱动身份带 pid——同一个人换个进程重试会被自己挡住 5 分钟。
+func TestCardDispatchFailureReleasesLease(t *testing.T) {
+	dir := t.TempDir()
+	dp := filepath.Join(dir, "block-a.md")
+	if err := os.WriteFile(dp, []byte("# 执行纪律\n1. 略。"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "会派失败的卡", "--project", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		return "", errors.New("起点在任务仓库中不存在")
+	})
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", dp); err == nil {
+		t.Fatal("传输失败时派发应报错")
+	}
+	restore()
+
+	show, _, err := runLedgerCLI(t, dir, "card", "show", c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(show, `"driver_session":""`) && strings.Contains(show, `"driver_session":"`) {
+		t.Fatalf("派发失败后租约未释放: %q", show)
+	}
+
+	// 真正的判据：换一个会话（新进程即新会话）能立刻重派
+	restore = swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		return "T-retry-1", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", dp); err != nil {
+		t.Fatalf("失败后重派应放行: %v", err)
 	}
 }
