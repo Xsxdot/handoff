@@ -142,3 +142,19 @@ func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
 		t.Fatal("无挂账 task 的 target 应照常空 touch")
 	}
 }
+
+func TestMirrorStopBeforeRun(t *testing.T) {
+	s := testLedger(t)
+	m := New(s, func() map[string]config.Target { return nil }, Options{Holder: "test"})
+	m.Stop()
+	done := make(chan struct{})
+	go func() {
+		m.Run(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop 先于 Run 时，Run 未及时退出")
+	}
+}
