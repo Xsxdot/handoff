@@ -95,12 +95,6 @@ var (
 	trayTray    *application.SystemTray
 )
 
-// runRemoteUpgrade 在 Task 11 由真实实现替换；先保留可编译的接线点，保证
-// 托盘重建这一个 task 可以独立构建。
-var runRemoteUpgrade = func(bool) {
-	logger.Warn("升级执行机功能尚未接入")
-}
-
 func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("桌面薄壳启动")
