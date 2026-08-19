@@ -21,6 +21,9 @@ func newPGStore(t *testing.T) *Store {
 	return s
 }
 
+// smokeProject 冒烟数据的项目名——同时是清理段的作用域边界。
+const smokeProject = "pg-smoke-临时数据"
+
 func TestPGSchema(t *testing.T) {
 	s := newPGStore(t)
 	if _, err := s.db.Exec("SELECT * FROM cards LIMIT 0"); err != nil {
@@ -41,7 +44,7 @@ func TestPGSmokeEndToEnd(t *testing.T) {
 	if err := s.EnsureMinB(9000); err != nil { // 高位垫号，避免与库内已有数据撞
 		t.Fatalf("minb: %v", err)
 	}
-	card, err := s.CreateCard(NewCard{Title: "pg 冒烟", Project: "smoke", Workflow: "feature", Actor: "pgtest"})
+	card, err := s.CreateCard(NewCard{Title: "pg 冒烟", Project: smokeProject, Workflow: "feature", Actor: "pgtest"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -54,7 +57,7 @@ func TestPGSmokeEndToEnd(t *testing.T) {
 	if err := s.MoveCard(card.ID, "已出spec", "", "pgtest"); err != nil {
 		t.Fatalf("gate 放行: %v", err)
 	}
-	member, err := s.CreateCard(NewCard{Title: "成员", Project: "smoke", Workflow: "bug", Actor: "pgtest"})
+	member, err := s.CreateCard(NewCard{Title: "成员", Project: smokeProject, Workflow: "bug", Actor: "pgtest"})
 	if err != nil {
 		t.Fatalf("member: %v", err)
 	}
@@ -72,10 +75,18 @@ func TestPGSmokeEndToEnd(t *testing.T) {
 	if err != nil || len(events) < 5 {
 		t.Fatalf("事件序: %v n=%d", err, len(events))
 	}
-	// 清理冒烟数据；此测试只能使用专用测试库。
-	for _, table := range []string{"card_events", "card_relations", "decisions", "cards"} {
-		if _, err := s.db.Exec(`DELETE FROM ` + table + ` WHERE TRUE`); err != nil {
-			t.Logf("清理 %s: %v", table, err)
+	// 清理只删本次冒烟自己造的数据（project = 冒烟专用值），不碰同库里的
+	// 其它行——原先是 DELETE ... WHERE TRUE 全表清，一旦 DSN 指向带真数据
+	// 的开发库就是一次静默误删；测试的清理不该有超出自己造物的杀伤半径。
+	for _, stmt := range []string{
+		`DELETE FROM card_events WHERE card_id IN (SELECT id FROM cards WHERE project = $1)`,
+		`DELETE FROM card_relations WHERE from_id IN (SELECT id FROM cards WHERE project = $1)
+			OR to_id IN (SELECT id FROM cards WHERE project = $1)`,
+		`DELETE FROM decisions WHERE card_id IN (SELECT id FROM cards WHERE project = $1)`,
+		`DELETE FROM cards WHERE project = $1`,
+	} {
+		if _, err := s.db.Exec(stmt, smokeProject); err != nil {
+			t.Logf("清理冒烟数据: %v", err)
 		}
 	}
 }
