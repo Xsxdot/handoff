@@ -8,3 +8,5 @@
 - Task 3 completed: added SQLite/PG Open, idempotent schema, q/time conversion, mutate locking, and event listener base; commit scope: `internal/ledger/store.go internal/ledger/store_test.go internal/ledger/store_pg_test.go`.
 - Task 4 completed: added immutable versioned workflows and idempotent feature/bug defaults with gates; commit scope: `internal/ledger/workflows.go internal/ledger/workflows_test.go`.
 - Task 5 completed: added card creation/read/update/termination/revival, B-number allocation, event append, and ascending event reads; commit scope: `internal/ledger/cards.go internal/ledger/events.go internal/ledger/cards_test.go`.
+- Task 6 repair round 1: preserved `ErrNotFound` only for missing workflow rows and wrapped other workflow read errors without misclassification; commit scope: `internal/ledger/move.go`.
+- Task 6 completed: added workflow-version state validation, gate checks, explicit/database CAS, and refusal logging; commit scope: `internal/ledger/move.go internal/ledger/move_test.go`.
