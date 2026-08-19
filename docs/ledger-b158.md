@@ -1,0 +1,10 @@
+# B158 控制台配置 Env 文件——执行 ledger
+
+任务：f327c494-6799-460a-8d65-294120fff7a3
+分支：claude/b158-env-console-config
+基线：49aa21ee（docs(plan): B158 控制台配置 Env 文件）
+
+## 进度
+
+- 2026-08-19 开始执行；当前基线为计划提交，尚未修改实现文件。
+- 2026-08-19 Task 1 完成：envfile 文件操作面（List/Read/Write、纯文件名校验、哈希与冲突错误）；spec PASS / quality PASS，无修复轮；待提交范围：internal/envfile + ledger。

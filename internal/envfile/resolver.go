@@ -69,7 +69,7 @@ func (r *Resolver) For(agent string) ([]string, error) {
 		r.log.Debug("agent 未配置 env 文件，跳过注入", "agent", agent)
 		return nil, nil
 	}
-	path, err := r.resolvePath(name)
+	path, err := resolvePath(r.dir, name)
 	if err != nil {
 		r.log.Error("env 文件名非法", "agent", agent, "name", name, "cause", err)
 		return nil, err
@@ -97,20 +97,6 @@ func (r *Resolver) For(agent string) ([]string, error) {
 	}
 	r.log.Info("已加载 env 文件", "agent", agent, "path", path, "keys", keys, "count", len(keys))
 	return out, nil
-}
-
-// resolvePath 把配置里的文件名换算为绝对路径，并拒绝一切非「纯文件名」的写法。
-//
-// 为什么只收纯文件名：一杜绝路径穿越（../../etc 之类），二保证 env 文件只有一个
-// 家、不会散落各处——运维找配置时只需要看一个目录。
-func (r *Resolver) resolvePath(name string) (string, error) {
-	if strings.ContainsRune(name, filepath.Separator) || strings.ContainsRune(name, '/') {
-		return "", fmt.Errorf("env 文件名 %q 不能含路径分隔符：只支持 %s 下的纯文件名", name, r.dir)
-	}
-	if name == "." || name == ".." {
-		return "", fmt.Errorf("env 文件名 %q 非法：只支持 %s 下的纯文件名", name, r.dir)
-	}
-	return filepath.Join(r.dir, name), nil
 }
 
 // Preflight 读一遍所有被引用的 env 文件，把问题以 WARN 暴露在启动日志里。
