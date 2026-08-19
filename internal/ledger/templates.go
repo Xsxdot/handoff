@@ -105,7 +105,12 @@ const reviewVerdictContract = "回合结束时，在最终报文末尾输出你�
 	"```handoff-verdict\n" +
 	`{"verdict":"pass"或"fail","findings":[{"severity":"major"或"minor","summary":"一句话","file":"可选路径"}],"notes":"可选"}` +
 	"\n```\n" +
-	"只输出一个该 block；解析不到会转人工，不要省略。"
+	"只输出一个该 block；解析不到会转人工，不要省略。\n" +
+	// why 要专门堵这一句：裁决走的是「回合结束时的最终报文」，而执行者
+	// 看得见的显式通道只有提问工单——2026-08-19 真机实测，codex 与 grok
+	// 两个独立执行器都把裁决塞进工单，节点两次都取不到报文
+	"不要用提问/发消息工具发裁决——工单不是报文通道，节点只读最终报文。" +
+	"审完不要再调用任何工具，直接停下，你停下前写的文字就是最终报文。"
 
 // EnsureDefaultTemplates 幂等 seed 出厂模板。已存在同名的不覆盖。
 func (s *Store) EnsureDefaultTemplates() error {

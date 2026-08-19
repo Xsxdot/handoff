@@ -31,7 +31,9 @@ func NewDispatchReview(st *ledger.Store,
 			return "", err
 		}
 		cl := client.New(addr, token)
-		if _, err := cl.WaitEvent(ctx, taskID, false); err != nil {
+		if err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
+			return cl.WaitEvent(ctx, taskID, false)
+		}); err != nil {
 			return "", fmt.Errorf("等审阅终态: %w", err)
 		}
 		message, err := clientFinalMessage(ctx, cl, taskID)
@@ -42,6 +44,33 @@ func NewDispatchReview(st *ledger.Store,
 			return message, fmt.Errorf("归档审阅 task（报文已取到，仅归档失败）: %w", err)
 		}
 		return message, nil
+	}
+}
+
+// waitForTurnEnd 反复 wait 直到出现回合终态事件（completed/turn_failed/
+// failed），中途的权限门与工单一律跳过继续等。
+//
+// why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑
+// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，节点
+// 几乎必然醒在 permission_request/question 上，随即去取最终报文，报
+// 「事件流中没有 completed/failed 最终报文」，一轮审阅白跑。函数头写的
+// 「wait 终态」是意图，WaitEvent 的语义不是，这里补上差额。
+//
+// 阻塞行为：executor 发了工单又不收尾时本函数会一直等，等价于任何一条
+// handoff task 挂在 waiting_answer——审核者从 wait --card 上看得见。
+func waitForTurnEnd(ctx context.Context, wait func(context.Context) (*proto.Event, error)) error {
+	for {
+		event, err := wait(ctx)
+		if err != nil {
+			return err
+		}
+		if event == nil {
+			continue
+		}
+		switch event.Type {
+		case proto.EventTypeCompleted, proto.EventTypeTurnFailed, proto.EventTypeFailed:
+			return nil
+		}
 	}
 }
 

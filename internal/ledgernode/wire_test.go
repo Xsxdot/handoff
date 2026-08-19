@@ -1,6 +1,7 @@
 package ledgernode
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -84,5 +85,41 @@ func TestFinalMessageFallsBackToFailure(t *testing.T) {
 	message, err := finalMessageFromEvents(events)
 	if err != nil || message != "模型 400" {
 		t.Fatalf("失败回退: %v %q", err, message)
+	}
+}
+
+// 节点等的必须是「回合终态」而不是「首个可动作事件」：审阅同样要过权限
+// 门、也可能发工单，醒在这些事件上就去取报文必然报「没有最终报文」。
+func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
+	seq := []proto.EventType{
+		proto.EventTypePermissionRequest,
+		proto.EventTypeQuestion,
+		proto.EventTypePermissionRequest,
+		proto.EventTypeCompleted,
+	}
+	calls := 0
+	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+		ev := &proto.Event{Type: seq[calls]}
+		calls++
+		return ev, nil
+	})
+	if err != nil {
+		t.Fatalf("等终态: %v", err)
+	}
+	if calls != len(seq) {
+		t.Fatalf("应一直等到 completed（%d 次），实际 %d 次", len(seq), calls)
+	}
+}
+
+// turn_failed 也是回合终态：executor 还活着，但这一回合结束了，报文在
+// fail_reason 里——不能继续等下去把节点挂死。
+func TestWaitForTurnEndAcceptsTurnFailed(t *testing.T) {
+	calls := 0
+	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+		calls++
+		return &proto.Event{Type: proto.EventTypeTurnFailed}, nil
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("turn_failed 应立即收口: err=%v calls=%d", err, calls)
 	}
 }
