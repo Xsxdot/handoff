@@ -18,3 +18,7 @@ prototypes/b107-file-tree-menu/
 # 前端构建产物经 embedweb 标签嵌入，不入库（npm run build 的落盘目标）
 internal/webui/dist/
 prototypes/discipline-config/
+prototypes/codegraph/
+
+# macOS Finder 在每个被浏览过的目录里留的元数据，与仓库内容无关
+.DS_Store

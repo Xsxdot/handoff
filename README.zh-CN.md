@@ -1,10 +1,18 @@
-# handoff
+<p align="center">
+  <img src="docs/assets/handoff-mark.svg" width="128" alt="handoff 项目标志">
+</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">handoff</h1>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-**把实现计划派发给另一个 AI 执行，你只负责审。**
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 许可证"></a>
+</p>
+
+<p align="center"><strong>把实现计划派发给另一个 AI 执行，你只负责审。</strong></p>
 
 handoff 是一个纯 CLI 的两角色协作工具：你（或任意 coding agent 会话——Claude Code、opencode、grok、codex 都行）扮演**协调者**——写计划、派发任务、裁决权限、审核改动；**executor**（opencode / Claude Code / grok / codex）在独立会话里真正干活，可以在本机，也可以在网络可达的任何一台开发机上（见「连接远程执行机」）。
 
