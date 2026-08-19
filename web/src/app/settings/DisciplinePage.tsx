@@ -22,6 +22,7 @@ import {
 import { useMachines } from '../data/useMachines'
 import { errorMessage } from '../lib/format'
 import { LoadFailed, SessionExpiredBanner } from '../lib/Banners'
+import { BlockEditor } from './BlockEditor'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -58,6 +59,7 @@ export function DisciplinePage() {
   const [loadingFile, setLoadingFile] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [conflict, setConflict] = useState(false)
   const [notice, setNotice] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [newName, setNewName] = useState('')
@@ -80,6 +82,7 @@ export function DisciplinePage() {
     setResponse(null)
     setSelected(null)
     setError('')
+    setConflict(false)
     setNotice('')
     // 机器列表没有本机时，先等选择状态切到第一台远程机，避免空 machine 误查本机。
     if (!hasActiveMachine || !activeReachable || !machineSelected) return
@@ -111,12 +114,14 @@ export function DisciplinePage() {
   const selectBuiltin = (tier: string) => {
     setSelected({ machine, kind: 'builtin', tier })
     setError('')
+    setConflict(false)
     setNotice('')
   }
 
   const selectFile = (name: string) => {
     setSelected({ machine, kind: 'file', name })
     setError('')
+    setConflict(false)
     setNotice('')
   }
 
@@ -128,6 +133,7 @@ export function DisciplinePage() {
     let cancelled = false
     setLoadingFile(true)
     setError('')
+    setConflict(false)
     void fetchDisciplineFile(machine, selectedFileName)
       .then((file) => {
         if (cancelled) return
@@ -149,6 +155,7 @@ export function DisciplinePage() {
     if (selected?.kind !== 'file') return
     setLoadingFile(true)
     setError('')
+    setConflict(false)
     try {
       const file = await fetchDisciplineFile(machine, selected.name)
       setDraft(file.content)
@@ -169,6 +176,7 @@ export function DisciplinePage() {
     if (selected?.kind !== 'file') return
     setBusy(true)
     setError('')
+    setConflict(false)
     setNotice('')
     try {
       const result = await saveDisciplineFile(machine, selected.name, {
@@ -180,7 +188,8 @@ export function DisciplinePage() {
       setNotice('已保存；下一个任务即生效，正在跑的任务不受影响')
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError('已被改动')
+        setConflict(true)
+        setError('盘上的内容和你打开时不一样了——重新加载会丢弃当前编辑')
       } else {
         setError(errorMessage(err))
       }
@@ -194,6 +203,7 @@ export function DisciplinePage() {
     setNewContent(template ?? '')
     setNewOpen(true)
     setError('')
+    setConflict(false)
   }
 
   const createFile = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -205,6 +215,7 @@ export function DisciplinePage() {
     }
     setBusy(true)
     setError('')
+    setConflict(false)
     try {
       await saveDisciplineFile(machine, name, { content: newContent, base_sha256: '' })
       await refresh()
@@ -317,16 +328,19 @@ export function DisciplinePage() {
 
           <section className="flex min-w-0 flex-1 flex-col rounded-lg border bg-background p-4">
             {selectedBuiltin && (
-              <Editor
+              <BlockEditor
                 title={`内置 ${selectedBuiltin.tier}`}
+                ariaLabel="纪律块正文"
                 content={selectedBuiltin.content}
                 readOnly
+                templateLabel="以此为模板新建"
                 onTemplate={() => openNew(selectedBuiltin.content)}
               />
             )}
             {selectedFile !== null && (
-              <Editor
+              <BlockEditor
                 title={selectedFile}
+                ariaLabel="纪律块正文"
                 content={draft}
                 readOnly={false}
                 loading={loadingFile}
@@ -334,6 +348,7 @@ export function DisciplinePage() {
                 onSave={() => void save()}
                 saving={busy}
                 error={error}
+                conflict={conflict}
                 notice={notice}
                 onReload={() => void reloadFile()}
                 size={selectedFileInfo?.size}
@@ -359,68 +374,5 @@ export function DisciplinePage() {
         </div>
       )}
     </div>
-  )
-}
-
-function Editor({
-  title,
-  content,
-  readOnly,
-  loading = false,
-  onChange,
-  onSave,
-  onTemplate,
-  saving = false,
-  error = '',
-  notice = '',
-  onReload,
-  size,
-}: {
-  title: string
-  content: string
-  readOnly: boolean
-  loading?: boolean
-  onChange?: (value: string) => void
-  onSave?: () => void
-  onTemplate?: () => void
-  saving?: boolean
-  error?: string
-  notice?: string
-  onReload?: () => void
-  size?: number
-}) {
-  return (
-    <>
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold">{title}</h3>
-          {readOnly && <span className="text-[11px] text-muted-foreground">只读</span>}
-        </div>
-        {readOnly ? (
-          <Button size="sm" onClick={onTemplate}>以此为模板新建</Button>
-        ) : (
-          <Button size="sm" onClick={onSave} disabled={saving || loading}>保存</Button>
-        )}
-      </div>
-      <textarea
-        aria-label="纪律块正文"
-        value={content}
-        readOnly={readOnly}
-        disabled={loading}
-        onChange={(event) => onChange?.(event.target.value)}
-        className={cn(
-          'mt-3 min-h-[28rem] w-full resize-y rounded-md border p-3 font-mono text-xs leading-5 outline-none focus-visible:ring-1 focus-visible:ring-ring',
-          readOnly ? 'bg-muted/50' : 'bg-background',
-        )}
-      />
-      {!readOnly && <p className="mt-2 text-[11px] text-muted-foreground">保存后下一个任务即生效（正在跑的任务不受影响）；上限 64 KiB{size !== undefined && `；当前 ${size} 字节`}</p>}
-      {error && (
-        <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
-          <span>{error}</span>
-          {error === '已被改动' && <Button type="button" variant="outline" size="sm" onClick={onReload}>重新加载</Button>}
-        </div>
-      )}
-      {notice && <p className="mt-2 text-xs text-emerald-700">{notice}</p>}
-    </>
   )
 }
