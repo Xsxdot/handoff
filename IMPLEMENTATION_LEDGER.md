@@ -15,3 +15,5 @@
 - Task 8+9 completed: added merge/unmerge/split, comment references, acceptance/needs/subtree events, and derived ListCards views/filters; commit scope: `internal/ledger/merge.go internal/ledger/events.go internal/ledger/derived.go` plus paired tests.
 - Task 10 completed: added decision open/answer/list lifecycle, project-level event support, and card Needs linkage; commit scope: `internal/ledger/decisions.go internal/ledger/decisions_test.go`.
 - Task 11 completed: added weak card-task links with reverse lookup and driver lease claim/heartbeat/expiry takeover; commit scope: `internal/ledger/tasks.go internal/ledger/tasks_test.go`.
+- Task 12 repair round 1: serialized SQLite through a single database connection and added concurrent B-number allocation coverage; commit scope: `internal/ledger/store.go internal/ledger/store_test.go`.
+- Task 12 completed: added PG end-to-end smoke coverage and completed final diff/gofmt/vet/build/package-test review; commit scope: `internal/ledger/store_pg_test.go` plus final audit ledger.

@@ -4,6 +4,7 @@ package ledger
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -55,5 +56,41 @@ func TestRedactDSN(t *testing.T) {
 	}
 	if got := redactDSN("/tmp/ledger.db", dialectSQLite); got != "/tmp/ledger.db" {
 		t.Fatalf("SQLite 路径不应改写: %q", got)
+	}
+}
+
+func TestSQLiteSerializesConcurrentCardAllocation(t *testing.T) {
+	s := seedStore(t)
+	const total = 16
+	ids := make(chan string, total)
+	errs := make(chan error, total)
+	var wg sync.WaitGroup
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			card, err := s.CreateCard(NewCard{Title: "并发建卡", Project: "p", Workflow: "bug", Actor: "test"})
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- card.ID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("并发建卡: %v", err)
+	}
+	seen := map[string]bool{}
+	for id := range ids {
+		if seen[id] {
+			t.Fatalf("B 号重复: %s", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != total {
+		t.Fatalf("并发建卡数 %d != %d", len(seen), total)
 	}
 }

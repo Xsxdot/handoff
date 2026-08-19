@@ -44,6 +44,11 @@ func Open(dsn string) (*Store, error) {
 		s.dialect = dialectSQLite
 		s.path = dsn
 		s.db, err = sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+		// database/sql 默认会开多个连接；SQLite 文件锁只保证最终写入互斥，
+		// 不能阻止两个事务同时读到同一个 B 号水位。单连接把账本的“读-判-写”
+		// 串成真正的单写者，兑现 mutate 的并发模型。
+		s.db.SetMaxOpenConns(1)
+		s.db.SetMaxIdleConns(1)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("打开账本库: %w", err)
