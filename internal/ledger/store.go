@@ -27,6 +27,7 @@ type Store struct {
 	db      *sql.DB
 	dialect dialect
 	path    string // 仅 SQLite：文件路径（测试用）
+	dsn     string // 原始 DSN（Follow 的 PG LISTEN 需要开第二条裸连接）
 
 	mu        sync.Mutex
 	listeners []func(seq int64) // SQLite 回退模式的进程内事件推送
@@ -35,7 +36,7 @@ type Store struct {
 // Open 打开账本库并幂等建 schema。dsn 以 postgres:// 或 postgresql://
 // 开头走 PG，否则视为 SQLite 文件路径（单机回退模式）。
 func Open(dsn string) (*Store, error) {
-	s := &Store{}
+	s := &Store{dsn: dsn}
 	var err error
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		s.dialect = dialectPG
