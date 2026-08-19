@@ -29,6 +29,8 @@ import type {
   FileResult,
   FileWriteReq,
   FileWriteResp,
+  ExecutorDefaultReq,
+  ExecutorDefaultResp,
   MachinesResp,
   PatchProjectReq,
   ProjectLocation,
@@ -293,6 +295,22 @@ export function saveDisciplineMapping(
   machine: string, bindings: DisciplineBinding[],
 ): Promise<DisciplineResp> {
   return putJSON<DisciplineResp>(`/api/discipline/mapping${machineQuery(machine)}`, { bindings })
+}
+
+// fetchExecutorDefault 取某台机器的缺省执行者配置（GET /api/executor/default）。
+export function fetchExecutorDefault(machine: string): Promise<ExecutorDefaultResp> {
+  return request<ExecutorDefaultResp>(`/api/executor/default${machineQuery(machine)}`)
+}
+
+// saveExecutorDefault 整体替换某台机器的缺省执行者与其默认模型
+//（PUT /api/executor/default），返回保存后的最新状态。
+//
+// req.model 为空串表示「清空默认模型」，是有意义的取值，不是「不改」。
+// req.default 不在该机名单内时后端回 400，message 里带可选名单——原样展示。
+export function saveExecutorDefault(
+  machine: string, req: ExecutorDefaultReq,
+): Promise<ExecutorDefaultResp> {
+  return putJSON<ExecutorDefaultResp>(`/api/executor/default${machineQuery(machine)}`, req)
 }
 
 // addMachine 新增一台远程开发机（POST /api/machines）。
