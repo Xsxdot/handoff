@@ -96,6 +96,24 @@ func TestUpdateCardAttachAccept(t *testing.T) {
 	}
 }
 
+func TestUpdateCardMeta(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "旧标题")
+	if err := s.UpdateCardMeta(c.ID, "新标题", "高", "test"); err != nil {
+		t.Fatalf("meta: %v", err)
+	}
+	got, _ := s.GetCard(c.ID)
+	if got.Title != "新标题" || got.Priority != "高" {
+		t.Fatalf("未生效: %+v", got)
+	}
+	// 只改一项：另一项保持
+	_ = s.UpdateCardMeta(c.ID, "", "低", "test")
+	got, _ = s.GetCard(c.ID)
+	if got.Title != "新标题" || got.Priority != "低" {
+		t.Fatalf("空串应保持原值: %+v", got)
+	}
+}
+
 func TestCloseAndRevive(t *testing.T) {
 	s := seedStore(t)
 	card, _ := s.CreateCard(NewCard{Title: "t", Project: "p", Workflow: "bug", Actor: "test"})

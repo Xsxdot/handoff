@@ -280,6 +280,29 @@ func (s *Store) SetAcceptance(id, criteria, actor string) error {
 	})
 }
 
+// UpdateCardMeta 改标题/优先级（空串 = 不改该项）。落 comment 事件。
+func (s *Store) UpdateCardMeta(id, title, priority, actor string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		card, err := getCardTx(s, tx, id)
+		if err != nil {
+			return fmt.Errorf("改卡: 卡 %s: %w", id, err)
+		}
+		if title == "" {
+			title = card.Title
+		}
+		if priority == "" {
+			priority = card.Priority
+		}
+		if _, err := tx.Exec(s.q(`UPDATE cards SET title = ?, priority = ?, updated_at = ? WHERE id = ?`),
+			title, priority, s.tval(time.Now()), id); err != nil {
+			return fmt.Errorf("写改卡: %w", err)
+		}
+		_, err = s.appendEvent(tx, sink, id, EvComment, actor,
+			map[string]any{"kind": "普通", "body": fmt.Sprintf("改卡：标题=%q 优先级=%s", title, priority)})
+		return err
+	})
+}
+
 // CloseCard 终止（从任意非终态；reason 受控词表）。终止不是删除：
 // 号仍占用、事件仍在流里、搁置可复活。
 func (s *Store) CloseCard(id, reason, actor string) error {
