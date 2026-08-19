@@ -14,3 +14,4 @@
 - Task 7 completed: added typed relations, blocks cycle/parent-child checks, bidirectional relation reads, and effective base inheritance; commit scope: `internal/ledger/relations.go internal/ledger/relations_test.go`.
 - Task 8+9 completed: added merge/unmerge/split, comment references, acceptance/needs/subtree events, and derived ListCards views/filters; commit scope: `internal/ledger/merge.go internal/ledger/events.go internal/ledger/derived.go` plus paired tests.
 - Task 10 completed: added decision open/answer/list lifecycle, project-level event support, and card Needs linkage; commit scope: `internal/ledger/decisions.go internal/ledger/decisions_test.go`.
+- Task 11 completed: added weak card-task links with reverse lookup and driver lease claim/heartbeat/expiry takeover; commit scope: `internal/ledger/tasks.go internal/ledger/tasks_test.go`.
