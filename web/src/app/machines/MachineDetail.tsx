@@ -12,6 +12,7 @@ import { formatRelative } from '../lib/format'
 import { cn } from '@/lib/utils'
 import type { Machine } from '../../api/types'
 import { MachineDiscipline } from './MachineDiscipline'
+import { MachineEnv } from './MachineEnv'
 
 // NOT_WIRED 是三个「形态已定、后端未做」的操作。点击后就地展开一句说明——
 // 不置灰（置灰承诺"以后能用"，用户会反复点），也不静默无反应。
@@ -78,6 +79,7 @@ export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailPro
       </div>
 
       <MachineDiscipline machine={machine} />
+      <MachineEnv machine={machine} />
 
       <div className="mt-3">
         <p className="text-xs font-medium text-muted-foreground">机器操作</p>
