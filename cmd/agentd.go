@@ -223,19 +223,25 @@ var agentdCmd = &cobra.Command{
 		// 账本镜像子系统：有已登记 target 才有镜像对象；账本库按配置解析
 		//（dsn 空 = DataDir/ledger.db 单机回退）。构造→go Run→Stop→Close
 		// 的次序是硬约束：订阅回调在写库，Stop 必须先于账本库 Close。
+		// 账本库始终打开：没有登记 target 时镜像循环不启动，但本机 web
+		// 看板仍必须能读写单机回退账本。
+		ldsn := cfg.Ledger.DSN
+		if ldsn == "" {
+			ldsn = filepath.Join(cfg.DataDir, "ledger.db")
+		}
+		lst, err := ledger.Open(ldsn)
+		if err != nil {
+			return fmt.Errorf("打开账本库: %w", err)
+		}
+		defer lst.Close()
+		if err := lst.EnsureDefaultWorkflows(); err != nil {
+			return fmt.Errorf("seed 默认工作流: %w", err)
+		}
+		if err := lst.EnsureDefaultTemplates(); err != nil {
+			return fmt.Errorf("seed 默认派发模板: %w", err)
+		}
+		srv.SetLedger(lst)
 		if len(cfg.Targets) > 0 {
-			ldsn := cfg.Ledger.DSN
-			if ldsn == "" {
-				ldsn = filepath.Join(cfg.DataDir, "ledger.db")
-			}
-			lst, err := ledger.Open(ldsn)
-			if err != nil {
-				return fmt.Errorf("打开账本库: %w", err)
-			}
-			defer lst.Close()
-			if err := lst.EnsureDefaultWorkflows(); err != nil {
-				return fmt.Errorf("seed 默认工作流: %w", err)
-			}
 			host, _ := os.Hostname()
 			lm := ledgermirror.New(lst, func() map[string]config.Target {
 				// /api/machines 热改会原子替换配置快照；从配置文件读取使

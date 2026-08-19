@@ -98,6 +98,9 @@ const (
 	// **只入库不 Publish**，且在客户端不可交付（见 client.isDeliverable）：它与
 	// completed/failed 同时刻产生，可交付就会抢走一次性 wait 的收手权。
 	EventTypeTicketsVoided EventType = "tickets_voided"
+	// EventTypeTicketAnswered 是 reply/审批者自动批准消耗工单后的审计事件。
+	// 它供账本镜像回放清除对应的未决工单，不唤醒 wait（应答回程另有 hub）。
+	EventTypeTicketAnswered EventType = "ticket_answered"
 	// EventTypeArchived 是任务被 done 归档时追加的终态事件，payload 为 ArchivedPayload。
 	//
 	// 为什么归档需要一条自己的事件：在此之前 Done 只做状态迁移、不追加任何事件，

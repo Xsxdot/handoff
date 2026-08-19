@@ -139,6 +139,7 @@ type CardView struct {
 	Blocked       bool     `json:"blocked"`
 	BlockedBy     []string `json:"blocked_by,omitempty"` // 未完成的 blocker
 	Following     string   `json:"following,omitempty"`  // 非空 = merged_into 的承载卡 id（跟随态）
+	MergedCount   int      `json:"merged_count"`         // 承载的成员数
 	NeedsReason   string   `json:"needs,omitempty"`      // 非空 = 等人，值为 reason
 	OpenDecisions int      `json:"open_decisions"`
 }

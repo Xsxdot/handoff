@@ -470,6 +470,11 @@ type questionPayload struct {
 	Kind     string `json:"kind"`
 }
 
+type ticketAnsweredPayload struct {
+	TicketID string `json:"ticket_id"`
+	Answer   string `json:"answer"`
+}
+
 // deliveryFailedPayload 是 delivery_failed 事件的 payload：哪张工单没送到、
 // 为什么、以及协调者该做什么。
 type deliveryFailedPayload struct {
@@ -2052,6 +2057,10 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
 		m.countApproverFail(taskID)
 		return
+	}
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
+		ticketAnsweredPayload{TicketID: ticketID, Answer: "allow"}); err != nil {
+		m.log.Warn("审批者批准：追加工单答复事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 	}
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
