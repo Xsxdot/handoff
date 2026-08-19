@@ -227,11 +227,6 @@ var cardDispatchCmd = &cobra.Command{
 	},
 }
 
-// runNodeDispatch 节点执行器入口在 Task 8 接线；先立桩让实现类派发可独立测试。
-func runNodeDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor string) error {
-	return fmt.Errorf("--node %s 未实现（Task 8）", node)
-}
-
 func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTemplate, "template", "feature-impl", "派发模板名")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
