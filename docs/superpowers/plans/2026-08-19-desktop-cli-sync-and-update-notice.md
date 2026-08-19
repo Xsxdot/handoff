@@ -27,6 +27,10 @@
 
 **这是整个设计的承重底座。它若不成立，Task 5 起的整条同步路都要改成「在 bundle 内运行」。必须最先做，不能留到最后。**
 
+> **✅ 已于 2026-08-19 由审核者在本地完成，P3 成立。** 取证原文见
+> `docs/superpowers/plans/2026-08-19-desktop-cli-sync-and-update-notice.notes.md`。
+> 本 task 保留在此是为了记录判据与复现方法（其中两条判据当初写错了，已修正）。
+
 **Files:**
 - 无代码改动。产出是一份写进 `docs/superpowers/plans/` 同名 `.notes.md` 的取证记录
 
@@ -54,13 +58,31 @@ cd "$P3HOME" && gh release download v0.3.0-rc10 --repo Xsxdot/handoff -p '*.dmg'
 MNT=$(mktemp -d) && hdiutil attach "$P3HOME"/*.dmg -nobrowse -readonly -mountpoint "$MNT" && ditto "$MNT/handoff-desktop.app" "$P3HOME/handoff-desktop.app" && hdiutil detach "$MNT"
 ```
 
-- [ ] **Step 4: 用隔离 HOME 直接运行壳内的可执行文件，让它走首次引导的释出路径**
+- [ ] **Step 3.5: 给 DMG 补上隔离属性（缺了这步整条验证是假绿）**
+
+`gh release download` **不设** `com.apple.quarantine`，只留 `provenance` 和一个 diskimages
+校验和。而本条问的恰恰是隔离属性会不会传染。拿 `gh` 下的 DMG 直接测必然"通过"，
+且完全测不到真实用户的处境（用户是浏览器下载的）。在 Step 3 挂载**之前**补上：
+
+```bash
+xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;$(uuidgen)" "$P3HOME"/*.dmg
+```
+
+补完再挂载、`ditto` 拷出，`.app` 上应出现 `0281;...` 且 UUID 与 DMG 的一致——传染链成立。
+
+- [ ] **Step 4: 用隔离 HOME **与隔离 PATH** 运行壳内的可执行文件**
 
 隔离 HOME 下 `shell.Resolve` 会判 `StateUnconfigured`，于是 `releaseEmbedded` 被调、把内嵌二进制写到 `$P3HOME/.local/bin/handoff`。窗口会弹出向导——**不要填，直接关窗**，释出发生在向导之前。
 
+**PATH 必须一起隔离。** `ResolveBinPath` 会搜 PATH：只设 `HOME` 时子进程继承操作者的
+PATH，会找到**真实的** `~/.local/bin/handoff` 并判成 `use-existing` 直接不释出——
+整个验证空转，而日志看着一切正常（`decision=use-existing`）。
+
 ```bash
-HOME="$P3HOME" "$P3HOME/handoff-desktop.app/Contents/MacOS/handoff-desktop"
+env -i HOME="$P3HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/tmp   "$P3HOME/handoff-desktop.app/Contents/MacOS/handoff-desktop"
 ```
+
+判据：日志里必须是 `释出决策 decision=install`，不是 `use-existing`。
 
 - [ ] **Step 5: 确认二进制真的被释出了**
 
@@ -79,12 +101,25 @@ echo "--- 3. 公证票据 ---"; xcrun stapler validate "$P3HOME/.local/bin/hando
 echo "--- 4. Gatekeeper 实判 ---"; spctl -a -vvv -t exec "$P3HOME/.local/bin/handoff"
 ```
 
-**判据**：第 4 项必须是 `accepted`。第 1 项若出现 `com.apple.quarantine` 则是危险信号，需第 7 步实测确认。
+**判据**（**已于 2026-08-19 实跑，第 3、4 项被证明用错了对象，此处已修正**）：
+
+- **第 1 项是本条的正题**：`com.apple.quarantine` **不该**出现。Gatekeeper 对可执行文件的
+  评估由隔离属性触发，没有它就不评估。实测结果是只有 `com.apple.provenance`——
+  隔离属性传染到了 `.app`，但没有继续传染到它写出的文件上
+- **第 2 项**：签名必须在，且带 `flags=0x10000(runtime)`
+- **第 3 项 `stapler validate` 报「没有票据」是正常的，不是缺陷。** 苹果只支持把票据
+  装订到 `.app` / `.dmg` / `.pkg`，**裸 Mach-O 可执行文件无法装订**
+- **第 4 项 `spctl` 报 `rejected` 也是正常的——读它给的理由。** 原文是
+  `rejected (the code is valid but does not seem to be an app)`，同一行明说了代码有效。
+  `spctl -t exec` 对非 bundle 的命令行工具就是这么报
+
+**判据要先确认它适用于被验对象。** 第 3、4 项若照原样当门用，会把一条成立的路径判成
+不成立，然后整份设计被推倒重做——代价远大于验错方向。
 
 - [ ] **Step 7: 真的执行它一次——这是唯一无法被前六步替代的判据**
 
 ```bash
-HOME="$P3HOME" "$P3HOME/.local/bin/handoff" version
+env -i HOME="$P3HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$P3HOME/.local/bin/handoff" version
 ```
 
 Expected: 打印版本号并退出 0。
