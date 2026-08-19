@@ -36,6 +36,9 @@ import taskFixture from './testdata/Task.json'
 import tasksRespFixture from './testdata/TasksResp.json'
 import ticketFixture from './testdata/Ticket.json'
 import frameFixture from './testdata/Frame.json'
+import envRespFixture from './testdata/EnvResp.json'
+import envKeysFixture from './testdata/EnvKeysResp.json'
+import envMappingReqFixture from './testdata/EnvMappingReq.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
@@ -44,6 +47,9 @@ import {
   type DisciplineMappingReq,
   type DisciplineResp,
   type Event,
+  type EnvKeysResp,
+  type EnvMappingReq,
+  type EnvResp,
   type FileConflictResp,
   type FileRead,
   type FileWriteReq,
@@ -191,6 +197,36 @@ describe('W3a 契约', () => {
     // 分母在 fixture 里有值；不报窗口的 executor 会让这个键整个缺席，
     // 而不是给 0——那是「如实缺席」的线格式约定
     expect(t.usage?.context_window).toBe(258400)
+  })
+})
+
+describe('Env 文件契约', () => {
+  it('EnvResp 两档都在线格式里，off 档不带 file 键', () => {
+    const resp = envRespFixture as EnvResp
+    expect(resp.bindings.map((b) => b.mode).sort()).toEqual(['file', 'off'])
+    const off = resp.bindings.find((b) => b.mode === 'off')!
+    expect(off.file).toBeUndefined()
+    const file = resp.bindings.find((b) => b.mode === 'file')!
+    expect(file.file).toBe('proxy.env')
+    // env 没有内置默认：响应里不得出现 builtins/default_tier 这类 discipline 概念
+    expect('builtins' in envRespFixture).toBe(false)
+    expect('default_tier' in (off as object)).toBe(false)
+  })
+
+  it('EnvKeysResp：只有 key 名与值长度，值不在线格式里', () => {
+    const resp = envKeysFixture as EnvKeysResp
+    expect(resp.keys.map((k) => k.key)).toEqual(['HTTPS_PROXY', 'GOPROXY', 'EMPTY_ONE'])
+    // 值为空的那条也必须带 value_bytes: 0（int 无 omitempty），否则界面判不出「空值」
+    expect(resp.keys[2].value_bytes).toBe(0)
+    expect(resp.keys[1].duplicate).toBe(true)
+    // 结构性判据：整份 fixture 里没有任何名为 value/content 的键
+    const raw = JSON.stringify(envKeysFixture)
+    expect(raw).not.toMatch(/"value"|"content"/)
+  })
+
+  it('EnvMappingReq：整段替换，两条 binding', () => {
+    const req = envMappingReqFixture as EnvMappingReq
+    expect(req.bindings).toHaveLength(2)
   })
 })
 
