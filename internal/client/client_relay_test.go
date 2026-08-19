@@ -10,8 +10,8 @@ import (
 func TestNewRelayUsesPlaceholderAndDialerTransport(t *testing.T) {
 	d := relay.NewDialer("ws://relay", "credential", "node", "token", "account", nil)
 	c := NewRelay(d, "token")
-	if c.baseURL != "http://relay" {
-		t.Fatalf("baseURL = %q, want http://relay", c.baseURL)
+	if c.baseURL != "http://localhost" {
+		t.Fatalf("baseURL = %q, want http://localhost", c.baseURL)
 	}
 	if c.token != "token" {
 		t.Fatalf("token = %q", c.token)

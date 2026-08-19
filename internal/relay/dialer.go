@@ -92,23 +92,36 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 	}
 	d.log.Debug("relay connect_ok received", "node", d.node, "account", d.account)
 	raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-	// The physical tunnel is the relay session-mux. E2E is established on each
-	// session stream so independent coordinators/requests get independent keys.
-	session, err := yamux.Client(raw, relayYamuxConfig())
+	// coordinator 的这条 WSS 连接与 executor 的一个 session 流由 relay 1:1 撮合，
+	// 因此它本身就是「一个 session」——这里绝不能再套 session-mux yamux：relay 只做
+	// 纯字节拷贝、不会解掉这层帧，套了会把 yamux 帧头漏进 executor 的 SecureServer
+	// （表现为 salt 长度被读成 0x00010001=65537）。顺序必须与 executor 的
+	// listener.serveSession 一致：E2E 先，app-yamux 在 E2E 密文信道内。
+	d.log.Debug("e2e handshake begin", "account", d.account, "node", d.node, "role", "initiator")
+	secure, err := SecureClient(ctx, raw, d.token, d.account, d.node)
 	if err != nil {
 		_ = raw.Close()
-		d.log.Error("relay yamux setup failed", "node", d.node, "cause", err)
-		return fmt.Errorf("create relay yamux client: %w", err)
+		d.log.Error("relay e2e handshake failed", "node", d.node, "account", d.account, "cause", err)
+		return fmt.Errorf("secure relay session: %w", err)
 	}
-	d.log.Debug("relay yamux ready", "node", d.node, "account", d.account)
+	d.log.Info("e2e established", "node", d.node, "account", d.account, "role", "initiator")
+	session, err := yamux.Client(secure, relayYamuxConfig())
+	if err != nil {
+		_ = secure.Close()
+		_ = raw.Close()
+		d.log.Error("relay app yamux setup failed", "node", d.node, "cause", err)
+		return fmt.Errorf("create relay app yamux client: %w", err)
+	}
 	d.raw = raw
 	d.session = session
 	d.log.Info("relay tunnel established", "node", d.node, "account", d.account)
 	return nil
 }
 
-// DialContext opens one app-yamux stream. addr is an http.Client placeholder:
-// routing is determined by the authenticated relay tunnel, not by addr.
+// DialContext opens one app-yamux stream inside the E2E-secured tunnel. addr is
+// an http.Client placeholder: routing is determined by the authenticated relay
+// tunnel, not by addr. E2E and app-yamux are set up once per tunnel in
+// ensureTunnel; here we only open a fresh app stream per HTTP/WS connection.
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if err := d.ensureTunnel(ctx); err != nil {
 		return nil, err
@@ -128,39 +141,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 		d.mu.Unlock()
 		return nil, err
 	}
-	d.log.Debug("e2e handshake begin", "account", d.account, "node", d.node, "role", "initiator")
-	secure, err := SecureClient(ctx, conn, d.token, d.account, d.node)
-	if err != nil {
-		_ = conn.Close()
-		d.log.Error("relay e2e handshake failed", "node", d.node, "account", d.account, "cause", err)
-		return nil, fmt.Errorf("secure relay session: %w", err)
-	}
-	d.log.Info("e2e established", "node", d.node, "account", d.account, "role", "initiator")
-	appMux, err := yamux.Client(secure, relayYamuxConfig())
-	if err != nil {
-		_ = secure.Close()
-		return nil, fmt.Errorf("create relay app yamux client: %w", err)
-	}
-	appStream, err := appMux.Open()
-	if err != nil {
-		_ = appMux.Close()
-		return nil, fmt.Errorf("open relay app stream: %w", err)
-	}
-	return &appStreamConn{Conn: appStream, mux: appMux}, nil
-}
-
-type appStreamConn struct {
-	net.Conn
-	mux  *yamux.Session
-	once sync.Once
-	err  error
-}
-
-func (c *appStreamConn) Close() error {
-	c.once.Do(func() {
-		c.err = c.mux.Close()
-	})
-	return c.err
+	return conn, nil
 }
 
 // Transport returns an HTTP transport whose requests all use the relay app

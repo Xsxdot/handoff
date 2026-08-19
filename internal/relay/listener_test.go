@@ -90,7 +90,11 @@ func TestAppListenerAcceptForwardsSession(t *testing.T) {
 
 func startBridgeRelay(t *testing.T, token, account, node string) (string, func()) {
 	t.Helper()
-	registered := make(chan net.Conn, 1)
+	// 对齐真 relay：executor 的物理隧道上跑 relay-session-mux（relay 侧 yamux.Client），
+	// 每个 coordinator 连接开一条 session 流，再把 coordinator raw 与该 session 流撮合。
+	// executor 的 Listener 在物理隧道上跑 yamux.Server 收 session——两侧必须成对，
+	// 直接 bridge raw↔raw 会让 executor 的 yamux.Server 读到非帧字节而失败。
+	registered := make(chan *yamux.Session, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -111,7 +115,11 @@ func startBridgeRelay(t *testing.T, token, account, node string) (string, func()
 			if err := sendControl(ctx, ws, Frame{Type: Registered, Account: account}); err != nil {
 				return
 			}
-			registered <- raw
+			sess, err := yamux.Client(raw, relayYamuxConfig())
+			if err != nil {
+				return
+			}
+			registered <- sess
 			<-ctx.Done()
 		case Connect:
 			if frame.Node != node || frame.Credential != "cred" {
@@ -121,13 +129,17 @@ func startBridgeRelay(t *testing.T, token, account, node string) (string, func()
 			if err := sendControl(ctx, ws, Frame{Type: ConnectOK, Account: account}); err != nil {
 				return
 			}
-			var executor net.Conn
+			var execSess *yamux.Session
 			select {
-			case executor = <-registered:
+			case execSess = <-registered:
 			case <-ctx.Done():
 				return
 			}
-			bridgeConns(executor, raw)
+			stream, err := execSess.Open()
+			if err != nil {
+				return
+			}
+			bridgeConns(stream, raw)
 		}
 	}))
 	return "ws" + strings.TrimPrefix(server.URL, "http"), server.Close

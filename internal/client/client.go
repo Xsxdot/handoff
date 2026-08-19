@@ -209,9 +209,14 @@ func New(addr, token string) *Client {
 // HTTP URL placeholder used to build request paths and WS URLs; routing is done
 // by the Dialer. token remains the agentd Bearer credential as a defense-in-depth
 // layer after the relay's E2E channel is established.
+//
+// baseURL 的 host 必须用 loopback 名（localhost）：relay 投递的请求经隧道直达
+// 对端 agentd.Handler，会先过 agentd 的 hostGuard（Host 白名单，防 DNS rebinding）。
+// loopback 三件套恒在白名单内，而任意占位名（如 "relay"）会被 403 拒。语义上
+// relay 投递等价于对端本地投递，用 localhost 正合适。
 func NewRelay(d *relay.Dialer, token string) *Client {
 	return &Client{
-		baseURL: "http://relay",
+		baseURL: "http://localhost",
 		token:   token,
 		hc: &http.Client{
 			Transport: d.Transport(),

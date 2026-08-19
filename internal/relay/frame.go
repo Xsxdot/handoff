@@ -16,11 +16,13 @@ import (
 type FrameType string
 
 const (
-	Register   FrameType = "register"
-	Connect    FrameType = "connect"
-	Registered FrameType = "registered"
-	ConnectOK  FrameType = "connect_ok"
-	Error      FrameType = "error"
+	// 线格式字面值必须与 handoff-server internal/wire 逐字节一致（全大写）：
+	// relay 两侧独立实现同一契约，大小写不符会导致控制帧互相解不出、握手全失败。
+	Register   FrameType = "REGISTER"
+	Connect    FrameType = "CONNECT"
+	Registered FrameType = "REGISTERED"
+	ConnectOK  FrameType = "CONNECT_OK"
+	Error      FrameType = "ERROR"
 )
 
 // Control error codes are shared with the relay server wire contract.

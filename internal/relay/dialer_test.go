@@ -50,37 +50,31 @@ func startFakeRelay(t *testing.T, token, account, node string) (string, func()) 
 			return
 		}
 		raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-		session, err := yamux.Server(raw, relayYamuxConfig())
+		// 对齐真实结构：coordinator 的这条 WSS 就是「一个 session」，E2E 直接在
+		// raw 上，app-yamux 在 E2E 密文信道内。假 relay 在此扮演 relay+executor
+		// 合体、终结 E2E（真 relay 不解 E2E，但 dialer 单测只需一个行为等价的对端）。
+		secure, err := SecureServer(ctx, raw, token, account, node)
+		if err != nil {
+			return
+		}
+		appMux, err := yamux.Server(secure, relayYamuxConfig())
 		if err != nil {
 			return
 		}
 		for {
-			stream, err := session.Accept()
+			appStream, err := appMux.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
-				secure, err := SecureServer(ctx, stream, token, account, node)
-				if err != nil {
-					return
-				}
-				appMux, err := yamux.Server(secure, relayYamuxConfig())
-				if err != nil {
-					return
-				}
-				appStream, err := appMux.Accept()
-				if err != nil {
-					return
-				}
-				_ = http.Serve(newSingleConnListener(appStream), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			go func(s net.Conn) {
+				_ = http.Serve(newSingleConnListener(s), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/ping" {
 						_, _ = io.WriteString(w, "pong")
 						return
 					}
 					http.NotFound(w, r)
 				}))
-				_ = appMux.Close()
-			}()
+			}(appStream)
 		}
 	}))
 	return "ws" + strings.TrimPrefix(server.URL, "http"), server.Close
