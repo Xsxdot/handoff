@@ -190,3 +190,91 @@ func TestDisciplineFileReadMissingIs404(t *testing.T) {
 		t.Fatalf("code = %d, want 404", code)
 	}
 }
+
+func TestDisciplineMappingSavesThreeModes(t *testing.T) {
+	env, dir := newDisciplineEnv(t, nil, "codex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mine.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var got proto.DisciplineResp
+	code := env.putJSON(t, "/api/discipline/mapping", proto.DisciplineMappingReq{
+		Bindings: []proto.DisciplineBinding{
+			{Executor: "codex", Mode: "file", File: "mine.md"},
+			{Executor: "grok", Mode: "off"},
+			{Executor: "opencode", Mode: "default"},
+		},
+	}, &got)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d", code)
+	}
+	m := env.srv.DisciplineMapping()
+	if m["codex"] != "mine.md" {
+		t.Errorf("file 档 = %q", m["codex"])
+	}
+	if v, ok := m["grok"]; !ok || v != "" {
+		t.Errorf("off 档应是空串且键存在，得到 %q/%v", v, ok)
+	}
+	if _, ok := m["opencode"]; ok {
+		t.Errorf("default 档必须是**键不存在**，现在键还在")
+	}
+	_ = got
+}
+
+func TestDisciplineMappingRejectsMissingFile(t *testing.T) {
+	env, _ := newDisciplineEnv(t, nil, "codex")
+	var body map[string]string
+	code := env.putJSON(t, "/api/discipline/mapping", proto.DisciplineMappingReq{
+		Bindings: []proto.DisciplineBinding{{Executor: "codex", Mode: "file", File: "nope.md"}},
+	}, &body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400（配一个不存在的文件等于埋一次必然失败的派发）", code)
+	}
+	if _, ok := env.srv.DisciplineMapping()["codex"]; ok {
+		t.Error("校验失败时不得落盘任何改动")
+	}
+}
+
+func TestDisciplineMappingRejectsBadMode(t *testing.T) {
+	env, _ := newDisciplineEnv(t, nil, "codex")
+	var body map[string]string
+	if code := env.putJSON(t, "/api/discipline/mapping", proto.DisciplineMappingReq{
+		Bindings: []proto.DisciplineBinding{{Executor: "codex", Mode: "sometimes"}},
+	}, &body); code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", code)
+	}
+}
+
+func TestDisciplineMappingTakesEffectWithoutRestart(t *testing.T) {
+	// 本条是 Task 2 + Task 3 + 本 task 合起来的唯一判据：
+	// 改完映射**不重建 Manager**，下一次纪律解析就该看到新值。
+	env, dir := newDisciplineEnv(t, nil, "codex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mine.md"), []byte("自定义纪律\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 白盒：直接问 manager 自己的 resolver，绕过任何缓存层
+	before, err := env.mgr.discipline.For("codex")
+	if err != nil || before.Source != "内置:single-context" {
+		t.Fatalf("改前 = %q err=%v", before.Source, err)
+	}
+	var got proto.DisciplineResp
+	if code := env.putJSON(t, "/api/discipline/mapping", proto.DisciplineMappingReq{
+		Bindings: []proto.DisciplineBinding{{Executor: "codex", Mode: "file", File: "mine.md"}},
+	}, &got); code != http.StatusOK {
+		t.Fatalf("code = %d", code)
+	}
+	after, err := env.mgr.discipline.For("codex")
+	if err != nil {
+		t.Fatalf("改后 For: %v", err)
+	}
+	if after.Source != "配置:mine.md" || after.Text != "自定义纪律\n" {
+		t.Fatalf("改后 = %q / %q，热更新失效（要重启才生效等于界面在骗人）", after.Source, after.Text)
+	}
+}

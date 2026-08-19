@@ -16,11 +16,13 @@ package agentd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -192,4 +194,77 @@ func (s *Server) handleDisciplineFileWrite(w http.ResponseWriter, r *http.Reques
 	}
 	s.log.Info("纪律块写文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
 	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: sha, Size: size})
+}
+
+// handleDisciplineMapping 处理 PUT /api/discipline/mapping[?machine=]。
+//
+// 请求体 proto.DisciplineMappingReq：**整段替换**该机的 discipline 配置段。
+//
+// 响应：200 proto.DisciplineResp（保存后的最新状态，界面直接拿它刷新）
+//
+//	400 mode 非法 / executor 为空 / file 档指向不存在的文件
+//	503 manager 未就绪
+//
+// 为什么要校验「file 档的文件必须存在」：Resolver 的既定语义是「配了但读不到 =
+// 派发失败」（刻意不退回内置，否则用户会以为跑的是自己那套）。把错误挡在保存
+// 这一刻，好过让它在三天后某次派发时炸出来。注意这只是保存时的一次性校验——
+// 文件仍可能事后被删，那时的失败仍由派发路径承担。
+func (s *Server) handleDisciplineMapping(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	if s.mgr == nil {
+		s.log.Warn("纪律映射保存：manager 未就绪")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req proto.DisciplineMappingReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("纪律映射保存：请求体无法解析", "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	dir := discipline.Dir(s.conf().DataDir)
+	s.log.Info("纪律映射保存请求", "bindings", len(req.Bindings), "dir", dir)
+
+	next := map[string]string{}
+	for _, b := range req.Bindings {
+		name := strings.TrimSpace(b.Executor)
+		if name == "" {
+			s.log.Warn("纪律映射保存被拒：executor 名为空", "cause", "executor 名不能为空")
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "executor 名不能为空"})
+			return
+		}
+		switch b.Mode {
+		case proto.DisciplineModeDefault:
+			// 默认档 = 配置里**不出现这个键**，什么都不写。
+		case proto.DisciplineModeOff:
+			next[name] = ""
+		case proto.DisciplineModeFile:
+			file := strings.TrimSpace(b.File)
+			if _, _, _, err := discipline.Read(dir, file); err != nil {
+				s.log.Warn("纪律映射保存被拒：文件不可用", "executor", name, "file", file, "cause", err)
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("%s 指定的纪律块文件不可用：%v", name, err)})
+				return
+			}
+			next[name] = file
+		default:
+			s.log.Warn("纪律映射保存被拒：档位非法", "executor", name, "mode", b.Mode,
+				"cause", "只支持 default/file/off")
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("%s 的档位 %q 非法：只支持 default/file/off", name, b.Mode)})
+			return
+		}
+	}
+	if err := s.swapConf(func(c *config.Config) error {
+		c.Discipline = next
+		return nil
+	}); err != nil {
+		s.log.Error("纪律映射落盘失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("纪律映射已保存", "configured", len(next))
+	s.handleDisciplineGet(w, r) // 回最新状态，界面直接拿它刷新
 }

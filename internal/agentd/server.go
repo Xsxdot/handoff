@@ -363,6 +363,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
 	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
 	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
+	api.HandleFunc("PUT /api/discipline/mapping", s.handleDisciplineMapping)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
