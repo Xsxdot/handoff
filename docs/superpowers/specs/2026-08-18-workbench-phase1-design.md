@@ -212,12 +212,18 @@ CREATE TABLE mirror_cursors (
 
 定案的生命周期与 lease 语义：
 
-- **订阅模型：常订全量 + 写入过滤 + 挂账定点补拉**。镜像者对每个已登记 target
-  维持一条 `/ws/events` 连接（从该 target 的 mirror cursor 起），事件到达时查
-  `card_tasks`——挂账的写入 `card_events`，未挂账的只推进 cursor。task 挂账
-  瞬间（dispatch 或手动 link）对该 task 做一次定点历史补拉（按任务粒度拉全量
-  事件写入，幂等键天然去重）——解决「挂账前已流过 cursor 的事件」。不做动态
-  订阅/退订：连接生命周期只随 target 登记表变化，无成员 churn。
+- **订阅模型：挂账即订阅（per-task）**。~~常订全量过滤~~ 该早稿假设存在
+  target 级全量事件流——真机核对后不成立：`/ws/events` 是按 task 的端点
+  （`?task=<id>&from_seq=`），且 web-console 既有 `internal/agentd/mirror.go`
+  正是 per-task 订阅形态。定案：镜像者按 tick（30s）从账本库读 `card_tasks`
+  得订阅集，对每个挂账 task 维持一条订阅（`client.StreamEventsOnce` 语义，
+  断线退避重连）；task 首次订阅从 watermark=0 起，历史事件自然全量补齐——
+  「挂账前的事件」不需要单独补拉机制。终态 task 的订阅随之退订。
+- **watermark 不设独立游标**：per (target, task) 的续拉起点 = 账本内
+  `MAX(card_events.source_seq)`（幂等键同源，游标与数据不可能漂移——
+  web-console Mirror 的 MirrorWatermark 同一手法）。`mirror_cursors` 表退化为
+  **per-target 健康表**（updated_at 心跳 + 最近见到的 seq，仅供滞后判定与
+  取证，不参与续拉）。
 - **lease 语义**：单行 `mirror_lease` 表，时长 30s，持有者每 10s 续约
   （`UPDATE ... SET lease_until = now()+30s WHERE holder = self`）。抢占 =
   任意协调机发现 `lease_until < now()` 后 CAS 改写 holder；两机并发抢恰一个
