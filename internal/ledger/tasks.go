@@ -58,6 +58,27 @@ func (s *Store) TasksOf(cardID string) ([]TaskLink, error) {
 	return out, rows.Err()
 }
 
+// AllTaskLinks 全部挂账行（镜像对账用）。
+func (s *Store) AllTaskLinks() ([]TaskLink, error) {
+	rows, err := s.db.Query(`SELECT card_id, target, task_id, purpose, created_at
+		FROM card_tasks ORDER BY target, task_id`)
+	if err != nil {
+		return nil, fmt.Errorf("读全部挂账: %w", err)
+	}
+	defer rows.Close()
+	var out []TaskLink
+	for rows.Next() {
+		var link TaskLink
+		var createdAt any
+		if err := rows.Scan(&link.CardID, &link.Target, &link.TaskID, &link.Purpose, &createdAt); err != nil {
+			return nil, err
+		}
+		link.CreatedAt = toTime(createdAt)
+		out = append(out, link)
+	}
+	return out, rows.Err()
+}
+
 // CardOfTask 反查 task 挂在哪张卡（镜像写入路径的热查询）。
 func (s *Store) CardOfTask(target, taskID string) (string, error) {
 	var cardID string

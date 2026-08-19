@@ -21,6 +21,10 @@ func TestLinkTask(t *testing.T) {
 	if err != nil || len(links) != 1 || links[0].TaskID != "T1234" || links[0].Purpose != "implement" {
 		t.Fatalf("TasksOf: %v %+v", err, links)
 	}
+	allLinks, err := s.AllTaskLinks()
+	if err != nil || len(allLinks) != 1 || allLinks[0].CardID != card.ID {
+		t.Fatalf("AllTaskLinks: %v %+v", err, allLinks)
+	}
 	// 反查：task → 卡
 	cardID, err := s.CardOfTask("mac-02", "T1234")
 	if err != nil || cardID != card.ID {
