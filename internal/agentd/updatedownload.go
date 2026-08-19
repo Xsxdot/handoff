@@ -87,7 +87,8 @@ func desktopDownloadChecksum(inst *release.Installer) func(context.Context, stri
 // openDownloadedFile 按当前平台唤起文件管理器。
 //
 // 参数：path 是已落盘的绝对路径。
-// 返回：只有子进程无法启动时返回错误；Windows explorer 的退出码不参与判断，
+// 返回：只有子进程无法启动时返回错误；Start 成功后由后台 goroutine Wait 收尸，
+// 防止长驻 agentd 每次下载都积累僵尸子进程。Windows explorer 的退出码不参与判断，
 // 因为它天生可能用非零码结束。
 func openDownloadedFile(path string) error {
 	var cmd *exec.Cmd
@@ -99,7 +100,14 @@ func openDownloadedFile(path string) error {
 	default:
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
 	}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// agentd 长驻；不 Wait 会让 open/xdg-open 秒退后的子进程一直占 zombie 槽位。
+	// 不把 Wait 的退出码传给调用方：调用方只关心是否成功唤起，Windows explorer
+	// 非零退出码不表示启动失败。
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // handleUpdateLatest 返回缓存的最新 release tag。

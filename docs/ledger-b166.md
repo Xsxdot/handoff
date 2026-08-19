@@ -143,3 +143,43 @@
 - §9 日志与注释复查：agentd/薄壳新路径均使用 slog；下载开始、校验、跳过、打开器、清理均有日志；承重「不复用 reveal」「不做自我替换」「状态只在内存」说明已落在对应文件头。最终范围复审命令 `gofmt -l .`、`git diff --check 3addd708..HEAD`、死代码 grep 均无输出；除已记录环境/平台未验证项外无待修代码发现。
 - 未验证项：`desktop/main.go` 与托盘改动未经 Linux Wails 编译验证（缺 GTK/Wails 构建依赖）；macOS/Windows 真机菜单、图标、DMG 挂载与控制台下载走查未做；计划引用的 `prototypes/desktop-update/` 副本在仓库中不存在，未能逐像素对照。
 - 终审修复轮：补充 `desktop/main.go:100` 的 `trayLatest` 生命周期注释；修复后复跑静态范围检查与死代码 grep，均无输出。无第二轮修复波。
+
+## 审核修复轮：跨平台下载测试、子进程回收与提示框按钮矩阵
+
+- 修复 `internal/agentd/updatedownload_test.go`：
+  `TestDownloadDeletesFileOnChecksumMismatch` 与 `TestDownloadSkipsMatchingExistingFile` 均加入
+  `env.srv.downloadPlatform = func() (string, string) { return "linux", "amd64" }`。
+  两个测试的预置/断言文件名本来就由 `DesktopAssetName("v0.3.1", "linux", "amd64")` 生成，
+  现在 handler 的平台缝也固定为同一值；因此 handler、预置文件和 stat 断言始终指向同一资产，
+  与运行平台的 `runtime.GOOS/GOARCH` 无关。
+- 变异复验在 Linux（非 macOS）完成：临时删除校验失败分支的 `os.Remove(path)` 后，
+  `go test ./internal/agentd/ -run TestDownloadDeletesFileOnChecksumMismatch -v` 原始失败为：
+  `updatedownload_test.go:71: 校验失败后文件仍存在，stat err=<nil>`，包结果 `FAIL`；恢复删除逻辑后，
+  同一测试与 `TestDownloadSkipsMatchingExistingFile` 均 `PASS`，包结果：
+  `ok github.com/Xsxdot/handoff/internal/agentd 0.074s`（缓存复跑为 `ok ... (cached)`）。
+- `internal/agentd/updatedownload.go` 的 `openDownloadedFile` 在 `Start` 成功后以 goroutine 调用
+  `Wait` 收尸，并注释说明长驻 agentd 若不回收会积累 open/xdg-open 的僵尸子进程；Wait 的退出码
+  仍不影响 Windows explorer 的唤起判定。
+- 提示框补齐原型按钮矩阵：有新版显示「下载」+「稍后」+「查看详情」，点击「稍后」复用关闭逻辑；
+  下载中显示禁用的进度主按钮并隐藏「稍后」；下载完成显示「已下载 <文件名>」及校验通过文案、
+  移除主按钮；blocked/failed 仍只有「知道了」，失败下载保留「重试」。新增/更新测试覆盖这些行为。
+- 定向验证：
+  `go test ./internal/agentd/ -run 'TestDownload|TestUpdateLatest' -v`：8 个测试全部 `PASS`，
+  包结果 `ok github.com/Xsxdot/handoff/internal/agentd 0.494s`；
+  `npm run typecheck && npx vitest run src/app/update/UpdateToasts.test.tsx`：1 文件、7 用例通过。
+- 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./internal/agentd/`：`ok github.com/Xsxdot/handoff/internal/agentd (cached)`；
+  `cd web && npm run typecheck && npm test && npm run build`：typecheck 通过，`Test Files 81 passed (81)`、
+  `Tests 799 passed (799)`，Vite `1944 modules transformed`，产物 `index-CuFMmnUq.js 899.47 kB`，
+  仅有大 chunk warning。
+- `go test ./...` 退出码 1，实际新增相关包仍为 `ok github.com/Xsxdot/handoff/internal/agentd 98.670s`；
+  其余失败与前次终审相同（`internal/client` 游标根目录、`internal/config` 回写失败、
+  `internal/executor/claudecode` 长 socket 路径、`internal/executor/grok` 写回失败），均为当前沙箱
+  `/tmp` 只读/root 身份造成，未触及其实现。`cd desktop && gofmt -l . && go test ./internal/...` 的
+  `gofmt` 无输出，`embedbin` 为 `ok`，`desktop/internal/shell` 仍因
+  `open /tmp/.handoff-sync-1998365080: read-only file system` 在 `TestSyncOnOpenOrderIsLoadBearing` 失败。
+  按约束未在 Linux 执行 desktop 根包 Wails 编译；macOS 编译由审核者另行验证为退出 0。
+- `git diff --check` 无输出；死代码复查 grep 无输出。
+- 双裁决第 1 轮：spec 符合（两个测试平台缝一致、opener 收尸、按钮矩阵完整）且代码质量通过；
+  无额外修复轮。提交范围：四个下载/提示框实现与测试文件及本 ledger，待提交信息为
+  `fix(update): 修正跨平台下载测试与提示框按钮矩阵`。

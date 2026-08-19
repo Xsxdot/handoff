@@ -54,6 +54,7 @@ func postDesktopDownload(t *testing.T, env *testAgentdEnv, tag string) int {
 // 校验不过必须删文件：留一份坏安装包在下载目录里，用户下次会装上它。
 func TestDownloadDeletesFileOnChecksumMismatch(t *testing.T) {
 	env := newDesktopUpdateEnv(t)
+	env.srv.downloadPlatform = func() (string, string) { return "linux", "amd64" }
 	env.srv.downloadFetch = func(context.Context, string, string) ([]byte, string, error) {
 		return []byte("bad package"), downloadSum([]byte("good package")), nil
 	}
@@ -118,6 +119,7 @@ func TestDownloadSucceedsWhenOpenerFails(t *testing.T) {
 
 func TestDownloadSkipsMatchingExistingFile(t *testing.T) {
 	env := newDesktopUpdateEnv(t)
+	env.srv.downloadPlatform = func() (string, string) { return "linux", "amd64" }
 	body := []byte("already downloaded")
 	name, ok := release.DesktopAssetName("v0.3.1", "linux", "amd64")
 	if !ok {

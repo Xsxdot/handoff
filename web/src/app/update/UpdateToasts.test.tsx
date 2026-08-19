@@ -59,6 +59,35 @@ describe('UpdateToasts', () => {
     renderToasts()
     expect(screen.getByText('有新版 v0.3.1 可下载')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '稍后' })).toBeInTheDocument()
+  })
+
+  it('点击稍后后关闭本条提示', () => {
+    renderToasts()
+    fireEvent.click(screen.getByRole('button', { name: '稍后' }))
+    expect(screen.queryByText('有新版 v0.3.1 可下载')).toBeNull()
+  })
+
+  it('下载中主按钮禁用并显示进度，且隐藏稍后', () => {
+    vi.mocked(useDownload).mockReturnValue({
+      data: download({ stage: 'downloading', tag: 'v0.3.1', percent: 42 }),
+      disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
+    })
+    renderToasts()
+    expect(screen.getByRole('button', { name: '下载中 42%' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '稍后' })).toBeNull()
+  })
+
+  it('下载完成显示固定完成文案并移除主按钮', () => {
+    vi.mocked(useDownload).mockReturnValue({
+      data: download({ stage: 'done', tag: 'v0.3.1', percent: 100, path: '/tmp/handoff.dmg', opened: true }),
+      disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
+    })
+    renderToasts()
+    expect(screen.getByText('已下载 handoff.dmg')).toBeInTheDocument()
+    expect(screen.getByText('校验通过，已在访达中打开。把新版拖进「应用程序」，再重开一次即可。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '下载' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '稍后' })).toBeNull()
   })
 
   it('sync_plan=blocked 时弹「有更新待应用」，且主按钮是「知道了」', () => {

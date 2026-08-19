@@ -134,17 +134,20 @@ export function UpdateToasts({ homeOpen }: UpdateToastsProps) {
           (stage === 'downloading' || stage === 'verifying')
         const done = isDownload && downloadForCandidate?.stage === 'done'
         const failed = isDownload && downloadForCandidate?.stage === 'failed'
+        const downloadedName = fileName(downloadForCandidate?.path ?? '')
 
         return (
           <article key={key} className="rounded-lg border bg-background p-3 shadow-xl">
             <div className="flex items-start gap-2">
               <div className="min-w-0 flex-1">
-                <h2 className="text-sm font-semibold">{candidate.title}</h2>
+                <h2 className="text-sm font-semibold">
+                  {done ? `已下载 ${downloadedName}` : candidate.title}
+                </h2>
                 {done ? (
                   <p className="mt-1 break-words text-xs text-emerald-700">
                     {downloadForCandidate?.opened
-                      ? `已下载 ${fileName(downloadForCandidate.path ?? '')}，已在访达中打开`
-                      : `已下载到 ${downloadForCandidate?.path ?? '下载目录'}`}
+                      ? '校验通过，已在访达中打开。把新版拖进「应用程序」，再重开一次即可。'
+                      : `校验通过，已下载到 ${downloadForCandidate?.path ?? '下载目录'}。把新版拖进「应用程序」，再重开一次即可。`}
                   </p>
                 ) : (
                   <p className="mt-1 break-words text-xs text-muted-foreground">
@@ -179,7 +182,20 @@ export function UpdateToasts({ homeOpen }: UpdateToastsProps) {
             )}
 
             <div className="mt-3 flex items-center gap-3">
-              {isDownload && !done && !downloading ? (
+              {isDownload && downloading && (
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground opacity-60"
+                >
+                  {stage === 'verifying'
+                    ? '正在校验…'
+                    : downloadForCandidate?.percent !== undefined && downloadForCandidate.percent >= 0
+                      ? `下载中 ${downloadForCandidate.percent}%`
+                      : '正在下载…'}
+                </button>
+              )}
+              {isDownload && !downloading && !done && (
                 <button
                   type="button"
                   onClick={() => downloadCandidate(candidate)}
@@ -187,7 +203,8 @@ export function UpdateToasts({ homeOpen }: UpdateToastsProps) {
                 >
                   {failed ? '重试' : '下载'}
                 </button>
-              ) : !isDownload ? (
+              )}
+              {!isDownload && (
                 <button
                   type="button"
                   onClick={() => close(candidate)}
@@ -195,7 +212,16 @@ export function UpdateToasts({ homeOpen }: UpdateToastsProps) {
                 >
                   知道了
                 </button>
-              ) : null}
+              )}
+              {isDownload && !downloading && !done && (
+                <button
+                  type="button"
+                  onClick={() => close(candidate)}
+                  className="rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent"
+                >
+                  稍后
+                </button>
+              )}
               <Link
                 to="/settings?section=update"
                 className="text-xs text-muted-foreground hover:text-foreground hover:underline"
