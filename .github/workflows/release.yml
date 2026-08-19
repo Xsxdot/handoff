@@ -568,10 +568,10 @@ jobs:
           grep -q 'status: Accepted' /tmp/notary-desktop.log || {
             echo "公证未被接受：" >&2; cat /tmp/notary-desktop.log >&2; exit 1; }
 
-          # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
+          # 装订票据后 .app 就能在离线机器上过 Gatekeeper。**这里不再打 zip**：
+          # 交付形态是 DMG（见下面那个 step），zip 会让同一份 .app 出现两种资产。
           xcrun stapler staple "$app"
           rm -f "${RUNNER_TEMP}/notarize-desktop.zip"
-          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.zip"
 
       # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
       # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
@@ -605,6 +605,52 @@ jobs:
             cat /tmp/spctl-desktop.log >&2; exit 1; }
           echo "bundle 签名与公证票据校验通过"
 
+      # DMG 是 macOS 上的交付形态：挂载后把 .app 拖进 Applications。发 zip 的话
+      # 用户多半就地在 ~/Downloads 里双击，那份 .app 带着隔离属性、被 Gatekeeper
+      # 路径随机化（App Translocation）挪到只读临时挂载点上跑；DMG 里那个
+      # Applications 快捷方式的存在就是为了把人推去做「搬出下载目录」这一步。
+      #
+      # **必须直接调 create:dmg，不能调 package:dmg。** 后者的 deps 挂着
+      # package → build，会把上一步刚签名并装订好票据的 .app 整个重建掉，最后
+      # 塞进 DMG 的是一个全新的、未签名的 bundle——这条路上没有任何报错，要到
+      # 用户挂载 DMG 双击打不开才发现。由 release_workflow_test.go 钉住。
+      #
+      # DMG 自己也要签 + 公证 + 装订：里面的 .app 虽已装订，但 DMG 作为下载物
+      # 同样带隔离属性，不装订的话首次挂载在离线机器上仍会被拦。
+      # 注意 DMG **不加 --options runtime**：硬化运行时是给可执行代码的，
+      # 磁盘映像不是代码。
+      - name: 打 DMG 并签名公证
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          wails3 task darwin:create:dmg
+          dmg="$(ls bin/*.dmg 2>/dev/null | head -1)"
+          test -n "$dmg" || { echo "create:dmg 没有产出 .dmg" >&2; ls -la bin >&2; exit 1; }
+
+          # 复核 DMG 里装的确实是那份已装订票据的 bundle，而不是被重建过的
+          mnt="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt" >/dev/null
+          xcrun stapler validate "$mnt/handoff-desktop.app" || {
+            echo "DMG 里的 .app 没有公证票据——多半是 package:dmg 把它重建了" >&2
+            hdiutil detach "$mnt" >/dev/null || true; exit 1; }
+          hdiutil detach "$mnt" >/dev/null
+
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary-dmg.log
+          # 同 bundle 那条：notarytool 在 Invalid 时仍可能退 0，必须查状态串
+          grep -q 'status: Accepted' /tmp/notary-dmg.log || {
+            echo "DMG 公证未被接受：" >&2; cat /tmp/notary-dmg.log >&2; exit 1; }
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          mv "$dmg" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.dmg"
+          echo "DMG 已签名、公证、装订"
+
       - name: 确认工作区干净
         run: |
           set -euo pipefail
@@ -614,7 +660,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: handoff-desktop_darwin
-          path: ${{ runner.temp }}/handoff-desktop_*.zip
+          path: ${{ runner.temp }}/handoff-desktop_*.dmg
           if-no-files-found: error
 
   # 薄壳的 windows 资产。放在 windows runner 上而不是从 Linux 交叉编译：
