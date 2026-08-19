@@ -130,7 +130,7 @@ var agentdCmd = &cobra.Command{
 		// 启动预检只 WARN 不阻断——env 文件是数据文件，可能在 agentd 启动后才创建；
 		// 但完全不检查会把问题拖到第一次派发才暴露，预检让它在启动日志里就可见。
 		// manager 侧自建同款 resolver（NewManager 内），两者无状态、不会发散。
-		envRes := envfile.NewResolver(envfile.Dir(cfg.DataDir), cfg.Env, logger)
+		envRes := envfile.NewResolver(envfile.Dir(cfg.DataDir), envfile.Static(cfg.Env), logger)
 		envRes.Preflight()
 
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
@@ -180,7 +180,7 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.DisciplineMapping, srv.EnvMapping, ap, gate, logger)
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）

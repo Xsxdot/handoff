@@ -43,14 +43,18 @@ type testEnv struct {
 // newTestEnv 构造完整测试环境，并注册 t.Cleanup 关闭 store 与 server。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newTestEnvWithCfg(t, &config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // newTestEnvWithLogger 同 newTestEnv，但注入自定义 logger（供测试捕获服务端关键日志做
 // 确定性同步信号）。
 func newTestEnvWithLogger(t *testing.T, logger *slog.Logger) *testEnv {
 	t.Helper()
-	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, logger)
+	return newTestEnvWithCfg(t, &config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, logger)
 }
 
 // newTestEnvWithCfg 同 newTestEnv，但注入自定义配置（覆盖 token 为空等边界场景）。
@@ -406,7 +410,7 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 	f := fake.New(nil)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil,
+		nil, nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
@@ -485,7 +489,7 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil,
+		nil, nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
@@ -542,7 +546,7 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	f := fake.New(nil)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil,
+		nil, nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
@@ -585,7 +589,7 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	f.SetSendError(fmt.Errorf("任务 %s 不在运行中: %w", taskID, executor.ErrTaskNotRunning))
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil,
+		nil, nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
@@ -831,7 +835,7 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
 	mgr := agentd.NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
+		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, env.srv.EnvMapping, nil, newTestGate(t), logger)
 	env.srv.SetManager(mgr)
 
 	// B62：派发必须先登记；env 解析发生在任何 git 动作之前，登记到真实项目即可
@@ -884,7 +888,7 @@ func newDoneEnvWithState(t *testing.T, taskID string, state proto.TaskState) *te
 		map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: testToken, DataDir: t.TempDir(),
 			Executor: config.ExecutorConfig{Default: "fake"}},
-		nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)
 	return env
 }

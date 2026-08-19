@@ -86,6 +86,13 @@ func TestContractFixtures(t *testing.T) {
 		{"FileConflictResp", fileConflictSample()},
 		{"ProjectBranchesResp", projectBranchesSample()},
 		{"CreateWorktreeReq", createWorktreeReqSample()},
+		{"DisciplineResp", disciplineRespSample()},
+		{"DisciplineMappingReq", disciplineMappingReqSample()},
+		{"EnvResp", envRespSample()},
+		{"EnvKeysResp", envKeysRespSample()},
+		{"EnvMappingReq", envMappingReqSample()},
+		{"ExecutorDefaultResp", executorDefaultRespSample()},
+		{"ExecutorDefaultReq", executorDefaultReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -506,4 +513,84 @@ func projectBranchesSample() ProjectBranchesResp {
 // createWorktreeReqSample 是建树请求的契约样本。
 func createWorktreeReqSample() CreateWorktreeReq {
 	return CreateWorktreeReq{Mode: "new_branch", Branch: "feat/b114-sidebar-prefs", Base: "main"}
+}
+
+// disciplineRespSample 返回 DisciplineResp 的代表性样本：三档各出现一次
+// （default / file / off），并含一个未注册但配置里有的 executor。
+func disciplineRespSample() DisciplineResp {
+	return DisciplineResp{
+		Dir: "/Users/dev/.handoff/discipline",
+		Builtins: []DisciplineBuiltin{
+			{Tier: "subagent", Content: "# 执行纪律（先读这段，再读 plan）\n\n1. 逐 task 派全新 subagent 实现。\n"},
+			{Tier: "single-context", Content: "# 执行纪律（先读这段，再读 plan）\n\n1. 在本会话内自己逐 task 实现。\n"},
+		},
+		Files: []DisciplineFile{
+			{Name: "codex-strict.md", Size: 128,
+				SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
+		},
+		Bindings: []DisciplineBinding{
+			{Executor: "codex", Mode: "file", File: "codex-strict.md", DefaultTier: "single-context"},
+			{Executor: "grok", Mode: "off", DefaultTier: "single-context"},
+			{Executor: "opencode", Mode: "default", DefaultTier: "subagent"},
+		},
+	}
+}
+
+// disciplineMappingReqSample 返回 DisciplineMappingReq 的代表性样本。
+func disciplineMappingReqSample() DisciplineMappingReq {
+	return DisciplineMappingReq{
+		Bindings: []DisciplineBinding{
+			{Executor: "codex", Mode: "file", File: "codex-strict.md", DefaultTier: "single-context"},
+			{Executor: "opencode", Mode: "default", DefaultTier: "subagent"},
+		},
+	}
+}
+
+// envRespSample 返回 EnvResp 的代表性样本：两档各出现一次（off / file），
+// 并含一个未注册但配置里有的 executor。
+func envRespSample() EnvResp {
+	return EnvResp{
+		Dir: "/Users/dev/.handoff/env",
+		Files: []EnvFile{
+			{Name: "proxy.env", Size: 64,
+				SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
+		},
+		Bindings: []EnvBinding{
+			{Executor: "codex", Mode: "file", File: "proxy.env"},
+			{Executor: "opencode", Mode: "off"},
+		},
+	}
+}
+
+// envKeysRespSample 返回 EnvKeysResp 的代表性样本：一条普通、一条重复、
+// 一条空值（ValueBytes=0，omitempty 不适用于它，必须仍然出现在 JSON 里）。
+func envKeysRespSample() EnvKeysResp {
+	return EnvKeysResp{Keys: []EnvKey{
+		{Key: "HTTPS_PROXY", ValueBytes: 34},
+		{Key: "GOPROXY", ValueBytes: 21, Duplicate: true},
+		{Key: "EMPTY_ONE", ValueBytes: 0},
+	}}
+}
+
+// envMappingReqSample 返回 EnvMappingReq 的代表性样本。
+func envMappingReqSample() EnvMappingReq {
+	return EnvMappingReq{Bindings: []EnvBinding{
+		{Executor: "codex", Mode: "file", File: "proxy.env"},
+		{Executor: "opencode", Mode: "off"},
+	}}
+}
+
+// executorDefaultRespSample 返回 ExecutorDefaultResp 的代表性样本。
+func executorDefaultRespSample() ExecutorDefaultResp {
+	return ExecutorDefaultResp{
+		Default:   "opencode",
+		Model:     "opencode-go/deepseek-v4-flash",
+		Available: []string{"claude", "codex", "fake", "grok", "opencode"},
+	}
+}
+
+// executorDefaultReqSample 返回 ExecutorDefaultReq 的代表性样本：
+// model 刻意给空串——「不设默认模型」是常态取值，必须在线格式里出现过一次。
+func executorDefaultReqSample() ExecutorDefaultReq {
+	return ExecutorDefaultReq{Default: "codex", Model: ""}
 }

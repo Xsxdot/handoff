@@ -55,3 +55,31 @@ func builtinFor(executor string) Block {
 	}
 	return Block{Text: builtinSingleContext, Source: "内置:" + TierSingleContext}
 }
+
+// Builtin 是一份内置纪律块（Tier + 正文）。控制台把它作为只读条目展示，
+// 并允许「以此为模板新建」——用户想微调内置纪律时不必去仓库里翻原文。
+type Builtin struct {
+	Tier    string
+	Content string
+}
+
+// Builtins 返回全部内置纪律块，顺序固定为 subagent、single-context。
+//
+// 顺序固定是给界面用的：列表次序不该随 map 迭代而抖动。
+func Builtins() []Builtin {
+	return []Builtin{
+		{Tier: TierSubagent, Content: builtinSubagent},
+		{Tier: TierSingleContext, Content: builtinSingleContext},
+	}
+}
+
+// DefaultTierFor 返回该 executor 在「未配置」这一档会用到的内置版本名。
+//
+// 未登记的 executor 一律 TierSingleContext，理由见 builtinFor 的注释。
+// 界面即使在已配置的档位上也要显示它——那是「改回默认会变成什么」的预告。
+func DefaultTierFor(executor string) string {
+	if defaultTier[executor] == TierSubagent {
+		return TierSubagent
+	}
+	return TierSingleContext
+}

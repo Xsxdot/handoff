@@ -1,0 +1,11 @@
+{
+  "default": "opencode",
+  "model": "opencode-go/deepseek-v4-flash",
+  "available": [
+    "claude",
+    "codex",
+    "fake",
+    "grok",
+    "opencode"
+  ]
+}

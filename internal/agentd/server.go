@@ -202,13 +202,20 @@ func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
 // 执行文件、rename 二进制、停进程。
 func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
-// SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
+// SetManager 把任务管理器挂到 Server 上。
 //
 // 注意：
 //   - manager 依赖本服务内部的 hub 与外部 adapter，必须在 NewServer 之后构造并注入
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
+//   - 挂接时会把 Server 的活配置取值函数交给 Manager。Manager 构造时收到的是一份
+//     配置**快照**指针，而 swapConf 换的是新指针，读快照永远拿不到控制台改过的值
+//     （B160 §4.2）。这一步是「保存后下一个任务即生效」成立的前提。
 func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
+	if m != nil {
+		m.conf = s.conf
+		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
+	}
 }
 
 // conf 返回当前配置快照。
@@ -216,6 +223,19 @@ func (s *Server) SetManager(m *Manager) {
 // 返回的指针在调用方持有期间恒定：写入方永不原地修改 Config，只整体换新，
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
+
+// DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
+//
+// 交给 Manager 的 discipline.Resolver 每次派发时调用，因此控制台改完映射
+// **下一个任务就生效**，不必重启 agentd。返回的是当前快照持有的 map，
+// 调用方只读不改（写入方永不原地修改配置，只整体换新）。
+func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
+
+// EnvMapping 返回当前配置里的 agent 名 → env 文件名映射。
+//
+// 供 envfile.Resolver 每次派发时取活值：控制台改完映射不必重启 agentd。
+// 返回的是配置快照里的 map 本体，**调用方不得修改**（写入一律走 swapConf）。
+func (s *Server) EnvMapping() map[string]string { return s.conf().Env }
 
 // SetConfigPath 注入配置文件路径，供写配置时落盘。
 //
@@ -236,7 +256,9 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 //
 // 注意：
 //   - 落盘成功才换快照；落盘失败时内存未曾改变——绝无「内存有、磁盘没有」的窗口
-//   - 只深拷贝 Targets 这一层。其余字段在 agentd 运行期不可变，共享是安全的
+//   - 深拷贝 Targets 与 Discipline 两层——它们在 agentd 运行期可被写接口修改。
+//     **新增运行期可变字段时必须在此补一层深拷**：漏了不会有测试变红，但读者
+//     会看到改到一半的配置，与 conf() 承诺的「快照自洽」直接冲突
 func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -246,6 +268,15 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	next.Targets = make(map[string]config.Target, len(old.Targets)+1)
 	for k, v := range old.Targets {
 		next.Targets[k] = v
+	}
+	next.Discipline = make(map[string]string, len(old.Discipline)+1)
+	for k, v := range old.Discipline {
+		next.Discipline[k] = v
+	}
+	// Env 与 Discipline 同为运行期可写的映射（B158 起可从控制台改），必须深拷。
+	next.Env = make(map[string]string, len(old.Env)+1)
+	for k, v := range old.Env {
+		next.Env[k] = v
 	}
 	if err := mutate(&next); err != nil {
 		return err
@@ -259,7 +290,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
 	s.cfg.Store(&next)
-	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets))
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath,
+		"targets", len(next.Targets), "discipline", len(next.Discipline), "env", len(next.Env))
 	return nil
 }
 
@@ -284,6 +316,14 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - GET  /api/discipline             内置纪律、文件列表与 executor 档位
+//   - GET  /api/env                    env 文件列表与 executor 档位
+//   - GET  /api/env/file/keys          env 文件的变量清单（不含值）
+//   - GET  /api/env/file                读 env 文件正文（仅编辑时）
+//   - PUT  /api/env/file                写 env 文件（写前解析校验）
+//   - PUT  /api/env/mapping             整段替换 executor→env 文件映射
+//   - GET  /api/executor/default       查询机器级缺省执行者、它的默认模型与可选名单
+//   - PUT  /api/executor/default       整体替换机器级缺省执行者与它的默认模型
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
@@ -346,6 +386,17 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
+	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
+	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
+	api.HandleFunc("PUT /api/discipline/mapping", s.handleDisciplineMapping)
+	api.HandleFunc("GET /api/env", s.handleEnvGet)
+	api.HandleFunc("GET /api/env/file/keys", s.handleEnvKeys)
+	api.HandleFunc("GET /api/env/file", s.handleEnvFileRead)
+	api.HandleFunc("PUT /api/env/file", s.handleEnvFileWrite)
+	api.HandleFunc("PUT /api/env/mapping", s.handleEnvMapping)
+	api.HandleFunc("GET /api/executor/default", s.handleExecutorDefaultGet)
+	api.HandleFunc("PUT /api/executor/default", s.handleExecutorDefaultPut)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)

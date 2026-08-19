@@ -20,13 +20,20 @@ import type {
   CreateProjectReq,
   CreateProjectResp,
   CreatePtySessionReq,
+  DisciplineBinding,
+  DisciplineResp,
   DiffResult,
   DirEntry,
   DirListResult,
+  EnvBinding,
+  EnvKeysResp,
+  EnvResp,
   FileRead,
   FileResult,
   FileWriteReq,
   FileWriteResp,
+  ExecutorDefaultReq,
+  ExecutorDefaultResp,
   MachinesResp,
   PatchProjectReq,
   ProjectLocation,
@@ -257,6 +264,102 @@ export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
 // 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
 export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
+}
+
+// fetchDiscipline 取某台机器的纪律配置面（GET /api/discipline）：
+// 目录、内置两版全文、该机文件列表、每个 executor 的档位。
+export function fetchDiscipline(machine: string): Promise<DisciplineResp> {
+  return request<DisciplineResp>(`/api/discipline${machineQuery(machine)}`)
+}
+
+// fetchDisciplineFile 读某台机器上一个纪律块文件的正文（GET /api/discipline/file）。
+// 内置两版不走这条——它们的全文已在 fetchDiscipline 的结果里。
+export function fetchDisciplineFile(machine: string, name: string): Promise<FileRead> {
+  return request<FileRead>(
+    `/api/discipline/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+  )
+}
+
+// saveDisciplineFile 写一个纪律块文件（PUT /api/discipline/file）。
+//
+// req.base_sha256 为空串表示新建：目标已存在时后端回 409，绝不静默覆盖。
+// 冲突（409）时响应体是 FileConflictResp，由调用方按 ApiError 处理。
+export function saveDisciplineFile(
+  machine: string, name: string, req: FileWriteReq,
+): Promise<FileWriteResp> {
+  return putJSON<FileWriteResp>(
+    `/api/discipline/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`, req,
+  )
+}
+
+// saveDisciplineMapping 整段替换某台机器的 executor→纪律块映射
+//（PUT /api/discipline/mapping），返回保存后的最新配置面。
+export function saveDisciplineMapping(
+  machine: string, bindings: DisciplineBinding[],
+): Promise<DisciplineResp> {
+  return putJSON<DisciplineResp>(`/api/discipline/mapping${machineQuery(machine)}`, { bindings })
+}
+
+// fetchEnv 取某台机器的 env 配置面（GET /api/env）：
+// 目录、该机文件列表、每个 executor 的档位（两档）。
+export function fetchEnv(machine: string): Promise<EnvResp> {
+  return request<EnvResp>(`/api/env${machineQuery(machine)}`)
+}
+
+// fetchEnvKeys 取一个 env 文件的变量清单（GET /api/env/file/keys）。
+//
+// **响应里没有值**，只有 key 名、值的字节长度与重复标记。这是 Env 分区的
+// 默认视图；要看值必须显式调 fetchEnvFile。
+export function fetchEnvKeys(machine: string, name: string): Promise<EnvKeysResp> {
+  return request<EnvKeysResp>(
+    `/api/env/file/keys?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+  )
+}
+
+// fetchEnvFile 读一个 env 文件的**含值全文**（GET /api/env/file）。
+//
+// 只在用户点「编辑正文」时调用——默认视图走 fetchEnvKeys。
+export function fetchEnvFile(machine: string, name: string): Promise<FileRead> {
+  return request<FileRead>(
+    `/api/env/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+  )
+}
+
+// saveEnvFile 写一个 env 文件（PUT /api/env/file）。
+//
+// req.base_sha256 为空串表示新建：目标已存在时后端回 409，绝不静默覆盖。
+// 正文语法错误时后端回 400，message 是 Parse 的原文（自带行号）——调用方
+// 应原样展示，那是用户改对的唯一线索。
+export function saveEnvFile(
+  machine: string, name: string, req: FileWriteReq,
+): Promise<FileWriteResp> {
+  return putJSON<FileWriteResp>(
+    `/api/env/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`, req,
+  )
+}
+
+// saveEnvMapping 整段替换某台机器的 executor→env 文件映射
+//（PUT /api/env/mapping），返回保存后的最新配置面。
+export function saveEnvMapping(
+  machine: string, bindings: EnvBinding[],
+): Promise<EnvResp> {
+  return putJSON<EnvResp>(`/api/env/mapping${machineQuery(machine)}`, { bindings })
+}
+
+// fetchExecutorDefault 取某台机器的缺省执行者配置（GET /api/executor/default）。
+export function fetchExecutorDefault(machine: string): Promise<ExecutorDefaultResp> {
+  return request<ExecutorDefaultResp>(`/api/executor/default${machineQuery(machine)}`)
+}
+
+// saveExecutorDefault 整体替换某台机器的缺省执行者与其默认模型
+//（PUT /api/executor/default），返回保存后的最新状态。
+//
+// req.model 为空串表示「清空默认模型」，是有意义的取值，不是「不改」。
+// req.default 不在该机名单内时后端回 400，message 里带可选名单——原样展示。
+export function saveExecutorDefault(
+  machine: string, req: ExecutorDefaultReq,
+): Promise<ExecutorDefaultResp> {
+  return putJSON<ExecutorDefaultResp>(`/api/executor/default${machineQuery(machine)}`, req)
 }
 
 // addMachine 新增一台远程开发机（POST /api/machines）。

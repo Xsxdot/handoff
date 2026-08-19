@@ -1,0 +1,13 @@
+{
+  "bindings": [
+    {
+      "executor": "codex",
+      "mode": "file",
+      "file": "proxy.env"
+    },
+    {
+      "executor": "opencode",
+      "mode": "off"
+    }
+  ]
+}

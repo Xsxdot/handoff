@@ -15,6 +15,10 @@
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
 import dirListFixture from './testdata/DirListResult.json'
+import disciplineMappingReqFixture from './testdata/DisciplineMappingReq.json'
+import disciplineRespFixture from './testdata/DisciplineResp.json'
+import executorDefaultReqFixture from './testdata/ExecutorDefaultReq.json'
+import executorDefaultRespFixture from './testdata/ExecutorDefaultResp.json'
 import taskPlanFixture from './testdata/TaskPlan.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
@@ -34,12 +38,22 @@ import taskFixture from './testdata/Task.json'
 import tasksRespFixture from './testdata/TasksResp.json'
 import ticketFixture from './testdata/Ticket.json'
 import frameFixture from './testdata/Frame.json'
+import envRespFixture from './testdata/EnvResp.json'
+import envKeysFixture from './testdata/EnvKeysResp.json'
+import envMappingReqFixture from './testdata/EnvMappingReq.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
   type BuildInfo,
   type DirListResult,
+  type DisciplineMappingReq,
+  type DisciplineResp,
   type Event,
+  type EnvKeysResp,
+  type EnvMappingReq,
+  type EnvResp,
+  type ExecutorDefaultReq,
+  type ExecutorDefaultResp,
   type FileConflictResp,
   type FileRead,
   type FileWriteReq,
@@ -190,6 +204,36 @@ describe('W3a 契约', () => {
   })
 })
 
+describe('Env 文件契约', () => {
+  it('EnvResp 两档都在线格式里，off 档不带 file 键', () => {
+    const resp = envRespFixture as EnvResp
+    expect(resp.bindings.map((b) => b.mode).sort()).toEqual(['file', 'off'])
+    const off = resp.bindings.find((b) => b.mode === 'off')!
+    expect(off.file).toBeUndefined()
+    const file = resp.bindings.find((b) => b.mode === 'file')!
+    expect(file.file).toBe('proxy.env')
+    // env 没有内置默认：响应里不得出现 builtins/default_tier 这类 discipline 概念
+    expect('builtins' in envRespFixture).toBe(false)
+    expect('default_tier' in (off as object)).toBe(false)
+  })
+
+  it('EnvKeysResp：只有 key 名与值长度，值不在线格式里', () => {
+    const resp = envKeysFixture as EnvKeysResp
+    expect(resp.keys.map((k) => k.key)).toEqual(['HTTPS_PROXY', 'GOPROXY', 'EMPTY_ONE'])
+    // 值为空的那条也必须带 value_bytes: 0（int 无 omitempty），否则界面判不出「空值」
+    expect(resp.keys[2].value_bytes).toBe(0)
+    expect(resp.keys[1].duplicate).toBe(true)
+    // 结构性判据：整份 fixture 里没有任何名为 value/content 的键
+    const raw = JSON.stringify(envKeysFixture)
+    expect(raw).not.toMatch(/"value"|"content"/)
+  })
+
+  it('EnvMappingReq：整段替换，两条 binding', () => {
+    const req = envMappingReqFixture as EnvMappingReq
+    expect(req.bindings).toHaveLength(2)
+  })
+})
+
 describe('W4a 帧契约', () => {
   it('Frame：可解析为 Frame 类型，omitempty 字段缺席', () => {
     const f: Frame = frameFixture
@@ -301,5 +345,33 @@ describe('文件读写的契约', () => {
     expect(typeof c.current.content).toBe('string')
     expect(typeof c.current.sha256).toBe('string')
     expect(typeof c.current.size).toBe('number')
+  })
+})
+
+describe('执行纪律契约', () => {
+  it('DisciplineResp 三档与内置两版都在线格式里', () => {
+    const resp = disciplineRespFixture as DisciplineResp
+    const req = disciplineMappingReqFixture as DisciplineMappingReq
+    expect(resp.builtins.map((b) => b.tier)).toEqual(['subagent', 'single-context'])
+    expect(resp.bindings.map((b) => b.mode).sort()).toEqual(['default', 'file', 'off'])
+    // mode=default 的条目不带 file 键（omitempty），但 default_tier 必须在
+    const def = resp.bindings.find((b) => b.mode === 'default')!
+    expect(def.file).toBeUndefined()
+    expect(def.default_tier).toBe('subagent')
+    expect(req.bindings).toHaveLength(2)
+  })
+})
+
+describe('缺省执行者契约', () => {
+  it('ExecutorDefaultResp：available 是升序名单，default 在其中', () => {
+    const resp = executorDefaultRespFixture as ExecutorDefaultResp
+    expect([...resp.available].sort()).toEqual(resp.available)
+    expect(resp.available).toContain(resp.default)
+  })
+
+  it('ExecutorDefaultReq：model 空串必须在场，不能被 omitempty 吃掉', () => {
+    // 缺了这个键，前端就没法表达「清空默认模型」——只能表达「不改」
+    expect('model' in executorDefaultReqFixture).toBe(true)
+    expect((executorDefaultReqFixture as ExecutorDefaultReq).model).toBe('')
   })
 })
