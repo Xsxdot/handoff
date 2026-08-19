@@ -313,6 +313,23 @@ describe('Shell 三栏外框', () => {
     expect(screen.getByText('文件')).toBeInTheDocument()
   })
 
+  // 右栏文件树与面包屑都挂在 Routes 外面、只跟 wb.base 走，整页路由把中央
+  // 换掉后它们还留着——点了目录再点「工作项」，文件面板一直挂在右边。
+  it('整页路由（/cards）不渲染右栏文件树与面包屑', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('工作项'))
+    await waitFor(() => expect(screen.queryByText('文件')).not.toBeInTheDocument())
+    expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
+  })
+
+  it('从整页路由点回目录，右栏文件树回来', async () => {
+    renderShell('/cards')
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+  })
+
   it('顶部 tab 条已删除', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())

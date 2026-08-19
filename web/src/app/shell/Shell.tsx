@@ -296,6 +296,15 @@ export function Shell() {
     if (location.pathname !== '/') navigate('/')
   }
 
+  // fullPageRoute = 中央区被整页替换掉的那些路由。
+  //
+  // why 要判它：右栏文件树与面包屑都挂在 <Routes> 外面、只跟 wb.base 走，
+  // 于是点了目录再点「工作项」，中央换成了看板、右边那棵文件树却一直挂着，
+  // 面包屑也还写着上一个目录（2026-08-19 真机看到）。它们是工作台的一部分，
+  // 不属于这些整页。左栏导航树不在此列——它是导航，任何页面都该在。
+  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines']
+    .some((path) => location.pathname.startsWith(path))
+
   // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
   const selectDir = (base: BaseDir) => {
     backToWorkbench()
@@ -378,7 +387,7 @@ export function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
-        {wb.base && !desktop && <Breadcrumb base={wb.base} />}
+        {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
         <main className="min-h-0 flex-1">
           <Routes>
             <Route
@@ -461,7 +470,7 @@ export function Shell() {
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
-      {wb.base && wb.base.kind === 'workspace' && (
+      {wb.base && wb.base.kind === 'workspace' && !fullPageRoute && (
         <div className="w-[280px] shrink-0">
           <FileTree
             base={wb.base}
