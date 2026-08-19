@@ -136,9 +136,6 @@ func main() {
 	})
 
 	openConsole := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		ep, state, err := shell.Resolve("")
 		if err != nil {
 			logger.Error("读取配置失败", "cause", err)
@@ -158,7 +155,11 @@ func main() {
 		//
 		// 承重：无论 out.Err 是什么，下面加载控制台的代码都必须照常执行
 		//（spec D8）。同步失败只是少升一次级，阻断则是「双击打不开应用」。
-		out := shell.SyncOnOpen(ctx, openSyncDeps(ep))
+		// 同步等待有自己的 90 秒上限；不能复用下面给 webview/握手的 30 秒
+		// 上下文，否则 Windows 的计划任务还没来得及拉起 agentd 就会被提前取消。
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		out := shell.SyncOnOpen(syncCtx, openSyncDeps(ep))
+		syncCancel()
 		switch {
 		case out.Err != nil && out.Plan == shell.SyncSkip:
 			// 这一支是 agentd 根本起不来或定位不到二进制——控制台加载不了，
@@ -174,6 +175,8 @@ func main() {
 			logger.Info("有活跃任务，本次不同步", "busy", out.Busy)
 			noteSyncBlocked(out)
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		// **切外链之前必须等窗口的 webview 真的建好。** 顺序也是承重的：
 		// 等在握手**之前**，因为 ticket 只有 60 秒寿命——先握手再等，等待
 		// 本身就可能把票等过期。
