@@ -312,6 +312,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/discipline             内置纪律、文件列表与 executor 档位
 //   - GET  /api/env                    env 文件列表与 executor 档位
 //   - GET  /api/env/file/keys          env 文件的变量清单（不含值）
+//   - GET  /api/env/file                读 env 文件正文（仅编辑时）
+//   - PUT  /api/env/file                写 env 文件（写前解析校验）
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
@@ -380,6 +382,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /api/discipline/mapping", s.handleDisciplineMapping)
 	api.HandleFunc("GET /api/env", s.handleEnvGet)
 	api.HandleFunc("GET /api/env/file/keys", s.handleEnvKeys)
+	api.HandleFunc("GET /api/env/file", s.handleEnvFileRead)
+	api.HandleFunc("PUT /api/env/file", s.handleEnvFileWrite)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -220,5 +221,103 @@ func assertNoSecret(t *testing.T, raw []byte, secret string) {
 	t.Helper()
 	if strings.Contains(string(raw), secret) {
 		t.Fatalf("响应体里出现了 env 的值 %q：%s", secret, raw)
+	}
+}
+
+func TestEnvFileReadReturnsFullText(t *testing.T) {
+	// 与 keys 端点相反：这条**就是**为编辑而存在的，全文含值必须原样交出
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "a.env"), []byte("TOKEN=zzz\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got proto.FileRead
+	if code := env.getJSON(t, "/api/env/file?name=a.env", &got); code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	if got.Content != "TOKEN=zzz\n" || got.Size != 10 || got.SHA256 == "" {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestEnvFileWriteRejectsBadSyntax(t *testing.T) {
+	// 差异二：env 比纪律块多一道解析门。写坏的文件不该进磁盘——写进去了才发现，
+	// 症状会拖到下一次派发（「代理配了但连不上」离根因十万八千里）
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	var body map[string]string
+	code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "1BAD=x\n", BaseSHA256: ""}, &body)
+	if code != 400 {
+		t.Fatalf("code = %d, want 400", code)
+	}
+	if _, err := os.Stat(filepath.Join(envDir, "a.env")); !os.IsNotExist(err) {
+		t.Fatalf("语法错的文件不该落盘")
+	}
+	if body["error"] == "" {
+		t.Fatalf("必须透传 Parse 的错误原文")
+	}
+}
+
+func TestEnvFileWriteCreateAndOverwrite(t *testing.T) {
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	var created proto.FileWriteResp
+	if code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "A=1\n", BaseSHA256: ""}, &created); code != 200 {
+		t.Fatalf("新建 code = %d, want 200", code)
+	}
+	if created.SHA256 == "" || created.Size != 4 {
+		t.Fatalf("created = %+v", created)
+	}
+	// 撞名新建 409
+	var conflict map[string]string
+	if code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "B=2\n", BaseSHA256: ""}, &conflict); code != 409 {
+		t.Fatalf("撞名 code = %d, want 409", code)
+	}
+	// 陈旧 base 409 且带磁盘现状
+	var stale proto.FileConflictResp
+	if code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "B=2\n", BaseSHA256: "deadbeef"}, &stale); code != 409 {
+		t.Fatalf("陈旧 base code = %d, want 409", code)
+	}
+	if stale.Current.Content != "A=1\n" {
+		t.Fatalf("409 体必须带磁盘现状，got = %+v", stale.Current)
+	}
+	// 正确 base 覆盖成功
+	var ok proto.FileWriteResp
+	if code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "B=2\n", BaseSHA256: created.SHA256}, &ok); code != 200 {
+		t.Fatalf("覆盖 code = %d, want 200", code)
+	}
+	data, err := os.ReadFile(filepath.Join(envDir, "a.env"))
+	if err != nil || string(data) != "B=2\n" {
+		t.Fatalf("落盘 = %q, err = %v", data, err)
+	}
+}
+
+func TestEnvFileWriteAllowsDuplicateKeys(t *testing.T) {
+	// 重复键不拦：Resolver 既有行为是 WARN + 后者覆盖。拦它等于在控制台里
+	// 发明一条 agentd 不认的规则
+	env, _ := newEnvEnv(t, nil, "opencode")
+	var resp proto.FileWriteResp
+	if code := env.putJSON(t, "/api/env/file?name=a.env",
+		proto.FileWriteReq{Content: "A=1\nA=2\n", BaseSHA256: ""}, &resp); code != 200 {
+		t.Fatalf("code = %d, want 200（重复键只标注不拦）", code)
+	}
+}
+
+func TestEnvFileWriteRejectsBadNameAndTooLarge(t *testing.T) {
+	env, _ := newEnvEnv(t, nil, "opencode")
+	var body map[string]string
+	if code := env.putJSON(t, "/api/env/file?name=../x",
+		proto.FileWriteReq{Content: "A=1\n"}, &body); code != 400 {
+		t.Fatalf("穿越名 code = %d, want 400", code)
+	}
+	big := strings.Repeat("A=1\n", envfile.MaxFileSize/4+1)
+	if code := env.putJSON(t, "/api/env/file?name=big.env",
+		proto.FileWriteReq{Content: big}, &body); code != 400 {
+		t.Fatalf("超限 code = %d, want 400", code)
 	}
 }

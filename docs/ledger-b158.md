@@ -13,3 +13,4 @@
 - 2026-08-19 Task 4 完成：proto Env 结构、fixture 与 TS 类型/契约测试；spec PASS / quality PASS，无修复轮；提交范围：70bc87d3..HEAD（Task 4）。
 - 2026-08-19 Task 5 完成：GET /api/env 文件列表与 executor 两档并集；spec PASS / quality PASS，无修复轮；提交范围：90bdc617..HEAD（Task 5）。
 - 2026-08-19 Task 6 完成：GET /api/env/file/keys、lookup=nil、重复标记与读错误映射；spec PASS / quality PASS，无修复轮；提交范围：ce6f3264..HEAD（Task 6）。
+- 2026-08-19 Task 7 完成：GET/PUT /api/env/file，正文读写、哈希冲突与写前 Parse 校验；spec PASS / quality PASS，无修复轮；提交范围：62f29911..HEAD（Task 7）。

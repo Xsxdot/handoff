@@ -18,6 +18,7 @@ package agentd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -165,4 +166,100 @@ func (s *Server) writeEnvReadError(w http.ResponseWriter, dir, name string, err 
 		s.log.Error("env 读文件失败", "dir", dir, "name", name)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取 env 文件失败"})
 	}
+}
+
+// handleEnvFileRead 处理 GET /api/env/file?name=[&machine=]。
+//
+// 响应：200 proto.FileRead / 400 名字非法 / 404 文件不存在。
+//
+// **这条会把含值的全文交给浏览器**，且这是刻意的——不然没法编辑。默认视图
+// 走 keys 端点；界面只在用户点「编辑正文」时调这条。spec §7 已写明这条边界：
+// 掩码防的是肩窥、截图、录屏、整页粘贴，不是防浏览器本身，更不是加密。
+func (s *Server) handleEnvFileRead(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	dir := envfile.Dir(s.conf().DataDir)
+	s.log.Info("env 读文件请求（含值全文）", "dir", dir, "name", name)
+
+	content, sha, size, err := envfile.Read(dir, name)
+	if err != nil {
+		s.writeEnvReadError(w, dir, name, err)
+		return
+	}
+	s.log.Info("env 读文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
+	writeJSON(w, http.StatusOK, proto.FileRead{Content: content, Size: size, SHA256: sha})
+}
+
+// handleEnvFileWrite 处理 PUT /api/env/file?name=[&machine=]。
+//
+// 请求体 proto.FileWriteReq：base_sha256 为空串 = 新建（目标必须不存在）。
+//
+// 响应：200 FileWriteResp / 400 名字非法、超限或**语法错误** / 409 撞名或冲突
+// （带磁盘现状）/ 404 目标在编辑期间被删。
+//
+// **写前必须解析**（与纪律块的唯一实质差异）：纪律块写错了模型顶多读到一段
+// 怪话；env 写错了，症状是「代理配了但连不上」「go test 突然全红」，离根因
+// 十万八千里。Parse 已经能产出带行号的错误，白不用。
+//
+// 重复键**不拦**：Resolver 的既有行为是 WARN + 后者覆盖，界面照此标注即可。
+func (s *Server) handleEnvFileWrite(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	dir := envfile.Dir(s.conf().DataDir)
+
+	var req proto.FileWriteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("env 写文件请求体解析失败", "name", name)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return
+	}
+	// 正文含值，日志只记长度与前置哈希，绝不记内容。
+	s.log.Info("env 写文件请求", "dir", dir, "name", name,
+		"bytes", len(req.Content), "base", shortHash(req.BaseSHA256))
+
+	// 语法门在落盘之前：写坏的文件不该进磁盘。
+	if _, _, perr := envfile.Parse(bytes.NewReader([]byte(req.Content)), nil); perr != nil {
+		s.log.Warn("env 写文件被拒：语法错误", "dir", dir, "name", name, "bytes", len(req.Content))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": perr.Error()})
+		return
+	}
+
+	sha, size, err := envfile.Write(dir, name, req.Content, req.BaseSHA256)
+	if err != nil {
+		switch {
+		case errors.Is(err, envfile.ErrBadName), errors.Is(err, envfile.ErrTooLarge):
+			s.log.Warn("env 写文件被拒", "name", name, "bytes", len(req.Content))
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case errors.Is(err, envfile.ErrExists):
+			s.log.Warn("env 写文件被拒：撞名", "dir", dir, "name", name)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		case errors.Is(err, envfile.ErrBaseMismatch):
+			// 409 的 body 带磁盘现状：界面据此提供「重新加载」，绝不静默覆盖。
+			cur, curSHA, curSize, rerr := envfile.Read(dir, name)
+			if rerr != nil {
+				s.log.Error("env 写文件冲突后读现状失败", "name", name)
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				return
+			}
+			s.log.Warn("env 写文件冲突", "dir", dir, "name", name,
+				"base", shortHash(req.BaseSHA256), "current", shortHash(curSHA))
+			writeJSON(w, http.StatusConflict, proto.FileConflictResp{
+				Error:   "env 文件已被改动",
+				Current: proto.FileRead{Content: cur, Size: curSize, SHA256: curSHA},
+			})
+		case errors.Is(err, fs.ErrNotExist):
+			s.log.Warn("env 写文件：目标在编辑期间被删", "dir", dir, "name", name)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "env 文件不存在"})
+		default:
+			s.log.Error("env 写文件失败", "dir", dir, "name", name)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "写入 env 文件失败"})
+		}
+		return
+	}
+	s.log.Info("env 写文件完成", "dir", dir, "name", name, "bytes", size, "sha256", shortHash(sha))
+	writeJSON(w, http.StatusOK, proto.FileWriteResp{SHA256: sha, Size: size})
 }
