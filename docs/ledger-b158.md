@@ -12,3 +12,4 @@
 - 2026-08-19 Task 3 完成：swapConf 深拷 Env 并在配置落盘日志加入 env 计数；spec PASS / quality PASS，无修复轮；提交范围：efea66a3..HEAD（Task 3）。
 - 2026-08-19 Task 4 完成：proto Env 结构、fixture 与 TS 类型/契约测试；spec PASS / quality PASS，无修复轮；提交范围：70bc87d3..HEAD（Task 4）。
 - 2026-08-19 Task 5 完成：GET /api/env 文件列表与 executor 两档并集；spec PASS / quality PASS，无修复轮；提交范围：90bdc617..HEAD（Task 5）。
+- 2026-08-19 Task 6 完成：GET /api/env/file/keys、lookup=nil、重复标记与读错误映射；spec PASS / quality PASS，无修复轮；提交范围：ce6f3264..HEAD（Task 6）。

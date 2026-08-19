@@ -2,6 +2,9 @@
 package agentd
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,5 +108,117 @@ func TestEnvGetWithoutManagerIs503(t *testing.T) {
 	}
 	if !strings.Contains(body["error"], "manager") {
 		t.Fatalf("error = %q，想要提到 manager", body["error"])
+	}
+}
+
+func TestEnvKeysHidesValues(t *testing.T) {
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "# 注释\nexport TOKEN=zzz-secret-zzz\nGOPROXY=https://proxy.example\nGOPROXY=https://mirror.example\nEMPTY_ONE=\n"
+	if err := os.WriteFile(filepath.Join(envDir, "a.env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, code := env.getRaw(t, "/api/env/file/keys?name=a.env")
+	if code != 200 {
+		t.Fatalf("code = %d, want 200: %s", code, raw)
+	}
+	// spec §6 的机器判据：响应体里不得出现任何值
+	assertNoSecret(t, raw, "zzz-secret-zzz")
+	assertNoSecret(t, raw, "proxy.example")
+
+	var resp proto.EnvKeysResp
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if len(resp.Keys) != 3 {
+		t.Fatalf("keys = %+v，想要 TOKEN/GOPROXY/EMPTY_ONE 三条（重复键只出现一次）", resp.Keys)
+	}
+	byKey := map[string]proto.EnvKey{}
+	for _, k := range resp.Keys {
+		byKey[k.Key] = k
+	}
+	if byKey["TOKEN"].ValueBytes != len("zzz-secret-zzz") {
+		t.Fatalf("TOKEN.value_bytes = %d，想要 %d", byKey["TOKEN"].ValueBytes, len("zzz-secret-zzz"))
+	}
+	if !byKey["GOPROXY"].Duplicate {
+		t.Fatalf("GOPROXY 应标记 duplicate（后者覆盖，位置留在首次出现处）")
+	}
+	if byKey["EMPTY_ONE"].ValueBytes != 0 {
+		t.Fatalf("EMPTY_ONE.value_bytes = %d，想要 0", byKey["EMPTY_ONE"].ValueBytes)
+	}
+}
+
+func TestEnvKeysDoesNotConsultProcessEnv(t *testing.T) {
+	// lookup 传 nil：展开时不查 agentd 自己的环境，否则同一个文件在不同机器上
+	// 会显示出不同的值长度，既误导又多泄露一层信息
+	t.Setenv("B158_OUTER", "0123456789")
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "a.env"), []byte("X=$B158_OUTER\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var resp proto.EnvKeysResp
+	if code := env.getJSON(t, "/api/env/file/keys?name=a.env", &resp); code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0].ValueBytes != 0 {
+		t.Fatalf("keys = %+v，想要 X 且 value_bytes=0（外部变量不查）", resp.Keys)
+	}
+}
+
+func TestEnvKeysErrors(t *testing.T) {
+	env, envDir := newEnvEnv(t, nil, "opencode")
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "bad.env"), []byte("1BAD=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]string
+	if code := env.getJSON(t, "/api/env/file/keys?name=../x", &body); code != 400 {
+		t.Fatalf("穿越名 code = %d, want 400", code)
+	}
+	if code := env.getJSON(t, "/api/env/file/keys?name=gone.env", &body); code != 404 {
+		t.Fatalf("不存在 code = %d, want 404", code)
+	}
+	if code := env.getJSON(t, "/api/env/file/keys?name=bad.env", &body); code != 400 {
+		t.Fatalf("语法错 code = %d, want 400", code)
+	}
+	// Parse 的错误自带行号，必须原样透传——它是用户改对的唯一线索
+	if !strings.Contains(body["error"], "第 1 行") && !strings.Contains(body["error"], "1BAD") {
+		t.Fatalf("error = %q，想要带行号或原行", body["error"])
+	}
+}
+
+// getRaw 发起带 token 的 GET，返回原始响应体与状态码；默认视图的凭据边界必须对原文检查。
+func (e *testAgentdEnv) getRaw(t *testing.T, path string) ([]byte, int) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, e.ts.URL+path, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("GET %s 读取: %v", path, err)
+	}
+	return raw, resp.StatusCode
+}
+
+// assertNoSecret 断言响应原文没有出现被测 env 值。
+func assertNoSecret(t *testing.T, raw []byte, secret string) {
+	t.Helper()
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("响应体里出现了 env 的值 %q：%s", secret, raw)
 	}
 }
