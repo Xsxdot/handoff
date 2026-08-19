@@ -41,15 +41,10 @@ Windows (amd64 / arm64, PowerShell):
 irm https://handoff.gosuper.dev/install.ps1 | iex
 ```
 
-**On Windows, handoff can only act as coordinator** — dispatching, reviewing, ruling on
-permissions, and `upgrade`-ing remote machines all work, but the machine itself cannot be
-an executor machine: the process-hosting layer agentd depends on is not yet implemented on
-non-unix platforms (backlog B37). The dispatch target must be a macOS or Linux executor
-machine. If you want a Windows box to execute, install WSL2 and set up handoff plus an
-executor inside it following the Linux steps (for the coordinator machine to reach WSL2,
-forward the agentd port in from the Windows host, or put WSL2 directly on a virtual
-network like Tailscale). Also note that `wait --notify` desktop notifications exist only
-on macOS; on Windows the wake-up channel is `wait`'s stdout.
+On Windows, handoff can act as either a coordinator or an executor machine. The available
+executors and the grok symlink capability check are summarized in the Executor Notes below.
+`wait --notify` desktop notifications exist only on macOS; on Windows the wake-up channel is
+`wait`'s stdout.
 
 The script installs the binary to `~/.local/bin/handoff` (on Windows,
 `%LOCALAPPDATA%\Programs\handoff\handoff.exe`) — no sudo, no administrator rights.
@@ -114,6 +109,43 @@ takes (the full UUID — short ids are not supported).
 
 **4. Wait for events, make the calls.**
 
+### 浏览器控制台
+
+```bash
+handoff console                 # 打开系统浏览器（自动换一次性 ticket）
+handoff console --print-url     # 只打印兑换 URL，不打开浏览器
+handoff sessions                # 列出已建立的浏览器会话
+handoff sessions revoke <id>    # 吊销一个会话（手机丢失时用它）
+```
+
+**机制**：`console` 用主令牌向 agentd 换一张 **60 秒、一次性**的 ticket，
+浏览器打开该 URL 后 agentd 原子消费它，下发一个 httpOnly cookie 会话（默认 30 天，
+滑动续期），此后 `/api` 与 `/ws` 全部路由都用这个 cookie。
+
+**长期凭据永远不进 URL**——URL 里只有那张一次性 ticket。
+
+**Host 白名单**：agentd 只接受 Host 为 `127.0.0.1` / `localhost` / `::1` /
+配置的 `listen` 地址的请求。放到域名后面时必须配：
+
+```yaml
+web:
+  allowed_hosts:
+    - handoff.example.com
+```
+
+不配的表现是**全部请求 403**，agentd 日志里有 `Host 不在白名单`。
+
+**桌面壳接线契约**（壳内零凭据逻辑）：
+
+1. 探测本机 agentd 是否在监听；
+2. 执行 `handoff console --print-url`，**stdout 恰好一行，就是 URL**；
+3. `loadURL(那一行)`。
+
+壳不读 `config.yaml`、不碰主令牌、不实现任何鉴权代码。会话过期时页面返回 401，
+壳重跑第 2、3 步即可，用户无感。
+
+## 配置（~/.handoff/config.yaml）
+
 ```bash
 handoff wait <task> --notify              # block until the next event that needs you (desktop notification on macOS)
 handoff reply <task> --ticket <id> --approve                                      # grant permission
@@ -138,6 +170,33 @@ To watch the executor live at any moment: `handoff attach <task>`.
 > capability difference: Claude Code and grok have background-task wake-up, so they can
 > keep a long `wait --follow` subscription; opencode and codex don't, and the skill steers
 > them to foreground blocking `wait` calls, one turn at a time.
+
+### Waiting for another task to be archived
+
+When a second session's work depends on a task you are still reviewing, that session needs
+one thing only: to know when the task was really archived. `--until-done` is that latch.
+
+```bash
+handoff wait <task> --until-done --timeout 3h
+```
+
+While it waits it prints nothing — `question`, `permission_request` and `completed` all
+pass by silently — and it never advances the coordinator's cursor, so the session actually
+reviewing the task still receives every event. Only once you run `handoff done` does the
+latch print a single line, the raw `archived` event, and exit 0.
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | Archived. stdout is the raw `archived` JSON; `payload.note` carries the note from `done` |
+| `124` | The total wait budget elapsed and the task is still not archived |
+| `1` | The dependency failed, or auth / task id / protocol error |
+
+`--timeout` here is a **total** budget, not an idle one: intermediate frames deliberately
+do not extend it, otherwise a task nobody ever archives could keep the latch alive forever.
+
+The latch only wakes you up — it never dispatches the follow-up work. The original task
+still needs its own coordinator to answer tickets, review `completed` and archive it
+explicitly; do not reach for this instead of a `wait --follow` review subscription.
 
 ## Connecting a Remote Executor Machine
 
@@ -190,6 +249,32 @@ targets:
     user: "<remote ssh username>"    # omit if same as your local username; pull uses it over ssh
 ```
 
+完整的 `~/.handoff/config.yaml` 样例：
+
+```yaml
+approver:                     # 分级审批链的廉价模型审批者
+  executor: opencode          # 空=不启用审批链（权限请求直接升级人工审核者）
+  model: cheap/model          # 审批者模型；空=用执行者自身默认
+  timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
+  blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
+    - "kubectl .*delete"
+executor:                     # dispatch 未显式指定执行者时的缺省
+  default: opencode
+  model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
+terminal:                     # dispatch 成功后的终端弹窗（默认不弹）
+  auto: false                 # 置 true 则 darwin 下 osascript 弹 Terminal.app 进实况
+sync:                         # 任务终结（failed）或回合失败（turn_failed）后自动同步远程任务分支到本地
+  auto: true                  # 关闭后仍可用 handoff pull 手动同步
+env:                          # agent 启动时注入的环境变量文件（放 ~/.handoff/env/ 下）
+  opencode: dev.env           # 值是纯文件名；未配置的 agent 不注入
+  claude: work.env            # 对 claude 执行者同样生效（鉴权/代理等走同一套注入）
+repo_root: ""                 # 项目落点根目录；留空则取 <datadir>/repos（首次生成配置时写入本文件）
+path_dirs: ["/opt/tools/bin"] # 额外的可执行文件搜索目录；按需才加，不需要就别写这个键
+web:                          # 浏览器控制台 Host 白名单
+  allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
+    - handoff.example.com
+```
+
 **3. Dispatch**:
 
 ```bash
@@ -207,6 +292,13 @@ When the task ends, the remote task branch syncs back to your local repo automat
 (`sync.auto`; or manually with `handoff pull <task>`) — **fetch only, no merge**. Merging
 into the mainline is your review decision.
 
+`pull` fetches a git bundle over agentd's HTTP API and fetches it into your local repo —
+**it needs neither ssh on the executor machine nor a POSIX login shell on the remote**. If
+the remote agentd is too old (no `GET /api/tasks/{id}/bundle`; it returns 404), `pull`
+automatically falls back to the old ssh path — that path still needs the executor machine
+to be ssh-able with a POSIX login shell (Windows' cmd.exe does not qualify). The client
+log states which path this run used.
+
 ## Command Reference
 
 | Command | Purpose | Key flags |
@@ -215,11 +307,11 @@ into the mainline is your review decision.
 | `handoff service install\|uninstall\|status` | Put agentd under launchd / systemd management | — |
 | `handoff agentd` | Run agentd in the foreground (development/debugging; day-to-day use goes through service) | `--executor=opencode\|claude\|grok\|codex\|fake` (default opencode) |
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
-| `handoff wait <task>` | Block until the next event that needs you | `--follow` (keep subscribing until the task ends); `--notify`; `--timeout <duration>`; `--no-sync` |
+| `handoff wait <task>` | Block until the next event that needs you (`--until-done` waits silently for the archive instead) | `--follow` (keep subscribing until the task ends); `--until-done` (dependency latch, prints only the `archived` event; mutually exclusive with `--follow`); `--notify`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget, `--until-done` = total budget); `--no-sync` |
 | `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
-| `handoff diff <task>` | git diff + commit list (review material) | `--base <branch>` |
+| `handoff diff <task>` | git diff + commit list (defaults to the task's own base commit, falling back to the repo's default branch) | `--base <rev>` |
 | `handoff fetch <task> <file>` | Read a single file from the task repo | — |
-| `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout) | handoff's own flags must come **before** the task id; everything after it is passed through verbatim |
+| `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout; one argument is a shell command, multiple arguments are shell-quoted) | handoff's own flags must come **before** the task id |
 | `handoff continue <task> "<instruction>"` | Send a follow-up change instruction (requires pending-review state; continues the same session) | — |
 | `handoff done <task>` | Archive the task and reclaim the executor (requires pending-review state) | `--note "<note>"` |
 | `handoff stop <task>` | Abort (stop the executor, void tickets, task ends failed) | — |
@@ -243,10 +335,11 @@ Global flags: `--agentd http://127.0.0.1:7777` (agentd address), `--target <name
 ## Task States and Events
 
 Task state machine: `pending` → `running` → (`waiting_answer` ⇄ `running`) →
-`waiting_review` → archived (`completed`). **A turn that ends in failure also goes to
-`waiting_review`** — the executor session is still alive with full context, so you can
-retry with `continue`. Only `stop`, or an executor failing to start, lands the task in
-`failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require
+`waiting_review` → archived (`completed`). **A turn that ends in failure (the
+`turn_failed` event) also goes to `waiting_review`** — the task is still alive and the
+executor session keeps its full context, so you can retry with `continue`. Only `stop`,
+a watchdog kill, or the executor no longer being present lands the task in `failed`
+(terminal; re-dispatch to continue). **Both `continue` and `done` require
 `waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.
 
 `wait` is woken by these events:
@@ -255,7 +348,9 @@ retry with `continue`. Only `stop`, or an executor failing to start, lands the t
 |------|------|------|
 | `permission_request` | executor asks for authorization | `reply --approve` / `--deny --reason` |
 | `question` | executor has a requirements question | `reply --answer` |
-| `completed` / `failed` | a turn finished / a turn ended in failure | both go to review: `diff` for evidence, then `continue` or `done` |
+| `completed` | a turn finished | goes to review: `diff` for evidence, then `continue` or `done` |
+| `turn_failed` | a turn failed, but the task is still alive in `waiting_review` | goes to review: `diff` for evidence, then `continue` to retry |
+| `failed` | terminal: the task ended (`stop`, watchdog kill, executor gone) | the task is over — re-dispatch to continue; `reclaim` cleans up the worktree |
 | `archived` | task archived by done (payload carries the note) | the task is truly over |
 | `delivery_failed` | a reply was persisted but never reached the executor | `handoff resume <task>` to redeliver |
 | `stalled` | watchdog: no output for a long time | `attach`/`show` to judge long-running vs stuck |
@@ -350,10 +445,22 @@ escalates straight to the human. Within one task, a byte-identical permission re
 a human already approved is reused automatically (recorded as a `permission_reuse` event)
 instead of asking again.
 
+Write targets outside the task's workspace — including shell redirect targets such as
+`echo x > ~/.zshrc` — always escalate to the human, never to the approver.
+
 ## Executor Notes
 
 `--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `fake` (a
 dependency-free scripted demo). Readiness checks and caveats:
+
+Windows 执行机上四个执行器的现状：
+
+| 执行器 | 状态 | 说明 |
+|---|---|---|
+| opencode | 可用 | B37 真机验收通过 |
+| codex | 可用 | B123 真机验收通过 |
+| claude | 可用 | 输入通道走命名管道 + 中继，裁决 socket 走 AF_UNIX（Windows 原生支持） |
+| grok | 取决于部署形态 | 需要创建符号链接的权限：agentd 以管理员身份运行，或开启开发者模式。agentd 启动时会探测并在日志里说明 |
 
 - **opencode**: install [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) on the executor
   machine with model credentials configured (this is a referral link: sign up through it
@@ -432,6 +539,21 @@ handoff show <task>                # snapshot: state + unhandled tickets + event
 
 Clear the `pending_tickets`, then act by state: `running` keeps waiting for events,
 `waiting_review` goes into review.
+
+### 进程归属的平台差异
+
+handoff 判断「这个进程属于哪个任务」有三条来源：进程组（pgid）、后代名册
+（采样得来）、任务标记。前两条对采样时机敏感——工具壳只活一两秒时会漏；
+任务标记不依赖时机，但各平台强度不同：
+
+| 平台 | 标记判据 | 边界 |
+|---|---|---|
+| Linux | 注入的 `HANDOFF_TASK_ID` 环境变量 | 全部任务形态可用；依赖执行者透传环境变量 |
+| macOS | 进程的工作目录是否在任务 worktree 内 | **仅 `--new-worktree` 的托管任务**启用；进程 `cd` 出任务目录后脱钩 |
+| Windows | 不适用 | 回收由 Job Object 进程容器承担，内核连坐，不需要事后判定 |
+
+macOS 上不带 `--new-worktree` 的任务不启用该判据：那时任务跑在共享主仓里，
+用户自己的编辑器与 shell 也在那个目录下，按工作目录归属会把它们一起清掉。
 
 ## Troubleshooting
 

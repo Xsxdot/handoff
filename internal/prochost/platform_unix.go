@@ -16,6 +16,7 @@ package prochost
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -24,6 +25,9 @@ import (
 
 // lockSupported 标记本平台是否真的能加锁。
 const lockSupported = true
+
+// defaultFenceHardLimitMode 见 fence.go：本平台走 reserve_ratio，不用 TaskHardLimit。
+const defaultFenceHardLimitMode = false
 
 // flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。
 //
@@ -166,4 +170,63 @@ func waitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// writeInputChannel 往 FIFO 投递字节（见 WriteInputChannel 的文档）。
+//
+// O_NONBLOCK 不是性能选择而是语义选择：没有它，打开写端会一直阻塞到出现读端，
+// 「执行者已不在」就变成「永远等下去」。
+func writeInputChannel(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return fmt.Errorf("打开输入通道 %s（读端可能已不在）: %w", path, err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写输入通道 %s: %w", path, err)
+	}
+	return nil
+}
+
+// openInputChannel 为子进程准备 stdin（见 shim.go 调用点）。
+//
+// 参数：path 为通道路径
+//
+// 返回：
+//   - r: 交给 cmd.Stdin 的读端
+//   - cleanup: 子进程退出后调用，释放本函数占用的资源
+//   - error: 非 nil 时 shim 必须放弃拉起执行者
+//
+// 注意：**O_RDWR 而不是 O_RDONLY 是承重的**。只读打开会在所有写端关闭时收到
+// EOF，执行者的 stdin 随即关闭；O_RDWR 让 shim 自己同时也是写端，FIFO 因此
+// 永不 EOF。这是旧 sh 脚本 `exec 3<> in.fifo` 的等价手法。
+func openInputChannel(path string) (io.ReadCloser, func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开输入通道 %s: %w", path, err)
+	}
+	return f, func() { _ = f.Close() }, nil
+}
+
+// installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的
+// 「进程容器」里，使执行者全树继承其约束。
+//
+// 参数：nprocLimit 为围栏值（执行者树的进程数上限）；<=0 表示不设围栏。
+//
+// 返回：error 非 nil 时 shim 必须放弃拉起执行者。
+//
+// unix 的容器就是 RLIMIT_NPROC——rlimit 随 fork 继承，所以装在 shim 上等于装在
+// 整棵树上。**装不上不阻断**：防护装置故障不该变成拒绝服务，这是 B73 定的语义，
+// 本次泛化不改变它（与 Windows 侧相反，见 platform_windows.go 的同名函数）。
+func installProcessContainer(nprocLimit int) error {
+	if nprocLimit <= 0 {
+		log().Info("本任务未设进程围栏", "reason", "spec 未下发围栏值")
+		return nil
+	}
+	if err := setNprocLimit(nprocLimit); err != nil {
+		log().Warn("安装进程围栏失败，本任务无围栏保护", "limit", nprocLimit, "cause", err)
+		return nil
+	}
+	log().Info("进程围栏已安装", "limit", nprocLimit)
+	return nil
 }

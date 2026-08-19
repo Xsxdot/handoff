@@ -3,15 +3,33 @@ package claudecode
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
 )
+
+// TestNewPermServerRejectsOverlongPath 钉住超长路径给出的是可读错误。
+//
+// AF_UNIX 的 sun_path 上限 108 字节，而 DataDir 可以被配到很深的位置。
+// 不加这层包装时，用户看到的是 net.Listen 的原始错误（"invalid argument"
+// 一类），完全指不到「路径太长」这个真因。
+func TestNewPermServerRejectsOverlongPath(t *testing.T) {
+	deep := filepath.Join(t.TempDir(), strings.Repeat("d", 120), "perm.sock")
+	_, err := newPermServer(deep, slog.New(slog.NewTextHandler(io.Discard, nil)), func(permAsk) {})
+	if err == nil {
+		t.Fatalf("超长 socket 路径竟然绑定成功了")
+	}
+	if !strings.Contains(err.Error(), "过长") {
+		t.Fatalf("错误没点明「路径过长」这个真因: %v", err)
+	}
+}
 
 // dialAsk 模拟 MCP 进程：连 socket、发一条 ask、返回连接供读裁决。
 func dialAsk(t *testing.T, sock, toolUseID, toolName, inputJSON string) net.Conn {

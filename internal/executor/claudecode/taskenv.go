@@ -1,7 +1,7 @@
 // taskenv.go —— Claude Code 任务环境物料生成。
 //
 // 职责：
-//   - 生成任务级 settings.json（权限静态分级：ask 收窄危险面、allow 兜底放行）
+//   - 生成任务级 settings.json（权限静态分级：ask 收窄危险面、allow 逐条白名单）
 //   - 生成 mcp.json（把 handoff 内置裁决工具挂到本任务的 perm.sock 上）
 //   - 渲染首回合 prompt（回合纪律模板复用 turn 共享包，两个 executor 同源）
 //
@@ -35,10 +35,11 @@ const (
 // bashPermissionRules ask 项同源。
 //
 // 匹配语义：claude 的 Bash 规则按命令前缀匹配（"Bash(rm:*)" 匹配以 rm 开头的命令）。
-// 命中 ask 的请求会经裁决工具进 handoff 审批链；未命中的落到 allowRules 兜底放行。
+// 命中 ask 的请求会经裁决工具进 handoff 审批链；命中 allowRules 的直接执行；
+// 两表都不命中的，claude 会照样来问 —— 于是也进审批链（B149 起 allow 不再兜底）。
 //
 // 两条实测依据（2026-08-09 探针，spec §5.4）：
-//   - 同文件内 ask 压过 allow——「allow 兜底 + ask 收窄」的形状成立
+//   - 同文件内 ask 压过 allow——「allow 放行 + ask 收窄」的形状成立
 //   - 任务级 ask 压过用户级 allow——个人 allowlist 无法绕过任务级收窄
 //
 // 每次修改本表必须同步 taskenv_test 的逐条断言——少一条就是静默放行。
@@ -55,16 +56,64 @@ var askRules = []string{
 	"WebSearch",         // 外访
 }
 
-// allowRules 是兜底放行表：在任务分支上改代码、读文件、跑测试是派发的目的本身，
-// diff 审核兜底。不写它会退回「默认全 ask」，造成一期那种连环唤醒协调者的噪音
-// （见 opencode/taskenv.go 文件头的 dogfooding 修正记录；ask 压过 allow 的形态
-// 已由 2026-08-09 探针证实，spec §5.4）。
+// allowRules 是自动放行表。2026-08-18（B149）起**不再有裸 `"Bash"`**，改为逐条
+// 前缀白名单。
 //
-// 2026-08-09 起 Edit/Write 移出本表进 askRules：它们经权限门后由 handoff
-// 判目标路径是否落在任务范围内，范围内的写入在 manager 侧微秒级自动放行、
-// 不建工单不发事件，越界的才升级人工（spec §5.2）。留在 allow 里等于
-// 「写 ~/.ssh/authorized_keys 连事件都不留」。
-var allowRules = []string{"Bash", "Read", "Glob", "Grep"}
+// 为什么必须换掉裸 `"Bash"`：它没有前缀参数，匹配一切 bash 命令，于是
+// `echo x > ~/.ssh/authorized_keys` 由 claude 自己放行、handoff 的 permgate
+// 连看都看不到（B128 真机验收第 4 条的原始现场：零权限请求、文件直接写成）。
+// 连带后果是 permgate 的黑名单、执行包装器识别、B115 的自指令收口在 claude 上
+// 全部空转——`handoff dispatch` 不匹配 askRules 那六个前缀，压根到不了 permgate。
+//
+// 为什么换成前缀白名单就能收住：2026-08-18 真机探针（mac-02 上真跑 claude）实测
+// 出一条关键性质——**追加文件重定向会破坏前缀匹配**：
+//
+//	echo hi-control     → 命中 Bash(echo:*)，直接执行
+//	echo hi > out.txt   → **不命中**，落 ask（文件未被创建）
+//	echo hi 2>&1        → 命中（fd 复制不算文件写入）
+//	echo hi | cat       → 命中（管道不算文件写入）
+//
+// 也就是说白名单里的命令一旦缀上写文件的重定向，就自动掉出白名单、进 ask →
+// permgate → 落点范围判定（B134 的 judgeBash）。白名单在「越界写」这件事上不漏。
+//
+// 选条目的原则（与 claude 自身内置指导的「绝不要放进 allowlist」清单一致）：
+//   - 放：只读检视 + 本项目工具链里边界清楚的子命令
+//   - **不放**：shell 与解释器（sh/bash/python/node/ruby）、包运行器（npx/bunx）、
+//     网络工具（curl/wget，且它们已在 askRules）、`find`（-exec/-delete 是任意执行）、
+//     `sed`（-i 可就地改仓库外文件，不经重定向）、`env`（`env X=1 <任意命令>`）
+//   - 用 `go build`/`go test` 这类**二级前缀**而不是 `Bash(go:*)`：后者会把
+//     `go run ./x` 与 `go generate` 一并放行，那是任意代码执行
+//
+// 不在本表的命令不是被拒，是落 ask 交 permgate 判——未知命令天然走判据，
+// 这是「安全默认」的形状，与 B115 自指令收口同源。
+//
+// 每次修改本表必须同步 taskenv_test 的逐条断言——多一条就是一条静默放行的通道。
+var allowRules = []string{
+	// 非 bash 工具：读文件与检索，本身不写任何东西
+	"Read", "Glob", "Grep",
+
+	// 只读检视
+	"Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+	"Bash(wc:*)", "Bash(stat:*)", "Bash(file:*)", "Bash(pwd:*)",
+	"Bash(echo:*)", "Bash(which:*)", "Bash(diff:*)",
+	"Bash(grep:*)", "Bash(rg:*)", "Bash(sort:*)", "Bash(uniq:*)",
+
+	// git：逐条列出而不是 Bash(git:*)——后者会放行 git config --global
+	// （写 ~/.gitconfig，不经重定向即越界）与 git fetch --upload-pack=<cmd>
+	// （任意命令执行）。push/reset 另在 askRules 里收窄
+	"Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+	"Bash(git show:*)", "Bash(git branch:*)", "Bash(git add:*)",
+	"Bash(git commit:*)", "Bash(git checkout:*)", "Bash(git restore:*)",
+	"Bash(git stash:*)", "Bash(git rev-parse:*)", "Bash(git ls-files:*)",
+
+	// Go 工具链：二级前缀，刻意不含 go run / go generate
+	"Bash(go build:*)", "Bash(go test:*)", "Bash(go vet:*)",
+	"Bash(go mod:*)", "Bash(go doc:*)", "Bash(go env:*)", "Bash(gofmt:*)",
+
+	// 前端：只放 run/test 两个子命令，不放 npm install/npx（会跑安装脚本，
+	// 等于任意代码执行）
+	"Bash(npm run:*)", "Bash(npm test:*)",
+}
 
 // settingsFile 是任务级 settings.json 的结构（只写 permissions 段）。
 //
@@ -103,6 +152,7 @@ type mcpServer struct {
 //   - planContent: 实现计划全文，原样嵌入 prompt
 //   - sockPath: 本任务的权限裁决 socket 路径（perm.go 监听它）
 //   - handoffBin: handoff 二进制绝对路径，作为裁决 MCP server 的启动命令
+//   - disciplineBlock: 唯一来自 StartReq 的纪律块正文；taskenv 不自行解析
 //
 // 返回：
 //   - settingsPath / mcpPath: 生成的两个配置文件路径
@@ -112,7 +162,7 @@ type mcpServer struct {
 // 注意：
 //   - 重复调用幂等覆盖，Start 失败重试可安全重来
 //   - 两个配置文件都是 0600：mcp.json 泄露 socket 路径即泄露裁决入口
-func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (settingsPath, mcpPath, promptText string, err error) {
+func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (settingsPath, mcpPath, promptText string, err error) {
 	log := slog.Default()
 	settingsPath = filepath.Join(taskDir, settingsFileName)
 	mcpPath = filepath.Join(taskDir, mcpFileName)
@@ -147,7 +197,7 @@ func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin string) (se
 		return settingsPath, mcpPath, "", fmt.Errorf("写 %s: %w", mcpPath, err)
 	}
 
-	promptText, err = turn.RenderPrompt(taskID, planContent)
+	promptText, err = turn.RenderPrompt(taskID, planContent, disciplineBlock)
 	if err != nil {
 		log.Error("claude 渲染 prompt 失败", "task", taskID, "cause", err)
 		return settingsPath, mcpPath, "", fmt.Errorf("渲染 prompt: %w", err)

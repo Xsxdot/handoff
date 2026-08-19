@@ -8,9 +8,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +184,31 @@ func TestDiffShowsCommits(t *testing.T) {
 	}
 }
 
+// TestBranches 验证分支列表按名称返回本地分支，且不含 HEAD 指针。
+func TestBranches(t *testing.T) {
+	repo := initTestRepo(t)
+	// 加一个特性分支
+	gitAt(t, repo, "branch", "feature/x")
+	got, err := Branches(repo)
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	want := map[string]bool{"feature/x": false}
+	for _, b := range got {
+		if _, ok := want[b]; ok {
+			want[b] = true
+		}
+		if strings.HasPrefix(b, "-") || b == "" {
+			t.Errorf("非法分支名混入：%q", b)
+		}
+	}
+	for b, seen := range want {
+		if !seen {
+			t.Errorf("缺少分支 %s（得到 %v）", b, got)
+		}
+	}
+}
+
 // TestDiffRejectsDashPrefixedBase 覆盖 L-4：以 "-" 开头的 base 会被 git 解释为
 // 选项而非 rev（如 --output=... 让 git 把 diff 写到任意路径，git 参数注入），
 // Diff 必须拒绝（ErrBadBaseBranch）且不得让 git 真正执行到写文件——
@@ -215,8 +243,8 @@ func TestReadFileEscapeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile 正常路径: %v", err)
 	}
-	if !strings.Contains(content, "# repo") {
-		t.Fatalf("ReadFile 内容=%q, want 含 # repo", content)
+	if !strings.Contains(content.Content, "# repo") {
+		t.Fatalf("ReadFile 内容=%q, want 含 # repo", content.Content)
 	}
 
 	for _, p := range []string{"../etc/passwd", "/etc/passwd", "sub/../../etc/passwd", "..", ""} {
@@ -287,15 +315,15 @@ func TestReadFileSymlinkEscape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("仓内文件链接应可读, got %v", err)
 		}
-		if !strings.Contains(content, "# repo") {
-			t.Fatalf("仓内链接内容=%q, want 含 # repo", content)
+		if !strings.Contains(content.Content, "# repo") {
+			t.Fatalf("仓内链接内容=%q, want 含 # repo", content.Content)
 		}
 		content, err = ReadFile(repo, "sublink/ok.txt")
 		if err != nil {
 			t.Fatalf("仓内目录链接应可读, got %v", err)
 		}
-		if content != "sub\n" {
-			t.Fatalf("仓内目录链接内容=%q, want sub\\n", content)
+		if content.Content != "sub\n" {
+			t.Fatalf("仓内目录链接内容=%q, want sub\\n", content.Content)
 		}
 	})
 
@@ -311,8 +339,8 @@ func TestReadFileSymlinkEscape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("仓库根为链接时应可读, got %v", err)
 		}
-		if !strings.Contains(content, "# repo") {
-			t.Fatalf("内容=%q, want 含 # repo", content)
+		if !strings.Contains(content.Content, "# repo") {
+			t.Fatalf("内容=%q, want 含 # repo", content.Content)
 		}
 	})
 
@@ -331,35 +359,35 @@ func TestReadFileSymlinkEscape(t *testing.T) {
 }
 
 // TestReadFileSizeCap 验证读取大小上限（P1-5）：超过 maxRunOutput 的文件只返回
-// 开头 maxRunOutput 字节 + 一行截断提示（截断而非拒绝——与 RunCmd 输出截断
-// 语义一致；提示不可省，否则协调者会把截断处当文件末尾），边界内的文件完整返回。
+// 开头 maxRunOutput 字节并标记 Truncated（截断而非拒绝——与 RunCmd 输出截断
+// 语义一致），边界内的文件完整返回。截断提示已迁至 handleTaskFile 端点
+// （TestTaskFileKeepsTruncatedNotice 守住 CLI 契约）。
 func TestReadFileSizeCap(t *testing.T) {
 	repo := initGitRepo(t)
 	big := filepath.Join(repo, "big.bin")
 	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxRunOutput+4096), 0o644); err != nil {
 		t.Fatalf("写大文件: %v", err)
 	}
-	content, err := ReadFile(repo, "big.bin")
+	got, err := ReadFile(repo, "big.bin")
 	if err != nil {
 		t.Fatalf("ReadFile 大文件: %v", err)
 	}
-	body, notice, found := strings.Cut(content, "\n\n=====")
-	if !found {
-		t.Fatalf("大文件返回未带截断提示（长度 %d）", len(content))
+	if !got.Truncated {
+		t.Fatalf("大文件应标记 Truncated=true")
 	}
-	if len(body) != maxRunOutput {
-		t.Fatalf("大文件正文长度=%d, want 截断到 %d", len(body), maxRunOutput)
+	if len(got.Content) != maxRunOutput {
+		t.Fatalf("大文件正文长度=%d, want 截断到 %d", len(got.Content), maxRunOutput)
 	}
-	if !strings.Contains(notice, "已截断") {
-		t.Fatalf("截断提示文案不明确: %q", notice)
+	if got.Size != int64(maxRunOutput+4096) {
+		t.Fatalf("Size=%d, want 磁盘真实大小 %d", got.Size, maxRunOutput+4096)
 	}
 
 	small, err := ReadFile(repo, "README.md")
 	if err != nil {
 		t.Fatalf("ReadFile 小文件: %v", err)
 	}
-	if !strings.Contains(small, "# repo") {
-		t.Fatalf("小文件内容=%q, want 含 # repo", small)
+	if !strings.Contains(small.Content, "# repo") {
+		t.Fatalf("小文件内容=%q, want 含 # repo", small.Content)
 	}
 }
 
@@ -1089,5 +1117,497 @@ func TestGitNetArgsUnchangedWithoutProxy(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("gitNetArgs = %v，期望 %v", got, want)
 		}
+	}
+}
+
+// TestListDirBasic 覆盖列举的四条硬约束：只列一层、目录在前、字典序、rel 为空即根。
+func TestListDirBasic(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "internal", "agentd"))
+	mustMkdirAll(t, filepath.Join(repo, "cmd"))
+	mustWriteFile(t, filepath.Join(repo, "go.mod"), "module x\n")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hi")
+
+	entries, err := ListDir(repo, "")
+	if err != nil {
+		t.Fatalf("ListDir 根目录: %v", err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, fmt.Sprintf("%s/%v", e.Name, e.IsDir))
+	}
+	want := []string{"cmd/true", "internal/true", "README.md/false", "go.mod/false"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("根目录列举 = %v, want %v", got, want)
+	}
+
+	// 只列一层：internal 下只应有 agentd，不含 internal/agentd 的内容
+	sub, err := ListDir(repo, "internal")
+	if err != nil {
+		t.Fatalf("ListDir internal: %v", err)
+	}
+	if len(sub) != 1 || sub[0].Name != "agentd" || !sub[0].IsDir {
+		t.Errorf("internal 列举 = %+v, want 只有目录 agentd", sub)
+	}
+
+	// 普通文件带 size
+	root, err := ListDir(repo, ".")
+	if err != nil {
+		t.Fatalf("ListDir .: %v", err)
+	}
+	for _, e := range root {
+		if e.Name == "go.mod" && e.Size != int64(len("module x\n")) {
+			t.Errorf("go.mod size = %d, want %d", e.Size, len("module x\n"))
+		}
+	}
+}
+
+// TestListDirRejectsEscape 断言列举与 ReadFile 共用同一条逃逸红线。
+func TestListDirRejectsEscape(t *testing.T) {
+	repo := t.TempDir()
+	for _, rel := range []string{"..", "../etc", "/etc", filepath.Join("a", "..", "..")} {
+		if _, err := ListDir(repo, rel); !errors.Is(err, ErrPathEscape) {
+			t.Errorf("ListDir(%q) err = %v, want ErrPathEscape", rel, err)
+		}
+	}
+}
+
+// TestListDirOnFileIsNotDir 断言把文件当目录列举时给出可辨识的错误（映射 400）。
+func TestListDirOnFileIsNotDir(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "go.mod"), "module x\n")
+	if _, err := ListDir(repo, "go.mod"); !errors.Is(err, ErrPathNotDir) {
+		t.Errorf("ListDir(go.mod) err = %v, want ErrPathNotDir", err)
+	}
+}
+
+// TestListDirMissing 断言不存在的子目录返回 fs.ErrNotExist（映射 404）。
+func TestListDirMissing(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := ListDir(repo, "nope"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ListDir(nope) err = %v, want fs.ErrNotExist", err)
+	}
+}
+
+// mustMkdirAll 建目录，失败即 Fatal。
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("建目录 %s: %v", dir, err)
+	}
+}
+
+// mustWriteFile 写文件，失败即 Fatal。
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写文件 %s: %v", path, err)
+	}
+}
+
+func TestCreateEntryFileAndDir(t *testing.T) {
+	repo := t.TempDir()
+	got, err := CreateEntry(repo, "", "handler.go", "file")
+	if err != nil {
+		t.Fatalf("建文件: %v", err)
+	}
+	if got.Name != "handler.go" || got.IsDir {
+		t.Fatalf("返回项不对: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "handler.go")); err != nil {
+		t.Fatalf("文件没落盘: %v", err)
+	}
+	if _, err := CreateEntry(repo, "", "internal", "dir"); err != nil {
+		t.Fatalf("建目录: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(repo, "internal"))
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("目录没落盘: %v", err)
+	}
+}
+
+func TestCreateEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "a.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, parent, entry, kind string
+		want                      error
+	}{
+		{"同名", "", "a.go", "file", ErrEntryExists},
+		{"名字含斜杠", "", "x/y.go", "file", ErrBadEntryName},
+		{"名字为空", "", "", "file", ErrBadEntryName},
+		{"名字是点点", "", "..", "dir", ErrBadEntryName},
+		{"父目录逃逸", "..", "a.go", "file", ErrPathEscape},
+		{"命中 git 目录", ".git", "config", "file", ErrGitDirWrite},
+		{"父目录不存在", "nope", "a.go", "file", ErrEntryNotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := CreateEntry(repo, c.parent, c.entry, c.kind)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("要 %v，得到 %v", c.want, err)
+			}
+		})
+	}
+}
+
+func TestRenameEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "old.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "old.go", "new.go"); err != nil {
+		t.Fatalf("改名: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.go")); err != nil {
+		t.Fatalf("新名字不在: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "old.go")); !os.IsNotExist(err) {
+		t.Fatal("旧名字还在")
+	}
+	if _, err := CreateEntry(repo, "", "taken.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenameEntry(repo, "new.go", "taken.go"); !errors.Is(err, ErrEntryExists) {
+		t.Fatal("撞名应当被拒")
+	}
+	if _, err := RenameEntry(repo, "new.go", "a/b.go"); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("新名字含斜杠应当被拒（本期不做跨目录移动）")
+	}
+	if _, err := RenameEntry(repo, ".git", "x"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("改名 .git 应当被拒")
+	}
+}
+
+func TestDeleteEntry(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := CreateEntry(repo, "", "gone.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "gone.go"); err != nil {
+		t.Fatalf("删文件: %v", err)
+	}
+	// 非空目录也要能删
+	if _, err := CreateEntry(repo, "", "d", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateEntry(repo, "d", "inner.go", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteEntry(repo, "d"); err != nil {
+		t.Fatalf("删非空目录: %v", err)
+	}
+	if err := DeleteEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("删不存在的应当 ErrEntryNotFound")
+	}
+	if err := DeleteEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("删 .git 应当被拒")
+	}
+	if err := DeleteEntry(repo, ""); !errors.Is(err, ErrBadEntryName) {
+		t.Fatal("删工作树根本身应当被拒")
+	}
+}
+
+func TestEntryOpsSymlinkEscape(t *testing.T) {
+	// 与 TestReadFileSymlinkEscape 同款手法：仓库内放一个指向仓库外的链接，
+	// 四个动作都必须被 os.OpenRoot 挡下，而不是顺着链接操作到仓库外
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "link")); err != nil {
+		t.Skipf("本平台建不了符号链接: %v", err)
+	}
+	if _, err := CreateEntry(repo, "link", "new.txt", "file"); err == nil {
+		t.Fatal("经链接在仓库外建文件竟然成功了")
+	}
+	if err := DeleteEntry(repo, "link/victim.txt"); err == nil {
+		t.Fatal("经链接删仓库外文件竟然成功了")
+	}
+	// RenameEntry 与 CopyEntry 的 rel 逃逸拦截不在 cleanEntryRel（那层只做词汇
+	// 层 Clean），而在 os.Root 对链接的实际解析——root.Stat 顺着 link 解析到
+	// 仓库外报 "path escapes from parent"，两处都应落 ErrPathEscape
+	if _, err := RenameEntry(repo, "link/victim.txt", "y.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接改名仓库外文件应当 ErrPathEscape，得到: %v", err)
+	}
+	if _, err := CopyEntry(repo, "link/victim.txt"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("经链接复制仓库外文件应当 ErrPathEscape，得到: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim.txt")); err != nil {
+		t.Fatal("仓库外的文件被动了")
+	}
+}
+
+func TestCopyEntryNaming(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "foo.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第一次复制: %v", err)
+	}
+	if first.Name != "foo copy.go" {
+		t.Fatalf("第一份副本要叫 %q，得到 %q", "foo copy.go", first.Name)
+	}
+	second, err := CopyEntry(repo, "foo.go")
+	if err != nil {
+		t.Fatalf("第二次复制: %v", err)
+	}
+	if second.Name != "foo copy 2.go" {
+		t.Fatalf("第二份副本要叫 %q，得到 %q", "foo copy 2.go", second.Name)
+	}
+	// 内容要真的复制过去
+	b, err := os.ReadFile(filepath.Join(repo, "foo copy.go"))
+	if err != nil || string(b) != "package main" {
+		t.Fatalf("副本内容不对: %q %v", b, err)
+	}
+	// 无扩展名
+	if err := os.WriteFile(filepath.Join(repo, "Makefile"), []byte("all:"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "Makefile")
+	if err != nil || got.Name != "Makefile copy" {
+		t.Fatalf("无扩展名副本要叫 %q，得到 %q（err=%v）", "Makefile copy", got.Name, err)
+	}
+}
+
+func TestCopyEntryDirRecursive(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "d", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "d", "sub", "x.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CopyEntry(repo, "d")
+	if err != nil {
+		t.Fatalf("复制目录: %v", err)
+	}
+	if got.Name != "d copy" || !got.IsDir {
+		t.Fatalf("目录副本不对: %+v", got)
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "d copy", "sub", "x.go"))
+	if err != nil || string(b) != "x" {
+		t.Fatalf("递归内容没复制过去: %q %v", b, err)
+	}
+	// 带点的目录名整体当 base，不拆扩展名（spec §3.4，Mac Finder 同款）
+	if err := os.MkdirAll(filepath.Join(repo, "a.b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.b", "inner.go"), []byte("i"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dotted, err := CopyEntry(repo, "a.b")
+	if err != nil {
+		t.Fatalf("复制带点目录: %v", err)
+	}
+	if dotted.Name != "a.b copy" {
+		t.Fatalf("带点目录副本要叫 %q，得到 %q", "a.b copy", dotted.Name)
+	}
+}
+
+func TestCopyEntryRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := CopyEntryRejectHelper(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyEntry(repo, "nope"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatal("复制不存在的应当 ErrEntryNotFound")
+	}
+	if _, err := CopyEntry(repo, ".git"); !errors.Is(err, ErrGitDirWrite) {
+		t.Fatal("复制 .git 应当被拒")
+	}
+	if _, err := CopyEntry(repo, "../x"); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸路径应当被拒")
+	}
+}
+
+// CopyEntryRejectHelper 建一个 .git 目录，让上面的 .git 用例有东西可撞。
+func CopyEntryRejectHelper(repo string) error {
+	return os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
+}
+
+func TestSearchInDirHitsAndSkips(t *testing.T) {
+	repo := t.TempDir()
+	mk := func(rel, body string) {
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a.go", "package main\nfunc needle() {}\n")
+	mk("sub/b.go", "// needle 在注释里\n")
+	mk(".git/config", "needle\n")
+	mk("node_modules/c.js", "needle\n")
+
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	rels := map[string]bool{}
+	for _, h := range got.Hits {
+		rels[h.Rel] = true
+	}
+	if !rels["a.go"] || !rels["sub/b.go"] {
+		t.Fatalf("正常文件没命中: %+v", got.Hits)
+	}
+	if rels[".git/config"] || rels["node_modules/c.js"] {
+		t.Fatalf(".git / node_modules 必须被跳过: %+v", got.Hits)
+	}
+	// 行号从 1 起
+	for _, h := range got.Hits {
+		if h.Rel == "a.go" && h.Line != 2 {
+			t.Fatalf("行号要从 1 起算，needle 在第 2 行，得到 %d", h.Line)
+		}
+	}
+}
+
+func TestSearchInDirLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != 10 {
+		t.Fatalf("limit=10 要恰好 10 条，得到 %d", len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("撞到上限必须标 Truncated——否则「10 条」会被读成「只有 10 处」")
+	}
+}
+
+func TestSearchInDirScopeAndRejects(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "only"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "only", "in.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "out.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "only", "needle", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) != 1 || got.Hits[0].Rel != "only/in.txt" {
+		t.Fatalf("范围没生效: %+v", got.Hits)
+	}
+	if _, err := SearchInDir(context.Background(), repo, "", "", 0); err == nil {
+		t.Fatal("空关键词应当被拒")
+	}
+	if _, err := SearchInDir(context.Background(), repo, "../x", "needle", 0); !errors.Is(err, ErrPathEscape) {
+		t.Fatal("逃逸范围应当被拒")
+	}
+}
+
+func TestSearchInDirDefaultLimit(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchDefaultLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", 0)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) != searchDefaultLimit {
+		t.Fatalf("limit<=0 时默认取 %d，得到 %d", searchDefaultLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过默认上限必须标 Truncated")
+	}
+}
+
+func TestSearchInDirLimitCapped(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < searchMaxLimit+50; i++ {
+		sb.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "many.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SearchInDir(context.Background(), repo, "", "needle", searchMaxLimit*10)
+	if err != nil {
+		t.Fatalf("搜索: %v", err)
+	}
+	if len(got.Hits) > searchMaxLimit {
+		t.Fatalf("limit 超过 %d 要收敛到 %d，得到 %d", searchMaxLimit, searchMaxLimit, len(got.Hits))
+	}
+	if !got.Truncated {
+		t.Fatal("命中数超过收敛后的上限必须标 Truncated")
+	}
+}
+
+// TestRemoveManagedWorktreeRetries 钉住重试语义。
+//
+// 为什么改函数内部而不是调用点：实际有四个调用点（workspace.go 的派发失败补偿、
+// manager.go 的 done/stop/失配三处），改函数一处覆盖全部，也不会漏掉将来新增的。
+//
+// 为什么不去等子进程：child.pid 虽然有，但用 pid 等存活会重新引入 pid 复用误判
+// ——那正是整个 prochost 用文件锁而非 pid 判存活的原因。
+func TestRemoveManagedWorktreeRetries(t *testing.T) {
+	oldAttempts, oldBackoff := removeWorktreeAttempts, removeWorktreeBackoff
+	t.Cleanup(func() { removeWorktreeAttempts, removeWorktreeBackoff = oldAttempts, oldBackoff })
+	removeWorktreeAttempts, removeWorktreeBackoff = 3, time.Millisecond
+
+	calls := 0
+	oldRun := worktreeRemoveFn
+	t.Cleanup(func() { worktreeRemoveFn = oldRun })
+	worktreeRemoveFn = func(ctx context.Context, repo, workdir string) (string, error) {
+		calls++
+		if calls < 3 {
+			return "fatal: 'x' contains modified or untracked files", errors.New("exit 128")
+		}
+		return "", nil
+	}
+
+	if err := RemoveManagedWorktree(context.Background(), "/repo", "/wt"); err != nil {
+		t.Fatalf("第三次应成功：%v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("应重试到成功为止：calls=%d want=3", calls)
+	}
+}
+
+// TestRemoveManagedWorktreeExhausted 钉住耗尽后仍返回错误（调用方据此只 Warn 不阻断）。
+func TestRemoveManagedWorktreeExhausted(t *testing.T) {
+	oldAttempts, oldBackoff := removeWorktreeAttempts, removeWorktreeBackoff
+	t.Cleanup(func() { removeWorktreeAttempts, removeWorktreeBackoff = oldAttempts, oldBackoff })
+	removeWorktreeAttempts, removeWorktreeBackoff = 2, time.Millisecond
+
+	calls := 0
+	oldRun := worktreeRemoveFn
+	t.Cleanup(func() { worktreeRemoveFn = oldRun })
+	worktreeRemoveFn = func(ctx context.Context, repo, workdir string) (string, error) {
+		calls++
+		return "被占用", errors.New("exit 128")
+	}
+
+	err := RemoveManagedWorktree(context.Background(), "/repo", "/wt")
+	if err == nil {
+		t.Fatal("耗尽后必须返回错误")
+	}
+	if calls != 2 {
+		t.Fatalf("应按 removeWorktreeAttempts 次数重试：calls=%d want=2", calls)
 	}
 }

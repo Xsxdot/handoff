@@ -24,7 +24,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/prochost"
@@ -81,6 +80,7 @@ type StartProcReq struct {
 	SettingsPath string
 	MCPPath      string
 	Env          []string
+	MarkRoot     string
 	Resume       bool
 }
 
@@ -181,6 +181,8 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 		InputCh: fifoPath, LockPath: lockPath, InfoPath: infoPath,
 		Sentinel: true, // claude 没有 HTTP 探活面，哨兵是唯一可靠的死亡信号
 	}
+	spec.TaskID = req.TaskID
+	spec.MarkRoot = req.MarkRoot
 	l.Info("启动 claude 执行者", "bin", bin, "repo", req.RepoPath, "resume", req.Resume)
 	handle, err := startProcHost(spec, selfExe)
 	if err != nil {
@@ -241,22 +243,17 @@ func claudeArgv(req StartProcReq) []string {
 	return argv
 }
 
-// WriteInput 往 in.fifo 投递一条 stream-json user message。
+// WriteInput 往输入通道投递一条 stream-json user message。
 //
 // 参数：
 //   - text: 指令原文，原样透传不加工（executor 契约要求）
 //
 // 注意：
-//   - 打开 fifo 写端会阻塞直到有读端；shim 的 O_RDWR 已永久持有读端，
-//     因此这里不会阻塞。若 shim 已死，O_NONBLOCK 打开会立刻失败，正是我们要的
-//     「进程不在」信号（调用方包装 executor.ErrTaskNotRunning）
+//   - 投递失败多半意味着执行者已不在（读端消失），调用方据此包装
+//     executor.ErrTaskNotRunning。平台差异（unix 的 ENXIO / Windows 的
+//     ERROR_FILE_NOT_FOUND）由 prochost 吸收，本层不感知
 func (p *Proc) WriteInput(text string) error {
 	path := filepath.Join(p.TaskDir, fifoFileName)
-	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return fmt.Errorf("打开 %s（进程可能已不在）: %w", path, err)
-	}
-	defer f.Close()
 	line, err := json.Marshal(map[string]any{
 		"type": "user",
 		"message": map[string]any{
@@ -267,9 +264,10 @@ func (p *Proc) WriteInput(text string) error {
 	if err != nil {
 		return fmt.Errorf("序列化 user message: %w", err)
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("写 %s: %w", path, err)
+	if err := prochost.WriteInputChannel(path, append(line, '\n')); err != nil {
+		return err
 	}
+	slog.Default().Debug("已投递指令到输入通道", "task_dir", p.TaskDir, "bytes", len(line)+1)
 	return nil
 }
 

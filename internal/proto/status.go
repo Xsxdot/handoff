@@ -161,7 +161,13 @@ type StatusResp struct {
 	// 空 = 无辅助监听（Listen 为 loopback/通配，或对端是老 agentd）。
 	ListenAux string `json:"listen_aux,omitempty"`
 
-	DataDir         string         `json:"data_dir"`
+	DataDir string `json:"data_dir"`
+	// ScratchRoot 是草稿区的绝对路径（<DataDir>/scratch），控制台浮窗的临时文件
+	// 落在这里。**缺席 = 这台机器不支持临时文件**（老 agentd，或目录建不出来）。
+	//
+	// 与 PtySupported 那种能力位的三态纪律不同：那里 nil 要按「不知道，放行」处理，
+	// 而这里缺的是一个**路径**——没有路径就没法发请求，放行只会换来一次必然 400。
+	ScratchRoot     string         `json:"scratch_root,omitempty"`
 	StartedAt       time.Time      `json:"started_at"`
 	Executors       []string       `json:"executors"`
 	DefaultExecutor string         `json:"default_executor"`
@@ -183,6 +189,46 @@ type StatusResp struct {
 	// Proc 是本机 uid 级的进程占用与上限。指针 + omitempty：老 agentd 不发这个
 	// 字段，消费方拿到 nil 应当什么都不显示，而不是显示一个「0/0」的假状态。
 	Proc *ProcUsage `json:"proc,omitempty"`
+
+	// PtySupported 报告本机 agentd 是否支持 PTY 终端。
+	//
+	// 三态，与 Update / Proc 同一纪律：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（Windows：ConPTY 是另一套 API，本轮不假装支持）
+	//   true      = 支持
+	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
+	PtySupported *bool `json:"pty_supported,omitempty"`
+
+	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
+	//
+	// 三态与 PtySupported 逐字相同：
+	//   缺席(nil) = 对端 agentd 太老，没上报这个字段——**不许当成 false**
+	//   false     = 平台不支持（只有 macOS 有 `open -R` 这个语义）
+	//   true      = 支持
+	//
+	// 注意：这只是**平台**支持度。真能不能揭示还要看调用方是不是从回环来的
+	//（远程浏览器点了会在 agentd 那台机器的桌面上弹窗，没人看得见），那一层
+	// 由端点自己判，不进能力位——它是每请求的属性，不是机器的属性。
+	RevealSupported *bool `json:"reveal_supported,omitempty"`
+
+	// PtySessions 是当前活着的终端会话数。指针 + omitempty，与 Proc 同一纪律：
+	// nil = 对端没上报，渲染时整行不打印；0 = 确实一个都没有。
+	//
+	// 为什么 status 只给个数、不给每个会话占多少进程：数进程要枚举全机进程，
+	// 而 status 有「不能变成慢命令」的硬纪律。进程数在 /api/footprint 里给。
+	PtySessions *int `json:"pty_sessions,omitempty"`
+}
+
+// PtyFootprintRow 是一个终端会话的足迹体检结果。
+//
+// Procs 为指针：数不出来（平台不支持枚举）时是 nil，**不是 0**——与 ProcUsage
+// 同一条理由，0 看起来像结论。
+type PtyFootprintRow struct {
+	ID         string `json:"id"`
+	BasePath   string `json:"base_path"`
+	PID        int    `json:"pid"`
+	Procs      *int   `json:"procs,omitempty"`
+	Foreground bool   `json:"foreground"`
 }
 
 // FootprintRow 是一个任务的进程足迹体检结果。
@@ -202,4 +248,8 @@ type FootprintRow struct {
 type FootprintResp struct {
 	Rows  []FootprintRow `json:"rows"`
 	Usage *ProcUsage     `json:"usage,omitempty"`
+
+	// Pty 是终端会话的足迹。会话只在内存里，所以这一段与 Rows 不同——
+	// 它不含历史，列出的都是此刻活着的会话。
+	Pty []PtyFootprintRow `json:"pty,omitempty"`
 }

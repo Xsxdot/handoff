@@ -29,7 +29,7 @@ func TestForceReclaimSuccessTransitsFailed(t *testing.T) {
 		t.Fatalf("置为 running: %v", err)
 	}
 	var swept []string
-	m.sweepProcs = func(id string) { swept = append(swept, id) }
+	m.sweepProcs = func(id string) error { swept = append(swept, id); return nil }
 
 	reason := "任务进程数 1300 超过硬上限 1200，已强制回收"
 	if err := m.ForceReclaim(taskID, reason); err != nil {

@@ -1,6 +1,8 @@
 package grok_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,4 +175,235 @@ func allowSection(cfg string) string {
 		return rest[:j]
 	}
 	return rest
+}
+
+// fakeAuthorityConfig 把 HOME 指向临时目录并写出一份权威 config.toml，
+// 返回该临时 HOME。body 为空串表示「权威配置不存在」。
+//
+// 同时设 USERPROFILE：os.UserHomeDir 在 Windows 上读的是它而不是 HOME。
+// 本包的测试目前只在 unix runner 上跑，但多设一个变量零成本，省得以后
+// CI 扩包时才发现这里是个哑弹。
+func fakeAuthorityConfig(t *testing.T, body string) string {
+	t.Helper()
+	fake := t.TempDir()
+	t.Setenv("HOME", fake)
+	t.Setenv("USERPROFILE", fake)
+	if body == "" {
+		return fake
+	}
+	grokDir := filepath.Join(fake, ".grok")
+	if err := os.MkdirAll(grokDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(grokDir, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return fake
+}
+
+const testAuthorityConfig = `[models]
+default = "deepseek-v4-pro"
+
+[model.deepseek-v4-pro]
+model = "deepseek-v4-pro"
+base_url = "https://example.invalid/v1"
+api_key = "sk-SENTINEL-DO-NOT-LOG"
+api_backend = "chat_completions"
+context_window = 131072
+
+[marketplace]
+enabled = true
+`
+
+// TestWriteTaskEnvCarriesCustomProvider 验证权威配置里的 provider 定义被搬进
+// 任务 config——不搬的话，配了自定义 provider 的机器上 grok 会回落内建
+// provider 并报 Authentication required（B135）。
+func TestWriteTaskEnvCarriesCustomProvider(t *testing.T) {
+	fakeAuthorityConfig(t, testAuthorityConfig)
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+
+	if !strings.Contains(cfg, "[model.deepseek-v4-pro]") {
+		t.Errorf("provider 段没被搬进来，实际:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `base_url = "https://example.invalid/v1"`) {
+		t.Errorf("provider 段字段丢失，实际:\n%s", cfg)
+	}
+	// 没传 model 时用权威 default 兜底
+	if !strings.Contains(cfg, `default = "deepseek-v4-pro"`) {
+		t.Errorf("应以权威 default 兜底，实际:\n%s", cfg)
+	}
+	// 权威的 [marketplace] 不该被搬：只搬 [model.*]
+	if strings.Contains(cfg, "[marketplace]") {
+		t.Errorf("[marketplace] 不该被搬进任务 config，实际:\n%s", cfg)
+	}
+	// [models] 只能出现一次——TOML 不允许同名表定义两次，出现两次 grok 直接报错
+	if n := strings.Count(cfg, "[models]"); n != 1 {
+		t.Errorf("[models] 出现 %d 次，必须恰好 1 次（TOML 不允许重复表定义），实际:\n%s", n, cfg)
+	}
+}
+
+// TestWriteTaskEnvFlagModelBeatsAuthorityDefault 验证 --model 传入值压过权威
+// default——协调者显式指定的模型不能被用户的个人默认值悄悄换掉。
+func TestWriteTaskEnvFlagModelBeatsAuthorityDefault(t *testing.T) {
+	fakeAuthorityConfig(t, testAuthorityConfig)
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+
+	if !strings.Contains(cfg, `default = "deepseek-v4-flash"`) {
+		t.Errorf("应以 --model 传入值为准，实际:\n%s", cfg)
+	}
+	if strings.Contains(cfg, `default = "deepseek-v4-pro"`) {
+		t.Errorf("权威 default 不该压过传入值，实际:\n%s", cfg)
+	}
+}
+
+// TestWriteTaskEnvOmitsDefaultWhenNeitherSourceHasOne 验证两个来源都没有模型名
+// 时**不写 default 这一行**——写一行空值会让 grok 拿空串当模型名去请求。
+func TestWriteTaskEnvOmitsDefaultWhenNeitherSourceHasOne(t *testing.T) {
+	fakeAuthorityConfig(t, `[model.x]
+model = "x"
+base_url = "https://example.invalid/v1"
+`)
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+
+	if strings.Contains(cfg, "default =") {
+		t.Errorf("两个来源都没模型名时不该写 default 行，实际:\n%s", cfg)
+	}
+	// 但 provider 段照搬不误——这两件事互不依赖
+	if !strings.Contains(cfg, "[model.x]") {
+		t.Errorf("provider 段仍应搬运，实际:\n%s", cfg)
+	}
+}
+
+// TestWriteTaskEnvWithoutAuthorityIsByteIdentical 是**回归保护**：不用自定义
+// provider 的用户必须零影响。权威配置不存在时，生成结果要与本条改动之前
+// 逐字节相同。
+//
+// golden 取自改动前 `WriteTaskEnv(dir, "grok-4.5")` 的实际输出。
+func TestWriteTaskEnvWithoutAuthorityIsByteIdentical(t *testing.T) {
+	fakeAuthorityConfig(t, "") // 权威配置不存在
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "grok-4.5")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "taskenv_config_golden.toml"))
+	if err != nil {
+		t.Fatalf("读 golden 失败（先按计划 Step 2 生成它）: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("无权威配置时生成结果与 golden 不一致——不用自定义 provider 的用户被影响了。\n实际:\n%s\n期望:\n%s", got, want)
+	}
+}
+
+// TestWriteTaskEnvNeverLogsSecrets 是**承重**用例：日志里出现 api_key 等于
+// 把用户密钥写进 agentd.log。
+func TestWriteTaskEnvNeverLogsSecrets(t *testing.T) {
+	fakeAuthorityConfig(t, testAuthorityConfig)
+
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	if _, err := grok.WriteTaskEnv(t.TempDir(), ""); err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	if strings.Contains(buf.String(), "sk-SENTINEL-DO-NOT-LOG") {
+		t.Errorf("日志里出现了 api_key，实际日志:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "example.invalid") {
+		t.Errorf("日志里出现了 base_url，段内容一律不许进日志，实际日志:\n%s", buf.String())
+	}
+	// 段名可以打，且应该打——否则出问题时无从判断到底搬了什么
+	if !strings.Contains(buf.String(), "model.deepseek-v4-pro") {
+		t.Errorf("日志应含段名以便排障，实际日志:\n%s", buf.String())
+	}
+}
+
+// TestWriteTaskEnvCarriesAuxiliaryModelKnobs 是 B138 的端到端断言：权威配置里
+// [models] 的辅助旋钮必须出现在任务级 config 里，且整份文件只能有一个 [models]
+// 段（TOML 不允许同名表定义两次，写重了 grok 直接解析失败）。
+//
+// 承重点在「只搬 default」曾经的代价：任务级 home 里 web_search / session_summary
+// 一律缺失 → grok 回落内建 grok-4.6 → 自定义 provider 400。
+func TestWriteTaskEnvCarriesAuxiliaryModelKnobs(t *testing.T) {
+	fakeAuthorityConfig(t, `[models]
+default = "deepseek-v4-pro"
+web_search = "deepseek-v4-flash"
+session_summary = "deepseek-v4-flash"
+
+[model.deepseek-v4-pro]
+model = "deepseek-v4-pro"
+base_url = "https://example.invalid/v1"
+`)
+
+	home, err := grok.WriteTaskEnv(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+
+	for _, want := range []string{
+		`default = "deepseek-v4-pro"`,
+		`web_search = "deepseek-v4-flash"`,
+		`session_summary = "deepseek-v4-flash"`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("任务级 config 缺 %q，实际:\n%s", want, cfg)
+		}
+	}
+	if n := strings.Count(cfg, "[models]"); n != 1 {
+		t.Errorf("[models] 段出现 %d 次（必须恰好 1 次，重复定义会让 grok 解析失败），实际:\n%s", n, cfg)
+	}
+	// --model 传入时仍以它为准，辅助旋钮照搬不误——两件事互不干扰
+	home2, err := grok.WriteTaskEnv(t.TempDir(), "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 出错: %v", err)
+	}
+	b2, err := os.ReadFile(filepath.Join(home2, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2 := string(b2)
+	if !strings.Contains(cfg2, `default = "deepseek-v4-flash"`) {
+		t.Errorf("--model 应压过权威 default，实际:\n%s", cfg2)
+	}
+	if !strings.Contains(cfg2, `session_summary = "deepseek-v4-flash"`) {
+		t.Errorf("辅助旋钮不该因传了 --model 就丢失，实际:\n%s", cfg2)
+	}
 }

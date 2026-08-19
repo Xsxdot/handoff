@@ -4,5 +4,17 @@
 .claude/
 # 单测在 taskDir="" 时会把 render.log 落到包目录（可见性落盘的测试副作用）
 render.log
-# 本机压测/一次性脚本，不进仓库
-scripts/
+# 同一副作用也会把 frames.jsonl 落到包目录（结构化帧落盘的测试副作用）
+frames.jsonl
+
+# 归档的原型站：只保留源码与设计图，不入库依赖与构建产物
+prototypes/**/node_modules/
+prototypes/**/dist/
+
+# B95 形态确认用的 fork 副本（临时工作区，不入库；回流见 finishing-a-development-branch）
+prototypes/b95-project-edit/
+prototypes/b107-file-tree-menu/
+
+# 前端构建产物经 embedweb 标签嵌入，不入库（npm run build 的落盘目标）
+internal/webui/dist/
+prototypes/discipline-config/

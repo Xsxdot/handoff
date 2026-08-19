@@ -1,7 +1,8 @@
 // Package executor 定义 handoff 的 executor 挂载契约：Adapter 接口与事件/结果类型。
 //
 // 职责：
-//   - 定义「五动作」Adapter 契约：Start / Events / Send / RespondPermission / Stop
+//   - 定义「五动作」Adapter 契约：Start / Events / Send / RespondPermission / Stop；
+//     RespondPermission 应答权限门，decision 取 "once" 或 "reject"，reject 时可带协调者理由
 //   - 定义 AdapterEvent（permission/question/progress/result 四类）与 Result 数据结构
 //   - 为不同 executor（opencode、Claude Code、grok）预留统一挂载点，实现方只实现本契约
 //
@@ -67,6 +68,10 @@ type StartReq struct {
 	PlanContent string
 	TaskDir     string
 	Env         []string
+	// Discipline 是按执行者裁出的执行纪律块正文（B129）；空表示不注入。
+	// 实现方必须把它作为第三个参数传给 turn.RenderPrompt，这是对所有 adapter
+	// 的统一要求，放在契约上而非各 adapter 的构造参数上，理由同 Env。
+	Discipline string
 }
 
 // Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。
@@ -160,7 +165,7 @@ func NormalizePermTool(raw string) string {
 // ——审核主路径常以 question 收尾、result 永不出现，progress 是会话 id 到达
 // manager 的可靠通道；result 携带它是双保险（见 adapter 的会话就绪 emit）。
 type AdapterEvent struct {
-	Type         string // "permission" | "question" | "progress" | "result"
+	Type         string // "permission" | "question" | "progress" | "result" | "usage"
 	PermissionID string // Type=permission 时有效（manager 按其派生 ticket id，天然幂等）
 	// QuestionID 是 Type=question 时 executor 侧提问请求的**原生**稳定 id
 	// （如 opencode 的 que_xxx）。manager 按其派生 ticket id 使其幂等——
@@ -176,6 +181,18 @@ type AdapterEvent struct {
 	// manager 据此 fail-closed 升级人工（看不懂的请求交给人）。
 	Perm   *PermRequest
 	Result *Result // Type=result 时有效
+	// ActualModel 是 executor 报回的**实际**模型名；空=本帧没带模型信息。
+	// 与 Task.Model（dispatch 的入参）是两件事，manager 落 task.ActualModel。
+	ActualModel string
+	// Usage 是当前 context 占用快照；nil=本帧没带用量。
+	// 语义见 proto.Usage：只描述占用不描述消耗，且绝不用 0 冒充「没有」。
+	Usage *proto.Usage
+	// Spend 是这一次调用/回合**新增**的消耗；nil = 本帧不带消耗信息。
+	//
+	// 与 Usage 的区别：Usage 是「当前占用」的快照（后到的覆盖先到的），
+	// Spend 是「新增消耗」的账目（按 Key 覆盖后**求和**）。数量级完全不同，
+	// 一个帧可以两者都带，但**绝不能互相赋值**。
+	Spend *proto.SpendEntry
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。
@@ -223,7 +240,11 @@ type Adapter interface {
 	//   - permID: 权限请求 id（与事件中的 PermissionID 一致；manager 的 ticket id
 	//     经 taskID:permID 命名空间化，此处传裸 permID，不得传命名空间化 id）
 	//   - decision: "once"（批准本次）或 "reject"（拒绝）
-	RespondPermission(ctx context.Context, taskID, permID, decision string) error
+	//   - reason: decision 为 "reject" 时协调者给出的原因；批准时忽略，可为空。
+	//     原生协议带得了消息的 adapter 应把它与裁决同帧送达模型，并实现
+	//     manager 侧的 DenyReasonInBand 可选接口；带不了的忽略即可，
+	//     manager 会退回带外注入（B50）
+	RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error
 
 	// Stop 终止任务执行并回收 executor 侧资源，事件通道随即关闭。
 	Stop(taskID string) error

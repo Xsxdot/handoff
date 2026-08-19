@@ -45,6 +45,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，两个必须同步；写死 '24' 而非 lts/*
+      # 或省略：让构建结果随时间漂移、静默变化是 release 流水线不能接受的事。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端并放进 embed 目录
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          # 产物缺 index.html 时必须当场失败：让它继续跑下去只会得到一个
+          # 编译通过但页面 404 的二进制，而那要等到用户手上才暴露
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+
       - name: 交叉编译并打包
         env:
           GOOS: ${{ matrix.goos }}
@@ -62,6 +81,7 @@ jobs:
             BIN=handoff
           fi
           go build -trimpath \
+            -tags embedweb \
             -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
             -o "${BIN}" .
           if [ "${GOOS}" = "windows" ]; then
@@ -69,6 +89,21 @@ jobs:
           else
             tar czf "handoff_${TAG}_${GOOS}_${GOARCH}.tar.gz" "${BIN}"
           fi
+      # 这道门是承重的：go:embed 一个只有 index.html 的空壳目录也能编译通过，
+      # 光看「go build 成功」不代表前端真的进去了。这里直接以原生平台跑带标签
+      # 的 webui 测试，确认嵌入的是真产物。
+      #
+      # 为什么显式置空 GOOS/GOARCH：matrix 的 GOOS/GOARCH 只挂在上面「交叉编译
+      # 并打包」那个 step 的 env 上，本 step 默认不继承；但一旦有人把 matrix env
+      # 提升成 job 级，本 step 就会继承 GOOS=linux/windows，`go test` 会去交叉
+      # 编译测试二进制再试图在本平台执行，当场 exec format error。显式置空让
+      # 本 step 永远在 runner 原生平台跑（go 把空 GOOS/GOARCH 视为宿主平台），
+      # 而不是依赖 env 作用域这种脆弱的巧合。测试只读嵌入内容，与交叉编译无关。
+      - name: 验证产物真的含前端
+        env:
+          GOOS: ''
+          GOARCH: ''
+        run: CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_${{ matrix.goos }}_${{ matrix.goarch }}
@@ -102,6 +137,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，两个必须同步（理由同 build-unix）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端并放进 embed 目录
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          # 产物缺 index.html 时必须当场失败：让它继续跑下去只会得到一个
+          # 编译通过但页面 404 的二进制，而那要等到用户手上才暴露
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+      # 前端必须在这之前构建好：前端经 go:embed 编进二进制（-tags embedweb），
+      # 一旦签名（codesign 改字节）或公证之后才补嵌，签名/票据就与最终字节不符。
+      # 所以前端构建排在「构建、签名、公证并打包」之前是硬顺序，不是风格选择。
 
       # secrets 缺失即硬失败，不产出未签名资产。
       # 这与 super-dev 的策略相反（它未配置时仍出未签名包，那是给 desktop 的
@@ -174,6 +229,7 @@ jobs:
             # 目录名带 arch、文件名固定 handoff：tar 里的文件名是与 install.sh
             # 及 extractBinary 的契约，不能带 arch 后缀
             GOOS=darwin GOARCH="$arch" go build -trimpath \
+              -tags embedweb \
               -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
               -o "build/${arch}/handoff" .
             # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
@@ -243,14 +299,423 @@ jobs:
             # 打包必须在签名之后：签名会改字节，先算校验和再签就全错
             tar czf "handoff_${TAG}_darwin_${arch}.tar.gz" -C "build/${arch}" handoff
           done
+      # 承重门（理由同 build-unix）：go:embed 一个只有 index.html 的空壳目录也能
+      # 编译通过，光看构建成功不代表前端进去了。darwin job 本就在原生平台跑，
+      # 无 matrix 交叉编译，go test 直接以 runner 原生架构执行。
+      - name: 验证产物真的含前端
+        run: CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
       - uses: actions/upload-artifact@v4
         with:
           name: handoff_darwin
           path: handoff_*.tar.gz
           if-no-files-found: error
 
+  # 薄壳的 Linux 资产必须在原生 runner 上构建：webkit2gtk 经 cgo，
+  # CGO_ENABLED=0 交叉编译编不过（P1-linux 探针实测）。
+  # runner 锁 22.04 而非 ubuntu-latest：AppImage 要在最老的目标发行版上构建，
+  # latest 会随 GitHub 滚动、某天静默抬高 glibc 基线，而这个变化不体现在
+  # 任何一次提交里。
+  build-desktop-linux:
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-unix / build-darwin 一致
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 22.04 上只有 webkit2gtk-4.1 这一代；4.0 见 spec §7 的非目标
+      - name: 装系统依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      # 承重：装 wails3 这一步**本身**也要带 -tags gtk3。不带的话在 22.04 上
+      # 直接 `No package 'gtk4' found` 退出 1——卡点在准备工具阶段，比构建期
+      # 更早，报错却和「薄壳代码有问题」长得一模一样（P1-linux 探针实测）。
+      - name: 装 wails3
+        run: go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 薄壳内嵌的 handoff 必须是同一次流水线编出来的那份，且 CLI 保持
+      # CGO_ENABLED=0（既有约束，与薄壳开 CGO 互不影响）
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # linux:package 还会产出 rpm 与 archlinux 包，本流水线只发 AppImage 与 deb，
+      # 其余留在 desktop/bin/（已忽略）不管
+      - name: 构建薄壳并打包
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          # 变量名承重：Taskfile 只认 EXTRA_TAGS / EXTRA_LDFLAGS，**不认 GO_FLAGS**
+          # ——传 GO_FLAGS 不会报错，会被静默忽略，编出一个没有 embedbin 标签的
+          # 薄壳（Available() 走 stub、内嵌 CLI 根本不在里面），而这要到用户双击
+          # 之后才暴露。gtk3 不用在这里传：linux 的 BUILD_FLAGS 本就写死了
+          # `-tags production,gtk3`，EXTRA_TAGS 是追加上去的。
+          wails3 task linux:package \
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      - name: 重命名为发布资产名
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # 独立前缀 handoff-desktop_：install.sh 与自更新都是精确拼
+          # handoff_<tag>_<平台> 取 CLI 资产，前缀不同就不会被误抓。
+          # 落点是 RUNNER_TEMP 而**不是仓库根**：资产是产物，留在工作树里会被
+          # 下一步的干净检查当成污染（实测 git status --porcelain 会把它们列成
+          # 未跟踪文件，job 挂在自己刚产出的东西上）。
+          mv desktop/bin/*.AppImage "${RUNNER_TEMP}/handoff-desktop_${TAG}_linux_amd64.AppImage"
+          mv desktop/bin/*.deb      "${RUNNER_TEMP}/handoff-desktop_${TAG}_linux_amd64.deb"
+
+      # 干净检查：构建产物不得入库（W5b-1 在这里栽过一次）
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      # if-no-files-found: error 与既有 job 一致：静默上传一个空 artifact 会让
+      # release job 在收集资产时才暴露问题，那时已经离现场很远了
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_linux
+          path: ${{ runner.temp }}/handoff-desktop_*
+          if-no-files-found: error
+
+  # 薄壳的 darwin 资产必须在 macOS runner 上构建：codesign 与 notarytool
+  # 只在那儿有，且 Wails 绑 WKWebView 需要 CGO。
+  #
+  # 签名顺序承重（spec §5.4）：签 handoff → 嵌进薄壳 → 构建 → 签+公证 bundle。
+  # 内嵌的那份 CLI 会在首次启动时被释出到 ~/.local/bin/handoff，**脱离 bundle
+  # 的签名覆盖**、由 Gatekeeper 单独校验；而它是 //go:embed 进薄壳可执行文件的
+  # 字节块，一旦嵌进去就只是数据，**之后再没有任何机会给它签名**。所以顺序
+  # 颠倒的后果不是「签名与字节不符」，是释出的那份根本没签名。
+  build-desktop-darwin:
+    needs: verify
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Node 版本与 web/.nvmrc 同一来源，与既有 build-darwin 一致
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 装 wails3
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 与既有 build-darwin 同款的前置门：secrets 缺失即硬失败，不产出未签名
+      # 资产。一个静默发出去的未签名薄壳会在几个月后咬人，症状出现在用户机器上。
+      - name: 检查签名凭据齐备
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT; do
+            if [ -z "${!v:-}" ]; then missing="${missing} ${v}"; fi
+          done
+          if [ -n "$missing" ]; then
+            printf '缺少签名 secret：%s\n未签名的 release 不发。\n' "$missing" >&2
+            exit 1
+          fi
+          echo "签名凭据齐备"
+
+      # App Store Connect API Key 只能以文件路径传给 notarytool
+      - name: 写 App Store Connect API Key
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 600 "$key_path"
+          # 只确认私钥文件头形态，不打印密钥正文
+          head -n 1 "$key_path" | grep -q 'BEGIN PRIVATE KEY' || {
+            echo "APPLE_API_KEY_CONTENT 不像是一份 .p8 私钥" >&2; exit 1; }
+          echo "APPLE_API_KEY_PATH=${key_path}" >> "$GITHUB_ENV"
+
+      # 第一步：编出 handoff 并**单独签名**。理由见本 job 顶部的顺序说明。
+      # CLI 保持 CGO_ENABLED=0：开了 CGO 会让它带上构建机的最低系统版本约束，
+      # 在更老的 macOS 上拒绝启动。
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # 钥匙串装载：与既有 build-darwin 的同名步骤保持一致（随机口令、搜索链
+      # 追加而非整个替换），只改钥匙串与证书的文件名以免与它撞名。
+      # **两处必须同步改**——抽成复合步骤会牵动那个已在生产用的 job，
+      # 风险大于收益。
+      - name: 导入签名证书到临时钥匙串
+        run: |
+          set -euo pipefail
+          cert_path="${RUNNER_TEMP}/desktop-certificate.p12"
+          keychain_path="${RUNNER_TEMP}/handoff-desktop-build.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          # Secrets 存的是 openssl base64 -A 的单行内容
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+          # 让 codesign 能在无 UI 提示下使用私钥
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" \
+            $(security list-keychains -d user | sed 's/"//g')
+          security find-identity -v -p codesigning "$keychain_path" \
+            | grep -F "$APPLE_SIGNING_IDENTITY" > /dev/null || {
+              echo "钥匙串里找不到 APPLE_SIGNING_IDENTITY" >&2; exit 1; }
+          rm -f "$cert_path"
+
+      # --options runtime（硬化运行时）是公证的前置条件，不加会被拒
+      - name: 签名内嵌的 handoff
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" desktop/internal/embedbin/handoff
+          codesign --verify --strict --verbose=2 desktop/internal/embedbin/handoff
+
+      # 第二步：把已签名的 handoff 嵌进薄壳并组装 bundle。
+      # 注意 `wails3 task build` 只出裸二进制，**`.app` 要靠 package 任务组装**
+      # ——只跑 build 会拿到一个陈旧的 .app。
+      - name: 构建薄壳 .app
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          # 变量名承重，理由同 linux job：Taskfile 认 EXTRA_TAGS / EXTRA_LDFLAGS，
+          # 传 GO_FLAGS 会被静默忽略，编出一个不含内嵌 CLI 的薄壳。
+          # EXTRA_LDFLAGS 是本仓库给 build/{darwin,linux}/Taskfile.yml 加的钩子
+          #（模板把 -ldflags 写死成 "-w -s"）；不注入 Version 的后果是
+          # DecideRelease 永远判不出内嵌版本，「已装的 CLI 更旧」这个提示分支失效。
+          wails3 task package \
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
+      #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
+      # go:embed 进可执行文件的字节块、不是 bundle 里的文件，--deep 对它没有
+      # 作用；Apple 本身也已不建议用 --deep 签名。
+      - name: 签名并公证 bundle
+        run: |
+          set -euo pipefail
+          app="desktop/bin/handoff-desktop.app"
+          TAG="${GITHUB_REF_NAME}"
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+          # 两个 zip 都落 RUNNER_TEMP 而**不是仓库根**：它们是产物，留在工作树里
+          # 会被后面的干净检查当成污染，job 挂在自己刚产出的东西上。
+          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/notarize-desktop.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/notarize-desktop.zip" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait 2>&1 | tee /tmp/notary-desktop.log
+          # 承重：notarytool 在 status 为 Invalid 时**仍可能退 0**，光看退出码
+          # 不够。这道门是既有 build-darwin 已经踩出来的教训。
+          grep -q 'status: Accepted' /tmp/notary-desktop.log || {
+            echo "公证未被接受：" >&2; cat /tmp/notary-desktop.log >&2; exit 1; }
+
+          # 装订票据后重新打包，让离线机器也能通过 Gatekeeper
+          xcrun stapler staple "$app"
+          rm -f "${RUNNER_TEMP}/notarize-desktop.zip"
+          ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/handoff-desktop_${TAG}_darwin_arm64.zip"
+
+      # 验的是**即将被打包的这个 bundle**，不是提交上去的那份——中间任何一次
+      # 重签、改字节、拿错文件都会让两者分叉，代价是用户机器上的一次弹窗。
+      # 注意喂法与 CLI 那条相反：app bundle 用 `-t exec`，裸 CLI 才用 `-t open`
+      #（既有 build-darwin 的长注释记着 2026-08-13 那次踩反了的经过）。
+      - name: 校验 bundle 的签名与票据
+        run: |
+          set -euo pipefail
+          app="desktop/bin/handoff-desktop.app"
+          codesign -dv --verbose=4 "$app" 2>/tmp/codesign-desktop.log || {
+            echo "codesign -dv 失败：" >&2; cat /tmp/codesign-desktop.log >&2; exit 1; }
+          grep -q 'Authority=Developer ID Application' /tmp/codesign-desktop.log || {
+            echo "签发者不是 Developer ID Application：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          # flags 里的 runtime 就是 --options runtime 的落地证据
+          grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\(.*runtime.*\)' /tmp/codesign-desktop.log || {
+            echo "硬化运行时未开，公证会被拒：" >&2
+            cat /tmp/codesign-desktop.log >&2; exit 1; }
+          # 票据发布到 Apple 边缘有传播延迟，所以重试而不是一次定生死
+          ok=0
+          for attempt in 1 2 3; do
+            if spctl -a -vvv -t exec "$app" >/tmp/spctl-desktop.log 2>&1; then ok=1; break; fi
+            echo "spctl 第 ${attempt} 次未通过，20s 后重试：" >&2
+            cat /tmp/spctl-desktop.log >&2
+            sleep 20
+          done
+          [ "$ok" = 1 ] || {
+            echo "公证票据在本机查不到：" >&2; cat /tmp/spctl-desktop.log >&2; exit 1; }
+          grep -q 'source=Notarized Developer ID' /tmp/spctl-desktop.log || {
+            echo "评估通过但来源不是 Notarized Developer ID：" >&2
+            cat /tmp/spctl-desktop.log >&2; exit 1; }
+          echo "bundle 签名与公证票据校验通过"
+
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_darwin
+          path: ${{ runner.temp }}/handoff-desktop_*.zip
+          if-no-files-found: error
+
+  # 薄壳的 windows 资产。放在 windows runner 上而不是从 Linux 交叉编译：
+  # wails3 的 generate:syso 要把图标与清单编进资源，且 windows/Taskfile.yml
+  # 里 `powershell Remove-item *.syso` 与 `rm -f *.syso` 是按 platforms 分支的
+  # ——原生跑才走到 Windows 那条，交叉编译时走的是另一条、等于没验。
+  #
+  # 只发 zip，不发 NSIS 安装器：未签名安装器与 zip 里的 exe 一样会带 Mark of
+  # the Web、双击触发 SmartScreen，发 zip 并不能绕开它；选 zip 的理由是省掉
+  # makensis 与 webview2 引导器两个依赖，且 zip 里就是可直接双击的 exe，与
+  # darwin 的 .zip 同打包形态（darwin 资产另带签名+公证，Windows 资产未签名）。
+  # build/windows/nsis/ 留在仓库里是为了本地 `wails3 task windows:package`
+  # 能跑，**CI 不跑它**。
+  build-desktop-windows:
+    needs: verify
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Windows 不需要 gtk3 那类构建标签（那是 linux 上 webkit2gtk 的事）
+      - name: 装 wails3
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+
+      # 输出文件名必须是 handoff（无扩展名）——embed.go 里写死 //go:embed handoff。
+      # 改成 handoff.exe 会让下一步在编译期直接失败。它是不是 PE 可执行文件与
+      # 文件名无关，释出到磁盘时才补 .exe（见 shell.DefaultCLIPath）。
+      - name: 构建要内嵌的 handoff
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix web ci
+          npm --prefix web run build
+          test -f web/dist/index.html
+          rm -rf internal/webui/dist
+          cp -R web/dist internal/webui/dist
+          go build -trimpath -tags embedweb \
+            -ldflags "-s -w -X github.com/Xsxdot/handoff/internal/buildinfo.releaseVersion=${TAG}" \
+            -o desktop/internal/embedbin/handoff .
+
+      # ARCH=amd64 必须显式传：不传时 wails3 取宿主架构，runner 换成 arm64
+      # 的那天会静默产出一个名字叫 amd64、实际是 arm64 的资产。
+      #
+      # 变量名承重：Taskfile 只认 EXTRA_TAGS / EXTRA_LDFLAGS，传 GO_FLAGS 会被
+      # 静默忽略，编出一个 embedbin.Available() 走 stub、根本不含内嵌 CLI 的
+      # 薄壳，而这要到用户双击之后才暴露。
+      - name: 构建薄壳
+        working-directory: desktop
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          npm --prefix frontend ci
+          wails3 task windows:build \
+            ARCH=amd64 \
+            EXTRA_TAGS=embedbin \
+            EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
+
+      # 落点是 RUNNER_TEMP 而不是仓库根：资产是产物，留在工作树里会被下一步的
+      # 干净检查当成污染。
+      - name: 打包为发布资产
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $exe = 'desktop/bin/handoff-desktop.exe'
+          if (-not (Test-Path $exe)) { throw "薄壳产物不存在：$exe" }
+          $out = Join-Path $env:RUNNER_TEMP "handoff-desktop_${tag}_windows_amd64.zip"
+          Compress-Archive -Path $exe -DestinationPath $out -Force
+          Get-Item $out | Format-List Name, Length
+
+      - name: 确认工作区干净
+        run: |
+          set -euo pipefail
+          out="$(git status --porcelain)"
+          test -z "$out" || { echo "构建污染了工作区："; echo "$out"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-desktop_windows
+          path: ${{ runner.temp }}/handoff-desktop_*.zip
+          if-no-files-found: error
+
   release:
-    needs: [build-unix, build-darwin]
+    # 五个构建 job 都要等：不把三个薄壳 job 列进来，release 会在它们上传完
+    # artifact 之前就起跑，下面 checksums 那步的 handoff-desktop_* 通配匹配不到
+    # 文件而失败——而且这个失败是时序相关的，重跑可能就过了。
+    needs: [build-unix, build-darwin, build-desktop-linux, build-desktop-darwin, build-desktop-windows]
     runs-on: ubuntu-latest
     steps:
       # checkout 必须排在 download 之前：两者写同一个工作目录，后执行的
@@ -267,7 +732,10 @@ jobs:
           # checksums 必须在签名之后算——签名会改字节。这里对下载下来的
           # 成品资产统一算，天然满足这个顺序，不要把它挪到构建 job 里去
           # 只列裸文件名：install.sh 是在自己的临时目录里按文件名比对的
-          sha256sum handoff_*.tar.gz handoff_*.zip > checksums.txt
+          # 薄壳资产用 handoff-desktop_ 前缀，**不匹配** handoff_*（前缀后是 -
+          # 不是 _），所以既不会被 install.sh 与自更新误抓（那正是选这个前缀的
+          # 理由），也不会被自动收进来——必须显式列出，否则校验和缺一半
+          sha256sum handoff_*.tar.gz handoff_*.zip handoff-desktop_* > checksums.txt
           cat checksums.txt
       - name: 从 CHANGELOG 抽取本版说明
         run: |
@@ -293,8 +761,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            "${NOTES_ARG}" \
-            dist/handoff_*.tar.gz dist/handoff_*.zip dist/checksums.txt
+          args=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" "${NOTES_ARG}")
+          # 带连字符的 tag（v1.2.3-rc1 / -beta.2 之类）一律标成 prerelease。
+          #
+          # 承重：install.sh 与 agentd 自更新**都认 GitHub 的 releases/latest**
+          #（install.sh:75 解重定向、internal/release/client.go:158 打 API），
+          # 而 GitHub 只把「非 prerelease」的最新一版算作 latest。少了这一行，
+          # 一个本意只是验证流水线的 rc 会当场成为所有用户装到、所有 agentd
+          # 自更新拉到的版本——而这一步在 CI 的绿色里完全看不出来。
+          case "${GITHUB_REF_NAME}" in
+            *-*) args+=(--prerelease) ;;
+          esac
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}" \
+            dist/handoff_*.tar.gz dist/handoff_*.zip \
+            dist/handoff-desktop_* dist/checksums.txt

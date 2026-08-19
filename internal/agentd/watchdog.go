@@ -1,11 +1,13 @@
-// watchdog.go —— 任务级卡住看门狗与 agentd 启动恢复。
+// watchdog.go —— 任务级卡住看门狗、失配对账扫描与 agentd 启动恢复。
 //
 // 职责：
 //   - RunWatchdog：周期扫描 running/waiting_answer 任务，最新事件早于 stallTimeout
-//     判定卡住，追加 stalled 事件并广播，唤醒协调者裁决（spec §8「任务级超时看门狗」）
+//     判定卡住，追加 stalled 事件并广播，唤醒协调者裁决（spec §8「任务级超时看门狗」）；
+//     每轮另做失配对账扫描（scanStateMismatch），把「最新事件已 failed、状态却非终态」
+//     的破损中间态补迁 failed（B97 Task 3 保险丝）
 //   - RecoverOnStartup：agentd 启动时对 running/waiting_answer/waiting_review 任务
 //     逐个探测执行器存活（spec §8「agentd 崩溃后重启恢复」）；running/waiting_answer
-//     不存活 → failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
+//     不存活 → turn_failed 事件 + 迁移 waiting_review 交协调者裁决；waiting_review 不存活
 //     → 保持现状（本就是待审核终态，不追加事件不迁状态）；存活（含 waiting_review）
 //     → 重建 SSE 订阅继续消费
 //
@@ -34,6 +36,19 @@ import (
 // 监控，触发后还有「只发一次」防刷屏（见 scanStalled），一分钟粒度足够且
 // 扫描开销（全表 ListTasks + 每任务 LatestEvent）极低。
 const watchdogTick = time.Minute
+
+// mismatchScanMinAge 是失配对账扫描的事件最小年龄（防抢）。
+// 为什么 30s：§2 那两处（Stop/reconcile）正常执行时也会短暂处在「事件已落、状态未迁」
+// 的中间态，扫描冲进去会把人家正在做的事搅了。30s 足够走完这两条路径上的任何正常窗口。
+const mismatchScanMinAge = 30 * time.Second
+
+// MismatchScanMinAge 是失配对账扫描的事件最小年龄（供 cmd 接线）。
+const MismatchScanMinAge = mismatchScanMinAge
+
+// stateMismatchTransit 是失配对账扫描的「迁移」回调：把任务状态迁到 failed。
+// 生产由 cmd/agentd.go 传 mgr.transit 的包装（与 sweep 的 mgr.SweepTaskProcs 接线同款）；
+// 终态收口（挂起工单作废 + 审计留痕，B63）挂在 Manager.transit 内部，扫描自己绝不做迁移。
+type stateMismatchTransit func(taskID string, to proto.TaskState, reason string) error
 
 // stalledPayload 是 stalled 事件的 payload，供协调者快速判断卡了多久、卡在哪个事件后。
 type stalledPayload struct {
@@ -83,6 +98,9 @@ func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
 //   - hardLimit: 任务级进程数硬上限，<=0 表示该档关闭（见 scanTaskProcs）
 //   - reclaim: 强制回收入口（接线传 mgr.ForceReclaim）；返回非 nil 表示 executor
 //     没停掉，此时任务不落终态
+//   - startedAt: 本次 agentd 启动时刻（失配对账扫描的护栏之一，见 mismatchVerdict）
+//   - minAge: 失配对账扫描的事件最小年龄（生产取 MismatchScanMinAge）
+//   - transit: 失配对账扫描的「迁移」回调（接线传 mgr.MismatchTransit）
 //   - log: 本模块日志入口
 //
 // 注意：
@@ -95,13 +113,15 @@ func SetTaskProcCounter(fn func(taskID string) (int, bool)) {
 //   - 每轮除卡住判定外，还判读一次进程余量高水位（见 scanPressure），越线沿
 //     给每个活跃任务发一条 resource_pressure 事件唤醒协调者收敛；再按任务点名
 //     进程数（见 scanTaskProcs），两档处置——告警线只唤醒，硬上限走强制回收
-func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, log *slog.Logger) {
-	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, reclaim, log)
+//   - 每轮另做失配对账扫描（见 scanStateMismatch）：把「最新事件 failed 但状态
+//     非终态」的破损中间态补迁 failed，经 transit 回调走终态收口
+func RunWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+	runWatchdog(ctx, st, hub, stallTimeout, watchdogTick, budget, hardLimit, reclaim, startedAt, minAge, transit, log)
 }
 
 // runWatchdog 是看门狗的实现骨架：tick 间隔可注入（生产固定一分钟，
 // 测试注入 10ms），其余语义与 RunWatchdog 一致。
-func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, log *slog.Logger) {
+func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout time.Duration, tick time.Duration, budget, hardLimit int, reclaim func(taskID, reason string) error, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	log.Info("看门狗启动", "tick", tick, "stall_timeout", stallTimeout)
@@ -117,6 +137,7 @@ func runWatchdog(ctx context.Context, st *store.Store, hub *Hub, stallTimeout ti
 			return
 		case <-ticker.C:
 			scanStalled(st, hub, stallTimeout, log)
+			scanStateMismatch(st, hub, startedAt, minAge, transit, log)
 			pressure = scanPressure(st, hub, pressure, log)
 			scanTaskProcs(st, hub, budget, hardLimit, taskFired, taskReclaimFailed, reclaim, log)
 		}
@@ -202,6 +223,57 @@ func scanStalled(st *store.Store, hub *Hub, stallTimeout time.Duration, log *slo
 			"idle", idle.Round(time.Second).String(), "last_seq", lastSeq)
 	}
 	log.Debug("看门狗扫描完成", "checked", checked, "fired", fired)
+}
+
+// scanStateMismatch 扫描一轮失配任务：最新事件是 failed、状态却非终态（判据见
+// mismatchVerdict，三条护栏缺一不可），则经 transit 回调把状态补成 failed。
+//
+// 为什么必须复用 transit 而不裸调 UpdateTaskState：终态迁移的挂起工单作废与审计留痕
+// （B63）挂在 Manager.transit 上，绕过它就只改了状态、留下一堆永远不会被回答的工单。
+// 迁移失败只记 Error 不重试——下一轮 tick 自然再扫。
+//
+// 不补第二条 failed 事件（会重复），改为追加一条 progress 审计：说明这是对账修的、
+// 原始事件的 seq 是多少。状态凭空变了却没有痕迹，比不修更难排查。
+//
+// 不清扫进程、不杀 executor：那是 SweepTaskProcs 的职责，且能走到这一步说明 executor
+// 早已被判死，清扫在别的路径上已经做过。
+func scanStateMismatch(st *store.Store, hub *Hub, startedAt time.Time, minAge time.Duration, transit stateMismatchTransit, log *slog.Logger) {
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("失配对账读取任务列表失败", "cause", err)
+		return
+	}
+	now := time.Now()
+	for _, t := range tasks {
+		latest, err := st.LatestEvent(t.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue // 零事件任务：没有 failed 事件，不是失配对象
+		}
+		if err != nil {
+			log.Error("失配对账读取任务最新事件失败", "task", t.ID, "cause", err)
+			continue
+		}
+		if !mismatchVerdict(t.State, latest, now, startedAt, minAge) {
+			continue
+		}
+		age := now.Sub(latest.CreatedAt)
+		// 每次动手必有一条 Warn（instrumenting-code）：含 taskID、原始事件 seq、原状态、事件年龄
+		log.Warn("失配对账：任务最新事件是 failed 但状态非终态，补迁 failed",
+			"task", t.ID, "seq", latest.Seq, "state", t.State, "event_age", age.Round(time.Second).String())
+		if terr := transit(t.ID, proto.TaskStateFailed, "mismatch-scan"); terr != nil {
+			log.Error("失配对账补迁 failed 失败，下一轮再试", "task", t.ID, "cause", terr)
+			continue
+		}
+		// 审计事件：progress，文本含原始事件 seq（不补第二条 failed 事件）
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeProgress, progressPayload{
+			Text: fmt.Sprintf("失配对账：任务状态已补正为 failed（对账前的 failed 事件 seq=%d）", latest.Seq),
+		})
+		if aerr != nil {
+			log.Error("失配对账追加审计事件失败", "task", t.ID, "seq", latest.Seq, "cause", aerr)
+			continue
+		}
+		hub.Publish(evt)
+	}
 }
 
 // scanPressure 判读一次进程余量，越线沿时给每个活跃任务发一条高水位事件。
@@ -374,14 +446,14 @@ func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
 // 对全部 running/waiting_answer/waiting_review 任务调用 probe 探测执行器存活——
-//   - running/waiting_answer 不存活：追加 failed 事件（原因固定为「agentd 重启后
+//   - running/waiting_answer 不存活：追加 turn_failed 事件（原因固定为「agentd 重启后
 //     执行器已不在」）并迁移 waiting_review，交协调者裁决（失败现场留在事件里，
 //     协调者凭 tasks/attach 可见）；该任务的挂起工单一并作废（P1-16，见
 //     VoidPendingTickets 的语义），事件照常广播，启动期无人订阅则由客户端凭
 //     seq cursor 补拉
 //   - waiting_review 不存活：保持现状即可——它本来就是待审核终态，等待协调者
-//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 failed 事件或再迁
-//     状态只会产生噪音，**不**复用 running/waiting_answer 的 failed 迁移路径
+//     裁决（continue 重派 / done 归档）是既有的终态语义，追加 turn_failed 事件或再迁
+//     状态只会产生噪音，**不**复用 running/waiting_answer 的 turn_failed 迁移路径
 //   - 存活（含 waiting_review）：重建 SSE 订阅继续消费——重建动作由 probe 闭包
 //     内部完成（见 seam 说明），本函数只记录结论日志；waiting_review 存活时
 //     同样重建，续接依赖的会话上下文（opencode serve 进程与 SSE 会话）才不至于
@@ -460,4 +532,36 @@ func recoverTransit(st *store.Store, taskID string, cur proto.TaskState) error {
 		}
 	}
 	return st.UpdateTaskState(taskID, proto.TaskStateWaitingReview)
+}
+
+// mismatchVerdict 判断一个任务是否处于「有 failed 事件、状态却非终态」的破损中间态。
+//
+// 参数：
+//   - state: 任务当前状态
+//   - latest: 该任务的最新一条事件（nil 表示没有事件）
+//   - now: 当前时刻（测试注入）
+//   - startedAt: 本次 agentd 启动时刻
+//   - minAge: 事件最小年龄（防抢，生产取 30s）
+//
+// 返回：true 表示应当把状态补成 failed
+func mismatchVerdict(state proto.TaskState, latest *proto.Event, now, startedAt time.Time, minAge time.Duration) bool {
+	// 判据（四条同时满足才算失配）：
+	//   1. 状态非终态：终态任务上的 failed 事件是合法的收官记录，不存在失配
+	//   2. 最新一条事件是 failed：只看最新一条，不是「历史上出现过」——
+	//      failed 之后还有 progress/turn_failed 说明任务在继续干，没破损
+	//   3. 事件年龄 ≥ minAge：防抢。Stop/对账正常执行时也会短暂处在
+	//      「已落 failed 事件、还没迁状态」的中间态，给它们留出收尾窗口
+	//   4. 事件产生于本次 agentd 启动之后：B100 之前的历史数据里存在合法的
+	//      failed + waiting_review（对账失败交协调者裁决），没这条护栏，
+	//      升级后会把正等着裁决的存量任务直接判死
+	//
+	// 本判据依赖 failed 只用于任务终结（B100 及其补漏才使之成立）——谁再让
+	// failed 用于非终态，这个扫描会当场开始误伤。
+	//
+	// 也兜不住「续接回合正常完成但结果被吞」：库里只有 stalled，扫描无从知道
+	// 回合其实跑过。本条是保险丝不是根治。
+	return !state.IsTerminal() &&
+		latest != nil && latest.Type == proto.EventTypeFailed &&
+		now.Sub(latest.CreatedAt) >= minAge &&
+		!latest.CreatedAt.Before(startedAt)
 }

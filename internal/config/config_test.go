@@ -31,6 +31,31 @@ func TestLoadGeneratesDefaultsAndToken(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsDisciplineSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("discipline:\n  codex: mine.md\n  grok: \"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Discipline["codex"] != "mine.md" {
+		t.Errorf("codex = %q, want mine.md", cfg.Discipline["codex"])
+	}
+	v, ok := cfg.Discipline["grok"]
+	if !ok || v != "" {
+		t.Errorf("grok 的显式空串必须被保留（它表示关闭注入），实得 %q ok=%v", v, ok)
+	}
+}
+
+func TestDefaultsHasEmptyDisciplineMap(t *testing.T) {
+	if c := config.Defaults(); c.Discipline == nil {
+		t.Fatal("Discipline 必须初始化为空 map，与 Env 一致")
+	}
+}
+
 // TestLoadParsesTargets 验证合法配置（已知键）正常解析：token 与 targets 表。
 // 此 fixture 全部为已知键——严格解析（L-1）下必须保持可加载，是回归基线。
 func TestLoadParsesTargets(t *testing.T) {
@@ -277,6 +302,22 @@ func TestUnknownFieldMessageOmitsUpdate(t *testing.T) {
 	}
 }
 
+// TestLoadParsesWebAllowedHosts 验证 web.allowed_hosts 在严格解码下按 tag 正确解析：
+// allowed_hosts（snake_case）能解出一个元素，而不是 yaml.v3 默认映射的 allowedhosts。
+func TestLoadParsesWebAllowedHosts(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("web:\n  allowed_hosts:\n    - foo.example.com\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Web.AllowedHosts) != 1 || cfg.Web.AllowedHosts[0] != "foo.example.com" {
+		t.Fatalf("web.allowed_hosts 解析错误: %#v", cfg.Web.AllowedHosts)
+	}
+}
+
 // TestLoadAcceptsDeprecatedUpdateKeys 是这次删除里唯一不能出错的一条。
 //
 // why：配置是 KnownFields(true) 严格解析的——未知键让 agentd **启动失败**。
@@ -464,6 +505,50 @@ func loadFromString(t *testing.T, body string) (*config.Config, error) {
 	return config.Load(p)
 }
 
+// env_forward 能被读进来，且**未配置时绝不落盘**。
+//
+// why：这是 spec §4.2 那条「默认值只能在用的时候取」的钉子。实现者最顺手的写法
+// 是在 Load 里把内置默认 ["SSH_AUTH_SOCK"] 填进结构体——那样下一次 Save 就会把
+// env_forward 写进每台机器的 config.yaml，一台还没换版的旧 agentd 读到这个未知键
+// 会直接**启动失败**，而所有功能测试仍然全绿。
+func TestEnvForwardRoundTripAndOmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+
+	cfg, err := config.Load(p) // 首次运行：生成默认配置并写盘
+	if err != nil {
+		t.Fatalf("首次加载: %v", err)
+	}
+	if cfg.EnvForward != nil {
+		t.Errorf("Load 不得把默认值填进结构体，实得 %v", cfg.EnvForward)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("读回配置: %v", err)
+	}
+	if strings.Contains(string(b), "env_forward") {
+		t.Errorf("未配置时 env_forward 不得落盘，实得:\n%s", b)
+	}
+
+	// 显式空列表要能被区分出来：它表示「一个都不转发」，不是「没配过」。
+	cfg.EnvForward = []string{}
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatalf("写盘: %v", err)
+	}
+
+	cfg.EnvForward = []string{"SSH_AUTH_SOCK", "GPG_AGENT_INFO"}
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatalf("写盘: %v", err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("回读: %v", err)
+	}
+	if len(got.EnvForward) != 2 || got.EnvForward[0] != "SSH_AUTH_SOCK" {
+		t.Errorf("env_forward = %v，期望 [SSH_AUTH_SOCK GPG_AGENT_INFO]", got.EnvForward)
+	}
+}
+
 // TestLoadFillsRepoRootDefault 验证 repo_root 未配置时补 <DataDir>/repos，
 // 且配置里写了的值不被覆盖。
 //
@@ -550,6 +635,28 @@ func TestProxyOmitEmptyOnSave(t *testing.T) {
 	}
 	if strings.Contains(string(b), "proxy") {
 		t.Errorf("未配置时 proxy 不得落盘，实得:\n%s", b)
+	}
+}
+
+// Defaults 必须零磁盘副作用：firstRun 写盘是 Load 的职责，Defaults 是
+// 给桌面壳首次引导用的不落盘入口。若它写盘，向导中途 SIGKILL/崩溃后磁盘上
+// 会留下 config.yaml，下次启动 Resolve 判「已配置」，用户回不到向导
+// （该缺陷已在真机 SIGKILL 复现，回滚法封不死——进程死了就没有回滚）。
+func TestDefaultsWritesNothingToDisk(t *testing.T) {
+	// 隔离 HOME：Defaults 不应在真实 ~/.handoff 附近留下任何东西
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Defaults()
+	if cfg.Token == "" {
+		t.Fatal("Defaults 应生成随机 token")
+	}
+	if _, err := os.Stat(config.DefaultPath()); !os.IsNotExist(err) {
+		t.Fatalf("Defaults 不得写盘：DefaultPath()=%s 已存在", config.DefaultPath())
+	}
+	// 二次调用也应幂等、无副作用。校验成功性由 Defaults 自身的契约覆盖：
+	// 它内部 validate 失败即 panic，能走到这里说明出厂默认已通过校验。
+	cfg2 := config.Defaults()
+	if cfg2.Token == "" {
+		t.Fatal("二次调用 Defaults 也应生成随机 token")
 	}
 }
 

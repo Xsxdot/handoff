@@ -1,13 +1,36 @@
 package prochost
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+// sleepCmd 返回一条「活若干秒」的命令，按平台给出可执行体与参数。
+//
+// 为什么不能写死 /bin/sh：Windows 上没有它，Start 会以
+// `exec: "/bin/sh": executable file not found in %PATH%` 直接失败。
+// 2026-08-18 本分支的 Windows 用例第一次在 CI 上跑（run 32149311654），
+// TestStartRecordsStartedAt 与 TestStartRecordsRosterPath 就是这么红的。
+//
+// Windows 侧用 ping 而不是 timeout：timeout.exe 在 stdin 被重定向时会直接
+// 报 "Input redirection is not supported" 退出，而 shim 一定会重定向 stdin，
+// 于是「用来占住几秒的进程」瞬间就没了，用例反而更难查。
+// ping 发 secs+1 个包、包间隔 1 秒，约等于睡 secs 秒。
+func sleepCmd(secs int) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", "ping", "-n", strconv.Itoa(secs + 1), "127.0.0.1"}
+	}
+	return "/bin/sh", []string{"-c", "sleep " + strconv.Itoa(secs)}
+}
 
 // 判据测试的固定基准：shim pid=100，启动于 t0。
 const (
@@ -16,6 +39,91 @@ const (
 )
 
 func h() Handle { return Handle{PID: testShimPID, StartedAt: t0} }
+
+// 有容器快照时，Footprint 直接用它，不走 pgid 三段判据。
+func TestFootprintPrefersContainerSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	mp := filepath.Join(dir, MembersFileName)
+	if err := writeMembers(mp, memberSnapshot{PIDs: []int{501, 502}, SampledAt: 42}); err != nil {
+		t.Fatal(err)
+	}
+	enumCalled := false
+	saved := enumProcsFn
+	defer func() { enumProcsFn = saved }()
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalled = true
+		return nil, ErrNotSupported
+	}
+
+	members, v, err := Footprint(Handle{PID: 500, StartedAt: 1, MembersPath: mp})
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("容器来源可用时应判 OK，实际 %s", v)
+	}
+	if len(members) != 2 || members[0] != 501 || members[1] != 502 {
+		t.Fatalf("应返回容器成员 [501 502]，实际 %v", members)
+	}
+	if enumCalled {
+		t.Error("容器来源可用时不该再走进程枚举")
+	}
+}
+
+// 没有容器快照时，unix 的三段判据路径必须原样走一遍。
+func TestFootprintWithoutContainerKeepsUnixPath(t *testing.T) {
+	enumCalls := 0
+	savedEnum, savedAlive := enumProcsFn, aliveFn
+	defer func() { enumProcsFn, aliveFn = savedEnum, savedAlive }()
+	aliveFn = func(Handle) bool { return true }
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalls++
+		return []procEntry{
+			{PID: 600, PPID: 1, PGID: 600, StartedAt: 10},
+			{PID: 601, PPID: 600, PGID: 600, StartedAt: 20},
+		}, nil
+	}
+
+	members, v, err := Footprint(Handle{PID: 600, StartedAt: 10})
+	if err != nil {
+		t.Fatalf("Footprint: %v", err)
+	}
+	if v != VerdictOK {
+		t.Fatalf("verdict 应为 OK，实际 %s", v)
+	}
+	if enumCalls == 0 {
+		t.Fatal("无容器来源时必须走进程枚举")
+	}
+	if len(members) != 2 {
+		t.Fatalf("pgid 组应有 2 个成员，实际 %v", members)
+	}
+}
+
+// 快照损坏或读不到时落回三段判据，不是报错也不是返回空。
+func TestFootprintFallsBackWhenSnapshotUnreadable(t *testing.T) {
+	savedEnum, savedAlive := enumProcsFn, aliveFn
+	defer func() { enumProcsFn, aliveFn = savedEnum, savedAlive }()
+	aliveFn = func(Handle) bool { return true }
+	enumCalls := 0
+	enumProcsFn = func() ([]procEntry, error) {
+		enumCalls++
+		return []procEntry{{PID: 700, PPID: 1, PGID: 700, StartedAt: 10}}, nil
+	}
+
+	members, v, err := Footprint(Handle{
+		PID: 700, StartedAt: 10,
+		MembersPath: filepath.Join(t.TempDir(), "gone.json"),
+	})
+	if err != nil {
+		t.Fatalf("快照读不到时不该报错，应落回三段判据: %v", err)
+	}
+	if v != VerdictOK || len(members) != 1 {
+		t.Fatalf("应落回 pgid 判据得到 1 个成员，实际 v=%s members=%v", v, members)
+	}
+	if enumCalls == 0 {
+		t.Fatal("必须落回进程枚举")
+	}
+}
 
 // TestClassifyLockHeldCountsGroup 锁仍被持有 ⇒ 组长就是我们的 shim，正常计数。
 //
@@ -103,6 +211,25 @@ func assertMembers(t *testing.T, got, want []int) {
 	}
 }
 
+func containsPID(pids []int, want int) bool {
+	for _, pid := range pids {
+		if pid == want {
+			return true
+		}
+	}
+	return false
+}
+
+func countPID(pids []int, want int) int {
+	n := 0
+	for _, pid := range pids {
+		if pid == want {
+			n++
+		}
+	}
+	return n
+}
+
 // stubEnum 把进程枚举换成脚本化的快照序列（最后一个快照会被重复使用）。
 //
 // 为什么需要序列而不是固定快照：Sweep 发完 SIGKILL 后要**复核**——再枚举一次并
@@ -155,21 +282,35 @@ func TestStartRecordsStartedAt(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	// selfExe 直接用 /bin/sh 顶替真 shim：本用例只验 StartedAt 有没有被填上，
+	// selfExe 直接用一条 sleep 命令顶替真 shim：本用例只验 StartedAt 有没有被填上，
 	// 不验 shim 行为（拿锁、读 spec.json 那些由 shim 自己的用例覆盖）
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = killGroup(hd.PID) })
+
+	// Windows 上读不到启动时刻，而且这是**刻意的**：那儿没有进程枚举
+	//（procenum_other.go 的注释写明「回收职责已由 Job Object 承担，缺的只是
+	// 足迹观测」），所以 Start 会打一条 warn 并把 StartedAt 留成 0。
+	// 这条用例验的是「时间下界判据的源头」，那套判据本身就只在 Unix 上成立；
+	// 在 Windows 上只断言 Start 确实拉起了进程，不去断言一个该平台不产出的值
+	//（也不写死 StartedAt==0：将来真给 Windows 补了枚举，这里不该因此翻红）。
+	if runtime.GOOS == "windows" {
+		if hd.PID <= 0 {
+			t.Fatalf("Start 应返回可用的 PID，got %d", hd.PID)
+		}
+		return
+	}
 	if hd.StartedAt <= 0 {
 		t.Fatalf("Start 未记录 StartedAt，got %d", hd.StartedAt)
 	}
@@ -370,15 +511,16 @@ func TestStartRecordsRosterPath(t *testing.T) {
 		t.Skip("本平台不支持文件锁")
 	}
 	dir := t.TempDir()
+	sleepExe, sleepArgs := sleepCmd(5)
 	spec := Spec{
-		Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+		Argv:     append([]string{sleepExe}, sleepArgs...),
 		Dir:      dir,
 		Stdout:   filepath.Join(dir, "out.log"),
 		Stderr:   filepath.Join(dir, "err.log"),
 		LockPath: filepath.Join(dir, "shim.lock"),
 		InfoPath: filepath.Join(dir, "proc.json"),
 	}
-	hd, err := Start(spec, "/bin/sh", "-c", "sleep 5")
+	hd, err := Start(spec, sleepExe, sleepArgs...)
 	if err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}
@@ -386,6 +528,9 @@ func TestStartRecordsRosterPath(t *testing.T) {
 	want := filepath.Join(dir, RosterFileName)
 	if hd.RosterPath != want {
 		t.Fatalf("Handle.RosterPath 应为 %s，实得 %q", want, hd.RosterPath)
+	}
+	if containerSampleFn == nil && hd.MembersPath != "" {
+		t.Fatalf("无进程容器的平台 MembersPath 应为空，实得 %q", hd.MembersPath)
 	}
 }
 
@@ -558,4 +703,227 @@ func TestFootprintExcludesReusedRosterPID(t *testing.T) {
 		t.Fatalf("Footprint: %v", err)
 	}
 	assertMembers(t, members, []int{100})
+}
+
+// TestSweepKillsMarkOnlyMembers 钉住 Sweep 与 Footprint 报的是同一批：
+// 标记独有的成员必须真的被杀，否则 handoff footprint 数出来的就是句空话（B70）。
+func TestSweepKillsMarkOnlyMembers(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 200, PGID: 200, StartedAt: 1200}, // 标记独有
+	}, nil)
+	stubAlive(t, false)
+	stubKillGroup(t, nil)
+	killedPIDs := stubKillProc(t)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return pid == 200, nil }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	if _, _, err := Sweep(h); err != nil {
+		t.Fatalf("清扫不应报错：%v", err)
+	}
+	if !containsPID(*killedPIDs, 200) {
+		t.Fatalf("标记独有的成员 200 未被回收：killed=%v", *killedPIDs)
+	}
+}
+
+// TestMarkKillReverifiesBeforeSignal 钉住发信号前必须复验标记。
+//
+// 枚举与发信号之间进程可能已退出且 pid 被复用；标记是活读的，
+// 复验一次的成本是一个 syscall，而误杀的代价是打掉用户的 shell（B47）。
+func TestMarkKillReverifiesBeforeSignal(t *testing.T) {
+	procs := []procEntry{{PID: 200, PGID: 200, StartedAt: 1200}}
+	killedPIDs := stubKillProc(t)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	calls := 0
+	attributesFn = func(pid int, cred TaskCred) (bool, error) {
+		calls++
+		// 第一次（筛选）命中，第二次（杀前复验）不再命中 ⇒ pid 已易主
+		return calls == 1, nil
+	}
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	killed := markKill(h, procs)
+	if killed != 0 || len(*killedPIDs) != 0 {
+		t.Fatalf("复验不通过时不得发信号：killed=%d pids=%v", killed, *killedPIDs)
+	}
+	if calls != 2 {
+		t.Fatalf("应恰好复验一次：attributes 调用 %d 次", calls)
+	}
+}
+
+// TestMarkKillSkipsWhenUnsupported 钉住平台不支持时安静返回 0，不影响前两段。
+func TestMarkKillSkipsWhenUnsupported(t *testing.T) {
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
+
+	killedPIDs := stubKillProc(t)
+	killed := markKill(Handle{PID: 100, StartedAt: 1000, TaskID: "t1"},
+		[]procEntry{{PID: 200, StartedAt: 1200}})
+	if killed != 0 || len(*killedPIDs) != 0 {
+		t.Fatalf("不支持时不得发信号：killed=%d pids=%v", killed, *killedPIDs)
+	}
+}
+
+// TestFootprintIncludesMarkOnlyMembers 钉住本条需求的核心价值：
+// 标记判据要捞回 pgid 与 roster 都看不见的那批进程。
+func TestFootprintIncludesMarkOnlyMembers(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000}, // shim 自己
+		{PID: 101, PGID: 100, StartedAt: 1100}, // 同组，pgid 能看见
+		{PID: 200, PGID: 200, StartedAt: 1200}, // setsid 逃逸，只有标记看得见
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) {
+		return pid == 200 || pid == 101, nil
+	}
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, v, err := Footprint(h)
+	if err != nil || v != VerdictOK {
+		t.Fatalf("判定应通过：v=%v err=%v", v, err)
+	}
+	if !containsPID(members, 200) {
+		t.Fatalf("标记独有的成员 200 未被捞回：members=%v", members)
+	}
+	if countPID(members, 101) != 1 {
+		t.Fatalf("同时被 pgid 与标记命中的 101 必须去重，members=%v", members)
+	}
+}
+
+// TestFootprintMarkRespectsStartedAtFloor 钉住时间下界对标记成员照样施加——
+// 枚举与发信号之间的 pid 复用窗口，这道护栏不能因为换判据就撤（B47）。
+func TestFootprintMarkRespectsStartedAtFloor(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 300, PGID: 300, StartedAt: 500}, // 比 shim 还早
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return pid == 300, nil }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, _, _ := Footprint(h)
+	if containsPID(members, 300) {
+		t.Fatalf("比 shim 更早启动的进程不得因标记命中而入选：members=%v", members)
+	}
+}
+
+// TestFootprintDegradesWhenMarkUnsupported 钉住平台不支持时不影响既有两段。
+func TestFootprintDegradesWhenMarkUnsupported(t *testing.T) {
+	stubEnum(t, []procEntry{
+		{PID: 100, PGID: 100, StartedAt: 1000},
+		{PID: 101, PGID: 100, StartedAt: 1100},
+	}, nil)
+	stubAlive(t, true)
+
+	oldAttr := attributesFn
+	t.Cleanup(func() { attributesFn = oldAttr })
+	attributesFn = func(pid int, cred TaskCred) (bool, error) { return false, ErrNotSupported }
+
+	h := Handle{PID: 100, StartedAt: 1000, TaskID: "t1"}
+	members, v, err := Footprint(h)
+	if err != nil || v != VerdictOK {
+		t.Fatalf("平台不支持标记不该让判定失败：v=%v err=%v", v, err)
+	}
+	if !containsPID(members, 101) {
+		t.Fatalf("pgid 那段必须照常工作：members=%v", members)
+	}
+}
+
+// TestCountGroupCountsOnlyItsOwnGroup 断言：只数同组成员，无关进程不计入。
+func TestCountGroupCountsOnlyItsOwnGroup(t *testing.T) {
+	stubProcs(t, []procEntry{
+		{PID: 300, PGID: 300, StartedAt: t0},     // 组长（PTY 里的 shell）
+		{PID: 301, PGID: 300, StartedAt: t0 + 1}, // 它起的命令
+		{PID: 302, PGID: 300, StartedAt: t0 + 2},
+		{PID: 400, PGID: 400, StartedAt: t0}, // 无关
+	})
+	n, err := CountGroup(300)
+	if err != nil {
+		t.Fatalf("不该出错: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("同组成员应为 3，实得 %d", n)
+	}
+}
+
+// TestCountGroupEmptyGroupIsZeroNotError 断言：组里一个都没有是 0 而不是错误
+// （会话刚退出、进程刚被收走都会走到这里）。
+func TestCountGroupEmptyGroupIsZeroNotError(t *testing.T) {
+	stubProcs(t, []procEntry{{PID: 400, PGID: 400, StartedAt: t0}})
+	n, err := CountGroup(300)
+	if err != nil || n != 0 {
+		t.Fatalf("空组应当是 (0, nil)，实得 (%d, %v)", n, err)
+	}
+}
+
+// TestCountGroupPropagatesEnumFailure 断言：枚举失败必须上抛，
+// **不能降级成 0**——0 会被渲染成「没有残留」，那是个假结论。
+func TestCountGroupPropagatesEnumFailure(t *testing.T) {
+	orig := enumProcsFn
+	enumProcsFn = func() ([]procEntry, error) { return nil, ErrNotSupported }
+	t.Cleanup(func() { enumProcsFn = orig })
+	if _, err := CountGroup(300); err == nil {
+		t.Fatalf("枚举失败必须上抛")
+	}
+}
+
+// stubProcs 把进程枚举替换成固定结果（沿用本文件既有的 enumProcsFn 接缝）。
+func stubProcs(t *testing.T, procs []procEntry) {
+	t.Helper()
+	orig := enumProcsFn
+	enumProcsFn = func() ([]procEntry, error) { return procs, nil }
+	t.Cleanup(func() { enumProcsFn = orig })
+}
+
+// 进程枚举失败要分两档记：平台不支持是**预期形态**（Debug），真故障才是 Error。
+//
+// 背景（B144）：非 darwin/linux 上 enumProcs 恒定返回 ErrNotSupported。改前
+// 一律按 Error 打，Windows 执行机上每次 handoff status 都在 agentd 日志里刷两条
+// 红字，把真正的枚举故障淹在噪音里。
+func TestLogEnumFailureTiersByCause(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		want    slog.Level
+		notWant slog.Level
+	}{
+		{"平台不支持降为 Debug", ErrNotSupported, slog.LevelDebug, slog.LevelError},
+		{"真故障仍是 Error", errors.New("/proc 读取失败"), slog.LevelError, slog.LevelDebug},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+			old := slog.Default()
+			slog.SetDefault(slog.New(h))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			logEnumFailure("足迹枚举失败", tc.err, "pid", 4242)
+
+			out := buf.String()
+			if !strings.Contains(out, "level="+tc.want.String()) {
+				t.Fatalf("应按 %s 记，实得：%s", tc.want, out)
+			}
+			if strings.Contains(out, "level="+tc.notWant.String()) {
+				t.Fatalf("不应按 %s 记，实得：%s", tc.notWant, out)
+			}
+			// 无论哪一档，cause 与上下文都必须在——降级的是档位，不是信息量
+			for _, want := range []string{"cause=", "pid=4242"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("日志应含 %q，实得：%s", want, out)
+				}
+			}
+		})
+	}
 }

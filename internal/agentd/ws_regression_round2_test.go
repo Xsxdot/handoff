@@ -126,7 +126,7 @@ func TestWSLiveBufferBounded(t *testing.T) {
 	}
 
 	// 越限后服务端应主动断开；客户端表现为读到错误而非无限等待
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsDeadline(t, 10*time.Second))
 	defer cancel()
 	var readErr error
 	for readErr == nil {
@@ -157,7 +157,7 @@ func TestWSOutOfOrderPublishNotDropped(t *testing.T) {
 	conn := env.dialWS(t, taskID, 0)
 	// 30s 而非 10s：同一 ctx 要先后完成多次往返（探活/收 high/探测断开），
 	// 全量并行负载下首步就可能耗去大半预算，10s 会让探测在超时上误报
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsDeadline(t, 30*time.Second))
 	defer cancel()
 
 	// 探活往返：Append+Publish 一条 progress 并等它到客户端。为什么要这一步——
@@ -208,6 +208,9 @@ func TestWSOutOfOrderPublishNotDropped(t *testing.T) {
 // 修复前诊断条件是 `storeMax > lastWrittenSeq`——比的是最大值。任何一条 seq 高于
 // storeMax 的实时事件都会把 lastWrittenSeq 顶过缺口，于是缺口真实存在而告警被
 // 抑制。修复后按「客户端已连续收到的 seq」判定，中段缺口无法被后续事件掩盖。
+// B125：本用例的等待期限走 wsDeadline 而非写死的 10s——它等的是建连 + 重放 5 条 +
+// 一条实时事件，整包并行时会与其他用例争 goroutine。这是负载缓解不是根治，
+// 若仍偶发翻红，按「WS 用例分包」处理，不要继续调倍数。
 func TestWSTruncationWarnsOnRealGap(t *testing.T) {
 	env := newWSTestEnv(t)
 	env.srv.replayLimit = 5 // 注入小阈值，制造重放截断
@@ -221,7 +224,7 @@ func TestWSTruncationWarnsOnRealGap(t *testing.T) {
 		}
 	}
 	conn := env.dialWS(t, taskID, 0)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsDeadline(t, 10*time.Second))
 	defer cancel()
 
 	// 连接后再产一条实时事件（seq=21）：它高于 storeMax，正是修复前掩盖缺口的那类事件
@@ -269,7 +272,7 @@ func TestWSTruncationGapCountedPerTask(t *testing.T) {
 	}
 
 	conn := env.dialWS(t, taskID, 0)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsDeadline(t, 10*time.Second))
 	defer cancel()
 	// 等服务端补发出重放首条（seq=2：本任务第一个事件）：收到它即保证服务端已
 	// 越过 storeMax 捕获点（补发写入发生在捕获**之后**）。此后追加的 fresh 不会
@@ -321,6 +324,44 @@ func tailStr(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// wsDeadline 返回 WS 用例的等待期限：基准值放宽到 3 倍，并在 -timeout 余额
+// 不足时收窄，但绝不低于 base。
+//
+// 为什么不是写死的 10s（B125）：本文件的用例等的是「建连 + 重放 N 条 + 一条
+// 实时事件」，这条链路在整包并行下要与其他用例争 goroutine。实测单独跑 3 次
+// 全过、全量第一遍撞满 10.01s——它是负载的函数，写死的数字治不了。
+//
+// 上限 3 倍 base 的理由：真挂住的用例不该拖满整个 -timeout，否则「哪个用例挂了」
+// 只能靠猜。下限 base 的理由：-timeout 很短时若按余额收窄到 base 以下，会比
+// 改动前更容易翻红。
+//
+// 局限：这是**负载缓解，不是根治**。根治要把 WS 用例与重负载用例隔开（分包或
+// t.Parallel() 分组）。若本文件的用例仍偶发翻红，按分包处理，不要继续调这个倍数。
+func wsDeadline(t *testing.T, base time.Duration) time.Duration {
+	t.Helper()
+	limit := 3 * base
+	if dl, ok := t.Deadline(); ok {
+		if quarter := time.Until(dl) / 4; quarter > base && quarter < limit {
+			limit = quarter
+		}
+	}
+	return limit
+}
+
+// TestWSDeadlineStaysWithinBounds 钉住 wsDeadline 的两条不变量（B125）：
+// 结果永不低于 base（否则比修改前更容易翻红），也永不超过 base 的 3 倍
+// （否则一个真挂住的用例会拖满整个 -timeout，把「哪个用例挂了」变成猜）。
+func TestWSDeadlineStaysWithinBounds(t *testing.T) {
+	const base = 10 * time.Second
+	got := wsDeadline(t, base)
+	if got < base {
+		t.Errorf("wsDeadline 低于 base：got=%v base=%v", got, base)
+	}
+	if got > 3*base {
+		t.Errorf("wsDeadline 超过 3 倍 base：got=%v base=%v", got, base)
+	}
 }
 
 // TestWSClosesNormallyOnArchive 验证订阅被 hub 关闭（任务归档）时，

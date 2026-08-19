@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,20 @@ func TestProcExitedDetectsSentinel(t *testing.T) {
 }
 
 func TestWriteInputRoundTrip(t *testing.T) {
+	// 本用例验的是 Unix FIFO 那条路：CreateInputChannel 建出一个真文件，
+	// 读端能 O_RDWR 常开。Windows 上输入通道是**命名管道**，且服务端归 shim
+	// 建——CreateInputChannel 在那儿是刻意的 no-op（prochost 的
+	// TestWindowsCreateInputChannelIsNoop 正是钉这一点），所以它既不报错、
+	// 也不留下任何可打开的文件。
+	//
+	// 2026-08-18 之前这里的守卫是「CreateInputChannel 返回错误就 skip」，
+	// 而 Windows 上它返回 nil，守卫整个失效，直接栽在下面的 OpenFile 上
+	//（run 32149311654）。Windows 那条路由
+	// internal/prochost/inputch_windows_test.go 覆盖，含 B128 真机抓到的
+	// ERROR_PIPE_BUSY 窗口，不存在没人测的缺口。
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 的输入通道是命名管道、服务端由 shim 建，见 prochost/inputch_windows_test.go")
+	}
 	dir := t.TempDir()
 	p := &Proc{TaskDir: dir}
 	if err := prochost.CreateInputChannel(filepath.Join(dir, fifoFileName)); err != nil {

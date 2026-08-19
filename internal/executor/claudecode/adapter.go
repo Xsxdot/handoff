@@ -43,6 +43,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/google/uuid"
 )
 
@@ -99,17 +100,31 @@ type runState struct {
 	stopOnce     sync.Once
 	closeOnce    sync.Once
 	renderPath   string
-	emitMu       sync.Mutex // 保护 evCh 的写入与关闭
-	evClosed     bool       // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
-	turnMu       sync.Mutex // 保护 turnBuf/lastProgress（maybeProgress 在 mapAssistant 调用）
+	frames       *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart     string            // 本回合正文/思维链的 part 标识，BeginTurn 后由 NextPart 分配
+	emitMu       sync.Mutex        // 保护 evCh 的写入与关闭
+	evClosed     bool              // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
+	turnMu       sync.Mutex        // 保护 turnBuf/lastProgress（maybeProgress 在 mapAssistant 调用）
 	turnBuf      strings.Builder
 	lastProgress time.Time
 	startCommit  string // 本回合起点 commit（git 兜底分类的基线，每回合结束后刷新）
 	turnEnded    bool   // 本回合是否已收尾（handoff_exit code=0 判断用）
 	exitHandled  bool   // 哨兵已处理（mapExit）：streamLoop 退出时不得再补一条失败 result
-	ready        chan struct{}
-	readyOnce    sync.Once
-	startOffset  int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
+	// ctxWindow 是 result 行 modelUsage 里取到的窗口上限（0=还没拿到）。
+	// 为什么要暂存而不是当场 emit：窗口与分子来自**不同的帧**——分子在每条
+	// assistant 消息里，窗口只在回合收尾的 result 行里。当场单发一条 usage 会
+	// 把 manager 已落库的 model/tokens 三元组整体覆盖成空（B80 硬约束），
+	// 所以窗口挂在这，随下一条 assistant 消息的分子一起走。
+	ctxWindow int
+	// actualModel 是已知的实际模型名（init 行或 assistant 消息带来），
+	// result 行 modelUsage 多键匹配窗口时优先用它（0 值语义见 ctxWindow）。
+	actualModel string
+	// prevCostUSD 是**本进程内**上一次 result 行的 total_cost_usd，用于把
+	// 进程累计花费差分成本轮花费（见 parseResultSpend）。0 = 本进程还没有回合。
+	prevCostUSD float64
+	ready       chan struct{}
+	readyOnce   sync.Once
+	startOffset int64 // streamLoop 的起始读取位置（Start=0，Resume=proc.json 持久化的 offset）
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -123,6 +138,13 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		renderPath: filepath.Join(taskDir, renderFileName),
 		ready:      make(chan struct{}),
 	}
+	// 帧写入器构造失败不该挡住任务：可见性是增强能力。持 nil 继续，
+	// FrameWriter 的方法对 nil 接收者是空操作，调用点不必判空。
+	fw, err := turn.WriterFor(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.runs[taskID] = r
@@ -175,6 +197,10 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	sessionID := uuid.NewString()
 	sockPath := filepath.Join(req.TaskDir, sockFileName)
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	r.session = sessionID
 	// 回滚顺序与创建顺序相反：先停 socket 受理、再 kill 进程、最后注销运行态
 	rollback := func() {
@@ -202,10 +228,15 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		rollback()
 		return fmt.Errorf("定位 handoff 二进制: %w", err)
 	}
-	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin)
+	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin, req.Discipline)
 	if err != nil {
 		rollback()
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("claude 未注入纪律块", "task", req.Task.ID)
+	} else {
+		a.log.Info("claude 纪律块已注入 prompt", "task", req.Task.ID, "bytes", len(req.Discipline))
 	}
 
 	// 3. 进程：Env 必须原样透传（见 StartProcReq.Env 的注意）
@@ -218,6 +249,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		SettingsPath: settingsPath,
 		MCPPath:      mcpPath,
 		Env:          req.Env,
+		MarkRoot:     prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
 	}, a.log)
 	if err != nil {
 		rollback()
@@ -318,6 +350,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	if r.proc == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
+	if err := r.frames.BeginTurn("send", text); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	if err := r.proc.WriteInput(text); err != nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
@@ -329,12 +365,14 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 // 参数：
 //   - permID: 与 permission 事件中的 PermissionID 一致（manager 还原后的裸 tool_use_id）
 //   - decision: "once"（批准本次）或 "reject"（拒绝）
+//   - reason: 协调者给出的拒绝理由；decision 为 reject 且理由非空时，经
+//     permDecision.Message 与裁决同帧送达模型（见下方 DenyReasonInBand）
 //
 // 注意：
 //   - decision 取值**除 once 外一律 deny**：不认识的裁决绝不当成放行
 //     （与 manager 侧 gateDecision「allow 之外一律 reject」同一条纪律）
 //   - 找不到挂起请求（进程已死 / 请求已被重试替换）时按 ErrTaskNotRunning 处置
-func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision string) (err error) {
+func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
@@ -357,10 +395,31 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	}
 	behavior, msg := "allow", ""
 	if decision != "once" {
-		behavior, msg = "deny", "协调者拒绝了本次操作"
+		behavior = "deny"
+		withReason := false
+		// 理由与裁决同帧：msg 会作为 tool_result 正文当场回给模型（perm.go 的
+		// Message → cmd/permission_mcp.go），模型在同一个回合里就知道该怎么改。
+		// 走带外注入的话，实测要迟到整整一个回合，中间那段空窗模型会自行发挥
+		// （B137 来源：B128 真机验收 seq32→seq33）
+		if r := strings.TrimSpace(reason); r != "" {
+			msg, withReason = turn.DenyGuidanceText(r), true
+		} else {
+			// 协调者没给理由：送一句空的比送通用句更差，模型会以为理由缺失是异常
+			msg = "协调者拒绝了本次操作"
+		}
+		a.log.Info("claude 回发拒绝裁决", "task", taskID, "perm", permID,
+			"with_reason", withReason)
 	}
 	return r.perm.Respond(permID, behavior, msg)
 }
+
+// DenyReasonInBand 表明本 adapter 把拒绝理由与裁决同帧送达模型。
+//
+// 返回恒为 true：理由进 permDecision.Message，经裁决 socket 回到
+// cmd/permission_mcp.go，再作为 tool_result 正文当场交给模型。
+//
+// manager 据此跳过 B50 的带外挂起注入——两条路都走会让模型被同一条理由说两遍。
+func (a *Adapter) DenyReasonInBand() bool { return true }
 
 // Stop 终止任务执行：停 socket 受理 → 回收执行者进程组 → 事件通道关闭 → 注销运行态。
 //
@@ -501,6 +560,13 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 		r.session = m.SessionID
 		r.markReady()
 		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: m.SessionID, Text: "会话就绪"})
+		// init 行就带实际模型名，比第一条 assistant 消息早。
+		// result 行的 model 是 null，别去那儿取。
+		if m.Model != "" {
+			a.log.Info("claude 实际模型", "task", r.taskID, "model", m.Model)
+			r.actualModel = m.Model
+			a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: m.Model})
+		}
 	case m.Type == "system":
 		// thinking_tokens 等系统副消息：仅留痕
 		a.log.Debug("system 消息跳过", "task", r.taskID, "subtype", m.Subtype)
@@ -522,14 +588,27 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 }
 
 // mapStreamEvent 处理流式增量：text_delta 追加 render.log（实况流式来源），
-// 不产生 AdapterEvent（spec §4.2）；thinking_delta 被 textDelta 过滤掉。
+// 不产生 AdapterEvent（spec §4.2）；thinking_delta 被 textDelta 过滤掉，
+// 但会单独落一条 reasoning 帧（W4a：隔离从「丢弃」改成「分流」）。
+//
+// 隔离不变式：thinking 内容只走 r.frames，绝不进 render.log、绝不进 turnBuf，
+// 因此绝不喂 turn.ParseTrailer、绝不进权限闸。
 func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
-	text, ok := textDelta(ev)
-	if !ok {
+	text, reasoning := splitDelta(ev)
+	if reasoning != "" {
+		if err := r.frames.Reasoning(r.textPart, reasoning); err != nil {
+			a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+		return
+	}
+	if text == "" {
 		return
 	}
 	if err := turn.AppendRender(r.renderPath, text); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
+	}
+	if err := r.frames.Text(r.textPart, text); err != nil {
+		a.log.Warn("写 text 帧失败，不影响回合", "task", r.taskID, "cause", err)
 	}
 }
 
@@ -539,10 +618,24 @@ func (a *Adapter) mapStreamEvent(r *runState, ev json.RawMessage) {
 // why（text 块不重复追加 render.log）：render.log 已由 text_delta 增量写过，
 // 整块再写会出两遍正文；这里只累积进 turnBuf 供分类用。
 func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
+	// 模型名与用量与 content 同级，就在这条消息里——此前整块丢弃。
+	// 每条 assistant 消息都带，manager 侧靠去重防写库风暴。
+	// 窗口在 result 行才到（r.ctxWindow），这里把它挂到分子上一起发。
+	if model, u, ok := parseAssistantUsage(msg); ok && (model != "" || u != nil) {
+		if model != "" {
+			r.actualModel = model
+		}
+		if u != nil && r.ctxWindow > 0 {
+			w := r.ctxWindow
+			u.ContextWindow = &w
+		}
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+	}
 	var m struct {
 		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
+			ID    string          `json:"id"`
 			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
@@ -562,13 +655,17 @@ func (a *Adapter) mapAssistant(r *runState, msg json.RawMessage) {
 			r.turnMu.Unlock()
 			a.maybeProgress(r)
 		case "tool_use":
-			a.appendActionSummary(r, block.Name, block.Input)
+			a.appendActionSummary(r, block.ID, block.Name, block.Input)
 		}
 	}
 }
 
-// appendActionSummary 往 render.log 追加一行工具动作摘要（render 流的旁观内容）。
-func (a *Adapter) appendActionSummary(r *runState, toolName string, input json.RawMessage) {
+// appendActionSummary 往 render.log 追加一行工具动作摘要（render 流的旁观内容），
+// 并落一条 tool_call 帧。
+//
+// toolUseID 用作帧的 part：user 消息里的 tool_result 带同值的 tool_use_id，
+// 两条帧因此天然配对，不需要本地再维护一张映射表。
+func (a *Adapter) appendActionSummary(r *runState, toolUseID, toolName string, input json.RawMessage) {
 	line := "→ " + toolName
 	if toolName == "Bash" {
 		var in struct {
@@ -583,14 +680,22 @@ func (a *Adapter) appendActionSummary(r *runState, toolName string, input json.R
 	if err := turn.AppendRender(r.renderPath, "\n"+line+"\n"); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
 	}
+	// 帧里存**完整入参**（只受头尾截断约束），不是 render.log 的行摘要——
+	// 行摘要的 firstLine 会切掉多行命令的后续行，那正是审核者要看的
+	if err := r.frames.ToolCall(toolUseID, toolName, string(input)); err != nil {
+		a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
 }
 
-// mapUserMessage 处理 user 消息：tool_result 块往 render.log 追加结果摘要。
+// mapUserMessage 处理 user 消息：tool_result 块往 render.log 追加结果摘要，
+// 并落一条 tool_result 帧（part 取 tool_use_id，与 tool_call 帧配对）。
 func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 	var m struct {
 		Content []struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
+			Type      string          `json:"type"`
+			ToolUseID string          `json:"tool_use_id"`
+			IsError   bool            `json:"is_error"`
+			Content   json.RawMessage `json:"content"`
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(msg, &m); err != nil {
@@ -609,12 +714,43 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 		if err := turn.AppendRender(r.renderPath, "\n"+line+"\n"); err != nil {
 			a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
 		}
+		// 帧里存完整结果（只受头尾截断约束），不是 render.log 的 200 字行摘要
+		full := compactJSON(block.Content)
+		if s, ok := jsonString(block.Content); ok {
+			full = s
+		}
+		status := "ok"
+		if block.IsError {
+			status = "error"
+		}
+		if err := r.frames.ToolResult(block.ToolUseID, status, full); err != nil {
+			a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
 	}
 }
 
 // mapResult 处理回合收尾：result.result 是最后一条 assistant 正文，正是
 // turn.ParseTrailer 的输入；subtype!=success 时按失败处理（带 claude.log 尾部）。
 func (a *Adapter) mapResult(r *runState, m streamMsg) {
+	// 窗口只在 result 行出现，先取再走回合收尾；只存不发（硬约束见 runState.ctxWindow）。
+	w, confident := pickModelUsageWindow(m.ModelUsage, r.actualModel)
+	if !confident {
+		a.log.Warn("claude result 多模型且都匹配不上已知模型，取了任意一个的窗口",
+			"task", r.taskID, "window", w)
+	}
+	r.ctxWindow = w
+	// 累计消耗：result 行同时带本轮 token 与进程累计花费，差分成本轮账目。
+	// 与上面的窗口是两回事——窗口进 Usage（当前占用），这里进 Spend（累计消耗）。
+	if e, next, ok := parseResultSpend(m, r.prevCostUSD); ok {
+		if m.TotalCostUSD < r.prevCostUSD {
+			a.log.Warn("claude 花费基线陈旧，本轮按当前值入账",
+				"task", r.taskID, "prev", r.prevCostUSD, "now", m.TotalCostUSD)
+		}
+		r.prevCostUSD = next
+		a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+	} else {
+		a.log.Debug("claude result 行不带可入账的消耗，跳过", "task", r.taskID, "uuid", m.UUID)
+	}
 	if m.Subtype != "success" || m.IsError {
 		tail := claudeLogTail(r.taskDir)
 		a.log.Error("claude 回合异常结束", "task", r.taskID, "subtype", m.Subtype, "stderr_tail", tail)

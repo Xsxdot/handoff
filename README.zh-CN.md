@@ -166,9 +166,9 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal` |
 | `handoff wait <task>` | 阻塞等下一个需要你的事件 | `--follow`(持续订阅到任务终结)；`--notify`；`--timeout <时长>`；`--no-sync` |
 | `handoff reply <task>` | 回答工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"` 三选一 |
-| `handoff diff <task>` | git diff + 提交列表（审阅素材） | `--base <分支>` |
+| `handoff diff <task>` | git diff + 提交列表（默认用任务自己的基线提交，没有才退回仓库默认分支） | `--base <基准>` |
 | `handoff fetch <task> <文件>` | 读任务仓库内单个文件 | — |
-| `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时） | handoff 自有 flag 必须在任务名**之前**，任务名之后的一切原样透传给命令 |
+| `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时；单参数按 shell 命令，多参数逐个 shell 转义） | handoff 自有 flag 必须在任务名**之前** |
 | `handoff continue <task> "<指令>"` | 续发修改指令（要求待审核状态，同一会话续接） | — |
 | `handoff done <task>` | 归档任务并回收 executor（要求待审核状态） | `--note "<说明>"` |
 | `handoff stop <task>` | 主动中止（停 executor、作废工单、任务落 failed） | — |
@@ -274,6 +274,8 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
 同一份 env 也会注入审批者（`approver`）——否则代理只配半边，审批者连不出去会静默升级人工。文件不存在或语法错会**拒绝派发**并回显完整路径与行号，不会带病启动。
 
 **权限分级**：权限请求走三级分流——静态规则（编辑放行、危险命令必问）→ 廉价模型审批者（配置了 `approver` 时；黑名单命中或裁决失败一律升级）→ 人工协调者 `reply` 裁决。审批者连续失败 3 次自动停用，之后直接升级人工。同一任务内一字不差的同一权限请求，人工批过一次后自动复用（`permission_reuse` 事件留痕），不会反复来问。
+
+写到任务范围外的落点——包括 `echo x > ~/.zshrc` 这类 shell 重定向落点——一律升级人工，不经审批者。
 
 ## 各 executor 须知
 

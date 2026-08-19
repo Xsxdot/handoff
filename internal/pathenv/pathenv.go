@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -61,6 +62,10 @@ var homeRelDirs = []string{
 	".cargo/bin",      // rust
 	"go/bin",          // go
 }
+
+// loginShellGOOS 是平台判定的测试缝。**生产路径恒为 runtime.GOOS**，
+// 非测试代码不得赋值。为什么要缝：Windows 分支在 mac/linux 的 CI 上永远测不到。
+var loginShellGOOS = runtime.GOOS
 
 // absDirs 是与 HOME 无关的已知安装目录。
 //
@@ -203,6 +208,13 @@ func Apply(ctx context.Context, opt Options, log *slog.Logger) []string {
 
 // loginShellDirs 取登录 shell 的 PATH 并拆成目录列表；失败返回 nil。
 func loginShellDirs(ctx context.Context, log *slog.Logger) []string {
+	// Windows 没有「登录 shell 的 rc 链」这个概念，这个来源在该平台本就无意义。
+	// 而且不能只靠 $SHELL 为空来跳过——Windows OpenSSH 会把它设成 cmd.exe，
+	// 于是这段会真去执行 cmd 并把它的欢迎横幅当成目录塞进 PATH（真机实测）。
+	if loginShellGOOS == "windows" {
+		log.Debug("Windows 平台跳过登录 shell 的 PATH 解析", "reason", "该平台无 rc 链概念")
+		return nil
+	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		log.Warn("未设置 $SHELL，跳过登录 shell 的 PATH 解析")

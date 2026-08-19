@@ -14,11 +14,15 @@
 //   - --follow 每次建连前先对账：本机 cursor 之后有积压时吐**一行** backlog_summary
 //     （带 missed/stale/actionable），把 cursor 推到当前水位，积压事件不再逐条重放
 //     ——stdout 每行是一次会话唤醒，逐条重放会把一次重连变成 N 次唤醒
+//   - --until-done：B67 依赖门闩。--timeout 在此时是**总时限**，progress 等任何
+//     中间帧都不能续命；成功只输出一行 archived，等待/失败/超时 stdout 全空
 //
 // 边界：
 //   - 不做事件语义判断与审批（审批在协调者脑中），事件原样输出
 //   - 不覆盖「协调者会话被关闭」：Monitor 是会话级的，会话没了订阅就没了，
 //     本命令给不出任何补救（spec §7.2 明确接受的边界）
+//   - --until-done 不读写审核者 cursor、不自动派发/回答后续任务：它只是
+//     「真实 archived 到达」的唤醒门闩，不是审核流程的替代品
 package cmd
 
 import (
@@ -52,6 +56,13 @@ var followFlag bool
 // waitNoSync 关闭「任务结束后自动同步远程任务分支到本地」。
 var waitNoSync bool
 
+// waitUntilDone 开启 B67 依赖门闩：静默忽略中间事件，只等真实 archived。
+//
+// 为什么它与 --follow 互斥：follow 的契约是把 question/permission/completed 等
+// 中间事件逐条交付给审核者；until-done 的契约是全部吞掉只等终态 archived——
+// 两种消费模型相反，组合起来连语义都说不清。
+var waitUntilDone bool
+
 // waitTimeout 为 0 表示不设上限；大于 0 时等待超过该时长返回错误退出非 0。
 //
 // 为什么需要它：wait 的正常形态是无限阻塞（断线自动退避重连），但无人值守时
@@ -63,7 +74,8 @@ var waitTimeout time.Duration
 // waitCmd 阻塞等待指定任务的下一个可动作事件。
 //
 // 使用方式：handoff wait <task> —— 事件到达打印 {"seq":..,"type":..,"payload":..} 退出 0；
-// 加 --notify 时同时发 macOS 系统通知；加 --timeout <时长>（如 1h）时到点报错退出非 0。
+// 加 --notify 时同时发 macOS 系统通知；加 --timeout <时长>（如 1h）时到点报错退出非 0；
+// 加 --until-done 时静默等待真实 archived，成功才输出一行。
 var waitCmd = &cobra.Command{
 	Use:   "wait <task>",
 	Short: "阻塞等待任务的下一个可动作事件（question/permission_request 等）",
@@ -76,12 +88,20 @@ var waitCmd = &cobra.Command{
 		if waitTimeout < 0 {
 			return fmt.Errorf("--timeout 必须为正时长（当前 %s）；不设上限请省略该参数", waitTimeout)
 		}
+		// 冲突校验必须在任何网络请求之前：两种模式的 stdout 契约完全相反
+		// （逐事件交付 vs 静默只等终态），提前报错比发出请求后失败更好诊断
+		if followFlag && waitUntilDone {
+			return fmt.Errorf("--follow 与 --until-done 不能同时使用：前者交付审核事件，后者只等归档")
+		}
 		addr, token, err := TargetEndpoint()
 		if err != nil {
 			return err
 		}
 		// 统一日志格式：wait 是长驻命令，stderr 日志是「为什么没唤醒」的唯一线索
 		slog.SetDefault(logx.Setup("cli", ""))
+		if waitUntilDone {
+			return runUntilDone(cmd, taskID, addr, token)
+		}
 		if followFlag {
 			return runFollow(cmd, taskID, addr, token)
 		}
@@ -109,17 +129,84 @@ var waitCmd = &cobra.Command{
 		if notifyFlag {
 			notifyEvent(ev)
 		}
-		b, err := json.Marshal(ev)
-		if err != nil {
-			return fmt.Errorf("序列化事件: %w", err)
+		if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
+			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), string(b))
 		// 任务结束后把远程任务分支拉到本地（B12）。
 		// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
 		// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
 		autoSyncAfterWait(cmd, addr, token, ev)
 		return nil
 	},
+}
+
+// runUntilDone 实现 B67 依赖门闩：静默等待真实 archived，成功只输出一行事件。
+//
+// 参数：
+//   - taskID: 完整 UUID
+//   - waitTimeout: 总时限。它被套在 ctx 上，任何中间帧/重连都不能重置——
+//     到点即 124，与「事件到达退出 0」可区分
+//
+// 返回：
+//   - nil: 已归档，stdout 是原始 archived JSON（唯一写 stdout 的路径）
+//   - exitCodeError(ExitTimeout): 总时限到，任务尚未归档
+//   - 其他: 依赖 failed / 鉴权 / 任务不存在 / 协议异常（退出 1）
+//
+// 边界：不写审核者 cursor、不自动派发后续任务；等待期间 stdout 恒为空。
+func runUntilDone(cmd *cobra.Command, taskID, addr, token string) error {
+	ctx := cmd.Context()
+	if waitTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, waitTimeout)
+		defer cancel()
+	}
+	slog.Debug("等待依赖任务归档", "task", taskID, "addr", addr,
+		"timeout", waitTimeout.String())
+	ev, err := client.New(addr, token).WaitArchived(ctx, taskID)
+	if err != nil {
+		switch {
+		case waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded):
+			slog.Error("等待依赖任务归档超时",
+				"task", taskID, "timeout", waitTimeout.String(), "cause", err)
+			return &exitCodeError{code: ExitTimeout, err: fmt.Errorf(
+				"等待任务 %s 归档超时（%s）", taskID, waitTimeout)}
+		case errors.Is(err, client.ErrDependencyFailed):
+			slog.Error("依赖任务失败，归档门闩终止", "task", taskID, "cause", err)
+			return fmt.Errorf("依赖任务 %s 已失败: %w", taskID, err)
+		case errors.Is(err, client.ErrArchivedEventMissing):
+			slog.Error("任务已完成但缺归档事件", "task", taskID, "cause", err)
+			return fmt.Errorf("任务 %s 已归档但缺 archived 事件；请升级对端 agentd 或检查事件数据: %w",
+				taskID, err)
+		default:
+			slog.Error("等待依赖任务归档失败", "task", taskID, "cause", err)
+			return err
+		}
+	}
+	if notifyFlag {
+		notifyEvent(ev)
+	}
+	if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
+		slog.Error("输出归档事件失败", "task", taskID, "seq", ev.Seq, "cause", err)
+		return err
+	}
+	slog.Debug("依赖任务已归档", "task", taskID, "seq", ev.Seq)
+	return nil
+}
+
+// writeEventLine 把事件作为**严格一行** JSON 写出。
+//
+// 为什么统一走它而不是各处 Fprintln：wait 的 stdout 是「每行一个 JSON 对象」的
+// 机器契约，写出失败（管道断裂等）必须上抛——原来一次性 wait 的 Fprintln 把
+// 错误吞掉，脚本侧拿到的行是残缺的，却没人知道。
+func writeEventLine(w io.Writer, ev *proto.Event) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("序列化事件: %w", err)
+	}
+	if _, err := fmt.Fprintln(w, string(b)); err != nil {
+		return fmt.Errorf("写出事件: %w", err)
+	}
+	return nil
 }
 
 // runFollow 持续订阅任务事件流，每条事件单行输出到 stdout，直到任务终结。
@@ -146,11 +233,9 @@ func runFollow(cmd *cobra.Command, taskID, addr, token string) error {
 			if notifyFlag {
 				notifyEvent(ev)
 			}
-			b, merr := json.Marshal(ev)
-			if merr != nil {
-				return fmt.Errorf("序列化事件: %w", merr)
+			if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
+				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(b))
 			// 每次遇到回合结束都同步一次：--follow 下一个任务会有多个 completed
 			autoSyncAfterWait(cmd, addr, token, ev)
 			return nil
@@ -225,22 +310,22 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 			"建议设为大于 %s（如 %s）", idle, stall, stall, stall+time.Hour)
 }
 
-// autoSyncAfterWait 在任务结束事件（completed/failed）到达后，把远程任务分支
-// 同步到本地仓库。
+// autoSyncAfterWait 在任务进入等待审核的事件（completed/turn_failed）或任务
+// 终结（failed）到达后，把远程任务分支同步到本地仓库。
 //
 // 参数：
-//   - ev: 刚返回的事件；只有 completed/failed 触发（回合中途的 permission/
-//     question/progress 不触发——那时活还没干完）
+//   - ev: 刚返回的事件；只有 completed/turn_failed/failed 触发（回合中途的
+//     permission/question/progress 不触发——那时活还没干完）
 //
 // 注意：
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
 //     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
-//   - failed 也同步：失败恰恰是最需要把代码拉到本地翻的时候
+//   - 失败（含回合失败）也同步：失败恰恰是最需要把代码拉到本地翻的时候
 func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
 	}
-	if ev.Type != proto.EventTypeCompleted && ev.Type != proto.EventTypeFailed {
+	if !shouldAutoSync(ev.Type) {
 		return
 	}
 	if !loadCLIConfig().Sync.Auto {
@@ -258,6 +343,14 @@ func autoSyncAfterWait(cmd *cobra.Command, addr, token string, ev *proto.Event) 
 		return
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), syncMessage(res))
+}
+
+// shouldAutoSync 判断这类事件要不要触发自动同步。
+//
+// 为什么 turn_failed 也要：任务此刻在 waiting_review，协调者马上就要 diff 审代码，
+// 而失败恰恰是最需要把代码拉到本地翻的时候。
+func shouldAutoSync(t proto.EventType) bool {
+	return t == proto.EventTypeCompleted || t == proto.EventTypeFailed || t == proto.EventTypeTurnFailed
 }
 
 // notifyEvent 发 macOS 系统通知提醒协调者事件已到达（--notify 的兜底实现）。
@@ -344,8 +437,11 @@ func init() {
 		"任务结束（completed/failed）时不自动同步远程任务分支到本地")
 	waitCmd.Flags().BoolVar(&followFlag, "follow", false,
 		"持续订阅：每条事件单行输出，任务终结（failed/归档）才退出")
+	waitCmd.Flags().BoolVar(&waitUntilDone, "until-done", false,
+		"静默等待 handoff done；成功只输出 archived，failed 立即失败")
 	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0,
 		"超时（如 3h）；默认不设上限。一次性模式=等不到事件的总时长上限，"+
-			"--follow 模式=空闲上限（期间一帧都没收到，含 progress），到点退出非 0")
+			"--follow 模式=空闲上限（期间一帧都没收到，含 progress），"+
+			"--until-done 模式=总时限（任何帧都不能续命），到点退出非 0")
 	rootCmd.AddCommand(waitCmd)
 }

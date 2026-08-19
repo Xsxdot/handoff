@@ -1,0 +1,79 @@
+# W5b-2 台账：图形化首次引导 + 内嵌二进制释出
+
+范围：8 个 task。分支 handoff/w5b2-onboarding。
+恢复现场以本 ledger + git log 为准。
+
+## 进度
+
+- 2026-08-17 Task 1（initflow 下沉迁移）完成，commit 149ad5eb。审查双 APPROVED。协调者基线校验：搬迁前 `go test ./cmd/...` PASS 用例名集合 184 行、0 FAIL；搬迁后 `./cmd/... ./internal/initflow/...` 186 行、0 FAIL；diff 仅多两个名字——`TestAskAllCanceled`（从 cmd 的 TestInitCanceledDoesNotWrite 拆出的直接钉 AskAll 段，移入 initflow）与 `TestInitflowHasNoUILayerDeps`（新增边界守卫），无任何用例丢失。实现者适配（审查裁决合理）：`maybeInstallService` 依赖的 `installService`（cmd/service.go:97，CLI 层）无法被 initflow 反向 import（会成环），改为 initflow 包级 `var InstallService func(w, cfgPath)` 缝，由 cmd/service.go 的 init() 注入，MaybeInstallService 内 nil 兜底不 panic——这反而把「CLI 注 installService、GUI 注自己的实现」落成显式契约。Step 6 手工 CLI 探测被协调者判定作废（管道 stdin 下走非交互分支，askAll 不被调用，验不到东西），以上述用例名集合等价性替代。Minor 记账 3 条：M19 TestInitCanceledDoesNotWrite 内仍保留直接钉 AskAll 段（与 initflow 的 TestAskAllCanceled 重复，复制而非拆分，冗余无害）；M20 InstallService==nil 兜底只打印用户提示未记 slog 日志，桌面壳漏接无从排查，建议补 slog.Warn；M21 HostGOOS/HostGeteuid 是计划清单外导出（合理必要，initflow.go:275 已注释理由）。
+
+- 2026-08-17 Task 2（事件驱动 Prompter）完成，commit dc9c1ac7。审查双 APPROVED。实现者适配：newTestConfig 返回 `&config.Config{}` 需补 import config；AskAll 协调者分支实际问 3 个问题（角色 Select + sync.auto Confirm + targets Input 空答结束），answers 为 `["coordinator","true",""]`（plan 原稿只有 2 个，plan 明示按实际数补齐、不许改 AskAll）。Minor 记账 2 条：M22 无用例喂非法 Select 答案，变异测试不生效（把非法答案静默取 def 现有 6 条用例全查不出来，可后续补非法值用例）；M23 `cd desktop && go test ./...` 根包因 `go:embed all:frontend/dist` 前端未构建 setup failed——父提交 149ad5eb 上完全相同，既有环境问题非本 task 引入（对应 W5b-1 记账 M5）。
+
+- 2026-08-17 Task 3（embedbin 双形态）完成，commit e3419b7d。审查双 APPROVED。带标签侧编译失败实测 `pattern handoff: no matching files found`（缺席即编译期失败的前提实证）；假产物 1000 字节被 1MB 门槛拦下、已删、工作区干净。审查裁决 embed.go 的 Open 对 embed.FS.Open 失败 panic 合理（go:embed 编译期保证，与 webui.FS 对不可达分支 panic 的先例一致，不改）。Minor 记账 3 条：M24 stub.go 导出了 plan 未要求的 ErrNotEmbedded 哨兵错误（良性增量，调用方可 errors.Is，可改回内联错误）；M25 embed_test.go 的 defer rc.Close() 未检查 Close 错误（测试场景可接受）；M26 .gitignore 的 `handoff` 模式同时匹配同名目录（无实害）。
+
+- 2026-08-17 Task 4（三态释出逻辑）完成，commit 3636cdfb。审查双 APPROVED。实现者决策：版本比较另写 compareVersion/parseVersion（internal/selfupdate 的 cmpVersion 未导出，不值得为此改导出面；语义与 clicheck.go 逐行一致，无第三方依赖）；「existing 空 + embedVer 空」走 DecisionInstall（没有既有安装则承重不适用，embedbin 不可用由调用方查 Available() 兜底）；os.Lstat 检查悬空符号链接（Stat 会跟随悬空链返回 ENOENT 放行 rename 覆盖链接本身）；chmod 在 rename 前避免「已可见但无权限」窗口。调试中自己修了一个 compareVersion 方向写反的 bug（cmp>=0 → UseExisting、cmp<0 → NotifyOutdated）。Minor 记账 4 条：M27 existing 非空 + embedVer 空 → UseExisting 分支无直接测试覆盖（逻辑正确）；M28 TOCTOU：Lstat 检查与 Rename 之间并发新建 dst 会被 Unix rename 静默覆盖（桌面单机上下文可忽略）；M29 release.go 注释「本模块可 import 根模块 internal 包」表述稍绕（desktop 是独立 module 需 require/replace，起决定作用的是「cmpVersion 未导出」）；M30 已存在分支同时 logger.Error + 返回错误轻微重复（符合项目惯例）。
+
+- 2026-08-17 Task 5（绝对二进制路径）完成，commit 67e9b774。审查双 APPROVED。审查用临时 dist 桩验证 main.go 编译通过后已删。Minor 记账 3 条：M31 binpath.go:88 `filepath.Abs(real)` 的 error 未包候选路径（Abs 出错实际不可达）；M32 审查发现工作区残留 `desktop/desktop` 二进制（实现者桩构建产物，已被 .gitignore 忽略），协调者已删；M33 建议补「显式传目录路径必须报错」用例（plan 逐字测试块之外，真实场景 `~/.local/bin` 恰命中此分支，极廉价，需 plan 所有者认可）。
+
+- 2026-08-17 Task 6（向导界面）完成，commit 631faf2c。审查双 APPROVED。wails3 不在 PATH，用 `~/go/bin/wails3`（v3.0.0-beta.8）+ `PATH="$HOME/go/bin:$PATH"` 前缀（generate:icons 子任务裸调 wails3）。事件 payload 形状 `{data:T}` 成立（读 node_modules events.d.ts 确认 WailsEvent.data 为真实字段）；Go 侧 Question{Kind,Title,Default,Options} 与前端 interface 字段名完全一致。style.css 精简重写（保留设计令牌、删模板 DOM 样式、新增向导卡片样式）；Inter-Medium.ttf 无引用已删。审查发现 tsconfig 与 TS 4.9 不兼容是模板遗留（W5b-1 的 cfa527c3），Task 6 未触碰，构建管线只跑 vite 不查类型；审查用兼容配置单独跑 tsc 零错误。Minor 记账 4 条：M34 wizard.ts:49-52 input 的 Enter keydown 回调不检查 btn.disabled，首次 emit 后到下一问 re-render 的窗口内再按 Enter 会二次 Emit 可能错位（窗口极小，建议补 `if (btn.disabled) return;`）；M35 wizard-done 文案「配置完成，正在启动 agentd…」后半句是对 Go 侧行为的推断，若启动时序不同文案失真（建议终审确认或用纯「配置完成」）；M36 confirm 恒返回 "true"/"false" 永不发空串，空答落默认只在 input 上走到（预选即默认，与 CLI 语义等价）；M37 Events.Emit 未 await（fire-and-forget，一问一答场景够用）。
+
+- 2026-08-17 Task 7（装配进启动序列）完成，commit 7fa8d7d6。协调者独立复核通过（不采信自述）：四个事件名逐字一致、wizard-answer 的 On 注册计数为 1、未调 MaybeInstallService、ExecutorOptions(nil) 会被空列表问题由桌面壳自行 toolchain.Detect() 解决（此点 plan 漏列，实现者补上）。实现者适配清单：①必须 toolchain.Detect() 并传入 AskAll（否则执行机分支渲染空 select、EventPrompter 拒绝一切非空答案）；②wizard-answer 的 payload 类型断言 `ev.Data.(string)`，非串跳过不 panic；③WindowRuntimeReady 事件（events.Common.WindowRuntimeReady）先等前端运行时挂载再发第一问——webview 加载完成前的 Go 事件会被 `window._wails` 未就绪守卫静默丢弃，早发等于吞掉第一题；④win.OnWindowEvent(WindowClosing) 调 wizCancel 实现关窗即取消；⑤wizMu/wizActive 防重入（托盘重复打开不另起 AskAll）；⑥isExec 不用（GUI 托管由 EnsureRunning 统一走 service 路径）。真机走查（macOS 临时 HOME）：实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通；**不再重跑**——走完向导会调 EnsureRunning，而 launchd label dev.gosuper.handoff.agentd 是固定值（backlog B71），在此执行机上装会和派发本任务的 agentd 抢同一 label 与 DataDir；上次未出事只因 EnsureRunning 遇到「已在运行」直接返回（W5b-1 刻意设计）。现场已核：临时 HOME 下无 Library/LaunchAgents/，真 plist 未改（mtime 8/13），agentd 连续运行未重启，无损害。剩余走查（逐题前进的人工观察）由协调者在自己机器补。**与 spec §4.4 的有意偏离**：spec 把「是否装 service」列入向导要覆盖的决策，GUI 没问。理由：CLI 里答「否」用户还能自己跑 agentd；薄壳答「否」就没有 agentd 可连、应用当场没用——一个「否」会让程序不能工作的问题不该问。main.go 注释已说明，这里记账。
+
+## Minor 总账
+
+- **已修**：M20、M22（commit 35b675c5）、M27、M33、M34（commit f389a017，终审修复波）。
+- **已认可不动**：M19、M21、M23（协调者复核认可定级）。
+- **终审 triage 后留**：M24（ErrNotEmbedded 哨兵良性增量）、M25（embed_test Close 未查错）、M26（gitignore 匹配同名目录）、M28（TOCTOU 桌面单机可忽略）、M29（release.go 注释表述绕）、M30（日志与错误轻微重复符合惯例）、M31（Abs error 不可达）、M32（工作区残留已删）、M35（wizard-done 文案此刻准确）、M36（confirm 恒发布尔等价语义）、M37（Emit 不 await 够用）。
+- **新发现**：M38 binpath.go 多候选全失败只透传最后一个候选原因（可 errors.Join 汇总，非必须，留后续）。M39（原 readInstalledVersion HOME 隔离的 Windows 问题）随该隔离整体回退而**撤销**，见终审后收尾段。
+
+## 真机走查
+
+- 2026-08-17 macOS 临时 HOME：~~实现者成功跑通一次，临时 HOME 下写出了有效 config.yaml、向导端到端走通~~ **结论纠正（协调者指示）**：那份 config.yaml 正是 firstRun 写盘产生的，**证明不了向导走完**。正确表述：**向导窗口起来了；逐题走完未被证实**。
+  - 验收 ①窗口显示向导 ②问题能逐个前进 ③答完后配置写进临时 HOME —— **待人工在有授权的机器上走查（记为未决）**：协调者本机无辅助功能/屏幕录制授权（`osascript` 返 -1719、`screencapture` 返 `could not create image from display`），驱动不了也看不到窗口。不要留成已完成。
+  - 验收 ④中途关窗不留 config.yaml —— 已由 SIGKILL 复验覆盖并通过（见下「终审后协调者收尾指示」第 5 条审计者独立复验）。
+  - 另注意：launchd label 固定值 B71，走查会与派发本任务的机器上的运行中 agentd 抢 label/DataDir，故不在执行机上重跑向导。
+
+## Task 8 干净检出验收门（协调者本机执行）
+
+在 commit 35b675c5 上干净检出（mktemp + git clone），实际输出：
+
+- Step 2（构建前端前，协调者修正版）：`go build ./...` OK；`go test ./...` 32 个包 ok、无 FAIL（coordinator 修正原步骤：干净检出上 main.go 的 `//go:embed all:frontend/dist` 指向构建产物，`cd desktop && go test ./...` 必然报 no matching files found——这是 W5b-1 写进 desktop/README.md:32 的既定行为，不是缺陷，故 Step 2 只测根模块 + desktop 的 internal）；`cd desktop && go test ./internal/...` 两包 ok（embedbin、shell）。
+- Step 3（构建前端后）：`cd desktop && PATH="$HOME/go/bin:$PATH" ~/go/bin/wails3 task build` 成功（vite built + go build -tags production 出 bin/handoff-desktop）；`go build ./...` OK（仅 macOS 链接器警告：object built for macOS 26 vs linked 11，无害）；`go test ./... -count=1` 全过（desktop 根包 no test files、embedbin/shell ok）。
+- **洁净判据**：`git status --porcelain` **输出为空（0 行）**。通过。
+- 未提交 dist 占位文件（W5b-1 试过并被判死的路，不重走）。
+
+## 收尾
+
+- 2026-08-17 协调者升级 Minor M20/M22 并处理，commit 35b675c5：M20 → MaybeInstallService 的 InstallService==nil 分支补 `slog.Warn(..., "cfg_path", cfgPath)`（薄壳走不到此分支，是「理论上不该被走到」的路，将来真被调用即设计被违反的信号，现场只剩日志能说明）；M22 → 新增 TestEventPrompterSelectRejectsUnknownAnswer（喂非法值断言返回错误，钉住 plan 定为承重的「Select 拒非法值」行为——变异把 for 循环换成 return ans, nil 现有用例全绿，只有它能拦住）。同时删除孤儿文件 desktop/frontend/"Inter Font License.txt"（字体已删，许可成悬空资产）。M19/M21/M23 协调者认可定级不动。
+
+## 终审
+
+- 2026-08-17 整分支终审（相对 92656f00 完整 diff，15 commit）。承重项 7/8 PASS、全局约束 10/10 PASS、spec 符合性 PASS、代码质量 PASS。**承重项 #2 FAIL——关键缺陷**：`config.Load`（config.go:308-312）在文件不存在（firstRun）时会 save() 写默认配置（随机 token）；startWizard 在 AskAll 前调 Load 即落盘，用户取消/问答失败后文件仍在，下次启动 Resolve stat 命中 → StateConfigured → **向导永不再现**。实现避开了 config.Save 却漏了 Load 的 firstRun 写盘副作用。真机走查没拦住的原因：验收 ④「中途关窗后无 config.yaml」从未被跑（走查只跑成功路径，成功路径上 Save 覆盖看不出问题）。结论 NEEDS-FIX，一次性修复波。
+- 2026-08-17 修复波 commit f389a017，范围复审 APPROVED。修复 1（承重）：startWizard 在 Load 前 os.Stat 记 existed，AskAll 出错分支 `!existed` 时 os.Remove 回滚 firstRun 写盘，成功路径 Save 不受影响；Load 错误分支不回滚判定可接受（firstRun 写盘失败时文件要么没写成→stat 不存在→向导重现，要么半写→Resolve 走 Load 错误分支显示显式错误，都不会静默判已配置）。修复 2（M34）wizard.ts submit 加 `if (btn.disabled) return;` 拦双发。修复 3（M33）补 TestResolveBinPathRejectsDirectory，配套把 binpath.go 的 lastErr 拼进最终错误让「不是常规文件」文案透传（复审裁决必要且无害）。修复 4（M27）三态表补 embedVer 空 → UseExisting 子用例。探针验证：Load firstRun 写盘确认 → os.Remove → stat 不存在，探针文件已删。新发现 Minor 1 条：M38 binpath.go 多候选全失败只透传最后一个候选的原因（可 errors.Join 汇总，非必须）。
+
+## 结论
+
+W5b-2 全部 8 task + 终审修复波完成，分支 handoff/w5b2-onboarding 终裁 APPROVED。所有承重项通过：绝不覆盖用户已有安装 / 取消不写盘（含 firstRun 回滚）/ wizard-answer 只注册一次 / launchd 绝对路径 / CLI 行为不变 / 内嵌缺席即编译期失败 / shell 与 embedbin 不 import Wails / 不内嵌 agentd 不停 agentd。
+
+## 终审后协调者收尾指示（3 项，全部完成）
+
+**修复 A（承重）：firstRun 回滚只覆盖了一条路径，未封死**。终审抓到的修法（AskAll 出错时 os.Remove）只在「进程还活着且走到那个 return」时执行；kill -9/崩溃/托盘退出都不经过它，原缺陷以「崩溃」为触发条件原样成立。协调者裁定方向：**向导路径干脆不调 config.Load**，在 config 包加不落盘入口 `Defaults()`。
+
+- 复现（修复前 commit 9e332d78 之前）：temp HOME 起向导不答 → `kill -9` → `$TH/.handoff/config.yaml` 仍在且 token 非空（实测确认，含 `update/cli-check.json`）。
+- 修复 commit 9e332d78：config 包抽出 `newDefaultConfig()`/`applyComputedDefaults(cfg)`，Load 复用（行为等价，现有测试全绿证明），新增 `Defaults() *Config`（出厂默认 + 随机 token + 计算默认值 + validate，**零磁盘副作用**）；startWizard 改调 `config.Defaults()`，删除 os.Stat/existed/os.Remove 回滚段。desktop/main.go 同时修缺陷 B（见下）。
+- **第三处泄漏（实现者实测挖出）**：startWizard 改完后 SIGKILL 实测仍失败——`readInstalledVersion` 用 `exec.Command(path, "version")` 探测既有 handoff 版本，而 handoff CLI 每条命令跑完有 PersistentPostRun → maybeNotifyUpdate → config.Load，子进程继承桌面壳的 HOME，把 config.yaml 写进目标目录。
+  - **根因不在桌面壳**：根命令钩子无条件走 firstRun 写盘，违背 `cmd/version.go` 文件头「不读配置文件、必须能在没有 config.yaml 的机器上跑通」的契约。桌面壳只是第一个撞上的调用方；任何东西（脚本/包管理器/监控/CI）跑一次 `handoff version` 都会在真实 `~/.handoff` 留下一份从未配过对的 config.yaml，此后 Resolve 判「已配置」、向导永不再现。
+  - **第一版修法（commit f489d3d7）已回退**：原给 `readInstalledVersion` 的探测子进程套临时 HOME（`os.MkdirTemp` + `cmd.Env=append(...,"HOME="+tmp)` + defer RemoveAll）。回退理由（协调者裁定 + 实现者确认）：①对其他调用方（脚本/CI/监控）无效，洞在 CLI 钩子；②`defer os.RemoveAll` 在 SIGKILL 下不执行，只把残留从 config.yaml 换成越堆越多的孤儿临时目录（复验实测留下过 `handoff-version-probe-2416771840`，手工删除）；③会蒙住 CLI 侧这条契约的回归信号。
+  - **最终修复（commit 03fa22e）**：`maybeNotifyUpdate` 在 `config.Load` 之前先 `os.Stat(effectiveConfigPath())`，配置文件不存在直接 return（未配置的机器上「有新版本可升级」提示本就无意义，也符合该函数「绝不能成为故障源」的注释约定）。`config.Load` 的 firstRun 行为一字不动——status/tasks 等真需要配置的命令在自己的 RunE 里 Load，首次生成在那里是合理的。`desktop/main.go` 的 readInstalledVersion 恢复为原样 exec `handoff version`。
+  - **回归用例**：`cmd/version_test.go` 新增 `TestVersionCreatesNothingInEmptyHome`——隔离临时 HOME 下跑 version，命令成功、首行仍是版本号，且事后整个 `.handoff` 不存在（含 update/）。单独放到修复前的 21a73aa7 上跑 FAIL（报「根命令钩子把 firstRun 写盘带进了 version」），修复后 PASS，确实抓得住本 bug。
+- **修复后 SIGKILL 实测（commit 03fa22e，审核者在自有机器独立复验）**：`go build` CLI 到临时目录 + `wails3 task build` 薄壳，`PATH="$THEIRBIN:$PATH" HOME="$TH" ./bin/handoff-desktop` → 8s 后 `kill -9`：日志 `释出决策 ... existing=/private/var/folders/.../tmp.PB1O1lxqVh/handoff`（确认解析到构建的 CLI 而非 `~/.local/bin/handoff`）；`$TH/.handoff` **整个不存在**；无 `handoff-version-probe-*` 孤儿目录。判据通过。/ 注：不在执行机上覆盖 `~/.local/bin/handoff`——那是运行中 agentd 用的二进制，macOS `com.apple.provenance` 会让就地覆盖后的二进制被 SIGKILL，覆盖即砖；复验改在审核者自有机器用 PATH 前置进行。
+
+**修复 B（W5b-1 遗留，本轮暴露）：早期失败时 panic 不是弹对话框**。`go openConsole()` 起在 `app.Run()` 之前，失败足够早时（握手 401）showError → app.Dialog → InvokeSync → a.impl.isOnMainThread()，而 a.impl 由 app.Run() 初始化 → nil deref。
+
+- 复现（修复前）：temp HOME 放 WRONGTOKEN config.yaml 二次启动 → 401 → `panic: runtime error: invalid memory address or nil pointer dereference` at application.go:967（main.go:126 showError → main.go:192 go openConsole）。
+- 修复（9e332d78）：`go openConsole()` 换成 `app.Event.OnApplicationEvent(events.Common.ApplicationStarted, ...)` 后再起 goroutine。平台映射已核实：darwin `Mac.ApplicationDidFinishLaunching→Common.ApplicationStarted`（events_common_darwin.go:8）、linux `Linux.ApplicationStartup→`（events_common_linux.go:8）、windows `Windows.ApplicationStarted→`（events_common_windows.go:9）；a.impl 在 Run() 内初始化（application.go:659）恒先于 ApplicationStarted 发出，showError 路径安全。
+- **修复后实测（9e332d78 及其后的 bin，401 修复不受 readInstalledVersion 回退影响）**：同 401 场景 → 进程存活不 panic，日志 `ERROR 握手失败 cause="向 agentd … 状态码 401"`（走 showError 对话框路径）。通过。
+
+**ledger 走查结论纠正**：见上方「真机走查」段（原「写出有效 config.yaml、向导端到端走通」证明不了向导走完，已改为「向导窗口起来了；逐题走完未被证实」）。
+
+复审（最终修复 03fa22e 后）双裁决 APPROVED：Load 重构行为等价逐段核对、Defaults() 零副作用、maybeNotifyUpdate 的存在性守卫符合「自己绝不能成为故障源」约定且 config.Load firstRun 行为未动、平台事件映射（修复 B）核实闭合、readInstalledVersion 回退后无夹带、gofmt/vet/全量测试（32 包）全绿。~~M39 readInstalledVersion 的 HOME= 隔离在 Windows 不生效~~ **M39 撤销**：该隔离已整体回退，M39 无对象，不再记账。

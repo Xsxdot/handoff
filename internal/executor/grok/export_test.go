@@ -8,6 +8,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // WriteServeInfoForTest 暴露恢复凭据写入，供 grok_test 包做往返断言。
@@ -20,6 +21,15 @@ func WriteServeInfoForTest(p *Proc) error {
 // ServeSpecForTest 暴露 serveSpec，供 grok_test 包做 argv/env 安全边界断言。
 func ServeSpecForTest(repoPath, taskDir, model string, port int, secret string, env []string) prochost.Spec {
 	return serveSpec(repoPath, taskDir, model, port, secret, env)
+}
+
+// RenderStartPromptForTest exposes the same prompt helper used by Start.
+func RenderStartPromptForTest(req executor.StartReq) string {
+	prompt, err := renderStartPrompt(req.Task.ID, req.PlanContent, req.Discipline)
+	if err != nil {
+		panic(err)
+	}
+	return prompt
 }
 
 // NewTurnAccumulatorForTest 暴露回合累积器，供事件映射的纯逻辑断言
@@ -95,6 +105,16 @@ func FinishTurnForTest(a *Adapter, r *runState, stopReason, turnText string) {
 
 // NoteAskedViaToolForTest 模拟 OnAskQuestion 已在本回合转交过一个提问。
 func NoteAskedViaToolForTest(r *runState) { r.noteAskedViaTool() }
+
+// ParseResponseCompletedForTest 暴露用量解析，供 grok_test 包用真实报文断言。
+func ParseResponseCompletedForTest(params json.RawMessage) (*proto.Usage, bool) {
+	return parseResponseCompleted(params)
+}
+
+// ParseModelsUpdateForTest 暴露模型/窗口解析。
+func ParseModelsUpdateForTest(params json.RawMessage) (string, int, bool) {
+	return parseModelsUpdate(params)
+}
 
 func mustJSONString(s string) string {
 	b, err := json.Marshal(s)

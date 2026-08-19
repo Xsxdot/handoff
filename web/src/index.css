@@ -1,0 +1,206 @@
+@import 'tailwindcss';
+
+/* Geist 自托管：agentd 托管的控制台可能跑在无外网环境，不引 CDN（spec §7） */
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* dark 变体只在根元素带 .dark 类时生效；本轮不做主题切换，仅保留 shadcn 契约 */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.5rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.196 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.569 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.943 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  /* 状态色板：取自形态基准 prototypes/desktop-console/src/styles.css 的
+     --green / --amber / --red。intervention 单独给一个文字色，是因为
+     #e79b18 当 7px 圆点够醒目，当小字对白底只有约 2.4:1，读不清 */
+  --state-active: oklch(0.653 0.144 158.5);         /* ≈ #18a86b */
+  --state-intervention: oklch(0.735 0.153 68.5);    /* ≈ #e79b18 */
+  --state-intervention-text: oklch(0.565 0.117 65.8); /* ≈ #a66c09 */
+  --state-failed: oklch(0.638 0.163 24.8);          /* ≈ #df554f */
+  --file-accent: oklch(0.596 0.135 245.6);          /* ≈ #2187d7，原型的 --blue */
+  /* 项目身份色。取自原型 projectRows 的五个色值。
+     深色一组不是浅色的机械换算：同一个 hex 在深底上对比度会掉，
+     所以整体提亮并略降饱和——与 --state-* 那一组的做法一致 */
+  --project-1: oklch(0.606 0.233 303.9);  /* ≈ #9b5de5 紫 */
+  --project-2: oklch(0.665 0.124 240.5);  /* ≈ #4aa3df 蓝 */
+  --project-3: oklch(0.686 0.140 152.2);  /* ≈ #44b678 绿 */
+  --project-4: oklch(0.652 0.150 260.8);  /* ≈ #619df0 靛 */
+  --project-5: oklch(0.240 0.000 0);      /* ≈ #171717 近黑 */
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.804 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  /* 暗色档：同色相提亮。本轮不做主题切换（见文件顶部注释），但 shadcn 契约
+     要求 :root 与 .dark 成对，缺一档将来开主题切换时会静默塌成浅色值 */
+  --state-active: oklch(0.745 0.152 158.5);
+  --state-intervention: oklch(0.812 0.146 72.0);
+  --state-intervention-text: oklch(0.845 0.132 76.0);
+  --state-failed: oklch(0.715 0.165 22.0);
+  --file-accent: oklch(0.720 0.115 245.6);
+  --project-1: oklch(0.720 0.180 303.9);
+  --project-2: oklch(0.760 0.105 240.5);
+  --project-3: oklch(0.775 0.120 152.2);
+  --project-4: oklch(0.745 0.125 260.8);
+  --project-5: oklch(0.880 0.000 0);      /* 近黑在深底上必须翻成近白 */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-state-active: var(--state-active);
+  --color-state-intervention: var(--state-intervention);
+  --color-state-intervention-text: var(--state-intervention-text);
+  --color-state-failed: var(--state-failed);
+  --color-file-accent: var(--file-accent);
+  --color-project-1: var(--project-1);
+  --color-project-2: var(--project-2);
+  --color-project-3: var(--project-3);
+  --color-project-4: var(--project-4);
+  --color-project-5: var(--project-5);
+  --font-sans: var(--font-sans);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+
+  /* 滚动条弱化：系统默认的深色粗条在左栏 / 会话区 / 右栏同时出现时比内容还抢眼。
+     统一改成细的半透明滑块 + 透明轨道，hover 才加深——滚动条是导航辅助，
+     不该在静止时参与视觉层级。
+
+     两套写法都要：scrollbar-* 是 Firefox 与新版 Chrome 的标准属性，
+     ::-webkit-scrollbar 覆盖 Safari 与旧版 Chromium，缺一档就有浏览器落回默认粗条。
+     颜色用 color-mix 从 --foreground 调，深浅两个主题各自跟随，不写死灰值 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    border-radius: 999px;
+    /* 透明边框 + background-clip 让滑块比轨道更细，两侧留出呼吸位 */
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--foreground) 35%, transparent);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}

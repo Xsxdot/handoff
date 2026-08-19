@@ -63,11 +63,23 @@ func withFakeLimit(t *testing.T, limit int, limitErr error) {
 }
 
 // withPolicy 临时改策略，恢复交给 t.Cleanup。
+//
+// **同时把 fenceHardLimitMode 钉成 false**：它由平台常量初始化
+// （defaultFenceHardLimitMode，Windows 上是 true），而所有用本 helper 的用例
+// 验的都是 reserve_ratio 那条路。不钉的话 fenceLimit 会在 Windows 上从
+// 硬上限档直接返回 fenceTaskHardLimit（默认 0），用例看到的是「围栏应为
+// 2400，得到 0」——像是算错了，实际是走了另一条分支。
+//
+// 2026-08-18 这件事真的发生了：本分支的 Windows 用例第一次在 CI 上跑
+// （run 32149311654），四条一起红。验硬上限档的
+// TestFenceLimitHardLimitMode / …IgnoresProcLimit 自己钉 true，两条路都测得到。
 func withPolicy(t *testing.T, disabled bool, ratio float64) {
 	t.Helper()
-	oldD, oldR := fenceDisabled, fenceReserveRatio
-	fenceDisabled, fenceReserveRatio = disabled, ratio
-	t.Cleanup(func() { fenceDisabled, fenceReserveRatio = oldD, oldR })
+	oldD, oldR, oldM := fenceDisabled, fenceReserveRatio, fenceHardLimitMode
+	fenceDisabled, fenceReserveRatio, fenceHardLimitMode = disabled, ratio, false
+	t.Cleanup(func() {
+		fenceDisabled, fenceReserveRatio, fenceHardLimitMode = oldD, oldR, oldM
+	})
 }
 
 // 正常机器：2666 的上限、10% 保留额 → 围栏 2400，救护车道 266。
@@ -124,7 +136,7 @@ func TestFenceLimitDisabled(t *testing.T) {
 // 读数不可信时 Known=false，且 Full/NearFull 恒为 false——调用方据此
 // fail-open。为「量不出来」而拒绝派发，代价远大于收益。
 func TestCheckAdmissionUnknownFailsOpen(t *testing.T) {
-	withFakeProcs(t, 100, 0, errNotSupported)
+	withFakeProcs(t, 100, 0, ErrNotSupported)
 	withPolicy(t, false, 0.1)
 	a := CheckAdmission()
 	if a.Known {
@@ -236,5 +248,57 @@ func TestApplyFencePolicyDisabledLeavesZero(t *testing.T) {
 	applyFencePolicy(&spec)
 	if spec.NprocLimit != 0 {
 		t.Fatalf("策略关闭时围栏值应为 0，得到 %d", spec.NprocLimit)
+	}
+}
+
+// TestFenceLimitHardLimitMode 钉住 Windows 模式下的围栏值来源。
+//
+// 为什么要有这条：Windows 没有 RLIMIT_NPROC 式的每用户上限，reserve_ratio 那套
+// 算不出数（procLimit 返回未实现），照搬会让围栏静默缺席——真机日志实测过
+// 「读不到系统进程上限，本次不设围栏」。本用例把「换一套取值来源」钉死。
+func TestFenceLimitHardLimitMode(t *testing.T) {
+	oldMode, oldHard, oldDisabled := fenceHardLimitMode, fenceTaskHardLimit, fenceDisabled
+	t.Cleanup(func() {
+		fenceHardLimitMode, fenceTaskHardLimit, fenceDisabled = oldMode, oldHard, oldDisabled
+	})
+	fenceHardLimitMode, fenceDisabled = true, false
+
+	// 取 TaskHardLimit 原值，不做保留比例换算
+	fenceTaskHardLimit = 1200
+	got, err := fenceLimit()
+	if err != nil || got != 1200 {
+		t.Fatalf("硬上限模式应取 TaskHardLimit 原值：got=%d err=%v，want=1200 nil", got, err)
+	}
+
+	// TaskHardLimit==0 是「不启用该档」的合法表达，不是错误
+	fenceTaskHardLimit = 0
+	got, err = fenceLimit()
+	if err != nil || got != 0 {
+		t.Fatalf("TaskHardLimit=0 应为不设围栏且不报错：got=%d err=%v，want=0 nil", got, err)
+	}
+
+	// 全局关掉围栏优先于一切
+	fenceDisabled, fenceTaskHardLimit = true, 1200
+	got, err = fenceLimit()
+	if err != nil || got != 0 {
+		t.Fatalf("fenceDisabled 应优先：got=%d err=%v，want=0 nil", got, err)
+	}
+}
+
+// TestFenceLimitHardLimitModeIgnoresProcLimit 证明硬上限模式**根本不碰** procLimit。
+//
+// 这是本次改动的要害：Windows 上 procLimit 返回错误，只要 fenceLimit 还调它，
+// 围栏就还是算不出来。用一个必然失败的 procLimitFn 把这条路钉死。
+func TestFenceLimitHardLimitModeIgnoresProcLimit(t *testing.T) {
+	oldMode, oldHard, oldFn := fenceHardLimitMode, fenceTaskHardLimit, procLimitFn
+	t.Cleanup(func() {
+		fenceHardLimitMode, fenceTaskHardLimit, procLimitFn = oldMode, oldHard, oldFn
+	})
+	fenceHardLimitMode, fenceTaskHardLimit = true, 800
+	procLimitFn = func() (int, error) { return 0, errors.New("本平台不支持进程枚举") }
+
+	got, err := fenceLimit()
+	if err != nil || got != 800 {
+		t.Fatalf("硬上限模式不得依赖 procLimit：got=%d err=%v，want=800 nil", got, err)
 	}
 }

@@ -19,7 +19,7 @@ func TestTaskModelOverridesEnv(t *testing.T) {
 	quietLog(t)
 	t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
 	taskDir := t.TempDir()
-	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan")
+	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	quietLog(t)
 	t.Run("env 兜底", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	})
 	t.Run("都空则不写", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	const taskID = "T-2026-0001"
 	plan := "1. 实现 foo\n2. 修复 bar\n{\"ask\":\"要第三方库吗?\"}"
 
-	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan)
+	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan, "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -124,6 +124,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	for _, pattern := range []string{
 		"*rm -rf*", "*rm -fr*", "rm *", "*sudo*",
 		"*git push*", "*git reset --hard*", "*--force*", "curl *", "wget *",
+		"*>/*", "*> /*", "*>~*", "*> ~*",
 	} {
 		if got := cfg.Permission.Bash[pattern]; got != "ask" {
 			t.Errorf("permission.bash[%q] = %q，期望 ask", pattern, got)
@@ -146,7 +147,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 
 	newPlan := "改版后的计划：只做一件事"
-	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan); err != nil {
+	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan, ""); err != nil {
 		t.Fatalf("重复调用 WriteTaskEnv: %v", err)
 	}
 	again, err := os.ReadFile(promptPath)
@@ -158,6 +159,53 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 }
 
+func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
+	_, promptPath, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "计划正文", "# 执行纪律\n单上下文版内容")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "单上下文版内容") {
+		t.Fatalf("纪律块未进入 opencode prompt: %q", raw)
+	}
+}
+
+// TestBashRulesRejectBareRedirectGlob 守住一条取舍：不许把重定向模式放宽成 "*>*"。
+//
+// "*>*" 会命中 2>&1，而 `go test ./... 2>&1 | tail` 是高频写法，每条都送 Consult；
+// 在没配审批者的部署上 Consult 会退化成升级人工，等于把审批回路淹掉。
+func TestBashRulesRejectBareRedirectGlob(t *testing.T) {
+	quietLog(t)
+	// 第 5 个参数是纪律块（B129 引入），本用例只关心 bash 规则表，传空串
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	if _, ok := cfg.Permission.Bash["*>*"]; ok {
+		t.Fatal(`bashPermissionRules 不得含 "*>*"——它会命中 2>&1，见本用例注释`)
+	}
+	for _, p := range []string{"*>/*", "*> /*", "*>~*", "*> ~*"} {
+		if got := cfg.Permission.Bash[p]; got != "ask" {
+			t.Fatalf("模式 %q = %q，期望 ask——少一条就是一条静默放行的重定向通道", p, got)
+		}
+	}
+}
+
 // TestExternalDirectoryIsAsk 锁死 B27 对 opencode 的真实拦截点。
 //
 // opencode 的越界写入不是靠 edit 的 ask 拦的（edit 是 allow、范围内写入
@@ -165,7 +213,7 @@ func TestWriteTaskEnv(t *testing.T) {
 // ~/.ssh/authorized_keys 就会连事件都不留。
 func TestExternalDirectoryIsAsk(t *testing.T) {
 	quietLog(t)
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -183,5 +231,84 @@ func TestExternalDirectoryIsAsk(t *testing.T) {
 	}
 	if got := cfg.Permission.ExternalDirectory; got != "ask" {
 		t.Fatalf("external_directory 必须是 ask，实得 %q——这是 opencode 侧唯一的越界写入拦截点（B27）", got)
+	}
+}
+
+// TestBashRulesAskOnTee 钉住 B151 的 opencode 半边。
+//
+// 真机基线（2026-08-18，任务 4feb3766）：`echo oc-tee-probe | tee /tmp/b151-oc-tee.txt`
+// **零权限请求、文件实写 13 字节**——opencode 的 external_directory 对管道后的写命令
+// 是盲的，而静态表末尾是 "*": "allow"，于是它连 permgate 都到不了。
+//
+// 为什么是宽模式 "*tee*" 而不是 "*tee /*" 那种锚定形态：落点可以被标志隔开
+// （tee -a /tmp/x）、被引号包住、跟在管道后也可以不跟，锚定形态要枚举四五条还留缝。
+// 而 tee 在构建/测试流里本就低频，误伤的代价只是一次 Consult，不是拦截。
+// 这与重定向那四条的取舍方向不同，是因为那边要避开高频的 2>&1。
+func TestBashRulesAskOnTee(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	if got := cfg.Permission.Bash["*tee*"]; got != "ask" {
+		t.Fatalf(`模式 "*tee*" = %q，期望 ask——少了它，| tee /tmp/x 零请求实写（B151）`, got)
+	}
+	// 兜底 allow 必须还在：本轮只补漏，不反转整张表（B150 已并入 B151 并记明理由）
+	if got := cfg.Permission.Bash["*"]; got != "allow" {
+		t.Fatalf(`兜底模式 "*" = %q，期望 allow——本轮不反转静态表`, got)
+	}
+}
+
+// TestBashRulesAskOnParamWriteCommands 钉住 B151 的第二轮：ln / install / dd
+// 也必须落 ask，理由与 tee 同族。
+//
+// 真机基线（2026-08-18，任务 64569d7f）：整个任务只产生 **1 次**权限请求
+// （`mv probe-mv.txt /tmp/x` 经 external_directory 检出），而
+// `ln -s /etc/hosts /tmp/b151-ln`、`install -m 644 x /tmp/b151-install.txt`、
+// `dd if=/dev/zero of=/tmp/b151-dd.bin` **三条零权限请求、文件全部实写**。
+// 也就是说 opencode 的 external_directory 只认 cp/mv 两个。
+//
+// 为什么带空格锚定而不是裸包含：`"*ln*"` 会被 `grep alnum` 这类命令命中，
+// 平白送进审批链；tee 那条敢裸包含是因为 "tee" 作为子串罕见。
+func TestBashRulesAskOnParamWriteCommands(t *testing.T) {
+	quietLog(t)
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("读取 opencode.json: %v", err)
+	}
+	var cfg struct {
+		Permission struct {
+			Bash map[string]string `json:"bash"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("opencode.json 解析失败: %v", err)
+	}
+	for _, p := range []string{"ln *", "* ln *", "install *", "* install *", "dd *", "* dd *"} {
+		if got := cfg.Permission.Bash[p]; got != "ask" {
+			t.Fatalf("模式 %q = %q，期望 ask——少一条就是一条静默放行的越界写通道（B151）", p, got)
+		}
+	}
+	// 裸包含模式会误伤（"ln" 是常见子串），不许出现
+	for _, p := range []string{"*ln*", "*dd*"} {
+		if _, ok := cfg.Permission.Bash[p]; ok {
+			t.Fatalf("不得含裸包含模式 %q——它会命中 grep alnum 这类无关命令", p)
+		}
 	}
 }

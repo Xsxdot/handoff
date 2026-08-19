@@ -20,6 +20,17 @@ import (
 	"github.com/Xsxdot/handoff/internal/release"
 )
 
+// 推送模式的等待超时必须给 Windows 的重启节奏留余量。
+//
+// Windows 上计划任务的重复触发最坏空窗接近 60 秒；旧值 60 秒正好压在线上，
+// 会让换版表现为间歇性失败。
+func TestUpgradeWaitTimeoutPushLeavesRoomForWindowsRepetition(t *testing.T) {
+	const windowsWorstCaseGap = 60 * time.Second
+	if upgradeWaitTimeoutPush < 2*windowsWorstCaseGap {
+		t.Fatalf("推送超时 %v 不足 Windows 最坏空窗 %v 的两倍；Windows 换版靠计划任务每分钟重复触发拉起，余量不足会让换版间歇性失败", upgradeWaitTimeoutPush, windowsWorstCaseGap)
+	}
+}
+
 // fakeMachine 是一台被完全替身化的机器：既不联网也不动任何真实文件。
 //
 // 用指针（map[string]*fakeMachine）：fake peer 的 PushUpdate 要把 pushed
@@ -618,5 +629,39 @@ func TestChecksumFetchedOncePerRun(t *testing.T) {
 
 	if fetcher.checksumCalls != 1 {
 		t.Errorf("checksums 应只下一次，实得 %d 次", fetcher.checksumCalls)
+	}
+}
+
+// 巡检表里，没有 release 版本号的机器必须回落显示提交号，不能留一片空格。
+//
+// 背景（B147）：Version 只在 -ldflags 注入时才有值，手工 go build 的 agentd
+// 该字段为空。改前 win-b37 那一行版本列是空的，而 handoff status 明明报得出
+// revision——读表的人无从区分「没探到」与「没版本号」。
+func TestRenderCheckRowFallsBackToRevision(t *testing.T) {
+	var buf bytes.Buffer
+	renderCheckRow(&buf, machineState{
+		Ep:       Endpoint{Name: "win-b37"},
+		Agentd:   "",
+		Revision: "85c1e2322a086e237f63261f7b9ea3e05f2733e4",
+		Platform: "windows/amd64",
+	}, "v0.2.3")
+	out := buf.String()
+	if !strings.Contains(out, "85c1e2322a08") {
+		t.Fatalf("无 release 版本号时应回落显示提交号，实得：%q", out)
+	}
+	if strings.Contains(out, "85c1e2322a086e") {
+		t.Fatalf("提交号应截到 12 位，与 handoff status 同宽，实得：%q", out)
+	}
+}
+
+// 两者都没有时仍然留空——不能编一个假版本号出来。
+func TestRenderCheckRowNoVersionNoRevisionStaysBlank(t *testing.T) {
+	var buf bytes.Buffer
+	renderCheckRow(&buf, machineState{
+		Ep:       Endpoint{Name: "win-b37"},
+		Platform: "windows/amd64",
+	}, "v0.2.3")
+	if strings.Contains(buf.String(), "（非 release 构建）") {
+		t.Fatalf("没有提交号时不应渲染回落文案，实得：%q", buf.String())
 	}
 }

@@ -1,0 +1,26 @@
+# 由 handoff agentd 生成的任务级 grok 配置，勿手工编辑。
+
+[ui]
+permission_mode = "default"
+
+[models]
+default = "grok-4.5"
+
+[permission]
+ask = [
+  "Write(*)",
+  "Edit(*)",
+  "Bash(rm *)",
+  "Bash(*sudo*)",
+  "Bash(*git push*)",
+  "Bash(*git reset --hard*)",
+  "Bash(*--force*)",
+  "Bash(curl *)",
+  "Bash(wget *)",
+  "WebFetch(*)",
+]
+allow = [
+]
+
+[cli]
+auto_update = false

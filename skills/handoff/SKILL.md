@@ -124,6 +124,20 @@ handoff wait <task> --notify --timeout 1h
 你正忙时流入，cursor 已经推进而你还没看。**任何处置前先 show，以 `state` +
 `pending_tickets` 为准。**
 
+### 另一个会话只等本任务归档
+
+后续会话的实现依赖当前任务**真正审核归档**时，那个会话挂一条门闩就够了：
+
+    handoff wait <完整 task-id> --until-done --timeout 3h
+
+它不消费协调者的游标，也不把 question / permission_request / completed 送进后续
+会话；只在 `handoff done` 产生 `archived` 后输出一行原始事件。退出 `0` 才能开工，
+`124` 表示本轮等待到期（任务还没归档），其他非 0 是依赖失败或配置错误。
+
+**它只负责唤醒，不自动 dispatch**，也不能替代本任务自己的 `wait --follow` 审核
+订阅——工单、completed、`done` 仍由本任务的协调者照常处理。`--timeout` 在这个模式
+下是**总时限**，中间帧不续命：否则一个永远没人 `done` 的任务能把门闩拖到天荒地老。
+
 ### cursor 语义：为什么 wait 可能吐出旧事件
 
 `wait` 的「不重不丢」靠协调者**本机**的游标文件（`~/.handoff/cursors/` 下按 agentd 地址分命名空间，每任务一个），且**只有 wait 成功交付事件时才推进**。两个直接后果：
@@ -213,7 +227,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 | `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer "..."` |
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
 | `failed` | 一轮以失败收尾，任务进 `waiting_review`（executor 会话还在） | 与 `completed` 同路：`diff` 取证后 `continue` 续接重试或 `done` 归档。**别急着重新 dispatch**——只有 `show` 确认状态真是 `failed`（stop/启动失败）才需要重派 |
-| `archived` | 任务被 `done` 归档，`payload.note` 是协调者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是协调者时无需动作 |
+| `archived` | 任务被 `done` 归档，`payload.note` 是协调者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是协调者时无需动作。只有 `wait --until-done` 把它当成功信号；`wait --follow` 收到它后随连接正常结束 |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
 | `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
 
@@ -242,7 +256,20 @@ handoff fetch <task> internal/foo/bar.go # 读任务仓库里的单个文件
 handoff run <task> go test ./...         # 在任务仓库执行命令（sh -c，10min 超时）
 ```
 
+`handoff diff` 默认用任务自己的基线提交，没有才按仓库默认分支推导。所以默认 diff
+就是这个任务的改动，不再含 base 分支与任务分支之间的历史。
+
 **`handoff run` 的参数顺序有坑**：handoff 自己的 flag 必须写在 `<task>` **之前**，任务名之后的一切（含 `-v`、`--race`）都原样透传给被执行的命令。
+
+**`handoff run` 的参数按个数分两档**：
+
+- **只给一个参数** = 一条 shell 命令原文，原样交给远端 `sh -c` 解析：
+  `handoff run T1 "cd web && npm test"`
+- **给多个参数** = argv，逐个做 shell 转义后再拼接。你敲的引号、空格、元字符
+  原样到达远端：`handoff run T1 grep -rn 'foo bar' .`
+
+B66 之前多参数形态是直接空格重拼的，`'foo bar'` 到远端会变成两个参数——静默失真，
+不报错。
 
 ```bash
 handoff run --target devbox T1 go test -race ./...   # ✅ --target 在任务名之前

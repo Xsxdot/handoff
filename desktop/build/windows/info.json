@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "handoff",
+			"FileDescription": "handoff 桌面薄壳：托管本机 agentd 并打开 Web 控制台",
+			"LegalCopyright": "© 2026, handoff",
+			"ProductName": "handoff-desktop",
+			"Comments": "https://github.com/Xsxdot/handoff"
+		}
+	}
+}

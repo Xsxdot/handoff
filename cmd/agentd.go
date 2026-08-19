@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
@@ -67,8 +68,17 @@ var agentdCmd = &cobra.Command{
 		slog.SetDefault(logger)
 
 		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
-		// 这两个包级值，晚一步就会有任务在默认策略下开工
-		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio)
+		// 这些包级值，晚一步就会有任务在默认策略下开工
+		prochost.SetFencePolicy(cfg.ProcFence.Disabled, cfg.ProcFence.ReserveRatio,
+			cfg.ProcFence.TaskHardLimit)
+		if supported, reason := prochost.MarkCapability(); supported {
+			logger.Info("任务标记归属可用，进程归属不依赖采样时机")
+		} else {
+			logger.Warn("任务标记归属不可用，进程归属退回其它判据",
+				"reason", reason,
+				"fallback", prochost.FallbackKind(),
+				"note", "Windows 上这是预期形态：回收由 Job Object 进程容器承担")
+		}
 
 		// PATH 补全（B7 + B71）：agentd 常由非登录 shell 或进程管理器拉起，
 		// 拿到的 PATH 可能只有 /usr/bin:/bin:/usr/sbin:/sbin。必须早于任何
@@ -144,11 +154,16 @@ var agentdCmd = &cobra.Command{
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
-		// 五个执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
-		// 是真实执行，fake 用于演示/测试。缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
+		srv.SetConfigPath(p)
+		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
+		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
+				if runtime.GOOS == "windows" {
+					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/codex/fake）", executorFlag)
+				}
 				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
@@ -165,7 +180,7 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.DisciplineMapping, ap, gate, logger)
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
@@ -183,8 +198,25 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
+		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
+		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
+		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
+		// 会让这些合法的迁移在首轮就被误判成失配
+		wdStart := time.Now()
 		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
-			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim, logger)
+			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
+			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
+
+		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，
+		// 让浏览器只连本机一条 WS 也能看到远端任务的实时事件。没有远程机器就
+		// 没必要开一条常驻循环——空转只会占一个 goroutine 与每 30s 一次空轮询。
+		if len(cfg.Targets) > 0 {
+			mirror := agentd.NewMirror(cfg, st, srv.Hub(), logger)
+			go mirror.Run(wdCtx)
+			logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
+		} else {
+			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
+		}
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -263,15 +295,46 @@ func logExecutorDetection(log *slog.Logger, defaultExecutor string, rs []toolcha
 //
 // 抽成函数而非内联字面量：注册表是 dispatch --executor 路由的唯一真相，
 // 漏注册的症状是「派发时报未注册」而不是编译错误，值得一条断言守着
-// （见 agentd_test.go 的 TestAdapterRegistryHasAllExecutors）。
+// （见 agentd_test.go 的 TestAdapterRegistryHasAlwaysAvailableExecutors）。
 func defaultAdapters(logger *slog.Logger) map[string]executor.Adapter {
-	return map[string]executor.Adapter{
+	return adaptersFor(runtime.GOOS, logger)
+}
+
+// claude 从 B128 起在所有平台注册：Windows 的输入通道（inputch_windows.go）
+// 与裁决 socket（AF_UNIX，Windows 原生支持）都已落地。
+// adaptersFor 按平台能力构造执行器注册表。
+//
+// 参数：goos 为目标平台；logger 用于播报不注册的理由
+//
+// 返回：可用执行器的注册表。
+//
+// 注意：
+//   - **不注册必须有明确理由并打日志**：静默缺席会让用户以为是配置问题，
+//     而 dispatch 在门口被拒时只知道「没这个执行器」
+//   - grok 走**运行期能力探测**而不是按平台写死：它卡的是符号链接权限，
+//     而那是部署形态决定的（管理员 / 开发者模式），同一个 Windows 上装法
+//     不同结论就不同。写死等于把一台其实可用的机器判成不可用
+func adaptersFor(goos string, logger *slog.Logger) map[string]executor.Adapter {
+	return adaptersForWithProbe(goos, logger, os.TempDir())
+}
+
+// adaptersForWithProbe 是 adaptersFor 的可测形态：探测目录由调用方给。
+func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map[string]executor.Adapter {
+	ads := map[string]executor.Adapter{
 		"opencode": opencode.New(logger),
-		"claude":   claudecode.New(logger),
-		"grok":     grok.New(logger),
 		"codex":    codex.New(logger),
+		"claude":   claudecode.New(logger),
 		"fake":     fake.New(nil),
 	}
+	if supported, reason := grok.SymlinkCapability(probeDir); supported {
+		ads["grok"] = grok.New(logger)
+	} else {
+		logger.Warn("不注册 grok：本机不具备创建符号链接的能力",
+			"reason", reason,
+			"note", "grok 用软链让 auth 文件只有一份权威副本，改成复制会让用户那份与任务那份静默漂移")
+	}
+	_ = goos // 平台不再直接决定注册面，保留参数是为了不改调用方与既有测试
+	return ads
 }
 
 // newAgentdHTTPServer 构造 agentd 的 HTTP 服务监听（独立成函数以便测试断言超时配置）。
@@ -303,7 +366,8 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 	}
 }
 
-// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok | codex | fake（脚本演示）。
+// executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
+// codex | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
 var executorFlag string
 
 func init() {

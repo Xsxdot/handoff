@@ -69,7 +69,8 @@ var allowRules = []string{}
 //
 // 参数：
 //   - taskDir: 任务工作目录（须已存在，由调用方保证）
-//   - model: 任务级模型；空则不写 [models] 段，用 grok 自身默认
+//   - model: 任务级模型；空则退回权威配置的 default，两者都空时不写 default
+//     （此时 [models] 段仍可能因搬来的辅助旋钮而存在）
 //
 // 返回：grokhome 目录路径；建目录或写文件失败时返回错误
 //
@@ -78,11 +79,20 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 	log := slog.Default()
 	homeDir = filepath.Join(taskDir, homeDirName)
 	log.Info("grok 生成任务环境", "task_dir", taskDir, "home", homeDir)
+	// 搬运结果与 default 来源在 defer 的日志里要用，先声明再赋值
+	var (
+		carried     carryResult
+		defaultFrom = "none"
+	)
 	defer func() {
 		if err != nil {
 			log.Error("grok 生成任务环境失败", "home", homeDir, "cause", err)
 		} else {
-			log.Info("grok 任务环境已生成", "home", homeDir, "model", model)
+			log.Info("grok 任务环境已生成", "home", homeDir, "model", model,
+				"provider_sections", len(carried.SectionNames),
+				"provider_names", carried.SectionNames,
+				"default_from", defaultFrom,
+				"models_extra_keys", carried.ModelsExtraKeys)
 		}
 	}()
 
@@ -90,13 +100,35 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 		return homeDir, fmt.Errorf("建 grok home %s: %w", homeDir, err)
 	}
 
+	// 权威配置里的自定义 provider 定义（B135）。不搬的话，配了自定义 provider
+	// 的机器上 grok 不认识任务级 default 里的模型名，会回落内建 x.ai provider
+	// 并报 Authentication required——报文指向「没登录」，根因其实是 provider 缺失。
+	carried = loadAuthorityProviderConfig(log)
+
+	// default 的取值优先级：--model 传入值 > 权威 config 的 default > 不写。
+	// 三选一而不是各写一段：TOML 不允许同名表定义两次，[models] 只能出现一次。
+	defaultModel := strings.TrimSpace(model)
+	switch {
+	case defaultModel != "":
+		defaultFrom = "flag"
+	case carried.DefaultModel != "":
+		defaultModel, defaultFrom = carried.DefaultModel, "authority"
+	}
+
 	var b strings.Builder
 	b.WriteString("# 由 handoff agentd 生成的任务级 grok 配置，勿手工编辑。\n\n")
 	b.WriteString("[ui]\n")
 	b.WriteString("permission_mode = \"default\"\n\n")
-	if m := strings.TrimSpace(model); m != "" {
+	// [models] 段：default 由上面的优先级决定，其余旋钮（web_search /
+	// session_summary / image_description 等）从权威配置原样搬来。
+	// 两者合成一段而不是各写一段——TOML 不允许同名表定义两次。
+	if defaultModel != "" || carried.ModelsExtra != "" {
 		b.WriteString("[models]\n")
-		fmt.Fprintf(&b, "default = %q\n\n", m)
+		if defaultModel != "" {
+			fmt.Fprintf(&b, "default = %q\n", defaultModel)
+		}
+		b.WriteString(carried.ModelsExtra) // 已归一化：每行带 \n、无尾随空行
+		b.WriteString("\n")
 	}
 	b.WriteString("[permission]\n")
 	b.WriteString("ask = [\n")
@@ -127,6 +159,13 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 	// config（注释保住），serve 正常监听。
 	b.WriteString("\n[cli]\n")
 	b.WriteString("auto_update = false\n")
+
+	// provider 定义追加在末尾：handoff 自己写的四段保持连续，便于逐字节比对与
+	// 人工核对。TOML 段顺序无语义，放末尾不影响 grok 读取。
+	if carried.ModelSections != "" {
+		b.WriteString("\n# 以下 provider 定义由 handoff 从 ~/.grok/config.toml 原样透传，勿手工编辑。\n\n")
+		b.WriteString(carried.ModelSections)
+	}
 
 	cfgPath := filepath.Join(homeDir, configFileName)
 	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {

@@ -18,7 +18,7 @@ import (
 )
 
 // swapStartServeForTest 替换包级 startServe 执行点，返回恢复函数。
-func swapStartServeForTest(fn func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error)) func() {
+func swapStartServeForTest(fn func(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error)) func() {
 	old := startServe
 	startServe = fn
 	return func() { startServe = old }
@@ -70,7 +70,7 @@ func TestResumeColdVerifiesSessionStillExists(t *testing.T) {
 	if err := writeProcInfo(dir, &procInfo{Handle: prochost.Handle{LockPath: filepath.Join(dir, "proc.lock")}, Port: 1, Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: port, Password: "p"}, nil
 	})
 	defer restore()
@@ -100,7 +100,7 @@ func TestResumeColdKeepsSessionWhenPresent(t *testing.T) {
 	if err := writeProcInfo(dir, &procInfo{Handle: prochost.Handle{LockPath: filepath.Join(dir, "proc.lock")}, Port: 1, Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: port, Password: "p"}, nil
 	})
 	defer restore()
@@ -124,7 +124,7 @@ func TestResumeColdKeepsSessionWhenPresent(t *testing.T) {
 func TestResumeColdMutualExclusion(t *testing.T) {
 	quietLog(t)
 	var starts int32
-	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+	restore := swapStartServeForTest(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 		atomic.AddInt32(&starts, 1)
 		time.Sleep(50 * time.Millisecond) // 拉长窗口，让第二个必然撞进来
 		return &Proc{Handle: prochost.Handle{PID: 1234, LockPath: filepath.Join(taskDir, "proc.lock")}, Port: 1, Password: "p"}, nil

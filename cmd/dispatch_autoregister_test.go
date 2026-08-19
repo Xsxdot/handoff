@@ -201,7 +201,6 @@ func TestDispatchAutoRegisterSurvivesMissingLocalAgentd(t *testing.T) {
 	targetName = "devbox"
 	agentdURL = "http://127.0.0.1:7777"
 	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
-	t.Cleanup(func() { dispatchNoTerminal = false })
 
 	rootCmd.SetArgs([]string{"dispatch", "--target", "devbox", "--prompt", "x", "--no-terminal"})
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })

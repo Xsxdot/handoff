@@ -23,6 +23,12 @@ import (
 // 但 4xx 能让协调者立刻知道「不用重试，先腾地方」。
 var ErrNoProcHeadroom = errors.New("进程余量不足")
 
+// ErrWorkdirGone 表示 run 要用的工作目录已不存在。
+//
+// why 单独一个哨兵：它是调用方的条件（多半是 managed worktree 已被 done/stop 回收），
+// 不是服务端故障，路由层据此返回 400 而不是 500。
+var ErrWorkdirGone = errors.New("工作目录不存在")
+
 // admissionFn 是余量判读的测试缝。**生产路径恒为 prochost.CheckAdmission**。
 var admissionFn = prochost.CheckAdmission
 

@@ -1,0 +1,38 @@
+{
+  "dir": "/Users/dev/.handoff/discipline",
+  "builtins": [
+    {
+      "tier": "subagent",
+      "content": "# 执行纪律（先读这段，再读 plan）\n\n1. 逐 task 派全新 subagent 实现。\n"
+    },
+    {
+      "tier": "single-context",
+      "content": "# 执行纪律（先读这段，再读 plan）\n\n1. 在本会话内自己逐 task 实现。\n"
+    }
+  ],
+  "files": [
+    {
+      "name": "codex-strict.md",
+      "size": 128,
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    }
+  ],
+  "bindings": [
+    {
+      "executor": "codex",
+      "mode": "file",
+      "file": "codex-strict.md",
+      "default_tier": "single-context"
+    },
+    {
+      "executor": "grok",
+      "mode": "off",
+      "default_tier": "single-context"
+    },
+    {
+      "executor": "opencode",
+      "mode": "default",
+      "default_tier": "subagent"
+    }
+  ]
+}

@@ -32,20 +32,27 @@ type Trailer struct {
 	Summary  string // finish 类型：50 字内摘要
 }
 
-// promptTemplate 是任务 prompt 的回合制纪律模板，逐字来自一期 spec §6 的落地。
+// ProtocolRules 是回合制协议铁律的原文，供启动 prompt 与 codex 的常驻指令复用。
 //
-// 注意：模板内嵌的 {"ask":...}/{"branch":...} 是给模型看的协议样例，
-// 与 text/template 语法不冲突（不含 {{ ），可直接放在字面文本中。
-const promptTemplate = `你是 handoff 任务 {{.TaskID}} 的执行者，按下方实现计划执行。铁律：
-1. 提问纪律：任何需要人决策的问题，输出单行 JSON {"ask":"<问题>"}
+// 只保留一份文本是为了避免首回合消息与常驻指令漂移；收尾纪律是
+// turn.ParseTrailer 的前提，漂移会让完成判定失去协议依据。
+const ProtocolRules = `1. 提问纪律：任何需要人决策的问题，输出单行 JSON {"ask":"<问题>"}
    然后结束本回合。协调者的回答会作为下一条消息发给你。
    禁止自行假设，禁止用其它格式提问。
 2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），
    然后输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}
    作为本回合最后一行。
-3. 只在当前分支工作，不切分支、不改 git 配置。
+3. 只在当前分支工作，不切分支、不改 git 配置。`
 
---- 实现计划 ---
+// promptTemplate 是任务 prompt 的骨架：标题行 + 协议铁律 + 可选纪律块 + 实现计划。
+// 纪律块用 {{if}} 包住，显式关闭注入时不会留下小标题或空段落。
+const promptTemplate = `你是 handoff 任务 {{.TaskID}} 的执行者，按下方实现计划执行。铁律：
+{{.ProtocolRules}}
+
+{{if .Discipline}}--- 执行纪律（先读这段，再读计划）---
+{{.Discipline}}
+
+{{end}}--- 实现计划 ---
 {{.PlanContent}}
 `
 
@@ -54,8 +61,10 @@ const promptTemplate = `你是 handoff 任务 {{.TaskID}} 的执行者，按下�
 var promptTmpl = template.Must(template.New("prompt").Parse(promptTemplate))
 
 type promptData struct {
-	TaskID      string
-	PlanContent string
+	TaskID        string
+	ProtocolRules string
+	Discipline    string
+	PlanContent   string
 }
 
 // RenderPrompt 渲染带回合纪律的启动 prompt。
@@ -64,11 +73,15 @@ type promptData struct {
 //   - taskID: 任务 ID，写入 prompt 标题行
 //   - planContent: 实现计划全文（dispatch 侧已把 --prompt 附加指令拼在其后），
 //     原样嵌入「实现计划」段，本函数不再二次拼接
+//   - disciplineBlock: 按执行者裁出的执行纪律块；空串表示不注入，产物不含纪律块标记
 //
 // 返回：渲染后的 prompt 全文；模板执行失败时返回错误
-func RenderPrompt(taskID, planContent string) (string, error) {
+func RenderPrompt(taskID, planContent, disciplineBlock string) (string, error) {
 	var buf bytes.Buffer
-	if err := promptTmpl.Execute(&buf, promptData{TaskID: taskID, PlanContent: planContent}); err != nil {
+	if err := promptTmpl.Execute(&buf, promptData{
+		TaskID: taskID, ProtocolRules: ProtocolRules,
+		Discipline: strings.TrimSpace(disciplineBlock), PlanContent: planContent,
+	}); err != nil {
 		return "", fmt.Errorf("渲染 prompt 模板: %w", err)
 	}
 	return buf.String(), nil

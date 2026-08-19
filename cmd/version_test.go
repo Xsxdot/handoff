@@ -7,6 +7,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -73,5 +75,44 @@ func TestVersionNeedsNoConfig(t *testing.T) {
 	}
 	if first := strings.SplitN(buf.String(), "\n", 2)[0]; first != versionUnknown {
 		t.Fatalf("首行=%q", first)
+	}
+}
+
+// version 在空 HOME 下跑完，不得在磁盘留下任何东西——这是 file 头注释那条
+// 「不读配置文件、必须在没有 config.yaml 的机器上跑通」契约的完整钉子。
+//
+// 坑：config.Load 在文件不存在时会 firstRun 落盘（生成随机 token），而根命令
+// 的 PersistentPostRun → maybeNotifyUpdate 曾因照常 Load 而把这个副作用带进
+// version（以及桌面壳探测、脚本、CI 等一切调 version 的调用方）——一台装了
+// CLI 但没配过的机器，任何人跑一次 version 就在真实 ~/.handoff 留下一份
+// 从未配过对的 config.yaml，此后 shell.Resolve 判「已配置」，图形向导永不
+// 再现。本用例用隔离的临时 HOME 钉死「跑完不留 .handoff」。
+func TestVersionCreatesNothingInEmptyHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// datadir 落到临时 HOME 下 .handoff；显式 --config 指向它，绕过测试进程
+	// 继承的真实 ~/.handoff
+	cfgPath := filepath.Join(home, ".handoff", "config.yaml")
+
+	resetFlags(t)
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"version", "--config", cfgPath})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("version 不应报错: %v", err)
+	}
+	if first := strings.SplitN(buf.String(), "\n", 2)[0]; first != versionUnknown {
+		t.Fatalf("首行=%q", first)
+	}
+	// 契约：跑完后整个 .handoff 都不存在（不仅 config.yaml，还有 update/ 等）
+	if _, err := os.Stat(filepath.Dir(cfgPath)); !os.IsNotExist(err) {
+		t.Fatalf("空 HOME 下跑 version 后不应生成 %s（got %v）——根命令钩子把 firstRun 写盘带进了 version",
+			filepath.Dir(cfgPath), err)
 	}
 }

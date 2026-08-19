@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -57,6 +58,12 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		a.log.Info("恢复凭据缺失，判不可恢复", "task", taskID, "cause", err)
 		return executor.ResumeOutcome{}, nil
 	}
+	taskTmp := taskTmpDir(taskDir)
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
+		return executor.ResumeOutcome{}, fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
+	}
+	a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
 
 	// 冷恢复互斥：先在 runs 上占位再拉进程，后到者直接返回「恢复进行中」。
 	// 两个 app-server 抢同一个 thread 是数据损坏级别的后果。
@@ -102,7 +109,9 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		}
 		a.log.Info("app-server 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "thread", threadID)
-		newProc, serr := startServe(context.Background(), repoPath, taskID, taskDir, req.Env, a.log)
+		env := append(append([]string{}, req.Env...), tmpEnvKVs(taskTmp)...)
+		newProc, serr := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
+			taskDir, env, a.log)
 		if serr != nil {
 			// 起不来是可预期现场（未登录/端口占用），按不可恢复处理而非错误
 			a.log.Warn("冷恢复重起 app-server 失败，判不可恢复", "task", taskID, "cause", serr)
@@ -114,7 +123,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		a.log.Info("冷恢复新 app-server 就绪", "task", taskID, "new_port", proc.Port)
 	}
 
-	r := newRunState(taskID, taskDir, repoPath)
+	r := a.newRunState(taskID, taskDir, repoPath)
 	r.proc = proc
 	r.threadID = threadID
 	if _, c, _, gerr := turn.GitTurnStatus(repoPath, ""); gerr == nil {
@@ -146,12 +155,11 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 	// thread/resume 必须把三个安全参数一起重传（spec §5.6）：恢复路径是最容易让
 	// 安全档位悄悄退回开发机 config 的地方。恢复后的第一个 turn/start 会再钉一遍，
 	// 两层都钉是刻意的。
-	if _, err := cli.Call(ctx, methodThreadResume, map[string]any{
-		"threadId":          threadID,
-		"cwd":               repoPath,
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": "user",
-	}); err != nil {
+	developerInstructions := developerInstructionsFor(req.Discipline)
+	a.log.Info("codex 恢复常驻指令已准备", "task", taskID,
+		"dev_instr_bytes", len(developerInstructions))
+	if _, err := cli.Call(ctx, methodThreadResume,
+		buildThreadResumeParams(threadID, repoPath, developerInstructions)); err != nil {
 		if !req.Cold {
 			_ = cli.Close()
 			a.log.Warn("thread/resume 失败，判不可恢复", "task", taskID, "cause", err)
@@ -161,7 +169,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		// 第 4 级：原 thread 载不进，新开一个。上下文断了，manager 会据 Mode=fresh
 		// 播报给协调者——这一条必须让人知道，它决定下一条指令要不要重述背景
 		a.log.Warn("thread/resume 失败，降级新开会话", "task", taskID, "cause", err)
-		if nerr := a.openThreadOnConn(ctx, r, repoPath, req.Model); nerr != nil {
+		if nerr := a.openThreadOnConn(ctx, r, repoPath, req.Model, developerInstructions); nerr != nil {
 			_ = cli.Close()
 			a.log.Warn("降级新开会话也失败，判不可恢复", "task", taskID, "cause", nerr)
 			return executor.ResumeOutcome{Alive: false,
@@ -185,16 +193,8 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 // openThreadOnConn 在既有连接上新开一个 thread（冷恢复降级第 4 级用）。
 //
 // 从 openThread 拆出「已握手之后 thread/start」那一段复用，不复制一份。
-func (a *Adapter) openThreadOnConn(ctx context.Context, r *runState, cwd, model string) error {
-	params := map[string]any{
-		"cwd":               cwd,
-		"sandbox":           "workspace-write",
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": "user",
-	}
-	if model != "" {
-		params["model"] = model
-	}
+func (a *Adapter) openThreadOnConn(ctx context.Context, r *runState, cwd, model, developerInstructions string) error {
+	params := buildThreadStartParams(cwd, model, developerInstructions)
 	res, err := r.cli.Call(ctx, methodThreadStart, params)
 	if err != nil {
 		return fmt.Errorf("codex thread/start: %w", err)
@@ -208,7 +208,8 @@ func (a *Adapter) openThreadOnConn(ctx context.Context, r *runState, cwd, model 
 		return fmt.Errorf("codex thread/start 未返回 threadId: %s", res)
 	}
 	r.threadID = out.Thread.ID
-	a.log.Info("codex 新 thread 已建立", "cwd", cwd, "thread", r.threadID)
+	a.log.Info("codex 新 thread 已建立", "cwd", cwd, "thread", r.threadID,
+		"dev_instr_bytes", len(developerInstructions))
 	return nil
 }
 

@@ -16,8 +16,11 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,14 +60,22 @@ const nameFallbackLimit = 50
 
 // RegisterProjectReq 是登记一个项目位置的请求。
 //
-// 两种形态由 Path 是否为空决定：
-//   - Path 非空：这台机器上已经有一份，用它（agentd 现读它的 origin 校验一致）
-//   - Path 为空：由本机 clone 到 cfg.RepoRoot/<Name>
+// 形态由 Path 是否给出 / 路径是否存在 / OriginURL 是否非空共同决定（三态决策表）：
+//   - Path 空 + OriginURL 空 → 400：既无身份也无落点
+//   - Path 空 + OriginURL 有 → 由本机 clone 到 cfg.RepoRoot/<Name>（或认领已有落点）
+//   - Path 非空且目录存在 → 登记已有仓（OriginURL 可省，省则现读 origin）
+//   - Path 非空且目录不存在 + OriginURL 空 → 400：无 URL 无法创建
+//   - Path 非空且目录不存在 + OriginURL 有 → clone 到该 Path 再登记
+//   - 其余非法组合 → 400
 //
-// 为什么没有 Clone 布尔位：形态已被 Path 完全决定，多一个布尔位只会多出
-// 一组无意义的非法组合。
+// Path 的形态约束：必须是**绝对路径**。相对路径与 ~ 一律 400——clone 落点与
+// 落库路径的解析基准不同，猜错的代价是一条指向不存在路径的死记录。
 //
-// Name 可省，此时由 OriginURL 末段派生；它只是人可读引用，不参与身份判定。
+// 为什么没有 Clone 布尔位：形态已被 Path + 文件系统状态 + OriginURL 是否为空
+// 完全决定，多一个布尔位只会多出一组无意义的非法组合。
+//
+// Name 可省，此时由 OriginURL（请求给出或现读的实际 origin）末段派生；
+// 它只是人可读引用，不参与身份判定。
 type RegisterProjectReq struct {
 	OriginURL string
 	Name      string
@@ -99,10 +110,14 @@ func projectOriginURL(ctx context.Context, repo string) (string, error) {
 // projectNameFromURL 从 git URL 末段派生缺省引用名（去掉 .git 后缀）。
 //
 // 例：git@github.com:Xsxdot/handoff.git → handoff
+//
+// why 分隔符集合里有反斜杠：origin 可以是 Windows 本地路径（`C:\work\x.git`）。
+// git URL 的四种形态（https/ssh/scp 简写/file）都不含反斜杠，把它加进集合
+// 对既有形态零影响，只有本地路径 origin 会走到这一支。
 func projectNameFromURL(url string) string {
-	s := strings.TrimRight(strings.TrimSpace(url), "/")
+	s := strings.TrimRight(strings.TrimSpace(url), `/\`)
 	s = strings.TrimSuffix(s, ".git")
-	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+	if i := strings.LastIndexAny(s, `/:\`); i >= 0 {
 		s = s[i+1:]
 	}
 	return s
@@ -134,7 +149,7 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// RegisterProject 登记一个项目位置（两种形态见 RegisterProjectReq）。
+// RegisterProject 登记一个项目位置（各形态与分派见 RegisterProjectReq 的决策表）。
 //
 // 参数：
 //   - ctx: 控制整组 git 调用的生命周期
@@ -150,21 +165,179 @@ func validateProjectName(name string) error {
 // 注意：
 //   - **登记在 clone 成功之后才落库**：反过来会在 clone 失败时留下一条指向
 //     不存在路径的死记录
+//   - Path 非空时必须是绝对路径，否则 400（见 RegisterProjectReq）
 //   - clone 的落点若已存在则直接拒绝，绝不往里 clone、绝不覆盖
 func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	m.log.Info("登记项目请求", "origin", req.OriginURL, "name", req.Name, "path", req.Path)
-	if strings.TrimSpace(req.OriginURL) == "" {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 登记必须带 origin_url（项目身份由它派生）",
-			errBadDispatchRequest)
-	}
-	if strings.HasPrefix(req.OriginURL, "-") {
+	req.OriginURL = strings.TrimSpace(req.OriginURL)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Path = strings.TrimSpace(req.Path)
+	if req.OriginURL != "" && strings.HasPrefix(req.OriginURL, "-") {
 		// git 会把以 - 开头的参数解释为选项——参数注入面，与 ErrBadBaseBranch 同源。
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", errBadDispatchRequest)
 	}
 	if req.Path != "" {
-		return m.registerExistingProject(ctx, req)
+		// path 必须是绝对路径：clone 落点由 gitRun（cwd=父目录）解析，落库路径由
+		// persistProject（cwd=agentd 进程）解析，两边基准不同——相对路径会让仓库
+		// 克隆到一处、位置表记到另一处，留下一条指向不存在路径的死记录。
+		// ~ 同理：Go 不展开它，不拦就会在 agentd 的 cwd 里造出字面量 ~ 目录。
+		// 不用 filepath.Abs 兜底：调用方不知道 agentd 的 cwd 是哪儿，猜一个
+		// "能算出来的路径"不等于猜对了用户要的路径。
+		if !filepath.IsAbs(req.Path) {
+			m.log.Warn("登记被拒：path 不是绝对路径", "path", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: path 必须是绝对路径（不支持 ~ 展开与相对路径）：%s",
+				errBadDispatchRequest, req.Path)
+		}
+		req.Path = filepath.Clean(req.Path)
+		return m.registerAtPath(ctx, req)
+	}
+	// 无 path：只能 clone 到 repo_root，必须带 origin——否则既无落点也无项目身份。
+	if req.OriginURL == "" {
+		return proto.ProjectLocation{}, fmt.Errorf(
+			"%w: 不带 path 时必须提供 origin_url（否则既无落点也无项目身份）",
+			errBadDispatchRequest)
 	}
 	return m.cloneAndRegisterProject(ctx, req)
+}
+
+// registerAtPath 处理 Path 非空的请求：按目录是否存在在「登记已有仓」与
+// 「clone 到该 Path」间分派。
+//
+// 目录不存在时：无 OriginURL → 400（无 URL 无法创建）；有 OriginURL →
+// cloneToPathAndRegister。目录存在时一律走 registerExistingProject——
+// 绝不往已存在的目录里 clone（那里是不是仓库、是不是本项目，由 inspect 校验说）。
+func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	_, err := os.Stat(req.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		if req.OriginURL == "" {
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 路径 %s 不存在，且未提供 origin_url，无法 clone",
+				errBadDispatchRequest, req.Path)
+		}
+		return m.cloneToPathAndRegister(ctx, req)
+	}
+	if err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", ErrRepoUnusable, req.Path, err)
+	}
+	return m.registerExistingProject(ctx, req)
+}
+
+// firstMissingAncestor 返回从 dir 往上第一个「尚不存在」的祖先目录——也就是
+// os.MkdirAll(dir) 会从哪一层开始真正创建目录。
+//
+// 参数：
+//   - dir: 待创建的目录（绝对路径）
+//
+// 返回：
+//   - 第一个不存在的祖先的绝对路径；dir 本身已存在时返回空串
+//
+// 为什么需要它：clone 失败要回收「本次自己造的」目录，而 MkdirAll 可能一次造好
+// 几层。只删最后那一层会留下中间空目录；从根上 RemoveAll 又会删掉调用方原本就有
+// 的目录。这个函数给出的正是那条分界线。
+func firstMissingAncestor(dir string) string {
+	missing := ""
+	for p := dir; ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		}
+		missing = p
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return missing
+}
+
+// cleanupCreatedDir 回收 clone 失败后本次新建的目录树。
+//
+// 参数：
+//   - created: firstMissingAncestor 的返回值；空串表示本次没造过任何目录，直接返回
+//
+// 注意：回收失败**不改变**调用方看到的错误——clone 的失败原因才是人要看的那条，
+// 残留目录只是需要人工清理的次要事实，写进 Warn 日志即可。
+func (m *Manager) cleanupCreatedDir(created string) {
+	if created == "" {
+		return
+	}
+	if err := os.RemoveAll(created); err != nil {
+		m.log.Warn("克隆失败后回收目录失败，需人工清理", "dir", created, "cause", err)
+		return
+	}
+	m.log.Info("克隆失败，已回收本次新建的目录", "dir", created)
+}
+
+// cloneToPathAndRegister 把 origin clone 到调用方指定的 dest（req.Path）再登记。
+//
+// 与 cloneAndRegisterProject 的区别只在落点：这里落点是 req.Path 原样使用，
+// 那里落点是 repo_root/<name> 并带「落点已存在则尝试认领」的归并逻辑。这里
+// 不做认领——落点已存在的请求根本不会进入本函数（由 registerAtPath 分流到
+// registerExistingProject），任意 path 上也没有 repo_root 那种「rm 后磁盘残留」
+// 的自动登记场景。
+//
+// 幂等边界：同项目 + 同落点 → 返回已有行（磁盘被 rm 掉、位置表还在时，重复登记
+// 不该把自动登记链打断）；同项目 + 异落点 → ErrProjectAlreadyExists，报文指向
+// 已有位置。绝不静默返回一个与请求 path 不同的位置。
+func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
+	// 幂等短路：必须发生在 clone 之前——重复登记同一个项目不应再 clone 出第二份。
+	// 但只有**同落点**才算"重复声明同一个事实"：调用方明确指了一个新落点时，
+	// 静默返回旧位置等于把他填的 path 吞了。异落点报 409，与「路径已存在」分支
+	// （registerExistingProject）给出同一种答复（ADR-0008：一台机器一个项目一个位置）。
+	pid := projectid.FromOrigin(req.OriginURL)
+	if pid != "" {
+		existing, ok, err := m.registeredProjectByID(pid)
+		if err != nil {
+			return proto.ProjectLocation{}, err
+		}
+		if ok {
+			if sameLocation(existing.Path, req.Path) {
+				m.log.Info("项目位置已存在且落点相同，幂等返回",
+					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
+				existing.Status = projectStatusOK
+				return existing, nil
+			}
+			m.log.Warn("克隆登记被拒：该项目在本机已有位置",
+				"project_id", pid, "existing", existing.Path, "requested", req.Path)
+			return proto.ProjectLocation{}, fmt.Errorf(
+				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
+				ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
+		}
+	}
+	// 与 cloneAndRegisterProject 同款提前校验：name 派生（空名走 projectNameFromURL）
+	// 与 validateProjectName 都必须发生在 clone 之前——非法名等 clone 跑完
+	// persistProject 再拦就晚了，会留下已 clone 未登记的孤儿目录。
+	name := req.Name
+	if name == "" {
+		name = projectNameFromURL(req.OriginURL)
+	}
+	if err := validateProjectName(name); err != nil {
+		m.log.Warn("克隆登记被拒：项目名非法", "name", name, "cause", err)
+		return proto.ProjectLocation{}, err
+	}
+	dest := req.Path
+	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
+	}
+	m.log.Info("开始克隆项目到指定路径", "origin", req.OriginURL, "dest", dest)
+	start := time.Now()
+	// gitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
+	if _, stderr, err := gitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+		m.log.Error("克隆到指定路径失败", "origin", req.OriginURL, "dest", dest,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
+			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+	}
+	m.log.Info("克隆到指定路径完成", "origin", req.OriginURL, "dest", dest,
+		"elapsed_ms", time.Since(start).Milliseconds())
+	return m.persistProject(name, dest, req.OriginURL)
 }
 
 // registeredProjectByID 在位置表里按 project_id 查已登记的位置。
@@ -244,14 +417,21 @@ func (m *Manager) inspectRepoDir(ctx context.Context, dir string) (root, origin 
 	return root, origin, nil
 }
 
-// registerExistingProject 登记本机上已存在的一份代码。
+// registerExistingProject 登记本机上已存在的一份代码（Path 已确认存在）。
+//
+// OriginURL 可空：空时采用 inspectRepoDir 现读的 actual 作为项目身份与落库值
+// （Web「只填 path」主路径——磁盘上的仓库本身就是权威，不要求调用方复述）；
+// 非空时仅作一致性校验，不一致仍报 ErrProjectOriginMismatch。
+// 落库 origin 永远用 actual，不采信请求串里未校验的写法。
 func (m *Manager) registerExistingProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error) {
 	root, actual, err := m.inspectRepoDir(ctx, req.Path)
 	if err != nil {
 		return proto.ProjectLocation{}, err
 	}
-	// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
-	if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+	if req.OriginURL == "" {
+		m.log.Info("登记已有目录（origin 由磁盘现读）", "path", root, "origin", actual)
+	} else if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
+		// 校验一致：挡住「路径敲错但恰好指到另一个真实仓库」这种脏登记。
 		m.log.Warn("登记被拒：路径上的仓库不是请求的项目",
 			"path", root, "actual_origin", actual, "want_origin", req.OriginURL)
 		return proto.ProjectLocation{}, fmt.Errorf(
@@ -350,6 +530,9 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", ErrRepoUnusable, dest, err)
 	}
 	parent := filepath.Dir(dest)
+	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
+	// 调用方原本就有的目录绝不碰。
+	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
 	}
@@ -360,6 +543,7 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
 			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
@@ -538,4 +722,232 @@ func (m *Manager) UnregisterProject(ctx context.Context, name string) error {
 	}
 	m.log.Info("项目位置已注销（磁盘仓库未动）", "name", name, "path", loc.Path)
 	return nil
+}
+
+// projectPatchRequest 是 PATCH /api/projects/{name} 的请求体。
+//
+// 两个字段都可选，但不能都为空：new_name 改引用名，path 改本机路径（两个改动
+// 可以同时发生，也可各自独立）。
+type projectPatchRequest struct {
+	NewName string `json:"new_name"`
+	Path    string `json:"path"`
+}
+
+// handleProjectPatch 改一条项目位置的引用名与/或 path。
+//
+// 顺序（handler 级判定，**不许调换**）：
+//  1. 解析 body；两个字段都空 → 400
+//  2. 按 name 取当前记录；不存在 → 404
+//  3. 若要改 name：复用登记时那套 validateProjectName 校验；不合法 → 400。
+//     new_name 与当前 name 相同 → 当作没改这个字段（spec §3.3），传给 store 空串
+//  4. 若要改 path：对新目录做与登记同款的检查（inspectRepoDir 现读 origin），
+//     算 projectid.FromOrigin(origin)：
+//     - 与当前 project_id 不同 → 400（该目录是另一个项目）
+//     - 相同且 new path 与当前 path 是同一位置（sameLocation）→ 当作没改这个字段
+//  5. store.UpdateProjectLocation；ErrProjectDuplicate → 409（writeProjectError）、
+//     ErrNotFound → 404
+//  6. 返回更新后的记录
+//
+// 注意：
+//   - 本机与远程都能改：先 forwardIfRequested，显式 ?machine= 的请求本机只做搬运
+//   - 改 path 的两条校验（origin 一致 + 非同一位置）保证「编辑 path」永远不把登记
+//     静默指向另一个仓库：project_id 由 origin 派生，磁盘上换了仓库而身份不变是
+//     比不给编辑危险得多的脏状态（本 handler 的正身）
+func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.forwardIfRequested(w, r) {
+		return // 显式指名了别的机器：本机只做搬运（W3a §5.1.1）
+	}
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	var req projectPatchRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("project patch 请求体解析失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "请求体必须是 JSON {new_name, path}"})
+		return
+	}
+	// 进入处理：明确本次要改哪些字段
+	s.log.Info("project patch 请求", "name", name,
+		"change_name", req.NewName != "", "new_name", req.NewName,
+		"change_path", req.Path != "", "path", req.Path)
+	if req.NewName == "" && req.Path == "" {
+		s.log.Warn("project patch 被拒：两个字段都为空", "name", name,
+			"cause", "new_name 与 path 不能都为空")
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "new_name 与 path 不能都为空"})
+		return
+	}
+	cur, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("project patch 被拒：项目不存在", "name", name, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Error("project patch 读取项目失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	// 改 name：复用登记时那套校验；new_name 与当前相同视为没改
+	newName := req.NewName
+	if newName != "" {
+		if newName == cur.Name {
+			newName = ""
+		} else if err := validateProjectName(newName); err != nil {
+			s.log.Warn("project patch 被拒：新名字非法", "name", name,
+				"new_name", req.NewName, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	// 改 path：与登记同款的三步检查（inspectRepoDir 内部 EnsureRepoUsable →
+	// MainWorktreeRoot → 现读 origin），project_id 由 origin 派生，必须与当前一致
+	newPath := req.Path
+	if newPath != "" {
+		root, origin, ierr := s.mgr.inspectRepoDir(r.Context(), newPath)
+		if ierr != nil {
+			s.log.Warn("project patch 被拒：新路径不是可用的仓库",
+				"name", name, "path", newPath, "cause", ierr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": ierr.Error()})
+			return
+		}
+		if pid := projectid.FromOrigin(origin); pid != cur.ProjectID {
+			s.log.Warn("project patch 被拒：新路径属于另一个项目",
+				"name", name, "path", root, "origin", origin,
+				"current_project_id", cur.ProjectID, "cause", "该目录是另一个项目（origin 不同）")
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "该目录是另一个项目（origin 不同），请注销后重新添加"})
+			return
+		}
+		// 同一位置（归并后）视为没改这个字段——与登记幂等的语义一致
+		if sameLocation(cur.Path, root) {
+			newPath = ""
+		} else {
+			newPath = root
+		}
+	}
+	loc, err := s.st.UpdateProjectLocation(name, newName, newPath)
+	if err != nil {
+		s.writeProjectError(w, name, err)
+		return
+	}
+	s.log.Info("project patch 完成", "old_name", name, "new_name", loc.Name,
+		"old_path", cur.Path, "new_path", loc.Path)
+	// 与 handleProjectAdd/persistProject 对齐：登记返回前也填「有效」，两个端点
+	// 都返回 proto.ProjectLocation，行为应一致（改 path 场景新目录刚过
+	// EnsureRepoUsable，填「有效」语义成立）。
+	loc.Status = projectStatusOK
+	writeJSON(w, http.StatusOK, loc)
+}
+
+// handleProjectBranches 处理 GET /api/projects/{name}/branches[?machine=]。
+//
+// 列出该项目位置的本地分支，并标出每个分支是否已被某棵工作树检出——建树弹层
+// 的两个下拉都吃这份数据。
+//
+// 参数：
+//   - name（路径）: 项目登记名
+//   - machine（查询）: 可选，转发到指定机器
+//
+// 响应：200 proto.ProjectBranchesResp；项目不存在 404；列分支失败 500（原文透出）
+func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	s.log.Info("列项目分支请求", "name", name, "machine", r.URL.Query().Get("machine"))
+	loc, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("列项目分支被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "项目 " + name + " 未登记"})
+			return
+		}
+		s.log.Error("列项目分支失败：查询位置表", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	names, err := Branches(loc.Path)
+	if err != nil {
+		s.log.Error("列项目分支失败", "name", name, "repo", loc.Path, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	worktreesDir := filepath.Join(s.conf().DataDir, "worktrees")
+	// 占用表复用项目树那次探测的同一个函数，不另跑一遍 worktree list：
+	// 两处口径分叉时，界面置灰的分支与真能建的分支会对不上
+	existing, probeErr := probeWorkspaces(r.Context(), loc.Path, worktreesDir)
+	if probeErr != "" {
+		s.log.Warn("列项目分支：探测工作树失败，占用信息缺失", "name", name, "cause", probeErr)
+	}
+	byBranch := make(map[string]string, len(existing))
+	for _, ws := range existing {
+		if ws.Branch != "" {
+			byBranch[ws.Branch] = ws.Path
+		}
+	}
+	resp := proto.ProjectBranchesResp{
+		Branches:     make([]proto.ProjectBranch, 0, len(names)),
+		Default:      resolveBaseBranch(loc.Path),
+		WorktreeRoot: ManualWorktreeRoot(worktreesDir),
+	}
+	for _, b := range names {
+		resp.Branches = append(resp.Branches, proto.ProjectBranch{Name: b, Worktree: byBranch[b]})
+	}
+	s.log.Info("列项目分支完成", "name", name, "count", len(resp.Branches),
+		"default", resp.Default, "occupied", len(byBranch))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleProjectWorktreeCreate 处理 POST /api/projects/{name}/worktrees[?machine=]。
+//
+// 在该项目位置上开一棵不属于任何任务的工作树（spec §3.2）。
+//
+// 参数：
+//   - name（路径）: 项目登记名
+//   - machine（查询）: 可选，转发到指定机器
+//   - 请求体: proto.CreateWorktreeReq
+//
+// 响应：200 proto.Workspace；项目不存在 404；请求不合法 400；git 失败 500（原文透出）
+func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Request) {
+	if s.forwardIfRequested(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	var req proto.CreateWorktreeReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.log.Warn("建树请求体解析失败", "name", name, "status", http.StatusBadRequest, "cause", err)
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "请求体必须是 JSON {mode, branch, base}"})
+		return
+	}
+	s.log.Info("建树请求", "name", name, "machine", r.URL.Query().Get("machine"),
+		"mode", req.Mode, "branch", req.Branch, "base", req.Base)
+	loc, err := s.st.GetProjectLocationByName(name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.log.Warn("建树被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "项目 " + name + " 未登记"})
+			return
+		}
+		s.log.Error("建树失败：查询位置表", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	ws, err := CreateManualWorktree(r.Context(), loc.Path, filepath.Join(s.conf().DataDir, "worktrees"), req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrBadWorktreeReq) {
+			status = http.StatusBadRequest
+		}
+		s.log.Error("建树失败", "name", name, "repo", loc.Path, "mode", req.Mode,
+			"branch", req.Branch, "status", status, "cause", err)
+		writeJSON(w, status, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	s.log.Info("建树完成", "name", name, "dir", ws.Path, "branch", ws.Branch)
+	writeJSON(w, http.StatusOK, ws)
 }

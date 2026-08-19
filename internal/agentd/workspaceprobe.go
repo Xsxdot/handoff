@@ -1,0 +1,212 @@
+// 本文件实现工作区（git 工作树）的**现场探测**：给一个 location 的路径，
+// 吐出它下面的全部工作树。
+//
+// 职责：
+//   - 调一次 git worktree list --porcelain，解析成 []proto.Workspace
+//   - 判定每条是不是主工作树、是不是 agentd 自建的任务工作树
+//   - 探测失败时降级为「空列表 + 人话说明」，不向上抛错
+//
+// 边界：
+//   - 不落库：worktree 会在 agentd 背后被 git worktree add/remove 改动，
+//     落表必然产生说谎的行；本机文件系统调用是毫秒级的，缓存只会引入失真窗口
+//   - 不判断工作树上挂着哪个任务（那是 join 的事，见 projectjoin.go）
+//   - 不做鉴权、不碰 HTTP
+package agentd
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
+)
+
+// worktreeProbeTimeout 是单次探测的上限。
+//
+// 为什么要有：目录落在挂掉的网络盘上时 git 会卡住，而项目树是 UI 的常规请求，
+// 一个卡住的 location 不能拖垮整棵树。
+const worktreeProbeTimeout = 5 * time.Second
+
+// headShortLen 是短 sha 的长度，与 git 默认的 7 位一致。
+const headShortLen = 7
+
+// probeWorkspaces 现场探测 dir 下的全部工作树。
+//
+// 参数：
+//   - ctx: 上下文；内部再叠加 worktreeProbeTimeout 作为兜底上限
+//   - dir: location 的路径（B62 保证它是主工作树根）
+//   - managedRoot: agentd 自建 worktree 的根目录（<DataDir>/worktrees）；
+//     空串表示「无法判定 managed」，此时全部按 false
+//
+// 返回：
+//   - 工作树列表（**永不为 nil**，失败时是空切片）
+//   - 探测失败的人话说明，空串=正常
+//
+// 注意：
+//   - 失败不返回 error 而返回说明字符串，是刻意的：调用方要把它放进
+//     ProjectLocationNode.ProbeError 展示，而不是让整棵树 500
+func probeWorkspaces(ctx context.Context, dir, managedRoot string) ([]proto.Workspace, string) {
+	ctx, cancel := context.WithTimeout(ctx, worktreeProbeTimeout)
+	defer cancel()
+
+	log().Debug("工作区探测开始", "dir", dir)
+	out, stderr, err := gitRun(ctx, dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = err.Error()
+		}
+		// 目录被删、不是 git 仓库、git 超时都走这里：这是**可展示的状态**，
+		// 不是服务端故障，所以只 Warn 不 Error
+		log().Warn("工作区探测失败，降级为空列表", "dir", dir, "cause", msg)
+		return []proto.Workspace{}, msg
+	}
+	ws := parseWorktreePorcelain(out, managedRoot)
+	// 创建时间在解析之后单独补：porcelain 输出里没有这个信息，只能落到文件系统上问。
+	// 每个工作树一次 stat（毫秒级），与已经付出的一次 git 子进程相比可忽略
+	for i := range ws {
+		ws[i].CreatedAt = workspaceCreatedAt(ws[i].Path, ws[i].IsMain)
+	}
+	log().Debug("工作区探测完成", "dir", dir, "worktrees", len(ws))
+	return ws, ""
+}
+
+// parseWorktreePorcelain 解析 git worktree list --porcelain 的输出。
+//
+// 输出形态（每块之间空行分隔，第一块恒为主工作树）：
+//
+//	worktree /path
+//	HEAD <40 位 sha>
+//	branch refs/heads/main      ← detached 时这一行换成 detached
+//
+// 返回的切片永不为 nil。
+func parseWorktreePorcelain(out, managedRoot string) []proto.Workspace {
+	list := []proto.Workspace{}
+	var cur *proto.Workspace
+	flush := func() {
+		if cur != nil {
+			cur.IsMain = len(list) == 0 // 第一块即主工作树，git 的输出顺序保证
+			cur.Managed = underRoot(cur.Path, managedRoot)
+			list = append(list, *cur)
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			cur = &proto.Workspace{Path: strings.TrimPrefix(line, "worktree ")}
+		case cur == nil:
+			// 块外的行（不该出现）直接忽略，别 panic
+		case strings.HasPrefix(line, "HEAD "):
+			sha := strings.TrimPrefix(line, "HEAD ")
+			if len(sha) > headShortLen {
+				sha = sha[:headShortLen]
+			}
+			cur.Head = sha
+		case strings.HasPrefix(line, "branch "):
+			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+		case line == "detached":
+			// detached 时 branch 留空串——UI 靠 head 显示，不能编一个假分支名
+			cur.Branch = ""
+		}
+	}
+	flush()
+	return list
+}
+
+// underRoot 判断 path 是否落在 root 目录下（含 root 自身的子目录）。
+//
+// 为什么不用 strings.HasPrefix 裸比：/a/worktrees-old 会被 /a/worktrees 误判为
+// 子目录。走 filepath.Rel 再看有没有 ".." 才是准的。
+//
+// 为什么先解析符号链接：git 的 porcelain 输出会解析路径里的符号链接
+// （macOS 上 /var → /private/var 是实景），而 managedRoot 是配置里的原样路径，
+// 两者不归一，真实机器上的 managed 判定会恒为 false。EvalSymlinks 对不存在的
+// 路径失败（porcelain 测试里的虚构路径），此时退回词汇级比较。
+func underRoot(path, root string) bool {
+	if root == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	if rp, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = rp
+	}
+	if rr, err := filepath.EvalSymlinks(cleanRoot); err == nil {
+		cleanRoot = rr
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// workspaceCreatedAt 取一个工作树的创建时间；取不到返回零值。
+//
+// 参数：
+//   - path: 工作树根的绝对路径
+//   - isMain: 是否主工作树（决定去哪个文件上问）
+//
+// 返回：创建时间；取不到（含主工作树，见下）返回零值，**不返回 error**——
+// 调用方要的是一个可展示的字段，不是一个能让整棵树 500 的错误。
+//
+// 链接工作树看 <公共目录>/worktrees/<名>/gitdir：git worktree add 写一次就不再动，
+// 是唯一稳定的创建时间证据。刻意不 stat 工作树目录本身——它的 mtime 会随着往里
+// 写代码变化，那是「最近动过」不是「什么时候建的」。
+//
+// **主工作树一律返回零值**，因为拿不到可信的创建时间：
+//   - `.git` 目录的 mtime 不是创建时间，而是「最后一次在里面增删条目」的时间。
+//     git 一直在干这事（FETCH_HEAD、新 ref、packed-refs、worktrees/ 下增删），
+//     实测一个 08-07 建的仓库报出 08-18——差 11 天。
+//   - 文件系统的 birthtime 才是准的，但 Go 标准库不给，要按平台走 syscall
+//     （darwin 有 Birthtimespec，Linux 得 statx）。
+//
+// 零值在这里不是缺陷而是诚实：排序把主工作树**钉在第一位、不参与比较**
+// （见 web 侧 sortWorkspaces），metricsOf 对它根本不会被调用，所以这个值
+// 没有消费者。与其报一个自信的错值，不如如实说「不知道」。真需要时再上
+// 平台相关的 birthtime，那时它有真实依据。
+func workspaceCreatedAt(path string, isMain bool) time.Time {
+	if isMain {
+		return time.Time{}
+	}
+	dotGit := filepath.Join(path, ".git")
+	fi, err := os.Stat(dotGit)
+	if err != nil {
+		// 探测与 stat 之间工作树被 git worktree remove 掉是正常竞态，
+		// 不是故障——只 Debug，不 Warn
+		log().Debug("取工作树创建时间失败，留零值", "path", path, "cause", err)
+		return time.Time{}
+	}
+	// 链接工作树的 .git 是**一个文件**，内容形如 "gitdir: /主仓库/.git/worktrees/名"。
+	// 它自己的 mtime 不可靠（git 会在 prune/repair 时重写它），要顺着它指到管理目录
+	// 里的 gitdir 文件上——那个才是只写一次的。
+	if fi.IsDir() {
+		// 少见但真实：有人手工把工作树的 .git 做成了目录。此时没有可跟的指针，
+		// 与主工作树同因——目录 mtime 说明不了创建时间，如实留零值
+		log().Debug("工作树的 .git 是目录而非指针文件，无稳定创建时间可取，留零值", "path", path)
+		return time.Time{}
+	}
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		log().Debug("读工作树 .git 指针失败，留零值", "path", path, "cause", err)
+		return time.Time{}
+	}
+	adminDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+	if adminDir == "" {
+		log().Debug("工作树 .git 指针为空，留零值", "path", path)
+		return time.Time{}
+	}
+	gi, err := os.Stat(filepath.Join(adminDir, "gitdir"))
+	if err != nil {
+		log().Debug("取工作树管理目录时间失败，留零值", "path", path, "admin_dir", adminDir, "cause", err)
+		return time.Time{}
+	}
+	return gi.ModTime()
+}

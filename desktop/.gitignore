@@ -1,0 +1,29 @@
+.task
+bin
+frontend/dist
+frontend/node_modules
+build/linux/appimage/build
+# linux 打包副产物：create:appimage 把二进制与图标 cp 进 appimage 目录，
+# generate:dotdesktop 生成 .desktop 文件（两者都在 build/linux/Taskfile.yml 里写死）。
+# 三者都落在仓库树内，不忽略的话「构建后工作区干净」这条判据必然失败——
+# 而症状看起来像是薄壳构建污染了工作区，不像打包副产物没被忽略。
+build/linux/appimage/handoff-desktop
+build/linux/appimage/handoff-desktop.png
+build/linux/handoff-desktop.desktop
+# 裸 `go build`（无参数）在 desktop 根产生的产物，约 15MB，曾残留过
+desktop
+# macOS 构建产物：wails3 generate icons 会在每次构建时从 build/appicon.icon
+# 重新生成，属产物不该入库（输入源 build/appicon.icon / build/appicon.png 已跟踪）
+build/darwin/Assets.car
+build/darwin/icons.icns
+# Windows 构建产物，与上面 darwin 两项同性质：
+#   - icon.ico 由 generate:icons 从 appicon.png 生成
+#   - *.syso 由 generate:syso 在 desktop/ 根生成（图标+清单编进资源），构建
+#     成功时会被自己删掉，但**构建失败时会残留**——不忽略的话下一次「工作区
+#     干净」检查会挂在上一次的失败残渣上，症状看起来像本次构建污染了工作区
+build/windows/icon.ico
+*.syso
+# NSIS 打包副产物：CI 只发 zip，不跑 package；本地跑 `wails3 task windows:package`
+# 时安装器与 wails3 下载的 webview2 引导器都落在 nsis 目录里
+build/windows/nsis/*-installer.exe
+build/windows/nsis/*.exe

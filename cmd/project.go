@@ -5,6 +5,7 @@
 //   - project add：把 cwd 登记为本机位置；--target 时一并登记到那台机器
 //   - project ls：列出位置，并显示每条的实际状态（登记与磁盘漂移时看得见）
 //   - project rm：注销位置
+//   - project edit：改一条位置的引用名与/或路径（不动 project_id）
 //
 // 边界：
 //   - 不自己 ssh、不自己 clone：clone 由目标机上的 agentd 执行，用它自己的 git 凭据
@@ -15,8 +16,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,11 +28,26 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
 
-// projectAddPath 是 --path：目标机上已有的那份代码的路径（省略则让它自己 clone）。
+// projectAddPath 是 --path：目标机上这份代码的落点。
+//
+// 三态（与 agentd 的决策表一致）：路径已存在 → 登记它；路径不存在 → 由那台
+// 机器 clone 到该路径；省略 → 由那台机器 clone 到它自己的 repo_root/<名字>。
+// 注意「路径不存在就 clone」意味着 --path 打错字不会被拦下，而是会在错的
+// 路径上克隆出一份新的——路径要自己核对。
 var projectAddPath string
+
+// project ls 的展示开关（W3a）：
+//   - projectTree / projectTreeAll：三层树形输出（单机 / ?scope=all 跨机）
+//   - projectTreeJSON：树形路径下输出 JSON
+var (
+	projectTree     bool
+	projectTreeAll  bool
+	projectTreeJSON bool
+)
 
 // localOriginURL 读当前目录仓库的 origin 地址；不是 git 仓库或没有 origin 时返回空串。
 //
@@ -70,7 +88,7 @@ var projectCmd = &cobra.Command{
 //
 //	handoff project add [名字]                                       # 把 cwd 登记为本机位置
 //	handoff project add [名字] --target devbox                       # 本机与 devbox 一起登记，devbox 自动 clone
-//	handoff project add [名字] --target devbox --path /root/work/x   # 同上，但 devbox 上已有一份
+//	handoff project add [名字] --target devbox --path /root/work/x   # 同上，但落点指定为 /root/work/x（已有就登记它，没有就 clone 过去）
 var projectAddCmd = &cobra.Command{
 	Use:   "add [名字]",
 	Short: "把当前项目登记到本机（--target 时一并登记到那台开发机）",
@@ -99,7 +117,8 @@ var projectAddCmd = &cobra.Command{
 //   - origin: cwd 的 origin（项目身份来源）
 //   - name: 人可读引用名（可空，由 agentd 从 origin 末段派生）
 //   - localPath: 本机位置（cwd 的主工作树）
-//   - remotePath: 目标机上已有的路径（可空，空则让那台机器自己 clone）
+//   - remotePath: 目标机上的落点（可空，空则让那台机器 clone 到自己的 repo_root/<名字>；
+//     非空时已存在就登记它、不存在就 clone 到它）
 //
 // 返回：
 //   - 错误：任一跳失败即返回（本机跳「够不着」除外，见「注意」）；
@@ -185,7 +204,34 @@ var projectLsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		locs, err := client.New(addr, token).ProjectList(cmd.Context())
+		c := client.New(addr, token)
+		// --tree / --all 走项目树（三层、带探测）。不带 --tree 的输出是 B62 的
+		// 契约（扁平位置表 + 状态列），一个字符都不许改——本分支原样保留
+		if projectTree || projectTreeAll {
+			var resp *proto.ProjectTreeResp
+			if projectTreeAll {
+				resp, err = c.ProjectTreeAll(cmd.Context())
+			} else {
+				resp, err = c.ProjectTree(cmd.Context())
+			}
+			if err != nil {
+				return err
+			}
+			if projectTreeJSON {
+				b, err := json.Marshal(resp)
+				if err != nil {
+					return fmt.Errorf("序列化项目树: %w", err)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(b))
+				return nil
+			}
+			renderProjectTree(cmd.OutOrStdout(), resp)
+			if projectTreeAll {
+				renderMachinesTail(cmd.OutOrStdout(), resp)
+			}
+			return nil
+		}
+		locs, err := c.ProjectList(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -200,6 +246,77 @@ var projectLsCmd = &cobra.Command{
 		}
 		return tw.Flush()
 	},
+}
+
+// renderProjectTree 打印三层项目树：project → location → workspace。
+//
+// 形态：
+//
+//	handoff  (a1b2c3d4e5f60718)  git@github.com:x/handoff.git
+//	  本机  /Users/dev/handoff
+//	    * main  482aab1  /Users/dev/handoff
+//	      w1  9e12a3b  ~/.handoff/worktrees/w1  [任务工作树]
+//	  devbox  /home/dev/handoff  ← 探测失败：路径不存在
+//
+// 探测失败的 location 照常打印，带人话原因——「登记还在、目录已失效」必须可见。
+func renderProjectTree(w io.Writer, resp *proto.ProjectTreeResp) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, p := range resp.Projects {
+		fmt.Fprintf(tw, "%s  (%s)  %s\n", p.Name, p.ProjectID, p.OriginURL)
+		for _, l := range p.Locations {
+			machine := l.Machine
+			if machine == "" {
+				machine = "本机" // 空串是线格式，人看的是「本机」
+			}
+			if l.ProbeError != "" {
+				fmt.Fprintf(tw, "  %s  %s  ← 探测失败：%s\n", machine, l.Path, firstLineOf(l.ProbeError))
+				continue
+			}
+			fmt.Fprintf(tw, "  %s  %s\n", machine, l.Path)
+			for _, ws := range l.Workspaces {
+				marker := " "
+				if ws.IsMain {
+					marker = "*"
+				}
+				suffix := ""
+				if ws.Managed {
+					suffix = "  [任务工作树]"
+				}
+				branch := ws.Branch
+				if branch == "" {
+					branch = "(detached)" // detached 时 branch 为空串，UI 靠 head 显示
+				}
+				fmt.Fprintf(tw, "    %s %s  %s  %s%s\n", marker, branch, ws.Head, ws.Path, suffix)
+			}
+		}
+	}
+	// 算不出 project_id 的脏行：诚实列出，不吞、也不塞进某个项目里
+	for _, u := range resp.Unowned {
+		fmt.Fprintf(tw, "%s  (未归属)\n", u)
+	}
+	_ = tw.Flush()
+}
+
+// renderMachinesTail 打印 --all 的机器应答情况。缺席必须可见：
+// 没答上来的机器逐台列出带原因，不能让「某台机器没了」只剩一串少了的行。
+func renderMachinesTail(w io.Writer, resp *proto.ProjectTreeResp) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "机器应答情况：")
+	for _, m := range resp.Machines {
+		name := m.Name
+		if name == "" {
+			name = "本机"
+		}
+		if m.Ok {
+			fmt.Fprintf(w, "  %s  应答正常（快照 %s）\n", name, m.FetchedAt.Local().Format("15:04:05"))
+			continue
+		}
+		reason := m.Error
+		if reason == "" {
+			reason = "未知原因"
+		}
+		fmt.Fprintf(w, "  %s  未应答：%s\n", name, firstLineOf(reason))
+	}
 }
 
 // projectRmCmd 注销一条位置。
@@ -220,9 +337,59 @@ var projectRmCmd = &cobra.Command{
 	},
 }
 
+// projectEditName / projectEditPath 是 project edit 的两个可选改动。
+var (
+	projectEditName string
+	projectEditPath string
+)
+
+// projectEditCmd 改一条位置的引用名与/或路径。
+//
+// 使用方式：
+//
+//	handoff project edit <名字> --name <新引用名>                  # 只改名
+//	handoff project edit <名字> --path <新路径>                    # 只改路径
+//	handoff project edit <名字> --name <新引用名> --path <新路径>   # 两个都改
+//	handoff project edit <名字> --name <新引用名> --target devbox   # 在 devbox 上改
+var projectEditCmd = &cobra.Command{
+	Use:   "edit <名字>",
+	Short: "改一条项目位置的引用名与/或路径",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// 两个可选改动都缺时本地就拦：错误在发请求前暴露，不白打一趟网络
+		if projectEditName == "" && projectEditPath == "" {
+			return fmt.Errorf("project edit 需要至少一个改动：--name <新引用名> 或 --path <新路径>")
+		}
+		addr, token, err := TargetEndpoint()
+		if err != nil {
+			return err
+		}
+		loc, err := client.New(addr, token).PatchProject(cmd.Context(), args[0], projectEditName, projectEditPath)
+		if err != nil {
+			return err
+		}
+		parts := []string{}
+		if projectEditName != "" {
+			parts = append(parts, "新名字 "+loc.Name)
+		}
+		if projectEditPath != "" {
+			parts = append(parts, "新路径 "+loc.Path)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "已更新 %s：%s\n", args[0], strings.Join(parts, "，"))
+		return nil
+	},
+}
+
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPath, "path", "",
-		"目标机上已有的那份代码的路径（仅与 --target 连用；省略则由那台机器 clone 到它的 repo_root/<名字>）")
-	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd)
+		"目标机上的落点（仅与 --target 连用）：已存在则登记它，不存在则 clone 到它；省略则 clone 到那台机器的 repo_root/<名字>")
+	projectLsCmd.Flags().BoolVar(&projectTree, "tree", false, "以三层项目树输出（project → location → workspace，现场探测工作树）")
+	projectLsCmd.Flags().BoolVar(&projectTreeAll, "all", false, "跨机汇总所有机器上的项目树（配合 --tree 使用）")
+	projectLsCmd.Flags().BoolVar(&projectTreeJSON, "json", false, "树形输出改为单行 JSON（配合 --tree/--all 使用）")
+	projectEditCmd.Flags().StringVar(&projectEditName, "name", "",
+		"新的引用名（省略=不改名；与 --path 至少给一个）")
+	projectEditCmd.Flags().StringVar(&projectEditPath, "path", "",
+		"新的路径（省略=不改路径；与 --name 至少给一个）")
+	projectCmd.AddCommand(projectAddCmd, projectLsCmd, projectRmCmd, projectEditCmd)
 	rootCmd.AddCommand(projectCmd)
 }

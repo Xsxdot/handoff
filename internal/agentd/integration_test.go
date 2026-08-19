@@ -86,9 +86,60 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, newTestGate(t), logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
+	quiesceOnCleanup(t, st, mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
+}
+
+// quiesceOnCleanup 让用例结束时先把写方停干净，再让 testing 去删沙箱目录。
+//
+// 为什么非有不可：Manager 没有停机接口，每个任务一条 go m.mediate 协程。用例
+// 返回时仍在 running/waiting_* 的任务，协程还会继续 AppendEvent，而 AppendEvent
+// 的同步钩子（eventFrameHook）会往 DataDir/tasks/<id>/frames.jsonl 追加。
+// DataDir 是 t.TempDir()，testing 收尾时对它 RemoveAll——RemoveAll 刚把某个任务
+// 目录清空、正要 unlink 它时对方又落一个 frames.jsonl，unlinkat 报
+// "directory not empty"，用例被判失败。这条曾以 6% 左右的概率打红
+// TestDispatchWorkdirBusyWhileWaitingReview（它故意留了个 running 的任务 B 不收）。
+//
+// 调用位置有讲究：t.Cleanup 是 LIFO，这行必须晚于第一次 t.TempDir()（那次注册了
+// 删目录）与 st.Close 的注册，才能拿到「先停写 → 再关库 → 最后删目录」的顺序。
+func quiesceOnCleanup(t *testing.T, st *store.Store, mgr *agentd.Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		// 先敲掉还活着的任务。Stop 对已是终态的任务会报错，所以先筛一遍；
+		// 报错一律忽略——这里是拆台阶段，收不掉也没有下一步可做。
+		if tasks, err := st.ListTasks(); err == nil {
+			for i := range tasks {
+				if !tasks[i].State.IsTerminal() {
+					_, _ = mgr.Stop(context.Background(), tasks[i].ID)
+				}
+			}
+		}
+		// Stop 只保证 executor 被敲掉，mediate 协程还要再跑几行（落终态事件）
+		// 才退出。等所有任务落终态，写方才算真的停了。
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			tasks, err := st.ListTasks()
+			if err != nil {
+				break
+			}
+			busy := false
+			for i := range tasks {
+				if !tasks[i].State.IsTerminal() {
+					busy = true
+					break
+				}
+			}
+			if !busy {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// 兜住掉队者：终态之后仍可能有零星事件（清扫、回收）。目录马上就要被删，
+		// 派生帧没有任何价值，摘钩子比跟它赛跑可靠。
+		st.SetEventHook(nil)
+	})
 }
 
 // registerProject 把 repo 登记成一个项目位置（同一仓库只登一次，结果缓存），
@@ -625,7 +676,7 @@ func (startFailAdapter) Events(string) <-chan executor.AdapterEvent {
 }
 
 func (startFailAdapter) Send(context.Context, string, string) error { return nil }
-func (startFailAdapter) RespondPermission(context.Context, string, string, string) error {
+func (startFailAdapter) RespondPermission(context.Context, string, string, string, string) error {
 	return nil
 }
 
@@ -648,7 +699,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, newTestGate(t), logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 
 	repo := newTestRepo(t)

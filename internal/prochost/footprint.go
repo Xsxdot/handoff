@@ -1,7 +1,7 @@
 // footprint.go —— 任务进程足迹的身份校验与两个孪生原语。
 //
 // 职责：
-//   - classify：给定 Handle 与一次进程快照，判定「哪些进程属于这个任务」
+//   - classify：给定 Handle 与一次进程快照，判定 pgid 层「哪些进程属于这个任务」
 //   - Footprint（只数）/ Sweep（回收）：共用 classify，保证数出来的与被杀的是同一批
 //
 // 边界：
@@ -131,21 +131,41 @@ func classify(h Handle, procs []procEntry, lockHeld bool) (members []int, v Verd
 // 返回：
 //   - members: 通过身份校验的成员 pid
 //   - v: 判定结论；非 VerdictOK 时 members 必然为空
-//   - err: 进程枚举失败（平台不支持时为 errNotSupported）
+//   - err: 进程枚举失败（平台不支持时为 ErrNotSupported）
 //
 // 注意：
 //   - **只读，绝不发信号**——它是 Sweep 的孪生只读版本，两者共用 classify
 //   - 对**存活中**与**已死亡**的执行者均可调用：判据随存活锁状态自动切换
-//   - **members 是两段并集**：pgid 组 + 出生名册里仍存活且身份吻合的逃逸后代。
-//     Sweep 现在也是两段（B72），报的数和杀的范围必须一致，否则 handoff footprint
+//   - **members 是三段并集**：pgid 组 + 出生名册里仍存活且身份吻合的逃逸后代 +
+//     任务标记命中的进程。第三段覆盖「壳活得太短、一次都没被采样到」的残留。
+//     Sweep 也必须同步三段，报的数和杀的范围必须一致，否则 handoff footprint
 //     就变成一句骗人的话（B70：宣称什么就得是什么）
 func Footprint(h Handle) (members []int, v Verdict, err error) {
+	// 有进程容器的平台（Windows 的 Job Object）由内核维护成员表，进程退出即移除，
+	// 因此比 pgid + 名册 + 标记三段判据更强，不需要时间下界校验。
+	// 读不到快照时落回三段判据：任务刚起、文件损坏或升级前没有容器来源都不应
+	// 被误读成「任务没有进程」，也不应让只读足迹查询直接报错。
+	if h.MembersPath != "" {
+		if snap, rerr := readMembers(h.MembersPath); rerr == nil {
+			log().Debug("足迹取自进程容器成员表", "pid", h.PID,
+				"members", len(snap.PIDs), "sampled_at", snap.SampledAt)
+			return snap.PIDs, VerdictOK, nil
+		} else {
+			// 任务刚起、shim 还没采过第一轮时读不到是预期形态，降到 Debug，
+			// 避免每个新任务开头刷一条假告警。
+			log().Debug("容器成员快照不可用，落回 pgid 判据", "pid", h.PID,
+				"path", h.MembersPath, "cause", rerr)
+		}
+	}
 	procs, err := enumProcsFn()
 	if err != nil {
-		log().Error("足迹枚举失败", "pid", h.PID, "cause", err)
+		logEnumFailure("足迹枚举失败", err, "pid", h.PID)
 		return nil, VerdictNoCredential, err
 	}
 	members, v = classify(h, procs, aliveFn(h))
+	byPgid := len(members)
+	var byRoster, byMark, markOnly int
+	markSupported := false
 	if v == VerdictOK {
 		// 第二段：名册里仍然存活且身份吻合的逃逸后代。判定放弃时不并入——
 		// 那时 members 必须为空是 classify 的契约，不能被这里破坏
@@ -154,14 +174,46 @@ func Footprint(h Handle) (members []int, v Verdict, err error) {
 			seen[p] = true
 		}
 		for _, p := range rosterMembers(h, procs) {
+			byRoster++
 			if !seen[p] {
 				members = append(members, p)
 				seen[p] = true
 			}
 		}
+		// 第三段：任务标记命中的进程。它不依赖采样时机，补足工具壳短命的盲区。
+		marked, supported := markMembers(h.cred(), procs)
+		markSupported = supported
+		for _, p := range marked {
+			// 标记读的是活状态，枚举与发信号之间仍有 pid 复用窗口；时间下界
+			// 对这条来源照样施加（B47 的教训不因换判据而失效）。
+			if startedAtOf(procs, p) < h.StartedAt {
+				continue
+			}
+			byMark++
+			if !seen[p] {
+				members = append(members, p)
+				seen[p] = true
+				markOnly++
+			}
+		}
 	}
-	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v), "members", len(members))
+	log().Debug("足迹判定完成", "pid", h.PID, "verdict", string(v),
+		"members", len(members), "by_pgid", byPgid, "by_roster", byRoster,
+		"by_mark", byMark, "mark_only", markOnly, "mark_supported", markSupported)
 	return members, v, nil
+}
+
+// startedAtOf 在快照里查 pid 的启动时刻；查不到返回 0（会被时间下界排除）。
+//
+// 为什么返回 0 而不是报错：pid 来自同一份快照，查不到只可能是调用方传错，
+// 返回 0 会让它被下界规则挡掉——宁可漏一个也不放一个身份不明的进 members。
+func startedAtOf(procs []procEntry, pid int) int64 {
+	for _, p := range procs {
+		if p.PID == pid {
+			return p.StartedAt
+		}
+	}
+	return 0
 }
 
 // rosterMembers 按出生名册筛出仍然存活且身份吻合的后代 pid（只读，不发信号）。
@@ -220,10 +272,11 @@ var ErrExecutorAlive = errors.New("执行者仍存活，Sweep 降级为点名回
 //   - 判定为放弃（leader_reuse / no_credential）**不是错误**，是正常结论：
 //     调用方据 v 决定是否上报人工，不该按 err != nil 判
 //   - 与 Kill 一致：发完 SIGKILL 必须复核，复核窗口走完仍存活返回 ErrStillAlive
-//   - **两段判据**：第一段按 pgid 回收「shim + executor 本体」这一层；第二段按
-//     出生名册点名回收 executor 经 Bash 工具 setsid 逃逸出去的后代（B72）。
-//     第二段依赖 shim 生前落盘的 roster.json，缺失时自动降级为只做第一段——
-//     升级前建的任务、或 shim 还没来得及落第一次名册就死了的任务，都是这个形态
+//   - **三段判据**：第一段按 pgid 回收「shim + executor 本体」这一层；第二段按
+//     出生名册点名回收 executor 经 Bash 工具 setsid 逃逸出去的后代（B72）；第三段
+//     按任务标记逐个回收壳活得太短、一次都没被采样到的残留。第三段比名册段更强在
+//     活读 + 杀前复验；macOS 非托管任务没有 MarkRoot，在这一段天然是 no-op。
+//     名册缺失或平台不支持时各自自动降级，不影响其它来源。
 func Sweep(h Handle) (killed int, v Verdict, err error) {
 	if aliveFn(h) {
 		// 执行者存活时**只跳过段①**，不整体放弃：段①按 pgid 整组发信号，会连
@@ -234,7 +287,7 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 		// （B119：生产日志 118 次拒绝、真正跑完的清扫仅 34 次）。
 		procs, eerr := enumProcsFn()
 		if eerr != nil {
-			log().Error("降级清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+			logEnumFailure("降级清扫前枚举进程失败", eerr, "pid", h.PID)
 			return 0, VerdictNoCredential, eerr
 		}
 		n := rosterKill(h, procs)
@@ -244,7 +297,7 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 	}
 	procs, eerr := enumProcsFn()
 	if eerr != nil {
-		log().Error("清扫前枚举进程失败", "pid", h.PID, "cause", eerr)
+		logEnumFailure("清扫前枚举进程失败", eerr, "pid", h.PID)
 		return 0, VerdictNoCredential, eerr
 	}
 	members, v := classify(h, procs, false)
@@ -253,11 +306,11 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 		// 自己的凭据出了问题，而名册里每条成员都自带 pid+出生时刻的凭据，
 		// 两者的信任来源是独立的
 		log().Warn("组清扫放弃，仍尝试点名回收", "pid", h.PID, "verdict", string(v))
-		return rosterKill(h, procs), v, nil
+		return rosterKill(h, procs) + markKill(h, procs), v, nil
 	}
 	if len(members) == 0 {
 		log().Info("组内无残留，转入点名回收", "pid", h.PID)
-		return rosterKill(h, procs), VerdictOK, nil
+		return rosterKill(h, procs) + markKill(h, procs), VerdictOK, nil
 	}
 	log().Info("回收残留进程组", "pid", h.PID, "members", len(members), "pids", members)
 	if kerr := killGroupFn(h.PID); kerr != nil {
@@ -274,10 +327,12 @@ func Sweep(h Handle) (killed int, v Verdict, err error) {
 			break
 		}
 		if left, _ := classify(h, rest, false); len(left) == 0 {
-			n := rosterKill(h, rest)
+			rk := rosterKill(h, rest)
+			mk := markKill(h, rest)
 			log().Info("清扫完成，已确认残留退出", "pid", h.PID,
-				"group_killed", len(members), "roster_killed", n, "probe", i+1)
-			return len(members) + n, VerdictOK, nil
+				"group_killed", len(members), "roster_killed", rk,
+				"mark_killed", mk, "probe", i+1)
+			return len(members) + rk + mk, VerdictOK, nil
 		}
 	}
 	log().Error("已发 SIGKILL 但复核窗口走完仍有残留", "pid", h.PID,
@@ -351,11 +406,104 @@ func rosterKill(h Handle, procs []procEntry) (killed int) {
 	return killed
 }
 
+// markKill 执行第三段清扫：按任务标记逐个回收 pgid 与名册都看不见的残留。
+//
+// 参数：
+//   - h: 任务句柄（用 h.cred() 取归属凭据、h.StartedAt 做时间下界）
+//   - procs: 一次进程快照（与前两段共用，避免重复枚举）
+//
+// 返回：killed 为**实际发出信号**的成员数
+//
+// 判据（比名册那段更强，因为标记是活读的）：
+//  1. 标记命中，且
+//  2. 启动时刻不早于 shim（比 shim 还早的不可能是它的后代），且
+//  3. **发信号前立刻再读一次标记**——枚举与发信号之间进程可能已退出且 pid
+//     被复用，复验一次只花一个 syscall，而误杀的代价是打掉用户的登录 shell
+//     或 agentd 自己（B47 误杀 114 次的教训）
+//
+// 注意：
+//   - 平台不支持标记是**正常形态**（Windows 走 Job Object，见 B37），安静返回 0
+//   - 逐条发信号而不是按组：标记命中的进程各自 setsid 成组，按组会带走未经
+//     校验的兄弟进程
+//   - macOS 上只有托管 worktree 形态才会有 MarkRoot，非托管任务在这里天然返回 0
+func markKill(h Handle, procs []procEntry) (killed int) {
+	cred := h.cred()
+	candidates, supported := markMembers(cred, procs)
+	if !supported {
+		log().Debug("本平台无任务标记能力或本任务无凭据，跳过标记回收", "pid", h.PID)
+		return 0
+	}
+	if len(candidates) == 0 {
+		return 0
+	}
+	var skippedOld, skippedRecheck int
+	for _, pid := range candidates {
+		if startedAtOf(procs, pid) < h.StartedAt {
+			skippedOld++
+			continue
+		}
+		ok, err := attributesFn(pid, cred)
+		if err != nil {
+			// 多为进程已退出：常态，不发信号即可
+			log().Debug("杀前复验标记失败，跳过", "pid", pid, "cause", err)
+			skippedRecheck++
+			continue
+		}
+		if !ok {
+			// 这条必须是 Warn：它是「我们差点杀错」的唯一现场记录，
+			// 出现频率高本身就是个值得追的信号（同 rosterKill 的易主日志）
+			log().Warn("杀前复验标记不再命中，拒绝发信号", "pid", pid, "task_id", cred.TaskID)
+			skippedRecheck++
+			continue
+		}
+		if kerr := killProcFn(pid); kerr != nil {
+			log().Error("按标记回收进程失败", "pid", pid, "cause", kerr)
+			continue
+		}
+		killed++
+	}
+	log().Info("标记回收完成", "pid", h.PID, "candidates", len(candidates),
+		"killed", killed, "skipped_older_than_shim", skippedOld,
+		"skipped_recheck", skippedRecheck)
+	return killed
+}
+
+// CountGroup 数出进程组 pgid 当前有多少个属于本 uid 的成员。
+//
+// 参数：pgid 为进程组 id（PTY 会话里就是 shell 自己的 pid，因为它 setsid 后
+// 是组长）
+//
+// 返回：成员数；枚举失败时上抛错误（**不降级成 0**——0 会被渲染成「没有残留」，
+// 那是个我们并没有得出的结论）
+//
+// 注意：
+//   - 与 Footprint 不同，这里**没有启动时刻校验**。Footprint 面对的是可能已死的
+//     shim，pid 复用是真实风险；本函数的调用方仍然持有组长进程（会话活着、
+//     *os.Process 未被回收），此时组长的 pid 不可能被复用，多一道校验只会
+//     要求调用方额外记一个内核时间戳
+//   - 因此**只能对仍存活的组调用**。对已退出的会话调用它，数出来的东西没有身份
+//   - 只读，绝不发信号
+func CountGroup(pgid int) (int, error) {
+	procs, err := enumProcsFn()
+	if err != nil {
+		log().Error("进程组计数失败", "pgid", pgid, "cause", err)
+		return 0, err
+	}
+	n := 0
+	for _, p := range procs {
+		if p.PGID == pgid {
+			n++
+		}
+	}
+	log().Debug("进程组计数完成", "pgid", pgid, "members", n)
+	return n, nil
+}
+
 // UIDUsage 报告当前 uid 的进程占用与上限。
 //
 // 返回：
 //   - used: 当前 uid 的进程数；limit: 每 uid 上限
-//   - err: 平台不支持（errNotSupported）或读取失败
+//   - err: 平台不支持（ErrNotSupported）或读取失败
 //
 // 注意：与 Footprint 共用同一次进程枚举的实现，但回答的是不同问题——
 // Footprint 问「这个任务占了多少」，本函数问「这台机器还剩多少」。
@@ -363,14 +511,39 @@ func rosterKill(h Handle, procs []procEntry) (killed int) {
 func UIDUsage() (used, limit int, err error) {
 	procs, err := enumProcsFn()
 	if err != nil {
-		log().Error("统计 uid 进程占用失败", "cause", err)
+		logEnumFailure("统计 uid 进程占用失败", err)
 		return 0, 0, err
 	}
 	limit, err = procLimit()
 	if err != nil {
-		log().Error("读取进程数上限失败", "cause", err)
+		// 与上面同一条纪律：平台没有这个原语是结论不是故障。Windows 上
+		// enumProcs 会先一步返回，走不到这里；但 procLimit 单独缺失的平台
+		// 组合是存在的，不能靠「反正到不了」来省这一档
+		logEnumFailure("读取进程数上限失败", err)
 		return len(procs), 0, err
 	}
 	log().Debug("uid 进程占用", "used", len(procs), "limit", limit)
 	return len(procs), limit, nil
+}
+
+// logEnumFailure 按「平台缺能力」还是「真故障」两档记录进程枚举失败。
+//
+// 参数：msg 为事件名；err 为 enumProcs 的返回；args 为附加键值对（不含 cause，
+// 本函数自己补）。
+//
+// 为什么不一律按 Error 打：非 darwin/linux 上 enumProcs 恒定返回
+// ErrNotSupported，那是**预期形态**而不是故障。按 Error 打的后果实测过——
+// Windows 执行机上每次 handoff status 都在 agentd 日志里刷两条红字
+// （足迹枚举失败 + 统计 uid 进程占用失败），把真正的枚举故障淹在噪音里
+// （B144）。同一档位的正确措辞见 shim.go 的名册采样分支。
+//
+// 注意：降档的只是**日志**，返回值与降级语义一概不变——调用方仍须把结论
+// 呈现为「未知」，绝不能回退成 0。
+func logEnumFailure(msg string, err error, args ...any) {
+	args = append(args, "cause", err)
+	if errors.Is(err, ErrNotSupported) {
+		log().Debug(msg+"：本平台不支持进程枚举，结论降级为未知", args...)
+		return
+	}
+	log().Error(msg, args...)
 }

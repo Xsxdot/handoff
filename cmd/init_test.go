@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/initflow"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -54,16 +55,16 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 	// Linux（systemd 要 root，非 root 只打 sudo 提示就返回）上行为相反，不钉住
 	// 就是拿跑测试的机器当断言前提——开发机全绿、Linux CI 全红（2026-08-13 实测）。
 	// Linux 那条分支由 TestMaybeInstallServiceLinuxNonRootOnlyHints 单独覆盖。
-	oldGOOS, oldEuid := initGOOS, initGeteuid
-	initGOOS = func() string { return "darwin" }
-	initGeteuid = func() int { return 501 }
-	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+	oldGOOS, oldEuid := initflow.HostGOOS, initflow.HostGeteuid
+	initflow.HostGOOS = func() string { return "darwin" }
+	initflow.HostGeteuid = func() int { return 501 }
+	t.Cleanup(func() { initflow.HostGOOS, initflow.HostGeteuid = oldGOOS, oldEuid })
 
 	// 测试不得走 huh：CI 没有真终端，huh 会挂死。生产 RunE 用
 	// newInteractivePrompter；这里一律换成脚本化，按行吃 SetIn 的答案。
 	oldP := newInteractivePrompter
-	newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
-		return newScriptedPrompter(in, out)
+	newInteractivePrompter = func(in io.Reader, out io.Writer) initflow.Prompter {
+		return initflow.NewScriptedPrompter(in, out)
 	}
 	t.Cleanup(func() { newInteractivePrompter = oldP })
 
@@ -86,14 +87,14 @@ func runInitWith(t *testing.T, cfgPath string, tty bool, answers string, f *fake
 // 半截答案绝不能 Save，否则会留下一份只配了一半的配置。
 type cancelPrompter struct{}
 
-func (cancelPrompter) Select(string, []promptOption, string) (string, error) {
-	return "", errPromptCanceled
+func (cancelPrompter) Select(string, []initflow.Option, string) (string, error) {
+	return "", initflow.ErrCanceled
 }
 func (cancelPrompter) Input(string, string) (string, error) {
-	return "", errPromptCanceled
+	return "", initflow.ErrCanceled
 }
 func (cancelPrompter) Confirm(string, bool) (bool, error) {
-	return false, errPromptCanceled
+	return false, initflow.ErrCanceled
 }
 
 // runInitProduction 走生产 TTY 构造缝，不换成脚本化。取消用例用它
@@ -132,25 +133,25 @@ func TestInitCanceledDoesNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 先直接钉 askAll：任一问返回取消就立刻停。
+	// 先直接钉 AskAll：任一问返回取消就立刻停。
 	cfg, err := config.Load(p)
 	if err != nil {
 		t.Fatalf("预载配置: %v", err)
 	}
-	if _, _, err := askAll(io.Discard, cancelPrompter{}, cfg, nil, true); !errors.Is(err, errPromptCanceled) {
-		t.Fatalf("askAll 取消应得 errPromptCanceled，得到 %v", err)
+	if _, _, err := initflow.AskAll(io.Discard, cancelPrompter{}, cfg, nil, true); !errors.Is(err, initflow.ErrCanceled) {
+		t.Fatalf("AskAll 取消应得 initflow.ErrCanceled，得到 %v", err)
 	}
 
 	oldP := newInteractivePrompter
-	newInteractivePrompter = func(in io.Reader, out io.Writer) prompter {
+	newInteractivePrompter = func(in io.Reader, out io.Writer) initflow.Prompter {
 		return cancelPrompter{}
 	}
 	t.Cleanup(func() { newInteractivePrompter = oldP })
 
 	if _, err := runInitProduction(t, p); err == nil {
 		t.Fatal("取消应返回错误")
-	} else if !errors.Is(err, errPromptCanceled) {
-		t.Fatalf("取消应得 errPromptCanceled，得到 %v", err)
+	} else if !errors.Is(err, initflow.ErrCanceled) {
+		t.Fatalf("取消应得 initflow.ErrCanceled，得到 %v", err)
 	}
 	body, rerr := os.ReadFile(p)
 	if rerr != nil {
@@ -452,14 +453,14 @@ func TestMaybeInstallServiceLinuxNonRootOnlyHints(t *testing.T) {
 	f := &fakeManager{}
 	withFakeManager(t, f)
 
-	oldGOOS, oldEuid := initGOOS, initGeteuid
-	initGOOS = func() string { return "linux" }
-	initGeteuid = func() int { return 1000 }
-	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+	oldGOOS, oldEuid := initflow.HostGOOS, initflow.HostGeteuid
+	initflow.HostGOOS = func() string { return "linux" }
+	initflow.HostGeteuid = func() int { return 1000 }
+	t.Cleanup(func() { initflow.HostGOOS, initflow.HostGeteuid = oldGOOS, oldEuid })
 
 	var buf bytes.Buffer
-	p := newScriptedPrompter(strings.NewReader("y\n"), &buf)
-	maybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+	p := initflow.NewScriptedPrompter(strings.NewReader("y\n"), &buf)
+	initflow.MaybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
 
 	if f.installed != nil {
 		t.Error("Linux 非 root 时不该调 Install：systemd 单元写不进 /etc")
@@ -481,14 +482,14 @@ func TestMaybeInstallServiceLinuxRootInstalls(t *testing.T) {
 	osExecutable = func() (string, error) { return "/usr/local/bin/handoff", nil }
 	t.Cleanup(func() { osExecutable = oldExe })
 
-	oldGOOS, oldEuid := initGOOS, initGeteuid
-	initGOOS = func() string { return "linux" }
-	initGeteuid = func() int { return 0 }
-	t.Cleanup(func() { initGOOS, initGeteuid = oldGOOS, oldEuid })
+	oldGOOS, oldEuid := initflow.HostGOOS, initflow.HostGeteuid
+	initflow.HostGOOS = func() string { return "linux" }
+	initflow.HostGeteuid = func() int { return 0 }
+	t.Cleanup(func() { initflow.HostGOOS, initflow.HostGeteuid = oldGOOS, oldEuid })
 
 	var buf bytes.Buffer
-	p := newScriptedPrompter(strings.NewReader("y\n"), &buf)
-	maybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+	p := initflow.NewScriptedPrompter(strings.NewReader("y\n"), &buf)
+	initflow.MaybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
 
 	if f.installed == nil {
 		t.Errorf("Linux root 下答 y 必须真的装，实得输出:\n%s", buf.String())
@@ -656,52 +657,5 @@ func TestInitListenSelectLoopback(t *testing.T) {
 	}
 	if got := loadCfg(t, p).Listen; got != "127.0.0.1:7777" {
 		t.Fatalf("选 loopback 后 listen=%q", got)
-	}
-}
-
-// 没装的执行者也必须出现在选项里——探测不阻断选择。
-func TestExecutorOptionsIncludeMissing(t *testing.T) {
-	rs := []toolchain.Result{
-		{Name: "opencode", State: toolchain.StateReady},
-		{Name: "claude", State: toolchain.StateAuthUnknown},
-		{Name: "grok", State: toolchain.StateMissing},
-		{Name: "codex", State: toolchain.StateNoCreds},
-	}
-	opts := executorOptions(rs)
-	if len(opts) != 4 {
-		t.Fatalf("应列出四家，得到 %d", len(opts))
-	}
-	byName := map[string]string{}
-	for _, o := range opts {
-		byName[o.Value] = o.Label
-	}
-	if !strings.Contains(byName["grok"], "没装") {
-		t.Errorf("没装的 grok 应留在列表并旁注状态，得到 %q", byName["grok"])
-	}
-	if !strings.Contains(byName["opencode"], "就绪") {
-		t.Errorf("就绪项 Label 应含状态，得到 %q", byName["opencode"])
-	}
-}
-
-func TestListenPreset(t *testing.T) {
-	cases := []struct {
-		listen  string
-		existed bool
-		isExec  bool
-		want    string
-	}{
-		{"127.0.0.1:7777", false, true, listenAll},
-		{"127.0.0.1:7777", true, true, listenLoopback},
-		{"0.0.0.0:7777", true, true, listenAll},
-		{"[::]:7777", true, true, listenAll},
-		{"0.0.0:7777", true, true, listenCustom},
-		{"0.0.0.0:7788", true, true, listenCustom},
-		{"192.168.1.9:7788", true, true, listenCustom},
-	}
-	for _, tc := range cases {
-		if got := listenPreset(tc.listen, tc.existed, tc.isExec); got != tc.want {
-			t.Errorf("listenPreset(%q, existed=%v, exec=%v)=%q, want %q",
-				tc.listen, tc.existed, tc.isExec, got, tc.want)
-		}
 	}
 }

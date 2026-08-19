@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestIdleTimeoutWarning 钉死 §2.2 的硬约束：--timeout 必须大于 stalltimeout。
@@ -41,6 +43,25 @@ func TestIdleTimeoutWarning(t *testing.T) {
 				t.Errorf("告警未点名对端的 stalltimeout: %q", got)
 			}
 		})
+	}
+}
+
+// TestShouldAutoSync：turn_failed 同样要触发自动同步——任务此刻在 waiting_review，
+// 协调者马上就要 diff 审代码，而失败恰恰是最需要把代码拉到本地翻的时候。
+func TestShouldAutoSync(t *testing.T) {
+	cases := []struct {
+		typ  proto.EventType
+		want bool
+	}{
+		{proto.EventTypeCompleted, true},
+		{proto.EventTypeFailed, true},
+		{proto.EventTypeTurnFailed, true},
+		{proto.EventTypeProgress, false},
+	}
+	for _, c := range cases {
+		if got := shouldAutoSync(c.typ); got != c.want {
+			t.Fatalf("shouldAutoSync(%s) = %v, want %v", c.typ, got, c.want)
+		}
 	}
 }
 

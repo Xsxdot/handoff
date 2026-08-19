@@ -112,11 +112,13 @@ var (
 //
 // 自拉模式下对端要下 20MB（慢网 + 代理下几分钟很正常），放宽到 10min，
 // 且 WaitVersion 在 pull 模式会读对端 pull_state，真失败时立刻中止、不会干等满。
-// 推送模式二进制已经在对端、换版是秒级动作，维持 60s——一次真起不来的换版
-// 不该让操作者晾 10 分钟。
+// 推送模式二进制已经在对端，换版本身是秒级动作——但重启不一定是。
+// macOS/Linux 上管理器会很快拉回 exit 0 的进程；Windows 上只能靠计划任务每分钟
+// 的重复触发模拟，最坏空窗接近 60 秒。旧值 60s 恰好压在线上，取两倍余量；一次
+// 真起不来的推送换版让操作者多等 60 秒，可接受。
 const (
 	upgradeWaitTimeoutPull = 10 * time.Minute
-	upgradeWaitTimeoutPush = 60 * time.Second
+	upgradeWaitTimeoutPush = 120 * time.Second
 	upgradeWaitInterval    = 2 * time.Second
 )
 
@@ -134,9 +136,13 @@ var (
 // 未运行时为空）。Err 非空表示 status 够不着——对远端是失败，对本机只表示
 // agentd 未运行（敲命令的人知道自己要不要把它起回来）。
 type machineState struct {
-	Ep       Endpoint
-	Bin      string
-	Agentd   string
+	Ep     Endpoint
+	Bin    string
+	Agentd string
+	// Revision 是对端上报的 VCS 提交号，仅在 Agentd（release 版本号）为空时
+	// 用于渲染。非 release 构建的 agentd 没有版本号却有提交号，只显示前者会
+	// 让那一行的版本列是一片空格，读表的人分不出「没探到」和「没版本号」（B147）。
+	Revision string
 	Platform string // 对端上报的平台；空 = 对端过旧未上报
 	// Managed 是对端上报的「agentd 由进程管理器拉起」状态。
 	//
@@ -324,6 +330,7 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 		slog.Default().Warn("探测机器失败", "name", ep.Name, "cause", err)
 	default:
 		ms.Agentd = st.Version.Version
+		ms.Revision = st.Version.Revision
 		ms.Platform = st.Version.Platform
 		if st.Update != nil {
 			managed := st.Update.Managed
@@ -356,6 +363,9 @@ func renderCheckRow(w io.Writer, s machineState, latest string) {
 		return
 	}
 	info := s.Agentd
+	if info == "" {
+		info = revisionFallback(s.Revision)
+	}
 	if s.Ep.Local {
 		info = "二进制 " + dispVer(s.Bin)
 		if s.Agentd == "" {
@@ -389,6 +399,22 @@ func dispVer(v string) string {
 		return "unknown（非 release 构建）"
 	}
 	return v
+}
+
+// revisionFallback 在没有 release 版本号时渲染提交号，两者都没有才留空。
+//
+// 参数：rev 为对端上报的 VCS 提交号（可能为空）。
+//
+// 为什么截到 12 位：与 handoff status 的版本行同宽，两处对同一台机器的称呼
+// 必须一致，否则对照两份输出时会以为是两台机器。
+func revisionFallback(rev string) string {
+	if rev == "" {
+		return ""
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	return rev + "（非 release 构建）"
 }
 
 // checkPad 把结论推到固定列（信息 8 列名 + 1 空格之后，结论对齐在 ~38 列）。

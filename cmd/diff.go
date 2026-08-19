@@ -4,7 +4,8 @@
 //   - 调 client.Diff 拉取 diff 文本并原文输出到 stdout（协调者阅读/管道分析用）
 //
 // 边界：
-//   - 不做 diff 语义判断；基准分支可经 --base 指定，缺省由 agentd 按仓库默认分支推导
+//   - 不做 diff 语义判断；基准可经 --base 指定，缺省优先用任务基线提交，没有才由
+//     agentd 按仓库默认分支推导
 package cmd
 
 import (
@@ -38,6 +39,6 @@ var diffCmd = &cobra.Command{
 }
 
 func init() {
-	diffCmd.Flags().StringVar(&diffBase, "base", "", "基准分支（默认按仓库默认分支推导）")
+	diffCmd.Flags().StringVar(&diffBase, "base", "", "基准（默认用任务基线提交，没有才按仓库默认分支推导）")
 	rootCmd.AddCommand(diffCmd)
 }

@@ -27,3 +27,20 @@ func TestWindowsCrossCompiles(t *testing.T) {
 		t.Fatalf("GOOS=windows go build ./... 失败（Windows 之路被堵死）:\n%s", out)
 	}
 }
+
+// TestWindowsVets 断言整个模块在 GOOS=windows 下 vet 通过。
+//
+// 为什么 build 门不够：build 只看非测试代码，而 unix-only 的**测试**文件同样会
+// 把 Windows 之路堵死——它们不加 build tag 时，任何人在 Windows 上跑 go test
+// 都会先撞编译错误。B37 落地后真机 e2e 不可能每个 PR 跑，vet 门是唯一守得住的。
+func TestWindowsVets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short：跳过交叉 vet 门禁")
+	}
+	cmd := exec.Command("go", "vet", "./...")
+	cmd.Env = append(cmd.Environ(), "GOOS=windows", "GOARCH=amd64")
+	cmd.Dir = ".." + string('/') + ".."
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("GOOS=windows go vet ./... 失败（Windows 之路被堵死）：\n%s", out)
+	}
+}

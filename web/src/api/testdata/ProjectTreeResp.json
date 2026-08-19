@@ -1,0 +1,36 @@
+{
+  "projects": [
+    {
+      "project_id": "a1b2c3d4e5f60718",
+      "origin_url": "git@github.com:xushixin/handoff.git",
+      "name": "handoff",
+      "locations": [
+        {
+          "machine": "",
+          "name": "handoff",
+          "path": "/home/dev/handoff",
+          "workspaces": [
+            {
+              "path": "/home/dev/handoff",
+              "branch": "main",
+              "head": "482aab1",
+              "is_main": true,
+              "managed": false,
+              "created_at": "0001-01-01T00:00:00Z"
+            },
+            {
+              "path": "/home/dev/.handoff/worktrees/w1",
+              "branch": "handoff/w1-web-scaffold",
+              "head": "9e12a3b",
+              "is_main": false,
+              "managed": true,
+              "created_at": "0001-01-01T00:00:00Z"
+            }
+          ],
+          "probe_error": ""
+        }
+      ]
+    }
+  ],
+  "unowned": []
+}

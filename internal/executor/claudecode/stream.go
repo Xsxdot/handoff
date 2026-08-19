@@ -42,14 +42,19 @@ const garbageLimit = 64
 // 只声明 adapter 用得到的字段：claude 的消息体字段很多且随版本变化，
 // 全量建模会让每次 claude 升级都变成一次编译错误。
 type streamMsg struct {
-	Type      string          `json:"type"`
-	Subtype   string          `json:"subtype"`
-	SessionID string          `json:"session_id"`
-	Message   json.RawMessage `json:"message"`
-	Event     json.RawMessage `json:"event"`
-	Result    string          `json:"result"`
-	IsError   bool            `json:"is_error"`
-	ExitCode  int             `json:"code"` // handoff_exit 哨兵携带
+	Type         string                `json:"type"`
+	Subtype      string                `json:"subtype"`
+	SessionID    string                `json:"session_id"`
+	Message      json.RawMessage       `json:"message"`
+	Event        json.RawMessage       `json:"event"`
+	Result       string                `json:"result"`
+	IsError      bool                  `json:"is_error"`
+	ExitCode     int                   `json:"code"`           // handoff_exit 哨兵携带
+	Model        string                `json:"model"`          // system/init 行携带的实际模型名
+	ModelUsage   map[string]modelUsage `json:"modelUsage"`     // result 行携带的会话级窗口（B80：分母来源）
+	UUID         string                `json:"uuid"`           // result 行的唯一标识（B83：账目的幂等键）
+	TotalCostUSD float64               `json:"total_cost_usd"` // **进程内累计**花费，本轮花费要做差分
+	Usage        json.RawMessage       `json:"usage"`          // result 行的**本轮**用量（与 modelUsage 的进程累计不是一回事）
 }
 
 // tailer 从指定 offset 增量读 out.jsonl。
@@ -198,4 +203,39 @@ func textDelta(ev json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return e.Delta.Text, true
+}
+
+// splitDelta 从 stream_event 里同时取出正文增量与思维链增量。
+//
+// 返回：
+//   - text:      delta.type == "text_delta" 时的正文，否则空串
+//   - reasoning: delta.type == "thinking_delta" 时的思维链，否则空串
+//
+// 两者互斥，至多一个非空。
+//
+// 为什么另开一个函数而不是改 textDelta：textDelta 是既有隔离判定的入口
+// （mapStreamEvent 靠它把思维链挡在 render.log 与回合正文之外）。改它的返回
+// 语义等于动隔离，而本期的纪律是隔离一行不许放松——多一个函数是最便宜的守法方式。
+func splitDelta(ev json.RawMessage) (text, reasoning string) {
+	var e struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(ev, &e); err != nil {
+		return "", ""
+	}
+	if e.Type != "content_block_delta" {
+		return "", ""
+	}
+	switch e.Delta.Type {
+	case "text_delta":
+		return e.Delta.Text, ""
+	case "thinking_delta":
+		return "", e.Delta.Thinking
+	}
+	return "", ""
 }

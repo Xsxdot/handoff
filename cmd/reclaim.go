@@ -182,5 +182,16 @@ func renderDirtyRejection(w io.Writer, taskID, workdir string, files []proto.Dir
 		fmt.Fprintf(w, "%s %s  %s\n", label, f.Status, f.Path)
 	}
 	fmt.Fprintf(w, "         （共 %d 项）\n", len(files))
-	fmt.Fprintf(w, "处置     确认可丢弃后重跑：handoff reclaim %s --force\n", short8(taskID))
+	fmt.Fprintf(w, "处置     确认可丢弃后重跑：handoff reclaim %s%s --force\n", taskID, targetArg())
+}
+
+// targetArg 把当前的 --target 还原成可粘贴的命令片段（本机模式返回空串）。
+//
+// 处置建议里必须带上它：远程任务只存在于那台机器的 agentd 上，漏掉 --target
+// 的命令会打到本机，同样以 404 收场——那就又变成一条「照着敲必然失败」的建议。
+func targetArg() string {
+	if targetName == "" {
+		return ""
+	}
+	return " --target " + targetName
 }

@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - Start：以脱离本进程的方式拉起 shim，由 shim 承载真正的 executor 进程
-//   - Alive / Kill：基于文件锁的存活判定与按进程组的回收
+//   - Alive / Kill：基于文件锁的存活判定与平台容器回收（unix 进程组 / Windows Job Object）
 //   - CreateInputChannel / WaitInputReader：executor 的输入通道（unix = FIFO）
 //   - RunShim：shim 自身的主体逻辑（见 shim.go）
 //
@@ -15,7 +15,7 @@
 // 为什么存活判定用文件锁而不是 pid：pid 会被操作系统复用，「进程存在」不等于
 // 「我的那个进程存在」——历史上 workspace.go 就因此误杀过无关进程组。shim 全生命
 // 周期持有 LockPath 的排他锁，内核在进程死亡时无条件释放，试锁失败即证明它还活着，
-// 完全没有复用窗口。pid 只用于发信号，不参与存活语义。
+// 完全没有复用窗口。pid 只用于定位终止目标，不参与存活语义。
 package prochost
 
 import (
@@ -35,7 +35,7 @@ import (
 //   - Dir: 子进程工作目录（任务仓库）
 //   - Env: 完整环境变量（KEY=VALUE），由调用方合并完毕，shim 原样使用不再追加
 //   - Stdout/Stderr: 子进程输出的追加落盘路径；两者可指向同一文件
-//   - InputCh: 可选。非空时 shim 以 O_RDWR 持有该 FIFO 并作为子进程 stdin
+//   - InputCh: 可选。非空时 shim 经 openInputChannel 准备子进程 stdin（平台各自实现）
 //   - LockPath: shim 的存活锁路径
 //   - InfoPath: adapter 的 proc.json 路径。shim **不写它**（那是 adapter 的独占
 //     文件），只拿它的所在目录来放 spec.json 与 child.pid——见 shim.go recordChildPID
@@ -64,12 +64,28 @@ type Spec struct {
 	// spec.json 被旧版 shim 读到时该字段被忽略（旧 shim 不认识），新版 shim
 	// 读到升级前的 spec.json 得到 0 则跳过安装——两个方向都不会出事。
 	NprocLimit int `json:"nproc_limit,omitempty"`
+
+	// TaskID 是本任务的 UUID，Start 据它注入 HANDOFF_TASK_ID 环境变量，
+	// 并回填进 Handle 供归属判定使用。
+	//
+	// omitempty + 零值语义：为空则不注入、不参与归属判定。旧版 shim 读到新版
+	// spec.json 会忽略该字段；新版 shim 读到旧 spec.json 得到空串则判据不参与——
+	// 两个方向都不会出事，与 NprocLimit 同款滚动升级纪律。
+	TaskID string `json:"task_id,omitempty"`
+
+	// MarkRoot 是 cwd 归属判据的比对根（已解析符号链接的绝对路径）。
+	//
+	// **只在托管 worktree 形态下由调用方填写**：空串即本任务不启用 cwd 归属。
+	// 把「仅托管 worktree 可杀」编码进数据而不是运行时再判一次，是为了让这条
+	// 边界没有「某处忘了检查」的可能。
+	MarkRoot string `json:"mark_root,omitempty"`
 }
 
 // Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc.json。
 //
 // 字段说明：
-//   - PID: shim 的进程 id，同时是它的进程组 id（Kill 按组发信号靠它）
+//   - PID: shim 的进程 id；unix 上同时是它的进程组 id，Windows 上用于定位 shim，
+//     由 shim 关闭 Job Object 句柄触发后代连坐回收
 //   - LockPath: 存活锁路径；Alive 只看它，不看 PID（见包注释的 why）
 type Handle struct {
 	PID      int    `json:"pid"`
@@ -96,6 +112,30 @@ type Handle struct {
 	// 跳过第二段清扫（只做 pgid 那段），与 StartedAt 缺失时降级为只上报是
 	// 同一条纪律——老任务不会因为升级就被动手。
 	RosterPath string `json:"roster_path,omitempty"`
+
+	// MembersPath 是进程容器成员快照（members.json）的路径。
+	//
+	// 只有具备进程容器的平台（Windows 的 Job Object）会填它并落盘；unix 上恒为空串，
+	// Footprint 因此自然落回 pgid + roster + 标记三段判据。升级前写下的 proc.json
+	// 没有此字段，读出空串即跳过容器来源，不会改变老任务的清扫语义。
+	MembersPath string `json:"members_path,omitempty"`
+
+	// TaskID / MarkRoot 是归属判定的凭据，由 Start 从 Spec 原样带过来。
+	//
+	// omitempty + 零值语义：升级前写下的 proc.json 没有这两个字段，读出空串即
+	// 跳过标记判据、只走 pgid + roster——与 StartedAt / RosterPath 缺失时同一条
+	// 纪律，老任务不会因为升级就被动手。
+	TaskID   string `json:"task_id,omitempty"`
+	MarkRoot string `json:"mark_root,omitempty"`
+}
+
+// cred 把 Handle 投影成一次归属判定所需的凭据。
+//
+// 为什么要单独一层而不是让判据直接吃 Handle：判据只需要这两个字段，
+// 传整个 Handle 会让 taskmark.go 依赖 PID/LockPath 这些与它无关的东西，
+// 单测也得构造无关字段。
+func (h Handle) cred() TaskCred {
+	return TaskCred{TaskID: h.TaskID, MarkRoot: h.MarkRoot}
 }
 
 // log 返回包日志入口（运行时取 slog.Default()，跟随 agentd 的 logx 配置）。
@@ -120,7 +160,7 @@ func Alive(h Handle) bool {
 	return locked
 }
 
-// ErrStillAlive 表示已发出 SIGKILL 且复核窗口走完，进程组仍然存活。
+// ErrStillAlive 表示已发出终止请求且复核窗口走完，目标容器仍然存活。
 //
 // 与「信号发送失败」区分开：后者是系统调用出错（可能只是权限或参数问题），
 // 前者是进程**真的没死**——只有后一种意味着会留下长期孤儿，值得惊动人。
@@ -130,13 +170,13 @@ var ErrStillAlive = errors.New("进程组仍然存活")
 // killVerifyWindow 是复核存活的总时长上限，killVerifyBackoff 的各项之和。
 //
 // 为什么是 1s 而不是更久：Kill 处在归档/中止的同步路径上，它变慢等于
-// handoff done / handoff stop 变慢。1s 足以覆盖 SIGKILL 的正常生效窗口；
+// handoff done / handoff stop 变慢。1s 足以覆盖终止请求的正常生效窗口；
 // 超过 1s 还活着的本来就该交给人和后台重试，而不是让协调者对着终端干等。
 const killVerifyWindow = time.Second
 
-// killVerifyBackoff 是 killGroup 之后逐次复核的等待序列（累计 = killVerifyWindow）。
+// killVerifyBackoff 是终止目标之后逐次复核的等待序列（累计 = killVerifyWindow）。
 //
-// 为什么要退避而不是固定间隔：SIGKILL 异步生效，绝大多数进程在头几十毫秒内
+// 为什么要退避而不是固定间隔：终止请求异步生效，绝大多数进程在头几十毫秒内
 // 就没了——前密后疏能让常见情况几乎不增加延迟，又不放弃慢死场景的覆盖。
 //
 // 是变量而非常量：测试要把它换成微秒级，否则每条复核用例都真等 1s。
@@ -146,7 +186,7 @@ var killVerifyBackoff = []time.Duration{
 	370 * time.Millisecond,
 }
 
-// aliveFn / killGroupFn / killProcFn 是包内测试接缝：SIGKILL 在类 Unix 上不可拦截，
+// aliveFn / killGroupFn / killProcFn 是包内测试接缝：强制终止在生产环境不可拦截，
 // 真进程做不出「持锁但杀不死」或「出生时刻不符」的形态，只能靠替换这些函数驱动
 // 复核失败与点名安全路径。**生产路径恒为下面这些默认值**，任何非测试代码都不得
 // 赋值给它们。
@@ -158,7 +198,9 @@ var (
 	killProcFn = killProc
 )
 
-// Kill 终止 shim 及其全部后代（按进程组发送 SIGKILL），并**复核它是否真的死了**。
+// Kill 终止 shim 及其全部后代，并**复核它是否真的死了**。
+//
+// unix 通过 shim 的进程组回收，Windows 终止 shim 后由 Job Object 句柄关闭连坐回收。
 //
 // 幂等：锁已空闲说明 shim 已死，直接返回 nil——**绝不对该 pid 发任何信号**，
 // 因为它可能已被操作系统复用给毫不相干的进程（workspace.go 的历史教训：
@@ -203,15 +245,14 @@ func Kill(h Handle) error {
 	return fmt.Errorf("%w: pid=%d，已发 SIGKILL 并复核 %s", ErrStillAlive, h.PID, killVerifyWindow)
 }
 
-// CreateInputChannel 幂等创建输入通道（unix 为 0600 命名管道）。
+// CreateInputChannel 幂等创建输入通道（unix 为 0600 命名管道，Windows 由平台实现）。
 //
 // 参数：path 为通道路径（通常是 <taskDir>/in.fifo）
 //
 // 返回：
 //   - 已存在且确实是命名管道 → nil（复用）
-//   - 已存在但是普通文件/目录 → 错误（残留物会让 shim 的 O_RDWR 打开语义完全改变，
-//     必须显式失败而不是静默当管道用）
-//   - Windows → not implemented（A 期）
+//   - 已存在但是普通文件/目录 → 错误（残留物会让平台输入通道语义完全改变，必须
+//     显式失败而不是静默当通道用）
 func CreateInputChannel(path string) error { return createInputChannel(path) }
 
 // WaitInputReader 等待输入通道上出现读端（shim 已执行到持有 FIFO 那一步）。
@@ -230,6 +271,24 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 	return waitInputReader(path, timeout)
 }
 
+// WriteInputChannel 往输入通道投递一段字节。
+//
+// 参数：
+//   - path: 通道路径（与 Spec.InputCh 同一个值）
+//   - data: 原样投递的字节，本函数不加工、不追加换行
+//
+// 返回：读端不在、通道不存在、写失败时返回错误。
+//
+// 注意：
+//   - **「打不开即读端不在」是承重语义**：unix 上以 O_WRONLY|O_NONBLOCK 打开，
+//     读端未就绪时 POSIX 规定直接失败（ENXIO）；Windows 上 CreateFile 打不开
+//     管道名报 ERROR_FILE_NOT_FOUND。两边都是调用方判定「执行者已不在」的依据，
+//     实现不得改成阻塞等待或静默成功
+//   - 本函数不做 JSON 序列化：那是 adapter 的协议知识，prochost 只搬字节
+func WriteInputChannel(path string, data []byte) error {
+	return writeInputChannel(path, data)
+}
+
 // Start 以 detached 方式拉起 shim，由 shim 承载 spec 描述的执行者进程。
 //
 // 参数：
@@ -238,7 +297,7 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 //   - extraArgs: 附加给 selfExe 的参数；生产传空，测试用它指向测试二进制的 shim 入口
 //
 // 返回：
-//   - Handle（PID 为 shim 的 pid，同时是进程组 id）；spec 落盘失败或 fork 失败时返回错误
+//   - Handle（PID 为 shim 的 pid；unix 上同时是进程组 id）；spec 落盘失败或 fork 失败时返回错误
 //
 // 注意：
 //   - 返回只代表 shim 已被 fork，**不代表它已持锁或已打开 FIFO**。调用方若要
@@ -248,6 +307,9 @@ func WaitInputReader(path string, timeout time.Duration) (time.Duration, error) 
 func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 	specPath := filepath.Join(filepath.Dir(spec.InfoPath), "spec.json")
 	applyFencePolicy(&spec)
+	applyTaskMark(&spec)
+	log().Debug("任务标记凭据已就位", "task_id", spec.TaskID,
+		"mark_root", spec.MarkRoot, "env_injected", spec.TaskID != "")
 	b, err := json.Marshal(spec)
 	if err != nil {
 		return Handle{}, fmt.Errorf("序列化 spec: %w", err)
@@ -287,12 +349,19 @@ func Start(spec Spec, selfExe string, extraArgs ...string) (Handle, error) {
 			"pid", pid, "spec", specPath)
 	}
 	roster := rosterPath(spec.InfoPath)
+	members := ""
+	if containerSampleFn != nil {
+		members = membersPath(spec.InfoPath)
+	}
 	log().Info("shim 已拉起", "pid", pid, "bin", spec.Argv[0], "spec", specPath,
-		"started_at", startedAt, "roster", roster)
+		"started_at", startedAt, "roster", roster, "members", members)
 	return Handle{
-		PID:        pid,
-		LockPath:   spec.LockPath,
-		StartedAt:  startedAt,
-		RosterPath: roster,
+		PID:         pid,
+		LockPath:    spec.LockPath,
+		StartedAt:   startedAt,
+		RosterPath:  roster,
+		MembersPath: members,
+		TaskID:      spec.TaskID,
+		MarkRoot:    spec.MarkRoot,
 	}, nil
 }

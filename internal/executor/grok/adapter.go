@@ -31,6 +31,8 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 const (
@@ -100,6 +102,17 @@ type runState struct {
 	// 收尾兜底据此不再把回合叙述文本补成第二张工单（见 finishTurn 的 default 分支）。
 	askedViaTool bool
 
+	// ctxWindow 是当前模型的上下文窗口上限，由 _x.ai/models/update 带来（0=未知）。
+	// 为什么要暂存：分子与分母来自**不同的帧**——窗口在会话建立后立刻到，
+	// 占用在每次模型调用后到。只发分子的话分母永远补不上
+	//（manager 的「nil=不更新」保护的是已落库的值，不是从没落过库的值）。
+	ctxWindow int
+	// actualModel 是 grok 报回的实际模型名（同上，随用量一起发出去）。
+	actualModel string
+
+	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart string            // 本回合正文/思维链的 part 标识
+
 	pendMu  sync.Mutex
 	pending map[string]pendingPerm // toolCallId -> 待裁决权限（perm.go 使用）
 }
@@ -112,6 +125,10 @@ type runState struct {
 type pendingPerm struct {
 	reqID json.RawMessage
 	desc  string
+}
+
+func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
+	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
 }
 
 // Start 异步启动执行并立即返回。
@@ -132,7 +149,9 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := startServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Task.Model, req.Env, a.log)
+	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
+		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
+		req.TaskDir, req.Task.Model, req.Env, a.log)
 	if err != nil {
 		return err
 	}
@@ -147,6 +166,16 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		taskID: taskID, taskDir: req.TaskDir, repoPath: req.Task.Workdir(),
 		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
 		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
+	}
+	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
+	// （放块里用局部 err：Start 的 err 是命名返回值，覆写它会让下面的
+	// defer 把「本任务无结构化帧」误判成「启动失败」而杀掉 serve 进程）
+	{
+		fw, err := turn.WriterFor(req.TaskDir, a.log)
+		if err != nil {
+			a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+		}
+		r.frames = fw
 	}
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
@@ -170,10 +199,19 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	prompt, err := renderStartPrompt(taskID, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("grok 未注入纪律块", "task", taskID)
+	} else {
+		a.log.Info("grok 纪律块已注入 prompt", "task", taskID, "bytes", len(req.Discipline))
+	}
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	// 不等待：session/prompt 要跑完一整个回合才响应，Start 必须立即返回
 	resCh, err := cli.CallAsync("session/prompt", map[string]any{
 		"sessionId": r.sessionID,
@@ -205,13 +243,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 // 地打到「凭据错误 → 可操作指引」这条路径。
 func (a *Adapter) openSession(ctx context.Context, r *runState, cwd string) error {
 	a.log.Info("grok ACP 会话建立中", "task", r.taskID, "cwd", cwd)
-	if _, err := r.cli.Call(ctx, "initialize", map[string]any{
-		"protocolVersion": 1,
-		"clientCapabilities": map[string]any{
-			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
-			"terminal": false,
-		},
-	}); err != nil {
+	if _, err := r.cli.Call(ctx, "initialize", initializeParams()); err != nil {
 		return fmt.Errorf("ACP initialize: %w", err)
 	}
 	newRes, err := r.cli.Call(ctx, "session/new", map[string]any{
@@ -265,6 +297,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("grok 续接回合", "task", taskID, "session", r.sessionID)
+	if err := r.frames.BeginTurn("send", text); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	// 续接即发新的 session/prompt，回合边界由它的响应（stopReason）标记
 	resCh, err := r.cli.CallAsync("session/prompt", map[string]any{
 		"sessionId": r.sessionID,
@@ -483,9 +519,23 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		return
 	}
 	var out struct {
-		StopReason string `json:"stopReason"`
+		StopReason string          `json:"stopReason"`
+		Meta       json.RawMessage `json:"_meta"` // 整回合的 usage 与 costUsdTicks（B83）
 	}
 	_ = json.Unmarshal(res.Result, &out)
+	// 累计消耗要**先于** stopReason 判定记账：回合没跑完（拒答、超限、被取消）
+	// 这些 token 也已经烧掉了，漏记就成了系统性少算。
+	// 注意这与 onUsageNotification 取的是**两套口径**、缓存算法相反（见 spend.go 文件头）。
+	// 解析失败**有意不记日志**：awaitTurn 每回合都跑，失败只是这条没入账，不构成告警。
+	if len(out.Meta) > 0 {
+		if e, ok := parseTurnMetaSpend(out.Meta); ok {
+			if e.CostState == proto.CostUnknown {
+				a.log.Info("grok 本回合没有花费戳（pool/OAuth 路径或 cost_is_partial），"+
+					"token 照常入账、花费记未知", "task", r.taskID, "prompt", e.Key)
+			}
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+		}
+	}
 	if out.StopReason != "end_turn" {
 		a.emitTurnFailed(r, "回合非正常收尾 stopReason="+out.StopReason)
 		return
@@ -589,6 +639,34 @@ func (a *Adapter) onClosed(r *runState, cause error) {
 	a.emitFatal(r, fmt.Sprintf("ACP 连接断开: %v；serve 日志尾部: %s", cause, logTail))
 }
 
+// updateKind 是 ACP sessionUpdate 的帧归类。
+type updateKind int
+
+const (
+	updateNone      updateKind = iota // 不产帧
+	updateText                        // 产 text 帧
+	updateReasoning                   // 产 reasoning 帧
+)
+
+// updateFrameKind 把 ACP 的 sessionUpdate 类型归类成帧类型。
+//
+// 为什么 tool_call / tool_call_update 归 updateNone：grok 的工具动作今天只有
+// 一行人读摘要（toolLine，带 200 截断），拿它当 tool_call 帧的 input 会把
+// 「命令尾部可能藏着危险片段」这个已知问题（见 adapter.go 的 toolLine 注释）
+// 复制进帧流。W4a 不为 grok 造工具帧——诚实缺席好过失真在场（spec §3.5）。
+//
+// 未知类型一律 updateNone。
+func updateFrameKind(sessionUpdate string) updateKind {
+	switch sessionUpdate {
+	case "agent_message_chunk":
+		return updateText
+	case "agent_thought_chunk":
+		return updateReasoning
+	default:
+		return updateNone
+	}
+}
+
 // turnAccumulator 是单回合的文本累积器：把 session/update 分流成
 // 「回合正文」与「render.log 可见性文本」两股。
 //
@@ -653,6 +731,29 @@ func (t *turnAccumulator) feedRaw(raw []byte) {
 			t.renderBuf.WriteString("  └ " + u.Status + "\n")
 		}
 	}
+}
+
+// updateFrameFields 从一条原始 session/update 消息里取 sessionUpdate 类型与
+// content.text，供调用方在 feedRaw 之外把帧分流出去。
+//
+// 解析形状与 feedRaw 一致（同一份消息、同一套字段名）；解析失败或不是
+// session/update 时返回空串（调用方据此跳过分流，绝不 panic）。
+func updateFrameFields(raw []byte) (kind, text string) {
+	var msg struct {
+		Method string `json:"method"`
+		Params struct {
+			Update struct {
+				Kind    string `json:"sessionUpdate"`
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Method != "session/update" {
+		return "", ""
+	}
+	return msg.Params.Update.Kind, msg.Params.Update.Content.Text
 }
 
 // toolLine 把工具调用渲染成一行人类可读摘要：优先用 rawInput.command，
@@ -784,14 +885,82 @@ type acpHandler struct {
 	r *runState
 }
 
+// OnNotify 分流对方通知。
+//
+// 三类：session/update（正文与工具调用，原有链路）、_x.ai/session_notification
+// （用量）、_x.ai/models/update（模型名与窗口）。其余私有通知继续忽略。
+//
+// 为什么这里要认 _x.ai/*：grok 把用量放在私有通知上，标准的 session/update
+// 变体一个都不带计数。此前这个函数的第一行是 `if method != "session/update"
+// { return }`，私有通知在那里就没了——它们压根到不了 feedRaw。
 func (h *acpHandler) OnNotify(method string, params json.RawMessage) {
-	if method != "session/update" {
+	switch method {
+	case "session/update":
+		h.onSessionUpdate(params)
+	case "_x.ai/session_notification":
+		h.onUsageNotification(params)
+	case "_x.ai/models/update":
+		h.onModelsUpdate(params)
+	}
+}
+
+// onSessionUpdate 是原 OnNotify 的正文链路，一字未改，只是从早返回后的直线
+// 变成 switch 的一个分支。
+func (h *acpHandler) onSessionUpdate(params json.RawMessage) {
+	h.r.turnMu.Lock()
+	raw := append([]byte(`{"method":"session/update","params":`), append(params, '}')...)
+	h.r.acc.feedRaw(raw)
+	// W4a：turnAccumulator 是纯累积器，不该带 I/O——帧在它的调用方分流。
+	// bodyBuf / renderBuf 的两股走向一字不改，这里只是多一路输出
+	if kind, text := updateFrameFields(raw); text != "" {
+		switch updateFrameKind(kind) {
+		case updateText:
+			if err := h.r.frames.Text(h.r.textPart, text); err != nil {
+				h.a.log.Warn("写 text 帧失败，不影响回合", "task", h.r.taskID, "cause", err)
+			}
+		case updateReasoning:
+			if err := h.r.frames.Reasoning(h.r.textPart, text); err != nil {
+				h.a.log.Warn("写 reasoning 帧失败，不影响回合", "task", h.r.taskID, "cause", err)
+			}
+		}
+	}
+	h.r.turnMu.Unlock()
+	h.a.flushRender(h.r)
+}
+
+// onUsageNotification 处理 _x.ai/session_notification：只有 response_completed
+// 会产出用量，其余（turn_completed 等）一律忽略——理由见 parseResponseCompleted。
+func (h *acpHandler) onUsageNotification(params json.RawMessage) {
+	u, ok := parseResponseCompleted(params)
+	if !ok {
+		return // 不是 response_completed，或没有有效数字：静默跳过，不是错误
+	}
+	h.r.turnMu.Lock()
+	if h.r.ctxWindow > 0 {
+		w := h.r.ctxWindow
+		u.ContextWindow = &w
+	}
+	model := h.r.actualModel
+	h.r.turnMu.Unlock()
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model, Usage: u})
+}
+
+// onModelsUpdate 处理 _x.ai/models/update：记下模型名与窗口，供后续用量帧带上。
+func (h *acpHandler) onModelsUpdate(params json.RawMessage) {
+	model, window, ok := parseModelsUpdate(params)
+	if !ok {
+		h.a.log.Debug("grok 模型通知解析失败，跳过", "task", h.r.taskID)
 		return
 	}
 	h.r.turnMu.Lock()
-	h.r.acc.feedRaw(append([]byte(`{"method":"session/update","params":`), append(params, '}')...))
+	changed := h.r.actualModel != model || h.r.ctxWindow != window
+	h.r.actualModel, h.r.ctxWindow = model, window
 	h.r.turnMu.Unlock()
-	h.a.flushRender(h.r)
+	if changed {
+		h.a.log.Info("grok 实际模型", "task", h.r.taskID, "model", model, "window", window)
+	}
+	// 模型名先单发一次：回合还没开始就能显示，不必等第一次模型调用完成
+	h.a.emit(h.r, executor.AdapterEvent{Type: "usage", ActualModel: model})
 }
 
 func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {

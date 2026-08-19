@@ -43,15 +43,20 @@ jobs:
           fi
       - name: Windows 交叉编译门禁
         # agentd 在 Windows 上跑不起来（B37），但协调者路径必须能编译——
-        # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过
+        # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过。
+        # B37 起追加 vet：build 只看非测试代码，测试文件里的 unix-ism 同样能把
+        # Windows 之路堵死，而那正是 B37 落地后最容易被静默弄坏的地方。
         run: |
           set -euo pipefail
           GOOS=windows GOARCH=amd64 go build ./...
           GOOS=windows GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
       - name: install.sh 单测
         run: bash install_test.sh
 
-  powershell:
+  # windows：Windows runner 上的运行期验证。install.ps1 的 PowerShell 单测 +
+  # Go 侧真正需要 Windows 内核语义的那些包。
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,3 +69,12 @@ jobs:
       - name: install.ps1 单测（PowerShell 7）
         shell: pwsh
         run: .\install_test.ps1
+      # Go 侧此前在 Windows 上一行测试都没跑过：命名管道中继、匿名管道不 EOF、
+      # 管道名抢占防护、AF_UNIX 往返，全是运行期行为，在 Linux/macOS runner 上
+      # 写多少单测都碰不到。交叉编译门禁只防编译期回归，防不住运行期语义错配
+      # （B128 实证：syscall.O_NONBLOCK 在 Windows 上有定义、编译得过、运行期必炸）。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Windows 运行期单测
+        run: go test ./internal/prochost/... ./internal/executor/claudecode/... -count=1

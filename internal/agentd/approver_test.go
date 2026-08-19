@@ -178,6 +178,25 @@ func waitEvent(t *testing.T, st *store.Store, taskID string, typ proto.EventType
 	})
 }
 
+// waitApproverIdle 等待审批链的裁决 goroutine 全部退出。
+//
+// consultApprover 是 handlePermission 用 go 起的独立 goroutine，它的 ticket 登记
+// （markApproverInflight）在 handlePermission 内**同步**完成，注销则在 goroutine
+// 的 defer 里、晚于它可能做的一切建工单/发事件/回传动作。所以「apInflight 空」
+// 是这条链彻底跑完的唯一完整信号。
+//
+// 断言「某件事没有发生」时必须等这个，等状态或等某个事件都不够：那些条件在
+// goroutine 还剩几行没跑完时就已经成立，此刻读到的「没发生」可能只是「还没轮到
+// 发生」——真回归会被判成通过。
+func waitApproverIdle(t *testing.T, m *Manager) {
+	t.Helper()
+	eventually(t, 3*time.Second, "审批链裁决结束", func() bool {
+		m.apMu.Lock()
+		defer m.apMu.Unlock()
+		return len(m.apInflight) == 0
+	})
+}
+
 // waitCondition 轮询等待条件成立。
 func waitCondition(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
@@ -394,6 +413,11 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	m.handlePermission(context.Background(), task.ID,
 		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x",
 			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
+	// 等的是审批链跑完，不是状态到位：waiting_review 由 runCmd 里的 handleResult
+	// 落下，此刻 Decide 甚至还没返回，approver_decision 与后面的分流全在后头。
+	// 原先等 waitTaskState 就读事件，等于在裁决半途拍快照——正面断言
+	// （应留 approver_decision）会偶发假红，反面断言（不应建工单）会假绿。
+	waitApproverIdle(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview)
 
 	// 断言：不产生 permission_request、不新建挂起工单、状态保持 waiting_review
@@ -410,6 +434,76 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	}
 	if !hasEvent(evs, proto.EventTypeApproverDecision) {
 		t.Fatalf("应留 approver_decision 审计事件: %v", evs)
+	}
+}
+
+// TestLateApproverDecisionRespondsRejectAndPublishes 验证回合边界之后到达的审批裁决
+// 会回传一次干净 reject，并留下协调者可见的 approval_dropped 事件。
+func TestLateApproverDecisionRespondsRejectAndPublishes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		approve bool
+		state   proto.TaskState
+	}{
+		{"approve 晚到且任务已待审", true, proto.TaskStateWaitingReview},
+		{"escalate 晚到且任务已待审", false, proto.TaskStateWaitingReview},
+		{"approve 晚到且任务已归档", true, proto.TaskStateCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, ad, taskID := seedLateDecisionCase(t, tc.state)
+			m.consultApproverForTest(taskID, tc.approve, "tk-1", "perm-1")
+
+			var decisions []string
+			for _, p := range ad.recordedPerms() {
+				if strings.HasPrefix(p, "perm-1:") {
+					decisions = append(decisions, strings.TrimPrefix(p, "perm-1:"))
+				}
+			}
+			if len(decisions) != 1 || decisions[0] != "reject" {
+				t.Errorf("回传给 executor 的是 %v，必须恰好一次 reject", decisions)
+			}
+			evs, err := st.EventsFromAsc(taskID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, e := range evs {
+				if e.Type == proto.EventTypeApprovalDropped {
+					found = true
+				}
+			}
+			if !found {
+				t.Error("没有 approval_dropped 事件，协调者只能去 agentd.log 里翻")
+			}
+		})
+	}
+}
+
+// TestLateApproverDecisionDoesNotCreateTicket 保留 P1-1 的原意：边界之后不建工单。
+func TestLateApproverDecisionDoesNotCreateTicket(t *testing.T) {
+	m, st, _, taskID := seedLateDecisionCase(t, proto.TaskStateWaitingReview)
+	m.consultApproverForTest(taskID, false, "tk-1", "perm-1")
+	tks, err := st.PendingTickets(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tks) != 0 {
+		t.Fatalf("边界之后不得建工单，实得 %d 张", len(tks))
+	}
+}
+
+// TestLateDecisionRespondFailureDoesNotChangeState 确认 executor 已死时，reject
+// 回传失败不改变任务状态。
+func TestLateDecisionRespondFailureDoesNotChangeState(t *testing.T) {
+	m, st, ad, taskID := seedLateDecisionCase(t, proto.TaskStateCompleted)
+	ad.setRespondErr(errors.New("executor 已不在"))
+	m.consultApproverForTest(taskID, true, "tk-1", "perm-1")
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateCompleted {
+		t.Fatalf("回传失败不该改状态，实得 %s", task.State)
 	}
 }
 
@@ -445,7 +539,7 @@ func TestApprovePermissionAdapterForFailureNotesDeliveryFailed(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	// 任务 executor 用未注册名，让 approvePermission 的 adapterFor 解析失败
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "ghost", State: proto.TaskStateRunning})
-	m.approvePermission("t1", "t1:p1", "p1", "x", "reason", "approver")
+	m.approvePermission("t1", "t1:p1", "p1", "x", "", "reason", "approver")
 	evs := mustEvents(t, st, "t1")
 	if !hasEvent(evs, proto.EventTypeDeliveryFailed) {
 		t.Fatalf("adapterFor 失败应产出 delivery_failed 事件（P1-4）: %v", evs)

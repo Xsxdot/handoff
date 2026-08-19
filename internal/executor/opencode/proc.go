@@ -105,7 +105,7 @@ var startProcHost = prochost.Start
 // 注意：
 //   - 端口选择存在 TOCTOU 竞态（见 freePort），MVP 接受
 //   - 就绪超时后自动 Kill 清理残留进程，避免半启动进程占着端口
-func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
+func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir, configPath string, env []string, log *slog.Logger) (*Proc, error) {
 	l := log.With("task", taskID)
 	port, err := freePort()
 	if err != nil {
@@ -149,6 +149,8 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 		return nil, fmt.Errorf("取自身可执行路径: %w", err)
 	}
 	spec := serveSpec(repoPath, taskDir, configPath, port, password, env)
+	spec.TaskID = taskID
+	spec.MarkRoot = markRoot
 	spec.Argv[0] = bin
 	// 写前置：proc.json 先于进程落盘，Reap 才永远有据可查
 	if err := writeProcInfo(taskDir, &procInfo{
@@ -185,10 +187,13 @@ func StartServe(ctx context.Context, repoPath, taskID, taskDir, configPath strin
 			// 就绪超时：读 serve.log 尾部（serve 的 stderr）带进错误，这是
 			// 「为什么没起来」的第一手证据（如端口被占、config 解析失败）。
 			stderrTail := serveLogTail(p.ServeLogPath)
-			l.Error("opencode serve 就绪超时", "port", port, "shim_pid", handle.PID,
+			// bin 必须进错误文本：Windows 上桌面 GUI 与 CLI 同名，LookPath 可能
+			// 解析到 OpenCode.exe（桌面版），它起来不会 listen 这个端口，症状就是
+			// 这里超时。只说「超时」会让人去查端口和配置，而真因是解析错了文件。
+			l.Error("opencode serve 就绪超时", "port", port, "shim_pid", handle.PID, "bin", bin,
 				"stderr_tail", stderrTail)
 			_ = p.Kill() // 清理残留，避免半启动进程占着端口
-			return nil, fmt.Errorf("opencode serve 就绪超时（10s）: %s", stderrTail)
+			return nil, fmt.Errorf("opencode serve 就绪超时（10s，bin=%s）: %s", bin, stderrTail)
 		case <-time.After(serveProbeInterval):
 		}
 	}

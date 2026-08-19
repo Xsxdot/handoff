@@ -82,7 +82,23 @@ type Config struct {
 	// agentd **启动失败**。没有 omitempty 时，新版 Save 会把 proxy: "" 写进
 	// 每一台机器的 config.yaml，而一台还没换版的旧 agentd 读到它就再也起不来了
 	//（PathDirs 同款）。
-	Proxy        string `yaml:"proxy,omitempty"`
+	Proxy string `yaml:"proxy,omitempty"`
+	// EnvForward 是要转发进终端会话的环境变量名单（见 internal/ptyhost）。
+	//
+	// 它解决的是 PathDirs 解决不了的**另一类**问题：SSH_AUTH_SOCK 这类变量由
+	// launchd / ssh-agent **按会话注入**，不来自任何 dotfile，因此 login shell
+	// 的 rc 链**无法**像恢复 PATH 那样把它恢复出来。agentd 以服务形态托管时，
+	// 终端里的 ssh / git push 会因此全部失败。
+	//
+	// 三态语义（**不要**在 Load 里填默认值）：
+	//   nil        → 用内置默认清单 ptyhost.DefaultEnvForward()（当前是 SSH_AUTH_SOCK）
+	//   非 nil     → 完全以配置为准
+	//   []（显式） → 一个都不转发
+	// 一旦 Load 把默认值填进结构体，下一次 Save 就会把 env_forward 落进
+	// config.yaml，omitempty 形同虚设，旧 agentd 照样被顶死。
+	//
+	// omitempty 是硬要求，理由同 PathDirs（B59 spec D7）。
+	EnvForward   []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
@@ -98,8 +114,20 @@ type Config struct {
 	// 环境变量。文件名必须是 <DataDir>/env/ 下的纯文件名（含路径分隔符会被拒绝）。
 	// 未配置的 agent 不注入。任务执行者与审批者共用同一份（见 B19 spec §4）。
 	Env map[string]string
+	// Discipline 是 executor 名 → 纪律块文件名的映射：派发该 executor 的任务时，
+	// 把该文件的内容作为「执行纪律」注入首回合 prompt。文件名必须是
+	// <DataDir>/discipline/ 下的纯文件名（含路径分隔符会被拒绝）。
+	//
+	// 三档语义（与 Env 刻意不同的是第三档）：有非空值用该文件；显式空串关闭注入；
+	// 未出现该键用内置默认。Env 在未出现该键时是不注入。
+	//
+	// 为什么第三档不同：env 内容是机器特有的，猜错不如不猜；纪律块内容是 handoff
+	// 通用的，不给默认等于让用户退回人工粘贴到 plan 头部（见 B129 spec §2.4）。
+	Discipline map[string]string
 	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
+	// Web 是浏览器控制台相关配置。
+	Web WebConfig
 }
 
 // SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支
@@ -139,6 +167,18 @@ type ExecutorConfig struct {
 // 多出一行提示而解析错乱。
 type TerminalConfig struct {
 	Auto bool
+}
+
+// WebConfig 是浏览器控制台相关配置。
+//
+// AllowedHosts 是 Host 白名单的扩展项——回环地址（127.0.0.1 / localhost / ::1）
+// 与 Listen 的 host 恒在白名单内，无需重复配置。它为将来的域名/中转场景预留：
+// agentd 部署在 handoff.example.com 后面时，不配这一项所有请求都会被 403。
+//
+// yaml:"allowed_hosts"：strict 解码器（KnownFields）按 tag 匹配键名，
+// 不加 tag 时 yaml.v3 会把它映射成 allowedhosts（同 RepoRoot 的处理）。
+type WebConfig struct {
+	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，
@@ -193,26 +233,11 @@ type ProcFenceConfig struct {
 // 注意：
 //   - 首次运行生成的 Token 需要人工同步到配对主机的 Targets 中
 //   - 旧文件的顶层 update 必须先剥再 KnownFields，否则 v0.1.x 机器升级即砖
+//
+// 与 Defaults 的分工：Load 在文件不存在时会生成 token 并把默认配置写盘（firstRun），
+// 这是给 CLI/agentd 用的；桌面壳的首次引导走 Defaults（见其 doc 注释）。
 func Load(path string) (*Config, error) {
-	// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
-	//（如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
-	// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
-	cfg := &Config{
-		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
-		Approver: ApproverConfig{Timeout: 60 * time.Second},
-		Executor: ExecutorConfig{Default: "opencode"},
-		Terminal: TerminalConfig{Auto: false},
-		Sync:     SyncConfig{Auto: true},
-		ProcFence: ProcFenceConfig{
-			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
-			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
-			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
-			// 默认（400/1200），显式写 0 覆盖为 0。
-			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
-		},
-		Targets: map[string]Target{},
-		Env:     map[string]string{},
-	}
+	cfg := newDefaultConfig()
 	// firstRun 标记首次运行（配置文件不存在）：默认值补全必须在解码之后，
 	// 而写盘必须在补全之后，否则默认 repo_root 不会随首次写盘一起落地。
 	firstRun := false
@@ -246,6 +271,62 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
 		}
 	}
+	applyComputedDefaults(cfg)
+	if firstRun {
+		if werr := save(path, cfg); werr != nil {
+			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
+		}
+		log().Info("首次运行，已生成配置", "path", path)
+	}
+	if verr := cfg.validate(); verr != nil {
+		log().Error("配置校验失败", "path", path, "cause", verr)
+		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+	}
+	if cfg.Proxy != "" {
+		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
+		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
+	}
+	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
+	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
+	// 把整台机器卡死在升级后的第一秒。
+	if stripped && !firstRun {
+		if werr := save(path, cfg); werr != nil {
+			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
+		} else {
+			log().Info("已从配置文件删除废弃 update 段", "path", path)
+		}
+	}
+	return cfg, nil
+}
+
+// newDefaultConfig 构造出厂默认配置（不落盘）。
+//
+// 初始字面量预置默认值，yaml 覆盖式解码：配置里没写的键保持默认
+// （如 approver.timeout=60s、executor.default=opencode、terminal.auto=false），
+// 写了的键覆盖——而非「只读显式配置，其余为空」导致默认值丢失。
+func newDefaultConfig() *Config {
+	return &Config{
+		Listen: "127.0.0.1:7777", DataDir: defaultDataDir(), StallTimeout: 2 * time.Hour,
+		Approver: ApproverConfig{Timeout: 60 * time.Second},
+		Executor: ExecutorConfig{Default: "opencode"},
+		Terminal: TerminalConfig{Auto: false},
+		Sync:     SyncConfig{Auto: true},
+		ProcFence: ProcFenceConfig{
+			// 默认值放初始字面量而不是兜底：ReserveRatio 的兜底是「越界就取默认」，
+			// 但 TaskBudget/TaskHardLimit 的 0 是「关掉这一档」的合法表达，用同样的
+			// 兜底会把显式写的 0 改回默认值。初始字面量配合覆盖式解码：省略时保持
+			// 默认（400/1200），显式写 0 覆盖为 0。
+			ReserveRatio: 0.1, TaskBudget: 400, TaskHardLimit: 1200,
+		},
+		Targets:    map[string]Target{},
+		Env:        map[string]string{},
+		Discipline: map[string]string{},
+	}
+}
+
+// applyComputedDefaults 补算依赖实际值才能定的默认项，必须在解码之后调用：
+// repo_root 派生自 DataDir 与 ProcFence 的越界兜底都依赖已解析的配置内容。
+func applyComputedDefaults(cfg *Config) {
 	// repo_root 的默认值必须在解码之后补，不能预置在初始字面量里：
 	// 它派生自 DataDir，而 DataDir 本身可能被配置文件改写。
 	//
@@ -275,31 +356,24 @@ func Load(path string) (*Config, error) {
 		cfg.ProcFence.TaskHardLimit < cfg.ProcFence.TaskBudget {
 		cfg.ProcFence.TaskHardLimit = cfg.ProcFence.TaskBudget
 	}
-	if firstRun {
-		if werr := save(path, cfg); werr != nil {
-			return nil, fmt.Errorf("写默认配置 %s: %w", path, werr)
-		}
-		log().Info("首次运行，已生成配置", "path", path)
-	}
+}
+
+// Defaults 返回一份「出厂默认 + 随机 token」的配置，**不落盘**。
+//
+// 与 Load 的分工：Load 在文件不存在时会生成 token 并把默认配置写盘（firstRun），
+// 这是给 CLI/agentd 用的。桌面壳的首次引导不能调 Load——向导问答中途崩溃、
+// 被杀或取消时，磁盘上绝不允许出现会让 Resolve 判为「已配置」的 config.yaml
+// （SIGKILL 实测原样复现过这个坑，且回滚法依赖进程还活着，封不死）。Defaults
+// 只构造内存里的配置，落盘由调用方在问答成功后一次性 config.Save。
+func Defaults() *Config {
+	cfg := newDefaultConfig()
+	cfg.Token = randToken()
+	applyComputedDefaults(cfg)
 	if verr := cfg.validate(); verr != nil {
-		log().Error("配置校验失败", "path", path, "cause", verr)
-		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
+		// 出厂默认必然合法；真走到这里说明默认字面量写错了
+		panic("config: 出厂默认校验失败: " + verr.Error())
 	}
-	if cfg.Proxy != "" {
-		// 只打脱敏值：代理 URL 常含 user:pass@（envfile/resolver.go:64 同款纪律）
-		log().Info("已配置出网代理", "proxy", proxycfg.Redact(cfg.Proxy))
-	}
-	// 剥过 update 就回写一次，磁盘立刻干净。回写失败不得阻断启动：
-	// 内存里已经没有这个字段，agentd 能跑；拦下来等于为一次清垃圾
-	// 把整台机器卡死在升级后的第一秒。
-	if stripped && !firstRun {
-		if werr := save(path, cfg); werr != nil {
-			log().Error("删除废弃 update 段后回写失败", "path", path, "cause", werr)
-		} else {
-			log().Info("已从配置文件删除废弃 update 段", "path", path)
-		}
-	}
-	return cfg, nil
+	return cfg
 }
 
 // validate 校验取值域，把「能解析但必然误动作」的配置挡在启动之前。
@@ -358,7 +432,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/env{<agent>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/targets{addr,user,token}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

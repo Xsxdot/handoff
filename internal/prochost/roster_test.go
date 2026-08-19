@@ -3,6 +3,7 @@ package prochost
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -117,7 +118,7 @@ func TestReadRosterMissingIsNotError(t *testing.T) {
 
 // 名册损坏必须**报错**而不是当成空名册：空名册意味着「确实没有后代」，
 // 损坏意味着「有后代但我读不出来」，两者对调用方是不同的决定（后者要打日志
-// 让人看见），这与 errNotSupported 不能退化成空集是同一条纪律。
+// 让人看见），这与 ErrNotSupported 不能退化成空集是同一条纪律。
 func TestReadRosterCorruptReportsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), RosterFileName)
 	if err := os.WriteFile(path, []byte("{不是 json"), 0o600); err != nil {
@@ -152,7 +153,68 @@ func TestWriteRosterIsAtomicAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows 没有 POSIX 权限位：写盘时传的 0o600 只映射到只读属性，Stat 恒
+	// 回报 -rw-rw-rw-，断言 0600 等于断言一个该平台表达不了的东西。实际保护
+	// 在 NTFS ACL（任务目录位于用户 profile 之下）。原子性那半边（临时文件必须
+	// 已 rename 掉）与平台无关，上面那段对两边都有效。
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("名册权限应为 0600，实得 %v", fi.Mode().Perm())
+	}
+}
+
+func TestMergeRosterKeepsEscapedDescendant(t *testing.T) {
+	// 第一轮：工具壳 200 与它的子进程 300 都能由 ppid 闭包到
+	prev := []rosterEntry{{PID: 200, StartedAt: 1000}, {PID: 300, StartedAt: 1100}}
+	// 第二轮：工具壳已退出，300 被 reparent 给 launchd（ppid=1），闭包走不到它
+	procs := []procEntry{
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: 900},  // shim
+		{PID: 300, PPID: 1, PGID: 200, StartedAt: 1100}, // 逃逸后代，仍活着
+	}
+	cur := descendantsOf(100, procs) // 本轮闭包为空
+	got := mergeRoster(prev, cur, procs)
+	if len(got) != 1 || got[0].PID != 300 || got[0].StartedAt != 1100 {
+		t.Fatalf("逃逸后代必须留在名册里，got=%v", got)
+	}
+}
+
+func TestMergeRosterDropsDeadAndReusedPID(t *testing.T) {
+	prev := []rosterEntry{
+		{PID: 300, StartedAt: 1100}, // 已从进程表消失
+		{PID: 400, StartedAt: 1200}, // pid 还在，但 StartedAt 变了 = pid 被复用
+	}
+	procs := []procEntry{
+		{PID: 100, PPID: 1, PGID: 100, StartedAt: 900},
+		{PID: 400, PPID: 1, PGID: 400, StartedAt: 9999},
+	}
+	got := mergeRoster(prev, nil, procs)
+	if len(got) != 0 {
+		t.Fatalf("已死与 pid 复用的条目都必须剪掉，got=%v", got)
+	}
+}
+
+func TestMergeRosterUnionsAndSortsByPID(t *testing.T) {
+	prev := []rosterEntry{{PID: 500, StartedAt: 1000}}
+	cur := []rosterEntry{{PID: 300, StartedAt: 1100}, {PID: 500, StartedAt: 1000}}
+	procs := []procEntry{
+		{PID: 300, PPID: 100, PGID: 100, StartedAt: 1100},
+		{PID: 500, PPID: 100, PGID: 100, StartedAt: 1000},
+	}
+	got := mergeRoster(prev, cur, procs)
+	if len(got) != 2 || got[0].PID != 300 || got[1].PID != 500 {
+		t.Fatalf("并集须去重且按 pid 升序，got=%v", got)
+	}
+}
+
+func TestMarshalRosterStableForSameSet(t *testing.T) {
+	a, err := marshalRoster([]rosterEntry{{PID: 2, StartedAt: 20}, {PID: 1, StartedAt: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := marshalRoster([]rosterEntry{{PID: 2, StartedAt: 20}, {PID: 1, StartedAt: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("同一批条目的序列化结果必须逐字节一致：%s vs %s", a, b)
 	}
 }

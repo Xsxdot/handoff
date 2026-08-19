@@ -1,0 +1,212 @@
+:root {
+    /* Design tokens kept from the Wails template; the wizard page no longer
+       needs the photo background layers or the brand/footer/toast chrome. */
+    --ink: #06070f;
+    --text: #f4f6fb;
+    --muted: #9aa6c0;
+    --accent: #ff4d4d;
+    --accent-2: #ff2d72;
+    --glass: rgba(255, 255, 255, 0.05);
+    --glass-border: rgba(255, 255, 255, 0.12);
+    --radius: 11px;
+    --grad: linear-gradient(135deg, #ff5a4d 0%, #ff2d72 100%);
+
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+        sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--ink); }
+html, body {
+    margin: 0;
+    color: var(--text);
+}
+
+body {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 24px;
+    /* Drag the window by the surrounding background; the wizard card opts out. */
+    -webkit-user-select: none;
+    user-select: none;
+    --wails-draggable: drag;
+}
+
+#wizard {
+    --wails-draggable: no-drag;
+    width: 100%;
+    max-width: 520px;
+    padding: 32px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+
+#wizard h1 {
+    margin: 0 0 20px;
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+#question h2 {
+    margin: 0 0 14px;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+/* Inputs stay selectable so the user can edit a default value. */
+#question select,
+#question input[type="text"] {
+    display: block;
+    width: 100%;
+    padding: 9px 11px;
+    margin-bottom: 14px;
+    font-size: 16px;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    outline: none;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+#question input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    margin: 0 0 14px;
+    accent-color: var(--accent);
+}
+
+#question button {
+    border: none;
+    background: var(--grad);
+    color: #fff;
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+#question button:disabled { opacity: 0.5; cursor: default; }
+
+#notices { margin-top: 18px; }
+#notices p {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* ---- 单页表单布局 ---- */
+
+#question form {
+    display: flex;
+    flex-direction: column;
+}
+
+.field {
+    margin-bottom: 16px;
+}
+
+.field:last-child {
+    margin-bottom: 0;
+}
+
+.field-title {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.field .notice {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 间距交给 .field 统一管理，控件自身不再往下挤 */
+#question .field select,
+#question .field input[type="text"] {
+    margin-bottom: 0;
+}
+
+#question .field input[type="checkbox"] {
+    margin: 0;
+}
+
+/* 高级设置：默认折叠的 details */
+#question details.advanced {
+    margin-bottom: 16px;
+    padding: 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+#question details.advanced summary {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    outline: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#question details.advanced[open] summary {
+    margin-bottom: 12px;
+}
+
+/* 校验/保存失败的错误提示：在按钮上方 */
+.wizard-error {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 77, 77, 0.4);
+    border-radius: 8px;
+    background: rgba(255, 77, 77, 0.12);
+    color: #ffb4b4;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 一般提示横幅（如检测到旧版已装 handoff）：非阻塞信息，用中性色系与
+   阻塞性错误 .wizard-error 区分开。挂在 #notices 里的 div 上，避开
+   #notices p 的通用规则、让本类自己掌控间距与配色。 */
+.wizard-notice {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* 完成按钮不占满整行 */
+#question form > button[type="submit"] {
+    align-self: flex-start;
+}

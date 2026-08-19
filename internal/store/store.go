@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -44,6 +45,11 @@ var ErrBadTransit = errors.New("非法状态迁移")
 // Store 持有 SQLite 数据库连接池，是 store 包对外唯一入口。
 type Store struct {
 	db *sql.DB
+
+	// eventHook 在事件落库成功后被同步调用一次，用于派生只读副作用
+	// （目前是写 frames.jsonl 的 event 引用帧）。见 SetEventHook 的边界约定。
+	eventHookMu sync.RWMutex
+	eventHook   func(proto.Event)
 }
 
 // Open 打开（必要时创建）path 处的 SQLite 数据库并建表。
@@ -88,7 +94,32 @@ func Open(path string) (*Store, error) {
   base_commit TEXT NOT NULL DEFAULT '', base_ahead INTEGER NOT NULL DEFAULT 0,
   -- B43 两列：repo_dirty_count=派发当时任务仓库未提交改动总数（仅 managed 模式采集）；
   -- repo_dirty_files=其文件名展示串（封顶 5 个）。这些改动不在新工作树里。
-  repo_dirty_count INTEGER NOT NULL DEFAULT 0, repo_dirty_files TEXT NOT NULL DEFAULT '')`,
+  repo_dirty_count INTEGER NOT NULL DEFAULT 0, repo_dirty_files TEXT NOT NULL DEFAULT '',
+  -- B80 三列：actual_model=executor 报回的实际模型名（与入参 model 不是一回事）；
+  -- usage_context_tokens=当前 context 占用；usage_context_window=该模型的窗口上限。
+  -- 0/空一律表示「取不到」——真实的模型调用输入与真实的窗口都必然 > 0，
+  -- 所以 0 可以安全地当哨兵，读取时还原成 nil（绝不冒充 0）。
+  actual_model TEXT NOT NULL DEFAULT '',
+  usage_context_tokens INTEGER NOT NULL DEFAULT 0,
+  usage_context_window INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS task_usage_ledger (
+  -- B83 账本：一行 = 一次「新增消耗」的账目，累计值由对本表求和得到。
+  -- 为什么不在 tasks 表上冗余累计列：冗余就有一致性问题（漏写一次永久偏差），
+  -- 而行数是回合数量级（几十到几百），一次 SUM 的成本可以忽略。
+  task_id TEXT NOT NULL,
+  -- entry_key 是 adapter 给的幂等键（claudecode=result.uuid、codex=turnId、
+  -- grok=promptId、opencode=message.id）。同键**覆盖**而非累加：流式推送的
+  -- 同一条消息会推多次且值在涨，覆盖才拿到最终值。
+  entry_key TEXT NOT NULL,
+  input INTEGER NOT NULL DEFAULT 0,
+  cached_input INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  -- cost_ticks 单位 1 USD = 10^10 ticks；cost_state 只可能是
+  -- reported / estimated / unknown（partial 是聚合级状态，不落库）。
+  cost_ticks INTEGER NOT NULL DEFAULT 0,
+  cost_state TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (task_id, entry_key))`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -106,6 +137,39 @@ func Open(path string) (*Store, error) {
   -- path 唯一：两个不同项目不能声称在同一个目录。
   path TEXT NOT NULL UNIQUE,
   origin_url TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,           -- 会话 id，可公开，用于列出与吊销
+  token_hash   TEXT NOT NULL UNIQUE,       -- cookie 值的 SHA-256；明文不落库
+  device_name  TEXT NOT NULL DEFAULT '',
+  created_at   TIMESTAMP NOT NULL,
+  expires_at   TIMESTAMP NOT NULL,
+  last_seen_at TIMESTAMP NOT NULL,
+  revoked_at   TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS auth_tickets (
+  id          TEXT PRIMARY KEY,            -- ticket 明文的 SHA-256
+  device_name TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMP NOT NULL,
+  expires_at  TIMESTAMP NOT NULL,
+  consumed_at TIMESTAMP)`,
+		// 镜像两表（W3a §6.2）：远端权威日志的**副本**，不是第二份真相。
+		// 可随时整表删掉，从远端按 from_seq=0 重建。
+		//
+		// 为什么不混进本机 events 表：远端 events.seq 是**远端库的全局自增**，
+		// 本机 seq 也是全局自增主键，混表必撞。
+		`CREATE TABLE IF NOT EXISTS mirror_events (
+  task_id TEXT NOT NULL,
+  -- seq 保留远端原值：远端是权威，本机不重编号，重连凭它续拉
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL, payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL,
+  -- 复合主键即幂等键：重连补拉重复到达时 INSERT OR IGNORE 静默跳过
+  PRIMARY KEY (task_id, seq))`,
+		`CREATE TABLE IF NOT EXISTS mirror_tasks (
+  task_id TEXT PRIMARY KEY,
+  -- target 是 §5.1 透明路由的索引：这条任务该转发给谁
+  target TEXT NOT NULL,
+  -- snapshot 是最近一次拉到的任务体 JSON（§6.3 的事件触发刷新 + 慢对账）
+  snapshot TEXT NOT NULL,
+  fetched_at TIMESTAMP NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()
@@ -142,16 +206,19 @@ func Open(path string) (*Store, error) {
 	// IF NOT EXISTS，且不支持一次加多列，只能逐条 ALTER；已存在时报 duplicate
 	// column 属预期，忽略即可（与 tickets.delivered_at 的迁移写法保持一致）。
 	for col, typ := range map[string]string{
-		"name":             "TEXT NOT NULL DEFAULT ''",
-		"executor":         "TEXT NOT NULL DEFAULT ''",
-		"model":            "TEXT NOT NULL DEFAULT ''",
-		"work_dir":         "TEXT NOT NULL DEFAULT ''",
-		"worktree_managed": "INTEGER NOT NULL DEFAULT 0",
-		"base_commit":      "TEXT NOT NULL DEFAULT ''",
-		"base_ahead":       "INTEGER NOT NULL DEFAULT 0",
-		"repo_dirty_count": "INTEGER NOT NULL DEFAULT 0",
-		"repo_dirty_files": "TEXT NOT NULL DEFAULT ''",
-		"done_note":        "TEXT NOT NULL DEFAULT ''",
+		"name":                 "TEXT NOT NULL DEFAULT ''",
+		"executor":             "TEXT NOT NULL DEFAULT ''",
+		"model":                "TEXT NOT NULL DEFAULT ''",
+		"work_dir":             "TEXT NOT NULL DEFAULT ''",
+		"worktree_managed":     "INTEGER NOT NULL DEFAULT 0",
+		"base_commit":          "TEXT NOT NULL DEFAULT ''",
+		"base_ahead":           "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_count":     "INTEGER NOT NULL DEFAULT 0",
+		"repo_dirty_files":     "TEXT NOT NULL DEFAULT ''",
+		"done_note":            "TEXT NOT NULL DEFAULT ''",
+		"actual_model":         "TEXT NOT NULL DEFAULT ''",
+		"usage_context_tokens": "INTEGER NOT NULL DEFAULT 0",
+		"usage_context_window": "INTEGER NOT NULL DEFAULT 0",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -205,7 +272,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
 // Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
 const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note`
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
+  actual_model, usage_context_tokens, usage_context_window`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -222,17 +290,28 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		createdAt       string
 		updatedAt       string
 		worktreeManaged int
+		ctxTokens       int
+		ctxWindow       int
 	)
 	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
-		&task.DoneNote); err != nil {
+		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)
 	task.UpdatedAt = parseTime(updatedAt)
 	task.WorktreeManaged = worktreeManaged != 0
+	// 0 还原成 nil：任何一次真实的模型调用输入都 > 0，所以 0 只可能是
+	// 「还没有任何一次调用完成」。用 0 表示「占用为零」是编造。
+	if ctxTokens > 0 {
+		task.Usage = &proto.Usage{ContextTokens: ctxTokens}
+		if ctxWindow > 0 {
+			w := ctxWindow
+			task.Usage.ContextWindow = &w
+		}
+	}
 	return task, nil
 }
 
@@ -253,6 +332,12 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取任务 %s: %w", id, err)
 	}
+	// 累计消耗来自另一张表，单读时一并带上；列表刻意不带（见下方注释）。
+	cum, err := s.TaskCumulative(id)
+	if err != nil {
+		return nil, err
+	}
+	task.Cumulative = cum
 	return &task, nil
 }
 
@@ -260,6 +345,8 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 //
 // 注意：
 //   - created_at 统一为 UTC RFC3339Nano 文本，字典序即时间序，可直接排序
+//   - **不填充 Task.Cumulative**。列表页不显示累计消耗，为每一行做一次
+//     SUM 是纯浪费；要拿累计值请用 GetTask。这不是 bug，改之前先想清楚代价。
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(),
 		`SELECT `+taskColumns+` FROM tasks ORDER BY created_at DESC`)
@@ -406,6 +493,156 @@ func (s *Store) SetTaskField(id, field, value string) error {
 	return nil
 }
 
+// SetTaskUsage 一次性更新任务的实际模型名与 context 占用。
+//
+// 参数：
+//   - id: 任务 ID
+//   - model: 实际模型名；**空串表示本次不更新该列**（保留既有值）
+//   - ctxTokens: 当前 context 占用；**0 表示不更新**
+//   - ctxWindow: 上下文窗口上限；**nil 表示不更新**
+//
+// 为什么空值语义是「不更新」而不是「清空」：用量与模型名往往来自**不同的帧**
+// （grok 的窗口在会话建立时到、占用在每次模型调用后到），若空值等于清空，
+// 后到的那一帧会把先到的那一半抹掉。
+//
+// 注意：
+//   - 三个参数全为空时是空操作，不打库
+//   - 任务不存在时不报错（与 SetTaskField 一致，不影响其他行即返回 nil）
+func (s *Store) SetTaskUsage(id, model string, ctxTokens int, ctxWindow *int) error {
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 5)
+	if model != "" {
+		sets = append(sets, "actual_model = ?")
+		args = append(args, model)
+	}
+	if ctxTokens > 0 {
+		sets = append(sets, "usage_context_tokens = ?")
+		args = append(args, ctxTokens)
+	}
+	if ctxWindow != nil {
+		sets = append(sets, "usage_context_window = ?")
+		args = append(args, *ctxWindow)
+	}
+	if len(sets) == 0 {
+		return nil // 无事可做，不打库
+	}
+	args = append(args, fmtTime(time.Now()), id)
+	if _, err := s.db.ExecContext(context.Background(),
+		"UPDATE tasks SET "+strings.Join(sets, ", ")+", updated_at = ? WHERE id = ?",
+		args...); err != nil {
+		return fmt.Errorf("更新任务 %s 用量: %w", id, err)
+	}
+	return nil
+}
+
+// UpsertSpend 记一条消耗账目；同 (taskID, e.Key) **覆盖**既有行。
+//
+// 参数：
+//   - taskID: 所属任务
+//   - e: 账目。三个 token 分项的口径是归一化后的值——**输入不含缓存**、
+//     **缓存输入 = 读缓存 + 写缓存**、**输出含 reasoning**。四家 executor 的
+//     原始字段含义互不相同（codex/grok 的输入含缓存要减，claudecode/opencode
+//     的要加；opencode 的 reasoning 与 output 平行要加，codex/grok 的是子集
+//     不能加），归一化在各 adapter 的 spend.go 里完成，本方法不做换算。
+//
+// 注意：
+//   - e.Key 为空时直接返回错误——没有键就没有幂等，宁可报错也不写一行永远
+//     去不掉重的账
+//   - 覆盖而非累加是刻意的，理由见 proto.SpendEntry 的注释
+//   - **不打成功日志**：频率与 assistant 消息同级，会刷屏；错误由调用方
+//     handleSpend 打（见 Task 2）
+func (s *Store) UpsertSpend(taskID string, e proto.SpendEntry) error {
+	if e.Key == "" {
+		return fmt.Errorf("记任务 %s 的消耗：幂等键为空", taskID)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO task_usage_ledger
+   (task_id, entry_key, input, cached_input, output, cost_ticks, cost_state, updated_at)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ ON CONFLICT(task_id, entry_key) DO UPDATE SET
+   input = excluded.input, cached_input = excluded.cached_input,
+   output = excluded.output, cost_ticks = excluded.cost_ticks,
+   cost_state = excluded.cost_state, updated_at = excluded.updated_at`,
+		taskID, e.Key, e.InputTokens, e.CachedTokens, e.OutputTokens,
+		e.CostTicks, string(e.CostState), fmtTime(time.Now())); err != nil {
+		return fmt.Errorf("记任务 %s 消耗 %s: %w", taskID, e.Key, err)
+	}
+	return nil
+}
+
+// TaskCumulative 对该任务的全部账目求和，得到累计消耗。
+//
+// 返回：
+//   - 没有任何账目行时返回 (nil, nil)。**不返回零值结构**——0 会被读成
+//     「一共花了 0」，而真相是「还不知道」
+//   - 花费状态按四条规则定（known=非 unknown 行的 ticks 之和，
+//     missing=unknown 行的条数，est=是否含 estimated 行）：
+//     missing==0 && !est → reported；missing==0 && est → estimated；
+//     missing>0 && known>0 → partial（**下界**）；missing>0 && known==0 → unknown
+//
+// 注意：estimated 与 missing 同时成立时按 partial——漏账比不准要紧，
+// 而 partial 的展示（下界）也已经隐含了「别当真」。
+//
+// **本方法读路径高频，成功不打日志**；只在调用方需要时报错（扫描/遍历出错
+// 由调用方带上下文记录）。
+func (s *Store) TaskCumulative(taskID string) (*proto.Cumulative, error) {
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT input, cached_input, output, cost_ticks, cost_state
+   FROM task_usage_ledger WHERE task_id = ?`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("读任务 %s 消耗账本: %w", taskID, err)
+	}
+	defer rows.Close()
+
+	var (
+		c       proto.Cumulative
+		known   int64
+		missing int
+		est     bool
+		n       int
+	)
+	for rows.Next() {
+		var in, cached, out int
+		var ticks int64
+		var state string
+		if err := rows.Scan(&in, &cached, &out, &ticks, &state); err != nil {
+			return nil, fmt.Errorf("扫描任务 %s 的消耗行: %w", taskID, err)
+		}
+		n++
+		c.InputTokens += in
+		c.CachedTokens += cached
+		c.OutputTokens += out
+		switch proto.CostState(state) {
+		case proto.CostUnknown:
+			missing++
+		case proto.CostEstimated:
+			est = true
+			known += ticks
+		default:
+			known += ticks
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历任务 %s 的消耗账本: %w", taskID, err)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	c.TotalTokens = c.InputTokens + c.CachedTokens + c.OutputTokens
+	c.Cost = &proto.Cost{Ticks: known}
+	switch {
+	case missing == 0 && !est:
+		c.Cost.State = proto.CostReported
+	case missing == 0:
+		c.Cost.State = proto.CostEstimated
+	case known > 0:
+		c.Cost.State = proto.CostPartial
+	default:
+		c.Cost.State = proto.CostUnknown
+	}
+	return &c, nil
+}
+
 // AppendEvent 为任务追加一条事件，返回落库后带自增 seq 的完整事件。
 //
 // 参数：
@@ -434,7 +671,47 @@ func (s *Store) AppendEvent(taskID string, typ proto.EventType, payload any) (pr
 	if err != nil {
 		return proto.Event{}, fmt.Errorf("获取事件 seq: %w", err)
 	}
-	return proto.Event{Seq: seq, TaskID: taskID, Type: typ, Payload: json.RawMessage(b), CreatedAt: parseTime(now)}, nil
+	evt := proto.Event{Seq: seq, TaskID: taskID, Type: typ,
+		Payload: json.RawMessage(b), CreatedAt: parseTime(now)}
+	// 同步触发钩子：保证「入库顺序 == 观察顺序」（见 SetEventHook）
+	s.fireEventHook(evt)
+	return evt, nil
+}
+
+// SetEventHook 注册「事件落库后」的回调。传 nil 可取消。
+//
+// 调用时机：INSERT 成功、proto.Event 组装完成之后，AppendEvent 返回之前，
+// **同步**调用。同步是刻意的——它保证「事件入库顺序 == 钩子观察顺序」，
+// 派生出的帧流才能与事件流对齐。
+//
+// 边界（违反会死锁或自我递归）：
+//   - **钩子内不得回调本 Store 的任何方法**。只允许做不回到数据库的动作，
+//     比如往文件追加一行。
+//   - 钩子不得长时间阻塞：它跑在 AppendEvent 的调用栈上，会拖慢事件落库。
+//   - 钩子 panic 由本方法内部 recover：一个可见性副作用不该让已经成功的
+//     事件落库变成失败。
+func (s *Store) SetEventHook(fn func(proto.Event)) {
+	s.eventHookMu.Lock()
+	defer s.eventHookMu.Unlock()
+	s.eventHook = fn
+}
+
+// fireEventHook 调用已注册的钩子，并把 panic 收在这里。
+func (s *Store) fireEventHook(e proto.Event) {
+	s.eventHookMu.RLock()
+	fn := s.eventHook
+	s.eventHookMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			// 事件已经落库了，这里只能记账——把它升级成错误会让
+			// 一个派生副作用回过头来否定一次成功的写入
+			log().Error("事件钩子 panic，已忽略", "seq", e.Seq, "type", e.Type, "panic", rec)
+		}
+	}()
+	fn(e)
 }
 
 // EventsFrom 返回任务 taskID 在 seq 之后的事件，按 seq 升序，最多 limit 条。

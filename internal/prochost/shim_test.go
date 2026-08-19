@@ -1,7 +1,11 @@
+//go:build unix
+
 package prochost
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -332,4 +336,98 @@ func TestShimWritesRosterImmediately(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("10s 内没等到非空名册（path=%s）", path)
+}
+
+func TestRosterSamplerKeepsEscapedDescendantAcrossRounds(t *testing.T) {
+	dir := t.TempDir()
+	info := filepath.Join(dir, "proc.json")
+	self := os.Getpid()
+
+	orig := enumProcsFn
+	defer func() { enumProcsFn = orig }()
+
+	// 第一轮：工具壳 200（ppid=self）与它的子进程 300 都在树里
+	enumProcsFn = func() ([]procEntry, error) {
+		return []procEntry{
+			{PID: self, PPID: 1, PGID: self, StartedAt: 900},
+			{PID: 200, PPID: self, PGID: 200, StartedAt: 1000},
+			{PID: 300, PPID: 200, PGID: 200, StartedAt: 1100},
+		}, nil
+	}
+	s := &rosterSampler{path: rosterPath(info)}
+	s.sample(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// 第二轮：工具壳退出，300 被 reparent 给 launchd
+	enumProcsFn = func() ([]procEntry, error) {
+		return []procEntry{
+			{PID: self, PPID: 1, PGID: self, StartedAt: 900},
+			{PID: 300, PPID: 1, PGID: 200, StartedAt: 1100},
+		}, nil
+	}
+	s.sample(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	got, err := readRoster(rosterPath(info))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PID != 300 {
+		t.Fatalf("工具壳退出后逃逸后代必须仍在名册里，got=%v", got)
+	}
+}
+
+func TestRosterSamplerSkipsWriteWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	info := filepath.Join(dir, "proc.json")
+	self := os.Getpid()
+
+	orig := enumProcsFn
+	defer func() { enumProcsFn = orig }()
+	enumProcsFn = func() ([]procEntry, error) {
+		return []procEntry{
+			{PID: self, PPID: 1, PGID: self, StartedAt: 900},
+			{PID: 300, PPID: self, PGID: self, StartedAt: 1100},
+		}, nil
+	}
+
+	l := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := &rosterSampler{path: rosterPath(info)}
+	s.sample(l)
+	st1, err := os.Stat(rosterPath(info))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.writes != 1 {
+		t.Fatalf("第一轮必须落盘一次，writes=%d", s.writes)
+	}
+	s.sample(l)
+	if s.writes != 1 {
+		t.Fatalf("同一批后代第二轮不得再落盘，writes=%d", s.writes)
+	}
+	st2, err := os.Stat(rosterPath(info))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st1.ModTime().Equal(st2.ModTime()) {
+		t.Fatal("内容未变时不应重写文件")
+	}
+}
+
+func TestRosterIntervalIsOneSecond(t *testing.T) {
+	// 间隔是本次修复的承重件之一：工具壳只活约 1 秒，15s 的 tick 打不中它。
+	if rosterInterval != time.Second {
+		t.Fatalf("rosterInterval 应为 1s，实为 %v", rosterInterval)
+	}
+}
+
+// BenchmarkRosterSampleReal 测单次采样（enumProcs + 合并 + 序列化 + 落盘）在真机上的
+// 真实耗时，用于核算 1s 采样间隔下本功能对每任务的常驻开销占比。用真实 enumProcs，
+// 不打桩——这条要测的正是真机上的进程枚举开销（见 ledger「实测数据」小节）。
+func BenchmarkRosterSampleReal(b *testing.B) {
+	dir := b.TempDir()
+	s := &rosterSampler{path: rosterPath(filepath.Join(dir, "proc.json"))}
+	l := slog.New(slog.NewTextHandler(io.Discard, nil))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.sample(l)
+	}
 }

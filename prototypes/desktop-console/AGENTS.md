@@ -1,0 +1,59 @@
+> # ⚠️ 已退役（2026-08-18，B106）
+>
+> **本目录不是形态权威。不要照它写计划、也不要照它改真实前端。**
+>
+> 形态基准已迁至 `prototypes/base/`——真实前端 `web/` 的镜像，由 `prototype-site` 生成与刷新。
+> 需要 fork 做新形态时也从 base 起步（见 `prototyping-in-brainstorm`）。
+>
+> 本目录保留为**历史资产**：设计决策与走查截图有考古价值，但**已知至少三处与真实前端不符**——
+>
+> 1. **Finder 目录选择器**：原型有，真实前端按 spec §9 与 `AddProjectWizard.test.tsx` 的断言
+>    刻意没有。B95 派发中途因此被咬——按本原型写的 plan §3.6 被执行者当场驳回。
+> 2. **B94 的四条交互修复只回流了第 ① 条**：注销菜单压计数、tab 焦点被回写抢走、关 home
+>    终端时 machine 传成事件对象，这三条从未同步过来。
+> 3. **右键菜单背景全透明**：`.row-context-menu` 用了 `--surface` / `--line` / `--hover` /
+>    `--text` 四个本目录 `:root` 里**根本没定义**的变量（真名是 `--border` / `--sidebar-hover`
+>    / `--red`，面色直接写 `#ffffff`），实测 `getComputedStyle` 返回 `rgba(0, 0, 0, 0)`，
+>    菜单下面的文件树整片透出来。**这条与前两条性质不同**：不是「落后于真实前端」，
+>    而是**从未成立过**——真实前端 `ContextMenu.tsx` 用的是 Tailwind 的 `bg-popover`，一直是好的。
+>
+> 换句话说：一个没人对照真实前端校准过的原型，既会给出过时的形态，也会给出从未成立的形态。
+> 这正是它被退役的原因。
+
+# Prototype Instructions
+
+Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
+
+Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
+
+When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
+
+Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+
+## Confirmed product and visual decisions
+
+- Use an Orca-like three-column desktop workbench: project overview on the left, tab groups in the center, and the selected directory's file tree on the right.
+- There are exactly **three kinds of center tab**: terminal, file, and task TUI (spec §8.5). No browser-preview tab — the user's real browser previews a local port better than an embedded iframe can (devtools, extensions, existing sessions); "open in browser" is a link, not a tab kind.
+- **No bottom dock** (spec §8.2). Problems / Output / Debug Console do not apply — handoff is not an IDE and has no language server or debugger. The terminal is an ordinary tab that participates in splitting, so a one-tab dock bar would only waste vertical space.
+- Each project has at least one code location: local, one paired remote development machine, or both. A project can never bind more than one remote machine. The left hierarchy is project → code location(s) → main/worktree directory → handoff tasks. Project rows aggregate directory, running-task, and attention counts. **Known divergence: agentd does not enforce the one-remote-machine rule (`ProjectNode.Locations` is an array), and the real console renders whatever the data says rather than hiding extras — showing two machines when there are two is safer than hiding one (spec §8.6). Whether the constraint should move into the backend is undecided.**
+- Selecting a directory changes both the central workspace context and the right file tree. A disconnected remote machine stays visible but cannot be opened.
+- handoff renders the task session itself; it does not attach the executor's native CLI. (Superseded the earlier "executor attachment layer" decision — see `docs/superpowers/specs/2026-08-12-w4-shell-calibration-design.md` §8.1.) The task TUI is a handoff-rendered turn timeline plus event stream plus an instruction box, built on W4a's `frames.jsonl`. It is still not a task *table* — a task tab shows one task's session, and the cross-task table lives in the task board.
+- Keep the quiet light Orca visual system: Geist UI type, compact monospace technical surfaces, neutral chrome, hairline dividers, and color reserved for state and git decorations.
+- The global task board and the global ticket list are **overlays** over the workbench, not content-area replacements: they are cross-directory views, and replacing the content area would evict the tab group the user is looking at (spec §8.3). Only settings replaces the content area, with the project overview staying visible. The file tree appears only when a concrete directory is selected in the workbench.
+- Machine/agent management is **a section inside settings**, no longer a top-level nav destination (spec §8.4). Machines still appear as the second level of the left tree — that is navigation ("which machines does this project land on"), which is a different job from managing them.
+- The task board uses four lifecycle columns; approval, question, blocked, and failure are card-level intervention states rather than additional columns. Opening an actionable card returns to its existing task session in the workbench.
+- Settings has three sections: development machines, general desktop behavior, and Env-file management. An Env file is a physical `.env` file under one machine's handoff directory; each machine has many files and each file has many variables. (Env-file management is designed but unimplemented in the real console as of W4.)
+- Executor availability, each executor's optional Env file, and the automatic approver are configured per machine on the development-machine page. An automatic approver is a lightweight executor invocation in handoff's graded approval flow; uncertainty escalates to the user.
+- Adding a project first selects local and/or one remote development machine, with at least one selected, then configures a Git repository or existing directory for every selected location. Git clone path is optional and defaults to `~/.handoff/<project-name>`. Only local existing directories can be chosen through Finder; remote directories accept pasted paths only.
+- Machine management handles already-paired agents and shows disconnected code hosts, their files, Env files, and task sites as unavailable, not read-only.
+- The task board's project filter is a clickable dropdown that supports multi-select.
+- The file tab is an **editable plain textarea** — no line numbers, no syntax highlighting, no Monaco (B81 spec §6.2). An earlier version of this prototype drew a highlighted, line-numbered code view; the real console never had one and the spec does not build one, so the prototype was made to match reality. A prototype that looks better than what gets built makes the acceptance comparison worthless. Line numbers/highlighting would be a separate backlog row, not an assumed part of B81.
+- The file tab has exactly **three read outcomes**, all reachable by clicking files in the tree: editable text, binary (read-only, refused — NUL in the first 8 KiB), and over-limit (read-only, truncated at 1 MiB). `logo.png` and `fixtures.json` exist in the mock tree only to make the latter two clickable.
+- Conflict on save is a **bar above the editor with two exits** (discard mine / overwrite theirs), not a modal — the user needs to keep reading their own edit while deciding. The `原型：模拟执行者改动此文件` button in the editor status bar is prototype-only scaffolding to make that bar reachable; nothing like it exists in the real console.
+- **Overwrite carries its own confirmation** (`用我的内容覆盖` → `确认覆盖` / `取消`, with the irreversibility warning). orca can let a manual save straight through after warning, because its filesystem watcher raised a banner *before* the user pressed save. handoff has no watcher: the conflict only surfaces at the moment of saving, so the user has never been warned before that click. One click that silently discards someone else's work is the thing the confirmation exists to prevent.
+- The conflict bar has **two entrances and one set of exits**: a 409 at save time (`文件已在磁盘上变了…`), and reopening a file whose stored draft baseline no longer matches the disk (`本地草稿基于的版本已经变了。`). Same bar, same two exits, same confirmation — it is one problem from the user's side, so it does not get a second mechanism. `原型：模拟带草稿重开此文件` is prototype-only scaffolding for the second entrance; the prototype has one editor and no refresh, so that moment cannot arise on its own.
+- **累计用量与 context 占用共用 TaskTui meta 框，靠右上角一个按钮切换（B83，2026-08-13 用户确认）**：默认显示 context 占用（B80 的形态），点「累计用量」换成累计视图，点「当前占用」换回来。两种视图**只有一行不同**，框高都是 68px——切换不推动下面的正文。这是选它的主要理由：另外两个候选形态一个要把框撑高 66px（五项各占一行的网格），一个把明细藏进 hover（触屏上等于没有）。
+- **累计视图是单行，且跨掉标签列拿全宽**：`累计 3.42M · 输入 1.18M · 缓存 2.06M · 输出 183.7k · ≈$4.20估算`。关在 `Context:` 那个标签右边的第二列时，内容宽度正好卡满可用宽度（432/432px），多一位数字就折行、框就跳高；跨列后余量 115px（23.7%）。别把它改回两列。
+- **估算的钱必须和自报的钱长得不一样**：codex 不自报花费，由 handoff 按牌价乘出来，渲染成 `≈$4.20` 加一个带框的「估算」小标；grok/claudecode/opencode 自报，渲染成 `$4.20`，`≈` 和小标都不出现。两者长得一样就是在暗示一个估算值没有的精度，而且误差是静默的。`原型：花费来源` 那排开关是原型专用脚手架，真实控制台里没有——那里两种形态取决于执行器自己报不报。
+- **原型里的五个数字是刻意对得上的**（输入 1,182,400 + 缓存 2,058,900 + 输出 183,700 = 总量 3,425,000）。真实实现要先把四家的缓存口径归一化才能这么加：codex 的 `cachedInputTokens` 是 `inputTokens` 的**子集**，grok/claudecode/opencode 的是**加项**。不归一化就照搬这个排版，同一个「输入」标签在四家下是四个意思，而且不会报错。
+- This folder is a throwaway interactive prototype. Do not add production backend integration, persistence, or production instrumentation unless the user explicitly expands scope.

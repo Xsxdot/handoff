@@ -16,13 +16,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
-// 三个探测缝，生产实现即标准库；测试替换它们，从而不依赖跑测机器的真实环境。
+// 四个探测缝，生产实现即标准库/运行时；测试替换它们，从而不依赖跑测机器的真实环境。
 var (
 	lookPath    = exec.LookPath
 	statFile    = func(p string) error { _, err := os.Stat(p); return err }
 	userHomeDir = os.UserHomeDir
+	goos        = runtime.GOOS
 )
 
 // State 是一家 executor 的可用状态。
@@ -85,6 +87,23 @@ var credRelPath = map[string]string{
 	"codex":    ".codex/auth.json",
 }
 
+// credRelPathFor 返回某家 executor 在当前平台的凭证文件相对路径；
+// 第二个返回值为 false 表示「本平台没有可靠的文件判据」。
+//
+// why 要按平台过滤：credRelPath 里 opencode 那条是 XDG 落点，Windows 上 opencode
+// 不用它。拿一个在该平台不成立的路径去断言「未登录」，与拿 ~/.claude.json 断言
+// claude 已就绪是同一种撒谎——后者正是 claude 被排除在表外的理由。
+// 查不到判据时调用方会落到 StateAuthUnknown（「查不了」≠「没登录」）。
+//
+// grok 与 codex 不在此列：~/.grok、~/.codex 在 Windows 上同样成立。
+func credRelPathFor(name string) (string, bool) {
+	if goos == "windows" && name == "opencode" {
+		return "", false
+	}
+	rel, ok := credRelPath[name]
+	return rel, ok
+}
+
 // order 固定探测与返回顺序，让 init 的表格每次长得一样。
 var order = []string{"opencode", "claude", "grok", "codex"}
 
@@ -116,7 +135,7 @@ func Detect() []Result {
 			out = append(out, r)
 			continue
 		}
-		rel, ok := credRelPath[name]
+		rel, ok := credRelPathFor(name)
 		if !ok || homeErr != nil {
 			// 没有凭证判据（工具不在表里）或连 HOME 都取不到——都属于「查不了」，
 			// 不是「没登录」。如实报未知，别猜。与 claude 那条同一个道理

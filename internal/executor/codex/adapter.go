@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // progressThrottle 与 opencode/grok 同值：防高频增量刷爆事件库。
@@ -43,6 +46,7 @@ const (
 	ntfThreadStatus      = "thread/status/changed"
 	ntfRateLimits        = "account/rateLimits/updated"
 	ntfServerReqResolved = "serverRequest/resolved"
+	ntfTokenUsage        = "thread/tokenUsage/updated"
 
 	reqCommandApproval     = "item/commandExecution/requestApproval"
 	reqFileChangeApproval  = "item/fileChange/requestApproval"
@@ -62,6 +66,37 @@ var deltaNotifications = map[string]bool{
 	"item/commandExecution/outputDelta": true,
 }
 
+// deltaKind 是增量通知的帧归类。
+//
+// 常量带 Kind 中缀是被迫的：本包已有一个 deltaText **函数**
+// （adapter.go:727，从 params 里取增量文本），Go 不允许同名。
+type deltaKind int
+
+const (
+	deltaKindNone      deltaKind = iota // 不产帧
+	deltaKindText                       // 产 text 帧
+	deltaKindReasoning                  // 产 reasoning 帧
+)
+
+// deltaFrameKind 把增量通知的方法名归类成帧类型。
+//
+// 为什么 commandExecution/outputDelta 归 deltaNone：它是命令的流式输出，
+// 属于工具结果；完整结果由 commandExecution item 的 completed 通知以一条
+// tool_result 帧上报，在这里再产一路会把同一段输出写两遍。
+//
+// 未知方法一律 deltaNone：codex 上游加了新的 delta 通知时，宁可少一种帧，
+// 也不要把它猜成正文。
+func deltaFrameKind(method string) deltaKind {
+	switch method {
+	case "item/agentMessage/delta":
+		return deltaKindText
+	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
+		return deltaKindReasoning
+	default:
+		return deltaKindNone
+	}
+}
+
 // sandboxPolicy 是每回合显式钉死的沙箱策略（spec §2 / §2.2）。
 //
 // 为什么每回合都传而不是只在 thread/start 传一次：thread/start 钉过的值会被
@@ -72,13 +107,39 @@ var deltaNotifications = map[string]bool{
 // networkAccess 为 true 是 2026-08-09 用户的明确决定（spec §2.2）：executor 跑在
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
 // 且实证拒网**不产工单**，属于协调者不知情的哑失败。
-func sandboxPolicy() map[string]any {
+
+// taskTmpDir 返回任务专属临时目录（<taskDir>/tmp）。
+//
+// TaskDir 位于 <DataDir>/tasks/<id>，因此该目录在工作区之外。把 TMPDIR 指进
+// 仓库会让「非 git 目录应报错」用例的临时目录落入仓库，git 命令正常成功而假红。
+func taskTmpDir(taskDir string) string { return filepath.Join(taskDir, "tmp") }
+
+// tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。
+//
+// writableRoots 是开门，环境变量是走门；两者缺一不可。GOCACHE 单独放子目录，
+// 让清理临时文件时不会误删构建缓存，同时消除跨任务缓存污染。
+func tmpEnvKVs(taskTmp string) []string {
+	return []string{
+		"TMPDIR=" + taskTmp,
+		"GOTMPDIR=" + taskTmp,
+		"GOCACHE=" + filepath.Join(taskTmp, "gocache"),
+	}
+}
+
+// sandboxPolicy 的 taskTmp 为空时保持历史行为，不新增可写域；非空时只开放
+// 任务专属目录。/tmp 与 $TMPDIR 是跨任务共享目录，保持排除可避免并发任务互相
+// 看见或覆盖临时文件。
+func sandboxPolicy(taskTmp string) map[string]any {
+	roots := []any{}
+	if taskTmp != "" {
+		roots = append(roots, taskTmp)
+	}
 	return map[string]any{
 		"type":                "workspaceWrite",
 		"networkAccess":       true,
 		"excludeSlashTmp":     true,
 		"excludeTmpdirEnvVar": true,
-		"writableRoots":       []any{},
+		"writableRoots":       roots,
 	}
 }
 
@@ -116,6 +177,9 @@ type runState struct {
 	*permTable
 	items *itemIndex
 
+	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	textPart string            // 本回合正文/思维链的 part 标识
+
 	// stopping 是主动停止标记：Stop 先置位再关连接，onClosed 与回合收尾据此
 	// 知道这是用户主动停止而非执行失败，不产出假的失败结果
 	stopping bool
@@ -131,11 +195,18 @@ type runState struct {
 	renderBuf    strings.Builder
 	lastProgress time.Time
 	askedViaTool bool
+
+	// spendBase 是累计消耗的回合基线（B83）。与 usage 的当前占用是两个口径，
+	// 共用同一条 thread/tokenUsage/updated 通知但取不同字段，别混。
+	spendBase spendBase
+	// pricingWarned 是「模型不在牌价表」的 Warn 已打标记：同模型只打一次，
+	// 否则每回合刷一条。
+	pricingWarned bool
 }
 
 // newRunState 建一条运行态。
-func newRunState(taskID, taskDir, repoPath string) *runState {
-	return &runState{
+func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
+	r := &runState{
 		taskID: taskID, taskDir: taskDir, repoPath: repoPath,
 		evCh:      make(chan executor.AdapterEvent, 64),
 		permTable: newPermTable(),
@@ -145,6 +216,17 @@ func newRunState(taskID, taskDir, repoPath string) *runState {
 		// 权限工单旁边凭空多一张进度单（计划原稿漏了初始化）。
 		lastProgress: time.Now(),
 	}
+	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
+	fw, err := turn.WriterFor(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
+	return r
+}
+
+func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
+	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
 }
 
 // Start 异步启动执行并立即返回。
@@ -165,7 +247,17 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	proc, err := startServe(ctx, req.Task.Workdir(), taskID, req.TaskDir, req.Env, a.log)
+	taskTmp := taskTmpDir(req.TaskDir)
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
+		return fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
+	}
+	a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
+	env := append(append([]string{}, req.Env...), tmpEnvKVs(taskTmp)...)
+
+	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
+		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
+		req.TaskDir, env, a.log)
 	if err != nil {
 		return err
 	}
@@ -176,7 +268,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	r := newRunState(taskID, req.TaskDir, req.Task.Workdir())
+	r := a.newRunState(taskID, req.TaskDir, req.Task.Workdir())
 	r.proc = proc
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
@@ -196,13 +288,19 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model); err != nil {
+	if err := a.openThread(ctx, r, req.Task.Workdir(), req.Task.Model,
+		developerInstructionsFor(req.Discipline)); err != nil {
 		return err
 	}
 
-	prompt, err := turn.RenderPrompt(taskID, req.PlanContent)
+	prompt, err := renderStartPrompt(taskID, req.PlanContent, req.Discipline)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.Discipline) == "" {
+		a.log.Info("codex 未注入纪律块", "task", taskID)
+	} else {
+		a.log.Info("codex 纪律块已注入 prompt", "task", taskID, "bytes", len(req.Discipline))
 	}
 
 	a.mu.Lock()
@@ -215,6 +313,11 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.threadID,
 		Text: "codex 会话已就绪"})
 
+	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
+
 	if err := a.startTurn(r, prompt); err != nil {
 		return err
 	}
@@ -225,11 +328,56 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	return nil
 }
 
+// buildThreadStartParams 构造 thread/start 的入参。
+//
+// 抽成函数是为了让测试与生产代码用同一份字面量；下次增加安全参数时，
+// 两处各写一份必然漏改一处。developerInstructions 是 codex 协议直收的持久
+// 指令通道，协议铁律与执行纪律放在这里才能跨回合常驻。
+func buildThreadStartParams(cwd, model, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"cwd":               cwd,
+		"sandbox":           "workspace-write",
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if model != "" {
+		params["model"] = model
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// buildThreadResumeParams 构造 thread/resume 的入参。恢复路径也必须重传
+// developerInstructions，否则恢复后常驻纪律会消失。
+func buildThreadResumeParams(threadID, repoPath, developerInstructions string) map[string]any {
+	params := map[string]any{
+		"threadId":          threadID,
+		"cwd":               repoPath,
+		"approvalPolicy":    "on-request",
+		"approvalsReviewer": "user",
+	}
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
+	}
+	return params
+}
+
+// developerInstructionsFor 拼出常驻指令：协议铁律在前，执行纪律在后。
+func developerInstructionsFor(disciplineBlock string) string {
+	if strings.TrimSpace(disciplineBlock) == "" {
+		return turn.ProtocolRules
+	}
+	return turn.ProtocolRules + "\n\n" + strings.TrimSpace(disciplineBlock)
+}
+
 // openThread 完成握手与会话建立：initialize → initialized → thread/start。
 //
 // 单独抽出：登录态失效那条路径要能在不起进程的情况下被测到。
-func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string) error {
-	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model)
+func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model, developerInstructions string) error {
+	a.log.Info("codex 会话建立中", "task", r.taskID, "cwd", cwd, "model", model,
+		"dev_instr_bytes", len(developerInstructions))
 	if _, err := r.cli.Call(ctx, methodInitialize, map[string]any{
 		"clientInfo":   map[string]any{"name": "handoff", "version": "1"},
 		"capabilities": map[string]any{"experimentalApi": true},
@@ -240,15 +388,7 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		return fmt.Errorf("codex initialized 通知: %w", err)
 	}
 
-	params := map[string]any{
-		"cwd":               cwd,
-		"sandbox":           "workspace-write",
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": "user",
-	}
-	if model != "" {
-		params["model"] = model
-	}
+	params := buildThreadStartParams(cwd, model, developerInstructions)
 	res, err := r.cli.Call(ctx, methodThreadStart, params)
 	if err != nil {
 		// 凭据问题重试一万次也不会好，给可操作指引（spec §8）
@@ -261,12 +401,22 @@ func (a *Adapter) openThread(ctx context.Context, r *runState, cwd, model string
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		// Model 是本 thread **实际**使用的模型（如 "gpt-5.6-sol"）。
+		// 它就在我们已经在读的这一帧的顶层，此前被整块丢弃。
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil || out.Thread.ID == "" {
 		return fmt.Errorf("codex thread/start 未返回 threadId: %s", res)
 	}
 	r.threadID = out.Thread.ID
 	a.log.Info("codex 会话已建立", "task", r.taskID, "thread", r.threadID)
+	// 在会话就绪之后补发实际模型名：init 帧里没带，thread/start 的顶层才有
+	if out.Model != "" {
+		// 牌价估算要用实际模型名，而 emit 之后这个值就没别处留存了。
+		r.spendBase.Model = out.Model
+		a.log.Info("codex 实际模型", "task", r.taskID, "model", out.Model)
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: out.Model})
+	}
 	return nil
 }
 
@@ -287,7 +437,7 @@ func (a *Adapter) startTurn(r *runState, text string) error {
 	ch, err := r.cli.CallAsync(methodTurnStart, map[string]any{
 		"threadId":          r.threadID,
 		"cwd":               r.repoPath,
-		"sandboxPolicy":     sandboxPolicy(),
+		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir)),
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
 		"input":             []any{map[string]any{"type": "text", "text": text}},
@@ -359,6 +509,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 		return fmt.Errorf("任务 %s 的事件通道已关闭，运行态已终结: %w", taskID, executor.ErrTaskNotRunning)
 	}
 	a.log.Info("codex 续接回合", "task", taskID, "thread", r.threadID)
+	if err := r.frames.BeginTurn("send", text); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
+	}
+	r.textPart = r.frames.NextPart()
 	return a.startTurn(r, text)
 }
 
@@ -728,7 +882,18 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 	a, r := h.a, h.r
 	switch {
 	case deltaNotifications[method]:
-		r.appendRenderDelta(deltaText(params))
+		text := deltaText(params) // 既有函数：从 params 取增量文本
+		r.appendRenderDelta(text) // 既有行为：一字不改（codex 的 render.log 本来就含思维链）
+		switch deltaFrameKind(method) {
+		case deltaKindText:
+			if err := r.frames.Text(r.textPart, text); err != nil {
+				a.log.Warn("写 text 帧失败，不影响回合", "task", r.taskID, "cause", err)
+			}
+		case deltaKindReasoning:
+			if err := r.frames.Reasoning(r.textPart, text); err != nil {
+				a.log.Warn("写 reasoning 帧失败，不影响回合", "task", r.taskID, "cause", err)
+			}
+		}
 		return
 	case method == ntfItemStarted || method == ntfItemCompleted:
 		it, ok := parseItemNotification(params)
@@ -740,6 +905,9 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 		}
 		r.items.put(it)
 		r.appendRenderDelta(it.renderLine())
+		// 工具类 item 落一条 tool_call / tool_result 帧。part 取 item id：
+		// started 与 completed 两条通知带同一个 id，帧因此天然配对
+		a.appendItemFrame(r, method, it)
 		// 回合正文只从 agentMessage 的 completed 取：它带的是**完整正文**，
 		// 不必从 delta 拼，trailer 解析因此永远拿到完整文本
 		if method == ntfItemCompleted && it.Type == "agentMessage" &&
@@ -752,6 +920,8 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			a.log.Debug("codex 收到无对应回合的 turn/completed，忽略", "task", r.taskID)
 			return
 		}
+		// 回合边界：把本回合最后看到的 total 推进为下一个回合的基线。
+		r.spendBase = r.spendBase.commit()
 		status, errMsg := parseTurnCompleted(params)
 		a.finishTurn(r, status, errMsg, r.takeTurnText())
 	case method == ntfThreadStatus || method == ntfRateLimits:
@@ -765,6 +935,32 @@ func (h *handler) OnNotify(method string, params json.RawMessage) {
 			if itemID, ok := r.dropByReqID(string(p.RequestID)); ok {
 				a.log.Info("codex 权限请求已被别处了结，摘掉挂起项",
 					"task", r.taskID, "perm", itemID)
+			}
+		}
+	case method == ntfTokenUsage:
+		// 这条通知排在 turn/completed 之前到达，回合结束时数据已在手。
+		// turn/completed 的报文里没有任何用量字段，别去那儿找。
+		if u, ok := parseTokenUsage(params); ok {
+			a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
+		} else {
+			a.log.Debug("codex 用量通知解析失败，跳过", "task", r.taskID)
+		}
+		// 累计消耗：同一帧的 total 做回合级差分。取 total 不取 last——
+		// 上面那行当前占用恰好相反。
+		if e, next, ok := parseTurnSpend(params, r.spendBase); ok {
+			if next.pending.Input < r.spendBase.Input {
+				a.log.Warn("codex 用量计数器疑似归零，本回合按当前值全量入账",
+					"task", r.taskID, "base_input", r.spendBase.Input,
+					"now_input", next.pending.Input)
+			}
+			r.spendBase = next
+			a.emit(r, executor.AdapterEvent{Type: "usage", Spend: &e})
+			// 模型不在牌价表是用户看不到花费的唯一原因，日志里必须能查到；
+			// 同一个模型只 Warn 一次，否则每回合刷一条。
+			if e.CostState == proto.CostUnknown && !r.pricingWarned {
+				r.pricingWarned = true
+				a.log.Warn("codex 模型不在牌价表，本任务不显示花费",
+					"task", r.taskID, "model", r.spendBase.Model)
 			}
 		}
 	default:
@@ -910,3 +1106,35 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 
 // OnClosed 连接终止。
 func (h *handler) OnClosed(err error) { h.a.onClosed(h.r, err) }
+
+// appendItemFrame 把 item 通知落成 tool_call / tool_result 帧。
+//
+// 归类：
+//   - commandExecution / fileChange 的 started → tool_call
+//   - 同类 item 的 completed → tool_result（status 由 ExitCode 判定）
+//   - agentMessage / reasoning 不在此处产帧（它们走 delta 通知那一路）
+//
+// 为什么 part 取 it.ID：started 与 completed 是同一个 item 的两次通知，
+// id 相同，前端据此把结果挂回调用卡片，不需要本地维护映射表。
+func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
+	if it.Type != "commandExecution" && it.Type != "fileChange" {
+		return
+	}
+	if method == ntfItemStarted {
+		input := it.Command
+		if it.Type == "fileChange" {
+			input = it.renderLine() // 文件变更没有命令串，用路径清单当入参
+		}
+		if err := r.frames.ToolCall(it.ID, it.Type, input); err != nil {
+			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+		return
+	}
+	status := "ok"
+	if it.ExitCode != nil && *it.ExitCode != 0 {
+		status = "error"
+	}
+	if err := r.frames.ToolResult(it.ID, status, it.renderLine()); err != nil {
+		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
+}

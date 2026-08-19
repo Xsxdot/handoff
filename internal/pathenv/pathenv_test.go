@@ -208,3 +208,20 @@ func TestLoginShellPATHToleratesNonZeroExit(t *testing.T) {
 		t.Errorf("PATH = %q，期望 /opt/x:/opt/y（stderr 的告警不得混入）", got)
 	}
 }
+
+// TestLoginShellDirsSkippedOnWindows 钉住「Windows 上不跑登录 shell」。
+//
+// 真机实测（2026-08-17，Server 2025）：Windows OpenSSH 会设 SHELL=cmd.exe，
+// 于是这段逻辑不降级而是真去执行 cmd.exe，把它的欢迎横幅当成一个目录塞进 PATH。
+// Windows 没有「登录 shell 的 rc 链」这个概念，这个来源在该平台本就无意义。
+func TestLoginShellDirsSkippedOnWindows(t *testing.T) {
+	oldGOOS := loginShellGOOS
+	t.Cleanup(func() { loginShellGOOS = oldGOOS })
+	loginShellGOOS = "windows"
+
+	t.Setenv("SHELL", `c:\windows\system32\cmd.exe`)
+	got := loginShellDirs(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if got != nil {
+		t.Fatalf("Windows 上不应产生任何登录 shell 目录，got=%v", got)
+	}
+}

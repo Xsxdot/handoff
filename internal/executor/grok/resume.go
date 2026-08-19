@@ -116,7 +116,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		}
 		a.log.Info("serve 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "session", sessionID)
-		newProc, err := startServe(context.Background(), repoPath, taskID,
+		newProc, err := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
 			taskDir, req.Model, req.Env, a.log)
 		if err != nil {
 			// 起不来是可预期现场（配额/凭据过期），按不可恢复处理而非错误
@@ -151,13 +151,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		return executor.ResumeOutcome{}, nil
 	}
 	r.cli = cli
-	if _, err := cli.Call(ctx, "initialize", map[string]any{
-		"protocolVersion": 1,
-		"clientCapabilities": map[string]any{
-			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
-			"terminal": false,
-		},
-	}); err != nil {
+	if _, err := cli.Call(ctx, "initialize", initializeParams()); err != nil {
 		_ = cli.Close()
 		a.log.Warn("重连后 initialize 失败，判不可恢复", "task", taskID, "cause", err)
 		return executor.ResumeOutcome{}, nil

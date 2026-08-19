@@ -8,6 +8,183 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc9] - 2026-08-19
+
+**预发布。** 修 macOS 应用图标与品牌原图不一致。
+
+### 修复
+
+- **macOS 的 .app 图标与原图差得很远**（字形偏小、发灰、带投影）。根因不是图错
+  了，是走错了通道：`Info.plist` 同时有 `CFBundleIconFile`(icns) 与
+  `CFBundleIconName`(Assets.car)，macOS 优先用后者；而 Assets.car 出自 Icon
+  Composer，它不是「把图放上去」，是把 SVG 当**一层**去合成——叠中性阴影、高光、
+  半透明，再按 `scale` 缩放。对自带圆角底板与固定配色的扁平品牌标志，这条路
+  怎么调参都不可能与原图一致。
+
+  改为只留 icns：`generate:icons` 去掉 `-iconcomposerinput`/`-macassetdir`，
+  `Info.plist` 去掉 `CFBundleIconName`，删掉 `appicon.icon` bundle。应用图标
+  自此就是 `build/appicon.png` 本身。**代价**：放弃 macOS 26 的分层/着色图标
+  变体——品牌标志本来也不该被系统着色成灰的。
+
+  Windows 侧不受影响，`icon.ico` 仍由同一个 `appicon.png` 生成、内容未变。
+
+## [v0.3.0-rc8] - 2026-08-19
+
+**预发布。** 内容同 rc7，外加桌面端应用图标。
+
+### 变更
+
+- **桌面端图标换成 handoff 品牌标志**（此前是 Wails 脚手架自带的默认图标）。
+  两个输入源一起换：`build/appicon.png` 由品牌 SVG 渲染成 1024（不是把 512
+  的位图拉大），驱动 `windows/icon.ico` 与 `darwin/icons.icns`；
+  `build/appicon.icon` 是 macOS Icon Composer 的分层格式，它要的是**纯字形**、
+  底板由清单里的 `fill` 出，所以那一层去掉了圆角底板，否则会叠成板中板。
+
+  Windows 托盘图标不需要改代码——`systemtray_windows.go` 的取图优先级是
+  「自定义图标 > 默认应用图标 > 内置图标」，换掉 exe 的图标资源即可。
+
+## [v0.3.0-rc7] - 2026-08-19
+
+**预发布。** 内容同 rc6，外加一处 Windows 桌面薄壳的真 bug 修复——由 rc6 的
+人工走查抓到，症状是**双击快捷方式完全没反应**。
+
+### 修复
+
+- **Windows：已配置的机器上双击薄壳，进程在约 1 秒后无声消失。** 薄壳在
+  `ApplicationStarted` 后约 110ms 就完成鉴权握手并调 `win.SetURL()` 切到控制台
+  外链，而此时窗口的 chromium 还没建出来。Wails v3.0.0-beta.8 的
+  `windowsWebviewWindow.setURL` 直接 `w.chromium.Navigate(url)`，**不判 chromium
+  是否已建好**（紧挨着的 `execJS` 判了）；上层 `SetURL` 只判 `w.impl != nil`，
+  而 `w.impl` 在 `webview_window.go:484` 就被赋值，**早于** `run()` 里调用
+  `setupChromium()`——「impl 有了、chromium 还没有」是一个真实存在的窗口期。
+
+  后果不是报错：进程当场消失，**没有 Go panic 栈**，stderr 只留下一行 Chromium
+  的 `Failed to unregister class Chrome_WidgetWin_0`，用户看到的就是「双击没
+  反应」。agentd 侧的取证是 ticket 一张张签发出去却**一张都没有被消费**——
+  webview 从来没去请求那个 URL。
+
+  **首次配置向导那条路径一直正常**，因为它本来就等 `WindowRuntimeReady`
+  （见 `runtimeReadyCh` 的注释）——「向导能开、桌面快捷方式打不开」正是由此
+  而来。现在控制台那条走同一个信号，且等待放在握手**之前**（ticket 只有 60 秒
+  寿命，先握手再等会把票等过期）。等不到就绪时**报错而不放行**：放行等于回到
+  那个无声消失的失败。
+
+  macOS 上同一段代码一直正常，所以这条只在 Windows 上显形。
+
+- **托盘「打开控制台」改为在 goroutine 里跑**：它含网络握手，现在还要等 webview
+  就绪（最长 30s），在点击回调里同步跑会把主线程连同整个 UI 冻住。
+
+## [v0.3.0-rc6] - 2026-08-19
+
+**预发布。** 内容同 rc5，外加一处 Windows 托管判据的真 bug 修复——由 rc5 的
+人工走查在真机上抓到。
+
+### 修复
+
+- **Windows：`handoff service status` 长期误报「已安装但未运行」，桌面薄壳每次
+  启动都会把托管拆掉重建。** 判据 `taskIsRunning` 只认
+  `SCHED_S_TASK_RUNNING`（267009），而那个数字在 `schtasks` 的**「上次结果」**
+  一栏——它是上一次**启动尝试**的结果，不是任务此刻的状态。计划任务为模拟
+  KeepAlive 用的是「TimeTrigger 每分钟重复 + `IgnoreNew`」，于是 agentd 起来后
+  **最多 60 秒**，下一个分钟边界的重复触发被拒，「上次结果」被改写成
+  `0x800710E0`（-2147020576），267009 从此不再出现。
+
+  后果不止于状态显示错：`shell.EnsureRunning` 据此判定 agentd 没跑并调
+  `Install()`，而 `Install()` 的 `schtasks /Create /F` 是**删掉重建**——任务与
+  活着的 agentd 就此失联，每分钟的重复触发开始真的拉起新 agentd，撞 DataDir
+  锁退出，**一分钟弹一个控制台窗口**；Install 自己的 5 秒复核也必然失败，弹出
+  「无法启动 agentd」。桌面薄壳每次启动踩一遍。
+
+  之前所有验证都没抓到，是因为每次检查都紧跟在安装/启动之后，全落在判据唯一
+  正确的那 60 秒窗口里。现在两个码都认，并由三条用例钉住（含中文本地化输出与
+  撞锁退出码 1 的反面用例）。
+
+- **Windows：薄壳 spawn 子进程时不再闪控制台窗口。** 薄壳是 GUI 子系统进程、
+  自身没有控制台，Windows 会给它拉起的控制台程序**新分配**一个——那个窗口不
+  受 `STARTUPINFO.wShowWindow` 约束，只设 `HideWindow` 管不到，必须用
+  `CREATE_NO_WINDOW` 让它根本不分配。影响 `schtasks` 的每次调用（Install 的复核
+  轮询一次要十几下）与读取已装 CLI 版本号的 `handoff version`。
+
+## [v0.3.0-rc5] - 2026-08-19
+
+**预发布。** 内容与 rc4 相同（见下一节），外加一处 CI 修复。
+
+> **v0.3.0-rc4 未产出 Release**：`build-desktop-windows` 挂了，但不是构建失败
+> ——薄壳编译成功、13.4MB 的 zip 都打出来了，挂在自己末尾那道「工作区干净」
+> 检查上，报 `desktop/go.mod` 与两个 `desktop/frontend/bindings/*.ts` 被改。
+> 根因是换行：`go mod tidy` 与 `wails3 generate bindings` 一律写 LF，而
+> Windows 上 git 默认 `core.autocrlf=true` 把这些文件检出成 CRLF，构建期一
+> 重写就被判成改过——而 `git diff` 是**空的**，只有一行「LF will be replaced
+> by CRLF」，看起来像依赖变了，实际一个字符都没变。已在 Windows Server 2025
+> 真机复现与验证修复：`.gitattributes` 把这几类文件钉成 `eol=lf` 后，干净克隆
+> 上跑 `go mod tidy` 工作区保持干净。新增 `TestToolRewrittenFilesPinnedToLF`
+> 钉住它（断言走 `git check-attr`，并让用例自己读一次 `.gitattributes`——
+> 否则 Go 的测试缓存看不见子进程读了什么，这道门变异复验时全绿，是假门）。
+
+## [v0.3.0-rc4] - 2026-08-19
+
+**预发布。** 同样标成 prerelease，不改变 `releases/latest`。
+
+本轮补上**Windows 桌面薄壳**，三平台桌面资产至此打全：
+
+- 新增资产 `handoff-desktop_<tag>_windows_amd64.zip`，里面是可直接双击的
+  `handoff-desktop.exe`。**未签名**（macOS 那份有签名与公证），双击会触发
+  SmartScreen，属已知代价。
+- 薄壳释出内嵌 CLI 的落点改为按平台走：Windows 落
+  `%LOCALAPPDATA%\Programs\handoff\handoff.exe`，与 `install.ps1` 的
+  `Get-HandoffInstallDir` 逐字一致；其余平台仍是 `~/.local/bin/handoff`。
+  两边对不上的后果不是报错，而是「桌面端用的 handoff 和命令行敲的是两个
+  版本」——属最难排查的一类错配。
+- 补回 `desktop/build/windows/` 构建资产。此前它被整个删掉过，后果不是
+  「Windows 没打包」，而是 `build` / `package` / `run` 三个入口在 Windows 上
+  一律报 `task windows:build not found`。
+
+Windows 真机（Server 2025 / AMD64）已验到：释出决策、落点、释出的 CLI
+可执行（`handoff.exe version` 报 `windows/amd64`）、首次向导的工具链探测与
+配置表生成。**托盘外观与菜单、关窗行为、首次向导的三步交互尚未走查**，
+那需要交互式桌面。
+
+## [v0.3.0-rc3] - 2026-08-18
+
+**预发布，只为在真实 runner 上把三平台资产一次性打全。** 同样标成 prerelease，
+不改变 `releases/latest`。
+
+rc2 已验证到的：桌面端资产在 Linux 与 macOS 上构建通过，命名管道中继的关闭
+死锁修掉（Windows 运行期单测由 600s 超时降到 71s 跑完），`claudecode` 全绿。
+本轮修掉 rc2 剩下的两条 Windows 红，两条根因都在测试而非生产代码：
+
+- 名册与任务环境文件的 `0600` 权限断言：Windows 没有 POSIX 权限位，写盘传的
+  `0o600` 只映射到只读属性，`Stat` 恒回报 `-rw-rw-rw-`。生产代码两处都老老实实
+  传了 `0o600`，实际保护在 NTFS ACL（任务目录位于用户 profile 之下）。断言改为
+  平台自适应，Unix 侧仍钉着。
+- `TestStartRecordsStartedAt`：`procenum_other.go` 有意不在 Windows 实现进程
+  枚举（回收职责已由 Job Object 承担，缺的只是「足迹观测」），所以拿不到
+  `StartedAt`。Windows 上退化为断言 PID 已分配。
+
+另新增 `.gitattributes` 关掉基线文件与样本流的换行转换：Windows 上 git 默认
+`core.autocrlf=true`，会把逐字节比对的基线悄悄换成 CRLF，报文却长得像「渲染
+逻辑变了」。
+
+## [v0.3.0-rc2] - 2026-08-18
+
+**预发布，只为在真实 runner 上验证发布流水线。** 它被标成 prerelease，因此
+不会改变 `releases/latest`——`install.sh` 与 agentd 自更新都不会拉到它。
+
+> v0.3.0-rc1 未产出 release：它在验证门就红了（`internal/agentd` 的八条
+> Reveal in Finder 用例默认取宿主平台，在 ubuntu runner 上一律撞 501）。
+> 那是本分支第一次在 Linux 上跑 CI 才暴露出来的既有问题，已在 rc2 修掉。
+
+本轮流水线第一次产出**桌面端资产**（`handoff-desktop_*`），与既有的 CLI 资产
+（`handoff_*`）互不干扰；后者的命名、校验和与自更新契约保持不变。
+
+自 v0.2.3 以来积累的改动很多，完整说明留到正式版 v0.3.0 的小节里写。要点：
+
+- Web 控制台（任务看板、项目/工作树文件树、内嵌终端、机器与项目管理），
+  由 agentd 经 `go:embed` 托管，不再需要 Vite dev server。
+- 桌面薄壳 `handoff-desktop`：内嵌 CLI 并在首次启动时释出到 `~/.local/bin/handoff`、
+  图形化首次配置向导、托盘常驻；关掉窗口不影响正在跑的执行者。
+- Windows 执行机支持、`proxy` 配置项、按执行器注入的纪律配置。
+
 ## [Unreleased]
 
 ### 新增

@@ -44,7 +44,20 @@ const (
 	EventTypeProgress          EventType = "progress"
 	EventTypeCompleted         EventType = "completed"
 	EventTypeFailed            EventType = "failed"
-	EventTypeStalled           EventType = "stalled"
+	// EventTypeTurnFailed 表示**一个回合**失败了，而任务**仍然活着**——
+	// handleResult 在发这条之前已经把任务迁到 waiting_review，协调者一个
+	// continue 就能接着干。
+	//
+	// 为什么必须与 EventTypeFailed 分开而不是共用一个类型加个字段：
+	// 客户端要据此决定「要不要收流、要不要报任务终结」，而这是一个封闭取值的
+	// 判断，不能靠 fail_reason 的散文去猜（那是十来处各自措辞、改一句文案就能
+	// 静默改掉客户端行为的东西）。分成两个类型还有一个好处：**旧客户端遇到未知
+	// 类型会当普通事件继续跟随**，于是它不再假终态退出——bug 对旧 CLI 自动消失。
+	//
+	// 与 EventTypeCompleted 的关系：两者是**同一个状态迁移**（都进 waiting_review），
+	// 所以消费端对它俩的行为必须一致，只是一个成功一个失败。
+	EventTypeTurnFailed EventType = "turn_failed"
+	EventTypeStalled    EventType = "stalled"
 	// EventTypeDeliveryFailed 表示协调者的应答已落库但没能送达 executor。
 	//
 	// 为什么必须是一类事件而不只是日志：应答未送达时 executor 仍原地阻塞，
@@ -68,6 +81,14 @@ const (
 	// EventTypeDenyGuidanceDropped 表示拒绝原因没能下发——回合在下一条提问到达前
 	// 就终结了。协调者据此知道要用 continue 自己把话带上。
 	EventTypeDenyGuidanceDropped EventType = "deny_guidance_dropped"
+	// EventTypeApprovalDropped 表示审批者的裁决没能下发给 executor——裁决回来时
+	// 回合已经结束（任务离开 running/waiting_answer）。agentd 已代为回了一个
+	// 干净的 reject，本事件说明「那条裁决去哪了」。
+	//
+	// 与 deny_guidance_dropped 是同一根因（回合结束即无下发通道）的 approve 方向，
+	// 但后果更重：拒绝原因丢了只是少一段指导，批准丢了会让 executor 那条请求
+	// 悬到自行 abort，**打断的是下一个回合**（08-17 实测两次同型）。
+	EventTypeApprovalDropped EventType = "approval_dropped"
 	// EventTypeTicketsVoided 表示任务终结时把剩余挂起工单一并作废了（B63）。
 	//
 	// 为什么必须留痕：pending_tickets 是协调者接管陌生会话时「我还欠哪些没答」
@@ -99,6 +120,96 @@ const (
 	EventTypeTaskProcPressure EventType = "task_proc_pressure"
 )
 
+// Usage 是任务当前的 context 占用快照。
+//
+// 「当前占用」= 最后一次模型调用的输入侧（含缓存命中），**不是**回合或会话的
+// 累加。两者差别巨大：实测一个 4 次模型调用的 grok 回合，累加值是真实占用的
+// 4 倍，且工具调用越多越离谱，长回合会超过 100%（探针笔记 §4.2）。
+//
+// 边界：本结构只描述「占用」，不描述「消耗」。累计 token 与花费是另一个口径，
+// 将来以新增字段的形式加进来，形状不变、不需要重新设计。
+type Usage struct {
+	// ContextTokens 是当前 context 占用的 token 数。永远 > 0——取不到时整个
+	// Usage 为 nil，不用 0 冒充「没用 token」（B69/B70 纪律）。
+	ContextTokens int `json:"context_tokens"`
+	// ContextWindow 是该模型的上下文窗口上限（百分比的分母）。
+	// nil = 该 executor 不在协议里报窗口（claudecode / opencode），此时界面
+	// 只显绝对值。**绝不由 handoff 猜**：猜错是静默错误，百分比照常显示只是错的。
+	ContextWindow *int `json:"context_window,omitempty"`
+}
+
+// CostState 是花费的可信度。
+//
+// 取值范围**分两级**：单条账目（SpendEntry / ledger 行）只可能是
+// CostReported / CostEstimated / CostUnknown；CostPartial 只在**求和之后**
+// 产生（部分行有花费、部分行没有），任何 adapter 都不会产出它。
+// 别去找「哪个 adapter 报 partial」——没有。
+type CostState string
+
+const (
+	// CostReported：执行器自报了花费且完整。
+	CostReported CostState = "reported"
+	// CostEstimated：执行器不报花费，由 handoff 按 API 牌价估算（只有 codex）。
+	CostEstimated CostState = "estimated"
+	// CostPartial：**仅聚合级**。有已知部分，但有调用没拿到花费——所以它是
+	// **下界**，真实值只会更高。展示时必须能读出这一点。
+	CostPartial CostState = "partial"
+	// CostUnknown：一次都没拿到。展示成「—」，**绝不是 $0.00**：
+	// 花费的缺席意味着 "unreported or incomplete, never free"。
+	CostUnknown CostState = "unknown"
+)
+
+// Cost 是累计花费及其可信度。
+//
+// 注意：State 为 CostPartial 时，Ticks 只是**已知部分**的和，是下界不是总额。
+type Cost struct {
+	// Ticks 是花费，单位 1 USD = 10^10 ticks。
+	//
+	// 为什么用整数 ticks 而不是浮点美元：grok 原生就给 ticks，且它的文档明说
+	// 浮点求和对不上服务端的账。统一整数累加，只在展示的最后一步转美元。
+	Ticks int64 `json:"ticks"`
+	// State 见 CostState 的注释。CostUnknown 时 Ticks 恒为 0。
+	State CostState `json:"state"`
+}
+
+// Cumulative 是任务的累计消耗快照。
+//
+// 与 Usage 的区别（**改错了不会报错，只会显示错的数**）：Usage 描述
+// 「现在占用多少 context」（最后一次模型调用的输入侧），本结构描述
+// 「这个任务一共烧了多少」（跨全部调用累加）。两者数量级差几倍到几十倍，
+// 不要因为字段名像就互相赋值。
+//
+// 边界：本结构由 Store.TaskCumulative 对 task_usage_ledger 求和产出，
+// 只在**单任务读取**时填充；列表接口不填（见 Store.ListTasks 的注释）。
+type Cumulative struct {
+	// InputTokens 是未命中缓存的输入（口径见 Store.UpsertSpend 的注释）。
+	InputTokens int `json:"input_tokens"`
+	// CachedTokens 是命中缓存的输入（读缓存 + 写缓存）。
+	CachedTokens int `json:"cached_tokens"`
+	// OutputTokens 是模型产出，含 reasoning。
+	OutputTokens int `json:"output_tokens"`
+	// TotalTokens 是上面三项之和，由 store 算好，前端不再自己加。
+	TotalTokens int `json:"total_tokens"`
+	// Cost 是累计花费；nil = 还没有任何一条账目带花费信息。
+	Cost *Cost `json:"cost,omitempty"`
+}
+
+// SpendEntry 是一条待入账的消耗（adapter 产出，store 消费）。
+//
+// Key 必须在同一个任务内**稳定且唯一**——它是幂等的全部依据。同 Key 重复上报
+// 按**覆盖**处理（不是累加），所以流式增长的值可以放心重复报：
+// opencode 对同一条 message 会随生成推很多次、id 相同而 tokens 在涨，
+// 覆盖天然取到最终值；重复推同值则是无操作。
+type SpendEntry struct {
+	Key          string
+	InputTokens  int
+	CachedTokens int
+	OutputTokens int
+	CostTicks    int64
+	// CostState 只能是 CostReported / CostEstimated / CostUnknown 三者之一。
+	CostState CostState
+}
+
 // Task 表示一个 handoff 任务。
 //
 // JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
@@ -120,6 +231,12 @@ type Task struct {
 	Executor string `json:"executor"`
 	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
 	Model string `json:"model"`
+	// Discipline 是本任务实际注入的纪律块来源标注（如「内置:single-context」）。
+	// 该列后加、不回填、不编造——老任务为空。
+	//
+	// 为什么要落进 Task 而不只是日志：配置化把纪律块从 plan 文件里拿走后，
+	// 写 plan 的人再也看不见它，dispatch 必须当场回显；CLI 拿到的就是这个对象。
+	Discipline string `json:"discipline,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`
@@ -145,6 +262,33 @@ type Task struct {
 	// 或该任务归档于本功能上线之前。它回答的是「这次到底做完了什么、为什么放行」——
 	// 归档之后除了一个 completed 状态位，此前没有任何地方记录这件事。
 	DoneNote string `json:"done_note"`
+	// ActualModel 是 executor 报回的**实际**模型名；空=执行者还没报（回合未
+	// 开始）或该任务跑在不报模型名的旧版执行者上。
+	//
+	// 它与 Model 是两件事：Model 是 dispatch --model 发下去的**入参**（常为空，
+	// 意思是「用执行者自己的默认」），ActualModel 是执行者实际在用的那个。
+	// 二者不一致时以 ActualModel 为准，界面不并列显示。
+	ActualModel string `json:"actual_model,omitempty"`
+	// Usage 是当前 context 占用；nil=还没有任何一次模型调用完成。
+	Usage *Usage `json:"usage,omitempty"`
+	// Cumulative 是任务的累计消耗；nil = 没有任何账目（或本次是列表读取，
+	// 列表不填充——见 Store.ListTasks）。与 Usage 是两个口径，别混。
+	Cumulative *Cumulative `json:"cumulative,omitempty"`
+	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
+	//
+	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，
+	// 语义是「我从哪个 target 拉来的」。
+	//
+	// 为什么不复用 Target：`target` 存的是「当年派发它的那个 CLI 管这台机器叫
+	// 什么」——换一台笔记本、换一份配置派发，同一台机器可以叫不同名字，它是
+	// 历史记录不是路由键。透明路由与 UI 的机器筛选必须锚在本机配置上。
+	Machine string `json:"machine"`
+	// ProjectID 是任务的项目归属：读时按 repo_path 与 project_locations.path
+	// 等值 join 得到（W3a §1.3），未归属为 ""。
+	//
+	// 线注解，不入库：tasks 表不加这一列——历史任务或已注销项目的任务应当
+	// 诚实显示「未归属」，而不是一列陈旧数据说谎。
+	ProjectID string `json:"project_id"`
 }
 
 // MaxDoneNoteBytes 是归档说明的字节上限。
