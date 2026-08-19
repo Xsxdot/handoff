@@ -224,6 +224,12 @@ func (s *Server) conf() *config.Config { return s.cfg.Load() }
 // 调用方只读不改（写入方永不原地修改配置，只整体换新）。
 func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
 
+// EnvMapping 返回当前配置里的 agent 名 → env 文件名映射。
+//
+// 供 envfile.Resolver 每次派发时取活值：控制台改完映射不必重启 agentd。
+// 返回的是配置快照里的 map 本体，**调用方不得修改**（写入一律走 swapConf）。
+func (s *Server) EnvMapping() map[string]string { return s.conf().Env }
+
 // SetConfigPath 注入配置文件路径，供写配置时落盘。
 //
 // 参数：
@@ -260,6 +266,11 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	for k, v := range old.Discipline {
 		next.Discipline[k] = v
 	}
+	// Env 与 Discipline 同为运行期可写的映射（B158 起可从控制台改），必须深拷。
+	next.Env = make(map[string]string, len(old.Env)+1)
+	for k, v := range old.Env {
+		next.Env[k] = v
+	}
 	if err := mutate(&next); err != nil {
 		return err
 	}
@@ -272,7 +283,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
 	s.cfg.Store(&next)
-	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets), "discipline", len(next.Discipline))
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath,
+		"targets", len(next.Targets), "discipline", len(next.Discipline), "env", len(next.Env))
 	return nil
 }
 
@@ -298,6 +310,11 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
 //   - GET  /api/discipline             内置纪律、文件列表与 executor 档位
+//   - GET  /api/env                    env 文件列表与 executor 档位
+//   - GET  /api/env/file/keys          env 文件的变量清单（不含值）
+//   - GET  /api/env/file                读 env 文件正文（仅编辑时）
+//   - PUT  /api/env/file                写 env 文件（写前解析校验）
+//   - PUT  /api/env/mapping             整段替换 executor→env 文件映射
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
@@ -364,6 +381,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
 	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
 	api.HandleFunc("PUT /api/discipline/mapping", s.handleDisciplineMapping)
+	api.HandleFunc("GET /api/env", s.handleEnvGet)
+	api.HandleFunc("GET /api/env/file/keys", s.handleEnvKeys)
+	api.HandleFunc("GET /api/env/file", s.handleEnvFileRead)
+	api.HandleFunc("PUT /api/env/file", s.handleEnvFileWrite)
+	api.HandleFunc("PUT /api/env/mapping", s.handleEnvMapping)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)

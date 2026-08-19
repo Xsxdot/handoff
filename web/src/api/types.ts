@@ -446,6 +446,47 @@ export interface DisciplineMappingReq {
   bindings: DisciplineBinding[]
 }
 
+// EnvFile 是 env 目录下的一个文件（不含正文，正文按需单读）。
+export interface EnvFile {
+  name: string
+  size: number
+  sha256: string
+}
+
+// EnvBinding 是一个 executor 的当前档位。**只有两档**：
+//   - 'off'：配置里没有这个键，启动时不注入任何环境变量
+//   - 'file'：用 file 指定的文件
+// 与 DisciplineBinding 的三档是**错位**的，不要照抄翻译。
+export interface EnvBinding {
+  executor: string
+  mode: 'off' | 'file'
+  file?: string
+}
+
+// EnvResp 是 GET /api/env 的响应。
+export interface EnvResp {
+  dir: string
+  files: EnvFile[]
+  bindings: EnvBinding[]
+}
+
+// EnvKey 是解析出的一个变量。**永不含值**——只有 key 名与值的字节长度。
+export interface EnvKey {
+  key: string
+  value_bytes: number
+  duplicate?: boolean
+}
+
+// EnvKeysResp 是 GET /api/env/file/keys 的响应。
+export interface EnvKeysResp {
+  keys: EnvKey[]
+}
+
+// EnvMappingReq 是 PUT /api/env/mapping 的请求体：整段替换。
+export interface EnvMappingReq {
+  bindings: EnvBinding[]
+}
+
 // resumeResult 是 resume 接口的响应体（RecoverReport 的镜像）。
 export interface ResumeResult {
   task: string

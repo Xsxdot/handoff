@@ -25,6 +25,9 @@ import type {
   DiffResult,
   DirEntry,
   DirListResult,
+  EnvBinding,
+  EnvKeysResp,
+  EnvResp,
   FileRead,
   FileResult,
   FileWriteReq,
@@ -293,6 +296,52 @@ export function saveDisciplineMapping(
   machine: string, bindings: DisciplineBinding[],
 ): Promise<DisciplineResp> {
   return putJSON<DisciplineResp>(`/api/discipline/mapping${machineQuery(machine)}`, { bindings })
+}
+
+// fetchEnv 取某台机器的 env 配置面（GET /api/env）：
+// 目录、该机文件列表、每个 executor 的档位（两档）。
+export function fetchEnv(machine: string): Promise<EnvResp> {
+  return request<EnvResp>(`/api/env${machineQuery(machine)}`)
+}
+
+// fetchEnvKeys 取一个 env 文件的变量清单（GET /api/env/file/keys）。
+//
+// **响应里没有值**，只有 key 名、值的字节长度与重复标记。这是 Env 分区的
+// 默认视图；要看值必须显式调 fetchEnvFile。
+export function fetchEnvKeys(machine: string, name: string): Promise<EnvKeysResp> {
+  return request<EnvKeysResp>(
+    `/api/env/file/keys?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+  )
+}
+
+// fetchEnvFile 读一个 env 文件的**含值全文**（GET /api/env/file）。
+//
+// 只在用户点「编辑正文」时调用——默认视图走 fetchEnvKeys。
+export function fetchEnvFile(machine: string, name: string): Promise<FileRead> {
+  return request<FileRead>(
+    `/api/env/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+  )
+}
+
+// saveEnvFile 写一个 env 文件（PUT /api/env/file）。
+//
+// req.base_sha256 为空串表示新建：目标已存在时后端回 409，绝不静默覆盖。
+// 正文语法错误时后端回 400，message 是 Parse 的原文（自带行号）——调用方
+// 应原样展示，那是用户改对的唯一线索。
+export function saveEnvFile(
+  machine: string, name: string, req: FileWriteReq,
+): Promise<FileWriteResp> {
+  return putJSON<FileWriteResp>(
+    `/api/env/file?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`, req,
+  )
+}
+
+// saveEnvMapping 整段替换某台机器的 executor→env 文件映射
+//（PUT /api/env/mapping），返回保存后的最新配置面。
+export function saveEnvMapping(
+  machine: string, bindings: EnvBinding[],
+): Promise<EnvResp> {
+  return putJSON<EnvResp>(`/api/env/mapping${machineQuery(machine)}`, { bindings })
 }
 
 // addMachine 新增一台远程开发机（POST /api/machines）。

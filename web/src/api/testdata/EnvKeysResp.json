@@ -1,0 +1,17 @@
+{
+  "keys": [
+    {
+      "key": "HTTPS_PROXY",
+      "value_bytes": 34
+    },
+    {
+      "key": "GOPROXY",
+      "value_bytes": 21,
+      "duplicate": true
+    },
+    {
+      "key": "EMPTY_ONE",
+      "value_bytes": 0
+    }
+  ]
+}

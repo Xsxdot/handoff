@@ -18,6 +18,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useProjectTree } from '../data/useProjectTree'
 import { MachinesPage } from '../machines/MachinesPage'
 import { DisciplinePage } from './DisciplinePage'
+import { EnvPage } from './EnvPage'
 import { cn } from '@/lib/utils'
 
 // SECTIONS 是设置页的四个分区。顺序即原型的顺序：开发机在最上，执行纪律紧随其后。
@@ -75,12 +76,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               常规设置本期没有可配置项。桌面行为、主题、快捷键等留待后续。
             </p>
           )}
-          {section === 'env' && (
-            <p className="p-6 text-sm text-muted-foreground">
-              Env 文件管理（每台机器下的物理 .env 文件、每个文件多个变量）本期不做。
-              原型里有完整设计，等它有真实落点时再实现。
-            </p>
-          )}
+          {section === 'env' && <EnvPage />}
         </div>
       </div>
     </div>
