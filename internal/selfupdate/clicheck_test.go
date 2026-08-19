@@ -113,3 +113,40 @@ func TestNotifyLineNumericOrder(t *testing.T) {
 		t.Fatal("v0.10.0 比 v0.9.0 新，应当提示")
 	}
 }
+
+// TestCompareVersionIsTheOnlyExportedComparator 钉住导出入口的存在与语义。
+//
+// 为什么要有这条：本函数历史上被写错过（B59 验收当场抓出反向提示——装了
+// v0.1.1 的机器被劝「有新版本 v0.1.0」，根因是没按三段整数比）。它现在有
+// 三个消费者（CLI 提示、桌面同步、桌面通知），错一次的代价乘以三。
+func TestCompareVersionIsTheOnlyExportedComparator(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"v0.1.0", "v0.1.1", -1, true},
+		{"v0.1.1", "v0.1.0", 1, true},
+		{"v0.1.0", "v0.1.0", 0, true},
+		// 字典序会把 v0.10.0 判成比 v0.9.0 旧——这条是本函数存在的理由
+		{"v0.10.0", "v0.9.0", 1, true},
+		{"v0.9.0", "v0.10.0", -1, true},
+		// 前缀 v 可有可无
+		{"0.2.0", "v0.1.0", 1, true},
+		// 形态不符一律 ok=false
+		{"v0.1", "v0.1.0", 0, false},
+		{"", "v0.1.0", 0, false},
+		{"v0.1.0", "rc10", 0, false},
+		{"v0.1.-1", "v0.1.0", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := CompareVersion(c.a, c.b)
+		if ok != c.ok {
+			t.Errorf("CompareVersion(%q,%q) ok = %v，想要 %v", c.a, c.b, ok, c.ok)
+			continue
+		}
+		if ok && got != c.want {
+			t.Errorf("CompareVersion(%q,%q) = %d，想要 %d", c.a, c.b, got, c.want)
+		}
+	}
+}

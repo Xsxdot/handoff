@@ -5,6 +5,7 @@
 //     换掉自己不合适，脚本化场景下行为还会突变。这里只打一行提示
 //   - 读缓存的失败一律静默：这条路径挂在**每一条** handoff 命令上，
 //     一个坏掉的缓存文件让所有命令都吐错误，代价远大于少提示一次更新
+//   - 本文件持有全仓唯一的版本比较入口 CompareVersion
 package selfupdate
 
 import (
@@ -91,13 +92,13 @@ func NotifyLine(c *CLICheck, current string) string {
 	if c == nil || c.Latest == "" || current == "" || c.Latest == current {
 		return ""
 	}
-	if cmp, ok := cmpVersion(c.Latest, current); !ok || cmp <= 0 {
+	if cmp, ok := CompareVersion(c.Latest, current); !ok || cmp <= 0 {
 		return ""
 	}
 	return fmt.Sprintf("有新版本 %s（当前 %s），运行 handoff upgrade --now 升级", c.Latest, current)
 }
 
-// cmpVersion 比较两个 vX.Y.Z 版本号。
+// CompareVersion 比较两个 vX.Y.Z 版本号，是**全仓唯一**的版本比较入口。
 //
 // 参数：
 //   - a, b: 形如 v0.1.2 的标签，前缀 v 可有可无
@@ -110,7 +111,10 @@ func NotifyLine(c *CLICheck, current string) string {
 //   - 三段都按整数比，不能用字典序——字典序会判定 v0.10.0 比 v0.9.0 旧
 //   - 只认 vX.Y.Z。release 工作流只产出这个形态，install.sh 的 latest_tag
 //     也明确拒绝其余形态；解析不了时由调用方决定怎么办，这里不猜
-func cmpVersion(a, b string) (int, bool) {
+//   - **不要在别处另写一份。** 消费者已有三个（CLI 提示、桌面同步、桌面
+//     通知）；本函数被写错过一次（B59 验收抓出的反向提示），三份实现意味着
+//     错一次要修三处、而且一定有一处会被漏掉
+func CompareVersion(a, b string) (int, bool) {
 	pa, ok := parseVersion(a)
 	if !ok {
 		return 0, false
