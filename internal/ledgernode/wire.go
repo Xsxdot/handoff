@@ -62,6 +62,26 @@ func clientFinalMessage(ctx context.Context, cl *client.Client, taskID string) (
 // finalMessageFromEvents 是协议字段解析的纯函数，供 wire 层单测固定
 // completed.summary 与 turn_failed/failed.fail_reason 的真实线格式。
 func finalMessageFromEvents(events []proto.Event) (string, error) {
+	// completed 优先于失败类事件，即使失败排在后面：codex 收尾时常在
+	// completed 之后再补一条 turn_failed（app-server 的 WebSocket 断开），
+	// 那是传输层的假警报，不是回合失败——报告已经在 completed 里了。
+	// 节点执行器每轮审阅都派一条新 task 并等它的首个终态，所以「本次
+	// 生命周期内出现过 completed」就意味着报文存在，取它不会串到上一轮。
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != proto.EventTypeCompleted {
+			continue
+		}
+		var payload struct {
+			Summary string `json:"summary"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
+			return "", fmt.Errorf("completed payload 解析失败: %w", err)
+		}
+		if payload.Summary == "" {
+			return "", fmt.Errorf("completed payload 缺 summary")
+		}
+		return payload.Summary, nil
+	}
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		switch event.Type {

@@ -117,7 +117,10 @@ func (s *Store) EnsureDefaultTemplates() error {
 		},
 		"review-generic": {
 			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
-			DisciplinePath: "docs/superpowers/discipline/block-b.md",
+			// 审阅用只读纪律块：实现类纪律块写着「每个 task 完成即 commit」，
+			// 派给审阅者会让它在审阅分支上真的提交东西（2026-08-19 真机实测
+			// 出现过一次）——审阅的产出是裁决报文，不是提交
+			DisciplinePath: "docs/superpowers/discipline/block-review.md",
 			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
 				"验收判据：{{ACCEPT}}\n" + reviewVerdictContract,
 		},
