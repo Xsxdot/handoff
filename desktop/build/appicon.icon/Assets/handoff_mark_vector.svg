@@ -1,0 +1,20 @@
+<!--
+  handoff 应用图标的字形层（供 macOS Icon Composer 合成用）。
+
+  职责：
+    - 只画 H 形本体，供 icon.json 作为单一 layer 合成
+  边界：
+    - **不含圆角底板**：底板由 icon.json 的 fill 提供，画在这里会变成板中板
+    - 与 docs/assets/handoff-mark.svg 的两条 path 逐字节相同，改品牌形状时两处一起改
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>handoff</title>
+  <path
+    fill="#11131A"
+    d="M146 96H196C215 96 230 111 230 130V198H264L330 256L264 314H230V382C230 401 215 416 196 416H146C127 416 112 401 112 382V130C112 111 127 96 146 96Z"
+  />
+  <path
+    fill="#5457E8"
+    d="M322 96H382C401 96 416 111 416 130V382C416 401 401 416 382 416H322C303 416 288 401 288 382V330L350 256L288 182V130C288 111 303 96 322 96Z"
+  />
+</svg>
