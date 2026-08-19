@@ -89,6 +89,58 @@ func (s *Store) EnsureDefaultWorkflows() error {
 	return nil
 }
 
+// ListWorkflowNames 全部工作流名（去重升序）。
+func (s *Store) ListWorkflowNames() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT name FROM workflows ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("列工作流名: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// MigrateCardWorkflow 把卡显式迁到本工作流的另一个版本。防悬空校验：
+// 卡的当前状态必须存在于目标版本的 States（否则拒绝，让人先挪状态）。
+func (s *Store) MigrateCardWorkflow(cardID string, toVersion int, actor string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		card, err := getCardTx(s, tx, cardID)
+		if err != nil {
+			return fmt.Errorf("迁工作流: 卡 %s: %w", cardID, err)
+		}
+		target, err := s.getWorkflowTx(tx, card.WorkflowName, toVersion)
+		if err != nil {
+			return err
+		}
+		found := card.Status == StatusClosed // 终止态卡不受 States 约束
+		for _, state := range target.Def.States {
+			if state == card.Status {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log().Warn("迁移被拒：状态悬空", "card", cardID, "status", card.Status, "to_version", toVersion)
+			return fmt.Errorf("卡 %s 当前状态 %q 不在 %s v%d 中，先转移状态再迁: %w",
+				cardID, card.Status, card.WorkflowName, toVersion, ErrBadState)
+		}
+		if _, err := tx.Exec(s.q(`UPDATE cards SET workflow_version = ?, updated_at = ? WHERE id = ?`),
+			toVersion, s.tval(time.Now()), cardID); err != nil {
+			return fmt.Errorf("写迁移: %w", err)
+		}
+		_, err = s.appendEvent(tx, sink, cardID, EvComment, actor,
+			map[string]any{"kind": "普通", "body": fmt.Sprintf("工作流迁至 %s v%d", card.WorkflowName, toVersion)})
+		return err
+	})
+}
+
 // jsonUnmarshal 统一 JSON 解码错误措辞。
 func jsonUnmarshal(raw string, v any) error {
 	if err := json.Unmarshal([]byte(raw), v); err != nil {
