@@ -216,7 +216,10 @@ func main() {
 // 隔离（那既在 SIGKILL 下失效——defer 不执行、孤儿目录越堆越多，又会蒙住
 // CLI 侧这条契约的回归信号）。
 func readInstalledVersion(path string) string {
-	out, err := exec.Command(path, "version").Output()
+	c := exec.Command(path, "version")
+	// 薄壳是 GUI 进程：不压这一下，读版本号会在用户屏幕上闪一个黑窗口
+	hideConsole(c)
+	out, err := c.Output()
 	if err != nil {
 		logger.Debug("读取已有 handoff 版本失败，按判不出处理", "bin", path, "cause", err)
 		return ""
