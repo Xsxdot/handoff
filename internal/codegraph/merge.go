@@ -68,6 +68,12 @@ func Merge(g *Graph, d *Diff) *View {
 		}
 	}
 	for _, e := range d.EdgesAdded {
+		if _, ok := v.Nodes[e[0]]; !ok {
+			continue
+		}
+		if _, ok := v.Nodes[e[1]]; !ok {
+			continue
+		}
 		v.Edges = append(v.Edges, ViewEdge{From: e[0], To: e[1], Status: "added"})
 	}
 	return v

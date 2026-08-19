@@ -40,3 +40,11 @@ func TestMergeWithDiff(t *testing.T) {
 		t.Fatalf("边状态: %v", st)
 	}
 }
+
+func TestMergeSkipsInvalidAddedEdges(t *testing.T) {
+	g := loadFixture(t)
+	v := Merge(g, &Diff{EdgesAdded: []Edge{{"n_do", "n_ghost"}}})
+	if len(v.Edges) != len(g.Edges) {
+		t.Fatalf("非法新增边不应进入视图: %+v", v.Edges)
+	}
+}

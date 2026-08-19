@@ -81,6 +81,9 @@ var graphValidateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if views == nil {
+			views = []string{}
+		}
 		for _, name := range views {
 			d, err := codegraph.LoadDiff(graphRepo, name)
 			if err != nil {
