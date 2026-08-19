@@ -91,6 +91,8 @@ func TestContractFixtures(t *testing.T) {
 		{"EnvResp", envRespSample()},
 		{"EnvKeysResp", envKeysRespSample()},
 		{"EnvMappingReq", envMappingReqSample()},
+		{"ExecutorDefaultResp", executorDefaultRespSample()},
+		{"ExecutorDefaultReq", executorDefaultReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -576,4 +578,19 @@ func envMappingReqSample() EnvMappingReq {
 		{Executor: "codex", Mode: "file", File: "proxy.env"},
 		{Executor: "opencode", Mode: "off"},
 	}}
+}
+
+// executorDefaultRespSample 返回 ExecutorDefaultResp 的代表性样本。
+func executorDefaultRespSample() ExecutorDefaultResp {
+	return ExecutorDefaultResp{
+		Default:   "opencode",
+		Model:     "opencode-go/deepseek-v4-flash",
+		Available: []string{"claude", "codex", "fake", "grok", "opencode"},
+	}
+}
+
+// executorDefaultReqSample 返回 ExecutorDefaultReq 的代表性样本：
+// model 刻意给空串——「不设默认模型」是常态取值，必须在线格式里出现过一次。
+func executorDefaultReqSample() ExecutorDefaultReq {
+	return ExecutorDefaultReq{Default: "codex", Model: ""}
 }

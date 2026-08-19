@@ -17,6 +17,8 @@ import activeTaskFixture from './testdata/ActiveTask.json'
 import dirListFixture from './testdata/DirListResult.json'
 import disciplineMappingReqFixture from './testdata/DisciplineMappingReq.json'
 import disciplineRespFixture from './testdata/DisciplineResp.json'
+import executorDefaultReqFixture from './testdata/ExecutorDefaultReq.json'
+import executorDefaultRespFixture from './testdata/ExecutorDefaultResp.json'
 import taskPlanFixture from './testdata/TaskPlan.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
@@ -50,6 +52,8 @@ import {
   type EnvKeysResp,
   type EnvMappingReq,
   type EnvResp,
+  type ExecutorDefaultReq,
+  type ExecutorDefaultResp,
   type FileConflictResp,
   type FileRead,
   type FileWriteReq,
@@ -355,5 +359,19 @@ describe('执行纪律契约', () => {
     expect(def.file).toBeUndefined()
     expect(def.default_tier).toBe('subagent')
     expect(req.bindings).toHaveLength(2)
+  })
+})
+
+describe('缺省执行者契约', () => {
+  it('ExecutorDefaultResp：available 是升序名单，default 在其中', () => {
+    const resp = executorDefaultRespFixture as ExecutorDefaultResp
+    expect([...resp.available].sort()).toEqual(resp.available)
+    expect(resp.available).toContain(resp.default)
+  })
+
+  it('ExecutorDefaultReq：model 空串必须在场，不能被 omitempty 吃掉', () => {
+    // 缺了这个键，前端就没法表达「清空默认模型」——只能表达「不改」
+    expect('model' in executorDefaultReqFixture).toBe(true)
+    expect((executorDefaultReqFixture as ExecutorDefaultReq).model).toBe('')
   })
 })

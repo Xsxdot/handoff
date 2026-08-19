@@ -210,6 +210,24 @@ export interface Machine {
   scratch_root?: string
 }
 
+// ExecutorDefaultResp 是 GET /api/executor/default 的响应。
+//
+// model 是「**default 的**默认模型」，不是全局默认：agentd 只在派缺省执行者时
+// 套用它。改 default 会连带改变 model 的作用对象——界面必须让这个连带效应在
+// 保存前就可见（标签随 default 变）。
+export interface ExecutorDefaultResp {
+  default: string
+  model: string
+  available: string[]
+}
+
+// ExecutorDefaultReq 是 PUT /api/executor/default 的请求体：整体替换。
+// model 为空串是有意义的取值（不设默认模型），不是「不改」。
+export interface ExecutorDefaultReq {
+  default: string
+  model: string
+}
+
 export interface MachinesResp {
   machines: Machine[]
 }

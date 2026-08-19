@@ -102,7 +102,7 @@ var errDisciplineResolveFailed = errors.New("纪律块解析失败")
 
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
-// 并发安全：无共享可变字段（st/hub/ads/cfg/log 构造后只读），
+// 并发安全：无共享可变字段（st/hub/ads/cfg/conf/log 构造后只读），
 // 每个任务的中介 goroutine 与应答 goroutine 通过 store CAS + hub 路由协作。
 // approver 相关的 in-flight/失败计数/停用表由 apMu 保护。
 type Manager struct {
@@ -112,7 +112,12 @@ type Manager struct {
 	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
 	ads map[string]executor.Adapter
 	cfg *config.Config
-	log *slog.Logger
+	// conf 取当前配置快照。**不要改回直接读 cfg**：cfg 是 NewManager 那一刻的
+	// 指针，而 swapConf 换的是新指针，运行期可变的字段（Executor / Targets）
+	// 读 cfg 永远是旧值（B160 §4.2）。默认值等价于旧行为，Server.SetManager
+	// 挂接时会换成活的。
+	conf func() *config.Config
+	log  *slog.Logger
 	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
@@ -247,7 +252,8 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 //   - hub: 进程内实时路由（事件广播 + ticket 应答等待）
 //   - ads: executor 注册表（name → Adapter，如 {"opencode": ..., "fake": ...}）；
 //     任务按 executor 名路由，缺省名取 cfg.Executor.Default
-//   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
+//   - cfg: 配置**快照**。运行期可变的字段（Executor / Targets）不要直接读它，
+//     走 m.conf()——Server.SetManager 会把活取值函数注入进来（B160 §4.2）
 //   - discMapping: 取当前纪律块映射的函数（生产上传 (*Server).DisciplineMapping）；
 //     nil 时全部 executor 走内置默认
 //   - envMapping: 取当前 env 文件映射的函数（生产上传 (*Server).EnvMapping）；
@@ -265,7 +271,9 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 	disc.Preflight()
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
 	return &Manager{
-		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,
+		st: st, hub: hub, ads: ads, cfg: cfg,
+		conf:     func() *config.Config { return cfg },
+		approver: approver, gate: gate, log: log,
 		env:          env,
 		discipline:   disc,
 		apInflight:   map[string]bool{},
@@ -289,7 +297,7 @@ func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
 	}
 	name := task.Executor
 	if name == "" {
-		name = m.cfg.Executor.Default
+		name = m.conf().Executor.Default
 	}
 	ad, ok := m.ads[name]
 	if !ok {
@@ -306,7 +314,7 @@ func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
 // 包装的错误（server 层映射 400）并列出已注册名。
 func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error) {
 	if name == "" {
-		name = m.cfg.Executor.Default
+		name = m.conf().Executor.Default
 	}
 	ad, ok := m.ads[name]
 	if !ok {
@@ -334,8 +342,8 @@ func (m *Manager) resolveModel(reqModel, execName string) string {
 	if reqModel != "" {
 		return reqModel
 	}
-	if execName == m.cfg.Executor.Default {
-		return m.cfg.Executor.Model
+	if execName == m.conf().Executor.Default {
+		return m.conf().Executor.Model
 	}
 	return ""
 }
@@ -1156,7 +1164,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	}
 	execName := task.Executor
 	if execName == "" {
-		execName = m.cfg.Executor.Default
+		execName = m.conf().Executor.Default
 	}
 	envKVs, eerr := m.env.For(execName)
 	if eerr != nil {
@@ -3197,7 +3205,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
 	execName := task.Executor
 	if execName == "" {
-		execName = m.cfg.Executor.Default
+		execName = m.conf().Executor.Default
 	}
 	// env 与 Dispatch 同源：冷恢复重起进程要原样注入（B19），解析失败不阻断
 	// 恢复——热重连根本用不上它，冷恢复用不上时由 adapter 侧自行报错

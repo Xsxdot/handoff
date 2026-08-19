@@ -69,7 +69,7 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 		Listen:          m.cfg.Listen,
 		DataDir:         m.cfg.DataDir,
 		Executors:       names,
-		DefaultExecutor: m.cfg.Executor.Default,
+		DefaultExecutor: m.conf().Executor.Default,
 		StallTimeout:    m.cfg.StallTimeout.String(),
 		TaskCounts:      map[string]int{},
 		Active:          []proto.ActiveTask{},
@@ -135,7 +135,7 @@ func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask {
 		}
 		// 老任务的 Executor 为空，回退缺省——展示上不该出现空执行者
 		if at.Executor == "" {
-			at.Executor = m.cfg.Executor.Default
+			at.Executor = m.conf().Executor.Default
 		}
 		// watchers 取自 hub 的瞬时订阅数：这是「有没有人在听这个任务」的唯一真相
 		// 来源，昨晚 f7d07ece 空转 7h43m 时它一直是 0，只是从没有人问过

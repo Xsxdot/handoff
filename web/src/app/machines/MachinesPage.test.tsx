@@ -16,6 +16,7 @@ vi.mock('../../api/client', async () => {
     addMachine: vi.fn(),
     deleteMachine: vi.fn(),
     fetchDiscipline: vi.fn().mockResolvedValue({ dir: '', builtins: [], files: [], bindings: [] }),
+    fetchExecutorDefault: vi.fn().mockResolvedValue({ default: 'opencode', model: '', available: ['opencode'] }),
   }
 })
 
@@ -99,12 +100,12 @@ describe('MachinesPage', () => {
     expect(screen.queryByText(/操作系统/)).toBeNull()
   })
 
-  it('三个未接线的操作可点，点了明说尚未实现（不置灰）', () => {
+  it('两个未接线的操作可点，点了明说尚未实现（不置灰）', () => {
     mockStream([localMachine])
     render(<MachinesPage tree={tree} />)
     // 卡片按钮与详情标题都含「本机」文案，点卡片按钮本身来选中本机。
     fireEvent.click(screen.getByRole('button', { name: /本机/ }))
-    for (const label of ['可用执行者', '重启 agent', '打开终端']) {
+    for (const label of ['重启 agent', '打开终端']) {
       const btn = screen.getByRole('button', { name: new RegExp(label) })
       expect(btn).not.toBeDisabled()
       fireEvent.click(btn)

@@ -19,6 +19,7 @@ import { useProjectTree } from '../data/useProjectTree'
 import { MachinesPage } from '../machines/MachinesPage'
 import { DisciplinePage } from './DisciplinePage'
 import { EnvPage } from './EnvPage'
+import { GeneralPage } from './GeneralPage'
 import { cn } from '@/lib/utils'
 
 // SECTIONS 是设置页的四个分区。顺序即原型的顺序：开发机在最上，执行纪律紧随其后。
@@ -70,12 +71,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         <div className="min-h-0 flex-1 overflow-auto">
           {section === 'machines' && <MachinesPage tree={treeState.data} />}
           {section === 'discipline' && <DisciplinePage />}
-          {/* 空分区也要有话说：一块空白会让人以为页面坏了（spec §0 不置灰的同源纪律） */}
-          {section === 'general' && (
-            <p className="p-6 text-sm text-muted-foreground">
-              常规设置本期没有可配置项。桌面行为、主题、快捷键等留待后续。
-            </p>
-          )}
+          {section === 'general' && <GeneralPage tree={treeState.data} />}
           {section === 'env' && <EnvPage />}
         </div>
       </div>

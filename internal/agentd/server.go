@@ -202,13 +202,20 @@ func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
 // 执行文件、rename 二进制、停进程。
 func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
-// SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
+// SetManager 把任务管理器挂到 Server 上。
 //
 // 注意：
 //   - manager 依赖本服务内部的 hub 与外部 adapter，必须在 NewServer 之后构造并注入
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
+//   - 挂接时会把 Server 的活配置取值函数交给 Manager。Manager 构造时收到的是一份
+//     配置**快照**指针，而 swapConf 换的是新指针，读快照永远拿不到控制台改过的值
+//     （B160 §4.2）。这一步是「保存后下一个任务即生效」成立的前提。
 func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
+	if m != nil {
+		m.conf = s.conf
+		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
+	}
 }
 
 // conf 返回当前配置快照。
@@ -315,6 +322,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/env/file                读 env 文件正文（仅编辑时）
 //   - PUT  /api/env/file                写 env 文件（写前解析校验）
 //   - PUT  /api/env/mapping             整段替换 executor→env 文件映射
+//   - GET  /api/executor/default       查询机器级缺省执行者、它的默认模型与可选名单
+//   - PUT  /api/executor/default       整体替换机器级缺省执行者与它的默认模型
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
@@ -386,6 +395,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/env/file", s.handleEnvFileRead)
 	api.HandleFunc("PUT /api/env/file", s.handleEnvFileWrite)
 	api.HandleFunc("PUT /api/env/mapping", s.handleEnvMapping)
+	api.HandleFunc("GET /api/executor/default", s.handleExecutorDefaultGet)
+	api.HandleFunc("PUT /api/executor/default", s.handleExecutorDefaultPut)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
