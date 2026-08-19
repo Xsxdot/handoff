@@ -141,6 +141,19 @@ func main() {
 			showError(app, "无法启动 agentd", err.Error())
 			return
 		}
+		// **切外链之前必须等窗口的 webview 真的建好。** 顺序也是承重的：
+		// 等在握手**之前**，因为 ticket 只有 60 秒寿命——先握手再等，等待
+		// 本身就可能把票等过期。
+		//
+		// 不等的后果不是报错，是进程当场消失（Wails beta.8 的
+		// windowsWebviewWindow.setURL 不判 chromium 是否已建好，详见
+		// shell.AwaitWebviewReady 的注释）。首次配置向导那条路径一直没事，
+		// 因为它本来就等这同一个信号。
+		if err := shell.AwaitWebviewReady(ctx, runtimeReadyCh); err != nil {
+			logger.Error("窗口 webview 未就绪，放弃加载控制台", "cause", err)
+			showError(app, "窗口未能就绪", err.Error())
+			return
+		}
 		url, err := shell.ConsoleURL(ctx, ep, shell.DefaultDeviceName())
 		if err != nil {
 			logger.Error("握手失败", "cause", err)
