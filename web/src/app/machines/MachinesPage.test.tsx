@@ -11,7 +11,12 @@ vi.mock('../data/useMachines', () => ({ useMachines: vi.fn() }))
 // 新增/删除走 agentd 写接口，单独 mock 掉；其余导出（含 ApiError）保留真实实现。
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
-  return { ...actual, addMachine: vi.fn(), deleteMachine: vi.fn() }
+  return {
+    ...actual,
+    addMachine: vi.fn(),
+    deleteMachine: vi.fn(),
+    fetchDiscipline: vi.fn().mockResolvedValue({ dir: '', builtins: [], files: [], bindings: [] }),
+  }
 })
 
 const localMachine: Machine = {
@@ -64,7 +69,7 @@ describe('MachinesPage', () => {
     renderMachines([nas])
     expect(screen.getAllByText('nas').length).toBeGreaterThan(0)
     expect(screen.getAllByText('已断开').length).toBeGreaterThan(0)
-    expect(screen.getByText(/connection refused/)).toBeInTheDocument()
+    expect(screen.getAllByText(/connection refused/).length).toBeGreaterThan(0)
   })
 
   it('本机（name:""）显示「本机」且不显示延迟格', () => {

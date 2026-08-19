@@ -4,8 +4,12 @@ import {
   ApiError,
   createWorktree,
   deleteMachine,
+  fetchDiscipline,
+  fetchDisciplineFile,
   fetchProjectBranches,
   fetchTasks,
+  saveDisciplineFile,
+  saveDisciplineMapping,
   writeWorkspaceFile,
 } from './client'
 
@@ -21,6 +25,17 @@ function stubFetch(status: number, body: unknown) {
       }),
     ),
   )
+}
+
+function mockFetchJSON(body: unknown) {
+	const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+		new Response(JSON.stringify(body), {
+			status: 200,
+			headers: { 'Content-Type': 'application/json' },
+		}),
+	))
+	vi.stubGlobal('fetch', fetchMock)
+	return fetchMock
 }
 
 describe('fetchTasks', () => {
@@ -128,4 +143,39 @@ describe('建树接口', () => {
     expect(spy.mock.calls[0][0]).toBe('/api/projects/handoff/worktrees')
     spy.mockRestore()
   })
+})
+
+describe('纪律配置接口', () => {
+	it('本机不带 machine 参数，远程机带', async () => {
+		const fetchMock = mockFetchJSON({ dir: '/d', builtins: [], files: [], bindings: [] })
+		await fetchDiscipline('')
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/discipline')
+		await fetchDiscipline('mac-02')
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/discipline?machine=mac-02')
+	})
+
+	it('文件名与机器名都过 encodeURIComponent', async () => {
+		const fetchMock = mockFetchJSON({ content: '', size: 0, sha256: '' })
+		await fetchDisciplineFile('mac 02', 'my rules.md')
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/discipline/file?name=my%20rules.md&machine=mac%2002')
+	})
+
+	it('保存映射走 PUT 并带 bindings', async () => {
+		const fetchMock = mockFetchJSON({ dir: '/d', builtins: [], files: [], bindings: [] })
+		await saveDisciplineMapping('', [{ executor: 'codex', mode: 'off', default_tier: 'single-context' }])
+		const init = fetchMock.mock.calls[0][1] as RequestInit
+		expect(init.method).toBe('PUT')
+		expect(JSON.parse(init.body as string)).toEqual({
+			bindings: [{ executor: 'codex', mode: 'off', default_tier: 'single-context' }],
+		})
+	})
+
+	it('保存文件带文件名、机器名与前置哈希', async () => {
+		const fetchMock = mockFetchJSON({ sha256: 'new', size: 3 })
+		await saveDisciplineFile('mac 02', 'my rules.md', { content: 'new', base_sha256: 'old' })
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/discipline/file?name=my%20rules.md&machine=mac%2002')
+		const init = fetchMock.mock.calls[0][1] as RequestInit
+		expect(init.method).toBe('PUT')
+		expect(JSON.parse(init.body as string)).toEqual({ content: 'new', base_sha256: 'old' })
+	})
 })

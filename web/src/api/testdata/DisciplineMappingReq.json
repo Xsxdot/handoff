@@ -1,0 +1,15 @@
+{
+  "bindings": [
+    {
+      "executor": "codex",
+      "mode": "file",
+      "file": "codex-strict.md",
+      "default_tier": "single-context"
+    },
+    {
+      "executor": "opencode",
+      "mode": "default",
+      "default_tier": "subagent"
+    }
+  ]
+}

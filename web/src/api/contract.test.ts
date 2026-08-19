@@ -15,6 +15,8 @@
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
 import dirListFixture from './testdata/DirListResult.json'
+import disciplineMappingReqFixture from './testdata/DisciplineMappingReq.json'
+import disciplineRespFixture from './testdata/DisciplineResp.json'
 import taskPlanFixture from './testdata/TaskPlan.json'
 import authTicketFixture from './testdata/AuthTicketResp.json'
 import buildFixture from './testdata/BuildInfo.json'
@@ -39,6 +41,8 @@ import {
   type AuthTicketResp,
   type BuildInfo,
   type DirListResult,
+  type DisciplineMappingReq,
+  type DisciplineResp,
   type Event,
   type FileConflictResp,
   type FileRead,
@@ -301,5 +305,19 @@ describe('文件读写的契约', () => {
     expect(typeof c.current.content).toBe('string')
     expect(typeof c.current.sha256).toBe('string')
     expect(typeof c.current.size).toBe('number')
+  })
+})
+
+describe('执行纪律契约', () => {
+  it('DisciplineResp 三档与内置两版都在线格式里', () => {
+    const resp = disciplineRespFixture as DisciplineResp
+    const req = disciplineMappingReqFixture as DisciplineMappingReq
+    expect(resp.builtins.map((b) => b.tier)).toEqual(['subagent', 'single-context'])
+    expect(resp.bindings.map((b) => b.mode).sort()).toEqual(['default', 'file', 'off'])
+    // mode=default 的条目不带 file 键（omitempty），但 default_tier 必须在
+    const def = resp.bindings.find((b) => b.mode === 'default')!
+    expect(def.file).toBeUndefined()
+    expect(def.default_tier).toBe('subagent')
+    expect(req.bindings).toHaveLength(2)
   })
 })

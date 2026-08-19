@@ -217,6 +217,13 @@ func (s *Server) SetManager(m *Manager) {
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
 
+// DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
+//
+// 交给 Manager 的 discipline.Resolver 每次派发时调用，因此控制台改完映射
+// **下一个任务就生效**，不必重启 agentd。返回的是当前快照持有的 map，
+// 调用方只读不改（写入方永不原地修改配置，只整体换新）。
+func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
+
 // SetConfigPath 注入配置文件路径，供写配置时落盘。
 //
 // 参数：
@@ -236,7 +243,9 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 //
 // 注意：
 //   - 落盘成功才换快照；落盘失败时内存未曾改变——绝无「内存有、磁盘没有」的窗口
-//   - 只深拷贝 Targets 这一层。其余字段在 agentd 运行期不可变，共享是安全的
+//   - 深拷贝 Targets 与 Discipline 两层——它们在 agentd 运行期可被写接口修改。
+//     **新增运行期可变字段时必须在此补一层深拷**：漏了不会有测试变红，但读者
+//     会看到改到一半的配置，与 conf() 承诺的「快照自洽」直接冲突
 func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -246,6 +255,10 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	next.Targets = make(map[string]config.Target, len(old.Targets)+1)
 	for k, v := range old.Targets {
 		next.Targets[k] = v
+	}
+	next.Discipline = make(map[string]string, len(old.Discipline)+1)
+	for k, v := range old.Discipline {
+		next.Discipline[k] = v
 	}
 	if err := mutate(&next); err != nil {
 		return err
@@ -259,7 +272,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
 	s.cfg.Store(&next)
-	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets))
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets), "discipline", len(next.Discipline))
 	return nil
 }
 
@@ -284,6 +297,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
+//   - GET  /api/discipline             内置纪律、文件列表与 executor 档位
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
 //   - GET  /api/workspaces/file         读工作树内单个文件（同上白名单）
 //   - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件）
@@ -346,6 +360,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
+	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
+	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
+	api.HandleFunc("PUT /api/discipline/mapping", s.handleDisciplineMapping)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)

@@ -410,6 +410,42 @@ export interface FileConflictResp {
   current: FileRead
 }
 
+// DisciplineBuiltin 是一份内置纪律块（随二进制分发，只读）。
+export interface DisciplineBuiltin {
+  tier: string // 'subagent' | 'single-context'
+  content: string
+}
+
+// DisciplineFile 是纪律块目录下的一个文件（不含正文，正文按需单读）。
+export interface DisciplineFile {
+  name: string
+  size: number
+  sha256: string
+}
+
+// DisciplineBinding 是一个 executor 的当前档位。
+// default_tier 恒有值：mode='default' 时用于显示「内置默认（xxx）」；
+// 其余两档是「改回默认会变成什么」的预告。
+export interface DisciplineBinding {
+  executor: string
+  mode: 'default' | 'file' | 'off'
+  file?: string
+  default_tier: string
+}
+
+// DisciplineResp 是 GET /api/discipline 的响应。
+export interface DisciplineResp {
+  dir: string
+  builtins: DisciplineBuiltin[]
+  files: DisciplineFile[]
+  bindings: DisciplineBinding[]
+}
+
+// DisciplineMappingReq 是 PUT /api/discipline/mapping 的请求体：整段替换。
+export interface DisciplineMappingReq {
+  bindings: DisciplineBinding[]
+}
+
 // resumeResult 是 resume 接口的响应体（RecoverReport 的镜像）。
 export interface ResumeResult {
   task: string
