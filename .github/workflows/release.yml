@@ -522,6 +522,18 @@ jobs:
             --sign "$APPLE_SIGNING_IDENTITY" desktop/internal/embedbin/handoff
           codesign --verify --strict --verbose=2 desktop/internal/embedbin/handoff
 
+      - name: 把 TAG 写进 Info.plist
+        # Info.plist 是签进 bundle 的静态文件，仓库里存的是占位值 0.1.0。
+        # 不在这里覆盖，发出去的每一份 .app 都自称 0.1.0——而这是用户排查
+        # 「我装的是哪个版本」时唯一会看的地方。漏掉不会有任何报错。
+        # ${TAG#v}: CFBundleShortVersionString 按苹果约定不带 v 前缀。
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          plutil -replace CFBundleShortVersionString -string "${TAG#v}" desktop/build/darwin/Info.plist
+          plutil -replace CFBundleVersion -string "${TAG#v}" desktop/build/darwin/Info.plist
+          plutil -p desktop/build/darwin/Info.plist | grep -E "CFBundle(Short)?Version"
+
       # 第二步：把已签名的 handoff 嵌进薄壳并组装 bundle。
       # 注意 `wails3 task build` 只出裸二进制，**`.app` 要靠 package 任务组装**
       # ——只跑 build 会拿到一个陈旧的 .app。

@@ -631,3 +631,38 @@ func TestDarwinDesktopShipsStapledDMG(t *testing.T) {
 		t.Fatal("darwin 薄壳资产名必须是 .dmg")
 	}
 }
+
+// TestDarwinAppCarriesRealVersion 钉住 .app 的版本号随 TAG 注入。
+//
+// 为什么需要这条门：Info.plist 里的版本是**签进 bundle 的静态文件**，不像
+// ldflags 那样构建时必然被注入。漏掉这一步不会有任何报错——wails3 照常打包、
+// 签名公证照常通过、DMG 照常产出——只有用户在访达「显示简介」里看到一个
+// 假版本号。而这正是他排查「我到底装的是哪个版本」时唯一会看的地方。
+//
+// 断言用精确串计数而不是 Contains：Contains 会被本文件里任何一处提到
+// plutil 的注释或 echo 文案蒙混过关（同一个坑本文件里已经吃过两次，见
+// TestDarwinDesktopShipsStapledDMG 的注释）。
+func TestDarwinAppCarriesRealVersion(t *testing.T) {
+	wf := readWorkflow(t)
+	plistPath := "desktop/build/darwin/Info.plist"
+	want := map[string]int{
+		`plutil -replace CFBundleShortVersionString -string "${TAG#v}" ` + plistPath: 1,
+		`plutil -replace CFBundleVersion -string "${TAG#v}" ` + plistPath:            1,
+	}
+	for s, n := range want {
+		if got := strings.Count(wf, s); got != n {
+			t.Errorf("release.yml 里 %q 出现 %d 次，想要 %d 次", s, got, n)
+		}
+	}
+	// 注入必须排在构建之前——排在之后等于没注入，而且同样不报错
+	iInject := strings.Index(wf, `plutil -replace CFBundleShortVersionString`)
+	// 当前 job 调的是 package；它的依赖会先执行 darwin build，再复制这份
+	// Info.plist 组装 .app。断言对准实际调用，而不是凭旧的 task 名猜。
+	iBuild := strings.Index(wf, `wails3 task package`)
+	if iInject < 0 || iBuild < 0 {
+		t.Fatalf("找不到注入步骤或构建步骤：inject=%d build=%d", iInject, iBuild)
+	}
+	if iInject > iBuild {
+		t.Error("版本注入排在了 package 之后，构建读到的还是旧值")
+	}
+}

@@ -12,6 +12,7 @@
 //     ReleaseBinary 对已存在的目标一律报错，绝不「顺手覆盖」。
 //   - 版本判不出的所有分支一律偏保守（用用户已有的），因为猜错的代价不对称：
 //     不覆盖最坏是用户少个新特性，覆盖错了是把用户手装的二进制换掉。
+//   - 版本比较统一走 selfupdate.CompareVersion
 package shell
 
 import (
@@ -20,8 +21,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
+
+	"github.com/Xsxdot/handoff/internal/selfupdate"
 )
 
 // logger 是包级日志入口，默认 slog.Default()。
@@ -39,8 +40,13 @@ const (
 	DecisionInstall ReleaseDecision = iota
 	// DecisionUseExisting 表示直接使用用户已有的安装，不释出。
 	DecisionUseExisting
-	// DecisionNotifyOutdated 表示已有安装比内嵌的旧：只提示，不自动换。
-	DecisionNotifyOutdated
+	// DecisionEmbeddedNewer 表示已有安装比内嵌的旧。
+	//
+	// **它只陈述事实，不规定处置。** 处置由调用方按当前处境决定：
+	// 首次引导时（StateUnconfigured）只提示不换，避免打断；已配置时走同步
+	// （见 PlanSync）。原名 DecisionNotifyOutdated 把「提示」这一种处置烧进了
+	// 枚举名，而同一个事实现在有两种处置。
+	DecisionEmbeddedNewer
 )
 
 // String 返回三态的可读名。
@@ -50,8 +56,8 @@ func (d ReleaseDecision) String() string {
 		return "install"
 	case DecisionUseExisting:
 		return "use-existing"
-	case DecisionNotifyOutdated:
-		return "notify-outdated"
+	case DecisionEmbeddedNewer:
+		return "embedded-newer"
 	default:
 		return fmt.Sprintf("ReleaseDecision(%d)", int(d))
 	}
@@ -69,7 +75,7 @@ func (d ReleaseDecision) String() string {
 //     「绝不覆盖」这条承重不适用；内嵌版本判不出也不影响——若 embedbin 实际
 //     不可用，由调用方在 ReleaseBinary 之前检查 embedbin.Available() 兜底。
 //   - existing 非空时，任何「版本判不出」或「已有不旧于内嵌」都走
-//     DecisionUseExisting；只有确认已有比内嵌旧才 DecisionNotifyOutdated。
+//     DecisionUseExisting；只有确认已有比内嵌旧才 DecisionEmbeddedNewer。
 //
 // 注意：本函数不写日志。决策日志（三态、已有版本、内嵌版本）由调用方在拿到
 // 返回值后自行记录，以免破坏「纯函数」这条约束。
@@ -83,7 +89,7 @@ func DecideRelease(existing, existVer, embedVer string) ReleaseDecision {
 		// 覆盖旧版安全，直接用用户的。
 		return DecisionUseExisting
 	}
-	cmp, ok := compareVersion(existVer, embedVer)
+	cmp, ok := selfupdate.CompareVersion(existVer, embedVer)
 	if !ok {
 		// 已有版本判不出（空或形态不符）：猜错代价不对称——不覆盖最坏是用户
 		// 少个新特性，覆盖错了是把用户手装的二进制换掉。用用户的。
@@ -96,7 +102,7 @@ func DecideRelease(existing, existVer, embedVer string) ReleaseDecision {
 	default:
 		// 已有的比内嵌旧：只提示，不自动换——换版要重启 agentd，自动换会
 		// 打断正在跑的任务。
-		return DecisionNotifyOutdated
+		return DecisionEmbeddedNewer
 	}
 }
 
@@ -155,51 +161,4 @@ func ReleaseBinary(dst string, data io.Reader) error {
 	tmpName = ""
 	logger.Info("内嵌二进制已释出", "dst", dst, "perm", "0755")
 	return nil
-}
-
-// compareVersion 按 v?major.minor.patch 逐段做数值比较。
-//
-// 返回 -1/0/1（a 比 b 旧/同/新）；任一侧解析不出 vX.Y.Z（空串、段数不对、
-// 段不是非负整数）时 ok 为 false，第一个返回值无意义。
-//
-// 为什么在这里另写一份而不复用 internal/selfupdate 的 cmpVersion：
-// Go 的 internal 规则允许本模块 import 根模块的 internal 包，但 cmpVersion 与
-// parseVersion 在 clicheck.go 里未导出（也没有等价导出入口），不值得为此改动
-// selfupdate 的导出面。故做最小实现，保持与 clicheck.go:113-148 一致的语义：
-// 三段按整数比——字典序会判定 v0.10.0 比 v0.9.0 旧，必须按数值比。
-func compareVersion(a, b string) (int, bool) {
-	pa, ok := parseVersion(a)
-	if !ok {
-		return 0, false
-	}
-	pb, ok := parseVersion(b)
-	if !ok {
-		return 0, false
-	}
-	for i := range pa {
-		switch {
-		case pa[i] < pb[i]:
-			return -1, true
-		case pa[i] > pb[i]:
-			return 1, true
-		}
-	}
-	return 0, true
-}
-
-// parseVersion 把 vX.Y.Z 拆成三个非负整数；形态不符时 ok 为 false。
-func parseVersion(v string) ([3]int, bool) {
-	var out [3]int
-	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
-	if len(parts) != 3 {
-		return out, false
-	}
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return out, false
-		}
-		out[i] = n
-	}
-	return out, true
 }

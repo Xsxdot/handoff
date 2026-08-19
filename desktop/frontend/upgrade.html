@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>handoff 升级</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <!-- 顶部让出 28px：与 Go 侧 desktopTopInset 必须一致，见 main.go 的注释 -->
+    <div class="top-inset"></div>
+    <main class="panel">
+      <h2 id="panel-title">正在升级</h2>
+      <pre id="panel-output" aria-live="polite"></pre>
+      <div id="panel-actions" hidden>
+        <button id="panel-force" type="button">带 --force 重试</button>
+        <p class="panel-hint">
+          仅当上面显示有活跃任务时才有用。强制会重启 agentd——执行者进程不受影响，
+          中断的是事件推送与在途请求。
+        </p>
+      </div>
+    </main>
+    <script type="module" src="/src/upgrade.ts"></script>
+  </body>
+</html>
