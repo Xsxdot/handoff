@@ -1,8 +1,9 @@
 # 控制台配置执行纪律：分区编辑正文 + 开发机详情配映射 —— 设计
 
 > 日期：2026-08-19
-> Backlog：**B156**（取号依据见 §9）
-> 基线：`claude/dispatch-discipline-frontend-config-f7d563`（main 线，含 B129 全部提交）
+> Backlog：**B157**（取号依据见 §9）
+> 基线：`claude/dispatch-discipline-frontend-config-f7d563`（**web-console 线**上的一点，含 B129 全部提交；
+> 落地时应以 `handoff/web-console` 最新处为基，本分支写 spec 时落后它 19 个提交）
 > 形态基准：`prototypes/discipline-config/pages/settings.html`（2026-08-19 走查确认）
 
 ## 1. 问题与目标
@@ -277,7 +278,13 @@ Go 侧测试：
 ## 9. 取号与落点
 
 取号按三者并集（`main` ∪ `handoff/web-console` ∪ 分支名认领）：`main` 到 119、
-`handoff/web-console` 到 155、分支名无 >155 的认领，故取 **B156**。
+`handoff/web-console` 到 **156**（B156 是「工作台蓝图」epic，含 B156.1–.4）、分支名无
+>156 的认领，故取 **B157**。
 
-**backlog 行要加在汇流点 `handoff/web-console` 上**，不要加在本分支的 backlog 副本里
-（本分支是 main 线，其 backlog max 停在 119，在这里算 max 会撞号）。
+**改号记录**：本 spec 初稿取的是 B156——写稿时汇流点 max 还是 155，二十分钟后复核，
+B156 epic 已经落在 `handoff/web-console` 上（`30307010a`）。这不是疏忽而是**取号的固有
+竞态**：汇流点在并行推进，算出来的 max 只在那一刻成立，**开工前必须再算一次**。
+
+**backlog 行要加在汇流点 `handoff/web-console` 上**，不要加在本分支的 backlog 副本里：
+本分支虽在 web-console 线上，但落后 19 个提交，其 backlog 副本的 max 停在 119，
+在这里算 max 必撞号。

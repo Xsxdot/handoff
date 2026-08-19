@@ -1,4 +1,4 @@
-# B156 控制台配置执行纪律 实现计划
+# B157 控制台配置执行纪律 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,8 @@
 
 **Tech Stack:** Go 1.26.1（slog、`net/http` Go1.22 方法路由、`gopkg.in/yaml.v3`）、React + TypeScript + Vite + vitest + Testing Library、Tailwind/shadcn。
 
-**Spec:** `docs/superpowers/specs/2026-08-19-b156-discipline-console-config-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-19-b157-discipline-console-config-design.md`
+**Base:** 以 `handoff/web-console` 最新处开分支（该线才有 B129 后端与控制台代码；`main` 两者都没有）
 **形态基准:** `prototypes/discipline-config/pages/settings.html`（走查已确认；真实页面对照它验收）
 
 ## Global Constraints
@@ -709,7 +710,7 @@ git commit -m "fix(agentd): swapConf 深拷 Discipline，否则改映射会污�
 - [ ] **Step 1: 写 Go 类型**
 
 ```go
-// discipline.go —— 控制台配置执行纪律的线格式（B156）。
+// discipline.go —— 控制台配置执行纪律的线格式（B157）。
 //
 // 职责：GET /api/discipline 与 PUT /api/discipline/mapping 的请求/响应结构。
 // 边界：
@@ -1048,7 +1049,7 @@ func (m *Manager) ExecutorNames() []string { return registeredNames(m.ads) }
 - [ ] **Step 4: 实现 handler**
 
 ```go
-// 本文件实现控制台的纪律配置面（B156）：
+// 本文件实现控制台的纪律配置面（B157）：
 //   - GET  /api/discipline            列出内置两版、该机纪律块文件、每个 executor 的档位
 //   - GET  /api/discipline/file       读单个纪律块文件正文
 //   - PUT  /api/discipline/file       写单个纪律块文件（带前置哈希）
@@ -1807,7 +1808,7 @@ Expected: FAIL，模块不存在。
 按原型形态实现，要点（写进文件头注释）：
 
 ```tsx
-// DisciplinePage —— 设置页「执行纪律」分区（B156 spec §2.1）。
+// DisciplinePage —— 设置页「执行纪律」分区（B157 spec §2.1）。
 //
 // 职责：按机器编辑 <DataDir>/discipline/ 下的纪律块正文；内置两版只读展示，
 // 可「以此为模板新建」。
@@ -1937,7 +1938,7 @@ Expected: FAIL，模块不存在。
 - [ ] **Step 3: 实现**
 
 ```tsx
-// MachineDiscipline —— 开发机详情里的「执行纪律」块（B156 spec §2.2）。
+// MachineDiscipline —— 开发机详情里的「执行纪律」块（B157 spec §2.2）。
 //
 // 职责：给这台机器的每个 executor 指定注入哪块纪律（三档），整块一次保存。
 //
@@ -2012,7 +2013,7 @@ Expected: 与本次改动相关的命中为 0。
 
 ```bash
 git add -A
-git commit -m "chore(b156): 全量校验与形态走查的修复"
+git commit -m "chore(b157): 全量校验与形态走查的修复"
 ```
 
 ---
