@@ -36,6 +36,10 @@ func openLedger() (*ledger.Store, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("seed 默认工作流: %w", err)
 	}
+	if err := st.EnsureDefaultTemplates(); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("seed 默认派发模板: %w", err)
+	}
 	return st, nil
 }
 
