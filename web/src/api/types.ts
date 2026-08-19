@@ -635,3 +635,46 @@ export interface PtyControl {
   cols?: number
   rows?: number
 }
+
+// —— 代码图（spec 2026-08-19-codegraph-design §3）——
+export interface CgTestRef { name: string; file: string; snippet?: string }
+export interface CgNode {
+  kind: 'entry' | 'func' | 'model'
+  container: string
+  order?: number
+  name: string
+  file: string
+  line: number
+  signature?: string
+  signatureOld?: string
+  params?: string[][]
+  returns?: string
+  summary?: string
+  tests?: CgTestRef[]
+  fields?: string[][]
+  unscanned?: boolean
+}
+export interface CgContainer { label: string; kind: string; entry?: boolean }
+export interface CgGraph {
+  meta: { project: string; branch: string; commit: string; scannedAt: string; generator: string }
+  containers: Record<string, CgContainer>
+  nodes: Record<string, CgNode>
+  edges: [string, string][]
+}
+export interface CgDiff {
+  view: string
+  base?: string
+  summary?: string
+  nodesAdded?: Record<string, CgNode>
+  nodesModified?: Record<string, CgNode>
+  nodesDeleted?: string[]
+  edgesAdded?: [string, string][]
+  edgesDeleted?: [string, string][]
+}
+export interface CgStaleNode { id: string; file: string; line: number; reason: string }
+export interface CodegraphResp {
+  baseline: CgGraph
+  views: Record<string, CgDiff>
+  stale: CgStaleNode[]
+}
+export interface CgSourceResp { file: string; from: number; lines: string[] }
