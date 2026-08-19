@@ -44,7 +44,10 @@ export function CodegraphPage() {
   const setFociWithHist = (next: string[], fromHist = false) => {
     if (next.join('|') === effFoci.join('|')) return
     if (!fromHist) {
-      const h = [...hist.slice(0, histIdx + 1), next]
+      // 历史为空时先把当前（默认）焦点垫底：否则第一次换焦点后「后退」
+      // 无处可退——默认入口也是用户看过的一站，必须能退回去
+      const base = hist.length ? hist.slice(0, histIdx + 1) : [effFoci]
+      const h = [...base, next]
       setHist(h)
       setHistIdx(h.length - 1)
     }
