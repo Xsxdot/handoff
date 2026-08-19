@@ -8,6 +8,28 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc10] - 2026-08-19
+
+**预发布。** macOS 薄壳改发 DMG。
+
+### 变更
+
+- **macOS 薄壳的资产从 `.zip` 换成 `.dmg`**（`handoff-desktop_<tag>_darwin_arm64.dmg`）。
+  挂载后把 `handoff-desktop.app` 拖进 Applications 即可。
+
+  为什么不是 zip：zip 解出来的 `.app` 多半就留在 `~/Downloads` 里被双击，那份
+  app 带隔离属性、会被 Gatekeeper 路径随机化（App Translocation）挪到只读临时
+  挂载点上运行；DMG 里那个 Applications 快捷方式的存在，就是为了把人推去做
+  「搬出下载目录」这一步。
+
+  DMG 自身也经签名、公证、装订票据——里面的 `.app` 虽已装订，但 DMG 作为下载物
+  同样带隔离属性，不装订的话首次挂载在离线机器上仍会被拦。
+
+  流水线里加了一道运行期复核：挂载刚产出的 DMG，对里面的 `.app` 跑
+  `stapler validate`。因为组装 DMG 有一个**不报错的**错法——调 `package:dmg`
+  而不是 `create:dmg`，前者的 deps 会把已签名已装订的 bundle 整个重建成一个
+  未签名的新 bundle，而 wails3 退 0、DMG 照常产出、job 全绿。
+
 ## [v0.3.0-rc9] - 2026-08-19
 
 **预发布。** 修 macOS 应用图标与品牌原图不一致。
