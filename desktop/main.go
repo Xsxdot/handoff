@@ -291,7 +291,7 @@ func releaseEmbedded(app *application.App) {
 		logger.Info("已释出内嵌 handoff 二进制", "dst", dst)
 	case shell.DecisionUseExisting:
 		logger.Debug("直接使用既有 handoff 安装，不释出", "bin", existing)
-	case shell.DecisionNotifyOutdated:
+	case shell.DecisionEmbeddedNewer:
 		logger.Info("既有 handoff 比内嵌旧，只提示不自动替换", "bin", existing,
 			"existing_version", existVer, "embedded_version", embedbin.Version)
 		app.Event.Emit("wizard-notice", fmt.Sprintf(

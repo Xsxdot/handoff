@@ -40,8 +40,13 @@ const (
 	DecisionInstall ReleaseDecision = iota
 	// DecisionUseExisting 表示直接使用用户已有的安装，不释出。
 	DecisionUseExisting
-	// DecisionNotifyOutdated 表示已有安装比内嵌的旧：只提示，不自动换。
-	DecisionNotifyOutdated
+	// DecisionEmbeddedNewer 表示已有安装比内嵌的旧。
+	//
+	// **它只陈述事实，不规定处置。** 处置由调用方按当前处境决定：
+	// 首次引导时（StateUnconfigured）只提示不换，避免打断；已配置时走同步
+	// （见 PlanSync）。原名 DecisionNotifyOutdated 把「提示」这一种处置烧进了
+	// 枚举名，而同一个事实现在有两种处置。
+	DecisionEmbeddedNewer
 )
 
 // String 返回三态的可读名。
@@ -51,8 +56,8 @@ func (d ReleaseDecision) String() string {
 		return "install"
 	case DecisionUseExisting:
 		return "use-existing"
-	case DecisionNotifyOutdated:
-		return "notify-outdated"
+	case DecisionEmbeddedNewer:
+		return "embedded-newer"
 	default:
 		return fmt.Sprintf("ReleaseDecision(%d)", int(d))
 	}
@@ -70,7 +75,7 @@ func (d ReleaseDecision) String() string {
 //     「绝不覆盖」这条承重不适用；内嵌版本判不出也不影响——若 embedbin 实际
 //     不可用，由调用方在 ReleaseBinary 之前检查 embedbin.Available() 兜底。
 //   - existing 非空时，任何「版本判不出」或「已有不旧于内嵌」都走
-//     DecisionUseExisting；只有确认已有比内嵌旧才 DecisionNotifyOutdated。
+//     DecisionUseExisting；只有确认已有比内嵌旧才 DecisionEmbeddedNewer。
 //
 // 注意：本函数不写日志。决策日志（三态、已有版本、内嵌版本）由调用方在拿到
 // 返回值后自行记录，以免破坏「纯函数」这条约束。
@@ -97,7 +102,7 @@ func DecideRelease(existing, existVer, embedVer string) ReleaseDecision {
 	default:
 		// 已有的比内嵌旧：只提示，不自动换——换版要重启 agentd，自动换会
 		// 打断正在跑的任务。
-		return DecisionNotifyOutdated
+		return DecisionEmbeddedNewer
 	}
 }
 
