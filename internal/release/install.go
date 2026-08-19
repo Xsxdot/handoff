@@ -150,7 +150,8 @@ func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch 
 	return tgz, want, nil
 }
 
-// FetchChecksum 只下载 checksums.txt 并解出某平台资产的期望哈希。
+// FetchChecksum 只下载 checksums.txt 并解出本平台 CLI 资产的期望哈希。
+// 保留是为了不动既有调用方；新代码请直接用 FetchChecksumFor。
 //
 // 参数：
 //   - ctx: 上下文
@@ -167,6 +168,24 @@ func (i *Installer) FetchArchive(ctx context.Context, rel Release, goos, goarch 
 //   - 一次 upgrade --now 涉及多台机器时，调用方应当只调一次并缓存——
 //     同一个 release 的 checksums.txt 对所有平台是同一份
 func (i *Installer) FetchChecksum(ctx context.Context, rel Release, goos, goarch string) (string, error) {
+	return i.FetchChecksumFor(ctx, rel, AssetName(rel.Tag, goos, goarch))
+}
+
+// FetchChecksumFor 只下载 checksums.txt，并按调用方给定的资产名解出期望哈希。
+//
+// 参数：
+//   - ctx：上下文，用于取消与超时
+//   - rel：目标发布，需要它的 Assets 里有 checksums.txt 的 URL
+//   - assetName：要查的完整资产名，由调用方给定；checksums.txt 里 CLI 与薄壳
+//     资产并列，按平台推导只能推出其中一种
+//
+// 返回：
+//   - 指定资产的 sha256（十六进制小写）
+//   - 错误：缺 checksums 资产、下载失败、文件里没有该资产的行
+//
+// 注意：不下载资产本身；自拉模式只取几百字节的 checksums，20MB 的资产由
+// 执行机自己下载。解析失败的错误会带上要找的资产名，便于定位发布清单问题。
+func (i *Installer) FetchChecksumFor(ctx context.Context, rel Release, assetName string) (string, error) {
 	ck, ok := rel.Checksums()
 	if !ok {
 		i.Log.Error("发布没有校验和文件，无法校验完整性", "tag", rel.Tag, "asset", ChecksumsName)
@@ -178,13 +197,13 @@ func (i *Installer) FetchChecksum(ctx context.Context, rel Release, goos, goarch
 		i.Log.Error("下载校验和文件失败", "tag", rel.Tag, "url", ck.URL, "cause", err)
 		return "", fmt.Errorf("下载 %s: %w", ChecksumsName, err)
 	}
-	sum, err := sumFor(string(sums), AssetName(rel.Tag, goos, goarch))
+	sum, err := sumFor(string(sums), assetName)
 	if err != nil {
-		i.Log.Error("校验和文件里没有该平台的行", "tag", rel.Tag,
-			"platform", goos+"/"+goarch, "cause", err)
+		i.Log.Error("校验和文件里没有该资产的行", "tag", rel.Tag,
+			"asset", assetName, "cause", err)
 		return "", err
 	}
-	i.Log.Info("取得校验和", "tag", rel.Tag, "platform", goos+"/"+goarch, "sha256", sum)
+	i.Log.Info("取得校验和", "tag", rel.Tag, "asset", assetName, "sha256", sum)
 	return sum, nil
 }
 

@@ -83,6 +83,34 @@ func AssetName(tag, goos, goarch string) string {
 	return fmt.Sprintf("handoff_%s_%s_%s%s", tag, goos, goarch, archiveExt(goos))
 }
 
+// DesktopAssetName 返回桌面薄壳在某平台的发布物文件名。
+//
+// 参数：tag 形如 v0.3.1；goos/goarch 用 runtime 的取值。
+// 返回：文件名与「该平台有没有薄壳发布物」。ok 为 false 时文件名为空，
+// 调用方必须先判 ok，不能拿空串去拼下载地址。
+//
+// 注意：
+//   - 前缀是 handoff-desktop_，与 CLI 的 handoff_ 不同。checksums.txt 里两者
+//     并列，用 handoff_* 通配是匹配不到薄壳资产的（release.yml 的注释点名了这一条）。
+//   - 不与 AssetName 合并：两者的扩展名规则完全不同，薄壳按 goos 选
+//     dmg/zip/AppImage，合并会让两套互不相干的分支挤在一起。
+//   - 发布流水线只构建 darwin/arm64、windows/amd64、linux/amd64 三种薄壳，
+//     其余平台一律返回 false——判不出就说没有，不猜一个不存在的文件名。
+func DesktopAssetName(tag, goos, goarch string) (string, bool) {
+	ext := ""
+	switch {
+	case goos == "darwin" && goarch == "arm64":
+		ext = "dmg"
+	case goos == "windows" && goarch == "amd64":
+		ext = "zip"
+	case goos == "linux" && goarch == "amd64":
+		ext = "AppImage"
+	default:
+		return "", false
+	}
+	return fmt.Sprintf("handoff-desktop_%s_%s_%s.%s", tag, goos, goarch, ext), true
+}
+
 // AssetFor 取本平台的资产。
 //
 // 返回：

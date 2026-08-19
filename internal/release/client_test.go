@@ -18,6 +18,27 @@ func TestAssetName(t *testing.T) {
 	}
 }
 
+func TestDesktopAssetName(t *testing.T) {
+	cases := []struct {
+		goos, goarch string
+		want         string
+		ok           bool
+	}{
+		{"darwin", "arm64", "handoff-desktop_v0.3.1_darwin_arm64.dmg", true},
+		{"windows", "amd64", "handoff-desktop_v0.3.1_windows_amd64.zip", true},
+		{"linux", "amd64", "handoff-desktop_v0.3.1_linux_amd64.AppImage", true},
+		// 发布流水线只出 darwin/arm64，没有 darwin/amd64 的薄壳资产。
+		{"darwin", "amd64", "", false},
+		{"freebsd", "amd64", "", false},
+	}
+	for _, c := range cases {
+		got, ok := DesktopAssetName("v0.3.1", c.goos, c.goarch)
+		if got != c.want || ok != c.ok {
+			t.Fatalf("DesktopAssetName(%s/%s) = %q,%v，想要 %q,%v", c.goos, c.goarch, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 // 薄壳资产用 handoff-desktop_ 前缀发布（release.yml 的 build-desktop-* 两个 job）。
 // 这条钉死 CLI 侧拼出的资产名永远不会撞上薄壳包——两边都改名才会失效，那时这条会红。
 //
