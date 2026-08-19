@@ -60,3 +60,44 @@
 - 实际允许的 desktop 全包命令 `cd desktop && gofmt -l . && go test ./internal/...` 失败，原始报错：`--- FAIL: TestSyncOnOpenOrderIsLoadBearing`；`一切顺利时不该有错误：创建临时文件: open /tmp/.handoff-sync-2396126359: read-only file system`；包结果 `FAIL github.com/Xsxdot/handoff/desktop/internal/shell 0.075s`。
 - main.go 改动未经编译验证，原因：执行机缺 Wails 构建依赖；按 Global Constraints 由 macOS 审核者验证。
 - 提交范围：`internal/client/desktop.go`、`internal/client/desktop_test.go`、`desktop/internal/shell/report.go`、`desktop/internal/shell/report_test.go`、`desktop/main.go` 与本 ledger，提交信息按计划为 `feat(desktop): 薄壳单向上报自身状态，10s 一次`。
+
+## Task 5：托盘瘦身与图标，删除死代码
+
+- Step 1 初始 grep 原始输出：
+
+  ```text
+  ./panel.go:4://   - 创建并持有一个独立窗口，加载内嵌前端的 /upgrade.html
+  ./panel.go:46:// openUpgradePanel 创建并显示升级面板窗口。
+  ./panel.go:50:func openUpgradePanel(app *application.App) *upgradePanel {
+  ./panel.go:57:        URL:    "/upgrade.html",
+  ./main.go:316:        menu.Add(label).OnClick(func(*application.Context) { go showBlockedPanel() })
+  ./main.go:319:        menu.Add("上次同步失败，查看详情").OnClick(func(*application.Context) { go showSyncFailurePanel() })
+  ./main.go:323:            OnClick(func(*application.Context) { go openReleasePage(trayLatest) })
+  ./main.go:325:    menu.Add("升级执行机…").OnClick(func(*application.Context) { go runRemoteUpgrade(false) })
+  ./remote_upgrade.go:5://   - runRemoteUpgrade 用它跑 handoff upgrade --now 并把输出流进升级面板
+  ./remote_upgrade.go:80:// runRemoteUpgrade 跑 handoff upgrade --now 并把输出流进升级面板。
+  ./remote_upgrade.go:88:func runRemoteUpgrade(force bool) {
+  ./main.go:514:// showBlockedPanel 打开面板，说明为什么没同步，并提供强制入口。
+  ./main.go:519:func showBlockedPanel() {
+  ./main.go:520:    p := openUpgradePanel(trayApp)
+  ./main.go:535:    p.OnForceRetry(func() { forceSyncNow(p) })
+  ./main.go:538:// showSyncFailurePanel 打开面板展示上次同步失败的原因。
+  ./main.go:539:func showSyncFailurePanel() {
+  ./main.go:540:    p := openUpgradePanel(trayApp)
+  ./main.go:550:    p.OnForceRetry(func() { forceSyncNow(p) })
+  ./main.go:553:// forceSyncNow 越过闸一立即同步。只由用户在面板上点击触发。
+  ./main.go:554:func forceSyncNow(p *upgradePanel) {
+  ./main.go:589:// openReleasePage 打开 release 页面让用户自己下载。
+  ./main.go:593:func openReleasePage(tag string) {
+  ./frontend/vite.config.ts:13:      // 多页入口。缺了这段，upgrade.html 不会被打进 dist，而 go:embed
+  ./frontend/vite.config.ts:18:        upgrade: "upgrade.html",
+  ```
+
+  输出中的引用全部位于本 task 将删除/修改的调用方。
+- 删除后同一 grep 实际无输出。
+- `cd desktop && gofmt -l .` 无输出；`go vet ./...` 无输出。
+- `cd desktop && go test ./internal/...` 失败，原始报错：`--- FAIL: TestSyncOnOpenOrderIsLoadBearing`；`一切顺利时不该有错误：创建临时文件: open /tmp/.handoff-sync-3837148909: read-only file system`；包结果 `FAIL github.com/Xsxdot/handoff/desktop/internal/shell 0.075s`。
+- 首次 `cd desktop/frontend && npm run build` 失败原始报错：`sh: 1: tsc: not found`。随后 `npm ci` 默认缓存失败原始报错：`npm error code EROFS`、`npm error rofs EROFS: read-only file system, open '/root/.npm/_cacache/tmp/***'`；改用任务可写缓存执行 `npm ci --cache /root/.handoff/tasks/dce76326-0f86-4e0a-b56e-b010f4c1a62e/tmp/npm-cache` 成功：`added 17 packages, and audited 18 packages in 2s`、`found 0 vulnerabilities`。
+- 最终 `cd desktop/frontend && npm run build` 通过：`vite v8.2.1`、`35 modules transformed`、`dist/index.html 0.48 kB`、`dist/assets/main-QvimaT1l.js 20.92 kB`、`✓ built in 42ms`。
+- 双裁决第 1 轮：spec 符合，托盘保留打开控制台/退出两项，macOS 模板图标与其他平台彩色图标均接入，升级面板/远程升级死代码与多页入口已删除；代码质量通过，无修复轮次。main.go 仍未经 Linux Wails 编译验证。
+- 提交范围：`desktop/main.go`、`desktop/frontend/vite.config.ts`、`desktop/build/trayicon.png`（仅引用，未修改）及删除的 4 个 desktop 文件与本 ledger，提交信息按计划为 `refactor(desktop): 托盘瘦身到两项并换成标志，删掉升级面板与远程升级`。
