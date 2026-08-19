@@ -183,3 +183,23 @@
 - 双裁决第 1 轮：spec 符合（两个测试平台缝一致、opener 收尸、按钮矩阵完整）且代码质量通过；
   无额外修复轮。提交范围：四个下载/提示框实现与测试文件及本 ledger，待提交信息为
   `fix(update): 修正跨平台下载测试与提示框按钮矩阵`。
+
+## 本期 Task 1：结论判据搬进 internal/upgrade
+
+- 将 `cmd/upgrade_verdict.go` 的唯一判据原样迁入 `internal/upgrade/machine.go`，保留七种结论、
+  优先级与三态指针语义；`Machine.Bin` 保留 CLI 本机二进制与 agentd 双版本判定。既有判据测试
+  迁入 `internal/upgrade/machine_test.go`，用例数量与断言强度未减；`cmd/upgrade_test.go` 未修改。
+- CLI 通过 `machineState.toUpgrade()` 调用 `upgrade.Classify`，仅替换判据类型与调用点，
+  本机路径与原有输出渲染保持不动。测试辅助 `boolPtr` 移至 `cmd/upgrade_helpers_test.go`，
+  以保持未改动的 `cmd/upgrade_test.go` 可编译。
+- 验证：`go test ./internal/upgrade/ -v` PASS（11 条）；`go test ./cmd/ -run TestUpgrade -v`
+  PASS；`go test ./cmd/` PASS；`git diff --stat cmd/upgrade_test.go` 无输出；`git diff --check` 无输出。
+- Task 收尾命令：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./cmd/ ./internal/upgrade/ ./internal/agentd/` PASS；`cd web && npm run typecheck && npm test`
+  PASS（81 files / 799 tests）。首次前端命令因依赖未安装原始失败：`sh: 1: tsc: not found`；
+  随后 `npm ci --cache /root/.handoff/tasks/e46f1156-7285-4bfe-a033-59746a4fd331/tmp/npm-cache`
+  成功后复跑通过。
+- 双裁决第 1 轮：spec 符合，代码质量通过，无修复轮。提交范围：
+  `internal/upgrade/machine.go`、`internal/upgrade/machine_test.go`、删除的两个旧判据文件、
+  `cmd/upgrade.go`、`cmd/upgrade_helpers_test.go` 与本 ledger；提交信息：
+  `refactor(upgrade): 结论判据搬进 internal/upgrade，CLI 输出不变`。

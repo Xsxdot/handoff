@@ -38,6 +38,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/upgrade"
 	"github.com/spf13/cobra"
 )
 
@@ -160,6 +161,18 @@ type machineState struct {
 	Pull *bool
 	Busy int
 	Err  error
+}
+
+// toUpgrade 投影 CLI 侧的探测载体，供结论判据包消费。
+//
+// Endpoint 与 Bin 仍留在 CLI：Endpoint 是 CLI 的配置/拨号概念，Bin 是本机
+// 文件路径上的版本；新包只接收一台机器的探测结果，不认识 cobra 或 Endpoint。
+func (ms *machineState) toUpgrade() upgrade.Machine {
+	return upgrade.Machine{
+		Name: ms.Ep.Name, Local: ms.Ep.Local, Bin: ms.Bin, Agentd: ms.Agentd,
+		Revision: ms.Revision, Platform: ms.Platform, Managed: ms.Managed,
+		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err,
+	}
 }
 
 // currentBinary 返回当前二进制的真实路径。
@@ -350,15 +363,15 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 
 // renderCheckRow 渲染巡检表的一行（--check 默认行为）。
 //
-// 行内三段：名字（定宽）、信息、结论。结论一律来自 classify，本函数只负责把
-// verdict 翻译成一句话——判据不在这里，改判据请改 classify（B64）。
+// 行内三段：名字（定宽）、信息、结论。结论一律来自 upgrade.Classify，本函数只负责把
+// Verdict 翻译成一句话——判据不在这里，改判据请改 internal/upgrade（B64）。
 //
 // 本机必须分别显示二进制与 agentd 两个版本——换掉磁盘上的文件后正在跑的 agentd
 // 仍是旧进程，这是正常且常见的中间态，合成一个数字就必然骗人（B59 spec §4.1）。
 func renderCheckRow(w io.Writer, s machineState, latest string) {
 	name := s.Ep.Name
-	v := classify(&s, latest)
-	if v == verdictUnreachable {
+	v := upgrade.Classify(s.toUpgrade(), latest)
+	if v == upgrade.VerdictUnreachable {
 		fmt.Fprintf(w, "%-8s 够不着（%s）\n", name, s.Err)
 		return
 	}
@@ -382,11 +395,11 @@ func renderCheckRow(w io.Writer, s machineState, latest string) {
 // 只有「已是最新」与「对端过旧」值得单独措辞：其余几格（非托管、未上报托管、
 // 该升级）在只读巡检下的行动含义相同——都是「这台机器落后了」，差别体现在
 // --now 的处置里，不该在巡检表上提前吓人。
-func checkConclusion(v verdict) string {
+func checkConclusion(v upgrade.Verdict) string {
 	switch v {
-	case verdictLatest:
+	case upgrade.VerdictLatest:
 		return "已是最新"
-	case verdictTooOld:
+	case upgrade.VerdictTooOld:
 		return "对端过旧（未上报平台）"
 	default:
 		return "需要升级"
@@ -426,56 +439,42 @@ func checkPad(info string) string {
 	return strings.Repeat(" ", n)
 }
 
-// isLatest 判断一台机器是否已是最新版本。
-//
-// 本机 agentd 未运行时只比二进制版本；运行时两者都要对齐（二进制已最新但
-// agentd 还是旧进程 = 中间态，仍需要重启这一步）。
-func (ms *machineState) isLatest(latest string) bool {
-	if ms.Ep.Local {
-		if ms.Agentd == "" {
-			return ms.Bin == latest
-		}
-		return ms.Bin == latest && ms.Agentd == latest
-	}
-	return ms.Agentd == latest
-}
-
 // process 对一台机器执行升级，返回结果分类。
 //
-// 结论来自 classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
-// busy 闸不在 classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
+// 结论来自 upgrade.Classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
+// busy 闸不在 Classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
 // ——否则会对一台已是最新的忙机器建议 --force，而那条命令跑完只会说「已是最新」。
 func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	out := cmd.OutOrStdout()
 	name := ms.Ep.Name
 	peer := newAgentdClient(ms.Ep)
-	v := classify(ms, rel.Tag)
+	v := upgrade.Classify(ms.toUpgrade(), rel.Tag)
 	slog.Default().Info("开始处理机器", "name", name, "addr", ms.Ep.Addr, "local", ms.Ep.Local,
 		"verdict", v.String(), "platform", ms.Platform, "busy", ms.Busy)
 
 	switch v {
-	case verdictUnreachable:
+	case upgrade.VerdictUnreachable:
 		// 只报原始错误原文，不编处置——编一条建议就是在猜，而猜出来的建议会把人
 		// 引到错误的方向
 		slog.Default().Warn("机器够不着", "name", name, "cause", ms.Err)
 		fmt.Fprintf(out, "%-8s 失败   %s\n", name, ms.Err)
 		return outcomeFail
 
-	case verdictLatest:
+	case upgrade.VerdictLatest:
 		slog.Default().Info("跳过：已是最新", "name", name)
 		fmt.Fprintf(out, "%-8s 跳过   已是最新\n", name)
 		return outcomeSkip
 
-	case verdictTooOld:
+	case upgrade.VerdictTooOld:
 		// 明确拒绝而不是猜一个默认平台——猜错就是给一台 linux 机器推 darwin 二进制
 		slog.Default().Info("跳过：对端未上报平台", "name", name)
 		fmt.Fprintf(out, "%-8s 跳过   对端 agentd 过旧，未上报平台，需先手工升级到 ≥v0.1.1\n", name)
 		return outcomeSkip
 
-	case verdictAgentdDown:
+	case upgrade.VerdictAgentdDown:
 		return ms.swapAndTell(ctx, out, rel, "agentd 未运行，请自行重启它")
 
-	case verdictUnmanaged:
+	case upgrade.VerdictUnmanaged:
 		if ms.Ep.Local {
 			return ms.swapAndTell(ctx, out, rel, "agentd 非托管启动，请自行重启它")
 		}
@@ -485,7 +484,7 @@ func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel rel
 		fmt.Fprintf(out, "         先在该机器上 handoff service install\n")
 		return outcomeSkip
 
-	case verdictManagedUnknown:
+	case upgrade.VerdictManagedUnknown:
 		if ms.Ep.Local {
 			return ms.swapAndTell(ctx, out, rel, "无法确认 agentd 是否托管启动，请自行重启它")
 		}
