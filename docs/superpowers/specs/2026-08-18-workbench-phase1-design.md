@@ -265,6 +265,9 @@ CREATE TABLE mirror_cursors (
 - `handoff card dispatch <id> [--node <节点>]`：按模板拼装 prompt + 纪律块，走
   现有 dispatch 通道；**派发即认领**（待办→进行中 的 CAS 就是 claim，第二个
   会话干净失败并提示「已被 X 认领」）；task 回链 + 模板版本快照落事件。
+  **`--node review|merge` 是节点执行器入口，不走认领语义**（卡此刻在
+  「待审阅」，复用认领 CAS 会把卡拉回「进行中」、第二轮审阅死锁）——审阅
+  派发只挂账 + 快照，卡状态由节点结论驱动。
 - `handoff workflow ...` / `handoff template ...`：双聚合分开管理。
 - `handoff wait --card <id> [--subtree]`：**账本单流多路 wait**。订阅卡子树
   事件流（含镜像 task 事件），wait 挂起期间新派发的 task 天然进流；退出条件 =
@@ -272,6 +275,8 @@ CREATE TABLE mirror_cursors (
 - `handoff decision open/list/answer`：裁决项——主会话回合末落请示、用户答复、
   会话唤醒后读答复（`list --open` 是全局裁决收件箱）。
 - `handoff card export`：最薄 markdown 只读快照导出（逃生门）。
+- `handoff card min-b <n>`（Hidden，切换期一次性）：垫 B 号水位——新建卡号
+  严格大于历史总账 max B，两本账永不撞号（§8 第 2 步的执行入口）。
 - **executor 白名单不扩**：新增 card/workflow/template/decision 命令均不进 B115 自指令
   白名单，executor 永不写账。
 
@@ -356,20 +361,28 @@ CREATE TABLE mirror_cursors (
 - 验收后发现 bug：开新卡挂关联，不 reopen。
 - 出问题（等人标记、状态冲突）：协调、裁决、或转人工，全部动作落事件。
 
-## 8. 存量迁移（按序执行）
+## 8. 存量切换（按序执行；**08-19 修订：不做存量导入**）
 
-1. 迁移前对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
-2. backlog.md 未完成条目入库为 open 卡，历史 done 条目归档入库（只读，历史
-   共享 spec 的批次不重建合并关系，只保留 spec 附件引用——考古够用，别造史）；
-   **B 号→卡 id 映射表落库**，历史考古接得上。状态映射表：💡→待办、
-   📋→已出 spec、🔨→进行中、✅done(已验)→已完成+已验、done(待真机验)→
-   已完成+待验、🗄️/🧊→终止(搁置·可复活)；「验收」列→acceptance_criteria+
-   验收事件；「变更痕迹/备注」→首条 comment；「见 B17/由 B115 发现」类引用
-   尽力解析为 relations（解析不了的保留在 comment 原文里）。
-3. backlog.md 顶部加冻结注记；**全局 skill（~/.claude 下 product-backlog）与
-   CLAUDE.md §4 同一批次切换为指针**——先切 skill 再冻结文件，避免其他在途
-   worktree 的旧 skill 副本继续追加。
-4. 抽查 N 条历史条目字段无损 + 映射表可反查。
+> 原方案是解析 backlog.md 全量导入（含状态映射表/坏行报错/幂等重放）。计划
+> 审查发现真实数据有导入器接不住的形态（🚫/🔀/🐛 未映射、`done(真机验)` 会被
+> 静默错账、B80-B83/B89/B90 六对真撞号会被幂等语义静默丢半），用户裁决
+> （08-19）：**已有 backlog 不导入**——旧账冻结为历史正史，账本从零开始记新
+> 账，未完成的活由一个 agent 用 CLI 直接补录。撞号、错账、映射表全部问题就地
+> 消失，代价是历史考古回 markdown 查（可接受：冻结文件永在，全文可 grep）。
+
+1. 切换前对齐汇流点分支（web-console）实测 merge-base，确认无分叉遗漏。
+2. **B 号垫水位**：取冻结时刻总账的 max B 号，`card min-b <maxB>` 垫进
+   ledger_meta——此后新建卡号严格大于历史号，新旧两本账的 B 号永不撞。
+3. **未完成项补录**（一个 agent 执行）：范围 = 状态为 💡/📦/📋/🔨/🐛/🧊 的
+   条目（🗄️ shelved 不迁——真要复活时再开新卡；done 系含未验/待真机验一律
+   留在历史账，要补验另开新卡引用旧号）。每条 `card add` 建新卡（新号），
+   首条 note 写「迁自 B<旧号>」+ 原备注/变更痕迹摘录，spec 路径 `--attach
+   spec:` 挂回，直觉的依赖/引用用 `card link`/note `#B新号` 补边。旧号在
+   note 里可 grep，考古接得上。
+4. backlog.md 顶部加冻结注记；**全局 skill（~/.claude 下 product-backlog）与
+   CLAUDE.md §3/§4 同一批次切换为指针**——先切 skill 再冻结文件，避免其他
+   在途 worktree 的旧 skill 副本继续追加。
+5. 抽查补录卡：每张首条 note 含旧号、附件路径存在、新卡号 > 垫号水位。
 
 ## 9. 验收判据（逐条真机判法）
 
@@ -400,8 +413,10 @@ CREATE TABLE mirror_cursors (
 ⑦ **镜像断链恢复**：停掉 target 的 agentd ≥60s 再拉起。判法：断链期看板该
   target 亮「事件流滞后」；恢复后 `card_events` 按（target,task,seq）无重复
   （幂等键约束在，count 与来源事件数一致），滞后标记消失。
-⑧ **迁移无损**：迁移脚本跑完后随机抽 10 条历史条目对照 backlog.md 原文行，
-  字段逐列一致；用映射表把任一卡 id 反查回 B 号并在原文中 grep 命中。
+⑧ **切换无损**（08-19 随 §8 修订）：补录完成后逐张核对未完成卡（数量少，
+  全查不抽查）：首条 note 含「迁自 B<旧号>」且旧号在冻结的 backlog.md 里
+  grep 命中；spec 附件路径存在；`card add` 新建一张验证卡，其 B 号 > 冻结
+  时刻的 max B（垫号生效）。
 ⑨ **双端一致**：CLI `card move` 后看板 3s 内呈现新列；看板一键转移后
   `card show` 状态一致（同一账本库，无中间缓存）。
 ⑩ **双协调机对等**：本机与 mac-02 指向同一账本库；A 机认领派发，B 机看板

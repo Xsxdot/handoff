@@ -34,7 +34,7 @@ internal/ledger/
   relations.go     // AddBlocks/AddRelation/RemoveRelation、环检测、EffectiveBaseBranch
   merge.go         // MergeCards/UnmergeCard/SplitCard
   events.go        // appendEvent、EventsFromAsc、Subtree、AddComment、RecordAcceptance、MarkNeedsHuman
-  workflows.go     // Workflow 聚合：Put/Get/EnsureDefaults/MigrateCard
+  workflows.go     // Workflow 聚合：Put/Get/EnsureDefaults（MigrateCardWorkflow 归 Plan A2，本 plan 不实现）
   decisions.go     // OpenDecision/AnswerDecision/ListDecisions
   derived.go       // CardView 派生标记（blocked/跟随/needs）
   *_test.go        // 与实现文件同名配对；store_pg_test.go 为 PG 冒烟（env 门控）
@@ -1557,9 +1557,9 @@ func TestMoveCASAndGate(t *testing.T) {
 		t.Fatalf("正确前值应成功: %v", err)
 	}
 
-	// 未知状态拒绝
-	if err := s.MoveCard(c.ID, "不存在的状态", "", "test"); err == nil {
-		t.Fatal("未知状态应拒绝")
+	// 未知状态拒绝（必须是 ErrBadState 哨兵——Plan D 的 API 层靠它翻译 409）
+	if err := s.MoveCard(c.ID, "不存在的状态", "", "test"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("未知状态应拒且 wrap ErrBadState: %v", err)
 	}
 	// 终态卡不可 move
 	_ = s.MoveCard(c.ID, StatusReview, "", "test")
@@ -1645,7 +1645,8 @@ func (s *Store) MoveCard(id, to, expect, actor string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("状态 %q 不在工作流 %s v%d 中", to, wf.Name, wf.Version)
+			// wrap ErrBadState：API 层（Plan D）靠哨兵翻译成 409，裸 error 会变 500
+			return fmt.Errorf("状态 %q 不在工作流 %s v%d 中: %w", to, wf.Name, wf.Version, ErrBadState)
 		}
 		if g, ok := wf.Def.Gates[to]; ok {
 			if g.RequireAttachment != "" {
@@ -2125,6 +2126,12 @@ func TestMergeUnmergeSplit(t *testing.T) {
 	if err := s.MergeCards([]string{m1.ID}, carrier.ID, "test"); !errors.Is(err, ErrBadMerge) {
 		t.Fatalf("重复并入应拒: %v", err)
 	}
+	// 终态卡不许参与合并（成员侧；承载侧同一检查）
+	dead := mk(t, s, "dead")
+	_ = s.CloseCard(dead.ID, CloseCancelled, "test")
+	if err := s.MergeCards([]string{dead.ID}, carrier.ID, "test"); !errors.Is(err, ErrBadMerge) {
+		t.Fatalf("终态成员应拒: %v", err)
+	}
 	// 拆回：恢复自主 + 判据仍在（判据⑫的单测形）
 	if err := s.UnmergeCard(m1.ID, "test"); err != nil {
 		t.Fatalf("unmerge: %v", err)
@@ -2222,6 +2229,19 @@ func TestCommentRefsAutoRelate(t *testing.T) {
 	if p.Body == "" {
 		t.Fatal("更正评论 body 丢失")
 	}
+	// 重置评论：payload 带 human_reset_node（Plan C 回合计数清零的落账形态）
+	ev3, err := s.AddCommentReset(a.ID, "人工看过，重新计数", "普通", "test", "review")
+	if err != nil {
+		t.Fatalf("reset comment: %v", err)
+	}
+	var pr map[string]any
+	_ = json.Unmarshal(ev3.Payload, &pr)
+	if pr["human_reset_node"] != "review" {
+		t.Fatalf("缺 human_reset_node: %v", pr)
+	}
+	if _, err := s.AddCommentReset(a.ID, "x", "普通", "test", ""); err == nil {
+		t.Fatal("空节点名应拒")
+	}
 }
 
 func TestAcceptanceAndNeeds(t *testing.T) {
@@ -2296,8 +2316,12 @@ func (s *Store) MergeCards(ids []string, into, actor string) error {
 		return fmt.Errorf("合并: 成员为空")
 	}
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		if _, err := getCardTx(s, tx, into); err != nil {
+		intoCard, err := getCardTx(s, tx, into)
+		if err != nil {
 			return fmt.Errorf("合并: 承载卡 %s: %w", into, err)
+		}
+		if intoCard.Status == StatusClosed || intoCard.Status == StatusDone {
+			return fmt.Errorf("承载卡 %s 已处于终态 %s: %w", into, intoCard.Status, ErrBadMerge)
 		}
 		if n, err := s.mergedIntoTx(tx, into); err != nil {
 			return err
@@ -2313,8 +2337,12 @@ func (s *Store) MergeCards(ids []string, into, actor string) error {
 			if id == into {
 				return fmt.Errorf("卡 %s 不能并入自己: %w", id, ErrBadMerge)
 			}
-			if _, err := getCardTx(s, tx, id); err != nil {
+			mc, err := getCardTx(s, tx, id)
+			if err != nil {
 				return fmt.Errorf("合并: 成员 %s: %w", id, err)
+			}
+			if mc.Status == StatusClosed || mc.Status == StatusDone {
+				return fmt.Errorf("成员 %s 已处于终态 %s: %w", id, mc.Status, ErrBadMerge)
 			}
 			if cur, err := s.mergedIntoTx(tx, id); err != nil {
 				return err
@@ -2422,6 +2450,20 @@ var cardRefPat = regexp.MustCompile(`#(B\d+(?:\.\d+)*)`)
 // relates 边（幂等），不存在的只留在 refs 里（评论是记录不是校验）。
 // kind ∈ {普通, 更正}——「更正」承接 markdown 总账的变更痕迹文化。
 func (s *Store) AddComment(cardID, body, kind, actor string) (Event, error) {
+	return s.addComment(cardID, body, kind, actor, "")
+}
+
+// AddCommentReset 同 AddComment，但 payload 附 human_reset_node=<节点>。
+// 这是「人工介入重置回合计数」（spec §5）的唯一落账入口：节点执行器
+// （Plan C 的 CountRounds）读到该字段即把对应节点的裁决轮次清零。
+func (s *Store) AddCommentReset(cardID, body, kind, actor, resetNode string) (Event, error) {
+	if resetNode == "" {
+		return Event{}, fmt.Errorf("重置评论: 节点名不能为空")
+	}
+	return s.addComment(cardID, body, kind, actor, resetNode)
+}
+
+func (s *Store) addComment(cardID, body, kind, actor, resetNode string) (Event, error) {
 	if kind != "普通" && kind != "更正" {
 		return Event{}, fmt.Errorf("评论 kind %q 不在 {普通,更正}", kind)
 	}
@@ -2447,13 +2489,16 @@ func (s *Store) AddComment(cardID, body, kind, actor string) (Event, error) {
 				return fmt.Errorf("评论引用建边 %s: %w", ref, err)
 			}
 		}
-		seq, err := s.appendEvent(tx, sink, cardID, EvComment, actor,
-			map[string]any{"kind": kind, "body": body, "refs": refs})
+		payload := map[string]any{"kind": kind, "body": body, "refs": refs}
+		if resetNode != "" {
+			payload["human_reset_node"] = resetNode
+		}
+		seq, err := s.appendEvent(tx, sink, cardID, EvComment, actor, payload)
 		if err != nil {
 			return err
 		}
 		out = Event{Seq: seq, CardID: cardID, Type: EvComment, Actor: actor}
-		raw, _ := json.Marshal(map[string]any{"kind": kind, "body": body, "refs": refs})
+		raw, _ := json.Marshal(payload)
 		out.Payload = raw
 		return nil
 	})
@@ -3418,7 +3463,7 @@ git commit -m "test(ledger): PG 冒烟端到端 + 整包 gofmt/vet 终审"
 
 ## Self-Review 记录（写 plan 时已做）
 
-1. **Spec 覆盖**：§2 的全部结构性决策映射到 Task 3–11（见 Task 12 Step 3 清单）。**不在本 plan 的**：镜像写入/lease 仲裁（Plan B）、dispatch_templates 领域操作与 dispatch/回合计数（Plan C）、CLI/HTTP 面（Plan A2）、看板（Plan D）、迁移（Plan E）——表已建齐，操作按依赖归属后续 plan。
+1. **Spec 覆盖**：§2 的全部结构性决策映射到 Task 3–11（见 Task 12 Step 3 清单）。**不在本 plan 的**：镜像写入/lease 仲裁（Plan B）、dispatch_templates 领域操作与 dispatch/回合计数（Plan C）、CLI/HTTP 面（Plan A2）、看板（Plan D）、切换收尾（Plan E，08-19 修订：不做存量导入，只剩垫号命令 + 审核者清单）——表已建齐，操作按依赖归属后续 plan。
 2. **类型一致性**：`eventSink`/`appendEvent`/`getCardTx`/`effectiveBaseTx`/`jsonUnmarshal` 的定义 Task 与全部使用 Task 已互核；`rowScanner` 只在 cards.go 定义一次。
 3. **已知妥协（执行者不要"修复"它们）**：mutate 全局粗锁（正确性优先，写 QPS 极小）；ListCards 全量小表扫（卡数百张量级）；SQLite 的 merged_into 唯一性靠应用层（写路径全在 MergeCards + 全局锁内）；`EffectiveBaseBranch` 返回空串表主线（库不猜 main/master，派发方解析）。
 4. **测试环境**：全部测试 SQLite 即可跑；PG 冒烟需 `LEDGER_TEST_PG_DSN` 指向**专用测试库**，默认 skip——远端执行机上没有 PG 也不会红。

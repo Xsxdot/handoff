@@ -192,7 +192,11 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("查幂等键: %w", err)
 		}
-		payload := fmt.Sprintf(`{"task_type":%q,"payload":%s}`, ev.Type, string(ev.Payload))
+		inner := string(ev.Payload)
+		if len(ev.Payload) == 0 {
+			inner = "null" // 空负载嵌进去会产出非法 JSON（PG JSONB 直接拒）
+		}
+		payload := fmt.Sprintf(`{"task_type":%q,"payload":%s}`, ev.Type, inner)
 		var seq int64
 		if s.dialect == dialectPG {
 			err = tx.QueryRow(s.q(`INSERT INTO card_events
@@ -523,6 +527,7 @@ package ledgermirror
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -619,6 +624,57 @@ func TestMirrorLeaseExclusive(t *testing.T) {
 		t.Fatalf("lease 应恰一人持有: A=%v B=%v", a.Holding(), b.Holding())
 	}
 }
+
+// 断链不 touch：有挂账 task 但源永远连不上的 target，健康行不得被空
+// touch 持续刷新——否则 agentd 停掉后 updated_at 永远新鲜，判据⑦
+// 「断链期看板亮事件流滞后」永不触发。无挂账 task 的 target 照常
+// touch（没东西可镜像不算滞后）。
+func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
+	s := testLedger(t)
+	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
+	_ = s.LinkTask(c.ID, "dead-box", "T9", "implement", "t")
+	failSrc := func(ctx context.Context, _, _, _ string, _ int64, _ func(proto.Event) error) error {
+		return fmt.Errorf("dial refused")
+	}
+	m := New(s, func() map[string]config.Target {
+		return map[string]config.Target{
+			"dead-box": {Addr: "127.0.0.1:1", Token: "t"},
+			"idle-box": {Addr: "127.0.0.1:2", Token: "t"},
+		}
+	}, Options{Holder: "test", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: failSrc})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+
+	deadAt := func() (time.Time, bool) {
+		rows, _ := s.MirrorHealth()
+		for _, r := range rows {
+			if r.Target == "dead-box" {
+				return r.UpdatedAt, true
+			}
+		}
+		return time.Time{}, false
+	}
+	time.Sleep(300 * time.Millisecond)
+	t1, ok1 := deadAt()
+	time.Sleep(300 * time.Millisecond)
+	t2, ok2 := deadAt()
+	// 起订瞬间可能抢在断连标记前被 touch 一次（窗口极小），所以断言的
+	// 是「不再持续刷新」而非「行绝对不存在」
+	if ok2 && (!ok1 || t2.After(t1)) {
+		t.Fatalf("断链 target 的健康心跳仍在被刷新: %v -> %v", t1, t2)
+	}
+	rows, _ := s.MirrorHealth()
+	idleOK := false
+	for _, r := range rows {
+		if r.Target == "idle-box" {
+			idleOK = true
+		}
+	}
+	if !idleOK {
+		t.Fatal("无挂账 task 的 target 应照常空 touch")
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -641,6 +697,7 @@ package ledgermirror
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -670,14 +727,16 @@ func DefaultSource(ctx context.Context, addr, token, taskID string, fromSeq int6
 	return client.New(addr, token).StreamEventsOnce(ctx, taskID, fromSeq, onEvent)
 }
 
-// mirrorSkip 不入账本单流的事件类型。与 internal/client 的 isDeliverable
-// 保持同一份语义（progress 高频噪音；三个审计类型 live 流本就不发，镜像
-// 若写入会让重放比实况多）。改这里前先看 client.go 的对应注释。
+// mirrorSkip 不入账本单流的事件类型。基准是 internal/client 的
+// isDeliverable（progress 高频噪音；审计类型 live 流不发）——但有一个
+// 有意的偏离：**tickets_voided 不 skip**。账本侧要从镜像流推导未决
+// 工单数（Plan D 的 OpenTicketCounts，工单上注意力平面），作废事件
+// 是唯一的「未答工单已失效」信号，掐掉它工单就永远悬着。isDeliverable
+// 的 parity 顾虑只针对 CLI wait 的回放体验，与镜像消费者无关。
 var mirrorSkip = map[proto.EventType]bool{
 	proto.EventTypeProgress:         true,
 	proto.EventTypeApproverDecision: true,
 	proto.EventTypeApproverDisabled: true,
-	proto.EventTypeTicketsVoided:    true,
 }
 
 // Mirror 镜像子系统实例。
@@ -690,6 +749,7 @@ type Mirror struct {
 	holding atomic.Bool
 	mu      sync.Mutex
 	subs    map[string]context.CancelFunc // key: target + "/" + task
+	conn    map[string]bool               // 同 key：订阅连接是否存活（Source 在跑且未报错）
 	wg      sync.WaitGroup
 }
 
@@ -705,7 +765,15 @@ func New(st *ledger.Store, targets func() map[string]config.Target, opt Options)
 		opt.Source = DefaultSource
 	}
 	return &Mirror{st: st, targets: targets, opt: opt,
-		log: slog.Default().With("subsystem", "ledgermirror"), subs: map[string]context.CancelFunc{}}
+		log:  slog.Default().With("subsystem", "ledgermirror"),
+		subs: map[string]context.CancelFunc{}, conn: map[string]bool{}}
+}
+
+// setConn 标记一条订阅连接的存活态（供 reconcile 决定健康 touch 范围）。
+func (m *Mirror) setConn(key string, ok bool) {
+	m.mu.Lock()
+	m.conn[key] = ok
+	m.mu.Unlock()
 }
 
 // Holding 当前是否持有镜像 lease（测试与状态面用）。
@@ -771,6 +839,7 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		if _, ok := want[key]; !ok {
 			cancel()
 			delete(m.subs, key)
+			delete(m.conn, key)
 			m.log.Info("退订", "sub", key)
 		}
 	}
@@ -785,8 +854,23 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		go m.subscribe(subCtx, l, tgt)
 		m.log.Info("起订", "sub", key)
 	}
-	// 静默期空 touch：健康心跳不因没事件而误报滞后
+	// 静默期空 touch：健康心跳不因没事件而误报滞后。范围是 spec §3 的
+	// 定案：只 touch「没有挂账 task（无需订阅）」或「至少一条订阅连接
+	// 存活」的 target；**有订阅但全断的 target 不 touch**——否则 agentd
+	// 停掉后 updated_at 仍被每 tick 刷新，判据⑦（断链亮滞后）永不触发
+	hasSub := map[string]bool{}
+	alive := map[string]bool{}
+	for key := range want {
+		tn := key[:strings.Index(key, "/")]
+		hasSub[tn] = true
+		if m.conn[key] {
+			alive[tn] = true
+		}
+	}
 	for name := range targets {
+		if hasSub[name] && !alive[name] {
+			continue // 断链的 target：让它自然变陈
+		}
 		if err := m.st.TouchMirrorHealth(name, 0); err != nil {
 			m.log.Warn("touch 健康失败", "target", name, "err", err)
 		}
@@ -797,14 +881,27 @@ func (m *Mirror) reconcile(ctx context.Context) {
 // 幂等落账。回源正常终结（task 归档）即退出。
 func (m *Mirror) subscribe(ctx context.Context, l ledger.TaskLink, tgt config.Target) {
 	defer m.wg.Done()
+	key := l.Target + "/" + l.TaskID
 	backoff := 300 * time.Millisecond
 	const maxBackoff = 10 * time.Second
 	for ctx.Err() == nil {
 		wm, err := m.st.MirrorWatermark(l.Target, l.TaskID)
 		if err != nil {
-			m.log.Warn("读 watermark 失败", "task", l.TaskID, "err", err)
-			return
+			// 库读失败不退出——直接 return 会把 subs 里的占位留成死项
+			// （reconcile 见 key 在 subs 即不重启），退避后重试
+			m.log.Warn("读 watermark 失败，退避重试", "task", l.TaskID, "backoff", backoff, "err", err)
+			m.setConn(key, false)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
 		}
+		m.setConn(key, true)
 		err = m.opt.Source(ctx, tgt.Addr, tgt.Token, l.TaskID, wm, func(e proto.Event) error {
 			if mirrorSkip[e.Type] {
 				return nil
@@ -828,9 +925,11 @@ func (m *Mirror) subscribe(ctx context.Context, l ledger.TaskLink, tgt config.Ta
 			return
 		}
 		if err == nil {
+			// 正常终结（task 归档）：连接语义上不算断链，保持存活标记
 			m.log.Info("订阅正常终结（task 归档）", "task", l.TaskID)
 			return
 		}
+		m.setConn(key, false)
 		m.log.Warn("订阅断开，退避重连", "task", l.TaskID, "backoff", backoff, "err", err)
 		select {
 		case <-ctx.Done():
@@ -1148,7 +1247,7 @@ go test ./... 2>&1 | tail -20                           # 全仓全绿
 
 - [ ] **Step 2: 对照 spec §3 修订版逐条自检**
 
-挂账即订阅（reconcile 从 card_tasks 对账）✓；watermark 库派生 ✓；lease 30s/续约 10s、CAS 抢占、续约失败立即停写 ✓；幂等键（先查后插 + 唯一索引兜底）✓；per-target 健康心跳 + 静默期空 touch ✓；「无 lease 持有者也亮滞后」——健康行 updated_at 只有持有者在 touch，无持有者自然全员变陈，看板侧 60s 判定即覆盖（Plan D 落 UI）✓；工单随镜像入流（permission_request/question 不在 mirrorSkip）✓。
+挂账即订阅（reconcile 从 card_tasks 对账）✓；watermark 库派生 ✓；lease 30s/续约 10s、CAS 抢占、续约失败立即停写 ✓；幂等键（先查后插 + 唯一索引兜底）✓；per-target 健康心跳 + 静默期空 touch（范围收窄：只 touch 无挂账 task 或有存活订阅连接的 target，**有订阅但全断的不 touch**——spec §3「连接断开的 target 不 touch」，判据⑦靠它）✓；「无 lease 持有者也亮滞后」——健康行 updated_at 只有持有者在 touch，无持有者自然全员变陈，看板侧 60s 判定即覆盖（Plan D 落 UI）✓；工单随镜像入流（permission_request/question 不在 mirrorSkip，**tickets_voided 也有意不 skip**——Plan D 的未决工单推导要靠它清账）✓。
 
 - [ ] **Step 3: Commit**
 
@@ -1163,12 +1262,12 @@ git commit -m "test(mirror): 镜像 + 多路 wait 整包终审"
 
 1. **Spec 覆盖**：§3 修订版全部落位（Step 2 清单）；「看板亮滞后」的 UI 归 Plan D，数据源（MirrorHealth）本 plan 交付。
 2. **类型一致性**：`MirroredEvent`/`TaskLink`/`Source`/`Options` 定义与使用处已互核；`AllTaskLinks` 补充在 tasks.go 并有调用方（reconcile）。
-3. **已知妥协**：镜像 payload 用 fmt.Sprintf 拼 JSON（task_type + 原始负载原样嵌入——负载本身是合法 JSON，来源是我们自己的 events 表；若真机发现非 JSON 负载，改 json.Marshal 包一层）；Follow 的 PG LISTEN 断连后靠兜底轮询降级（不重建 LISTEN 连接，wait 是短命进程，降级可接受，注释写明）；`checkDone` 只在 status_moved 事件后触发 + 起跑一次（其余事件不可能改变终态判定）。
+3. **已知妥协**：镜像 payload 用 fmt.Sprintf 拼 JSON（task_type + 原始负载原样嵌入——负载本身是合法 JSON，来源是我们自己的 events 表；空负载已显式补 `null` 防拼出非法 JSON；若真机发现非 JSON 负载，改 json.Marshal 包一层）；Follow 的 PG LISTEN 断连后靠兜底轮询降级（不重建 LISTEN 连接，wait 是短命进程，降级可接受，注释写明）；`checkDone` 只在 status_moved 事件后触发 + 起跑一次（其余事件不可能改变终态判定）。
 4. **真机判据归属（审核者本地，不派发）**：⑤ 多路 wait 不漏（真派发 + wait 挂起期间 split/dispatch）；⑦ 断链恢复（停 target agentd ≥60s）；⑩ 双协调机 lease 切换（本机 + mac-02 指同一 PG）。单测覆盖的是它们的库层/子系统形（幂等重放、lease 排他、动态成员）。
 
 ## 与 Plan A/A2 的接缝
 
 - 依赖 Plan A 的：mutate/appendEvent/EventsFromAsc/Subtree/LinkTask/card_tasks 表。
 - 依赖 Plan A2 的：`openLedger`/`runLedgerCLI`（wait --card 的 CLI 底座与测试基座）。
-- 给 Plan C 的：`AllTaskLinks`、镜像事件里的 review verdict 原文（节点执行器解析 handoff-verdict 用）。
+- 给 Plan C 的：`AllTaskLinks`。（verdict 原文 Plan C 不走镜像流——节点执行器经 client 直取审阅 task 的最终报文再解析，镜像只负责时间线呈现。）
 - 给 Plan D 的：`MirrorHealth`、`Holding`、单流查询。

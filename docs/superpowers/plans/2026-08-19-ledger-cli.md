@@ -52,6 +52,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/Xsxdot/handoff/internal/config"
 )
 
@@ -66,12 +69,27 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 			t.Fatalf("写测试配置: %v", err)
 		}
 	}
+	resetAllFlags(rootCmd)
 	var out, errb bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errb)
 	rootCmd.SetArgs(append([]string{"--config", cfgPath}, args...))
 	err := Execute()
 	return out.String(), errb.String(), err
+}
+
+// resetAllFlags 递归把命令树上所有 flag 恢复默认值。cobra 的 flag 绑定
+// 在包级变量上，跨 Execute() 持久——上一个测试设过的 --parent/--json
+// 会静默污染下一个测试（repo 既有做法是逐个 t.Cleanup 手工复位，账本
+// 命令族 flag 太多，统一在基座里回默认值）。
+func resetAllFlags(c *cobra.Command) {
+	c.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	for _, sub := range c.Commands() {
+		resetAllFlags(sub)
+	}
 }
 
 func TestOpenLedgerFallbackSQLite(t *testing.T) {
@@ -610,12 +628,13 @@ func TestCardCloseConfirmAndMerge(t *testing.T) {
 	}
 	a, b, carrier := mkCard("a"), mkCard("b"), mkCard("carrier")
 
-	// close 非交互无 --yes 拒绝（二次确认约定）
+	// close 非交互无 --yes 拒绝（二次确认约定；只对不可逆的 取消|废弃 设门）
 	if _, _, err := runLedgerCLI(t, dir, "card", "close", a, "--reason", "废弃"); err == nil {
 		t.Fatal("无 --yes 应拒")
 	}
-	if _, _, err := runLedgerCLI(t, dir, "card", "close", a, "--reason", "搁置", "--yes"); err != nil {
-		t.Fatalf("close --yes: %v", err)
+	// 搁置可复活，不设确认门——无 --yes 也应直接成功
+	if _, _, err := runLedgerCLI(t, dir, "card", "close", a, "--reason", "搁置"); err != nil {
+		t.Fatalf("close 搁置不应要求确认: %v", err)
 	}
 	if _, _, err := runLedgerCLI(t, dir, "card", "revive", a); err != nil {
 		t.Fatalf("revive: %v", err)
@@ -654,6 +673,11 @@ func TestCardCloseConfirmAndMerge(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "note", a, "与 #"+b+" 同源"); err != nil {
 		t.Fatalf("note: %v", err)
 	}
+	// note --reset-node：人工重置回合计数的落账入口（Plan C 消费）
+	out2, _, err := runLedgerCLI(t, dir, "card", "note", a, "人工看过重新计数", "--reset-node", "review")
+	if err != nil || !strings.Contains(out2, `"human_reset_node":"review"`) {
+		t.Fatalf("note --reset-node: %v %q", err, out2)
+	}
 
 	// export markdown 快照
 	out, _, err = runLedgerCLI(t, dir, "card", "export")
@@ -675,7 +699,8 @@ var (
 	cardCloseYes    bool
 	cardMergeInto   string
 	cardMergeYes    bool
-	cardNoteFix     bool
+	cardNoteFix       bool
+	cardNoteResetNode string
 	cardExportOut   string
 )
 
@@ -684,9 +709,13 @@ var cardCloseCmd = &cobra.Command{
 	Short: "终止（--reason 取消|废弃|搁置；破坏性，需确认或 --yes）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := confirmDestructive(cmd, cardCloseYes,
-			fmt.Sprintf("终止 %s（reason=%s）不可逆（仅搁置可复活）", args[0], cardCloseReason)); err != nil {
-			return err
+		// spec §4 定案：二次确认只三处，close 只对不可逆的 取消|废弃 设门；
+		// 搁置可复活，不确认
+		if cardCloseReason != "搁置" {
+			if err := confirmDestructive(cmd, cardCloseYes,
+				fmt.Sprintf("终止 %s（reason=%s）不可逆", args[0], cardCloseReason)); err != nil {
+				return err
+			}
 		}
 		st, err := openLedger()
 		if err != nil {
@@ -818,7 +847,7 @@ var cardSplitCmd = &cobra.Command{
 
 var cardNoteCmd = &cobra.Command{
 	Use:   "note <id> <text...>",
-	Short: "记一笔（#B 号引用自动成关系边；--correction 记更正）",
+	Short: "记一笔（#B 号引用自动成关系边；--correction 记更正；--reset-node 重置节点回合计数）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -830,7 +859,15 @@ var cardNoteCmd = &cobra.Command{
 		if cardNoteFix {
 			kind = "更正"
 		}
-		ev, err := st.AddComment(args[0], strings.Join(args[1:], " "), kind, ledgerActor())
+		body := strings.Join(args[1:], " ")
+		var ev ledger.Event
+		if cardNoteResetNode != "" {
+			// spec §5：人工介入重置回合计数，落事件注明——这是唯一写入口，
+			// Plan C 的 CountRounds 读 human_reset_node 字段清零
+			ev, err = st.AddCommentReset(args[0], body, kind, ledgerActor(), cardNoteResetNode)
+		} else {
+			ev, err = st.AddComment(args[0], body, kind, ledgerActor())
+		}
 		if err != nil {
 			return err
 		}
@@ -883,6 +920,7 @@ var cardExportCmd = &cobra.Command{
 	cardMergeCmd.Flags().StringVar(&cardMergeInto, "into", "", "承载卡 id（必填）")
 	cardMergeCmd.Flags().BoolVar(&cardMergeYes, "yes", false, "跳过确认")
 	cardNoteCmd.Flags().BoolVar(&cardNoteFix, "correction", false, "记为更正（变更痕迹）")
+	cardNoteCmd.Flags().StringVar(&cardNoteResetNode, "reset-node", "", "重置该节点的裁决回合计数（如 review）")
 	cardExportCmd.Flags().StringVar(&cardExportOut, "out", "", "输出文件路径")
 	cardCmd.AddCommand(cardCloseCmd, cardReviveCmd, cardLinkCmd, cardUnlinkCmd,
 		cardMergeCmd, cardUnmergeCmd, cardSplitCmd, cardNoteCmd, cardExportCmd)

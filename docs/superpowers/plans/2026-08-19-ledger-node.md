@@ -32,7 +32,11 @@ cmd/
   template_test.go
   card_dispatch.go    // card dispatch 动词（挂进 cardCmd）
   card_dispatch_test.go
+  card_node.go        // card dispatch --node review|merge（节点执行器 CLI 入口）
+  card_node_test.go
 ```
+
+（wire.go 归 internal/ledgernode/，Task 7 创建。）
 
 ---
 
@@ -612,10 +616,10 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &c)
 	_, _, _ = runLedgerCLI(t, dir, "card", "update", c.ID, "--accept", "测试全绿")
 
-	// 假派发通道：记录收到的 prompt，返回固定 task
-	var gotPrompt string
-	restore := swapDispatchTransport(func(prompt, branch, target string) (string, error) {
-		gotPrompt = prompt
+	// 假派发通道：记录收到的 prompt 与 project，返回固定 task
+	var gotPrompt, gotProject string
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		gotPrompt, gotProject = prompt, project
 		return "T-fake-1", nil
 	})
 	defer restore()
@@ -632,6 +636,10 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	if !strings.HasPrefix(gotPrompt, "# 执行纪律") || !strings.Contains(gotPrompt, "要派的卡") ||
 		!strings.Contains(gotPrompt, "测试全绿") {
 		t.Fatalf("prompt 拼装: %q", gotPrompt)
+	}
+	// project 必达通道：agentd 靠它定位仓库，缺了真机派发必拒
+	if gotProject != "demo" {
+		t.Fatalf("派发未带 project: %q", gotProject)
 	}
 	// 派发即认领：卡进「进行中」，第二次派发干净失败并提示认领者
 	show, _, _ := runLedgerCLI(t, dir, "card", "show", c.ID)
@@ -676,17 +684,44 @@ var (
 	cardDispatchTarget     string
 	cardDispatchPlan       string
 	cardDispatchDiscipline string // 测试/应急用：覆盖模板的纪律块路径
+	cardDispatchNode       string // 节点执行器入口：review|merge（spec §4 的 --node）
+	cardDispatchRepo       string // 合并/客观判据的本地仓库目录（--node merge 用）
 )
 
+// runNodeDispatch 节点执行器入口。本 Task 先立桩占位保证编译，
+// Task 8 用真实现替换（构造 ReviewNode/MergeNode 并 RunOnce）。
+func runNodeDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor string) error {
+	return fmt.Errorf("--node %s 未实现（Task 8）", node)
+}
+
+// targetEndpoint 按登记名解析目标机地址与 token。字段与加载方式以
+// root.go / config.go 实际为准（注意：既有 `Endpoints(only)` 返回的是
+// []Endpoint 列表，不是这里要的单机解析，别照抄它）。
+func targetEndpoint(target string) (addr, token string, err error) {
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		return "", "", err
+	}
+	tgt, ok := cfg.Targets[target] // 字段名以 config.go 实际为准
+	if !ok {
+		return "", "", fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	}
+	return tgt.Addr, tgt.Token, nil
+}
+
 // dispatchTransport 网络段的测试缝：生产走 client.Dispatch，测试换假。
-// 返回 task id。
-var dispatchTransport = func(prompt, branch, target string) (string, error) {
-	addr, token, err := Endpoints(target) // 既有 helper，签名以 root.go 为准
+// 返回 task id。project 是 agentd 定位仓库的必要参数（请求体里的
+// ProjectID/ProjectName，二选一以 client.go 实际为准）——**卡的
+// Project 字段必须与 handoff 项目登记名同一词表**，这是账本与派发
+// 通道的对齐约定，缺它 agentd 找不到 repo，真机派发必拒。
+var dispatchTransport = func(prompt, branch, target, project string) (string, error) {
+	addr, token, err := targetEndpoint(target)
 	if err != nil {
 		return "", err
 	}
 	task, err := client.New(addr, token).Dispatch(nil, client.DispatchOpts{ // ctx 参数按实际签名传
 		Prompt: prompt, Target: target, NewBranch: branch,
+		ProjectName: project, // 字段名以 client.go 实际为准
 	})
 	if err != nil {
 		return "", err
@@ -695,15 +730,81 @@ var dispatchTransport = func(prompt, branch, target string) (string, error) {
 }
 
 // swapDispatchTransport 测试注入。
-func swapDispatchTransport(fn func(prompt, branch, target string) (string, error)) func() {
+func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, error)) func() {
 	old := dispatchTransport
 	dispatchTransport = fn
 	return func() { dispatchTransport = old }
 }
 
+// dispatchResult 模板派发共用段的产出（回显 + 节点入口复用）。
+type dispatchResult struct {
+	Card            string `json:"card"`
+	Task            string `json:"task"`
+	Target          string `json:"target"`
+	Branch          string `json:"branch"`
+	Template        string `json:"template"`
+	TemplateVersion int    `json:"template_version"`
+	DisciplineHash  string `json:"discipline_hash"`
+}
+
+// dispatchViaTemplate 模板派发的共用段：取模板 → 纪律块 hash → 拼
+// prompt → 走既有 dispatch 通道 → LinkTask 挂账 → dispatched 快照。
+// **不含认领语义**——实现类派发（card dispatch）在调用前自行 CAS 认领；
+// 审阅节点的派发（--node review）绝不能动卡状态（卡在「待审阅」，把它
+// 拉回「进行中」会让第二轮审阅死在「已被认领」上），所以共用段保持纯净。
+func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
+	tplName, targetFlag, planPath, disciplineOverride, actor string) (dispatchResult, error) {
+	var zero dispatchResult
+	tpl, err := st.GetTemplate(tplName, 0)
+	if err != nil {
+		return zero, fmt.Errorf("取模板: %w", err)
+	}
+	target := targetFlag
+	if target == "" {
+		target = tpl.Def.Target
+	}
+	if target == "" {
+		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
+	}
+	// 纪律块：读文件、算 hash（快照对象是内容不是路径）
+	dpath := tpl.Def.DisciplinePath
+	if disciplineOverride != "" {
+		dpath = disciplineOverride
+	}
+	discipline, err := os.ReadFile(dpath)
+	if err != nil {
+		return zero, fmt.Errorf("读纪律块 %s（先把纪律块文件落库，见模板定义）: %w", dpath, err)
+	}
+	sum := sha256.Sum256(discipline)
+	dhash := hex.EncodeToString(sum[:])[:12]
+
+	// prompt = 纪律块 + 模板占位替换（{{TITLE}}/{{CARD}}/{{ACCEPT}}）
+	body := strings.NewReplacer(
+		"{{TITLE}}", c.Title, "{{CARD}}", c.ID, "{{ACCEPT}}", c.AcceptanceCriteria,
+	).Replace(tpl.Def.Prompt)
+	prompt := string(discipline) + "\n\n---\n\n" + body
+
+	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, tpl.Def.Purpose)
+	taskID, err := dispatchTransport(prompt, branch, target, c.Project)
+	if err != nil {
+		return zero, fmt.Errorf("派发: %w", err)
+	}
+	if err := st.LinkTask(c.ID, target, taskID, tpl.Def.Purpose, actor); err != nil {
+		return zero, fmt.Errorf("回链挂账: %w", err)
+	}
+	if err := st.RecordDispatch(c.ID, ledger.DispatchSnapshot{
+		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: dhash,
+		Target: target, TaskID: taskID, Branch: branch, PlanPath: planPath, Actor: actor,
+	}); err != nil {
+		return zero, fmt.Errorf("快照落账: %w", err)
+	}
+	return dispatchResult{Card: c.ID, Task: taskID, Target: target, Branch: branch,
+		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: dhash}, nil
+}
+
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
-	Short: "按模板派发（派发即认领；快照模板版本与纪律块 hash）",
+	Short: "按模板派发（派发即认领；--node review|merge 走节点执行器，见 card_node.go）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -712,70 +813,36 @@ var cardDispatchCmd = &cobra.Command{
 		}
 		defer st.Close()
 		id, actor := args[0], ledgerActor()
+		if cardDispatchNode != "" {
+			// 节点执行器入口（Task 8 实现；审阅/合并不走认领语义）
+			return runNodeDispatch(cmd, st, id, cardDispatchNode, actor)
+		}
 		c, err := st.GetCard(id)
 		if err != nil {
 			return err
 		}
-		tpl, err := st.GetTemplate(cardDispatchTemplate, 0)
-		if err != nil {
-			return fmt.Errorf("取模板: %w", err)
-		}
-		target := cardDispatchTarget
-		if target == "" {
-			target = tpl.Def.Target
-		}
-		if target == "" {
-			return fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
-		}
-		// 纪律块：读文件、算 hash（快照对象是内容不是路径）
-		dpath := tpl.Def.DisciplinePath
-		if cardDispatchDiscipline != "" {
-			dpath = cardDispatchDiscipline
-		}
-		discipline, err := os.ReadFile(dpath)
-		if err != nil {
-			return fmt.Errorf("读纪律块 %s（先把纪律块文件落库，见模板定义）: %w", dpath, err)
-		}
-		sum := sha256.Sum256(discipline)
-		dhash := hex.EncodeToString(sum[:])[:12]
-
 		// 派发即认领：CAS 进「进行中」。已在「进行中」= 已被认领。
 		if c.Status == ledger.StatusDoing {
 			return fmt.Errorf("卡 %s 已被认领（驱动 %s）", id, c.DriverSession)
 		}
 		if err := st.MoveCard(id, ledger.StatusDoing, c.Status, actor); err != nil {
+			// 并发输家重读卡取认领者名字——判据⑥要求报「已被 <会话> 认领」
+			if cur, gerr := st.GetCard(id); gerr == nil && cur.DriverSession != "" {
+				return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, cur.DriverSession, err)
+			}
 			return fmt.Errorf("认领失败（可能被并发抢先）: %w", err)
 		}
 		if err := st.ClaimDriver(id, actor); err != nil {
 			return fmt.Errorf("认领驱动: %w", err)
 		}
-
-		// prompt = 纪律块 + 模板占位替换（{{TITLE}}/{{CARD}}/{{ACCEPT}}）
-		body := strings.NewReplacer(
-			"{{TITLE}}", c.Title, "{{CARD}}", c.ID, "{{ACCEPT}}", c.AcceptanceCriteria,
-		).Replace(tpl.Def.Prompt)
-		prompt := string(discipline) + "\n\n---\n\n" + body
-
-		branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, tpl.Def.Purpose)
-		taskID, err := dispatchTransport(prompt, branch, target)
+		res, err := dispatchViaTemplate(st, c,
+			cardDispatchTemplate, cardDispatchTarget, cardDispatchPlan, cardDispatchDiscipline, actor)
 		if err != nil {
 			// 派发失败回滚认领：不留「进行中却无 task」的假账
 			_ = st.MoveCard(id, c.Status, ledger.StatusDoing, actor)
-			return fmt.Errorf("派发: %w", err)
+			return err
 		}
-		if err := st.LinkTask(id, target, taskID, tpl.Def.Purpose, actor); err != nil {
-			return fmt.Errorf("回链挂账: %w", err)
-		}
-		if err := st.RecordDispatch(id, ledger.DispatchSnapshot{
-			Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: dhash,
-			Target: target, TaskID: taskID, Branch: branch, PlanPath: cardDispatchPlan, Actor: actor,
-		}); err != nil {
-			return fmt.Errorf("快照落账: %w", err)
-		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
-			"card": id, "task": taskID, "target": target, "branch": branch,
-			"template": tpl.Name, "template_version": tpl.Version, "discipline_hash": dhash,
-		})
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(res)
 	},
 }
 
@@ -784,11 +851,13 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖纪律块路径（测试/应急）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchNode, "node", "", "节点执行器：review|merge（不走认领语义）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchRepo, "repo", ".", "本地仓库目录（--node merge 的客观判据与合并在此跑）")
 	cardCmd.AddCommand(cardDispatchCmd)
 }
 ```
 
-**执行者注意**：①`Endpoints`/`client.Dispatch` 的实际签名以 `cmd/root.go`、`internal/client/client.go` 为准（含 ctx、plan base64、model 覆盖参数——模板 `ModelByTarget[target]` 非空时传给 DispatchOpts.Model）；②基线分支：`EffectiveBaseBranch` 非空时传 `DispatchOpts.Base`，空 = 不传（沿用远端默认分支）；③`--plan` 非空时按既有 dispatch 的 planB64 路径随附文件。这三点都是对既有通道的**传参**，不新造逻辑。
+**执行者注意**：①`loadCLIConfig`/`client.Dispatch` 的实际签名以 `cmd/root.go`、`internal/client/client.go` 为准（含 ctx、plan base64、model 覆盖参数——模板 `ModelByTarget[target]` 非空时传给 DispatchOpts.Model）；②基线分支：`EffectiveBaseBranch` 非空时传 `DispatchOpts.Base`，空 = 不传（沿用远端默认分支）；③`--plan` 非空时按既有 dispatch 的 planB64 路径随附文件；④**project 必须传**——请求体的 `ProjectID`/`ProjectName`（以实际为准），取值就是卡的 `Project` 字段，账本侧建卡时该字段必须填 handoff 的项目登记名（同一词表，不做映射层）。这四点都是对既有通道的**传参**，不新造逻辑。
 
 - [ ] **Step 5: 跑测试 + Commit**
 
@@ -920,6 +989,22 @@ func TestMergeNodeDecision(t *testing.T) {
 	out, err := m.RunOnce(context.Background(), c.ID)
 	if err != nil || out.Action != ActionNeedsHuman {
 		t.Fatalf("main 人工层: %v %+v", err, out)
+	}
+	// 基线 = 主线 + feature 流（有「待合并」态）：先推「待合并」再等人
+	// （判据⑭「热修卡进『待合并』」的单测形）
+	cf, _ := s.CreateCard(ledger.NewCard{Title: "热修卡", Project: "p", Workflow: "feature", Actor: "t"})
+	_ = s.AttachFile(cf.ID, "spec", "specs/x.md", "t")
+	_ = s.SetAcceptance(cf.ID, "测试全绿", "t")
+	for _, to := range []string{"已出spec", ledger.StatusDoing, ledger.StatusReview} {
+		if err := s.MoveCard(cf.ID, to, "", "t"); err != nil {
+			t.Fatalf("铺路 %s: %v", to, err)
+		}
+	}
+	if out, err := m.RunOnce(context.Background(), cf.ID); err != nil || out.Action != ActionNeedsHuman {
+		t.Fatalf("feature 主线合并: %v %+v", err, out)
+	}
+	if got, _ := s.GetCard(cf.ID); got.Status != "待合并" {
+		t.Fatalf("应已推「待合并」: %s", got.Status)
 	}
 	// 基线 = 集成分支：客观判据过 → DoMerge 被调 → ActionMerged
 	c2, _ := s.CreateCard(ledger.NewCard{Title: "集成线卡", Project: "p", Workflow: "bug",
@@ -1061,6 +1146,19 @@ func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 	if base == "" {
 		reason := "基线是主线：合并永远人工"
 		lg.Info("main 层不自动合", "card", cardID)
+		// spec §5 原文是「直接打『待合并』等人」——工作流里有「待合并」态
+		// 就先推进去（判据⑭判的是热修卡进「待合并」），没有（如 bug 流）
+		// 只标等人。推不动（gate 缺判据/并发）不阻塞：记日志、照样标等人
+		if wf, werr := m.St.GetWorkflow(c.WorkflowName, c.WorkflowVersion); werr == nil {
+			for _, st := range wf.Def.States {
+				if st == "待合并" && c.Status != "待合并" {
+					if merr := m.St.MoveCard(cardID, "待合并", c.Status, "node:merge"); merr != nil {
+						lg.Warn("推「待合并」未成，仅标等人", "err", merr)
+					}
+					break
+				}
+			}
+		}
 		if err := m.St.MarkNeedsHuman(cardID, reason, "node:merge"); err != nil {
 			return Outcome{}, err
 		}
@@ -1264,7 +1362,145 @@ git commit -m "feat(ledgernode): 生产接线——审阅派发/finalMessage/本
 
 ---
 
-### Task 8: 整包终审
+### Task 8: cmd/card_node.go——节点执行器的 CLI 入口（--node review|merge）
+
+**Files:**
+- Create: `cmd/card_node.go`
+- Modify: `cmd/card_dispatch.go`（删除 Task 5 的 `runNodeDispatch` 桩）
+- Test: `cmd/card_node_test.go`
+
+没有这个入口，节点执行器在一期交付物里就只有单测在调它——spec §4 定案的
+`card dispatch <id> [--node <节点>]` 与 spec §5「主会话/看板按钮共用同一实现」
+都落在这里。**审阅/合并派发不走认领语义**：卡此刻在「待审阅」，若复用实现类
+派发的 CAS（待办→进行中）会把卡拉回「进行中」，第二轮审阅直接死在「已被
+认领」上——所以走 Task 5 拆出的纯净共用段 `dispatchViaTemplate`。
+
+- [ ] **Step 1: 测试（card_node_test.go）**
+
+```go
+package cmd
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// --node merge 在 bug 流（无「待合并」态）+ 基线主线：转等人、不认领、
+// 不动卡状态。全程无网络（MergeNode 的 main 层分支不触 Objective/DoMerge）。
+func TestCardNodeMergeMainStaysHuman(t *testing.T) {
+	dir := t.TempDir()
+	out, _, _ := runLedgerCLI(t, dir, "card", "add", "热修", "--project", "demo", "--workflow", "bug")
+	var c struct{ ID string `json:"id"` }
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &c)
+
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID, "--node", "merge")
+	if err != nil {
+		t.Fatalf("node merge: %v", err)
+	}
+	if !strings.Contains(out, "needs_human") {
+		t.Fatalf("main 层应转等人: %q", out)
+	}
+	// 不走认领语义：状态未被拉去「进行中」、无 driver
+	show, _, _ := runLedgerCLI(t, dir, "card", "show", c.ID)
+	if strings.Contains(show, "进行中") {
+		t.Fatalf("节点入口不应认领: %q", show)
+	}
+}
+
+func TestCardNodeRejectsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	out, _, _ := runLedgerCLI(t, dir, "card", "add", "x", "--project", "demo", "--workflow", "bug")
+	var c struct{ ID string `json:"id"` }
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &c)
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID, "--node", "verify"); err == nil ||
+		!strings.Contains(err.Error(), "review|merge") {
+		t.Fatalf("未知节点应拒: %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `go test ./cmd/ -run TestCardNode -v` → FAIL（桩函数报「未实现」）
+
+- [ ] **Step 3: 实现 cmd/card_node.go（并删 card_dispatch.go 里的桩）**
+
+```go
+// card dispatch --node 的真实现：构造节点执行体并跑一轮。
+// 审阅与合并都**不走认领语义**（原因见文件内注释与 Task 5 的
+// dispatchViaTemplate doc）。看板的动作按钮（Plan D 之后的迭代）也
+// 应打到同一实现——单一编排真相源。
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgernode"
+	"github.com/spf13/cobra"
+)
+
+// runNodeDispatch card dispatch --node 的入口（Task 5 桩的真实现）。
+func runNodeDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor string) error {
+	ctx := context.Background()
+	var out ledgernode.Outcome
+	var err error
+	switch node {
+	case "review":
+		rn := &ledgernode.ReviewNode{St: st, Node: "review",
+			RunReview: ledgernode.NewDispatchReview(st, reviewDispatchFn(st, actor), targetEndpoint)}
+		out, err = rn.RunOnce(ctx, id)
+	case "merge":
+		mn := &ledgernode.MergeNode{St: st,
+			Objective: ledgernode.NewLocalObjective(cardDispatchRepo),
+			DoMerge:   ledgernode.NewLocalMerge(cardDispatchRepo)}
+		out, err = mn.RunOnce(ctx, id)
+	default:
+		return fmt.Errorf("--node 只认 review|merge，收到 %q", node)
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
+}
+
+// reviewDispatchFn 审阅派发：模板派发共用段，不认领、不动卡状态。
+func reviewDispatchFn(st *ledger.Store, actor string) func(ctx context.Context, cardID, template string) (string, string, error) {
+	return func(ctx context.Context, cardID, template string) (string, string, error) {
+		c, err := st.GetCard(cardID)
+		if err != nil {
+			return "", "", err
+		}
+		res, err := dispatchViaTemplate(st, c, template, cardDispatchTarget, "", cardDispatchDiscipline, actor)
+		if err != nil {
+			return "", "", err
+		}
+		return res.Target, res.Task, nil
+	}
+}
+```
+
+**执行者注意**：①`NewDispatchReview` 的 endpoints 参数直接传 Task 5 的
+`targetEndpoint`（签名已对齐）；②review 路径的真机链路（派发→wait→取报文→
+done 归档）在 Task 7 的 wire.go 里，这里只是接线，CLI 测试不触网络——上面的
+测试只走 merge 的 main 层分支与参数校验；③review 的完整真机行为归判据①②，
+审核者本地执行。
+
+- [ ] **Step 4: 跑测试 + Commit**
+
+Run: `go test ./cmd/ -run TestCardNode -v` → PASS
+
+```bash
+git add cmd/
+git commit -m "feat(cli): card dispatch --node review|merge——节点执行器 CLI 入口，审阅派发不走认领语义"
+```
+
+---
+
+### Task 9: 整包终审
 
 - [ ] **Step 1:**
 
@@ -1276,7 +1512,7 @@ go test ./... 2>&1 | tail -20
 
 - [ ] **Step 2: 对照 spec §5 自检**
 
-裁决 schema 与通道（最后 block、失败不猜、契约在模板里版本化）✓；回合计数（卡×节点、事件流推导、封顶 3、人工重置）✓；合并节点（客观判据先行、只合基线分支、main 永远人工、冲突清单落 timeline）✓；审阅 task 收口（done 归档）✓；派发即认领 + 快照 ✓；`--plan` 挂派发事件 ✓。
+裁决 schema 与通道（最后 block、失败不猜、契约在模板里版本化）✓；回合计数（卡×节点、事件流推导、封顶 3、人工重置——重置的写入口是 Plan A2 的 `card note --reset-node`）✓；合并节点（客观判据先行、只合基线分支、main 永远人工且工作流有「待合并」态时先推进去、冲突清单落 timeline）✓；审阅 task 收口（done 归档）✓；派发即认领 + 快照 + project 必达 ✓；审阅/合并派发不走认领语义 ✓；`--node` CLI 入口落码（spec §4 命名对齐）✓；`--plan` 挂派发事件 ✓。
 
 - [ ] **Step 3: Commit**
 
@@ -1290,4 +1526,5 @@ git add -A && git commit -m "test(node): 派发/节点执行器整包终审"
 
 1. **决策与副作用分离**是本 plan 的主设计：ReviewNode/MergeNode 的全部分支逻辑有单测（超轮/解析失败/main 层/判据红/冲突），副作用（真派发、真 git）收在 wire.go 薄层 + 真机判据。
 2. **已知妥协**：wire.go 的 `clientFinalMessage`/`taskBranch` 按「以实际为准」交给执行者写实（各配一个解析单测）——这是本 plan 唯一两处非全码步骤，因为 proto 事件字段名在摸底报告里没有精确记录，编造字段名比留给执行者对照真代码更危险；merge 脚本用 bash -c（协调机是 mac/linux；Windows 协调机暂不在一期范围）。
-3. **真机判据归属（审核者本地）**：判据①（标准例全程一个 wait）②（3 轮封顶真机复现）；纪律块文件（block-a/b.md）正文从 CLAUDE.md §4 抄录入库——审核者在派发前完成或在派发包附录随附。
+3. **真机判据归属（审核者本地）**：判据①（标准例全程一个 wait）②（3 轮封顶真机复现）⑥（并发认领报「已被 <会话> 认领」——CAS 分支单测有形，真机并发时序仍要跑）⑭（基线分支并行：集成线自动合 vs main 热修进「待合并」）；纪律块文件（block-a/b.md）正文从 CLAUDE.md §4 抄录入库——审核者在派发前完成或在派发包附录随附。
+4. **合并顺序按 done 时序（spec §5）不落码**：MergeNode 是单卡执行体，多卡合并的顺序编排一期由主会话/审核者按 done 时序逐卡驱动 `card dispatch --node merge`（每次合并本身有 dispatched/merged 事件落账，顺序可事后取证）；若真机发现顺序错乱成为高频问题，二期再立编排器。

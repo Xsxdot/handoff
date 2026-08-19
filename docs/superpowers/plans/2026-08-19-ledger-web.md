@@ -10,7 +10,7 @@
 
 **Tech Stack:** Go（`internal/agentd` API 层）、React 19 + Vite + Tailwind v4 + react-router 7、vitest + testing-library（既有基座）。
 
-**前置条件：** Plan A/A2/B 已合入（C 不是硬依赖：一键派发按钮先隐藏/禁用到 C 合入，见 Task 5）。基线全绿含 `cd web && npm test`。
+**前置条件：** ①Plan A/A2/B/C 已合入——**C 是硬编译依赖**：Task 2 的 `/api/flows` 调 `ListTemplateNames()/GetTemplate()`，它们定义在 Plan C Task 1 的 templates.go（此前版本误写「C 不是硬依赖」，那只对动作按钮成立：一键派发/合并按钮仍禁用到后续迭代另开 handler，Web 写面保持最小）。②形态基准 `prototypes/workbench-ledger/` 已 commit + push 到执行者可 fetch 的分支——Task 4「照原型逐区搬运」与 Task 6 原型对照都以它为准，审核者派发前自查 `git ls-files prototypes/workbench-ledger | head` 非空，否则 BLOCKED。③基线全绿含 `cd web && npm test`。
 
 ---
 
@@ -80,6 +80,37 @@ func TestLatestTaskStates(t *testing.T) {
 		t.Fatalf("应两行: %+v", states)
 	}
 }
+
+// 工单必须上注意力平面（蓝图 §3.5）：从镜像流推导每张卡的未决工单数。
+// 事件类型名与 ticket id 字段以 internal/proto 实际为准——本测试用实现
+// 文件里的同一组常量造事件，执行者先对照 proto 钉死常量再跑。
+func TestOpenTicketCounts(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "卡")
+	_ = s.LinkTask(c.ID, "mac-02", "T1", "implement", "t")
+	seq := int64(0)
+	put := func(typ, payload string) {
+		seq++
+		_, _ = s.AppendMirroredEvent(c.ID, MirroredEvent{Target: "mac-02", Task: "T1",
+			SourceSeq: seq, Type: typ, Payload: []byte(payload), CreatedAt: time.Now()})
+	}
+	put(evTicketCreated, `{"ticket_id":"q1"}`)
+	put(evTicketCreated, `{"ticket_id":"q2"}`)
+	counts, err := s.OpenTicketCounts()
+	if err != nil || counts[c.ID] != 2 {
+		t.Fatalf("两单未决: %v %+v", err, counts)
+	}
+	put(evTicketAnswered, `{"ticket_id":"q1"}`)
+	counts, _ = s.OpenTicketCounts()
+	if counts[c.ID] != 1 {
+		t.Fatalf("答一单剩一单: %+v", counts)
+	}
+	put(evTicketsVoided, `{}`) // 回合结束作废全部未决单
+	counts, _ = s.OpenTicketCounts()
+	if counts[c.ID] != 0 {
+		t.Fatalf("作废后应清零: %+v", counts)
+	}
+}
 ```
 
 - [ ] **Step 2: 实现**
@@ -118,6 +149,27 @@ func (s *Store) LatestTaskStates(cardID string) ([]TaskStateRow, error) {
 	return out, nil
 }
 ```
+
+同文件追加未决工单推导（工单不上注意力平面 = 在最关键的信号上失明，蓝图 §3.5）：
+
+```go
+// 工单事件类型常量。**名字以 internal/proto 实际为准**（创建 =
+// permission_request / question 一族；答复 = reply/approve 落下的对应
+// 事件；tickets_voided = 回合结束作废全部未决单）——执行者先对照
+// proto 与 agentd 真实事件流钉死这三个常量，再跑上面的测试。
+const (
+	evTicketCreated  = "permission_request" // 以 proto 实际为准
+	evTicketAnswered = "ticket_answered"    // 以 proto 实际为准
+	evTicketsVoided  = "tickets_voided"     // 以 proto 实际为准
+)
+
+// OpenTicketCounts 每张卡的未决工单数：单遍扫描镜像事件，按 ticket_id
+// 回放 创建→答复/作废。镜像滞后即工单滞后——与实况同一显性化通道
+// （MirrorHealth），不另设真相源。
+func (s *Store) OpenTicketCounts() (map[string]int, error)
+```
+
+实现要点：`SELECT card_id, payload FROM card_events WHERE type = ? AND source_target IS NOT NULL ORDER BY seq ASC`（EvTaskMirrored），解 payload 的 `task_type` 归入三族，按 (card, ticket_id) 置位/清位，voided 清该 task 全部未决单；创建族若一个类型对应多种 proto 事件（permission_request 与 question），常量改切片。
 
 **执行者注意**：payload 是 `{"task_type":"...","payload":...}` JSON——上面的 Scan 直接进 string 后要 `json.Unmarshal` 取 `task_type` 字段（写实现时展开，测试已断言 `failed`）。`fmt` 若未用则删 import。
 
@@ -165,9 +217,11 @@ func TestLedgerAPI(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// GET /api/cards：视图数组，含派生标记字段
+	// GET /api/cards：视图数组，含派生标记字段 + 工单数 + 未挂账摘要
+	// （测试环境无登记 target，unlinked 是 count=0 的空摘要——形状在即可）
 	body := authedGet(t, ts, "/api/cards?project=p")
-	if !strings.Contains(body, c.ID) || !strings.Contains(body, `"needs"`) {
+	if !strings.Contains(body, c.ID) || !strings.Contains(body, `"needs"`) ||
+		!strings.Contains(body, `"open_tickets"`) || !strings.Contains(body, `"unlinked"`) {
 		t.Fatalf("cards: %q", body)
 	}
 	// GET /api/cards/{id}：detail = 卡+关系+事件+task 实况+有效基线
@@ -217,15 +271,24 @@ func TestLedgerAPIWithoutLedger(t *testing.T) {
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
 // SetLedger 注入账本库（agentd 启动时；nil = 未配置，API 降级 503）。
+// Server 结构体随之增补（server.go）：ledger *ledger.Store、未挂账缓存
+// 三件套 unlinkedMu sync.Mutex / unlinkedAt time.Time / unlinkedCache
+// map[string]any，以及 cfgTargets() 取登记机清单的小方法（从 Server
+// 既有的 config 引用取 Targets，名字以实际结构为准）。
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
 // registerLedgerRoutes 在 api 子 mux 上挂账本路由（server.go 的路由
@@ -275,6 +338,10 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
+	tickets, terr := s.ledger.OpenTicketCounts()
+	if terr != nil {
+		slog.Warn("未决工单推导失败（徽标退化为不显示，不阻塞列表）", "err", terr)
+	}
 	out := make([]map[string]any, 0, len(views))
 	for _, v := range views {
 		// conflict：账面进行中 × 最后镜像实况 failed（看板不说谎，蓝图 §3.7）
@@ -295,9 +362,50 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 			"attachments": v.Attachments, "following": v.Following,
 			"blocked": v.Blocked, "blocked_by": v.BlockedBy, "needs": v.NeedsReason,
 			"open_decisions": v.OpenDecisions, "conflict": conflict,
+			"open_tickets": tickets[v.ID],
 		})
 	}
-	writeJSON(w, map[string]any{"cards": out})
+	writeJSON(w, map[string]any{"cards": out, "unlinked": s.unlinkedSummary()})
+}
+
+// unlinkedSummary 「未挂账」摘要：登记 target 上存在、但 card_tasks 里
+// 没有的 task（spec §6 / 蓝图 §3.1——裸 dispatch 的无主 task 是重复开工
+// 的盲区，必须显性）。这份数据账本里 by definition 没有，是全 plan 唯一
+// 破例拨号的位置：30s 内存缓存 + 每 target 2s 超时；拨不通的 target 进
+// unknown_targets 而不是假装为零（不知道 ≠ 没有）。task 列表接口与
+// client 方法名以 internal/client 实际为准（agentd 的 /api/tasks）。
+func (s *Server) unlinkedSummary() map[string]any {
+	s.unlinkedMu.Lock()
+	defer s.unlinkedMu.Unlock()
+	if time.Since(s.unlinkedAt) < 30*time.Second {
+		return s.unlinkedCache
+	}
+	linked := map[string]bool{} // "target/task" 集合
+	if links, err := s.ledger.AllTaskLinks(); err == nil {
+		for _, l := range links {
+			linked[l.Target+"/"+l.TaskID] = true
+		}
+	}
+	var rows []map[string]any
+	var unknown []string
+	for name, tgt := range s.cfgTargets() { // 取登记机清单，来源以 server 实际结构为准
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		tasks, err := client.New(tgt.Addr, tgt.Token).Tasks(ctx) // 方法名以 client 实际为准
+		cancel()
+		if err != nil {
+			unknown = append(unknown, name)
+			continue
+		}
+		for _, t := range tasks {
+			if !linked[name+"/"+t.ID] {
+				rows = append(rows, map[string]any{
+					"target": name, "task_id": t.ID, "title": t.Title, "state": t.State})
+			}
+		}
+	}
+	s.unlinkedCache = map[string]any{"count": len(rows), "tasks": rows, "unknown_targets": unknown}
+	s.unlinkedAt = time.Now()
+	return s.unlinkedCache
 }
 
 func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {
@@ -441,7 +549,12 @@ export interface CardView {
   id: string; title: string; status: string; priority: string; project: string
   parent: string; base_branch: string; attachments: { kind: string; path: string }[]
   following: string; blocked: boolean; blocked_by: string[]; needs: string
-  open_decisions: number; conflict: boolean
+  open_decisions: number; conflict: boolean; open_tickets: number
+}
+export interface UnlinkedSummary {
+  count: number
+  tasks: { target: string; task_id: string; title: string; state: string }[] | null
+  unknown_targets: string[] | null
 }
 export interface CardDetail {
   card: unknown; relations: { From: string; To: string; Type: string }[]
@@ -456,7 +569,7 @@ export interface FlowsResp {
 }
 
 export const fetchCards = (params: string) =>
-  request<{ cards: CardView[] }>(`/api/cards?${params}`).then(r => r.cards ?? [])
+  request<{ cards: CardView[]; unlinked: UnlinkedSummary }>(`/api/cards?${params}`)
 export const fetchCardDetail = (id: string) => request<CardDetail>(`/api/cards/${id}`)
 export const moveCard = (id: string, to: string) => postJSON(`/api/cards/${id}/move`, { to })
 export const noteCard = (id: string, body: string, kind = '普通') => postJSON(`/api/cards/${id}/note`, { body, kind })
@@ -471,8 +584,9 @@ export const fetchLedgerHealth = () => request<{ mirror: { Target: string; Updat
 
 ```ts
 // 工作项看板的纯逻辑：列 = 工作流状态序列（骨架+插入）；「需要你」
-// 合一过滤 = 等人 ∪ open 裁决 ∪ conflict；被并卡（following 非空）不在
-// 看板成列。这些是产品契约（原型走查确认），测试钉死防漂移。
+// 合一过滤 = 等人 ∪ open 裁决 ∪ conflict ∪ 未决工单（工单不上注意力
+// 平面 = 在最关键的信号上失明，蓝图 §3.5）；被并卡（following 非空）
+// 不在看板成列。这些是产品契约（原型走查确认），测试钉死防漂移。
 import type { CardView } from '../../api/ledger'
 
 export function boardColumns(workflowStates: string[]): string[] {
@@ -482,7 +596,7 @@ export function cardsInColumn(cards: CardView[], status: string): CardView[] {
   return cards.filter(c => c.status === status && !c.following)
 }
 export function needsAttention(c: CardView): boolean {
-  return Boolean(c.needs) || c.open_decisions > 0 || c.conflict
+  return Boolean(c.needs) || c.open_decisions > 0 || c.conflict || c.open_tickets > 0
 }
 export function filterNeeds(cards: CardView[], on: boolean): CardView[] {
   return on ? cards.filter(needsAttention) : cards
@@ -497,7 +611,7 @@ import type { CardView } from '../../api/ledger'
 const card = (over: Partial<CardView>): CardView => ({
   id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', parent: '',
   base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
-  needs: '', open_decisions: 0, conflict: false, ...over,
+  needs: '', open_decisions: 0, conflict: false, open_tickets: 0, ...over,
 })
 
 describe('工作项看板契约', () => {
@@ -505,10 +619,11 @@ describe('工作项看板契约', () => {
     const cs = [card({ id: 'B1' }), card({ id: 'B2', following: 'B1' })]
     expect(cardsInColumn(cs, '待办').map(c => c.id)).toEqual(['B1'])
   })
-  it('需要你 = 等人 ∪ open 裁决 ∪ conflict', () => {
+  it('需要你 = 等人 ∪ open 裁决 ∪ conflict ∪ 未决工单', () => {
     expect(needsAttention(card({ needs: '审阅超轮' }))).toBe(true)
     expect(needsAttention(card({ open_decisions: 1 }))).toBe(true)
     expect(needsAttention(card({ conflict: true }))).toBe(true)
+    expect(needsAttention(card({ open_tickets: 2 }))).toBe(true)
     expect(needsAttention(card({}))).toBe(false)
     expect(filterNeeds([card({}), card({ id: 'B2', needs: 'x' })], true)).toHaveLength(1)
   })
@@ -538,8 +653,8 @@ git commit -m "feat(web): 账本 API 客户端 + 工作项列/需要你/跟随�
 
 实现依据 = 原型 `pages/board.html` 的结构逐区搬运（原型是验收基准，不是灵感来源）。组件拆分与数据流：
 
-- `CardsPage`：`usePoll(fetchCards, 2500)` + `usePoll(fetchDecisions(true), 2500)` + `fetchFlows()` 一次性取列定义；state：`view: 'board'|'list'`、`needsOnly`、`selected: string|null`（抽屉）。工具条：项目/工作流过滤、搜索、`⚑ 需要你 N` 单按钮（N = needsAttention 卡数 + 项目级 open 裁决数；点击就地过滤，筛选态下项目级裁决以琥珀细条出现在列区上方，再点还原）。
-- `CardItem`：chips 序与显隐照原型 `chipHtml`：priority / `▤ spec`（title=path）/ `⊕ 并入 N` / `⚖ 裁决 N` / 已验·待真机验 / `⛓ blocked_by` / `⚑ needs` / `✕ 状态冲突` / `⎇ base_branch`（非空才显）/ project。**驱动正常不显示**（保真信号沉默）。`⊕` 点击 = 打开抽屉并滚动到并入区（不是独立面板）。
+- `CardsPage`：`usePoll(fetchCards, 2500)`（返回 `{cards, unlinked}`）+ `usePoll(fetchDecisions(true), 2500)` + `fetchFlows()` 一次性取列定义；state：`view: 'board'|'list'`、`needsOnly`、`selected: string|null`（抽屉）。工具条：项目/工作流过滤、搜索、`⚑ 需要你 N` 单按钮（N = needsAttention 卡数 + 项目级 open 裁决数；点击就地过滤，筛选态下项目级裁决以琥珀细条出现在列区上方，再点还原）。**未挂账摘要行**：`unlinked.count > 0` 或 `unknown_targets` 非空时，列区上方一条琥珀细行「未挂账 task N（mac-02×2 …）／不可达: win-b37」，点击展开明细清单（target/task/标题/态）——这是重复开工盲区的显性化（spec §6），一期只读不提供动作；两者皆空则整行不渲染（保真信号沉默）。
+- `CardItem`：chips 序与显隐照原型 `chipHtml`：priority / `▤ spec`（title=path）/ `⊕ 并入 N` / `⚖ 裁决 N` / `🄠 工单 N`（`open_tickets > 0` 才显，琥珀色——工单必须上注意力平面，蓝图 §3.5；原型无此 chip，样式沿用 `⚖ 裁决` 的琥珀 chip 形态，原型对照时以本条为准补基准）/ 已验·待真机验 / `⛓ blocked_by` / `⚑ needs` / `✕ 状态冲突` / `⎇ base_branch`（非空才显）/ project。**驱动正常不显示**（保真信号沉默）。`⊕` 点击 = 打开抽屉并滚动到并入区（不是独立面板）。
 - `CardDrawer`：`fetchCardDetail(id)`；区块自上而下：状态流水线（当前态高亮）→ kv（项目/工作流@版本/附件/基线/驱动或跟随）→ 验收区 → **并入区（仅承载卡显示：成员行 = id+标题+已验/未验+跟随 badge+拆回按钮——拆回按钮先禁用带 tooltip「CLI: handoff card unmerge」，写动作一期 web 只开 move/note/answer）** → 关系区（双向分组，「承载着」不进关系区）→ 子任务 → 关联执行（task_states 行 + 跳转）→ 分层 timeline（comment 气泡 / 系统 meta 行 / task_mirrored 折叠成组；全部/评论/裁决/系统过滤）→ 评论框（`noteCard`，`#B\d+` 引用提示）。
 - `ListView`：列 = ID/标题/状态（following 显示「跟随 X」）/验收/优先级/附件/备注 + 「含归档」checkbox（带 `all=1` 重查）。
 - 状态转移：抽屉「转移状态…」按钮内联二次确认（点一下变确认态再点执行，spec §6），调 `moveCard`，409 时把服务端错误文案原样展示（gate 拒绝要说清缺什么）。
@@ -632,7 +747,8 @@ git commit -m "feat(web): /flows 流程管理页 + Shell 路由 + dock ▤ 图�
 
 ## Self-Review 记录
 
-1. **写动作最小面**：web 一期只开 move/note/answer 三个写动作（就地确认交互）；merge/unmerge/dispatch 按钮占位禁用带 CLI 提示——Plan C 合入后另开 handler 再点亮，避免 D 对 C 的硬依赖。
-2. **conflict join 用镜像流不拨号**：是对 spec「实时 join」的实现裁决——单一数据源 + 滞后显性化（MirrorHealth），代价与理由写在 taskstate.go 头注释。
-3. **已知妥协**：ledgerapi 对 detail 的子查询错误吞掉部分（rels/evs 失败返回空段而非 500）——看板宁缺区块不整页白屏；前端类型 `card: unknown`（Go Card 字段大写序列化，抽屉内做一层窄化——若要 snake_case 线格式，得给 Card 加 json tag，那是 Plan A 类型的改动，记账不做）。
-4. **验收判据归属**：⑨（双端一致）⑪（裁决看板可答）⑫ 的看板侧、④（状态冲突亮灯）在本 plan 后可真机验；「事件流滞后」UI 亮灯依赖 MirrorHealth 的 60s 判定（CardsPage 顶部健康点，异常才展开——原型 health-dot 形态）。
+1. **写动作最小面**：web 一期只开 move/note/answer 三个写动作（就地确认交互）；merge/unmerge/dispatch 按钮占位禁用带 CLI 提示（`handoff card dispatch --node …`），点亮归后续迭代。注意这与依赖无关——D 对 C 的 templates 读面是硬编译依赖（见前置条件①），派发序必须 C 在 D 前。
+2. **盲区显性化两件套**：未挂账摘要（`unlinkedSummary`，全 plan 唯一破例拨号处：30s 缓存 + 2s 超时 + 不可达进 unknown_targets 不假装为零）与未决工单徽标（`OpenTicketCounts` 从镜像流推导，`tickets_voided` 有意不进 Plan B 的 mirrorSkip 正是为它清账）；两者都进「需要你」合一（工单）或琥珀细行（未挂账）。
+3. **conflict join 用镜像流不拨号**：是对 spec「实时 join」的实现裁决——单一数据源 + 滞后显性化（MirrorHealth），代价与理由写在 taskstate.go 头注释。
+4. **已知妥协**：ledgerapi 对 detail 的子查询错误吞掉部分（rels/evs 失败返回空段而非 500）——看板宁缺区块不整页白屏；前端类型 `card: unknown`（Go Card 字段大写序列化，抽屉内做一层窄化——若要 snake_case 线格式，得给 Card 加 json tag，那是 Plan A 类型的改动，记账不做）。
+5. **验收判据归属**：⑨（双端一致）⑪（裁决看板可答）⑫ 的看板侧、④（状态冲突亮灯）在本 plan 后可真机验；「事件流滞后」UI 亮灯依赖 MirrorHealth 的 60s 判定（CardsPage 顶部健康点，异常才展开——原型 health-dot 形态）。
