@@ -31,6 +31,38 @@ func TestLoadGeneratesDefaultsAndToken(t *testing.T) {
 	}
 }
 
+// TestLedgerConfigRoundTrip 保证新增 ledger 节可保存可回读，且旧配置文件
+// （无 ledger 键）加载不受影响——KnownFields(true) 下新键必须 omitempty，
+// 否则新版写的配置会让旧版 agentd 起不来（config.go 顶部注释的既有约束）。
+func TestLedgerConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+	c.Ledger.DSN = "postgres://u:p@localhost:5432/handoff"
+	if err := config.Save(p, c); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.Ledger.DSN != c.Ledger.DSN {
+		t.Fatalf("dsn 丢失: %q", got.Ledger.DSN)
+	}
+	// 空 ledger 节不得写进文件（omitempty 生效的直接证据）
+	c2 := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+	if err := config.Save(p, c2); err != nil {
+		t.Fatalf("save2: %v", err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("load without ledger: %v", err)
+	}
+	raw, _ := os.ReadFile(p)
+	if strings.Contains(string(raw), "ledger") {
+		t.Fatalf("空 ledger 节不应落盘: %s", raw)
+	}
+}
+
 func TestLoadAcceptsDisciplineSection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
