@@ -72,10 +72,10 @@ const maxUpdateBytes = 100 << 20
 
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
-// 并发安全：**除 cfg 外**所有字段只读（构造后不变），hub 自身线程安全。
+// 并发安全：**除 cfg 与升级槽位外**所有字段只读（构造后不变），hub 自身线程安全。
 // cfg 是可变的——控制台增删开发机会整体换掉它（写时复制），因此一律经
 // s.conf() 读取；**禁止再引入直接持有 *config.Config 的字段**，那会让
-// 同样的错误从编译错误退化成静默竞态。
+// 同样的错误从编译错误退化成静默竞态。升级槽位由 upgradeMu 保护。
 type Server struct {
 	cfg atomic.Pointer[config.Config]
 	// cfgMu 只序列化写入方（swapConf）。读取方走 atomic 快照，不加锁。
@@ -131,6 +131,12 @@ type Server struct {
 	desktopAt    time.Time
 	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
 	desktopNow func() time.Time
+	// upgradeMu / machineUpgrades 保护后台执行机升级：同一台机器同时只允许一个。
+	upgradeMu       sync.Mutex
+	machineUpgrades map[string]bool
+	// machineUpgradeInstaller 是远端升级共用的资产下载器；测试用 runner 缝整体替换。
+	machineUpgradeInstaller *release.Installer
+	machineUpgradeRunner    machineUpgradeRunner
 }
 
 // NewServer 创建 agentd 服务端。
@@ -176,9 +182,12 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		downloadPlatform: func() (string, string) {
 			return release.CurrentPlatform()
 		},
-		downloadState:    &proto.DownloadState{Stage: "idle", Percent: -1},
-		downloadChecksum: desktopDownloadChecksum(inst),
+		downloadState:           &proto.DownloadState{Stage: "idle", Percent: -1},
+		downloadChecksum:        desktopDownloadChecksum(inst),
+		machineUpgrades:         make(map[string]bool),
+		machineUpgradeInstaller: inst,
 	}
+	s.machineUpgradeRunner = s.executeMachineUpgrade
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
@@ -425,6 +434,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /api/executor/default", s.handleExecutorDefaultPut)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
+	api.HandleFunc("POST /api/machines/{name}/upgrade", s.handleMachineUpgrade)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	api.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	api.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)

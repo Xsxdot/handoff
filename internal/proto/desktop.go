@@ -44,3 +44,15 @@ type DownloadState struct {
 	Opened  bool   `json:"opened"`         // 是否成功唤起文件管理器。
 	Error   string `json:"error,omitempty"`
 }
+
+// MachineUpgradeResp 是 POST /api/machines/{name}/upgrade 的响应。
+type MachineUpgradeResp struct {
+	// Accepted=true 时升级已在后台开始，进度靠 GET /api/machines 的 version 变化观察。
+	Accepted bool   `json:"accepted"`
+	Verdict  string `json:"verdict"`
+	Reason   string `json:"reason,omitempty"`
+	Remedy   string `json:"remedy,omitempty"`
+	// Forcible 表示这次拒绝能不能被 ?force=1 越过。非托管永远 false。
+	Forcible bool `json:"forcible"`
+	Busy     int  `json:"busy,omitempty"`
+}

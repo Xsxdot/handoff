@@ -1,8 +1,9 @@
 // 设置页「更新」分区的显示契约测试。
 //
-// 职责：钉住无薄壳时的浏览器降级，以及本机/远端执行机的只读边界。
-// 边界：下载与轮询在测试中注入，不驱动真实 agentd。
+// 职责：钉住无薄壳时的浏览器降级，以及本机无按钮、远端升级动作的边界。
+// 边界：下载、机器轮询与升级请求在测试中注入，不驱动真实 agentd。
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DownloadState, LatestResp, Machine } from '../../api/types'
 import { useMachines } from '../data/useMachines'
@@ -11,7 +12,22 @@ import { UpdatePage } from './UpdatePage'
 
 vi.mock('../data/useMachines', () => ({ useMachines: vi.fn() }))
 vi.mock('../data/useUpdate', () => ({ useDownload: vi.fn() }))
-vi.mock('../../api/client', () => ({ fetchLatest: vi.fn(), startDownload: vi.fn() }))
+vi.mock('../../api/client', () => ({
+  fetchLatest: vi.fn(),
+  startDownload: vi.fn(),
+  upgradeMachine: vi.fn(),
+  ApiError: class ApiError extends Error {
+    status: number
+    body: unknown
+    constructor(status: number, _message: string, body: unknown) {
+      super('api error')
+      this.status = status
+      this.body = body
+    }
+  },
+}))
+
+import { ApiError, upgradeMachine } from '../../api/client'
 
 const latest: LatestResp = { tag: 'v0.3.1', checked_at: '2026-08-19T12:00:00Z' }
 const download: DownloadState = { stage: 'idle', percent: -1, opened: false }
@@ -23,6 +39,8 @@ const machine = (patch: Partial<Machine>): Machine => ({
 })
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(upgradeMachine).mockResolvedValue({ accepted: true, verdict: 'needs_upgrade', forcible: false })
   vi.mocked(useDownload).mockReturnValue({ data: download, disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn() })
   vi.mocked(useMachines).mockReturnValue({
     data: { machines: [machine({})] }, disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
@@ -43,13 +61,50 @@ describe('UpdatePage', () => {
     expect(screen.queryByRole('button', { name: /升级到/ })).toBeNull()
   })
 
-  it('远端机器行显示「可升级」但本期不渲染升级按钮', () => {
+  it('远端可升级的机器显示升级按钮并在点击后禁用', async () => {
     vi.mocked(useMachines).mockReturnValue({
       data: { machines: [machine({ name: 'mac-02', addr: '10.0.0.2:7777', version: 'v0.2.0' })] },
       disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
     })
     render(<UpdatePage desktopState={null} latest={latest} />)
     expect(screen.getByText('可升级')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '升级到 v0.3.1' })).toBeNull()
+    const button = screen.getByRole('button', { name: '升级到 v0.3.1' })
+    await userEvent.click(button)
+    expect(screen.getByRole('button', { name: '升级中…' })).toBeDisabled()
+    expect(upgradeMachine).toHaveBeenCalledWith('mac-02', false)
+  })
+
+  it('有活跃任务时给「仍要升级」', async () => {
+    vi.mocked(upgradeMachine).mockRejectedValueOnce(new ApiError(409, 'busy', {
+      accepted: false, verdict: 'needs_upgrade', reason: '2 个活跃任务', forcible: true, busy: 2,
+    }))
+    vi.mocked(useMachines).mockReturnValue({
+      data: { machines: [machine({ name: 'mac-02', version: 'v0.2.0' })] },
+      disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
+    })
+    const user = userEvent.setup()
+    render(<UpdatePage desktopState={null} latest={latest} />)
+    await user.click(screen.getByRole('button', { name: '升级到 v0.3.1' }))
+    expect(screen.getByText('2 个活跃任务')).toBeInTheDocument()
+    const force = screen.getByRole('button', { name: '仍要升级' })
+    await user.click(force)
+    expect(upgradeMachine).toHaveBeenLastCalledWith('mac-02', true)
+    expect(screen.getByRole('button', { name: '升级中…' })).toBeDisabled()
+  })
+
+  it('非托管时只显示处置建议，不给强制入口', async () => {
+    vi.mocked(upgradeMachine).mockRejectedValueOnce(new ApiError(422, 'unmanaged', {
+      accepted: false, verdict: 'unmanaged', reason: 'agentd 非托管启动，重启后不会被拉起',
+      remedy: '先在该机器上 handoff service install', forcible: false,
+    }))
+    vi.mocked(useMachines).mockReturnValue({
+      data: { machines: [machine({ name: 'mac-02', version: 'v0.2.0' })] },
+      disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn(),
+    })
+    const user = userEvent.setup()
+    render(<UpdatePage desktopState={null} latest={latest} />)
+    await user.click(screen.getByRole('button', { name: '升级到 v0.3.1' }))
+    expect(screen.getByText('先在该机器上 handoff service install')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '仍要升级' })).toBeNull()
   })
 })

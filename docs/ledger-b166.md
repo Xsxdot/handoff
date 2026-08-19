@@ -183,3 +183,123 @@
 - 双裁决第 1 轮：spec 符合（两个测试平台缝一致、opener 收尸、按钮矩阵完整）且代码质量通过；
   无额外修复轮。提交范围：四个下载/提示框实现与测试文件及本 ledger，待提交信息为
   `fix(update): 修正跨平台下载测试与提示框按钮矩阵`。
+
+## 本期 Task 1：结论判据搬进 internal/upgrade
+
+- 将 `cmd/upgrade_verdict.go` 的唯一判据原样迁入 `internal/upgrade/machine.go`，保留七种结论、
+  优先级与三态指针语义；`Machine.Bin` 保留 CLI 本机二进制与 agentd 双版本判定。既有判据测试
+  迁入 `internal/upgrade/machine_test.go`，用例数量与断言强度未减；`cmd/upgrade_test.go` 未修改。
+- CLI 通过 `machineState.toUpgrade()` 调用 `upgrade.Classify`，仅替换判据类型与调用点，
+  本机路径与原有输出渲染保持不动。测试辅助 `boolPtr` 移至 `cmd/upgrade_helpers_test.go`，
+  以保持未改动的 `cmd/upgrade_test.go` 可编译。
+- 验证：`go test ./internal/upgrade/ -v` PASS（11 条）；`go test ./cmd/ -run TestUpgrade -v`
+  PASS；`go test ./cmd/` PASS；`git diff --stat cmd/upgrade_test.go` 无输出；`git diff --check` 无输出。
+- Task 收尾命令：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./cmd/ ./internal/upgrade/ ./internal/agentd/` PASS；`cd web && npm run typecheck && npm test`
+  PASS（81 files / 799 tests）。首次前端命令因依赖未安装原始失败：`sh: 1: tsc: not found`；
+  随后 `npm ci --cache /root/.handoff/tasks/e46f1156-7285-4bfe-a033-59746a4fd331/tmp/npm-cache`
+  成功后复跑通过。
+- 双裁决第 1 轮：spec 符合，代码质量通过，无修复轮。提交范围：
+  `internal/upgrade/machine.go`、`internal/upgrade/machine_test.go`、删除的两个旧判据文件、
+  `cmd/upgrade.go`、`cmd/upgrade_helpers_test.go` 与本 ledger；提交信息：
+  `refactor(upgrade): 结论判据搬进 internal/upgrade，CLI 输出不变`。
+
+## 本期 Task 2：单台远端升级搬进 internal/upgrade
+
+- 新增 `internal/upgrade/remote.go` 与 `remote_test.go`。`RemoteOne` 统一处理远端七种
+  结论、两道闸、pull/push 选择、资产/校验和下载、上线等待与结构化失败建议；nil pull
+  明确退回 push，非托管与已有自拉的 `Forcible` 恒为 false，平台格式不合法不猜默认平台。
+- 闸一落点选择：远端闸一放进 `RemoteOne`，让 agentd 端点可直接复用；CLI 仅保留本机
+  路径的 busy 闸，因为 `RemoteOne` 明确只处理远端。CLI `remoteUpgrade` 退化为适配
+  `releaseFetcher`、调用 `RemoteOne`、渲染原有两行输出；`cmd/upgrade_test.go` 未修改。
+- 定向验证：`go test ./internal/upgrade/ -v` PASS；`go test ./cmd/ -v` PASS；
+  `go test ./cmd/ -v 2>&1 | tail -30` PASS；`git diff --stat cmd/upgrade_test.go` 无输出；
+  `git diff --check` 无输出。
+- 变异复验原文：把 nil pull 当 true 后，`TestRemoteOneFallsBackToPushWhenPullUnknown` 失败：
+  `remote_test.go:101: pull=nil 时应只走 push，push=0 pull=1`；把非托管拒绝 `Forcible` 改 true 后，
+  `TestRemoteOneRejectionsCarryMatchingRemedy/unmanaged` 失败：
+  `结果 = {Verdict:needs_upgrade Status:1 Reason:agentd 非托管启动 Remedy:先在该机器上 handoff service install Forcible:true From: To:}，期望 skip/forcible=false`。
+  两处均已恢复，恢复后 `go test ./internal/upgrade/ -run TestRemoteOne -v` PASS。
+- 收尾命令：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./cmd/ ./internal/upgrade/ ./internal/agentd/` PASS；`cd web && npm run typecheck && npm test`
+  PASS（81 files / 799 tests）。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修正一次测试条件编译错误并清理 CLI 远端早退后的
+  不可达分支，复审后通过，无承重搁置。提交范围：`internal/upgrade/remote.go`、
+  `internal/upgrade/remote_test.go`、`cmd/upgrade.go` 与本 ledger；提交信息：
+  `refactor(upgrade): 单台远端升级搬进 internal/upgrade，返回结构化结论`。
+
+## 本期 Task 3：agentd 的执行机升级端点
+
+- 新增 `internal/agentd/machineupgrade.go` 与测试，`internal/proto/desktop.go` 新增
+  `MachineUpgradeResp`，`server.go` 注册 `POST /api/machines/{name}/upgrade`。端点只探测一次
+  target 的 `client.Status`，投影 `Agentd/Revision/Platform/Managed/Pull/Busy`，并把七种结论
+  映射到 404/400、502、422、200、409、202；非托管始终 `Forcible=false`，够不着 `Remedy` 为空。
+- 202 后使用独立 `context.Background()` + 15 分钟超时后台 runner，runner 生产实现只调用
+  `upgrade.RemoteOne`；`upgradeMu` + `machineUpgrades` 保证单机单升级，goroutine defer 无论
+  成败均释放槽位。日志覆盖受理、阶段回调与后台成功/失败；本机和本机名入口拒绝。
+- 测试覆盖未知机器、本机、busy 409 可 force、非托管 422 不可 force、不可达 502 无处置、
+  202 后后台实际调用与重复请求 409；所有远端 status/最新版/升级动作均替身化。另修正旧
+  agentd `ErrStatusUnsupported` 必须投影为 `VerdictTooOld`，不能误报不可达。
+- 变异复验原文：把非托管状态码改为 409、`Forcible` 改 true 后，
+  `TestMachineUpgradeUnmanagedIsNotForcible` 失败：
+  `非托管应 422 且 forcible=false，code=409 body={Accepted:false Verdict:unmanaged Reason:agentd 非托管启动，重启后不会被拉起 Remedy:先在该机器上 handoff service install Forcible:true Busy:0}`；已恢复。
+- 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./internal/agentd/` PASS；`go test ./internal/upgrade/ ./cmd/` PASS；
+  `cd web && npm run typecheck && npm test` PASS（81 files / 799 tests）；`git diff --check` 无输出。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修复旧 agentd 过旧判定后复审通过，无承重搁置。
+  提交范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_test.go`、
+  `internal/proto/desktop.go`、`internal/agentd/server.go` 与本 ledger；提交信息：
+  `feat(agentd): 单台执行机升级端点，复用 internal/upgrade 的编排`。
+
+## 本期 Task 4：更新页的升级按钮
+
+- `web/src/api/types.ts` 新增 `MachineUpgradeResp`，`client.ts` 新增
+  `upgradeMachine(name, force)`，机器名 URL 编码，强制请求使用 `?force=1`；409/422 的完整
+  结构化响应沿 `ApiError.body` 透传。
+- `UpdatePage.tsx` 为可达且落后的远端机器显示“升级到 <tag>”；请求受理后按钮进入禁用的
+  “升级中…”，完成判据只使用既有 `useMachines()` 轮询观察 `version === latest.tag`，本机行
+  永远不显示按钮。409 且 `forcible=true` 就地显示“仍要升级”；422 非托管只显示 remedy，
+  不提供强制入口。
+- 测试：更新页 5 条用例、client 请求路径用例；`npm run typecheck` PASS；
+  `npm test` PASS（81 files / 802 tests）；`npm run build` PASS（1944 modules transformed，
+  Vite 仅报告既有的大 chunk warning）。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修正页面职责注释以反映按钮已落地，无承重搁置。
+  提交范围：`web/src/api/types.ts`、`web/src/api/client.ts`、`web/src/api/client.test.ts`、
+  `web/src/app/settings/UpdatePage.tsx`、`UpdatePage.test.tsx` 与本 ledger；提交信息：
+  `feat(web): 更新页支持一键升级执行机`。
+
+## 本期 Task 5：整分支终审
+
+- 全分支格式与静态检查：`gofmt -l .` 无输出、退出 0；`go vet ./...` 无输出、退出 0。
+- `go test ./...` 退出 1。`cmd`、`internal/agentd`、`internal/upgrade` 及其余非环境敏感包均通过；
+  失败逐条对照 Global Constraints，全部属于既有环境假红：
+  - `internal/client`：`TestCursorRootFallsBackToCwdWhenHomeUnwritable` 原文为
+    `根 = ".../001/.handoff/cursors"，want ".../002/.handoff/cursors"（应降级到 cwd）`；
+    `TestCursorRootErrorNamesBothPaths` 原文为 `两处都不可写时必须报错，不得静默`。
+  - `internal/config`：`TestLoadStripUpdateDoesNotBlockOnSaveFailure` 原文为
+    `回写应失败，磁盘上仍须留着 update 段`。
+  - `internal/executor/claudecode`：三个 `TestPermServer*` 原文均为
+    `裁决 socket 路径过长（114/115/116 字节，上限 107）`；`TestResumeContinuesFromOffset`
+    同样因 `perm.sock` 路径 115 字节而失败。
+  - `internal/executor/grok`：`TestSyncAuthKeepsTaskCopyWhenWriteFails` 原文为
+    `写回失败应返回错误`。
+  这些失败分别由沙箱 `/tmp` 的路径/只读限制与 root 身份触发，未修改其实现；与计划列出的
+  Global Constraints 假红清单逐项一致。
+- 前端终审：`cd web && npm run typecheck && npm test && npm run build` 通过；
+  `Test Files 81 passed (81)`、`Tests 802 passed (802)`；Vite `1944 modules transformed`，
+  产物 `dist/index.html 0.47 kB`、`dist/assets/index-D8NPat9H.js 901.32 kB`，仅有既有大 chunk warning。
+- 回归网：`git diff --stat 3addd708..HEAD -- cmd/upgrade_test.go` 无输出；完整 diff 与
+  `git diff --check 3addd708..HEAD` 无空白错误。未修改 `cmd/upgrade_test.go`。
+- 对照 spec §6.5 落点：不重写编排在 `internal/upgrade/machine.go:1-130` 与
+  `internal/upgrade/remote.go:1-232`，CLI 适配/渲染在 `cmd/upgrade.go:170-182,439-599`；
+  202/404/409/422/502 映射在 `internal/agentd/machineupgrade.go:215-231`；非托管永不强制
+  在 `internal/upgrade/remote.go:176-186`、`machineupgrade.go:192-205` 与
+  `web/src/app/settings/UpdatePage.tsx:264-286`；不造进度流在 `machineupgrade.go:242-262`
+  和 `UpdatePage.tsx:73-88`；本机不给按钮在 `UpdatePage.tsx:244-252,264-286`。
+- 终审发现并集中修复 1 项：端点预检阶段的 busy/非托管拒绝缺少闸日志；在
+  `internal/agentd/machineupgrade.go` 增加闸一、闸二及其它跳过结论的 `slog` 记录。
+  修复后定向复验：`go test ./internal/agentd/ -run TestMachineUpgrade -v` 7 条 PASS，
+  `go test ./cmd/ ./internal/upgrade/` PASS，`go vet ./...` 无输出。
+- 双裁决第 1 轮（含上述集中修复后的范围复审）：spec 符合，代码质量通过；无未决承重项。
+  提交范围：本 Task 5 ledger 与 `internal/agentd/machineupgrade.go`；待提交信息：
+  `chore(upgrade): 完成执行机一键升级终审`。
