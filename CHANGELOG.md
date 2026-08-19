@@ -8,6 +8,26 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc9] - 2026-08-19
+
+**预发布。** 修 macOS 应用图标与品牌原图不一致。
+
+### 修复
+
+- **macOS 的 .app 图标与原图差得很远**（字形偏小、发灰、带投影）。根因不是图错
+  了，是走错了通道：`Info.plist` 同时有 `CFBundleIconFile`(icns) 与
+  `CFBundleIconName`(Assets.car)，macOS 优先用后者；而 Assets.car 出自 Icon
+  Composer，它不是「把图放上去」，是把 SVG 当**一层**去合成——叠中性阴影、高光、
+  半透明，再按 `scale` 缩放。对自带圆角底板与固定配色的扁平品牌标志，这条路
+  怎么调参都不可能与原图一致。
+
+  改为只留 icns：`generate:icons` 去掉 `-iconcomposerinput`/`-macassetdir`，
+  `Info.plist` 去掉 `CFBundleIconName`，删掉 `appicon.icon` bundle。应用图标
+  自此就是 `build/appicon.png` 本身。**代价**：放弃 macOS 26 的分层/着色图标
+  变体——品牌标志本来也不该被系统着色成灰的。
+
+  Windows 侧不受影响，`icon.ico` 仍由同一个 `appicon.png` 生成、内容未变。
+
 ## [v0.3.0-rc8] - 2026-08-19
 
 **预发布。** 内容同 rc7，外加桌面端应用图标。
