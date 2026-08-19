@@ -130,6 +130,19 @@ func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
 	})
 }
 
+// RecordReviewVerdict 落审阅裁决事件（node 是回合计数分组键，raw 是
+// verdict block 原文取证）。
+func (s *Store) RecordReviewVerdict(cardID, node string, pass bool, raw, actor string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("裁决落账: 卡 %s: %w", cardID, err)
+		}
+		_, err := s.appendEvent(tx, sink, cardID, EvReviewVerdict, actor,
+			map[string]any{"node": node, "pass": pass, "raw": raw})
+		return err
+	})
+}
+
 // AddComment 发评论。body 里的 #B 号引用解析出来：存在的卡自动建
 // relates 边（幂等），不存在的只留在 refs 里（评论是记录不是校验）。
 // kind ∈ {普通, 更正}——「更正」承接 markdown 总账的变更痕迹文化。
