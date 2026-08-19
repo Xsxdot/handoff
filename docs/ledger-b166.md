@@ -227,3 +227,26 @@
   不可达分支，复审后通过，无承重搁置。提交范围：`internal/upgrade/remote.go`、
   `internal/upgrade/remote_test.go`、`cmd/upgrade.go` 与本 ledger；提交信息：
   `refactor(upgrade): 单台远端升级搬进 internal/upgrade，返回结构化结论`。
+
+## 本期 Task 3：agentd 的执行机升级端点
+
+- 新增 `internal/agentd/machineupgrade.go` 与测试，`internal/proto/desktop.go` 新增
+  `MachineUpgradeResp`，`server.go` 注册 `POST /api/machines/{name}/upgrade`。端点只探测一次
+  target 的 `client.Status`，投影 `Agentd/Revision/Platform/Managed/Pull/Busy`，并把七种结论
+  映射到 404/400、502、422、200、409、202；非托管始终 `Forcible=false`，够不着 `Remedy` 为空。
+- 202 后使用独立 `context.Background()` + 15 分钟超时后台 runner，runner 生产实现只调用
+  `upgrade.RemoteOne`；`upgradeMu` + `machineUpgrades` 保证单机单升级，goroutine defer 无论
+  成败均释放槽位。日志覆盖受理、阶段回调与后台成功/失败；本机和本机名入口拒绝。
+- 测试覆盖未知机器、本机、busy 409 可 force、非托管 422 不可 force、不可达 502 无处置、
+  202 后后台实际调用与重复请求 409；所有远端 status/最新版/升级动作均替身化。另修正旧
+  agentd `ErrStatusUnsupported` 必须投影为 `VerdictTooOld`，不能误报不可达。
+- 变异复验原文：把非托管状态码改为 409、`Forcible` 改 true 后，
+  `TestMachineUpgradeUnmanagedIsNotForcible` 失败：
+  `非托管应 422 且 forcible=false，code=409 body={Accepted:false Verdict:unmanaged Reason:agentd 非托管启动，重启后不会被拉起 Remedy:先在该机器上 handoff service install Forcible:true Busy:0}`；已恢复。
+- 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./internal/agentd/` PASS；`go test ./internal/upgrade/ ./cmd/` PASS；
+  `cd web && npm run typecheck && npm test` PASS（81 files / 799 tests）；`git diff --check` 无输出。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修复旧 agentd 过旧判定后复审通过，无承重搁置。
+  提交范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_test.go`、
+  `internal/proto/desktop.go`、`internal/agentd/server.go` 与本 ledger；提交信息：
+  `feat(agentd): 单台执行机升级端点，复用 internal/upgrade 的编排`。
