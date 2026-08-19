@@ -101,3 +101,11 @@
 - 最终 `cd desktop/frontend && npm run build` 通过：`vite v8.2.1`、`35 modules transformed`、`dist/index.html 0.48 kB`、`dist/assets/main-QvimaT1l.js 20.92 kB`、`✓ built in 42ms`。
 - 双裁决第 1 轮：spec 符合，托盘保留打开控制台/退出两项，macOS 模板图标与其他平台彩色图标均接入，升级面板/远程升级死代码与多页入口已删除；代码质量通过，无修复轮次。main.go 仍未经 Linux Wails 编译验证。
 - 提交范围：`desktop/main.go`、`desktop/frontend/vite.config.ts`、`desktop/build/trayicon.png`（仅引用，未修改）及删除的 4 个 desktop 文件与本 ledger，提交信息按计划为 `refactor(desktop): 托盘瘦身到两项并换成标志，删掉升级面板与远程升级`。
+
+## Task 6：前端数据层
+
+- 失败测试确认：`npx vitest run src/app/data/useUpdate.test.ts` 原始失败为 `TypeError: fetchDesktopState is not a function`；`npx vitest run src/app/lib/version.test.ts` 原始失败为 `Failed to resolve import "./version"`。
+- 实现后：`npm run typecheck` 通过；`npx vitest run src/app/data/useUpdate.test.ts src/app/lib/version.test.ts`：2 个测试文件、3 个用例全部通过。
+- 双裁决第 1 轮：spec 符合，三种线上类型、四个请求函数、10s/1s 轮询 hooks、204 空状态解码和与 Go 侧一致的数字/预发布版本比较均落地；代码质量通过，`parseResponse` 未被全局放宽，无修复轮次。
+- 收尾验证：`git diff --check` 无输出；`npm run typecheck` 通过；定向 vitest 结果为 `Test Files 2 passed (2)`、`Tests 3 passed (3)`。
+- 提交范围：`web/src/api/types.ts`、`web/src/api/client.ts`、`web/src/app/data/useUpdate.ts` 及测试、`web/src/app/lib/version.ts` 及测试与本 ledger，提交信息按计划为 `feat(web): 更新面的数据层与版本比较`。

@@ -22,6 +22,7 @@ import type {
   CreatePtySessionReq,
   DisciplineBinding,
   DisciplineResp,
+  DesktopState,
   DiffResult,
   DirEntry,
   DirListResult,
@@ -35,6 +36,8 @@ import type {
   ExecutorDefaultReq,
   ExecutorDefaultResp,
   MachinesResp,
+  DownloadState,
+  LatestResp,
   PatchProjectReq,
   ProjectLocation,
   ProjectBranchesResp,
@@ -125,6 +128,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parseResponse<T>(resp)
 }
 
+// requestAllowNoContent 允许某个接口用 204 表示「当前没有资源」。
+//
+// 为什么不改 parseResponse：其它接口的 2xx 都有 JSON body，全局放宽会把接口
+// 契约错误静默变成 undefined；桌面状态只有「没有薄壳」这一个明确的 204 语义。
+async function requestAllowNoContent<T>(path: string): Promise<T | null> {
+  let resp: Response
+  try {
+    resp = await fetch(path, { credentials: 'same-origin' })
+  } catch (err) {
+    throw new ApiError(0, `无法连接 agentd（反代失败？）：${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (resp.status === 204) return null
+  return parseResponse<T>(resp)
+}
+
 // postJSON 以 JSON body 发起 POST 请求。
 function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
@@ -155,6 +173,26 @@ function patchJSON<T>(path: string, body: unknown): Promise<T> {
 // fetchStatus 取 agentd 的可用性与身份信息（GET /api/status）。
 export function fetchStatus(): Promise<StatusResp> {
   return request<StatusResp>('/api/status')
+}
+
+// fetchDesktopState 取薄壳上报的自身状态；204 表示当前没有活跃薄壳，解成 null。
+export function fetchDesktopState(): Promise<DesktopState | null> {
+  return requestAllowNoContent<DesktopState>('/api/desktop/state')
+}
+
+// fetchLatest 取 agentd 缓存的最新 release tag；refresh=true 强制绕过 24h 缓存。
+export function fetchLatest(refresh = false): Promise<LatestResp> {
+  return request<LatestResp>(`/api/update/latest${refresh ? '?refresh=1' : ''}`)
+}
+
+// fetchDownloadState 取桌面端安装包下载进度与结果。
+export function fetchDownloadState(): Promise<DownloadState> {
+  return request<DownloadState>('/api/update/desktop/download')
+}
+
+// startDownload 请求 agentd 下载、校验并打开桌面端安装包；响应状态由下载轮询读取。
+export function startDownload(): Promise<void> {
+  return postJSON<DownloadState>('/api/update/desktop/download', {}).then(() => undefined)
 }
 
 // fetchTasks 取全部任务（GET /api/tasks?scope=all），拆掉信封只交出任务数组。
