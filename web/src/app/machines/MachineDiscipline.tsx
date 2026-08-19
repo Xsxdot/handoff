@@ -38,6 +38,18 @@ function decodeBinding(binding: DisciplineBinding, value: string): DisciplineBin
   }
 }
 
+function bindingDescription(binding: DisciplineBinding): string {
+  switch (binding.mode) {
+    case 'default':
+      return '未配置——按该执行器有没有 subagent 机制自动选'
+    case 'file':
+      return '正文在「执行纪律」分区里编辑'
+    case 'off':
+      return `这台机器上派 ${binding.executor} 时不注入任何纪律块`
+  }
+}
+
+// MachineDiscipline 展示并保存一台机器的 executor→纪律块映射。
 export function MachineDiscipline({ machine }: { machine: Machine }) {
   const [response, setResponse] = useState<DisciplineResp | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
@@ -116,21 +128,26 @@ export function MachineDiscipline({ machine }: { machine: Machine }) {
             return (
               <label key={binding.executor} className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-3 text-xs">
                 <span className="font-medium">{binding.executor}</span>
-                <select
-                  aria-label={`${binding.executor} 的纪律块`}
-                  value={value}
-                  onChange={(event) => setEdits((current) => ({ ...current, [binding.executor]: event.target.value }))}
-                  className={cn(
-                    'h-8 min-w-0 rounded-md border bg-background px-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                    dirty && 'border-amber-500/60',
-                  )}
-                >
-                  <option value="default">内置默认（{binding.default_tier}）</option>
-                  {response.files.map((file) => (
-                    <option key={file.name} value={`file:${file.name}`}>{file.name}</option>
-                  ))}
-                  <option value="off">关闭注入（不发纪律块）</option>
-                </select>
+                <div className="min-w-0">
+                  <select
+                    aria-label={`${binding.executor} 的纪律块`}
+                    value={value}
+                    onChange={(event) => setEdits((current) => ({ ...current, [binding.executor]: event.target.value }))}
+                    className={cn(
+                      'h-8 w-full min-w-0 rounded-md border bg-background px-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                      dirty && 'border-amber-500/60',
+                    )}
+                  >
+                    <option value="default">内置默认（{binding.default_tier}）</option>
+                    {response.files.map((file) => (
+                      <option key={file.name} value={`file:${file.name}`}>{file.name}</option>
+                    ))}
+                    <option value="off">关闭注入（不发纪律块）</option>
+                  </select>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    {bindingDescription(binding)}
+                  </span>
+                </div>
               </label>
             )
           })}

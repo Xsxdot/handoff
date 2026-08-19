@@ -45,6 +45,7 @@ function bindingHint(users: string[]): string {
   return users.length === 0 ? '未被引用' : `${users.join('、')} 在用`
 }
 
+// DisciplinePage 提供按机器编辑纪律块正文与从内置版本新建文件的设置分区。
 export function DisciplinePage() {
   const machinesState = useMachines(true)
   const machineList = machinesState.data?.machines
@@ -65,6 +66,7 @@ export function DisciplinePage() {
   const activeMachine = machines.find((m) => m.name === machine) ?? machines[0] ?? null
   const activeReachable = activeMachine?.reachable ?? false
   const hasActiveMachine = activeMachine !== null
+  const machineSelected = machines.some((m) => m.name === machine)
 
   // 机器列表是外部探活数据，但只用它决定当前机器是否还存在，不触碰正在编辑的 draft。
   useEffect(() => {
@@ -79,7 +81,8 @@ export function DisciplinePage() {
     setSelected(null)
     setError('')
     setNotice('')
-    if (!hasActiveMachine || !activeReachable) return
+    // 机器列表没有本机时，先等选择状态切到第一台远程机，避免空 machine 误查本机。
+    if (!hasActiveMachine || !activeReachable || !machineSelected) return
     let cancelled = false
     void fetchDiscipline(machine)
       .then((next) => {
@@ -94,7 +97,7 @@ export function DisciplinePage() {
     return () => {
       cancelled = true
     }
-  }, [machine, activeReachable, hasActiveMachine])
+  }, [machine, activeReachable, hasActiveMachine, machineSelected])
 
   const selectedBuiltin = selected?.kind === 'builtin'
     ? response?.builtins.find((b) => b.tier === selected.tier) ?? null
