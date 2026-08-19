@@ -598,13 +598,24 @@ func TestDarwinDesktopShipsStapledDMG(t *testing.T) {
 	if !invokesDMG {
 		t.Fatal("darwin 薄壳 job 没有调 create:dmg，不会产出 DMG")
 	}
-	for _, want := range []string{
-		"stapler staple",   // DMG 自己也要装订
-		"stapler validate", // 装订后立刻复核，别等用户来发现
-		"notary-dmg.log",   // DMG 走自己那轮公证，不复用 bundle 那轮的日志
+	// **带次数，不用 Contains。** bundle 那步本来就有一处 stapler staple，
+	// 裸 Contains 的话「DMG 不装订」这条变异照样绿——第一版就是这么写的，
+	// 变异复验当场抓出来。同一份文件顶上的
+	// TestWorkflowInjectsVersionAtModulePath 早记过这个教训。
+	for _, c := range []struct {
+		want string
+		n    int
+	}{
+		{"xcrun stapler staple \"$app\"", 1},   // bundle 装订
+		{"xcrun stapler staple \"$dmg\"", 1},   // DMG 自己也要装订
+		{"xcrun stapler validate \"$dmg\"", 1}, // 装订后立刻复核，别等用户来发现
+		// 挂载产出的 DMG，复核里面那份 .app 的票据还在——这是 package:dmg
+		// 重建 bundle 的运行期兜底，测试之外的第二道保险
+		{"xcrun stapler validate \"$mnt/handoff-desktop.app\"", 1},
+		{"notary-dmg.log", 3}, // 提交 / 查状态 / 打印失败详情，各一次
 	} {
-		if !strings.Contains(wf, want) {
-			t.Fatalf("darwin 薄壳 job 缺 DMG 关键步骤 %q", want)
+		if got := strings.Count(wf, c.want); got != c.n {
+			t.Fatalf("DMG 承重步骤 %q 应出现 %d 次，实得 %d 次", c.want, c.n, got)
 		}
 	}
 	// notarytool 在 status 为 Invalid 时仍可能退 0——两轮公证都必须查状态串，
