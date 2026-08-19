@@ -58,9 +58,9 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 | `completed` | 已归档 | `show` / `diff`（只读） | 一切写操作，含 `stop` |
 | `failed` | 已失败 | `show` / `diff` / `pull`（只读取证） | `continue` / `done` / `stop` |
 
-> **failed 事件 ≠ failed 状态**：回合以失败收尾（failed 事件）时任务进的是 `waiting_review`——executor 会话与上下文都在，`continue` 就能续接重试。只有 `stop`、executor 启动失败等才落 `failed` **状态**；它是终态，想继续只能重新 `dispatch`。
+> **回合失败发的是 `turn_failed` 事件，不是 `failed`**（B100 拆开的两个类型）：`turn_failed` 时任务进 `waiting_review`——executor 会话与上下文都在，`continue` 就能续接重试。`failed` **事件**如今只在真终态出现：`stop`、`resume --force`、dispatch 期启动失败、看门狗补正——此时任务落 `failed` **状态**，想继续只能重新 `dispatch`。
 >
-> `diff` / `fetch` / `run` 无状态门禁：`running` 中也能看实时进度。但 `completed`（已归档）的 `--new-worktree` 任务其 worktree 已被清理，diff 可能失败。
+> `diff` / `fetch` / `run` 无状态门禁：`running` 中也能看实时进度。但 `completed`（已归档）的 `--new-worktree` 任务其 worktree 已被回收：`run` 会给出真因并返回 400（「managed worktree 可能已被 done/stop 回收」），`diff` 则是普通 git 失败（500），没有专门归因。
 
 **动手前先确认状态**：`handoff show <task>` 输出一行 JSON，含任务体 + `pending_tickets` + 最近事件。不确定就先 show，比吃一个 409 便宜。
 
@@ -82,7 +82,7 @@ handoff wait <task> --notify --timeout 1h
 **`wait` 的三条契约**，记牢了省很多事：
 
 - **默认一次只吐一个事件**。stdout 单行 JSON，然后退出；`--follow` 持续订阅，事件逐条流入，退出即任务终结或超时。处理完**不用重挂**——follow 订阅活到会话结束。
-- **退出码有语义**。`0` = 事件到达；`124` = `--timeout` 到点（可以接着挂）；`1` = 真失败。
+- **退出码有语义**。`0` = 事件到达；`124` = `--timeout` 到点（可以接着挂）；`1` = 真失败。`--timeout` 在三种模式下三种含义：一次性 wait 是**等不到事件的总时长**，`--follow` 是**空闲上限**（见下节），`--until-done` 是**总时限**（中间帧不续命）。
 - **失败会立刻退出，不会闷等**。token 没同步（401）、task-id 不存在（1008）都是立即报错。`wait` 长时间不返回**只**意味着「还没有事件」，那是正常态——stderr 里的「WS 连接断开，等待后重连」也是正常态。
 
 无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。
@@ -111,8 +111,10 @@ handoff wait <task> --notify --timeout 1h
   客户端的超时会抢在 agentd 的 stalled 诊断前面退出——把一条带 last_seq 的
   诊断换成一句「我没收到东西」。
 - **follow 进程退出本身就是信号**，必须看退出码：
-  - `0`：收到终结性事件（failed 或 archived）→ 先 `show`：failed 多半停在
-    `waiting_review`、可 `continue` 续接；archived 才是真结束
+  - `0`：收到真终结事件（`failed` 或 `archived`）→ 先 `show` 确认。两个都是终态：
+    `failed` 来自 stop / `resume --force` / 启动失败，`archived` 来自 `done`。
+    **`turn_failed`（回合失败）不会让 follow 退出**——任务进 `waiting_review`，
+    订阅还活着，照常审核即可
   - `124`：空闲 3 小时一帧都没收到 → **可疑**。正常情况下 agentd 的 stalled
     会先到；先 `handoff show`，再怀疑 agentd 失联
   - 其他非 0：鉴权失败 / 任务不存在 / 连接永久失败 → 看 stderr 按排障表办，
@@ -134,8 +136,9 @@ handoff wait <task> --notify --timeout 1h
 会话；只在 `handoff done` 产生 `archived` 后输出一行原始事件。退出 `0` 才能开工，
 `124` 表示本轮等待到期（任务还没归档），其他非 0 是依赖失败或配置错误。
 
-**它只负责唤醒，不自动 dispatch**，也不能替代本任务自己的 `wait --follow` 审核
-订阅——工单、completed、`done` 仍由本任务的协调者照常处理。`--timeout` 在这个模式
+**它只负责唤醒，不自动 dispatch，也不触发分支自动同步**——下游会话拿到 `archived`
+后要自己 `handoff pull`。它也不能替代本任务自己的 `wait --follow` 审核订阅——
+工单、completed、`done` 仍由本任务的协调者照常处理。`--timeout` 在这个模式
 下是**总时限**，中间帧不续命：否则一个永远没人 `done` 的任务能把门闩拖到天荒地老。
 
 ### cursor 语义：为什么 wait 可能吐出旧事件
@@ -145,7 +148,9 @@ handoff wait <task> --notify --timeout 1h
 - `show` / `reply` 不推进 cursor。走「show → reply」恢复流程之后再挂 wait，第一批返回的可能是**你早已处理过的历史事件**（答过的 question、continue 过的 completed）。
 - 换一台机器接管时本机没有 cursor 文件。**`wait --follow` 会在建连前先对账**，
   把水位之前的一切折成一行 `backlog_summary`（带 `missed` / `stale` / `actionable`），
-  而不是逐条重放。一次性 `wait`（不带 `--follow`）没有这个机制，仍会从 seq 0 起逐条重放。
+  而不是逐条重放；**对账同时把磁盘游标直接推到水位**——被折叠的积压从此不会再逐条
+  交付，要看历史只能 `handoff show`。一次性 `wait`（不带 `--follow`）没有对账机制，
+  会从本机游标（换机接管时即 seq 0）起逐条重放。
 
 这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：**醒来先 show**。历史 question 的 ticket 已被消耗，补 reply 会 404——正常，跳过即可；历史 completed 也不代表当前在 `waiting_review`，state 说了算。
 
@@ -160,8 +165,8 @@ handoff wait <task> --notify --timeout 1h
 这条机制有三个必须记住的边界：
 
 - **只 commit 不够，必须 push。** 校验的是「远端能不能 fetch 到这个 commit」。没推上去的提交，远程永远拿不到；未提交的改动更是完全不可见——校验会拿你的 HEAD 去比，而 HEAD 不含工作区的脏改动，所以它会**静默通过**，然后 executor 基于一份没有你最新改动的代码开工。
-- **项目本身就取自 cwd，所以必须在项目目录里发 `dispatch`。** 项目由当前工作目录的 origin 识别，基线同样取自 cwd。未给 `--project` 时，cwd 不是 git 仓库**直接被拒**；显式给了 `--project`（跨项目派发）则只跳过基线校验放行——此时新分支起点退回执行机仓库的 HEAD，风险自担。
-- **新分支的起点是你派发时的本地 HEAD，不是执行机仓库的 HEAD。** agentd 收到基线后，既拿它做存在性校验，也拿它做新分支的起点——两件事出自同一次决议，不会再分叉（B35 之前会：校验的是你的基线，开分支用的是执行机 HEAD，中间可以差出几十个提交而毫无痕迹）。派发成功后 stderr 会打一行 `基线 <短号>`；执行机仓库比这个起点新时还会补上「领先 N 个提交，新分支不含它们」。
+- **项目本身就取自 cwd，所以必须在项目目录里发 `dispatch`。** 项目由当前工作目录的 origin 识别，基线同样取自 cwd。未给 `--project` 时，cwd 不是 git 仓库**直接被拒**。**注意：`--project` 不会跳过基线校验**——跨项目派发时它照样拿 cwd 的 HEAD 去校验目标仓库，会假拒绝；cwd 与目标项目不是同一个仓库时，必须自己加 `--no-sync-check`。
+- **新分支的起点是你派发时的本地 HEAD，不是执行机仓库的 HEAD。** agentd 收到基线后，既拿它做存在性校验，也拿它做新分支的起点——两件事出自同一次决议，不会再分叉（B35 之前会：校验的是你的基线，开分支用的是执行机 HEAD，中间可以差出几十个提交而毫无痕迹）。派发成功后 stderr 会打一行 `分支 <名>，起点 <短号>`（B76 起的三件套文案）；执行机仓库比这个起点新时还会补上「领先 N 个提交，新分支不含它们」。
 - **`--no-sync-check` 关掉的不止是校验。** 它同时关掉起点决议——没有基线可用时，新分支的起点退回执行机仓库当前的 HEAD（很可能是旧的）。只在 cwd 与 `--project` 指定的项目不是同一个仓库时用它。
 
 稳妥的远程派发姿势：
@@ -174,17 +179,31 @@ handoff dispatch --target devbox \
 
 `--base` 仍然可用，用于**刻意**从别处开分支（比如从某个 tag 或更早的提交起）；给了它就以它为准，也不会再提示分叉。
 
+### 纪律块：agentd 自动注入，别手工拼
+
+派发时 agentd 会按 executor **自动**把执行纪律块注入首回合 prompt（B129）：内置
+两版——subagent 版（opencode / claude）与 single-context 版（codex / grok，
+未登记的 executor 也走这版，保守方向）。**不要再手工把纪律块拼到 plan 文件头部**：
+模板会再注入一份，纪律在 prompt 里出现两遍（codex 因常驻 developer instructions
+会有三遍）。
+
+- 按机器覆盖：映射与正文在 Web 控制台改（设置页编正文、开发机详情配
+  executor→纪律映射），落盘即生效，不必重启 agentd。CLI 没有开关。
+- 派发成功后 stderr 回显 `纪律块: <来源>`（如 `内置:single-context` /
+  `配置:my-rules.md`）——这是你确认「注入了哪版」的唯一入口，派发后瞄一眼。
+- 纪律块文件不可用时 agentd 直接拒发（500 带真因），不会静默不注入。
+
 ### 回程：wait 自动 fetch，合并是你的决定
 
-任务结束（`completed` / `failed`）时 `wait` 会自动把远程任务分支同步回来（配置 `sync.auto`，`--no-sync` 可关）；也可以随时手动：
+回合结束（`completed` / `turn_failed`）时 `wait` 会自动把远程任务分支同步回来（配置 `sync.auto` 默认开，`--no-sync` 可关；`--follow` 下**每个回合结束都同步一次**，`archived` 与 `--until-done` 不触发）；也可以随时手动：
 
 ```bash
 handoff pull <task> --target devbox
 ```
 
-`pull` 经 ssh 从执行机 fetch 任务分支到**当前工作目录**的仓库。**只 fetch，不 checkout、不合并**——合并进你的主线是审核决定，handoff 不替你做。
+`pull` 主路径走 agentd 的 **HTTP bundle**（复用已有连接与鉴权，不需要 ssh）；只有对端 agentd 太旧不支持（404）才回落老的 ssh fetch，其他任何错误如实报错、不回落。落到**当前工作目录**的仓库，**只 fetch，不 checkout、不合并**——合并进你的主线是审核决定，handoff 不替你做。
 
-去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 机器配置里的 `user` 字段是 `pull` 用的 ssh 用户名：与本机用户名不一致时必须配，否则 Permission denied；`attach` 走 agentd 的 render 流、不走 ssh，不需要它。
+去程回程都以 cwd 为准，所以 `dispatch` / `wait` / `pull` 最好都在同一个本地仓库目录里发。`--target` 机器配置里的 `user` 字段（ssh 用户名）**只在回落 ssh 老路时**才用得上——对端 agentd 够新时它完全不参与；ssh 老路在 Windows 执行机上不可用。`attach` 走 agentd 的 render 流，从来不需要 ssh。
 
 本机派发（不带 `--target`）完全不走这一套：代码本来就在同一台机器上，基线校验直接跳过，`pull` 也会告诉你「本机任务，无需同步」。
 
@@ -226,7 +245,10 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 | `permission_request` | executor 要执行一个需授权的操作 | 判断后 `reply <task> --ticket <id> --approve` 或 `--deny --reason "..."` |
 | `question` | executor 卡在一个需求取舍上 | `reply <task> --ticket <id> --answer "..."` |
 | `completed` | 一轮干完了，任务进 `waiting_review` | 进入审核：`diff` → 决定 `continue` 还是 `done` |
-| `failed` | 一轮以失败收尾，任务进 `waiting_review`（executor 会话还在） | 与 `completed` 同路：`diff` 取证后 `continue` 续接重试或 `done` 归档。**别急着重新 dispatch**——只有 `show` 确认状态真是 `failed`（stop/启动失败）才需要重派 |
+| `turn_failed` | 一轮以失败收尾，任务进 `waiting_review`（executor 会话还在） | 与 `completed` 同路：`diff` 取证后 `continue` 续接重试或 `done` 归档。follow 订阅**不会退出**，不用重挂。**别急着重新 dispatch** |
+| `failed` | 任务真终结：`stop`、`resume --force`、启动失败、看门狗补正 | follow 随之退出（码 0）。先 `show` 取证；想继续只能重新 `dispatch` |
+| `approval_dropped` | 你**批准**的裁决没送到 executor（回合已结束），agentd 已代回一个 reject | 后果比 deny 丢失重：那一步被打断了。`continue` 让 executor 重跑该步 |
+| `resource_pressure` / `task_proc_pressure` | 执行机进程余量告警 / 单任务进程数越预算 | 看 payload 的 `used/limit`（或 `used/budget`）；连续告警时 `attach` 查 executor 是否在泄漏进程 |
 | `archived` | 任务被 `done` 归档，`payload.note` 是协调者留的完成说明 | 这是任务真正结束的信号。等这个任务的下游会话据此开工；自己是协调者时无需动作。只有 `wait --until-done` 把它当成功信号；`wait --follow` 收到它后随连接正常结束 |
 | `delivery_failed` | 裁决落库了但没送到 executor | **`handoff resume <task>`**（详见排障） |
 | `stalled` | 看门狗：长时间无产出 | `attach` 或 `show` 判断 executor 是真死还是在长跑：真死就 `stop`；若模型其实已干完（如 `attach` 能看到结果、`git log` 有新提交）而事件流停在 `question`/无终态，那是 agentd 断连窗口丢了终态事件——**先 `handoff resume <task>` 对账补回**（自动补发后任务会自然迁移），判不出再 `handoff resume <task> --force` 收口，`stop` 是最后手段 |
@@ -235,9 +257,9 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 ## 审批：批什么，不批什么
 
-`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**一字不差**的同一权限请求会自动复用你先前的 allow（`permission_reuse` 事件留痕，跨任务不复用）；工作区内的文件写入由静态规则自动放行，根本不会来问你。
+`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；工作区内的文件写入由静态规则自动放行，根本不会来问你。
 
-**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否真送达模型，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped` 留痕。
+**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否送达的留痕分执行器：claude 的理由与裁决**同帧送达**，事件历史里**不会**有留痕事件——没有留痕不等于没送达，反而是送得更早；其余 executor（opencode / grok / codex）走带外注入，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped`。
 
 ```bash
 handoff reply <task> --ticket <id> --deny --reason "别装全局包，加到 go.mod 里"
@@ -284,8 +306,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 ```
 
 - `continue` 是**同一会话续接**，executor 的上下文完整保留——不需要在指令里重述前情。
-- `continue` 之后任务回到 `running`；follow 订阅还活着时会继续收到新一轮事件，**不需要重挂**。唯一例外：**failed 事件会让 follow 退出**（退出码 0），失败后 `continue` 要重新挂一条 follow。
-- `done` 归档任务并回收 executor（停进程、删 managed worktree、清任务目录）；`--note` 的说明会写进任务记录与 `archived` 事件，等这个任务的下游会话靠它知道结果。
+- `continue` 之后任务回到 `running`；follow 订阅还活着时会继续收到新一轮事件，**不需要重挂**。回合失败（`turn_failed`）同样不断订阅——只有真终结的 `failed` / `archived` 才让 follow 退出，而那之后也没有 `continue` 可言。
+- `done` 归档任务并回收 executor（停进程、删 managed worktree；**任务目录不删**，留作排查素材）；`--note` 的说明会写进任务记录与 `archived` 事件，等这个任务的下游会话靠它知道结果。对已是 `completed` 的任务重发 `done` 幂等返回 200，不算错。
 
 **`done` 返回成功之前，什么都不要删。** `done` 会因状态不符被拒（409）；如果你已经先手删了任务目录或杀了 executor 进程，就会留下一个 agentd 记着、但资源已经被你拆掉的孤儿，只能手工补清。顺序永远是：先 `done`，看到 `{"ok":true}` 再谈清理。
 
@@ -325,7 +347,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | `可用（版本过旧）` | 能用，但远端 agentd 不支持 status | 想看详情就升级远端；不看也不影响派发 |
 | `target "x" 未在配置 … 中定义` | 你的本机配置问题，不是远端问题 | 补 target 配置 |
 | `dial tcp …: connect: connection refused` | 真的没有 agentd 在跑 | 见下面的红线 |
-| `状态码 401` | agentd 在，但 token 对不上 | 同步两边的 token |
+| `状态码 401`（通用报错，无专门提示） | agentd 在，但 token 对不上 | 同步两边的 token |
 
 退出码：**0 = 能用**（含版本过旧）；**1 = 够不着**。
 
@@ -357,7 +379,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
 | `dispatch` 报「本地工作区有 N 处未提交的已跟踪改动」 | **你本地**（不是执行机）有改动没提交，远程派发的基线不含它们，executor 会基于旧代码开工 | `git commit` 或 `git stash` 后重试；确认这些改动与本次任务无关时加 `--allow-dirty`（放行仍会打印被忽略的文件） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
-| 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「基线」行就是实际起点 |
+| 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
 
@@ -375,7 +397,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | 「短 id 应该也能认吧」 | 精确匹配，没有前缀补全。一定 404。 |
 | 「先删掉任务目录再 done」 | 顺序反了。`done` 可能被拒，先删就留孤儿。 |
 | 「ssh 上执行机手动杀进程/改工作区更快」 | agentd 不知道你改了什么，运行态当场失配。走 CLI。 |
-| 「收到 failed 事件，只能重新 dispatch 了」 | failed 事件 ≠ failed 状态。回合失败进 `waiting_review`，`continue` 能续接，重派才是浪费。 |
+| 「收到 turn_failed，只能重新 dispatch 了」 | 回合失败进 `waiting_review`，`continue` 能续接，重派才是浪费。真要重派的只有 `failed`（stop / 启动失败 / force-reclaim）。 |
+| 「派 plan 前先把纪律块拼到文件头」 | B129 后 agentd 自动注入，手工拼会让纪律出现两遍。看 stderr 的「纪律块: <来源>」确认即可。 |
 | 「拒了就拒了，不用写理由」 | 理由是给模型看的。不给，它就原地重试同样的操作。 |
 | 「reply 报 502，我再 reply 一次」 | 工单已被消耗，第二次必 404。要的是 `resume`。 |
 | 「wait 没动静，是不是挂了？」 | 没有事件就是没有事件。看退出码和 stderr，别瞎重启。 |
@@ -399,3 +422,6 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 - **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。
 - **各 executor 的差异与就绪判据（opencode / claude / grok / codex）**：`README.md` 的「各 executor 须知」。
 - **架构与协议设计**：`docs/superpowers/specs/2026-08-07-handoff-design.md`。
+- **协调者回路之外的子命令**（`frames` 结构化回合帧、`footprint` 进程足迹体检、
+  `machines` / `project` 机器与项目登记、`console` / `sessions` Web 控制台、
+  `upgrade` / `service` 换版与托管、`skill` 同步本 skill）：各命令 `--help`。
