@@ -145,6 +145,26 @@ func (m *systemdManager) rollback(path string) {
 	}
 }
 
+// Start 启动一个已安装的单元，不重写 unit 文件、不 daemon-reload。
+//
+// 单元没装时 systemctl start 会失败，调用方据此回落到 Install。
+func (m *systemdManager) Start() error {
+	if out, err := m.run("systemctl", "start", SystemdUnit); err != nil {
+		m.log.Error("启动 systemd 服务失败", "unit", SystemdUnit,
+			"cause", err, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("启动 systemd 服务失败: %s（%w）", strings.TrimSpace(string(out)), err)
+	}
+	// 复核理由同 Install：start 返回 0 只说明请求被受理，起来即退出照样「成功」
+	if out, err := m.run("systemctl", "is-active", SystemdUnit); err != nil {
+		m.log.Error("服务已触发但未 active", "unit", SystemdUnit,
+			"cause", err, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("服务已触发但未 active（可能起来即退出）: %s（%w）",
+			strings.TrimSpace(string(out)), err)
+	}
+	m.log.Info("systemd 服务已启动", "unit", SystemdUnit)
+	return nil
+}
+
 // Uninstall 停用并删除 unit。本来就没装时返回 nil。
 func (m *systemdManager) Uninstall() error {
 	path, err := m.UnitPath()

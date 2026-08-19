@@ -51,6 +51,16 @@ type Status struct {
 type Manager interface {
 	// Install 生成单元、写盘、加载、启动，并复核真的起来了。失败时回滚。
 	Install(spec Spec) error
+	// Start 启动一个**已安装**的单元，不改动单元定义本身。
+	//
+	// 与 Install 的分工是承重的：Install 负责「让单元存在并跑起来」，为此会
+	// 重写单元定义（Windows 上是删掉任务再重建）；Start 只负责「让已存在的
+	// 单元跑起来」。把两者混为一谈的代价在 Windows 上最明显——每次换版都会
+	// 把计划任务删了重建，用户对任务定义的任何修改和任务历史一并消失。
+	//
+	// 单元没装时返回错误，**不代为安装**：调用方据此决定是否回落到 Install，
+	// 而不是让 Start 悄悄替 Install 干活——那样调用方就再也分不清这两种情形。
+	Start() error
 	// Uninstall 停止并移除单元。单元本来就不在时返回 nil（幂等）。
 	Uninstall() error
 	// Status 查询状态。「没装」是正常答案，不是错误。
