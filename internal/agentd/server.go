@@ -224,6 +224,12 @@ func (s *Server) conf() *config.Config { return s.cfg.Load() }
 // 调用方只读不改（写入方永不原地修改配置，只整体换新）。
 func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
 
+// EnvMapping 返回当前配置里的 agent 名 → env 文件名映射。
+//
+// 供 envfile.Resolver 每次派发时取活值：控制台改完映射不必重启 agentd。
+// 返回的是配置快照里的 map 本体，**调用方不得修改**（写入一律走 swapConf）。
+func (s *Server) EnvMapping() map[string]string { return s.conf().Env }
+
 // SetConfigPath 注入配置文件路径，供写配置时落盘。
 //
 // 参数：

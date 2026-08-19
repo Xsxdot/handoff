@@ -192,7 +192,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger), st, hub
+	return NewManager(st, hub, ads, cfg, nil, nil, approver, newTestGate(t), logger), st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
@@ -407,7 +407,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
@@ -1289,7 +1289,7 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake"},
 		Env:      map[string]string{"fake": "missing.env"},
 	}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 
 	// 先登记一个真实项目让解析通过：env 解析发生在任何 git 动作之前，
 	// 这条断言同时证明了「解析确实排在最前段」——若排到 git 动作之后，
@@ -1341,7 +1341,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 		Env:      map[string]string{"fake": "dev.env"},
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
@@ -1537,7 +1537,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return m, dataDir
 }
 
@@ -1682,7 +1682,7 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	return NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // TestCompensateKeepsBranchWhenWorktreeRemoveFails 验证 worktree 删不掉时

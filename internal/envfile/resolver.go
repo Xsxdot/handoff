@@ -25,27 +25,38 @@ func Dir(dataDir string) string { return filepath.Join(dataDir, "env") }
 
 // Resolver 按 agent 名把配置里的文件名换算成可注入的环境变量。
 //
-// 无状态：每次 For 都重新读盘，因此多个实例之间不会发散（见 For 的热更新说明）。
+// 无状态：每次 For 都重新取映射并重新读盘，因此配置改动与文件改动有同一种
+// 时效——都在下一个任务生效，都不需要重启 agentd。
 type Resolver struct {
-	dir string            // env 文件目录
-	m   map[string]string // agent 名 → 文件名（纯文件名，不含路径）
-	log *slog.Logger
+	dir     string                   // env 文件目录
+	mapping func() map[string]string // 取当前 agent 名 → 文件名映射
+	log     *slog.Logger
 }
 
 // NewResolver 构造 Resolver。
 //
 // 参数：
 //   - dir: env 文件目录，通常取 Dir(cfg.DataDir)
-//   - m: agent 名 → 文件名映射（取自 config 的 env 段）；nil 视为空映射
+//   - mapping: 取当前映射的函数（生产上指向 agentd 的活配置）；nil 视为空映射，
+//     此时所有 agent 都不注入
 //   - log: 日志入口；nil 时退回 slog.Default()
-func NewResolver(dir string, m map[string]string, log *slog.Logger) *Resolver {
+//
+// 注意：mapping 会在每次 For 时被调用，实现方必须是廉价且并发安全的
+// （Server.EnvMapping 读的是 atomic 快照，满足这两条）。
+func NewResolver(dir string, mapping func() map[string]string, log *slog.Logger) *Resolver {
 	if log == nil {
 		log = slog.Default()
 	}
-	if m == nil {
-		m = map[string]string{}
+	if mapping == nil {
+		log.Warn("env 映射取值函数为空，所有 agent 都不会注入环境变量", "dir", dir)
+		mapping = func() map[string]string { return nil }
 	}
-	return &Resolver{dir: dir, m: m, log: log}
+	return &Resolver{dir: dir, mapping: mapping, log: log}
+}
+
+// Static 把一份固定映射包成取值函数，供测试与不需要热更新的调用方使用。
+func Static(m map[string]string) func() map[string]string {
+	return func() map[string]string { return m }
 }
 
 // For 返回该 agent 启动时应注入的环境变量（KEY=VALUE 形式）。
@@ -64,7 +75,7 @@ func NewResolver(dir string, m map[string]string, log *slog.Logger) *Resolver {
 //   - 日志只打 key 名，绝不打值：环境类变量里 HTTPS_PROXY=http://user:pass@host
 //     是正常写法，值里带凭据的概率不低
 func (r *Resolver) For(agent string) ([]string, error) {
-	name := strings.TrimSpace(r.m[agent])
+	name := strings.TrimSpace(r.mapping()[agent])
 	if name == "" {
 		r.log.Debug("agent 未配置 env 文件，跳过注入", "agent", agent)
 		return nil, nil
@@ -105,7 +116,7 @@ func (r *Resolver) For(agent string) ([]string, error) {
 // 才创建，为它拒绝启动太硬；但完全不检查会把问题拖到第一次派发才暴露——WARN 让它
 // 在启动日志里就可见，真正的拒发发生在 Dispatch（见 spec §6）。
 func (r *Resolver) Preflight() {
-	for agent := range r.m {
+	for agent := range r.mapping() {
 		if _, err := r.For(agent); err != nil {
 			r.log.Warn("env 文件预检失败（不阻断启动，派发时会拒发）", "agent", agent, "cause", err)
 		}

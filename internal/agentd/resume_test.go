@@ -254,7 +254,7 @@ func TestResumeTaskAssemblesRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.Env = map[string]string{"fake": "dev.env"}
-	m.env = envfile.NewResolver(envfile.Dir(m.cfg.DataDir), m.cfg.Env, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.env = envfile.NewResolver(envfile.Dir(m.cfg.DataDir), envfile.Static(m.cfg.Env), slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
 		Model: "sonnet", State: proto.TaskStateRunning, ExecutorSession: "sess-1"})
