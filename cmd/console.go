@@ -21,7 +21,6 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -40,17 +39,18 @@ var consoleCmd = &cobra.Command{
 	// 依赖 stdout 恰好一行的契约，多喂一个参数被吞掉会直接破坏那条契约
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
+		defer cleanup()
 		device := consoleDevice
 		if device == "" {
 			// CLI 没有 User-Agent 可推断，用主机名作缺省展示名；
 			// 取不到主机名时留空，由服务端补浏览器名
 			device, _ = os.Hostname()
 		}
-		tk, err := client.New(addr, token).IssueAuthTicket(cmd.Context(), device)
+		tk, err := c.IssueAuthTicket(cmd.Context(), device)
 		if err != nil {
 			return err
 		}

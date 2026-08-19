@@ -37,11 +37,15 @@ var reclaimCmd = &cobra.Command{
 	Short: "回收终态任务残留的 managed worktree（不删分支）",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		cl, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		cl := client.New(addr, token)
+		defer cleanup()
+		addr := "http://relay"
+		if targetName == "" {
+			addr, _, _ = TargetEndpoint()
+		}
 		if len(args) == 0 {
 			return runReclaimList(cmd, cl, addr)
 		}

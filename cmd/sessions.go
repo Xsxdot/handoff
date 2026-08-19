@@ -18,7 +18,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
@@ -28,11 +27,12 @@ var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
 	Short: "列出浏览器会话（handoff console 建立的登录态）",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		list, err := client.New(addr, token).ListSessions(cmd.Context())
+		defer cleanup()
+		list, err := c.ListSessions(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -47,11 +47,12 @@ var sessionsRevokeCmd = &cobra.Command{
 	Short: "吊销指定的浏览器会话（手机丢失时用它，不必换主令牌）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		if err := client.New(addr, token).RevokeSession(cmd.Context(), args[0]); err != nil {
+		defer cleanup()
+		if err := c.RevokeSession(cmd.Context(), args[0]); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "已吊销会话 %s\n", args[0])

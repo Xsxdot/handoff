@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/selfupdate"
 	"github.com/spf13/cobra"
@@ -212,7 +214,52 @@ func TargetEndpoint() (addr, token string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("target %q 未在配置 %s 中定义", targetName, p)
 	}
+	if t.IsRelay() {
+		// Relay targets have no direct agentd address; this placeholder is only
+		// for legacy display paths. Requests use newTargetClient and its tunnel.
+		return "http://relay", t.Token, nil
+	}
 	return "http://" + t.Addr, t.Token, nil
+}
+
+// newTargetClient dispatches the three CLI target forms: local mode keeps the
+// existing direct client, direct targets keep the existing endpoint, and relay
+// targets use a high-entropy token plus a lazy E2E relay Dialer.
+func newTargetClient() (*client.Client, func(), error) {
+	return newTargetClientNamed(targetName)
+}
+
+func newTargetClientNamed(name string) (*client.Client, func(), error) {
+	noop := func() {}
+	if name == "" {
+		addr, token, err := TargetEndpoint()
+		if err != nil {
+			return nil, noop, err
+		}
+		return client.New(addr, token), noop, nil
+	}
+	p := configPath
+	if p == "" {
+		p = config.DefaultPath()
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		return nil, noop, fmt.Errorf("加载配置 %s: %w", p, err)
+	}
+	t, ok := cfg.Targets[name]
+	if !ok {
+		return nil, noop, fmt.Errorf("target %q 未在配置 %s 中定义", name, p)
+	}
+	if !t.IsRelay() {
+		return client.New("http://"+t.Addr, t.Token), noop, nil
+	}
+	if err := relay.CheckTokenEntropy(t.Token); err != nil {
+		slog.Default().Error("relay requires high-entropy token", "target", name)
+		return nil, noop, err
+	}
+	d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", slog.Default())
+	slog.Default().Info("using relay transport", "node", t.Node, "relay_url", t.Relay)
+	return client.NewRelay(d, t.Token), func() { _ = d.Close() }, nil
 }
 
 // LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。

@@ -12,7 +12,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -25,11 +24,12 @@ var continueCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID, instructions := args[0], args[1]
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		if err := client.New(addr, token).Continue(cmd.Context(), taskID, instructions); err != nil {
+		defer cleanup()
+		if err := c.Continue(cmd.Context(), taskID, instructions); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"text/tabwriter"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -26,11 +25,12 @@ var machinesCmd = &cobra.Command{
 	Short: "列出机器与探活结果（本机 + 配置里的 targets）",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		resp, err := client.New(addr, token).Machines(cmd.Context())
+		defer cleanup()
+		resp, err := c.Machines(cmd.Context())
 		if err != nil {
 			return err
 		}

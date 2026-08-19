@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -40,11 +39,12 @@ var replyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		if err := client.New(addr, token).Reply(cmd.Context(), taskID, replyTicketID, answer); err != nil {
+		defer cleanup()
+		if err := c.Reply(cmd.Context(), taskID, replyTicketID, answer); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)

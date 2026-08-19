@@ -174,16 +174,17 @@ func registerProjectBothHops(cmd *cobra.Command, origin, name, localPath, remote
 		slog.Info("项目登记完成", "origin", origin, "scope", "仅本机")
 		return nil
 	}
-	addr, token, err := TargetEndpoint()
+	remoteClient, cleanup, err := newTargetClient()
 	if err != nil {
 		return err
 	}
+	defer cleanup()
 	if remotePath == "" {
 		// 服务端可能 clone 也可能认领已存在的落点（spec §12），CLI 事前无法分辨，
 		// 措辞必须两种结局都成立——写成「克隆」会在认领路径下成为假话。
 		fmt.Fprintf(cmd.ErrOrStderr(), "正在让 %s 落地项目 %s（首次需要 clone，可能较慢）…\n", targetName, origin)
 	}
-	remote, err := client.New(addr, token).ProjectAdd(cmd.Context(), client.ProjectAddOpts{
+	remote, err := remoteClient.ProjectAdd(cmd.Context(), client.ProjectAddOpts{
 		OriginURL: origin, Name: remoteName, Path: remotePath,
 	})
 	if err != nil {
@@ -200,11 +201,11 @@ var projectLsCmd = &cobra.Command{
 	Short: "列出机器上的项目位置（含实际状态）",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		c := client.New(addr, token)
+		defer cleanup()
 		// --tree / --all 走项目树（三层、带探测）。不带 --tree 的输出是 B62 的
 		// 契约（扁平位置表 + 状态列），一个字符都不许改——本分支原样保留
 		if projectTree || projectTreeAll {
@@ -325,11 +326,12 @@ var projectRmCmd = &cobra.Command{
 	Short: "注销一条项目位置（只删登记，不删磁盘上的代码）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		if err := client.New(addr, token).ProjectRemove(cmd.Context(), args[0]); err != nil {
+		defer cleanup()
+		if err := c.ProjectRemove(cmd.Context(), args[0]); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "已注销 %s（磁盘上的代码未动）\n", args[0])
@@ -360,11 +362,12 @@ var projectEditCmd = &cobra.Command{
 		if projectEditName == "" && projectEditPath == "" {
 			return fmt.Errorf("project edit 需要至少一个改动：--name <新引用名> 或 --path <新路径>")
 		}
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		loc, err := client.New(addr, token).PatchProject(cmd.Context(), args[0], projectEditName, projectEditPath)
+		defer cleanup()
+		loc, err := c.PatchProject(cmd.Context(), args[0], projectEditName, projectEditPath)
 		if err != nil {
 			return err
 		}

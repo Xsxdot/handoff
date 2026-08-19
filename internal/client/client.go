@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/coder/websocket"
 )
 
@@ -202,6 +203,23 @@ type Client struct {
 //   - 仅做地址归一化，不做任何网络请求，连接在首次调用时建立
 func New(addr, token string) *Client {
 	return NewWithWSTiming(addr, token, wsInitialBackoff, wsMaxBackoff, wsStableAfter)
+}
+
+// NewRelay creates a client backed by a relay Dialer. The fixed baseURL is an
+// HTTP URL placeholder used to build request paths and WS URLs; routing is done
+// by the Dialer. token remains the agentd Bearer credential as a defense-in-depth
+// layer after the relay's E2E channel is established.
+func NewRelay(d *relay.Dialer, token string) *Client {
+	return &Client{
+		baseURL: "http://relay",
+		token:   token,
+		hc: &http.Client{
+			Transport: d.Transport(),
+		},
+		wsInitialBackoff: wsInitialBackoff,
+		wsMaxBackoff:     wsMaxBackoff,
+		wsStableAfter:    wsStableAfter,
+	}
 }
 
 // NewWithWSTiming 是 New 的 WS 重连节奏可注入变体：测试注入毫秒级退避与
