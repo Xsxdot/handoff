@@ -97,6 +97,37 @@ $psi.EnvironmentVariables['PATH']        = 'C:\Windows\System32;C:\Windows'
 
 跑完看 `$root\local\Programs\handoff\handoff.exe` 是否生成。清理直接删 `$root`。
 
+## 走查前必须先确认：三条前置（版本同步那条路径）
+
+从 2026-08-19 起本文件还覆盖**版本同步与升级**（spec
+`2026-08-19-desktop-cli-sync-and-update-notice-design.md`）。那条路径有三条前置，
+**缺一条整轮走查都是空转而看着一切正常**：
+
+1. **`handoff-desktop.exe` 必须是 release 构建**（带 `-tags embedbin`）。否则
+   `PlanSync` 恒为 `SyncNoEmbed`，同步整条路不跑。判据是日志里
+   `同步对账结果` 那行的 `plan` 字段——看到 `plan=no-embed` 就是构建不对
+2. **已装 CLI 的版本号必须是 `vX.Y.Z` 形态。** 同步的判据是版本比较，而
+   `CompareVersion` 只认三段整数；开发构建自报的是 `web-console-0c75a56c9+b161fix`
+   这种分支+短号，解析不出就走保守分支 `use-existing`，**永远不同步**。
+   判据 `handoff version`，看到分支名就说明装的是开发构建
+3. agentd 是不是 release 构建——见下一节（老条目，仍然有效）
+
+### 取证时别用中文串 grep
+
+ssh 回来的输出里中文会被通道改写，`grep 同步完成` 这类**永远不匹配**，
+而不匹配看起来和"没发生"一模一样。判据一律用退出码、英文字段名或数字：
+
+```powershell
+# 不要这样
+handoff version | Select-String "版本"
+# 要这样
+handoff version | Select-Object -First 1
+```
+
+同理 `$LASTEXITCODE` 不属于「命令没找到」那条判据——命令没找到时它可能压根没被赋值。
+
+---
+
 ## 走查前必须先确认：agentd 是不是 release 构建
 
 薄壳只是个壳，控制台页面是 **agentd 伺服的**。而 agentd 只有用
@@ -197,6 +228,124 @@ w.visibilityTimeout = time.AfterFunc(3*time.Second, func() {
 
 所以：**在 RDP 会话里正常双击如果也 3 秒崩，那才是问题**，请记下来；无头跑
 崩掉是预期的。
+
+## P2 换版后 schtasks 真拉起新版，且主动催缩短了等待
+
+**Windows 与 macOS 在这一项上差别很大，是本条单列的理由。** Windows 的 KeepAlive 是
+用「TimeTrigger 每分钟重复 + `MultipleInstancesPolicy=IgnoreNew`」模拟的
+（`internal/service/windows.go:150` 的 `<Interval>PT1M</Interval>`），**不是 launchd 那种秒回**。
+agentd 自更新退出后最坏要等 60 秒才被拉回来，所以代码里在首次探测失败后主动催一次
+`schtasks /Run`。
+
+准备：让已装的 CLI 比 `.exe` 内嵌的旧。记下当前版本与计划任务的进程。
+
+```powershell
+handoff version | Select-Object -First 1
+Get-Process handoff -ErrorAction SilentlyContinue | Select-Object Id, StartTime
+```
+
+双击 `handoff-desktop.exe`，然后看壳的日志：
+
+```
+已催进程管理器拉起 agentd
+agentd 已带新版本回来 version=v0.3.1 attempts=N
+```
+
+**判据**：
+
+- 两行都出现，且 **`attempts` 明显小于 120**。120 = 60 秒 ÷ 500ms 的轮询间隔，
+  即「完全靠每分钟那次重复触发」的情形。催生效了，`attempts` 应该在几十以内
+- `handoff version` 与 `handoff status` 的版本都变成新的
+- handoff 进程的 **Id 变了**（证明真的重启过，不是只换了磁盘上的文件）
+
+**判否说明什么**：
+
+- `attempts` 接近或超过 120 = 那次主动催没生效，退化成干等重复触发。
+  用户每次升级都要多等最多一分钟
+- 只出现「已催」不出现「已带新版本回来」= 催了但没起来，去看
+  `schtasks /Query /TN handoff-agentd /V /FO LIST` 的「上次结果」栏
+- **「上次结果」是 `0x800710E0`（十进制 `-2147020576`）不代表失败**：
+  那是 `IgnoreNew` 抑制重复触发时写进去的正常值，也是 rc5 那个 bug 的同一个值。
+  见下面「一个已经修掉的坑（rc6 修复）」
+
+---
+
+## P4 有活跃任务时不同步，强制路径走得通
+
+双击时若本机有活跃任务（`running` / `waiting_answer`）：
+
+- 日志 `同步对账结果 plan=blocked … busy=N`，且**没有** `换版完成`
+- 托盘出现「有更新待应用（N 个任务进行中）」
+
+点它 → 面板 → 「带 --force 重试」，四步都要能走到。之后：
+
+- 日志出现 `换版完成` 与 `agentd 已带新版本回来`
+- **执行者进程仍然存活**——这是最要紧的一条判据。B59 V3 在 macOS 上实测过执行者
+  能活过 agentd 重启（当时 16m29s）；Windows 侧用 `prochost` 承载，本条要单独确认
+
+---
+
+## P5 升级面板窗口能出来
+
+托盘 →「升级执行机…」。**判据**：弹出一个独立窗口，逐行出现 `handoff upgrade` 的巡检表。
+
+**判否说明什么**：如果**进程静默消失、没有任何输出**，那是 rc7 那个 bug 的第二次——
+新窗口漏挂了 `WindowRuntimeReady`，`setURL` 导航进一个还没建好的 chromium。
+Wails beta.8 的 `windowsWebviewWindow.setURL` 至今没有 nil 守卫（相邻的 `execJS` 有）。
+这是本次改动新增的第三个 UI 面，而前两个各自都出过一次真机才照得出的 bug。
+
+窗口出来但一片空白是另一回事：vite 的多页入口没生效、`dist/upgrade.html` 没被打进去。
+Go 侧照样编得过，不会有任何构建期报错。
+
+---
+
+## P6 同步失败时控制台**仍然能打开**
+
+**这是本次改动最严重的回归面。** 双击打开应用是整个产品里唯一一个"必须成功"的动作，
+而我们在它前面插了一段会换二进制、重启服务的逻辑。
+
+制造一次必然失败的同步。**任何让落点目录不可写的办法都行**——`release.Activate`
+开头的 `checkDirWritable` 会在那儿实际建一个临时文件来探，失败时给的是一句
+带路径的明确报错，不是扁平的 permission denied。
+
+```powershell
+$p = "$env:LOCALAPPDATA\Programs\handoff"
+icacls $p /deny "$env:USERNAME:(WD)"        # 拒绝写入
+```
+
+> 这条 `icacls` 写法**未在 Windows 上实跑验证过**（清单写于 macOS）。
+> 先确认它真的生效再往下走——在该目录里手动 `New-Item -ItemType File t.tmp`
+> 应当被拒。不生效就换别的办法（改目录属主、把目录换成同名文件等），
+> 判据不变。
+
+双击。**判据**：控制台照常打开；日志 `同步失败，将用现有版本继续打开控制台`；
+托盘出现「上次同步失败，查看详情」，点开能看到原因原文。
+
+```powershell
+icacls $p /remove:d "$env:USERNAME"          # 验完立刻改回来
+```
+
+**判否说明什么**：应用打不开 = spec D8 被破。这是本条路径唯一不可接受的失败模式，
+优先级高于同步本身能不能成功。
+
+---
+
+## 已知且刻意如此（不要当缺陷上报）
+
+与 `macos-desktop-acceptance.md` 同一份清单：
+
+- **「带 --force 重试」对非闸一原因的失败点了也没用**（网络不通、目录只读等）。
+  按钮只按退出码非零就亮，**不解析输出文本**——输出是给人看的中文表格，解析它会在
+  格式一改时静默失效，而失效方式是「按钮再也不出现」，没有任何报错。见 spec §7.2
+- **agentd 被锁在你手上这份 `.exe` 的版本。** 要升到更新的版本必须换安装包，
+  托盘的「有新版 vX.Y.Z 可下载」就是提醒你去换。见 spec §11 风险③
+- **开发构建下同步整条路不跑**，日志里 `plan=no-embed`
+- **已装 CLI 版本号不是 `vX.Y.Z` 时同步永不触发**，日志里 `decision=use-existing`。
+  这是设计要的保守行为（判不出就不覆盖用户手上的），不是缺陷
+- **Windows 上换版后要等最多 60 秒**是计划任务模拟 KeepAlive 的固有代价；
+  代码里那次主动催把它压到几秒，但催失败时会退化回干等。见 P2
+
+---
 
 ## 已经验过的（不用重做）
 
