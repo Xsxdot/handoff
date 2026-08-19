@@ -8,6 +8,7 @@ export interface CardView {
   status: string
   priority: string
   project: string
+  workflow: string
   parent: string
   base_branch: string
   attachments: { kind: string; path: string }[]

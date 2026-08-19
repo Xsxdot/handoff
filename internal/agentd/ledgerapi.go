@@ -91,7 +91,7 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, map[string]any{
 			"id": view.ID, "title": view.Title, "status": view.Status, "priority": view.Priority,
-			"project": view.Project, "parent": view.ParentID, "base_branch": view.BaseBranch,
+			"project": view.Project, "workflow": view.WorkflowName, "parent": view.ParentID, "base_branch": view.BaseBranch,
 			"attachments": view.Attachments, "following": view.Following,
 			"blocked": view.Blocked, "blocked_by": view.BlockedBy, "needs": view.NeedsReason,
 			"open_decisions": view.OpenDecisions, "conflict": conflict,

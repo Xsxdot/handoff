@@ -3,7 +3,7 @@ import type { CardView } from '../../api/ledger'
 import { boardColumns, cardsInColumn, filterNeeds, needsAttention } from './columns'
 
 const card = (over: Partial<CardView>): CardView => ({
-  id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', parent: '',
+  id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', workflow: 'bug', parent: '',
   base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
   needs: '', open_decisions: 0, conflict: false, open_tickets: 0, ...over,
 })
