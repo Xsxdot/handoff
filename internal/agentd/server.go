@@ -202,13 +202,20 @@ func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
 // 执行文件、rename 二进制、停进程。
 func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
-// SetManager 注入任务管理器，激活 dispatch/continue/done 三条路由。
+// SetManager 把任务管理器挂到 Server 上。
 //
 // 注意：
 //   - manager 依赖本服务内部的 hub 与外部 adapter，必须在 NewServer 之后构造并注入
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
+//   - 挂接时会把 Server 的活配置取值函数交给 Manager。Manager 构造时收到的是一份
+//     配置**快照**指针，而 swapConf 换的是新指针，读快照永远拿不到控制台改过的值
+//     （B160 §4.2）。这一步是「保存后下一个任务即生效」成立的前提。
 func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
+	if m != nil {
+		m.conf = s.conf
+		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
+	}
 }
 
 // conf 返回当前配置快照。

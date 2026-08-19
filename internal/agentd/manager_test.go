@@ -480,6 +480,82 @@ func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	}
 }
 
+// TestManagerReadsLiveExecutorDefault 钉住：swapConf 改完缺省执行者后，
+// Manager 立即用新值解析 adapter，**不需要重建 Manager、不需要重启 agentd**。
+//
+// 为什么这条是承重的：m.cfg 存的是 NewManager 那一刻的 *config.Config 指针，
+// 而 swapConf 做的是 next := *old + s.cfg.Store(&next)——换的是新指针，
+// m.cfg 永远停在构造那一刻。B157/B158 的热更新走的是各自的取值函数旁路，
+// Executor.Default 没有那条旁路。
+func TestManagerReadsLiveExecutorDefault(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token: testToken, DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake", Model: "m-fake"},
+	}, discardLogger())
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	ads := map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}}
+	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
+		env.srv.DisciplineMapping, nil, newTestGate(t), discardLogger())
+	env.srv.SetManager(mgr) // 注入活配置就发生在这一刻
+
+	name, _, err := mgr.resolveExecutor("")
+	if err != nil || name != "fake" {
+		t.Fatalf("改之前 name = %q, err = %v，想要 fake", name, err)
+	}
+	if got := mgr.resolveModel("", "fake"); got != "m-fake" {
+		t.Fatalf("改之前 model = %q，想要 m-fake", got)
+	}
+
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		c.Executor = config.ExecutorConfig{Default: "opencode", Model: "m-oc"}
+		return nil
+	}); err != nil {
+		t.Fatalf("swapConf: %v", err)
+	}
+
+	name, _, err = mgr.resolveExecutor("")
+	if err != nil || name != "opencode" {
+		t.Fatalf("改之后 name = %q, err = %v，想要 opencode（Manager 必须读活配置）", name, err)
+	}
+	// model 跟着 default 一起换作用对象：现在 fake 不再是缺省，不该再套配置模型
+	if got := mgr.resolveModel("", "opencode"); got != "m-oc" {
+		t.Fatalf("改之后 opencode 的 model = %q，想要 m-oc", got)
+	}
+	if got := mgr.resolveModel("", "fake"); got != "" {
+		t.Fatalf("改之后 fake 的 model = %q，想要空串（它已不是缺省执行者）", got)
+	}
+}
+
+// TestStatusReportsLiveExecutorDefault 钉住 status.go 那两处读点。
+//
+// 漏改它的症状很隐蔽：保存成功、config.yaml 也对，但开发机列表上的「默认」
+// 标记来自 GET /api/status 的 default_executor，一直显示旧值——看起来像没保存成功。
+func TestStatusReportsLiveExecutorDefault(t *testing.T) {
+	env := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token: testToken, DataDir: t.TempDir(),
+		Executor: config.ExecutorConfig{Default: "fake"},
+	}, discardLogger())
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	mgr := NewManager(env.st, env.srv.Hub(),
+		map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}},
+		env.srv.conf(), env.srv.DisciplineMapping, nil, newTestGate(t), discardLogger())
+	env.srv.SetManager(mgr)
+
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		c.Executor.Default = "opencode"
+		return nil
+	}); err != nil {
+		t.Fatalf("swapConf: %v", err)
+	}
+	var st proto.StatusResp
+	if code := env.getJSON(t, "/api/status", &st); code != 200 {
+		t.Fatalf("code = %d, want 200", code)
+	}
+	if st.DefaultExecutor != "opencode" {
+		t.Fatalf("default_executor = %q，想要 opencode", st.DefaultExecutor)
+	}
+}
+
 // TestStopRemovesManagedWorktree 覆盖 managed worktree 泄漏路径 (b)：被 stop 的任务
 // 落 failed，managed worktree 必须随 stop 删除——否则 stop 过的任务永远归档不了、
 // worktree 永久残留。任务分支必须保留（stop 不丢工作）。
