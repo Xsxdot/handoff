@@ -196,12 +196,11 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   generate:icons:
-    summary: Generates Mac `.icns` and Windows `.ico` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
+    summary: Generates Mac `.icns` and Windows `.ico` from build/appicon.png。
     run: once
     dir: build
     sources:
       - "appicon.png"
-      - "appicon.icon"
     generates:
       - "darwin/icons.icns"
       - "windows/icon.ico"
@@ -212,7 +211,19 @@ tasks:
       # 把图标编进资源，文件不在就整条构建断在准备阶段。
       # 产物与 darwin/icons.icns 同性质（由 appicon.png 生成、已入 .gitignore），
       # 不入库。
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin -windowsfilename windows/icon.ico
+      # **刻意不带 -iconcomposerinput / -macassetdir。** 那条路会产出 Assets.car，
+      # 而 Info.plist 的 CFBundleIconName 让 macOS 优先用它——Icon Composer 不是
+      # 「把图放上去」，是把 SVG 当一层去合成：叠中性阴影、高光、半透明，再按
+      # position.scale 缩放。对一个扁平品牌标志，结果与原图差得很远（2026-08-19
+      # 实测：字形明显偏小、发灰、带投影）。
+      #
+      # 代价说清楚：放弃 macOS 26 的分层/着色图标变体，换取「应用图标就是
+      # build/appicon.png 本身」。品牌标志自带圆角底板与固定配色，本来也不该
+      # 被系统着色成灰的。
+      #
+      # 与 darwin/Info.plist 是一对：那边不能有 CFBundleIconName，否则 macOS 会
+      # 去找一个不存在的资源目录。由 desktop_icon_test.go 钉住两者一致。
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico
 
   dev:frontend:
     summary: Runs the frontend in development mode
