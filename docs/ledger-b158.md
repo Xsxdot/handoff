@@ -16,3 +16,4 @@
 - 2026-08-19 Task 7 完成：GET/PUT /api/env/file，正文读写、哈希冲突与写前 Parse 校验；spec PASS / quality PASS，无修复轮；提交范围：62f29911..HEAD（Task 7）。
 - 2026-08-19 Task 8 完成：PUT /api/env/mapping 两档落盘与不重建 Manager 热更新；spec PASS / quality PASS，无修复轮；全包仍仅有基线三条 status/footprint 失败；提交范围：43ec13c7..HEAD（Task 8）。
 - 2026-08-19 Task 9 完成：抽出 BlockEditor、Discipline 409 改 conflict 布尔、前端 env 五个 API 函数；spec PASS / quality PASS，无修复轮；提交范围：ee378bd5..HEAD（Task 9）。
+- 2026-08-19 Task 10 完成：设置页 Env 文件分区，默认显示变量清单，正文按需编辑；spec PASS / quality PASS，无修复轮；验证：settings 18 tests、tsc、eslint 均通过；提交范围：bf8f3e8f..HEAD（Task 10）。
