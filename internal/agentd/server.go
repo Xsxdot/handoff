@@ -243,7 +243,9 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 //
 // 注意：
 //   - 落盘成功才换快照；落盘失败时内存未曾改变——绝无「内存有、磁盘没有」的窗口
-//   - 只深拷贝 Targets 这一层。其余字段在 agentd 运行期不可变，共享是安全的
+//   - 深拷贝 Targets 与 Discipline 两层——它们在 agentd 运行期可被写接口修改。
+//     **新增运行期可变字段时必须在此补一层深拷**：漏了不会有测试变红，但读者
+//     会看到改到一半的配置，与 conf() 承诺的「快照自洽」直接冲突
 func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -253,6 +255,10 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	next.Targets = make(map[string]config.Target, len(old.Targets)+1)
 	for k, v := range old.Targets {
 		next.Targets[k] = v
+	}
+	next.Discipline = make(map[string]string, len(old.Discipline)+1)
+	for k, v := range old.Discipline {
+		next.Discipline[k] = v
 	}
 	if err := mutate(&next); err != nil {
 		return err
@@ -266,7 +272,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
 	s.cfg.Store(&next)
-	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets))
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets), "discipline", len(next.Discipline))
 	return nil
 }
 
