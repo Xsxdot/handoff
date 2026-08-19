@@ -1,10 +1,18 @@
-# handoff
+<p align="center">
+  <img src="docs/assets/handoff-mark.svg" width="128" alt="handoff logo">
+</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">handoff</h1>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-**Hand an implementation plan to another AI. You just review.**
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license"></a>
+</p>
+
+<p align="center"><strong>Hand an implementation plan to another AI. You just review.</strong></p>
 
 handoff is a CLI-only, two-role collaboration tool. You — or any coding-agent session: Claude Code, opencode, grok, and codex all work — play the **coordinator**: write the plan, dispatch the task, rule on permissions, review the changes. The **executor** (opencode / Claude Code / grok / codex) does the actual work in its own independent session — on the same machine, or on any dev box you can reach over the network (see "Connecting a Remote Executor Machine").
 
