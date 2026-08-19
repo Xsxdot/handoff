@@ -30,6 +30,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/pathenv"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -88,8 +89,8 @@ var openConsoleFn func()
 // 能是幂等的。
 var (
 	trayMu      sync.Mutex
-	traySync    shell.SyncOutcome // 最近一次对账的结果
-	traySyncErr error             // 最近一次同步失败的原因，nil 表示没失败
+	traySync    shell.SyncOutcome // 最近一次对账的结果，也是状态上报的数据源
+	traySyncErr error             // 最近一次同步失败的原因，也是状态上报的数据源
 	trayLatest  string            // 发现的新版 tag，空串表示没有
 	trayApp     *application.App
 	trayTray    *application.SystemTray
@@ -160,6 +161,9 @@ func main() {
 		syncCtx, syncCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		out := shell.SyncOnOpen(syncCtx, openSyncDeps(ep))
 		syncCancel()
+		trayMu.Lock()
+		traySync, traySyncErr = out, out.Err
+		trayMu.Unlock()
 		switch {
 		case out.Err != nil && out.Plan == shell.SyncSkip:
 			// 这一支是 agentd 根本起不来或定位不到二进制——控制台加载不了，
@@ -240,6 +244,9 @@ func main() {
 	// 之前走到 showError（如握手 401）会 nil deref panic（实测复现）。
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		go openConsole()
+		// 上报自身状态供控制台读取。放在 openConsole 之后、独立 goroutine：
+		// 它要发 HTTP、可失败，绝不能挡在打开控制台前面（与新版检查同一条纪律）。
+		go runDesktopReporter()
 		// 新版检查独立于同步：它要出网、可失败，绝不能挡在打开控制台前面。
 		// 单开 goroutine，结果到了再刷托盘
 		go func() {
@@ -409,6 +416,7 @@ func noteSyncFailed(out shell.SyncOutcome) {
 	traySync, traySyncErr = out, out.Err
 	trayMu.Unlock()
 	rebuildTray()
+	reportDesktopStateNow()
 }
 
 // noteSyncBlocked 记录一次被闸一拦下的同步并刷新托盘。
@@ -417,6 +425,90 @@ func noteSyncBlocked(out shell.SyncOutcome) {
 	traySync, traySyncErr = out, nil
 	trayMu.Unlock()
 	rebuildTray()
+	reportDesktopStateNow()
+}
+
+// reportDesktopStatePut 保存 reporter 使用的单向 PUT 函数。
+//
+// reporter 依赖只有在配置可读时才会装配；同步回调可能更早到达，因此用锁保护
+// 可选函数，未装配时立即上报安全地退化为 no-op。
+var (
+	desktopReportMu  sync.RWMutex
+	desktopReportPut func(context.Context, proto.DesktopState) error
+)
+
+// reportDeps 装配薄壳状态上报的 agentd 客户端依赖。
+//
+// 参数：ep 是 shell.Resolve 得到的地址与令牌；令牌只进入 client，不进入日志。
+// 返回：ReportDeps，供 RunReporter 与立即上报共用。
+func reportDeps(ep shell.Endpoint) shell.ReportDeps {
+	c := client.New(ep.Addr, ep.Token)
+	return shell.ReportDeps{
+		Put: func(ctx context.Context, st proto.DesktopState) error {
+			return c.PutDesktopState(ctx, st)
+		},
+	}
+}
+
+// runDesktopReporter 在配置完成时启动单向状态上报循环。
+//
+// 注意：配置缺失或读取失败只记录 Debug 并退出；首次向导与控制台加载不应被
+// 这条锦上添花的链路拖住。
+func runDesktopReporter() {
+	ep, state, err := shell.Resolve("")
+	if err != nil {
+		logger.Debug("读取上报用配置失败，跳过薄壳状态上报", "cause", err)
+		return
+	}
+	if state != shell.StateConfigured {
+		logger.Debug("薄壳尚未配置，跳过状态上报")
+		return
+	}
+	d := reportDeps(ep)
+	desktopReportMu.Lock()
+	desktopReportPut = d.Put
+	desktopReportMu.Unlock()
+	shell.RunReporter(context.Background(), logger, snapshotDesktopState, d)
+}
+
+// reportDesktopStateNow 立即上报一次最新快照，不阻塞同步回调。
+func reportDesktopStateNow() {
+	desktopReportMu.RLock()
+	put := desktopReportPut
+	desktopReportMu.RUnlock()
+	if put == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := put(ctx, snapshotDesktopState()); err != nil {
+			logger.Warn("立即上报薄壳状态失败", "cause", err)
+		}
+	}()
+}
+
+// snapshotDesktopState 从托盘保护的同步结论组装线上状态。
+//
+// 返回：只含版本与同步结论的 proto.DesktopState；版本为空时控制台不会提示更新。
+// 注意：SyncBusy 只在 blocked 时保留，探测失败沿用 -1，不把未知伪装成 0。
+func snapshotDesktopState() proto.DesktopState {
+	trayMu.Lock()
+	out, syncErr := traySync, traySyncErr
+	trayMu.Unlock()
+
+	st := proto.DesktopState{AppVersion: embedbin.Version, SyncPlan: "skip", SyncBusy: 0}
+	switch {
+	case syncErr != nil:
+		st.SyncPlan = "failed"
+		st.SyncError = syncErr.Error()
+	case out.Plan == shell.SyncBlocked:
+		st.SyncPlan = "blocked"
+		st.SyncBusy = out.Busy
+	case out.Plan == shell.SyncDo:
+		st.SyncPlan = "done"
+	}
+	return st
 }
 
 // showBlockedPanel 打开面板，说明为什么没同步，并提供强制入口。

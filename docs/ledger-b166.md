@@ -49,3 +49,14 @@
 - 双裁决第 1 轮：spec 符合，latest 共用 24h CLICheck 缓存，下载按 DesktopAssetName、按名校验、失败删包、并发锁、平台 opener 与旧包清理均落地；代码质量通过，无修复轮次。
 - 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；`go test ./internal/agentd/`：`ok github.com/Xsxdot/handoff/internal/agentd 104.406s`。
 - 提交范围：`internal/agentd/updatedownload.go`、`internal/agentd/updatedownload_test.go`、`internal/proto/desktop.go`、`internal/agentd/server.go` 与本 ledger，提交信息按计划为 `feat(agentd): 下载并校验桌面端安装包，下完唤起文件管理器`。
+
+## Task 4：薄壳上报自身状态
+
+- 根模块 client 定向验证：`go test ./internal/client/ -run TestPutDesktopState -v`：`PASS`，`ok github.com/Xsxdot/handoff/internal/client (cached)`；断言 PUT 方法、路径、Bearer 与 JSON body。
+- reporter 定向验证：`cd desktop && go test ./internal/shell/ -run TestReporter -v`：两个用例均 `PASS`，`ok github.com/Xsxdot/handoff/desktop/internal/shell (cached)`。
+- 双裁决第 1 轮：spec 符合，client 单向 PUT、10s reporter、失败继续退避、每轮读取快照、main.go 的版本/同步结论组装与失败/阻塞立即上报均落地；代码质量通过，无修复轮次。
+- 收尾静态验证：`gofmt -l .` 无输出；`go vet ./...` 无输出。
+- 实际全包命令 `go test ./internal/client/` 失败，原始报错：`--- FAIL: TestCursorRootFallsBackToCwdWhenHomeUnwritable`；`根 = ".../001/.handoff/cursors"，want ".../002/.handoff/cursors"（应降级到 cwd）`；`--- FAIL: TestCursorRootErrorNamesBothPaths`；`两处都不可写时必须报错，不得静默`；包结果 `FAIL github.com/Xsxdot/handoff/internal/client 9.101s`。
+- 实际允许的 desktop 全包命令 `cd desktop && gofmt -l . && go test ./internal/...` 失败，原始报错：`--- FAIL: TestSyncOnOpenOrderIsLoadBearing`；`一切顺利时不该有错误：创建临时文件: open /tmp/.handoff-sync-2396126359: read-only file system`；包结果 `FAIL github.com/Xsxdot/handoff/desktop/internal/shell 0.075s`。
+- main.go 改动未经编译验证，原因：执行机缺 Wails 构建依赖；按 Global Constraints 由 macOS 审核者验证。
+- 提交范围：`internal/client/desktop.go`、`internal/client/desktop_test.go`、`desktop/internal/shell/report.go`、`desktop/internal/shell/report_test.go`、`desktop/main.go` 与本 ledger，提交信息按计划为 `feat(desktop): 薄壳单向上报自身状态，10s 一次`。
