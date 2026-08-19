@@ -478,3 +478,74 @@ Last Result:   267009
 		})
 	}
 }
+
+// 任务在跑、但「上次结果」已被 IgnoreNew 的拒绝码覆盖时，Running 仍须为 true。
+//
+// 这条钉的是 2026-08-19 win-b37 上抓到的真实翻转，也是本判据最容易被误判成
+// 「已经验过了」的地方：**判据只在 agentd 生命的头 60 秒内成立**。
+//
+// 单元为了模拟 KeepAlive 用的是「TimeTrigger 每分钟重复 + IgnoreNew」。agentd
+// 起来之后，下一个分钟边界上调度器会拒掉那次重复触发，并把这次「拒绝」当作
+// 一次启动结果写进「上次结果」——于是 267009 被 0x800710E0 覆盖，此后再也不
+// 出现。实测（每 5 秒采样，全程 Status: Running，进程一直活着）：
+//
+//	[10:34:57] Status: Running | Last Result: 267009
+//	[10:35:02] Status: Running | Last Result: -2147020576   ← 分钟边界
+//	[10:35:32] Status: Running | Last Result: -2147020576
+//
+// 判错的代价不是「少报一个状态」：EnsureRunning 会据此判定 agentd 没跑并调
+// Install，而 Install 的 `schtasks /Create /F` 是删掉重建——任务与活着的 agentd
+// 就此失联，每分钟的重复触发开始真的拉起新 agentd，撞 DataDir 锁退出，一分钟
+// 一个控制台窗口。桌面薄壳每次启动都会走一遍。
+func TestWindowsStatusRunningWhenLastResultIsAlreadyRunningRefusal(t *testing.T) {
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(string, ...string) ([]byte, error) {
+		// win-b37 原文形状（两个触发器各印一段，这里取一段就够）
+		return []byte("TaskName:      \\handoff-agentd\r\n" +
+			"Status:        Running\r\n" +
+			"Last Result:   -2147020576\r\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Running {
+		t.Fatal("上次结果是 0x800710E0（因已在运行而拒绝本次触发）时必须判在跑；" +
+			"判成没跑会让 EnsureRunning 去重建任务，把活着的 agentd 从托管里摘掉")
+	}
+}
+
+// 拒绝码同样不能靠文本认：中文机器上字段名与 Status 取值都会本地化，
+// 而 -2147020576 是数值常量，跨语言不变。
+func TestWindowsStatusRefusalCodeIsLocaleProof(t *testing.T) {
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(string, ...string) ([]byte, error) {
+		return []byte("任务名:    \\handoff-agentd\r\n状态:      正在运行\r\n上次结果:  -2147020576\r\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Running {
+		t.Fatal("中文输出下拒绝码判据必须照样成立")
+	}
+}
+
+// 拒绝码不得被子串匹配误伤：真实退出码里不会出现它，但别的字段（如时间戳、
+// 路径）万一含有这串数字也不该被认成在跑。这条钉的是「判据要够窄」。
+func TestWindowsStatusNotRunningOnPlainFailureCode(t *testing.T) {
+	m, _, _ := newTestWindows(t, "", nil)
+	m.run = func(string, ...string) ([]byte, error) {
+		// 撞锁退出的真实形状：Ready + 退出码 1
+		return []byte("TaskName:      \\handoff-agentd\r\n" +
+			"Status:        Ready\r\n" +
+			"Last Result:   1\r\n"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Running {
+		t.Fatal("退出码 1（撞 DataDir 锁）必须判成没跑")
+	}
+}

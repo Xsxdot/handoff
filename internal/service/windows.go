@@ -69,7 +69,12 @@ func newWindows(log *slog.Logger) *windowsManager {
 		},
 		mkdirAll: os.MkdirAll,
 		run: func(name string, args ...string) ([]byte, error) {
-			return exec.Command(name, args...).CombinedOutput()
+			c := exec.Command(name, args...)
+			// 桌面薄壳是 GUI 子系统进程，没有自己的控制台：不加这一下，
+			// 每 spawn 一次 schtasks 就在用户屏幕上闪一个黑窗口，而 Install
+			// 的复核轮询一次要 spawn 十几次。
+			hideConsole(c)
+			return c.CombinedOutput()
 		},
 		writeFile: func(path string, data []byte, perm uint32) error {
 			return os.WriteFile(path, data, os.FileMode(perm))
@@ -361,21 +366,50 @@ func (m *windowsManager) Status() (Status, error) {
 }
 
 // schedTaskRunning 是 Win32 的 SCHED_S_TASK_RUNNING（0x41301），schtasks 在
-// 「上次结果」一栏用它表示任务此刻正在运行。
+// 「上次结果」一栏用它表示这次启动的结果是「实例已拉起并仍在跑」。
 //
 // 用十进制字面量而不是 0x41301：schtasks 的输出就是十进制。
 const schedTaskRunning = "267009"
+
+// schedTaskAlreadyRunning 是 HRESULT 0x800710E0（十进制 -2147020576，
+// 即 HRESULT_FROM_WIN32(4320)，`net helpmsg 4320` 的原文是
+// "The operator or administrator has refused the request"）。
+//
+// **它是本单元「已在运行」最主要、也最长时间成立的证据**，不是异常情况。
+// taskXML 用「TimeTrigger 每分钟重复 + MultipleInstancesPolicy=IgnoreNew」
+// 模拟 KeepAlive；agentd 起来之后，下一个分钟边界上调度器会因为已有实例而
+// 拒掉那次重复触发，并把这次拒绝当作一次启动结果写进「上次结果」。于是
+// 267009 只在 agentd 生命的头 60 秒内可见，此后一直是这个拒绝码。
+const schedTaskAlreadyRunning = "-2147020576"
 
 // taskIsRunning 判断 schtasks 的详细输出是否表示任务正在运行。
 //
 // 参数：out 为 `schtasks /Query /V /FO LIST` 的原文
 //
 // 为什么是子串匹配而不是解析字段：字段名会随系统语言变化（英文
-// `Last Result`、中文「上次结果」），按名字取值等于把判据绑死在一种语言上。
-// 而 267009 这个数值只会出现在「上次结果」里——它既不是时间戳也不是路径，
-// 误命中其它字段的可能性可以忽略。
+// `Last Result`、中文「上次结果」），按名字取值等于把判据绑死在一种语言上；
+// Status 一列的**取值**同样会本地化（中文机器是「正在运行」）。而这两个数值
+// 跨语言不变——它们既不是时间戳也不是路径，误命中其它字段可以忽略。
+//
+// **两个码都要认，只认 267009 是错的。** 2026-08-19 win-b37 实测（每 5 秒采样，
+// 全程 Status: Running、进程一直活着）：
+//
+//	[10:34:57] Last Result: 267009
+//	[10:35:02] Last Result: -2147020576   ← 分钟边界，此后永远是它
+//
+// 少认后者的代价不是「状态少报一档」：EnsureRunning 会据此判 agentd 没跑并调
+// Install，而 Install 的 `schtasks /Create /F` 是删掉重建——任务与活着的 agentd
+// 就此失联，每分钟的重复触发开始真的拉起新 agentd，撞 DataDir 锁退出，一分钟
+// 一个控制台窗口，Install 自己的 5s 复核也必然失败。桌面薄壳每次启动踩一遍。
+//
+// 明确接受的局限：拒绝码证明的是「上一次触发时有实例在跑」，而不是此刻。单元
+// 每分钟触发一次，所以这个证据最多陈旧 60 秒——agentd 刚死的那不到一分钟里会
+// 判成还在跑，而那一分钟正是单元自己要把它拉回来的时间，判「在跑」并不算错。
+// 任务被手工 Disable 时不再有触发，拒绝码会永久停在那里；此时判据会假阳性，
+// 后果是薄壳报「无法连接 agentd」而不是去重建托管——比反过来安全。
 func taskIsRunning(out string) bool {
-	return strings.Contains(out, schedTaskRunning)
+	return strings.Contains(out, schedTaskRunning) ||
+		strings.Contains(out, schedTaskAlreadyRunning)
 }
 
 // UnitReferences 报告已注册的计划任务是否指向 exePath 这个二进制。
