@@ -8,6 +8,21 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc8] - 2026-08-19
+
+**预发布。** 内容同 rc7，外加桌面端应用图标。
+
+### 变更
+
+- **桌面端图标换成 handoff 品牌标志**（此前是 Wails 脚手架自带的默认图标）。
+  两个输入源一起换：`build/appicon.png` 由品牌 SVG 渲染成 1024（不是把 512
+  的位图拉大），驱动 `windows/icon.ico` 与 `darwin/icons.icns`；
+  `build/appicon.icon` 是 macOS Icon Composer 的分层格式，它要的是**纯字形**、
+  底板由清单里的 `fill` 出，所以那一层去掉了圆角底板，否则会叠成板中板。
+
+  Windows 托盘图标不需要改代码——`systemtray_windows.go` 的取图优先级是
+  「自定义图标 > 默认应用图标 > 内置图标」，换掉 exe 的图标资源即可。
+
 ## [v0.3.0-rc7] - 2026-08-19
 
 **预发布。** 内容同 rc6，外加一处 Windows 桌面薄壳的真 bug 修复——由 rc6 的
