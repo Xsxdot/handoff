@@ -554,6 +554,13 @@ jobs:
             EXTRA_TAGS=embedbin \
             EXTRA_LDFLAGS="-X=github.com/Xsxdot/handoff/desktop/internal/embedbin.Version=${TAG}"
 
+          # 还原被上一步 plutil 改过的 Info.plist。**这一步是必需的，不是洁癖**：
+          # 本 job 末尾有「确认工作区干净」的门，而 plutil 改的是仓库里被跟踪的
+          # 文件——不还原，job 必定在那道门上失败（rc11 第一次就是这么挂的）。
+          # 还原必须排在 package 之后：Info.plist 此时已经拷进 .app，改回源文件
+          # 不影响产物。
+          git checkout -- desktop/build/darwin/Info.plist
+
       # 第三步：签 + 公证 bundle。**不用 --deep**：bundle 里没有嵌套代码项
       #（create:app 只放一个可执行文件 + icns + Info.plist），内嵌的 handoff 是
       # go:embed 进可执行文件的字节块、不是 bundle 里的文件，--deep 对它没有

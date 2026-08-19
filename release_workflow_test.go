@@ -665,4 +665,31 @@ func TestDarwinAppCarriesRealVersion(t *testing.T) {
 	if iInject > iBuild {
 		t.Error("版本注入排在了 package 之后，构建读到的还是旧值")
 	}
+
+	// **改了被跟踪的文件就必须还原**，否则本 job 末尾的「确认工作区干净」必挂。
+	//
+	// rc11 第一次发布就是栽在这里：注入步骤本身完全正确、上面几条断言全绿，
+	// 但它与另一个 step 的相互作用没人管——契约测试只看了「这一步对不对」，
+	// 没看「这一步会不会把别的门弄挂」。凡是在 CI 里改仓库内被跟踪文件的步骤，
+	// 都要连着问一句：这个 job 有没有干净门？
+	restore := "git checkout -- desktop/build/darwin/Info.plist"
+	if got := strings.Count(wf, restore); got != 1 {
+		t.Errorf("release.yml 里 %q 出现 %d 次，想要 1 次——"+
+			"plutil 改的是仓库里被跟踪的文件，不还原，末尾的「确认工作区干净」必挂", restore, got)
+	}
+	iRestore := strings.Index(wf, restore)
+	if iRestore < 0 {
+		return
+	}
+	if iRestore < iBuild {
+		t.Error("还原排在了 package 之前，package 组装 .app 时读到的就是被还原后的占位版本号")
+	}
+	// 还原必须排在那道干净门之前才有意义。取 package 之后的第一处干净检查。
+	rel := strings.Index(wf[iBuild:], `out="$(git status --porcelain)"`)
+	if rel < 0 {
+		t.Fatal("找不到 package 之后的「确认工作区干净」步骤")
+	}
+	if iClean := iBuild + rel; iRestore > iClean {
+		t.Error("还原排在了「确认工作区干净」之后，那道门还是会挂")
+	}
 }
