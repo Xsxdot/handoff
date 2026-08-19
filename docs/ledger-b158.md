@@ -11,3 +11,4 @@
 - 2026-08-19 Task 2 完成：Resolver 改吃活映射、Static、Server.EnvMapping、Manager/agentd 构造点接线；spec PASS / quality PASS，无修复轮；基线既有失败（HEAD~1 同样失败）：TestStatusFillsProcsForActiveTasks、TestFootprintAllCoversArchivedTasks、TestFootprintAllReportsVerdict；提交范围：49aa21ee..HEAD（Task 2）。
 - 2026-08-19 Task 3 完成：swapConf 深拷 Env 并在配置落盘日志加入 env 计数；spec PASS / quality PASS，无修复轮；提交范围：efea66a3..HEAD（Task 3）。
 - 2026-08-19 Task 4 完成：proto Env 结构、fixture 与 TS 类型/契约测试；spec PASS / quality PASS，无修复轮；提交范围：70bc87d3..HEAD（Task 4）。
+- 2026-08-19 Task 5 完成：GET /api/env 文件列表与 executor 两档并集；spec PASS / quality PASS，无修复轮；提交范围：90bdc617..HEAD（Task 5）。
