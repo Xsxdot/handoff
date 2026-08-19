@@ -9,6 +9,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/flynn/noise v1.1.0
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/yamux v0.1.2
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
