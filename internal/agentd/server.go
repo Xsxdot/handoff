@@ -102,6 +102,15 @@ type Server struct {
 	sessionRecheck time.Duration
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// latestFetch 查 GitHub latest release；更新提示与下载共用 selfupdate 缓存。
+	latestFetch func(context.Context) (release.Release, error)
+	// downloadMu 保护下载状态快照；下载 I/O 不持锁，否则 GET 进度会被阻塞。
+	downloadMu       sync.Mutex
+	downloadState    *proto.DownloadState
+	downloadChecksum func(context.Context, string, string) (string, error)
+	downloadFetch    func(context.Context, string, string) ([]byte, string, error)
+	downloadOpen     func(string) error
+	downloadPlatform func() (string, string)
 	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
 	pull *pullTracker
 	// pullBaseCtx 是后台自拉的基准上下文。
@@ -150,6 +159,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		}
 	}
 	inst := release.NewInstaller(log, tr)
+	releaseClient := release.NewClient(tr)
 	s := &Server{
 		st:             st,
 		hub:            NewHub(),
@@ -160,6 +170,14 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		pty:            ptyhost.New(log),
+		latestFetch:    releaseClient.Latest,
+		downloadFetch:  desktopDownloadFetcher(inst),
+		downloadOpen:   openDownloadedFile,
+		downloadPlatform: func() (string, string) {
+			return release.CurrentPlatform()
+		},
+		downloadState:    &proto.DownloadState{Stage: "idle", Percent: -1},
+		downloadChecksum: desktopDownloadChecksum(inst),
 	}
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
@@ -425,6 +443,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	api.HandleFunc("POST /api/update", s.handleUpdate)
+	api.HandleFunc("GET /api/update/latest", s.handleUpdateLatest)
+	api.HandleFunc("POST /api/update/desktop/download", s.handleDesktopDownloadStart)
+	api.HandleFunc("GET /api/update/desktop/download", s.handleDesktopDownloadState)
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)

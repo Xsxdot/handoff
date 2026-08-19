@@ -23,3 +23,24 @@ type DesktopState struct {
 	// SyncError 是 failed 时的原文，供控制台原样展示。
 	SyncError string `json:"sync_error,omitempty"`
 }
+
+// LatestResp 是 GET /api/update/latest 的响应。
+//
+// Tag 是最新发布的版本号。空串表示查不出（限流、断网、缓存为空），消费方一律
+// 按「没有新版」处理；通知是锦上添花，绝不能自己变成故障源。
+type LatestResp struct {
+	Tag       string `json:"tag"`
+	CheckedAt string `json:"checked_at,omitempty"` // RFC3339；空=从未查过。
+}
+
+// DownloadState 是桌面端安装包下载的进度与结果。
+type DownloadState struct {
+	// Stage：idle / downloading / verifying / done / failed。
+	Stage string `json:"stage"`
+	Tag   string `json:"tag,omitempty"`
+	// Percent 为 -1 表示不可知（服务端没给 Content-Length）。
+	Percent int    `json:"percent"`
+	Path    string `json:"path,omitempty"` // done 时的绝对路径。
+	Opened  bool   `json:"opened"`         // 是否成功唤起文件管理器。
+	Error   string `json:"error,omitempty"`
+}

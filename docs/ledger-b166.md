@@ -39,3 +39,13 @@
 - 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；`go test ./internal/agentd/`：`ok github.com/Xsxdot/handoff/internal/agentd 99.849s`。
 - 额外实际命令 `cd desktop && gofmt -l . && go test ./internal/...` 失败，原始关键报错：`--- FAIL: TestSyncOnOpenOrderIsLoadBearing`；`open /tmp/.handoff-sync-642072607: read-only file system`；`FAIL github.com/Xsxdot/handoff/desktop/internal/shell 0.072s`。
 - 提交范围：`internal/proto/desktop.go`、`internal/agentd/desktopstate.go`、`internal/agentd/desktopstate_test.go`、`internal/agentd/server.go` 与本 ledger，提交信息按计划为 `feat(agentd): 中转薄壳状态，带 30s TTL`。
+
+## Task 3：agentd 下载桌面端安装包
+
+- 失败测试确认：`go test ./internal/agentd/ -run TestDownload -v` 原始编译错误为 `downloadFetch undefined`、`downloadOpen undefined`、`downloadPlatform undefined`、`downloadState undefined`。
+- 实现后定向验证：`go test ./internal/agentd/ -run 'TestDownload|TestUpdateLatest' -v`：8 个用例全部 `PASS`，最终结果 `ok github.com/Xsxdot/handoff/internal/agentd 0.557s`；覆盖校验失败删除、并发 409、已有文件跳过、唤起失败仍成功、平台拒绝、缓存命中/刷新/失败空结果。
+- 变异复验第 1 次（删掉校验失败后的 `os.Remove`）：原始失败为 `updatedownload_test.go:70: 校验失败后文件仍存在，stat err=<nil>`，包结果 `FAIL github.com/Xsxdot/handoff/internal/agentd 0.032s`；已恢复。
+- 变异复验第 2 次（删掉并发判断）：用 `-timeout 3s` 实际失败，原始报错含 `panic: test timed out after 3s`、`POST 下载: ... EOF`，包结果 `FAIL github.com/Xsxdot/handoff/internal/agentd 3.013s`；已恢复。
+- 双裁决第 1 轮：spec 符合，latest 共用 24h CLICheck 缓存，下载按 DesktopAssetName、按名校验、失败删包、并发锁、平台 opener 与旧包清理均落地；代码质量通过，无修复轮次。
+- 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；`go test ./internal/agentd/`：`ok github.com/Xsxdot/handoff/internal/agentd 104.406s`。
+- 提交范围：`internal/agentd/updatedownload.go`、`internal/agentd/updatedownload_test.go`、`internal/proto/desktop.go`、`internal/agentd/server.go` 与本 ledger，提交信息按计划为 `feat(agentd): 下载并校验桌面端安装包，下完唤起文件管理器`。
