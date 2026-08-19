@@ -346,6 +346,13 @@ func registeredNames(ads map[string]executor.Adapter) []string {
 	return names
 }
 
+// ExecutorNames 返回本机已注册的 executor 名，按名字升序。
+//
+// 用途：纪律配置端点要把「注册的 adapter」与「配置里已出现的键」取并集，
+// 后者不能省——一个配了纪律块但当前没注册的名字（改名、临时摘掉）若不列出，
+// 界面就看不见它，而它还躺在配置里。
+func (m *Manager) ExecutorNames() []string { return registeredNames(m.ads) }
+
 // DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
 	// ProjectID 是项目身份（sha256(归一化 origin) 前 16 位），由调用方离线算出。
