@@ -214,15 +214,34 @@ type ExecutorDefaultReq struct {
 | `status.go:72` `DefaultExecutor` | `Executor.Default` | **`GET /api/status` 会一直回旧值**——而开发机列表的「默认」标记就来自它，保存完界面上那个标记不动，看起来像没保存成功 |
 | `status.go:138` | `Executor.Default` | 活动任务行的执行者名回填 |
 
-做法：`Manager` 加一个 `conf func() *config.Config` 字段（生产传 `(*Server).Conf`，
-测试传 `func() *config.Config { return cfg }`），上述 7 处改走它。与 B157 给
-`discipline.Resolver`、B158 给 `envfile.Resolver` 做的是同一件事，**第三次了**——
-这次做完，把「`Manager` 不得缓存配置快照」这条写进 `NewManager` 的注释。
+**做法（刻意不动 `NewManager` 的签名）**：`Manager` 加一个私有字段
+`conf func() *config.Config`，`NewManager` 里默认成 `func() *config.Config { return cfg }`
+（旧行为，测试不受影响），再由 `Server.SetManager` 在挂接时换成活的：
 
-> 注意 `Server` 今天的 `conf()` 是**私有**的（`internal/agentd` 包内可见），
-> `Manager` 与 `Server` 同包，所以直接传 `s.conf` 即可，不必新增导出方法。
-> 这与 B157/B158 需要导出 `DisciplineMapping`/`EnvMapping` 不同——那两个是给
-> 别的包（`internal/discipline`、`internal/envfile`）用的。
+```go
+func (s *Server) SetManager(m *Manager) {
+	s.mgr = m
+	if m != nil {
+		// Manager 挂到 Server 上之后就不该再读构造时的配置快照：
+		// swapConf 换的是新指针，m.cfg 永远停在构造那一刻（B160 §4.2）。
+		m.conf = s.conf
+	}
+}
+```
+
+上表 7 处改成 `m.conf().Executor.…`。
+
+**为什么不改签名**：B158（env 配置面）正在并行进行，它给 `NewManager` 加了一个
+`envMapping` 参数、连带改了所有测试调用点。B160 再动一次签名，两条分支必然在
+`NewManager` 与十几个测试调用点上冲突。走 `SetManager` 这条路，B160 对签名与调用点
+**零改动**——而且它本身更对：Manager 什么时候能拿到活配置，答案本来就是「被挂到
+Server 上之后」。
+
+**顺带发现，本期不修，记进 backlog**：`m.cfg.Targets` 有 7 处读点（全在
+`mirror.go`），而 Targets 同样是 swapConf 可写的——**从控制台加一台开发机，跨机
+镜像要等到 agentd 重启才认识它**。这与本条是同一个 bug 的同一个形状。本期不顺手
+改（镜像有自己的生命周期与并发假设，不该在一个设置页的 task 里动），但既然
+`m.conf` 这条路已经铺好，修它就只剩替换读点。
 
 > 这是本设计里唯一的**结构性**改动，也是它比「加两个 handler」值钱的地方。
 > 计划阶段必须为它单开一个 task，不许折进 handler 那个 task 里。
