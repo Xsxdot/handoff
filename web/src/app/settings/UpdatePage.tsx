@@ -1,10 +1,11 @@
 // 设置页「更新」分区。
 //
-// 职责：展示桌面应用与同步状态，并只读列出所有执行机的版本与可升级状态。
-// 边界：本期不提供执行机升级按钮、不实现桌面端自我替换；安装包动作仍由 agentd 完成。
-import { useState } from 'react'
-import { fetchLatest, startDownload } from '../../api/client'
-import type { DesktopState, LatestResp, Machine } from '../../api/types'
+// 职责：展示桌面应用与同步状态，并为远端执行机提供一次升级入口。
+// 边界：本机不提供升级按钮；升级完成仍由 GET /api/machines 的 version 变化判定，
+// 不另造进度流；桌面端自我替换仍由安装包动作完成。
+import { useEffect, useState } from 'react'
+import { ApiError, fetchLatest, startDownload, upgradeMachine } from '../../api/client'
+import type { DesktopState, LatestResp, Machine, MachineUpgradeResp } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useDownload } from '../data/useUpdate'
 import { errorMessage } from '../lib/format'
@@ -25,6 +26,13 @@ function downloadFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path
 }
 
+interface MachineUpgradeViewState {
+  running: boolean
+  force: boolean
+  reason: string
+  remedy: string
+}
+
 // UpdatePage 渲染更新页的桌面应用、同步状态、执行机三块内容。
 export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
   const machinesState = useMachines(true)
@@ -33,6 +41,7 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
   const [checkError, setCheckError] = useState('')
   const [downloadStarted, setDownloadStarted] = useState(false)
   const [downloadError, setDownloadError] = useState('')
+  const [machineUpgradeStates, setMachineUpgradeStates] = useState<Record<string, MachineUpgradeViewState>>({})
   const latestView = latestOverride ?? latest
   // 有桌面状态时持续接进度；agentd 的状态在页面刷新后仍可被重新读到。
   const download = useDownload(desktopState !== null || downloadStarted)
@@ -60,6 +69,53 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
   }
 
   const machines = machinesState.data?.machines ?? []
+
+  // 升级没有单独的进度流：机器轮询拿到目标版本后，清掉按钮上的本地「升级中」态。
+  useEffect(() => {
+    const latestTag = latestView?.tag ?? ''
+    if (latestTag === '') return
+    setMachineUpgradeStates((previous) => {
+      let changed = false
+      const next = { ...previous }
+      for (const machine of machines) {
+        if (machine.name !== '' && machine.version === latestTag && next[machine.name]?.running) {
+          delete next[machine.name]
+          changed = true
+        }
+      }
+      return changed ? next : previous
+    })
+  }, [latestView?.tag, machines])
+
+  const startMachineUpgrade = async (name: string, force: boolean) => {
+    setMachineUpgradeStates((previous) => ({
+      ...previous,
+      [name]: { running: true, force: false, reason: '', remedy: '' },
+    }))
+    try {
+      const result = await upgradeMachine(name, force)
+      setMachineUpgradeStates((previous) => ({
+        ...previous,
+        [name]: {
+          running: result.accepted,
+          force: false,
+          reason: result.accepted ? '' : (result.reason ?? ''),
+          remedy: result.accepted ? '' : (result.remedy ?? ''),
+        },
+      }))
+    } catch (err: unknown) {
+      const body = err instanceof ApiError && isMachineUpgradeBody(err.body) ? err.body : undefined
+      setMachineUpgradeStates((previous) => ({
+        ...previous,
+        [name]: {
+          running: false,
+          force: err instanceof ApiError && err.status === 409 && body?.forcible === true,
+          reason: body?.reason ?? errorMessage(err),
+          remedy: body?.remedy ?? '',
+        },
+      }))
+    }
+  }
 
   return (
     <div className="flex flex-col gap-5 p-4">
@@ -160,7 +216,15 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
           <p className="mt-3 text-xs text-muted-foreground">正在读取执行机…</p>
         ) : (
           <div className="mt-3 divide-y rounded-lg border bg-background">
-            {machines.map((machine) => <MachineUpdateRow key={machine.name || 'local'} machine={machine} latestTag={latestView?.tag ?? ''} />)}
+            {machines.map((machine) => (
+              <MachineUpdateRow
+                key={machine.name || 'local'}
+                machine={machine}
+                latestTag={latestView?.tag ?? ''}
+                state={machineUpgradeStates[machine.name]}
+                onUpgrade={(force) => void startMachineUpgrade(machine.name, force)}
+              />
+            ))}
           </div>
         )}
         {machinesState.disconnected && !machinesState.sessionExpired && (
@@ -173,18 +237,54 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
   )
 }
 
-// MachineUpdateRow 渲染一台执行机的只读更新状态。
-function MachineUpdateRow({ machine, latestTag }: { machine: Machine; latestTag: string }) {
+function isMachineUpgradeBody(value: unknown): value is MachineUpgradeResp {
+  return typeof value === 'object' && value !== null && 'verdict' in value && 'forcible' in value
+}
+
+// MachineUpdateRow 渲染一台执行机的更新状态；本机只显示随桌面应用更新，不接升级动作。
+function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
+  machine: Machine
+  latestTag: string
+  state?: MachineUpgradeViewState
+  onUpgrade: (force: boolean) => void
+}) {
   const local = machine.name === ''
-  const upgradeAvailable = !local && machine.version !== '' && latestTag !== '' && hasNewer(latestTag, machine.version)
+  const upgradeAvailable = !local && machine.reachable && machine.version !== '' && latestTag !== '' && hasNewer(latestTag, machine.version)
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 text-xs">
       <span className="w-28 shrink-0 font-medium">{machineLabel(machine)}</span>
       <span className="font-mono text-muted-foreground">{machine.version || '—'}</span>
       <span className={machine.reachable ? 'text-emerald-700' : 'text-amber-700'}>{machine.reachable ? '已连接' : '已断开'}</span>
-      <span className="ml-auto text-right text-muted-foreground">
-        {local ? '随桌面应用一起更新' : upgradeAvailable ? '可升级' : '已是最新'}
-      </span>
+      <div className="ml-auto flex items-center gap-2 text-right">
+        <div className="text-muted-foreground">
+          {local ? '随桌面应用一起更新' : state?.running ? '升级中…' : upgradeAvailable ? '可升级' : '已是最新'}
+          {state?.reason && <p className="mt-1 max-w-72 break-words text-destructive">{state.reason}</p>}
+          {state?.remedy && <p className="mt-1 max-w-72 break-words text-amber-700">{state.remedy}</p>}
+        </div>
+        {!local && upgradeAvailable && (
+          state?.running ? (
+            <button type="button" disabled className="rounded-md border px-2 py-1 text-xs opacity-50">
+              升级中…
+            </button>
+          ) : state?.force ? (
+            <button
+              type="button"
+              onClick={() => onUpgrade(true)}
+              className="rounded-md border border-amber-500 px-2 py-1 text-xs text-amber-700 hover:bg-amber-500/10"
+            >
+              仍要升级
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onUpgrade(false)}
+              className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90"
+            >
+              升级到 {latestTag}
+            </button>
+          )
+        )}
+      </div>
     </div>
   )
 }

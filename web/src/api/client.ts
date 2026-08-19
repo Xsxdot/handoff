@@ -36,6 +36,7 @@ import type {
   ExecutorDefaultReq,
   ExecutorDefaultResp,
   MachinesResp,
+  MachineUpgradeResp,
   DownloadState,
   LatestResp,
   PatchProjectReq,
@@ -302,6 +303,15 @@ export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
 // 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
 export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
+}
+
+// upgradeMachine 请求一台远端执行机升级到最新版本。
+// 409/422 等拒绝由 request 抛出 ApiError；完整的 MachineUpgradeResp 保存在 body 中。
+export function upgradeMachine(name: string, force = false): Promise<MachineUpgradeResp> {
+  const q = force ? '?force=1' : ''
+  return request<MachineUpgradeResp>(`/api/machines/${encodeURIComponent(name)}/upgrade${q}`, {
+    method: 'POST',
+  })
 }
 
 // fetchDiscipline 取某台机器的纪律配置面（GET /api/discipline）：

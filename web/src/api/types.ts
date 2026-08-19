@@ -232,6 +232,16 @@ export interface MachinesResp {
   machines: Machine[]
 }
 
+// MachineUpgradeResp 是 POST /api/machines/{name}/upgrade 的响应。
+export interface MachineUpgradeResp {
+  accepted: boolean
+  verdict: string
+  reason?: string
+  remedy?: string
+  forcible: boolean
+  busy?: number
+}
+
 // AddMachineReq 是 POST /api/machines 的请求体。
 //
 // token 只进不出：后端接受它，但 Machine 类型没有对应字段，任何响应里

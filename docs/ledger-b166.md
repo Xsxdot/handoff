@@ -250,3 +250,20 @@
   提交范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_test.go`、
   `internal/proto/desktop.go`、`internal/agentd/server.go` 与本 ledger；提交信息：
   `feat(agentd): 单台执行机升级端点，复用 internal/upgrade 的编排`。
+
+## 本期 Task 4：更新页的升级按钮
+
+- `web/src/api/types.ts` 新增 `MachineUpgradeResp`，`client.ts` 新增
+  `upgradeMachine(name, force)`，机器名 URL 编码，强制请求使用 `?force=1`；409/422 的完整
+  结构化响应沿 `ApiError.body` 透传。
+- `UpdatePage.tsx` 为可达且落后的远端机器显示“升级到 <tag>”；请求受理后按钮进入禁用的
+  “升级中…”，完成判据只使用既有 `useMachines()` 轮询观察 `version === latest.tag`，本机行
+  永远不显示按钮。409 且 `forcible=true` 就地显示“仍要升级”；422 非托管只显示 remedy，
+  不提供强制入口。
+- 测试：更新页 5 条用例、client 请求路径用例；`npm run typecheck` PASS；
+  `npm test` PASS（81 files / 802 tests）；`npm run build` PASS（1944 modules transformed，
+  Vite 仅报告既有的大 chunk warning）。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修正页面职责注释以反映按钮已落地，无承重搁置。
+  提交范围：`web/src/api/types.ts`、`web/src/api/client.ts`、`web/src/api/client.test.ts`、
+  `web/src/app/settings/UpdatePage.tsx`、`UpdatePage.test.tsx` 与本 ledger；提交信息：
+  `feat(web): 更新页支持一键升级执行机`。
