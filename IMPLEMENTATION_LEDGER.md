@@ -10,3 +10,5 @@
 - Task 5 completed: added card creation/read/update/termination/revival, B-number allocation, event append, and ascending event reads; commit scope: `internal/ledger/cards.go internal/ledger/events.go internal/ledger/cards_test.go`.
 - Task 6 repair round 1: preserved `ErrNotFound` only for missing workflow rows and wrapped other workflow read errors without misclassification; commit scope: `internal/ledger/move.go`.
 - Task 6 completed: added workflow-version state validation, gate checks, explicit/database CAS, and refusal logging; commit scope: `internal/ledger/move.go internal/ledger/move_test.go`.
+- Task 7 repair round 1: added Warn logging for self-block cycle rejection with the card id; commit scope: `internal/ledger/relations.go`.
+- Task 7 completed: added typed relations, blocks cycle/parent-child checks, bidirectional relation reads, and effective base inheritance; commit scope: `internal/ledger/relations.go internal/ledger/relations_test.go`.
