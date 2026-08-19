@@ -88,7 +88,18 @@ export function CardsPage() {
     : [...new Set(flows?.workflows.flatMap((flow) => flow.def.states) ?? [])]
   const workflowOptions = flows?.workflows ?? []
   const healthRows = healthPoll.data?.mirror ?? []
-  const healthStale = healthPoll.disconnected || healthRows.some((row) => Date.now() - Date.parse(row.UpdatedAt) > 60_000)
+  // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
+  // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」
+  const staleTargets = healthRows
+    .filter((row) => Date.now() - Date.parse(row.UpdatedAt) > 60_000)
+    .map((row) => row.Target)
+  const healthStale = healthPoll.disconnected || staleTargets.length > 0
+  const healthLabel = healthPoll.disconnected
+    ? '看板离线'
+    : staleTargets.length > 0
+      ? `事件流滞后: ${staleTargets.join('、')}`
+      : ''
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     const base = cards.filter((card) => {
@@ -112,7 +123,7 @@ export function CardsPage() {
         <select aria-label="工作流" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部工作流</option>{workflowOptions.map((item) => <option key={item.name} value={item.name}>{item.name} v{item.version}</option>)}</select>
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
-        <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? '镜像健康异常' : '镜像正常'}>{healthStale ? '镜像异常' : '●'}</span>
+        <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {needsOnly && projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
