@@ -78,3 +78,76 @@ func TestCardAddChildAndBaseBranch(t *testing.T) {
 		t.Fatalf("基线继承过滤: %q", out)
 	}
 }
+
+func TestCardCloseConfirmAndMerge(t *testing.T) {
+	dir := t.TempDir()
+	mkCard := func(title string) string {
+		out, _, err := runLedgerCLI(t, dir, "card", "add", title, "--project", "demo", "--workflow", "bug")
+		if err != nil {
+			t.Fatalf("add %s: %v", title, err)
+		}
+		var card struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
+		return card.ID
+	}
+	a, b, carrier := mkCard("a"), mkCard("b"), mkCard("carrier")
+
+	// close 非交互无 --yes 拒绝（二次确认约定；只对不可逆的 取消|废弃 设门）
+	if _, _, err := runLedgerCLI(t, dir, "card", "close", a, "--reason", "废弃"); err == nil {
+		t.Fatal("无 --yes 应拒")
+	}
+	// 搁置可复活，不设确认门——无 --yes 也应直接成功
+	if _, _, err := runLedgerCLI(t, dir, "card", "close", a, "--reason", "搁置"); err != nil {
+		t.Fatalf("close 搁置不应要求确认: %v", err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "revive", a); err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+
+	// link 环检测透传
+	if _, _, err := runLedgerCLI(t, dir, "card", "link", a, b); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "link", b, a); err == nil {
+		t.Fatal("成环应拒")
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "unlink", a, b); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+
+	// merge --yes + 列表跟随 + unmerge
+	if _, _, err := runLedgerCLI(t, dir, "card", "merge", a, b, "--into", carrier, "--yes"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	out, _, _ := runLedgerCLI(t, dir, "card", "list", "--project", "demo", "--json")
+	if !strings.Contains(out, `"following":"`+carrier+`"`) {
+		t.Fatalf("跟随未呈现: %q", out)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "unmerge", a); err != nil {
+		t.Fatalf("unmerge: %v", err)
+	}
+
+	// split
+	out, _, err := runLedgerCLI(t, dir, "card", "split", carrier, "拆出的子项")
+	if err != nil || !strings.Contains(out, carrier+".") {
+		t.Fatalf("split: %v %q", err, out)
+	}
+
+	// note 引用建边
+	if _, _, err := runLedgerCLI(t, dir, "card", "note", a, "与 #"+b+" 同源"); err != nil {
+		t.Fatalf("note: %v", err)
+	}
+	// note --reset-node：人工重置回合计数的落账入口（Plan C 消费）
+	out2, _, err := runLedgerCLI(t, dir, "card", "note", a, "人工看过重新计数", "--reset-node", "review")
+	if err != nil || !strings.Contains(out2, `"human_reset_node":"review"`) {
+		t.Fatalf("note --reset-node: %v %q", err, out2)
+	}
+
+	// export markdown 快照
+	out, _, err = runLedgerCLI(t, dir, "card", "export")
+	if err != nil || !strings.Contains(out, "| "+carrier+" |") {
+		t.Fatalf("export: %v %q", err, out)
+	}
+}
