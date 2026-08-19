@@ -534,6 +534,14 @@ describe('显示偏好', () => {
     fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: 'handoff' } })
     expect(within(screen.getByTestId('tree-scroll')).getByText('handoff')).toBeInTheDocument()
   })
+
+  it('项目分组下直接列出项目勾选，没有全选/全不选', () => {
+    render(<ProjectTree {...props({})} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: /handoff/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '全选' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: '全不选' })).toBeNull()
+  })
 })
 
 describe('机器行新建工作树', () => {
