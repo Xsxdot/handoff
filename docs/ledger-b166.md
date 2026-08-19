@@ -118,3 +118,11 @@
 - 全量验证：`npm run typecheck` 通过；`npm test`：`Test Files 80 passed (80)`、`Tests 793 passed (793)`；`npm run build` 通过，`1943 modules transformed`，产物 `index-DX7Zrx4l.css 47.53 kB`、`index-lgefZoLt.js 892.54 kB`，仅有 Vite 的大 chunk warning。
 - 双裁决第 1 轮：spec 符合，非桌面壳不渲染、三种提示条件、sessionStorage 按 `(kind, tag)` 关闭、agentd 下载进度与 home 浮窗 236px 让位均落地；代码质量通过，`git diff --check` 无输出，无修复轮次。
 - 提交范围：`web/src/app/update/UpdateToasts.tsx`、测试、`web/src/app/shell/Shell.tsx` 与本 ledger，提交信息按计划为 `feat(web): 控制台右下角的更新提示框`。
+
+## Task 8：设置「更新」页
+
+- 失败测试确认：`npx vitest run src/app/settings/UpdatePage.test.tsx` 原始失败为 `Failed to resolve import "./UpdatePage"`。
+- 实现后定向验证：`npm run typecheck` 通过；`npx vitest run src/app/settings/UpdatePage.test.tsx src/app/settings/SettingsPage.test.tsx`：2 个测试文件、8 个用例全部通过。
+- 全量验证：`npm run typecheck` 通过；`npm test`：`Test Files 81 passed (81)`、`Tests 796 passed (796)`；`npm run build` 通过，`1944 modules transformed`，产物 `index-xnjDc_rI.css 48.03 kB`、`index-BzwGnVwc.js 898.87 kB`，仅有 Vite 的大 chunk warning。
+- 双裁决第 1 轮：spec 符合，更新导航接在 Env 文件之后并带琥珀点，桌面应用/同步状态在 204 时隐藏，执行机块始终只读，本机显示随桌面应用更新，远端只显示可升级状态；重新检查走 `fetchLatest(true)`，无修复轮次。
+- 提交范围：`web/src/app/settings/UpdatePage.tsx`、测试、`web/src/app/settings/SettingsPage.tsx` 与本 ledger，提交信息按计划为 `feat(web): 设置页新增更新分区`。
