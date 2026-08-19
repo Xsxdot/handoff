@@ -39,6 +39,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -86,9 +87,15 @@ type Server struct {
 	// 未注入时 swapConf 直接报错，绝不猜一个路径写下去。
 	cfgPath string
 	st      *store.Store
-	hub     *Hub
-	log     *slog.Logger
-	mgr     *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	ledger  *ledger.Store
+	// unlinked* caches the only web ledger join that may dial registered targets.
+	// The cache keeps the cards endpoint bounded when a target is unavailable.
+	unlinkedMu    sync.Mutex
+	unlinkedAt    time.Time
+	unlinkedCache map[string]any
+	hub           *Hub
+	log           *slog.Logger
+	mgr           *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -390,6 +397,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	s.registerLedgerRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//
