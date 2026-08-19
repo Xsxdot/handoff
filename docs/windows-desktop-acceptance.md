@@ -14,6 +14,12 @@ win-b37 上验完，结论列在最后一节，不用重做。
 
 **它没有签名**（macOS 那份有签名+公证，Windows 这份没有）。双击时
 SmartScreen 会拦一次，要点「更多信息 → 仍要运行」。这是已知代价，不是缺陷。
+解压后跑一次 `Get-ChildItem -Recurse <目录> | Unblock-File` 可以去掉
+Mark of the Web，SmartScreen 就不再拦——**只对自己确认过来源的产物这么做**。
+
+**必须是 rc6 或更新的版本。** rc5 及更早的薄壳在这台机器上启动会把 agentd 的
+计划任务删掉重建，从而进入「每分钟弹一个控制台窗口 + 无法启动 agentd 弹框」
+的状态（根因见下面「一个已经修掉的坑」）。
 
 如果这台机器上已经装过 handoff CLI，薄壳会走「已有安装」分支、不释出内嵌的
 那份。想验「首次安装」的完整路径，用一个干净账户，或者按下面的隔离办法跑。
@@ -90,6 +96,46 @@ $psi.EnvironmentVariables['PATH']        = 'C:\Windows\System32;C:\Windows'
 ```
 
 跑完看 `$root\local\Programs\handoff\handoff.exe` 是否生成。清理直接删 `$root`。
+
+## 一个已经修掉的坑（rc6 修复，留档以防复发）
+
+rc5 上走查第 1 项时会看到：**每分钟弹一个终端窗口**，以及弹框
+「无法启动 agentd: 托管并拉起 agentd: 任务已建并已触发，但 5s 内未复核到
+agentd 进程存活」。
+
+根因不在薄壳，在 `internal/service/windows.go` 的托管判据：`taskIsRunning` 只
+认 `SCHED_S_TASK_RUNNING`（267009），而那个数字在 `schtasks` 的**「上次结果」**
+一栏——那是上一次**启动尝试**的结果，不是任务此刻的状态。计划任务为模拟
+KeepAlive 用「TimeTrigger 每分钟重复 + IgnoreNew」，于是 agentd 起来后**最多
+60 秒**，下一个分钟边界的重复触发被拒，「上次结果」被改写成 `0x800710E0`
+（-2147020576），267009 从此不再出现。真机采样（全程 `Status: Running`、
+进程一直活着）：
+
+```
+[10:34:57] Status: Running | Last Result: 267009
+[10:35:02] Status: Running | Last Result: -2147020576   ← 分钟边界，此后永远是它
+[10:35:32] Status: Running | Last Result: -2147020576
+```
+
+于是 `EnsureRunning` 判 agentd 没跑 → `Install()` → `schtasks /Create /F` 删掉
+重建 → 任务与活着的 agentd 失联 → 每分钟真的拉起一个新 agentd → 撞 DataDir
+锁退出（控制台窗口就是这么来的）→ Install 自己的 5s 复核失败 → 弹框。
+
+**为什么以前所有验证都没抓到**：每次检查都紧跟安装/启动之后，全落在判据唯一
+正确的那 60 秒窗口里。
+
+如果这个现象在 rc6 之后重现，先跑 `handoff service status`：agentd 明明活着却
+报「已安装但未运行」，就是这条回来了。
+
+**机器如果已经进了那个状态**，修法是让计划任务重新领养 agentd：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='handoff.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+schtasks /Run /TN handoff-agentd
+```
+
+几秒后 `schtasks /Query /TN handoff-agentd /V /FO LIST` 应报 `Status: Running`
+且 `Last Result: 267009`，`handoff status` 恢复「可用」。
 
 ## 一个已知现象，别当缺陷
 
