@@ -49,10 +49,10 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { name: '执行纪律' })).toBeInTheDocument()
   })
 
-  it('切到常规分区显示明确的空占位，而不是空白', () => {
+  it('切到常规分区显示当前浏览器范围说明', () => {
     render(<SettingsPage onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: '常规' }))
-    expect(screen.getByText(/本期没有可配置项/)).toBeInTheDocument()
+    expect(screen.getByText(/只保存在当前浏览器/)).toBeInTheDocument()
   })
 
   it('切到 Env 文件分区说明本期不做', () => {
