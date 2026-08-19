@@ -7,7 +7,7 @@
 // 行为（sync.auto / terminal.auto）两处都不放——控制台连的 agentd 与你敲 CLI
 // 那台机可能不是同一台，一个改了不生效的开关比没有这个开关更糟。
 //
-// **不为了填满一屏去发明设置**：今天就这三项，主题与快捷键都还不存在。
+// **不为了填满一屏去发明设置**：今天就显示两项 + 排序 + 项目勾选，主题与快捷键都还不存在。
 //
 // 边界：
 //   - 不复用 TreePrefsMenu 的紧凑形态：设置页有空间，菜单没有。共用的是
@@ -48,6 +48,14 @@ export function GeneralPage({ tree }: { tree: ProjectTreeResp | null }) {
             onChange={() => update({ ...prefs, hideIdleWorktrees: !prefs.hideIdleWorktrees })}
           />
           隐藏无活跃任务的工作树
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={prefs.hideArchived}
+            onChange={() => update({ ...prefs, hideArchived: !prefs.hideArchived })}
+          />
+          隐藏已结束分组
         </label>
       </section>
 

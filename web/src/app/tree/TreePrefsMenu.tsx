@@ -39,6 +39,14 @@ export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps)
       keepOpen: true,
       onSelect: () => onChange({ ...prefs, hideIdleWorktrees: !prefs.hideIdleWorktrees }),
     },
+    {
+      key: 'hide-archived',
+      label: '隐藏已结束分组',
+      kind: 'check',
+      checked: prefs.hideArchived,
+      keepOpen: true,
+      onSelect: () => onChange({ ...prefs, hideArchived: !prefs.hideArchived }),
+    },
     { key: 'h-sort', label: '排序方式', kind: 'header' },
     ...SORT_LABELS.map((s) => ({
       key: `sort-${s.value}`,

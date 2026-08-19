@@ -47,6 +47,12 @@ describe('GeneralPage', () => {
     expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).hideIdleWorktrees).toBe(true)
   })
 
+  it('隐藏已结束分组是个开关', async () => {
+    render(<GeneralPage tree={tree} />)
+    await userEvent.click(screen.getByRole('checkbox', { name: /隐藏已结束分组/ }))
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).hideArchived).toBe(true)
+  })
+
   it('项目树还没到时不画项目那一组，但另外两项照常可用', () => {
     render(<GeneralPage tree={null} />)
     expect(screen.getByRole('checkbox', { name: /隐藏无活跃任务的工作树/ })).toBeInTheDocument()

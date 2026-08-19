@@ -542,6 +542,32 @@ describe('显示偏好', () => {
     expect(screen.queryByRole('menuitem', { name: '全选' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: '全不选' })).toBeNull()
   })
+
+  it('开「隐藏已结束分组」后，「已结束」行不再出现', () => {
+    const p = props({})
+    p.tasks.push(task({
+      id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务',
+    }))
+    render(<ProjectTree {...p} />)
+    expect(screen.getByTestId('archived-row')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏已结束分组/ }))
+    expect(screen.queryByTestId('archived-row')).toBeNull()
+  })
+
+  it('搜索期间旁路「隐藏已结束分组」：能搜到已回收任务', () => {
+    const p = props({})
+    p.tasks.push(task({
+      id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务',
+    }))
+    render(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏已结束分组/ }))
+    expect(screen.queryByTestId('archived-row')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: '已回收' } })
+    expect(screen.getByTestId('archived-row')).toBeInTheDocument()
+    expect(within(screen.getByTestId('tree-scroll')).getByText('已回收的任务')).toBeInTheDocument()
+  })
 })
 
 describe('机器行新建工作树', () => {

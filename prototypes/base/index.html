@@ -609,8 +609,11 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
 <dialog id="prefsDialog">
   <div style="padding:16px;width:280px">
     <div class="dim" style="font-size:12px;margin-bottom:6px">显示</div>
-    <label style="display:block;font-size:13px;margin-bottom:10px">
+    <label style="display:block;font-size:13px;margin-bottom:6px">
       <input type="checkbox" checked> 隐藏无活跃任务的工作树
+    </label>
+    <label style="display:block;font-size:13px;margin-bottom:10px">
+      <input type="checkbox"> 隐藏已结束分组
     </label>
     <div class="dim" style="font-size:12px;margin-bottom:6px">排序方式</div>
     <label style="display:block;font-size:13px"><input type="radio" name="sort" checked> 活跃优先</label>
