@@ -69,6 +69,7 @@ export interface ProjectTreeProps {
   onOpenBoard: () => void
   onOpenTickets: () => void
   onOpenSettings: () => void
+  onOpenCodegraph?: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -188,7 +189,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onOpenCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -727,6 +728,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </span>
           )}
         </button>
+        {onOpenCodegraph && (
+          <button
+            type="button"
+            aria-label="代码图"
+            title="代码图"
+            onClick={onOpenCodegraph}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          >
+            <GitBranch className="size-4" />
+          </button>
+        )}
         <button
           type="button"
           aria-label="设置"

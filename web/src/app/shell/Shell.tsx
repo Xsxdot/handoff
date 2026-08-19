@@ -46,6 +46,7 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
+import { CodegraphPage } from '../codegraph/CodegraphPage'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 
@@ -319,6 +320,7 @@ export function Shell() {
             onOpenBoard={() => setOverlay('board')}
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
+            onOpenCodegraph={() => navigate('/codegraph')}
             onAddProject={() => setWizardOpen(true)}
             onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
@@ -342,6 +344,7 @@ export function Shell() {
               path="/settings"
               element={<SettingsPage onClose={() => navigate('/')} />}
             />
+            <Route path="/codegraph" element={<CodegraphPage />} />
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
             <Route path="/tasks/:id" element={<TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} />} />
             <Route
