@@ -7,15 +7,19 @@ import { boardColumns } from './columns'
 
 type Relation = { From: string; To: string; Type: string }
 
-// CardDecisions 是挂卡裁决的呈现与答复区。
+// CardAttention 是抽屉里的「需要你」合一区：等人原因 + 挂卡裁决。
 //
-// why 它必须在抽屉里而不是只躺在 timeline：请示的候选项与答复入口以前完全
+// why 两者合成一区：「需要你」在看板上就是等人 ∪ 裁决合一的筛选，抽屉里
+// 也该是同一处，否则用户点开一张亮着角标的卡，看到的却是空白——B3 那种只
+// 打了等人标记、没有请示的卡尤其明显（2026-08-19 真机看到）。
+//
+// why 必须在抽屉里而不是只躺在 timeline：请示的候选项与答复入口以前完全
 // 没有呈现面——卡上只显示一个「裁决 N」角标，点进抽屉也只在 timeline 里剩
-// 一行原文，看不到选什么、也没法答（2026-08-19 真机看到）。项目级裁决走顶部
-// 收件箱横幅，挂卡的走这里，两条路都能答复。
+// 一行原文，看不到选什么、也没法答。项目级裁决走顶部收件箱横幅，挂卡的走
+// 这里，两条路都能答复。
 //
 // 答复成功后调 onAnswered 让抽屉重取详情：答案要立刻落到这一处，不能等轮询。
-function CardDecisions({ decisions, onAnswered }: { decisions: Decision[]; onAnswered: () => void }) {
+function CardAttention({ needs, decisions, onAnswered }: { needs: string; decisions: Decision[]; onAnswered: () => void }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState('')
@@ -36,7 +40,13 @@ function CardDecisions({ decisions, onAnswered }: { decisions: Decision[]; onAns
   }
   return (
     <section className="mb-5">
-      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⚖ 裁决</h3>
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⚑ 需要你</h3>
+      {needs !== '' && (
+        <div className="mb-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+          <span className="mr-1.5 shrink-0 font-semibold">等人</span>
+          <span className="break-words">{needs}</span>
+        </div>
+      )}
       {decisions.map((decision) => {
         const open = decision.status === 'open'
         return (
@@ -311,7 +321,9 @@ export function CardDrawer({
               </section>
             )}
 
-            {(detail.decisions ?? []).length > 0 && <CardDecisions decisions={detail.decisions ?? []} onAnswered={load} />}
+            {((detail.decisions ?? []).length > 0 || (detail.needs ?? '') !== '') && (
+              <CardAttention needs={detail.needs ?? ''} decisions={detail.decisions ?? []} onAnswered={load} />
+            )}
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">节点动作</h3>

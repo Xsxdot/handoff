@@ -357,6 +357,7 @@ export function Shell() {
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
+            onOpenFlows={() => navigate('/flows')}
             cardNeedsCount={cardNeedsCount}
             unlinkedCount={unlinkedTaskIds?.size ?? 0}
             onOpenTickets={() => setOverlay('tickets')}

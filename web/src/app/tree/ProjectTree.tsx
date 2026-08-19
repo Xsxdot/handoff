@@ -33,7 +33,7 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Ticket, WifiOff,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import { filterTree } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
@@ -67,6 +67,9 @@ export interface ProjectTreeProps {
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
   onOpenCards?: () => void
+  // onOpenFlows 流程页（工作流形状 / 派发模板）。以前没有 dock 入口，
+  // 只能手敲 /flows——spec §5 要求入口挂 dock
+  onOpenFlows?: () => void
   // unlinkedCount 未挂账 task 数，挂在任务看板按钮上——它现在是兜底入口，
   // 有未挂账时才值得点开（主入口是工作项看板）
   unlinkedCount?: number
@@ -192,7 +195,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -738,6 +741,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               {unlinkedCount}
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          aria-label="流程"
+          title="流程（工作流 / 派发模板）"
+          onClick={onOpenFlows}
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+        >
+          <Workflow className="size-4" />
         </button>
         <button
           type="button"

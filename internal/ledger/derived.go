@@ -197,3 +197,38 @@ func (s *Store) openDecisionCount() (map[string]int, error) {
 	}
 	return counts, rows.Err()
 }
+
+// NeedsOf 取一张卡当前的等人原因；没打标记（或已清除）返回空串。
+//
+// why 单卡要有自己的取法：needsMap 是为列表视图一次性扫全表的，详情抽屉
+// 只关心一张卡。看板卡片上有「需要你」角标、点进抽屉却看不到原因，等于把
+// 「卡的一切只在抽屉一处看」拆成了两处（2026-08-19 真机看到）。
+//
+// 语义与 needsMap 一致：按 seq 顺序回放，needs_cleared 抵消先前的 needs_human。
+func (s *Store) NeedsOf(cardID string) (string, error) {
+	rows, err := s.db.Query(s.q(`SELECT type, payload FROM card_events
+		WHERE card_id = ? AND type IN (?, ?) ORDER BY seq ASC`), cardID, EvNeedsHuman, EvNeedsCleared)
+	if err != nil {
+		return "", fmt.Errorf("读卡 %s 的等人事件: %w", cardID, err)
+	}
+	defer rows.Close()
+	reason := ""
+	for rows.Next() {
+		var typ, payload string
+		if err := rows.Scan(&typ, &payload); err != nil {
+			return "", err
+		}
+		if typ == EvNeedsCleared {
+			reason = ""
+			continue
+		}
+		var data struct {
+			Reason string `json:"reason"`
+		}
+		if err := jsonUnmarshal(payload, &data); err != nil {
+			return "", err
+		}
+		reason = data.Reason
+	}
+	return reason, rows.Err()
+}

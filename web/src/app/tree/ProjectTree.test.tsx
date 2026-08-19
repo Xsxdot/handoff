@@ -34,6 +34,7 @@ function props(over: {
   onOpenBoard?: () => void
   onOpenTickets?: () => void
   onOpenSettings?: () => void
+  onOpenFlows?: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -64,6 +65,7 @@ function props(over: {
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
+    onOpenFlows: over.onOpenFlows ?? vi.fn(),
     onAddProject: over.onAddProject ?? vi.fn(),
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
@@ -485,6 +487,17 @@ describe('ProjectTree', () => {
     unmount()
     render(<ProjectTree {...props()} />)
     expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
+  })
+})
+
+describe('dock 入口', () => {
+  // 流程页以前只能手敲 URL——dock 上没有它的按钮，而 spec §5 写的是
+  // 「入口挂底部 dock」（2026-08-19 真机找不到）。
+  it('有流程页入口', () => {
+    const onOpenFlows = vi.fn()
+    render(<ProjectTree {...props({ onOpenFlows })} />)
+    fireEvent.click(screen.getByLabelText('流程'))
+    expect(onOpenFlows).toHaveBeenCalled()
   })
 })
 

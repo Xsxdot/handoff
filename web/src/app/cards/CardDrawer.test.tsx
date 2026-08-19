@@ -52,3 +52,29 @@ describe('抽屉里的裁决', () => {
     expect(screen.queryByPlaceholderText('答复这条请示…')).not.toBeInTheDocument()
   })
 })
+
+describe('抽屉里的「需要你」', () => {
+  it('等人卡要说得出原因——看板有角标，抽屉不能什么都不显示', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B3', Title: '镜像断链', Status: '待合并', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '基线是主线：合并永远人工',
+    } as never)
+    render(<CardDrawer id="B3" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText(/需要你/)).toBeInTheDocument()
+    expect(screen.getByText('基线是主线：合并永远人工')).toBeInTheDocument()
+  })
+
+  it('既不等人也没请示时不画这一区，免得平白多一块空标题', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B9', Title: '普通卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '',
+    } as never)
+    render(<CardDrawer id="B9" onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('普通卡')
+    expect(screen.queryByText(/需要你/)).not.toBeInTheDocument()
+  })
+})

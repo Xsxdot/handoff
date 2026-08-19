@@ -86,3 +86,30 @@ func TestListCardsFilters(t *testing.T) {
 		t.Fatalf("needs 过滤: %+v", views)
 	}
 }
+
+// 抽屉要在卡上就地看到「为什么需要你」——看板卡片有那个角标，点进详情
+// 反而没有，等于把唯一一处的信息又拆成了两处（2026-08-19 真机看到）。
+func TestNeedsOfSingleCard(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "会等人的卡")
+	other := mk(t, s, "不相干的卡")
+	if err := s.MarkNeedsHuman(other.ID, "别人的原因", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.NeedsOf(card.ID); err != nil || got != "" {
+		t.Fatalf("没打标记时应为空: %q %v", got, err)
+	}
+	if err := s.MarkNeedsHuman(card.ID, "基线是主线：合并永远人工", "t"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.NeedsOf(card.ID)
+	if err != nil || got != "基线是主线：合并永远人工" {
+		t.Fatalf("应取到本卡原因: %q %v", got, err)
+	}
+	if err := s.ClearNeedsHuman(card.ID, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.NeedsOf(card.ID); err != nil || got != "" {
+		t.Fatalf("清除后应为空: %q %v", got, err)
+	}
+}

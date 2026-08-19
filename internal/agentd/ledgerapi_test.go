@@ -142,6 +142,9 @@ func TestCardDetailCarriesDecisions(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("detail status: %d %q", code, body)
 	}
+	if !ledgerContainsAll(body, `"needs"`) {
+		t.Fatalf("详情应带等人原因字段（看板有角标，抽屉得说得出为什么）: %q", body)
+	}
 	if !ledgerContainsAll(body, `"decisions"`, "就地重试还是直接退化？", "立即退化") {
 		t.Fatalf("详情应含本卡裁决与候选项: %q", body)
 	}
