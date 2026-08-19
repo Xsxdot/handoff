@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -63,6 +64,12 @@ var waitNoSync bool
 // 两种消费模型相反，组合起来连语义都说不清。
 var waitUntilDone bool
 
+// waitCardID selects the ledger single-stream wait path.
+var waitCardID string
+
+// waitSubtree expands a card wait to its dynamically recomputed subtree.
+var waitSubtree bool
+
 // waitTimeout 为 0 表示不设上限；大于 0 时等待超过该时长返回错误退出非 0。
 //
 // 为什么需要它：wait 的正常形态是无限阻塞（断线自动退避重连），但无人值守时
@@ -79,9 +86,8 @@ var waitTimeout time.Duration
 var waitCmd = &cobra.Command{
 	Use:   "wait <task>",
 	Short: "阻塞等待任务的下一个可动作事件（question/permission_request 等）",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		taskID := args[0]
 		// 负时长必须报错而不是当「不设上限」：--timeout 的用途正是无人值守时
 		// 的最后一道防线，把 -5s 静默当成「永远等下去」，等于在最需要兜底的
 		// 场景把兜底悄悄关掉
@@ -93,6 +99,16 @@ var waitCmd = &cobra.Command{
 		if followFlag && waitUntilDone {
 			return fmt.Errorf("--follow 与 --until-done 不能同时使用：前者交付审核事件，后者只等归档")
 		}
+		if waitCardID != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("--card 与 task 参数互斥：账本 wait 不指向单 task")
+			}
+			return runCardWait(cmd, waitCardID, waitSubtree, waitTimeout)
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("需要 task id 参数（或 --card 走账本多路 wait）")
+		}
+		taskID := args[0]
 		addr, token, err := TargetEndpoint()
 		if err != nil {
 			return err
@@ -138,6 +154,85 @@ var waitCmd = &cobra.Command{
 		autoSyncAfterWait(cmd, addr, token, ev)
 		return nil
 	},
+}
+
+// runCardWait 账本单流多路 wait：从当前 seq 起跟子树事件（每行一个
+// JSON 事件到 stdout），全部成员达骨架终态（已完成/终止）即退出 0。
+// 成员集每轮重算——wait 挂起期间新拆/新并入的卡天然进流。timeout 是
+// 总时长（0=不限），超时退出码 124 与单 task wait 一致。
+func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.Duration) error {
+	st, err := openLedger()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if _, err := st.GetCard(cardID); err != nil {
+		return err
+	}
+	members := func() ([]string, error) {
+		if subtree {
+			return st.Subtree(cardID)
+		}
+		return []string{cardID}, nil
+	}
+	start, err := st.MaxSeq()
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	slog.SetDefault(logx.Setup("cli", ""))
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	allDone := errors.New("all-done")
+	checkDone := func() (bool, error) {
+		ids, err := members()
+		if err != nil {
+			return false, err
+		}
+		for _, id := range ids {
+			card, err := st.GetCard(id)
+			if err != nil {
+				return false, err
+			}
+			if card.Status != ledger.StatusDone && card.Status != ledger.StatusClosed {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	if done, err := checkDone(); err != nil {
+		return err
+	} else if done {
+		fmt.Fprintln(cmd.ErrOrStderr(), "子树已全部完成")
+		return nil
+	}
+	err = st.Follow(ctx, members, start, 2*time.Second, func(e ledger.Event) error {
+		if err := enc.Encode(e); err != nil {
+			return err
+		}
+		if e.Type != ledger.EvStatusMoved {
+			return nil
+		}
+		if done, err := checkDone(); err != nil {
+			return err
+		} else if done {
+			return allDone
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, allDone):
+		fmt.Fprintln(cmd.ErrOrStderr(), "子树全部完成，wait 退出")
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("wait --card 超时")}
+	default:
+		return err
+	}
 }
 
 // runUntilDone 实现 B67 依赖门闩：静默等待真实 archived，成功只输出一行事件。
@@ -439,6 +534,8 @@ func init() {
 		"持续订阅：每条事件单行输出，任务终结（failed/归档）才退出")
 	waitCmd.Flags().BoolVar(&waitUntilDone, "until-done", false,
 		"静默等待 handoff done；成功只输出 archived，failed 立即失败")
+	waitCmd.Flags().StringVar(&waitCardID, "card", "", "账本多路 wait：跟一张卡（配 --subtree 跟整棵树）")
+	waitCmd.Flags().BoolVar(&waitSubtree, "subtree", false, "扩展到子树（后代 + 并入成员，动态）")
 	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0,
 		"超时（如 3h）；默认不设上限。一次性模式=等不到事件的总时长上限，"+
 			"--follow 模式=空闲上限（期间一帧都没收到，含 progress），"+
