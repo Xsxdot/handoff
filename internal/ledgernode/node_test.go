@@ -2,6 +2,7 @@ package ledgernode
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -150,5 +151,39 @@ func TestMergeNodeDecision(t *testing.T) {
 	}
 	if out, err = m3.RunOnce(context.Background(), c3.ID); err != nil || out.Action != ActionNeedsHuman {
 		t.Fatalf("客观判据红: %v %+v", err, out)
+	}
+}
+
+// 审阅跑不出报文（派发失败、卡在工单上、连接断了）同样要落「需要你」：
+// 只把错误抛给调用方等于卡上不留痕——看板会显示一切正常，而实际没人在
+// 推它。2026-08-19 真机实测：审阅执行者把裁决塞进提问工单没有完成回合，
+// 节点直接报错退出，卡上一片空白。
+func TestReviewNodeMarksNeedsHumanWhenReviewFails(t *testing.T) {
+	s, card := nodeLedger(t)
+	node := &ReviewNode{St: s, Node: "review",
+		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
+			return "", fmt.Errorf("事件流中没有 completed/failed 最终报文")
+		}}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("不应把错误直接抛出: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("应转等人: %+v", out)
+	}
+	view, _ := s.GetCard(card.ID)
+	_ = view
+	events, _ := s.EventsFromAsc([]string{card.ID}, 0, 100)
+	sawNeeds, sawRaw := false, false
+	for _, e := range events {
+		if e.Type == ledger.EvNeedsHuman {
+			sawNeeds = true
+		}
+		if e.Type == ledger.EvComment && strings.Contains(string(e.Payload), "没有 completed/failed") {
+			sawRaw = true
+		}
+	}
+	if !sawNeeds || !sawRaw {
+		t.Fatalf("需要你标记=%v 原文落账=%v（两者都要有）", sawNeeds, sawRaw)
 	}
 }

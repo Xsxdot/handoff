@@ -60,7 +60,18 @@ func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error
 	}
 	message, err := n.RunReview(ctx, card)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("跑审阅: %w", err)
+		// 审阅没跑出报文（派发失败、卡在工单上、连接断了……）同样要上浮到
+		// 「需要你」，不能只让调用方拿到一个错误码：卡上不留痕 = 这张卡在
+		// 看板上看着一切正常，而实际没人在推它。原文落 timeline 供取证。
+		logger.Warn("审阅未取到报文，转等人", "err", err)
+		if _, cerr := n.St.AddComment(cardID,
+			"审阅未取到裁决报文：\n"+err.Error(), "普通", "node:"+n.Node); cerr != nil {
+			return Outcome{}, cerr
+		}
+		if merr := n.St.MarkNeedsHuman(cardID, "审阅未取到报文", "node:"+n.Node); merr != nil {
+			return Outcome{}, merr
+		}
+		return Outcome{Action: ActionNeedsHuman, Reason: "审阅未取到报文"}, nil
 	}
 	verdict, parseErr := ParseVerdict(message)
 	if parseErr != nil {
