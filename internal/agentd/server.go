@@ -116,6 +116,12 @@ type Server struct {
 	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
 	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
 	pty *ptyhost.Host
+	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
+	desktopMu    sync.Mutex
+	desktopState *proto.DesktopState
+	desktopAt    time.Time
+	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
+	desktopNow func() time.Time
 }
 
 // NewServer 创建 agentd 服务端。
@@ -386,6 +392,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("PUT /api/desktop/state", s.handleDesktopStatePut)
+	api.HandleFunc("GET /api/desktop/state", s.handleDesktopStateGet)
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
 	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
 	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)

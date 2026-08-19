@@ -29,3 +29,13 @@
 - 双裁决第 1 轮：spec 符合，新增 `DesktopAssetName` 三平台精确映射，`FetchChecksum` 保持转发兼容，`FetchChecksumFor` 按传入资产名解析且错误/日志带资产名；代码质量通过，gofmt/vet/包测试均通过，无修复轮次。
 - 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；`go test ./internal/release/`：`ok github.com/Xsxdot/handoff/internal/release 0.086s`。
 - 提交范围：`internal/release/` 与本 ledger，提交信息按计划为 `feat(release): 桌面端发布物的资产名与按名取校验和`。
+
+## Task 2：agentd 持有薄壳状态
+
+- 失败测试确认：`go test ./internal/agentd/ -run TestDesktopState -v` 原始编译错误为 `env.srv.desktopNow undefined` 与 `undefined: desktopStateTTL`。
+- 实现后 focused 测试：`go test ./internal/agentd/ -run TestDesktopState -v`：3 个用例全部 `PASS`，包结果 `ok github.com/Xsxdot/handoff/internal/agentd 0.161s`。
+- 变异复验第 1 次（反转过期判据）：`TestDesktopStateExpiresAfterTTL` 实际失败原文：`desktopstate_test.go:47: 过期后得到 200，想要 204`；包结果 `FAIL github.com/Xsxdot/handoff/internal/agentd 0.047s`。已恢复 TTL 判据。
+- 双裁决第 1 轮：spec 符合，PUT/GET、内存存储、互斥锁与 30s TTL 均落地，204/200 契约和过期行为有测试；代码质量通过，无修复轮次。
+- 收尾验证：`gofmt -l .` 无输出；`go vet ./...` 无输出；`go test ./internal/agentd/`：`ok github.com/Xsxdot/handoff/internal/agentd 99.849s`。
+- 额外实际命令 `cd desktop && gofmt -l . && go test ./internal/...` 失败，原始关键报错：`--- FAIL: TestSyncOnOpenOrderIsLoadBearing`；`open /tmp/.handoff-sync-642072607: read-only file system`；`FAIL github.com/Xsxdot/handoff/desktop/internal/shell 0.072s`。
+- 提交范围：`internal/proto/desktop.go`、`internal/agentd/desktopstate.go`、`internal/agentd/desktopstate_test.go`、`internal/agentd/server.go` 与本 ledger，提交信息按计划为 `feat(agentd): 中转薄壳状态，带 30s TTL`。
