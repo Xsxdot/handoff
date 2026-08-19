@@ -3,8 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree } from './ProjectTree'
+import { __resetTreePrefsForTest } from './useTreePrefs'
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  __resetTreePrefsForTest()
+})
 
 function task(over: Partial<Task>): Task {
   return {
