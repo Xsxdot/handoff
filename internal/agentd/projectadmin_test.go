@@ -344,7 +344,7 @@ func newPatchTestEnv(t *testing.T) *testAgentdEnv {
 	cfg := &config.Config{Token: testToken}
 	env := newTestAgentdEnvWithCfg(t, cfg, logger)
 	mgr := NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, newTestGate(t), logger)
+		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, nil, newTestGate(t), logger)
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env

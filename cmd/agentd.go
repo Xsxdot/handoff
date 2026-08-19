@@ -180,7 +180,7 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, ap, gate, logger)
+		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.DisciplineMapping, ap, gate, logger)
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）

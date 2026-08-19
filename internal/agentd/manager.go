@@ -248,14 +248,17 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 //   - ads: executor 注册表（name → Adapter，如 {"opencode": ..., "fake": ...}）；
 //     任务按 executor 名路由，缺省名取 cfg.Executor.Default
 //   - cfg: 配置（DataDir 用于派生任务目录、Executor.Default 为缺省执行者名）
+//   - discMapping: 取当前纪律块映射的函数（生产上传 (*Server).DisciplineMapping）；
+//     nil 时全部 executor 走内置默认
 //   - approver: 审批链裁决器；nil=不启用
 //   - gate: 权限判据网关；**不得为 nil**，它与 approver 是否启用无关
 //   - log: 本模块日志入口
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
-func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
-	disc := discipline.NewResolver(discipline.Dir(cfg.DataDir), cfg.Discipline, log)
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config,
+	discMapping func() map[string]string, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
+	disc := discipline.NewResolver(discipline.Dir(cfg.DataDir), discMapping, log)
 	disc.Preflight()
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg, approver: approver, gate: gate, log: log,

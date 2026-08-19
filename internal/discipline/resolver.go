@@ -32,25 +32,35 @@ func Dir(dataDir string) string { return filepath.Join(dataDir, "discipline") }
 // 无状态：每次 For 都重新读盘并重新取映射，因此配置改动与文件改动有同一种
 // 时效——都在下一个任务生效，都不需要重启 agentd。
 type Resolver struct {
-	dir string            // 纪律块文件目录
-	m   map[string]string // executor 名 → 文件名（纯文件名，不含路径）
-	log *slog.Logger
+	dir     string                   // 纪律块文件目录
+	mapping func() map[string]string // 取当前 executor 名 → 文件名映射
+	log     *slog.Logger
 }
 
 // NewResolver 构造 Resolver。
 //
 // 参数：
 //   - dir: 纪律块文件目录，通常取 Dir(cfg.DataDir)
-//   - m: executor 名 → 文件名映射（取自 config 的 discipline 段）；nil 视为空映射
+//   - mapping: 取当前映射的函数（生产上指向 agentd 的活配置）；nil 视为空映射，
+//     此时全部 executor 走内置默认
 //   - log: 日志入口；nil 时退回 slog.Default()
-func NewResolver(dir string, m map[string]string, log *slog.Logger) *Resolver {
+//
+// 注意：mapping 会在每次 For 时被调用，实现方必须是廉价且并发安全的
+// （Server.DisciplineMapping 读的是 atomic 快照，满足这两条）。
+func NewResolver(dir string, mapping func() map[string]string, log *slog.Logger) *Resolver {
 	if log == nil {
 		log = slog.Default()
 	}
-	if m == nil {
-		m = map[string]string{}
+	if mapping == nil {
+		log.Warn("纪律块映射取值函数为空，全部 executor 将走内置默认", "dir", dir)
+		mapping = func() map[string]string { return nil }
 	}
-	return &Resolver{dir: dir, m: m, log: log}
+	return &Resolver{dir: dir, mapping: mapping, log: log}
+}
+
+// Static 把一份固定映射包成取值函数，供测试与不需要热更新的调用方使用。
+func Static(m map[string]string) func() map[string]string {
+	return func() map[string]string { return m }
 }
 
 // For 返回该 executor 派发时应注入的纪律块。
@@ -74,7 +84,7 @@ func NewResolver(dir string, m map[string]string, log *slog.Logger) *Resolver {
 // 为什么配置指向的文件缺失是错误而不是退回内置：用户明确配了一份，
 // 悄悄换成另一份比失败更危险——他会以为跑的是自己那套纪律。
 func (r *Resolver) For(executor string) (Block, error) {
-	raw, configured := r.m[executor]
+	raw, configured := r.mapping()[executor]
 	name := strings.TrimSpace(raw)
 	if !configured {
 		b := builtinFor(executor)
@@ -135,7 +145,7 @@ func resolvePath(dir, name string) (string, error) {
 // 才创建；但完全不检查会把问题拖到第一次派发才暴露——WARN 让它在启动日志里
 // 就可见，真正的拒发发生在 Dispatch（envfile.Preflight 同款理由）。
 func (r *Resolver) Preflight() {
-	for executor := range r.m {
+	for executor := range r.mapping() {
 		if _, err := r.For(executor); err != nil {
 			r.log.Warn("纪律块预检失败（不阻断启动，派发时会拒发）", "executor", executor, "cause", err)
 		}

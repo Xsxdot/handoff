@@ -217,6 +217,13 @@ func (s *Server) SetManager(m *Manager) {
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
 
+// DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
+//
+// 交给 Manager 的 discipline.Resolver 每次派发时调用，因此控制台改完映射
+// **下一个任务就生效**，不必重启 agentd。返回的是当前快照持有的 map，
+// 调用方只读不改（写入方永不原地修改配置，只整体换新）。
+func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
+
 // SetConfigPath 注入配置文件路径，供写配置时落盘。
 //
 // 参数：
