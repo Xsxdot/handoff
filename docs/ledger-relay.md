@@ -7,3 +7,4 @@
 | Task 3 complete | HKDF-SHA256 PSK derivation, Noise NNpsk0, framed secure net.Conn | `HEAD^..HEAD` (Task 3 commit) | `go test ./internal/relay/ -v` passed |
 | Task 4 complete | Coordinator lazy relay Dialer, HTTP Transport, fake-relay E2E | `HEAD^..HEAD` (Task 4 commit) | `go test ./internal/relay/ -v` passed; yamux emitted its raw context-canceled close log during cleanup |
 | Task 5 complete | Relay client/factory, token entropy gate, command migration, Bundle pull | `HEAD^..HEAD` (Task 5 commit) | `go test ./cmd/` passed; targeted cmd/client/relay tests passed; full internal/client has root-permission failures in cursor fallback/error tests |
+| Task 6 complete | Executor relay Listener, per-session E2E/app yamux, reconnect, appListener | `HEAD^..HEAD` (Task 6 commit) | `go test ./internal/relay/ -v -count=1` passed; mux ordering synchronized with Dialer and yamux stderr logging suppressed |

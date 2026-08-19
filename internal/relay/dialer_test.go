@@ -50,11 +50,7 @@ func startFakeRelay(t *testing.T, token, account, node string) (string, func()) 
 			return
 		}
 		raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-		secure, err := SecureServer(ctx, raw, token, account, node)
-		if err != nil {
-			return
-		}
-		session, err := yamux.Server(secure, nil)
+		session, err := yamux.Server(raw, relayYamuxConfig())
 		if err != nil {
 			return
 		}
@@ -64,13 +60,26 @@ func startFakeRelay(t *testing.T, token, account, node string) (string, func()) 
 				return
 			}
 			go func() {
-				_ = http.Serve(&singleConnListener{conn: stream}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				secure, err := SecureServer(ctx, stream, token, account, node)
+				if err != nil {
+					return
+				}
+				appMux, err := yamux.Server(secure, relayYamuxConfig())
+				if err != nil {
+					return
+				}
+				appStream, err := appMux.Accept()
+				if err != nil {
+					return
+				}
+				_ = http.Serve(newSingleConnListener(appStream), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/ping" {
 						_, _ = io.WriteString(w, "pong")
 						return
 					}
 					http.NotFound(w, r)
 				}))
+				_ = appMux.Close()
 			}()
 		}
 	}))
@@ -78,18 +87,31 @@ func startFakeRelay(t *testing.T, token, account, node string) (string, func()) 
 }
 
 type singleConnListener struct {
-	conn net.Conn
-	done bool
+	conn   net.Conn
+	done   bool
+	closed chan struct{}
+}
+
+func newSingleConnListener(conn net.Conn) *singleConnListener {
+	return &singleConnListener{conn: conn, closed: make(chan struct{})}
 }
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
 	if l.done {
-		return nil, io.EOF
+		<-l.closed
+		return nil, net.ErrClosed
 	}
 	l.done = true
 	return l.conn, nil
 }
-func (l *singleConnListener) Close() error   { return nil }
+func (l *singleConnListener) Close() error {
+	select {
+	case <-l.closed:
+	default:
+		close(l.closed)
+	}
+	return nil
+}
 func (l *singleConnListener) Addr() net.Addr { return fakeAddr("relay-stream") }
 
 type fakeAddr string

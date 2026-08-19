@@ -91,20 +91,16 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 	}
 	d.log.Debug("relay connect_ok received", "node", d.node, "account", d.account)
 	raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-	secure, err := SecureClient(ctx, raw, d.token, d.account, d.node)
+	// The physical tunnel is the relay session-mux. E2E is established on each
+	// session stream so independent coordinators/requests get independent keys.
+	session, err := yamux.Client(raw, relayYamuxConfig())
 	if err != nil {
 		_ = raw.Close()
-		d.log.Error("relay e2e handshake failed", "node", d.node, "account", d.account, "cause", err)
-		return fmt.Errorf("secure relay tunnel: %w", err)
-	}
-	d.log.Debug("relay e2e established", "node", d.node, "account", d.account)
-	session, err := yamux.Client(secure, nil)
-	if err != nil {
-		_ = secure.Close()
 		d.log.Error("relay yamux setup failed", "node", d.node, "cause", err)
 		return fmt.Errorf("create relay yamux client: %w", err)
 	}
-	d.raw = secure
+	d.log.Debug("relay yamux ready", "node", d.node, "account", d.account)
+	d.raw = raw
 	d.session = session
 	d.log.Info("relay tunnel established", "node", d.node, "account", d.account)
 	return nil
@@ -131,7 +127,38 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 		d.mu.Unlock()
 		return nil, err
 	}
-	return conn, nil
+	secure, err := SecureClient(ctx, conn, d.token, d.account, d.node)
+	if err != nil {
+		_ = conn.Close()
+		d.log.Error("relay e2e handshake failed", "node", d.node, "account", d.account, "cause", err)
+		return nil, fmt.Errorf("secure relay session: %w", err)
+	}
+	d.log.Debug("relay e2e established", "node", d.node, "account", d.account)
+	appMux, err := yamux.Client(secure, relayYamuxConfig())
+	if err != nil {
+		_ = secure.Close()
+		return nil, fmt.Errorf("create relay app yamux client: %w", err)
+	}
+	appStream, err := appMux.Open()
+	if err != nil {
+		_ = appMux.Close()
+		return nil, fmt.Errorf("open relay app stream: %w", err)
+	}
+	return &appStreamConn{Conn: appStream, mux: appMux}, nil
+}
+
+type appStreamConn struct {
+	net.Conn
+	mux  *yamux.Session
+	once sync.Once
+	err  error
+}
+
+func (c *appStreamConn) Close() error {
+	c.once.Do(func() {
+		c.err = c.mux.Close()
+	})
+	return c.err
 }
 
 // Transport returns an HTTP transport whose requests all use the relay app
