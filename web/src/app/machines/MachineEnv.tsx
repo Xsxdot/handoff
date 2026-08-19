@@ -20,6 +20,7 @@ import { fetchEnv, saveEnvMapping } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { BINDING_LABEL, BINDING_ROW } from './bindingRow'
 
 function bindingValue(binding: EnvBinding): string {
   if (binding.mode === 'file') return `file:${binding.file ?? ''}`
@@ -120,8 +121,8 @@ export function MachineEnv({ machine }: { machine: Machine }) {
             const value = edits[binding.executor] ?? bindingValue(binding)
             const shownBinding = decodeBinding(binding.executor, value)
             return (
-              <label key={binding.executor} className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-3 text-xs">
-                <span className="font-medium">{binding.executor}</span>
+              <label key={binding.executor} className={BINDING_ROW}>
+                <span className={BINDING_LABEL}>{binding.executor}</span>
                 <div className="min-w-0">
                   <select
                     aria-label={`${binding.executor} 的 env 文件`}

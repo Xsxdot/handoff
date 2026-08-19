@@ -17,6 +17,7 @@ import { fetchDiscipline, saveDisciplineMapping } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { BINDING_LABEL, BINDING_ROW } from './bindingRow'
 
 function bindingValue(binding: DisciplineBinding): string {
   if (binding.mode === 'file') return `file:${binding.file ?? ''}`
@@ -126,8 +127,8 @@ export function MachineDiscipline({ machine }: { machine: Machine }) {
           {bindings.map((binding) => {
             const value = edits[binding.executor] ?? bindingValue(binding)
             return (
-              <label key={binding.executor} className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-3 text-xs">
-                <span className="font-medium">{binding.executor}</span>
+              <label key={binding.executor} className={BINDING_ROW}>
+                <span className={BINDING_LABEL}>{binding.executor}</span>
                 <div className="min-w-0">
                   <select
                     aria-label={`${binding.executor} 的纪律块`}
