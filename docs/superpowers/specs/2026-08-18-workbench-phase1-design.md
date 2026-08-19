@@ -39,8 +39,10 @@
   title、status、priority（仅展示/排序）、project、parent_id、workflow_id +
   版本、`attachments`（附件引用集：{kind: spec/plan/doc, path} 列表，路径归一
   为相对 docs/superpowers/ 的规范形）、`acceptance_criteria`（判据文本，每卡
-  独立）、driver lease（会话标识 + 心跳时间）、时间戳。**不强制出 spec**——
-  spec 是否必须由工作流 gate 决定（见 workflows）。
+  独立）、`base_branch`（**基线分支**，可空：空 = 继承最近显式设置的祖先卡，
+  顶层也空 = 项目默认主线。派发的工作分支从基线拉出，合并节点的自动合并目标 =
+  基线；蓝图 §3.1）、driver lease（会话标识 + 心跳时间）、时间戳。**不强制出
+  spec**——spec 是否必须由工作流 gate 决定（见 workflows）。
 - `card_relations`：`from → to` + `type` 枚举 {blocks / merged_into（并入）/
   discovered_from（发现自）/ split_from（拆分自）/ relates（关联）}。
   环检测与 blocked 衍生态**只对 blocks 生效**；`merged_into` 派生**跟随**态
@@ -51,6 +53,8 @@
   （「B4–B9 六条一份 spec」= 六卡并入承载卡，各自验收判据与已验记录保留）；
   拆分 = 建子卡 + split_from。批内单条真机验不过 → 拆回恢复自主流转。
   原「按 spec_ref 聚合的批次视图」设计**退役**——合并关系是更诚实的表达。
+  **合并校验**：成员有效基线分支必须一致（跨基线拒绝）；不允许链式合并
+  （承载卡自身不得是被并卡、被并卡不得再承载别人）——跟随派生保持单跳。
 - **验收结构化**：验收结果落事件类型 `acceptance_recorded`（含
   `verified_on_real_machine` bool + 证据文本）。「已完成(已验)」与「已完成
   (待真机验)」是真实存在的正交维度，必须可表达、可过滤，不压进状态列。
@@ -95,6 +99,8 @@ CREATE TABLE cards (
   workflow_version INT NOT NULL,           -- 卡钉工作流版本
   attachments   JSONB NOT NULL DEFAULT '[]',  -- [{kind: spec|plan|doc, path}]
   acceptance_criteria TEXT,
+  base_branch   TEXT,                      -- 基线分支；NULL = 继承祖先/项目主线
+
   driver_session TEXT,                     -- 驱动会话 lease
   driver_heartbeat_at TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -231,8 +237,9 @@ CREATE TABLE mirror_cursors (
 
 - **状态名用中文原文**做 CLI 参数值（与 workflow 定义一致，如
   `card move B157 已出spec`），不造英文别名——两套词表必然漂移。
-- **flag 约定**：`card add --project --priority --parent --workflow`（workflow
-  缺省取项目默认流）；`card list --status --project --blocked --needs --json`；
+- **flag 约定**：`card add --project --priority --parent --workflow
+  --base-branch`（workflow 缺省取项目默认流；base-branch 缺省空 = 继承/主线）；
+  `card list --status --project --blocked --needs --base-branch --json`；
   `card update --title --priority --attach kind:path --detach path --accept
   <判据文本>`；`card move <id> <状态> [--expect <前值>]`（CAS 前值缺省取读到的
   当前值，`--expect` 显式钉住用于脚本场景）。
@@ -281,9 +288,10 @@ CREATE TABLE mirror_cursors (
 - **回合计数**：按 卡 × 节点粒度，从 card_events 推导（不存内存）；
   默认封顶 3 轮，超限打「等人」；人工插手（用户手动 continue/改裁决）是否重置
   计数：**重置**（人工介入视为新基线），落事件注明。
-- 合并节点：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；只合
-  集成分支；冲突打「等人」，冲突文件清单 + 双方 commit 范围落 timeline；合并
-  顺序按 done 时序。
+- 合并节点：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；**自动
+  合并目标 = 卡的有效基线分支**——基线是集成分支时自动合回，基线就是 main 时
+  该节点不自动合、直接打「待合并」等人（两级合并策略的退化形）；冲突打
+  「等人」，冲突文件清单 + 双方 commit 范围落 timeline；合并顺序按 done 时序。
 - 审阅 task 的生命周期由执行器收口（裁决落账后自动 `done` 归档），不留孤儿。
 
 ## 6. Web 看板（任一协调机 agentd 托管，读同一账本库）
@@ -312,8 +320,9 @@ CREATE TABLE mirror_cursors (
   N」徽标（点开详情抽屉并定位到并入区：各被并卡 + 各自验收状态 + 拆回
   动作）**、已完成态的
   「已验/待真机验」徽标；异常徽标（⚖ 裁决/⛔ 等人/状态冲突/blocked/工单）。
-  被并卡不在看板单独成卡（列表与承载卡抽屉并入区可见）。**实时 join 关联
-  task 状态**，
+  基线非主线的卡显示分支 chip（如 `⎇ desktop-shell`，长期功能线一眼可辨，
+  可按基线过滤）。被并卡不在看板单独成卡（列表与承载卡抽屉并入区可见）。
+  **实时 join 关联 task 状态**，
   账面与实况矛盾亮「状态冲突」。
 - 详情抽屉：状态流水线、**验收区（判据 + 已验开关 + 证据摘要）**、**并入区
   （承载卡专属：被并卡清单 + 各自验收 + 拆回，替代独立合并面板）**、**关系区
@@ -400,3 +409,7 @@ CREATE TABLE mirror_cursors (
   恢复自主状态流转，且其 acceptance_recorded 事件数与合并前一致。
 ⑬ **workflow gate**：feature 流卡无 spec 附件时 `card move <id> 已出spec`
   被拒且报错文案指明缺附件；`card update --attach spec:<path>` 后同命令成功。
+⑭ **基线分支并行**：epic 父卡设 base_branch=集成分支，其子卡与一张顶层
+  main 热修卡并行派发。判法：两个 task 的工作分支 `git merge-base` 实测分别
+  落在各自基线上；合并节点把子卡合回集成分支（自动），热修卡不自动合、进
+  「待合并」；跨基线 `card merge` 被拒且报错指明两侧基线。
