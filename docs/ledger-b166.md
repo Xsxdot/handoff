@@ -109,3 +109,12 @@
 - 双裁决第 1 轮：spec 符合，三种线上类型、四个请求函数、10s/1s 轮询 hooks、204 空状态解码和与 Go 侧一致的数字/预发布版本比较均落地；代码质量通过，`parseResponse` 未被全局放宽，无修复轮次。
 - 收尾验证：`git diff --check` 无输出；`npm run typecheck` 通过；定向 vitest 结果为 `Test Files 2 passed (2)`、`Tests 3 passed (3)`。
 - 提交范围：`web/src/api/types.ts`、`web/src/api/client.ts`、`web/src/app/data/useUpdate.ts` 及测试、`web/src/app/lib/version.ts` 及测试与本 ledger，提交信息按计划为 `feat(web): 更新面的数据层与版本比较`。
+
+## Task 7：右下角提示框
+
+- 形态基准检查：计划引用的 `prototypes/desktop-update/index.html` 在当前仓库中不存在；实际读取并遵循 `docs/superpowers/specs/2026-08-19-desktop-update-surface-design.md` §4、§6.3，完成三种可堆叠提示、右下角让位、下载进度与会话级关闭。
+- 失败测试确认：`npx vitest run src/app/update/UpdateToasts.test.tsx` 首次原始失败为 `Failed to resolve import "./UpdateToasts"`。
+- 实现后定向验证：`npx vitest run src/app/update/UpdateToasts.test.tsx`：1 个测试文件、5 个用例全部通过。
+- 全量验证：`npm run typecheck` 通过；`npm test`：`Test Files 80 passed (80)`、`Tests 793 passed (793)`；`npm run build` 通过，`1943 modules transformed`，产物 `index-DX7Zrx4l.css 47.53 kB`、`index-lgefZoLt.js 892.54 kB`，仅有 Vite 的大 chunk warning。
+- 双裁决第 1 轮：spec 符合，非桌面壳不渲染、三种提示条件、sessionStorage 按 `(kind, tag)` 关闭、agentd 下载进度与 home 浮窗 236px 让位均落地；代码质量通过，`git diff --check` 无输出，无修复轮次。
+- 提交范围：`web/src/app/update/UpdateToasts.tsx`、测试、`web/src/app/shell/Shell.tsx` 与本 ledger，提交信息按计划为 `feat(web): 控制台右下角的更新提示框`。
