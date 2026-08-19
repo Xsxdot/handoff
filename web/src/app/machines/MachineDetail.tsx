@@ -1,10 +1,9 @@
-// MachineDetail —— 开发机分区右侧的选中机器详情（只读）。
+// MachineDetail —— 开发机分区右侧的选中机器详情。
 //
 // 字段来源严格按 spec §4 的表（name/addr/reachable/version/probe_ms/executors/
 // default_executor/active_tasks/error），后端没有的字段不渲染：
 //   - 操作系统：后端没有这个数据，整格不渲染（spec §0）
-//   - 可用执行者：只读列表 + 默认执行者标记，**没有任何开关**（执行器开关属
-//     机器级配置，W3b 不实现；开关以 NOT_WIRED 按钮形式给出「尚未实现」说明）
+//   - 可用执行者：只读列表 + 默认执行者标记；缺省执行者与默认模型由详情块修改
 //   - 最后心跳：后端没有该字段，前端记录「本页打开以来」的探活成功时刻并注明，
 //     不冒充服务端心跳（spec §9 诚实）
 import { useState } from 'react'
@@ -12,11 +11,11 @@ import { formatRelative } from '../lib/format'
 import { cn } from '@/lib/utils'
 import type { Machine } from '../../api/types'
 import { MachineDiscipline } from './MachineDiscipline'
+import { MachineExecutor } from './MachineExecutor'
 
-// NOT_WIRED 是三个「形态已定、后端未做」的操作。点击后就地展开一句说明——
+// NOT_WIRED 是两个「形态已定、后端未做」的操作。点击后就地展开一句说明——
 // 不置灰（置灰承诺"以后能用"，用户会反复点），也不静默无反应。
 const NOT_WIRED = [
-  { key: 'executors', label: '可用执行者', note: '执行者开关尚未实现：需要 agentd 提供机器级配置的写接口。' },
   { key: 'restart', label: '重启 agent', note: '重启尚未实现：需要 agentd 提供自重启接口，且要先想清楚重启期间在跑的任务怎么办。' },
   { key: 'terminal', label: '打开终端', note: '终端尚未实现：PTY 后端未做，当前请用 handoff attach <task>。' },
 ]
@@ -78,6 +77,7 @@ export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailPro
       </div>
 
       <MachineDiscipline machine={machine} />
+      <MachineExecutor machine={machine} />
 
       <div className="mt-3">
         <p className="text-xs font-medium text-muted-foreground">机器操作</p>
