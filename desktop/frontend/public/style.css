@@ -210,3 +210,29 @@ body {
 #question form > button[type="submit"] {
     align-self: flex-start;
 }
+
+/* 面板页的顶部 28px 是原生拖动区；主体必须退出拖动，否则按钮也会被窗口层吞掉。 */
+.top-inset {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 28px;
+    --wails-draggable: drag;
+}
+.panel {
+    width: 100%;
+    max-width: 680px;
+    padding: 0 16px 16px;
+    --wails-draggable: no-drag;
+}
+.panel h2 { font-size: 15px; margin: 8px 0; }
+#panel-output {
+    height: 320px; overflow: auto; margin: 0;
+    padding: 8px; border-radius: 6px;
+    background: #1e1e1e; color: #e6e6e6;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-all;
+}
+#panel-actions { margin-top: 12px; }
+.panel-hint { font-size: 12px; color: #888; margin: 6px 0 0; }
