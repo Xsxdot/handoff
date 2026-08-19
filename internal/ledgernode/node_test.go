@@ -187,3 +187,37 @@ func TestReviewNodeMarksNeedsHumanWhenReviewFails(t *testing.T) {
 		t.Fatalf("需要你标记=%v 原文落账=%v（两者都要有）", sawNeeds, sawRaw)
 	}
 }
+
+// 基线**显式写成 main** 与留空同义：spec「基线就是 main 时该节点不自动合、
+// 直接打『待合并』等人」。只判空串会让 `card add --base-branch main` 悄悄
+// 绕开主线的人工门，把改动自动合进 main（2026-08-19 真机验收发现）。
+func TestMergeNodeTreatsNamedMainAsMainline(t *testing.T) {
+	s, _ := nodeLedger(t)
+	card, err := s.CreateCard(ledger.NewCard{Title: "顶层热修卡", Project: "p", Workflow: "feature",
+		BaseBranch: "main", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 铺到「待审阅」：合并节点是从这一状态推「待合并」的
+	_ = s.AttachFile(card.ID, "spec", "specs/x.md", "t")
+	_ = s.SetAcceptance(card.ID, "测试全绿", "t")
+	for _, to := range []string{"已出spec", ledger.StatusDoing, ledger.StatusReview} {
+		if err := s.MoveCard(card.ID, to, "", "t"); err != nil {
+			t.Fatalf("铺路 %s: %v", to, err)
+		}
+	}
+	m := &MergeNode{St: s,
+		Objective: func(ctx context.Context, c ledger.Card, base string) error { return nil },
+		DoMerge: func(ctx context.Context, c ledger.Card, base string) error {
+			t.Fatal("显式 main 不应自动合")
+			return nil
+		},
+	}
+	out, err := m.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionNeedsHuman {
+		t.Fatalf("显式 main 应转人工: %v %+v", err, out)
+	}
+	if got, _ := s.GetCard(card.ID); got.Status != "待合并" {
+		t.Fatalf("应已推「待合并」: %s", got.Status)
+	}
+}

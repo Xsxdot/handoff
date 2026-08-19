@@ -100,6 +100,26 @@ type MergeNode struct {
 	St        *ledger.Store
 	Objective func(ctx context.Context, card ledger.Card, base string) error
 	DoMerge   func(ctx context.Context, card ledger.Card, base string) error
+	// MainLine 主线分支名，空则取 defaultMainLine。基线等于它（或为空）时
+	// 一律不自动合——两者是同一件事的两种写法，见 isMainline。
+	MainLine string
+}
+
+// defaultMainLine 主线分支的缺省名。
+const defaultMainLine = "main"
+
+// isMainline 判定一条基线是不是主线。
+//
+// why 不能只判空串：spec 说「基线就是 main 时该节点不自动合、直接打
+// 『待合并』等人」，空串只是「继承/项目默认主线」的表达之一。只认空串的话，
+// `card add --base-branch main` 建出的顶层热修卡会被当成集成线**自动合进
+// main**，主线的人工门就此失效（2026-08-19 真机验收发现）。
+func (m *MergeNode) isMainline(base string) bool {
+	mainLine := m.MainLine
+	if mainLine == "" {
+		mainLine = defaultMainLine
+	}
+	return base == "" || base == mainLine
 }
 
 // RunOnce 执行合并决策：主线转人工；集成线先跑客观判据，再尝试合并。
@@ -114,7 +134,7 @@ func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if base == "" {
+	if m.isMainline(base) {
 		reason := "基线是主线：合并永远人工"
 		logger.Info("main 层不自动合")
 		if workflow, workflowErr := m.St.GetWorkflow(card.WorkflowName, card.WorkflowVersion); workflowErr == nil {
