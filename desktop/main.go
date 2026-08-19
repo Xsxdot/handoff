@@ -8,7 +8,7 @@
 //     wizard-form / wizard-submit / wizard-error 的收发通道，不在
 //     这里加任何字段、不定义任何默认值
 //   - **不在退出路径上停 agentd**（spec §4.3 承重）
-//   - 托盘只有「打开控制台」「退出」两项。**不做「停止 agentd」**：
+//   - 托盘不提供「停止 agentd」。**不做「停止 agentd」**：
 //     service.Manager 没有 Stop，用 Uninstall 冒充是错的语义
 package main
 
@@ -73,6 +73,33 @@ var runtimeReadyCh = make(chan struct{})
 // closeRuntimeReady 保证只 close 一次：WindowRuntimeReady 若重发，
 // 直接 close 一个已关闭的 channel 会 panic。
 var closeRuntimeReady sync.Once
+
+// openConsoleFn 指向 main() 里那个 openConsole 闭包。
+//
+// 为什么要这个间接层：openConsole 捕获了 app/win/runtimeReadyCh 三个 main()
+// 的局部变量，提不成包级函数；而 rebuildTray 与托盘回调都在包级作用域里，
+// 引用不到闭包。用一个包级变量把它导出到包作用域是最小的接法。
+var openConsoleFn func()
+
+// trayState 是托盘菜单要展示的动态状态。
+//
+// 为什么用包级变量 + 重建而不是让菜单项自己刷新：Wails v3 的托盘菜单没有
+// 「改一项的文案」这种接口，改动只能整体重建。状态集中在一处，重建函数才
+// 能是幂等的。
+var (
+	trayMu      sync.Mutex
+	traySync    shell.SyncOutcome // 最近一次对账的结果
+	traySyncErr error             // 最近一次同步失败的原因，nil 表示没失败
+	trayLatest  string            // 发现的新版 tag，空串表示没有
+	trayApp     *application.App
+	trayTray    *application.SystemTray
+)
+
+// runRemoteUpgrade 在 Task 11 由真实实现替换；先保留可编译的接线点，保证
+// 托盘重建这一个 task 可以独立构建。
+var runRemoteUpgrade = func(bool) {
+	logger.Warn("升级执行机功能尚未接入")
+}
 
 func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -177,21 +204,12 @@ func main() {
 		win.SetURL(url)
 		win.Show()
 	}
+	openConsoleFn = openConsole
 
 	tray := app.SystemTray.New()
 	tray.SetLabel("handoff")
-	menu := app.Menu.New()
-	// 放 goroutine 里跑，与 ApplicationStarted 那条一致：openConsole 里有网络
-	// 握手，还要等 webview 就绪（最长 30s）——在点击回调里同步跑等于把主线程
-	// 连同整个 UI 一起冻住。SetURL/Show 内部走 InvokeSync 派回主线程，从
-	// goroutine 调用本就是它们支持的形态。
-	menu.Add("打开控制台").OnClick(func(*application.Context) { go openConsole() })
-	menu.Add("退出（agentd 继续运行）").OnClick(func(*application.Context) {
-		// 只退薄壳。agentd 与它拉起的执行者继续跑，这是招牌属性
-		logger.Info("用户从托盘退出薄壳；agentd 不受影响")
-		app.Quit()
-	})
-	tray.SetMenu(menu)
+	trayApp, trayTray = app, tray
+	rebuildTray()
 	logger.Info("系统托盘已就绪")
 
 	// 目录选择器：暴露给前端，收口 B110 的本机半边
@@ -225,6 +243,40 @@ func main() {
 	// 之前走到 showError（如握手 401）会 nil deref panic（实测复现）。
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		go openConsole()
+		// 新版检查独立于同步：它要出网、可失败，绝不能挡在打开控制台前面。
+		// 单开 goroutine，结果到了再刷托盘
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			configPath := config.DefaultPath()
+			if _, err := os.Stat(configPath); err != nil {
+				// 配置不存在时绝不能调用 config.Load：它会 firstRun 写盘，
+				// 把一个尚未完成向导的机器伪装成已配置
+				logger.Debug("取不到数据目录，跳过新版检查", "cause", err)
+				return
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				logger.Debug("取不到数据目录，跳过新版检查", "cause", err)
+				return
+			}
+			tag, newer := shell.CheckLatest(ctx, cfg.DataDir, embedbin.Version, shell.LatestDeps{
+				Fetch: func(ctx context.Context) (string, error) {
+					rel, err := release.NewClient(nil).Latest(ctx)
+					if err != nil {
+						return "", err
+					}
+					return rel.Tag, nil
+				},
+			})
+			if !newer {
+				return
+			}
+			trayMu.Lock()
+			trayLatest = tag
+			trayMu.Unlock()
+			rebuildTray()
+		}()
 	})
 
 	if err := app.Run(); err != nil {
@@ -232,6 +284,50 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info("薄壳正常退出；agentd 未被触碰")
+}
+
+// rebuildTray 按当前 trayState 重建托盘菜单。
+//
+// 幂等：可以随时调，每次都从零构建整个菜单。加锁是因为它会被三个来源调用
+// （启动序列、新版检查的 goroutine、用户点完强制同步之后），而 Wails 的
+// 菜单对象不是并发安全的。
+func rebuildTray() {
+	trayMu.Lock()
+	defer trayMu.Unlock()
+	if trayApp == nil || trayTray == nil {
+		return
+	}
+	menu := trayApp.Menu.New()
+	// 放 goroutine 里跑：openConsole 里有网络握手，还要等 webview 就绪，
+	// 在点击回调里同步跑会把主线程连同整个 UI 一起冻住。
+	menu.Add("打开控制台").OnClick(func(*application.Context) { go openConsoleFn() })
+
+	// 同步被闸一拦下：给强制入口，但藏在面板后面一层（spec D4）
+	if traySync.Plan == shell.SyncBlocked {
+		label := fmt.Sprintf("有更新待应用（%d 个任务进行中）", traySync.Busy)
+		if traySync.Busy < 0 {
+			// 探测失败时不谎报数字
+			label = "有更新待应用（活跃任务数未知）"
+		}
+		menu.Add(label).OnClick(func(*application.Context) { go showBlockedPanel() })
+	}
+	if traySyncErr != nil {
+		menu.Add("上次同步失败，查看详情").OnClick(func(*application.Context) { go showSyncFailurePanel() })
+	}
+	if trayLatest != "" {
+		menu.Add(fmt.Sprintf("有新版 %s 可下载", trayLatest)).
+			OnClick(func(*application.Context) { go openReleasePage(trayLatest) })
+	}
+	menu.Add("升级执行机…").OnClick(func(*application.Context) { go runRemoteUpgrade(false) })
+
+	menu.Add("退出（agentd 继续运行）").OnClick(func(*application.Context) {
+		// 只退薄壳。agentd 与它拉起的执行者继续跑，这是招牌属性
+		logger.Info("用户从托盘退出薄壳；agentd 不受影响")
+		trayApp.Quit()
+	})
+	trayTray.SetMenu(menu)
+	logger.Info("托盘菜单已重建", "plan", traySync.Plan.String(),
+		"sync_failed", traySyncErr != nil, "latest", trayLatest)
 }
 
 // openSyncDeps 装配 SyncOnOpen 的生产依赖。
@@ -310,14 +406,107 @@ func nudgeAgentd(ep shell.Endpoint) func() error {
 // emitSyncProgress 把同步阶段送给 UI。Task 9 之前先只记日志。
 func emitSyncProgress(stage string) { logger.Info("同步进度", "stage", stage) }
 
-// noteSyncFailed 记录一次失败的同步，供托盘展示。Task 10 之前先只记日志。
+// noteSyncFailed 记录一次失败的同步并刷新托盘。
 func noteSyncFailed(out shell.SyncOutcome) {
-	logger.Warn("同步失败已记录", "plan", out.Plan.String(), "cause", out.Err)
+	trayMu.Lock()
+	traySync, traySyncErr = out, out.Err
+	trayMu.Unlock()
+	rebuildTray()
 }
 
-// noteSyncBlocked 记录一次被闸一拦下的同步，供托盘展示。Task 10 之前先只记日志。
+// noteSyncBlocked 记录一次被闸一拦下的同步并刷新托盘。
 func noteSyncBlocked(out shell.SyncOutcome) {
-	logger.Info("同步被闸一拦下已记录", "busy", out.Busy)
+	trayMu.Lock()
+	traySync, traySyncErr = out, nil
+	trayMu.Unlock()
+	rebuildTray()
+}
+
+// showBlockedPanel 打开面板，说明为什么没同步，并提供强制入口。
+//
+// 代价必须写准：执行者是 setsid 出去的独立进程，B59 V3 实测跨过 agentd
+// 重启存活 16m29s，工单也在库里不丢。重启真正打断的是事件推送与在途请求，
+// **不是任务本身**。写成「会中断任务」是吓唬用户，也不诚实。
+func showBlockedPanel() {
+	p := openUpgradePanel(trayApp)
+	trayMu.Lock()
+	busy := traySync.Busy
+	trayMu.Unlock()
+	p.State("fail", "有活跃任务，本次未同步")
+	if busy >= 0 {
+		p.Line(fmt.Sprintf("当前有 %d 个活跃任务（running / waiting_answer）。", busy))
+	} else {
+		p.Line("探测活跃任务数失败，按「有任务」保守处置。")
+	}
+	p.Line("")
+	p.Line("强制同步会重启 agentd。实际代价：")
+	p.Line("  - 执行者进程不受影响（它们是 setsid 出去的独立进程）")
+	p.Line("  - 挂起的工单在库里，不会丢")
+	p.Line("  - 中断的是事件推送与在途请求，agentd 起回来后自动恢复")
+	p.OnForceRetry(func() { forceSyncNow(p) })
+}
+
+// showSyncFailurePanel 打开面板展示上次同步失败的原因。
+func showSyncFailurePanel() {
+	p := openUpgradePanel(trayApp)
+	trayMu.Lock()
+	err := traySyncErr
+	trayMu.Unlock()
+	p.State("fail", "上次同步失败")
+	if err != nil {
+		p.Line(err.Error())
+	}
+	p.Line("")
+	p.Line("agentd 仍在用旧版本运行，控制台不受影响。")
+	p.OnForceRetry(func() { forceSyncNow(p) })
+}
+
+// forceSyncNow 越过闸一立即同步。只由用户在面板上点击触发。
+func forceSyncNow(p *upgradePanel) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	p.State("running", "正在强制同步")
+	ep, _, err := shell.Resolve("")
+	if err != nil {
+		p.State("fail", "读取配置失败")
+		p.Line(err.Error())
+		return
+	}
+	d := openSyncDeps(ep)
+	target, err := d.InstalledPath()
+	if err != nil {
+		p.State("fail", "定位 handoff 失败")
+		p.Line(err.Error())
+		return
+	}
+	if err := shell.DoSync(ctx, target, true, d.Sync, func(s string) { p.Line(s) }); err != nil {
+		p.State("fail", "同步失败")
+		p.Line(err.Error())
+		return
+	}
+	p.Line("正在等 agentd 重启完成…")
+	if err := shell.WaitAgentdBack(ctx, d.EmbedVersion, d.Wait); err != nil {
+		p.State("fail", "agentd 未按时回来")
+		p.Line(err.Error())
+		return
+	}
+	p.State("ok", "已同步到 "+d.EmbedVersion)
+	trayMu.Lock()
+	traySync, traySyncErr = shell.SyncOutcome{Plan: shell.SyncSkip}, nil
+	trayMu.Unlock()
+	rebuildTray()
+}
+
+// openReleasePage 打开 release 页面让用户自己下载。
+//
+// 不做自动下载替换：那要处理 .app 自我替换、Gatekeeper、DMG 挂载，是另一个
+// 量级（spec §2 非目标）。
+func openReleasePage(tag string) {
+	url := "https://github.com/Xsxdot/handoff/releases/tag/" + tag
+	logger.Info("打开 release 页面", "url", url)
+	if err := trayApp.Browser.OpenURL(url); err != nil {
+		logger.Error("打开 release 页面失败", "url", url, "cause", err)
+	}
 }
 
 // readInstalledVersion 从既有 handoff 二进制里读版本号，供释出决策用。
