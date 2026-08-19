@@ -58,7 +58,9 @@ func newTestClientEnv(t *testing.T) *newTestEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	srv := agentd.NewServer(&config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &newTestEnv{srv: srv, ts: ts, st: st, home: home, token: testToken}

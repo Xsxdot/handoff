@@ -43,14 +43,18 @@ type testEnv struct {
 // newTestEnv 构造完整测试环境，并注册 t.Cleanup 关闭 store 与 server。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newTestEnvWithCfg(t, &config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // newTestEnvWithLogger 同 newTestEnv，但注入自定义 logger（供测试捕获服务端关键日志做
 // 确定性同步信号）。
 func newTestEnvWithLogger(t *testing.T, logger *slog.Logger) *testEnv {
 	t.Helper()
-	return newTestEnvWithCfg(t, &config.Config{Token: testToken}, logger)
+	return newTestEnvWithCfg(t, &config.Config{
+		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
+	}, logger)
 }
 
 // newTestEnvWithCfg 同 newTestEnv，但注入自定义配置（覆盖 token 为空等边界场景）。
