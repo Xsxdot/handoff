@@ -86,6 +86,34 @@ func TestAcceptanceAndNeeds(t *testing.T) {
 	}
 }
 
+func TestRecordDispatch(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "要派的卡")
+	err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Template: "feature-impl", TemplateVersion: 1, DisciplineHash: "1f3c9d",
+		Target: "mac-02", TaskID: "T9", Branch: "cards/" + c.ID + "-implement",
+		PlanPath: "plans/x.md", Actor: "cli:me@host",
+	})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	evs, _ := s.EventsFromAsc([]string{c.ID}, 0, 10)
+	found := false
+	for _, event := range evs {
+		if event.Type == EvDispatched {
+			found = true
+			var payload map[string]any
+			_ = json.Unmarshal(event.Payload, &payload)
+			if payload["discipline_hash"] != "1f3c9d" || payload["template_version"] != float64(1) {
+				t.Fatalf("快照字段: %+v", payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("缺 dispatched 事件")
+	}
+}
+
 func TestSubtree(t *testing.T) {
 	s := seedStore(t)
 	root := mk(t, s, "root")

@@ -106,6 +106,30 @@ func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Eve
 
 var cardRefPat = regexp.MustCompile(`#(B\d+(?:\.\d+)*)`)
 
+// DispatchSnapshot 派发事件快照：模板版本 + 纪律块 hash + 落点。
+// 「B107 那次派发用的哪版纪律块」从这里答（蓝图 §3.3 取证文化）。
+type DispatchSnapshot struct {
+	Template        string `json:"template"`
+	TemplateVersion int    `json:"template_version"`
+	DisciplineHash  string `json:"discipline_hash"`
+	Target          string `json:"target"`
+	TaskID          string `json:"task_id"`
+	Branch          string `json:"branch"`
+	PlanPath        string `json:"plan_path,omitempty"`
+	Actor           string `json:"-"`
+}
+
+// RecordDispatch 落派发事件。
+func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("派发落账: 卡 %s: %w", cardID, err)
+		}
+		_, err := s.appendEvent(tx, sink, cardID, EvDispatched, snap.Actor, snap)
+		return err
+	})
+}
+
 // AddComment 发评论。body 里的 #B 号引用解析出来：存在的卡自动建
 // relates 边（幂等），不存在的只留在 refs 里（评论是记录不是校验）。
 // kind ∈ {普通, 更正}——「更正」承接 markdown 总账的变更痕迹文化。
