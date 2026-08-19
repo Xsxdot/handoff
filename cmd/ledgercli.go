@@ -54,6 +54,14 @@ func ledgerActor() string {
 	return fmt.Sprintf("cli:%s@%s", user, host)
 }
 
+// ledgerSession 驱动身份。比 ledgerActor 多一个 pid——事件的 actor 要的是
+// 「谁干的」（人可读即可），而驱动锁要的是「哪一次运行占着」：同一台机器
+// 上两个并发会话的 user@host 完全相同，只用它做驱动身份，判据⑥ 要求的
+// 「已被 <会话> 认领」就退化成「已被我自己认领」，等于没报。
+func ledgerSession() string {
+	return fmt.Sprintf("%s#%d", ledgerActor(), os.Getpid())
+}
+
 // confirmDestructive 三处破坏性动作（close/merge/workflow migrate）的
 // 二次确认：--yes 跳过；非 TTY 且无 --yes 直接拒绝（脚本必须显式表态，
 // 不许静默走破坏路径）。

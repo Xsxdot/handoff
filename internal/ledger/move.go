@@ -15,6 +15,15 @@ import (
 // gate 不过返回 ErrGateBlocked（错误文案指明缺什么）。
 func (s *Store) MoveCard(id, to, expect, actor string) error {
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		return s.moveCardTx(tx, sink, id, to, expect, actor)
+	})
+}
+
+// moveCardTx 事务内的转移实现。抽出来是为了让「认领」把转状态与落驱动
+// 并进同一个事务（见 ClaimCard）——分成两次写会留出一个「进行中但没有
+// 驱动」的窗口，并发输家恰好读到它时就报不出认领者是谁。
+func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor string) error {
+	{
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			return fmt.Errorf("转移: 卡 %s: %w", id, err)
@@ -74,6 +83,34 @@ func (s *Store) MoveCard(id, to, expect, actor string) error {
 		_, err = s.appendEvent(tx, sink, id, EvStatusMoved, actor,
 			map[string]any{"from": card.Status, "to": to})
 		return err
+	}
+}
+
+// ClaimCard 原子认领：把「CAS 转入 to」与「落驱动 session」并进同一个
+// 事务。派发即认领用它——分两次写会留出「进行中但驱动为空」的窗口，
+// 并发输家恰好读到那个瞬间就报不出认领者是谁（判据⑥要求报出会话名），
+// 进程若在窗口内崩掉还会留下一张没人驱动的「进行中」卡。
+// 冲突返回 ErrCASConflict，卡上已有活跃的别家驱动同样拒。
+func (s *Store) ClaimCard(id, to, expect, session string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		card, err := getCardTx(s, tx, id)
+		if err != nil {
+			return fmt.Errorf("认领: 卡 %s: %w", id, err)
+		}
+		expired := card.DriverHeartbeatAt.IsZero() || time.Since(card.DriverHeartbeatAt) > driverLeaseTTL
+		if card.DriverSession != "" && card.DriverSession != session && !expired {
+			log().Warn("认领被拒：卡已有活跃驱动", "card", id, "holder", card.DriverSession, "claimer", session)
+			return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
+		}
+		if err := s.moveCardTx(tx, sink, id, to, expect, session); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			session, s.tval(time.Now()), id); err != nil {
+			return fmt.Errorf("认领写驱动: %w", err)
+		}
+		log().Info("卡已认领", "card", id, "to", to, "session", session)
+		return nil
 	})
 }
 

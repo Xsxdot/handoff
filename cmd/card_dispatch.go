@@ -29,15 +29,19 @@ var (
 )
 
 type dispatchRequest struct {
-	prompt   string
-	branch   string
-	target   string
-	project  string
-	executor string
-	model    string
-	planB64  string
-	planName string
-	base     string
+	prompt string
+	branch string
+	// 每张卡在目标机上开自己的工作树。共用主工作树时第二张卡会撞
+	// 「目标工作目录已被活跃任务占用」409——而看板的前提就是多张卡
+	// 同时在飞，共用工作树等于一次只能干一张
+	newWorktree bool
+	target      string
+	project     string
+	executor    string
+	model       string
+	planB64     string
+	planName    string
+	base        string
 }
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
@@ -66,6 +70,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		Prompt: req.prompt, Target: req.target, NewBranch: req.branch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
 		PlanB64: req.planB64, PlanName: req.planName, Base: req.base,
+		NewWorktree: req.newWorktree,
 	})
 	if err != nil {
 		return "", err
@@ -166,7 +171,7 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 	taskID, err := dispatchTransportWithOpts(dispatchRequest{
 		prompt: prompt, branch: branch, target: target, project: c.Project,
 		executor: tpl.Def.Executor, model: model, planB64: planB64,
-		planName: planName, base: base,
+		planName: planName, base: base, newWorktree: true,
 	})
 	if err != nil {
 		return zero, fmt.Errorf("派发: %w", err)
@@ -207,15 +212,16 @@ var cardDispatchCmd = &cobra.Command{
 		if card.Status == ledger.StatusDoing {
 			return fmt.Errorf("卡 %s 已被认领（驱动 %s）", id, card.DriverSession)
 		}
-		if err := st.MoveCard(id, ledger.StatusDoing, card.Status, actor); err != nil {
-			if current, getErr := st.GetCard(id); getErr == nil && current.DriverSession != "" {
-				return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, current.DriverSession, err)
+		// 原子认领：转状态与落驱动同事务。分两步写会留出「进行中但驱动
+		// 为空」的窗口，并发输家读到它就报不出认领者是谁（判据⑥要会话名）
+		if err := st.ClaimCard(id, ledger.StatusDoing, card.Status, ledgerSession()); err != nil {
+			// 报文只出一次：库层在「读到时已有驱动」时自带会话名，CAS 竞态
+			// 里则没有，这里补读一次；两条路径都只包哨兵不包文案，避免套娃
+			if current, getErr := st.GetCard(id); getErr == nil && current.DriverSession != "" &&
+				current.DriverSession != ledgerSession() {
+				return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, current.DriverSession, ledger.ErrCASConflict)
 			}
 			return fmt.Errorf("认领失败（可能被并发抢先）: %w", err)
-		}
-		if err := st.ClaimDriver(id, actor); err != nil {
-			_ = st.MoveCard(id, card.Status, ledger.StatusDoing, actor)
-			return fmt.Errorf("认领驱动: %w", err)
 		}
 		result, err := dispatchViaTemplate(st, card, cardDispatchTemplate, cardDispatchTarget,
 			cardDispatchPlan, cardDispatchDiscipline, actor)

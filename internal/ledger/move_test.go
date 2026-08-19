@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,38 @@ func TestMoveGateAcceptance(t *testing.T) {
 	// 判据为空进「待合并」被拒（feature 流第二道门）
 	if err := s.MoveCard(card.ID, "待合并", "", "test"); !errors.Is(err, ErrGateBlocked) {
 		t.Fatalf("缺判据应拒: %v", err)
+	}
+}
+
+// 认领必须原子：转状态与落驱动同事务。分两步写时并发输家会读到
+// 「进行中但驱动为空」的中间态，报不出认领者是谁（判据⑥要会话名），
+// 进程在窗口内崩掉还会留下没人驱动的「进行中」卡。
+func TestClaimCardIsAtomic(t *testing.T) {
+	s := seedStore(t)
+	c, _ := s.CreateCard(NewCard{Title: "认领", Project: "p", Workflow: "bug", Actor: "test"})
+
+	if err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-A#1"); err != nil {
+		t.Fatalf("首次认领: %v", err)
+	}
+	got, _ := s.GetCard(c.ID)
+	if got.Status != StatusDoing || got.DriverSession != "sess-A#1" {
+		t.Fatalf("状态与驱动必须同时落定: status=%q driver=%q", got.Status, got.DriverSession)
+	}
+	if got.DriverHeartbeatAt.IsZero() {
+		t.Fatal("认领未落心跳时间")
+	}
+
+	// 第二个会话：前值已不是「待办」，且卡上有活跃驱动——错误必须报出持有者
+	err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-B#2")
+	if !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("并发认领应 ErrCASConflict: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sess-A#1") {
+		t.Fatalf("错误必须点名持有者会话（判据⑥）: %v", err)
+	}
+
+	// 同一会话重入不算冲突（重试安全）
+	if err := s.ClaimCard(c.ID, StatusReview, StatusDoing, "sess-A#1"); err != nil {
+		t.Fatalf("同会话推进不应被自己的驱动挡住: %v", err)
 	}
 }
