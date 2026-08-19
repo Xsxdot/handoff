@@ -562,3 +562,61 @@ func TestToolRewrittenFilesPinnedToLF(t *testing.T) {
 		}
 	}
 }
+
+// macOS 薄壳的交付形态是 DMG，而组装 DMG 的调用方式是承重的。
+//
+// **`package:dmg` 与 `create:dmg` 不能互换。** 前者的 deps 挂着
+// `package` → `build`（见 desktop/build/darwin/Taskfile.yml），会把流水线上一步
+// 刚签名并装订好票据的 `.app` 整个重建掉，最后塞进 DMG 的是一个全新的、未签名
+// 的 bundle。这条路上**没有任何一步会报错**：wails3 退 0、DMG 照常产出、
+// job 全绿，要到用户挂载 DMG 双击被 Gatekeeper 拦住才暴露，而那时资产已经发出去了。
+//
+// DMG 本身也必须签 + 公证 + 装订：里面的 .app 虽已装订，但 DMG 作为下载物同样
+// 带隔离属性，不装订的话首次挂载在离线机器上仍会被拦。
+func TestDarwinDesktopShipsStapledDMG(t *testing.T) {
+	wf := stripYAMLComments(readWorkflow(t))
+
+	// 只看**调用行**，不看提及。报错文案里出现 package:dmg 是正当的（那正是要
+	// 提醒的坑），禁的是真的去调它。第一版写成裸 Contains，被自己的 echo 文案
+	// 绊倒——门要对准行为，不是对准字符串。
+	var invokesDMG, invokesPackageDMG bool
+	for _, line := range strings.Split(wf, "\n") {
+		if !strings.Contains(line, "wails3 task") {
+			continue
+		}
+		if strings.Contains(line, "package:dmg") {
+			invokesPackageDMG = true
+		}
+		if strings.Contains(line, "create:dmg") {
+			invokesDMG = true
+		}
+	}
+	if invokesPackageDMG {
+		t.Fatal("不得调 package:dmg：它的 deps 会重建 .app，把已签名已装订的 bundle " +
+			"换成一个未签名的新 bundle，且全程不报错")
+	}
+	if !invokesDMG {
+		t.Fatal("darwin 薄壳 job 没有调 create:dmg，不会产出 DMG")
+	}
+	for _, want := range []string{
+		"stapler staple",   // DMG 自己也要装订
+		"stapler validate", // 装订后立刻复核，别等用户来发现
+		"notary-dmg.log",   // DMG 走自己那轮公证，不复用 bundle 那轮的日志
+	} {
+		if !strings.Contains(wf, want) {
+			t.Fatalf("darwin 薄壳 job 缺 DMG 关键步骤 %q", want)
+		}
+	}
+	// notarytool 在 status 为 Invalid 时仍可能退 0——两轮公证都必须查状态串，
+	// 只查一轮等于放过另一轮。
+	if got := strings.Count(wf, "status: Accepted"); got < 3 {
+		t.Fatalf("每一轮公证都要查 'status: Accepted'（裸 CLI / bundle / DMG 共三轮），实得 %d 次", got)
+	}
+	// 交付的是 DMG，不再另发一份同内容的 zip
+	if strings.Contains(wf, "handoff-desktop_${TAG}_darwin_arm64.zip") {
+		t.Fatal("darwin 薄壳不该再发 zip：同一份 .app 出现两种资产会让用户不知道该下哪个")
+	}
+	if !strings.Contains(wf, "handoff-desktop_${TAG}_darwin_arm64.dmg") {
+		t.Fatal("darwin 薄壳资产名必须是 .dmg")
+	}
+}
