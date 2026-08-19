@@ -212,6 +212,7 @@
 | B156.2 | 共同 | 二期·协作层：评论/群聊/上下文文档挂卡 | 💡 idea | 中 | — | — | — | — | 属 B156。依赖 B156.1 的 card_events 单流 |
 | B156.3 | 共同 | 三期·自动化层：规则引擎 + agentd 拉起协调会话 + 裁决自动唤醒 | 💡 idea | 中 | — | — | — | — | 属 B156。keystone 原语：agentd 拉起无人值守协调会话 |
 | B156.4 | 共同 | 四期·蓝图域：goal 驱动自主推进 + 跨任务摘要共享 | 💡 idea | 中 | — | — | — | — | 属 B156。依赖 B156.3 |
+| B157 | w5 | 控制台配置执行纪律：设置页新分区编纪律块正文 + 开发机详情配 executor→文件映射 | 📋 specced | 中 | [spec](specs/2026-08-19-b157-discipline-console-config-design.md) · [plan](plans/2026-08-19-b157-discipline-console-config.md) | [原型](../../prototypes/base/README.md) | — | **改号 B156→B157**：写 spec 时汇流点 max=155，二十分钟后复核 B156 工作台蓝图 epic 已落（30307010a）——取号竞态，开工前必须再算一次 | 来源：08-19 用户发现 B129 只做了后端。控制台今天 `grep -rn discipline web/src` 零命中，纪律块唯一配置面是去执行机上手改 config.yaml + 丢文件。范围只两件：按机器编正文、按机器配映射（参照 env 的文件+映射形状）。**刻意不做**：删除/改名文件（映射存的是文件名，改名会静默指空）；任务详情显示「本次用了哪块纪律」与会话流里被 QUIET_EVENTS 滤掉的 progress 事件（真缺口，另立条目）。形态经 fork 副本 `discipline-config/` 走查确认，base README 已记确认中。三处既有点要动：swapConf 只深拷 Targets（改 Discipline 会污染旧快照）、Resolver 构造时吞映射（不改则「改完要重启才生效」）、config.Save 整份 marshal 丢注释（沿用不解决） |
 
 ## 待验证的空白
 
