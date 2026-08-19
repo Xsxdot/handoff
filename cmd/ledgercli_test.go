@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -21,7 +22,7 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if _, err := os.Stat(cfgPath); err != nil {
-		c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir}
+		c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
 		if err := config.Save(cfgPath, c); err != nil {
 			t.Fatalf("写测试配置: %v", err)
 		}
