@@ -34,6 +34,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgermirror"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/pathenv"
 	"github.com/Xsxdot/handoff/internal/permgate"
@@ -216,6 +218,40 @@ var agentdCmd = &cobra.Command{
 			logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
 		} else {
 			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
+		}
+
+		// 账本镜像子系统：有已登记 target 才有镜像对象；账本库按配置解析
+		//（dsn 空 = DataDir/ledger.db 单机回退）。构造→go Run→Stop→Close
+		// 的次序是硬约束：订阅回调在写库，Stop 必须先于账本库 Close。
+		if len(cfg.Targets) > 0 {
+			ldsn := cfg.Ledger.DSN
+			if ldsn == "" {
+				ldsn = filepath.Join(cfg.DataDir, "ledger.db")
+			}
+			lst, err := ledger.Open(ldsn)
+			if err != nil {
+				return fmt.Errorf("打开账本库: %w", err)
+			}
+			defer lst.Close()
+			if err := lst.EnsureDefaultWorkflows(); err != nil {
+				return fmt.Errorf("seed 默认工作流: %w", err)
+			}
+			host, _ := os.Hostname()
+			lm := ledgermirror.New(lst, func() map[string]config.Target {
+				// /api/machines 热改会原子替换配置快照；从配置文件读取使
+				// 本子系统无需持有启动时的旧 targets 集合。
+				current, err := config.Load(p)
+				if err != nil {
+					logger.Warn("读取镜像 targets 配置失败，沿用启动快照", "err", err)
+					return cfg.Targets
+				}
+				return current.Targets
+			}, ledgermirror.Options{Holder: host})
+			go lm.Run(wdCtx)
+			defer lm.Stop()
+			logger.Info("账本镜像子系统已挂载", "holder", host)
+		} else {
+			logger.Info("账本镜像未启动：无已登记 target")
 		}
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
