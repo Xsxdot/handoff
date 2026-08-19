@@ -635,3 +635,30 @@ export interface PtyControl {
   cols?: number
   rows?: number
 }
+
+// DesktopState / LatestResp / DownloadState 与 internal/proto/desktop.go 对应，
+// 两边一起改。字段名严格跟随 Go 的 json tag，避免薄壳状态在 agentd 中转时漂移。
+
+// DesktopState 是桌面薄壳上报给 agentd、再供控制台读取的自身状态。
+export interface DesktopState {
+  app_version: string
+  sync_plan: string
+  sync_busy: number
+  sync_error?: string
+}
+
+// LatestResp 是 GET /api/update/latest 的最新版本查询结果。
+export interface LatestResp {
+  tag: string
+  checked_at?: string
+}
+
+// DownloadState 是桌面端安装包下载的进度与结果。
+export interface DownloadState {
+  stage: string
+  tag?: string
+  percent: number
+  path?: string
+  opened: boolean
+  error?: string
+}

@@ -46,6 +46,7 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
+import { UpdateToasts } from '../update/UpdateToasts'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 
@@ -454,6 +455,9 @@ export function Shell() {
           }
         />
       )}
+
+      {/* 更新提示与 home 浮窗共享右下角；直接把 dock.windowOpen 下传，避免再造一份全局状态。 */}
+      <UpdateToasts homeOpen={dock.windowOpen} />
 
       {scratchError !== '' && (
         <p role="alert" className="fixed right-5 bottom-24 z-40 rounded border border-destructive/30 bg-background px-3 py-1.5 text-xs text-destructive shadow">

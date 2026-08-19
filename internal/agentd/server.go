@@ -102,6 +102,15 @@ type Server struct {
 	sessionRecheck time.Duration
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// latestFetch 查 GitHub latest release；更新提示与下载共用 selfupdate 缓存。
+	latestFetch func(context.Context) (release.Release, error)
+	// downloadMu 保护下载状态快照；下载 I/O 不持锁，否则 GET 进度会被阻塞。
+	downloadMu       sync.Mutex
+	downloadState    *proto.DownloadState
+	downloadChecksum func(context.Context, string, string) (string, error)
+	downloadFetch    func(context.Context, string, string) ([]byte, string, error)
+	downloadOpen     func(string) error
+	downloadPlatform func() (string, string)
 	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
 	pull *pullTracker
 	// pullBaseCtx 是后台自拉的基准上下文。
@@ -116,6 +125,12 @@ type Server struct {
 	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
 	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
 	pty *ptyhost.Host
+	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
+	desktopMu    sync.Mutex
+	desktopState *proto.DesktopState
+	desktopAt    time.Time
+	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
+	desktopNow func() time.Time
 }
 
 // NewServer 创建 agentd 服务端。
@@ -144,6 +159,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		}
 	}
 	inst := release.NewInstaller(log, tr)
+	releaseClient := release.NewClient(tr)
 	s := &Server{
 		st:             st,
 		hub:            NewHub(),
@@ -154,6 +170,14 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		pty:            ptyhost.New(log),
+		latestFetch:    releaseClient.Latest,
+		downloadFetch:  desktopDownloadFetcher(inst),
+		downloadOpen:   openDownloadedFile,
+		downloadPlatform: func() (string, string) {
+			return release.CurrentPlatform()
+		},
+		downloadState:    &proto.DownloadState{Stage: "idle", Percent: -1},
+		downloadChecksum: desktopDownloadChecksum(inst),
 	}
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
@@ -386,6 +410,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("PUT /api/desktop/state", s.handleDesktopStatePut)
+	api.HandleFunc("GET /api/desktop/state", s.handleDesktopStateGet)
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
 	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
 	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
@@ -417,6 +443,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	api.HandleFunc("POST /api/update", s.handleUpdate)
+	api.HandleFunc("GET /api/update/latest", s.handleUpdateLatest)
+	api.HandleFunc("POST /api/update/desktop/download", s.handleDesktopDownloadStart)
+	api.HandleFunc("GET /api/update/desktop/download", s.handleDesktopDownloadState)
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
