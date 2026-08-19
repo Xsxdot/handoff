@@ -1,6 +1,8 @@
-# 工作台一期：任务卡账本 + 看板 + 主会话驱动（spec 骨架 v3）
+# 工作台一期：任务卡账本 + 看板 + 主会话驱动（spec v4）
 
-> 状态：骨架，经业务/领域双审阅修订，待与用户逐节敲定后充实为可派发 spec。
+> 状态：待敲定项已全部敲实（选型 PG、DDL、镜像 lease、CLI 命名、裁决 schema、
+> 页面关系、逐条判法），原型形态经两轮走查确认（基准落 base/README.md，
+> 确认中）。待用户终审后交 writing-plans。
 > 上游蓝图：[2026-08-18-workbench-blueprint-design.md](2026-08-18-workbench-blueprint-design.md)
 > （账本宿主、双聚合、正交标记、对账规则等设计裁决见蓝图 §3，本文不重复论证）。
 
@@ -14,11 +16,15 @@
 **非目标**（蓝图二期以后）：事件自动触发、群聊、富评论、上下文文档实体化、
 蓝图 goal、自动合 main、executor 写账、agentd 自主唤醒协调者。
 
-## 2. 数据模型（中心账本库 PG/MySQL，单机回退 SQLite）
+## 2. 数据模型（中心账本库 PostgreSQL，单机回退 SQLite）
 
-> 待敲定：具体 DDL 与索引；**中心库选型（PG 还是 MySQL）**——倾向 PG
-> （LISTEN/NOTIFY 可做事件推送，多路 wait 免轮询；MySQL 则事件消费走短周期
-> 轮询），以用户实际已有的中心库为准。以下为定案的结构性决策：
+> **选型定案：PostgreSQL**。理由：LISTEN/NOTIFY 天然支撑账本单流的事件推送
+> （多路 wait 免轮询）、partial unique index 直接表达「一卡至多一条
+> merged_into」与镜像幂等键。store 接口层保留方言吸收位，MySQL 适配留到真有
+> 需求再做（不预先实现）。单机回退 SQLite 时事件推送退化为进程内广播 +
+> 兜底轮询（回退模式下账本与消费者同进程，无跨进程推送需求）。
+>
+> DDL 见 §2.1；以下为定案的结构性决策：
 
 - **账本表只存在于中心账本库**（或单机回退模式的本机 SQLite）；执行机 agentd
   的 store 永不建这些表，执行机不持有账本库凭据。账本持久化收在 store 接口
@@ -69,6 +75,121 @@
 - 正交标记不落列：`blocked`（全部 blocker 达「已完成」才解除；blocker 终止 →
   下游打等人）与 `等人`（带 reason 枚举）均从边表 + 事件流推导，查询时计算。
 
+### 2.1 DDL（PG 规范形；SQLite 回退映射见文末注）
+
+```sql
+CREATE TABLE cards (
+  id            TEXT PRIMARY KEY,          -- B 号（子卡点号形：B156.1）
+  title         TEXT NOT NULL,
+  status        TEXT NOT NULL,             -- 状态名中文原文，与 workflow 定义一致
+  terminate_reason TEXT,                   -- 终止态才填：取消/废弃/搁置
+  priority      TEXT NOT NULL DEFAULT '中',
+  project       TEXT NOT NULL,
+  parent_id     TEXT REFERENCES cards(id),
+  workflow_name TEXT NOT NULL,
+  workflow_version INT NOT NULL,           -- 卡钉工作流版本
+  attachments   JSONB NOT NULL DEFAULT '[]',  -- [{kind: spec|plan|doc, path}]
+  acceptance_criteria TEXT,
+  driver_session TEXT,                     -- 驱动会话 lease
+  driver_heartbeat_at TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_cards_board  ON cards(project, status);
+CREATE INDEX idx_cards_parent ON cards(parent_id);
+
+CREATE TABLE card_relations (
+  from_id TEXT NOT NULL REFERENCES cards(id),
+  to_id   TEXT NOT NULL REFERENCES cards(id),
+  type    TEXT NOT NULL,  -- blocks|merged_into|discovered_from|split_from|relates
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (from_id, to_id, type)
+);
+-- 一卡至多一条并入边（拆回 = 删这条边）
+CREATE UNIQUE INDEX uq_rel_merged_into ON card_relations(from_id)
+  WHERE type = 'merged_into';
+CREATE INDEX idx_rel_to ON card_relations(to_id, type);
+
+CREATE TABLE card_tasks (
+  card_id  TEXT NOT NULL REFERENCES cards(id),
+  target   TEXT NOT NULL,
+  task_id  TEXT NOT NULL,
+  purpose  TEXT NOT NULL,   -- implement|review|merge
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (target, task_id)   -- 一个 task 至多挂一张卡
+);
+CREATE INDEX idx_card_tasks_card ON card_tasks(card_id);
+
+CREATE TABLE card_events (
+  seq       BIGSERIAL PRIMARY KEY,   -- 账本单流全局序
+  card_id   TEXT REFERENCES cards(id),  -- 可空：项目级事件（如项目级裁决开闭）
+  type      TEXT NOT NULL,  -- status_moved|dispatched|review_verdict|merged|
+                            -- unmerged|split|acceptance_recorded|comment|
+                            -- decision_opened|decision_answered|task_mirrored
+  actor     TEXT NOT NULL,  -- 会话标识 / user / mirror
+  payload   JSONB NOT NULL,
+  source_target TEXT, source_task TEXT, source_seq BIGINT,  -- 仅镜像事件
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 镜像幂等键：（来源 target, task, 原 seq）唯一
+CREATE UNIQUE INDEX uq_events_mirror
+  ON card_events(source_target, source_task, source_seq)
+  WHERE source_target IS NOT NULL;
+CREATE INDEX idx_events_card ON card_events(card_id, seq);
+
+CREATE TABLE workflows (
+  name    TEXT NOT NULL,
+  version INT  NOT NULL,
+  definition JSONB NOT NULL,  -- 状态序列（骨架锚点+插入位）、gate 条件、终态集
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (name, version)   -- 不可变版本化：只插新行，不更新旧行
+);
+
+CREATE TABLE dispatch_templates (
+  name    TEXT NOT NULL,
+  version INT  NOT NULL,
+  definition JSONB NOT NULL,  -- executor、target、分支策略、prompt 模板、
+                              -- 纪律块（路径引用+hash）、per-target 模型覆盖
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (name, version)
+);
+
+CREATE TABLE decisions (
+  id      BIGSERIAL PRIMARY KEY,   -- 展示为 D-<id>
+  card_id TEXT REFERENCES cards(id),  -- 可空 = 项目级请示
+  body    TEXT NOT NULL,
+  options JSONB,                   -- 可选项列表，可空 = 开放问答
+  status  TEXT NOT NULL DEFAULT 'open',  -- open|answered
+  created_by  TEXT NOT NULL,
+  answer      TEXT,
+  answered_by TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  answered_at TIMESTAMPTZ
+);
+CREATE INDEX idx_decisions_open ON decisions(status) WHERE status = 'open';
+
+-- 镜像者仲裁与游标（§3）
+CREATE TABLE mirror_lease (
+  id INT PRIMARY KEY CHECK (id = 1),   -- 单行表
+  holder      TEXT NOT NULL,           -- 协调机标识
+  lease_until TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE mirror_cursors (
+  target   TEXT PRIMARY KEY,
+  last_seq BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- 兼作镜像心跳
+);
+```
+
+- **事件推送**：`card_events` 插入后 `NOTIFY card_events, '<seq>'`（触发器或
+  应用层发均可，落实现时定）；消费者 LISTEN + 按 seq 补查，断连后从上次 seq
+  catch-up——推送只是叫醒，**真相永远是按 seq 查表**。
+- **SQLite 回退映射**：BIGSERIAL→INTEGER PRIMARY KEY AUTOINCREMENT、
+  JSONB→TEXT(json)、TIMESTAMPTZ→TEXT(RFC3339)、partial index→应用层校验；
+  NOTIFY→进程内广播 + 兜底轮询。回退模式建表由同一 store 层按方言生成。
+- **B 号分配**：`card add` 在单事务里取当前 max B 号 +1（含历史归档与映射表，
+  号永不复用）；子卡取父卡下一个点号位。
+
 ## 3. 事件镜像（协调机 agentd 新子系统）
 
 - 镜像者（任一协调机 agentd，由**账本库 lease 仲裁单实例**）订阅各 target 的
@@ -78,12 +199,42 @@
 - 镜像滞后/断链落显式状态，看板卡片标「事件流滞后」。
 - 工单（permission_request/question）随镜像入流，是「等人」显性化的数据源。
 
-> 待敲定：镜像订阅的生命周期管理（挂账即订阅 or 常订全量过滤）、lease 时长与
-> 抢占语义、镜像者切换/重启后的补拉窗口。
+定案的生命周期与 lease 语义：
+
+- **订阅模型：常订全量 + 写入过滤 + 挂账定点补拉**。镜像者对每个已登记 target
+  维持一条 `/ws/events` 连接（从该 target 的 mirror cursor 起），事件到达时查
+  `card_tasks`——挂账的写入 `card_events`，未挂账的只推进 cursor。task 挂账
+  瞬间（dispatch 或手动 link）对该 task 做一次定点历史补拉（按任务粒度拉全量
+  事件写入，幂等键天然去重）——解决「挂账前已流过 cursor 的事件」。不做动态
+  订阅/退订：连接生命周期只随 target 登记表变化，无成员 churn。
+- **lease 语义**：单行 `mirror_lease` 表，时长 30s，持有者每 10s 续约
+  （`UPDATE ... SET lease_until = now()+30s WHERE holder = self`）。抢占 =
+  任意协调机发现 `lease_until < now()` 后 CAS 改写 holder；两机并发抢恰一个
+  成功（行锁保证）。持有者续约失败（发现 holder 已非自己）立即停写。
+- **切换/重启无补拉窗口问题**：cursor 按 target 落 `mirror_cursors`，每次批量
+  写事件与推进 cursor 同事务；接任者从 cursor 续拉，幂等键兜住重复区间——
+  不丢不重不需要额外窗口参数。
+- **滞后判定**：`mirror_cursors.updated_at` 兼作心跳——持有者续约时对每条
+  **健康**连接的 cursor 做空 touch（只更时间不动 seq），静默期不误报；连接
+  断开的 target 不 touch。看板对 target 判 `now() - updated_at > 60s` →
+  亮「事件流滞后」。无有效 lease 持有者超过 60s（全部协调机 agentd 都不在线）
+  则全部 target 一起亮。
 
 ## 4. CLI
 
-> 待敲定：命令面最终命名与 flag；哪些动作要二次确认。
+命令面定案（命名即下表所列，不再引入别名）：
+
+- **状态名用中文原文**做 CLI 参数值（与 workflow 定义一致，如
+  `card move B157 已出spec`），不造英文别名——两套词表必然漂移。
+- **flag 约定**：`card add --project --priority --parent --workflow`（workflow
+  缺省取项目默认流）；`card list --status --project --blocked --needs --json`；
+  `card update --title --priority --attach kind:path --detach path --accept
+  <判据文本>`；`card move <id> <状态> [--expect <前值>]`（CAS 前值缺省取读到的
+  当前值，`--expect` 显式钉住用于脚本场景）。
+- **二次确认（交互确认，`-y` 跳过）只设三处**：`card close --reason
+  取消|废弃`（终止不可逆语义重）、`card merge`（改变多卡的看板呈现）、
+  `workflow migrate`（批量迁卡）。`unmerge`/`split`/`note`/`move` 是恢复性或
+  高频操作，不设门。
 
 - `handoff card add/list/show/update/close`：账本 CRUD；`list` 支持按状态/项目/
   blocked/等人 过滤（新会话领活前查账的入口）。骨架终态叫「已完成」，CLI 动作
@@ -112,8 +263,16 @@
 
 - 输入：卡 + 节点定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
   落账、决定下一步。
-- **裁决 schema 与通道**（待敲定细节）：审阅 task 以约定格式返回 pass/fail +
-  发现项；解析失败不猜，打「等人」（reason=裁决解析失败）。
+- **裁决 schema 与通道（定案）**：executor 不写账（白名单不扩），裁决通道 =
+  审阅 task 最终报文的文本契约。约定：报文末尾一个 fenced block，语言标记
+  `handoff-verdict`，内容为 JSON：
+  `{"verdict":"pass"|"fail","findings":[{"severity":"major"|"minor",
+  "summary":"...","file":"可选"}],"notes":"可选"}`。解析器取报文中**最后一个**
+  该标记的 block（防 executor 中途引用示例）；缺失或解析失败不猜，打「等人」
+  （reason=裁决解析失败），原文全文落 timeline 供人裁。落账事件
+  `review_verdict`，payload = 解析结果 + 原文引用。审阅类 dispatch_template
+  的 prompt 模板**必须包含这份输出契约原文**——契约随模板版本化，改契约 =
+  出新模板版本。
 - **回合计数**：按 卡 × 节点粒度，从 card_events 推导（不存内存）；
   默认封顶 3 轮，超限打「等人」；人工插手（用户手动 continue/改裁决）是否重置
   计数：**重置**（人工介入视为新基线），落事件注明。
@@ -124,12 +283,19 @@
 
 ## 6. Web 看板（任一协调机 agentd 托管，读同一账本库）
 
-> 待敲定：与 web-console 现有页面的关系（新页 or 重构）；一键动作确认交互。
+**与 web-console 现有页面的关系（定案）**：**新增两页，不重构现有弹层**——
+工作项账本页（路由 `/cards`）与流程管理页（路由 `/flows`），入口挂底部 dock
+新图标 ▤（带「需要你」计数徽标，原型已示范）。现有看板 `<dialog>` 弹层保留
+不动：它是**执行域**视图（task 生命周期，四列），账本页是**账本域**视图
+（卡生命周期，工作流状态列），两者经卡片抽屉的「关联执行」区互跳。
+**一键动作确认交互**：状态转移/派发采用按钮内联二次确认（点一下变确认态、
+再点执行），不弹 modal——与「就地变化」原则一致。
 
 **信息优先级原则（设计约束，用户反馈的直接教训）**：界面主角是知识流
 （spec 批次、验收状态、引用关系、评论），**lease/镜像/CAS 类保真信号默认沉默、
 异常才显形**（驱动正常不显示，只亮「无驱动会话」；镜像收敛为健康小点，断链才
-展开告警）。
+展开告警）。**同源约束：卡的一切信息只在详情抽屉一处看，不另开面板/弹层**
+（裁决就地答复、合并成员在抽屉并入区——两次形态走查确认的同一条原则）。
 
 - 看板/**列表双视图**：看板列 = 工作流状态（骨架 + 插入）；列表复刻 markdown
   总账列（ID/标题/状态/验收/优先级/附件/备注）+「含归档」过滤——领活与考古
@@ -138,12 +304,16 @@
   上方；不设常驻横条，不弹层。blocked 徽标；多项目过滤；「未挂账」收为一行
   摘要点开展开（异常态不常驻占位）。
 - 卡片主信息：优先级、附件徽标（▤ spec 等，指向 git 文件）、**承载卡「⊕ 并入
-  N」徽标（点开合并面板：各被并卡 + 各自验收状态 + 拆回动作）**、已完成态的
+  N」徽标（点开详情抽屉并定位到并入区：各被并卡 + 各自验收状态 + 拆回
+  动作）**、已完成态的
   「已验/待真机验」徽标；异常徽标（⚖ 裁决/⛔ 等人/状态冲突/blocked/工单）。
-  被并卡不在看板单独成卡（列表与合并面板可见）。**实时 join 关联 task 状态**，
+  被并卡不在看板单独成卡（列表与承载卡抽屉并入区可见）。**实时 join 关联
+  task 状态**，
   账面与实况矛盾亮「状态冲突」。
-- 详情抽屉：状态流水线、**验收区（判据 + 已验开关 + 证据摘要）**、**关系区
-  （阻塞/发现自/拆分自/关联，双向）**、子任务树 rollup（父状态独立驱动）、
+- 详情抽屉：状态流水线、**验收区（判据 + 已验开关 + 证据摘要）**、**并入区
+  （承载卡专属：被并卡清单 + 各自验收 + 拆回，替代独立合并面板）**、**关系区
+  （阻塞/发现自/拆分自/关联，双向；「承载着」不进关系区以免重复）**、
+  子任务树 rollup（父状态独立驱动）、
   关联 task 跳转、**分层 timeline**（评论=气泡主视觉，系统事件=浅色 meta 行，
   镜像 task 事件折叠成组，全部/评论/裁决/系统过滤）、评论框（`#B142` 引用自动
   成关系边，双向可见）。
@@ -181,19 +351,47 @@
    worktree 的旧 skill 副本继续追加。
 4. 抽查 N 条历史条目字段无损 + 映射表可反查。
 
-## 9. 验收判据（骨架）
+## 9. 验收判据（逐条真机判法）
 
-> 待敲定：逐条真机判据。方向：
-> ① 标准例（1→2→(3∥4)→5）真机上主会话全程一个 wait 推完，人工只出现在审 spec /
-> 整功能验收 / 合 main；② 审阅 fail 3 轮封顶转「等人」可复现，回合数从事件流
-> 可审计；③ blocker 终止不解锁下游、下游得「等人」标记可复现；④ 杀掉主会话，
-> 看板在 task 判 failed 后亮「状态冲突」而非报假账；⑤ 多路 wait 在 wait 挂起
-> 期间新派发的 task 事件不漏（对照账本库单流 seq）；⑥ 两个会话并发 dispatch
-> 同一张卡，恰一个成功；⑦ 镜像断链 → 看板亮「事件流滞后」，恢复后按来源 seq
-> 幂等补齐；⑧ 迁移后抽查字段无损、B 号映射可反查；⑨ 看板与 CLI 对同一账本
-> 读写一致；⑩ 双协调机指向同一账本库：A 机认领派发，B 机看板实时可见并可接续
-> 驱动，镜像 lease 从 A 切到 B 后事件不丢不重；⑪ 主会话回合末 `decision open`
-> 的请示在看板「需要你」面可见并可答复，答复落 timeline，另一会话
-> `decision list` 能读到答复；⑫ 合并三卡入承载卡后看板只剩承载卡流动、被并卡
-> 列表显示跟随，拆回一张后其恢复自主状态且验收记录无损；⑬ feature 流 gate：
-> 无 spec 附件时进「已出 spec」被拒且提示，挂附件后放行。
+> **执行归属**：本节判据全部需要驱动 handoff 自身（agentd/dispatch/wait），
+> 按派发纪律**一律由审核者本地执行，不写进派发 plan**（B105 教训）；派发 plan
+> 里另设不依赖真机的单测/集成测试判据。**开工前判据先在基线上重跑一遍**
+> （判据会过期，写下时对不等于开工时对）。判定尽量用正向断言 +
+> 事件流计数对照，不用「不存在 X」类反面断言。
+
+① **标准例全程一个 wait**：测试项目建 5 卡依赖图（1→2→(3∥4)→5），主会话
+  单条 `wait --card <父> --subtree` 推完全程。判法：card_events 审计——
+  dispatch 事件 ≥5 条且 actor 均为主会话；人工 actor 的事件只出现在
+  审 spec / 整功能验收 / 合 main 三个位置。
+② **审阅 3 轮封顶**：用判据故意造 fail 的审阅模板连跑；第 3 次 `review_verdict
+  (fail)` 后卡带等人(reason=审阅超轮)。判法：`card show` 显示等人；事件流中该
+  卡×审阅节点的 review_verdict 恰 3 条。
+③ **blocker 终止不解锁**：`card close --reason 取消` 一个 blocker。判法：下游
+  `card show` 仍 blocked 且新增等人(reason=前置终止)；`card list --needs`
+  能过滤出它。
+④ **看板不说谎**：kill 主会话进程，等 task 判 failed。判法：看板该卡亮
+  「状态冲突」（账面进行中 × task failed 的 join 结果），而非仍显示正常推进。
+⑤ **多路 wait 不漏事件**：wait 挂起期间另一会话向子树 dispatch 新 task。
+  判法：wait 输出含该 task 的镜像事件；结束后按 seq 对照账本单流，子树事件
+  无缺号。
+⑥ **并发认领恰一成功**：两会话并发 `card dispatch` 同一张卡（脚本同时发）。
+  判法：恰一个 exit 0；另一个非零退出且报「已被 <会话> 认领」；事件流只有
+  一条 dispatched。
+⑦ **镜像断链恢复**：停掉 target 的 agentd ≥60s 再拉起。判法：断链期看板该
+  target 亮「事件流滞后」；恢复后 `card_events` 按（target,task,seq）无重复
+  （幂等键约束在，count 与来源事件数一致），滞后标记消失。
+⑧ **迁移无损**：迁移脚本跑完后随机抽 10 条历史条目对照 backlog.md 原文行，
+  字段逐列一致；用映射表把任一卡 id 反查回 B 号并在原文中 grep 命中。
+⑨ **双端一致**：CLI `card move` 后看板 3s 内呈现新列；看板一键转移后
+  `card show` 状态一致（同一账本库，无中间缓存）。
+⑩ **双协调机对等**：本机与 mac-02 指向同一账本库；A 机认领派发，B 机看板
+  实时可见。停 A 机 agentd。判法：≤60s 内 `mirror_lease.holder` 变为 B；
+  切换前后子树事件按幂等键去重比对，不丢不重；B 机可接续驱动（continue 成功）。
+⑪ **裁决闭环**：主会话 `decision open` 一条请示。判法：看板「需要你」筛选态
+  可见并可答复；答复后事件流有 decision_answered、卡 timeline 可见；另一会话
+  `decision list` 读到答案且 `--open` 不再列出它。
+⑫ **合并/拆回无损**：三卡 merge 入承载卡。判法：看板列内被并卡消失、仅承载卡
+  流动（列 count 少 3）；列表视图三卡显示「跟随 <承载卡>」；unmerge 一张后其
+  恢复自主状态流转，且其 acceptance_recorded 事件数与合并前一致。
+⑬ **workflow gate**：feature 流卡无 spec 附件时 `card move <id> 已出spec`
+  被拒且报错文案指明缺附件；`card update --attach spec:<path>` 后同命令成功。
