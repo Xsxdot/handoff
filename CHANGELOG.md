@@ -8,6 +8,37 @@
 **这份文件是承重的**：release workflow 按 tag 抽取对应小节作为 GitHub Release
 的说明。抽不到时会回落成自动生成的 commit 列表，并在日志里打一条警告。
 
+## [v0.3.0-rc6] - 2026-08-19
+
+**预发布。** 内容同 rc5，外加一处 Windows 托管判据的真 bug 修复——由 rc5 的
+人工走查在真机上抓到。
+
+### 修复
+
+- **Windows：`handoff service status` 长期误报「已安装但未运行」，桌面薄壳每次
+  启动都会把托管拆掉重建。** 判据 `taskIsRunning` 只认
+  `SCHED_S_TASK_RUNNING`（267009），而那个数字在 `schtasks` 的**「上次结果」**
+  一栏——它是上一次**启动尝试**的结果，不是任务此刻的状态。计划任务为模拟
+  KeepAlive 用的是「TimeTrigger 每分钟重复 + `IgnoreNew`」，于是 agentd 起来后
+  **最多 60 秒**，下一个分钟边界的重复触发被拒，「上次结果」被改写成
+  `0x800710E0`（-2147020576），267009 从此不再出现。
+
+  后果不止于状态显示错：`shell.EnsureRunning` 据此判定 agentd 没跑并调
+  `Install()`，而 `Install()` 的 `schtasks /Create /F` 是**删掉重建**——任务与
+  活着的 agentd 就此失联，每分钟的重复触发开始真的拉起新 agentd，撞 DataDir
+  锁退出，**一分钟弹一个控制台窗口**；Install 自己的 5 秒复核也必然失败，弹出
+  「无法启动 agentd」。桌面薄壳每次启动踩一遍。
+
+  之前所有验证都没抓到，是因为每次检查都紧跟在安装/启动之后，全落在判据唯一
+  正确的那 60 秒窗口里。现在两个码都认，并由三条用例钉住（含中文本地化输出与
+  撞锁退出码 1 的反面用例）。
+
+- **Windows：薄壳 spawn 子进程时不再闪控制台窗口。** 薄壳是 GUI 子系统进程、
+  自身没有控制台，Windows 会给它拉起的控制台程序**新分配**一个——那个窗口不
+  受 `STARTUPINFO.wShowWindow` 约束，只设 `HideWindow` 管不到，必须用
+  `CREATE_NO_WINDOW` 让它根本不分配。影响 `schtasks` 的每次调用（Install 的复核
+  轮询一次要十几下）与读取已装 CLI 版本号的 `handoff version`。
+
 ## [v0.3.0-rc5] - 2026-08-19
 
 **预发布。** 内容与 rc4 相同（见下一节），外加一处 CI 修复。
