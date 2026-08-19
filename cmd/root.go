@@ -101,10 +101,13 @@ func resetPerRunState(c *cobra.Command) {
 // Local 为 true 时 Name 恒为「本机」：它的二进制由 CLI 直接换（文件就在本地），
 // 与远端走的是两条不同的路径（spec §4.2）。
 type Endpoint struct {
-	Name  string
-	Addr  string
-	Token string
-	Local bool
+	Name       string
+	Addr       string
+	Token      string
+	Local      bool
+	RelayURL   string
+	Credential string
+	Node       string
 }
 
 // localDialAddr 决议本机模式的拨号地址：host 非 loopback（通配或单网卡 IP）
@@ -157,7 +160,7 @@ func Endpoints(only string) ([]Endpoint, error) {
 		if !ok {
 			return nil, fmt.Errorf("target %q 未在配置 %s 中定义", only, p)
 		}
-		return []Endpoint{{Name: only, Addr: "http://" + t.Addr, Token: t.Token}}, nil
+		return []Endpoint{endpointForTarget(only, t)}, nil
 	}
 	local := localDialAddr(cfg.Listen)
 	eps := []Endpoint{{Name: "本机", Addr: local, Token: cfg.Token, Local: true}}
@@ -167,9 +170,20 @@ func Endpoints(only string) ([]Endpoint, error) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		eps = append(eps, Endpoint{Name: n, Addr: "http://" + cfg.Targets[n].Addr, Token: cfg.Targets[n].Token})
+		eps = append(eps, endpointForTarget(n, cfg.Targets[n]))
 	}
 	return eps, nil
+}
+
+func endpointForTarget(name string, t config.Target) Endpoint {
+	ep := Endpoint{Name: name, Addr: "http://" + t.Addr, Token: t.Token}
+	if t.IsRelay() {
+		ep.Addr = "http://relay"
+		ep.RelayURL = t.Relay
+		ep.Credential = t.Credential
+		ep.Node = t.Node
+	}
+	return ep
 }
 
 // TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。

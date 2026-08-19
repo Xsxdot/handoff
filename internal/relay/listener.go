@@ -60,6 +60,7 @@ func (l *Listener) Run(ctx context.Context) error {
 	defer ws.Close(websocket.StatusNormalClosure, "listener stopping")
 	l.log.Debug("relay ws dialed", "node", l.node)
 	if err := sendControl(ctx, ws, Frame{Type: Register, Node: l.node, Credential: l.credential}); err != nil {
+		l.log.Error("relay register send failed", "node", l.node, "cause", err)
 		return err
 	}
 	l.log.Debug("relay register sent", "node", l.node)
@@ -68,10 +69,13 @@ func (l *Listener) Run(ctx context.Context) error {
 		var ce *ControlError
 		if errors.As(err, &ce) {
 			l.log.Error("relay registration rejected", "node", l.node, "code", ce.Code)
+		} else {
+			l.log.Error("relay registration failed", "node", l.node, "cause", err)
 		}
 		return err
 	}
 	if response.Type != Registered {
+		l.log.Error("relay registration returned unexpected frame", "node", l.node, "type", response.Type)
 		return fmt.Errorf("relay register: expected %q, got %q", Registered, response.Type)
 	}
 	if response.Account != "" {
@@ -141,11 +145,13 @@ func (l *Listener) RunWithReconnect(ctx context.Context) {
 
 func (l *Listener) serveSession(ctx context.Context, stream net.Conn) {
 	defer stream.Close()
+	l.log.Debug("e2e handshake begin", "account", l.account, "node", l.node, "role", "responder")
 	secure, err := SecureServer(ctx, stream, l.token, l.account, l.node)
 	if err != nil {
 		l.log.Error("relay session e2e handshake failed", "node", l.node, "account", l.account, "cause", err)
 		return
 	}
+	l.log.Info("e2e established", "node", l.node, "account", l.account, "role", "responder")
 	appMux, err := yamux.Server(secure, relayYamuxConfig())
 	if err != nil {
 		l.log.Error("relay app yamux setup failed", "node", l.node, "cause", err)

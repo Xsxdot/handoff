@@ -66,6 +66,7 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 	d.log.Debug("relay ws dialed", "node", d.node)
 	if err := sendControl(ctx, ws, Frame{Type: Connect, Node: d.node, Credential: d.credential}); err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "control exchange failed")
+		d.log.Error("relay connect send failed", "node", d.node, "cause", err)
 		return err
 	}
 	d.log.Debug("relay connect sent", "node", d.node)
@@ -127,13 +128,14 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 		d.mu.Unlock()
 		return nil, err
 	}
+	d.log.Debug("e2e handshake begin", "account", d.account, "node", d.node, "role", "initiator")
 	secure, err := SecureClient(ctx, conn, d.token, d.account, d.node)
 	if err != nil {
 		_ = conn.Close()
 		d.log.Error("relay e2e handshake failed", "node", d.node, "account", d.account, "cause", err)
 		return nil, fmt.Errorf("secure relay session: %w", err)
 	}
-	d.log.Debug("relay e2e established", "node", d.node, "account", d.account)
+	d.log.Info("e2e established", "node", d.node, "account", d.account, "role", "initiator")
 	appMux, err := yamux.Client(secure, relayYamuxConfig())
 	if err != nil {
 		_ = secure.Close()
