@@ -7,3 +7,4 @@
 - Task 3 repair round 1: retained dialect/target Open logging while redacting credentials from PostgreSQL DSNs; commit scope: `internal/ledger/store.go`.
 - Task 3 completed: added SQLite/PG Open, idempotent schema, q/time conversion, mutate locking, and event listener base; commit scope: `internal/ledger/store.go internal/ledger/store_test.go internal/ledger/store_pg_test.go`.
 - Task 4 completed: added immutable versioned workflows and idempotent feature/bug defaults with gates; commit scope: `internal/ledger/workflows.go internal/ledger/workflows_test.go`.
+- Task 5 completed: added card creation/read/update/termination/revival, B-number allocation, event append, and ascending event reads; commit scope: `internal/ledger/cards.go internal/ledger/events.go internal/ledger/cards_test.go`.
