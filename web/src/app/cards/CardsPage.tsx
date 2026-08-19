@@ -51,7 +51,7 @@ function ProjectDecisions({ decisions }: { decisions: Decision[] }) {
   }
   return (
     <div className="mx-4 mt-2 space-y-1.5">
-      {decisions.map((decision) => <div key={decision.id} className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900"><span className="font-mono">⚖ #{decision.id}</span><span className="min-w-0 flex-1">{decision.body}</span><input value={answers[decision.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [decision.id]: event.target.value }))} placeholder="答复" className="w-36 rounded border bg-background px-2 py-1 text-xs" /><button type="button" disabled={busy === decision.id || !(answers[decision.id] ?? '').trim()} onClick={() => void answer(decision)} className="rounded border px-2 py-1 text-xs disabled:opacity-50">答复</button></div>)}
+      {decisions.map((decision) => <div key={decision.id} className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900"><span className="shrink-0 rounded-full border border-amber-300 px-1.5 py-0.5 text-[10px]">项目级请示 · 不挂卡</span><span className="font-mono">⚖ #{decision.id}</span><span className="min-w-0 flex-1">{decision.body}</span>{decision.created_by && <span className="shrink-0 text-[10px] text-amber-700/70">{decision.created_by}</span>}<input value={answers[decision.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [decision.id]: event.target.value }))} placeholder="答复这条请示…" className="w-40 rounded border bg-background px-2 py-1 text-xs" /><button type="button" disabled={busy === decision.id || !(answers[decision.id] ?? '').trim()} onClick={() => void answer(decision)} className="rounded border px-2 py-1 text-xs disabled:opacity-50">答复</button></div>)}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     </div>
   )
@@ -112,7 +112,9 @@ export function CardsPage() {
     return filterNeeds(base, needsOnly)
   }, [cards, needsOnly, project, search, workflow])
   const attentionCount = cards.filter(needsAttention).length + projectDecisionCount(decisions)
-  const projectDecisions = needsOnly ? decisions.filter((decision) => !decision.card_id) : []
+  // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
+  // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
+  const projectDecisions = decisions.filter((decision) => !decision.card_id)
   const openDrawer = (id: string, focus?: 'merge') => { setSelected(id); setDrawerFocus(focus) }
   const closeDrawer = () => { setSelected(null); setDrawerFocus(undefined) }
 
@@ -128,7 +130,7 @@ export function CardsPage() {
         <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
-      {needsOnly && projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
+      {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
       {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}

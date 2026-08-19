@@ -54,6 +54,7 @@ export interface Decision {
   options: string[] | null
   status: string
   answer: string
+  created_by?: string
 }
 
 export interface WorkflowWire {
