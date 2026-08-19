@@ -114,27 +114,9 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 
 // taskBranch 从卡的最新 dispatched 快照取实际工作分支名。
 func taskBranch(st *ledger.Store, card ledger.Card) (string, error) {
-	events, err := st.EventsFromAsc([]string{card.ID}, 0, 10000)
-	if err != nil {
-		return "", fmt.Errorf("读卡 dispatched 事件: %w", err)
-	}
-	var branch string
-	for _, event := range events {
-		if event.Type != ledger.EvDispatched {
-			continue
-		}
-		var snapshot ledger.DispatchSnapshot
-		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
-			continue
-		}
-		if snapshot.Branch != "" {
-			branch = snapshot.Branch
-		}
-	}
-	if branch == "" {
-		return "", fmt.Errorf("卡 %s 没有带 branch 的 dispatched 快照", card.ID)
-	}
-	return branch, nil
+	// 走账本的 WorkBranch：它跳过审阅轮的快照。直接取「最后一条 dispatched」
+	// 会在审阅之后指向审阅分支，合并节点就会去合一条只读分支
+	return st.WorkBranch(card.ID)
 }
 
 // NewLocalObjective 生产客观判据：在 repoDir 内 fetch 后，在临时 worktree

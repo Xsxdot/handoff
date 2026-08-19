@@ -35,13 +35,15 @@ type dispatchRequest struct {
 	// 「目标工作目录已被活跃任务占用」409——而看板的前提就是多张卡
 	// 同时在飞，共用工作树等于一次只能干一张
 	newWorktree bool
-	target      string
-	project     string
-	executor    string
-	model       string
-	planB64     string
-	planName    string
-	base        string
+	// 审阅轮跑在已有工作分支上：只读、不新开分支。空 = 新开 branch
+	existingBranch string
+	target         string
+	project        string
+	executor       string
+	model          string
+	planB64        string
+	planName       string
+	base           string
 }
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
@@ -67,7 +69,8 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		return "", err
 	}
 	task, err := client.New(addr, token).Dispatch(context.Background(), client.DispatchOpts{
-		Prompt: req.prompt, Target: req.target, NewBranch: req.branch,
+		Prompt: req.prompt, Target: req.target,
+		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
 		PlanB64: req.planB64, PlanName: req.planName, Base: req.base,
 		NewWorktree: req.newWorktree,
@@ -150,7 +153,18 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 	).Replace(tpl.Def.Prompt)
 	prompt := string(discipline) + "\n\n---\n\n" + body
 
+	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
+	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
+	// 第二轮——2026-08-19 真机实测 fatal: a branch named ... already exists）
 	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, tpl.Def.Purpose)
+	existingBranch := ""
+	if tpl.Def.Purpose == ledger.PurposeReview {
+		work, err := st.WorkBranch(c.ID)
+		if err != nil {
+			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
+		}
+		branch, existingBranch = "", work
+	}
 	base, err := st.EffectiveBaseBranch(c.ID)
 	if err != nil {
 		return zero, fmt.Errorf("取有效基线: %w", err)
@@ -172,21 +186,27 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 		prompt: prompt, branch: branch, target: target, project: c.Project,
 		executor: tpl.Def.Executor, model: model, planB64: planB64,
 		planName: planName, base: base, newWorktree: true,
+		existingBranch: existingBranch,
 	})
 	if err != nil {
 		return zero, fmt.Errorf("派发: %w", err)
+	}
+	snapshotBranch := branch
+	if snapshotBranch == "" {
+		snapshotBranch = existingBranch
 	}
 	if err := st.LinkTask(c.ID, target, taskID, tpl.Def.Purpose, actor); err != nil {
 		return zero, fmt.Errorf("回链挂账: %w", err)
 	}
 	if err := st.RecordDispatch(c.ID, ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: disciplineHash,
-		Target: target, TaskID: taskID, Branch: branch, PlanPath: planPath, Actor: actor,
+		Target: target, TaskID: taskID, Branch: snapshotBranch,
+		Purpose: tpl.Def.Purpose, PlanPath: planPath, Actor: actor,
 	}); err != nil {
 		return zero, fmt.Errorf("快照落账: %w", err)
 	}
 	return dispatchResult{
-		Card: c.ID, Task: taskID, Target: target, Branch: branch,
+		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: disciplineHash,
 	}, nil
 }

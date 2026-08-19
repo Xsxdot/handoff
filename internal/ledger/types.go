@@ -24,6 +24,13 @@ const (
 	CloseShelved   = "搁置" // 唯一可复活的终止
 )
 
+// 派发用途。审阅轮只读、跑在工作分支上，不新开分支——WorkBranch 靠它
+// 把审阅轮排除在「卡的分支」之外。
+const (
+	PurposeImplement = "implement"
+	PurposeReview    = "review"
+)
+
 // 关系类型。merged_into 不许经 AddRelation 直建，必须走 MergeCards
 // （因为要做基线/链式校验）。
 const (

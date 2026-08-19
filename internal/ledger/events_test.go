@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -128,5 +129,41 @@ func TestSubtree(t *testing.T) {
 	// 根 + 两级后代 + 并入成员 = 4
 	if len(ids) != 4 {
 		t.Fatalf("子树成员 %v", ids)
+	}
+}
+
+// WorkBranch 必须跳过审阅轮：审阅只读、跑在工作分支上不新开分支。
+// 直接取「最后一条 dispatched」会在审阅之后指向审阅分支——合并节点会去
+// 合一条只读分支，第二轮审阅会撞第一轮的同名分支（真机实测过）。
+func TestWorkBranchSkipsReviewRounds(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "有实现也有审阅")
+	if _, err := s.WorkBranch(c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("没派过实现轮应报 ErrNotFound: %v", err)
+	}
+	_ = s.LinkTask(c.ID, "acc", "T-impl", PurposeImplement, "test")
+	if err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Template: "feature-impl", Target: "acc", TaskID: "T-impl",
+		Branch: "cards/" + c.ID + "-implement", Purpose: PurposeImplement, Actor: "test"}); err != nil {
+		t.Fatalf("记实现派发: %v", err)
+	}
+	_ = s.LinkTask(c.ID, "acc", "T-review", PurposeReview, "test")
+	if err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Template: "review-generic", Target: "acc", TaskID: "T-review",
+		Branch: "cards/" + c.ID + "-implement", Purpose: PurposeReview, Actor: "test"}); err != nil {
+		t.Fatalf("记审阅派发: %v", err)
+	}
+	got, err := s.WorkBranch(c.ID)
+	if err != nil || got != "cards/"+c.ID+"-implement" {
+		t.Fatalf("工作分支应为实现轮的分支: %q %v", got, err)
+	}
+
+	// 老快照没有 purpose 字段时，回落到挂账表查用途
+	_ = s.LinkTask(c.ID, "acc", "T-review-2", PurposeReview, "test")
+	_ = s.RecordDispatch(c.ID, DispatchSnapshot{
+		Template: "review-generic", Target: "acc", TaskID: "T-review-2",
+		Branch: "cards/" + c.ID + "-review", Actor: "test"})
+	if got, err = s.WorkBranch(c.ID); err != nil || got != "cards/"+c.ID+"-implement" {
+		t.Fatalf("无 purpose 的审阅快照应经挂账表识别并跳过: %q %v", got, err)
 	}
 }

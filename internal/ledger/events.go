@@ -115,6 +115,7 @@ type DispatchSnapshot struct {
 	Target          string `json:"target"`
 	TaskID          string `json:"task_id"`
 	Branch          string `json:"branch"`
+	Purpose         string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
 	PlanPath        string `json:"plan_path,omitempty"`
 	Actor           string `json:"-"`
 }
@@ -312,4 +313,48 @@ func (s *Store) Subtree(rootID string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, rows.Err()
+}
+
+// WorkBranch 卡的工作分支：最近一次**非审阅**派发所用的分支。
+// 审阅是只读的、跑在工作分支上，不新开分支——所以「卡的分支」这个问题
+// 的答案必须跳过审阅轮，否则合并节点会去合一条审阅分支，而第二轮审阅
+// 会撞上第一轮的同名分支（真机实测：fatal: a branch named ... already exists）。
+// 老快照没有 purpose 字段时回落到挂账表按 task_id 查用途。
+func (s *Store) WorkBranch(cardID string) (string, error) {
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		return "", fmt.Errorf("读卡 dispatched 事件: %w", err)
+	}
+	links, err := s.TasksOf(cardID)
+	if err != nil {
+		return "", err
+	}
+	purposeOf := map[string]string{}
+	for _, link := range links {
+		purposeOf[link.TaskID] = link.Purpose
+	}
+	branch := ""
+	for _, event := range events {
+		if event.Type != EvDispatched {
+			continue
+		}
+		var snapshot DispatchSnapshot
+		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+			continue
+		}
+		purpose := snapshot.Purpose
+		if purpose == "" {
+			purpose = purposeOf[snapshot.TaskID]
+		}
+		if purpose == PurposeReview {
+			continue
+		}
+		if snapshot.Branch != "" {
+			branch = snapshot.Branch
+		}
+	}
+	if branch == "" {
+		return "", fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
+	}
+	return branch, nil
 }
