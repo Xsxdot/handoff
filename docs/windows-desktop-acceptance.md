@@ -360,3 +360,79 @@ icacls $p /remove:d "$env:USERNAME"          # 验完立刻改回来
 | 配置判定 | 日志 `未找到配置文件，判为未配置 path=…\.handoff\config.yaml` |
 | Go 侧运行期单测 | `go test ./internal/prochost/... ./internal/executor/claudecode/... -count=1` 两包 ok |
 | install.ps1 单测 | PowerShell 5.1 下 exit 0（该脚本全通过时静默退出） |
+| 桌面端换新版带动 CLI+agentd（P2） | rc12 实跑：`plan=do` → `换版完成` → `agentd 已带新版本回来 attempts=2`，进程 Id `2604`→`1660`，见文末「rc12 真机跑过的」 |
+| 有活跃任务时不同步（P4 前半） | rc12 实跑：`plan=blocked busy=2`，无 `换版完成`，控制台照常加载 |
+| 预发布号比较器判真实 rc 标签 | rc12 实跑：`decision=embedded-newer`（rc8 < rc12，未踩 semver 字典序陷阱） |
+
+---
+
+## rc12 真机跑过的（2026-08-19，win-b37）
+
+用 GitHub 构建的 `handoff-desktop_v0.3.0-rc12_windows_amd64.zip`（SHA256
+`af976564…a35b7`，与 `checksums.txt` 一致）在 win-b37 上实跑，**无头启动**取证。
+`SyncOnOpen` 排在 `win.Show()` 之前，所以同步日志完整拿得到；GUI 部分仍未验。
+
+### P2 通过（四条判据全中）
+
+起点：CLI `v0.3.0-rc8`，agentd 进程 `Id=2604`。
+
+```
+同步对账结果 plan=do decision=embedded-newer
+              installed_version=v0.3.0-rc8 embedded_version=v0.3.0-rc12 busy=0
+换版完成 target=C:\Tools\handoff\handoff.exe prev=C:\Tools\handoff\handoff.exe.prev
+skill 同步完成
+推送换版请求 → 换版已受理，对端将重启
+等 agentd 带着新版本回来 want_version=v0.3.0-rc12 timeout=1m30s
+已催进程管理器拉起 agentd
+agentd 已带新版本回来 version=v0.3.0-rc12 attempts=2
+同步完成 → 鉴权握手成功 → 加载控制台
+```
+
+| 判据 | 实测 |
+|---|---|
+| 「已催」与「已带新版本回来」两行都出现 | ✅ |
+| `attempts` 明显小于 120 | ✅ **2**（干等重复触发会是 ~120） |
+| `version` / `status` 都变新 | ✅ 两处都是 `v0.3.0-rc12` |
+| handoff 进程 Id 变了 | ✅ `2604` → `1660` |
+
+启动到控制台加载**全程 5 秒**（18:24:32 → 18:24:37）。磁盘侧 `handoff.exe`
+SHA `BEDEF409…` → `E367FF6F…`，旧的落在 `handoff.exe.prev`。
+
+**顺带验掉的**：`decision=embedded-newer` 说明扩到预发布号的比较器在真实 rc 标签上
+判对了 rc8 < rc12——按严格 semver 的字典序会得出 `rc12 < rc8`，那条陷阱没踩上。
+
+### P4 的前半通过，后半仍未验
+
+同一台机器上第一次跑时有 2 个 `waiting_review` 任务，得到：
+
+```
+同步对账结果 plan=blocked decision=embedded-newer
+              installed_version=v0.3.0-rc8 embedded_version=v0.3.0-rc12 busy=2
+有活跃任务，本次不同步 busy=2
+托盘菜单已重建 plan=blocked sync_failed=false latest=""
+```
+
+`换版完成` 确实没出现，且控制台**照常加载完成**（D8 成立：同步不成不挡开门）。
+托盘那行文案、面板、「带 --force 重试」四步、以及执行者进程活过 agentd 重启，
+都要 RDP 才能验。
+
+### 一个别当缺陷的现象：催一次会重写计划任务 XML
+
+`WaitAgentdBack` 的 `Nudge` 复用 `shell.EnsureRunning`，它在 agentd 不在跑时走的是
+**Install + 拉起**，所以日志里会出现：
+
+```
+agentd 未在运行，准备托管拉起 kind=schtasks installed=true
+安装 Windows 计划任务 task=handoff-agentd xml=…\handoff-agentd.xml
+Windows 计划任务安装完成并已运行 task=handoff-agentd probe=1
+```
+
+即每次换版都会重写一遍 `handoff-agentd.xml`。这是 `EnsureRunning` 的既有语义
+（幂等安装），不是同步路径新引入的行为；副作用是用户手改过的任务定义会被覆盖回默认。
+
+### 取证时的第二处码页坑
+
+`Get-Content -Encoding UTF8` 只修**文件读取**。`& handoff status | Out-String` 是
+**stdout 捕获**，PowerShell 按控制台输出码页解码，中文在进 base64 之前就已经烂了
+（本次实测 `可用` → `σÅ»τö¿`）。要保真就把日志写文件再整份 base64 带回，
+别对进程 stdout 做 base64——那是给已经烂掉的字符串编码。
