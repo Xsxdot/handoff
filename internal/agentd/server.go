@@ -266,6 +266,11 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 	for k, v := range old.Discipline {
 		next.Discipline[k] = v
 	}
+	// Env 与 Discipline 同为运行期可写的映射（B158 起可从控制台改），必须深拷。
+	next.Env = make(map[string]string, len(old.Env)+1)
+	for k, v := range old.Env {
+		next.Env[k] = v
+	}
 	if err := mutate(&next); err != nil {
 		return err
 	}
@@ -278,7 +283,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 		return fmt.Errorf("保存配置 %s: %w", s.cfgPath, err)
 	}
 	s.cfg.Store(&next)
-	s.log.Info("配置已更新并落盘", "path", s.cfgPath, "targets", len(next.Targets), "discipline", len(next.Discipline))
+	s.log.Info("配置已更新并落盘", "path", s.cfgPath,
+		"targets", len(next.Targets), "discipline", len(next.Discipline), "env", len(next.Env))
 	return nil
 }
 
