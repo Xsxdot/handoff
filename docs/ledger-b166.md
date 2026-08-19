@@ -203,3 +203,27 @@
   `internal/upgrade/machine.go`、`internal/upgrade/machine_test.go`、删除的两个旧判据文件、
   `cmd/upgrade.go`、`cmd/upgrade_helpers_test.go` 与本 ledger；提交信息：
   `refactor(upgrade): 结论判据搬进 internal/upgrade，CLI 输出不变`。
+
+## 本期 Task 2：单台远端升级搬进 internal/upgrade
+
+- 新增 `internal/upgrade/remote.go` 与 `remote_test.go`。`RemoteOne` 统一处理远端七种
+  结论、两道闸、pull/push 选择、资产/校验和下载、上线等待与结构化失败建议；nil pull
+  明确退回 push，非托管与已有自拉的 `Forcible` 恒为 false，平台格式不合法不猜默认平台。
+- 闸一落点选择：远端闸一放进 `RemoteOne`，让 agentd 端点可直接复用；CLI 仅保留本机
+  路径的 busy 闸，因为 `RemoteOne` 明确只处理远端。CLI `remoteUpgrade` 退化为适配
+  `releaseFetcher`、调用 `RemoteOne`、渲染原有两行输出；`cmd/upgrade_test.go` 未修改。
+- 定向验证：`go test ./internal/upgrade/ -v` PASS；`go test ./cmd/ -v` PASS；
+  `go test ./cmd/ -v 2>&1 | tail -30` PASS；`git diff --stat cmd/upgrade_test.go` 无输出；
+  `git diff --check` 无输出。
+- 变异复验原文：把 nil pull 当 true 后，`TestRemoteOneFallsBackToPushWhenPullUnknown` 失败：
+  `remote_test.go:101: pull=nil 时应只走 push，push=0 pull=1`；把非托管拒绝 `Forcible` 改 true 后，
+  `TestRemoteOneRejectionsCarryMatchingRemedy/unmanaged` 失败：
+  `结果 = {Verdict:needs_upgrade Status:1 Reason:agentd 非托管启动 Remedy:先在该机器上 handoff service install Forcible:true From: To:}，期望 skip/forcible=false`。
+  两处均已恢复，恢复后 `go test ./internal/upgrade/ -run TestRemoteOne -v` PASS。
+- 收尾命令：`gofmt -l .` 无输出；`go vet ./...` 无输出；
+  `go test ./cmd/ ./internal/upgrade/ ./internal/agentd/` PASS；`cd web && npm run typecheck && npm test`
+  PASS（81 files / 799 tests）。
+- 双裁决第 1 轮：spec 符合，代码质量通过；修正一次测试条件编译错误并清理 CLI 远端早退后的
+  不可达分支，复审后通过，无承重搁置。提交范围：`internal/upgrade/remote.go`、
+  `internal/upgrade/remote_test.go`、`cmd/upgrade.go` 与本 ledger；提交信息：
+  `refactor(upgrade): 单台远端升级搬进 internal/upgrade，返回结构化结论`。
