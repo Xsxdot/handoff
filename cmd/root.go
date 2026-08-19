@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/buildinfo"
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/selfupdate"
 	"github.com/spf13/cobra"
@@ -99,10 +101,13 @@ func resetPerRunState(c *cobra.Command) {
 // Local 为 true 时 Name 恒为「本机」：它的二进制由 CLI 直接换（文件就在本地），
 // 与远端走的是两条不同的路径（spec §4.2）。
 type Endpoint struct {
-	Name  string
-	Addr  string
-	Token string
-	Local bool
+	Name       string
+	Addr       string
+	Token      string
+	Local      bool
+	RelayURL   string
+	Credential string
+	Node       string
 }
 
 // localDialAddr 决议本机模式的拨号地址：host 非 loopback（通配或单网卡 IP）
@@ -155,7 +160,7 @@ func Endpoints(only string) ([]Endpoint, error) {
 		if !ok {
 			return nil, fmt.Errorf("target %q 未在配置 %s 中定义", only, p)
 		}
-		return []Endpoint{{Name: only, Addr: "http://" + t.Addr, Token: t.Token}}, nil
+		return []Endpoint{endpointForTarget(only, t)}, nil
 	}
 	local := localDialAddr(cfg.Listen)
 	eps := []Endpoint{{Name: "本机", Addr: local, Token: cfg.Token, Local: true}}
@@ -165,9 +170,20 @@ func Endpoints(only string) ([]Endpoint, error) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		eps = append(eps, Endpoint{Name: n, Addr: "http://" + cfg.Targets[n].Addr, Token: cfg.Targets[n].Token})
+		eps = append(eps, endpointForTarget(n, cfg.Targets[n]))
 	}
 	return eps, nil
+}
+
+func endpointForTarget(name string, t config.Target) Endpoint {
+	ep := Endpoint{Name: name, Addr: "http://" + t.Addr, Token: t.Token}
+	if t.IsRelay() {
+		ep.Addr = "http://relay"
+		ep.RelayURL = t.Relay
+		ep.Credential = t.Credential
+		ep.Node = t.Node
+	}
+	return ep
 }
 
 // TargetEndpoint 根据 --target / --agentd / --config 换算实际请求的 agentd 端点与令牌。
@@ -212,7 +228,52 @@ func TargetEndpoint() (addr, token string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("target %q 未在配置 %s 中定义", targetName, p)
 	}
+	if t.IsRelay() {
+		// Relay targets have no direct agentd address; this placeholder is only
+		// for legacy display paths. Requests use newTargetClient and its tunnel.
+		return "http://relay", t.Token, nil
+	}
 	return "http://" + t.Addr, t.Token, nil
+}
+
+// newTargetClient dispatches the three CLI target forms: local mode keeps the
+// existing direct client, direct targets keep the existing endpoint, and relay
+// targets use a high-entropy token plus a lazy E2E relay Dialer.
+func newTargetClient() (*client.Client, func(), error) {
+	return newTargetClientNamed(targetName)
+}
+
+func newTargetClientNamed(name string) (*client.Client, func(), error) {
+	noop := func() {}
+	if name == "" {
+		addr, token, err := TargetEndpoint()
+		if err != nil {
+			return nil, noop, err
+		}
+		return client.New(addr, token), noop, nil
+	}
+	p := configPath
+	if p == "" {
+		p = config.DefaultPath()
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		return nil, noop, fmt.Errorf("加载配置 %s: %w", p, err)
+	}
+	t, ok := cfg.Targets[name]
+	if !ok {
+		return nil, noop, fmt.Errorf("target %q 未在配置 %s 中定义", name, p)
+	}
+	if !t.IsRelay() {
+		return client.New("http://"+t.Addr, t.Token), noop, nil
+	}
+	if err := relay.CheckTokenEntropy(t.Token); err != nil {
+		slog.Default().Error("relay requires high-entropy token", "target", name)
+		return nil, noop, err
+	}
+	d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", slog.Default())
+	slog.Default().Info("using relay transport", "node", t.Node, "relay_url", t.Relay)
+	return client.NewRelay(d, t.Token), func() { _ = d.Close() }, nil
 }
 
 // LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。

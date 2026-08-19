@@ -13,7 +13,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -24,11 +23,12 @@ var stopCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		removed, err := client.New(addr, token).Stop(cmd.Context(), taskID)
+		defer cleanup()
+		removed, err := c.Stop(cmd.Context(), taskID)
 		if err != nil {
 			return err
 		}

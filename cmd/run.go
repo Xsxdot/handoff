@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -64,13 +63,14 @@ var runCmd = &cobra.Command{
 	Short: "在任务仓库执行审阅命令（跑测试/lint）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
+		defer cleanup()
 		cmdline := shellJoin(args[1:])
 		fmt.Fprintf(cmd.ErrOrStderr(), "远端将执行: %s\n", cmdline)
-		stdout, code, err := client.New(addr, token).Run(cmd.Context(), args[0], cmdline)
+		stdout, code, err := c.Run(cmd.Context(), args[0], cmdline)
 		if err != nil {
 			return err
 		}

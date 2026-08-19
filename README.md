@@ -215,8 +215,10 @@ executor machine's agentd port**. Pick a connectivity option by environment:
 - **Same LAN / intranet**: connect directly; put the intranet IP in `targets`.
 - **Across networks**: use Tailscale, WireGuard, or a similar overlay to pull both
   machines into one virtual network; put the virtual interface IP in `targets`.
-- **Cloud relay**: coming soon — two machines that can't share a network will connect
-  through a relay.
+- **Cloud relay**: available when the two machines cannot share a network. The executor
+  dials the relay and the coordinator opens HTTP/WS streams through it; the relay forwards
+  control metadata and opaque E2E ciphertext, but does not receive the handoff token or
+  persist tunnel payloads. Use `wss://` in production.
 
 The executor machine's `listen` has three settings:
 
@@ -237,7 +239,7 @@ intercepted in transit, and holding the token equals dispatching arbitrary code 
 on the executor machine. Home/office networks (behind NAT) and virtual overlay networks
 are the intended places to run `0.0.0.0`; a cloud host with a public IP should not be an
 executor machine at this stage (or firewall the port down to the intranet/overlay
-segment) — wait for the cloud relay.
+segment) — or use the E2E-encrypted cloud relay described below.
 
 ## Remote Executor Machine
 
@@ -282,6 +284,37 @@ web:                          # 浏览器控制台 Host 白名单
   allowed_hosts:              # 放行域名（回环地址恒在白名单，无需配置）
     - handoff.example.com
 ```
+
+### Cloud relay configuration
+
+Use a relay target when the coordinator cannot reach the executor's agentd port directly.
+The executor's `relay` block uses its register credential; the coordinator's target uses a
+separate connect credential. Both sides use the executor token as the E2E key source, so the
+relay only sees the control credential and encrypted tunnel traffic.
+
+On the executor:
+
+```yaml
+relay:
+  url: "wss://relay.example.com/relay"
+  credential: "<register credential>"
+  node: "devbox"
+```
+
+On the coordinator:
+
+```yaml
+targets:
+  devbox:
+    relay: "wss://relay.example.com/relay"
+    credential: "<connect credential>"
+    node: "devbox"
+    token: "<executor token>"
+```
+
+`relay` and `addr` are mutually exclusive. Relay mode requires a high-entropy token (the
+normal `handoff init` token qualifies), and `handoff pull` uses the Bundle HTTP endpoint
+through the tunnel instead of git-over-SSH. `ws://` is supported only for a local relay test.
 
 **3. Dispatch**:
 
@@ -615,10 +648,8 @@ rm ~/.local/bin/handoff
 rm -rf ~/.handoff        # includes config, task data and logs — delete only once you're sure
 ```
 
-## Coming Soon
+## Roadmap
 
-- **Cloud relay**: coordinator and executor machines that can't share a network connect
-  through a cloud relay.
 - **Desktop app**: view and operate tasks in a GUI, not just the CLI.
 
 ## Documentation

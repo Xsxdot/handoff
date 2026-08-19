@@ -48,14 +48,19 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "查看 agentd 是否可用及其版本/数据目录/任务概况",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		addr, _, err := TargetEndpoint()
 		if err != nil {
 			return err
 		}
+		c, cleanup, err := newTargetClient()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
 		cliVer, _ := buildinfo.Read()
 		out := cmd.OutOrStdout()
 
-		st, err := client.New(addr, token).Status(cmd.Context())
+		st, err := c.Status(cmd.Context())
 		switch {
 		case errors.Is(err, client.ErrStatusUnsupported):
 			// 老 agentd：能收到 404 已经证明了 TCP 通、HTTP 正常、Bearer 过，

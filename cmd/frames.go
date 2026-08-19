@@ -32,11 +32,12 @@ var framesCmd = &cobra.Command{
 	Short: "读任务的结构化回合帧（每行一个 JSON 帧）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		return runFrames(cmd.Context(), addr, token, args[0],
+		defer cleanup()
+		return runFramesClient(cmd.Context(), c, args[0],
 			framesOffset, framesTail, framesFollow, cmd.OutOrStdout())
 	},
 }
@@ -54,7 +55,12 @@ var framesCmd = &cobra.Command{
 //   - follow 模式下本函数直到 ctx 取消（Ctrl+C）或服务端断流才返回
 func runFrames(ctx context.Context, addr, token, taskID string,
 	offset, tail int64, follow bool, out io.Writer) error {
-	rc, size, err := client.New(addr, token).FramesStream(ctx, taskID, offset, tail, follow)
+	return runFramesClient(ctx, client.New(addr, token), taskID, offset, tail, follow, out)
+}
+
+func runFramesClient(ctx context.Context, c *client.Client, taskID string,
+	offset, tail int64, follow bool, out io.Writer) error {
+	rc, size, err := c.FramesStream(ctx, taskID, offset, tail, follow)
 	if err != nil {
 		return err
 	}

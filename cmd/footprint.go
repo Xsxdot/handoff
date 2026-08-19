@@ -34,13 +34,18 @@ var footprintCmd = &cobra.Command{
 	Use:   "footprint",
 	Short: "查看各任务占用的进程数与本机进程余量（只数不杀）",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
+		defer cleanup()
 		out := cmd.OutOrStdout()
+		addr := "http://relay"
+		if targetName == "" {
+			addr, _, _ = TargetEndpoint()
+		}
 
-		fp, err := client.New(addr, token).Footprint(cmd.Context())
+		fp, err := c.Footprint(cmd.Context())
 		switch {
 		case errors.Is(err, client.ErrFootprintUnsupported):
 			// 与 status 同款：404 是一条成功的诊断结论，不是失败
