@@ -1,0 +1,110 @@
+# 代码图扫描配方（派发给 AI executor 的 plan 模板）
+
+## 用法
+
+1. 复制本文档为一次性 plan，替换 <项目名>；
+2. handoff dispatch --target <机器> --new-worktree --new-branch codegraph-scan-<日期> --executor codex <plan 文件>；
+3. 回来后 handoff graph validate --repo . 通过才算扫描合格。
+
+## 产物
+
+仅新增或更新 codegraph/baseline.json（全量重扫）或
+codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
+
+基线文件描述扫描时刻的完整图；增量文件描述某个 branch/plan 相对基线的变化。
+视图名使用文件名去掉 .json 的部分，消费方从 codegraph/diffs/ 发现视图，不读取
+基线顶层的历史兼容字段。
+
+## Schema（必须严格遵守）
+
+字段名、JSON 类型和可选性必须与仓库 internal/codegraph/types.go 一致。不得增加
+未在下表出现的业务字段，也不得把源码正文塞进节点。
+
+### codegraph/baseline.json
+
+顶层对象字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| meta | Meta | 图的来源信息 |
+| containers | Record<string, Container> | 分组盒子，key 是容器 ID |
+| nodes | Record<string, Node> | 节点，key 是节点 ID |
+| edges | [string, string][] | 调用关系 [caller, callee] |
+
+meta 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| project | string | 项目名 |
+| branch | string | 扫描分支 |
+| commit | string | 扫描基准提交 |
+| scannedAt | string | 扫描日期/时间 |
+| generator | string | 扫描器或 executor 标识 |
+
+containers 的 value 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| label | string | 否 | 展示名称 |
+| kind | string | 否 | 容器类别 |
+| entry | boolean | 是 | 是否为入口容器，默认 false |
+
+nodes 的 value 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| kind | "entry" \| "func" \| "model" | 否 | 节点类别 |
+| container | string | 否 | 所属容器 ID |
+| order | integer | 是 | 容器/入口内稳定排序值 |
+| name | string | 否 | 节点名称 |
+| file | string | 否 | 仓库内相对文件路径 |
+| line | integer | 否 | 1 基函数/类型定义行 |
+| signature | string | 是 | 当前签名 |
+| signatureOld | string | 是 | 仅 diff 的 nodesModified 使用，旧签名 |
+| params | string[][] | 是 | 参数项 [名, 类型, 说明] |
+| returns | string | 是 | 返回值描述 |
+| summary | string | 是 | 职责摘要 |
+| tests | TestRef[] | 是 | 直接关联测试 |
+| fields | string[][] | 是 | model 专用字段 [名, 类型, 说明] |
+| unscanned | boolean | 是 | 入口尚未追链时为 true，默认 false |
+
+tests 中每个 TestRef 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| name | string | 否 | 测试函数名 |
+| file | string | 否 | 测试文件和行号，如 pkg/x_test.go:41 |
+| snippet | string | 是 | 测试片段 |
+
+### codegraph/diffs/<视图名>.json
+
+顶层对象字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| view | string | 否 | 分支/计划视图标签，如 branch:x |
+| base | string | 是 | 相对的基线提交 |
+| summary | string | 是 | 变化摘要 |
+| nodesAdded | Record<string, Node> | 是 | 新增节点的完整定义 |
+| nodesModified | Record<string, Node> | 是 | 修改节点的完整新定义，可带 signatureOld |
+| nodesDeleted | string[] | 是 | 被删除的基线节点 ID |
+| edgesAdded | [string, string][] | 是 | 新增调用关系 |
+| edgesDeleted | [string, string][] | 是 | 删除调用关系 |
+
+未发生变化的字段可以省略（消费方按空 map/空数组处理）。nodesModified 中必须
+提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
+由基线提供。
+
+## 硬纪律（历次扫描验证过的坑）
+
+- 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
+  pkg（包级函数），model 归 pkg 实体；入口分 CLI/HTTP/WS 三容器。
+- 所有入口必须全量盘点；没追链的标 unscanned: true——宁缺毋滥。
+- file/line/signature 必须与真实代码一致（line 指函数或类型定义行）。
+- tests 找同包 *_test.go 里直接测到该函数的；找不到就 []，不编造。
+- 链路追到导出方法级；承重的未导出函数（如 RunE 主函数）也入图；纯工具小函数不入。
+- 节点的 file 必须是仓库内相对路径，不能写机器绝对路径；源码正文不进入 JSON。
+- 边两端必须是已定义节点；节点的 container 必须是已定义容器。
+- diff 的修改/删除只能引用基线已有节点；新增边的端点必须来自基线或同一 diff 的新增节点。
+- 收尾自检：python3 -m json.tool 验证 JSON 合法性 + 引用完整性脚本（或直接
+  handoff graph validate --repo .），并抽查 5 个节点的 file:line。
