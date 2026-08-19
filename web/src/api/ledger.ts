@@ -15,6 +15,7 @@ export interface CardView {
   following: string
   blocked: boolean
   blocked_by: string[]
+  merged_count: number
   needs: string
   open_decisions: number
   conflict: boolean

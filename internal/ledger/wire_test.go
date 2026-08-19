@@ -35,8 +35,8 @@ func TestWireFieldNames(t *testing.T) {
 		}
 	}
 	viewKeys := keysOf(t, CardView{Card: Card{ID: "B1"}, Blocked: true,
-		BlockedBy: []string{"B2"}, Following: "B3", NeedsReason: "等人", OpenDecisions: 1})
-	for _, want := range []string{"blocked", "blocked_by", "following", "needs", "open_decisions"} {
+		BlockedBy: []string{"B2"}, Following: "B3", MergedCount: 2, NeedsReason: "等人", OpenDecisions: 1})
+	for _, want := range []string{"blocked", "blocked_by", "following", "merged_count", "needs", "open_decisions"} {
 		if !viewKeys[want] {
 			t.Errorf("CardView 缺字段 %q（实际 %v）", want, viewKeys)
 		}

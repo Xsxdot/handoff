@@ -5,7 +5,7 @@ import { boardColumns, cardsInColumn, filterNeeds, needsAttention } from './colu
 const card = (over: Partial<CardView>): CardView => ({
   id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', workflow: 'bug', parent: '',
   base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
-  needs: '', open_decisions: 0, conflict: false, open_tickets: 0, ...over,
+  merged_count: 0, needs: '', open_decisions: 0, conflict: false, open_tickets: 0, ...over,
 })
 
 describe('工作项看板契约', () => {

@@ -26,7 +26,7 @@ function Chip({ children, className, title, onClick }: {
   return <span title={title} className={cn('rounded-full border px-1.5 text-[10px]', className)}>{children}</span>
 }
 
-export function CardItem({ card, onOpen, mergedCount = 0, verified }: CardItemProps) {
+export function CardItem({ card, onOpen, mergedCount = card.merged_count, verified }: CardItemProps) {
   const needs = needsAttention(card)
   const attachments = card.attachments ?? []
   const blockedBy = card.blocked_by ?? []

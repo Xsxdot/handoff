@@ -867,6 +867,10 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		return
 	}
+	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
+		ticketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
+		s.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", req.TicketID, "cause", err)
+	}
 
 	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）；
 	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走

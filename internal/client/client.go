@@ -140,7 +140,8 @@ func isDeliverable(t proto.EventType) bool {
 	case proto.EventTypeProgress,
 		proto.EventTypeApproverDecision,
 		proto.EventTypeApproverDisabled,
-		proto.EventTypeTicketsVoided:
+		proto.EventTypeTicketsVoided,
+		proto.EventTypeTicketAnswered:
 		return false
 	}
 	return true

@@ -69,6 +69,8 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 			switch {
 			case relation.Type == RelMergedInto && relation.From == card.ID:
 				view.Following = relation.To
+			case relation.Type == RelMergedInto && relation.To == card.ID:
+				view.MergedCount++
 			case relation.Type == RelBlocks && relation.To == card.ID:
 				// blocker 到「已完成」才解除；终止不解除且派生等人（判据③）
 				status := statusOf[relation.From]

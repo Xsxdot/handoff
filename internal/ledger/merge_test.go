@@ -23,6 +23,9 @@ func TestMergeUnmergeSplit(t *testing.T) {
 	if byID[m1.ID].Following != carrier.ID {
 		t.Fatalf("m1 应跟随 %s: %+v", carrier.ID, byID[m1.ID])
 	}
+	if byID[carrier.ID].MergedCount != 3 {
+		t.Fatalf("承载卡应显示 3 个成员: %+v", byID[carrier.ID])
+	}
 	// 被并卡验收判据无损
 	got, _ := s.GetCard(m1.ID)
 	if got.AcceptanceCriteria != "m1 判据" {
