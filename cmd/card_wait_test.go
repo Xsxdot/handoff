@@ -10,7 +10,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
-func TestWaitCardSubtreeExitsWhenAllDone(t *testing.T) {
+func TestCardWaitSubtreeExitsWhenAllDone(t *testing.T) {
 	dir := t.TempDir()
 	out, _, _ := runLedgerCLI(t, dir, "card", "add", "根卡", "--project", "demo", "--workflow", "bug")
 	var root struct {
@@ -40,7 +40,7 @@ func TestWaitCardSubtreeExitsWhenAllDone(t *testing.T) {
 			_ = st.MoveCard(id, "已完成", "", "test")
 		}
 	}()
-	waitOut, _, err := runLedgerCLI(t, dir, "wait", "--card", root.ID, "--subtree", "--timeout", "15s")
+	waitOut, _, err := runLedgerCLI(t, dir, "card", "wait", root.ID, "--subtree", "--timeout", "15s")
 	wg.Wait()
 	if err != nil {
 		t.Fatalf("wait 应正常退出: %v", err)
@@ -50,9 +50,15 @@ func TestWaitCardSubtreeExitsWhenAllDone(t *testing.T) {
 	}
 }
 
-func TestWaitCardConflictsWithTaskArg(t *testing.T) {
+// TestWaitRejectsCardFlag 执行域动词必须对 card 一无所知：--card 应是未知 flag。
+// 这条是「分层」这个设计裁决的回归网——有人再把账本分支塞回 wait 就会红。
+func TestWaitRejectsCardFlag(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := runLedgerCLI(t, dir, "wait", "T123", "--card", "B1"); err == nil {
-		t.Fatal("task 参数与 --card 互斥应报错")
+	_, _, err := runLedgerCLI(t, dir, "wait", "--card", "B1")
+	if err == nil {
+		t.Fatalf("wait 不应再认识 --card")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("应报未知 flag，实际: %v", err)
 	}
 }
