@@ -192,10 +192,19 @@ func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {
 	// 等人原因也随详情给：看板卡片上有「需要你」角标，点进抽屉却看不到
 	// 为什么，等于把「卡的一切只在抽屉一处看」拆成了两处
 	needs, _ := s.ledger.NeedsOf(id)
+	// 子任务随详情给：抽屉是「卡的一切只在一处看」的那一处，为一个只读列表
+	// 单开端点会让抽屉多打一次网络往返，还得自己处理它的 loading 与失败态
+	children, err := s.ledger.ChildrenOf(id)
+	if err != nil {
+		// 与 relations/decisions 同款降级：主查询已经决定了 200，
+		// 附加信息拿不到时给空列表，不能让整个抽屉打不开
+		s.log.Warn("读子卡失败，详情降级为无子任务", "card", id, "cause", err)
+		children = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"card": card, "relations": relations, "events": events,
 		"task_states": taskStates, "effective_base_branch": base,
-		"decisions": decisions, "needs": needs,
+		"decisions": decisions, "needs": needs, "children": children,
 	})
 }
 

@@ -50,6 +50,44 @@ func ledgerPost(t *testing.T, env *testAgentdEnv, path, body string) (int, strin
 	return resp.StatusCode, string(data)
 }
 
+type ledgerEnv struct {
+	*testAgentdEnv
+	ledger *ledger.Store
+}
+
+func newLedgerEnv(t *testing.T) *ledgerEnv {
+	t.Helper()
+	st, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	env := newTestAgentdEnv(t)
+	env.srv.SetLedger(st)
+	return &ledgerEnv{testAgentdEnv: env, ledger: st}
+}
+
+func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
+	t.Helper()
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: title, Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
+}
+
+func seedChildCard(t *testing.T, env *ledgerEnv, parentID, title string) ledger.Card {
+	t.Helper()
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: title, Project: "p", Workflow: "bug", Parent: parentID, Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
+}
+
 func TestLedgerAPI(t *testing.T) {
 	lst, err := ledger.Open(t.TempDir() + "/ledger.db")
 	if err != nil {
@@ -103,6 +141,31 @@ func TestLedgerAPIWithoutLedger(t *testing.T) {
 	code, body := ledgerGet(t, env, "/api/cards")
 	if code != http.StatusServiceUnavailable || !ledgerContainsAll(body, "账本") {
 		t.Fatalf("降级: %d %q", code, body)
+	}
+}
+
+// TestCardDetailReturnsChildren 抽屉是「卡的一切只在一处看」的那一处，
+// 子任务随详情给，不新开端点。
+func TestCardDetailReturnsChildren(t *testing.T) {
+	env := newLedgerEnv(t)
+	parent := seedCard(t, env, "父卡")
+	child := seedChildCard(t, env, parent.ID, "子卡")
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+parent.ID)
+	if code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	var resp struct {
+		Children []ledger.CardBrief `json:"children"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解析详情: %v，body=%s", err, body)
+	}
+	if len(resp.Children) != 1 || resp.Children[0].ID != child.ID {
+		t.Fatalf("children 不对: %+v", resp.Children)
+	}
+	if resp.Children[0].Title == "" || resp.Children[0].Status == "" {
+		t.Fatalf("children 少字段: %+v", resp.Children)
 	}
 }
 

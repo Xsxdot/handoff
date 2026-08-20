@@ -105,3 +105,37 @@ describe('抽屉里的合并事件', () => {
     expect(screen.queryByText(/\{/)).not.toBeInTheDocument()
   })
 })
+
+describe('抽屉里的子任务', () => {
+  it('有直接子卡时列出来，点 id 能跳转', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B156', Title: '父卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '',
+      children: [
+        { id: 'B156.1', title: '子卡一', status: '待办' },
+        { id: 'B156.2', title: '子卡二', status: '已完成' },
+      ],
+    })
+    const opened: string[] = []
+    render(<CardDrawer id="B156" onClose={() => {}} onOpenCard={(id) => opened.push(id)} />)
+    expect(await screen.findByText(/子任务/)).toBeInTheDocument()
+    expect(screen.getByText('子卡一')).toBeInTheDocument()
+    expect(screen.getByText('已完成')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'B156.1' }))
+    expect(opened).toEqual(['B156.1'])
+  })
+
+  it('没有子卡时整区不渲染——空区块比没有区块更吵', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B160', Title: '叶子卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B160" onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('叶子卡')
+    expect(screen.queryByText(/子任务/)).not.toBeInTheDocument()
+  })
+})

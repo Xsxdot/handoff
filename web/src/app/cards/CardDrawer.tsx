@@ -318,6 +318,19 @@ export function CardDrawer({
               </section>
             )}
 
+            {(detail.children ?? []).length > 0 && (
+              <section className="mb-5">
+                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">子任务</h3>
+                {(detail.children ?? []).map((child) => (
+                  <div key={child.id} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs">
+                    <button type="button" className="font-mono underline" onClick={() => onOpenCard(child.id)}>{child.id}</button>
+                    <span className="min-w-0 flex-1 truncate">{child.title}</span>
+                    <span className="ml-auto rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">{child.status}</span>
+                  </div>
+                ))}
+              </section>
+            )}
+
             {(detail.task_states ?? []).length > 0 && (
               <section className="mb-5">
                 <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>

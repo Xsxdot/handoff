@@ -28,6 +28,13 @@ export interface UnlinkedSummary {
   unknown_targets: string[] | null
 }
 
+// CardBrief 是子任务区一行的最小三元组，字段名与 Go 侧 ledger.CardBrief 一字不差。
+export interface CardBrief {
+  id: string
+  title: string
+  status: string
+}
+
 export interface CardDetail {
   card: unknown
   relations: { From: string; To: string; Type: string }[]
@@ -36,6 +43,9 @@ export interface CardDetail {
   effective_base_branch: string
   decisions: Decision[] | null
   needs: string
+  // children 是直接子卡（只一层）。可选而非必填：抽屉对每个列表都用 `?? []`
+  // 防御性读取，标成必填只会逼着六处与子任务无关的测试 mock 补一个空数组。
+  children?: CardBrief[] | null
 }
 
 export interface LedgerEvent {
