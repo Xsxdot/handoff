@@ -385,20 +385,28 @@ handoff card wait <id> [--subtree] [--timeout 3h]
 
 ```bash
 handoff card move <id> 待审阅
-handoff card dispatch <id> --node review     # 审阅环节
+handoff card dispatch <id> --step review     # 审阅环节
 handoff card accept <id> --evidence "go test ./... 全绿"
 handoff card move <id> <下一态>
-handoff card dispatch <id> --node merge      # 合并环节
+handoff card dispatch <id> --step merge      # 合并环节
 ```
 
-三条要点：
+四条要点：
 
 - **审阅环节的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
-  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node review`。
+  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node review`
+  （注意这个 flag 仍叫 `--reset-node`：本次「节点→环节」改名只动了
+  `card dispatch` 的 `--step`，没顺带改它）。
 - **`card accept` 的「已验」必须带 `--evidence`**——已验是一个断言，无证据的
   断言不许落账。还没验就用 `--unverified`。
 - **合并环节永不自动合主线**：基线是 main 的卡，它跑完客观判据后推「待合并」
   等你，不会自己合。基线是集成分支的才自动合。
+- **合并环节走 origin，且会推两条分支**：它先把工作分支推上 origin（执行机的
+  分支 origin 上本来没有），再在一个临时脱头 worktree 里合并、把结果推到
+  origin 的基线分支。两个后果要知道：① 你本地仓的当前分支、未提交改动都不会
+  被动，合并不在你的工作区里发生；② **你本地的基线分支引用不会前进**——结果
+  在 origin 上，想看得 `git fetch`。工作分支在本地和 origin 都找不到时，卡会
+  转「等人」并明说「先 handoff pull 再重试」。
 
 `card move` 的每一步都拿卡钉的那版工作流当法律——状态名合不合法、gate（如
 「进『待合并』需已验收」）过不过，全按配置判。被拒了先 `handoff workflow show
