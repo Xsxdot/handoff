@@ -27,6 +27,30 @@ func ptyPost(t *testing.T, env *testAgentdEnv, body string) (*http.Response, []b
 	return resp, b
 }
 
+// ptyCreate 建一个终端会话，并**断言它真的建成了**。
+//
+// 参数：env 是目标 agentd 测试环境；body 是建会话请求体。
+// 返回：建成的会话，ID 保证非空。
+// 注意：建会话失败时的响应体是 {"error":"..."}，它照样能 unmarshal 进
+// PtySession 且不报错，只是留下一个空 ID。不在这里拦住，失败就会被搬到
+// 下游——用空 id 去 attach，报成「终端会话不存在」，把「拉起 ptyhost 超时」
+// 这类真因盖掉。凡是需要一个可用会话的用例都必须经这个入口建。
+func ptyCreate(t *testing.T, env *testAgentdEnv, body string) proto.PtySession {
+	t.Helper()
+	resp, b := ptyPost(t, env, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("建终端会话状态码 = %d，期望 200；体=%s", resp.StatusCode, b)
+	}
+	var s proto.PtySession
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatalf("解析建会话响应: %v；体=%s", err, b)
+	}
+	if s.ID == "" {
+		t.Fatalf("建会话返回了空 id；体=%s", b)
+	}
+	return s
+}
+
 // base_path 不是本机已探测到的工作树 → 400 且文案说清是参数问题。
 //
 // 400 而不是 403：会话在能力上等价于主令牌（spec §1），白名单是参数校验
@@ -74,11 +98,7 @@ func TestPtySessionListAndDelete(t *testing.T) {
 	}
 	env := newTestAgentdEnv(t)
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	if err := json.Unmarshal(body, &s); err != nil {
-		t.Fatalf("解析响应: %v；体=%s", err, body)
-	}
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
 
 	req, _ := http.NewRequest(http.MethodGet, env.ts.URL+"/api/pty/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)

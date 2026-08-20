@@ -73,9 +73,7 @@ func TestPtyWSEchoRoundTrip(t *testing.T) {
 	}
 	env := newTestAgentdEnv(t)
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	_ = json.Unmarshal(body, &s)
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
 	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
 
 	c, ctrl := dialPty(t, env, s.ID, 0)
@@ -96,9 +94,7 @@ func TestPtyWSResize(t *testing.T) {
 	}
 	env := newTestAgentdEnv(t)
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	_ = json.Unmarshal(body, &s)
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
 	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
 
 	c, _ := dialPty(t, env, s.ID, 0)
@@ -118,9 +114,7 @@ func TestPtyWSResumeSince(t *testing.T) {
 	}
 	env := newTestAgentdEnv(t)
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	_ = json.Unmarshal(body, &s)
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
 	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
 
 	c1, _ := dialPty(t, env, s.ID, 0)
@@ -155,9 +149,7 @@ func TestPtyWSAttachToExitedSession(t *testing.T) {
 	}
 	env := newTestAgentdEnv(t)
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	_ = json.Unmarshal(body, &s)
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
 	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
 
 	_ = env.srv.pty.Write(s.ID, []byte("echo BYE; exit 5\n"))
