@@ -106,7 +106,14 @@ func testHandoffExecutable(t *testing.T) string {
 			testHandoffErr = fmt.Errorf("go build handoff: %w: %s", testHandoffErr, output)
 			return
 		}
-		testHandoffErr = os.Chmod(testHandoffPath, 0o700)
+		if testHandoffErr = os.Chmod(testHandoffPath, 0o700); testHandoffErr != nil {
+			return
+		}
+		// 预热：ptyhost 客户端只给 socket 的出现留 3s（internal/ptyhost 的 socketWait），
+		// 而**首次** exec 一个刚编出来的二进制要付页缓存冷启动、macOS 还要付首次代码
+		// 签名校验的代价。并发负载下这笔开销能把 3s 吃光，PTY 用例随之超时变红。
+		// 空跑一次把它挪到计时窗口之外。失败忽略：预热不是判据，真有问题会在用例里暴露。
+		_ = exec.Command(testHandoffPath, "--version").Run()
 	})
 	if testHandoffErr != nil {
 		t.Fatalf("准备测试 handoff: %v", testHandoffErr)

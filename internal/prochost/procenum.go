@@ -50,6 +50,20 @@ func SetPtyhostCredentialProvider(provider PtyhostCredentialProvider) {
 	ptyhostCredentialMu.Unlock()
 }
 
+// PtyhostCredentials 返回当前已登记的 ptyhost 凭据快照。
+//
+// 返回：提供者给出的凭据切片；未设置提供者时为 nil。
+// 注意：这是只读视图，供调用方核对「某个真实会话是否已成为可验证凭据」。
+// **不要拿它自己做扣减** —— 扣减判据（PID 与启动时刻必须同时匹配）在
+// chargeableProcessCount 里，绕过它会把 PID 复用误判成 ptyhost。
+func PtyhostCredentials() []ProcessCredential {
+	provider := currentPtyhostCredentialProvider()
+	if provider == nil {
+		return nil
+	}
+	return provider()
+}
+
 func currentPtyhostCredentialProvider() PtyhostCredentialProvider {
 	ptyhostCredentialMu.RLock()
 	provider := ptyhostCredentialProvider

@@ -49,8 +49,31 @@ func startHost(t *testing.T) (root, id string) {
 		case <-time.After(3 * time.Second):
 		}
 	})
-	waitSock(t, sessdir.SockPath(root, id))
+	waitSessionReady(t, root, id)
 	return root, id
+}
+
+// waitSessionReady 等到会话**真正**就绪：socket 与 meta.json 都在。
+//
+// why 不能只等 socket：Run 先 net.Listen、**之后**才 WriteMeta，socket 出现只是
+// 中途副产物。并发负载下这两步之间的窗口被拉大，只等 socket 的调用方会读到
+// 「meta.json 不存在」——2026-08-20 并行跑 ./internal/ptyhost/... 时
+// TestMetaWrittenWithPidAndVersion 正是这么红的。
+//
+// 注意：waitSock 仍然保留给「只需要连上 socket、不读 meta」的调用方——那里等 socket
+// 就是正确判据，换成本函数只会白等一个用不着的条件。
+func waitSessionReady(t *testing.T, root, id string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sessdir.SockPath(root, id)); err == nil {
+			if _, err := sessdir.ReadMeta(root, id); err == nil {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("会话迟迟没就绪（socket 或 meta.json 缺失）: root=%s id=%s", root, id)
 }
 
 // shortTempDir 给 Unix socket 留出 sockaddr_un 的路径空间；本仓库的测试任务根目录很深，

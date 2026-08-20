@@ -48,29 +48,35 @@ func TestClientOpenList(t *testing.T) {
 	}
 }
 
-// TestClientRegistersPtyhostForPressure 真实 hostproc 会话经 Adopt 后必须成为可验证凭据，
-// 从机器级压力计数中扣除；hostproc 在本测试进程的 goroutine 中运行，所以差值应恰为一。
+// TestClientRegistersPtyhostForPressure 真实 hostproc 会话经 Adopt 后必须成为可验证凭据。
+//
+// why 不再对整机进程数取两次样断言差值恰为一：CheckAdmission 读的是**实时的整机计数**，
+// 而 go test ./... 期间几十个测试进程在并发起落，两次采样之间基数就会漂
+// （2026-08-20 实测 703 → 702，净漂 2，断言必挂）。扣减判据本身已由
+// internal/prochost/ptyhost_pressure_test.go 用固定进程快照确定性覆盖；按那个文件
+// 写明的分工，本测试只负责「真实会话产出正确凭据」这一半，不重复验计数效果。
 func TestClientRegistersPtyhostForPressure(t *testing.T) {
 	_, h, id, _ := startClientHost(t)
-	if sess, ok := h.Get(id); !ok || sess.PID <= 0 {
+	sess, ok := h.Get(id)
+	if !ok || sess.PID <= 0 {
 		t.Fatalf("Get = %+v, ok=%v，期望活 ptyhost 会话", sess, ok)
 	}
 
-	withPtyhost := prochost.CheckAdmission()
-	if !withPtyhost.Known {
-		t.Skip("本平台无法读机器级进程压力")
+	credentials := prochost.PtyhostCredentials()
+	idx := -1
+	for i := range credentials {
+		if credentials[i].PID == sess.PID {
+			idx = i
+			break
+		}
 	}
-	// 取掉 Host 在 New 时安装的提供者，得到同一时刻的未排除基线；
-	// t.Cleanup 先恢复为空，避免影响本包后续测试进程。
-	prochost.SetPtyhostCredentialProvider(nil)
-	t.Cleanup(func() { prochost.SetPtyhostCredentialProvider(nil) })
-	withoutPtyhost := prochost.CheckAdmission()
-	if !withoutPtyhost.Known {
-		t.Skip("本平台无法读机器级进程压力")
+	if idx < 0 {
+		t.Fatalf("会话 PID %d 未出现在 ptyhost 凭据里: %+v", sess.PID, credentials)
 	}
-	if withoutPtyhost.Used-withPtyhost.Used != 1 {
-		t.Fatalf("未排除 used=%d，排除后 used=%d，期望差值 1",
-			withoutPtyhost.Used, withPtyhost.Used)
+	// 启动时刻是扣减判据的另一半：PID 会被复用，PID+启动时刻才能唯一指认一个进程。
+	// 少了它，prochost 那边会把复用同一 PID 的陌生进程当成 ptyhost 扣掉。
+	if credentials[idx].StartedAt <= 0 {
+		t.Fatalf("凭据缺少启动时刻: %+v", credentials[idx])
 	}
 }
 
@@ -219,7 +225,7 @@ func startClientHost(t *testing.T) (root string, h *ptyhost.Host, id string, don
 		done <- hostproc.Run(specPath)
 		close(done)
 	}()
-	waitSocket(t, sessdir.SockPath(root, id))
+	waitSessionReady(t, root, id)
 	entries, err := sessdir.Scan(root)
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +282,13 @@ func buildHandoff(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 预热：Open 只给 socket 的出现留 3s（client.go 的 socketWait），而**首次** exec
+	// 一个刚编出来的二进制要付页缓存冷启动、macOS 还要付首次代码签名校验的代价。
+	// 并发负载下这笔开销能把 3s 吃光，于是 Open 超时、测试红——2026-08-20 实测：
+	// 与全仓 go test ./... 同时跑时 6 轮里红 3 轮，错误是「等待 ptyhost socket 超时」。
+	// 空跑一次把这笔代价挪到计时窗口之外。本测试要验的是 Open 的接线，不是冷启动耗时。
+	// 失败忽略：预热本身不是判据，真有问题会在后面的 Open 上如实暴露。
+	_ = exec.Command(path, "--version").Run()
 	return path
 }
 
@@ -289,16 +302,24 @@ func shortRoot(t *testing.T) string {
 	return root
 }
 
-func waitSocket(t *testing.T, path string) {
+// waitSessionReady 等到会话**真正**就绪：socket 与 meta.json 都在。
+//
+// why 不能只等 socket：hostproc 先 net.Listen（hostproc.go 的 Run）、**之后**才
+// WriteMeta，socket 出现只是中途副产物。并发负载下这两步之间的窗口被拉大，只等
+// socket 的调用方会读到「meta.json 不存在」——2026-08-20 全仓并行跑时
+// TestClientProtoMismatch 正是这么红的（读会话元数据 ...: no such file or directory）。
+func waitSessionReady(t *testing.T, root, id string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
+		if _, err := os.Stat(sessdir.SockPath(root, id)); err == nil {
+			if _, err := sessdir.ReadMeta(root, id); err == nil {
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("socket 迟迟没出现: %s", path)
+	t.Fatalf("会话迟迟没就绪（socket 或 meta.json 缺失）: root=%s id=%s", root, id)
 }
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
