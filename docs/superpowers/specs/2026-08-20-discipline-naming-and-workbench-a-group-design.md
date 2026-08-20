@@ -162,7 +162,15 @@ commit」。`review-generic` 模板那条注释记的「2026-08-19 真机实测�
 用了废弃字段、建议 `template put` 重写。映射表只认这三个已知文件名，其他值映射为
 空并 Warn——猜不出来就退回兜底，但**必须留声音**。
 
-## 4. 共用编排包 `internal/cardstep`
+## 4. 共用编排包 `internal/ledgerstep`
+
+> **2026-08-20 订正**：本节原写「新建 `internal/cardstep`」，那是写 spec 时没核实
+> 基线。共用编排包**已经存在**——`internal/ledgerstep/verdict.go` 的包注释写明它是
+> 「审阅/合并环节的**唯一实现**，主会话（经 CLI）与**看板按钮（经 Plan D API）
+> 共用**」，注入点模式（`RunReview` / `Objective` / `DoMerge` 函数字段 + `wire.go`
+> 生产装配）也已建好。再开一个包等于造第二个真相源，正是本节要避免的东西。
+> 下文的 `internal/cardstep` 一律读作 `internal/ledgerstep`；形态与依赖注入的设计
+> （4.2）与异步约束（4.3）不变。
 
 ### 4.1 为什么要抽
 
@@ -174,7 +182,7 @@ commit」。`review-generic` 模板那条注释记的「2026-08-19 真机实测�
 
 ### 4.2 形态
 
-把 `dispatchViaTemplate` 与 `runStepDispatch` 搬进 `internal/cardstep`，只收显式
+把 `dispatchViaTemplate` 与 `runStepDispatch` 搬进 `internal/ledgerstep`，只收显式
 依赖：账本 store、仓路径、派发传输函数、actor。调用方各自注入：
 
 | 调用方 | 仓路径 | 传输 |
