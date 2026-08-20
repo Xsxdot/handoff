@@ -6,3 +6,4 @@
 - Task 3 完成（spec/质量双裁决通过）：新增建卡对话框与 CardsPage「+ 新建」入口，创建成功后刷新并打开抽屉；定向测试先红后绿，全量前端回归通过（94 files/951 tests）。commit range: 3eecab96..HEAD（本 task commit）。
 - Task 4 修复轮 1：lint 报 `CardDrawer.tsx:277:10 error 'priorityError' is assigned a value but never used`；补上优先级错误展示后定向/全量回归恢复通过。commit range: 15673bf5..HEAD。
 - Task 4 完成（spec/质量双裁决通过）：抽屉支持标题、优先级、验收判据、附件增删，保存按字段独立 PATCH，基线只读并说明原因；变异测试证明多发字段会失败。commit range: 15673bf5..HEAD（本 task commit）。
+- Task 5 完成（spec/质量双裁决通过）：关联 task 行可展开，复用 TicketsPanel 展示/回答工单，回答后重取 task；兼容 `pending_tickets` 与计划样例 `tickets`。定向工单测试、CardDrawer 24 项、全量 959 项通过。commit range: 9e524e01..HEAD（本 task commit）。

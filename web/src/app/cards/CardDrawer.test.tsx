@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CardDrawer } from './CardDrawer'
 
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
+  fetchTaskDetail: vi.fn(),
+  replyTicket: vi.fn(),
+}))
+
 vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCardDetail: vi.fn().mockResolvedValue({
@@ -279,6 +285,60 @@ describe('抽屉里的环节动作', () => {
     // 直接写字面量：这条断言的全部意义就是「界面上不存在这个名字的按钮」，
     // 把名字拆开只是为了躲某条 grep，会让后来人看不懂它在断言什么
     expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的工单入口', () => {
+  const withTask = {
+    card: { ID: 'B30', Title: '在跑的卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+    relations: [], events: [], effective_base_branch: '', decisions: [],
+    task_states: [{ Target: 'linux-01', TaskID: 'task-abc', Purpose: 'implement', LastType: 'question', LastSeq: 9 }],
+  }
+
+  it('展开关联执行行能看到该 task 的挂起工单', async () => {
+    const ledger = await import('../../api/ledger')
+    const client = await import('../../api/client')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(withTask as never)
+    vi.mocked(client.fetchTaskDetail).mockResolvedValue({
+      task: { id: 'task-abc', state: 'waiting_answer' },
+      tickets: [{ id: 'tk-1', kind: 'ask', request: '这里要用哪个基线？' }],
+      events: [],
+    } as never)
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /task-abc/ }))
+    expect(await screen.findByText('这里要用哪个基线？')).toBeInTheDocument()
+  })
+
+  it('在抽屉里作答走 replyTicket，不用跳去任务页', async () => {
+    const ledger = await import('../../api/ledger')
+    const client = await import('../../api/client')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(withTask as never)
+    vi.mocked(client.fetchTaskDetail).mockResolvedValue({
+      task: { id: 'task-abc', state: 'waiting_answer' },
+      tickets: [{ id: 'tk-1', kind: 'ask', request: '这里要用哪个基线？' }],
+      events: [],
+    } as never)
+    vi.mocked(client.replyTicket).mockResolvedValue({ ok: true } as never)
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /task-abc/ }))
+    const box = await screen.findByPlaceholderText('输入你的回答…')
+    fireEvent.change(box, { target: { value: 'feat/x' } })
+    fireEvent.click(screen.getByRole('button', { name: /提交|回答|发送/ }))
+    await waitFor(() => expect(vi.mocked(client.replyTicket)).toHaveBeenCalledWith(
+      'task-abc', expect.objectContaining({ ticket_id: 'tk-1' }),
+    ))
+  })
+
+  it('没有挂起工单时说清楚，不留一片空白', async () => {
+    const ledger = await import('../../api/ledger')
+    const client = await import('../../api/client')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(withTask as never)
+    vi.mocked(client.fetchTaskDetail).mockResolvedValue({
+      task: { id: 'task-abc', state: 'running' }, tickets: [], events: [],
+    } as never)
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /task-abc/ }))
+    expect(await screen.findByText(/没有等待处理的工单/)).toBeInTheDocument()
   })
 })
 

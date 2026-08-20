@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
+import { fetchTaskDetail, replyTicket } from '../../api/client'
+import type { TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
+import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
 
 type Relation = { From: string; To: string; Type: string }
@@ -244,6 +247,12 @@ function timelineGroups(events: LedgerEvent[]): Array<{ kind: 'mirror' | 'event'
   return groups
 }
 
+type DrawerTaskDetail = TaskDetail & { tickets?: Ticket[]; events?: unknown[] }
+
+function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
+  return detail.pending_tickets ?? detail.tickets ?? []
+}
+
 export function CardDrawer({
   id,
   onClose,
@@ -283,6 +292,10 @@ export function CardDrawer({
   const [attachmentPath, setAttachmentPath] = useState('')
   const [attachmentBusy, setAttachmentBusy] = useState(false)
   const [attachmentError, setAttachmentError] = useState('')
+  const [expandedTask, setExpandedTask] = useState<string | null>(null)
+  const [taskDetails, setTaskDetails] = useState<Record<string, DrawerTaskDetail>>({})
+  const [taskLoading, setTaskLoading] = useState<string | null>(null)
+  const [taskErrors, setTaskErrors] = useState<Record<string, string>>({})
   const [stepBusy, setStepBusy] = useState<'review' | 'merge' | null>(null)
   const [stepStarted, setStepStarted] = useState<'review' | 'merge' | null>(null)
   const [stepError, setStepError] = useState('')
@@ -430,6 +443,35 @@ export function CardDrawer({
     } finally {
       setAttachmentBusy(false)
     }
+  }
+
+  const loadTaskDetail = async (taskID: string) => {
+    setTaskLoading(taskID)
+    setTaskErrors((current) => ({ ...current, [taskID]: '' }))
+    try {
+      const next = await fetchTaskDetail(taskID)
+      setTaskDetails((current) => ({ ...current, [taskID]: next as DrawerTaskDetail }))
+    } catch (err) {
+      setTaskErrors((current) => ({ ...current, [taskID]: errorMessage(err) }))
+    } finally {
+      setTaskLoading((current) => current === taskID ? null : current)
+    }
+  }
+
+  const toggleTask = (taskID: string) => {
+    if (expandedTask === taskID) {
+      setExpandedTask(null)
+      return
+    }
+    setExpandedTask(taskID)
+    if (!taskDetails[taskID]) void loadTaskDetail(taskID)
+  }
+
+  const replyTaskTicket = async (taskID: string, ticket: Ticket, answer: string) => {
+    // TicketsPanel 已用 buildTicketAnswer 按 gate/ask 契约编码 answer；这里负责把
+    // 编码后的答复送回 task，并重取详情让工单在抽屉里立即消失或更新。
+    await replyTicket(taskID, { ticket_id: ticket.id, answer })
+    await loadTaskDetail(taskID)
   }
 
   const submitNote = async () => {
@@ -697,7 +739,39 @@ export function CardDrawer({
             {(detail.task_states ?? []).length > 0 && (
               <section className="mb-5">
                 <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>
-                {(detail.task_states ?? []).map((task) => <div key={`${task.Target}/${task.TaskID}`} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs"><span className="font-mono">{task.TaskID}</span><span>{task.Purpose}</span><span className="ml-auto text-muted-foreground">{task.LastType || '未知'}</span><span className="text-muted-foreground">{task.Target}</span></div>)}
+                {(detail.task_states ?? []).map((task) => {
+                  const open = expandedTask === task.TaskID
+                  const taskDetail = taskDetails[task.TaskID]
+                  return (
+                    <div key={`${task.Target}/${task.TaskID}`} className="mb-1 rounded-md border text-xs">
+                      <button
+                        type="button"
+                        aria-expanded={open}
+                        onClick={() => toggleTask(task.TaskID)}
+                        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+                      >
+                        <span className="font-mono">{task.TaskID}</span><span>{task.Purpose}</span><span className="ml-auto text-muted-foreground">{task.LastType || '未知'}</span><span className="text-muted-foreground">{task.Target}</span>
+                      </button>
+                      {open && (
+                        <div className="border-t px-2 py-2">
+                          {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
+                              /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
+                              是纯前端复用，不需要任何新后端。 */}
+                          {taskLoading === task.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
+                          {taskErrors[task.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[task.TaskID]}</p>}
+                          {taskDetail && (
+                            <TicketsPanel
+                              bare
+                              tickets={pendingTickets(taskDetail)}
+                              disabled={false}
+                              onReply={(ticket, answer) => replyTaskTicket(task.TaskID, ticket, answer)}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </section>
             )}
 
