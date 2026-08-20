@@ -27,6 +27,10 @@ func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/cards", s.withLedger(s.handleCardsList))
 	api.HandleFunc("GET /api/cards/{id}", s.withLedger(s.handleCardDetail))
+	api.HandleFunc("POST /api/cards", s.withLedger(s.handleCardCreate))
+	api.HandleFunc("PATCH /api/cards/{id}", s.withLedger(s.handleCardPatch))
+	api.HandleFunc("POST /api/cards/{id}/attachments", s.withLedger(s.handleCardAttach))
+	api.HandleFunc("DELETE /api/cards/{id}/attachments", s.withLedger(s.handleCardDetach))
 	api.HandleFunc("POST /api/cards/{id}/move", s.withLedger(s.handleCardMove))
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
 	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
@@ -66,6 +70,18 @@ func ledgerErr(w http.ResponseWriter, err error) {
 		code = http.StatusConflict
 	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// writeErr 按本文件既有约定写错误响应：{"error": "<原因>"}。
+//
+// 抽出来只是省重复，语义与散落各处的 writeJSON(w, code, map[string]string{"error": ...}) 完全一致。
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// ledgerActor 为浏览器写操作生成与既有账本 handler 一致的 actor 标识。
+func (s *Server) ledgerActor(r *http.Request) string {
+	return "web:" + r.RemoteAddr
 }
 
 func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
@@ -517,4 +533,159 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mirror": rows})
+}
+
+// attachmentKinds 是允许的附件类型。收窄成白名单不是洁癖：附件 kind 是
+// 「进入某一列的门槛」的判据（Gate.RequireAttachment），拼错一个字母会让门
+// 永远过不去，而界面上看着附件明明挂着——那种问题极难自查。
+var attachmentKinds = map[string]bool{"spec": true, "plan": true, "doc": true}
+
+// handleCardCreate 建卡。
+//
+// 请求体：title（必填）、project（必填）、workflow（必填）、priority、parent、
+// base_branch。响应：{"id": "<新卡号>"}。
+//
+// 注意：**base_branch 只在这里能设**，建完不可改（改基线会让已经派出去的
+// 任务与卡的说法对不上）。子卡不传 base_branch 时自动继承父卡的有效基线。
+func (s *Server) handleCardCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title      string `json:"title"`
+		Project    string `json:"project"`
+		Workflow   string `json:"workflow"`
+		Priority   string `json:"priority"`
+		Parent     string `json:"parent"`
+		BaseBranch string `json:"base_branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("标题不能为空"))
+		return
+	}
+	if body.Project == "" || body.Workflow == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("project 与 workflow 都是必填"))
+		return
+	}
+	actor := s.ledgerActor(r)
+	card, err := s.ledger.CreateCard(ledger.NewCard{
+		Title: strings.TrimSpace(body.Title), Project: body.Project,
+		Priority: body.Priority, Parent: body.Parent,
+		Workflow: body.Workflow, BaseBranch: body.BaseBranch, Actor: actor,
+	})
+	if err != nil {
+		s.log.Warn("建卡失败", "title", body.Title, "workflow", body.Workflow, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("已建卡", "card", card.ID, "title", card.Title,
+		"workflow", card.WorkflowName, "version", card.WorkflowVersion,
+		"base_branch", card.BaseBranch, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]any{"id": card.ID})
+}
+
+// handleCardPatch 改卡的标题 / 优先级 / 验收判据。
+//
+// **缺字段 = 不动该字段，不是置空。** 三个字段都用 *string 收，靠指针区分
+// 「没给」与「给了空串」——用值类型收会让「只改优先级」把标题和判据一起清掉。
+func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Title              *string `json:"title"`
+		Priority           *string `json:"priority"`
+		AcceptanceCriteria *string `json:"acceptance_criteria"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	card, err := s.ledger.GetCard(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	actor := s.ledgerActor(r)
+	if body.Title != nil || body.Priority != nil {
+		// UpdateCardMeta 收的是最终值而不是「改动」，所以没给的那一半要用现值补齐。
+		title, priority := card.Title, card.Priority
+		if body.Title != nil {
+			if strings.TrimSpace(*body.Title) == "" {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("标题不能改成空"))
+				return
+			}
+			title = strings.TrimSpace(*body.Title)
+		}
+		if body.Priority != nil {
+			priority = *body.Priority
+		}
+		if err := s.ledger.UpdateCardMeta(id, title, priority, actor); err != nil {
+			s.log.Warn("改卡元信息失败", "card", id, "cause", err)
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		s.log.Info("已改卡元信息", "card", id, "title", title, "priority", priority, "actor", actor)
+	}
+	if body.AcceptanceCriteria != nil {
+		if err := s.ledger.SetAcceptance(id, *body.AcceptanceCriteria, actor); err != nil {
+			s.log.Warn("写验收判据失败", "card", id, "cause", err)
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		s.log.Info("已写验收判据", "card", id, "bytes", len(*body.AcceptanceCriteria), "actor", actor)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCardAttach 给卡挂一个附件（同 path 幂等）。kind 只认 spec|plan|doc。
+func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Kind string `json:"kind"`
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if !attachmentKinds[body.Kind] {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("附件 kind 只认 spec|plan|doc，收到 %q", body.Kind))
+		return
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("附件路径不能为空"))
+		return
+	}
+	actor := s.ledgerActor(r)
+	if err := s.ledger.AttachFile(id, body.Kind, strings.TrimSpace(body.Path), actor); err != nil {
+		s.log.Warn("挂附件失败", "card", id, "kind", body.Kind, "path", body.Path, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("已挂附件", "card", id, "kind", body.Kind, "path", body.Path, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCardDetach 摘掉卡上指定路径的附件（不存在也返回 ok，摘除天然幂等）。
+func (s *Server) handleCardDetach(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if body.Path == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("附件路径不能为空"))
+		return
+	}
+	actor := s.ledgerActor(r)
+	if err := s.ledger.DetachFile(id, body.Path, actor); err != nil {
+		s.log.Warn("摘附件失败", "card", id, "path", body.Path, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("已摘附件", "card", id, "path", body.Path, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

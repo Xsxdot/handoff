@@ -1,6 +1,6 @@
 // 账本 API 客户端：/api/cards、/api/flows、/api/decisions、/api/ledger/health。
 // 与 client.ts 同一 request/postJSON 底座；类型字段名与 Go 侧 wire map 一字不差。
-import { postJSON, request } from './client'
+import { deleteJSON, patchJSON, postJSON, putJSON, request } from './client'
 
 export interface CardView {
   id: string
@@ -46,6 +46,47 @@ export interface CardDetail {
   // children 是直接子卡（只一层）。可选而非必填：抽屉对每个列表都用 `?? []`
   // 防御性读取，标成必填只会逼着六处与子任务无关的测试 mock 补一个空数组。
   children?: CardBrief[] | null
+}
+
+// NodeOverride 节点对模板的单字段覆盖；省略的字段 = 沿用模板。
+// 字段名与 Go 侧 ledger.NodeOverride 一字不差。
+export interface NodeOverride {
+  executor?: string
+  discipline?: string
+  target?: string
+  model?: string
+}
+
+// NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
+// 字段名与 Go 侧 ledger.NodeDef 一字不差。
+export interface NodeDef {
+  name: string
+  template?: string
+  override?: NodeOverride
+  dispatch?: boolean
+  verdict?: boolean
+  carry_card_context?: boolean
+  max_rounds?: number
+  next?: string
+  on_fail?: string
+  gate?: { require_attachment?: string; require_acceptance?: boolean }
+  human_bases?: string[]
+}
+
+export interface FlowDetail {
+  name: string
+  version: number
+  nodes: NodeDef[]
+  states: string[]
+}
+
+export interface NewCardReq {
+  title: string
+  project: string
+  workflow: string
+  priority?: string
+  parent?: string
+  base_branch?: string
 }
 
 export interface LedgerEvent {
@@ -103,10 +144,33 @@ export const noteCard = (id: string, body: string, kind = '普通') =>
 export const acceptCard = (id: string, evidence: string) =>
   postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/accept`, { evidence })
 
-// runCardStep 发起一个卡环节。后端受理即 202——环节要跑几分钟到几十分钟，
-// 这个 Promise resolve 只代表「收到了」，进展看卡的事件流。
-export const runCardStep = (id: string, step: 'review' | 'merge') =>
+// runCardStep 发起一个卡环节。step 是**节点名**（= 看板列名），由卡钉住的
+// 工作流决定，不再是写死的 review|merge。后端受理即返回——环节要跑几分钟到
+// 几十分钟，这个 Promise resolve 只代表「收到了」，进展看卡的事件流。
+export const runCardStep = (id: string, step: string) =>
   postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/step`, { step })
+
+// createCard 建卡。base_branch 只在建卡时能给，之后不可改。
+export const createCard = (req: NewCardReq) =>
+  postJSON<{ id: string }>('/api/cards', req)
+
+// CardPatch 的三个字段**全部可选，缺席即「不动该字段」**（不是置空）。
+// 调用方只放要改的键，别为了「补全」而把现值原样塞回去——那会在没改动的
+// 字段上也落一条事件。
+export interface CardPatch {
+  title?: string
+  priority?: string
+  acceptance_criteria?: string
+}
+
+export const patchCard = (id: string, patch: CardPatch) =>
+  patchJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}`, patch)
+
+export const attachFile = (id: string, kind: string, path: string) =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/attachments`, { kind, path })
+
+export const detachFile = (id: string, path: string) =>
+  deleteJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/attachments`, { path })
 
 // clearCardNeeds 人工撤回卡上的「等人」标记。无条件清除——人对任何来源的
 // 标记都有处置权；环节只能撤自己打的那条，那条逻辑在后端。
@@ -114,6 +178,17 @@ export const clearCardNeeds = (id: string) =>
   postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/needs/clear`, {})
 
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
+
+export const fetchFlow = (name: string) =>
+  request<FlowDetail>(`/api/flows/${encodeURIComponent(name)}`)
+
+// putFlow 发布该工作流的**下一个版本**。工作流不可变版本化——保存不是「改」，
+// 已钉在老版本上的卡完全不受影响。
+export const putFlow = (name: string, nodes: NodeDef[]) =>
+  putJSON<{ name: string; version: number }>(`/api/flows/${encodeURIComponent(name)}`, { nodes })
+
+export const fetchDisciplineNames = () =>
+  request<{ names: string[] }>('/api/disciplines').then((response) => response.names ?? [])
 
 export const fetchDecisions = (openOnly: boolean) =>
   request<{ decisions: Decision[] }>(`/api/decisions${openOnly ? '?open=1' : ''}`).then(

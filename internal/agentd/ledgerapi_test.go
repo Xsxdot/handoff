@@ -72,6 +72,46 @@ func ledgerPut(t *testing.T, env *testAgentdEnv, path, body string) (int, string
 	return resp.StatusCode, string(data)
 }
 
+func ledgerPatch(t *testing.T, env *testAgentdEnv, path, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPatch, env.ts.URL+path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(data)
+}
+
+func ledgerDelete(t *testing.T, env *testAgentdEnv, path, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, env.ts.URL+path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(data)
+}
+
 type ledgerEnv struct {
 	*testAgentdEnv
 	ledger *ledger.Store
@@ -99,6 +139,115 @@ func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
 		t.Fatal(err)
 	}
 	return card
+}
+
+func TestCreateCardViaAPI(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards",
+		`{"title":"浏览器建的卡","project":"p","workflow":"bug","priority":"高","base_branch":"feat/x"}`)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码: %v（原文 %s）", err, body)
+	}
+	if got.ID == "" {
+		t.Fatalf("响应没带卡号: %s", body)
+	}
+	card, err := env.ledger.GetCard(got.ID)
+	if err != nil {
+		t.Fatalf("读回新卡: %v", err)
+	}
+	if card.Title != "浏览器建的卡" || card.Priority != "高" || card.BaseBranch != "feat/x" {
+		t.Fatalf("字段没落全: %+v", card)
+	}
+}
+
+func TestCreateCardRejectsEmptyTitle(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards", `{"title":"  ","project":"p","workflow":"bug"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("空标题应 400，实际 %d: %s", code, body)
+	}
+}
+
+func TestPatchCardUpdatesMetaAndAcceptance(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "原标题")
+	code, body := ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID,
+		`{"title":"新标题","priority":"低","acceptance_criteria":"测试全绿且 gofmt 干净"}`)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	got, err := env.ledger.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读回: %v", err)
+	}
+	if got.Title != "新标题" || got.Priority != "低" {
+		t.Fatalf("元信息没改: %+v", got)
+	}
+	if got.AcceptanceCriteria != "测试全绿且 gofmt 干净" {
+		t.Fatalf("验收判据没改: %q", got.AcceptanceCriteria)
+	}
+}
+
+func TestPatchCardOmittedFieldsUntouched(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "原标题")
+	if err := env.ledger.SetAcceptance(card.ID, "原判据", "t"); err != nil {
+		t.Fatalf("预置判据: %v", err)
+	}
+	// 只给 priority：标题与判据都不该被清空。缺字段 ≠ 置空是这个接口最容易写错的地方。
+	code, body := ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID, `{"priority":"高"}`)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	got, _ := env.ledger.GetCard(card.ID)
+	if got.Title != "原标题" {
+		t.Fatalf("没给 title 却把标题改了: %q", got.Title)
+	}
+	if got.AcceptanceCriteria != "原判据" {
+		t.Fatalf("没给 acceptance_criteria 却把判据清了: %q", got.AcceptanceCriteria)
+	}
+	if got.Priority != "高" {
+		t.Fatalf("priority 没生效: %q", got.Priority)
+	}
+}
+
+func TestAttachAndDetachViaAPI(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "带附件的卡")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/attachments",
+		`{"kind":"plan","path":"docs/superpowers/plans/x.md"}`)
+	if code != http.StatusOK {
+		t.Fatalf("挂附件 code = %d, body = %s", code, body)
+	}
+	got, _ := env.ledger.GetCard(card.ID)
+	if len(got.Attachments) != 1 || got.Attachments[0].Kind != "plan" {
+		t.Fatalf("附件没挂上: %+v", got.Attachments)
+	}
+	code, body = ledgerDelete(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/attachments",
+		`{"path":"docs/superpowers/plans/x.md"}`)
+	if code != http.StatusOK {
+		t.Fatalf("摘附件 code = %d, body = %s", code, body)
+	}
+	got, _ = env.ledger.GetCard(card.ID)
+	if len(got.Attachments) != 0 {
+		t.Fatalf("附件没摘掉: %+v", got.Attachments)
+	}
+}
+
+func TestAttachRejectsBadKind(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "带附件的卡")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/attachments",
+		`{"kind":"随便什么","path":"a.md"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("非法 kind 应 400，实际 %d: %s", code, body)
+	}
 }
 
 func seedChildCard(t *testing.T, env *ledgerEnv, parentID, title string) ledger.Card {

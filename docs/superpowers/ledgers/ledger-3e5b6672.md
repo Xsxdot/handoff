@@ -1,0 +1,11 @@
+# 工作台 Web 写操作执行 ledger
+
+- Task 1 完成（spec/质量双裁决通过）：新增卡片建卡、PATCH 元信息/验收判据、附件增删 API；补齐 PATCH/DELETE 测试工具与覆盖测试。commit range: 3e45274..HEAD（本 task commit）。
+- Task 1 验证：定向 agentd 测试通过；变异测试恢复后通过；`go build ./...`、`go vet ./...`、`gofmt -l .` 通过。`go test ./... -count=1` 失败项原文摘要：`internal/client` 的 `TestCursorRootFallsBackToCwdWhenHomeUnwritable`/`TestCursorRootErrorNamesBothPaths`，`internal/config` 的 `TestLoadStripUpdateDoesNotBlockOnSaveFailure`，`internal/executor/grok` 的 `TestPermServerAskThenRespond`/`TestPermServerRespondUnknownID`/`TestPermServerReRegisterSameID`/`TestSyncAuthKeepsTaskCopyWhenWriteFails`。
+- Task 2 完成（spec/质量双裁决通过）：补齐 PATCH/DELETE/PUT JSON 底座，新增卡片与工作流客户端方法、节点/工作流类型、线格式测试；`npx vitest run src/api/ledger.test.ts` 与 `npm run lint && npm run typecheck && npm test` 通过（93 files/947 tests）。commit range: 93bf488f..HEAD（本 task commit）。
+- Task 3 完成（spec/质量双裁决通过）：新增建卡对话框与 CardsPage「+ 新建」入口，创建成功后刷新并打开抽屉；定向测试先红后绿，全量前端回归通过（94 files/951 tests）。commit range: 3eecab96..HEAD（本 task commit）。
+- Task 4 修复轮 1：lint 报 `CardDrawer.tsx:277:10 error 'priorityError' is assigned a value but never used`；补上优先级错误展示后定向/全量回归恢复通过。commit range: 15673bf5..HEAD。
+- Task 4 完成（spec/质量双裁决通过）：抽屉支持标题、优先级、验收判据、附件增删，保存按字段独立 PATCH，基线只读并说明原因；变异测试证明多发字段会失败。commit range: 15673bf5..HEAD（本 task commit）。
+- Task 5 完成（spec/质量双裁决通过）：关联 task 行可展开，复用 TicketsPanel 展示/回答工单，回答后重取 task；兼容 `pending_tickets` 与计划样例 `tickets`。定向工单测试、CardDrawer 24 项、全量 959 项通过。commit range: 9e524e01..HEAD（本 task commit）。
+- Task 6 完成（spec/质量双裁决通过）：CardDrawer 按可选 NodeDef 的 dispatch 动态生成节点按钮，泛化 step 为 string；CardsPage 按选中卡工作流拉最新版节点并标注已知版本缺口。定向节点/全量前端回归通过（94 files/963 tests）。commit range: bf474a67..HEAD（本 task commit）。
+- Task 7 完成（spec/质量双裁决通过）：新增 NodeEditor 与工作流编辑态，支持节点字段、覆盖、能力、路由、门槛、人工基线清单、增删排序；工作流保存调用 PUT 发布新版本，模板仍只读。`npx vitest run src/app/flows/`、变异测试（去掉派发联动清理后按预期失败）、`npm run build`、`npm run lint && npm run typecheck && npm test` 通过（96 files/970 tests，lint 仍为既有 16 warnings、0 errors）。commit range: 417a8c61..HEAD（本 task commit）。

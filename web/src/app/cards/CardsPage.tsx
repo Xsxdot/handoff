@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { answerDecision, fetchCards, fetchDecisions, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
-import type { Decision, FlowsResp, UnlinkedSummary } from '../../api/ledger'
+import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
+import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
 import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, visibleColumns } from './columns'
 import { ListView } from './ListView'
+import { NewCardDialog } from './NewCardDialog'
 
 const POLL_MS = 2500
 
@@ -61,6 +62,7 @@ export function CardsPage() {
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
+  const [newCardOpen, setNewCardOpen] = useState(false)
   const [drawerFocus, setDrawerFocus] = useState<'merge' | undefined>()
   const [project, setProject] = useState('')
   const [workflow, setWorkflow] = useState('')
@@ -68,6 +70,7 @@ export function CardsPage() {
   const [includeArchived, setIncludeArchived] = useState(false)
   const [flows, setFlows] = useState<FlowsResp | null>(null)
   const [flowsError, setFlowsError] = useState('')
+  const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
   const cardsPoll = usePoll(() => fetchCards(includeArchived ? 'all=1' : ''), POLL_MS)
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
@@ -115,8 +118,29 @@ export function CardsPage() {
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
   const projectDecisions = decisions.filter((decision) => !decision.card_id)
+  const selectedCard = selected ? cards.find((card) => card.id === selected) : undefined
+  const selectedWorkflowName = selectedCard?.workflow ?? ''
+
+  useEffect(() => {
+    if (!selected || !selectedWorkflowName) {
+      setDrawerNodes(undefined)
+      return
+    }
+    let cancelled = false
+    setDrawerNodes(undefined)
+    // 已知缺口：fetchFlow 拿的是工作流最新版，而卡钉的是建卡时那版。两者不同时，
+    // 这里画出来的按钮可能多一个或少一个——真正的合法性由后端按卡钉的版本判，
+    // 点了不存在的节点会拿到「节点 %q 不在卡 %s 的工作流 … 里」。先接受这个偏差：
+    // 修它要给 /api/cards/{id} 的响应带上卡自己那版的节点，属于另一个改动。
+    void fetchFlow(selectedWorkflowName)
+      .then((flow) => { if (!cancelled) setDrawerNodes(flow.nodes) })
+      .catch(() => { if (!cancelled) setDrawerNodes(undefined) })
+    return () => { cancelled = true }
+  }, [selected, selectedWorkflowName])
   const openDrawer = (id: string, focus?: 'merge') => { setSelected(id); setDrawerFocus(focus) }
   const closeDrawer = () => { setSelected(null); setDrawerFocus(undefined) }
+  const newCardProject = project || cards[0]?.project || 'handoff'
+  const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
 
   return (
     <main className="flex h-full min-h-0 w-full flex-col bg-background">
@@ -126,6 +150,7 @@ export function CardsPage() {
         <select aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部项目</option>{projectOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select>
         <select aria-label="工作流" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部工作流</option>{workflowOptions.map((item) => <option key={item.name} value={item.name}>{item.name} v{item.version}</option>)}</select>
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
+        <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
         <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
@@ -134,7 +159,12 @@ export function CardsPage() {
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
       {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} nodes={drawerNodes} />}
+      <NewCardDialog
+        open={newCardOpen} project={newCardProject} workflows={newCardWorkflows}
+        onClose={() => setNewCardOpen(false)}
+        onCreated={(id) => { setNewCardOpen(false); cardsPoll.refresh(); openDrawer(id) }}
+      />
     </main>
   )
 }
