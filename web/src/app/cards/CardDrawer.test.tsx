@@ -215,7 +215,8 @@ describe('抽屉里的环节动作', () => {
     })
     render(<CardDrawer id="B182" onClose={() => {}} onOpenCard={() => {}} />)
     await screen.findByText('卡')
-    const implementationLabel = ['派发', '实现'].join('')
-    expect(screen.queryByRole('button', { name: new RegExp(implementationLabel) })).not.toBeInTheDocument()
+    // 直接写字面量：这条断言的全部意义就是「界面上不存在这个名字的按钮」，
+    // 把名字拆开只是为了躲某条 grep，会让后来人看不懂它在断言什么
+    expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
   })
 })

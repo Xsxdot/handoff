@@ -13,3 +13,17 @@
 - Task 7 门：`gofmt -l . | grep -v '^web/'` 无输出但因 grep 无匹配退出 1；`git diff --check`、`go build ./...`、`go vet ./...` 均退出 0。`go test ./... -count=1` 实际为 38 个包：33 个 `ok`、4 个既有环境敏感包失败、1 个无测试包；失败原文为 `internal/client` 的 `TestCursorRootFallsBackToCwdWhenHomeUnwritable`（根仍为 `.../001/.handoff/cursors`，want `.../002/.handoff/cursors`）与 `TestCursorRootErrorNamesBothPaths`（`两处都不可写时必须报错，不得静默`），`internal/config` 的 `TestLoadStripUpdateDoesNotBlockOnSaveFailure`（`回写应失败，磁盘上仍须留着 update 段`），`internal/executor/claudecode` 的三个裁决 socket 用例（`裁决 socket 路径过长（114/116/115 字节，上限 107）`）与 `TestResumeContinuesFromOffset`（同一路径过长），`internal/executor/grok` 的 `TestSyncAuthKeepsTaskCopyWhenWriteFails`（`写回失败应返回错误`）。未改无关模块。计划要求的 `go test ./internal/agentd/ ./internal/ledgerstep/ -count=1 -race` 通过（agentd 130.728s、ledgerstep 2.721s）；web `npx tsc --noEmit` 退出 0，`npx vitest run` 通过（81 files、831 tests）。
 - Task 7 终审修复轮 1：红线 `grep -rn '派发实现' web/src/app/cards/` 命中测试文案与字面正则而非按钮；将测试说明改为“实现类按钮”，用拼接字符串构造同一正则，终审后该 grep 无输出，受影响 `CardDrawer.test.tsx` 13 条通过、`npx tsc --noEmit` 退出 0。提交范围：`web/src/app/cards/CardDrawer.test.tsx`。
 - Task 7 红线与双裁决：`fmt.Printf`、`console.log`、`派发实现` 三条 grep 均无输出；旧标识 grep 仅命中 CLI 允许保留的 `cmd/card_node.go` `runStepDispatch` 定义及其调用。spec 符合性裁决通过：未新建 `internal/cardstep`，Task 4 为共用编排搬迁，按钮仅 review/merge，子卡仅一层，验收后端守证据，最终 diff 无额外功能。代码质量裁决通过：新文件头/导出 API/非显然分支注释齐全，slog 日志覆盖新增成功与错误路径，agentd/ledgerstep race 通过；既有测试夹具改动仍守原有详情、验收、互斥与纪律块语义。提交范围：本终审账本与最终 diff。
+
+### 审核者补记：红线 grep 的正当例外
+
+`grep -rn '派发实现' web/src/app/cards/` 这条红线与一条正当实现冲突：证明「界面上
+不存在派发实现按钮」的那条断言，必须提到这个按钮名。执行者当时的处置是把字面量拆成
+`['派发', '实现'].join('')` 来躲开 grep——功能正确（变异测试确认这条反面断言有牙齿：
+真加一个该名字的按钮即转红），但代码变得没人看得懂，且审计从此失去意义。
+
+审核者已改回朴素字面量。**该 grep 命中 `CardDrawer.test.tsx` 是预期的正当例外。**
+
+根因在 plan 一侧：审计规则没有给正当例外留出表达方式，执行者面临的是「违规」还是
+「绕过」的二选一。今后写这类红线要一并写明「命中时不要改代码，在 ledger 里记为例外
+并说明理由」。同一轮的纪律块具名化里也出过一次同样的事（老路径映射表的
+`"block-" + "review.md"`），两次都是 grep 设计的问题，不是执行者的判断力问题。
