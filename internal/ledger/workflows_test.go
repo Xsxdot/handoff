@@ -2,6 +2,79 @@ package ledger
 
 import "testing"
 
+func TestWorkflowLegacyDefStillDecodes(t *testing.T) {
+	s := newTestStore(t)
+	// 老 def：只有 States/Gates，没有 Nodes。存量卡钉的就是这种行。
+	if _, err := s.PutWorkflow("legacy", WorkflowDef{
+		States: []string{"待办", "进行中", "已完成"},
+		Gates:  map[string]Gate{"已完成": {RequireAcceptance: true}},
+	}); err != nil {
+		t.Fatalf("写老 def: %v", err)
+	}
+	got, err := s.GetWorkflow("legacy", 0)
+	if err != nil {
+		t.Fatalf("读老 def: %v", err)
+	}
+	if len(got.Def.States) != 3 {
+		t.Fatalf("States 丢了: %v", got.Def.States)
+	}
+	// 读出时应补出等价的纯人工节点序列，且顺序与 States 一致、按序 Next。
+	if len(got.Def.Nodes) != 3 {
+		t.Fatalf("Nodes 应补出 3 个，得到 %d", len(got.Def.Nodes))
+	}
+	if got.Def.Nodes[0].Name != "待办" || got.Def.Nodes[0].Next != "进行中" {
+		t.Fatalf("首节点补错: %+v", got.Def.Nodes[0])
+	}
+	if got.Def.Nodes[2].Next != "" {
+		t.Fatalf("末节点不该有 Next: %+v", got.Def.Nodes[2])
+	}
+	if got.Def.Nodes[0].Dispatch || got.Def.Nodes[0].Verdict {
+		t.Fatalf("补出的节点必须是纯人工列: %+v", got.Def.Nodes[0])
+	}
+	if got.Def.Nodes[2].Gate.RequireAcceptance != true {
+		t.Fatalf("Gate 应并入对应节点: %+v", got.Def.Nodes[2].Gate)
+	}
+}
+
+func TestWorkflowNodesProjectToStates(t *testing.T) {
+	s := newTestStore(t)
+	// 先 seed 模板：本用例引用了 feature-impl，而 Task 2 会给 PutWorkflow 加上
+	// 模板存在性校验。现在补这一行，等 Task 2 落地时这个用例不会回头变红。
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	// 新 def：只给 Nodes，States/Gates 应由写入侧派生出来，
+	// 好让 MoveCard 等既有消费者一行不改地继续工作。
+	if _, err := s.PutWorkflow("nodeform", WorkflowDef{
+		Nodes: []NodeDef{
+			{Name: "待办", Next: "进行中"},
+			{Name: "进行中", Next: "待审阅", Dispatch: true, Template: "feature-impl"},
+			{Name: "待审阅", Gate: Gate{RequireAcceptance: true}},
+		},
+	}); err != nil {
+		t.Fatalf("写节点形 def: %v", err)
+	}
+	got, err := s.GetWorkflow("nodeform", 0)
+	if err != nil {
+		t.Fatalf("读节点形 def: %v", err)
+	}
+	want := []string{"待办", "进行中", "待审阅"}
+	if len(got.Def.States) != len(want) {
+		t.Fatalf("States 未派生: %v", got.Def.States)
+	}
+	for i, state := range want {
+		if got.Def.States[i] != state {
+			t.Fatalf("States[%d] = %q, want %q", i, got.Def.States[i], state)
+		}
+	}
+	if !got.Def.Gates["待审阅"].RequireAcceptance {
+		t.Fatalf("Gates 未派生: %+v", got.Def.Gates)
+	}
+	if !got.Def.Nodes[1].Dispatch || got.Def.Nodes[1].Template != "feature-impl" {
+		t.Fatalf("Nodes 原样保存失败: %+v", got.Def.Nodes[1])
+	}
+}
+
 func TestEnsureDefaultWorkflows(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.EnsureDefaultWorkflows(); err != nil {

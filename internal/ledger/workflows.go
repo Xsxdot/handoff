@@ -10,8 +10,67 @@ import (
 	"time"
 )
 
-// PutWorkflow 写入 name 的下一个版本并返回版本号。def 原样存 JSON。
+// withStatesFromNodes 把 Nodes 投影成 States/Gates（写入侧）。
+//
+// 参数：无（值接收者）。返回：投影后的副本；Nodes 为空时原样返回。
+// 注意：会**覆盖**调用方传入的 States/Gates——Nodes 在场时它们是派生物，
+// 允许两者不一致等于允许账本自相矛盾。
+func (d WorkflowDef) withStatesFromNodes() WorkflowDef {
+	if len(d.Nodes) == 0 {
+		return d
+	}
+	states := make([]string, 0, len(d.Nodes))
+	gates := make(map[string]Gate, len(d.Nodes))
+	for _, node := range d.Nodes {
+		states = append(states, node.Name)
+		if node.Gate != (Gate{}) {
+			gates[node.Name] = node.Gate
+		}
+	}
+	d.States = states
+	if len(gates) == 0 {
+		gates = nil
+	}
+	d.Gates = gates
+	return d
+}
+
+// withNodesFromStates 为只有 States 的老 def 补出等价节点序列（读取侧）。
+//
+// 参数：无（值接收者）。返回：补齐 Nodes 的副本；Nodes 非空时原样返回。
+// 补出的节点全部是纯人工列（所有能力开关关闭），Next 按 States 顺序串起来，
+// 末节点无 Next——与老 def 在界面上的行为完全一致。
+func (d WorkflowDef) withNodesFromStates() WorkflowDef {
+	if len(d.Nodes) > 0 || len(d.States) == 0 {
+		return d
+	}
+	nodes := make([]NodeDef, 0, len(d.States))
+	for i, state := range d.States {
+		node := NodeDef{Name: state, Gate: d.Gates[state]}
+		if i+1 < len(d.States) {
+			node.Next = d.States[i+1]
+		}
+		nodes = append(nodes, node)
+	}
+	d.Nodes = nodes
+	return d
+}
+
+// countDispatchNodes 数带派发能力的节点，只用于日志——「这条流有几列会自动跑」
+// 是排查「卡为什么不动」时第一个要看的数。
+func countDispatchNodes(nodes []NodeDef) int {
+	n := 0
+	for _, node := range nodes {
+		if node.Dispatch {
+			n++
+		}
+	}
+	return n
+}
+
+// PutWorkflow 写入 name 的下一个版本并返回版本号。Nodes 在写入前投影为 States/Gates。
 func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
+	def = def.withStatesFromNodes()
 	raw, err := json.Marshal(def)
 	if err != nil {
 		return 0, fmt.Errorf("编码工作流定义: %w", err)
@@ -28,6 +87,8 @@ func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 		if err != nil {
 			return fmt.Errorf("写工作流 %s v%d: %w", name, version, err)
 		}
+		log().Info("写入工作流版本", "name", name, "version", version,
+			"nodes", len(def.Nodes), "dispatch_nodes", countDispatchNodes(def.Nodes))
 		return nil
 	})
 	return version, err
@@ -54,6 +115,10 @@ func (s *Store) GetWorkflow(name string, version int) (Workflow, error) {
 	}
 	if err := jsonUnmarshal(raw, &workflow.Def); err != nil {
 		return Workflow{}, fmt.Errorf("解码工作流定义: %w", err)
+	}
+	workflow.Def = workflow.Def.withNodesFromStates()
+	if len(workflow.Def.Nodes) > 0 && len(workflow.Def.Nodes) == len(workflow.Def.States) {
+		log().Debug("读出工作流", "name", workflow.Name, "version", workflow.Version, "nodes", len(workflow.Def.Nodes))
 	}
 	workflow.CreatedAt = toTime(createdAt)
 	return workflow, nil
