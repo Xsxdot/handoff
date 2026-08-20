@@ -217,7 +217,7 @@ function flush(
   const dockRaw = encodeDock(d.dockSnapshot)
   if (dockRaw !== dockSentRef.current) {
     putWorkbenchDock(dockRaw)
-    .then(() => {
+      .then(() => {
         dockSentRef.current = dockRaw
       })
       .catch((err: unknown) => console.warn('悬浮窗现场写回失败，下次变动会重试', 'dock', err))

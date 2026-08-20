@@ -198,7 +198,9 @@ export function findBaseOfTask(
 // 再比对，而不是直接比 path——key 带机器维度，两台机器上同路径的工作树只有
 // 连机器一起比才分得开。
 //
-// 返回 null 是正常情形，不要当异常处理：那个目录已经不在树上了（worktree 被
+// 参数：tree 是已经加载的项目树；key 是待反查的 BaseDir.key。
+// 返回：找到时返回树上重新构造的 BaseDir；找不到时返回 null。
+// 注意：null 是正常情形，不要当异常处理：那个目录已经不在树上了（worktree 被
 // done 回收、项目被注销）。调用方据此退回「未选中」态。
 export function findBaseByKey(tree: ProjectTreeResp, key: string): BaseDir | null {
   for (const project of tree.projects) {
