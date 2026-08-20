@@ -54,6 +54,10 @@ type TemplateDispatch struct {
 	Target             string
 	PlanPath           string
 	DisciplineOverride string
+	// CarryCardContext 为真时把卡上下文段拼进 prompt（来自节点的同名开关）。
+	CarryCardContext bool
+	// Extra 是本次派发的临时补充说明，可为空。
+	Extra string
 }
 
 // ViaTemplate 按模板把一张卡派出去。
@@ -93,7 +97,6 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"{{CARD}}", c.ID,
 		"{{ACCEPT}}", c.AcceptanceCriteria,
 	).Replace(tpl.Def.Prompt)
-	prompt := body
 
 	reviewBase := ""
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
@@ -125,6 +128,14 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if reviewBase != "" {
 		base = reviewBase // 审阅分支从工作分支的当前提交开，不是从基线开
 	}
+	// 三段拼装要用到有效基线，所以必须排在 base 算完之后。审阅轮的 base 被
+	// 换成了工作分支，但卡上下文里要写的是**卡的**基线（合并目标），两者不同，
+	// 因此这里重新取一次而不是复用上面的 base。
+	cardBase, err := d.St.EffectiveBaseBranch(c.ID)
+	if err != nil {
+		return zero, fmt.Errorf("取卡上下文基线: %w", err)
+	}
+	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.Extra)
 	model := ""
 	if tpl.Def.ModelByTarget != nil {
 		model = tpl.Def.ModelByTarget[target]
@@ -138,6 +149,12 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		planB64 = base64.StdEncoding.EncodeToString(content)
 		planName = filepath.Base(req.PlanPath)
 	}
+	slog.Default().Info("按模板派发",
+		"card", c.ID, "template", req.Template, "target", target,
+		"executor", tpl.Def.Executor, "discipline", disciplineName,
+		"branch", branch, "base", base,
+		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
+		"prompt_bytes", len(prompt))
 	taskID, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: tpl.Def.Executor, Model: model, PlanB64: planB64,
@@ -169,4 +186,62 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 	}, nil
+}
+
+// buildPrompt 把 executor 收到的 prompt 按三段拼起来。
+//
+// 参数：
+//   - body:  模板正文（占位符已替换完）
+//   - c:     卡
+//   - base:  卡的有效基线分支，可为空
+//   - carry: 是否拼入卡上下文段（节点的 CarryCardContext 开关）
+//   - extra: 本次派发的临时补充说明，可为空
+//
+// 返回：拼好的 prompt。三段之间用空行分隔，缺席的段不留空标题。
+//
+// why 分三段而不是全塞进模板：模板是**复用**的（同一份审阅模板给所有卡用），
+// 卡上下文是**每张卡不同的事实**，补充说明是**这一次才有的话**。混在一起就
+// 只能靠占位符硬塞，而占位符加一个就要改所有模板。
+//
+// 注意：**这里绝不拼纪律块正文**。纪律块只传名字，正文由 agentd 按 B129 注入；
+// 两份纪律同场会让审阅的「只读」被实现块的「完成即 commit」推翻（2026-08-19
+// 真机出过一次）。
+func buildPrompt(body string, c ledger.Card, base string, carry bool, extra string) string {
+	sections := []string{body}
+	if carry {
+		var b strings.Builder
+		b.WriteString("## 本卡上下文\n\n")
+		fmt.Fprintf(&b, "- 卡号：%s\n", c.ID)
+		fmt.Fprintf(&b, "- 标题：%s\n", c.Title)
+		if base != "" {
+			// 明写「合并目标以此为准」是这一段的核心用途：合并环节要合到哪条
+			// 分支每张卡都不同，节点配置里没有也不该有这个值，它只能从卡带进来。
+			fmt.Fprintf(&b, "- 有效基线分支：%s（本卡的合并目标以此为准，不要越过它碰别的分支）\n", base)
+		} else {
+			b.WriteString("- 有效基线分支：（未设置，需要合并时先向协调者确认，不要自行假定 main）\n")
+		}
+		if c.AcceptanceCriteria != "" {
+			fmt.Fprintf(&b, "- 验收判据：\n%s\n", indentLines(c.AcceptanceCriteria, "  "))
+		}
+		if len(c.Attachments) > 0 {
+			b.WriteString("- 附件（仓内相对路径）：\n")
+			for _, att := range c.Attachments {
+				fmt.Fprintf(&b, "  - %s: %s\n", att.Kind, att.Path)
+			}
+		}
+		sections = append(sections, strings.TrimRight(b.String(), "\n"))
+	}
+	if strings.TrimSpace(extra) != "" {
+		sections = append(sections, "## 本次补充\n\n"+strings.TrimSpace(extra))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// indentLines 给多行文本每行加前缀，让验收判据在 markdown 列表下缩进对齐。
+func indentLines(s, prefix string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
