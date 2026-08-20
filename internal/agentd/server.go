@@ -1485,7 +1485,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo := task.Workdir()
+	repo, headRev := taskDiffTarget(task)
 	base := r.URL.Query().Get("base")
 	if base == "" {
 		base = diffBaseFor(task, repo)
@@ -1497,7 +1497,16 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无法确定基准分支，请用 base 参数指定"})
 		return
 	}
-	diff, err := Diff(repo, base)
+	// 回退到主仓库时，任务分支可能也已经被删了（任务做完、分支合并后删掉是常态）。
+	// 那种情况下素材是真的没有了，要说清楚——原来它表现为 git 的 exit status 128，
+	// 读的人无从判断是「分支没了」还是「git 坏了」。
+	if repo != task.Workdir() && !manualBranchExists(r.Context(), repo, headRev) {
+		s.log.Warn("任务分支已不存在，无可比对素材", "task", taskID, "repo", repo, "branch", headRev)
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("任务分支 %s 已不存在，且任务 worktree 已回收——没有可比对的素材了", headRev)})
+		return
+	}
+	diff, err := DiffRange(repo, base, headRev)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非

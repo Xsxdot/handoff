@@ -1021,6 +1021,18 @@ func taskBranch(taskID string) string {
 //   - err: git 失败返回错误（如 baseBranch 不存在，stderr 已并入日志）；
 //     baseBranch 以 "-" 开头返回 ErrBadBaseBranch
 func Diff(repo, baseBranch string) (string, error) {
+	return DiffRange(repo, baseBranch, "HEAD")
+}
+
+// DiffRange 与 Diff 相同，但右端 rev 由调用方指定。
+//
+// 为什么需要指定右端：任务归档后 managed worktree 会被回收，此时只能回到主仓库
+// 去看。**主仓库的 HEAD 不是任务分支**（多半是 main），拿 HEAD 当右端会把
+// 「主线相对基线的全部历史」当成这个任务的改动——实测一个已归档任务因此吐出
+// 1002 个文件，而它真实只改了几个。右端必须显式给任务分支。
+//
+// headRev 与 baseBranch 同一套校验：空串与 "-" 前缀一律拒绝（git 参数注入）。
+func DiffRange(repo, baseBranch, headRev string) (string, error) {
 	// 拒绝空串与 "-" 前缀的 base（L-4）：空 base 会拼出 "git diff ...HEAD" 的
 	// 裸 diff（不是相对基准分支的语义）；以 "-" 开头则会被 git 解释为选项而非
 	// rev——如 "--output=/tmp/x" 会让 git 把 diff 写到任意路径（git 参数注入）。
@@ -1030,13 +1042,17 @@ func Diff(repo, baseBranch string) (string, error) {
 		log().Warn("diff 基准分支非法（空或 - 前缀，疑似 git 参数注入）", "repo", repo, "base", baseBranch)
 		return "", fmt.Errorf("%w: %q", ErrBadBaseBranch, baseBranch)
 	}
-	diffText, _, err := gitRun(context.Background(), repo, "diff", baseBranch+"...HEAD")
-	if err != nil {
-		return "", fmt.Errorf("git diff %s...HEAD: %w", baseBranch, err)
+	if headRev == "" || strings.HasPrefix(headRev, "-") {
+		log().Warn("diff 右端 rev 非法（空或 - 前缀，疑似 git 参数注入）", "repo", repo, "head", headRev)
+		return "", fmt.Errorf("%w: %q", ErrBadBaseBranch, headRev)
 	}
-	logText, _, err := gitRun(context.Background(), repo, "log", "--oneline", baseBranch+"..HEAD")
+	diffText, _, err := gitRun(context.Background(), repo, "diff", baseBranch+"..."+headRev)
 	if err != nil {
-		return "", fmt.Errorf("git log %s..HEAD: %w", baseBranch, err)
+		return "", fmt.Errorf("git diff %s...%s: %w", baseBranch, headRev, err)
+	}
+	logText, _, err := gitRun(context.Background(), repo, "log", "--oneline", baseBranch+".."+headRev)
+	if err != nil {
+		return "", fmt.Errorf("git log %s..%s: %w", baseBranch, headRev, err)
 	}
 	var parts []string
 	if d := strings.TrimSpace(diffText); d != "" {
@@ -2384,4 +2400,31 @@ func SearchInDir(ctx context.Context, repo, rel, query string, limit int) (proto
 	log().Info("搜索完成", "repo", repo, "scope", scope, "query", query,
 		"hits", len(res.Hits), "scanned", scanned, "elapsed_ms", time.Since(start).Milliseconds())
 	return res, nil
+}
+
+// taskDiffTarget 决定一个任务的 diff 该在哪个仓库、以什么为右端。
+//
+// 两种形态：
+//   - 任务的 work_dir 还在 → 就用它，右端 HEAD（跑着的任务要看实时进度，
+//     这条路径与此前逐字一致，不改行为）
+//   - work_dir 已被回收（`handoff done` 会删掉 managed worktree）→ 回到
+//     repo_path，右端用**任务分支**
+//
+// 为什么必须用分支而不是 HEAD：主仓库的 HEAD 是主线。拿它当右端，diff 出来的是
+// 「主线相对基线」的全部历史，与这个任务无关——实测一个已归档任务因此吐 1002 个
+// 文件。宁可报错也不能给出一份看似正常的错素材。
+//
+// 分支为空（老任务没记）时不回退：回退了也没有合法右端，让原来的错误原样暴露，
+// 比拿主线冒充任务改动诚实。
+func taskDiffTarget(task *proto.Task) (repo, headRev string) {
+	workdir := task.Workdir()
+	if task.Branch == "" || workdir == task.RepoPath {
+		return workdir, "HEAD"
+	}
+	if _, err := os.Stat(workdir); err == nil {
+		return workdir, "HEAD"
+	}
+	log().Info("任务 worktree 已不在，diff 回退到主仓库 + 任务分支",
+		"work_dir", workdir, "repo", task.RepoPath, "branch", task.Branch)
+	return task.RepoPath, task.Branch
 }
