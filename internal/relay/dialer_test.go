@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,18 @@ import (
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 )
+
+// TestEnsureOnClosedDialerFails：已关闭的 Dialer 必须拒绝建隧道。
+//
+// why：预热循环会对每台机器反复调 Ensure，池 Close 之后它可能还在跑最后一轮。
+// 这一条锁死「关了就是关了」，不会因为预热而复活一条隧道。
+func TestEnsureOnClosedDialerFails(t *testing.T) {
+	d := NewDialer("wss://example.invalid/relay", "cred", "node", "token", "", slog.Default())
+	_ = d.Close()
+	if err := d.Ensure(context.Background()); err == nil {
+		t.Fatal("已关闭的 Dialer 不该还能建隧道")
+	}
+}
 
 func TestDialerHTTPRoundTripThroughFakeRelay(t *testing.T) {
 	relayURL, cleanup := startFakeRelay(t, "tok", "acc1", "devbox")
