@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/ptyhost/hostproc"
 	"github.com/Xsxdot/handoff/internal/ptyhost/sessdir"
@@ -44,6 +45,32 @@ func TestClientOpenList(t *testing.T) {
 	list := h.List()
 	if len(list) != 1 || list[0].ID != sess.ID || list[0].BasePath != root || list[0].PID != sess.PID {
 		t.Fatalf("List = %+v", list)
+	}
+}
+
+// TestClientRegistersPtyhostForPressure 真实 hostproc 会话经 Adopt 后必须成为可验证凭据，
+// 从机器级压力计数中扣除；hostproc 在本测试进程的 goroutine 中运行，所以差值应恰为一。
+func TestClientRegistersPtyhostForPressure(t *testing.T) {
+	_, h, id, _ := startClientHost(t)
+	if sess, ok := h.Get(id); !ok || sess.PID <= 0 {
+		t.Fatalf("Get = %+v, ok=%v，期望活 ptyhost 会话", sess, ok)
+	}
+
+	withPtyhost := prochost.CheckAdmission()
+	if !withPtyhost.Known {
+		t.Skip("本平台无法读机器级进程压力")
+	}
+	// 取掉 Host 在 New 时安装的提供者，得到同一时刻的未排除基线；
+	// t.Cleanup 先恢复为空，避免影响本包后续测试进程。
+	prochost.SetPtyhostCredentialProvider(nil)
+	t.Cleanup(func() { prochost.SetPtyhostCredentialProvider(nil) })
+	withoutPtyhost := prochost.CheckAdmission()
+	if !withoutPtyhost.Known {
+		t.Skip("本平台无法读机器级进程压力")
+	}
+	if withoutPtyhost.Used-withPtyhost.Used != 1 {
+		t.Fatalf("未排除 used=%d，排除后 used=%d，期望差值 1",
+			withoutPtyhost.Used, withPtyhost.Used)
 	}
 }
 

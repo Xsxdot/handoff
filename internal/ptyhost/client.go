@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/ptyhost/sessdir"
 	"github.com/Xsxdot/handoff/internal/ptyhost/wire"
 	"github.com/google/uuid"
@@ -54,7 +55,10 @@ type Host struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*clientSession
-	conns    map[string]map[*clientAttachment]struct{}
+	// credentials 只保存仍登记且曾被内核启动时刻认证过的 ptyhost；
+	// ptyhostCredentialProvider 据此避免把普通同 uid 进程误扣掉。
+	credentials map[string]prochost.ProcessCredential
+	conns       map[string]map[*clientAttachment]struct{}
 }
 
 // clientSession 是一条可恢复的静态会话登记。活事实不缓存为真相，只在 stat 时现问。
@@ -96,11 +100,14 @@ type clientAttachment struct {
 // 返回：一个尚未登记会话的 Host。
 // 注意：New 不扫描 root，也不连接任何 socket；启动时认领由 Adopt 完成。
 func New(root, selfExe string, log *slog.Logger) *Host {
-	return &Host{
+	h := &Host{
 		root: root, selfExe: selfExe, log: log,
-		sessions: make(map[string]*clientSession),
-		conns:    make(map[string]map[*clientAttachment]struct{}),
+		sessions:    make(map[string]*clientSession),
+		credentials: make(map[string]prochost.ProcessCredential),
+		conns:       make(map[string]map[*clientAttachment]struct{}),
 	}
+	prochost.SetPtyhostCredentialProvider(h.machineCredentials)
+	return h
 }
 
 // Supported 报告本平台是否支持 PTY。
@@ -371,6 +378,11 @@ func (h *Host) Adopt(entries []sessdir.Entry) {
 			continue
 		}
 		h.sessions[entry.ID] = &clientSession{meta: entry.Meta}
+		if credential, ok := prochost.ProcessCredentialForPID(entry.Meta.PID); ok {
+			h.credentials[entry.ID] = credential
+		} else {
+			delete(h.credentials, entry.ID)
+		}
 		adopted++
 	}
 	h.mu.Unlock()
@@ -450,20 +462,42 @@ func (h *Host) sessionEntries() []*clientSession {
 }
 
 func (h *Host) remember(meta sessdir.Meta) {
+	credential, credentialOK := prochost.ProcessCredentialForPID(meta.PID)
 	h.mu.Lock()
 	h.sessions[meta.ID] = &clientSession{meta: meta}
+	if credentialOK {
+		h.credentials[meta.ID] = credential
+	} else {
+		delete(h.credentials, meta.ID)
+	}
 	h.mu.Unlock()
 }
 
 func (h *Host) forget(id string) {
 	h.mu.Lock()
 	delete(h.sessions, id)
+	delete(h.credentials, id)
 	attachments := h.conns[id]
 	delete(h.conns, id)
 	h.mu.Unlock()
 	for att := range attachments {
 		att.close()
 	}
+}
+
+// machineCredentials 返回仍登记的 ptyhost 凭据快照。
+//
+// 返回：调用方可安全持有的凭据副本。
+// 注意：凭据不是按进程名推断出来的；它们只来自当前 Host 对 StateLive 会话的登记，
+// 并且每条都在登记时与内核启动时刻核对过。快照不含无法核对的进程。
+func (h *Host) machineCredentials() []prochost.ProcessCredential {
+	h.mu.RLock()
+	out := make([]prochost.ProcessCredential, 0, len(h.credentials))
+	for _, credential := range h.credentials {
+		out = append(out, credential)
+	}
+	h.mu.RUnlock()
+	return out
 }
 
 func (h *Host) addAttachment(att *clientAttachment) {
