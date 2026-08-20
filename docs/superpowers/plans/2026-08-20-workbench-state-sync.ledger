@@ -10,3 +10,4 @@
 2026-08-20 Task 9 修复轮 1；类型检查发现既有 HomeDock 测试桩未补 hydrate 字段，已加入 vi.fn 桩；commit 范围：web/src/app/homedock/HomeDock.test.tsx、ledger。
 2026-08-20 Task 9 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/homedock/useHomeDock.ts、web/src/app/homedock/useHomeDock.test.ts、web/src/app/homedock/HomeDock.test.tsx、ledger；验证：useHomeDock 20 项、web typecheck、web 全量 861 项通过。
 2026-08-20 Task 10 修复轮 1；双裁决初检发现导出的 baseOfSession 缺少参数/返回/注意事项说明，已补齐；commit 范围：web/src/app/workbench/restore.ts、ledger。
+2026-08-20 Task 11 修复轮 1；双裁决初检发现 dock/selected 写回失败 warning 缺少明确 key，上下文已补齐；commit 范围：web/src/app/workbench/useWorkbenchSync.ts、ledger。
