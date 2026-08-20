@@ -167,6 +167,10 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
+		if err := srv.ReclaimPtySessions(); err != nil {
+			// PTY 是附属能力，扫描失败不应阻断任务派发主服务；broken 条目由日志留给人工处理。
+			logger.Error("启动时认领 PTY 会话失败，继续提供服务", "err", err)
+		}
 		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -267,7 +271,11 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
+		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), func() {
+			// 先停后台扫描，再显式 kill PTY；升级路径只有在这里被区分为 stop 时才收口。
+			wdCancel()
+			srv.ShutdownPtySessions(context.Background())
+		}, listenAddrs...)
 	},
 }
 

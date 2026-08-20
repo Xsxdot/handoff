@@ -121,8 +121,9 @@ type Server struct {
 	pullBaseCtx context.Context
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
-	restart func(reason string) bool
-	pty     *ptyhost.Host
+	restart     func(reason string) bool
+	pty         *ptyhost.Host
+	ptyRootPath string
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -181,7 +182,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		liveLimit:      liveBufferLimit,
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
-		pty:            ptyhost.New(filepath.Join(cfg.DataDir, "ptys"), exe, log),
+		ptyRootPath:    filepath.Join(cfg.DataDir, "ptys"),
 		latestFetch:    releaseClient.Latest,
 		downloadFetch:  desktopDownloadFetcher(inst),
 		downloadOpen:   openDownloadedFile,
@@ -193,6 +194,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 	}
+	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{

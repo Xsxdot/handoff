@@ -65,6 +65,7 @@ func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logg
 		if err != nil {
 			t.Fatalf("准备 PTY 根目录失败: %v", err)
 		}
+		srv.ptyRootPath = ptyRoot
 		srv.pty = ptyhost.New(ptyRoot, testHandoffExecutable(t), logger)
 		t.Cleanup(func() {
 			for _, sess := range srv.pty.List() {
