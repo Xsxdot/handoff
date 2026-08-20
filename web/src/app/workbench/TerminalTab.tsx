@@ -28,6 +28,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
+import { describeElement, logTermFocus, logTermInput, logTermResize } from './terminalDebug'
 import type { BaseDir } from './useWorkbench'
 
 export interface TerminalTabProps {
@@ -80,6 +81,11 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     if (!host) return
     let disposed = false
     let handle: PtyHandle | null = null
+    // wsStatus 是数据通道的当前状态，供输入取证判断「这批输入发出去了没有」。
+    // 用闭包变量而不是 React state：effect 里读 state 拿到的是挂载那一刻的旧值。
+    let wsStatus: 'connecting' | 'open' | 'closed' = 'connecting'
+    // label 只用于取证日志，让多个终端 tab 同时开着时分得清是哪一个
+    const label = seq > 1 ? `${base.label} (${seq})` : base.label
 
     // 终端底色固定为深色：xterm 的 WebGL 渲染器不支持透明背景，跟着页面主题
     // 走会在浅色主题下拿到一块透不过去的白底。终端惯例本就是深色，不折腾。
@@ -110,6 +116,30 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     } catch (err) {
       console.warn('WebGL 渲染器不可用，已回退到 DOM 渲染', err)
     }
+    // onResize 必须在 fit.fit() **之前**注册。
+    //
+    // 挂载时 term.open 给的是默认 80×24，紧接着的 fit.fit() 才算出真实尺寸——
+    // 那一次 fit 会触发 onResize，注册晚了就没人接得住。它今天不会真的发出去
+    //（此刻 handle 还是 null），但注册次序错了这件事本身是隐患：将来只要有人
+    // 在 start() 之前建连，这一次尺寸就又悄悄丢了。真正保证尺寸对齐的是下面
+    // onAttached 里的那次重申。
+    term.onResize(({ cols, rows }) => {
+      logTermResize(label, cols, rows, 'observer')
+      handle?.resize(cols, rows)
+    })
+    term.onData((d) => {
+      logTermInput(label, d, wsStatus)
+      handle?.send(new TextEncoder().encode(d))
+    })
+
+    // 焦点取证：只记不改。relatedTarget 是「焦点去了哪儿 / 从哪儿来」的标准来源，
+    // 比在 blur 里读 document.activeElement 准——blur 触发时新的焦点元素还没落定。
+    const ta = term.textarea
+    const onFocusEvt = () => logTermFocus(label, 'focus', describeElement(document.activeElement))
+    const onBlurEvt = (ev: FocusEvent) => logTermFocus(label, 'blur', describeElement(ev.relatedTarget as Element | null))
+    ta?.addEventListener('focus', onFocusEvt)
+    ta?.addEventListener('blur', onBlurEvt)
+
     fit.fit()
 
     const start = async () => {
@@ -142,13 +172,32 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
           // 服务端说中间丢了一段：屏幕上现有的内容与即将到来的回放接不上，
           // 不清就会把同一段输出画两遍
           if (truncated) term.clear()
+          // **每次建连都重申本订阅者的尺寸**，这是「TUI 乱码、拖一下窗口就好」的修复点。
+          //
+          // 恢复一个已存在的会话时不走 createPtySession，于是整条挂载路径从头到尾
+          // 没有向服务端报过一次尺寸：服务端的 PTY 还是它被创建时的 cols/rows，
+          // 里面的 TUI 按那个宽度画，而 xterm 现在是另一个宽度——就是乱码。
+          // 用户拖一下窗口，ResizeObserver 触发 fit，尺寸这才发出去，于是「好了」。
+          // 切 tab 走的也是这条路（WorkbenchPage 只渲染激活 tab，切回来是恢复不是新建）。
+          //
+          // 挂在 onAttached 而不是 connectPty 之后同步发：connectPty 内部同步 open()，
+          // 此刻 WS 还是 CONNECTING，`ws.send()` 会抛 InvalidStateError。onAttached
+          // 由服务端的 attached 帧驱动，触发时 WS 必然已 open。
+          //
+          // 它同时覆盖重连：断线期间别的订阅者可能把会话尺寸协商成了别的值，
+          // 重连后重申一次才是对的。
+          logTermResize(label, term.cols, term.rows, 'attach')
+          handle?.resize(term.cols, term.rows)
         },
         onData: (bytes) => term.write(bytes),
         onExit: (code) => {
           setExit(code ?? null)
           setStatus('closed')
         },
-        onStatus: setStatus,
+        onStatus: (s) => {
+          wsStatus = s
+          setStatus(s)
+        },
         onError: (message) => setError(message),
         onTerminal: ({ message }) => {
           // 判死 = 没有重连可等了，界面必须给出下一步动作，而不是只留一行红字
@@ -156,8 +205,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
           setDead(true)
         },
       })
-      term.onData((d) => handle?.send(new TextEncoder().encode(d)))
-      term.onResize(({ cols, rows }) => handle?.resize(cols, rows))
+      // onData / onResize 已在 effect 开头注册（见那里的次序说明），这里不再重复挂
       term.focus()
     }
 
@@ -172,6 +220,8 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     return () => {
       disposed = true
       ro.disconnect()
+      ta?.removeEventListener('focus', onFocusEvt)
+      ta?.removeEventListener('blur', onBlurEvt)
       // 只断连接，不发 DELETE：服务端会话继续跑
       handle?.close()
       term.dispose()

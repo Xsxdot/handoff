@@ -211,3 +211,54 @@ describe('TerminalTab', () => {
     expect(deletePtySession).not.toHaveBeenCalled()
   })
 })
+
+// 尺寸重申：这是「TUI 乱码、拖一下窗口就好」的回归网。
+//
+// 恢复已有会话时不走 createPtySession，历史上整条挂载路径从头到尾没向服务端
+// 报过一次尺寸——服务端 PTY 停在创建时的 cols/rows，xterm 是另一个宽度，TUI 就花了。
+describe('TerminalTab 建连时重申尺寸', () => {
+  // attachOf 取出本次 connectPty 收到的 onAttached 回调。
+  function attachOf(): (info: { since: number; truncated: boolean }) => void {
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+    }
+    return opts.onAttached
+  }
+
+  it('恢复已有会话时，attached 帧到达后立刻上报当前尺寸', async () => {
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+
+    render(<TerminalTab base={WS} seq={1} sessionId="S1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
+    // 不走建会话那条路，所以尺寸只可能由这次重申发出去
+    expect(createPtySession).not.toHaveBeenCalled()
+    expect(resize).not.toHaveBeenCalled()
+
+    attachOf()({ since: 0, truncated: false })
+    expect(resize).toHaveBeenCalledWith(termInstance.cols, termInstance.rows)
+  })
+
+  it('每次重连都重申一次——断线期间别的订阅者可能把尺寸协商成了别的值', async () => {
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+
+    render(<TerminalTab base={WS} seq={1} sessionId="S1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
+
+    const onAttached = attachOf()
+    onAttached({ since: 0, truncated: false })
+    onAttached({ since: 4096, truncated: true })
+    expect(resize).toHaveBeenCalledTimes(2)
+  })
+
+  it('新建会话那条路也重申一次（建会话与建连之间容器可能已经变了）', async () => {
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
+    attachOf()({ since: 0, truncated: false })
+    expect(resize).toHaveBeenCalledWith(termInstance.cols, termInstance.rows)
+  })
+})
