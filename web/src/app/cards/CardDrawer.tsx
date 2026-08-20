@@ -330,7 +330,7 @@ export function CardDrawer({
             )}
 
             <section className="mb-5">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">节点动作</h3>
+              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
               {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent">转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
               {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
             </section>

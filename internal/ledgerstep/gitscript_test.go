@@ -1,4 +1,4 @@
-package ledgernode
+package ledgerstep
 
 import (
 	"errors"
@@ -36,7 +36,7 @@ func TestSyncWorkBranchScriptQuotesBranch(t *testing.T) {
 }
 
 // TestClassifyScriptErrorMarker 命中 marker 时必须能被 errors.Is 认出来，
-// 否则 MergeNode 会把「工作分支缺失」误报成「合并冲突」，人看到的原因是错的。
+// 否则 MergeStep 会把「工作分支缺失」误报成「合并冲突」，人看到的原因是错的。
 func TestClassifyScriptErrorMarker(t *testing.T) {
 	out := []byte("something\n" + workBranchMissingMarker + "\n")
 	err := classifyScriptError(out, errors.New("exit status 3"), "合并")

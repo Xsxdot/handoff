@@ -1,4 +1,4 @@
-package ledgernode
+package ledgerstep
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func TestTaskBranchReadsLatestDispatchSnapshot(t *testing.T) {
 }
 
 // codex 收尾会在 completed 之后再补一条 turn_failed（app-server 断连），
-// 那是传输层假警报。取报文必须认 completed——否则节点拿到的是断连文案，
+// 那是传输层假警报。取报文必须认 completed——否则环节拿到的是断连文案，
 // 裁决必然解析失败、每次审阅都白白转人工。2026-08-19 真机实测踩中。
 func TestFinalMessagePrefersCompletedOverTrailingTurnFailed(t *testing.T) {
 	events := []proto.Event{
@@ -88,7 +88,7 @@ func TestFinalMessageFallsBackToFailure(t *testing.T) {
 	}
 }
 
-// 节点等的必须是「回合终态」而不是「首个可动作事件」：审阅同样要过权限
+// 环节等的必须是「回合终态」而不是「首个可动作事件」：审阅同样要过权限
 // 门、也可能发工单，醒在这些事件上就去取报文必然报「没有最终报文」。
 func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
 	seq := []proto.EventType{
@@ -112,7 +112,7 @@ func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
 }
 
 // turn_failed 也是回合终态：executor 还活着，但这一回合结束了，报文在
-// fail_reason 里——不能继续等下去把节点挂死。
+// fail_reason 里——不能继续等下去把环节挂死。
 func TestWaitForTurnEndAcceptsTurnFailed(t *testing.T) {
 	calls := 0
 	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {

@@ -63,7 +63,7 @@ var cardAcceptCmd = &cobra.Command{
 // 参数：<id> 卡 id；<reason...> 原因（打标时必填，多词自动拼接）；
 // --clear 清除标记（此时不需要原因）。
 // 注意：本命令与节点执行器自动打的标记同源同显——审阅超轮、合并冲突那些
-// 由 internal/ledgernode 落的标记走的是同一个 MarkNeedsHuman。
+// 由 internal/ledgerstep 落的标记走的是同一个 MarkNeedsHuman。
 var cardNeedsCmd = &cobra.Command{
 	Use:   "needs <id> [reason...]",
 	Short: "打等人标记（原因必填）；--clear 清除",

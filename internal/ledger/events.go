@@ -384,7 +384,7 @@ func (s *Store) WorkBranch(cardID string) (string, error) {
 }
 
 // ReviewRounds 已派出的审阅轮数（用于给每轮审阅分支编号，避免同名撞车）。
-// 与 ledgernode 的 CountRounds 不是一回事：那个数的是「裁决回合」（人工
+// 与 ledgerstep 的 CountRounds 不是一回事：那个数的是「裁决回合」（人工
 // 重置会清零，用于封顶），这个数的是「派过几次审阅」（只增不减，用于起名）。
 func (s *Store) ReviewRounds(cardID string) (int, error) {
 	links, err := s.TasksOf(cardID)

@@ -1,4 +1,4 @@
-package ledgernode
+package ledgerstep
 
 import "testing"
 

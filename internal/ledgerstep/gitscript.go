@@ -4,7 +4,7 @@
 // 调用方能分辨的 Go 错误。
 // 边界：只生成脚本文本与翻译错误，不执行任何命令——执行在 wire.go 的两个
 // 注入点里，那里才有 repoDir 与 ctx。
-package ledgernode
+package ledgerstep
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 
 // ErrWorkBranchMissing 工作分支在协调者本地与 origin 上都不存在。
 //
-// 为什么要单独一个哨兵：MergeNode 把 DoMerge 的任何错误都记成「合并冲突」，
+// 为什么要单独一个哨兵：MergeStep 把 DoMerge 的任何错误都记成「合并冲突」，
 // 而这一条根本没走到合并——人看到「合并冲突」会去查代码冲突，白费一轮。
 var ErrWorkBranchMissing = errors.New("工作分支在本地与 origin 都不存在")
 

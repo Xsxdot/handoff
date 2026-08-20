@@ -1,4 +1,4 @@
-package ledgernode
+package ledgerstep
 
 import (
 	"context"
@@ -37,14 +37,14 @@ func seedMergeableCard(t *testing.T, s *ledger.Store) ledger.Card {
 	return c
 }
 
-func TestReviewNodePassAndFailLoop(t *testing.T) {
+func TestReviewStepPassAndFailLoop(t *testing.T) {
 	s, c := nodeLedger(t)
 	msgs := []string{
 		"第一轮\n```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[{\"severity\":\"major\",\"summary\":\"x\"}]}\n```",
 		"第二轮\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```",
 	}
 	i := 0
-	n := &ReviewNode{St: s, Node: "review",
+	n := &ReviewStep{St: s, Step: "review",
 		RunReview: func(ctx context.Context, card ledger.Card) (string, error) {
 			message := msgs[i]
 			i++
@@ -71,10 +71,10 @@ func TestReviewNodePassAndFailLoop(t *testing.T) {
 	}
 }
 
-func TestReviewNodeRoundCapAndParseFailure(t *testing.T) {
+func TestReviewStepRoundCapAndParseFailure(t *testing.T) {
 	s, c := nodeLedger(t)
 	failMessage := "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```"
-	n := &ReviewNode{St: s, Node: "review",
+	n := &ReviewStep{St: s, Step: "review",
 		RunReview: func(ctx context.Context, card ledger.Card) (string, error) { return failMessage, nil }}
 	for i := 0; i < MaxRounds; i++ {
 		if out, err := n.RunOnce(context.Background(), c.ID); err != nil || out.Action != ActionContinue {
@@ -91,7 +91,7 @@ func TestReviewNodeRoundCapAndParseFailure(t *testing.T) {
 	}
 
 	s2, c2 := nodeLedger(t)
-	n2 := &ReviewNode{St: s2, Node: "review",
+	n2 := &ReviewStep{St: s2, Step: "review",
 		RunReview: func(ctx context.Context, card ledger.Card) (string, error) { return "没有 block 的报文", nil }}
 	out, err = n2.RunOnce(context.Background(), c2.ID)
 	if err != nil || out.Action != ActionNeedsHuman {
@@ -109,9 +109,9 @@ func TestReviewNodeRoundCapAndParseFailure(t *testing.T) {
 	}
 }
 
-func TestMergeNodeDecision(t *testing.T) {
+func TestMergeStepDecision(t *testing.T) {
 	s, c := nodeLedger(t)
-	m := &MergeNode{St: s,
+	m := &MergeStep{St: s,
 		Objective: func(ctx context.Context, card ledger.Card, base string) error { return nil },
 		DoMerge: func(ctx context.Context, card ledger.Card, base string) error {
 			t.Fatal("main 不应自动合")
@@ -141,7 +141,7 @@ func TestMergeNodeDecision(t *testing.T) {
 	c2, _ := s.CreateCard(ledger.NewCard{Title: "集成线卡", Project: "p", Workflow: "bug",
 		BaseBranch: "integration", Actor: "t"})
 	called := false
-	m2 := &MergeNode{St: s,
+	m2 := &MergeStep{St: s,
 		Objective: func(ctx context.Context, card ledger.Card, base string) error { return nil },
 		DoMerge: func(ctx context.Context, card ledger.Card, base string) error {
 			called = true
@@ -158,7 +158,7 @@ func TestMergeNodeDecision(t *testing.T) {
 
 	c3, _ := s.CreateCard(ledger.NewCard{Title: "红测试卡", Project: "p", Workflow: "bug",
 		BaseBranch: "integration", Actor: "t"})
-	m3 := &MergeNode{St: s,
+	m3 := &MergeStep{St: s,
 		Objective: func(ctx context.Context, card ledger.Card, base string) error {
 			return context.DeadlineExceeded
 		},
@@ -169,13 +169,13 @@ func TestMergeNodeDecision(t *testing.T) {
 	}
 }
 
-// 审阅跑不出报文（派发失败、卡在工单上、连接断了）同样要落「需要你」：
+// 审阅环节跑不出报文（派发失败、卡在工单上、连接断了）同样要落「需要你」：
 // 只把错误抛给调用方等于卡上不留痕——看板会显示一切正常，而实际没人在
 // 推它。2026-08-19 真机实测：审阅执行者把裁决塞进提问工单没有完成回合，
 // 节点直接报错退出，卡上一片空白。
-func TestReviewNodeMarksNeedsHumanWhenReviewFails(t *testing.T) {
+func TestReviewStepMarksNeedsHumanWhenReviewFails(t *testing.T) {
 	s, card := nodeLedger(t)
-	node := &ReviewNode{St: s, Node: "review",
+	node := &ReviewStep{St: s, Step: "review",
 		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
 			return "", fmt.Errorf("事件流中没有 completed/failed 最终报文")
 		}}
@@ -203,17 +203,17 @@ func TestReviewNodeMarksNeedsHumanWhenReviewFails(t *testing.T) {
 	}
 }
 
-// 基线**显式写成 main** 与留空同义：spec「基线就是 main 时该节点不自动合、
+// 基线**显式写成 main** 与留空同义：spec「基线就是 main 时该环节不自动合、
 // 直接打『待合并』等人」。只判空串会让 `card add --base-branch main` 悄悄
 // 绕开主线的人工门，把改动自动合进 main（2026-08-19 真机验收发现）。
-func TestMergeNodeTreatsNamedMainAsMainline(t *testing.T) {
+func TestMergeStepTreatsNamedMainAsMainline(t *testing.T) {
 	s, _ := nodeLedger(t)
 	card, err := s.CreateCard(ledger.NewCard{Title: "顶层热修卡", Project: "p", Workflow: "feature",
 		BaseBranch: "main", Actor: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 铺到「待审阅」：合并节点是从这一状态推「待合并」的
+	// 铺到「待审阅」：合并环节是从这一状态推「待合并」的
 	_ = s.AttachFile(card.ID, "spec", "specs/x.md", "t")
 	_ = s.SetAcceptance(card.ID, "测试全绿", "t")
 	for _, to := range []string{"已出spec", ledger.StatusDoing, ledger.StatusReview} {
@@ -221,7 +221,7 @@ func TestMergeNodeTreatsNamedMainAsMainline(t *testing.T) {
 			t.Fatalf("铺路 %s: %v", to, err)
 		}
 	}
-	m := &MergeNode{St: s,
+	m := &MergeStep{St: s,
 		Objective: func(ctx context.Context, c ledger.Card, base string) error { return nil },
 		DoMerge: func(ctx context.Context, c ledger.Card, base string) error {
 			t.Fatal("显式 main 不应自动合")
@@ -237,13 +237,13 @@ func TestMergeNodeTreatsNamedMainAsMainline(t *testing.T) {
 	}
 }
 
-// TestMergeNodeDistinguishesMissingWorkBranch 工作分支缺失不能被记成「合并冲突」。
+// TestMergeStepDistinguishesMissingWorkBranch 工作分支缺失不能被记成「合并冲突」。
 // 人看到「合并冲突」会去查代码冲突，而真实处置是 handoff pull——原因写错等于
 // 把人引到错误的排查路径上。
-func TestMergeNodeDistinguishesMissingWorkBranch(t *testing.T) {
+func TestMergeStepDistinguishesMissingWorkBranch(t *testing.T) {
 	st, _ := nodeLedger(t)
 	card := seedMergeableCard(t, st)
-	node := &MergeNode{
+	node := &MergeStep{
 		St:        st,
 		Objective: func(context.Context, ledger.Card, string) error { return nil },
 		DoMerge: func(context.Context, ledger.Card, string) error {
@@ -265,12 +265,12 @@ func TestMergeNodeDistinguishesMissingWorkBranch(t *testing.T) {
 	}
 }
 
-// TestMergeNodeConflictStillSaysConflict 普通合并失败仍记「合并冲突」，
+// TestMergeStepConflictStillSaysConflict 普通合并失败仍记「合并冲突」，
 // 不能被上一条改动带偏。
-func TestMergeNodeConflictStillSaysConflict(t *testing.T) {
+func TestMergeStepConflictStillSaysConflict(t *testing.T) {
 	st, _ := nodeLedger(t)
 	card := seedMergeableCard(t, st)
-	node := &MergeNode{
+	node := &MergeStep{
 		St:        st,
 		Objective: func(context.Context, ledger.Card, string) error { return nil },
 		DoMerge: func(context.Context, ledger.Card, string) error {
@@ -286,9 +286,9 @@ func TestMergeNodeConflictStillSaysConflict(t *testing.T) {
 	}
 }
 
-// TestMergeNodeSuccessRecordsBranchMerged 合并成功后必须留下外部推送事件，
+// TestMergeStepSuccessRecordsBranchMerged 合并成功后必须留下外部推送事件，
 // 否则 timeline 无法回答这次自动化到底把什么推到了 origin。
-func TestMergeNodeSuccessRecordsBranchMerged(t *testing.T) {
+func TestMergeStepSuccessRecordsBranchMerged(t *testing.T) {
 	st, _ := nodeLedger(t)
 	card := seedMergeableCard(t, st)
 	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
@@ -296,7 +296,7 @@ func TestMergeNodeSuccessRecordsBranchMerged(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("记工作分支: %v", err)
 	}
-	node := &MergeNode{
+	node := &MergeStep{
 		St:        st,
 		Objective: func(context.Context, ledger.Card, string) error { return nil },
 		DoMerge:   func(context.Context, ledger.Card, string) error { return nil },

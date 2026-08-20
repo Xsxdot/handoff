@@ -1,7 +1,7 @@
-// Package ledgernode 节点执行器：审阅/合并节点的唯一实现，主会话
+// Package ledgerstep 环节执行器：审阅/合并环节的唯一实现，主会话
 // （经 CLI）与看板按钮（经 Plan D API）共用，三期规则引擎复用。
 // 边界：无自有状态——回合计数从事件流推导，全部写入经 internal/ledger。
-package ledgernode
+package ledgerstep
 
 import (
 	"encoding/json"

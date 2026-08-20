@@ -1,7 +1,7 @@
-// 节点注入点的生产实现：审阅派发走 dispatch 通道 + wait 终态 + 取
+// 环节注入点的生产实现：审阅派发走 dispatch 通道 + wait 终态 + 取
 // 报文；客观判据/合并在协调机本地工作区跑真命令。审阅 task 生命周期
 // 在此收口（裁决落账后 done 归档，不留孤儿）。
-package ledgernode
+package ledgerstep
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func NewDispatchReview(st *ledger.Store,
 // failed），中途的权限门与工单一律跳过继续等。
 //
 // why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑
-// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，节点
+// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，环节
 // 几乎必然醒在 permission_request/question 上，随即去取最终报文，报
 // 「事件流中没有 completed/failed 最终报文」，一轮审阅白跑。函数头写的
 // 「wait 终态」是意图，WaitEvent 的语义不是，这里补上差额。
@@ -95,7 +95,7 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 	// completed 优先于失败类事件，即使失败排在后面：codex 收尾时常在
 	// completed 之后再补一条 turn_failed（app-server 的 WebSocket 断开），
 	// 那是传输层的假警报，不是回合失败——报告已经在 completed 里了。
-	// 节点执行器每轮审阅都派一条新 task 并等它的首个终态，所以「本次
+	// 环节执行器每轮审阅都派一条新 task 并等它的首个终态，所以「本次
 	// 生命周期内出现过 completed」就意味着报文存在，取它不会串到上一轮。
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type != proto.EventTypeCompleted {
@@ -145,7 +145,7 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 // taskBranch 从卡的最新 dispatched 快照取实际工作分支名。
 func taskBranch(st *ledger.Store, card ledger.Card) (string, error) {
 	// 走账本的 WorkBranch：它跳过审阅轮的快照。直接取「最后一条 dispatched」
-	// 会在审阅之后指向审阅分支，合并节点就会去合一条只读分支
+	// 会在审阅之后指向审阅分支，合并环节就会去合一条只读分支
 	return st.WorkBranch(card.ID)
 }
 
