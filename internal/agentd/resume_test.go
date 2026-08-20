@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -344,6 +345,66 @@ func TestContinueReparsesPersistedDisciplineName(t *testing.T) {
 			}
 			if strings.Contains(got.Discipline, tc.notWant) {
 				t.Fatalf("纪律块不应含 %q", tc.notWant)
+			}
+		})
+	}
+}
+
+// TestContinueRefusesWhenNamedDisciplineUnresolvable 点名的纪律块解析不出来时，
+// 续接必须失败而不是静默注入空块。
+//
+// why 这条值得单独守：本路径是 Cold=true，会重建 executor 进程——纪律块是约束
+// 在新进程里的唯一来源。空块意味着一个点名 review 的审阅任务在续接后失去
+// 「只读，不写」，可能开始在审阅分支上真提交，而日志上只有一行 Warn。
+// 未点名的任务仍走既有降级（丢的是通用纪律，不是角色的正确性约束）。
+func TestContinueRefusesWhenNamedDisciplineUnresolvable(t *testing.T) {
+	for _, tc := range []struct {
+		label     string
+		persisted string
+		mapping   map[string]string
+		wantErr   bool
+	}{
+		{label: "named/refuse", persisted: "review", wantErr: true},
+		{label: "fallback/degrade", persisted: "", mapping: map[string]string{"fake": "missing.md"}, wantErr: false},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			ad := &ladderAdapter{
+				chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+				outcome:     executor.ResumeOutcome{Alive: true},
+			}
+			m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+			discDir := discipline.Dir(m.cfg.DataDir)
+			if err := os.MkdirAll(discDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// 超限的 review.md 让 ByName("review") 必然失败（与「文件坏掉」同一类）
+			if err := os.WriteFile(filepath.Join(discDir, "review.md"), make([]byte, 70<<10), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m.discipline = discipline.NewResolver(discDir, discipline.Static(tc.mapping),
+				slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+			mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+				DisciplineName: tc.persisted, State: proto.TaskStateWaitingReview, ExecutorSession: "sess-1"})
+
+			err := m.Continue(context.Background(), "t1", "继续干")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("点名的纪律块解析失败时必须拒绝续接，不能静默注入空块")
+				}
+				if !strings.Contains(err.Error(), "review") {
+					t.Fatalf("错误里应点明是哪个纪律块: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("未点名的任务应沿用既有降级、继续续接: %v", err)
+			}
+			ad.mu.Lock()
+			got := ad.gotReq
+			ad.mu.Unlock()
+			if got.Discipline != "" {
+				t.Fatalf("未点名且解析失败时应注入空块，实得 %d 字节", len(got.Discipline))
 			}
 		})
 	}

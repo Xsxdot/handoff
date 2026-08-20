@@ -1205,9 +1205,24 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	}
 	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
 	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
-	if derr != nil {
+	switch {
+	case derr != nil && task.DisciplineName != "":
+		// 点名的任务解析失败：拒绝续接，与 Dispatch 同一条规则。
+		//
+		// why 这里不能沿用「不注入」的降级：本路径是 Cold=true，会重建 executor
+		// 进程——纪律块是约束在新进程里的**唯一**来源。空块意味着一个点名 review
+		// 的审阅任务在续接后失去「只读，不写」，可能开始在审阅分支上真提交。
+		// 拒绝是可见的，静默降级不是。
+		m.log.Error("续接时点名的纪律块解析失败，拒绝续接",
+			"task", taskID, "name", task.DisciplineName, "cause", derr)
+		return fmt.Errorf("%w: 任务 %s 点名的纪律块 %q 解析失败: %v",
+			errDisciplineResolveFailed, taskID, task.DisciplineName, derr)
+	case derr != nil:
+		// 未点名：沿用既有降级。这条路上丢的是按 executor 选的通用纪律，
+		// 不是某个角色的正确性约束；在这里改成拒绝会让所有配置坏掉的存量部署
+		// 突然续接不了，代价远大于收益。
 		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
-	} else {
+	default:
 		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
 	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
@@ -3255,9 +3270,20 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	}
 	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
 	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
-	if derr != nil {
+	switch {
+	case derr != nil && task.DisciplineName != "":
+		// 点名的任务解析失败：记 Error 但**不**拒绝恢复——与 resumeForContinue 的
+		// 处置刻意不同。
+		//
+		// why 不对称：本路径一律 Cold=false（见下方注释），是热重连，executor
+		// 进程还活着、首回合注入的纪律块仍在它的上下文里，空块并不会让约束消失。
+		// 而拒绝恢复会把一个健康的活任务晾成孤儿，纯亏。真正会丢约束的是重建
+		// 进程的冷恢复，那条在 resumeForContinue 里已经拒了。
+		m.log.Error("启动恢复时点名的纪律块解析失败（热重连，约束仍在原会话上下文内）",
+			"task", taskID, "name", task.DisciplineName, "cause", derr)
+	case derr != nil:
 		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
-	} else {
+	default:
 		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
 	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
