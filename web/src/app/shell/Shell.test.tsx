@@ -182,7 +182,7 @@ beforeEach(() => {
   vi.mocked(createPtySession).mockResolvedValue({
     id: 'new-1', machine: '', base_path: '~', base_kind: 'home', shell: '',
     created_at: '', cols: 100, rows: 30, attached: 0, pid: 0,
-    foreground: false, bytes_out: 0,
+    foreground: false, incompatible: false, bytes_out: 0,
   })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
 })
@@ -340,8 +340,8 @@ describe('Shell 三栏外框', () => {
   it('恢复时 home 会话进浮窗、工作树会话进中央', async () => {
     vi.mocked(fetchPtySessions).mockResolvedValue({
       sessions: [
-        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false },
-        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false },
+        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false, incompatible: false },
+        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false, incompatible: false },
       ],
     })
     renderShell()
@@ -415,7 +415,7 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
 const liveSession = (id: string) => ({
   id, base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh',
   created_at: '2026-08-20T00:00:00Z', cols: 120, rows: 40, attached: 1, pid: 9,
-  bytes_out: 0, foreground: false,
+  bytes_out: 0, foreground: false, incompatible: false,
 })
 
 describe('关闭一个服务端已经没有的终端会话', () => {

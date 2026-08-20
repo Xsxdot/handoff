@@ -24,7 +24,7 @@ function sess(id: string, over: Partial<PtySession> = {}): PtySession {
   return {
     id, machine: '', base_path: '/repo/a', base_kind: 'workspace', shell: '/bin/bash',
     created_at: '2026-08-20T10:00:00+08:00', cols: 80, rows: 24, attached: 0,
-    foreground: false, pid: 1, bytes_out: 0, ...over,
+    foreground: false, pid: 1, bytes_out: 0, incompatible: false, ...over,
   }
 }
 
@@ -45,6 +45,48 @@ describe('buildRestore', () => {
     expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
     expect(r.pruned).toBe(0)
     expect(r.adopted).toBe(0)
+  })
+
+  // 这一组是承重的：合并 A（PTY 出进程）时，协议错配的降级链路原本挂在
+  // usePtyRestore 上，而那个文件在 B 里被删掉了。链路重新落到本层之后，
+  // 它的判据必须跟着搬过来，否则「合并之后功能还在、测试没了」不会有人发现。
+  it('不兼容的会话打标记而不是抹 id——它还活着，抹了等于把旧 shell 丢在后台', () => {
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
+      sessions: [sess('S1', { incompatible: true })],
+      ...VIEW,
+    })
+    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({
+      kind: 'terminal', seq: 1, sessionId: 'S1', incompatible: true,
+    })
+    // 它没死，所以不该被计进「抹掉的死会话」
+    expect(r.pruned).toBe(0)
+  })
+
+  it('补进来的孤儿会话不兼容时也带标记', () => {
+    const r = buildRestore({
+      state: state(),
+      sessions: [sess('S9', { incompatible: true })],
+      ...VIEW,
+    })
+    expect(r.adopted).toBe(1)
+    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({
+      kind: 'terminal', seq: 1, sessionId: 'S9', incompatible: true,
+    })
+  })
+
+  it('悬浮窗里的不兼容会话同样打标记', () => {
+    const dock = encodeDock({
+      tabs: [{ id: 'h1', kind: 'terminal', seq: 1, sessionId: 'H1', machine: '' }],
+      activeId: 'h1', windowOpen: true, geom: { x: 100, y: 100, w: 400, h: 300 }, maximized: false,
+    })
+    const r = buildRestore({
+      state: state({ dock }),
+      sessions: [sess('H1', { base_kind: 'home', base_path: '', incompatible: true })],
+      ...VIEW,
+    })
+    expect(r.dock?.tabs[0].incompatible).toBe(true)
+    expect(r.dock?.tabs[0].sessionId).toBe('H1')
   })
 
   it('已退出的会话被抹掉 id，tab 留在原位', () => {

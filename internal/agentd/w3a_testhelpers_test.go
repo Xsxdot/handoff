@@ -7,14 +7,20 @@ package agentd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -54,9 +60,58 @@ func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logg
 	t.Cleanup(func() { st.Close() })
 	srv := NewServer(cfg, st, logger)
 	srv.SetConfigPath(cfgPath)
+	if runtime.GOOS != "windows" {
+		ptyRoot, err := os.MkdirTemp(".", "at-pty-")
+		if err != nil {
+			t.Fatalf("准备 PTY 根目录失败: %v", err)
+		}
+		srv.ptyRootPath = ptyRoot
+		srv.pty = ptyhost.New(ptyRoot, testHandoffExecutable(t), logger)
+		t.Cleanup(func() {
+			for _, sess := range srv.pty.List() {
+				_ = srv.pty.Close(sess.ID)
+			}
+			_ = os.RemoveAll(ptyRoot)
+		})
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &testAgentdEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
+}
+
+var (
+	testHandoffOnce sync.Once
+	testHandoffPath string
+	testHandoffErr  error
+)
+
+// testHandoffExecutable 构建真正包含 _ptyhost 子命令的 handoff 二进制。
+//
+// agentd.test 是 Go 测试运行器，不是 handoff 主程序；直接把 os.Executable 交给客户端
+// 会让它把 `_ptyhost` 当成测试参数。二进制放在系统临时目录，避免测试把构建产物留在仓库。
+func testHandoffExecutable(t *testing.T) string {
+	t.Helper()
+	testHandoffOnce.Do(func() {
+		var dir string
+		dir, testHandoffErr = os.MkdirTemp("", "handoff-test-bin-")
+		if testHandoffErr != nil {
+			return
+		}
+		testHandoffPath = filepath.Join(dir, "handoff")
+		cmd := exec.Command("go", "build", "-o", testHandoffPath, "../..")
+		cmd.Dir = "."
+		var output []byte
+		output, testHandoffErr = cmd.CombinedOutput()
+		if testHandoffErr != nil {
+			testHandoffErr = fmt.Errorf("go build handoff: %w: %s", testHandoffErr, output)
+			return
+		}
+		testHandoffErr = os.Chmod(testHandoffPath, 0o700)
+	})
+	if testHandoffErr != nil {
+		t.Fatalf("准备测试 handoff: %v", testHandoffErr)
+	}
+	return testHandoffPath
 }
 
 // getJSON 发起带 token 的 GET，返回状态码并把响应体解码到 out（out 为 nil 时只取状态码）。

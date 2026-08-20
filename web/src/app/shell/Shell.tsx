@@ -430,9 +430,10 @@ export function Shell() {
                             seq={c.seq}
                             sessionId={c.sessionId}
                             rel={c.rel}
+                            incompatible={c.incompatible}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
-                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
+                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
                           />
                         )
                       }
@@ -510,6 +511,7 @@ export function Shell() {
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
+                incompatible={t.incompatible}
                 onSession={(id) => dock.setSession(t.id, id)}
               />
             )

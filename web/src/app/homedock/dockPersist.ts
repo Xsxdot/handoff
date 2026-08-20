@@ -62,6 +62,8 @@ export function encodeDock(d: DockSnapshot): string {
 
 // stripDockTab 去掉一个悬浮窗 tab 里不该落盘的部分（目前只有草稿两字段）。
 function stripDockTab(t: HomeTab): HomeTab {
+  // incompatible 不落盘：它是**服务端此刻**的结论，下次启动要重新问，
+  // 存下来只会让一个已经换回兼容版本的会话继续显示成不可用
   const out: HomeTab = { id: t.id, kind: t.kind, seq: t.seq, machine: t.machine }
   if (t.sessionId !== undefined) out.sessionId = t.sessionId
   if (t.rel !== undefined) out.rel = t.rel
@@ -135,6 +137,20 @@ export function pruneDeadDockSessions(tabs: HomeTab[], liveIds: Set<string>): Ho
     const out: HomeTab = { id: t.id, kind: t.kind, seq: t.seq, machine: t.machine }
     if (t.rel !== undefined) out.rel = t.rel
     return out
+  })
+}
+
+// markIncompatibleDockTabs 给指向「协议不兼容会话」的悬浮窗终端 tab 打标记。
+//
+// 参数：tabs 是刚恢复出来的悬浮窗 tab；ids 是服务端报为 incompatible 的会话 id。
+// 返回：新数组；不删 tab、不抹 sessionId，只加标记（同工作台侧的理由：那个
+// 会话还活着，抹掉 id 会让它变成没人管得着的后台 shell）。
+export function markIncompatibleDockTabs(tabs: HomeTab[], ids: Set<string>): HomeTab[] {
+  if (ids.size === 0) return tabs
+  return tabs.map((t) => {
+    if (t.kind !== 'terminal' || t.sessionId === undefined) return t
+    if (!ids.has(t.sessionId)) return t
+    return { ...t, incompatible: true }
   })
 }
 

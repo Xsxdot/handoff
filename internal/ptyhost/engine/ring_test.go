@@ -1,4 +1,4 @@
-package ptyhost
+package engine
 
 import (
 	"bytes"

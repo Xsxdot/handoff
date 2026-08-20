@@ -77,6 +77,19 @@ describe('encodeBase / decodeBase', () => {
     expect(c).toEqual({ kind: 'file', rel: 'a.ts' })
   })
 
+  it('终端 tab 的 incompatible 不落盘——它是服务端此刻的结论，不是布局', () => {
+    const wb: Workbench = {
+      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, sessionId: 'S1', incompatible: true } }], activeId: 't1' }],
+      active: 0,
+      sizes: [1],
+    }
+    // 直接看 payload 原文：解码端会丢掉不认识的字段，只比往返结果的话，
+    // 「写进去了但读不出来」这种情形会被盖住
+    expect(encodeBase(base, wb)).not.toContain('incompatible')
+    const out = decodeBase(base.key, encodeBase(base, wb))
+    expect(out!.wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+  })
+
   it.each([
     ['不是 JSON', 'not json at all'],
     ['版本号不认识', JSON.stringify({ v: 99, base: {}, wb: EMPTY_WORKBENCH })],

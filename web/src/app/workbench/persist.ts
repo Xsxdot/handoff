@@ -51,11 +51,23 @@ export function encodeBase(base: BaseDir, wb: Workbench): string {
 
 // stripTab 去掉一个 tab 里不该落盘的部分。
 //
-// 目前只有 file tab 的草稿两字段。写成一个独立函数而不是内联三元，
-// 是为了将来再多一种「不落盘字段」时只有一处要改。
+// 两类：file tab 的草稿两字段，以及 terminal tab 的 incompatible。
+// 写成一个独立函数而不是内联三元，是为了将来再多一种「不落盘字段」时只有一处要改。
 function stripTab(t: Tab): Tab {
   if (t.content.kind === 'file') {
     return { id: t.id, content: { kind: 'file', rel: t.content.rel } }
+  }
+  if (t.content.kind === 'terminal' && t.content.incompatible !== undefined) {
+    // incompatible 是**服务端此刻**的结论，不是布局的一部分：换回兼容版本之后
+    // 它就该消失，存下来会让那个 tab 一直显示成不可用。落盘的形状也因此保持稳定，
+    // 不会因为这个标记翻转而白白多一次 PUT
+    const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string } = {
+      kind: 'terminal',
+      seq: t.content.seq,
+    }
+    if (t.content.sessionId !== undefined) out.sessionId = t.content.sessionId
+    if (t.content.rel !== undefined) out.rel = t.content.rel
+    return { id: t.id, content: out }
   }
   return { id: t.id, content: t.content }
 }
@@ -195,6 +207,31 @@ export function pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbenc
         const next: { kind: 'terminal'; seq: number; rel?: string } = { kind: 'terminal', seq: t.content.seq }
         if (t.content.rel !== undefined) next.rel = t.content.rel
         return { id: t.id, content: next }
+      }),
+    })),
+  }
+}
+
+// markIncompatibleSessions 给指向「协议不兼容会话」的终端 tab 打上标记。
+//
+// 参数：wb 是刚恢复出来的工作台；ids 是服务端报为 incompatible 的会话 id。
+// 返回：新的 Workbench；不删 tab、不抹 sessionId，只加一个标记。
+//
+// 为什么不能像死会话那样直接抹掉 sessionId：那个会话**还活着**，抹掉 id
+// 等于让 TerminalTab 原地再建一个新 shell，而旧的还在后台跑着没人管得着。
+// 打标记之后 TerminalTab 不建连、不重连，直接给「重开一个终端」的出口，
+// 由用户决定要不要放弃它（A spec 的协议错配降级）。
+export function markIncompatibleSessions(wb: Workbench, ids: Set<string>): Workbench {
+  if (ids.size === 0) return wb
+  return {
+    ...wb,
+    groups: wb.groups.map((g) => ({
+      ...g,
+      tabs: g.tabs.map((t) => {
+        if (t.content.kind !== 'terminal') return t
+        const id = t.content.sessionId
+        if (id === undefined || !ids.has(id)) return t
+        return { id: t.id, content: { ...t.content, incompatible: true } }
       }),
     })),
   }

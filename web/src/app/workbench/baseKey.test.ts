@@ -15,7 +15,7 @@ function session(machine: string): PtySession {
   return {
     id: 'S1', machine, base_path: '/repo/a', base_kind: 'workspace', shell: '/bin/bash',
     created_at: '2026-08-20T10:00:00+08:00', cols: 80, rows: 24, attached: 0,
-    foreground: false, pid: 1, bytes_out: 0,
+    foreground: false, pid: 1, bytes_out: 0, incompatible: false,
   }
 }
 

@@ -1,6 +1,6 @@
 //go:build unix
 
-package ptyhost
+package engine
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ var fmtSscan = func(s string, a ...any) (int, error) { return fmt.Sscan(s, a...)
 // startDrain 在后台持续读 PTY 主端，把输出累积进 out。
 //
 // 为什么必须有它（macOS 实测）：bash 从 PTY 退出时会阻塞在「往主端写收尾输出」
-// 的路径上，主端没人读它就不肯死，cmd.Wait 永不返回。生产代码里 ptyhost.Host
+// 的路径上，主端没人读它就不肯死，cmd.Wait 永不返回。生产代码里 engine.Engine
 // 的 pump 循环总是在读，这是纯测试层面的需求。
 //
 // 另外 SetReadDeadline 在这里**不可用**：creack/pty 返回的主端是阻塞 fd，Go 的

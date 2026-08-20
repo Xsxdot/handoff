@@ -152,7 +152,8 @@ func fenceReference() (int, error) {
 // Admission 是一次余量判读的结果。
 //
 // 字段说明：
-//   - Used: 当前 uid 的进程数
+//   - Used: 当前 uid 中计入机器级压力的进程数；已由会话锁、meta.json 与启动时刻
+//     共同认证的 ptyhost 不计入
 //   - Limit: 参考上限（围栏值或系统上限）
 //   - Known: 读数是否可信；false 时 Used/Limit 无意义，不得据此做任何判断
 type Admission struct {
@@ -187,7 +188,44 @@ func CheckAdmission() Admission {
 		log().Debug("余量判读失败（参考上限不可用），按未知处理", "cause", err, "ref", ref)
 		return Admission{}
 	}
-	return Admission{Used: len(procs), Limit: ref, Known: true}
+	used, excluded := chargeableProcessCount(procs)
+	if excluded > 0 {
+		log().Debug("机器级进程压力统计排除 ptyhost", "excluded", excluded,
+			"observed", len(procs), "used", used)
+	}
+	return Admission{Used: used, Limit: ref, Known: true}
+}
+
+// chargeableProcessCount 从机器级快照扣除已验证的 ptyhost。
+//
+// 参数：procs 是一次完整的当前 uid 进程快照。
+// 返回：计入机器级压力的进程数，以及成功排除的 ptyhost 数。
+// 注意：PID 与启动时刻必须同时匹配；凭据缺失、过期或只匹配 PID 都保留计数。
+// 任务级 footprint 不调用本函数，因此它的统计口径不受影响。
+func chargeableProcessCount(procs []procEntry) (used, excluded int) {
+	provider := currentPtyhostCredentialProvider()
+	if provider == nil {
+		return len(procs), 0
+	}
+	credentials := provider()
+	if len(credentials) == 0 {
+		return len(procs), 0
+	}
+	known := make(map[ProcessCredential]struct{}, len(credentials))
+	for _, credential := range credentials {
+		if credential.PID <= 0 || credential.StartedAt <= 0 {
+			continue
+		}
+		known[credential] = struct{}{}
+	}
+	for _, proc := range procs {
+		if _, ok := known[ProcessCredential{PID: proc.PID, StartedAt: proc.StartedAt}]; ok {
+			excluded++
+			continue
+		}
+		used++
+	}
+	return used, excluded
 }
 
 // ExplainForkFailure 判读一个进程创建失败是否为配额耗尽，并给出可读归因。

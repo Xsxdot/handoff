@@ -125,7 +125,7 @@ export interface WorkbenchApi {
   // 与 openTerminal 的关键差别：它**不切换当前基准**。页面加载时可能一次恢复
   // 好几个目录下的会话，逐个 select 过去会让用户的选中态落在最后一条上——
   // 那是把「后台恢复」变成了「替用户点了一下左栏」。
-  restoreTerminal: (b: BaseDir, sessionId: string) => void
+  restoreTerminal: (b: BaseDir, sessionId: string, incompatible?: boolean) => void
   // byBase 是全部基准目录的 tab 组，**只读**。持久化层要监听它整体做差分，
   // 只盯当前基准是不够的——restoreTerminal 会写非当前基准的行。
   byBase: Record<string, Workbench>
@@ -231,12 +231,15 @@ export function useWorkbench(): WorkbenchApi {
 
   // restoreTerminal 不走 mutate：mutate 在给了显式基准时会 select 过去，而恢复
   // 是后台动作，不该把用户的选中态拽走。它只在 byBase 里按目标基准写入。
-  const restoreTerminal = useCallback((b: BaseDir, sessionId: string) => {
+  const restoreTerminal = useCallback((b: BaseDir, sessionId: string, incompatible?: boolean) => {
     setBaseDirs((prev) => (prev[b.key] ? prev : { ...prev, [b.key]: b }))
     setByBase((prev) => {
       const w = prev[b.key] ?? EMPTY_WORKBENCH
       // seq 在 updater 里算：连着恢复多个会话时，闭包外算出来的序号全是旧的
-      return { ...prev, [b.key]: openTab(w, { kind: 'terminal', seq: nextTerminalSeq(w), sessionId }) }
+      const content = incompatible
+        ? { kind: 'terminal' as const, seq: nextTerminalSeq(w), sessionId, incompatible: true }
+        : { kind: 'terminal' as const, seq: nextTerminalSeq(w), sessionId }
+      return { ...prev, [b.key]: openTab(w, content) }
     })
   }, [])
 

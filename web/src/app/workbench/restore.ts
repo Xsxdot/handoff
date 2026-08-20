@@ -13,10 +13,16 @@
 //     （要等项目树，spec §6）
 //   - 不打日志：它不知道自己跑在什么上下文里；统计量以返回值给出，由调用方记录
 import type { PtySession, WorkbenchStateResp } from '../../api/types'
-import { clampGeom, decodeDock, pruneDeadDockSessions, type DockSnapshot } from '../homedock/dockPersist'
+import {
+  clampGeom,
+  decodeDock,
+  markIncompatibleDockTabs,
+  pruneDeadDockSessions,
+  type DockSnapshot,
+} from '../homedock/dockPersist'
 import type { HomeTab } from '../homedock/useHomeDock'
-import { decodeBase, pruneDeadSessions } from './persist'
-import { EMPTY_WORKBENCH, nextTerminalSeq, openTab, type Workbench } from './tabs'
+import { decodeBase, markIncompatibleSessions, pruneDeadSessions } from './persist'
+import { EMPTY_WORKBENCH, nextTerminalSeq, openTab, type TabContent, type Workbench } from './tabs'
 import { HOME_BASE, type BaseDir } from './useWorkbench'
 
 // baseOfSession 把一个会话反解成它所属的基准目录。
@@ -74,6 +80,21 @@ export interface RestoreResult {
   adopted: number
 }
 
+// incompatibleSessionIds 挑出「还活着但本版接不进去」的会话 id。
+//
+// 参数：sessions 是服务端会话列表。
+// 返回：incompatible 为真且还活着的那些 id。
+// 注意：它与 liveSessionIds 是**交集**关系而不是互补——不兼容的会话仍然是活的，
+// 只是不能 attach。当成死的处理会让前端原地再建一个新 shell，把旧的丢在后台。
+function incompatibleSessionIds(sessions: PtySession[]): Set<string> {
+  const out = new Set<string>()
+  for (const s of sessions) {
+    if (s.exit_code != null) continue
+    if (s.incompatible) out.add(s.id)
+  }
+  return out
+}
+
 // liveSessionIds 挑出还活着的会话 id。exit_code 缺席 = 还活着，出现 = 已退出。
 //
 // 为什么用 `!= null` 而不是 `!== undefined`：它同时挡住 undefined 与 null。
@@ -116,6 +137,18 @@ function countTerminalsWithSession(wb: Workbench): number {
   return n
 }
 
+// orphanTerminal 造一个「补进来的孤儿会话」的终端 tab 内容。
+//
+// 参数：seq 是这一栏里的序号；s 是那条孤儿会话。
+// 返回：terminal 形状的 TabContent；会话不兼容时带上标记。
+// 注意：抽出来是因为工作树侧有两个构造点（已有基准行 / 新建基准行），
+// 内联两遍必然有一天只改其中一处。
+function orphanTerminal(seq: number, s: PtySession): TabContent {
+  const content: TabContent = { kind: 'terminal', seq, sessionId: s.id }
+  if (s.incompatible) return { ...content, incompatible: true }
+  return content
+}
+
 // buildRestore 合成恢复结果。
 //
 // 参数：见 RestoreInput。
@@ -124,6 +157,7 @@ function countTerminalsWithSession(wb: Workbench): number {
 // 注意：它不探活，只使用调用方已经拉到的会话列表。
 export function buildRestore(input: RestoreInput): RestoreResult {
   const live = liveSessionIds(input.sessions)
+  const incompatible = incompatibleSessionIds(input.sessions)
 
   // ① 解码基准行，坏行整行丢弃；顺手抹掉死会话
   const entries: Array<{ base: BaseDir; wb: Workbench }> = []
@@ -138,7 +172,9 @@ export function buildRestore(input: RestoreInput): RestoreResult {
     const before = countTerminalsWithSession(decoded.wb)
     const wb = pruneDeadSessions(decoded.wb, live)
     pruned += before - countTerminalsWithSession(wb)
-    entries.push({ base: decoded.base, wb })
+    // 打标记必须在抹死会话**之后**：两者作用于不相交的集合（死的已经没有
+    // sessionId 了），次序颠倒不会出错，但这样读起来与「先清理再标注」一致
+    entries.push({ base: decoded.base, wb: markIncompatibleSessions(wb, incompatible) })
   }
 
   // ② 解码悬浮窗现场：坏数据或从没存过都得到 null
@@ -149,7 +185,11 @@ export function buildRestore(input: RestoreInput): RestoreResult {
       const beforeTabs = d.tabs.filter((t) => t.sessionId).length
       const tabs = pruneDeadDockSessions(d.tabs, live)
       pruned += beforeTabs - tabs.filter((t) => t.sessionId).length
-      dock = { ...d, tabs, geom: clampGeom(d.geom, input.vw, input.vh, input.inset) }
+      dock = {
+        ...d,
+        tabs: markIncompatibleDockTabs(tabs, incompatible),
+        geom: clampGeom(d.geom, input.vw, input.vh, input.inset),
+      }
     }
   }
 
@@ -167,15 +207,16 @@ export function buildRestore(input: RestoreInput): RestoreResult {
       // 孤儿 home 会话的 tab id 直接用 sessionId：与 Shell 里 dock.adopt 的既有
       // 调用一致，且天然唯一。它不是 h<n> 形状，不参与 useHomeDock 的计数器播种
       const tab: HomeTab = { id: s.id, kind: 'terminal', seq: ++dockSeq, sessionId: s.id, machine: s.machine }
+      if (s.incompatible) tab.incompatible = true
       if (dock === null) dockOrphans.push(tab)
       else dock.tabs = [...dock.tabs, tab]
       continue
     }
     const found = entries.find((e) => e.base.key === b.key)
     if (found) {
-      found.wb = openTab(found.wb, { kind: 'terminal', seq: nextTerminalSeq(found.wb), sessionId: s.id })
+      found.wb = openTab(found.wb, orphanTerminal(nextTerminalSeq(found.wb), s))
     } else {
-      entries.push({ base: b, wb: openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: s.id }) })
+      entries.push({ base: b, wb: openTab(EMPTY_WORKBENCH, orphanTerminal(1, s)) })
     }
   }
 

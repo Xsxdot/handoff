@@ -1992,7 +1992,41 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 10: 真机走查与收尾
+### Task 10: 排除 ptyhost 对机器级进程压力告警的干扰
+
+Task 1 已确认：`resource_pressure` 按当前 uid 的全机进程枚举计数，ptyhost 会让
+executor 派发的机器级告警虚高；`task_proc_pressure` 只沿任务足迹统计，不受影响。
+
+**Files:**
+- Modify: `internal/prochost/procenum*.go` 或其调用层（以实现时读码确定最小改动点）
+- Create/Modify: 针对 ptyhost 排除口径的单元测试
+
+- [ ] **行为规格**
+  - 只从机器级 `resource_pressure` 的计数中排除 ptyhost；不得改变 executor 树的
+    RLIMIT_NPROC、`task_proc_pressure` 的任务足迹口径或普通用户进程的计数。
+  - 判定必须使用可验证的 ptyhost 身份凭据（不能按进程名或模糊祖先关系猜测）；
+    无法确认身份时宁可计入，不得漏报真实压力。
+  - 覆盖一个真实/测试 ptyhost 被排除、普通同 uid 进程仍计入、身份不明仍计入的测试。
+  - `resource_pressure` 的 `used` 与前端/事件字段保持既有含义，日志说明排除数量。
+
+- [ ] **验证**
+  - `go test ./internal/prochost/... ./internal/agentd/`
+  - `go test ./...`
+  - `GOOS=windows go build ./...`
+
+- [ ] **提交**
+
+```bash
+gofmt -l internal/ | head
+git add internal/prochost/ internal/agentd/ docs/superpowers/plans/2026-08-20-pty-out-of-process.md
+git commit -m "fix(prochost): 排除 ptyhost 对机器级压力告警的干扰
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: 真机走查与收尾
 
 > **本 task 由审核者在本地执行，不派发。**
 > 它要反复重启 agentd、开桌面端、看终端里的滚屏，属于交互式真机操作；
