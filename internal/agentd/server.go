@@ -121,10 +121,9 @@ type Server struct {
 	pullBaseCtx context.Context
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
-	restart func(reason string) bool
-	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
-	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
-	pty *ptyhost.Host
+	restart     func(reason string) bool
+	pty         *ptyhost.Host
+	ptyRootPath string
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -169,6 +168,11 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	inst := release.NewInstaller(log, tr)
 	releaseClient := release.NewClient(tr)
+	exe, err := os.Executable()
+	if err != nil {
+		// 拿不到自身路径就起不了 ptyhost；PTY 是控制台的附属能力，不应拖垮 agentd。
+		log.Error("无法确定自身可执行文件路径，PTY 会话将无法创建", "err", err)
+	}
 	s := &Server{
 		st:             st,
 		hub:            NewHub(),
@@ -178,7 +182,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		liveLimit:      liveBufferLimit,
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
-		pty:            ptyhost.New(log),
+		ptyRootPath:    filepath.Join(cfg.DataDir, "ptys"),
 		latestFetch:    releaseClient.Latest,
 		downloadFetch:  desktopDownloadFetcher(inst),
 		downloadOpen:   openDownloadedFile,
@@ -190,6 +194,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 	}
+	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
@@ -422,6 +427,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("GET /api/workbench/state", s.handleWorkbenchStateGet)
+	api.HandleFunc("PUT /api/workbench/state/base", s.handleWorkbenchBasePut)
+	api.HandleFunc("PUT /api/workbench/state/selected", s.handleWorkbenchSelectedPut)
+	api.HandleFunc("PUT /api/workbench/state/dock", s.handleWorkbenchDockPut)
 	api.HandleFunc("PUT /api/desktop/state", s.handleDesktopStatePut)
 	api.HandleFunc("GET /api/desktop/state", s.handleDesktopStateGet)
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)

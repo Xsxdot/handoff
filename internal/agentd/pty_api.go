@@ -248,6 +248,7 @@ func ptySessionView(s ptyhost.Session, machine string) proto.PtySession {
 		ID: s.ID, Machine: machine, BasePath: s.BasePath, BaseKind: s.BaseKind,
 		Shell: s.Shell, CreatedAt: s.CreatedAt, Cols: s.Cols, Rows: s.Rows,
 		Attached: s.Attached, Foreground: s.Foreground, PID: s.PID, ExitCode: s.ExitCode, BytesOut: s.BytesOut,
+		Incompatible: s.Incompatible,
 	}
 }
 

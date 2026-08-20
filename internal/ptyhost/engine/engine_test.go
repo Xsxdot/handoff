@@ -1,6 +1,6 @@
 //go:build unix
 
-package ptyhost_test
+package engine_test
 
 import (
 	"io"
@@ -11,14 +11,15 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/ptyhost"
+	"github.com/Xsxdot/handoff/internal/ptyhost/engine"
 )
 
-func testHost(t *testing.T) *ptyhost.Host {
+func testHost(t *testing.T) *engine.Engine {
 	t.Helper()
-	return ptyhost.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return engine.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-func testOpen(t *testing.T, h *ptyhost.Host) ptyhost.Session {
+func testOpen(t *testing.T, h *engine.Engine) ptyhost.Session {
 	t.Helper()
 	s, err := h.Open(ptyhost.OpenOptions{
 		BasePath: t.TempDir(), BaseKind: "workspace", Shell: "/bin/sh",
@@ -222,7 +223,7 @@ func TestCloseRemovesSession(t *testing.T) {
 
 // waitExited 轮询到会话落 exit_code 为止，用于「让 shell 在并发压力下自然退出」
 // 这类用例。超时即 Fatal——等不到退出说明压测本身出了问题，继续断言没有意义。
-func waitExited(t *testing.T, h *ptyhost.Host, id string) {
+func waitExited(t *testing.T, h *engine.Engine, id string) {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {

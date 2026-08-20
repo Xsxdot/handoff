@@ -5,11 +5,14 @@
 //   - uninstall：停止并移除单元
 //   - status：报告托管状态
 //   - start / stop / restart：改已装单元的运行状态，不改单元定义本身
+//   - stop 额外收口本机 PTY 会话——它是**唯一**能表达「显式停止」意图的地方
 //
 // 边界：
 //   - 不替代进程管理器：start/stop/restart 是对管理器下指令，不自己 fork
 //     或 kill agentd；单元没装时一律硬拒，不代为 install
 //   - 不改 handoff 的配置文件：托管与配置是两件事，配置走 handoff init
+//   - restart 不碰 PTY 会话：重启的意图是「让改动生效」，不是「结束我的终端」。
+//     agentd 那一侧分不出这次 SIGTERM 是 stop 还是 restart，所以区分只能在这里做
 //   - 托管之后 agentd 的形态会变：手动 Ctrl-C 会被管理器拉回，停服务要用
 //     handoff service stop；彻底摘掉托管用 handoff service uninstall。install
 //     成功时会把这两种处置打给用户
@@ -24,9 +27,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/initflow"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -187,6 +192,16 @@ var serviceStopCmd = &cobra.Command{
 			return lifecycleErr("停止", err)
 		}
 		slog.Default().Info("执行服务生命周期命令", "action", "stop", "kind", m.Kind())
+		// 先收口 PTY，再停服务。
+		//
+		// 次序不能反：停完服务再收口，中间那段时间里 ptyhost 还在，而已经没有
+		// agentd 能报告它们了。先收口则最坏情况只是多留几个自己会退的进程。
+		//
+		// **只有这条路收口**。信号关停、升级换版、崩溃都必须让会话活下来——
+		// 那是把 PTY 搬出 agentd 进程的全部意义（见 internal/ptyhost/closeall.go）。
+		// 而 agentd 分不出「这次 SIGTERM 是 stop 还是 restart」，所以这个区分
+		// 只能由发起停止的这一端表达。
+		closePtySessionsForStop(cmd.OutOrStdout())
 		if err := m.Stop(); err != nil {
 			slog.Default().Error("服务生命周期命令失败", "action", "stop", "kind", m.Kind(), "cause", err)
 			return lifecycleErr("停止", err)
@@ -220,6 +235,37 @@ var serviceRestartCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "已重启   %s   %s\n", m.Kind(), unit)
 		return nil
 	},
+}
+
+// ptyCloseBudget 是显式停止时留给 PTY 收口的总时间。
+//
+// 2 秒的来由：与 agentd 侧同名预算一致；kill 是一次本机 unix socket 往返，
+// 正常在毫秒级，2 秒足够覆盖几十个会话，又不会让 stop 明显变慢。
+const ptyCloseBudget = 2 * time.Second
+
+// closePtySessionsForStop 在显式停止服务前杀掉本机全部 PTY 会话。
+//
+// 参数：out 是命令的标准输出，用于把「关掉了几个」告诉用户。
+// 返回：无。**任何失败都不阻断停服务**——用户要的是服务停下来，
+// 收不干净的 ptyhost 各自持有锁，shell 退出后有 24 小时 TTL 兜底。
+//
+// 注意：它自己读配置拿 DataDir，不经 agentd。调用这条命令时 agentd 可能
+// 已经不在了（先停了服务才想起来收口，或者它本来就崩着）。
+func closePtySessionsForStop(out io.Writer) {
+	cfg, err := config.Load(effectiveConfigPath())
+	if err != nil {
+		slog.Default().Warn("停止服务前读配置失败，跳过 PTY 收口", "cause", err)
+		return
+	}
+	root := filepath.Join(cfg.DataDir, "ptys")
+	closed, err := ptyhost.CloseAll(root, slog.Default(), ptyCloseBudget)
+	if err != nil {
+		slog.Default().Warn("停止服务前收口 PTY 会话失败", "root", root, "cause", err)
+		return
+	}
+	if closed > 0 {
+		fmt.Fprintf(out, "已关闭   %d 个终端会话\n", closed)
+	}
 }
 
 // lifecycleErr 把生命周期操作的失败包成面向用户的报文。

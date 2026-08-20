@@ -1,4 +1,4 @@
-// Package ptyhost 托管伪终端（PTY）会话：开 shell、持有会话表、维护回放缓冲、
+// Package engine 托管伪终端（PTY）会话：开 shell、持有会话表、维护回放缓冲、
 // 向多个订阅者广播输出、按进程组终止。
 //
 // 职责：
@@ -11,10 +11,9 @@
 //   - 不做鉴权，不做 base_path 白名单校验（那是 agentd 接口层的参数校验）
 //   - 不落盘：会话表只在内存里，随 agentd 生死（spec §3.1、§10）
 //   - 不解析终端转义序列，只搬字节
-package ptyhost
+package engine
 
 import (
-	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -23,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/google/uuid"
 )
 
@@ -42,64 +42,20 @@ const (
 	readChunk = 32 << 10
 )
 
-var (
-	// ErrNoSession 表示会话 id 不存在（或已被显式关闭）。
-	ErrNoSession = errors.New("终端会话不存在")
-	// ErrTooManySubscribers 表示该会话的订阅者已达上限。
-	ErrTooManySubscribers = errors.New("终端会话的连接数已达上限")
-	// ErrSessionExited 表示 shell 已经退出，只能读历史不能再写。
-	ErrSessionExited = errors.New("终端会话已退出")
-)
-
-// Session 是一个会话的**快照**，跨出锁之后可以自由持有。
-//
-// ExitCode 用指针表达三态里的两态：nil = 还活着，非 nil = 已退出且这是退出码。
-// 这条与项目里 Watchers / Live / Procs 同一纪律——绝不用 0 或 -1 冒充「不知道」。
-type Session struct {
-	ID        string
-	BasePath  string
-	BaseKind  string
-	Shell     string
-	CreatedAt time.Time
-	Cols      int
-	Rows      int
-	Attached  int
-	PID       int
-	ExitCode  *int
-	// Foreground 表示会话里当前有一个跑在前台的命令（前台进程组 ≠ shell 自己）。
-	//
-	// 为什么是 bool 而不是三态：读不到（shell 已退出、平台不支持）时结论是
-	// **false**——两种情形下「关掉它会打断什么」的答案都是「不会」，与真的空闲
-	// 同解。这与 PtySupported 那种「不知道」不是一回事，不要照抄那条纪律。
-	Foreground bool
-	BytesOut   uint64
-}
-
-// OpenOptions 是开会话的入参。Env 是**完整环境**，不会再追加 os.Environ()——
-// 这正是 spec §4.2 要绕开的那个坑（封存分支 service_unix.go:43 的写法）。
-type OpenOptions struct {
-	BasePath string
-	BaseKind string
-	Shell    string
-	Env      []string
-	Cols     int
-	Rows     int
-}
-
-// Host 是本机所有 PTY 会话的持有者。零值不可用，请用 New。
-type Host struct {
+// Engine 是一个进程内 PTY 引擎的会话持有者。零值不可用，请用 New。
+type Engine struct {
 	log  *slog.Logger
 	mu   sync.Mutex
 	sess map[string]*session
 }
 
-// New 创建一个 Host。log 用于记录会话生命周期与错误，不得为 nil。
-func New(log *slog.Logger) *Host {
-	return &Host{log: log, sess: map[string]*session{}}
+// New 创建一个 Engine。参数 log 用于记录会话生命周期与错误，不得为 nil。
+func New(log *slog.Logger) *Engine {
+	return &Engine{log: log, sess: map[string]*session{}}
 }
 
-// Supported 报告本平台是否支持 PTY，供 /api/status 的 pty_supported 上报。
-func (h *Host) Supported() bool { return ptySupported }
+// Supported 报告引擎所在编译目标是否支持 PTY。
+func (h *Engine) Supported() bool { return ptySupported }
 
 type subscriber struct {
 	ch   chan []byte
@@ -109,7 +65,7 @@ type subscriber struct {
 
 type session struct {
 	mu       sync.Mutex
-	meta     Session
+	meta     ptyhost.Session
 	f        *os.File
 	cmd      *exec.Cmd
 	buf      *ring
@@ -119,9 +75,9 @@ type session struct {
 }
 
 // Open 起一个新会话。失败时不留残骸。
-func (h *Host) Open(opt OpenOptions) (Session, error) {
+func (h *Engine) Open(opt ptyhost.OpenOptions) (ptyhost.Session, error) {
 	if !ptySupported {
-		return Session{}, ErrNotSupported
+		return ptyhost.Session{}, ptyhost.ErrNotSupported
 	}
 	if opt.Cols <= 0 {
 		opt.Cols = 80
@@ -134,10 +90,10 @@ func (h *Host) Open(opt OpenOptions) (Session, error) {
 		// shell 起不来是最常见的失败（$SHELL 指向不存在的路径、cwd 被删）。
 		// 带齐 shell 与 cwd，否则这行日志无法定位。
 		h.log.Error("开终端会话失败", "shell", opt.Shell, "cwd", opt.BasePath, "err", err)
-		return Session{}, err
+		return ptyhost.Session{}, err
 	}
 	s := &session{
-		meta: Session{
+		meta: ptyhost.Session{
 			ID: uuid.NewString(), BasePath: opt.BasePath, BaseKind: opt.BaseKind,
 			Shell: opt.Shell, CreatedAt: time.Now(),
 			Cols: opt.Cols, Rows: opt.Rows, PID: cmd.Process.Pid,
@@ -164,7 +120,7 @@ func fmtSize(cols, rows int) string {
 
 // pump 是读循环：把 PTY 输出写进环并广播。PTY 主端在子进程退出后返回
 // EIO（linux）或 EOF（darwin），两者都只意味着「读到头了」，不记为错误。
-func (h *Host) pump(s *session) {
+func (h *Engine) pump(s *session) {
 	b := make([]byte, readChunk)
 	for {
 		n, err := s.f.Read(b)
@@ -182,7 +138,7 @@ func (h *Host) pump(s *session) {
 //
 // 订阅通道的关闭是前端「停止重连」的唯一信号——不关，客户端会一直以为
 // 只是网络抖动。
-func (h *Host) reap(s *session) {
+func (h *Engine) reap(s *session) {
 	code := waitExitCode(s.cmd)
 	s.mu.Lock()
 	s.exited = true
@@ -214,7 +170,7 @@ func (s *session) broadcast(p []byte) {
 	}
 }
 
-func (s *session) snapshot() Session {
+func (s *session) snapshot() ptyhost.Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.meta
@@ -227,25 +183,25 @@ func (s *session) snapshot() Session {
 	return m
 }
 
-func (h *Host) get(id string) (*session, error) {
+func (h *Engine) get(id string) (*session, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	s, ok := h.sess[id]
 	if !ok {
-		return nil, ErrNoSession
+		return nil, ptyhost.ErrNoSession
 	}
 	return s, nil
 }
 
 // List 返回全部会话快照（含已退出但未被显式关闭的）。
-func (h *Host) List() []Session {
+func (h *Engine) List() []ptyhost.Session {
 	h.mu.Lock()
 	all := make([]*session, 0, len(h.sess))
 	for _, s := range h.sess {
 		all = append(all, s)
 	}
 	h.mu.Unlock()
-	out := make([]Session, 0, len(all))
+	out := make([]ptyhost.Session, 0, len(all))
 	for _, s := range all {
 		out = append(out, s.snapshot())
 	}
@@ -254,16 +210,16 @@ func (h *Host) List() []Session {
 }
 
 // Get 取单个会话快照。第二个返回值 false = 不存在。
-func (h *Host) Get(id string) (Session, bool) {
+func (h *Engine) Get(id string) (ptyhost.Session, bool) {
 	s, err := h.get(id)
 	if err != nil {
-		return Session{}, false
+		return ptyhost.Session{}, false
 	}
 	return s.snapshot(), true
 }
 
 // Write 把用户按键送进 PTY。会话已退出时返回 ErrSessionExited。
-func (h *Host) Write(id string, p []byte) error {
+func (h *Engine) Write(id string, p []byte) error {
 	s, err := h.get(id)
 	if err != nil {
 		return err
@@ -272,7 +228,7 @@ func (h *Host) Write(id string, p []byte) error {
 	exited := s.exited
 	s.mu.Unlock()
 	if exited {
-		return ErrSessionExited
+		return ptyhost.ErrSessionExited
 	}
 	if _, err := s.f.Write(p); err != nil {
 		h.log.Error("向终端会话写入失败", "session", id, "bytes", len(p), "err", err)
@@ -286,7 +242,7 @@ func (h *Host) Write(id string, p []byte) error {
 //
 // 注意：摘除是同步的、杀进程的兜底是异步的——DELETE 请求不该为了等一个
 // 赖着不走的进程而挂 2 秒。用户点了 ×，列表里就该立刻没有它。
-func (h *Host) Close(id string) error {
+func (h *Engine) Close(id string) error {
 	h.mu.Lock()
 	s, ok := h.sess[id]
 	if ok {
@@ -295,7 +251,7 @@ func (h *Host) Close(id string) error {
 	remain := len(h.sess)
 	h.mu.Unlock()
 	if !ok {
-		return ErrNoSession
+		return ptyhost.ErrNoSession
 	}
 	if err := terminatePty(s.cmd); err != nil {
 		h.log.Error("终止终端会话失败", "session", id, "pid", s.meta.PID, "err", err)
@@ -316,24 +272,11 @@ func (h *Host) Close(id string) error {
 	return nil
 }
 
-// Attachment 是一次订阅。Backlog 是建连瞬间的历史回放，Out 是后续实时输出；
-// Out 被关闭意味着会话结束（不是网络抖动），客户端应停止重连。
-type Attachment struct {
-	Backlog   []byte
-	Since     uint64
-	Truncated bool
-	Out       <-chan []byte
-
-	h   *Host
-	s   *session
-	sub *subscriber
-}
-
 // Attach 订阅一个会话，并原子地取回 since 之后的历史。
 //
 // 「原子」是关键：回放与订阅必须在同一把锁里完成，否则两者之间产生的输出
 // 会两头都不落，用户看到的历史就缺了一段。
-func (h *Host) Attach(id string, since uint64) (*Attachment, error) {
+func (h *Engine) Attach(id string, since uint64) (*ptyhost.Attachment, error) {
 	s, err := h.get(id)
 	if err != nil {
 		return nil, err
@@ -343,7 +286,7 @@ func (h *Host) Attach(id string, since uint64) (*Attachment, error) {
 		s.mu.Unlock()
 		h.log.Warn("终端会话连接数已达上限，拒绝新连接",
 			"session", id, "limit", maxSubscribers)
-		return nil, ErrTooManySubscribers
+		return nil, ptyhost.ErrTooManySubscribers
 	}
 	backlog, start, truncated := s.buf.since(since)
 	sub := &subscriber{ch: make(chan []byte, subscriberBuffer)}
@@ -359,14 +302,19 @@ func (h *Host) Attach(id string, since uint64) (*Attachment, error) {
 
 	h.log.Info("终端会话已接入", "session", id, "since", since,
 		"backlog_bytes", len(backlog), "truncated", truncated, "attached", attached)
-	return &Attachment{
-		Backlog: backlog, Since: start, Truncated: truncated, Out: sub.ch,
-		h: h, s: s, sub: sub,
-	}, nil
+	return ptyhost.NewAttachment(backlog, start, truncated, sub.ch,
+		&engineAttachOps{h: h, s: s, sub: sub}), nil
+}
+
+// engineAttachOps 是引擎注入到公共 Attachment 壳里的行为。
+type engineAttachOps struct {
+	h   *Engine
+	s   *session
+	sub *subscriber
 }
 
 // Resize 上报本订阅者的尺寸，并按「所有订阅者取最小」重新协商实际尺寸。
-func (a *Attachment) Resize(cols, rows int) error {
+func (a *engineAttachOps) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil // 客户端还没量出来，忽略而不是把 PTY 调成 0
 	}
@@ -405,7 +353,7 @@ func (a *Attachment) Resize(cols, rows int) error {
 
 // Detach 退订。**只断连接，不动进程**——这是 spec §3.2 的核心分工：
 // 关页面、切设备、组件卸载一律走这里，杀会话只有 Close 一条路。
-func (a *Attachment) Detach() {
+func (a *engineAttachOps) Detach() {
 	s := a.s
 	s.mu.Lock()
 	if _, ok := s.subs[a.sub]; ok {
@@ -418,7 +366,7 @@ func (a *Attachment) Detach() {
 }
 
 // ExitCode 返回会话的退出码，nil = 还活着。
-func (a *Attachment) ExitCode() *int {
+func (a *engineAttachOps) ExitCode() *int {
 	a.s.mu.Lock()
 	defer a.s.mu.Unlock()
 	return a.s.exitCode

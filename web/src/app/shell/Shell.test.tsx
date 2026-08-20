@@ -26,12 +26,13 @@ vi.mock('../../api/client', async () => {
     fetchTaskDetail: vi.fn(),
     fetchTaskDiff: vi.fn(),
     fetchPtySessions: vi.fn(),
+    fetchWorkbenchState: vi.fn(),
     fetchMachines: vi.fn(),
     deletePtySession: vi.fn(),
     createPtySession: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchWorkbenchState, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
 // 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
 const termInstance = {
@@ -156,6 +157,7 @@ beforeEach(() => {
   })
   vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: '' })
   vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+  vi.mocked(fetchWorkbenchState).mockResolvedValue({ selected: '', dock: '', bases: [] })
   // 本机上报支持 PTY：能力门在既有用例里必须是「放行」，否则一堆无关用例
   // 会因为终端项被收起而失败。Machine 其余字段按 /api/machines 契约给全，
   // 否则 /settings 里的 MachineDetail 会在 machine.executors 上崩
@@ -180,7 +182,7 @@ beforeEach(() => {
   vi.mocked(createPtySession).mockResolvedValue({
     id: 'new-1', machine: '', base_path: '~', base_kind: 'home', shell: '',
     created_at: '', cols: 100, rows: 30, attached: 0, pid: 0,
-    foreground: false, bytes_out: 0,
+    foreground: false, incompatible: false, bytes_out: 0,
   })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
 })
@@ -338,8 +340,8 @@ describe('Shell 三栏外框', () => {
   it('恢复时 home 会话进浮窗、工作树会话进中央', async () => {
     vi.mocked(fetchPtySessions).mockResolvedValue({
       sessions: [
-        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false },
-        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false },
+        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false, incompatible: false },
+        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false, incompatible: false },
       ],
     })
     renderShell()
@@ -413,7 +415,7 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
 const liveSession = (id: string) => ({
   id, base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh',
   created_at: '2026-08-20T00:00:00Z', cols: 120, rows: 40, attached: 1, pid: 9,
-  bytes_out: 0, foreground: false,
+  bytes_out: 0, foreground: false, incompatible: false,
 })
 
 describe('关闭一个服务端已经没有的终端会话', () => {

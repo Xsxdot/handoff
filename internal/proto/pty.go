@@ -28,6 +28,9 @@ type PtySession struct {
 	Foreground bool `json:"foreground"`
 	PID        int  `json:"pid"`
 	ExitCode   *int `json:"exit_code,omitempty"`
+	// Incompatible 表示会话由协议不兼容的旧版本托管：进程还活着，但本版接不进去，
+	// 前端只能给出「重开一个终端」的出口。不带 omitempty，false 也是明确结论。
+	Incompatible bool `json:"incompatible"`
 	// BytesOut 是该会话累计输出的字节数，也是 /ws/pty 的 since 水位。
 	BytesOut uint64 `json:"bytes_out"`
 }

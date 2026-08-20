@@ -16,7 +16,7 @@
 // 关于 ShellContext 的移除：W3 用 <Outlet context> 给三个子页面下发共享数据。
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
@@ -30,7 +30,7 @@ import { isDesktopShell } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
-import { findBaseOfTask, ProjectTree, workspaceBase } from '../tree/ProjectTree'
+import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -38,10 +38,11 @@ import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
+import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
 import { type TabContent } from '../workbench/tabs'
-import { usePtyRestore } from '../workbench/usePtyRestore'
+import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
@@ -103,21 +104,52 @@ export function Shell() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [split])
-  // 恢复服务端已有的终端会话（spec §6.1）。写入口用 restoreTerminal 而不是
-  // openTerminal：它不会把用户的选中目录拽走。
-  // 恢复出来的会话按基准分流：home 的收进浮窗，工作树的回中央工作区。
-  // 不分流的话，Task 4 之后会出现「新建的在浮窗、刷新后恢复的却在中央」
-  // 这种自相矛盾的状态。
+  // dockSnapshot 把悬浮窗的五份状态收成一个对象，供落盘层做差分。
+  // 必须 useMemo：不 memo 的话每次渲染都是新引用，写回 effect 会每帧重排一次去抖
+  const dockSnapshot: DockSnapshot = useMemo(
+    () => ({ tabs: dock.tabs, activeId: dock.activeId, windowOpen: dock.windowOpen, geom: dock.geom, maximized: dock.maximized }),
+    [dock.tabs, dock.activeId, dock.windowOpen, dock.geom, dock.maximized],
+  )
+
+  // 工作台状态的水合与写回（2026-08-20 状态同步 spec §5.3）。
+  // 它取代了旧的会话恢复入口：布局恢复与会话恢复是同一件事的两半。
   //
-  // 用 adopt 而不是 newTerminal：adopt 不打开浮窗、不抢焦点——页面一加载
-  // 就弹出浮窗，等于替用户点了一下
-  const ptyRestore = usePtyRestore((b, sessionId) => {
-    if (b.kind === 'home') {
-      dock.adopt({ id: sessionId, kind: 'terminal', seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+  // adoptDockTab 仍用 dock.adopt 而不是别的入口：adopt 不打开浮窗、不抢焦点——
+  // 页面一加载就弹出浮窗，等于替用户点了一下
+  const sync = useWorkbenchSync({
+    byBase: wb.byBase,
+    baseDirs: wb.baseDirs,
+    selectedKey: wb.base?.key ?? '',
+    dockSnapshot,
+    hydrateWorkbench: wb.hydrate,
+    hydrateDock: dock.hydrate,
+    adoptDockTab: dock.adopt,
+  })
+
+  // 恢复「上次选中的目录」：要等项目树到位才能校验它还在不在（spec §6 规则三）。
+  //
+  // 三个条件缺一不可：
+  //   - 树已加载（没树就无从校验）
+  //   - 服务端确实存了一个（空串 = 上次就没选中）
+  //   - 用户还没自己选过（wb.base 非空说明他已经点过左栏了，别抢方向盘）
+  // selectedRestoredRef 保证只做一次：树刷新会让这个 effect 重跑，
+  // 而用户此时可能已经切到别的目录了
+  const selectedRestoredRef = useRef(false)
+  useEffect(() => {
+    if (selectedRestoredRef.current) return
+    if (!treeState.data || sync.restoredSelected === '' || wb.base !== null) return
+    selectedRestoredRef.current = true
+    const found = findBaseByKey(treeState.data, sync.restoredSelected)
+    if (found === null) {
+      // 目录已经不在树上了（worktree 被回收、项目被注销）。退回未选中态，
+      // 而不是摆出一栏点什么都报错的 tab
+      console.debug('上次选中的目录已不在树上，退回未选中态', sync.restoredSelected)
       return
     }
-    wb.restoreTerminal(b, sessionId)
-  })
+    // 用树上重新构造的那份，而不是 payload 里的快照：树上的 label 会跟着
+    // 分支改名一起变，用快照会让面包屑显示一个已经改掉的旧分支名
+    wb.select(found)
+  }, [treeState.data, sync.restoredSelected, wb.base, wb.select])
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与 tab id 都要留着：
   // 确认之后要先删会话、再关那个 tab
   //
@@ -334,8 +366,8 @@ export function Shell() {
         {treeState.disconnected && !treeState.sessionExpired && (
           <DisconnectedBanner message={treeState.errorText} compact />
         )}
-        {ptyRestore.error !== '' && (
-          <DisconnectedBanner message={`终端会话恢复失败：${ptyRestore.error}`} compact />
+        {sync.error !== '' && (
+          <DisconnectedBanner message={`工作台状态恢复失败，本次不会保存布局：${sync.error}`} compact />
         )}
         {treeState.data && (
           <ProjectTree
@@ -398,9 +430,10 @@ export function Shell() {
                             seq={c.seq}
                             sessionId={c.sessionId}
                             rel={c.rel}
+                            incompatible={c.incompatible}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
-                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
+                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
                           />
                         )
                       }
@@ -478,6 +511,7 @@ export function Shell() {
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
+                incompatible={t.incompatible}
                 onSession={(id) => dock.setSession(t.id, id)}
               />
             )

@@ -28,11 +28,7 @@ func TestForwardWSPtyEndToEnd(t *testing.T) {
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	t.Setenv("HOME", t.TempDir())
-	_, body := ptyPost(t, remote, `{"base_kind":"home","cols":80,"rows":24}`)
-	var s proto.PtySession
-	if err := json.Unmarshal(body, &s); err != nil {
-		t.Fatalf("解析建会话响应: %v；体=%s", err, body)
-	}
+	s := ptyCreate(t, remote, `{"base_kind":"home","cols":80,"rows":24}`)
 	t.Cleanup(func() { _ = remote.srv.pty.Close(s.ID) })
 
 	url := strings.Replace(local.ts.URL, "http://", "ws://", 1) +

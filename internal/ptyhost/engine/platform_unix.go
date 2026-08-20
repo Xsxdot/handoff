@@ -12,7 +12,7 @@
 //
 // 日志：本文件不打日志。所有错误原样上抛，由 ptyhost.go 带着会话 id 统一记录，
 // 避免同一个失败在两层各留一条无法关联的记录。
-package ptyhost
+package engine
 
 import (
 	"errors"
@@ -24,7 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ptySupported 是本平台的能力常量，经 Host.Supported() 上报到 /api/status。
+// ptySupported 是本平台的能力常量，经 Engine.Supported() 上报到 /api/status。
 const ptySupported = true
 
 // startPty 在新伪终端里启动一个 login shell。

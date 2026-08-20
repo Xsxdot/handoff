@@ -1,0 +1,11 @@
+{
+  "selected": "/Users/dev/repo@linux-01",
+  "dock": "{\"v\":1,\"windowOpen\":true}",
+  "bases": [
+    {
+      "base_key": "/Users/dev/repo@linux-01",
+      "payload": "{\"v\":1,\"base\":{\"kind\":\"workspace\"},\"wb\":{\"active\":0}}",
+      "updated_at": 1755648000000
+    }
+  ]
+}
