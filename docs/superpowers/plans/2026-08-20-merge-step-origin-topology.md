@@ -261,8 +261,16 @@ func TestMergeScriptPushesBothRefs(t *testing.T) {
 	if !strings.Contains(script, "git push origin HEAD:'integration/y'") {
 		t.Fatalf("缺基线推送（D4），且必须用 HEAD: 显式 refspec：\n%s", script)
 	}
-	if strings.Contains(script, "--force") {
-		t.Fatalf("不得强推：\n%s", script)
+	// 红线是「推送不得强推」，不是「脚本里不许出现 --force」——trap 里的
+	// git worktree remove --force 是清理临时目录所必需（目录有改动时不带
+	// --force 会被拒，清理失败会留下残骸）。所以按行判，只盯 git push。
+	for _, line := range strings.Split(script, "\n") {
+		if !strings.Contains(line, "git push") {
+			continue
+		}
+		if strings.Contains(line, "--force") || strings.Contains(line, "--force-with-lease") || strings.Contains(line, " -f ") {
+			t.Fatalf("推送不得强推：%s", line)
+		}
 	}
 }
 
