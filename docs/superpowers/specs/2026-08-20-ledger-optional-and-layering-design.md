@@ -14,7 +14,7 @@
    系统里根本没有「账本未启用」这个状态。用户裁决：**不能要求所有用户都用
    这个功能**，可选边界 = skill + 前端入口。
 2. **两条回路在 skill 里打架**。任务回路（dispatch→wait→分诊）与账本回路
-   （card dispatch→card wait→节点）看似两条主循环，spec §7 改写会与现有
+   （card dispatch→card wait→自动环节）看似两条主循环，spec §7 改写会与现有
    handoff skill 四节冲突。讨论定案：**分层，不是动词融合**——账本回路是
    把任务回路**包了一层**，外层管卡的调度，内层处置具体 task 事件时用的
    还是原动词（reply/approve/continue），分诊表、审批纪律、排障全部共享。
@@ -85,7 +85,7 @@ backlog 的 done(未验)，evidence 可空）。actor 用 `ledgerActor()`。
 
 `card needs <id> <reason...>` 调 `MarkNeedsHuman`（reason 必填，store
 已强制）；`card needs <id> --clear` 调 `ClearNeedsHuman`。回合末四分法
-的「阻断需人工」一格由此有门。节点执行器自动打的标记与手工打的同源同显。
+的「阻断需人工」一格由此有门。环节执行体自动打的标记与手工打的同源同显。
 
 ## 5. Web 门控
 
@@ -132,12 +132,12 @@ Shell 启动时查一次 `/api/ledger/health`：
 
 ## 7. 明确不做（本轮）
 
-- web 的验收开关 UI、「按节点派发」按钮、子任务树 rollup——留 backlog
+- web 的验收开关 UI、「按环节派发」按钮、子任务树 rollup——留 backlog
   按痛感排（交接文档 A 组）。
 - §8 存量切换与 backlog.md 冻结——用户定案先试用两天再切。
 - 本分支合回 main——用户决定「用一段时间再合」，main 已反向合入
   （`884f09a6d`）。
-- 合并节点 origin 依赖等 D 组三条观察——切换前另行定夺，不混进本轮。
+- 合并环节 origin 依赖等 D 组三条观察——切换前另行定夺，不混进本轮。
 - status 命令加账本面板——撤销（见 §2）。
 
 ## 8. 验收判据

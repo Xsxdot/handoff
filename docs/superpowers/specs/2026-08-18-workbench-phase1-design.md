@@ -10,7 +10,7 @@
 
 **目标**：把 backlog 从 markdown 总账搬进中心账本库，成为带合并/拆分、
 阻塞边、自定义状态、工作流/派发模板双聚合的一等实体；事件镜像把跨机 task 事件
-汇成账本单流；看板作为不说谎的注意力平面；CLI + 节点执行器支撑主会话按工作流
+汇成账本单流；看板作为不说谎的注意力平面；CLI + 环节执行体支撑主会话按工作流
 驱动推进；账本单流多路 wait 支撑「全程一个 wait」。
 
 **非目标**（蓝图二期以后）：事件自动触发、群聊、富评论、上下文文档实体化、
@@ -40,7 +40,7 @@
   版本、`attachments`（附件引用集：{kind: spec/plan/doc, path} 列表，路径归一
   为相对 docs/superpowers/ 的规范形）、`acceptance_criteria`（判据文本，每卡
   独立）、`base_branch`（**基线分支**，可空：空 = 继承最近显式设置的祖先卡，
-  顶层也空 = 项目默认主线。派发的工作分支从基线拉出，合并节点的自动合并目标 =
+  顶层也空 = 项目默认主线。派发的工作分支从基线拉出，合并环节的自动合并目标 =
   基线；蓝图 §3.1）、driver lease（会话标识 + 心跳时间）、时间戳。**不强制出
   spec**——spec 是否必须由工作流 gate 决定（见 workflows）。
 - `card_relations`：`from → to` + `type` 枚举 {blocks / merged_into（并入）/
@@ -262,12 +262,12 @@ CREATE TABLE mirror_cursors (
   `split <id> <标题>`：拆子卡（自动挂 split_from）。
 - `handoff card note <id> <text>`：记一笔。
 - `handoff card move <id> <status>`：CAS 状态转移（带前值校验，冲突干净失败）。
-- `handoff card dispatch <id> [--node <节点>]`：按模板拼装 prompt + 纪律块，走
+- `handoff card dispatch <id> [--node <环节>]`：按模板拼装 prompt + 纪律块，走
   现有 dispatch 通道；**派发即认领**（待办→进行中 的 CAS 就是 claim，第二个
   会话干净失败并提示「已被 X 认领」）；task 回链 + 模板版本快照落事件。
-  **`--node review|merge` 是节点执行器入口，不走认领语义**（卡此刻在
+  **`--node review|merge` 是环节执行体入口，不走认领语义**（卡此刻在
   「待审阅」，复用认领 CAS 会把卡拉回「进行中」、第二轮审阅死锁）——审阅
-  派发只挂账 + 快照，卡状态由节点结论驱动。
+  派发只挂账 + 快照，卡状态由环节结论驱动。
 - `handoff workflow ...` / `handoff template ...`：双聚合分开管理。
 - `handoff wait --card <id> [--subtree]`：**账本单流多路 wait**。订阅卡子树
   事件流（含镜像 task 事件），wait 挂起期间新派发的 task 天然进流；退出条件 =
@@ -280,11 +280,11 @@ CREATE TABLE mirror_cursors (
 - **executor 白名单不扩**：新增 card/workflow/template/decision 命令均不进 B115 自指令
   白名单，executor 永不写账。
 
-## 5. 节点执行器（落码，不留 prose）
+## 5. 环节执行体（落码，不留 prose）
 
 一期新增的唯一「编排」构件，主会话/看板按钮共用（三期规则引擎复用）：
 
-- 输入：卡 + 节点定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
+- 输入：卡 + 环节定义（模板引用）；动作：派发审阅/合并 task、解析结构化裁决、
   落账、决定下一步。
 - **裁决 schema 与通道（定案）**：executor 不写账（白名单不扩），裁决通道 =
   审阅 task 最终报文的文本契约。约定：报文末尾一个 fenced block，语言标记
@@ -296,12 +296,12 @@ CREATE TABLE mirror_cursors (
   `review_verdict`，payload = 解析结果 + 原文引用。审阅类 dispatch_template
   的 prompt 模板**必须包含这份输出契约原文**——契约随模板版本化，改契约 =
   出新模板版本。
-- **回合计数**：按 卡 × 节点粒度，从 card_events 推导（不存内存）；
+- **回合计数**：按 卡 × 环节粒度，从 card_events 推导（不存内存）；
   默认封顶 3 轮，超限打「等人」；人工插手（用户手动 continue/改裁决）是否重置
   计数：**重置**（人工介入视为新基线），落事件注明。
-- 合并节点：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；**自动
+- 合并环节：客观判据先行（测试、gofmt），LLM 裁决 pass 仅为必要条件；**自动
   合并目标 = 卡的有效基线分支**——基线是集成分支时自动合回，基线就是 main 时
-  该节点不自动合、直接打「待合并」等人（两级合并策略的退化形）；冲突打
+  该环节不自动合、直接打「待合并」等人（两级合并策略的退化形）；冲突打
   「等人」，冲突文件清单 + 双方 commit 范围落 timeline；合并顺序按 done 时序。
 - 审阅 task 的生命周期由执行器收口（裁决落账后自动 `done` 归档），不留孤儿。
 
@@ -342,7 +342,7 @@ CREATE TABLE mirror_cursors (
   关联 task 跳转、**分层 timeline**（评论=气泡主视觉，系统事件=浅色 meta 行，
   镜像 task 事件折叠成组，全部/评论/裁决/系统过滤）、评论框（`#B142` 引用自动
   成关系边，双向可见）。
-- 一键动作（人工插手通道）：转移状态、按节点派发——调用与主会话同一节点执行器。
+- 一键动作（人工插手通道）：转移状态、按环节派发——调用与主会话同一环节执行体。
 - **流程管理页**（独立页，不塞 settings）：工作流 / 派发模板两个 tab，各自
   版本列表 +「N 张卡钉在 vX」+ 显式迁移动作；模板详情含 per-target 模型
   覆盖、纪律块正文与 hash、版本取证（哪次派发用了哪版）。
@@ -355,7 +355,7 @@ CREATE TABLE mirror_cursors (
   comment(kind=更正)；请示裁决→`decision open`；阻断需人工→等人标记。聊天
   prose 照旧，账本是结构化副本。
 - 派发前查账防重复开工；派发即认领；挂账本单流多路 wait。
-- 子任务完成 → 推「待审阅」→ 调节点执行器（审阅→裁决→continue 或合并→已完成）
+- 子任务完成 → 推「待审阅」→ 调环节执行体（审阅→裁决→continue 或合并→已完成）
   → 查阻塞图派下一个。
 - 全部完成 → 整功能验收（主会话亲自）→ 父卡进「待合并」等用户合 main。
 - 验收后发现 bug：开新卡挂关联，不 reopen。
@@ -398,7 +398,7 @@ CREATE TABLE mirror_cursors (
   审 spec / 整功能验收 / 合 main 三个位置。
 ② **审阅 3 轮封顶**：用判据故意造 fail 的审阅模板连跑；第 3 次 `review_verdict
   (fail)` 后卡带等人(reason=审阅超轮)。判法：`card show` 显示等人；事件流中该
-  卡×审阅节点的 review_verdict 恰 3 条。
+  卡×审阅环节的 review_verdict 恰 3 条。
 ③ **blocker 终止不解锁**：`card close --reason 取消` 一个 blocker。判法：下游
   `card show` 仍 blocked 且新增等人(reason=前置终止)；`card list --needs`
   能过滤出它。
@@ -432,5 +432,5 @@ CREATE TABLE mirror_cursors (
   被拒且报错文案指明缺附件；`card update --attach spec:<path>` 后同命令成功。
 ⑭ **基线分支并行**：epic 父卡设 base_branch=集成分支，其子卡与一张顶层
   main 热修卡并行派发。判法：两个 task 的工作分支 `git merge-base` 实测分别
-  落在各自基线上；合并节点把子卡合回集成分支（自动），热修卡不自动合、进
+  落在各自基线上；合并环节把子卡合回集成分支（自动），热修卡不自动合、进
   「待合并」；跨基线 `card merge` 被拒且报错指明两侧基线。
