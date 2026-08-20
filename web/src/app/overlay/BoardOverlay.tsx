@@ -28,8 +28,10 @@ export interface BoardOverlayProps {
 }
 
 export function BoardOverlay({ tasksState, tree, unlinkedTaskIds, ledgerEnabled = false, onOpenTask, onClose }: BoardOverlayProps) {
+  // 账本未启用时看板就是任务主入口，「未挂账兜底」会暴露不存在的账本概念。
+  const title = ledgerEnabled ? '任务看板（未挂账兜底）' : '任务看板'
   return (
-    <Overlay title="任务看板（未挂账兜底）" onClose={onClose} wide tall>
+    <Overlay title={title} onClose={onClose} wide tall>
       <BoardPage
         tasksState={tasksState}
         tree={tree}

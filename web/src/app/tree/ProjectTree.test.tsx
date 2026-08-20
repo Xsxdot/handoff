@@ -274,6 +274,13 @@ describe('ProjectTree', () => {
     expect(screen.queryByRole('button', { name: '开发机' })).not.toBeInTheDocument()
   })
 
+  it('账本未启用时任务看板标题不带未挂账', () => {
+    render(<ProjectTree {...props({ ledgerEnabled: false })} />)
+    const board = screen.getByRole('button', { name: '任务看板' })
+    expect(board).toHaveAttribute('title', '任务看板')
+    expect(board.getAttribute('title')).not.toContain('未挂账')
+  })
+
   it('底部四个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()

@@ -119,6 +119,20 @@ describe('BoardOverlay', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
+  it('账本未启用时看板标题不带未挂账', () => {
+    render(
+      <BoardOverlay
+        tasksState={pollState([task])}
+        tree={tree}
+        ledgerEnabled={false}
+        onOpenTask={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('dialog', { name: '任务看板' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /未挂账/ })).not.toBeInTheDocument()
+  })
+
   it('筛选栏在弹层内，且每次打开都是空筛选', () => {
     const { unmount } = render(
       <BoardOverlay tasksState={pollState([task])} tree={tree} onOpenTask={vi.fn()} onClose={vi.fn()} />,

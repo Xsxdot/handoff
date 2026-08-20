@@ -732,7 +732,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         <button
           type="button"
           aria-label="任务看板"
-          title="任务看板（未挂账兜底）"
+          // 账本未启用时看板就是任务主入口，标题不应引入「未挂账」概念。
+          title={ledgerEnabled ? '任务看板（未挂账兜底）' : '任务看板'}
           onClick={onOpenBoard}
           className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >
