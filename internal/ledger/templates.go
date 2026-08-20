@@ -37,9 +37,9 @@ type TemplateDef struct {
 // legacyDisciplinePaths 是废弃的 discipline_path 取值 → 角色名的映射表。
 // 只认这三个出厂过的文件名：认不出来的自定义路径没法猜，映射为空退回兜底。
 var legacyDisciplinePaths = map[string]string{
-	"block-" + "review.md": "review",
-	"block-" + "a.md":      "implement",
-	"block-" + "b.md":      "implement",
+	"block-review.md": "review",
+	"block-a.md":      "implement",
+	"block-b.md":      "implement",
 }
 
 // disciplineNameFromLegacyPath 把废弃的 discipline_path 换算成角色名。

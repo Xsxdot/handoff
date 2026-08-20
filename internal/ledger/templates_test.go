@@ -7,12 +7,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
-const legacyDisciplineDir = "docs/superpowers/discipline"
-
-func legacyDisciplinePath(file string) string {
-	return legacyDisciplineDir + "/" + file
-}
-
 func TestTemplateVersioningAndDefaults(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.EnsureDefaultTemplates(); err != nil {
@@ -62,9 +56,9 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 // 退回 executor 兜底的实现块（正是本轮要修的缺陷换个方式复活）。
 func TestTemplateLegacyDisciplinePathMaps(t *testing.T) {
 	for _, tc := range []struct{ path, want string }{
-		{legacyDisciplinePath("block-" + "review.md"), "review"},
-		{legacyDisciplinePath("block-" + "a.md"), "implement"},
-		{legacyDisciplinePath("block-" + "b.md"), "implement"},
+		{"docs/superpowers/discipline/block-review.md", "review"},
+		{"docs/superpowers/discipline/block-a.md", "implement"},
+		{"docs/superpowers/discipline/block-b.md", "implement"},
 	} {
 		got := disciplineNameFromLegacyPath(tc.path)
 		if got != tc.want {
@@ -86,7 +80,7 @@ func TestGetTemplateMapsLegacyRow(t *testing.T) {
 	st := newTestStore(t)
 	if _, err := st.PutTemplate("legacy-review", TemplateDef{
 		Executor: "grok", Purpose: PurposeReview, BranchPrefix: "cards",
-		DisciplinePath: legacyDisciplinePath("block-" + "review.md"),
+		DisciplinePath: "docs/superpowers/discipline/block-review.md",
 		Prompt:         "审阅",
 	}); err != nil {
 		t.Fatalf("PutTemplate: %v", err)
@@ -105,7 +99,7 @@ func TestGetTemplateNewFieldWins(t *testing.T) {
 	st := newTestStore(t)
 	if _, err := st.PutTemplate("both", TemplateDef{
 		Executor: "grok", Purpose: PurposeReview, BranchPrefix: "cards",
-		Discipline: "review", DisciplinePath: legacyDisciplinePath("block-" + "a.md"),
+		Discipline: "review", DisciplinePath: "docs/superpowers/discipline/block-a.md",
 		Prompt: "审阅",
 	}); err != nil {
 		t.Fatalf("PutTemplate: %v", err)
