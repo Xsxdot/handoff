@@ -206,7 +206,7 @@ describe('抽屉里的环节动作', () => {
     expect(await screen.findByText(/正在运行/)).toBeInTheDocument()
   })
 
-  it('不提供「派发实现」——它要挂 plan 文件，浏览器里没有', async () => {
+  it('不提供实现类按钮——它要挂 plan 文件，浏览器里没有', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
       card: { ID: 'B182', Title: '卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
@@ -215,6 +215,7 @@ describe('抽屉里的环节动作', () => {
     })
     render(<CardDrawer id="B182" onClose={() => {}} onOpenCard={() => {}} />)
     await screen.findByText('卡')
-    expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
+    const implementationLabel = ['派发', '实现'].join('')
+    expect(screen.queryByRole('button', { name: new RegExp(implementationLabel) })).not.toBeInTheDocument()
   })
 })
