@@ -19,7 +19,7 @@ import (
 	"strings"
 )
 
-// systemdManager 是 Linux 实现。四个字段是测试缝。
+// systemdManager 是 Linux 实现。五个字段是测试缝。
 type systemdManager struct {
 	log       *slog.Logger
 	unitDir   string
@@ -27,6 +27,9 @@ type systemdManager struct {
 	run       func(name string, args ...string) ([]byte, error)
 	writeFile func(path string, data []byte, perm uint32) error
 	remove    func(path string) error
+	// stat 用来判断 unit 文件在不在，即「装没装」。做成缝是为了让
+	// 「装了但没跑」「没装」这两种状态在测试里都构造得出来
+	stat func(path string) (os.FileInfo, error)
 }
 
 // newSystemd 构造生产用的 systemd manager。
@@ -44,6 +47,7 @@ func newSystemd(log *slog.Logger) *systemdManager {
 		},
 		writeFile: func(p string, b []byte, perm uint32) error { return os.WriteFile(p, b, os.FileMode(perm)) },
 		remove:    os.Remove,
+		stat:      os.Stat,
 	}
 }
 
@@ -145,23 +149,114 @@ func (m *systemdManager) rollback(path string) {
 	}
 }
 
-// Start 启动一个已安装的单元，不重写 unit 文件、不 daemon-reload。
+// ensureInstalled 在做任何变更前确认 unit 文件在。
 //
-// 单元没装时 systemctl start 会失败，调用方据此回落到 Install。
-func (m *systemdManager) Start() error {
-	if out, err := m.run("systemctl", "start", SystemdUnit); err != nil {
-		m.log.Error("启动 systemd 服务失败", "unit", SystemdUnit,
-			"cause", err, "output", strings.TrimSpace(string(out)))
-		return fmt.Errorf("启动 systemd 服务失败: %s（%w）", strings.TrimSpace(string(out)), err)
+// 返回：unit 路径；不在时返回包装了 ErrNotInstalled 的错误
+func (m *systemdManager) ensureInstalled() (string, error) {
+	path, err := m.UnitPath()
+	if err != nil {
+		return "", err
 	}
-	// 复核理由同 Install：start 返回 0 只说明请求被受理，起来即退出照样「成功」
-	if out, err := m.run("systemctl", "is-active", SystemdUnit); err != nil {
+	if _, statErr := m.stat(path); statErr != nil {
+		m.log.Error("单元未安装", "unit", SystemdUnit, "path", path, "cause", statErr)
+		return "", errNotInstalled(path)
+	}
+	return path, nil
+}
+
+// Start 启动已安装的单元，并恢复开机自启。
+//
+// 返回：错误——unit 不在（ErrNotInstalled）、enable --now 失败、
+// 或复核不到 active
+//
+// 注意：
+//   - **用 enable --now 而不是裸 start。** Stop 用 disable 摘掉了开机自启，
+//     只 start 能把它跑起来但下次开机又没了；「显式 start 之后恢复原状」
+//     才是这里的目标
+//   - 不重写 unit 文件、不 daemon-reload：那是 Install 的职责
+//   - 不代为 Install
+func (m *systemdManager) Start() error {
+	path, err := m.ensureInstalled()
+	if err != nil {
+		return err
+	}
+	m.log.Info("启动 systemd 服务", "unit", SystemdUnit, "path", path)
+	if out, serr := m.run("systemctl", "enable", "--now", SystemdUnit); serr != nil {
+		m.log.Error("启动 systemd 服务失败", "unit", SystemdUnit,
+			"cause", serr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s（%w）", sudoHint("启动", strings.TrimSpace(string(out))), serr)
+	}
+	// 复核：enable --now 返回 0 只说明请求被受理，起来即退出照样「成功」
+	if out, aerr := m.run("systemctl", "is-active", SystemdUnit); aerr != nil {
 		m.log.Error("服务已触发但未 active", "unit", SystemdUnit,
-			"cause", err, "output", strings.TrimSpace(string(out)))
-		return fmt.Errorf("服务已触发但未 active（可能起来即退出）: %s（%w）",
-			strings.TrimSpace(string(out)), err)
+			"cause", aerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("服务已触发但未处于活跃状态（可能起来即退出，查 journalctl -u %s）: %s（%w）",
+			SystemdUnit, strings.TrimSpace(string(out)), aerr)
 	}
 	m.log.Info("systemd 服务已启动", "unit", SystemdUnit)
+	return nil
+}
+
+// Stop 停止服务并关掉开机自启，直到显式 Start。
+//
+// 返回：错误——unit 不在（ErrNotInstalled）、disable --now 失败、
+// 或复核到它仍然 active
+//
+// 注意：
+//   - **用 disable --now 而不是裸 stop。** 只 stop 的话 unit 还是 enabled，
+//     下次开机 systemd 照样把它拉起来，「停到显式 start」撑不过一次重启
+//   - unit 里的 Restart=always 不会跟显式 stop 打架：systemd 的重启策略只对
+//     「进程自己退出」生效，对 systemctl stop 不生效
+func (m *systemdManager) Stop() error {
+	path, err := m.ensureInstalled()
+	if err != nil {
+		return err
+	}
+	m.log.Info("停止并停用 systemd 服务", "unit", SystemdUnit, "path", path)
+	if out, derr := m.run("systemctl", "disable", "--now", SystemdUnit); derr != nil {
+		m.log.Error("停止 systemd 服务失败", "unit", SystemdUnit,
+			"cause", derr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s（%w）", sudoHint("停止", strings.TrimSpace(string(out))), derr)
+	}
+	// 复核：is-active 仍返回 0 说明它还活着，那时报「已停止」就是撒谎
+	if out, aerr := m.run("systemctl", "is-active", SystemdUnit); aerr == nil {
+		m.log.Error("已请求停止但仍处于活跃状态", "unit", SystemdUnit,
+			"output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("已请求停止，但 unit 仍处于活跃状态: %s", strings.TrimSpace(string(out)))
+	}
+	m.log.Info("systemd 服务已停止并停用", "unit", SystemdUnit)
+	return nil
+}
+
+// Restart 就地重启，不重写 unit、不 daemon-reload。
+//
+// 返回：错误——unit 不在（ErrNotInstalled）、restart 失败、或复核不到 active
+//
+// 注意：
+//   - systemctl restart 默认发 SIGTERM，配合 unit 里的 KillMode=process，
+//     执行者不会被连坐（B36）
+//   - 它是**同步**的：返回时新实例已经起来。所以复核一次 is-active 就够，
+//     不像 launchd 那样要轮询等 KeepAlive 把它拉回来
+//   - 单元当前没在跑（含被 Stop 停住）时，systemctl restart 会直接把它启起来
+//     ——与 Manager.Restart 的约定一致，无需在这里特判
+func (m *systemdManager) Restart() error {
+	path, err := m.ensureInstalled()
+	if err != nil {
+		return err
+	}
+	m.log.Info("重启 systemd 服务", "unit", SystemdUnit, "path", path)
+	if out, rerr := m.run("systemctl", "restart", SystemdUnit); rerr != nil {
+		m.log.Error("重启 systemd 服务失败", "unit", SystemdUnit,
+			"cause", rerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s（%w）", sudoHint("重启", strings.TrimSpace(string(out))), rerr)
+	}
+	if out, aerr := m.run("systemctl", "is-active", SystemdUnit); aerr != nil {
+		m.log.Error("已重启但未 active", "unit", SystemdUnit,
+			"cause", aerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("已重启但未处于活跃状态（可能起来即退出，查 journalctl -u %s）: %s（%w）",
+			SystemdUnit, strings.TrimSpace(string(out)), aerr)
+	}
+	m.log.Info("systemd 服务已重启", "unit", SystemdUnit)
 	return nil
 }
 
@@ -189,18 +284,52 @@ func (m *systemdManager) Uninstall() error {
 	return nil
 }
 
-// Status 查询 unit 是否装了、是否活跃。
+// Status 查询 unit 是否装了、是否活跃、是否被停用。
+//
+// 返回：
+//   - Status：Installed 看 unit 文件在不在，Running 看 is-active，
+//     Disabled 看 is-enabled
+//   - 错误：恒为 nil。「没装」「没跑」「停用了」都是正常答案
+//
+// 注意：
+//   - is-enabled 的输出是稳定的英文枚举（enabled/disabled/static/...），
+//     不随 locale 变，可以按文本判。disabled 时它返回非 0，所以不看 err
 func (m *systemdManager) Status() (Status, error) {
-	out, err := m.run("systemctl", "is-active", SystemdUnit)
-	detail := firstLine(string(out))
-	if err != nil {
-		// is-active 对 inactive/failed/not-found 都返回非 0。这些都是正常答案。
-		// 用 unit 文件在不在来区分「没装」与「装了没跑」
-		path, _ := m.UnitPath()
-		if _, statErr := os.Stat(path); statErr == nil {
-			return Status{Installed: true, Running: false, Detail: detail}, nil
-		}
-		return Status{Detail: detail}, nil
+	s := Status{}
+	path, _ := m.UnitPath()
+	if _, statErr := m.stat(path); statErr == nil {
+		s.Installed = true
 	}
-	return Status{Installed: true, Running: true, Detail: detail}, nil
+	out, err := m.run("systemctl", "is-active", SystemdUnit)
+	s.Detail = firstLine(string(out))
+	if err == nil {
+		s.Installed = true
+		s.Running = true
+	}
+	if eout, _ := m.run("systemctl", "is-enabled", SystemdUnit); strings.TrimSpace(firstLine(string(eout))) == "disabled" {
+		s.Disabled = true
+	}
+	m.log.Debug("systemd 服务状态", "unit", SystemdUnit,
+		"installed", s.Installed, "running", s.Running, "disabled", s.Disabled)
+	return s, nil
+}
+
+// sudoHint 在 systemctl 的输出里认出权限不足，并把报文换成可执行的处置。
+//
+// 参数：
+//   - action: 正在做的事，用于拼报文（如「停止」「启动」「重启」）
+//   - output: systemctl 的原文
+//
+// 返回：面向用户的报文。权限不足时带上「请用 sudo 重跑」，否则原样带出原文
+//
+// 注意：B45 的教训——system unit 落在 /etc/systemd/system，所有变更类操作
+// 都要 root；扁平抛一句 Access denied，用户不知道下一步该干什么
+func sudoHint(action, output string) string {
+	low := strings.ToLower(output)
+	for _, sig := range []string{"access denied", "permission denied", "interactive authentication required"} {
+		if strings.Contains(low, sig) {
+			return fmt.Sprintf("%s systemd 服务需要 root 权限，请用 sudo 重跑：%s", action, output)
+		}
+	}
+	return fmt.Sprintf("%s systemd 服务失败: %s", action, output)
 }

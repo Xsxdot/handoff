@@ -8,8 +8,8 @@
 //     wizard-form / wizard-submit / wizard-error 的收发通道，不在
 //     这里加任何字段、不定义任何默认值
 //   - **不在退出路径上停 agentd**（spec §4.3 承重）
-//   - 托盘不提供「停止 agentd」。**不做「停止 agentd」**：
-//     service.Manager 没有 Stop，用 Uninstall 冒充是错的语义
+//   - 托盘不提供「停止 agentd」。这是产品决定而非能力缺失：薄壳是 agentd
+//     的观察窗，不是它的开关；要停用 CLI 的 handoff service stop
 package main
 
 import (
