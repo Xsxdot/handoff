@@ -1,172 +1,215 @@
-# 账本可选化与命令分层 实现计划
+# 账本可选化与命令分层 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) 语法跟踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 账本功能变为显式 opt-in（`ledger.enabled`，默认关），执行域命令回到零 card 感知（`wait --card` 搬到 `card wait`），并补齐验收（`card accept`）与等人标记（`card needs`）两个写入口。
+**Goal:** 让账本域（任务卡）成为**默认关闭的可选功能**，并把混进执行域的 `wait --card` 搬回 `card` 族，同时补上「验收结果」与「等人标记」两个缺失的 CLI 写入口。
 
-**Architecture:** 一个机器级开关喂三面——agentd（不开库、不起镜像、health 探针恒 200 报 enabled）、CLI（`openLedger()` 单点拦截）、web（dock/路由/看板筛选按探针门控）。执行域与账本域分层：核心动词零 ledger 引用，账本域三族命令包装执行域。
+**Architecture:** 加一个机器级开关 `ledger.enabled`（默认 false），单点拦截喂三面——CLI 在 `openLedger()` 拦、agentd 在启动时不开库不起镜像、web 用 `/api/ledger/health` 探测后条件渲染入口。执行域动词（`dispatch/wait/reply/continue/approve/done`）零 card 感知，账本三族（`card`/`workflow`/`decision`）包装执行域。
 
-**Tech Stack:** Go（cobra CLI、`log/slog`、内部 `internal/ledger` store）、React + TS（vitest + testing-library）。
+**Tech Stack:** Go 1.x（cobra CLI、`database/sql`、SQLite/PG 双方言）、React + TypeScript + Vite（web/，vitest + testing-library）。
 
-**Spec:** `docs/superpowers/specs/2026-08-20-ledger-optional-and-layering-design.md`
+**上游 spec:** `docs/superpowers/specs/2026-08-20-ledger-optional-and-layering-design.md`（本 plan 是它的 §3/§4/§5 落地；**§6 的 skill 改写不在本 plan 范围内**，由协调者另行完成）
 
 ## Global Constraints
 
-- 工作分支基线：`feat/b156-workbench-ledger`（不是 main）。
-- Go 日志一律 `log/slog`（agentd 侧沿用现有 `logger` 变量），**禁止 `fmt.Printf` 当日志**；web 侧禁止 `console.log`。
-- **任何日志不得输出 `cfg.Ledger.DSN` 的值**——DSN 含库凭据。
-- 新文件必须有文件头注释（职责 + 边界）；导出函数必须有 doc comment；非显然分支写「为什么」的中文注释。
-- 每个 task 结束跑 `gofmt -l . | grep -v '^web/'`（应无输出）再 commit。
-- CLI 命令的 stdout 契约：单 JSON 对象/逐行 JSON，人读的提示走 stderr——与既有 card 族一致。
-- 不改 `skills/handoff/SKILL.md`（skill 改写由审核者本地完成，不在本计划内）。
-- 不做：web 验收 UI、「按节点派发」按钮、子树 rollup、存量切换（spec §7）。
+- **日志用 `logger` / `slog`，禁止 `fmt.Printf` 作为日志机制**。Go 侧本仓约定见既有代码（`internal/ledger/log.go` 的 `log()`、`cmd/` 侧 `slog`）。web 侧**禁止 `console.log`**（既有红线）。
+- 新建文件必须有文件头注释（职责 + 边界）；导出函数必须有 doc 注释；非显然分支写「为什么」的中文注释。
+- 中文注释与中文错误文案，与仓库既有风格一致。
+- **gofmt 必须干净**：`gofmt -l . | grep -v '^web/'` 应无输出（历史教训：执行者的 ledger 会漏 gofmt）。
+- 每个 task 独立提交，提交信息用中文，遵循 `type(scope): 说明` 格式。
+- **不要动 `skills/handoff/SKILL.md`**——那一节由协调者本地写。
+- **不要碰 `docs/superpowers/backlog.md`**。
+- 分支上已有的账本实现是已验收的，除本 plan 明确指出的点外**不重构、不改名、不"顺手优化"**。
 
 ---
 
-### Task 1: `ledger.enabled` 配置开关
+### Task 1: `ledger.enabled` 配置字段 + CLI 单点拦截
 
 **Files:**
-- Modify: `internal/config/config.go:143`（LedgerConfig）、`internal/config/config.go`（decodeStrict 报错文案，搜 `ledger{dsn}`）
-- Test: `internal/config/config_test.go`
+- Modify: `internal/config/config.go:143-147`（`LedgerConfig` 加字段）、`internal/config/config.go:533`（`decodeStrict` 错误文案的已知键清单）
+- Modify: `cmd/ledgercli.go`（`openLedger()` 开头拦截）
+- Modify: `cmd/ledgercli_test.go:21-35`（测试基座写 config 时打开开关）
+- Test: `cmd/ledgercli_test.go`
 
 **Interfaces:**
-- Produces: `config.LedgerConfig{Enabled bool, DSN string}`——后续所有 task 读 `cfg.Ledger.Enabled` 判启用。
+- Consumes: 无（首个 task）
+- Produces: `config.LedgerConfig.Enabled bool`；`openLedger() (*ledger.Store, error)` 在未启用时返回错误，错误文案含子串 `账本未启用`。后续 Task 2 读同一个 `cfg.Ledger.Enabled` 字段。
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 写失败的测试**
 
-在 `internal/config/config_test.go` 追加：
+在 `cmd/ledgercli_test.go` 末尾追加：
 
 ```go
-// TestLedgerEnabledParse 验证 ledger.enabled 键能被严格解码接受并正确落位。
-func TestLedgerEnabledParse(t *testing.T) {
+// TestLedgerDisabledByDefault 未配 ledger 段时 card 族必须拒绝执行，
+// 且不得在 DataDir 下自建 ledger.db——「静默自建」正是本次要消灭的行为。
+func TestLedgerDisabledByDefault(t *testing.T) {
 	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	body := "listen: 127.0.0.1:0\ntoken: t\ndatadir: " + dir + "\nledger:\n  enabled: true\n"
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+	cfgPath := filepath.Join(dir, "config.yaml")
+	c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+	if err := config.Save(cfgPath, c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
 	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	resetAllFlags(rootCmd)
+	var out, errb bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errb)
+	rootCmd.SetArgs([]string{"--config", cfgPath, "card", "add", "标题", "--project", "demo"})
+	err := Execute()
+	if err == nil {
+		t.Fatalf("账本未启用时 card add 应报错，实际成功: %q", out.String())
 	}
-	if !cfg.Ledger.Enabled {
-		t.Fatal("ledger.enabled=true 未落位")
+	if !strings.Contains(err.Error(), "账本未启用") {
+		t.Fatalf("错误文案应含「账本未启用」，实际: %v", err)
 	}
-	if cfg.Ledger.DSN != "" {
-		t.Fatalf("dsn 应为空, got %q", cfg.Ledger.DSN)
-	}
-}
-
-// TestLedgerEnabledDefaultFalse 无 ledger 段时开关必须是关——可选化的根。
-func TestLedgerEnabledDefaultFalse(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	body := "listen: 127.0.0.1:0\ntoken: t\ndatadir: " + dir + "\n"
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Ledger.Enabled {
-		t.Fatal("缺省必须未启用")
+	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); statErr == nil {
+		t.Fatalf("账本未启用时不得自建 ledger.db")
 	}
 }
 ```
 
-（若文件顶部缺 `os`/`filepath` import 则补。）
+- [ ] **Step 2: 跑测试确认它失败**
 
-- [ ] **Step 2: 跑测试确认失败**
+Run: `go test ./cmd/ -run TestLedgerDisabledByDefault -count=1`
+Expected: FAIL —— 当前 `card add` 会成功并生成 `ledger.db`，报 `账本未启用时 card add 应报错`
 
-Run: `go test ./internal/config/ -run 'TestLedgerEnabled' -v`
-Expected: `TestLedgerEnabledParse` FAIL（`cfg.Ledger.Enabled` 字段不存在，编译错）。
+- [ ] **Step 3: 加配置字段**
 
-- [ ] **Step 3: 实现**
-
-`internal/config/config.go:143` 的 LedgerConfig 加字段：
+`internal/config/config.go`，把 `LedgerConfig` 改成：
 
 ```go
 // LedgerConfig 账本域（任务卡）中心库配置。只描述本机如何连库，
 // 不描述库里有什么——schema 归 internal/ledger 管。
 type LedgerConfig struct {
-	// Enabled 账本总开关，默认 false。false 时 agentd 不开账本库、
-	// 不起事件镜像，CLI 账本三族命令报未启用，web 不渲染账本入口。
-	// 为什么不用「dsn 非空」当信号：单机 SQLite 回退恰恰没有 dsn。
+	// Enabled 账本域总开关，默认 false。账本是可选功能：不开时 CLI 的
+	// card/workflow/decision 三族拒绝执行、agentd 不开库不起镜像、web
+	// 不渲染入口。**不能用「DSN 非空」当启用信号**——单机 SQLite 用户
+	// 恰恰是 DSN 为空的那一类，那样判会把他们永久排除在外。
 	Enabled bool `yaml:"enabled,omitempty"`
 	// DSN 形如 postgres://user:pass@host:5432/db。空 = SQLite 回退。
 	DSN string `yaml:"dsn,omitempty"`
 }
 ```
 
-decodeStrict 报错文案里 `ledger{dsn}` 改为 `ledger{enabled,dsn}`。
+同文件 `decodeStrict` 的错误文案里，把 `ledger{dsn}` 改成 `ledger{enabled,dsn}`（该字符串在 `config.go:533` 附近，整行是一条很长的 `fmt.Errorf`，只改这一个子串，别动别处）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: 加 CLI 拦截**
 
-Run: `go test ./internal/config/ -v -run 'TestLedger|TestDecode|TestLoad'`
-Expected: PASS（含既有用例不回归）。
+`cmd/ledgercli.go` 的 `openLedger()`，在 `cfg := loadCLIConfig()` 之后、取 dsn 之前插入：
 
-- [ ] **Step 5: Commit**
+```go
+	// 账本是可选功能：未启用时干净拒绝，绝不静默自建 ledger.db。
+	// 这里是 card/workflow/decision 三族的唯一入口，拦这一处即可覆盖全族。
+	if !cfg.Ledger.Enabled {
+		slog.Warn("账本未启用，拒绝账本命令", "config_dsn_set", cfg.Ledger.DSN != "")
+		return nil, fmt.Errorf("账本未启用：在 config.yaml 设 ledger.enabled: true（可选 ledger.dsn 连中心库，缺省本机 SQLite）")
+	}
+```
+
+如果 `cmd/ledgercli.go` 尚未 import `log/slog`，加上。
+
+- [ ] **Step 5: 修测试基座（否则既有账本测试全红）**
+
+`cmd/ledgercli_test.go` 的 `runLedgerCLI` 里，写 config 那行加上账本开关——**这一步必须做**，`cmd/` 下所有既有 card/workflow/decision 测试都走这个基座：
+
+```go
+		c := &config.Config{
+			Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour,
+			// 账本测试基座必须显式开账本：开关默认 false，不开则全族拒绝执行
+			Ledger: config.LedgerConfig{Enabled: true},
+		}
+```
+
+同时确认该测试文件 import 了 `bytes`、`os`、`path/filepath`、`strings`、`time`、`config`（新测试用到；缺哪个补哪个）。
+
+- [ ] **Step 6: 跑测试确认通过**
+
+Run: `go test ./cmd/ -run 'TestLedgerDisabledByDefault|TestOpenLedgerFallbackSQLite' -count=1`
+Expected: PASS（两条都过——前者证明关时拒绝，后者证明开时回退 SQLite 照旧）
+
+- [ ] **Step 7: 跑 cmd 全包回归**
+
+Run: `go test ./cmd/ -count=1`
+Expected: PASS。若有账本相关用例红，检查它是否绕过了 `runLedgerCLI` 自己写 config——那些也要补 `Ledger: config.LedgerConfig{Enabled: true}`。
+
+- [ ] **Step 8: 加日志与注释（本 task 的日志/注释门）**
+
+确认已具备：
+- `openLedger()` 拒绝分支有 `slog.Warn`，带 `config_dsn_set` 上下文（区分「压根没配」与「配了 dsn 但忘了开开关」两种现场）
+- `LedgerConfig.Enabled` 字段有「为什么不能用 DSN 非空当信号」的注释
+- `runLedgerCLI` 里新增那行有「为什么基座必须开」的注释
+
+- [ ] **Step 9: gofmt + 提交**
 
 ```bash
-git add internal/config/
-git commit -m "feat(config): ledger.enabled 账本总开关（默认关）"
+gofmt -l . | grep -v '^web/'
+git add internal/config/config.go cmd/ledgercli.go cmd/ledgercli_test.go
+git commit -m "feat(ledger): 加 ledger.enabled 开关，CLI 未启用时干净拒绝"
 ```
 
 ---
 
-### Task 2: agentd 门控与 health 探针
+### Task 2: agentd 侧门控 + health 端点挪出 503 门
 
 **Files:**
-- Modify: `cmd/agentd.go:241-280`（账本块整体包进开关）
-- Modify: `internal/agentd/ledgerapi.go:24-31`（health 路由挪出 withLedger）、`internal/agentd/ledgerapi.go`（withLedger 503 文案）
-- Test: `internal/agentd/ledgerapi_test.go`（或该包既有 API 测试文件，就近追加）
+- Modify: `cmd/agentd.go:63-79`（账本库打开块加开关判断）
+- Modify: `internal/agentd/ledgerapi.go:31`（health 路由注册）、`internal/agentd/ledgerapi.go:295-302`（handler）
+- Test: `internal/agentd/ledgerapi_test.go`（若不存在则新建，文件头注释见 Step 5）
 
 **Interfaces:**
-- Consumes: Task 1 的 `cfg.Ledger.Enabled`。
-- Produces: `GET /api/ledger/health` 恒 200，返回 `{"enabled":bool,"mirror":[]|null}`——Task 6 前端探针的契约。其余 `/api/cards*` 等未启用时仍 503。
+- Consumes: Task 1 的 `config.LedgerConfig.Enabled`
+- Produces: `GET /api/ledger/health` 在账本未启用时返回 HTTP 200 + `{"enabled":false}`；启用时返回 `{"enabled":true,"mirror":[...]}`。Task 6 的前端按这个契约解析。
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 写失败的测试**
 
-在 `internal/agentd/ledgerapi_test.go` 追加（复用同文件既有基座 `newTestAgentdEnv(t)` + `ledgerGet(t, env, path)` + `ledgerContainsAll`；`TestLedgerAPIWithoutLedger` 已存在并断言 `/api/cards` 503，保留不动）：
+在 `internal/agentd/ledgerapi_test.go` 追加（文件不存在则新建，含文件头注释）：
 
 ```go
-// TestLedgerHealthReportsDisabled 未启用账本时探针必须 200 报 enabled=false，
-// 而不是 503——前端靠它做门控，503 无法与「agentd 挂了」区分。
+// TestLedgerHealthReportsDisabled 账本未挂载时 health 必须 200 + enabled:false。
+// 为什么不能用 503：这个端点是前端做入口门控的探针，503 与「网络错」
+// 无法区分，前端就只能靠猜。其余 /api/cards* 仍走 withLedger 的 503。
 func TestLedgerHealthReportsDisabled(t *testing.T) {
-	env := newTestAgentdEnv(t) // 不 SetLedger = 未启用
-	code, body := ledgerGet(t, env, "/api/ledger/health")
-	if code != http.StatusOK {
-		t.Fatalf("want 200, got %d %q", code, body)
+	srv := newTestServer(t) // 不调 SetLedger
+	req := httptest.NewRequest(http.MethodGet, "/api/ledger/health", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health 应 200，实际 %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !ledgerContainsAll(body, `"enabled":false`) {
-		t.Fatalf("want enabled=false, got %q", body)
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析 health 报文: %v body=%s", err, rec.Body.String())
+	}
+	if got["enabled"] != false {
+		t.Fatalf("enabled 应为 false，实际报文: %s", rec.Body.String())
 	}
 }
 ```
 
-已配 ledger 的路径（`TestLedgerAPI` 里若打到 `/api/ledger/health`）断言同步补 `"enabled":true`；响应新增字段不破坏 contains 型断言，跑包内测试后按红改。
+**注意**：`newTestServer(t)` 与鉴权方式请照抄同目录既有测试的写法（本仓 agentd 测试有固定基座与 token 注入模式）；若既有测试用的是别的辅助名或需要带 token header，按既有写法调整，**不要新造一套基座**。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [ ] **Step 2: 跑测试确认它失败**
 
-Run: `go test ./internal/agentd/ -run 'TestLedgerHealthReportsDisabled' -v`
-Expected: FAIL——health 现在挂在 withLedger 后面，未 SetLedger 时回 503。
+Run: `go test ./internal/agentd/ -run TestLedgerHealthReportsDisabled -count=1`
+Expected: FAIL —— 当前走 `withLedger`，未挂载账本时返回 503
 
-- [ ] **Step 3: 实现 health 挪出与文案**
+- [ ] **Step 3: health 挪出 withLedger**
 
-`internal/agentd/ledgerapi.go`：
+`internal/agentd/ledgerapi.go`，路由注册那行去掉包装：
 
 ```go
-// 路由注册处：health 不过 withLedger——它是前端门控探针，必须恒可达
-api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
+	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
+	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
+	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
 ```
 
+handler 改为自己判空：
+
 ```go
-// handleLedgerHealth 账本探针：未启用恒 200 报 enabled=false（不能用 503
-// 当信号，前端无法区分「未启用」与「agentd 挂了」）；启用时附镜像水位。
+// handleLedgerHealth 账本健康探针：恒 200。未启用时只回 {"enabled":false}，
+// 启用时附镜像水位。前端据此决定要不要渲染账本入口。
 func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 	if s.ledger == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "mirror": nil})
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
 	rows, err := s.ledger.MirrorHealth()
@@ -178,143 +221,137 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-withLedger 的 503 文案改为：`"账本未启用（config.yaml 设 ledger.enabled: true）"`。
+**注意**：`s.ledger` 的字段名与判空方式请照 `withLedger` 的实现写（打开 `ledgerapi.go` 看 `withLedger` 怎么判的，用同一个条件，别自创）。
 
-- [ ] **Step 4: 实现 agentd 启动门控**
+- [ ] **Step 4: agentd 启动时按开关决定开不开库**
 
-`cmd/agentd.go:241-280` 现有账本块（`ldsn := cfg.Ledger.DSN` 起到 `logger.Info("账本镜像未启动：无已登记 target")` 止）整体包进：
+`cmd/agentd.go`，把现有的账本块（从注释 `// 账本镜像子系统：...` 到 `logger.Info("账本镜像未启动：无已登记 target")` 那个 else 分支结束）整体包进开关判断。改后形如：
 
 ```go
-if cfg.Ledger.Enabled {
-	// ……现有整块原样内移：Open→EnsureDefaults→SetLedger→镜像子系统……
-} else {
-	if cfg.Ledger.DSN != "" {
-		// 只报「配了没开」这个事实，绝不打 DSN 值——里面有库凭据
-		logger.Warn("ledger.dsn 已配置但 ledger.enabled=false，账本未启用")
-	}
-	logger.Info("账本未启用（ledger.enabled=false），事件镜像与账本 API 关闭")
-}
+		// 账本域是可选功能（默认关）。关掉时既不开库也不起镜像，DataDir 下
+		// 不会凭空多出 ledger.db；web 侧靠 /api/ledger/health 探到 enabled:false
+		// 后不渲染入口。
+		if !cfg.Ledger.Enabled {
+			if cfg.Ledger.DSN != "" {
+				// 配了 dsn 却没开开关是典型的半配状态，静默跳过会让人对着
+				// 一个「配了却不生效」的库排查半天
+				logger.Warn("ledger.dsn 已配置但 enabled=false，账本未启用")
+			} else {
+				logger.Info("账本未启用（ledger.enabled=false）")
+			}
+		} else {
+			// 账本镜像子系统：有已登记 target 才有镜像对象；账本库按配置解析
+			//（dsn 空 = DataDir/ledger.db 单机回退）。构造→go Run→Stop→Close
+			// 的次序是硬约束：订阅回调在写库，Stop 必须先于账本库 Close。
+			// 账本库始终打开：没有登记 target 时镜像循环不启动，但本机 web
+			// 看板仍必须能读写单机回退账本。
+			... 原有内容原样保留，只是缩进一层 ...
+		}
 ```
 
-块顶注释「账本库始终打开」相应改为「账本库仅在 enabled 时打开」。
+**硬约束**：原块里的 `defer lst.Close()` / `defer lm.Stop()` 语义不能变——`defer` 在函数作用域生效，包进 `if` 块不影响注册时机与次序，但**不要**把它们改成别的关闭方式。原有的次序注释一字不改地保留。
 
 - [ ] **Step 5: 跑测试确认通过**
 
-Run: `go test ./internal/agentd/ -v -run 'Ledger'` 然后 `go build ./... && go vet ./...`
-Expected: 全 PASS，编译干净。
+Run: `go test ./internal/agentd/ -run TestLedgerHealth -count=1 && go build ./...`
+Expected: PASS + 编译通过
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: 跑 agentd 全包回归**
+
+Run: `go test ./internal/agentd/ -count=1`
+Expected: PASS（该包较慢，允许 ~90s）
+
+- [ ] **Step 7: 加日志与注释**
+
+确认已具备：
+- 未启用时 `logger.Info("账本未启用（ledger.enabled=false）")` —— 成功路径不静默，运维能从日志确认「账本确实是被关掉的，不是崩了」
+- 半配状态 `logger.Warn`，带原因
+- 启用路径保留原有的 `账本镜像子系统已挂载` / `账本镜像未启动：无已登记 target` 两条日志不变
+- health handler 有 doc 注释说明「为什么恒 200」
+
+- [ ] **Step 8: gofmt + 提交**
 
 ```bash
-git add cmd/agentd.go internal/agentd/
-git commit -m "feat(agentd): 账本按 ledger.enabled 门控，health 探针恒 200 报启用态"
+gofmt -l . | grep -v '^web/'
+git add cmd/agentd.go internal/agentd/ledgerapi.go internal/agentd/ledgerapi_test.go
+git commit -m "feat(agentd): 账本按 enabled 开关挂载，health 探针恒 200"
 ```
 
 ---
 
-### Task 3: CLI 单点门 `openLedger`
-
-**Files:**
-- Modify: `cmd/ledgercli.go`（openLedger 头部加拦截）
-- Modify: `cmd/ledgercli_test.go:26`（测试基座最小 config 补 `Ledger: config.LedgerConfig{Enabled: true}`）
-- Test: `cmd/ledgercli_test.go`
-
-**Interfaces:**
-- Consumes: Task 1 的 `cfg.Ledger.Enabled`；既有 `loadCLIConfig()`。
-- Produces: 未启用时账本三族（card/workflow/decision）统一报错文案——Task 4/5 的新命令走同一个门，无需各自判断。
-
-- [ ] **Step 1: 改测试基座（先做——否则所有既有账本测试在 Step 3 后齐红）**
-
-`cmd/ledgercli_test.go:26` 的最小 config 补开关：
-
-```go
-c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir,
-	StallTimeout: 2 * time.Hour, Ledger: config.LedgerConfig{Enabled: true}}
-```
-
-- [ ] **Step 2: 写失败测试**
-
-同文件追加：
-
-```go
-// TestLedgerDisabledBlocksCardFamily 未启用时账本命令族必须统一报未启用
-// 文案，而不是静默自建 ledger.db——可选化的 CLI 面。
-func TestLedgerDisabledBlocksCardFamily(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
-	c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
-	if err := config.Save(cfgPath, c); err != nil {
-		t.Fatal(err)
-	}
-	resetAllFlags(rootCmd)
-	rootCmd.SetOut(&bytes.Buffer{})
-	rootCmd.SetErr(&bytes.Buffer{})
-	rootCmd.SetArgs([]string{"--config", cfgPath, "card", "list"})
-	err := Execute()
-	if err == nil || !strings.Contains(err.Error(), "账本未启用") {
-		t.Fatalf("want 未启用报错, got %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); !os.IsNotExist(statErr) {
-		t.Fatal("未启用时不得自建 ledger.db")
-	}
-}
-```
-
-- [ ] **Step 3: 跑测试确认失败**
-
-Run: `go test ./cmd/ -run 'TestLedgerDisabledBlocksCardFamily' -v`
-Expected: FAIL——现在 openLedger 不看开关，card list 正常执行。
-
-- [ ] **Step 4: 实现**
-
-`cmd/ledgercli.go` 的 `openLedger()` 顶部：
-
-```go
-func openLedger() (*ledger.Store, error) {
-	cfg := loadCLIConfig()
-	// 单点门：账本三族命令全部经这里开库，未启用在此统一拦截，
-	// 各命令无需自带判断（spec §3）
-	if !cfg.Ledger.Enabled {
-		return nil, fmt.Errorf("账本未启用：在 config.yaml 设 ledger.enabled: true（可选 ledger.dsn 连中心库，缺省本机 SQLite）")
-	}
-	// ……以下原样……
-}
-```
-
-- [ ] **Step 5: 跑包内全量确认无回归**
-
-Run: `go test ./cmd/ -count=1`
-Expected: 全 PASS（基座已在 Step 1 补开关，既有账本用例不受影响）。
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add cmd/ledgercli.go cmd/ledgercli_test.go
-git commit -m "feat(cli): openLedger 单点拦截未启用账本，测试基座显式开启"
-```
-
----
-
-### Task 4: `card wait` 搬家，`wait.go` 去 ledger 化
+### Task 3: `card wait` 搬家（执行域去 card 感知）
 
 **Files:**
 - Create: `cmd/card_wait.go`
-- Modify: `cmd/wait.go`（删 `--card`/`--subtree` flag、互斥校验、`runCardWait`，Args 收回 ExactArgs(1)）
-- Create: `cmd/card_wait_test.go`（迁自 `cmd/wait_card_test.go`）
-- Delete: `cmd/wait_card_test.go`
+- Modify: `cmd/wait.go`（删 `waitCardID`/`waitSubtree` 变量声明约 67-71 行、删 `RunE` 里的 card 分发与互斥校验、删 `runCardWait` 函数体、删 flag 注册第 543-544 行）
+- Modify: `cmd/card.go:464`（`cardCmd.AddCommand(...)` 追加 `cardWaitCmd`）
+- Rename + Modify: `cmd/wait_card_test.go` → `cmd/card_wait_test.go`
+- Test: `cmd/card_wait_test.go`
 
 **Interfaces:**
-- Consumes: Task 3 的 `openLedger()` 门；既有 `exitCodeError`/`ExitTimeout`/`logx.Setup`。
-- Produces: `handoff card wait <id> [--subtree] [--timeout <时长>]`，行为与原 `wait --card` 逐字等价（stdout 逐行 JSON 事件、全员终态退出 0、超时退出码 `ExitTimeout`）。
+- Consumes: Task 1 的 `openLedger()`（未启用时报错）
+- Produces: `handoff card wait <id> [--subtree] [--timeout <dur>]`，行为与原 `handoff wait --card <id> --subtree` 完全等价（逐事件 JSON 到 stdout、全部成员达终态退 0、超时退 `ExitTimeout`=124）
 
-- [ ] **Step 1: 新建 `cmd/card_wait.go`**
+- [ ] **Step 1: 先读懂要搬的东西**
+
+打开 `cmd/wait.go`，定位这三处（**只读，先别改**）：
+1. `waitCardID` / `waitSubtree` 两个包级变量（约 67-71 行）
+2. `waitCmd.RunE` 里分发到 `runCardWait` 的分支，以及与 `<task>` 位置参数互斥的校验
+3. `runCardWait` 函数全体（约 170-244 行）
+4. flag 注册（约 543-544 行的 `--card` / `--subtree`）
+
+`runCardWait` 函数体要**原样搬运**，一行逻辑都不改——它的多路 wait 语义（成员集每轮重算、`allDone` 哨兵错误、超时映射 124）是已验收的行为。
+
+- [ ] **Step 2: 改测试（新位置、新命令行）**
+
+`git mv cmd/wait_card_test.go cmd/card_wait_test.go`，然后：
+
+把 `TestWaitCardSubtreeExitsWhenAllDone` 改名为 `TestCardWaitSubtreeExitsWhenAllDone`，并把调用行从
 
 ```go
-// card wait：账本单流多路 wait。跟一张卡（或 --subtree 整棵树）的事件流，
-// 全部成员达骨架终态（已完成/终止）即退出 0。
+	waitOut, _, err := runLedgerCLI(t, dir, "wait", "--card", root.ID, "--subtree", "--timeout", "15s")
+```
+
+改为
+
+```go
+	waitOut, _, err := runLedgerCLI(t, dir, "card", "wait", root.ID, "--subtree", "--timeout", "15s")
+```
+
+把 `TestWaitCardConflictsWithTaskArg` **整个删除**——它验的是 `wait --card` 与位置参数的互斥，搬家后这条约束不再存在（`card wait` 只有一个位置参数）。改为新增一条验证执行域已去 card 感知的用例：
+
+```go
+// TestWaitRejectsCardFlag 执行域动词必须对 card 一无所知：--card 应是未知 flag。
+// 这条是「分层」这个设计裁决的回归网——有人再把账本分支塞回 wait 就会红。
+func TestWaitRejectsCardFlag(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := runLedgerCLI(t, dir, "wait", "--card", "B1")
+	if err == nil {
+		t.Fatalf("wait 不应再认识 --card")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("应报未知 flag，实际: %v", err)
+	}
+}
+```
+
+- [ ] **Step 3: 跑测试确认它失败**
+
+Run: `go test ./cmd/ -run 'TestCardWait|TestWaitRejectsCardFlag' -count=1`
+Expected: FAIL —— `card wait` 还不存在（报 unknown command），且 `wait --card` 目前仍被接受
+
+- [ ] **Step 4: 建新文件**
+
+创建 `cmd/card_wait.go`：
+
+```go
+// card wait：账本单流多路 wait。
 //
-// 边界：本文件只有账本 wait；单 task 的 wait 在 cmd/wait.go（执行域，
-// 零 ledger 引用——分层原则见 spec §2）。
+// 职责：跟一张卡（或其动态重算的子树）的账本事件流，逐事件输出，全部成员
+// 达骨架终态即退出。
+// 边界：不碰执行域的 task wait（那是 cmd/wait.go 的 handoff wait <task>）；
+// 两者是分层关系——外层用本命令管卡的调度，醒来后处置具体 task 事件仍用
+// 执行域动词（reply/approve/continue）。
 package cmd
 
 import (
@@ -325,22 +362,23 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
-	"github.com/spf13/cobra"
 )
 
-var (
-	// cardWaitSubtree 扩展到子树（后代 + 并入成员，每轮动态重算）。
-	cardWaitSubtree bool
-	// cardWaitTimeout 总时长上限，0=不限；超时以 ExitTimeout 退出，
-	// 与单 task wait 的语义一致（脚本按退出码分流）。
-	cardWaitTimeout time.Duration
-)
+// cardWaitSubtree 扩展到子树（后代 + 并入成员，每轮动态重算）。
+var cardWaitSubtree bool
 
+// cardWaitTimeout 总时长，0 = 不限；超时以 ExitTimeout(124) 退出，与执行域
+// wait 的超时码一致，脚本侧可用同一套判断。
+var cardWaitTimeout time.Duration
+
+// cardWaitCmd 阻塞跟随一张卡（或整棵子树）的账本事件流。
 var cardWaitCmd = &cobra.Command{
 	Use:   "wait <id>",
-	Short: "账本单流多路 wait：跟一张卡（--subtree 跟整棵树），全员终态退出",
+	Short: "跟随卡的账本事件流（--subtree 跟整棵子树），全部达终态退出",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cardWaitTimeout < 0 {
@@ -350,94 +388,85 @@ var cardWaitCmd = &cobra.Command{
 	},
 }
 
+// runCardWait 账本单流多路 wait：从当前 seq 起跟子树事件（每行一个
+// JSON 事件到 stdout），全部成员达骨架终态（已完成/终止）即退出 0。
+// 成员集每轮重算——wait 挂起期间新拆/新并入的卡天然进流。timeout 是
+// 总时长（0=不限），超时退出码 124 与单 task wait 一致。
+func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.Duration) error {
+	... 从 cmd/wait.go 原样搬运函数体，一行不改 ...
+}
+
 func init() {
 	cardWaitCmd.Flags().BoolVar(&cardWaitSubtree, "subtree", false, "扩展到子树（后代 + 并入成员，动态）")
-	cardWaitCmd.Flags().DurationVar(&cardWaitTimeout, "timeout", 0, "总时长上限（如 1h），0=不限；超时退出码与单 task wait 一致")
-	cardCmd.AddCommand(cardWaitCmd)
+	cardWaitCmd.Flags().DurationVar(&cardWaitTimeout, "timeout", 0, "总时限（如 2h）；到点以 124 退出")
 }
 ```
 
-然后把 `cmd/wait.go` 的 `runCardWait` 函数**原样剪切**到本文件末尾（函数体一字不改，含注释）。
+**注意**：import 清单以搬过来的函数体实际用到的为准（`context`/`encoding/json`/`errors`/`fmt`/`log/slog`/`time`/`cobra`/`ledger`/`logx`），多余的删掉否则编译不过。`exitCodeError` 与 `ExitTimeout` 都在 `cmd` 包内，同包直接用。
 
-- [ ] **Step 2: 净化 `cmd/wait.go`**
+- [ ] **Step 5: 拆掉 wait.go 里的 card 分支**
 
-按序删：
-1. `waitCardID` / `waitSubtree` 两个包级变量及注释（`cmd/wait.go:67-71`）；
-2. init 里 `--card`/`--subtree` 两行 flag 注册（`cmd/wait.go:543-544`）；
-3. RunE 里 `if waitCardID != "" { ... }` 与 `if len(args) != 1 { ... }` 两段，恢复为：
+`cmd/wait.go` 删除：
+1. `waitCardID`、`waitSubtree` 两个变量及其注释
+2. `RunE` 里 `if waitCardID != ""` 的分发分支与相关互斥校验（保留 `--follow` 与 `--until-done` 的互斥校验，那是执行域自己的）
+3. `runCardWait` 函数全体
+4. flag 注册的 `--card` 与 `--subtree` 两行
 
-```go
-		taskID := args[0]
-		// main 的 relay 改造把带 token 的 client 构造收进 newTargetClient()，
-		// 这里只还需要 addr 做日志与 pull 的落点，token 不再单独取
-		addr, _, err := TargetEndpoint()
-```
+删完后确认 `cmd/wait.go` 不再 import `internal/ledger`（这是 spec 判据④）。
 
-4. `Args: cobra.MaximumNArgs(1)` 改回 `Args: cobra.ExactArgs(1)`；
-5. 删掉 wait.go 里因搬家而不再使用的 import（编译器会点名；预期 `ledger` 必删，`encoding/json`/`errors` 若仍被本文件其他函数用则保留）。
+- [ ] **Step 6: 挂到 card 命令树**
 
-- [ ] **Step 3: 迁测试**
+`cmd/card.go:464` 的 `cardCmd.AddCommand(...)` 调用里追加 `cardWaitCmd`。
 
-新建 `cmd/card_wait_test.go`，把 `TestWaitCardSubtreeExitsWhenAllDone` 整体搬入并改两处：函数名 `TestCardWaitSubtreeExitsWhenAllDone`，调用行改为：
+- [ ] **Step 7: 跑测试确认通过**
 
-```go
-	waitOut, _, err := runLedgerCLI(t, dir, "card", "wait", root.ID, "--subtree", "--timeout", "15s")
-```
+Run: `go test ./cmd/ -run 'TestCardWait|TestWaitRejectsCardFlag' -count=1`
+Expected: PASS
 
-追加两条守门用例：
+- [ ] **Step 8: 验证判据④（wait.go 零 ledger 依赖）**
 
-```go
-// TestWaitCardFlagRemoved 执行域 wait 不再认 --card——分层后账本地址
-// 只存在于 card 族（spec §4.1）。
-func TestWaitCardFlagRemoved(t *testing.T) {
-	dir := t.TempDir()
-	_, _, err := runLedgerCLI(t, dir, "wait", "--card", "B1")
-	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
-		t.Fatalf("want unknown flag, got %v", err)
-	}
-}
+Run: `grep -c 'ledger' cmd/wait.go`
+Expected: `0`（若非 0，检查残留的 import 或注释引用并清理）
 
-// TestWaitRequiresExactlyOneArg wait 收回 ExactArgs(1)。
-func TestWaitRequiresExactlyOneArg(t *testing.T) {
-	dir := t.TempDir()
-	_, _, err := runLedgerCLI(t, dir, "wait")
-	if err == nil {
-		t.Fatal("零参数应报错")
-	}
-}
-```
+- [ ] **Step 9: 跑 cmd 全包回归**
 
-删除 `cmd/wait_card_test.go`（其中 `TestWaitCardConflictsWithTaskArg` 随 flag 一起废止——互斥场景已不存在）。
+Run: `go test ./cmd/ -count=1`
+Expected: PASS
 
-- [ ] **Step 4: 验证零 ledger 引用 + 全量测试**
+- [ ] **Step 10: 加日志与注释**
 
-Run: `grep -c "ledger" cmd/wait.go`（Expected: `0`）；`go build ./... && go test ./cmd/ -count=1`
-Expected: 编译过、全 PASS。
+确认已具备：
+- `cmd/card_wait.go` 有文件头注释（职责 + 边界，含「不碰执行域 task wait」这条分层边界）
+- `runCardWait` 的 doc 注释原样保留
+- `cardWaitTimeout` 变量有「为什么超时码要与执行域一致」的注释
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 11: gofmt + 提交**
 
 ```bash
-git add cmd/wait.go cmd/card_wait.go cmd/card_wait_test.go
-git rm cmd/wait_card_test.go
-git commit -m "refactor(cli): wait --card 搬到 card wait，执行域动词回到零 ledger 引用"
+gofmt -l . | grep -v '^web/'
+git add cmd/card_wait.go cmd/wait.go cmd/card.go cmd/card_wait_test.go
+git commit -m "refactor(cli): wait --card 搬为 card wait，执行域去 card 感知"
 ```
 
 ---
 
-### Task 5: `card accept` 与 `card needs` 写入口
+### Task 4: `card accept` 验收写入口
 
 **Files:**
-- Create: `cmd/card_accept.go`
-- Create: `cmd/card_needs.go`
-- Test: `cmd/card_accept_test.go`、`cmd/card_needs_test.go`
+- Create: `cmd/card_records.go`
+- Modify: `cmd/card.go:464`（`AddCommand` 追加 `cardAcceptCmd`）
+- Test: `cmd/card_records_test.go`
 
 **Interfaces:**
-- Consumes: `st.RecordAcceptance(cardID string, verified bool, evidence, actor string) error`（`internal/ledger/events.go:214`）、`st.MarkNeedsHuman(cardID, reason, actor string) error`（`events.go:227`）、`st.ClearNeedsHuman(cardID, actor string) error`（`events.go:241`）、`openLedger()`、`ledgerActor()`。
-- Produces: `card accept <id> --evidence <文本> [--unverified]`、`card needs <id> <reason...>` / `card needs <id> --clear`。
+- Consumes: Task 1 的 `openLedger()`、既有 `ledgerActor() string`、既有 `(*ledger.Store).RecordAcceptance(cardID string, verified bool, evidence, actor string) error`
+- Produces: `handoff card accept <id> [--evidence <文本>] [--unverified]`，落 `acceptance_recorded` 事件（`ledger.EvAcceptanceRecorded`），payload 含 `verified_on_real_machine` 与 `evidence`
 
-- [ ] **Step 1: 写失败测试 `cmd/card_accept_test.go`**
+- [ ] **Step 1: 写失败的测试**
+
+创建 `cmd/card_records_test.go`：
 
 ```go
+// 回合末四分法两个写入口（card accept / card needs）的 CLI 测试。
 package cmd
 
 import (
@@ -446,136 +475,99 @@ import (
 	"testing"
 )
 
-// 验收写入口：已验必须带证据；事件落 card show 的事件流。
-func TestCardAcceptRecordsVerifiedEvent(t *testing.T) {
-	dir := t.TempDir()
-	out, _, _ := runLedgerCLI(t, dir, "card", "add", "验收卡", "--project", "demo", "--workflow", "bug")
-	var card struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
-
-	if _, _, err := runLedgerCLI(t, dir, "card", "accept", card.ID, "--evidence", "go test ./... 全绿"); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	showOut, _, err := runLedgerCLI(t, dir, "card", "show", card.ID)
+// newTestCard 建一张卡并返回 id，供本文件各用例复用。
+func newTestCard(t *testing.T, dir, title string) string {
+	t.Helper()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", title, "--project", "demo", "--workflow", "bug")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("建卡: %v", err)
 	}
-	if !strings.Contains(showOut, "acceptance_recorded") || !strings.Contains(showOut, "go test ./... 全绿") {
-		t.Fatalf("事件缺失: %q", showOut)
-	}
-}
-
-// 已验缺证据必须拒绝且不落事件——取证文化：没有证据的「已验」是假账。
-func TestCardAcceptVerifiedRequiresEvidence(t *testing.T) {
-	dir := t.TempDir()
-	out, _, _ := runLedgerCLI(t, dir, "card", "add", "验收卡", "--project", "demo", "--workflow", "bug")
-	var card struct {
+	var got struct {
 		ID string `json:"id"`
 	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
-
-	_, _, err := runLedgerCLI(t, dir, "card", "accept", card.ID)
-	if err == nil || !strings.Contains(err.Error(), "--evidence") {
-		t.Fatalf("want evidence 报错, got %v", err)
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &got); err != nil {
+		t.Fatalf("解析建卡输出 %q: %v", out, err)
 	}
-	showOut, _, _ := runLedgerCLI(t, dir, "card", "show", card.ID)
-	if strings.Contains(showOut, "acceptance_recorded") {
-		t.Fatal("报错路径不得落事件")
+	return got.ID
+}
+
+// TestCardAcceptRecordsVerified 已验必须落事件且带证据。
+func TestCardAcceptRecordsVerified(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "验收卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "accept", id, "--evidence", "go test ./... 全绿"); err != nil {
+		t.Fatalf("card accept: %v", err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "show", id)
+	if err != nil {
+		t.Fatalf("card show: %v", err)
+	}
+	if !strings.Contains(out, "acceptance_recorded") {
+		t.Fatalf("事件流缺 acceptance_recorded: %q", out)
+	}
+	if !strings.Contains(out, "go test ./... 全绿") {
+		t.Fatalf("事件流缺证据原文: %q", out)
 	}
 }
 
-// --unverified 允许无证据（对应 done(未验) 的形态）。
+// TestCardAcceptRequiresEvidence 「已验」而不给证据必须拒绝——本项目的
+// 取证文化：已验是一个断言，无证据的断言不许落账。
+func TestCardAcceptRequiresEvidence(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "无证据卡")
+	_, _, err := runLedgerCLI(t, dir, "card", "accept", id)
+	if err == nil {
+		t.Fatalf("已验不带证据应报错")
+	}
+	if !strings.Contains(err.Error(), "证据") {
+		t.Fatalf("错误文案应提到证据，实际: %v", err)
+	}
+	out, _, showErr := runLedgerCLI(t, dir, "card", "show", id)
+	if showErr != nil {
+		t.Fatalf("card show: %v", showErr)
+	}
+	if strings.Contains(out, "acceptance_recorded") {
+		t.Fatalf("拒绝时不得落事件: %q", out)
+	}
+}
+
+// TestCardAcceptUnverified 未验可以不带证据（对应 backlog 的 done(未验)）。
 func TestCardAcceptUnverified(t *testing.T) {
 	dir := t.TempDir()
-	out, _, _ := runLedgerCLI(t, dir, "card", "add", "验收卡", "--project", "demo", "--workflow", "bug")
-	var card struct {
-		ID string `json:"id"`
+	id := newTestCard(t, dir, "未验卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "accept", id, "--unverified"); err != nil {
+		t.Fatalf("card accept --unverified: %v", err)
 	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
-
-	if _, _, err := runLedgerCLI(t, dir, "card", "accept", card.ID, "--unverified"); err != nil {
-		t.Fatalf("unverified accept: %v", err)
+	out, _, err := runLedgerCLI(t, dir, "card", "show", id)
+	if err != nil {
+		t.Fatalf("card show: %v", err)
 	}
-	showOut, _, _ := runLedgerCLI(t, dir, "card", "show", card.ID)
-	if !strings.Contains(showOut, `"verified_on_real_machine":false`) {
-		t.Fatalf("未验事件缺失: %q", showOut)
+	if !strings.Contains(out, "acceptance_recorded") {
+		t.Fatalf("事件流缺 acceptance_recorded: %q", out)
 	}
 }
 ```
 
-- [ ] **Step 2: 写失败测试 `cmd/card_needs_test.go`**
+- [ ] **Step 2: 跑测试确认它失败**
+
+Run: `go test ./cmd/ -run TestCardAccept -count=1`
+Expected: FAIL —— `unknown command "accept" for "handoff card"`
+
+- [ ] **Step 3: 实现命令**
+
+创建 `cmd/card_records.go`：
 
 ```go
-package cmd
-
-import (
-	"encoding/json"
-	"strings"
-	"testing"
-)
-
-// 等人标记写入口：打上后 card list --needs 可见，--clear 后消失。
-func TestCardNeedsMarkAndClear(t *testing.T) {
-	dir := t.TempDir()
-	out, _, _ := runLedgerCLI(t, dir, "card", "add", "等人卡", "--project", "demo", "--workflow", "bug")
-	var card struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
-
-	if _, _, err := runLedgerCLI(t, dir, "card", "needs", card.ID, "等", "mac-02", "授权"); err != nil {
-		t.Fatalf("needs: %v", err)
-	}
-	listOut, _, _ := runLedgerCLI(t, dir, "card", "list", "--needs")
-	if !strings.Contains(listOut, card.ID) {
-		t.Fatalf("--needs 应可见 %s: %q", card.ID, listOut)
-	}
-
-	if _, _, err := runLedgerCLI(t, dir, "card", "needs", card.ID, "--clear"); err != nil {
-		t.Fatalf("clear: %v", err)
-	}
-	listOut, _, _ = runLedgerCLI(t, dir, "card", "list", "--needs")
-	if strings.Contains(listOut, card.ID) {
-		t.Fatalf("clear 后不应再见 %s: %q", card.ID, listOut)
-	}
-}
-
-// 标等人不带 reason 必须拒绝（store 层已强制，CLI 提前给出可读文案）。
-func TestCardNeedsRequiresReason(t *testing.T) {
-	dir := t.TempDir()
-	out, _, _ := runLedgerCLI(t, dir, "card", "add", "等人卡", "--project", "demo", "--workflow", "bug")
-	var card struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
-
-	_, _, err := runLedgerCLI(t, dir, "card", "needs", card.ID)
-	if err == nil || !strings.Contains(err.Error(), "reason") {
-		t.Fatalf("want reason 报错, got %v", err)
-	}
-}
-```
-
-- [ ] **Step 3: 跑测试确认失败**
-
-Run: `go test ./cmd/ -run 'TestCardAccept|TestCardNeeds' -v`
-Expected: FAIL（`unknown command "accept"` / `"needs"`）。
-
-- [ ] **Step 4: 实现 `cmd/card_accept.go`**
-
-```go
-// card accept：验收结果写入口。判据文本归 card update --accept（写「怎么才
-// 算验过」）；本命令写「验的结果」——落 acceptance_recorded 事件，已验/待
-// 真机验由最后一条该事件推导。
+// 回合末四分法的两个写入口：card accept（完成项的验收结果）与
+// card needs（阻断需人工的等人标记）。
 //
-// 边界：不校验判据是否存在——落不落验收记录永远自愿，只有工作流配了
-// RequireAcceptance gate 它才成为那条流的门（spec §4.2）。
+// 职责：把 ledger.Store 上已有的 RecordAcceptance / MarkNeedsHuman /
+// ClearNeedsHuman 三个方法接出 CLI 门面。
+// 边界：只落事件，不改卡状态——状态流转一律走 card move（由工作流 gate
+// 校验）；验收判据文本归 card update --accept，本文件只管「验的结果」。
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -583,273 +575,636 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	cardAcceptEvidence   string
-	cardAcceptUnverified bool
-)
+// cardAcceptEvidence 验收证据原文（命令 + 结果）。
+var cardAcceptEvidence string
 
+// cardAcceptUnverified 落「未验」而非「已验」。
+var cardAcceptUnverified bool
+
+// cardAcceptCmd 记录验收结果。
+//
+// 参数：<id> 卡 id；--evidence 证据原文（已验时必填）；--unverified 落未验。
+// 注意：本命令只落 acceptance_recorded 事件，不推状态。是否「验过了才能进
+// 下一态」由工作流的 RequireAcceptance gate 决定，是政策不是本命令的事。
 var cardAcceptCmd = &cobra.Command{
 	Use:   "accept <id>",
-	Short: "落验收结果事件：--evidence 证据（已验必填）；--unverified 记为未验",
+	Short: "记验收结果（缺省已验，需 --evidence；--unverified 落未验）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		verified := !cardAcceptUnverified
-		// 已验必须带证据：没有证据的「已验」是假账（取证文化，与
-		// backlog done(已验) 需测试证据同一条纪律）
-		if verified && strings.TrimSpace(cardAcceptEvidence) == "" {
-			return fmt.Errorf("已验必须带证据：--evidence 不能为空（确实未验请用 --unverified）")
+		evidence := strings.TrimSpace(cardAcceptEvidence)
+		// 「已验」是一个断言，无证据的断言不许落账——这是本项目取证文化的
+		// 硬约束，不是可选的输入校验。未验则允许空证据（就是「还没验」）。
+		if verified && evidence == "" {
+			return fmt.Errorf("已验必须带证据：加 --evidence <命令与结果>，或用 --unverified 记为未验")
 		}
 		st, err := openLedger()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		if err := st.RecordAcceptance(args[0], verified, cardAcceptEvidence, ledgerActor()); err != nil {
+		actor := ledgerActor()
+		slog.Info("记验收结果", "card", args[0], "verified", verified, "evidence_bytes", len(evidence))
+		if err := st.RecordAcceptance(args[0], verified, evidence, actor); err != nil {
+			slog.Error("记验收结果失败", "card", args[0], "verified", verified, "err", err)
 			return err
 		}
-		slog.Info("验收已落账", "card", args[0], "verified", verified)
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
-			"ok": true, "card": args[0], "verified": verified,
-		})
+		slog.Info("验收结果已落账", "card", args[0], "verified", verified)
+		fmt.Fprintf(cmd.OutOrStdout(), "已记录：%s %s\n", args[0], map[bool]string{true: "已验", false: "未验"}[verified])
+		return nil
 	},
-}
-
-func init() {
-	cardAcceptCmd.Flags().StringVar(&cardAcceptEvidence, "evidence", "", "验收证据（命令 + 结果，如 'go test ./... 全绿'）")
-	cardAcceptCmd.Flags().BoolVar(&cardAcceptUnverified, "unverified", false, "记为未验（证据可空）")
-	cardCmd.AddCommand(cardAcceptCmd)
 }
 ```
 
-- [ ] **Step 5: 实现 `cmd/card_needs.go`**
+`init()` 与 flag 注册放在本文件末尾（Task 5 会往同一个 `init()` 里加 needs 的 flag）：
 
 ```go
-// card needs：等人标记写入口。回合末四分法的「阻断需人工」一格由此有门；
-// 与节点执行器自动打的标记同源（都走 MarkNeedsHuman），看板同显。
-//
-// 边界：reason 语义由 store 强制非空；标记不落列，从最后一条
-// needs_human/needs_cleared 事件推导（spec §4.3）。
-package cmd
-
-import (
-	"encoding/json"
-	"fmt"
-	"log/slog"
-	"strings"
-
-	"github.com/spf13/cobra"
-)
-
-var cardNeedsClear bool
-
-var cardNeedsCmd = &cobra.Command{
-	Use:   "needs <id> [reason...]",
-	Short: "打等人标记（reason 必填）；--clear 解除",
-	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		st, err := openLedger()
-		if err != nil {
-			return err
-		}
-		defer st.Close()
-		id := args[0]
-		if cardNeedsClear {
-			if len(args) > 1 {
-				return fmt.Errorf("--clear 不带 reason（解除就是解除，理由写 card note）")
-			}
-			if err := st.ClearNeedsHuman(id, ledgerActor()); err != nil {
-				return err
-			}
-			slog.Info("等人标记已解除", "card", id)
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"ok": true, "card": id, "needs": ""})
-		}
-		reason := strings.TrimSpace(strings.Join(args[1:], " "))
-		if reason == "" {
-			return fmt.Errorf("标等人必须带 reason（如 card needs %s 等 mac-02 授权；解除用 --clear）", id)
-		}
-		if err := st.MarkNeedsHuman(id, reason, ledgerActor()); err != nil {
-			return err
-		}
-		slog.Info("等人标记已打上", "card", id, "reason", reason)
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"ok": true, "card": id, "needs": reason})
-	},
-}
-
 func init() {
-	cardNeedsCmd.Flags().BoolVar(&cardNeedsClear, "clear", false, "解除等人标记")
-	cardCmd.AddCommand(cardNeedsCmd)
+	cardAcceptCmd.Flags().StringVar(&cardAcceptEvidence, "evidence", "", "证据原文（命令 + 结果）；已验时必填")
+	cardAcceptCmd.Flags().BoolVar(&cardAcceptUnverified, "unverified", false, "记为未验（证据可空）")
 }
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+`cmd/card.go:464` 的 `AddCommand` 追加 `cardAcceptCmd`。
 
-Run: `go test ./cmd/ -run 'TestCardAccept|TestCardNeeds' -v && go test ./cmd/ -count=1`
-Expected: 新用例 PASS，包内无回归。
+- [ ] **Step 4: 跑测试确认通过**
 
-- [ ] **Step 7: Commit**
+Run: `go test ./cmd/ -run TestCardAccept -count=1`
+Expected: PASS（三条全过）
+
+- [ ] **Step 5: 加日志与注释（复核）**
+
+确认已具备：
+- 进入时 Info 日志带 card / verified / evidence 长度（**不打证据原文**，它可能很长）
+- 错误分支 Error 日志带上下文与 cause
+- **成功路径有 Info 日志**（`验收结果已落账`）——静默成功是「调试靠猜」的头号来源
+- 文件头注释、`cardAcceptCmd` doc 注释、「为什么已验必须带证据」的 why 注释
+
+- [ ] **Step 6: gofmt + 提交**
 
 ```bash
-git add cmd/card_accept.go cmd/card_needs.go cmd/card_accept_test.go cmd/card_needs_test.go
-git commit -m "feat(cli): card accept 验收写入口 + card needs 等人标记入口"
+gofmt -l . | grep -v '^web/'
+git add cmd/card_records.go cmd/card_records_test.go cmd/card.go
+git commit -m "feat(ledger): card accept 记验收结果，已验强制带证据"
 ```
 
 ---
 
-### Task 6: web 门控
+### Task 5: `card needs` 等人标记写入口
 
 **Files:**
-- Modify: `web/src/api/ledger.ts:105-108`（fetchLedgerHealth 类型）
-- Create: `web/src/app/data/useLedgerEnabled.ts`
-- Modify: `web/src/app/shell/Shell.tsx`（79-95 轮询与角标、368-370 与 392-400 入口与路由）
-- Modify: `web/src/app/tree/ProjectTree.tsx`（Props、199、714-750 两个按钮）
-- Modify: `web/src/app/board/BoardPage.tsx`（Props、46-54 默认筛选与开关）
-- Modify: `web/src/app/board/columns.ts:157`（注释改条件性表述）
-- Test: `web/src/app/tree/ProjectTree.test.tsx`、`web/src/app/board/BoardPage.test.tsx`（就近追加用例；文件名以实际为准，先 `ls` 再落）
+- Modify: `cmd/card_records.go`（追加命令，复用 Task 4 建的文件与 `init()`）
+- Modify: `cmd/card.go:464`（`AddCommand` 追加 `cardNeedsCmd`）
+- Test: `cmd/card_records_test.go`（追加用例）
 
 **Interfaces:**
-- Consumes: Task 2 的 `{"enabled":bool,"mirror":[]|null}`。
-- Produces: `useLedgerEnabled(): boolean`；`ProjectTree` 与 `BoardPage` 各新增 `ledgerEnabled: boolean` prop。
+- Consumes: Task 1 的 `openLedger()`、既有 `ledgerActor()`、既有 `(*ledger.Store).MarkNeedsHuman(cardID, reason, actor string) error` 与 `(*ledger.Store).ClearNeedsHuman(cardID, actor string) error`、Task 4 的 `newTestCard` 测试辅助
+- Produces: `handoff card needs <id> <reason...>` / `handoff card needs <id> --clear`
 
-- [ ] **Step 1: 改 API 类型**
+- [ ] **Step 1: 写失败的测试**
+
+在 `cmd/card_records_test.go` 追加：
+
+```go
+// TestCardNeedsMarkAndClear 打等人标记后 card list --needs 可见，--clear 后消失。
+func TestCardNeedsMarkAndClear(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "等人卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "needs", id, "等用户授权删远端分支"); err != nil {
+		t.Fatalf("card needs: %v", err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "list", "--needs")
+	if err != nil {
+		t.Fatalf("card list --needs: %v", err)
+	}
+	if !strings.Contains(out, id) {
+		t.Fatalf("打标后应出现在 --needs 列表: %q", out)
+	}
+	if !strings.Contains(out, "等用户授权删远端分支") {
+		t.Fatalf("--needs 列表应带原因: %q", out)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "needs", id, "--clear"); err != nil {
+		t.Fatalf("card needs --clear: %v", err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "list", "--needs")
+	if err != nil {
+		t.Fatalf("card list --needs: %v", err)
+	}
+	if strings.Contains(out, id) {
+		t.Fatalf("清除后不应再出现: %q", out)
+	}
+}
+
+// TestCardNeedsRequiresReason 打标必须给原因——「等人」不带 reason 等于
+// 在注意力平面上放一个没人知道为什么的红点。
+func TestCardNeedsRequiresReason(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "无因卡")
+	_, _, err := runLedgerCLI(t, dir, "card", "needs", id)
+	if err == nil {
+		t.Fatalf("不带原因应报错")
+	}
+	if !strings.Contains(err.Error(), "原因") {
+		t.Fatalf("错误文案应提到原因，实际: %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+Run: `go test ./cmd/ -run TestCardNeeds -count=1`
+Expected: FAIL —— `unknown command "needs" for "handoff card"`
+
+- [ ] **Step 3: 实现命令**
+
+在 `cmd/card_records.go` 追加：
+
+```go
+// cardNeedsClear 清除等人标记而不是打标。
+var cardNeedsClear bool
+
+// cardNeedsCmd 打/清等人标记。
+//
+// 参数：<id> 卡 id；<reason...> 原因（打标时必填，多词自动拼接）；
+// --clear 清除标记（此时不需要原因）。
+// 注意：本命令与节点执行器自动打的标记同源同显——审阅超轮、合并冲突那些
+// 由 internal/ledgernode 落的标记走的是同一个 MarkNeedsHuman。
+var cardNeedsCmd = &cobra.Command{
+	Use:   "needs <id> [reason...]",
+	Short: "打等人标记（原因必填）；--clear 清除",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id := args[0]
+		reason := strings.TrimSpace(strings.Join(args[1:], " "))
+		// 「等人」是注意力平面上的一个红点，没有原因的红点等于噪音——
+		// 看的人无从判断该做什么，只能再去翻事件流
+		if !cardNeedsClear && reason == "" {
+			return fmt.Errorf("等人标记必须带原因：handoff card needs %s <原因>", id)
+		}
+		st, err := openLedger()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		actor := ledgerActor()
+		if cardNeedsClear {
+			slog.Info("清除等人标记", "card", id)
+			if err := st.ClearNeedsHuman(id, actor); err != nil {
+				slog.Error("清除等人标记失败", "card", id, "err", err)
+				return err
+			}
+			slog.Info("等人标记已清除", "card", id)
+			fmt.Fprintf(cmd.OutOrStdout(), "已清除等人标记：%s\n", id)
+			return nil
+		}
+		slog.Info("打等人标记", "card", id, "reason", reason)
+		if err := st.MarkNeedsHuman(id, reason, actor); err != nil {
+			slog.Error("打等人标记失败", "card", id, "reason", reason, "err", err)
+			return err
+		}
+		slog.Info("等人标记已落账", "card", id, "reason", reason)
+		fmt.Fprintf(cmd.OutOrStdout(), "已标记等人：%s（%s）\n", id, reason)
+		return nil
+	},
+}
+```
+
+在本文件既有的 `init()` 里追加：
+
+```go
+	cardNeedsCmd.Flags().BoolVar(&cardNeedsClear, "clear", false, "清除等人标记（不需要原因）")
+```
+
+`cmd/card.go:464` 的 `AddCommand` 追加 `cardNeedsCmd`。
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `go test ./cmd/ -run TestCardNeeds -count=1`
+Expected: PASS（两条都过）
+
+- [ ] **Step 5: 跑 cmd 全包回归**
+
+Run: `go test ./cmd/ -count=1`
+Expected: PASS
+
+- [ ] **Step 6: 加日志与注释（复核）**
+
+确认已具备：打标/清除两条路径各有进入 Info、错误 Error 带 cause、**成功 Info**；`cardNeedsCmd` doc 注释说明与节点执行器同源；「为什么原因必填」的 why 注释。
+
+- [ ] **Step 7: gofmt + 提交**
+
+```bash
+gofmt -l . | grep -v '^web/'
+git add cmd/card_records.go cmd/card_records_test.go cmd/card.go
+git commit -m "feat(ledger): card needs 打/清等人标记，原因必填"
+```
+
+---
+
+### Task 6: 前端账本启用探测
+
+**Files:**
+- Modify: `web/src/api/ledger.ts:104-107`（`fetchLedgerHealth` 返回类型加 `enabled`）
+- Create: `web/src/app/data/useLedgerEnabled.ts`
+- Test: `web/src/app/data/useLedgerEnabled.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2 的 `GET /api/ledger/health` → `{"enabled":boolean, "mirror"?:[...]}`
+- Produces: `useLedgerEnabled(): { enabled: boolean; loading: boolean }`。Task 7 的三个消费点用它。**契约：请求失败一律 `enabled:false`**；`loading` 为 true 期间调用方按未启用渲染（宁可晚一拍出现，也不要闪一个点进去 503 的入口）。
+
+- [ ] **Step 1: 写失败的测试**
+
+创建 `web/src/app/data/useLedgerEnabled.test.ts`：
+
+```ts
+import { renderHook, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useLedgerEnabled } from './useLedgerEnabled'
+import * as ledgerApi from '../../api/ledger'
+
+describe('useLedgerEnabled', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('enabled:true 时返回启用', async () => {
+    vi.spyOn(ledgerApi, 'fetchLedgerHealth').mockResolvedValue({ enabled: true, mirror: [] })
+    const { result } = renderHook(() => useLedgerEnabled())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.enabled).toBe(true)
+  })
+
+  it('enabled:false 时返回未启用', async () => {
+    vi.spyOn(ledgerApi, 'fetchLedgerHealth').mockResolvedValue({ enabled: false })
+    const { result } = renderHook(() => useLedgerEnabled())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.enabled).toBe(false)
+  })
+
+  // 请求失败按未启用处理：宁可少显示一个入口，也不要亮一个点进去就 503 的入口
+  it('请求失败时按未启用处理', async () => {
+    vi.spyOn(ledgerApi, 'fetchLedgerHealth').mockRejectedValue(new Error('connection refused'))
+    const { result } = renderHook(() => useLedgerEnabled())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.enabled).toBe(false)
+  })
+
+  // loading 期间必须按未启用渲染，否则会闪一下账本入口再消失
+  it('初始为 loading 且 enabled 为 false', () => {
+    vi.spyOn(ledgerApi, 'fetchLedgerHealth').mockReturnValue(new Promise(() => {}))
+    const { result } = renderHook(() => useLedgerEnabled())
+    expect(result.current.loading).toBe(true)
+    expect(result.current.enabled).toBe(false)
+  })
+})
+```
+
+**注意**：本仓 web 测试的 import 路径别名与 `renderHook` 来源请对照同目录既有测试；若既有测试用的是 `@/` 别名，改成一致的写法。
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+Run（在 `web/` 下）: `npx vitest run src/app/data/useLedgerEnabled.test.ts`
+Expected: FAIL —— 模块不存在
+
+- [ ] **Step 3: 改 API 类型**
 
 `web/src/api/ledger.ts`：
 
 ```ts
-export const fetchLedgerHealth = () =>
-  request<{
-    enabled: boolean
-    mirror: { Target: string; LastSeq: number; UpdatedAt: string }[] | null
-  }>('/api/ledger/health')
+export interface LedgerHealth {
+  // enabled 账本域总开关。未启用时后端只回这一个字段（恒 200，不是 503——
+  // 503 在浏览器侧与网络错无法区分，那样前端只能靠猜）。
+  enabled: boolean
+  mirror?: { Target: string; LastSeq: number; UpdatedAt: string }[]
+}
+
+export const fetchLedgerHealth = () => request<LedgerHealth>('/api/ledger/health')
 ```
 
-- [ ] **Step 2: 新建 `web/src/app/data/useLedgerEnabled.ts`**
+若 `fetchLedgerHealth` 已有调用方依赖旧的内联类型（`grep -rn "fetchLedgerHealth" web/src` 查一下），一并改为用 `LedgerHealth`。
+
+- [ ] **Step 4: 写 hook**
+
+创建 `web/src/app/data/useLedgerEnabled.ts`：
 
 ```ts
-// 账本启用探测：挂载时查一次 /api/ledger/health。
-// 请求失败按未启用处理——宁可少显示入口，也不显示一个点进去 503 的
-// 入口（agentd 版本旧或网络错时，账本入口整体隐身，spec §5）。
+// 账本是否启用的一次性探测。
+//
+// 职责：查一次 /api/ledger/health，把 enabled 交给调用方做入口门控。
+// 边界：只回答「开没开」，不回答镜像健康——那是 /cards 页自己的事。
+// 不做轮询：开关是 agentd 启动期决定的，运行期不会变；改了配置要重启
+// agentd，那时前端也会重连。
 import { useEffect, useState } from 'react'
 import { fetchLedgerHealth } from '../../api/ledger'
 
-export function useLedgerEnabled(): boolean {
+export interface LedgerEnabledState {
+  enabled: boolean
+  loading: boolean
+}
+
+// useLedgerEnabled 返回账本启用状态。
+//
+// 契约：请求失败一律按未启用处理；loading 期间 enabled 恒 false，调用方
+// 据此渲染即可（宁可入口晚一拍出现，也不要闪一下再消失）。
+export function useLedgerEnabled(): LedgerEnabledState {
   const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+
   useEffect(() => {
-    let alive = true
+    let stopped = false
     fetchLedgerHealth()
-      .then((health) => { if (alive) setEnabled(health.enabled) })
-      .catch(() => { if (alive) setEnabled(false) })
-    return () => { alive = false }
+      .then((health) => {
+        if (stopped) return
+        setEnabled(Boolean(health.enabled))
+      })
+      .catch(() => {
+        // 探不到就当没开：老版本 agentd 没有这个端点、网络断开都会走到这里，
+        // 两种情况下亮出账本入口都会让用户点进一个坏页面
+        if (!stopped) setEnabled(false)
+      })
+      .finally(() => {
+        if (!stopped) setLoading(false)
+      })
+    return () => { stopped = true }
   }, [])
-  return enabled
+
+  return { enabled, loading }
 }
 ```
 
-- [ ] **Step 3: Shell 接线**
+- [ ] **Step 5: 跑测试确认通过**
+
+Run（在 `web/` 下）: `npx vitest run src/app/data/useLedgerEnabled.test.ts`
+Expected: PASS（四条全过）
+
+- [ ] **Step 6: 类型检查**
+
+Run（在 `web/` 下）: `npx tsc --noEmit`
+Expected: 0 错
+
+- [ ] **Step 7: 注释复核**
+
+确认已具备：`useLedgerEnabled.ts` 文件头注释（职责 + 边界 + 为什么不轮询）、导出函数与接口的注释、catch 分支的「为什么失败要当未启用」注释。**确认没有 `console.log`。**
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add web/src/api/ledger.ts web/src/app/data/useLedgerEnabled.ts web/src/app/data/useLedgerEnabled.test.ts
+git commit -m "feat(web): 加 useLedgerEnabled 探测账本启用状态"
+```
+
+---
+
+### Task 7: 前端三处入口门控
+
+**Files:**
+- Modify: `web/src/app/shell/Shell.tsx`（约 79-95 行的 poll 与角标、约 360-405 行的 dock props 与路由注册）
+- Modify: `web/src/app/tree/ProjectTree.tsx`（约 199 行 props 签名、约 713-729 行「工作项」按钮、约 746 行「流程」按钮）
+- Modify: `web/src/app/board/BoardPage.tsx:47`（`onlyUnlinked` 默认值）
+- Modify: `web/src/app/board/columns.ts:157` 附近的注释（「工作项看板已是主入口」改为条件性表述）
+- Test: `web/src/app/board/BoardPage.test.tsx`（追加用例；文件不存在则新建）
+
+**Interfaces:**
+- Consumes: Task 6 的 `useLedgerEnabled()`
+- Produces: 账本未启用时——dock 无「工作项」与「流程」两个图标、`/cards` `/flows` 路由不注册、角标不计卡数、任务看板不默认「只看未挂账」
+
+- [ ] **Step 1: 写失败的测试**
+
+在 `web/src/app/board/BoardPage.test.tsx` 追加（照抄同文件既有用例的 render 辅助与 props 构造方式；文件不存在则参照 `web/src/app/cards/` 下既有测试新建）：
+
+```tsx
+// 账本未启用时任务看板是主入口，不能默认藏起挂了卡的 task。
+// ledgerEnabled=false 时 onlyUnlinked 必须为 false。
+it('账本未启用时不默认只看未挂账', () => {
+  render(
+    <BoardPage
+      tasksState={makeTasksState([taskA, taskB])}
+      tree={null}
+      unlinkedTaskIds={new Set([taskA.id])}
+      ledgerEnabled={false}
+      onOpenTask={() => {}}
+    />,
+  )
+  // 两条 task 都应出现——未启用账本时「未挂账」这个概念不该影响可见性
+  expect(screen.getByText(taskA.title)).toBeInTheDocument()
+  expect(screen.getByText(taskB.title)).toBeInTheDocument()
+})
+
+it('账本启用时默认只看未挂账', () => {
+  render(
+    <BoardPage
+      tasksState={makeTasksState([taskA, taskB])}
+      tree={null}
+      unlinkedTaskIds={new Set([taskA.id])}
+      ledgerEnabled
+      onOpenTask={() => {}}
+    />,
+  )
+  expect(screen.getByText(taskA.title)).toBeInTheDocument()
+  expect(screen.queryByText(taskB.title)).not.toBeInTheDocument()
+})
+```
+
+`taskA` / `taskB` / `makeTasksState` 按同文件既有 fixture 构造；`taskA` 在 `unlinkedTaskIds` 里、`taskB` 不在。
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+Run（在 `web/` 下）: `npx vitest run src/app/board/BoardPage.test.tsx`
+Expected: FAIL —— `ledgerEnabled` prop 不存在，第一条用例里 `taskB` 被默认筛选藏掉
+
+- [ ] **Step 3: 改 BoardPage**
+
+`web/src/app/board/BoardPage.tsx`，props 加一个字段并改默认值：
+
+```tsx
+  // unlinkedTaskIds 未挂账 task id 集合；null = 账本未就绪，此时不做未挂账过滤
+  unlinkedTaskIds?: Set<string> | null
+  // ledgerEnabled 账本是否启用。未启用时本页是任务的**主入口**，不能默认
+  // 只看未挂账——那会把绝大多数 task 藏起来。启用时本页降级为兜底入口。
+  ledgerEnabled?: boolean
+}
+
+export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, ledgerEnabled = false, onOpenTask }: BoardPageProps) {
+  const [filter, setFilter] = useState<BoardFilter>(EMPTY_FILTER)
+  // 默认只看未挂账**仅在账本启用时成立**：那时工作项看板（/cards）是主入口，
+  // 本页降级为「账本管不到的 task」的兜底，挂了卡的 task 在卡抽屉的「关联执行」
+  // 区看。账本没启用时本页就是主入口，必须显示全部。
+  const [onlyUnlinked, setOnlyUnlinked] = useState(ledgerEnabled)
+```
+
+同时检查页面上「只看未挂账」那个开关控件：账本未启用时应**整体不渲染**（「未挂账」概念不出现）。找到渲染该开关的 JSX，用 `{ledgerEnabled && (...)}` 包起来。
+
+`web/src/app/board/columns.ts:157` 附近那条「工作项看板已是主入口」的注释改为条件性表述，例如「账本启用时工作项看板是主入口，本页为兜底；未启用时本页即主入口」。
+
+- [ ] **Step 4: 改 ProjectTree**
+
+`web/src/app/tree/ProjectTree.tsx`：props 接口加 `ledgerEnabled?: boolean`（带注释说明「未启用时不渲染账本两个入口」），解构时给默认 `ledgerEnabled = false`；把「工作项」按钮（约 713-729 行，`aria-label="工作项"` 那个 `<button>`）与「流程」按钮（约 740-750 行，`onClick={onOpenFlows}` 那个）各自用 `{ledgerEnabled && (...)}` 包起来。
+
+- [ ] **Step 5: 改 Shell**
 
 `web/src/app/shell/Shell.tsx`：
 
-```tsx
-const ledgerEnabled = useLedgerEnabled()
-// 未启用时不轮询账本端点——它们只会 503 刷日志
-const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
-const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
-```
-
-- `/cards`、`/flows` 两条 `<Route>` 包成 `{ledgerEnabled && <Route ... />}`；
-- `<ProjectTree ... ledgerEnabled={ledgerEnabled} />`；
-- BoardPage 的渲染处传 `ledgerEnabled={ledgerEnabled}`；
-- `Shell.tsx:88` 起「任务看板降级为兜底」注释改为条件性表述（「账本启用时任务看板降级为未挂账兜底；未启用时它就是主入口」）。
-
-- [ ] **Step 4: ProjectTree 门控**
-
-Props 加 `ledgerEnabled?: boolean`（缺省 false——探针没回来前不显示，回来了再长出来）；「工作项」按钮（`:714-728`）与「流程」按钮（`:746` 一带）包成 `{ledgerEnabled && (<button ...>...)}`。`ProjectTree.tsx:75` 注释同步改条件性表述。
-
-- [ ] **Step 5: BoardPage 门控**
-
-Props 加 `ledgerEnabled?: boolean`（缺省 false）。改动两处：
+1. 顶部调用 hook：`const { enabled: ledgerEnabled } = useLedgerEnabled()`（import 从 `../data/useLedgerEnabled`）
+2. 两个账本轮询改为条件启用（`usePoll` 已支持 `opts.enabled`，见 `web/src/app/data/usePoll.ts:27-31`）：
 
 ```tsx
-// 账本启用时默认只看未挂账（工作项看板是主入口，本页兜底）；
-// 未启用时本页就是主入口，不做未挂账过滤，开关也不出现。
-const [onlyUnlinked, setOnlyUnlinked] = useState(true)
-const unlinkedFilterOn = ledgerEnabled && onlyUnlinked
-const filtered = applyFilter(unlinkedFilterOn ? unlinkedOnly(tasks, unlinkedTaskIds) : tasks, filter, projects)
+  const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
+  const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
 ```
 
-「只看未挂账」开关的 JSX 包 `{ledgerEnabled && (...)}`。`columns.ts:157` 注释改条件性表述。
-
-- [ ] **Step 6: 组件测试**
-
-`web/src/app/tree/ProjectTree.test.tsx` 有 `props({...})` 覆写工厂（文件头有使用说明，先读它）；两个按钮的 aria-label 实测为「工作项」「流程」。追加：
+3. `cardNeedsCount` 的 `useMemo` 开头加早退，未启用时恒 0：
 
 ```tsx
-it('账本未启用时不渲染工作项与流程入口', () => {
-  render(<ProjectTree {...props({ ledgerEnabled: false })} />)
-  expect(screen.queryByLabelText('工作项')).toBeNull()
-  expect(screen.queryByLabelText('流程')).toBeNull()
-})
-
-it('账本启用时渲染工作项与流程入口', () => {
-  render(<ProjectTree {...props({ ledgerEnabled: true })} />)
-  expect(screen.getByLabelText('工作项')).toBeInTheDocument()
-  expect(screen.getByLabelText('流程')).toBeInTheDocument()
-})
+  const cardNeedsCount = useMemo(() => {
+    // 账本未启用时角标恒 0：轮询已关，cardsState 永远是 null，这里显式返回
+    // 比依赖「null 恰好算出 0」可靠
+    if (!ledgerEnabled) return 0
+    ...原有内容...
+  }, [ledgerEnabled, cardsState.data, decisionsState.data])
 ```
 
-注意既有用例未传 `ledgerEnabled`（缺省 false）——若其中有断言「工作项」按钮存在的用例，给它补 `ledgerEnabled: true` 而不是改缺省值。
-
-`web/src/app/board/BoardPage.test.tsx` 沿同文件既有 fixture 追加：
+4. 给 `<ProjectTree>` 传 `ledgerEnabled={ledgerEnabled}`
+5. 给 `<BoardPage>` 传 `ledgerEnabled={ledgerEnabled}`（找到 BoardPage 的渲染点，overlay 或路由里）
+6. `/cards` 与 `/flows` 两个 `<Route>` 条件注册：
 
 ```tsx
-it('账本未启用时无未挂账筛选，任务全量显示', () => {
-  // fixture 抄同文件既有用例：一个挂账 task + 一个未挂账 task，
-  // unlinkedTaskIds 只含后者；断言两者都渲染且开关文案不出现
-  render(<BoardPage {...既有基座参数} ledgerEnabled={false} unlinkedTaskIds={new Set(['t1'])} />)
-  expect(screen.queryByText(/只看未挂账/)).toBeNull()
-})
+            {ledgerEnabled && <Route path="/cards" element={<CardsPage />} />}
+            {ledgerEnabled && <Route path="/flows" element={<FlowsPage />} />}
 ```
 
-- [ ] **Step 7: 跑前端门**
+**注意**：`<Routes>` 的直接子元素为 `false` 时 react-router 会报错。若报错，改用展开写法：把两个 Route 收进一个数组变量再展开，或者用 `{ledgerEnabled ? <><Route .../><Route .../></> : null}` —— **以本仓 react-router 版本实际能跑通的写法为准，跑测试验证**。
 
-Run: `cd web && npx tsc --noEmit && npx vitest run`
-Expected: 0 错、全绿。
+- [ ] **Step 6: 跑测试确认通过**
 
-- [ ] **Step 8: Commit**
+Run（在 `web/` 下）: `npx vitest run src/app/board/BoardPage.test.tsx`
+Expected: PASS（两条都过）
+
+- [ ] **Step 7: 跑 web 全量**
+
+Run（在 `web/` 下）: `npx tsc --noEmit && npx vitest run`
+Expected: tsc 0 错；vitest 全绿。**若有既有用例因新增 required prop 而红**，说明 prop 没给默认值——补默认值而不是改测试。
+
+- [ ] **Step 8: 构建 + lint**
+
+Run（在 `web/` 下）: `npm run build && npx eslint src --max-warnings 13`
+Expected: build 通过；eslint 0 error（本仓有 13 条既有 warning，不新增即可）
+
+- [ ] **Step 9: 注释复核**
+
+确认已具备：三个改动点各有「为什么」注释（BoardPage 的主/兜底入口切换、ProjectTree 的入口隐藏、Shell 的角标早退）。**确认没有 `console.log`。**
+
+- [ ] **Step 10: 提交**
 
 ```bash
-git add web/src/
-git commit -m "feat(web): 账本入口按 /api/ledger/health 探针门控，未启用时任务看板回主入口"
+git add web/src/app/shell/Shell.tsx web/src/app/tree/ProjectTree.tsx web/src/app/board/BoardPage.tsx web/src/app/board/columns.ts web/src/app/board/BoardPage.test.tsx
+git commit -m "feat(web): 账本未启用时不渲染入口，任务看板回主入口形态"
 ```
 
 ---
 
-### Task 7: 全量终审门
+### Task 8: 全量门与端到端手工验证
+
+**Files:**
+- 无新增；本 task 只跑验证并修出现的问题
+
+**Interfaces:**
+- Consumes: Task 1-7 的全部产出
+- Produces: 一份可信的「全绿」结论
 
 - [ ] **Step 1: 后端全量**
 
-Run: `gofmt -l . | grep -v '^web/'`（应无输出）；`go build ./... && go vet ./... && go test ./... -count=1`
-Expected: 全绿。
+```bash
+gofmt -l . | grep -v '^web/'
+go build ./... && go vet ./... && go test ./... -count=1
+```
+
+Expected: gofmt 无输出；build/vet 退 0；test 全绿。
+
+**沙箱注意**：若在受限沙箱内跑，可能出现与本次改动无关的环境性失败（`mktemp` 被拒、`sysctl` 权限、临时目录相关的 panic）。这类失败要**如实记进 ledger 并说明形状**，不许写成「全绿」，也不许当成本次改动引入的红。
 
 - [ ] **Step 2: 前端全量**
 
-Run: `cd web && npx tsc --noEmit && npx vitest run && npx eslint src --max-warnings=-1 2>/dev/null || npx eslint src`
-Expected: tsc 0 错、vitest 全绿、eslint 0 error（既有 warning 不算）。
+```bash
+cd web && npx tsc --noEmit && npx vitest run && npm run build
+```
 
-- [ ] **Step 3: 红线自查**
+Expected: 全部通过。
 
-Run: `grep -rn "fmt.Printf" internal/ --include="*.go" | grep -v _test`（应无新增）；`grep -rn "console.log" web/src --include="*.ts*"`（应无输出）；`grep -rn "cfg.Ledger.DSN" cmd/ internal/ | grep -i "log\|slog\|Info\|Warn\|Error"`（应无输出——DSN 不进日志）。
+- [ ] **Step 3: 红线自检**
 
-- [ ] **Step 4: Commit（如有收尾改动）并写 ledger**
+```bash
+grep -rn 'fmt\.Printf' internal/ cmd/ | grep -v '_test.go'
+grep -rn 'console\.log' web/src | grep -v test
+```
 
-按执行纪律块要求逐 task 落盘 ledger。
+Expected: 两条都无输出（若 `internal/` 有既有的 `fmt.Printf`，确认不是本次新增的）。
+
+- [ ] **Step 4: 把 Step 1-3 的实际输出写进 ledger**
+
+按纪律块要求落 ledger：每条命令的**实际输出**（不是预期），沙箱受限导致的失败如实标注形状。**没跑到结果的不许写结论。**
+
+**本 task 到此为止。** 端到端的真机验证（起实例、敲 `handoff card ...`）**不属于执行者范围**——纪律块禁止调用 handoff CLI，那部分见文末「审核者本地验收清单」，由协调者执行。
+
+- [ ] **Step 5: 提交（如有修复）**
+
+```bash
+gofmt -l . | grep -v '^web/'
+git add -A
+git commit -m "fix(ledger): 全量门与端到端验证发现的问题修复"
+```
+
+若 Step 1-6 全绿无需修复，本步跳过，不要造空提交。
 
 ---
 
-## 审核者本地验收清单（不派发——需要驱动 agentd/浏览器，与纪律块冲突）
+## 附一：审核者本地验收清单（**不派发**，协调者执行）
 
-以下由审核者在本地完成，不写入执行者任务：
+以下步骤要敲 `handoff` CLI 或起 agentd 实例，与 B 版纪律块的「不要调用
+handoff CLI、不要起任何新的 executor 进程」直接冲突，**故意留在派发范围
+之外**。执行者跑完 Task 1-8 后由协调者本地补做。
 
-1. **判据①**：新 config（无 ledger 段）起隔离 agentd（独立 DataDir + 端口，配方见交接文档「怎么验」），确认 DataDir 下不生成 `ledger.db`、`curl /api/ledger/health` 返回 `{"enabled":false,...}`、`card add` 报未启用文案。
-2. **判据②**：`ledger.enabled: true` 且 dsn 空，SQLite 回退照旧、card 全族可用。
-3. **判据③**：浏览器实测 off/on 两态的 dock 图标、`/cards` 直达、任务看板筛选。
-4. **spec §6 skill 改写**：由审核者本地完成（用户指定，不在本计划）。
+**A. 默认关（spec 判据①）**
+
+```bash
+mkdir -p /tmp/ledger-off && printf 'listen: 127.0.0.1:0\ntoken: t\ndatadir: /tmp/ledger-off\nstalltimeout: 2h\n' > /tmp/ledger-off/config.yaml
+go run . --config /tmp/ledger-off/config.yaml card add 测试 --project demo; ls /tmp/ledger-off/
+```
+
+判据：报「账本未启用」非 0 退出；目录里**没有** `ledger.db`。
+
+**B. 打开后全族可用（判据②⑤⑥）**
+
+```bash
+mkdir -p /tmp/ledger-on && printf 'listen: 127.0.0.1:0\ntoken: t\ndatadir: /tmp/ledger-on\nstalltimeout: 2h\nledger:\n  enabled: true\n' > /tmp/ledger-on/config.yaml
+go run . --config /tmp/ledger-on/config.yaml card add 测试卡 --project demo --workflow bug
+```
+
+取输出里的 id 记为 `<ID>`：
+
+```bash
+go run . --config /tmp/ledger-on/config.yaml card accept <ID> --evidence "go test ./... 全绿"
+go run . --config /tmp/ledger-on/config.yaml card needs <ID> "等用户拍板"
+go run . --config /tmp/ledger-on/config.yaml card list --needs
+go run . --config /tmp/ledger-on/config.yaml card show <ID>
+go run . --config /tmp/ledger-on/config.yaml card accept <ID>   # 应报「已验必须带证据」
+```
+
+**C. web 门控真机走查（判据③）**
+
+起**隔离**实例（独立 DataDir + 端口，**绝不重启 launchd 托管的生产
+agentd**——它会用旧二进制把改动顶回去）。分别用 `ledger.enabled` 关/开
+两份 config 各起一次，在真实控制台确认：关时 dock 无「工作项」与「流程」
+两个图标、`/cards` 直达不渲染看板、任务看板无「只看未挂账」开关；开时
+三者恢复现状。登录走 `handoff console --print-url`（**一次性 ticket，
+谁先打开谁消费掉**，自己验过一次要重开一张给用户）。
+
+**D. 清理**
+
+```bash
+rm -rf /tmp/ledger-off /tmp/ledger-on
+```
+
+## 附二：本 plan 明确不做
+
+- **`skills/handoff/SKILL.md` 的「账本模式」节**（spec §6）——由协调者本地写，执行者**不要动这个文件**。
+- web 的验收开关 UI、「按节点派发」按钮、子任务树 rollup。
+- 存量切换、`backlog.md` 冻结、合回 main。
+- 合并节点的 origin 依赖问题（spec §7 列的 D 组三条观察）。
