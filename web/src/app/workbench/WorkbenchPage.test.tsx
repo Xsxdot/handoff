@@ -118,6 +118,9 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     closeById: vi.fn(),
     resize: vi.fn(),
     restoreTerminal: vi.fn(),
+    byBase: {},
+    baseDirs: {},
+    hydrate: vi.fn(),
     ...overrides,
   }
 }

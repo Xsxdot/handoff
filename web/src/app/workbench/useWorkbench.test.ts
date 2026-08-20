@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { HOME_BASE, useWorkbench, type BaseDir } from './useWorkbench'
+import type { Workbench } from './tabs'
 
 const wsA: BaseDir = {
   key: '/home/dev/handoff',
@@ -180,5 +181,39 @@ describe('openInNewPane', () => {
     act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, Number.MAX_SAFE_INTEGER))
     expect(result.current.wb.groups).toHaveLength(2)
     expect(result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+  })
+})
+
+describe('hydrate 与基准元数据', () => {
+  it('hydrate 灌入多个目录的 tab 组，且不改变当前选中', () => {
+    const { result } = renderHook(() => useWorkbench())
+    const a: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'a', projectName: 'p', machine: '' }
+    const b: BaseDir = { key: '/repo/b@m1', kind: 'workspace', path: '/repo/b', label: 'b', projectName: 'p', machine: 'm1' }
+    const wbA: Workbench = { groups: [{ tabs: [{ id: 't1', content: { kind: 'blank' } }], activeId: 't1' }], active: 0, sizes: [1] }
+    const wbB: Workbench = { groups: [{ tabs: [{ id: 't2', content: { kind: 'tui', taskId: 'T' } }], activeId: 't2' }], active: 0, sizes: [1] }
+
+    act(() => result.current.hydrate([{ base: a, wb: wbA }, { base: b, wb: wbB }]))
+
+    // 水合不选中任何目录——那要等项目树到位（spec §6）
+    expect(result.current.base).toBeNull()
+    expect(result.current.byBase['/repo/a']).toEqual(wbA)
+    expect(result.current.byBase['/repo/b@m1']).toEqual(wbB)
+    expect(result.current.baseDirs['/repo/b@m1']).toEqual(b)
+  })
+
+  it('baseDirs 会随 select / open 记住每个基准的元数据', () => {
+    const { result } = renderHook(() => useWorkbench())
+    const a: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'a', projectName: 'p', machine: '' }
+    act(() => result.current.select(a))
+    expect(result.current.baseDirs['/repo/a']).toEqual(a)
+  })
+
+  it('restoreTerminal 也会登记 baseDirs（它写的是非当前基准）', () => {
+    const { result } = renderHook(() => useWorkbench())
+    const b: BaseDir = { key: '/repo/b@m1', kind: 'workspace', path: '/repo/b', label: 'b', projectName: '', machine: 'm1' }
+    act(() => result.current.restoreTerminal(b, 'S1'))
+    expect(result.current.base).toBeNull()
+    expect(result.current.baseDirs['/repo/b@m1']).toEqual(b)
+    expect(result.current.byBase['/repo/b@m1'].groups[0].tabs).toHaveLength(1)
   })
 })
