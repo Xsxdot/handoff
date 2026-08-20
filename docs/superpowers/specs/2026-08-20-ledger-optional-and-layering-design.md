@@ -149,8 +149,10 @@ Shell 启动时查一次 `/api/ledger/health`：
    无「只看未挂账」默认筛选；on 时三者恢复现状。
 ④ 搬家后 `cmd/wait.go` 零 ledger import；`card wait --subtree` 行为与原
    `wait --card --subtree` 等价（原测试用例迁移后全绿）。
-⑤ `card accept B --evidence "..."` 后 `card list` 验收列由「待真机验」
-   变「已验」；`--evidence` 缺失时报错不落事件。
+⑤ `card accept B --evidence "..."` 后 `card show B` 事件流出现
+   `acceptance_recorded`（verified=true），web 卡抽屉验收区由「待真机验」
+   变「已验」（抽屉的推导已实现，见 `CardDrawer.tsx:132`）；`--evidence`
+   缺失时报错不落事件。
 ⑥ `card needs B "等授权"` 后 `card list --needs` 可见该卡；`--clear` 后
    消失。
 ⑦ skill 新节中出现的每条命令与 `handoff card --help` 实际命令面一致
