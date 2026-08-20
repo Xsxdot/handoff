@@ -75,6 +75,30 @@ func TestForEmptyValueDisablesInjection(t *testing.T) {
 	}
 }
 
+// TestByNameIgnoresExecutorDisable 机器级显式关闭只属于 executor 兜底轴，
+// 不得让点名 review 的正确性路径也变成空块。
+func TestByNameIgnoresExecutorDisable(t *testing.T) {
+	r := NewResolver(t.TempDir(), Static(map[string]string{"grok": ""}), quietLog())
+	fallback, err := r.For("grok")
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if fallback.Text != "" || fallback.Source != "" {
+		t.Fatalf("显式关闭应返回空块，实得 %+v", fallback)
+	}
+
+	named, err := r.ByName(NameReview, "grok")
+	if err != nil {
+		t.Fatalf("ByName(review): %v", err)
+	}
+	if !strings.Contains(named.Text, "只读，不写") {
+		t.Fatalf("点名 review 应仍返回完整块，实得前 80 字节 %.80q", named.Text)
+	}
+	if strings.Contains(named.Text, "每个 task 完成即 commit") {
+		t.Fatal("点名 review 不应拿到 executor 兜底的实现块")
+	}
+}
+
 func TestForRejectsPathSeparator(t *testing.T) {
 	for _, bad := range []string{"../etc/passwd", "sub/dir.md", "."} {
 		r := NewResolver(t.TempDir(), Static(map[string]string{"codex": bad}), quietLog())

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -272,5 +273,78 @@ func TestResumeTaskAssemblesRequest(t *testing.T) {
 	}
 	if len(got.Env) != 1 || got.Env[0] != "FOO=bar" {
 		t.Fatalf("env 未透传（漏传会让冷恢复丢掉用户密钥）: %v", got.Env)
+	}
+}
+
+// TestResumeTaskReparsesPersistedDisciplineName 验证启动恢复从 SQLite 读出的名字
+// 再解析纪律块，而不是只凭 executor 重新选块；两个分支都要守住，避免点名路径
+// 正确而空名字的兼容兜底悄悄退化。
+func TestResumeTaskReparsesPersistedDisciplineName(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		want    string
+		notWant string
+	}{
+		{name: "review", want: "只读，不写", notWant: "每个 task 完成即 commit"},
+		{name: "", want: "每个 task 完成即 commit", notWant: "只读，不写"},
+	} {
+		t.Run(map[string]string{"review": "named", "": "fallback"}[tc.name], func(t *testing.T) {
+			ad := &recordingRestorer{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+			m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+			mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+				DisciplineName: tc.name, State: proto.TaskStateRunning, ExecutorSession: "sess-1"})
+
+			if alive := m.ResumeTask("t1"); alive {
+				t.Fatal("Resume 返回不存活时 ResumeTask 应为 false")
+			}
+			ad.mu.Lock()
+			got := ad.got
+			ad.mu.Unlock()
+			if !strings.Contains(got.Discipline, tc.want) {
+				t.Fatalf("纪律块应含 %q，实得前 80 字节 %q", tc.want, got.Discipline[:min(len(got.Discipline), 80)])
+			}
+			if strings.Contains(got.Discipline, tc.notWant) {
+				t.Fatalf("纪律块不应含 %q", tc.notWant)
+			}
+		})
+	}
+}
+
+// TestContinueReparsesPersistedDisciplineName 验证 waiting_review 任务走 Continue
+// 的冷恢复阶梯时，也从落盘名字重解析；否则首回合正确、续接回合会换块。
+func TestContinueReparsesPersistedDisciplineName(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		want    string
+		notWant string
+	}{
+		{name: "review", want: "只读，不写", notWant: "每个 task 完成即 commit"},
+		{name: "", want: "每个 task 完成即 commit", notWant: "只读，不写"},
+	} {
+		t.Run(map[string]string{"review": "named", "": "fallback"}[tc.name], func(t *testing.T) {
+			ad := &ladderAdapter{
+				chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+				outcome:     executor.ResumeOutcome{Alive: true},
+			}
+			m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+			mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake",
+				DisciplineName: tc.name, State: proto.TaskStateWaitingReview, ExecutorSession: "sess-1"})
+
+			if err := m.Continue(context.Background(), "t1", "继续干"); err != nil {
+				t.Fatalf("Continue: %v", err)
+			}
+			ad.mu.Lock()
+			got := ad.gotReq
+			ad.mu.Unlock()
+			if !got.Cold {
+				t.Fatal("Continue 触发的恢复必须 Cold=true")
+			}
+			if !strings.Contains(got.Discipline, tc.want) {
+				t.Fatalf("纪律块应含 %q，实得前 80 字节 %q", tc.want, got.Discipline[:min(len(got.Discipline), 80)])
+			}
+			if strings.Contains(got.Discipline, tc.notWant) {
+				t.Fatalf("纪律块不应含 %q", tc.notWant)
+			}
+		})
 	}
 }
