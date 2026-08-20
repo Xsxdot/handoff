@@ -87,6 +87,39 @@ func TestAcceptanceAndNeeds(t *testing.T) {
 	}
 }
 
+// TestRecordBranchMerged 合并环节的外部动作必须落账：推了什么、合进哪里。
+func TestRecordBranchMerged(t *testing.T) {
+	s := seedStore(t)
+	a := mk(t, s, "待合并")
+	if err := s.RecordBranchMerged(a.ID, "feat/x", "integration/y", true, "node:merge"); err != nil {
+		t.Fatalf("RecordBranchMerged: %v", err)
+	}
+	events, err := s.EventsFromAsc([]string{a.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Type != EvBranchMerged {
+			continue
+		}
+		found = true
+		var p map[string]any
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解 payload: %v", err)
+		}
+		if p["pushed_work_branch"] != true {
+			t.Fatalf("pushed_work_branch 应为 true: %v", p)
+		}
+		if p["merged_into"] != "integration/y" || p["pushed_base"] != "integration/y" {
+			t.Fatalf("分支字段不对: %v", p)
+		}
+	}
+	if !found {
+		t.Fatalf("没落 %s 事件", EvBranchMerged)
+	}
+}
+
 func TestRecordDispatch(t *testing.T) {
 	s := seedStore(t)
 	c := mk(t, s, "要派的卡")

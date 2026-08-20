@@ -109,6 +109,10 @@ function eventSummary(event: LedgerEvent): string {
   if (event.type === 'status_moved') {
     return `${String(payload.from ?? '')} → ${String(payload.to ?? '')}`
   }
+  if (event.type === 'branch_merged') {
+    const pushed = payload.pushed_work_branch === true ? '已推工作分支' : '工作分支来自 origin'
+    return `合并 ${String(payload.work_branch ?? '')} → ${String(payload.merged_into ?? '')}（${pushed}，已推 ${String(payload.pushed_base ?? '')}）`
+  }
   const raw = JSON.stringify(event.payload)
   return raw && raw !== '{}' ? raw : event.type
 }

@@ -184,6 +184,17 @@ func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 		}
 		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 	}
-	logger.Info("已自动合回基线", "base", base)
+	logger.Info("已自动合回基线并推 origin", "base", base)
+	branch, branchErr := taskBranch(m.St, card)
+	if branchErr != nil {
+		// 分支名取不到不推翻已经完成的合并——合并是真的做了，落账缺一条
+		// 比谎报失败好。留 Warn 供事后追。
+		logger.Warn("合并已完成但取工作分支名失败，事件缺分支字段", "err", branchErr)
+		branch = ""
+	}
+	if err := m.St.RecordBranchMerged(cardID, branch, base, true, "node:merge"); err != nil {
+		// 合并已经完成并推上 origin，不能因落账失败把成功动作伪装成失败。
+		logger.Warn("合并已完成但落账失败", "err", err)
+	}
 	return Outcome{Action: ActionMerged}, nil
 }

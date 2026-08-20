@@ -44,11 +44,14 @@ const (
 // 事件类型（card_events.type）。task_mirrored 由 Plan B 镜像子系统写入，
 // 这里先占词表位。
 const (
-	EvCardCreated        = "card_created"
-	EvStatusMoved        = "status_moved"
-	EvDispatched         = "dispatched"
-	EvReviewVerdict      = "review_verdict"
-	EvMerged             = "merged"
+	EvCardCreated   = "card_created"
+	EvStatusMoved   = "status_moved"
+	EvDispatched    = "dispatched"
+	EvReviewVerdict = "review_verdict"
+	EvMerged        = "merged"
+	// EvBranchMerged 合并环节把工作分支合进基线并推 origin。与 EvMerged
+	// （卡并入承载卡）是两回事，不可复用。
+	EvBranchMerged       = "branch_merged"
 	EvUnmerged           = "unmerged"
 	EvSplit              = "split"
 	EvAcceptanceRecorded = "acceptance_recorded"

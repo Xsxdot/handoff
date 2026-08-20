@@ -285,3 +285,34 @@ func TestMergeNodeConflictStillSaysConflict(t *testing.T) {
 		t.Fatalf("普通失败应记合并冲突，实得 %q", out.Reason)
 	}
 }
+
+// TestMergeNodeSuccessRecordsBranchMerged 合并成功后必须留下外部推送事件，
+// 否则 timeline 无法回答这次自动化到底把什么推到了 origin。
+func TestMergeNodeSuccessRecordsBranchMerged(t *testing.T) {
+	st, _ := nodeLedger(t)
+	card := seedMergeableCard(t, st)
+	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Branch: "feat/x", Purpose: ledger.PurposeImplement, Actor: "node:dispatch",
+	}); err != nil {
+		t.Fatalf("记工作分支: %v", err)
+	}
+	node := &MergeNode{
+		St:        st,
+		Objective: func(context.Context, ledger.Card, string) error { return nil },
+		DoMerge:   func(context.Context, ledger.Card, string) error { return nil },
+	}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionMerged {
+		t.Fatalf("合并成功: %v %+v", err, out)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvBranchMerged {
+			return
+		}
+	}
+	t.Fatalf("成功路径未落 %s 事件", ledger.EvBranchMerged)
+}

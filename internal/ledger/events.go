@@ -222,6 +222,30 @@ func (s *Store) RecordAcceptance(cardID string, verified bool, evidence, actor s
 	})
 }
 
+// RecordBranchMerged 落合并环节的外部动作事件。
+//
+// 参数：workBranch 工作分支名；base 基线分支名；pushedWorkBranch 本次是否
+// 真的推了工作分支（本地已有则推，走 fetch 兜底那条腿则为 false）。
+//
+// 为什么要专门落这条：合并环节会 push 到 origin——外部可见、不易撤回。
+// 自动化做的外部动作必须在 timeline 上留痕，否则「这次到底往 origin 推了
+// 什么」只能去翻日志。
+func (s *Store) RecordBranchMerged(cardID, workBranch, base string, pushedWorkBranch bool, actor string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("合并落账: 卡 %s: %w", cardID, err)
+		}
+		_, err := s.appendEvent(tx, sink, cardID, EvBranchMerged, actor,
+			map[string]any{
+				"work_branch":        workBranch,
+				"pushed_work_branch": pushedWorkBranch,
+				"merged_into":        base,
+				"pushed_base":        base,
+			})
+		return err
+	})
+}
+
 // MarkNeedsHuman 打等人标记（reason 必填）；ClearNeedsHuman 清除。
 // 等人不落列，从最后一条 needs_human/needs_cleared 事件推导（spec §2）。
 func (s *Store) MarkNeedsHuman(cardID, reason, actor string) error {
