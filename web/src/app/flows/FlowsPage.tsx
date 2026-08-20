@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchFlows } from '../../api/ledger'
-import type { FlowsResp, TemplateWire, WorkflowWire } from '../../api/ledger'
+import { fetchDisciplineNames, fetchFlow, fetchFlows, putFlow } from '../../api/ledger'
+import type { FlowsResp, NodeDef, TemplateWire, WorkflowWire } from '../../api/ledger'
+import { errorMessage } from '../lib/format'
+import { NodeEditor } from './NodeEditor'
 
 type Tab = 'workflows' | 'templates'
 
@@ -43,17 +45,154 @@ function Pipeline({ workflow }: { workflow: WorkflowWire }) {
   )
 }
 
-function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
+function nodesFromStates(states: string[]): NodeDef[] {
+  return states.map((name, index) => ({
+    name,
+    ...(index + 1 < states.length ? { next: states[index + 1] } : {}),
+  }))
+}
+
+function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templates: string[] }) {
+  const [editing, setEditing] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [nodes, setNodes] = useState<NodeDef[]>(() => nodesFromStates(workflow.def.states))
+  const [disciplines, setDisciplines] = useState<string[]>([])
+  const [version, setVersion] = useState(workflow.version)
+  const [loadError, setLoadError] = useState('')
+  const [saveError, setSaveError] = useState('')
+
+  const beginEdit = () => {
+    setEditing(true)
+    setLoading(true)
+    setLoadError('')
+    setSaveError('')
+    setNodes(nodesFromStates(workflow.def.states))
+    void Promise.all([fetchFlow(workflow.name), fetchDisciplineNames()])
+      .then(([detail, names]) => {
+        setNodes(detail.nodes)
+        setDisciplines(names)
+      })
+      .catch((err: unknown) => setLoadError(errorMessage(err)))
+      .finally(() => setLoading(false))
+  }
+
+  const updateNode = (index: number, node: NodeDef) => {
+    setNodes((current) => current.map((item, itemIndex) => itemIndex === index ? node : item))
+  }
+
+  const removeNode = (index: number) => {
+    setNodes((current) => current.filter((_, itemIndex) => itemIndex !== index))
+  }
+
+  const moveNode = (index: number, offset: number) => {
+    setNodes((current) => {
+      const target = index + offset
+      if (target < 0 || target >= current.length) return current
+      const next = [...current]
+      const [item] = next.splice(index, 1)
+      next.splice(target, 0, item)
+      return next
+    })
+  }
+
+  const addNode = () => {
+    setNodes((current) => [...current, { name: `新列${current.length + 1}` }])
+  }
+
+  const save = async () => {
+    setBusy(true)
+    setSaveError('')
+    try {
+      const result = await putFlow(workflow.name, nodes)
+      setVersion(result.version)
+      setEditing(false)
+    } catch (err) {
+      setSaveError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <section className="rounded-lg border p-4">
+        <div className="flex items-center gap-2">
+          <h3 className="font-medium">编辑 {workflow.name} 流</h3>
+          <span className="rounded bg-muted px-2 py-0.5 text-xs">当前版本 {version}</span>
+          <button
+            type="button"
+            className="ml-auto rounded border px-3 py-1.5 text-xs"
+            onClick={() => setEditing(false)}
+          >
+            取消编辑
+          </button>
+        </div>
+        <p className="mt-3 rounded border border-blue-500/30 bg-blue-500/10 p-3 text-xs">
+          保存会发布一个新版本；已有的卡仍走各自钉住的版本；要让老卡用新流程，用 <code>handoff workflow migrate</code> 显式迁。
+        </p>
+        {loadError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">读取节点定义失败：{loadError}</p>}
+        {saveError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">{saveError}</p>}
+        {loading && <p className="mt-3 text-xs text-muted-foreground">正在读取完整节点定义…</p>}
+        <div className="mt-3 space-y-3">
+          {nodes.map((node, index) => (
+            <div key={`${node.name}-${index}`}>
+              <NodeEditor
+                node={node}
+                templates={templates}
+                disciplines={disciplines}
+                nodeNames={nodes.map((item) => item.name)}
+                onChange={(next) => updateNode(index, next)}
+                onRemove={() => removeNode(index)}
+              />
+              <div className="mt-1 flex gap-1 pl-1">
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  disabled={index === 0}
+                  onClick={() => moveNode(index, -1)}
+                >
+                  上移
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  disabled={index === nodes.length - 1}
+                  onClick={() => moveNode(index, 1)}
+                >
+                  下移
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={addNode}>加一列</button>
+          <button
+            type="button"
+            className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            {busy ? '保存中…' : '保存为新版本'}
+          </button>
+        </div>
+      </section>
+    )
+  }
+
+  const displayWorkflow = { ...workflow, version }
   const gates = workflow.def.gates ?? {}
   return (
     <section className="rounded-lg border p-4">
       <div className="flex items-center gap-2">
         <h3 className="font-medium">{workflow.name} 流</h3>
-        <span className="rounded bg-muted px-2 py-0.5 text-xs">当前 v{workflow.version}</span>
-        <span className="ml-auto text-xs text-muted-foreground">只读 · 编辑请使用 CLI</span>
+        <span className="rounded bg-muted px-2 py-0.5 text-xs">当前版本 {version}</span>
+        <span className="ml-auto text-xs text-muted-foreground">可在此编辑并发布新版本</span>
+        <button type="button" className="rounded border px-3 py-1.5 text-xs" onClick={beginEdit}>编辑</button>
       </div>
       <div className="mt-3">
-        <Pipeline workflow={workflow} />
+        <Pipeline workflow={displayWorkflow} />
       </div>
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
         <dt className="text-muted-foreground">状态数</dt>
@@ -67,10 +206,10 @@ function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
                 .join(' · ')}
         </dd>
         <dt className="text-muted-foreground">版本</dt>
-        <dd className="font-mono">v{workflow.version}（当前 API 返回最新版）</dd>
+        <dd className="font-mono">v{version}（当前 API 返回最新版）</dd>
       </dl>
       <p className="mt-3 border-l-2 pl-2 text-xs text-muted-foreground">
-        工作项会钉住创建时的工作流版本；改形状用 <code>handoff workflow put</code>，把卡迁到新版用 <code>handoff workflow migrate</code>。
+        工作项会钉住创建时的工作流版本；要让老卡用新流程，用 <code>handoff workflow migrate</code> 显式迁移。
       </p>
     </section>
   )
@@ -197,7 +336,13 @@ export function FlowsPage() {
             </p>
             <div className="space-y-4">
               {workflows.length === 0 && data && <p className="text-sm text-muted-foreground">暂无工作流。</p>}
-              {workflows.map((workflow) => <WorkflowCard key={workflow.name} workflow={workflow} />)}
+              {workflows.map((workflow) => (
+                <WorkflowCard
+                  key={workflow.name}
+                  workflow={workflow}
+                  templates={templates.map((template) => template.name)}
+                />
+              ))}
             </div>
           </>
         ) : (
