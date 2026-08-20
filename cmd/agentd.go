@@ -216,6 +216,10 @@ var agentdCmd = &cobra.Command{
 				cfg.Token, "", srv.Handler(), logger)
 			go listener.RunWithReconnect(wdCtx)
 		}
+		// relay 隧道预热：探活只有 3s 预算，首次建隧道（WSS + CONNECT + E2E）
+		// 装不进去。预热用独立超时提前备好，让探活只花在 /api/status 上。
+		go srv.Pool().Warm(wdCtx)
+		logger.Info("relay 隧道预热已启动")
 		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
 		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
@@ -267,7 +271,11 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
+		err = sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
+		if closeErr := srv.CloseTargets(); closeErr != nil {
+			logger.Warn("关闭 target 客户端池失败", "cause", closeErr)
+		}
+		return err
 	},
 }
 

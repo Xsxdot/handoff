@@ -44,6 +44,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/webui"
 	"github.com/coder/websocket"
 )
@@ -140,6 +141,12 @@ type Server struct {
 	// machineUpgradeInstaller 是远端升级共用的资产下载器；测试用 runner 缝整体替换。
 	machineUpgradeInstaller *release.Installer
 	machineUpgradeRunner    machineUpgradeRunner
+	// pool 是对 target 的客户端复用池（探活/镜像/项目树/PTY/升级共用）。
+	//
+	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
+	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
+	// 自建没有代价。
+	pool *targetclient.Pool
 }
 
 // NewServer 创建 agentd 服务端。
@@ -192,6 +199,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	s.machineUpgradeRunner = s.executeMachineUpgrade
 	s.cfg.Store(cfg)
+	s.pool = targetclient.NewPool(s.conf, log)
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
 		Executable: resolvedExecutable,
@@ -280,6 +288,17 @@ func (s *Server) EnvMapping() map[string]string { return s.conf().Env }
 //
 // 注意：与 SetManager 同款的构造后注入，必须在 Handler 开始服务前调用。
 func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
+
+// Pool 返回 target 客户端复用池。
+//
+// 用途：cmd/agentd.go 起预热循环、给 Mirror 注入同一个池——**必须是同一个**，
+// 两个池等于两套隧道，relay 侧会看到重复的节点连接。
+func (s *Server) Pool() *targetclient.Pool { return s.pool }
+
+// CloseTargets 关掉池内全部客户端与 relay 隧道。
+//
+// 注意：只在进程退出路径调用。池关了就不再复活（relay.Dialer.Close 是终态）。
+func (s *Server) CloseTargets() error { return s.pool.Close() }
 
 // swapConf 以写时复制的方式修改配置并落盘。
 //
