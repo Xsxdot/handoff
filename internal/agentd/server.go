@@ -41,7 +41,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
-	"github.com/Xsxdot/handoff/internal/ptyhost/engine"
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/webui"
@@ -122,9 +122,7 @@ type Server struct {
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
 	restart func(reason string) bool
-	// 过渡接线：Task 6 会把它换成连 ptyhost 进程的客户端。
-	// 现在直连引擎，行为与搬家前逐字节一致。
-	pty *engine.Engine
+	pty     *ptyhost.Host
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -169,6 +167,11 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	inst := release.NewInstaller(log, tr)
 	releaseClient := release.NewClient(tr)
+	exe, err := os.Executable()
+	if err != nil {
+		// 拿不到自身路径就起不了 ptyhost；PTY 是控制台的附属能力，不应拖垮 agentd。
+		log.Error("无法确定自身可执行文件路径，PTY 会话将无法创建", "err", err)
+	}
 	s := &Server{
 		st:             st,
 		hub:            NewHub(),
@@ -178,7 +181,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		liveLimit:      liveBufferLimit,
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
-		pty:            engine.New(log),
+		pty:            ptyhost.New(filepath.Join(cfg.DataDir, "ptys"), exe, log),
 		latestFetch:    releaseClient.Latest,
 		downloadFetch:  desktopDownloadFetcher(inst),
 		downloadOpen:   openDownloadedFile,
