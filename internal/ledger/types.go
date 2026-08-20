@@ -114,11 +114,66 @@ type Gate struct {
 	RequireAcceptance bool   `json:"require_acceptance,omitempty"` // 验收判据非空
 }
 
-// WorkflowDef 状态机形状。States 是含插入状态的全序列（不含「终止」）；
-// 一期不限制转移方向（人工回退是真实需求），只校验目标在 States 内 + gate。
+// NodeOverride 节点对所引模板的单字段覆盖；零值字段 = 沿用模板的值。
+//
+// why 要「引模板 + 覆盖」而不是节点内联全部字段：executor / target / model
+// 这几样在同一条流里高度重复，内联会让「换一台执行机」变成挨个节点改；
+// 而只引模板又满足不了「审阅这一列想换个执行者」这种单点微调。
+type NodeOverride struct {
+	Executor   string `json:"executor,omitempty"`
+	Discipline string `json:"discipline,omitempty"` // 具名纪律块名，如 review / finishing
+	Target     string `json:"target,omitempty"`
+	Model      string `json:"model,omitempty"`
+}
+
+// NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
+//
+// 设计要点（用户 2026-08-21 定死，改动前先回看 spec）：
+//   - **没有预设节点类型**。「审阅」「合并」不是内置语义，而是下面几个能力
+//     开关的组合结果，用户可以随意重组。
+//   - **节点只配「怎么干」（纪律、执行者、开关），不配「干什么」**。合并目标
+//     这类每张卡都不同的值来自卡本身（有效基线分支），不写死在节点上。
+//   - **路由用节点名指向而不是数组下标**，为将来的 DAG 分叉预留形状；本轮
+//     只实现线性消费。
+type NodeDef struct {
+	Name     string       `json:"name"`
+	Template string       `json:"template,omitempty"` // Dispatch=true 时必填
+	Override NodeOverride `json:"override,omitempty"`
+
+	// 能力开关——语义由组合得出，不要在这里新增「节点类型」字段。
+	Dispatch         bool `json:"dispatch,omitempty"`           // 进入本列时派发一个任务
+	Verdict          bool `json:"verdict,omitempty"`            // 等回合终态、解析裁决块并按结果路由（蕴含 Dispatch）
+	CarryCardContext bool `json:"carry_card_context,omitempty"` // prompt 里拼入卡上下文段
+	MaxRounds        int  `json:"max_rounds,omitempty"`         // Verdict 的轮次封顶；0 = 用包内默认
+
+	Next   string `json:"next,omitempty"`    // 裁决通过后移到哪一列；空 = 停在本列
+	OnFail string `json:"on_fail,omitempty"` // 裁决未过退到哪一列；空 = 停在本列
+	Gate   Gate   `json:"gate,omitempty"`    // 进入本列的门槛
+
+	// HumanBases 列出「卡的有效基线落在其中时，本节点不自动执行、直接打
+	// 等人标记」的分支名。
+	//
+	// why 需要它：合并退役成普通派发节点后，原 MergeStep 里那条
+	// 「基线是主线就永远人工」的保护随之消失，而往 main 合并是外部可见且
+	// 不易撤回的动作。做成节点上的一个列表（而不是代码里的常量）既保住了
+	// 保护，又符合「只提供能力、语义由配置组合」——用户想让某条流自动合
+	// main，把这个列表清空即可。
+	HumanBases []string `json:"human_bases,omitempty"`
+}
+
+// WorkflowDef 工作流形状。
+//
+// **Nodes 是权威，States/Gates 是写入时从 Nodes 派生的只读投影。**
+// why 保留派生投影而不是让消费者全改成读 Nodes：MoveCard 的状态校验、
+// 看板列渲染、MigrateCardWorkflow 的防悬空校验都在读 States，派生投影让
+// 它们一行不改地继续工作，把本次改动的爆炸半径压在读写两端。
+//
+// 反方向也成立：只有 States 的老行（存量卡钉的就是它）读出时补出等价的
+// 纯人工节点序列，所以调用方永远可以只看 Nodes。
 type WorkflowDef struct {
 	States []string        `json:"states"`
 	Gates  map[string]Gate `json:"gates,omitempty"` // key = 目标状态
+	Nodes  []NodeDef       `json:"nodes,omitempty"`
 }
 
 // Workflow 不可变版本化聚合：同 name 只增版本，不改旧行。

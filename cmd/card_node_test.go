@@ -6,32 +6,21 @@ import (
 	"testing"
 )
 
-func TestCardStepMergeMainStaysHuman(t *testing.T) {
-	dir := t.TempDir()
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "热修", "--project", "demo", "--workflow", "bug")
-	if err != nil {
-		t.Fatal(err)
+func TestStepFlagHelpMentionsNodeName(t *testing.T) {
+	flag := cardDispatchCmd.Flags().Lookup("step")
+	if flag == nil {
+		t.Fatalf("找不到 --step flag")
 	}
-	var c struct {
-		ID string `json:"id"`
+	if flag.Usage == "" {
+		t.Fatalf("--step 的说明为空")
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(flag.Usage, "节点名") {
+		t.Fatalf("--step 应说明接收节点名: %s", flag.Usage)
 	}
-
-	out, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID, "--step", "merge")
-	if err != nil {
-		t.Fatalf("step merge: %v", err)
-	}
-	if !strings.Contains(out, "needs_human") {
-		t.Fatalf("main 层应转等人: %q", out)
-	}
-	show, _, err := runLedgerCLI(t, dir, "card", "show", c.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(show, "进行中") {
-		t.Fatalf("环节入口不应认领: %q", show)
+	for _, stale := range []string{"review|merge", "环节只认"} {
+		if strings.Contains(flag.Usage, stale) {
+			t.Fatalf("--step 的说明还写着写死的白名单 %q: %s", stale, flag.Usage)
+		}
 	}
 }
 
@@ -48,7 +37,7 @@ func TestCardStepRejectsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID, "--step", "verify"); err == nil ||
-		!strings.Contains(err.Error(), "review|merge") {
-		t.Fatalf("未知环节应拒: %v", err)
+		!strings.Contains(err.Error(), "verify") || !strings.Contains(err.Error(), "bug") {
+		t.Fatalf("未知节点应带节点名与工作流名: %v", err)
 	}
 }

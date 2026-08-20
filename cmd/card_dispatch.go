@@ -21,7 +21,6 @@ var (
 	cardDispatchPlan       string
 	cardDispatchDiscipline string
 	cardDispatchStep       string
-	cardDispatchRepo       string
 )
 
 type dispatchRequest struct {
@@ -143,7 +142,7 @@ func targetClient(target string) (*client.Client, func(), error) {
 
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
-	Short: "按模板派发（派发即认领；--step review|merge 走自动环节）",
+	Short: "按模板派发（派发即认领；--step 走工作流节点）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -200,7 +199,6 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖模板指定的纪律块角色名（如 review；测试/应急）")
-	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "自动环节：review|merge")
-	cardDispatchCmd.Flags().StringVar(&cardDispatchRepo, "repo", ".", "本地仓库目录（--step merge 的客观判据与合并在此跑）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "节点名（= 看板列名），从卡钉住的工作流里查；不给则不跑节点")
 	cardCmd.AddCommand(cardDispatchCmd)
 }

@@ -1,6 +1,6 @@
 // card dispatch --step 的 CLI 装配层：构造 ledgerstep.StepRunner 并把结果编码成 JSON。
 // 编排本身在 internal/ledgerstep——看板按钮（经 /api/cards/{id}/step）装配的是同一个
-// StepRunner，只是注入不同的仓路径与传输，单一编排真相源由此落实。
+// StepRunner，只是注入不同的传输，单一编排真相源由此落实。
 package cmd
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 // runStepDispatch card dispatch --step 的入口。
-func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, step, actor string) error {
+func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -28,8 +28,7 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, step, actor strin
 		}
 	}()
 	runner := &ledgerstep.StepRunner{
-		St:      st,
-		RepoDir: cardDispatchRepo,
+		St: st,
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: st, Transport: cliTransport, Actor: actor,
 		},
@@ -43,7 +42,7 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, step, actor strin
 		},
 		Target: cardDispatchTarget,
 	}
-	outcome, err := runner.Run(ctx, id, step)
+	outcome, err := runner.Run(ctx, id, node)
 	if err != nil {
 		return err
 	}
