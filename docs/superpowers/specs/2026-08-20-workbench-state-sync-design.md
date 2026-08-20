@@ -178,6 +178,13 @@ PUT  /api/workbench/state/base     ← { base_key, payload }   payload 为 null 
 PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选中
 ```
 
+`payload` 在线上是一个**字符串**（内容是前端序列化好的 JSON），不是嵌套对象。这与 §3 的
+架构分界一致：后端不解析它，所以也不该让 JSON 解码器替它解析一遍。前端 `JSON.stringify`
+后发出、`JSON.parse` 后消费。
+
+`payload` 取 `null`（而非空串）表示删除该行。空串是一个合法但无意义的 payload，
+用它当删除信号会让「前端 bug 发了个空串」静默变成「删掉用户的布局」。
+
 鉴权走既有 `/api` 那一套，无新增。
 
 `payload` 超过 256 KiB 拒 400。这不是防攻击（控制台会话在能力上本就等价于主令牌），
@@ -194,10 +201,16 @@ PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选�
 
 ### 5.1 `web/src/app/workbench/persist.ts`（纯函数，无 React 依赖）
 
-- `PersistedBase` 形状，带 `v: 1`（将来改形状时判断要不要整份丢弃，同 `TreePrefs.v`）
+- `PersistedBase` 形状，带 `v: 1`（将来改形状时判断要不要整份丢弃，同 `TreePrefs.v`）。
+  它**同时装 `BaseDir` 元数据与 `Workbench`**：`kind` / `path` / `label` / `projectName` /
+  `machine` 都要存。只存 `Workbench` 的话，恢复时拿着一个 key 却不知道它是哪台机器上的
+  哪个目录、面包屑该写什么——而 key 本身（`path@machine`）不足以还原 `label` 与 `projectName`。
 - `encodeBase(base: BaseDir, wb: Workbench): PersistedBase`
 - `decodeBase(raw: unknown): { base: BaseDir; wb: Workbench } | null` —— 逐字段校验，
   坏数据整行丢弃并 warn，**绝不半信半疑地用一部分**
+- `isEmptyWorkbench(wb): boolean` —— 所有组都没有 tab。**空 Workbench 编码为删除**
+  （PUT `payload: null`），不存一行空记录：用户把一个目录的 tab 全关掉，就是不想再看见它，
+  存一行空记录只会白占 50 行配额里的一格
 - `pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbench` —— 规则二
 - `diffBases(prev, next): { changed: string[]; removed: string[] }`
 
@@ -264,7 +277,14 @@ key = machine ? `${path}@${machine}` : path
 1. `byBase` 立刻灌入，但 `base` 保持 `null`
 2. 树到位后校验 `selected` 还在不在树上：在就 `select` 过去，不在就停在未选中态（规则三）
 
-home 基准跳过第 2 步的校验，直接 select。
+第 2 步 `select` 用的 `BaseDir` **从项目树重新构造**（`workspaceBase(project, machine, ws)`），
+不用 payload 里存的那份。理由：树上那份是当下的真相，`label` 会跟着分支改名一起变；
+payload 里的是上次退出时的快照。用快照会让面包屑显示一个已经改掉的旧分支名。
+（payload 里仍要存这些字段——`selected` 之外的目录不会走这条路径，它们的 tab 标题与
+面包屑只能靠 payload 自己那份，见 §5.1。）
+
+home 基准跳过第 2 步的校验，直接 select：本机 home 用 `HOME_BASE` 常量，远端 home
+（key 形如 `~@machine`）按 `baseOfSession` 里同一条规则现场构造。
 
 用户看到的是：启动 → 短暂空态 → 树到位的同一帧，目录选中、tab 与分屏一起出现。
 
