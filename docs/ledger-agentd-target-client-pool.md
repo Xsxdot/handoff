@@ -16,3 +16,5 @@
 - Task 10 完成；范围：`internal/agentd/mirror.go`、`internal/agentd/mirror_test.go`、`internal/agentd/mirror_pool_test.go`、`cmd/agentd.go`、`internal/targetclient/targetclient.go`；Mirror 回归、build、agentd/cmd 全包测试通过，`gofmt -l internal/agentd/ cmd/` 为空；双裁决通过。
 - Task 11 完成；范围：`internal/agentd/projectfanout.go`、`internal/agentd/pty_api.go`、`internal/agentd/fanout_relay_test.go`；定向 relay 测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
 - Task 12 完成；范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_relay_test.go`；定向升级测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 13 修复轮 1；范围：`internal/agentd/nodirectclient_test.go`；守卫首次原始失败误报 `machines.go:205 ... targetclient.New(req.Name,`；改为按标识符边界识别精确 `client.New(`，随后临时变异实际失败 `machines.go:35 ... var _ = client.New("x", "y")`，撤销后通过。
+- Task 13 完成；范围：`internal/agentd/nodirectclient_test.go`；守卫定向测试、变异实验后的 agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
