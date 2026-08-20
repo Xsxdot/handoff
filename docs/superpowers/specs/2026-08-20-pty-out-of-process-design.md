@@ -226,10 +226,18 @@ agentd 是转译层：浏览器的 `/ws/pty` 帧 ↔ ptyhost 的 socket 帧，�
 ## 11. 已知取舍
 
 - **进程数**：每个终端会话多一个常驻进程。它极轻（一个 goroutine 泵 + 256 KiB 环形
-  缓冲），但可能计入 `prochost` 的进程围栏（`fence.go` 的 `NprocLimit`）与
-  `resource_pressure` / `task_proc_pressure` 的告警口径。**这两处的当前口径要在实现的
-  第一个 task 里先读码确认**（ptyhost 是 agentd 的子进程而不是 executor 树的成员，
-  很可能本来就不计入），确认结果写进 plan，不要靠推测。
+  缓冲）。**口径已确认（2026-08-20 读码）**：`internal/prochost/fence.go:241-257`
+  只是把 `NprocLimit` 写入 executor 的 `Spec`，真正的 `setrlimit(RLIMIT_NPROC)` 在
+  `internal/prochost/shim.go:99-110` 的 shim 内执行；`internal/prochost/fence_unix.go:9-12,33-40`
+  说明该限制只由 shim 及其子孙继承。因此 agentd 直接 fork 的 ptyhost 不在 executor
+  树的 RLIMIT_NPROC 围栏内。机器级 `resource_pressure` 的 `used` 来自
+  `internal/prochost/fence.go:172-190` 的 `CheckAdmission`，其 `enumProcsFn` 在
+  `internal/prochost/procenum_linux.go:42-80`（以及同契约的 Darwin 实现）枚举当前 uid
+  的全部进程，所以 ptyhost 会被计入。任务级 `task_proc_pressure` 的 `used` 来自
+  `internal/agentd/reconcile.go:209-230` 的 `Manager.TaskProcCount`，经
+  `internal/prochost/footprint.go:127-203` 只沿任务句柄的 pgid、后代名册与任务标记
+  归属，因此不包含 ptyhost。需要在后续 task 排除 ptyhost 出机器级
+  `resource_pressure` 的统计；executor 围栏与任务级统计无需调整。
 - **协议错配时那个 tab 是死物**：进程还在跑（build 没白跑），但看不到它的输出。这是
   §1.3 权衡的结果，不是缺陷。
 - **`service stop` 的 2 秒超时之后 agentd 照退**：极端情况下可能留下一个没被杀干净的
