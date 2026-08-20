@@ -21,8 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 )
 
 // machineProbeBudget 是整轮扇出探活的总预算。
@@ -198,7 +199,20 @@ func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), addMachineProbeBudget)
 		defer cancel()
 		s.log.Info("新增开发机：开始可达性探测", "name", req.Name, "addr", req.Addr)
-		if _, err := client.New(req.Addr, req.Token).NoRedirect().Status(ctx); err != nil {
+		// 走工厂而不是直连构造：空 addr 会被 ErrNoEndpoint 明确拒绝，不再退化成
+		// 一个没有 Host 的 URL。控制台目前只能新增直连机器（AddMachineReq 没有
+		// relay 字段），relay 形态的新增是另一张单。
+		probeClient, cleanup, newErr := targetclient.New(req.Name,
+			config.Target{Addr: req.Addr, Token: req.Token}, s.log)
+		if newErr != nil {
+			s.log.Warn("新增开发机：无法构造探测客户端", "name", req.Name, "cause", newErr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("探测 %s 失败：%v", req.Addr, newErr),
+			})
+			return
+		}
+		defer cleanup()
+		if _, err := probeClient.NoRedirect().Status(ctx); err != nil {
 			// 原文回给前端：绝大多数失败是地址或令牌粘错，原文是唯一能让人
 			// 一眼看出「是连不上还是没授权」的东西
 			s.log.Warn("新增开发机：探测不通", "name", req.Name, "addr", req.Addr, "cause", err)
