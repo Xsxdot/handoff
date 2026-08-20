@@ -2,6 +2,7 @@ package agentd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 )
 
 func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
@@ -48,6 +50,44 @@ func ledgerPost(t *testing.T, env *testAgentdEnv, path, body string) (int, strin
 		t.Fatal(err)
 	}
 	return resp.StatusCode, string(data)
+}
+
+type ledgerEnv struct {
+	*testAgentdEnv
+	ledger *ledger.Store
+}
+
+func newLedgerEnv(t *testing.T) *ledgerEnv {
+	t.Helper()
+	st, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	env := newTestAgentdEnv(t)
+	env.srv.SetLedger(st)
+	return &ledgerEnv{testAgentdEnv: env, ledger: st}
+}
+
+func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
+	t.Helper()
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: title, Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
+}
+
+func seedChildCard(t *testing.T, env *ledgerEnv, parentID, title string) ledger.Card {
+	t.Helper()
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: title, Project: "p", Workflow: "bug", Parent: parentID, Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
 }
 
 func TestLedgerAPI(t *testing.T) {
@@ -103,6 +143,142 @@ func TestLedgerAPIWithoutLedger(t *testing.T) {
 	code, body := ledgerGet(t, env, "/api/cards")
 	if code != http.StatusServiceUnavailable || !ledgerContainsAll(body, "账本") {
 		t.Fatalf("降级: %d %q", code, body)
+	}
+}
+
+// TestCardDetailReturnsChildren 抽屉是「卡的一切只在一处看」的那一处，
+// 子任务随详情给，不新开端点。
+func TestCardDetailReturnsChildren(t *testing.T) {
+	env := newLedgerEnv(t)
+	parent := seedCard(t, env, "父卡")
+	child := seedChildCard(t, env, parent.ID, "子卡")
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+parent.ID)
+	if code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	var resp struct {
+		Children []ledger.CardBrief `json:"children"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解析详情: %v，body=%s", err, body)
+	}
+	if len(resp.Children) != 1 || resp.Children[0].ID != child.ID {
+		t.Fatalf("children 不对: %+v", resp.Children)
+	}
+	if resp.Children[0].Title == "" || resp.Children[0].Status == "" {
+		t.Fatalf("children 少字段: %+v", resp.Children)
+	}
+}
+
+// TestCardAcceptRecordsEvidence 验收写入口落事件。
+func TestCardAcceptRecordsEvidence(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "待验卡")
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/accept",
+		`{"evidence":"真机跑了 3 轮，日志见 render.log"}`)
+	if code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	evs, err := env.ledger.EventsFromAsc([]string{card.ID}, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range evs {
+		if event.Type != ledger.EvAcceptanceRecorded {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["verified_on_real_machine"] != true {
+			t.Fatalf("应记为已验: %+v", payload)
+		}
+		if payload["evidence"] != "真机跑了 3 轮，日志见 render.log" {
+			t.Fatalf("证据没落对: %+v", payload)
+		}
+	}
+	if !found {
+		t.Fatal("缺 acceptance_recorded 事件")
+	}
+}
+
+// TestCardAcceptRejectsEmptyEvidence 空证据 400——「已验必须带证据」
+// 这条规则必须由后端守。只靠前端不让空提交的话，curl 一下就能落一条
+// 没有证据的「已验」，而验收记录正是事后唯一能复查的东西。
+func TestCardAcceptRejectsEmptyEvidence(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "待验卡")
+	for _, bad := range []string{`{"evidence":""}`, `{"evidence":"   "}`, `{}`} {
+		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/accept", bad)
+		if code != http.StatusBadRequest {
+			t.Fatalf("body=%s 应 400，实得 %d（%s）", bad, code, body)
+		}
+	}
+}
+
+// TestCardAcceptUnknownCard404 卡不存在走既有的错误翻译。
+func TestCardAcceptUnknownCard404(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/B-不存在/accept", `{"evidence":"x"}`)
+	if code != http.StatusNotFound {
+		t.Fatalf("应 404，实得 %d", code)
+	}
+}
+
+// TestCardStepReturns202 受理即返回 202——环节要跑几十分钟，
+// 200 会让前端以为它已经做完了。
+func TestCardStepReturns202(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {}
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("应 202，实得 %d（%s）", code, body)
+	}
+}
+
+// TestCardStepSecondReturns409 同卡第二个环节 409 并说清冲突原因。
+func TestCardStepSecondReturns409(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := holdCardStep(t, env.srv, card.ID)
+	defer release()
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("应 409，实得 %d", code)
+	}
+	if !strings.Contains(body, card.ID) || !strings.Contains(body, "正在运行") {
+		t.Fatalf("409 要说清是哪张卡的什么在跑：%s", body)
+	}
+}
+
+// TestCardStepRejectsImplement implement 不是环节——它要挂 plan 文件，
+// 浏览器里没有那个文件，只能走 CLI。
+func TestCardStepRejectsImplement(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"implement"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("应 400，实得 %d", code)
 	}
 }
 

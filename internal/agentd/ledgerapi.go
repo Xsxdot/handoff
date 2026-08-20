@@ -1,6 +1,8 @@
 // 账本 HTTP API：web 看板的唯一账本通道。薄层——业务全在
-// internal/ledger，此处只做解码/调用/编码与错误翻译。写动作只有
-// move/note/answer 三个；派发、合并等动作由 CLI 承载。
+// internal/ledger，此处只做解码/调用/编码与错误翻译。写动作：
+// move/note/answer/accept 同步返回；step（审阅/合并环节）异步 202，
+// 编排在 internal/ledgerstep。实现类派发仍只由 CLI 承载——它要挂 plan 文件，
+// 浏览器里没有那个文件。
 package agentd
 
 import (
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
@@ -25,6 +28,8 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/cards/{id}", s.withLedger(s.handleCardDetail))
 	api.HandleFunc("POST /api/cards/{id}/move", s.withLedger(s.handleCardMove))
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
+	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
+	api.HandleFunc("POST /api/cards/{id}/step", s.withLedger(s.handleCardStep))
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
@@ -192,10 +197,19 @@ func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {
 	// 等人原因也随详情给：看板卡片上有「需要你」角标，点进抽屉却看不到
 	// 为什么，等于把「卡的一切只在抽屉一处看」拆成了两处
 	needs, _ := s.ledger.NeedsOf(id)
+	// 子任务随详情给：抽屉是「卡的一切只在一处看」的那一处，为一个只读列表
+	// 单开端点会让抽屉多打一次网络往返，还得自己处理它的 loading 与失败态
+	children, err := s.ledger.ChildrenOf(id)
+	if err != nil {
+		// 与 relations/decisions 同款降级：主查询已经决定了 200，
+		// 附加信息拿不到时给空列表，不能让整个抽屉打不开
+		s.log.Warn("读子卡失败，详情降级为无子任务", "card", id, "cause", err)
+		children = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"card": card, "relations": relations, "events": events,
 		"task_states": taskStates, "effective_base_branch": base,
-		"decisions": decisions, "needs": needs,
+		"decisions": decisions, "needs": needs, "children": children,
 	})
 }
 
@@ -233,6 +247,75 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, event)
+}
+
+// handleCardStep 发起一个卡环节（审阅/合并），受理即 202。
+//
+// 为什么是 202 而不是 200：环节要跑几分钟到几十分钟，200 会让前端以为
+// 它已经做完了。202 的语义正是「收到了，正在做」，界面据此把按钮置灰并
+// 提示「进展见下方 Timeline」。
+//
+// 为什么不支持 implement：实现派发通常要挂 plan 文件，浏览器里没有那个文件。
+// 它留在 CLI，这是交接文档「按**环节**派发」的字面含义。
+func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Step string `json:"step"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	id := r.PathValue("id")
+	actor := "web:" + r.RemoteAddr
+	err := s.startCardStep(id, req.Step, actor)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+	case errors.Is(err, errStepInFlight):
+		s.log.Warn("环节被拒：已有在飞", "card", id, "step", req.Step, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ledger.ErrNotFound):
+		ledgerErr(w, err)
+	default:
+		// 其余都是前置校验失败（环节名不认、项目未登记）：这些是调用方能改的，
+		// 400 比 500 更准确，且错误原文里已经写了该怎么办
+		s.log.Warn("环节被拒", "card", id, "step", req.Step, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+}
+
+// handleCardAccept 记一条「已真机验」验收，body 只收证据。
+//
+// 为什么不收 verified 字段：标记未验是补记动作而不是日常，留 CLI 的
+// `card accept --unverified`。界面上只提供「标记已验」这一个方向，语义更窄也更难误点。
+//
+// 为什么空证据必须在这里拦：RecordAcceptance 自己不校验，「已验必须带证据」
+// 这条规则今天只由 CLI 守着。只靠前端不让空提交的话，curl 一下就能落一条
+// 没有证据的「已验」——而验收记录正是事后唯一能复查的东西。
+func (s *Server) handleCardAccept(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Evidence string `json:"evidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	id := r.PathValue("id")
+	evidence := strings.TrimSpace(req.Evidence)
+	if evidence == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "标记已验必须带证据（与 CLI card accept 同规则）",
+		})
+		return
+	}
+	actor := "web:" + r.RemoteAddr
+	if err := s.ledger.RecordAcceptance(id, true, evidence, actor); err != nil {
+		s.log.Error("记验收失败", "card", id, "actor", actor, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	s.log.Info("已记验收", "card", id, "actor", actor, "evidence_bytes", len(evidence))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {

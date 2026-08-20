@@ -28,6 +28,13 @@ export interface UnlinkedSummary {
   unknown_targets: string[] | null
 }
 
+// CardBrief 是子任务区一行的最小三元组，字段名与 Go 侧 ledger.CardBrief 一字不差。
+export interface CardBrief {
+  id: string
+  title: string
+  status: string
+}
+
 export interface CardDetail {
   card: unknown
   relations: { From: string; To: string; Type: string }[]
@@ -36,6 +43,9 @@ export interface CardDetail {
   effective_base_branch: string
   decisions: Decision[] | null
   needs: string
+  // children 是直接子卡（只一层）。可选而非必填：抽屉对每个列表都用 `?? []`
+  // 防御性读取，标成必填只会逼着六处与子任务无关的测试 mock 补一个空数组。
+  children?: CardBrief[] | null
 }
 
 export interface LedgerEvent {
@@ -87,6 +97,16 @@ export const moveCard = (id: string, to: string) =>
 
 export const noteCard = (id: string, body: string, kind = '普通') =>
   postJSON<LedgerEvent>(`/api/cards/${encodeURIComponent(id)}/note`, { body, kind })
+
+// acceptCard 记一条「已真机验」。证据由后端强制非空（与 CLI card accept 同规则），
+// 前端只是不让空提交，不是唯一的那道门。
+export const acceptCard = (id: string, evidence: string) =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/accept`, { evidence })
+
+// runCardStep 发起一个卡环节。后端受理即 202——环节要跑几分钟到几十分钟，
+// 这个 Promise resolve 只代表「收到了」，进展看卡的事件流。
+export const runCardStep = (id: string, step: 'review' | 'merge') =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/step`, { step })
 
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
 

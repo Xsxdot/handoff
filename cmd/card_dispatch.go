@@ -6,16 +6,12 @@ package cmd
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/spf13/cobra"
 )
 
@@ -85,6 +81,20 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 	return task.ID, nil
 }
 
+// cliTransport 把 CLI 的派发通道适配成 ledgerstep.Transport。
+//
+// 保留 dispatchTransportWithOpts 这层间接：它是 cmd 包既有的测试缝
+// （swapDispatchTransport / swapDispatchTransportWithOpts），认领与租约的
+// 用例还挂在上面。
+func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
+	return dispatchTransportWithOpts(dispatchRequest{
+		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
+		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
+		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
+		discipline: opts.Discipline, newWorktree: opts.NewWorktree,
+	})
+}
+
 // swapDispatchTransport 替换网络派发段；测试恢复原实现。
 func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, error)) func() {
 	old := dispatchTransport
@@ -120,125 +130,6 @@ func targetEndpoint(target string) (addr, token string, err error) {
 	return "http://" + tgt.Addr, tgt.Token, nil
 }
 
-// dispatchResult 模板派发共用段的产出（回显 + 环节入口复用）。
-type dispatchResult struct {
-	Card            string `json:"card"`
-	Task            string `json:"task"`
-	Target          string `json:"target"`
-	Branch          string `json:"branch"`
-	Template        string `json:"template"`
-	TemplateVersion int    `json:"template_version"`
-	DisciplineName  string `json:"discipline_name"`
-}
-
-// dispatchViaTemplate 模板派发的共用段：取模板 → 决定纪律块名字 → 拼 prompt
-// → 走既有 dispatch 通道 → LinkTask 挂账 → dispatched 快照。
-// 不含认领语义：实现类派发在调用前自行 CAS 认领；环节派发也复用此段，
-// 因而不会把待审阅卡拉回进行中。
-func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
-	tplName, targetFlag, planPath, disciplineOverride, actor string) (dispatchResult, error) {
-	var zero dispatchResult
-	tpl, err := st.GetTemplate(tplName, 0)
-	if err != nil {
-		return zero, fmt.Errorf("取模板: %w", err)
-	}
-	target := targetFlag
-	if target == "" {
-		target = tpl.Def.Target
-	}
-	if target == "" {
-		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
-	}
-
-	// 纪律块只传名字，正文由 agentd 解析注入。CLI 曾在这里读文件并拼进 prompt，
-	// 而 agentd 又会按 executor 注入一份——两份同时在场，审阅那次的「只读，不写」
-	// 被实现块的「每个 task 完成即 commit」直接推翻（2026-08-19 真机实测过一次）。
-	disciplineName := tpl.Def.Discipline
-	if disciplineOverride != "" {
-		disciplineName = disciplineOverride
-	}
-
-	body := strings.NewReplacer(
-		"{{TITLE}}", c.Title,
-		"{{CARD}}", c.ID,
-		"{{ACCEPT}}", c.AcceptanceCriteria,
-	).Replace(tpl.Def.Prompt)
-	prompt := body
-
-	reviewBase := ""
-	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
-	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
-	// 第二轮——2026-08-19 真机实测 fatal: a branch named ... already exists）
-	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, tpl.Def.Purpose)
-	existingBranch := ""
-	if tpl.Def.Purpose == ledger.PurposeReview {
-		work, err := st.WorkBranch(c.ID)
-		if err != nil {
-			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
-		}
-		// 审阅每轮开一条指向工作分支当前提交的一次性分支。三个约束叠出这个形态：
-		// ① 不能复用固定名 cards/<卡>-review——第二轮撞名，判据② 的 3 轮封顶
-		//    走不到第二轮；② 不能直接检出工作分支——实现任务的工作树还占着它，
-		//    git 不许两个工作树检出同一分支；③ 审阅要看的是工作分支的代码，
-		//    所以起点必须是它的当前提交（base=work）
-		round, err := st.ReviewRounds(c.ID)
-		if err != nil {
-			return zero, fmt.Errorf("审阅轮取轮次: %w", err)
-		}
-		branch = fmt.Sprintf("%s/%s-review-%d", tpl.Def.BranchPrefix, c.ID, round+1)
-		reviewBase = work
-	}
-	base, err := st.EffectiveBaseBranch(c.ID)
-	if err != nil {
-		return zero, fmt.Errorf("取有效基线: %w", err)
-	}
-	if reviewBase != "" {
-		base = reviewBase // 审阅分支从工作分支的当前提交开，不是从基线开
-	}
-	model := ""
-	if tpl.Def.ModelByTarget != nil {
-		model = tpl.Def.ModelByTarget[target]
-	}
-	var planB64, planName string
-	if planPath != "" {
-		content, err := os.ReadFile(planPath)
-		if err != nil {
-			return zero, fmt.Errorf("读 plan %s: %w", planPath, err)
-		}
-		planB64 = base64.StdEncoding.EncodeToString(content)
-		planName = filepath.Base(planPath)
-	}
-	taskID, err := dispatchTransportWithOpts(dispatchRequest{
-		prompt: prompt, branch: branch, target: target, project: c.Project,
-		executor: tpl.Def.Executor, model: model, planB64: planB64,
-		planName: planName, base: base, newWorktree: true,
-		existingBranch: existingBranch, discipline: disciplineName,
-	})
-	if err != nil {
-		return zero, fmt.Errorf("派发: %w", err)
-	}
-	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "template", tplName,
-		"discipline", disciplineName, "overridden", disciplineOverride != "")
-	snapshotBranch := branch
-	if snapshotBranch == "" {
-		snapshotBranch = existingBranch
-	}
-	if err := st.LinkTask(c.ID, target, taskID, tpl.Def.Purpose, actor); err != nil {
-		return zero, fmt.Errorf("回链挂账: %w", err)
-	}
-	if err := st.RecordDispatch(c.ID, ledger.DispatchSnapshot{
-		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
-		Target: target, TaskID: taskID, Branch: snapshotBranch,
-		Purpose: tpl.Def.Purpose, PlanPath: planPath, Actor: actor,
-	}); err != nil {
-		return zero, fmt.Errorf("快照落账: %w", err)
-	}
-	return dispatchResult{
-		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
-		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
-	}, nil
-}
-
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
 	Short: "按模板派发（派发即认领；--step review|merge 走自动环节）",
@@ -271,8 +162,17 @@ var cardDispatchCmd = &cobra.Command{
 			}
 			return fmt.Errorf("认领失败（可能被并发抢先）: %w", err)
 		}
-		result, err := dispatchViaTemplate(st, card, cardDispatchTemplate, cardDispatchTarget,
-			cardDispatchPlan, cardDispatchDiscipline, actor)
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		dispatcher := &ledgerstep.Dispatcher{St: st, Transport: cliTransport, Actor: actor}
+		result, err := dispatcher.ViaTemplate(ctx, card, ledgerstep.TemplateDispatch{
+			Template:           cardDispatchTemplate,
+			Target:             cardDispatchTarget,
+			PlanPath:           cardDispatchPlan,
+			DisciplineOverride: cardDispatchDiscipline,
+		})
 		if err != nil {
 			// 回滚要连租约一起退：只退状态会把卡留在「待办但有主」，
 			// 驱动身份带 pid，本人换个进程重试都会被自己挡住（见 ReleaseCard）

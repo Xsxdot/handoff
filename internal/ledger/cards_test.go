@@ -15,6 +15,71 @@ func seedStore(t *testing.T) *Store {
 	return s
 }
 
+func mustChild(t *testing.T, s *Store, parentID, title string) Card {
+	t.Helper()
+	card, err := s.CreateCard(NewCard{Title: title, Project: "p", Workflow: "bug", Parent: parentID, Actor: "test"})
+	if err != nil {
+		t.Fatalf("mustChild: %v", err)
+	}
+	return card
+}
+
+// TestChildrenOfReturnsDirectChildren 只返回直接子卡，按 id 排序。
+func TestChildrenOfReturnsDirectChildren(t *testing.T) {
+	s := seedStore(t)
+	root := mk(t, s, "根卡")
+	childB := mustChild(t, s, root.ID, "子卡 B")
+	childA := mustChild(t, s, root.ID, "子卡 A")
+	grand := mustChild(t, s, childA.ID, "孙卡")
+
+	got, err := s.ChildrenOf(root.ID)
+	if err != nil {
+		t.Fatalf("ChildrenOf: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("应有 2 个直接子卡，实得 %d：%+v", len(got), got)
+	}
+	// 孙卡不该出现：本方法只一层，递归是抽屉里再点一次的事
+	for _, brief := range got {
+		if brief.ID == grand.ID {
+			t.Fatalf("孙卡 %s 不该出现在直接子卡里", grand.ID)
+		}
+	}
+	if got[0].ID > got[1].ID {
+		t.Fatalf("应按 id 排序，实得 %s, %s", got[0].ID, got[1].ID)
+	}
+	byID := map[string]CardBrief{got[0].ID: got[0], got[1].ID: got[1]}
+	if byID[childA.ID].Title != "子卡 A" || byID[childB.ID].Title != "子卡 B" {
+		t.Fatalf("标题没带出来：%+v", got)
+	}
+	if byID[childA.ID].Status == "" {
+		t.Fatalf("状态没带出来：%+v", got)
+	}
+}
+
+// TestChildrenOfEmptyForLeaf 叶子卡返回空切片而不是错误——
+// 「没有子卡」是正常态，抽屉据此整区不渲染。
+func TestChildrenOfEmptyForLeaf(t *testing.T) {
+	s := seedStore(t)
+	leaf := mk(t, s, "叶子卡")
+	got, err := s.ChildrenOf(leaf.ID)
+	if err != nil {
+		t.Fatalf("ChildrenOf: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("叶子卡应为空，实得 %+v", got)
+	}
+}
+
+// TestChildrenOfUnknownCardErrors 卡不存在要报错（映射 404），
+// 不能与「有卡但没子卡」都返回空——那样前端分不出「打错 id」和「真没有」。
+func TestChildrenOfUnknownCardErrors(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.ChildrenOf("B-不存在"); err == nil {
+		t.Fatal("未知卡应报错")
+	}
+}
+
 func TestCreateCardAllocatesBNumbers(t *testing.T) {
 	s := seedStore(t)
 	// 迁移前的新库要先垫号，防与 markdown 总账撞号（spec §2.1 B 号分配）

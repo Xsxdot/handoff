@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { answerDecision, fetchCardDetail, moveCard, noteCard } from '../../api/ledger'
+import { acceptCard, answerDecision, fetchCardDetail, moveCard, noteCard, runCardStep } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { boardColumns } from './columns'
@@ -175,6 +175,13 @@ export function CardDrawer({
   const [note, setNote] = useState('')
   const [noteBusy, setNoteBusy] = useState(false)
   const [noteError, setNoteError] = useState('')
+  const [acceptOpen, setAcceptOpen] = useState(false)
+  const [acceptEvidence, setAcceptEvidence] = useState('')
+  const [acceptBusy, setAcceptBusy] = useState(false)
+  const [acceptError, setAcceptError] = useState('')
+  const [stepBusy, setStepBusy] = useState<'review' | 'merge' | null>(null)
+  const [stepStarted, setStepStarted] = useState<'review' | 'merge' | null>(null)
+  const [stepError, setStepError] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [moveConfirm, setMoveConfirm] = useState(false)
   const [moveBusy, setMoveBusy] = useState(false)
@@ -208,6 +215,10 @@ export function CardDrawer({
   const heartbeat = value(card, 'driver_heartbeat_at', '')
   const driverStale = Boolean(driverSession) && (!heartbeat || Number.isNaN(Date.parse(heartbeat)) || Date.now() - Date.parse(heartbeat) > 5 * 60 * 1000)
   const acceptanceInfo = detail ? acceptance(detail) : { criteria: '', verified: false, evidence: '' }
+  // 验收 chip 三态：已验 / 待真机验（活干完了等验）/ 未验（还没干完）。
+  // 原来只有两态，把「还在进行中的卡」也显示成「待真机验」——那会让看板上
+  // 一片卡都像在等人验，真正等验的那几张反而看不出来
+  const acceptanceLabel = acceptanceInfo.verified ? '已验' : status === '已完成' ? '待真机验' : '未验'
   const relations = detail?.relations ?? []
   const mergedMembers = relations.filter((relation) => relationValue(relation, 'Type') === 'merged_into' && relationValue(relation, 'To') === id)
   const visibleRelations = relations.filter((relation) => relationValue(relation, 'Type') !== 'merged_into')
@@ -234,6 +245,40 @@ export function CardDrawer({
       setNoteError(errorMessage(err))
     } finally {
       setNoteBusy(false)
+    }
+  }
+
+  const submitAccept = async () => {
+    const evidence = acceptEvidence.trim()
+    if (!evidence) return
+    setAcceptBusy(true)
+    setAcceptError('')
+    try {
+      await acceptCard(id, evidence)
+      setAcceptOpen(false)
+      setAcceptEvidence('')
+      load()
+    } catch (err) {
+      // ApiError.message 是后端的规则原文（如「必须带证据」），逐字保留
+      setAcceptError(errorMessage(err))
+    } finally {
+      setAcceptBusy(false)
+    }
+  }
+
+  const startStep = async (step: 'review' | 'merge') => {
+    setStepBusy(step)
+    setStepError('')
+    try {
+      await runCardStep(id, step)
+      // 受理即置灰：环节是异步的，再点一次只会撞 409。进展在 Timeline 上
+      setStepStarted(step)
+      load()
+    } catch (err) {
+      // 409 的冲突原因是后端写的原文（哪张卡的什么环节在跑），逐字显示
+      setStepError(errorMessage(err))
+    } finally {
+      setStepBusy(null)
     }
   }
 
@@ -289,9 +334,28 @@ export function CardDrawer({
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">验收</h3>
               <div className="rounded-lg border p-3 text-xs">
-                <div className="mb-1.5 font-medium">{acceptanceInfo.verified ? '已验' : '待真机验'}</div>
+                <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
                 <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
                 {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
+                {!acceptanceInfo.verified && (
+                  !acceptOpen ? (
+                    <button type="button" onClick={() => setAcceptOpen(true)}
+                      className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
+                  ) : (
+                    <div className="mt-2 space-y-1.5">
+                      <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
+                        rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
+                        className="w-full rounded border bg-background px-2 py-1 text-xs" />
+                      <div className="flex gap-2">
+                        <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                          className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认</button>
+                        <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
+                          className="rounded-md border px-2.5 py-1 text-xs">取消</button>
+                      </div>
+                      {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
+                    </div>
+                  )
+                )}
               </div>
             </section>
 
@@ -318,6 +382,19 @@ export function CardDrawer({
               </section>
             )}
 
+            {(detail.children ?? []).length > 0 && (
+              <section className="mb-5">
+                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">子任务</h3>
+                {(detail.children ?? []).map((child) => (
+                  <div key={child.id} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs">
+                    <button type="button" className="font-mono underline" onClick={() => onOpenCard(child.id)}>{child.id}</button>
+                    <span className="min-w-0 flex-1 truncate">{child.title}</span>
+                    <span className="ml-auto rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">{child.status}</span>
+                  </div>
+                ))}
+              </section>
+            )}
+
             {(detail.task_states ?? []).length > 0 && (
               <section className="mb-5">
                 <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>
@@ -331,6 +408,16 @@ export function CardDrawer({
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
+              <div className="mb-2 flex flex-wrap gap-2">
+                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
+                  onClick={() => void startStep('review')}
+                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇆ 派发审阅</button>
+                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
+                  onClick={() => void startStep('merge')}
+                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇣ 合入集成分支</button>
+              </div>
+              {stepStarted && <p className="mb-2 text-xs text-muted-foreground">已发起，进展见下方 Timeline。</p>}
+              {stepError && <p role="alert" className="mb-2 break-words text-xs text-destructive">{stepError}</p>}
               {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent">转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
               {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
             </section>

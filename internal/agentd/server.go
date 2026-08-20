@@ -40,6 +40,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -123,6 +124,13 @@ type Server struct {
 	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
 	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
 	pty *ptyhost.Host
+	// cardStepMu / cardStepFlight 守「同一张卡同时只允许一个环节在飞」。
+	// 进程内状态：重启即清空，见 cardstep.go 的边界说明。
+	cardStepMu     sync.Mutex
+	cardStepFlight map[string]bool
+	// runStepFn 是环节执行的落点，只为测试可替换而存在：生产恒为 s.runStep。
+	// 环节要跑几十分钟且会真派 task，单测替换掉它才能验「在飞集合」这类装配逻辑。
+	runStepFn func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string)
 }
 
 // NewServer 创建 agentd 服务端。
@@ -161,7 +169,9 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		pty:            ptyhost.New(log),
+		cardStepFlight: make(map[string]bool),
 	}
+	s.runStepFn = s.runStep
 	s.cfg.Store(cfg)
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
