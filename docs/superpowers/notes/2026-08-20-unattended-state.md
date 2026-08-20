@@ -39,10 +39,16 @@ superpowers 各阶段的改写版（出 spec/写 plan/实现/审阅/收尾合并
 
 - [x] main 已合进 feat/b156-workbench-ledger（8940c875c）
 - [x] 需求对齐（2026-08-21，三层拼装模型定稿）
-- [ ] 批2 spec（先于批1：节点模型是地基）
-- [ ] 批2 plan + 派发/验收
-- [ ] 批1 plan + 派发/验收
-- [ ] 隔离 demo 清理（pkill -f "handoff-demo agentd"；rm -rf /tmp/acc）
+- [x] 批2 spec：`docs/superpowers/specs/2026-08-21-node-workflow-design.md`
+- [x] 批2 plan：`docs/superpowers/plans/2026-08-21-node-workflow-backend.md`（8 task）
+- [x] 批2 已派发 → **task 3ae97099-03d8-455c-a8a9-d95f5fe841ec**
+      linux-01 + codex，分支 `feat/b156.2-node-workflow`，起点 777971b，
+      纪律块「内置:single-context」（档位正确），model 空=机器默认。
+      协调者已挂 `wait --follow` 订阅。
+- [ ] 批2 验收（审核者本地做：真机跑一张卡走全程）
+- [ ] 批1 plan（Web）——**必须等批2 落地后再派**，两者改同一分支会冲突
+- [ ] 批1 派发/验收
+- [x] 隔离 demo 已清理（进程无、/tmp/acc 已删）
 
 ## 约束
 
