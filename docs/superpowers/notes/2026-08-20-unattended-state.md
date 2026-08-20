@@ -45,10 +45,23 @@ superpowers 各阶段的改写版（出 spec/写 plan/实现/审阅/收尾合并
       linux-01 + codex，分支 `feat/b156.2-node-workflow`，起点 777971b，
       纪律块「内置:single-context」（档位正确），model 空=机器默认。
       协调者已挂 `wait --follow` 订阅。
+- [x] 批1 plan：`docs/superpowers/plans/2026-08-21-workbench-web-write.md`（7 task）
+      **未派发**——它依赖批2 落地，且两者改同一分支会冲突。
+- [x] 基线实测（起点 777971b）：go build/vet/gofmt 干净；`go test ./...` 43 包 ok 0 FAIL；
+      `npm test` 92 文件 941 用例全绿。**已知既有 flake：`TestPtyWSResumeSince`
+      偶发 TempDir 清理红，单独连跑三次全绿，与本次改动无关。**
 - [ ] 批2 验收（审核者本地做：真机跑一张卡走全程）
-- [ ] 批1 plan（Web）——**必须等批2 落地后再派**，两者改同一分支会冲突
 - [ ] 批1 派发/验收
 - [x] 隔离 demo 已清理（进程无、/tmp/acc 已删）
+
+## 已知欠账
+
+- **派出去的批2 plan 是修订前的快照**：其 Task 7 引用了仓库里并不存在的
+  `writeErr` helper（仓库真实写法是
+  `writeJSON(w, code, map[string]string{"error": ...})`），且没带基线 flake 警告。
+  两处都已在本地文件补好，但 executor 手上那份没有。**编译期会自己撞出来**
+  （它得自己定义 writeErr 才能过），代价是一轮。首次进 `waiting_review` 时
+  用 `continue` 把这两条一并告诉它。
 
 ## 约束
 
