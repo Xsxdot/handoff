@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **前置依赖**：本 plan 建立在 `feat/b156.2-node-workflow`（节点化工作流后端）**已合入**的基础上。开工前先确认 `internal/ledger/types.go` 里有 `NodeDef`、`internal/agentd/ledgerapi.go` 里有 `PUT /api/flows/{name}` 与 `GET /api/disciplines`。**没有就停下来报告，不要自己把后端补一遍。**
+- **前置依赖已就位（协调者 2026-08-21 实测）**：节点化工作流后端已合入本分支——`internal/ledger/types.go` 有 `NodeDef`、`internal/agentd/ledgerapi.go` 有 `PUT /api/flows/{name}` 与 `GET /api/disciplines`、测试 helper `ledgerPut` 已存在（Task 1 不必再补，补了会重复声明编译错）。错误响应用既有的 `ledgerErr(w, err)`（把账本哨兵错误映射成 HTTP 码）或直接 `writeJSON(w, code, map[string]string{"error": ...})`。**开工前仍自己确认一遍；对不上就停下来报告，不要自己把后端补一遍。**
 - **不碰 main 分支。**
 - 后端日志一律 `s.log`（agentd）/ 包内 `log()`（ledger），**禁止 `fmt.Printf`**；前端不留 `console.log`。
 - 每个 task 结束：后端 `gofmt -l .` 无输出；前端 `npm run lint`、`npm run typecheck`、`npm test` 全绿。
@@ -932,7 +932,7 @@ describe('抽屉里的工单入口', () => {
     fireEvent.change(box, { target: { value: 'feat/x' } })
     fireEvent.click(screen.getByRole('button', { name: /提交|回答|发送/ }))
     await waitFor(() => expect(vi.mocked(client.replyTicket)).toHaveBeenCalledWith(
-      'task-abc', expect.objectContaining({ ticket: 'tk-1' }),
+      'task-abc', expect.objectContaining({ ticket_id: 'tk-1' }),
     ))
   })
 
@@ -950,7 +950,7 @@ describe('抽屉里的工单入口', () => {
 })
 ```
 
-文件顶部补一个 `vi.mock('../../api/client', ...)`，把 `fetchTaskDetail` 与 `replyTicket` 打成 `vi.fn()`。**`replyTicket` 的第二个参数字段名以 `ReplyRequest` 的实际定义为准**（`grep -n "interface ReplyRequest" -A 6 web/src/api/types.ts`），上面用 `expect.objectContaining({ ticket: 'tk-1' })` 是按现有契约写的，对不上就按实际字段名改断言，不要改生产代码去迁就测试。
+文件顶部补一个 `vi.mock('../../api/client', ...)`，把 `fetchTaskDetail` 与 `replyTicket` 打成 `vi.fn()`。**`replyTicket` 的第二个参数已核实**（`web/src/api/types.ts:391`）：`ReplyRequest { ticket_id: string; answer: string }`——是 `ticket_id` 不是 `ticket`，上面的断言已按实测字段名写好。`buildTicketAnswer` 在 `web/src/app/task/review.ts:46`，`errorMessage` 在 `web/src/app/lib/format.ts:66`，`request`/`postJSON` 在 `web/src/api/client.ts:123/149`。
 
 - [ ] **Step 2: 跑测试确认它红**
 
