@@ -32,6 +32,21 @@ const (
 	StatusFail
 )
 
+// String 让 Status 在日志与线格式里是可读的词，而不是 0/1/2。
+// 真机实测过这个代价：一条 WARN 打出 status=2，读日志的人得回来翻常量顺序。
+func (s Status) String() string {
+	switch s {
+	case StatusOK:
+		return "ok"
+	case StatusSkip:
+		return "skip"
+	case StatusFail:
+		return "fail"
+	default:
+		return "unknown"
+	}
+}
+
 // Result 是结构化结论，不含任何排版：机器名、列宽、缩进都由调用方决定。
 type Result struct {
 	Verdict Verdict

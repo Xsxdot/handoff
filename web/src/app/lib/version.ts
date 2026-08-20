@@ -8,7 +8,17 @@ type ParsedVersion = {
   pre: string[]
 }
 
+// isComparableVersion 判断一个版本戳能否参与比较。
+//
+// 为什么必须单独有它：hasNewer 返回 false 有两种截然不同的含义——「确实不更新」
+// 和「我根本比不出来」。开发构建的版本戳是提交号（如 7dec31185aaa），解析失败也
+// 得到 false，调用方若直接把 false 当成「已是最新」，就是把不知道说成了没事。
+export function isComparableVersion(value: string): boolean {
+  return parseVersion(value) !== null
+}
+
 // hasNewer 判断 latest 是否严格新于 current；任一版本格式不合法时返回 false。
+// **false 不等于「已是最新」**：不可比时也是 false，调用方要先问 isComparableVersion。
 export function hasNewer(latest: string, current: string): boolean {
   if (!latest || !current) return false
   const a = parseVersion(latest)

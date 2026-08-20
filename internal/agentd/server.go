@@ -131,9 +131,12 @@ type Server struct {
 	desktopAt    time.Time
 	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
 	desktopNow func() time.Time
-	// upgradeMu / machineUpgrades 保护后台执行机升级：同一台机器同时只允许一个。
+	// upgradeMu / machineUpgrades 保护后台执行机升级：同一台机器同时只允许一个，
+	// 且记住最近一次的终态——**终态是控制台唯一的「失败出口」**（见
+	// proto.MachineUpgrade 的说明），丢了它界面就会一直停在「升级中」。
+	// 进程内存，agentd 重启即清空：这是诚实的，重启后本进程确实不知道。
 	upgradeMu       sync.Mutex
-	machineUpgrades map[string]bool
+	machineUpgrades map[string]*proto.MachineUpgrade
 	// machineUpgradeInstaller 是远端升级共用的资产下载器；测试用 runner 缝整体替换。
 	machineUpgradeInstaller *release.Installer
 	machineUpgradeRunner    machineUpgradeRunner
@@ -184,7 +187,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		},
 		downloadState:           &proto.DownloadState{Stage: "idle", Percent: -1},
 		downloadChecksum:        desktopDownloadChecksum(inst),
-		machineUpgrades:         make(map[string]bool),
+		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 	}
 	s.machineUpgradeRunner = s.executeMachineUpgrade

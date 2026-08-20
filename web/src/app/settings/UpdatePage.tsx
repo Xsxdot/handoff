@@ -9,7 +9,7 @@ import type { DesktopState, LatestResp, Machine, MachineUpgradeResp } from '../.
 import { useMachines } from '../data/useMachines'
 import { useDownload } from '../data/useUpdate'
 import { errorMessage } from '../lib/format'
-import { hasNewer } from '../lib/version'
+import { hasNewer, isComparableVersion } from '../lib/version'
 
 export interface UpdatePageProps {
   desktopState: DesktopState | null
@@ -70,15 +70,23 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
 
   const machines = machinesState.data?.machines ?? []
 
-  // 升级没有单独的进度流：机器轮询拿到目标版本后，清掉按钮上的本地「升级中」态。
+  // 升级没有单独的进度流，但**必须有出口**。两条出口，缺一不可：
+  //   成功：机器版本变成了目标版本（沿用原判据）
+  //   结束但没成功：服务端 upgrade 段报出 running=false 的终态
+  // 只留前者是 B166 二期的缺陷——失败时版本压根不会变，按钮就永远停在「升级中」，
+  // 而 agentd 其实早已放弃（真机实测：后端 10:58 记下网络超时，界面还在转）。
   useEffect(() => {
     const latestTag = latestView?.tag ?? ''
-    if (latestTag === '') return
     setMachineUpgradeStates((previous) => {
       let changed = false
       const next = { ...previous }
       for (const machine of machines) {
-        if (machine.name !== '' && machine.version === latestTag && next[machine.name]?.running) {
+        if (machine.name === '' || !next[machine.name]?.running) continue
+        const doneOnServer = machine.upgrade !== undefined && !machine.upgrade.running
+        const reachedTarget = latestTag !== '' && machine.version === latestTag
+        if (reachedTarget || doneOnServer) {
+          // 只清本地的「升级中」。失败原文不往本地态里抄——服务端的 upgrade 段
+          // 就是它的家，抄一份就有了两个真相，且刷新页面后本地那份还会消失。
           delete next[machine.name]
           changed = true
         }
@@ -249,7 +257,30 @@ function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
   onUpgrade: (force: boolean) => void
 }) {
   const local = machine.name === ''
-  const upgradeAvailable = !local && machine.reachable && machine.version !== '' && latestTag !== '' && hasNewer(latestTag, machine.version)
+  // 版本比不出来（开发构建的版本戳是提交号）不等于「已是最新」。此前两者都落到
+  // hasNewer=false，界面就把「我不知道」说成了「你没事」，还顺手把升级按钮藏了——
+  // 而后端对这种机器的结论是 needs_upgrade，本来就该能升。
+  const comparable = machine.version !== '' && isComparableVersion(machine.version)
+  const upgradeAvailable = !local && machine.reachable && machine.version !== '' && latestTag !== '' &&
+    (!comparable || hasNewer(latestTag, machine.version))
+  // 服务端的 running 优先于本地态：刷新页面后本地态就没了，服务端仍知道在跑。
+  const running = machine.upgrade?.running === true || state?.running === true
+  // 两种失败来源，都要显示：
+  //   本地态 = 请求当场被拒（409 忙 / 422 非托管），这类根本没进后台，服务端不留痕
+  //   服务端 = 后台跑完但没成功，这是刷新页面后唯一还在的那份
+  const serverFailed = machine.upgrade !== undefined && !machine.upgrade.running &&
+    machine.upgrade.status !== undefined && machine.upgrade.status !== 'ok'
+  const reason = state?.reason || (serverFailed ? (machine.upgrade?.reason ?? '') : '')
+  const remedy = state?.remedy || (serverFailed ? (machine.upgrade?.remedy ?? '') : '')
+  const statusText = local
+    ? '随桌面应用一起更新'
+    : running
+      ? '升级中…'
+      : !comparable
+        ? '版本无法比较'
+        : upgradeAvailable
+          ? '可升级'
+          : '已是最新'
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 text-xs">
       <span className="w-28 shrink-0 font-medium">{machineLabel(machine)}</span>
@@ -257,12 +288,12 @@ function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
       <span className={machine.reachable ? 'text-emerald-700' : 'text-amber-700'}>{machine.reachable ? '已连接' : '已断开'}</span>
       <div className="ml-auto flex items-center gap-2 text-right">
         <div className="text-muted-foreground">
-          {local ? '随桌面应用一起更新' : state?.running ? '升级中…' : upgradeAvailable ? '可升级' : '已是最新'}
-          {state?.reason && <p className="mt-1 max-w-72 break-words text-destructive">{state.reason}</p>}
-          {state?.remedy && <p className="mt-1 max-w-72 break-words text-amber-700">{state.remedy}</p>}
+          {statusText}
+          {reason && <p className="mt-1 max-w-72 break-words text-destructive">{reason}</p>}
+          {remedy && <p className="mt-1 max-w-72 break-words text-amber-700">{remedy}</p>}
         </div>
         {!local && upgradeAvailable && (
-          state?.running ? (
+          running ? (
             <button type="button" disabled className="rounded-md border px-2 py-1 text-xs opacity-50">
               升级中…
             </button>

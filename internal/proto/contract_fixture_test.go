@@ -259,8 +259,9 @@ func projectTreeSample() ProjectTreeResp {
 
 // machinesSample 返回 MachinesResp 的代表性样本。
 //
-// 两台覆盖两种结局：本机（name 空串、probe_ms 恒 0）与不可达的远端
-// （reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见）。
+// 三台覆盖三种结局：本机（name 空串、probe_ms 恒 0、upgrade 恒缺席）、不可达的
+// 远端（reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见），
+// 以及**升级失败过**的远端——upgrade 段是控制台唯一的失败出口，线格式必须钉住。
 func machinesSample() MachinesResp {
 	ptyOK := true
 	return MachinesResp{
@@ -287,6 +288,22 @@ func machinesSample() MachinesResp {
 				ProbeMs:         3000,
 				ActiveTasks:     0,
 				Error:           "dial tcp 10.0.0.8:7777: connect: connection refused",
+			},
+			{
+				Name:            "mac-02",
+				Addr:            "10.0.0.9:7777",
+				Reachable:       true,
+				Version:         "v0.3.1",
+				Executors:       []string{"codex"},
+				DefaultExecutor: "codex",
+				ProbeMs:         12,
+				ActiveTasks:     0,
+				Error:           "",
+				Upgrade: &MachineUpgrade{
+					Status:  "fail",
+					Verdict: "needs_upgrade",
+					Reason:  "下载 checksums.txt: 尝试 3 次仍失败: i/o timeout",
+				},
 			},
 		},
 	}

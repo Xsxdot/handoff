@@ -55,7 +55,11 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			remote[i] = s.probeRemote(ctx, name)
+			m := s.probeRemote(ctx, name)
+			// 升级状态与探活无关（够不着的机器也可能刚失败过一次升级），
+			// 所以在探活结论之外单独贴上——不可达不能顺手把它抹掉
+			m.Upgrade = s.machineUpgradeState(name)
+			remote[i] = m
 		}(i, name)
 	}
 	wg.Wait()

@@ -6,7 +6,9 @@
 //     探一台机器、把结论翻成 HTTP 状态码、把动作丢进后台
 //   - **不处理本机。** 本机 agentd 的版本由薄壳的同步路决定（spec §6.5）；
 //     在这里再开一个入口就是第二条换版路径，两条会打架
-//   - **不造进度流。** 升级完成的判据就是 GET /api/machines 里那台的 version 变了
+//   - **不造进度流。** 中途阶段只进日志。但**终态必须可查**：GET /api/machines
+//     里那台的 upgrade 段带着最近一次的结论。原先只说「判据是 version 变了」，
+//     那只覆盖成功；失败时版本不会变，控制台就永远停在「升级中」（真机实测）
 package agentd
 
 import (
@@ -47,24 +49,58 @@ func (s *Server) executeMachineUpgrade(ctx context.Context, m upgrade.Machine, t
 }
 
 // beginMachineUpgrade 抢占单台机器的后台升级槽位。
+//
+// 抢到时把状态置为 Running 并**清掉上一轮的终态**：留着会让控制台把旧结果
+// 当成这一轮的结论。
 func (s *Server) beginMachineUpgrade(name string) bool {
 	s.upgradeMu.Lock()
 	defer s.upgradeMu.Unlock()
 	if s.machineUpgrades == nil {
-		s.machineUpgrades = make(map[string]bool)
+		s.machineUpgrades = make(map[string]*proto.MachineUpgrade)
 	}
-	if s.machineUpgrades[name] {
+	if st := s.machineUpgrades[name]; st != nil && st.Running {
 		return false
 	}
-	s.machineUpgrades[name] = true
+	s.machineUpgrades[name] = &proto.MachineUpgrade{Running: true}
 	return true
 }
 
-// finishMachineUpgrade 释放单台机器的后台升级槽位。
-func (s *Server) finishMachineUpgrade(name string) {
+// abortMachineUpgrade 放弃一个刚抢到、但还没真正开跑的槽位（前置校验没过）。
+// 恢复成「本进程没发起过」，不留一条没有内容的终态。
+func (s *Server) abortMachineUpgrade(name string) {
 	s.upgradeMu.Lock()
 	defer s.upgradeMu.Unlock()
 	delete(s.machineUpgrades, name)
+}
+
+// finishMachineUpgrade 落终态并释放槽位。
+//
+// 承重：这是控制台知道「升级结束了」的唯一途径——升级没有进度流，成功可以靠
+// 版本变化推断，失败**只有这条**。
+func (s *Server) finishMachineUpgrade(name string, result upgrade.Result) {
+	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
+	s.machineUpgrades[name] = &proto.MachineUpgrade{
+		Running: false,
+		Status:  result.Status.String(),
+		Verdict: result.Verdict.String(),
+		Reason:  result.Reason,
+		Remedy:  result.Remedy,
+		From:    result.From,
+		To:      result.To,
+	}
+}
+
+// machineUpgradeState 返回某台机器的升级状态快照（无=nil）。
+func (s *Server) machineUpgradeState(name string) *proto.MachineUpgrade {
+	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
+	st, ok := s.machineUpgrades[name]
+	if !ok || st == nil {
+		return nil
+	}
+	snapshot := *st // 拷贝：调用方拿去序列化，不能让它读到之后的写
+	return &snapshot
 }
 
 // handleMachineUpgrade 处理 POST /api/machines/{name}/upgrade。
@@ -95,7 +131,8 @@ func (s *Server) handleMachineUpgrade(w http.ResponseWriter, r *http.Request) {
 	keepSlot := false
 	defer func() {
 		if !keepSlot {
-			s.finishMachineUpgrade(name)
+			// 没跑起来就不留终态：前置校验的结论已经在 HTTP 响应里给了调用方
+			s.abortMachineUpgrade(name)
 		}
 	}()
 
@@ -253,7 +290,6 @@ func (s *Server) writeMachineUpgradeResult(w http.ResponseWriter, code int, m up
 // runMachineUpgradeBackground 使用独立 context：请求返回后 r.Context 已不可用。
 func (s *Server) runMachineUpgradeBackground(name string, m upgrade.Machine, target config.Target,
 	rel release.Release, force bool) {
-	defer s.finishMachineUpgrade(name)
 	ctx, cancel := context.WithTimeout(context.Background(), machineUpgradeTimeout)
 	defer cancel()
 	progress := func(message string) {
@@ -264,11 +300,13 @@ func (s *Server) runMachineUpgradeBackground(name string, m upgrade.Machine, tar
 		runner = s.executeMachineUpgrade
 	}
 	result := runner(ctx, m, target, rel, force, progress)
+	// 先落终态再打日志：落盘失败会让控制台一直转，比日志缺一行严重
+	s.finishMachineUpgrade(name, result)
 	if result.Status == upgrade.StatusOK {
 		s.log.Info("后台执行机升级成功", "name", name, "from", result.From, "to", result.To)
 		return
 	}
-	s.log.Warn("后台执行机升级结束", "name", name, "status", result.Status,
+	s.log.Warn("后台执行机升级结束", "name", name, "status", result.Status.String(),
 		"verdict", result.Verdict.String(), "reason", result.Reason)
 }
 

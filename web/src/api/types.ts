@@ -205,6 +205,8 @@ export interface Machine {
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
   reveal_supported?: boolean | null
+  // upgrade 是这台机器最近一次升级的状态；本机恒缺席（本机版本走薄壳同步路）。
+  upgrade?: MachineUpgrade
   // scratch_root 是这台机器的草稿区路径，探活时从对端 StatusResp 投影。
   // 缺席 = 不支持临时文件（老 agentd 或目录建不出来），前端不渲染入口。
   scratch_root?: string
@@ -226,6 +228,23 @@ export interface ExecutorDefaultResp {
 export interface ExecutorDefaultReq {
   default: string
   model: string
+}
+
+// MachineUpgrade 是一台执行机最近一次升级的状态（GET /api/machines 的 upgrade 段）。
+//
+// 升级没有进度流：中途只进 agentd 日志。这一段给的是**终态**，也是失败唯一的出口——
+// 失败时机器版本不会变，只靠「版本变成最新」判定结束的界面会永远停在「升级中」。
+//
+// 三态：缺席 = 那个 agentd 进程内没发起过升级（重启即回到缺席，**不等于没失败过**）；
+// running=true = 在跑，其余字段是上一轮的；running=false = 已结束，status 是终态。
+export interface MachineUpgrade {
+  running: boolean
+  status?: string   // ok / skip / fail
+  verdict?: string
+  reason?: string
+  remedy?: string
+  from?: string
+  to?: string
 }
 
 export interface MachinesResp {

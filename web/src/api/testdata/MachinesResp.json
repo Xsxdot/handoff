@@ -25,6 +25,25 @@
       "probe_ms": 3000,
       "active_tasks": 0,
       "error": "dial tcp 10.0.0.8:7777: connect: connection refused"
+    },
+    {
+      "name": "mac-02",
+      "addr": "10.0.0.9:7777",
+      "reachable": true,
+      "version": "v0.3.1",
+      "executors": [
+        "codex"
+      ],
+      "default_executor": "codex",
+      "probe_ms": 12,
+      "active_tasks": 0,
+      "error": "",
+      "upgrade": {
+        "running": false,
+        "status": "fail",
+        "verdict": "needs_upgrade",
+        "reason": "下载 checksums.txt: 尝试 3 次仍失败: i/o timeout"
+      }
     }
   ]
 }
