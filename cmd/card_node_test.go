@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestStepFlagHelpMentionsNodeName(t *testing.T) {
+	flag := cardDispatchCmd.Flags().Lookup("step")
+	if flag == nil {
+		t.Fatalf("找不到 --step flag")
+	}
+	if flag.Usage == "" {
+		t.Fatalf("--step 的说明为空")
+	}
+	if !strings.Contains(flag.Usage, "节点名") {
+		t.Fatalf("--step 应说明接收节点名: %s", flag.Usage)
+	}
+	for _, stale := range []string{"review|merge", "环节只认"} {
+		if strings.Contains(flag.Usage, stale) {
+			t.Fatalf("--step 的说明还写着写死的白名单 %q: %s", stale, flag.Usage)
+		}
+	}
+}
+
 func TestCardStepRejectsUnknown(t *testing.T) {
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "x", "--project", "demo", "--workflow", "bug")
