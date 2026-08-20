@@ -22,7 +22,11 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if _, err := os.Stat(cfgPath); err != nil {
-		c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+		c := &config.Config{
+			Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour,
+			// 账本测试基座必须显式开账本：开关默认 false，不开则全族拒绝执行
+			Ledger: config.LedgerConfig{Enabled: true},
+		}
 		if err := config.Save(cfgPath, c); err != nil {
 			t.Fatalf("写测试配置: %v", err)
 		}
@@ -61,5 +65,31 @@ func TestOpenLedgerFallbackSQLite(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ledger.db")); err != nil {
 		t.Fatalf("回退 SQLite 未落 DataDir: %v", err)
+	}
+}
+
+// TestLedgerDisabledByDefault 未配 ledger 段时 card 族必须拒绝执行，
+// 且不得在 DataDir 下自建 ledger.db——「静默自建」正是本次要消灭的行为。
+func TestLedgerDisabledByDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+	if err := config.Save(cfgPath, c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	resetAllFlags(rootCmd)
+	var out, errb bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errb)
+	rootCmd.SetArgs([]string{"--config", cfgPath, "card", "add", "标题", "--project", "demo"})
+	err := Execute()
+	if err == nil {
+		t.Fatalf("账本未启用时 card add 应报错，实际成功: %q", out.String())
+	}
+	if !strings.Contains(err.Error(), "账本未启用") {
+		t.Fatalf("错误文案应含「账本未启用」，实际: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); statErr == nil {
+		t.Fatalf("账本未启用时不得自建 ledger.db")
 	}
 }
