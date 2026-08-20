@@ -15,6 +15,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { topInset } from '../lib/desktopShell'
+import type { DockSnapshot } from './dockPersist'
 
 export interface HomeTab {
   id: string // 客户端生成的 tab 身份（不是服务端 sessionId）
@@ -46,6 +47,11 @@ export interface HomeDockApi {
   maximized: boolean
   toggleMaximize: () => void
   adopt: (t: HomeTab) => void // 恢复既有会话时把它收进来
+  // hydrate 一次性灌入落盘恢复出来的悬浮窗现场。
+  //
+  // 与 adopt 的关键差别：adopt 收编的是「用户不知道存在的孤儿会话」，所以刻意
+  // 不打开浮窗；hydrate 恢复的是「用户上次亲手开着的窗」，windowOpen 照实还原。
+  hydrate: (s: DockSnapshot) => void
 }
 
 // 悬浮球（HomeDock 的 FAB）在视口里的位置与尺寸，单位 px。
@@ -216,6 +222,35 @@ export function useHomeDock(): HomeDockApi {
     setMaximized((m) => !m)
   }, [])
 
+  // hydrate 恢复整份现场，并**播种两个计数器**。
+  //
+  // 播种这一步是承重的：tabIdCounter / seqCounter 都从 0 起，恢复出 h1..h5 之后
+  // 再点「新建终端」会生成 h1——与已存在的 tab 撞 id，React 的 key 与 activate
+  // 全部错乱；seq 同理会出现两个 'bash · home 3'。不播种的话功能看起来是好的，
+  // 只在用户恢复后新建第一个 tab 时炸。
+  //
+  // id 只从 /^h(\d+)$/ 里取最大值：adopt 收编的孤儿会话其 id 是 **sessionId**
+  //（见 Shell 里 dock.adopt 的调用），不是 h<n> 形状，拿它去 parseInt 会得到 NaN。
+  const hydrate = useCallback((s: DockSnapshot) => {
+    setTabs(s.tabs)
+    setActiveId(s.activeId)
+    setWindowOpen(s.windowOpen)
+    setGeomState(s.geom)
+    setMaximized(s.maximized)
+    // 恢复出来的几何就是用户上次亲手摆的位置，不能被「第一次打开时按视口重摆」冲掉
+    placed.current = true
+
+    let maxTabId = 0
+    let maxSeq = 0
+    for (const t of s.tabs) {
+      const m = /^h(\d+)$/.exec(t.id)
+      if (m) maxTabId = Math.max(maxTabId, Number(m[1]))
+      if (Number.isFinite(t.seq)) maxSeq = Math.max(maxSeq, t.seq)
+    }
+    tabIdCounter.current = Math.max(tabIdCounter.current, maxTabId)
+    seqCounter.current = Math.max(seqCounter.current, maxSeq)
+  }, [])
+
   // adopt 把既有会话收进 tabs，但不改 windowOpen、不改 activeId（activeId 为
   // null 时可以设成它）。
   //
@@ -245,5 +280,6 @@ export function useHomeDock(): HomeDockApi {
     maximized,
     toggleMaximize,
     adopt,
+    hydrate,
   }
 }
