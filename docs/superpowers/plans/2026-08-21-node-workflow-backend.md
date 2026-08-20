@@ -17,6 +17,22 @@
 - **不要调用 `handoff` CLI、不要起 agentd、不要派发子任务**：本 plan 全部判据都是 `go test` / `go build` / `go vet`，真机验收由协调者在本地做。
 - 每个 task 结束必须 `gofmt -l .` 无输出后再 commit。
 
+
+## 基线实测（2026-08-21，起点 777971b）
+
+判据在派发前已在基线上跑过一遍，你看到的红如果超出这个范围，就是本次改动引入的：
+
+- `go build ./...`、`go vet ./...`、`gofmt -l .` —— 干净
+- `go test ./...` —— **43 个包 ok，0 FAIL**
+- `cd web && npm test` —— **92 个测试文件、941 个用例全绿**
+
+**一个已知的既有 flake，不要去追它：** `internal/agentd` 的 `TestPtyWSResumeSince`
+偶发报 `TempDir RemoveAll cleanup: ... directory not empty`。这不是断言失败，是测试
+进程收尾与 Go 的 TempDir 清理之间的竞态；单独 `-run TestPtyWS -count=1` 连跑三次全绿。
+**它与本 plan 的改动毫无关系。** 撞上了就重跑一次；不要改它、不要把它写进你的报告
+当成本次引入的问题，也不要因为它而认为「全量测试没过」。
+
+
 ---
 
 ### Task 1: NodeDef 数据模型与新旧 def 双向投影
@@ -1905,6 +1921,21 @@ Expected: 404 / 编译失败。
 
 - [ ] **Step 3: 注册路由并实现 handler（含注释）**
 
+**注意：仓库里没有 `writeErr` 这个 helper。** `internal/agentd/ledgerapi.go` 现有的错误响应写法是
+`writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})`（解析失败时 error 值固定写
+`"bad json"`）。下面的代码里凡出现 `writeErr(w, code, err)`，一律照这个写法展开；
+嫌重复就在本文件里抽一个带 doc 注释的小 helper：
+
+```go
+// writeErr 按本文件既有约定写错误响应：{"error": "<原因>"}。
+//
+// 抽出来只是省重复，语义与散落各处的 writeJSON(w, code, map[string]string{"error": ...}) 完全一致。
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+```
+
+
 `internal/agentd/ledgerapi.go` 的路由块里，在 `GET /api/flows` 之后追加：
 
 ```go
@@ -2005,7 +2036,7 @@ func (s *Server) handleDisciplineNames(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-import 增补 `"errors"`、`"sort"`、`"strings"`、`"github.com/Xsxdot/handoff/internal/discipline"`、`"github.com/Xsxdot/handoff/internal/ledger"`（按实际缺什么补）。`s.cfg.DataDir` 的确切取法用 `grep -n "discipline.Dir(" internal/agentd/*.go` 对齐既有写法，不要自己发明。`writeErr` 若不存在则照文件里既有的错误响应写法来。
+import 增补 `"errors"`、`"sort"`、`"strings"`、`"github.com/Xsxdot/handoff/internal/discipline"`、`"github.com/Xsxdot/handoff/internal/ledger"`（按实际缺什么补）。`s.cfg.DataDir` 的确切取法用 `grep -n "discipline.Dir(" internal/agentd/*.go` 对齐既有写法，不要自己发明。
 
 - [ ] **Step 4: 放开 step 的白名单**
 

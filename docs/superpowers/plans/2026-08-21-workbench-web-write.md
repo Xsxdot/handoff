@@ -17,6 +17,22 @@
 - 前端测试 mock 沿用 `vi.mock('../../api/ledger', async (importOriginal) => ({...}))` 的既有写法，不要换风格。
 - **卡的基线分支只在建卡时定，之后不可改**（`ledger.Store` 没有对应的 mutator，本 plan 也不加——改基线会让已经派出去的任务与卡的说法对不上）。界面上要显示成只读并说明这一点。
 
+
+## 基线实测（2026-08-21，起点 777971b）
+
+判据在派发前已在基线上跑过一遍，你看到的红如果超出这个范围，就是本次改动引入的：
+
+- `go build ./...`、`go vet ./...`、`gofmt -l .` —— 干净
+- `go test ./...` —— **43 个包 ok，0 FAIL**
+- `cd web && npm test` —— **92 个测试文件、941 个用例全绿**
+
+**一个已知的既有 flake，不要去追它：** `internal/agentd` 的 `TestPtyWSResumeSince`
+偶发报 `TempDir RemoveAll cleanup: ... directory not empty`。这不是断言失败，是测试
+进程收尾与 Go 的 TempDir 清理之间的竞态；单独 `-run TestPtyWS -count=1` 连跑三次全绿。
+**它与本 plan 的改动毫无关系。** 撞上了就重跑一次；不要改它、不要把它写进你的报告
+当成本次引入的问题，也不要因为它而认为「全量测试没过」。
+
+
 ---
 
 ### Task 1: 后端卡片写 API
@@ -161,6 +177,21 @@ Expected: 404 / 编译失败。
 ```
 
 - [ ] **Step 4: 实现 handler（含注释）**
+
+**注意：仓库里没有 `writeErr` 这个 helper。** `internal/agentd/ledgerapi.go` 现有的错误响应写法是
+`writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})`（解析失败时 error 值固定写
+`"bad json"`）。下面的代码里凡出现 `writeErr(w, code, err)`，一律照这个写法展开；
+嫌重复就在本文件里抽一个带 doc 注释的小 helper：
+
+```go
+// writeErr 按本文件既有约定写错误响应：{"error": "<原因>"}。
+//
+// 抽出来只是省重复，语义与散落各处的 writeJSON(w, code, map[string]string{"error": ...}) 完全一致。
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+```
+
 
 在文件末尾追加：
 
