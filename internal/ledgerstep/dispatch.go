@@ -54,6 +54,9 @@ type TemplateDispatch struct {
 	Target             string
 	PlanPath           string
 	DisciplineOverride string
+	// ExecutorOverride / ModelOverride 是节点对模板的单字段覆盖；空 = 用模板的。
+	ExecutorOverride string
+	ModelOverride    string
 	// CarryCardContext 为真时把卡上下文段拼进 prompt（来自节点的同名开关）。
 	CarryCardContext bool
 	// Extra 是本次派发的临时补充说明，可为空。
@@ -140,6 +143,13 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if tpl.Def.ModelByTarget != nil {
 		model = tpl.Def.ModelByTarget[target]
 	}
+	executor := tpl.Def.Executor
+	if req.ExecutorOverride != "" {
+		executor = req.ExecutorOverride
+	}
+	if req.ModelOverride != "" {
+		model = req.ModelOverride
+	}
 	var planB64, planName string
 	if req.PlanPath != "" {
 		content, err := os.ReadFile(req.PlanPath)
@@ -151,13 +161,13 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "template", req.Template, "target", target,
-		"executor", tpl.Def.Executor, "discipline", disciplineName,
+		"executor", executor, "discipline", disciplineName,
 		"branch", branch, "base", base,
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
 		"prompt_bytes", len(prompt))
 	taskID, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
-		Executor: tpl.Def.Executor, Model: model, PlanB64: planB64,
+		Executor: executor, Model: model, PlanB64: planB64,
 		PlanName: planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
 	})

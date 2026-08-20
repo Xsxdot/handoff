@@ -1,7 +1,7 @@
-// 看板环节动作的 agentd 侧装配：把一张卡的 review / merge 环节跑起来。
+// 看板节点动作的 agentd 侧装配：把一张卡的工作流节点跑起来。
 //
 // 职责：
-//   - 解析仓路径（项目登记）与目标机（配置），装配 ledgerstep.StepRunner
+//   - 解析目标机（配置），装配 ledgerstep.StepRunner
 //   - 守「同一张卡同时只允许一个环节在飞」
 //   - 起 goroutine 异步执行，HTTP 侧立刻返回
 //
@@ -27,7 +27,7 @@ var errStepInFlight = errors.New("该卡已有环节在运行")
 
 // startCardStep 起一个卡环节。
 //
-// 参数：cardID 卡；step 只认 "review" | "merge"；actor 发起人（web:<addr>）。
+// 参数：cardID 卡；node 节点名（= 看板列名）；actor 发起人（web:<addr>）。
 // 返回：前置校验失败时返回错误（调用方翻成 400/404/409）；校验通过后
 // 立刻返回 nil，环节在后台 goroutine 里跑。
 //
@@ -36,36 +36,21 @@ var errStepInFlight = errors.New("该卡已有环节在运行")
 // 界面靠已有的卡事件流看进展。
 //
 // 注意：返回 nil 不代表环节成功，只代表它启动了。成败落在卡的事件流上。
-func (s *Server) startCardStep(cardID, step, actor string) error {
-	if step != "review" && step != "merge" {
-		return fmt.Errorf("环节只认 review|merge，收到 %q", step)
-	}
-	card, err := s.ledger.GetCard(cardID)
-	if err != nil {
-		return err
-	}
-	// 仓路径不猜：卡的项目必须在本机登记过。猜错的代价是 merge 往错误的
-	// 仓库 push——外部可见且不易撤回，宁可拒绝并说清怎么办
-	loc, err := s.st.GetProjectLocationByName(card.Project)
-	if err != nil {
-		return fmt.Errorf("卡 %s 的项目 %q 未在本机登记，先 handoff project add: %w",
-			cardID, card.Project, err)
-	}
+func (s *Server) startCardStep(cardID, node, actor string) error {
 	if !s.claimCardStep(cardID) {
-		return fmt.Errorf("%w: %s 的 %s 环节正在运行", errStepInFlight, cardID, step)
+		return fmt.Errorf("%w: %s 的 %s 节点正在运行", errStepInFlight, cardID, node)
 	}
 	runner := &ledgerstep.StepRunner{
-		St:      s.ledger,
-		RepoDir: loc.Path,
+		St: s.ledger,
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: actor,
 		},
 		Clients: s.pool.For,
 	}
-	s.log.Info("环节已受理", "card", cardID, "step", step, "actor", actor, "repo_dir", loc.Path)
+	s.log.Info("节点已受理", "card", cardID, "node", node, "actor", actor)
 	go func() {
 		defer s.releaseCardStep(cardID)
-		s.runStepFn(context.Background(), runner, cardID, step)
+		s.runStepFn(context.Background(), runner, cardID, node)
 	}()
 	return nil
 }
@@ -74,13 +59,13 @@ func (s *Server) startCardStep(cardID, step, actor string) error {
 //
 // 为什么错误只进日志不往上抛：调用它的 goroutine 没有上游。环节的成败
 // 由 ledgerstep 落进卡的事件流，那是界面看得见的地方；日志是排查时的第二现场。
-func (s *Server) runStep(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string) {
-	outcome, err := runner.Run(ctx, cardID, step)
+func (s *Server) runStep(ctx context.Context, runner *ledgerstep.StepRunner, cardID, node string) {
+	outcome, err := runner.Run(ctx, cardID, node)
 	if err != nil {
-		s.log.Error("环节失败", "card", cardID, "step", step, "cause", err)
+		s.log.Error("节点失败", "card", cardID, "node", node, "cause", err)
 		return
 	}
-	s.log.Info("环节结束", "card", cardID, "step", step,
+	s.log.Info("节点结束", "card", cardID, "node", node,
 		"action", string(outcome.Action), "reason", outcome.Reason)
 }
 

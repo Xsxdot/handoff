@@ -1,5 +1,5 @@
-// Package ledgerstep 环节执行器：审阅/合并环节的唯一实现，主会话
-// （经 CLI）与看板按钮（经 Plan D API）共用，三期规则引擎复用。
+// Package ledgerstep 工作流节点执行器：主会话（经 CLI）与看板按钮（经 API）
+// 共用同一份节点决策与派发装配。
 // 边界：无自有状态——回合计数从事件流推导，全部写入经 internal/ledger。
 package ledgerstep
 
