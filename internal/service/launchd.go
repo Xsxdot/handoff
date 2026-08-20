@@ -197,6 +197,16 @@ func (m *launchdManager) Status() (Status, error) {
 	return s, nil
 }
 
+// Stop 见 Manager.Stop。TODO(handoff): Task 2 换成真实现。
+func (m *launchdManager) Stop() error {
+	return fmt.Errorf("launchd Stop 尚未实现")
+}
+
+// Restart 见 Manager.Restart。TODO(handoff): Task 2 换成真实现。
+func (m *launchdManager) Restart() error {
+	return fmt.Errorf("launchd Restart 尚未实现")
+}
+
 // firstLine 取多行输出的第一行，用作 Detail 摘要。
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {

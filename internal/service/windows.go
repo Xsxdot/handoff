@@ -400,6 +400,16 @@ func (m *windowsManager) Status() (Status, error) {
 	return s, nil
 }
 
+// Stop 见 Manager.Stop。TODO(handoff): Task 4 换成真实现。
+func (m *windowsManager) Stop() error {
+	return fmt.Errorf("schtasks Stop 尚未实现")
+}
+
+// Restart 见 Manager.Restart。TODO(handoff): Task 4 换成真实现。
+func (m *windowsManager) Restart() error {
+	return fmt.Errorf("schtasks Restart 尚未实现")
+}
+
 // schedTaskRunning 是 Win32 的 SCHED_S_TASK_RUNNING（0x41301），schtasks 在
 // 「上次结果」一栏用它表示这次启动的结果是「实例已拉起并仍在跑」。
 //

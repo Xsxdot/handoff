@@ -204,3 +204,13 @@ func (m *systemdManager) Status() (Status, error) {
 	}
 	return Status{Installed: true, Running: true, Detail: detail}, nil
 }
+
+// Stop 见 Manager.Stop。TODO(handoff): Task 3 换成真实现。
+func (m *systemdManager) Stop() error {
+	return fmt.Errorf("systemd Stop 尚未实现")
+}
+
+// Restart 见 Manager.Restart。TODO(handoff): Task 3 换成真实现。
+func (m *systemdManager) Restart() error {
+	return fmt.Errorf("systemd Restart 尚未实现")
+}
