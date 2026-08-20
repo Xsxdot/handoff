@@ -49,6 +49,19 @@ tab 内记录机器名即可，不需要去远程机存任何东西。
 `blank` 必须存：它是「还没选种类」的合法中间态，不存的话用户点了 `+` 还没选就退出，
 回来会少一个 tab。
 
+外加**右下角悬浮窗**（`useHomeDock`）的现场：
+
+```
+悬浮窗 → { tabs: HomeTab[], activeId, windowOpen, geom: {x,y,w,h}, maximized }
+  HomeTab: id + kind + seq + sessionId + machine + rel
+```
+
+它必须单独存，因为它**不在 `byBase` 里**：`Shell.tsx` 把 `base_kind=home` 的会话路由进
+悬浮窗而不是中央工作台，`useHomeDock` 的注释写明了理由——home 终端不挂在任何目录上，
+塞进 `byBase` 就会跟着目录切换走。
+
+`HomeTab` 的 `draft` / `baseSha` **剥掉不存**，与 §1.2 对文件草稿的决定一致。
+
 **不存**这三样：
 
 1. **文件 tab 的未保存草稿**（现落 localStorage，见 `fileDraft.ts`）。跨端同步草稿要处理
@@ -109,8 +122,11 @@ tab 降级成「还没有会话的终端 tab」。用户切到它时，原来那
 `sessionId` 大多数时候还活着，那一栏就是原来那个 shell，连滚屏内容都在。中间不改任何代码。
 
 反方向也要管：列表里有活会话、布局里没有（另一台设备开的，或那行被淘汰了）。保留
-`usePtyRestore` 现在的行为——补到对应目录的最后一栏末尾。不补的话它就是个在后台跑着、
-界面上却看不见的 shell。
+`usePtyRestore` 现在的行为——工作树会话补到对应目录的最后一栏末尾，home 会话补进悬浮窗
+（`dock.adopt`）。不补的话它就是个在后台跑着、界面上却看不见的 shell。
+
+这条规则**同等适用于悬浮窗的 tab**：恢复出来的 `HomeTab.sessionId` 不在列表里就抹掉，
+tab 留在原位，用户点到它时原地起一个新 shell。
 
 ### 规则三：只有「上次选中的目录」要校验一次
 
@@ -146,22 +162,27 @@ CREATE TABLE IF NOT EXISTS workbench_bases (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS workbench_selected (
-  id         INTEGER PRIMARY KEY CHECK(id = 1),
-  base_key   TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS workbench_singletons (
+  key        TEXT PRIMARY KEY,   -- 'selected' | 'dock'
+  value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
 ```
 
-`workbench_selected` 用单行表而不是通用 kv 表：它就是只有一条记录，`CHECK(id = 1)` 把这个
-事实钉在 schema 里，比运行时约定可靠。
+`workbench_bases` 是「多行、有上限、按 key 索引」的那一类；`workbench_singletons` 装的是
+**整个控制台只有一份**的两样东西——当前选中目录、悬浮窗现场。两者形状不同（前者要淘汰、
+后者永远两行封顶），所以不合表。
+
+单例用 kv 表而不是两张 `CHECK(id = 1)` 的单行表：两个单例就已经让「每样一张表」显得
+啰嗦，而将来若再多一个单例，kv 表不用改 schema。
 
 方法：
 
-- `ListWorkbench() ([]WorkbenchBase, string, error)` —— 全部行 + selected
+- `ListWorkbench() ([]WorkbenchBase, map[string]string, error)` —— 全部行 + 全部单例
 - `PutWorkbenchBase(key, payload string) error` —— upsert，写完就地裁到 50 行
 - `DeleteWorkbenchBase(key string) error`
-- `PutWorkbenchSelected(key string) error` —— upsert 单行
+- `PutWorkbenchSingleton(key, value string) error` —— upsert
+- `DeleteWorkbenchSingleton(key string) error`
 
 上限淘汰做在 `PutWorkbenchBase` 里而不是定时任务：省一个后台 goroutine，而且「刚写完立刻裁」
 的时机最准。裁剪 SQL 按 `updated_at DESC` 保留前 50。
@@ -173,10 +194,13 @@ CREATE TABLE IF NOT EXISTS workbench_selected (
 三个端点，全部走 body 传参，不碰 path 转义（`base_key` 含 `/` 与 `@`）：
 
 ```
-GET  /api/workbench/state          → { selected: string, bases: [{base_key, payload, updated_at}] }
+GET  /api/workbench/state          → { selected: string, dock: string, bases: [{base_key, payload, updated_at}] }
 PUT  /api/workbench/state/base     ← { base_key, payload }   payload 为 null = 删除该行
 PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选中
+PUT  /api/workbench/state/dock     ← { payload }              payload 为 null = 清空悬浮窗现场
 ```
+
+`dock` 在 GET 响应里是字符串（没有现场时为空串），与 `payload` 同一条「后端不解析」的纪律。
 
 `payload` 在线上是一个**字符串**（内容是前端序列化好的 JSON），不是嵌套对象。这与 §3 的
 架构分界一致：后端不解析它，所以也不该让 JSON 解码器替它解析一遍。前端 `JSON.stringify`
@@ -195,7 +219,7 @@ PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选�
 ### 4.3 proto 类型
 
 `internal/proto` 加 `WorkbenchBase` / `WorkbenchStateResp` / `WorkbenchBaseReq` /
-`WorkbenchSelectedReq`，并在 `web/src/api/testdata/` 补对应 JSON，纳入既有 `contract.test.ts`。
+`WorkbenchSelectedReq` / `WorkbenchDockReq`，并在 `web/src/api/testdata/` 补对应 JSON，纳入既有 `contract.test.ts`。
 
 ## 5. 前端设计
 
@@ -213,6 +237,10 @@ PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选�
   存一行空记录只会白占 50 行配额里的一格
 - `pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbench` —— 规则二
 - `diffBases(prev, next): { changed: string[]; removed: string[] }`
+- `encodeDock(d: DockSnapshot): PersistedDock` —— **剥掉每个 tab 的 `draft` / `baseSha`**
+- `decodeDock(raw: unknown): DockSnapshot | null` —— 同款逐字段校验
+- `pruneDeadDockSessions(tabs: HomeTab[], liveIds: Set<string>): HomeTab[]` —— 规则二用在悬浮窗上
+- `clampGeom(g, vw, vh, inset): Geom` —— 恢复几何时按**当前**视口夹紧
 
 ### 5.2 `web/src/api/client.ts`
 
@@ -225,9 +253,9 @@ PUT  /api/workbench/state/selected ← { base_key }             空串 = 无选�
 
 ```
 Promise.all([fetchWorkbenchState(), fetchPtySessions('all')])
-  → 用会话列表抹掉死 sessionId（规则二）
-  → 补上列表里有、布局里没有的孤儿会话
-  → 一次性 hydrate
+  → 用会话列表抹掉死 sessionId（规则二，工作台与悬浮窗各一遍）
+  → 补上列表里有、状态里没有的孤儿会话（工作树 → byBase，home → 悬浮窗）
+  → 一次性 hydrate（byBase + 悬浮窗一起）
 ```
 
 `usePtyRestore.ts` 随之删除——它和布局恢复本来就是同一件事的两半，留着两个入口必然会有人
@@ -236,7 +264,7 @@ Promise.all([fetchWorkbenchState(), fetchPtySessions('all')])
 cleanup 取消掉这一轮仍有效的请求，开发端 100% 恢复不出任何 tab）。
 
 写回：监听 `byBase`，与「上次已落盘快照」`diffBases`，变了的行各自去抖 500ms 单独 PUT，
-被删的行 PUT `payload: null`。
+被删的行 PUT `payload: null`。悬浮窗同理——它整体是一个单例，变了就去抖 500ms PUT 一次。
 
 不用「只监听当前基准」：`restoreTerminal` 会写**非当前**基准的行（恢复是后台动作，
 故意不切走用户的选中态），只盯当前基准的话那些 tab 永远落不了盘。
@@ -252,7 +280,26 @@ cleanup 取消掉这一轮仍有效的请求，开发端 100% 恢复不出任何
 - 新增 `hydrate(entries: Array<{ base: BaseDir; wb: Workbench }>, selectedKey: string)`
 - 现有的十几个动作签名一个都不动
 
-### 5.5 `workspaceBase` 的 key 加机器维度（既有隐患，顺手修）
+### 5.5 `useHomeDock` 的改动
+
+- 新增 `hydrate(snapshot: DockSnapshot)`：一次性灌入 `tabs` / `activeId` / `windowOpen` /
+  `geom` / `maximized`
+- **必须把 `seqCounter` 与 `tabIdCounter` 两个 ref 一起播种**到已恢复 tab 的最大值。
+  这两个计数器现在从 0 起，恢复出 `h1..h5` 之后再点「新建终端」会生成 `h1`——与已存在的
+  tab 撞 id。`seq` 同理，会出现两个 `bash · home 3`。这条不做的话，功能看起来是好的，
+  只在用户恢复后新建第一个 tab 时炸。
+  注意 `adopt` 进来的孤儿会话其 `id` 是 **sessionId**（见 `Shell.tsx` 的调用），不匹配
+  `h<n>` 形状——播种时只从匹配 `/^h(\d+)$/` 的 id 里取最大值，其余忽略。
+- `hydrate` 后把 `placed` ref 置 true：恢复出来的几何就是用户上次摆的位置，
+  不能被「第一次打开时按视口重摆」冲掉
+- `windowOpen` 为 true 时**照实恢复**（浮窗直接是打开的）。这与 `adopt` 刻意不打开浮窗
+  不冲突：`adopt` 收编的是「用户不知道存在的孤儿会话」，而恢复的是「用户上次亲手开着的窗」
+
+几何恢复要过 `clampGeom`：上次在 27 寸屏上摆到 x=2000，这次在笔记本上打开，不夹紧就是
+一个看不见的浮窗。夹紧规则复用 `setGeom` 里已有的那四条下界（`MIN_W` / `MIN_H` / `MARGIN` /
+`topInset()`），再加上界 `x + w <= vw`、`y + h <= vh`。
+
+### 5.6 `workspaceBase` 的 key 加机器维度（既有隐患，顺手修）
 
 `tree/ProjectTree.tsx` 的 `workspaceBase()` 返回 `key: ws.path`，**不带机器名**。
 而 `usePtyRestore.baseOfSession()` 里 home 基准是明确按 `~@machine` 分开的，注释还写了
@@ -283,8 +330,9 @@ payload 里的是上次退出时的快照。用快照会让面包屑显示一个
 （payload 里仍要存这些字段——`selected` 之外的目录不会走这条路径，它们的 tab 标题与
 面包屑只能靠 payload 自己那份，见 §5.1。）
 
-home 基准跳过第 2 步的校验，直接 select：本机 home 用 `HOME_BASE` 常量，远端 home
-（key 形如 `~@machine`）按 `baseOfSession` 里同一条规则现场构造。
+**悬浮窗不等树**：它不挂在任何目录上，第 1 步就能连同 `byBase` 一起灌入。
+
+`selected` 只可能是工作树基准——home 走悬浮窗，不进 `byBase`，也就永远不会是 `selected`。
 
 用户看到的是：启动 → 短暂空态 → 树到位的同一帧，目录选中、tab 与分屏一起出现。
 
@@ -322,6 +370,10 @@ home 基准跳过第 2 步的校验，直接 select：本机 home 用 `HOME_BASE
   `diffBases`（新增 / 变更 / 删除三类）
 - `useWorkbenchSync`：两个请求都到齐才 hydrate（先到的那个不触发）；去抖只发一次 PUT；
   拉取失败时返回 error 且不 hydrate；StrictMode 下只跑一次
+- `encodeDock` 剥掉 `draft` / `baseSha`；`clampGeom` 的四条下界与两条上界；
+  `pruneDeadDockSessions`
+- `useHomeDock.hydrate`：计数器播种（恢复 `h1..h5` 后 `newTerminal` 产出 `h6` 且
+  `seq` 不撞）；`adopt` 进来的 sessionId 形 id 不参与播种；`placed` 被置 true
 - `workspaceBase` / `baseOfSession`：带机器名与不带机器名两种 key 的回归，两处必须产出同一个 key
 
 ## 10. 明确不做
