@@ -6,6 +6,7 @@ package service
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,8 +25,145 @@ func newTestSystemd(t *testing.T, runErr error) (*systemdManager, *[]string, *ma
 		},
 		writeFile: func(p string, b []byte, _ uint32) error { written[p] = b; return nil },
 		remove:    func(p string) error { delete(written, p); return nil },
+		// 默认「unit 在」：多数用例测的是已装场景
+		stat: func(string) (os.FileInfo, error) { return nil, nil },
 	}
 	return m, &calls, &written
+}
+
+// Stop 必须走 disable --now，不是裸 stop。
+//
+// why：只 stop 的话 unit 还是 enabled，下次开机 systemd 照样拉起来，
+// 「停到显式 start」撑不过一次重启。
+func TestSystemdStopDisablesNotJustStops(t *testing.T) {
+	m, calls, _ := newTestSystemd(t, nil)
+	m.run = func(name string, args ...string) ([]byte, error) {
+		*calls = append(*calls, name+" "+strings.Join(args, " "))
+		if len(args) > 0 && args[0] == "is-active" {
+			return []byte("inactive"), errors.New("exit status 3")
+		}
+		return []byte("ok"), nil
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	if !strings.Contains(joined, "disable --now") {
+		t.Errorf("Stop 必须 disable --now（只 stop 撑不过一次重启）: %s", joined)
+	}
+}
+
+// 停不下来时不许报成功：is-active 仍返回 0 说明它还活着。
+func TestSystemdStopFailsWhenStillActive(t *testing.T) {
+	m, _, _ := newTestSystemd(t, nil)
+	if err := m.Stop(); err == nil {
+		t.Fatal("is-active 仍返回 0（还活着）时 Stop 必须报错")
+	}
+}
+
+// Start 必须 enable --now，不是裸 start。
+//
+// why：Stop 用 disable 摘掉了开机自启，只 start 能跑起来但下次开机又没了
+// ——「显式 start 之后恢复原状」才是这里的目标。
+func TestSystemdStartEnablesNotJustStarts(t *testing.T) {
+	m, calls, _ := newTestSystemd(t, nil)
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	if !strings.Contains(joined, "enable --now") {
+		t.Errorf("Start 必须 enable --now（否则 stop 过的单元下次开机不回来）: %s", joined)
+	}
+}
+
+// Restart 走 systemctl restart，并复核 is-active。
+func TestSystemdRestartVerifiesActive(t *testing.T) {
+	m, calls, _ := newTestSystemd(t, nil)
+	if err := m.Restart(); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	if !strings.Contains(joined, "systemctl restart") {
+		t.Errorf("Restart 必须发 systemctl restart: %s", joined)
+	}
+	ri, ai := strings.Index(joined, "restart"), strings.LastIndex(joined, "is-active")
+	if ai < ri {
+		t.Errorf("复核（is-active）必须在 restart 之后: %s", joined)
+	}
+}
+
+// unit 文件不在 => 未安装，三个命令一律硬拒且不发变更命令。
+func TestSystemdLifecycleRefusesWhenNotInstalled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*systemdManager) error
+	}{
+		{"Start", (*systemdManager).Start},
+		{"Stop", (*systemdManager).Stop},
+		{"Restart", (*systemdManager).Restart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, calls, _ := newTestSystemd(t, nil)
+			m.stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+			err := tc.call(m)
+			if !errors.Is(err, ErrNotInstalled) {
+				t.Fatalf("未安装时应返回 ErrNotInstalled，得到: %v", err)
+			}
+			for _, c := range *calls {
+				for _, mutating := range []string{"start", "stop", "restart", "enable", "disable"} {
+					if strings.Contains(c, mutating) {
+						t.Errorf("未安装时不得发出变更类命令，却发了: %s", c)
+					}
+				}
+			}
+		})
+	}
+}
+
+// 权限不足要给出「用 sudo 重跑」，不能扁平抛原文。
+//
+// why（B45 的教训）：system unit 落在 /etc/systemd/system，所有变更类操作
+// 都需要 root；只抛一句 Access denied，用户不知道下一步该干什么。
+func TestSystemdStopHintsSudoOnPermissionDenied(t *testing.T) {
+	m, _, _ := newTestSystemd(t, nil)
+	m.run = func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "disable" {
+			return []byte("Failed to disable unit: Access denied"), errors.New("exit status 1")
+		}
+		return []byte("ok"), nil
+	}
+	err := m.Stop()
+	if err == nil {
+		t.Fatal("权限不足时 Stop 必须报错")
+	}
+	if !strings.Contains(err.Error(), "sudo") {
+		t.Errorf("权限不足的报错必须提示用 sudo 重跑，得到: %v", err)
+	}
+}
+
+// is-enabled 报 disabled 时 Status.Disabled 为 true。
+//
+// why 可以按文本判：is-enabled 的输出是稳定的英文枚举，不随 locale 变
+// （这与 Windows 的 Status 列不同，那一列会本地化）。
+func TestSystemdStatusDisabled(t *testing.T) {
+	m, _, _ := newTestSystemd(t, nil)
+	m.run = func(name string, args ...string) ([]byte, error) {
+		switch {
+		case len(args) > 0 && args[0] == "is-enabled":
+			// disabled 时 systemctl 返回非 0，所以这里连错误一起给
+			return []byte("disabled\n"), errors.New("exit status 1")
+		case len(args) > 0 && args[0] == "is-active":
+			return []byte("inactive"), errors.New("exit status 3")
+		}
+		return []byte("ok"), nil
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Disabled {
+		t.Error("is-enabled 报 disabled 时 Status.Disabled 应为 true")
+	}
 }
 
 // unit 内容逐项钉住。两条硬要求各有各的理由，写错都不会在编译期暴露。
