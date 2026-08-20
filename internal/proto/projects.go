@@ -110,6 +110,11 @@ type Machine struct {
 	// Name 为 ""=本机（与 tasks.target 的空串语义一致；UI 显示「本机」）。
 	Name string `json:"name"`
 	Addr string `json:"addr"`
+	// Relay 是这台机器的 relay 节点名；空=直连形态。
+	//
+	// 为什么需要它：relay 形态与 addr 互斥，中继机器的 Addr 恒为空，界面上
+	// 那张卡片会一个身份标识都没有。前端在 Addr 为空时用它显示「中继 · <node>」。
+	Relay string `json:"relay,omitempty"`
 	// Reachable=false 时 Error 必非空。
 	Reachable bool   `json:"reachable"`
 	Version   string `json:"version"`
