@@ -8,8 +8,8 @@
 // 边界：
 //   - 不发请求、不认识 ProjectTree 的数据形状：调用方把选中的目录整理成
 //     BaseDir 传进来
-//   - 不做持久化。tab 组存内存，刷新即丢（spec §10）——持久化要处理
-//     「目录被删了但 tab 还在」这类失效态，本期不值得
+//   - 不由本 hook 直接做持久化。tab 组存内存，落盘与恢复由外部同步层处理；
+//     这样容器不需要认识 HTTP 或坏 payload 的降级策略
 //
 // 为什么按目录分别持有而不是一份全局 tab 列表：一份全局列表切目录时要么
 // 全清空（用户丢工作现场），要么混在一起（左栏选了 A 却看见 B 的文件）。
@@ -32,7 +32,7 @@ import {
 
 // BaseDir 是一个 tab 组的基准目录。
 //
-// key 是它在 Map 里的身份：工作树用绝对路径，home 用 '~'。
+// key 是它在 Map 里的身份：工作树用 path 或 path@machine，home 用 '~' / '~@machine'。
 // label 是面包屑与 tab 标题里的短名——工作树优先用分支名（原型显示的是
 // `integration/b2-b3` 这样的分支），没有分支（detached）时退回目录名。
 export interface BaseDir {
@@ -126,11 +126,27 @@ export interface WorkbenchApi {
   // 好几个目录下的会话，逐个 select 过去会让用户的选中态落在最后一条上——
   // 那是把「后台恢复」变成了「替用户点了一下左栏」。
   restoreTerminal: (b: BaseDir, sessionId: string) => void
+  // byBase 是全部基准目录的 tab 组，**只读**。持久化层要监听它整体做差分，
+  // 只盯当前基准是不够的——restoreTerminal 会写非当前基准的行。
+  byBase: Record<string, Workbench>
+  // baseDirs 是每个 key 对应的基准元数据。
+  //
+  // 为什么必须单独存一张：byBase 只有 key → Workbench，而落盘时要把 label /
+  // projectName / machine / path 一起编码进 payload（恢复时 key 还原不出它们）。
+  // 当前基准之外的那些目录，除了这张表没有别的地方留着它们的 BaseDir。
+  baseDirs: Record<string, BaseDir>
+  // hydrate 一次性灌入落盘恢复出来的全部 tab 组。
+  //
+  // **刻意不管选中**：selected 的恢复要等项目树加载完（spec §6），在这里 select
+  // 会把用户丢进一个树还没到、面包屑是空的界面。
+  hydrate: (entries: Array<{ base: BaseDir; wb: Workbench }>) => void
 }
 
 export function useWorkbench(): WorkbenchApi {
   const [base, setBase] = useState<BaseDir | null>(null)
   const [byBase, setByBase] = useState<Record<string, Workbench>>({})
+  // baseDirs 与 byBase 同生命周期：凡是写进 byBase 的 key，元数据都在这里
+  const [baseDirs, setBaseDirs] = useState<Record<string, BaseDir>>({})
   // baseRef 让 open/openTerminal 在同一个事件里「先切基准再写它的 tab 组」时
   // 读到刚切过去的那个，而不是本次渲染闭包里的旧值
   const baseRef = useRef<BaseDir | null>(null)
@@ -141,6 +157,9 @@ export function useWorkbench(): WorkbenchApi {
   const select = useCallback((b: BaseDir) => {
     baseRef.current = b
     setBase(b)
+    // 登记元数据：落盘时要用它编码 payload。用 updater 里的浅比较避免
+    // 每次 select 都产生一个新对象引发无谓的重渲染
+    setBaseDirs((prev) => (prev[b.key] === b ? prev : { ...prev, [b.key]: b }))
   }, [])
 
   // mutate 是所有写入的唯一通道：确定目标基准 → 取它的 Workbench → 应用纯函数。
@@ -151,6 +170,7 @@ export function useWorkbench(): WorkbenchApi {
       const target = b ?? baseRef.current
       if (!target) return
       if (b && b.key !== baseRef.current?.key) select(b)
+      setBaseDirs((prev) => (prev[target.key] ? prev : { ...prev, [target.key]: target }))
       setByBase((prev) => ({ ...prev, [target.key]: fn(prev[target.key] ?? EMPTY_WORKBENCH) }))
     },
     [select],
@@ -212,6 +232,7 @@ export function useWorkbench(): WorkbenchApi {
   // restoreTerminal 不走 mutate：mutate 在给了显式基准时会 select 过去，而恢复
   // 是后台动作，不该把用户的选中态拽走。它只在 byBase 里按目标基准写入。
   const restoreTerminal = useCallback((b: BaseDir, sessionId: string) => {
+    setBaseDirs((prev) => (prev[b.key] ? prev : { ...prev, [b.key]: b }))
     setByBase((prev) => {
       const w = prev[b.key] ?? EMPTY_WORKBENCH
       // seq 在 updater 里算：连着恢复多个会话时，闭包外算出来的序号全是旧的
@@ -219,5 +240,39 @@ export function useWorkbench(): WorkbenchApi {
     })
   }, [])
 
-  return { base, wb, select, open, openTerminal, close, closeById, activate, setContent, split, splitAt, openInNewPane, resize, restoreTerminal }
+  // hydrate 一次性灌入恢复出来的全部 tab 组。见接口注释：不碰选中态。
+  //
+  // 用整体替换而不是逐条合并：水合只在应用启动时发生一次，那时 byBase 必然是空的。
+  // 写成合并会让「重复调用」看起来是安全的，而它其实会把用户启动后新开的 tab
+  // 与一份陈旧快照混在一起——那种状态没人能解释。
+  const hydrate = useCallback((entries: Array<{ base: BaseDir; wb: Workbench }>) => {
+    const nextBases: Record<string, Workbench> = {}
+    const nextDirs: Record<string, BaseDir> = {}
+    for (const e of entries) {
+      nextBases[e.base.key] = e.wb
+      nextDirs[e.base.key] = e.base
+    }
+    setByBase(nextBases)
+    setBaseDirs(nextDirs)
+  }, [])
+
+  return {
+    base,
+    wb,
+    byBase,
+    baseDirs,
+    select,
+    open,
+    openTerminal,
+    close,
+    closeById,
+    activate,
+    setContent,
+    split,
+    splitAt,
+    openInNewPane,
+    resize,
+    restoreTerminal,
+    hydrate,
+  }
 }

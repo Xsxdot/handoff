@@ -85,6 +85,26 @@ export interface Ticket {
   delivered_at?: string
 }
 
+// WorkbenchBaseRow / WorkbenchStateResp 与 internal/proto/workbench.go 对应，两边一起改。
+//
+// payload 是**字符串**而不是嵌套对象：agentd 不解析它，所以线上就是一段序列化好的
+// JSON 文本。解析与逐字段校验全部在 app/workbench/persist.ts 里做。
+
+// WorkbenchBaseRow 是一个基准目录的持久化状态行。
+export interface WorkbenchBaseRow {
+  base_key: string
+  payload: string
+  updated_at: number // 毫秒时间戳
+}
+
+// WorkbenchStateResp 是 GET /api/workbench/state 的响应。
+// selected / dock 没有内容时是空串（不是缺键）。
+export interface WorkbenchStateResp {
+  selected: string
+  dock: string
+  bases: WorkbenchBaseRow[]
+}
+
 // ProjectLocation 是一条「项目 × 机器」位置记录：项目在本机的那一个工作副本
 // （B62 的 project_locations 表）。GET /api/projects 返回它的数组，
 // POST /api/projects 登记成功时 200 返回单条。

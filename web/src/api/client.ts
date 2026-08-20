@@ -1,7 +1,7 @@
 // agentd 的 HTTP fetch 客户端（浏览器侧）。
 //
 // 职责：
-//   - 封装 /api/status 与 /api/tasks 两个只读接口，返回强类型结果
+//   - 封装 /api/status、/api/tasks 与工作台状态接口，返回强类型结果
 //   - 出错时把状态码与响应体错误信息统一成可读的 ApiError，供界面展示
 //
 // 边界：
@@ -57,6 +57,7 @@ import type {
   TaskPlan,
   TasksResp,
   Workspace,
+  WorkbenchStateResp,
 } from './types'
 
 // ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
@@ -604,4 +605,42 @@ export function deletePtySession(id: string, machine?: string): Promise<{ ok: bo
     `/api/pty/sessions/${encodeURIComponent(id)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
+}
+
+// fetchWorkbenchState 一次拉全工作台状态（GET /api/workbench/state）。
+//
+// 返回：服务端的完整工作台状态。
+// 注意：
+// **只在应用启动时调一次。** 不做前台唤醒时重拉：那一刻本端内存里的那份才是
+// 用户刚才的现场，从服务端拉一份回来盖掉它是纯粹的坏（spec §1.6）。
+export function fetchWorkbenchState(): Promise<WorkbenchStateResp> {
+  return request<WorkbenchStateResp>('/api/workbench/state')
+}
+
+// putWorkbenchBase 写一行基准状态（PUT /api/workbench/state/base）。
+//
+// 参数：baseKey 是基准目录身份；payload 是序列化字符串，null 表示删除。
+// 返回：写入或删除完成的 Promise；失败时抛 ApiError。
+// 注意：
+// payload 传 null = 删除该行（一个目录的 tab 全关光了就该删，不存空记录）。
+// 400 = base_key 为空或 payload 超过 256 KiB。
+export async function putWorkbenchBase(baseKey: string, payload: string | null): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/base', { base_key: baseKey, payload })
+}
+
+// putWorkbenchSelected 写「当前选中的基准目录」（PUT /api/workbench/state/selected）。
+// 参数：baseKey 是基准目录 key；空串表示当前没有选中目录。
+// 返回：写入完成的 Promise；失败时抛 ApiError。
+// 注意：空串是合法值，不应把它当成请求参数缺失。
+export async function putWorkbenchSelected(baseKey: string): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/selected', { base_key: baseKey })
+}
+
+// putWorkbenchDock 写悬浮窗现场（PUT /api/workbench/state/dock）。
+// 参数：payload 是序列化字符串，null 表示清空。
+// 返回：写入或清空完成的 Promise；失败时抛 ApiError。
+// 注意：payload 原样发送，编解码由工作台状态层负责。
+// payload 传 null = 清空。
+export async function putWorkbenchDock(payload: string | null): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/dock', { payload })
 }

@@ -37,7 +37,7 @@ export function useMachineCaps(): MachineCaps {
   const ranRef = useRef(false)
   const cancelledRef = useRef(false)
 
-  // 与 usePtyRestore 同因同修：cancelledRef 必须跨 effect run，否则 StrictMode
+  // 与旧会话恢复逻辑同因同修：cancelledRef 必须跨 effect run，否则 StrictMode
   // 下第一轮 cleanup 会取消掉唯一那次请求，能力表永远停在 null。
   // 停在 null 不会出错（三态门对 null 的反应是放行），但等于这个门没生效。
   useEffect(() => {
