@@ -261,3 +261,38 @@ func TestForUnchangedByNamedPath(t *testing.T) {
 		t.Fatalf("兜底 Source 变了：%q", block.Source)
 	}
 }
+
+func TestBuiltinByNameCoversNewRoles(t *testing.T) {
+	for _, name := range []string{NameImplement, NameReview, NameSpecDraft, NamePlanWriting, NameFinishing} {
+		block, ok := builtinByName(name, "codex")
+		if !ok {
+			t.Fatalf("角色 %q 没有内置纪律块", name)
+		}
+		if strings.TrimSpace(block.Text) == "" {
+			t.Fatalf("角色 %q 的内置纪律块是空的", name)
+		}
+		if block.Source == "" {
+			t.Fatalf("角色 %q 的 Source 为空", name)
+		}
+	}
+}
+
+func TestBuiltinsListStableAndComplete(t *testing.T) {
+	got := Builtins()
+	if len(got) != 6 {
+		t.Fatalf("内置纪律块应有 6 份（subagent/single-context/review/spec-draft/plan-writing/finishing），得到 %d", len(got))
+	}
+	// 顺序固定：控制台用 builtins[0] 当默认选中项，换位置会静默改掉用户看到的内容。
+	if got[0].Tier != TierSubagent || got[1].Tier != TierSingleContext || got[2].Tier != NameReview {
+		t.Fatalf("前三项顺序被改动: %+v", got[:3])
+	}
+}
+
+func TestFinishingBlockCarriesBaseDiscipline(t *testing.T) {
+	block, _ := builtinByName(NameFinishing, "codex")
+	for _, want := range []string{"基线", "不要", "裁决"} {
+		if !strings.Contains(block.Text, want) {
+			t.Fatalf("收尾纪律块缺关键约束 %q", want)
+		}
+	}
+}

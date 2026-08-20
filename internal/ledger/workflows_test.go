@@ -79,6 +79,72 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 	}
 }
 
+func TestDefaultWorkflowsAreNodeForm(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("seed 工作流: %v", err)
+	}
+	feature, err := s.GetWorkflow("feature", 0)
+	if err != nil {
+		t.Fatalf("读 feature 流: %v", err)
+	}
+	if len(feature.Def.Nodes) == 0 {
+		t.Fatalf("出厂工作流应是节点形")
+	}
+	var review, merge *NodeDef
+	for i := range feature.Def.Nodes {
+		switch feature.Def.Nodes[i].Name {
+		case "待审阅":
+			review = &feature.Def.Nodes[i]
+		case "待合并":
+			merge = &feature.Def.Nodes[i]
+		}
+	}
+	if review == nil || !review.Dispatch || !review.Verdict || !review.CarryCardContext {
+		t.Fatalf("待审阅应是派发+裁决+带卡上下文: %+v", review)
+	}
+	if review.OnFail != "进行中" {
+		t.Fatalf("审阅未过应退回进行中，实际 %q", review.OnFail)
+	}
+	if merge == nil || !merge.Dispatch {
+		t.Fatalf("待合并应是派发型节点: %+v", merge)
+	}
+	// main 上的合并必须留人工——出厂默认不能自动往主线合。
+	found := false
+	for _, base := range merge.HumanBases {
+		if base == "main" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("出厂合并节点必须把 main 列入人工清单: %+v", merge.HumanBases)
+	}
+	// States 投影必须仍在，看板与 MoveCard 靠它。
+	if len(feature.Def.States) != len(feature.Def.Nodes) {
+		t.Fatalf("States 投影缺失: %v", feature.Def.States)
+	}
+}
+
+func TestEnsureDefaultWorkflowsDoesNotOverwrite(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "我自己的列"}}}); err != nil {
+		t.Fatalf("写用户版本: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, _ := s.GetWorkflow("feature", 0)
+	if len(got.Def.Nodes) != 1 || got.Def.Nodes[0].Name != "我自己的列" {
+		t.Fatalf("seed 覆盖了用户改过的工作流: %+v", got.Def.Nodes)
+	}
+}
+
 func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.EnsureDefaultTemplates(); err != nil {

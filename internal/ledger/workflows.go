@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
 // withStatesFromNodes 把 Nodes 投影成 States/Gates（写入侧）。
@@ -187,20 +189,48 @@ func (s *Store) GetWorkflow(name string, version int) (Workflow, error) {
 	return workflow, nil
 }
 
-// EnsureDefaultWorkflows 幂等 seed 出厂工作流：feature 流（带「已出spec」
-// 插入状态与两道 gate，对齐 💡→📋→🔨→✅ 生命周期）与 bug 流（无门直流）。
-// 已存在同名工作流则不动（不覆盖用户改过的版本）。
+// EnsureDefaultWorkflows 幂等 seed 出厂工作流。已存在同名的不动（不覆盖用户改过的版本）。
+//
+// 注意：**本方法会先调 EnsureDefaultTemplates**。出厂工作流的节点引用出厂模板，
+// 而 PutWorkflow 会校验模板存在性——把顺序要求写进文档等于把它留给每个调用点
+// 各自记住，仓库里 11 处调用点原本全是反的。两个 seed 都幂等，合并调用没有代价。
 func (s *Store) EnsureDefaultWorkflows() error {
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		return fmt.Errorf("seed 出厂工作流前置的模板: %w", err)
+	}
+	// 出厂工作流是**数据不是代码语义**：用户在控制台改它、删它、重排它都行，
+	// seed 只保证「装完就有一条能跑通的流」。这里刻意不引入任何「节点类型」
+	// 概念——每一列的行为都由下面这些能力开关组合出来。
 	defaults := map[string]WorkflowDef{
 		"feature": {
-			States: []string{StatusTodo, "已出spec", StatusDoing, StatusReview, "待合并", StatusDone},
-			Gates: map[string]Gate{
-				"已出spec": {RequireAttachment: "spec"},
-				"待合并":    {RequireAcceptance: true},
+			Nodes: []NodeDef{
+				{Name: StatusTodo, Next: "已出spec"},
+				{Name: "已出spec", Next: StatusDoing, Gate: Gate{RequireAttachment: "spec"}},
+				{Name: StatusDoing, Next: StatusReview,
+					Dispatch: true, Template: "feature-impl", CarryCardContext: true},
+				{Name: StatusReview, Dispatch: true, Verdict: true, Template: "review-generic",
+					CarryCardContext: true, MaxRounds: 3,
+					Next: "待合并", OnFail: StatusDoing},
+				{Name: "待合并", Next: StatusDone, Gate: Gate{RequireAcceptance: true},
+					Dispatch: true, Verdict: true, Template: "review-generic",
+					Override:         NodeOverride{Discipline: discipline.NameFinishing},
+					CarryCardContext: true, MaxRounds: 1,
+					// 出厂默认不自动往主线合：往 main 合是外部可见且不易撤回的
+					// 动作，留一道人工门。想让它全自动的用户把这个清单清空即可。
+					HumanBases: []string{"main"},
+				},
+				{Name: StatusDone},
 			},
 		},
 		"bug": {
-			States: []string{StatusTodo, StatusDoing, StatusReview, StatusDone},
+			Nodes: []NodeDef{
+				{Name: StatusTodo, Next: StatusDoing},
+				{Name: StatusDoing, Next: StatusReview,
+					Dispatch: true, Template: "feature-impl", CarryCardContext: true},
+				{Name: StatusReview, Dispatch: true, Verdict: true, Template: "review-generic",
+					CarryCardContext: true, MaxRounds: 3, Next: StatusDone, OnFail: StatusDoing},
+				{Name: StatusDone},
+			},
 		},
 	}
 	for name, def := range defaults {
@@ -210,7 +240,8 @@ func (s *Store) EnsureDefaultWorkflows() error {
 			return err
 		}
 		if _, err := s.PutWorkflow(name, def); err != nil {
-			return err
+			log().Error("seed 默认工作流失败", "name", name, "cause", err)
+			return fmt.Errorf("seed 默认工作流 %s: %w", name, err)
 		}
 		log().Info("seed 默认工作流", "name", name)
 	}

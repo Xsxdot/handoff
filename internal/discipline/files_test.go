@@ -145,12 +145,13 @@ func TestWriteRejectsOversize(t *testing.T) {
 
 func TestBuiltinsAndDefaultTier(t *testing.T) {
 	bs := discipline.Builtins()
-	if len(bs) != 3 {
-		t.Fatalf("len = %d, want 3", len(bs))
+	if len(bs) != 6 {
+		t.Fatalf("len = %d, want 6", len(bs))
 	}
 	// 顺序是界面契约：控制台用 builtins[0] 当默认选中项，
 	// review 只能追加在末尾，不能插到前面
-	want := []string{discipline.TierSubagent, discipline.TierSingleContext, discipline.NameReview}
+	want := []string{discipline.TierSubagent, discipline.TierSingleContext, discipline.NameReview,
+		discipline.NameSpecDraft, discipline.NamePlanWriting, discipline.NameFinishing}
 	for i, w := range want {
 		if bs[i].Tier != w {
 			t.Fatalf("第 %d 条 = %q, want %q", i, bs[i].Tier, w)

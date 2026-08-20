@@ -22,6 +22,19 @@ var builtinSingleContext string
 //go:embed builtin/review.md
 var builtinReview string
 
+// builtinSpecDraft / builtinPlanWriting / builtinFinishing 是 superpowers
+// 三个阶段的纪律块改写版。它们是**数据**：用户可以在控制台以此为模板新建
+// 并任意微调，出厂内置只保证「开箱就有一份能用的」。
+//
+//go:embed builtin/spec-draft.md
+var builtinSpecDraft string
+
+//go:embed builtin/plan-writing.md
+var builtinPlanWriting string
+
+//go:embed builtin/finishing.md
+var builtinFinishing string
+
 // 内置档位名。
 const (
 	TierSubagent      = "subagent"       // 有 subagent 机制的执行器（opencode / claude）
@@ -31,8 +44,11 @@ const (
 // 纪律块角色名。名字是「这一轮执行者扮演什么角色」，与 Tier（执行器能力档位）
 // 是两条正交的轴：implement 这一个角色内部还要按档位分，review 则与档位无关。
 const (
-	NameImplement = "implement" // 实现角色；内部按 defaultTier 落到 subagent / single-context
-	NameReview    = "review"    // 审阅角色；只读，与执行器能力无关
+	NameImplement   = "implement"    // 实现角色；内部按 defaultTier 落到 subagent / single-context
+	NameReview      = "review"       // 审阅角色；只读，与执行器能力无关
+	NameSpecDraft   = "spec-draft"   // 出 spec 角色；只出文档，不写代码
+	NamePlanWriting = "plan-writing" // 写 plan 角色；只出计划，不写代码
+	NameFinishing   = "finishing"    // 收尾合并角色；合并目标取自卡的有效基线
 )
 
 // Block 是一次纪律解析的产物。
@@ -87,6 +103,12 @@ func builtinByName(name, executor string) (Block, bool) {
 		return Block{Text: b.Text, Source: "内置:" + NameImplement + "(" + tier + ")"}, true
 	case NameReview:
 		return Block{Text: builtinReview, Source: "内置:" + NameReview}, true
+	case NameSpecDraft:
+		return Block{Text: builtinSpecDraft, Source: "内置:" + NameSpecDraft}, true
+	case NamePlanWriting:
+		return Block{Text: builtinPlanWriting, Source: "内置:" + NamePlanWriting}, true
+	case NameFinishing:
+		return Block{Text: builtinFinishing, Source: "内置:" + NameFinishing}, true
 	}
 	return Block{}, false
 }
@@ -98,7 +120,8 @@ type Builtin struct {
 	Content string
 }
 
-// Builtins 返回全部内置纪律块，顺序固定为 subagent、single-context、review。
+// Builtins 返回全部内置纪律块，顺序固定为 subagent、single-context、review、
+// spec-draft、plan-writing、finishing。
 //
 // 顺序固定是给界面用的：列表次序不该随 map 迭代而抖动。
 func Builtins() []Builtin {
@@ -108,6 +131,9 @@ func Builtins() []Builtin {
 		// review 追加在末尾而不是插在前面：控制台用 builtins[0] 当默认选中项，
 		// 换位置会静默改掉用户打开设置页时看到的内容。
 		{Tier: NameReview, Content: builtinReview},
+		{Tier: NameSpecDraft, Content: builtinSpecDraft},
+		{Tier: NamePlanWriting, Content: builtinPlanWriting},
+		{Tier: NameFinishing, Content: builtinFinishing},
 	}
 }
 
