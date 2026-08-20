@@ -282,6 +282,12 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 // 返回：initErr 原样返回；未毒化时 nil。
 func (c *Client) checkInit() error { return c.initErr }
 
+// BaseURL 返回这个 client 的基址。
+//
+// 用途：调用方判定「选路选对了没有」——relay 形态恒为 http://localhost（经隧道
+// 直达对端），直连形态是 http://<addr>。只读，不暴露 token。
+func (c *Client) BaseURL() string { return c.baseURL }
+
 // wsDialOptions 组装 WS 拨号选项：本 Client 自己的 http.Client + Bearer 头。
 //
 // **HTTPClient 必须显式给出，这是本函数存在的全部理由。** 不给时
