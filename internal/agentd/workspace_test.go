@@ -1163,7 +1163,7 @@ func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
 	// 在 origin 上再推一个提交，clone 此时还不知道。
 	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
 
-	got, err := ResolveBaseBranch(context.Background(), clone, "main")
+	got, err := ResolveBaseBranch(context.Background(), clone, "origin", "main")
 	if err != nil {
 		t.Fatalf("ResolveBaseBranch: %v", err)
 	}
@@ -1172,10 +1172,30 @@ func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
 	}
 }
 
+// TestResolveDispatchBaseLocalBranchUsesConfiguredRemote 本地 heads 存在时，D2 应取
+// branch.<name>.remote，而不是无条件猜 origin。
+func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitT(t, clone, "remote", "add", "upstream", origin)
+	gitT(t, clone, "config", "branch.main.remote", "upstream")
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("本地分支的配置远端应触发 D2 fetch")
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到配置远端最新提交 %s，实得 %s", newSHA, got)
+	}
+}
+
 // TestResolveBaseBranchMissingBranch origin 上没有该分支时拒绝，且带原文。
 func TestResolveBaseBranchMissingBranch(t *testing.T) {
 	_, clone := newOriginAndClone(t)
-	_, err := ResolveBaseBranch(context.Background(), clone, "no-such-branch")
+	_, err := ResolveBaseBranch(context.Background(), clone, "origin", "no-such-branch")
 	if err == nil {
 		t.Fatalf("不存在的分支应报错")
 	}
@@ -1225,16 +1245,15 @@ func TestResolveDispatchBaseCommitISHKeepsOldPath(t *testing.T) {
 	}
 }
 
-// TestResolveDispatchBaseAmbiguousRemoteOnlyBranch B76：本地没有同名 heads、两棵
-// 远端却都有同名分支时，不能走 D2 静默拿 origin，必须保留多远端拒发。
+// TestResolveDispatchBaseAmbiguousRemoteOnlyBranch B76：本地没有同名 heads、origin
+// 与 upstream 却都有同名分支时，不能走 D2 静默拿某一棵，必须保留多远端拒发。
 func TestResolveDispatchBaseAmbiguousRemoteOnlyBranch(t *testing.T) {
 	up := initTestRepo(t)
 	gitT(t, up, "branch", "shared-base")
 	clone := filepath.Join(t.TempDir(), "clone")
 	gitT(t, up, "clone", "-q", up, clone)
-	gitT(t, clone, "remote", "rename", "origin", "upstream")
-	gitT(t, clone, "remote", "add", "other", up)
-	gitT(t, clone, "fetch", "-q", "other")
+	gitT(t, clone, "remote", "add", "upstream", up)
+	gitT(t, clone, "fetch", "-q", "upstream")
 
 	_, fetched, err := resolveDispatchBase(context.Background(), clone, "shared-base")
 	if fetched {
@@ -1245,6 +1264,28 @@ func TestResolveDispatchBaseAmbiguousRemoteOnlyBranch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "多个远端") {
 		t.Fatalf("错误必须保留多远端语义，实得 %v", err)
+	}
+}
+
+// TestResolveDispatchBaseRemoteOnlyUpstreamStillFetches 只有 upstream 一棵远端有分支
+// 时，必须从 upstream 补拉而不是写死 fetch origin；在 upstream 上追加提交来证明
+// 读到的是补拉后的尖端，而不是陈旧的 remote-tracking ref。
+func TestResolveDispatchBaseRemoteOnlyUpstreamStillFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "checkout", "-q", "--detach", "HEAD")
+	gitT(t, clone, "branch", "-D", "main")
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("upstream-only remote-tracking branch 必须触发 D2 fetch")
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 upstream 最新提交 %s，实得 %s", newSHA, got)
 	}
 }
 
