@@ -14,6 +14,9 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   }),
   answerDecision: vi.fn().mockResolvedValue(undefined),
   acceptCard: vi.fn().mockResolvedValue({ ok: true }),
+  patchCard: vi.fn().mockResolvedValue({ ok: true }),
+  attachFile: vi.fn().mockResolvedValue({ ok: true }),
+  detachFile: vi.fn().mockResolvedValue({ ok: true }),
   runCardStep: vi.fn().mockResolvedValue({ ok: true }),
   clearCardNeeds: vi.fn().mockResolvedValue({ ok: true }),
 }))
@@ -175,6 +178,63 @@ describe('抽屉里的验收', () => {
     await screen.findByText('进行中的卡')
     expect(screen.getByText('未验')).toBeInTheDocument()
     expect(screen.queryByText('待真机验')).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的编辑', () => {
+  const detail = {
+    card: { ID: 'B20', Title: '原标题', Status: '进行中', Priority: '中', Attachments: [], AcceptanceCriteria: '' },
+    relations: [], events: [], task_states: [], effective_base_branch: 'feat/x', decisions: [],
+  }
+
+  it('改标题走 patchCard，只发 title 一个字段', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '改标题' }))
+    fireEvent.change(screen.getByDisplayValue('原标题'), { target: { value: '改过的标题' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存标题' }))
+    await waitFor(() => expect(vi.mocked(ledger.patchCard)).toHaveBeenCalledWith('B20', { title: '改过的标题' }))
+  })
+
+  it('写验收判据走 patchCard，只发 acceptance_criteria', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑判据' }))
+    fireEvent.change(screen.getByPlaceholderText('这张卡怎样算做完了…'), { target: { value: '全量测试绿' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存判据' }))
+    await waitFor(() => expect(vi.mocked(ledger.patchCard)).toHaveBeenCalledWith('B20', { acceptance_criteria: '全量测试绿' }))
+  })
+
+  it('挂附件要同时给 kind 与 path', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.change(await screen.findByPlaceholderText('docs/superpowers/plans/…'), {
+      target: { value: 'docs/superpowers/plans/x.md' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '挂上' }))
+    await waitFor(() => expect(vi.mocked(ledger.attachFile)).toHaveBeenCalledWith('B20', 'plan', 'docs/superpowers/plans/x.md'))
+  })
+
+  it('已挂的附件能摘掉', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      ...detail,
+      card: { ...detail.card, Attachments: [{ Kind: 'plan', Path: 'docs/p.md' }] },
+    } as never)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '摘掉 docs/p.md' }))
+    await waitFor(() => expect(vi.mocked(ledger.detachFile)).toHaveBeenCalledWith('B20', 'docs/p.md'))
+  })
+
+  it('基线分支只读且注明不可改', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('feat/x')).toBeInTheDocument()
+    expect(screen.getByText(/建卡时定，不可改/)).toBeInTheDocument()
   })
 })
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { acceptCard, answerDecision, clearCardNeeds, fetchCardDetail, moveCard, noteCard, runCardStep } from '../../api/ledger'
+import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { boardColumns } from './columns'
@@ -208,9 +208,17 @@ function cardTitle(detail: CardDetail): string {
   return value(detail.card, 'title', '工作项')
 }
 
-function attachmentsOf(card: unknown): Array<{ path?: string }> {
+function attachmentsOf(card: unknown): Array<{ kind: string; path: string }> {
   const attachments = value<unknown>(card, 'attachments', [])
-  return Array.isArray(attachments) ? attachments as Array<{ path?: string }> : []
+  if (!Array.isArray(attachments)) return []
+  return attachments.flatMap((item) => {
+    const data = record(item)
+    const path = data.path ?? data.Path
+    const kind = data.kind ?? data.Kind
+    return typeof path === 'string' && path !== ''
+      ? [{ kind: typeof kind === 'string' ? kind : '', path }]
+      : []
+  })
 }
 
 function acceptance(detail: CardDetail): { criteria: string; verified: boolean; evidence: string } {
@@ -259,6 +267,22 @@ export function CardDrawer({
   const [acceptEvidence, setAcceptEvidence] = useState('')
   const [acceptBusy, setAcceptBusy] = useState(false)
   const [acceptError, setAcceptError] = useState('')
+  const [titleEditing, setTitleEditing] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
+  const [titleBusy, setTitleBusy] = useState(false)
+  const [titleError, setTitleError] = useState('')
+  const [priorityEditing, setPriorityEditing] = useState(false)
+  const [priorityDraft, setPriorityDraft] = useState('')
+  const [priorityBusy, setPriorityBusy] = useState(false)
+  const [priorityError, setPriorityError] = useState('')
+  const [acceptanceEditing, setAcceptanceEditing] = useState(false)
+  const [acceptanceDraft, setAcceptanceDraft] = useState('')
+  const [acceptanceBusy, setAcceptanceBusy] = useState(false)
+  const [acceptanceError, setAcceptanceError] = useState('')
+  const [attachmentKind, setAttachmentKind] = useState('plan')
+  const [attachmentPath, setAttachmentPath] = useState('')
+  const [attachmentBusy, setAttachmentBusy] = useState(false)
+  const [attachmentError, setAttachmentError] = useState('')
   const [stepBusy, setStepBusy] = useState<'review' | 'merge' | null>(null)
   const [stepStarted, setStepStarted] = useState<'review' | 'merge' | null>(null)
   const [stepError, setStepError] = useState('')
@@ -297,6 +321,7 @@ export function CardDrawer({
   const heartbeat = value(card, 'driver_heartbeat_at', '')
   const driverStale = Boolean(driverSession) && (!heartbeat || Number.isNaN(Date.parse(heartbeat)) || Date.now() - Date.parse(heartbeat) > 5 * 60 * 1000)
   const acceptanceInfo = detail ? acceptance(detail) : { criteria: '', verified: false, evidence: '' }
+  const attachments = attachmentsOf(card)
   // 验收 chip 三态：已验 / 待真机验（活干完了等验）/ 未验（还没干完）。
   // 原来只有两态，把「还在进行中的卡」也显示成「待真机验」——那会让看板上
   // 一片卡都像在等人验，真正等验的那几张反而看不出来
@@ -314,6 +339,98 @@ export function CardDrawer({
     })
   }, [detail, timelineFilter])
   const groups = timelineGroups(filteredEvents)
+
+  const beginTitleEdit = () => {
+    if (!detail) return
+    setTitleDraft(cardTitle(detail))
+    setTitleError('')
+    setTitleEditing(true)
+  }
+
+  const submitTitle = async () => {
+    const title = titleDraft.trim()
+    if (!title) return
+    setTitleBusy(true)
+    setTitleError('')
+    try {
+      await patchCard(id, { title })
+      setTitleEditing(false)
+      load()
+    } catch (err) {
+      setTitleError(errorMessage(err))
+    } finally {
+      setTitleBusy(false)
+    }
+  }
+
+  const beginPriorityEdit = () => {
+    setPriorityDraft(value<string>(card, 'priority', '中'))
+    setPriorityError('')
+    setPriorityEditing(true)
+  }
+
+  const submitPriority = async () => {
+    setPriorityBusy(true)
+    setPriorityError('')
+    try {
+      await patchCard(id, { priority: priorityDraft })
+      setPriorityEditing(false)
+      load()
+    } catch (err) {
+      setPriorityError(errorMessage(err))
+    } finally {
+      setPriorityBusy(false)
+    }
+  }
+
+  const beginAcceptanceEdit = () => {
+    setAcceptanceDraft(acceptanceInfo.criteria)
+    setAcceptanceError('')
+    setAcceptanceEditing(true)
+  }
+
+  const submitAcceptance = async () => {
+    setAcceptanceBusy(true)
+    setAcceptanceError('')
+    try {
+      await patchCard(id, { acceptance_criteria: acceptanceDraft })
+      setAcceptanceEditing(false)
+      load()
+    } catch (err) {
+      setAcceptanceError(errorMessage(err))
+    } finally {
+      setAcceptanceBusy(false)
+    }
+  }
+
+  const submitAttachment = async () => {
+    const path = attachmentPath.trim()
+    if (!path) return
+    setAttachmentBusy(true)
+    setAttachmentError('')
+    try {
+      await attachFile(id, attachmentKind, path)
+      setAttachmentPath('')
+      load()
+    } catch (err) {
+      setAttachmentError(errorMessage(err))
+    } finally {
+      setAttachmentBusy(false)
+    }
+  }
+
+  const removeAttachment = async (path: string) => {
+    setAttachmentBusy(true)
+    setAttachmentError('')
+    try {
+      await detachFile(id, path)
+      load()
+    } catch (err) {
+      setAttachmentError(errorMessage(err))
+    } finally {
+      setAttachmentBusy(false)
+    }
+  }
 
   const submitNote = async () => {
     if (!note.trim()) return
@@ -390,7 +507,26 @@ export function CardDrawer({
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
           <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>
         </div>
-        <h2 className="mt-1 text-sm font-semibold">{detail ? cardTitle(detail) : '工作项详情'}</h2>
+        {titleEditing ? (
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              aria-label="标题"
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-sm"
+            />
+            <button type="button" disabled={titleBusy || !titleDraft.trim()} onClick={() => void submitTitle()}
+              className="rounded border px-2 py-1 text-xs disabled:opacity-50">保存标题</button>
+            <button type="button" disabled={titleBusy} onClick={() => setTitleEditing(false)}
+              className="rounded border px-2 py-1 text-xs">取消</button>
+          </div>
+        ) : (
+          <div className="mt-1 flex items-center gap-2">
+            <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{detail ? cardTitle(detail) : '工作项详情'}</h2>
+            {detail && <button type="button" onClick={beginTitleEdit} className="rounded border px-2 py-1 text-xs">改标题</button>}
+          </div>
+        )}
+        {titleError && <p role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error && <p role="alert" className="mb-3 break-words rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
@@ -407,8 +543,30 @@ export function CardDrawer({
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                 <dt className="text-muted-foreground">项目</dt><dd>{value(card, 'project', '—')}</dd>
                 <dt className="text-muted-foreground">工作流</dt><dd>{value(card, 'workflow', '—')} @ v{value(card, 'workflow_version', 0)}</dd>
-                <dt className="text-muted-foreground">附件</dt><dd>{attachmentsOf(card).map((item) => item.path).filter(Boolean).join('、') || '—'}</dd>
-                <dt className="text-muted-foreground">基线</dt><dd className="font-mono">{value(detail, 'effective_base_branch', '') || '—'}</dd>
+                <dt className="text-muted-foreground">优先级</dt>
+                <dd>
+                  {priorityEditing ? (
+                    <span className="flex items-center gap-1.5">
+                      <select aria-label="优先级" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value)} className="rounded border bg-background px-1.5 py-0.5 text-xs">
+                        {['高', '中', '低'].map((level) => <option key={level} value={level}>{level}</option>)}
+                      </select>
+                      <button type="button" disabled={priorityBusy} onClick={() => void submitPriority()} className="rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50">保存优先级</button>
+                      <button type="button" disabled={priorityBusy} onClick={() => setPriorityEditing(false)} className="rounded border px-1.5 py-0.5 text-[11px]">取消</button>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5"><span>{value(card, 'priority', '—')}</span><button type="button" onClick={beginPriorityEdit} className="rounded border px-1.5 py-0.5 text-[11px]">改优先级</button></span>
+                  )}
+                </dd>
+                {priorityError && <dd role="alert" className="col-span-2 break-words text-xs text-destructive">{priorityError}</dd>}
+                <dt className="text-muted-foreground">附件</dt><dd>{attachments.map((item) => item.path).join('、') || '—'}</dd>
+                <dt className="text-muted-foreground">基线</dt>
+                <dd className="font-mono">
+                  {value(detail, 'effective_base_branch', '') || '—'}
+                  {/* 基线分支只读：卡建出来之后改基线，会让已经派出去、正按老基线工作的
+                      任务与卡的说法对不上——那种不一致在事后极难分辨是谁错了。要换基线
+                      就新建一张卡。 */}
+                  <span className="ml-2 font-sans text-[11px] text-muted-foreground">建卡时定，不可改</span>
+                </dd>
                 {(following || driverStale) && <><dt className="text-muted-foreground">驱动/跟随</dt><dd>{following ? `跟随 ${following}` : `驱动异常：${driverSession}`}</dd></>}
               </dl>
             </section>
@@ -417,7 +575,29 @@ export function CardDrawer({
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">验收</h3>
               <div className="rounded-lg border p-3 text-xs">
                 <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
-                <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
+                {acceptanceEditing ? (
+                  <div className="space-y-1.5">
+                    <textarea
+                      value={acceptanceDraft}
+                      onChange={(event) => setAcceptanceDraft(event.target.value)}
+                      placeholder="这张卡怎样算做完了…"
+                      rows={4}
+                      className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+                    />
+                    <div className="flex gap-2">
+                      <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                        className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">保存判据</button>
+                      <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
+                        className="rounded-md border px-2.5 py-1 text-xs">取消</button>
+                    </div>
+                    {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
+                  </div>
+                ) : (
+                  <>
+                    <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
+                    <button type="button" onClick={beginAcceptanceEdit} className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">编辑判据</button>
+                  </>
+                )}
                 {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
                 {!acceptanceInfo.verified && (
                   !acceptOpen ? (
@@ -438,6 +618,43 @@ export function CardDrawer({
                     </div>
                   )
                 )}
+              </div>
+            </section>
+
+            <section className="mb-5">
+              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">附件管理</h3>
+              <div className="space-y-1.5 rounded-lg border p-3 text-xs">
+                {attachments.length > 0 ? (
+                  <ul className="space-y-1">
+                    {attachments.map((attachment) => (
+                      <li key={`${attachment.kind}:${attachment.path}`} className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 break-all font-mono">{attachment.path}</span>
+                        <span className="shrink-0 text-muted-foreground">{attachment.kind || '附件'}</span>
+                        <button
+                          type="button"
+                          aria-label={`摘掉 ${attachment.path}`}
+                          disabled={attachmentBusy}
+                          onClick={() => void removeAttachment(attachment.path)}
+                          className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50"
+                        >摘掉</button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="text-muted-foreground">尚未挂附件。</p>}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select aria-label="附件类型" value={attachmentKind} onChange={(event) => setAttachmentKind(event.target.value)} className="rounded border bg-background px-1.5 py-1 text-xs">
+                    {['spec', 'plan', 'doc'].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                  </select>
+                  <input
+                    value={attachmentPath}
+                    onChange={(event) => setAttachmentPath(event.target.value)}
+                    placeholder="docs/superpowers/plans/…"
+                    className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+                  />
+                  <button type="button" disabled={attachmentBusy || !attachmentPath.trim()} onClick={() => void submitAttachment()}
+                    className="rounded border px-2 py-1 text-xs disabled:opacity-50">挂上</button>
+                </div>
+                {attachmentError && <p role="alert" className="break-words text-xs text-destructive">{attachmentError}</p>}
               </div>
             </section>
 

@@ -4,3 +4,5 @@
 - Task 1 验证：定向 agentd 测试通过；变异测试恢复后通过；`go build ./...`、`go vet ./...`、`gofmt -l .` 通过。`go test ./... -count=1` 失败项原文摘要：`internal/client` 的 `TestCursorRootFallsBackToCwdWhenHomeUnwritable`/`TestCursorRootErrorNamesBothPaths`，`internal/config` 的 `TestLoadStripUpdateDoesNotBlockOnSaveFailure`，`internal/executor/grok` 的 `TestPermServerAskThenRespond`/`TestPermServerRespondUnknownID`/`TestPermServerReRegisterSameID`/`TestSyncAuthKeepsTaskCopyWhenWriteFails`。
 - Task 2 完成（spec/质量双裁决通过）：补齐 PATCH/DELETE/PUT JSON 底座，新增卡片与工作流客户端方法、节点/工作流类型、线格式测试；`npx vitest run src/api/ledger.test.ts` 与 `npm run lint && npm run typecheck && npm test` 通过（93 files/947 tests）。commit range: 93bf488f..HEAD（本 task commit）。
 - Task 3 完成（spec/质量双裁决通过）：新增建卡对话框与 CardsPage「+ 新建」入口，创建成功后刷新并打开抽屉；定向测试先红后绿，全量前端回归通过（94 files/951 tests）。commit range: 3eecab96..HEAD（本 task commit）。
+- Task 4 修复轮 1：lint 报 `CardDrawer.tsx:277:10 error 'priorityError' is assigned a value but never used`；补上优先级错误展示后定向/全量回归恢复通过。commit range: 15673bf5..HEAD。
+- Task 4 完成（spec/质量双裁决通过）：抽屉支持标题、优先级、验收判据、附件增删，保存按字段独立 PATCH，基线只读并说明原因；变异测试证明多发字段会失败。commit range: 15673bf5..HEAD（本 task commit）。
