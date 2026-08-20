@@ -1,0 +1,4 @@
+time=2026-08-20T16:50:14.182+08:00 level=INFO msg="ptyhost 已绑定 socket" session=s1 socket=ph-2000195815/s1/sock
+time=2026-08-20T16:50:14.182+08:00 level=INFO msg=终端会话已创建 session=bf73745a-1fcd-4e4e-9af8-5d4c29f59619 pid=112 shell=/bin/sh base_kind=workspace cwd=./ph-2000195815 size=80x24 sessions=1
+time=2026-08-20T16:50:14.182+08:00 level=INFO msg="ptyhost 进程已启动" session=s1 pid=91 cwd=./ph-2000195815 shell=/bin/sh
+time=2026-08-20T16:50:14.192+08:00 level=WARN msg="ptyhost stat 找不到会话" session=s1
