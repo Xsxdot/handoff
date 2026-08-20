@@ -15,6 +15,7 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   answerDecision: vi.fn().mockResolvedValue(undefined),
   acceptCard: vi.fn().mockResolvedValue({ ok: true }),
   runCardStep: vi.fn().mockResolvedValue({ ok: true }),
+  clearCardNeeds: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
 describe('抽屉一处看', () => {
@@ -218,5 +219,60 @@ describe('抽屉里的环节动作', () => {
     // 直接写字面量：这条断言的全部意义就是「界面上不存在这个名字的按钮」，
     // 把名字拆开只是为了躲某条 grep，会让后来人看不懂它在断言什么
     expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('审阅裁决的呈现与等人标记的撤回', () => {
+  // 2026-08-20 真机看到：裁决正文整个塞在 payload.raw 这个 JSON 字符串里，
+  // 走 eventSummary 的兜底会渲染成转义两遍的裸串——这个看板上最该一眼看清的
+  // 东西，反而最难读。
+  it('review_verdict 要渲染成裁决卡片，不是一坨裸 JSON', async () => {
+    const ledger = await import('../../api/ledger')
+    const raw = JSON.stringify({
+      verdict: 'fail',
+      findings: [
+        { severity: 'major', summary: '验收项全部未实现', file: 'greet.go' },
+        { severity: 'minor', summary: '缺文件头注释' },
+      ],
+      notes: '未跑 UI 点击：仓库无对应页面，标为未验证。',
+    })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B1.1', Title: '抽屉环节动作按钮', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], task_states: [], effective_base_branch: '', decisions: [],
+      events: [{ seq: 43, card_id: 'B1.1', type: 'review_verdict', actor: 'node:review', payload: { node: 'review', pass: false, raw }, created_at: '' }],
+    } as never)
+    render(<CardDrawer id="B1.1" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('审阅未过')).toBeInTheDocument()
+    expect(screen.getByText('验收项全部未实现')).toBeInTheDocument()
+    expect(screen.getByText('greet.go')).toBeInTheDocument()
+    expect(screen.getByText('major')).toBeInTheDocument()
+    expect(screen.getByText(/标为未验证/)).toBeInTheDocument()
+    // 裸 JSON 不该再出现在界面上
+    expect(screen.queryByText(/\{"node"/)).not.toBeInTheDocument()
+  })
+
+  it('裁决报文解析不动时退回显示原文，不能把裁决吞掉', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B1.1', Title: 'x', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], task_states: [], effective_base_branch: '', decisions: [],
+      events: [{ seq: 43, card_id: 'B1.1', type: 'review_verdict', actor: 'node:review', payload: { node: 'review', pass: false, raw: '这不是 JSON' }, created_at: '' }],
+    } as never)
+    render(<CardDrawer id="B1.1" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText(/这不是 JSON/)).toBeInTheDocument()
+  })
+
+  // 撤回入口此前只有 CLI 一条路：红旗挂在抽屉上、撤它却要回命令行。
+  it('等人标记要能在抽屉里直接撤回', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B1.1', Title: 'x', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [],
+      needs: '审阅未取到报文',
+    } as never)
+    render(<CardDrawer id="B1.1" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('审阅未取到报文')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '已处理' }))
+    await waitFor(() => expect(vi.mocked(ledger.clearCardNeeds)).toHaveBeenCalledWith('B1.1'))
   })
 })

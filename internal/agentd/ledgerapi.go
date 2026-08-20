@@ -30,6 +30,7 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
 	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
 	api.HandleFunc("POST /api/cards/{id}/step", s.withLedger(s.handleCardStep))
+	api.HandleFunc("POST /api/cards/{id}/needs/clear", s.withLedger(s.handleCardNeedsClear))
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
@@ -315,6 +316,26 @@ func (s *Server) handleCardAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("已记验收", "card", id, "actor", actor, "evidence_bytes", len(evidence))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleCardNeedsClear 人工撤回卡上的「需要你 · 等人」标记。
+//
+// why 要有这个入口：撤回此前只有 CLI 一条路（card needs --clear）。红旗挂在
+// 抽屉上、撤它却要回命令行，等于把一张卡的处置拆成了两处，而抽屉本该是
+// 「卡的一切只在一处看」的那一处（2026-08-20 真机看到）。
+//
+// 这里是无条件清除，与环节侧的 ClearNeedsHumanFrom（只撤自己打的那条）
+// 有意不同：撤回权属于打标记的一方，而人对任何来源的标记都有处置权。
+func (s *Server) handleCardNeedsClear(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	actor := "web:" + r.RemoteAddr
+	if err := s.ledger.ClearNeedsHuman(id, actor); err != nil {
+		s.log.Error("清等人标记失败", "card", id, "actor", actor, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	s.log.Info("已清等人标记", "card", id, "actor", actor)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

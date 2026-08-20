@@ -276,6 +276,44 @@ func (s *Store) ClearNeedsHuman(cardID, actor string) error {
 	})
 }
 
+// ClearNeedsHumanFrom 仅当当前生效的等人标记是 actor 自己打的时才清除，
+// 返回是否真的清了（没打过、已清过、或标记是别人打的都返回 false, nil）。
+//
+// why 要「只撤自己的」而不是让环节直接调 ClearNeedsHuman：等人标记有三种
+// 来源——人手工打的、审阅环节打的、合并环节打的。环节跑成一轮就无条件清，
+// 会把人刚打上的「先别动这张卡」和另一个环节的「合并冲突待处理」一起抹掉，
+// 而那两件事谁也没解决。撤回权只能落在打标记的那一方手里；人是例外，人有权
+// 撤任何来源的标记，那条走 ClearNeedsHuman。
+func (s *Store) ClearNeedsHumanFrom(cardID, actor string) (bool, error) {
+	cleared := false
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("撤回等人: 卡 %s: %w", cardID, err)
+		}
+		var typ, owner string
+		row := tx.QueryRow(s.q(`SELECT type, actor FROM card_events
+			WHERE card_id = ? AND type IN (?, ?) ORDER BY seq DESC LIMIT 1`),
+			cardID, EvNeedsHuman, EvNeedsCleared)
+		switch err := row.Scan(&typ, &owner); {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil // 这张卡从没打过等人标记，无从撤回
+		case err != nil:
+			return fmt.Errorf("撤回等人: 读卡 %s 的等人事件: %w", cardID, err)
+		}
+		// 最后一条是 needs_cleared 说明标记当前已不生效；actor 对不上说明
+		// 这条标记是别人打的。两种情况都不动，也不算错。
+		if typ != EvNeedsHuman || owner != actor {
+			return nil
+		}
+		if _, err := s.appendEvent(tx, sink, cardID, EvNeedsCleared, actor, map[string]any{}); err != nil {
+			return err
+		}
+		cleared = true
+		return nil
+	})
+	return cleared, err
+}
+
 // Subtree 返回卡树成员 id 集：root + 全部后代（parent 链）+ 并入成员
 // （merged_into 指向集内任一成员的卡）。多路 wait 用。
 //

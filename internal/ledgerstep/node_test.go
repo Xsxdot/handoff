@@ -347,3 +347,65 @@ func TestMergeStepSuccessRecordsBranchMerged(t *testing.T) {
 	}
 	t.Fatalf("成功路径未落 %s 事件", ledger.EvBranchMerged)
 }
+
+// TestReviewStepRetractsOwnStaleNeedsHuman 复现 2026-08-20 真机看到的形态：
+// 第一轮审阅没取到报文 → 打「需要你」；第二轮真跑出裁决 → 那面红旗必须落下。
+// 不落的话看板会一直把这张卡算进「需要你」，而没有任何一处能撤它。
+func TestReviewStepRetractsOwnStaleNeedsHuman(t *testing.T) {
+	s, card := nodeLedger(t)
+	round := 0
+	node := &ReviewStep{St: s, Step: "review",
+		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
+			round++
+			if round == 1 {
+				return "", fmt.Errorf("派发审阅: 基线提交在任务仓库中不存在")
+			}
+			return "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[{\"severity\":\"major\",\"summary\":\"验收项全部未实现\"}]}\n```", nil
+		}}
+
+	first, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("第一轮: %v", err)
+	}
+	if first.Action != ActionNeedsHuman {
+		t.Fatalf("第一轮应转等人: %+v", first)
+	}
+	if reason, _ := s.NeedsOf(card.ID); reason == "" {
+		t.Fatal("第一轮没打上等人标记，后面验不了撤回")
+	}
+
+	// 第二轮出裁决（fail 也算跑通——裁决拿到了，只是判不过）。
+	second, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("第二轮: %v", err)
+	}
+	if second.Action != ActionContinue {
+		t.Fatalf("第二轮应打回实现: %+v", second)
+	}
+	if reason, _ := s.NeedsOf(card.ID); reason != "" {
+		t.Fatalf("裁决已出，第一轮的等人标记仍挂着: %q", reason)
+	}
+}
+
+// TestReviewStepKeepsHumanNeedsHuman 人打的「先别动这张卡」不因环节跑成一轮
+// 而被抹掉——撤回权只属于打标记的那一方。
+func TestReviewStepKeepsHumanNeedsHuman(t *testing.T) {
+	s, card := nodeLedger(t)
+	if err := s.MarkNeedsHuman(card.ID, "先别动这张卡，等我确认需求", "cli:human"); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	node := &ReviewStep{St: s, Step: "review",
+		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
+			return "```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```", nil
+		}}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionPass {
+		t.Fatalf("应过: %+v", out)
+	}
+	if reason, _ := s.NeedsOf(card.ID); reason != "先别动这张卡，等我确认需求" {
+		t.Fatalf("人打的等人标记被环节抹掉了: %q", reason)
+	}
+}

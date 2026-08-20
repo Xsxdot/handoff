@@ -89,6 +89,19 @@ func (n *ReviewStep) RunOnce(ctx context.Context, cardID string) (Outcome, error
 		return Outcome{}, err
 	}
 	logger.Info("审阅裁决完成", "pass", verdict.Pass, "findings", len(verdict.Findings))
+	// 裁决落账即代表本环节这一轮真的跑通了。此前若因为派发失败、报文取不到
+	// 或裁决解析不了打过等人标记，那条标记已被这一轮推翻，由打它的同一个节点
+	// 撤回——不撤的话卡上会一直挂着一面已经不成立的红旗，而看板的「需要你」
+	// 筛选正是靠它（2026-08-20 真机看到：第二轮出了裁决，第一轮的
+	// 「审阅未取到报文」仍挂在抽屉顶上，且 Web 上没有任何撤除入口）。
+	//
+	// 失败只告警不中断：裁决已经落账，为一次收尾清理失败而让整个环节报错，
+	// 代价比留一条陈标记大。
+	if cleared, cerr := n.St.ClearNeedsHumanFrom(cardID, "node:"+n.Step); cerr != nil {
+		logger.Warn("撤回本环节旧等人标记失败", "err", cerr)
+	} else if cleared {
+		logger.Info("已撤回本环节此前的等人标记")
+	}
 	if verdict.Pass {
 		return Outcome{Action: ActionPass, Verdict: verdict}, nil
 	}

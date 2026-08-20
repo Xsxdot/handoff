@@ -200,3 +200,64 @@ func TestWorkBranchSkipsReviewRounds(t *testing.T) {
 		t.Fatalf("无 purpose 的审阅快照应经挂账表识别并跳过: %q %v", got, err)
 	}
 }
+
+// TestClearNeedsHumanFrom 撤回权只属于打标记的那一方：环节能撤自己那条，
+// 不能撤人打的，也不能在标记已清后重复补一条。
+func TestClearNeedsHumanFrom(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "a")
+	needsOf := func() string {
+		reason, err := s.NeedsOf(card.ID)
+		if err != nil {
+			t.Fatalf("NeedsOf: %v", err)
+		}
+		return reason
+	}
+
+	// 从没打过标记：撤回是空操作，不报错也不落事件。
+	if cleared, err := s.ClearNeedsHumanFrom(card.ID, "node:review"); err != nil || cleared {
+		t.Fatalf("没标记时撤回应为空操作，得到 cleared=%v err=%v", cleared, err)
+	}
+
+	// 自己打的自己撤：清掉。
+	if err := s.MarkNeedsHuman(card.ID, "审阅未取到报文", "node:review"); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	cleared, err := s.ClearNeedsHumanFrom(card.ID, "node:review")
+	if err != nil || !cleared {
+		t.Fatalf("自己打的标记应能撤回，得到 cleared=%v err=%v", cleared, err)
+	}
+	if got := needsOf(); got != "" {
+		t.Fatalf("撤回后仍有等人原因: %q", got)
+	}
+
+	// 已经清过了：再撤一次不该重复落 needs_cleared。
+	if cleared, err := s.ClearNeedsHumanFrom(card.ID, "node:review"); err != nil || cleared {
+		t.Fatalf("已清除后重复撤回应为空操作，得到 cleared=%v err=%v", cleared, err)
+	}
+
+	// 别人打的不许撤：人手工打的标记，环节动不了。
+	if err := s.MarkNeedsHuman(card.ID, "先别动这张卡", "cli:human"); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if cleared, err := s.ClearNeedsHumanFrom(card.ID, "node:review"); err != nil || cleared {
+		t.Fatalf("别人打的标记不该被环节撤回，得到 cleared=%v err=%v", cleared, err)
+	}
+	if got := needsOf(); got != "先别动这张卡" {
+		t.Fatalf("人打的标记被抹掉了: %q", got)
+	}
+
+	// 另一个环节打的也不许撤：两个环节各管各的。
+	if err := s.ClearNeedsHuman(card.ID, "cli:human"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if err := s.MarkNeedsHuman(card.ID, "合并冲突待处理", "node:merge"); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if cleared, err := s.ClearNeedsHumanFrom(card.ID, "node:review"); err != nil || cleared {
+		t.Fatalf("合并环节的标记不该被审阅环节撤回，得到 cleared=%v err=%v", cleared, err)
+	}
+	if got := needsOf(); got != "合并冲突待处理" {
+		t.Fatalf("另一环节的标记被抹掉了: %q", got)
+	}
+}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { acceptCard, answerDecision, fetchCardDetail, moveCard, noteCard, runCardStep } from '../../api/ledger'
+import { acceptCard, answerDecision, clearCardNeeds, fetchCardDetail, moveCard, noteCard, runCardStep } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { boardColumns } from './columns'
@@ -19,10 +19,24 @@ type Relation = { From: string; To: string; Type: string }
 // 这里，两条路都能答复。
 //
 // 答复成功后调 onAnswered 让抽屉重取详情：答案要立刻落到这一处，不能等轮询。
-function CardAttention({ needs, decisions, onAnswered }: { needs: string; decisions: Decision[]; onAnswered: () => void }) {
+function CardAttention({ cardId, needs, decisions, onAnswered }: { cardId: string; needs: string; decisions: Decision[]; onAnswered: () => void }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [clearing, setClearing] = useState(false)
+  // 撤回等人标记。撤完立刻重取详情，让红旗当场消失——等轮询的话用户会以为没点上。
+  const clearNeeds = async () => {
+    setClearing(true)
+    setError('')
+    try {
+      await clearCardNeeds(cardId)
+      onAnswered()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setClearing(false)
+    }
+  }
   const submit = async (decision: Decision) => {
     const text = (drafts[decision.id] ?? '').trim()
     if (!text) return
@@ -42,9 +56,11 @@ function CardAttention({ needs, decisions, onAnswered }: { needs: string; decisi
     <section className="mb-5">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⚑ 需要你</h3>
       {needs !== '' && (
-        <div className="mb-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
-          <span className="mr-1.5 shrink-0 font-semibold">等人</span>
-          <span className="break-words">{needs}</span>
+        <div className="mb-1.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+          <span className="shrink-0 font-semibold">等人</span>
+          <span className="min-w-0 flex-1 break-words">{needs}</span>
+          <button type="button" disabled={clearing} onClick={() => void clearNeeds()}
+            className="shrink-0 rounded border border-amber-300 px-2 py-0.5 text-[11px] disabled:opacity-50">已处理</button>
         </div>
       )}
       {decisions.map((decision) => {
@@ -115,6 +131,70 @@ function eventSummary(event: LedgerEvent): string {
   }
   const raw = JSON.stringify(event.payload)
   return raw && raw !== '{}' ? raw : event.type
+}
+
+// Verdict 是 review_verdict 事件解出来的裁决正文。findings 里的字段都按可选
+// 处理：报文由被审阅的 executor 生成，字段缺失是常态，不能让一个缺 file 的
+// finding 把整块渲染打掉。
+type VerdictFinding = { severity?: string; summary?: string; file?: string }
+
+// parseVerdict 把 review_verdict 的 payload 解成可渲染的结构，解不动返回 null。
+//
+// why 需要单独解一层：payload.pass 是布尔，但裁决正文（findings/notes）整个
+// 塞在 payload.raw 这个 **JSON 字符串** 里。走 eventSummary 的兜底
+// （JSON.stringify(payload)）渲染出来的是转义两遍的裸串——这个看板上最该
+// 一眼看清的东西，反而成了最难读的一条（2026-08-20 真机看到）。
+function parseVerdict(payload: AnyRecord): { pass: boolean; findings: VerdictFinding[]; notes: string } | null {
+  const raw = payload.raw
+  if (typeof raw !== 'string' || raw === '') return null
+  try {
+    const parsed = record(JSON.parse(raw))
+    return {
+      pass: payload.pass === true,
+      findings: Array.isArray(parsed.findings) ? parsed.findings as VerdictFinding[] : [],
+      notes: typeof parsed.notes === 'string' ? parsed.notes : '',
+    }
+  } catch {
+    // 解不动就交回上层按原文显示：宁可难看，也不能把裁决吞掉。
+    return null
+  }
+}
+
+// VerdictCard 渲染一条审阅裁决：通过与否 + findings 列表 + 备注。
+function VerdictCard({ event }: { event: LedgerEvent }) {
+  const verdict = parseVerdict(payloadOf(event))
+  if (!verdict) {
+    return (
+      <div className="flex gap-2 text-xs text-muted-foreground">
+        <span className="font-mono">#{event.seq}</span><span className="break-all">{eventSummary(event)}</span>
+      </div>
+    )
+  }
+  return (
+    <div className={`rounded-lg border px-3 py-2 text-xs ${verdict.pass ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'}`}>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="font-mono text-[11px] opacity-70">#{event.seq}</span>
+        <span className="font-semibold">{verdict.pass ? '审阅通过' : '审阅未过'}</span>
+        <span className="text-[11px] opacity-70">{event.actor}</span>
+      </div>
+      {verdict.findings.length === 0
+        ? <p className="opacity-80">没有 findings。</p>
+        : (
+          <ul className="space-y-1">
+            {verdict.findings.map((finding, index) => (
+              <li key={index} className="flex gap-1.5">
+                <span className="shrink-0 rounded-full border px-1.5 text-[10px] leading-4 opacity-80">{finding.severity ?? '—'}</span>
+                <span className="min-w-0 flex-1 break-words">
+                  {finding.summary ?? '（无描述）'}
+                  {finding.file ? <span className="ml-1 font-mono text-[11px] opacity-70">{finding.file}</span> : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      {verdict.notes !== '' && <p className="mt-1 break-words opacity-80">{verdict.notes}</p>}
+    </div>
+  )
 }
 
 function eventKind(type: string): 'comment' | 'verdict' | 'system' | 'mirror' {
@@ -405,7 +485,7 @@ export function CardDrawer({
             )}
 
             {((detail.decisions ?? []).length > 0 || (detail.needs ?? '') !== '') && (
-              <CardAttention needs={detail.needs ?? ''} decisions={detail.decisions ?? []} onAnswered={load} />
+              <CardAttention cardId={id} needs={detail.needs ?? ''} decisions={detail.decisions ?? []} onAnswered={load} />
             )}
 
             <section className="mb-5">
@@ -428,7 +508,7 @@ export function CardDrawer({
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">Timeline</h3>
               <div className="mb-2 flex flex-wrap gap-1"><span className="sr-only">timeline filter</span>{(['all', 'comment', 'verdict', 'system'] as const).map((filter) => <button key={filter} type="button" onClick={() => setTimelineFilter(filter)} className={`rounded-full border px-2 py-0.5 text-[11px] ${timelineFilter === filter ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>{filter === 'all' ? '全部' : filter === 'comment' ? '评论' : filter === 'verdict' ? '裁决' : '系统'}</button>)}</div>
               <div className="space-y-1.5">
-                {groups.map((group, index) => group.kind === 'mirror' ? <details key={`mirror-${index}`} className="text-xs text-muted-foreground"><summary className="cursor-pointer">镜像执行事件（{group.events.length}）</summary><div className="ml-2 border-l pl-2">{group.events.map((event) => <div key={event.seq} className="py-0.5">#{event.seq} {eventSummary(event)}</div>)}</div></details> : group.events.map((event) => event.type === 'comment' ? <div key={event.seq} className="rounded-lg bg-muted px-3 py-2 text-xs leading-5"><div className="mb-0.5 text-[11px] text-muted-foreground">{event.actor}</div>{eventSummary(event)}</div> : <div key={event.seq} className="flex gap-2 text-xs text-muted-foreground"><span className="font-mono">#{event.seq}</span><span>{eventSummary(event)}</span></div>))}
+                {groups.map((group, index) => group.kind === 'mirror' ? <details key={`mirror-${index}`} className="text-xs text-muted-foreground"><summary className="cursor-pointer">镜像执行事件（{group.events.length}）</summary><div className="ml-2 border-l pl-2">{group.events.map((event) => <div key={event.seq} className="py-0.5">#{event.seq} {eventSummary(event)}</div>)}</div></details> : group.events.map((event) => event.type === 'review_verdict' ? <VerdictCard key={event.seq} event={event} /> : event.type === 'comment' ? <div key={event.seq} className="rounded-lg bg-muted px-3 py-2 text-xs leading-5"><div className="mb-0.5 text-[11px] text-muted-foreground">{event.actor}</div>{eventSummary(event)}</div> : <div key={event.seq} className="flex gap-2 text-xs text-muted-foreground"><span className="font-mono">#{event.seq}</span><span>{eventSummary(event)}</span></div>))}
                 {groups.length === 0 && <p className="text-xs text-muted-foreground">还没有事件。</p>}
               </div>
               <div className="mt-3 flex gap-1.5"><input value={note} onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitNote() } }} placeholder="写评论… 用 #B142 引用其他工作项" className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs" /><button type="button" disabled={noteBusy || !note.trim()} onClick={() => void submitNote()} className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50">发布</button></div>

@@ -108,6 +108,11 @@ export const acceptCard = (id: string, evidence: string) =>
 export const runCardStep = (id: string, step: 'review' | 'merge') =>
   postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/step`, { step })
 
+// clearCardNeeds 人工撤回卡上的「等人」标记。无条件清除——人对任何来源的
+// 标记都有处置权；环节只能撤自己打的那条，那条逻辑在后端。
+export const clearCardNeeds = (id: string) =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/needs/clear`, {})
+
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
 
 export const fetchDecisions = (openOnly: boolean) =>
