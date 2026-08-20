@@ -2,3 +2,4 @@
 2026-08-20 Task 1 修复轮 1；双裁决初检发现新测试文件缺少顶部职责/边界注释，已补齐；commit 范围：internal/store/workbench_test.go、ledger。
 2026-08-20 Task 3 修复轮 1；双裁决初检发现成功日志未统一包含 key 与 payload 字节数，已补齐 GET/PUT 各成功分支字段；commit 范围：internal/agentd/workbench_api.go、ledger。
 2026-08-20 Task 4 修复轮 1；双裁决初检发现新增客户端导出函数的参数/返回/注意事项注释不完整，且文件头职责遗漏工作台接口，已补齐；commit 范围：web/src/api/client.ts、ledger。
+2026-08-20 Task 5 修复轮 1；双裁决初检发现 isEmptyWorkbench 导出函数缺少参数/返回/注意事项说明，已补齐；commit 范围：web/src/app/workbench/persist.ts、ledger。
