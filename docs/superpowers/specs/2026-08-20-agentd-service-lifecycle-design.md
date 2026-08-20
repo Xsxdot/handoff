@@ -108,7 +108,7 @@ type Status struct {
 |---|---|---|---|
 | **launchd** | `launchctl kill SIGTERM <target>`，KeepAlive 自动拉起 | `launchctl disable <target>` + `launchctl bootout <target>` | `launchctl enable <target>` + `launchctl bootstrap <domain> <plist>` |
 | **systemd** | `systemctl restart <unit>` | `systemctl disable --now <unit>` | `systemctl enable --now <unit>` |
-| **schtasks** | `/End` + 回收进程树 + `/Run` | `/Change /Disable` + 回收进程树 | `/Change /Enable` + `/Run` |
+| **schtasks** | `/End` + `/Run` | `/Change /Disable` + `/End` | `/Change /Enable` + `/Run` |
 
 四条实现约束：
 
@@ -126,9 +126,18 @@ type Status struct {
    kickstart 在 bootout 之后必然失败，`systemctl start` 能起但不恢复开机
    自启。改成上表的 enable + bootstrap / `enable --now`。
    `Start()` 的既有契约（单元没装时返回错误、不代为安装）保持不变。
-4. **Windows 的进程回收复用现成实现。** `Uninstall` 里已经解决过「`/End`
-   只杀外层 cmd.exe，杀不到 agentd 孙进程」这个坑，把那段抽成私有方法供
-   Uninstall / Stop / Restart 共用，不复制第二份。
+4. **Windows 上 `/End` 本身就是进程回收手段，不需要额外抽取。** 起草本设计
+   时以为要复用 `Uninstall` 里一段「杀进程树」的逻辑，读代码后确认那段逻辑
+   就是一次 `/End`：D8 当初拒绝 `/End` 是因为手搓任务套了 `cmd.exe`，调度器
+   只跟踪外层；本实现的任务动作进程直接就是 `handoff.exe`，`/End` 精确命中。
+   Stop / Restart 直接用 `/End` 即可。
+5. **Windows 上 `/Change /Disable` 必须在 `/End` 之前。** 任务的 TimeTrigger
+   每分钟重复触发一次，先 `/End` 的话它在 60 秒内就被拉回来了。
+6. **`Install` 也要补 `launchctl enable`。** `launchctl disable` 写进的是
+   launchd 的停用覆写数据库，那份数据库独立于 plist——删掉 plist 重装也不会
+   清掉它，而 `bootstrap` 对停用的 target 会直接拒、Install 随后回滚删掉刚写
+   的 plist。不补的话，`stop` 过一次的机器再跑 `install` 会「装不上而且 plist
+   也没了」。
 
 ### 4.3 复核
 
