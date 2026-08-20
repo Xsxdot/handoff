@@ -80,7 +80,7 @@ ptyhost 进程持有主端 fd 与环形缓冲，agentd 只是它的一个订阅�
 - **旧进程收到不认识的握手时自己退出，agentd 原地起新的**：把一个罕见事件变成了
   「每次升级都可能丢终端」，正是要根治的东西。
 
-配套是让它尽量不发生：协议保持极小（五个控制帧），加字段走「未知字段忽略」，
+配套是让它尽量不发生：协议保持极小（六个控制帧），加字段走「未知字段忽略」，
 只有真正的破坏性变更才升版本号。
 
 ## 2. 架构分界
@@ -149,19 +149,26 @@ cwd、shell、env、初始 cols/rows、会话目录路径。
   类型 1 = 控制帧 JSON
 ```
 
-控制词汇表五个，与现在 `/ws/pty` 那套几乎一一对应：
+控制词汇表六个，与现在 `/ws/pty` 那套几乎一一对应：
 
 | 帧 | 方向 | 载荷 |
 |---|---|---|
 | `attach` | agentd → ptyhost | `{since}` |
 | `attached` | ptyhost → agentd | `{since, truncated, proto_version}` |
 | `resize` | agentd → ptyhost | `{cols, rows}` |
-| `stat` | 双向（请求/应答） | 应答 `{bytes_out, foreground, attached, cols, rows, exit_code}` |
+| `stat` | 请求 / 应答 | 应答 `{bytes_out, foreground, attached, cols, rows, exit_code}` |
 | `exit` | ptyhost → agentd | `{exit_code}` |
+| `kill` | agentd → ptyhost | `{}`（杀进程组并退出） |
 
-`close` 不是控制帧：关闭走 socket 断开 + 一个显式的 `DELETE` 语义（agentd 发 `stat` 之外
-的独立短连接命令 `kill`）。**这一条要在 plan 里定死**：把「断开订阅」和「杀掉会话」压在
-同一个信号上，正是「切个 tab 就杀掉跑了一晚上的 build」的经典成因。
+**「断开订阅」与「杀掉会话」必须是两个不同的信号**，这条是承重的：
+
+- 断开订阅 = 直接关掉 socket 连接，**没有任何帧**。切 tab、切基准目录、关页面都走它。
+- 杀掉会话 = 显式发 `kill` 帧。只有用户点 × 才走它。
+
+把两者压在同一个信号上，正是「切个 tab 就杀掉跑了一晚上的 build」的经典成因——
+`TerminalTab` 的边界注释（「卸载只断 WS，不发 DELETE」）与 `client.ts` 里
+`deletePtySession` 的注释（「只有用户点 × 才该调它」）已经在浏览器↔agentd 这一段
+守住了这条分界，agentd↔ptyhost 这一段必须同样守住，否则等于在下游又把它拆了。
 
 agentd 是转译层：浏览器的 `/ws/pty` 帧 ↔ ptyhost 的 socket 帧，两边的词汇表刻意保持
 同形，转译不需要状态机。
@@ -219,8 +226,10 @@ agentd 是转译层：浏览器的 `/ws/pty` 帧 ↔ ptyhost 的 socket 帧，�
 ## 11. 已知取舍
 
 - **进程数**：每个终端会话多一个常驻进程。它极轻（一个 goroutine 泵 + 256 KiB 环形
-  缓冲），但会计入 `prochost` 的进程围栏与 `resource_pressure` 告警口径。要在 plan 里
-  确认这两处的预算是否需要跟着调。
+  缓冲），但可能计入 `prochost` 的进程围栏（`fence.go` 的 `NprocLimit`）与
+  `resource_pressure` / `task_proc_pressure` 的告警口径。**这两处的当前口径要在实现的
+  第一个 task 里先读码确认**（ptyhost 是 agentd 的子进程而不是 executor 树的成员，
+  很可能本来就不计入），确认结果写进 plan，不要靠推测。
 - **协议错配时那个 tab 是死物**：进程还在跑（build 没白跑），但看不到它的输出。这是
   §1.3 权衡的结果，不是缺陷。
 - **`service stop` 的 2 秒超时之后 agentd 照退**：极端情况下可能留下一个没被杀干净的
