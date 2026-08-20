@@ -78,3 +78,46 @@ func TestCardAcceptUnverified(t *testing.T) {
 		t.Fatalf("事件流缺 acceptance_recorded: %q", out)
 	}
 }
+
+// TestCardNeedsMarkAndClear 打等人标记后 card list --needs 可见，--clear 后消失。
+func TestCardNeedsMarkAndClear(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "等人卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "needs", id, "等用户授权删远端分支"); err != nil {
+		t.Fatalf("card needs: %v", err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "list", "--needs")
+	if err != nil {
+		t.Fatalf("card list --needs: %v", err)
+	}
+	if !strings.Contains(out, id) {
+		t.Fatalf("打标后应出现在 --needs 列表: %q", out)
+	}
+	if !strings.Contains(out, "等用户授权删远端分支") {
+		t.Fatalf("--needs 列表应带原因: %q", out)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "needs", id, "--clear"); err != nil {
+		t.Fatalf("card needs --clear: %v", err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "list", "--needs")
+	if err != nil {
+		t.Fatalf("card list --needs: %v", err)
+	}
+	if strings.Contains(out, id) {
+		t.Fatalf("清除后不应再出现: %q", out)
+	}
+}
+
+// TestCardNeedsRequiresReason 打标必须给原因——「等人」不带 reason 等于
+// 在注意力平面上放一个没人知道为什么的红点。
+func TestCardNeedsRequiresReason(t *testing.T) {
+	dir := t.TempDir()
+	id := newTestCard(t, dir, "无因卡")
+	_, _, err := runLedgerCLI(t, dir, "card", "needs", id)
+	if err == nil {
+		t.Fatalf("不带原因应报错")
+	}
+	if !strings.Contains(err.Error(), "原因") {
+		t.Fatalf("错误文案应提到原因，实际: %v", err)
+	}
+}
