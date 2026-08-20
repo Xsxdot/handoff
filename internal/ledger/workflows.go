@@ -68,9 +68,72 @@ func countDispatchNodes(nodes []NodeDef) int {
 	return n
 }
 
+// validateNodes 校验节点序列的内部一致性。
+//
+// 参数：nodes 节点序列（可为空，空 = 老 def 形态，不校验）。
+// 返回：第一处违规的错误（包装 ErrBadState，供 HTTP 层翻成 400）；全部合法返回 nil。
+//
+// 校验范围**刻意只覆盖 Store 看得见的东西**：模板存在性能查（同一个库），
+// 纪律块存在性查不了（正文在 agentd 的 DataDir 下，Store 不认识文件系统），
+// 那一项留给派发时报错。把校验硬塞进来只会让 Store 依赖 agentd 的目录布局。
+func (s *Store) validateNodes(nodes []NodeDef) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		if node.Name == "" {
+			return fmt.Errorf("节点名不能为空: %w", ErrBadState)
+		}
+		if seen[node.Name] {
+			return fmt.Errorf("节点名 %q 重复: %w", node.Name, ErrBadState)
+		}
+		seen[node.Name] = true
+	}
+	for _, node := range nodes {
+		// Verdict 蕴含 Dispatch：没有派发就没有报文，也就没有裁决块可解析。
+		if node.Verdict && !node.Dispatch {
+			return fmt.Errorf("节点 %q 开了 Verdict 却没开 Dispatch（没有派发就没有报文可裁决）: %w",
+				node.Name, ErrBadState)
+		}
+		if node.Dispatch && node.Template == "" {
+			return fmt.Errorf("节点 %q 开了 Dispatch 但没写模板: %w", node.Name, ErrBadState)
+		}
+		if node.Dispatch {
+			if _, err := s.GetTemplate(node.Template, 0); err != nil {
+				return fmt.Errorf("节点 %q 引用的模板 %q 不可用: %w", node.Name, node.Template, ErrBadState)
+			}
+		}
+		if node.MaxRounds < 0 {
+			return fmt.Errorf("节点 %q 的 MaxRounds 不能为负: %w", node.Name, ErrBadState)
+		}
+		if node.MaxRounds > 0 && !node.Verdict {
+			return fmt.Errorf("节点 %q 设了 MaxRounds 却没开 Verdict（不裁决就没有轮次）: %w",
+				node.Name, ErrBadState)
+		}
+		if node.OnFail != "" && !node.Verdict {
+			return fmt.Errorf("节点 %q 设了 OnFail 却没开 Verdict（不裁决就没有失败分支）: %w",
+				node.Name, ErrBadState)
+		}
+		// 路由按名字指向，悬空的名字会让卡走到一半停住且看不出原因，写入时就拦掉。
+		for label, to := range map[string]string{"Next": node.Next, "OnFail": node.OnFail} {
+			if to == "" || seen[to] {
+				continue
+			}
+			return fmt.Errorf("节点 %q 的 %s 指向不存在的节点 %q: %w",
+				node.Name, label, to, ErrBadState)
+		}
+	}
+	return nil
+}
+
 // PutWorkflow 写入 name 的下一个版本并返回版本号。Nodes 在写入前投影为 States/Gates。
 func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 	def = def.withStatesFromNodes()
+	if err := s.validateNodes(def.Nodes); err != nil {
+		log().Warn("工作流节点校验未过", "name", name, "cause", err)
+		return 0, err
+	}
 	raw, err := json.Marshal(def)
 	if err != nil {
 		return 0, fmt.Errorf("编码工作流定义: %w", err)

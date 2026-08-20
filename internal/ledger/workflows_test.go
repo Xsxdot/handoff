@@ -1,6 +1,10 @@
 package ledger
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestWorkflowLegacyDefStillDecodes(t *testing.T) {
 	s := newTestStore(t)
@@ -72,6 +76,72 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 	}
 	if !got.Def.Nodes[1].Dispatch || got.Def.Nodes[1].Template != "feature-impl" {
 		t.Fatalf("Nodes 原样保存失败: %+v", got.Def.Nodes[1])
+	}
+}
+
+func TestPutWorkflowRejectsBadNodes(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	cases := []struct {
+		name string
+		def  WorkflowDef
+		want string // 错误里必须出现的关键词
+	}{
+		{"空节点名", WorkflowDef{Nodes: []NodeDef{{Name: ""}}}, "节点名"},
+		{"重名节点", WorkflowDef{Nodes: []NodeDef{{Name: "A"}, {Name: "A"}}}, "重复"},
+		{"派发缺模板", WorkflowDef{Nodes: []NodeDef{{Name: "A", Dispatch: true}}}, "模板"},
+		{"模板不存在", WorkflowDef{Nodes: []NodeDef{
+			{Name: "A", Dispatch: true, Template: "查无此模板"},
+		}}, "查无此模板"},
+		{"Next 悬空", WorkflowDef{Nodes: []NodeDef{{Name: "A", Next: "B"}}}, "B"},
+		{"OnFail 悬空", WorkflowDef{Nodes: []NodeDef{
+			{Name: "A", Dispatch: true, Verdict: true, Template: "review-generic", OnFail: "B"},
+		}}, "B"},
+		{"Verdict 不带 Dispatch", WorkflowDef{Nodes: []NodeDef{
+			{Name: "A", Verdict: true, Template: "review-generic"},
+		}}, "Dispatch"},
+		{"MaxRounds 不带 Verdict", WorkflowDef{Nodes: []NodeDef{
+			{Name: "A", Dispatch: true, Template: "feature-impl", MaxRounds: 3},
+		}}, "Verdict"},
+		{"MaxRounds 为负", WorkflowDef{Nodes: []NodeDef{
+			{Name: "A", Dispatch: true, Verdict: true, Template: "review-generic", MaxRounds: -1},
+		}}, "MaxRounds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.PutWorkflow("bad", tc.def)
+			if err == nil {
+				t.Fatalf("非法节点应被拒，却写成功了")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误里应提到 %q，实际: %v", tc.want, err)
+			}
+			if !errors.Is(err, ErrBadState) {
+				t.Fatalf("应包装 ErrBadState，实际: %v", err)
+			}
+		})
+	}
+}
+
+func TestPutWorkflowAcceptsGoodNodes(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	version, err := s.PutWorkflow("good", WorkflowDef{Nodes: []NodeDef{
+		{Name: "待办", Next: "进行中"},
+		{Name: "进行中", Next: "待审阅", Dispatch: true, Template: "feature-impl", CarryCardContext: true},
+		{Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic",
+			CarryCardContext: true, MaxRounds: 3, Next: "已完成", OnFail: "进行中"},
+		{Name: "已完成"},
+	}})
+	if err != nil {
+		t.Fatalf("合法节点定义被拒: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("version = %d, want 1", version)
 	}
 }
 
