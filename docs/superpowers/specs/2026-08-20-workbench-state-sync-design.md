@@ -236,11 +236,21 @@ PUT  /api/workbench/state/dock     ← { payload }              payload 为 null
   （PUT `payload: null`），不存一行空记录：用户把一个目录的 tab 全关掉，就是不想再看见它，
   存一行空记录只会白占 50 行配额里的一格
 - `pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbench` —— 规则二
-- `diffBases(prev, next): { changed: string[]; removed: string[] }`
-- `encodeDock(d: DockSnapshot): PersistedDock` —— **剥掉每个 tab 的 `draft` / `baseSha`**
-- `decodeDock(raw: unknown): DockSnapshot | null` —— 同款逐字段校验
+- `diffPayloads(prev, next): { changed: string[]; removed: string[] }` —— 比较两份
+  「key → payload 字符串」，分出要写的与要删的
+
+悬浮窗那一套**放在 `web/src/app/homedock/dockPersist.ts`**，不进本文件：悬浮窗与工作台是
+两套互不认识的状态（`useHomeDock` 的边界注释写明了这条分界），合并会让工作台反过来依赖
+`HomeTab`。它导出：
+
+- `encodeDock(d: DockSnapshot): string` —— **剥掉每个 tab 的 `draft` / `baseSha`**
+- `decodeDock(raw: string): DockSnapshot | null` —— 同款逐字段校验
 - `pruneDeadDockSessions(tabs: HomeTab[], liveIds: Set<string>): HomeTab[]` —— 规则二用在悬浮窗上
 - `clampGeom(g, vw, vh, inset): Geom` —— 恢复几何时按**当前**视口夹紧
+
+另有一层纯函数 `web/src/app/workbench/restore.ts`，把「落盘状态 + 会话列表」合成一次可直接
+灌入的恢复结果（抹死会话、补孤儿、夹几何）。抽出来的理由：这些判断全都不需要 React 也
+不需要网络，留在 hook 里就只能靠 mock fetch 去测，而它们恰恰最该用表驱动逐条钉住。
 
 ### 5.2 `web/src/api/client.ts`
 
