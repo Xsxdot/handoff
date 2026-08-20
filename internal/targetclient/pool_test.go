@@ -1,3 +1,6 @@
+// 本文件验证 Pool 的复用、配置失效、删除清理与活快照枚举。
+//
+// 边界：使用直连伪配置验证池状态，不探测真实机器；relay 拨号由 Warm/relay 测试覆盖。
 package targetclient
 
 import (

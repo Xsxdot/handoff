@@ -1,3 +1,6 @@
+// 本文件验证 targetclient.New 的 relay/直连选路、错误边界与清理契约。
+//
+// 边界：只断言构造结果，不发起真实 relay 网络请求；隧道行为由 relay 包测试覆盖。
 package targetclient
 
 import (

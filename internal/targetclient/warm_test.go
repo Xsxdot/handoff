@@ -1,3 +1,6 @@
+// 本文件验证 relay 预热的筛选、逐台退避和上下文退出行为。
+//
+// 边界：通过 ensure 缝替换真实拨号，只验证循环调度，不依赖外部 relay 服务。
 package targetclient
 
 import (

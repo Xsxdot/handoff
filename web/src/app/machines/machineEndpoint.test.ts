@@ -1,3 +1,6 @@
+// 本文件验证机器端点展示的 addr 优先、中继回退与空值边界。
+//
+// 边界：只测试纯展示函数，不渲染组件，也不判断机器可达性。
 import { describe, expect, it } from 'vitest'
 import { machineEndpoint } from './machineEndpoint'
 
