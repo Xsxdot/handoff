@@ -24,6 +24,9 @@ type Session struct {
 	Attached  int
 	PID       int
 	ExitCode  *int
+	// Incompatible 表示该会话由当前客户端不认识的协议版本托管；进程仍活着，
+	// 但本版不能 Attach，只能在界面走「重开一个终端」出口。
+	Incompatible bool
 	// Foreground 表示会话里当前有一个跑在前台的命令。
 	Foreground bool
 	BytesOut   uint64

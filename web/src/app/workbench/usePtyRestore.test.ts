@@ -56,6 +56,15 @@ describe('usePtyRestore', () => {
     expect(restore.mock.calls[0][1]).toBe('alive')
   })
 
+  it('协议不兼容的活会话照样恢复，但带上降级标记而不在列表阶段丢掉', async () => {
+    fetchPtySessions.mockResolvedValue({ sessions: [session({ id: 'old-v99', incompatible: true })] })
+    const restore = vi.fn()
+    renderHook(() => usePtyRestore(restore))
+    await waitFor(() => expect(restore).toHaveBeenCalled())
+    expect(restore.mock.calls[0][1]).toBe('old-v99')
+    expect(restore.mock.calls[0][2]).toBe(true)
+  })
+
   it('只跑一次：重渲染不会把同一批会话反复往回灌', async () => {
     fetchPtySessions.mockResolvedValue({ sessions: [session()] })
     const restore = vi.fn()

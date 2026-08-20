@@ -36,6 +36,8 @@ export interface TerminalTabProps {
   seq: number
   // sessionId 缺席 = 这个 tab 还没有会话，挂载时建一个。
   sessionId?: string
+  // incompatible = 服务端会话仍活着但本版协议无法接入；不应发起连接或重连。
+  incompatible?: boolean
   // rel 是终端要起的工作树子目录；空串/缺席 = 工作树根。
   rel?: string
   // onSession 把新建会话的 id 交回上层写进 TabContent。必须回报：
@@ -61,7 +63,7 @@ function ptyBase(base: BaseDir, rel?: string): { base_kind: string; base_path: s
   return out
 }
 
-export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTabProps) {
+export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, onSession }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
@@ -75,6 +77,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
   // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
   const [discarded, setDiscarded] = useState<string | undefined>(undefined)
   const liveId = sessionId !== undefined && sessionId !== discarded ? sessionId : undefined
+  const incompatibleLive = incompatible && liveId !== undefined
 
   useEffect(() => {
     const host = hostRef.current
@@ -144,6 +147,12 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
 
     const start = async () => {
       let id = liveId
+      if (incompatibleLive) {
+        setError('会话由不兼容的版本托管')
+        setDead(true)
+        setStatus('closed')
+        return
+      }
       if (!id) {
         const created = await createPtySession(
           { ...ptyBase(base, rel), cols: term.cols, rows: term.rows },
@@ -229,7 +238,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
     // rel 参与身份：改 rel 就该在新的子目录里重建会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveId, base.key, base.machine, rel])
+  }, [liveId, incompatibleLive, base.key, base.machine, rel])
 
   return (
     <div className="flex h-full flex-col">

@@ -92,6 +92,17 @@ describe('TerminalTab', () => {
     expect(connectPty.mock.calls[0][0]).toMatchObject({ sessionId: 'old-9', machine: '' })
   })
 
+  it('协议不兼容时不建连不重连，直接给重开出口', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="old-v99" incompatible onSession={vi.fn()} />)
+    expect(await screen.findByText(/会话由不兼容的版本托管/)).toBeInTheDocument()
+    expect(connectPty).not.toHaveBeenCalled()
+    expect(createPtySession).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /重开/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /重开/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+  })
+
   it('收到字节写进终端', async () => {
     render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())

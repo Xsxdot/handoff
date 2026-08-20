@@ -638,6 +638,7 @@ export interface PtySession {
   attached: number
   pid: number
   exit_code?: number
+  incompatible: boolean // 进程仍活着，但本版协议无法接入；直接给「重开一个终端」出口
   foreground: boolean    // 有前台命令在跑，控制台据此在关 tab 前先确认
   bytes_out: number      // /ws/pty 的 since 水位
 }

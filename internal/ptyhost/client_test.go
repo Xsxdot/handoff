@@ -141,7 +141,7 @@ func TestClientProtoMismatch(t *testing.T) {
 	if _, err := h.Attach(id, 0); !errors.Is(err, ptyhost.ErrProtoMismatch) {
 		t.Fatalf("Attach err = %v，期望 ErrProtoMismatch", err)
 	}
-	if list := h.List(); len(list) != 1 || list[0].ID != id {
+	if list := h.List(); len(list) != 1 || list[0].ID != id || !list[0].Incompatible {
 		t.Fatalf("版本错配会话不应从 List 消失: %+v", list)
 	}
 }

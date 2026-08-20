@@ -10,5 +10,6 @@
   "attached": 1,
   "foreground": true,
   "pid": 48213,
+  "incompatible": false,
   "bytes_out": 81920
 }

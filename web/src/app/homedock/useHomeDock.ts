@@ -21,6 +21,7 @@ export interface HomeTab {
   kind: 'terminal' | 'file'
   seq: number // 第几个浮窗 tab，用于终端标题 'bash · home N'
   sessionId?: string // 服务端会话 id；建成之前是 undefined
+  incompatible?: boolean // 服务端仍活着但协议不兼容，终端只显示重开出口
   machine: string // '' = 本机
   rel?: string // file tab 在 scratch 根下的相对路径
   draft?: string // file tab 的未保存内容；不设表示组件尚未改动
@@ -178,7 +179,7 @@ export function useHomeDock(): HomeDockApi {
   }, [activeId])
 
   const setSession = useCallback((id: string, sessionId: string) => {
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sessionId } : t)))
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sessionId, incompatible: false } : t)))
   }, [])
 
   const setDraft = useCallback((id: string, d: { draft: string; baseSha: string } | null) => {

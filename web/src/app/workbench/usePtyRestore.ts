@@ -44,7 +44,7 @@ export function baseOfSession(s: PtySession): BaseDir {
 //
 // 返回：error 为拉取失败的原文（空串 = 没出错）。**不吞**：拉不到列表意味着
 // 用户会看到一个「终端都不见了」的界面，必须说清是为什么。
-export function usePtyRestore(restore: (b: BaseDir, sessionId: string) => void): { error: string } {
+export function usePtyRestore(restore: (b: BaseDir, sessionId: string, incompatible?: boolean) => void): { error: string } {
   const [error, setError] = useState('')
   // ranRef 让它严格只跑一次：React 18 的 StrictMode 会把 effect 跑两遍，
   // 空依赖数组挡不住，而这里跑两遍就是两次跨机探活。
@@ -70,7 +70,9 @@ export function usePtyRestore(restore: (b: BaseDir, sessionId: string) => void):
           for (const s of resp.sessions) {
             // exit_code 出现 = 已退出。恢复一个死会话只会让人以为它还能用
             if (s.exit_code !== undefined && s.exit_code !== null) continue
-            restoreRef.current(baseOfSession(s), s.id)
+            const base = baseOfSession(s)
+            if (s.incompatible) restoreRef.current(base, s.id, true)
+            else restoreRef.current(base, s.id)
           }
         })
         .catch((err: unknown) => {

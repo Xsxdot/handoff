@@ -111,12 +111,12 @@ export function Shell() {
   //
   // 用 adopt 而不是 newTerminal：adopt 不打开浮窗、不抢焦点——页面一加载
   // 就弹出浮窗，等于替用户点了一下
-  const ptyRestore = usePtyRestore((b, sessionId) => {
+  const ptyRestore = usePtyRestore((b, sessionId, incompatible) => {
     if (b.kind === 'home') {
-      dock.adopt({ id: sessionId, kind: 'terminal', seq: dock.tabs.length + 1, sessionId, machine: b.machine })
+      dock.adopt({ id: sessionId, kind: 'terminal', seq: dock.tabs.length + 1, sessionId, machine: b.machine, incompatible })
       return
     }
-    wb.restoreTerminal(b, sessionId)
+    wb.restoreTerminal(b, sessionId, incompatible)
   })
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与 tab id 都要留着：
   // 确认之后要先删会话、再关那个 tab
@@ -369,9 +369,10 @@ export function Shell() {
                             seq={c.seq}
                             sessionId={c.sessionId}
                             rel={c.rel}
+                            incompatible={c.incompatible}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
-                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id })}
+                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
                           />
                         )
                       }
@@ -449,6 +450,7 @@ export function Shell() {
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
+                incompatible={t.incompatible}
                 onSession={(id) => dock.setSession(t.id, id)}
               />
             )

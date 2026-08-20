@@ -567,7 +567,7 @@ func (a *clientAttachment) writeData(p []byte) error {
 
 func sessionFromMeta(m sessdir.Meta) Session {
 	return Session{ID: m.ID, BasePath: m.BasePath, BaseKind: m.BaseKind, Shell: m.Shell,
-		CreatedAt: m.CreatedAt, PID: m.PID}
+		CreatedAt: m.CreatedAt, PID: m.PID, Incompatible: m.ProtoVersion != wire.ProtoVersion}
 }
 
 func readMetaUntil(root, id string, deadline time.Time) (sessdir.Meta, error) {
