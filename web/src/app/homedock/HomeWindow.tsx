@@ -113,7 +113,16 @@ export function HomeWindow({
 
   return (
     <section
-      className="fixed z-40 flex flex-col overflow-hidden rounded-[10px] border border-[#2b3542] bg-[#09111c] shadow-2xl"
+      // dark + text-foreground：本窗是一块**深色表面**，而控制台其余部分是浅色。
+      // 放进来的 tab（FileTab / TerminalTab）用主题令牌，令牌不换档就仍然解析成
+      // 浅色主题下的近黑色，落在这块深色底上等于隐形——走查实测：悬浮窗里新建
+      // 文件，正文与背景同色，不选中根本看不见。
+      //
+      // **两个都要，缺一不可**：dark 只是把 --foreground 的值换成浅色，而 textarea
+      // 经 Tailwind preflight 是 color:inherit、背景透明；本窗到 body 之间若没有
+      // 任何一处真正写下 color: var(--foreground)，它就一路继承到 body 上那个
+      // 浅色主题的近黑色。只加 dark 时实测仍是 oklch(0.196)——变量对了，颜色没变。
+      className="dark fixed z-40 flex flex-col overflow-hidden rounded-[10px] border border-[#2b3542] bg-[#09111c] text-foreground shadow-2xl"
       // z-40：必须低于 Overlay 的 z-50。看板/工单弹层打开时应当盖住浮窗，否则弹层遮罩上会露出一个亮洞
       style={style}
     >
