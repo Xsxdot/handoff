@@ -4,15 +4,18 @@
 //   - install：解析当前二进制与配置路径，生成并安装服务单元，复核起来了
 //   - uninstall：停止并移除单元
 //   - status：报告托管状态
+//   - start / stop / restart：改已装单元的运行状态，不改单元定义本身
 //
 // 边界：
-//   - 不启动/停止 agentd 进程本身：那是管理器的事，本命令只管单元
+//   - 不替代进程管理器：start/stop/restart 是对管理器下指令，不自己 fork
+//     或 kill agentd；单元没装时一律硬拒，不代为 install
 //   - 不改 handoff 的配置文件：托管与配置是两件事，配置走 handoff init
 //   - 托管之后 agentd 的形态会变：手动 Ctrl-C 会被管理器拉回，停服务要用
 //     systemctl stop / launchctl bootout。install 成功时会把这句打给用户
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -145,6 +148,94 @@ var serviceUninstallCmd = &cobra.Command{
 	},
 }
 
+// lifecycleManager 取一个 Manager，是三个生命周期子命令的共用前半段。
+//
+// 返回：平台对应的 Manager；构造失败时返回错误（平台不支持等）
+func lifecycleManager() (service.Manager, error) {
+	return newServiceManager(slog.Default())
+}
+
+var serviceStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "启动已托管但被停止的 agentd（恢复自动拉起）",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		m, err := lifecycleManager()
+		if err != nil {
+			slog.Default().Error("执行服务生命周期命令失败", "action", "start", "cause", err)
+			return lifecycleErr("启动", err)
+		}
+		slog.Default().Info("执行服务生命周期命令", "action", "start", "kind", m.Kind())
+		if err := m.Start(); err != nil {
+			slog.Default().Error("服务生命周期命令失败", "action", "start", "kind", m.Kind(), "cause", err)
+			return lifecycleErr("启动", err)
+		}
+		unit, _ := m.UnitPath()
+		fmt.Fprintf(cmd.OutOrStdout(), "已启动   %s   %s\n", m.Kind(), unit)
+		fmt.Fprintf(cmd.OutOrStdout(), "         agentd 已恢复自动拉起与开机自启\n")
+		return nil
+	},
+}
+
+var serviceStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "停止 agentd，并关掉自动拉起（直到 handoff service start）",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		m, err := lifecycleManager()
+		if err != nil {
+			slog.Default().Error("执行服务生命周期命令失败", "action", "stop", "cause", err)
+			return lifecycleErr("停止", err)
+		}
+		slog.Default().Info("执行服务生命周期命令", "action", "stop", "kind", m.Kind())
+		if err := m.Stop(); err != nil {
+			slog.Default().Error("服务生命周期命令失败", "action", "stop", "kind", m.Kind(), "cause", err)
+			return lifecycleErr("停止", err)
+		}
+		out := cmd.OutOrStdout()
+		unit, _ := m.UnitPath()
+		fmt.Fprintf(out, "已停止   %s   %s\n", m.Kind(), unit)
+		// 形态变化必须说清楚：不说的话，用户下次发现本机派不了活时
+		// 不会想到是自己停的。与 install 打「Ctrl-C 停不掉它」同一类提示
+		fmt.Fprintf(out, "\n注意     agentd 不会自己回来，重启机器也不会。\n")
+		fmt.Fprintf(out, "         恢复用 handoff service start。\n")
+		return nil
+	},
+}
+
+var serviceRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "重启 agentd（改完配置让它生效）",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		m, err := lifecycleManager()
+		if err != nil {
+			slog.Default().Error("执行服务生命周期命令失败", "action", "restart", "cause", err)
+			return lifecycleErr("重启", err)
+		}
+		slog.Default().Info("执行服务生命周期命令", "action", "restart", "kind", m.Kind())
+		if err := m.Restart(); err != nil {
+			slog.Default().Error("服务生命周期命令失败", "action", "restart", "kind", m.Kind(), "cause", err)
+			return lifecycleErr("重启", err)
+		}
+		unit, _ := m.UnitPath()
+		fmt.Fprintf(cmd.OutOrStdout(), "已重启   %s   %s\n", m.Kind(), unit)
+		return nil
+	},
+}
+
+// lifecycleErr 把生命周期操作的失败包成面向用户的报文。
+//
+// 参数：
+//   - action: 「启动」「停止」「重启」
+//   - err: 底层错误
+//
+// 返回：包装后的错误。单元没装时把处置直接写进报文——那是与「装了但操作
+// 失败」完全不同的处置（去 install，而不是去查日志）
+func lifecycleErr(action string, err error) error {
+	if errors.Is(err, service.ErrNotInstalled) {
+		return fmt.Errorf("%s服务失败：本机还没有 handoff 的服务单元，先跑 handoff service install（%w）", action, err)
+	}
+	return fmt.Errorf("%s服务失败: %w", action, err)
+}
+
 var serviceStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "查看托管状态",
@@ -160,8 +251,18 @@ var serviceStatusCmd = &cobra.Command{
 		unit, _ := m.UnitPath()
 		out := cmd.OutOrStdout()
 		switch {
+		case st.Installed && st.Running && st.Disabled:
+			// stop 的 disable 成功、停进程失败会留下这个状态。报成「已托管」
+			// 会让用户以为一切正常，而重启机器后它不会回来
+			fmt.Fprintf(out, "运行中但已停用  %s   %s\n", m.Kind(), unit)
+			fmt.Fprintf(out, "处置          它还在跑，但重启机器后不会回来；handoff service start 恢复\n")
 		case st.Installed && st.Running:
 			fmt.Fprintf(out, "已托管        %s   %s\n", m.Kind(), unit)
+		case st.Installed && st.Disabled:
+			// 与「装了没跑」分开：这是被 handoff service stop 停住的，
+			// 处置是 start，不是去查日志、更不是重装
+			fmt.Fprintf(out, "已停止        %s   %s\n", m.Kind(), unit)
+			fmt.Fprintf(out, "处置          handoff service start\n")
 		case st.Installed:
 			// 装了没跑是一个真实且常见的状态（崩溃循环、被手动 stop），
 			// 必须与「没装」分开报，否则用户会去重装一个已经装了的东西
@@ -182,7 +283,8 @@ func init() {
 	// 把托管追问的代跑入口接上 initflow 的缝：init 与 handoff service install
 	// 必须走同一条代码路径（B71），否则两处托管行为会各自演化。
 	initflow.InstallService = installService
-	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd)
+	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd,
+		serviceStartCmd, serviceStopCmd, serviceRestartCmd)
 	rootCmd.AddCommand(serviceCmd)
 }
 

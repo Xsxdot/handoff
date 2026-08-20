@@ -140,6 +140,116 @@ func TestServiceUninstallIsIdempotent(t *testing.T) {
 	}
 }
 
+// start 调 Manager.Start 并报出结果。
+func TestServiceStart(t *testing.T) {
+	f := &fakeManager{}
+	withFakeManager(t, f)
+	out, err := runService(t, writeStatusConfig(t), "start")
+	if err != nil {
+		t.Fatalf("start: %v\n%s", err, out)
+	}
+	if !f.started {
+		t.Error("start 必须调 Manager.Start")
+	}
+	if !strings.Contains(out, "已启动") {
+		t.Errorf("输出应报「已启动」，得到:\n%s", out)
+	}
+}
+
+// stop 必须把「它不会自己回来」这句打出来。
+//
+// why：这是形态变化。不说的话，用户下次发现本机派不了活时不会想到
+// 是自己停的——那正是 install 打「Ctrl-C 停不掉它」要避免的同一类坑。
+func TestServiceStopWarnsItWontComeBack(t *testing.T) {
+	f := &fakeManager{}
+	withFakeManager(t, f)
+	out, err := runService(t, writeStatusConfig(t), "stop")
+	if err != nil {
+		t.Fatalf("stop: %v\n%s", err, out)
+	}
+	if !f.stopped {
+		t.Error("stop 必须调 Manager.Stop")
+	}
+	for _, want := range []string{"不会自己回来", "重启机器", "handoff service start"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stop 的输出必须含 %q（形态变化要说清楚），得到:\n%s", want, out)
+		}
+	}
+}
+
+// restart 调 Manager.Restart 并报出结果。
+func TestServiceRestart(t *testing.T) {
+	f := &fakeManager{}
+	withFakeManager(t, f)
+	out, err := runService(t, writeStatusConfig(t), "restart")
+	if err != nil {
+		t.Fatalf("restart: %v\n%s", err, out)
+	}
+	if !f.restarted {
+		t.Error("restart 必须调 Manager.Restart")
+	}
+	if !strings.Contains(out, "已重启") {
+		t.Errorf("输出应报「已重启」，得到:\n%s", out)
+	}
+}
+
+// 未安装时报错必须直接给出 install，而不是把底层原文原样抛给用户。
+func TestServiceLifecycleNotInstalledPointsAtInstall(t *testing.T) {
+	for _, sub := range []string{"start", "stop", "restart"} {
+		t.Run(sub, func(t *testing.T) {
+			f := &fakeManager{
+				startErr:   service.ErrNotInstalled,
+				stopErr:    service.ErrNotInstalled,
+				restartErr: service.ErrNotInstalled,
+			}
+			withFakeManager(t, f)
+			out, err := runService(t, writeStatusConfig(t), sub)
+			if err == nil {
+				t.Fatal("未安装时应报错")
+			}
+			combined := out + err.Error()
+			if !strings.Contains(combined, "handoff service install") {
+				t.Errorf("未安装的处置必须是 install，得到:\n%s", combined)
+			}
+		})
+	}
+}
+
+// status 要把「被停用」单独报出来。
+//
+// why：现状「已安装但未运行」的处置是「看日志找原因，或 install 重装」。
+// 被 stop 停住时那条是错的——会把用户支去重装一个本来好好的单元。
+func TestServiceStatusReportsDisabled(t *testing.T) {
+	f := &fakeManager{status: service.Status{Installed: true, Disabled: true}}
+	withFakeManager(t, f)
+	out, err := runService(t, writeStatusConfig(t), "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "已停止") {
+		t.Errorf("被停用时应报「已停止」，得到:\n%s", out)
+	}
+	if !strings.Contains(out, "handoff service start") {
+		t.Errorf("被停用的处置是 start，得到:\n%s", out)
+	}
+	if strings.Contains(out, "重装") {
+		t.Errorf("被停用时不得建议重装（那是崩溃场景的处置），得到:\n%s", out)
+	}
+}
+
+// 「在跑但已停用」是 stop 半途失败留下的真实状态，不能被报成一切正常。
+func TestServiceStatusReportsRunningButDisabled(t *testing.T) {
+	f := &fakeManager{status: service.Status{Installed: true, Running: true, Disabled: true}}
+	withFakeManager(t, f)
+	out, err := runService(t, writeStatusConfig(t), "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "已停用") {
+		t.Errorf("在跑但已停用时必须点出「已停用」，否则重启机器后它不会回来而用户毫不知情，得到:\n%s", out)
+	}
+}
+
 func TestIsEphemeralBin(t *testing.T) {
 	cases := []struct {
 		path string
