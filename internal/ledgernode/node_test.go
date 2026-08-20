@@ -22,6 +22,21 @@ func nodeLedger(t *testing.T) (*ledger.Store, ledger.Card) {
 	return s, c
 }
 
+// seedMergeableCard 建一张基线是集成分支的卡。基线非主线是唯一的关键点：
+// 基线为空或为 main 时 isMainline 会直接把卡推去「待合并」等人，根本走不到
+// Objective/DoMerge，本 task 要验的分支就摸不到。
+func seedMergeableCard(t *testing.T, s *ledger.Store) ledger.Card {
+	t.Helper()
+	c, err := s.CreateCard(ledger.NewCard{
+		Title: "待合并卡", Project: "p", Workflow: "bug",
+		BaseBranch: "integration/y", Actor: "t",
+	})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	return c
+}
+
 func TestReviewNodePassAndFailLoop(t *testing.T) {
 	s, c := nodeLedger(t)
 	msgs := []string{
@@ -219,5 +234,54 @@ func TestMergeNodeTreatsNamedMainAsMainline(t *testing.T) {
 	}
 	if got, _ := s.GetCard(card.ID); got.Status != "待合并" {
 		t.Fatalf("应已推「待合并」: %s", got.Status)
+	}
+}
+
+// TestMergeNodeDistinguishesMissingWorkBranch 工作分支缺失不能被记成「合并冲突」。
+// 人看到「合并冲突」会去查代码冲突，而真实处置是 handoff pull——原因写错等于
+// 把人引到错误的排查路径上。
+func TestMergeNodeDistinguishesMissingWorkBranch(t *testing.T) {
+	st, _ := nodeLedger(t)
+	card := seedMergeableCard(t, st)
+	node := &MergeNode{
+		St:        st,
+		Objective: func(context.Context, ledger.Card, string) error { return nil },
+		DoMerge: func(context.Context, ledger.Card, string) error {
+			return fmt.Errorf("%w：\n（脚本输出）", ErrWorkBranchMissing)
+		},
+	}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce 不该整体报错: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("应转等人，实得 %q", out.Action)
+	}
+	if !strings.Contains(out.Reason, "工作分支缺失") {
+		t.Fatalf("reason 应指明工作分支缺失，实得 %q", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "handoff pull") {
+		t.Fatalf("reason 必须给出可操作的下一步，实得 %q", out.Reason)
+	}
+}
+
+// TestMergeNodeConflictStillSaysConflict 普通合并失败仍记「合并冲突」，
+// 不能被上一条改动带偏。
+func TestMergeNodeConflictStillSaysConflict(t *testing.T) {
+	st, _ := nodeLedger(t)
+	card := seedMergeableCard(t, st)
+	node := &MergeNode{
+		St:        st,
+		Objective: func(context.Context, ledger.Card, string) error { return nil },
+		DoMerge: func(context.Context, ledger.Card, string) error {
+			return fmt.Errorf("合并失败:\nCONFLICT (content): foo.go")
+		},
+	}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce 不该整体报错: %v", err)
+	}
+	if out.Reason != "合并冲突" {
+		t.Fatalf("普通失败应记合并冲突，实得 %q", out.Reason)
 	}
 }

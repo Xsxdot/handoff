@@ -5,6 +5,7 @@ package ledgernode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -168,14 +169,20 @@ func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 	}
 	logger.Info("客观判据通过，执行合并", "base", base)
 	if err := m.DoMerge(ctx, card, base); err != nil {
-		logger.Info("合并执行失败转等人", "err", err)
+		// 工作分支根本没拿到时，压根没走到合并——记成「合并冲突」会把人
+		// 引去查代码冲突，而真实处置是 handoff pull。原因必须可操作。
+		reason := "合并冲突"
+		if errors.Is(err, ErrWorkBranchMissing) {
+			reason = "工作分支缺失：先 handoff pull 再重试"
+		}
+		logger.Info("合并执行失败转等人", "reason", reason, "err", err)
 		if _, commentErr := m.St.AddComment(cardID, "合并失败（冲突清单/报错）：\n"+err.Error(), "普通", "node:merge"); commentErr != nil {
 			return Outcome{}, commentErr
 		}
-		if err := m.St.MarkNeedsHuman(cardID, "合并冲突", "node:merge"); err != nil {
+		if err := m.St.MarkNeedsHuman(cardID, reason, "node:merge"); err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "合并冲突"}, nil
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 	}
 	logger.Info("已自动合回基线", "base", base)
 	return Outcome{Action: ActionMerged}, nil
