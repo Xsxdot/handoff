@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+_（下一版的改动记在这里。）_
+
+## [v0.3.5] - 2026-08-20
+
+**这一版让 agentd 重启不再带走现场。** 终端会话搬出 agentd 进程，工作台的 tab、
+分栏和悬浮窗会留下来；同时补上 `handoff service start/stop/restart`，被停掉的
+agentd 不会被桌面薄壳悄悄拉回来。从 v0.3.4 升级无需改配置。
+
 ### 新增
 
 - **`handoff service start` / `stop` / `restart`。** 改完配置想让 agentd
