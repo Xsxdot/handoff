@@ -14,6 +14,7 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   }),
   answerDecision: vi.fn().mockResolvedValue(undefined),
   acceptCard: vi.fn().mockResolvedValue({ ok: true }),
+  runCardStep: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
 describe('抽屉一处看', () => {
@@ -173,5 +174,47 @@ describe('抽屉里的验收', () => {
     await screen.findByText('进行中的卡')
     expect(screen.getByText('未验')).toBeInTheDocument()
     expect(screen.queryByText('待真机验')).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的环节动作', () => {
+  it('派发审阅点一次即置灰并提示看 Timeline', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B180', Title: '待审卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    const run = vi.mocked(ledger.runCardStep).mockResolvedValue({ ok: true })
+    render(<CardDrawer id="B180" onClose={() => {}} onOpenCard={() => {}} />)
+    const button = await screen.findByRole('button', { name: /派发审阅/ })
+    fireEvent.click(button)
+    await waitFor(() => expect(run).toHaveBeenCalledWith('B180', 'review'))
+    expect(await screen.findByText(/进展见下方 Timeline/)).toBeInTheDocument()
+  })
+
+  it('409 原地显示冲突原因，不吞掉后端文案', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B181', Title: '待审卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    vi.mocked(ledger.runCardStep).mockRejectedValue(new Error('B181 的 review 环节正在运行'))
+    render(<CardDrawer id="B181" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /合入集成分支/ }))
+    expect(await screen.findByText(/正在运行/)).toBeInTheDocument()
+  })
+
+  it('不提供「派发实现」——它要挂 plan 文件，浏览器里没有', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B182', Title: '卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B182" onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('卡')
+    expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
   })
 })

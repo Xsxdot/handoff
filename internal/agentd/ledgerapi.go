@@ -29,6 +29,7 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/move", s.withLedger(s.handleCardMove))
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
 	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
+	api.HandleFunc("POST /api/cards/{id}/step", s.withLedger(s.handleCardStep))
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
@@ -246,6 +247,41 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, event)
+}
+
+// handleCardStep 发起一个卡环节（审阅/合并），受理即 202。
+//
+// 为什么是 202 而不是 200：环节要跑几分钟到几十分钟，200 会让前端以为
+// 它已经做完了。202 的语义正是「收到了，正在做」，界面据此把按钮置灰并
+// 提示「进展见下方 Timeline」。
+//
+// 为什么不支持 implement：实现派发通常要挂 plan 文件，浏览器里没有那个文件。
+// 它留在 CLI，这是交接文档「按**环节**派发」的字面含义。
+func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Step string `json:"step"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	id := r.PathValue("id")
+	actor := "web:" + r.RemoteAddr
+	err := s.startCardStep(id, req.Step, actor)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+	case errors.Is(err, errStepInFlight):
+		s.log.Warn("环节被拒：已有在飞", "card", id, "step", req.Step, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ledger.ErrNotFound):
+		ledgerErr(w, err)
+	default:
+		// 其余都是前置校验失败（环节名不认、项目未登记）：这些是调用方能改的，
+		// 400 比 500 更准确，且错误原文里已经写了该怎么办
+		s.log.Warn("环节被拒", "card", id, "step", req.Step, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
 }
 
 // handleCardAccept 记一条「已真机验」验收，body 只收证据。

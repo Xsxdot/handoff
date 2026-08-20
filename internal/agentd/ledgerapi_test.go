@@ -2,6 +2,7 @@ package agentd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 )
 
 func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
@@ -225,6 +227,58 @@ func TestCardAcceptUnknownCard404(t *testing.T) {
 	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/B-不存在/accept", `{"evidence":"x"}`)
 	if code != http.StatusNotFound {
 		t.Fatalf("应 404，实得 %d", code)
+	}
+}
+
+// TestCardStepReturns202 受理即返回 202——环节要跑几十分钟，
+// 200 会让前端以为它已经做完了。
+func TestCardStepReturns202(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {}
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("应 202，实得 %d（%s）", code, body)
+	}
+}
+
+// TestCardStepSecondReturns409 同卡第二个环节 409 并说清冲突原因。
+func TestCardStepSecondReturns409(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := holdCardStep(t, env.srv, card.ID)
+	defer release()
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("应 409，实得 %d", code)
+	}
+	if !strings.Contains(body, card.ID) || !strings.Contains(body, "正在运行") {
+		t.Fatalf("409 要说清是哪张卡的什么在跑：%s", body)
+	}
+}
+
+// TestCardStepRejectsImplement implement 不是环节——它要挂 plan 文件，
+// 浏览器里没有那个文件，只能走 CLI。
+func TestCardStepRejectsImplement(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "demo")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"implement"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("应 400，实得 %d", code)
 	}
 }
 

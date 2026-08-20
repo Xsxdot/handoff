@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { acceptCard, answerDecision, fetchCardDetail, moveCard, noteCard } from '../../api/ledger'
+import { acceptCard, answerDecision, fetchCardDetail, moveCard, noteCard, runCardStep } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { boardColumns } from './columns'
@@ -179,6 +179,9 @@ export function CardDrawer({
   const [acceptEvidence, setAcceptEvidence] = useState('')
   const [acceptBusy, setAcceptBusy] = useState(false)
   const [acceptError, setAcceptError] = useState('')
+  const [stepBusy, setStepBusy] = useState<'review' | 'merge' | null>(null)
+  const [stepStarted, setStepStarted] = useState<'review' | 'merge' | null>(null)
+  const [stepError, setStepError] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [moveConfirm, setMoveConfirm] = useState(false)
   const [moveBusy, setMoveBusy] = useState(false)
@@ -260,6 +263,22 @@ export function CardDrawer({
       setAcceptError(errorMessage(err))
     } finally {
       setAcceptBusy(false)
+    }
+  }
+
+  const startStep = async (step: 'review' | 'merge') => {
+    setStepBusy(step)
+    setStepError('')
+    try {
+      await runCardStep(id, step)
+      // 受理即置灰：环节是异步的，再点一次只会撞 409。进展在 Timeline 上
+      setStepStarted(step)
+      load()
+    } catch (err) {
+      // 409 的冲突原因是后端写的原文（哪张卡的什么环节在跑），逐字显示
+      setStepError(errorMessage(err))
+    } finally {
+      setStepBusy(null)
     }
   }
 
@@ -389,6 +408,16 @@ export function CardDrawer({
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
+              <div className="mb-2 flex flex-wrap gap-2">
+                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
+                  onClick={() => void startStep('review')}
+                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇆ 派发审阅</button>
+                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
+                  onClick={() => void startStep('merge')}
+                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇣ 合入集成分支</button>
+              </div>
+              {stepStarted && <p className="mb-2 text-xs text-muted-foreground">已发起，进展见下方 Timeline。</p>}
+              {stepError && <p role="alert" className="mb-2 break-words text-xs text-destructive">{stepError}</p>}
               {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent">转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
               {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
             </section>

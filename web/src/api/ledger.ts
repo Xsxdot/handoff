@@ -103,6 +103,11 @@ export const noteCard = (id: string, body: string, kind = '普通') =>
 export const acceptCard = (id: string, evidence: string) =>
   postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/accept`, { evidence })
 
+// runCardStep 发起一个卡环节。后端受理即 202——环节要跑几分钟到几十分钟，
+// 这个 Promise resolve 只代表「收到了」，进展看卡的事件流。
+export const runCardStep = (id: string, step: 'review' | 'merge') =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/step`, { step })
+
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
 
 export const fetchDecisions = (openOnly: boolean) =>
