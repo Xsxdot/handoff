@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
 import type { TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
-import type { CardDetail, Decision, LedgerEvent } from '../../api/ledger'
+import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
@@ -259,12 +259,14 @@ export function CardDrawer({
   onOpenCard,
   workflowStates,
   initialSection,
+  nodes,
 }: {
   id: string
   onClose: () => void
   onOpenCard: (id: string) => void
   workflowStates?: string[]
   initialSection?: 'merge'
+  nodes?: NodeDef[]
 }) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -296,8 +298,8 @@ export function CardDrawer({
   const [taskDetails, setTaskDetails] = useState<Record<string, DrawerTaskDetail>>({})
   const [taskLoading, setTaskLoading] = useState<string | null>(null)
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({})
-  const [stepBusy, setStepBusy] = useState<'review' | 'merge' | null>(null)
-  const [stepStarted, setStepStarted] = useState<'review' | 'merge' | null>(null)
+  const [stepBusy, setStepBusy] = useState<string | null>(null)
+  const [stepStarted, setStepStarted] = useState<string | null>(null)
   const [stepError, setStepError] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [moveConfirm, setMoveConfirm] = useState(false)
@@ -507,7 +509,7 @@ export function CardDrawer({
     }
   }
 
-  const startStep = async (step: 'review' | 'merge') => {
+  const startStep = async (step: string) => {
     setStepBusy(step)
     setStepError('')
     try {
@@ -782,12 +784,20 @@ export function CardDrawer({
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
               <div className="mb-2 flex flex-wrap gap-2">
-                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
-                  onClick={() => void startStep('review')}
-                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇆ 派发审阅</button>
-                <button type="button" disabled={stepBusy !== null || stepStarted !== null}
-                  onClick={() => void startStep('merge')}
-                  className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50">⇣ 合入集成分支</button>
+                {nodes?.filter((node) => node.dispatch).map((node) => {
+                  const base = value<string>(detail, 'effective_base_branch', '')
+                  const humanOnly = base !== '' && (node.human_bases ?? []).includes(base)
+                  return (
+                    <button
+                      key={node.name}
+                      type="button"
+                      title={humanOnly ? `基线 ${base} 在本节点的人工清单里：点了也不会自动跑，会直接转「需要你」` : undefined}
+                      disabled={stepBusy !== null || stepStarted !== null}
+                      onClick={() => void startStep(node.name)}
+                      className={`rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50 ${humanOnly ? 'text-muted-foreground' : ''}`}
+                    >跑「{node.name}」</button>
+                  )
+                })}
               </div>
               {stepStarted && <p className="mb-2 text-xs text-muted-foreground">已发起，进展见下方 Timeline。</p>}
               {stepError && <p role="alert" className="mb-2 break-words text-xs text-destructive">{stepError}</p>}

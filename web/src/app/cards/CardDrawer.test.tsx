@@ -245,6 +245,8 @@ describe('抽屉里的编辑', () => {
 })
 
 describe('抽屉里的环节动作', () => {
+  const legacyActionNodes = [{ name: 'review', dispatch: true }, { name: 'merge', dispatch: true }]
+
   it('派发审阅点一次即置灰并提示看 Timeline', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
@@ -253,8 +255,8 @@ describe('抽屉里的环节动作', () => {
       decisions: [], needs: '', children: [],
     })
     const run = vi.mocked(ledger.runCardStep).mockResolvedValue({ ok: true })
-    render(<CardDrawer id="B180" onClose={() => {}} onOpenCard={() => {}} />)
-    const button = await screen.findByRole('button', { name: /派发审阅/ })
+    render(<CardDrawer id="B180" onClose={() => {}} onOpenCard={() => {}} nodes={legacyActionNodes as never} />)
+    const button = await screen.findByRole('button', { name: '跑「review」' })
     fireEvent.click(button)
     await waitFor(() => expect(run).toHaveBeenCalledWith('B180', 'review'))
     expect(await screen.findByText(/进展见下方 Timeline/)).toBeInTheDocument()
@@ -268,8 +270,8 @@ describe('抽屉里的环节动作', () => {
       decisions: [], needs: '', children: [],
     })
     vi.mocked(ledger.runCardStep).mockRejectedValue(new Error('B181 的 review 环节正在运行'))
-    render(<CardDrawer id="B181" onClose={() => {}} onOpenCard={() => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: /合入集成分支/ }))
+    render(<CardDrawer id="B181" onClose={() => {}} onOpenCard={() => {}} nodes={legacyActionNodes as never} />)
+    fireEvent.click(await screen.findByRole('button', { name: '跑「merge」' }))
     expect(await screen.findByText(/正在运行/)).toBeInTheDocument()
   })
 
@@ -285,6 +287,55 @@ describe('抽屉里的环节动作', () => {
     // 直接写字面量：这条断言的全部意义就是「界面上不存在这个名字的按钮」，
     // 把名字拆开只是为了躲某条 grep，会让后来人看不懂它在断言什么
     expect(screen.queryByRole('button', { name: /派发实现/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的节点执行按钮', () => {
+  const nodes = [
+    { name: '待办' },
+    { name: '进行中', dispatch: true, template: 'feature-impl' },
+    { name: '待审阅', dispatch: true, verdict: true, template: 'review-generic' },
+    { name: '待合并', dispatch: true, verdict: true, template: 'review-generic', human_bases: ['main'] },
+    { name: '已完成' },
+  ]
+  const detail = {
+    card: { ID: 'B40', Title: '节点卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+    relations: [], events: [], task_states: [], effective_base_branch: 'feat/x', decisions: [],
+  }
+
+  it('只给有 dispatch 能力的节点画按钮，纯人工列不画', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B40" onClose={() => {}} onOpenCard={() => {}} nodes={nodes as never} />)
+    expect(await screen.findByRole('button', { name: '跑「待审阅」' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '跑「待合并」' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '跑「待办」' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '跑「已完成」' })).not.toBeInTheDocument()
+  })
+
+  it('点按钮把节点名原样发给后端', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B40" onClose={() => {}} onOpenCard={() => {}} nodes={nodes as never} />)
+    fireEvent.click(await screen.findByRole('button', { name: '跑「待审阅」' }))
+    await waitFor(() => expect(vi.mocked(ledger.runCardStep)).toHaveBeenCalledWith('B40', '待审阅'))
+  })
+
+  it('卡的基线在节点的人工清单里时，按钮要提前说明它不会自动跑', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      ...detail, effective_base_branch: 'main',
+    } as never)
+    render(<CardDrawer id="B40" onClose={() => {}} onOpenCard={() => {}} nodes={nodes as never} />)
+    expect(await screen.findByTitle(/基线 main 在本节点的人工清单里/)).toBeInTheDocument()
+  })
+
+  it('没拿到节点定义时退回不画按钮，而不是画一堆写死的', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B40" onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('节点卡')
+    expect(screen.queryByRole('button', { name: /^跑「/ })).not.toBeInTheDocument()
   })
 })
 

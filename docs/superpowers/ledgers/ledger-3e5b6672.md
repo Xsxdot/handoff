@@ -7,3 +7,4 @@
 - Task 4 修复轮 1：lint 报 `CardDrawer.tsx:277:10 error 'priorityError' is assigned a value but never used`；补上优先级错误展示后定向/全量回归恢复通过。commit range: 15673bf5..HEAD。
 - Task 4 完成（spec/质量双裁决通过）：抽屉支持标题、优先级、验收判据、附件增删，保存按字段独立 PATCH，基线只读并说明原因；变异测试证明多发字段会失败。commit range: 15673bf5..HEAD（本 task commit）。
 - Task 5 完成（spec/质量双裁决通过）：关联 task 行可展开，复用 TicketsPanel 展示/回答工单，回答后重取 task；兼容 `pending_tickets` 与计划样例 `tickets`。定向工单测试、CardDrawer 24 项、全量 959 项通过。commit range: 9e524e01..HEAD（本 task commit）。
+- Task 6 完成（spec/质量双裁决通过）：CardDrawer 按可选 NodeDef 的 dispatch 动态生成节点按钮，泛化 step 为 string；CardsPage 按选中卡工作流拉最新版节点并标注已知版本缺口。定向节点/全量前端回归通过（94 files/963 tests）。commit range: bf474a67..HEAD（本 task commit）。
