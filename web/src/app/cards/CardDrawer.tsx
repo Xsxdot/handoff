@@ -208,7 +208,9 @@ export function CardDrawer({
   }, [detail, initialSection])
 
   const card = detail ? detail.card : null
-  const status = value(card, 'status', '')
+  // 显式给 string：value<T> 会把字面量实参 '' 推成字面量类型 ""，
+  // 那样 status === '已完成' 在类型上恒假，tsc -b 直接报 TS2367
+  const status = value<string>(card, 'status', '')
   const states = workflowStates?.length ? workflowStates : [status]
   const following = value(card, 'following', '')
   const driverSession = value(card, 'driver_session', '')
