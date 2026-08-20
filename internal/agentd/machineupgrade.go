@@ -44,7 +44,16 @@ func (s *Server) executeMachineUpgrade(ctx context.Context, m upgrade.Machine, t
 		return upgrade.Result{Verdict: upgrade.VerdictNeedsUpgrade, Status: upgrade.StatusFail,
 			Reason: "远端升级下载器未就绪"}
 	}
-	return upgrade.RemoteOne(ctx, s.log, m, client.New(target.Addr, target.Token),
+	// target 仅为 machineUpgradeRunner 缝的签名保留，选路已收进池。
+	// relay 机器没有 addr；推送 tar.gz 经 relay 走 yamux 流没有先例，见 spec §6
+	// 的真机验收项。
+	peer, err := s.pool.For(m.Name)
+	if err != nil {
+		s.log.Error("执行机升级：取客户端失败", "name", m.Name, "cause", err)
+		return upgrade.Result{Verdict: upgrade.VerdictUnreachable, Status: upgrade.StatusFail,
+			Reason: err.Error()}
+	}
+	return upgrade.RemoteOne(ctx, s.log, m, peer,
 		s.machineUpgradeInstaller, rel, upgrade.Options{Force: force}, progress)
 }
 
@@ -138,8 +147,17 @@ func (s *Server) handleMachineUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	probeCtx, cancel := context.WithTimeout(r.Context(), machineUpgradeProbeTimeout)
 	defer cancel()
-	s.log.Info("开始探测执行机升级目标", "name", name, "addr", target.Addr)
-	status, err := client.New(target.Addr, target.Token).Status(probeCtx)
+	peer, err := s.pool.For(name)
+	if err != nil {
+		s.log.Error("执行机升级：取客户端失败", "name", name, "cause", err)
+		result := upgrade.Result{Verdict: upgrade.VerdictUnreachable, Status: upgrade.StatusFail,
+			Reason: err.Error()}
+		s.writeMachineUpgradeResult(w, http.StatusBadGateway,
+			projectUpgradeMachine(name, nil, err), result, false)
+		return
+	}
+	s.log.Info("开始探测执行机升级目标", "name", name, "relay", target.IsRelay())
+	status, err := peer.Status(probeCtx)
 	probeErr := err
 	if errors.Is(err, client.ErrStatusUnsupported) {
 		// 旧 agentd 没有 status 端点：这是可判定的「过旧」，不是网络不可达。

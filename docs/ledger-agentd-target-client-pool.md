@@ -15,3 +15,4 @@
 - Task 10 修复轮 2；范围：`internal/targetclient/targetclient.go`；Mirror 回归原始失败为 `mirror_test.go:48: 镜像任务不对：[] err=<nil>`、`mirror_test.go:94: 镜像任务不对：[] err=<nil>`；修正完整 `http://` 地址被重复前缀的问题。
 - Task 10 完成；范围：`internal/agentd/mirror.go`、`internal/agentd/mirror_test.go`、`internal/agentd/mirror_pool_test.go`、`cmd/agentd.go`、`internal/targetclient/targetclient.go`；Mirror 回归、build、agentd/cmd 全包测试通过，`gofmt -l internal/agentd/ cmd/` 为空；双裁决通过。
 - Task 11 完成；范围：`internal/agentd/projectfanout.go`、`internal/agentd/pty_api.go`、`internal/agentd/fanout_relay_test.go`；定向 relay 测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 12 完成；范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_relay_test.go`；定向升级测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
