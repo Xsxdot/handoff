@@ -3,6 +3,8 @@ package ledger
 import (
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
 func TestTemplateVersioningAndDefaults(t *testing.T) {
@@ -14,7 +16,7 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	if err != nil || tp.Version != 1 {
 		t.Fatalf("feature-impl: %v %+v", err, tp)
 	}
-	if tp.Def.Executor != "opencode" || tp.Def.DisciplinePath == "" {
+	if tp.Def.Executor != "opencode" || tp.Def.Discipline != discipline.NameImplement || tp.Def.DisciplinePath != "" {
 		t.Fatalf("默认模板字段: %+v", tp.Def)
 	}
 	rv, err := s.GetTemplate("review-generic", 0)
@@ -46,5 +48,90 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	tp3, _ := s.GetTemplate("feature-impl", 0)
 	if tp3.Def.ModelByTarget["mac-02"] != "gpt-5.6-luna" {
 		t.Fatalf("覆盖丢失: %+v", tp3.Def)
+	}
+}
+
+// TestTemplateLegacyDisciplinePathMaps 老模板行用的是 discipline_path，
+// 宽松 JSON 解码会把它静默丢掉——必须映射成名字，否则审阅模板会悄悄
+// 退回 executor 兜底的实现块（正是本轮要修的缺陷换个方式复活）。
+func TestTemplateLegacyDisciplinePathMaps(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"docs/superpowers/discipline/block-review.md", "review"},
+		{"docs/superpowers/discipline/block-a.md", "implement"},
+		{"docs/superpowers/discipline/block-b.md", "implement"},
+	} {
+		got := disciplineNameFromLegacyPath(tc.path)
+		if got != tc.want {
+			t.Fatalf("路径 %s 应映射为 %q，实得 %q", tc.path, tc.want, got)
+		}
+	}
+}
+
+// TestTemplateLegacyUnknownPathMapsEmpty 认不出来的旧值映射为空（退回兜底），
+// 但调用方必须打 Warn——猜不出来可以退，不能不出声。
+func TestTemplateLegacyUnknownPathMapsEmpty(t *testing.T) {
+	if got := disciplineNameFromLegacyPath("some/custom/block.md"); got != "" {
+		t.Fatalf("未知路径应映射为空，实得 %q", got)
+	}
+}
+
+// TestGetTemplateMapsLegacyRow 存了老字段的行读出来要带上名字。
+func TestGetTemplateMapsLegacyRow(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.PutTemplate("legacy-review", TemplateDef{
+		Executor: "grok", Purpose: PurposeReview, BranchPrefix: "cards",
+		DisciplinePath: "docs/superpowers/discipline/block-review.md",
+		Prompt:         "审阅",
+	}); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	tpl, err := st.GetTemplate("legacy-review", 0)
+	if err != nil {
+		t.Fatalf("GetTemplate: %v", err)
+	}
+	if tpl.Def.Discipline != "review" {
+		t.Fatalf("老行应映射出 review，实得 %q", tpl.Def.Discipline)
+	}
+}
+
+// TestGetTemplateNewFieldWins 新字段非空时不看旧字段。
+func TestGetTemplateNewFieldWins(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.PutTemplate("both", TemplateDef{
+		Executor: "grok", Purpose: PurposeReview, BranchPrefix: "cards",
+		Discipline: "review", DisciplinePath: "docs/superpowers/discipline/block-a.md",
+		Prompt: "审阅",
+	}); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+	tpl, err := st.GetTemplate("both", 0)
+	if err != nil {
+		t.Fatalf("GetTemplate: %v", err)
+	}
+	if tpl.Def.Discipline != "review" {
+		t.Fatalf("新字段应胜出，实得 %q", tpl.Def.Discipline)
+	}
+}
+
+// TestDefaultTemplatesUseNames 出厂模板用名字，不再指路径。
+func TestDefaultTemplatesUseNames(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("EnsureDefaultTemplates: %v", err)
+	}
+	for name, want := range map[string]string{
+		"feature-impl":   discipline.NameImplement,
+		"review-generic": discipline.NameReview,
+	} {
+		tpl, err := st.GetTemplate(name, 0)
+		if err != nil {
+			t.Fatalf("GetTemplate(%s): %v", name, err)
+		}
+		if tpl.Def.Discipline != want {
+			t.Fatalf("%s 的纪律块名字应为 %q，实得 %q", name, want, tpl.Def.Discipline)
+		}
+		if tpl.Def.DisciplinePath != "" {
+			t.Fatalf("%s 不该再带旧路径字段，实得 %q", name, tpl.Def.DisciplinePath)
+		}
 	}
 }

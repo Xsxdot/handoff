@@ -8,20 +8,52 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
-// TemplateDef 派发模板定义。DisciplinePath 指向纪律块文件（仓内相对
-// 路径）；派发时读文件算 hash 快照进事件——「那次派发用的哪版纪律块」
-// 必须答得上。
+// TemplateDef 派发模板定义。
 type TemplateDef struct {
-	Executor       string            `json:"executor"`
-	Target         string            `json:"target"`
-	Purpose        string            `json:"purpose"`
-	BranchPrefix   string            `json:"branch_prefix"`
-	Prompt         string            `json:"prompt"`
-	DisciplinePath string            `json:"discipline_path"`
+	Executor     string `json:"executor"`
+	Target       string `json:"target"`
+	Purpose      string `json:"purpose"`
+	BranchPrefix string `json:"branch_prefix"`
+	Prompt       string `json:"prompt"`
+	// Discipline 是派发该模板时点名的纪律块**角色名**（如 implement / review）；
+	// 空=按 executor 兜底。
+	Discipline string `json:"discipline,omitempty"`
+	// DisciplinePath 是**已废弃**的旧字段（仓内相对路径）。
+	//
+	// 保留它不是为了兼容语义，是为了**不静默降级**：模板 def 存 JSON 且用宽松
+	// 解码，直接删字段会让老行解出空 Discipline、退回 executor 兜底——审阅模板
+	// 悄悄拿到实现块，正是本次重构要修的缺陷换个方式复活。读取时映射并 Warn，
+	// 提示用户 template put 重写；确认线上无残留后再删。
+	DisciplinePath string            `json:"discipline_path,omitempty"`
 	ModelByTarget  map[string]string `json:"model_by_target,omitempty"`
+}
+
+// legacyDisciplinePaths 是废弃的 discipline_path 取值 → 角色名的映射表。
+// 只认这三个出厂过的文件名：认不出来的自定义路径没法猜，映射为空退回兜底。
+var legacyDisciplinePaths = map[string]string{
+	"block-review.md": "review",
+	"block-a.md":      "implement",
+	"block-b.md":      "implement",
+}
+
+// disciplineNameFromLegacyPath 把废弃的 discipline_path 换算成角色名。
+//
+// 参数：path 旧字段原值（形如 docs/superpowers/discipline/block-review.md）。
+// 返回：角色名；认不出来时返回空串（调用方负责 Warn 并退回兜底）。
+//
+// 只按 basename 匹配已知的三个出厂文件名：用户自定义的路径指向的是什么纪律
+// 我们不知道，猜错比退回兜底更危险。
+func disciplineNameFromLegacyPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return legacyDisciplinePaths[filepath.Base(path)]
 }
 
 // Template 一个版本化的派发模板。
@@ -76,6 +108,18 @@ func (s *Store) GetTemplate(name string, version int) (Template, error) {
 	if err := jsonUnmarshal(raw, &t.Def); err != nil {
 		return Template{}, err
 	}
+	// 老行只有废弃的 discipline_path：映射成名字，映不出来就退回兜底，
+	// 两种情况都出声——静默降级会让审阅模板悄悄拿到实现块。
+	if t.Def.Discipline == "" && t.Def.DisciplinePath != "" {
+		if name := disciplineNameFromLegacyPath(t.Def.DisciplinePath); name != "" {
+			t.Def.Discipline = name
+			log().Warn("模板用了废弃字段 discipline_path，已按文件名映射为角色名；建议 template put 重写",
+				"template", t.Name, "legacy_path", t.Def.DisciplinePath, "name", name)
+		} else {
+			log().Warn("模板用了废弃字段 discipline_path 且认不出对应角色，本次派发将按 executor 兜底；建议 template put 重写",
+				"template", t.Name, "legacy_path", t.Def.DisciplinePath)
+		}
+	}
 	t.CreatedAt = toTime(ct)
 	return t, nil
 }
@@ -118,15 +162,15 @@ func (s *Store) EnsureDefaultTemplates() error {
 	defaults := map[string]TemplateDef{
 		"feature-impl": {
 			Executor: "opencode", Purpose: "implement", BranchPrefix: "cards",
-			DisciplinePath: "docs/superpowers/discipline/block-a.md",
-			Prompt:         "实现以下工作项：{{TITLE}}（卡 {{CARD}}）。\n验收判据：{{ACCEPT}}\n完整需求见随附 plan。",
+			Discipline: discipline.NameImplement,
+			Prompt:     "实现以下工作项：{{TITLE}}（卡 {{CARD}}）。\n验收判据：{{ACCEPT}}\n完整需求见随附 plan。",
 		},
 		"review-generic": {
 			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
 			// 审阅用只读纪律块：实现类纪律块写着「每个 task 完成即 commit」，
 			// 派给审阅者会让它在审阅分支上真的提交东西（2026-08-19 真机实测
 			// 出现过一次）——审阅的产出是裁决报文，不是提交
-			DisciplinePath: "docs/superpowers/discipline/block-review.md",
+			Discipline: discipline.NameReview,
 			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
 				"验收判据：{{ACCEPT}}\n" + reviewVerdictContract,
 		},
