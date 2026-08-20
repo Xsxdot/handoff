@@ -112,6 +112,39 @@ func initClonedRepo(t *testing.T, baseBranch string) string {
 	return clone
 }
 
+// newOriginAndClone 造一个裸 origin 与已推送初始提交的克隆，供基线分支
+// 补拉测试使用。两个仓库都在 t.TempDir() 下，避免污染被测仓库。
+func newOriginAndClone(t *testing.T) (origin, clone string) {
+	t.Helper()
+	bareParent := t.TempDir()
+	origin = filepath.Join(bareParent, "origin.git")
+	gitAt(t, bareParent, "init", "--bare", "-q", origin)
+	seed := initGitRepo(t)
+	gitAt(t, seed, "remote", "add", "origin", origin)
+	gitAt(t, seed, "push", "-q", "origin", "main")
+	gitAt(t, origin, "symbolic-ref", "HEAD", "refs/heads/main")
+	cloneParent := t.TempDir()
+	clone = filepath.Join(cloneParent, "clone")
+	gitAt(t, cloneParent, "clone", "-q", origin, clone)
+	gitAt(t, clone, "config", "user.email", "test@handoff.dev")
+	gitAt(t, clone, "config", "user.name", "handoff test")
+	return origin, clone
+}
+
+// commitOnOrigin 通过临时克隆向 origin 的 main 推一个提交，返回新提交 sha。
+// 直接在裸仓里无法创建提交，临时克隆也必须放在 t.TempDir()，不能建在仓库内。
+func commitOnOrigin(t *testing.T, origin, name, content string) string {
+	t.Helper()
+	writerParent := t.TempDir()
+	writer := filepath.Join(writerParent, "writer")
+	gitAt(t, writerParent, "clone", "-q", origin, writer)
+	gitAt(t, writer, "config", "user.email", "test@handoff.dev")
+	gitAt(t, writer, "config", "user.name", "handoff test")
+	sha := writeAndCommit(t, writer, name, content)
+	gitAt(t, writer, "push", "-q", "origin", "main")
+	return sha
+}
+
 // TestPrepareBranchCleanAndDirty 验证分支准备的两种前置：
 // 干净工作区 → 建出 handoff/<id8> 并切过去；脏工作区（已修改/未跟踪）→ ErrDirtyWorktree
 // 拒绝派发，且拒绝后不得擅自建分支。
@@ -1117,6 +1150,37 @@ func TestGitNetArgsUnchangedWithoutProxy(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("gitNetArgs = %v，期望 %v", got, want)
 		}
+	}
+}
+
+// TestResolveBaseBranchAlwaysFetches 分支路径必须无条件补拉。
+//
+// 为什么不能照抄提交路径的「本地没有才拉」：分支名在本地**永远解析得到**
+// （那正是陈旧的那一份），拿「解析得到」当「不用拉」的信号，等于让这个 bug
+// 永远走不到修复路径。
+func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	// 在 origin 上再推一个提交，clone 此时还不知道。
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, err := ResolveBaseBranch(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("ResolveBaseBranch: %v", err)
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 origin 上的最新提交 %s，实得 %s（说明没补拉）", newSHA, got)
+	}
+}
+
+// TestResolveBaseBranchMissingBranch origin 上没有该分支时拒绝，且带原文。
+func TestResolveBaseBranchMissingBranch(t *testing.T) {
+	_, clone := newOriginAndClone(t)
+	_, err := ResolveBaseBranch(context.Background(), clone, "no-such-branch")
+	if err == nil {
+		t.Fatalf("不存在的分支应报错")
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") {
+		t.Fatalf("错误里应带分支名: %v", err)
 	}
 }
 

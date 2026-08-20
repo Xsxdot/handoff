@@ -954,6 +954,37 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 	return bl, nil
 }
 
+// ResolveBaseBranch 把基线**分支名**解析成完整 sha，起点取 origin 上的那一份。
+//
+// 参数：repo 任务仓库路径；branch 基线分支名。
+// 返回：origin/<branch> 的完整 sha；分支在 origin 上不存在或 fetch 失败时报错。
+//
+// 与 ResolveBaseline（提交路径）唯一的、也是必须的不同：**无条件 fetch**。
+// 提交路径是「本地没有才拉」，因为 commit sha 在本地要么有要么没有，是可靠
+// 信号；而分支名在本地永远解析得到——那正是陈旧的那一份。拿「解析得到」当
+// 「不用拉」的信号，会让「执行机镜像陈旧导致起点错」这个 bug 永远不触发
+// 修复路径。
+func ResolveBaseBranch(ctx context.Context, repo, branch string) (string, error) {
+	log().Info("解析基线分支，补拉远端", "repo", repo, "branch", branch, "timeout", FetchTimeout)
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	if _, stderr, err := gitRunNet(fctx, repo, "fetch", "origin", branch); err != nil {
+		log().Error("基线分支补拉失败", "repo", repo, "branch", branch,
+			"stderr", truncateRunes(stderr, 500), "cause", err)
+		return "", fmt.Errorf("%w: 基线分支 %q 补拉失败（fetch 输出：%s）",
+			ErrBaseCommitMissing, branch, strings.TrimSpace(truncateRunes(stderr, 300)))
+	}
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		log().Warn("基线分支解析失败", "repo", repo, "branch", branch,
+			"stderr", truncateRunes(stderr, 300))
+		return "", fmt.Errorf("%w: 基线分支 %q 在 origin 上不存在", ErrBaseCommitMissing, branch)
+	}
+	sha := strings.TrimSpace(out)
+	log().Info("基线分支解析完成", "repo", repo, "branch", branch, "start", sha)
+	return sha, nil
+}
+
 // headCommit 取仓库当前 HEAD 的完整 sha。
 //
 // 返回空串只对应「仓库一个提交都没有」：仓库有效性已由 Dispatch 前置的

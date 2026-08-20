@@ -2250,6 +2250,9 @@ func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
 	wantBase := gitOut(t, clone, "rev-parse", "upstream/shared-base")
 	m := compensateOnlyManager(t)
 	pid := registerTestProject(t, m, clone)
+	// D2 的分支起点会无条件 fetch origin；这个 B76 夹具原本只为解析路径
+	// 配了不可出网的假 origin，改成已有的本地 upstream 才能同时覆盖两条语义。
+	gitAt(t, clone, "remote", "set-url", "origin", gitOut(t, clone, "remote", "get-url", "upstream"))
 
 	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
