@@ -96,7 +96,11 @@ export function useChangedFiles(taskId: string | null): Map<string, ChangeStatus
       .then((r) => {
         if (!cancelled) setFiles(parseChangedFiles(r.diff))
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        // 角标是装饰性的，取不到就不显示——但**不能连一声都不吭**。
+        // 真机实测：任务归档后 worktree 被回收，diff 端点 500，这里静默吞掉，
+        // 表现成「文件树的颜色莫名其妙没了」，查了很久才回到这一行。
+        console.warn('[changedFiles] 取任务 diff 失败，本次不显示改动角标：', err)
         if (!cancelled) setFiles(new Map())
       })
     return () => {
