@@ -156,6 +156,39 @@ func TestLaunchdStartEnablesBeforeBootstrap(t *testing.T) {
 	}
 }
 
+// bootstrap 与 kickstart 都失败时，两个命令的原文都必须保留。
+//
+// why：bootstrap 的失败通常才是真因；只报 kickstart 的「找不到服务」会把
+// 用户误导到「没装」，但 ensureInstalled 刚确认过 plist 确实存在。
+func TestLaunchdStartReportsBootstrapAndKickstartFailures(t *testing.T) {
+	m, _, _ := newTestLaunchd(t, nil)
+	m.run = func(name string, args ...string) ([]byte, error) {
+		if len(args) == 0 {
+			return nil, nil
+		}
+		switch args[0] {
+		case "bootstrap":
+			return []byte("Load failed: 5: Input/output error"), errors.New("exit status 5")
+		case "kickstart":
+			return []byte("Could not find service in domain"), errors.New("exit status 113")
+		default:
+			return []byte("ok"), nil
+		}
+	}
+	err := m.Start()
+	if err == nil {
+		t.Fatal("bootstrap 与 kickstart 都失败时 Start 必须报错")
+	}
+	for _, want := range []string{
+		"Load failed: 5: Input/output error",
+		"Could not find service in domain",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误必须保留两次尝试的原文 %q，得到: %v", want, err)
+		}
+	}
+}
+
 // Restart 发 SIGTERM，不发 kickstart -k。
 //
 // why：kickstart -k 是 SIGKILL，会把在途任务砍在半路；SIGTERM 走的是

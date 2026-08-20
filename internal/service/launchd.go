@@ -193,9 +193,12 @@ func (m *launchdManager) ensureInstalled() (string, error) {
 }
 
 // waitRunning 轮询到服务真的在跑为止。超时返回 false。
+//
+// 这里不调用 Status，因为它还会查询 print-disabled，而 start 的 25 轮复核只
+// 关心运行态。
 func (m *launchdManager) waitRunning() bool {
 	for i := 0; i < launchdVerifyAttempts; i++ {
-		if st, err := m.Status(); err == nil && st.Running {
+		if m.currentPid() != 0 {
 			return true
 		}
 		m.sleep(launchdVerifyInterval)
@@ -204,9 +207,12 @@ func (m *launchdManager) waitRunning() bool {
 }
 
 // waitStopped 轮询到服务真的不在跑为止。超时返回 false。
+//
+// 这里不调用 Status，因为它还会查询 print-disabled，而 stop 的 25 轮复核只关
+// 心运行态。
 func (m *launchdManager) waitStopped() bool {
 	for i := 0; i < launchdVerifyAttempts; i++ {
-		if st, err := m.Status(); err == nil && !st.Running {
+		if m.currentPid() == 0 {
 			return true
 		}
 		m.sleep(launchdVerifyInterval)
@@ -215,6 +221,10 @@ func (m *launchdManager) waitStopped() bool {
 }
 
 // currentPid 取当前实例的 pid，取不到（未加载 / 没在跑）返回 0。
+//
+// 它也是 start/stop 复核使用的轻量运行态探针：launchctl print 查不到 job，或
+// 输出里没有 pid 行，这两种情况都返回 0；非零 pid 就代表当前有 agentd 实例在跑。
+// 这正是轮询可以用 pid 代替完整 Status 的等价关系。
 func (m *launchdManager) currentPid() int {
 	out, err := m.run("launchctl", "print", m.target())
 	if err != nil {
@@ -249,13 +259,17 @@ func (m *launchdManager) Start() error {
 		return fmt.Errorf("解除停用失败: %s（%w）", strings.TrimSpace(string(out)), eerr)
 	}
 	if out, berr := m.run("launchctl", "bootstrap", m.domain(), path); berr != nil {
+		bootstrapOutput := strings.TrimSpace(string(out))
 		m.log.Debug("bootstrap 报错，改用 kickstart（已加载时属正常）",
-			"output", strings.TrimSpace(string(out)))
+			"output", bootstrapOutput)
 		if kout, kerr := m.run("launchctl", "kickstart", m.target()); kerr != nil {
-			m.log.Error("启动 launchd 服务失败", "label", LaunchdLabel,
-				"cause", kerr, "output", strings.TrimSpace(string(kout)))
-			return fmt.Errorf("启动 launchd 服务失败: %s（%w）",
-				strings.TrimSpace(string(kout)), kerr)
+			kickstartOutput := strings.TrimSpace(string(kout))
+			m.log.Error("启动 launchd 服务失败：先试 bootstrap 再试 kickstart，两个都失败",
+				"label", LaunchdLabel,
+				"bootstrap_cause", berr, "bootstrap_output", bootstrapOutput,
+				"kickstart_cause", kerr, "kickstart_output", kickstartOutput)
+			return fmt.Errorf("启动 launchd 服务失败：先试 bootstrap 再试 kickstart，两个都失败；bootstrap 原文: %s（%v）；kickstart 原文: %s（%w）",
+				bootstrapOutput, berr, kickstartOutput, kerr)
 		}
 	}
 	if !m.waitRunning() {
