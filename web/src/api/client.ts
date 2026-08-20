@@ -154,8 +154,8 @@ export function postJSON<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
-// putJSON 以 JSON body 发起 PUT 请求。
-function putJSON<T>(path: string, body: unknown): Promise<T> {
+// putJSON 以 JSON body 发起 PUT 请求；除 method 外与 postJSON 相同。
+export function putJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -163,10 +163,19 @@ function putJSON<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
-// patchJSON 以 JSON body 发起 PATCH 请求。
-function patchJSON<T>(path: string, body: unknown): Promise<T> {
+// patchJSON 以 JSON body 发起 PATCH 请求；除 method 外与 postJSON 相同。
+export function patchJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// deleteJSON 以 JSON body 发起 DELETE 请求；除 method 外与 postJSON 相同。
+export function deleteJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
