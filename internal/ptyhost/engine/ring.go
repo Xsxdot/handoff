@@ -1,4 +1,4 @@
-package ptyhost
+package engine
 
 // ring 是一个定长字节环形缓冲，用于 PTY 输出的断线续传回放。
 //

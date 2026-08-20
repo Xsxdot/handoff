@@ -10,24 +10,26 @@
 // 文件名用 _other 而不是 _windows：Go 会把 _windows.go 当成隐式 GOOS 约束，
 // 那样 `//go:build !unix` 里除 windows 外的其它非 unix 平台就没有实现了。
 // 与 internal/prochost/platform_other.go 同款。
-package ptyhost
+package engine
 
 import (
 	"os"
 	"os/exec"
+
+	"github.com/Xsxdot/handoff/internal/ptyhost"
 )
 
 const ptySupported = false
 
 func startPty(shell, cwd string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
-	return nil, nil, ErrNotSupported
+	return nil, nil, ptyhost.ErrNotSupported
 }
 
-func resizePty(f *os.File, cols, rows int) error { return ErrNotSupported }
+func resizePty(f *os.File, cols, rows int) error { return ptyhost.ErrNotSupported }
 
-func terminatePty(cmd *exec.Cmd) error { return ErrNotSupported }
+func terminatePty(cmd *exec.Cmd) error { return ptyhost.ErrNotSupported }
 
-func killPty(cmd *exec.Cmd) error { return ErrNotSupported }
+func killPty(cmd *exec.Cmd) error { return ptyhost.ErrNotSupported }
 
 // waitExitCode 在本平台永远不会被调用（会话根本起不来），返回 -1 表示未知。
 func waitExitCode(cmd *exec.Cmd) int { return -1 }
