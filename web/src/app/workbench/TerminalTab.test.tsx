@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TerminalTab } from './TerminalTab'
 import type { BaseDir } from './useWorkbench'
@@ -158,6 +158,50 @@ describe('TerminalTab', () => {
     unmount()
     resolveCreate({ id: 'orphan-1', base_path: WS.path })
     await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('orphan-1', ''))
+  })
+
+  // 1008 = 服务端判死这条订阅，前端不重连（api/pty.ts 的终止语义）。最常见的
+  // 一种是 agentd 重启过：PTY 会话只活在它的进程内存里，重启即全没，而页面里
+  // 这个 tab 还记着旧 id。此时只给一行红字等于把 tab 变成死物，用户唯一的出路
+  // 是关掉重开——那正是这个按钮要替他做的事。
+  it('会话被判死（1008）时给出重开入口：点一下就在同一基准目录建新会话', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="dead-1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onTerminal({ message: '终端会话不存在', closeCode: 1008 })
+    expect(await screen.findByText(/终端会话不存在/)).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: /重开/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    expect(createPtySession.mock.calls[0][0]).toMatchObject({
+      base_kind: 'workspace', base_path: '/home/dev/handoff',
+    })
+  })
+
+  it('重开后把新会话 id 回报给上层——不回报的话切一次 tab 又回到那个死 id', async () => {
+    const onSession = vi.fn()
+    render(<TerminalTab base={WS} seq={1} sessionId="dead-1" onSession={onSession} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onTerminal({ message: '终端会话不存在', closeCode: 1008 })
+    fireEvent.click(await screen.findByRole('button', { name: /重开/ }))
+    await waitFor(() => expect(onSession).toHaveBeenCalledWith('new-1'))
+  })
+
+  it('重开后那行红字消失——留着它会让人以为新会话也是坏的', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="dead-1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onTerminal({ message: '终端会话不存在', closeCode: 1008 })
+    fireEvent.click(await screen.findByRole('button', { name: /重开/ }))
+    await waitFor(() => expect(screen.queryByText(/终端会话不存在/)).not.toBeInTheDocument())
+  })
+
+  // 只有终止态（1008）才给按钮：其余关闭码 api/pty.ts 还在退避重连，此时给一个
+  // 「重开」等于鼓励用户在重连成功前再造一个会话，白留一个 shell。
+  it('普通断线（还在重连）不给重开按钮', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onError('连接异常断开（agentd 未运行或握手鉴权失败？）', 1006)
+    expect(await screen.findByText(/连接异常断开/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /重开/ })).not.toBeInTheDocument()
   })
 
   it('已回报过的会话在卸载时不删——切 tab 不能杀掉跑了一晚上的 build', async () => {
