@@ -4,3 +4,4 @@
 2026-08-20 Task 4 修复轮 1；双裁决初检发现新增客户端导出函数的参数/返回/注意事项注释不完整，且文件头职责遗漏工作台接口，已补齐；commit 范围：web/src/api/client.ts、ledger。
 2026-08-20 Task 5 修复轮 1；双裁决初检发现 isEmptyWorkbench 导出函数缺少参数/返回/注意事项说明，已补齐；commit 范围：web/src/app/workbench/persist.ts、ledger。
 2026-08-20 Task 6 修复轮 1；类型检查发现计划样例的 HomeTab 导入未使用（TS6133），已删除无用导入；commit 范围：web/src/app/homedock/dockPersist.test.ts、ledger。
+2026-08-20 Task 7 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/tree/ProjectTree.tsx、web/src/app/workbench/usePtyRestore.ts、web/src/app/workbench/baseKey.test.ts、ledger；验证：baseKey 4 项、web typecheck、web 全量 855 项通过。

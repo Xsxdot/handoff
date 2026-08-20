@@ -135,11 +135,15 @@ function dirLabel(ws: Workspace): string {
 // 参数：project 所属项目；machine 机器名（""=本机）；ws 目录节点
 // 返回：可直接交给 useWorkbench.select 的基准目录
 //
-// key 用绝对路径：同一台机器上路径唯一，且它正是后端白名单比对的那个值，
-// 前后端用同一个字符串做身份，不需要额外的映射表。
+// key 必须带机器维度：两台机器上完全可能出现同路径的工作树（同一个项目
+// 在两台开发机上 clone 到同一个位置），不带机器名它们的 tab 组会撞进同一个
+// key 里混在一起。形状与 home 基准的 `~` / `~@machine` 同构。
+//
+// machine 为空串（本机）时 key **逐字节等于 path**，与改动前完全一致——
+// 单机用户的既有行为不受影响。
 export function workspaceBase(project: ProjectNode, machine: string, ws: Workspace): BaseDir {
   return {
-    key: ws.path,
+    key: machine ? `${ws.path}@${machine}` : ws.path,
     kind: 'workspace',
     path: ws.path,
     label: dirLabel(ws),
@@ -521,7 +525,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                           const c = wsCounts(project, loc.machine, ws)
                           return {
                             isMain: ws.is_main,
-                            selected: selectedKey === ws.path,
+                            // 必须走 workspaceBase 而不是直接比 path：key 带机器维度之后
+                            // 拿 path 比会让远端目录永远未被选中，进而被当成空闲折叠掉
+                            selected: selectedKey === workspaceBase(project, loc.machine, ws).key,
                             active: c.running + c.pending,
                           }
                         },

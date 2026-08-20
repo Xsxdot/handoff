@@ -20,7 +20,7 @@ import { errorMessage } from '../lib/format'
 
 // baseOfSession 把一个会话反解成它所属的基准目录。
 //
-// 工作树的 key 必须与 ProjectTree.workspaceBase 完全一致（绝对路径）——
+// 工作树的 key 必须与 ProjectTree.workspaceBase 完全一致（含机器维度）——
 // 两边对不上就会出现「左栏点进这个目录，恢复出来的终端却在另一个组里」。
 //
 // label 退回目录名：会话不带分支信息，而树上的 label 优先用分支名。这只影响
@@ -34,7 +34,16 @@ export function baseOfSession(s: PtySession): BaseDir {
     return HOME_BASE
   }
   const name = s.base_path.split('/').filter(Boolean).pop() ?? s.base_path
-  return { key: s.base_path, kind: 'workspace', path: s.base_path, label: name, projectName: '', machine: s.machine }
+  // key 与 ProjectTree.workspaceBase 必须逐字节一致，含机器维度——
+  // 两边对不上就会出现「左栏点进这个目录，恢复出来的终端却在另一个组里」
+  return {
+    key: s.machine ? `${s.base_path}@${s.machine}` : s.base_path,
+    kind: 'workspace',
+    path: s.base_path,
+    label: name,
+    projectName: '',
+    machine: s.machine,
+  }
 }
 
 // usePtyRestore 在挂载时恢复一次终端会话。
