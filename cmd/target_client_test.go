@@ -41,3 +41,31 @@ targets:
 		t.Fatalf("relay endpoint = %+v", ep)
 	}
 }
+
+// TestNamedTargetNoEndpointReportsClearly：无端点的 target 报清楚的错，
+// 而不是造出一个注定失败的直连 client。
+//
+// why：这正是 relay 显示问题的镜像面——CLI 侧本来就不会走到这里，但重构后
+// 两侧共用一个工厂，这条断言保证共用之后 CLI 的错误语义只会变好不会变差。
+func TestNamedTargetNoEndpointReportsClearly(t *testing.T) {
+	cfg := writeTestConfig(t, `listen: "127.0.0.1:7777"
+token: "local-token"
+targets:
+  broken:
+    token: "some-token"
+`)
+	resetFlags(t)
+	configPath = cfg
+	targetName = "broken"
+
+	_, cleanup, err := newTargetClient()
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("无端点的 target 必须报错")
+	}
+	if !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("错误要点名 target，实得 %v", err)
+	}
+}
