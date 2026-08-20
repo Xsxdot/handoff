@@ -17,7 +17,7 @@ func TestStepFlagHelpMentionsNodeName(t *testing.T) {
 	if !strings.Contains(flag.Usage, "节点名") {
 		t.Fatalf("--step 应说明接收节点名: %s", flag.Usage)
 	}
-	for _, stale := range []string{strings.Join([]string{"review", "merge"}, "|"), strings.Join([]string{"环节", "只认"}, "")} {
+	for _, stale := range []string{"review|merge", "环节只认"} {
 		if strings.Contains(flag.Usage, stale) {
 			t.Fatalf("--step 的说明还写着写死的白名单 %q: %s", stale, flag.Usage)
 		}
