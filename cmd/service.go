@@ -11,7 +11,8 @@
 //     或 kill agentd；单元没装时一律硬拒，不代为 install
 //   - 不改 handoff 的配置文件：托管与配置是两件事，配置走 handoff init
 //   - 托管之后 agentd 的形态会变：手动 Ctrl-C 会被管理器拉回，停服务要用
-//     systemctl stop / launchctl bootout。install 成功时会把这句打给用户
+//     handoff service stop；彻底摘掉托管用 handoff service uninstall。install
+//     成功时会把这两种处置打给用户
 package cmd
 
 import (
@@ -120,7 +121,7 @@ func installService(out io.Writer, cfgPath string) error {
 	// 形态变化必须说清楚：托管之后手动 Ctrl-C 会被拉回来，这是最容易
 	// 让人以为「服务停不掉」的一点
 	fmt.Fprintf(out, "\n注意     agentd 现在由 %s 托管，崩溃或退出都会被自动拉起。\n", m.Kind())
-	fmt.Fprintf(out, "         想真正停掉它请用 handoff service uninstall，Ctrl-C 只会让它被重新拉起。\n")
+	fmt.Fprintf(out, "         临时停掉用 handoff service stop；彻底摘掉托管用 handoff service uninstall。\n")
 	return nil
 }
 
