@@ -9,8 +9,9 @@
 //   - 不解释 broken：目录留着、进程不动，只记 Error 让人处理
 //   - 不参与 agentd 崩溃或升级重启；没有显式 stop 意图时不会杀会话
 //
-// 为什么显式 stop 一起停而崩溃/升级不停：用户敲 service stop 的意图是让这台机器上
-// 的 handoff 全部停止；升级则明确要求会话跨进程重启保留，两者不能靠猜测合并。
+// 为什么显式 stop 一起停而崩溃/升级不停：显式 stop 的入口会调用
+// ShutdownPtySessions；信号关停与进程内 Trigger（包括升级换版）只取消后台扫描，
+// 让 ptyhost 跨 agentd 生命周期继续持有会话。两类意图不能共用一个会杀会话的 cleanup。
 package agentd
 
 import (
@@ -71,6 +72,16 @@ func (s *Server) reclaimPtySessions() error {
 // 注意：该导出薄壳只供 cmd 启动接线，实际三态逻辑在 reclaimPtySessions。
 func (s *Server) ReclaimPtySessions() error { return s.reclaimPtySessions() }
 
+// GracefulShutdownCleanup 返回 agentd 通用优雅关停使用的 cleanup 闭包。
+//
+// 参数：wdCancel 是后台看门狗与镜像循环的取消函数。
+// 返回：只取消这些 agentd 内部后台循环的 cleanup；不会关闭任何 PTY 会话。
+// 注意：信号关停与进程内 Trigger 走同一条 Shutdown 路径，包含升级换版；显式停止
+// PTY 必须由独立的显式 stop 入口调用 ShutdownPtySessions，不能挂在这里。
+func (s *Server) GracefulShutdownCleanup(wdCancel context.CancelFunc) func() {
+	return func() { wdCancel() }
+}
+
 // shutdownPtySessions 显式停止全部已登记的 PTY 会话。
 //
 // 参数：ctx 是 agentd 关停上下文；函数会在最多 ptyShutdownWait 后返回。
@@ -109,9 +120,10 @@ func (s *Server) shutdownPtySessions(ctx context.Context) {
 	}
 }
 
-// ShutdownPtySessions 在 agentd 显式关停清理阶段停止全部 PTY 会话。
+// ShutdownPtySessions 在 agentd 显式停止路径中停止全部 PTY 会话。
 //
 // 参数：ctx 是调用方的关停上下文。
 // 返回：无；内部固定使用 2 秒总预算。
-// 注意：该导出薄壳只供 cmd 启动接线，崩溃和升级路径不调用它。
+// 注意：该入口由显式停止路径调用，不挂在信号关停或进程内 Trigger（包括升级换版）上；
+// 崩溃、OOM 与升级重启都必须让 ptyhost 留存。
 func (s *Server) ShutdownPtySessions(ctx context.Context) { s.shutdownPtySessions(ctx) }

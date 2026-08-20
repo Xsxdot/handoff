@@ -271,11 +271,8 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), func() {
-			// 先停后台扫描，再显式 kill PTY；升级路径只有在这里被区分为 stop 时才收口。
-			wdCancel()
-			srv.ShutdownPtySessions(context.Background())
-		}, listenAddrs...)
+		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()),
+			srv.GracefulShutdownCleanup(wdCancel), listenAddrs...)
 	},
 }
 

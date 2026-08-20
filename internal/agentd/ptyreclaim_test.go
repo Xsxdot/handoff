@@ -10,9 +10,12 @@ package agentd
 import (
 	"bytes"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -107,6 +110,67 @@ func TestPtyReclaimMissingRoot(t *testing.T) {
 	}
 	if list := s.pty.List(); len(list) != 0 {
 		t.Fatalf("List = %+v，期望空", list)
+	}
+}
+
+// TestGracefulShutdownKeepsPtySession 优雅 Trigger 与信号共用的关停路径不得杀 PTY。
+//
+// 不起真实 hostproc：reclaim 脚手架已经把一个 live 会话登记进 Host；若通用 cleanup
+// 错误调用 ShutdownPtySessions，假 socket 会让 Close 失败并留下可审计的停止警告，
+// 因此同时断言会话仍登记且没有进入 Close 失败分支。
+func TestGracefulShutdownKeepsPtySession(t *testing.T) {
+	requireLockSupport(t)
+	root := t.TempDir()
+	meta := reclaimMeta("graceful")
+	if err := sessdir.Create(root, meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := prochost.AcquireLock(sessdir.LockPath(root, meta.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	s, logs := reclaimServer(root)
+	if err := s.reclaimPtySessions(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := &http.Server{Handler: http.NewServeMux()}
+	sd := NewShutdown(quietLogger())
+	wdCanceled := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- sd.serveWithListeners([]net.Listener{ln}, httpSrv,
+			s.GracefulShutdownCleanup(func() { close(wdCanceled) }))
+	}()
+	waitListening(t, ln.Addr().String())
+	sd.Trigger("update:v-next")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("优雅关停应返回 nil: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("优雅关停未返回")
+	}
+	select {
+	case <-wdCanceled:
+	default:
+		t.Fatal("优雅关停应取消 watchdog")
+	}
+	if list := s.pty.List(); len(list) != 1 || list[0].ID != meta.ID {
+		t.Fatalf("优雅关停后 PTY 会话不应被移除: %+v", list)
+	}
+	if bytes.Contains(logs.Bytes(), []byte("停止 PTY 会话失败")) {
+		t.Fatalf("优雅关停不应进入 PTY Close 路径: %s", logs.String())
 	}
 }
 
