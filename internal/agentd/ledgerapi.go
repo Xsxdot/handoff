@@ -1,6 +1,6 @@
 // 账本 HTTP API：web 看板的唯一账本通道。薄层——业务全在
 // internal/ledger，此处只做解码/调用/编码与错误翻译。写动作：
-// move/note/answer/accept 同步返回；step（审阅/合并环节）异步 202，
+// move/note/answer/accept 同步返回；step（工作流节点）异步 202，
 // 编排在 internal/ledgerstep。实现类派发仍只由 CLI 承载——它要挂 plan 文件，
 // 浏览器里没有那个文件。
 package agentd
@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
@@ -33,6 +35,9 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
+	api.HandleFunc("GET /api/flows/{name}", s.withLedger(s.handleFlowGet))
+	api.HandleFunc("PUT /api/flows/{name}", s.withLedger(s.handleFlowPut))
+	api.HandleFunc("GET /api/disciplines", s.withLedger(s.handleDisciplineNames))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
@@ -257,14 +262,14 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
-// handleCardStep 发起一个卡环节（审阅/合并），受理即 202。
+// handleCardStep 发起一个卡节点，受理即 202。
 //
 // 为什么是 202 而不是 200：环节要跑几分钟到几十分钟，200 会让前端以为
 // 它已经做完了。202 的语义正是「收到了，正在做」，界面据此把按钮置灰并
 // 提示「进展见下方 Timeline」。
 //
 // 为什么不支持 implement：实现派发通常要挂 plan 文件，浏览器里没有那个文件。
-// 它留在 CLI，这是交接文档「按**环节**派发」的字面含义。
+// 它留在 CLI；其余节点名透传给卡钉工作流，由 StepRunner 做合法性判断。
 func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Step string `json:"step"`
@@ -274,20 +279,26 @@ func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if req.Step == discipline.NameImplement {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "implement 节点只能通过 CLI 派发（浏览器没有 plan 文件）",
+		})
+		return
+	}
 	actor := "web:" + r.RemoteAddr
 	err := s.startCardStep(id, req.Step, actor)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 	case errors.Is(err, errStepInFlight):
-		s.log.Warn("环节被拒：已有在飞", "card", id, "step", req.Step, "cause", err)
+		s.log.Warn("节点被拒：已有在飞", "card", id, "node", req.Step, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ledger.ErrNotFound):
 		ledgerErr(w, err)
 	default:
-		// 其余都是前置校验失败（环节名不认、项目未登记）：这些是调用方能改的，
+		// 其余都是前置校验失败（节点名不在卡钉工作流、卡不存在）：这些是调用方能改的，
 		// 400 比 500 更准确，且错误原文里已经写了该怎么办
-		s.log.Warn("环节被拒", "card", id, "step", req.Step, "cause", err)
+		s.log.Warn("节点被拒", "card", id, "node", req.Step, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 }
@@ -374,6 +385,94 @@ func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workflows": flows, "templates": templates})
+}
+
+// handleFlowGet 取单条工作流的最新版本（含节点定义）。
+//
+// 老 def（只有 states）读出时会被补出等价的纯人工节点序列，所以前端永远
+// 只需要看 nodes 一个字段。
+func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	workflow, err := s.ledger.GetWorkflow(name, 0)
+	if err != nil {
+		s.log.Warn("取工作流失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("读出工作流", "name", name, "version", workflow.Version, "nodes", len(workflow.Def.Nodes))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":    workflow.Name,
+		"version": workflow.Version,
+		"nodes":   workflow.Def.Nodes,
+		"states":  workflow.Def.States,
+	})
+}
+
+// handleFlowPut 发布该工作流的**下一个版本**。
+//
+// 注意：这不是「改」——工作流不可变版本化，每次保存都是插一个新版本，
+// 已经钉在老版本上的卡完全不受影响。想让老卡用新流程要显式迁移
+// （MigrateCardWorkflow），那是另一个动作。
+func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		Nodes []ledger.NodeDef `json:"nodes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Errorf("解析请求体: %w", err).Error()})
+		return
+	}
+	if len(body.Nodes) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nodes 不能为空"})
+		return
+	}
+	version, err := s.ledger.PutWorkflow(name, ledger.WorkflowDef{Nodes: body.Nodes})
+	if err != nil {
+		// 节点校验不过是用户输入问题（400），不是服务器故障（500）。
+		if errors.Is(err, ledger.ErrBadState) {
+			s.log.Warn("工作流节点校验未过", "name", name, "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Error("写工作流失败", "name", name, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("已发布工作流新版本", "name", name, "version", version, "nodes", len(body.Nodes))
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "version": version})
+}
+
+// handleDisciplineNames 列出可选的纪律块名：内置角色 + DataDir 下的自定义文件。
+//
+// 给节点配置的下拉用。返回去重升序的名字列表，不带正文——正文有专门的
+// 纪律块读写接口，列表接口没必要驮着几十 KB。
+func (s *Server) handleDisciplineNames(w http.ResponseWriter, r *http.Request) {
+	seen := map[string]bool{}
+	names := []string{}
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, name := range []string{
+		discipline.NameImplement, discipline.NameReview,
+		discipline.NameSpecDraft, discipline.NamePlanWriting, discipline.NameFinishing,
+	} {
+		add(name)
+	}
+	files, err := discipline.List(discipline.Dir(s.conf().DataDir))
+	if err != nil {
+		// 目录读不了不该让整个下拉空掉——内置的那几个仍然可用，如实告警即可。
+		s.log.Warn("列自定义纪律块失败，只返回内置", "cause", err)
+	}
+	for _, file := range files {
+		add(strings.TrimSuffix(file.Name, ".md"))
+	}
+	sort.Strings(names)
+	s.log.Info("列出纪律块名", "count", len(names), "custom", len(files))
+	writeJSON(w, http.StatusOK, map[string]any{"names": names})
 }
 
 func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {

@@ -52,6 +52,26 @@ func ledgerPost(t *testing.T, env *testAgentdEnv, path, body string) (int, strin
 	return resp.StatusCode, string(data)
 }
 
+func ledgerPut(t *testing.T, env *testAgentdEnv, path, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, env.ts.URL+path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(data)
+}
+
 type ledgerEnv struct {
 	*testAgentdEnv
 	ledger *ledger.Store
@@ -279,6 +299,96 @@ func TestCardStepRejectsImplement(t *testing.T) {
 	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"implement"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("应 400，实得 %d", code)
+	}
+}
+
+func TestFlowGetReturnsNodes(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/flows/feature")
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	var got struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+		Nodes   []struct {
+			Name     string `json:"name"`
+			Dispatch bool   `json:"dispatch"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码: %v（原文 %s）", err, body)
+	}
+	if got.Name != "feature" || got.Version < 1 || len(got.Nodes) == 0 {
+		t.Fatalf("响应不完整: %+v", got)
+	}
+}
+
+func TestFlowPutCreatesNewVersion(t *testing.T) {
+	env := newLedgerEnv(t)
+	payload := `{"nodes":[{"name":"待办","next":"进行中"},{"name":"进行中"}]}`
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature", payload)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	var got struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码: %v（原文 %s）", err, body)
+	}
+	if got.Version < 2 {
+		t.Fatalf("应发出新版本，得到 v%d", got.Version)
+	}
+}
+
+func TestFlowPutRejectsBadNodes(t *testing.T) {
+	env := newLedgerEnv(t)
+	// Next 指向不存在的节点：校验应在 Store 层拦下，HTTP 翻成 400 而不是 500。
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature",
+		`{"nodes":[{"name":"A","next":"查无此节点"}]}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("code = %d（想要 400），body = %s", code, body)
+	}
+}
+
+func TestDisciplinesListIncludesBuiltins(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/disciplines")
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", code, body)
+	}
+	var got struct {
+		Names []string `json:"names"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码: %v（原文 %s）", err, body)
+	}
+	for _, want := range []string{"implement", "review", "spec-draft", "plan-writing", "finishing"} {
+		found := false
+		for _, name := range got.Names {
+			if name == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("纪律块清单缺 %q: %v", want, got.Names)
+		}
+	}
+}
+
+func TestCardStepAcceptsNodeName(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "节点名透传")
+	// 占住环节槽位，挡住真派发——本用例只验「节点名不再被白名单拦掉」。
+	release := holdCardStep(t, env.srv, card.ID)
+	defer release()
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
+	if code == http.StatusBadRequest && strings.Contains(body, "review|merge") {
+		t.Fatalf("节点名仍被写死的白名单拦掉: %s", body)
+	}
+	if code != http.StatusConflict {
+		t.Logf("注意：槽位已占用时预期 409，实际 %d（%s）", code, body)
 	}
 }
 
