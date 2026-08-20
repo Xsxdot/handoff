@@ -78,3 +78,30 @@ describe('抽屉里的「需要你」', () => {
     expect(screen.queryByText(/需要你/)).not.toBeInTheDocument()
   })
 })
+
+describe('抽屉里的合并事件', () => {
+  it('branch_merged 使用专用摘要显示工作分支与基线', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B10', Title: '合并卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      relations: [],
+      events: [{
+        seq: 1,
+        card_id: 'B10',
+        type: 'branch_merged',
+        actor: 'node:merge',
+        payload: {
+          work_branch: 'feat/x',
+          pushed_work_branch: true,
+          merged_into: 'integration/y',
+          pushed_base: 'integration/y',
+        },
+        created_at: '',
+      }],
+      task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(<CardDrawer id="B10" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText(/合并 feat\/x → integration\/y/)).toBeInTheDocument()
+    expect(screen.queryByText(/\{/)).not.toBeInTheDocument()
+  })
+})

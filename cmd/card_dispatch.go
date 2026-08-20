@@ -24,7 +24,7 @@ var (
 	cardDispatchTarget     string
 	cardDispatchPlan       string
 	cardDispatchDiscipline string
-	cardDispatchNode       string
+	cardDispatchStep       string
 	cardDispatchRepo       string
 )
 
@@ -105,7 +105,7 @@ func targetEndpoint(target string) (addr, token string, err error) {
 	return "http://" + tgt.Addr, tgt.Token, nil
 }
 
-// dispatchResult 模板派发共用段的产出（回显 + 节点入口复用）。
+// dispatchResult 模板派发共用段的产出（回显 + 环节入口复用）。
 type dispatchResult struct {
 	Card            string `json:"card"`
 	Task            string `json:"task"`
@@ -118,7 +118,7 @@ type dispatchResult struct {
 
 // dispatchViaTemplate 模板派发的共用段：取模板 → 纪律块 hash → 拼 prompt
 // → 走既有 dispatch 通道 → LinkTask 挂账 → dispatched 快照。
-// 不含认领语义：实现类派发在调用前自行 CAS 认领；节点派发也复用此段，
+// 不含认领语义：实现类派发在调用前自行 CAS 认领；环节派发也复用此段，
 // 因而不会把待审阅卡拉回进行中。
 func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 	tplName, targetFlag, planPath, disciplineOverride, actor string) (dispatchResult, error) {
@@ -227,7 +227,7 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
-	Short: "按模板派发（派发即认领；--node review|merge 走节点执行器）",
+	Short: "按模板派发（派发即认领；--step review|merge 走自动环节）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -236,8 +236,8 @@ var cardDispatchCmd = &cobra.Command{
 		}
 		defer st.Close()
 		id, actor := args[0], ledgerActor()
-		if cardDispatchNode != "" {
-			return runNodeDispatch(cmd, st, id, cardDispatchNode, actor)
+		if cardDispatchStep != "" {
+			return runStepDispatch(cmd, st, id, cardDispatchStep, actor)
 		}
 		card, err := st.GetCard(id)
 		if err != nil {
@@ -275,7 +275,7 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖纪律块路径（测试/应急）")
-	cardDispatchCmd.Flags().StringVar(&cardDispatchNode, "node", "", "节点执行器：review|merge")
-	cardDispatchCmd.Flags().StringVar(&cardDispatchRepo, "repo", ".", "本地仓库目录（--node merge 的客观判据与合并在此跑）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "自动环节：review|merge")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchRepo, "repo", ".", "本地仓库目录（--step merge 的客观判据与合并在此跑）")
 	cardCmd.AddCommand(cardDispatchCmd)
 }

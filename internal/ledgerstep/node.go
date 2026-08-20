@@ -1,17 +1,18 @@
-// 审阅节点与合并节点的执行体。依赖全部经函数字段注入（RunReview/
+// 审阅环节与合并环节的执行体。依赖全部经函数字段注入（RunReview/
 // Objective/DoMerge），决策逻辑与副作用分离——单测覆盖决策，真机
 // 判据覆盖副作用（真派发/真 git）。
-package ledgernode
+package ledgerstep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
-// Action 节点执行的结论。
+// Action 环节执行的结论。
 type Action string
 
 const (
@@ -21,25 +22,25 @@ const (
 	ActionMerged     Action = "merged"
 )
 
-// Outcome 节点单次执行结果。
+// Outcome 环节单次执行结果。
 type Outcome struct {
 	Action  Action
 	Verdict Verdict
 	Reason  string
 }
 
-// ReviewNode 审阅节点。RunReview 跑一次审阅并返回最终报文。
-type ReviewNode struct {
+// ReviewStep 审阅环节。RunReview 跑一次审阅并返回最终报文。
+type ReviewStep struct {
 	St        *ledger.Store
-	Node      string
+	Step      string
 	RunReview func(ctx context.Context, card ledger.Card) (string, error)
 }
 
 // RunOnce 执行一轮审阅：查回合 → 超限转等人 → 跑审阅 → 解析裁决 →
 // 落账 → 给出下一步。
-func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
-	logger := slog.Default().With("node", n.Node, "card", cardID)
-	logger.Info("进入审阅节点")
+func (n *ReviewStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
+	logger := slog.Default().With("step", n.Step, "card", cardID)
+	logger.Info("进入审阅环节")
 	card, err := n.St.GetCard(cardID)
 	if err != nil {
 		return Outcome{}, err
@@ -48,12 +49,12 @@ func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error
 	if err != nil {
 		return Outcome{}, err
 	}
-	rounds := CountRounds(events, n.Node)
+	rounds := CountRounds(events, n.Step)
 	logger.Info("读取审阅回合数", "rounds", rounds, "max_rounds", MaxRounds)
 	if rounds >= MaxRounds {
 		reason := fmt.Sprintf("审阅超轮（%d/%d）", rounds, MaxRounds)
 		logger.Info("回合封顶转等人", "rounds", rounds)
-		if err := n.St.MarkNeedsHuman(cardID, reason, "node:"+n.Node); err != nil {
+		if err := n.St.MarkNeedsHuman(cardID, reason, "node:"+n.Step); err != nil {
 			return Outcome{}, err
 		}
 		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
@@ -65,10 +66,10 @@ func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error
 		// 看板上看着一切正常，而实际没人在推它。原文落 timeline 供取证。
 		logger.Warn("审阅未取到报文，转等人", "err", err)
 		if _, cerr := n.St.AddComment(cardID,
-			"审阅未取到裁决报文：\n"+err.Error(), "普通", "node:"+n.Node); cerr != nil {
+			"审阅未取到裁决报文：\n"+err.Error(), "普通", "node:"+n.Step); cerr != nil {
 			return Outcome{}, cerr
 		}
-		if merr := n.St.MarkNeedsHuman(cardID, "审阅未取到报文", "node:"+n.Node); merr != nil {
+		if merr := n.St.MarkNeedsHuman(cardID, "审阅未取到报文", "node:"+n.Step); merr != nil {
 			return Outcome{}, merr
 		}
 		return Outcome{Action: ActionNeedsHuman, Reason: "审阅未取到报文"}, nil
@@ -76,15 +77,15 @@ func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error
 	verdict, parseErr := ParseVerdict(message)
 	if parseErr != nil {
 		logger.Info("裁决解析失败转等人", "err", parseErr)
-		if _, err := n.St.AddComment(cardID, "裁决解析失败，审阅原文：\n"+message, "普通", "node:"+n.Node); err != nil {
+		if _, err := n.St.AddComment(cardID, "裁决解析失败，审阅原文：\n"+message, "普通", "node:"+n.Step); err != nil {
 			return Outcome{}, err
 		}
-		if err := n.St.MarkNeedsHuman(cardID, "裁决解析失败", "node:"+n.Node); err != nil {
+		if err := n.St.MarkNeedsHuman(cardID, "裁决解析失败", "node:"+n.Step); err != nil {
 			return Outcome{}, err
 		}
 		return Outcome{Action: ActionNeedsHuman, Reason: "裁决解析失败"}, nil
 	}
-	if err := n.St.RecordReviewVerdict(cardID, n.Node, verdict.Pass, verdict.Raw, "node:"+n.Node); err != nil {
+	if err := n.St.RecordReviewVerdict(cardID, n.Step, verdict.Pass, verdict.Raw, "node:"+n.Step); err != nil {
 		return Outcome{}, err
 	}
 	logger.Info("审阅裁决完成", "pass", verdict.Pass, "findings", len(verdict.Findings))
@@ -94,9 +95,9 @@ func (n *ReviewNode) RunOnce(ctx context.Context, cardID string) (Outcome, error
 	return Outcome{Action: ActionContinue, Verdict: verdict}, nil
 }
 
-// MergeNode 合并节点。Objective 跑客观判据（测试+gofmt）；DoMerge 执行
+// MergeStep 合并环节。Objective 跑客观判据（测试+gofmt）；DoMerge 执行
 // 合并。基线为空代表主线，永远不自动合并。
-type MergeNode struct {
+type MergeStep struct {
 	St        *ledger.Store
 	Objective func(ctx context.Context, card ledger.Card, base string) error
 	DoMerge   func(ctx context.Context, card ledger.Card, base string) error
@@ -110,11 +111,11 @@ const defaultMainLine = "main"
 
 // isMainline 判定一条基线是不是主线。
 //
-// why 不能只判空串：spec 说「基线就是 main 时该节点不自动合、直接打
+// why 不能只判空串：spec 说「基线就是 main 时该环节不自动合、直接打
 // 『待合并』等人」，空串只是「继承/项目默认主线」的表达之一。只认空串的话，
 // `card add --base-branch main` 建出的顶层热修卡会被当成集成线**自动合进
 // main**，主线的人工门就此失效（2026-08-19 真机验收发现）。
-func (m *MergeNode) isMainline(base string) bool {
+func (m *MergeStep) isMainline(base string) bool {
 	mainLine := m.MainLine
 	if mainLine == "" {
 		mainLine = defaultMainLine
@@ -122,10 +123,20 @@ func (m *MergeNode) isMainline(base string) bool {
 	return base == "" || base == mainLine
 }
 
+// mergeFailureReason 把两个合并前后执行阶段的工作分支缺失统一归类。
+// 客观判据和实际合并都可能执行补拉阶梯；若只在后者识别，真实链路通常会先
+// 被客观判据截住，用户就拿不到可操作的 handoff pull 提示。
+func mergeFailureReason(err error, fallback string) string {
+	if errors.Is(err, ErrWorkBranchMissing) {
+		return "工作分支缺失：先 handoff pull 再重试"
+	}
+	return fallback
+}
+
 // RunOnce 执行合并决策：主线转人工；集成线先跑客观判据，再尝试合并。
-func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
-	logger := slog.Default().With("node", "merge", "card", cardID)
-	logger.Info("进入合并节点")
+func (m *MergeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
+	logger := slog.Default().With("step", "merge", "card", cardID)
+	logger.Info("进入合并环节")
 	card, err := m.St.GetCard(cardID)
 	if err != nil {
 		return Outcome{}, err
@@ -157,26 +168,39 @@ func (m *MergeNode) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 
 	logger.Info("运行合并前客观判据", "base", base)
 	if err := m.Objective(ctx, card, base); err != nil {
-		logger.Info("客观判据红转等人", "err", err)
+		reason := mergeFailureReason(err, "合并判据未过")
+		logger.Info("客观判据红转等人", "reason", reason, "err", err)
 		if _, commentErr := m.St.AddComment(cardID, "合并前客观判据未过：\n"+err.Error(), "普通", "node:merge"); commentErr != nil {
 			return Outcome{}, commentErr
 		}
-		if err := m.St.MarkNeedsHuman(cardID, "合并判据未过", "node:merge"); err != nil {
+		if err := m.St.MarkNeedsHuman(cardID, reason, "node:merge"); err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "合并判据未过"}, nil
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 	}
 	logger.Info("客观判据通过，执行合并", "base", base)
 	if err := m.DoMerge(ctx, card, base); err != nil {
-		logger.Info("合并执行失败转等人", "err", err)
+		reason := mergeFailureReason(err, "合并冲突")
+		logger.Info("合并执行失败转等人", "reason", reason, "err", err)
 		if _, commentErr := m.St.AddComment(cardID, "合并失败（冲突清单/报错）：\n"+err.Error(), "普通", "node:merge"); commentErr != nil {
 			return Outcome{}, commentErr
 		}
-		if err := m.St.MarkNeedsHuman(cardID, "合并冲突", "node:merge"); err != nil {
+		if err := m.St.MarkNeedsHuman(cardID, reason, "node:merge"); err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "合并冲突"}, nil
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 	}
-	logger.Info("已自动合回基线", "base", base)
+	logger.Info("已自动合回基线并推 origin", "base", base)
+	branch, branchErr := taskBranch(m.St, card)
+	if branchErr != nil {
+		// 分支名取不到不推翻已经完成的合并——合并是真的做了，落账缺一条
+		// 比谎报失败好。留 Warn 供事后追。
+		logger.Warn("合并已完成但取工作分支名失败，事件缺分支字段", "err", branchErr)
+		branch = ""
+	}
+	if err := m.St.RecordBranchMerged(cardID, branch, base, true, "node:merge"); err != nil {
+		// 合并已经完成并推上 origin，不能因落账失败把成功动作伪装成失败。
+		logger.Warn("合并已完成但落账失败", "err", err)
+	}
 	return Outcome{Action: ActionMerged}, nil
 }

@@ -1,12 +1,13 @@
-// 节点注入点的生产实现：审阅派发走 dispatch 通道 + wait 终态 + 取
+// 环节注入点的生产实现：审阅派发走 dispatch 通道 + wait 终态 + 取
 // 报文；客观判据/合并在协调机本地工作区跑真命令。审阅 task 生命周期
 // 在此收口（裁决落账后 done 归档，不留孤儿）。
-package ledgernode
+package ledgerstep
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -51,7 +52,7 @@ func NewDispatchReview(st *ledger.Store,
 // failed），中途的权限门与工单一律跳过继续等。
 //
 // why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑
-// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，节点
+// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，环节
 // 几乎必然醒在 permission_request/question 上，随即去取最终报文，报
 // 「事件流中没有 completed/failed 最终报文」，一轮审阅白跑。函数头写的
 // 「wait 终态」是意图，WaitEvent 的语义不是，这里补上差额。
@@ -94,7 +95,7 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 	// completed 优先于失败类事件，即使失败排在后面：codex 收尾时常在
 	// completed 之后再补一条 turn_failed（app-server 的 WebSocket 断开），
 	// 那是传输层的假警报，不是回合失败——报告已经在 completed 里了。
-	// 节点执行器每轮审阅都派一条新 task 并等它的首个终态，所以「本次
+	// 环节执行器每轮审阅都派一条新 task 并等它的首个终态，所以「本次
 	// 生命周期内出现过 completed」就意味着报文存在，取它不会串到上一轮。
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type != proto.EventTypeCompleted {
@@ -144,8 +145,49 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 // taskBranch 从卡的最新 dispatched 快照取实际工作分支名。
 func taskBranch(st *ledger.Store, card ledger.Card) (string, error) {
 	// 走账本的 WorkBranch：它跳过审阅轮的快照。直接取「最后一条 dispatched」
-	// 会在审阅之后指向审阅分支，合并节点就会去合一条只读分支
+	// 会在审阅之后指向审阅分支，合并环节就会去合一条只读分支
 	return st.WorkBranch(card.ID)
+}
+
+// objectiveScript 客观判据脚本：补齐工作分支 → fetch → 在临时 worktree 里
+// 跑 gofmt 与测试。临时 worktree 的落点是 origin/<工作分支>，天然脱头。
+func objectiveScript(branch, base string) string {
+	return strings.Join([]string{
+		"set -e",
+		syncWorkBranchScript(branch),
+		"git fetch origin " + shellQuote(branch) + " " + shellQuote(base),
+		"tmp=$(mktemp -d)",
+		"git worktree add \"$tmp\" " + shellQuote("origin/"+branch),
+		`trap 'git worktree remove --force "$tmp"' EXIT`,
+		"cd \"$tmp\"",
+		"test -z \"$(gofmt -l .)\"",
+		"go test ./...",
+	}, "\n")
+}
+
+// mergeScript 合并脚本：补齐工作分支 → fetch → 在**脱头**的临时 worktree 里
+// 合并 → 推基线。
+//
+// 为什么落点是 origin/<基线> 而不是本地基线分支名（两条原因，缺一都会踩）：
+//  1. git 不允许同一分支同时在两个 worktree 里被 checkout——协调者主工作区
+//     恰好停在基线分支上时（合并完想看结果，很常见），worktree add 会直接失败
+//  2. 用刚 fetch 的 origin/<基线> 作落点，顺带消灭「本地基线陈旧」这个变量
+//
+// 随之而来的行为：协调者本地的基线分支引用**不再被推进**，新合并提交只落
+// origin。这是「origin 为权威」的直接推论，也免去一份会漂移的影子引用。
+func mergeScript(branch, base string) string {
+	return strings.Join([]string{
+		"set -e",
+		syncWorkBranchScript(branch),
+		"git fetch origin " + shellQuote(branch) + " " + shellQuote(base),
+		"tmp=$(mktemp -d)",
+		"git worktree add --detach \"$tmp\" " + shellQuote("origin/"+base),
+		`trap 'git worktree remove --force "$tmp"' EXIT`,
+		"cd \"$tmp\"",
+		"git merge --no-ff " + shellQuote("origin/"+branch) +
+			" || { git diff --name-only --diff-filter=U; git merge --abort; exit 1; }",
+		"git push origin HEAD:" + shellQuote(base),
+	}, "\n")
 }
 
 // NewLocalObjective 生产客观判据：在 repoDir 内 fetch 后，在临时 worktree
@@ -160,22 +202,16 @@ func NewLocalObjective(repoDir string, stores ...*ledger.Store) func(ctx context
 		if err != nil {
 			return err
 		}
-		script := strings.Join([]string{
-			"set -e",
-			"git fetch origin " + shellQuote(branch) + " " + shellQuote(base),
-			"tmp=$(mktemp -d)",
-			"git worktree add \"$tmp\" " + shellQuote("origin/"+branch),
-			"trap 'git worktree remove --force \"$tmp\"' EXIT",
-			"cd \"$tmp\"",
-			"test -z \"$(gofmt -l .)\"",
-			"go test ./...",
-		}, "\n")
-		cmd := exec.CommandContext(ctx, "bash", "-c", script)
+		logger := slog.Default().With("step", "objective", "card", card.ID, "branch", branch, "base", base)
+		logger.Info("运行客观判据")
+		cmd := exec.CommandContext(ctx, "bash", "-c", objectiveScript(branch, base))
 		cmd.Dir = repoDir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("客观判据未过:\n%s", out)
+		out, runErr := cmd.CombinedOutput()
+		if cerr := classifyScriptError(out, runErr, "客观判据"); cerr != nil {
+			logger.Error("客观判据失败", "err", cerr)
+			return cerr
 		}
+		logger.Info("客观判据通过")
 		return nil
 	}
 }
@@ -191,20 +227,16 @@ func NewLocalMerge(repoDir string, stores ...*ledger.Store) func(ctx context.Con
 		if err != nil {
 			return err
 		}
-		script := strings.Join([]string{
-			"set -e",
-			"git fetch origin " + shellQuote(branch) + " " + shellQuote(base),
-			"git checkout " + shellQuote(base),
-			"git merge --no-ff " + shellQuote("origin/"+branch) +
-				" || { git diff --name-only --diff-filter=U; git merge --abort; exit 1; }",
-			"git push origin " + shellQuote(base),
-		}, "\n")
-		cmd := exec.CommandContext(ctx, "bash", "-c", script)
+		logger := slog.Default().With("step", "merge", "card", card.ID, "branch", branch, "base", base)
+		logger.Info("运行合并")
+		cmd := exec.CommandContext(ctx, "bash", "-c", mergeScript(branch, base))
 		cmd.Dir = repoDir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("合并失败:\n%s", out)
+		out, runErr := cmd.CombinedOutput()
+		if cerr := classifyScriptError(out, runErr, "合并"); cerr != nil {
+			logger.Error("合并失败", "err", cerr)
+			return cerr
 		}
+		logger.Info("合并完成并已推 origin", "pushed_base", base)
 		return nil
 	}
 }
