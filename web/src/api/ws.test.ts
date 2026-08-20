@@ -9,7 +9,7 @@
 // 真 WebSocket 实现；退避定时器用 vi.useFakeTimers 控制。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event } from './types'
-import { connectEvents, type WsStatus } from './ws'
+import { connectEvents, wsCloseReason, type WsStatus } from './ws'
 
 // FakeWebSocket 模拟浏览器 WebSocket 的最小可编程表面。
 class FakeWebSocket {
@@ -144,5 +144,24 @@ describe('connectEvents 连接生命周期', () => {
     vi.advanceTimersByTime(120000)
     expect(FakeWebSocket.instances).toHaveLength(1) // close 后不自动重连
     vi.useRealTimers()
+  })
+})
+
+// wsCloseReason 的取信顺序：**服务端给了原因就用服务端的**。
+//
+// 为什么单独钉死：agentd 关 /ws/pty 时把真实原因（如「终端会话不存在」，
+// agentd 重启后必然如此）写进了 close reason，而按 code 查表得到的只有
+// 「订阅非法（agentd 吊销了本连接）」——两句话指向完全不同的排查方向，
+// 用户按后者查会一路查到鉴权上去。丢掉 reason 就是丢掉唯一的现场。
+describe('wsCloseReason', () => {
+  it('服务端给了 reason 就显示原文，不再显示按 code 猜的通用文案', () => {
+    const r = wsCloseReason({ code: 1008, reason: '终端会话不存在' } as CloseEvent)
+    expect(r.message).toContain('终端会话不存在')
+    expect(r.code).toBe(1008)
+  })
+
+  it('reason 为空时回退到按 code 的通用文案', () => {
+    expect(wsCloseReason({ code: 1008, reason: '' } as CloseEvent).message).toContain('订阅非法')
+    expect(wsCloseReason({ code: 1006, reason: '' } as CloseEvent).message).toContain('agentd 未运行')
   })
 })

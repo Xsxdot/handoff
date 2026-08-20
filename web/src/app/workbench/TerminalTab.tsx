@@ -5,6 +5,9 @@
 //   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
 //   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
 //   - shell 退出后在下方显示退出码，tab 留着等用户自己关
+//   - 订阅被判死（close 1008，最常见的是 agentd 重启后旧会话已不存在）时，
+//     除了报出服务端给的原因，还给一个「重开一个终端」的出口——没有它，这个
+//     tab 就是死物，用户只能关掉重开
 //
 // 边界：
 //   - **不删会话**。卸载只断 WS——切 tab、切基准目录、关页面都不该杀掉
@@ -63,6 +66,14 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
   const [exit, setExit] = useState<number | null | undefined>(undefined)
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
+  // dead：这条订阅被服务端判死（close 1008），api/pty.ts 不会再重连。
+  // 与 error 分开存：普通断线也会写 error，但那时还在退避重连，不该给重开入口。
+  const [dead, setDead] = useState(false)
+  // discarded 是用户已经放弃的那个会话 id。不清空上层的 sessionId（那是 tab 的
+  // 状态，本组件不持有），而是在本地把它「划掉」：liveId 因此回到 undefined，
+  // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
+  const [discarded, setDiscarded] = useState<string | undefined>(undefined)
+  const liveId = sessionId !== undefined && sessionId !== discarded ? sessionId : undefined
 
   useEffect(() => {
     const host = hostRef.current
@@ -102,7 +113,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     fit.fit()
 
     const start = async () => {
-      let id = sessionId
+      let id = liveId
       if (!id) {
         const created = await createPtySession(
           { ...ptyBase(base, rel), cols: term.cols, rows: term.rows },
@@ -139,7 +150,11 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
         },
         onStatus: setStatus,
         onError: (message) => setError(message),
-        onTerminal: ({ message }) => setError(message),
+        onTerminal: ({ message }) => {
+          // 判死 = 没有重连可等了，界面必须给出下一步动作，而不是只留一行红字
+          setError(message)
+          setDead(true)
+        },
       })
       term.onData((d) => handle?.send(new TextEncoder().encode(d)))
       term.onResize(({ cols, rows }) => handle?.resize(cols, rows))
@@ -164,7 +179,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
     // rel 参与身份：改 rel 就该在新的子目录里重建会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, base.key, base.machine, rel])
+  }, [liveId, base.key, base.machine, rel])
 
   return (
     <div className="flex h-full flex-col">
@@ -179,7 +194,25 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
       </div>
       <div ref={hostRef} className="min-h-0 flex-1 bg-[#0b0b0c]" />
       {error !== null && (
-        <div className="border-t px-3 py-1.5 text-xs text-destructive">{error}</div>
+        <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-destructive">
+          <span>{error}</span>
+          {dead && (
+            <button
+              type="button"
+              className="rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                // 划掉旧 id → liveId 变 undefined → effect 重跑，在同一基准目录建新会话。
+                // 老会话不发 DELETE：它在服务端要么已经不存在（agentd 重启），要么是被
+                // 判死的另一条订阅，替用户去删一个可能还活着的 shell 不是这个按钮的职责。
+                setDiscarded(sessionId)
+                setError(null)
+                setDead(false)
+              }}
+            >
+              重开一个终端
+            </button>
+          )}
+        </div>
       )}
       {exit !== undefined && (
         <div className="border-t px-3 py-1.5 text-xs text-muted-foreground">
