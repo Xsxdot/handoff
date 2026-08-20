@@ -1254,7 +1254,10 @@ git commit -m "feat(web): 工作流页可编辑——节点配置、路由、能
 - [ ] `go build ./... && go vet ./... && go test ./... -count=1` 全绿；`gofmt -l .` 无输出
 - [ ] `cd web && npm run lint && npm run typecheck && npm test` 全绿
 - [ ] `grep -rn "编辑请使用 CLI" web/src/app/flows/` 只在模板那张卡上还有
-- [ ] `grep -rn "'review' | 'merge'\|\"review\" | \"merge\"" web/src/` 无残留
+- [ ] `grep -rn "'review' | 'merge'" web/src/ | grep -v "\.test\."` 无残留的写死联合类型
+
+> 同上：`.test.tsx` 里为了断言「不再写死 review/merge」而出现这两个词是**正当的**，
+> 不要为了让 grep 变干净就把字符串拆开拼。命中就在报告里说明为何正当。
 - [ ] `grep -rn "console.log" web/src/` 没有新增
 - [ ] 新建的每个 tsx 文件都有职责+边界的文件头注释；后端新导出函数都有 doc 注释
 - [ ] 后端每个错误分支都带上下文并落 `s.log.Warn/Error`；成功路径落 `s.log.Info`

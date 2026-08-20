@@ -2169,8 +2169,18 @@ git commit -m "docs(cli,readme): --step 收任意节点名，README 补节点化
 
 - [ ] `go build ./... && go vet ./... && go test ./... -count=1` 全绿
 - [ ] `gofmt -l .` 无输出
-- [ ] `grep -rn "MergeStep\|NewLocalMerge\|NewLocalObjective\|gitscript" --include="*.go" .` 无残留
-- [ ] `grep -rn "review|merge" --include="*.go" .` 无残留的写死白名单
+- [ ] **只查生产代码**（`--include="*.go"` 会连测试和注释一起扫，那些地方正当地会出现这些词）：
+      `grep -rn "MergeStep\|NewLocalMerge\|NewLocalObjective" --include="*.go" . | grep -v "_test.go" | grep -v "^\S*:[0-9]*:\s*//"` 无残留；
+      `ls internal/ledgerstep/gitscript*.go 2>/dev/null` 无输出
+- [ ] `grep -rn '"review", "merge"\|review|merge' --include="*.go" . | grep -v "_test.go"` 无残留的写死白名单
+
+> **这两条 grep 允许并且预期在下列位置命中，命中不是问题，不要为了让它们变干净而改代码：**
+> ① `_test.go` 里把这些字符串当**断言对象**（「帮助文案里不该再出现 review|merge」这种测试，
+>    必须写出那个字符串才能断言）；② 注释里解释**历史**（「原 MergeStep 里那条保护」）。
+>
+> **绝对不要**把字符串拆成 `strings.Join([]string{"review","merge"}, "|")` 之类的拼串来躲开 grep。
+> 那样两头都变哑：测试读不出在断言什么，而这条 grep 从此再也查不出真的残留。
+> 觉得 grep 误报了，就在报告里说明命中位置为何正当——**这是被允许的答案**。
 - [ ] `grep -rn "fmt.Printf" --include="*.go" internal/ cmd/` 没有新增（既有的不管）
 - [ ] 每个新建文件都有职责+边界的头注释；每个新导出函数都有参数/返回/注意事项的 doc 注释
 - [ ] 每个错误分支都带上下文（`%w` 或结构化日志的 `cause`）；成功路径有结果日志
