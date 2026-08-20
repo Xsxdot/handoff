@@ -10,12 +10,9 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      // 多页入口。缺了这段，upgrade.html 不会被打进 dist，而 go:embed
-      // all:frontend/dist 照样能编过——症状是窗口打开后 404 一片空白，
-      // 且没有任何构建期报错
+      // 控制台只有一个入口；升级提示与更新页由外链控制台统一承载。
       input: {
         main: "index.html",
-        upgrade: "upgrade.html",
       },
     },
   },

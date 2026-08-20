@@ -86,7 +86,7 @@ handoff service install
 handoff service status
 ```
 
-`init` 选了执行机角色时会顺带问你要不要装，答 y 即就地装好。**不托管的 agentd 重启后不会自己回来**，而且它的 PATH 取决于启动它的那个 shell——「重启后第一次派发报 executor 未安装」多半是这个原因。托管后 Ctrl-C 停不掉它（会被自动拉回），要停用 `handoff service uninstall`。
+`init` 选了执行机角色时会顺带问你要不要装，答 y 即就地装好。**不托管的 agentd 重启后不会自己回来**，而且它的 PATH 取决于启动它的那个 shell——「重启后第一次派发报 executor 未安装」多半是这个原因。托管后 Ctrl-C 停不掉它（会被自动拉回）：改完配置让它生效用 `handoff service restart`，临时停掉用 `handoff service stop`（会一直停到 `handoff service start`，重启机器也不会自己回来），彻底摘掉托管用 `handoff service uninstall`。
 
 **只当协调机时不需要本机 agentd**：派发、`wait`、`reply`、`diff`、`attach` 全部直连目标机的 agentd。首次给一个新项目派发时，CLI 会顺带把项目也登记到本机一份（用于 `handoff project ls` 的本机项目树）；本机没有 agentd 时这一跳自动跳过并提示，不影响派发本身。
 
@@ -202,6 +202,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 |------|------|----------|
 | `handoff init` | 探测 executor、交互式生成/更新配置（幂等） | — |
 | `handoff service install\|uninstall\|status` | agentd 交给 launchd / systemd 托管 | — |
+| `handoff service start\|stop\|restart` | 起停/重启已托管的 agentd（`stop` 会一直停到 `start`） | — |
 | `handoff agentd` | 前台启动 agentd（开发/调试用，日常走 service） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
 | `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal` |
 | `handoff wait <task>` | 阻塞等下一个需要你的事件 | `--follow`(持续订阅到任务终结)；`--notify`；`--timeout <时长>`；`--no-sync` |
@@ -424,6 +425,16 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 - systemd 手工部署模板：[deploy/handoff-agentd.service](deploy/handoff-agentd.service)（注意模板中 `KillMode=process` 是硬要求：它保证重启 agentd 不杀正在跑的 executor）
 - 参与贡献（本地怎么跑、提交前要过哪几道门）：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 安全策略与威胁模型（**漏洞请走私密通道，不要开公开 issue**）：[SECURITY.md](SECURITY.md)
+
+## 交流群
+
+扫码加入 **Handoff Coding 交流群**，聊使用问题、踩坑和想法：
+
+<p align="center">
+  <img src="docs/assets/wechat-group.jpg" width="280" alt="Handoff Coding 交流群二维码">
+</p>
+
+微信群二维码通常 7 天内有效。扫不进去或提示过期时，开个 [issue](https://github.com/Xsxdot/handoff/issues) 提醒更新即可。
 
 ## 友情链接
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/spf13/cobra"
@@ -18,14 +19,29 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, step, actor strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// 本次运行里建过的 relay 隧道，命令结束时统一关。环节是一次性的短命令，
+	// 攒起来在这里关比让 ledgerstep 承担关闭责任简单，也不会跨命令泄漏。
+	var cleanups []func()
+	defer func() {
+		for _, done := range cleanups {
+			done()
+		}
+	}()
 	runner := &ledgerstep.StepRunner{
 		St:      st,
 		RepoDir: cardDispatchRepo,
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: st, Transport: cliTransport, Actor: actor,
 		},
-		Endpoints: targetEndpoint,
-		Target:    cardDispatchTarget,
+		Clients: func(target string) (*client.Client, error) {
+			cl, done, err := targetClient(target)
+			if err != nil {
+				return nil, err
+			}
+			cleanups = append(cleanups, done)
+			return cl, nil
+		},
+		Target: cardDispatchTarget,
 	}
 	outcome, err := runner.Run(ctx, id, step)
 	if err != nil {

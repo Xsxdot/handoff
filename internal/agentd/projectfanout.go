@@ -14,11 +14,9 @@ package agentd
 
 import (
 	"context"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -39,11 +37,7 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		out.Machines = []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}}
 	}
 
-	names := make([]string, 0, len(s.conf().Targets))
-	for name := range s.conf().Targets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := s.pool.Names()
 
 	fanCtx, cancel := context.WithTimeout(ctx, treeFanoutBudget)
 	defer cancel()
@@ -58,11 +52,18 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			t := s.conf().Targets[name]
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
-			tree, err := client.New(t.Addr, t.Token).MarkForwarded().ProjectTree(fanCtx)
+			// relay 机器没有 addr，项目树扇出必须复用池里的选路结果。
+			c, err := s.pool.For(name)
 			if err != nil {
-				s.log.Warn("项目树扇出失败", "machine", name, "addr", t.Addr, "cause", err)
+				s.log.Warn("项目树扇出：取客户端失败", "machine", name, "cause", err)
+				st.Error = err.Error()
+				results[i] = result{status: st}
+				return
+			}
+			tree, err := c.MarkForwarded().ProjectTree(fanCtx)
+			if err != nil {
+				s.log.Warn("项目树扇出失败", "machine", name, "cause", err)
 				st.Error = err.Error()
 				results[i] = result{status: st}
 				return

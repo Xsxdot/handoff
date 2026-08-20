@@ -721,6 +721,30 @@ func TestFetchChecksumDownloadsOnlyChecksums(t *testing.T) {
 	}
 }
 
+func TestFetchChecksumForResolvesGivenAssetName(t *testing.T) {
+	// checksums.txt 里 CLI 与薄壳两种资产并列，必须按给定的名字取，不能按平台推导。
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = w.Write([]byte("aaa  handoff_v0.3.1_darwin_arm64.tar.gz\n" +
+			"bbb  handoff-desktop_v0.3.1_darwin_arm64.dmg\n"))
+	}))
+	defer srv.Close()
+	rel := Release{Tag: "v0.3.1", Assets: []Asset{{Name: ChecksumsName, URL: srv.URL + "/checksums"}}}
+
+	sum, err := NewInstaller(quietLog(), nil).FetchChecksumFor(context.Background(), rel,
+		"handoff-desktop_v0.3.1_darwin_arm64.dmg")
+	if err != nil {
+		t.Fatalf("FetchChecksumFor 失败：%v", err)
+	}
+	if sum != "bbb" {
+		t.Fatalf("取到 %q，想要 bbb（拿到 aaa 说明还在按平台推导名字）", sum)
+	}
+	if len(paths) != 1 || paths[0] != "/checksums" {
+		t.Fatalf("只应请求 checksums，实得 %v", paths)
+	}
+}
+
 // FetchByTag 拼 URL 自己下，并用**传进来的** sum 校验（协调者下发的那个）。
 func TestFetchByTagVerifiesGivenSum(t *testing.T) {
 	payload := []byte("fake-archive")

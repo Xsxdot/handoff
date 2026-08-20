@@ -60,7 +60,7 @@ func (s *Server) startCardStep(cardID, step, actor string) error {
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: actor,
 		},
-		Endpoints: s.targetEndpoint,
+		Clients: s.pool.For,
 	}
 	s.log.Info("环节已受理", "card", cardID, "step", step, "actor", actor, "repo_dir", loc.Path)
 	go func() {
@@ -107,11 +107,13 @@ func (s *Server) cardStepInFlight(cardID string) bool {
 }
 
 func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
-	addr, token, err := s.targetEndpoint(opts.Target)
+	// 走 target 客户端池而不是自己 client.New：relay 形态的机器没有 addr，
+	// 直连构造对它们恒失败（见 internal/targetclient 与 nodirectclient_test）。
+	cl, err := s.pool.For(opts.Target)
 	if err != nil {
 		return "", err
 	}
-	task, err := client.New(addr, token).Dispatch(ctx, client.DispatchOpts{
+	task, err := cl.Dispatch(ctx, client.DispatchOpts{
 		Prompt: opts.Prompt, Target: opts.Target,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
@@ -123,15 +125,4 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		return "", err
 	}
 	return task.ID, nil
-}
-
-func (s *Server) targetEndpoint(target string) (addr, token string, err error) {
-	tgt, ok := s.conf().Targets[target]
-	if !ok {
-		return "", "", fmt.Errorf("目标机 %s 未登记（请先在 agentd 配置 Targets 中登记）", target)
-	}
-	if tgt.Addr == "" {
-		return "", "", fmt.Errorf("目标机 %s 未配置地址", target)
-	}
-	return "http://" + tgt.Addr, tgt.Token, nil
 }

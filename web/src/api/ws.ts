@@ -167,7 +167,15 @@ export function connectEvents(options: WsOptions): { close: () => void } {
 // 为什么单独归口：onclose 的 ev.code 在不同浏览器上报的既有差异，又和
 // agentd 侧语义（1008=订阅非法，见 server.go 的 handleEvents 用 PolicyViolation
 // 关闭的语义）叠加，集中在函数里翻译一处修改、全界面生效。
+//
+// 取信顺序：**服务端给的 reason 优先，code 查表只是兜底**。agentd 关连接时
+// 把真实原因写在 close reason 里（如 /ws/pty 的「终端会话不存在」——agentd
+// 一重启，内存里的 PTY 会话全没，重连必然撞这条），而按 code 查表只能给出
+// 「订阅非法（agentd 吊销了本连接）」这种指向鉴权的通用话术。两句话把人引向
+// 完全不同的排查方向，丢掉 reason 等于丢掉唯一的现场证据。
 export function wsCloseReason(ev: CloseEvent): { message: string; code: number } {
+  // reason 可能缺席（1006 断网、部分浏览器不回填），此处只认非空串
+  if (ev.reason) return { message: ev.reason, code: ev.code }
   switch (ev.code) {
     case 1008:
       return { message: '会话已失效或订阅非法（agentd 吊销了本连接）', code: ev.code }

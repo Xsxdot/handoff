@@ -116,6 +116,166 @@ func newTestWindows(t *testing.T, runOut string, runErr error) (*windowsManager,
 	return m, &calls, &written
 }
 
+// Stop 必须先 /Change /Disable 再 /End。
+//
+// why 顺序承重：任务的 TimeTrigger 每分钟重复触发一次（等价于
+// Restart=always）。先 /End 的话它会在 60 秒内被重新拉起，「停住」
+// 根本不成立。先掐掉触发源，再回收进程。
+func TestWindowsStopDisablesBeforeEnd(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "ok", nil)
+	// 复核轮询要立刻看到「不在跑」，否则要等满复核窗口才失败
+	m.run = func(name string, args ...string) ([]byte, error) {
+		*calls = append(*calls, name+" "+strings.Join(args, " "))
+		if strings.Contains(strings.Join(args, " "), "/FO LIST") {
+			return []byte("TaskName: \\handoff-agentd\r\nLast Result: 0\r\n"), nil
+		}
+		return []byte("ok"), nil
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	di, ei := strings.Index(joined, "/Disable"), strings.Index(joined, "/End")
+	if di < 0 || ei < 0 {
+		t.Fatalf("Stop 必须同时发出 /Change /Disable 与 /End: %s", joined)
+	}
+	if di > ei {
+		t.Errorf("/Disable 必须先于 /End（否则每分钟的重复触发会在 60 秒内把它拉回来）: %s", joined)
+	}
+}
+
+// 停不下来时不许报成功。
+func TestWindowsStopFailsWhenStillRunning(t *testing.T) {
+	m, _, _ := newTestWindows(t, "ok", nil)
+	// 默认的 /FO LIST 就含 267009（在跑），无需覆盖
+	if err := m.Stop(); err == nil {
+		t.Fatal("复核到仍在运行时 Stop 必须报错，不能报「已停止」")
+	}
+}
+
+// Start 必须先 /Change /Enable 再 /Run。
+//
+// why：被 /Change /Disable 停用过的任务，/Run 会直接报「任务已禁用」。
+func TestWindowsStartEnablesBeforeRun(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "ok", nil)
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	ei, ri := strings.Index(joined, "/Enable"), strings.Index(joined, "/Run")
+	if ei < 0 || ri < 0 {
+		t.Fatalf("Start 必须同时发出 /Change /Enable 与 /Run: %s", joined)
+	}
+	if ei > ri {
+		t.Errorf("/Enable 必须先于 /Run（停用过的任务 /Run 会被拒）: %s", joined)
+	}
+}
+
+// Restart 必须 /End 之后才 /Run。
+//
+// why 不能省中间那次复核：上一个实例还在时，计划任务服务会忽略这次
+// /Run，于是「什么都没发生」被报成「已重启」。
+func TestWindowsRestartEndsThenRuns(t *testing.T) {
+	m, calls, _ := newTestWindows(t, "ok", nil)
+	ended := false
+	m.run = func(name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		*calls = append(*calls, name+" "+joined)
+		if strings.Contains(joined, "/FO LIST") {
+			// /End 之前答「在跑」，之后答「不在跑」，/Run 之后再答「在跑」
+			if ended {
+				return []byte("TaskName: \\handoff-agentd\r\nLast Result: 0\r\n"), nil
+			}
+			return []byte("TaskName: \\handoff-agentd\r\nLast Result: 267009\r\n"), nil
+		}
+		if strings.Contains(joined, "/End") {
+			ended = true
+		}
+		if strings.Contains(joined, "/Run") {
+			ended = false
+		}
+		return []byte("ok"), nil
+	}
+	if err := m.Restart(); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	joined := strings.Join(*calls, " | ")
+	ei, ri := strings.Index(joined, "/End"), strings.LastIndex(joined, "/Run")
+	if ei < 0 || ri < 0 || ei > ri {
+		t.Errorf("Restart 必须先 /End 再 /Run: %s", joined)
+	}
+}
+
+// 任务查不到 => 未安装，三个命令一律硬拒且不发变更命令。
+func TestWindowsLifecycleRefusesWhenNotInstalled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*windowsManager) error
+	}{
+		{"Start", (*windowsManager).Start},
+		{"Stop", (*windowsManager).Stop},
+		{"Restart", (*windowsManager).Restart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, calls, _ := newTestWindows(t, "ERROR: 找不到任务", errors.New("exit status 1"))
+			err := tc.call(m)
+			if !errors.Is(err, ErrNotInstalled) {
+				t.Fatalf("未安装时应返回 ErrNotInstalled，得到: %v", err)
+			}
+			for _, c := range *calls {
+				for _, mutating := range []string{"/Run", "/End", "/Change", "/Create", "/Delete"} {
+					if strings.Contains(c, mutating) {
+						t.Errorf("未安装时不得发出变更类命令，却发了: %s", c)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Disabled 判据取自任务 XML 的 <Enabled>，不取本地化的状态列。
+//
+// why：/Query /V 的「Scheduled Task State」列会本地化（英文 Disabled、
+// 中文「已禁用」），按文本判会在换一台机器时静默失效；XML 里的 <Enabled>
+// 是 schema 标签名，不随 locale 变。
+//
+// 输出可能是 UTF-16LE（schtasks 的 /XML 走 Unicode），所以判之前先滤掉
+// NUL 字节——这比为一处判据引一个真解码器便宜，且两种编码都能命中。
+func TestWindowsStatusDisabledFromXML(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		xml  string
+		want bool
+	}{
+		{"UTF-8 已停用", "<Settings><Enabled>false</Enabled></Settings>", true},
+		{"UTF-8 已启用", "<Settings><Enabled>true</Enabled></Settings>", false},
+		{"缺省即启用", "<Settings><Hidden>false</Hidden></Settings>", false},
+		{"UTF-16LE 已停用", string(toUTF16LE("<Settings><Enabled>false</Enabled></Settings>")), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newTestWindows(t, "ok", nil)
+			xml := tc.xml
+			m.run = func(name string, args ...string) ([]byte, error) {
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "/XML") {
+					return []byte(xml), nil
+				}
+				if strings.Contains(joined, "/FO LIST") {
+					return []byte("TaskName: \\handoff-agentd\r\nLast Result: 267009\r\n"), nil
+				}
+				return []byte("ok"), nil
+			}
+			st, err := m.Status()
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if st.Disabled != tc.want {
+				t.Errorf("Disabled=%v, want %v", st.Disabled, tc.want)
+			}
+		})
+	}
+}
+
 // 安装要按删旧 → 写盘 → 建任务 → 复核的次序走。
 func TestWindowsInstallSequence(t *testing.T) {
 	m, calls, written := newTestWindows(t, "SUCCESS", nil)

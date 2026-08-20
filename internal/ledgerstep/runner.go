@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
@@ -22,7 +23,12 @@ type StepRunner struct {
 	St         *ledger.Store
 	RepoDir    string
 	Dispatcher *Dispatcher
-	Endpoints  func(target string) (addr, token string, err error)
+	// Clients 按 target 名取一个已装配好的 agentd 客户端。
+	//
+	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，
+	// 拿地址自己 client.New 对它们恒失败（会退化成一个没有 Host 的 URL）。
+	// 选路归 agentd 的 target 客户端池管，本包只消费。
+	Clients func(target string) (*client.Client, error)
 	// MainLine 主线分支名，透传给 MergeStep；空则用它的缺省值。
 	MainLine string
 	// Target 审阅派发目标机；空则使用模板里的 target。
@@ -43,7 +49,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, step string) (Outcome, err
 	case "review":
 		runner := &ReviewStep{
 			St: r.St, Step: "review",
-			RunReview: NewDispatchReview(r.St, r.reviewDispatch(), r.Endpoints),
+			RunReview: NewDispatchReview(r.St, r.reviewDispatch(), r.Clients),
 		}
 		return runner.RunOnce(ctx, cardID)
 	case "merge":

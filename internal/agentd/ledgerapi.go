@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
@@ -146,9 +145,17 @@ func (s *Server) unlinkedSummary() map[string]any {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		target := targets[name]
+		// 走 target 客户端池：relay 形态的机器没有 addr，直连构造对它们恒失败
+		// （见 internal/targetclient 与 nodirectclient_test）。取不到客户端与
+		// 拿不到任务列表同归「未知」——本区块的语义就是「这台机器对不上账」。
+		cl, err := s.pool.For(name)
+		if err != nil {
+			s.log.Warn("取 target 客户端失败，该机器计入未对账", "target", name, "cause", err)
+			unknown = append(unknown, name)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		tasks, err := client.New(target.Addr, target.Token).ListTasks(ctx)
+		tasks, err := cl.ListTasks(ctx)
 		cancel()
 		if err != nil {
 			unknown = append(unknown, name)

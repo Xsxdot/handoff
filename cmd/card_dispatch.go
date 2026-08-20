@@ -49,11 +49,12 @@ type dispatchRequest struct {
 // dispatchTransportWithOpts 走 client.Dispatch；保留这个四参数缝是为了让
 // 单测只关心 prompt、分支、目标机与项目四个派发前事实。
 var dispatchTransport = func(prompt, branch, target, project string) (string, error) {
-	addr, token, err := targetEndpoint(target)
+	cl, done, err := targetClient(target)
 	if err != nil {
 		return "", err
 	}
-	task, err := client.New(addr, token).Dispatch(context.Background(), client.DispatchOpts{
+	defer done()
+	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
 		Prompt: prompt, NewBranch: branch, Target: target, ProjectName: project,
 	})
 	if err != nil {
@@ -63,11 +64,12 @@ var dispatchTransport = func(prompt, branch, target, project string) (string, er
 }
 
 var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
-	addr, token, err := targetEndpoint(req.target)
+	cl, done, err := targetClient(req.target)
 	if err != nil {
 		return "", err
 	}
-	task, err := client.New(addr, token).Dispatch(context.Background(), client.DispatchOpts{
+	defer done()
+	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
 		Prompt: req.prompt, Target: req.target,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
@@ -120,14 +122,23 @@ func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, error)) fun
 	return func() { dispatchTransportWithOpts = old }
 }
 
-// targetEndpoint 按登记名解析目标机地址与 token。
-func targetEndpoint(target string) (addr, token string, err error) {
-	cfg := loadCLIConfig()
-	tgt, ok := cfg.Targets[target]
-	if !ok {
-		return "", "", fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+// targetClient 按登记名取一个可用的 agentd 客户端。
+//
+// why 不再解析出 (addr, token) 自己 client.New：relay 形态的机器**没有
+// addr**，直连构造对它们恒失败（会退化成一个没有 Host 的 URL）。选路判据
+// 只允许有一份，在 internal/targetclient，CLI 与 agentd 共用。
+//
+// 返回的 cleanup 关闭本次可能建立的 relay 隧道，调用方必须调用（直连形态
+// 是 no-op）。target 为空视为未指定，直接报错而不是退回本机——环节派发的
+// 目标机由 --target 或模板给出，静默换一台机器是更坏的失败。
+func targetClient(target string) (*client.Client, func(), error) {
+	if target == "" {
+		return nil, func() {}, fmt.Errorf("未指定目标机（--target 或模板 target 至少一个）")
 	}
-	return "http://" + tgt.Addr, tgt.Token, nil
+	if _, ok := loadCLIConfig().Targets[target]; !ok {
+		return nil, func() {}, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	}
+	return newTargetClientNamed(target)
 }
 
 var cardDispatchCmd = &cobra.Command{

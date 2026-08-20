@@ -16,25 +16,43 @@
 import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useProjectTree } from '../data/useProjectTree'
+import { useDesktopState, useLatest } from '../data/useUpdate'
+import { hasNewer } from '../lib/version'
 import { MachinesPage } from '../machines/MachinesPage'
 import { DisciplinePage } from './DisciplinePage'
 import { EnvPage } from './EnvPage'
 import { GeneralPage } from './GeneralPage'
+import { UpdatePage } from './UpdatePage'
 import { cn } from '@/lib/utils'
 
-// SECTIONS 是设置页的四个分区。顺序即原型的顺序：开发机在最上，执行纪律紧随其后。
+// SECTIONS 是设置页的五个分区。更新接在 Env 文件之后，顺序即原型的顺序。
 const SECTIONS = [
   { key: 'machines', label: '开发机' },
   { key: 'discipline', label: '执行纪律' },
   { key: 'general', label: '常规' },
   { key: 'env', label: 'Env 文件' },
+  { key: 'update', label: '更新' },
 ] as const
 
 type SectionKey = (typeof SECTIONS)[number]['key']
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
-  const [section, setSection] = useState<SectionKey>('machines')
+  const [section, setSection] = useState<SectionKey>(() => {
+    // 提示框的「查看详情」用 query 指向更新分区；读取 window 而不是 router hook，
+    // 保持 SettingsPage 在现有的独立单测与嵌入场景中也能直接渲染。
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('section') === 'update') {
+      return 'update'
+    }
+    return 'machines'
+  })
   const treeState = useProjectTree()
+  const desktopState = useDesktopState()
+  const latest = useLatest()
+  const updateAvailable = desktopState.data !== null && desktopState.data !== undefined && (
+    desktopState.data.sync_plan === 'blocked' || desktopState.data.sync_plan === 'failed' ||
+    (desktopState.data.app_version !== '' && latest.data?.tag !== undefined && latest.data.tag !== '' &&
+      hasNewer(latest.data.tag, desktopState.data.app_version))
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -64,6 +82,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               )}
             >
               {s.label}
+              {s.key === 'update' && updateAvailable && (
+                <span aria-label="有可用更新" data-testid="update-available-dot" className="ml-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
+              )}
             </button>
           ))}
         </nav>
@@ -73,6 +94,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
           {section === 'discipline' && <DisciplinePage />}
           {section === 'general' && <GeneralPage tree={treeState.data} />}
           {section === 'env' && <EnvPage />}
+          {section === 'update' && <UpdatePage desktopState={desktopState.data} latest={latest.data} />}
         </div>
       </div>
     </div>

@@ -93,6 +93,11 @@ func TestContractFixtures(t *testing.T) {
 		{"EnvMappingReq", envMappingReqSample()},
 		{"ExecutorDefaultResp", executorDefaultRespSample()},
 		{"ExecutorDefaultReq", executorDefaultReqSample()},
+		{"WorkbenchBase", workbenchBaseSample()},
+		{"WorkbenchStateResp", workbenchStateRespSample()},
+		{"WorkbenchBaseReq", workbenchBaseReqSample()},
+		{"WorkbenchSelectedReq", workbenchSelectedReqSample()},
+		{"WorkbenchDockReq", workbenchDockReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -125,6 +130,39 @@ func TestContractFixtures(t *testing.T) {
 			t.Errorf("%s: 序列化结果与 fixture 不一致（契约已漂移，如需接受变更请用 -update）：\n--- 期望(已存) ---\n%s\n--- 实际(现生成) ---\n%s", c.name, stored, data)
 		}
 	}
+}
+
+// workbenchBaseSample 是一行基准状态的代表性样本。
+func workbenchBaseSample() WorkbenchBase {
+	return WorkbenchBase{
+		BaseKey:   "/Users/dev/repo@linux-01",
+		Payload:   `{"v":1,"base":{"kind":"workspace"},"wb":{"active":0}}`,
+		UpdatedAt: 1755648000000,
+	}
+}
+
+// workbenchStateRespSample 覆盖三个字段同时有值的情形。
+func workbenchStateRespSample() WorkbenchStateResp {
+	return WorkbenchStateResp{
+		Selected: "/Users/dev/repo@linux-01",
+		Dock:     `{"v":1,"windowOpen":true}`,
+		Bases:    []WorkbenchBase{workbenchBaseSample()},
+	}
+}
+
+// workbenchBaseReqSample 取「有 payload」那一支；null 那一支由 agentd 侧用例覆盖。
+func workbenchBaseReqSample() WorkbenchBaseReq {
+	p := `{"v":1}`
+	return WorkbenchBaseReq{BaseKey: "/Users/dev/repo", Payload: &p}
+}
+
+func workbenchSelectedReqSample() WorkbenchSelectedReq {
+	return WorkbenchSelectedReq{BaseKey: "/Users/dev/repo"}
+}
+
+func workbenchDockReqSample() WorkbenchDockReq {
+	p := `{"v":1,"tabs":[]}`
+	return WorkbenchDockReq{Payload: &p}
 }
 
 // buildSample 返回 BuildInfo 的代表性样本（release 构建：Version 与 Revision 都有）。
@@ -259,8 +297,9 @@ func projectTreeSample() ProjectTreeResp {
 
 // machinesSample 返回 MachinesResp 的代表性样本。
 //
-// 两台覆盖两种结局：本机（name 空串、probe_ms 恒 0）与不可达的远端
-// （reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见）。
+// 三台覆盖三种结局：本机（name 空串、probe_ms 恒 0、upgrade 恒缺席）、不可达的
+// 远端（reachable=false + error 带原文，且仍然出现在列表里——缺席必须可见），
+// 以及**升级失败过**的远端——upgrade 段是控制台唯一的失败出口，线格式必须钉住。
 func machinesSample() MachinesResp {
 	ptyOK := true
 	return MachinesResp{
@@ -287,6 +326,22 @@ func machinesSample() MachinesResp {
 				ProbeMs:         3000,
 				ActiveTasks:     0,
 				Error:           "dial tcp 10.0.0.8:7777: connect: connection refused",
+			},
+			{
+				Name:            "mac-02",
+				Addr:            "10.0.0.9:7777",
+				Reachable:       true,
+				Version:         "v0.3.1",
+				Executors:       []string{"codex"},
+				DefaultExecutor: "codex",
+				ProbeMs:         12,
+				ActiveTasks:     0,
+				Error:           "",
+				Upgrade: &MachineUpgrade{
+					Status:  "fail",
+					Verdict: "needs_upgrade",
+					Reason:  "下载 checksums.txt: 尝试 3 次仍失败: i/o timeout",
+				},
 			},
 		},
 	}

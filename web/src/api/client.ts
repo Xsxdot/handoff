@@ -1,7 +1,7 @@
 // agentd 的 HTTP fetch 客户端（浏览器侧）。
 //
 // 职责：
-//   - 封装 /api/status 与 /api/tasks 两个只读接口，返回强类型结果
+//   - 封装 /api/status、/api/tasks 与工作台状态接口，返回强类型结果
 //   - 出错时把状态码与响应体错误信息统一成可读的 ApiError，供界面展示
 //
 // 边界：
@@ -22,6 +22,7 @@ import type {
   CreatePtySessionReq,
   DisciplineBinding,
   DisciplineResp,
+  DesktopState,
   DiffResult,
   DirEntry,
   DirListResult,
@@ -35,6 +36,9 @@ import type {
   ExecutorDefaultReq,
   ExecutorDefaultResp,
   MachinesResp,
+  MachineUpgradeResp,
+  DownloadState,
+  LatestResp,
   PatchProjectReq,
   ProjectLocation,
   ProjectBranchesResp,
@@ -53,6 +57,7 @@ import type {
   TaskPlan,
   TasksResp,
   Workspace,
+  WorkbenchStateResp,
 } from './types'
 
 // ApiError 携带 HTTP 状态码、agentd 返回的 error 字段，以及**完整响应体**。
@@ -125,6 +130,21 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parseResponse<T>(resp)
 }
 
+// requestAllowNoContent 允许某个接口用 204 表示「当前没有资源」。
+//
+// 为什么不改 parseResponse：其它接口的 2xx 都有 JSON body，全局放宽会把接口
+// 契约错误静默变成 undefined；桌面状态只有「没有薄壳」这一个明确的 204 语义。
+async function requestAllowNoContent<T>(path: string): Promise<T | null> {
+  let resp: Response
+  try {
+    resp = await fetch(path, { credentials: 'same-origin' })
+  } catch (err) {
+    throw new ApiError(0, `无法连接 agentd（反代失败？）：${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (resp.status === 204) return null
+  return parseResponse<T>(resp)
+}
+
 // postJSON 以 JSON body 发起 POST 请求。
 export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
@@ -155,6 +175,26 @@ function patchJSON<T>(path: string, body: unknown): Promise<T> {
 // fetchStatus 取 agentd 的可用性与身份信息（GET /api/status）。
 export function fetchStatus(): Promise<StatusResp> {
   return request<StatusResp>('/api/status')
+}
+
+// fetchDesktopState 取薄壳上报的自身状态；204 表示当前没有活跃薄壳，解成 null。
+export function fetchDesktopState(): Promise<DesktopState | null> {
+  return requestAllowNoContent<DesktopState>('/api/desktop/state')
+}
+
+// fetchLatest 取 agentd 缓存的最新 release tag；refresh=true 强制绕过 24h 缓存。
+export function fetchLatest(refresh = false): Promise<LatestResp> {
+  return request<LatestResp>(`/api/update/latest${refresh ? '?refresh=1' : ''}`)
+}
+
+// fetchDownloadState 取桌面端安装包下载进度与结果。
+export function fetchDownloadState(): Promise<DownloadState> {
+  return request<DownloadState>('/api/update/desktop/download')
+}
+
+// startDownload 请求 agentd 下载、校验并打开桌面端安装包；响应状态由下载轮询读取。
+export function startDownload(): Promise<void> {
+  return postJSON<DownloadState>('/api/update/desktop/download', {}).then(() => undefined)
 }
 
 // fetchTasks 取全部任务（GET /api/tasks?scope=all），拆掉信封只交出任务数组。
@@ -264,6 +304,15 @@ export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
 // 单台不可达是数据不是错误：整体仍 200，该台 reachable=false 且 error 带原文。
 export function fetchMachines(): Promise<MachinesResp> {
   return request<MachinesResp>('/api/machines')
+}
+
+// upgradeMachine 请求一台远端执行机升级到最新版本。
+// 409/422 等拒绝由 request 抛出 ApiError；完整的 MachineUpgradeResp 保存在 body 中。
+export function upgradeMachine(name: string, force = false): Promise<MachineUpgradeResp> {
+  const q = force ? '?force=1' : ''
+  return request<MachineUpgradeResp>(`/api/machines/${encodeURIComponent(name)}/upgrade${q}`, {
+    method: 'POST',
+  })
 }
 
 // fetchDiscipline 取某台机器的纪律配置面（GET /api/discipline）：
@@ -556,4 +605,42 @@ export function deletePtySession(id: string, machine?: string): Promise<{ ok: bo
     `/api/pty/sessions/${encodeURIComponent(id)}${machineQuery(machine)}`,
     { method: 'DELETE' },
   )
+}
+
+// fetchWorkbenchState 一次拉全工作台状态（GET /api/workbench/state）。
+//
+// 返回：服务端的完整工作台状态。
+// 注意：
+// **只在应用启动时调一次。** 不做前台唤醒时重拉：那一刻本端内存里的那份才是
+// 用户刚才的现场，从服务端拉一份回来盖掉它是纯粹的坏（spec §1.6）。
+export function fetchWorkbenchState(): Promise<WorkbenchStateResp> {
+  return request<WorkbenchStateResp>('/api/workbench/state')
+}
+
+// putWorkbenchBase 写一行基准状态（PUT /api/workbench/state/base）。
+//
+// 参数：baseKey 是基准目录身份；payload 是序列化字符串，null 表示删除。
+// 返回：写入或删除完成的 Promise；失败时抛 ApiError。
+// 注意：
+// payload 传 null = 删除该行（一个目录的 tab 全关光了就该删，不存空记录）。
+// 400 = base_key 为空或 payload 超过 256 KiB。
+export async function putWorkbenchBase(baseKey: string, payload: string | null): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/base', { base_key: baseKey, payload })
+}
+
+// putWorkbenchSelected 写「当前选中的基准目录」（PUT /api/workbench/state/selected）。
+// 参数：baseKey 是基准目录 key；空串表示当前没有选中目录。
+// 返回：写入完成的 Promise；失败时抛 ApiError。
+// 注意：空串是合法值，不应把它当成请求参数缺失。
+export async function putWorkbenchSelected(baseKey: string): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/selected', { base_key: baseKey })
+}
+
+// putWorkbenchDock 写悬浮窗现场（PUT /api/workbench/state/dock）。
+// 参数：payload 是序列化字符串，null 表示清空。
+// 返回：写入或清空完成的 Promise；失败时抛 ApiError。
+// 注意：payload 原样发送，编解码由工作台状态层负责。
+// payload 传 null = 清空。
+export async function putWorkbenchDock(payload: string | null): Promise<void> {
+  await putJSON<unknown>('/api/workbench/state/dock', { payload })
 }

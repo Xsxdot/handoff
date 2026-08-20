@@ -1,0 +1,23 @@
+# agentd target client pool 执行 ledger
+
+- Task 1 完成；范围：`internal/client/client.go`、`internal/client/update.go`、`internal/client/poisoned_test.go`；定向测试通过，`gofmt -l internal/client/` 为空；全包回归原始失败：`TestCursorRootFallsBackToCwdWhenHomeUnwritable ... 根 = ".../.handoff/cursors", want ".../.handoff/cursors"（应降级到 cwd）`；`TestCursorRootErrorNamesBothPaths ... 两处都不可写时必须报错，不得静默`。
+- Task 2 完成；范围：`internal/relay/dialer.go`、`internal/relay/dialer_test.go`；定向测试、relay 全包测试通过，`gofmt -l internal/relay/` 为空；双裁决通过。
+- Task 3 完成；范围：`internal/client/client.go`、`internal/targetclient/targetclient.go`、`internal/targetclient/targetclient_test.go`；targetclient 全包测试通过；client 回归原始失败仍为 `TestCursorRootFallsBackToCwdWhenHomeUnwritable ... 应降级到 cwd` 与 `TestCursorRootErrorNamesBothPaths ... 两处都不可写时必须报错，不得静默`；双裁决通过。
+- Task 4 完成；范围：`internal/targetclient/pool.go`、`internal/targetclient/pool_test.go`；Pool 定向测试与 `-race` 通过，`gofmt -l internal/targetclient/` 为空；双裁决通过。
+- Task 5 完成；范围：`internal/targetclient/warm.go`、`internal/targetclient/warm_test.go`、`internal/targetclient/pool.go`、`internal/targetclient/targetclient.go`；Warm 定向测试、全包 `-race` 通过，`gofmt -l internal/targetclient/` 为空；双裁决通过。
+- Task 6 完成；范围：`cmd/root.go`、`cmd/target_client_test.go`；定向测试、cmd 全包测试通过，`gofmt -l cmd/` 为空；双裁决通过。
+- Task 7 修复轮 1；范围：`internal/agentd/pool_wiring_test.go`；原计划测试传 nil Store，实际原始失败为 `panic: runtime error: invalid memory address or nil pointer dereference`，栈落在 `store.(*Store).SetEventHook` / `agentd.(*Server).registerEventFrameHook`；测试改为使用临时 Store，未改变生产代码。
+- Task 7 完成；范围：`internal/agentd/server.go`、`internal/agentd/pool_wiring_test.go`、`cmd/agentd.go`；定向测试、`go build ./...`、`go test ./internal/agentd/ ./cmd/` 通过，`gofmt -l internal/agentd/ cmd/` 为空；双裁决通过。
+- Task 8 完成；范围：`internal/agentd/machines.go`、`internal/agentd/machines_relay_test.go`、`internal/proto/projects.go`；定向测试、agentd/proto 全包测试通过，`gofmt -l internal/agentd/ internal/proto/` 为空；双裁决通过。
+- Task 9 修复轮 1；范围：`internal/agentd/machines.go`；首次编译原始失败：`"github.com/Xsxdot/handoff/internal/client" imported and not used`、`undefined: config`；已同步删除 client import、补 config import。
+- Task 9 完成；范围：`internal/agentd/machines.go`、`internal/agentd/machines_addprobe_test.go`；定向测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 10 修复轮 1；范围：`internal/agentd/mirror.go`；Mirror 直接调用 `discoverOnce` 时启动快照循环会使既有 `m.Stop()` 等待未取消上下文；已改为仅由 `Run` 每轮管理循环。
+- Task 10 修复轮 2；范围：`internal/targetclient/targetclient.go`；Mirror 回归原始失败为 `mirror_test.go:48: 镜像任务不对：[] err=<nil>`、`mirror_test.go:94: 镜像任务不对：[] err=<nil>`；修正完整 `http://` 地址被重复前缀的问题。
+- Task 10 完成；范围：`internal/agentd/mirror.go`、`internal/agentd/mirror_test.go`、`internal/agentd/mirror_pool_test.go`、`cmd/agentd.go`、`internal/targetclient/targetclient.go`；Mirror 回归、build、agentd/cmd 全包测试通过，`gofmt -l internal/agentd/ cmd/` 为空；双裁决通过。
+- Task 11 完成；范围：`internal/agentd/projectfanout.go`、`internal/agentd/pty_api.go`、`internal/agentd/fanout_relay_test.go`；定向 relay 测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 12 完成；范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_relay_test.go`；定向升级测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 13 修复轮 1；范围：`internal/agentd/nodirectclient_test.go`；守卫首次原始失败误报 `machines.go:205 ... targetclient.New(req.Name,`；改为按标识符边界识别精确 `client.New(`，随后临时变异实际失败 `machines.go:35 ... var _ = client.New("x", "y")`，撤销后通过。
+- Task 13 完成；范围：`internal/agentd/nodirectclient_test.go`；守卫定向测试、变异实验后的 agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 14 预检记录；范围：`web/` 测试环境；首次定向测试原始失败：`npm error code EROFS`、`npm error syscall open`、`/root/.npm/_cacache/tmp/***`；提升权限后原始失败：`Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@tailwindcss/vite' imported from .../web/vite.config.ts`；执行 `npm ci` 安装锁定依赖，未改 package-lock。
+- Task 14 完成；范围：`web/src/api/types.ts`、`web/src/app/machines/MachineDetail.tsx`、`web/src/app/machines/MachinesPage.tsx`、`web/src/app/machines/machineEndpoint.ts`、`web/src/app/machines/machineEndpoint.test.ts`；定向测试 4/4、全量 82 files/828 tests、tsc、build 均通过；双裁决通过。
+- Task 15 完成；范围：整分支 `adbdce35..HEAD` 终审与验收记录；`go build ./...` 通过；`go test ./...` 原始失败包含 `--- FAIL: TestCursorRootFallsBackToCwdWhenHomeUnwritable`、`--- FAIL: TestCursorRootErrorNamesBothPaths`、`--- FAIL: TestLoadStripUpdateDoesNotBlockOnSaveFailure`、`--- FAIL: TestPermServerAskThenRespond`、`--- FAIL: TestPermServerRespondUnknownID`、`--- FAIL: TestPermServerReRegisterSameID`、`--- FAIL: TestSyncAuthKeepsTaskCopyWhenWriteFails`；targetclient/agentd `-race` 通过；前端 tsc、82 files/828 tests、build 通过；`gofmt -l .` 为空；真机验收清单 1-6 均未验证（未启动真实 relay/agentd，按计划留给审核者）。终审范围复审通过。

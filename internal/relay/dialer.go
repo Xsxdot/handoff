@@ -144,6 +144,20 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 	return conn, nil
 }
 
+// Ensure 主动建立（或复用）relay 隧道，不发任何业务请求。
+//
+// 参数：
+//   - ctx: 控制本次建隧道的时限；超时/取消原样返回
+//
+// 返回：
+//   - nil 表示隧道已就绪（本次新建或复用现有）；Dialer 已 Close 时恒返回错误
+//
+// 为什么需要它：协调者侧的预热要把「隧道通没通」与「对端 agentd 活没活」分成
+// 两个判据。借一次业务请求（如 GET /api/status）代劳会把两者搅在一起——隧道
+// 建好但对端没起时，那次请求失败，预热无从判断该不该重试。
+// 不另加日志：内部 ensureTunnel 已有完整的拨号/CONNECT/拒绝日志链。
+func (d *Dialer) Ensure(ctx context.Context) error { return d.ensureTunnel(ctx) }
+
 // Transport returns an HTTP transport whose requests all use the relay app
 // streams. Proxy is explicitly nil so the relay URL itself is not redirected
 // through an unrelated HTTP proxy.

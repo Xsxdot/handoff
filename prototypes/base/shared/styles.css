@@ -187,3 +187,31 @@ dialog::backdrop { background: rgba(0,0,0,.3); }
   font-family: var(--font-mono); font-size: 12px; padding: 10px;
   height: 140px; overflow: auto; color: var(--muted-foreground);
 }
+
+/* ---- B166：控制台内右下角提示框（桌面壳专用，浏览器里不出现） ----
+   替代原来挂在菜单栏上的三条动态提示。堆叠、可手动关，
+   与 home 悬浮窗共用右下角，home 打开时整摞上移让位。 */
+.toast-stack {
+  position: fixed; right: 20px; bottom: 20px; z-index: 50;
+  display: flex; flex-direction: column-reverse; gap: 8px;
+  transition: bottom .18s ease;
+}
+body.home-open .toast-stack { bottom: 236px; }
+.toast {
+  width: 340px; background: var(--background);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0,0,0,.14);
+  padding: 12px 14px; font-size: 13px;
+  animation: toast-in .22s ease;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.toast.out { opacity: 0; transform: translateY(8px); transition: opacity .18s, transform .18s; }
+.toast .t-head { display: flex; align-items: center; gap: 8px; }
+.toast .t-title { font-weight: 600; flex: 1; min-width: 0; }
+.toast .t-close { border: none; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 14px; line-height: 1; padding: 0 2px; }
+.toast .t-body { color: var(--muted-foreground); font-size: 12.5px; line-height: 1.6; margin-top: 4px; }
+.toast .t-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.toast .t-actions .link { margin-left: auto; font-size: 12px; color: var(--muted-foreground); text-decoration: none; }
+.toast .t-actions .link:hover { color: var(--foreground); text-decoration: underline; }
+.toast .progress { height: 5px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 10px; }
+.toast .progress > i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .25s linear; }

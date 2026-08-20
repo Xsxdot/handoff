@@ -23,9 +23,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/buildinfo"
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
-	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/selfupdate"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/spf13/cobra"
 )
 
@@ -264,16 +264,10 @@ func newTargetClientNamed(name string) (*client.Client, func(), error) {
 	if !ok {
 		return nil, noop, fmt.Errorf("target %q 未在配置 %s 中定义", name, p)
 	}
-	if !t.IsRelay() {
-		return client.New("http://"+t.Addr, t.Token), noop, nil
-	}
-	if err := relay.CheckTokenEntropy(t.Token); err != nil {
-		slog.Default().Error("relay requires high-entropy token", "target", name)
-		return nil, noop, err
-	}
-	d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", slog.Default())
-	slog.Default().Info("using relay transport", "node", t.Node, "relay_url", t.Relay)
-	return client.NewRelay(d, t.Token), func() { _ = d.Close() }, nil
+	// 选路交给 targetclient：CLI 与 agentd 必须用同一个判据。判据存两份正是
+	// relay 机器在控制台显示「已断开」的成因——agentd 那份从来没被写出来。
+	// 选路日志已由工厂统一记录，这里不重复打印，避免一次派发出现两遍。
+	return targetclient.New(name, t, slog.Default())
 }
 
 // LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。

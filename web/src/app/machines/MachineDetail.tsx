@@ -6,20 +6,13 @@
 //   - 可用执行者：只读列表 + 默认执行者标记；缺省执行者与默认模型由详情块修改
 //   - 最后心跳：后端没有该字段，前端记录「本页打开以来」的探活成功时刻并注明，
 //     不冒充服务端心跳（spec §9 诚实）
-import { useState } from 'react'
 import { formatRelative } from '../lib/format'
 import { cn } from '@/lib/utils'
 import type { Machine } from '../../api/types'
 import { MachineDiscipline } from './MachineDiscipline'
 import { MachineEnv } from './MachineEnv'
 import { MachineExecutor } from './MachineExecutor'
-
-// NOT_WIRED 是两个「形态已定、后端未做」的操作。点击后就地展开一句说明——
-// 不置灰（置灰承诺"以后能用"，用户会反复点），也不静默无反应。
-const NOT_WIRED = [
-  { key: 'restart', label: '重启 agent', note: '重启尚未实现：需要 agentd 提供自重启接口，且要先想清楚重启期间在跑的任务怎么办。' },
-  { key: 'terminal', label: '打开终端', note: '终端尚未实现：PTY 后端未做，当前请用 handoff attach <task>。' },
-]
+import { machineEndpoint } from './machineEndpoint'
 
 // machineLabel 把机器名转成展示文案：""=本机。
 function machineLabel(name: string): string {
@@ -34,12 +27,10 @@ export interface MachineDetailProps {
 
 export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailProps) {
   const remote = machine.name !== ''
-  // openNote 记录当前展开的「尚未实现」说明条；null=全部收起。
-  const [openNote, setOpenNote] = useState<string | null>(null)
   return (
     <section className="rounded-lg border bg-background p-4">
       <h2 className="text-sm font-semibold">{machineLabel(machine.name)}</h2>
-      <p className="mt-0.5 font-mono text-xs text-muted-foreground">{machine.addr}</p>
+      <p className="mt-0.5 font-mono text-xs text-muted-foreground">{machineEndpoint(machine)}</p>
 
       <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 text-xs">
         <DetailRow label="状态" value={machine.reachable ? '已连接' : '已断开'} />
@@ -80,27 +71,6 @@ export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailPro
       <MachineDiscipline machine={machine} />
       <MachineEnv machine={machine} />
       <MachineExecutor machine={machine} />
-
-      <div className="mt-3">
-        <p className="text-xs font-medium text-muted-foreground">机器操作</p>
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {NOT_WIRED.map((item) => (
-            <div key={item.key}>
-              <button
-                type="button"
-                onClick={() => setOpenNote(item.key)}
-                aria-expanded={openNote === item.key}
-                className="rounded-md border px-2 py-0.5 text-xs hover:bg-accent"
-              >
-                {item.label}
-              </button>
-              {openNote === item.key && (
-                <p className="mt-1 max-w-md text-[11px] text-muted-foreground">{item.note}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
 
       <p className="mt-3 text-[11px] text-muted-foreground">
         「最后心跳」是本页打开以来的探活观测，不是 agentd 服务端心跳。

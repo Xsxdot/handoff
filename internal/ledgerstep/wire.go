@@ -20,18 +20,17 @@ import (
 // wait 终态 → 取最终报文 → done 归档 → 返回报文。
 func NewDispatchReview(st *ledger.Store,
 	dispatch func(ctx context.Context, cardID, template string) (target, taskID string, err error),
-	endpoints func(target string) (addr, token string, err error),
+	clients func(target string) (*client.Client, error),
 ) func(ctx context.Context, card ledger.Card) (string, error) {
 	return func(ctx context.Context, card ledger.Card) (string, error) {
 		target, taskID, err := dispatch(ctx, card.ID, "review-generic")
 		if err != nil {
 			return "", fmt.Errorf("派发审阅: %w", err)
 		}
-		addr, token, err := endpoints(target)
+		cl, err := clients(target)
 		if err != nil {
 			return "", err
 		}
-		cl := client.New(addr, token)
 		if err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
 			return cl.WaitEvent(ctx, taskID, false)
 		}); err != nil {
