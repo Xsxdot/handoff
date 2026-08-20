@@ -123,6 +123,16 @@ func (m *MergeStep) isMainline(base string) bool {
 	return base == "" || base == mainLine
 }
 
+// mergeFailureReason 把两个合并前后执行阶段的工作分支缺失统一归类。
+// 客观判据和实际合并都可能执行补拉阶梯；若只在后者识别，真实链路通常会先
+// 被客观判据截住，用户就拿不到可操作的 handoff pull 提示。
+func mergeFailureReason(err error, fallback string) string {
+	if errors.Is(err, ErrWorkBranchMissing) {
+		return "工作分支缺失：先 handoff pull 再重试"
+	}
+	return fallback
+}
+
 // RunOnce 执行合并决策：主线转人工；集成线先跑客观判据，再尝试合并。
 func (m *MergeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
 	logger := slog.Default().With("step", "merge", "card", cardID)
@@ -158,23 +168,19 @@ func (m *MergeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error)
 
 	logger.Info("运行合并前客观判据", "base", base)
 	if err := m.Objective(ctx, card, base); err != nil {
-		logger.Info("客观判据红转等人", "err", err)
+		reason := mergeFailureReason(err, "合并判据未过")
+		logger.Info("客观判据红转等人", "reason", reason, "err", err)
 		if _, commentErr := m.St.AddComment(cardID, "合并前客观判据未过：\n"+err.Error(), "普通", "node:merge"); commentErr != nil {
 			return Outcome{}, commentErr
 		}
-		if err := m.St.MarkNeedsHuman(cardID, "合并判据未过", "node:merge"); err != nil {
+		if err := m.St.MarkNeedsHuman(cardID, reason, "node:merge"); err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "合并判据未过"}, nil
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 	}
 	logger.Info("客观判据通过，执行合并", "base", base)
 	if err := m.DoMerge(ctx, card, base); err != nil {
-		// 工作分支根本没拿到时，压根没走到合并——记成「合并冲突」会把人
-		// 引去查代码冲突，而真实处置是 handoff pull。原因必须可操作。
-		reason := "合并冲突"
-		if errors.Is(err, ErrWorkBranchMissing) {
-			reason = "工作分支缺失：先 handoff pull 再重试"
-		}
+		reason := mergeFailureReason(err, "合并冲突")
 		logger.Info("合并执行失败转等人", "reason", reason, "err", err)
 		if _, commentErr := m.St.AddComment(cardID, "合并失败（冲突清单/报错）：\n"+err.Error(), "普通", "node:merge"); commentErr != nil {
 			return Outcome{}, commentErr

@@ -237,9 +237,40 @@ func TestMergeStepTreatsNamedMainAsMainline(t *testing.T) {
 	}
 }
 
-// TestMergeStepDistinguishesMissingWorkBranch 工作分支缺失不能被记成「合并冲突」。
-// 人看到「合并冲突」会去查代码冲突，而真实处置是 handoff pull——原因写错等于
-// 把人引到错误的排查路径上。
+// TestMergeStepDistinguishesMissingWorkBranchAtObjective 工作分支缺失通常先在
+// 客观判据阶段暴露，不能被记成「合并判据未过」。真实链路在这里就会停止，DoMerge
+// 不应被调用；人需要的是 handoff pull，而不是重新检查测试。
+func TestMergeStepDistinguishesMissingWorkBranchAtObjective(t *testing.T) {
+	st, _ := nodeLedger(t)
+	card := seedMergeableCard(t, st)
+	node := &MergeStep{
+		St: st,
+		Objective: func(context.Context, ledger.Card, string) error {
+			return fmt.Errorf("%w：\n（脚本输出）", ErrWorkBranchMissing)
+		},
+		DoMerge: func(context.Context, ledger.Card, string) error {
+			t.Fatal("客观判据失败后不应调用 DoMerge")
+			return nil
+		},
+	}
+	out, err := node.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce 不该整体报错: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("应转等人，实得 %q", out.Action)
+	}
+	if !strings.Contains(out.Reason, "工作分支缺失") {
+		t.Fatalf("reason 应指明工作分支缺失，实得 %q", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "handoff pull") {
+		t.Fatalf("reason 必须给出可操作的下一步，实得 %q", out.Reason)
+	}
+}
+
+// TestMergeStepDistinguishesMissingWorkBranch 验证 DoMerge 分支的工作分支缺失归类。
+// 这里故意把 Objective 打桩为成功，守的是 DoMerge 侧；真实链路通常先在 Objective
+// 失败，上一条用例单独守住那条路径。两条测试各自覆盖一处归类，不能合并。
 func TestMergeStepDistinguishesMissingWorkBranch(t *testing.T) {
 	st, _ := nodeLedger(t)
 	card := seedMergeableCard(t, st)
