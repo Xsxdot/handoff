@@ -668,6 +668,17 @@ rm -rf ~/.handoff        # includes config, task data and logs — delete only o
 - Security policy and threat model (Chinese; **report vulnerabilities through the private
   channel, not a public issue**): [SECURITY.md](SECURITY.md)
 
+## Community
+
+Scan the QR code to join the **Handoff Coding** WeChat group:
+
+<p align="center">
+  <img src="docs/assets/wechat-group.jpg" width="280" alt="Handoff Coding WeChat group QR code">
+</p>
+
+WeChat group QR codes expire after 7 days. If it no longer scans, open an
+[issue](https://github.com/Xsxdot/handoff/issues) and we'll refresh it.
+
 ## Links
 
 - [Linux Do](https://linux.do) — a sincere, friendly, united, professional developer

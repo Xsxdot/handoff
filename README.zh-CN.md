@@ -425,6 +425,16 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 - 参与贡献（本地怎么跑、提交前要过哪几道门）：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 安全策略与威胁模型（**漏洞请走私密通道，不要开公开 issue**）：[SECURITY.md](SECURITY.md)
 
+## 交流群
+
+扫码加入 **Handoff Coding 交流群**，聊使用问题、踩坑和想法：
+
+<p align="center">
+  <img src="docs/assets/wechat-group.jpg" width="280" alt="Handoff Coding 交流群二维码">
+</p>
+
+微信群二维码通常 7 天内有效。扫不进去或提示过期时，开个 [issue](https://github.com/Xsxdot/handoff/issues) 提醒更新即可。
+
 ## 友情链接
 
 - [Linux Do](https://linux.do) —— 真诚、友善、团结、专业的开发者社区
