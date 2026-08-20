@@ -116,6 +116,31 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     } catch (err) {
       console.warn('WebGL 渲染器不可用，已回退到 DOM 渲染', err)
     }
+    // measured 表示「容器已经有布局盒子，此刻量出来的尺寸作数」。
+    //
+    // 为什么必须挡这一下：恢复布局时 TerminalTab 会在容器还没拿到布局盒子的
+    // 那一帧挂载，此时 FitAddon 量出的是 **2×1**（xterm 的下限）。把它当真实
+    // 尺寸报给服务端，PTY 就真被调成 2 列 1 行——shell 按 2 列重排，正在回放的
+    // 历史当场被绞碎，正在跑的 TUI 同样遭殃；等 ResizeObserver 补一次真实尺寸
+    // 时已经救不回来了。用户看到的现象是「刷新之后终端里什么都没了」。
+    //
+    // 判据取容器而不是取 term.cols：2×1 也可能是一个真的很窄的分栏，
+    // 「有没有布局盒子」才是「这次测量算不算数」的正解。
+    const measured = (): boolean => {
+      const r = host.getBoundingClientRect()
+      return r.width >= 1 && r.height >= 1
+    }
+    // reassertPending = 「这条连接的尺寸还欠服务端一次」。onAttached 撞上
+    // 未成型的容器时置位，由容器成型后的第一次量兑现。
+    let reassertPending = false
+    // fitIfMeasured 只在容器成型后量。没量成时什么都不做——ResizeObserver
+    // 会在容器拿到盒子的那一刻再来一次。
+    const fitIfMeasured = (): boolean => {
+      if (!measured()) return false
+      fit.fit()
+      return true
+    }
+
     // onResize 必须在 fit.fit() **之前**注册。
     //
     // 挂载时 term.open 给的是默认 80×24，紧接着的 fit.fit() 才算出真实尺寸——
@@ -140,7 +165,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     ta?.addEventListener('focus', onFocusEvt)
     ta?.addEventListener('blur', onBlurEvt)
 
-    fit.fit()
+    fitIfMeasured()
 
     const start = async () => {
       let id = liveId
@@ -186,6 +211,17 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
           //
           // 它同时覆盖重连：断线期间别的订阅者可能把会话尺寸协商成了别的值，
           // 重连后重申一次才是对的。
+          //
+          // 但**容器还没成型时一个字节都不能报**：那一刻 fit 量出的是 2×1，
+          // 报上去等于把用户的 PTY 绞成 2 列（见上面 measured 的说明）。
+          // 此时把这次重申挂起，交给容器成型后的第一次量补上——**不是**指望
+          // onResize 自己会发：fit 算出的尺寸与 xterm 当前值相同时它根本不触发，
+          // 而「相同」恰恰是恢复布局时的常态。
+          if (!fitIfMeasured()) {
+            reassertPending = true
+            return
+          }
+          reassertPending = false
           logTermResize(label, term.cols, term.rows, 'attach')
           handle?.resize(term.cols, term.rows)
         },
@@ -214,7 +250,16 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
       setError(err instanceof Error ? err.message : String(err))
     })
 
-    const ro = new ResizeObserver(() => fit.fit())
+    const ro = new ResizeObserver(() => {
+      if (!fitIfMeasured()) return
+      // 兑现挂起的重申。必须显式发一次而不是等 onResize：尺寸没变时 onResize
+      // 不触发，而恢复布局时「量出来正好等于 xterm 当前值」是常态。
+      if (reassertPending) {
+        reassertPending = false
+        logTermResize(label, term.cols, term.rows, 'attach')
+        handle?.resize(term.cols, term.rows)
+      }
+    })
     ro.observe(host)
 
     return () => {

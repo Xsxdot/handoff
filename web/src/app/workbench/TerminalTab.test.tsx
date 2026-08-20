@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TerminalTab } from './TerminalTab'
 import type { BaseDir } from './useWorkbench'
 
@@ -47,9 +47,16 @@ const HOME: BaseDir = {
   key: '~', kind: 'home', path: '~', label: 'home', projectName: '', machine: '',
 }
 
+// roCallbacks 收着组件注册的 ResizeObserver 回调，测试用它模拟「容器尺寸变了」。
+// 不这么做就没法测「容器成型后补上那次尺寸重申」——那条路径只由观察者驱动。
+const roCallbacks: Array<() => void> = []
+
 beforeAll(() => {
   // jsdom 没有 ResizeObserver，而组件用它跟随容器尺寸
   globalThis.ResizeObserver = class {
+    constructor(cb: () => void) {
+      roCallbacks.push(cb)
+    }
     observe() {}
     unobserve() {}
     disconnect() {}
@@ -58,6 +65,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  roCallbacks.length = 0
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
   deletePtySession.mockResolvedValue({ ok: true })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
@@ -216,7 +224,21 @@ describe('TerminalTab', () => {
 //
 // 恢复已有会话时不走 createPtySession，历史上整条挂载路径从头到尾没向服务端
 // 报过一次尺寸——服务端 PTY 停在创建时的 cols/rows，xterm 是另一个宽度，TUI 就花了。
+// stubLayout 给 jsdom 里的元素一个布局盒子。
+//
+// jsdom 的 getBoundingClientRect 恒返回全 0，而组件把「没有布局盒子」当成
+// 「此刻量出来的尺寸不作数」——不桩掉它，所有依赖尺寸上报的用例都会走进跳过分支。
+function stubLayout(width: number, height: number) {
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+    width, height, x: 0, y: 0, top: 0, left: 0, right: width, bottom: height,
+    toJSON: () => ({}),
+  } as DOMRect)
+}
+
 describe('TerminalTab 建连时重申尺寸', () => {
+  beforeEach(() => stubLayout(800, 400))
+  afterEach(() => vi.restoreAllMocks())
+
   // attachOf 取出本次 connectPty 收到的 onAttached 回调。
   function attachOf(): (info: { since: number; truncated: boolean }) => void {
     const opts = connectPty.mock.calls[0][0] as {
@@ -250,6 +272,45 @@ describe('TerminalTab 建连时重申尺寸', () => {
     onAttached({ since: 0, truncated: false })
     onAttached({ since: 4096, truncated: true })
     expect(resize).toHaveBeenCalledTimes(2)
+  })
+
+  // 这条是承重的：2026-08-20 真机走查里，刷新页面后终端里的历史整屏消失，
+  // 取证日志显示 attach 那一刻上报的是 `cols: 2, rows: 1` —— 容器还没拿到布局
+  // 盒子，FitAddon 量出了 xterm 的下限，而这个尺寸被当真报给了服务端，
+  // PTY 真被调成 2 列 1 行，shell 按 2 列重排把回放的历史绞碎了。
+  it('容器还没有布局盒子时一个字节都不上报——那一刻量出的 2×1 会把 PTY 绞成 2 列', async () => {
+    stubLayout(0, 0)
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+
+    render(<TerminalTab base={WS} seq={1} sessionId="S1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
+
+    attachOf()({ since: 0, truncated: false })
+    expect(resize).not.toHaveBeenCalled()
+  })
+
+  // 跳过那一次不能就这么算了：恢复布局时 fit 量出的尺寸常常正好等于 xterm
+  // 当前值，onResize 因此根本不触发——只靠它兜底就又回到「整条挂载路径一次
+  // 尺寸都没报过」，也就是 TUI 乱码那个老毛病。
+  it('容器成型后补上那次欠下的重申——尺寸没变时 onResize 不会自己发', async () => {
+    stubLayout(0, 0)
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+
+    render(<TerminalTab base={WS} seq={1} sessionId="S1" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
+    attachOf()({ since: 0, truncated: false })
+    expect(resize).not.toHaveBeenCalled()
+
+    // 容器拿到布局盒子，观察者被唤醒
+    stubLayout(800, 400)
+    for (const cb of roCallbacks) cb()
+    expect(resize).toHaveBeenCalledWith(termInstance.cols, termInstance.rows)
+
+    // 只补一次，别每次容器尺寸变动都重发
+    for (const cb of roCallbacks) cb()
+    expect(resize).toHaveBeenCalledTimes(1)
   })
 
   it('新建会话那条路也重申一次（建会话与建连之间容器可能已经变了）', async () => {
