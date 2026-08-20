@@ -463,6 +463,6 @@ func init() {
 
 	cardCmd.AddCommand(cardAddCmd, cardListCmd, cardShowCmd, cardUpdateCmd, cardMoveCmd,
 		cardCloseCmd, cardReviveCmd, cardLinkCmd, cardUnlinkCmd,
-		cardMergeCmd, cardUnmergeCmd, cardSplitCmd, cardNoteCmd, cardExportCmd, cardWaitCmd)
+		cardMergeCmd, cardUnmergeCmd, cardSplitCmd, cardNoteCmd, cardExportCmd, cardWaitCmd, cardAcceptCmd)
 	rootCmd.AddCommand(cardCmd)
 }
