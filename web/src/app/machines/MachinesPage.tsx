@@ -24,6 +24,7 @@ import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Ban
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { MachineDetail } from './MachineDetail'
+import { machineEndpoint } from './machineEndpoint'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -373,7 +374,7 @@ function MachineCard({
             {machine.reachable ? '已连接' : '已断开'}
           </span>
         </div>
-        <div className="truncate font-mono text-xs text-muted-foreground">{machine.addr}</div>
+        <div className="truncate font-mono text-xs text-muted-foreground">{machineEndpoint(machine)}</div>
         <div className="text-[11px] text-muted-foreground">{machine.active_tasks} 活跃任务</div>
       </button>
       {remote && (

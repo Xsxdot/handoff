@@ -12,6 +12,7 @@ import type { Machine } from '../../api/types'
 import { MachineDiscipline } from './MachineDiscipline'
 import { MachineEnv } from './MachineEnv'
 import { MachineExecutor } from './MachineExecutor'
+import { machineEndpoint } from './machineEndpoint'
 
 // machineLabel 把机器名转成展示文案：""=本机。
 function machineLabel(name: string): string {
@@ -29,7 +30,7 @@ export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailPro
   return (
     <section className="rounded-lg border bg-background p-4">
       <h2 className="text-sm font-semibold">{machineLabel(machine.name)}</h2>
-      <p className="mt-0.5 font-mono text-xs text-muted-foreground">{machine.addr}</p>
+      <p className="mt-0.5 font-mono text-xs text-muted-foreground">{machineEndpoint(machine)}</p>
 
       <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 text-xs">
         <DetailRow label="状态" value={machine.reachable ? '已连接' : '已断开'} />

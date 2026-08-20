@@ -18,3 +18,5 @@
 - Task 12 完成；范围：`internal/agentd/machineupgrade.go`、`internal/agentd/machineupgrade_relay_test.go`；定向升级测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
 - Task 13 修复轮 1；范围：`internal/agentd/nodirectclient_test.go`；守卫首次原始失败误报 `machines.go:205 ... targetclient.New(req.Name,`；改为按标识符边界识别精确 `client.New(`，随后临时变异实际失败 `machines.go:35 ... var _ = client.New("x", "y")`，撤销后通过。
 - Task 13 完成；范围：`internal/agentd/nodirectclient_test.go`；守卫定向测试、变异实验后的 agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 14 预检记录；范围：`web/` 测试环境；首次定向测试原始失败：`npm error code EROFS`、`npm error syscall open`、`/root/.npm/_cacache/tmp/***`；提升权限后原始失败：`Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@tailwindcss/vite' imported from .../web/vite.config.ts`；执行 `npm ci` 安装锁定依赖，未改 package-lock。
+- Task 14 完成；范围：`web/src/api/types.ts`、`web/src/app/machines/MachineDetail.tsx`、`web/src/app/machines/MachinesPage.tsx`、`web/src/app/machines/machineEndpoint.ts`、`web/src/app/machines/machineEndpoint.test.ts`；定向测试 4/4、全量 82 files/828 tests、tsc、build 均通过；双裁决通过。
