@@ -11,3 +11,6 @@
 - Task 8 完成；范围：`internal/agentd/machines.go`、`internal/agentd/machines_relay_test.go`、`internal/proto/projects.go`；定向测试、agentd/proto 全包测试通过，`gofmt -l internal/agentd/ internal/proto/` 为空；双裁决通过。
 - Task 9 修复轮 1；范围：`internal/agentd/machines.go`；首次编译原始失败：`"github.com/Xsxdot/handoff/internal/client" imported and not used`、`undefined: config`；已同步删除 client import、补 config import。
 - Task 9 完成；范围：`internal/agentd/machines.go`、`internal/agentd/machines_addprobe_test.go`；定向测试、agentd 全包测试通过，`gofmt -l internal/agentd/` 为空；双裁决通过。
+- Task 10 修复轮 1；范围：`internal/agentd/mirror.go`；Mirror 直接调用 `discoverOnce` 时启动快照循环会使既有 `m.Stop()` 等待未取消上下文；已改为仅由 `Run` 每轮管理循环。
+- Task 10 修复轮 2；范围：`internal/targetclient/targetclient.go`；Mirror 回归原始失败为 `mirror_test.go:48: 镜像任务不对：[] err=<nil>`、`mirror_test.go:94: 镜像任务不对：[] err=<nil>`；修正完整 `http://` 地址被重复前缀的问题。
+- Task 10 完成；范围：`internal/agentd/mirror.go`、`internal/agentd/mirror_test.go`、`internal/agentd/mirror_pool_test.go`、`cmd/agentd.go`、`internal/targetclient/targetclient.go`；Mirror 回归、build、agentd/cmd 全包测试通过，`gofmt -l internal/agentd/ cmd/` 为空；双裁决通过。

@@ -51,7 +51,7 @@ func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Clie
 		return nil, nil, noop, fmt.Errorf("target %s: %w", name, ErrNoEndpoint)
 	}
 	log.Debug("target 走直连传输", "target", name, "addr", t.Addr)
-	return client.New("http://"+t.Addr, t.Token), nil, noop, nil
+	return client.New(t.Addr, t.Token), nil, noop, nil
 }
 
 // New 按 Target 形态选路，构造一个一次性的 agentd 客户端。
