@@ -30,6 +30,30 @@ import (
 // 不变式在扇出侧的落点——扇出侧过去从没问过它。
 var ErrNoEndpoint = errors.New("target 既没有 addr 也没有 relay")
 
+// newWithDialer 与 New 同源，额外把 relay Dialer 交给调用方（池要用它预热）。
+// New 是它的薄壳：外部调用方不该拿到 Dialer，那是池的内部事务。
+func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Client, *relay.Dialer, func(), error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	noop := func() {}
+	if t.IsRelay() {
+		if err := relay.CheckTokenEntropy(t.Token); err != nil {
+			log.Error("relay target 的 token 熵不足，拒绝构造", "target", name, "node", t.Node)
+			return nil, nil, noop, fmt.Errorf("target %s: %w", name, err)
+		}
+		d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", log)
+		log.Info("target 走 relay 传输", "target", name, "node", t.Node, "relay_url", t.Relay)
+		return client.NewRelay(d, t.Token), d, func() { _ = d.Close() }, nil
+	}
+	if t.Addr == "" {
+		log.Error("target 无端点，既没有 addr 也没有 relay", "target", name)
+		return nil, nil, noop, fmt.Errorf("target %s: %w", name, ErrNoEndpoint)
+	}
+	log.Debug("target 走直连传输", "target", name, "addr", t.Addr)
+	return client.New("http://"+t.Addr, t.Token), nil, noop, nil
+}
+
 // New 按 Target 形态选路，构造一个一次性的 agentd 客户端。
 //
 // 参数：
@@ -46,25 +70,6 @@ var ErrNoEndpoint = errors.New("target 既没有 addr 也没有 relay")
 //   - 不发任何网络请求；relay 隧道由 Dialer 首次用到时惰性建立
 //   - 常驻场景不要用它——每次调用都会新建一条 relay 隧道，用 Pool
 func New(name string, t config.Target, log *slog.Logger) (*client.Client, func(), error) {
-	if log == nil {
-		log = slog.Default()
-	}
-	noop := func() {}
-	if t.IsRelay() {
-		// relay 形态下 token 额外充当 E2E 的 PSK 源，弱 token = 隧道没有端到端
-		// 保护。这道闸必须在建隧道之前。
-		if err := relay.CheckTokenEntropy(t.Token); err != nil {
-			log.Error("relay target 的 token 熵不足，拒绝构造", "target", name, "node", t.Node)
-			return nil, noop, fmt.Errorf("target %s: %w", name, err)
-		}
-		d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", log)
-		log.Info("target 走 relay 传输", "target", name, "node", t.Node, "relay_url", t.Relay)
-		return client.NewRelay(d, t.Token), func() { _ = d.Close() }, nil
-	}
-	if t.Addr == "" {
-		log.Error("target 无端点，既没有 addr 也没有 relay", "target", name)
-		return nil, noop, fmt.Errorf("target %s: %w", name, ErrNoEndpoint)
-	}
-	log.Debug("target 走直连传输", "target", name, "addr", t.Addr)
-	return client.New("http://"+t.Addr, t.Token), noop, nil
+	c, _, cleanup, err := newWithDialer(name, t, log)
+	return c, cleanup, err
 }

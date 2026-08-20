@@ -12,13 +12,16 @@
 package targetclient
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/relay"
 )
 
 // entry 是一台机器的缓存条目。
@@ -27,8 +30,10 @@ import (
 // 整体 != 比较能覆盖每一个字段——逐字段比会在 relay 将来加字段时漏掉新字段，
 // 而漏掉的表现是「改了配置不生效」，属于最难查的一类。
 type entry struct {
-	target  config.Target
-	client  *client.Client
+	target config.Target
+	client *client.Client
+	// dialer 只在 relay 形态非 nil；预热要拿它主动建隧道。
+	dialer  *relay.Dialer
 	cleanup func()
 }
 
@@ -43,6 +48,12 @@ type Pool struct {
 	mu      sync.Mutex
 	entries map[string]*entry
 	closed  bool
+	// 预热参数与缝。warmTick/warmBackoff* 生产用包级默认，测试注入毫秒级值；
+	// ensure 生产为 nil（走 realEnsure），测试替换以避开真 relay 服务端。
+	warmTick           time.Duration
+	warmBackoffInitial time.Duration
+	warmBackoffMax     time.Duration
+	ensure             func(ctx context.Context, name string) error
 }
 
 // NewPool 构造复用池。
@@ -54,7 +65,12 @@ func NewPool(conf func() *config.Config, log *slog.Logger) *Pool {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Pool{conf: conf, log: log, entries: make(map[string]*entry)}
+	return &Pool{
+		conf: conf, log: log, entries: make(map[string]*entry),
+		warmTick:           warmTick,
+		warmBackoffInitial: warmBackoffInitial,
+		warmBackoffMax:     warmBackoffMax,
+	}
 }
 
 // Names 返回当前配置里全部 target 名，已排序。
@@ -104,11 +120,11 @@ func (p *Pool) For(name string) (*client.Client, error) {
 		delete(p.entries, name)
 	}
 
-	c, cleanup, err := New(name, t, p.log)
+	c, dialer, cleanup, err := newWithDialer(name, t, p.log)
 	if err != nil {
 		return nil, err
 	}
-	p.entries[name] = &entry{target: t, client: c, cleanup: cleanup}
+	p.entries[name] = &entry{target: t, client: c, dialer: dialer, cleanup: cleanup}
 	p.log.Info("target 客户端已建立并入池", "target", name, "relay", t.IsRelay(), "pool_size", len(p.entries))
 	return c, nil
 }
