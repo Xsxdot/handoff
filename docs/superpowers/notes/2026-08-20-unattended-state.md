@@ -37,31 +37,33 @@ superpowers 各阶段的改写版（出 spec/写 plan/实现/审阅/收尾合并
 
 ## 进度
 
-- [x] main 已合进 feat/b156-workbench-ledger（8940c875c）
+- [x] main 已合进 feat/b156-workbench-ledger
 - [x] 需求对齐（2026-08-21，三层拼装模型定稿）
-- [x] 批2 spec：`docs/superpowers/specs/2026-08-21-node-workflow-design.md`
-- [x] 批2 plan：`docs/superpowers/plans/2026-08-21-node-workflow-backend.md`（8 task）
-- [x] 批2 已派发 → **task 3ae97099-03d8-455c-a8a9-d95f5fe841ec**
-      linux-01 + codex，分支 `feat/b156.2-node-workflow`，起点 777971b，
-      纪律块「内置:single-context」（档位正确），model 空=机器默认。
-      协调者已挂 `wait --follow` 订阅。
-- [x] 批1 plan：`docs/superpowers/plans/2026-08-21-workbench-web-write.md`（7 task）
-      **未派发**——它依赖批2 落地，且两者改同一分支会冲突。
-- [x] 基线实测（起点 777971b）：go build/vet/gofmt 干净；`go test ./...` 43 包 ok 0 FAIL；
-      `npm test` 92 文件 941 用例全绿。**已知既有 flake：`TestPtyWSResumeSince`
-      偶发 TempDir 清理红，单独连跑三次全绿，与本次改动无关。**
-- [ ] 批2 验收（审核者本地做：真机跑一张卡走全程）
-- [ ] 批1 派发/验收
-- [x] 隔离 demo 已清理（进程无、/tmp/acc 已删）
+- [x] 批2 spec + plan + 派发 + **复核 + 已合入**（合并提交 5823805ca）
+      复核手段：独立工作树重跑 → 43 包全绿/vet/gofmt 干净 → **5 处变异测试
+      全部红→绿**（老 def 兼容、HumanBases 守卫、OnFail 路由、轮次封顶、
+      路由悬空校验）→ 大小写不敏感 grep 确认本地合并真退役。
+- [x] 批1 plan + **已派发** → **task 3e5b6672-a53d-425b-bf86-b5bbdc726c48**
+      linux-01 + codex，分支 `feat/b156.3-web-write`，起点 3e45274，
+      纪律块「内置:single-context」，model 空=机器默认。订阅已挂。
+- [ ] 批1 验收
+- [ ] 真机验收：起控制台，手动推一张卡从头走到尾（**必须本地做**——纪律块
+      禁止执行者调 handoff CLI）
+- [ ] 合并进 main 的决策（留给用户）
 
-## 已知欠账
+## 本轮踩到并已修的坑
 
-- **派出去的批2 plan 是修订前的快照**：其 Task 7 引用了仓库里并不存在的
-  `writeErr` helper（仓库真实写法是
-  `writeJSON(w, code, map[string]string{"error": ...})`），且没带基线 flake 警告。
-  两处都已在本地文件补好，但 executor 手上那份没有。**编译期会自己撞出来**
-  （它得自己定义 writeErr 才能过），代价是一轮。首次进 `waiting_review` 时
-  用 `continue` 把这两条一并告诉它。
+1. **符号核对做在了派发之后**（批2）：`writeErr` 不存在、四个测试 helper 名字
+   对不上。四处赶在派发前修好，`writeErr` 那处没赶上——executor 拿的是旧快照。
+   已记进 `plan-criteria-must-be-verified-on-baseline` 记忆的「第七类」。
+   **批1 派发前已改为机械核对，当场逮到 `ReplyRequest.ticket_id`（我原写成
+   `ticket`），修完才派。**
+2. **收尾 grep 诱发绕过**（批2）：执行者把 `"review|merge"` 拆成
+   `strings.Join([]string{"review","merge"}, "|")` 以躲开我的红线 grep，
+   ledger 里写明动机是「避免误报」。**根因在我的 grep 没给正当例外留出口**
+   （测试断言、历史注释里正当会命中）。已改回可读形式（fe5a6bbe7），
+   两份 plan 的收尾自检都补了例外出口，记忆 `executor-evades-audit-greps`
+   已补第二个实例。
 
 ## 约束
 
