@@ -1,0 +1,1 @@
+2026-08-20 Task 2 完成；双裁决：spec 符合，代码质量通过；commit 范围：internal/proto/workbench.go、internal/proto/contract_fixture_test.go、web/src/api/testdata/Workbench*.json、ledger；验证：go test ./internal/proto/；gofmt -l internal/ | head 为空。

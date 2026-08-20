@@ -93,6 +93,11 @@ func TestContractFixtures(t *testing.T) {
 		{"EnvMappingReq", envMappingReqSample()},
 		{"ExecutorDefaultResp", executorDefaultRespSample()},
 		{"ExecutorDefaultReq", executorDefaultReqSample()},
+		{"WorkbenchBase", workbenchBaseSample()},
+		{"WorkbenchStateResp", workbenchStateRespSample()},
+		{"WorkbenchBaseReq", workbenchBaseReqSample()},
+		{"WorkbenchSelectedReq", workbenchSelectedReqSample()},
+		{"WorkbenchDockReq", workbenchDockReqSample()},
 	}
 
 	dir := fixtureDir(t)
@@ -125,6 +130,39 @@ func TestContractFixtures(t *testing.T) {
 			t.Errorf("%s: 序列化结果与 fixture 不一致（契约已漂移，如需接受变更请用 -update）：\n--- 期望(已存) ---\n%s\n--- 实际(现生成) ---\n%s", c.name, stored, data)
 		}
 	}
+}
+
+// workbenchBaseSample 是一行基准状态的代表性样本。
+func workbenchBaseSample() WorkbenchBase {
+	return WorkbenchBase{
+		BaseKey:   "/Users/dev/repo@linux-01",
+		Payload:   `{"v":1,"base":{"kind":"workspace"},"wb":{"active":0}}`,
+		UpdatedAt: 1755648000000,
+	}
+}
+
+// workbenchStateRespSample 覆盖三个字段同时有值的情形。
+func workbenchStateRespSample() WorkbenchStateResp {
+	return WorkbenchStateResp{
+		Selected: "/Users/dev/repo@linux-01",
+		Dock:     `{"v":1,"windowOpen":true}`,
+		Bases:    []WorkbenchBase{workbenchBaseSample()},
+	}
+}
+
+// workbenchBaseReqSample 取「有 payload」那一支；null 那一支由 agentd 侧用例覆盖。
+func workbenchBaseReqSample() WorkbenchBaseReq {
+	p := `{"v":1}`
+	return WorkbenchBaseReq{BaseKey: "/Users/dev/repo", Payload: &p}
+}
+
+func workbenchSelectedReqSample() WorkbenchSelectedReq {
+	return WorkbenchSelectedReq{BaseKey: "/Users/dev/repo"}
+}
+
+func workbenchDockReqSample() WorkbenchDockReq {
+	p := `{"v":1,"tabs":[]}`
+	return WorkbenchDockReq{Payload: &p}
 }
 
 // buildSample 返回 BuildInfo 的代表性样本（release 构建：Version 与 Revision 都有）。
