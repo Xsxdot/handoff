@@ -44,11 +44,19 @@ func TestReviewStepPassAndFailLoop(t *testing.T) {
 		"第二轮\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```",
 	}
 	i := 0
-	n := &ReviewStep{St: s, Step: "review",
-		RunReview: func(ctx context.Context, card ledger.Card) (string, error) {
-			message := msgs[i]
-			i++
-			return message, nil
+	runReview := func(ctx context.Context, card ledger.Card) (string, error) {
+		message := msgs[i]
+		i++
+		return message, nil
+	}
+	n := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
+			return runReview(ctx, c)
 		},
 	}
 	out, err := n.RunOnce(context.Background(), c.ID)
@@ -74,8 +82,14 @@ func TestReviewStepPassAndFailLoop(t *testing.T) {
 func TestReviewStepRoundCapAndParseFailure(t *testing.T) {
 	s, c := nodeLedger(t)
 	failMessage := "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```"
-	n := &ReviewStep{St: s, Step: "review",
-		RunReview: func(ctx context.Context, card ledger.Card) (string, error) { return failMessage, nil }}
+	n := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) { return failMessage, nil },
+	}
 	for i := 0; i < MaxRounds; i++ {
 		if out, err := n.RunOnce(context.Background(), c.ID); err != nil || out.Action != ActionContinue {
 			t.Fatalf("round%d: %v %+v", i+1, err, out)
@@ -91,8 +105,14 @@ func TestReviewStepRoundCapAndParseFailure(t *testing.T) {
 	}
 
 	s2, c2 := nodeLedger(t)
-	n2 := &ReviewStep{St: s2, Step: "review",
-		RunReview: func(ctx context.Context, card ledger.Card) (string, error) { return "没有 block 的报文", nil }}
+	n2 := &NodeStep{
+		St:   s2,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) { return "没有 block 的报文", nil },
+	}
 	out, err = n2.RunOnce(context.Background(), c2.ID)
 	if err != nil || out.Action != ActionNeedsHuman {
 		t.Fatalf("解析失败处置: %v %+v", err, out)
@@ -175,10 +195,16 @@ func TestMergeStepDecision(t *testing.T) {
 // 节点直接报错退出，卡上一片空白。
 func TestReviewStepMarksNeedsHumanWhenReviewFails(t *testing.T) {
 	s, card := nodeLedger(t)
-	node := &ReviewStep{St: s, Step: "review",
-		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
+	node := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
 			return "", fmt.Errorf("事件流中没有 completed/failed 最终报文")
-		}}
+		},
+	}
 	out, err := node.RunOnce(context.Background(), card.ID)
 	if err != nil {
 		t.Fatalf("不应把错误直接抛出: %v", err)
@@ -354,14 +380,23 @@ func TestMergeStepSuccessRecordsBranchMerged(t *testing.T) {
 func TestReviewStepRetractsOwnStaleNeedsHuman(t *testing.T) {
 	s, card := nodeLedger(t)
 	round := 0
-	node := &ReviewStep{St: s, Step: "review",
-		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
-			round++
-			if round == 1 {
-				return "", fmt.Errorf("派发审阅: 基线提交在任务仓库中不存在")
-			}
-			return "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[{\"severity\":\"major\",\"summary\":\"验收项全部未实现\"}]}\n```", nil
-		}}
+	runReview := func(ctx context.Context, c ledger.Card) (string, error) {
+		round++
+		if round == 1 {
+			return "", fmt.Errorf("派发审阅: 基线提交在任务仓库中不存在")
+		}
+		return "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[{\"severity\":\"major\",\"summary\":\"验收项全部未实现\"}]}\n```", nil
+	}
+	node := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
+			return runReview(ctx, card)
+		},
+	}
 
 	first, err := node.RunOnce(context.Background(), card.ID)
 	if err != nil {
@@ -394,10 +429,16 @@ func TestReviewStepKeepsHumanNeedsHuman(t *testing.T) {
 	if err := s.MarkNeedsHuman(card.ID, "先别动这张卡，等我确认需求", "cli:human"); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
-	node := &ReviewStep{St: s, Step: "review",
-		RunReview: func(ctx context.Context, c ledger.Card) (string, error) {
+	node := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(ctx context.Context, c ledger.Card, node ledger.NodeDef) (string, string, error) {
+			return "t", "task", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
 			return "```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```", nil
-		}}
+		},
+	}
 	out, err := node.RunOnce(context.Background(), card.ID)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -407,5 +448,171 @@ func TestReviewStepKeepsHumanNeedsHuman(t *testing.T) {
 	}
 	if reason, _ := s.NeedsOf(card.ID); reason != "先别动这张卡，等我确认需求" {
 		t.Fatalf("人打的等人标记被环节抹掉了: %q", reason)
+	}
+}
+
+// newNodeStep 组一个注入了假 Dispatch/Await 的 NodeStep。
+func newNodeStep(t *testing.T, st *ledger.Store, node ledger.NodeDef, message string, dispatchErr error) *NodeStep {
+	t.Helper()
+	return &NodeStep{
+		St:   st,
+		Node: node,
+		Dispatch: func(ctx context.Context, c ledger.Card, n ledger.NodeDef) (string, string, error) {
+			if dispatchErr != nil {
+				return "", "", dispatchErr
+			}
+			return "linux-01", "task-1", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
+			return message, nil
+		},
+	}
+}
+
+func TestNodeStepRejectsManualColumn(t *testing.T) {
+	st, c := nodeLedger(t)
+	card := c.ID
+	step := newNodeStep(t, st, ledger.NodeDef{Name: "待办"}, "", nil)
+	if _, err := step.RunOnce(context.Background(), card); err == nil {
+		t.Fatalf("纯人工列没有可执行能力，应报错")
+	}
+}
+
+func TestNodeStepDispatchOnlyReturnsDispatched(t *testing.T) {
+	st, c := nodeLedger(t)
+	card := c.ID
+	step := newNodeStep(t, st, ledger.NodeDef{
+		Name: "进行中", Dispatch: true, Template: "feature-impl",
+	}, "", nil)
+	out, err := step.RunOnce(context.Background(), card)
+	if err != nil {
+		t.Fatalf("派发型节点执行失败: %v", err)
+	}
+	if out.Action != ActionDispatched {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionDispatched)
+	}
+}
+
+func TestNodeStepVerdictRoutesOnPass(t *testing.T) {
+	st, c := nodeLedger(t)
+	card := c.ID
+	step := newNodeStep(t, st, ledger.NodeDef{
+		Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic",
+		Next: "已完成", OnFail: "进行中",
+	}, "报告\n```handoff-verdict\n{\"verdict\":\"pass\"}\n```", nil)
+	out, err := step.RunOnce(context.Background(), card)
+	if err != nil {
+		t.Fatalf("裁决节点执行失败: %v", err)
+	}
+	if out.Action != ActionPass {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionPass)
+	}
+	got, err := st.GetCard(card)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	if got.Status != "已完成" {
+		t.Fatalf("通过后应移到 Next «已完成»，实际 %q", got.Status)
+	}
+}
+
+func TestNodeStepVerdictRoutesOnFail(t *testing.T) {
+	st, c := nodeLedger(t)
+	card := c.ID
+	step := newNodeStep(t, st, ledger.NodeDef{
+		Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic",
+		Next: "已完成", OnFail: "进行中",
+	}, "报告\n```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```", nil)
+	out, err := step.RunOnce(context.Background(), card)
+	if err != nil {
+		t.Fatalf("裁决节点执行失败: %v", err)
+	}
+	if out.Action != ActionContinue {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionContinue)
+	}
+	got, _ := st.GetCard(card)
+	if got.Status != "进行中" {
+		t.Fatalf("未过应退到 OnFail «进行中»，实际 %q", got.Status)
+	}
+}
+
+func TestNodeStepHumanBaseSkipsDispatch(t *testing.T) {
+	st, _ := nodeLedger(t)
+	mainCard, err := st.CreateCard(ledger.NewCard{
+		Title: "主线卡", Project: "p", Workflow: "bug", BaseBranch: "main", Actor: "t",
+	})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	card := mainCard.ID
+	dispatched := false
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "收尾合并", Dispatch: true, Verdict: true,
+			Template: "review-generic", HumanBases: []string{"main"},
+		},
+		Dispatch: func(ctx context.Context, c ledger.Card, n ledger.NodeDef) (string, string, error) {
+			dispatched = true
+			return "linux-01", "task-1", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) { return "", nil },
+	}
+	out, err := step.RunOnce(context.Background(), card)
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if dispatched {
+		t.Fatalf("基线在 HumanBases 里，绝不允许派发")
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionNeedsHuman)
+	}
+	views, err := st.ListCards(ledger.CardFilter{IncludeTerminal: true})
+	if err != nil {
+		t.Fatalf("列卡: %v", err)
+	}
+	marked := false
+	for _, view := range views {
+		if view.ID == card && view.NeedsReason != "" {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Fatalf("应打上等人标记")
+	}
+}
+
+func TestNodeStepMaxRoundsFromNode(t *testing.T) {
+	st, c := nodeLedger(t)
+	card := c.ID
+	node := ledger.NodeDef{
+		Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic",
+		MaxRounds: 1, Next: "已完成", OnFail: "进行中",
+	}
+	fail := "报告\n```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```"
+	// 第一轮：正常跑，落一条 review_verdict
+	if _, err := newNodeStep(t, st, node, fail, nil).RunOnce(context.Background(), card); err != nil {
+		t.Fatalf("第一轮失败: %v", err)
+	}
+	// 第二轮：MaxRounds=1 已到顶，应直接转等人且不再派发
+	dispatched := false
+	step := &NodeStep{
+		St: st, Node: node,
+		Dispatch: func(ctx context.Context, c ledger.Card, n ledger.NodeDef) (string, string, error) {
+			dispatched = true
+			return "linux-01", "task-2", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) { return fail, nil },
+	}
+	out, err := step.RunOnce(context.Background(), card)
+	if err != nil {
+		t.Fatalf("第二轮失败: %v", err)
+	}
+	if dispatched {
+		t.Fatalf("已到轮次上限，不该再派发")
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionNeedsHuman)
 	}
 }

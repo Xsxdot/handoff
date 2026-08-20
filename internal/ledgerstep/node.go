@@ -19,6 +19,8 @@ const (
 	ActionPass       Action = "pass"
 	ActionContinue   Action = "continue"
 	ActionNeedsHuman Action = "needs_human"
+	// ActionDispatched 表示本节点只负责把任务派出去，不等结果（Verdict=false）。
+	ActionDispatched Action = "dispatched"
 	ActionMerged     Action = "merged"
 )
 
@@ -29,83 +31,197 @@ type Outcome struct {
 	Reason  string
 }
 
-// ReviewStep 审阅环节。RunReview 跑一次审阅并返回最终报文。
+// ReviewStep 是 Task 5 完成前保留的兼容装配器；实际决策全部委托 NodeStep。
+// 新调用方应直接构造 NodeStep，避免把节点语义重新写死成 review。
 type ReviewStep struct {
 	St        *ledger.Store
 	Step      string
 	RunReview func(ctx context.Context, card ledger.Card) (string, error)
 }
 
-// RunOnce 执行一轮审阅：查回合 → 超限转等人 → 跑审阅 → 解析裁决 →
-// 落账 → 给出下一步。
+// RunOnce 以兼容字段装配一个审阅形 NodeStep；NodeStep 承担全部状态副作用。
 func (n *ReviewStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
-	logger := slog.Default().With("step", n.Step, "card", cardID)
-	logger.Info("进入审阅环节")
+	step := &NodeStep{
+		St:   n.St,
+		Node: ledger.NodeDef{Name: n.Step, Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "compat", "compat", nil
+		},
+		Await: func(ctx context.Context, target, taskID string) (string, error) {
+			card, err := n.St.GetCard(cardID)
+			if err != nil {
+				return "", err
+			}
+			return n.RunReview(ctx, card)
+		},
+	}
+	return step.RunOnce(ctx, cardID)
+}
+
+// NodeStep 通用节点执行体：一个节点该怎么跑，完全由 Node 上的能力开关决定，
+// 本类型不认识「审阅」「合并」这些名字。
+//
+// 依赖经函数字段注入（Dispatch/Await），决策逻辑与副作用分离——单测覆盖
+// 决策，真机判据覆盖副作用。
+type NodeStep struct {
+	St   *ledger.Store
+	Node ledger.NodeDef
+	// Dispatch 按节点配置把卡派出去，返回目标机与 task id。
+	Dispatch func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (target, taskID string, err error)
+	// Await 等该 task 跑到回合终态并取回最终报文。只在 Node.Verdict 时调用。
+	Await func(ctx context.Context, target, taskID string) (message string, err error)
+}
+
+// maxRounds 返回本节点的轮次封顶：节点没配就用包内默认。
+func (n *NodeStep) maxRounds() int {
+	if n.Node.MaxRounds > 0 {
+		return n.Node.MaxRounds
+	}
+	return MaxRounds
+}
+
+// actor 返回本节点写事件时的署名，形如 node:待审阅。
+func (n *NodeStep) actor() string { return "node:" + n.Node.Name }
+
+// haltForHuman 落一条说明性 comment（body 非空时）并打等人标记，返回统一的 Outcome。
+//
+// why 抽出来：这条「留痕 + 打旗 + 返回」三件套在本文件里出现五次，每次漏掉
+// 其中任何一件，卡在看板上都会看着一切正常而实际没人在推它。
+func (n *NodeStep) haltForHuman(cardID, reason, body string) (Outcome, error) {
+	if body != "" {
+		if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
+			return Outcome{}, err
+		}
+	}
+	if err := n.St.MarkNeedsHuman(cardID, reason, n.actor()); err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
+}
+
+// routeTo 把卡移到 to 列；to 为空表示停在本列（不是错误）。
+//
+// 返回：移动失败时返回错误原文，由调用方转等人——门槛没过（如「待合并」要求
+// 验收判据非空）是常态而不是异常，硬失败会让已经落账的裁决白跑。
+func (n *NodeStep) routeTo(cardID, to string) error {
+	if to == "" {
+		return nil
+	}
+	card, err := n.St.GetCard(cardID)
+	if err != nil {
+		return err
+	}
+	if card.Status == to {
+		return nil
+	}
+	return n.St.MoveCard(cardID, to, card.Status, n.actor())
+}
+
+// RunOnce 跑一次本节点。
+//
+// 参数：cardID 卡。
+// 返回：Outcome（下一步动作 + 裁决 + 理由）；只有「本节点根本不该被执行」
+// （纯人工列）和账本写失败才返回 error，其余异常一律转成 needs_human 并留痕。
+//
+// 阻塞行为：Node.Verdict 为真时会阻塞到被派出去的 task 跑到回合终态——几分钟
+// 到几十分钟，executor 挂在 waiting_answer 时更久。调用方自行决定要不要放
+// goroutine 里跑。
+func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) {
+	logger := slog.Default().With("node", n.Node.Name, "card", cardID)
+	logger.Info("进入节点",
+		"dispatch", n.Node.Dispatch, "verdict", n.Node.Verdict,
+		"template", n.Node.Template, "max_rounds", n.maxRounds())
+
+	if !n.Node.Dispatch {
+		// 纯人工列没有可执行能力。这不是「什么都不做」而是配置错误——
+		// 界面上不该给这种列画执行按钮，走到这里说明调用方绕过了判断。
+		logger.Warn("纯人工列被要求执行")
+		return Outcome{}, fmt.Errorf("节点 %q 没有 Dispatch 能力，不可执行", n.Node.Name)
+	}
 	card, err := n.St.GetCard(cardID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	events, err := n.St.EventsFromAsc([]string{cardID}, 0, 10000)
+	base, err := n.St.EffectiveBaseBranch(cardID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	rounds := CountRounds(events, n.Step)
-	logger.Info("读取审阅回合数", "rounds", rounds, "max_rounds", MaxRounds)
-	if rounds >= MaxRounds {
-		reason := fmt.Sprintf("审阅超轮（%d/%d）", rounds, MaxRounds)
-		logger.Info("回合封顶转等人", "rounds", rounds)
-		if err := n.St.MarkNeedsHuman(cardID, reason, "node:"+n.Step); err != nil {
+	for _, human := range n.Node.HumanBases {
+		if base != human {
+			continue
+		}
+		reason := fmt.Sprintf("基线 %s 在本节点的人工清单里：不自动执行", base)
+		logger.Info("基线命中人工清单，跳过派发", "base", base)
+		return n.haltForHuman(cardID, reason, "")
+	}
+	if n.Node.Verdict {
+		events, err := n.St.EventsFromAsc([]string{cardID}, 0, 10000)
+		if err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
+		rounds := CountRounds(events, n.Node.Name)
+		logger.Info("读取裁决回合数", "rounds", rounds, "max_rounds", n.maxRounds())
+		if rounds >= n.maxRounds() {
+			reason := fmt.Sprintf("裁决超轮（%d/%d）", rounds, n.maxRounds())
+			logger.Info("回合封顶转等人", "rounds", rounds)
+			return n.haltForHuman(cardID, reason, "")
+		}
 	}
-	message, err := n.RunReview(ctx, card)
+
+	target, taskID, err := n.Dispatch(ctx, card, n.Node)
 	if err != nil {
-		// 审阅没跑出报文（派发失败、卡在工单上、连接断了……）同样要上浮到
-		// 「需要你」，不能只让调用方拿到一个错误码：卡上不留痕 = 这张卡在
-		// 看板上看着一切正常，而实际没人在推它。原文落 timeline 供取证。
-		logger.Warn("审阅未取到报文，转等人", "err", err)
-		if _, cerr := n.St.AddComment(cardID,
-			"审阅未取到裁决报文：\n"+err.Error(), "普通", "node:"+n.Step); cerr != nil {
-			return Outcome{}, cerr
-		}
-		if merr := n.St.MarkNeedsHuman(cardID, "审阅未取到报文", "node:"+n.Step); merr != nil {
-			return Outcome{}, merr
-		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "审阅未取到报文"}, nil
+		// 派发失败同样要上浮到「需要你」：卡上不留痕 = 这张卡在看板上看着
+		// 一切正常，而实际没人在推它。原文落 timeline 供取证。
+		logger.Warn("派发失败，转等人", "cause", err)
+		return n.haltForHuman(cardID, "派发失败", "本节点派发失败：\n"+err.Error())
+	}
+	logger.Info("已派发", "target", target, "task", taskID)
+	if !n.Node.Verdict {
+		// 不裁决的节点到此为止：任务在对端跑，进展看卡的事件流与 handoff task。
+		logger.Info("节点结束（只派发不裁决）", "action", string(ActionDispatched))
+		return Outcome{Action: ActionDispatched}, nil
+	}
+
+	message, err := n.Await(ctx, target, taskID)
+	if err != nil {
+		logger.Warn("未取到报文，转等人", "cause", err)
+		return n.haltForHuman(cardID, "未取到裁决报文", "本节点未取到裁决报文：\n"+err.Error())
 	}
 	verdict, parseErr := ParseVerdict(message)
 	if parseErr != nil {
-		logger.Info("裁决解析失败转等人", "err", parseErr)
-		if _, err := n.St.AddComment(cardID, "裁决解析失败，审阅原文：\n"+message, "普通", "node:"+n.Step); err != nil {
-			return Outcome{}, err
-		}
-		if err := n.St.MarkNeedsHuman(cardID, "裁决解析失败", "node:"+n.Step); err != nil {
-			return Outcome{}, err
-		}
-		return Outcome{Action: ActionNeedsHuman, Reason: "裁决解析失败"}, nil
+		logger.Info("裁决解析失败转等人", "cause", parseErr)
+		return n.haltForHuman(cardID, "裁决解析失败", "裁决解析失败，报文原文：\n"+message)
 	}
-	if err := n.St.RecordReviewVerdict(cardID, n.Step, verdict.Pass, verdict.Raw, "node:"+n.Step); err != nil {
+	if err := n.St.RecordReviewVerdict(cardID, n.Node.Name, verdict.Pass, verdict.Raw, n.actor()); err != nil {
 		return Outcome{}, err
 	}
-	logger.Info("审阅裁决完成", "pass", verdict.Pass, "findings", len(verdict.Findings))
-	// 裁决落账即代表本环节这一轮真的跑通了。此前若因为派发失败、报文取不到
-	// 或裁决解析不了打过等人标记，那条标记已被这一轮推翻，由打它的同一个节点
-	// 撤回——不撤的话卡上会一直挂着一面已经不成立的红旗，而看板的「需要你」
-	// 筛选正是靠它（2026-08-20 真机看到：第二轮出了裁决，第一轮的
-	// 「审阅未取到报文」仍挂在抽屉顶上，且 Web 上没有任何撤除入口）。
+	logger.Info("裁决落账", "pass", verdict.Pass, "findings", len(verdict.Findings))
+	// 裁决落账即代表本节点这一轮真的跑通了。此前若因派发失败、报文取不到或
+	// 裁决解析不了打过等人标记，那条标记已被这一轮推翻，由打它的同一个节点撤回
+	// ——不撤的话卡上会一直挂着一面已经不成立的红旗，而看板的「需要你」筛选
+	// 正是靠它（2026-08-20 真机看到过陈标记挂在抽屉顶上且 Web 无撤除入口）。
 	//
-	// 失败只告警不中断：裁决已经落账，为一次收尾清理失败而让整个环节报错，
+	// 失败只告警不中断：裁决已落账，为一次收尾清理失败而让整个节点报错，
 	// 代价比留一条陈标记大。
-	if cleared, cerr := n.St.ClearNeedsHumanFrom(cardID, "node:"+n.Step); cerr != nil {
-		logger.Warn("撤回本环节旧等人标记失败", "err", cerr)
+	if cleared, cerr := n.St.ClearNeedsHumanFrom(cardID, n.actor()); cerr != nil {
+		logger.Warn("撤回本节点旧等人标记失败", "cause", cerr)
 	} else if cleared {
-		logger.Info("已撤回本环节此前的等人标记")
+		logger.Info("已撤回本节点此前的等人标记")
 	}
+
+	to, action := n.Node.OnFail, ActionContinue
 	if verdict.Pass {
-		return Outcome{Action: ActionPass, Verdict: verdict}, nil
+		to, action = n.Node.Next, ActionPass
 	}
-	return Outcome{Action: ActionContinue, Verdict: verdict}, nil
+	if err := n.routeTo(cardID, to); err != nil {
+		// 门槛没过是常态（例如「待合并」要求验收判据非空），转等人而不是硬失败：
+		// 裁决已经落账了，为一次移动失败把整轮判成错误会让人看不出发生了什么。
+		reason := fmt.Sprintf("裁决已落账但移到 %q 失败", to)
+		logger.Warn("路由失败转等人", "to", to, "cause", err)
+		return n.haltForHuman(cardID, reason, reason+"：\n"+err.Error())
+	}
+	logger.Info("节点结束", "action", string(action), "moved_to", to)
+	return Outcome{Action: action, Verdict: verdict}, nil
 }
 
 // MergeStep 合并环节。Objective 跑客观判据（测试+gofmt）；DoMerge 执行
