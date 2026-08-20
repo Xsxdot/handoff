@@ -213,6 +213,50 @@ func (s *Store) GetCard(id string) (Card, error) {
 	return card, err
 }
 
+// CardBrief 是卡的最小展示三元组：抽屉「子任务」区一行需要的全部。
+//
+// 为什么不直接返回 Card：子任务区只渲染 id + 标题 + 状态徽标，把整张卡
+// （含判据、附件、驱动租约）塞进详情响应，是给一个只读列表付整卡的序列化代价。
+type CardBrief struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// ChildrenOf 返回该卡的直接子卡（parent_id = cardID），按 id 升序。
+//
+// 参数：cardID 父卡 id。
+// 返回：直接子卡的最小三元组；卡不存在时返回错误（上层映射 404）。
+//
+// 注意：只一层，不递归。要全后代请看 Subtree——但那个语义不一样
+// （含 merged_into 的并入成员），不是「子任务」。
+//
+// 为什么卡不存在要报错而不是返回空：空切片是「这张卡没有子卡」的合法答案，
+// 与「你给的 id 根本不存在」混成同一个响应，前端就只能靠猜。
+func (s *Store) ChildrenOf(cardID string) ([]CardBrief, error) {
+	if _, err := s.GetCard(cardID); err != nil {
+		return nil, fmt.Errorf("查子卡父卡 %s: %w", cardID, err)
+	}
+	rows, err := s.db.Query(s.q(
+		`SELECT id, title, status FROM cards WHERE parent_id = ? ORDER BY id`), cardID)
+	if err != nil {
+		return nil, fmt.Errorf("读子卡 %s: %w", cardID, err)
+	}
+	defer rows.Close()
+	children := make([]CardBrief, 0, 4)
+	for rows.Next() {
+		var brief CardBrief
+		if err := rows.Scan(&brief.ID, &brief.Title, &brief.Status); err != nil {
+			return nil, fmt.Errorf("扫描子卡 %s: %w", cardID, err)
+		}
+		children = append(children, brief)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读子卡 %s: %w", cardID, err)
+	}
+	return children, nil
+}
+
 // AttachFile 挂附件（同 path 幂等）；落 comment 事件记录动作，附件本体
 // 是卡字段不是事件。
 func (s *Store) AttachFile(id, kind, path, actor string) error {

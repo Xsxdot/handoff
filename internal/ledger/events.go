@@ -277,7 +277,10 @@ func (s *Store) ClearNeedsHuman(cardID, actor string) error {
 }
 
 // Subtree 返回卡树成员 id 集：root + 全部后代（parent 链）+ 并入成员
-// （merged_into 指向集内任一成员的卡）。多路 wait 与看板 rollup 共用。
+// （merged_into 指向集内任一成员的卡）。多路 wait 用。
+//
+// 注意：它的语义含并入成员，与抽屉「子任务」区不是一回事——
+// 那里要的是直接子卡，走 ChildrenOf。
 func (s *Store) Subtree(rootID string) ([]string, error) {
 	if _, err := s.GetCard(rootID); err != nil {
 		return nil, err
