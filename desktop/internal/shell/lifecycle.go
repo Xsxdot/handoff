@@ -1,10 +1,12 @@
 // 本文件负责 agentd 的存活：判断它装没装、起没起，必要时用 internal/service 托管起来。
 //
-// 边界（三条都是承重的，见 spec §4.3）：
+// 边界（四条都是承重的，见 spec §4.3）：
 //   - **绝不把 agentd 跑进薄壳进程**。agentd 必须活过薄壳、必须能在无 GUI 机器上裸跑，
 //     且 B59 的更新机制假设它由 service 托管
 //   - **绝不在薄壳退出时停掉 agentd**。执行者不能随关窗陪葬
 //   - 已在运行时**什么都不做**。重复 Install 会重装单元、打断正在跑的任务
+//   - **绝不复活被显式停用的 agentd**。handoff service stop 是显式意图，
+//     不是待修复的故障；把它当故障自愈，stop 在装了薄壳的机器上就失效了
 package shell
 
 import (
@@ -43,6 +45,17 @@ func EnsureRunning(log *slog.Logger, spec service.Spec) error {
 	}
 	if st.Running {
 		log.Info("agentd 已在运行，无需干预", "kind", m.Kind(), "detail", st.Detail)
+		return nil
+	}
+	// 被 handoff service stop 显式停用：不自愈。
+	//
+	// 承重的理由：下面那段「Start 失败就 Install 自愈」在 launchd 上会把
+	// 被 bootout 的单元重新 bootstrap 起来——用户明确停掉的东西又被拉回来，
+	// stop 这个动作在装了桌面壳的机器上当场失效。停用是一个显式意图，
+	// 不是一个待修复的故障。
+	if st.Disabled {
+		log.Info("agentd 已被显式停用，不自愈",
+			"kind", m.Kind(), "installed", st.Installed, "detail", st.Detail)
 		return nil
 	}
 	log.Info("agentd 未在运行，准备托管拉起", "kind", m.Kind(), "installed", st.Installed, "bin", spec.BinPath)

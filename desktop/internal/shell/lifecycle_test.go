@@ -120,6 +120,26 @@ func TestEnsureRunningFallsBackToInstallWhenStartFails(t *testing.T) {
 	}
 }
 
+// 被 handoff service stop 显式停用时，绝不自愈。
+//
+// why 承重：EnsureRunning 的既有逻辑是「没在跑 → Start，Start 失败 →
+// Install 自愈」。launchd 上 stop 做过 bootout，Start 会失败，于是回落
+// Install 把用户刚显式停掉的 agentd 装回来跑起来——stop 这个动作在装了
+// 桌面壳的机器上当场失效。
+func TestEnsureRunningRespectsDisabled(t *testing.T) {
+	f := &fakeManager{status: service.Status{Installed: true, Running: false, Disabled: true}}
+	withManager(t, f, nil)
+	if err := EnsureRunning(slog.Default(), service.Spec{BinPath: "/opt/bin/handoff"}); err != nil {
+		t.Fatalf("被停用不是错误，EnsureRunning 应正常返回: %v", err)
+	}
+	if f.started {
+		t.Error("被停用时不得调 Start")
+	}
+	if f.installed {
+		t.Error("被停用时不得调 Install——那会把用户显式停掉的 agentd 装回来")
+	}
+}
+
 // 平台不支持（Windows）：把原因原样带出来，不许吞、不许 panic。
 func TestEnsureRunningSurfacesUnsupportedPlatform(t *testing.T) {
 	withManager(t, nil, errors.New("暂不支持 Windows：agentd 依赖的进程承载层 Windows 实现尚未完成"))
