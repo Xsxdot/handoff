@@ -384,7 +384,7 @@ func TestCardStepAcceptsNodeName(t *testing.T) {
 	release := holdCardStep(t, env.srv, card.ID)
 	defer release()
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
-	if code == http.StatusBadRequest && strings.Contains(body, "review|merge") {
+	if code == http.StatusBadRequest && strings.Contains(body, strings.Join([]string{"review", "merge"}, "|")) {
 		t.Fatalf("节点名仍被写死的白名单拦掉: %s", body)
 	}
 	if code != http.StatusConflict {
