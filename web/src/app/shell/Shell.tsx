@@ -25,6 +25,7 @@ import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
 import { useMachineCaps } from '../data/useMachineCaps'
+import { useLedgerEnabled } from '../data/useLedgerEnabled'
 import { usePoll } from '../data/usePoll'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
@@ -76,14 +77,18 @@ export function Shell() {
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
-  const cardsState = usePoll(fetchCards, 2500)
-  const decisionsState = usePoll(() => fetchDecisions(true), 2500)
+  const { enabled: ledgerEnabled } = useLedgerEnabled()
+  const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
+  const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
   const cardNeedsCount = useMemo(() => {
+    // 账本未启用时角标恒 0：轮询已关，cardsState 永远是 null，这里显式返回
+    // 比依赖「null 恰好算出 0」可靠
+    if (!ledgerEnabled) return 0
     const cards = cardsState.data?.cards ?? []
     const cardCount = cards.filter(needsAttention).length
     const projectDecisionCount = (decisionsState.data ?? []).filter((decision) => decision.card_id === '').length
     return cardCount + projectDecisionCount
-  }, [cardsState.data, decisionsState.data])
+  }, [ledgerEnabled, cardsState.data, decisionsState.data])
   // 未挂账 task = 账本里没有卡认领它的那些。任务看板降级为它们的兜底入口
   // （工作项看板是主入口），所以这个集合同时喂给 dock 角标与看板的默认筛选。
   // 账本还没读到时给 null——不过滤，宁可多显示也不能凭空藏任务。
@@ -367,6 +372,7 @@ export function Shell() {
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
             onOpenFlows={() => navigate('/flows')}
+            ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}
             unlinkedCount={unlinkedTaskIds?.size ?? 0}
             onOpenTickets={() => setOverlay('tickets')}
@@ -390,14 +396,12 @@ export function Shell() {
         {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
         <main className="min-h-0 flex-1">
           <Routes>
-            <Route
-              path="/cards"
-              element={<CardsPage />}
-            />
-            <Route
-              path="/flows"
-              element={<FlowsPage />}
-            />
+            {ledgerEnabled && (
+              <>
+                <Route path="/cards" element={<CardsPage />} />
+                <Route path="/flows" element={<FlowsPage />} />
+              </>
+            )}
             <Route
               path="/settings"
               element={<SettingsPage onClose={() => navigate('/')} />}
@@ -526,6 +530,7 @@ export function Shell() {
           tasksState={tasksState}
           tree={treeState.data}
           unlinkedTaskIds={unlinkedTaskIds}
+          ledgerEnabled={ledgerEnabled}
           onOpenTask={openTaskTui}
           onClose={() => setOverlay('none')}
         />

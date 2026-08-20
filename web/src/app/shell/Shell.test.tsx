@@ -32,6 +32,15 @@ vi.mock('../../api/client', async () => {
   }
 })
 const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession, createPtySession } = await import('../../api/client')
+
+vi.mock('../../api/ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../api/ledger')>('../../api/ledger')
+  return {
+    ...actual,
+    // Shell 既有路由/工作台回归按账本已启用基线运行；关闭态由门控专项断言。
+    fetchLedgerHealth: vi.fn().mockResolvedValue({ enabled: true, mirror: [] }),
+  }
+})
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
 // 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
 const termInstance = {

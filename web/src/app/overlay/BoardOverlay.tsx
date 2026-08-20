@@ -22,16 +22,19 @@ export interface BoardOverlayProps {
   tree: ProjectTreeResp | null
   onOpenTask: (base: BaseDir | null, taskId: string) => void
   unlinkedTaskIds?: Set<string> | null
+  // ledgerEnabled 由 Shell 的一次性探测传入；未启用时看板是任务主入口。
+  ledgerEnabled?: boolean
   onClose: () => void
 }
 
-export function BoardOverlay({ tasksState, tree, unlinkedTaskIds, onOpenTask, onClose }: BoardOverlayProps) {
+export function BoardOverlay({ tasksState, tree, unlinkedTaskIds, ledgerEnabled = false, onOpenTask, onClose }: BoardOverlayProps) {
   return (
     <Overlay title="任务看板（未挂账兜底）" onClose={onClose} wide tall>
       <BoardPage
         tasksState={tasksState}
         tree={tree}
         unlinkedTaskIds={unlinkedTaskIds ?? null}
+        ledgerEnabled={ledgerEnabled}
         onOpenTask={(base, id) => {
           onClose()
           onOpenTask(base, id)

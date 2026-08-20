@@ -36,6 +36,7 @@ function props(over: {
   onSelectDir?: (b: BaseDir) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
   onOpenBoard?: () => void
+  ledgerEnabled?: boolean
   onOpenTickets?: () => void
   onOpenSettings?: () => void
   onOpenFlows?: () => void
@@ -67,6 +68,8 @@ function props(over: {
     onSelectDir: over.onSelectDir ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
+    // 这组 dock 回归测试覆盖账本已启用时的既有入口；未启用门控另由专项用例覆盖。
+    ledgerEnabled: over.ledgerEnabled ?? true,
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),

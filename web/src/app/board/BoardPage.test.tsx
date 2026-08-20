@@ -6,7 +6,8 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { Task } from '../../api/types'
-import { TaskCard } from './BoardPage'
+import type { PollState } from '../data/usePoll'
+import { BoardPage, TaskCard } from './BoardPage'
 
 function task(over: Partial<Task>): Task {
   return {
@@ -21,6 +22,19 @@ function task(over: Partial<Task>): Task {
 function renderCard(state: string) {
   return render(<TaskCard task={task({ state })} projectName="handoff" onOpen={vi.fn()} />)
 }
+
+function makeTasksState(tasks: Task[]): PollState<Task[]> {
+  return {
+    data: tasks,
+    disconnected: false,
+    sessionExpired: false,
+    errorText: '',
+    refresh: vi.fn(),
+  }
+}
+
+const taskA = task({ id: 'A', name: '任务 A' })
+const taskB = task({ id: 'B', name: '任务 B' })
 
 describe('TaskCard', () => {
   // B75 的回归防线：这条红了说明重复徽章又回来了
@@ -59,5 +73,38 @@ describe('TaskCard', () => {
     render(<TaskCard task={task({ state: 'running' })} projectName="" onOpen={vi.fn()} />)
     expect(screen.getByText('未归属')).toBeInTheDocument()
     expect(screen.getByText('本机')).toBeInTheDocument()
+  })
+})
+
+describe('BoardPage', () => {
+  // 账本未启用时任务看板是主入口，不能默认藏起挂了卡的 task。
+  // ledgerEnabled=false 时 onlyUnlinked 必须为 false。
+  it('账本未启用时不默认只看未挂账', () => {
+    render(
+      <BoardPage
+        tasksState={makeTasksState([taskA, taskB])}
+        tree={null}
+        unlinkedTaskIds={new Set([taskA.id])}
+        ledgerEnabled={false}
+        onOpenTask={() => {}}
+      />,
+    )
+    // 两条 task 都应出现——未启用账本时「未挂账」这个概念不该影响可见性
+    expect(screen.getByText(taskA.name)).toBeInTheDocument()
+    expect(screen.getByText(taskB.name)).toBeInTheDocument()
+  })
+
+  it('账本启用时默认只看未挂账', () => {
+    render(
+      <BoardPage
+        tasksState={makeTasksState([taskA, taskB])}
+        tree={null}
+        unlinkedTaskIds={new Set([taskA.id])}
+        ledgerEnabled
+        onOpenTask={() => {}}
+      />,
+    )
+    expect(screen.getByText(taskA.name)).toBeInTheDocument()
+    expect(screen.queryByText(taskB.name)).not.toBeInTheDocument()
   })
 })

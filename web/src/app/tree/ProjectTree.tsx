@@ -68,6 +68,8 @@ export interface ProjectTreeProps {
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
   onOpenCards?: () => void
+  // ledgerEnabled 未启用时不渲染账本的「工作项」与「流程」两个入口。
+  ledgerEnabled?: boolean
   // onOpenFlows 流程页（工作流形状 / 派发模板）。以前没有 dock 入口，
   // 只能手敲 /flows——spec §5 要求入口挂 dock
   onOpenFlows?: () => void
@@ -196,7 +198,7 @@ export function findBaseOfTask(
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -711,20 +713,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           <Plus className="size-4 shrink-0" />
           <span>添加项目</span>
         </button>
-        <button
-          type="button"
-          aria-label="工作项"
-          title="工作项"
-          onClick={onOpenCards}
-          className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-        >
-          <SquareKanban className="size-4" />
-          {cardNeedsCount > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-state-intervention px-1 text-center text-[10px] leading-4 text-white">
-              {cardNeedsCount}
-            </span>
-          )}
-        </button>
+        {ledgerEnabled && (
+          <button
+            type="button"
+            aria-label="工作项"
+            title="工作项"
+            onClick={onOpenCards}
+            className="relative rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          >
+            <SquareKanban className="size-4" />
+            {cardNeedsCount > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-state-intervention px-1 text-center text-[10px] leading-4 text-white">
+                {cardNeedsCount}
+              </span>
+            )}
+          </button>
+        )}
         <button
           type="button"
           aria-label="任务看板"
@@ -739,15 +743,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </span>
           )}
         </button>
-        <button
-          type="button"
-          aria-label="流程"
-          title="流程（工作流 / 派发模板）"
-          onClick={onOpenFlows}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-        >
-          <Workflow className="size-4" />
-        </button>
+        {ledgerEnabled && (
+          <button
+            type="button"
+            aria-label="流程"
+            title="流程（工作流 / 派发模板）"
+            onClick={onOpenFlows}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          >
+            <Workflow className="size-4" />
+          </button>
+        )}
         <button
           type="button"
           aria-label="工单"
