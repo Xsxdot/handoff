@@ -235,11 +235,18 @@ type Task struct {
 	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
 	Model string `json:"model"`
 	// Discipline 是本任务实际注入的纪律块来源标注（如「内置:single-context」）。
-	// 该列后加、不回填、不编造——老任务为空。
+	// **不落盘**：它只在派发响应里回显给协调者，agentd 重启后为空。
 	//
-	// 为什么要落进 Task 而不只是日志：配置化把纪律块从 plan 文件里拿走后，
-	// 写 plan 的人再也看不见它，dispatch 必须当场回显；CLI 拿到的就是这个对象。
+	// 为什么要回显：配置化把纪律块从 plan 文件里拿走后，写 plan 的人再也看不见它，
+	// dispatch 必须当场把「这次注入的是哪块」说出来；CLI 拿到的就是这个对象。
 	Discipline string `json:"discipline,omitempty"`
+	// DisciplineName 是派发时点名的纪律块角色名（如 review）；空=按 executor 兜底。
+	// 该列后加，老任务为空——空是有意义的取值（走兜底），不回填、不编造。
+	//
+	// 为什么必须落盘：resumeForContinue 与 ResumeTask 只拿得到 executor 名，
+	// 不落盘的话一次 continue 或一次 agentd 重启就会让点名的任务静默退回兜底块，
+	// 而且首回合是对的，事后极难查。
+	DisciplineName string `json:"discipline_name,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`
