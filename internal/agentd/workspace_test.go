@@ -1176,9 +1176,13 @@ func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
 // branch.<name>.remote，而不是无条件猜 origin。
 func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
 	origin, clone := newOriginAndClone(t)
-	gitT(t, clone, "remote", "add", "upstream", origin)
+	upstream, _ := newOriginAndClone(t)
+	gitT(t, clone, "remote", "add", "upstream", upstream)
+	gitT(t, clone, "fetch", "-q", "upstream")
+
+	originSHA := commitOnOrigin(t, origin, "origin.txt", "origin")
+	upstreamSHA := commitOnOrigin(t, upstream, "upstream.txt", "upstream")
 	gitT(t, clone, "config", "branch.main.remote", "upstream")
-	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
 
 	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
 	if err != nil {
@@ -1187,8 +1191,14 @@ func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
 	if !fetched {
 		t.Fatalf("本地分支的配置远端应触发 D2 fetch")
 	}
-	if got != newSHA {
-		t.Fatalf("应解析到配置远端最新提交 %s，实得 %s", newSHA, got)
+	if originSHA == upstreamSHA {
+		t.Fatalf("夹具必须让两个远端停在不同提交")
+	}
+	if got != upstreamSHA {
+		t.Fatalf("应解析到配置远端 upstream 的最新提交 %s，实得 %s", upstreamSHA, got)
+	}
+	if got == originSHA {
+		t.Fatalf("不应解析到 origin 的提交 %s：配置远端回归网未生效", originSHA)
 	}
 }
 
