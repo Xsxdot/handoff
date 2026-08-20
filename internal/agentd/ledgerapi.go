@@ -1,6 +1,8 @@
 // 账本 HTTP API：web 看板的唯一账本通道。薄层——业务全在
-// internal/ledger，此处只做解码/调用/编码与错误翻译。写动作只有
-// move/note/answer 三个；派发、合并等动作由 CLI 承载。
+// internal/ledger，此处只做解码/调用/编码与错误翻译。写动作：
+// move/note/answer/accept 同步返回；step（审阅/合并环节）异步 202，
+// 编排在 internal/ledgerstep。实现类派发仍只由 CLI 承载——它要挂 plan 文件，
+// 浏览器里没有那个文件。
 package agentd
 
 import (
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
@@ -25,6 +28,7 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/cards/{id}", s.withLedger(s.handleCardDetail))
 	api.HandleFunc("POST /api/cards/{id}/move", s.withLedger(s.handleCardMove))
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
+	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
@@ -242,6 +246,40 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, event)
+}
+
+// handleCardAccept 记一条「已真机验」验收，body 只收证据。
+//
+// 为什么不收 verified 字段：标记未验是补记动作而不是日常，留 CLI 的
+// `card accept --unverified`。界面上只提供「标记已验」这一个方向，语义更窄也更难误点。
+//
+// 为什么空证据必须在这里拦：RecordAcceptance 自己不校验，「已验必须带证据」
+// 这条规则今天只由 CLI 守着。只靠前端不让空提交的话，curl 一下就能落一条
+// 没有证据的「已验」——而验收记录正是事后唯一能复查的东西。
+func (s *Server) handleCardAccept(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Evidence string `json:"evidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	id := r.PathValue("id")
+	evidence := strings.TrimSpace(req.Evidence)
+	if evidence == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "标记已验必须带证据（与 CLI card accept 同规则）",
+		})
+		return
+	}
+	actor := "web:" + r.RemoteAddr
+	if err := s.ledger.RecordAcceptance(id, true, evidence, actor); err != nil {
+		s.log.Error("记验收失败", "card", id, "actor", actor, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	s.log.Info("已记验收", "card", id, "actor", actor, "evidence_bytes", len(evidence))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {

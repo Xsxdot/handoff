@@ -98,6 +98,11 @@ export const moveCard = (id: string, to: string) =>
 export const noteCard = (id: string, body: string, kind = '普通') =>
   postJSON<LedgerEvent>(`/api/cards/${encodeURIComponent(id)}/note`, { body, kind })
 
+// acceptCard 记一条「已真机验」。证据由后端强制非空（与 CLI card accept 同规则），
+// 前端只是不让空提交，不是唯一的那道门。
+export const acceptCard = (id: string, evidence: string) =>
+  postJSON<{ ok: boolean }>(`/api/cards/${encodeURIComponent(id)}/accept`, { evidence })
+
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
 
 export const fetchDecisions = (openOnly: boolean) =>

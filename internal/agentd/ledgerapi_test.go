@@ -169,6 +169,65 @@ func TestCardDetailReturnsChildren(t *testing.T) {
 	}
 }
 
+// TestCardAcceptRecordsEvidence 验收写入口落事件。
+func TestCardAcceptRecordsEvidence(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "待验卡")
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/accept",
+		`{"evidence":"真机跑了 3 轮，日志见 render.log"}`)
+	if code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	evs, err := env.ledger.EventsFromAsc([]string{card.ID}, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range evs {
+		if event.Type != ledger.EvAcceptanceRecorded {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["verified_on_real_machine"] != true {
+			t.Fatalf("应记为已验: %+v", payload)
+		}
+		if payload["evidence"] != "真机跑了 3 轮，日志见 render.log" {
+			t.Fatalf("证据没落对: %+v", payload)
+		}
+	}
+	if !found {
+		t.Fatal("缺 acceptance_recorded 事件")
+	}
+}
+
+// TestCardAcceptRejectsEmptyEvidence 空证据 400——「已验必须带证据」
+// 这条规则必须由后端守。只靠前端不让空提交的话，curl 一下就能落一条
+// 没有证据的「已验」，而验收记录正是事后唯一能复查的东西。
+func TestCardAcceptRejectsEmptyEvidence(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "待验卡")
+	for _, bad := range []string{`{"evidence":""}`, `{"evidence":"   "}`, `{}`} {
+		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/accept", bad)
+		if code != http.StatusBadRequest {
+			t.Fatalf("body=%s 应 400，实得 %d（%s）", bad, code, body)
+		}
+	}
+}
+
+// TestCardAcceptUnknownCard404 卡不存在走既有的错误翻译。
+func TestCardAcceptUnknownCard404(t *testing.T) {
+	env := newLedgerEnv(t)
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/B-不存在/accept", `{"evidence":"x"}`)
+	if code != http.StatusNotFound {
+		t.Fatalf("应 404，实得 %d", code)
+	}
+}
+
 // TestLedgerHealthReportsDisabled 账本未挂载时 health 必须 200 + enabled:false。
 // 为什么不能用 503：这个端点是前端做入口门控的探针，503 与「网络错」
 // 无法区分，前端就只能靠猜。其余 /api/cards* 仍走 withLedger 的 503。

@@ -13,6 +13,7 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
     events: [], task_states: [], effective_base_branch: '', decisions: [],
   }),
   answerDecision: vi.fn().mockResolvedValue(undefined),
+  acceptCard: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
 describe('抽屉一处看', () => {
@@ -137,5 +138,40 @@ describe('抽屉里的子任务', () => {
     render(<CardDrawer id="B160" onClose={() => {}} onOpenCard={() => {}} />)
     await screen.findByText('叶子卡')
     expect(screen.queryByText(/子任务/)).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的验收', () => {
+  it('未验且已完成显示「待真机验」，标记已验要带证据', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B170', Title: '待验卡', Status: '已完成', Attachments: [], AcceptanceCriteria: '判据：全绿' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    const accept = vi.mocked(ledger.acceptCard).mockResolvedValue({ ok: true })
+    render(<CardDrawer id="B170" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('待真机验')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /标记已验/ }))
+    const box = screen.getByPlaceholderText(/证据/)
+    // 空证据不许提交
+    expect(screen.getByRole('button', { name: '确认' })).toBeDisabled()
+    fireEvent.change(box, { target: { value: '真机跑了 3 轮' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
+    await waitFor(() => expect(accept).toHaveBeenCalledWith('B170', '真机跑了 3 轮'))
+  })
+
+  it('未验且未完成显示「未验」——三态里这一态原来是缺的', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ID: 'B171', Title: '进行中的卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '',
+      decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B171" onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('进行中的卡')
+    expect(screen.getByText('未验')).toBeInTheDocument()
+    expect(screen.queryByText('待真机验')).not.toBeInTheDocument()
   })
 })
