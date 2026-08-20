@@ -220,6 +220,10 @@ var agentdCmd = &cobra.Command{
 				cfg.Token, "", srv.Handler(), logger)
 			go listener.RunWithReconnect(wdCtx)
 		}
+		// relay 隧道预热：探活只有 3s 预算，首次建隧道（WSS + CONNECT + E2E）
+		// 装不进去。预热用独立超时提前备好，让探活只花在 /api/status 上。
+		go srv.Pool().Warm(wdCtx)
+		logger.Info("relay 隧道预热已启动")
 		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
 		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
@@ -229,16 +233,11 @@ var agentdCmd = &cobra.Command{
 			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
 			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
-		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，
-		// 让浏览器只连本机一条 WS 也能看到远端任务的实时事件。没有远程机器就
-		// 没必要开一条常驻循环——空转只会占一个 goroutine 与每 30s 一次空轮询。
-		if len(cfg.Targets) > 0 {
-			mirror := agentd.NewMirror(cfg, st, srv.Hub(), logger)
-			go mirror.Run(wdCtx)
-			logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
-		} else {
-			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
-		}
+		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
+		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
+		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), logger)
+		go mirror.Run(wdCtx)
+		logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -271,8 +270,14 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()),
+		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
+		// 本分支要在 Serve 返回后关掉 target 客户端池（含 relay 隧道）。
+		err = sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()),
 			srv.GracefulShutdownCleanup(wdCancel), listenAddrs...)
+		if closeErr := srv.CloseTargets(); closeErr != nil {
+			logger.Warn("关闭 target 客户端池失败", "cause", closeErr)
+		}
+		return err
 	},
 }
 

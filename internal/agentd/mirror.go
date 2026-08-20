@@ -20,14 +20,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
-	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 )
 
 // mirrorDiscoveryTick 是发现轮询间隔（§6.1）。慢对账靠它补漏「不伴随事件的
@@ -60,45 +58,52 @@ var errMirrorDone = errors.New("镜像任务已终结")
 // 并发安全：subs/ring 两个 map 的全部访问都在 mu 保护下；wg 跟踪全部
 // 订阅与门铃 goroutine，Stop 等它们收干净才返回。
 type Mirror struct {
-	cfg *config.Config
-	st  *store.Store
-	hub *Hub
-	log *slog.Logger
+	// pool 同时提供两样东西：客户端与「有哪些机器」的判据。
+	//
+	// 为什么不再持 *config.Config：那是 NewMirror 时的静态快照，控制台运行期
+	// 新增的机器要重启 agentd 才会被镜像——而「加完看不见」很容易被误当成
+	// 对端故障去查。
+	pool *targetclient.Pool
+	st   *store.Store
+	hub  *Hub
+	log  *slog.Logger
 
-	mu   sync.Mutex
-	subs map[string]context.CancelFunc // task_id → 取消订阅
-	ring map[string]chan struct{}      // target → 防抖门铃（缓冲 1）
-	wg   sync.WaitGroup
+	mu    sync.Mutex
+	subs  map[string]context.CancelFunc // task_id → 取消订阅
+	ring  map[string]chan struct{}      // target → 防抖门铃（缓冲 1）
+	loops map[string]struct{}           // 已启动的 target 快照循环
+	wg    sync.WaitGroup
 }
 
 // NewMirror 创建镜像管理器。
 //
 // 参数：
-//   - cfg: 配置（Targets 是发现与订阅的目标清单）
+//   - pool: target 客户端池（同时提供客户端与活的 target 清单）
 //   - st: 本机存储（mirror_events / mirror_tasks 的落点）
 //   - hub: 本机实时路由（镜像事件经它 Publish，让 /ws/events 订阅者立刻收到）
 //   - log: 本镜像的日志入口
-func NewMirror(cfg *config.Config, st *store.Store, hub *Hub, log *slog.Logger) *Mirror {
+func NewMirror(pool *targetclient.Pool, st *store.Store, hub *Hub, log *slog.Logger) *Mirror {
 	return &Mirror{
-		cfg:  cfg,
-		st:   st,
-		hub:  hub,
-		log:  log,
-		subs: map[string]context.CancelFunc{},
-		ring: map[string]chan struct{}{},
+		pool:  pool,
+		st:    st,
+		hub:   hub,
+		log:   log,
+		subs:  map[string]context.CancelFunc{},
+		ring:  map[string]chan struct{}{},
+		loops: map[string]struct{}{},
 	}
 }
+
+// machineNames 返回当前要镜像的机器名，已排序。判据只有一处：池。
+func (m *Mirror) machineNames() []string { return m.pool.Names() }
 
 // Run 启动发现循环：先立刻跑一轮，然后按 mirrorDiscoveryTick 周期跑，
 // ctx 取消时收掉全部订阅与门铃 goroutine。
 //
 // 注意：Run 内调 Stop 收尾，测试可直接调 Stop 而不用等 ctx 取消。
 func (m *Mirror) Run(ctx context.Context) {
-	m.log.Info("镜像启动", "tick", mirrorDiscoveryTick.String(), "targets", len(m.cfg.Targets))
-	for name := range m.cfg.Targets {
-		m.wg.Add(1)
-		go m.runSnapshotLoop(ctx, name)
-	}
+	m.log.Info("镜像启动", "tick", mirrorDiscoveryTick.String(), "targets", len(m.machineNames()))
+	m.ensureSnapshotLoops(ctx)
 	m.discoverOnce(ctx)
 	ticker := time.NewTicker(mirrorDiscoveryTick)
 	defer ticker.Stop()
@@ -109,8 +114,27 @@ func (m *Mirror) Run(ctx context.Context) {
 			m.Stop()
 			return
 		case <-ticker.C:
+			m.ensureSnapshotLoops(ctx)
 			m.discoverOnce(ctx)
 		}
+	}
+}
+
+// ensureSnapshotLoops 为当前配置里尚未见过的机器启动快照门铃循环。
+//
+// 运行期新增 target 也必须有消费者：否则事件虽会落库，ringBell 却没有循环来
+// 防抖刷新任务快照，新增机器的状态会停在首次发现的旧值。
+func (m *Mirror) ensureSnapshotLoops(ctx context.Context) {
+	for _, name := range m.machineNames() {
+		m.mu.Lock()
+		if _, ok := m.loops[name]; ok {
+			m.mu.Unlock()
+			continue
+		}
+		m.loops[name] = struct{}{}
+		m.mu.Unlock()
+		m.wg.Add(1)
+		go m.runSnapshotLoop(ctx, name)
 	}
 }
 
@@ -131,11 +155,7 @@ func (m *Mirror) Stop() {
 // discoverOnce 跑一轮发现：对每台 target 拉任务列表，快照进 mirror_tasks，
 // 活跃任务开订阅、终态任务收订阅。单台失败不影响其余。
 func (m *Mirror) discoverOnce(ctx context.Context) {
-	names := make([]string, 0, len(m.cfg.Targets))
-	for name := range m.cfg.Targets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := m.machineNames()
 
 	fanCtx, cancel := context.WithTimeout(ctx, mirrorDiscoverBudget)
 	defer cancel()
@@ -151,8 +171,12 @@ func (m *Mirror) discoverOnce(ctx context.Context) {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			t := m.cfg.Targets[name]
-			views, err := client.New(t.Addr, t.Token).MarkForwarded().ListTasks(fanCtx)
+			c, err := m.pool.For(name)
+			if err != nil {
+				results[i] = result{name: name, err: err}
+				return
+			}
+			views, err := c.MarkForwarded().ListTasks(fanCtx)
 			results[i] = result{name: name, views: views, err: err}
 		}(i, name)
 	}
@@ -179,11 +203,10 @@ func (m *Mirror) discoverOnce(ctx context.Context) {
 				continue
 			}
 			if !m.isSubscribed(tv.Task.ID) {
-				t := m.cfg.Targets[r.name]
 				subCtx, subCancel := context.WithCancel(ctx)
 				m.registerSub(tv.Task.ID, subCancel)
 				m.wg.Add(1)
-				go m.subscribe(subCtx, r.name, t, tv.Task.ID)
+				go m.subscribe(subCtx, r.name, tv.Task.ID)
 				subscribed++
 			}
 		}
@@ -194,7 +217,7 @@ func (m *Mirror) discoverOnce(ctx context.Context) {
 
 // subscribe 是一条任务的常驻上游订阅：从本机水位续拉事件，断线退避重连，
 // 直到任务终态、上下文取消或 Stop。
-func (m *Mirror) subscribe(ctx context.Context, machine string, t config.Target, taskID string) {
+func (m *Mirror) subscribe(ctx context.Context, machine string, taskID string) {
 	defer m.wg.Done()
 	defer m.unregisterSub(taskID)
 	backoff := mirrorBackoffInitial
@@ -207,8 +230,13 @@ func (m *Mirror) subscribe(ctx context.Context, machine string, t config.Target,
 			return
 		}
 		m.log.Info("镜像订阅建立", "task", taskID, "machine", machine, "from_seq", fromSeq)
-		err = client.New(t.Addr, t.Token).MarkForwarded().StreamEventsOnce(ctx, taskID, fromSeq,
-			func(ev proto.Event) error { return m.onEvent(ctx, machine, t, taskID, ev) })
+		c, err := m.pool.For(machine)
+		if err != nil {
+			m.log.Warn("镜像订阅：取客户端失败", "task", taskID, "machine", machine, "cause", err)
+			return
+		}
+		err = c.MarkForwarded().StreamEventsOnce(ctx, taskID, fromSeq,
+			func(ev proto.Event) error { return m.onEvent(ctx, machine, taskID, ev) })
 
 		switch {
 		case ctx.Err() != nil:
@@ -243,7 +271,7 @@ func (m *Mirror) subscribe(ctx context.Context, machine string, t config.Target,
 //
 // 返回 errMirrorDone 表示任务已终态；返回其他错误会中止本次连接（重连时凭
 // 未推进的水位把失败事件重新拉回来）。
-func (m *Mirror) onEvent(ctx context.Context, machine string, t config.Target, taskID string, ev proto.Event) error {
+func (m *Mirror) onEvent(ctx context.Context, machine string, taskID string, ev proto.Event) error {
 	inserted, err := m.st.AppendMirrorEvent(taskID, ev)
 	if err != nil {
 		m.log.Error("镜像事件落库失败", "task", taskID, "machine", machine, "seq", ev.Seq, "cause", err)
@@ -265,10 +293,15 @@ func (m *Mirror) onEvent(ctx context.Context, machine string, t config.Target, t
 }
 
 // refreshSnapshot 拉一次该 target 的任务列表并全部 upsert（事件即门铃的落点）。
-func (m *Mirror) refreshSnapshot(ctx context.Context, machine string, t config.Target) {
-	tasks, err := client.New(t.Addr, t.Token).MarkForwarded().ListTasks(ctx)
+func (m *Mirror) refreshSnapshot(ctx context.Context, machine string) {
+	c, err := m.pool.For(machine)
 	if err != nil {
-		m.log.Warn("镜像快照刷新失败", "machine", machine, "addr", t.Addr, "cause", err)
+		m.log.Warn("镜像快照刷新：取客户端失败", "machine", machine, "cause", err)
+		return
+	}
+	tasks, err := c.MarkForwarded().ListTasks(ctx)
+	if err != nil {
+		m.log.Warn("镜像快照刷新失败", "machine", machine, "cause", err)
 		return
 	}
 	now := time.Now().UTC()
@@ -309,7 +342,7 @@ func (m *Mirror) runSnapshotLoop(ctx context.Context, machine string) {
 				return
 			}
 		}
-		m.refreshSnapshot(ctx, machine, m.cfg.Targets[machine])
+		m.refreshSnapshot(ctx, machine)
 	}
 }
 

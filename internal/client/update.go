@@ -89,6 +89,9 @@ func (c *Client) PullUpdate(ctx context.Context, tag, sum string, force bool) (*
 }
 
 func (c *Client) postUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool, mode string) (*proto.UpdateResp, error) {
+	if err := c.checkInit(); err != nil {
+		return nil, err
+	}
 	q := url.Values{}
 	if tag != "" {
 		q.Set("tag", tag)

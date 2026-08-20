@@ -211,6 +211,8 @@ export interface CreateWorktreeReq {
 export interface Machine {
   name: string              // ""=本机
   addr: string
+  // relay 节点名；空=直连形态。与 addr 互斥（配置层保证）。
+  relay?: string
   reachable: boolean
   version: string
   executors: string[]

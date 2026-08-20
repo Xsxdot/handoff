@@ -18,12 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 )
 
 // machineProbeBudget 是整轮扇出探活的总预算。
@@ -43,11 +43,9 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 	out := make([]proto.Machine, 0, len(s.conf().Targets)+1)
 	out = append(out, s.localMachine())
 
-	names := make([]string, 0, len(s.conf().Targets))
-	for name := range s.conf().Targets {
-		names = append(names, name)
-	}
-	sort.Strings(names) // 顺序稳定：UI 列表不该每次刷新都跳
+	// 「有哪些机器」的判据只有一处：池。Names 已排序（顺序稳定：UI 列表不该
+	// 每次刷新都跳）。
+	names := s.pool.Names()
 
 	remote := make([]proto.Machine, len(names))
 	var wg sync.WaitGroup
@@ -111,13 +109,22 @@ func (s *Server) localMachine() proto.Machine {
 // probeRemote 探活一台远程机器。
 func (s *Server) probeRemote(ctx context.Context, name string) proto.Machine {
 	t := s.conf().Targets[name]
-	m := proto.Machine{Name: name, Addr: t.Addr, Executors: []string{}}
+	m := proto.Machine{Name: name, Addr: t.Addr, Relay: t.Node, Executors: []string{}}
 	start := time.Now()
+	// 选路走池：relay 形态的机器没有 addr，直连构造会退化成一个没有 Host 的
+	// URL——那正是它们曾经一律显示「已断开」的原因。
+	c, err := s.pool.For(name)
+	if err != nil {
+		m.ProbeMs = time.Since(start).Milliseconds()
+		s.log.Warn("机器探活：取客户端失败", "machine", name, "relay", t.IsRelay(), "cause", err)
+		m.Error = err.Error()
+		return m
+	}
 	// 注意：token 只进请求头，绝不进日志
-	st, err := client.New(t.Addr, t.Token).Status(ctx)
+	st, err := c.Status(ctx)
 	m.ProbeMs = time.Since(start).Milliseconds()
 	if err != nil {
-		s.log.Warn("机器探活失败", "machine", name, "addr", t.Addr,
+		s.log.Warn("机器探活失败", "machine", name, "addr", t.Addr, "relay", t.Node,
 			"probe_ms", m.ProbeMs, "cause", err)
 		m.Error = err.Error()
 		return m
@@ -192,7 +199,20 @@ func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), addMachineProbeBudget)
 		defer cancel()
 		s.log.Info("新增开发机：开始可达性探测", "name", req.Name, "addr", req.Addr)
-		if _, err := client.New(req.Addr, req.Token).NoRedirect().Status(ctx); err != nil {
+		// 走工厂而不是直连构造：空 addr 会被 ErrNoEndpoint 明确拒绝，不再退化成
+		// 一个没有 Host 的 URL。控制台目前只能新增直连机器（AddMachineReq 没有
+		// relay 字段），relay 形态的新增是另一张单。
+		probeClient, cleanup, newErr := targetclient.New(req.Name,
+			config.Target{Addr: req.Addr, Token: req.Token}, s.log)
+		if newErr != nil {
+			s.log.Warn("新增开发机：无法构造探测客户端", "name", req.Name, "cause", newErr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("探测 %s 失败：%v", req.Addr, newErr),
+			})
+			return
+		}
+		defer cleanup()
+		if _, err := probeClient.NoRedirect().Status(ctx); err != nil {
 			// 原文回给前端：绝大多数失败是地址或令牌粘错，原文是唯一能让人
 			// 一眼看出「是连不上还是没授权」的东西
 			s.log.Warn("新增开发机：探测不通", "name", req.Name, "addr", req.Addr, "cause", err)

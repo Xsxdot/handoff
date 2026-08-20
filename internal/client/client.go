@@ -191,6 +191,14 @@ type Client struct {
 	cursorRootOnce sync.Once
 	cursorRoot     string
 	cursorRootErr  error
+	// initErr 非空表示这个 client 从构造起就不可用（地址不含主机名）。
+	//
+	// 为什么毒化而不是让 New 返回 error：New 有二十多个调用点，加返回值的波及
+	// 远大于收益。而不管它的代价是实打实的——空地址会被归一化成
+	// baseURL="http:"，请求 URL 退化成 http:/api/status，报出来的是
+	// "no Host in request URL"，把「这台机器是 relay 形态、压根没有 addr」这个
+	// 配置事实伪装成了网络故障。
+	initErr error
 }
 
 // New 创建 agentd 客户端。
@@ -234,11 +242,13 @@ func NewRelay(d *relay.Dialer, token string) *Client {
 //   - initial/max: 断线重连的初始/封顶退避
 //   - stableAfter: 连接存活多久才算健康、才复位退避（见 WaitEvent）
 func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration) *Client {
+	raw := addr
 	if !strings.Contains(addr, "://") {
 		addr = "http://" + addr
 	}
-	return &Client{
-		baseURL: strings.TrimRight(addr, "/"),
+	base := strings.TrimRight(addr, "/")
+	c := &Client{
+		baseURL: base,
 		token:   token,
 		hc: &http.Client{
 			Transport: &http.Transport{
@@ -258,7 +268,25 @@ func NewWithWSTiming(addr, token string, initial, max, stableAfter time.Duration
 		wsMaxBackoff:     max,
 		wsStableAfter:    stableAfter,
 	}
+	// 地址缺 host 时当场毒化：raw 为空会一路变成 base="http:"（TrimRight 把两个
+	// 斜杠一起削掉），后续每个请求都报 no Host——那个文案指不出真正的原因。
+	if u, err := url.Parse(base); err != nil || u.Host == "" {
+		c.initErr = fmt.Errorf("agentd 地址不含主机名（原始地址 %q）：relay 形态的机器没有 addr，应经 targetclient 选路而不是直连构造", raw)
+		slog.Default().Error("client 构造时地址不含主机名，该实例已毒化", "raw_addr", raw, "base_url", base)
+	}
+	return c
 }
+
+// checkInit 在发请求前查毒化标记。
+//
+// 返回：initErr 原样返回；未毒化时 nil。
+func (c *Client) checkInit() error { return c.initErr }
+
+// BaseURL 返回这个 client 的基址。
+//
+// 用途：调用方判定「选路选对了没有」——relay 形态恒为 http://localhost（经隧道
+// 直达对端），直连形态是 http://<addr>。只读，不暴露 token。
+func (c *Client) BaseURL() string { return c.baseURL }
 
 // wsDialOptions 组装 WS 拨号选项：本 Client 自己的 http.Client + Bearer 头。
 //
@@ -306,6 +334,7 @@ func (c *Client) MarkForwarded() *Client {
 		baseURL:          c.baseURL,
 		token:            c.token,
 		hc:               c.hc,
+		initErr:          c.initErr,
 		extraHeaders:     map[string]string{"X-Handoff-Forwarded": "1"},
 		wsInitialBackoff: c.wsInitialBackoff,
 		wsMaxBackoff:     c.wsMaxBackoff,
@@ -327,6 +356,7 @@ func (c *Client) NoRedirect() *Client {
 	cp := &Client{
 		baseURL: c.baseURL,
 		token:   c.token,
+		initErr: c.initErr,
 		hc: &http.Client{
 			Transport: c.hc.Transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -350,6 +380,9 @@ func (c *Client) log() *slog.Logger { return slog.Default() }
 
 // do 发送带 Bearer token 的请求，返回响应（调用方负责关闭 resp.Body）。
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	if err := c.checkInit(); err != nil {
+		return nil, err
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -1159,6 +1192,9 @@ func (c *Client) RevokeSession(ctx context.Context, id string) error {
 // c.hc 本就没有全局 Timeout（只有拨号超时），直接复用即可；本函数与 do 的
 // 区别只在明确「调用方负责消费并 Close body」。
 func (c *Client) doStream(ctx context.Context, method, path string) (*http.Response, error) {
+	if err := c.checkInit(); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("构造请求 %s: %w", path, err)
@@ -1352,6 +1388,9 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 //   - permanentError / 其他: 拨号或读取失败，由调用方决定是否重连
 func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
+	if err := c.checkInit(); err != nil {
+		return err
+	}
 	// 拨号段：与原 waitOnce 完全一致（scheme 换算、Bearer 头、dialTimeout、
 	// 永久状态码判定、连接建立/关闭日志），照搬不改
 	wsScheme := "ws"
