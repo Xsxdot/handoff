@@ -78,7 +78,7 @@ func TestDisciplineGetListsBuiltinsFilesAndBindings(t *testing.T) {
 	if got.Dir != discDir {
 		t.Errorf("Dir = %q, want %q", got.Dir, discDir)
 	}
-	if len(got.Builtins) != 2 || got.Builtins[0].Tier != "subagent" {
+	if len(got.Builtins) != 3 || got.Builtins[0].Tier != "subagent" || got.Builtins[2].Tier != "review" {
 		t.Errorf("Builtins = %+v", got.Builtins)
 	}
 	if len(got.Files) != 1 || got.Files[0].Name != "codex-strict.md" {
