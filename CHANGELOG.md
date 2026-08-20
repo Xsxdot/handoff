@@ -10,7 +10,22 @@
 
 ## [Unreleased]
 
-_（下一版的改动记在这里。）_
+### 新增
+
+- **`handoff service start` / `stop` / `restart`。** 改完配置想让 agentd
+  生效，此前只能 kill 掉等进程管理器把它拉回来。现在 `handoff service restart`
+  就地重启（发 SIGTERM 走 agentd 自己的优雅关停，不是硬砍），`stop` 停到你
+  显式 `start` 为止——**包括重启机器也不会自己回来**，因为三个平台都配了
+  「退出就拉起」，只杀进程根本停不住。三个命令都只对已安装的单元生效，
+  没装时直接告诉你去 `handoff service install`，不代为安装。
+- **`handoff service status` 认得「被停住」了。** 此前「装了没跑」只有一档，
+  处置写的是「看日志找原因，或 install 重装」——被 `stop` 停住时那是错的
+  处置。现在被停用会单独报一档，处置是 `handoff service start`。
+
+### 修复
+
+- **桌面薄壳不再复活被显式停掉的 agentd。** 薄壳启动时会自愈「装了没跑」的
+  agentd，而 `stop` 之后正好长这样，于是你停掉的东西一开薄壳就回来了。
 
 ## [v0.3.4] - 2026-08-20
 
