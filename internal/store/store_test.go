@@ -1145,3 +1145,54 @@ func TestGetTaskFillsCumulativeListDoesNot(t *testing.T) {
 		}
 	}
 }
+
+// TestSaveTaskRoundTripsDisciplineName 纪律块名字必须落盘：
+// resumeForContinue 与 ResumeTask 只拿得到 executor 名，不落盘的话
+// 一次 continue 或一次 agentd 重启就会让审阅任务静默退回实现块，
+// 且首回合是对的、更难查。
+func TestSaveTaskRoundTripsDisciplineName(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	task := &proto.Task{
+		ID: "t-disc", RepoPath: "/tmp/r", State: proto.TaskStateRunning,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Executor: "grok", DisciplineName: "review",
+	}
+	if err := st.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := st.GetTask("t-disc")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.DisciplineName != "review" {
+		t.Fatalf("纪律块名字未往返，实得 %q", got.DisciplineName)
+	}
+}
+
+// TestSaveTaskEmptyDisciplineName 不点名的任务存空串，读回也是空串
+// （空 = 走 executor 兜底，是有意义的取值，不能变成别的东西）。
+func TestSaveTaskEmptyDisciplineName(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	task := &proto.Task{
+		ID: "t-plain", RepoPath: "/tmp/r", State: proto.TaskStateRunning,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), Executor: "codex",
+	}
+	if err := st.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := st.GetTask("t-plain")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.DisciplineName != "" {
+		t.Fatalf("未点名的任务应为空串，实得 %q", got.DisciplineName)
+	}
+}

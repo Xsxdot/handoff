@@ -19,7 +19,7 @@ func TestTemplateListShowPut(t *testing.T) {
 	}
 	p := filepath.Join(dir, "tpl.json")
 	if err := os.WriteFile(p, []byte(`{"executor":"codex","purpose":"implement","branch_prefix":"cards",
-		"prompt":"x {{CARD}}","discipline_path":"docs/superpowers/discipline/block-b.md"}`), 0o644); err != nil {
+		"prompt":"x {{CARD}}","discipline":"implement"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, _, err = runLedgerCLI(t, dir, "template", "put", "codex-impl", "--file", p)

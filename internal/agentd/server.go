@@ -998,8 +998,10 @@ type dispatchRequest struct {
 	Prompt      string `json:"prompt"`
 	Name        string `json:"name"`
 	Executor    string `json:"executor"`
-	Model       string `json:"model"`
-	Branch      string `json:"branch"`
+	// Discipline 是派发点名的纪律块角色名；空=按 executor 兜底。
+	Discipline string `json:"discipline"`
+	Model      string `json:"model"`
+	Branch     string `json:"branch"`
 	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
 	NewBranch   string `json:"new_branch"`
 	Base        string `json:"base"`
@@ -1028,7 +1030,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
-		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
+		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 	})

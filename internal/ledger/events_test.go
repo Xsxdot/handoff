@@ -124,7 +124,7 @@ func TestRecordDispatch(t *testing.T) {
 	s := seedStore(t)
 	c := mk(t, s, "要派的卡")
 	err := s.RecordDispatch(c.ID, DispatchSnapshot{
-		Template: "feature-impl", TemplateVersion: 1, DisciplineHash: "1f3c9d",
+		Template: "feature-impl", TemplateVersion: 1, DisciplineName: "review",
 		Target: "mac-02", TaskID: "T9", Branch: "cards/" + c.ID + "-implement",
 		PlanPath: "plans/x.md", Actor: "cli:me@host",
 	})
@@ -138,7 +138,7 @@ func TestRecordDispatch(t *testing.T) {
 			found = true
 			var payload map[string]any
 			_ = json.Unmarshal(event.Payload, &payload)
-			if payload["discipline_hash"] != "1f3c9d" || payload["template_version"] != float64(1) {
+			if payload["discipline_name"] != "review" || payload["template_version"] != float64(1) {
 				t.Fatalf("快照字段: %+v", payload)
 			}
 		}

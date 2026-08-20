@@ -145,14 +145,19 @@ func TestWriteRejectsOversize(t *testing.T) {
 
 func TestBuiltinsAndDefaultTier(t *testing.T) {
 	bs := discipline.Builtins()
-	if len(bs) != 2 {
-		t.Fatalf("len = %d, want 2", len(bs))
+	if len(bs) != 3 {
+		t.Fatalf("len = %d, want 3", len(bs))
 	}
-	if bs[0].Tier != discipline.TierSubagent || bs[1].Tier != discipline.TierSingleContext {
-		t.Fatalf("顺序 = %q/%q", bs[0].Tier, bs[1].Tier)
-	}
-	if bs[0].Content == "" || bs[1].Content == "" {
-		t.Fatal("内置正文不能为空")
+	// 顺序是界面契约：控制台用 builtins[0] 当默认选中项，
+	// review 只能追加在末尾，不能插到前面
+	want := []string{discipline.TierSubagent, discipline.TierSingleContext, discipline.NameReview}
+	for i, w := range want {
+		if bs[i].Tier != w {
+			t.Fatalf("第 %d 条 = %q, want %q", i, bs[i].Tier, w)
+		}
+		if bs[i].Content == "" {
+			t.Fatalf("第 %d 条（%s）内置正文不能为空", i, w)
+		}
 	}
 	for exec, want := range map[string]string{
 		"opencode": discipline.TierSubagent,

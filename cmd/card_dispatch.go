@@ -1,15 +1,15 @@
-// card dispatch：按模板拼装 prompt + 纪律块，走既有 dispatch 通道；
+// card dispatch：按模板拼装 prompt，带上纪律块**角色名**（正文由 agentd 注入），
+// 走既有 dispatch 通道；
 // 派发即认领（CAS 进「进行中」就是 claim，第二个会话干净失败）；
-// task 回链 + 模板版本/纪律 hash 快照落事件。
+// task 回链 + 模板版本/纪律角色名快照落事件。
 package cmd
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +40,13 @@ type dispatchRequest struct {
 	target         string
 	project        string
 	executor       string
-	model          string
-	planB64        string
-	planName       string
-	base           string
+	// discipline 是本次派发点名的纪律块角色名；空=让 agentd 按 executor 兜底。
+	// 只传名字不传正文：正文由 agentd 解析注入，CLI 不再是纪律块的搬运工。
+	discipline string
+	model      string
+	planB64    string
+	planName   string
+	base       string
 }
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
@@ -72,7 +75,8 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		Prompt: req.prompt, Target: req.target,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
-		PlanB64: req.planB64, PlanName: req.planName, Base: req.base,
+		Discipline: req.discipline,
+		PlanB64:    req.planB64, PlanName: req.planName, Base: req.base,
 		NewWorktree: req.newWorktree,
 	})
 	if err != nil {
@@ -95,6 +99,17 @@ func swapDispatchTransport(fn func(prompt, branch, target, project string) (stri
 	}
 }
 
+// swapDispatchTransportWithOpts 只替换携带完整请求的派发段；测试恢复原实现。
+//
+// 为什么不复用 swapDispatchTransport：那条缝刻意只暴露 prompt/branch/target/project
+// 四个标量（见它的注释），纪律块名字这类新字段到不了回调手上。两条缝并存，
+// 各测各的关注面，既有用例不必为新字段改回调。
+func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, error)) func() {
+	old := dispatchTransportWithOpts
+	dispatchTransportWithOpts = fn
+	return func() { dispatchTransportWithOpts = old }
+}
+
 // targetEndpoint 按登记名解析目标机地址与 token。
 func targetEndpoint(target string) (addr, token string, err error) {
 	cfg := loadCLIConfig()
@@ -113,10 +128,10 @@ type dispatchResult struct {
 	Branch          string `json:"branch"`
 	Template        string `json:"template"`
 	TemplateVersion int    `json:"template_version"`
-	DisciplineHash  string `json:"discipline_hash"`
+	DisciplineName  string `json:"discipline_name"`
 }
 
-// dispatchViaTemplate 模板派发的共用段：取模板 → 纪律块 hash → 拼 prompt
+// dispatchViaTemplate 模板派发的共用段：取模板 → 决定纪律块名字 → 拼 prompt
 // → 走既有 dispatch 通道 → LinkTask 挂账 → dispatched 快照。
 // 不含认领语义：实现类派发在调用前自行 CAS 认领；环节派发也复用此段，
 // 因而不会把待审阅卡拉回进行中。
@@ -135,23 +150,20 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
 	}
 
-	disciplinePath := tpl.Def.DisciplinePath
+	// 纪律块只传名字，正文由 agentd 解析注入。CLI 曾在这里读文件并拼进 prompt，
+	// 而 agentd 又会按 executor 注入一份——两份同时在场，审阅那次的「只读，不写」
+	// 被实现块的「每个 task 完成即 commit」直接推翻（2026-08-19 真机实测过一次）。
+	disciplineName := tpl.Def.Discipline
 	if disciplineOverride != "" {
-		disciplinePath = disciplineOverride
+		disciplineName = disciplineOverride
 	}
-	discipline, err := os.ReadFile(disciplinePath)
-	if err != nil {
-		return zero, fmt.Errorf("读纪律块 %s（先把纪律块文件落库，见模板定义）: %w", disciplinePath, err)
-	}
-	sum := sha256.Sum256(discipline)
-	disciplineHash := hex.EncodeToString(sum[:])[:12]
 
 	body := strings.NewReplacer(
 		"{{TITLE}}", c.Title,
 		"{{CARD}}", c.ID,
 		"{{ACCEPT}}", c.AcceptanceCriteria,
 	).Replace(tpl.Def.Prompt)
-	prompt := string(discipline) + "\n\n---\n\n" + body
+	prompt := body
 
 	reviewBase := ""
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
@@ -200,11 +212,13 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 		prompt: prompt, branch: branch, target: target, project: c.Project,
 		executor: tpl.Def.Executor, model: model, planB64: planB64,
 		planName: planName, base: base, newWorktree: true,
-		existingBranch: existingBranch,
+		existingBranch: existingBranch, discipline: disciplineName,
 	})
 	if err != nil {
 		return zero, fmt.Errorf("派发: %w", err)
 	}
+	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "template", tplName,
+		"discipline", disciplineName, "overridden", disciplineOverride != "")
 	snapshotBranch := branch
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
@@ -213,7 +227,7 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 		return zero, fmt.Errorf("回链挂账: %w", err)
 	}
 	if err := st.RecordDispatch(c.ID, ledger.DispatchSnapshot{
-		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: disciplineHash,
+		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		Target: target, TaskID: taskID, Branch: snapshotBranch,
 		Purpose: tpl.Def.Purpose, PlanPath: planPath, Actor: actor,
 	}); err != nil {
@@ -221,7 +235,7 @@ func dispatchViaTemplate(st *ledger.Store, c ledger.Card,
 	}
 	return dispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
-		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineHash: disciplineHash,
+		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 	}, nil
 }
 
@@ -274,7 +288,7 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTemplate, "template", "feature-impl", "派发模板名")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
-	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖纪律块路径（测试/应急）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖模板指定的纪律块角色名（如 review；测试/应急）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "自动环节：review|merge")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchRepo, "repo", ".", "本地仓库目录（--step merge 的客观判据与合并在此跑）")
 	cardCmd.AddCommand(cardDispatchCmd)

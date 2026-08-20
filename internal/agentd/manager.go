@@ -348,6 +348,21 @@ func (m *Manager) resolveModel(reqModel, execName string) string {
 	return ""
 }
 
+// resolveDisciplineFor 按「有名字用名字、无名字按 executor 兜底」裁出纪律块。
+//
+// 参数：name 角色名（空=不点名）；execName 执行者名。
+// 返回：解析出的块；名字非法 / 未知 / 覆盖文件坏掉时返回错误（调用方拒发）。
+//
+// 为什么要收口成一个函数：三个调用点（Dispatch / resumeForContinue / ResumeTask）
+// 必须用同一套判定。分开写的表现是首回合注入了点名的块、continue 之后悄悄换成
+// 兜底块——首回合是对的，事后极难查。
+func (m *Manager) resolveDisciplineFor(name, execName string) (discipline.Block, error) {
+	if strings.TrimSpace(name) != "" {
+		return m.discipline.ByName(name, execName)
+	}
+	return m.discipline.For(execName)
+}
+
 // registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
 func registeredNames(ads map[string]executor.Adapter) []string {
 	names := make([]string, 0, len(ads))
@@ -383,6 +398,12 @@ type DispatchReq struct {
 	Name string
 	// Executor 是任务选择的执行者名；空=缺省（cfg.Executor.Default）。
 	Executor string
+	// Discipline 是本次派发点名的纪律块**角色名**（如 review）；空=按 executor 兜底。
+	//
+	// 为什么是名字而不是路径或正文：路径要跨机器解析（协调者的仓内相对路径在
+	// agentd 上没有意义），正文要跨网络搬运且没法被机器级覆盖。名字让 agentd
+	// 成为纪律块的唯一拥有者，调用方只说「我要哪个角色」。
+	Discipline string
 	// Model 是任务级模型覆盖；空=配置 executor.model，再空=executor 自身默认。
 	Model string
 	// Branch / NewBranch 分支二选一（与 PrepareWorkspace 的 WorkspaceReq 一致）：
@@ -681,7 +702,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	}
 	// 纪律块裁决与 env 解析同段：失败是配置问题，此刻还没有落库/建树副作用，
 	// 拒发是干净的。
-	discBlock, err := m.discipline.For(execName)
+	discBlock, err := m.resolveDisciplineFor(req.Discipline, execName)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errDisciplineResolveFailed, err)
 	}
@@ -837,6 +858,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Executor:        execName,
 		Model:           model,
 		Discipline:      discBlock.Source,
+		DisciplineName:  req.Discipline,
 		WorkDir:         ws.WorkDir,
 		WorktreeManaged: ws.Managed,
 		// 基线随创建期一并入库（此刻已由 ResolveBaseline 决议完毕），
@@ -895,6 +917,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, fmt.Errorf("读取派发后的任务: %w", err)
 	}
 	task.Discipline = discBlock.Source
+	task.DisciplineName = req.Discipline
+	m.log.Info("纪律块已裁定", "task", taskID, "name", req.Discipline, "source", discBlock.Source)
 	// 派发回显：纪律块配置化之后，写 plan 的人再也看不到它躺在 plan 头部了。
 	if discBlock.Source != "" {
 		m.appendProgress(taskID, "纪律块: "+discBlock.Source)
@@ -1179,9 +1203,12 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
 	}
-	discBlock, derr := m.discipline.For(execName)
+	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
+	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
 	if derr != nil {
 		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	} else {
+		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
 	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
@@ -3226,9 +3253,12 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
 	}
-	discBlock, derr := m.discipline.For(execName)
+	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
+	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
 	if derr != nil {
 		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+	} else {
+		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
 	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）

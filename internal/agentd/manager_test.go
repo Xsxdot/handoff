@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
@@ -2268,6 +2269,89 @@ func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
 	// 分支确实建在任务仓库里，且指向 base 的尖端
 	if got := gitOut(t, clone, "rev-parse", "refs/heads/feat/wanted"); got != wantBase {
 		t.Fatalf("新分支应从解析后的起点开出: branch=%s base=%s", got, wantBase)
+	}
+}
+
+// TestDispatchNamedDisciplineInjectsNamedBlock 点名 review 时注入的是只读块，
+// 而不是按 executor 兜底的实现块。
+func TestDispatchNamedDisciplineInjectsNamedBlock(t *testing.T) {
+	clone := initClonedRepo(t, "named-base")
+	m := compensateOnlyManager(t)
+	pid := registerTestProject(t, m, clone)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
+		Discipline: discipline.NameReview,
+	})
+	if err != nil {
+		t.Fatalf("派发应成功: %v", err)
+	}
+	if task.DisciplineName != discipline.NameReview {
+		t.Fatalf("名字应落到 task 上，实得 %q", task.DisciplineName)
+	}
+	if task.Discipline != "内置:review" {
+		t.Fatalf("来源标注应为 内置:review，实得 %q", task.Discipline)
+	}
+}
+
+// TestDispatchUnnamedDisciplineUnchanged 不点名时行为逐字不变——
+// 这是本次重构的兼容底线：所有现存部署走的都是这条路。
+func TestDispatchUnnamedDisciplineUnchanged(t *testing.T) {
+	clone := initClonedRepo(t, "named-base")
+	m := compensateOnlyManager(t)
+	pid := registerTestProject(t, m, clone)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("派发应成功: %v", err)
+	}
+	if task.DisciplineName != "" {
+		t.Fatalf("不点名时 DisciplineName 应为空，实得 %q", task.DisciplineName)
+	}
+	if !strings.HasPrefix(task.Discipline, "内置:") {
+		t.Fatalf("兜底来源标注变了：%q", task.Discipline)
+	}
+}
+
+// TestDispatchUnknownDisciplineNameRejected 点了不存在的名字：拒发，不静默兜底。
+func TestDispatchUnknownDisciplineNameRejected(t *testing.T) {
+	clone := initClonedRepo(t, "named-base")
+	m := compensateOnlyManager(t)
+	pid := registerTestProject(t, m, clone)
+
+	_, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
+		Discipline: "no-such-role",
+	})
+	if err == nil {
+		t.Fatal("未知纪律块名字应拒发")
+	}
+	if !strings.Contains(err.Error(), "no-such-role") {
+		t.Fatalf("错误里应带名字：%v", err)
+	}
+}
+
+// TestResolveDisciplineForPrefersName 直接打 resolveDisciplineFor 的两条分支：
+// 有名字走 ByName、无名字走 For。这条守的是三个调用点共用的那段判定。
+func TestResolveDisciplineForPrefersName(t *testing.T) {
+	m := compensateOnlyManager(t)
+
+	named, err := m.resolveDisciplineFor(discipline.NameReview, "codex")
+	if err != nil {
+		t.Fatalf("有名字: %v", err)
+	}
+	if named.Source != "内置:review" {
+		t.Fatalf("有名字应走 ByName，实得 %q", named.Source)
+	}
+
+	fallback, err := m.resolveDisciplineFor("", "codex")
+	if err != nil {
+		t.Fatalf("无名字: %v", err)
+	}
+	if fallback.Source != "内置:"+discipline.TierSingleContext {
+		t.Fatalf("无名字应走 For，实得 %q", fallback.Source)
 	}
 }
 

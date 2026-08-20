@@ -79,8 +79,8 @@ var tplPutCmd = &cobra.Command{
 		if err := json.Unmarshal(raw, &def); err != nil {
 			return fmt.Errorf("解析定义: %w", err)
 		}
-		if def.Executor == "" || def.Prompt == "" || def.DisciplinePath == "" {
-			return fmt.Errorf("executor/prompt/discipline_path 三者必填")
+		if def.Executor == "" || def.Prompt == "" || def.Discipline == "" {
+			return fmt.Errorf("executor/prompt/discipline 三者必填")
 		}
 		st, err := openLedger()
 		if err != nil {
