@@ -1184,6 +1184,90 @@ func TestResolveBaseBranchMissingBranch(t *testing.T) {
 	}
 }
 
+// TestResolveDispatchBaseCommitISHKeepsOldPath --base 的短 sha、tag 与 origin/<分支>
+// 都是既有 commit-ish 形态，不能被 D2 当成普通分支去 fetch。
+// 把 origin URL 改成不可用地址：若误走补拉路径，测试会立刻失败；旧解析路径只读
+// 本地对象/ref，仍应成功。
+func TestResolveDispatchBaseCommitISHKeepsOldPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		base func(t *testing.T, repo string) string
+	}{
+		{name: "短 sha", base: func(t *testing.T, repo string) string {
+			full := gitOut(t, repo, "rev-parse", "HEAD")
+			return full[:7]
+		}},
+		{name: "origin 分支全名", base: func(t *testing.T, repo string) string {
+			return "origin/main"
+		}},
+		{name: "tag", base: func(t *testing.T, repo string) string {
+			gitT(t, repo, "tag", "v-test")
+			return "v-test"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, clone := newOriginAndClone(t)
+			base := tc.base(t, clone)
+			want := gitOut(t, clone, "rev-parse", base+"^{commit}")
+			gitT(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
+
+			got, fetched, err := resolveDispatchBase(context.Background(), clone, base)
+			if err != nil {
+				t.Fatalf("resolveDispatchBase(%q): %v", base, err)
+			}
+			if fetched {
+				t.Fatalf("%q 不应触发 origin fetch", base)
+			}
+			if got != want {
+				t.Fatalf("解析结果=%s，期望=%s", got, want)
+			}
+		})
+	}
+}
+
+// TestResolveDispatchBaseAmbiguousRemoteOnlyBranch B76：本地没有同名 heads、两棵
+// 远端却都有同名分支时，不能走 D2 静默拿 origin，必须保留多远端拒发。
+func TestResolveDispatchBaseAmbiguousRemoteOnlyBranch(t *testing.T) {
+	up := initTestRepo(t)
+	gitT(t, up, "branch", "shared-base")
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "remote", "add", "other", up)
+	gitT(t, clone, "fetch", "-q", "other")
+
+	_, fetched, err := resolveDispatchBase(context.Background(), clone, "shared-base")
+	if fetched {
+		t.Fatalf("多远端歧义不得触发 D2 fetch")
+	}
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("多远端歧义应按 ErrBadWorkspaceReq 拒发，实得 %v", err)
+	}
+	if !strings.Contains(err.Error(), "多个远端") {
+		t.Fatalf("错误必须保留多远端语义，实得 %v", err)
+	}
+}
+
+// TestResolveDispatchBaseRemoteOnlyOriginStillFetches 只有 origin/<分支> 远程跟踪
+// ref、没有本地 heads 时仍要补拉；不能为了避开 B76 歧义把这条正常路径一并漏掉。
+func TestResolveDispatchBaseRemoteOnlyOriginStillFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitT(t, clone, "checkout", "-q", "--detach", "HEAD")
+	gitT(t, clone, "branch", "-D", "main")
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("origin-only remote-tracking branch 必须触发 D2 fetch")
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 origin 最新提交 %s，实得 %s", newSHA, got)
+	}
+}
+
 // TestListDirBasic 覆盖列举的四条硬约束：只列一层、目录在前、字典序、rel 为空即根。
 func TestListDirBasic(t *testing.T) {
 	repo := t.TempDir()

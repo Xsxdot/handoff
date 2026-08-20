@@ -761,22 +761,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 解析放在这里（而不是 PrepareWorkspace 内部）是因为 start 同时喂给工作区
 	// 准备与任务记录的 BaseCommit，一次解析服务两处，两者不可能再分叉。
 	if start != "" {
-		// D2：start 是分支名时必须先补拉。分支名在本地永远解析得到（那正是
-		// 陈旧的那一份），直接 resolveCommit 会拿旧引用当起点。40 位 sha 不需要
-		// ——ResolveBaseline 已经保证它在库里了。
-		if !baseCommitRe.MatchString(start) {
-			fetched, ferr := ResolveBaseBranch(ctx, repoPath, start)
-			if ferr != nil {
-				return nil, ferr
-			}
-			m.log.Info("基线分支已补拉并解析", "repo", repoPath, "branch", start, "sha", fetched)
-			start = fetched
-		}
-		resolved, rerr := resolveCommit(ctx, repoPath, start)
+		// D2 只补拉普通分支名；短 sha、tag、origin/<分支> 等 commit-ish 形态
+		// 必须保留旧 resolveCommit 路径，否则 --base 的既有承诺会被网络 fetch 打断。
+		resolved, fetched, rerr := resolveDispatchBase(ctx, repoPath, start)
 		if rerr != nil {
 			return nil, rerr
 		}
-		if resolved != start {
+		if fetched {
+			m.log.Info("基线分支已补拉并解析", "repo", repoPath, "branch", start, "sha", resolved)
+		} else if resolved != start {
 			m.log.Info("起点原文已解析为提交号", "repo", repoPath, "base", start, "sha", resolved)
 		}
 		start = resolved
