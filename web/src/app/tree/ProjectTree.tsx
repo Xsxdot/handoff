@@ -192,6 +192,26 @@ export function findBaseOfTask(
   return null
 }
 
+// findBaseByKey 在树上按 key 反查一个目录基准。
+//
+// 用途：恢复「上次选中的目录」（spec §6 规则三）。必须走 workspaceBase 生成 key
+// 再比对，而不是直接比 path——key 带机器维度，两台机器上同路径的工作树只有
+// 连机器一起比才分得开。
+//
+// 返回 null 是正常情形，不要当异常处理：那个目录已经不在树上了（worktree 被
+// done 回收、项目被注销）。调用方据此退回「未选中」态。
+export function findBaseByKey(tree: ProjectTreeResp, key: string): BaseDir | null {
+  for (const project of tree.projects) {
+    for (const loc of project.locations) {
+      for (const ws of loc.workspaces) {
+        const base = workspaceBase(project, loc.machine, ws)
+        if (base.key === key) return base
+      }
+    }
+  }
+  return null
+}
+
 export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenTickets, onOpenSettings, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。

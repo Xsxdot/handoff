@@ -11,7 +11,7 @@
 //   - **只在启动时拉一次**，不做前台唤醒重拉：那一刻本端内存里的那份才是用户
 //     刚才的现场，从服务端拉一份回来盖掉它是纯粹的坏（spec §1.6）
 //
-// 它取代了原来的 usePtyRestore：布局恢复与会话恢复本来就是同一件事的两半，
+// 它取代了旧的会话恢复入口：布局恢复与会话恢复本来就是同一件事的两半，
 // 留两个入口必然会有人只改一边。
 import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import {
@@ -69,7 +69,7 @@ export function useWorkbenchSync(deps: WorkbenchSyncDeps): { error: string; rest
   // cancelledRef 与它配对：ranRef 管「只跑一次」，cancelledRef 管「结果还要不要」，
   // 两者都必须跨 effect run。用局部变量是错的——上一轮 cleanup 会取消掉这一轮
   // 仍有效的请求，StrictMode 下开发端 100% 恢复不出任何 tab。
-  //（这两条纪律原样承接自它取代的 usePtyRestore。）
+  //（这两条纪律原样承接自它取代的旧会话恢复入口。）
   const ranRef = useRef(false)
   const cancelledRef = useRef(false)
 

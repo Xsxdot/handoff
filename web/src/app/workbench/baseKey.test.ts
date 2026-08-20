@@ -1,11 +1,11 @@
 // 两处 key 生成必须产出同一个字符串。对不上就会出现「左栏点进这个目录，
-// 恢复出来的终端却在另一个组里」——这是 usePtyRestore 里早就写下的告诫。
+// 恢复出来的终端却在另一个组里」——这是 restore.ts 里早就写下的告诫。
 //
 // 职责：验证树节点与 PTY 会话反解对工作树 key 的机器维度约定。
 // 边界：不测试目录树渲染或会话恢复副作用。
 import { describe, expect, it } from 'vitest'
 import { workspaceBase } from '../tree/ProjectTree'
-import { baseOfSession } from './usePtyRestore'
+import { baseOfSession } from './restore'
 import type { PtySession } from '../../api/types'
 
 const project = { project_id: 'p1', name: 'handoff', locations: [] } as never
