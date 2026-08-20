@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 偏好的形状、默认值与持久化（单键 handoff.tree.prefs）
-//   - 项目排序、项目隐藏、空闲目录折叠三条规则本身
+//   - 项目排序、项目隐藏、空闲目录折叠、已结束分组隐藏四条规则本身
 //
 // 边界：
 //   - **不认识 React、不认识项目树类型**：三个函数都收泛型 + metrics/info 回调，
@@ -16,6 +16,9 @@ export type ProjectSort = 'active' | 'name' | 'recent'
 export interface TreePrefs {
   v: 1
   hideIdleWorktrees: boolean
+  // hideArchived：藏掉机器行下的「已结束」分组。默认关——那一组本来就是
+  // 为「done 回收了 worktree 之后任务从树上消失」兜的底，默认藏等于把兜底拆掉。
+  hideArchived: boolean
   projectSort: ProjectSort
   // hiddenProjects 存的是**隐藏名单**（project_id）而不是显示名单：
   // 新登记的项目必须默认可见，否则刚登记完在左栏找不到，看起来像登记失败
@@ -27,6 +30,7 @@ export const PREFS_KEY = 'handoff.tree.prefs'
 export const DEFAULT_PREFS: TreePrefs = {
   v: 1,
   hideIdleWorktrees: false,
+  hideArchived: false,
   // 默认按「谁在动」而不是按名称：左栏的本职是回答「我该看哪」，
   // 按名字找项目已经有搜索框了
   projectSort: 'active',
@@ -43,10 +47,16 @@ function isPrefs(v: unknown): v is TreePrefs {
   return (
     p.v === 1 &&
     typeof p.hideIdleWorktrees === 'boolean' &&
+    (p.hideArchived === undefined || typeof p.hideArchived === 'boolean') &&
     (p.projectSort === 'active' || p.projectSort === 'name' || p.projectSort === 'recent') &&
     Array.isArray(p.hiddenProjects) &&
     p.hiddenProjects.every((x) => typeof x === 'string')
   )
+}
+
+// 旧盘没有 hideArchived。不 bump v：bump 会把用户的排序和隐藏名单整份丢掉。
+function withArchivedDefault(p: TreePrefs): TreePrefs {
+  return { ...p, hideArchived: p.hideArchived === true }
 }
 
 // loadPrefs 读偏好；任何异常都静默回退默认值。
@@ -63,7 +73,7 @@ export function loadPrefs(): TreePrefs {
   if (raw === null) return DEFAULT_PREFS
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (isPrefs(parsed)) return parsed
+    if (isPrefs(parsed)) return withArchivedDefault(parsed)
     console.warn('[treePrefs] 偏好形状不认识，已回退默认值：', raw.slice(0, 200))
   } catch (err) {
     console.warn('[treePrefs] 偏好不是合法 JSON，已回退默认值：', raw.slice(0, 200), err)

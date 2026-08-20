@@ -36,6 +36,21 @@ describe('偏好读写', () => {
     localStorage.setItem(PREFS_KEY, JSON.stringify({ v: 1, hideIdleWorktrees: 'yes', projectSort: 'active', hiddenProjects: [] }))
     expect(loadPrefs()).toEqual(DEFAULT_PREFS)
   })
+
+  it('旧盘没有 hideArchived 时当 false，不整份丢弃', () => {
+    // v:1 当初没有这个字段。bump 版本会把用户的排序和隐藏名单清掉，所以只补默认值。
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'],
+    }))
+    expect(loadPrefs()).toEqual({
+      v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'], hideArchived: false,
+    })
+  })
+
+  it('hideArchived 能存能取', () => {
+    savePrefs({ ...DEFAULT_PREFS, hideArchived: true })
+    expect(loadPrefs().hideArchived).toBe(true)
+  })
 })
 
 describe('项目排序', () => {

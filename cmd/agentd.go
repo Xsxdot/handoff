@@ -39,6 +39,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/spf13/cobra"
@@ -66,6 +67,17 @@ var agentdCmd = &cobra.Command{
 		// hub 构造时取 slog.Default()，必须先于 NewServer 生效，才能让 hub/store/config
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
+		if cfg.Relay != nil {
+			// 弱 token 经公网 relay 可被离线爆破；relay 出站因此必须
+			// fail-closed，不能带着低熵凭证启动。
+			if err := validateRelayToken(cfg); err != nil {
+				logger.Error("relay requires high-entropy token", "cause", err)
+				return fmt.Errorf("relay token 熵校验失败: %w", err)
+			}
+			logger.Info("relay egress enabled", "url", cfg.Relay.URL, "node", cfg.Relay.Node)
+		} else {
+			logger.Info("relay egress not configured")
+		}
 
 		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
 		// 这些包级值，晚一步就会有任务在默认策略下开工
@@ -198,6 +210,12 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
+		if cfg.Relay != nil {
+			// relay 出站与本地 listen 并存，是附加通道；不改变现有 agentd 路由。
+			listener := relay.NewListener(cfg.Relay.URL, cfg.Relay.Credential, cfg.Relay.Node,
+				cfg.Token, "", srv.Handler(), logger)
+			go listener.RunWithReconnect(wdCtx)
+		}
 		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
 		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
@@ -251,6 +269,15 @@ var agentdCmd = &cobra.Command{
 		srv.SetRestart(sd.Trigger)
 		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
 	},
+}
+
+// validateRelayToken keeps the relay startup gate small and directly testable.
+// Direct-only agentd configurations intentionally bypass this check.
+func validateRelayToken(cfg *config.Config) error {
+	if cfg == nil || cfg.Relay == nil {
+		return nil
+	}
+	return relay.CheckTokenEntropy(cfg.Token)
 }
 
 // logExecutorDetection 把四家 executor 的探测结果成表写进启动日志，并对

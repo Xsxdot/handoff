@@ -33,11 +33,12 @@ var pullCmd = &cobra.Command{
 	Short: "把远程任务分支同步到本地仓库（只 fetch，不 checkout）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		info, err := client.New(addr, token).Attach(cmd.Context(), args[0])
+		defer cleanup()
+		info, err := c.Attach(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
@@ -81,13 +82,23 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 	if err != nil {
 		return localsync.Result{}, fmt.Errorf("取当前目录: %w", err)
 	}
-
 	// have 取任务记录里的基线，但**发出前先在本地核实自己真有**——协调者可能换了
 	// 机器接管、或在另一个克隆里执行 pull，不能假设它持有这个提交。核实不过就不带
 	// have，服务端给全量包
 	have := ""
 	if hasLocalCommit(ctx, cwd, task.BaseCommit) {
 		have = task.BaseCommit
+	}
+	if t.IsRelay() {
+		// Relay executor may sit behind NAT, where git-over-ssh cannot reach it;
+		// Bundle-over-HTTP is the only pull path that stays inside the tunnel.
+		c, cleanup, err := newTargetClientNamed(task.Target)
+		if err != nil {
+			return localsync.Result{}, err
+		}
+		defer cleanup()
+		slog.Default().Info("pull via bundle over relay (ssh skipped)", "target", task.Target, "task", task.ID)
+		return syncViaBundleClient(ctx, c, task.ID, have, task.Branch, cwd)
 	}
 	// 用 task.Target 对应的配置而不是 --target 标志：任务自己知道它在哪台机器上
 	res, err := syncViaBundle(ctx, "http://"+t.Addr, t.Token, task.ID, have, task.Branch, cwd)
@@ -131,7 +142,11 @@ func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, er
 //     所以「有没有新提交」由 localsync.Fetch 的 Result 如实反映，本地分支引用
 //     则总是被 fetch 建出来——与 ssh 老路逐字一致
 func syncViaBundle(ctx context.Context, addr, token, taskID, have, branch, localRepo string) (localsync.Result, error) {
-	rc, err := client.New(addr, token).Bundle(ctx, taskID, have)
+	return syncViaBundleClient(ctx, client.New(addr, token), taskID, have, branch, localRepo)
+}
+
+func syncViaBundleClient(ctx context.Context, c *client.Client, taskID, have, branch, localRepo string) (localsync.Result, error) {
+	rc, err := c.Bundle(ctx, taskID, have)
 	if err != nil {
 		return localsync.Result{}, err
 	}

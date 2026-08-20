@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -25,11 +24,12 @@ var showCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		info, err := client.New(addr, token).Attach(cmd.Context(), taskID)
+		defer cleanup()
+		info, err := c.Attach(cmd.Context(), taskID)
 		if err != nil {
 			return err
 		}

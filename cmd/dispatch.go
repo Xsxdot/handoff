@@ -195,10 +195,11 @@ var dispatchCmd = &cobra.Command{
 			}
 			projectID = projectid.FromOrigin(origin)
 		}
-		addr, token, err := TargetEndpoint()
+		cli, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
+		defer cleanup()
 		// 只对远程 target 采集基线：本机派发时 cwd 与目标项目未必是同一个仓库，
 		// 拿 cwd 的 HEAD 去校验别的仓库会造成假拒绝
 		baseCommit := ""
@@ -222,7 +223,6 @@ var dispatchCmd = &cobra.Command{
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
 		}
-		cli := client.New(addr, token)
 		task, err := dispatchWithAutoRegister(
 			func() (*proto.Task, error) { return cli.Dispatch(cmd.Context(), opts) },
 			func() error {

@@ -80,6 +80,21 @@ bash install_test.sh                 # 安装脚本单测
   机器全红。平台相关的分支请把 `runtime.GOOS` 之类做成可注入的包级变量。
 - 别写会真睡几秒的测试——退避、超时这类间隔做成可在测试里覆盖的包级变量。
 
+## Relay 集成测试
+
+relay 的跨仓测试需要先准备 `handoff-server` 仓库及其二进制；它不会作为普通
+`go test ./...` 的依赖。审核者在两仓齐全、临时数据库和 master key 已准备好后运行：
+
+```bash
+HANDOFF_SERVER_BIN=/path/to/handoff-server \
+  go test -tags integration ./internal/relay/ -run Integration -v
+```
+
+测试会覆盖真实 server 的 admin 建账户、register/connect 凭证、agentd relay 出站、
+coordinator relay target 和 `used_bytes > 0` 计量。`ws://` 只用于本机测试；生产配置
+必须使用 `wss://`。没有 handoff-server 环境时只运行普通单元测试，不要把集成骨架误报
+为已通过。
+
 ## 提交信息
 
 Conventional Commits，正文用中文：

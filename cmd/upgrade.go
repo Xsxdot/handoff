@@ -37,6 +37,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/upgrade"
 	"github.com/spf13/cobra"
@@ -87,7 +88,16 @@ var (
 	rollbackBinary = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它
 	// 就能整套替身化远端，而不必起真实 HTTP 服务
-	newAgentdClient = func(ep Endpoint) agentdPeer { return client.New(ep.Addr, ep.Token) }
+	newAgentdClient = func(ep Endpoint) agentdPeer {
+		if ep.RelayURL != "" {
+			// Upgrade is still executor traffic: relay targets must not fall back to
+			// the placeholder HTTP address. The short-lived CLI owns this dialer;
+			// its tunnel is closed when the process exits.
+			d := relay.NewDialer(ep.RelayURL, ep.Credential, ep.Node, ep.Token, "", slog.Default())
+			return client.NewRelay(d, ep.Token)
+		}
+		return client.New(ep.Addr, ep.Token)
+	}
 	// listEndpoints 是机器清单的缝：测试注入临时配置里的机器
 	listEndpoints = Endpoints
 	// recordOrder 在每台机器开始处理时被调用一次，生产是空实现。
@@ -333,6 +343,13 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 		ms.Bin = bi.Version
 	}
 	slog.Default().Info("开始探测机器", "name", ep.Name, "addr", ep.Addr, "local", ep.Local)
+	if ep.RelayURL != "" {
+		if err := relay.CheckTokenEntropy(ep.Token); err != nil {
+			ms.Err = err
+			slog.Default().Error("relay requires high-entropy token", "name", ep.Name)
+			return ms
+		}
+	}
 	st, err := newAgentdClient(ep).Status(ctx)
 	switch {
 	case errors.Is(err, client.ErrStatusUnsupported):
