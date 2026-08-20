@@ -17,7 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
-// SetLedger 注入账本库（agentd 启动时；nil = 未配置，API 降级 503）。
+// SetLedger 注入账本库（agentd 启动时；nil = 未配置，除 health 外 API 降级 503）。
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
@@ -28,7 +28,9 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
 	api.HandleFunc("POST /api/decisions/{id}/answer", s.withLedger(s.handleDecisionAnswer))
-	api.HandleFunc("GET /api/ledger/health", s.withLedger(s.handleLedgerHealth))
+	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
+	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
+	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
 }
 
 func (s *Server) withLedger(h http.HandlerFunc) http.HandlerFunc {
@@ -292,11 +294,17 @@ func (s *Server) handleDecisionAnswer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleLedgerHealth 账本健康探针：恒 200。未启用时只回 {"enabled":false}，
+// 启用时附镜像水位。前端据此决定要不要渲染账本入口。
 func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
+	if s.ledger == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
 	rows, err := s.ledger.MirrorHealth()
 	if err != nil {
 		ledgerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mirror": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mirror": rows})
 }

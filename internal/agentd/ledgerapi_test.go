@@ -2,6 +2,7 @@ package agentd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -102,6 +103,24 @@ func TestLedgerAPIWithoutLedger(t *testing.T) {
 	code, body := ledgerGet(t, env, "/api/cards")
 	if code != http.StatusServiceUnavailable || !ledgerContainsAll(body, "账本") {
 		t.Fatalf("降级: %d %q", code, body)
+	}
+}
+
+// TestLedgerHealthReportsDisabled 账本未挂载时 health 必须 200 + enabled:false。
+// 为什么不能用 503：这个端点是前端做入口门控的探针，503 与「网络错」
+// 无法区分，前端就只能靠猜。其余 /api/cards* 仍走 withLedger 的 503。
+func TestLedgerHealthReportsDisabled(t *testing.T) {
+	env := newTestAgentdEnv(t) // 不调 SetLedger
+	code, body := ledgerGet(t, env, "/api/ledger/health")
+	if code != http.StatusOK {
+		t.Fatalf("health 应 200，实际 %d body=%s", code, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解析 health 报文: %v body=%s", err, body)
+	}
+	if got["enabled"] != false {
+		t.Fatalf("enabled 应为 false，实际报文: %s", body)
 	}
 }
 

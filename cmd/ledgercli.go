@@ -10,6 +10,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,12 @@ import (
 // 调用方负责 Close。
 func openLedger() (*ledger.Store, error) {
 	cfg := loadCLIConfig()
+	// 账本是可选功能：未启用时干净拒绝，绝不静默自建 ledger.db。
+	// 这里是 card/workflow/decision 三族的唯一入口，拦这一处即可覆盖全族。
+	if !cfg.Ledger.Enabled {
+		slog.Warn("账本未启用，拒绝账本命令", "config_dsn_set", cfg.Ledger.DSN != "")
+		return nil, fmt.Errorf("账本未启用：在 config.yaml 设 ledger.enabled: true（可选 ledger.dsn 连中心库，缺省本机 SQLite）")
+	}
 	dsn := cfg.Ledger.DSN
 	if dsn == "" {
 		dsn = filepath.Join(cfg.DataDir, "ledger.db")

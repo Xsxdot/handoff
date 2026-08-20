@@ -40,13 +40,16 @@ export interface BoardPageProps {
   onOpenTask: (base: BaseDir | null, taskId: string) => void
   // unlinkedTaskIds 未挂账 task id 集合；null = 账本未就绪，此时不做未挂账过滤
   unlinkedTaskIds?: Set<string> | null
+  // ledgerEnabled 账本是否启用。未启用时本页是任务的主入口，不能默认
+  // 只看未挂账——那会把绝大多数 task 藏起来。启用时本页降级为兜底入口。
+  ledgerEnabled?: boolean
 }
 
-export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, onOpenTask }: BoardPageProps) {
+export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, ledgerEnabled = false, onOpenTask }: BoardPageProps) {
   const [filter, setFilter] = useState<BoardFilter>(EMPTY_FILTER)
-  // 默认只看未挂账：工作项看板（/cards）是主入口，本页降级为「账本管不到的
-  // task」的兜底。挂了卡的 task 在卡抽屉的「关联执行」区看，不在这里重复一遍。
-  const [onlyUnlinked, setOnlyUnlinked] = useState(true)
+  // 默认只看未挂账**仅在账本启用时成立**：那时工作项看板（/cards）是主入口，
+  // 本页降级为「账本管不到的 task」的兜底。账本没启用时本页就是主入口，必须显示全部。
+  const [onlyUnlinked, setOnlyUnlinked] = useState(ledgerEnabled)
   const tasks = tasksState.data ?? []
   const { disconnected, sessionExpired, errorText } = tasksState
 
@@ -102,10 +105,12 @@ export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, onOpenTask
             taskCounts={taskCounts}
             taskCount={filtered.length}
           />
-          <label className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <input type="checkbox" checked={onlyUnlinked} onChange={(event) => setOnlyUnlinked(event.target.checked)} />
-            只看未挂账（挂了卡的去工作项看板看）
-          </label>
+          {ledgerEnabled && (
+            <label className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={onlyUnlinked} onChange={(event) => setOnlyUnlinked(event.target.checked)} />
+              只看未挂账（挂了卡的去工作项看板看）
+            </label>
+          )}
           <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto pb-2">
             {BOARD_COLUMNS.map((col) => (
               <BoardColumn

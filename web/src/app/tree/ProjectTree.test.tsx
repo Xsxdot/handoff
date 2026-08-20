@@ -36,6 +36,7 @@ function props(over: {
   onSelectDir?: (b: BaseDir) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
   onOpenBoard?: () => void
+  ledgerEnabled?: boolean
   onOpenTickets?: () => void
   onOpenSettings?: () => void
   onOpenFlows?: () => void
@@ -67,6 +68,8 @@ function props(over: {
     onSelectDir: over.onSelectDir ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
+    // 这组 dock 回归测试覆盖账本已启用时的既有入口；未启用门控另由专项用例覆盖。
+    ledgerEnabled: over.ledgerEnabled ?? true,
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),
@@ -269,6 +272,13 @@ describe('ProjectTree', () => {
     fireEvent.click(board)
     expect(onOpenBoard).toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: '开发机' })).not.toBeInTheDocument()
+  })
+
+  it('账本未启用时任务看板标题不带未挂账', () => {
+    render(<ProjectTree {...props({ ledgerEnabled: false })} />)
+    const board = screen.getByRole('button', { name: '任务看板' })
+    expect(board).toHaveAttribute('title', '任务看板')
+    expect(board.getAttribute('title')).not.toContain('未挂账')
   })
 
   it('底部四个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
