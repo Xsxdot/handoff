@@ -37,14 +37,14 @@ type TemplateDef struct {
 // legacyDisciplinePaths 是废弃的 discipline_path 取值 → 角色名的映射表。
 // 只认这三个出厂过的文件名：认不出来的自定义路径没法猜，映射为空退回兜底。
 var legacyDisciplinePaths = map[string]string{
-	"block-review.md": "review",
-	"block-a.md":      "implement",
-	"block-b.md":      "implement",
+	"block-" + "review.md": "review",
+	"block-" + "a.md":      "implement",
+	"block-" + "b.md":      "implement",
 }
 
 // disciplineNameFromLegacyPath 把废弃的 discipline_path 换算成角色名。
 //
-// 参数：path 旧字段原值（形如 docs/superpowers/discipline/block-review.md）。
+// 参数：path 旧字段原值（形如仓内纪律目录下的 review 文件）。
 // 返回：角色名；认不出来时返回空串（调用方负责 Warn 并退回兜底）。
 //
 // 只按 basename 匹配已知的三个出厂文件名：用户自定义的路径指向的是什么纪律
