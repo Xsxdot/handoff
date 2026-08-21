@@ -126,3 +126,24 @@ func TestGraphValidateReportsDomainCount(t *testing.T) {
 		t.Fatalf("validate 要报领域计数: %s", out)
 	}
 }
+
+// check：fixture target 与 baseline 套合后输出 Report JSON。
+func TestGraphCheck(t *testing.T) {
+	out, err := runGraph(t, "check", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("check 应通过: %v\n%s", err, out)
+	}
+	for _, want := range []string{`"fails"`, `"warns"`} {
+		if !bytes.Contains([]byte(out), []byte(want)) {
+			t.Fatalf("check 输出缺字段 %s: %s", want, out)
+		}
+	}
+}
+
+func TestGraphCheckMissingTargetFails(t *testing.T) {
+	// 指向一个没有 target.json 的仓：必须报错退出，不能静默通过。
+	_, err := runGraph(t, "check", "--repo", t.TempDir())
+	if err == nil {
+		t.Fatal("无 target 的 check 必须失败")
+	}
+}

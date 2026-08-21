@@ -121,6 +121,34 @@ var graphValidateCmd = &cobra.Command{
 	},
 }
 
+var graphCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "目标图契约对照：实际跨域边 ⊆ target.json 声明的契约面，违规即非零退出",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		t, err := codegraph.LoadTarget(graphRepo)
+		if err != nil {
+			// 无基准绝不静默通过——这是本机制的头号反静默约定（spec §5）
+			return fmt.Errorf("目标图不可用，check 拒绝执行: %w", err)
+		}
+		if issues := codegraph.ValidateTarget(t); len(issues) > 0 {
+			return fmt.Errorf("目标图自身不合法: %v", issues)
+		}
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		rep := codegraph.Check(t, v)
+		if err := graphPrintJSON(cmd, rep); err != nil {
+			return err
+		}
+		if len(rep.Fails) > 0 {
+			return fmt.Errorf("契约对照发现 %d 处违规", len(rep.Fails))
+		}
+		return nil
+	},
+}
+
 var graphViewsCmd = &cobra.Command{
 	Use:   "views",
 	Short: "列出可用视图（codegraph/diffs/ 下的文件名）",
@@ -223,6 +251,6 @@ func init() {
 	graphCmd.PersistentFlags().IntVar(&graphDepth, "depth", 2, "查询深度（0 = 不限）")
 	graphCmd.PersistentFlags().StringVar(&graphView, "view", "", "叠加的视图名（codegraph/diffs/<名>.json）")
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
-	graphCmd.AddCommand(graphValidateCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
 	rootCmd.AddCommand(graphCmd)
 }
