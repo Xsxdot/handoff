@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -263,7 +264,7 @@ func TestMigrateCardWorkflow(t *testing.T) {
 	_, _ = s.PutWorkflow("wf", def)
 
 	// 卡在 v1 的「待办」——v2 里仍有该状态，迁移放行
-	if err := s.MigrateCardWorkflow(card.ID, 2, "test"); err != nil {
+	if err := s.MigrateCardWorkflow(card.ID, "wf", 2, "待办", "test"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
@@ -271,10 +272,26 @@ func TestMigrateCardWorkflow(t *testing.T) {
 		t.Fatalf("版本未迁: %+v", got)
 	}
 	// 迁回 v1、推进到「进行中」再迁 v2：当前状态不在新版，拒绝（防在途卡悬空）
-	_ = s.MigrateCardWorkflow(card.ID, 1, "test")
+	_ = s.MigrateCardWorkflow(card.ID, "wf", 1, "待办", "test")
 	_ = s.MoveCard(card.ID, "进行中", "", "test")
-	if err := s.MigrateCardWorkflow(card.ID, 2, "test"); err == nil {
+	if err := s.MigrateCardWorkflow(card.ID, "wf", 2, "进行中", "test"); err == nil {
 		t.Fatal("状态悬空应拒")
+	}
+}
+
+func TestDefaultTriageWorkflow(t *testing.T) {
+	s := seedStore(t)
+	wf, err := s.GetWorkflow("triage", 0)
+	if err != nil {
+		t.Fatalf("取 triage 流: %v", err)
+	}
+	if got, want := wf.Def.States, []string{"待办", "定性中", "已定性"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("triage 状态序列 = %v，want %v", got, want)
+	}
+	for _, node := range wf.Def.Nodes {
+		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" || node.Gate != (Gate{}) {
+			t.Fatalf("triage 节点必须纯人工且无闸: %+v", node)
+		}
 	}
 }
 

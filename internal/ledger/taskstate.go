@@ -130,3 +130,13 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 	}
 	return counts, nil
 }
+
+// CardStepInFlight 报告卡是否存在仍在运行的环节。
+//
+// 参数 cardID 是要查询的卡号；返回值为在飞标记和查询错误。实现应沿用
+// OpenTicketCounts 的同一机制：单遍扫描 EvTaskMirrored，回放任务生命周期。
+// 接受的取舍是镜像滞后即在飞判定滞后，不另设真相源。B167-L 将承接该派生查询。
+func (s *Store) CardStepInFlight(cardID string) (bool, error) {
+	// TODO(B167-L): 按 OpenTicketCounts 回放 EvTaskMirrored 任务生命周期。
+	return false, nil
+}

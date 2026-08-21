@@ -259,3 +259,14 @@ func TestCloseAndRevive(t *testing.T) {
 		t.Fatalf("取消卡不应可复活: %v", err)
 	}
 }
+
+func TestCreateCardEmptyWorkflowDefaultsToTriage(t *testing.T) {
+	s := seedStore(t)
+	card, err := s.CreateCard(NewCard{Title: "待定性", Project: "p", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if card.WorkflowName != "triage" || card.Status != "待办" {
+		t.Fatalf("空 workflow 应落 triage 待办: %+v", card)
+	}
+}

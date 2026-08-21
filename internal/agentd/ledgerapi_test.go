@@ -174,6 +174,28 @@ func TestCreateCardRejectsEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestMigrateCardRouteUsesExplicitTargetShape(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "迁移骨架")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/migrate", `{"workflow":"domain","status":"拆解"}`)
+	if code != http.StatusOK {
+		t.Fatalf("迁移骨架应可调用账本: %d %s", code, body)
+	}
+	var response struct {
+		OK    bool   `json:"ok"`
+		ID    string `json:"id"`
+		From  any    `json:"from"`
+		To    any    `json:"to"`
+		Event any    `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("迁移响应不是 JSON: %v (%s)", err, body)
+	}
+	if !response.OK || response.ID != card.ID || response.From == nil || response.To == nil || response.Event == nil {
+		t.Fatalf("迁移响应缺契约字段: %s", body)
+	}
+}
+
 func TestPatchCardUpdatesMetaAndAcceptance(t *testing.T) {
 	env := newLedgerEnv(t)
 	card := seedCard(t, env, "原标题")

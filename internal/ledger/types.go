@@ -61,7 +61,31 @@ const (
 	EvDecisionOpened     = "decision_opened"
 	EvDecisionAnswered   = "decision_answered"
 	EvTaskMirrored       = "task_mirrored"
+	EvWorkflowMigrated   = "workflow_migrated"
 )
+
+// WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。
+// Status 必须显式提供，迁移不根据同名列自动映射。
+type WorkflowTarget struct {
+	Name    string
+	Version int
+	Status  string
+}
+
+// WorkflowLocation 是卡在某个工作流版本和状态列上的位置。
+type WorkflowLocation struct {
+	Workflow string
+	Version  int
+	Status   string
+}
+
+// WorkflowMigration 描述一次跨流迁移及其审计事件。
+type WorkflowMigration struct {
+	CardID string
+	From   WorkflowLocation
+	To     WorkflowLocation
+	Event  Event
+}
 
 // Attachment 卡的附件引用。Path 是相对 docs/superpowers/ 的规范形 git 路径。
 type Attachment struct {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -15,10 +16,12 @@ import (
 var workflowCmd = &cobra.Command{Use: "workflow", Short: "工作流聚合（状态机形状，不可变版本化）"}
 
 var (
-	wfShowVersion int
-	wfPutFile     string
-	wfMigrateTo   int
-	wfMigrateYes  bool
+	wfShowVersion     int
+	wfPutFile         string
+	wfMigrateWorkflow string
+	wfMigrateColumn   string
+	wfMigrateVersion  int
+	wfMigrateYes      bool
 )
 
 var wfListCmd = &cobra.Command{
@@ -31,7 +34,7 @@ var wfListCmd = &cobra.Command{
 		defer st.Close()
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "名称\t最新版\t状态序列")
-		for _, name := range []string{"feature", "bug"} { // 出厂两条恒在
+		for _, name := range []string{"feature", "bug", "triage"} { // 出厂三条恒在
 			workflow, err := st.GetWorkflow(name, 0)
 			if err != nil {
 				return err
@@ -43,7 +46,7 @@ var wfListCmd = &cobra.Command{
 			return err
 		}
 		for _, name := range names {
-			if name == "feature" || name == "bug" {
+			if name == "feature" || name == "bug" || name == "triage" {
 				continue
 			}
 			workflow, err := st.GetWorkflow(name, 0)
@@ -100,13 +103,16 @@ var wfPutCmd = &cobra.Command{
 }
 
 var wfMigrateCmd = &cobra.Command{
-	Use: "migrate <card-id>", Short: "把卡迁到其工作流的指定版本（--to；需确认或 --yes）", Args: cobra.ExactArgs(1),
+	Use: "migrate <card-id>", Short: "把卡迁到显式工作流和落点列（需确认或 --yes）", Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if wfMigrateTo <= 0 {
-			return fmt.Errorf("--to 必填且为正整数")
+		if strings.TrimSpace(wfMigrateWorkflow) == "" || strings.TrimSpace(wfMigrateColumn) == "" {
+			return fmt.Errorf("--workflow 与 --column 必填")
+		}
+		if wfMigrateVersion < 0 {
+			return fmt.Errorf("--version 必须为 0 或正整数")
 		}
 		if err := confirmDestructive(cmd, wfMigrateYes,
-			fmt.Sprintf("把 %s 迁到工作流 v%d", args[0], wfMigrateTo)); err != nil {
+			fmt.Sprintf("把 %s 迁到工作流 %s 的 %s 列", args[0], wfMigrateWorkflow, wfMigrateColumn)); err != nil {
 			return err
 		}
 		st, err := openLedger()
@@ -114,7 +120,7 @@ var wfMigrateCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
-		if err := st.MigrateCardWorkflow(args[0], wfMigrateTo, ledgerActor()); err != nil {
+		if err := st.MigrateCardWorkflow(args[0], wfMigrateWorkflow, wfMigrateVersion, wfMigrateColumn, ledgerActor()); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
@@ -126,8 +132,12 @@ func init() {
 	wfShowCmd.Flags().IntVar(&wfShowVersion, "version", 0, "指定版本（0=最新）")
 	wfPutCmd.Flags().StringVar(&wfPutFile, "file", "", "定义 JSON 文件（必填）")
 	_ = wfPutCmd.MarkFlagRequired("file")
-	wfMigrateCmd.Flags().IntVar(&wfMigrateTo, "to", 0, "目标版本（必填）")
+	wfMigrateCmd.Flags().StringVar(&wfMigrateWorkflow, "workflow", "", "目标工作流（必填）")
+	wfMigrateCmd.Flags().StringVar(&wfMigrateColumn, "column", "", "目标落点列（必填）")
+	wfMigrateCmd.Flags().IntVar(&wfMigrateVersion, "version", 0, "目标版本（0=事务内取最新）")
 	wfMigrateCmd.Flags().BoolVar(&wfMigrateYes, "yes", false, "跳过确认")
+	_ = wfMigrateCmd.MarkFlagRequired("workflow")
+	_ = wfMigrateCmd.MarkFlagRequired("column")
 	workflowCmd.AddCommand(wfListCmd, wfShowCmd, wfPutCmd, wfMigrateCmd)
 	rootCmd.AddCommand(workflowCmd)
 }
