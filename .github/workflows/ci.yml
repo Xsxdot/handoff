@@ -41,6 +41,20 @@ jobs:
             printf '以下文件未格式化：\n%s\n' "$out" >&2
             exit 1
           fi
+      - name: desktop 模块依赖对齐
+        # desktop 是嵌套 module，用 replace 指向主模块——主模块新增依赖时它的
+        # go.mod/go.sum 不会自己跟上。三个 desktop 构建 job 末尾都有「确认工作区
+        # 干净」的门，于是这种漂移只会在**推完 tag 之后**炸（v0.3.2 整条 release
+        # 就是这么全红的：主模块的 relay 引入 noise/yamux/x-crypto，desktop 没跟）。
+        # 那时版本号已经用掉了。把同一道门提前到 PR 上，代价是一次 go mod tidy。
+        run: |
+          set -euo pipefail
+          cd desktop
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo 'desktop/go.mod 与主模块依赖不同步：在 desktop/ 下跑 go mod tidy 并提交上面的改动' >&2
+            exit 1
+          fi
       - name: Windows 交叉编译门禁
         # agentd 在 Windows 上跑不起来（B37），但协调者路径必须能编译——
         # 从 B36 起这就是硬约束，B86 之后 Windows 还要真发资产，两个 arch 都要过。

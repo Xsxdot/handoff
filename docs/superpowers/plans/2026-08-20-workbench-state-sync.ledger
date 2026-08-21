@@ -1,0 +1,17 @@
+2026-08-20 Task 2 完成；双裁决：spec 符合，代码质量通过；commit 范围：internal/proto/workbench.go、internal/proto/contract_fixture_test.go、web/src/api/testdata/Workbench*.json、ledger；验证：go test ./internal/proto/；gofmt -l internal/ | head 为空。
+2026-08-20 Task 1 修复轮 1；双裁决初检发现新测试文件缺少顶部职责/边界注释，已补齐；commit 范围：internal/store/workbench_test.go、ledger。
+2026-08-20 Task 3 修复轮 1；双裁决初检发现成功日志未统一包含 key 与 payload 字节数，已补齐 GET/PUT 各成功分支字段；commit 范围：internal/agentd/workbench_api.go、ledger。
+2026-08-20 Task 4 修复轮 1；双裁决初检发现新增客户端导出函数的参数/返回/注意事项注释不完整，且文件头职责遗漏工作台接口，已补齐；commit 范围：web/src/api/client.ts、ledger。
+2026-08-20 Task 5 修复轮 1；双裁决初检发现 isEmptyWorkbench 导出函数缺少参数/返回/注意事项说明，已补齐；commit 范围：web/src/app/workbench/persist.ts、ledger。
+2026-08-20 Task 6 修复轮 1；类型检查发现计划样例的 HomeTab 导入未使用（TS6133），已删除无用导入；commit 范围：web/src/app/homedock/dockPersist.test.ts、ledger。
+2026-08-20 Task 7 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/tree/ProjectTree.tsx、web/src/app/workbench/usePtyRestore.ts、web/src/app/workbench/baseKey.test.ts、ledger；验证：baseKey 4 项、web typecheck、web 全量 855 项通过。
+2026-08-20 Task 8 修复轮 1；类型检查发现既有 WorkbenchPage 测试 mock 未补新接口字段，已加入空 byBase/baseDirs 与 hydrate 桩；commit 范围：web/src/app/workbench/WorkbenchPage.test.tsx、ledger。
+2026-08-20 Task 8 修复轮 2；双裁决复审发现 hook 文件头仍写「刷新即丢」且 BaseDir 注释未反映 path@machine，已更新为外部同步层负责持久化并补机器维度；commit 范围：web/src/app/workbench/useWorkbench.ts、ledger。
+2026-08-20 Task 9 修复轮 1；类型检查发现既有 HomeDock 测试桩未补 hydrate 字段，已加入 vi.fn 桩；commit 范围：web/src/app/homedock/HomeDock.test.tsx、ledger。
+2026-08-20 Task 9 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/homedock/useHomeDock.ts、web/src/app/homedock/useHomeDock.test.ts、web/src/app/homedock/HomeDock.test.tsx、ledger；验证：useHomeDock 20 项、web typecheck、web 全量 861 项通过。
+2026-08-20 Task 10 修复轮 1；双裁决初检发现导出的 baseOfSession 缺少参数/返回/注意事项说明，已补齐；commit 范围：web/src/app/workbench/restore.ts、ledger。
+2026-08-20 Task 11 修复轮 1；双裁决初检发现 dock/selected 写回失败 warning 缺少明确 key，上下文已补齐；commit 范围：web/src/app/workbench/useWorkbenchSync.ts、ledger。
+2026-08-20 Task 10 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/workbench/restore.ts、web/src/app/workbench/restore.test.ts；验证：restore 19 项、web typecheck 通过。
+2026-08-20 Task 12 修复轮 1；全量搜索发现已删除恢复入口仍残留旧符号注释，已清理 Shell、同步 hook 与能力 hook 的过时引用；commit 范围：web/src/app/shell/Shell.tsx、web/src/app/workbench/useWorkbenchSync.ts、web/src/app/data/useMachineCaps.ts、ledger。
+2026-08-20 Task 12 完成；双裁决：spec 符合，代码质量通过；commit 范围：web/src/app/tree/ProjectTree.tsx、web/src/app/tree/findBaseByKey.test.ts、web/src/app/shell/Shell.tsx、web/src/app/shell/Shell.test.tsx、web/src/app/workbench/baseKey.test.ts、web/src/app/workbench/useWorkbenchSync.ts、web/src/app/data/useMachineCaps.ts、删除 usePtyRestore、ledger；验证：findBaseByKey 3 项、web 全量 873 项、typecheck、指定 Go 包与 gofmt 通过；go test ./... 原始失败保留在执行记录。
+2026-08-20 终审修复轮 1；修正 findBaseByKey 导出注释的参数/返回说明与 dock 写回 Promise 链缩进；commit 范围：web/src/app/tree/ProjectTree.tsx、web/src/app/workbench/useWorkbenchSync.ts、ledger；复审验证：web typecheck、web 全量 873 项、指定 Go 包、gofmt、git diff --check 通过。

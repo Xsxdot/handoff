@@ -170,6 +170,25 @@ func Open(path string) (*Store, error) {
   -- snapshot 是最近一次拉到的任务体 JSON（§6.3 的事件触发刷新 + 慢对账）
   snapshot TEXT NOT NULL,
   fetched_at TIMESTAMP NOT NULL)`,
+		// 工作台状态两表（2026-08-20 状态同步 spec §4.1）。
+		//
+		// 为什么分两张而不是一张：workbench_bases 是「多行、有 50 行上限、按 key 索引」
+		// 的那一类；workbench_singletons 装的是整个控制台只有一份的东西（当前选中目录、
+		// 悬浮窗现场），永远两行封顶、不参与淘汰。形状不同，合表会让淘汰 SQL 必须
+		// 额外排除单例行——那是一句迟早有人写漏的 WHERE。
+		//
+		// payload / value 一律是**前端序列化好的 JSON 字符串**，agentd 不解析它。
+		// 这条分界是有意的：布局里加字段时后端一行都不用改。
+		`CREATE TABLE IF NOT EXISTS workbench_bases (
+  base_key   TEXT PRIMARY KEY,
+  payload    TEXT NOT NULL,
+  -- updated_at 是毫秒时间戳。用毫秒而不是秒：淘汰按它排序，秒级精度下
+  -- 同一秒内写入的多行并列，被裁掉哪一条就成了随机的
+  updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS workbench_singletons (
+  key        TEXT PRIMARY KEY,   -- 'selected' | 'dock'
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL)`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()

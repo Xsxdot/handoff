@@ -609,17 +609,17 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
 <dialog id="prefsDialog">
   <div style="padding:16px;width:280px">
     <div class="dim" style="font-size:12px;margin-bottom:6px">显示</div>
-    <label style="display:block;font-size:13px;margin-bottom:10px">
+    <label style="display:block;font-size:13px;margin-bottom:6px">
       <input type="checkbox" checked> 隐藏无活跃任务的工作树
+    </label>
+    <label style="display:block;font-size:13px;margin-bottom:10px">
+      <input type="checkbox"> 隐藏已结束分组
     </label>
     <div class="dim" style="font-size:12px;margin-bottom:6px">排序方式</div>
     <label style="display:block;font-size:13px"><input type="radio" name="sort" checked> 活跃优先</label>
     <label style="display:block;font-size:13px"><input type="radio" name="sort"> 名称</label>
     <label style="display:block;font-size:13px;margin-bottom:10px"><input type="radio" name="sort"> 最近活动</label>
     <div class="dim" style="font-size:12px;margin-bottom:6px">项目 · 2</div>
-    <div style="display:flex;gap:8px;margin-bottom:6px">
-      <button class="btn sm">全选</button><button class="btn sm">全不选</button>
-    </div>
     <label style="display:block;font-size:13px"><input type="checkbox" checked> handoff</label>
     <label style="display:block;font-size:13px"><input type="checkbox" checked> gokit</label>
     <div style="margin-top:14px;text-align:right"><button class="btn sm" id="closePrefs">关闭</button></div>
@@ -751,5 +751,27 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
   document.getElementById('confirmCancel').addEventListener('click', () => confirmDialog.close());
   document.getElementById('confirmOk').addEventListener('click', () => confirmDialog.close());
 </script>
+
+<!-- ===== 控制台内的更新提示框（B166，2026-08-20 回流） =====
+     只在桌面薄壳里出现（真实实现按 UA 后缀判定），浏览器直接访问控制台时没有这一摞。
+     取代了原先挂在菜单栏图标上的三条动态提示：有新版 / 有更新待应用 / 上次同步失败。
+     这里静态渲染「有新版」一条作形态参考——真实产品里它是有更新时才出现的**瞬态**，
+     不是常驻元素；另两条的文案与动作见 pages/settings.html?section=update 与 spec。
+     与 home 悬浮窗共用右下角，home 打开时整摞上移让位（body.home-open）。 -->
+<div class="toast-stack">
+  <div class="toast">
+    <div class="t-head">
+      <span class="t-title">有新版 v0.3.4 可下载</span>
+      <button class="t-close" title="关闭">✕</button>
+    </div>
+    <div class="t-body">当前 v0.3.3。下载并校验后会自动打开安装包，拖进「应用程序」再重开即可。</div>
+    <div class="t-actions">
+      <button class="btn sm primary">下载</button>
+      <button class="btn sm">稍后</button>
+      <a class="link" href="pages/settings.html?section=update">查看详情</a>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

@@ -18,12 +18,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -172,11 +170,7 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		Sessions: local,
 		Machines: []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}},
 	}
-	names := make([]string, 0, len(s.conf().Targets))
-	for name := range s.conf().Targets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := s.pool.Names()
 
 	ctx, cancel := context.WithTimeout(r.Context(), ptyFanoutBudget)
 	defer cancel()
@@ -191,11 +185,18 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			t := s.conf().Targets[name]
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
-			resp, err := client.New(t.Addr, t.Token).MarkForwarded().PtySessions(ctx)
+			// relay 机器没有 addr，终端会话扇出必须复用池里的选路结果。
+			c, err := s.pool.For(name)
 			if err != nil {
-				s.log.Warn("终端会话扇出失败", "machine", name, "addr", t.Addr, "cause", err)
+				s.log.Warn("终端会话扇出：取客户端失败", "machine", name, "cause", err)
+				st.Error = err.Error()
+				results[i] = result{status: st}
+				return
+			}
+			resp, err := c.MarkForwarded().PtySessions(ctx)
+			if err != nil {
+				s.log.Warn("终端会话扇出失败", "machine", name, "cause", err)
 				st.Error = err.Error()
 				results[i] = result{status: st}
 				return
@@ -248,6 +249,7 @@ func ptySessionView(s ptyhost.Session, machine string) proto.PtySession {
 		ID: s.ID, Machine: machine, BasePath: s.BasePath, BaseKind: s.BaseKind,
 		Shell: s.Shell, CreatedAt: s.CreatedAt, Cols: s.Cols, Rows: s.Rows,
 		Attached: s.Attached, Foreground: s.Foreground, PID: s.PID, ExitCode: s.ExitCode, BytesOut: s.BytesOut,
+		Incompatible: s.Incompatible,
 	}
 }
 

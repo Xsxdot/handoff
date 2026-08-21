@@ -11,7 +11,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -25,11 +24,12 @@ var diffCmd = &cobra.Command{
 	Short: "输出任务的 git diff 与提交列表（审阅素材）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, token, err := TargetEndpoint()
+		c, cleanup, err := newTargetClient()
 		if err != nil {
 			return err
 		}
-		diff, err := client.New(addr, token).Diff(cmd.Context(), args[0], diffBase)
+		defer cleanup()
+		diff, err := c.Diff(cmd.Context(), args[0], diffBase)
 		if err != nil {
 			return err
 		}

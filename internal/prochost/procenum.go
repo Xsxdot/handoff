@@ -12,7 +12,86 @@
 //   - 非 darwin/linux 一律返回 ErrNotSupported，调用方据此降级，不猜值
 package prochost
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
+
+// ProcessCredential 是一个进程的可验证身份凭据。
+//
+// PID 单独不能证明身份：进程退出后操作系统会复用它。StartedAt 与 PID 一起构成
+// 本包已有的 pid 复用防线；0 表示没有拿到内核启动时刻，调用方必须把它当成未知。
+type ProcessCredential struct {
+	PID       int
+	StartedAt int64
+}
+
+// PtyhostCredentialProvider 返回当前 agentd 已登记的 ptyhost 身份凭据。
+//
+// 参数：无。
+// 返回：已由会话目录锁与 meta.json 认证过的 ptyhost 进程凭据；未知身份不得返回。
+// 注意：该回调只服务机器级进程压力统计，不改变任务级进程名册与 RLIMIT_NPROC。
+type PtyhostCredentialProvider func() []ProcessCredential
+
+var (
+	ptyhostCredentialMu       sync.RWMutex
+	ptyhostCredentialProvider PtyhostCredentialProvider
+)
+
+// SetPtyhostCredentialProvider 设置机器级进程压力统计的 ptyhost 凭据来源。
+//
+// 参数：provider 是当前 agentd 的凭据提供者；传 nil 表示不排除任何进程。
+// 返回：无。
+// 注意：agentd 启动时设置一次；调用方必须保证 provider 返回的是仍然持有会话锁的
+// ptyhost。未知或过期凭据不能用于扣减统计，否则会把 PID 复用误判成 ptyhost。
+func SetPtyhostCredentialProvider(provider PtyhostCredentialProvider) {
+	ptyhostCredentialMu.Lock()
+	ptyhostCredentialProvider = provider
+	ptyhostCredentialMu.Unlock()
+}
+
+// PtyhostCredentials 返回当前已登记的 ptyhost 凭据快照。
+//
+// 返回：提供者给出的凭据切片；未设置提供者时为 nil。
+// 注意：这是只读视图，供调用方核对「某个真实会话是否已成为可验证凭据」。
+// **不要拿它自己做扣减** —— 扣减判据（PID 与启动时刻必须同时匹配）在
+// chargeableProcessCount 里，绕过它会把 PID 复用误判成 ptyhost。
+func PtyhostCredentials() []ProcessCredential {
+	provider := currentPtyhostCredentialProvider()
+	if provider == nil {
+		return nil
+	}
+	return provider()
+}
+
+func currentPtyhostCredentialProvider() PtyhostCredentialProvider {
+	ptyhostCredentialMu.RLock()
+	provider := ptyhostCredentialProvider
+	ptyhostCredentialMu.RUnlock()
+	return provider
+}
+
+// ProcessCredentialForPID 读取一个当前 uid 进程的内核启动时刻。
+//
+// 参数：pid 是要查的进程号。
+// 返回：找到时返回 PID 与启动时刻及 true；进程不存在、枚举失败或启动时刻缺失时
+// 返回零值与 false。
+// 注意：调用方应把 false 当成“无法证明身份”，不能因此排除该进程。
+func ProcessCredentialForPID(pid int) (ProcessCredential, bool) {
+	if pid <= 0 {
+		return ProcessCredential{}, false
+	}
+	procs, err := enumProcsFn()
+	if err != nil {
+		return ProcessCredential{}, false
+	}
+	for _, proc := range procs {
+		if proc.PID == pid && proc.StartedAt > 0 {
+			return ProcessCredential{PID: proc.PID, StartedAt: proc.StartedAt}, true
+		}
+	}
+	return ProcessCredential{}, false
+}
 
 // ErrNotSupported 表示本平台没有进程枚举实现。
 //

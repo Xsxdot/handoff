@@ -11,6 +11,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +33,10 @@ func TestMirrorDiscoverOnceSubscribesActiveTasks(t *testing.T) {
 	hub := NewHub()
 	cfg := &config.Config{Token: testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}}}
-	m := NewMirror(cfg, localSt, hub, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pool := targetclient.NewPool(func() *config.Config { return cfg }, log)
+	defer pool.Close()
+	m := NewMirror(pool, localSt, hub, log)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -75,7 +79,10 @@ func TestMirrorDropsTerminalTasks(t *testing.T) {
 	hub := NewHub()
 	cfg := &config.Config{Token: testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}}}
-	m := NewMirror(cfg, localSt, hub, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pool := targetclient.NewPool(func() *config.Config { return cfg }, log)
+	defer pool.Close()
+	m := NewMirror(pool, localSt, hub, log)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

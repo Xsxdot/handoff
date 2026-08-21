@@ -22,6 +22,7 @@ function dock(over: Partial<{ tabs: HomeTab[]; windowOpen: boolean }> = {}) {
     maximized: false,
     toggleMaximize: vi.fn(),
     adopt: vi.fn(),
+    hydrate: vi.fn(),
     ...over,
   }
 }

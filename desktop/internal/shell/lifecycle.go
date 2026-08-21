@@ -1,10 +1,12 @@
 // 本文件负责 agentd 的存活：判断它装没装、起没起，必要时用 internal/service 托管起来。
 //
-// 边界（三条都是承重的，见 spec §4.3）：
+// 边界（四条都是承重的，见 spec §4.3）：
 //   - **绝不把 agentd 跑进薄壳进程**。agentd 必须活过薄壳、必须能在无 GUI 机器上裸跑，
 //     且 B59 的更新机制假设它由 service 托管
 //   - **绝不在薄壳退出时停掉 agentd**。执行者不能随关窗陪葬
 //   - 已在运行时**什么都不做**。重复 Install 会重装单元、打断正在跑的任务
+//   - **绝不复活被显式停用的 agentd**。handoff service stop 是显式意图，
+//     不是待修复的故障；把它当故障自愈，stop 在装了薄壳的机器上就失效了
 package shell
 
 import (
@@ -45,7 +47,35 @@ func EnsureRunning(log *slog.Logger, spec service.Spec) error {
 		log.Info("agentd 已在运行，无需干预", "kind", m.Kind(), "detail", st.Detail)
 		return nil
 	}
+	// 被 handoff service stop 显式停用：不自愈。
+	//
+	// 承重的理由：下面那段「Start 失败就 Install 自愈」在 launchd 上会把
+	// 被 bootout 的单元重新 bootstrap 起来——用户明确停掉的东西又被拉回来，
+	// stop 这个动作在装了桌面壳的机器上当场失效。停用是一个显式意图，
+	// 不是一个待修复的故障。
+	if st.Disabled {
+		log.Info("agentd 已被显式停用，不自愈",
+			"kind", m.Kind(), "installed", st.Installed, "detail", st.Detail)
+		return nil
+	}
 	log.Info("agentd 未在运行，准备托管拉起", "kind", m.Kind(), "installed", st.Installed, "bin", spec.BinPath)
+	// 已装就只启动，不重写单元定义。
+	//
+	// 承重的理由在 Windows：Install 会先 `schtasks /Delete /F` 再重建任务，
+	// 而本函数是换版路径上的常客（WaitAgentdBack 探不到新版本时会催一次），
+	// 于是「升级一次 = 计划任务被删了重建一次」，用户对任务定义做过的任何
+	// 修改和任务历史一并消失。Start 只触发、不重建。
+	if st.Installed {
+		serr := m.Start()
+		if serr == nil {
+			log.Info("agentd 已拉起（沿用既有单元定义）", "kind", m.Kind())
+			return nil
+		}
+		// 不直接返回错误：既有单元可能真的坏了（指向已被删除的二进制、定义被
+		// 改残），那种情况下重装才是对的自愈动作。降级为 Warn 后继续走 Install
+		// ——把「省一次重写」置于「agentd 拉不起来」之上是本末倒置
+		log.Warn("沿用既有单元拉起失败，改为重装", "kind", m.Kind(), "cause", serr)
+	}
 	if err := m.Install(spec); err != nil {
 		log.Error("托管 agentd 失败", "kind", m.Kind(), "bin", spec.BinPath, "cause", err)
 		return fmt.Errorf("托管并拉起 agentd: %w", err)

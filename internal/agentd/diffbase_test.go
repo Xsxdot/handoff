@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,52 @@ func TestBranchesEndpointReportsTaskBase(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(body.Branches, ","), "main") {
 		t.Errorf("分支列表应含 main：%v", body.Branches)
+	}
+}
+
+// TestTaskDiffTargetFallsBackToRepoWhenWorktreeGone 钉住归档任务的 diff 出路。
+//
+// 真机实测：任务 done 之后 managed worktree 被回收，而 handleTaskDiff 仍在
+// work_dir 里跑 git，目录不存在 → exit status 128 → 500。控制台把这个 500
+// 静默吞成空集合，表现为「文件树不再显示新增/修改的颜色」，一点提示都没有。
+//
+// 分支还在主仓库里，所以回得去：repo_path + 任务分支。
+func TestTaskDiffTargetFallsBackToRepoWhenWorktreeGone(t *testing.T) {
+	repo := t.TempDir()
+	task := &proto.Task{
+		RepoPath: repo,
+		WorkDir:  filepath.Join(t.TempDir(), "已被回收的-worktree"),
+		Branch:   "bench/b93",
+	}
+	gotRepo, gotHead := taskDiffTarget(task)
+	if gotRepo != repo {
+		t.Errorf("worktree 没了应回到主仓库，得到 %q 想要 %q", gotRepo, repo)
+	}
+	// **右端必须是任务分支而不是 HEAD**：主仓库的 HEAD 是主线，拿它当右端
+	// 会把主线相对基线的全部历史算成这个任务的改动
+	if gotHead != "bench/b93" {
+		t.Errorf("回退后右端应是任务分支，得到 %q", gotHead)
+	}
+}
+
+// TestTaskDiffTargetKeepsWorktreeWhenPresent 反面：worktree 还在就别改行为。
+// 跑着的任务要看实时进度，右端保持 HEAD。
+func TestTaskDiffTargetKeepsWorktreeWhenPresent(t *testing.T) {
+	wt := t.TempDir()
+	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: wt, Branch: "bench/b93"}
+	gotRepo, gotHead := taskDiffTarget(task)
+	if gotRepo != wt || gotHead != "HEAD" {
+		t.Errorf("worktree 在时应原样用它 + HEAD，得到 (%q, %q)", gotRepo, gotHead)
+	}
+}
+
+// TestTaskDiffTargetKeepsWorktreeWhenBranchUnknown 老任务没记分支时不回退：
+// 回退了也没有合法的右端，不如让错误原样暴露，别拿主线的 HEAD 冒充。
+func TestTaskDiffTargetKeepsWorktreeWhenBranchUnknown(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "没了")
+	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: gone, Branch: ""}
+	gotRepo, gotHead := taskDiffTarget(task)
+	if gotRepo != gone || gotHead != "HEAD" {
+		t.Errorf("无分支可用时不该回退，得到 (%q, %q)", gotRepo, gotHead)
 	}
 }

@@ -5,6 +5,9 @@
 //   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
 //   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
 //   - shell 退出后在下方显示退出码，tab 留着等用户自己关
+//   - 订阅被判死（close 1008，最常见的是 agentd 重启后旧会话已不存在）时，
+//     除了报出服务端给的原因，还给一个「重开一个终端」的出口——没有它，这个
+//     tab 就是死物，用户只能关掉重开
 //
 // 边界：
 //   - **不删会话**。卸载只断 WS——切 tab、切基准目录、关页面都不该杀掉
@@ -25,6 +28,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
+import { describeElement, logTermFocus, logTermInput, logTermResize } from './terminalDebug'
 import type { BaseDir } from './useWorkbench'
 
 export interface TerminalTabProps {
@@ -32,6 +36,8 @@ export interface TerminalTabProps {
   seq: number
   // sessionId 缺席 = 这个 tab 还没有会话，挂载时建一个。
   sessionId?: string
+  // incompatible = 服务端会话仍活着但本版协议无法接入；不应发起连接或重连。
+  incompatible?: boolean
   // rel 是终端要起的工作树子目录；空串/缺席 = 工作树根。
   rel?: string
   // onSession 把新建会话的 id 交回上层写进 TabContent。必须回报：
@@ -57,18 +63,32 @@ function ptyBase(base: BaseDir, rel?: string): { base_kind: string; base_path: s
   return out
 }
 
-export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTabProps) {
+export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, onSession }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
   const [exit, setExit] = useState<number | null | undefined>(undefined)
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
+  // dead：这条订阅被服务端判死（close 1008），api/pty.ts 不会再重连。
+  // 与 error 分开存：普通断线也会写 error，但那时还在退避重连，不该给重开入口。
+  const [dead, setDead] = useState(false)
+  // discarded 是用户已经放弃的那个会话 id。不清空上层的 sessionId（那是 tab 的
+  // 状态，本组件不持有），而是在本地把它「划掉」：liveId 因此回到 undefined，
+  // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
+  const [discarded, setDiscarded] = useState<string | undefined>(undefined)
+  const liveId = sessionId !== undefined && sessionId !== discarded ? sessionId : undefined
+  const incompatibleLive = incompatible && liveId !== undefined
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     let disposed = false
     let handle: PtyHandle | null = null
+    // wsStatus 是数据通道的当前状态，供输入取证判断「这批输入发出去了没有」。
+    // 用闭包变量而不是 React state：effect 里读 state 拿到的是挂载那一刻的旧值。
+    let wsStatus: 'connecting' | 'open' | 'closed' = 'connecting'
+    // label 只用于取证日志，让多个终端 tab 同时开着时分得清是哪一个
+    const label = seq > 1 ? `${base.label} (${seq})` : base.label
 
     // 终端底色固定为深色：xterm 的 WebGL 渲染器不支持透明背景，跟着页面主题
     // 走会在浅色主题下拿到一块透不过去的白底。终端惯例本就是深色，不折腾。
@@ -99,10 +119,65 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     } catch (err) {
       console.warn('WebGL 渲染器不可用，已回退到 DOM 渲染', err)
     }
-    fit.fit()
+    // measured 表示「容器已经有布局盒子，此刻量出来的尺寸作数」。
+    //
+    // 为什么必须挡这一下：恢复布局时 TerminalTab 会在容器还没拿到布局盒子的
+    // 那一帧挂载，此时 FitAddon 量出的是 **2×1**（xterm 的下限）。把它当真实
+    // 尺寸报给服务端，PTY 就真被调成 2 列 1 行——shell 按 2 列重排，正在回放的
+    // 历史当场被绞碎，正在跑的 TUI 同样遭殃；等 ResizeObserver 补一次真实尺寸
+    // 时已经救不回来了。用户看到的现象是「刷新之后终端里什么都没了」。
+    //
+    // 判据取容器而不是取 term.cols：2×1 也可能是一个真的很窄的分栏，
+    // 「有没有布局盒子」才是「这次测量算不算数」的正解。
+    const measured = (): boolean => {
+      const r = host.getBoundingClientRect()
+      return r.width >= 1 && r.height >= 1
+    }
+    // reassertPending = 「这条连接的尺寸还欠服务端一次」。onAttached 撞上
+    // 未成型的容器时置位，由容器成型后的第一次量兑现。
+    let reassertPending = false
+    // fitIfMeasured 只在容器成型后量。没量成时什么都不做——ResizeObserver
+    // 会在容器拿到盒子的那一刻再来一次。
+    const fitIfMeasured = (): boolean => {
+      if (!measured()) return false
+      fit.fit()
+      return true
+    }
+
+    // onResize 必须在 fit.fit() **之前**注册。
+    //
+    // 挂载时 term.open 给的是默认 80×24，紧接着的 fit.fit() 才算出真实尺寸——
+    // 那一次 fit 会触发 onResize，注册晚了就没人接得住。它今天不会真的发出去
+    //（此刻 handle 还是 null），但注册次序错了这件事本身是隐患：将来只要有人
+    // 在 start() 之前建连，这一次尺寸就又悄悄丢了。真正保证尺寸对齐的是下面
+    // onAttached 里的那次重申。
+    term.onResize(({ cols, rows }) => {
+      logTermResize(label, cols, rows, 'observer')
+      handle?.resize(cols, rows)
+    })
+    term.onData((d) => {
+      logTermInput(label, d, wsStatus)
+      handle?.send(new TextEncoder().encode(d))
+    })
+
+    // 焦点取证：只记不改。relatedTarget 是「焦点去了哪儿 / 从哪儿来」的标准来源，
+    // 比在 blur 里读 document.activeElement 准——blur 触发时新的焦点元素还没落定。
+    const ta = term.textarea
+    const onFocusEvt = () => logTermFocus(label, 'focus', describeElement(document.activeElement))
+    const onBlurEvt = (ev: FocusEvent) => logTermFocus(label, 'blur', describeElement(ev.relatedTarget as Element | null))
+    ta?.addEventListener('focus', onFocusEvt)
+    ta?.addEventListener('blur', onBlurEvt)
+
+    fitIfMeasured()
 
     const start = async () => {
-      let id = sessionId
+      let id = liveId
+      if (incompatibleLive) {
+        setError('会话由不兼容的版本托管')
+        setDead(true)
+        setStatus('closed')
+        return
+      }
       if (!id) {
         const created = await createPtySession(
           { ...ptyBase(base, rel), cols: term.cols, rows: term.rows },
@@ -131,18 +206,51 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
           // 服务端说中间丢了一段：屏幕上现有的内容与即将到来的回放接不上，
           // 不清就会把同一段输出画两遍
           if (truncated) term.clear()
+          // **每次建连都重申本订阅者的尺寸**，这是「TUI 乱码、拖一下窗口就好」的修复点。
+          //
+          // 恢复一个已存在的会话时不走 createPtySession，于是整条挂载路径从头到尾
+          // 没有向服务端报过一次尺寸：服务端的 PTY 还是它被创建时的 cols/rows，
+          // 里面的 TUI 按那个宽度画，而 xterm 现在是另一个宽度——就是乱码。
+          // 用户拖一下窗口，ResizeObserver 触发 fit，尺寸这才发出去，于是「好了」。
+          // 切 tab 走的也是这条路（WorkbenchPage 只渲染激活 tab，切回来是恢复不是新建）。
+          //
+          // 挂在 onAttached 而不是 connectPty 之后同步发：connectPty 内部同步 open()，
+          // 此刻 WS 还是 CONNECTING，`ws.send()` 会抛 InvalidStateError。onAttached
+          // 由服务端的 attached 帧驱动，触发时 WS 必然已 open。
+          //
+          // 它同时覆盖重连：断线期间别的订阅者可能把会话尺寸协商成了别的值，
+          // 重连后重申一次才是对的。
+          //
+          // 但**容器还没成型时一个字节都不能报**：那一刻 fit 量出的是 2×1，
+          // 报上去等于把用户的 PTY 绞成 2 列（见上面 measured 的说明）。
+          // 此时把这次重申挂起，交给容器成型后的第一次量补上——**不是**指望
+          // onResize 自己会发：fit 算出的尺寸与 xterm 当前值相同时它根本不触发，
+          // 而「相同」恰恰是恢复布局时的常态。
+          if (!fitIfMeasured()) {
+            reassertPending = true
+            return
+          }
+          reassertPending = false
+          logTermResize(label, term.cols, term.rows, 'attach')
+          handle?.resize(term.cols, term.rows)
         },
         onData: (bytes) => term.write(bytes),
         onExit: (code) => {
           setExit(code ?? null)
           setStatus('closed')
         },
-        onStatus: setStatus,
+        onStatus: (s) => {
+          wsStatus = s
+          setStatus(s)
+        },
         onError: (message) => setError(message),
-        onTerminal: ({ message }) => setError(message),
+        onTerminal: ({ message }) => {
+          // 判死 = 没有重连可等了，界面必须给出下一步动作，而不是只留一行红字
+          setError(message)
+          setDead(true)
+        },
       })
-      term.onData((d) => handle?.send(new TextEncoder().encode(d)))
-      term.onResize(({ cols, rows }) => handle?.resize(cols, rows))
+      // onData / onResize 已在 effect 开头注册（见那里的次序说明），这里不再重复挂
       term.focus()
     }
 
@@ -151,12 +259,23 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
       setError(err instanceof Error ? err.message : String(err))
     })
 
-    const ro = new ResizeObserver(() => fit.fit())
+    const ro = new ResizeObserver(() => {
+      if (!fitIfMeasured()) return
+      // 兑现挂起的重申。必须显式发一次而不是等 onResize：尺寸没变时 onResize
+      // 不触发，而恢复布局时「量出来正好等于 xterm 当前值」是常态。
+      if (reassertPending) {
+        reassertPending = false
+        logTermResize(label, term.cols, term.rows, 'attach')
+        handle?.resize(term.cols, term.rows)
+      }
+    })
     ro.observe(host)
 
     return () => {
       disposed = true
       ro.disconnect()
+      ta?.removeEventListener('focus', onFocusEvt)
+      ta?.removeEventListener('blur', onBlurEvt)
       // 只断连接，不发 DELETE：服务端会话继续跑
       handle?.close()
       term.dispose()
@@ -164,7 +283,7 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
     // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
     // rel 参与身份：改 rel 就该在新的子目录里重建会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, base.key, base.machine, rel])
+  }, [liveId, incompatibleLive, base.key, base.machine, rel])
 
   return (
     <div className="flex h-full flex-col">
@@ -179,7 +298,25 @@ export function TerminalTab({ base, seq, sessionId, rel, onSession }: TerminalTa
       </div>
       <div ref={hostRef} className="min-h-0 flex-1 bg-[#0b0b0c]" />
       {error !== null && (
-        <div className="border-t px-3 py-1.5 text-xs text-destructive">{error}</div>
+        <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-destructive">
+          <span>{error}</span>
+          {dead && (
+            <button
+              type="button"
+              className="rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                // 划掉旧 id → liveId 变 undefined → effect 重跑，在同一基准目录建新会话。
+                // 老会话不发 DELETE：它在服务端要么已经不存在（agentd 重启），要么是被
+                // 判死的另一条订阅，替用户去删一个可能还活着的 shell 不是这个按钮的职责。
+                setDiscarded(sessionId)
+                setError(null)
+                setDead(false)
+              }}
+            >
+              重开一个终端
+            </button>
+          )}
+        </div>
       )}
       {exit !== undefined && (
         <div className="border-t px-3 py-1.5 text-xs text-muted-foreground">

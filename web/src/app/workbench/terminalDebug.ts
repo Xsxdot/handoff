@@ -1,0 +1,105 @@
+// terminalDebug —— 终端输入与焦点的取证开关。
+//
+// 职责：为两个**尚未定位根因**的偶现故障提供读数，而不是替它们猜一个修法：
+//   ② 用 ESC 取消 TUI 里正在跑的命令后，偶现无法再输入
+//   ③ espanso 之类的文本展开工具在桌面端终端里少字符
+//
+// 边界：
+//   - **默认全关**，靠 localStorage 显式打开。终端输入是每次按键一条，
+//     常开会把控制台刷成不可用，也会把用户敲的东西（可能含密码）留在日志里
+//   - 只读不写：不改任何终端行为，摘掉这个模块功能应当完全不变
+//   - 不做聚合、不做上报：它是给人现场看的，不是给采集系统看的
+//
+// 打开方式（浏览器控制台或桌面端 devtools）：
+//   localStorage.setItem('handoff.debug.terminal', '1')  // 然后重开那个终端 tab
+//   localStorage.removeItem('handoff.debug.terminal')    // 关掉
+//
+// 怎么用这些读数：
+//   ② 复现失焦后看最后一条 focus/blur —— activeElement 是谁抢走了焦点；
+//      若根本没有 blur 记录，说明焦点还在 xterm 上，问题在 TUI 的模式残留
+//      （鼠标追踪 / bracketed paste 没有配对关闭），而不在前端焦点管理
+//   ③ 触发一次展开（如 `:ps`），把 input 行里的字符数加起来与期望值比 ——
+//      对得上说明字符进了 xterm，问题在我们下游（WS/PTY）；对不上说明注入层
+//      就已经丢了，前端修不了，只能给 espanso 调 inject_delay
+
+// DEBUG_KEY 是开关所在的 localStorage 键。
+export const TERMINAL_DEBUG_KEY = 'handoff.debug.terminal'
+
+// terminalDebugEnabled 读开关。
+//
+// 返回：true 表示本次会话要打终端取证日志。
+//
+// 注意：每次调用都现读 localStorage 而不是模块加载时缓存一次——开关的用途
+// 就是「出问题时当场打开」，缓存会逼用户刷新页面，而刷新往往就把现场弄没了。
+// 隐私模式下 localStorage 可能直接抛，此时一律当作关闭（同 treePrefs 的处置）。
+export function terminalDebugEnabled(): boolean {
+  try {
+    return localStorage.getItem(TERMINAL_DEBUG_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// describeElement 把一个 DOM 元素描述成一行可读的短串，用于「焦点被谁抢走了」。
+//
+// 参数：el 可为 null（document.activeElement 在极少数时刻确实是 null）。
+// 返回：形如 `textarea.xterm-helper-textarea` 的短串；null 返回 `(null)`。
+export function describeElement(el: Element | null): string {
+  if (el === null) return '(null)'
+  const tag = el.tagName.toLowerCase()
+  // className 在 SVG 元素上是 SVGAnimatedString 而不是 string，直接 slice 会炸
+  const cls = typeof el.className === 'string' ? el.className.trim().slice(0, 60) : ''
+  return cls === '' ? tag : `${tag}.${cls.split(/\s+/).join('.')}`
+}
+
+// logTermInput 记一次终端输入（③ 的主要读数）。
+//
+// 参数：
+//   - label: 终端标识，用于在多个 tab 同时开着时分辨是哪一个
+//   - data: xterm 交出来的这一批输入原文
+//   - wsStatus: 发生输入时数据通道的状态。**不是 'open' 时这批输入很可能丢了**
+//     —— connectPty 的 send 走 `ws?.send()`，WS 处于 CONNECTING 时会抛
+//     InvalidStateError，处于重连间隙时 ws 是 null，两种情形都不会有任何提示
+//
+// 注意：原文经 JSON.stringify 输出，好让不可见字符（ESC、退格、回车）看得见——
+// espanso 的展开动作正是「先退格删掉触发词再打替换文本」，看不见退格就判不了案。
+export function logTermInput(label: string, data: string, wsStatus: string): void {
+  if (!terminalDebugEnabled()) return
+  if (wsStatus !== 'open') {
+    console.warn('[term:input] 输入发生在数据通道未就绪时，很可能已丢失', {
+      终端: label,
+      状态: wsStatus,
+      字符数: data.length,
+      原文: JSON.stringify(data),
+    })
+    return
+  }
+  console.debug('[term:input]', { 终端: label, 字符数: data.length, 原文: JSON.stringify(data) })
+}
+
+// logTermFocus 记一次焦点变化（② 的主要读数）。
+//
+// 参数：
+//   - label: 终端标识
+//   - kind: 'focus' = xterm 拿到焦点，'blur' = 它失去焦点
+//   - active: 事件发生**之后**的 document.activeElement 描述（用 describeElement 取）
+//
+// 注意：blur 的那一条才是关键——它说明焦点去了哪儿。如果复现失焦时压根没有
+// blur 记录，那焦点根本没离开 xterm，问题在别处（见文件头）。
+export function logTermFocus(label: string, kind: 'focus' | 'blur', active: string): void {
+  if (!terminalDebugEnabled()) return
+  console.debug(`[term:${kind}]`, { 终端: label, 当前焦点: active })
+}
+
+// logTermResize 记一次尺寸上报。
+//
+// 参数：label 是终端标识；cols/rows 是本次上报的尺寸；reason 说明是谁触发的
+//（'attach' = 建连时重申，'observer' = 容器尺寸变化）。
+//
+// 为什么这条也留着：尺寸不同步曾经是「TUI 乱码、拖一下窗口就好」的根因
+//（恢复已有会话的路径从不上报尺寸）。修好之后留一条读数，下次再出现同类
+// 现象时能一眼确认尺寸到底发出去没有，不必再从头读一遍挂载次序。
+export function logTermResize(label: string, cols: number, rows: number, reason: 'attach' | 'observer'): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:resize]', { 终端: label, cols, rows, 触发: reason })
+}

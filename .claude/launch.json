@@ -2,85 +2,17 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "w1-web-check",
+      "name": "console-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "/private/tmp/claude-501/-Users-xushixin-workspace-handoff/767af9eb-27f8-4822-9787-7c7b9905815f/scratchpad/w1check/web",
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5173",
-        "--strictPort"
-      ],
-      "port": 5173
-    },
-    {
-      "name": "prototype-desktop-console",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "/Users/xushixin/workspace/handoff/.claude/worktrees/web-console/prototypes/desktop-console",
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5280",
-        "--strictPort"
-      ],
-      "port": 5280
-    },
-    {
-      "name": "prototype-b81",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "/Users/xushixin/workspace/handoff/.claude/worktrees/parallel-handoff-planning-ed00d0/prototypes/desktop-console",
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5281",
-        "--strictPort"
-      ],
-      "port": 5281
-    },
-    {
-      "name": "b107-prototype",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "/private/tmp/claude-501/-Users-xushixin-workspace-handoff--claude-worktrees-parallel-handoff-planning-ed00d0/3e792921-61ab-4dd1-a4e5-18f1880090d7/scratchpad/w4/prototypes/b107-file-tree-menu",
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5283",
-        "--strictPort"
-      ],
-      "port": 5283
+      "runtimeArgs": ["--prefix", "web", "run", "dev", "--", "--port", "5241", "--strictPort"],
+      "port": 5241,
+      "autoPort": false
     },
     {
       "name": "prototype-static",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8931", "--directory", "prototypes"],
       "port": 8931
-    },
-    {
-      "name": "tui-web-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "/Users/xushixin/workspace/handoff/.claude/worktrees/tool-call-issues-fix-0125fb/web",
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5290",
-        "--strictPort"
-      ],
-      "port": 5290
     }
   ]
 }

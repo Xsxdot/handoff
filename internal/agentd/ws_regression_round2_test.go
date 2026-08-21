@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -40,6 +41,9 @@ type wsTestEnv struct {
 	st   *store.Store
 	logs *strings.Builder
 	mu   sync.Mutex
+	// sockBuf>0 时钉住两端 socket 缓冲（服务端发送 / 客户端接收），
+	// 让「对端不读」类用例的 TCP 背压不再取决于运行机器的默认值。
+	sockBuf int
 }
 
 // logged 返回迄今为止的服务端日志文本（供「告警是否触发」类断言）。
@@ -55,31 +59,88 @@ func (e *wsTestEnv) Write(p []byte) (int, error) {
 	return e.logs.Write(p)
 }
 
-// newWSTestEnv 组装 WS 测试环境并注册清理。
+// newWSTestEnv 组装 WS 测试环境并注册清理（socket 缓冲用系统默认）。
 func newWSTestEnv(t *testing.T) *wsTestEnv {
+	t.Helper()
+	return newWSTestEnvWithSockBuf(t, 0)
+}
+
+// newWSTestEnvWithSockBuf 同 newWSTestEnv，但把服务端**发送**缓冲钉成 sockBuf
+// 字节（0=系统默认），并让 dialWS 把客户端**接收**缓冲钉成同一个值。
+//
+// 为什么要能钉住：只有「对端不读」类用例才需要它。那类用例的前提是写循环真的
+// 被 TCP 背压挡住，而挡不挡得住取决于内核缓冲能吞下多少——那是机器属性，不是
+// 被测对象的属性。不钉住，判据就悬在运行机器的 SO_SNDBUF/SO_RCVBUF 默认值上。
+func newWSTestEnvWithSockBuf(t *testing.T, sockBuf int) *wsTestEnv {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "ws.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	env := &wsTestEnv{st: st, logs: &strings.Builder{}}
+	env := &wsTestEnv{st: st, logs: &strings.Builder{}, sockBuf: sockBuf}
 	logger := slog.New(slog.NewTextHandler(env, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{Token: wsTestToken, DataDir: t.TempDir()}
 	env.srv = NewServer(cfg, st, logger)
-	env.ts = httptest.NewServer(env.srv.Handler())
+	if sockBuf <= 0 {
+		env.ts = httptest.NewServer(env.srv.Handler())
+	} else {
+		// 换掉 httptest 自带的 listener：accept 出来的每条连接都在交给 http.Server
+		// 之前把发送缓冲调小。SetWriteBuffer 是 net 包的可移植封装（底层 SO_SNDBUF），
+		// 不用 syscall——GOOS=windows go vet ./... 连测试文件一起看，platform split
+		// 会在那道门上现形。
+		ts := httptest.NewUnstartedServer(env.srv.Handler())
+		ts.Listener = &sockBufListener{Listener: ts.Listener, writeBuf: sockBuf}
+		ts.Start()
+		env.ts = ts
+	}
 	t.Cleanup(env.ts.Close)
 	return env
 }
 
-// dialWS 建立一条 WS 事件流连接。
+// sockBufListener 给每条 accept 到的 TCP 连接钉住发送缓冲。
+type sockBufListener struct {
+	net.Listener
+	writeBuf int
+}
+
+func (l *sockBufListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		// 设不上就让它保持默认——退化成「缓冲未钉住」，而依赖它的用例会因此
+		// 失败并报出原因，不会静默假绿
+		_ = tc.SetWriteBuffer(l.writeBuf)
+	}
+	return c, nil
+}
+
+// dialWS 建立一条 WS 事件流连接。env.sockBuf > 0 时同时钉住客户端接收缓冲。
 func (e *wsTestEnv) dialWS(t *testing.T, taskID string, fromSeq int64) *websocket.Conn {
 	t.Helper()
 	url := strings.Replace(e.ts.URL, "http://", "ws://", 1) +
 		"/ws/events?task=" + taskID + "&from_seq=" + strconv.FormatInt(fromSeq, 10)
-	conn, _, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{
+	opts := &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + wsTestToken}},
-	})
+	}
+	if e.sockBuf > 0 {
+		buf := e.sockBuf
+		opts.HTTPClient = &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				if tc, ok := c.(*net.TCPConn); ok {
+					_ = tc.SetReadBuffer(buf)
+				}
+				return c, nil
+			},
+		}}
+	}
+	conn, _, err := websocket.Dial(context.Background(), url, opts)
 	if err != nil {
 		t.Fatalf("WS 拨号: %v", err)
 	}
@@ -112,8 +173,21 @@ func (e *wsTestEnv) appendAndPublish(t *testing.T, taskID, text string) proto.Ev
 // 且连接不断则永不回收。
 //
 // 修复后越限即断开：事件都已落库，客户端凭 cursor 重连可完整补拉，断开是无损的。
+//
+// 本用例的前提是「写循环真的被 TCP 背压挡住」，而挡不挡得住取决于内核缓冲能吞下
+// 多少字节——**那是运行机器的属性，不是被测对象的属性**。用系统默认值时这条判据
+// 是悬空的：macOS 默认约 800KB，本用例发的 3.2MB 稳稳撑爆它；而 Linux runner 上
+// 自动调优后的收发缓冲可以超过 3.2MB，服务端一次也不阻塞就把 400 条全写完，
+// live 永远到不了 liveLimit，用例读满 400 条后干等到超时——2026-08-20 main 上那次
+// 偶发红就是这个形状（同一提交在 release 的 verify 里却是绿的）。
+// 在 macOS 上把两端缓冲调到 4MB 可以稳定复现。
+//
+// 所以这里把两端 socket 缓冲钉成 8KB：能吞下的字节数从「机器说了算」变成「用例
+// 说了算」，3.2MB 相对它有两个数量级的余量，任何机器上结论都一样。
+// 早前那次把超时从 10s 放宽到 3 倍（B125）治的是症状——服务端已经无事可做时，
+// 等再久也等不到断开。
 func TestWSLiveBufferBounded(t *testing.T) {
-	env := newWSTestEnv(t)
+	env := newWSTestEnvWithSockBuf(t, 8<<10)
 	env.srv.liveLimit = 32 // 注入小阈值，免造几万条事件
 	const taskID = "task-ws-overflow"
 	env.seedTask(t, taskID)

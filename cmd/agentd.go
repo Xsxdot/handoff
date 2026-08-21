@@ -39,6 +39,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/spf13/cobra"
@@ -66,6 +67,17 @@ var agentdCmd = &cobra.Command{
 		// hub 构造时取 slog.Default()，必须先于 NewServer 生效，才能让 hub/store/config
 		// 的全部日志统一走 logx 的「JSON 文件 + stderr 文本」双路输出
 		slog.SetDefault(logger)
+		if cfg.Relay != nil {
+			// 弱 token 经公网 relay 可被离线爆破；relay 出站因此必须
+			// fail-closed，不能带着低熵凭证启动。
+			if err := validateRelayToken(cfg); err != nil {
+				logger.Error("relay requires high-entropy token", "cause", err)
+				return fmt.Errorf("relay token 熵校验失败: %w", err)
+			}
+			logger.Info("relay egress enabled", "url", cfg.Relay.URL, "node", cfg.Relay.Node)
+		} else {
+			logger.Info("relay egress not configured")
+		}
 
 		// 围栏策略必须在任何 executor 被拉起之前注入：Start 算 L 时读的就是
 		// 这些包级值，晚一步就会有任务在默认策略下开工
@@ -155,6 +167,10 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
+		if err := srv.ReclaimPtySessions(); err != nil {
+			// PTY 是附属能力，扫描失败不应阻断任务派发主服务；broken 条目由日志留给人工处理。
+			logger.Error("启动时认领 PTY 会话失败，继续提供服务", "err", err)
+		}
 		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
@@ -198,6 +214,16 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
+		if cfg.Relay != nil {
+			// relay 出站与本地 listen 并存，是附加通道；不改变现有 agentd 路由。
+			listener := relay.NewListener(cfg.Relay.URL, cfg.Relay.Credential, cfg.Relay.Node,
+				cfg.Token, "", srv.Handler(), logger)
+			go listener.RunWithReconnect(wdCtx)
+		}
+		// relay 隧道预热：探活只有 3s 预算，首次建隧道（WSS + CONNECT + E2E）
+		// 装不进去。预热用独立超时提前备好，让探活只花在 /api/status 上。
+		go srv.Pool().Warm(wdCtx)
+		logger.Info("relay 隧道预热已启动")
 		// wdStart 是失配对账扫描的启动时刻护栏：只对本次启动之后的事件判失配
 		//（B100 之前的历史 failed+waiting_review 是合法的，见 mismatchVerdict）。
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
@@ -207,16 +233,11 @@ var agentdCmd = &cobra.Command{
 			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
 			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
-		// 事件镜像（W3a §6）：本机 agentd 发现远端活跃任务、订上游事件流，
-		// 让浏览器只连本机一条 WS 也能看到远端任务的实时事件。没有远程机器就
-		// 没必要开一条常驻循环——空转只会占一个 goroutine 与每 30s 一次空轮询。
-		if len(cfg.Targets) > 0 {
-			mirror := agentd.NewMirror(cfg, st, srv.Hub(), logger)
-			go mirror.Run(wdCtx)
-			logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
-		} else {
-			logger.Info("未配置 targets，事件镜像未启动（无远程机器）")
-		}
+		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
+		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
+		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), logger)
+		go mirror.Run(wdCtx)
+		logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -249,8 +270,24 @@ var agentdCmd = &cobra.Command{
 		sd := agentd.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
-		return sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()), wdCancel, listenAddrs...)
+		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
+		// 本分支要在 Serve 返回后关掉 target 客户端池（含 relay 隧道）。
+		err = sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()),
+			srv.GracefulShutdownCleanup(wdCancel), listenAddrs...)
+		if closeErr := srv.CloseTargets(); closeErr != nil {
+			logger.Warn("关闭 target 客户端池失败", "cause", closeErr)
+		}
+		return err
 	},
+}
+
+// validateRelayToken keeps the relay startup gate small and directly testable.
+// Direct-only agentd configurations intentionally bypass this check.
+func validateRelayToken(cfg *config.Config) error {
+	if cfg == nil || cfg.Relay == nil {
+		return nil
+	}
+	return relay.CheckTokenEntropy(cfg.Token)
 }
 
 // logExecutorDetection 把四家 executor 的探测结果成表写进启动日志，并对

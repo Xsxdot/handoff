@@ -1,7 +1,13 @@
 <!doctype html>
 <!--
-  设置页（/settings）—— 镜像 SettingsPage.tsx：三栏外壳不变，中央换成
-  左侧分区导航（开发机/常规/Env 文件）+ 右侧内容的整页设置。
+  设置页（/settings）—— 真实控制台的形态镜像。
+
+  「更新」分区的形态由 B166 确认并已实现（2026-08-19 走查、2026-08-20 回流）：
+    1. 分区导航含「更新」，支持 ?section=update 直达（右下角提示框的「查看详情」跳这里）；
+    2. 三块：桌面应用自更新 / 同步状态（提示框消失后的常驻落点）/ 执行机版本与一键升级；
+    3. 桌面应用块只到「下载 + 校验 + 打开安装包」为止——自我替换要求一条控制台→薄壳的
+       指令通道，比它服务的动作还贵，已在 spec §5 排除，最后一下留给用户。
+  其余分区仍是占位：形态还没设计过，别把占位当成基准。
 -->
 <html lang="zh-CN">
 <head>
@@ -12,31 +18,74 @@
 <style>
   .settings { display: flex; height: 100%; }
   .settings nav { width: 180px; border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
-  .settings nav a { padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--foreground); text-decoration: none; }
+  .settings nav a { padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--foreground); text-decoration: none; display: flex; align-items: center; gap: 6px; }
   .settings nav a.active { background: var(--muted); font-weight: 500; }
+  .settings nav a .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-left: auto; }
   .settings .body { flex: 1; padding: 20px; overflow-y: auto; }
+  .sec-title { margin: 0 0 12px; font-size: 16px; }
+  .sub-title { margin: 24px 0 8px; font-size: 13px; font-weight: 600; }
+  .sub-title:first-child { margin-top: 0; }
+  .hint { font-size: 12px; color: var(--muted-foreground); margin: 4px 0 0; line-height: 1.6; }
+
+  /* 桌面应用自更新卡：一张卡把「我是谁、有没有新的、点一下会发生什么」讲完 */
+  .upd-hero { padding: 16px; display: flex; align-items: flex-start; gap: 14px; }
+  .upd-hero .icon { font-size: 26px; line-height: 1; margin-top: 2px; }
+  .upd-hero .grow { flex: 1; min-width: 0; }
+  .upd-hero .vline { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+  .upd-hero .actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .progress { height: 6px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 12px; }
+  .progress > i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .25s linear; }
+  /* 变更摘要默认折起：更新页不是发布说明页，展开才看 */
+  details.notes { margin-top: 10px; font-size: 12.5px; }
+  details.notes summary { cursor: pointer; color: var(--muted-foreground); }
+  details.notes ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.8; color: var(--foreground); }
+
+  /* 同步状态：toast 会消失，这里是它唯一的常驻落点 */
+  .status-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .status-row:last-child { border-bottom: none; }
+  .status-row .grow { flex: 1; min-width: 0; }
+
+  table.machines { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.machines th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted-foreground); padding: 0 10px 6px; }
+  table.machines td { padding: 9px 10px; border-top: 1px solid var(--border); }
+  table.machines tr td:last-child { text-align: right; }
+
+  /* 菜单栏图标菜单的形态参考：不是网页，只是画出来给人对一眼 */
+  .traymock { width: 260px; padding: 5px; font-size: 13px; }
+  .traymock .mi { padding: 5px 10px; border-radius: 5px; }
+  .traymock .mi:hover { background: var(--muted); }
+  .traymock .sep { height: 1px; background: var(--border); margin: 4px 8px; }
+  .traymock .gone { color: var(--muted-foreground); text-decoration: line-through; }
 </style>
 </head>
 <body>
 <div class="app-shell">
   <aside class="sidebar">
-    <div class="brand">handoff</div>
+    <div class="brand">
+      <span>handoff</span>
+      <button class="icon-btn" title="显示偏好">☰</button>
+    </div>
+    <div class="tree-search">
+      <input class="input sm" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
     <div class="tree">
       <div class="tree-group">
-        <div class="tree-label">本机</div>
+        <div class="tree-label machine-row"><span>本机</span></div>
         <a class="tree-item">handoff</a>
         <a class="tree-item">└ 7a8334f4（工作树）</a>
       </div>
       <div class="tree-group">
-        <div class="tree-label">mac-02</div>
+        <div class="tree-label machine-row"><span>mac-02</span></div>
         <a class="tree-item">gokit</a>
       </div>
     </div>
-    <div class="footer">
-      <a href="../index.html">看板</a>
-      <a>工单 <span class="badge">2</span></a>
-      <a class="active" aria-current="page" style="background:var(--muted)">设置</a>
-      <a>＋ 添加项目</a>
+    <div class="dock">
+      <a class="dock-btn" href="../index.html" title="任务看板">▦</a>
+      <a class="dock-btn" href="../index.html" title="工单">✉<span class="badge dock-badge">2</span></a>
+      <button class="dock-btn" style="background:var(--muted);color:var(--foreground)" title="设置">⚙<span class="dot amber"></span></button>
+      <a class="dock-btn" href="../index.html" title="home 基准终端">▭</a>
+      <button class="dock-btn" title="添加项目">＋</button>
     </div>
   </aside>
 
@@ -44,13 +93,88 @@
     <main class="content">
       <div class="settings">
         <nav>
-          <a class="active" data-tab="machines">开发机</a>
+          <a data-tab="machines">开发机</a>
+          <a data-tab="discipline">执行纪律</a>
           <a data-tab="general">常规</a>
           <a data-tab="env">Env 文件</a>
+          <!-- 有可用更新时挂一个琥珀点：不打断，但进设置页就能看见 -->
+          <a class="active" data-tab="update">更新<span class="dot"></span></a>
         </nav>
         <div class="body">
-          <div class="panel-sec" data-panel="machines">
-            <h2 style="margin:0 0 12px;font-size:16px">开发机</h2>
+
+          <!-- ===================== 更新 ===================== -->
+          <div class="panel-sec" data-panel="update">
+            <h2 class="sec-title">更新</h2>
+
+            <div class="sub-title">桌面应用</div>
+            <div class="card upd-hero" id="heroCard">
+              <div class="icon">⬆︎</div>
+              <div class="grow">
+                <div class="vline">
+                  <span id="heroTitle">有新版 v0.3.4 可用</span>
+                  <span class="badge amber" id="heroBadge">可更新</span>
+                </div>
+                <p class="hint" id="heroSub">当前 v0.3.3 · 2026-08-20 发布 · 11.4 MB。下载并校验后会自动打开安装包；把新版拖进「应用程序」再重开一次，agentd 随之同步到同一版本。</p>
+                <details class="notes" id="heroNotes">
+                  <summary>本次变更（4 项）</summary>
+                  <ul>
+                    <li>修复 macOS 桌面端控制台停在「需要登录」</li>
+                    <li>Windows 拉起 agentd 不再重建计划任务</li>
+                    <li>更新提示从菜单栏移到控制台内</li>
+                    <li>升级执行机可在控制台一键完成</li>
+                  </ul>
+                </details>
+                <div class="progress" id="heroProg" hidden><i id="heroBar"></i></div>
+                <div class="actions">
+                  <button class="btn primary" id="heroBtn">下载安装包</button>
+                  <button class="btn sm" id="heroRecheck">重新检查</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint">应用每天检查一次；这里的「重新检查」会立刻问一次，不受每天一次的缓存限制。</p>
+
+            <div class="sub-title">同步状态</div>
+            <div class="card">
+              <div class="status-row">
+                <span class="badge amber">待应用</span>
+                <span class="grow">有更新待应用 —— <strong>2 个任务进行中</strong>，会在它们结束后自动应用。想立刻应用就重开一次桌面端。</span>
+              </div>
+              <div class="status-row">
+                <span class="badge">上次同步</span>
+                <span class="grow dim">2026-08-20 11:46 · 成功 · agentd v0.3.2 → v0.3.3</span>
+              </div>
+            </div>
+            <p class="hint">这些状态原来只在菜单栏里能看到。提示框会自己消失，这里是它们的常驻落点。不给「立即应用」按钮——重开一次桌面端就会重走同步，不必再造第二个入口。</p>
+
+            <div class="sub-title">执行机</div>
+            <div class="card">
+              <table class="machines">
+                <thead>
+                  <tr><th style="width:26%">机器</th><th style="width:20%">agentd 版本</th><th>状态</th><th></th></tr>
+                </thead>
+                <tbody id="machineRows"></tbody>
+              </table>
+            </div>
+            <p class="hint">升级会在对应机器上拉取发布物并重启 agentd；有任务在跑的机器会等它跑完。这条能力原来只有 <code class="mono">handoff upgrade</code> 命令行有，浏览器里够不着。</p>
+
+            <div class="sub-title">参考：菜单栏图标菜单（改造后）</div>
+            <div class="card traymock">
+              <div class="mi">打开控制台</div>
+              <div class="sep"></div>
+              <div class="mi gone">有更新待应用（2 个任务进行中）</div>
+              <div class="mi gone">上次同步失败，查看详情</div>
+              <div class="mi gone">有新版 v0.3.4 可下载</div>
+              <div class="mi gone">升级执行机…</div>
+              <div class="mi gone">（面板里的「强制同步」一并去掉）</div>
+              <div class="sep"></div>
+              <div class="mi">退出（agentd 继续运行）</div>
+            </div>
+            <p class="hint">划掉的移走或删除：三条动态提示改为控制台右下角提示框，「升级执行机」并入本页，强制同步入口直接删掉（重开桌面端等效）。菜单只剩两项，图标本身也换成 logo（现在显示的是「handoff」四个字）。</p>
+          </div>
+
+          <!-- ===================== 其它分区（占位，保持基准形态） ===================== -->
+          <div class="panel-sec" data-panel="machines" hidden>
+            <h2 class="sec-title">开发机</h2>
             <div class="card" style="padding:12px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
               <span class="badge solid">在线</span><strong style="font-size:13px">本机</strong><span class="dim mono" style="font-size:12px">127.0.0.1:7466</span>
             </div>
@@ -59,14 +183,19 @@
               <button class="btn sm" style="margin-left:auto">编辑</button>
             </div>
           </div>
+          <div class="panel-sec" data-panel="discipline" hidden>
+            <h2 class="sec-title">执行纪律</h2>
+            <p class="hint">A/B 版纪律块正文与机器级映射（占位）。</p>
+          </div>
           <div class="panel-sec" data-panel="general" hidden>
-            <h2 style="margin:0 0 12px;font-size:16px">常规</h2>
-            <p class="dim" style="font-size:13px">常规配置项（占位）。</p>
+            <h2 class="sec-title">常规</h2>
+            <p class="hint">常规配置项（占位）。</p>
           </div>
           <div class="panel-sec" data-panel="env" hidden>
-            <h2 style="margin:0 0 12px;font-size:16px">Env 文件</h2>
-            <p class="dim" style="font-size:13px">Env 文件管理（占位）。</p>
+            <h2 class="sec-title">Env 文件</h2>
+            <p class="hint">Env 文件管理（占位）。</p>
           </div>
+
         </div>
       </div>
     </main>
@@ -74,14 +203,94 @@
 </div>
 
 <script>
-  // 设置分区切换
+  // ---- 分区切换；?section=xxx 支持从 toast 的「查看详情」直达 ----
+  function activate(name) {
+    const tab = document.querySelector(`.settings nav a[data-tab="${name}"]`);
+    if (!tab) return;
+    document.querySelectorAll('.settings nav a').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel-sec').forEach(p => p.hidden = true);
+    tab.classList.add('active');
+    document.querySelector(`.panel-sec[data-panel="${name}"]`).hidden = false;
+  }
   document.querySelectorAll('.settings nav a').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.settings nav a').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.panel-sec').forEach(p => p.hidden = true);
-      tab.classList.add('active');
-      document.querySelector(`.panel-sec[data-panel="${tab.dataset.tab}"]`).hidden = false;
-    });
+    tab.addEventListener('click', () => activate(tab.dataset.tab));
+  });
+  activate(new URLSearchParams(location.search).get('section') || 'update');
+
+  // ---- mock 数据：执行机版本 ----
+  // 四行覆盖四种真实状态。后两种是 2026-08-20 真机走查补上的：
+  //   incomparable —— 开发构建的版本戳是提交号，比不出来。它**不是**「已是最新」，
+  //     那样写等于把「我不知道」显示成「你没事」，还会顺手藏掉升级入口
+  //   failing —— 升级会失败（如那台机器出不了网）。失败必须有出口：清掉「升级中」
+  //     并原样显示原因，否则界面会永远转下去
+  const machines = [
+    { name: '本机',     addr: '127.0.0.1:7466',    ver: 'v0.3.3',      state: 'bundled' },
+    { name: 'mac-02',   addr: '192.168.1.42:7466', ver: 'v0.3.1',      state: 'outdated', failing: true },
+    { name: 'win-b37',  addr: '192.168.1.37:7466', ver: 'v0.2.9',      state: 'outdated' },
+    { name: 'linux-01', addr: '192.168.1.11:7466', ver: '7dec31185aaa', state: 'incomparable' },
+  ];
+  const tbody = document.getElementById('machineRows');
+  machines.forEach((m, i) => {
+    const tr = document.createElement('tr');
+    const right = m.state === 'bundled'
+      ? '<span class="dim" style="font-size:12px">随桌面应用一起更新</span>'
+      : `<button class="btn sm" data-up="${i}">升级到 v0.3.4</button>`;
+    const badge = m.state === 'bundled'
+      ? '<span class="badge">与本机应用绑定</span>'
+      : m.state === 'incomparable'
+        ? '<span class="badge">版本无法比较</span>'
+        : '<span class="badge amber">可升级</span>';
+    tr.innerHTML = `<td><strong>${m.name}</strong><div class="dim mono" style="font-size:11.5px">${m.addr}</div></td>
+                    <td class="mono">${m.ver}</td><td>${badge}</td><td>${right}</td>`;
+    tbody.appendChild(tr);
+  });
+  // 升级执行机：原型只走状态动画，不发真实请求
+  tbody.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-up]');
+    if (!btn) return;
+    const row = btn.closest('tr');
+    btn.disabled = true; btn.textContent = '升级中…';
+    const m = machines[Number(btn.dataset.up)];
+    setTimeout(() => {
+      if (m.failing) {
+        // 失败出口：版本不变，按钮回到可点，原因与处置就地摊开
+        row.children[3].innerHTML =
+          `<button class="btn sm" data-up="${machines.indexOf(m)}">升级到 v0.3.4</button>` +
+          '<div style="color:var(--destructive);font-size:11.5px;margin-top:4px;text-align:right">' +
+          '下载 checksums.txt: 尝试 3 次仍失败: i/o timeout</div>';
+        return;
+      }
+      row.children[1].textContent = 'v0.3.4';
+      row.children[2].innerHTML = '<span class="badge">已是最新</span>';
+      row.children[3].innerHTML = '<span class="dim" style="font-size:12px">刚刚升级</span>';
+    }, 1400);
+  });
+
+  // ---- 桌面应用自更新：下载 → 进度 → 即将重启 ----
+  const btn = document.getElementById('heroBtn');
+  const prog = document.getElementById('heroProg'), bar = document.getElementById('heroBar');
+  btn.addEventListener('click', () => {
+    if (btn.dataset.done) { location.reload(); return; }
+    btn.disabled = true; btn.textContent = '下载中…';
+    document.getElementById('heroRecheck').hidden = true;
+    prog.hidden = false;
+    let p = 0;
+    const t = setInterval(() => {
+      p += 9 + Math.floor(Math.random() * 12);
+      bar.style.width = Math.min(p, 100) + '%';
+      if (p >= 100) {
+        clearInterval(t);
+        document.getElementById('heroTitle').textContent = '已下载 v0.3.4';
+        document.getElementById('heroBadge').outerHTML = '<span class="badge solid">待安装</span>';
+        document.getElementById('heroSub').innerHTML = '已校验并在访达中打开：<code class="mono">~/.handoff/downloads/handoff-desktop_v0.3.4_darwin_arm64.dmg</code>。把新版拖进「应用程序」，再重开一次即可。';
+        document.getElementById('heroNotes').hidden = true;
+        btn.textContent = '再次打开'; btn.disabled = false; btn.dataset.done = '1';
+      }
+    }, 260);
+  });
+  document.getElementById('heroRecheck').addEventListener('click', function () {
+    this.disabled = true; this.textContent = '检查中…';
+    setTimeout(() => { this.disabled = false; this.textContent = '重新检查'; }, 900);
   });
 </script>
 </body>

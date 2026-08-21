@@ -34,6 +34,7 @@ import {
 } from '../../api/client'
 import type { DirEntry, SearchHit } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
+import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 import { ContextMenu, type ContextMenuEntry } from '../shared/ContextMenu'
 import { useChangedFiles, type ChangeStatus } from './changedFiles'
@@ -322,10 +323,9 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
   // 落在自身，折叠文件夹只给目录行，Reveal in Finder 只在同机 macOS 时可点。
   const menuItems = (entry: MenuEntry): ContextMenuEntry[] => {
     const dOf = dirOf(entry.rel, entry.isDir)
-    const clipboard = (text: string) => () => {
-      // jsdom 之类环境可能没有 clipboard，写失败也吞掉——复制是尽力而为
-      void navigator.clipboard?.writeText(text).catch(() => {})
-    }
+    // 桌面壳的 WKWebView 里 writeText 会被拒，必须走 copyToClipboard 的
+    // 同步 execCommand 路径（见 lib/clipboard.ts 头注释）
+    const clipboard = (text: string) => () => copyToClipboard(text)
     return [
       { label: '新文件', onSelect: () => setNameDlg({ mode: 'create-file', dirOf: dOf, target: dOf, name: '' }) },
       { label: '新建文件夹', onSelect: () => setNameDlg({ mode: 'create-dir', dirOf: dOf, target: dOf, name: '' }) },

@@ -10,6 +10,7 @@ import {
   fetchTasks,
   saveDisciplineFile,
   saveDisciplineMapping,
+  upgradeMachine,
   writeWorkspaceFile,
 } from './client'
 
@@ -71,6 +72,14 @@ describe('fetchTasks', () => {
   it('tasks 缺失时返回空数组而不是 null', async () => {
     stubFetch(200, { machines: [] })
     await expect(fetchTasks()).resolves.toEqual([])
+  })
+})
+
+describe('upgradeMachine', () => {
+  it('按机器名编码路径，并用 force=1 请求强制升级', async () => {
+    const fetchMock = mockFetchJSON({ accepted: true, verdict: 'needs_upgrade', forcible: false })
+    await upgradeMachine('mac 02', true)
+    expect(fetchMock).toHaveBeenCalledWith('/api/machines/mac%2002/upgrade?force=1', expect.objectContaining({ method: 'POST' }))
   })
 })
 

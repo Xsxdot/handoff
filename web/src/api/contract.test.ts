@@ -41,6 +41,8 @@ import frameFixture from './testdata/Frame.json'
 import envRespFixture from './testdata/EnvResp.json'
 import envKeysFixture from './testdata/EnvKeysResp.json'
 import envMappingReqFixture from './testdata/EnvMappingReq.json'
+import workbenchBaseFixture from './testdata/WorkbenchBase.json'
+import workbenchStateFixture from './testdata/WorkbenchStateResp.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
@@ -70,6 +72,8 @@ import {
   type TaskPlan,
   type TasksResp,
   type Ticket,
+  type WorkbenchBaseRow,
+  type WorkbenchStateResp,
 } from './types'
 
 describe('契约 fixture 与 TS 类型', () => {
@@ -373,5 +377,22 @@ describe('缺省执行者契约', () => {
     // 缺了这个键，前端就没法表达「清空默认模型」——只能表达「不改」
     expect('model' in executorDefaultReqFixture).toBe(true)
     expect((executorDefaultReqFixture as ExecutorDefaultReq).model).toBe('')
+  })
+})
+
+describe('工作台状态契约', () => {
+  it('WorkbenchStateResp 的 payload 是字符串而不是嵌套对象', () => {
+    const base: WorkbenchBaseRow = workbenchBaseFixture
+    expect(typeof base.base_key).toBe('string')
+    // 这条断言是本用例存在的理由：payload 一旦被写成嵌套对象，
+    // persist.ts 里的 JSON.parse 会在运行时炸，而 typecheck 未必拦得住
+    expect(typeof base.payload).toBe('string')
+    expect(typeof base.updated_at).toBe('number')
+
+    const state: WorkbenchStateResp = workbenchStateFixture
+    expect(typeof state.selected).toBe('string')
+    expect(typeof state.dock).toBe('string')
+    expect(Array.isArray(state.bases)).toBe(true)
+    expect(typeof state.bases[0].payload).toBe('string')
   })
 })

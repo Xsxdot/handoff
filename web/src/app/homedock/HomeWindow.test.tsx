@@ -21,6 +21,22 @@ describe('HomeWindow', () => {
     expect(screen.queryByTestId('content-b')).toBeNull()
   })
 
+  // 本窗是浅色控制台里的一块深色表面，放进来的 tab 用主题令牌上色。
+  // 两个类缺一不可：dark 换令牌档，text-foreground 才真的把颜色写下来供继承——
+  // 只有 dark 时 textarea 会一路继承到 body 上那个浅色主题的近黑色，
+  // 落在深色底上等于隐形（走查实测：新建文件后正文看不见）。
+  //
+  // **这条只钉住两个类还在，钉不住「渲染出来对比度够」**：jsdom 不编译 Tailwind，
+  // 算不出真实颜色。真实颜色是在浏览器里量的（textarea 的 color 从 oklch(0.196)
+  // 变成 oklch(0.804)），那次验证记在提交信息里。
+  it('窗口根节点带 dark 与 text-foreground，主题令牌才落得到子 tab 上', () => {
+    const { container } = render(<HomeWindow {...base()} />)
+    const root = container.querySelector('section')
+    expect(root).not.toBeNull()
+    expect(root!.className).toContain('dark')
+    expect(root!.className).toContain('text-foreground')
+  })
+
   it('收起走 onCollapse，不走 onKill', () => {
     const p = base()
     render(<HomeWindow {...p} />)

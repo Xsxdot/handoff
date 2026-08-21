@@ -26,12 +26,13 @@ vi.mock('../../api/client', async () => {
     fetchTaskDetail: vi.fn(),
     fetchTaskDiff: vi.fn(),
     fetchPtySessions: vi.fn(),
+    fetchWorkbenchState: vi.fn(),
     fetchMachines: vi.fn(),
     deletePtySession: vi.fn(),
     createPtySession: vi.fn(),
   }
 })
-const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchMachines, deletePtySession, createPtySession } = await import('../../api/client')
+const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchWorkbenchState, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
 // 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
 const termInstance = {
@@ -156,6 +157,7 @@ beforeEach(() => {
   })
   vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: '' })
   vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+  vi.mocked(fetchWorkbenchState).mockResolvedValue({ selected: '', dock: '', bases: [] })
   // 本机上报支持 PTY：能力门在既有用例里必须是「放行」，否则一堆无关用例
   // 会因为终端项被收起而失败。Machine 其余字段按 /api/machines 契约给全，
   // 否则 /settings 里的 MachineDetail 会在 machine.executors 上崩
@@ -180,7 +182,7 @@ beforeEach(() => {
   vi.mocked(createPtySession).mockResolvedValue({
     id: 'new-1', machine: '', base_path: '~', base_kind: 'home', shell: '',
     created_at: '', cols: 100, rows: 30, attached: 0, pid: 0,
-    foreground: false, bytes_out: 0,
+    foreground: false, incompatible: false, bytes_out: 0,
   })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
 })
@@ -338,8 +340,8 @@ describe('Shell 三栏外框', () => {
   it('恢复时 home 会话进浮窗、工作树会话进中央', async () => {
     vi.mocked(fetchPtySessions).mockResolvedValue({
       sessions: [
-        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false },
-        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false },
+        { id: 's-home', base_kind: 'home', base_path: '~', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 1, bytes_out: 0, foreground: false, incompatible: false },
+        { id: 's-ws', base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh', created_at: '2026-08-12T00:00:00Z', cols: 120, rows: 40, attached: 0, pid: 2, bytes_out: 0, foreground: false, incompatible: false },
       ],
     })
     renderShell()
@@ -406,5 +408,76 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
     expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
+  })
+})
+
+// liveSession 造一条「这个会话还活着」的列表项，只有 id 有意义。
+const liveSession = (id: string) => ({
+  id, base_kind: 'workspace', base_path: '/repo/x', machine: '', shell: '/bin/zsh',
+  created_at: '2026-08-20T00:00:00Z', cols: 120, rows: 40, attached: 1, pid: 9,
+  bytes_out: 0, foreground: false, incompatible: false,
+})
+
+describe('关闭一个服务端已经没有的终端会话', () => {
+  // 场景：agentd 重启后内存里的会话全没了，页面上的终端 tab 变成死物。用户点 ×
+  // 确认关闭时 DELETE 会拿到 404，如果照「删失败就不关 tab」处理，这个 tab 就被
+  // 焊死在界面上——关不掉、也没有第二个出口。
+  //
+  // 造场景：在中央开一个终端 tab（会话 id 由 createPtySession 桩给出），再让
+  // deletePtySession 抛 404。
+  const openTerminalTab = async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    // 等 TerminalTab 把会话 id 回报上来，否则 × 走的是「还没有会话」那条直接关的路
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    return await screen.findByRole('button', { name: /关闭 bash/ })
+  }
+
+  it('DELETE 返回 404 时照样关掉 tab——要杀的东西已经不在了', async () => {
+    // agentd 重启后的现场：列表里一个会话都没有，DELETE 也只会 404
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+    vi.mocked(deletePtySession).mockRejectedValue(new ApiError(404, '终端会话 new-1 不存在'))
+    const closeBtn = await openTerminalTab()
+
+    fireEvent.click(closeBtn)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '关闭' }))
+
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /bash/ })).not.toBeInTheDocument())
+    expect(screen.queryByText(/不存在/)).toBeNull()
+  })
+
+  it('DELETE 返回 500 时仍然不关 tab——会话可能还活着，不能从视野里抹掉', async () => {
+    // 这一路会话确实还在（探测答得出来），删失败就是真失败
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('new-1')] })
+    vi.mocked(deletePtySession).mockRejectedValue(new ApiError(500, 'kill 失败'))
+    const closeBtn = await openTerminalTab()
+
+    fireEvent.click(closeBtn)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+
+    expect(await screen.findByText(/kill 失败/)).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /bash/ })).toBeInTheDocument()
+  })
+})
+
+describe('会话已经不在时弹层要说实话', () => {
+  it('服务端查不到这个会话时，弹层不再说「会终止正在运行的命令」', async () => {
+    // 探测答「一个会话都没有」= agentd 重启后的现场
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: /关闭 bash/ }))
+    expect(await screen.findByText(/在服务端已经不存在了/)).toBeInTheDocument()
+    expect(screen.queryByText(/会被一并结束/)).toBeNull()
+    // 没有东西可终止，按钮就不该再叫「关闭并终止」
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument()
   })
 })

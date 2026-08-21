@@ -86,7 +86,7 @@ handoff service install
 handoff service status
 ```
 
-`init` 选了执行机角色时会顺带问你要不要装，答 y 即就地装好。**不托管的 agentd 重启后不会自己回来**，而且它的 PATH 取决于启动它的那个 shell——「重启后第一次派发报 executor 未安装」多半是这个原因。托管后 Ctrl-C 停不掉它（会被自动拉回），要停用 `handoff service uninstall`。
+`init` 选了执行机角色时会顺带问你要不要装，答 y 即就地装好。**不托管的 agentd 重启后不会自己回来**，而且它的 PATH 取决于启动它的那个 shell——「重启后第一次派发报 executor 未安装」多半是这个原因。托管后 Ctrl-C 停不掉它（会被自动拉回）：改完配置让它生效用 `handoff service restart`，临时停掉用 `handoff service stop`（会一直停到 `handoff service start`，重启机器也不会自己回来），彻底摘掉托管用 `handoff service uninstall`。
 
 **只当协调机时不需要本机 agentd**：派发、`wait`、`reply`、`diff`、`attach` 全部直连目标机的 agentd。首次给一个新项目派发时，CLI 会顺带把项目也登记到本机一份（用于 `handoff project ls` 的本机项目树）；本机没有 agentd 时这一跳自动跳过并提示，不影响派发本身。
 
@@ -127,7 +127,9 @@ handoff done <task> --note "已验收"        # 满意：归档并回收 executo
 
 - **同一局域网 / 内网**：直接连，`targets` 里写内网 IP 即可。
 - **跨网络**：用 Tailscale、WireGuard 这类组网工具把两台机器拉进同一张虚拟内网，`targets` 里写虚拟网卡 IP。
-- **云服务器中转连接**：即将推出——届时无法组网的两台机器也能经中转互联。
+- **云服务器中转连接**：已可用。两台机器无法组网时，执行机主动拨 relay，协调机的
+  HTTP/WS 流经 relay 转发；relay 只能看到控制元数据和不可读的 E2E 密文，不接触
+  handoff token，也不保存隧道载荷。生产环境请使用 `wss://`。
 
 执行机的 `listen` 分三档：
 
@@ -135,7 +137,7 @@ handoff done <task> --note "已验收"        # 满意：归档并回收 executo
 - **单网卡 IP（如 Tailscale 的 `100.x.y.z:7777`）**：只把 agentd 暴露给这一块网卡，安全面比 `0.0.0.0` 小。agentd 会自动追加一个 `127.0.0.1:同端口` 的辅助监听，本机命令始终走 loopback，不随网卡状态起伏。已知限制：该 IP 不在时（组网工具掉线期间重启、开机早于组网工具）agentd 起不来，托管形态下由 launchd/systemd 反复拉起，等 IP 回来自动就绪。
 - **`0.0.0.0:7777`**：全网卡，接受任意网卡方向的远程派发。
 
-**安全红线：把 agentd 暴露到网卡上（后两档）之前，确认这台机器没有直接暴露在公网。** agentd 是明文 HTTP/WS + Bearer token 鉴权、没有 TLS：公网上 token 在传输中可被截获，而拿到 token 就等于能在执行机上派发任意代码执行。家庭/办公内网（NAT 之后）或虚拟组网环境里开 `0.0.0.0` 是预期用法；带公网 IP 的云主机现阶段不要当执行机（或用防火墙把端口收窄到内网/虚拟网段），等云中转连接推出后再上。
+**安全红线：把 agentd 暴露到网卡上（后两档）之前，确认这台机器没有直接暴露在公网。** 直连 agentd 是明文 HTTP/WS + Bearer token 鉴权、没有 TLS：公网上 token 在传输中可被截获，而拿到 token 就等于能在执行机上派发任意代码执行。家庭/办公内网（NAT 之后）或虚拟组网环境里开 `0.0.0.0` 是预期用法；跨公网时改用下面的 `wss://` relay，载荷经 E2E 加密。
 
 ## 远程执行机
 
@@ -152,6 +154,36 @@ targets:
     token: "<执行机的 token>"
     user: "<远程 ssh 用户名>"    # 与本机用户名一致时可省略；pull 走 ssh 要用它
 ```
+
+### 云 relay
+
+协调机无法直达执行机的 agentd 端口时，改用 relay target。执行机的 `relay` 段使用
+register 凭证，协调机 target 使用另一把 connect 凭证；两把凭证不能混用。两端仍以
+执行机 token 作为 E2E 密钥源，因此 relay 只看到控制凭证和加密后的隧道流量。
+
+执行机配置：
+
+```yaml
+relay:
+  url: "wss://relay.example.com/relay"
+  credential: "<register 凭证>"
+  node: "devbox"
+```
+
+协调机配置：
+
+```yaml
+targets:
+  devbox:
+    relay: "wss://relay.example.com/relay"
+    credential: "<connect 凭证>"
+    node: "devbox"
+    token: "<执行机 token>"
+```
+
+relay 形态与 `addr` 互斥，并要求高熵 token（`handoff init` 生成的 token 默认符合）。
+relay 模式下 `handoff pull` 走隧道内的 Bundle HTTP 端点，不走 git-over-SSH。
+`ws://` 仅供本机 relay 测试，生产必须使用 `wss://`。
 
 **3. 派发**：
 
@@ -170,6 +202,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 |------|------|----------|
 | `handoff init` | 探测 executor、交互式生成/更新配置（幂等） | — |
 | `handoff service install\|uninstall\|status` | agentd 交给 launchd / systemd 托管 | — |
+| `handoff service start\|stop\|restart` | 起停/重启已托管的 agentd（`stop` 会一直停到 `start`） | — |
 | `handoff agentd` | 前台启动 agentd（开发/调试用，日常走 service） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
 | `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal` |
 | `handoff wait <task>` | 阻塞等下一个需要你的事件 | `--follow`(持续订阅到任务终结)；`--notify`；`--timeout <时长>`；`--no-sync` |
@@ -381,9 +414,8 @@ rm ~/.local/bin/handoff
 rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了再删
 ```
 
-## 即将推出
+## 后续计划
 
-- **云服务器中转连接**：无法内网组网的协调机与执行机经云端中转互联。
 - **桌面端**：图形界面查看与操作任务，不再只有 CLI。
 
 ## 文档
@@ -393,6 +425,16 @@ rm -rf ~/.handoff        # 含配置、任务数据与日志，确认不要了�
 - systemd 手工部署模板：[deploy/handoff-agentd.service](deploy/handoff-agentd.service)（注意模板中 `KillMode=process` 是硬要求：它保证重启 agentd 不杀正在跑的 executor）
 - 参与贡献（本地怎么跑、提交前要过哪几道门）：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 安全策略与威胁模型（**漏洞请走私密通道，不要开公开 issue**）：[SECURITY.md](SECURITY.md)
+
+## 交流群
+
+扫码加入 **Handoff Coding 交流群**，聊使用问题、踩坑和想法：
+
+<p align="center">
+  <img src="docs/assets/wechat-group.jpg" width="280" alt="Handoff Coding 交流群二维码">
+</p>
+
+微信群二维码通常 7 天内有效。扫不进去或提示过期时，开个 [issue](https://github.com/Xsxdot/handoff/issues) 提醒更新即可。
 
 ## 友情链接
 

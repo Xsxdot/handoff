@@ -1,0 +1,32 @@
+<!--
+  控制台运行时用的品牌标志副本。源文件是 docs/assets/handoff-mark.svg；
+  改图形只改源文件，再拷到这里。vite 把 public/ 原样放到站点根路径。
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="512"
+  height="512"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="handoff-mark-title handoff-mark-description"
+>
+  <title id="handoff-mark-title">handoff</title>
+  <desc id="handoff-mark-description">
+    深色协调者形状把任务向右交给靛蓝色执行者形状，两者共同构成字母 H。
+  </desc>
+
+  <!-- 固定浅色底保证同一文件在 GitHub 明暗主题下保持一致的品牌色。 -->
+  <rect width="512" height="512" rx="104" fill="#FAFAF7" />
+
+  <!-- 左侧伸出的箭头代表协调者交出实现任务。 -->
+  <path
+    fill="#11131A"
+    d="M146 96H196C215 96 230 111 230 130V198H264L330 256L264 314H230V382C230 401 215 416 196 416H146C127 416 112 401 112 382V130C112 111 127 96 146 96Z"
+  />
+
+  <!-- 右侧凹口为箭头保留稳定间距，表达执行者接收而不是简单的播放符号。 -->
+  <path
+    fill="#5457E8"
+    d="M322 96H382C401 96 416 111 416 130V382C416 401 401 416 382 416H322C303 416 288 401 288 382V330L350 256L288 182V130C288 111 303 96 322 96Z"
+  />
+</svg>

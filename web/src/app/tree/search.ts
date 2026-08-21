@@ -14,6 +14,7 @@
 // 组件里只能靠渲染断言间接测。仓库既有同款模式——board/filter.ts（看板
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
 import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import { archivedKey, archivedTasks } from './archived'
 
 // TreeFilter 是一次过滤的完整结果。projects 已按可见性裁剪，
 // 调用方直接遍历即可，不需要再判一次。
@@ -94,6 +95,10 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
     }
   }
 
+  // 已结束任务的目录已被回收，不在任何 workspace 下，但它们仍是机器节点的后代。
+  // 不算进去的话，搜一个已回收任务名会得到「没有匹配」——分组存在的意义就没了。
+  const archived = archivedTasks(tree, tasks)
+
   const projects: ProjectNode[] = []
   for (const project of tree.projects) {
     const projectHit = hit(project.name, q)
@@ -101,6 +106,8 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
     const locations: ProjectLocationNode[] = []
     for (const loc of project.locations) {
       const machineHit = projectHit || hit(machineText(loc.machine), q)
+      const archivedHit = (archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
+        .some((t) => hit(taskText(t), q))
 
       // 项目或机器自身命中 → 整层目录原样保留；否则逐个目录判
       const workspaces = machineHit
@@ -110,7 +117,7 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
             tasksOfWorkspace(tasks, project, loc.machine, ws).some((t) => hit(taskText(t), q)),
           )
 
-      if (machineHit || workspaces.length > 0) locations.push({ ...loc, workspaces })
+      if (machineHit || workspaces.length > 0 || archivedHit) locations.push({ ...loc, workspaces })
     }
 
     if (projectHit || locations.length > 0) projects.push({ ...project, locations })

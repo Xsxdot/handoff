@@ -85,6 +85,26 @@ export interface Ticket {
   delivered_at?: string
 }
 
+// WorkbenchBaseRow / WorkbenchStateResp 与 internal/proto/workbench.go 对应，两边一起改。
+//
+// payload 是**字符串**而不是嵌套对象：agentd 不解析它，所以线上就是一段序列化好的
+// JSON 文本。解析与逐字段校验全部在 app/workbench/persist.ts 里做。
+
+// WorkbenchBaseRow 是一个基准目录的持久化状态行。
+export interface WorkbenchBaseRow {
+  base_key: string
+  payload: string
+  updated_at: number // 毫秒时间戳
+}
+
+// WorkbenchStateResp 是 GET /api/workbench/state 的响应。
+// selected / dock 没有内容时是空串（不是缺键）。
+export interface WorkbenchStateResp {
+  selected: string
+  dock: string
+  bases: WorkbenchBaseRow[]
+}
+
 // ProjectLocation 是一条「项目 × 机器」位置记录：项目在本机的那一个工作副本
 // （B62 的 project_locations 表）。GET /api/projects 返回它的数组，
 // POST /api/projects 登记成功时 200 返回单条。
@@ -191,6 +211,8 @@ export interface CreateWorktreeReq {
 export interface Machine {
   name: string              // ""=本机
   addr: string
+  // relay 节点名；空=直连形态。与 addr 互斥（配置层保证）。
+  relay?: string
   reachable: boolean
   version: string
   executors: string[]
@@ -205,6 +227,8 @@ export interface Machine {
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
   reveal_supported?: boolean | null
+  // upgrade 是这台机器最近一次升级的状态；本机恒缺席（本机版本走薄壳同步路）。
+  upgrade?: MachineUpgrade
   // scratch_root 是这台机器的草稿区路径，探活时从对端 StatusResp 投影。
   // 缺席 = 不支持临时文件（老 agentd 或目录建不出来），前端不渲染入口。
   scratch_root?: string
@@ -228,8 +252,35 @@ export interface ExecutorDefaultReq {
   model: string
 }
 
+// MachineUpgrade 是一台执行机最近一次升级的状态（GET /api/machines 的 upgrade 段）。
+//
+// 升级没有进度流：中途只进 agentd 日志。这一段给的是**终态**，也是失败唯一的出口——
+// 失败时机器版本不会变，只靠「版本变成最新」判定结束的界面会永远停在「升级中」。
+//
+// 三态：缺席 = 那个 agentd 进程内没发起过升级（重启即回到缺席，**不等于没失败过**）；
+// running=true = 在跑，其余字段是上一轮的；running=false = 已结束，status 是终态。
+export interface MachineUpgrade {
+  running: boolean
+  status?: string   // ok / skip / fail
+  verdict?: string
+  reason?: string
+  remedy?: string
+  from?: string
+  to?: string
+}
+
 export interface MachinesResp {
   machines: Machine[]
+}
+
+// MachineUpgradeResp 是 POST /api/machines/{name}/upgrade 的响应。
+export interface MachineUpgradeResp {
+  accepted: boolean
+  verdict: string
+  reason?: string
+  remedy?: string
+  forcible: boolean
+  busy?: number
 }
 
 // AddMachineReq 是 POST /api/machines 的请求体。
@@ -609,6 +660,7 @@ export interface PtySession {
   attached: number
   pid: number
   exit_code?: number
+  incompatible: boolean // 进程仍活着，但本版协议无法接入；直接给「重开一个终端」出口
   foreground: boolean    // 有前台命令在跑，控制台据此在关 tab 前先确认
   bytes_out: number      // /ws/pty 的 since 水位
 }
@@ -696,3 +748,29 @@ export interface CodegraphResp {
   stale: CgStaleNode[]
 }
 export interface CgSourceResp { file: string; from: number; lines: string[] }
+// DesktopState / LatestResp / DownloadState 与 internal/proto/desktop.go 对应，
+// 两边一起改。字段名严格跟随 Go 的 json tag，避免薄壳状态在 agentd 中转时漂移。
+
+// DesktopState 是桌面薄壳上报给 agentd、再供控制台读取的自身状态。
+export interface DesktopState {
+  app_version: string
+  sync_plan: string
+  sync_busy: number
+  sync_error?: string
+}
+
+// LatestResp 是 GET /api/update/latest 的最新版本查询结果。
+export interface LatestResp {
+  tag: string
+  checked_at?: string
+}
+
+// DownloadState 是桌面端安装包下载的进度与结果。
+export interface DownloadState {
+  stage: string
+  tag?: string
+  percent: number
+  path?: string
+  opened: boolean
+  error?: string
+}

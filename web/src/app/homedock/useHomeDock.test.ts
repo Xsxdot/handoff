@@ -163,3 +163,58 @@ describe('浮窗首次打开才定位', () => {
     expect(result.current.geom).toEqual({ x: 200, y: 150, w: 500, h: 300 })
   })
 })
+
+describe('hydrate', () => {
+  it('hydrate 之后新建 tab 不与恢复出来的撞 id / seq', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() =>
+      result.current.hydrate({
+        tabs: [
+          { id: 'h1', kind: 'terminal', seq: 1, sessionId: 'S1', machine: '' },
+          { id: 'h5', kind: 'terminal', seq: 7, machine: '' },
+        ],
+        activeId: 'h5',
+        windowOpen: true,
+        geom: { x: 100, y: 100, w: 620, h: 340 },
+        maximized: false,
+      }),
+    )
+    expect(result.current.tabs).toHaveLength(2)
+    expect(result.current.windowOpen).toBe(true)
+    expect(result.current.activeId).toBe('h5')
+
+    act(() => result.current.newTerminal())
+    const fresh = result.current.tabs[2]
+    // id 必须跳过已恢复的 h5
+    expect(result.current.tabs.map((t) => t.id)).toHaveLength(new Set(result.current.tabs.map((t) => t.id)).size)
+    expect(fresh.id).toBe('h6')
+    // seq 必须跳过已恢复的 7
+    expect(fresh.seq).toBe(8)
+  })
+
+  it('adopt 进来的 sessionId 形 id 不参与播种', () => {
+    const { result } = renderHook(() => useHomeDock())
+    act(() =>
+      result.current.hydrate({
+        // 孤儿会话被 adopt 时 id 就是 sessionId（见 Shell 的调用），不是 h<n> 形状
+        tabs: [{ id: '7ec762e7-3bd2-412c-a39c-e4cf8b4057ad', kind: 'terminal', seq: 3, sessionId: 'S9', machine: '' }],
+        activeId: '7ec762e7-3bd2-412c-a39c-e4cf8b4057ad',
+        windowOpen: false,
+        geom: { x: 10, y: 40, w: 620, h: 340 },
+        maximized: false,
+      }),
+    )
+    act(() => result.current.newTerminal())
+    expect(result.current.tabs[1].id).toBe('h1')
+    expect(result.current.tabs[1].seq).toBe(4)
+  })
+
+  it('hydrate 之后再打开浮窗不会把恢复的位置冲掉', () => {
+    const { result } = renderHook(() => useHomeDock())
+    const geom = { x: 123, y: 234, w: 620, h: 340 }
+    act(() => result.current.hydrate({ tabs: [], activeId: null, windowOpen: false, geom, maximized: false }))
+    // newTerminal 内部会 openWindow；placed 已被 hydrate 置 true，不该重摆
+    act(() => result.current.newTerminal())
+    expect(result.current.geom).toEqual(geom)
+  })
+})

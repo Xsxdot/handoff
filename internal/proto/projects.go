@@ -110,6 +110,11 @@ type Machine struct {
 	// Name 为 ""=本机（与 tasks.target 的空串语义一致；UI 显示「本机」）。
 	Name string `json:"name"`
 	Addr string `json:"addr"`
+	// Relay 是这台机器的 relay 节点名；空=直连形态。
+	//
+	// 为什么需要它：relay 形态与 addr 互斥，中继机器的 Addr 恒为空，界面上
+	// 那张卡片会一个身份标识都没有。前端在 Addr 为空时用它显示「中继 · <node>」。
+	Relay string `json:"relay,omitempty"`
 	// Reachable=false 时 Error 必非空。
 	Reachable bool   `json:"reachable"`
 	Version   string `json:"version"`
@@ -136,9 +141,41 @@ type Machine struct {
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`
 
+	// Upgrade 是这台机器最近一次升级的状态（本机恒缺席：本机版本走薄壳同步路）。
+	// 缺席=本 agentd 进程内没发起过升级；读法见 MachineUpgrade 的三态说明。
+	Upgrade *MachineUpgrade `json:"upgrade,omitempty"`
+
 	// ScratchRoot 是这台机器的草稿区路径，探活时从它的 StatusResp 投影而来。
 	// 空串（omitempty 后为缺席）= 这台机器不支持临时文件，前端不渲染入口。
 	ScratchRoot string `json:"scratch_root,omitempty"`
+}
+
+// MachineUpgrade 是一台执行机最近一次升级的状态，随 GET /api/machines 一起返回。
+//
+// 为什么需要它：升级**没有进度流**，这是刻意的——完成的判据就是这台机器的
+// version 变成了最新。但那只覆盖成功路径：失败时版本压根不会变，控制台按钮上的
+// 「升级中」就永远清不掉，而后端其实早已放弃（真机实测：agentd 三分钟前就记下
+// 「下载 checksums.txt 超时」，界面还在转）。这一段把**终态**交回控制台，
+// 补的是出口，不是进度流。
+//
+// 三态读法：
+//
+//	nil            = 这台机器本进程内从未发起过升级（agentd 重启即回到 nil）
+//	Running=true   = 正在升级；其余字段是上一轮的结果，可能全空
+//	Running=false  = 已结束，Status 为终态
+//
+// **nil 不许当「没失败」用**：它只说明这个 agentd 不知道，不说明没发生过。
+type MachineUpgrade struct {
+	Running bool `json:"running"`
+	// Status 是终态：ok / skip / fail；从未跑完时为空。
+	Status  string `json:"status,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
+	// Reason / Remedy 原样透传 internal/upgrade 的结论，不在这里重新措辞。
+	Reason string `json:"reason,omitempty"`
+	Remedy string `json:"remedy,omitempty"`
+	// From / To 仅在 Status==ok 时有值。
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 }
 
 // MachinesResp 是 GET /api/machines 的响应信封。

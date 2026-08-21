@@ -97,7 +97,10 @@ If you picked the executor-machine role in `init`, it offers to install the serv
 there — answer y and it's done. **An unmanaged agentd does not come back after a reboot**,
 and its PATH depends on whichever shell started it — "first dispatch after reboot says the
 executor is not installed" is usually exactly this. Once managed, Ctrl-C won't kill it (it
-gets pulled right back up); to stop it, use `handoff service uninstall`.
+gets pulled right back up): to make a config change take effect, use `handoff service
+restart`; to stop it for a while, use `handoff service stop` (it stays down until
+`handoff service start` — a reboot won't bring it back); to remove the management entirely,
+use `handoff service uninstall`.
 
 **A machine that only coordinates does not need a local agentd**: dispatch, `wait`,
 `reply`, `diff`, and `attach` all talk directly to the target machine's agentd. The first
@@ -215,8 +218,10 @@ executor machine's agentd port**. Pick a connectivity option by environment:
 - **Same LAN / intranet**: connect directly; put the intranet IP in `targets`.
 - **Across networks**: use Tailscale, WireGuard, or a similar overlay to pull both
   machines into one virtual network; put the virtual interface IP in `targets`.
-- **Cloud relay**: coming soon — two machines that can't share a network will connect
-  through a relay.
+- **Cloud relay**: available when the two machines cannot share a network. The executor
+  dials the relay and the coordinator opens HTTP/WS streams through it; the relay forwards
+  control metadata and opaque E2E ciphertext, but does not receive the handoff token or
+  persist tunnel payloads. Use `wss://` in production.
 
 The executor machine's `listen` has three settings:
 
@@ -237,7 +242,7 @@ intercepted in transit, and holding the token equals dispatching arbitrary code 
 on the executor machine. Home/office networks (behind NAT) and virtual overlay networks
 are the intended places to run `0.0.0.0`; a cloud host with a public IP should not be an
 executor machine at this stage (or firewall the port down to the intranet/overlay
-segment) — wait for the cloud relay.
+segment) — or use the E2E-encrypted cloud relay described below.
 
 ## Remote Executor Machine
 
@@ -283,6 +288,37 @@ web:                          # 浏览器控制台 Host 白名单
     - handoff.example.com
 ```
 
+### Cloud relay configuration
+
+Use a relay target when the coordinator cannot reach the executor's agentd port directly.
+The executor's `relay` block uses its register credential; the coordinator's target uses a
+separate connect credential. Both sides use the executor token as the E2E key source, so the
+relay only sees the control credential and encrypted tunnel traffic.
+
+On the executor:
+
+```yaml
+relay:
+  url: "wss://relay.example.com/relay"
+  credential: "<register credential>"
+  node: "devbox"
+```
+
+On the coordinator:
+
+```yaml
+targets:
+  devbox:
+    relay: "wss://relay.example.com/relay"
+    credential: "<connect credential>"
+    node: "devbox"
+    token: "<executor token>"
+```
+
+`relay` and `addr` are mutually exclusive. Relay mode requires a high-entropy token (the
+normal `handoff init` token qualifies), and `handoff pull` uses the Bundle HTTP endpoint
+through the tunnel instead of git-over-SSH. `ws://` is supported only for a local relay test.
+
 **3. Dispatch**:
 
 ```bash
@@ -313,6 +349,7 @@ log states which path this run used.
 |------|------|----------|
 | `handoff init` | Detect executors, generate/update config interactively (idempotent) | — |
 | `handoff service install\|uninstall\|status` | Put agentd under launchd / systemd management | — |
+| `handoff service start\|stop\|restart` | Start / stop / restart the managed agentd (`stop` stays down until `start`) | — |
 | `handoff agentd` | Run agentd in the foreground (development/debugging; day-to-day use goes through service) | `--executor=opencode\|claude\|grok\|codex\|fake` (default opencode) |
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
 | `handoff wait <task>` | Block until the next event that needs you (`--until-done` waits silently for the archive instead) | `--follow` (keep subscribing until the task ends); `--until-done` (dependency latch, prints only the `archived` event; mutually exclusive with `--follow`); `--notify`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget, `--until-done` = total budget); `--no-sync` |
@@ -615,10 +652,8 @@ rm ~/.local/bin/handoff
 rm -rf ~/.handoff        # includes config, task data and logs — delete only once you're sure
 ```
 
-## Coming Soon
+## Roadmap
 
-- **Cloud relay**: coordinator and executor machines that can't share a network connect
-  through a cloud relay.
 - **Desktop app**: view and operate tasks in a GUI, not just the CLI.
 
 ## Documentation
@@ -636,6 +671,17 @@ rm -rf ~/.handoff        # includes config, task data and logs — delete only o
   [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security policy and threat model (Chinese; **report vulnerabilities through the private
   channel, not a public issue**): [SECURITY.md](SECURITY.md)
+
+## Community
+
+Scan the QR code to join the **Handoff Coding** WeChat group:
+
+<p align="center">
+  <img src="docs/assets/wechat-group.jpg" width="280" alt="Handoff Coding WeChat group QR code">
+</p>
+
+WeChat group QR codes expire after 7 days. If it no longer scans, open an
+[issue](https://github.com/Xsxdot/handoff/issues) and we'll refresh it.
 
 ## Links
 

@@ -44,6 +44,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/webui"
 	"github.com/coder/websocket"
 )
@@ -72,10 +73,10 @@ const maxUpdateBytes = 100 << 20
 
 // Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。
 //
-// 并发安全：**除 cfg 外**所有字段只读（构造后不变），hub 自身线程安全。
+// 并发安全：**除 cfg 与升级槽位外**所有字段只读（构造后不变），hub 自身线程安全。
 // cfg 是可变的——控制台增删开发机会整体换掉它（写时复制），因此一律经
 // s.conf() 读取；**禁止再引入直接持有 *config.Config 的字段**，那会让
-// 同样的错误从编译错误退化成静默竞态。
+// 同样的错误从编译错误退化成静默竞态。升级槽位由 upgradeMu 保护。
 type Server struct {
 	cfg atomic.Pointer[config.Config]
 	// cfgMu 只序列化写入方（swapConf）。读取方走 atomic 快照，不加锁。
@@ -102,6 +103,15 @@ type Server struct {
 	sessionRecheck time.Duration
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
+	// latestFetch 查 GitHub latest release；更新提示与下载共用 selfupdate 缓存。
+	latestFetch func(context.Context) (release.Release, error)
+	// downloadMu 保护下载状态快照；下载 I/O 不持锁，否则 GET 进度会被阻塞。
+	downloadMu       sync.Mutex
+	downloadState    *proto.DownloadState
+	downloadChecksum func(context.Context, string, string) (string, error)
+	downloadFetch    func(context.Context, string, string) ([]byte, string, error)
+	downloadOpen     func(string) error
+	downloadPlatform func() (string, string)
 	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
 	pull *pullTracker
 	// pullBaseCtx 是后台自拉的基准上下文。
@@ -112,10 +122,30 @@ type Server struct {
 	pullBaseCtx context.Context
 	// restart 触发优雅关停，由 cmd/agentd.go 注入 Shutdown.Trigger。
 	// nil 表示未注入（只会发生在测试或 bootstrap 顺序出错时）
-	restart func(reason string) bool
-	// pty 是本机 PTY 终端会话的持有者。会话只在内存里，随 agentd 生死
-	//（spec §3.1）——重启后列表为空，前端如实显示，不假装。
-	pty *ptyhost.Host
+	restart     func(reason string) bool
+	pty         *ptyhost.Host
+	ptyRootPath string
+	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
+	desktopMu    sync.Mutex
+	desktopState *proto.DesktopState
+	desktopAt    time.Time
+	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
+	desktopNow func() time.Time
+	// upgradeMu / machineUpgrades 保护后台执行机升级：同一台机器同时只允许一个，
+	// 且记住最近一次的终态——**终态是控制台唯一的「失败出口」**（见
+	// proto.MachineUpgrade 的说明），丢了它界面就会一直停在「升级中」。
+	// 进程内存，agentd 重启即清空：这是诚实的，重启后本进程确实不知道。
+	upgradeMu       sync.Mutex
+	machineUpgrades map[string]*proto.MachineUpgrade
+	// machineUpgradeInstaller 是远端升级共用的资产下载器；测试用 runner 缝整体替换。
+	machineUpgradeInstaller *release.Installer
+	machineUpgradeRunner    machineUpgradeRunner
+	// pool 是对 target 的客户端复用池（探活/镜像/项目树/PTY/升级共用）。
+	//
+	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
+	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
+	// 自建没有代价。
+	pool *targetclient.Pool
 }
 
 // NewServer 创建 agentd 服务端。
@@ -144,6 +174,12 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		}
 	}
 	inst := release.NewInstaller(log, tr)
+	releaseClient := release.NewClient(tr)
+	exe, err := os.Executable()
+	if err != nil {
+		// 拿不到自身路径就起不了 ptyhost；PTY 是控制台的附属能力，不应拖垮 agentd。
+		log.Error("无法确定自身可执行文件路径，PTY 会话将无法创建", "err", err)
+	}
 	s := &Server{
 		st:             st,
 		hub:            NewHub(),
@@ -153,9 +189,22 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		liveLimit:      liveBufferLimit,
 		pull:           newPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
-		pty:            ptyhost.New(log),
+		ptyRootPath:    filepath.Join(cfg.DataDir, "ptys"),
+		latestFetch:    releaseClient.Latest,
+		downloadFetch:  desktopDownloadFetcher(inst),
+		downloadOpen:   openDownloadedFile,
+		downloadPlatform: func() (string, string) {
+			return release.CurrentPlatform()
+		},
+		downloadState:           &proto.DownloadState{Stage: "idle", Percent: -1},
+		downloadChecksum:        desktopDownloadChecksum(inst),
+		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
+		machineUpgradeInstaller: inst,
 	}
+	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
+	s.machineUpgradeRunner = s.executeMachineUpgrade
 	s.cfg.Store(cfg)
+	s.pool = targetclient.NewPool(s.conf, log)
 	s.upd = UpdateDeps{
 		Getenv:     os.Getenv,
 		Executable: resolvedExecutable,
@@ -244,6 +293,17 @@ func (s *Server) EnvMapping() map[string]string { return s.conf().Env }
 //
 // 注意：与 SetManager 同款的构造后注入，必须在 Handler 开始服务前调用。
 func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
+
+// Pool 返回 target 客户端复用池。
+//
+// 用途：cmd/agentd.go 起预热循环、给 Mirror 注入同一个池——**必须是同一个**，
+// 两个池等于两套隧道，relay 侧会看到重复的节点连接。
+func (s *Server) Pool() *targetclient.Pool { return s.pool }
+
+// CloseTargets 关掉池内全部客户端与 relay 隧道。
+//
+// 注意：只在进程退出路径调用。池关了就不再复活（relay.Dialer.Close 是终态）。
+func (s *Server) CloseTargets() error { return s.pool.Close() }
 
 // swapConf 以写时复制的方式修改配置并落盘。
 //
@@ -386,6 +446,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects", s.handleProjectList)
 	api.HandleFunc("GET /api/projects/tree", s.handleProjectTree)
 	api.HandleFunc("GET /api/machines", s.handleMachines)
+	api.HandleFunc("GET /api/workbench/state", s.handleWorkbenchStateGet)
+	api.HandleFunc("PUT /api/workbench/state/base", s.handleWorkbenchBasePut)
+	api.HandleFunc("PUT /api/workbench/state/selected", s.handleWorkbenchSelectedPut)
+	api.HandleFunc("PUT /api/workbench/state/dock", s.handleWorkbenchDockPut)
+	api.HandleFunc("PUT /api/desktop/state", s.handleDesktopStatePut)
+	api.HandleFunc("GET /api/desktop/state", s.handleDesktopStateGet)
 	api.HandleFunc("GET /api/discipline", s.handleDisciplineGet)
 	api.HandleFunc("GET /api/discipline/file", s.handleDisciplineFileRead)
 	api.HandleFunc("PUT /api/discipline/file", s.handleDisciplineFileWrite)
@@ -399,6 +465,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /api/executor/default", s.handleExecutorDefaultPut)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
 	api.HandleFunc("DELETE /api/machines/{name}", s.handleDeleteMachine)
+	api.HandleFunc("POST /api/machines/{name}/upgrade", s.handleMachineUpgrade)
 	api.HandleFunc("GET /api/workspaces/dir", s.handleWorkspaceDir)
 	api.HandleFunc("GET /api/workspaces/file", s.handleWorkspaceFile)
 	api.HandleFunc("PUT /api/workspaces/file", s.handleWorkspaceFileWrite)
@@ -419,6 +486,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	api.HandleFunc("POST /api/update", s.handleUpdate)
+	api.HandleFunc("GET /api/update/latest", s.handleUpdateLatest)
+	api.HandleFunc("POST /api/update/desktop/download", s.handleDesktopDownloadStart)
+	api.HandleFunc("GET /api/update/desktop/download", s.handleDesktopDownloadState)
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
@@ -1445,7 +1515,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo := task.Workdir()
+	repo, headRev := taskDiffTarget(task)
 	base := r.URL.Query().Get("base")
 	if base == "" {
 		base = diffBaseFor(task, repo)
@@ -1457,7 +1527,16 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无法确定基准分支，请用 base 参数指定"})
 		return
 	}
-	diff, err := Diff(repo, base)
+	// 回退到主仓库时，任务分支可能也已经被删了（任务做完、分支合并后删掉是常态）。
+	// 那种情况下素材是真的没有了，要说清楚——原来它表现为 git 的 exit status 128，
+	// 读的人无从判断是「分支没了」还是「git 坏了」。
+	if repo != task.Workdir() && !manualBranchExists(r.Context(), repo, headRev) {
+		s.log.Warn("任务分支已不存在，无可比对素材", "task", taskID, "repo", repo, "branch", headRev)
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("任务分支 %s 已不存在，且任务 worktree 已回收——没有可比对的素材了", headRev)})
+		return
+	}
+	diff, err := DiffRange(repo, base, headRev)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非

@@ -78,12 +78,34 @@ func TestServeReturnsNilOnGracefulShutdown(t *testing.T) {
 //
 // why：端口被占是最常见的启动失败。若这里返回 nil，systemd 会认为服务
 // "正常退出"，配合 Restart=always 变成每 3 秒重启一次的静默死循环。
+//
+// why 用「先占住再绑同一个」而不是绑特权端口：EADDRINUSE 与 uid 无关，
+// 而「特权端口绑不上」只对非 root 成立——agentd 在部分执行机上就是以 root
+// 跑的，那里 bind 127.0.0.1:1 会成功，Serve 于是阻塞等一个永不到来的停机
+// 信号，把整包拖到 10 分钟 test timeout，且报错完全指不到根因。
 func TestServeReturnsListenError(t *testing.T) {
-	srv := &http.Server{Addr: "127.0.0.1:1", Handler: http.NewServeMux()}
+	// 占住一个随机端口，让 Serve 去绑同一个地址
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	srv := &http.Server{Addr: occupied.Addr().String(), Handler: http.NewServeMux()}
 	sd := NewShutdown(quietLogger())
-	err := sd.Serve(srv, func() {})
+
+	// 判据本身是「Serve 立刻带错返回」，所以必须给它一个上界：万一哪天真绑上了，
+	// Serve 会永久阻塞——不设上界就是整包 panic: test timed out，而不是这一条红
+	done := make(chan error, 1)
+	go func() { done <- sd.Serve(srv, func() {}) }()
+
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve 未在 10s 内返回：监听本应失败却绑上了，判据失效")
+	}
 	if err == nil {
-		t.Fatal("监听 1 端口应失败并返回错误")
+		t.Fatal("绑一个已被占用的端口应失败并返回错误")
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		t.Fatal("ErrServerClosed 不该外泄，它是优雅关停的正常信号")

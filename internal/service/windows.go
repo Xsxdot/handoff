@@ -277,13 +277,25 @@ func (m *windowsManager) Install(spec Spec) error {
 	// 二进制路径错、端口被占、配置读不出来都会让它起来即死——那种情况下
 	// 报「安装成功」，操作者会去查一个并不存在的服务。
 	// 轮询而不是睡一个固定值：进程拉起通常在百毫秒内，慢的机器上要几秒。
+	return m.waitRunning("Windows 计划任务安装完成并已运行", spec.LogPath)
+}
+
+// waitRunning 轮询到任务真的在跑为止，供 Install 与 Start 共用。
+//
+// 参数：
+//   - okMsg: 复核通过时打的日志文案。由调用方给而不是写死——Install 与 Start
+//     是两件不同的事，走查清单按这行文案区分它们，合并会让判据失去分辨力
+//   - logPath: 复核不过时提示用户去看哪个日志
+//
+// 复核的是「进程真的存活」而不是「注册上了/触发了」：二进制路径错、端口被占、
+// 配置读不出来都会让它起来即死，那种情况下报成功，操作者会去查一个不存在的服务。
+func (m *windowsManager) waitRunning(okMsg, logPath string) error {
 	var last Status
 	for i := 0; i < installVerifyAttempts; i++ {
 		m.sleep(installVerifyInterval)
 		st, serr := m.Status()
 		if serr == nil && st.Running {
-			m.log.Info("Windows 计划任务安装完成并已运行",
-				"task", WindowsTaskName, "probe", i+1)
+			m.log.Info(okMsg, "task", WindowsTaskName, "probe", i+1)
 			return nil
 		}
 		last = st
@@ -291,8 +303,172 @@ func (m *windowsManager) Install(spec Spec) error {
 	m.log.Error("任务已启动但复核窗口内未见进程存活",
 		"task", WindowsTaskName, "window", installVerifyWindow,
 		"installed", last.Installed, "detail", last.Detail)
-	return fmt.Errorf("任务已建并已触发，但 %s 内未复核到 agentd 进程存活（检查 %s）",
-		installVerifyWindow, spec.LogPath)
+	// logPath 为空时不拼「检查 」——一个指向空白的排障提示比没有提示更糟
+	hint := ""
+	if logPath != "" {
+		hint = "（检查 " + logPath + "）"
+	}
+	return fmt.Errorf("任务已触发，但 %s 内未复核到 agentd 进程存活%s", installVerifyWindow, hint)
+}
+
+// ensureInstalled 在做任何变更前确认计划任务存在。
+//
+// 返回：任务不存在时返回包装了 ErrNotInstalled 的错误
+//
+// 注意：三个生命周期方法共用它，且必须在发出任何 schtasks 变更命令之前调用
+func (m *windowsManager) ensureInstalled() error {
+	if out, qerr := m.run("schtasks", "/Query", "/TN", WindowsTaskName); qerr != nil {
+		m.log.Error("计划任务查询不到，单元未安装",
+			"task", WindowsTaskName, "cause", qerr, "output", strings.TrimSpace(string(out)))
+		return errNotInstalled(WindowsTaskName)
+	}
+	return nil
+}
+
+// waitStopped 轮询到任务真的不在跑为止，供 Stop 与 Restart 共用。
+//
+// 参数：
+//   - okMsg: 复核通过时打的日志文案。由调用方给而不是写死——Stop 与 Restart
+//     是两件不同的事，走查按这行文案区分它们，合并会让判据失去分辨力
+//
+// 返回：复核窗口内没停下来时返回错误
+//
+// 注意：轮询而不是查一次——/End 只是把停止请求交给计划任务服务，
+// 进程退出还要一段时间；查一次会把「还没死透」当成「停不下来」
+func (m *windowsManager) waitStopped(okMsg string) error {
+	var last Status
+	for i := 0; i < installVerifyAttempts; i++ {
+		m.sleep(installVerifyInterval)
+		st, serr := m.Status()
+		if serr == nil && !st.Running {
+			m.log.Info(okMsg, "task", WindowsTaskName, "probe", i+1)
+			return nil
+		}
+		last = st
+	}
+	m.log.Error("已请求停止但复核窗口内进程仍在",
+		"task", WindowsTaskName, "window", installVerifyWindow, "detail", last.Detail)
+	return fmt.Errorf("已请求停止，但 %s 内任务仍在运行", installVerifyWindow)
+}
+
+// isDisabled 从任务 XML 读 Settings/Enabled，判断任务是否被显式停用。
+//
+// 返回：显式为 false 才算停用；查不到、查询失败、标签缺省都按未停用处理
+//
+// 注意：
+//   - **不看 /Query /V 的「Scheduled Task State」列**：那一列会本地化
+//     （英文机器 Disabled、中文机器「已禁用」），按文本判会在换一台机器时
+//     静默失效。XML 里的 <Enabled> 是 schema 标签名，不随 locale 变
+//   - schtasks 的 /XML 输出走 Unicode，可能是 UTF-16LE。判之前滤掉 NUL 字节
+//     ——这比为一处判据引一个真解码器便宜，且 UTF-8/UTF-16LE 都能命中
+func (m *windowsManager) isDisabled() bool {
+	out, err := m.run("schtasks", "/Query", "/TN", WindowsTaskName, "/XML", "ONE")
+	if err != nil {
+		m.log.Debug("查任务 XML 失败，按未停用处理",
+			"task", WindowsTaskName, "output", strings.TrimSpace(string(out)))
+		return false
+	}
+	plain := strings.ReplaceAll(string(out), "\x00", "")
+	return strings.Contains(plain, "<Enabled>false</Enabled>")
+}
+
+// Start 启动已安装的计划任务，并解除可能存在的停用状态。
+//
+// 返回：错误——任务不存在（ErrNotInstalled）、/Change 或 /Run 失败、
+// 或复核窗口内没见进程存活
+//
+// 注意：
+//   - **/Change /Enable 必须在 /Run 之前**：被 /Change /Disable 停用过的任务，
+//     /Run 会直接报「任务已禁用」
+//   - 不写 XML、不 /Create、不 /Delete——这正是它存在的理由：Windows 的
+//     Install 会先 /Delete /F 再重建，每次换版都会把任务定义恢复成默认值，
+//     用户对任务定义的修改和任务历史一并消失
+func (m *windowsManager) Start() error {
+	if err := m.ensureInstalled(); err != nil {
+		return err
+	}
+	m.log.Info("启动已安装的 Windows 计划任务（不重建定义）", "task", WindowsTaskName)
+	if out, cerr := m.run("schtasks", "/Change", "/TN", WindowsTaskName, "/Enable"); cerr != nil {
+		m.log.Error("解除任务停用失败", "task", WindowsTaskName,
+			"cause", cerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("解除任务停用失败: %s（%w）", strings.TrimSpace(string(out)), cerr)
+	}
+	if out, rerr := m.run("schtasks", "/Run", "/TN", WindowsTaskName); rerr != nil {
+		m.log.Error("启动计划任务失败", "task", WindowsTaskName,
+			"cause", rerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("启动计划任务失败: %s（%w）", strings.TrimSpace(string(out)), rerr)
+	}
+	return m.waitRunning("Windows 计划任务已启动", "")
+}
+
+// Stop 停止计划任务并停用它，直到显式 Start。
+//
+// 返回：错误——任务不存在（ErrNotInstalled）、/Change /Disable 失败、
+// 或复核窗口内它仍在跑
+//
+// 注意：
+//   - **/Change /Disable 必须在 /End 之前，顺序承重。** 任务的 TimeTrigger
+//     每分钟重复触发一次（等价于 systemd 的 Restart=always）；先 /End 的话
+//     它会在 60 秒内被重新拉起，「停住」根本不成立。先掐触发源，再回收进程
+//   - 用 /End 而不是按镜像名杀：本实现的任务动作进程直接就是 handoff.exe
+//     （不套 cmd.exe），/End 精确命中；而 agentd 与操作者正在敲的 handoff CLI
+//     同镜像名，按名字杀会连自己一起杀掉
+//   - agentd 若是手工起的（不由本任务拉起），/End 杀不到它——那是诚实的结果：
+//     stop 停的是托管，手工起的进程不归管理器处置
+func (m *windowsManager) Stop() error {
+	if err := m.ensureInstalled(); err != nil {
+		return err
+	}
+	m.log.Info("停用并停止 Windows 计划任务", "task", WindowsTaskName)
+	if out, cerr := m.run("schtasks", "/Change", "/TN", WindowsTaskName, "/Disable"); cerr != nil {
+		m.log.Error("停用计划任务失败", "task", WindowsTaskName,
+			"cause", cerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("停用计划任务失败: %s（%w）", strings.TrimSpace(string(out)), cerr)
+	}
+	if out, eerr := m.run("schtasks", "/End", "/TN", WindowsTaskName); eerr != nil {
+		// 本来就没在跑时 /End 必然报错，这不是失败
+		m.log.Debug("停止任务报错（本来就没在跑时属正常）",
+			"output", strings.TrimSpace(string(out)))
+	}
+	return m.waitStopped("Windows 计划任务已停止并停用")
+}
+
+// Restart 就地重启计划任务，不改动任务定义。
+//
+// 返回：错误——任务不存在（ErrNotInstalled）、停不下来、起不来、
+// 或复核窗口内没见进程存活
+//
+// 注意：
+//   - 先 /End 并**复核真的停下来**，再 /Run。不复核就 /Run 的话，计划任务
+//     服务可能因为「上一个实例还在」而忽略这次启动请求，于是「什么都没发生」
+//     被报成「已重启」
+//   - 被 Stop 停住时走 Start：/Run 对停用的任务会被拒，而用户敲 restart
+//     要的是它起来（与 Manager.Restart 的约定一致）
+func (m *windowsManager) Restart() error {
+	if err := m.ensureInstalled(); err != nil {
+		return err
+	}
+	st, serr := m.Status()
+	if serr == nil && (st.Disabled || !st.Running) {
+		m.log.Info("重启时发现任务已停用或未在运行，改为启动",
+			"task", WindowsTaskName, "disabled", st.Disabled, "running", st.Running)
+		return m.Start()
+	}
+	m.log.Info("重启 Windows 计划任务", "task", WindowsTaskName)
+	if out, eerr := m.run("schtasks", "/End", "/TN", WindowsTaskName); eerr != nil {
+		m.log.Error("停止计划任务失败", "task", WindowsTaskName,
+			"cause", eerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("停止计划任务失败: %s（%w）", strings.TrimSpace(string(out)), eerr)
+	}
+	if err := m.waitStopped("重启中：旧实例已停止"); err != nil {
+		return err
+	}
+	if out, rerr := m.run("schtasks", "/Run", "/TN", WindowsTaskName); rerr != nil {
+		m.log.Error("重启中启动计划任务失败", "task", WindowsTaskName,
+			"cause", rerr, "output", strings.TrimSpace(string(out)))
+		return fmt.Errorf("重启中启动计划任务失败: %s（%w）", strings.TrimSpace(string(out)), rerr)
+	}
+	return m.waitRunning("Windows 计划任务已重启", "")
 }
 
 // Uninstall 删任务并删 XML。本来就没装时返回 nil。
@@ -334,7 +510,7 @@ func (m *windowsManager) Uninstall() error {
 	return nil
 }
 
-// Status 查询任务是否注册且在跑。
+// Status 查询任务是否注册、在跑或被停用。
 //
 // **Running 判据是 schtasks 的「上次结果」等于 SCHED_S_TASK_RUNNING(267009)**，
 // 不是 PID、也不是 Status 列的文本。三条理由，都是 2026-08-18 真机实测得来的：
@@ -360,8 +536,9 @@ func (m *windowsManager) Status() (Status, error) {
 	}
 	s := Status{Installed: true, Detail: firstLine(string(out))}
 	s.Running = taskIsRunning(string(out))
+	s.Disabled = m.isDisabled()
 	m.log.Debug("计划任务状态", "task", WindowsTaskName,
-		"installed", s.Installed, "running", s.Running)
+		"installed", s.Installed, "running", s.Running, "disabled", s.Disabled)
 	return s, nil
 }
 

@@ -173,16 +173,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("消费 ticket 成功", "result", "成功", "session", sess.ID)
 	s.log.Info("会话建立", "session", sess.ID, "device_name", sess.DeviceName, "expires_at", sess.ExpiresAt)
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		// 只按 r.TLS：明文 loopback 下设 Secure 会让 cookie 直接失效
-		Secure: r.TLS != nil,
-		MaxAge: int(time.Until(sess.ExpiresAt).Seconds()),
-	})
+	http.SetCookie(w, sessionCookie(r, token, int(time.Until(sess.ExpiresAt).Seconds())))
 	// 302 到 /：cookie 此时已设好，/ 上是控制台还是 stub 说明页由 webui 决定，与本处无关
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -275,12 +266,44 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "登出失败"})
 		return
 	}
-	// MaxAge<0 让浏览器立即删除该 cookie；属性必须与下发时一致，否则删不掉
-	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: "", Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: -1,
-	})
+	// MaxAge<0 让浏览器立即删除该 cookie；属性必须与下发时一致，否则删不掉——
+	// 走同一个构造函数就是为了让「一致」由代码保证，而不是靠两处手写对齐
+	http.SetCookie(w, sessionCookie(r, "", -1))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// sessionCookie 构造会话 cookie。下发与删除共用，属性只在这一处定义。
+//
+// 参数：
+//   - r: 仅用于判断是否走 TLS（决定 Secure）
+//   - value: cookie 值；删除时传空串
+//   - maxAge: 秒；负值表示删除（浏览器立即丢弃）
+//
+// SameSite 取 Lax 而不是 Strict，这条是承重的：桌面薄壳用 WKWebView，
+// 它加载控制台走的是**程序发起**的顶层导航（Wails 的 setURL），没有同站发起方，
+// WebKit 会把 Strict cookie 扣下不发。症状是 ticket 明明兑换成功、Set-Cookie
+// 也收下了，紧跟的 302 到 / 却报「无凭据」，用户看到「需要登录」页。
+// Chromium（Chrome / Windows 的 WebView2）在同样情形下认作同站照发，所以这个
+// bug 只在 macOS 出现——两边跑同一份 agentd 代码，别据此怀疑构建产物。
+//
+// 降到 Lax 不放松实际防护：Lax 只对**顶层 GET 导航**放行，写操作走 POST/DELETE，
+// 跨站 POST 一样带不上 cookie。而 Strict 在这里唯一多挡的场景，恰好就是我们
+// 自己要用的那一跳。
+//
+// 历史成因：这段 cookie 代码写于 agentd 还不托管前端时（当时注释写的是
+// 「/ 返回 404 是预期结果」），W5a 让 agentd 托管控制台之后，才把一条从没被
+// WKWebView 走过的跳转变成了主路径。
+func sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		// 只按 r.TLS：明文 loopback 下设 Secure 会让 cookie 直接失效
+		Secure: r.TLS != nil,
+		MaxAge: maxAge,
+	}
 }
 
 // revoke 执行吊销并记录发起方，供 handleRevokeSession 与 handleLogout 共用。

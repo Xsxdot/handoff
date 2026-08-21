@@ -118,6 +118,9 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     closeById: vi.fn(),
     resize: vi.fn(),
     restoreTerminal: vi.fn(),
+    byBase: {},
+    baseDirs: {},
+    hydrate: vi.fn(),
     ...overrides,
   }
 }
@@ -210,6 +213,19 @@ describe('WorkbenchPage', () => {
     )
     expect(screen.getByText(/从侧边栏选择一个目录开始/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
+  })
+
+  it('空态用品牌标志，不用字母 h 占位', () => {
+    render(
+      <WorkbenchPage
+        api={api({ base: null })}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    const mark = screen.getByRole('img', { name: 'handoff' })
+    expect(mark).toHaveAttribute('src', '/handoff-mark.svg')
+    expect(screen.queryByText('h')).toBeNull()
   })
 
   it('选中目录但没有 tab 时，中央仍然给出可用起点（种类选择）', () => {

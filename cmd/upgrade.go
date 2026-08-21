@@ -37,7 +37,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/upgrade"
 	"github.com/spf13/cobra"
 )
 
@@ -86,7 +88,16 @@ var (
 	rollbackBinary = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它
 	// 就能整套替身化远端，而不必起真实 HTTP 服务
-	newAgentdClient = func(ep Endpoint) agentdPeer { return client.New(ep.Addr, ep.Token) }
+	newAgentdClient = func(ep Endpoint) agentdPeer {
+		if ep.RelayURL != "" {
+			// Upgrade is still executor traffic: relay targets must not fall back to
+			// the placeholder HTTP address. The short-lived CLI owns this dialer;
+			// its tunnel is closed when the process exits.
+			d := relay.NewDialer(ep.RelayURL, ep.Credential, ep.Node, ep.Token, "", slog.Default())
+			return client.NewRelay(d, ep.Token)
+		}
+		return client.New(ep.Addr, ep.Token)
+	}
 	// listEndpoints 是机器清单的缝：测试注入临时配置里的机器
 	listEndpoints = Endpoints
 	// recordOrder 在每台机器开始处理时被调用一次，生产是空实现。
@@ -160,6 +171,18 @@ type machineState struct {
 	Pull *bool
 	Busy int
 	Err  error
+}
+
+// toUpgrade 投影 CLI 侧的探测载体，供结论判据包消费。
+//
+// Endpoint 与 Bin 仍留在 CLI：Endpoint 是 CLI 的配置/拨号概念，Bin 是本机
+// 文件路径上的版本；新包只接收一台机器的探测结果，不认识 cobra 或 Endpoint。
+func (ms *machineState) toUpgrade() upgrade.Machine {
+	return upgrade.Machine{
+		Name: ms.Ep.Name, Local: ms.Ep.Local, Bin: ms.Bin, Agentd: ms.Agentd,
+		Revision: ms.Revision, Platform: ms.Platform, Managed: ms.Managed,
+		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err,
+	}
 }
 
 // currentBinary 返回当前二进制的真实路径。
@@ -320,6 +343,13 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 		ms.Bin = bi.Version
 	}
 	slog.Default().Info("开始探测机器", "name", ep.Name, "addr", ep.Addr, "local", ep.Local)
+	if ep.RelayURL != "" {
+		if err := relay.CheckTokenEntropy(ep.Token); err != nil {
+			ms.Err = err
+			slog.Default().Error("relay requires high-entropy token", "name", ep.Name)
+			return ms
+		}
+	}
 	st, err := newAgentdClient(ep).Status(ctx)
 	switch {
 	case errors.Is(err, client.ErrStatusUnsupported):
@@ -350,15 +380,15 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 
 // renderCheckRow 渲染巡检表的一行（--check 默认行为）。
 //
-// 行内三段：名字（定宽）、信息、结论。结论一律来自 classify，本函数只负责把
-// verdict 翻译成一句话——判据不在这里，改判据请改 classify（B64）。
+// 行内三段：名字（定宽）、信息、结论。结论一律来自 upgrade.Classify，本函数只负责把
+// Verdict 翻译成一句话——判据不在这里，改判据请改 internal/upgrade（B64）。
 //
 // 本机必须分别显示二进制与 agentd 两个版本——换掉磁盘上的文件后正在跑的 agentd
 // 仍是旧进程，这是正常且常见的中间态，合成一个数字就必然骗人（B59 spec §4.1）。
 func renderCheckRow(w io.Writer, s machineState, latest string) {
 	name := s.Ep.Name
-	v := classify(&s, latest)
-	if v == verdictUnreachable {
+	v := upgrade.Classify(s.toUpgrade(), latest)
+	if v == upgrade.VerdictUnreachable {
 		fmt.Fprintf(w, "%-8s 够不着（%s）\n", name, s.Err)
 		return
 	}
@@ -382,11 +412,11 @@ func renderCheckRow(w io.Writer, s machineState, latest string) {
 // 只有「已是最新」与「对端过旧」值得单独措辞：其余几格（非托管、未上报托管、
 // 该升级）在只读巡检下的行动含义相同——都是「这台机器落后了」，差别体现在
 // --now 的处置里，不该在巡检表上提前吓人。
-func checkConclusion(v verdict) string {
+func checkConclusion(v upgrade.Verdict) string {
 	switch v {
-	case verdictLatest:
+	case upgrade.VerdictLatest:
 		return "已是最新"
-	case verdictTooOld:
+	case upgrade.VerdictTooOld:
 		return "对端过旧（未上报平台）"
 	default:
 		return "需要升级"
@@ -426,77 +456,39 @@ func checkPad(info string) string {
 	return strings.Repeat(" ", n)
 }
 
-// isLatest 判断一台机器是否已是最新版本。
-//
-// 本机 agentd 未运行时只比二进制版本；运行时两者都要对齐（二进制已最新但
-// agentd 还是旧进程 = 中间态，仍需要重启这一步）。
-func (ms *machineState) isLatest(latest string) bool {
-	if ms.Ep.Local {
-		if ms.Agentd == "" {
-			return ms.Bin == latest
-		}
-		return ms.Bin == latest && ms.Agentd == latest
-	}
-	return ms.Agentd == latest
-}
-
 // process 对一台机器执行升级，返回结果分类。
 //
-// 结论来自 classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
-// busy 闸不在 classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
+// 结论来自 upgrade.Classify（唯一判据），本函数只负责把结论翻译成动作与处置建议。
+// busy 闸不在 Classify 里：它是「要不要现在换」的闸，只在确实需要换版时才成立
 // ——否则会对一台已是最新的忙机器建议 --force，而那条命令跑完只会说「已是最新」。
 func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	out := cmd.OutOrStdout()
 	name := ms.Ep.Name
 	peer := newAgentdClient(ms.Ep)
-	v := classify(ms, rel.Tag)
+	v := upgrade.Classify(ms.toUpgrade(), rel.Tag)
 	slog.Default().Info("开始处理机器", "name", name, "addr", ms.Ep.Addr, "local", ms.Ep.Local,
 		"verdict", v.String(), "platform", ms.Platform, "busy", ms.Busy)
+	if !ms.Ep.Local {
+		return ms.remoteUpgrade(ctx, out, peer, rel, sumFor)
+	}
 
 	switch v {
-	case verdictUnreachable:
-		// 只报原始错误原文，不编处置——编一条建议就是在猜，而猜出来的建议会把人
-		// 引到错误的方向
-		slog.Default().Warn("机器够不着", "name", name, "cause", ms.Err)
-		fmt.Fprintf(out, "%-8s 失败   %s\n", name, ms.Err)
-		return outcomeFail
-
-	case verdictLatest:
+	case upgrade.VerdictLatest:
 		slog.Default().Info("跳过：已是最新", "name", name)
 		fmt.Fprintf(out, "%-8s 跳过   已是最新\n", name)
 		return outcomeSkip
 
-	case verdictTooOld:
-		// 明确拒绝而不是猜一个默认平台——猜错就是给一台 linux 机器推 darwin 二进制
-		slog.Default().Info("跳过：对端未上报平台", "name", name)
-		fmt.Fprintf(out, "%-8s 跳过   对端 agentd 过旧，未上报平台，需先手工升级到 ≥v0.1.1\n", name)
-		return outcomeSkip
-
-	case verdictAgentdDown:
+	case upgrade.VerdictAgentdDown:
 		return ms.swapAndTell(ctx, out, rel, "agentd 未运行，请自行重启它")
 
-	case verdictUnmanaged:
-		if ms.Ep.Local {
-			return ms.swapAndTell(ctx, out, rel, "agentd 非托管启动，请自行重启它")
-		}
-		slog.Default().Info("跳过：agentd 非托管", "name", name)
-		fmt.Fprintf(out, "%-8s 跳过   agentd 非托管启动，重启后不会被拉起\n", name)
-		// 不给 --force：它不越过闸二，给了就是让用户跑一条注定失败的命令
-		fmt.Fprintf(out, "         先在该机器上 handoff service install\n")
-		return outcomeSkip
+	case upgrade.VerdictUnmanaged:
+		return ms.swapAndTell(ctx, out, rel, "agentd 非托管启动，请自行重启它")
 
-	case verdictManagedUnknown:
-		if ms.Ep.Local {
-			return ms.swapAndTell(ctx, out, rel, "无法确认 agentd 是否托管启动，请自行重启它")
-		}
-		// 不猜托管（猜错=换完没人拉起，这台机器就此没有 agentd 且无人知晓），
-		// 也不猜非托管（猜错=把人引去装一个可能早已装好的 service，即 B64 原症状）
-		slog.Default().Info("跳过：对端未上报托管状态", "name", name)
-		fmt.Fprintf(out, "%-8s 跳过   对端未上报托管状态，无法确认换版后能否被拉起\n", name)
-		return outcomeSkip
+	case upgrade.VerdictManagedUnknown:
+		return ms.swapAndTell(ctx, out, rel, "无法确认 agentd 是否托管启动，请自行重启它")
 	}
 
-	// verdictNeedsUpgrade：闸一（活跃任务，--force 可越过）
+	// 本机路径仍在 CLI：闸一只在本机这里施加；远端由 RemoteOne 统一施加。
 	if ms.Busy > 0 && !upgradeForce {
 		slog.Default().Info("跳过：有活跃任务", "name", name, "busy", ms.Busy)
 		fmt.Fprintf(out, "%-8s 跳过   %d 个活跃任务\n", name, ms.Busy)
@@ -507,10 +499,7 @@ func (ms *machineState) process(ctx context.Context, cmd *cobra.Command, rel rel
 		}
 		return outcomeSkip
 	}
-	if ms.Ep.Local {
-		return ms.localUpgrade(ctx, out, peer, rel)
-	}
-	return ms.remoteUpgrade(ctx, out, peer, rel, sumFor)
+	return ms.localUpgrade(ctx, out, peer, rel)
 }
 
 // swapAndTell 只换本机文件、不触发重启，并如实说明「为什么要你自己重启」。
@@ -597,89 +586,47 @@ func (ms *machineState) syncSkill(ctx context.Context, out io.Writer, target str
 
 // remoteUpgrade 远端的完整升级路径。
 //
-// 两条路：对端支持自拉（且未 --push）时只下发 tag+sha256，20MB 由执行机自己下；
-// 否则按本机下载 + 推送的老路走。选路判据是 ms.Pull——nil（老 agentd）一律降级
-// 推送，因为老 agentd 会把 mode=pull 当成纯重启并回 200。
+// 结论、两道闸、选路、等待与失败语义由 internal/upgrade 统一负责；本函数只把
+// CLI 的下载缝接上，并将结构化结果渲染成既有的两行表格输出。
+type cliRemoteFetcher struct {
+	releaseFetcher
+	sumFor func(context.Context, string, string) (string, error)
+}
+
+func (f cliRemoteFetcher) FetchChecksum(ctx context.Context, rel release.Release, goos, goarch string) (string, error) {
+	if f.sumFor != nil {
+		return f.sumFor(ctx, goos, goarch)
+	}
+	return f.releaseFetcher.FetchChecksum(ctx, rel, goos, goarch)
+}
+
 func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer agentdPeer,
 	rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	name := ms.Ep.Name
-	parts := strings.SplitN(ms.Platform, "/", 2)
-	if len(parts) != 2 {
-		fmt.Fprintf(out, "%-8s 失败   对端上报的平台 %q 格式非法\n", name, ms.Platform)
-		return outcomeFail
-	}
-
-	usePull := !upgradePush && ms.Pull != nil && *ms.Pull
-	slog.Default().Info("选择换版分发模式", "name", name, "platform", ms.Platform,
-		"pull_capable", ms.Pull != nil && *ms.Pull, "force_push", upgradePush, "use_pull", usePull)
-
-	var resp *proto.UpdateResp
-	var err error
-	if usePull {
-		sum, serr := sumFor(ctx, parts[0], parts[1])
-		if serr != nil {
-			slog.Default().Error("取校验和失败", "name", name, "cause", serr)
-			fmt.Fprintf(out, "%-8s 失败   %s\n", name, serr)
-			return outcomeFail
+	result := upgrade.RemoteOne(ctx, slog.Default(), ms.toUpgrade(), peer,
+		cliRemoteFetcher{releaseFetcher: newReleaseFetcher(), sumFor: sumFor}, rel,
+		upgrade.Options{
+			Force: upgradeForce, PreferPush: upgradePush,
+			WaitPull: upgradeWaitTimeoutPull, WaitPush: upgradeWaitTimeoutPush,
+			WaitInterval: upgradeWaitInterval,
+		}, nil)
+	switch result.Status {
+	case upgrade.StatusOK:
+		fmt.Fprintf(out, "%-8s 成功   %s → %s\n", name, result.From, result.To)
+		return outcomeOK
+	case upgrade.StatusSkip:
+		fmt.Fprintf(out, "%-8s 跳过   %s\n", name, result.Reason)
+		if result.Remedy != "" {
+			fmt.Fprintf(out, "         %s\n", result.Remedy)
 		}
-		slog.Default().Info("下发自拉换版请求", "name", name, "tag", rel.Tag, "sha256", sum)
-		resp, err = peer.PullUpdate(ctx, rel.Tag, sum, upgradeForce)
-	} else {
-		slog.Default().Info("下载远端平台资产", "name", name, "platform", ms.Platform, "tag", rel.Tag)
-		tgz, sum, ferr := newReleaseFetcher().FetchArchive(ctx, rel, parts[0], parts[1])
-		if ferr != nil {
-			slog.Default().Error("下载远端资产失败", "name", name, "cause", ferr)
-			fmt.Fprintf(out, "%-8s 失败   %s\n", name, ferr)
-			return outcomeFail
-		}
-		slog.Default().Info("下载完成，推送换版请求", "name", name, "tag", rel.Tag, "bytes", len(tgz))
-		resp, err = peer.PushUpdate(ctx, rel.Tag, sum, tgz, upgradeForce)
-	}
-
-	if err != nil {
-		var rej *client.UpdateRejected
-		if errors.As(err, &rej) {
-			slog.Default().Warn("换版被拒", "name", name, "reason", rej.Reason, "detail", rej.Msg)
-			fmt.Fprintf(out, "%-8s 跳过   %s\n", name, rej.Msg)
-			// 处置建议必须对症：三种拒绝的出路完全不同
-			switch rej.Reason {
-			case proto.UpdateReasonBusy:
-				fmt.Fprintf(out, "         handoff upgrade --now --target %s --force\n", name)
-			case proto.UpdateReasonUnmanaged:
-				fmt.Fprintf(out, "         先在该机器上 handoff service install\n")
-			case proto.UpdateReasonPullInProgress:
-				// 不给 --force：它不越过这一条（两个自拉会写坏同一个临时文件）
-				fmt.Fprintf(out, "         等它跑完，或 handoff status --target %s 看 pull_state\n", name)
-			}
-			return outcomeSkip
-		}
-		slog.Default().Error("发起换版失败", "name", name, "use_pull", usePull, "cause", err)
-		fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
-		return outcomeFail
-	}
-
-	waitTimeout := upgradeWaitTimeoutPull
-	if !usePull {
-		waitTimeout = upgradeWaitTimeoutPush
-	}
-	slog.Default().Info("换版已受理，等待新版本上线", "name", name,
-		"version", resp.Version, "prev", resp.Prev, "accepted", resp.Accepted)
-	if err := peer.WaitVersion(ctx, rel.Tag, waitTimeout, upgradeWaitInterval, usePull); err != nil {
-		// 自拉与推送的失败措辞必须不同：推送模式下二进制已经在对端了，
-		// 提 prev 与回滚是对的；自拉模式下可能连下载都没成，提回滚是误导
-		slog.Default().Error("等待新版本上线失败", "name", name, "use_pull", usePull, "cause", err)
-		if usePull {
-			fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
-			fmt.Fprintf(out, "         handoff status --target %s 看 pull_state 拿完整原因\n", name)
-		} else {
-			fmt.Fprintf(out, "%-8s 失败   已换版但新进程未在 %s 内上线\n", name, waitTimeout)
-			fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", resp.Prev)
+		return outcomeSkip
+	default:
+		fmt.Fprintf(out, "%-8s 失败   %s\n", name, result.Reason)
+		if result.Remedy != "" {
+			fmt.Fprintf(out, "         %s\n", result.Remedy)
 		}
 		return outcomeFail
 	}
-	slog.Default().Info("新版本已上线", "name", name, "version", rel.Tag)
-	fmt.Fprintf(out, "%-8s 成功   %s → %s\n", name, ms.Agentd, rel.Tag)
-	return outcomeOK
 }
 
 // firstLineOf 取多行输出的首行，用于把子进程的失败原因压成一行。
