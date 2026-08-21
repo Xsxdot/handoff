@@ -26,6 +26,22 @@ type Container struct {
 	Label string `json:"label"`
 	Kind  string `json:"kind"`
 	Entry bool   `json:"entry,omitempty"`
+	// Domain 是所属领域 id，必须是**叶子**领域。空串只在整图没有 domains 段时
+	// 合法（旧扫描数据，消费方降级为单领域视图）。
+	Domain string `json:"domain,omitempty"`
+}
+
+// Domain 是一个领域：领域图的一级组织单位，可嵌套。
+//
+// 领域由扫描产出、人可在入库后修改（spec §3.1）。Parent 串成树，为空即顶层。
+// 容器只能挂叶子领域——挂在中间层的容器既不属于本级全景、也进不了任何子领域，
+// 会静默从图里消失，所以 Validate 把它当错误报出来而不是默默丢掉。
+type Domain struct {
+	Label   string `json:"label"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary,omitempty"`
+	Desc    string `json:"desc,omitempty"`
+	Parent  string `json:"parent,omitempty"`
 }
 
 // TestRef 关联一个测试函数。File 形如 "pkg/x_test.go:41"。
@@ -60,7 +76,10 @@ type Edge [2]string
 // Graph 是 codegraph/baseline.json 的顶层结构。
 // 顶层 "diffs" 字段是早期原型的兼容残留，一期忽略：视图一律来自 diffs/目录。
 type Graph struct {
-	Meta       Meta                 `json:"meta"`
+	Meta Meta `json:"meta"`
+	// Domains 是领域段，可为空——空即「该图未划分领域」，消费方降级为单领域视图。
+	// **不得按包名伪造领域**：伪造出来的层级会被人和 agent 当成真实架构读。
+	Domains    map[string]Domain    `json:"domains,omitempty"`
 	Containers map[string]Container `json:"containers"`
 	Nodes      map[string]Node      `json:"nodes"`
 	Edges      []Edge               `json:"edges"`

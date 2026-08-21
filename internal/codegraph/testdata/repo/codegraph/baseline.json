@@ -1,9 +1,15 @@
 {
   "meta": {"project": "demo", "branch": "main", "commit": "abc1234", "scannedAt": "2026-08-19", "generator": "test"},
+  "domains": {
+    "d_cli": {"label": "cli", "kind": "命令层", "summary": "命令入口"},
+    "d_svc": {"label": "svc", "kind": "服务端", "summary": "服务与实体", "desc": "干活与落库"},
+    "d_svc/api": {"label": "api", "kind": "服务端", "summary": "对外方法", "parent": "d_svc"},
+    "d_svc/store": {"label": "store", "kind": "存储", "summary": "实体存放", "parent": "d_svc"}
+  },
   "containers": {
-    "c_cli": {"label": "CLI 命令", "kind": "入口", "entry": true},
-    "k_svc": {"label": "svc.Server", "kind": "服务端"},
-    "k_ent": {"label": "store 实体", "kind": "实体"}
+    "c_cli": {"label": "CLI 命令", "kind": "入口", "entry": true, "domain": "d_cli"},
+    "k_svc": {"label": "svc.Server", "kind": "服务端", "domain": "d_svc/api"},
+    "k_ent": {"label": "store 实体", "kind": "实体", "domain": "d_svc/store"}
   },
   "nodes": {
     "e_run":  {"kind": "entry", "container": "c_cli", "name": "demo run", "file": "cmd/run.go", "line": 3, "summary": "跑"},

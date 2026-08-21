@@ -24,7 +24,9 @@ type ViewEdge struct {
 
 // View 是合并后的图视图。
 type View struct {
-	Name       string               `json:"view"`
+	Name string `json:"view"`
+	// Domains 原样来自基线：diff 只改节点与边，不改领域划分。
+	Domains    map[string]Domain    `json:"domains,omitempty"`
 	Containers map[string]Container `json:"containers"`
 	Nodes      map[string]ViewNode  `json:"nodes"`
 	Edges      []ViewEdge           `json:"edges"`
@@ -32,7 +34,7 @@ type View struct {
 
 // Merge 把基线与一个 diff 合并成视图。d 为 nil 时返回纯基准视图（Name="baseline"）。
 func Merge(g *Graph, d *Diff) *View {
-	v := &View{Name: "baseline", Containers: g.Containers,
+	v := &View{Name: "baseline", Domains: g.Domains, Containers: g.Containers,
 		Nodes: make(map[string]ViewNode, len(g.Nodes))}
 	for id, n := range g.Nodes {
 		v.Nodes[id] = ViewNode{Node: n}

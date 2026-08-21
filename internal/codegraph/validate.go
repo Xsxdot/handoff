@@ -25,8 +25,62 @@ func Validate(g *Graph) []string {
 			}
 		}
 	}
+	issues = append(issues, validateDomains(g)...)
 	sort.Strings(issues)
 	return issues
+}
+
+// validateDomains 检查领域段自洽与容器归属。
+// domains 为空时整段跳过——那是旧扫描数据的合法降级路径，不是错误。
+func validateDomains(g *Graph) []string {
+	if len(g.Domains) == 0 {
+		return nil
+	}
+	var out []string
+	hasChild := map[string]bool{}
+	for id, d := range g.Domains {
+		if d.Parent == "" {
+			continue
+		}
+		if _, ok := g.Domains[d.Parent]; !ok {
+			out = append(out, fmt.Sprintf("领域 %s 的 parent %s 不存在", id, d.Parent))
+			continue
+		}
+		hasChild[d.Parent] = true
+	}
+	// 父链探环：沿 Parent 上溯，重复遇到同一个 id 即成环。
+	// 成环会让消费方的路径推导死循环，必须在数据层拦下。
+	for id := range g.Domains {
+		seen := map[string]bool{id: true}
+		for cur := g.Domains[id].Parent; cur != ""; {
+			if seen[cur] {
+				out = append(out, fmt.Sprintf("领域 %s 的父链存在环", id))
+				break
+			}
+			seen[cur] = true
+			d, ok := g.Domains[cur]
+			if !ok {
+				break // parent 不存在已在上面报过，这里不重复报
+			}
+			cur = d.Parent
+		}
+	}
+	// 容器归属：必须有 domain、领域必须存在、且必须是叶子。
+	// 存在性一律用 ok 判定——拿零值比较会把「存在但字段全空的领域」误判成不存在。
+	for cid, c := range g.Containers {
+		if c.Domain == "" {
+			out = append(out, fmt.Sprintf("容器 %s 未归属领域（domains 非空时每个容器都必须有 domain）", cid))
+			continue
+		}
+		if _, ok := g.Domains[c.Domain]; !ok {
+			out = append(out, fmt.Sprintf("容器 %s 引用不存在的领域 %s", cid, c.Domain))
+			continue
+		}
+		if hasChild[c.Domain] {
+			out = append(out, fmt.Sprintf("容器 %s 挂在非叶子领域 %s（容器只能挂叶子领域）", cid, c.Domain))
+		}
+	}
+	return out
 }
 
 // ValidateDiff 检查 diff 相对基线的引用完整性。
