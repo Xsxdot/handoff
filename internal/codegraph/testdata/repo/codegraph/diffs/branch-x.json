@@ -1,0 +1,11 @@
+{
+  "view": "branch:x", "base": "abc1234", "summary": "改 Do 加 Audit",
+  "nodesAdded": {"n_audit": {"kind": "func", "container": "k_svc", "name": "Server.Audit",
+    "file": "svc/audit.go", "line": 3, "signature": "func (s *Server) Audit() error", "returns": "error", "summary": "审计"}},
+  "nodesModified": {"n_do": {"kind": "func", "container": "k_svc", "name": "Server.Do",
+    "file": "svc/server.go", "line": 4, "signature": "func (s *Server) Do(ctx context.Context) error",
+    "signatureOld": "func (s *Server) Do() error", "returns": "error", "summary": "干活（带 ctx）"}},
+  "nodesDeleted": ["n_save"],
+  "edgesAdded": [["n_do", "n_audit"]],
+  "edgesDeleted": [["n_do", "n_save"]]
+}

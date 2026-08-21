@@ -688,6 +688,66 @@ export interface PtyControl {
   rows?: number
 }
 
+// —— 代码图（spec 2026-08-19-codegraph-design §3）——
+export interface CgTestRef { name: string; file: string; snippet?: string }
+export interface CgNode {
+  kind: 'entry' | 'func' | 'model'
+  container: string
+  order?: number
+  name: string
+  file: string
+  line: number
+  signature?: string
+  signatureOld?: string
+  params?: string[][]
+  returns?: string
+  summary?: string
+  tests?: CgTestRef[]
+  fields?: string[][]
+  unscanned?: boolean
+}
+// CgDomain 是一个领域（领域图的一级组织单位，可嵌套）。
+// 领域由扫描产出，人可在入库后改；parent 为空即顶层。**前端不推导领域**——
+// 按包名猜出来的层级会被当成真实架构读（spec §3.1）。
+export interface CgDomain {
+  label: string
+  kind: string
+  summary?: string
+  desc?: string
+  parent?: string
+}
+export interface CgContainer {
+  label: string
+  kind: string
+  entry?: boolean
+  // domain 是所属领域 id，必须是叶子领域；整图无 domains 段时缺席（旧扫描数据）
+  domain?: string
+}
+export interface CgGraph {
+  meta: { project: string; branch: string; commit: string; scannedAt: string; generator: string }
+  // domains 缺席 = 该图未划分领域，页面降级为单领域视图
+  domains?: Record<string, CgDomain>
+  containers: Record<string, CgContainer>
+  nodes: Record<string, CgNode>
+  edges: [string, string][]
+}
+export interface CgDiff {
+  view: string
+  base?: string
+  summary?: string
+  nodesAdded?: Record<string, CgNode>
+  nodesModified?: Record<string, CgNode>
+  nodesDeleted?: string[]
+  edgesAdded?: [string, string][]
+  edgesDeleted?: [string, string][]
+}
+export interface CgStaleNode { id: string; file: string; line: number; reason: string }
+export interface CodegraphResp {
+  baseline: CgGraph
+  views: Record<string, CgDiff>
+  stale: CgStaleNode[]
+}
+export interface CgSourceResp { file: string; from: number; lines: string[] }
 // DesktopState / LatestResp / DownloadState 与 internal/proto/desktop.go 对应，
 // 两边一起改。字段名严格跟随 Go 的 json tag，避免薄壳状态在 agentd 中转时漂移。
 

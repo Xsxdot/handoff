@@ -17,6 +17,8 @@ import type {
   AddMachineReq,
   BranchesResult,
   CreateWorktreeReq,
+  CgSourceResp,
+  CodegraphResp,
   CreateProjectReq,
   CreateProjectResp,
   CreatePtySessionReq,
@@ -570,6 +572,18 @@ export function patchProject(name: string, req: PatchProjectReq, machine?: strin
 // machine 省略或空串 = 本机。
 export function fetchProjectBranches(name: string, machine?: string): Promise<ProjectBranchesResp> {
   return request<ProjectBranchesResp>(`/api/projects/${encodeURIComponent(name)}/branches${machineQuery(machine)}`)
+}
+
+// fetchCodegraph 取项目的基线、全部 diff 视图与 file:line 保鲜报告。
+export function fetchCodegraph(project: string): Promise<CodegraphResp> {
+  return request<CodegraphResp>(`/api/projects/${encodeURIComponent(project)}/codegraph`)
+}
+
+// fetchCodegraphSource 按节点 file:line 实时读取源码窗口。
+export function fetchCodegraphSource(project: string, file: string, line: number, span = 40): Promise<CgSourceResp> {
+  return request<CgSourceResp>(
+    `/api/projects/${encodeURIComponent(project)}/codegraph/source?file=${encodeURIComponent(file)}&line=${line}&span=${span}`,
+  )
 }
 
 // createWorktree 在项目位置上新建一棵工作树（POST /api/projects/{name}/worktrees）。
