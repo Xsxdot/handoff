@@ -134,9 +134,11 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 // CardStepInFlight 报告卡是否存在仍在运行的环节。
 //
 // 参数 cardID 是要查询的卡号；返回值为在飞标记和查询错误。实现沿用
-// OpenTicketCounts 的同一机制：单遍扫描 EvTaskMirrored，按 source_task 回放
-// 任务生命周期。只有 archived/failed 是终态；completed/turn_failed 对应
-// waiting_review，等裁决仍算在飞。镜像滞后即在飞判定滞后，不另设真相源。
+// OpenTicketCounts 的单遍扫描机制，同时读取卡自己的 EvDispatched 与
+// EvTaskMirrored：派发事件 payload.task_id 加入已派发集合，镜像事件
+// source_task 对应的 archived/failed 加入已收口集合。只有已派发但尚未
+// 收口的 task 才算在飞。completed/turn_failed 对应 waiting_review，等裁决
+// 仍算在飞；镜像滞后即在飞判定滞后，不另设真相源。
 func (s *Store) CardStepInFlight(cardID string) (bool, error) {
 	inFlight, _, err := s.cardStepInFlightQuery(s.db, cardID)
 	return inFlight, err
@@ -153,40 +155,65 @@ func (s *Store) cardStepInFlightTx(tx *sql.Tx, cardID string) (bool, string, err
 }
 
 func (s *Store) cardStepInFlightQuery(q taskEventQueryer, cardID string) (bool, string, error) {
-	rows, err := q.Query(s.q(`SELECT source_task, payload
+	rows, err := q.Query(s.q(`SELECT type, source_task, payload
 		FROM card_events
-		WHERE card_id = ? AND type = ? AND source_target IS NOT NULL
-		ORDER BY seq ASC`), cardID, EvTaskMirrored)
+		WHERE card_id = ? AND type IN (?, ?)
+		ORDER BY seq ASC`), cardID, EvDispatched, EvTaskMirrored)
 	if err != nil {
-		err = fmt.Errorf("读卡在飞镜像事件: %w", err)
-		log().Error("读取在飞任务镜像失败", "card", cardID, "cause", err)
+		err = fmt.Errorf("读卡在飞事件: %w", err)
+		log().Error("读取在飞任务事件失败", "card", cardID, "cause", err)
 		return false, "", err
 	}
 	defer rows.Close()
 
-	closed := make(map[string]bool)
+	dispatched := make(map[string]struct{})
+	closed := make(map[string]struct{})
 	for rows.Next() {
-		var taskID, raw string
-		if err := rows.Scan(&taskID, &raw); err != nil {
-			err = fmt.Errorf("扫卡在飞镜像事件: %w", err)
-			log().Error("扫描在飞任务镜像失败", "card", cardID, "cause", err)
+		var eventType, raw string
+		var sourceTask sql.NullString
+		if err := rows.Scan(&eventType, &sourceTask, &raw); err != nil {
+			err = fmt.Errorf("扫卡在飞事件: %w", err)
+			log().Error("扫描在飞任务事件失败", "card", cardID, "cause", err)
 			return false, "", err
 		}
-		var event mirroredTaskPayload
-		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			err = fmt.Errorf("解码卡在飞镜像事件: %w", err)
-			log().Error("解码在飞任务镜像失败", "card", cardID, "cause", err)
-			return false, "", err
+		switch eventType {
+		case EvDispatched:
+			var dispatch DispatchSnapshot
+			if err := json.Unmarshal([]byte(raw), &dispatch); err != nil {
+				err = fmt.Errorf("解码卡在飞派发事件: %w", err)
+				log().Error("解码在飞任务派发失败", "card", cardID, "cause", err)
+				return false, "", err
+			}
+			if dispatch.TaskID == "" {
+				err := fmt.Errorf("卡在飞派发事件缺少 task_id")
+				log().Error("解码在飞任务派发失败", "card", cardID, "cause", err)
+				return false, "", err
+			}
+			dispatched[dispatch.TaskID] = struct{}{}
+		case EvTaskMirrored:
+			if !sourceTask.Valid || sourceTask.String == "" {
+				err := fmt.Errorf("卡在飞镜像事件缺少 source_task")
+				log().Error("扫描在飞任务镜像失败", "card", cardID, "cause", err)
+				return false, "", err
+			}
+			var event mirroredTaskPayload
+			if err := json.Unmarshal([]byte(raw), &event); err != nil {
+				err = fmt.Errorf("解码卡在飞镜像事件: %w", err)
+				log().Error("解码在飞任务镜像失败", "card", cardID, "cause", err)
+				return false, "", err
+			}
+			if event.TaskType == "archived" || event.TaskType == "failed" {
+				closed[sourceTask.String] = struct{}{}
+			}
 		}
-		closed[taskID] = event.TaskType == "archived" || event.TaskType == "failed"
 	}
 	if err := rows.Err(); err != nil {
-		err = fmt.Errorf("读卡在飞镜像事件: %w", err)
-		log().Error("读取在飞任务镜像失败", "card", cardID, "cause", err)
+		err = fmt.Errorf("读卡在飞事件: %w", err)
+		log().Error("读取在飞任务事件失败", "card", cardID, "cause", err)
 		return false, "", err
 	}
-	for taskID, done := range closed {
-		if !done {
+	for taskID := range dispatched {
+		if _, done := closed[taskID]; !done {
 			log().Debug("卡环节仍在飞", "card", cardID, "task", taskID)
 			return true, taskID, nil
 		}

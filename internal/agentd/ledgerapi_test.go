@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -255,11 +254,11 @@ func TestMigrateAPIProjectsFromTo(t *testing.T) {
 func TestMigrateAPIRejectsInFlightWith409(t *testing.T) {
 	env := newLedgerEnv(t)
 	card := seedCard(t, env, "在飞 409")
-	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{
-		Target: "acc", Task: "T-1", SourceSeq: 1, Type: "dispatched",
-		Payload: nil, CreatedAt: time.Now(),
+	if err := env.ledger.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Target: "acc", TaskID: "T-1", Branch: "cards/" + card.ID + "-T-1",
+		Purpose: ledger.PurposeImplement, Template: "feature-impl", Actor: "test",
 	}); err != nil {
-		t.Fatalf("写镜像事件: %v", err)
+		t.Fatalf("写派发事件: %v", err)
 	}
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/migrate",
 		`{"workflow":"bug","status":"进行中"}`)

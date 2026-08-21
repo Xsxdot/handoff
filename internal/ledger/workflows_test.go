@@ -288,7 +288,12 @@ func TestMigrateRejectsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
-	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "dispatched")
+	if err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Target: "acc", TaskID: "T-1", Branch: "cards/" + c.ID + "-T-1",
+		Purpose: PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatalf("写派发事件: %v", err)
+	}
 	_, err = s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test")
 	if !errors.Is(err, ErrStepInFlight) {
 		t.Fatalf("在飞时应拒绝迁移并包 ErrStepInFlight，实得 %v", err)
