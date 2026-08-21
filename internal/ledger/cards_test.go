@@ -130,6 +130,29 @@ func TestCreateCardValidation(t *testing.T) {
 	}
 }
 
+// 建子卡要在父卡 timeline 留痕：审计链能回答「这张子卡为什么存在、
+// 什么时候从谁身上拆出来的」。复用 EvComment+refs（AddBlocks 同款），
+// 不新增事件类型。
+func TestCreateChildLeavesParentTimelineEvent(t *testing.T) {
+	s := seedStore(t)
+	parent := mk(t, s, "母卡")
+	child := mustChild(t, s, parent.ID, "拆出的子卡")
+
+	events, err := s.EventsFromAsc([]string{parent.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读父卡事件: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == EvComment && strings.Contains(string(event.Payload), child.ID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("父卡 timeline 应有指向 %s 的建子卡事件，实得 %d 条事件", child.ID, len(events))
+	}
+}
+
 func TestUpdateCardAttachAccept(t *testing.T) {
 	s := seedStore(t)
 	card, _ := s.CreateCard(NewCard{Title: "t", Project: "p", Workflow: "feature", Actor: "test"})

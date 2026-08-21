@@ -162,6 +162,16 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 			map[string]any{"title": nc.Title, "workflow": wf.Name, "workflow_version": wf.Version}); err != nil {
 			return err
 		}
+		// 父卡 timeline 留痕：审计链要能从父卡回答「子卡从哪来」。放在同
+		// 一事务里——子卡建了而父卡没痕，或反过来，都是账本自相矛盾。
+		if nc.Parent != "" {
+			if _, err := s.appendEvent(tx, sink, nc.Parent, EvComment, nc.Actor,
+				map[string]any{"kind": "普通",
+					"body": fmt.Sprintf("创建子卡 %s：%s", id, nc.Title),
+					"refs": []string{id}}); err != nil {
+				return err
+			}
+		}
 		card = Card{ID: id, Title: nc.Title, Status: wf.Def.States[0], Priority: nc.Priority,
 			Project: nc.Project, ParentID: nc.Parent, WorkflowName: wf.Name,
 			WorkflowVersion: wf.Version, BaseBranch: nc.BaseBranch, CreatedAt: now, UpdatedAt: now}
