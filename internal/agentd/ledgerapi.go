@@ -538,8 +538,9 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 
 // attachmentKinds 是允许的附件类型。收窄成白名单不是洁癖：附件 kind 是
 // 「进入某一列的门槛」的判据（Gate.RequireAttachment），拼错一个字母会让门
-// 永远过不去，而界面上看着附件明明挂着——那种问题极难自查。
-var attachmentKinds = map[string]bool{"spec": true, "plan": true, "doc": true}
+// 永远过不去，而界面上看着附件明明挂着——那种问题极难自查。新增
+// Gate.RequireAttachment 取值时必须同步登记，家族回归测试会拦住遗漏。
+var attachmentKinds = map[string]bool{"spec": true, "plan": true, "doc": true, "contract": true}
 
 // handleCardCreate 建卡。
 //
@@ -638,7 +639,7 @@ func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleCardAttach 给卡挂一个附件（同 path 幂等）。kind 只认 spec|plan|doc。
+// handleCardAttach 给卡挂一个附件（同 path 幂等）。kind 只认 spec|plan|doc|contract。
 func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
@@ -650,7 +651,7 @@ func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !attachmentKinds[body.Kind] {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("附件 kind 只认 spec|plan|doc，收到 %q", body.Kind))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("附件 kind 只认 spec|plan|doc|contract，收到 %q", body.Kind))
 		return
 	}
 	if strings.TrimSpace(body.Path) == "" {

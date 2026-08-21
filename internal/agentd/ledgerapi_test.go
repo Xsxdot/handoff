@@ -240,6 +240,53 @@ func TestAttachAndDetachViaAPI(t *testing.T) {
 	}
 }
 
+// TestAttachContractViaAPI 穿真实 HTTP handler 验证 domain 的 contract 闸附件
+// 能从 Web 通道写入账本并读回；CLI 能写不代表浏览器这条接缝也能过。
+func TestAttachContractViaAPI(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "domain 契约附件")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/attachments",
+		`{"kind":"contract","path":"docs/superpowers/specs/contract.md"}`)
+	if code != http.StatusOK {
+		t.Fatalf("挂 contract 附件 code = %d, body = %s", code, body)
+	}
+	got, err := env.ledger.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读回卡: %v", err)
+	}
+	if len(got.Attachments) != 1 || got.Attachments[0].Kind != "contract" ||
+		got.Attachments[0].Path != "docs/superpowers/specs/contract.md" {
+		t.Fatalf("contract 附件没挂上: %+v", got.Attachments)
+	}
+}
+
+// TestAttachmentKindsCoverDefaultWorkflowGates 出厂工作流新增闸 kind 时，
+// 必须同步登记 Web 白名单；否则 CLI 与 Web 行为分裂，闸在 Web 永远无法满足。
+func TestAttachmentKindsCoverDefaultWorkflowGates(t *testing.T) {
+	env := newLedgerEnv(t)
+	names, err := env.ledger.ListWorkflowNames()
+	if err != nil {
+		t.Fatalf("列出厂工作流: %v", err)
+	}
+	seen := map[string]string{}
+	for _, name := range names {
+		wf, err := env.ledger.GetWorkflow(name, 0)
+		if err != nil {
+			t.Fatalf("读取工作流 %s: %v", name, err)
+		}
+		for _, node := range wf.Def.Nodes {
+			if kind := node.Gate.RequireAttachment; kind != "" {
+				seen[kind] = name + "/" + node.Name
+			}
+		}
+	}
+	for kind, location := range seen {
+		if !attachmentKinds[kind] {
+			t.Fatalf("工作流 %s 使用的附件 kind %q 未登记到 attachmentKinds", location, kind)
+		}
+	}
+}
+
 func TestAttachRejectsBadKind(t *testing.T) {
 	env := newLedgerEnv(t)
 	card := seedCard(t, env, "带附件的卡")
