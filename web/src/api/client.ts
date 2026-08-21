@@ -122,7 +122,7 @@ async function parseResponse<T>(resp: Response): Promise<T> {
 // 注意：
 //   - 401 的 message 特意写明「重跑 handoff console 换新 cookie」——这是
 //     浏览器会话过期/被吊销时唯一可行动的动作，静默失败会让人无从下手
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
   try {
     resp = await fetch(path, { credentials: 'same-origin', ...init })
@@ -148,7 +148,7 @@ async function requestAllowNoContent<T>(path: string): Promise<T | null> {
 }
 
 // postJSON 以 JSON body 发起 POST 请求。
-function postJSON<T>(path: string, body: unknown): Promise<T> {
+export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -156,8 +156,8 @@ function postJSON<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
-// putJSON 以 JSON body 发起 PUT 请求。
-function putJSON<T>(path: string, body: unknown): Promise<T> {
+// putJSON 以 JSON body 发起 PUT 请求；除 method 外与 postJSON 相同。
+export function putJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -165,10 +165,19 @@ function putJSON<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
-// patchJSON 以 JSON body 发起 PATCH 请求。
-function patchJSON<T>(path: string, body: unknown): Promise<T> {
+// patchJSON 以 JSON body 发起 PATCH 请求；除 method 外与 postJSON 相同。
+export function patchJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// deleteJSON 以 JSON body 发起 DELETE 请求；除 method 外与 postJSON 相同。
+export function deleteJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })

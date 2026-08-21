@@ -98,6 +98,9 @@ const (
 	// **只入库不 Publish**，且在客户端不可交付（见 client.isDeliverable）：它与
 	// completed/failed 同时刻产生，可交付就会抢走一次性 wait 的收手权。
 	EventTypeTicketsVoided EventType = "tickets_voided"
+	// EventTypeTicketAnswered 是 reply/审批者自动批准消耗工单后的审计事件。
+	// 它供账本镜像回放清除对应的未决工单，不唤醒 wait（应答回程另有 hub）。
+	EventTypeTicketAnswered EventType = "ticket_answered"
 	// EventTypeArchived 是任务被 done 归档时追加的终态事件，payload 为 ArchivedPayload。
 	//
 	// 为什么归档需要一条自己的事件：在此之前 Done 只做状态迁移、不追加任何事件，
@@ -232,11 +235,18 @@ type Task struct {
 	// Model 是任务级模型覆盖（dispatch --model）；空=executor 自身默认。
 	Model string `json:"model"`
 	// Discipline 是本任务实际注入的纪律块来源标注（如「内置:single-context」）。
-	// 该列后加、不回填、不编造——老任务为空。
+	// **不落盘**：它只在派发响应里回显给协调者，agentd 重启后为空。
 	//
-	// 为什么要落进 Task 而不只是日志：配置化把纪律块从 plan 文件里拿走后，
-	// 写 plan 的人再也看不见它，dispatch 必须当场回显；CLI 拿到的就是这个对象。
+	// 为什么要回显：配置化把纪律块从 plan 文件里拿走后，写 plan 的人再也看不见它，
+	// dispatch 必须当场把「这次注入的是哪块」说出来；CLI 拿到的就是这个对象。
 	Discipline string `json:"discipline,omitempty"`
+	// DisciplineName 是派发时点名的纪律块角色名（如 review）；空=按 executor 兜底。
+	// 该列后加，老任务为空——空是有意义的取值（走兜底），不回填、不编造。
+	//
+	// 为什么必须落盘：resumeForContinue 与 ResumeTask 只拿得到 executor 名，
+	// 不落盘的话一次 continue 或一次 agentd 重启就会让点名的任务静默退回兜底块，
+	// 而且首回合是对的，事后极难查。
+	DisciplineName string `json:"discipline_name,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`

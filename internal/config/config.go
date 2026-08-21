@@ -104,6 +104,11 @@ type Config struct {
 	EnvForward   []string `yaml:"env_forward,omitempty"`
 	StallTimeout time.Duration
 	Targets      map[string]Target
+	// Ledger 中心账本库连接。DSN 空 = 单机回退模式（账本落
+	// DataDir/ledger.db 的 SQLite）。omitempty 是硬约束不是风格：
+	// 解码是 KnownFields(true)，新键不 omitempty 会让旧版 agentd
+	// 读到新版写的配置直接启动失败。
+	Ledger LedgerConfig `yaml:"ledger,omitempty"`
 	// Approver 是分级审批链的廉价模型审批者配置。Executor 空=不启用审批链
 	//（二期前的现行为：权限请求直接走人工协调者）。
 	Approver ApproverConfig
@@ -131,6 +136,18 @@ type Config struct {
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
 	// Web 是浏览器控制台相关配置。
 	Web WebConfig
+}
+
+// LedgerConfig 账本域（任务卡）中心库配置。只描述本机如何连库，
+// 不描述库里有什么——schema 归 internal/ledger 管。
+type LedgerConfig struct {
+	// Enabled 账本域总开关，默认 false。账本是可选功能：不开时 CLI 的
+	// card/workflow/decision 三族拒绝执行、agentd 不开库不起镜像、web
+	// 不渲染入口。不能用「DSN 非空」当启用信号——单机 SQLite 用户
+	// 恰恰是 DSN 为空的那一类，那样判会把他们永久排除在外。
+	Enabled bool `yaml:"enabled,omitempty"`
+	// DSN 形如 postgres://user:pass@host:5432/db。空 = SQLite 回退。
+	DSN string `yaml:"dsn,omitempty"`
 }
 
 // RelayConfig describes the executor's outbound relay registration.
@@ -518,7 +535,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

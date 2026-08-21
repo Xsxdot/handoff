@@ -182,6 +182,33 @@ To watch the executor live at any moment: `handoff attach <task>`.
 > keep a long `wait --follow` subscription; opencode and codex don't, and the skill steers
 > them to foreground blocking `wait` calls, one turn at a time.
 
+### 节点化工作流
+
+工作流是一串**节点**，每个节点既是看板的一列，也是「卡走到这列时怎么办」的
+配置。系统**不预设任何节点类型**——「审阅」「合并」这些语义由下面几个能力
+开关组合出来：
+
+| 开关 | 含义 |
+|------|------|
+| `dispatch` | 进入这一列时派发一个任务 |
+| `verdict` | 等回合终态、解析 `handoff-verdict` 块并按结果路由（蕴含 `dispatch`） |
+| `carry_card_context` | 把卡上下文（卡号/标题/有效基线/验收判据/附件）拼进 prompt |
+| `max_rounds` | 裁决的轮次封顶，到顶转「需要你」 |
+| `next` / `on_fail` | 通过/未过分别移到哪一列，**按节点名指向** |
+| `human_bases` | 卡的有效基线落在其中时不自动执行，直接转「需要你」 |
+| `gate` | 进入这一列的门槛（要求某类附件 / 要求验收判据非空） |
+
+节点用 `template` 引一份派发模板（执行者、目标机、模型、纪律块、prompt 正文），
+再用 `override` 覆盖其中单个字段——想让审阅这一列换个执行者，只改这一个节点。
+
+**节点配的是规矩，不是具体要干什么。** 「合并到哪条分支」这种每张卡都不同的
+值来自卡本身的**有效基线分支**（子卡自动继承父卡的），由 `carry_card_context`
+带进 prompt；节点上的纪律块只规定「合并目标以卡的基线为准，不要越过它碰别的
+分支」。
+
+工作流不可变版本化：每次保存都是发布一个新版本，卡钉着建卡时的版本，
+老卡完全不受影响。
+
 ### Waiting for another task to be archived
 
 When a second session's work depends on a task you are still reviewing, that session needs

@@ -39,6 +39,8 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -87,9 +89,15 @@ type Server struct {
 	// 未注入时 swapConf 直接报错，绝不猜一个路径写下去。
 	cfgPath string
 	st      *store.Store
-	hub     *Hub
-	log     *slog.Logger
-	mgr     *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	ledger  *ledger.Store
+	// unlinked* caches the only web ledger join that may dial registered targets.
+	// The cache keeps the cards endpoint bounded when a target is unavailable.
+	unlinkedMu    sync.Mutex
+	unlinkedAt    time.Time
+	unlinkedCache map[string]any
+	hub           *Hub
+	log           *slog.Logger
+	mgr           *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -146,6 +154,13 @@ type Server struct {
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
 	pool *targetclient.Pool
+	// cardStepMu / cardStepFlight 守「同一张卡同时只允许一个环节在飞」。
+	// 进程内状态：重启即清空，见 cardstep.go 的边界说明。
+	cardStepMu     sync.Mutex
+	cardStepFlight map[string]bool
+	// runStepFn 是环节执行的落点，只为测试可替换而存在：生产恒为 s.runStep。
+	// 环节要跑几十分钟且会真派 task，单测替换掉它才能验「在飞集合」这类装配逻辑。
+	runStepFn func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string)
 }
 
 // NewServer 创建 agentd 服务端。
@@ -200,9 +215,11 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		downloadChecksum:        desktopDownloadChecksum(inst),
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
+		cardStepFlight:          make(map[string]bool),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
+	s.runStepFn = s.runStep
 	s.cfg.Store(cfg)
 	s.pool = targetclient.NewPool(s.conf, log)
 	s.upd = UpdateDeps{
@@ -495,6 +512,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	s.registerLedgerRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//
@@ -964,6 +982,10 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		return
 	}
+	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
+		ticketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
+		s.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", req.TicketID, "cause", err)
+	}
 
 	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）；
 	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走
@@ -1058,8 +1080,10 @@ type dispatchRequest struct {
 	Prompt      string `json:"prompt"`
 	Name        string `json:"name"`
 	Executor    string `json:"executor"`
-	Model       string `json:"model"`
-	Branch      string `json:"branch"`
+	// Discipline 是派发点名的纪律块角色名；空=按 executor 兜底。
+	Discipline string `json:"discipline"`
+	Model      string `json:"model"`
+	Branch     string `json:"branch"`
 	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
 	NewBranch   string `json:"new_branch"`
 	Base        string `json:"base"`
@@ -1088,7 +1112,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
-		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Model: req.Model,
+		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 	})

@@ -34,6 +34,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgermirror"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/pathenv"
 	"github.com/Xsxdot/handoff/internal/permgate"
@@ -238,6 +240,59 @@ var agentdCmd = &cobra.Command{
 		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), logger)
 		go mirror.Run(wdCtx)
 		logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
+
+		// 账本域是可选功能（默认关）。关掉时既不开库也不起镜像，DataDir 下
+		// 不会凭空多出 ledger.db；web 侧靠 /api/ledger/health 探到 enabled:false
+		// 后不渲染入口。
+		if !cfg.Ledger.Enabled {
+			if cfg.Ledger.DSN != "" {
+				// 配了 dsn 却没开开关是典型的半配状态，静默跳过会让人对着
+				// 一个「配了却不生效」的库排查半天
+				logger.Warn("ledger.dsn 已配置但 enabled=false，账本未启用")
+			} else {
+				logger.Info("账本未启用（ledger.enabled=false）")
+			}
+		} else {
+			// 账本镜像子系统：有已登记 target 才有镜像对象；账本库按配置解析
+			//（dsn 空 = DataDir/ledger.db 单机回退）。构造→go Run→Stop→Close
+			// 的次序是硬约束：订阅回调在写库，Stop 必须先于账本库 Close。
+			// 账本库始终打开：没有登记 target 时镜像循环不启动，但本机 web
+			// 看板仍必须能读写单机回退账本。
+			ldsn := cfg.Ledger.DSN
+			if ldsn == "" {
+				ldsn = filepath.Join(cfg.DataDir, "ledger.db")
+			}
+			lst, err := ledger.Open(ldsn)
+			if err != nil {
+				return fmt.Errorf("打开账本库: %w", err)
+			}
+			defer lst.Close()
+			if err := lst.EnsureDefaultWorkflows(); err != nil {
+				return fmt.Errorf("seed 默认工作流: %w", err)
+			}
+			if err := lst.EnsureDefaultTemplates(); err != nil {
+				return fmt.Errorf("seed 默认派发模板: %w", err)
+			}
+			srv.SetLedger(lst)
+			if len(cfg.Targets) > 0 {
+				host, _ := os.Hostname()
+				lm := ledgermirror.New(lst, func() map[string]config.Target {
+					// /api/machines 热改会原子替换配置快照；从配置文件读取使
+					// 本子系统无需持有启动时的旧 targets 集合。
+					current, err := config.Load(p)
+					if err != nil {
+						logger.Warn("读取镜像 targets 配置失败，沿用启动快照", "err", err)
+						return cfg.Targets
+					}
+					return current.Targets
+				}, ledgermirror.Options{Holder: host})
+				go lm.Run(wdCtx)
+				defer lm.Stop()
+				logger.Info("账本镜像子系统已挂载", "holder", host)
+			} else {
+				logger.Info("账本镜像未启动：无已登记 target")
+			}
+		}
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待

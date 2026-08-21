@@ -5,6 +5,7 @@
 //   「等你答复」标记）；waiting_review → Review；completed/failed → 完成
 //   （failed 视觉区分）。
 import { describe, expect, it } from 'vitest'
+import type { Task } from '../../api/types'
 import {
   COLUMN_LABELS,
   isFailed,
@@ -13,6 +14,7 @@ import {
   stateBadgeVariant,
   stateLabel,
   stateToColumn,
+  unlinkedOnly,
   stateTone,
 } from './columns'
 
@@ -90,5 +92,15 @@ describe('状态的视觉基调（硬契约）', () => {
     expect(stateBadgeVariant('running')).toBe('default')
     expect(stateBadgeVariant('completed')).toBe('secondary')
     expect(stateBadgeVariant('new_unknown_state')).toBe('secondary')
+  })
+})
+
+describe('未挂账兜底', () => {
+  const t = (id: string): Pick<Task, 'id'> => ({ id })
+  it('只看未挂账时只留下不在账本里的 task', () => {
+    expect(unlinkedOnly([t('T1'), t('T2'), t('T3')] as Task[], new Set(['T2'])).map((x) => x.id)).toEqual(['T2'])
+  })
+  it('账本还没读到（未挂账集合为 null）时不过滤，宁可多显示也不能凭空藏任务', () => {
+    expect(unlinkedOnly([t('T1'), t('T2')] as Task[], null).map((x) => x.id)).toEqual(['T1', 'T2'])
   })
 })

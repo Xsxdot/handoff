@@ -13,6 +13,8 @@
 // waiting_answer 刻意不单列：它在实际使用中是瞬时状态，绝大多数工单审核者
 // 当场就答了，给它独立一列是给噪声让位。
 
+import type { Task } from '../../api/types'
+
 export type BoardColumn = 'waiting' | 'active' | 'review' | 'done'
 
 // BOARD_COLUMNS 是看板从左到右的列顺序。
@@ -148,4 +150,16 @@ export function stateBadgeVariant(
     default:
       return 'secondary'
   }
+}
+
+// unlinkedOnly 把任务列表收敛到「未挂账」——账本里没有卡认领它的那些。
+//
+// why 它存在：账本启用时工作项看板（/cards）是主入口，本页是未挂账 task 的兜底；
+// 账本未启用时本页即主入口，不应调用这个过滤器把挂卡 task 隐藏掉。
+//
+// 参数：unlinked 为未挂账 task id 集合；传 null 表示账本还没读到，此时**不过滤**
+// ——宁可多显示几条，也不能因为账本没到位就把任务凭空藏起来。
+export function unlinkedOnly(tasks: Task[], unlinked: Set<string> | null): Task[] {
+  if (unlinked === null) return tasks
+  return tasks.filter((task) => unlinked.has(task.id))
 }

@@ -112,6 +112,39 @@ func initClonedRepo(t *testing.T, baseBranch string) string {
 	return clone
 }
 
+// newOriginAndClone 造一个裸 origin 与已推送初始提交的克隆，供基线分支
+// 补拉测试使用。两个仓库都在 t.TempDir() 下，避免污染被测仓库。
+func newOriginAndClone(t *testing.T) (origin, clone string) {
+	t.Helper()
+	bareParent := t.TempDir()
+	origin = filepath.Join(bareParent, "origin.git")
+	gitAt(t, bareParent, "init", "--bare", "-q", origin)
+	seed := initGitRepo(t)
+	gitAt(t, seed, "remote", "add", "origin", origin)
+	gitAt(t, seed, "push", "-q", "origin", "main")
+	gitAt(t, origin, "symbolic-ref", "HEAD", "refs/heads/main")
+	cloneParent := t.TempDir()
+	clone = filepath.Join(cloneParent, "clone")
+	gitAt(t, cloneParent, "clone", "-q", origin, clone)
+	gitAt(t, clone, "config", "user.email", "test@handoff.dev")
+	gitAt(t, clone, "config", "user.name", "handoff test")
+	return origin, clone
+}
+
+// commitOnOrigin 通过临时克隆向 origin 的 main 推一个提交，返回新提交 sha。
+// 直接在裸仓里无法创建提交，临时克隆也必须放在 t.TempDir()，不能建在仓库内。
+func commitOnOrigin(t *testing.T, origin, name, content string) string {
+	t.Helper()
+	writerParent := t.TempDir()
+	writer := filepath.Join(writerParent, "writer")
+	gitAt(t, writerParent, "clone", "-q", origin, writer)
+	gitAt(t, writer, "config", "user.email", "test@handoff.dev")
+	gitAt(t, writer, "config", "user.name", "handoff test")
+	sha := writeAndCommit(t, writer, name, content)
+	gitAt(t, writer, "push", "-q", "origin", "main")
+	return sha
+}
+
 // TestPrepareBranchCleanAndDirty 验证分支准备的两种前置：
 // 干净工作区 → 建出 handoff/<id8> 并切过去；脏工作区（已修改/未跟踪）→ ErrDirtyWorktree
 // 拒绝派发，且拒绝后不得擅自建分支。
@@ -1117,6 +1150,172 @@ func TestGitNetArgsUnchangedWithoutProxy(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("gitNetArgs = %v，期望 %v", got, want)
 		}
+	}
+}
+
+// TestResolveBaseBranchAlwaysFetches 分支路径必须无条件补拉。
+//
+// 为什么不能照抄提交路径的「本地没有才拉」：分支名在本地**永远解析得到**
+// （那正是陈旧的那一份），拿「解析得到」当「不用拉」的信号，等于让这个 bug
+// 永远走不到修复路径。
+func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	// 在 origin 上再推一个提交，clone 此时还不知道。
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, err := ResolveBaseBranch(context.Background(), clone, "origin", "main")
+	if err != nil {
+		t.Fatalf("ResolveBaseBranch: %v", err)
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 origin 上的最新提交 %s，实得 %s（说明没补拉）", newSHA, got)
+	}
+}
+
+// TestResolveDispatchBaseLocalBranchUsesConfiguredRemote 本地 heads 存在时，D2 应取
+// branch.<name>.remote，而不是无条件猜 origin。
+func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	upstream, _ := newOriginAndClone(t)
+	gitT(t, clone, "remote", "add", "upstream", upstream)
+	gitT(t, clone, "fetch", "-q", "upstream")
+
+	originSHA := commitOnOrigin(t, origin, "origin.txt", "origin")
+	upstreamSHA := commitOnOrigin(t, upstream, "upstream.txt", "upstream")
+	gitT(t, clone, "config", "branch.main.remote", "upstream")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("本地分支的配置远端应触发 D2 fetch")
+	}
+	if originSHA == upstreamSHA {
+		t.Fatalf("夹具必须让两个远端停在不同提交")
+	}
+	if got != upstreamSHA {
+		t.Fatalf("应解析到配置远端 upstream 的最新提交 %s，实得 %s", upstreamSHA, got)
+	}
+	if got == originSHA {
+		t.Fatalf("不应解析到 origin 的提交 %s：配置远端回归网未生效", originSHA)
+	}
+}
+
+// TestResolveBaseBranchMissingBranch origin 上没有该分支时拒绝，且带原文。
+func TestResolveBaseBranchMissingBranch(t *testing.T) {
+	_, clone := newOriginAndClone(t)
+	_, err := ResolveBaseBranch(context.Background(), clone, "origin", "no-such-branch")
+	if err == nil {
+		t.Fatalf("不存在的分支应报错")
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") {
+		t.Fatalf("错误里应带分支名: %v", err)
+	}
+}
+
+// TestResolveDispatchBaseCommitISHKeepsOldPath --base 的短 sha、tag 与 origin/<分支>
+// 都是既有 commit-ish 形态，不能被 D2 当成普通分支去 fetch。
+// 把 origin URL 改成不可用地址：若误走补拉路径，测试会立刻失败；旧解析路径只读
+// 本地对象/ref，仍应成功。
+func TestResolveDispatchBaseCommitISHKeepsOldPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		base func(t *testing.T, repo string) string
+	}{
+		{name: "短 sha", base: func(t *testing.T, repo string) string {
+			full := gitOut(t, repo, "rev-parse", "HEAD")
+			return full[:7]
+		}},
+		{name: "origin 分支全名", base: func(t *testing.T, repo string) string {
+			return "origin/main"
+		}},
+		{name: "tag", base: func(t *testing.T, repo string) string {
+			gitT(t, repo, "tag", "v-test")
+			return "v-test"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, clone := newOriginAndClone(t)
+			base := tc.base(t, clone)
+			want := gitOut(t, clone, "rev-parse", base+"^{commit}")
+			gitT(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
+
+			got, fetched, err := resolveDispatchBase(context.Background(), clone, base)
+			if err != nil {
+				t.Fatalf("resolveDispatchBase(%q): %v", base, err)
+			}
+			if fetched {
+				t.Fatalf("%q 不应触发 origin fetch", base)
+			}
+			if got != want {
+				t.Fatalf("解析结果=%s，期望=%s", got, want)
+			}
+		})
+	}
+}
+
+// TestResolveDispatchBaseAmbiguousRemoteOnlyBranch B76：本地没有同名 heads、origin
+// 与 upstream 却都有同名分支时，不能走 D2 静默拿某一棵，必须保留多远端拒发。
+func TestResolveDispatchBaseAmbiguousRemoteOnlyBranch(t *testing.T) {
+	up := initTestRepo(t)
+	gitT(t, up, "branch", "shared-base")
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitT(t, up, "clone", "-q", up, clone)
+	gitT(t, clone, "remote", "add", "upstream", up)
+	gitT(t, clone, "fetch", "-q", "upstream")
+
+	_, fetched, err := resolveDispatchBase(context.Background(), clone, "shared-base")
+	if fetched {
+		t.Fatalf("多远端歧义不得触发 D2 fetch")
+	}
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("多远端歧义应按 ErrBadWorkspaceReq 拒发，实得 %v", err)
+	}
+	if !strings.Contains(err.Error(), "多个远端") {
+		t.Fatalf("错误必须保留多远端语义，实得 %v", err)
+	}
+}
+
+// TestResolveDispatchBaseRemoteOnlyUpstreamStillFetches 只有 upstream 一棵远端有分支
+// 时，必须从 upstream 补拉而不是写死 fetch origin；在 upstream 上追加提交来证明
+// 读到的是补拉后的尖端，而不是陈旧的 remote-tracking ref。
+func TestResolveDispatchBaseRemoteOnlyUpstreamStillFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitT(t, clone, "remote", "rename", "origin", "upstream")
+	gitT(t, clone, "checkout", "-q", "--detach", "HEAD")
+	gitT(t, clone, "branch", "-D", "main")
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("upstream-only remote-tracking branch 必须触发 D2 fetch")
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 upstream 最新提交 %s，实得 %s", newSHA, got)
+	}
+}
+
+// TestResolveDispatchBaseRemoteOnlyOriginStillFetches 只有 origin/<分支> 远程跟踪
+// ref、没有本地 heads 时仍要补拉；不能为了避开 B76 歧义把这条正常路径一并漏掉。
+func TestResolveDispatchBaseRemoteOnlyOriginStillFetches(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitT(t, clone, "checkout", "-q", "--detach", "HEAD")
+	gitT(t, clone, "branch", "-D", "main")
+	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("resolveDispatchBase: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("origin-only remote-tracking branch 必须触发 D2 fetch")
+	}
+	if got != newSHA {
+		t.Fatalf("应解析到 origin 最新提交 %s，实得 %s", newSHA, got)
 	}
 }
 

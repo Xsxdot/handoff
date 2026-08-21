@@ -10,6 +10,7 @@
 package discipline
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -116,6 +117,64 @@ func (r *Resolver) For(executor string) (Block, error) {
 	}
 	r.log.Info("已加载纪律块", "executor", executor, "path", path, "bytes", len(data))
 	return Block{Text: string(data), Source: "配置:" + name}, nil
+}
+
+// ByName 按**角色名**解析纪律块，与 For（按 executor 兜底）并列的另一条路径。
+//
+// 参数：
+//   - name: 角色名（如 implement / review）；不是路径，含路径分隔符一律拒绝
+//   - executor: 仅在 name==NameImplement 时被使用（选能力档位）
+//
+// 返回：
+//   - Block；名字非法 / 覆盖文件超限或读不到 / 名字既无文件又无同名内置时返回错误
+//
+// 解析顺序：<dir>/<name>.md 存在 → 用它（Source「配置:<name>」）；
+// 否则 → 内置同名块（Source「内置:<name>」）；两者都没有 → 报错。
+//
+// 为什么未知名字是错误而不是退回 executor 兜底：调用方明确点了名，
+// 悄悄换成另一份比失败更危险——它会以为跑的是自己点的那套（与 For 里
+// 「配置指向的文件缺失是错误」同一条理由）。
+//
+// 注意：本方法**不看** executor 的机器级映射，因此机器级的「显式空串关闭」
+// 不作用于点名路径。那个开关属 executor 轴（这台机器给这个执行器派任务时不注入），
+// 角色轴的点名是正确性需求（审阅必须只读），两者不是同一件事。
+func (r *Resolver) ByName(name, executor string) (Block, error) {
+	if strings.TrimSpace(name) == "" || name == "." || name == ".." ||
+		strings.ContainsRune(name, filepath.Separator) || strings.ContainsRune(name, '/') {
+		r.log.Error("纪律块名字非法", "name", name, "dir", r.dir)
+		return Block{}, fmt.Errorf("%w: 纪律块名字 %q 不能是路径或为空", ErrBadName, name)
+	}
+
+	path, err := resolvePath(r.dir, name+".md")
+	if err != nil {
+		r.log.Error("纪律块名字非法", "name", name, "dir", r.dir, "cause", err)
+		return Block{}, fmt.Errorf("%w: 纪律块名字 %q 不合法", ErrBadName, name)
+	}
+	fi, statErr := os.Stat(path)
+	switch {
+	case statErr == nil && fi.Size() > maxBlockSize:
+		r.log.Error("纪律块覆盖文件超限", "name", name, "path", path, "size", fi.Size())
+		return Block{}, fmt.Errorf("纪律块文件 %s 超过 %d 字节上限（实际 %d）", path, maxBlockSize, fi.Size())
+	case statErr == nil:
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			r.log.Error("读取纪律块覆盖文件失败", "name", name, "path", path, "cause", readErr)
+			return Block{}, fmt.Errorf("读取纪律块文件 %s: %w", path, readErr)
+		}
+		r.log.Info("纪律块按名字命中覆盖文件", "name", name, "path", path, "bytes", len(data))
+		return Block{Text: string(data), Source: "配置:" + name}, nil
+	case errors.Is(statErr, os.ErrNotExist):
+		// 只有覆盖文件不存在才继续看内置块；其他 stat 错误要原样暴露，避免把坏配置伪装成默认块。
+	default:
+		r.log.Error("纪律块覆盖文件不可读", "name", name, "path", path, "cause", statErr)
+		return Block{}, fmt.Errorf("读取纪律块文件 %s: %w", path, statErr)
+	}
+	if block, ok := builtinByName(name, executor); ok {
+		r.log.Info("纪律块按名字命中内置", "name", name, "executor", executor, "source", block.Source)
+		return block, nil
+	}
+	r.log.Error("未知纪律块名字", "name", name, "dir", r.dir)
+	return Block{}, fmt.Errorf("未知纪律块名字 %q：既无 %s 也无同名内置块", name, path)
 }
 
 // resolvePath 把配置里的文件名换算为绝对路径，并拒绝一切非「纯文件名」的写法。

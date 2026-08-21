@@ -141,7 +141,8 @@ func isDeliverable(t proto.EventType) bool {
 	case proto.EventTypeProgress,
 		proto.EventTypeApproverDecision,
 		proto.EventTypeApproverDisabled,
-		proto.EventTypeTicketsVoided:
+		proto.EventTypeTicketsVoided,
+		proto.EventTypeTicketAnswered:
 		return false
 	}
 	return true
@@ -708,6 +709,8 @@ type DispatchOpts struct {
 	Prompt      string
 	Name        string
 	Executor    string
+	// Discipline 是本次派发点名的纪律块角色名；空=按 executor 兜底。
+	Discipline  string
 	Model       string
 	Branch      string
 	NewBranch   string
@@ -731,7 +734,8 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"project_id": opts.ProjectID, "project_name": opts.ProjectName,
 		"plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
-		"branch": opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
+		"discipline": opts.Discipline,
+		"branch":     opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
 	})
 	if err != nil {

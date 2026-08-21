@@ -17,13 +17,16 @@
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
+import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
 import { useMachineCaps } from '../data/useMachineCaps'
+import { useLedgerEnabled } from '../data/useLedgerEnabled'
+import { usePoll } from '../data/usePoll'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { isDesktopShell } from '../lib/desktopShell'
@@ -48,6 +51,9 @@ import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphPage } from '../codegraph/CodegraphPage'
+import { CardsPage } from '../cards/CardsPage'
+import { FlowsPage } from '../flows/FlowsPage'
+import { needsAttention } from '../cards/columns'
 import { UpdateToasts } from '../update/UpdateToasts'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
@@ -62,6 +68,7 @@ export function Shell() {
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
   const wb = useWorkbench()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -73,6 +80,26 @@ export function Shell() {
   const [editProject, setEditProject] = useState<ProjectNode | null>(null)
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
+  const { enabled: ledgerEnabled } = useLedgerEnabled()
+  const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
+  const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
+  const cardNeedsCount = useMemo(() => {
+    // 账本未启用时角标恒 0：轮询已关，cardsState 永远是 null，这里显式返回
+    // 比依赖「null 恰好算出 0」可靠
+    if (!ledgerEnabled) return 0
+    const cards = cardsState.data?.cards ?? []
+    const cardCount = cards.filter(needsAttention).length
+    const projectDecisionCount = (decisionsState.data ?? []).filter((decision) => decision.card_id === '').length
+    return cardCount + projectDecisionCount
+  }, [ledgerEnabled, cardsState.data, decisionsState.data])
+  // 未挂账 task = 账本里没有卡认领它的那些。任务看板降级为它们的兜底入口
+  // （工作项看板是主入口），所以这个集合同时喂给 dock 角标与看板的默认筛选。
+  // 账本还没读到时给 null——不过滤，宁可多显示也不能凭空藏任务。
+  const unlinkedTaskIds = useMemo(() => {
+    const summary = cardsState.data?.unlinked
+    if (!summary) return null
+    return new Set((summary.tasks ?? []).map((task) => task.task_id))
+  }, [cardsState.data])
   const caps = useMachineCaps()
   // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
   // 浮窗里的入口不渲染。
@@ -327,12 +354,38 @@ export function Shell() {
     treeState.refresh()
   }
 
+  // backToWorkbench 把中央区换回工作台。
+  //
+  // why 每个「改工作台状态」的入口都得先调它：工作台挂在 path="*" 上，停在
+  // /cards、/flows、/settings 时它根本没渲染。只改状态不换路由的后果是——
+  // 面包屑跟着变了，中央还是原来那一页，看着像点击没反应（2026-08-19 真机踩到）。
+  // 已在 / 上时不导航，避免往历史里塞无意义的同址条目。
+  const backToWorkbench = () => {
+    if (location.pathname !== '/') navigate('/')
+  }
+
+  // fullPageRoute = 中央区被整页替换掉的那些路由。
+  //
+  // why 要判它：右栏文件树与面包屑都挂在 <Routes> 外面、只跟 wb.base 走，
+  // 于是点了目录再点「工作项」，中央换成了看板、右边那棵文件树却一直挂着，
+  // 面包屑也还写着上一个目录（2026-08-19 真机看到）。它们是工作台的一部分，
+  // 不属于这些整页。左栏导航树不在此列——它是导航，任何页面都该在。
+  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines']
+    .some((path) => location.pathname.startsWith(path))
+
+  // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
+  const selectDir = (base: BaseDir) => {
+    backToWorkbench()
+    wb.select(base)
+  }
+
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
   // 左栏任务行、看板卡片、/tasks/:id 深链、工单弹层的「跳到该任务」都走它。
   // 首参为 null（工单弹层、未归属任务）时先用树解析任务自己的目录；解析不出
   // （任务真的不在树上）才退回「当前选中目录」，一个都没选中则 wb.open 空操作。
   const openTaskTui = (base: BaseDir | null, taskId: string) => {
     setOverlay('none')
+    backToWorkbench()
     let target = base
     if (target === null && treeState.data) {
       target = findBaseOfTask(treeState.data, tasks, taskId)
@@ -377,9 +430,14 @@ export function Shell() {
             selectedKey={wb.base?.key ?? null}
             ticketCount={tickets.count}
             ticketsByDir={tickets.byWorkDir}
-            onSelectDir={wb.select}
+            onSelectDir={selectDir}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
+            onOpenCards={() => navigate('/cards')}
+            onOpenFlows={() => navigate('/flows')}
+            ledgerEnabled={ledgerEnabled}
+            cardNeedsCount={cardNeedsCount}
+            unlinkedCount={unlinkedTaskIds?.size ?? 0}
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onOpenCodegraph={() => navigate('/codegraph')}
@@ -399,9 +457,15 @@ export function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
-        {wb.base && !desktop && <Breadcrumb base={wb.base} />}
+        {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
         <main className="min-h-0 flex-1">
           <Routes>
+            {ledgerEnabled && (
+              <>
+                <Route path="/cards" element={<CardsPage />} />
+                <Route path="/flows" element={<FlowsPage />} />
+              </>
+            )}
             <Route
               path="/settings"
               element={<SettingsPage onClose={() => navigate('/')} />}
@@ -476,7 +540,7 @@ export function Shell() {
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
-      {wb.base && wb.base.kind === 'workspace' && (
+      {wb.base && wb.base.kind === 'workspace' && !fullPageRoute && (
         <div className="w-[280px] shrink-0">
           <FileTree
             base={wb.base}
@@ -535,6 +599,8 @@ export function Shell() {
         <BoardOverlay
           tasksState={tasksState}
           tree={treeState.data}
+          unlinkedTaskIds={unlinkedTaskIds}
+          ledgerEnabled={ledgerEnabled}
           onOpenTask={openTaskTui}
           onClose={() => setOverlay('none')}
         />

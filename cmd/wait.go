@@ -79,9 +79,8 @@ var waitTimeout time.Duration
 var waitCmd = &cobra.Command{
 	Use:   "wait <task>",
 	Short: "阻塞等待任务的下一个可动作事件（question/permission_request 等）",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		taskID := args[0]
 		// 负时长必须报错而不是当「不设上限」：--timeout 的用途正是无人值守时
 		// 的最后一道防线，把 -5s 静默当成「永远等下去」，等于在最需要兜底的
 		// 场景把兜底悄悄关掉
@@ -93,6 +92,12 @@ var waitCmd = &cobra.Command{
 		if followFlag && waitUntilDone {
 			return fmt.Errorf("--follow 与 --until-done 不能同时使用：前者交付审核事件，后者只等归档")
 		}
+		if len(args) != 1 {
+			return fmt.Errorf("需要 task id 参数")
+		}
+		taskID := args[0]
+		// main 的 relay 改造把带 token 的 client 构造收进 newTargetClient()，
+		// 这里只还需要 addr 做日志与 pull 的落点，token 不再单独取
 		addr, _, err := TargetEndpoint()
 		if err != nil {
 			return err

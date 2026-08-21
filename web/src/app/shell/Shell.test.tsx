@@ -33,6 +33,15 @@ vi.mock('../../api/client', async () => {
   }
 })
 const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchWorkbenchState, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
+
+vi.mock('../../api/ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../api/ledger')>('../../api/ledger')
+  return {
+    ...actual,
+    // Shell 既有路由/工作台回归按账本已启用基线运行；关闭态由门控专项断言。
+    fetchLedgerHealth: vi.fn().mockResolvedValue({ enabled: true, mirror: [] }),
+  }
+})
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
 // 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
 const termInstance = {
@@ -295,6 +304,41 @@ describe('Shell 三栏外框', () => {
     renderShell('/tasks/T1')
     await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
+  })
+
+  // 停在 /cards 或 /flows 时，工作台挂在 path="*" 上根本没渲染——侧栏点任务
+  // 只改了工作台状态，中央还是看板，面包屑却已经跟着变了。真机实测踩到。
+  it('停在 /cards 时点左栏任务，中央换回工作台并开 TUI tab', async () => {
+    renderShell('/cards')
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
+  })
+
+  it('停在 /cards 时点左栏目录，中央换回工作台', async () => {
+    renderShell('/cards')
+    // 右栏文件树挂在 Routes 外面，光看它不区分；判据要钉中央区——
+    // 账本页的占位文案消失才说明路由真的换回了工作台
+    await waitFor(() => expect(screen.getByText(/正在读取账本/)).toBeInTheDocument())
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.queryByText(/正在读取账本/)).not.toBeInTheDocument())
+    expect(screen.getByText('文件')).toBeInTheDocument()
+  })
+
+  // 右栏文件树与面包屑都挂在 Routes 外面、只跟 wb.base 走，整页路由把中央
+  // 换掉后它们还留着——点了目录再点「工作项」，文件面板一直挂在右边。
+  it('整页路由（/cards）不渲染右栏文件树与面包屑', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('工作项'))
+    await waitFor(() => expect(screen.queryByText('文件')).not.toBeInTheDocument())
+    expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
+  })
+
+  it('从整页路由点回目录，右栏文件树回来', async () => {
+    renderShell('/cards')
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
   })
 
   it('顶部 tab 条已删除', async () => {

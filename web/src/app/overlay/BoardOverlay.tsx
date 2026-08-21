@@ -17,18 +17,26 @@ import { BoardPage } from '../board/BoardPage'
 import { Overlay } from './Overlay'
 
 export interface BoardOverlayProps {
+  // unlinkedTaskIds 未挂账 task id 集合；null = 账本未就绪，看板不做未挂账过滤
   tasksState: PollState<Task[]>
   tree: ProjectTreeResp | null
   onOpenTask: (base: BaseDir | null, taskId: string) => void
+  unlinkedTaskIds?: Set<string> | null
+  // ledgerEnabled 由 Shell 的一次性探测传入；未启用时看板是任务主入口。
+  ledgerEnabled?: boolean
   onClose: () => void
 }
 
-export function BoardOverlay({ tasksState, tree, onOpenTask, onClose }: BoardOverlayProps) {
+export function BoardOverlay({ tasksState, tree, unlinkedTaskIds, ledgerEnabled = false, onOpenTask, onClose }: BoardOverlayProps) {
+  // 账本未启用时看板就是任务主入口，「未挂账兜底」会暴露不存在的账本概念。
+  const title = ledgerEnabled ? '任务看板（未挂账兜底）' : '任务看板'
   return (
-    <Overlay title="任务看板" onClose={onClose} wide tall>
+    <Overlay title={title} onClose={onClose} wide tall>
       <BoardPage
         tasksState={tasksState}
         tree={tree}
+        unlinkedTaskIds={unlinkedTaskIds ?? null}
+        ledgerEnabled={ledgerEnabled}
         onOpenTask={(base, id) => {
           onClose()
           onOpenTask(base, id)

@@ -101,7 +101,10 @@ func Open(path string) (*Store, error) {
   -- 所以 0 可以安全地当哨兵，读取时还原成 nil（绝不冒充 0）。
   actual_model TEXT NOT NULL DEFAULT '',
   usage_context_tokens INTEGER NOT NULL DEFAULT 0,
-  usage_context_window INTEGER NOT NULL DEFAULT 0)`,
+  usage_context_window INTEGER NOT NULL DEFAULT 0,
+  -- discipline_name：派发时点名的纪律块角色名；空=按 executor 兜底。
+  -- continue/resume 靠它重解析，不落盘会让点名任务在第二回合静默换块。
+  discipline_name TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS task_usage_ledger (
   -- B83 账本：一行 = 一次「新增消耗」的账目，累计值由对本表求和得到。
   -- 为什么不在 tasks 表上冗余累计列：冗余就有一致性问题（漏写一次永久偏差），
@@ -238,6 +241,7 @@ func Open(path string) (*Store, error) {
 		"actual_model":         "TEXT NOT NULL DEFAULT ''",
 		"usage_context_tokens": "INTEGER NOT NULL DEFAULT 0",
 		"usage_context_window": "INTEGER NOT NULL DEFAULT 0",
+		"discipline_name":      "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -274,12 +278,12 @@ func (s *Store) Close() error {
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
-		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles)
+		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -288,11 +292,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
 // taskColumns 是 tasks 表的完整读取列清单：GetTask / ListTasks /
 // ActiveTasksByWorkDir 共用同一份。为什么要共用：这份清单原先在两处各抄一遍，
-// 每加一列就得同步四个位置（DDL/迁移/写/读×N），漏一处的表现是运行期
-// Scan 列数不匹配——集中到一处后加列只改这里与 scanTaskRow。
+// 每加一列就得同步四个位置，漏一处的表现是运行期 Scan 列数不匹配。
+//
+// 加一列要改**四处**：建表 DDL、迁移 map、INSERT（列清单 + 占位符 + 实参）、
+// 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
 const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
-  actual_model, usage_context_tokens, usage_context_window`
+  actual_model, usage_context_tokens, usage_context_window, discipline_name`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -316,7 +322,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
-		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow); err != nil {
+		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow, &task.DisciplineName); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)

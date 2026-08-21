@@ -822,6 +822,11 @@ var FetchTimeout = 2 * time.Minute
 // baseCommitRe 限定基线只能是 40 位小写十六进制（git rev-parse HEAD 的输出形态）。
 var baseCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// commitishRe 识别 --base 里不应触发网络补拉的十六进制提交缩写。
+// ResolveBaseline 仍只接受 40 位小写 sha；这里服务的是另一个字段 req.Base，
+// 它历史上一直交给 resolveCommit 处理短 sha，所以判定范围不能收窄到 40 位。
+var commitishRe = regexp.MustCompile(`^[0-9a-fA-F]{4,40}$`)
+
 // Baseline 是一次基线决议的结果：校验结论与新分支起点出自同一次计算。
 //
 // 为什么必须是同一个结构而不是分两次算：B35 的根因就是「校验这个 sha 存不存在」
@@ -869,13 +874,7 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 	// rev-parse 不 DWIM：base 分支只以 refs/remotes/*/<rev> 存在时上面的调用取不到
 	// （B76 的触发前提正是这种仓库）。按 git checkout 的 guess 语义补一次「唯一
 	// 远程跟踪 ref」匹配，剥到 commit 后与主路径同款校验与落日志。
-	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+rev)
-	var cands []string
-	for _, line := range strings.Split(matches, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			cands = append(cands, line)
-		}
-	}
+	cands := remoteBranchCandidates(ctx, repo, rev)
 	// 多于一棵远端同时有这个分支名：歧义，拒发（git 同样不猜）。歧义不是
 	// 「不存在」——起点明明在，让协调者去 git push 是把他引向错误方向（fork
 	// 工作流 origin+upstream 同名分支会真实撞上）；出路是给带远端前缀的全名
@@ -883,9 +882,7 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 	if len(cands) > 1 {
 		log().Warn("起点解析歧义：多棵远端都有同名分支，拒绝派发",
 			"repo", repo, "base", rev, "cands", cands)
-		return "", fmt.Errorf("%w: 起点 %s 在多个远端同时存在（%s）；"+
-			"请改用带远端前缀的全名（如 --base upstream/%s）或直接给 40 位 sha",
-			ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
+		return "", ambiguousRemoteBranchError(rev, cands)
 	}
 	if len(cands) == 1 {
 		if mout, _, e := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", cands[0]+"^{commit}"); e == nil && strings.TrimSpace(mout) != "" {
@@ -898,6 +895,128 @@ func resolveCommit(ctx context.Context, repo, rev string) (string, error) {
 		"stderr", strings.TrimSpace(truncateRunes(stderr, 300)))
 	return "", fmt.Errorf("%w: 起点 %s 在任务仓库中不存在"+
 		"（若它是你本地的分支，先 git push 再派发；或换一个起点）", ErrBadWorkspaceReq, rev)
+}
+
+// remoteBranchCandidates 列出仓库里当前已知的同名远程跟踪分支。
+// 查询失败按空列表处理：调用方仍会走原有的 commit-ish 解析并给出可操作错误。
+func remoteBranchCandidates(ctx context.Context, repo, branch string) []string {
+	matches, _, _ := gitRun(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+branch)
+	var cands []string
+	for _, line := range strings.Split(matches, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			cands = append(cands, line)
+		}
+	}
+	return cands
+}
+
+// remoteFromBranchCandidate 从 refs/remotes/<remote>/<branch> 中取出远端名。
+// branch 可能包含斜杠，所以必须按完整 branch 后缀剥离，不能简单 strings.Split。
+func remoteFromBranchCandidate(ref, branch string) string {
+	const prefix = "refs/remotes/"
+	suffix := "/" + branch
+	if !strings.HasPrefix(ref, prefix) || !strings.HasSuffix(ref, suffix) {
+		return ""
+	}
+	remote := strings.TrimSuffix(strings.TrimPrefix(ref, prefix), suffix)
+	return remote
+}
+
+// ambiguousRemoteBranchError 统一 B76 的多远端拒发文案，避免补拉路径与旧解析路径
+// 对同一个安全问题给出两种说法。
+func ambiguousRemoteBranchError(rev string, cands []string) error {
+	return fmt.Errorf("%w: 起点 %s 在多个远端同时存在（%s）；"+
+		"请改用带远端前缀的全名（如 --base upstream/%s）或直接给 40 位 sha",
+		ErrBadWorkspaceReq, rev, strings.Join(cands, "、"), rev)
+}
+
+// refExists 判断一个完整 ref 是否存在，不把正常的未命中写成 ERROR 日志。
+func refExists(ctx context.Context, repo, ref string) bool {
+	_, _, err := gitProbe(ctx, repo, "show-ref", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// remoteQualifiedBase 判断 rev 是否已经明确指定了某个远端（如 origin/main）。
+// 不能仅凭包含斜杠判断：feature/x 是合法的普通分支名，也必须走 D2 补拉。
+func remoteQualifiedBase(ctx context.Context, repo, rev string) bool {
+	// origin/xxx 是 CLI 已承诺支持的完整远端形态；即使当前仓库的 remote
+	// 配置损坏，也应回到 resolveCommit 报出原有错误，而不是尝试 fetch origin/xxx。
+	if strings.HasPrefix(rev, "origin/") {
+		return true
+	}
+	remotes, _, _ := gitRun(ctx, repo, "remote")
+	for _, line := range strings.Split(remotes, "\n") {
+		remote := strings.TrimSpace(line)
+		if remote != "" && (rev == remote || strings.HasPrefix(rev, remote+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// needsBaseBranchSync 判定 req.Base 是否要走 D2 的远端补拉路径。
+//
+// 只有「普通分支名」才补拉：短 sha、tag、显式 ref、远端全名与其他可直接由
+// resolveCommit 处理的 commit-ish 继续走老路。无本地 heads、但只有一棵远程跟踪
+// 分支时仍然补拉；这是执行机镜像陈旧的核心场景。无本地 heads 且多棵远端同名时
+// 刻意返回 false，让 resolveCommit 的 B76 歧义拒发继续生效，而不是静默挑 origin。
+func needsBaseBranchSync(ctx context.Context, repo, rev string) bool {
+	if strings.HasPrefix(rev, "refs/") || strings.HasPrefix(rev, "HEAD") || remoteQualifiedBase(ctx, repo, rev) {
+		return false
+	}
+	localHead := refExists(ctx, repo, "refs/heads/"+rev)
+	if localHead {
+		return true
+	}
+	if commitishRe.MatchString(rev) {
+		return false
+	}
+	if refExists(ctx, repo, "refs/tags/"+rev) {
+		return false
+	}
+	cands := remoteBranchCandidates(ctx, repo, rev)
+	if !localHead && len(cands) > 1 {
+		return false
+	}
+	if localHead || len(cands) == 1 {
+		return true
+	}
+	// 没有任何 ref 时，仍先试一次本地 commit-ish；这样 HEAD~1、对象全 sha 等
+	// 形态不会被误送进网络 fetch。普通的未知分支则解析失败，再走 D2 补拉。
+	if _, _, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); err == nil {
+		return false
+	}
+	return true
+}
+
+// resolveDispatchBase 按 --base 的形态选择旧 commit-ish 解析或 D2 分支补拉。
+// 返回值 fetched 供 manager 日志标记是否真的走过 origin fetch。
+func resolveDispatchBase(ctx context.Context, repo, rev string) (resolved string, fetched bool, err error) {
+	if !needsBaseBranchSync(ctx, repo, rev) {
+		resolved, err = resolveCommit(ctx, repo, rev)
+		return resolved, false, err
+	}
+	resolved, err = ResolveBaseBranch(ctx, repo, baseBranchRemote(ctx, repo, rev), rev)
+	return resolved, true, err
+}
+
+// baseBranchRemote 为 D2 选择真正持有分支的远端：本地分支优先看其配置的
+// branch.<name>.remote；本地没有时看唯一远程跟踪 ref；都无法确定时才回退 origin。
+func baseBranchRemote(ctx context.Context, repo, branch string) string {
+	if refExists(ctx, repo, "refs/heads/"+branch) {
+		if out, _, err := gitProbe(ctx, repo, "config", "--get", "branch."+branch+".remote"); err == nil {
+			if remote := strings.TrimSpace(out); remote != "" {
+				return remote
+			}
+		}
+		return "origin"
+	}
+	if cands := remoteBranchCandidates(ctx, repo, branch); len(cands) == 1 {
+		if remote := remoteFromBranchCandidate(cands[0], branch); remote != "" {
+			return remote
+		}
+	}
+	return "origin"
 }
 
 // ResolveBaseline 决议任务的基线：校验协调者本地基线在任务仓库中可用，并给出
@@ -952,6 +1071,45 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 	bl := Baseline{Start: sha, Ahead: countAhead(ctx, repo, sha), Fetched: fetched}
 	log().Info("基线决议完成", "repo", repo, "start", bl.Start, "ahead", bl.Ahead, "fetched", bl.Fetched)
 	return bl, nil
+}
+
+// ResolveBaseBranch 把基线**分支名**解析成完整 sha，起点取指定远端上的那一份。
+//
+// 参数：repo 任务仓库路径；remote 持有该分支的远端名；branch 基线分支名。
+// 返回：remote/<branch> 的完整 sha；分支在远端上不存在或 fetch 失败时报错。
+//
+// 与 ResolveBaseline（提交路径）唯一的、也是必须的不同：**无条件 fetch**。
+// 提交路径是「本地没有才拉」，因为 commit sha 在本地要么有要么没有，是可靠
+// 信号；而分支名在本地永远解析得到——那正是陈旧的那一份。拿「解析得到」当
+// 「不用拉」的信号，会让「执行机镜像陈旧导致起点错」这个 bug 永远不触发
+// 修复路径。无本地同名 heads 且发现多棵远端同名 ref 时，仍在 fetch 前拒发。
+func ResolveBaseBranch(ctx context.Context, repo, remote, branch string) (string, error) {
+	localHead := refExists(ctx, repo, "refs/heads/"+branch)
+	if !localHead {
+		if cands := remoteBranchCandidates(ctx, repo, branch); len(cands) > 1 {
+			log().Warn("基线分支解析歧义：补拉前发现多棵远端同名分支，拒绝派发",
+				"repo", repo, "branch", branch, "cands", cands)
+			return "", ambiguousRemoteBranchError(branch, cands)
+		}
+	}
+	log().Info("解析基线分支，补拉远端", "repo", repo, "remote", remote, "branch", branch, "timeout", FetchTimeout)
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	if _, stderr, err := gitRunNet(fctx, repo, "fetch", remote, branch); err != nil {
+		log().Error("基线分支补拉失败", "repo", repo, "remote", remote, "branch", branch,
+			"stderr", truncateRunes(stderr, 500), "cause", err)
+		return "", fmt.Errorf("%w: 基线分支 %q 从远端 %q 补拉失败（fetch 输出：%s）",
+			ErrBaseCommitMissing, branch, remote, strings.TrimSpace(truncateRunes(stderr, 300)))
+	}
+	out, stderr, err := gitRun(ctx, repo, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		log().Warn("基线分支解析失败", "repo", repo, "remote", remote, "branch", branch,
+			"stderr", truncateRunes(stderr, 300))
+		return "", fmt.Errorf("%w: 基线分支 %q 在远端 %q 上不存在", ErrBaseCommitMissing, branch, remote)
+	}
+	sha := strings.TrimSpace(out)
+	log().Info("基线分支解析完成", "repo", repo, "remote", remote, "branch", branch, "start", sha)
+	return sha, nil
 }
 
 // headCommit 取仓库当前 HEAD 的完整 sha。
