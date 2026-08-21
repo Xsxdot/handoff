@@ -50,6 +50,31 @@ describe('DomainPanorama', () => {
     fireEvent.click(container.querySelector('[data-domain="ext:d_cli"]')!)
     expect(onEnter).toHaveBeenLastCalledWith('d_cli')
   })
+  it('不出滚动条：靠平移而不是滚动来看画布外的领域', () => {
+    const { container } = render(<DomainPanorama view={mergeView(g)} scope={null} {...base} />)
+    const wrap = container.firstElementChild as HTMLElement
+    expect(wrap.className).toContain('overflow-hidden')
+    expect(wrap.className).not.toContain('overflow-auto')
+  })
+  it('空白拖动平移画布；在卡片上按下不平移（那是拖卡片）', () => {
+    const { container } = render(<DomainPanorama view={mergeView(g)} scope={null} {...base} />)
+    const wrap = container.firstElementChild as HTMLElement
+    const canvas = wrap.querySelector('div.relative') as HTMLElement
+    const before = canvas.style.transform
+    // 空白处按下并拖动 → 画布位移
+    fireEvent.mouseDown(wrap, { clientX: 10, clientY: 10 })
+    fireEvent.mouseMove(window, { clientX: 90, clientY: 50 })
+    fireEvent.mouseUp(window)
+    expect(canvas.style.transform).not.toBe(before)
+    expect(canvas.style.transform).toContain('translate(80px, 40px)')
+    // 在卡片上按下 → 不平移，交给卡片自己的拖拽
+    const held = canvas.style.transform
+    const card = container.querySelector('[data-domain]') as HTMLElement
+    fireEvent.mouseDown(card, { clientX: 200, clientY: 200 })
+    fireEvent.mouseMove(window, { clientX: 300, clientY: 260 })
+    fireEvent.mouseUp(window)
+    expect(canvas.style.transform).toBe(held)
+  })
   it('叠加 diff 视图时，领域卡显示加/改/删计数徽标', () => {
     const d: CgDiff = {
       view: 'branch:x',

@@ -57,6 +57,52 @@ export function DomainPanorama(props: DomainPanoramaProps) {
   // 拖拽标志：拖完紧接着会冒出一个 click，用它把那次 click 吞掉，
   // 否则「拖动卡片」会被误判成「点击选中」
   const dragged = useRef(false)
+  // 平移/缩放：与叶子领域的焦点图同一套手势，全景不该是另一种操作方式
+  const wrap = useRef<HTMLDivElement>(null)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  // 换一层领域就回到原点：上一层的视口位置对新的一层没有意义
+  useEffect(() => { setPan({ x: 0, y: 0 }); setZoom(1) }, [scope])
+
+  // 空白拖动平移：卡片/连线标签/控制按钮上按下不算，交给它们自己的处理
+  const onPan = (ev: React.MouseEvent) => {
+    if ((ev.target as HTMLElement).closest('[data-domain],[data-dedge],[data-relayout]')) return
+    const sx = ev.clientX
+    const sy = ev.clientY
+    const o = pan
+    const move = (e: MouseEvent) => setPan({ x: o.x + e.clientX - sx, y: o.y + e.clientY - sy })
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    ev.preventDefault()
+  }
+
+  // 滚轮：普通=平移；ctrl/⌘=以光标为不动点缩放（触控板捏合也走 ctrlKey 路径）。
+  // 必须 passive:false 才能 preventDefault，否则 ⌘+滚轮会被浏览器当成页面缩放。
+  useEffect(() => {
+    const el = wrap.current
+    if (!el) return
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault()
+      if (ev.ctrlKey || ev.metaKey) {
+        const r = el.getBoundingClientRect()
+        const mx = ev.clientX - r.left
+        const my = ev.clientY - r.top
+        setZoom((z) => {
+          const nz = Math.min(2.5, Math.max(0.3, z * Math.exp(-ev.deltaY * 0.0035)))
+          setPan((p) => ({ x: mx - (mx - p.x) * (nz / z), y: my - (my - p.y) * (nz / z) }))
+          return nz
+        })
+      } else {
+        setPan((p) => ({ x: p.x - ev.deltaX, y: p.y - ev.deltaY }))
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
 
   const onDrag = (id: string, ev: React.MouseEvent) => {
     const sx = ev.clientX
@@ -64,8 +110,9 @@ export function DomainPanorama(props: DomainPanoramaProps) {
     const orig = pos[id] ?? [0, 0]
     dragged.current = false
     const move = (e: MouseEvent) => {
-      const dx = e.clientX - sx
-      const dy = e.clientY - sy
+      // 屏幕位移要除以缩放才是画布位移，否则放大后卡片跟不上光标
+      const dx = (e.clientX - sx) / zoom
+      const dy = (e.clientY - sy) / zoom
       // 4px 阈值：手抖不算拖动，否则选中会变得很难点
       if (Math.abs(dx) > 4 || Math.abs(dy) > 4) dragged.current = true
       if (!dragged.current) return
@@ -96,12 +143,13 @@ export function DomainPanorama(props: DomainPanoramaProps) {
   }
 
   return (
-    <div className="relative min-w-0 flex-1 overflow-auto">
+    <div ref={wrap} className="relative min-w-0 flex-1 cursor-grab overflow-hidden" onMouseDown={onPan}>
       {/* 拖乱了一键重排：从当前布局重新松弛，不是推倒重来 */}
       <button data-relayout onClick={() => setPos(layoutDomains(agg, ids, pos))}
         className="absolute right-3 top-2.5 z-30 rounded border bg-background px-2 py-0.5 text-xs"
         title="拖乱了就重排一次">重新布局</button>
-      <div className="relative" style={{ width: W, height: H }}>
+      <div className="relative"
+        style={{ width: W, height: H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
         <svg width={W} height={H} className="absolute inset-0">
           {[...agg.edges.entries()].map(([key, de]) => {
             if (!pos[de.from] || !pos[de.to]) return null

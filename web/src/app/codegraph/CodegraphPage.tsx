@@ -132,7 +132,7 @@ export function CodegraphPage() {
               {scope === null ? (
                 <>
                   <b>领域全景</b>
-                  <span className="text-[11px] text-muted-foreground">点卡片看职责 · 点连线看谁调谁 · 进入 ▸ 下钻</span>
+                  <span className="text-[11px] text-muted-foreground">点卡片看职责 · 点连线看谁调谁 · 进入 ▸ 下钻 · 空白拖动平移 · ⌘/⌃+滚轮缩放</span>
                 </>
               ) : (
                 <>
