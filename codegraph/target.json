@@ -1,0 +1,73 @@
+{
+  "meta": { "version": 1, "project": "handoff" },
+  "domains": [
+    {
+      "id": "d_coordination",
+      "name": "协作控制",
+      "type": "logic",
+      "paths": ["internal/agentd/**", "cmd/**", "internal/proto/**", "internal/store/**", "internal/codegraph/**"]
+    },
+    {
+      "id": "d_sessions",
+      "name": "终端会话",
+      "type": "boundary",
+      "paths": ["internal/ptyhost/**", "internal/executor/turn/**"]
+    },
+    {
+      "id": "d_execution",
+      "name": "执行运行",
+      "type": "boundary",
+      "paths": ["internal/executor/**", "internal/prochost/**"]
+    },
+    {
+      "id": "d_runtime",
+      "name": "本机治理",
+      "type": "logic",
+      "paths": [
+        "internal/config/**",
+        "internal/discipline/**",
+        "internal/envfile/**",
+        "internal/logx/**",
+        "internal/pathenv/**",
+        "internal/permgate/**",
+        "internal/buildinfo/**",
+        "internal/release/**",
+        "internal/selfupdate/**",
+        "internal/skill/**",
+        "internal/toolchain/**",
+        "internal/upgrade/**"
+      ]
+    },
+    {
+      "id": "d_transport",
+      "name": "跨机连接",
+      "type": "boundary",
+      "paths": ["internal/client/**", "internal/relay/**", "internal/targetclient/**", "internal/proxycfg/**"]
+    },
+    {
+      "id": "d_workspace",
+      "name": "项目工作区",
+      "type": "logic",
+      "paths": ["internal/localsync/**", "internal/projectid/**"]
+    }
+  ],
+  "assignments": [
+    { "path": "internal/agentd/mirror.go", "domain": "d_workspace" },
+    { "path": "internal/agentd/reclaim.go", "domain": "d_workspace" }
+  ],
+  "assembly": ["main.go", "cmd/main.go"],
+  "contracts": [
+    { "from": "d_coordination", "to": "d_execution", "entries": [], "legacyBudget": 35 },
+    { "from": "d_coordination", "to": "d_runtime", "entries": [], "legacyBudget": 109 },
+    { "from": "d_coordination", "to": "d_sessions", "entries": [], "legacyBudget": 19 },
+    { "from": "d_coordination", "to": "d_transport", "entries": [], "legacyBudget": 75 },
+    { "from": "d_coordination", "to": "d_workspace", "entries": [], "legacyBudget": 37 },
+    { "from": "d_runtime", "to": "d_coordination", "entries": [], "legacyBudget": 1 },
+    { "from": "d_runtime", "to": "d_transport", "entries": [], "legacyBudget": 2 },
+    { "from": "d_sessions", "to": "d_coordination", "entries": [], "legacyBudget": 1 },
+    { "from": "d_sessions", "to": "d_execution", "entries": [], "legacyBudget": 6 },
+    { "from": "d_transport", "to": "d_coordination", "entries": [], "legacyBudget": 25 },
+    { "from": "d_transport", "to": "d_runtime", "entries": [], "legacyBudget": 3 },
+    { "from": "d_workspace", "to": "d_coordination", "entries": [], "legacyBudget": 20 }
+  ]
+}
