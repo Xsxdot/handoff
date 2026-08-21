@@ -58,8 +58,16 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 				"error": "任务在机器 " + target + " 上，但它已不在本机配置的 targets 中"})
 			return
 		}
+		// relay 机器没有 addr，传输必须复用池里的选路结果（与各扇出同一条纪律）
+		c, err := s.pool.For(target)
+		if err != nil {
+			s.log.Error("任务路由：取目标客户端失败", "task", id, "machine", target, "cause", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "转发到 " + target + " 失败: " + err.Error()})
+			return
+		}
 		s.log.Info("任务路由：转发到远端", "task", id, "machine", target,
 			"method", r.Method, "path", r.URL.Path)
-		s.forwardTo(w, r, target, t.Addr, t.Token)
+		s.forwardTo(w, r, target, c, t.Token)
 	}
 }

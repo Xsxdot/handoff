@@ -288,6 +288,20 @@ func (c *Client) checkInit() error { return c.initErr }
 // 直达对端），直连形态是 http://<addr>。只读，不暴露 token。
 func (c *Client) BaseURL() string { return c.baseURL }
 
+// HTTPClient 返回本 client 的底层 http.Client，供 agentd 的转发基座做原样搬运。
+//
+// 为什么要暴露它：跨机转发（REST/WS 反代）搬的是任意方法与路径的原始报文，
+// 走不了本包的类型化方法；而选路（relay 隧道还是直连）恰恰长在这个 http.Client
+// 的 Transport 里——转发层自己 new 一个就等于绕开选路，relay 机器会退化成
+// "no Host in request URL"。
+//
+// 注意：
+//   - 返回的是共享实例，调用方**不得**改它的字段（Timeout/Transport 等）
+//   - Timeout 恒为 0（超时由调用方经 context 施加），同时满足 coder/websocket
+//     对 HTTPClient.Timeout 必须为零的硬要求
+//   - 不暴露 token：转发层的 Authorization 由它自己按 target 配置设置
+func (c *Client) HTTPClient() *http.Client { return c.hc }
+
 // wsDialOptions 组装 WS 拨号选项：本 Client 自己的 http.Client + Bearer 头。
 //
 // **HTTPClient 必须显式给出，这是本函数存在的全部理由。** 不给时

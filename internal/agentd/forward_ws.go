@@ -29,17 +29,6 @@ import (
 // 比让用户对着一个转圈的终端强。建连之后的数据流**不受它约束**。
 const wsDialBudget = 10 * time.Second
 
-// noProxyWSClient 是 agentd→agentd WS 转发专用的 http.Client。
-//
-// 存在的唯一理由是 **Proxy 显式留空**：agentd 之间是 LAN/Tailscale 直连，
-// 永不经代理（纪律见 internal/proxycfg 包头）。零值 http.Transport 的 Proxy
-// 就是 nil，这里写出来是为了让「刻意不走代理」这件事在代码里看得见——
-// 上一次它只是隐式成立，于是新加的 WS 路径漏掉了它（B161）。
-//
-// 不设 Timeout：coder/websocket 要求 HTTPClient.Timeout 为零，拨号时限由
-// wsDialBudget 经 context 施加。
-var noProxyWSClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
-
 // forwardWS 把一条 WS 请求反代到 machine 指定的机器。
 //
 // 关键顺序：**先拨上游，成功了再 Accept 本地**。反过来的话，上游不可达时
@@ -53,9 +42,17 @@ func (s *Server) forwardWS(w http.ResponseWriter, r *http.Request, machine strin
 			"error": "机器 " + machine + " 未在本机配置的 targets 中定义"})
 		return
 	}
-	target, err := forwardURL(t.Addr, r.URL) // 复用 REST 那份：同时摘掉 machine 参数
+	// relay 机器没有 addr，拨号传输必须复用池里的选路结果（与 forwardTo 同一条纪律）
+	c, err := s.pool.For(machine)
 	if err != nil {
-		s.log.Error("WS 转发失败：目标地址不合法", "machine", machine, "addr", t.Addr, "cause", err)
+		s.log.Error("WS 转发失败：取目标客户端失败", "machine", machine, "relay", t.IsRelay(), "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "转发到 " + machine + " 失败: " + err.Error()})
+		return
+	}
+	target, err := forwardURL(c.BaseURL(), r.URL) // 复用 REST 那份：同时摘掉 machine 参数
+	if err != nil {
+		s.log.Error("WS 转发失败：目标地址不合法", "machine", machine, "base_url", c.BaseURL(), "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "转发到 " + machine + " 失败: " + err.Error()})
 		return
@@ -77,7 +74,11 @@ func (s *Server) forwardWS(w http.ResponseWriter, r *http.Request, machine strin
 		// HTTP_PROXY。而 proxycfg 包头写死：agentd 之间那条链路永不走代理
 		//（它是 LAN/Tailscale 地址，代理化轻则多绕一跳、重则解析不了直接断链）。
 		// B161 实测过客户端侧的同款缺陷：代理回 503，长连接永远建不起来且不报错。
-		HTTPClient: noProxyWSClient,
+		//
+		// 用池客户端的 http.Client 一石二鸟：relay 形态经隧道拨（direct 构造压根
+		// 到不了 relay 对端），直连形态的 Transport 带 Proxy:nil（B161 纪律不丢）；
+		// 其 Timeout 恒为 0，满足 coder/websocket 的硬要求，时限仍由 dialCtx 施加。
+		HTTPClient: c.HTTPClient(),
 	})
 	if err != nil {
 		s.log.Error("WS 转发失败：上游不可达", "machine", machine, "path", r.URL.Path,
