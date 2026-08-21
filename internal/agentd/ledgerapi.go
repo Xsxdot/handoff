@@ -19,6 +19,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // SetLedger 注入账本库（agentd 启动时；nil = 未配置，除 health 外 API 降级 503）。
@@ -140,8 +141,12 @@ func (s *Server) cfgTargets() map[string]config.Target {
 	return s.conf().Targets
 }
 
-// unlinkedSummary 「未挂账」摘要：登记 target 上存在、但 card_tasks 里
-// 没有的 task。拨号失败进入 unknown_targets，而不是假装为零。
+// unlinkedSummary 「未挂账」摘要：登记 target 上存在、card_tasks 里没有、
+// **且还没走到终态**的 task。拨号失败进入 unknown_targets，而不是假装为零。
+//
+// 为什么排除终态（见 unlinkedRowsFor）：这个摘要的用途是「账目对不上，需要
+// 补挂卡」的兜底提醒——已 completed/failed 的历史任务补挂已无意义，把它们
+// 算进来只会让角标常年停在三位数（实测本机 164 条全是终态），提醒退化成噪声。
 func (s *Server) unlinkedSummary() map[string]any {
 	s.unlinkedMu.Lock()
 	defer s.unlinkedMu.Unlock()
@@ -183,14 +188,7 @@ func (s *Server) unlinkedSummary() map[string]any {
 			unknown = append(unknown, name)
 			continue
 		}
-		for _, task := range tasks {
-			if linked[name+"/"+task.ID] {
-				continue
-			}
-			rows = append(rows, map[string]any{
-				"target": name, "task_id": task.ID, "title": task.Name, "state": task.State,
-			})
-		}
+		rows = append(rows, unlinkedRowsFor(name, tasks, linked)...)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		leftTarget, _ := rows[i]["target"].(string)
@@ -208,6 +206,32 @@ func (s *Server) unlinkedSummary() map[string]any {
 	}
 	s.unlinkedAt = time.Now()
 	return s.unlinkedCache
+}
+
+// unlinkedRowsFor 从一台 target 的任务列表里挑出该计入「未挂账」的行。
+//
+// 参数：target 为本机配置里这台机器的键名；tasks 为它当前的任务列表；
+// linked 为 "target/task_id" → true 的挂账索引（由 ledger.AllTaskLinks 建立）。
+// 返回：可直接进 JSON 的行，顺序与 tasks 一致（排序由调用方统一做）。
+//
+// 两条排除规则，缺一不可：
+//   - 已挂账的跳过——它们在工作项看板里有卡认领，不属于「对不上账」
+//   - 终态（completed / failed）的跳过——终态任务不再有 executor 持有工作区，
+//     事后补挂卡改变不了任何事实；它们是历史残留而非待办
+func unlinkedRowsFor(target string, tasks []proto.TaskView, linked map[string]bool) []map[string]any {
+	rows := make([]map[string]any, 0, len(tasks))
+	for _, task := range tasks {
+		if linked[target+"/"+task.ID] {
+			continue
+		}
+		if task.State.IsTerminal() {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"target": target, "task_id": task.ID, "title": task.Name, "state": task.State,
+		})
+	}
+	return rows
 }
 
 func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {

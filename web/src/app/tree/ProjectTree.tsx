@@ -28,7 +28,7 @@
 //
 // 计数来源：任务流（2.5s），见 counts.ts 的文件头注释。
 //
-// 任务 9：底部「添加项目」接 onAddProject 打开登记向导；机器（位置）行右侧悬浮
+// 任务 9：「项目 N」标题行右侧的「添加项目」图标接 onAddProject 打开登记向导；机器（位置）行右侧悬浮
 // 注销按钮（仅当 onUnregister 提供时渲染），点按弹 ConfirmDialog 二次确认，
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -74,12 +74,16 @@ export interface ProjectTreeProps {
   // 只能手敲 /flows——spec §5 要求入口挂 dock
   onOpenFlows?: () => void
   // unlinkedCount 未挂账 task 数，挂在任务看板按钮上——它现在是兜底入口，
-  // 有未挂账时才值得点开（主入口是工作项看板）
+  // 有未挂账时才值得点开（主入口是工作项看板）。
+  // 口径由 agentd 的 unlinkedSummary 定义：**只数非终态**的未挂账 task。
+  // 终态的历史任务补挂卡已无意义，算进来角标会常年停在三位数，提醒退化成噪声。
   unlinkedCount?: number
   cardNeedsCount?: number
   onOpenTickets: () => void
   onOpenSettings: () => void
   onOpenCodegraph?: () => void
+  // onAddProject 打开项目登记向导。入口是「项目 N」标题行右侧的 + 图标——
+  // 它改变树本身，与底部那排「去别处看」的跳转入口不是一类东西。
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -423,7 +427,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         {projectSplit.hiddenCount > 0 && (
           <span className="font-normal normal-case text-muted-foreground/70">· 已隐藏 {projectSplit.hiddenCount}</span>
         )}
-        <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-0.5">
+          {/* 「添加项目」跟着它作用的对象走：这一行说的就是「项目 N」，加一个
+              项目属于同一件事。原先钉在左栏底部，离标题一屏远，而底部那排全是
+              「离开这棵树去别处看」的跳转入口，一个会改变树本身的动作混在里面
+              不是一类东西 */}
+          <button
+            type="button"
+            aria-label="添加项目"
+            title="添加项目"
+            onClick={onAddProject}
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          >
+            <Plus className="size-3.5" />
+          </button>
           {/* 菜单吃的是**原树**的项目，不是过滤后的：藏起来的项目要能勾回来 */}
           <TreePrefsMenu
             prefs={prefs}
@@ -729,19 +746,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       </div>
 
       {/* 第三段：钉在底部 */}
-      {/* 底部四入口：添加项目占主位，看板 / 工单 / 设置收在右侧图标区。
-          三个图标是同一类东西——都是「离开这棵树去别处看」的全局入口，
-          所以摆在一起（看板原先单独钉在顶部，那个位置让它看起来像是树的一部分）。
-          工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了 */}
-      <div className="mt-1 flex items-center gap-1 border-t px-2 pt-2">
-        <button
-          type="button"
-          onClick={onAddProject}
-          className="flex flex-1 items-center gap-1.5 rounded-md py-1 pl-1 text-left text-[13px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-        >
-          <Plus className="size-4 shrink-0" />
-          <span>添加项目</span>
-        </button>
+      {/* 底部只放跳转入口：工作项 / 看板 / 流程 / 工单 / 代码图 / 设置。
+          它们是同一类东西——都是「离开这棵树去别处看」的全局入口，所以摆在
+          一起（看板原先单独钉在顶部，那个位置让它看起来像是树的一部分）。
+          「添加项目」不在这里：它改变树本身，已上移到「项目 N」那一行。
+          工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了。
+          justify-around 而非左对齐：少了占主位的文字按钮后，一排图标挤在
+          左半边会让右半边看起来像渲染缺了东西 */}
+      <div className="mt-1 flex items-center justify-around gap-0.5 border-t px-2 pt-2">
         {ledgerEnabled && (
           <button
             type="button"
