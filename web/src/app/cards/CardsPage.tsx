@@ -7,6 +7,7 @@ import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
 import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, visibleColumns } from './columns'
 import { ListView } from './ListView'
+import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
 
 const POLL_MS = 2500
@@ -63,6 +64,7 @@ export function CardsPage() {
   const [needsOnly, setNeedsOnly] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
+  const [migrateCardId, setMigrateCardId] = useState<string | null>(null)
   const [drawerFocus, setDrawerFocus] = useState<'merge' | undefined>()
   const [project, setProject] = useState('')
   const [workflow, setWorkflow] = useState('')
@@ -157,13 +159,19 @@ export function CardsPage() {
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
       {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} nodes={drawerNodes} />}
       <NewCardDialog
         open={newCardOpen} project={newCardProject} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}
         onCreated={(id) => { setNewCardOpen(false); cardsPoll.refresh(); openDrawer(id) }}
+      />
+      <MigrateDialog
+        open={migrateCardId !== null}
+        cardId={migrateCardId ?? ''}
+        onClose={() => setMigrateCardId(null)}
+        onMigrated={() => { setMigrateCardId(null); cardsPoll.refresh() }}
       />
     </main>
   )

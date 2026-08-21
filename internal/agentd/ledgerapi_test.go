@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -193,6 +194,77 @@ func TestMigrateCardRouteUsesExplicitTargetShape(t *testing.T) {
 	}
 	if !response.OK || response.ID != card.ID || response.From == nil || response.To == nil || response.Event == nil {
 		t.Fatalf("迁移响应缺契约字段: %s", body)
+	}
+}
+
+// TestMigrateAPIProjectsFromTo 迁移响应必须带 from/to/event——穿真实 HTTP
+// handler 断言，Store 有值不代表 wire 上有值（ChildrenTotal 教训）。
+func TestMigrateAPIProjectsFromTo(t *testing.T) {
+	env := newLedgerEnv(t)
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "迁移投影", Project: "p", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/migrate",
+		`{"workflow":"bug","status":"进行中"}`)
+	if code != http.StatusOK {
+		t.Fatalf("迁移 code=%d body=%s", code, body)
+	}
+	var resp struct {
+		OK   *bool `json:"ok"`
+		From *struct {
+			Workflow *string `json:"workflow"`
+			Status   *string `json:"status"`
+			Version  *int    `json:"workflow_version"`
+		} `json:"from"`
+		To *struct {
+			Workflow *string `json:"workflow"`
+			Status   *string `json:"status"`
+			Version  *int    `json:"workflow_version"`
+		} `json:"to"`
+		Event *struct {
+			Type *string `json:"type"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解码响应: %v body=%s", err, body)
+	}
+	if resp.OK == nil || !*resp.OK {
+		t.Fatalf("响应 ok 键缺失或为假：%s", body)
+	}
+	if resp.From == nil || resp.To == nil || resp.Event == nil {
+		t.Fatalf("响应缺 from/to/event：%s", body)
+	}
+	if resp.From.Workflow == nil || *resp.From.Workflow != "triage" {
+		t.Fatalf("from.workflow 不对：%s", body)
+	}
+	if resp.To.Workflow == nil || *resp.To.Workflow != "bug" ||
+		resp.To.Status == nil || *resp.To.Status != "进行中" {
+		t.Fatalf("to 不对：%s", body)
+	}
+	if resp.To.Version == nil {
+		t.Fatal("to.workflow_version 键缺失——版本必须回给调用方（契约拍板记录②）")
+	}
+	if resp.Event.Type == nil || *resp.Event.Type != "workflow_migrated" {
+		t.Fatalf("event.type 不对：%s", body)
+	}
+}
+
+// TestMigrateAPIRejectsInFlightWith409 在飞时 handler 把 Store 的错误翻成 409，
+// 不自己做检查（契约拍板记录④：handler 只翻错误码）。
+func TestMigrateAPIRejectsInFlightWith409(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "在飞 409")
+	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{
+		Target: "acc", Task: "T-1", SourceSeq: 1, Type: "dispatched",
+		Payload: nil, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("写镜像事件: %v", err)
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/migrate",
+		`{"workflow":"bug","status":"进行中"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("在飞迁移应 409，实得 %d body=%s", code, body)
 	}
 }
 

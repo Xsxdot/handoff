@@ -133,10 +133,63 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 
 // CardStepInFlight 报告卡是否存在仍在运行的环节。
 //
-// 参数 cardID 是要查询的卡号；返回值为在飞标记和查询错误。实现应沿用
-// OpenTicketCounts 的同一机制：单遍扫描 EvTaskMirrored，回放任务生命周期。
-// 接受的取舍是镜像滞后即在飞判定滞后，不另设真相源。B167-L 将承接该派生查询。
+// 参数 cardID 是要查询的卡号；返回值为在飞标记和查询错误。实现沿用
+// OpenTicketCounts 的同一机制：单遍扫描 EvTaskMirrored，按 source_task 回放
+// 任务生命周期。只有 archived/failed 是终态；completed/turn_failed 对应
+// waiting_review，等裁决仍算在飞。镜像滞后即在飞判定滞后，不另设真相源。
 func (s *Store) CardStepInFlight(cardID string) (bool, error) {
-	// TODO(B167-L): 按 OpenTicketCounts 回放 EvTaskMirrored 任务生命周期。
-	return false, nil
+	inFlight, _, err := s.cardStepInFlightQuery(s.db, cardID)
+	return inFlight, err
+}
+
+type taskEventQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// cardStepInFlightTx 是迁移事务使用的同一派生查询，避免把门禁读到事务外
+// 形成 TOCTOU 窗口。公开查询与事务查询共享回放实现，保持两个入口同一把尺。
+func (s *Store) cardStepInFlightTx(tx *sql.Tx, cardID string) (bool, string, error) {
+	return s.cardStepInFlightQuery(tx, cardID)
+}
+
+func (s *Store) cardStepInFlightQuery(q taskEventQueryer, cardID string) (bool, string, error) {
+	rows, err := q.Query(s.q(`SELECT source_task, payload
+		FROM card_events
+		WHERE card_id = ? AND type = ? AND source_target IS NOT NULL
+		ORDER BY seq ASC`), cardID, EvTaskMirrored)
+	if err != nil {
+		err = fmt.Errorf("读卡在飞镜像事件: %w", err)
+		log().Error("读取在飞任务镜像失败", "card", cardID, "cause", err)
+		return false, "", err
+	}
+	defer rows.Close()
+
+	closed := make(map[string]bool)
+	for rows.Next() {
+		var taskID, raw string
+		if err := rows.Scan(&taskID, &raw); err != nil {
+			err = fmt.Errorf("扫卡在飞镜像事件: %w", err)
+			log().Error("扫描在飞任务镜像失败", "card", cardID, "cause", err)
+			return false, "", err
+		}
+		var event mirroredTaskPayload
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			err = fmt.Errorf("解码卡在飞镜像事件: %w", err)
+			log().Error("解码在飞任务镜像失败", "card", cardID, "cause", err)
+			return false, "", err
+		}
+		closed[taskID] = event.TaskType == "archived" || event.TaskType == "failed"
+	}
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("读卡在飞镜像事件: %w", err)
+		log().Error("读取在飞任务镜像失败", "card", cardID, "cause", err)
+		return false, "", err
+	}
+	for taskID, done := range closed {
+		if !done {
+			log().Debug("卡环节仍在飞", "card", cardID, "task", taskID)
+			return true, taskID, nil
+		}
+	}
+	return false, "", nil
 }
