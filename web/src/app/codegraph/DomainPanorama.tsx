@@ -12,6 +12,7 @@ import { layoutDomains } from './domainlayout'
 import type { CgView } from './graphmath'
 
 const CARD_W = 252
+const CARD_H = 112      // 卡高实测 89~108，取上界；与 domainlayout 的分离用同一个值
 const EXT_W = 196
 
 interface DomainPanoramaProps {
@@ -53,7 +54,6 @@ export function DomainPanorama(props: DomainPanoramaProps) {
   )
   // 位置：进入新的一层就按布局算一次；拖拽只改这里的状态，不回写数据
   const [pos, setPos] = useState<Record<string, [number, number]>>({})
-  useEffect(() => { setPos(layoutDomains(agg, ids)) }, [agg, ids])
   // 拖拽标志：拖完紧接着会冒出一个 click，用它把那次 click 吞掉，
   // 否则「拖动卡片」会被误判成「点击选中」
   const dragged = useRef(false)
@@ -61,8 +61,47 @@ export function DomainPanorama(props: DomainPanoramaProps) {
   const wrap = useRef<HTMLDivElement>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
-  // 换一层领域就回到原点：上一层的视口位置对新的一层没有意义
-  useEffect(() => { setPan({ x: 0, y: 0 }); setZoom(1) }, [scope])
+  // 进入新的一层：算布局，并把内容整体缩放平移到刚好铺满视口。
+  //
+  // 为什么必须自动适配：全景没有滚动条了，落在视口外的卡片等于不存在——用户
+  // 既不知道有内容，也不知道该往哪个方向拖。窄面板下 6 张卡散在 1200+ 的画布上
+  // 打开就是一片空白，正是这个症状。
+  // 只缩不放（zoom 上限 1）：内容装得下就按原尺寸显示，不要把小图放大到糊。
+  useEffect(() => {
+    const next = layoutDomains(agg, ids)
+    setPos(next)
+    const el = wrap.current
+    if (!el || !ids.length) {
+      setPan({ x: 0, y: 0 })
+      setZoom(1)
+      return
+    }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const id of ids) {
+      const p = next[id]
+      if (!p) continue
+      const w = agg.cards[id]?.ext ? EXT_W : CARD_W
+      x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1])
+      x1 = Math.max(x1, p[0] + w); y1 = Math.max(y1, p[1] + CARD_H)
+    }
+    if (!Number.isFinite(x0)) return
+    const padX = 24, padTop = 44, padBottom = 24
+    const vw = el.clientWidth - padX * 2
+    const vh = el.clientHeight - padTop - padBottom
+    // 容器还没被测量（首次挂载、或被折叠）时不要适配：vw/vh 会是 0 甚至负数，
+    // 算出来的缩放就是 0 或负值——画布会塌成一点或翻转。宁可保持 1:1 不动。
+    if (vw < 80 || vh < 80) {
+      setPan({ x: 0, y: 0 })
+      setZoom(1)
+      return
+    }
+    const z = Math.max(0.3, Math.min(1, vw / (x1 - x0), vh / (y1 - y0)))
+    setZoom(z)
+    setPan({
+      x: padX + (vw - (x1 - x0) * z) / 2 - x0 * z,
+      y: padTop + (vh - (y1 - y0) * z) / 2 - y0 * z,
+    })
+  }, [agg, ids])
 
   // 空白拖动平移：卡片/连线标签/控制按钮上按下不算，交给它们自己的处理
   const onPan = (ev: React.MouseEvent) => {

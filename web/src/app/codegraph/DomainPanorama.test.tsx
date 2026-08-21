@@ -56,6 +56,16 @@ describe('DomainPanorama', () => {
     expect(wrap.className).toContain('overflow-hidden')
     expect(wrap.className).not.toContain('overflow-auto')
   })
+  it('容器还没量到尺寸时不适配：缩放不能算成 0 或负数', () => {
+    // jsdom 的 clientWidth/clientHeight 恒为 0，正好是「还没测量」这个真实场景。
+    // 没有守卫时 vw = 0 - 48 = -48，算出 scale(-0.21)：画布翻转塌陷。
+    const { container } = render(<DomainPanorama view={mergeView(g)} scope={null} {...base} />)
+    // 注意外层 wrap 自己也带 relative 类，要从 wrap 里面找画布
+    const wrap = container.firstElementChild as HTMLElement
+    const canvas = wrap.querySelector('div.relative') as HTMLElement
+    const z = Number(/scale\(([-\d.]+)\)/.exec(canvas.style.transform)![1])
+    expect(z).toBe(1)
+  })
   it('空白拖动平移画布；在卡片上按下不平移（那是拖卡片）', () => {
     const { container } = render(<DomainPanorama view={mergeView(g)} scope={null} {...base} />)
     const wrap = container.firstElementChild as HTMLElement
@@ -66,7 +76,9 @@ describe('DomainPanorama', () => {
     fireEvent.mouseMove(window, { clientX: 90, clientY: 50 })
     fireEvent.mouseUp(window)
     expect(canvas.style.transform).not.toBe(before)
-    expect(canvas.style.transform).toContain('translate(80px, 40px)')
+    const d = (t: string) => (/translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(t) as RegExpExecArray).slice(1).map(Number)
+    expect(d(canvas.style.transform)[0] - d(before)[0]).toBe(80)
+    expect(d(canvas.style.transform)[1] - d(before)[1]).toBe(40)
     // 在卡片上按下 → 不平移，交给卡片自己的拖拽
     const held = canvas.style.transform
     const card = container.querySelector('[data-domain]') as HTMLElement
