@@ -4,7 +4,11 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/codegraph"
 )
 
 // runGraph 执行 handoff graph <args...>，返回 stdout 与 err。
@@ -145,5 +149,59 @@ func TestGraphCheckMissingTargetFails(t *testing.T) {
 	_, err := runGraph(t, "check", "--repo", t.TempDir())
 	if err == nil {
 		t.Fatal("无 target 的 check 必须失败")
+	}
+}
+
+func TestGraphAbsorb(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "absorb", "branch-x", "--repo", repo, "--commit", "abc123", "--branch", "main")
+	if err != nil {
+		t.Fatalf("absorb 应通过: %v\n%s", err, out)
+	}
+	g, err := codegraph.LoadGraph(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Meta.Commit != "abc123" || g.Meta.Branch != "main" {
+		t.Fatalf("meta 来源戳未刷新: %+v", g.Meta)
+	}
+	if _, ok := g.Nodes["n_audit"]; !ok {
+		t.Fatal("added 节点未写入基线")
+	}
+	if _, ok := g.Nodes["n_save"]; ok {
+		t.Fatal("deleted 节点仍在基线")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "codegraph", "diffs", "branch-x.json")); !os.IsNotExist(err) {
+		t.Fatalf("diff 应在写盘成功后删除，stat=%v", err)
+	}
+}
+
+func copyFixtureRepo(t *testing.T, src, dst string) {
+	t.Helper()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		from := filepath.Join(src, entry.Name())
+		to := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := os.MkdirAll(to, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			copyFixtureRepo(t, from, to)
+			continue
+		}
+		raw, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(to, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
