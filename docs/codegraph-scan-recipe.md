@@ -31,6 +31,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 | containers | Record<string, Container> | 分组盒子，key 是容器 ID |
 | nodes | Record<string, Node> | 节点，key 是节点 ID |
 | edges | [string, string][] | 调用关系 [caller, callee] |
+| implements | [string, string][] | 接口满足关系 [实现节点 id, 接口节点 id] |
 
 meta 字段：
 
@@ -102,6 +103,8 @@ tests 中每个 TestRef 字段：
 | nodesDeleted | string[] | 是 | 被删除的基线节点 ID |
 | edgesAdded | [string, string][] | 是 | 新增调用关系 |
 | edgesDeleted | [string, string][] | 是 | 删除调用关系 |
+| implementsAdded | [string, string][] | 是 | 新增接口满足关系 [实现节点 id, 接口节点 id] |
+| implementsDeleted | [string, string][] | 是 | 删除接口满足关系 [实现节点 id, 接口节点 id] |
 
 未发生变化的字段可以省略（消费方按空 map/空数组处理）。nodesModified 中必须
 提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
@@ -137,6 +140,9 @@ tests 中每个 TestRef 字段：
 - **desc 写内部逻辑**：这个领域内部怎么组织、有哪些关键类型、对外靠什么方式协作。
 - **领域之间的连线不用手写**：消费方按跨领域的调用边自动聚合，只要 container.domain
   归属正确，连线与「对外开放接口」清单就是对的。
+- 接口类型建 model 节点；扫到 `var _ Iface = (*Impl)(nil)`、方法集满足或显式注入处，
+  为每个实现产一条 implements 边；接口节点归**使用方**的容器/域，实现节点归提供方
+  （消费者侧接口惯例，spec §3）。
 
 ## 硬纪律（历次扫描验证过的坑）
 
