@@ -121,8 +121,9 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 			"id": view.ID, "title": view.Title, "status": view.Status, "priority": view.Priority,
 			"project": view.Project, "workflow": view.WorkflowName, "parent": view.ParentID, "base_branch": view.BaseBranch,
 			"attachments": view.Attachments, "following": view.Following,
-			"merged_count": view.MergedCount,
-			"blocked":      view.Blocked, "blocked_by": view.BlockedBy, "needs": view.NeedsReason,
+			"merged_count": view.MergedCount, "children_total": view.ChildrenTotal,
+			"children_done": view.ChildrenDone,
+			"blocked":       view.Blocked, "blocked_by": view.BlockedBy, "needs": view.NeedsReason,
 			"open_decisions": view.OpenDecisions, "conflict": conflict,
 			"open_tickets": tickets[view.ID],
 		})

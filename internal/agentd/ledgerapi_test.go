@@ -307,6 +307,49 @@ func TestLedgerAPI(t *testing.T) {
 	}
 }
 
+// TestCardsListWireCarriesChildrenCounts 锁住 CardView → HTTP wire 的接缝：
+// ledger.ListCards 正确不够，手搭响应 map 也必须把子卡计数传给看板。
+func TestCardsListWireCarriesChildrenCounts(t *testing.T) {
+	env := newLedgerEnv(t)
+	parent := seedCard(t, env, "父卡")
+	childA := seedChildCard(t, env, parent.ID, "子卡 A")
+	childB := seedChildCard(t, env, parent.ID, "子卡 B")
+	for _, child := range []ledger.Card{childA, childB} {
+		if err := env.ledger.MoveCard(child.ID, ledger.StatusDone, "", "test"); err != nil {
+			t.Fatalf("完结子卡 %s: %v", child.ID, err)
+		}
+	}
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards?project=p")
+	if code != http.StatusOK {
+		t.Fatalf("列表 code=%d body=%s", code, body)
+	}
+	var resp struct {
+		Cards []struct {
+			ID            string `json:"id"`
+			ChildrenTotal *int   `json:"children_total"`
+			ChildrenDone  *int   `json:"children_done"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解析列表: %v body=%s", err, body)
+	}
+	for _, card := range resp.Cards {
+		if card.ID != parent.ID {
+			continue
+		}
+		if card.ChildrenTotal == nil || card.ChildrenDone == nil {
+			t.Fatalf("父卡 wire 缺 children_total/children_done: %s", body)
+		}
+		if *card.ChildrenTotal != 2 || *card.ChildrenDone != 2 {
+			t.Fatalf("父卡 wire 子卡计数错误: total=%d done=%d body=%s",
+				*card.ChildrenTotal, *card.ChildrenDone, body)
+		}
+		return
+	}
+	t.Fatalf("列表找不到父卡 %s: %s", parent.ID, body)
+}
+
 func TestLedgerAPIWithoutLedger(t *testing.T) {
 	env := newTestAgentdEnv(t)
 	code, body := ledgerGet(t, env, "/api/cards")
