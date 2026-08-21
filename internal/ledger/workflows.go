@@ -310,13 +310,14 @@ func (s *Store) ListWorkflowNames() ([]string, error) {
 	return names, rows.Err()
 }
 
-// MigrateCardWorkflow 把卡显式迁到目标工作流、版本和状态列。Version==0
-// 取事务内目标流最新版；目标流和状态列都必须由调用方显式提供。
-func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, toStatus, actor string) error {
+// MigrateCardWorkflow 把卡显式迁到目标工作流、版本和状态列，并返回迁移审计投影。
+// Version==0 取事务内目标流最新版；目标流和状态列都必须由调用方显式提供。
+func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, toStatus, actor string) (WorkflowMigration, error) {
+	var migration WorkflowMigration
 	if strings.TrimSpace(toWorkflow) == "" || strings.TrimSpace(toStatus) == "" {
-		return fmt.Errorf("迁移目标工作流和状态列不能为空: %w", ErrBadState)
+		return migration, fmt.Errorf("迁移目标工作流和状态列不能为空: %w", ErrBadState)
 	}
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, cardID)
 		if err != nil {
 			log().Error("迁移读取原位置失败", "card", cardID, "cause", err)
@@ -362,22 +363,38 @@ func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, to
 			toWorkflow, toVersion, toStatus, s.tval(time.Now()), cardID); err != nil {
 			return fmt.Errorf("写迁移: %w", err)
 		}
-		_, err = s.appendEvent(tx, sink, cardID, EvWorkflowMigrated, actor, map[string]any{
+		payload := map[string]any{
 			"from_workflow": from.Workflow,
 			"from_version":  from.Version,
 			"from_status":   from.Status,
 			"to_workflow":   to.Workflow,
 			"to_version":    to.Version,
 			"to_status":     to.Status,
-		})
+		}
+		eventAt := time.Now().UTC()
+		seq, err := s.appendEventAt(tx, sink, cardID, EvWorkflowMigrated, actor, payload, eventAt)
 		if err != nil {
 			return err
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("编码迁移事件投影: %w", err)
+		}
+		migration = WorkflowMigration{
+			CardID: cardID,
+			From:   from,
+			To:     to,
+			Event: Event{
+				Seq: seq, CardID: cardID, Type: EvWorkflowMigrated, Actor: actor,
+				Payload: raw, CreatedAt: eventAt,
+			},
 		}
 		log().Info("工作流迁移完成", "card", cardID,
 			"from_workflow", from.Workflow, "from_version", from.Version, "from_status", from.Status,
 			"to_workflow", to.Workflow, "to_version", to.Version, "to_status", to.Status)
 		return nil
 	})
+	return migration, err
 }
 
 // jsonUnmarshal 统一 JSON 解码错误措辞。

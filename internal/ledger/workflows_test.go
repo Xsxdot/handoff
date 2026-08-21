@@ -265,7 +265,7 @@ func TestMigrateCardWorkflow(t *testing.T) {
 	_, _ = s.PutWorkflow("wf", def)
 
 	// 卡在 v1 的「待办」——v2 里仍有该状态，迁移放行
-	if err := s.MigrateCardWorkflow(card.ID, "wf", 2, "待办", "test"); err != nil {
+	if _, err := s.MigrateCardWorkflow(card.ID, "wf", 2, "待办", "test"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
@@ -273,9 +273,9 @@ func TestMigrateCardWorkflow(t *testing.T) {
 		t.Fatalf("版本未迁: %+v", got)
 	}
 	// 迁回 v1、推进到「进行中」再迁 v2：当前状态不在新版，拒绝（防在途卡悬空）
-	_ = s.MigrateCardWorkflow(card.ID, "wf", 1, "待办", "test")
+	_, _ = s.MigrateCardWorkflow(card.ID, "wf", 1, "待办", "test")
 	_ = s.MoveCard(card.ID, "进行中", "", "test")
-	if err := s.MigrateCardWorkflow(card.ID, "wf", 2, "进行中", "test"); err == nil {
+	if _, err := s.MigrateCardWorkflow(card.ID, "wf", 2, "进行中", "test"); err == nil {
 		t.Fatal("状态悬空应拒")
 	}
 }
@@ -289,7 +289,7 @@ func TestMigrateRejectsInFlight(t *testing.T) {
 		t.Fatalf("建卡: %v", err)
 	}
 	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "dispatched")
-	err = s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test")
+	_, err = s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test")
 	if !errors.Is(err, ErrStepInFlight) {
 		t.Fatalf("在飞时应拒绝迁移并包 ErrStepInFlight，实得 %v", err)
 	}
@@ -308,7 +308,7 @@ func TestMigrateWritesMigrationEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
-	if err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "tester"); err != nil {
+	if _, err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "tester"); err != nil {
 		t.Fatalf("迁移: %v", err)
 	}
 	events, err := s.EventsFromAsc([]string{c.ID}, 0, 100)
@@ -347,7 +347,7 @@ func TestMigrateLeavesChildrenAlone(t *testing.T) {
 	s := seedStore(t)
 	parent := mk(t, s, "父卡")
 	child := mustChild(t, s, parent.ID, "子卡") // mustChild 建的是 bug 流子卡
-	if err := s.MigrateCardWorkflow(parent.ID, "feature", 0, StatusTodo, "test"); err != nil {
+	if _, err := s.MigrateCardWorkflow(parent.ID, "feature", 0, StatusTodo, "test"); err != nil {
 		t.Fatalf("迁父卡: %v", err)
 	}
 	got, err := s.GetCard(child.ID)

@@ -120,7 +120,7 @@ var wfMigrateCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
-		if err := st.MigrateCardWorkflow(args[0], wfMigrateWorkflow, wfMigrateVersion, wfMigrateColumn, ledgerActor()); err != nil {
+		if _, err := st.MigrateCardWorkflow(args[0], wfMigrateWorkflow, wfMigrateVersion, wfMigrateColumn, ledgerActor()); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)

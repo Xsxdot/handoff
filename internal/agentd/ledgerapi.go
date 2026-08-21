@@ -671,12 +671,34 @@ func (s *Server) handleCardMigrate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("workflow、status 必填，version 不能为负数"))
 		return
 	}
-	if err := s.ledger.MigrateCardWorkflow(r.PathValue("id"), body.Workflow, body.Version, body.Status, s.ledgerActor(r)); err != nil {
+	migration, err := s.ledger.MigrateCardWorkflow(r.PathValue("id"), body.Workflow, body.Version, body.Status, s.ledgerActor(r))
+	if err != nil {
+		// handler 不做在飞检查，只翻 Store 的错误码；否则 HTTP 与 CLI 会再次分裂
+		// （契约拍板记录④）。ErrStepInFlight 等 409 原因原样留在响应中。
+		s.log.Warn("迁移请求失败", "card", r.PathValue("id"), "cause", err)
 		ledgerErr(w, err)
 		return
 	}
-	// TODO(B167-A): 账本迁移结果投影为完整 from/to/event；Ticket 0 只冻结响应形状。
-	writeJSON(w, http.StatusOK, proto.MigrateCardResp{OK: true, ID: r.PathValue("id")})
+	toWireLocation := func(location ledger.WorkflowLocation) proto.CardWorkflowLocation {
+		return proto.CardWorkflowLocation{
+			ID: migration.CardID, Workflow: location.Workflow,
+			WorkflowVersion: location.Version, Status: location.Status,
+		}
+	}
+	response := proto.MigrateCardResp{
+		OK: true, ID: migration.CardID,
+		From: toWireLocation(migration.From), To: toWireLocation(migration.To),
+		Event: proto.LedgerEvent{
+			Seq: migration.Event.Seq, CardID: migration.Event.CardID,
+			Type: migration.Event.Type, Actor: migration.Event.Actor,
+			Payload: migration.Event.Payload, CreatedAt: migration.Event.CreatedAt,
+		},
+	}
+	s.log.Info("迁移响应已投影", "card", migration.CardID,
+		"from_workflow", migration.From.Workflow, "from_version", migration.From.Version,
+		"from_status", migration.From.Status, "to_workflow", migration.To.Workflow,
+		"to_version", migration.To.Version, "to_status", migration.To.Status)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleCardPatch 改卡的标题 / 优先级 / 验收判据。
