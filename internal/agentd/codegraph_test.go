@@ -24,6 +24,7 @@ func codegraphFixtureRepo(t *testing.T) string {
 		"cmd/run.go",
 		"svc/server.go",
 		"svc/task.go",
+		"svc/notifier.go",
 	} {
 		raw, err := os.ReadFile(filepath.Join(sourceRoot, rel))
 		if err != nil {
@@ -64,7 +65,7 @@ func TestCodegraphEndpoint(t *testing.T) {
 	if status := env.getJSON(t, "/api/projects/demo/codegraph", &body); status != http.StatusOK {
 		t.Fatalf("代码图状态=%d, body=%+v", status, body)
 	}
-	if len(body.Baseline.Nodes) != 6 || body.Views["branch-x"].View != "branch:x" || body.Stale == nil || len(body.Stale) != 0 {
+	if len(body.Baseline.Nodes) != 7 || body.Views["branch-x"].View != "branch:x" || body.Stale == nil || len(body.Stale) != 0 {
 		t.Fatalf("代码图响应形状: nodes=%d views=%v stale=%v", len(body.Baseline.Nodes), body.Views, body.Stale)
 	}
 

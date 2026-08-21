@@ -15,16 +15,22 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/codegraph"
 	"github.com/spf13/cobra"
 )
 
 var (
-	graphRepo  = "."
-	graphDepth = 2
-	graphView  string
-	graphStale bool
+	graphRepo    = "."
+	graphDepth   = 2
+	graphView    string
+	graphStale   bool
+	absorbCommit string
+	absorbBranch string
 )
 
 var graphCmd = &cobra.Command{
@@ -65,6 +71,8 @@ func graphResetState() {
 	graphDepth = 2
 	graphView = ""
 	graphStale = false
+	absorbCommit = ""
+	absorbBranch = ""
 }
 
 var graphValidateCmd = &cobra.Command{
@@ -119,6 +127,103 @@ var graphValidateCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+var graphCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "目标图契约对照：实际跨域边 ⊆ target.json 声明的契约面，违规即非零退出",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		t, err := codegraph.LoadTarget(graphRepo)
+		if err != nil {
+			// 无基准绝不静默通过——这是本机制的头号反静默约定（spec §5）
+			return fmt.Errorf("目标图不可用，check 拒绝执行: %w", err)
+		}
+		if issues := codegraph.ValidateTarget(t); len(issues) > 0 {
+			return fmt.Errorf("目标图自身不合法: %v", issues)
+		}
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		rep := codegraph.Check(t, v)
+		if err := graphPrintJSON(cmd, rep); err != nil {
+			return err
+		}
+		if len(rep.Fails) > 0 {
+			return fmt.Errorf("契约对照发现 %d 处违规", len(rep.Fails))
+		}
+		return nil
+	},
+}
+
+var graphAbsorbCmd = &cobra.Command{
+	Use:   "absorb <view>",
+	Short: "把分支视图 diff 併入 baseline 并删除该 diff（分支合并回主线后执行）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		g, err := codegraph.LoadGraph(graphRepo)
+		if err != nil {
+			return err
+		}
+		d, err := codegraph.LoadDiff(graphRepo, args[0])
+		if err != nil {
+			return err
+		}
+		if issues := codegraph.ValidateDiff(g, d); len(issues) > 0 {
+			return fmt.Errorf("视图 %s 引用不完整，拒绝併入: %v", args[0], issues)
+		}
+		merged := codegraph.Absorb(g, d)
+		// 刷新来源戳。--commit/--branch 未给时从 git 取；取不到就报错，
+		// 不猜——基线的 meta 是审计锚点（worktree 版本戳说谎的前科）。
+		merged.Meta.Commit, merged.Meta.Branch = absorbCommit, absorbBranch
+		if merged.Meta.Commit == "" {
+			if merged.Meta.Commit, err = gitHead(graphRepo); err != nil {
+				return fmt.Errorf("取 HEAD 失败，请显式传 --commit: %w", err)
+			}
+		}
+		if merged.Meta.Branch == "" {
+			if merged.Meta.Branch, err = gitBranch(graphRepo); err != nil {
+				return fmt.Errorf("取分支失败，请显式传 --branch: %w", err)
+			}
+		}
+		if err := codegraph.SaveGraph(graphRepo, merged); err != nil {
+			return err // 写盘失败：diff 保留，重试无损
+		}
+		diffPath := filepath.Join(graphRepo, "codegraph", "diffs", args[0]+".json")
+		if err := os.Remove(diffPath); err != nil {
+			return fmt.Errorf("基线已更新但删除 diff 失败（手动删除 %s）: %w", diffPath, err)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "已併入视图 %s：+%d 节点 ~%d -%d，基线 %d 节点 @%s\n",
+			args[0], len(d.NodesAdded), len(d.NodesModified), len(d.NodesDeleted),
+			len(merged.Nodes), merged.Meta.Commit)
+		return nil
+	},
+}
+
+func gitHead(repo string) (string, error) {
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	commit := strings.TrimSpace(string(out))
+	if commit == "" {
+		return "", fmt.Errorf("git rev-parse HEAD 返回空值")
+	}
+	return commit, nil
+}
+
+func gitBranch(repo string) (string, error) {
+	out, err := exec.Command("git", "-C", repo, "branch", "--show-current").Output()
+	if err != nil {
+		return "", fmt.Errorf("git branch --show-current: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("当前处于 detached HEAD")
+	}
+	return branch, nil
 }
 
 var graphViewsCmd = &cobra.Command{
@@ -223,6 +328,8 @@ func init() {
 	graphCmd.PersistentFlags().IntVar(&graphDepth, "depth", 2, "查询深度（0 = 不限）")
 	graphCmd.PersistentFlags().StringVar(&graphView, "view", "", "叠加的视图名（codegraph/diffs/<名>.json）")
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
-	graphCmd.AddCommand(graphValidateCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
+	graphAbsorbCmd.Flags().StringVar(&absorbCommit, "commit", "", "写入基线 meta 的提交号（缺省从 git HEAD 读取）")
+	graphAbsorbCmd.Flags().StringVar(&absorbBranch, "branch", "", "写入基线 meta 的分支名（缺省从 git 读取）")
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
 	rootCmd.AddCommand(graphCmd)
 }

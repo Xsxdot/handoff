@@ -22,8 +22,11 @@
     "n_save": {"kind": "func", "container": "k_svc", "name": "Server.Save", "file": "svc/server.go", "line": 9,
                "signature": "func (s *Server) Save() error", "returns": "error", "summary": "落库"},
     "m_task": {"kind": "model", "container": "k_ent", "name": "Task", "file": "svc/task.go", "line": 2,
-               "fields": [["ID", "string", "号"]], "summary": "实体"}
+               "fields": [["ID", "string", "号"]], "summary": "实体"},
+    "m_notifier": {"kind": "model", "container": "k_svc", "name": "Notifier", "file": "svc/notifier.go", "line": 2,
+               "summary": "回调接口"}
   },
   "edges": [["e_run", "n_runE"], ["n_runE", "n_do"], ["n_do", "n_save"], ["n_save", "m_task"]],
+  "implements": [["n_do", "m_notifier"]],
   "diffs": {}
 }

@@ -4,7 +4,11 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/codegraph"
 )
 
 // runGraph 执行 handoff graph <args...>，返回 stdout 与 err。
@@ -28,7 +32,7 @@ func TestGraphValidate(t *testing.T) {
 	}
 	var r map[string]any
 	if json.Unmarshal([]byte(out), &r) != nil ||
-		r["nodes"].(float64) != 6 || r["unscannedEntries"].(float64) != 1 {
+		r["nodes"].(float64) != 7 || r["unscannedEntries"].(float64) != 1 {
 		t.Fatalf("统计 JSON 形状: %s", out)
 	}
 }
@@ -124,5 +128,80 @@ func TestGraphValidateReportsDomainCount(t *testing.T) {
 	var r map[string]any
 	if json.Unmarshal([]byte(out), &r) != nil || r["domains"].(float64) != 4 {
 		t.Fatalf("validate 要报领域计数: %s", out)
+	}
+}
+
+// check：fixture target 与 baseline 套合后输出 Report JSON。
+func TestGraphCheck(t *testing.T) {
+	out, err := runGraph(t, "check", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("check 应通过: %v\n%s", err, out)
+	}
+	for _, want := range []string{`"fails"`, `"warns"`} {
+		if !bytes.Contains([]byte(out), []byte(want)) {
+			t.Fatalf("check 输出缺字段 %s: %s", want, out)
+		}
+	}
+}
+
+func TestGraphCheckMissingTargetFails(t *testing.T) {
+	// 指向一个没有 target.json 的仓：必须报错退出，不能静默通过。
+	_, err := runGraph(t, "check", "--repo", t.TempDir())
+	if err == nil {
+		t.Fatal("无 target 的 check 必须失败")
+	}
+}
+
+func TestGraphAbsorb(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "absorb", "branch-x", "--repo", repo, "--commit", "abc123", "--branch", "main")
+	if err != nil {
+		t.Fatalf("absorb 应通过: %v\n%s", err, out)
+	}
+	g, err := codegraph.LoadGraph(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Meta.Commit != "abc123" || g.Meta.Branch != "main" {
+		t.Fatalf("meta 来源戳未刷新: %+v", g.Meta)
+	}
+	if _, ok := g.Nodes["n_audit"]; !ok {
+		t.Fatal("added 节点未写入基线")
+	}
+	if _, ok := g.Nodes["n_save"]; ok {
+		t.Fatal("deleted 节点仍在基线")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "codegraph", "diffs", "branch-x.json")); !os.IsNotExist(err) {
+		t.Fatalf("diff 应在写盘成功后删除，stat=%v", err)
+	}
+}
+
+func copyFixtureRepo(t *testing.T, src, dst string) {
+	t.Helper()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		from := filepath.Join(src, entry.Name())
+		to := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := os.MkdirAll(to, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			copyFixtureRepo(t, from, to)
+			continue
+		}
+		raw, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(to, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

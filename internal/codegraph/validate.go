@@ -25,6 +25,13 @@ func Validate(g *Graph) []string {
 			}
 		}
 	}
+	for _, e := range g.Implements {
+		for _, end := range e {
+			if _, ok := g.Nodes[end]; !ok {
+				issues = append(issues, fmt.Sprintf("implements 边 %s→%s 引用不存在的节点 %s", e[0], e[1], end))
+			}
+		}
+	}
 	issues = append(issues, validateDomains(g)...)
 	sort.Strings(issues)
 	return issues
@@ -115,6 +122,13 @@ func ValidateDiff(g *Graph, d *Diff) []string {
 		for _, end := range e {
 			if !known(end) {
 				issues = append(issues, fmt.Sprintf("diff 边 %s→%s 引用未知节点 %s", e[0], e[1], end))
+			}
+		}
+	}
+	for _, e := range append(append([]Edge{}, d.ImplementsAdded...), d.ImplementsDeleted...) {
+		for _, end := range e {
+			if !known(end) {
+				issues = append(issues, fmt.Sprintf("diff implements 边 %s→%s 引用未知节点 %s", e[0], e[1], end))
 			}
 		}
 	}

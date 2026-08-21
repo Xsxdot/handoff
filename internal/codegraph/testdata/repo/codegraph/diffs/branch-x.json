@@ -7,5 +7,6 @@
     "signatureOld": "func (s *Server) Do() error", "returns": "error", "summary": "干活（带 ctx）"}},
   "nodesDeleted": ["n_save"],
   "edgesAdded": [["n_do", "n_audit"]],
-  "edgesDeleted": [["n_do", "n_save"]]
+  "edgesDeleted": [["n_do", "n_save"]],
+  "implementsAdded": [["n_audit", "m_notifier"]]
 }

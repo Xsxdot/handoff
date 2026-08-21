@@ -83,16 +83,21 @@ type Graph struct {
 	Containers map[string]Container `json:"containers"`
 	Nodes      map[string]Node      `json:"nodes"`
 	Edges      []Edge               `json:"edges"`
+	// Implements 是接口满足边 [实现, 接口]。与 Edges 分列是 wire 兼容决策
+	//（Edge 是二元组塞不进 kind 字段，spec §3）；语义上它们是 kind=implements 的边。
+	Implements []Edge `json:"implements,omitempty"`
 }
 
 // Diff 是 codegraph/diffs/<view>.json：某分支/plan 相对基准的差异声明。
 type Diff struct {
-	View          string          `json:"view"`
-	Base          string          `json:"base,omitempty"`
-	Summary       string          `json:"summary,omitempty"`
-	NodesAdded    map[string]Node `json:"nodesAdded,omitempty"`
-	NodesModified map[string]Node `json:"nodesModified,omitempty"`
-	NodesDeleted  []string        `json:"nodesDeleted,omitempty"`
-	EdgesAdded    []Edge          `json:"edgesAdded,omitempty"`
-	EdgesDeleted  []Edge          `json:"edgesDeleted,omitempty"`
+	View              string          `json:"view"`
+	Base              string          `json:"base,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+	NodesAdded        map[string]Node `json:"nodesAdded,omitempty"`
+	NodesModified     map[string]Node `json:"nodesModified,omitempty"`
+	NodesDeleted      []string        `json:"nodesDeleted,omitempty"`
+	EdgesAdded        []Edge          `json:"edgesAdded,omitempty"`
+	EdgesDeleted      []Edge          `json:"edgesDeleted,omitempty"`
+	ImplementsAdded   []Edge          `json:"implementsAdded,omitempty"`
+	ImplementsDeleted []Edge          `json:"implementsDeleted,omitempty"`
 }
