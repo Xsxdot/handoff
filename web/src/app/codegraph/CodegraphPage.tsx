@@ -95,6 +95,7 @@ export function CodegraphPage() {
       ) : (
         <div className="flex min-h-0 flex-1">
           <CallTree view={view} foci={effFoci} open={open}
+            scope={null} onCrossJump={() => {}}
             onToggle={(id, o) => setOpen((s) => {
               const n = new Set(s)
               if (o) n.add(id)
@@ -104,6 +105,7 @@ export function CodegraphPage() {
             onFocus={onFocus} />
           {mode === 'combo' ? (
             <FocusGraph view={view} foci={effFoci} depth={depth} staleIds={staleIds}
+              scope={null} onCrossJump={() => {}}
               onDepth={setDepth} onFocus={onFocus} onSelect={setSelected}
               canBack={histIdx > 0} canFwd={histIdx < hist.length - 1}
               onBack={() => { setHistIdx(histIdx - 1); setFociWithHist(hist[histIdx - 1], true) }}

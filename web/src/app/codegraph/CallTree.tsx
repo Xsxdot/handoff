@@ -2,6 +2,7 @@
 // 展开状态由父组件持有（Set<string>），点名字换焦点、⌘/Ctrl+点做并集追加。
 import type { ChainTreeNode, CgView } from './graphmath'
 import { chainTree, scannedEntries } from './graphmath'
+import { inScope, leafRoots, nodeDomainPathOf } from './domains'
 
 const STATUS_BADGE: Record<string, { text: string; cls: string }> = {
   added: { text: '加', cls: 'bg-green-600' },
@@ -9,8 +10,9 @@ const STATUS_BADGE: Record<string, { text: string; cls: string }> = {
   deleted: { text: '删', cls: 'bg-red-600' },
 }
 
-function Row({ view, node, foci, open, onToggle, onFocus }: {
+function Row({ view, node, foci, open, scope, onToggle, onFocus, onCrossJump }: {
   view: CgView; node: ChainTreeNode; foci: string[]; open: Set<string>
+  scope: string | null; onCrossJump: (id: string) => void
   onToggle: (id: string, open: boolean) => void
   onFocus: (id: string, additive: boolean) => void
 }) {
@@ -32,7 +34,17 @@ function Row({ view, node, foci, open, onToggle, onFocus }: {
         {n.tests?.length ? <span className="text-[10px] text-green-600">✓{n.tests.length}</span> : null}
       </summary>
       {node.children.map((c, i) => (
-        <Row key={`${c.id}-${i}`} view={view} node={c} foci={foci} open={open} onToggle={onToggle} onFocus={onFocus} />
+        scope && !inScope(view, c.id, scope) ? (
+          // 链路撞到领域外：不截断也不越界，给一行可点的横跳——
+          // 截断会让人以为调用到此为止，越界会让这层树无边无际
+          <div key={`${c.id}-${i}`} className="ml-4 cursor-pointer text-xs text-muted-foreground hover:underline"
+            onClick={() => onCrossJump(c.id)}>
+            ↗ {view.nodes[c.id]?.name} · {view.domains[nodeDomainPathOf(view, c.id)[0]]?.label ?? ''} 领域
+          </div>
+        ) : (
+          <Row key={`${c.id}-${i}`} view={view} node={c} foci={foci} open={open}
+            scope={scope} onToggle={onToggle} onFocus={onFocus} onCrossJump={onCrossJump} />
+        )
       ))}
     </details>
   )
@@ -41,14 +53,16 @@ function Row({ view, node, foci, open, onToggle, onFocus }: {
 // CallTree 渲染全部已扫描入口，各自一棵 chainTree。
 export function CallTree(props: {
   view: CgView; foci: string[]; open: Set<string>
+  scope: string | null; onCrossJump: (id: string) => void
   onToggle: (id: string, open: boolean) => void
   onFocus: (id: string, additive: boolean) => void
 }) {
   return (
     <nav className="w-80 shrink-0 overflow-auto border-r p-2 text-[13px]">
-      {scannedEntries(props.view).map((e) => (
+      {(props.scope ? leafRoots(props.view, props.scope) : scannedEntries(props.view)).map((e) => (
         <Row key={e} view={props.view} node={chainTree(props.view, e)} foci={props.foci}
-          open={props.open} onToggle={props.onToggle} onFocus={props.onFocus} />
+          open={props.open} scope={props.scope} onToggle={props.onToggle} onFocus={props.onFocus}
+          onCrossJump={props.onCrossJump} />
       ))}
     </nav>
   )

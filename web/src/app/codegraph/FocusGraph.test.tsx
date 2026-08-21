@@ -19,6 +19,7 @@ const g: CgGraph = {
 const noop = () => {}
 const base = {
   depth: 2, staleIds: new Set<string>(), onDepth: noop, onSelect: noop,
+  scope: null as string | null, onCrossJump: noop,
   canBack: false, canFwd: false, onBack: noop, onFwd: noop,
 }
 
@@ -46,5 +47,28 @@ describe('FocusGraph', () => {
     expect(screen.getByText('runE')).toBeTruthy()
     fireEvent.change(screen.getByTitle('上下游各展开几级'), { target: { value: '0' } })
     expect(onDepth).toHaveBeenCalledWith(0)
+  })
+  it('领域下钻：域外节点画成虚线卡且点击横跳，不再从它继续扩展', () => {
+    const onCrossJump = vi.fn()
+    const gd = {
+      ...g,
+      domains: {
+        d_cli: { label: 'cli', kind: '命令层', summary: '入口' },
+        d_svc: { label: 'svc', kind: '服务端', summary: '干活' },
+      },
+      containers: {
+        c_cli: { label: 'CLI', kind: '入口', entry: true, domain: 'd_cli' },
+        k_svc: { label: 'svc', kind: '服务端', domain: 'd_svc' },
+      },
+    }
+    const { container } = render(
+      <FocusGraph view={mergeView(gd)} foci={['e_run']} onFocus={() => {}} {...base}
+        scope="d_cli" depth={0} onCrossJump={onCrossJump} />)
+    const ext = container.querySelector('[data-node="n_runE"]')!
+    expect((ext as HTMLElement).dataset.ext).toBe('1')
+    // n_do 在 n_runE 之后，域外不再扩展 → 不入图
+    expect(container.querySelector('[data-node="n_do"]')).toBeNull()
+    fireEvent.click(ext)
+    expect(onCrossJump).toHaveBeenCalledWith('n_runE')
   })
 })

@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CgView } from './graphmath'
 import { layoutBands, neighborhood } from './graphmath'
+import { inScope, nodeDomainPathOf } from './domains'
 
 const NODE_W = 156
 
@@ -14,20 +15,22 @@ interface FocusGraphProps {
   onDepth: (d: number) => void
   onFocus: (id: string, additive: boolean) => void
   onSelect: (id: string) => void
+  scope: string | null; onCrossJump: (id: string) => void
   canBack: boolean; canFwd: boolean; onBack: () => void; onFwd: () => void
 }
 
 export function FocusGraph(props: FocusGraphProps) {
   const { view, foci, depth, staleIds, onDepth, onFocus, onSelect,
-    canBack, canFwd, onBack, onFwd } = props
+    scope, onCrossJump, canBack, canFwd, onBack, onFwd } = props
   const wrap = useRef<HTMLDivElement>(null)
   const [pan, setPan] = useState<{ x: number; y: number } | null>(null)
   const [zoom, setZoom] = useState(1)
 
   const { dist, px, py, W, H, order } = useMemo(() => {
-    const dist = neighborhood(view, foci, depth)
+    // 领域边界：域外节点要入图显示关系，但不能成为 BFS 的新扩展起点。
+    const dist = neighborhood(view, foci, depth, (id) => inScope(view, id, scope))
     return { dist, ...layoutBands(view, dist) }
-  }, [view, foci, depth])
+  }, [view, foci, depth, scope])
 
   // 焦点/层级变化 → 平移重算：锚点是最后加入的焦点，垂直居中但顶部最多悬空 24px
   const anchor = foci[foci.length - 1]
@@ -118,7 +121,9 @@ export function FocusGraph(props: FocusGraphProps) {
           </span>
         ))}
         <span className="rounded-full border bg-muted px-2.5 py-0.5 text-[11px] text-muted-foreground">
-          {foci.length > 1 ? '并集视图：N 个焦点的链叠加' : '单击：只看它的链 · ⌘+单击：并集 · 空白拖动 · ⌃滚轮缩放'}
+          {foci.length > 1 ? '并集视图：N 个焦点的链叠加'
+            : scope ? '单击：只看它的链 · ⌘+单击：并集 · 虚线卡=领域外，点击横跳'
+            : '单击：只看它的链 · ⌘+单击：并集 · 空白拖动 · ⌃滚轮缩放'}
         </span>
       </div>
       <div className="absolute" style={{
@@ -146,9 +151,13 @@ export function FocusGraph(props: FocusGraphProps) {
         {order[order.length - 1] > 0 && <div className="absolute text-[10px] tracking-widest text-muted-foreground" style={{ left: 60, top: H - 22 }}>下游（它调用谁）↓</div>}
         {Object.keys(dist).map((id) => {
           const n = view.nodes[id]
+          const ext = !!scope && !inScope(view, id, scope)
           return (
-            <div key={id} data-node={id} className={nodeCls(id)} style={{ left: px[id], top: py[id] }}
+            <div key={id} data-node={id} data-ext={ext ? '1' : undefined}
+              className={nodeCls(id) + (ext ? ' border-dashed bg-muted ' : '')}
+              style={{ left: px[id], top: py[id] }}
               onClick={(e) => {
+                if (ext) { onCrossJump(id); return }
                 onSelect(id)
                 if (!(foci.length === 1 && foci[0] === id)) onFocus(id, e.metaKey || e.ctrlKey)
               }}>
@@ -156,7 +165,10 @@ export function FocusGraph(props: FocusGraphProps) {
                 {n.name}{n.kind === 'func' ? '()' : ''}{staleIds.has(id) ? ' ⚠' : ''}
               </div>
               <div className="flex gap-1 text-[9.5px] opacity-70">
-                <span>{view.containers[n.container]?.label ?? ''}</span>
+                <span className={ext ? 'text-primary' : ''}>
+                  {ext ? '◇ ' + (view.domains[nodeDomainPathOf(view, id)[0]]?.label ?? '') + ' 领域'
+                    : view.containers[n.container]?.label ?? ''}
+                </span>
                 {n.tests?.length ? <span className="text-green-600">✓{n.tests.length}</span> : null}
               </div>
             </div>
