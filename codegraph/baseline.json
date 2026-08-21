@@ -1,4080 +1,1145 @@
 {
- "meta": {
-  "project": "handoff",
-  "branch": "main",
-  "commit": "60b944f5",
-  "scannedAt": "2026-08-19",
-  "generator": "codex"
- },
- "domains": {
-  "d_cli": {
-   "label": "cli",
-   "kind": "命令行入口",
-   "summary": "协调者敲的全部 handoff 子命令",
-   "desc": "cobra 命令树：参数解析、把请求交给 client、把结果按 JSON/人读两种形态打出来。不含任何业务判断。"
-  },
-  "d_client": {
-   "label": "client",
-   "kind": "客户端",
-   "summary": "与 agentd 通话的唯一通道",
-   "desc": "HTTP 调用与 WS 事件订阅的封装，含 cursor 落盘、断线重连、积压对账。CLI 的一切远程能力都从这里出去。"
-  },
-  "d_agentd": {
-   "label": "agentd",
-   "kind": "执行机守护进程",
-   "summary": "持有全部任务状态的服务端",
-   "desc": "对外是 HTTP + WS，对内是任务状态机与 executor 生命周期。分对外接口层与核心两个子领域。"
-  },
-  "d_agentd/api": {
-   "label": "api",
-   "kind": "对外接口层",
-   "summary": "HTTP 处理器与 WS 事件广播",
-   "desc": "Server 的 handleXxx 做参数校验与状态码决策，Hub 负责事件的订阅与扇出。不直接碰 executor 进程。",
-   "parent": "d_agentd"
-  },
-  "d_agentd/core": {
-   "label": "core",
-   "kind": "生命周期核心",
-   "summary": "任务状态机、executor 调度与工作区准备",
-   "desc": "Manager 负责 dispatch/continue/状态迁移/存活探测与执行器解析；包级函数负责仓库可用性、工作区准备与基线决议。",
-   "parent": "d_agentd"
-  },
-  "d_executor": {
-   "label": "executor",
-   "kind": "执行器适配",
-   "summary": "各家 executor 的统一适配层",
-   "desc": "把 opencode/claude/grok/codex 的差异收敛成同一套 adapter 接口，向上只暴露启动、投递、探活。"
-  },
-  "d_store": {
-   "label": "store",
-   "kind": "持久化",
-   "summary": "SQLite 落盘：任务、事件、工单、项目位置",
-   "desc": "全部状态的唯一真相。事件按 seq 单调递增，是 cursor 语义与断线续拉的基础。"
-  },
-  "d_proto": {
-   "label": "proto",
-   "kind": "数据契约",
-   "summary": "跨进程共享的结构定义",
-   "desc": "任务、事件、工单等在 CLI / agentd / executor 之间传递的结构体，改动会同时波及三端。"
-  },
-  "d_localsync": {
-   "label": "localsync",
-   "kind": "本地同步",
-   "summary": "远程分支经 bundle 落回本地仓库",
-   "desc": "pull 的落地实现：取 bundle、fetch 进本地、只更新引用不 checkout 不合并。"
-  }
- },
- "containers": {
-  "c_cli": {
-   "label": "CLI 命令",
-   "kind": "入口",
-   "col": 0,
-   "entry": true,
-   "domain": "d_cli"
-  },
-  "c_http": {
-   "label": "HTTP API",
-   "kind": "入口",
-   "col": 3,
-   "entry": true,
-   "domain": "d_agentd/api"
-  },
-  "c_ws": {
-   "label": "长连接/WS",
-   "kind": "入口",
-   "col": 3,
-   "entry": true,
-   "domain": "d_agentd/api"
-  },
-  "k_cmd_fn": {
-   "label": "cmd（包级函数）",
-   "kind": "函数组",
-   "col": 1,
-   "domain": "d_cli"
-  },
-  "k_client_fn": {
-   "label": "client（包级函数）",
-   "kind": "函数组",
-   "col": 2,
-   "domain": "d_client"
-  },
-  "k_client_Client": {
-   "label": "client.Client",
-   "kind": "类",
-   "col": 2,
-   "domain": "d_client"
-  },
-  "k_agentd_Server": {
-   "label": "agentd.Server",
-   "kind": "类",
-   "col": 4,
-   "domain": "d_agentd/api"
-  },
-  "k_agentd_fn": {
-   "label": "agentd（包级函数）",
-   "kind": "函数组",
-   "col": 4,
-   "domain": "d_agentd/core"
-  },
-  "k_agentd_Manager": {
-   "label": "agentd.Manager",
-   "kind": "类",
-   "col": 4,
-   "domain": "d_agentd/core"
-  },
-  "k_agentd_Hub": {
-   "label": "agentd.Hub",
-   "kind": "类",
-   "col": 4,
-   "domain": "d_agentd/api"
-  },
-  "k_executor_fn": {
-   "label": "executor（包级函数）",
-   "kind": "函数组",
-   "col": 5,
-   "domain": "d_executor"
-  },
-  "k_localsync_fn": {
-   "label": "localsync（包级函数）",
-   "kind": "函数组",
-   "col": 2,
-   "domain": "d_localsync"
-  },
-  "k_store_Store": {
-   "label": "store.Store",
-   "kind": "类",
-   "col": 5,
-   "domain": "d_store"
-  },
-  "k_proto_model": {
-   "label": "proto 实体",
-   "kind": "实体",
-   "col": 6,
-   "domain": "d_proto"
-  },
-  "k_client_model": {
-   "label": "client 实体",
-   "kind": "实体",
-   "col": 2,
-   "domain": "d_client"
-  },
-  "k_localsync_model": {
-   "label": "localsync 实体",
-   "kind": "实体",
-   "col": 2,
-   "domain": "d_localsync"
-  }
- },
- "nodes": {
-  "e_agentd": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 0,
-   "name": "handoff agentd",
-   "file": "cmd/agentd.go",
-   "line": 53,
-   "summary": "启动提供 HTTP API 与 WS 事件流的 agentd 服务。",
-   "unscanned": true
-  },
-  "e_attach": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 1,
-   "name": "handoff attach",
-   "file": "cmd/attach.go",
-   "line": 47,
-   "summary": "进入任务执行器的终端实况。",
-   "unscanned": true
-  },
-  "e_console": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 2,
-   "name": "handoff console",
-   "file": "cmd/console.go",
-   "line": 36,
-   "summary": "打开 agentd 浏览器控制台。",
-   "unscanned": true
-  },
-  "e_continue": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 3,
-   "name": "handoff continue",
-   "file": "cmd/continue.go",
-   "line": 23,
-   "summary": "向待审核任务续发修改指令。"
-  },
-  "e_diff": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 4,
-   "name": "handoff diff",
-   "file": "cmd/diff.go",
-   "line": 24,
-   "summary": "输出任务的 git diff 与提交列表。",
-   "unscanned": true
-  },
-  "e_dispatch": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 5,
-   "name": "handoff dispatch",
-   "file": "cmd/dispatch.go",
-   "line": 169,
-   "summary": "把计划任务派发到 agentd 执行。"
-  },
-  "e_done": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 6,
-   "name": "handoff done",
-   "file": "cmd/done.go",
-   "line": 30,
-   "summary": "归档一个处于待审核状态的任务。",
-   "unscanned": true
-  },
-  "e_fetch": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 7,
-   "name": "handoff fetch",
-   "file": "cmd/fetch.go",
-   "line": 21,
-   "summary": "读取任务仓库内文件供审阅。",
-   "unscanned": true
-  },
-  "e_footprint": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 8,
-   "name": "handoff footprint",
-   "file": "cmd/footprint.go",
-   "line": 34,
-   "summary": "体检任务残留的进程足迹。",
-   "unscanned": true
-  },
-  "e_frames": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 9,
-   "name": "handoff frames",
-   "file": "cmd/frames.go",
-   "line": 31,
-   "summary": "读取任务的结构化回合帧。",
-   "unscanned": true
-  },
-  "e_init": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 10,
-   "name": "handoff init",
-   "file": "cmd/init.go",
-   "line": 49,
-   "summary": "探测 executor 并交互式生成本机配置。",
-   "unscanned": true
-  },
-  "e_machines": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 11,
-   "name": "handoff machines",
-   "file": "cmd/machines.go",
-   "line": 25,
-   "summary": "列出机器与探活结果。",
-   "unscanned": true
-  },
-  "e_permissionMcp": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 12,
-   "name": "handoff permission-mcp",
-   "file": "cmd/permission_mcp.go",
-   "line": 77,
-   "summary": "以 stdio 提供权限裁决 MCP 服务。",
-   "unscanned": true
-  },
-  "e_project": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 13,
-   "name": "handoff project",
-   "file": "cmd/project.go",
-   "line": 81,
-   "summary": "管理项目在各机器上的登记位置。",
-   "unscanned": true
-  },
-  "e_projectAdd": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 14,
-   "name": "handoff project add",
-   "file": "cmd/project.go",
-   "line": 93,
-   "summary": "登记项目位置并按需克隆项目。",
-   "unscanned": true
-  },
-  "e_projectEdit": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 15,
-   "name": "handoff project edit",
-   "file": "cmd/project.go",
-   "line": 355,
-   "summary": "修改项目位置的引用名或路径。",
-   "unscanned": true
-  },
-  "e_projectLs": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 16,
-   "name": "handoff project ls",
-   "file": "cmd/project.go",
-   "line": 199,
-   "summary": "列出机器上的项目位置及状态。",
-   "unscanned": true
-  },
-  "e_projectRm": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 17,
-   "name": "handoff project rm",
-   "file": "cmd/project.go",
-   "line": 324,
-   "summary": "注销项目位置登记而不删除磁盘代码。",
-   "unscanned": true
-  },
-  "e_pull": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 18,
-   "name": "handoff pull",
-   "file": "cmd/pull.go",
-   "line": 32,
-   "summary": "把远程任务分支同步到本地仓库。"
-  },
-  "e_reclaim": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 19,
-   "name": "handoff reclaim",
-   "file": "cmd/reclaim.go",
-   "line": 36,
-   "summary": "回收终态任务遗留的 managed worktree。",
-   "unscanned": true
-  },
-  "e_reply": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 20,
-   "name": "handoff reply",
-   "file": "cmd/reply.go",
-   "line": 34,
-   "summary": "回答一个待办工单。",
-   "unscanned": true
-  },
-  "e_resume": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 21,
-   "name": "handoff resume",
-   "file": "cmd/resume.go",
-   "line": 40,
-   "summary": "恢复一个卡住的任务执行态。",
-   "unscanned": true
-  },
-  "e_run": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 22,
-   "name": "handoff run",
-   "file": "cmd/run.go",
-   "line": 63,
-   "summary": "在任务仓库执行审阅命令。",
-   "unscanned": true
-  },
-  "e_service": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 23,
-   "name": "handoff service",
-   "file": "cmd/service.go",
-   "line": 39,
-   "summary": "管理 agentd 的系统服务。",
-   "unscanned": true
-  },
-  "e_serviceInstall": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 24,
-   "name": "handoff service install",
-   "file": "cmd/service.go",
-   "line": 125,
-   "summary": "安装并托管 agentd 系统服务。",
-   "unscanned": true
-  },
-  "e_serviceStatus": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 25,
-   "name": "handoff service status",
-   "file": "cmd/service.go",
-   "line": 149,
-   "summary": "查看 agentd 系统服务状态。",
-   "unscanned": true
-  },
-  "e_serviceUninstall": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 26,
-   "name": "handoff service uninstall",
-   "file": "cmd/service.go",
-   "line": 133,
-   "summary": "卸载 agentd 系统服务。",
-   "unscanned": true
-  },
-  "e_sessions": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 27,
-   "name": "handoff sessions",
-   "file": "cmd/sessions.go",
-   "line": 28,
-   "summary": "列出浏览器控制台会话。",
-   "unscanned": true
-  },
-  "e_sessionsRevoke": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 28,
-   "name": "handoff sessions revoke",
-   "file": "cmd/sessions.go",
-   "line": 46,
-   "summary": "吊销指定浏览器会话。",
-   "unscanned": true
-  },
-  "e_show": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 29,
-   "name": "handoff show",
-   "file": "cmd/show.go",
-   "line": 23,
-   "summary": "输出任务完整现场快照。",
-   "unscanned": true
-  },
-  "e_skill": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 30,
-   "name": "handoff skill",
-   "file": "cmd/skill.go",
-   "line": 31,
-   "summary": "查看协调者 skill 落点状态。",
-   "unscanned": true
-  },
-  "e_skillInstall": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 31,
-   "name": "handoff skill install",
-   "file": "cmd/skill.go",
-   "line": 56,
-   "summary": "安装内嵌 skill 到本机 agent。",
-   "unscanned": true
-  },
-  "e_status": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 32,
-   "name": "handoff status",
-   "file": "cmd/status.go",
-   "line": 48,
-   "summary": "查看 agentd 可用性与状态概况。"
-  },
-  "e_stop": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 33,
-   "name": "handoff stop",
-   "file": "cmd/stop.go",
-   "line": 22,
-   "summary": "中止指定任务并停止 executor。",
-   "unscanned": true
-  },
-  "e_tasks": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 34,
-   "name": "handoff tasks",
-   "file": "cmd/tasks.go",
-   "line": 27,
-   "summary": "列出任务及其当前状态。",
-   "unscanned": true
-  },
-  "e_upgrade": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 35,
-   "name": "handoff upgrade",
-   "file": "cmd/upgrade.go",
-   "line": 217,
-   "summary": "检查并升级本机与目标机器的 handoff。",
-   "unscanned": true
-  },
-  "e_version": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 36,
-   "name": "handoff version",
-   "file": "cmd/version.go",
-   "line": 34,
-   "summary": "输出 handoff 版本信息。",
-   "unscanned": true
-  },
-  "e_wait": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 37,
-   "name": "handoff wait",
-   "file": "cmd/wait.go",
-   "line": 80,
-   "summary": "等待任务的下一个可动作事件。"
-  },
-  "e_shim": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 38,
-   "name": "handoff _shim",
-   "file": "cmd/shim.go",
-   "line": 22,
-   "summary": "承载 agentd 拉起的 executor 进程。",
-   "unscanned": true
-  },
-  "e_updateCheck": {
-   "kind": "entry",
-   "container": "c_cli",
-   "order": 39,
-   "name": "handoff update-check",
-   "file": "cmd/root.go",
-   "line": 257,
-   "summary": "后台检查版本并写入更新缓存的内部命令。",
-   "unscanned": true
-  },
-  "e_getApiStatus": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 0,
-   "name": "GET /api/status",
-   "file": "internal/agentd/server.go",
-   "line": 352,
-   "summary": "返回 agentd 版本、任务计数与探活状态。",
-   "unscanned": true
-  },
-  "e_getApiFootprint": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 1,
-   "name": "GET /api/footprint",
-   "file": "internal/agentd/server.go",
-   "line": 353,
-   "summary": "返回全部任务的进程足迹体检结果。",
-   "unscanned": true
-  },
-  "e_getApiReclaim": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 2,
-   "name": "GET /api/reclaim",
-   "file": "internal/agentd/server.go",
-   "line": 354,
-   "summary": "列出可回收的任务工作树残留。",
-   "unscanned": true
-  },
-  "e_getApiTasks": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 3,
-   "name": "GET /api/tasks",
-   "file": "internal/agentd/server.go",
-   "line": 355,
-   "summary": "列出 agentd 上的任务。",
-   "unscanned": true
-  },
-  "e_postApiTasks": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 4,
-   "name": "POST /api/tasks",
-   "file": "internal/agentd/server.go",
-   "line": 356,
-   "summary": "创建任务并启动 executor。"
-  },
-  "e_getApiTasksId": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 5,
-   "name": "GET /api/tasks/{id}",
-   "file": "internal/agentd/server.go",
-   "line": 370,
-   "summary": "返回任务、待办工单与最近事件快照。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdReply": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 6,
-   "name": "POST /api/tasks/{id}/reply",
-   "file": "internal/agentd/server.go",
-   "line": 371,
-   "summary": "提交任务待办工单的回答。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdContinue": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 7,
-   "name": "POST /api/tasks/{id}/continue",
-   "file": "internal/agentd/server.go",
-   "line": 372,
-   "summary": "向待审核任务续发指令。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdDone": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 8,
-   "name": "POST /api/tasks/{id}/done",
-   "file": "internal/agentd/server.go",
-   "line": 373,
-   "summary": "归档任务并回收执行资源。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdStop": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 9,
-   "name": "POST /api/tasks/{id}/stop",
-   "file": "internal/agentd/server.go",
-   "line": 374,
-   "summary": "停止任务执行并将任务置为失败。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdReclaim": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 10,
-   "name": "POST /api/tasks/{id}/reclaim",
-   "file": "internal/agentd/server.go",
-   "line": 375,
-   "summary": "回收任务的 managed worktree。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdResume": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 11,
-   "name": "POST /api/tasks/{id}/resume",
-   "file": "internal/agentd/server.go",
-   "line": 376,
-   "summary": "恢复任务执行器。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdPlan": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 12,
-   "name": "GET /api/tasks/{id}/plan",
-   "file": "internal/agentd/server.go",
-   "line": 377,
-   "summary": "读取任务原始计划内容。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdDiff": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 13,
-   "name": "GET /api/tasks/{id}/diff",
-   "file": "internal/agentd/server.go",
-   "line": 378,
-   "summary": "返回任务分支的差异审阅素材。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdBranches": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 14,
-   "name": "GET /api/tasks/{id}/branches",
-   "file": "internal/agentd/server.go",
-   "line": 379,
-   "summary": "列出任务仓库分支。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdRender": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 15,
-   "name": "GET /api/tasks/{id}/render",
-   "file": "internal/agentd/server.go",
-   "line": 380,
-   "summary": "流式读取任务执行实况日志。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdFrames": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 16,
-   "name": "GET /api/tasks/{id}/frames",
-   "file": "internal/agentd/server.go",
-   "line": 381,
-   "summary": "流式读取任务结构化回合帧。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 17,
-   "name": "GET /api/tasks/{id}/file",
-   "file": "internal/agentd/server.go",
-   "line": 382,
-   "summary": "读取任务仓库内文件。",
-   "unscanned": true
-  },
-  "e_getApiTasksIdBundle": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 18,
-   "name": "GET /api/tasks/{id}/bundle",
-   "file": "internal/agentd/server.go",
-   "line": 383,
-   "summary": "生成任务分支的 git bundle。",
-   "unscanned": true
-  },
-  "e_postApiTasksIdRun": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 19,
-   "name": "POST /api/tasks/{id}/run",
-   "file": "internal/agentd/server.go",
-   "line": 384,
-   "summary": "在任务工作区执行审阅命令。",
-   "unscanned": true
-  },
-  "e_postApiProjects": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 20,
-   "name": "POST /api/projects",
-   "file": "internal/agentd/server.go",
-   "line": 385,
-   "summary": "登记项目位置并按需克隆项目。",
-   "unscanned": true
-  },
-  "e_getApiProjects": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 21,
-   "name": "GET /api/projects",
-   "file": "internal/agentd/server.go",
-   "line": 386,
-   "summary": "列出已登记项目位置。",
-   "unscanned": true
-  },
-  "e_getApiProjectsTree": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 22,
-   "name": "GET /api/projects/tree",
-   "file": "internal/agentd/server.go",
-   "line": 387,
-   "summary": "返回项目与任务树。",
-   "unscanned": true
-  },
-  "e_getApiMachines": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 23,
-   "name": "GET /api/machines",
-   "file": "internal/agentd/server.go",
-   "line": 388,
-   "summary": "列出配置中的机器及探活结果。",
-   "unscanned": true
-  },
-  "e_getApiDiscipline": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 24,
-   "name": "GET /api/discipline",
-   "file": "internal/agentd/server.go",
-   "line": 389,
-   "summary": "读取纪律块配置。",
-   "unscanned": true
-  },
-  "e_getApiDisciplineFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 25,
-   "name": "GET /api/discipline/file",
-   "file": "internal/agentd/server.go",
-   "line": 390,
-   "summary": "读取纪律块文件内容。",
-   "unscanned": true
-  },
-  "e_putApiDisciplineFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 26,
-   "name": "PUT /api/discipline/file",
-   "file": "internal/agentd/server.go",
-   "line": 391,
-   "summary": "写入纪律块文件内容。",
-   "unscanned": true
-  },
-  "e_putApiDisciplineMapping": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 27,
-   "name": "PUT /api/discipline/mapping",
-   "file": "internal/agentd/server.go",
-   "line": 392,
-   "summary": "更新执行者到纪律块的映射。",
-   "unscanned": true
-  },
-  "e_getApiEnv": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 28,
-   "name": "GET /api/env",
-   "file": "internal/agentd/server.go",
-   "line": 393,
-   "summary": "读取执行者环境文件配置。",
-   "unscanned": true
-  },
-  "e_getApiEnvFileKeys": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 29,
-   "name": "GET /api/env/file/keys",
-   "file": "internal/agentd/server.go",
-   "line": 394,
-   "summary": "列出环境文件中的键。",
-   "unscanned": true
-  },
-  "e_getApiEnvFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 30,
-   "name": "GET /api/env/file",
-   "file": "internal/agentd/server.go",
-   "line": 395,
-   "summary": "读取环境文件内容。",
-   "unscanned": true
-  },
-  "e_putApiEnvFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 31,
-   "name": "PUT /api/env/file",
-   "file": "internal/agentd/server.go",
-   "line": 396,
-   "summary": "写入环境文件内容。",
-   "unscanned": true
-  },
-  "e_putApiEnvMapping": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 32,
-   "name": "PUT /api/env/mapping",
-   "file": "internal/agentd/server.go",
-   "line": 397,
-   "summary": "更新执行者到环境文件的映射。",
-   "unscanned": true
-  },
-  "e_getApiExecutorDefault": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 33,
-   "name": "GET /api/executor/default",
-   "file": "internal/agentd/server.go",
-   "line": 398,
-   "summary": "读取机器级默认执行者配置。",
-   "unscanned": true
-  },
-  "e_putApiExecutorDefault": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 34,
-   "name": "PUT /api/executor/default",
-   "file": "internal/agentd/server.go",
-   "line": 399,
-   "summary": "保存机器级默认执行者配置。",
-   "unscanned": true
-  },
-  "e_postApiMachines": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 35,
-   "name": "POST /api/machines",
-   "file": "internal/agentd/server.go",
-   "line": 400,
-   "summary": "登记一台远程机器。",
-   "unscanned": true
-  },
-  "e_deleteApiMachinesName": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 36,
-   "name": "DELETE /api/machines/{name}",
-   "file": "internal/agentd/server.go",
-   "line": 401,
-   "summary": "删除一台远程机器登记。",
-   "unscanned": true
-  },
-  "e_getApiWorkspacesDir": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 37,
-   "name": "GET /api/workspaces/dir",
-   "file": "internal/agentd/server.go",
-   "line": 402,
-   "summary": "列出工作区目录。",
-   "unscanned": true
-  },
-  "e_getApiWorkspacesFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 38,
-   "name": "GET /api/workspaces/file",
-   "file": "internal/agentd/server.go",
-   "line": 403,
-   "summary": "读取工作区文件。",
-   "unscanned": true
-  },
-  "e_putApiWorkspacesFile": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 39,
-   "name": "PUT /api/workspaces/file",
-   "file": "internal/agentd/server.go",
-   "line": 404,
-   "summary": "写入工作区文件。",
-   "unscanned": true
-  },
-  "e_postApiWorkspacesEntry": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 40,
-   "name": "POST /api/workspaces/entry",
-   "file": "internal/agentd/server.go",
-   "line": 405,
-   "summary": "创建工作区目录项。",
-   "unscanned": true
-  },
-  "e_postApiWorkspacesEntryCopy": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 41,
-   "name": "POST /api/workspaces/entry/copy",
-   "file": "internal/agentd/server.go",
-   "line": 406,
-   "summary": "复制工作区目录项。",
-   "unscanned": true
-  },
-  "e_patchApiWorkspacesEntry": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 42,
-   "name": "PATCH /api/workspaces/entry",
-   "file": "internal/agentd/server.go",
-   "line": 407,
-   "summary": "重命名工作区目录项。",
-   "unscanned": true
-  },
-  "e_deleteApiWorkspacesEntry": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 43,
-   "name": "DELETE /api/workspaces/entry",
-   "file": "internal/agentd/server.go",
-   "line": 408,
-   "summary": "删除工作区目录项。",
-   "unscanned": true
-  },
-  "e_getApiWorkspacesSearch": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 44,
-   "name": "GET /api/workspaces/search",
-   "file": "internal/agentd/server.go",
-   "line": 409,
-   "summary": "搜索工作区文件内容。",
-   "unscanned": true
-  },
-  "e_postApiWorkspacesReveal": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 45,
-   "name": "POST /api/workspaces/reveal",
-   "file": "internal/agentd/server.go",
-   "line": 411,
-   "summary": "请求系统打开工作区路径。",
-   "unscanned": true
-  },
-  "e_deleteApiProjectsName": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 46,
-   "name": "DELETE /api/projects/{name}",
-   "file": "internal/agentd/server.go",
-   "line": 412,
-   "summary": "注销指定项目位置。",
-   "unscanned": true
-  },
-  "e_patchApiProjectsName": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 47,
-   "name": "PATCH /api/projects/{name}",
-   "file": "internal/agentd/server.go",
-   "line": 413,
-   "summary": "修改指定项目位置。",
-   "unscanned": true
-  },
-  "e_getApiProjectsNameBranches": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 48,
-   "name": "GET /api/projects/{name}/branches",
-   "file": "internal/agentd/server.go",
-   "line": 414,
-   "summary": "列出项目分支及占用情况。",
-   "unscanned": true
-  },
-  "e_postApiProjectsNameWorktrees": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 49,
-   "name": "POST /api/projects/{name}/worktrees",
-   "file": "internal/agentd/server.go",
-   "line": 415,
-   "summary": "为项目创建工作树。",
-   "unscanned": true
-  },
-  "e_getApiPtySessions": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 50,
-   "name": "GET /api/pty/sessions",
-   "file": "internal/agentd/server.go",
-   "line": 416,
-   "summary": "列出伪终端会话。",
-   "unscanned": true
-  },
-  "e_postApiPtySessions": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 51,
-   "name": "POST /api/pty/sessions",
-   "file": "internal/agentd/server.go",
-   "line": 417,
-   "summary": "创建伪终端会话。",
-   "unscanned": true
-  },
-  "e_deleteApiPtySessionsId": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 52,
-   "name": "DELETE /api/pty/sessions/{id}",
-   "file": "internal/agentd/server.go",
-   "line": 418,
-   "summary": "删除伪终端会话。",
-   "unscanned": true
-  },
-  "e_postApiUpdate": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 53,
-   "name": "POST /api/update",
-   "file": "internal/agentd/server.go",
-   "line": 419,
-   "summary": "处理 agentd 自身更新请求。",
-   "unscanned": true
-  },
-  "e_postApiAuthTickets": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 54,
-   "name": "POST /api/auth/tickets",
-   "file": "internal/agentd/server.go",
-   "line": 422,
-   "summary": "签发一次性控制台登录 ticket。",
-   "unscanned": true
-  },
-  "e_getApiAuthSessions": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 55,
-   "name": "GET /api/auth/sessions",
-   "file": "internal/agentd/server.go",
-   "line": 423,
-   "summary": "列出浏览器登录会话。",
-   "unscanned": true
-  },
-  "e_deleteApiAuthSessionsId": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 56,
-   "name": "DELETE /api/auth/sessions/{id}",
-   "file": "internal/agentd/server.go",
-   "line": 424,
-   "summary": "吊销指定浏览器登录会话。",
-   "unscanned": true
-  },
-  "e_postApiAuthLogout": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 57,
-   "name": "POST /api/auth/logout",
-   "file": "internal/agentd/server.go",
-   "line": 425,
-   "summary": "吊销当前会话并清除 cookie。",
-   "unscanned": true
-  },
-  "e_getConsole": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 58,
-   "name": "GET /console",
-   "file": "internal/agentd/server.go",
-   "line": 449,
-   "summary": "兑换 ticket、建立控制台会话并重定向到首页。",
-   "unscanned": true
-  },
-  "e_spaRoot": {
-   "kind": "entry",
-   "container": "c_http",
-   "order": 59,
-   "name": "GET/HEAD /",
-   "file": "internal/agentd/server.go",
-   "line": 442,
-   "summary": "为控制台静态资源与深链接提供 SPA 兜底。",
-   "unscanned": true
-  },
-  "e_wsEvents": {
-   "kind": "entry",
-   "container": "c_ws",
-   "order": 0,
-   "name": "GET /ws/events",
-   "file": "internal/agentd/server.go",
-   "line": 420,
-   "summary": "订阅任务事件并补发历史事件。",
-   "unscanned": true
-  },
-  "e_wsPty": {
-   "kind": "entry",
-   "container": "c_ws",
-   "order": 1,
-   "name": "GET /ws/pty",
-   "file": "internal/agentd/server.go",
-   "line": 421,
-   "summary": "建立伪终端的双向长连接。",
-   "unscanned": true
-  },
-  "n_dispatchRunE": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 0,
-   "name": "dispatch.RunE",
-   "file": "cmd/dispatch.go",
-   "line": 172,
-   "signature": "func(cmd *cobra.Command, args []string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "args",
-     "[]string",
-     "可选的 plan 文件路径"
-    ]
-   ],
-   "returns": "error",
-   "summary": "读取计划、解析目标端点并发起任务派发。",
-   "tests": [
-    {
-     "name": "TestDispatchPrintsBaselineToStderr",
-     "file": "cmd/dispatch_test.go:208",
-     "snippet": "func TestDispatchPrintsBaselineToStderr(t *testing.T) {\n\told := dispatchTestTaskJSON\n\tdispatchTestTaskJSON = `{\"id\":\"task-abc123\",\"state\":\"running\",\"branch\":\"feat/abc\",\"base_commit\":\"d64bac4d64bac4d64bac4d64bac4d64bac4d64ba\",\"base_ahead\":0}`\n\tt.Cleanup(func() { dispatchTestTaskJSON = old })\n\n\tout, errOut, err := runDispatch(t, \"--no-terminal\")\n\tif err != nil {\n\t\tt.Fatalf(\"dispatch: %v\", err)\n\t}\n\tif !strings.Contains(errOut, \"分支 feat/abc，起点 d64bac4\") {\n\t\tt.Fatalf(\"stderr 应含分支名与起点短号，得到 %q\", errOut)\n\t}"
+  "meta": {
+    "project": "handoff",
+    "branch": "codegraph-scan-2026-08-21",
+    "commit": "8425099751123bec3903f8157be04d29db5a82f3",
+    "scannedAt": "2026-08-21",
+    "generator": "codex"
+  },
+  "containers": {
+    "c_cli": {
+      "label": "CLI 命令",
+      "kind": "入口",
+      "entry": true
+    },
+    "c_http": {
+      "label": "HTTP API",
+      "kind": "入口",
+      "entry": true
+    },
+    "c_ws": {
+      "label": "长连接/WS",
+      "kind": "入口",
+      "entry": true
     }
-   ]
   },
-  "n_pullRunE": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 1,
-   "name": "pull.RunE",
-   "file": "cmd/pull.go",
-   "line": 35,
-   "signature": "func(cmd *cobra.Command, args []string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "args",
-     "[]string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "error",
-   "summary": "读取任务快照、同步远程分支并输出同步结果。",
-   "tests": []
-  },
-  "n_continueRunE": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 2,
-   "name": "continue.RunE",
-   "file": "cmd/continue.go",
-   "line": 26,
-   "signature": "func(cmd *cobra.Command, args []string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "args",
-     "[]string",
-     "任务 ID 与续接指令"
-    ]
-   ],
-   "returns": "error",
-   "summary": "解析任务与指令并调用客户端续接执行器。",
-   "tests": []
-  },
-  "n_waitRunE": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 3,
-   "name": "wait.RunE",
-   "file": "cmd/wait.go",
-   "line": 83,
-   "signature": "func(cmd *cobra.Command, args []string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "args",
-     "[]string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "error",
-   "summary": "选择一次性、follow 或 until-done 等待模式并交付事件。",
-   "tests": []
-  },
-  "n_statusRunE": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 4,
-   "name": "status.RunE",
-   "file": "cmd/status.go",
-   "line": 50,
-   "signature": "func(cmd *cobra.Command, _ []string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "_",
-     "[]string",
-     "未使用的位置参数"
-    ]
-   ],
-   "returns": "error",
-   "summary": "查询 agentd 状态并渲染文本或 JSON 诊断结果。",
-   "tests": [
-    {
-     "name": "TestStatusRendersText",
-     "file": "cmd/status_test.go:51",
-     "snippet": "func TestStatusRendersText(t *testing.T) {\n\tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.Write([]byte(`{\"listen\":\"0.0.0.0:7777\",\"data_dir\":\"/data\",\n\t\t\t\"started_at\":\"2026-08-10T00:00:00Z\",\n\t\t\t\"version\":{\"revision\":\"8353ef68d711eaf63eeb1287f342f3238204aec8\",\"go\":\"go1.26.1\"},\n\t\t\t\"executors\":[\"claude\",\"opencode\"],\"default_executor\":\"opencode\",\n\t\t\t\"task_counts\":{\"running\":1,\"pending\":0,\"completed\":2},\n\t\t\t\"active\":[{\"id\":\"1c28505a-1111-2222-3333-444455556666\",\"name\":\"B19 env 注入\",\n\t\t\t\t\"state\":\"running\",\"executor\":\"opencode\",\"live\":\"dead\",\n\t\t\t\t\"note\":\"tmux 会话 handoff-1c28505a 不存在\"}]}`))\n\t}))"
+  "nodes": {
+    "e_cli_agentd": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 1,
+      "name": "handoff agentd",
+      "file": "cmd/agentd.go",
+      "line": 53,
+      "unscanned": true
+    },
+    "e_cli_attach": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 2,
+      "name": "handoff attach",
+      "file": "cmd/attach.go",
+      "line": 46,
+      "unscanned": true
+    },
+    "e_cli_console": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 3,
+      "name": "handoff console",
+      "file": "cmd/console.go",
+      "line": 34,
+      "unscanned": true
+    },
+    "e_cli_continue": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 4,
+      "name": "handoff continue",
+      "file": "cmd/continue.go",
+      "line": 21,
+      "unscanned": true
+    },
+    "e_cli_diff": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 5,
+      "name": "handoff diff",
+      "file": "cmd/diff.go",
+      "line": 22,
+      "unscanned": true
+    },
+    "e_cli_dispatch": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 6,
+      "name": "handoff dispatch",
+      "file": "cmd/dispatch.go",
+      "line": 168,
+      "unscanned": true
+    },
+    "e_cli_done": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 7,
+      "name": "handoff done",
+      "file": "cmd/done.go",
+      "line": 28,
+      "unscanned": true
+    },
+    "e_cli_fetch": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 8,
+      "name": "handoff fetch",
+      "file": "cmd/fetch.go",
+      "line": 19,
+      "unscanned": true
+    },
+    "e_cli_footprint": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 9,
+      "name": "handoff footprint",
+      "file": "cmd/footprint.go",
+      "line": 33,
+      "unscanned": true
+    },
+    "e_cli_frames": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 10,
+      "name": "handoff frames",
+      "file": "cmd/frames.go",
+      "line": 30,
+      "unscanned": true
+    },
+    "e_cli_graph": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 11,
+      "name": "handoff graph",
+      "file": "cmd/graph.go",
+      "line": 30,
+      "unscanned": true
+    },
+    "e_cli_graph_validate": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 12,
+      "name": "handoff graph validate",
+      "file": "cmd/graph.go",
+      "line": 70,
+      "unscanned": true
+    },
+    "e_cli_graph_views": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 13,
+      "name": "handoff graph views",
+      "file": "cmd/graph.go",
+      "line": 124,
+      "unscanned": true
+    },
+    "e_cli_graph_chain": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 14,
+      "name": "handoff graph chain",
+      "file": "cmd/graph.go",
+      "line": 186,
+      "unscanned": true
+    },
+    "e_cli_graph_who_calls": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 15,
+      "name": "handoff graph who-calls",
+      "file": "cmd/graph.go",
+      "line": 193,
+      "unscanned": true
+    },
+    "e_cli_graph_domains": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 16,
+      "name": "handoff graph domains",
+      "file": "cmd/graph.go",
+      "line": 201,
+      "unscanned": true
+    },
+    "e_cli_init": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 17,
+      "name": "handoff init",
+      "file": "cmd/init.go",
+      "line": 48,
+      "unscanned": true
+    },
+    "e_cli_machines": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 18,
+      "name": "handoff machines",
+      "file": "cmd/machines.go",
+      "line": 23,
+      "unscanned": true
+    },
+    "e_cli_permission_mcp": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 19,
+      "name": "handoff permission-mcp",
+      "file": "cmd/permission_mcp.go",
+      "line": 76,
+      "unscanned": true
+    },
+    "e_cli_project": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 20,
+      "name": "handoff project",
+      "file": "cmd/project.go",
+      "line": 80,
+      "unscanned": true
+    },
+    "e_cli_project_add": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 21,
+      "name": "handoff project add",
+      "file": "cmd/project.go",
+      "line": 92,
+      "unscanned": true
+    },
+    "e_cli_project_ls": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 22,
+      "name": "handoff project ls",
+      "file": "cmd/project.go",
+      "line": 199,
+      "unscanned": true
+    },
+    "e_cli_project_rm": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 23,
+      "name": "handoff project rm",
+      "file": "cmd/project.go",
+      "line": 324,
+      "unscanned": true
+    },
+    "e_cli_project_edit": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 24,
+      "name": "handoff project edit",
+      "file": "cmd/project.go",
+      "line": 356,
+      "unscanned": true
+    },
+    "e_cli_ptyhost": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 25,
+      "name": "handoff _ptyhost",
+      "file": "cmd/ptyhost.go",
+      "line": 16,
+      "unscanned": true
+    },
+    "e_cli_pull": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 26,
+      "name": "handoff pull",
+      "file": "cmd/pull.go",
+      "line": 31,
+      "unscanned": true
+    },
+    "e_cli_reclaim": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 27,
+      "name": "handoff reclaim",
+      "file": "cmd/reclaim.go",
+      "line": 35,
+      "unscanned": true
+    },
+    "e_cli_reply": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 28,
+      "name": "handoff reply",
+      "file": "cmd/reply.go",
+      "line": 32,
+      "unscanned": true
+    },
+    "e_cli_resume": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 29,
+      "name": "handoff resume",
+      "file": "cmd/resume.go",
+      "line": 38,
+      "unscanned": true
+    },
+    "e_cli_update_check": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 30,
+      "name": "handoff update-check",
+      "file": "cmd/root.go",
+      "line": 311,
+      "unscanned": true
+    },
+    "e_cli_run": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 31,
+      "name": "handoff run",
+      "file": "cmd/run.go",
+      "line": 61,
+      "unscanned": true
+    },
+    "e_cli_service": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 32,
+      "name": "handoff service",
+      "file": "cmd/service.go",
+      "line": 47,
+      "unscanned": true
+    },
+    "e_cli_service_install": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 33,
+      "name": "handoff service install",
+      "file": "cmd/service.go",
+      "line": 133,
+      "unscanned": true
+    },
+    "e_cli_service_uninstall": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 34,
+      "name": "handoff service uninstall",
+      "file": "cmd/service.go",
+      "line": 141,
+      "unscanned": true
+    },
+    "e_cli_service_start": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 35,
+      "name": "handoff service start",
+      "file": "cmd/service.go",
+      "line": 164,
+      "unscanned": true
+    },
+    "e_cli_service_stop": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 36,
+      "name": "handoff service stop",
+      "file": "cmd/service.go",
+      "line": 185,
+      "unscanned": true
+    },
+    "e_cli_service_restart": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 37,
+      "name": "handoff service restart",
+      "file": "cmd/service.go",
+      "line": 220,
+      "unscanned": true
+    },
+    "e_cli_service_status": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 38,
+      "name": "handoff service status",
+      "file": "cmd/service.go",
+      "line": 286,
+      "unscanned": true
+    },
+    "e_cli_sessions": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 39,
+      "name": "handoff sessions",
+      "file": "cmd/sessions.go",
+      "line": 26,
+      "unscanned": true
+    },
+    "e_cli_sessions_revoke": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 40,
+      "name": "handoff sessions revoke",
+      "file": "cmd/sessions.go",
+      "line": 45,
+      "unscanned": true
+    },
+    "e_cli_shim": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 41,
+      "name": "handoff _shim",
+      "file": "cmd/shim.go",
+      "line": 21,
+      "unscanned": true
+    },
+    "e_cli_show": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 42,
+      "name": "handoff show",
+      "file": "cmd/show.go",
+      "line": 21,
+      "unscanned": true
+    },
+    "e_cli_skill": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 43,
+      "name": "handoff skill",
+      "file": "cmd/skill.go",
+      "line": 30,
+      "unscanned": true
+    },
+    "e_cli_skill_install": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 44,
+      "name": "handoff skill install",
+      "file": "cmd/skill.go",
+      "line": 55,
+      "unscanned": true
+    },
+    "e_cli_status": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 45,
+      "name": "handoff status",
+      "file": "cmd/status.go",
+      "line": 47,
+      "unscanned": true
+    },
+    "e_cli_stop": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 46,
+      "name": "handoff stop",
+      "file": "cmd/stop.go",
+      "line": 20,
+      "unscanned": true
+    },
+    "e_cli_tasks": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 47,
+      "name": "handoff tasks",
+      "file": "cmd/tasks.go",
+      "line": 25,
+      "unscanned": true
+    },
+    "e_cli_upgrade": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 48,
+      "name": "handoff upgrade",
+      "file": "cmd/upgrade.go",
+      "line": 239,
+      "unscanned": true
+    },
+    "e_cli_version": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 49,
+      "name": "handoff version",
+      "file": "cmd/version.go",
+      "line": 33,
+      "unscanned": true
+    },
+    "e_cli_wait": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 50,
+      "name": "handoff wait",
+      "file": "cmd/wait.go",
+      "line": 79,
+      "unscanned": true
+    },
+    "e_http_get_api_status": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 1,
+      "name": "GET /api/status",
+      "file": "internal/agentd/server.go",
+      "line": 412,
+      "unscanned": true
+    },
+    "e_http_get_api_footprint": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 2,
+      "name": "GET /api/footprint",
+      "file": "internal/agentd/server.go",
+      "line": 413,
+      "unscanned": true
+    },
+    "e_http_get_api_reclaim": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 3,
+      "name": "GET /api/reclaim",
+      "file": "internal/agentd/server.go",
+      "line": 414,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 4,
+      "name": "GET /api/tasks",
+      "file": "internal/agentd/server.go",
+      "line": 415,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 5,
+      "name": "POST /api/tasks",
+      "file": "internal/agentd/server.go",
+      "line": 416,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 6,
+      "name": "GET /api/tasks/{id}",
+      "file": "internal/agentd/server.go",
+      "line": 430,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_reply": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 7,
+      "name": "POST /api/tasks/{id}/reply",
+      "file": "internal/agentd/server.go",
+      "line": 431,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_continue": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 8,
+      "name": "POST /api/tasks/{id}/continue",
+      "file": "internal/agentd/server.go",
+      "line": 432,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_done": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 9,
+      "name": "POST /api/tasks/{id}/done",
+      "file": "internal/agentd/server.go",
+      "line": 433,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_stop": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 10,
+      "name": "POST /api/tasks/{id}/stop",
+      "file": "internal/agentd/server.go",
+      "line": 434,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_reclaim": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 11,
+      "name": "POST /api/tasks/{id}/reclaim",
+      "file": "internal/agentd/server.go",
+      "line": 435,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_resume": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 12,
+      "name": "POST /api/tasks/{id}/resume",
+      "file": "internal/agentd/server.go",
+      "line": 436,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_plan": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 13,
+      "name": "GET /api/tasks/{id}/plan",
+      "file": "internal/agentd/server.go",
+      "line": 437,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_diff": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 14,
+      "name": "GET /api/tasks/{id}/diff",
+      "file": "internal/agentd/server.go",
+      "line": 438,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_branches": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 15,
+      "name": "GET /api/tasks/{id}/branches",
+      "file": "internal/agentd/server.go",
+      "line": 439,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_render": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 16,
+      "name": "GET /api/tasks/{id}/render",
+      "file": "internal/agentd/server.go",
+      "line": 440,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_frames": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 17,
+      "name": "GET /api/tasks/{id}/frames",
+      "file": "internal/agentd/server.go",
+      "line": 441,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 18,
+      "name": "GET /api/tasks/{id}/file",
+      "file": "internal/agentd/server.go",
+      "line": 442,
+      "unscanned": true
+    },
+    "e_http_get_api_tasks_id_bundle": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 19,
+      "name": "GET /api/tasks/{id}/bundle",
+      "file": "internal/agentd/server.go",
+      "line": 443,
+      "unscanned": true
+    },
+    "e_http_post_api_tasks_id_run": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 20,
+      "name": "POST /api/tasks/{id}/run",
+      "file": "internal/agentd/server.go",
+      "line": 444,
+      "unscanned": true
+    },
+    "e_http_post_api_projects": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 21,
+      "name": "POST /api/projects",
+      "file": "internal/agentd/server.go",
+      "line": 445,
+      "unscanned": true
+    },
+    "e_http_get_api_projects": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 22,
+      "name": "GET /api/projects",
+      "file": "internal/agentd/server.go",
+      "line": 446,
+      "unscanned": true
+    },
+    "e_http_get_api_projects_tree": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 23,
+      "name": "GET /api/projects/tree",
+      "file": "internal/agentd/server.go",
+      "line": 447,
+      "unscanned": true
+    },
+    "e_http_get_api_machines": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 24,
+      "name": "GET /api/machines",
+      "file": "internal/agentd/server.go",
+      "line": 448,
+      "unscanned": true
+    },
+    "e_http_get_api_workbench_state": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 25,
+      "name": "GET /api/workbench/state",
+      "file": "internal/agentd/server.go",
+      "line": 449,
+      "unscanned": true
+    },
+    "e_http_put_api_workbench_state_base": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 26,
+      "name": "PUT /api/workbench/state/base",
+      "file": "internal/agentd/server.go",
+      "line": 450,
+      "unscanned": true
+    },
+    "e_http_put_api_workbench_state_selected": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 27,
+      "name": "PUT /api/workbench/state/selected",
+      "file": "internal/agentd/server.go",
+      "line": 451,
+      "unscanned": true
+    },
+    "e_http_put_api_workbench_state_dock": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 28,
+      "name": "PUT /api/workbench/state/dock",
+      "file": "internal/agentd/server.go",
+      "line": 452,
+      "unscanned": true
+    },
+    "e_http_put_api_desktop_state": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 29,
+      "name": "PUT /api/desktop/state",
+      "file": "internal/agentd/server.go",
+      "line": 453,
+      "unscanned": true
+    },
+    "e_http_get_api_desktop_state": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 30,
+      "name": "GET /api/desktop/state",
+      "file": "internal/agentd/server.go",
+      "line": 454,
+      "unscanned": true
+    },
+    "e_http_get_api_discipline": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 31,
+      "name": "GET /api/discipline",
+      "file": "internal/agentd/server.go",
+      "line": 455,
+      "unscanned": true
+    },
+    "e_http_get_api_discipline_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 32,
+      "name": "GET /api/discipline/file",
+      "file": "internal/agentd/server.go",
+      "line": 456,
+      "unscanned": true
+    },
+    "e_http_put_api_discipline_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 33,
+      "name": "PUT /api/discipline/file",
+      "file": "internal/agentd/server.go",
+      "line": 457,
+      "unscanned": true
+    },
+    "e_http_put_api_discipline_mapping": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 34,
+      "name": "PUT /api/discipline/mapping",
+      "file": "internal/agentd/server.go",
+      "line": 458,
+      "unscanned": true
+    },
+    "e_http_get_api_env": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 35,
+      "name": "GET /api/env",
+      "file": "internal/agentd/server.go",
+      "line": 459,
+      "unscanned": true
+    },
+    "e_http_get_api_env_file_keys": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 36,
+      "name": "GET /api/env/file/keys",
+      "file": "internal/agentd/server.go",
+      "line": 460,
+      "unscanned": true
+    },
+    "e_http_get_api_env_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 37,
+      "name": "GET /api/env/file",
+      "file": "internal/agentd/server.go",
+      "line": 461,
+      "unscanned": true
+    },
+    "e_http_put_api_env_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 38,
+      "name": "PUT /api/env/file",
+      "file": "internal/agentd/server.go",
+      "line": 462,
+      "unscanned": true
+    },
+    "e_http_put_api_env_mapping": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 39,
+      "name": "PUT /api/env/mapping",
+      "file": "internal/agentd/server.go",
+      "line": 463,
+      "unscanned": true
+    },
+    "e_http_get_api_executor_default": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 40,
+      "name": "GET /api/executor/default",
+      "file": "internal/agentd/server.go",
+      "line": 464,
+      "unscanned": true
+    },
+    "e_http_put_api_executor_default": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 41,
+      "name": "PUT /api/executor/default",
+      "file": "internal/agentd/server.go",
+      "line": 465,
+      "unscanned": true
+    },
+    "e_http_post_api_machines": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 42,
+      "name": "POST /api/machines",
+      "file": "internal/agentd/server.go",
+      "line": 466,
+      "unscanned": true
+    },
+    "e_http_delete_api_machines_name": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 43,
+      "name": "DELETE /api/machines/{name}",
+      "file": "internal/agentd/server.go",
+      "line": 467,
+      "unscanned": true
+    },
+    "e_http_post_api_machines_name_upgrade": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 44,
+      "name": "POST /api/machines/{name}/upgrade",
+      "file": "internal/agentd/server.go",
+      "line": 468,
+      "unscanned": true
+    },
+    "e_http_get_api_workspaces_dir": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 45,
+      "name": "GET /api/workspaces/dir",
+      "file": "internal/agentd/server.go",
+      "line": 469,
+      "unscanned": true
+    },
+    "e_http_get_api_workspaces_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 46,
+      "name": "GET /api/workspaces/file",
+      "file": "internal/agentd/server.go",
+      "line": 470,
+      "unscanned": true
+    },
+    "e_http_put_api_workspaces_file": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 47,
+      "name": "PUT /api/workspaces/file",
+      "file": "internal/agentd/server.go",
+      "line": 471,
+      "unscanned": true
+    },
+    "e_http_post_api_workspaces_entry": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 48,
+      "name": "POST /api/workspaces/entry",
+      "file": "internal/agentd/server.go",
+      "line": 472,
+      "unscanned": true
+    },
+    "e_http_post_api_workspaces_entry_copy": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 49,
+      "name": "POST /api/workspaces/entry/copy",
+      "file": "internal/agentd/server.go",
+      "line": 473,
+      "unscanned": true
+    },
+    "e_http_patch_api_workspaces_entry": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 50,
+      "name": "PATCH /api/workspaces/entry",
+      "file": "internal/agentd/server.go",
+      "line": 474,
+      "unscanned": true
+    },
+    "e_http_delete_api_workspaces_entry": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 51,
+      "name": "DELETE /api/workspaces/entry",
+      "file": "internal/agentd/server.go",
+      "line": 475,
+      "unscanned": true
+    },
+    "e_http_get_api_workspaces_search": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 52,
+      "name": "GET /api/workspaces/search",
+      "file": "internal/agentd/server.go",
+      "line": 476,
+      "unscanned": true
+    },
+    "e_http_post_api_workspaces_reveal": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 53,
+      "name": "POST /api/workspaces/reveal",
+      "file": "internal/agentd/server.go",
+      "line": 478,
+      "unscanned": true
+    },
+    "e_http_delete_api_projects_name": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 54,
+      "name": "DELETE /api/projects/{name}",
+      "file": "internal/agentd/server.go",
+      "line": 479,
+      "unscanned": true
+    },
+    "e_http_patch_api_projects_name": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 55,
+      "name": "PATCH /api/projects/{name}",
+      "file": "internal/agentd/server.go",
+      "line": 480,
+      "unscanned": true
+    },
+    "e_http_get_api_projects_name_branches": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 56,
+      "name": "GET /api/projects/{name}/branches",
+      "file": "internal/agentd/server.go",
+      "line": 481,
+      "unscanned": true
+    },
+    "e_http_get_api_projects_name_codegraph": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 57,
+      "name": "GET /api/projects/{name}/codegraph",
+      "file": "internal/agentd/server.go",
+      "line": 482,
+      "unscanned": true
+    },
+    "e_http_get_api_projects_name_codegraph_source": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 58,
+      "name": "GET /api/projects/{name}/codegraph/source",
+      "file": "internal/agentd/server.go",
+      "line": 483,
+      "unscanned": true
+    },
+    "e_http_post_api_projects_name_worktrees": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 59,
+      "name": "POST /api/projects/{name}/worktrees",
+      "file": "internal/agentd/server.go",
+      "line": 484,
+      "unscanned": true
+    },
+    "e_http_get_api_pty_sessions": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 60,
+      "name": "GET /api/pty/sessions",
+      "file": "internal/agentd/server.go",
+      "line": 485,
+      "unscanned": true
+    },
+    "e_http_post_api_pty_sessions": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 61,
+      "name": "POST /api/pty/sessions",
+      "file": "internal/agentd/server.go",
+      "line": 486,
+      "unscanned": true
+    },
+    "e_http_delete_api_pty_sessions_id": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 62,
+      "name": "DELETE /api/pty/sessions/{id}",
+      "file": "internal/agentd/server.go",
+      "line": 487,
+      "unscanned": true
+    },
+    "e_http_post_api_update": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 63,
+      "name": "POST /api/update",
+      "file": "internal/agentd/server.go",
+      "line": 488,
+      "unscanned": true
+    },
+    "e_http_get_api_update_latest": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 64,
+      "name": "GET /api/update/latest",
+      "file": "internal/agentd/server.go",
+      "line": 489,
+      "unscanned": true
+    },
+    "e_http_post_api_update_desktop_download": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 65,
+      "name": "POST /api/update/desktop/download",
+      "file": "internal/agentd/server.go",
+      "line": 490,
+      "unscanned": true
+    },
+    "e_http_get_api_update_desktop_download": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 66,
+      "name": "GET /api/update/desktop/download",
+      "file": "internal/agentd/server.go",
+      "line": 491,
+      "unscanned": true
+    },
+    "e_ws_get_ws_events": {
+      "kind": "entry",
+      "container": "c_ws",
+      "order": 1,
+      "name": "GET /ws/events",
+      "file": "internal/agentd/server.go",
+      "line": 492,
+      "unscanned": true
+    },
+    "e_ws_get_ws_pty": {
+      "kind": "entry",
+      "container": "c_ws",
+      "order": 2,
+      "name": "GET /ws/pty",
+      "file": "internal/agentd/server.go",
+      "line": 493,
+      "unscanned": true
+    },
+    "e_http_post_api_auth_tickets": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 67,
+      "name": "POST /api/auth/tickets",
+      "file": "internal/agentd/server.go",
+      "line": 494,
+      "unscanned": true
+    },
+    "e_http_get_api_auth_sessions": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 68,
+      "name": "GET /api/auth/sessions",
+      "file": "internal/agentd/server.go",
+      "line": 495,
+      "unscanned": true
+    },
+    "e_http_delete_api_auth_sessions_id": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 69,
+      "name": "DELETE /api/auth/sessions/{id}",
+      "file": "internal/agentd/server.go",
+      "line": 496,
+      "unscanned": true
+    },
+    "e_http_post_api_auth_logout": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 70,
+      "name": "POST /api/auth/logout",
+      "file": "internal/agentd/server.go",
+      "line": 497,
+      "unscanned": true
+    },
+    "e_http_console": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 71,
+      "name": "GET /console",
+      "file": "internal/agentd/server.go",
+      "line": 521,
+      "unscanned": true
+    },
+    "e_http_root": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 72,
+      "name": "GET/HEAD /",
+      "file": "internal/agentd/server.go",
+      "line": 514,
+      "unscanned": true
     }
-   ]
   },
-  "n_runUntilDone": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 5,
-   "name": "runUntilDone",
-   "file": "cmd/wait.go",
-   "line": 156,
-   "signature": "func runUntilDone(cmd *cobra.Command, taskID, addr, token string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "taskID",
-     "string",
-     "依赖任务 ID"
-    ],
-    [
-     "addr",
-     "string",
-     "agentd 地址"
-    ],
-    [
-     "token",
-     "string",
-     "Bearer 令牌"
-    ]
-   ],
-   "returns": "error",
-   "summary": "静默等待真实 archived 事件并在成功时输出它。",
-   "tests": []
-  },
-  "n_runFollow": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 6,
-   "name": "runFollow",
-   "file": "cmd/wait.go",
-   "line": 225,
-   "signature": "func runFollow(cmd *cobra.Command, taskID, addr, token string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     "命令上下文与输出流"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "addr",
-     "string",
-     "agentd 地址"
-    ],
-    [
-     "token",
-     "string",
-     "Bearer 令牌"
-    ]
-   ],
-   "returns": "error",
-   "summary": "持续订阅事件并逐条输出直到任务终结。",
-   "tests": []
-  },
-  "n_writeEventLine": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 7,
-   "name": "writeEventLine",
-   "file": "cmd/wait.go",
-   "line": 201,
-   "signature": "func writeEventLine(w io.Writer, ev *proto.Event) error",
-   "params": [
-    [
-     "w",
-     "io.Writer",
-     "事件输出流"
-    ],
-    [
-     "ev",
-     "*proto.Event",
-     "待输出事件"
-    ]
-   ],
-   "returns": "error",
-   "summary": "把事件序列化为严格的一行 JSON。",
-   "tests": []
-  },
-  "n_syncTaskBranch": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 8,
-   "name": "syncTaskBranch",
-   "file": "cmd/pull.go",
-   "line": 68,
-   "signature": "func syncTaskBranch(ctx context.Context, task *proto.Task) (localsync.Result, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "同步生命周期"
-    ],
-    [
-     "task",
-     "*proto.Task",
-     "任务快照"
-    ]
-   ],
-   "returns": "(localsync.Result, error)",
-   "summary": "选择 agentd bundle 或 SSH 老路同步任务分支。",
-   "tests": []
-  },
-  "n_syncViaBundle": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 9,
-   "name": "syncViaBundle",
-   "file": "cmd/pull.go",
-   "line": 133,
-   "signature": "func syncViaBundle(ctx context.Context, addr, token, taskID, have, branch, localRepo string) (localsync.Result, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "同步生命周期"
-    ],
-    [
-     "addr",
-     "string",
-     "agentd 地址"
-    ],
-    [
-     "token",
-     "string",
-     "Bearer 令牌"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "have",
-     "string",
-     "本地已有基线提交"
-    ],
-    [
-     "branch",
-     "string",
-     "任务分支"
-    ],
-    [
-     "localRepo",
-     "string",
-     "本地仓库路径"
-    ]
-   ],
-   "returns": "(localsync.Result, error)",
-   "summary": "下载 bundle 到临时文件并交给本地同步器。",
-   "tests": []
-  },
-  "n_hasLocalCommit": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 10,
-   "name": "hasLocalCommit",
-   "file": "cmd/pull.go",
-   "line": 174,
-   "signature": "func hasLocalCommit(ctx context.Context, repo, sha string) bool",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "命令生命周期"
-    ],
-    [
-     "repo",
-     "string",
-     "本地仓库路径"
-    ],
-    [
-     "sha",
-     "string",
-     "提交号"
-    ]
-   ],
-   "returns": "bool",
-   "summary": "探测本地仓库是否已有指定提交对象。",
-   "tests": [
-    {
-     "name": "TestHasLocalCommit",
-     "file": "cmd/pull_test.go:45",
-     "snippet": "func TestHasLocalCommit(t *testing.T) {\n\trepo, base := newPullRepo(t)\n\tif !hasLocalCommit(context.Background(), repo, base) {\n\t\tt.Error(\"本地确实有 base，应报 true\")\n\t}\n\tif hasLocalCommit(context.Background(), repo, \"0123456789abcdef0123456789abcdef01234567\") {\n\t\tt.Error(\"本地没有的 sha 应报 false\")\n\t}\n\tif hasLocalCommit(context.Background(), repo, \"\") {\n\t\tt.Error(\"空 sha 应报 false\")\n\t}\n\tif hasLocalCommit(context.Background(), repo, \"--upload-pack=x\") {"
-    }
-   ]
-  },
-  "n_syncMessage": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 11,
-   "name": "syncMessage",
-   "file": "cmd/pull.go",
-   "line": 187,
-   "signature": "func syncMessage(res localsync.Result) string",
-   "params": [
-    [
-     "res",
-     "localsync.Result",
-     "同步结果"
-    ]
-   ],
-   "returns": "string",
-   "summary": "把同步结果渲染为一行中文提示。",
-   "tests": []
-  },
-  "n_targetEndpoint": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 12,
-   "name": "TargetEndpoint",
-   "file": "cmd/root.go",
-   "line": 186,
-   "signature": "func TargetEndpoint() (addr, token string, err error)",
-   "params": [],
-   "returns": "(addr, token string, err error)",
-   "summary": "根据全局参数与配置解析 agentd 地址和访问令牌。",
-   "tests": []
-  },
-  "n_clientNew": {
-   "kind": "func",
-   "container": "k_client_fn",
-   "order": 0,
-   "name": "New",
-   "file": "internal/client/client.go",
-   "line": 203,
-   "signature": "func New(addr, token string) *Client",
-   "params": [
-    [
-     "addr",
-     "string",
-     "agentd 地址"
-    ],
-    [
-     "token",
-     "string",
-     "Bearer 令牌"
-    ]
-   ],
-   "returns": "*Client",
-   "summary": "创建带 HTTP/WS 传输配置的 agentd 客户端。",
-   "tests": []
-  },
-  "n_clientDispatch": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 1,
-   "name": "Client.Dispatch",
-   "file": "internal/client/client.go",
-   "line": 673,
-   "signature": "func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ],
-    [
-     "opts",
-     "DispatchOpts",
-     "派发请求参数"
-    ]
-   ],
-   "returns": "(*proto.Task, error)",
-   "summary": "POST /api/tasks 并解码创建后的任务。",
-   "tests": [
-    {
-     "name": "TestDispatchErrorBodyNotTruncated",
-     "file": "internal/client/client_test.go:560",
-     "snippet": "func TestDispatchErrorBodyNotTruncated(t *testing.T) {\n\ttrailer := \"或改用 --new-worktree 在独立工作树上开工\"\n\t// 路径加长：保证 trailer 起点落在 256 之后——旧上限 256 字节会把它整体截没，\n\t// 新上限 4096 才放得下。仅 len(body)>256 不够（trailer 可能恰好嵌在前 256 内）。\n\trepo := \"/Users/very/long/path/to/repo/with/a/considerably/longer/prefix/so/the/trailing/message/tail/gets/cut/by/the/old/256/byte/limit\"\n\tbody := `{\"error\":\"目标工作目录已被活跃任务占用: ` + repo + ` 正被任务 8fd0b7d8-86d2-46f7-97c8-421cae47a954（重构登录, waiting_review）占用；先 handoff done/stop 它，` + trailer + `\"}`\n\tif i := strings.Index(body, trailer); i <= 256 {\n\t\tt.Fatalf(\"trailer 起点 %d 必须在 256 之后才能测截断（body 共 %d 字节）\", i, len(body))\n\t}\n\tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusConflict)"
-    }
-   ]
-  },
-  "n_clientAttach": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 2,
-   "name": "Client.Attach",
-   "file": "internal/client/client.go",
-   "line": 600,
-   "signature": "func (c *Client) Attach(ctx context.Context, taskID string) (*AttachInfo, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*AttachInfo, error)",
-   "summary": "GET /api/tasks/{id} 并解码任务现场快照。",
-   "tests": [
-    {
-     "name": "TestListTasksAndAttach",
-     "file": "internal/client/client_test.go:114",
-     "snippet": "func TestListTasksAndAttach(t *testing.T) {\n\tenv := newTestClientEnv(t)\n\ttaskID := env.createPendingTask(t)\n\tnow := time.Now().UTC()\n\tif _, err := env.st.CreateTicket(&proto.Ticket{ID: \"tk-1\", TaskID: taskID, Kind: \"gate\", Request: json.RawMessage(`{\"kind\":\"bash\",\"command\":\"go test ./...\"}`), CreatedAt: now}); err != nil {\n\t\tt.Fatalf(\"CreateTicket: %v\", err)\n\t}\n\tcl := client.New(env.ts.URL, env.token)\n\n\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\tdefer cancel()"
-    }
-   ]
-  },
-  "n_clientContinue": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 3,
-   "name": "Client.Continue",
-   "file": "internal/client/client.go",
-   "line": 894,
-   "signature": "func (c *Client) Continue(ctx context.Context, taskID, instructions string) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "instructions",
-     "string",
-     "原样续接指令"
-    ]
-   ],
-   "returns": "error",
-   "summary": "POST /api/tasks/{id}/continue 透传续接指令。",
-   "tests": []
-  },
-  "n_clientStatus": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 4,
-   "name": "Client.Status",
-   "file": "internal/client/client.go",
-   "line": 421,
-   "signature": "func (c *Client) Status(ctx context.Context) (*proto.StatusResp, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ]
-   ],
-   "returns": "(*proto.StatusResp, error)",
-   "summary": "GET /api/status 并处理旧版 agentd 的降级哨兵。",
-   "tests": [
-    {
-     "name": "TestStatusDecodes",
-     "file": "internal/client/status_test.go:15",
-     "snippet": "func TestStatusDecodes(t *testing.T) {\n\tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tif r.URL.Path != \"/api/status\" {\n\t\t\tt.Errorf(\"请求路径=%q, want /api/status\", r.URL.Path)\n\t\t}\n\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.Write([]byte(`{\"listen\":\"0.0.0.0:7777\",\"data_dir\":\"/d\",\n\t\t\t\"version\":{\"revision\":\"abc123\",\"go\":\"go1.26.1\"},\n\t\t\t\"executors\":[\"claude\",\"opencode\"],\"default_executor\":\"opencode\",\n\t\t\t\"task_counts\":{\"running\":1},\"active\":[]}`))\n\t}))\n\tt.Cleanup(ts.Close)"
-    }
-   ]
-  },
-  "n_clientBundle": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 5,
-   "name": "Client.Bundle",
-   "file": "internal/client/bundle.go",
-   "line": 44,
-   "signature": "func (c *Client) Bundle(ctx context.Context, taskID, have string) (io.ReadCloser, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "have",
-     "string",
-     "已有基线提交"
-    ]
-   ],
-   "returns": "(io.ReadCloser, error)",
-   "summary": "GET /api/tasks/{id}/bundle 并返回 bundle 字节流。",
-   "tests": [
-    {
-     "name": "TestBundleOK",
-     "file": "internal/client/bundle_test.go:13",
-     "snippet": "func TestBundleOK(t *testing.T) {\n\twant := []byte(\"PACK-fake-bundle-bytes\")\n\tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tif got := r.URL.Query().Get(\"have\"); got != \"abc123\" {\n\t\t\tt.Errorf(\"have 应透传，实得 %q\", got)\n\t\t}\n\t\tw.Header().Set(\"Content-Type\", \"application/octet-stream\")\n\t\t_, _ = w.Write(want)\n\t}))\n\tdefer ts.Close()\n\n\trc, err := New(ts.URL, \"tok\").Bundle(context.Background(), \"t1\", \"abc123\")"
-    }
-   ]
-  },
-  "n_clientDo": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 6,
-   "name": "Client.do",
-   "file": "internal/client/client.go",
-   "line": 329,
-   "signature": "func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "请求生命周期"
-    ],
-    [
-     "method",
-     "string",
-     "HTTP 方法"
-    ],
-    [
-     "path",
-     "string",
-     "API 路径"
-    ],
-    [
-     "body",
-     "any",
-     "可选 JSON 请求体"
-    ]
-   ],
-   "returns": "(*http.Response, error)",
-   "summary": "构造带 Bearer 的 JSON HTTP 请求并发送。",
-   "tests": []
-  },
-  "n_clientWaitEvent": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 7,
-   "name": "Client.WaitEvent",
-   "file": "internal/client/client.go",
-   "line": 1260,
-   "signature": "func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "等待生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "all",
-     "bool",
-     "是否交付全部事件"
-    ]
-   ],
-   "returns": "(*proto.Event, error)",
-   "summary": "从游标开始等待首个可交付事件并处理 WS 重连。",
-   "tests": [
-    {
-     "name": "TestWaitEventSkipsProgress",
-     "file": "internal/client/client_test.go:149",
-     "snippet": "func TestWaitEventSkipsProgress(t *testing.T) {\n\tenv := newTestClientEnv(t)\n\ttaskID := \"t1\"\n\t// 任务行必须先存在：P0-2 后服务端对不存在的任务直接 PolicyViolation 关闭\n\t// WS（打错 task-id 的永久错误），本测试要覆盖的是 cursor 语义而非该分支\n\tif err := env.st.CreateTask(&proto.Task{ID: taskID, Target: \"opencode\", RepoPath: \"/repo\",\n\t\tState: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {\n\t\tt.Fatalf(\"CreateTask: %v\", err)\n\t}\n\tpv, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, map[string]any{\"n\": 1})\n\tif err != nil {\n\t\tt.Fatalf(\"AppendEvent progress: %v\", err)"
-    }
-   ]
-  },
-  "n_clientReadCursor": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 8,
-   "name": "Client.readCursor",
-   "file": "internal/client/client.go",
-   "line": 1665,
-   "signature": "func (c *Client) readCursor(taskID string) int64",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "int64",
-   "summary": "读取协调者侧任务事件游标。",
-   "tests": []
-  },
-  "n_clientWaitOnce": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 9,
-   "name": "Client.waitOnce",
-   "file": "internal/client/client.go",
-   "line": 1438,
-   "signature": "func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "连接生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "起始序号"
-    ],
-    [
-     "all",
-     "bool",
-     "是否跳过类型过滤"
-    ]
-   ],
-   "returns": "(*proto.Event, error)",
-   "summary": "建立一次事件 WS 并取得首个目标事件。",
-   "tests": []
-  },
-  "n_clientStreamOnce": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 10,
-   "name": "Client.streamOnce",
-   "file": "internal/client/client.go",
-   "line": 1330,
-   "signature": "func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64, readDeadline func() time.Time, onFrame func(proto.Event) error) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "连接生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "起始序号"
-    ],
-    [
-     "readDeadline",
-     "func() time.Time",
-     "空闲截止时间计算器"
-    ],
-    [
-     "onFrame",
-     "func(proto.Event) error",
-     "事件帧回调"
-    ]
-   ],
-   "returns": "error",
-   "summary": "拨号并消费一条 WS 事件流直到回调或连接结束。",
-   "tests": []
-  },
-  "n_clientWSDialOptions": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 11,
-   "name": "Client.wsDialOptions",
-   "file": "internal/client/client.go",
-   "line": 259,
-   "signature": "func (c *Client) wsDialOptions() *websocket.DialOptions",
-   "params": [],
-   "returns": "*websocket.DialOptions",
-   "summary": "组装复用 HTTP 传输和 Bearer 头的 WS 拨号参数。",
-   "tests": []
-  },
-  "n_clientWriteCursor": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 12,
-   "name": "Client.writeCursor",
-   "file": "internal/client/client.go",
-   "line": 1729,
-   "signature": "func (c *Client) writeCursor(taskID string, seq int64) error",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "seq",
-     "int64",
-     "已交付序号"
-    ]
-   ],
-   "returns": "error",
-   "summary": "持久化事件交付游标。",
-   "tests": []
-  },
-  "n_clientDropCursor": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 13,
-   "name": "Client.DropCursor",
-   "file": "internal/client/cursorgc.go",
-   "line": 47,
-   "signature": "func (c *Client) DropCursor(taskID string)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "",
-   "summary": "归档后删除任务游标文件。",
-   "tests": []
-  },
-  "n_clientFollowEvents": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 14,
-   "name": "Client.FollowEvents",
-   "file": "internal/client/client.go",
-   "line": 1538,
-   "signature": "func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool, idle time.Duration, onEvent func(*proto.Event) error, onBacklog func(*BacklogSummary) error) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "跟随生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "all",
-     "bool",
-     "是否交付全部事件"
-    ],
-    [
-     "idle",
-     "time.Duration",
-     "空闲超时"
-    ],
-    [
-     "onEvent",
-     "func(*proto.Event) error",
-     "事件回调"
-    ],
-    [
-     "onBacklog",
-     "func(*BacklogSummary) error",
-     "积压摘要回调"
-    ]
-   ],
-   "returns": "error",
-   "summary": "持续跟随事件流、断线重连并在建连前对账。",
-   "tests": [
-    {
-     "name": "TestFollowDeliversEveryEvent",
-     "file": "internal/client/follow_test.go:52",
-     "snippet": "func TestFollowDeliversEveryEvent(t *testing.T) {\n\tevs := []proto.Event{\n\t\t{Seq: 1, TaskID: \"t1\", Type: proto.EventTypeQuestion},\n\t\t{Seq: 2, TaskID: \"t1\", Type: proto.EventTypeProgress},\n\t\t{Seq: 3, TaskID: \"t1\", Type: proto.EventTypeCompleted},\n\t\t{Seq: 4, TaskID: \"t1\", Type: proto.EventTypeStalled},\n\t\t{Seq: 5, TaskID: \"t1\", Type: proto.EventTypeFailed},\n\t}\n\tts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })\n\n\tvar got []int64\n\terr := client.New(ts.URL, \"\").FollowEvents(t.Context(), \"t1\", false, 0,"
-    }
-   ]
-  },
-  "n_clientReconcileBacklog": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 15,
-   "name": "Client.reconcileBacklog",
-   "file": "internal/client/client.go",
-   "line": 1476,
-   "signature": "func (c *Client) reconcileBacklog(ctx context.Context, taskID string, fromSeq int64, onBacklog func(*BacklogSummary) error) (int64, bool, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "对账生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "当前游标"
-    ],
-    [
-     "onBacklog",
-     "func(*BacklogSummary) error",
-     "摘要回调"
-    ]
-   ],
-   "returns": "(int64, bool, error)",
-   "summary": "用权威任务快照计算积压并推进 follow 起点。",
-   "tests": [
-    {
-     "name": "TestReconcileBacklogEmitsAndAdvancesCursor",
-     "file": "internal/client/backlog_internal_test.go:150",
-     "snippet": "func TestReconcileBacklogEmitsAndAdvancesCursor(t *testing.T) {\n\thome := t.TempDir()\n\tt.Setenv(\"HOME\", home)\n\tts := snapServer(t, http.StatusOK, &AttachInfo{\n\t\tTask:           proto.TaskView{Task: proto.Task{State: proto.TaskStateWaitingAnswer}},\n\t\tPendingTickets: []proto.Ticket{{ID: \"new1\", Kind: \"gate\"}},\n\t\tRecentEvents:   []proto.Event{permEv(104, \"done1\"), permEv(109, \"new1\")},\n\t})\n\n\tvar got *BacklogSummary\n\tnext, terminal, err := New(ts.URL, \"\").reconcileBacklog(t.Context(), \"tk\", 100,\n\t\tfunc(s *BacklogSummary) error { got = s; return nil })"
-    }
-   ]
-  },
-  "n_clientComputeBacklog": {
-   "kind": "func",
-   "container": "k_client_fn",
-   "order": 16,
-   "name": "computeBacklog",
-   "file": "internal/client/backlog.go",
-   "line": 72,
-   "signature": "func computeBacklog(taskID string, fromSeq int64, snap *AttachInfo) *BacklogSummary",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "当前游标"
-    ],
-    [
-     "snap",
-     "*AttachInfo",
-     "权威快照"
-    ]
-   ],
-   "returns": "*BacklogSummary",
-   "summary": "从任务快照计算漏读、失效和待处理工单摘要。",
-   "tests": []
-  },
-  "n_clientWaitArchived": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 17,
-   "name": "Client.WaitArchived",
-   "file": "internal/client/wait_archived.go",
-   "line": 70,
-   "signature": "func (c *Client) WaitArchived(ctx context.Context, taskID string) (*proto.Event, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "总等待时限"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*proto.Event, error)",
-   "summary": "只等待真实 archived 事件，不消费审核游标。",
-   "tests": [
-    {
-     "name": "TestWaitArchivedAlreadyArchivedReturnsOriginalEvent",
-     "file": "internal/client/wait_archived_test.go:124",
-     "snippet": "func TestWaitArchivedAlreadyArchivedReturnsOriginalEvent(t *testing.T) {\n\twant := proto.Event{Seq: 12, TaskID: \"t1\", Type: proto.EventTypeArchived,\n\t\tPayload: json.RawMessage(`{\"note\":\"已验收\"}`)}\n\tts := newWaitArchivedServer(t,\n\t\tfunc() *AttachInfo { return snapshot(\"t1\", proto.TaskStateCompleted, want) },\n\t\tfunc(*websocket.Conn, *http.Request) { t.Fatal(\"已归档不应建 WS\") })\n\tgot, err := New(ts.URL, \"\").WaitArchived(t.Context(), \"t1\")\n\tif err != nil || got.Seq != want.Seq || string(got.Payload) != string(want.Payload) {\n\t\tt.Fatalf(\"got=%+v err=%v, want 原始 archived\", got, err)\n\t}\n}"
-    }
-   ]
-  },
-  "n_clientStreamEventsOnce": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 18,
-   "name": "Client.StreamEventsOnce",
-   "file": "internal/client/client.go",
-   "line": 1419,
-   "signature": "func (c *Client) StreamEventsOnce(ctx context.Context, taskID string, fromSeq int64, onEvent func(proto.Event) error) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "流生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "起始序号"
-    ],
-    [
-     "onEvent",
-     "func(proto.Event) error",
-     "事件回调"
-    ]
-   ],
-   "returns": "error",
-   "summary": "建立一次不读写磁盘游标的事件流连接。",
-   "tests": []
-  },
-  "n_clientIsDeliverable": {
-   "kind": "func",
-   "container": "k_client_fn",
-   "order": 19,
-   "name": "isDeliverable",
-   "file": "internal/client/client.go",
-   "line": 138,
-   "signature": "func isDeliverable(t proto.EventType) bool",
-   "params": [
-    [
-     "t",
-     "proto.EventType",
-     "事件类型"
-    ]
-   ],
-   "returns": "bool",
-   "summary": "判断事件是否应该唤醒审核者。",
-   "tests": []
-  },
-  "n_handleDispatch": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 0,
-   "name": "Server.handleDispatch",
-   "file": "internal/agentd/server.go",
-   "line": 1003,
-   "signature": "func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "派发请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "解析 POST /api/tasks 请求并交给 Manager 创建任务。",
-   "tests": [
-    {
-     "name": "TestDispatchExecutorStartFailureReturnsReason",
-     "file": "internal/agentd/integration_test.go:690",
-     "snippet": "func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {\n\tt.Setenv(\"HOME\", t.TempDir())\n\tst, err := store.Open(filepath.Join(t.TempDir(), \"handoff.db\"))\n\tif err != nil {\n\t\tt.Fatalf(\"store.Open: %v\", err)\n\t}\n\tt.Cleanup(func() { st.Close() })\n\tlogger := slog.New(slog.NewTextHandler(io.Discard, nil))\n\tcfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: \"opencode\"}}\n\tsrv := agentd.NewServer(cfg, st, logger)\n\tts := httptest.NewServer(srv.Handler())\n\tt.Cleanup(ts.Close)"
-    }
-   ]
-  },
-  "n_resolveProject": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 1,
-   "name": "resolveProject",
-   "file": "internal/agentd/projectresolve.go",
-   "line": 67,
-   "signature": "func resolveProject(projectID, projectName string, entries []proto.ProjectLocation) (proto.ProjectLocation, error)",
-   "params": [
-    [
-     "projectID",
-     "string",
-     "项目 ID"
-    ],
-    [
-     "projectName",
-     "string",
-     "项目名称"
-    ],
-    [
-     "entries",
-     "[]proto.ProjectLocation",
-     "本机项目位置表"
-    ]
-   ],
-   "returns": "(proto.ProjectLocation, error)",
-   "summary": "按项目 ID 或名称从本机位置表解析派发目标。",
-   "tests": [
-    {
-     "name": "TestResolveProject",
-     "file": "internal/agentd/projectresolve_test.go:26",
-     "snippet": "func TestResolveProject(t *testing.T) {\n\thandoffID := projectid.FromOrigin(\"git@github.com:Xsxdot/handoff.git\")\n\t// 同一仓库的另一种写法必须算出同一个 ID——这是跨机引用成立的前提。\n\taltID := projectid.FromOrigin(\"https://github.com/Xsxdot/handoff\")\n\n\ttests := []struct {\n\t\tname     string\n\t\tid       string\n\t\tprojName string\n\t\tentries  []proto.ProjectLocation\n\t\twantPath string\n\t\twantErr  error"
-    }
-   ]
-  },
-  "n_managerDispatch": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 1,
-   "name": "Manager.Dispatch",
-   "file": "internal/agentd/manager.go",
-   "line": 622,
-   "signature": "func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "派发生命周期"
-    ],
-    [
-     "req",
-     "DispatchReq",
-     "派发请求参数"
-    ]
-   ],
-   "returns": "(task *proto.Task, err error)",
-   "summary": "解析项目、准备工作区、落库并启动 executor。",
-   "tests": [
-    {
-     "name": "TestDispatchPromptOnly",
-     "file": "internal/agentd/manager_test.go:254",
-     "snippet": "func TestDispatchPromptOnly(t *testing.T) {\n\tm, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{\"fake\": fake.New(nil)}, \"fake\")\n\trepo := initTestRepo(t)\n\tpid := registerTestProject(t, m, repo)\n\ttask, err := m.Dispatch(context.Background(), DispatchReq{\n\t\tProjectID: pid, Prompt: \"把 README 安装命令改成 brew\", Target: \"local\",\n\t})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif task.PlanSummary == \"\" || !strings.Contains(task.PlanSummary, \"README\") {\n\t\tt.Fatalf(\"prompt-only 派发应以 prompt 生成摘要: %q\", task.PlanSummary)"
-    }
-   ]
-  },
-  "n_managerResolveExecutor": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 2,
-   "name": "Manager.resolveExecutor",
-   "file": "internal/agentd/manager.go",
-   "line": 315,
-   "signature": "func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error)",
-   "params": [
-    [
-     "name",
-     "string",
-     "请求的执行者名"
-    ]
-   ],
-   "returns": "(string, executor.Adapter, error)",
-   "summary": "把请求执行者名解析为已注册 adapter。",
-   "tests": []
-  },
-  "n_managerResolveModel": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 3,
-   "name": "Manager.resolveModel",
-   "file": "internal/agentd/manager.go",
-   "line": 341,
-   "signature": "func (m *Manager) resolveModel(reqModel, execName string) string",
-   "params": [
-    [
-     "reqModel",
-     "string",
-     "请求模型覆盖"
-    ],
-    [
-     "execName",
-     "string",
-     "已解析执行者"
-    ]
-   ],
-   "returns": "string",
-   "summary": "按任务覆盖和机器默认配置确定模型。",
-   "tests": []
-  },
-  "n_ensureRepoUsable": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 4,
-   "name": "EnsureRepoUsable",
-   "file": "internal/agentd/workspace.go",
-   "line": 546,
-   "signature": "func EnsureRepoUsable(ctx context.Context, repo string) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "仓库检查生命周期"
-    ],
-    [
-     "repo",
-     "string",
-     "项目仓库路径"
-    ]
-   ],
-   "returns": "error",
-   "summary": "确认项目路径是可用的 git 仓库。",
-   "tests": []
-  },
-  "n_managerGuardWorkdirBusy": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 5,
-   "name": "Manager.guardWorkdirBusy",
-   "file": "internal/agentd/manager.go",
-   "line": 917,
-   "signature": "func (m *Manager) guardWorkdirBusy(workDir string) error",
-   "params": [
-    [
-     "workDir",
-     "string",
-     "目标工作目录"
-    ]
-   ],
-   "returns": "error",
-   "summary": "拒绝把任务派到已被活跃任务占用的工作目录。",
-   "tests": []
-  },
-  "n_resolveBaseline": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 6,
-   "name": "ResolveBaseline",
-   "file": "internal/agentd/workspace.go",
-   "line": 924,
-   "signature": "func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "基线检查生命周期"
-    ],
-    [
-     "repo",
-     "string",
-     "项目仓库路径"
-    ],
-    [
-     "sha",
-     "string",
-     "协调者基线提交"
-    ]
-   ],
-   "returns": "(Baseline, error)",
-   "summary": "校验并解析任务分支的基线提交。",
-   "tests": []
-  },
-  "n_resolveCommit": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 7,
-   "name": "resolveCommit",
-   "file": "internal/agentd/workspace.go",
-   "line": 862,
-   "signature": "func resolveCommit(ctx context.Context, repo, rev string) (string, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "git 命令生命周期"
-    ],
-    [
-     "repo",
-     "string",
-     "项目仓库路径"
-    ],
-    [
-     "rev",
-     "string",
-     "分支或提交表达式"
-    ]
-   ],
-   "returns": "(string, error)",
-   "summary": "把分支或修订表达式解析为提交号。",
-   "tests": []
-  },
-  "n_checkProcHeadroom": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 8,
-   "name": "checkProcHeadroom",
-   "file": "internal/agentd/admission.go",
-   "line": 53,
-   "signature": "func checkProcHeadroom(op string) error",
-   "params": [
-    [
-     "op",
-     "string",
-     "操作名称"
-    ]
-   ],
-   "returns": "error",
-   "summary": "在创建任务前检查本机进程余量。",
-   "tests": []
-  },
-  "n_prepareWorkspace": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 9,
-   "name": "PrepareWorkspace",
-   "file": "internal/agentd/workspace.go",
-   "line": 313,
-   "signature": "func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "工作区准备生命周期"
-    ],
-    [
-     "req",
-     "WorkspaceReq",
-     "分支与工作树请求"
-    ]
-   ],
-   "returns": "(Workspace, error)",
-   "summary": "校验参数并准备任务分支与工作树。",
-   "tests": []
-  },
-  "n_managerTransit": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 10,
-   "name": "Manager.transit",
-   "file": "internal/agentd/manager.go",
-   "line": 3016,
-   "signature": "func (m *Manager) transit(taskID string, to proto.TaskState, reason string) error",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "to",
-     "proto.TaskState",
-     "目标状态"
-    ],
-    [
-     "reason",
-     "string",
-     "迁移原因"
-    ]
-   ],
-   "returns": "error",
-   "summary": "迁移任务状态并处理终态收口。",
-   "tests": []
-  },
-  "n_managerMediate": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 11,
-   "name": "Manager.mediate",
-   "file": "internal/agentd/manager.go",
-   "line": 1537,
-   "signature": "func (m *Manager) mediate(taskID string)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "",
-   "summary": "消费 executor 事件并驱动任务状态与工单。",
-   "tests": []
-  },
-  "n_handleGetTask": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 12,
-   "name": "Server.handleGetTask",
-   "file": "internal/agentd/server.go",
-   "line": 752,
-   "signature": "func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "任务详情请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "聚合任务、待办工单和最近事件形成 attach 快照。",
-   "tests": [
-    {
-     "name": "TestAttachEmptyListsAreArrays",
-     "file": "internal/agentd/server_test.go:235",
-     "snippet": "func TestAttachEmptyListsAreArrays(t *testing.T) {\n\tenv := newTestEnv(t)\n\tnow := time.Now().UTC()\n\ttaskID := \"task-empty\"\n\tif err := env.st.CreateTask(&proto.Task{ID: taskID, Target: \"opencode\", RepoPath: \"/repo\",\n\t\tState: proto.TaskStatePending, CreatedAt: now, UpdatedAt: now}); err != nil {\n\t\tt.Fatalf(\"CreateTask: %v\", err)\n\t}\n\n\tresp := env.get(t, \"/api/tasks/\"+taskID)\n\tif resp.StatusCode != http.StatusOK {\n\t\tt.Fatalf(\"GET detail 返回 %d, want 200\", resp.StatusCode)"
-    }
-   ]
-  },
-  "n_handleTaskBundle": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 13,
-   "name": "Server.handleTaskBundle",
-   "file": "internal/agentd/server.go",
-   "line": 1496,
-   "signature": "func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "bundle 请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "读取任务分支并生成、发送 git bundle。",
-   "tests": [
-    {
-     "name": "TestHandleTaskBundleOK",
-     "file": "internal/agentd/bundle_handler_test.go:62",
-     "snippet": "func TestHandleTaskBundleOK(t *testing.T) {\n\tenv, taskID, _, base := newBundleEnv(t, \"feat/x\")\n\n\tresp, body := getBundle(t, env, taskID, base)\n\tif resp.StatusCode != http.StatusOK {\n\t\tt.Fatalf(\"状态码应为 200，实得 %d，体 %s\", resp.StatusCode, body)\n\t}\n\tif ct := resp.Header.Get(\"Content-Type\"); ct != \"application/octet-stream\" {\n\t\tt.Errorf(\"Content-Type 应为 application/octet-stream，实得 %q\", ct)\n\t}\n\tif len(body) == 0 {\n\t\tt.Fatal(\"包体不该为空\")"
-    }
-   ]
-  },
-  "n_taskOrErr": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 14,
-   "name": "Server.taskOrErr",
-   "file": "internal/agentd/server.go",
-   "line": 1402,
-   "signature": "func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*proto.Task, bool)",
-   "summary": "读取任务并检查其工作区路径是否可用。",
-   "tests": []
-  },
-  "n_bundleRange": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 15,
-   "name": "BundleRange",
-   "file": "internal/agentd/bundle.go",
-   "line": 48,
-   "signature": "func BundleRange(ctx context.Context, repo, have, branch string) (string, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "git 命令生命周期"
-    ],
-    [
-     "repo",
-     "string",
-     "主仓库路径"
-    ],
-    [
-     "have",
-     "string",
-     "已有提交"
-    ],
-    [
-     "branch",
-     "string",
-     "任务分支"
-    ]
-   ],
-   "returns": "(string, error)",
-   "summary": "在主仓库中生成任务分支的 git bundle 临时文件。",
-   "tests": [
-    {
-     "name": "TestBundleRangeThin",
-     "file": "internal/agentd/bundle_test.go:48",
-     "snippet": "func TestBundleRangeThin(t *testing.T) {\n\trepo, base := newBundleRepo(t)\n\tpath, err := BundleRange(context.Background(), repo, base, \"feat/x\")\n\tif err != nil {\n\t\tt.Fatalf(\"BundleRange: %v\", err)\n\t}\n\tdefer os.Remove(path)\n\tfi, err := os.Stat(path)\n\tif err != nil {\n\t\tt.Fatalf(\"生成的包不存在: %v\", err)\n\t}\n\tif fi.Size() == 0 {"
-    }
-   ]
-  },
-  "n_byTask": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 16,
-   "name": "Server.byTask",
-   "file": "internal/agentd/taskroute.go",
-   "line": 27,
-   "signature": "func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc",
-   "params": [
-    [
-     "next",
-     "http.HandlerFunc",
-     "任务路由处理器"
-    ]
-   ],
-   "returns": "http.HandlerFunc",
-   "summary": "按任务本机记录或镜像索引决定本地处理或透明转发。",
-   "tests": []
-  },
-  "n_handleContinue": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 17,
-   "name": "Server.handleContinue",
-   "file": "internal/agentd/server.go",
-   "line": 1224,
-   "signature": "func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "续接请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "解析续接指令并交给 Manager 续发。",
-   "tests": [
-    {
-     "name": "TestContinueErrTaskNotRunningReturns409",
-     "file": "internal/agentd/server_test.go:578",
-     "snippet": "func TestContinueErrTaskNotRunningReturns409(t *testing.T) {\n\tenv := newTestEnv(t)\n\tnow := time.Now().UTC()\n\ttaskID := \"task-continue-409\"\n\tif err := env.st.CreateTask(&proto.Task{ID: taskID, Target: \"opencode\", RepoPath: \"/repo\",\n\t\tState: proto.TaskStateWaitingReview, CreatedAt: now, UpdatedAt: now}); err != nil {\n\t\tt.Fatalf(\"CreateTask: %v\", err)\n\t}\n\n\t// Send 一律返回 ErrTaskNotRunning（模拟 adapter 无该任务运行态）\n\tf := fake.New(nil)\n\tf.SetSendError(fmt.Errorf(\"任务 %s 不在运行中: %w\", taskID, executor.ErrTaskNotRunning))"
-    }
-   ]
-  },
-  "n_managerContinue": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 18,
-   "name": "Manager.Continue",
-   "file": "internal/agentd/manager.go",
-   "line": 1089,
-   "signature": "func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (err error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "续接生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "instructions",
-     "string",
-     "原样续接指令"
-    ]
-   ],
-   "returns": "(err error)",
-   "summary": "校验 waiting_review、切回 running 并向 executor 发送指令。",
-   "tests": [
-    {
-     "name": "TestContinueColdResumesAndRetriesSend",
-     "file": "internal/agentd/reconcile_test.go:390",
-     "snippet": "func TestContinueColdResumesAndRetriesSend(t *testing.T) {\n\tad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},\n\t\toutcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeCold,\n\t\t\tSessionID: \"sess-1\", Note: \"已从磁盘载入原会话\"}}\n\tm, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{\"fake\": ad}, \"fake\")\n\tmustCreateTask(t, st, &proto.Task{ID: \"t1\", RepoPath: \"/r\", Executor: \"fake\",\n\t\tState: proto.TaskStateWaitingReview, ExecutorSession: \"sess-1\"})\n\n\tif err := m.Continue(context.Background(), \"t1\", \"继续干\"); err != nil {\n\t\tt.Fatalf(\"冷恢复成功后 continue 应成功: %v\", err)\n\t}\n\tad.mu.Lock()"
-    }
-   ]
-  },
-  "n_managerAdapterFor": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 19,
-   "name": "Manager.adapterFor",
-   "file": "internal/agentd/manager.go",
-   "line": 293,
-   "signature": "func (m *Manager) adapterFor(taskID string) (executor.Adapter, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(executor.Adapter, error)",
-   "summary": "按任务记录的执行者路由到 adapter。",
-   "tests": [
-    {
-     "name": "TestAdapterForRoutesByTaskExecutor",
-     "file": "internal/agentd/manager_test.go:231",
-     "snippet": "func TestAdapterForRoutesByTaskExecutor(t *testing.T) {\n\tadA, adB := fake.New(nil), fake.New(nil)\n\tm, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{\"a\": adA, \"b\": adB}, \"a\")\n\tmustCreateTask(t, st, &proto.Task{ID: \"t1\", RepoPath: \"/r\", Executor: \"b\", State: proto.TaskStateRunning})\n\tmustCreateTask(t, st, &proto.Task{ID: \"t2\", RepoPath: \"/r\", Executor: \"\", State: proto.TaskStateRunning})\n\tif got, _ := m.adapterFor(\"t1\"); got != adB {\n\t\tt.Fatalf(\"t1 应路由到 b\")\n\t}\n\tif got, _ := m.adapterFor(\"t2\"); got != adA {\n\t\tt.Fatalf(\"executor 为空应回退缺省 a\")\n\t}\n}"
-    }
-   ]
-  },
-  "n_managerResumeForContinue": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 20,
-   "name": "Manager.resumeForContinue",
-   "file": "internal/agentd/manager.go",
-   "line": 1156,
-   "signature": "func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad executor.Adapter) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "恢复生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "ad",
-     "executor.Adapter",
-     "任务执行者"
-    ]
-   ],
-   "returns": "error",
-   "summary": "executor 不在时从磁盘恢复会话以便重试续接。",
-   "tests": []
-  },
-  "n_handleStatus": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 21,
-   "name": "Server.handleStatus",
-   "file": "internal/agentd/server.go",
-   "line": 559,
-   "signature": "func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "状态请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "聚合 Manager 状态并补齐 Server 能力字段后返回。",
-   "tests": [
-    {
-     "name": "TestStatusRequiresAuth",
-     "file": "internal/agentd/status_test.go:226",
-     "snippet": "func TestStatusRequiresAuth(t *testing.T) {\n\tenv := newStatusEnv(t, &probeStub{alive: true})\n\tresp, err := http.Get(env.ts.URL + \"/api/status\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tdefer resp.Body.Close()\n\tif resp.StatusCode != http.StatusUnauthorized {\n\t\tt.Fatalf(\"状态码=%d, want 401——status 不开匿名口\", resp.StatusCode)\n\t}\n}"
-    }
-   ]
-  },
-  "n_managerStatus": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 22,
-   "name": "Manager.Status",
-   "file": "internal/agentd/status.go",
-   "line": 54,
-   "signature": "func (m *Manager) Status() (*proto.StatusResp, error)",
-   "params": [],
-   "returns": "(*proto.StatusResp, error)",
-   "summary": "读取任务列表、统计状态并探测活跃 executor。",
-   "tests": [
-    {
-     "name": "TestStatusTaskCountsAlwaysHaveSixKeys",
-     "file": "internal/agentd/status_test.go:150",
-     "snippet": "func TestStatusTaskCountsAlwaysHaveSixKeys(t *testing.T) {\n\tenv := newStatusEnv(t, &probeStub{alive: true})\n\tgot := env.getStatus(t)\n\tfor _, s := range []string{\"pending\", \"running\", \"waiting_answer\",\n\t\t\"waiting_review\", \"completed\", \"failed\"} {\n\t\tif _, ok := got.TaskCounts[s]; !ok {\n\t\t\tt.Fatalf(\"task_counts 缺键 %q——缺键与零值对消费方是两回事\", s)\n\t\t}\n\t}\n}\n\n// 探活为 alive 时 Live=alive、Note 为空。"
-    }
-   ]
-  },
-  "n_managerProbeActive": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 23,
-   "name": "Manager.probeActive",
-   "file": "internal/agentd/status.go",
-   "line": 128,
-   "signature": "func (m *Manager) probeActive(tasks []proto.Task) []proto.ActiveTask",
-   "params": [
-    [
-     "tasks",
-     "[]proto.Task",
-     "非终结任务"
-    ]
-   ],
-   "returns": "[]proto.ActiveTask",
-   "summary": "在总时限预算内逐个探测活跃任务。",
-   "tests": []
-  },
-  "n_managerProbeOne": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 24,
-   "name": "Manager.probeOne",
-   "file": "internal/agentd/status.go",
-   "line": 177,
-   "signature": "func (m *Manager) probeOne(t proto.Task, budget time.Duration) (live, note string)",
-   "params": [
-    [
-     "t",
-     "proto.Task",
-     "待探测任务"
-    ],
-    [
-     "budget",
-     "time.Duration",
-     "剩余总预算"
-    ]
-   ],
-   "returns": "(live, note string)",
-   "summary": "在单任务时限内返回 executor 存活三态结论。",
-   "tests": []
-  },
-  "n_handleEvents": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 25,
-   "name": "Server.handleEvents",
-   "file": "internal/agentd/server.go",
-   "line": 1733,
-   "signature": "func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     "HTTP/WS 响应"
-    ],
-    [
-     "r",
-     "*http.Request",
-     "事件订阅请求"
-    ]
-   ],
-   "returns": "",
-   "summary": "校验任务后订阅 Hub、回放历史事件并持续发送实时事件。",
-   "tests": [
-    {
-     "name": "TestWSTaskNotFoundClosesPolicyViolation",
-     "file": "internal/agentd/server_test.go:726",
-     "snippet": "func TestWSTaskNotFoundClosesPolicyViolation(t *testing.T) {\n\tenv := newTestEnv(t)\n\n\twsURL := \"ws\" + strings.TrimPrefix(env.ts.URL, \"http\") + \"/ws/events?task=no-such-task&from_seq=0\"\n\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\tdefer cancel()\n\tconn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{\n\t\tHTTPHeader: http.Header{\"Authorization\": []string{\"Bearer \" + env.token}},\n\t})\n\tif err != nil {\n\t\tif resp != nil {\n\t\t\tt.Fatalf(\"WS 拨号失败 status=%d: %v\", resp.StatusCode, err)"
-    }
-   ]
-  },
-  "n_hubSubscribe": {
-   "kind": "func",
-   "container": "k_agentd_Hub",
-   "order": 26,
-   "name": "Hub.Subscribe",
-   "file": "internal/agentd/hub.go",
-   "line": 63,
-   "signature": "func (h *Hub) Subscribe(taskID string) (<-chan proto.Event, func())",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(<-chan proto.Event, func())",
-   "summary": "注册一个任务事件实时订阅者。",
-   "tests": []
-  },
-  "n_hubPublish": {
-   "kind": "func",
-   "container": "k_agentd_Hub",
-   "order": 27,
-   "name": "Hub.Publish",
-   "file": "internal/agentd/hub.go",
-   "line": 166,
-   "signature": "func (h *Hub) Publish(ev proto.Event)",
-   "params": [
-    [
-     "ev",
-     "proto.Event",
-     "已落库事件"
-    ]
-   ],
-   "returns": "",
-   "summary": "把已落库事件广播给任务订阅者。",
-   "tests": []
-  },
-  "n_writeEvent": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "order": 28,
-   "name": "writeEvent",
-   "file": "internal/agentd/server.go",
-   "line": 2020,
-   "signature": "func writeEvent(ctx context.Context, conn *websocket.Conn, ev proto.Event) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "连接生命周期"
-    ],
-    [
-     "conn",
-     "*websocket.Conn",
-     "WS 连接"
-    ],
-    [
-     "ev",
-     "proto.Event",
-     "待发送事件"
-    ]
-   ],
-   "returns": "error",
-   "summary": "把事件编码为文本帧写入 WS 连接。",
-   "tests": []
-  },
-  "n_adapterStart": {
-   "kind": "func",
-   "container": "k_executor_fn",
-   "order": 0,
-   "name": "Adapter.Start",
-   "file": "internal/executor/executor.go",
-   "line": 221,
-   "signature": "Start(ctx context.Context, req StartReq) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "启动生命周期"
-    ],
-    [
-     "req",
-     "StartReq",
-     "任务与计划启动参数"
-    ]
-   ],
-   "returns": "error",
-   "summary": "异步启动一个任务 executor。",
-   "tests": []
-  },
-  "n_adapterSend": {
-   "kind": "func",
-   "container": "k_executor_fn",
-   "order": 1,
-   "name": "Adapter.Send",
-   "file": "internal/executor/executor.go",
-   "line": 234,
-   "signature": "Send(ctx context.Context, taskID, text string) error",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "发送生命周期"
-    ],
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "text",
-     "string",
-     "原样指令或回答"
-    ]
-   ],
-   "returns": "error",
-   "summary": "向任务 executor 发送续接指令或回答。",
-   "tests": []
-  },
-  "n_localsyncFetch": {
-   "kind": "func",
-   "container": "k_localsync_fn",
-   "order": 0,
-   "name": "Fetch",
-   "file": "internal/localsync/localsync.go",
-   "line": 66,
-   "signature": "func Fetch(ctx context.Context, o Opts) (Result, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     "同步生命周期"
-    ],
-    [
-     "o",
-     "Opts",
-     "本地仓库、远程地址和分支参数"
-    ]
-   ],
-   "returns": "(Result, error)",
-   "summary": "把远程任务分支同步到本地同名分支并返回同步结果。",
-   "tests": []
-  },
-  "n_storeListProjectLocations": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 0,
-   "name": "Store.ListProjectLocations",
-   "file": "internal/store/projects.go",
-   "line": 99,
-   "signature": "func (s *Store) ListProjectLocations() ([]proto.ProjectLocation, error)",
-   "params": [],
-   "returns": "([]proto.ProjectLocation, error)",
-   "summary": "读取本机登记的全部项目位置。",
-   "tests": [
-    {
-     "name": "TestProjectLocationCRUD",
-     "file": "internal/store/projects_test.go:41",
-     "snippet": "func TestProjectLocationCRUD(t *testing.T) {\n\tst := newProjectStore(t)\n\ta := mustCreateLoc(t, st, \"handoff\", \"/w/handoff\", \"git@github.com:Xsxdot/handoff.git\")\n\tmustCreateLoc(t, st, \"tk\", \"/w/tk\", \"git@github.com:Xsxdot/tk.git\")\n\n\tgot, err := st.GetProjectLocationByName(\"handoff\")\n\tif err != nil {\n\t\tt.Fatalf(\"GetProjectLocationByName: %v\", err)\n\t}\n\tif got.ProjectID != a.ProjectID || got.Path != \"/w/handoff\" {\n\t\tt.Fatalf(\"查回的行不对: %+v\", got)\n\t}"
-    }
-   ]
-  },
-  "n_storeActiveTasksByWorkDir": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 1,
-   "name": "Store.ActiveTasksByWorkDir",
-   "file": "internal/store/store.go",
-   "line": 387,
-   "signature": "func (s *Store) ActiveTasksByWorkDir(workDir string) ([]proto.Task, error)",
-   "params": [
-    [
-     "workDir",
-     "string",
-     "工作目录"
-    ]
-   ],
-   "returns": "([]proto.Task, error)",
-   "summary": "查找仍占用指定工作目录的非终态任务。",
-   "tests": []
-  },
-  "n_storeCreateTask": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 2,
-   "name": "Store.CreateTask",
-   "file": "internal/store/store.go",
-   "line": 255,
-   "signature": "func (s *Store) CreateTask(t *proto.Task) error",
-   "params": [
-    [
-     "t",
-     "*proto.Task",
-     "待持久化任务"
-    ]
-   ],
-   "returns": "error",
-   "summary": "把新任务写入 tasks 表。",
-   "tests": [
-    {
-     "name": "TestTaskLifecycle",
-     "file": "internal/store/store_test.go:18",
-     "snippet": "func TestTaskLifecycle(t *testing.T) {\n\ts, err := store.Open(filepath.Join(t.TempDir(), \"handoff.db\"))\n\tif err != nil {\n\t\tt.Fatalf(\"Open 失败: %v\", err)\n\t}\n\tdefer s.Close()\n\n\tt0 := time.Now().UTC().Truncate(time.Millisecond)\n\ttask := &proto.Task{\n\t\tID:              \"task-1\",\n\t\tTarget:          \"codex\",\n\t\tRepoPath:        \"/Users/x/repo\","
-    }
-   ]
-  },
-  "n_storeSetTaskField": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 3,
-   "name": "Store.SetTaskField",
-   "file": "internal/store/store.go",
-   "line": 484,
-   "signature": "func (s *Store) SetTaskField(id, field, value string) error",
-   "params": [
-    [
-     "id",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "field",
-     "string",
-     "白名单字段"
-    ],
-    [
-     "value",
-     "string",
-     "字段值"
-    ]
-   ],
-   "returns": "error",
-   "summary": "按字段白名单更新任务派发期属性。",
-   "tests": []
-  },
-  "n_storeGetTask": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 4,
-   "name": "Store.GetTask",
-   "file": "internal/store/store.go",
-   "line": 325,
-   "signature": "func (s *Store) GetTask(id string) (*proto.Task, error)",
-   "params": [
-    [
-     "id",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*proto.Task, error)",
-   "summary": "按任务 ID 读取任务并补充累计消耗。",
-   "tests": [
-    {
-     "name": "TestGetTaskFillsCumulativeListDoesNot",
-     "file": "internal/store/store_test.go:1105",
-     "snippet": "func TestGetTaskFillsCumulativeListDoesNot(t *testing.T) {\n\ts, err := store.Open(filepath.Join(t.TempDir(), \"handoff.db\"))\n\tif err != nil {\n\t\tt.Fatalf(\"Open 失败: %v\", err)\n\t}\n\tdefer s.Close()\n\n\tnow := time.Now().UTC()\n\tif err := s.CreateTask(&proto.Task{\n\t\tID: \"t-cum\", RepoPath: \"/r\", State: proto.TaskStateRunning,\n\t\tCreatedAt: now, UpdatedAt: now,\n\t}); err != nil {"
-    }
-   ]
-  },
-  "n_storeTaskCumulative": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 5,
-   "name": "Store.TaskCumulative",
-   "file": "internal/store/store.go",
-   "line": 588,
-   "signature": "func (s *Store) TaskCumulative(taskID string) (*proto.Cumulative, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*proto.Cumulative, error)",
-   "summary": "汇总任务的 token 与花费账目。",
-   "tests": []
-  },
-  "n_storeUpdateTaskState": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 6,
-   "name": "Store.UpdateTaskState",
-   "file": "internal/store/store.go",
-   "line": 436,
-   "signature": "func (s *Store) UpdateTaskState(id string, st proto.TaskState) error",
-   "params": [
-    [
-     "id",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "st",
-     "proto.TaskState",
-     "目标状态"
-    ]
-   ],
-   "returns": "error",
-   "summary": "按状态机规则 CAS 迁移任务状态。",
-   "tests": [
-    {
-     "name": "TestUpdateTaskStateCAS",
-     "file": "internal/store/store_test.go:95",
-     "snippet": "func TestUpdateTaskStateCAS(t *testing.T) {\n\ts, err := store.Open(filepath.Join(t.TempDir(), \"handoff.db\"))\n\tif err != nil {\n\t\tt.Fatalf(\"Open 失败: %v\", err)\n\t}\n\tdefer s.Close()\n\n\t// 多次迭代：CAS 语义在每次竞争中都应恰好一胜一败，而非偶发通过。\n\tfor i := 0; i < 20; i++ {\n\t\tid := fmt.Sprintf(\"task-cas-%d\", i)\n\t\tnow := time.Now().UTC()\n\t\ttask := &proto.Task{ID: id, Target: \"codex\", RepoPath: \"/r\", State: proto.TaskStatePending,"
-    }
-   ]
-  },
-  "n_storeListTasks": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 7,
-   "name": "Store.ListTasks",
-   "file": "internal/store/store.go",
-   "line": 350,
-   "signature": "func (s *Store) ListTasks() ([]proto.Task, error)",
-   "params": [],
-   "returns": "([]proto.Task, error)",
-   "summary": "按创建时间倒序读取全部任务。",
-   "tests": []
-  },
-  "n_storePendingTickets": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 8,
-   "name": "Store.PendingTickets",
-   "file": "internal/store/store.go",
-   "line": 1161,
-   "signature": "func (s *Store) PendingTickets(taskID string) ([]proto.Ticket, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "([]proto.Ticket, error)",
-   "summary": "读取任务尚未回答的工单。",
-   "tests": []
-  },
-  "n_storeEventsFrom": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 9,
-   "name": "Store.EventsFrom",
-   "file": "internal/store/store.go",
-   "line": 734,
-   "signature": "func (s *Store) EventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "起始序号"
-    ],
-    [
-     "limit",
-     "int",
-     "窗口上限"
-    ]
-   ],
-   "returns": "([]proto.Event, error)",
-   "summary": "读取任务最近事件窗口并按序返回。",
-   "tests": [
-    {
-     "name": "TestEventsFromLatestN",
-     "file": "internal/store/store_test.go:199",
-     "snippet": "func TestEventsFromLatestN(t *testing.T) {\n\ts, err := store.Open(filepath.Join(t.TempDir(), \"handoff.db\"))\n\tif err != nil {\n\t\tt.Fatalf(\"Open 失败: %v\", err)\n\t}\n\tdefer s.Close()\n\n\tvar seqs []int64\n\tfor i := 1; i <= 5; i++ {\n\t\tev, err := s.AppendEvent(\"t1\", proto.EventTypeProgress, map[string]any{\"n\": i})\n\t\tif err != nil {\n\t\t\tt.Fatalf(\"AppendEvent %d: %v\", i, err)"
-    }
-   ]
-  },
-  "n_storeEventsFromAsc": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 10,
-   "name": "Store.EventsFromAsc",
-   "file": "internal/store/store.go",
-   "line": 782,
-   "signature": "func (s *Store) EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "fromSeq",
-     "int64",
-     "起始序号"
-    ],
-    [
-     "limit",
-     "int",
-     "窗口上限"
-    ]
-   ],
-   "returns": "([]proto.Event, error)",
-   "summary": "按 seq 升序读取 WS 需要回放的事件窗口。",
-   "tests": []
-  },
-  "n_storeLatestEvent": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 11,
-   "name": "Store.LatestEvent",
-   "file": "internal/store/store.go",
-   "line": 818,
-   "signature": "func (s *Store) LatestEvent(taskID string) (*proto.Event, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(*proto.Event, error)",
-   "summary": "读取任务最新事件作为 WS 回放水位。",
-   "tests": []
-  },
-  "n_storeAppendEvent": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 12,
-   "name": "Store.AppendEvent",
-   "file": "internal/store/store.go",
-   "line": 658,
-   "signature": "func (s *Store) AppendEvent(taskID string, typ proto.EventType, payload any) (proto.Event, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ],
-    [
-     "typ",
-     "proto.EventType",
-     "事件类型"
-    ],
-    [
-     "payload",
-     "any",
-     "事件负载"
-    ]
-   ],
-   "returns": "(proto.Event, error)",
-   "summary": "持久化一条任务事件并分配全局序号。",
-   "tests": []
-  },
-  "n_storeMirrorTaskTarget": {
-   "kind": "func",
-   "container": "k_store_Store",
-   "order": 13,
-   "name": "Store.MirrorTaskTarget",
-   "file": "internal/store/mirror.go",
-   "line": 179,
-   "signature": "func (s *Store) MirrorTaskTarget(taskID string) (string, bool, error)",
-   "params": [
-    [
-     "taskID",
-     "string",
-     "任务 ID"
-    ]
-   ],
-   "returns": "(string, bool, error)",
-   "summary": "查询镜像任务所属的远程机器。",
-   "tests": []
-  },
-  "m_task": {
-   "kind": "model",
-   "container": "k_proto_model",
-   "order": 0,
-   "name": "Task",
-   "file": "internal/proto/proto.go",
-   "line": 217,
-   "summary": "任务的持久化身份、工作区、执行者和状态快照。",
-   "fields": [
-    [
-     "ID",
-     "string",
-     "任务唯一标识"
-    ],
-    [
-     "State",
-     "TaskState",
-     "当前状态"
-    ],
-    [
-     "RepoPath",
-     "string",
-     "主仓库路径"
-    ],
-    [
-     "Branch",
-     "string",
-     "任务分支"
-    ],
-    [
-     "WorkDir",
-     "string",
-     "executor 工作目录"
-    ]
-   ]
-  },
-  "m_event": {
-   "kind": "model",
-   "container": "k_proto_model",
-   "order": 1,
-   "name": "Event",
-   "file": "internal/proto/proto.go",
-   "line": 342,
-   "summary": "任务事件流中的一条带序号事件。",
-   "fields": [
-    [
-     "Seq",
-     "int64",
-     "全局事件序号"
-    ],
-    [
-     "TaskID",
-     "string",
-     "所属任务"
-    ],
-    [
-     "Type",
-     "EventType",
-     "事件类型"
-    ],
-    [
-     "Payload",
-     "json.RawMessage",
-     "事件负载"
-    ]
-   ]
-  },
-  "m_ticket": {
-   "kind": "model",
-   "container": "k_proto_model",
-   "order": 2,
-   "name": "Ticket",
-   "file": "internal/proto/proto.go",
-   "line": 354,
-   "summary": "需要人工回答的权限门或提问工单。",
-   "fields": [
-    [
-     "ID",
-     "string",
-     "工单唯一标识"
-    ],
-    [
-     "TaskID",
-     "string",
-     "所属任务"
-    ],
-    [
-     "Kind",
-     "string",
-     "gate 或 ask"
-    ],
-    [
-     "Request",
-     "json.RawMessage",
-     "请求原文"
-    ],
-    [
-     "Answer",
-     "*string",
-     "人工回答"
-    ]
-   ]
-  },
-  "m_projectLocation": {
-   "kind": "model",
-   "container": "k_proto_model",
-   "order": 3,
-   "name": "ProjectLocation",
-   "file": "internal/proto/proto.go",
-   "line": 423,
-   "summary": "项目在一台 agentd 机器上的登记位置。",
-   "fields": [
-    [
-     "ProjectID",
-     "string",
-     "项目逻辑身份"
-    ],
-    [
-     "Name",
-     "string",
-     "本机引用名"
-    ],
-    [
-     "Path",
-     "string",
-     "项目绝对路径"
-    ],
-    [
-     "OriginURL",
-     "string",
-     "项目远程来源"
-    ]
-   ]
-  },
-  "m_statusResp": {
-   "kind": "model",
-   "container": "k_proto_model",
-   "order": 4,
-   "name": "StatusResp",
-   "file": "internal/proto/status.go",
-   "line": 155,
-   "summary": "GET /api/status 返回的 agentd 聚合诊断结果。",
-   "fields": [
-    [
-     "Version",
-     "BuildInfo",
-     "构建标识"
-    ],
-    [
-     "Listen",
-     "string",
-     "监听地址"
-    ],
-    [
-     "DataDir",
-     "string",
-     "数据目录"
-    ],
-    [
-     "TaskCounts",
-     "map[string]int",
-     "各状态任务计数"
-    ],
-    [
-     "Active",
-     "[]ActiveTask",
-     "活跃任务探活结果"
-    ]
-   ]
-  },
-  "m_attachInfo": {
-   "kind": "model",
-   "container": "k_client_model",
-   "order": 5,
-   "name": "AttachInfo",
-   "file": "internal/client/client.go",
-   "line": 166,
-   "summary": "客户端使用的任务、工单与最近事件现场快照。",
-   "fields": [
-    [
-     "Task",
-     "proto.TaskView",
-     "任务及 watcher 视图"
-    ],
-    [
-     "PendingTickets",
-     "[]proto.Ticket",
-     "尚未回答工单"
-    ],
-    [
-     "RecentEvents",
-     "[]proto.Event",
-     "最近事件窗口"
-    ]
-   ]
-  },
-  "m_syncResult": {
-   "kind": "model",
-   "container": "k_localsync_model",
-   "order": 6,
-   "name": "Result",
-   "file": "internal/localsync/localsync.go",
-   "line": 46,
-   "summary": "本地任务分支同步的结果摘要。",
-   "fields": [
-    [
-     "Branch",
-     "string",
-     "同步分支名"
-    ],
-    [
-     "Commits",
-     "int",
-     "新增提交数"
-    ],
-    [
-     "Created",
-     "bool",
-     "是否新建本地分支"
-    ]
-   ]
-  }
- },
- "edges": [
-  [
-   "e_dispatch",
-   "n_dispatchRunE"
-  ],
-  [
-   "n_dispatchRunE",
-   "n_targetEndpoint"
-  ],
-  [
-   "n_dispatchRunE",
-   "n_clientNew"
-  ],
-  [
-   "n_clientNew",
-   "n_clientDispatch"
-  ],
-  [
-   "n_clientDispatch",
-   "n_clientDo"
-  ],
-  [
-   "n_clientDo",
-   "n_handleDispatch"
-  ],
-  [
-   "n_handleDispatch",
-   "n_managerDispatch"
-  ],
-  [
-   "n_managerDispatch",
-   "n_storeListProjectLocations"
-  ],
-  [
-   "n_storeListProjectLocations",
-   "n_resolveProject"
-  ],
-  [
-   "n_resolveProject",
-   "m_projectLocation"
-  ],
-  [
-   "n_managerDispatch",
-   "n_managerResolveExecutor"
-  ],
-  [
-   "n_managerResolveExecutor",
-   "n_managerResolveModel"
-  ],
-  [
-   "n_managerDispatch",
-   "n_ensureRepoUsable"
-  ],
-  [
-   "n_managerDispatch",
-   "n_managerGuardWorkdirBusy"
-  ],
-  [
-   "n_managerGuardWorkdirBusy",
-   "n_storeActiveTasksByWorkDir"
-  ],
-  [
-   "n_storeActiveTasksByWorkDir",
-   "m_task"
-  ],
-  [
-   "n_managerDispatch",
-   "n_resolveBaseline"
-  ],
-  [
-   "n_resolveBaseline",
-   "n_resolveCommit"
-  ],
-  [
-   "n_managerDispatch",
-   "n_checkProcHeadroom"
-  ],
-  [
-   "n_managerDispatch",
-   "n_prepareWorkspace"
-  ],
-  [
-   "n_managerDispatch",
-   "n_storeCreateTask"
-  ],
-  [
-   "n_storeCreateTask",
-   "m_task"
-  ],
-  [
-   "n_managerDispatch",
-   "n_storeSetTaskField"
-  ],
-  [
-   "n_managerDispatch",
-   "n_adapterStart"
-  ],
-  [
-   "n_managerDispatch",
-   "n_managerTransit"
-  ],
-  [
-   "n_managerTransit",
-   "n_storeGetTask"
-  ],
-  [
-   "n_managerTransit",
-   "n_storeUpdateTaskState"
-  ],
-  [
-   "n_storeUpdateTaskState",
-   "n_storeGetTask"
-  ],
-  [
-   "n_storeGetTask",
-   "n_storeTaskCumulative"
-  ],
-  [
-   "n_storeGetTask",
-   "m_task"
-  ],
-  [
-   "n_managerDispatch",
-   "n_managerMediate"
-  ],
-  [
-   "n_adapterStart",
-   "m_task"
-  ],
-  [
-   "e_pull",
-   "n_pullRunE"
-  ],
-  [
-   "n_pullRunE",
-   "n_targetEndpoint"
-  ],
-  [
-   "n_pullRunE",
-   "n_clientNew"
-  ],
-  [
-   "n_clientNew",
-   "n_clientAttach"
-  ],
-  [
-   "n_clientAttach",
-   "n_clientDo"
-  ],
-  [
-   "n_clientDo",
-   "n_byTask"
-  ],
-  [
-   "n_byTask",
-   "n_storeGetTask"
-  ],
-  [
-   "n_byTask",
-   "n_handleGetTask"
-  ],
-  [
-   "n_handleGetTask",
-   "n_storeGetTask"
-  ],
-  [
-   "n_handleGetTask",
-   "n_storePendingTickets"
-  ],
-  [
-   "n_storePendingTickets",
-   "m_ticket"
-  ],
-  [
-   "n_handleGetTask",
-   "n_storeEventsFrom"
-  ],
-  [
-   "n_storeEventsFrom",
-   "m_event"
-  ],
-  [
-   "n_handleGetTask",
-   "m_attachInfo"
-  ],
-  [
-   "n_pullRunE",
-   "n_syncTaskBranch"
-  ],
-  [
-   "n_syncTaskBranch",
-   "n_hasLocalCommit"
-  ],
-  [
-   "n_syncTaskBranch",
-   "n_syncViaBundle"
-  ],
-  [
-   "n_syncViaBundle",
-   "n_clientBundle"
-  ],
-  [
-   "n_clientBundle",
-   "n_clientDo"
-  ],
-  [
-   "n_clientBundle",
-   "n_byTask"
-  ],
-  [
-   "n_byTask",
-   "n_handleTaskBundle"
-  ],
-  [
-   "n_handleTaskBundle",
-   "n_taskOrErr"
-  ],
-  [
-   "n_taskOrErr",
-   "n_storeGetTask"
-  ],
-  [
-   "n_handleTaskBundle",
-   "n_bundleRange"
-  ],
-  [
-   "n_bundleRange",
-   "m_task"
-  ],
-  [
-   "n_syncViaBundle",
-   "n_localsyncFetch"
-  ],
-  [
-   "n_syncTaskBranch",
-   "n_localsyncFetch"
-  ],
-  [
-   "n_localsyncFetch",
-   "m_syncResult"
-  ],
-  [
-   "n_syncTaskBranch",
-   "n_syncMessage"
-  ],
-  [
-   "e_continue",
-   "n_continueRunE"
-  ],
-  [
-   "n_continueRunE",
-   "n_targetEndpoint"
-  ],
-  [
-   "n_continueRunE",
-   "n_clientNew"
-  ],
-  [
-   "n_clientNew",
-   "n_clientContinue"
-  ],
-  [
-   "n_clientContinue",
-   "n_clientDo"
-  ],
-  [
-   "n_clientDo",
-   "n_byTask"
-  ],
-  [
-   "n_byTask",
-   "n_handleContinue"
-  ],
-  [
-   "n_handleContinue",
-   "n_managerContinue"
-  ],
-  [
-   "n_managerContinue",
-   "n_storeGetTask"
-  ],
-  [
-   "n_managerContinue",
-   "n_managerTransit"
-  ],
-  [
-   "n_managerContinue",
-   "n_managerAdapterFor"
-  ],
-  [
-   "n_managerAdapterFor",
-   "n_storeGetTask"
-  ],
-  [
-   "n_managerContinue",
-   "n_adapterSend"
-  ],
-  [
-   "n_managerContinue",
-   "n_managerResumeForContinue"
-  ],
-  [
-   "n_managerResumeForContinue",
-   "n_storeGetTask"
-  ],
-  [
-   "n_managerResumeForContinue",
-   "n_storeAppendEvent"
-  ],
-  [
-   "n_storeAppendEvent",
-   "n_hubPublish"
-  ],
-  [
-   "n_storeAppendEvent",
-   "m_event"
-  ],
-  [
-   "n_hubPublish",
-   "m_event"
-  ],
-  [
-   "n_managerContinue",
-   "n_managerMediate"
-  ],
-  [
-   "e_wait",
-   "n_waitRunE"
-  ],
-  [
-   "n_waitRunE",
-   "n_targetEndpoint"
-  ],
-  [
-   "n_waitRunE",
-   "n_clientNew"
-  ],
-  [
-   "n_waitRunE",
-   "n_clientWaitEvent"
-  ],
-  [
-   "n_waitRunE",
-   "n_runFollow"
-  ],
-  [
-   "n_waitRunE",
-   "n_runUntilDone"
-  ],
-  [
-   "n_waitRunE",
-   "n_writeEventLine"
-  ],
-  [
-   "n_clientWaitEvent",
-   "n_clientReadCursor"
-  ],
-  [
-   "n_clientWaitEvent",
-   "n_clientWaitOnce"
-  ],
-  [
-   "n_clientWaitOnce",
-   "n_clientIsDeliverable"
-  ],
-  [
-   "n_clientWaitOnce",
-   "n_clientStreamOnce"
-  ],
-  [
-   "n_clientStreamOnce",
-   "n_clientWSDialOptions"
-  ],
-  [
-   "n_clientStreamOnce",
-   "n_handleEvents"
-  ],
-  [
-   "n_handleEvents",
-   "n_storeGetTask"
-  ],
-  [
-   "n_handleEvents",
-   "n_hubSubscribe"
-  ],
-  [
-   "n_handleEvents",
-   "n_storeEventsFromAsc"
-  ],
-  [
-   "n_handleEvents",
-   "n_storeLatestEvent"
-  ],
-  [
-   "n_handleEvents",
-   "n_writeEvent"
-  ],
-  [
-   "n_storeEventsFromAsc",
-   "m_event"
-  ],
-  [
-   "n_storeLatestEvent",
-   "m_event"
-  ],
-  [
-   "n_writeEvent",
-   "m_event"
-  ],
-  [
-   "n_clientWaitEvent",
-   "n_clientWriteCursor"
-  ],
-  [
-   "n_clientWaitEvent",
-   "n_clientDropCursor"
-  ],
-  [
-   "n_runFollow",
-   "n_clientFollowEvents"
-  ],
-  [
-   "n_clientFollowEvents",
-   "n_clientReadCursor"
-  ],
-  [
-   "n_clientFollowEvents",
-   "n_clientReconcileBacklog"
-  ],
-  [
-   "n_clientReconcileBacklog",
-   "n_clientAttach"
-  ],
-  [
-   "n_clientReconcileBacklog",
-   "n_clientComputeBacklog"
-  ],
-  [
-   "n_clientComputeBacklog",
-   "m_attachInfo"
-  ],
-  [
-   "n_clientFollowEvents",
-   "n_clientStreamOnce"
-  ],
-  [
-   "n_clientFollowEvents",
-   "n_clientWriteCursor"
-  ],
-  [
-   "n_runFollow",
-   "n_writeEventLine"
-  ],
-  [
-   "n_runUntilDone",
-   "n_clientWaitArchived"
-  ],
-  [
-   "n_clientWaitArchived",
-   "n_clientAttach"
-  ],
-  [
-   "n_clientWaitArchived",
-   "n_clientStreamEventsOnce"
-  ],
-  [
-   "n_clientStreamEventsOnce",
-   "n_clientStreamOnce"
-  ],
-  [
-   "e_status",
-   "n_statusRunE"
-  ],
-  [
-   "n_statusRunE",
-   "n_targetEndpoint"
-  ],
-  [
-   "n_statusRunE",
-   "n_clientNew"
-  ],
-  [
-   "n_statusRunE",
-   "n_clientStatus"
-  ],
-  [
-   "n_clientStatus",
-   "n_clientDo"
-  ],
-  [
-   "n_clientDo",
-   "n_handleStatus"
-  ],
-  [
-   "n_handleStatus",
-   "n_managerStatus"
-  ],
-  [
-   "n_managerStatus",
-   "n_storeListTasks"
-  ],
-  [
-   "n_storeListTasks",
-   "m_task"
-  ],
-  [
-   "n_managerStatus",
-   "n_managerProbeActive"
-  ],
-  [
-   "n_managerProbeActive",
-   "n_managerProbeOne"
-  ],
-  [
-   "n_managerProbeOne",
-   "n_managerAdapterFor"
-  ],
-  [
-   "n_managerStatus",
-   "m_statusResp"
-  ],
-  [
-   "n_clientStatus",
-   "m_statusResp"
-  ],
-  [
-   "e_postApiTasks",
-   "n_handleDispatch"
-  ]
- ],
- "diffs": {}
+  "edges": []
 }
