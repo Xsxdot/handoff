@@ -5,6 +5,7 @@ package ledgerstep
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -114,6 +115,38 @@ func TestViaTemplateSnapshotRecordsDisciplineName(t *testing.T) {
 	show := string(raw)
 	if !strings.Contains(show, `"discipline_name":"implement"`) {
 		t.Fatalf("快照应记下角色名: %q", show)
+	}
+}
+
+// TestViaTemplateSecondRoundGetsNumberedBranch 非审阅模板重跑时分支按轮次
+// 挂号：首轮无后缀（存量 cards/<卡>-implement 命名不变），第二轮 -2。
+// 尾部断言穿序列化边界：挂号分支要落进 dispatched 快照并被 WorkBranch 读回，
+// 否则终审会审到第一轮的旧分支。
+func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var branches []string
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		branches = append(branches, opts.Branch)
+		return fmt.Sprintf("T-impl-%d", len(branches)), nil
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := d.ViaTemplate(context.Background(), card,
+			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+			t.Fatalf("第 %d 轮 ViaTemplate: %v", i+1, err)
+		}
+	}
+	want := []string{"cards/" + card.ID + "-implement", "cards/" + card.ID + "-implement-2"}
+	for i := range want {
+		if branches[i] != want[i] {
+			t.Fatalf("第 %d 轮分支应为 %q，实得 %q", i+1, want[i], branches[i])
+		}
+	}
+	wb, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if wb != want[1] {
+		t.Fatalf("WorkBranch 应读回最新挂号分支 %q，实得 %q", want[1], wb)
 	}
 }
 

@@ -201,6 +201,31 @@ func TestWorkBranchSkipsReviewRounds(t *testing.T) {
 	}
 }
 
+// TestPurposeRoundsCountsPerPurpose 轮数按 purpose 分开数——分支挂号靠它，
+// 混数会让不同节点的重跑互相污染编号。
+func TestPurposeRoundsCountsPerPurpose(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "数轮次")
+	for _, link := range []struct{ task, purpose string }{
+		{task: "T-1", purpose: "ticket0"},
+		{task: "T-2", purpose: "ticket0"},
+		{task: "T-3", purpose: PurposeReview},
+	} {
+		if err := s.LinkTask(c.ID, "acc", link.task, link.purpose, "test"); err != nil {
+			t.Fatalf("LinkTask(%s): %v", link.task, err)
+		}
+	}
+	for purpose, want := range map[string]int{"ticket0": 2, PurposeReview: 1, "integration": 0} {
+		got, err := s.PurposeRounds(c.ID, purpose)
+		if err != nil {
+			t.Fatalf("PurposeRounds(%s): %v", purpose, err)
+		}
+		if got != want {
+			t.Fatalf("purpose %s 应数出 %d，实得 %d", purpose, want, got)
+		}
+	}
+}
+
 // TestClearNeedsHumanFrom 撤回权只属于打标记的那一方：环节能撤自己那条，
 // 不能撤人打的，也不能在标记已清后重复补一条。
 func TestClearNeedsHumanFrom(t *testing.T) {

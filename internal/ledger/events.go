@@ -428,19 +428,26 @@ func (s *Store) WorkBranch(cardID string) (string, error) {
 	return branch, nil
 }
 
-// ReviewRounds 已派出的审阅轮数（用于给每轮审阅分支编号，避免同名撞车）。
-// 与 ledgerstep 的 CountRounds 不是一回事：那个数的是「裁决回合」（人工
-// 重置会清零，用于封顶），这个数的是「派过几次审阅」（只增不减，用于起名）。
-func (s *Store) ReviewRounds(cardID string) (int, error) {
+// PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的
+// 分支编号，避免 <prefix>/<卡>-<purpose> 固定拼法第二轮撞名）。
+// 与 ledgerstep 的 CountRounds 不是一回事：那个数的是「裁决回合」（人工重置
+// 会清零，用于封顶），这个数的是「派过几次」（只增不减，用于起名）。
+func (s *Store) PurposeRounds(cardID, purpose string) (int, error) {
 	links, err := s.TasksOf(cardID)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, link := range links {
-		if link.Purpose == PurposeReview {
+		if link.Purpose == purpose {
 			count++
 		}
 	}
 	return count, nil
+}
+
+// ReviewRounds 已派出的审阅轮数——PurposeRounds 在 review 上的特例，保留旧名
+// 不动既有调用方。
+func (s *Store) ReviewRounds(cardID string) (int, error) {
+	return s.PurposeRounds(cardID, PurposeReview)
 }

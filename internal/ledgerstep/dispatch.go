@@ -123,6 +123,20 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		}
 		branch = fmt.Sprintf("%s/%s-review-%d", tpl.Def.BranchPrefix, c.ID, round+1)
 		reviewBase = work
+	} else {
+		// 非审阅节点的重跑同样会撞分支名——同一张卡第二次从同 purpose 模板
+		// 派发时，目标机上第一轮分支还在，git 拒绝创建同名分支（与审阅轮
+		// 2026-08-19 真机实测同一形态）。解法与审阅一致：按「同 purpose 已派
+		// 几次」挂号。首轮保持无后缀，存量卡的分支命名不变。
+		rounds, err := d.St.PurposeRounds(c.ID, tpl.Def.Purpose)
+		if err != nil {
+			return zero, fmt.Errorf("取 %s 轮次: %w", tpl.Def.Purpose, err)
+		}
+		if rounds > 0 {
+			branch = fmt.Sprintf("%s-%d", branch, rounds+1)
+			slog.Default().Info("重跑轮分支挂号", "card", c.ID,
+				"purpose", tpl.Def.Purpose, "round", rounds+1, "branch", branch)
+		}
 	}
 	base, err := d.St.EffectiveBaseBranch(c.ID)
 	if err != nil {
