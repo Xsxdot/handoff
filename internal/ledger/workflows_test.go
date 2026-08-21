@@ -359,6 +359,24 @@ func TestMigrateLeavesChildrenAlone(t *testing.T) {
 	}
 }
 
+// TestMigrateCannotBypassGate 迁移不能用来跳过目标流的 gate：
+// 卡缺 contract 附件 → 迁到无闸流 → 再迁回有 contract 闸的列，最后一步仍须被拒。
+// 这是拆解 §4.4 的结论落成的回归网。
+func TestMigrateCannotBypassGate(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "绕闸尝试")
+	// domain/契约冻结 需要 contract 附件
+	if _, err := s.MigrateCardWorkflow(c.ID, "domain", 0, "契约冻结", "test"); err == nil {
+		t.Fatal("缺 contract 附件不该能迁进契约冻结列")
+	}
+	if _, err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test"); err != nil {
+		t.Fatalf("迁到无闸流应允许（场景 B 降级）: %v", err)
+	}
+	if _, err := s.MigrateCardWorkflow(c.ID, "domain", 0, "契约冻结", "test"); err == nil {
+		t.Fatal("绕一圈回来仍须被目标 gate 拒绝")
+	}
+}
+
 func TestDefaultTriageWorkflow(t *testing.T) {
 	s := seedStore(t)
 	wf, err := s.GetWorkflow("triage", 0)

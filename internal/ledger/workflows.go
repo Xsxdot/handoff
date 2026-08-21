@@ -355,6 +355,38 @@ func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, to
 			return fmt.Errorf("卡 %s 当前状态 %q 不在 %s v%d 中，先转移状态再迁: %w",
 				cardID, toStatus, toWorkflow, toVersion, ErrBadState)
 		}
+		// 迁移也是进入目标列，必须复用该列的 gate；否则「先迁到无闸流再迁回」
+		// 会绕过附件、验收和子卡聚合闸（拆解 §4.4）。检查与 UPDATE 同事务。
+		if gate, ok := target.Def.Gates[toStatus]; ok {
+			if gate.RequireAttachment != "" {
+				hasAttachment := false
+				for _, attachment := range card.Attachments {
+					if attachment.Kind == gate.RequireAttachment {
+						hasAttachment = true
+						break
+					}
+				}
+				if !hasAttachment {
+					log().Warn("迁移被拒：gate 缺附件", "card", cardID, "to", toStatus, "need", gate.RequireAttachment)
+					return fmt.Errorf("进 %q 需要 %s 附件（当前没有）: %w", toStatus, gate.RequireAttachment, ErrGateBlocked)
+				}
+			}
+			if gate.RequireAcceptance && card.AcceptanceCriteria == "" {
+				log().Warn("迁移被拒：gate 缺判据", "card", cardID, "to", toStatus)
+				return fmt.Errorf("进 %q 需要验收判据非空: %w", toStatus, ErrGateBlocked)
+			}
+			if gate.RequireChildrenDone {
+				pending, err := s.pendingChildrenTx(tx, cardID)
+				if err != nil {
+					return err
+				}
+				if len(pending) > 0 {
+					log().Warn("迁移被拒：聚合闸有未完结子卡", "card", cardID, "to", toStatus, "pending", pending)
+					return fmt.Errorf("进 %q 需全部子卡完结，未完结: %s: %w",
+						toStatus, strings.Join(pending, ", "), ErrGateBlocked)
+				}
+			}
+		}
 		// 原位置必须在 UPDATE 之前从事务内读出；写完后 cards 只剩目标值，
 		// 再读会丢失审计事件需要的 from_*。
 		from := WorkflowLocation{Workflow: card.WorkflowName, Version: card.WorkflowVersion, Status: card.Status}
