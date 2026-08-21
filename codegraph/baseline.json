@@ -902,9 +902,7 @@
       "order": 39,
       "name": "handoff sessions",
       "file": "cmd/sessions.go",
-      "line": 26,
-      "unscanned": true,
-      "summary": "Cobra 分组命令；无自有 RunE，行为由 Cobra 框架处理"
+      "line": 26
     },
     "e_cli_sessions_revoke": {
       "kind": "entry",
