@@ -241,6 +241,46 @@
     "k_proto_fn": {
       "label": "proto（包级函数）",
       "kind": "函数组"
+    },
+    "k_agentd_model": {
+      "label": "agentd 实体",
+      "kind": "实体"
+    },
+    "k_client_model": {
+      "label": "client 实体",
+      "kind": "实体"
+    },
+    "k_codegraph_model": {
+      "label": "codegraph 实体",
+      "kind": "实体"
+    },
+    "k_config_model": {
+      "label": "config 实体",
+      "kind": "实体"
+    },
+    "k_executor_model": {
+      "label": "executor 实体",
+      "kind": "实体"
+    },
+    "k_localsync_model": {
+      "label": "localsync 实体",
+      "kind": "实体"
+    },
+    "k_permgate_model": {
+      "label": "permgate 实体",
+      "kind": "实体"
+    },
+    "k_prochost_model": {
+      "label": "prochost 实体",
+      "kind": "实体"
+    },
+    "k_proto_model": {
+      "label": "proto 实体",
+      "kind": "实体"
+    },
+    "k_ptyhost_model": {
+      "label": "ptyhost 实体",
+      "kind": "实体"
     }
   },
   "nodes": {
@@ -28849,6 +28889,5581 @@
       "returns": "",
       "summary": "drop 关掉并移出一条缓存条目；不存在时无副作用",
       "tests": []
+    },
+    "m_agentd_ApproverDecision": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 52,
+      "name": "ApproverDecision",
+      "file": "internal/agentd/approver.go",
+      "line": 52,
+      "summary": "ApproverDecision 是审批者一次裁决的结果",
+      "tests": [],
+      "fields": [
+        [
+          "Approve",
+          "bool",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "ElapsedMS",
+          "int64",
+          ""
+        ],
+        [
+          "Err",
+          "error",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_identityKey": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 52,
+      "name": "identityKey",
+      "file": "internal/agentd/auth.go",
+      "line": 52,
+      "summary": "identityKey 是 identity 在 request context 中的键类型",
+      "tests": [],
+      "fields": []
+    },
+    "m_agentd_DispatchReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 369,
+      "name": "DispatchReq",
+      "file": "internal/agentd/manager.go",
+      "line": 369,
+      "summary": "DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数",
+      "tests": [],
+      "fields": [
+        [
+          "ProjectID",
+          "string",
+          ""
+        ],
+        [
+          "ProjectName",
+          "string",
+          ""
+        ],
+        [
+          "PlanB64",
+          "string",
+          "plan 内容，base64 编码（路由/CLI 层编码，此处解码）"
+        ],
+        [
+          "PlanName",
+          "string",
+          "plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）"
+        ],
+        [
+          "Target",
+          "string",
+          "目标主机名（归档展示用，记入 task.Target）"
+        ],
+        [
+          "Prompt",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "NewBranch",
+          "string",
+          ""
+        ],
+        [
+          "Base",
+          "string",
+          ""
+        ],
+        [
+          "Worktree",
+          "string",
+          ""
+        ],
+        [
+          "NewWorktree",
+          "bool",
+          ""
+        ],
+        [
+          "BaseCommit",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_ticketRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 465,
+      "name": "ticketRequest",
+      "file": "internal/agentd/manager.go",
+      "line": 465,
+      "summary": "ticketRequest 是工单 request 列的通用载体，kind 区分 gate/ask",
+      "tests": [],
+      "fields": [
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Permission",
+          "string",
+          "gate：权限描述"
+        ],
+        [
+          "Question",
+          "string",
+          "ask：问题原文"
+        ]
+      ]
+    },
+    "m_agentd_permissionPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 472,
+      "name": "permissionPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 472,
+      "summary": "permissionPayload 是 permission_request 事件的 payload（含 ticket_id 供回复）",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Permission",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_questionPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 479,
+      "name": "questionPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 479,
+      "summary": "questionPayload 是 question 事件的 payload（含 ticket_id 供回复）",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Question",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_deliveryFailedPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 487,
+      "name": "deliveryFailedPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 487,
+      "summary": "deliveryFailedPayload 是 delivery_failed 事件的 payload：哪张工单没送到、",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Hint",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_progressPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 494,
+      "name": "progressPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 494,
+      "summary": "progressPayload 是 progress 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "Text",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_completedPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 499,
+      "name": "completedPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 499,
+      "summary": "completedPayload 是 completed 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "CommitHash",
+          "string",
+          ""
+        ],
+        [
+          "Summary",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_failedPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 506,
+      "name": "failedPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 506,
+      "summary": "failedPayload 是 failed 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "FailReason",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "CommitHash",
+          "string",
+          ""
+        ],
+        [
+          "ProcUsage",
+          "*prochost.Admission",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_approverDecisionPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 546,
+      "name": "approverDecisionPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 546,
+      "summary": "approverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Permission",
+          "string",
+          ""
+        ],
+        [
+          "Decision",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "ElapsedMS",
+          "int64",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_approvalDroppedPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 555,
+      "name": "approvalDroppedPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 555,
+      "summary": "approvalDroppedPayload 是 approval_dropped 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Decision",
+          "string",
+          "审批者原本的裁决：approve / escalate / error"
+        ],
+        [
+          "State",
+          "string",
+          "裁决回来时任务已处的状态"
+        ]
+      ]
+    },
+    "m_agentd_approverDisabledPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 563,
+      "name": "approverDisabledPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 563,
+      "summary": "approverDisabledPayload 是 approver_disabled 事件的 payload：任务级审批链",
+      "tests": [],
+      "fields": [
+        [
+          "Reason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_permissionReusePayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 568,
+      "name": "permissionReusePayload",
+      "file": "internal/agentd/manager.go",
+      "line": 568,
+      "summary": "permissionReusePayload 是 permission_reuse 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "PriorTicketID",
+          "string",
+          ""
+        ],
+        [
+          "Fingerprint",
+          "string",
+          ""
+        ],
+        [
+          "Permission",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_denyGuidancePayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 579,
+      "name": "denyGuidancePayload",
+      "file": "internal/agentd/manager.go",
+      "line": 579,
+      "summary": "denyGuidancePayload 是 deny_guidance_relayed / deny_guidance_dropped 事件的",
+      "tests": [],
+      "fields": [
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Cause",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_RecoverReport": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 2487,
+      "name": "RecoverReport",
+      "file": "internal/agentd/manager.go",
+      "line": 2487,
+      "summary": "RecoverReport 是显式恢复操作的结果快照，原样作为 HTTP 响应体回给 CLI",
+      "tests": [],
+      "fields": [
+        [
+          "Task",
+          "string",
+          ""
+        ],
+        [
+          "Redelivered",
+          "int",
+          ""
+        ],
+        [
+          "ExecutorGone",
+          "bool",
+          ""
+        ],
+        [
+          "Reconciled",
+          "bool",
+          ""
+        ],
+        [
+          "TurnEnded",
+          "bool",
+          ""
+        ],
+        [
+          "Emitted",
+          "int",
+          ""
+        ],
+        [
+          "Forced",
+          "bool",
+          ""
+        ],
+        [
+          "State",
+          "proto.TaskState",
+          ""
+        ],
+        [
+          "Note",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_result": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 196,
+      "name": "result",
+      "file": "internal/agentd/status.go",
+      "line": 196,
+      "summary": "result 数据结构",
+      "tests": [],
+      "fields": [
+        [
+          "out",
+          "executor.ProbeOutcome",
+          ""
+        ],
+        [
+          "err",
+          "error",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_RegisterProjectReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 79,
+      "name": "RegisterProjectReq",
+      "file": "internal/agentd/projectadmin.go",
+      "line": 79,
+      "summary": "RegisterProjectReq 是登记一个项目位置的请求",
+      "tests": [],
+      "fields": [
+        [
+          "OriginURL",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_projectPatchRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 731,
+      "name": "projectPatchRequest",
+      "file": "internal/agentd/projectadmin.go",
+      "line": 731,
+      "summary": "projectPatchRequest 是 PATCH /api/projects/{name} 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "NewName",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_worktreeEntry": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 29,
+      "name": "worktreeEntry",
+      "file": "internal/agentd/reclaim.go",
+      "line": 29,
+      "summary": "worktreeEntry 是 git worktree list --porcelain 里的一条记录",
+      "tests": [],
+      "fields": [
+        [
+          "Path",
+          "string",
+          ""
+        ],
+        [
+          "Prunable",
+          "bool",
+          ""
+        ],
+        [
+          "PruneReason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_DirtyWorktreeError": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 224,
+      "name": "DirtyWorktreeError",
+      "file": "internal/agentd/reclaim.go",
+      "line": 224,
+      "summary": "DirtyWorktreeError 表示工作树有未提交改动或未跟踪文件，未带 force 时拒绝回收",
+      "tests": [],
+      "fields": [
+        [
+          "Files",
+          "[]proto.DirtyFile",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_taskDetail": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 873,
+      "name": "taskDetail",
+      "file": "internal/agentd/server.go",
+      "line": 873,
+      "summary": "taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）",
+      "tests": [],
+      "fields": [
+        [
+          "Task",
+          "proto.TaskView",
+          ""
+        ],
+        [
+          "PendingTickets",
+          "[]proto.Ticket",
+          ""
+        ],
+        [
+          "RecentEvents",
+          "[]proto.Event",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_replyRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 881,
+      "name": "replyRequest",
+      "file": "internal/agentd/server.go",
+      "line": 881,
+      "summary": "replyRequest 是 POST /api/tasks/{id}/reply 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "TicketID",
+          "string",
+          ""
+        ],
+        [
+          "Answer",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_replyResult": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 891,
+      "name": "replyResult",
+      "file": "internal/agentd/server.go",
+      "line": 891,
+      "summary": "replyResult 是 reply 接口的响应体",
+      "tests": [],
+      "fields": [
+        [
+          "OK",
+          "bool",
+          ""
+        ],
+        [
+          "Relayed",
+          "bool",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_dispatchRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1050,
+      "name": "dispatchRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1050,
+      "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，",
+      "tests": [],
+      "fields": [
+        [
+          "ProjectID",
+          "string",
+          ""
+        ],
+        [
+          "ProjectName",
+          "string",
+          ""
+        ],
+        [
+          "PlanB64",
+          "string",
+          ""
+        ],
+        [
+          "PlanName",
+          "string",
+          ""
+        ],
+        [
+          "Target",
+          "string",
+          ""
+        ],
+        [
+          "Prompt",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "NewBranch",
+          "string",
+          ""
+        ],
+        [
+          "Base",
+          "string",
+          ""
+        ],
+        [
+          "Worktree",
+          "string",
+          ""
+        ],
+        [
+          "NewWorktree",
+          "bool",
+          ""
+        ],
+        [
+          "BaseCommit",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_projectAddRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1174,
+      "name": "projectAddRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1174,
+      "summary": "projectAddRequest 是 POST /api/projects 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "OriginURL",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_continueRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1287,
+      "name": "continueRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1287,
+      "summary": "continueRequest 是 POST /api/tasks/{id}/continue 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Instructions",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_doneRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1326,
+      "name": "doneRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1326,
+      "summary": "doneRequest 是归档请求的可选请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Note",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_doneResult": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1335,
+      "name": "doneResult",
+      "file": "internal/agentd/server.go",
+      "line": 1335,
+      "summary": "doneResult 是归档响应",
+      "tests": [],
+      "fields": [
+        [
+          "OK",
+          "bool",
+          ""
+        ],
+        [
+          "NoteSaved",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_runRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1710,
+      "name": "runRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1710,
+      "summary": "runRequest 是 POST /api/tasks/{id}/run 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Cmd",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_runResponse": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1715,
+      "name": "runResponse",
+      "file": "internal/agentd/server.go",
+      "line": 1715,
+      "summary": "runResponse 是 run 接口的响应体（合并输出 + 退出码）",
+      "tests": [],
+      "fields": [
+        [
+          "Stdout",
+          "string",
+          ""
+        ],
+        [
+          "ExitCode",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_ticketsVoidedPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 25,
+      "name": "ticketsVoidedPayload",
+      "file": "internal/agentd/ticketvoid.go",
+      "line": 25,
+      "summary": "ticketsVoidedPayload 是 tickets_voided 事件的 payload",
+      "tests": [],
+      "fields": [
+        [
+          "Voided",
+          "int",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_stalledPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 54,
+      "name": "stalledPayload",
+      "file": "internal/agentd/watchdog.go",
+      "line": 54,
+      "summary": "stalledPayload 是 stalled 事件的 payload，供协调者快速判断卡了多久、卡在哪个事件后",
+      "tests": [],
+      "fields": [
+        [
+          "LastSeq",
+          "int64",
+          "卡住判定时刻的最新事件 seq（事发锚点）；零事件任务无事件可锚，记 0"
+        ],
+        [
+          "Idle",
+          "string",
+          "空闲时长（如 \"3h2m5s\"，秒粒度）"
+        ]
+      ]
+    },
+    "m_agentd_resourcePressurePayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 61,
+      "name": "resourcePressurePayload",
+      "file": "internal/agentd/watchdog.go",
+      "line": 61,
+      "summary": "resourcePressurePayload 是高水位事件的载荷：协调者要靠这两个数字判断",
+      "tests": [],
+      "fields": [
+        [
+          "Used",
+          "int",
+          ""
+        ],
+        [
+          "Limit",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_taskProcPressurePayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 70,
+      "name": "taskProcPressurePayload",
+      "file": "internal/agentd/watchdog.go",
+      "line": 70,
+      "summary": "taskProcPressurePayload 是任务级进程越线事件的载荷",
+      "tests": [],
+      "fields": [
+        [
+          "Used",
+          "int",
+          ""
+        ],
+        [
+          "Budget",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_WorkspaceReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 253,
+      "name": "WorkspaceReq",
+      "file": "internal/agentd/workspace.go",
+      "line": 253,
+      "summary": "WorkspaceReq 描述 dispatch 的工作区诉求（分支 × worktree 两个正交维度）",
+      "tests": [],
+      "fields": [
+        [
+          "Repo",
+          "string",
+          "主仓库路径"
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          "已存在分支（与 NewBranch 互斥）"
+        ],
+        [
+          "NewBranch",
+          "string",
+          "新建分支名（空且 Branch 空 = 自动 handoff/<id8>）"
+        ],
+        [
+          "Base",
+          "string",
+          "新分支起点（空=HEAD）；与 Branch 互斥，NewBranch/自动分支均可带"
+        ],
+        [
+          "Worktree",
+          "string",
+          "已存在 worktree 路径（与 NewWorktree 互斥）"
+        ],
+        [
+          "NewWorktree",
+          "bool",
+          ""
+        ],
+        [
+          "WorktreesDir",
+          "string",
+          "agentd 管理的 worktree 根目录（DataDir/worktrees）"
+        ]
+      ]
+    },
+    "m_agentd_Workspace": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 265,
+      "name": "Workspace",
+      "file": "internal/agentd/workspace.go",
+      "line": 265,
+      "summary": "Workspace 是准备完成的工作区结果",
+      "tests": [],
+      "fields": [
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "WorkDir",
+          "string",
+          "executor cwd 与审阅命令目录；原地模式 = Repo"
+        ],
+        [
+          "Managed",
+          "bool",
+          "WorkDir 是 agentd 创建的 worktree（done 时代删）"
+        ],
+        [
+          "NewBranchTip",
+          "string",
+          ""
+        ],
+        [
+          "PrevRef",
+          "string",
+          ""
+        ],
+        [
+          "RepoDirtyCount",
+          "int",
+          ""
+        ],
+        [
+          "RepoDirtyFiles",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_agentd_Baseline": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 830,
+      "name": "Baseline",
+      "file": "internal/agentd/workspace.go",
+      "line": 830,
+      "summary": "Baseline 是一次基线决议的结果：校验结论与新分支起点出自同一次计算",
+      "tests": [],
+      "fields": [
+        [
+          "Start",
+          "string",
+          ""
+        ],
+        [
+          "Ahead",
+          "int",
+          ""
+        ],
+        [
+          "Fetched",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_client_BacklogSummary": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 35,
+      "name": "BacklogSummary",
+      "file": "internal/client/backlog.go",
+      "line": 35,
+      "summary": "BacklogSummary 是 follow 建立连接前对账得出的「你错过了什么」",
+      "tests": [],
+      "fields": [
+        [
+          "Type",
+          "string",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "FromSeq",
+          "int64",
+          ""
+        ],
+        [
+          "ToSeq",
+          "int64",
+          ""
+        ],
+        [
+          "State",
+          "proto.TaskState",
+          ""
+        ],
+        [
+          "Missed",
+          "int",
+          ""
+        ],
+        [
+          "MissedTruncated",
+          "bool",
+          ""
+        ],
+        [
+          "Stale",
+          "int",
+          ""
+        ],
+        [
+          "Actionable",
+          "[]proto.Ticket",
+          ""
+        ]
+      ]
+    },
+    "m_client_AttachInfo": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 167,
+      "name": "AttachInfo",
+      "file": "internal/client/client.go",
+      "line": 167,
+      "summary": "AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件",
+      "tests": [],
+      "fields": [
+        [
+          "Task",
+          "proto.TaskView",
+          ""
+        ],
+        [
+          "PendingTickets",
+          "[]proto.Ticket",
+          ""
+        ],
+        [
+          "RecentEvents",
+          "[]proto.Event",
+          ""
+        ]
+      ]
+    },
+    "m_client_ReclaimRejected": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 543,
+      "name": "ReclaimRejected",
+      "file": "internal/client/client.go",
+      "line": 543,
+      "summary": "ReclaimRejected 是一次被拒的回收，带机器码与（脏树时的）改动清单",
+      "tests": [],
+      "fields": [
+        [
+          "Reason",
+          "proto.ReclaimReason",
+          ""
+        ],
+        [
+          "Msg",
+          "string",
+          ""
+        ],
+        [
+          "Dirty",
+          "[]proto.DirtyFile",
+          ""
+        ]
+      ]
+    },
+    "m_client_DispatchOpts": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 700,
+      "name": "DispatchOpts",
+      "file": "internal/client/client.go",
+      "line": 700,
+      "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应",
+      "tests": [],
+      "fields": [
+        [
+          "ProjectID",
+          "string",
+          ""
+        ],
+        [
+          "ProjectName",
+          "string",
+          ""
+        ],
+        [
+          "PlanB64",
+          "string",
+          ""
+        ],
+        [
+          "PlanName",
+          "string",
+          ""
+        ],
+        [
+          "Target",
+          "string",
+          ""
+        ],
+        [
+          "Prompt",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "NewBranch",
+          "string",
+          ""
+        ],
+        [
+          "Base",
+          "string",
+          ""
+        ],
+        [
+          "Worktree",
+          "string",
+          ""
+        ],
+        [
+          "NewWorktree",
+          "bool",
+          ""
+        ],
+        [
+          "BaseCommit",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_client_ProjectAddOpts": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 760,
+      "name": "ProjectAddOpts",
+      "file": "internal/client/client.go",
+      "line": 760,
+      "summary": "ProjectAddOpts 是 ProjectAdd 的参数",
+      "tests": [],
+      "fields": [
+        [
+          "OriginURL",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_client_UpdateRejected": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 32,
+      "name": "UpdateRejected",
+      "file": "internal/client/update.go",
+      "line": 32,
+      "summary": "UpdateRejected 是被两道闸拒绝时的错误",
+      "tests": [],
+      "fields": [
+        [
+          "Reason",
+          "string",
+          "proto.UpdateReasonBusy / proto.UpdateReasonUnmanaged / \"\""
+        ],
+        [
+          "Msg",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_DomainStat": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 16,
+      "name": "DomainStat",
+      "file": "internal/codegraph/domains.go",
+      "line": 16,
+      "summary": "DomainStat 是一个领域的展示投影：元信息 + 结构位置 + 成员统计",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Label",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Summary",
+          "string",
+          ""
+        ],
+        [
+          "Desc",
+          "string",
+          ""
+        ],
+        [
+          "Parent",
+          "string",
+          ""
+        ],
+        [
+          "Children",
+          "[]string",
+          ""
+        ],
+        [
+          "Containers",
+          "[]string",
+          ""
+        ],
+        [
+          "Funcs",
+          "int",
+          ""
+        ],
+        [
+          "Models",
+          "int",
+          ""
+        ],
+        [
+          "Entries",
+          "int",
+          ""
+        ],
+        [
+          "Unscanned",
+          "int",
+          ""
+        ],
+        [
+          "Interfaces",
+          "[]string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_ViewNode": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 13,
+      "name": "ViewNode",
+      "file": "internal/codegraph/merge.go",
+      "line": 13,
+      "summary": "ViewNode 是视图里的节点：Node + 差异状态",
+      "tests": [],
+      "fields": [
+        [
+          "",
+          "Node",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          "\"\" | added | modified | deleted"
+        ]
+      ]
+    },
+    "m_codegraph_ViewEdge": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 19,
+      "name": "ViewEdge",
+      "file": "internal/codegraph/merge.go",
+      "line": 19,
+      "summary": "ViewEdge 是视图里的边",
+      "tests": [],
+      "fields": [
+        [
+          "From",
+          "string",
+          ""
+        ],
+        [
+          "To",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_View": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 26,
+      "name": "View",
+      "file": "internal/codegraph/merge.go",
+      "line": 26,
+      "summary": "View 是合并后的图视图",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Domains",
+          "map[string]Domain",
+          ""
+        ],
+        [
+          "Containers",
+          "map[string]Container",
+          ""
+        ],
+        [
+          "Nodes",
+          "map[string]ViewNode",
+          ""
+        ],
+        [
+          "Edges",
+          "[]ViewEdge",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_ResultNode": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 14,
+      "name": "ResultNode",
+      "file": "internal/codegraph/query.go",
+      "line": 14,
+      "summary": "ResultNode 是查询结果里的节点：id + 与焦点的 BFS 距离（下游正、上游负）",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Dist",
+          "int",
+          ""
+        ],
+        [
+          "",
+          "ViewNode",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Result": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 23,
+      "name": "Result",
+      "file": "internal/codegraph/query.go",
+      "line": 23,
+      "summary": "Result 是一次邻域查询的完整结果",
+      "tests": [],
+      "fields": [
+        [
+          "View",
+          "string",
+          ""
+        ],
+        [
+          "Foci",
+          "[]string",
+          ""
+        ],
+        [
+          "Nodes",
+          "[]ResultNode",
+          ""
+        ],
+        [
+          "Edges",
+          "[]ViewEdge",
+          ""
+        ],
+        [
+          "UnscannedEntries",
+          "int",
+          ""
+        ],
+        [
+          "Warning",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_StaleNode": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 18,
+      "name": "StaleNode",
+      "file": "internal/codegraph/stale.go",
+      "line": 18,
+      "summary": "StaleNode 描述一个失鲜节点及原因",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "File",
+          "string",
+          ""
+        ],
+        [
+          "Line",
+          "int",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Meta": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 16,
+      "name": "Meta",
+      "file": "internal/codegraph/types.go",
+      "line": 16,
+      "summary": "Meta 是图的来源信息",
+      "tests": [],
+      "fields": [
+        [
+          "Project",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "Commit",
+          "string",
+          ""
+        ],
+        [
+          "ScannedAt",
+          "string",
+          ""
+        ],
+        [
+          "Generator",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Container": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 25,
+      "name": "Container",
+      "file": "internal/codegraph/types.go",
+      "line": 25,
+      "summary": "Container 是分组盒子（struct 一级，见 spec §3",
+      "tests": [],
+      "fields": [
+        [
+          "Label",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Entry",
+          "bool",
+          ""
+        ],
+        [
+          "Domain",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Domain": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 39,
+      "name": "Domain",
+      "file": "internal/codegraph/types.go",
+      "line": 39,
+      "summary": "Domain 是一个领域：领域图的一级组织单位，可嵌套",
+      "tests": [],
+      "fields": [
+        [
+          "Label",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Summary",
+          "string",
+          ""
+        ],
+        [
+          "Desc",
+          "string",
+          ""
+        ],
+        [
+          "Parent",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_TestRef": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 48,
+      "name": "TestRef",
+      "file": "internal/codegraph/types.go",
+      "line": 48,
+      "summary": "TestRef 关联一个测试函数",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "File",
+          "string",
+          ""
+        ],
+        [
+          "Snippet",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Node": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 56,
+      "name": "Node",
+      "file": "internal/codegraph/types.go",
+      "line": 56,
+      "summary": "Node 是图节点，Kind 三选一：entry / func / model",
+      "tests": [],
+      "fields": [
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Container",
+          "string",
+          ""
+        ],
+        [
+          "Order",
+          "int",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "File",
+          "string",
+          ""
+        ],
+        [
+          "Line",
+          "int",
+          ""
+        ],
+        [
+          "Signature",
+          "string",
+          ""
+        ],
+        [
+          "SignatureOld",
+          "string",
+          "仅出现在 diff 的 nodesModified 里"
+        ],
+        [
+          "Params",
+          "[][]string",
+          "[名, 类型, 说明]"
+        ],
+        [
+          "Returns",
+          "string",
+          ""
+        ],
+        [
+          "Summary",
+          "string",
+          ""
+        ],
+        [
+          "Tests",
+          "[]TestRef",
+          ""
+        ],
+        [
+          "Fields",
+          "[][]string",
+          "model 专用: [名, 类型, 说明]"
+        ],
+        [
+          "Unscanned",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Graph": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 78,
+      "name": "Graph",
+      "file": "internal/codegraph/types.go",
+      "line": 78,
+      "summary": "Graph 是 codegraph/baseline",
+      "tests": [],
+      "fields": [
+        [
+          "Meta",
+          "Meta",
+          ""
+        ],
+        [
+          "Domains",
+          "map[string]Domain",
+          ""
+        ],
+        [
+          "Containers",
+          "map[string]Container",
+          ""
+        ],
+        [
+          "Nodes",
+          "map[string]Node",
+          ""
+        ],
+        [
+          "Edges",
+          "[]Edge",
+          ""
+        ]
+      ]
+    },
+    "m_codegraph_Diff": {
+      "kind": "model",
+      "container": "k_codegraph_model",
+      "order": 89,
+      "name": "Diff",
+      "file": "internal/codegraph/types.go",
+      "line": 89,
+      "summary": "Diff 是 codegraph/diffs/<view>",
+      "tests": [],
+      "fields": [
+        [
+          "View",
+          "string",
+          ""
+        ],
+        [
+          "Base",
+          "string",
+          ""
+        ],
+        [
+          "Summary",
+          "string",
+          ""
+        ],
+        [
+          "NodesAdded",
+          "map[string]Node",
+          ""
+        ],
+        [
+          "NodesModified",
+          "map[string]Node",
+          ""
+        ],
+        [
+          "NodesDeleted",
+          "[]string",
+          ""
+        ],
+        [
+          "EdgesAdded",
+          "[]Edge",
+          ""
+        ],
+        [
+          "EdgesDeleted",
+          "[]Edge",
+          ""
+        ]
+      ]
+    },
+    "m_config_Config": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 43,
+      "name": "Config",
+      "file": "internal/config/config.go",
+      "line": 43,
+      "summary": "Config 是 handoff 的顶层配置",
+      "tests": [],
+      "fields": [
+        [
+          "Listen",
+          "string",
+          ""
+        ],
+        [
+          "Token",
+          "string",
+          ""
+        ],
+        [
+          "DataDir",
+          "string",
+          ""
+        ],
+        [
+          "Relay",
+          "*RelayConfig",
+          ""
+        ],
+        [
+          "RepoRoot",
+          "string",
+          ""
+        ],
+        [
+          "PathDirs",
+          "[]string",
+          ""
+        ],
+        [
+          "Proxy",
+          "string",
+          ""
+        ],
+        [
+          "EnvForward",
+          "[]string",
+          ""
+        ],
+        [
+          "StallTimeout",
+          "time.Duration",
+          ""
+        ],
+        [
+          "Targets",
+          "map[string]Target",
+          ""
+        ],
+        [
+          "Approver",
+          "ApproverConfig",
+          ""
+        ],
+        [
+          "Executor",
+          "ExecutorConfig",
+          ""
+        ],
+        [
+          "Terminal",
+          "TerminalConfig",
+          ""
+        ],
+        [
+          "Sync",
+          "SyncConfig",
+          ""
+        ],
+        [
+          "Env",
+          "map[string]string",
+          ""
+        ],
+        [
+          "Discipline",
+          "map[string]string",
+          ""
+        ],
+        [
+          "ProcFence",
+          "ProcFenceConfig",
+          ""
+        ],
+        [
+          "Web",
+          "WebConfig",
+          ""
+        ]
+      ]
+    },
+    "m_config_RelayConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 139,
+      "name": "RelayConfig",
+      "file": "internal/config/config.go",
+      "line": 139,
+      "summary": "RelayConfig describes the executor's outbound relay registration",
+      "tests": [],
+      "fields": [
+        [
+          "URL",
+          "string",
+          ""
+        ],
+        [
+          "Credential",
+          "string",
+          ""
+        ],
+        [
+          "Node",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_config_SyncConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 147,
+      "name": "SyncConfig",
+      "file": "internal/config/config.go",
+      "line": 147,
+      "summary": "SyncConfig 描述任务结束（completed/failed）后 wait 是否自动把远程任务分支",
+      "tests": [],
+      "fields": [
+        [
+          "Auto",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_config_ApproverConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 158,
+      "name": "ApproverConfig",
+      "file": "internal/config/config.go",
+      "line": 158,
+      "summary": "ApproverConfig 描述审批链的廉价模型审批者",
+      "tests": [],
+      "fields": [
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "Timeout",
+          "time.Duration",
+          ""
+        ],
+        [
+          "Blacklist",
+          "[]string",
+          ""
+        ]
+      ]
+    },
+    "m_config_ExecutorConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 166,
+      "name": "ExecutorConfig",
+      "file": "internal/config/config.go",
+      "line": 166,
+      "summary": "ExecutorConfig 描述 dispatch 未显式指定执行者时的缺省选择",
+      "tests": [],
+      "fields": [
+        [
+          "Default",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_config_TerminalConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 180,
+      "name": "TerminalConfig",
+      "file": "internal/config/config.go",
+      "line": 180,
+      "summary": "TerminalConfig 描述 dispatch 成功后的终端弹窗行为",
+      "tests": [],
+      "fields": [
+        [
+          "Auto",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_config_WebConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 192,
+      "name": "WebConfig",
+      "file": "internal/config/config.go",
+      "line": 192,
+      "summary": "WebConfig 是浏览器控制台相关配置",
+      "tests": [],
+      "fields": [
+        [
+          "AllowedHosts",
+          "[]string",
+          ""
+        ]
+      ]
+    },
+    "m_config_Target": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 199,
+      "name": "Target",
+      "file": "internal/config/config.go",
+      "line": 199,
+      "summary": "Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，",
+      "tests": [],
+      "fields": [
+        [
+          "Addr",
+          "string",
+          ""
+        ],
+        [
+          "Token",
+          "string",
+          "relay 形态下额外用作 E2E PSK 源（HKDF 派生），relay 不可见。"
+        ],
+        [
+          "User",
+          "string",
+          ""
+        ],
+        [
+          "Relay",
+          "string",
+          "relay WSS URL；与 Addr 互斥。"
+        ],
+        [
+          "Credential",
+          "string",
+          "coordinator 的 CONNECT 凭证。"
+        ],
+        [
+          "Node",
+          "string",
+          "relay 上的 executor 节点名。"
+        ]
+      ]
+    },
+    "m_config_ProcFenceConfig": {
+      "kind": "model",
+      "container": "k_config_model",
+      "order": 280,
+      "name": "ProcFenceConfig",
+      "file": "internal/config/config.go",
+      "line": 280,
+      "summary": "ProcFenceConfig 描述 executor 进程围栏（RLIMIT_NPROC）的策略",
+      "tests": [],
+      "fields": [
+        [
+          "Disabled",
+          "bool",
+          ""
+        ],
+        [
+          "ReserveRatio",
+          "float64",
+          ""
+        ],
+        [
+          "TaskBudget",
+          "int",
+          ""
+        ],
+        [
+          "TaskHardLimit",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_executor_StartReq": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 66,
+      "name": "StartReq",
+      "file": "internal/executor/executor.go",
+      "line": 66,
+      "summary": "StartReq 是 Adapter",
+      "tests": [],
+      "fields": [
+        [
+          "Task",
+          "proto.Task",
+          ""
+        ],
+        [
+          "PlanContent",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ],
+        [
+          "Env",
+          "[]string",
+          ""
+        ],
+        [
+          "Discipline",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_executor_Result": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 78,
+      "name": "Result",
+      "file": "internal/executor/executor.go",
+      "line": 78,
+      "summary": "Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）",
+      "tests": [],
+      "fields": [
+        [
+          "Branch",
+          "string",
+          "executor 工作分支名（如 handoff/T1）"
+        ],
+        [
+          "CommitHash",
+          "string",
+          "回合收尾 commit 的哈希"
+        ],
+        [
+          "SessionID",
+          "string",
+          "executor 会话标识（如 opencode session id），供续接与归档"
+        ],
+        [
+          "Summary",
+          "string",
+          "执行摘要（给协调者看的完成说明）"
+        ],
+        [
+          "OK",
+          "bool",
+          "true=正常完成；false=失败（见 FailReason）"
+        ],
+        [
+          "FailReason",
+          "string",
+          "OK=false 时的失败原因/日志尾部"
+        ],
+        [
+          "VoidReason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_executor_PermRequest": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 125,
+      "name": "PermRequest",
+      "file": "internal/executor/executor.go",
+      "line": 125,
+      "summary": "PermRequest 是权限请求的结构化形态",
+      "tests": [],
+      "fields": [
+        [
+          "Tool",
+          "string",
+          "归一化工具名，取上面的 PermTool* 常量"
+        ],
+        [
+          "Command",
+          "string",
+          "Tool=bash 时的完整命令串（不截断）"
+        ],
+        [
+          "Paths",
+          "[]string",
+          "Tool=write|edit 时的目标路径（可为相对路径）"
+        ]
+      ]
+    },
+    "m_executor_AdapterEvent": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 167,
+      "name": "AdapterEvent",
+      "file": "internal/executor/executor.go",
+      "line": 167,
+      "summary": "AdapterEvent 是 executor 侧产出的单向事件，由 manager 中介循环消费",
+      "tests": [],
+      "fields": [
+        [
+          "Type",
+          "string",
+          "\"permission\" | \"question\" | \"progress\" | \"result\" | \"usage\""
+        ],
+        [
+          "PermissionID",
+          "string",
+          "Type=permission 时有效（manager 按其派生 ticket id，天然幂等）"
+        ],
+        [
+          "QuestionID",
+          "string",
+          ""
+        ],
+        [
+          "SessionID",
+          "string",
+          "可选：executor 会话标识，manager 落 task.ExecutorSession；空则忽略"
+        ],
+        [
+          "Text",
+          "string",
+          "permission 描述 / question 原文 / progress 文本"
+        ],
+        [
+          "Perm",
+          "*PermRequest",
+          ""
+        ],
+        [
+          "Result",
+          "*Result",
+          "Type=result 时有效"
+        ],
+        [
+          "ActualModel",
+          "string",
+          ""
+        ],
+        [
+          "Usage",
+          "*proto.Usage",
+          ""
+        ],
+        [
+          "Spend",
+          "*proto.SpendEntry",
+          ""
+        ]
+      ]
+    },
+    "m_localsync_Opts": {
+      "kind": "model",
+      "container": "k_localsync_model",
+      "order": 35,
+      "name": "Opts",
+      "file": "internal/localsync/localsync.go",
+      "line": 35,
+      "summary": "Opts 描述一次同步",
+      "tests": [],
+      "fields": [
+        [
+          "LocalRepo",
+          "string",
+          ""
+        ],
+        [
+          "RemoteURL",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_localsync_Result": {
+      "kind": "model",
+      "container": "k_localsync_model",
+      "order": 46,
+      "name": "Result",
+      "file": "internal/localsync/localsync.go",
+      "line": 46,
+      "summary": "Result 是一次同步的结果",
+      "tests": [],
+      "fields": [
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "Commits",
+          "int",
+          ""
+        ],
+        [
+          "Created",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_permgate_Request": {
+      "kind": "model",
+      "container": "k_permgate_model",
+      "order": 58,
+      "name": "Request",
+      "file": "internal/permgate/permgate.go",
+      "line": 58,
+      "summary": "Request 是结构化后的权限请求",
+      "tests": [],
+      "fields": [
+        [
+          "Tool",
+          "string",
+          "归一化工具名，取 executor.PermTool* 常量"
+        ],
+        [
+          "Text",
+          "string",
+          "权限描述全文（与工单同源）"
+        ],
+        [
+          "Command",
+          "string",
+          "Tool=bash 时的完整命令串"
+        ],
+        [
+          "Paths",
+          "[]string",
+          "Tool=write|edit 时的目标路径（可为相对路径）"
+        ],
+        [
+          "Truncated",
+          "bool",
+          "描述含 executor.TruncationMarker"
+        ]
+      ]
+    },
+    "m_permgate_Scope": {
+      "kind": "model",
+      "container": "k_permgate_model",
+      "order": 70,
+      "name": "Scope",
+      "file": "internal/permgate/permgate.go",
+      "line": 70,
+      "summary": "Scope 是本任务的合法作用范围",
+      "tests": [],
+      "fields": [
+        [
+          "Workdir",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_permgate_Verdict": {
+      "kind": "model",
+      "container": "k_permgate_model",
+      "order": 79,
+      "name": "Verdict",
+      "file": "internal/permgate/permgate.go",
+      "line": 79,
+      "summary": "Verdict 是裁决结果",
+      "tests": [],
+      "fields": [
+        [
+          "Action",
+          "Action",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Rule",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_prochost_Admission": {
+      "kind": "model",
+      "container": "k_prochost_model",
+      "order": 159,
+      "name": "Admission",
+      "file": "internal/prochost/fence.go",
+      "line": 159,
+      "summary": "Admission 是一次余量判读的结果",
+      "tests": [],
+      "fields": [
+        [
+          "Used",
+          "int",
+          ""
+        ],
+        [
+          "Limit",
+          "int",
+          ""
+        ],
+        [
+          "Known",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_prochost_ProcessCredential": {
+      "kind": "model",
+      "container": "k_prochost_model",
+      "order": 24,
+      "name": "ProcessCredential",
+      "file": "internal/prochost/procenum.go",
+      "line": 24,
+      "summary": "ProcessCredential 是一个进程的可验证身份凭据",
+      "tests": [],
+      "fields": [
+        [
+          "PID",
+          "int",
+          ""
+        ],
+        [
+          "StartedAt",
+          "int64",
+          ""
+        ]
+      ]
+    },
+    "m_prochost_Spec": {
+      "kind": "model",
+      "container": "k_prochost_model",
+      "order": 47,
+      "name": "Spec",
+      "file": "internal/prochost/prochost.go",
+      "line": 47,
+      "summary": "Spec 是一次执行者进程的启动描述，序列化后交给 shim",
+      "tests": [],
+      "fields": [
+        [
+          "Argv",
+          "[]string",
+          ""
+        ],
+        [
+          "Dir",
+          "string",
+          ""
+        ],
+        [
+          "Env",
+          "[]string",
+          ""
+        ],
+        [
+          "Stdout",
+          "string",
+          ""
+        ],
+        [
+          "Stderr",
+          "string",
+          ""
+        ],
+        [
+          "InputCh",
+          "string",
+          ""
+        ],
+        [
+          "LockPath",
+          "string",
+          ""
+        ],
+        [
+          "InfoPath",
+          "string",
+          ""
+        ],
+        [
+          "Sentinel",
+          "bool",
+          ""
+        ],
+        [
+          "NprocLimit",
+          "int",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "MarkRoot",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_prochost_Handle": {
+      "kind": "model",
+      "container": "k_prochost_model",
+      "order": 90,
+      "name": "Handle",
+      "file": "internal/prochost/prochost.go",
+      "line": 90,
+      "summary": "Handle 是一个已拉起的 shim 的句柄，可直接序列化进 adapter 的 proc",
+      "tests": [],
+      "fields": [
+        [
+          "PID",
+          "int",
+          ""
+        ],
+        [
+          "LockPath",
+          "string",
+          ""
+        ],
+        [
+          "StartedAt",
+          "int64",
+          ""
+        ],
+        [
+          "RosterPath",
+          "string",
+          ""
+        ],
+        [
+          "MembersPath",
+          "string",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "MarkRoot",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_prochost_TaskCred": {
+      "kind": "model",
+      "container": "k_prochost_model",
+      "order": 32,
+      "name": "TaskCred",
+      "file": "internal/prochost/taskmark.go",
+      "line": 32,
+      "summary": "TaskCred 是一次归属判定所需的全部凭据，由 Handle 投影而来",
+      "tests": [],
+      "fields": [
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "MarkRoot",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_AuthTicketResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 16,
+      "name": "AuthTicketResp",
+      "file": "internal/proto/auth.go",
+      "line": 16,
+      "summary": "AuthTicketResp 是 POST /api/auth/tickets 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "URL",
+          "string",
+          ""
+        ],
+        [
+          "ExpiresAt",
+          "time.Time",
+          ""
+        ]
+      ]
+    },
+    "m_proto_SessionInfo": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 24,
+      "name": "SessionInfo",
+      "file": "internal/proto/auth.go",
+      "line": 24,
+      "summary": "SessionInfo 是 GET /api/auth/sessions 的单条会话",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "DeviceName",
+          "string",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "ExpiresAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "LastSeenAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "RevokedAt",
+          "*time.Time",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DesktopState": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 15,
+      "name": "DesktopState",
+      "file": "internal/proto/desktop.go",
+      "line": 15,
+      "summary": "DesktopState 是薄壳向控制台公开的自身状态",
+      "tests": [],
+      "fields": [
+        [
+          "AppVersion",
+          "string",
+          ""
+        ],
+        [
+          "SyncPlan",
+          "string",
+          ""
+        ],
+        [
+          "SyncBusy",
+          "int",
+          ""
+        ],
+        [
+          "SyncError",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_LatestResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 31,
+      "name": "LatestResp",
+      "file": "internal/proto/desktop.go",
+      "line": 31,
+      "summary": "LatestResp 是 GET /api/update/latest 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Tag",
+          "string",
+          ""
+        ],
+        [
+          "CheckedAt",
+          "string",
+          "RFC3339；空=从未查过。"
+        ]
+      ]
+    },
+    "m_proto_DownloadState": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 37,
+      "name": "DownloadState",
+      "file": "internal/proto/desktop.go",
+      "line": 37,
+      "summary": "DownloadState 是桌面端安装包下载的进度与结果",
+      "tests": [],
+      "fields": [
+        [
+          "Stage",
+          "string",
+          ""
+        ],
+        [
+          "Tag",
+          "string",
+          ""
+        ],
+        [
+          "Percent",
+          "int",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          "done 时的绝对路径。"
+        ],
+        [
+          "Opened",
+          "bool",
+          "是否成功唤起文件管理器。"
+        ],
+        [
+          "Error",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_MachineUpgradeResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 49,
+      "name": "MachineUpgradeResp",
+      "file": "internal/proto/desktop.go",
+      "line": 49,
+      "summary": "MachineUpgradeResp 是 POST /api/machines/{name}/upgrade 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Accepted",
+          "bool",
+          ""
+        ],
+        [
+          "Verdict",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Remedy",
+          "string",
+          ""
+        ],
+        [
+          "Forcible",
+          "bool",
+          ""
+        ],
+        [
+          "Busy",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DisciplineResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 15,
+      "name": "DisciplineResp",
+      "file": "internal/proto/discipline.go",
+      "line": 15,
+      "summary": "DisciplineResp 是 GET /api/discipline 的响应：一次给全配置面要用的四样东西",
+      "tests": [],
+      "fields": [
+        [
+          "Dir",
+          "string",
+          "<DataDir>/discipline 绝对路径，界面照原样显示"
+        ],
+        [
+          "Builtins",
+          "[]DisciplineBuiltin",
+          "内置两版全文，随二进制走，只读"
+        ],
+        [
+          "Files",
+          "[]DisciplineFile",
+          "该机纪律块目录下的文件（不含正文）"
+        ],
+        [
+          "Bindings",
+          "[]DisciplineBinding",
+          "该机每个 executor 的当前档位"
+        ]
+      ]
+    },
+    "m_proto_DisciplineBuiltin": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 23,
+      "name": "DisciplineBuiltin",
+      "file": "internal/proto/discipline.go",
+      "line": 23,
+      "summary": "DisciplineBuiltin 是一份内置纪律块",
+      "tests": [],
+      "fields": [
+        [
+          "Tier",
+          "string",
+          ""
+        ],
+        [
+          "Content",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DisciplineFile": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 29,
+      "name": "DisciplineFile",
+      "file": "internal/proto/discipline.go",
+      "line": 29,
+      "summary": "DisciplineFile 是纪律块目录下的一个文件",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ],
+        [
+          "SHA256",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DisciplineBinding": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 44,
+      "name": "DisciplineBinding",
+      "file": "internal/proto/discipline.go",
+      "line": 44,
+      "summary": "DisciplineBinding 是一个 executor 的当前档位",
+      "tests": [],
+      "fields": [
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Mode",
+          "string",
+          ""
+        ],
+        [
+          "File",
+          "string",
+          ""
+        ],
+        [
+          "DefaultTier",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DisciplineMappingReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 64,
+      "name": "DisciplineMappingReq",
+      "file": "internal/proto/discipline.go",
+      "line": 64,
+      "summary": "DisciplineMappingReq 是 PUT /api/discipline/mapping 的请求体：**整段替换**",
+      "tests": [],
+      "fields": [
+        [
+          "Bindings",
+          "[]DisciplineBinding",
+          ""
+        ]
+      ]
+    },
+    "m_proto_EnvResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 17,
+      "name": "EnvResp",
+      "file": "internal/proto/env.go",
+      "line": 17,
+      "summary": "EnvResp 是 GET /api/env 的响应：一次给全配置面要用的三样东西",
+      "tests": [],
+      "fields": [
+        [
+          "Dir",
+          "string",
+          "<DataDir>/env 绝对路径，界面照原样显示"
+        ],
+        [
+          "Files",
+          "[]EnvFile",
+          "该机 env 目录下的文件（不含正文）"
+        ],
+        [
+          "Bindings",
+          "[]EnvBinding",
+          "该机每个 executor 的当前档位"
+        ]
+      ]
+    },
+    "m_proto_EnvFile": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 24,
+      "name": "EnvFile",
+      "file": "internal/proto/env.go",
+      "line": 24,
+      "summary": "EnvFile 是 env 目录下的一个文件",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ],
+        [
+          "SHA256",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_EnvBinding": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 38,
+      "name": "EnvBinding",
+      "file": "internal/proto/env.go",
+      "line": 38,
+      "summary": "EnvBinding 是一个 executor 的当前档位",
+      "tests": [],
+      "fields": [
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Mode",
+          "string",
+          ""
+        ],
+        [
+          "File",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_EnvKey": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 62,
+      "name": "EnvKey",
+      "file": "internal/proto/env.go",
+      "line": 62,
+      "summary": "EnvKey 是解析出的一个变量",
+      "tests": [],
+      "fields": [
+        [
+          "Key",
+          "string",
+          ""
+        ],
+        [
+          "ValueBytes",
+          "int",
+          ""
+        ],
+        [
+          "Duplicate",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_EnvKeysResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 69,
+      "name": "EnvKeysResp",
+      "file": "internal/proto/env.go",
+      "line": 69,
+      "summary": "EnvKeysResp 是 GET /api/env/file/keys 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Keys",
+          "[]EnvKey",
+          ""
+        ]
+      ]
+    },
+    "m_proto_EnvMappingReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 78,
+      "name": "EnvMappingReq",
+      "file": "internal/proto/env.go",
+      "line": 78,
+      "summary": "EnvMappingReq 是 PUT /api/env/mapping 的请求体：**整段替换**",
+      "tests": [],
+      "fields": [
+        [
+          "Bindings",
+          "[]EnvBinding",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ExecutorDefaultResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 16,
+      "name": "ExecutorDefaultResp",
+      "file": "internal/proto/executor_default.go",
+      "line": 16,
+      "summary": "ExecutorDefaultResp 是 GET /api/executor/default 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Default",
+          "string",
+          "当前缺省执行者名"
+        ],
+        [
+          "Model",
+          "string",
+          "缺省执行者的默认模型；空串 = 用执行器自身默认"
+        ],
+        [
+          "Available",
+          "[]string",
+          "该机已注册的 adapter 名，按名字升序"
+        ]
+      ]
+    },
+    "m_proto_ExecutorDefaultReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 26,
+      "name": "ExecutorDefaultReq",
+      "file": "internal/proto/executor_default.go",
+      "line": 26,
+      "summary": "ExecutorDefaultReq 是 PUT /api/executor/default 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Default",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Frame": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 44,
+      "name": "Frame",
+      "file": "internal/proto/frames.go",
+      "line": 44,
+      "summary": "Frame 是一条结构化回合帧，对应 frames",
+      "tests": [],
+      "fields": [
+        [
+          "Seq",
+          "int64",
+          ""
+        ],
+        [
+          "TS",
+          "time.Time",
+          ""
+        ],
+        [
+          "Turn",
+          "int",
+          ""
+        ],
+        [
+          "Type",
+          "FrameType",
+          ""
+        ],
+        [
+          "Part",
+          "string",
+          ""
+        ],
+        [
+          "Delta",
+          "string",
+          ""
+        ],
+        [
+          "Tool",
+          "string",
+          ""
+        ],
+        [
+          "Input",
+          "string",
+          ""
+        ],
+        [
+          "Output",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ],
+        [
+          "Bytes",
+          "int64",
+          ""
+        ],
+        [
+          "RefSeq",
+          "int64",
+          ""
+        ],
+        [
+          "Event",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Instructions",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Workspace": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 23,
+      "name": "Workspace",
+      "file": "internal/proto/projects.go",
+      "line": 23,
+      "summary": "Workspace 是一个 git 工作树（含主工作树自身）",
+      "tests": [],
+      "fields": [
+        [
+          "Path",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "Head",
+          "string",
+          ""
+        ],
+        [
+          "IsMain",
+          "bool",
+          ""
+        ],
+        [
+          "Managed",
+          "bool",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectLocationNode": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 57,
+      "name": "ProjectLocationNode",
+      "file": "internal/proto/projects.go",
+      "line": 57,
+      "summary": "ProjectLocationNode 是一个项目在**一台**机器上的位置（项目树的中间层）",
+      "tests": [],
+      "fields": [
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ],
+        [
+          "Workspaces",
+          "[]Workspace",
+          ""
+        ],
+        [
+          "ProbeError",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectNode": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 73,
+      "name": "ProjectNode",
+      "file": "internal/proto/projects.go",
+      "line": 73,
+      "summary": "ProjectNode 是项目树的顶层：一个跨机器同一的项目",
+      "tests": [],
+      "fields": [
+        [
+          "ProjectID",
+          "string",
+          ""
+        ],
+        [
+          "OriginURL",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Locations",
+          "[]ProjectLocationNode",
+          ""
+        ]
+      ]
+    },
+    "m_proto_MachineStatus": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 86,
+      "name": "MachineStatus",
+      "file": "internal/proto/projects.go",
+      "line": 86,
+      "summary": "MachineStatus 是跨机汇总信封里每台机器的应答情况",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Ok",
+          "bool",
+          ""
+        ],
+        [
+          "FetchedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Error",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectTreeResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 98,
+      "name": "ProjectTreeResp",
+      "file": "internal/proto/projects.go",
+      "line": 98,
+      "summary": "ProjectTreeResp 是 GET /api/projects/tree 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Projects",
+          "[]ProjectNode",
+          ""
+        ],
+        [
+          "Unowned",
+          "[]string",
+          ""
+        ],
+        [
+          "Machines",
+          "[]MachineStatus",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Machine": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 109,
+      "name": "Machine",
+      "file": "internal/proto/projects.go",
+      "line": 109,
+      "summary": "Machine 是 GET /api/machines 的单台投影",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Addr",
+          "string",
+          ""
+        ],
+        [
+          "Relay",
+          "string",
+          ""
+        ],
+        [
+          "Reachable",
+          "bool",
+          ""
+        ],
+        [
+          "Version",
+          "string",
+          ""
+        ],
+        [
+          "Executors",
+          "[]string",
+          ""
+        ],
+        [
+          "DefaultExecutor",
+          "string",
+          ""
+        ],
+        [
+          "ProbeMs",
+          "int64",
+          ""
+        ],
+        [
+          "ActiveTasks",
+          "int",
+          ""
+        ],
+        [
+          "Error",
+          "string",
+          ""
+        ],
+        [
+          "PtySupported",
+          "*bool",
+          ""
+        ],
+        [
+          "RevealSupported",
+          "*bool",
+          ""
+        ],
+        [
+          "Upgrade",
+          "*MachineUpgrade",
+          ""
+        ],
+        [
+          "ScratchRoot",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_MachineUpgrade": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 168,
+      "name": "MachineUpgrade",
+      "file": "internal/proto/projects.go",
+      "line": 168,
+      "summary": "MachineUpgrade 是一台执行机最近一次升级的状态，随 GET /api/machines 一起返回",
+      "tests": [],
+      "fields": [
+        [
+          "Running",
+          "bool",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "Verdict",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Remedy",
+          "string",
+          ""
+        ],
+        [
+          "From",
+          "string",
+          ""
+        ],
+        [
+          "To",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_MachinesResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 182,
+      "name": "MachinesResp",
+      "file": "internal/proto/projects.go",
+      "line": 182,
+      "summary": "MachinesResp 是 GET /api/machines 的响应信封",
+      "tests": [],
+      "fields": [
+        [
+          "Machines",
+          "[]Machine",
+          ""
+        ]
+      ]
+    },
+    "m_proto_TasksResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 193,
+      "name": "TasksResp",
+      "file": "internal/proto/projects.go",
+      "line": 193,
+      "summary": "TasksResp 是 GET /api/tasks?scope=all 的跨机汇总响应（W3a §5",
+      "tests": [],
+      "fields": [
+        [
+          "Machines",
+          "[]MachineStatus",
+          ""
+        ],
+        [
+          "Tasks",
+          "[]TaskView",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DirEntry": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 204,
+      "name": "DirEntry",
+      "file": "internal/proto/projects.go",
+      "line": 204,
+      "summary": "DirEntry 是工作树目录列举里的一项（GET /api/workspaces/dir）",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "IsDir",
+          "bool",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ],
+        [
+          "Ignored",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DirListResult": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 218,
+      "name": "DirListResult",
+      "file": "internal/proto/projects.go",
+      "line": 218,
+      "summary": "DirListResult 是 GET /api/workspaces/dir 的响应体",
+      "tests": [],
+      "fields": [
+        [
+          "Entries",
+          "[]DirEntry",
+          ""
+        ]
+      ]
+    },
+    "m_proto_SearchHit": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 223,
+      "name": "SearchHit",
+      "file": "internal/proto/projects.go",
+      "line": 223,
+      "summary": "SearchHit 是搜索命中的一行（GET /api/workspaces/search）",
+      "tests": [],
+      "fields": [
+        [
+          "Rel",
+          "string",
+          ""
+        ],
+        [
+          "Line",
+          "int",
+          ""
+        ],
+        [
+          "Text",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_SearchResult": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 230,
+      "name": "SearchResult",
+      "file": "internal/proto/projects.go",
+      "line": 230,
+      "summary": "SearchResult 是搜索的完整结论",
+      "tests": [],
+      "fields": [
+        [
+          "Hits",
+          "[]SearchHit",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FileRead": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 246,
+      "name": "FileRead",
+      "file": "internal/proto/projects.go",
+      "line": 246,
+      "summary": "FileRead 是一次文件读取的完整结论（GET /api/workspaces/file 的响应体）",
+      "tests": [],
+      "fields": [
+        [
+          "Content",
+          "string",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          "超过 1 MiB，只返回开头"
+        ],
+        [
+          "Binary",
+          "bool",
+          "前 8 KiB 出现 NUL 字节"
+        ],
+        [
+          "SHA256",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_TaskPlan": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 262,
+      "name": "TaskPlan",
+      "file": "internal/proto/projects.go",
+      "line": 262,
+      "summary": "TaskPlan 是 GET /api/tasks/{id}/plan 的响应：**派发当刻交给 executor 的指令原文**",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Content",
+          "string",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_CreateWorkspaceEntryReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 270,
+      "name": "CreateWorkspaceEntryReq",
+      "file": "internal/proto/projects.go",
+      "line": 270,
+      "summary": "CreateWorkspaceEntryReq 是 POST /api/workspaces/entry 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          "\"file\" 或 \"dir\""
+        ]
+      ]
+    },
+    "m_proto_RenameWorkspaceEntryReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 276,
+      "name": "RenameWorkspaceEntryReq",
+      "file": "internal/proto/projects.go",
+      "line": 276,
+      "summary": "RenameWorkspaceEntryReq 是 PATCH /api/workspaces/entry 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "NewName",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FileWriteReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 284,
+      "name": "FileWriteReq",
+      "file": "internal/proto/projects.go",
+      "line": 284,
+      "summary": "FileWriteReq 是 PUT /api/workspaces/file 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Content",
+          "string",
+          ""
+        ],
+        [
+          "BaseSHA256",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FileWriteResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 293,
+      "name": "FileWriteResp",
+      "file": "internal/proto/projects.go",
+      "line": 293,
+      "summary": "FileWriteResp 是写入成功后的响应",
+      "tests": [],
+      "fields": [
+        [
+          "SHA256",
+          "string",
+          ""
+        ],
+        [
+          "Size",
+          "int64",
+          ""
+        ]
+      ]
+    },
+    "m_proto_AddMachineReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 306,
+      "name": "AddMachineReq",
+      "file": "internal/proto/projects.go",
+      "line": 306,
+      "summary": "AddMachineReq 是 POST /api/machines 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Addr",
+          "string",
+          ""
+        ],
+        [
+          "Token",
+          "string",
+          ""
+        ],
+        [
+          "User",
+          "string",
+          ""
+        ],
+        [
+          "Force",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FileConflictResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 319,
+      "name": "FileConflictResp",
+      "file": "internal/proto/projects.go",
+      "line": 319,
+      "summary": "FileConflictResp 是 409 的响应体",
+      "tests": [],
+      "fields": [
+        [
+          "Error",
+          "string",
+          ""
+        ],
+        [
+          "Current",
+          "FileRead",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectBranch": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 329,
+      "name": "ProjectBranch",
+      "file": "internal/proto/projects.go",
+      "line": 329,
+      "summary": "ProjectBranch 是一个本地分支，带「是否已被工作树占用」",
+      "tests": [],
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Worktree",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectBranchesResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 338,
+      "name": "ProjectBranchesResp",
+      "file": "internal/proto/projects.go",
+      "line": 338,
+      "summary": "ProjectBranchesResp 是 GET /api/projects/{name}/branches 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Branches",
+          "[]ProjectBranch",
+          ""
+        ],
+        [
+          "Default",
+          "string",
+          ""
+        ],
+        [
+          "WorktreeRoot",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_CreateWorktreeReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 349,
+      "name": "CreateWorktreeReq",
+      "file": "internal/proto/projects.go",
+      "line": 349,
+      "summary": "CreateWorktreeReq 是 POST /api/projects/{name}/worktrees 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Mode",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "Base",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Usage": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 131,
+      "name": "Usage",
+      "file": "internal/proto/proto.go",
+      "line": 131,
+      "summary": "Usage 是任务当前的 context 占用快照",
+      "tests": [],
+      "fields": [
+        [
+          "ContextTokens",
+          "int",
+          ""
+        ],
+        [
+          "ContextWindow",
+          "*int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Cost": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 165,
+      "name": "Cost",
+      "file": "internal/proto/proto.go",
+      "line": 165,
+      "summary": "Cost 是累计花费及其可信度",
+      "tests": [],
+      "fields": [
+        [
+          "Ticks",
+          "int64",
+          ""
+        ],
+        [
+          "State",
+          "CostState",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Cumulative": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 184,
+      "name": "Cumulative",
+      "file": "internal/proto/proto.go",
+      "line": 184,
+      "summary": "Cumulative 是任务的累计消耗快照",
+      "tests": [],
+      "fields": [
+        [
+          "InputTokens",
+          "int",
+          ""
+        ],
+        [
+          "CachedTokens",
+          "int",
+          ""
+        ],
+        [
+          "OutputTokens",
+          "int",
+          ""
+        ],
+        [
+          "TotalTokens",
+          "int",
+          ""
+        ],
+        [
+          "Cost",
+          "*Cost",
+          ""
+        ]
+      ]
+    },
+    "m_proto_SpendEntry": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 203,
+      "name": "SpendEntry",
+      "file": "internal/proto/proto.go",
+      "line": 203,
+      "summary": "SpendEntry 是一条待入账的消耗（adapter 产出，store 消费）",
+      "tests": [],
+      "fields": [
+        [
+          "Key",
+          "string",
+          ""
+        ],
+        [
+          "InputTokens",
+          "int",
+          ""
+        ],
+        [
+          "CachedTokens",
+          "int",
+          ""
+        ],
+        [
+          "OutputTokens",
+          "int",
+          ""
+        ],
+        [
+          "CostTicks",
+          "int64",
+          ""
+        ],
+        [
+          "CostState",
+          "CostState",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Task": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 217,
+      "name": "Task",
+      "file": "internal/proto/proto.go",
+      "line": 217,
+      "summary": "Task 表示一个 handoff 任务",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Target",
+          "string",
+          ""
+        ],
+        [
+          "RepoPath",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "PlanPath",
+          "string",
+          ""
+        ],
+        [
+          "PlanSummary",
+          "string",
+          ""
+        ],
+        [
+          "ExecutorSession",
+          "string",
+          ""
+        ],
+        [
+          "State",
+          "TaskState",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "UpdatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "Discipline",
+          "string",
+          ""
+        ],
+        [
+          "WorkDir",
+          "string",
+          ""
+        ],
+        [
+          "WorktreeManaged",
+          "bool",
+          ""
+        ],
+        [
+          "BaseCommit",
+          "string",
+          ""
+        ],
+        [
+          "BaseAhead",
+          "int",
+          ""
+        ],
+        [
+          "RepoDirtyCount",
+          "int",
+          ""
+        ],
+        [
+          "RepoDirtyFiles",
+          "string",
+          ""
+        ],
+        [
+          "DoneNote",
+          "string",
+          ""
+        ],
+        [
+          "ActualModel",
+          "string",
+          ""
+        ],
+        [
+          "Usage",
+          "*Usage",
+          ""
+        ],
+        [
+          "Cumulative",
+          "*Cumulative",
+          ""
+        ],
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "ProjectID",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ArchivedPayload": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 306,
+      "name": "ArchivedPayload",
+      "file": "internal/proto/proto.go",
+      "line": 306,
+      "summary": "ArchivedPayload 是 EventTypeArchived 的事件负载",
+      "tests": [],
+      "fields": [
+        [
+          "Note",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_TaskView": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 330,
+      "name": "TaskView",
+      "file": "internal/proto/proto.go",
+      "line": 330,
+      "summary": "TaskView 是 Task 的 API 视图：任务本体 + 不落库的运行态",
+      "tests": [],
+      "fields": [
+        [
+          "",
+          "Task",
+          ""
+        ],
+        [
+          "Watchers",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Event": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 342,
+      "name": "Event",
+      "file": "internal/proto/proto.go",
+      "line": 342,
+      "summary": "Event 表示任务生命周期中产生的一条事件记录",
+      "tests": [],
+      "fields": [
+        [
+          "Seq",
+          "int64",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Type",
+          "EventType",
+          ""
+        ],
+        [
+          "Payload",
+          "json.RawMessage",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ]
+      ]
+    },
+    "m_proto_Ticket": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 354,
+      "name": "Ticket",
+      "file": "internal/proto/proto.go",
+      "line": 354,
+      "summary": "Ticket 表示一次需人工介入的请求，Kind 取 \"gate\"（许可门）或 \"ask\"（提问）",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Request",
+          "json.RawMessage",
+          ""
+        ],
+        [
+          "Answer",
+          "*string",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "AnsweredAt",
+          "*time.Time",
+          ""
+        ],
+        [
+          "DeliveredAt",
+          "*time.Time",
+          ""
+        ],
+        [
+          "Fingerprint",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProjectLocation": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 423,
+      "name": "ProjectLocation",
+      "file": "internal/proto/proto.go",
+      "line": 423,
+      "summary": "ProjectLocation 是一条「项目 × 机器」位置记录：项目在**这一台**机器上的",
+      "tests": [],
+      "fields": [
+        [
+          "ProjectID",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ],
+        [
+          "OriginURL",
+          "string",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_PtySession": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 13,
+      "name": "PtySession",
+      "file": "internal/proto/pty.go",
+      "line": 13,
+      "summary": "PtySession 是一个终端会话的线格式投影",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "BasePath",
+          "string",
+          ""
+        ],
+        [
+          "BaseKind",
+          "string",
+          "\"workspace\" | \"home\""
+        ],
+        [
+          "Shell",
+          "string",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Cols",
+          "int",
+          ""
+        ],
+        [
+          "Rows",
+          "int",
+          ""
+        ],
+        [
+          "Attached",
+          "int",
+          ""
+        ],
+        [
+          "Foreground",
+          "bool",
+          ""
+        ],
+        [
+          "PID",
+          "int",
+          ""
+        ],
+        [
+          "ExitCode",
+          "*int",
+          ""
+        ],
+        [
+          "Incompatible",
+          "bool",
+          ""
+        ],
+        [
+          "BytesOut",
+          "uint64",
+          ""
+        ]
+      ]
+    },
+    "m_proto_PtySessionsResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 40,
+      "name": "PtySessionsResp",
+      "file": "internal/proto/pty.go",
+      "line": 40,
+      "summary": "PtySessionsResp 是 GET /api/pty/sessions 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Sessions",
+          "[]PtySession",
+          ""
+        ],
+        [
+          "Machines",
+          "[]MachineStatus",
+          ""
+        ]
+      ]
+    },
+    "m_proto_CreatePtySessionReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 47,
+      "name": "CreatePtySessionReq",
+      "file": "internal/proto/pty.go",
+      "line": 47,
+      "summary": "CreatePtySessionReq 是 POST /api/pty/sessions 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "BasePath",
+          "string",
+          ""
+        ],
+        [
+          "BaseKind",
+          "string",
+          ""
+        ],
+        [
+          "Rel",
+          "string",
+          ""
+        ],
+        [
+          "Cols",
+          "int",
+          ""
+        ],
+        [
+          "Rows",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_PtyControl": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 73,
+      "name": "PtyControl",
+      "file": "internal/proto/pty.go",
+      "line": 73,
+      "summary": "PtyControl 是 /ws/pty 上双向共用的控制帧",
+      "tests": [],
+      "fields": [
+        [
+          "Type",
+          "string",
+          ""
+        ],
+        [
+          "Since",
+          "uint64",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ],
+        [
+          "ExitCode",
+          "*int",
+          ""
+        ],
+        [
+          "Message",
+          "string",
+          ""
+        ],
+        [
+          "Cols",
+          "int",
+          ""
+        ],
+        [
+          "Rows",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_DirtyFile": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 34,
+      "name": "DirtyFile",
+      "file": "internal/proto/reclaim.go",
+      "line": 34,
+      "summary": "DirtyFile 是脏工作树里的一个条目，来自 git status --porcelain",
+      "tests": [],
+      "fields": [
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "Path",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ReclaimRow": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 41,
+      "name": "ReclaimRow",
+      "file": "internal/proto/reclaim.go",
+      "line": 41,
+      "summary": "ReclaimRow 是 GET /api/reclaim 列表里的一行",
+      "tests": [],
+      "fields": [
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "State",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "WorkDir",
+          "string",
+          ""
+        ],
+        [
+          "Worktree",
+          "WorktreeState",
+          ""
+        ],
+        [
+          "DirtyCount",
+          "int",
+          ""
+        ],
+        [
+          "Note",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ReclaimListResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 58,
+      "name": "ReclaimListResp",
+      "file": "internal/proto/reclaim.go",
+      "line": 58,
+      "summary": "ReclaimListResp 是 GET /api/reclaim 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Rows",
+          "[]ReclaimRow",
+          ""
+        ],
+        [
+          "Scanned",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ReclaimResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 78,
+      "name": "ReclaimResp",
+      "file": "internal/proto/reclaim.go",
+      "line": 78,
+      "summary": "ReclaimResp 是 POST /api/tasks/{id}/reclaim 成功时的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Removed",
+          "bool",
+          ""
+        ],
+        [
+          "Action",
+          "ReclaimAction",
+          ""
+        ],
+        [
+          "WorkDir",
+          "string",
+          ""
+        ],
+        [
+          "Branch",
+          "string",
+          ""
+        ],
+        [
+          "Discarded",
+          "[]DirtyFile",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ReclaimError": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 101,
+      "name": "ReclaimError",
+      "file": "internal/proto/reclaim.go",
+      "line": 101,
+      "summary": "ReclaimError 是 409 的响应体",
+      "tests": [],
+      "fields": [
+        [
+          "Error",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "ReclaimReason",
+          ""
+        ],
+        [
+          "Dirty",
+          "[]DirtyFile",
+          ""
+        ]
+      ]
+    },
+    "m_proto_BuildInfo": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 29,
+      "name": "BuildInfo",
+      "file": "internal/proto/status.go",
+      "line": 29,
+      "summary": "BuildInfo 是一个 handoff 二进制的构建标识",
+      "tests": [],
+      "fields": [
+        [
+          "Version",
+          "string",
+          ""
+        ],
+        [
+          "Revision",
+          "string",
+          ""
+        ],
+        [
+          "Time",
+          "string",
+          ""
+        ],
+        [
+          "Modified",
+          "bool",
+          ""
+        ],
+        [
+          "Go",
+          "string",
+          ""
+        ],
+        [
+          "Platform",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ActiveTask": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 61,
+      "name": "ActiveTask",
+      "file": "internal/proto/status.go",
+      "line": 61,
+      "summary": "ActiveTask 是一个非终结任务及其 executor 存活结论",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "State",
+          "string",
+          ""
+        ],
+        [
+          "Executor",
+          "string",
+          ""
+        ],
+        [
+          "RepoPath",
+          "string",
+          ""
+        ],
+        [
+          "Live",
+          "string",
+          "LiveAlive / LiveDead / LiveUnknown"
+        ],
+        [
+          "Note",
+          "string",
+          "判死或判不出的一句话理由；alive 时为空"
+        ],
+        [
+          "Watchers",
+          "*int",
+          ""
+        ],
+        [
+          "Procs",
+          "*int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_ProcUsage": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 89,
+      "name": "ProcUsage",
+      "file": "internal/proto/status.go",
+      "line": 89,
+      "summary": "ProcUsage 是本机当前 uid 的进程占用与上限",
+      "tests": [],
+      "fields": [
+        [
+          "Used",
+          "int",
+          ""
+        ],
+        [
+          "Limit",
+          "int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_UpdateStatus": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 106,
+      "name": "UpdateStatus",
+      "file": "internal/proto/status.go",
+      "line": 106,
+      "summary": "UpdateStatus 是这台 agentd 与「换版」有关的状态",
+      "tests": [],
+      "fields": [
+        [
+          "Managed",
+          "bool",
+          ""
+        ],
+        [
+          "Pull",
+          "*bool",
+          ""
+        ],
+        [
+          "PullState",
+          "*PullState",
+          ""
+        ]
+      ]
+    },
+    "m_proto_PullState": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 128,
+      "name": "PullState",
+      "file": "internal/proto/status.go",
+      "line": 128,
+      "summary": "PullState 是一次自拉换版的进度与结局",
+      "tests": [],
+      "fields": [
+        [
+          "Tag",
+          "string",
+          ""
+        ],
+        [
+          "Stage",
+          "string",
+          "PullStage* 之一"
+        ],
+        [
+          "Error",
+          "string",
+          ""
+        ],
+        [
+          "StartedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "UpdatedAt",
+          "time.Time",
+          ""
+        ]
+      ]
+    },
+    "m_proto_StatusResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 155,
+      "name": "StatusResp",
+      "file": "internal/proto/status.go",
+      "line": 155,
+      "summary": "StatusResp 是 GET /api/status 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Version",
+          "BuildInfo",
+          ""
+        ],
+        [
+          "Listen",
+          "string",
+          ""
+        ],
+        [
+          "ListenAux",
+          "string",
+          ""
+        ],
+        [
+          "DataDir",
+          "string",
+          ""
+        ],
+        [
+          "ScratchRoot",
+          "string",
+          ""
+        ],
+        [
+          "StartedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Executors",
+          "[]string",
+          ""
+        ],
+        [
+          "DefaultExecutor",
+          "string",
+          ""
+        ],
+        [
+          "TaskCounts",
+          "map[string]int",
+          ""
+        ],
+        [
+          "Active",
+          "[]ActiveTask",
+          ""
+        ],
+        [
+          "StallTimeout",
+          "string",
+          ""
+        ],
+        [
+          "Update",
+          "*UpdateStatus",
+          ""
+        ],
+        [
+          "Proc",
+          "*ProcUsage",
+          ""
+        ],
+        [
+          "PtySupported",
+          "*bool",
+          ""
+        ],
+        [
+          "RevealSupported",
+          "*bool",
+          ""
+        ],
+        [
+          "PtySessions",
+          "*int",
+          ""
+        ]
+      ]
+    },
+    "m_proto_PtyFootprintRow": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 226,
+      "name": "PtyFootprintRow",
+      "file": "internal/proto/status.go",
+      "line": 226,
+      "summary": "PtyFootprintRow 是一个终端会话的足迹体检结果",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "BasePath",
+          "string",
+          ""
+        ],
+        [
+          "PID",
+          "int",
+          ""
+        ],
+        [
+          "Procs",
+          "*int",
+          ""
+        ],
+        [
+          "Foreground",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FootprintRow": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 239,
+      "name": "FootprintRow",
+      "file": "internal/proto/status.go",
+      "line": 239,
+      "summary": "FootprintRow 是一个任务的进程足迹体检结果",
+      "tests": [],
+      "fields": [
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "State",
+          "string",
+          ""
+        ],
+        [
+          "Procs",
+          "int",
+          ""
+        ],
+        [
+          "Verdict",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_FootprintResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 248,
+      "name": "FootprintResp",
+      "file": "internal/proto/status.go",
+      "line": 248,
+      "summary": "FootprintResp 是 GET /api/footprint 的响应：全部任务（含已归档）的足迹体检",
+      "tests": [],
+      "fields": [
+        [
+          "Rows",
+          "[]FootprintRow",
+          ""
+        ],
+        [
+          "Usage",
+          "*ProcUsage",
+          ""
+        ],
+        [
+          "Pty",
+          "[]PtyFootprintRow",
+          ""
+        ]
+      ]
+    },
+    "m_proto_UpdateResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 30,
+      "name": "UpdateResp",
+      "file": "internal/proto/update.go",
+      "line": 30,
+      "summary": "UpdateResp 是换版成功的响应",
+      "tests": [],
+      "fields": [
+        [
+          "OK",
+          "bool",
+          ""
+        ],
+        [
+          "Version",
+          "string",
+          "换上的版本；纯重启模式为空"
+        ],
+        [
+          "Prev",
+          "string",
+          "旧二进制留存路径，回滚要用"
+        ],
+        [
+          "Accepted",
+          "bool",
+          ""
+        ],
+        [
+          "Restarted",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_proto_UpdateError": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 65,
+      "name": "UpdateError",
+      "file": "internal/proto/update.go",
+      "line": 65,
+      "summary": "UpdateError 是换版被拒的响应体",
+      "tests": [],
+      "fields": [
+        [
+          "Error",
+          "string",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_WorkbenchBase": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 11,
+      "name": "WorkbenchBase",
+      "file": "internal/proto/workbench.go",
+      "line": 11,
+      "summary": "WorkbenchBase 是一个基准目录的持久化状态行",
+      "tests": [],
+      "fields": [
+        [
+          "BaseKey",
+          "string",
+          ""
+        ],
+        [
+          "Payload",
+          "string",
+          ""
+        ],
+        [
+          "UpdatedAt",
+          "int64",
+          ""
+        ]
+      ]
+    },
+    "m_proto_WorkbenchStateResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 24,
+      "name": "WorkbenchStateResp",
+      "file": "internal/proto/workbench.go",
+      "line": 24,
+      "summary": "WorkbenchStateResp 是 GET /api/workbench/state 的响应",
+      "tests": [],
+      "fields": [
+        [
+          "Selected",
+          "string",
+          ""
+        ],
+        [
+          "Dock",
+          "string",
+          ""
+        ],
+        [
+          "Bases",
+          "[]WorkbenchBase",
+          ""
+        ]
+      ]
+    },
+    "m_proto_WorkbenchBaseReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 35,
+      "name": "WorkbenchBaseReq",
+      "file": "internal/proto/workbench.go",
+      "line": 35,
+      "summary": "WorkbenchBaseReq 是 PUT /api/workbench/state/base 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "BaseKey",
+          "string",
+          ""
+        ],
+        [
+          "Payload",
+          "*string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_WorkbenchSelectedReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 42,
+      "name": "WorkbenchSelectedReq",
+      "file": "internal/proto/workbench.go",
+      "line": 42,
+      "summary": "WorkbenchSelectedReq 是 PUT /api/workbench/state/selected 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "BaseKey",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_proto_WorkbenchDockReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 48,
+      "name": "WorkbenchDockReq",
+      "file": "internal/proto/workbench.go",
+      "line": 48,
+      "summary": "WorkbenchDockReq 是 PUT /api/workbench/state/dock 的请求体",
+      "tests": [],
+      "fields": [
+        [
+          "Payload",
+          "*string",
+          ""
+        ]
+      ]
+    },
+    "m_ptyhost_Attachment": {
+      "kind": "model",
+      "container": "k_ptyhost_model",
+      "order": 24,
+      "name": "Attachment",
+      "file": "internal/ptyhost/attachment.go",
+      "line": 24,
+      "summary": "Attachment 是一次订阅",
+      "tests": [],
+      "fields": [
+        [
+          "Backlog",
+          "[]byte",
+          ""
+        ],
+        [
+          "Since",
+          "uint64",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ],
+        [
+          "Out",
+          "<-chan []byte",
+          ""
+        ],
+        [
+          "ops",
+          "AttachOps",
+          ""
+        ]
+      ]
+    },
+    "m_ptyhost_Session": {
+      "kind": "model",
+      "container": "k_ptyhost_model",
+      "order": 16,
+      "name": "Session",
+      "file": "internal/ptyhost/types.go",
+      "line": 16,
+      "summary": "Session 是一个会话的快照，跨出实现内部的锁之后可以自由持有",
+      "tests": [],
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "BasePath",
+          "string",
+          ""
+        ],
+        [
+          "BaseKind",
+          "string",
+          ""
+        ],
+        [
+          "Shell",
+          "string",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "Cols",
+          "int",
+          ""
+        ],
+        [
+          "Rows",
+          "int",
+          ""
+        ],
+        [
+          "Attached",
+          "int",
+          ""
+        ],
+        [
+          "PID",
+          "int",
+          ""
+        ],
+        [
+          "ExitCode",
+          "*int",
+          ""
+        ],
+        [
+          "Incompatible",
+          "bool",
+          ""
+        ],
+        [
+          "Foreground",
+          "bool",
+          ""
+        ],
+        [
+          "BytesOut",
+          "uint64",
+          ""
+        ]
+      ]
+    },
+    "m_ptyhost_OpenOptions": {
+      "kind": "model",
+      "container": "k_ptyhost_model",
+      "order": 40,
+      "name": "OpenOptions",
+      "file": "internal/ptyhost/types.go",
+      "line": 40,
+      "summary": "OpenOptions 是开会话的入参",
+      "tests": [],
+      "fields": [
+        [
+          "BasePath",
+          "string",
+          ""
+        ],
+        [
+          "BaseKind",
+          "string",
+          ""
+        ],
+        [
+          "Shell",
+          "string",
+          ""
+        ],
+        [
+          "Env",
+          "[]string",
+          ""
+        ],
+        [
+          "Cols",
+          "int",
+          ""
+        ],
+        [
+          "Rows",
+          "int",
+          ""
+        ]
+      ]
     }
   },
   "edges": [
@@ -36571,6 +42186,1918 @@
     [
       "n_agentd_Manager_transit",
       "n_store_Store_UpdateTaskState"
+    ],
+    [
+      "n_cmd_validateRelayToken",
+      "m_config_Config"
+    ],
+    [
+      "n_cmd_sshHostFromTarget",
+      "m_config_Target"
+    ],
+    [
+      "n_cmd_printAttachSuggestions",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_cmd_dispatchWithAutoRegister",
+      "m_proto_Task"
+    ],
+    [
+      "n_cmd_baselineLine",
+      "m_proto_Task"
+    ],
+    [
+      "n_cmd_renderFootprint",
+      "m_proto_ProcUsage"
+    ],
+    [
+      "n_cmd_renderFootprint",
+      "m_proto_FootprintResp"
+    ],
+    [
+      "n_cmd_graphLoadView",
+      "m_codegraph_View"
+    ],
+    [
+      "n_cmd_graphLoadView",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_cmd_graphLoadView",
+      "m_codegraph_Diff"
+    ],
+    [
+      "n_cmd_printPairing",
+      "m_config_Config"
+    ],
+    [
+      "n_cmd_registerProjectBothHops",
+      "m_client_ProjectAddOpts"
+    ],
+    [
+      "n_cmd_renderProjectTree",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_cmd_renderMachinesTail",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_cmd_syncTaskBranch",
+      "m_localsync_Opts"
+    ],
+    [
+      "n_cmd_syncTaskBranch",
+      "m_localsync_Result"
+    ],
+    [
+      "n_cmd_syncTaskBranch",
+      "m_proto_Task"
+    ],
+    [
+      "n_cmd_syncViaBundle",
+      "m_localsync_Result"
+    ],
+    [
+      "n_cmd_syncViaBundleClient",
+      "m_localsync_Opts"
+    ],
+    [
+      "n_cmd_syncViaBundleClient",
+      "m_localsync_Result"
+    ],
+    [
+      "n_cmd_syncMessage",
+      "m_localsync_Result"
+    ],
+    [
+      "n_cmd_runReclaimOne",
+      "m_client_ReclaimRejected"
+    ],
+    [
+      "n_cmd_renderReclaimList",
+      "m_proto_ReclaimListResp"
+    ],
+    [
+      "n_cmd_worktreeLabel",
+      "m_proto_ReclaimRow"
+    ],
+    [
+      "n_cmd_renderReclaimResult",
+      "m_proto_ReclaimResp"
+    ],
+    [
+      "n_cmd_renderDirtyRejection",
+      "m_proto_DirtyFile"
+    ],
+    [
+      "n_cmd_loadCLIConfig",
+      "m_config_Config"
+    ],
+    [
+      "n_cmd_renderSessions",
+      "m_proto_SessionInfo"
+    ],
+    [
+      "n_cmd_renderStatus",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_renderStatus",
+      "m_proto_StatusResp"
+    ],
+    [
+      "n_cmd_describeBuild",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_describeByRevision",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_compareBuild",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_compareByRevision",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_liveText",
+      "m_proto_ActiveTask"
+    ],
+    [
+      "n_cmd_unattended",
+      "m_proto_ActiveTask"
+    ],
+    [
+      "n_cmd_writeTaskLine",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_cmd_writeMachinesSummary",
+      "m_proto_TasksResp"
+    ],
+    [
+      "n_cmd_proxyTransport",
+      "m_config_Config"
+    ],
+    [
+      "n_cmd_revisionText",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_cmd_writeEventLine",
+      "m_proto_Event"
+    ],
+    [
+      "n_cmd_runFollow",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_cmd_runFollow",
+      "m_proto_Event"
+    ],
+    [
+      "n_cmd_autoSyncAfterWait",
+      "m_proto_Event"
+    ],
+    [
+      "n_cmd_notifyEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_cmd_writeBacklogLine",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_cmd_notifyBacklog",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_agentd_NewApprover",
+      "m_config_ApproverConfig"
+    ],
+    [
+      "n_agentd_eventFrameHook",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_NewHub",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Hub_Publish",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_NewManager",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_newFailedPayload",
+      "m_agentd_failedPayload"
+    ],
+    [
+      "n_agentd_Manager_Done",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_Manager_Done",
+      "m_proto_ArchivedPayload"
+    ],
+    [
+      "n_agentd_Manager_Stop",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_Manager_clearApproverState",
+      "m_agentd_denyGuidancePayload"
+    ],
+    [
+      "n_agentd_Manager_clearApproverState",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Mirror_discoverOnce",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Mirror_discoverOnce",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_agentd_Mirror_subscribe",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Mirror_onEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_DirtyWorktreeError_Error",
+      "m_agentd_DirtyWorktreeError"
+    ],
+    [
+      "n_agentd_Manager_notifyOrphanRisk",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_NewServer",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_NewServer",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_NewServer",
+      "m_proto_MachineUpgrade"
+    ],
+    [
+      "n_agentd_Server_conf",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_voidTicketsWithAudit",
+      "m_agentd_ticketsVoidedPayload"
+    ],
+    [
+      "n_agentd_scanStalled",
+      "m_agentd_stalledPayload"
+    ],
+    [
+      "n_agentd_scanStalled",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_scanStateMismatch",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_scanPressure",
+      "m_agentd_resourcePressurePayload"
+    ],
+    [
+      "n_agentd_scanTaskProcs",
+      "m_agentd_taskProcPressurePayload"
+    ],
+    [
+      "n_agentd_emitReclaimFailed",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_mismatchVerdict",
+      "m_proto_Event"
+    ],
+    [
+      "n_buildinfo_Read",
+      "m_proto_BuildInfo"
+    ],
+    [
+      "n_client_computeBacklog",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_client_computeBacklog",
+      "m_client_AttachInfo"
+    ],
+    [
+      "n_client_computeBacklog",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_client_ticketIDOf",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_Status",
+      "m_proto_StatusResp"
+    ],
+    [
+      "n_client_Client_Footprint",
+      "m_proto_FootprintResp"
+    ],
+    [
+      "n_client_ReclaimRejected_Error",
+      "m_client_ReclaimRejected"
+    ],
+    [
+      "n_client_Client_ReclaimList",
+      "m_proto_ReclaimListResp"
+    ],
+    [
+      "n_client_Client_Reclaim",
+      "m_client_ReclaimRejected"
+    ],
+    [
+      "n_client_Client_Reclaim",
+      "m_proto_ReclaimResp"
+    ],
+    [
+      "n_client_Client_Reclaim",
+      "m_proto_ReclaimError"
+    ],
+    [
+      "n_client_Client_ListTasks",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_client_Client_Attach",
+      "m_client_AttachInfo"
+    ],
+    [
+      "n_client_Client_Dispatch",
+      "m_client_DispatchOpts"
+    ],
+    [
+      "n_client_Client_Dispatch",
+      "m_proto_Task"
+    ],
+    [
+      "n_client_Client_ProjectAdd",
+      "m_client_ProjectAddOpts"
+    ],
+    [
+      "n_client_Client_ProjectAdd",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_client_Client_ProjectList",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_client_Client_ProjectTree",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_client_Client_ProjectTreeAll",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_client_Client_Machines",
+      "m_proto_MachinesResp"
+    ],
+    [
+      "n_client_Client_ListTasksAll",
+      "m_proto_TasksResp"
+    ],
+    [
+      "n_client_Client_PatchProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_client_Client_IssueAuthTicket",
+      "m_proto_AuthTicketResp"
+    ],
+    [
+      "n_client_Client_ListSessions",
+      "m_proto_SessionInfo"
+    ],
+    [
+      "n_client_Client_WaitEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_streamOnce",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_StreamEventsOnce",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_waitOnce",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_reconcileBacklog",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_client_Client_FollowEvents",
+      "m_client_BacklogSummary"
+    ],
+    [
+      "n_client_Client_FollowEvents",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_UpdateRejected_Error",
+      "m_client_UpdateRejected"
+    ],
+    [
+      "n_client_classifyArchivedSnapshot",
+      "m_client_AttachInfo"
+    ],
+    [
+      "n_client_classifyArchivedSnapshot",
+      "m_proto_Event"
+    ],
+    [
+      "n_client_Client_WaitArchived",
+      "m_proto_Event"
+    ],
+    [
+      "n_codegraph_DomainTree",
+      "m_codegraph_DomainStat"
+    ],
+    [
+      "n_codegraph_DomainTree",
+      "m_codegraph_View"
+    ],
+    [
+      "n_codegraph_DomainTree",
+      "m_codegraph_Container"
+    ],
+    [
+      "n_codegraph_DomainTree",
+      "m_codegraph_Domain"
+    ],
+    [
+      "n_codegraph_domainOfContainer",
+      "m_codegraph_View"
+    ],
+    [
+      "n_codegraph_domainOfContainer",
+      "m_codegraph_Domain"
+    ],
+    [
+      "n_codegraph_LoadGraph",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_LoadDiff",
+      "m_codegraph_Diff"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_ViewNode"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_ViewEdge"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_View"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_Node"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_Merge",
+      "m_codegraph_Diff"
+    ],
+    [
+      "n_codegraph_Resolve",
+      "m_codegraph_View"
+    ],
+    [
+      "n_codegraph_Neighborhood",
+      "m_codegraph_ViewNode"
+    ],
+    [
+      "n_codegraph_Neighborhood",
+      "m_codegraph_View"
+    ],
+    [
+      "n_codegraph_Neighborhood",
+      "m_codegraph_ResultNode"
+    ],
+    [
+      "n_codegraph_Neighborhood",
+      "m_codegraph_Result"
+    ],
+    [
+      "n_codegraph_CheckStale",
+      "m_codegraph_StaleNode"
+    ],
+    [
+      "n_codegraph_CheckStale",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_Validate",
+      "m_codegraph_Container"
+    ],
+    [
+      "n_codegraph_Validate",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_validateDomains",
+      "m_codegraph_Domain"
+    ],
+    [
+      "n_codegraph_validateDomains",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_ValidateDiff",
+      "m_codegraph_Container"
+    ],
+    [
+      "n_codegraph_ValidateDiff",
+      "m_codegraph_Graph"
+    ],
+    [
+      "n_codegraph_ValidateDiff",
+      "m_codegraph_Diff"
+    ],
+    [
+      "n_config_Load",
+      "m_config_Config"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_Config"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_SyncConfig"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_ApproverConfig"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_ExecutorConfig"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_TerminalConfig"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_Target"
+    ],
+    [
+      "n_config_newDefaultConfig",
+      "m_config_ProcFenceConfig"
+    ],
+    [
+      "n_config_applyComputedDefaults",
+      "m_config_Config"
+    ],
+    [
+      "n_config_Config_validate",
+      "m_config_Config"
+    ],
+    [
+      "n_config_decodeStrict",
+      "m_config_Config"
+    ],
+    [
+      "n_config_save",
+      "m_config_Config"
+    ],
+    [
+      "n_config_Save",
+      "m_config_Config"
+    ],
+    [
+      "n_turn_resumeFrameState",
+      "m_proto_Frame"
+    ],
+    [
+      "n_localsync_Fetch",
+      "m_localsync_Opts"
+    ],
+    [
+      "n_localsync_Fetch",
+      "m_localsync_Result"
+    ],
+    [
+      "n_prochost_classify",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_Sweep",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_rosterKill",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_markKill",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_createPipeServer",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_relayPipe",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_flockExclusiveNB",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_ProcessCredentialForPID",
+      "m_prochost_ProcessCredential"
+    ],
+    [
+      "n_prochost_Handle_cred",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_Handle_cred",
+      "m_prochost_TaskCred"
+    ],
+    [
+      "n_prochost_readSpec",
+      "m_prochost_Spec"
+    ],
+    [
+      "n_prochost_TaskCred_empty",
+      "m_prochost_TaskCred"
+    ],
+    [
+      "n_prochost_markMembers",
+      "m_prochost_TaskCred"
+    ],
+    [
+      "n_prochost_MarkCapability",
+      "m_prochost_TaskCred"
+    ],
+    [
+      "n_ptyhost_New",
+      "m_prochost_ProcessCredential"
+    ],
+    [
+      "n_hostproc_Run",
+      "m_ptyhost_OpenOptions"
+    ],
+    [
+      "n_hostproc_server_serveConn",
+      "m_ptyhost_Attachment"
+    ],
+    [
+      "n_hostproc_server_pumpAttachment",
+      "m_ptyhost_Attachment"
+    ],
+    [
+      "n_store_Open",
+      "m_proto_Task"
+    ],
+    [
+      "n_targetclient_NewPool",
+      "m_config_Config"
+    ],
+    [
+      "n_targetclient_newWithDialer",
+      "m_config_Target"
+    ],
+    [
+      "n_targetclient_New",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_withIdentity",
+      "m_agentd_identityKey"
+    ],
+    [
+      "n_agentd_identityFrom",
+      "m_agentd_identityKey"
+    ],
+    [
+      "n_agentd_Server_handleIssueTicket",
+      "m_proto_AuthTicketResp"
+    ],
+    [
+      "n_agentd_Server_handleConsole",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_handleListSessions",
+      "m_proto_SessionInfo"
+    ],
+    [
+      "n_agentd_Server_handleProjectCodegraph",
+      "m_codegraph_StaleNode"
+    ],
+    [
+      "n_agentd_Server_handleProjectCodegraph",
+      "m_codegraph_Diff"
+    ],
+    [
+      "n_agentd_Server_handleDesktopStatePut",
+      "m_proto_DesktopState"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineGet",
+      "m_proto_DisciplineResp"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineGet",
+      "m_proto_DisciplineBuiltin"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineGet",
+      "m_proto_DisciplineFile"
+    ],
+    [
+      "n_agentd_Server_disciplineBindings",
+      "m_proto_DisciplineBinding"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineFileRead",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineFileWrite",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineFileWrite",
+      "m_proto_FileWriteReq"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineFileWrite",
+      "m_proto_FileWriteResp"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineFileWrite",
+      "m_proto_FileConflictResp"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineMapping",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_handleDisciplineMapping",
+      "m_proto_DisciplineMappingReq"
+    ],
+    [
+      "n_agentd_Server_handleEnvGet",
+      "m_proto_EnvResp"
+    ],
+    [
+      "n_agentd_Server_handleEnvGet",
+      "m_proto_EnvFile"
+    ],
+    [
+      "n_agentd_Server_envBindings",
+      "m_proto_EnvBinding"
+    ],
+    [
+      "n_agentd_Server_handleEnvKeys",
+      "m_proto_EnvKey"
+    ],
+    [
+      "n_agentd_Server_handleEnvKeys",
+      "m_proto_EnvKeysResp"
+    ],
+    [
+      "n_agentd_Server_handleEnvFileRead",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_Server_handleEnvFileWrite",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_Server_handleEnvFileWrite",
+      "m_proto_FileWriteReq"
+    ],
+    [
+      "n_agentd_Server_handleEnvFileWrite",
+      "m_proto_FileWriteResp"
+    ],
+    [
+      "n_agentd_Server_handleEnvFileWrite",
+      "m_proto_FileConflictResp"
+    ],
+    [
+      "n_agentd_Server_handleEnvMapping",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_handleEnvMapping",
+      "m_proto_EnvMappingReq"
+    ],
+    [
+      "n_agentd_Server_executorDefaultResp",
+      "m_proto_ExecutorDefaultResp"
+    ],
+    [
+      "n_agentd_Server_handleExecutorDefaultPut",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_handleExecutorDefaultPut",
+      "m_config_ExecutorConfig"
+    ],
+    [
+      "n_agentd_Server_handleExecutorDefaultPut",
+      "m_proto_ExecutorDefaultReq"
+    ],
+    [
+      "n_agentd_markIgnored",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_Hub_Subscribe",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Hub_unsubscribe",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_validateAddMachine",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_validateAddMachine",
+      "m_proto_Machine"
+    ],
+    [
+      "n_agentd_validateAddMachine",
+      "m_proto_AddMachineReq"
+    ],
+    [
+      "n_agentd_Server_addMachine",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_addMachine",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_Server_addMachine",
+      "m_proto_AddMachineReq"
+    ],
+    [
+      "n_agentd_Server_removeMachine",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_probeMachines",
+      "m_proto_Machine"
+    ],
+    [
+      "n_agentd_Server_probeMachines",
+      "m_proto_MachinesResp"
+    ],
+    [
+      "n_agentd_Server_localMachine",
+      "m_proto_Machine"
+    ],
+    [
+      "n_agentd_Server_probeRemote",
+      "m_proto_Machine"
+    ],
+    [
+      "n_agentd_fillFromStatus",
+      "m_proto_Machine"
+    ],
+    [
+      "n_agentd_fillFromStatus",
+      "m_proto_StatusResp"
+    ],
+    [
+      "n_agentd_Server_handleAddMachine",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_Server_handleAddMachine",
+      "m_proto_AddMachineReq"
+    ],
+    [
+      "n_agentd_Server_beginMachineUpgrade",
+      "m_proto_MachineUpgrade"
+    ],
+    [
+      "n_agentd_Server_finishMachineUpgrade",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_finishMachineUpgrade",
+      "m_proto_MachineUpgrade"
+    ],
+    [
+      "n_agentd_Server_machineUpgradeState",
+      "m_proto_MachineUpgrade"
+    ],
+    [
+      "n_agentd_Server_handleMachineUpgrade",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_handleMachineUpgrade",
+      "m_proto_MachineUpgradeResp"
+    ],
+    [
+      "n_agentd_projectUpgradeMachine",
+      "m_proto_StatusResp"
+    ],
+    [
+      "n_agentd_machineUpgradePreflight",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_machineUpgradeStatusCode",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_writeMachineUpgradeResult",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_writeMachineUpgradeResult",
+      "m_proto_MachineUpgradeResp"
+    ],
+    [
+      "n_agentd_Server_runMachineUpgradeBackground",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_runMachineUpgradeBackground",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "m_agentd_DispatchReq"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "m_agentd_WorkspaceReq"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "m_executor_StartReq"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Manager_compensateWorkspace",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_Manager_deleteCreatedBranch",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_Manager_resumeForContinue",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_Manager_RelayAnswer",
+      "m_agentd_ticketRequest"
+    ],
+    [
+      "n_agentd_Manager_handleEvent",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handlePermission",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_escalatePermission",
+      "m_agentd_ticketRequest"
+    ],
+    [
+      "n_agentd_Manager_escalatePermission",
+      "m_agentd_permissionPayload"
+    ],
+    [
+      "n_agentd_Manager_escalatePermission",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_escalatePermission",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_agentd_Manager_judgePermission",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_judgePermission",
+      "m_permgate_Request"
+    ],
+    [
+      "n_agentd_Manager_judgePermission",
+      "m_permgate_Scope"
+    ],
+    [
+      "n_agentd_Manager_judgePermission",
+      "m_permgate_Verdict"
+    ],
+    [
+      "n_agentd_Manager_autoAllowPermission",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_consultApprover",
+      "m_agentd_approverDecisionPayload"
+    ],
+    [
+      "n_agentd_Manager_consultApprover",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_respondLateDecision",
+      "m_agentd_approvalDroppedPayload"
+    ],
+    [
+      "n_agentd_Manager_countApproverFail",
+      "m_agentd_approverDisabledPayload"
+    ],
+    [
+      "n_agentd_Manager_approvePermission",
+      "m_agentd_ticketRequest"
+    ],
+    [
+      "n_agentd_Manager_approvePermission",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_agentd_permFingerprintFor",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_reuseDecision",
+      "m_agentd_permissionReusePayload"
+    ],
+    [
+      "n_agentd_Manager_reuseDecision",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_relayDenyGuidance",
+      "m_agentd_denyGuidancePayload"
+    ],
+    [
+      "n_agentd_Manager_appendGuidanceDropped",
+      "m_agentd_denyGuidancePayload"
+    ],
+    [
+      "n_agentd_Manager_handleQuestion",
+      "m_agentd_ticketRequest"
+    ],
+    [
+      "n_agentd_Manager_handleQuestion",
+      "m_agentd_questionPayload"
+    ],
+    [
+      "n_agentd_Manager_handleQuestion",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handleQuestion",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_agentd_Manager_RecoverStuck",
+      "m_agentd_RecoverReport"
+    ],
+    [
+      "n_agentd_Manager_reconcileInto",
+      "m_agentd_RecoverReport"
+    ],
+    [
+      "n_agentd_Manager_forceToReview",
+      "m_agentd_RecoverReport"
+    ],
+    [
+      "n_agentd_Manager_appendProgress",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_Manager_NoteDeliveryFailed",
+      "m_agentd_deliveryFailedPayload"
+    ],
+    [
+      "n_agentd_Manager_handleProgress",
+      "m_agentd_progressPayload"
+    ],
+    [
+      "n_agentd_Manager_handleProgress",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handleUsage",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handleSpend",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handleResult",
+      "m_agentd_completedPayload"
+    ],
+    [
+      "n_agentd_Manager_handleResult",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Manager_handleResult",
+      "m_executor_AdapterEvent"
+    ],
+    [
+      "n_agentd_Manager_handleResult",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Manager_transitToReview",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Manager_transitToReviewRetry",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_rejectWorktree",
+      "m_proto_CreateWorktreeReq"
+    ],
+    [
+      "n_agentd_CreateManualWorktree",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_CreateManualWorktree",
+      "m_proto_Workspace"
+    ],
+    [
+      "n_agentd_CreateManualWorktree",
+      "m_proto_CreateWorktreeReq"
+    ],
+    [
+      "n_agentd_readBackWorktree",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_readBackWorktree",
+      "m_proto_Workspace"
+    ],
+    [
+      "n_agentd_Manager_RegisterProject",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Manager_RegisterProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_registerAtPath",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Manager_registerAtPath",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_cloneToPathAndRegister",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Manager_cloneToPathAndRegister",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_registeredProjectByID",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_registerExistingProject",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Manager_registerExistingProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_cloneAndRegisterProject",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Manager_cloneAndRegisterProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_persistProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_uniqueProjectName",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Manager_ListProjects",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Server_handleProjectPatch",
+      "m_agentd_projectPatchRequest"
+    ],
+    [
+      "n_agentd_Server_handleProjectPatch",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Server_handleProjectBranches",
+      "m_proto_ProjectBranch"
+    ],
+    [
+      "n_agentd_Server_handleProjectBranches",
+      "m_proto_ProjectBranchesResp"
+    ],
+    [
+      "n_agentd_Server_handleProjectWorktreeCreate",
+      "m_proto_CreateWorktreeReq"
+    ],
+    [
+      "n_agentd_Server_buildTreeAll",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_buildTreeAll",
+      "m_proto_ProjectNode"
+    ],
+    [
+      "n_agentd_Server_buildTreeAll",
+      "m_proto_MachineStatus"
+    ],
+    [
+      "n_agentd_Server_buildTreeAll",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_agentd_mergeTree",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_agentd_newProjectIndex",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_locationLines",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_resolveProject",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Server_buildLocalTree",
+      "m_proto_ProjectLocationNode"
+    ],
+    [
+      "n_agentd_Server_buildLocalTree",
+      "m_proto_ProjectNode"
+    ],
+    [
+      "n_agentd_Server_buildLocalTree",
+      "m_proto_ProjectTreeResp"
+    ],
+    [
+      "n_agentd_Server_resolvePtyBase",
+      "m_proto_CreatePtySessionReq"
+    ],
+    [
+      "n_agentd_Server_handleCreatePtySession",
+      "m_proto_CreatePtySessionReq"
+    ],
+    [
+      "n_agentd_Server_handleCreatePtySession",
+      "m_ptyhost_OpenOptions"
+    ],
+    [
+      "n_agentd_Server_handleListPtySessions",
+      "m_proto_PtySession"
+    ],
+    [
+      "n_agentd_Server_handleListPtySessions",
+      "m_proto_PtySessionsResp"
+    ],
+    [
+      "n_agentd_Server_ptySessionsAll",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Server_ptySessionsAll",
+      "m_proto_MachineStatus"
+    ],
+    [
+      "n_agentd_Server_ptySessionsAll",
+      "m_proto_PtySession"
+    ],
+    [
+      "n_agentd_Server_ptySessionsAll",
+      "m_proto_PtySessionsResp"
+    ],
+    [
+      "n_agentd_ptySessionView",
+      "m_proto_PtySession"
+    ],
+    [
+      "n_agentd_ptySessionView",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_agentd_Server_ptyFootprint",
+      "m_proto_PtyFootprintRow"
+    ],
+    [
+      "n_agentd_Server_handlePtyWS",
+      "m_proto_PtyControl"
+    ],
+    [
+      "n_agentd_Server_pumpPtyUplink",
+      "m_proto_PtyControl"
+    ],
+    [
+      "n_agentd_Server_pumpPtyUplink",
+      "m_ptyhost_Attachment"
+    ],
+    [
+      "n_agentd_writeCtrl",
+      "m_proto_PtyControl"
+    ],
+    [
+      "n_agentd_parseWorktreeList",
+      "m_agentd_worktreeEntry"
+    ],
+    [
+      "n_agentd_parsePorcelainStatus",
+      "m_proto_DirtyFile"
+    ],
+    [
+      "n_agentd_findEntry",
+      "m_agentd_worktreeEntry"
+    ],
+    [
+      "n_agentd_repoWorktrees",
+      "m_agentd_worktreeEntry"
+    ],
+    [
+      "n_agentd_classifyWorktree",
+      "m_agentd_worktreeEntry"
+    ],
+    [
+      "n_agentd_classifyWorktree",
+      "m_proto_DirtyFile"
+    ],
+    [
+      "n_agentd_Manager_Reclaim",
+      "m_agentd_DirtyWorktreeError"
+    ],
+    [
+      "n_agentd_Manager_Reclaim",
+      "m_proto_ReclaimResp"
+    ],
+    [
+      "n_agentd_Manager_ReclaimList",
+      "m_agentd_worktreeEntry"
+    ],
+    [
+      "n_agentd_Manager_ReclaimList",
+      "m_proto_ReclaimRow"
+    ],
+    [
+      "n_agentd_Manager_ReclaimList",
+      "m_proto_ReclaimListResp"
+    ],
+    [
+      "n_agentd_Server_swapConf",
+      "m_config_Config"
+    ],
+    [
+      "n_agentd_Server_swapConf",
+      "m_config_Target"
+    ],
+    [
+      "n_agentd_Server_writeReclaimError",
+      "m_agentd_DirtyWorktreeError"
+    ],
+    [
+      "n_agentd_Server_writeReclaimError",
+      "m_proto_ReclaimError"
+    ],
+    [
+      "n_agentd_Server_handleListTasks",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Server_handleListTasks",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_agentd_Server_handleGetTask",
+      "m_agentd_taskDetail"
+    ],
+    [
+      "n_agentd_Server_handleGetTask",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_agentd_Server_handleGetTask",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Server_handleGetTask",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_agentd_Server_handleReply",
+      "m_agentd_replyRequest"
+    ],
+    [
+      "n_agentd_Server_handleReply",
+      "m_agentd_replyResult"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "m_agentd_DispatchReq"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "m_agentd_dispatchRequest"
+    ],
+    [
+      "n_agentd_Server_handleProjectAdd",
+      "m_agentd_RegisterProjectReq"
+    ],
+    [
+      "n_agentd_Server_handleProjectAdd",
+      "m_agentd_projectAddRequest"
+    ],
+    [
+      "n_agentd_Server_handleProjectList",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_agentd_Server_handleContinue",
+      "m_agentd_continueRequest"
+    ],
+    [
+      "n_agentd_Server_handleDone",
+      "m_agentd_doneRequest"
+    ],
+    [
+      "n_agentd_Server_handleDone",
+      "m_agentd_doneResult"
+    ],
+    [
+      "n_agentd_Server_taskOrErr",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Server_handleTaskRun",
+      "m_agentd_runRequest"
+    ],
+    [
+      "n_agentd_Server_handleTaskRun",
+      "m_agentd_runResponse"
+    ],
+    [
+      "n_agentd_Server_handleEvents",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_writeEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_agentd_Manager_Status",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Manager_Status",
+      "m_proto_ActiveTask"
+    ],
+    [
+      "n_agentd_Manager_Status",
+      "m_proto_ProcUsage"
+    ],
+    [
+      "n_agentd_Manager_Status",
+      "m_proto_UpdateStatus"
+    ],
+    [
+      "n_agentd_Manager_Status",
+      "m_proto_StatusResp"
+    ],
+    [
+      "n_agentd_Manager_probeActive",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Manager_probeActive",
+      "m_proto_ActiveTask"
+    ],
+    [
+      "n_agentd_Manager_probeOne",
+      "m_agentd_result"
+    ],
+    [
+      "n_agentd_Manager_probeOne",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Manager_FootprintAll",
+      "m_proto_ProcUsage"
+    ],
+    [
+      "n_agentd_Manager_FootprintAll",
+      "m_proto_FootprintRow"
+    ],
+    [
+      "n_agentd_Manager_FootprintAll",
+      "m_proto_FootprintResp"
+    ],
+    [
+      "n_agentd_Server_handleTaskPlan",
+      "m_proto_TaskPlan"
+    ],
+    [
+      "n_agentd_Server_tasksAll",
+      "m_proto_MachineStatus"
+    ],
+    [
+      "n_agentd_Server_tasksAll",
+      "m_proto_TasksResp"
+    ],
+    [
+      "n_agentd_Server_tasksAll",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Server_tasksAll",
+      "m_proto_TaskView"
+    ],
+    [
+      "n_agentd_Server_handleUpdate",
+      "m_proto_UpdateResp"
+    ],
+    [
+      "n_agentd_Server_handleUpdate",
+      "m_proto_UpdateError"
+    ],
+    [
+      "n_agentd_Server_handlePullUpdate",
+      "m_proto_UpdateResp"
+    ],
+    [
+      "n_agentd_Server_handlePullUpdate",
+      "m_proto_UpdateError"
+    ],
+    [
+      "n_agentd_Server_handleUpdateLatest",
+      "m_proto_LatestResp"
+    ],
+    [
+      "n_agentd_latestResp",
+      "m_proto_LatestResp"
+    ],
+    [
+      "n_agentd_Server_beginDesktopDownload",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_Server_setDesktopDownloadStage",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_Server_setDesktopDownloadFailed",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_Server_setDesktopDownloadDone",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_Server_desktopDownloadSnapshot",
+      "m_proto_DownloadState"
+    ],
+    [
+      "n_agentd_Server_handleWorkbenchStateGet",
+      "m_proto_WorkbenchStateResp"
+    ],
+    [
+      "n_agentd_Server_handleWorkbenchBasePut",
+      "m_proto_WorkbenchBaseReq"
+    ],
+    [
+      "n_agentd_Server_handleWorkbenchSelectedPut",
+      "m_proto_WorkbenchSelectedReq"
+    ],
+    [
+      "n_agentd_Server_handleWorkbenchDockPut",
+      "m_proto_WorkbenchDockReq"
+    ],
+    [
+      "n_agentd_PrepareWorkspace",
+      "m_agentd_WorkspaceReq"
+    ],
+    [
+      "n_agentd_PrepareWorkspace",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_rejectWorkspace",
+      "m_agentd_WorkspaceReq"
+    ],
+    [
+      "n_agentd_rollbackWorkspace",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_ResolveBaseline",
+      "m_agentd_Baseline"
+    ],
+    [
+      "n_agentd_diffBaseFor",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_WriteFile",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_ReadFile",
+      "m_proto_FileRead"
+    ],
+    [
+      "n_agentd_ListDir",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_statEntry",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_CreateEntry",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_RenameEntry",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_CopyEntry",
+      "m_proto_DirEntry"
+    ],
+    [
+      "n_agentd_SearchInDir",
+      "m_proto_SearchHit"
+    ],
+    [
+      "n_agentd_SearchInDir",
+      "m_proto_SearchResult"
+    ],
+    [
+      "n_agentd_taskDiffTarget",
+      "m_proto_Task"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceDir",
+      "m_proto_DirListResult"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceFileWrite",
+      "m_proto_FileWriteReq"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceFileWrite",
+      "m_proto_FileWriteResp"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceFileWrite",
+      "m_proto_FileConflictResp"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceEntryCreate",
+      "m_proto_CreateWorkspaceEntryReq"
+    ],
+    [
+      "n_agentd_Server_handleWorkspaceEntryRename",
+      "m_proto_RenameWorkspaceEntryReq"
+    ],
+    [
+      "n_agentd_probeWorkspaces",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_probeWorkspaces",
+      "m_proto_Workspace"
+    ],
+    [
+      "n_agentd_parseWorktreePorcelain",
+      "m_agentd_Workspace"
+    ],
+    [
+      "n_agentd_parseWorktreePorcelain",
+      "m_proto_Workspace"
+    ],
+    [
+      "n_prochost_Footprint",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_rosterMembers",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_ptyhost_NewAttachment",
+      "m_ptyhost_Attachment"
+    ],
+    [
+      "n_ptyhost_Host_Open",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_ptyhost_Host_Open",
+      "m_ptyhost_OpenOptions"
+    ],
+    [
+      "n_ptyhost_Host_List",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_ptyhost_Host_Attach",
+      "m_ptyhost_Attachment"
+    ],
+    [
+      "n_ptyhost_Host_stat",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_ptyhost_Host_getFresh",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_ptyhost_sessionFromMeta",
+      "m_ptyhost_Session"
+    ],
+    [
+      "n_store_Store_MirrorEventsFrom",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_ListMirrorTasks",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_scanProjectRow",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_store_Store_CreateProjectLocation",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_store_Store_GetProjectLocationByName",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_store_Store_ListProjectLocations",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_store_Store_UpdateProjectLocation",
+      "m_proto_ProjectLocation"
+    ],
+    [
+      "n_store_Store_ActiveTasksByRepoPath",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_Store_CreateTask",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_scanTaskRow",
+      "m_proto_Usage"
+    ],
+    [
+      "n_store_scanTaskRow",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_Store_GetTask",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_Store_ListTasks",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_Store_ActiveTasksByWorkDir",
+      "m_proto_Task"
+    ],
+    [
+      "n_store_Store_UpsertSpend",
+      "m_proto_SpendEntry"
+    ],
+    [
+      "n_store_Store_TaskCumulative",
+      "m_proto_Cost"
+    ],
+    [
+      "n_store_Store_TaskCumulative",
+      "m_proto_Cumulative"
+    ],
+    [
+      "n_store_Store_AppendEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_fireEventHook",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_EventsFrom",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_EventsFromAsc",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_LatestEvent",
+      "m_proto_Event"
+    ],
+    [
+      "n_store_Store_CreateTicket",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_store_Store_GetTicket",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_store_Store_FindReusableGrant",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_store_Store_UndeliveredAnswers",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_store_Store_PendingTickets",
+      "m_proto_Ticket"
+    ],
+    [
+      "n_store_Store_ListWorkbench",
+      "m_proto_WorkbenchBase"
     ]
   ]
 }
