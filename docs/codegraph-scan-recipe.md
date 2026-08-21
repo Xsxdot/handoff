@@ -86,7 +86,7 @@ tests 中每个 TestRef 字段：
 | 字段 | 类型 | 可选 | 说明 |
 | --- | --- | --- | --- |
 | name | string | 否 | 测试函数名 |
-| file | string | 否 | 测试文件和行号，如 pkg/x_test.go:41 |
+| file | string | 否 | 测试文件和测试函数的声明行号（func 行），如 pkg/x_test.go:41 |
 | snippet | string | 是 | 测试片段 |
 
 ### codegraph/diffs/<视图名>.json
