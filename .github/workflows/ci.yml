@@ -68,6 +68,37 @@ jobs:
       - name: install.sh 单测
         run: bash install_test.sh
 
+  # web：前端门禁。前端经 go:embed 进二进制，但此前 main 的 CI 只有 Go 侧检查，
+  # 前端坏了 push main 照样全绿，要到推 tag 跑 release 的「构建前端并放进 embed
+  # 目录」才炸（v0.3.7 整条 release 就是这么全红的：columns.test.ts 的类型错误
+  # 卡死 build-darwin 的 tsc -b）。那时版本号已经用掉了——这是继 v0.3.6 的
+  # desktop 依赖漂移之后第二个因门禁滞后烧掉的版本号。把 release 同款的前端
+  # 构建命令提前到 PR 上，这类破坏就在进 main 之前暴露。
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Node 版本与 web/.nvmrc 同一来源，两个必须同步；写死 '24' 而非 lts/*
+      # 或省略：与 release.yml 各构建 job 的写法保持一致，不让检查对象随时间漂移。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 构建前端
+        # 与 release 各构建 job 的「构建前端并放进 embed 目录」保持同款命令
+        # （build 即 tsc -b && vite build，v0.3.7 那类 tsc 类型错误在这里就红）。
+        # 不做 embed 目录拷贝——产出资产是 release 的事，这里只验「构建得出来」。
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          # 与 release 同款的产物门：构建退 0 但没吐出 index.html 一样是坏
+          test -f web/dist/index.html
+      - name: 前端单测
+        # test 脚本即 vitest run
+        run: npm --prefix web test
+
   # windows：Windows runner 上的运行期验证。install.ps1 的 PowerShell 单测 +
   # Go 侧真正需要 Windows 内核语义的那些包。
   windows:
