@@ -11,6 +11,8 @@ export interface ViewNode extends CgNode { status: Status }
 export interface ViewEdge { from: string; to: string; status: Status }
 export interface CgView {
   name: string
+  // 恒为对象（空对象 = 该图没有领域段）：调用方不必到处判 undefined
+  domains: NonNullable<CgGraph['domains']>
   containers: CgGraph['containers']
   nodes: Record<string, ViewNode>
   edges: ViewEdge[]
@@ -21,14 +23,14 @@ export function mergeView(g: CgGraph, d?: CgDiff): CgView {
   const nodes: Record<string, ViewNode> = {}
   for (const [id, n] of Object.entries(g.nodes)) nodes[id] = { ...n, status: '' }
   const edges: ViewEdge[] = g.edges.map(([from, to]) => ({ from, to, status: '' as Status }))
-  if (!d) return { name: 'baseline', containers: g.containers, nodes, edges }
+  if (!d) return { name: 'baseline', domains: g.domains ?? {}, containers: g.containers, nodes, edges }
   for (const [id, n] of Object.entries(d.nodesAdded ?? {})) nodes[id] = { ...n, status: 'added' }
   for (const [id, n] of Object.entries(d.nodesModified ?? {})) if (nodes[id]) nodes[id] = { ...n, status: 'modified' }
   for (const id of d.nodesDeleted ?? []) if (nodes[id]) nodes[id] = { ...nodes[id], status: 'deleted' }
   const del = new Set((d.edgesDeleted ?? []).map(([a, b]) => `${a}\u0000${b}`))
   for (const e of edges) if (del.has(`${e.from}\u0000${e.to}`)) e.status = 'deleted'
   for (const [from, to] of d.edgesAdded ?? []) edges.push({ from, to, status: 'added' })
-  return { name: d.view, containers: g.containers, nodes, edges }
+  return { name: d.view, domains: g.domains ?? {}, containers: g.containers, nodes, edges }
 }
 
 // scannedEntries 返回已扫描入口 id（unscanned/deleted 不进左树），按 order+name 稳定排序。
@@ -52,7 +54,11 @@ export function buildAdj(v: CgView): { adj: Record<string, string[]>; radj: Reco
 }
 
 // neighborhood 多源 BFS：焦点 0 层、下游正、上游负；depth=0 不限。
-export function neighborhood(v: CgView, foci: string[], depth: number): Record<string, number> {
+// expand 可选：返回 false 的节点仍会进入结果（要显示），但不再从它继续扩展——
+// 领域下钻靠它把邻域裁在领域边界上，否则一跳就跑到别的领域去了。
+export function neighborhood(
+  v: CgView, foci: string[], depth: number, expand?: (id: string) => boolean,
+): Record<string, number> {
   const { adj, radj } = buildAdj(v)
   const dist: Record<string, number> = {}
   for (const f of foci) dist[f] = 0
@@ -63,7 +69,11 @@ export function neighborhood(v: CgView, foci: string[], depth: number): Record<s
       for (const id of frontier) {
         const d = dist[id] + step
         if (depth > 0 && Math.abs(d) > depth) continue
-        for (const t of next[id] ?? []) if (!(t in dist)) { dist[t] = d; nx.push(t) }
+        for (const t of next[id] ?? []) {
+          if (t in dist) continue
+          dist[t] = d
+          if (!expand || expand(t)) nx.push(t)
+        }
       }
       frontier = nx
     }

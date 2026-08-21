@@ -654,9 +654,27 @@ export interface CgNode {
   fields?: string[][]
   unscanned?: boolean
 }
-export interface CgContainer { label: string; kind: string; entry?: boolean }
+// CgDomain 是一个领域（领域图的一级组织单位，可嵌套）。
+// 领域由扫描产出，人可在入库后改；parent 为空即顶层。**前端不推导领域**——
+// 按包名猜出来的层级会被当成真实架构读（spec §3.1）。
+export interface CgDomain {
+  label: string
+  kind: string
+  summary?: string
+  desc?: string
+  parent?: string
+}
+export interface CgContainer {
+  label: string
+  kind: string
+  entry?: boolean
+  // domain 是所属领域 id，必须是叶子领域；整图无 domains 段时缺席（旧扫描数据）
+  domain?: string
+}
 export interface CgGraph {
   meta: { project: string; branch: string; commit: string; scannedAt: string; generator: string }
+  // domains 缺席 = 该图未划分领域，页面降级为单领域视图
+  domains?: Record<string, CgDomain>
   containers: Record<string, CgContainer>
   nodes: Record<string, CgNode>
   edges: [string, string][]
