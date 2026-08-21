@@ -13394,99 +13394,6 @@
         }
       ]
     },
-    "n_prochost_openInputChannel": {
-      "kind": "func",
-      "container": "k_prochost_fn",
-      "order": 203,
-      "name": "openInputChannel",
-      "file": "internal/prochost/platform_unix.go",
-      "line": 203,
-      "signature": "func openInputChannel(path string) (io.ReadCloser, func(), error)",
-      "params": [
-        [
-          "path",
-          "string",
-          ""
-        ]
-      ],
-      "returns": "io.ReadCloser, func(), error",
-      "summary": "openInputChannel 为子进程准备 stdin（见 shim",
-      "tests": [
-        {
-          "name": "TestOpenInputChannelNeverEOFs",
-          "file": "internal/prochost/inputch_unix_test.go:86"
-        },
-        {
-          "name": "TestWindowsInputChannelNeverEOFs",
-          "file": "internal/prochost/inputch_windows_test.go:18"
-        },
-        {
-          "name": "TestWindowsFirstInstanceRejectsSquatting",
-          "file": "internal/prochost/inputch_windows_test.go:78"
-        },
-        {
-          "name": "TestWindowsWriteRightAfterReadinessProbe",
-          "file": "internal/prochost/inputch_windows_test.go:118"
-        }
-      ]
-    },
-    "n_prochost_flockExclusiveNB": {
-      "kind": "func",
-      "container": "k_prochost_fn",
-      "order": 52,
-      "name": "flockExclusiveNB",
-      "file": "internal/prochost/platform_windows.go",
-      "line": 52,
-      "signature": "func flockExclusiveNB(f *os.File) error",
-      "params": [
-        [
-          "f",
-          "*os.File",
-          ""
-        ]
-      ],
-      "returns": "error",
-      "summary": "flockExclusiveNB 对一个已打开的文件取非阻塞独占锁",
-      "tests": []
-    },
-    "n_prochost_isLockContended": {
-      "kind": "func",
-      "container": "k_prochost_fn",
-      "order": 62,
-      "name": "isLockContended",
-      "file": "internal/prochost/platform_windows.go",
-      "line": 62,
-      "signature": "func isLockContended(err error) bool",
-      "params": [
-        [
-          "err",
-          "error",
-          ""
-        ]
-      ],
-      "returns": "bool",
-      "summary": "isLockContended 判定错误是否为「锁已被他人持有」",
-      "tests": []
-    },
-    "n_prochost_installProcessContainer": {
-      "kind": "func",
-      "container": "k_prochost_fn",
-      "order": 154,
-      "name": "installProcessContainer",
-      "file": "internal/prochost/platform_windows.go",
-      "line": 154,
-      "signature": "func installProcessContainer(nprocLimit int) error",
-      "params": [
-        [
-          "nprocLimit",
-          "int",
-          ""
-        ]
-      ],
-      "returns": "error",
-      "summary": "installProcessContainer 建 Job Object、设限制、把 shim 自己放进去",
-      "tests": []
-    },
     "n_prochost_SetPtyhostCredentialProvider": {
       "kind": "func",
       "container": "k_prochost_fn",
@@ -26685,28 +26592,6 @@
         }
       ]
     },
-    "n_prochost_procLimit": {
-      "kind": "func",
-      "container": "k_prochost_fn",
-      "order": 18,
-      "name": "procLimit",
-      "file": "internal/prochost/procenum_other.go",
-      "line": 18,
-      "signature": "func procLimit() (int, error)",
-      "params": [],
-      "returns": "int, error",
-      "summary": "procLimit 的实现",
-      "tests": [
-        {
-          "name": "TestFenceLimitHardLimitModeIgnoresProcLimit",
-          "file": "internal/prochost/fence_test.go:292"
-        },
-        {
-          "name": "TestProcLimitPositive",
-          "file": "internal/prochost/procenum_test.go:60"
-        }
-      ]
-    },
     "n_prochost_ResolveMarkRoot": {
       "kind": "func",
       "container": "k_prochost_fn",
@@ -34762,6 +34647,1193 @@
           ""
         ]
       ]
+    },
+    "n_prochost_setNprocLimit_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 12,
+      "name": "setNprocLimit",
+      "file": "internal/prochost/fence_other.go",
+      "line": 12,
+      "signature": "func setNprocLimit(int) error",
+      "params": [
+        [
+          "",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "setNprocLimit 在本平台无实现。（other 平台实现）",
+      "tests": [
+        {
+          "name": "TestSetNprocLimitRejectsNonPositive",
+          "file": "internal/prochost/fence_test.go:33"
+        }
+      ]
+    },
+    "n_prochost_getNprocLimit_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 15,
+      "name": "getNprocLimit",
+      "file": "internal/prochost/fence_other.go",
+      "line": 15,
+      "signature": "func getNprocLimit() (int, error)",
+      "params": [],
+      "returns": "int, error",
+      "summary": "getNprocLimit 在本平台无实现。（other 平台实现）",
+      "tests": [
+        {
+          "name": "TestGetNprocLimitReportsPositiveOrNotSupported",
+          "file": "internal/prochost/fence_test.go:14"
+        }
+      ]
+    },
+    "n_prochost_setNprocLimit_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 46,
+      "name": "setNprocLimit",
+      "file": "internal/prochost/fence_unix.go",
+      "line": 46,
+      "signature": "func setNprocLimit(n int) error",
+      "params": [
+        [
+          "n",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "setNprocLimit 把当前进程的 RLIMIT_NPROC 软硬限一起压到 n。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestHelperFenceParent",
+          "file": "internal/prochost/fence_inherit_test.go:20"
+        },
+        {
+          "name": "TestHelperFenceRaise",
+          "file": "internal/prochost/fence_inherit_test.go:108"
+        },
+        {
+          "name": "TestSetNprocLimitRejectsNonPositive",
+          "file": "internal/prochost/fence_test.go:33"
+        }
+      ]
+    },
+    "n_prochost_getNprocLimit_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 63,
+      "name": "getNprocLimit",
+      "file": "internal/prochost/fence_unix.go",
+      "line": 63,
+      "signature": "func getNprocLimit() (int, error)",
+      "params": [],
+      "returns": "int, error",
+      "summary": "getNprocLimit 读当前进程的 RLIMIT_NPROC 软限。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestHelperFenceChild",
+          "file": "internal/prochost/fence_inherit_test.go:44"
+        },
+        {
+          "name": "TestFenceSurvivesSetsid",
+          "file": "internal/prochost/fence_inherit_test.go:73"
+        },
+        {
+          "name": "TestFenceCannotBeRaisedBack",
+          "file": "internal/prochost/fence_inherit_test.go:132"
+        },
+        {
+          "name": "TestGetNprocLimitReportsPositiveOrNotSupported",
+          "file": "internal/prochost/fence_test.go:14"
+        }
+      ]
+    },
+    "n_prochost_createInputChannel_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 50,
+      "name": "createInputChannel",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 50,
+      "signature": "func createInputChannel(path string) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "createInputChannel 在 Windows 上是 no-op。（windows 平台实现）",
+      "tests": [
+        {
+          "name": "TestWindowsInputChannelNeverEOFs",
+          "file": "internal/prochost/inputch_windows_test.go:18"
+        },
+        {
+          "name": "TestWindowsWaitInputReaderTimesOutWithoutServer",
+          "file": "internal/prochost/inputch_windows_test.go:51"
+        },
+        {
+          "name": "TestWindowsCreateInputChannelIsNoop",
+          "file": "internal/prochost/inputch_windows_test.go:96"
+        }
+      ]
+    },
+    "n_prochost_waitInputReader_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 68,
+      "name": "waitInputReader",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 68,
+      "signature": "func waitInputReader(path string, timeout time.Duration) (time.Duration, error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "timeout",
+          "time.Duration",
+          ""
+        ]
+      ],
+      "returns": "time.Duration, error",
+      "summary": "waitInputReader 轮询等待 shim 把命名管道服务端建起来。（windows 平台实现）",
+      "tests": [
+        {
+          "name": "TestWindowsInputChannelNeverEOFs",
+          "file": "internal/prochost/inputch_windows_test.go:18"
+        },
+        {
+          "name": "TestWindowsWaitInputReaderTimesOutWithoutServer",
+          "file": "internal/prochost/inputch_windows_test.go:51"
+        },
+        {
+          "name": "TestWindowsCreateInputChannelIsNoop",
+          "file": "internal/prochost/inputch_windows_test.go:96"
+        },
+        {
+          "name": "TestWindowsWriteRightAfterReadinessProbe",
+          "file": "internal/prochost/inputch_windows_test.go:118"
+        }
+      ]
+    },
+    "n_prochost_writeInputChannel_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 97,
+      "name": "writeInputChannel",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 97,
+      "signature": "func writeInputChannel(path string, data []byte) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "data",
+          "[]byte",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "writeInputChannel 以客户端身份连上管道投递一段字节（见 WriteInputChannel 的文档）。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_openInputChannel_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 126,
+      "name": "openInputChannel",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 126,
+      "signature": "func openInputChannel(path string) (io.ReadCloser, func(), error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "io.ReadCloser, func(), error",
+      "summary": "openInputChannel 为子进程准备 stdin：建匿名管道 + 命名管道服务端 + 中继。（windows 平台实现）",
+      "tests": [
+        {
+          "name": "TestWindowsInputChannelNeverEOFs",
+          "file": "internal/prochost/inputch_windows_test.go:18"
+        },
+        {
+          "name": "TestWindowsFirstInstanceRejectsSquatting",
+          "file": "internal/prochost/inputch_windows_test.go:78"
+        },
+        {
+          "name": "TestWindowsWriteRightAfterReadinessProbe",
+          "file": "internal/prochost/inputch_windows_test.go:118"
+        }
+      ]
+    },
+    "n_prochost_dialPipe": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 215,
+      "name": "dialPipe",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 215,
+      "signature": "func dialPipe(name string) (windows.Handle, error)",
+      "params": [
+        [
+          "name",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "windows.Handle, error",
+      "summary": "dialPipe 以客户端身份打开管道（写方向）。",
+      "tests": []
+    },
+    "n_prochost_dialPipeWaitBusy": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 247,
+      "name": "dialPipeWaitBusy",
+      "file": "internal/prochost/inputch_windows.go",
+      "line": 247,
+      "signature": "func dialPipeWaitBusy(name string, budget time.Duration) (windows.Handle, error)",
+      "params": [
+        [
+          "name",
+          "string",
+          ""
+        ],
+        [
+          "budget",
+          "time.Duration",
+          ""
+        ]
+      ],
+      "returns": "windows.Handle, error",
+      "summary": "dialPipeWaitBusy 连接管道，遇到 ERROR_PIPE_BUSY 时在预算内重试。",
+      "tests": []
+    },
+    "n_prochost_flockExclusiveNB_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 45,
+      "name": "flockExclusiveNB",
+      "file": "internal/prochost/platform_other.go",
+      "line": 45,
+      "signature": "func flockExclusiveNB(*os.File) error",
+      "params": [
+        [
+          "",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "flockExclusiveNB 非 unix 平台无 flock，空操作（见文件头「两类退化」）。（other 平台实现）",
+      "tests": []
+    },
+    "n_prochost_isLockContended_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 48,
+      "name": "isLockContended",
+      "file": "internal/prochost/platform_other.go",
+      "line": 48,
+      "signature": "func isLockContended(error) bool",
+      "params": [
+        [
+          "",
+          "error",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "isLockContended 非 unix 平台永远撞不上锁——因为根本没加锁。（other 平台实现）",
+      "tests": []
+    },
+    "n_prochost_spawnDetached_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 50,
+      "name": "spawnDetached",
+      "file": "internal/prochost/platform_other.go",
+      "line": 50,
+      "signature": "func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error)",
+      "params": [
+        [
+          "argv",
+          "[]string",
+          ""
+        ],
+        [
+          "dir",
+          "string",
+          ""
+        ],
+        [
+          "shimLog",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "int, error",
+      "summary": "spawnDetached 的 other 平台实现",
+      "tests": []
+    },
+    "n_prochost_killGroup_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 54,
+      "name": "killGroup",
+      "file": "internal/prochost/platform_other.go",
+      "line": 54,
+      "signature": "func killGroup(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killGroup 的 other 平台实现",
+      "tests": [
+        {
+          "name": "TestStartRecordsStartedAt",
+          "file": "internal/prochost/footprint_test.go:280"
+        },
+        {
+          "name": "TestStartRecordsRosterPath",
+          "file": "internal/prochost/footprint_test.go:509"
+        }
+      ]
+    },
+    "n_prochost_killProc_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 58,
+      "name": "killProc",
+      "file": "internal/prochost/platform_other.go",
+      "line": 58,
+      "signature": "func killProc(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killProc 非 unix 平台无 syscall.Kill（Windows 上它不存在），直接报未实现。（other 平台实现）",
+      "tests": []
+    },
+    "n_prochost_createInputChannel_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 60,
+      "name": "createInputChannel",
+      "file": "internal/prochost/platform_other.go",
+      "line": 60,
+      "signature": "func createInputChannel(path string) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "createInputChannel 的 other 平台实现",
+      "tests": []
+    },
+    "n_prochost_waitInputReader_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 62,
+      "name": "waitInputReader",
+      "file": "internal/prochost/platform_other.go",
+      "line": 62,
+      "signature": "func waitInputReader(path string, timeout time.Duration) (time.Duration, error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "timeout",
+          "time.Duration",
+          ""
+        ]
+      ],
+      "returns": "time.Duration, error",
+      "summary": "waitInputReader 的 other 平台实现",
+      "tests": []
+    },
+    "n_prochost_writeInputChannel_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 66,
+      "name": "writeInputChannel",
+      "file": "internal/prochost/platform_other.go",
+      "line": 66,
+      "signature": "func writeInputChannel(path string, data []byte) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "data",
+          "[]byte",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "writeInputChannel 的 other 平台实现",
+      "tests": []
+    },
+    "n_prochost_openInputChannel_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 68,
+      "name": "openInputChannel",
+      "file": "internal/prochost/platform_other.go",
+      "line": 68,
+      "signature": "func openInputChannel(path string) (io.ReadCloser, func(), error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "io.ReadCloser, func(), error",
+      "summary": "openInputChannel 的 other 平台实现",
+      "tests": []
+    },
+    "n_prochost_installProcessContainer_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 75,
+      "name": "installProcessContainer",
+      "file": "internal/prochost/platform_other.go",
+      "line": 75,
+      "signature": "func installProcessContainer(int) error",
+      "params": [
+        [
+          "",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "installProcessContainer 本平台无实现。（other 平台实现）",
+      "tests": []
+    },
+    "n_prochost_flockExclusiveNB_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 37,
+      "name": "flockExclusiveNB",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 37,
+      "signature": "func flockExclusiveNB(f *os.File) error",
+      "params": [
+        [
+          "f",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_isLockContended_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 43,
+      "name": "isLockContended",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 43,
+      "signature": "func isLockContended(err error) bool",
+      "params": [
+        [
+          "err",
+          "error",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "isLockContended 判定错误是否为「锁已被他人持有」（LOCK_NB 下的 EWOULDBLOCK），（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_spawnDetached_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 78,
+      "name": "spawnDetached",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 78,
+      "signature": "func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error)",
+      "params": [
+        [
+          "argv",
+          "[]string",
+          ""
+        ],
+        [
+          "dir",
+          "string",
+          ""
+        ],
+        [
+          "shimLog",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "int, error",
+      "summary": "spawnDetached 拉起 argv 并让它脱离当前进程的会话与进程组，返回其 pid。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestHelperSpawner",
+          "file": "internal/prochost/platform_test.go:23"
+        },
+        {
+          "name": "TestSpawnDetachedReapsChild",
+          "file": "internal/prochost/platform_test.go:183"
+        },
+        {
+          "name": "TestShimLogsLandInTaskDirShimLog",
+          "file": "internal/prochost/shim_test.go:274"
+        },
+        {
+          "name": "TestShimWritesRosterImmediately",
+          "file": "internal/prochost/shim_test.go:307"
+        }
+      ]
+    },
+    "n_prochost_killGroup_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 111,
+      "name": "killGroup",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 111,
+      "signature": "func killGroup(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killGroup 向 pid 所在进程组发送 SIGKILL（负 pid 表示按组发送）。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestSpawnDetachedSurvivesParentDeath",
+          "file": "internal/prochost/platform_test.go:68"
+        },
+        {
+          "name": "TestStartRecordsStartedAt",
+          "file": "internal/prochost/footprint_test.go:280"
+        },
+        {
+          "name": "TestStartRecordsRosterPath",
+          "file": "internal/prochost/footprint_test.go:509"
+        }
+      ]
+    },
+    "n_prochost_killProc_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 126,
+      "name": "killProc",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 126,
+      "signature": "func killProc(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killProc 对**单个 pid** 发 SIGKILL（不是进程组）。（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_createInputChannel_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 134,
+      "name": "createInputChannel",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 134,
+      "signature": "func createInputChannel(path string) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "createInputChannel 幂等创建 0600 命名管道（见 CreateInputChannel 的文档）。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestWriteInputChannelDeliversToReader",
+          "file": "internal/prochost/inputch_unix_test.go:15"
+        },
+        {
+          "name": "TestWriteInputChannelFailsWithoutReader",
+          "file": "internal/prochost/inputch_unix_test.go:57"
+        },
+        {
+          "name": "TestOpenInputChannelNeverEOFs",
+          "file": "internal/prochost/inputch_unix_test.go:86"
+        }
+      ]
+    },
+    "n_prochost_waitInputReader_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 155,
+      "name": "waitInputReader",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 155,
+      "signature": "func waitInputReader(path string, timeout time.Duration) (time.Duration, error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "timeout",
+          "time.Duration",
+          ""
+        ]
+      ],
+      "returns": "time.Duration, error",
+      "summary": "waitInputReader 轮询探测 FIFO 读端（见 WaitInputReader 的文档）。（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_writeInputChannel_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 179,
+      "name": "writeInputChannel",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 179,
+      "signature": "func writeInputChannel(path string, data []byte) error",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "data",
+          "[]byte",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "writeInputChannel 往 FIFO 投递字节（见 WriteInputChannel 的文档）。（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_openInputChannel_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 203,
+      "name": "openInputChannel",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 203,
+      "signature": "func openInputChannel(path string) (io.ReadCloser, func(), error)",
+      "params": [
+        [
+          "path",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "io.ReadCloser, func(), error",
+      "summary": "openInputChannel 为子进程准备 stdin（见 shim.go 调用点）。（unix 平台实现）",
+      "tests": [
+        {
+          "name": "TestOpenInputChannelNeverEOFs",
+          "file": "internal/prochost/inputch_unix_test.go:86"
+        }
+      ]
+    },
+    "n_prochost_installProcessContainer_unix": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 221,
+      "name": "installProcessContainer",
+      "file": "internal/prochost/platform_unix.go",
+      "line": 221,
+      "signature": "func installProcessContainer(nprocLimit int) error",
+      "params": [
+        [
+          "nprocLimit",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "installProcessContainer 在 spawn 执行者之前，把当前进程（shim）放进本平台的（unix 平台实现）",
+      "tests": []
+    },
+    "n_prochost_flockExclusiveNB_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 52,
+      "name": "flockExclusiveNB",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 52,
+      "signature": "func flockExclusiveNB(f *os.File) error",
+      "params": [
+        [
+          "f",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "flockExclusiveNB 对一个已打开的文件取非阻塞独占锁。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_isLockContended_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 62,
+      "name": "isLockContended",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 62,
+      "signature": "func isLockContended(err error) bool",
+      "params": [
+        [
+          "err",
+          "error",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "isLockContended 判定错误是否为「锁已被他人持有」。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_installProcessContainer_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 154,
+      "name": "installProcessContainer",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 154,
+      "signature": "func installProcessContainer(nprocLimit int) error",
+      "params": [
+        [
+          "nprocLimit",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "installProcessContainer 建 Job Object、设限制、把 shim 自己放进去。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_spawnDetached_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 209,
+      "name": "spawnDetached",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 209,
+      "signature": "func spawnDetached(argv []string, dir string, shimLog *os.File) (int, error)",
+      "params": [
+        [
+          "argv",
+          "[]string",
+          ""
+        ],
+        [
+          "dir",
+          "string",
+          ""
+        ],
+        [
+          "shimLog",
+          "*os.File",
+          ""
+        ]
+      ],
+      "returns": "int, error",
+      "summary": "spawnDetached 以脱离本进程的方式拉起 shim，返回其 pid。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_killGroup_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 248,
+      "name": "killGroup",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 248,
+      "signature": "func killGroup(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killGroup 回收 shim 及其全部后代。（windows 平台实现）",
+      "tests": [
+        {
+          "name": "TestStartRecordsStartedAt",
+          "file": "internal/prochost/footprint_test.go:280"
+        },
+        {
+          "name": "TestStartRecordsRosterPath",
+          "file": "internal/prochost/footprint_test.go:509"
+        }
+      ]
+    },
+    "n_prochost_killProc_windows": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 266,
+      "name": "killProc",
+      "file": "internal/prochost/platform_windows.go",
+      "line": 266,
+      "signature": "func killProc(pid int) error",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "killProc 终止单个进程（名册点名清扫用）。（windows 平台实现）",
+      "tests": []
+    },
+    "n_prochost_enumProcs_darwin": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 21,
+      "name": "enumProcs",
+      "file": "internal/prochost/procenum_darwin.go",
+      "line": 21,
+      "signature": "func enumProcs() ([]procEntry, error)",
+      "params": [],
+      "returns": "[]procEntry, error",
+      "summary": "enumProcs 用 sysctl KERN_PROC_UID 取当前 uid 的全部进程。（darwin 平台实现）",
+      "tests": [
+        {
+          "name": "TestEnumProcsFindsSelfPGID",
+          "file": "internal/prochost/procenum_unix_test.go:17"
+        },
+        {
+          "name": "TestEnumProcsFindsSelf",
+          "file": "internal/prochost/procenum_test.go:13"
+        },
+        {
+          "name": "TestEnumProcsFillsPPID",
+          "file": "internal/prochost/procenum_test.go:42"
+        }
+      ]
+    },
+    "n_prochost_procLimit_darwin": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 42,
+      "name": "procLimit",
+      "file": "internal/prochost/procenum_darwin.go",
+      "line": 42,
+      "signature": "func procLimit() (int, error)",
+      "params": [],
+      "returns": "int, error",
+      "summary": "procLimit 读 kern.maxprocperuid（每 uid 进程数上限）。（darwin 平台实现）",
+      "tests": [
+        {
+          "name": "TestProcLimitPositive",
+          "file": "internal/prochost/procenum_test.go:60"
+        }
+      ]
+    },
+    "n_prochost_bootTimeNano": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 21,
+      "name": "bootTimeNano",
+      "file": "internal/prochost/procenum_linux.go",
+      "line": 21,
+      "signature": "func bootTimeNano() (int64, error)",
+      "params": [],
+      "returns": "int64, error",
+      "summary": "bootTimeNano 读 /proc/stat 的 btime，返回系统启动时刻（unix 纳秒）。",
+      "tests": []
+    },
+    "n_prochost_enumProcs_linux": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 47,
+      "name": "enumProcs",
+      "file": "internal/prochost/procenum_linux.go",
+      "line": 47,
+      "signature": "func enumProcs() ([]procEntry, error)",
+      "params": [],
+      "returns": "[]procEntry, error",
+      "summary": "enumProcs 遍历 /proc 取当前 uid 的全部进程。（linux 平台实现）",
+      "tests": [
+        {
+          "name": "TestEnumProcsFindsSelfPGID",
+          "file": "internal/prochost/procenum_unix_test.go:17"
+        },
+        {
+          "name": "TestEnumProcsFindsSelf",
+          "file": "internal/prochost/procenum_test.go:13"
+        },
+        {
+          "name": "TestEnumProcsFillsPPID",
+          "file": "internal/prochost/procenum_test.go:42"
+        }
+      ]
+    },
+    "n_prochost_readStat": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 87,
+      "name": "readStat",
+      "file": "internal/prochost/procenum_linux.go",
+      "line": 87,
+      "signature": "func readStat(pid int, bootNano int64) (ppid, pgid int, startedAt int64, err error)",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ],
+        [
+          "bootNano",
+          "int64",
+          ""
+        ]
+      ],
+      "returns": "ppid, pgid int, startedAt int64, err error",
+      "summary": "readStat 解析 /proc/<pid>/stat，取 ppid（字段 4）、pgrp（字段 5）与 starttime（字段 22）。",
+      "tests": []
+    },
+    "n_prochost_procLimit_linux": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 119,
+      "name": "procLimit",
+      "file": "internal/prochost/procenum_linux.go",
+      "line": 119,
+      "signature": "func procLimit() (int, error)",
+      "params": [],
+      "returns": "int, error",
+      "summary": "procLimit 读当前进程的 RLIMIT_NPROC 软上限（每 uid 可创建进程数）。（linux 平台实现）",
+      "tests": [
+        {
+          "name": "TestProcLimitPositive",
+          "file": "internal/prochost/procenum_test.go:60"
+        }
+      ]
+    },
+    "n_prochost_enumProcs_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 16,
+      "name": "enumProcs",
+      "file": "internal/prochost/procenum_other.go",
+      "line": 16,
+      "signature": "func enumProcs() ([]procEntry, error)",
+      "params": [],
+      "returns": "[]procEntry, error",
+      "summary": "enumProcs 的 other 平台实现",
+      "tests": [
+        {
+          "name": "TestEnumProcsFindsSelf",
+          "file": "internal/prochost/procenum_test.go:13"
+        },
+        {
+          "name": "TestEnumProcsFillsPPID",
+          "file": "internal/prochost/procenum_test.go:42"
+        }
+      ]
+    },
+    "n_prochost_procLimit_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 18,
+      "name": "procLimit",
+      "file": "internal/prochost/procenum_other.go",
+      "line": 18,
+      "signature": "func procLimit() (int, error)",
+      "params": [],
+      "returns": "int, error",
+      "summary": "procLimit 的 other 平台实现",
+      "tests": [
+        {
+          "name": "TestProcLimitPositive",
+          "file": "internal/prochost/procenum_test.go:60"
+        }
+      ]
+    },
+    "n_prochost_cwdOf": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 51,
+      "name": "cwdOf",
+      "file": "internal/prochost/taskmark_darwin.go",
+      "line": 51,
+      "signature": "func cwdOf(pid int) (string, error)",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ]
+      ],
+      "returns": "string, error",
+      "summary": "cwdOf 读出 pid 的当前工作目录（不 fork）。",
+      "tests": [
+        {
+          "name": "TestCwdOffsetSelfCheckPasses",
+          "file": "internal/prochost/taskmark_darwin_test.go:18"
+        }
+      ]
+    },
+    "n_prochost_cwdReadable": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 96,
+      "name": "cwdReadable",
+      "file": "internal/prochost/taskmark_darwin.go",
+      "line": 96,
+      "signature": "func cwdReadable() bool",
+      "params": [],
+      "returns": "bool",
+      "summary": "cwdReadable 报告本机上 cwd 判据是否可用。",
+      "tests": [
+        {
+          "name": "TestCwdOffsetSelfCheckPasses",
+          "file": "internal/prochost/taskmark_darwin_test.go:18"
+        }
+      ]
+    },
+    "n_prochost_attributes_darwin": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 134,
+      "name": "attributes",
+      "file": "internal/prochost/taskmark_darwin.go",
+      "line": 134,
+      "signature": "func attributes(pid int, cred TaskCred) (bool, error)",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ],
+        [
+          "cred",
+          "TaskCred",
+          ""
+        ]
+      ],
+      "returns": "bool, error",
+      "summary": "attributes 判定 pid 是否属于 cred 所描述的任务（darwin：按 cwd）。",
+      "tests": [
+        {
+          "name": "TestAttributesByCwd",
+          "file": "internal/prochost/taskmark_darwin_test.go:38"
+        },
+        {
+          "name": "TestAttributesEmptyMarkRootNeverMatches",
+          "file": "internal/prochost/taskmark_darwin_test.go:78"
+        }
+      ]
+    },
+    "n_prochost_attributes_linux": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 36,
+      "name": "attributes",
+      "file": "internal/prochost/taskmark_linux.go",
+      "line": 36,
+      "signature": "func attributes(pid int, cred TaskCred) (bool, error)",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ],
+        [
+          "cred",
+          "TaskCred",
+          ""
+        ]
+      ],
+      "returns": "bool, error",
+      "summary": "attributes 判定 pid 是否属于 cred 所描述的任务（linux：按 environ）。",
+      "tests": [
+        {
+          "name": "TestAttributesByEnviron",
+          "file": "internal/prochost/taskmark_linux_test.go:17"
+        },
+        {
+          "name": "TestAttributesRejectsDifferentTaskID",
+          "file": "internal/prochost/taskmark_linux_test.go:53"
+        },
+        {
+          "name": "TestAttributesEmptyTaskIDNeverMatches",
+          "file": "internal/prochost/taskmark_linux_test.go:73"
+        }
+      ]
+    },
+    "n_prochost_attributes_other": {
+      "kind": "func",
+      "container": "k_prochost_fn",
+      "order": 13,
+      "name": "attributes",
+      "file": "internal/prochost/taskmark_other.go",
+      "line": 13,
+      "signature": "func attributes(pid int, cred TaskCred) (bool, error)",
+      "params": [
+        [
+          "pid",
+          "int",
+          ""
+        ],
+        [
+          "cred",
+          "TaskCred",
+          ""
+        ]
+      ],
+      "returns": "bool, error",
+      "summary": "attributes 的 other 平台实现",
+      "tests": []
     }
   },
   "edges": [
@@ -36391,14 +37463,6 @@
     ],
     [
       "n_prochost_RunShim",
-      "n_prochost_installProcessContainer"
-    ],
-    [
-      "n_prochost_RunShim",
-      "n_prochost_openInputChannel"
-    ],
-    [
-      "n_prochost_RunShim",
       "n_prochost_envKeys"
     ],
     [
@@ -36656,14 +37720,6 @@
     [
       "n_config_Config_validate",
       "n_proxycfg_Validate"
-    ],
-    [
-      "n_prochost_AcquireLock",
-      "n_prochost_flockExclusiveNB"
-    ],
-    [
-      "n_prochost_AcquireLock",
-      "n_prochost_isLockContended"
     ],
     [
       "n_store_migrateReposToProjectLocations",
@@ -37036,22 +38092,6 @@
     [
       "n_ptyhost_CloseAll",
       "n_ptyhost_Host_Close"
-    ],
-    [
-      "n_prochost_openInputChannel",
-      "n_prochost_pipeNameFor"
-    ],
-    [
-      "n_prochost_openInputChannel",
-      "n_prochost_createPipeServer"
-    ],
-    [
-      "n_prochost_openInputChannel",
-      "n_prochost_log"
-    ],
-    [
-      "n_prochost_openInputChannel",
-      "n_prochost_relayPipe"
     ],
     [
       "n_prochost_ExplainForkFailure",
@@ -37696,14 +38736,6 @@
     [
       "n_client_Client_sweepCursors",
       "n_client_Client_log"
-    ],
-    [
-      "n_prochost_IsLocked",
-      "n_prochost_flockExclusiveNB"
-    ],
-    [
-      "n_prochost_IsLocked",
-      "n_prochost_isLockContended"
     ],
     [
       "n_sessdir_ReadMeta",
@@ -40683,10 +41715,6 @@
     ],
     [
       "n_prochost_UIDUsage",
-      "n_prochost_procLimit"
-    ],
-    [
-      "n_prochost_UIDUsage",
       "n_prochost_log"
     ],
     [
@@ -43138,10 +44166,6 @@
       "m_prochost_Handle"
     ],
     [
-      "n_prochost_flockExclusiveNB",
-      "m_prochost_Handle"
-    ],
-    [
       "n_prochost_ProcessCredentialForPID",
       "m_prochost_ProcessCredential"
     ],
@@ -44396,6 +45420,198 @@
     [
       "n_store_Store_ListWorkbench",
       "m_proto_WorkbenchBase"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_installProcessContainer_other"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_installProcessContainer_unix"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_installProcessContainer_windows"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_openInputChannel_windows"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_openInputChannel_other"
+    ],
+    [
+      "n_prochost_RunShim",
+      "n_prochost_openInputChannel_unix"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_flockExclusiveNB_other"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_flockExclusiveNB_unix"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_flockExclusiveNB_windows"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_isLockContended_other"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_isLockContended_unix"
+    ],
+    [
+      "n_prochost_AcquireLock",
+      "n_prochost_isLockContended_windows"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_flockExclusiveNB_other"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_flockExclusiveNB_unix"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_flockExclusiveNB_windows"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_isLockContended_other"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_isLockContended_unix"
+    ],
+    [
+      "n_prochost_IsLocked",
+      "n_prochost_isLockContended_windows"
+    ],
+    [
+      "n_prochost_UIDUsage",
+      "n_prochost_procLimit_darwin"
+    ],
+    [
+      "n_prochost_UIDUsage",
+      "n_prochost_procLimit_linux"
+    ],
+    [
+      "n_prochost_UIDUsage",
+      "n_prochost_procLimit_other"
+    ],
+    [
+      "n_prochost_attributes_darwin",
+      "n_prochost_cwdReadable"
+    ],
+    [
+      "n_prochost_attributes_darwin",
+      "n_prochost_cwdOf"
+    ],
+    [
+      "n_prochost_enumProcs_linux",
+      "n_prochost_bootTimeNano"
+    ],
+    [
+      "n_prochost_enumProcs_linux",
+      "n_prochost_readStat"
+    ],
+    [
+      "n_prochost_flockExclusiveNB_windows",
+      "m_prochost_Handle"
+    ],
+    [
+      "n_prochost_installProcessContainer_unix",
+      "n_prochost_setNprocLimit_unix"
+    ],
+    [
+      "n_prochost_waitInputReader_windows",
+      "n_prochost_dialPipe"
+    ],
+    [
+      "n_prochost_writeInputChannel_windows",
+      "n_prochost_dialPipeWaitBusy"
+    ],
+    [
+      "n_prochost_createInputChannel_windows",
+      "n_prochost_pipeNameFor"
+    ],
+    [
+      "n_prochost_createInputChannel_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_waitInputReader_windows",
+      "n_prochost_pipeNameFor"
+    ],
+    [
+      "n_prochost_writeInputChannel_windows",
+      "n_prochost_pipeNameFor"
+    ],
+    [
+      "n_prochost_openInputChannel_windows",
+      "n_prochost_pipeNameFor"
+    ],
+    [
+      "n_prochost_openInputChannel_windows",
+      "n_prochost_createPipeServer"
+    ],
+    [
+      "n_prochost_openInputChannel_windows",
+      "n_prochost_relayPipe"
+    ],
+    [
+      "n_prochost_openInputChannel_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_spawnDetached_unix",
+      "n_prochost_ExplainForkFailure"
+    ],
+    [
+      "n_prochost_spawnDetached_unix",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_installProcessContainer_unix",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_installProcessContainer_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_spawnDetached_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_killGroup_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_killProc_windows",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_enumProcs_darwin",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_procLimit_darwin",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_enumProcs_linux",
+      "n_prochost_log"
+    ],
+    [
+      "n_prochost_procLimit_linux",
+      "n_prochost_log"
     ]
   ]
 }
