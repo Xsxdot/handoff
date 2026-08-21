@@ -9,8 +9,10 @@
 //
 // 边界：
 //   - 不解释业务语义：登记契约由目标机器解释，本机只做搬运，不加校验也不加解释
-//   - 不做凭据转换：用 cfg.Targets 里现成的 addr+token（与 CLI --target 同源
-//     同凭据，信任模型零新增）。**token 绝不进日志**
+//   - 不做凭据转换：token 用 cfg.Targets 里现成的（与 CLI --target 同源同凭据，
+//     信任模型零新增）。**token 绝不进日志**
+//   - 不自己选路：传输一律取自 s.pool（targetclient）——relay 机器没有 addr，
+//     拿 t.Addr 直连构造会退化成 "http:///..."（no Host），选路判据只在池里有一份
 //   - 不做重试：转发失败即如实回 502 带原文。重试会让「已登记成功但响应丢了」
 //     变成重复登记
 package agentd
@@ -21,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/client"
 )
 
 // forwardedHeader 是防环标记。一跳封顶：A→B→A 不可能成环。
@@ -55,14 +59,22 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 			"error": "机器 " + name + " 未在本机配置的 targets 中定义"})
 		return true
 	}
-	s.forwardTo(w, r, name, t.Addr, t.Token)
+	c, err := s.pool.For(name)
+	if err != nil {
+		s.log.Error("转发失败：取目标客户端失败", "machine", name, "relay", t.IsRelay(), "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
+		return true
+	}
+	s.forwardTo(w, r, name, c, t.Token)
 	return true
 }
 
 // forwardTo 把请求原样搬到目标机器，并把响应原样回送。
 //
 // 参数：
-//   - name/addr/token: 目标机器的名字、地址与令牌（token 只进请求头）
+//   - name: 目标机器名，只用于日志与错误文案
+//   - c: 池选路好的目标客户端——基址与传输都取自它（relay 走隧道、直连走 addr）
+//   - token: 目标机器的 Bearer 令牌（只进请求头；与池构造 c 时用的是同一份配置）
 //
 // 注意：
 //   - **不设独立超时**：跟随 r.Context()。项目登记可能触发目标机 clone，耗时
@@ -70,10 +82,10 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 //     浏览器/CLI 断开时 r.Context() 取消，上游连接随之断开
 //   - 转发失败回 502 带原文：这是本机与目标机之间的问题，不能伪装成目标机
 //     的业务错误
-func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name, addr, token string) {
-	target, err := forwardURL(addr, r.URL)
+func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name string, c *client.Client, token string) {
+	target, err := forwardURL(c.BaseURL(), r.URL)
 	if err != nil {
-		s.log.Error("转发失败：目标地址不合法", "machine", name, "addr", addr, "cause", err)
+		s.log.Error("转发失败：目标地址不合法", "machine", name, "base_url", c.BaseURL(), "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
 		return
 	}
@@ -95,7 +107,9 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name, addr, t
 	}
 	req.Header.Set(forwardedHeader, "1")
 
-	resp, err := http.DefaultClient.Do(req)
+	// 传输取自池客户端：relay 形态经隧道、直连形态带 Proxy:nil 的直连 Transport
+	//（agentd↔agentd 永不经代理的纪律随之生效，见 internal/proxycfg 包头）。
+	resp, err := c.HTTPClient().Do(req)
 	if err != nil {
 		s.log.Error("转发失败：上游不可达", "machine", name, "path", r.URL.Path,
 			"elapsed_ms", time.Since(start).Milliseconds(), "cause", err)
@@ -170,7 +184,9 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, name, addr, t
 		"status", resp.StatusCode, "elapsed_ms", time.Since(start).Milliseconds())
 }
 
-// forwardURL 拼出目标 URL：目标机地址 + 原路径 + 去掉 machine 的查询串。
+// forwardURL 拼出目标 URL：目标机基址 + 原路径 + 去掉 machine 的查询串。
+//
+// addr 现在恒为池客户端的 BaseURL()（已带 scheme），normalizeAddr 只是兜底保留。
 //
 // 为什么要摘掉 machine：它是**本机的路由指令**，不是业务参数。留着它，目标机
 // 看到的就是一个「让我转发给我自己」的请求——虽然被防环头挡住，但语义上是脏的。
