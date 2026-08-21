@@ -1,6 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { Card, CardDetail } from '../../api/ledger'
 import { CardDrawer } from './CardDrawer'
+
+// card 造一张字段齐全、**大小写与线格式一致**的卡。
+//
+// why 存在：这些夹具原先手写 `{ ID, Title, Status, Attachments,
+// AcceptanceCriteria }`——Go 结构体的字段名，不是 agentd 实际吐的 JSON。
+// 抽屉里的 value() 有一层 PascalCase 兜底，所以断言照样绿，夹具却在验证一个
+// 不存在的世界；线格式的真相以 src/api/testdata/CardDetail.json 为准，是小写
+// snake_case。这里一次性钉住，顺带补齐 Card 必填字段（缺一个 tsc 就红）。
+function card(over: Partial<Card> = {}): Card {
+  return {
+    id: 'B1', title: '卡', status: '进行中', priority: '中', project: 'handoff',
+    parent: '', workflow: 'triage', workflow_version: 1,
+    attachments: [], acceptance_criteria: '',
+    created_at: '', updated_at: '', ...over,
+  }
+}
 
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/client')>()),
@@ -11,7 +28,7 @@ vi.mock('../../api/client', async (importOriginal) => ({
 vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCardDetail: vi.fn().mockResolvedValue({
-    card: { ID: 'B147', Title: '承载卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+    card: card({ id: 'B147', title: '承载卡', status: '进行中' }),
     relations: [
       { From: 'B144', To: 'B147', Type: 'merged_into' },
       { From: 'B147', To: 'B95', Type: 'blocks' },
@@ -40,7 +57,7 @@ describe('抽屉里的裁决', () => {
   it('挂卡的请示要出正文、候选项与答复入口，不能只在 timeline 里剩一行', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B8', Title: 'WS 被 503', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B8', title: 'WS 被 503', status: '进行中' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [{ id: 5, card_id: 'B8', body: '就地重试还是直接退化？', options: ['重试三次', '立即退化'], status: 'open', answer: '' }],
     } as never)
@@ -55,7 +72,7 @@ describe('抽屉里的裁决', () => {
   it('已答复的请示显示答案，不再给答复框', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B8', Title: 'WS 被 503', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B8', title: 'WS 被 503', status: '进行中' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [{ id: 5, card_id: 'B8', body: '就地重试还是直接退化？', options: null, status: 'answered', answer: '立即退化但要出告警' }],
     } as never)
@@ -69,7 +86,7 @@ describe('抽屉里的「需要你」', () => {
   it('等人卡要说得出原因——看板有角标，抽屉不能什么都不显示', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B3', Title: '镜像断链', Status: '待合并', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B3', title: '镜像断链', status: '待合并' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '基线是主线：合并永远人工',
     } as never)
@@ -81,7 +98,7 @@ describe('抽屉里的「需要你」', () => {
   it('既不等人也没请示时不画这一区，免得平白多一块空标题', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B9', Title: '普通卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B9', title: '普通卡', status: '待办' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '',
     } as never)
@@ -95,7 +112,7 @@ describe('抽屉里的合并事件', () => {
   it('branch_merged 使用专用摘要显示工作分支与基线', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B10', Title: '合并卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B10', title: '合并卡', status: '进行中' }),
       relations: [],
       events: [{
         seq: 1,
@@ -122,7 +139,7 @@ describe('抽屉里的子任务', () => {
   it('有直接子卡时列出来，点 id 能跳转', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B156', Title: '父卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B156', title: '父卡', status: '进行中' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '',
       children: [
@@ -142,7 +159,7 @@ describe('抽屉里的子任务', () => {
   it('没有子卡时整区不渲染——空区块比没有区块更吵', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B160', Title: '叶子卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B160', title: '叶子卡', status: '待办' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -156,7 +173,7 @@ describe('抽屉里的验收', () => {
   it('未验且已完成显示「待真机验」，标记已验要带证据', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B170', Title: '待验卡', Status: '已完成', Attachments: [], AcceptanceCriteria: '判据：全绿' },
+      card: card({ id: 'B170', title: '待验卡', status: '已完成', acceptance_criteria: '判据：全绿' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -176,7 +193,7 @@ describe('抽屉里的验收', () => {
   it('未验且未完成显示「未验」——三态里这一态原来是缺的', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B171', Title: '进行中的卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B171', title: '进行中的卡', status: '进行中' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -188,9 +205,11 @@ describe('抽屉里的验收', () => {
 })
 
 describe('抽屉里的编辑', () => {
-  const detail = {
-    card: { ID: 'B20', Title: '原标题', Status: '进行中', Priority: '中', Attachments: [], AcceptanceCriteria: '' },
-    relations: [], events: [], task_states: [], effective_base_branch: 'feat/x', decisions: [],
+  // 显式标 CardDetail：不标的话 relations/events 会被推成 never[]，
+  // 任何一处想在 spread 之上改字段都得靠 `as never` 把类型检查关掉
+  const detail: CardDetail = {
+    card: card({ id: 'B20', title: '原标题' }),
+    relations: [], events: [], task_states: [], effective_base_branch: 'feat/x', decisions: [], needs: '',
   }
 
   it('改标题走 patchCard，只发 title 一个字段', async () => {
@@ -228,8 +247,8 @@ describe('抽屉里的编辑', () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
       ...detail,
-      card: { ...detail.card, Attachments: [{ Kind: 'plan', Path: 'docs/p.md' }] },
-    } as never)
+      card: { ...detail.card, attachments: [{ kind: 'plan', path: 'docs/p.md' }] },
+    })
     render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
     fireEvent.click(await screen.findByRole('button', { name: '摘掉 docs/p.md' }))
     await waitFor(() => expect(vi.mocked(ledger.detachFile)).toHaveBeenCalledWith('B20', 'docs/p.md'))
@@ -250,7 +269,7 @@ describe('抽屉里的环节动作', () => {
   it('派发审阅点一次即置灰并提示看 Timeline', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B180', Title: '待审卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B180', title: '待审卡', status: '待审阅' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -265,7 +284,7 @@ describe('抽屉里的环节动作', () => {
   it('409 原地显示冲突原因，不吞掉后端文案', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B181', Title: '待审卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B181', title: '待审卡', status: '待审阅' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -278,7 +297,7 @@ describe('抽屉里的环节动作', () => {
   it('不提供实现类按钮——它要挂 plan 文件，浏览器里没有', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B182', Title: '卡', Status: '待办', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B182', title: '卡', status: '待办' }),
       relations: [], events: [], task_states: [], effective_base_branch: '',
       decisions: [], needs: '', children: [],
     })
@@ -299,7 +318,7 @@ describe('抽屉里的节点执行按钮', () => {
     { name: '已完成' },
   ]
   const detail = {
-    card: { ID: 'B40', Title: '节点卡', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+    card: card({ id: 'B40', title: '节点卡', status: '待审阅' }),
     relations: [], events: [], task_states: [], effective_base_branch: 'feat/x', decisions: [],
   }
 
@@ -341,7 +360,7 @@ describe('抽屉里的节点执行按钮', () => {
 
 describe('抽屉里的工单入口', () => {
   const withTask = {
-    card: { ID: 'B30', Title: '在跑的卡', Status: '进行中', Attachments: [], AcceptanceCriteria: '' },
+    card: card({ id: 'B30', title: '在跑的卡', status: '进行中' }),
     relations: [], events: [], effective_base_branch: '', decisions: [],
     task_states: [{ Target: 'linux-01', TaskID: 'task-abc', Purpose: 'implement', LastType: 'question', LastSeq: 9 }],
   }
@@ -408,7 +427,7 @@ describe('审阅裁决的呈现与等人标记的撤回', () => {
       notes: '未跑 UI 点击：仓库无对应页面，标为未验证。',
     })
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B1.1', Title: '抽屉环节动作按钮', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B1.1', title: '抽屉环节动作按钮', status: '待审阅' }),
       relations: [], task_states: [], effective_base_branch: '', decisions: [],
       events: [{ seq: 43, card_id: 'B1.1', type: 'review_verdict', actor: 'node:review', payload: { node: 'review', pass: false, raw }, created_at: '' }],
     } as never)
@@ -425,7 +444,7 @@ describe('审阅裁决的呈现与等人标记的撤回', () => {
   it('裁决报文解析不动时退回显示原文，不能把裁决吞掉', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B1.1', Title: 'x', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B1.1', title: 'x', status: '待审阅' }),
       relations: [], task_states: [], effective_base_branch: '', decisions: [],
       events: [{ seq: 43, card_id: 'B1.1', type: 'review_verdict', actor: 'node:review', payload: { node: 'review', pass: false, raw: '这不是 JSON' }, created_at: '' }],
     } as never)
@@ -437,7 +456,7 @@ describe('审阅裁决的呈现与等人标记的撤回', () => {
   it('等人标记要能在抽屉里直接撤回', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
-      card: { ID: 'B1.1', Title: 'x', Status: '待审阅', Attachments: [], AcceptanceCriteria: '' },
+      card: card({ id: 'B1.1', title: 'x', status: '待审阅' }),
       relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [],
       needs: '审阅未取到报文',
     } as never)
