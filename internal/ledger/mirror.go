@@ -97,7 +97,7 @@ func (s *Store) AcquireMirrorLease(holder string, ttl time.Duration) (bool, erro
 		var cur string
 		var until any
 		err := tx.QueryRow(s.q(`SELECT holder, lease_until FROM mirror_lease WHERE id = 1`)).Scan(&cur, &until)
-		now := time.Now()
+		now := s.timeNow()
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if _, err := tx.Exec(s.q(`INSERT INTO mirror_lease (id, holder, lease_until) VALUES (1, ?, ?)`),

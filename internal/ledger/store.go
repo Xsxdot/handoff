@@ -31,6 +31,19 @@ type Store struct {
 
 	mu        sync.Mutex
 	listeners []func(seq int64) // SQLite 回退模式的进程内事件推送
+
+	// now 可注入时钟，仅供测试用假时钟替代真实壁钟（lease 过期判定这类
+	// 时序逻辑靠 sleep 与真实耗时比较在 CI 慢机上必然偶发红）。生产不设，
+	// 经 timeNow 回退到 time.Now。
+	now func() time.Time
+}
+
+// timeNow 取当前时间：测试注入了 now 就用假时钟，否则真实壁钟。
+func (s *Store) timeNow() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // Open 打开账本库并幂等建 schema。dsn 以 postgres:// 或 postgresql://

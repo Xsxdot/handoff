@@ -45,6 +45,11 @@ func TestAppendMirroredEventIdempotent(t *testing.T) {
 
 func TestMirrorLease(t *testing.T) {
 	s := seedStore(t)
+	// 假时钟：手动推进代替 time.Sleep 与真实壁钟比较。原写法里「A 丢 lease
+	// 后不应立刻拿回」要求 B 接任到 A 重试的真实耗时 < ttl，CI 慢机一次调度
+	// 卡顿就让 B 的 lease 先过期、断言偶发红。假时钟下过期与否完全由测试控制。
+	cur := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return cur }
 	ttl := 200 * time.Millisecond
 	got, err := s.AcquireMirrorLease("coordA", ttl)
 	if err != nil || !got {
@@ -56,12 +61,19 @@ func TestMirrorLease(t *testing.T) {
 	if got, _ := s.AcquireMirrorLease("coordA", ttl); !got {
 		t.Fatal("A 续约应成功")
 	}
-	time.Sleep(ttl + 50*time.Millisecond)
+	// 推进到 A 的 lease_until 之后 → 过期，B 可接任
+	cur = cur.Add(ttl + 50*time.Millisecond)
 	if got, _ := s.AcquireMirrorLease("coordB", ttl); !got {
 		t.Fatal("过期后 B 应接任")
 	}
+	// 时钟不动，B 的 lease 必然未过期 → A 不得拿回
 	if got, _ := s.AcquireMirrorLease("coordA", ttl); got {
 		t.Fatal("A 丢 lease 后不应立刻拿回")
+	}
+	// 再推进过 B 的 ttl → A 又能合法接任（补上原测试没盖到的第二次轮转）
+	cur = cur.Add(ttl + 50*time.Millisecond)
+	if got, _ := s.AcquireMirrorLease("coordA", ttl); !got {
+		t.Fatal("B 的 lease 过期后 A 应能接任")
 	}
 }
 
