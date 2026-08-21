@@ -27,6 +27,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | meta | Meta | 图的来源信息 |
+| domains | Record&lt;string, Domain&gt; | 领域段，key 是领域 ID；可嵌套 |
 | containers | Record<string, Container> | 分组盒子，key 是容器 ID |
 | nodes | Record<string, Node> | 节点，key 是节点 ID |
 | edges | [string, string][] | 调用关系 [caller, callee] |
@@ -41,6 +42,16 @@ meta 字段：
 | scannedAt | string | 扫描日期/时间 |
 | generator | string | 扫描器或 executor 标识 |
 
+domains 的 value 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| label | string | 否 | 领域展示名（如 agentd、store） |
+| kind | string | 否 | 一两个词的角色说明（如 执行机守护进程、存储） |
+| summary | string | 是 | 职责一句话，领域卡正面就显示它 |
+| desc | string | 是 | 内部逻辑介绍，点开领域详情时读 |
+| parent | string | 是 | 父领域 ID；缺省即顶层领域 |
+
 containers 的 value 字段：
 
 | 字段 | 类型 | 可选 | 说明 |
@@ -48,6 +59,7 @@ containers 的 value 字段：
 | label | string | 否 | 展示名称 |
 | kind | string | 否 | 容器类别 |
 | entry | boolean | 是 | 是否为入口容器，默认 false |
+| domain | string | 是 | 所属领域 ID，必须是叶子领域；整图无 domains 段时可省 |
 
 nodes 的 value 字段：
 
@@ -95,6 +107,25 @@ tests 中每个 TestRef 字段：
 提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
 由基线提供。
 
+## 怎么切领域
+
+领域是这张图的**主视图**：人先看领域全景（领域之间怎么调），再下钻到领域内部。
+切得对不对直接决定这张图有没有用，所以它是扫描的一等产物，不是附属信息。
+
+- **默认按包切一层**：一个 Go 包一个顶层领域，label 用包名。
+- **大包按职责再切子领域**：一个包超过约 20 个方法、或内部明显分层（对外接口层 /
+  业务核心 / 适配层）时，用 parent 切出子领域。层数不限，但**别为了切而切**——
+  没有职责差异的拆分只会多一次点击。
+- **容器只能挂叶子领域**：挂在中间层的容器会静默从图里消失，`handoff graph validate`
+  会把它报成错误。
+- **入口容器（CLI/HTTP/WS）挂到它服务的领域**上，不要单独成领域——入口是领域的对外
+  门面，不是独立的一层。
+- **summary 必填**：一句话说清这个领域负责什么。领域卡正面只显示这一句，写不出一句
+  话通常说明领域切错了。
+- **desc 写内部逻辑**：这个领域内部怎么组织、有哪些关键类型、对外靠什么方式协作。
+- **领域之间的连线不用手写**：消费方按跨领域的调用边自动聚合，只要 container.domain
+  归属正确，连线与「对外开放接口」清单就是对的。
+
 ## 硬纪律（历次扫描验证过的坑）
 
 - 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
@@ -106,5 +137,9 @@ tests 中每个 TestRef 字段：
 - 节点的 file 必须是仓库内相对路径，不能写机器绝对路径；源码正文不进入 JSON。
 - 边两端必须是已定义节点；节点的 container 必须是已定义容器。
 - diff 的修改/删除只能引用基线已有节点；新增边的端点必须来自基线或同一 diff 的新增节点。
+- 每个容器必须带 domain 且必须挂叶子领域；domains 段与容器归属要么全有、要么全无
+  （半套数据会让消费方一半降级一半不降级）。
+- 领域的 parent 必须指向已定义领域，且父链不能成环。
 - 收尾自检：python3 -m json.tool 验证 JSON 合法性 + 引用完整性脚本（或直接
-  handoff graph validate --repo .），并抽查 5 个节点的 file:line。
+  handoff graph validate --repo .（零 issues），再 handoff graph domains --repo . 目视领域树是否符合真实架构，
+  并抽查 5 个节点的 file:line。
