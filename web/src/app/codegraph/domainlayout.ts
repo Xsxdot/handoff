@@ -14,6 +14,9 @@ const RX = 340          // 椭圆斥力横向半径 ≈ 卡宽 + 间距
 const RY = 200          // 纵向半径 ≈ 卡高 + 间距
 const REST = 340        // 弹簧静止长度
 const GRAVITY_Y = 330   // 纵向重力的目标带
+const CARD_W = 252      // 与 DomainPanorama 的 CARD_W 一致
+const CARD_H = 112      // 卡高实测 89~108，取上界留余量
+const SEP_ITER = 80     // 分离迭代上限；正常几轮就收敛，上限只防病态输入
 
 export function layoutDomains(
   agg: DomainAgg,
@@ -66,5 +69,41 @@ export function layoutDomains(
       pos[id][1] = Math.max(64, pos[id][1] + f[id][1] * damp)
     }
   }
+  separate(pos, ids)
   return pos
+}
+
+// separate 在力导向收敛后，按**矩形真实相交**再分离一遍。
+//
+// 为什么单靠椭圆斥力不够：斥力是软的，领域一多（真机上 36 个）就在重力压出的
+// 横带里解不干净——36 张卡里 23 对压在一起，而卡压卡是这张图唯一不可接受的形态
+// 问题（读不出来就等于没有）。这里沿最小平移向量把相交的两张各挪一半，直到没有
+// 相交或到迭代上限。
+//
+// 确定性：只按 ids 的顺序两两处理，不含随机数——同一份数据每次结果逐位相同。
+function separate(pos: Record<string, [number, number]>, ids: string[]): void {
+  for (let it = 0; it < SEP_ITER; it++) {
+    let moved = false
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const A = pos[ids[i]]
+        const B = pos[ids[j]]
+        const ox = Math.min(A[0] + CARD_W, B[0] + CARD_W) - Math.max(A[0], B[0])
+        const oy = Math.min(A[1] + CARD_H, B[1] + CARD_H) - Math.max(A[1], B[1])
+        if (ox <= 0 || oy <= 0) continue
+        moved = true
+        // 沿重叠较小的那个轴分开：挪动距离最小，布局形状改变也最小
+        if (ox < oy) {
+          const d = (ox / 2 + 1) * (A[0] <= B[0] ? -1 : 1)
+          A[0] = Math.max(30, A[0] + d)
+          B[0] = Math.max(30, B[0] - d)
+        } else {
+          const d = (oy / 2 + 1) * (A[1] <= B[1] ? -1 : 1)
+          A[1] = Math.max(64, A[1] + d)
+          B[1] = Math.max(64, B[1] - d)
+        }
+      }
+    }
+    if (!moved) return
+  }
 }
