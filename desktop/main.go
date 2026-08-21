@@ -121,6 +121,19 @@ func main() {
 		Width:  1200,
 		Height: 800,
 		URL:    "/",
+		// 开这条才有「把文件从访达拖进终端」——它在窗口上盖一层
+		// NSDraggingDestination，落盘后由 Go 侧执行
+		// `window._wails.handlePlatformFileDrop(paths, x, y)`。
+		//
+		// **真实文件路径只有这条路给得出来**：WKWebView 的 HTML5 拖放能拿到
+		// File 对象，但 `file.path` 是 undefined、`text/uri-list` 是空串，
+		// 而终端要的正是路径。详见 web/src/app/lib/desktopFileDrop.ts。
+		//
+		// 那个回调按官方设计由前端 bundle 的 @wailsio/runtime 提供；控制台是外链
+		// 页面、注入的只有 runtime core，所以由控制台自己往 `window._wails` 上挂
+		// 一个同名函数接住。覆盖层的 hitTest 返回 nil，鼠标事件照旧穿透给 webview，
+		// 不影响选中与 hover。
+		EnableFileDrop: true,
 		Mac: application.MacWindow{
 			// 去掉那条系统标题栏：它是浅灰的、与控制台自身的深色顶栏割裂，
 			// 而且白占一条横向边框。MacTitleBarHidden 把内容顶到窗口最上沿，

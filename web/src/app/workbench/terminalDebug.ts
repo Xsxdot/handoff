@@ -1,8 +1,9 @@
 // terminalDebug —— 终端输入与焦点的取证开关。
 //
-// 职责：为两个**尚未定位根因**的偶现故障提供读数，而不是替它们猜一个修法：
-//   ② 用 ESC 取消 TUI 里正在跑的命令后，偶现无法再输入
-//   ③ espanso 之类的文本展开工具在桌面端终端里少字符
+// 职责：为终端输入相关的故障提供读数，而不是替它们猜一个修法：
+//   ② 用 ESC 取消 TUI 里正在跑的命令后，偶现无法再输入（**根因仍未定位**）
+//   ③ espanso 之类的文本展开工具在桌面端终端里少字符（根因已定位并已修，
+//      见 terminalInput.ts；这里留下的 logTermFix 是那个修法的现场判据）
 //
 // 边界：
 //   - **默认全关**，靠 localStorage 显式打开。终端输入是每次按键一条，
@@ -18,9 +19,9 @@
 //   ② 复现失焦后看最后一条 focus/blur —— activeElement 是谁抢走了焦点；
 //      若根本没有 blur 记录，说明焦点还在 xterm 上，问题在 TUI 的模式残留
 //      （鼠标追踪 / bracketed paste 没有配对关闭），而不在前端焦点管理
-//   ③ 触发一次展开（如 `:ps`），把 input 行里的字符数加起来与期望值比 ——
-//      对得上说明字符进了 xterm，问题在我们下游（WS/PTY）；对不上说明注入层
-//      就已经丢了，前端修不了，只能给 espanso 调 inject_delay
+//   ③ 触发一次展开（如 `:ps`），看 [term:fix] 有没有「拦下注入键事件」+「补发」
+//      各一条、且 [term:input] 的原文是完整的展开结果。只有首字符说明补漏没生效；
+//      出现重复字符说明补漏与 xterm 抢着发，判据串了
 
 // DEBUG_KEY 是开关所在的 localStorage 键。
 export const TERMINAL_DEBUG_KEY = 'handoff.debug.terminal'
@@ -102,4 +103,22 @@ export function logTermFocus(label: string, kind: 'focus' | 'blur', active: stri
 export function logTermResize(label: string, cols: number, rows: number, reason: 'attach' | 'observer'): void {
   if (!terminalDebugEnabled()) return
   console.debug('[term:resize]', { 终端: label, cols, rows, 触发: reason })
+}
+
+// logTermFix 记一次输入补漏动作（terminalInput 的读数）。
+//
+// 参数：
+//   - label: 终端标识
+//   - kind: 本次动作。'补发' = xterm 一个字节都没发，由我们喂回去；
+//     '让给 xterm' = xterm 自己处理了这个 input 事件，我们不插手（上游修好后
+//     会一直是这一条，是「没有双发」的现场判据）；
+//     '拦下注入键事件' = 认出了 espanso 那种「整串塞进一个键事件」的形状
+//   - text: 涉及的原文
+//
+// 注意：出现大量「补发」是正常的——WebKit 下中文标点每敲一下就是一条。
+// 真正要警惕的是同一次输入既有「补发」又有「让给 xterm」，那说明判据串了，
+// 用户会看到重复字符。
+export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦下注入键事件', text: string): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:fix]', { 终端: label, 动作: kind, 原文: JSON.stringify(text) })
 }

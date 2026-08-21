@@ -8,8 +8,12 @@
 //
 // 边界：
 //   - 只读 UA，不发请求、不碰后端。控制台在薄壳里是**外链页面**（agentd 伺服），
-//     Wails 运行时不会注入，window.wails 之类的探针一律为空——UA 后缀是唯一
-//     不用改握手协议就能传进来的信号
+//     只拿得到 Wails 注入的 runtime core，前端 bundle 那层的公开 API
+//     （window.wails、--wails-draggable 之类）一概没有——UA 后缀是唯一
+//     不用改握手协议就能传进来的信号。
+//     注意别把这条读成「什么都没注入」：`window._wails` 这个内部对象是**有**的
+//     （导航完成后约 1s 出现，实测），拖放通道正是挂在它上面走的，
+//     见 desktopFileDrop.ts
 //   - 浏览器里打开时一律返回 false / 0，普通页面不受任何影响
 
 // DESKTOP_TOP_INSET 是薄壳窗口顶部隐形拖动区的高度（CSS px）。

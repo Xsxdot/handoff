@@ -29,6 +29,8 @@ import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
 import { describeElement, logTermFocus, logTermInput, logTermResize } from './terminalDebug'
+import { installTerminalInputFix } from './terminalInput'
+import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import type { BaseDir } from './useWorkbench'
 
 export interface TerminalTabProps {
@@ -162,6 +164,23 @@ export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, o
 
     // 焦点取证：只记不改。relatedTarget 是「焦点去了哪儿 / 从哪儿来」的标准来源，
     // 比在 blur 里读 document.activeElement 准——blur 触发时新的焦点元素还没落定。
+    // 输入补漏必须装在 term.open() 之后：它要拿 term.textarea，也要抢在 xterm
+    // 的 textarea 监听之前读一次「发了没有」的计数（细节见 terminalInput.ts 文件头）。
+    const inputFix = installTerminalInputFix(term, host, label)
+
+    // 从访达拖进来的文件：把路径当成用户敲进去的字符送给 shell，跟在真终端里
+    // 拖文件的观感一致（补一个尾随空格，好接着敲下一个参数）。
+    //
+    // 走 term.input() 而不是直接 handle.send()：路径因此与手敲的输入合流到同一条
+    // onData，取证日志与 WS 未就绪的告警都照常适用，不必在这里重复一遍那些判断。
+    const unregisterDrop = registerFileDropTarget({
+      host,
+      accept: (paths) => {
+        term.focus()
+        term.input(`${paths.map(shellQuote).join(' ')} `)
+      },
+    })
+
     const ta = term.textarea
     const onFocusEvt = () => logTermFocus(label, 'focus', describeElement(document.activeElement))
     const onBlurEvt = (ev: FocusEvent) => logTermFocus(label, 'blur', describeElement(ev.relatedTarget as Element | null))
@@ -276,6 +295,8 @@ export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, o
       ro.disconnect()
       ta?.removeEventListener('focus', onFocusEvt)
       ta?.removeEventListener('blur', onBlurEvt)
+      inputFix.dispose()
+      unregisterDrop()
       // 只断连接，不发 DELETE：服务端会话继续跑
       handle?.close()
       term.dispose()
