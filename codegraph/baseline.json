@@ -6,281 +6,581 @@
     "scannedAt": "2026-08-21",
     "generator": "codex"
   },
+  "domains": {
+    "d_cli": {
+      "label": "cmd",
+      "kind": "CLI 入口",
+      "summary": "定义 handoff 的 Cobra 命令、参数和输出。",
+      "desc": "cmd 负责命令树、参数解析、输出和 client 接线，不持有 agentd 持久状态。"
+    },
+    "d_client": {
+      "label": "client",
+      "kind": "远端客户端",
+      "summary": "封装 CLI 到 agentd 的 HTTP、WS、bundle 和游标调用。",
+      "desc": "client 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_codegraph": {
+      "label": "codegraph",
+      "kind": "代码图契约",
+      "summary": "加载、查询、校验代码图并提供领域视图数据。",
+      "desc": "codegraph 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_config": {
+      "label": "config",
+      "kind": "配置",
+      "summary": "定义并持久化本机、target 和 executor 配置。",
+      "desc": "config 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_proto": {
+      "label": "proto",
+      "kind": "数据契约",
+      "summary": "定义 CLI、agentd 与 executor 共享的线格式。",
+      "desc": "proto 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_executor": {
+      "label": "executor",
+      "kind": "执行器契约",
+      "summary": "定义各类 executor 适配器共享的启动、事件和结果契约。",
+      "desc": "executor 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_store": {
+      "label": "store",
+      "kind": "持久化",
+      "summary": "把任务、事件、工单和项目状态落入 SQLite。",
+      "desc": "store 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_ptyhost": {
+      "label": "ptyhost",
+      "kind": "终端会话",
+      "summary": "托管本机 PTY 会话、回放缓冲和附着读写。",
+      "desc": "ptyhost 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_targetclient": {
+      "label": "targetclient",
+      "kind": "目标路由",
+      "summary": "按 target 形态选择直连或 relay 客户端。",
+      "desc": "targetclient 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_localsync": {
+      "label": "localsync",
+      "kind": "本地同步",
+      "summary": "把远端任务分支经 bundle 落回本地仓库。",
+      "desc": "localsync 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_permgate": {
+      "label": "permgate",
+      "kind": "权限决策",
+      "summary": "表达权限请求、范围与自动裁决结果。",
+      "desc": "permgate 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_prochost": {
+      "label": "prochost",
+      "kind": "进程托管",
+      "summary": "提供跨平台进程句柄、资源准入与任务凭据。",
+      "desc": "prochost 包内部实现其职责并通过明确的类型或函数与其他层协作。"
+    },
+    "d_buildinfo": {
+      "label": "buildinfo",
+      "kind": "包领域",
+      "summary": "buildinfo 包提供其专门的基础能力。",
+      "desc": "buildinfo 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_discipline": {
+      "label": "discipline",
+      "kind": "包领域",
+      "summary": "discipline 包提供其专门的基础能力。",
+      "desc": "discipline 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_envfile": {
+      "label": "envfile",
+      "kind": "包领域",
+      "summary": "envfile 包提供其专门的基础能力。",
+      "desc": "envfile 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_claudecode": {
+      "label": "claudecode",
+      "kind": "包领域",
+      "summary": "claudecode 包提供其专门的基础能力。",
+      "desc": "claudecode 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_codex": {
+      "label": "codex",
+      "kind": "包领域",
+      "summary": "codex 包提供其专门的基础能力。",
+      "desc": "codex 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_fake": {
+      "label": "fake",
+      "kind": "包领域",
+      "summary": "fake 包提供其专门的基础能力。",
+      "desc": "fake 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_grok": {
+      "label": "grok",
+      "kind": "包领域",
+      "summary": "grok 包提供其专门的基础能力。",
+      "desc": "grok 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_opencode": {
+      "label": "opencode",
+      "kind": "包领域",
+      "summary": "opencode 包提供其专门的基础能力。",
+      "desc": "opencode 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_turn": {
+      "label": "turn",
+      "kind": "包领域",
+      "summary": "turn 包提供其专门的基础能力。",
+      "desc": "turn 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_logx": {
+      "label": "logx",
+      "kind": "包领域",
+      "summary": "logx 包提供其专门的基础能力。",
+      "desc": "logx 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_pathenv": {
+      "label": "pathenv",
+      "kind": "包领域",
+      "summary": "pathenv 包提供其专门的基础能力。",
+      "desc": "pathenv 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_projectid": {
+      "label": "projectid",
+      "kind": "包领域",
+      "summary": "projectid 包提供其专门的基础能力。",
+      "desc": "projectid 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_proxycfg": {
+      "label": "proxycfg",
+      "kind": "包领域",
+      "summary": "proxycfg 包提供其专门的基础能力。",
+      "desc": "proxycfg 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_engine": {
+      "label": "engine",
+      "kind": "包领域",
+      "summary": "engine 包提供其专门的基础能力。",
+      "desc": "engine 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_hostproc": {
+      "label": "hostproc",
+      "kind": "包领域",
+      "summary": "hostproc 包提供其专门的基础能力。",
+      "desc": "hostproc 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_sessdir": {
+      "label": "sessdir",
+      "kind": "包领域",
+      "summary": "sessdir 包提供其专门的基础能力。",
+      "desc": "sessdir 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_wire": {
+      "label": "wire",
+      "kind": "包领域",
+      "summary": "wire 包提供其专门的基础能力。",
+      "desc": "wire 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_relay": {
+      "label": "relay",
+      "kind": "包领域",
+      "summary": "relay 包提供其专门的基础能力。",
+      "desc": "relay 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_release": {
+      "label": "release",
+      "kind": "包领域",
+      "summary": "release 包提供其专门的基础能力。",
+      "desc": "release 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_selfupdate": {
+      "label": "selfupdate",
+      "kind": "包领域",
+      "summary": "selfupdate 包提供其专门的基础能力。",
+      "desc": "selfupdate 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_skill": {
+      "label": "skill",
+      "kind": "包领域",
+      "summary": "skill 包提供其专门的基础能力。",
+      "desc": "skill 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_toolchain": {
+      "label": "toolchain",
+      "kind": "包领域",
+      "summary": "toolchain 包提供其专门的基础能力。",
+      "desc": "toolchain 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_upgrade": {
+      "label": "upgrade",
+      "kind": "包领域",
+      "summary": "upgrade 包提供其专门的基础能力。",
+      "desc": "upgrade 包内函数、类型和适配逻辑围绕该基础能力组织。"
+    },
+    "d_agentd": {
+      "label": "agentd",
+      "kind": "执行机守护进程",
+      "summary": "承载执行机上的任务、项目与实时会话服务。",
+      "desc": "agentd 同时包含对外 API 门面和内部任务生命周期；容器挂在下方职责叶子。"
+    },
+    "d_agentd_api": {
+      "label": "api",
+      "kind": "对外接口层",
+      "summary": "提供 agentd 的 HTTP API、WS 流与会话门面。",
+      "desc": "Server、Hub 与入口容器负责鉴权、参数校验、响应编排、事件订阅和 PTY 通道。",
+      "parent": "d_agentd"
+    },
+    "d_agentd_core": {
+      "label": "core",
+      "kind": "生命周期核心",
+      "summary": "管理任务状态、工作区、执行器与持久化协作。",
+      "desc": "Manager 与 agentd 包级函数负责派发、续接、状态迁移、工作区准备、仓库审阅及恢复。",
+      "parent": "d_agentd"
+    }
+  },
   "containers": {
     "c_cli": {
       "label": "CLI 命令",
       "kind": "入口",
-      "entry": true
+      "entry": true,
+      "domain": "d_cli"
     },
     "c_http": {
       "label": "HTTP API",
       "kind": "入口",
-      "entry": true
+      "entry": true,
+      "domain": "d_agentd_api"
     },
     "c_ws": {
       "label": "长连接/WS",
       "kind": "入口",
-      "entry": true
+      "entry": true,
+      "domain": "d_agentd_api"
     },
     "k_cmd_fn": {
       "label": "cmd（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_cli"
     },
     "k_agentd_fn": {
       "label": "agentd（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_agentd_core"
     },
     "k_agentd_Server": {
       "label": "agentd.Server",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_agentd_api"
     },
     "k_agentd_Hub": {
       "label": "agentd.Hub",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_agentd_api"
     },
     "k_agentd_Manager": {
       "label": "agentd.Manager",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_agentd_core"
     },
     "k_agentd_Mirror": {
       "label": "agentd.Mirror",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_agentd_core"
     },
     "k_agentd_DirtyWorktreeError": {
       "label": "agentd.DirtyWorktreeError",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_agentd_core"
     },
     "k_buildinfo_fn": {
       "label": "buildinfo（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_buildinfo"
     },
     "k_client_fn": {
       "label": "client（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_client"
     },
     "k_client_Client": {
       "label": "client.Client",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_client"
     },
     "k_client_permanentError": {
       "label": "client.permanentError",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_client"
     },
     "k_client_httpStatusError": {
       "label": "client.httpStatusError",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_client"
     },
     "k_client_ReclaimRejected": {
       "label": "client.ReclaimRejected",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_client"
     },
     "k_client_UpdateRejected": {
       "label": "client.UpdateRejected",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_client"
     },
     "k_codegraph_fn": {
       "label": "codegraph（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_codegraph"
     },
     "k_config_fn": {
       "label": "config（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_config"
     },
     "k_config_Config": {
       "label": "config.Config",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_config"
     },
     "k_discipline_fn": {
       "label": "discipline（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_discipline"
     },
     "k_envfile_fn": {
       "label": "envfile（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_envfile"
     },
     "k_claudecode_fn": {
       "label": "claudecode（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_claudecode"
     },
     "k_codex_fn": {
       "label": "codex（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_codex"
     },
     "k_fake_fn": {
       "label": "fake（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_fake"
     },
     "k_grok_fn": {
       "label": "grok（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_grok"
     },
     "k_opencode_fn": {
       "label": "opencode（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_opencode"
     },
     "k_turn_fn": {
       "label": "turn（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_turn"
     },
     "k_localsync_fn": {
       "label": "localsync（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_localsync"
     },
     "k_logx_fn": {
       "label": "logx（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_logx"
     },
     "k_pathenv_fn": {
       "label": "pathenv（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_pathenv"
     },
     "k_permgate_fn": {
       "label": "permgate（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_permgate"
     },
     "k_prochost_fn": {
       "label": "prochost（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_prochost"
     },
     "k_prochost_Lock": {
       "label": "prochost.Lock",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_prochost"
     },
     "k_prochost_Handle": {
       "label": "prochost.Handle",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_prochost"
     },
     "k_prochost_TaskCred": {
       "label": "prochost.TaskCred",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_prochost"
     },
     "k_projectid_fn": {
       "label": "projectid（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_projectid"
     },
     "k_proxycfg_fn": {
       "label": "proxycfg（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_proxycfg"
     },
     "k_ptyhost_fn": {
       "label": "ptyhost（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_ptyhost"
     },
     "k_ptyhost_Host": {
       "label": "ptyhost.Host",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_ptyhost"
     },
     "k_engine_fn": {
       "label": "engine（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_engine"
     },
     "k_hostproc_fn": {
       "label": "hostproc（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_hostproc"
     },
     "k_hostproc_server": {
       "label": "hostproc.server",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_hostproc"
     },
     "k_sessdir_fn": {
       "label": "sessdir（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_sessdir"
     },
     "k_wire_fn": {
       "label": "wire（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_wire"
     },
     "k_relay_fn": {
       "label": "relay（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_relay"
     },
     "k_release_fn": {
       "label": "release（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_release"
     },
     "k_selfupdate_fn": {
       "label": "selfupdate（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_selfupdate"
     },
     "k_skill_fn": {
       "label": "skill（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_skill"
     },
     "k_store_fn": {
       "label": "store（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_store"
     },
     "k_store_Store": {
       "label": "store.Store",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_store"
     },
     "k_targetclient_fn": {
       "label": "targetclient（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_targetclient"
     },
     "k_targetclient_Pool": {
       "label": "targetclient.Pool",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_targetclient"
     },
     "k_toolchain_fn": {
       "label": "toolchain（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_toolchain"
     },
     "k_upgrade_fn": {
       "label": "upgrade（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_upgrade"
     },
     "k_upgrade_Machine": {
       "label": "upgrade.Machine",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_upgrade"
     },
     "k_discipline_Resolver": {
       "label": "discipline.Resolver",
-      "kind": "类型方法"
+      "kind": "类型方法",
+      "domain": "d_discipline"
     },
     "k_proto_fn": {
       "label": "proto（包级函数）",
-      "kind": "函数组"
+      "kind": "函数组",
+      "domain": "d_proto"
     },
     "k_agentd_model": {
       "label": "agentd 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_agentd_core"
     },
     "k_client_model": {
       "label": "client 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_client"
     },
     "k_codegraph_model": {
       "label": "codegraph 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_codegraph"
     },
     "k_config_model": {
       "label": "config 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_config"
     },
     "k_executor_model": {
       "label": "executor 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_executor"
     },
     "k_localsync_model": {
       "label": "localsync 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_localsync"
     },
     "k_permgate_model": {
       "label": "permgate 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_permgate"
     },
     "k_prochost_model": {
       "label": "prochost 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_prochost"
     },
     "k_proto_model": {
       "label": "proto 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_proto"
     },
     "k_ptyhost_model": {
       "label": "ptyhost 实体",
-      "kind": "实体"
+      "kind": "实体",
+      "domain": "d_ptyhost"
     }
   },
   "nodes": {
