@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -276,6 +277,85 @@ func TestMigrateCardWorkflow(t *testing.T) {
 	_ = s.MoveCard(card.ID, "进行中", "", "test")
 	if err := s.MigrateCardWorkflow(card.ID, "wf", 2, "进行中", "test"); err == nil {
 		t.Fatal("状态悬空应拒")
+	}
+}
+
+// TestMigrateRejectsInFlight 卡有环节在飞时拒绝迁移——门禁在事务内，
+// 所以 CLI 与 HTTP 两个入口共享同一道门（契约拍板记录④）。
+func TestMigrateRejectsInFlight(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "在飞拒迁", Project: "p", Workflow: "triage", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "dispatched")
+	err = s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test")
+	if !errors.Is(err, ErrStepInFlight) {
+		t.Fatalf("在飞时应拒绝迁移并包 ErrStepInFlight，实得 %v", err)
+	}
+	// 拒绝必须是「没动」，不是「动了一半」
+	got, _ := s.GetCard(c.ID)
+	if got.WorkflowName == "bug" {
+		t.Fatal("被拒的迁移不该改动卡")
+	}
+}
+
+// TestMigrateWritesMigrationEvent 迁移落 EvWorkflowMigrated，payload 能回答
+// 从哪到哪——审计链要能解释「这张卡为什么换了流程」。
+func TestMigrateWritesMigrationEvent(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Actor: "test"}) // 空 workflow 默认 triage
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "tester"); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
+	events, err := s.EventsFromAsc([]string{c.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Type != EvWorkflowMigrated {
+			continue
+		}
+		found = true
+		var p map[string]any
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解码迁移事件: %v", err)
+		}
+		for _, k := range []string{"from_workflow", "from_status", "to_workflow", "to_status", "to_version"} {
+			if _, ok := p[k]; !ok {
+				t.Fatalf("迁移事件缺字段 %q: %v", k, p)
+			}
+		}
+		if p["to_workflow"] != "bug" || p["from_workflow"] != "triage" {
+			t.Fatalf("迁移事件的来去不对: %v", p)
+		}
+		if e.Actor != "tester" {
+			t.Fatalf("操作者应留痕，实得 %q", e.Actor)
+		}
+	}
+	if !found {
+		t.Fatal("没有 EvWorkflowMigrated 事件")
+	}
+}
+
+// TestMigrateLeavesChildrenAlone 子卡不随父卡迁（基准语义 5）。
+func TestMigrateLeavesChildrenAlone(t *testing.T) {
+	s := seedStore(t)
+	parent := mk(t, s, "父卡")
+	child := mustChild(t, s, parent.ID, "子卡") // mustChild 建的是 bug 流子卡
+	if err := s.MigrateCardWorkflow(parent.ID, "feature", 0, StatusTodo, "test"); err != nil {
+		t.Fatalf("迁父卡: %v", err)
+	}
+	got, err := s.GetCard(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkflowName != "bug" {
+		t.Fatalf("子卡不该随父卡迁，实得 %q", got.WorkflowName)
 	}
 }
 

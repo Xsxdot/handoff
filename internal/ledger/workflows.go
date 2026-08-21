@@ -317,8 +317,21 @@ func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, to
 		return fmt.Errorf("迁移目标工作流和状态列不能为空: %w", ErrBadState)
 	}
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		if _, err := getCardTx(s, tx, cardID); err != nil {
+		card, err := getCardTx(s, tx, cardID)
+		if err != nil {
+			log().Error("迁移读取原位置失败", "card", cardID, "cause", err)
 			return fmt.Errorf("迁工作流: 卡 %s: %w", cardID, err)
+		}
+		// 门禁必须和 UPDATE 共用这个事务：否则 CLI/HTTP 入口之间会有
+		// TOCTOU 窗口，且两入口不会共享同一道在飞判定（契约拍板记录④）。
+		inFlight, taskID, err := s.cardStepInFlightTx(tx, cardID)
+		if err != nil {
+			return fmt.Errorf("迁移检查卡 %s 在飞状态: %w", cardID, err)
+		}
+		if inFlight {
+			log().Warn("迁移被拒：卡环节仍在飞", "card", cardID, "task", taskID,
+				"to_workflow", toWorkflow, "to_status", toStatus)
+			return fmt.Errorf("卡 %s 的任务 %s 仍在运行，不能迁移: %w", cardID, taskID, ErrStepInFlight)
 		}
 		if toVersion == 0 {
 			if err := tx.QueryRow(s.q(`SELECT COALESCE(MAX(version), 0) FROM workflows WHERE name = ?`), toWorkflow).Scan(&toVersion); err != nil {
@@ -341,13 +354,29 @@ func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, to
 			return fmt.Errorf("卡 %s 当前状态 %q 不在 %s v%d 中，先转移状态再迁: %w",
 				cardID, toStatus, toWorkflow, toVersion, ErrBadState)
 		}
+		// 原位置必须在 UPDATE 之前从事务内读出；写完后 cards 只剩目标值，
+		// 再读会丢失审计事件需要的 from_*。
+		from := WorkflowLocation{Workflow: card.WorkflowName, Version: card.WorkflowVersion, Status: card.Status}
+		to := WorkflowLocation{Workflow: toWorkflow, Version: toVersion, Status: toStatus}
 		if _, err := tx.Exec(s.q(`UPDATE cards SET workflow_name = ?, workflow_version = ?, status = ?, updated_at = ? WHERE id = ?`),
 			toWorkflow, toVersion, toStatus, s.tval(time.Now()), cardID); err != nil {
 			return fmt.Errorf("写迁移: %w", err)
 		}
-		_, err = s.appendEvent(tx, sink, cardID, EvComment, actor,
-			map[string]any{"kind": "普通", "body": fmt.Sprintf("工作流迁至 %s v%d / %s", toWorkflow, toVersion, toStatus)})
-		return err
+		_, err = s.appendEvent(tx, sink, cardID, EvWorkflowMigrated, actor, map[string]any{
+			"from_workflow": from.Workflow,
+			"from_version":  from.Version,
+			"from_status":   from.Status,
+			"to_workflow":   to.Workflow,
+			"to_version":    to.Version,
+			"to_status":     to.Status,
+		})
+		if err != nil {
+			return err
+		}
+		log().Info("工作流迁移完成", "card", cardID,
+			"from_workflow", from.Workflow, "from_version", from.Version, "from_status", from.Status,
+			"to_workflow", to.Workflow, "to_version", to.Version, "to_status", to.Status)
+		return nil
 	})
 }
 
