@@ -277,3 +277,78 @@ func TestMigrateCardWorkflow(t *testing.T) {
 		t.Fatal("状态悬空应拒")
 	}
 }
+
+// TestDefaultDomainWorkflow domain 流的 seed 形状：节点序列、三道闸、
+// 能力开关矩阵。States/Gates 断言走真实写读路径——它们是 Nodes 的投影，
+// 投影断了看板列渲染与 MoveCard 校验就断了（序列化边界检查）。
+func TestDefaultDomainWorkflow(t *testing.T) {
+	s := seedStore(t)
+	wf, err := s.GetWorkflow("domain", 0)
+	if err != nil {
+		t.Fatalf("取 domain 流: %v", err)
+	}
+	wantStates := []string{StatusTodo, "拆解", "契约冻结", "域实现", "集成", "终审", StatusDone}
+	if len(wf.Def.States) != len(wantStates) {
+		t.Fatalf("States 应为 %v，实得 %v", wantStates, wf.Def.States)
+	}
+	for i, want := range wantStates {
+		if wf.Def.States[i] != want {
+			t.Fatalf("States[%d] 应为 %q，实得 %q", i, want, wf.Def.States[i])
+		}
+	}
+	nodes := map[string]NodeDef{}
+	for _, n := range wf.Def.Nodes {
+		nodes[n.Name] = n
+	}
+	// 拆解：只派发不裁决——人工移动到契约冻结即拍板动作。
+	breakdown := nodes["拆解"]
+	if !breakdown.Dispatch || breakdown.Verdict || breakdown.Template != "domain-breakdown" {
+		t.Fatalf("拆解节点形状不对: %+v", breakdown)
+	}
+	// 契约冻结：进入门槛 = contract 附件（投影到 Gates 也要在——真实读路径断言）。
+	freeze := nodes["契约冻结"]
+	if freeze.Gate.RequireAttachment != "contract" || !freeze.Verdict || freeze.Template != "domain-ticket0" {
+		t.Fatalf("契约冻结节点形状不对: %+v", freeze)
+	}
+	if wf.Def.Gates["契约冻结"].RequireAttachment != "contract" {
+		t.Fatal("契约冻结的闸没投影进 Gates（看板 MoveCard 校验读的是这里）")
+	}
+	// 域实现：纯人工列——扇出子卡是驱动 handoff 自身的操作，归协调者。
+	if nodes["域实现"].Dispatch {
+		t.Fatal("域实现必须是纯人工列")
+	}
+	// 集成：聚合闸 + 裁决未过退回域实现。
+	integ := nodes["集成"]
+	if !integ.Gate.RequireChildrenDone || integ.OnFail != "域实现" || integ.Template != "domain-integration" {
+		t.Fatalf("集成节点形状不对: %+v", integ)
+	}
+	if !wf.Def.Gates["集成"].RequireChildrenDone {
+		t.Fatal("聚合闸没投影进 Gates")
+	}
+	// 终审：验收判据闸 + main 人工门 + finishing 覆盖，形状与 feature 待合并一致。
+	final := nodes["终审"]
+	if !final.Gate.RequireAcceptance || len(final.HumanBases) == 0 || final.HumanBases[0] != "main" {
+		t.Fatalf("终审节点形状不对: %+v", final)
+	}
+	if final.Override.Discipline != "finishing" || final.Template != "review-generic" {
+		t.Fatalf("终审应复用 review-generic + finishing 覆盖: %+v", final)
+	}
+}
+
+// TestEnsureDefaultsKeepsUserDomainWorkflow 用户自建的同名流不被 seed 覆盖。
+func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.PutWorkflow("domain", WorkflowDef{States: []string{"甲", "乙"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := s.GetWorkflow("domain", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.Version != 1 || len(wf.Def.States) != 2 {
+		t.Fatalf("用户的 domain 流被覆盖了: v%d %v", wf.Version, wf.Def.States)
+	}
+}

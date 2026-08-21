@@ -222,6 +222,42 @@ func (s *Store) EnsureDefaultWorkflows() error {
 				{Name: StatusDone},
 			},
 		},
+		// domain：分域开发协议（docs/superpowers/specs/2026-08-21-domain-
+		// partitioned-dev-protocol-design.md §8.1）的执行形态。节点归属遵循
+		// 工作台基准 §5：拆解草案与代码执行归执行者，拍板/扇出/合并归人。
+		"domain": {
+			Nodes: []NodeDef{
+				{Name: StatusTodo, Next: "拆解"},
+				// 拆解：只派发不裁决。产出（域清单/契约增量/子卡清单）的拍板
+				// 归人——人工把卡移进契约冻结这一步就是拍板动作，附上拍板过
+				// 的契约（kind=contract）才能过下一列的闸。
+				{Name: "拆解", Next: "契约冻结",
+					Dispatch: true, Template: "domain-breakdown", CarryCardContext: true},
+				// 契约冻结：把拍板过的契约落成可编译骨架 commit。重跑分支已
+				// 按 purpose 轮次挂号（Task 1），MaxRounds 2 不会撞分支名。
+				{Name: "契约冻结", Next: "域实现",
+					Gate:     Gate{RequireAttachment: "contract"},
+					Dispatch: true, Verdict: true, Template: "domain-ticket0",
+					CarryCardContext: true, MaxRounds: 2},
+				// 域实现：纯人工列。扇出子卡是驱动 handoff 自身的操作（纪律块
+				// 对执行者禁止），归协调者；子卡各绑自己的工作流并行走。
+				{Name: "域实现", Next: "集成"},
+				// 集成：聚合闸拦到全部直接子卡完结；裁决未过退回域实现补卡。
+				{Name: "集成", Next: "终审", OnFail: "域实现",
+					Gate:     Gate{RequireChildrenDone: true},
+					Dispatch: true, Verdict: true, Template: "domain-integration",
+					CarryCardContext: true, MaxRounds: 2},
+				// 终审：整分支审阅 + 收尾合并，与 feature 流「待合并」同形；
+				// 基线是 main 时不自动执行——外部可见动作留人工门。
+				{Name: "终审", Next: StatusDone,
+					Gate:     Gate{RequireAcceptance: true},
+					Dispatch: true, Verdict: true, Template: "review-generic",
+					Override:         NodeOverride{Discipline: discipline.NameFinishing},
+					CarryCardContext: true, MaxRounds: 1,
+					HumanBases: []string{"main"}},
+				{Name: StatusDone},
+			},
+		},
 		"bug": {
 			Nodes: []NodeDef{
 				{Name: StatusTodo, Next: StatusDoing},
