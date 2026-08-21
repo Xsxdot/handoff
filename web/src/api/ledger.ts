@@ -18,6 +18,8 @@ export interface CardView {
   merged_count: number
   needs: string
   open_decisions: number
+  children_total: number
+  children_done: number // 已完结（含终止），与聚合闸同一把尺
   conflict: boolean
   open_tickets: number
 }
@@ -69,7 +71,7 @@ export interface NodeDef {
   max_rounds?: number
   next?: string
   on_fail?: string
-  gate?: { require_attachment?: string; require_acceptance?: boolean }
+  gate?: { require_attachment?: string; require_acceptance?: boolean; require_children_done?: boolean }
   human_bases?: string[]
 }
 
