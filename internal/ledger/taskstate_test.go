@@ -80,6 +80,16 @@ func TestCardStepInFlightNoEvents(t *testing.T) {
 	}
 }
 
+func recordDispatch(t *testing.T, s *Store, cardID, target, taskID string) {
+	t.Helper()
+	if err := s.RecordDispatch(cardID, DispatchSnapshot{
+		Target: target, TaskID: taskID, Branch: "cards/" + cardID + "-" + taskID,
+		Purpose: PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatalf("写派发事件: %v", err)
+	}
+}
+
 func mirrorTaskEvent(t *testing.T, s *Store, cardID, target, taskID, typ string) {
 	t.Helper()
 	seq, err := s.MirrorWatermark(target, taskID)
@@ -103,13 +113,18 @@ func TestCardStepInFlightInFlightUntilTerminal(t *testing.T) {
 	if got, err := s.CardStepInFlight(c.ID); err != nil || got {
 		t.Fatalf("没派过任务应不在飞，实得 %v err=%v", got, err)
 	}
-	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "dispatched")
+	// 真实派发是卡账本原生 EvDispatched；此时还没有任何镜像事件。
+	recordDispatch(t, s, c.ID, "acc", "T-1")
 	if got, _ := s.CardStepInFlight(c.ID); !got {
-		t.Fatal("派发后未见终态应判在飞")
+		t.Fatal("只派发、零镜像事件时必须判在飞")
 	}
 	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "completed")
 	if got, _ := s.CardStepInFlight(c.ID); !got {
 		t.Fatal("completed 对应 waiting_review，仍算在飞")
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "turn_failed")
+	if got, _ := s.CardStepInFlight(c.ID); !got {
+		t.Fatal("turn_failed 对应 waiting_review，仍算在飞")
 	}
 	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "archived")
 	if got, _ := s.CardStepInFlight(c.ID); got {
@@ -121,8 +136,8 @@ func TestCardStepInFlightInFlightUntilTerminal(t *testing.T) {
 func TestCardStepInFlightPerTask(t *testing.T) {
 	s := seedStore(t)
 	c := mk(t, s, "多任务在飞")
-	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "dispatched")
-	mirrorTaskEvent(t, s, c.ID, "acc", "T-2", "dispatched")
+	recordDispatch(t, s, c.ID, "acc", "T-1")
+	recordDispatch(t, s, c.ID, "acc", "T-2")
 	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "archived")
 	if got, _ := s.CardStepInFlight(c.ID); !got {
 		t.Fatal("T-2 未收口，整卡仍应判在飞")
