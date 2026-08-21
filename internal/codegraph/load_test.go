@@ -12,7 +12,7 @@ func TestLoadGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadGraph: %v", err)
 	}
-	if g.Meta.Project != "demo" || len(g.Nodes) != 6 || len(g.Edges) != 4 {
+	if g.Meta.Project != "demo" || len(g.Nodes) != 7 || len(g.Edges) != 4 {
 		t.Fatalf("解析形状不对: meta=%+v nodes=%d edges=%d", g.Meta, len(g.Nodes), len(g.Edges))
 	}
 	if !g.Nodes["e_skip"].Unscanned {

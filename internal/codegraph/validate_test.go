@@ -38,6 +38,24 @@ func TestValidateCatchesBrokenRefs(t *testing.T) {
 	}
 }
 
+func TestValidateImplementsRefs(t *testing.T) {
+	g := &Graph{
+		Containers: map[string]Container{"k": {Label: "svc"}},
+		Nodes:      map[string]Node{"n1": {Container: "k", File: "svc/a.go"}},
+		Implements: []Edge{{"n1", "n_missing"}},
+	}
+	issues := Validate(g)
+	found := false
+	for _, is := range issues {
+		if strings.Contains(is, "implements") && strings.Contains(is, "n_missing") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("implements 悬空引用未报: %v", issues)
+	}
+}
+
 func TestValidateDiff(t *testing.T) {
 	g := loadFixture(t)
 	d, _ := LoadDiff(filepath.Join("testdata", "repo"), "branch-x")

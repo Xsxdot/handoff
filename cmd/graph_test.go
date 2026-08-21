@@ -28,7 +28,7 @@ func TestGraphValidate(t *testing.T) {
 	}
 	var r map[string]any
 	if json.Unmarshal([]byte(out), &r) != nil ||
-		r["nodes"].(float64) != 6 || r["unscannedEntries"].(float64) != 1 {
+		r["nodes"].(float64) != 7 || r["unscannedEntries"].(float64) != 1 {
 		t.Fatalf("统计 JSON 形状: %s", out)
 	}
 }

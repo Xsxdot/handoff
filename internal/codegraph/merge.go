@@ -30,6 +30,7 @@ type View struct {
 	Containers map[string]Container `json:"containers"`
 	Nodes      map[string]ViewNode  `json:"nodes"`
 	Edges      []ViewEdge           `json:"edges"`
+	Implements []ViewEdge           `json:"implements"`
 }
 
 // Merge 把基线与一个 diff 合并成视图。d 为 nil 时返回纯基准视图（Name="baseline"）。
@@ -41,6 +42,9 @@ func Merge(g *Graph, d *Diff) *View {
 	}
 	for _, e := range g.Edges {
 		v.Edges = append(v.Edges, ViewEdge{From: e[0], To: e[1]})
+	}
+	for _, e := range g.Implements {
+		v.Implements = append(v.Implements, ViewEdge{From: e[0], To: e[1]})
 	}
 	if d == nil {
 		return v
@@ -77,6 +81,24 @@ func Merge(g *Graph, d *Diff) *View {
 			continue
 		}
 		v.Edges = append(v.Edges, ViewEdge{From: e[0], To: e[1], Status: "added"})
+	}
+	delImplements := map[string]bool{}
+	for _, e := range d.ImplementsDeleted {
+		delImplements[e[0]+"\x00"+e[1]] = true
+	}
+	for i := range v.Implements {
+		if delImplements[v.Implements[i].From+"\x00"+v.Implements[i].To] {
+			v.Implements[i].Status = "deleted"
+		}
+	}
+	for _, e := range d.ImplementsAdded {
+		if _, ok := v.Nodes[e[0]]; !ok {
+			continue
+		}
+		if _, ok := v.Nodes[e[1]]; !ok {
+			continue
+		}
+		v.Implements = append(v.Implements, ViewEdge{From: e[0], To: e[1], Status: "added"})
 	}
 	return v
 }
