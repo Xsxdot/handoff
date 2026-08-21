@@ -46,6 +46,33 @@ describe('layoutDomains', () => {
     const agg36 = { cards: {}, ifaces: {}, edges } as unknown as DomainAgg
     expect(overlaps(layoutDomains(agg36, many), many)).toEqual([])
   })
+  it('域外占位卡摆在本层内容的包围盒之外', () => {
+    // 混在一起摆就读不出「里」和「外」：真机上进「本机治理」那层，2 张本层卡
+    // 被 5 张域外卡夹在中间，看起来像 7 个领域乱摆，用户当场没看懂。
+    const cards = {
+      a: { ext: false }, b: { ext: false },
+      'ext:x': { ext: true }, 'ext:y': { ext: true }, 'ext:z': { ext: true },
+    }
+    const edges = new Map([
+      ['a|b', { from: 'a', to: 'b', pairs: [{ from: 'p', to: 'q', status: '' as const }] }],
+      ['a|ext:x', { from: 'a', to: 'ext:x', pairs: [{ from: 'p', to: 'q', status: '' as const }] }],
+      ['b|ext:y', { from: 'b', to: 'ext:y', pairs: [{ from: 'p', to: 'q', status: '' as const }] }],
+      ['a|ext:z', { from: 'a', to: 'ext:z', pairs: [{ from: 'p', to: 'q', status: '' as const }] }],
+    ])
+    const agg2 = { cards, ifaces: {}, edges } as unknown as DomainAgg
+    const all = ['a', 'b', 'ext:x', 'ext:y', 'ext:z']
+    const pos = layoutDomains(agg2, all)
+    const inner = ['a', 'b']
+    const x0 = Math.min(...inner.map((i) => pos[i][0]))
+    const y0 = Math.min(...inner.map((i) => pos[i][1]))
+    const x1 = Math.max(...inner.map((i) => pos[i][0] + CARD_W))
+    const y1 = Math.max(...inner.map((i) => pos[i][1] + CARD_H))
+    for (const e of ['ext:x', 'ext:y', 'ext:z']) {
+      const [x, y] = pos[e]
+      const outside = x + 176 < x0 || x > x1 || y + 56 < y0 || y > y1
+      expect(outside, `${e} 落在了本层包围盒里`).toBe(true)
+    }
+  })
   it('有调用关系的领域比无关领域更近', () => {
     const pos = layoutDomains(agg, ids)
     const d = (p: string, q: string) => Math.hypot(pos[p][0] - pos[q][0], pos[p][1] - pos[q][1])

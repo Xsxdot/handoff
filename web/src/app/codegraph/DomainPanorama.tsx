@@ -173,6 +173,24 @@ export function DomainPanorama(props: DomainPanoramaProps) {
     else onSelectDomain(id)
   }
 
+  // 本层边界：把「里」和「外」画出来。圈内是本层子领域，圈外是域外占位卡，
+  // 圈上挂当前领域的名字——否则下钻进来只看见一堆卡，不知道自己在哪一层、
+  // 也分不出哪些属于这个领域。真机走查时这一屏就是没读懂的那一屏。
+  const boundary = useMemo(() => {
+    if (!scope) return null
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const id of ids) {
+      if (agg.cards[id]?.ext) continue
+      const p = pos[id]
+      if (!p) continue
+      x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1])
+      x1 = Math.max(x1, p[0] + CARD_W); y1 = Math.max(y1, p[1] + CARD_H)
+    }
+    if (!Number.isFinite(x0)) return null
+    const pad = 36
+    return { x: x0 - pad, y: y0 - pad - 8, w: x1 - x0 + pad * 2, h: y1 - y0 + pad * 2 + 8 }
+  }, [ids, pos, agg, scope])
+
   const W = Math.max(1200, ...ids.map((id) => (pos[id]?.[0] ?? 0) + 420))
   const H = Math.max(620, ...ids.map((id) => (pos[id]?.[1] ?? 0) + 300))
   const center = (id: string): [number, number] => {
@@ -190,6 +208,15 @@ export function DomainPanorama(props: DomainPanoramaProps) {
       <div className="relative"
         style={{ width: W, height: H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
         <svg width={W} height={H} className="absolute inset-0">
+          {boundary && (
+            <g>
+              <rect x={boundary.x} y={boundary.y} width={boundary.w} height={boundary.h} rx={18}
+                fill="#8a8a8a" fillOpacity={0.04} stroke="#c4c4c4" strokeDasharray="7 5" strokeWidth={1.5} />
+              <text x={boundary.x + 16} y={boundary.y + 21} fontSize={12} fill="#8a8a8a">
+                {view.domains[scope as string]?.label} 领域内部 · 圈外是本层之外的领域
+              </text>
+            </g>
+          )}
           {[...agg.edges.entries()].map(([key, de]) => {
             if (!pos[de.from] || !pos[de.to]) return null
             const [x1, y1] = center(de.from)

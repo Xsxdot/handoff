@@ -17,6 +17,8 @@ const GRAVITY_Y = 330   // 纵向重力的目标带
 const CARD_W = 252      // 与 DomainPanorama 的 CARD_W 一致
 const CARD_H = 112      // 卡高实测 89~108，取上界留余量
 const SEP_ITER = 80     // 分离迭代上限；正常几轮就收敛，上限只防病态输入
+const EXT_W = 176       // 域外占位卡实测尺寸（比实卡小一号）
+const EXT_H = 56
 
 export function layoutDomains(
   agg: DomainAgg,
@@ -28,17 +30,22 @@ export function layoutDomains(
     // 无 seed 时用 id 序号散开：质数步长让初值分散又完全确定
     pos[id] = seed[id] ? [seed[id][0], seed[id][1]] : [340 + ((i * 173) % 640), 90 + ((i * 257) % 420)]
   })
+  // 域外占位卡不参与内部排布：它们是边界之外的注解，摆在外圈（见 ringOuter）
+  const inner = ids.filter((id) => !agg.cards?.[id]?.ext)
+  const outer = ids.filter((id) => agg.cards?.[id]?.ext)
   const springs: [string, string, number][] = []
   for (const de of agg.edges.values()) {
-    if (pos[de.from] && pos[de.to]) springs.push([de.from, de.to, Math.min(de.pairs.length, 4)])
+    if (pos[de.from] && pos[de.to] && !agg.cards?.[de.from]?.ext && !agg.cards?.[de.to]?.ext) {
+      springs.push([de.from, de.to, Math.min(de.pairs.length, 4)])
+    }
   }
   for (let it = 0; it < ITER; it++) {
     const f: Record<string, [number, number]> = {}
-    for (const id of ids) f[id] = [0, 0]
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const A = ids[i]
-        const B = ids[j]
+    for (const id of inner) f[id] = [0, 0]
+    for (let i = 0; i < inner.length; i++) {
+      for (let j = i + 1; j < inner.length; j++) {
+        const A = inner[i]
+        const B = inner[j]
         const dx = pos[A][0] - pos[B][0]
         const dy = pos[A][1] - pos[B][1]
         const nd = Math.sqrt((dx / RX) ** 2 + (dy / RY) ** 2) || 0.01
@@ -63,14 +70,64 @@ export function layoutDomains(
     }
     // 后半程减半阻尼：先快速铺开、再稳下来，避免末尾还在抖
     const damp = (it < 120 ? 1 : 0.5) * 0.5
-    for (const id of ids) {
+    for (const id of inner) {
       f[id][1] += (GRAVITY_Y - pos[id][1]) * 0.005
       pos[id][0] = Math.max(30, pos[id][0] + f[id][0] * damp)
       pos[id][1] = Math.max(64, pos[id][1] + f[id][1] * damp)
     }
   }
-  separate(pos, ids)
+  separate(pos, inner)
+  ringOuter(agg, pos, inner, outer)
+  separate(pos, ids, new Set(inner))
   return pos
+}
+
+// ringOuter 把域外占位卡摆到本层内容外面的一圈上。
+//
+// 为什么不和本层内容一起做力导向：混在一起摆出来的图读不出「里」和「外」——
+// 真机上进「本机治理」那一层，2 张本层卡被 5 张域外卡夹在中间，看起来像 7 个
+// 领域乱摆。占位卡的作用是「这条调用出去到哪儿了」，属于边界之外的注解，
+// 位置应该在外圈、按它连向谁来定方位，而不是参与内部的排布。
+function ringOuter(
+  agg: DomainAgg,
+  pos: Record<string, [number, number]>,
+  inner: string[],
+  outer: string[],
+): void {
+  if (!outer.length) return
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const id of inner) {
+    const p = pos[id]
+    if (!p) continue
+    x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1])
+    x1 = Math.max(x1, p[0] + CARD_W); y1 = Math.max(y1, p[1] + CARD_H)
+  }
+  if (!Number.isFinite(x0)) { x0 = 60; y0 = 90; x1 = 60 + CARD_W; y1 = 90 + CARD_H }
+  const cx = (x0 + x1) / 2
+  const cy = (y0 + y1) / 2
+  const rx = (x1 - x0) / 2 + 260
+  const ry = (y1 - y0) / 2 + 190
+  // 方位取「它连向的本层卡」的平均方向：调用谁就落在谁那一侧，连线不用横穿全场
+  const dir: Record<string, [number, number]> = {}
+  for (const de of agg.edges.values()) {
+    for (const [a, b] of [[de.from, de.to], [de.to, de.from]]) {
+      if (!outer.includes(a) || !pos[b]) continue
+      const d = dir[a] ?? (dir[a] = [0, 0])
+      d[0] += pos[b][0] + CARD_W / 2 - cx
+      d[1] += pos[b][1] + CARD_H / 2 - cy
+    }
+  }
+  outer.forEach((id, i) => {
+    const d = dir[id]
+    // 没有连线的（理论上不该出现）按序号均分一圈，保持确定性
+    const ang = d && (d[0] || d[1])
+      ? Math.atan2(d[1], d[0])
+      : (i / outer.length) * Math.PI * 2
+    pos[id] = [
+      Math.max(30, cx + Math.cos(ang) * rx - EXT_W / 2),
+      Math.max(64, cy + Math.sin(ang) * ry - EXT_H / 2),
+    ]
+  })
 }
 
 // separate 在力导向收敛后，按**矩形真实相交**再分离一遍。
@@ -81,7 +138,7 @@ export function layoutDomains(
 // 相交或到迭代上限。
 //
 // 确定性：只按 ids 的顺序两两处理，不含随机数——同一份数据每次结果逐位相同。
-function separate(pos: Record<string, [number, number]>, ids: string[]): void {
+function separate(pos: Record<string, [number, number]>, ids: string[], frozen?: Set<string>): void {
   for (let it = 0; it < SEP_ITER; it++) {
     let moved = false
     for (let i = 0; i < ids.length; i++) {
@@ -92,15 +149,20 @@ function separate(pos: Record<string, [number, number]>, ids: string[]): void {
         const oy = Math.min(A[1] + CARD_H, B[1] + CARD_H) - Math.max(A[1], B[1])
         if (ox <= 0 || oy <= 0) continue
         moved = true
+        // 冻结的一侧不动，位移全给另一侧；两侧都冻结就跳过（本层内容之间已分离过）
+        const fa = frozen?.has(ids[i]) ?? false
+        const fb = frozen?.has(ids[j]) ?? false
+        if (fa && fb) continue
+        const share = fa || fb ? 1 : 0.5
         // 沿重叠较小的那个轴分开：挪动距离最小，布局形状改变也最小
         if (ox < oy) {
-          const d = (ox / 2 + 1) * (A[0] <= B[0] ? -1 : 1)
-          A[0] = Math.max(30, A[0] + d)
-          B[0] = Math.max(30, B[0] - d)
+          const d = (ox * share + 1) * (A[0] <= B[0] ? -1 : 1)
+          if (!fa) A[0] = Math.max(30, A[0] + d)
+          if (!fb) B[0] = Math.max(30, B[0] - d)
         } else {
-          const d = (oy / 2 + 1) * (A[1] <= B[1] ? -1 : 1)
-          A[1] = Math.max(64, A[1] + d)
-          B[1] = Math.max(64, B[1] - d)
+          const d = (oy * share + 1) * (A[1] <= B[1] ? -1 : 1)
+          if (!fa) A[1] = Math.max(64, A[1] + d)
+          if (!fb) B[1] = Math.max(64, B[1] - d)
         }
       }
     }
