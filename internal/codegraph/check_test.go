@@ -1,6 +1,9 @@
 package codegraph
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // mkView 拼一个最小视图：nodes 映射 id→(container,file)，edges/impls 是边表。
 func mkView(nodes map[string][2]string, edges, impls [][2]string) *View {
@@ -111,4 +114,65 @@ func TestCheckExemptionsAndWarns(t *testing.T) {
 		t.Fatalf("组装豁免/deleted 边不应 fail: %+v", rep.Fails)
 	}
 	assertKinds(t, "warn", rep.Warns, []string{"outside-file", "dead-rule"})
+}
+
+// 组装点死配置：assembly 里写了视图中不存在的文件，必须报 dead-assembly warn。
+// 这是与 dead-rule 对称的一条——在此之前 assembly 写错文件名完全没有信号，
+// 一条不存在的 "cmd/main.go" 能在基准里躺过整轮而无人发现。
+func TestCheckDeadAssembly(t *testing.T) {
+	nodes := map[string][2]string{
+		"main": {"main", "cmd/main.go"}, "b1": {"b.Facade", "b/f.go"},
+	}
+	tg := &Target{
+		Meta: TargetMeta{Version: 1},
+		Domains: []TargetDomain{
+			{ID: "d_cmd", Type: "logic", Paths: []string{"cmd/**"}},
+			{ID: "d_b", Type: "logic", Paths: []string{"b/**"}},
+		},
+		Assembly: []string{"cmd/main.go", "cmd/ghost.go"},
+	}
+	rep := Check(tg, mkView(nodes, [][2]string{{"main", "b1"}}, nil))
+
+	var hits []Finding
+	for _, w := range rep.Warns {
+		if w.Kind == "dead-assembly" {
+			hits = append(hits, w)
+		}
+	}
+	// 恰好一条：存在的 cmd/main.go 不该报，不存在的 cmd/ghost.go 必须报。
+	// 断言条数而不只断言「有」，是为了挡住「把所有 assembly 都报一遍」这种实现。
+	if len(hits) != 1 {
+		t.Fatalf("dead-assembly 应恰好 1 条，实际 %d 条: %+v", len(hits), rep.Warns)
+	}
+	if !strings.Contains(hits[0].Detail, "cmd/ghost.go") {
+		t.Fatalf("dead-assembly 应指向 cmd/ghost.go，实际: %s", hits[0].Detail)
+	}
+	if len(rep.Fails) != 0 {
+		t.Fatalf("dead-assembly 只能是 warn，不能进 fails: %+v", rep.Fails)
+	}
+}
+
+// 节点被标记 deleted 时，该文件不算「视图里存在」——组装点仍应报死配置。
+// 边界条件：deleted 节点只为渲染保留，不代表当前分支里还有这个文件。
+func TestCheckDeadAssemblyIgnoresDeletedNodes(t *testing.T) {
+	tg := &Target{
+		Meta:     TargetMeta{Version: 1},
+		Domains:  []TargetDomain{{ID: "d_cmd", Type: "logic", Paths: []string{"cmd/**"}}},
+		Assembly: []string{"cmd/gone.go"},
+	}
+	v := mkView(map[string][2]string{"g": {"main", "cmd/gone.go"}}, nil, nil)
+	n := v.Nodes["g"]
+	n.Status = "deleted"
+	v.Nodes["g"] = n
+
+	rep := Check(tg, v)
+	found := false
+	for _, w := range rep.Warns {
+		if w.Kind == "dead-assembly" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("deleted 节点不应让组装点算「命中」，实际 warns: %+v", rep.Warns)
+	}
 }

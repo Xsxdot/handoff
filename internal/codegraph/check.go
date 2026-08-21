@@ -15,7 +15,8 @@ import (
 // Finding 一条对照发现。Kind 取值：
 // fail 侧：new-direction（无契约方向）/ off-entry 归并进 legacy 或 over-budget /
 // off-interface（未声明的跨域实现）/ over-budget（legacy 超预算）
-// warn 侧：legacy（预算内直调计数）/ outside-file（图外文件）/ dead-rule（规则未命中任何节点）
+// warn 侧：legacy（预算内直调计数）/ outside-file（图外文件）/ dead-rule（规则未命中任何节点）/
+// dead-assembly（组装点条目未命中任何节点文件）
 type Finding struct {
 	Kind   string `json:"kind"`
 	From   string `json:"from,omitempty"`
@@ -47,11 +48,13 @@ func Check(t *Target, v *View) *Report {
 	// 归域 + 图外收集（每文件报一次）
 	nodeDomain := make(map[string]string, len(v.Nodes))
 	outside := map[string]bool{}
-	fileHit := map[string]bool{} // 供死规则检测：哪些文件被规则命中过
+	fileHit := map[string]bool{}  // 供死规则检测：哪些文件被规则命中过
+	allFiles := map[string]bool{} // 供组装点死配置检测：视图里出现过的全部文件（含图外）
 	for id, n := range v.Nodes {
 		if n.Status == "deleted" {
 			continue
 		}
+		allFiles[n.File] = true
 		d := t.DomainOf(n.File)
 		nodeDomain[id] = d
 		if d == "" {
@@ -130,6 +133,18 @@ func Check(t *Target, v *View) *Report {
 				rep.Warns = append(rep.Warns, Finding{Kind: "dead-rule", From: d.ID,
 					Detail: fmt.Sprintf("域 %s 的规则 %q 未命中视图中任何节点文件", d.ID, rule)})
 			}
+		}
+	}
+	// 组装点死配置：assembly 条目在视图里找不到任何节点文件。
+	// 与 dead-rule 对称——在此之前 assembly 写错文件名是零信号：ValidateTarget
+	// 完全不看 Assembly，Check 只把它当 set 做 caller 比对，于是一条并不存在的
+	// "cmd/main.go" 能在基准里躺过整轮而无人发现（2026-08-21 双轨对照实测）。
+	// 只报 warn 不报 fail：扫描未覆盖的入口文件（如当前的 main.go）本就没有节点，
+	// 落 fail 会把「基线覆盖不全」误判成「契约违规」。
+	for _, f := range t.Assembly {
+		if !allFiles[f] {
+			rep.Warns = append(rep.Warns, Finding{Kind: "dead-assembly",
+				Detail: fmt.Sprintf("组装点 %q 未命中视图中任何节点文件", f)})
 		}
 	}
 	sortFindings(rep) // 输出稳定排序，测试与 diff 可复现
