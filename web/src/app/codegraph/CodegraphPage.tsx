@@ -95,7 +95,9 @@ export function CodegraphPage() {
     setSelected(id)
   }
 
-  if (error) return <div className="p-6 text-sm text-red-600">{error}</div>
+  // 出错时**不能整页替换**：项目下拉在工具条里，把工具条一起换掉，选中一个
+  // 没扫过图的项目后就再也换不回去了（本页没有别的项目入口，等于卡死）。
+  // 所以错误只占内容区，工具条恒在。
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-2 text-sm">
@@ -123,8 +125,8 @@ export function CodegraphPage() {
         )}
         <button onClick={reload} className="ml-auto rounded border px-2 py-0.5 text-xs">刷新</button>
       </div>
-      {loading || !view ? (
-        <div className="p-6 text-sm text-muted-foreground">{loading ? '加载中…' : '该项目未生成代码图'}</div>
+      {loading || error || !view ? (
+        <CodegraphPlaceholder loading={loading} error={error} project={active} onRetry={reload} />
       ) : (
         <div className="relative flex min-h-0 flex-1">
           {!single && (
@@ -186,6 +188,52 @@ export function CodegraphPage() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// NOT_SCANNED 是 agentd 对「这个项目还没扫过图」的应答特征（codegraph.go 的 404
+// 文案）。按文案判而不是按状态码：useCodegraph 只把 Error.message 传出来，
+// 状态码在那一层就丢了。改 agentd 那句文案时这里要一起改——两处都在提「未生成
+// 代码图」，grep 得到。
+const NOT_SCANNED = '未生成代码图'
+
+/** CodegraphPlaceholder 是内容区的三种非图状态：加载中 / 没扫过 / 真出错。 */
+function CodegraphPlaceholder({ loading, error, project, onRetry }: {
+  loading: boolean
+  error: string
+  project: string
+  onRetry: () => void
+}) {
+  if (loading) return <div className="p-6 text-sm text-muted-foreground">加载中…</div>
+
+  // 「没扫过」不是故障，是这个项目还没做过的一件事——给命令，别给红字。
+  const notScanned = !error || error.includes(NOT_SCANNED)
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+      {notScanned ? (
+        <>
+          <p className="text-sm font-medium">{project ? `项目 ${project} 还没有代码图` : '还没有代码图'}</p>
+          {/* 这里不给「跑一句命令」的暗示：本仓没有 graph scan 子命令，
+              基线是派 executor 按 docs/codegraph-scan-recipe.md 扫出来的
+              （handoff graph 一族全是本地只读查询，见 cmd/graph.go） */}
+          <p className="max-w-md text-xs text-muted-foreground">
+            代码图是扫描产物，落在项目仓库的
+            <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">codegraph/baseline.json</code>。
+            按 <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">docs/codegraph-scan-recipe.md</code>
+            派一次扫描任务，文件落盘后回来点「刷新」。
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm font-medium text-destructive">取代码图失败</p>
+          {/* 报错原文照抄，不翻译不概括：这里最常见的是网络/权限，改写会让人查错方向 */}
+          <p className="max-w-md break-all text-xs text-muted-foreground">{error}</p>
+        </>
+      )}
+      <button type="button" onClick={onRetry} className="rounded border px-2.5 py-1 text-xs hover:bg-accent/60">
+        重试
+      </button>
     </div>
   )
 }

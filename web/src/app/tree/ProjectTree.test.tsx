@@ -281,9 +281,22 @@ describe('ProjectTree', () => {
     expect(board.getAttribute('title')).not.toContain('未挂账')
   })
 
-  it('底部四个入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
+  it('「添加项目」在「项目 N」标题行里，不在底部入口区', () => {
+    // why：它改变树本身，与底部那排「离开这棵树去别处看」的跳转入口不是一类
+    // 东西；且原先钉在底部时离它作用的对象（项目列表）一屏远
+    const onAddProject = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onAddProject })} />)
+    const add = screen.getByRole('button', { name: '添加项目' })
+    const header = container.querySelector('[data-testid="project-count"]')!.parentElement!
+    expect(header.contains(add)).toBe(true)
+    const footer = container.querySelector('.border-t')
+    expect(footer?.contains(add)).toBe(false)
+    fireEvent.click(add)
+    expect(onAddProject).toHaveBeenCalled()
+  })
+
+  it('底部入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
     render(<ProjectTree {...props({ ticketCount: 0 })} />)
-    expect(screen.getByRole('button', { name: /添加项目/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /任务看板/ })).toBeInTheDocument()
     // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
     const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
