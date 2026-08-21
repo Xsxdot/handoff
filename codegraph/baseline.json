@@ -6,89 +6,163 @@
   "scannedAt": "2026-08-19",
   "generator": "codex"
  },
+ "domains": {
+  "d_cli": {
+   "label": "cli",
+   "kind": "命令行入口",
+   "summary": "协调者敲的全部 handoff 子命令",
+   "desc": "cobra 命令树：参数解析、把请求交给 client、把结果按 JSON/人读两种形态打出来。不含任何业务判断。"
+  },
+  "d_client": {
+   "label": "client",
+   "kind": "客户端",
+   "summary": "与 agentd 通话的唯一通道",
+   "desc": "HTTP 调用与 WS 事件订阅的封装，含 cursor 落盘、断线重连、积压对账。CLI 的一切远程能力都从这里出去。"
+  },
+  "d_agentd": {
+   "label": "agentd",
+   "kind": "执行机守护进程",
+   "summary": "持有全部任务状态的服务端",
+   "desc": "对外是 HTTP + WS，对内是任务状态机与 executor 生命周期。分对外接口层与核心两个子领域。"
+  },
+  "d_agentd/api": {
+   "label": "api",
+   "kind": "对外接口层",
+   "summary": "HTTP 处理器与 WS 事件广播",
+   "desc": "Server 的 handleXxx 做参数校验与状态码决策，Hub 负责事件的订阅与扇出。不直接碰 executor 进程。",
+   "parent": "d_agentd"
+  },
+  "d_agentd/core": {
+   "label": "core",
+   "kind": "生命周期核心",
+   "summary": "任务状态机、executor 调度与工作区准备",
+   "desc": "Manager 负责 dispatch/continue/状态迁移/存活探测与执行器解析；包级函数负责仓库可用性、工作区准备与基线决议。",
+   "parent": "d_agentd"
+  },
+  "d_executor": {
+   "label": "executor",
+   "kind": "执行器适配",
+   "summary": "各家 executor 的统一适配层",
+   "desc": "把 opencode/claude/grok/codex 的差异收敛成同一套 adapter 接口，向上只暴露启动、投递、探活。"
+  },
+  "d_store": {
+   "label": "store",
+   "kind": "持久化",
+   "summary": "SQLite 落盘：任务、事件、工单、项目位置",
+   "desc": "全部状态的唯一真相。事件按 seq 单调递增，是 cursor 语义与断线续拉的基础。"
+  },
+  "d_proto": {
+   "label": "proto",
+   "kind": "数据契约",
+   "summary": "跨进程共享的结构定义",
+   "desc": "任务、事件、工单等在 CLI / agentd / executor 之间传递的结构体，改动会同时波及三端。"
+  },
+  "d_localsync": {
+   "label": "localsync",
+   "kind": "本地同步",
+   "summary": "远程分支经 bundle 落回本地仓库",
+   "desc": "pull 的落地实现：取 bundle、fetch 进本地、只更新引用不 checkout 不合并。"
+  }
+ },
  "containers": {
   "c_cli": {
    "label": "CLI 命令",
    "kind": "入口",
    "col": 0,
-   "entry": true
+   "entry": true,
+   "domain": "d_cli"
   },
   "c_http": {
    "label": "HTTP API",
    "kind": "入口",
    "col": 3,
-   "entry": true
+   "entry": true,
+   "domain": "d_agentd/api"
   },
   "c_ws": {
    "label": "长连接/WS",
    "kind": "入口",
    "col": 3,
-   "entry": true
+   "entry": true,
+   "domain": "d_agentd/api"
   },
   "k_cmd_fn": {
    "label": "cmd（包级函数）",
    "kind": "函数组",
-   "col": 1
+   "col": 1,
+   "domain": "d_cli"
   },
   "k_client_fn": {
    "label": "client（包级函数）",
    "kind": "函数组",
-   "col": 2
+   "col": 2,
+   "domain": "d_client"
   },
   "k_client_Client": {
    "label": "client.Client",
    "kind": "类",
-   "col": 2
+   "col": 2,
+   "domain": "d_client"
   },
   "k_agentd_Server": {
    "label": "agentd.Server",
    "kind": "类",
-   "col": 4
+   "col": 4,
+   "domain": "d_agentd/api"
   },
   "k_agentd_fn": {
    "label": "agentd（包级函数）",
    "kind": "函数组",
-   "col": 4
+   "col": 4,
+   "domain": "d_agentd/core"
   },
   "k_agentd_Manager": {
    "label": "agentd.Manager",
    "kind": "类",
-   "col": 4
+   "col": 4,
+   "domain": "d_agentd/core"
   },
   "k_agentd_Hub": {
    "label": "agentd.Hub",
    "kind": "类",
-   "col": 4
+   "col": 4,
+   "domain": "d_agentd/api"
   },
   "k_executor_fn": {
    "label": "executor（包级函数）",
    "kind": "函数组",
-   "col": 5
+   "col": 5,
+   "domain": "d_executor"
   },
   "k_localsync_fn": {
    "label": "localsync（包级函数）",
    "kind": "函数组",
-   "col": 2
+   "col": 2,
+   "domain": "d_localsync"
   },
   "k_store_Store": {
    "label": "store.Store",
    "kind": "类",
-   "col": 5
+   "col": 5,
+   "domain": "d_store"
   },
   "k_proto_model": {
    "label": "proto 实体",
    "kind": "实体",
-   "col": 6
+   "col": 6,
+   "domain": "d_proto"
   },
   "k_client_model": {
    "label": "client 实体",
    "kind": "实体",
-   "col": 2
+   "col": 2,
+   "domain": "d_client"
   },
   "k_localsync_model": {
    "label": "localsync 实体",
    "kind": "实体",
-   "col": 2
+   "col": 2,
+   "domain": "d_localsync"
   }
  },
  "nodes": {
