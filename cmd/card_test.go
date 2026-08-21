@@ -8,7 +8,7 @@ import (
 
 func TestCardAddListShowMove(t *testing.T) {
 	dir := t.TempDir()
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "第一张卡", "--project", "demo")
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "第一张卡", "--project", "demo", "--workflow", "feature")
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}

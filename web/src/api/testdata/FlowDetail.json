@@ -1,0 +1,28 @@
+{
+  "name": "triage",
+  "version": 1,
+  "nodes": [
+    {
+      "name": "待办",
+      "override": {},
+      "next": "定性中",
+      "gate": {}
+    },
+    {
+      "name": "定性中",
+      "override": {},
+      "next": "已定性",
+      "gate": {}
+    },
+    {
+      "name": "已定性",
+      "override": {},
+      "gate": {}
+    }
+  ],
+  "states": [
+    "待办",
+    "定性中",
+    "已定性"
+  ]
+}

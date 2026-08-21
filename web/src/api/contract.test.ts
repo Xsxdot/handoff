@@ -43,6 +43,15 @@ import envKeysFixture from './testdata/EnvKeysResp.json'
 import envMappingReqFixture from './testdata/EnvMappingReq.json'
 import workbenchBaseFixture from './testdata/WorkbenchBase.json'
 import workbenchStateFixture from './testdata/WorkbenchStateResp.json'
+import newCardReqFixture from './testdata/NewCardReq.json'
+import cardCreateRespFixture from './testdata/CardCreateResp.json'
+import migrateCardReqFixture from './testdata/MigrateCardReq.json'
+import migrateCardRespFixture from './testdata/MigrateCardResp.json'
+import ledgerEventFixture from './testdata/LedgerEvent.json'
+import cardViewFixture from './testdata/CardView.json'
+import cardDetailFixture from './testdata/CardDetail.json'
+import nodeDefFixture from './testdata/NodeDef.json'
+import flowDetailFixture from './testdata/FlowDetail.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
@@ -75,8 +84,47 @@ import {
   type WorkbenchBaseRow,
   type WorkbenchStateResp,
 } from './types'
+import type {
+  CardDetail,
+  CardCreateResp,
+  CardView,
+  FlowDetail,
+  LedgerEvent,
+  MigrateCardReq,
+  MigrateCardResp,
+  NewCardReq,
+  NodeDef,
+} from './ledger'
 
 describe('契约 fixture 与 TS 类型', () => {
+	it('账本 wire：建卡/迁移 DTO 与派生投影字段完整', () => {
+		const create: NewCardReq = newCardReqFixture
+		const created: CardCreateResp = cardCreateRespFixture
+		const migrate: MigrateCardReq = migrateCardReqFixture
+		const response: MigrateCardResp = migrateCardRespFixture
+		const event: LedgerEvent = ledgerEventFixture
+		const view: CardView = cardViewFixture
+		const detail: CardDetail = cardDetailFixture
+		const node: NodeDef = nodeDefFixture
+		const flow: FlowDetail = flowDetailFixture
+		expect(create.workflow).toBeUndefined()
+		expect(created.id).toBe('B167')
+		expect(Object.keys(create)).toEqual(expect.arrayContaining(['title', 'project']))
+		expect(migrate.workflow).toBe('domain')
+		expect(migrate.status).toBe('拆解')
+		expect(migrate.version).toBeUndefined()
+		expect(response.ok).toBe(true)
+		expect(response.from.workflow).toBe('bug')
+		expect(response.to.status).toBe('拆解')
+		expect(event.payload).toMatchObject({
+			from_workflow: 'bug', from_version: 1, from_status: '进行中',
+			to_workflow: 'domain', to_version: 1, to_status: '拆解',
+		})
+		expect(Object.keys(view)).toEqual(expect.arrayContaining(['children_total', 'children_done', 'open_tickets']))
+		expect(Object.keys(detail)).toEqual(expect.arrayContaining(['card', 'relations', 'events', 'task_states', 'effective_base_branch', 'decisions', 'needs', 'children']))
+		expect(node.dispatch).toBeUndefined()
+		expect(flow.states).toEqual(['待办', '定性中', '已定性'])
+	})
   it('Task：可解析为 Task 类型，关键字段齐全', () => {
     const task: Task = taskFixture
     expect(task.id).toBe('7ec762e7-3bd2-412c-a39c-e4cf8b4057ad')

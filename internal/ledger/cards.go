@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// NewCard 建卡请求。Workflow 必填（调用方负责缺省解析，如 CLI 默认
-// feature）；Parent 非空则建子卡（点号 id，继承基线由查询期解析）。
+// NewCard 建卡请求。Workflow 为空时由账本解析为 triage；Parent 非空则建子卡
+// （点号 id，继承基线由查询期解析）。
 type NewCard struct {
 	Title, Project, Priority, Parent, Workflow, BaseBranch, Actor string
 }
@@ -126,6 +126,9 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 	}
 	if nc.Priority == "" {
 		nc.Priority = "中"
+	}
+	if strings.TrimSpace(nc.Workflow) == "" {
+		nc.Workflow = "triage"
 	}
 	wf, err := s.GetWorkflow(nc.Workflow, 0)
 	if err != nil {

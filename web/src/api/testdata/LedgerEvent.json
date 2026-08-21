@@ -1,0 +1,15 @@
+{
+  "seq": 9,
+  "card_id": "B167",
+  "type": "workflow_migrated",
+  "actor": "web:127.0.0.1",
+  "payload": {
+    "from_workflow": "bug",
+    "from_version": 1,
+    "from_status": "进行中",
+    "to_workflow": "domain",
+    "to_version": 1,
+    "to_status": "拆解"
+  },
+  "created_at": "2026-08-11T10:30:00+08:00"
+}

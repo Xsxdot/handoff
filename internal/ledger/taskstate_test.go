@@ -68,3 +68,14 @@ func TestOpenTicketCounts(t *testing.T) {
 		t.Fatalf("作废后应清零: %v %+v", err, counts)
 	}
 }
+
+func TestCardStepInFlightContractStub(t *testing.T) {
+	s := seedStore(t)
+	inFlight, err := s.CardStepInFlight("B167")
+	if err != nil {
+		t.Fatalf("CardStepInFlight: %v", err)
+	}
+	if inFlight {
+		t.Fatal("契约 stub 不应报告在飞")
+	}
+}

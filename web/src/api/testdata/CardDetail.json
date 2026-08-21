@@ -1,0 +1,22 @@
+{
+  "card": {
+    "id": "B167",
+    "title": "需要定性",
+    "status": "待办",
+    "priority": "中",
+    "project": "handoff",
+    "parent": "",
+    "workflow": "triage",
+    "workflow_version": 1,
+    "driver_heartbeat_at": "0001-01-01T00:00:00Z",
+    "created_at": "0001-01-01T00:00:00Z",
+    "updated_at": "0001-01-01T00:00:00Z"
+  },
+  "relations": [],
+  "events": [],
+  "task_states": [],
+  "effective_base_branch": "main",
+  "decisions": [],
+  "needs": "",
+  "children": []
+}
