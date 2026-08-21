@@ -118,7 +118,7 @@ export function layoutBands(
   return { px, py, W, H, order }
 }
 
-// ChainTreeNode 是左树/时序图共用的 DFS 展开结果；cycle=true 表示此处截断回边。
+// ChainTreeNode 是左树 CallTree 使用的 DFS 展开结果；cycle=true 表示此处截断回边。
 export interface ChainTreeNode { id: string; cycle?: boolean; children: ChainTreeNode[] }
 
 // chainTree 从入口 DFS 展开调用树，路径内重现即标 cycle 截断，深度上限防爆栈。
