@@ -11,7 +11,7 @@ export interface CardView {
   workflow: string
   parent: string
   base_branch: string
-  attachments: { kind: string; path: string }[]
+  attachments: Attachment[]
   following: string
   blocked: boolean
   blocked_by: string[]
@@ -22,6 +22,45 @@ export interface CardView {
   children_done: number // 已完结（含终止），与聚合闸同一把尺
   conflict: boolean
   open_tickets: number
+}
+
+export interface Attachment {
+  kind: string
+  path: string
+}
+
+export interface Card {
+  id: string
+  title: string
+  status: string
+  terminate_reason?: string
+  priority: string
+  project: string
+  parent: string
+  workflow: string
+  workflow_version: number
+  attachments?: Attachment[]
+  acceptance_criteria?: string
+  base_branch?: string
+  driver_session?: string
+  driver_heartbeat_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Relation {
+  From: string
+  To: string
+  Type: string
+  CreatedAt: string
+}
+
+export interface TaskStateRow {
+  Target: string
+  TaskID: string
+  Purpose: string
+  LastType: string
+  LastSeq: number
 }
 
 export interface UnlinkedSummary {
@@ -38,10 +77,10 @@ export interface CardBrief {
 }
 
 export interface CardDetail {
-  card: unknown
-  relations: { From: string; To: string; Type: string }[]
+  card: Card
+  relations: Relation[]
   events: LedgerEvent[]
-  task_states: { Target: string; TaskID: string; Purpose: string; LastType: string; LastSeq: number }[]
+  task_states: TaskStateRow[]
   effective_base_branch: string
   decisions: Decision[] | null
   needs: string
@@ -59,6 +98,12 @@ export interface NodeOverride {
   model?: string
 }
 
+export interface Gate {
+  require_attachment?: string
+  require_acceptance?: boolean
+  require_children_done?: boolean
+}
+
 // NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
 // 字段名与 Go 侧 ledger.NodeDef 一字不差。
 export interface NodeDef {
@@ -71,7 +116,7 @@ export interface NodeDef {
   max_rounds?: number
   next?: string
   on_fail?: string
-  gate?: { require_attachment?: string; require_acceptance?: boolean; require_children_done?: boolean }
+  gate?: Gate
   human_bases?: string[]
 }
 
@@ -85,10 +130,35 @@ export interface FlowDetail {
 export interface NewCardReq {
   title: string
   project: string
-  workflow: string
+  workflow?: string
   priority?: string
   parent?: string
   base_branch?: string
+}
+
+export interface CardCreateResp {
+  id: string
+}
+
+export interface MigrateCardReq {
+  workflow: string
+  status: string
+  version?: number
+}
+
+export interface CardWorkflowLocation {
+  id: string
+  workflow: string
+  workflow_version: number
+  status: string
+}
+
+export interface MigrateCardResp {
+  ok: boolean
+  id: string
+  from: CardWorkflowLocation
+  to: CardWorkflowLocation
+  event: LedgerEvent
 }
 
 export interface LedgerEvent {
@@ -108,6 +178,9 @@ export interface Decision {
   status: string
   answer: string
   created_by?: string
+  answered_by?: string
+  created_at?: string
+  answered_at?: string
 }
 
 export interface WorkflowWire {
@@ -154,7 +227,10 @@ export const runCardStep = (id: string, step: string) =>
 
 // createCard 建卡。base_branch 只在建卡时能给，之后不可改。
 export const createCard = (req: NewCardReq) =>
-  postJSON<{ id: string }>('/api/cards', req)
+  postJSON<CardCreateResp>('/api/cards', req)
+
+export const migrateCard = (id: string, req: MigrateCardReq) =>
+  postJSON<MigrateCardResp>(`/api/cards/${encodeURIComponent(id)}/migrate`, req)
 
 // CardPatch 的三个字段**全部可选，缺席即「不动该字段」**（不是置空）。
 // 调用方只放要改的键，别为了「补全」而把现值原样塞回去——那会在没改动的

@@ -1,0 +1,26 @@
+{
+  "id": "B167",
+  "title": "需要定性",
+  "status": "待办",
+  "priority": "中",
+  "project": "handoff",
+  "workflow": "triage",
+  "parent": "",
+  "base_branch": "main",
+  "attachments": [
+    {
+      "kind": "spec",
+      "path": "specs/example.md"
+    }
+  ],
+  "following": "",
+  "blocked": false,
+  "blocked_by": [],
+  "merged_count": 0,
+  "needs": "",
+  "open_decisions": 0,
+  "children_total": 0,
+  "children_done": 0,
+  "conflict": false,
+  "open_tickets": 0
+}

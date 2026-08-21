@@ -36,6 +36,7 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/note", s.withLedger(s.handleCardNote))
 	api.HandleFunc("POST /api/cards/{id}/accept", s.withLedger(s.handleCardAccept))
 	api.HandleFunc("POST /api/cards/{id}/step", s.withLedger(s.handleCardStep))
+	api.HandleFunc("POST /api/cards/{id}/migrate", s.withLedger(s.handleCardMigrate))
 	api.HandleFunc("POST /api/cards/{id}/needs/clear", s.withLedger(s.handleCardNeedsClear))
 	api.HandleFunc("GET /api/flows", s.withLedger(s.handleFlows))
 	api.HandleFunc("GET /api/decisions", s.withLedger(s.handleDecisions))
@@ -67,7 +68,7 @@ func ledgerErr(w http.ResponseWriter, err error) {
 		code = http.StatusNotFound
 	case errors.Is(err, ledger.ErrCASConflict), errors.Is(err, ledger.ErrGateBlocked),
 		errors.Is(err, ledger.ErrBadState), errors.Is(err, ledger.ErrBadMerge),
-		errors.Is(err, ledger.ErrCycle):
+		errors.Is(err, ledger.ErrCycle), errors.Is(err, ledger.ErrStepInFlight):
 		code = http.StatusConflict
 	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
@@ -83,6 +84,69 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // ledgerActor 为浏览器写操作生成与既有账本 handler 一致的 actor 标识。
 func (s *Server) ledgerActor(r *http.Request) string {
 	return "web:" + r.RemoteAddr
+}
+
+func ledgerCardWire(card ledger.Card) proto.Card {
+	attachments := make([]proto.Attachment, 0, len(card.Attachments))
+	for _, attachment := range card.Attachments {
+		attachments = append(attachments, proto.Attachment{Kind: attachment.Kind, Path: attachment.Path})
+	}
+	return proto.Card{
+		ID: card.ID, Title: card.Title, Status: card.Status, TerminateReason: card.TerminateReason,
+		Priority: card.Priority, Project: card.Project, ParentID: card.ParentID,
+		WorkflowName: card.WorkflowName, WorkflowVersion: card.WorkflowVersion, Attachments: attachments,
+		AcceptanceCriteria: card.AcceptanceCriteria, BaseBranch: card.BaseBranch,
+		DriverSession: card.DriverSession, DriverHeartbeatAt: card.DriverHeartbeatAt,
+		CreatedAt: card.CreatedAt, UpdatedAt: card.UpdatedAt,
+	}
+}
+
+func ledgerEventWire(event ledger.Event) proto.LedgerEvent {
+	return proto.LedgerEvent{
+		Seq: event.Seq, CardID: event.CardID, Type: event.Type, Actor: event.Actor,
+		Payload: event.Payload, CreatedAt: event.CreatedAt,
+	}
+}
+
+func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
+	return proto.NodeDef{
+		Name: node.Name, Template: node.Template,
+		Override: proto.NodeOverride{
+			Executor: node.Override.Executor, Discipline: node.Override.Discipline,
+			Target: node.Override.Target, Model: node.Override.Model,
+		},
+		Dispatch: node.Dispatch, Verdict: node.Verdict, CarryCardContext: node.CarryCardContext,
+		MaxRounds: node.MaxRounds, Next: node.Next, OnFail: node.OnFail,
+		Gate: proto.Gate{
+			RequireAttachment:   node.Gate.RequireAttachment,
+			RequireAcceptance:   node.Gate.RequireAcceptance,
+			RequireChildrenDone: node.Gate.RequireChildrenDone,
+		},
+		HumanBases: node.HumanBases,
+	}
+}
+
+func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) proto.CardView {
+	attachments := make([]proto.Attachment, 0, len(view.Attachments))
+	for _, attachment := range view.Attachments {
+		attachments = append(attachments, proto.Attachment{Kind: attachment.Kind, Path: attachment.Path})
+	}
+	return proto.CardView{
+		ID: view.ID, Title: view.Title, Status: view.Status, Priority: view.Priority,
+		Project: view.Project, Workflow: view.WorkflowName, Parent: view.ParentID, BaseBranch: view.BaseBranch,
+		Attachments: attachments, Following: view.Following, Blocked: view.Blocked,
+		BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
+		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,
+		Conflict: conflict, OpenTickets: openTickets,
+	}
+}
+
+func ledgerDecisionWire(decision ledger.Decision) proto.Decision {
+	return proto.Decision{
+		ID: decision.ID, CardID: decision.CardID, Body: decision.Body, Options: decision.Options,
+		Status: decision.Status, CreatedBy: decision.CreatedBy, Answer: decision.Answer,
+		AnsweredBy: decision.AnsweredBy, CreatedAt: decision.CreatedAt, AnsweredAt: decision.AnsweredAt,
+	}
 }
 
 func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +168,7 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("未决工单推导失败（徽标退化为不显示，不阻塞列表）", "err", err)
 		tickets = nil
 	}
-	out := make([]map[string]any, 0, len(views))
+	out := make([]proto.CardView, 0, len(views))
 	for _, view := range views {
 		conflict := false
 		if view.Status == ledger.StatusDoing {
@@ -118,16 +182,7 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		out = append(out, map[string]any{
-			"id": view.ID, "title": view.Title, "status": view.Status, "priority": view.Priority,
-			"project": view.Project, "workflow": view.WorkflowName, "parent": view.ParentID, "base_branch": view.BaseBranch,
-			"attachments": view.Attachments, "following": view.Following,
-			"merged_count": view.MergedCount, "children_total": view.ChildrenTotal,
-			"children_done": view.ChildrenDone,
-			"blocked":       view.Blocked, "blocked_by": view.BlockedBy, "needs": view.NeedsReason,
-			"open_decisions": view.OpenDecisions, "conflict": conflict,
-			"open_tickets": tickets[view.ID],
-		})
+		out = append(out, ledgerCardViewWire(view, conflict, tickets[view.ID]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cards":    out,
@@ -260,10 +315,30 @@ func (s *Server) handleCardDetail(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("读子卡失败，详情降级为无子任务", "card", id, "cause", err)
 		children = nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"card": card, "relations": relations, "events": events,
-		"task_states": taskStates, "effective_base_branch": base,
-		"decisions": decisions, "needs": needs, "children": children,
+	relationWire := make([]proto.Relation, 0, len(relations))
+	for _, relation := range relations {
+		relationWire = append(relationWire, proto.Relation{From: relation.From, To: relation.To, Type: relation.Type, CreatedAt: relation.CreatedAt})
+	}
+	taskStateWire := make([]proto.TaskStateRow, 0, len(taskStates))
+	for _, state := range taskStates {
+		taskStateWire = append(taskStateWire, proto.TaskStateRow{Target: state.Target, TaskID: state.TaskID, Purpose: state.Purpose, LastType: state.LastType, LastSeq: state.LastSeq})
+	}
+	decisionWire := make([]proto.Decision, 0, len(decisions))
+	for _, decision := range decisions {
+		decisionWire = append(decisionWire, ledgerDecisionWire(decision))
+	}
+	childrenWire := make([]proto.CardBrief, 0, len(children))
+	for _, child := range children {
+		childrenWire = append(childrenWire, proto.CardBrief{ID: child.ID, Title: child.Title, Status: child.Status})
+	}
+	eventWire := make([]proto.LedgerEvent, 0, len(events))
+	for _, event := range events {
+		eventWire = append(eventWire, ledgerEventWire(event))
+	}
+	writeJSON(w, http.StatusOK, proto.CardDetail{
+		Card: ledgerCardWire(card), Relations: relationWire, Events: eventWire,
+		TaskStates: taskStateWire, EffectiveBaseBranch: base,
+		Decisions: decisionWire, Needs: needs, Children: childrenWire,
 	})
 }
 
@@ -441,11 +516,12 @@ func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("读出工作流", "name", name, "version", workflow.Version, "nodes", len(workflow.Def.Nodes))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":    workflow.Name,
-		"version": workflow.Version,
-		"nodes":   workflow.Def.Nodes,
-		"states":  workflow.Def.States,
+	nodes := make([]proto.NodeDef, 0, len(workflow.Def.Nodes))
+	for _, node := range workflow.Def.Nodes {
+		nodes = append(nodes, ledgerNodeWire(node))
+	}
+	writeJSON(w, http.StatusOK, proto.FlowDetail{
+		Name: workflow.Name, Version: workflow.Version, Nodes: nodes, States: workflow.Def.States,
 	})
 }
 
@@ -568,20 +644,13 @@ var attachmentKinds = map[string]bool{"spec": true, "plan": true, "doc": true, "
 
 // handleCardCreate 建卡。
 //
-// 请求体：title（必填）、project（必填）、workflow（必填）、priority、parent、
+// 请求体：title（必填）、project（必填）、workflow（可省略）、priority、parent、
 // base_branch。响应：{"id": "<新卡号>"}。
 //
 // 注意：**base_branch 只在这里能设**，建完不可改（改基线会让已经派出去的
 // 任务与卡的说法对不上）。子卡不传 base_branch 时自动继承父卡的有效基线。
 func (s *Server) handleCardCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Title      string `json:"title"`
-		Project    string `json:"project"`
-		Workflow   string `json:"workflow"`
-		Priority   string `json:"priority"`
-		Parent     string `json:"parent"`
-		BaseBranch string `json:"base_branch"`
-	}
+	var body proto.NewCardReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
 		return
@@ -590,8 +659,8 @@ func (s *Server) handleCardCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("标题不能为空"))
 		return
 	}
-	if body.Project == "" || body.Workflow == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("project 与 workflow 都是必填"))
+	if body.Project == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("project 不能为空"))
 		return
 	}
 	actor := s.ledgerActor(r)
@@ -608,7 +677,51 @@ func (s *Server) handleCardCreate(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("已建卡", "card", card.ID, "title", card.Title,
 		"workflow", card.WorkflowName, "version", card.WorkflowVersion,
 		"base_branch", card.BaseBranch, "actor", actor)
-	writeJSON(w, http.StatusOK, map[string]any{"id": card.ID})
+	writeJSON(w, http.StatusOK, proto.CardCreateResp{ID: card.ID})
+}
+
+// handleCardMigrate 是跨流迁移的控制面骨架：只解码显式目标、调用账本并翻译错误。
+// 在飞判定属于账本迁移事务，handler 不读取 agentd 的 cardStepFlight map。
+func (s *Server) handleCardMigrate(w http.ResponseWriter, r *http.Request) {
+	var body proto.MigrateCardReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	body.Workflow = strings.TrimSpace(body.Workflow)
+	body.Status = strings.TrimSpace(body.Status)
+	if body.Workflow == "" || body.Status == "" || body.Version < 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("workflow、status 必填，version 不能为负数"))
+		return
+	}
+	migration, err := s.ledger.MigrateCardWorkflow(r.PathValue("id"), body.Workflow, body.Version, body.Status, s.ledgerActor(r))
+	if err != nil {
+		// handler 不做在飞检查，只翻 Store 的错误码；否则 HTTP 与 CLI 会再次分裂
+		// （契约拍板记录④）。ErrStepInFlight 等 409 原因原样留在响应中。
+		s.log.Warn("迁移请求失败", "card", r.PathValue("id"), "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	toWireLocation := func(location ledger.WorkflowLocation) proto.CardWorkflowLocation {
+		return proto.CardWorkflowLocation{
+			ID: migration.CardID, Workflow: location.Workflow,
+			WorkflowVersion: location.Version, Status: location.Status,
+		}
+	}
+	response := proto.MigrateCardResp{
+		OK: true, ID: migration.CardID,
+		From: toWireLocation(migration.From), To: toWireLocation(migration.To),
+		Event: proto.LedgerEvent{
+			Seq: migration.Event.Seq, CardID: migration.Event.CardID,
+			Type: migration.Event.Type, Actor: migration.Event.Actor,
+			Payload: migration.Event.Payload, CreatedAt: migration.Event.CreatedAt,
+		},
+	}
+	s.log.Info("迁移响应已投影", "card", migration.CardID,
+		"from_workflow", migration.From.Workflow, "from_version", migration.From.Version,
+		"from_status", migration.From.Status, "to_workflow", migration.To.Workflow,
+		"to_version", migration.To.Version, "to_status", migration.To.Status)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleCardPatch 改卡的标题 / 优先级 / 验收判据。

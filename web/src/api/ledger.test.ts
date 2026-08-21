@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { attachFile, createCard, detachFile, patchCard, putFlow, runCardStep } from './ledger'
+import { attachFile, createCard, detachFile, migrateCard, patchCard, putFlow, runCardStep } from './ledger'
 
 // 直接打桩 fetch：这一层要验的是「方法、路径、请求体」，不是渲染。
 const calls: Array<{ url: string; init: RequestInit }> = []
@@ -23,6 +23,15 @@ describe('账本写操作的线格式', () => {
     expect(calls[0].url).toContain('/api/cards')
     expect(calls[0].init.method).toBe('POST')
     expect(bodyOf(0)).toEqual({ title: 'T', project: 'p', workflow: 'bug', priority: '高', base_branch: 'feat/x' })
+  })
+
+  it('未定性建卡可省略 workflow，迁移一次提交目标流/列/版本', async () => {
+    await createCard({ title: 'T', project: 'p' })
+    expect(bodyOf(0)).toEqual({ title: 'T', project: 'p' })
+    await migrateCard('B1', { workflow: 'domain', status: '拆解' })
+    expect(calls[1].url).toContain('/api/cards/B1/migrate')
+    expect(calls[1].init.method).toBe('POST')
+    expect(bodyOf(1)).toEqual({ workflow: 'domain', status: '拆解' })
   })
 
   it('改卡用 PATCH，且只发调用方给的字段——缺字段在后端表示「不动」', async () => {

@@ -53,35 +53,8 @@ func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor st
 			log().Warn("转移被拒：未知状态", "card", id, "to", to)
 			return fmt.Errorf("状态 %q 不在工作流 %s v%d 中: %w", to, workflow.Name, workflow.Version, ErrBadState)
 		}
-		if gate, ok := workflow.Def.Gates[to]; ok {
-			if gate.RequireAttachment != "" {
-				hasAttachment := false
-				for _, attachment := range card.Attachments {
-					if attachment.Kind == gate.RequireAttachment {
-						hasAttachment = true
-						break
-					}
-				}
-				if !hasAttachment {
-					log().Warn("转移被拒：gate 缺附件", "card", id, "to", to, "need", gate.RequireAttachment)
-					return fmt.Errorf("进 %q 需要 %s 附件（当前没有）: %w", to, gate.RequireAttachment, ErrGateBlocked)
-				}
-			}
-			if gate.RequireAcceptance && card.AcceptanceCriteria == "" {
-				log().Warn("转移被拒：gate 缺判据", "card", id, "to", to)
-				return fmt.Errorf("进 %q 需要验收判据非空: %w", to, ErrGateBlocked)
-			}
-			if gate.RequireChildrenDone {
-				pending, err := s.pendingChildrenTx(tx, id)
-				if err != nil {
-					return err
-				}
-				if len(pending) > 0 {
-					log().Warn("转移被拒：聚合闸有未完结子卡", "card", id, "to", to, "pending", pending)
-					return fmt.Errorf("进 %q 需全部子卡完结，未完结: %s: %w",
-						to, strings.Join(pending, ", "), ErrGateBlocked)
-				}
-			}
+		if err := s.checkWorkflowGateTx(tx, card, workflow, to, "转移"); err != nil {
+			return err
 		}
 		// CAS 写：前值进 WHERE，被并发抢先则 0 行（照抄 store.UpdateTaskState 模式）
 		result, err := tx.Exec(s.q(`UPDATE cards SET status = ?, updated_at = ? WHERE id = ? AND status = ?`),
@@ -96,6 +69,45 @@ func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor st
 			map[string]any{"from": card.Status, "to": to})
 		return err
 	}
+}
+
+// checkWorkflowGateTx 检查进入 workflow 的 to 列所需的全部 gate。
+// moveCardTx 与 MigrateCardWorkflow 必须共用这里，避免新增 gate 时两条入口
+// 分裂；action 只区分日志前缀，检查顺序、错误文案和 ErrGateBlocked 保持一致。
+func (s *Store) checkWorkflowGateTx(tx *sql.Tx, card Card, workflow Workflow, to, action string) error {
+	gate, ok := workflow.Def.Gates[to]
+	if !ok {
+		return nil
+	}
+	if gate.RequireAttachment != "" {
+		hasAttachment := false
+		for _, attachment := range card.Attachments {
+			if attachment.Kind == gate.RequireAttachment {
+				hasAttachment = true
+				break
+			}
+		}
+		if !hasAttachment {
+			log().Warn(action+"被拒：gate 缺附件", "card", card.ID, "to", to, "need", gate.RequireAttachment)
+			return fmt.Errorf("进 %q 需要 %s 附件（当前没有）: %w", to, gate.RequireAttachment, ErrGateBlocked)
+		}
+	}
+	if gate.RequireAcceptance && card.AcceptanceCriteria == "" {
+		log().Warn(action+"被拒：gate 缺判据", "card", card.ID, "to", to)
+		return fmt.Errorf("进 %q 需要验收判据非空: %w", to, ErrGateBlocked)
+	}
+	if gate.RequireChildrenDone {
+		pending, err := s.pendingChildrenTx(tx, card.ID)
+		if err != nil {
+			return err
+		}
+		if len(pending) > 0 {
+			log().Warn(action+"被拒：聚合闸有未完结子卡", "card", card.ID, "to", to, "pending", pending)
+			return fmt.Errorf("进 %q 需全部子卡完结，未完结: %s: %w",
+				to, strings.Join(pending, ", "), ErrGateBlocked)
+		}
+	}
+	return nil
 }
 
 // pendingChildrenTx 事务内取未完结（非 已完成/终止）的直接子卡 id 列表。

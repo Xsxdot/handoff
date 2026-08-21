@@ -6,6 +6,7 @@ import { needsAttention } from './columns'
 export interface CardItemProps {
   card: CardView
   onOpen: (focus?: 'merge') => void
+  onMigrate?: () => void
   mergedCount?: number
   verified?: boolean
 }
@@ -26,7 +27,7 @@ function Chip({ children, className, title, onClick }: {
   return <span title={title} className={cn('rounded-full border px-1.5 text-[10px]', className)}>{children}</span>
 }
 
-export function CardItem({ card, onOpen, mergedCount = card.merged_count, verified }: CardItemProps) {
+export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified }: CardItemProps) {
   const needs = needsAttention(card)
   const attachments = card.attachments ?? []
   const blockedBy = card.blocked_by ?? []
@@ -51,6 +52,12 @@ export function CardItem({ card, onOpen, mergedCount = card.merged_count, verifi
       <div className="flex items-center gap-2">
         <span className="font-mono text-[11px] text-muted-foreground">{card.id}</span>
         <span className="ml-auto truncate text-[10px] text-muted-foreground">{card.status}</span>
+        {onMigrate && <button
+          type="button"
+          aria-label={`迁移 ${card.id}`}
+          onClick={(event) => { event.stopPropagation(); onMigrate() }}
+          className="rounded border px-1.5 py-0.5 text-[10px] hover:bg-accent"
+        >迁移</button>}
       </div>
       <h3 className="line-clamp-2 leading-5">{card.title}</h3>
       <div className="flex flex-wrap items-center gap-1.5">

@@ -432,7 +432,7 @@ func init() {
 	cardAddCmd.Flags().StringVar(&cardAddProject, "project", "", "项目名（必填）")
 	cardAddCmd.Flags().StringVar(&cardAddPriority, "priority", "中", "高|中|低")
 	cardAddCmd.Flags().StringVar(&cardAddParent, "parent", "", "父卡 id（建子卡）")
-	cardAddCmd.Flags().StringVar(&cardAddWorkflow, "workflow", "feature", "工作流名")
+	cardAddCmd.Flags().StringVar(&cardAddWorkflow, "workflow", "", "工作流名（空=triage）")
 	cardAddCmd.Flags().StringVar(&cardAddBase, "base-branch", "", "基线分支（空=继承/主线）")
 	_ = cardAddCmd.MarkFlagRequired("project")
 

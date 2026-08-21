@@ -19,12 +19,13 @@ import (
 
 // 错误哨兵。调用方（CLI/agentd）按哨兵翻译为退出码或 HTTP 状态。
 var (
-	ErrNotFound    = errors.New("ledger: 记录不存在")
-	ErrCASConflict = errors.New("ledger: 状态已被并发修改")         // Move 前值不符
-	ErrGateBlocked = errors.New("ledger: workflow gate 拒绝") // 缺附件/缺判据
-	ErrCycle       = errors.New("ledger: 阻塞边成环")
-	ErrBadMerge    = errors.New("ledger: 合并校验失败") // 跨基线/链式/重复
-	ErrBadState    = errors.New("ledger: 当前状态不允许该操作")
+	ErrNotFound     = errors.New("ledger: 记录不存在")
+	ErrCASConflict  = errors.New("ledger: 状态已被并发修改")         // Move 前值不符
+	ErrGateBlocked  = errors.New("ledger: workflow gate 拒绝") // 缺附件/缺判据
+	ErrCycle        = errors.New("ledger: 阻塞边成环")
+	ErrBadMerge     = errors.New("ledger: 合并校验失败") // 跨基线/链式/重复
+	ErrBadState     = errors.New("ledger: 当前状态不允许该操作")
+	ErrStepInFlight = errors.New("ledger: 卡环节正在运行")
 )
 
 // log 返回全局 slog——函数而非包变量，令 main 侧后设的

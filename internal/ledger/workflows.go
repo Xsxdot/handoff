@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
@@ -268,6 +269,13 @@ func (s *Store) EnsureDefaultWorkflows() error {
 				{Name: StatusDone},
 			},
 		},
+		"triage": {
+			Nodes: []NodeDef{
+				{Name: StatusTodo, Next: "定性中"},
+				{Name: "定性中", Next: "已定性"},
+				{Name: "已定性"},
+			},
+		},
 	}
 	for name, def := range defaults {
 		if _, err := s.GetWorkflow(name, 0); err == nil {
@@ -302,38 +310,96 @@ func (s *Store) ListWorkflowNames() ([]string, error) {
 	return names, rows.Err()
 }
 
-// MigrateCardWorkflow 把卡显式迁到本工作流的另一个版本。防悬空校验：
-// 卡的当前状态必须存在于目标版本的 States（否则拒绝，让人先挪状态）。
-func (s *Store) MigrateCardWorkflow(cardID string, toVersion int, actor string) error {
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+// MigrateCardWorkflow 把卡显式迁到目标工作流、版本和状态列，并返回迁移审计投影。
+// Version==0 取事务内目标流最新版；目标流和状态列都必须由调用方显式提供。
+func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, toStatus, actor string) (WorkflowMigration, error) {
+	var migration WorkflowMigration
+	if strings.TrimSpace(toWorkflow) == "" || strings.TrimSpace(toStatus) == "" {
+		return migration, fmt.Errorf("迁移目标工作流和状态列不能为空: %w", ErrBadState)
+	}
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, cardID)
 		if err != nil {
+			log().Error("迁移读取原位置失败", "card", cardID, "cause", err)
 			return fmt.Errorf("迁工作流: 卡 %s: %w", cardID, err)
 		}
-		target, err := s.getWorkflowTx(tx, card.WorkflowName, toVersion)
+		// 门禁必须和 UPDATE 共用这个事务：否则 CLI/HTTP 入口之间会有
+		// TOCTOU 窗口，且两入口不会共享同一道在飞判定（契约拍板记录④）。
+		inFlight, taskID, err := s.cardStepInFlightTx(tx, cardID)
+		if err != nil {
+			return fmt.Errorf("迁移检查卡 %s 在飞状态: %w", cardID, err)
+		}
+		if inFlight {
+			log().Warn("迁移被拒：卡环节仍在飞", "card", cardID, "task", taskID,
+				"to_workflow", toWorkflow, "to_status", toStatus)
+			return fmt.Errorf("卡 %s 的任务 %s 仍在运行，不能迁移: %w", cardID, taskID, ErrStepInFlight)
+		}
+		if toVersion == 0 {
+			if err := tx.QueryRow(s.q(`SELECT COALESCE(MAX(version), 0) FROM workflows WHERE name = ?`), toWorkflow).Scan(&toVersion); err != nil {
+				return fmt.Errorf("取目标工作流 %q 最新版本: %w", toWorkflow, err)
+			}
+		}
+		target, err := s.getWorkflowTx(tx, toWorkflow, toVersion)
 		if err != nil {
 			return err
 		}
-		found := card.Status == StatusClosed // 终止态卡不受 States 约束
+		found := toStatus == StatusClosed // 终止态卡不受 States 约束
 		for _, state := range target.Def.States {
-			if state == card.Status {
+			if state == toStatus {
 				found = true
 				break
 			}
 		}
 		if !found {
-			log().Warn("迁移被拒：状态悬空", "card", cardID, "status", card.Status, "to_version", toVersion)
+			log().Warn("迁移被拒：状态悬空", "card", cardID, "status", toStatus, "to_workflow", toWorkflow, "to_version", toVersion)
 			return fmt.Errorf("卡 %s 当前状态 %q 不在 %s v%d 中，先转移状态再迁: %w",
-				cardID, card.Status, card.WorkflowName, toVersion, ErrBadState)
+				cardID, toStatus, toWorkflow, toVersion, ErrBadState)
 		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET workflow_version = ?, updated_at = ? WHERE id = ?`),
-			toVersion, s.tval(time.Now()), cardID); err != nil {
+		// 迁移也是进入目标列，必须在同一事务内复用目标列 gate；否则「先迁到
+		// 无闸流再迁回」会绕过门禁（拆解 §4.4）。
+		if err := s.checkWorkflowGateTx(tx, card, target, toStatus, "迁移"); err != nil {
+			return err
+		}
+		// 原位置必须在 UPDATE 之前从事务内读出；写完后 cards 只剩目标值，
+		// 再读会丢失审计事件需要的 from_*。
+		from := WorkflowLocation{Workflow: card.WorkflowName, Version: card.WorkflowVersion, Status: card.Status}
+		to := WorkflowLocation{Workflow: toWorkflow, Version: toVersion, Status: toStatus}
+		if _, err := tx.Exec(s.q(`UPDATE cards SET workflow_name = ?, workflow_version = ?, status = ?, updated_at = ? WHERE id = ?`),
+			toWorkflow, toVersion, toStatus, s.tval(time.Now()), cardID); err != nil {
 			return fmt.Errorf("写迁移: %w", err)
 		}
-		_, err = s.appendEvent(tx, sink, cardID, EvComment, actor,
-			map[string]any{"kind": "普通", "body": fmt.Sprintf("工作流迁至 %s v%d", card.WorkflowName, toVersion)})
-		return err
+		payload := map[string]any{
+			"from_workflow": from.Workflow,
+			"from_version":  from.Version,
+			"from_status":   from.Status,
+			"to_workflow":   to.Workflow,
+			"to_version":    to.Version,
+			"to_status":     to.Status,
+		}
+		eventAt := time.Now().UTC()
+		seq, err := s.appendEventAt(tx, sink, cardID, EvWorkflowMigrated, actor, payload, eventAt)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("编码迁移事件投影: %w", err)
+		}
+		migration = WorkflowMigration{
+			CardID: cardID,
+			From:   from,
+			To:     to,
+			Event: Event{
+				Seq: seq, CardID: cardID, Type: EvWorkflowMigrated, Actor: actor,
+				Payload: raw, CreatedAt: eventAt,
+			},
+		}
+		log().Info("工作流迁移完成", "card", cardID,
+			"from_workflow", from.Workflow, "from_version", from.Version, "from_status", from.Status,
+			"to_workflow", to.Workflow, "to_version", to.Version, "to_status", to.Status)
+		return nil
 	})
+	return migration, err
 }
 
 // jsonUnmarshal 统一 JSON 解码错误措辞。

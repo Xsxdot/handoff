@@ -68,7 +68,7 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 // 而驱动身份带 pid——同一个人换个进程重试会被自己挡住 5 分钟。
 func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	dir := t.TempDir()
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "会派失败的卡", "--project", "demo")
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "会派失败的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
 	}

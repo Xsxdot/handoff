@@ -68,3 +68,82 @@ func TestOpenTicketCounts(t *testing.T) {
 		t.Fatalf("作废后应清零: %v %+v", err, counts)
 	}
 }
+
+func TestCardStepInFlightNoEvents(t *testing.T) {
+	s := seedStore(t)
+	inFlight, err := s.CardStepInFlight("B167")
+	if err != nil {
+		t.Fatalf("CardStepInFlight: %v", err)
+	}
+	if inFlight {
+		t.Fatal("没有镜像事件不应报告在飞")
+	}
+}
+
+func recordDispatch(t *testing.T, s *Store, cardID, target, taskID string) {
+	t.Helper()
+	if err := s.RecordDispatch(cardID, DispatchSnapshot{
+		Target: target, TaskID: taskID, Branch: "cards/" + cardID + "-" + taskID,
+		Purpose: PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatalf("写派发事件: %v", err)
+	}
+}
+
+func mirrorTaskEvent(t *testing.T, s *Store, cardID, target, taskID, typ string) {
+	t.Helper()
+	seq, err := s.MirrorWatermark(target, taskID)
+	if err != nil {
+		t.Fatalf("取镜像 watermark: %v", err)
+	}
+	if _, err := s.AppendMirroredEvent(cardID, MirroredEvent{
+		Target: target, Task: taskID, SourceSeq: seq + 1, Type: typ,
+		Payload: nil, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("写镜像任务事件: %v", err)
+	}
+}
+
+// TestCardStepInFlightReplaysTaskLifecycle 在飞判定按任务生命周期回放：
+// 派发后未见终态=在飞；archived/failed 才收口。completed/turn_failed 对应
+// waiting_review，基准语义把「等裁决」算在飞，不许当终态。
+func TestCardStepInFlightInFlightUntilTerminal(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "在飞判定")
+	if got, err := s.CardStepInFlight(c.ID); err != nil || got {
+		t.Fatalf("没派过任务应不在飞，实得 %v err=%v", got, err)
+	}
+	// 真实派发是卡账本原生 EvDispatched；此时还没有任何镜像事件。
+	recordDispatch(t, s, c.ID, "acc", "T-1")
+	if got, _ := s.CardStepInFlight(c.ID); !got {
+		t.Fatal("只派发、零镜像事件时必须判在飞")
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "completed")
+	if got, _ := s.CardStepInFlight(c.ID); !got {
+		t.Fatal("completed 对应 waiting_review，仍算在飞")
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "turn_failed")
+	if got, _ := s.CardStepInFlight(c.ID); !got {
+		t.Fatal("turn_failed 对应 waiting_review，仍算在飞")
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "archived")
+	if got, _ := s.CardStepInFlight(c.ID); got {
+		t.Fatal("archived 是终态，应收口")
+	}
+}
+
+// TestCardStepInFlightPerTask 多任务各自回放，一个收口不影响另一个。
+func TestCardStepInFlightPerTask(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "多任务在飞")
+	recordDispatch(t, s, c.ID, "acc", "T-1")
+	recordDispatch(t, s, c.ID, "acc", "T-2")
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-1", "archived")
+	if got, _ := s.CardStepInFlight(c.ID); !got {
+		t.Fatal("T-2 未收口，整卡仍应判在飞")
+	}
+	mirrorTaskEvent(t, s, c.ID, "acc", "T-2", "failed")
+	if got, _ := s.CardStepInFlight(c.ID); got {
+		t.Fatal("两个任务都收口了，应判不在飞")
+	}
+}

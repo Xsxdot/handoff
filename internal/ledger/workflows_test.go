@@ -1,7 +1,9 @@
 package ledger
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -263,7 +265,7 @@ func TestMigrateCardWorkflow(t *testing.T) {
 	_, _ = s.PutWorkflow("wf", def)
 
 	// 卡在 v1 的「待办」——v2 里仍有该状态，迁移放行
-	if err := s.MigrateCardWorkflow(card.ID, 2, "test"); err != nil {
+	if _, err := s.MigrateCardWorkflow(card.ID, "wf", 2, "待办", "test"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
@@ -271,10 +273,128 @@ func TestMigrateCardWorkflow(t *testing.T) {
 		t.Fatalf("版本未迁: %+v", got)
 	}
 	// 迁回 v1、推进到「进行中」再迁 v2：当前状态不在新版，拒绝（防在途卡悬空）
-	_ = s.MigrateCardWorkflow(card.ID, 1, "test")
+	_, _ = s.MigrateCardWorkflow(card.ID, "wf", 1, "待办", "test")
 	_ = s.MoveCard(card.ID, "进行中", "", "test")
-	if err := s.MigrateCardWorkflow(card.ID, 2, "test"); err == nil {
+	if _, err := s.MigrateCardWorkflow(card.ID, "wf", 2, "进行中", "test"); err == nil {
 		t.Fatal("状态悬空应拒")
+	}
+}
+
+// TestMigrateRejectsInFlight 卡有环节在飞时拒绝迁移——门禁在事务内，
+// 所以 CLI 与 HTTP 两个入口共享同一道门（契约拍板记录④）。
+func TestMigrateRejectsInFlight(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "在飞拒迁", Project: "p", Workflow: "triage", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Target: "acc", TaskID: "T-1", Branch: "cards/" + c.ID + "-T-1",
+		Purpose: PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatalf("写派发事件: %v", err)
+	}
+	_, err = s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test")
+	if !errors.Is(err, ErrStepInFlight) {
+		t.Fatalf("在飞时应拒绝迁移并包 ErrStepInFlight，实得 %v", err)
+	}
+	// 拒绝必须是「没动」，不是「动了一半」
+	got, _ := s.GetCard(c.ID)
+	if got.WorkflowName == "bug" {
+		t.Fatal("被拒的迁移不该改动卡")
+	}
+}
+
+// TestMigrateWritesMigrationEvent 迁移落 EvWorkflowMigrated，payload 能回答
+// 从哪到哪——审计链要能解释「这张卡为什么换了流程」。
+func TestMigrateWritesMigrationEvent(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Actor: "test"}) // 空 workflow 默认 triage
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if _, err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "tester"); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
+	events, err := s.EventsFromAsc([]string{c.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Type != EvWorkflowMigrated {
+			continue
+		}
+		found = true
+		var p map[string]any
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解码迁移事件: %v", err)
+		}
+		for _, k := range []string{"from_workflow", "from_status", "to_workflow", "to_status", "to_version"} {
+			if _, ok := p[k]; !ok {
+				t.Fatalf("迁移事件缺字段 %q: %v", k, p)
+			}
+		}
+		if p["to_workflow"] != "bug" || p["from_workflow"] != "triage" {
+			t.Fatalf("迁移事件的来去不对: %v", p)
+		}
+		if e.Actor != "tester" {
+			t.Fatalf("操作者应留痕，实得 %q", e.Actor)
+		}
+	}
+	if !found {
+		t.Fatal("没有 EvWorkflowMigrated 事件")
+	}
+}
+
+// TestMigrateLeavesChildrenAlone 子卡不随父卡迁（基准语义 5）。
+func TestMigrateLeavesChildrenAlone(t *testing.T) {
+	s := seedStore(t)
+	parent := mk(t, s, "父卡")
+	child := mustChild(t, s, parent.ID, "子卡") // mustChild 建的是 bug 流子卡
+	if _, err := s.MigrateCardWorkflow(parent.ID, "feature", 0, StatusTodo, "test"); err != nil {
+		t.Fatalf("迁父卡: %v", err)
+	}
+	got, err := s.GetCard(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkflowName != "bug" {
+		t.Fatalf("子卡不该随父卡迁，实得 %q", got.WorkflowName)
+	}
+}
+
+// TestMigrateCannotBypassGate 迁移不能用来跳过目标流的 gate：
+// 卡缺 contract 附件 → 迁到无闸流 → 再迁回有 contract 闸的列，最后一步仍须被拒。
+// 这是拆解 §4.4 的结论落成的回归网。
+func TestMigrateCannotBypassGate(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "绕闸尝试")
+	// domain/契约冻结 需要 contract 附件
+	if _, err := s.MigrateCardWorkflow(c.ID, "domain", 0, "契约冻结", "test"); err == nil {
+		t.Fatal("缺 contract 附件不该能迁进契约冻结列")
+	}
+	if _, err := s.MigrateCardWorkflow(c.ID, "bug", 0, StatusDoing, "test"); err != nil {
+		t.Fatalf("迁到无闸流应允许（场景 B 降级）: %v", err)
+	}
+	if _, err := s.MigrateCardWorkflow(c.ID, "domain", 0, "契约冻结", "test"); err == nil {
+		t.Fatal("绕一圈回来仍须被目标 gate 拒绝")
+	}
+}
+
+func TestDefaultTriageWorkflow(t *testing.T) {
+	s := seedStore(t)
+	wf, err := s.GetWorkflow("triage", 0)
+	if err != nil {
+		t.Fatalf("取 triage 流: %v", err)
+	}
+	if got, want := wf.Def.States, []string{"待办", "定性中", "已定性"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("triage 状态序列 = %v，want %v", got, want)
+	}
+	for _, node := range wf.Def.Nodes {
+		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" || node.Gate != (Gate{}) {
+			t.Fatalf("triage 节点必须纯人工且无闸: %+v", node)
+		}
 	}
 }
 
