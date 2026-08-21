@@ -89,3 +89,40 @@ func TestGraphResolveErrorListsCandidates(t *testing.T) {
 		t.Fatalf("报错要带候选: %v", err)
 	}
 }
+
+func TestGraphDomains(t *testing.T) {
+	out, err := runGraph(t, "domains", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("domains 应通过: %v\n%s", err, out)
+	}
+	var r struct {
+		View    string `json:"view"`
+		Domains []struct {
+			ID         string   `json:"id"`
+			Children   []string `json:"children"`
+			Funcs      int      `json:"funcs"`
+			Interfaces []string `json:"interfaces"`
+		} `json:"domains"`
+		Warning string `json:"warning"`
+	}
+	if json.Unmarshal([]byte(out), &r) != nil {
+		t.Fatalf("非法 JSON: %s", out)
+	}
+	if len(r.Domains) != 4 || r.Domains[0].ID != "d_cli" || r.Warning != "" {
+		t.Fatalf("领域树形状: %s", out)
+	}
+	if r.Domains[1].ID != "d_svc" || len(r.Domains[1].Children) != 2 {
+		t.Fatalf("嵌套子领域没出来: %s", out)
+	}
+}
+
+func TestGraphValidateReportsDomainCount(t *testing.T) {
+	out, err := runGraph(t, "validate", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("validate 应通过: %v\n%s", err, out)
+	}
+	var r map[string]any
+	if json.Unmarshal([]byte(out), &r) != nil || r["domains"].(float64) != 4 {
+		t.Fatalf("validate 要报领域计数: %s", out)
+	}
+}

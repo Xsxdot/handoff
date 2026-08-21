@@ -73,7 +73,7 @@ func (s *Server) handleProjectCodegraph(w http.ResponseWriter, r *http.Request) 
 		stale = []codegraph.StaleNode{}
 	}
 	s.log.Info("代码图完成", "name", name, "nodes", len(g.Nodes),
-		"edges", len(g.Edges), "views", len(views), "stale", len(stale))
+		"edges", len(g.Edges), "domains", len(g.Domains), "views", len(views), "stale", len(stale))
 	writeJSON(w, http.StatusOK, map[string]any{"baseline": g, "views": views, "stale": stale})
 }
 

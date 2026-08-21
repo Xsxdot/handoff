@@ -105,7 +105,7 @@ var graphValidateCmd = &cobra.Command{
 		}
 		out := map[string]any{
 			"nodes": len(g.Nodes), "edges": len(g.Edges),
-			"containers": len(g.Containers), "views": views,
+			"containers": len(g.Containers), "domains": len(g.Domains), "views": views,
 			"unscannedEntries": unscanned, "issues": issues,
 		}
 		if graphStale {
@@ -197,11 +197,32 @@ var graphWhoCallsCmd = &cobra.Command{
 	RunE:  graphQueryRunE(false, true),
 }
 
+// graphDomainsCmd 列领域树：agent 定位「该从哪个领域下手」的第一跳。
+var graphDomainsCmd = &cobra.Command{
+	Use:   "domains",
+	Short: "列出领域树（职责、成员统计、对外接口）",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		doms := codegraph.DomainTree(v)
+		out := map[string]any{"view": v.Name, "domains": doms}
+		if doms == nil {
+			// 明确区分「没有领域」与「查不出领域」：前者是旧数据，给可行动的提示
+			out["domains"] = []codegraph.DomainStat{}
+			out["warning"] = "该图未包含领域划分（扫描版本较旧）：重扫可获得领域信息"
+		}
+		return graphPrintJSON(cmd, out)
+	},
+}
+
 func init() {
 	graphCmd.PersistentFlags().StringVar(&graphRepo, "repo", ".", "目标仓库根目录")
 	graphCmd.PersistentFlags().IntVar(&graphDepth, "depth", 2, "查询深度（0 = 不限）")
 	graphCmd.PersistentFlags().StringVar(&graphView, "view", "", "叠加的视图名（codegraph/diffs/<名>.json）")
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
-	graphCmd.AddCommand(graphValidateCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
 	rootCmd.AddCommand(graphCmd)
 }
