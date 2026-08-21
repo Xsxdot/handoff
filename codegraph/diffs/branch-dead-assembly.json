@@ -1,0 +1,77 @@
+{
+  "view": "branch:dead-assembly",
+  "base": "a1a1ec62",
+  "summary": "本分支只改 Check 的 dead-assembly 行为；check.go 其余函数为基线补扫，首次纳入图。",
+  "nodesAdded": {
+    "n_codegraph_Check": {
+      "kind": "func",
+      "container": "k_codegraph_fn",
+      "order": 37,
+      "name": "Check",
+      "file": "internal/codegraph/check.go",
+      "line": 37,
+      "signature": "func Check(t *Target, v *View) *Report",
+      "params": [
+        ["t", "*Target", ""],
+        ["v", "*View", ""]
+      ],
+      "returns": "*Report",
+      "summary": "Check 把合并视图套在目标图上对照，结算契约、legacy 预算及告警。",
+      "tests": [
+        {"name": "TestCheckTable", "file": "internal/codegraph/check_test.go:55"},
+        {"name": "TestCheckImplements", "file": "internal/codegraph/check_test.go:87"},
+        {"name": "TestCheckExemptionsAndWarns", "file": "internal/codegraph/check_test.go:112"},
+        {"name": "TestCheckDeadAssembly", "file": "internal/codegraph/check_test.go:134"},
+        {"name": "TestCheckDeadAssemblyIgnoresDeletedNodes", "file": "internal/codegraph/check_test.go:168"}
+      ]
+    },
+    "n_codegraph_inList": {
+      "kind": "func",
+      "container": "k_codegraph_fn",
+      "order": 154,
+      "name": "inList",
+      "file": "internal/codegraph/check.go",
+      "line": 154,
+      "signature": "func inList(list []string, s string) bool",
+      "params": [
+        ["list", "[]string", ""],
+        ["s", "string", ""]
+      ],
+      "returns": "bool",
+      "summary": "inList 判断字符串是否在声明条目列表中。"
+    },
+    "n_codegraph_ruleHitsAny": {
+      "kind": "func",
+      "container": "k_codegraph_fn",
+      "order": 164,
+      "name": "ruleHitsAny",
+      "file": "internal/codegraph/check.go",
+      "line": 164,
+      "signature": "func ruleHitsAny(rule string, fileHit map[string]bool) bool",
+      "params": [
+        ["rule", "string", ""],
+        ["fileHit", "map[string]bool", ""]
+      ],
+      "returns": "bool",
+      "summary": "ruleHitsAny 判断 paths 规则是否命中已归域的节点文件。"
+    },
+    "n_codegraph_sortFindings": {
+      "kind": "func",
+      "container": "k_codegraph_fn",
+      "order": 176,
+      "name": "sortFindings",
+      "file": "internal/codegraph/check.go",
+      "line": 176,
+      "signature": "func sortFindings(rep *Report)",
+      "params": [
+        ["rep", "*Report", ""]
+      ],
+      "summary": "sortFindings 按 Kind 与 Detail 稳定排序报告发现。"
+    }
+  },
+  "edgesAdded": [
+    ["n_codegraph_Check", "n_codegraph_inList"],
+    ["n_codegraph_Check", "n_codegraph_ruleHitsAny"],
+    ["n_codegraph_Check", "n_codegraph_sortFindings"]
+  ]
+}
