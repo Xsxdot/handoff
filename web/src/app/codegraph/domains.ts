@@ -130,7 +130,8 @@ export function domainAgg(v: CgView, scope: string | null): DomainAgg {
     const de = edges.get(key) ?? { from: a, to: b, pairs: [] }
     de.pairs.push(e)
     edges.set(key, de)
-    if (e.status !== 'deleted' && !b.startsWith('ext:')) {
+    if (e.status !== 'deleted' && !b.startsWith('ext:')
+      && v.nodes[e.from]?.status !== 'deleted' && v.nodes[e.to]?.status !== 'deleted') {
       const m = (ifaces[b] ??= new Map())
       if (!m.has(e.to)) m.set(e.to, new Set())
       m.get(e.to)!.add(a)

@@ -63,6 +63,10 @@ describe('domainAgg', () => {
     expect(agg.cards['ext:d_cli'].ext).toBe(true)
     expect([...agg.edges.keys()].sort()).toEqual(['d_svc/api|d_svc/store', 'ext:d_cli|d_svc/api'])
   })
+  it('deleted 节点不再被统计为对外接口', () => {
+    const deleted = mergeView(g, { view: 'branch:x', nodesDeleted: ['n_runE'] })
+    expect(domainAgg(deleted, null).ifaces.d_svc?.has('n_runE') ?? false).toBe(false)
+  })
 })
 
 describe('leafRoots', () => {
