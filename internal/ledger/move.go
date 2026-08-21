@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -70,6 +71,17 @@ func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor st
 				log().Warn("转移被拒：gate 缺判据", "card", id, "to", to)
 				return fmt.Errorf("进 %q 需要验收判据非空: %w", to, ErrGateBlocked)
 			}
+			if gate.RequireChildrenDone {
+				pending, err := s.pendingChildrenTx(tx, id)
+				if err != nil {
+					return err
+				}
+				if len(pending) > 0 {
+					log().Warn("转移被拒：聚合闸有未完结子卡", "card", id, "to", to, "pending", pending)
+					return fmt.Errorf("进 %q 需全部子卡完结，未完结: %s: %w",
+						to, strings.Join(pending, ", "), ErrGateBlocked)
+				}
+			}
 		}
 		// CAS 写：前值进 WHERE，被并发抢先则 0 行（照抄 store.UpdateTaskState 模式）
 		result, err := tx.Exec(s.q(`UPDATE cards SET status = ?, updated_at = ? WHERE id = ? AND status = ?`),
@@ -84,6 +96,27 @@ func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor st
 			map[string]any{"from": card.Status, "to": to})
 		return err
 	}
+}
+
+// pendingChildrenTx 事务内取未完结（非 已完成/终止）的直接子卡 id 列表。
+// 与转移同事务读：闸判定和状态写之间不留「子卡刚好在窗口里完结/复活」的缝。
+func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error) {
+	rows, err := tx.Query(s.q(`SELECT id, status FROM cards WHERE parent_id = ?`), id)
+	if err != nil {
+		return nil, fmt.Errorf("聚合闸读子卡: %w", err)
+	}
+	defer rows.Close()
+	var pending []string
+	for rows.Next() {
+		var childID, status string
+		if err := rows.Scan(&childID, &status); err != nil {
+			return nil, err
+		}
+		if status != StatusDone && status != StatusClosed {
+			pending = append(pending, childID)
+		}
+	}
+	return pending, rows.Err()
 }
 
 // ClaimCard 原子认领：把「CAS 转入 to」与「落驱动 session」并进同一个

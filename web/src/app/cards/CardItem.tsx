@@ -63,6 +63,11 @@ export function CardItem({ card, onOpen, mergedCount = card.merged_count, verifi
         {mergedCount > 0 && (
           <Chip onClick={() => onOpen('merge')} className="text-foreground">⊕ 并入 {mergedCount}</Chip>
         )}
+        {(card.children_total ?? 0) > 0 && (
+          <Chip className="text-foreground" title="直接子卡：已完结/总数（完结含终止）">
+            ⧉ 子卡 {card.children_done}/{card.children_total}
+          </Chip>
+        )}
         {card.open_decisions > 0 && <Chip className="border-amber-300 bg-amber-50 text-amber-700">⚖ 裁决 {card.open_decisions}</Chip>}
         {card.open_tickets > 0 && <Chip className="border-amber-300 bg-amber-50 text-amber-700">🄠 工单 {card.open_tickets}</Chip>}
         {verified !== undefined && <Chip className="border-green-300 bg-green-50 text-green-700">{verified ? '已验' : '待真机验'}</Chip>}

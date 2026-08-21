@@ -61,10 +61,31 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 	if err != nil {
 		return nil, err
 	}
+	parents, err := s.allParents()
+	if err != nil {
+		return nil, err
+	}
+	type childStat struct{ total, done int }
+	childStats := map[string]*childStat{}
+	for child, parent := range parents {
+		stat := childStats[parent]
+		if stat == nil {
+			stat = &childStat{}
+			childStats[parent] = stat
+		}
+		stat.total++
+		// 完结 = 已完成或终止，与聚合闸同一把尺（types.go Gate 注释）
+		if status := statusOf[child]; status == StatusDone || status == StatusClosed {
+			stat.done++
+		}
+	}
 
 	var out []CardView
 	for _, card := range cards {
 		view := CardView{Card: card, OpenDecisions: openDecisions[card.ID], NeedsReason: needs[card.ID]}
+		if stat := childStats[card.ID]; stat != nil {
+			view.ChildrenTotal, view.ChildrenDone = stat.total, stat.done
+		}
 		for _, relation := range relations {
 			switch {
 			case relation.Type == RelMergedInto && relation.From == card.ID:
@@ -109,6 +130,25 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+// allParents 全量 child→parent 映射（只含有父的卡）。与 allStatuses 同为
+// 「全量小表 + 内存组装」——卡量级数百张，正确性优先（见文件头）。
+func (s *Store) allParents() (map[string]string, error) {
+	rows, err := s.db.Query(s.q(`SELECT id, parent_id FROM cards WHERE parent_id IS NOT NULL`))
+	if err != nil {
+		return nil, fmt.Errorf("读父子表: %w", err)
+	}
+	defer rows.Close()
+	parents := map[string]string{}
+	for rows.Next() {
+		var id, parent string
+		if err := rows.Scan(&id, &parent); err != nil {
+			return nil, err
+		}
+		parents[id] = parent
+	}
+	return parents, rows.Err()
 }
 
 func (s *Store) allRelations() ([]Relation, error) {

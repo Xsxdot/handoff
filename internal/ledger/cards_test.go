@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -127,6 +128,59 @@ func TestCreateCardValidation(t *testing.T) {
 	}
 	if _, err := s.CreateCard(NewCard{Title: "t", Project: "p", Workflow: "feature", Parent: "B999"}); err == nil {
 		t.Fatal("父卡不存在应拒绝")
+	}
+}
+
+// 建子卡要在父卡 timeline 留痕：审计链能回答「这张子卡为什么存在、
+// 什么时候从谁身上拆出来的」。复用 EvComment+refs（AddBlocks 同款），
+// 不新增事件类型。
+func TestCreateChildLeavesParentTimelineEvent(t *testing.T) {
+	s := seedStore(t)
+	parent := mk(t, s, "母卡")
+	child := mustChild(t, s, parent.ID, "拆出的子卡")
+
+	events, err := s.EventsFromAsc([]string{parent.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读父卡事件: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == EvComment && strings.Contains(string(event.Payload), child.ID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("父卡 timeline 应有指向 %s 的建子卡事件，实得 %d 条事件", child.ID, len(events))
+	}
+}
+
+// 递归护栏：父链上同名工作流的嵌套上限（spec §8.3）。子卡可绑任意工作流
+// ——包括父卡自己那个，递归是组合性质；护栏挡的是失控（拆解节点把活原样
+// 再拆给自己直到永远）。异名工作流不受此限。
+func TestCreateCardRejectsDeepWorkflowNesting(t *testing.T) {
+	s := seedStore(t)
+	newBug := func(parent string) (Card, error) {
+		return s.CreateCard(NewCard{Title: "层", Project: "p", Workflow: "bug", Parent: parent, Actor: "test"})
+	}
+	level1, err := newBug("")
+	if err != nil {
+		t.Fatalf("第 1 层: %v", err)
+	}
+	level2, err := newBug(level1.ID)
+	if err != nil {
+		t.Fatalf("第 2 层: %v", err)
+	}
+	level3, err := newBug(level2.ID)
+	if err != nil {
+		t.Fatalf("第 3 层（达上限，应放行）: %v", err)
+	}
+	if _, err := newBug(level3.ID); !errors.Is(err, ErrBadState) {
+		t.Fatalf("第 4 层应被护栏拒（wrap ErrBadState），实得: %v", err)
+	}
+	// 异名工作流不占同一个计数：feature 卡挂在三层 bug 之下照常放行
+	if _, err := s.CreateCard(NewCard{Title: "异名", Project: "p", Workflow: "feature",
+		Parent: level3.ID, Actor: "test"}); err != nil {
+		t.Fatalf("异名工作流不该被拒: %v", err)
 	}
 }
 

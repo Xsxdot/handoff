@@ -252,6 +252,15 @@ export function NodeEditor({
           />
           <label htmlFor={id('acceptance')}>要求验收判据</label>
         </div>
+        <div className="flex items-center gap-2 self-end pb-2 text-sm">
+          <input
+            id={id('children-done')}
+            type="checkbox"
+            checked={node.gate?.require_children_done === true}
+            onChange={(event) => updateGate({ require_children_done: event.target.checked || undefined })}
+          />
+          <label htmlFor={id('children-done')}>需全部子卡完结</label>
+        </div>
       </div>
 
       <div className="mt-3">

@@ -112,6 +112,11 @@ type Event struct {
 type Gate struct {
 	RequireAttachment string `json:"require_attachment,omitempty"` // 附件 kind 非空集
 	RequireAcceptance bool   `json:"require_acceptance,omitempty"` // 验收判据非空
+	// RequireChildrenDone 聚合闸：全部**直接**子卡已完结（已完成或终止）
+	// 才许进入本列。无子卡时空洞为真——同一工作流复用给不扇出的卡时，
+	// 这张卡不该被自己用不上的闸卡住。终止也算完结是刻意的：被取消的
+	// 子卡不该把父卡永远堵死，取舍权在看错误清单的人。
+	RequireChildrenDone bool `json:"require_children_done,omitempty"`
 }
 
 // NodeOverride 节点对所引模板的单字段覆盖；零值字段 = 沿用模板的值。
@@ -207,6 +212,8 @@ type CardView struct {
 	MergedCount   int      `json:"merged_count"`         // 承载的成员数
 	NeedsReason   string   `json:"needs,omitempty"`      // 非空 = 等人，值为 reason
 	OpenDecisions int      `json:"open_decisions"`
+	ChildrenTotal int      `json:"children_total"` // 直接子卡数
+	ChildrenDone  int      `json:"children_done"`  // 已完结（已完成或终止）的直接子卡数——语义与聚合闸同一把尺
 }
 
 // CardFilter ListCards 的过滤条件；零值 = 不过滤该维度。

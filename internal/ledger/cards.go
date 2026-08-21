@@ -21,6 +21,15 @@ type NewCard struct {
 
 var topIDPat = regexp.MustCompile(`^B(\d+)$`)
 
+// maxWorkflowNesting 父链上同名工作流的嵌套上限（含新卡自身）。
+//
+// why 存在：子卡可绑任意工作流模板——包括「分域开发」这类会在拆解节点
+// 再生子卡的模板自身，递归是刻意保留的组合性质（spec §8.3）；这个常量
+// 挡的是失控递归（拆解把活原样再拆给自己）。why 是 3：两层分域已覆盖
+// 「域内再分小领域」，第三层留给极端大活；再深就该先竖切域了。
+// 配置化（项目实例化清单覆盖）等真实需求出现再做。
+const maxWorkflowNesting = 3
+
 // EnsureMinB 垫高 B 号水位（迁移前防与 markdown 总账撞号；只升不降）。
 func (s *Store) EnsureMinB(n int) error {
 	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
@@ -133,6 +142,16 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 			if _, parentErr := getCardTx(s, tx, nc.Parent); parentErr != nil {
 				return fmt.Errorf("父卡 %s: %w", nc.Parent, parentErr)
 			}
+			nesting, err := s.workflowNestingTx(tx, nc.Parent, wf.Name)
+			if err != nil {
+				return err
+			}
+			if nesting+1 > maxWorkflowNesting {
+				log().Warn("建卡被拒：工作流嵌套超限",
+					"parent", nc.Parent, "workflow", wf.Name, "nesting", nesting)
+				return fmt.Errorf("父链上已有 %d 层 %q 工作流（上限 %d）——先竖切域或给子卡换更细粒度的工作流: %w",
+					nesting, wf.Name, maxWorkflowNesting, ErrBadState)
+			}
 			id, idErr = s.nextChildID(tx, nc.Parent)
 		} else {
 			id, idErr = s.nextTopID(tx)
@@ -161,6 +180,16 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 		if _, err := s.appendEvent(tx, sink, id, EvCardCreated, nc.Actor,
 			map[string]any{"title": nc.Title, "workflow": wf.Name, "workflow_version": wf.Version}); err != nil {
 			return err
+		}
+		// 父卡 timeline 留痕：审计链要能从父卡回答「子卡从哪来」。放在同
+		// 一事务里——子卡建了而父卡没痕，或反过来，都是账本自相矛盾。
+		if nc.Parent != "" {
+			if _, err := s.appendEvent(tx, sink, nc.Parent, EvComment, nc.Actor,
+				map[string]any{"kind": "普通",
+					"body": fmt.Sprintf("创建子卡 %s：%s", id, nc.Title),
+					"refs": []string{id}}); err != nil {
+				return err
+			}
 		}
 		card = Card{ID: id, Title: nc.Title, Status: wf.Def.States[0], Priority: nc.Priority,
 			Project: nc.Project, ParentID: nc.Parent, WorkflowName: wf.Name,
@@ -202,6 +231,33 @@ func getCardTx(s *Store, tx *sql.Tx, id string) (Card, error) {
 		return Card{}, ErrNotFound
 	}
 	return card, err
+}
+
+// workflowNestingTx 数父链（从 parent 起向上、含 parent 自身）里钉了
+// 同名工作流的卡数。64 层上限与 ancestorsTx 同源：防坏数据成环死循环。
+func (s *Store) workflowNestingTx(tx *sql.Tx, parent, workflowName string) (int, error) {
+	count := 0
+	current := parent
+	for i := 0; i < 64; i++ {
+		var name string
+		var up sql.NullString
+		err := tx.QueryRow(s.q(`SELECT workflow_name, parent_id FROM cards WHERE id = ?`), current).
+			Scan(&name, &up)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return count, nil
+			}
+			return 0, fmt.Errorf("数工作流嵌套: 读卡 %s: %w", current, err)
+		}
+		if name == workflowName {
+			count++
+		}
+		if !up.Valid || up.String == "" {
+			return count, nil
+		}
+		current = up.String
+	}
+	return 0, fmt.Errorf("父链深度超限（数据疑似成环）: %s", parent)
 }
 
 // GetCard 读单卡。不存在返回 ErrNotFound。
