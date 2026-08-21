@@ -135,3 +135,49 @@ func TestDefaultTemplatesUseNames(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultDomainTemplates 分域三模板的 seed 形状。purpose 必须互异——
+// 分支名由 purpose 拼出，相同会在同一张卡上撞名。变量白名单断言防静默失败：
+// prompt 里写了不受支持的 {{X}} 不会报错，会原样送到执行者面前。
+func TestDefaultDomainTemplates(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct{ discipline, purpose string }{
+		"domain-breakdown":   {"spec-draft", "breakdown"},
+		"domain-ticket0":     {"implement", "ticket0"},
+		"domain-integration": {"implement", "integration"},
+	}
+	for name, want := range cases {
+		tpl, err := s.GetTemplate(name, 0)
+		if err != nil {
+			t.Fatalf("取 %s: %v", name, err)
+		}
+		if tpl.Def.Executor != "codex" || tpl.Def.BranchPrefix != "cards" {
+			t.Fatalf("%s 执行者/分支前缀不对: %+v", name, tpl.Def)
+		}
+		if tpl.Def.Discipline != want.discipline || tpl.Def.Purpose != want.purpose {
+			t.Fatalf("%s 角色/purpose 不对: 想要 %+v 实得 %s/%s",
+				name, want, tpl.Def.Discipline, tpl.Def.Purpose)
+		}
+		stripped := strings.NewReplacer(
+			"{{TITLE}}", "", "{{CARD}}", "", "{{ACCEPT}}", "").Replace(tpl.Def.Prompt)
+		if strings.Contains(stripped, "{{") {
+			t.Fatalf("%s prompt 含不受支持的模板变量（会原样送出）:\n%s", name, tpl.Def.Prompt)
+		}
+	}
+	// 带 Verdict 节点引用的两个模板必须携带裁决输出契约，否则报文里没有
+	// handoff-verdict block，节点永远解析失败转等人。
+	for _, name := range []string{"domain-ticket0", "domain-integration"} {
+		tpl, _ := s.GetTemplate(name, 0)
+		if !strings.Contains(tpl.Def.Prompt, "handoff-verdict") {
+			t.Fatalf("%s 缺裁决输出契约", name)
+		}
+	}
+	// 拆解节点不裁决，prompt 里出现契约会诱导 spec-draft 角色多输出一个假裁决块。
+	tpl, _ := s.GetTemplate("domain-breakdown", 0)
+	if strings.Contains(tpl.Def.Prompt, "handoff-verdict") {
+		t.Fatal("domain-breakdown 不该带裁决契约")
+	}
+}
