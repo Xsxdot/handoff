@@ -177,10 +177,13 @@ stub，合入基线分支。域文档相关条目更新随行。此后所有域�
 
 | 节点 | 能力配置 | 说明 |
 |---|---|---|
-| 拆解/契约冻结 | Dispatch=on（模板=拆解协议 prompt，变量含项目实例化清单）、Verdict=on（判据=stub 编译绿+对抗审查过）、Gate=人工确认契约 | **Decision 闭环挂此节点**：契约变更是最该留裁决记录的事 |
-| 域实现 | 扇出子卡（§8.2），每子卡 Dispatch=on（模板=四段式域卡） | 逻辑域卡可全并行；边界域卡验收含真机清单归协调者 |
-| 集成 | Dispatch=on（模板=集成协议） | 调配层接线 + e2e |
-| 终审 | Verdict=on + 人工 Gate | 合并决策留人 |
+| 拆解 | Dispatch=on（模板=domain-breakdown，spec-draft 角色）、无 Verdict | 产出域清单/契约增量/子卡清单提案；**人工把卡移进下一列即拍板**，Decision 闭环挂此节点 |
+| 契约冻结 | Gate=contract 附件、Dispatch+Verdict（模板=domain-ticket0，判据=stub 编译绿）、MaxRounds 2 | 拍板过的契约落成可编译骨架 commit |
+| 域实现 | 纯人工列 | 扇出子卡归协调者（自指红线）；子卡各绑自己的工作流并行走 |
+| 集成 | Gate=聚合闸（全部直接子卡完结）、Dispatch+Verdict（模板=domain-integration）、OnFail=域实现 | 调配层接线 + e2e |
+| 终审 | Gate=验收判据、Dispatch+Verdict（review-generic + finishing 覆盖）、HumanBases=[main] | 合并决策留人 |
+
+2026-08-21 落地时与首版的差异：拆解/契约冻结拆为两节点，人工拍板（移列+contract 附件）显式插在中间——归属依据见工作台基准 §5。
 
 ### 8.2 子卡扇出机制（立项做，引擎一等能力）
 
