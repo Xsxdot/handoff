@@ -212,6 +212,8 @@ type CardView struct {
 	MergedCount   int      `json:"merged_count"`         // 承载的成员数
 	NeedsReason   string   `json:"needs,omitempty"`      // 非空 = 等人，值为 reason
 	OpenDecisions int      `json:"open_decisions"`
+	ChildrenTotal int      `json:"children_total"` // 直接子卡数
+	ChildrenDone  int      `json:"children_done"`  // 已完结（已完成或终止）的直接子卡数——语义与聚合闸同一把尺
 }
 
 // CardFilter ListCards 的过滤条件；零值 = 不过滤该维度。
