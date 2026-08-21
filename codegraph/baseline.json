@@ -48,10 +48,17 @@
       "desc": "client 与 targetclient 负责目标选择、HTTP/WS 会话和连接池，relay 与 proxycfg 处理跨网拨号和代理；错误模型把不可重试与可恢复的连接失败传回协调流程。"
     },
     "d_transport_channel": {
-      "label": "连接通道",
-      "kind": "客户端与中继",
-      "summary": "为协调者把本机操作路由到目标 agentd，并在直连与 relay 之间复用连接。",
-      "desc": "Client 封装任务、项目、机器和会话请求，Pool 按 target 复用连接；relay 提供懒拨号隧道，proxycfg 统一生成代理传输，相关模型和错误类型定义这条边界的返回语义。",
+      "label": "客户端路由",
+      "kind": "目标路由与客户端",
+      "summary": "为协调者把任务、项目、机器和会话操作路由到目标 agentd。",
+      "desc": "Client 封装目标 API/WS 请求，Pool 按 target 选择并复用客户端；错误和参数模型定义调用方可处理的返回边界。",
+      "parent": "d_transport"
+    },
+    "d_transport_tunnel": {
+      "label": "直连与中继",
+      "kind": "通道传输",
+      "summary": "为协调者在直连与 relay 场景下建立可复用的网络通道。",
+      "desc": "relay 负责懒拨号隧道，proxycfg 生成代理传输并校验目标配置；两者把跨网连接细节隔离在 client 路由之外。",
       "parent": "d_transport"
     },
     "d_workspace": {
@@ -59,13 +66,6 @@
       "kind": "项目登记与工作树",
       "summary": "为任务提供项目登记、工作树准备、分支同步和跨机器镜像。",
       "desc": "项目身份、工作树状态与机器镜像在同一协作语义下闭环：agentd 维护发现快照，localsync 通过 bundle 把远端结果落回本地，脏树错误和路径登记保护工作区边界。"
-    },
-    "d_workspace_project": {
-      "label": "项目与同步",
-      "kind": "项目工作区同步",
-      "summary": "为协调流程维护项目身份、工作树登记、远端镜像和本地分支同步。",
-      "desc": "Mirror 周期性发现执行机项目状态，projectid 规范化 origin，localsync 通过 bundle 执行本地 fetch；DirtyWorktreeError 把会破坏未提交改动的操作挡在工作区边界。",
-      "parent": "d_workspace"
     },
     "d_execution": {
       "label": "执行运行",
@@ -92,13 +92,6 @@
       "kind": "PTY 会话与回放",
       "summary": "为协调者提供可附着的本机终端会话、实时输出和历史回放。",
       "desc": "ptyhost 管理会话生命周期与订阅，engine/hostproc 驱动 shell 和退出监视，sessdir 保存元数据、锁和 socket；turn、wire 负责帧持久化及控制/数据通道。"
-    },
-    "d_sessions_core": {
-      "label": "PTY 会话",
-      "kind": "终端会话运行时",
-      "summary": "为协调者创建、附着、回放并回收本机 PTY 会话。",
-      "desc": "Host 维护会话登记和读写，engine 负责 PTY 进程，hostproc 服务订阅连接并把输出转成帧；sessdir 管理目录与 socket，wire/turn 保证控制帧、数据帧和历史回放可恢复。",
-      "parent": "d_sessions"
     },
     "d_runtime": {
       "label": "本机治理",
@@ -168,12 +161,12 @@
     "k_agentd_Mirror": {
       "label": "agentd.Mirror",
       "kind": "类型方法",
-      "domain": "d_workspace_project"
+      "domain": "d_workspace"
     },
     "k_agentd_DirtyWorktreeError": {
       "label": "agentd.DirtyWorktreeError",
       "kind": "类型方法",
-      "domain": "d_workspace_project"
+      "domain": "d_workspace"
     },
     "k_buildinfo_fn": {
       "label": "buildinfo（包级函数）",
@@ -263,12 +256,12 @@
     "k_turn_fn": {
       "label": "turn（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_localsync_fn": {
       "label": "localsync（包级函数）",
       "kind": "函数组",
-      "domain": "d_workspace_project"
+      "domain": "d_workspace"
     },
     "k_logx_fn": {
       "label": "logx（包级函数）",
@@ -308,52 +301,52 @@
     "k_projectid_fn": {
       "label": "projectid（包级函数）",
       "kind": "函数组",
-      "domain": "d_workspace_project"
+      "domain": "d_workspace"
     },
     "k_proxycfg_fn": {
       "label": "proxycfg（包级函数）",
       "kind": "函数组",
-      "domain": "d_transport_channel"
+      "domain": "d_transport_tunnel"
     },
     "k_ptyhost_fn": {
       "label": "ptyhost（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_ptyhost_Host": {
       "label": "ptyhost.Host",
       "kind": "类型方法",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_engine_fn": {
       "label": "engine（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_hostproc_fn": {
       "label": "hostproc（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_hostproc_server": {
       "label": "hostproc.server",
       "kind": "类型方法",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_sessdir_fn": {
       "label": "sessdir（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_wire_fn": {
       "label": "wire（包级函数）",
       "kind": "函数组",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     },
     "k_relay_fn": {
       "label": "relay（包级函数）",
       "kind": "函数组",
-      "domain": "d_transport_channel"
+      "domain": "d_transport_tunnel"
     },
     "k_release_fn": {
       "label": "release（包级函数）",
@@ -443,7 +436,7 @@
     "k_localsync_model": {
       "label": "localsync 实体",
       "kind": "实体",
-      "domain": "d_workspace_project"
+      "domain": "d_workspace"
     },
     "k_permgate_model": {
       "label": "permgate 实体",
@@ -463,7 +456,7 @@
     "k_ptyhost_model": {
       "label": "ptyhost 实体",
       "kind": "实体",
-      "domain": "d_sessions_core"
+      "domain": "d_sessions"
     }
   },
   "nodes": {
