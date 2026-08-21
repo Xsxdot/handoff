@@ -1,14 +1,18 @@
-// CodegraphPage —— 代码图页（/codegraph）：工具条 + 左树/中图/右详情三栏。
+// CodegraphPage —— 代码图页（/codegraph）：领域图三级下钻。
 //
-// 布局契约（spec §5）：左树 320px 固定、右详情 340px 固定、中间自适应。
-// 状态机：foci（焦点集合，单选=1 个）、hist/histIdx（焦点历史，语义同浏览器
-// 历史——新选择截断前进分支）、depth 默认 2、viewName 默认 baseline。
+// 三态（spec §5 定稿形态）：
+//   scope=null 且图里有领域 → 领域全景
+//   scope 还有子领域        → 子领域全景（域外领域画成占位卡）
+//   scope 是叶子领域        → 树+图视图（左树 320 / 中图自适应 / 右详情 340）
+// 整图没有领域段时降级为单领域视图并明示提示——不按包名伪造领域。
 import { useMemo, useState } from 'react'
 import { useProjectTree } from '../data/useProjectTree'
 import { CallTree } from './CallTree'
 import { DetailPanel } from './DetailPanel'
+import { DomainDetail } from './DomainDetail'
+import { DomainPanorama } from './DomainPanorama'
 import { FocusGraph } from './FocusGraph'
-import { SeqView } from './SeqView'
+import { childDomainsOf, domainAncestors, hasDomains, nodeDomainPathOf } from './domains'
 import { mergeView, scannedEntries } from './graphmath'
 import { useCodegraph } from './useCodegraph'
 
@@ -20,7 +24,9 @@ export function CodegraphPage() {
   const { data, error, loading, reload } = useCodegraph(active)
 
   const [viewName, setViewName] = useState('baseline')
-  const [mode, setMode] = useState<'combo' | 'seq'>('combo')
+  const [scope, setScope] = useState<string | null>(null)
+  const [selDomain, setSelDomain] = useState('')
+  const [selEdge, setSelEdge] = useState('')
   const [depth, setDepth] = useState(2)
   const [foci, setFoci] = useState<string[]>([])
   const [hist, setHist] = useState<string[][]>([])
@@ -35,6 +41,10 @@ export function CodegraphPage() {
   }, [data, viewName])
   const staleIds = useMemo(() => new Set((data?.stale ?? []).map((s) => s.id)), [data])
 
+  const single = !!view && !hasDomains(view)               // 旧图：整张图当一个领域看
+  const pano = !!view && !single && (scope === null || childDomainsOf(view, scope).length > 0)
+  const leafScope = single ? null : scope
+
   const effFoci = useMemo(() => {
     if (!view) return []
     const ok = foci.filter((f) => view.nodes[f] && view.nodes[f].status !== 'deleted')
@@ -44,8 +54,7 @@ export function CodegraphPage() {
   const setFociWithHist = (next: string[], fromHist = false) => {
     if (next.join('|') === effFoci.join('|')) return
     if (!fromHist) {
-      // 历史为空时先把当前（默认）焦点垫底：否则第一次换焦点后「后退」
-      // 无处可退——默认入口也是用户看过的一站，必须能退回去
+      // 历史为空时先把当前（默认）焦点垫底：否则第一次换焦点后「后退」无处可退
       const base = hist.length ? hist.slice(0, histIdx + 1) : [effFoci]
       const h = [...base, next]
       setHist(h)
@@ -61,24 +70,40 @@ export function CodegraphPage() {
     } else setFociWithHist([id])
   }
 
+  // 换一层领域：焦点历史与展开状态都作废——它们是上一层的语境，带过去只会误导
+  const goScope = (next: string | null) => {
+    setScope(next)
+    setSelDomain('')
+    setSelEdge('')
+    setFoci([])
+    setHist([])
+    setHistIdx(-1)
+    setOpen(new Set())
+    setSelected('')
+  }
+  // 横跳：落到目标节点所在的叶子领域并把它设为焦点
+  const enterNode = (id: string) => {
+    if (!view) return
+    const path = nodeDomainPathOf(view, id)
+    goScope(path.length ? path[path.length - 1] : null)
+    setFoci([id])
+    setHist([[id]])
+    setHistIdx(0)
+    setSelected(id)
+  }
+
   if (error) return <div className="p-6 text-sm text-red-600">{error}</div>
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-2 text-sm">
         <label className="text-muted-foreground">项目</label>
-        <select value={active} onChange={(e) => setProject(e.target.value)} className="rounded border px-1.5 py-0.5">
+        <select value={active} onChange={(e) => { setProject(e.target.value); goScope(null) }}
+          className="rounded border px-1.5 py-0.5">
           {projects.map((p) => <option key={p}>{p}</option>)}
         </select>
-        <div className="flex overflow-hidden rounded border">
-          {(['combo', 'seq'] as const).map((m) => (
-            <button key={m} onClick={() => setMode(m)}
-              className={`px-2.5 py-0.5 ${mode === m ? 'bg-primary text-primary-foreground' : ''}`}>
-              {m === 'combo' ? '树+图' : '时序图'}
-            </button>
-          ))}
-        </div>
         <label className="text-muted-foreground">视图</label>
-        <select value={viewName} onChange={(e) => setViewName(e.target.value)} className="rounded border px-1.5 py-0.5">
+        <select value={viewName} onChange={(e) => { setViewName(e.target.value); goScope(null) }}
+          className="rounded border px-1.5 py-0.5">
           <option value="baseline">基准 · {data?.baseline.meta.branch ?? ''}</option>
           {Object.entries(data?.views ?? {}).map(([k, v]) => <option key={k} value={k}>{v.view}</option>)}
         </select>
@@ -88,33 +113,74 @@ export function CodegraphPage() {
             ⚠ {data.stale.length} 个节点疑似失鲜
           </span>
         )}
+        {single && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">
+            该图未包含领域划分（扫描版本较旧）：重扫可获得领域全景
+          </span>
+        )}
         <button onClick={reload} className="ml-auto rounded border px-2 py-0.5 text-xs">刷新</button>
       </div>
       {loading || !view ? (
         <div className="p-6 text-sm text-muted-foreground">{loading ? '加载中…' : '该项目未生成代码图'}</div>
       ) : (
-        <div className="flex min-h-0 flex-1">
-          <CallTree view={view} foci={effFoci} open={open}
-            scope={null} onCrossJump={() => {}}
-            onToggle={(id, o) => setOpen((s) => {
-              const n = new Set(s)
-              if (o) n.add(id)
-              else n.delete(id)
-              return n
-            })}
-            onFocus={onFocus} />
-          {mode === 'combo' ? (
-            <FocusGraph view={view} foci={effFoci} depth={depth} staleIds={staleIds}
-              scope={null} onCrossJump={() => {}}
-              onDepth={setDepth} onFocus={onFocus} onSelect={setSelected}
-              canBack={histIdx > 0} canFwd={histIdx < hist.length - 1}
-              onBack={() => { setHistIdx(histIdx - 1); setFociWithHist(hist[histIdx - 1], true) }}
-              onFwd={() => { setHistIdx(histIdx + 1); setFociWithHist(hist[histIdx + 1], true) }} />
-          ) : (
-            <SeqView view={view} entry={effFoci[0]} onSelect={setSelected} />
+        <div className="relative flex min-h-0 flex-1">
+          {!single && (
+            <div className="absolute left-3.5 top-2.5 z-30 inline-flex items-center gap-2 rounded-full border bg-background px-3.5 py-1 text-xs shadow-sm">
+              {scope === null ? (
+                <>
+                  <b>领域全景</b>
+                  <span className="text-[11px] text-muted-foreground">点卡片看职责 · 点连线看谁调谁 · 进入 ▸ 下钻</span>
+                </>
+              ) : (
+                <>
+                  <span className="cursor-pointer text-muted-foreground hover:underline" onClick={() => goScope(null)}>◀ 领域全景</span>
+                  {domainAncestors(view, scope).map((id, i, arr) => (
+                    <span key={id} className="inline-flex items-center gap-2">
+                      <span className="text-muted-foreground">▸</span>
+                      {i === arr.length - 1 ? (
+                        <>
+                          <b>{view.domains[id]?.label}</b>
+                          <span className="text-[11px] text-muted-foreground">{view.domains[id]?.kind}</span>
+                        </>
+                      ) : (
+                        <span className="cursor-pointer text-muted-foreground hover:underline" onClick={() => goScope(id)}>
+                          {view.domains[id]?.label}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </>
+              )}
+            </div>
           )}
-          <DetailPanel project={active} view={view} nodeId={selected || effFoci[effFoci.length - 1] || ''}
-            stale={staleIds} onJump={(id) => setFociWithHist([id])} />
+          {pano ? (
+            <>
+              <DomainPanorama view={view} scope={scope} selectedDomain={selDomain} selectedEdge={selEdge}
+                onSelectDomain={(id) => { setSelDomain(id); setSelEdge('') }}
+                onSelectEdge={(k) => { setSelEdge(k); setSelDomain('') }}
+                onEnter={goScope} />
+              <DomainDetail view={view} scope={scope} domainId={selDomain} edgeKey={selEdge}
+                onEnterNode={enterNode} onEnterDomain={goScope} />
+            </>
+          ) : (
+            <>
+              <CallTree view={view} foci={effFoci} open={open} scope={leafScope}
+                onToggle={(id, o) => setOpen((s) => {
+                  const n = new Set(s)
+                  if (o) n.add(id)
+                  else n.delete(id)
+                  return n
+                })}
+                onFocus={onFocus} onCrossJump={enterNode} />
+              <FocusGraph view={view} foci={effFoci} depth={depth} staleIds={staleIds} scope={leafScope}
+                onDepth={setDepth} onFocus={onFocus} onSelect={setSelected} onCrossJump={enterNode}
+                canBack={histIdx > 0} canFwd={histIdx < hist.length - 1}
+                onBack={() => { setHistIdx(histIdx - 1); setFociWithHist(hist[histIdx - 1], true) }}
+                onFwd={() => { setHistIdx(histIdx + 1); setFociWithHist(hist[histIdx + 1], true) }} />
+              <DetailPanel project={active} view={view} nodeId={selected || effFoci[effFoci.length - 1] || ''}
+                stale={staleIds} onJump={enterNode} />
+            </>
+          )}
         </div>
       )}
     </div>
