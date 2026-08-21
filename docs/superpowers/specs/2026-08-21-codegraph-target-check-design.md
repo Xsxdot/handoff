@@ -26,7 +26,7 @@
 
 ## 3. schema 变更（实际图侧）
 
-- `edges[].kind: "call" | "implements"`，缺省 `"call"`。存量 baseline 不迁移，旧数据天然合法。
+- 边分两种 kind：`call` 与 `implements`。**wire 落法**：既有 `edges` 数组元素是 `[caller, callee]` 二元组（`type Edge [2]string`），塞不进 kind 字段——implements 边落成**独立顶层列表** `implements`（baseline）与 `implementsAdded` / `implementsDeleted`（diff），元素同为 `[实现, 接口]` 二元组。`edges` 语义不变、全部是 call 边，存量 baseline 零迁移。
 - `implements` 边方向：**实现 → 接口**。接口节点归**使用方**的域（Go 消费者侧接口惯例），实现节点归提供方的域。跨域 implements 边即「provider 实现了 consumer 的回调接口」，是接缝声明的一部分（见 §4 contracts.interfaces）。
 - 组装点（main/module 的 wire 代码）在目标图 `assembly` 中标出，其出边豁免契约检查——绑定关系只存在于组装点，是依赖注入的本义。
 - 同步改动：扫描配方增补「识别接口满足关系并产 implements 边」；`graph validate` 增加 kind 取值校验。
@@ -58,7 +58,7 @@
 字段语义：
 
 - `domains[].type: "logic" | "boundary"`——协议第四条要求的域类型标注落点。逻辑域接缝对面是自有代码，测试可闭环；边界域机内只验契约形状，行为验收走显式真机清单。域卡派发时据此分流验收方式。
-- `domains[].paths`：glob 归域规则。**归域三级优先**：`assignments` 例外文件 > `paths` 规则 > 无匹配即「图外」。图外文件出现在扫描 diff 里时 warn，不静默——逼着目标图跟上现实。
+- `domains[].paths`：归域规则。语法**刻意只支持两种形态**：精确文件路径，或 `dir/**`（目录前缀匹配）——不引入完整 glob 库（YAGNI，且规则可读性优先），其他写法 `ValidateTarget` 报错。**归域三级优先**：`assignments` 例外文件 > `paths` 规则 > 无匹配即「图外」。图外文件出现在扫描 diff 里时 warn，不静默——逼着目标图跟上现实。
 - `contracts[]`：一条 = 一个允许的依赖方向 `from → to`。
   - `entries`：允许 call 边进入的 to 域容器清单，**按容器名匹配**（配方的规范形 `pkg.Receiver` / `pkg` 函数组），不按扫描生成的容器 id——目标图是人写的，名字稳定可读，id 是扫描产物不该被人引用。
   - `interfaces`：允许 to 域跨域实现的 from 域接口清单（回调契约面，implements 边方向与 call 相反，但同属这条接缝的声明）。
@@ -82,7 +82,7 @@
 反静默约定（静默失败族对抗）：
 
 - `target.json` 缺失或解析失败 → **硬报错退出，绝不静默通过**。
-- paths 规则匹配不到任何存活文件 → warn（规则漂移信号）。
+- paths 规则未命中当前视图中任何节点文件 → warn（规则漂移信号；以图内节点为准，不扫文件系统——check 的输入只有图和 target）。
 
 ## 6. 分域协议集成
 
