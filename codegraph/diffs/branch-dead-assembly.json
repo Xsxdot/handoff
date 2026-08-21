@@ -18,11 +18,11 @@
       "returns": "*Report",
       "summary": "Check 把合并视图套在目标图上对照，结算契约、legacy 预算及告警。",
       "tests": [
-        {"name": "TestCheckTable", "file": "internal/codegraph/check_test.go:55"},
-        {"name": "TestCheckImplements", "file": "internal/codegraph/check_test.go:87"},
-        {"name": "TestCheckExemptionsAndWarns", "file": "internal/codegraph/check_test.go:112"},
-        {"name": "TestCheckDeadAssembly", "file": "internal/codegraph/check_test.go:134"},
-        {"name": "TestCheckDeadAssemblyIgnoresDeletedNodes", "file": "internal/codegraph/check_test.go:168"}
+        {"name": "TestCheckTable", "file": "internal/codegraph/check_test.go:35"},
+        {"name": "TestCheckImplements", "file": "internal/codegraph/check_test.go:81"},
+        {"name": "TestCheckExemptionsAndWarns", "file": "internal/codegraph/check_test.go:97"},
+        {"name": "TestCheckDeadAssembly", "file": "internal/codegraph/check_test.go:122"},
+        {"name": "TestCheckDeadAssemblyIgnoresDeletedNodes", "file": "internal/codegraph/check_test.go:157"}
       ]
     },
     "n_codegraph_inList": {
