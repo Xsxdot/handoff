@@ -175,6 +175,16 @@ func TestDefaultDomainTemplates(t *testing.T) {
 			t.Fatalf("%s 缺裁决输出契约", name)
 		}
 	}
+	for name, want := range map[string]string{
+		"domain-breakdown":   "graph check --view",
+		"domain-ticket0":     "契约冻结即提交该文件",
+		"domain-integration": "棘轮只减不增",
+	} {
+		tpl, _ := s.GetTemplate(name, 0)
+		if !strings.Contains(tpl.Def.Prompt, want) {
+			t.Fatalf("%s 缺 graph check 契约片段 %q", name, want)
+		}
+	}
 	// 拆解节点不裁决，prompt 里出现契约会诱导 spec-draft 角色多输出一个假裁决块。
 	tpl, _ := s.GetTemplate("domain-breakdown", 0)
 	if strings.Contains(tpl.Def.Prompt, "handoff-verdict") {

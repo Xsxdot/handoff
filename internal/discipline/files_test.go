@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
@@ -23,6 +24,19 @@ func TestListEmptyWhenDirMissing(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("len = %d, want 0", len(files))
+	}
+}
+
+func TestBuiltinGraphCommandException(t *testing.T) {
+	const exception = "不要调用 handoff CLI（只读本地图数据的 handoff graph 子命令除外——它不碰任务、不派发、不触网）"
+	for _, name := range []string{"plan-writing.md", "review.md", "finishing.md", "single-context.md", "spec-draft.md"} {
+		raw, err := os.ReadFile(filepath.Join("builtin", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), exception) {
+			t.Fatalf("%s 缺只读 graph 子命令例外", name)
+		}
 	}
 }
 
