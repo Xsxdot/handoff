@@ -2,72 +2,116 @@
   "meta": { "version": 1, "project": "handoff" },
   "domains": [
     {
-      "id": "d_coordination",
-      "name": "协作控制",
-      "type": "logic",
-      "paths": ["internal/agentd/**", "cmd/**", "internal/proto/**", "internal/store/**", "internal/codegraph/**"]
-    },
-    {
-      "id": "d_sessions",
-      "name": "终端会话",
-      "type": "boundary",
-      "paths": ["internal/ptyhost/**", "internal/executor/turn/**"]
-    },
-    {
-      "id": "d_execution",
-      "name": "执行运行",
-      "type": "boundary",
-      "paths": ["internal/executor/**", "internal/prochost/**"]
-    },
-    {
-      "id": "d_runtime",
-      "name": "本机治理",
+      "id": "d_ledger",
+      "name": "账本域",
       "type": "logic",
       "paths": [
-        "internal/config/**",
-        "internal/discipline/**",
-        "internal/envfile/**",
-        "internal/logx/**",
-        "internal/pathenv/**",
-        "internal/permgate/**",
-        "internal/buildinfo/**",
-        "internal/release/**",
-        "internal/selfupdate/**",
-        "internal/skill/**",
-        "internal/toolchain/**",
-        "internal/upgrade/**"
+        "internal/ledger/**",
+        "internal/ledgerstep/**",
+        "internal/ledgermirror/**",
+        "internal/store/**"
       ]
     },
     {
-      "id": "d_transport",
-      "name": "跨机连接",
-      "type": "boundary",
-      "paths": ["internal/client/**", "internal/relay/**", "internal/targetclient/**", "internal/proxycfg/**"]
+      "id": "d_controlplane",
+      "name": "控制面 API 域",
+      "type": "logic",
+      "paths": ["internal/agentd/**", "internal/webui/**"],
+      "note": "待竖切：61 文件平铺包，实例化清单 §5.1/§6 已立待办，竖切前整包归一域"
     },
     {
-      "id": "d_workspace",
-      "name": "项目工作区",
+      "id": "d_remote",
+      "name": "远端连接域",
+      "type": "boundary",
+      "paths": [
+        "internal/client/**",
+        "internal/targetclient/**",
+        "internal/relay/**",
+        "internal/proxycfg/**"
+      ]
+    },
+    {
+      "id": "d_executor",
+      "name": "Executor 适配域",
+      "type": "boundary",
+      "paths": ["internal/executor/**"]
+    },
+    {
+      "id": "d_host",
+      "name": "宿主进程与 PTY 域",
+      "type": "boundary",
+      "paths": ["internal/prochost/**", "internal/ptyhost/**"]
+    },
+    {
+      "id": "d_release",
+      "name": "换版与发布域",
+      "type": "boundary",
+      "paths": ["internal/release/**", "internal/upgrade/**", "internal/selfupdate/**"]
+    },
+    {
+      "id": "d_localint",
+      "name": "本机集成域",
+      "type": "boundary",
+      "paths": [
+        "internal/service/**",
+        "internal/toolchain/**",
+        "internal/pathenv/**",
+        "internal/envfile/**",
+        "internal/permgate/**",
+        "internal/initflow/**",
+        "internal/localsync/**",
+        "internal/skill/**",
+        "internal/config/**",
+        "internal/logx/**"
+      ]
+    },
+    {
+      "id": "d_cli",
+      "name": "CLI 域",
       "type": "logic",
-      "paths": ["internal/localsync/**", "internal/projectid/**"]
+      "paths": ["cmd/**"]
+    },
+    {
+      "id": "d_web",
+      "name": "Web 控制台域",
+      "type": "logic",
+      "paths": ["web/src/**"]
+    },
+    {
+      "id": "d_contract",
+      "name": "契约域",
+      "type": "logic",
+      "paths": [
+        "internal/proto/**",
+        "internal/buildinfo/**",
+        "internal/projectid/**",
+        "internal/discipline/**",
+        "internal/codegraph/**"
+      ]
     }
   ],
-  "assignments": [
-    { "path": "internal/agentd/mirror.go", "domain": "d_workspace" },
-    { "path": "internal/agentd/reclaim.go", "domain": "d_workspace" }
-  ],
-  "assembly": ["main.go", "cmd/main.go"],
+  "assignments": [],
+  "assembly": ["main.go"],
   "contracts": [
-    { "from": "d_coordination", "to": "d_execution", "entries": [], "legacyBudget": 35 },
-    { "from": "d_coordination", "to": "d_runtime", "entries": [], "legacyBudget": 109 },
-    { "from": "d_coordination", "to": "d_sessions", "entries": [], "legacyBudget": 19 },
-    { "from": "d_coordination", "to": "d_transport", "entries": [], "legacyBudget": 75 },
-    { "from": "d_coordination", "to": "d_workspace", "entries": [], "legacyBudget": 37 },
-    { "from": "d_runtime", "to": "d_coordination", "entries": [], "legacyBudget": 1 },
-    { "from": "d_runtime", "to": "d_transport", "entries": [], "legacyBudget": 2 },
-    { "from": "d_sessions", "to": "d_coordination", "entries": [], "legacyBudget": 1 },
-    { "from": "d_sessions", "to": "d_execution", "entries": [], "legacyBudget": 6 },
-    { "from": "d_transport", "to": "d_coordination", "entries": [], "legacyBudget": 25 },
-    { "from": "d_transport", "to": "d_runtime", "entries": [], "legacyBudget": 3 },
-    { "from": "d_workspace", "to": "d_coordination", "entries": [], "legacyBudget": 20 }
+    { "from": "d_cli", "to": "d_contract", "entries": [], "legacyBudget": 50 },
+    { "from": "d_cli", "to": "d_controlplane", "entries": [], "legacyBudget": 12 },
+    { "from": "d_cli", "to": "d_executor", "entries": [], "legacyBudget": 7 },
+    { "from": "d_cli", "to": "d_host", "entries": [], "legacyBudget": 6 },
+    { "from": "d_cli", "to": "d_ledger", "entries": [], "legacyBudget": 1 },
+    { "from": "d_cli", "to": "d_localint", "entries": [], "legacyBudget": 44 },
+    { "from": "d_cli", "to": "d_release", "entries": [], "legacyBudget": 3 },
+    { "from": "d_cli", "to": "d_remote", "entries": [], "legacyBudget": 62 },
+    { "from": "d_controlplane", "to": "d_contract", "entries": [], "legacyBudget": 192 },
+    { "from": "d_controlplane", "to": "d_executor", "entries": [], "legacyBudget": 16 },
+    { "from": "d_controlplane", "to": "d_host", "entries": [], "legacyBudget": 25 },
+    { "from": "d_controlplane", "to": "d_ledger", "entries": [], "legacyBudget": 112 },
+    { "from": "d_controlplane", "to": "d_localint", "entries": [], "legacyBudget": 36 },
+    { "from": "d_controlplane", "to": "d_release", "entries": [], "legacyBudget": 15 },
+    { "from": "d_controlplane", "to": "d_remote", "entries": [], "legacyBudget": 13 },
+    { "from": "d_executor", "to": "d_contract", "entries": [], "legacyBudget": 1 },
+    { "from": "d_ledger", "to": "d_contract", "entries": [], "legacyBudget": 31 },
+    { "from": "d_localint", "to": "d_remote", "entries": [], "legacyBudget": 2 },
+    { "from": "d_remote", "to": "d_contract", "entries": [], "legacyBudget": 25 },
+    { "from": "d_remote", "to": "d_localint", "entries": [], "legacyBudget": 3 }
   ]
 }
