@@ -60,6 +60,17 @@ describe('CodegraphPage 三态下钻', () => {
     await waitFor(() => expect(container.querySelectorAll('[data-node]').length).toBeGreaterThan(0))
     expect(container.querySelector('[data-domain]')).toBeNull()
   })
+  it('进入叶子领域：默认焦点取本域的根，不是全图第一个入口', async () => {
+    const { container } = render(<CodegraphPage />)
+    await waitFor(() => expect(container.querySelector('[data-domain="d_svc"]')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('下钻到领域内部：svc'))
+    await waitFor(() => expect(container.querySelector('[data-domain="d_svc/api"]')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('下钻到领域内部：api'))
+    await waitFor(() => expect(container.querySelectorAll('[data-node]').length).toBeGreaterThan(0))
+    // 焦点越界的症状：左树列的是本域的根，焦点图与右详情却停在域外节点上，
+    // 两栏在讲两个不同领域的事。demo run 属于 d_cli，不能成为 d_svc/api 的默认焦点。
+    expect(container.querySelector('h3')?.textContent).toBe('runE')
+  })
   it('无领域数据：降级为单领域视图并给出提示', async () => {
     state.data = { ...resp, baseline: { ...resp.baseline, domains: undefined } }
     const { container } = render(<CodegraphPage />)

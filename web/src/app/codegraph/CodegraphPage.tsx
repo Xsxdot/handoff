@@ -12,7 +12,7 @@ import { DetailPanel } from './DetailPanel'
 import { DomainDetail } from './DomainDetail'
 import { DomainPanorama } from './DomainPanorama'
 import { FocusGraph } from './FocusGraph'
-import { childDomainsOf, domainAncestors, hasDomains, nodeDomainPathOf } from './domains'
+import { childDomainsOf, domainAncestors, hasDomains, leafRoots, nodeDomainPathOf } from './domains'
 import { mergeView, scannedEntries } from './graphmath'
 import { useCodegraph } from './useCodegraph'
 
@@ -48,8 +48,11 @@ export function CodegraphPage() {
   const effFoci = useMemo(() => {
     if (!view) return []
     const ok = foci.filter((f) => view.nodes[f] && view.nodes[f].status !== 'deleted')
-    return ok.length ? ok : scannedEntries(view).slice(0, 1)
-  }, [view, foci])
+    if (ok.length) return ok
+    // 默认焦点必须落在当前领域内：goScope 会清空 foci，若这里回落到全图第一个
+    // 已扫描入口，进领域后左树列的是本域的根、焦点图却停在域外节点上，两栏各说各话。
+    return leafScope ? leafRoots(view, leafScope).slice(0, 1) : scannedEntries(view).slice(0, 1)
+  }, [view, foci, leafScope])
 
   const setFociWithHist = (next: string[], fromHist = false) => {
     if (next.join('|') === effFoci.join('|')) return
