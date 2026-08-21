@@ -118,3 +118,25 @@ func ValidateTarget(t *Target) []string {
 	}
 	return issues
 }
+
+// DomainOf 返回 file 的归属域 id，"" 表示图外。
+// 三级优先：assignments 精确指派 > 域 paths 规则 > 图外（spec §4）。
+// file 与规则都是 '/' 分隔的仓内相对路径——图数据即此形态，不做 filepath 转换。
+func (t *Target) DomainOf(file string) string {
+	for _, a := range t.Assignments {
+		if a.Path == file {
+			return a.Domain
+		}
+	}
+	for _, d := range t.Domains {
+		for _, rule := range d.Paths {
+			if rule == file {
+				return d.ID
+			}
+			if prefix, ok := strings.CutSuffix(rule, "/**"); ok && strings.HasPrefix(file, prefix+"/") {
+				return d.ID
+			}
+		}
+	}
+	return ""
+}

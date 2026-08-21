@@ -53,3 +53,25 @@ func TestContractBudgetDefaultZero(t *testing.T) {
 		t.Fatal("缺省预算必须是 0（硬拦）")
 	}
 }
+
+func TestDomainOf(t *testing.T) {
+	tg := &Target{
+		Domains: []TargetDomain{
+			{ID: "d_svc", Type: "logic", Paths: []string{"svc/**"}},
+			{ID: "d_cmd", Type: "logic", Paths: []string{"cmd/run.go"}},
+		},
+		Assignments: []Assignment{{Path: "svc/mirror.go", Domain: "d_cmd"}},
+	}
+	cases := []struct{ file, want string }{
+		{"svc/task.go", "d_svc"},   // 前缀规则
+		{"svc/mirror.go", "d_cmd"}, // assignments 优先于 paths
+		{"cmd/run.go", "d_cmd"},    // 精确规则
+		{"web/x.ts", ""},           // 图外
+		{"svcx/task.go", ""},       // 前缀必须整段匹配，svcx 不是 svc/
+	}
+	for _, c := range cases {
+		if got := tg.DomainOf(c.file); got != c.want {
+			t.Errorf("DomainOf(%q) = %q, want %q", c.file, got, c.want)
+		}
+	}
+}
