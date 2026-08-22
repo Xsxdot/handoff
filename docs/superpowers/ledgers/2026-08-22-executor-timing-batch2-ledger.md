@@ -107,4 +107,21 @@
   claudecode 顺序测试通过、gofmt/vet/build 命令链无前置错误，剩余全包失败已按
   原始输出记账。
 - commit 范围：`internal/executor/claudecode/start_ordering_test.go` 与本 ledger；
-  提交信息待按计划提交。
+  已提交为 `b9b1578a test(claudecode): 固定启动顺序测试死线`。
+
+## 整分支终审（相对 `ada1ff32`）
+
+- `git diff --name-status ada1ff32..HEAD` 仅列出本计划的 ledger、grok adapter/test、
+  opencode adapter/test 辅助、claudecode timeout test；无计划外生产包或配置变更。
+- `git diff --check ada1ff32..HEAD` 无输出，终审时工作树干净。
+- `go test -count=1 ./internal/executor/grok/ ./internal/executor/opencode/` 输出：
+  `ok github.com/Xsxdot/handoff/internal/executor/grok 1.354s`、
+  `ok github.com/Xsxdot/handoff/internal/executor/opencode 17.897s`。
+- `go vet ./internal/executor/...` 与 `go build ./...` 均无错误输出并返回成功。
+- `go test ./...` 实测返回失败；根包、cmd 及除 claudecode 外的 internal 包均输出
+  `ok`。原始失败仍为 claudecode `TestPermServerAskThenRespond`/
+  `TestPermServerRespondUnknownID`/`TestPermServerReRegisterSameID` 的
+  `裁决 socket 路径过长（114/115/116 字节，上限 107）`、
+  `TestResumeContinuesFromOffset` 的同类路径超限，以及
+  `TestClaudeToolTimingPaired` 的 `FAIL`。终审没有把这个基线环境问题扩展成无关修复。
+- 终审结论：未发现需要集中修复的计划内代码问题；以上全仓测试阻断已原样留账。
