@@ -81,6 +81,31 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 	}
 }
 
+func TestWorkflowNodeCarriesPurposeAndAcceptanceSwitch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	_, err := s.PutWorkflow("node-fields", WorkflowDef{Nodes: []NodeDef{{
+		Name: "待审阅", Dispatch: true, Template: "feature-impl", OmitAcceptance: true,
+		Override: NodeOverride{Purpose: PurposeReview},
+	}}})
+	if err != nil {
+		t.Fatalf("写工作流: %v", err)
+	}
+	got, err := s.GetWorkflow("node-fields", 0)
+	if err != nil {
+		t.Fatalf("读工作流: %v", err)
+	}
+	if len(got.Def.Nodes) != 1 {
+		t.Fatalf("节点数量应为 1，实得 %d", len(got.Def.Nodes))
+	}
+	node := got.Def.Nodes[0]
+	if node.Override.Purpose != PurposeReview || !node.OmitAcceptance {
+		t.Fatalf("节点字段穿序列化边界失败: %+v", node)
+	}
+}
+
 func TestDefaultWorkflowsAreNodeForm(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.EnsureDefaultTemplates(); err != nil {

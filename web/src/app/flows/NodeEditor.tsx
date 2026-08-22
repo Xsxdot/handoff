@@ -28,6 +28,15 @@ function controlID(name: string, suffix: string): string {
   return `flow-node-${safe}-${suffix}`
 }
 
+// 用途候选：review 会让派发走审阅路径（基线取卡的工作分支、开一次性分支、
+// 不算作卡的工作分支）；implement 是普通实现轮。用户自建的用途照样存得下，
+// 所以当前值不在候选里时把它并进去，避免打开编辑器就被静默改掉。
+const knownPurposes = ['implement', 'review']
+
+function purposeOptions(current?: string): string[] {
+  return current && !knownPurposes.includes(current) ? [current, ...knownPurposes] : knownPurposes
+}
+
 function routeOptions(node: NodeDef, nodeNames: string[]): string[] {
   return nodeNames.filter((name) => name !== node.name)
 }
@@ -69,6 +78,7 @@ export function NodeEditor({
         override: undefined,
         max_rounds: undefined,
         on_fail: undefined,
+        omit_acceptance: undefined,
       })
       return
     }
@@ -138,6 +148,15 @@ export function NodeEditor({
               />
               <label htmlFor={id('carry-card-context')}>携带卡上下文</label>
             </div>
+            <div className="flex items-center gap-2">
+              <input
+                id={id('omit-acceptance')}
+                type="checkbox"
+                checked={node.omit_acceptance === true}
+                onChange={(event) => update({ omit_acceptance: event.target.checked || undefined })}
+              />
+              <label htmlFor={id('omit-acceptance')}>不注入验收判据</label>
+            </div>
           </>
         )}
       </div>
@@ -166,6 +185,18 @@ export function NodeEditor({
             >
               <option value="">（沿用模板）</option>
               {disciplines.map((discipline) => <option key={discipline} value={discipline}>{discipline}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass} htmlFor={id('purpose')}>用途</label>
+            <select
+              id={id('purpose')}
+              className={inputClass}
+              value={node.override?.purpose ?? ''}
+              onChange={(event) => updateOverride('purpose', event.target.value)}
+            >
+              <option value="">（沿用模板）</option>
+              {purposeOptions(node.override?.purpose).map((purpose) => <option key={purpose} value={purpose}>{purpose}</option>)}
             </select>
           </div>
           {(['executor', 'target', 'model'] as const).map((key) => {
