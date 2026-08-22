@@ -162,6 +162,27 @@ func waitTaskState(t *testing.T, st *store.Store, taskID string, want proto.Task
 	})
 }
 
+// waitTicketDelivered 等到工单的送达标记真的落库。
+//
+// why 不能用 waitTaskState 代替：任务迁 waiting_review 与 markDelivered 写
+// delivered_at 是两条独立路径，中间有真实窗口——CI 上实测到过 Answer 已写、
+// DeliveredAt 仍是 nil 的一瞬（B159）。就绪门要取这条链彻底跑完的注销点，
+// 不取中途的任务状态。
+func waitTicketDelivered(t *testing.T, st *store.Store, ticketID string) *proto.Ticket {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tk, err := st.GetTicket(ticketID)
+		if err == nil && tk.DeliveredAt != nil {
+			return tk
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等工单 %s 送达标记超时（最后一次读到 %+v，err=%v）", ticketID, tk, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // waitEvent 轮询等待某类事件落库。
 //
 // 为什么断言事件不能拿 waitTaskState 当就绪信号：escalatePermission 是
@@ -253,7 +274,7 @@ func TestApproverApprovesPermissionWithoutWaking(t *testing.T) {
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingReview) // 直通完成，未经 waiting_answer 停留
 
 	// 断言 1：工单已建且已答已送达（审计闭环）；answer 为精确 allow（P0-2）
-	tk := mustGetTicket(t, st, task.ID+":"+fk.PermID())
+	tk := waitTicketDelivered(t, st, task.ID+":"+fk.PermID())
 	if tk.Answer == nil || *tk.Answer != "allow" || tk.DeliveredAt == nil {
 		t.Fatalf("approve 应自动应答精确 allow 并标记送达: %+v", tk)
 	}
