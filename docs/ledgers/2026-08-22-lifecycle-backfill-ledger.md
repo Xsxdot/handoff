@@ -19,8 +19,8 @@
 | d_execution | 0 | 0 | 0 | 父领域，无直接 model |
 | d_execution_adapters | 0 | 0 | 0 | 无直接 model 容器 |
 | d_execution_host | 14 | 3 | 3 | 11：进程凭据/判定快照/roster 结构无可证生命周期，跳过 |
-| d_executor | 97 | 10 | 14 | 87：结果/事件/协议投影及纯业务辅助结构无稳定生命周期，跳过 |
-| d_ledger | 48 | 4 | 10 | 44：查询/镜像/关系投影及配置快照跳过；仅保留卡片、事件、裁决和迁移审计的真实构造/状态写入 |
+| d_executor | 97 | 10 | 13 | 87：结果/事件/协议投影及纯业务辅助结构无稳定生命周期，跳过 |
+| d_ledger | 48 | 4 | 9 | 44：查询/镜像/关系投影及配置快照跳过；仅保留卡片、事件、裁决和迁移审计的真实构造/状态写入 |
 | d_runtime | 0 | 0 | 0 | 父领域，无直接 model |
 | d_runtime_config | 26 | 0 | 0 | 26：配置、环境、路径和权限门模型是解析输入/策略快照，无生命周期状态，跳过 |
 | d_runtime_maintenance | 18 | 0 | 0 | 18：版本探测、发布、工具链、自更新和 skill 结果快照，无持久生命周期状态，跳过 |
@@ -30,7 +30,7 @@
 | d_transport_tunnel | 8 | 4 | 9 | 4：Frame/错误/地址等协议值对象无生命周期，保留 Dialer、Listener、appListener 和 secureConn |
 | d_web | 254 | 14 | 52 | 240：API wire/请求响应、展示投影、props/枚举和无独立状态的辅助结构跳过；保留轮询门控、文件搜索、悬浮窗、工单聚合、任务流、树偏好、工作台基准/草稿及工作台状态的真实构造/写入 |
 | d_workspace | 3 | 0 | 0 | 3：启动项配置项、同步选项与同步结果是配置/输入/结果快照，无独立生命周期状态，跳过 |
-| **合计** | **707** | **待扫** | **待扫** | |
+| **合计** | **707** | **52** | **125** | 全部 19 个 baseline domain 已对账；baseline 原有 2 条 lifecycle 未重复产出 |
 
 ## 领域进度
 
@@ -53,3 +53,20 @@
 - Task d_execution_adapters 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；无直接 model 容器，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_runtime 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_transport 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+
+## 终审
+
+- 相对分支起点 `108d148a` 的完整 diff 仅涉及本 diff JSON 与本 ledger；19 个领域行齐全，model 数总和 `707` 与 `baseline.json` 的 707 个 model 一致。
+- lifecycle 增量共 125 条、覆盖 52 个 model；`python3 -m json.tool codegraph/diffs/lifecycle-backfill.json` 与 `go run . graph validate --repo .` 均通过，validate 输出 `issues: null`。
+- 抽样代码出处（who 文件:行；model 定义文件:行）：
+  1. `useLedgerEnabled` creator → `LedgerEnabledState`：`web/src/app/data/useLedgerEnabled.ts:20`；`web/src/app/data/useLedgerEnabled.ts:11`
+  2. `useMachineCaps` creator → `MachineCaps`：`web/src/app/data/useMachineCaps.ts:31`；`web/src/app/data/useMachineCaps.ts:18`
+  3. `FileTree` writer `SearchState.q`：`web/src/app/files/FileTree.tsx:163`；`web/src/app/files/FileTree.tsx:133`
+  4. `parseGeom` creator → `Geom`：`web/src/app/homedock/dockPersist.ts:117`；`web/src/app/homedock/dockPersist.ts:22`
+  5. `decodeDock` creator → `DockSnapshot`：`web/src/app/homedock/dockPersist.ts:78`；`web/src/app/homedock/dockPersist.ts:30`
+  6. `useHomeDock` creator → `HomeDockApi`：`web/src/app/homedock/useHomeDock.ts:115`；`web/src/app/homedock/useHomeDock.ts:32`
+  7. `useGlobalTickets` creator → `GlobalTickets`：`web/src/app/overlay/useGlobalTickets.ts:37`；`web/src/app/overlay/useGlobalTickets.ts:25`
+  8. `useTaskSession` creator → `TaskSession`：`web/src/app/task/useTaskSession.ts:45`；`web/src/app/task/useTaskSession.ts:32`
+  9. `useFramesStream` writer `FramesStream.frames`：`web/src/app/task/useFramesStream.ts:59`；`web/src/app/task/useFramesStream.ts:30`
+  10. `workspaceBase` creator → `BaseDir`：`web/src/app/tree/ProjectTree.tsx:159`；`web/src/app/workbench/useWorkbench.ts:38`
+- 终审修复：校正 d_executor/d_ledger 条目计数、补齐总计与终审抽样；spec 符合性与代码质量复审通过。提交范围：`HEAD^..HEAD`。
