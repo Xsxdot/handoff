@@ -379,7 +379,7 @@ func TestQuestionTextIsBounded(t *testing.T) {
 	}
 }
 
-// nextNonProgress 取下一条非 progress 事件（progress 是噪音）。
+// nextNonProgress 取下一条非 progress/耗时事件（progress 与 Timing 是噪音）。
 // 与 waitAnyClassified 的区别：本函数不跳过 permission，用于断言
 // 「某类事件根本不该出现」。
 func nextNonProgress(t *testing.T, ch <-chan executor.AdapterEvent) executor.AdapterEvent {
@@ -390,6 +390,9 @@ func nextNonProgress(t *testing.T, ch <-chan executor.AdapterEvent) executor.Ada
 		case ev, ok := <-ch:
 			if !ok {
 				t.Fatal("事件通道已关闭")
+			}
+			if isTimingEvent(ev) {
+				continue
 			}
 			if ev.Type != "progress" {
 				return ev
