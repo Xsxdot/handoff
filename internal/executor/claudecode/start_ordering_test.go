@@ -49,22 +49,32 @@ func TestStartWritesPromptBeforeWaitingReady(t *testing.T) {
 		t.Fatalf("Start 应成功（prompt 先投、init 随后到达）：%v", err)
 	}
 
-	// 假执行者的 init 事件应已产出（session_id 与假 claude 写的一致）
+	// 假执行者的 init 事件应已产出（session_id 与假 claude 写的一致）。
+	// Start 会先记录 dispatch 回合的 turn TimingEntry；它与 init 无关，跳过后
+	// 检查首个协议进度事件。
 	r := a.lookup("T-order")
 	if r == nil {
 		t.Fatal("Start 成功后运行态缺失")
 	}
-	select {
-	case ev := <-r.evCh:
-		if ev.Type != "progress" || ev.SessionID != "sess-fake" {
-			t.Fatalf("init 事件应先到且带假执行者的 session_id，实际 %+v", ev)
-		}
 	// 死线放到 10s（仍在外层 15s ctx 之内）：本用例要等一个真的子进程被拉起、
 	// 写 fifo、事件穿过 streamLoop。2s 在多包并发 -race 把 CPU 吃满时不够用，
 	// 已实测偶发失败。放宽不削弱断言——顺序错了照样失败，只是容得下慢机器。
-	case <-time.After(10 * time.Second):
-		t.Fatal("10s 内未收到 init progress 事件")
+	for {
+		select {
+		case ev := <-r.evCh:
+			if ev.Type == "usage" && ev.Timing != nil {
+				continue
+			}
+			if ev.Type != "progress" || ev.SessionID != "sess-fake" {
+				t.Fatalf("首个非耗时事件应是带假执行者 session_id 的 init，实际 %+v", ev)
+			}
+			goto initReceived
+		case <-time.After(10 * time.Second):
+			t.Fatal("10s 内未收到 init progress 事件")
+		}
 	}
+
+initReceived:
 
 	// 收摊：Stop 幂等，运行态可能已被 streamLoop 随哨兵终结而注销
 	_ = a.Stop("T-order")

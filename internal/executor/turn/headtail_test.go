@@ -3,6 +3,8 @@ package turn
 import (
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestHeadTailShortStringUntouched(t *testing.T) {
@@ -52,5 +54,48 @@ func TestHeadTailNoTruncateWhenBudgetCovers(t *testing.T) {
 	out, truncated, _ := HeadTail(s, 10, 10)
 	if truncated || out != s {
 		t.Fatalf("预算刚好覆盖时不该截断: out=%q truncated=%v", out, truncated)
+	}
+}
+
+func TestHeadTailRunes(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         string
+		head, tail int
+		want       string
+	}{
+		{"不足预算原样返回", "abcdef", 3, 3, "abcdef"},
+		{"刚好等于预算原样返回", "abcdef", 3, 3, "abcdef"},
+		{"英文截断", "abcdefghij", 3, 2, "abc" + executor.TruncationMarker + "ij"},
+		// 中文是本函数存在的理由：按字节切会切出半个字符
+		{"中文按 rune 切不出乱码", "一二三四五六七八九十", 2, 2, "一二" + executor.TruncationMarker + "九十"},
+		{"tail 为 0", "abcdef", 2, 0, "ab" + executor.TruncationMarker},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := HeadTailRunes(c.in, c.head, c.tail); got != c.want {
+				t.Errorf("HeadTailRunes(%q,%d,%d) = %q，期望 %q", c.in, c.head, c.tail, got, c.want)
+			}
+		})
+	}
+}
+
+func TestFrameWriterTurnAccessor(t *testing.T) {
+	dir := t.TempDir()
+	w, _ := NewFrameWriter(dir, nil)
+	if w.Turn() != 0 {
+		t.Errorf("还没开回合时应为 0，实得 %d", w.Turn())
+	}
+	_ = w.BeginTurn("dispatch", "")
+	if w.Turn() != 1 {
+		t.Errorf("第一回合应为 1，实得 %d", w.Turn())
+	}
+	_ = w.BeginTurn("send", "")
+	if w.Turn() != 2 {
+		t.Errorf("第二回合应为 2，实得 %d", w.Turn())
+	}
+	var nilW *FrameWriter
+	if nilW.Turn() != 0 {
+		t.Error("nil 接收者应返回 0（全包的 nil 安全约定）")
 	}
 }

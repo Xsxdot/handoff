@@ -178,6 +178,7 @@ type runState struct {
 	items *itemIndex
 
 	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	seg      *turn.Segmenter   // 耗时段切分器；与 frames 同款 nil 安全约定
 	textPart string            // 本回合正文/思维链的 part 标识
 
 	// stopping 是主动停止标记：Stop 先置位再关连接，onClosed 与回合收尾据此
@@ -222,6 +223,7 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 	}
 	r.frames = fw
+	r.seg = turn.NewSegmenter(nil)
 	return r
 }
 
@@ -316,6 +318,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 
 	if err := a.startTurn(r, prompt); err != nil {
@@ -512,6 +515,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	return a.startTurn(r, text)
 }
@@ -603,6 +607,24 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	default:
 		a.log.Warn("事件通道满，丢弃事件", "task", r.taskID, "type", ev.Type)
 		return false
+	}
+}
+
+// reportTiming 把段切分器产出的条目逐条经 usage 事件上报。
+//
+// 为什么走 usage 而不是新事件类型：Usage（当前占用）、Spend（累计消耗）与
+// Timing（耗时）是同一次模型调用结束时的三样产物；拆成两个事件，两者之间
+// 就能插进一次 agentd 重启（契约文档 §6.3 的拍板记录）。
+//
+// entries 为空是常态（不是错误），静默返回。
+func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
+	for i := range entries {
+		e := entries[i]
+		if !a.emit(r, executor.AdapterEvent{Type: "usage", Timing: &e}) {
+			a.log.Debug("codex 耗时条目未能上报（事件通道已终止或已满）",
+				"task", r.taskID, "key", e.Key, "remaining", len(entries)-i)
+			return
+		}
 	}
 }
 
@@ -760,6 +782,9 @@ func firstNonEmpty(vals ...string) string {
 //   - errMsg: status=failed 时 codex 给的原因（B16：必须原样带出，不许扁平化）
 //   - text: 本回合正文（已取走）
 func (a *Adapter) finishTurn(r *runState, status, errMsg, text string) {
+	// 回合收尾在最前面：本函数按 status 分支且 failed 分支提前 return，
+	// 放开头是唯一能覆盖全部分支的位置。EndTurn 幂等。
+	a.reportTiming(r, r.seg.EndTurn())
 	a.flushRender(r)
 
 	switch status {
@@ -1125,6 +1150,7 @@ func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
 		if it.Type == "fileChange" {
 			input = it.renderLine() // 文件变更没有命令串，用路径清单当入参
 		}
+		a.reportTiming(r, r.seg.ToolStart(it.ID, it.Type, input))
 		if err := r.frames.ToolCall(it.ID, it.Type, input); err != nil {
 			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
 		}
@@ -1134,8 +1160,9 @@ func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
 	if it.ExitCode != nil && *it.ExitCode != 0 {
 		status = "error"
 	}
-	// TODO(contract Ticket 0): 耗时打点归 implement 节点；-1 = 不知道，帧上不带 dur_ms。
-	if err := r.frames.ToolResult(it.ID, status, it.renderLine(), -1); err != nil {
+	dur, entries := r.seg.ToolEnd(it.ID)
+	if err := r.frames.ToolResult(it.ID, status, it.renderLine(), dur); err != nil {
 		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
 	}
+	a.reportTiming(r, entries)
 }

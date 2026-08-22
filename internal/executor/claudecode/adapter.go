@@ -44,6 +44,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
 )
 
@@ -101,6 +102,7 @@ type runState struct {
 	closeOnce    sync.Once
 	renderPath   string
 	frames       *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	seg          *turn.Segmenter   // 耗时段切分器；与 frames 同款 nil 安全约定
 	textPart     string            // 本回合正文/思维链的 part 标识，BeginTurn 后由 NextPart 分配
 	emitMu       sync.Mutex        // 保护 evCh 的写入与关闭
 	evClosed     bool              // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
@@ -145,6 +147,10 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 	}
 	r.frames = fw
+	// 段切分器与帧写入器共用回合号（见 FrameWriter.Turn 注释）。
+	// 时钟传 nil 即 time.Now；本包不注入时钟——口径的穷举验证在 turn 包完成，
+	// 这里只验「信号有没有喂对」，不验时长算得对不对。
+	r.seg = turn.NewSegmenter(nil)
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.runs[taskID] = r
@@ -200,6 +206,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	r.session = sessionID
 	// 回滚顺序与创建顺序相反：先停 socket 受理、再 kill 进程、最后注销运行态
@@ -353,6 +360,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	if err := r.proc.WriteInput(text); err != nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
@@ -680,6 +688,9 @@ func (a *Adapter) appendActionSummary(r *runState, toolUseID, toolName string, i
 	if err := turn.AppendRender(r.renderPath, "\n"+line+"\n"); err != nil {
 		a.log.Warn("追加 render.log 失败", "task", r.taskID, "cause", err)
 	}
+	// 打点必须在写帧**之前**：写帧要过一次头尾截断与文件 IO，把那段时间算进
+	// 工具耗时是在给工具记别人的账。
+	a.reportTiming(r, r.seg.ToolStart(toolUseID, toolName, timingDetail(toolName, input)))
 	// 帧里存**完整入参**（只受头尾截断约束），不是 render.log 的行摘要——
 	// 行摘要的 firstLine 会切掉多行命令的后续行，那正是审核者要看的
 	if err := r.frames.ToolCall(toolUseID, toolName, string(input)); err != nil {
@@ -723,16 +734,22 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 		if block.IsError {
 			status = "error"
 		}
-		// TODO(contract Ticket 0): 耗时打点归 implement 节点；-1 = 不知道，帧上不带 dur_ms。
-		if err := r.frames.ToolResult(block.ToolUseID, status, full, -1); err != nil {
+		// 先取耗时再写帧：dur 来自 Segmenter 里记的 tool_call 时刻，
+		// 没配上时是 -1（不知道），帧上就不带 dur_ms
+		dur, entries := r.seg.ToolEnd(block.ToolUseID)
+		if err := r.frames.ToolResult(block.ToolUseID, status, full, dur); err != nil {
 			a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
 		}
+		a.reportTiming(r, entries)
 	}
 }
 
 // mapResult 处理回合收尾：result.result 是最后一条 assistant 正文，正是
 // turn.ParseTrailer 的输入；subtype!=success 时按失败处理（带 claude.log 尾部）。
 func (a *Adapter) mapResult(r *runState, m streamMsg) {
+	// 回合收尾在最前面：本函数有两条出口（异常分支提前 return），
+	// 放在开头是唯一能同时覆盖两条的位置。EndTurn 幂等，重复触发无害。
+	a.reportTiming(r, r.seg.EndTurn())
 	// 窗口只在 result 行出现，先取再走回合收尾；只存不发（硬约束见 runState.ctxWindow）。
 	w, confident := pickModelUsageWindow(m.ModelUsage, r.actualModel)
 	if !confident {
@@ -937,6 +954,25 @@ func (a *Adapter) maybeProgress(r *runState) {
 	a.emit(r, executor.AdapterEvent{Type: "progress", Text: turn.TailRunes(text, 200)})
 }
 
+// reportTiming 把段切分器产出的条目逐条经 usage 事件上报。
+//
+// 为什么走 usage 而不是新事件类型：Usage（当前占用）、Spend（累计消耗）与
+// Timing（耗时）是同一次模型调用结束时的三样产物；拆成两个事件，两者之间
+// 就能插进一次 agentd 重启（契约文档 §6.3 的拍板记录）。
+//
+// entries 为空是常态（不是错误），静默返回。
+func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
+	for i := range entries {
+		e := entries[i]
+		if !a.emit(r, executor.AdapterEvent{Type: "usage", Timing: &e}) {
+			// 通道已关或已 stop：剩下的条目也送不出去，不必逐条重试刷日志
+			a.log.Debug("耗时条目未能上报（事件通道已终止）",
+				"task", r.taskID, "key", e.Key, "remaining", len(entries)-i)
+			return
+		}
+	}
+}
+
 // clearTurn 清空回合累积（回合分类终结时调用）。
 func (r *runState) clearTurn() {
 	r.turnMu.Lock()
@@ -962,6 +998,10 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	case "result":
 		ok := ev.Result != nil && ev.Result.OK
 		a.log.Info("claude 产出结果事件", "task", r.taskID, "type", ev.Type, "ok", ok)
+	case "usage":
+		// 不打 Info：用量/耗时事件频率高（一个回合几十到几百条），逐条打入口
+		// 日志就是刷屏。落库结果的日志在 manager 的 handleUsage/handleSpend/
+		// handleTiming 里打（那里是 Debug，且只在真落库时打）。
 	default:
 		a.log.Info("claude 产出未知事件", "task", r.taskID, "type", ev.Type)
 	}
@@ -1043,4 +1083,23 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// timingDetail 从工具入参里取出进 TimingEntry.Detail 的摘要。
+//
+// Bash 取完整命令原文（聚合层要按命令首词分桶，摘要里没有命令就分不了桶）；
+// 其余工具取紧凑 JSON。截断由 Segmenter 负责，本函数不截。
+//
+// 为什么不复用 appendActionSummary 里那行 render.log 摘要：那行走的是
+// firstLine，会切掉多行命令的后续行——而多行命令的首行往往只是 `set -e`。
+func timingDetail(toolName string, input json.RawMessage) string {
+	if toolName == "Bash" {
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) == nil && in.Command != "" {
+			return in.Command
+		}
+	}
+	return compactJSON(input)
 }
