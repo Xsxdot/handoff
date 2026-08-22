@@ -2509,6 +2509,94 @@ func TestHandleResultEmitsTurnFailedOnTurnFailure(t *testing.T) {
 	}
 }
 
+// TestSettledTurnDropsLateFailureResult 验证回合已经收口后，adapter 因正常退出
+// 读到 EOF 而补发的失败 result 不会覆盖已落库的成功结果。
+func TestSettledTurnDropsLateFailureResult(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: true, Branch: "handoff/B180", CommitHash: "abc1234",
+	}})
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: false, FailReason: "codex 连接断开: EOF",
+	}})
+
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	var completed, turnFailed int
+	for _, ev := range evs {
+		switch ev.Type {
+		case proto.EventTypeCompleted:
+			completed++
+		case proto.EventTypeTurnFailed:
+			turnFailed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("收口后的成功结果应恰好保留一条 completed，实际 %d", completed)
+	}
+	if turnFailed != 0 {
+		t.Fatalf("收口后的迟到失败结果不应落 turn_failed，实际 %d 条", turnFailed)
+	}
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("读任务失败: %v", err)
+	}
+	if task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("丢弃迟到失败结果后任务仍应在 waiting_review，实际 %s", task.State)
+	}
+}
+
+// TestRunningTurnStillRecordsFailureResult 是收口守卫的回归网：running 上的真实
+// 失败仍须落账并把任务迁入 waiting_review。
+func TestRunningTurnStillRecordsFailureResult(t *testing.T) {
+	m, taskID := newManagerWithRunningTask(t)
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: false, FailReason: "executor 连接断开: EOF",
+	}})
+
+	evs, err := m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件失败: %v", err)
+	}
+	var turnFailed int
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeTurnFailed {
+			turnFailed++
+		}
+	}
+	if turnFailed != 1 {
+		t.Fatalf("running 上的真实失败应恰好落一条 turn_failed，实际 %d 条", turnFailed)
+	}
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("读任务失败: %v", err)
+	}
+	if task.State != proto.TaskStateWaitingReview {
+		t.Fatalf("running 上的真实失败后任务应在 waiting_review，实际 %s", task.State)
+	}
+
+	// OK=true 在 waiting_review 上仍须保持既有行为：它可能是 agentd 重启后
+	// 唯一能补回本回合报文的迟到 completed，不能被失败守卫一并吃掉。
+	m.handleResult(taskID, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: true, Branch: "handoff/B180", CommitHash: "def5678",
+	}})
+	evs, err = m.st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("读取补回成功结果失败: %v", err)
+	}
+	var completed int
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeCompleted {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("waiting_review 上的成功结果应照旧落一条 completed，实际 %d 条", completed)
+	}
+}
+
 // TestStopEmitsFailed 防止 Task 2 改过头：协调者主动中止仍然是**任务终结**，
 // 必须继续落 failed，否则 follow 再也收不了流。
 func TestStopEmitsFailed(t *testing.T) {
