@@ -206,6 +206,74 @@ func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 	}
 }
 
+func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		dispatched = append(dispatched, opts)
+		return fmt.Sprintf("T-purpose-%d", len(dispatched)), nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("实现轮 ViaTemplate: %v", err)
+	}
+	workBranch := "cards/" + card.ID + "-implement"
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{
+			Template: "feature-impl", Target: "mac-02", PurposeOverride: ledger.PurposeReview,
+		}); err != nil {
+		t.Fatalf("审阅轮 ViaTemplate: %v", err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("应派两轮，实得 %d", len(dispatched))
+	}
+	if got, want := dispatched[1].Branch, "cards/"+card.ID+"-review-1"; got != want {
+		t.Fatalf("审阅分支应为 %q，实得 %q", want, got)
+	}
+	if dispatched[1].Base != workBranch {
+		t.Fatalf("审阅分支基线应为首轮工作分支 %q，实得 %q", workBranch, dispatched[1].Base)
+	}
+	if dispatched[1].ResolveDefaultBase {
+		t.Fatal("审阅轮已有工作分支，不应要求目标侧解析默认基线")
+	}
+	reviews, err := st.ReviewRounds(card.ID)
+	if err != nil {
+		t.Fatalf("ReviewRounds: %v", err)
+	}
+	if reviews != 1 {
+		t.Fatalf("审阅轮数应为 1，实得 %d", reviews)
+	}
+	gotWorkBranch, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if gotWorkBranch != workBranch {
+		t.Fatalf("WorkBranch 应跳过审阅轮并保持 %q，实得 %q", workBranch, gotWorkBranch)
+	}
+}
+
+func TestViaTemplateWithoutPurposeOverrideKeepsTemplatePurpose(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var got DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		return "T-template-purpose", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+	if want := "cards/" + card.ID + "-implement"; got.Branch != want {
+		t.Fatalf("无覆盖时应沿用模板用途的分支 %q，实得 %q", want, got.Branch)
+	}
+	if got.Base != "" {
+		t.Fatalf("首轮无卡基线时 Base 应为空，实得 %q", got.Base)
+	}
+	if !got.ResolveDefaultBase {
+		t.Fatal("首轮无卡基线时应要求目标侧解析默认基线")
+	}
+}
+
 func TestBuildPromptThreeSections(t *testing.T) {
 	card := ledger.Card{
 		ID: "B9.1", Title: "做点什么", AcceptanceCriteria: "测试全绿",

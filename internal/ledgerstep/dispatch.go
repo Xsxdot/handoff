@@ -62,6 +62,12 @@ type TemplateDispatch struct {
 	ModelOverride    string
 	// CarryCardContext 为真时把卡上下文段拼进 prompt（来自节点的同名开关）。
 	CarryCardContext bool
+	// PurposeOverride 覆盖模板的派发用途；空 = 用模板的。
+	// 用途决定分支命名、审阅基线、工作分支归属与轮次挂号四件事，见
+	// ledger.NodeOverride.Purpose 的注释。
+	PurposeOverride string
+	// OmitAcceptance 为真时不把整卡验收判据注入 prompt（来自节点的同名开关）。
+	OmitAcceptance bool
 	// Extra 是本次派发的临时补充说明，可为空。
 	Extra string
 }
@@ -98,19 +104,34 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		disciplineName = req.DisciplineOverride
 	}
 
+	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
+	// 不再直接读取模板用途字段——漏掉任何一处都会让节点只对了一半（例如分支
+	// 名对了但快照里记的还是模板用途，WorkBranch 于是把审阅分支当成工作分支）。
+	templateDef := tpl.Def
+	purpose := templateDef.Purpose
+	if req.PurposeOverride != "" {
+		purpose = req.PurposeOverride
+	}
+
+	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
+	// 空白，比说明白更让执行者困惑。
+	acceptance := c.AcceptanceCriteria
+	if req.OmitAcceptance {
+		acceptance = "（本节点不注入整卡验收判据——那是实现级的最终判据；本节点的产出物与 pass 依据以纪律块为准）"
+	}
 	body := strings.NewReplacer(
 		"{{TITLE}}", c.Title,
 		"{{CARD}}", c.ID,
-		"{{ACCEPT}}", c.AcceptanceCriteria,
+		"{{ACCEPT}}", acceptance,
 	).Replace(tpl.Def.Prompt)
 
 	reviewBase := ""
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
 	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
 	// 第二轮——2026-08-19 真机实测 fatal: a branch named ... already exists）
-	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, tpl.Def.Purpose)
+	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, purpose)
 	existingBranch := ""
-	if tpl.Def.Purpose == ledger.PurposeReview {
+	if purpose == ledger.PurposeReview {
 		work, err := d.St.WorkBranch(c.ID)
 		if err != nil {
 			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
@@ -131,14 +152,14 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		// 派发时，目标机上第一轮分支还在，git 拒绝创建同名分支（与审阅轮
 		// 2026-08-19 真机实测同一形态）。解法与审阅一致：按「同 purpose 已派
 		// 几次」挂号。首轮保持无后缀，存量卡的分支命名不变。
-		rounds, err := d.St.PurposeRounds(c.ID, tpl.Def.Purpose)
+		rounds, err := d.St.PurposeRounds(c.ID, purpose)
 		if err != nil {
-			return zero, fmt.Errorf("取 %s 轮次: %w", tpl.Def.Purpose, err)
+			return zero, fmt.Errorf("取 %s 轮次: %w", purpose, err)
 		}
 		if rounds > 0 {
 			branch = fmt.Sprintf("%s-%d", branch, rounds+1)
 			slog.Default().Info("重跑轮分支挂号", "card", c.ID,
-				"purpose", tpl.Def.Purpose, "round", rounds+1, "branch", branch)
+				"purpose", purpose, "round", rounds+1, "branch", branch)
 		}
 	}
 	base, err := d.St.EffectiveBaseBranch(c.ID)
@@ -180,6 +201,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "template", req.Template, "target", target,
 		"executor", executor, "discipline", disciplineName,
+		"purpose", purpose, "purpose_overridden", req.PurposeOverride != "",
+		"omit_acceptance", req.OmitAcceptance,
 		"branch", branch, "base", base,
 		"resolve_default_base", resolveDefaultBase,
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
@@ -200,13 +223,13 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
 	}
-	if err := d.St.LinkTask(c.ID, target, taskID, tpl.Def.Purpose, d.Actor); err != nil {
+	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
 		return zero, fmt.Errorf("回链挂账: %w", err)
 	}
 	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		Target: target, TaskID: taskID, Branch: snapshotBranch,
-		Purpose: tpl.Def.Purpose, PlanPath: req.PlanPath, Actor: d.Actor,
+		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
 	}); err != nil {
 		return zero, fmt.Errorf("快照落账: %w", err)
 	}
