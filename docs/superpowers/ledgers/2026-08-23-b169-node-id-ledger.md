@@ -27,7 +27,7 @@
        35|       .map((input) => input.id)
        36|     expect(new Set(checkboxIds).size).toBe(checkboxIds.length)
          |                                       ^
-       37|     
+       37|
        38|     const childrenDoneLabels = [...container.querySelectorAll('label')]
 
   Test Files  1 failed (1)
@@ -46,3 +46,8 @@
 - 双裁决第 1 轮：spec 符合，`NodeEditor.test.tsx` 的 4 个实例与 `NodeEditor.childrengate.test.tsx` 的 2 个实例均补 `index={0}`；`NodeEditor.purpose.test.tsx` 不在本分支，未新增或修改其它断言。代码质量通过，改动仅为所需 prop，无修复轮次。
 - 验证：`cd web && npx vitest run src/app/flows/NodeEditor.test.tsx src/app/flows/NodeEditor.childrengate.test.tsx`：2 个文件、5 个用例通过；`git diff --check` 无输出。
 - 提交范围：`HEAD^..HEAD`（Task 2 提交）。
+
+## 整分支终审
+
+- 相对基线 `408cd912` 的完整 diff 复核发现 1 项非功能性尾随空格（本 ledger 保存的红测原文），已在本轮统一修复；未发现规格遗漏、越界改动或代码质量问题。终审修复轮次：1。
+- 提交范围：`HEAD^..HEAD`（终审修复提交）。
