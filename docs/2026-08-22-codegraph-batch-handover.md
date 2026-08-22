@@ -44,6 +44,13 @@ charter 架构法（`~/workspace/charter/skills/architecture-law/SKILL.md` 术�
      > 但**规模数字请以新基线为准**。副作用：完整基线让 `graph check` 由绿转红
      > （69 条未声明跨域方向 + 17 条预算偏低），已记 backlog B173，与第 1 刀的
      > `domains`→`subsystems` 改名有重叠，两者需一并规划。
+     >
+     > **再后续（08-22 晚，B173 复查）**：由绿转红的**主体是扫描器重名误连伪影**，
+     > 不是覆盖补全暴露真依赖——边解析按裸符号名撞库（`os.ReadFile` 连到
+     > `agentd.ReadFile`、TSX 本地 `save()` 连到 Go 未导出 `config.save`），
+     > 69 条 new-direction 里 65 假 4 真。**本批次需在刀 0/1 之外一并修边解析**
+     > （Go 边 import 门控、认限定符、禁跨语言裸名连边），先修工具、重扫干净基线，
+     > 再做 target.json 标定。详见 backlog B173 修订。
 
    - handoff-server 仓 `codegraph/target.json`：`domains` 数组 4 条（`d_tunnel`/`d_account`/`d_admin`/`d_console`，带 boundary/logic 类型与 `contracts` 依赖方向）——按架构法判据这些是**子系统**。
 
