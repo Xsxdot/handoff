@@ -1,8 +1,8 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "codegraph-coverage-backfill-0822",
-  "commit": "74b5f45d89cd7fe1e42fd0bbd684d81073be7368",
+  "branch": "codegraph-ledger-backfill-0822",
+  "commit": "3ba27eb92881e6e62212ff7c2d68edaee3c24806",
   "scannedAt": "2026-08-22",
   "generator": "codex-codegraph-backfill"
  },
@@ -118,6 +118,12 @@
    "kind": "执行器适配边界",
    "summary": "为控制面把各家模型执行器的启动、事件和终态收敛成统一契约。",
    "desc": "executor 根契约、turn 帧协议、四家 adapter 及 fake/rawtap 支撑共同组成执行适配面；跨包调用连接到进程承载与共享协议。"
+  },
+  "d_ledger": {
+   "label": "账本域",
+   "kind": "卡片账本与工作流",
+   "summary": "为协调者保存卡片、工作流、事件和执行镜像，提供可审计的状态编排。",
+   "desc": "ledger.Store 维护卡片、关系、事件、裁决和不可变工作流；ledgerstep 将节点配置编排为派发与裁决；ledgermirror 对账远端任务并把事件幂等落入账本。"
   },
   "d_web": {
    "label": "Web 控制台域",
@@ -693,6 +699,71 @@
   "k_web_app_workbench": {
    "label": "app/workbench 组件与函数",
    "kind": "React 组件/函数",
+   "domain": "d_web"
+  },
+  "k_ledger_Store": {
+   "label": "ledger.Store",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledger_WorkflowDef": {
+   "label": "ledger.WorkflowDef",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledger_fn": {
+   "label": "ledger（包级函数）",
+   "kind": "函数组",
+   "domain": "d_ledger"
+  },
+  "k_ledger_model": {
+   "label": "ledger 实体",
+   "kind": "实体",
+   "domain": "d_ledger"
+  },
+  "k_ledgermirror_Mirror": {
+   "label": "ledgermirror.Mirror",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledgermirror_fn": {
+   "label": "ledgermirror（包级函数）",
+   "kind": "函数组",
+   "domain": "d_ledger"
+  },
+  "k_ledgermirror_model": {
+   "label": "ledgermirror 实体",
+   "kind": "实体",
+   "domain": "d_ledger"
+  },
+  "k_ledgerstep_Dispatcher": {
+   "label": "ledgerstep.Dispatcher",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledgerstep_NodeStep": {
+   "label": "ledgerstep.NodeStep",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledgerstep_StepRunner": {
+   "label": "ledgerstep.StepRunner",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledgerstep_fn": {
+   "label": "ledgerstep（包级函数）",
+   "kind": "函数组",
+   "domain": "d_ledger"
+  },
+  "k_ledgerstep_model": {
+   "label": "ledgerstep 实体",
+   "kind": "实体",
+   "domain": "d_ledger"
+  },
+  "k_web_api_ledger_model": {
+   "label": "api/ledger wire 实体",
+   "kind": "TypeScript 实体",
    "domain": "d_web"
   }
  },
@@ -53655,6 +53726,5499 @@
    "signature": "func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request)",
    "summary": "返回单条工作流 wire 详情",
    "tests": []
+  },
+  "m_ledger_Attachment": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 91,
+   "name": "Attachment",
+   "file": "internal/ledger/types.go",
+   "line": 91,
+   "summary": "Attachment 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Kind",
+     "string",
+     ""
+    ],
+    [
+     "Path",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Card": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 97,
+   "name": "Card",
+   "file": "internal/ledger/types.go",
+   "line": 97,
+   "summary": "Card 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ],
+    [
+     "TerminateReason",
+     "string",
+     ""
+    ],
+    [
+     "Priority",
+     "string",
+     ""
+    ],
+    [
+     "Project",
+     "string",
+     ""
+    ],
+    [
+     "ParentID",
+     "string",
+     ""
+    ],
+    [
+     "WorkflowName",
+     "string",
+     ""
+    ],
+    [
+     "WorkflowVersion",
+     "int",
+     ""
+    ],
+    [
+     "Attachments",
+     "[]Attachment",
+     ""
+    ],
+    [
+     "AcceptanceCriteria",
+     "string",
+     ""
+    ],
+    [
+     "BaseBranch",
+     "string",
+     ""
+    ],
+    [
+     "DriverSession",
+     "string",
+     ""
+    ],
+    [
+     "DriverHeartbeatAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "UpdatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_CardBrief": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 279,
+   "name": "CardBrief",
+   "file": "internal/ledger/cards.go",
+   "line": 279,
+   "summary": "CardBrief 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_CardFilter": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 244,
+   "name": "CardFilter",
+   "file": "internal/ledger/types.go",
+   "line": 244,
+   "summary": "CardFilter 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Project",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ],
+    [
+     "BaseBranch",
+     "string",
+     ""
+    ],
+    [
+     "Blocked",
+     "bool",
+     ""
+    ],
+    [
+     "Needs",
+     "bool",
+     ""
+    ],
+    [
+     "IncludeTerminal",
+     "bool",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_CardView": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 231,
+   "name": "CardView",
+   "file": "internal/ledger/types.go",
+   "line": 231,
+   "summary": "CardView 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "",
+     "Card",
+     ""
+    ],
+    [
+     "Blocked",
+     "bool",
+     ""
+    ],
+    [
+     "BlockedBy",
+     "[]string",
+     ""
+    ],
+    [
+     "Following",
+     "string",
+     ""
+    ],
+    [
+     "MergedCount",
+     "int",
+     ""
+    ],
+    [
+     "NeedsReason",
+     "string",
+     ""
+    ],
+    [
+     "OpenDecisions",
+     "int",
+     ""
+    ],
+    [
+     "ChildrenTotal",
+     "int",
+     ""
+    ],
+    [
+     "ChildrenDone",
+     "int",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Decision": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 217,
+   "name": "Decision",
+   "file": "internal/ledger/types.go",
+   "line": 217,
+   "summary": "Decision 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "ID",
+     "int64",
+     ""
+    ],
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Body",
+     "string",
+     ""
+    ],
+    [
+     "Options",
+     "[]string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ],
+    [
+     "CreatedBy",
+     "string",
+     ""
+    ],
+    [
+     "Answer",
+     "string",
+     ""
+    ],
+    [
+     "AnsweredBy",
+     "string",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "AnsweredAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_DispatchSnapshot": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 115,
+   "name": "DispatchSnapshot",
+   "file": "internal/ledger/events.go",
+   "line": 115,
+   "summary": "DispatchSnapshot 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Template",
+     "string",
+     ""
+    ],
+    [
+     "TemplateVersion",
+     "int",
+     ""
+    ],
+    [
+     "DisciplineName",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "TaskID",
+     "string",
+     ""
+    ],
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "Purpose",
+     "string",
+     ""
+    ],
+    [
+     "PlanPath",
+     "string",
+     ""
+    ],
+    [
+     "Actor",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Event": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 123,
+   "name": "Event",
+   "file": "internal/ledger/types.go",
+   "line": 123,
+   "summary": "Event 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Seq",
+     "int64",
+     ""
+    ],
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Type",
+     "string",
+     ""
+    ],
+    [
+     "Actor",
+     "string",
+     ""
+    ],
+    [
+     "Payload",
+     "json.RawMessage",
+     ""
+    ],
+    [
+     "SourceTarget",
+     "string",
+     ""
+    ],
+    [
+     "SourceTask",
+     "string",
+     ""
+    ],
+    [
+     "SourceSeq",
+     "int64",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Gate": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 136,
+   "name": "Gate",
+   "file": "internal/ledger/types.go",
+   "line": 136,
+   "summary": "Gate 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "RequireAttachment",
+     "string",
+     ""
+    ],
+    [
+     "RequireAcceptance",
+     "bool",
+     ""
+    ],
+    [
+     "RequireChildrenDone",
+     "bool",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_MirrorHealthRow": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 23,
+   "name": "MirrorHealthRow",
+   "file": "internal/ledger/mirror.go",
+   "line": 23,
+   "summary": "MirrorHealthRow 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "LastSeq",
+     "int64",
+     ""
+    ],
+    [
+     "UpdatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_MirroredEvent": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 14,
+   "name": "MirroredEvent",
+   "file": "internal/ledger/mirror.go",
+   "line": 14,
+   "summary": "MirroredEvent 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Task",
+     "string",
+     ""
+    ],
+    [
+     "SourceSeq",
+     "int64",
+     ""
+    ],
+    [
+     "Type",
+     "string",
+     ""
+    ],
+    [
+     "Payload",
+     "[]byte",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_NewCard": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 18,
+   "name": "NewCard",
+   "file": "internal/ledger/cards.go",
+   "line": 18,
+   "summary": "NewCard 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Project",
+     "string",
+     ""
+    ],
+    [
+     "Priority",
+     "string",
+     ""
+    ],
+    [
+     "Parent",
+     "string",
+     ""
+    ],
+    [
+     "Workflow",
+     "string",
+     ""
+    ],
+    [
+     "BaseBranch",
+     "string",
+     ""
+    ],
+    [
+     "Actor",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_NodeDef": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 167,
+   "name": "NodeDef",
+   "file": "internal/ledger/types.go",
+   "line": 167,
+   "summary": "NodeDef 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Template",
+     "string",
+     ""
+    ],
+    [
+     "Override",
+     "NodeOverride",
+     ""
+    ],
+    [
+     "Dispatch",
+     "bool",
+     ""
+    ],
+    [
+     "Verdict",
+     "bool",
+     ""
+    ],
+    [
+     "CarryCardContext",
+     "bool",
+     ""
+    ],
+    [
+     "MaxRounds",
+     "int",
+     ""
+    ],
+    [
+     "Next",
+     "string",
+     ""
+    ],
+    [
+     "OnFail",
+     "string",
+     ""
+    ],
+    [
+     "Gate",
+     "Gate",
+     ""
+    ],
+    [
+     "HumanBases",
+     "[]string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_NodeOverride": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 151,
+   "name": "NodeOverride",
+   "file": "internal/ledger/types.go",
+   "line": 151,
+   "summary": "NodeOverride 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Relation": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 117,
+   "name": "Relation",
+   "file": "internal/ledger/types.go",
+   "line": 117,
+   "summary": "Relation 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "From",
+     "string",
+     ""
+    ],
+    [
+     "To",
+     "string",
+     ""
+    ],
+    [
+     "Type",
+     "string",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Store": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 26,
+   "name": "Store",
+   "file": "internal/ledger/store.go",
+   "line": 26,
+   "summary": "Store 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "db",
+     "*sql.DB",
+     ""
+    ],
+    [
+     "dialect",
+     "dialect",
+     ""
+    ],
+    [
+     "path",
+     "string",
+     ""
+    ],
+    [
+     "dsn",
+     "string",
+     ""
+    ],
+    [
+     "mu",
+     "sync.Mutex",
+     ""
+    ],
+    [
+     "listeners",
+     "[]func(seq int64)",
+     ""
+    ],
+    [
+     "now",
+     "func() time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_TaskLink": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 18,
+   "name": "TaskLink",
+   "file": "internal/ledger/tasks.go",
+   "line": 18,
+   "summary": "TaskLink 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "TaskID",
+     "string",
+     ""
+    ],
+    [
+     "Purpose",
+     "string",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_TaskStateRow": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 14,
+   "name": "TaskStateRow",
+   "file": "internal/ledger/taskstate.go",
+   "line": 14,
+   "summary": "TaskStateRow 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "TaskID",
+     "string",
+     ""
+    ],
+    [
+     "Purpose",
+     "string",
+     ""
+    ],
+    [
+     "LastType",
+     "string",
+     ""
+    ],
+    [
+     "LastSeq",
+     "int64",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Template": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 60,
+   "name": "Template",
+   "file": "internal/ledger/templates.go",
+   "line": 60,
+   "summary": "Template 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     ""
+    ],
+    [
+     "Def",
+     "TemplateDef",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_TemplateDef": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 18,
+   "name": "TemplateDef",
+   "file": "internal/ledger/templates.go",
+   "line": 18,
+   "summary": "TemplateDef 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Purpose",
+     "string",
+     ""
+    ],
+    [
+     "BranchPrefix",
+     "string",
+     ""
+    ],
+    [
+     "Prompt",
+     "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "DisciplinePath",
+     "string",
+     ""
+    ],
+    [
+     "ModelByTarget",
+     "map[string]string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_Workflow": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 209,
+   "name": "Workflow",
+   "file": "internal/ledger/types.go",
+   "line": 209,
+   "summary": "Workflow 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     ""
+    ],
+    [
+     "Def",
+     "WorkflowDef",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_WorkflowDef": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 202,
+   "name": "WorkflowDef",
+   "file": "internal/ledger/types.go",
+   "line": 202,
+   "summary": "WorkflowDef 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "States",
+     "[]string",
+     ""
+    ],
+    [
+     "Gates",
+     "map[string]Gate",
+     ""
+    ],
+    [
+     "Nodes",
+     "[]NodeDef",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_WorkflowLocation": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 76,
+   "name": "WorkflowLocation",
+   "file": "internal/ledger/types.go",
+   "line": 76,
+   "summary": "WorkflowLocation 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Workflow",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_WorkflowMigration": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 83,
+   "name": "WorkflowMigration",
+   "file": "internal/ledger/types.go",
+   "line": 83,
+   "summary": "WorkflowMigration 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "From",
+     "WorkflowLocation",
+     ""
+    ],
+    [
+     "To",
+     "WorkflowLocation",
+     ""
+    ],
+    [
+     "Event",
+     "Event",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_WorkflowTarget": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 69,
+   "name": "WorkflowTarget",
+   "file": "internal/ledger/types.go",
+   "line": 69,
+   "summary": "WorkflowTarget 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_eventSink": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 150,
+   "name": "eventSink",
+   "file": "internal/ledger/store.go",
+   "line": 150,
+   "summary": "eventSink 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "seqs",
+     "[]int64",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_mirroredTaskPayload": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 65,
+   "name": "mirroredTaskPayload",
+   "file": "internal/ledger/taskstate.go",
+   "line": 65,
+   "summary": "mirroredTaskPayload 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "TaskType",
+     "string",
+     ""
+    ],
+    [
+     "Payload",
+     "json.RawMessage",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_openTicketKey": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 61,
+   "name": "openTicketKey",
+   "file": "internal/ledger/taskstate.go",
+   "line": 61,
+   "summary": "openTicketKey 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "ticketID",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledger_ticketPayload": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 70,
+   "name": "ticketPayload",
+   "file": "internal/ledger/taskstate.go",
+   "line": 70,
+   "summary": "ticketPayload 是 ledger 包的领域实体",
+   "fields": [
+    [
+     "TicketID",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgermirror_Mirror": {
+   "kind": "model",
+   "container": "k_ledgermirror_model",
+   "order": 51,
+   "name": "Mirror",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 51,
+   "summary": "Mirror 是 ledgermirror 包的领域实体",
+   "fields": [
+    [
+     "st",
+     "*ledger.Store",
+     ""
+    ],
+    [
+     "targets",
+     "func() map[string]config.Target",
+     ""
+    ],
+    [
+     "opt",
+     "Options",
+     ""
+    ],
+    [
+     "log",
+     "*slog.Logger",
+     ""
+    ],
+    [
+     "holding",
+     "atomic.Bool",
+     ""
+    ],
+    [
+     "mu",
+     "sync.Mutex",
+     ""
+    ],
+    [
+     "subs",
+     "map[string]context.CancelFunc",
+     ""
+    ],
+    [
+     "conn",
+     "map[string]bool",
+     ""
+    ],
+    [
+     "ended",
+     "map[string]bool",
+     ""
+    ],
+    [
+     "wg",
+     "sync.WaitGroup",
+     ""
+    ],
+    [
+     "wgMu",
+     "sync.Mutex",
+     ""
+    ],
+    [
+     "runMu",
+     "sync.Mutex",
+     ""
+    ],
+    [
+     "runStop",
+     "context.CancelFunc",
+     ""
+    ],
+    [
+     "runDone",
+     "chan struct{}",
+     ""
+    ],
+    [
+     "runStarted",
+     "atomic.Bool",
+     ""
+    ],
+    [
+     "stopAsked",
+     "atomic.Bool",
+     ""
+    ]
+   ]
+  },
+  "m_ledgermirror_Options": {
+   "kind": "model",
+   "container": "k_ledgermirror_model",
+   "order": 29,
+   "name": "Options",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 29,
+   "summary": "Options 是 ledgermirror 包的领域实体",
+   "fields": [
+    [
+     "Holder",
+     "string",
+     ""
+    ],
+    [
+     "Tick",
+     "time.Duration",
+     ""
+    ],
+    [
+     "LeaseTTL",
+     "time.Duration",
+     ""
+    ],
+    [
+     "Source",
+     "Source",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_DispatchOpts": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 25,
+   "name": "DispatchOpts",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 25,
+   "summary": "DispatchOpts 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Prompt",
+     "string",
+     ""
+    ],
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Project",
+     "string",
+     ""
+    ],
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "PlanB64",
+     "string",
+     ""
+    ],
+    [
+     "PlanName",
+     "string",
+     ""
+    ],
+    [
+     "Base",
+     "string",
+     ""
+    ],
+    [
+     "ExistingBranch",
+     "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "NewWorktree",
+     "bool",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_DispatchResult": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 34,
+   "name": "DispatchResult",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 34,
+   "summary": "DispatchResult 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Card",
+     "string",
+     ""
+    ],
+    [
+     "Task",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "Template",
+     "string",
+     ""
+    ],
+    [
+     "TemplateVersion",
+     "int",
+     ""
+    ],
+    [
+     "DisciplineName",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_Dispatcher": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 45,
+   "name": "Dispatcher",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 45,
+   "summary": "Dispatcher 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "St",
+     "*ledger.Store",
+     ""
+    ],
+    [
+     "Transport",
+     "Transport",
+     ""
+    ],
+    [
+     "Actor",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_Finding": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 14,
+   "name": "Finding",
+   "file": "internal/ledgerstep/verdict.go",
+   "line": 14,
+   "summary": "Finding 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Severity",
+     "string",
+     ""
+    ],
+    [
+     "Summary",
+     "string",
+     ""
+    ],
+    [
+     "File",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_NodeStep": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 40,
+   "name": "NodeStep",
+   "file": "internal/ledgerstep/node.go",
+   "line": 40,
+   "summary": "NodeStep 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "St",
+     "*ledger.Store",
+     ""
+    ],
+    [
+     "Node",
+     "ledger.NodeDef",
+     ""
+    ],
+    [
+     "Dispatch",
+     "func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (target, taskID string, err error)",
+     ""
+    ],
+    [
+     "Await",
+     "func(ctx context.Context, target, taskID string) (message string, err error)",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_Outcome": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 29,
+   "name": "Outcome",
+   "file": "internal/ledgerstep/node.go",
+   "line": 29,
+   "summary": "Outcome 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Action",
+     "Action",
+     ""
+    ],
+    [
+     "Verdict",
+     "Verdict",
+     ""
+    ],
+    [
+     "Reason",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_StepRunner": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 22,
+   "name": "StepRunner",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 22,
+   "summary": "StepRunner 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "St",
+     "*ledger.Store",
+     ""
+    ],
+    [
+     "Dispatcher",
+     "*Dispatcher",
+     ""
+    ],
+    [
+     "Clients",
+     "func(target string) (*client.Client, error)",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Extra",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_TemplateDispatch": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 52,
+   "name": "TemplateDispatch",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 52,
+   "summary": "TemplateDispatch 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Template",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "PlanPath",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineOverride",
+     "string",
+     ""
+    ],
+    [
+     "ExecutorOverride",
+     "string",
+     ""
+    ],
+    [
+     "ModelOverride",
+     "string",
+     ""
+    ],
+    [
+     "CarryCardContext",
+     "bool",
+     ""
+    ],
+    [
+     "Extra",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_ledgerstep_Verdict": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 21,
+   "name": "Verdict",
+   "file": "internal/ledgerstep/verdict.go",
+   "line": 21,
+   "summary": "Verdict 是 ledgerstep 包的领域实体",
+   "fields": [
+    [
+     "Pass",
+     "bool",
+     ""
+    ],
+    [
+     "Findings",
+     "[]Finding",
+     ""
+    ],
+    [
+     "Notes",
+     "string",
+     ""
+    ],
+    [
+     "Raw",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_Attachment": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 27,
+   "name": "Attachment",
+   "file": "web/src/api/ledger.ts",
+   "line": 27,
+   "signature": "interface Attachment",
+   "summary": "Attachment 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "path",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_Card": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 32,
+   "name": "Card",
+   "file": "web/src/api/ledger.ts",
+   "line": 32,
+   "signature": "interface Card",
+   "summary": "Card 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ],
+    [
+     "terminate_reason",
+     "string",
+     ""
+    ],
+    [
+     "priority",
+     "string",
+     ""
+    ],
+    [
+     "project",
+     "string",
+     ""
+    ],
+    [
+     "parent",
+     "string",
+     ""
+    ],
+    [
+     "workflow",
+     "string",
+     ""
+    ],
+    [
+     "workflow_version",
+     "number",
+     ""
+    ],
+    [
+     "attachments",
+     "Attachment[]",
+     ""
+    ],
+    [
+     "acceptance_criteria",
+     "string",
+     ""
+    ],
+    [
+     "base_branch",
+     "string",
+     ""
+    ],
+    [
+     "driver_session",
+     "string",
+     ""
+    ],
+    [
+     "driver_heartbeat_at",
+     "string",
+     ""
+    ],
+    [
+     "created_at",
+     "string",
+     ""
+    ],
+    [
+     "updated_at",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_CardBrief": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 73,
+   "name": "CardBrief",
+   "file": "web/src/api/ledger.ts",
+   "line": 73,
+   "signature": "interface CardBrief",
+   "summary": "CardBrief 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_CardCreateResp": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 139,
+   "name": "CardCreateResp",
+   "file": "web/src/api/ledger.ts",
+   "line": 139,
+   "signature": "interface CardCreateResp",
+   "summary": "CardCreateResp 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_CardDetail": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 79,
+   "name": "CardDetail",
+   "file": "web/src/api/ledger.ts",
+   "line": 79,
+   "signature": "interface CardDetail",
+   "summary": "CardDetail 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "card",
+     "Card",
+     ""
+    ],
+    [
+     "relations",
+     "Relation[]",
+     ""
+    ],
+    [
+     "events",
+     "LedgerEvent[]",
+     ""
+    ],
+    [
+     "task_states",
+     "TaskStateRow[]",
+     ""
+    ],
+    [
+     "effective_base_branch",
+     "string",
+     ""
+    ],
+    [
+     "decisions",
+     "Decision[] | null",
+     ""
+    ],
+    [
+     "needs",
+     "string",
+     ""
+    ],
+    [
+     "children",
+     "CardBrief[] | null",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_CardView": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 5,
+   "name": "CardView",
+   "file": "web/src/api/ledger.ts",
+   "line": 5,
+   "signature": "interface CardView",
+   "summary": "CardView 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ],
+    [
+     "priority",
+     "string",
+     ""
+    ],
+    [
+     "project",
+     "string",
+     ""
+    ],
+    [
+     "workflow",
+     "string",
+     ""
+    ],
+    [
+     "parent",
+     "string",
+     ""
+    ],
+    [
+     "base_branch",
+     "string",
+     ""
+    ],
+    [
+     "attachments",
+     "Attachment[]",
+     ""
+    ],
+    [
+     "following",
+     "string",
+     ""
+    ],
+    [
+     "blocked",
+     "boolean",
+     ""
+    ],
+    [
+     "blocked_by",
+     "string[]",
+     ""
+    ],
+    [
+     "merged_count",
+     "number",
+     ""
+    ],
+    [
+     "needs",
+     "string",
+     ""
+    ],
+    [
+     "open_decisions",
+     "number",
+     ""
+    ],
+    [
+     "children_total",
+     "number",
+     ""
+    ],
+    [
+     "children_done",
+     "number",
+     ""
+    ],
+    [
+     "conflict",
+     "boolean",
+     ""
+    ],
+    [
+     "open_tickets",
+     "number",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_CardWorkflowLocation": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 149,
+   "name": "CardWorkflowLocation",
+   "file": "web/src/api/ledger.ts",
+   "line": 149,
+   "signature": "interface CardWorkflowLocation",
+   "summary": "CardWorkflowLocation 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "workflow",
+     "string",
+     ""
+    ],
+    [
+     "workflow_version",
+     "number",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_Decision": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 173,
+   "name": "Decision",
+   "file": "web/src/api/ledger.ts",
+   "line": 173,
+   "signature": "interface Decision",
+   "summary": "Decision 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "id",
+     "number",
+     ""
+    ],
+    [
+     "card_id",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "options",
+     "string[] | null",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ],
+    [
+     "answer",
+     "string",
+     ""
+    ],
+    [
+     "created_by",
+     "string",
+     ""
+    ],
+    [
+     "answered_by",
+     "string",
+     ""
+    ],
+    [
+     "created_at",
+     "string",
+     ""
+    ],
+    [
+     "answered_at",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_FlowDetail": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 123,
+   "name": "FlowDetail",
+   "file": "web/src/api/ledger.ts",
+   "line": 123,
+   "signature": "interface FlowDetail",
+   "summary": "FlowDetail 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "version",
+     "number",
+     ""
+    ],
+    [
+     "nodes",
+     "NodeDef[]",
+     ""
+    ],
+    [
+     "states",
+     "string[]",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_Gate": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 101,
+   "name": "Gate",
+   "file": "web/src/api/ledger.ts",
+   "line": 101,
+   "signature": "interface Gate",
+   "summary": "Gate 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "require_attachment",
+     "string",
+     ""
+    ],
+    [
+     "require_acceptance",
+     "boolean",
+     ""
+    ],
+    [
+     "require_children_done",
+     "boolean",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_LedgerEvent": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 164,
+   "name": "LedgerEvent",
+   "file": "web/src/api/ledger.ts",
+   "line": 164,
+   "signature": "interface LedgerEvent",
+   "summary": "LedgerEvent 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "seq",
+     "number",
+     ""
+    ],
+    [
+     "card_id",
+     "string",
+     ""
+    ],
+    [
+     "type",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ],
+    [
+     "payload",
+     "unknown",
+     ""
+    ],
+    [
+     "created_at",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_MigrateCardReq": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 143,
+   "name": "MigrateCardReq",
+   "file": "web/src/api/ledger.ts",
+   "line": 143,
+   "signature": "interface MigrateCardReq",
+   "summary": "MigrateCardReq 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "workflow",
+     "string",
+     ""
+    ],
+    [
+     "status",
+     "string",
+     ""
+    ],
+    [
+     "version",
+     "number",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_MigrateCardResp": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 156,
+   "name": "MigrateCardResp",
+   "file": "web/src/api/ledger.ts",
+   "line": 156,
+   "signature": "interface MigrateCardResp",
+   "summary": "MigrateCardResp 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "ok",
+     "boolean",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "from",
+     "CardWorkflowLocation",
+     ""
+    ],
+    [
+     "to",
+     "CardWorkflowLocation",
+     ""
+    ],
+    [
+     "event",
+     "LedgerEvent",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_NewCardReq": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 130,
+   "name": "NewCardReq",
+   "file": "web/src/api/ledger.ts",
+   "line": 130,
+   "signature": "interface NewCardReq",
+   "summary": "NewCardReq 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "project",
+     "string",
+     ""
+    ],
+    [
+     "workflow",
+     "string",
+     ""
+    ],
+    [
+     "priority",
+     "string",
+     ""
+    ],
+    [
+     "parent",
+     "string",
+     ""
+    ],
+    [
+     "base_branch",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_NodeDef": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 109,
+   "name": "NodeDef",
+   "file": "web/src/api/ledger.ts",
+   "line": 109,
+   "signature": "interface NodeDef",
+   "summary": "NodeDef 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "template",
+     "string",
+     ""
+    ],
+    [
+     "override",
+     "NodeOverride",
+     ""
+    ],
+    [
+     "dispatch",
+     "boolean",
+     ""
+    ],
+    [
+     "verdict",
+     "boolean",
+     ""
+    ],
+    [
+     "carry_card_context",
+     "boolean",
+     ""
+    ],
+    [
+     "max_rounds",
+     "number",
+     ""
+    ],
+    [
+     "next",
+     "string",
+     ""
+    ],
+    [
+     "on_fail",
+     "string",
+     ""
+    ],
+    [
+     "gate",
+     "Gate",
+     ""
+    ],
+    [
+     "human_bases",
+     "string[]",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_NodeOverride": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 94,
+   "name": "NodeOverride",
+   "file": "web/src/api/ledger.ts",
+   "line": 94,
+   "signature": "interface NodeOverride",
+   "summary": "NodeOverride 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "executor",
+     "string",
+     ""
+    ],
+    [
+     "discipline",
+     "string",
+     ""
+    ],
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "model",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_Relation": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 51,
+   "name": "Relation",
+   "file": "web/src/api/ledger.ts",
+   "line": 51,
+   "signature": "interface Relation",
+   "summary": "Relation 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "From",
+     "string",
+     ""
+    ],
+    [
+     "To",
+     "string",
+     ""
+    ],
+    [
+     "Type",
+     "string",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_ledger_TaskStateRow": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 58,
+   "name": "TaskStateRow",
+   "file": "web/src/api/ledger.ts",
+   "line": 58,
+   "signature": "interface TaskStateRow",
+   "summary": "TaskStateRow 是账本 API 的 TypeScript wire model",
+   "fields": [
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "TaskID",
+     "string",
+     ""
+    ],
+    [
+     "Purpose",
+     "string",
+     ""
+    ],
+    [
+     "LastType",
+     "string",
+     ""
+    ],
+    [
+     "LastSeq",
+     "number",
+     ""
+    ]
+   ]
+  },
+  "n_ledger_Open": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 51,
+   "name": "Open",
+   "file": "internal/ledger/store.go",
+   "line": 51,
+   "signature": "func Open(dsn string) (*Store, error)",
+   "params": [
+    [
+     "dsn",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "*Store, error",
+   "summary": "打开账本库并幂等建立 schema，按 DSN 选择 SQLite 或 PostgreSQL 方言",
+   "tests": []
+  },
+  "n_ledger_Store_AcquireMirrorLease": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 94,
+   "name": "Store.AcquireMirrorLease",
+   "file": "internal/ledger/mirror.go",
+   "line": 94,
+   "signature": "func (s *Store) AcquireMirrorLease(holder string, ttl time.Duration) (bool, error)",
+   "params": [
+    [
+     "holder",
+     "string",
+     ""
+    ],
+    [
+     "ttl",
+     "time.Duration",
+     ""
+    ]
+   ],
+   "returns": "bool, error",
+   "summary": "用账本 lease 竞争镜像单实例持有权",
+   "tests": []
+  },
+  "n_ledger_Store_AddBlocks": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 27,
+   "name": "Store.AddBlocks",
+   "file": "internal/ledger/relations.go",
+   "line": 27,
+   "signature": "func (s *Store) AddBlocks(blocker, blocked, actor string) error",
+   "params": [
+    [
+     "blocker",
+     "string",
+     ""
+    ],
+    [
+     "blocked",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "AddBlocks 加阻塞边：blocker 阻塞 blocked�",
+   "tests": []
+  },
+  "n_ledger_Store_AddComment": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 154,
+   "name": "Store.AddComment",
+   "file": "internal/ledger/events.go",
+   "line": 154,
+   "signature": "func (s *Store) AddComment(cardID, body, kind, actor string) (Event, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Event, error",
+   "summary": "AddComment 发评论�",
+   "tests": []
+  },
+  "n_ledger_Store_AddCommentReset": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 161,
+   "name": "Store.AddCommentReset",
+   "file": "internal/ledger/events.go",
+   "line": 161,
+   "signature": "func (s *Store) AddCommentReset(cardID, body, kind, actor, resetNode string) (Event, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ],
+    [
+     "resetNode",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Event, error",
+   "summary": "AddCommentReset 同 AddComment，但 payload 附 human_reset_node=<节点>�",
+   "tests": []
+  },
+  "n_ledger_Store_AddRelation": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 89,
+   "name": "Store.AddRelation",
+   "file": "internal/ledger/relations.go",
+   "line": 89,
+   "signature": "func (s *Store) AddRelation(from, to, typ, actor string) error",
+   "params": [
+    [
+     "from",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "typ",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "AddRelation 加非阻塞、非合并的关系边（discovered_from/split_from/relates）�",
+   "tests": []
+  },
+  "n_ledger_Store_AllTaskLinks": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 62,
+   "name": "Store.AllTaskLinks",
+   "file": "internal/ledger/tasks.go",
+   "line": 62,
+   "signature": "func (s *Store) AllTaskLinks() ([]TaskLink, error)",
+   "params": [],
+   "returns": "[]TaskLink, error",
+   "summary": "AllTaskLinks 全部挂账行（镜像对账用）�",
+   "tests": []
+  },
+  "n_ledger_Store_AnswerDecision": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 66,
+   "name": "Store.AnswerDecision",
+   "file": "internal/ledger/decisions.go",
+   "line": 66,
+   "signature": "func (s *Store) AnswerDecision(id int64, answer, answeredBy string) error",
+   "params": [
+    [
+     "id",
+     "int64",
+     ""
+    ],
+    [
+     "answer",
+     "string",
+     ""
+    ],
+    [
+     "answeredBy",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "AnswerDecision 答复�",
+   "tests": []
+  },
+  "n_ledger_Store_AppendMirroredEvent": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 32,
+   "name": "Store.AppendMirroredEvent",
+   "file": "internal/ledger/mirror.go",
+   "line": 32,
+   "signature": "func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "ev",
+     "MirroredEvent",
+     ""
+    ]
+   ],
+   "returns": "bool, error",
+   "summary": "在幂等键约束下把远端 task 事件写入账本单流",
+   "tests": []
+  },
+  "n_ledger_Store_AttachFile": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 321,
+   "name": "Store.AttachFile",
+   "file": "internal/ledger/cards.go",
+   "line": 321,
+   "signature": "func (s *Store) AttachFile(id, kind, path, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "path",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "AttachFile 挂附件（同 path 幂等）；落 comment 事件记录动作，附件本体 是卡字段不是事件�",
+   "tests": []
+  },
+  "n_ledger_Store_CardOfTask": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 83,
+   "name": "Store.CardOfTask",
+   "file": "internal/ledger/tasks.go",
+   "line": 83,
+   "signature": "func (s *Store) CardOfTask(target, taskID string) (string, error)",
+   "params": [
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "CardOfTask 反查 task 挂在哪张卡（镜像写入路径的热查询）�",
+   "tests": []
+  },
+  "n_ledger_Store_CardStepInFlight": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 142,
+   "name": "Store.CardStepInFlight",
+   "file": "internal/ledger/taskstate.go",
+   "line": 142,
+   "signature": "func (s *Store) CardStepInFlight(cardID string) (bool, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "bool, error",
+   "summary": "CardStepInFlight 报告卡是否存在仍在运行的环节�",
+   "tests": []
+  },
+  "n_ledger_Store_ChildrenOf": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 295,
+   "name": "Store.ChildrenOf",
+   "file": "internal/ledger/cards.go",
+   "line": 295,
+   "signature": "func (s *Store) ChildrenOf(cardID string) ([]CardBrief, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]CardBrief, error",
+   "summary": "ChildrenOf 返回该卡的直接子卡（parent_id = cardID），按 id 升序�",
+   "tests": []
+  },
+  "n_ledger_Store_ClaimCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 139,
+   "name": "Store.ClaimCard",
+   "file": "internal/ledger/move.go",
+   "line": 139,
+   "signature": "func (s *Store) ClaimCard(id, to, expect, session string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "expect",
+     "string",
+     ""
+    ],
+    [
+     "session",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "ClaimCard 原子认领：把「CAS 转入 to」与「落驱动 session」并进同一个 事务�",
+   "tests": []
+  },
+  "n_ledger_Store_ClaimDriver": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 98,
+   "name": "Store.ClaimDriver",
+   "file": "internal/ledger/tasks.go",
+   "line": 98,
+   "signature": "func (s *Store) ClaimDriver(cardID, session string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "session",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "ClaimDriver 认领驱动权：现驱动为空、为己、或心跳过期才可得； 否则 ErrCASConflict（提示对方会话标识）�",
+   "tests": []
+  },
+  "n_ledger_Store_ClearNeedsHuman": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 269,
+   "name": "Store.ClearNeedsHuman",
+   "file": "internal/ledger/events.go",
+   "line": 269,
+   "signature": "func (s *Store) ClearNeedsHuman(cardID, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "ClearNeedsHuman 清除等人标记�",
+   "tests": []
+  },
+  "n_ledger_Store_ClearNeedsHumanFrom": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 287,
+   "name": "Store.ClearNeedsHumanFrom",
+   "file": "internal/ledger/events.go",
+   "line": 287,
+   "signature": "func (s *Store) ClearNeedsHumanFrom(cardID, actor string) (bool, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "bool, error",
+   "summary": "ClearNeedsHumanFrom 仅当当前生效的等人标记是 actor 自己打的时才清除， 返回是否真的清了（没打过、已清过、或标记是别人打的都返回 false, nil）�",
+   "tests": []
+  },
+  "n_ledger_Store_Close": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 103,
+   "name": "Store.Close",
+   "file": "internal/ledger/store.go",
+   "line": 103,
+   "signature": "func (s *Store) Close() error",
+   "params": [],
+   "returns": "error",
+   "summary": "Close 关闭底层连接�",
+   "tests": []
+  },
+  "n_ledger_Store_CloseCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 411,
+   "name": "Store.CloseCard",
+   "file": "internal/ledger/cards.go",
+   "line": 411,
+   "signature": "func (s *Store) CloseCard(id, reason, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "reason",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "CloseCard 终止（从任意非终态；reason 受控词表）�",
+   "tests": []
+  },
+  "n_ledger_Store_CreateCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 120,
+   "name": "Store.CreateCard",
+   "file": "internal/ledger/cards.go",
+   "line": 120,
+   "signature": "func (s *Store) CreateCard(nc NewCard) (Card, error)",
+   "params": [
+    [
+     "nc",
+     "NewCard",
+     ""
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "CreateCard 建卡：分配 B 号、钉工作流最新版本、初始态 = 工作流首态、 落 card_created 事件�",
+   "tests": []
+  },
+  "n_ledger_Store_DecisionsOf": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 115,
+   "name": "Store.DecisionsOf",
+   "file": "internal/ledger/decisions.go",
+   "line": 115,
+   "signature": "func (s *Store) DecisionsOf(cardID string) ([]Decision, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]Decision, error",
+   "summary": "DecisionsOf 取一张卡上的全部裁决（含已答复的），按 id 升序�",
+   "tests": []
+  },
+  "n_ledger_Store_DetachFile": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 345,
+   "name": "Store.DetachFile",
+   "file": "internal/ledger/cards.go",
+   "line": 345,
+   "signature": "func (s *Store) DetachFile(id, path, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "path",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "DetachFile 摘附件（按 path 匹配）�",
+   "tests": []
+  },
+  "n_ledger_Store_EffectiveBaseBranch": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 197,
+   "name": "Store.EffectiveBaseBranch",
+   "file": "internal/ledger/relations.go",
+   "line": 197,
+   "signature": "func (s *Store) EffectiveBaseBranch(id string) (string, error)",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "EffectiveBaseBranch 解析卡的有效基线分支：自身非空即自身；否则沿 parent 链向上取最近的显式设置；全空返回 \"\"（= 项目默认主线，由 调用方在派发时解析为具体分支名——库不猜 main/master）�",
+   "tests": []
+  },
+  "n_ledger_Store_EnsureDefaultTemplates": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 203,
+   "name": "Store.EnsureDefaultTemplates",
+   "file": "internal/ledger/templates.go",
+   "line": 203,
+   "signature": "func (s *Store) EnsureDefaultTemplates() error",
+   "params": [],
+   "returns": "error",
+   "summary": "EnsureDefaultTemplates 幂等 seed 出厂模板�",
+   "tests": []
+  },
+  "n_ledger_Store_EnsureDefaultWorkflows": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 198,
+   "name": "Store.EnsureDefaultWorkflows",
+   "file": "internal/ledger/workflows.go",
+   "line": 198,
+   "signature": "func (s *Store) EnsureDefaultWorkflows() error",
+   "params": [],
+   "returns": "error",
+   "summary": "EnsureDefaultWorkflows 幂等 seed 出厂工作流�",
+   "tests": []
+  },
+  "n_ledger_Store_EnsureMinB": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 34,
+   "name": "Store.EnsureMinB",
+   "file": "internal/ledger/cards.go",
+   "line": 34,
+   "signature": "func (s *Store) EnsureMinB(n int) error",
+   "params": [
+    [
+     "n",
+     "int",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "EnsureMinB 垫高 B 号水位（迁移前防与 markdown 总账撞号；只升不降）�",
+   "tests": []
+  },
+  "n_ledger_Store_EventsFromAsc": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 63,
+   "name": "Store.EventsFromAsc",
+   "file": "internal/ledger/events.go",
+   "line": 63,
+   "signature": "func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Event, error)",
+   "params": [
+    [
+     "cardIDs",
+     "[]string",
+     ""
+    ],
+    [
+     "fromSeq",
+     "int64",
+     ""
+    ],
+    [
+     "limit",
+     "int",
+     ""
+    ]
+   ],
+   "returns": "[]Event, error",
+   "summary": "按卡集合和游标升序读取账本事件，截断尾部以保证消费游标安全",
+   "tests": []
+  },
+  "n_ledger_Store_Follow": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 18,
+   "name": "Store.Follow",
+   "file": "internal/ledger/follow.go",
+   "line": 18,
+   "signature": "func (s *Store) Follow(ctx context.Context, members func() ([]string, error), fromSeq int64, pollInterval time.Duration, onEvent func(Event) error) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "members",
+     "func() ([]string, error)",
+     ""
+    ],
+    [
+     "fromSeq",
+     "int64",
+     ""
+    ],
+    [
+     "pollInterval",
+     "time.Duration",
+     ""
+    ],
+    [
+     "onEvent",
+     "func(Event) error",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "持续轮询或监听账本事件，并把新事件交给调用方消费",
+   "tests": []
+  },
+  "n_ledger_Store_GetCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 267,
+   "name": "Store.GetCard",
+   "file": "internal/ledger/cards.go",
+   "line": 267,
+   "signature": "func (s *Store) GetCard(id string) (Card, error)",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "GetCard 读单卡�",
+   "tests": []
+  },
+  "n_ledger_Store_GetTemplate": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 90,
+   "name": "Store.GetTemplate",
+   "file": "internal/ledger/templates.go",
+   "line": 90,
+   "signature": "func (s *Store) GetTemplate(name string, version int) (Template, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "version",
+     "int",
+     ""
+    ]
+   ],
+   "returns": "Template, error",
+   "summary": "GetTemplate 取指定版本；0 = 最新�",
+   "tests": []
+  },
+  "n_ledger_Store_GetWorkflow": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 164,
+   "name": "Store.GetWorkflow",
+   "file": "internal/ledger/workflows.go",
+   "line": 164,
+   "signature": "func (s *Store) GetWorkflow(name string, version int) (Workflow, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "version",
+     "int",
+     ""
+    ]
+   ],
+   "returns": "Workflow, error",
+   "summary": "GetWorkflow 取指定版本；version==0 取最新版�",
+   "tests": []
+  },
+  "n_ledger_Store_HeartbeatDriver": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 118,
+   "name": "Store.HeartbeatDriver",
+   "file": "internal/ledger/tasks.go",
+   "line": 118,
+   "signature": "func (s *Store) HeartbeatDriver(cardID, session string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "session",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "HeartbeatDriver 续心跳（仅现持有者可续）�",
+   "tests": []
+  },
+  "n_ledger_Store_LatestTaskStates": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 20,
+   "name": "Store.LatestTaskStates",
+   "file": "internal/ledger/taskstate.go",
+   "line": 20,
+   "signature": "func (s *Store) LatestTaskStates(cardID string) ([]TaskStateRow, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]TaskStateRow, error",
+   "summary": "LatestTaskStates 一张卡全部挂账 task 的实况�",
+   "tests": []
+  },
+  "n_ledger_Store_LinkTask": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 25,
+   "name": "Store.LinkTask",
+   "file": "internal/ledger/tasks.go",
+   "line": 25,
+   "signature": "func (s *Store) LinkTask(cardID, target, taskID, purpose, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "purpose",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "LinkTask 把 (target, task) 挂到卡上�",
+   "tests": []
+  },
+  "n_ledger_Store_ListCards": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 14,
+   "name": "Store.ListCards",
+   "file": "internal/ledger/derived.go",
+   "line": 14,
+   "signature": "func (s *Store) ListCards(filter CardFilter) ([]CardView, error)",
+   "params": [
+    [
+     "filter",
+     "CardFilter",
+     ""
+    ]
+   ],
+   "returns": "[]CardView, error",
+   "summary": "从卡、关系和事件小表组装 blocked、跟随、等人及子卡派生视图",
+   "tests": []
+  },
+  "n_ledger_Store_ListDecisions": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 93,
+   "name": "Store.ListDecisions",
+   "file": "internal/ledger/decisions.go",
+   "line": 93,
+   "signature": "func (s *Store) ListDecisions(openOnly bool) ([]Decision, error)",
+   "params": [
+    [
+     "openOnly",
+     "bool",
+     ""
+    ]
+   ],
+   "returns": "[]Decision, error",
+   "summary": "ListDecisions openOnly=true 只列未答复（全局裁决收件箱）；false 全量按 创建时间升序�",
+   "tests": []
+  },
+  "n_ledger_Store_ListTemplateNames": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 128,
+   "name": "Store.ListTemplateNames",
+   "file": "internal/ledger/templates.go",
+   "line": 128,
+   "signature": "func (s *Store) ListTemplateNames() ([]string, error)",
+   "params": [],
+   "returns": "[]string, error",
+   "summary": "ListTemplateNames 全部模板名�",
+   "tests": []
+  },
+  "n_ledger_Store_ListWorkflowNames": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 296,
+   "name": "Store.ListWorkflowNames",
+   "file": "internal/ledger/workflows.go",
+   "line": 296,
+   "signature": "func (s *Store) ListWorkflowNames() ([]string, error)",
+   "params": [],
+   "returns": "[]string, error",
+   "summary": "ListWorkflowNames 全部工作流名（去重升序）�",
+   "tests": []
+  },
+  "n_ledger_Store_MarkNeedsHuman": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 255,
+   "name": "Store.MarkNeedsHuman",
+   "file": "internal/ledger/events.go",
+   "line": 255,
+   "signature": "func (s *Store) MarkNeedsHuman(cardID, reason, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "reason",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "MarkNeedsHuman 打等人标记（reason 必填）；ClearNeedsHuman 清除�",
+   "tests": []
+  },
+  "n_ledger_Store_MaxSeq": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 167,
+   "name": "Store.MaxSeq",
+   "file": "internal/ledger/mirror.go",
+   "line": 167,
+   "signature": "func (s *Store) MaxSeq() (int64, error)",
+   "params": [],
+   "returns": "int64, error",
+   "summary": "MaxSeq 账本单流当前最大 seq（wait 的起点）�",
+   "tests": []
+  },
+  "n_ledger_Store_MergeCards": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 15,
+   "name": "Store.MergeCards",
+   "file": "internal/ledger/merge.go",
+   "line": 15,
+   "signature": "func (s *Store) MergeCards(ids []string, into, actor string) error",
+   "params": [
+    [
+     "ids",
+     "[]string",
+     ""
+    ],
+    [
+     "into",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "校验基线与链式约束后把多张卡并入承载卡",
+   "tests": []
+  },
+  "n_ledger_Store_MigrateCardWorkflow": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 315,
+   "name": "Store.MigrateCardWorkflow",
+   "file": "internal/ledger/workflows.go",
+   "line": 315,
+   "signature": "func (s *Store) MigrateCardWorkflow(cardID, toWorkflow string, toVersion int, toStatus, actor string) (WorkflowMigration, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "toWorkflow",
+     "string",
+     ""
+    ],
+    [
+     "toVersion",
+     "int",
+     ""
+    ],
+    [
+     "toStatus",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "WorkflowMigration, error",
+   "summary": "把卡迁移到显式目标工作流版本和状态列并记录审计事件",
+   "tests": []
+  },
+  "n_ledger_Store_MirrorHealth": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 147,
+   "name": "Store.MirrorHealth",
+   "file": "internal/ledger/mirror.go",
+   "line": 147,
+   "signature": "func (s *Store) MirrorHealth() ([]MirrorHealthRow, error)",
+   "params": [],
+   "returns": "[]MirrorHealthRow, error",
+   "summary": "MirrorHealth 全部 target 的健康行（看板滞后判定：now-UpdatedAt>60s 亮灯）�",
+   "tests": []
+  },
+  "n_ledger_Store_MirrorWatermark": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 82,
+   "name": "Store.MirrorWatermark",
+   "file": "internal/ledger/mirror.go",
+   "line": 82,
+   "signature": "func (s *Store) MirrorWatermark(target, task string) (int64, error)",
+   "params": [
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "task",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "int64, error",
+   "summary": "MirrorWatermark per (target, task) 的续拉起点 = 已镜像的最大原 seq�",
+   "tests": []
+  },
+  "n_ledger_Store_MoveCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 17,
+   "name": "Store.MoveCard",
+   "file": "internal/ledger/move.go",
+   "line": 17,
+   "signature": "func (s *Store) MoveCard(id, to, expect, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "expect",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "按工作流 gate 与 CAS 条件执行卡状态转移并记录事件",
+   "tests": []
+  },
+  "n_ledger_Store_NeedsOf": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 248,
+   "name": "Store.NeedsOf",
+   "file": "internal/ledger/derived.go",
+   "line": 248,
+   "signature": "func (s *Store) NeedsOf(cardID string) (string, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "NeedsOf 取一张卡当前的等人原因；没打标记（或已清除）返回空串�",
+   "tests": []
+  },
+  "n_ledger_Store_OnEvent": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 189,
+   "name": "Store.OnEvent",
+   "file": "internal/ledger/store.go",
+   "line": 189,
+   "signature": "func (s *Store) OnEvent(fn func(seq int64))",
+   "params": [
+    [
+     "fn",
+     "func(seq int64)",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "OnEvent 注册进程内事件回调（仅 SQLite 回退模式有意义；PG 模式下 消费者应走 LISTEN card_events）�",
+   "tests": []
+  },
+  "n_ledger_Store_OpenDecision": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 15,
+   "name": "Store.OpenDecision",
+   "file": "internal/ledger/decisions.go",
+   "line": 15,
+   "signature": "func (s *Store) OpenDecision(cardID, body string, options []string, createdBy string) (Decision, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "options",
+     "[]string",
+     ""
+    ],
+    [
+     "createdBy",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Decision, error",
+   "summary": "OpenDecision 开一条裁决�",
+   "tests": []
+  },
+  "n_ledger_Store_OpenTicketCounts": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 77,
+   "name": "Store.OpenTicketCounts",
+   "file": "internal/ledger/taskstate.go",
+   "line": 77,
+   "signature": "func (s *Store) OpenTicketCounts() (map[string]int, error)",
+   "params": [],
+   "returns": "map[string]int, error",
+   "summary": "OpenTicketCounts 每张卡的未决工单数：单遍扫描镜像事件，按 ticket_id 回放 创建→答复/作废�",
+   "tests": []
+  },
+  "n_ledger_Store_PurposeRounds": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 435,
+   "name": "Store.PurposeRounds",
+   "file": "internal/ledger/events.go",
+   "line": 435,
+   "signature": "func (s *Store) PurposeRounds(cardID, purpose string) (int, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "purpose",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的 分支编号，避免 <prefix>/<卡>-<purpose> 固定拼法第二轮撞名）�",
+   "tests": []
+  },
+  "n_ledger_Store_PutTemplate": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 68,
+   "name": "Store.PutTemplate",
+   "file": "internal/ledger/templates.go",
+   "line": 68,
+   "signature": "func (s *Store) PutTemplate(name string, def TemplateDef) (int, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "def",
+     "TemplateDef",
+     ""
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "PutTemplate 写入下一版本（不改旧行）�",
+   "tests": []
+  },
+  "n_ledger_Store_PutWorkflow": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 134,
+   "name": "Store.PutWorkflow",
+   "file": "internal/ledger/workflows.go",
+   "line": 134,
+   "signature": "func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "def",
+     "WorkflowDef",
+     ""
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "PutWorkflow 写入 name 的下一个版本并返回版本号�",
+   "tests": []
+  },
+  "n_ledger_Store_RecordAcceptance": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 218,
+   "name": "Store.RecordAcceptance",
+   "file": "internal/ledger/events.go",
+   "line": 218,
+   "signature": "func (s *Store) RecordAcceptance(cardID string, verified bool, evidence, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "verified",
+     "bool",
+     ""
+    ],
+    [
+     "evidence",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "RecordAcceptance 落验收结果事件（verified=true 表示真机已验）�",
+   "tests": []
+  },
+  "n_ledger_Store_RecordBranchMerged": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 237,
+   "name": "Store.RecordBranchMerged",
+   "file": "internal/ledger/events.go",
+   "line": 237,
+   "signature": "func (s *Store) RecordBranchMerged(cardID, workBranch, base string, pushedWorkBranch bool, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "workBranch",
+     "string",
+     ""
+    ],
+    [
+     "base",
+     "string",
+     ""
+    ],
+    [
+     "pushedWorkBranch",
+     "bool",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "RecordBranchMerged 落合并环节的外部动作事件�",
+   "tests": []
+  },
+  "n_ledger_Store_RecordDispatch": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 128,
+   "name": "Store.RecordDispatch",
+   "file": "internal/ledger/events.go",
+   "line": 128,
+   "signature": "func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "snap",
+     "DispatchSnapshot",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "RecordDispatch 落派发事件�",
+   "tests": []
+  },
+  "n_ledger_Store_RecordReviewVerdict": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 140,
+   "name": "Store.RecordReviewVerdict",
+   "file": "internal/ledger/events.go",
+   "line": 140,
+   "signature": "func (s *Store) RecordReviewVerdict(cardID, node string, pass bool, raw, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "node",
+     "string",
+     ""
+    ],
+    [
+     "pass",
+     "bool",
+     ""
+    ],
+    [
+     "raw",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "RecordReviewVerdict 落审阅裁决事件（node 是回合计数分组键，raw 是 verdict block 原文取证）�",
+   "tests": []
+  },
+  "n_ledger_Store_RelationsOf": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 134,
+   "name": "Store.RelationsOf",
+   "file": "internal/ledger/relations.go",
+   "line": 134,
+   "signature": "func (s *Store) RelationsOf(id string) ([]Relation, error)",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]Relation, error",
+   "summary": "RelationsOf 双向取一张卡的全部关系边（from 或 to 命中皆返回）�",
+   "tests": []
+  },
+  "n_ledger_Store_ReleaseCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 170,
+   "name": "Store.ReleaseCard",
+   "file": "internal/ledger/move.go",
+   "line": 170,
+   "signature": "func (s *Store) ReleaseCard(id, session string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "session",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "ReleaseCard 释放驱动租约（幂等；只动自己持有的那份）�",
+   "tests": []
+  },
+  "n_ledger_Store_RemoveRelation": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 116,
+   "name": "Store.RemoveRelation",
+   "file": "internal/ledger/relations.go",
+   "line": 116,
+   "signature": "func (s *Store) RemoveRelation(from, to, typ string) error",
+   "params": [
+    [
+     "from",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "typ",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "RemoveRelation 删关系边�",
+   "tests": []
+  },
+  "n_ledger_Store_ReviewRounds": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 451,
+   "name": "Store.ReviewRounds",
+   "file": "internal/ledger/events.go",
+   "line": 451,
+   "signature": "func (s *Store) ReviewRounds(cardID string) (int, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "ReviewRounds 已派出的审阅轮数——PurposeRounds 在 review 上的特例，保留旧名 不动既有调用方�",
+   "tests": []
+  },
+  "n_ledger_Store_ReviveCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 435,
+   "name": "Store.ReviveCard",
+   "file": "internal/ledger/cards.go",
+   "line": 435,
+   "signature": "func (s *Store) ReviveCard(id, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "ReviveCard 复活：仅 终止(搁置) → 待办�",
+   "tests": []
+  },
+  "n_ledger_Store_SetAcceptance": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 370,
+   "name": "Store.SetAcceptance",
+   "file": "internal/ledger/cards.go",
+   "line": 370,
+   "signature": "func (s *Store) SetAcceptance(id, criteria, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "criteria",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "SetAcceptance 写验收判据文本（判据是卡字段；验收**结果**走 RecordAcceptance 落事件，Task 8）�",
+   "tests": []
+  },
+  "n_ledger_Store_SplitCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 113,
+   "name": "Store.SplitCard",
+   "file": "internal/ledger/merge.go",
+   "line": 113,
+   "signature": "func (s *Store) SplitCard(parent, title, actor string) (Card, error)",
+   "params": [
+    [
+     "parent",
+     "string",
+     ""
+    ],
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "SplitCard 拆子卡：建子卡（点号 id、同工作流、同 project）+ split_from 边�",
+   "tests": []
+  },
+  "n_ledger_Store_Subtree": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 322,
+   "name": "Store.Subtree",
+   "file": "internal/ledger/events.go",
+   "line": 322,
+   "signature": "func (s *Store) Subtree(rootID string) ([]string, error)",
+   "params": [
+    [
+     "rootID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]string, error",
+   "summary": "Subtree 返回卡树成员 id 集：root + 全部后代（parent 链）+ 并入成员 （merged_into 指向集内任一成员的卡）�",
+   "tests": []
+  },
+  "n_ledger_Store_TasksOf": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 41,
+   "name": "Store.TasksOf",
+   "file": "internal/ledger/tasks.go",
+   "line": 41,
+   "signature": "func (s *Store) TasksOf(cardID string) ([]TaskLink, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]TaskLink, error",
+   "summary": "TasksOf 列一张卡挂的全部 task�",
+   "tests": []
+  },
+  "n_ledger_Store_TouchMirrorHealth": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 130,
+   "name": "Store.TouchMirrorHealth",
+   "file": "internal/ledger/mirror.go",
+   "line": 130,
+   "signature": "func (s *Store) TouchMirrorHealth(target string, lastSeq int64) error",
+   "params": [
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "lastSeq",
+     "int64",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "TouchMirrorHealth per-target 心跳：updated_at 恒更新，last_seq 只升不降�",
+   "tests": []
+  },
+  "n_ledger_Store_UnmergeCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 94,
+   "name": "Store.UnmergeCard",
+   "file": "internal/ledger/merge.go",
+   "line": 94,
+   "signature": "func (s *Store) UnmergeCard(id, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "UnmergeCard 拆回：删 merged_into 边，恢复自主流转�",
+   "tests": []
+  },
+  "n_ledger_Store_UpdateCardMeta": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 387,
+   "name": "Store.UpdateCardMeta",
+   "file": "internal/ledger/cards.go",
+   "line": 387,
+   "signature": "func (s *Store) UpdateCardMeta(id, title, priority, actor string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "title",
+     "string",
+     ""
+    ],
+    [
+     "priority",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "UpdateCardMeta 改标题/优先级（空串 = 不改该项）�",
+   "tests": []
+  },
+  "n_ledger_Store_WorkBranch": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 392,
+   "name": "Store.WorkBranch",
+   "file": "internal/ledger/events.go",
+   "line": 392,
+   "signature": "func (s *Store) WorkBranch(cardID string) (string, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "WorkBranch 卡的工作分支：最近一次**非审阅**派发所用的分支�",
+   "tests": []
+  },
+  "n_ledger_Store_addComment": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 168,
+   "name": "Store.addComment",
+   "file": "internal/ledger/events.go",
+   "line": 168,
+   "signature": "func (s *Store) addComment(cardID, body, kind, actor, resetNode string) (Event, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ],
+    [
+     "resetNode",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Event, error",
+   "summary": "Store.addComment 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_Store_allParents": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 137,
+   "name": "Store.allParents",
+   "file": "internal/ledger/derived.go",
+   "line": 137,
+   "signature": "func (s *Store) allParents() (map[string]string, error)",
+   "params": [],
+   "returns": "map[string]string, error",
+   "summary": "allParents 全量 child→parent 映射（只含有父的卡）�",
+   "tests": []
+  },
+  "n_ledger_Store_allRelations": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 154,
+   "name": "Store.allRelations",
+   "file": "internal/ledger/derived.go",
+   "line": 154,
+   "signature": "func (s *Store) allRelations() ([]Relation, error)",
+   "params": [],
+   "returns": "[]Relation, error",
+   "summary": "Store.allRelations 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_Store_allStatuses": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 171,
+   "name": "Store.allStatuses",
+   "file": "internal/ledger/derived.go",
+   "line": 171,
+   "signature": "func (s *Store) allStatuses() (map[string]string, error)",
+   "params": [],
+   "returns": "map[string]string, error",
+   "summary": "Store.allStatuses 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_Store_ancestorsTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 155,
+   "name": "Store.ancestorsTx",
+   "file": "internal/ledger/relations.go",
+   "line": 155,
+   "signature": "func (s *Store) ancestorsTx(tx *sql.Tx, id string) (map[string]bool, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "map[string]bool, error",
+   "summary": "ancestorsTx 取卡的祖先集合（parent 链，含防御性深度上限）�",
+   "tests": []
+  },
+  "n_ledger_Store_appendEvent": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 19,
+   "name": "Store.appendEvent",
+   "file": "internal/ledger/events.go",
+   "line": 19,
+   "signature": "func (s *Store) appendEvent(tx *sql.Tx, sink *eventSink, cardID, typ, actor string, payload any) (int64, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "sink",
+     "*eventSink",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "typ",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ],
+    [
+     "payload",
+     "any",
+     ""
+    ]
+   ],
+   "returns": "int64, error",
+   "summary": "appendEvent 在事务内落一条账本事件并（PG）推送通知�",
+   "tests": []
+  },
+  "n_ledger_Store_appendEventAt": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 26,
+   "name": "Store.appendEventAt",
+   "file": "internal/ledger/events.go",
+   "line": 26,
+   "signature": "func (s *Store) appendEventAt(tx *sql.Tx, sink *eventSink, cardID, typ, actor string, payload any, at time.Time) (int64, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "sink",
+     "*eventSink",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "typ",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ],
+    [
+     "payload",
+     "any",
+     ""
+    ],
+    [
+     "at",
+     "time.Time",
+     ""
+    ]
+   ],
+   "returns": "int64, error",
+   "summary": "appendEventAt 同 appendEvent，但由调用方给定事件时间——调用方需要把 同一个时间戳回填进返回给上层的 Event，否则返回值的 CreatedAt 是零值， 机器消费方（CLI stdout、Plan D 的 HTTP API）会读到 0001-01-01�",
+   "tests": []
+  },
+  "n_ledger_Store_blocksEdgesTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 177,
+   "name": "Store.blocksEdgesTx",
+   "file": "internal/ledger/relations.go",
+   "line": 177,
+   "signature": "func (s *Store) blocksEdgesTx(tx *sql.Tx) (map[string][]string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ]
+   ],
+   "returns": "map[string][]string, error",
+   "summary": "blocksEdgesTx 事务内读全部阻塞边成邻接表（from 阻塞 → to 列表）�",
+   "tests": []
+  },
+  "n_ledger_Store_cardStepInFlightQuery": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 157,
+   "name": "Store.cardStepInFlightQuery",
+   "file": "internal/ledger/taskstate.go",
+   "line": 157,
+   "signature": "func (s *Store) cardStepInFlightQuery(q taskEventQueryer, cardID string) (bool, string, error)",
+   "params": [
+    [
+     "q",
+     "taskEventQueryer",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "bool, string, error",
+   "summary": "Store.cardStepInFlightQuery 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_Store_cardStepInFlightTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 153,
+   "name": "Store.cardStepInFlightTx",
+   "file": "internal/ledger/taskstate.go",
+   "line": 153,
+   "signature": "func (s *Store) cardStepInFlightTx(tx *sql.Tx, cardID string) (bool, string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "bool, string, error",
+   "summary": "cardStepInFlightTx 是迁移事务使用的同一派生查询，避免把门禁读到事务外 形成 TOCTOU 窗口�",
+   "tests": []
+  },
+  "n_ledger_Store_checkWorkflowGateTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 77,
+   "name": "Store.checkWorkflowGateTx",
+   "file": "internal/ledger/move.go",
+   "line": 77,
+   "signature": "func (s *Store) checkWorkflowGateTx(tx *sql.Tx, card Card, workflow Workflow, to, action string) error",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "card",
+     "Card",
+     ""
+    ],
+    [
+     "workflow",
+     "Workflow",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "action",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "checkWorkflowGateTx 检查进入 workflow 的 to 列所需的全部 gate�",
+   "tests": []
+  },
+  "n_ledger_Store_effectiveBaseTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 207,
+   "name": "Store.effectiveBaseTx",
+   "file": "internal/ledger/relations.go",
+   "line": 207,
+   "signature": "func (s *Store) effectiveBaseTx(tx *sql.Tx, id string) (string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "Store.effectiveBaseTx 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_Store_ensureSchema": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 198,
+   "name": "Store.ensureSchema",
+   "file": "internal/ledger/store.go",
+   "line": 198,
+   "signature": "func (s *Store) ensureSchema() error",
+   "params": [],
+   "returns": "error",
+   "summary": "ensureSchema 幂等建表�",
+   "tests": []
+  },
+  "n_ledger_Store_getWorkflowTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 185,
+   "name": "Store.getWorkflowTx",
+   "file": "internal/ledger/move.go",
+   "line": 185,
+   "signature": "func (s *Store) getWorkflowTx(tx *sql.Tx, name string, version int) (Workflow, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "version",
+     "int",
+     ""
+    ]
+   ],
+   "returns": "Workflow, error",
+   "summary": "getWorkflowTx 事务内取指定版本工作流（Move 的 gate 判定必须与写同事务）�",
+   "tests": []
+  },
+  "n_ledger_Store_mergedIntoTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 138,
+   "name": "Store.mergedIntoTx",
+   "file": "internal/ledger/merge.go",
+   "line": 138,
+   "signature": "func (s *Store) mergedIntoTx(tx *sql.Tx, id string) (string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "mergedIntoTx 查卡当前并入的承载卡（\"\" = 未并入）�",
+   "tests": []
+  },
+  "n_ledger_Store_moveCardTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 26,
+   "name": "Store.moveCardTx",
+   "file": "internal/ledger/move.go",
+   "line": 26,
+   "signature": "func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor string) error",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "sink",
+     "*eventSink",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ],
+    [
+     "expect",
+     "string",
+     ""
+    ],
+    [
+     "actor",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "moveCardTx 事务内的转移实现�",
+   "tests": []
+  },
+  "n_ledger_Store_mutate": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 156,
+   "name": "Store.mutate",
+   "file": "internal/ledger/store.go",
+   "line": 156,
+   "signature": "func (s *Store) mutate(fn func(tx *sql.Tx, sink *eventSink) error) error",
+   "params": [
+    [
+     "fn",
+     "func(tx *sql.Tx, sink *eventSink) error",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "mutate 写事务包裹：PG 先拿全局 advisory lock 串行化全部账本写 （B 号分配的 max+1、环检测的读全图、合并校验都要求读-判-写原子； 写 QPS 极小，一把粗锁换正确性，蓝图 §3.",
+   "tests": []
+  },
+  "n_ledger_Store_needsMap": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 190,
+   "name": "Store.needsMap",
+   "file": "internal/ledger/derived.go",
+   "line": 190,
+   "signature": "func (s *Store) needsMap() (map[string]string, error)",
+   "params": [],
+   "returns": "map[string]string, error",
+   "summary": "needsMap 每卡最后一条 needs_human/needs_cleared 决定当前等人态�",
+   "tests": []
+  },
+  "n_ledger_Store_nextChildID": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 93,
+   "name": "Store.nextChildID",
+   "file": "internal/ledger/cards.go",
+   "line": 93,
+   "signature": "func (s *Store) nextChildID(tx *sql.Tx, parent string) (string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "parent",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "nextChildID 分配 parent 下一个点号子位（B157 → B157.",
+   "tests": []
+  },
+  "n_ledger_Store_nextTopID": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 60,
+   "name": "Store.nextTopID",
+   "file": "internal/ledger/cards.go",
+   "line": 60,
+   "signature": "func (s *Store) nextTopID(tx *sql.Tx) (string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "nextTopID 事务内分配下一个顶层 B 号：max(现存顶层号, min_b) + 1�",
+   "tests": []
+  },
+  "n_ledger_Store_openDecisionCount": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 220,
+   "name": "Store.openDecisionCount",
+   "file": "internal/ledger/derived.go",
+   "line": 220,
+   "signature": "func (s *Store) openDecisionCount() (map[string]int, error)",
+   "params": [],
+   "returns": "map[string]int, error",
+   "summary": "openDecisionCount 每卡 open 裁决数（decisions 表在 Task 10 前恒空， 查询天然返回空 map，不需要桩）�",
+   "tests": []
+  },
+  "n_ledger_Store_pendingChildrenTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 115,
+   "name": "Store.pendingChildrenTx",
+   "file": "internal/ledger/move.go",
+   "line": 115,
+   "signature": "func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]string, error",
+   "summary": "pendingChildrenTx 事务内取未完结（非 已完成/终止）的直接子卡 id 列表�",
+   "tests": []
+  },
+  "n_ledger_Store_q": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 107,
+   "name": "Store.q",
+   "file": "internal/ledger/store.go",
+   "line": 107,
+   "signature": "func (s *Store) q(query string) string",
+   "params": [
+    [
+     "query",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "q 把 ?",
+   "tests": []
+  },
+  "n_ledger_Store_timeNow": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 42,
+   "name": "Store.timeNow",
+   "file": "internal/ledger/store.go",
+   "line": 42,
+   "signature": "func (s *Store) timeNow() time.Time",
+   "params": [],
+   "returns": "time.Time",
+   "summary": "timeNow 取当前时间：测试注入了 now 就用假时钟，否则真实壁钟�",
+   "tests": []
+  },
+  "n_ledger_Store_tval": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 126,
+   "name": "Store.tval",
+   "file": "internal/ledger/store.go",
+   "line": 126,
+   "signature": "func (s *Store) tval(t time.Time) any",
+   "params": [
+    [
+     "t",
+     "time.Time",
+     ""
+    ]
+   ],
+   "returns": "any",
+   "summary": "tval 时间入库编码：PG 直接传 time.",
+   "tests": []
+  },
+  "n_ledger_Store_validateNodes": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 82,
+   "name": "Store.validateNodes",
+   "file": "internal/ledger/workflows.go",
+   "line": 82,
+   "signature": "func (s *Store) validateNodes(nodes []NodeDef) error",
+   "params": [
+    [
+     "nodes",
+     "[]NodeDef",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "validateNodes 校验节点序列的内部一致性�",
+   "tests": []
+  },
+  "n_ledger_Store_workflowNestingTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 241,
+   "name": "Store.workflowNestingTx",
+   "file": "internal/ledger/cards.go",
+   "line": 241,
+   "signature": "func (s *Store) workflowNestingTx(tx *sql.Tx, parent, workflowName string) (int, error)",
+   "params": [
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "parent",
+     "string",
+     ""
+    ],
+    [
+     "workflowName",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "workflowNestingTx 数父链（从 parent 起向上、含 parent 自身）里钉了 同名工作流的卡数�",
+   "tests": []
+  },
+  "n_ledger_WorkflowDef_withNodesFromStates": {
+   "kind": "func",
+   "container": "k_ledger_WorkflowDef",
+   "order": 46,
+   "name": "WorkflowDef.withNodesFromStates",
+   "file": "internal/ledger/workflows.go",
+   "line": 46,
+   "signature": "func (d WorkflowDef) withNodesFromStates() WorkflowDef",
+   "params": [],
+   "returns": "WorkflowDef",
+   "summary": "withNodesFromStates 为只有 States 的老 def 补出等价节点序列（读取侧）�",
+   "tests": []
+  },
+  "n_ledger_WorkflowDef_withStatesFromNodes": {
+   "kind": "func",
+   "container": "k_ledger_WorkflowDef",
+   "order": 21,
+   "name": "WorkflowDef.withStatesFromNodes",
+   "file": "internal/ledger/workflows.go",
+   "line": 21,
+   "signature": "func (d WorkflowDef) withStatesFromNodes() WorkflowDef",
+   "params": [],
+   "returns": "WorkflowDef",
+   "summary": "withStatesFromNodes 把 Nodes 投影成 States/Gates（写入侧）�",
+   "tests": []
+  },
+  "n_ledger_countDispatchNodes": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 64,
+   "name": "countDispatchNodes",
+   "file": "internal/ledger/workflows.go",
+   "line": 64,
+   "signature": "func countDispatchNodes(nodes []NodeDef) int",
+   "params": [
+    [
+     "nodes",
+     "[]NodeDef",
+     ""
+    ]
+   ],
+   "returns": "int",
+   "summary": "countDispatchNodes 数带派发能力的节点，只用于日志——「这条流有几列会自动跑」 是排查「卡为什么不动」时第一个要看的数�",
+   "tests": []
+  },
+  "n_ledger_disciplineNameFromLegacyPath": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 52,
+   "name": "disciplineNameFromLegacyPath",
+   "file": "internal/ledger/templates.go",
+   "line": 52,
+   "signature": "func disciplineNameFromLegacyPath(path string) string",
+   "params": [
+    [
+     "path",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "disciplineNameFromLegacyPath 把废弃的 discipline_path 换算成角色名�",
+   "tests": []
+  },
+  "n_ledger_getCardTx": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 231,
+   "name": "getCardTx",
+   "file": "internal/ledger/cards.go",
+   "line": 231,
+   "signature": "func getCardTx(s *Store, tx *sql.Tx, id string) (Card, error)",
+   "params": [
+    [
+     "s",
+     "*Store",
+     ""
+    ],
+    [
+     "tx",
+     "*sql.Tx",
+     ""
+    ],
+    [
+     "id",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "getCardTx 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_jsonUnmarshal": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 406,
+   "name": "jsonUnmarshal",
+   "file": "internal/ledger/workflows.go",
+   "line": 406,
+   "signature": "func jsonUnmarshal(raw string, v any) error",
+   "params": [
+    [
+     "raw",
+     "string",
+     ""
+    ],
+    [
+     "v",
+     "any",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "jsonUnmarshal 统一 JSON 解码错误措辞�",
+   "tests": []
+  },
+  "n_ledger_log": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 33,
+   "name": "log",
+   "file": "internal/ledger/ledger.go",
+   "line": 33,
+   "signature": "func log() *slog.Logger",
+   "params": [],
+   "returns": "*slog.Logger",
+   "summary": "log 返回全局 slog——函数而非包变量，令 main 侧后设的 slog.",
+   "tests": []
+  },
+  "n_ledger_redactDSN": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 88,
+   "name": "redactDSN",
+   "file": "internal/ledger/store.go",
+   "line": 88,
+   "signature": "func redactDSN(dsn string, d dialect) string",
+   "params": [
+    [
+     "dsn",
+     "string",
+     ""
+    ],
+    [
+     "d",
+     "dialect",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "redactDSN 保留 Open 日志需要的目标定位信息，同时不把 PG URL 中的密码 写进日志；SQLite 路径没有凭据，原样保留�",
+   "tests": []
+  },
+  "n_ledger_scanCard": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 212,
+   "name": "scanCard",
+   "file": "internal/ledger/cards.go",
+   "line": 212,
+   "signature": "func scanCard(row rowScanner) (Card, error)",
+   "params": [
+    [
+     "row",
+     "rowScanner",
+     ""
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "scanCard 执行 ledger 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledger_scanDecisions": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 127,
+   "name": "scanDecisions",
+   "file": "internal/ledger/decisions.go",
+   "line": 127,
+   "signature": "func scanDecisions(rows *sql.Rows) ([]Decision, error)",
+   "params": [
+    [
+     "rows",
+     "*sql.Rows",
+     ""
+    ]
+   ],
+   "returns": "[]Decision, error",
+   "summary": "scanDecisions 把结果集扫成 Decision 切片；调用方负责 rows 的来源，本函数负责关闭�",
+   "tests": []
+  },
+  "n_ledger_toTime": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 134,
+   "name": "toTime",
+   "file": "internal/ledger/store.go",
+   "line": 134,
+   "signature": "func toTime(v any) time.Time",
+   "params": [
+    [
+     "v",
+     "any",
+     ""
+    ]
+   ],
+   "returns": "time.Time",
+   "summary": "toTime 时间出库解码，兼容两方言的扫描产物�",
+   "tests": []
+  },
+  "n_ledgermirror_DefaultSource": {
+   "kind": "func",
+   "container": "k_ledgermirror_fn",
+   "order": 37,
+   "name": "DefaultSource",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 37,
+   "signature": "func DefaultSource(ctx context.Context, addr, token, taskID string, fromSeq int64, onEvent func(proto.Event) error) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "addr",
+     "string",
+     ""
+    ],
+    [
+     "token",
+     "string",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "fromSeq",
+     "int64",
+     ""
+    ],
+    [
+     "onEvent",
+     "func(proto.Event) error",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "用 client.StreamEventsOnce 读取目标任务事件流",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_Holding": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 97,
+   "name": "Mirror.Holding",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 97,
+   "signature": "func (m *Mirror) Holding() bool",
+   "params": [],
+   "returns": "bool",
+   "summary": "Holding 当前是否持有镜像 lease（测试与状态面用）�",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_Run": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 101,
+   "name": "Mirror.Run",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 101,
+   "signature": "func (m *Mirror) Run(ctx context.Context)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "持有镜像 lease 后周期性对账并运行 per-task 订阅",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_Stop": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 146,
+   "name": "Mirror.Stop",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 146,
+   "signature": "func (m *Mirror) Stop()",
+   "params": [],
+   "returns": "",
+   "summary": "Stop 等全部订阅 goroutine 退出�",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_reconcile": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 165,
+   "name": "Mirror.reconcile",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 165,
+   "signature": "func (m *Mirror) reconcile(ctx context.Context)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "对账挂账任务与订阅集合，维护断线取消和镜像健康水位",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_setConn": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 90,
+   "name": "Mirror.setConn",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 90,
+   "signature": "func (m *Mirror) setConn(key string, ok bool)",
+   "params": [
+    [
+     "key",
+     "string",
+     ""
+    ],
+    [
+     "ok",
+     "bool",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "Mirror.setConn 执行 ledgermirror 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_stopAllSubs": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 307,
+   "name": "Mirror.stopAllSubs",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 307,
+   "signature": "func (m *Mirror) stopAllSubs(reason string)",
+   "params": [
+    [
+     "reason",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "Mirror.stopAllSubs 执行 ledgermirror 域的持久化或编排操作",
+   "tests": []
+  },
+  "n_ledgermirror_Mirror_subscribe": {
+   "kind": "func",
+   "container": "k_ledgermirror_Mirror",
+   "order": 235,
+   "name": "Mirror.subscribe",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 235,
+   "signature": "func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, target config.Target)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "link",
+     "ledger.TaskLink",
+     ""
+    ],
+    [
+     "target",
+     "config.Target",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "订阅单个远端任务事件并幂等落入账本",
+   "tests": []
+  },
+  "n_ledgermirror_New": {
+   "kind": "func",
+   "container": "k_ledgermirror_fn",
+   "order": 72,
+   "name": "New",
+   "file": "internal/ledgermirror/mirror.go",
+   "line": 72,
+   "signature": "func New(st *ledger.Store, targets func() map[string]config.Target, opt Options) *Mirror",
+   "params": [
+    [
+     "st",
+     "*ledger.Store",
+     ""
+    ],
+    [
+     "targets",
+     "func() map[string]config.Target",
+     ""
+    ],
+    [
+     "opt",
+     "Options",
+     ""
+    ]
+   ],
+   "returns": "*Mirror",
+   "summary": "New 构造�",
+   "tests": []
+  },
+  "n_ledgerstep_CountRounds": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 18,
+   "name": "CountRounds",
+   "file": "internal/ledgerstep/rounds.go",
+   "line": 18,
+   "signature": "func CountRounds(evs []ledger.Event, step string) int",
+   "params": [
+    [
+     "evs",
+     "[]ledger.Event",
+     ""
+    ],
+    [
+     "step",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "int",
+   "summary": "CountRounds 数 step 自最近一次人工重置以来的裁决回合数�",
+   "tests": []
+  },
+  "n_ledgerstep_Dispatcher_ViaTemplate": {
+   "kind": "func",
+   "container": "k_ledgerstep_Dispatcher",
+   "order": 76,
+   "name": "Dispatcher.ViaTemplate",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 76,
+   "signature": "func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req TemplateDispatch) (DispatchResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "c",
+     "ledger.Card",
+     ""
+    ],
+    [
+     "req",
+     "TemplateDispatch",
+     ""
+    ]
+   ],
+   "returns": "DispatchResult, error",
+   "summary": "按模板、卡基线和节点覆盖组装派发请求并挂账",
+   "tests": []
+  },
+  "n_ledgerstep_NodeStep_RunOnce": {
+   "kind": "func",
+   "container": "k_ledgerstep_NodeStep",
+   "order": 103,
+   "name": "NodeStep.RunOnce",
+   "file": "internal/ledgerstep/node.go",
+   "line": 103,
+   "signature": "func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Outcome, error",
+   "summary": "执行一个工作流节点的派发、裁决、路由或人工暂停",
+   "tests": []
+  },
+  "n_ledgerstep_NodeStep_actor": {
+   "kind": "func",
+   "container": "k_ledgerstep_NodeStep",
+   "order": 58,
+   "name": "NodeStep.actor",
+   "file": "internal/ledgerstep/node.go",
+   "line": 58,
+   "signature": "func (n *NodeStep) actor() string",
+   "params": [],
+   "returns": "string",
+   "summary": "actor 返回本节点写事件时的署名，形如 node:待审阅�",
+   "tests": []
+  },
+  "n_ledgerstep_NodeStep_haltForHuman": {
+   "kind": "func",
+   "container": "k_ledgerstep_NodeStep",
+   "order": 64,
+   "name": "NodeStep.haltForHuman",
+   "file": "internal/ledgerstep/node.go",
+   "line": 64,
+   "signature": "func (n *NodeStep) haltForHuman(cardID, reason, body string) (Outcome, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "reason",
+     "string",
+     ""
+    ],
+    [
+     "body",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Outcome, error",
+   "summary": "haltForHuman 落一条说明性 comment（body 非空时）并打等人标记，返回统一的 Outcome�",
+   "tests": []
+  },
+  "n_ledgerstep_NodeStep_maxRounds": {
+   "kind": "func",
+   "container": "k_ledgerstep_NodeStep",
+   "order": 50,
+   "name": "NodeStep.maxRounds",
+   "file": "internal/ledgerstep/node.go",
+   "line": 50,
+   "signature": "func (n *NodeStep) maxRounds() int",
+   "params": [],
+   "returns": "int",
+   "summary": "maxRounds 返回本节点的轮次封顶：节点没配就用包内默认�",
+   "tests": []
+  },
+  "n_ledgerstep_NodeStep_routeTo": {
+   "kind": "func",
+   "container": "k_ledgerstep_NodeStep",
+   "order": 80,
+   "name": "NodeStep.routeTo",
+   "file": "internal/ledgerstep/node.go",
+   "line": 80,
+   "signature": "func (n *NodeStep) routeTo(cardID, to string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "to",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "routeTo 把卡移到 to 列；to 为空表示停在本列（不是错误）�",
+   "tests": []
+  },
+  "n_ledgerstep_ParseVerdict": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 32,
+   "name": "ParseVerdict",
+   "file": "internal/ledgerstep/verdict.go",
+   "line": 32,
+   "signature": "func ParseVerdict(message string) (Verdict, error)",
+   "params": [
+    [
+     "message",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Verdict, error",
+   "summary": "从最终报文解析 handoff-verdict fenced block",
+   "tests": []
+  },
+  "n_ledgerstep_StepRunner_Run": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 45,
+   "name": "StepRunner.Run",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 45,
+   "signature": "func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "nodeName",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Outcome, error",
+   "summary": "按卡钉住的工作流节点装配并运行 NodeStep",
+   "tests": []
+  },
+  "n_ledgerstep_StepRunner_awaitNode": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 107,
+   "name": "StepRunner.awaitNode",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 107,
+   "signature": "func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error)",
+   "params": [],
+   "returns": "func(context.Context, string, string) (string, error)",
+   "summary": "awaitNode 生产 NodeStep.",
+   "tests": []
+  },
+  "n_ledgerstep_StepRunner_dispatchNode": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 84,
+   "name": "StepRunner.dispatchNode",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 84,
+   "signature": "func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
+   "params": [],
+   "returns": "func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
+   "summary": "dispatchNode 生产 NodeStep.",
+   "tests": []
+  },
+  "n_ledgerstep_StepRunner_nodeFor": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 64,
+   "name": "StepRunner.nodeFor",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 64,
+   "signature": "func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     ""
+    ],
+    [
+     "nodeName",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "ledger.NodeDef, error",
+   "summary": "nodeFor 在卡**钉住的**工作流版本里按名字找节点�",
+   "tests": []
+  },
+  "n_ledgerstep_buildPrompt": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 233,
+   "name": "buildPrompt",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 233,
+   "signature": "func buildPrompt(body string, c ledger.Card, base string, carry bool, extra string) string",
+   "params": [
+    [
+     "body",
+     "string",
+     ""
+    ],
+    [
+     "c",
+     "ledger.Card",
+     ""
+    ],
+    [
+     "base",
+     "string",
+     ""
+    ],
+    [
+     "carry",
+     "bool",
+     ""
+    ],
+    [
+     "extra",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "buildPrompt 把 executor 收到的 prompt 按三段拼起来�",
+   "tests": []
+  },
+  "n_ledgerstep_clientFinalMessage": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 43,
+   "name": "clientFinalMessage",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 43,
+   "signature": "func clientFinalMessage(ctx context.Context, cl *client.Client, taskID string) (string, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cl",
+     "*client.Client",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "clientFinalMessage 从 attach 快照取最后一条 completed/turn_failed/failed 事件，按真实协议字段返回最终报文；缺失即报错，不拿 progress 凑数�",
+   "tests": []
+  },
+  "n_ledgerstep_finalMessageFromEvents": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 57,
+   "name": "finalMessageFromEvents",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 57,
+   "signature": "func finalMessageFromEvents(events []proto.Event) (string, error)",
+   "params": [
+    [
+     "events",
+     "[]proto.Event",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "从协议事件中选出完成或失败回合的最终报文",
+   "tests": []
+  },
+  "n_ledgerstep_indentLines": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 265,
+   "name": "indentLines",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 265,
+   "signature": "func indentLines(s, prefix string) string",
+   "params": [
+    [
+     "s",
+     "string",
+     ""
+    ],
+    [
+     "prefix",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "indentLines 给多行文本每行加前缀，让验收判据在 markdown 列表下缩进对齐�",
+   "tests": []
+  },
+  "n_ledgerstep_waitForTurnEnd": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 25,
+   "name": "waitForTurnEnd",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 25,
+   "signature": "func waitForTurnEnd(ctx context.Context, wait func(context.Context) (*proto.Event, error)) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "wait",
+     "func(context.Context) (*proto.Event, error)",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "waitForTurnEnd 反复 wait 直到出现回合终态事件（completed/turn_failed/ failed），中途的权限门与工单一律跳过继续等�",
+   "tests": []
   }
  },
  "edges": [
@@ -66985,6 +72549,1246 @@
   [
    "n_wire_WriteData",
    "n_wire_writeFrame"
+  ],
+  [
+   "n_ledger_Open",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Open",
+   "n_ledger_redactDSN"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_Store_timeNow"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_AcquireMirrorLease",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_ancestorsTx"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_blocksEdgesTx"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_AddBlocks",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_AddComment",
+   "n_ledger_Store_addComment"
+  ],
+  [
+   "n_ledger_Store_AddCommentReset",
+   "n_ledger_Store_addComment"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_Store_AddBlocks"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AddRelation",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_AllTaskLinks",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_AnswerDecision",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_AnswerDecision",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AnswerDecision",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AnswerDecision",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AnswerDecision",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_AppendMirroredEvent",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AppendMirroredEvent",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AppendMirroredEvent",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AttachFile",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_AttachFile",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_AttachFile",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_AttachFile",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_AttachFile",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_CardOfTask",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_CardStepInFlight",
+   "n_ledger_Store_cardStepInFlightQuery"
+  ],
+  [
+   "n_ledger_Store_ChildrenOf",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledger_Store_ChildrenOf",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_Store_moveCardTx"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_ClaimCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_ClaimDriver",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ClaimDriver",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ClaimDriver",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_ClaimDriver",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_ClaimDriver",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHuman",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHuman",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHuman",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHumanFrom",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHumanFrom",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHumanFrom",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ClearNeedsHumanFrom",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_CloseCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_GetWorkflow"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_nextChildID"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_nextTopID"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_workflowNestingTx"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_DecisionsOf",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_DecisionsOf",
+   "n_ledger_scanDecisions"
+  ],
+  [
+   "n_ledger_Store_DetachFile",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_DetachFile",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_DetachFile",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_DetachFile",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_DetachFile",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_EffectiveBaseBranch",
+   "n_ledger_Store_effectiveBaseTx"
+  ],
+  [
+   "n_ledger_Store_EffectiveBaseBranch",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultTemplates",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultTemplates",
+   "n_ledger_Store_PutTemplate"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultTemplates",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultWorkflows",
+   "n_ledger_Store_EnsureDefaultTemplates"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultWorkflows",
+   "n_ledger_Store_GetWorkflow"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultWorkflows",
+   "n_ledger_Store_PutWorkflow"
+  ],
+  [
+   "n_ledger_Store_EnsureDefaultWorkflows",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_EnsureMinB",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_EnsureMinB",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_EventsFromAsc",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_EventsFromAsc",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_Follow",
+   "n_ledger_Store_EventsFromAsc"
+  ],
+  [
+   "n_ledger_Store_GetCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_GetCard",
+   "n_ledger_scanCard"
+  ],
+  [
+   "n_ledger_Store_GetTemplate",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_GetTemplate",
+   "n_ledger_disciplineNameFromLegacyPath"
+  ],
+  [
+   "n_ledger_Store_GetTemplate",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_Store_GetTemplate",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_GetTemplate",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_GetWorkflow",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_GetWorkflow",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_Store_GetWorkflow",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_GetWorkflow",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_HeartbeatDriver",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_HeartbeatDriver",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_HeartbeatDriver",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_LatestTaskStates",
+   "n_ledger_Store_TasksOf"
+  ],
+  [
+   "n_ledger_Store_LatestTaskStates",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_LinkTask",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_LinkTask",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_LinkTask",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_LinkTask",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_LinkTask",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_EffectiveBaseBranch"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_allParents"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_allRelations"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_allStatuses"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_needsMap"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_openDecisionCount"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ListCards",
+   "n_ledger_scanCard"
+  ],
+  [
+   "n_ledger_Store_ListDecisions",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ListDecisions",
+   "n_ledger_scanDecisions"
+  ],
+  [
+   "n_ledger_Store_MarkNeedsHuman",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_MarkNeedsHuman",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_MarkNeedsHuman",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_effectiveBaseTx"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_mergedIntoTx"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_MergeCards",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_appendEventAt"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_cardStepInFlightTx"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_checkWorkflowGateTx"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_getWorkflowTx"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_MigrateCardWorkflow",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_MirrorHealth",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_MirrorWatermark",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_MoveCard",
+   "n_ledger_Store_moveCardTx"
+  ],
+  [
+   "n_ledger_Store_MoveCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_NeedsOf",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_NeedsOf",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_Store_OpenDecision",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_OpenDecision",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_OpenDecision",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_OpenDecision",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_OpenDecision",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_OpenTicketCounts",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_PurposeRounds",
+   "n_ledger_Store_TasksOf"
+  ],
+  [
+   "n_ledger_Store_PutTemplate",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_PutTemplate",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_PutTemplate",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_Store_validateNodes"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_countDispatchNodes"
+  ],
+  [
+   "n_ledger_Store_PutWorkflow",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_RecordAcceptance",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_RecordAcceptance",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_RecordAcceptance",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_RecordBranchMerged",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_RecordBranchMerged",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_RecordBranchMerged",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_RecordDispatch",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_RecordDispatch",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_RecordDispatch",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_RecordReviewVerdict",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_RecordReviewVerdict",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_RecordReviewVerdict",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_RelationsOf",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_RelationsOf",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_ReleaseCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ReleaseCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ReleaseCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_ReleaseCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_RemoveRelation",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_RemoveRelation",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ReviewRounds",
+   "n_ledger_Store_PurposeRounds"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_ReviveCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_SetAcceptance",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_SetAcceptance",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_SetAcceptance",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_SetAcceptance",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_CreateCard"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_SplitCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_Subtree",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledger_Store_Subtree",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_TasksOf",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_TasksOf",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_TouchMirrorHealth",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_TouchMirrorHealth",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_TouchMirrorHealth",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_UnmergeCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_UnmergeCard",
+   "n_ledger_Store_mergedIntoTx"
+  ],
+  [
+   "n_ledger_Store_UnmergeCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_UnmergeCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_UpdateCardMeta",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_UpdateCardMeta",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_UpdateCardMeta",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_UpdateCardMeta",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_UpdateCardMeta",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_WorkBranch",
+   "n_ledger_Store_EventsFromAsc"
+  ],
+  [
+   "n_ledger_Store_WorkBranch",
+   "n_ledger_Store_TasksOf"
+  ],
+  [
+   "n_ledger_Store_addComment",
+   "n_ledger_Store_appendEventAt"
+  ],
+  [
+   "n_ledger_Store_addComment",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_addComment",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_addComment",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_addComment",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_allParents",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_ancestorsTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_appendEvent",
+   "n_ledger_Store_appendEventAt"
+  ],
+  [
+   "n_ledger_Store_appendEventAt",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_appendEventAt",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_blocksEdgesTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_cardStepInFlightQuery",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_cardStepInFlightQuery",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_cardStepInFlightTx",
+   "n_ledger_Store_cardStepInFlightQuery"
+  ],
+  [
+   "n_ledger_Store_checkWorkflowGateTx",
+   "n_ledger_Store_pendingChildrenTx"
+  ],
+  [
+   "n_ledger_Store_checkWorkflowGateTx",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_effectiveBaseTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_getWorkflowTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_getWorkflowTx",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_Store_getWorkflowTx",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_mergedIntoTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_Store_checkWorkflowGateTx"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_Store_getWorkflowTx"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_moveCardTx",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_needsMap",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_needsMap",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_Store_nextChildID",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_nextTopID",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_pendingChildrenTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_validateNodes",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_ledger_Store_workflowNestingTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_getCardTx",
+   "n_ledger_scanCard"
+  ],
+  [
+   "n_ledger_scanCard",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_scanDecisions",
+   "n_ledger_jsonUnmarshal"
+  ],
+  [
+   "n_ledger_scanDecisions",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledgermirror_Mirror_Run",
+   "n_ledger_Store_AcquireMirrorLease"
+  ],
+  [
+   "n_ledgermirror_Mirror_Run",
+   "n_ledgermirror_Mirror_reconcile"
+  ],
+  [
+   "n_ledgermirror_Mirror_Run",
+   "n_ledgermirror_Mirror_stopAllSubs"
+  ],
+  [
+   "n_ledgermirror_Mirror_Stop",
+   "n_ledgermirror_Mirror_stopAllSubs"
+  ],
+  [
+   "n_ledgermirror_Mirror_reconcile",
+   "n_ledger_Store_AllTaskLinks"
+  ],
+  [
+   "n_ledgermirror_Mirror_reconcile",
+   "n_ledger_Store_TouchMirrorHealth"
+  ],
+  [
+   "n_ledgermirror_Mirror_reconcile",
+   "n_ledgermirror_Mirror_subscribe"
+  ],
+  [
+   "n_ledgermirror_Mirror_subscribe",
+   "n_ledger_Store_AppendMirroredEvent"
+  ],
+  [
+   "n_ledgermirror_Mirror_subscribe",
+   "n_ledger_Store_MirrorWatermark"
+  ],
+  [
+   "n_ledgermirror_Mirror_subscribe",
+   "n_ledger_Store_TouchMirrorHealth"
+  ],
+  [
+   "n_ledgermirror_Mirror_subscribe",
+   "n_ledgermirror_Mirror_setConn"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_EffectiveBaseBranch"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_LinkTask"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_PurposeRounds"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_RecordDispatch"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_ReviewRounds"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledger_Store_WorkBranch"
+  ],
+  [
+   "n_ledgerstep_Dispatcher_ViaTemplate",
+   "n_ledgerstep_buildPrompt"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledger_Store_ClearNeedsHumanFrom"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledger_Store_EffectiveBaseBranch"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledger_Store_EventsFromAsc"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledger_Store_RecordReviewVerdict"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_CountRounds"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_NodeStep_actor"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_NodeStep_haltForHuman"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_NodeStep_maxRounds"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_NodeStep_routeTo"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_ParseVerdict"
+  ],
+  [
+   "n_ledgerstep_NodeStep_haltForHuman",
+   "n_ledger_Store_AddComment"
+  ],
+  [
+   "n_ledgerstep_NodeStep_haltForHuman",
+   "n_ledger_Store_MarkNeedsHuman"
+  ],
+  [
+   "n_ledgerstep_NodeStep_haltForHuman",
+   "n_ledgerstep_NodeStep_actor"
+  ],
+  [
+   "n_ledgerstep_NodeStep_routeTo",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledgerstep_NodeStep_routeTo",
+   "n_ledger_Store_MoveCard"
+  ],
+  [
+   "n_ledgerstep_NodeStep_routeTo",
+   "n_ledgerstep_NodeStep_actor"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledgerstep_NodeStep_RunOnce"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledgerstep_StepRunner_awaitNode"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledgerstep_StepRunner_dispatchNode"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledgerstep_StepRunner_nodeFor"
+  ],
+  [
+   "n_ledgerstep_StepRunner_awaitNode",
+   "n_ledgerstep_clientFinalMessage"
+  ],
+  [
+   "n_ledgerstep_StepRunner_awaitNode",
+   "n_ledgerstep_waitForTurnEnd"
+  ],
+  [
+   "n_ledgerstep_StepRunner_nodeFor",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_ledgerstep_StepRunner_nodeFor",
+   "n_ledger_Store_GetWorkflow"
+  ],
+  [
+   "n_ledgerstep_buildPrompt",
+   "n_ledgerstep_indentLines"
+  ],
+  [
+   "n_ledgerstep_clientFinalMessage",
+   "n_ledgerstep_finalMessageFromEvents"
   ]
  ],
  "implements": [
@@ -67372,6 +74176,121 @@
   ["n_agentd_Server_handleCardMigrate","m_proto_MigrateCardReq","typed"],
   ["n_agentd_Server_handleCardMigrate","m_proto_MigrateCardResp","typed"],
   ["n_agentd_Server_handleFlowGet","m_proto_FlowDetail","typed"],
-  ["n_agentd_Server_handleFlowGet","m_proto_NodeDef","typed"]
+  ["n_agentd_Server_handleFlowGet","m_proto_NodeDef","typed"],
+  [
+   "m_proto_Attachment",
+   "m_web_api_ledger_Attachment",
+   "twin"
+  ],
+  [
+   "m_proto_Card",
+   "m_web_api_ledger_Card",
+   "twin"
+  ],
+  [
+   "m_proto_CardBrief",
+   "m_web_api_ledger_CardBrief",
+   "twin"
+  ],
+  [
+   "m_proto_CardCreateResp",
+   "m_web_api_ledger_CardCreateResp",
+   "twin"
+  ],
+  [
+   "m_proto_CardDetail",
+   "m_web_api_ledger_CardDetail",
+   "twin"
+  ],
+  [
+   "m_proto_CardView",
+   "m_web_api_ledger_CardView",
+   "twin"
+  ],
+  [
+   "m_proto_CardWorkflowLocation",
+   "m_web_api_ledger_CardWorkflowLocation",
+   "twin"
+  ],
+  [
+   "m_proto_Decision",
+   "m_web_api_ledger_Decision",
+   "twin"
+  ],
+  [
+   "m_proto_FlowDetail",
+   "m_web_api_ledger_FlowDetail",
+   "twin"
+  ],
+  [
+   "m_proto_Gate",
+   "m_web_api_ledger_Gate",
+   "twin"
+  ],
+  [
+   "m_proto_LedgerEvent",
+   "m_web_api_ledger_LedgerEvent",
+   "twin"
+  ],
+  [
+   "m_proto_MigrateCardReq",
+   "m_web_api_ledger_MigrateCardReq",
+   "twin"
+  ],
+  [
+   "m_proto_MigrateCardResp",
+   "m_web_api_ledger_MigrateCardResp",
+   "twin"
+  ],
+  [
+   "m_proto_NewCardReq",
+   "m_web_api_ledger_NewCardReq",
+   "twin"
+  ],
+  [
+   "m_proto_NodeDef",
+   "m_web_api_ledger_NodeDef",
+   "twin"
+  ],
+  [
+   "m_proto_NodeOverride",
+   "m_web_api_ledger_NodeOverride",
+   "twin"
+  ],
+  [
+   "m_proto_Relation",
+   "m_web_api_ledger_Relation",
+   "twin"
+  ],
+  [
+   "m_proto_TaskStateRow",
+   "m_web_api_ledger_TaskStateRow",
+   "twin"
+  ],
+  [
+   "n_ledgermirror_DefaultSource",
+   "m_proto_Event",
+   "typed"
+  ],
+  [
+   "n_ledgermirror_Mirror_subscribe",
+   "m_proto_Event",
+   "typed"
+  ],
+  [
+   "n_ledgerstep_clientFinalMessage",
+   "m_proto_Event",
+   "typed"
+  ],
+  [
+   "n_ledgerstep_finalMessageFromEvents",
+   "m_proto_Event",
+   "typed"
+  ],
+  [
+   "n_ledgerstep_waitForTurnEnd",
+   "m_proto_Event",
+   "typed"
+  ]
 ]
 }
