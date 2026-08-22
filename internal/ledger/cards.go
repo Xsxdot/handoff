@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
@@ -115,14 +116,20 @@ func (s *Store) nextChildID(tx *sql.Tx, parent string) (string, error) {
 	return fmt.Sprintf("%s.%d", parent, maxNumber+1), nil
 }
 
-// CreateCard 建卡：分配 B 号、钉工作流最新版本、初始态 = 工作流首态、
-// 落 card_created 事件。
-func (s *Store) CreateCard(nc NewCard) (Card, error) {
+// prepareCard 校验建卡请求并补默认值（优先级缺省「中」、工作流缺省 triage），
+// 取回要钉住的工作流版本。
+//
+// 参数：nc 建卡请求（就地补默认，故取指针）。
+// 返回：钉定版本的工作流；标题/project 为空、工作流不存在或状态序列为空时报错。
+//
+// 注意：只做纯校验与取流，不开事务——CreateCard 与 ImportCard 共用它，
+// 保证两条通道的入参语义逐字一致（差别只在 id 从哪来）。
+func (s *Store) prepareCard(nc *NewCard) (Workflow, error) {
 	if strings.TrimSpace(nc.Title) == "" {
-		return Card{}, fmt.Errorf("建卡: 标题不能为空")
+		return Workflow{}, fmt.Errorf("建卡: 标题不能为空")
 	}
 	if nc.Project == "" {
-		return Card{}, fmt.Errorf("建卡: project 不能为空")
+		return Workflow{}, fmt.Errorf("建卡: project 不能为空")
 	}
 	if nc.Priority == "" {
 		nc.Priority = "中"
@@ -132,29 +139,97 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 	}
 	wf, err := s.GetWorkflow(nc.Workflow, 0)
 	if err != nil {
-		return Card{}, fmt.Errorf("建卡取工作流 %q: %w", nc.Workflow, err)
+		return Workflow{}, fmt.Errorf("建卡取工作流 %q: %w", nc.Workflow, err)
 	}
 	if len(wf.Def.States) == 0 {
-		return Card{}, fmt.Errorf("建卡取工作流 %q: 状态序列不能为空", nc.Workflow)
+		return Workflow{}, fmt.Errorf("建卡取工作流 %q: 状态序列不能为空", nc.Workflow)
+	}
+	return wf, nil
+}
+
+// checkParentTx 校验父卡存在且同名工作流嵌套未超限。
+//
+// 参数：parent 父卡 id（空串直接放行）；workflowName 新卡要绑的工作流名。
+// 返回：父卡不存在返回包装 ErrNotFound 的错误，嵌套超限返回包装 ErrBadState 的错误。
+func (s *Store) checkParentTx(tx *sql.Tx, parent, workflowName string) error {
+	if parent == "" {
+		return nil
+	}
+	if _, err := getCardTx(s, tx, parent); err != nil {
+		return fmt.Errorf("父卡 %s: %w", parent, err)
+	}
+	nesting, err := s.workflowNestingTx(tx, parent, workflowName)
+	if err != nil {
+		return err
+	}
+	if nesting+1 > maxWorkflowNesting {
+		log().Warn("建卡被拒：工作流嵌套超限",
+			"parent", parent, "workflow", workflowName, "nesting", nesting)
+		return fmt.Errorf("父链上已有 %d 层 %q 工作流（上限 %d）——先竖切域或给子卡换更细粒度的工作流: %w",
+			nesting, workflowName, maxWorkflowNesting, ErrBadState)
+	}
+	return nil
+}
+
+// insertCardTx 事务内落卡：插行 + card_created 事件 + 子卡时父卡 timeline 留痕。
+//
+// 参数：id 已定好的卡号；nc 已过 prepareCard 的请求；wf 钉定版本的工作流；
+// extra 并入 card_created 负载的附加字段（导入通道用来标注来源，普通建卡传 nil）。
+// 返回：建成的卡（内存态，字段与刚插入的行一致）。
+func (s *Store) insertCardTx(tx *sql.Tx, sink *eventSink, id string, nc NewCard, wf Workflow, extra map[string]any) (Card, error) {
+	now := time.Now()
+	var parent any
+	if nc.Parent != "" {
+		parent = nc.Parent
+	}
+	var base any
+	if nc.BaseBranch != "" {
+		base = nc.BaseBranch
+	}
+	_, err := tx.Exec(s.q(`INSERT INTO cards
+		(id, title, status, priority, project, parent_id, workflow_name, workflow_version,
+		 attachments, acceptance_criteria, base_branch, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,'[]','',?,?,?)`),
+		id, nc.Title, wf.Def.States[0], nc.Priority, nc.Project, parent,
+		wf.Name, wf.Version, base, s.tval(now), s.tval(now))
+	if err != nil {
+		return Card{}, fmt.Errorf("插入卡 %s: %w", id, err)
+	}
+	payload := map[string]any{"title": nc.Title, "workflow": wf.Name, "workflow_version": wf.Version}
+	maps.Copy(payload, extra)
+	if _, err := s.appendEvent(tx, sink, id, EvCardCreated, nc.Actor, payload); err != nil {
+		return Card{}, err
+	}
+	// 父卡 timeline 留痕：审计链要能从父卡回答「子卡从哪来」。放在同
+	// 一事务里——子卡建了而父卡没痕，或反过来，都是账本自相矛盾。
+	if nc.Parent != "" {
+		if _, err := s.appendEvent(tx, sink, nc.Parent, EvComment, nc.Actor,
+			map[string]any{"kind": "普通",
+				"body": fmt.Sprintf("创建子卡 %s：%s", id, nc.Title),
+				"refs": []string{id}}); err != nil {
+			return Card{}, err
+		}
+	}
+	return Card{ID: id, Title: nc.Title, Status: wf.Def.States[0], Priority: nc.Priority,
+		Project: nc.Project, ParentID: nc.Parent, WorkflowName: wf.Name,
+		WorkflowVersion: wf.Version, BaseBranch: nc.BaseBranch, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// CreateCard 建卡：分配 B 号、钉工作流最新版本、初始态 = 工作流首态、
+// 落 card_created 事件。
+func (s *Store) CreateCard(nc NewCard) (Card, error) {
+	wf, err := s.prepareCard(&nc)
+	if err != nil {
+		return Card{}, err
 	}
 	var card Card
 	err = s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if err := s.checkParentTx(tx, nc.Parent, wf.Name); err != nil {
+			return err
+		}
 		var id string
 		var idErr error
 		if nc.Parent != "" {
-			if _, parentErr := getCardTx(s, tx, nc.Parent); parentErr != nil {
-				return fmt.Errorf("父卡 %s: %w", nc.Parent, parentErr)
-			}
-			nesting, err := s.workflowNestingTx(tx, nc.Parent, wf.Name)
-			if err != nil {
-				return err
-			}
-			if nesting+1 > maxWorkflowNesting {
-				log().Warn("建卡被拒：工作流嵌套超限",
-					"parent", nc.Parent, "workflow", wf.Name, "nesting", nesting)
-				return fmt.Errorf("父链上已有 %d 层 %q 工作流（上限 %d）——先竖切域或给子卡换更细粒度的工作流: %w",
-					nesting, wf.Name, maxWorkflowNesting, ErrBadState)
-			}
 			id, idErr = s.nextChildID(tx, nc.Parent)
 		} else {
 			id, idErr = s.nextTopID(tx)
@@ -162,41 +237,69 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 		if idErr != nil {
 			return idErr
 		}
-		now := time.Now()
-		var parent any
-		if nc.Parent != "" {
-			parent = nc.Parent
+		card, err = s.insertCardTx(tx, sink, id, nc, wf, nil)
+		return err
+	})
+	return card, err
+}
+
+// importIDPat 导入卡号的合法形态：顶层 B<数字>，或点号子卡 B<数字>(.<数字>)+。
+var importIDPat = regexp.MustCompile(`^B\d+(\.\d+)*$`)
+
+// ImportCard 显式 ID 导入建卡：携带既有 B 号（markdown 存量总账的行、
+// 搁置条目复活）原号迁入账本。这是永久能力，不是一次性迁移脚本。
+//
+// 参数：id 目标卡号（顶层 "B153" 或点号子卡 "B153.1"，父卡 id 由点号前缀
+// 推导，nc.Parent 无需也不应自行填写）；source 导入来源标注（落进
+// card_created 事件负载，空串记为「手工导入」）；nc 卡字段（标题、project
+// 必填；优先级缺省「中」；工作流缺省 triage）。
+// 返回：建成的卡；目标号已存在返回包装 ErrBadState 的错误。
+//
+// 注意：
+//   - **导入不受 min_b 水位约束**——min_b 只约束自动取号（nextTopID），
+//     导入一律按原号落位；导入号高于水位时，后续自动取号会自然跳过它
+//     （nextTopID 取「现存最大号」与 min_b 的较大者 +1）。
+//   - 点号子卡要求父卡**已存在**，缺父直接拒，不自动补建——补建等于
+//     替用户猜父卡的标题与状态，猜错比报错难发现。
+//   - 除 card_created 事件多带 imported/import_source 两个字段外，导入卡
+//     与 CreateCard 建的卡零行为差别：同样钉工作流最新版本、初始态 =
+//     工作流首态、子卡同样在父卡 timeline 留痕。
+func (s *Store) ImportCard(id, source string, nc NewCard) (Card, error) {
+	id = strings.TrimSpace(id)
+	if !importIDPat.MatchString(id) {
+		return Card{}, fmt.Errorf("导入卡: id %q 形如 B153 或 B153.1", id)
+	}
+	if strings.TrimSpace(source) == "" {
+		source = "手工导入"
+	}
+	// 父卡由点号前缀推导：id 自己就带着归属，再让调用方传一遍 Parent
+	// 只会多出「两者不一致时听谁的」这种没有正确答案的问题。
+	if idx := strings.LastIndex(id, "."); idx >= 0 {
+		nc.Parent = id[:idx]
+	} else {
+		nc.Parent = ""
+	}
+	wf, err := s.prepareCard(&nc)
+	if err != nil {
+		return Card{}, err
+	}
+	var card Card
+	err = s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, id); err == nil {
+			log().Warn("导入被拒：目标卡号已存在", "card", id)
+			return fmt.Errorf("卡 %s 已存在，导入拒绝覆盖: %w", id, ErrBadState)
+		} else if !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("导入查重 %s: %w", id, err)
 		}
-		var base any
-		if nc.BaseBranch != "" {
-			base = nc.BaseBranch
-		}
-		_, err := tx.Exec(s.q(`INSERT INTO cards
-			(id, title, status, priority, project, parent_id, workflow_name, workflow_version,
-			 attachments, acceptance_criteria, base_branch, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,'[]','',?,?,?)`),
-			id, nc.Title, wf.Def.States[0], nc.Priority, nc.Project, parent,
-			wf.Name, wf.Version, base, s.tval(now), s.tval(now))
-		if err != nil {
-			return fmt.Errorf("插入卡 %s: %w", id, err)
-		}
-		if _, err := s.appendEvent(tx, sink, id, EvCardCreated, nc.Actor,
-			map[string]any{"title": nc.Title, "workflow": wf.Name, "workflow_version": wf.Version}); err != nil {
+		if err := s.checkParentTx(tx, nc.Parent, wf.Name); err != nil {
 			return err
 		}
-		// 父卡 timeline 留痕：审计链要能从父卡回答「子卡从哪来」。放在同
-		// 一事务里——子卡建了而父卡没痕，或反过来，都是账本自相矛盾。
-		if nc.Parent != "" {
-			if _, err := s.appendEvent(tx, sink, nc.Parent, EvComment, nc.Actor,
-				map[string]any{"kind": "普通",
-					"body": fmt.Sprintf("创建子卡 %s：%s", id, nc.Title),
-					"refs": []string{id}}); err != nil {
-				return err
-			}
+		card, err = s.insertCardTx(tx, sink, id, nc, wf,
+			map[string]any{"imported": true, "import_source": source})
+		if err != nil {
+			return err
 		}
-		card = Card{ID: id, Title: nc.Title, Status: wf.Def.States[0], Priority: nc.Priority,
-			Project: nc.Project, ParentID: nc.Parent, WorkflowName: wf.Name,
-			WorkflowVersion: wf.Version, BaseBranch: nc.BaseBranch, CreatedAt: now, UpdatedAt: now}
+		log().Info("导入卡完成", "card", id, "workflow", wf.Name, "source", source)
 		return nil
 	})
 	return card, err
