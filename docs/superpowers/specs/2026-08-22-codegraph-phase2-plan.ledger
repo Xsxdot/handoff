@@ -1,0 +1,2 @@
+2026-08-22 Task 1 修复轮 1；`mergeProjections` 在无投影时保持 nil，修复 `TestAbsorbRoundTrip` 的 JSON round-trip 差异；`go test ./internal/codegraph/`、`gofmt -l internal/codegraph/`、`git diff --check` 均通过；commit 范围：internal/codegraph/types.go、merge.go、validate.go、absorb.go、projection_test.go、本 ledger。
+2026-08-22 Task 1 完成；双裁决：spec 符合（Projection/ViewProjection、ProjScanned、三种 kind 校验、diff 状态合并、dead 节点连带剔除）；代码质量通过；commit 范围：internal/codegraph/types.go、merge.go、validate.go、absorb.go、projection_test.go、本 ledger。
