@@ -1,3 +1,2 @@
 2026-08-22 Task 1 完成；双裁决：spec 符合，代码质量通过；验证：go test ./internal/codegraph/ -run 'TestSym|TestReAnchor'、go test ./internal/codegraph/、gofmt -l internal/codegraph/ 均通过；commit 范围：internal/codegraph/sym.go、internal/codegraph/sym_test.go、ledger。
 2026-08-22 Task 2 完成；双裁决：spec 符合，代码质量通过；验证：go test ./cmd/ -run 'TestGraphSym|TestGraphSummary'、go test ./cmd/、gofmt -l cmd/、git diff --check 均通过；commit 范围：cmd/graph.go、cmd/graph_test.go、ledger。
-2026-08-22 Task 3 阶段进度；handoff 仓新增 .claude/settings.json，临时含 sym 二进制执行 SessionStart 命令通过；真实覆盖补全 worktree 清单实测 6/8 命中，mapToolPart/TuiTab 未命中且含图覆盖债提示；覆盖合并后 8/8 与新 handoff 会话摘要未验证；阻塞：计划指定的 /root/workspace/charter 仓不存在，无法修改 skills/spec/SKILL.md 与 skills/plan/SKILL.md；commit 范围：.claude/settings.json、ledger。

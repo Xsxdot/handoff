@@ -1,7 +1,0 @@
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "handoff graph summary 2>/dev/null || true" } ] }
-    ]
-  }
-}
