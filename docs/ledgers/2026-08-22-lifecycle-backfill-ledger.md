@@ -25,7 +25,7 @@
 | d_runtime_config | 26 | 0 | 0 | 26：配置、环境、路径和权限门模型是解析输入/策略快照，无生命周期状态，跳过 |
 | d_runtime_maintenance | 18 | 0 | 0 | 18：版本探测、发布、工具链、自更新和 skill 结果快照，无持久生命周期状态，跳过 |
 | d_sessions | 20 | 4 | 7 | 13：hostproc/连接与快照结构缺少可证生命周期，跳过 |
-| d_transport | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_transport | 0 | 0 | 0 | 父领域，无直接 model |
 | d_transport_channel | 12 | 3 | 5 | 9：wire/连接缓存的非生命周期投影跳过；保留 Pool、entry 与预热退避状态 |
 | d_transport_tunnel | 8 | 4 | 9 | 4：Frame/错误/地址等协议值对象无生命周期，保留 Dialer、Listener、appListener 和 secureConn |
 | d_web | 254 | 14 | 52 | 240：API wire/请求响应、展示投影、props/枚举和无独立状态的辅助结构跳过；保留轮询门控、文件搜索、悬浮窗、工单聚合、任务流、树偏好、工作台基准/草稿及工作台状态的真实构造/写入 |
@@ -52,3 +52,4 @@
 - Task d_execution 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_execution_adapters 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；无直接 model 容器，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_runtime 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_transport 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
