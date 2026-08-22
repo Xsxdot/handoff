@@ -75289,10 +75289,6 @@
    "n_agentd_writeJSON"
   ],
   [
-   "n_agentd_Server_handlePullUpdate",
-   "n_release_TempName"
-  ],
-  [
    "n_agentd_Server_handleReclaim",
    "n_agentd_Manager_Reclaim"
   ],
@@ -75587,10 +75583,6 @@
   [
    "n_agentd_Server_handleUpdate",
    "n_agentd_writeJSON"
-  ],
-  [
-   "n_agentd_Server_handleUpdate",
-   "n_release_TempName"
   ],
   [
    "n_agentd_Server_handleUpdate",
@@ -76201,10 +76193,6 @@
    "m_proto_DownloadState"
   ],
   [
-   "n_agentd_Server_shutdownPtySessions",
-   "n_ptyhost_clientAttachment_close"
-  ],
-  [
    "n_agentd_Server_startCardStep",
    "n_agentd_Server_claimCardStep"
   ],
@@ -76359,10 +76347,6 @@
   [
    "n_agentd_Shutdown_Trigger",
    "n_agentd_Shutdown_Reason"
-  ],
-  [
-   "n_agentd_Shutdown_Trigger",
-   "n_ptyhost_clientAttachment_close"
   ],
   [
    "n_agentd_Shutdown_serveWithListeners",
@@ -80017,10 +80001,6 @@
    "m_proto_TaskView"
   ],
   [
-   "n_cmdcliRemoteFetcher_FetchChecksum",
-   "n_release_sumFor"
-  ],
-  [
    "n_cmdconfirmDestructive",
    "n_proto_TaskState_IsTerminal"
   ],
@@ -80129,10 +80109,6 @@
    "n_ledger_Store_EnsureDefaultWorkflows"
   ],
   [
-   "n_cmdprintCardJSON",
-   "n_relay_Encode"
-  ],
-  [
    "n_cmdrunCardWait",
    "n_cmdopenLedger"
   ],
@@ -80157,20 +80133,12 @@
    "n_logx_Setup"
   ],
   [
-   "n_cmdrunCardWait",
-   "n_relay_Encode"
-  ],
-  [
    "n_cmdrunFrames",
    "n_cmd_runFramesClient"
   ],
   [
    "n_cmdrunStepDispatch",
    "n_cmdtargetClient"
-  ],
-  [
-   "n_cmdrunStepDispatch",
-   "n_relay_Encode"
   ],
   [
    "n_cmdtargetClient",
@@ -81197,10 +81165,6 @@
    "n_ptyhost_NewAttachment"
   ],
   [
-   "n_engine_Engine_Attach",
-   "n_ptyhost_clientAttachment_close"
-  ],
-  [
    "n_engine_Engine_Open",
    "n_engine_Engine_pump"
   ],
@@ -81225,18 +81189,6 @@
    "n_engine_session_broadcast"
   ],
   [
-   "n_engine_Engine_pump",
-   "n_ptyhost_clientAttachment_close"
-  ],
-  [
-   "n_engine_Engine_reap",
-   "n_ptyhost_clientAttachment_close"
-  ],
-  [
-   "n_engine_engineAttachOps_Detach",
-   "n_ptyhost_clientAttachment_close"
-  ],
-  [
    "n_engine_engineAttachOps_Resize",
    "n_engine_fmtSize"
   ],
@@ -81251,10 +81203,6 @@
   [
    "n_engine_resizePty_2",
    "n_engine_withFd"
-  ],
-  [
-   "n_engine_session_broadcast",
-   "n_ptyhost_clientAttachment_close"
   ],
   [
    "n_engine_session_snapshot",

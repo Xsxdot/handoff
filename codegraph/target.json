@@ -118,9 +118,10 @@
       "from": "d_cli",
       "to": "d_contract",
       "entries": [
-        "proto 实体"
+        "proto 实体",
+        "proto.TaskState"
       ],
-      "legacyBudget": 22
+      "legacyBudget": 4
     },
     {
       "from": "d_cli",
@@ -143,34 +144,45 @@
     {
       "from": "d_cli",
       "to": "d_ledger",
-      "entries": [],
+      "entries": [
+        "ledger.Store"
+      ],
       "legacyBudget": 1
     },
     {
       "from": "d_cli",
       "to": "d_localint",
-      "entries": [],
-      "legacyBudget": 44
+      "entries": [
+        "config 实体",
+        "config.Target",
+        "localsync 实体"
+      ],
+      "legacyBudget": 35
     },
     {
       "from": "d_cli",
       "to": "d_release",
       "entries": [],
-      "legacyBudget": 3
+      "legacyBudget": 8
     },
     {
       "from": "d_cli",
       "to": "d_remote",
-      "entries": [],
-      "legacyBudget": 62
+      "entries": [
+        "client 实体",
+        "client.Client"
+      ],
+      "legacyBudget": 10
     },
     {
       "from": "d_controlplane",
       "to": "d_contract",
       "entries": [
-        "proto 实体"
+        "discipline.Resolver",
+        "proto 实体",
+        "proto.Task"
       ],
-      "legacyBudget": 27
+      "legacyBudget": 19
     },
     {
       "from": "d_controlplane",
@@ -178,18 +190,22 @@
       "entries": [
         "executor 实体"
       ],
-      "legacyBudget": 2
+      "legacyBudget": 3
     },
     {
       "from": "d_controlplane",
       "to": "d_host",
-      "entries": [],
-      "legacyBudget": 25
+      "entries": [
+        "ptyhost 实体",
+        "ptyhost.Host"
+      ],
+      "legacyBudget": 16
     },
     {
       "from": "d_controlplane",
       "to": "d_ledger",
       "entries": [
+        "ledger.Store",
         "store.Store"
       ],
       "legacyBudget": 3
@@ -197,26 +213,32 @@
     {
       "from": "d_controlplane",
       "to": "d_localint",
-      "entries": [],
-      "legacyBudget": 36
+      "entries": [
+        "config 实体",
+        "permgate 实体"
+      ],
+      "legacyBudget": 18
     },
     {
       "from": "d_controlplane",
       "to": "d_release",
       "entries": [],
-      "legacyBudget": 15
+      "legacyBudget": 14
     },
     {
       "from": "d_controlplane",
       "to": "d_remote",
-      "entries": [],
-      "legacyBudget": 13
+      "entries": [
+        "targetclient.Pool"
+      ],
+      "legacyBudget": 6
     },
     {
       "from": "d_executor",
       "to": "d_contract",
       "entries": [
-        "proto 实体"
+        "proto 实体",
+        "proto.Task"
       ],
       "legacyBudget": 0
     },
@@ -224,7 +246,7 @@
       "from": "d_executor",
       "to": "d_host",
       "entries": [],
-      "legacyBudget": 4
+      "legacyBudget": 9
     },
     {
       "from": "d_ledger",
@@ -241,16 +263,35 @@
       "legacyBudget": 2
     },
     {
+      "from": "d_release",
+      "to": "d_localint",
+      "entries": [],
+      "legacyBudget": 1
+    },
+    {
+      "from": "d_release",
+      "to": "d_remote",
+      "entries": [
+        "client.Client"
+      ],
+      "legacyBudget": 0
+    },
+    {
       "from": "d_remote",
       "to": "d_contract",
-      "entries": [],
-      "legacyBudget": 25
+      "entries": [
+        "proto 实体"
+      ],
+      "legacyBudget": 0
     },
     {
       "from": "d_remote",
       "to": "d_localint",
-      "entries": [],
-      "legacyBudget": 3
+      "entries": [
+        "config 实体",
+        "config.Target"
+      ],
+      "legacyBudget": 0
     }
   ]
 }

@@ -2,7 +2,7 @@
 //
 // 刀 0 搬迁后 codegraph 的 canonical 家在 charter 仓（github.com/Xsxdot/charter/graph），
 // 命令树由 graph/cli 构造——与 codegraph 二进制同一构造，行为同版本等价
-//（契约见 charter 仓 docs/contracts/2026-08-22-codegraph-extraction-contract.md §4）。
+// （契约见 charter 仓 docs/contracts/2026-08-22-codegraph-extraction-contract.md §4）。
 //
 // 边界：
 //   - 本文件只做挂载与 deprecated 标注，不含任何子命令逻辑；
