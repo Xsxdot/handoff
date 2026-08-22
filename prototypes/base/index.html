@@ -16,6 +16,10 @@
 <style>
   /* ---------- 整体骨架：头 / (流 + 审阅栏) / composer ---------- */
   .tui { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  /* 同 .running-line[hidden]：display:flex 会盖掉 UA 的 [hidden]{display:none}，
+     必须自己再声明一次。漏了的表现是两个面板叠在一起——DOM 上 hidden 为 true、
+     页面上却照常显示，属性检查看不出来 */
+  .tui[hidden], .blank[hidden] { display: none; }
   /* 页头两行：第一行身份 + 动作；第二行遥测（模型/回合/时长/ctx），小字浅色 */
   .tui-head {
     display: flex; flex-direction: column; gap: 2px;
@@ -176,6 +180,43 @@
   .usage-pop .sec { font-weight: 600; margin: 6px 0 4px; font-size: 12px; }
   .usage-pop .sec:first-child { margin-top: 0; }
 
+  /* 耗时弹出：**右锚**，不是照抄 usage-pop 的 left:0。它永远是遥测行最右的
+     元素，向右展 288px 必然出界——2026-08-22 真机实测 left:0 时被 overflow
+     祖先裁掉 32px，数字整列消失，而 DOM 里文本俱在（jsdom 测试全绿）。 */
+  .usage-pop.right { left: auto; right: 0; width: 288px; }
+  .usage-pop .hint { font-family: var(--font-sans); font-size: 10px; color: var(--muted-foreground); margin-left: 4px; }
+  .usage-pop .warn { color: var(--amber); font-size: 11px; margin: 0 0 8px; line-height: 1.6; }
+  .usage-pop ul.rank { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .usage-pop ul.rank .r { display: flex; align-items: baseline; gap: 8px; }
+  .usage-pop ul.rank .r .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .usage-pop ul.rank .r .c { flex-shrink: 0; font-size: 10px; color: var(--muted-foreground); }
+  .usage-pop ul.rank .r .d { flex-shrink: 0; font-family: var(--font-mono); }
+  /* 下钻只有一层——刻意不做成可递归的结构，那条规则不在契约里 */
+  .usage-pop ul.rank ul { list-style: none; margin: 2px 0 0 12px; padding-left: 8px;
+    border-left: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); }
+
+  /* 工具行的单次耗时：夹在参数与状态之间。缺席就一个字都不画——
+     0ms 与「没报出耗时」在线格式上不可分，画个 0ms 会把「极快」与「没测到」说成同一句话 */
+  .meta-line .dur { flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; }
+
+  /* 空白页：新建 tab 后先落在这里，选一种内容再变成终端/文件/TUI。
+     自定义启动项是这块下半部分，与上面的固定三项**分组隔开** */
+  .blank { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; height: 100%; padding: 32px; }
+  .blank .base { font-size: 12px; color: var(--muted-foreground); }
+  .blank .base b { font-family: var(--font-mono); font-weight: 400; color: var(--foreground); }
+  .blank ul { list-style: none; margin: 0; padding: 0; width: 100%; max-width: 320px;
+    display: flex; flex-direction: column; gap: 4px; }
+  .blank ul.launchers { border-top: 1px solid var(--border); padding-top: 12px; }
+  .blank ul button { width: 100%; display: flex; align-items: center; gap: 12px; text-align: left;
+    padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;
+    font-size: 13px; color: var(--foreground); font-family: inherit; }
+  .blank ul button:hover { background: var(--muted); }
+  .blank ul button .ico { flex-shrink: 0; width: 16px; text-align: center; color: var(--muted-foreground); }
+  .blank ul button .nm { flex: 1; }
+  .blank ul button .hk { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
+  .blank ul button .miss { font-size: 11px; color: var(--destructive); }
+
   /* 回合下拉：回合数本身就是跳转入口，不再单设按钮 */
   .turn-pop {
     position: absolute; left: 0; top: 22px; z-index: 10; min-width: 200px;
@@ -248,7 +289,7 @@
       <button class="tab active" aria-current="page">TUI · 7a8334f4</button>
       <button class="tab">终端 1</button>
       <button class="tab">README.md</button>
-      <button class="tab-add">＋</button>
+      <button class="tab-add" id="newTabBtn" title="新建 tab（空白页）">＋</button>
     </div>
 
     <main class="content">
@@ -298,6 +339,34 @@
                 </dl>
               </div>
             </details>
+            <span class="sep">·</span>
+            <!-- 耗时三分：**独立于 ctx chip，不合并**。耗时问「花了多少时间」，
+                 ctx 问「花了多少钱」，两组数字挤一个弹出里互相干扰。
+                 「工具（墙钟）」与「工具（时长合计）」必须同时出现——并发工具时
+                 后者更大，取其一当另一个用就是在撒谎。 -->
+            <details style="position:relative">
+              <summary style="list-style:none;cursor:pointer">耗时 3m4s</summary>
+              <div class="usage-pop right">
+                <div class="sec">耗时三分</div>
+                <dl>
+                  <dt>模型</dt><dd>2m2s</dd>
+                  <dt>工具（墙钟）</dt><dd>52.1s</dd>
+                  <dt>工具（时长合计）</dt><dd>1m41s<span class="hint">并发时大于墙钟</span></dd>
+                  <dt>未归类</dt><dd>10.7s<span class="hint">排队/等审批/框架开销</span></dd>
+                  <dt>合计</dt><dd>3m4s</dd>
+                </dl>
+                <div class="sec">工具排行</div>
+                <ul class="rank">
+                  <li>
+                    <div class="r"><span class="l">Bash</span><span class="c">×2</span><span class="d">1m11s</span></div>
+                    <ul>
+                      <li class="r"><span class="l">go test</span><span class="c">×2</span><span class="d">1m11s</span></li>
+                    </ul>
+                  </li>
+                  <li><div class="r"><span class="l">Read</span><span class="c">×1</span><span class="d">30.0s</span></div></li>
+                </ul>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -319,8 +388,11 @@
                 <div class="body">计划要求六个 task 顺序执行，每个 task 结束做双裁决。先确认分支头与 fact table 的 commit 一致，避免在旧基线上开工……</div>
               </details>
 
+              <!-- 工具行的单次耗时：**只有报了才画**。本页刻意保留多条不带耗时的
+                   工具行——那不是漏画，是真实形态：executor 没报出耗时时一个字都不画，
+                   因为 0ms 与「没测到」在线格式上不可分。 -->
               <details class="meta-line">
-                <summary><span class="dot"></span><span class="name">读文件</span><span class="arg">docs/plans/b93-plan.md</span><span class="chev">展开</span></summary>
+                <summary><span class="dot"></span><span class="name">读文件</span><span class="arg">docs/plans/b93-plan.md</span><span class="dur">30.0s</span><span class="chev">展开</span></summary>
                 <div class="body mono"># B93 实现计划
 Task 1: 终态即清扫 …
 Task 2: watchdog 按任务两档点名 …（其余 180 行）</div>
@@ -331,7 +403,7 @@ Task 2: watchdog 按任务两档点名 …（其余 180 行）</div>
                 <summary><span class="caret">▸</span>执行了 4 步操作<span class="fail">（1 失败）</span></summary>
                 <div class="members">
                   <details class="meta-line">
-                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">npm ci</span><span class="chev">展开</span></summary>
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">npm ci</span><span class="dur">19.1s</span><span class="chev">展开</span></summary>
                     <div class="body mono">added 412 packages in 18s</div>
                   </details>
                   <details class="meta-line">
@@ -506,6 +578,24 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
           </div>
         </div>
       </div>
+
+      <!-- 空白页（点 tab 条的 ＋ 进入）。镜像 workbench/BlankTab.tsx。 -->
+      <div class="blank" id="blankTab" hidden>
+        <p class="base">基准目录 <b>~/workspace/handoff/worktrees/7a8334f4</b></p>
+        <ul>
+          <li><button type="button"><span class="ico">▭</span><span class="nm">新终端</span><span class="hk">⌘T</span></button></li>
+          <li><button type="button"><span class="ico">◫</span><span class="nm">新建文件</span><span class="hk">⌘N</span></button></li>
+          <li><button type="button"><span class="ico">◇</span><span class="nm">打开任务</span><span class="hk">⌘⇧A</span></button></li>
+        </ul>
+        <!-- 自定义启动项：数量不定，所以**刻意不分配快捷键**——印在面板上却按不动的
+             快捷键会变成一句 UI 说了不算的话。env 文件缺失时就地标出来，不置灰、
+             也不拦着点：能不能起得来是终端那边的事。 -->
+        <ul class="launchers" aria-label="自定义启动项">
+          <li><button type="button"><span class="ico">▭</span><span class="nm">dev server</span></button></li>
+          <li><button type="button"><span class="ico">▭</span><span class="nm">go test 循环</span></button></li>
+          <li><button type="button"><span class="ico">▭</span><span class="nm">带代理的 shell</span><span class="miss">env 文件缺失</span></button></li>
+        </ul>
+      </div>
     </main>
   </div>
 
@@ -661,6 +751,47 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
 </div>
 
 <script>
+  // 耗时弹出的夹取：右锚只在「chip 确实在最右」时够用。遥测行一换行（约 <1000px）
+  // chip 就不再最右，288px 的弹出层会**向左**溢出裁剪祖先——2026-08-22 真机上
+  // 两次都是这么翻的：先 left:0 向右溢 32px，改 right:0 后在 900px 向左溢 34px。
+  // 所以锚定方向不是机制，只是赌注；真正的机制是按第一个裁剪祖先夹一次。
+  const TIMING_MARGIN = 8;
+  function clampTimingPop(pop) {
+    pop.style.transform = '';
+    let el = pop.parentElement, clip = null;
+    while (el && el !== document.body) {
+      const cs = getComputedStyle(el);
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') { clip = el; break; }
+      el = el.parentElement;
+    }
+    const b = clip ? clip.getBoundingClientRect() : { left: 0, right: window.innerWidth };
+    const r = pop.getBoundingClientRect();
+    let dx = 0;
+    if (r.right > b.right - TIMING_MARGIN) dx = b.right - TIMING_MARGIN - r.right;
+    if (r.left + dx < b.left + TIMING_MARGIN) dx = b.left + TIMING_MARGIN - r.left;
+    if (dx) pop.style.transform = `translateX(${Math.round(dx)}px)`;
+  }
+  document.querySelectorAll('.telemetry details').forEach((d) => {
+    const pop = d.querySelector('.usage-pop.right');
+    if (!pop) return;
+    d.addEventListener('toggle', () => { if (d.open) clampTimingPop(pop); });
+    window.addEventListener('resize', () => { if (d.open) clampTimingPop(pop); });
+  });
+
+  // tab 条的 ＋：切到空白页（真实前端是新开一个 tab 落在 BlankTab）
+  const blankTab = document.getElementById('blankTab');
+  const tuiPane = document.querySelector('.content .tui');
+  document.getElementById('newTabBtn').addEventListener('click', () => {
+    const toBlank = blankTab.hidden;
+    blankTab.hidden = !toBlank;
+    tuiPane.hidden = toBlank;
+    document.querySelectorAll('.tabbar .tab').forEach((t) => t.classList.toggle('active', !toBlank && t.textContent.startsWith('TUI')));
+  });
+  // 选了内容就回到 TUI（原型只演形态，不真开终端）
+  blankTab.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    blankTab.hidden = true; tuiPane.hidden = false;
+  }));
+
   // 看板/工单弹层：原生 dialog，镜像真实 Shell 的 overlay 行为（同时只开一个）
   const board = document.getElementById('boardDialog');
   const tickets = document.getElementById('ticketsDialog');
