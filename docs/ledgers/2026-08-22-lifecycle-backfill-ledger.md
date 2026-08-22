@@ -13,7 +13,7 @@
 |---|---:|---:|---:|---|
 | d_coordination | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
 | d_coordination_api | 0 | 待扫 | 待扫 | 入口容器，无直接 model |
-| d_coordination_cli | 13 | 待扫 | 待扫 | 待逐符号核查 |
+| d_coordination_cli | 13 | 0 | 0 | 13：CLI 请求/响应、错误和升级命令内部结构，无独立生命周期状态，跳过 |
 | d_coordination_graph | 0 | 待扫 | 待扫 | 无直接 model 容器 |
 | d_coordination_task | 194 | 10 | 27 | 184：wire/配置/展示投影/枚举/无状态服务结构跳过 |
 | d_execution | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
@@ -41,3 +41,4 @@
 - Task d_executor 完成：97 个 model，10 个 model 有可证生命周期，新增 14 条，87 个跳过（结果/事件/协议投影及纯业务辅助结构）。四类 Proc 与四类 runState 均使用直接返回类型/构造点，FrameWriter 的 `turn`、`nextPart`、`seq` 是真实字段写入，Trailer 有明确返回类型；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_runtime_maintenance 完成：18 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（版本探测、发布、工具链、自更新和 skill 结果快照无持久生命周期状态）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_runtime_config 完成：26 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（配置、环境、路径和权限门模型是解析输入或策略快照）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_coordination_cli 完成：13 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（CLI 请求/响应、错误和升级命令内部结构无独立生命周期状态）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
