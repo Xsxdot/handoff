@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
@@ -195,9 +196,7 @@ func (s *Store) insertCardTx(tx *sql.Tx, sink *eventSink, id string, nc NewCard,
 		return Card{}, fmt.Errorf("插入卡 %s: %w", id, err)
 	}
 	payload := map[string]any{"title": nc.Title, "workflow": wf.Name, "workflow_version": wf.Version}
-	for k, v := range extra {
-		payload[k] = v
-	}
+	maps.Copy(payload, extra)
 	if _, err := s.appendEvent(tx, sink, id, EvCardCreated, nc.Actor, payload); err != nil {
 		return Card{}, err
 	}
