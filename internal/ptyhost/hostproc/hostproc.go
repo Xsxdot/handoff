@@ -46,15 +46,16 @@ const ExitedTTL = 24 * time.Hour
 // 返回：由 Run 从 spec.json 解码使用。
 // 注意：Env 可能含敏感值，spec.json 必须以 0600 写入并只放在会话目录中。
 type Spec struct {
-	Root     string   `json:"root"`
-	ID       string   `json:"id"`
-	BasePath string   `json:"base_path"`
-	BaseKind string   `json:"base_kind"`
-	Cwd      string   `json:"cwd"`
-	Shell    string   `json:"shell"`
-	Env      []string `json:"env"`
-	Cols     int      `json:"cols"`
-	Rows     int      `json:"rows"`
+	Root        string   `json:"root"`
+	ID          string   `json:"id"`
+	BasePath    string   `json:"base_path"`
+	BaseKind    string   `json:"base_kind"`
+	Cwd         string   `json:"cwd"`
+	Shell       string   `json:"shell"`
+	Env         []string `json:"env"`
+	Cols        int      `json:"cols"`
+	Rows        int      `json:"rows"`
+	InitCommand string   `json:"init_command,omitempty"`
 }
 
 // outbound 是单个连接的待写帧。所有 socket 写入都经 writer goroutine 串行化。
@@ -168,7 +169,7 @@ func Run(specPath string) (runErr error) {
 	eng = engine.New(log)
 	meta, err := eng.Open(ptyhost.OpenOptions{
 		BasePath: spec.Cwd, BaseKind: spec.BaseKind, Shell: spec.Shell,
-		Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
+		Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows, InitCommand: spec.InitCommand,
 	})
 	if err != nil {
 		return fmt.Errorf("启动 PTY shell %s: %w", spec.Shell, err)

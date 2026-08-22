@@ -673,6 +673,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK
+	launchersOK := true
+	resp.LaunchersSupported = &launchersOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()

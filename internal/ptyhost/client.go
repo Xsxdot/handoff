@@ -69,15 +69,16 @@ type clientSession struct {
 // launchSpec 是写给 _ptyhost 的启动 JSON。它与 hostproc.Spec 保持同形，但客户端不导入
 // hostproc：hostproc 反过来依赖本包的公共类型，双向依赖会让父包无法编译。
 type launchSpec struct {
-	Root     string   `json:"root"`
-	ID       string   `json:"id"`
-	BasePath string   `json:"base_path"`
-	BaseKind string   `json:"base_kind"`
-	Cwd      string   `json:"cwd"`
-	Shell    string   `json:"shell"`
-	Env      []string `json:"env"`
-	Cols     int      `json:"cols"`
-	Rows     int      `json:"rows"`
+	Root        string   `json:"root"`
+	ID          string   `json:"id"`
+	BasePath    string   `json:"base_path"`
+	BaseKind    string   `json:"base_kind"`
+	Cwd         string   `json:"cwd"`
+	Shell       string   `json:"shell"`
+	Env         []string `json:"env"`
+	Cols        int      `json:"cols"`
+	Rows        int      `json:"rows"`
+	InitCommand string   `json:"init_command,omitempty"`
 }
 
 // clientAttachment 是一条 agentd 到 ptyhost 的订阅连接，同时实现 Attachment 的注入行为。
@@ -145,6 +146,7 @@ func (h *Host) Open(opt OpenOptions) (Session, error) {
 	spec := launchSpec{
 		Root: h.root, ID: id, BasePath: opt.BasePath, BaseKind: opt.BaseKind,
 		Cwd: opt.BasePath, Shell: opt.Shell, Env: opt.Env, Cols: opt.Cols, Rows: opt.Rows,
+		InitCommand: opt.InitCommand,
 	}
 	body, err := json.Marshal(spec)
 	if err != nil {
