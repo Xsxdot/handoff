@@ -103,6 +103,49 @@ tool_call 帧」——**数量对、内容空，于是全绿**。判据挑错了
 处置：已 `continue` 回执行者修（任务 `d278cc18`），要求加一条断言帧 input 内容的
 用例 + 变异自检（回退成「首见即写帧」必须变红）。
 
+#### ✅ 修复后的真机复验（commit `10fb151d`，合并为 `3e377d7a`）
+
+用同一台隔离实例、换成修复后的二进制重跑一个 opencode 冒烟任务
+（`68a0e27d`）。**帧侧：**
+
+```
+tool_call 帧数: 6 | input 为空的: 0        <-- 修复前是 10/10 全空
+tool_call | tool=bash  | input={"command":"echo hello-from-executor"}
+tool_call | tool=bash  | input={"command":"ls -a"}
+tool_call | tool=bash  | input={"command":"git status && git branch --show-current && git log --oneline -3"}
+tool_call | tool=bash  | input={"command":"mkdir -p notes"}
+tool_call | tool=write | input={"filePath":".../notes/out.txt","content":"smoke sample\n..."}
+tool_call | tool=bash  | input={"command":"git add notes/out.txt && git commit -m \"chore: 冒烟取样\" ..."}
+```
+
+6 条 `tool_call` 与 6 条 `tool_result` 严格配对，重复的 `running` 没有产生多余帧。
+`write` 这类非命令工具也走通了（`toolDetail` 回落到整个 input 的 JSON，符合设计）。
+
+**账本侧**（`task_timing_ledger`，14 条）：
+
+```
+kind=tool dur_ms=35 label=bash  detail=echo hello-from-executor
+kind=tool dur_ms=16 label=bash  detail=ls -a
+kind=tool dur_ms=14 label=bash  detail=git status && git branch --show-current && ...
+kind=tool dur_ms=4  label=bash  detail=mkdir -p notes
+kind=tool dur_ms=5  label=write detail={"filePath":".../notes/out.txt","content...
+kind=tool dur_ms=12 label=bash  detail=git add notes/out.txt && git commit -m ...
+```
+
+`detail` 拿到了真实命令（修复前是 `{}`），`label` 是工具名。
+
+**顺带验到的三分法自洽**（这不是本轮的判据，但它给分段正确性提供了一个独立佐证）：
+
+```
+api 合计  = 7377+231+0+1324+1467+1205+3079 = 14683
+tool 合计 = 35+16+14+4+5+12               = 86
+turn 墙钟 =                                 14773
+other（差额）= 14773 - 14683 - 86         = 4 ms
+```
+
+模型段 + 工具段几乎填满整个回合墙钟，未归类只剩 4ms。契约 §2.1 的三分法口径
+在真机上自洽。
+
 ---
 
 ## 2. 需求 B 真机清单
@@ -188,10 +231,28 @@ $SHELL = /usr/bin/bash
 ## 3. 收尾状态
 
 - 需求 B 真机清单 **4 条全部确认**，无缺陷。
-- 需求 A 第二批真机清单 **3 条确认、1 条部分（claudecode/codex 未取样）、
-  1 条确认**，并**发现 1 个真实缺陷**（opencode `tool_call` 帧 input 全空），
-  已回派修复。
+- 需求 A 第二批真机清单 **4 条确认、1 条部分**（第 4 条的 claudecode/codex 未取样），
+  并**发现 1 个真实缺陷**（opencode `tool_call` 帧 input 全空）——已回派修复，
+  且在同一台隔离实例上**复验通过**（6/6 帧带真实入参，账本 detail 正确）。
 - 第一批的真机清单（4 条）**仍未跑**：其中三条依赖 T6（聚合与接线）落地后
   `handoff show` 能带 timing，T6 尚未开工。
 - 两张任务卡（`d278cc18`、`51dce9c0`）刻意留在 `waiting_review`，未归档。
-- 隔离实例与冒烟仓库留在 `/tmp/hoav/`，供后续复验；生产 agentd 全程未受影响。
+- 隔离实例与冒烟仓库留在 `/tmp/hoav/`，供后续复验；生产 agentd（pid 2485606）
+  全程未受影响。
+
+### 操作教训：`pkill -f` 会杀掉执行它的那个 shell
+
+重启隔离实例时用 `pkill -f "handoff agentd --config /tmp/hoav/cfg.yaml"`，
+结果 `handoff run` 直接返回 `退出码 -1`——**它把执行这条命令的 shell 自己杀了**。
+
+根因：整段脚本是 `sh -c` 的**一个参数**，脚本里后面那行
+`setsid nohup ... agentd --config /tmp/hoav/cfg.yaml` 就在这个 shell 自己的
+命令行里，而 `pkill -f` 匹配的是完整命令行。
+
+第二次用方括号拆模式（`--con[f]ig`）想绕开，**照样被杀**：绕开的只是 pkill 那一行
+的字面串，脚本里 `setsid` 那行的真实文本仍在同一条命令行上，仍被正则匹中。
+这是「按模式杀进程」在自动化脚本里的通病——**只要脚本里出现了要杀的目标命令，
+模式就一定同时匹配脚本自己**。
+
+正解：从 `ss -ltnp` 的 LISTEN 行取确切 pid 再 kill 那一个。**不能**退回
+`lsof -ti tcp:<port>`——那个会把**客户端连接**也算进去一起杀。
