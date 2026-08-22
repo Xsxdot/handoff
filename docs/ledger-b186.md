@@ -12,3 +12,4 @@
 - Task 1 / 静态验证：`go build ./...`、`go vet ./...`、`gofmt -l .` 均无输出。提交前 `git status --porcelain internal/ptyhost/` 实际输出 ` M internal/ptyhost/client_test.go`（预期源改动）；`ls internal/ptyhost/ | grep -c '^pc-'` 实际输出 `0`。
 - Task 1 / 提交后污染复核：`go test ./internal/ptyhost/ -count=1` 通过：`ok  github.com/Xsxdot/handoff/internal/ptyhost  0.933s`；紧接执行 `git status --porcelain internal/ptyhost/` 无输出；`ls internal/ptyhost/ | grep -c '^pc-'` 实际输出 `0`（命令因 grep 无匹配退出码为 1，但计数为 0）。
 - 整分支终审 / 修复轮 1：`git diff --check 408cd912..HEAD` 发现本 ledger 第 3、4 行的 Markdown 行尾空格；已移除，代码范围未变。提交范围：`HEAD^..HEAD`。
+- 整分支终审 / 范围复审：相对 `408cd912` 的完整 diff 仅含 `internal/ptyhost/client_test.go` 与本 ledger；`git diff --check` 无输出，未发现规格遗漏、越界改动或代码质量问题。
