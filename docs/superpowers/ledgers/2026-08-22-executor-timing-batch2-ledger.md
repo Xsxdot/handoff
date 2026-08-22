@@ -125,3 +125,95 @@
   `TestResumeContinuesFromOffset` 的同类路径超限，以及
   `TestClaudeToolTimingPaired` 的 `FAIL`。终审没有把这个基线环境问题扩展成无关修复。
 - 终审结论：未发现需要集中修复的计划内代码问题；以上全仓测试阻断已原样留账。
+
+## 补覆盖轮：四家 adapter 回合边界
+
+本轮基线：`e5d1edf1`。本轮不改任何 adapter 实现，只改四家的 timing 测试搭台，
+让生产路径自己喂 BeginTurn/EndTurn；四个 timing 测试文件中已无直接
+`seg.BeginTurn`/`seg.EndTurn` 调用（`rg` 实测无输出）。
+
+### grok
+
+- 改动：`internal/executor/grok/timing_test.go`。假 ACP WebSocket 经真实
+  `Adapter.Send` 发起回合，通知经真实 `acpHandler` 分流，终局响应经真实
+  `awaitTurn`/`finishTurn` 收尾；断言两个模型段、工具段及 turn 条目数量，覆盖
+  BeginTurn 与 EndTurn 的静默缺口。未知状态测试也改走同一真实回合路径。
+- 定向结果：`go test ./internal/executor/grok/ -run '^TestGrok(ToolTimingPaired|UnknownToolStatusIsNotTerminal)$'`
+  输出 `ok github.com/Xsxdot/handoff/internal/executor/grok 0.013s`；整包
+  `go test ./internal/executor/grok/ 2>&1 | tail -20` 输出 `ok ... 1.364s`。
+- 变异：临时删除 `finishTurn` 的 EndTurn 上报，目标测试原始失败为
+  `timing_test.go:59: ...实得 1 个 api 条目`、`:62: ...实得 3 个`，以及未知状态
+  `:112: ...实得 2 个`；恢复实现后整包通过。之后又以
+  `go test ./internal/executor/grok/` 复跑整包，命令尾部为 `FAIL`（变异仍被测试
+  罩住）。
+- 双裁决：规格上真实 Send/finishTurn 边界均被驱动，未增加实现行为；质量上
+  gofmt 与 grok 整包通过。
+- commit：`5fceb5c7 test(grok): cover adapter timing boundaries`。
+
+### opencode
+
+- 改动：`internal/executor/opencode/timing_test.go`。用现有 `startFakeRun` 驱动
+  真实 startRun/BeginTurn；工具 part 仍经 mapPartUpdated，收尾经真实 mapIdle；
+  新增事件排空 goroutine，避免阻塞 emit；断言 BeginTurn 与 mapIdle EndTurn 各自
+  贡献模型段。未改变 `frameKind("tool")` 断言。
+- 结果：`go test ./internal/executor/opencode/ 2>&1 | tail -20` 输出
+  `ok github.com/Xsxdot/handoff/internal/executor/opencode 17.870s`。
+- 变异：临时删除 `mapIdle` 的 EndTurn 上报，整包命令输出
+  `TestOpencodeToolTimingPaired ... 实得 1 个 api 条目`、
+  `TestOpencodeErrorToolStatus ... 实得 1 个 api 条目`，并以 `FAIL` 结束；恢复后
+  整包通过。临时删除 startRun 的 BeginTurn 上报，定向 timing 命令原始失败为
+  `一次工具调用应恰好产一条 tool 条目，实得 0 条` 与
+  `真实 BeginTurn 与 mapIdle EndTurn 都应收尾模型段，实得 0 个 api 条目`；恢复后
+  定向测试通过。
+- 双裁决：规格上两条真实边界与阻塞事件通道均有测试；质量上 opencode 整包通过，
+  没有修改 adapter 实现或旧 tool 文本跳过判据。
+- commit：`cb97cd5e test(opencode): cover adapter timing boundaries`。
+
+### claudecode
+
+- 改动：`internal/executor/claudecode/timing_test.go`。改为 Unix 测试，通过现有
+  假 shim/短目录和持久在线 fake claude 驱动真实 Start/BeginTurn；夹具消息经真实
+  mapMessage，最终 result 经真实 mapResult/EndTurn；新增断言两个 api 段和四次
+  turn 信号。未改生产代码。
+- 结果：`go test ./internal/executor/claudecode/ -run '^TestClaudeToolTimingPaired$'`
+  输出 `ok github.com/Xsxdot/handoff/internal/executor/claudecode (cached)`。
+  整包回归仍失败，原始失败为 `TestPermServerAskThenRespond`、
+  `TestPermServerRespondUnknownID`、`TestPermServerReRegisterSameID` 的
+  `裁决 socket 路径过长（114/116 字节，上限 107）`，以及
+  `TestResumeContinuesFromOffset` 的同类 `115 字节` 路径错误；本轮新的
+  `TestClaudeToolTimingPaired` 通过。
+- 变异：临时删除 mapResult 的 EndTurn 上报，整包尾部明确出现
+  `TestClaudeToolTimingPaired`：`实得 1 个 api 条目`、`实得 3 个 turn 条目`，
+  并以 `FAIL` 结束；恢复后定向测试通过。临时删除 Start 的 BeginTurn 上报，
+  定向测试原始失败为 `至少应有一条 tool TimingEntry`；恢复后通过。
+- 双裁决：规格上真实 Start/mapResult 边界均被驱动；质量上假执行者可回收、短路径
+  避免了本测试自身的 socket 问题，既有全包环境路径问题未扩大修复。
+- commit：`dadb522b test(claudecode): cover adapter timing boundaries`。
+
+### codex
+
+- 改动：`internal/executor/codex/timing_test.go`。保留已有真实 finishTurn/EndTurn，
+  将测试运行态接入假 app-server WebSocket，通过真实 Adapter.Send 驱动 BeginTurn；
+  工具帧与 clock 注入断言不变。
+- 结果：`go test ./internal/executor/codex/ 2>&1 | tail -20` 输出
+  `ok github.com/Xsxdot/handoff/internal/executor/codex 5.930s`。
+- 变异：临时删除 Send 的 BeginTurn 上报，定向测试原始失败为
+  `TestCodexToolTimingPaired: 至少应有一条 tool TimingEntry` 与
+  `TestCodexTimingShapeMatchesClaude: 实得 api=0 tool=0 turn=0`；整包命令以
+  `FAIL` 结束；恢复后定向测试通过。EndTurn 变异属于本轮前已有覆盖，未改生产路径。
+- 双裁决：规格上真实 Send/finishTurn 两端覆盖完整；质量上 codex 整包正常回归通过。
+- commit：`8c717531 test(codex): cover adapter timing boundaries`。
+
+### 本轮四项变异验收与门禁
+
+- opencode `mapIdle` EndTurn 删除：整包 `FAIL`，两条 timing 用例报告 api=1。
+- grok `finishTurn` EndTurn 删除：整包 `FAIL`；定向用例报告 api/turn 数量不足。
+- claudecode `mapResult` EndTurn 删除：整包 `FAIL`，新的 timing 用例报告 api=1、
+  turn=3。
+- codex Send BeginTurn 删除：整包 `FAIL`；timing shape 报 api=0/tool=0/turn=0。
+- `gofmt -l internal/` 无输出；`go vet ./internal/executor/...` 成功；
+  `go build ./...` 成功。
+- `go test ./internal/executor/... 2>&1 | tail -20`：codex、fake、grok、opencode、
+  rawtap、turn 输出 `ok`；claudecode 以 `FAIL` 结束。失败仍是上述既有 socket
+  路径超限用例，非本轮 timing 测试；没有为此修改无关实现或夹具。
+- 本轮没有遇到需要人决策的问题；没有派发子任务、切分支或 push。
