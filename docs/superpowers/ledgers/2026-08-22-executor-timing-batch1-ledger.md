@@ -11,5 +11,6 @@
 - 2026-08-22 Task 1（HeadTailRunes 与 FrameWriter.Turn）完成，spec 符合性与代码质量双裁决通过；中文 rune 头尾截断与 nil-safe 回合访问器均按契约实现。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：T1 定向测试、`go test ./internal/executor/turn/` 与 gofmt 检查通过。
 - 2026-08-22 Task 2（turn.Segmenter 状态机）完成，spec 符合性与代码质量双裁决通过；修复计划样例暴露的回合收尾后迟到工具入账与截断标记导致的 200-rune 超限。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：7 个 Segmenter 测试、`go test ./internal/executor/turn/` 与 gofmt 检查通过；timing.go 无 provider 分支，导出方法仅四个。
 - 2026-08-22 Task 3（claudecode 接线）完成，spec 符合性与代码质量双裁决通过；工具信号贴协议事件接入 Segmenter，tool_result 写入真实 dur_ms，usage 分支避免高频 Info，启动时序测试同步跳过合法的初始 Timing 事件。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：T3 定向回归、启动时序、结果/用量/黄金测试及 gofmt 通过；整包命令 `go test ./internal/executor/claudecode/` 仍失败，原始失败为 `perm_test.go:56/91/108: 裁决 socket 路径过长（114/116 字节，上限 107）` 与 `resume_test.go:89: 裁决 socket 路径过长（115 字节，上限 107）`。
+- 2026-08-22 Task 4（codex 接线）完成，spec 符合性与代码质量双裁决通过；Segmenter 仅从 item/started、item/completed、finishTurn 接入，避开 emit 自锁，真实 frames.jsonl 回归覆盖 dur_ms 正反面与两家结构对照。Commit 范围：`HEAD^..HEAD`（本 task 提交）。验证：`go test ./internal/executor/codex/` 与 gofmt 通过；输出无 `事件通道满，丢弃事件`。
 
 ## Minor 记账
