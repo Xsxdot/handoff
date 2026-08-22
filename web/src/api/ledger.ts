@@ -96,6 +96,8 @@ export interface NodeOverride {
   discipline?: string
   target?: string
   model?: string
+  // purpose 按节点覆盖模板派发用途（如 implement / review）。
+  purpose?: string
 }
 
 export interface Gate {
@@ -114,6 +116,8 @@ export interface NodeDef {
   verdict?: boolean
   carry_card_context?: boolean
   max_rounds?: number
+  // omit_acceptance 关闭本节点的整卡验收判据注入。
+  omit_acceptance?: boolean
   next?: string
   on_fail?: string
   gate?: Gate
