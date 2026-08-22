@@ -1,7 +1,7 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "handoff graph summary 2>/dev/null || true" } ] }
+      { "hooks": [ { "type": "command", "command": "handoff graph summary 2>/dev/null | grep '^本仓库有代码图' || true" } ] }
     ]
   }
 }
