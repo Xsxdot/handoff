@@ -13,6 +13,7 @@ import type { NodeDef, NodeOverride } from '../../api/ledger'
 
 export interface NodeEditorProps {
   node: NodeDef
+  index: number
   templates: string[]
   disciplines: string[]
   nodeNames: string[]
@@ -23,9 +24,15 @@ export interface NodeEditorProps {
 const inputClass = 'mt-1 w-full rounded border px-2 py-1.5 text-sm'
 const labelClass = 'block text-xs text-muted-foreground'
 
-function controlID(name: string, suffix: string): string {
-  const safe = name.replace(/[^a-zA-Z0-9_-]+/g, '-') || 'node'
-  return `flow-node-${safe}-${suffix}`
+// 控件 id 用节点下标当稳定键，不用列名——列名是用户可改、可重名、可为任意
+// 语言的显示文本。曾经用 name.replace(...) 造 id，中文列名整段塌缩成一个
+// `-`，同一页上「待办/集成/已完成」三列拿到同一个 id，label 的 for 走
+// getElementById 只命中第一个：点第三列的开关翻的是第一列的框（B169）。
+//
+// 注意别据此误判「开关没回显」：坏的只有 label→input 关联，复选框自己的
+// checked 一直是对的。
+function controlID(index: number, suffix: string): string {
+  return `flow-node-${index}-${suffix}`
 }
 
 // 用途候选：review 会让派发走审阅路径（基线取卡的工作分支、开一次性分支、
@@ -42,9 +49,9 @@ function routeOptions(node: NodeDef, nodeNames: string[]): string[] {
 }
 
 export function NodeEditor({
-  node, templates, disciplines, nodeNames, onChange, onRemove,
+  node, index, templates, disciplines, nodeNames, onChange, onRemove,
 }: NodeEditorProps) {
-  const id = (suffix: string) => controlID(node.name, suffix)
+  const id = (suffix: string) => controlID(index, suffix)
   const routes = routeOptions(node, nodeNames)
   const templateNames = node.template && !templates.includes(node.template)
     ? [node.template, ...templates]
