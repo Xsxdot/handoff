@@ -28,7 +28,7 @@
 | d_transport | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
 | d_transport_channel | 12 | 3 | 5 | 9：wire/连接缓存的非生命周期投影跳过；保留 Pool、entry 与预热退避状态 |
 | d_transport_tunnel | 8 | 4 | 9 | 4：Frame/错误/地址等协议值对象无生命周期，保留 Dialer、Listener、appListener 和 secureConn |
-| d_web | 254 | 待扫 | 待扫 | wire/展示类型优先跳过，仍核查真实构造点 |
+| d_web | 254 | 14 | 52 | 240：API wire/请求响应、展示投影、props/枚举和无独立状态的辅助结构跳过；保留轮询门控、文件搜索、悬浮窗、工单聚合、任务流、树偏好、工作台基准/草稿及工作台状态的真实构造/写入 |
 | d_workspace | 3 | 0 | 0 | 3：启动项配置项、同步选项与同步结果是配置/输入/结果快照，无独立生命周期状态，跳过 |
 | **合计** | **707** | **待扫** | **待扫** | |
 
@@ -45,3 +45,4 @@
 - Task d_transport_channel 完成：12 个 model，3 个 model 有可证生命周期，新增 5 条，9 个跳过（wire/连接缓存的非生命周期投影）。`NewPool`、`Pool.For`、预热退避状态的构造和 `backoff`/`nextAt` 写入均有源码证据；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_transport_tunnel 完成：8 个 model，4 个 model 有可证生命周期，新增 9 条，4 个跳过（Frame/错误/地址等协议值对象）。`NewDialer`、`NewListener`、`secure`、`serveSession` 的明确构造，以及 Dialer 隧道字段的写入均有源码证据；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_workspace 完成：3 个 model，0 个 model 有可证生命周期，新增 0 条，3 个跳过（启动项配置项、同步选项与同步结果是配置/输入/结果快照，无独立生命周期状态）。逐符号核查了 `launcher.Item`、`localsync.Opts` 与 `localsync.Result` 的定义及构造/返回点；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_web 完成：254 个 model，14 个 model 有可证生命周期，新增 52 条，240 个跳过（API wire/请求响应、展示投影、props/枚举和无独立状态的辅助结构）。轮询 `PollState` 因缺少对应基线函数节点，按 who 必须是真实节点的纪律不产出；其余保留文件搜索、悬浮窗、工单聚合、任务流、树偏好、工作台基准/草稿与工作台状态的直接构造/状态写入；spec 符合性与代码质量双裁决通过，首轮修正了无效的 `usePoll` 节点引用。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
