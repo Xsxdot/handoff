@@ -217,3 +217,42 @@
   rawtap、turn 输出 `ok`；claudecode 以 `FAIL` 结束。失败仍是上述既有 socket
   路径超限用例，非本轮 timing 测试；没有为此修改无关实现或夹具。
 - 本轮没有遇到需要人决策的问题；没有派发子任务、切分支或 push。
+
+## 补覆盖轮：opencode 非空工具入参时机
+
+本轮基线：`9ce37668`。真机反馈确认 grok 正常，本轮只改 opencode；
+claudecode/codex/grok 没有工作树改动。
+
+- 根因核对：`mapToolPart` 原先在 `toolStageNone` 的首个 pending 事件就同时调用
+  `Segmenter.ToolStart`、`FrameWriter.ToolCall` 和 `toolDetail`；真机 pending 的
+  `state.input` 是 `{}`，后续 running 才出现 `{"command":"echo hi"}`，所以追加式
+  帧与 TimingEntry.Detail 被永久锁成空对象。
+- 口径选择：保留工具耗时的审批等待口径，但把 `ToolStart` 与 tool_call 帧一起延后到
+  第一次非空 input。依据是本轮真机抓包结论：pending→首个 running 之间没有审批，
+  审批等待发生在后续 running 之间；因此延后不会缩短需要可比的墙钟耗时。若直到
+  终态仍无非空 input，则终态触发一次 `{}` 回落，保留诚实凭据而不伪造命令。
+- 改动文件：`internal/executor/opencode/adapter.go` 增加 `toolInputReady`，将
+  `mapToolPart` 的 stage/ToolStart/ToolCall 触发条件改为「非空 input 或终态」；
+  `internal/executor/opencode/timing_test.go` 增加 `tool_call` input 含 `echo hi`、
+  `TimingEntry.Detail == "echo hi"` 的断言，并增加终态空 input 回落测试。
+- TDD RED：先只加入真实序列
+  `pending(input={}) -> running(input={"command":"echo hi"}) -> running 重复 -> completed`;
+  `go test ./internal/executor/opencode/ -run 'TestOpencodeToolTimingPaired|TestOpencodeToolInputFallsBackAtTerminal'`
+  原始失败为 `tool_call 帧应等到非空 input 后写入并含真实命令，实得 "{}"`。
+- GREEN：`go test ./internal/executor/opencode/ -run 'TestOpencodeToolTimingPaired|TestOpencodeToolInputFallsBackAtTerminal|TestOpencodeErrorToolStatus'`
+  输出 `ok github.com/Xsxdot/handoff/internal/executor/opencode 0.021s`；
+  `go test ./internal/executor/opencode/ 2>&1 | tail -30` 输出
+  `ok github.com/Xsxdot/handoff/internal/executor/opencode 17.902s`。
+- 变异自检：临时将条件回退为 `if r.toolStages[key] == toolStageNone`，运行
+  `go test ./internal/executor/opencode/ -run '^TestOpencodeToolTimingPaired$'`，
+  原始失败为 `TimingEntry.Detail ... 实得 "{}"` 与
+  `tool_call 帧 ... 实得 "{}"`；恢复修复后目标测试通过。该变异证明回归断言
+  不是稳定假绿。
+- 门禁：`gofmt -l internal/` 无输出，`git diff --check` 无输出，
+  `go vet ./internal/executor/...` 成功。`go test ./internal/executor/...` 输出
+  codex/fake/grok/opencode/rawtap/turn 为 `ok`，claudecode 仍以 `FAIL` 结束，
+  原因是此前 ledger 已记录的测试 socket 路径超限；本轮未改该包。
+- 双裁决：规格上满足非空输入帧、Detail 与终态回落三条要求，并保留审批等待口径；
+  代码质量上只引入 opencode 局部判定与回归测试，无其它 executor 改动。
+- commit：`10fb151d fix(opencode): 延迟工具帧到真实入参`；本 ledger 追加将在后续
+  收口 commit 中提交。
