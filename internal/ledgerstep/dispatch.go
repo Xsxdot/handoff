@@ -177,7 +177,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err != nil {
 		return zero, fmt.Errorf("取卡上下文基线: %w", err)
 	}
-	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.Extra)
+	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra)
 	model := ""
 	if tpl.Def.ModelByTarget != nil {
 		model = tpl.Def.ModelByTarget[target]
@@ -248,6 +248,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 //   - c:     卡
 //   - base:  卡的有效基线分支，可为空
 //   - carry: 是否拼入卡上下文段（节点的 CarryCardContext 开关）
+//   - omitAccept: 是否**不**注入整卡验收判据（节点的 OmitAcceptance 开关）
 //   - extra: 本次派发的临时补充说明，可为空
 //
 // 返回：拼好的 prompt。三段之间用空行分隔，缺席的段不留空标题。
@@ -259,7 +260,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 // 注意：**这里绝不拼纪律块正文**。纪律块只传名字，正文由 agentd 按 B129 注入；
 // 两份纪律同场会让审阅的「只读」被实现块的「完成即 commit」推翻（2026-08-19
 // 真机出过一次）。
-func buildPrompt(body string, c ledger.Card, base string, carry bool, extra string) string {
+func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool, extra string) string {
 	sections := []string{body}
 	if carry {
 		var b strings.Builder
@@ -273,7 +274,9 @@ func buildPrompt(body string, c ledger.Card, base string, carry bool, extra stri
 		} else {
 			b.WriteString("- 有效基线分支：（未设置，需要合并时先向协调者确认，不要自行假定 main）\n")
 		}
-		if c.AcceptanceCriteria != "" {
+		// 判据有两个注入通道（模板的 {{ACCEPT}} 与这一段），开关必须同时管住
+		// 两个——只堵一个等于没堵，charter 流的节点两个通道都开着。
+		if c.AcceptanceCriteria != "" && !omitAccept {
 			fmt.Fprintf(&b, "- 验收判据：\n%s\n", indentLines(c.AcceptanceCriteria, "  "))
 		}
 		if len(c.Attachments) > 0 {
