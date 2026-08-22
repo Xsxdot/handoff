@@ -32,7 +32,7 @@ func TestGraphValidate(t *testing.T) {
 	}
 	var r map[string]any
 	if json.Unmarshal([]byte(out), &r) != nil ||
-		r["nodes"].(float64) != 7 || r["unscannedEntries"].(float64) != 1 {
+		r["nodes"].(float64) != 8 || r["unscannedEntries"].(float64) != 1 {
 		t.Fatalf("统计 JSON 形状: %s", out)
 	}
 }
@@ -174,6 +174,148 @@ func TestGraphAbsorb(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "codegraph", "diffs", "branch-x.json")); !os.IsNotExist(err) {
 		t.Fatalf("diff 应在写盘成功后删除，stat=%v", err)
+	}
+}
+
+func TestGraphSym(t *testing.T) {
+	out, err := runGraph(t, "sym", "Do", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("sym 应通过: %v\n%s", err, out)
+	}
+	var r struct {
+		Matches []struct {
+			ID        string `json:"id"`
+			Anchor    string `json:"anchor"`
+			Line      int    `json:"line"`
+			Signature string `json:"signature"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, out)
+	}
+	if len(r.Matches) != 1 || r.Matches[0].ID != "n_do" || r.Matches[0].Anchor != "ok" ||
+		r.Matches[0].Line != 4 || r.Matches[0].Signature == "" {
+		t.Fatalf("sym 结果: %s", out)
+	}
+}
+
+func TestGraphSymMiss(t *testing.T) {
+	out, err := runGraph(t, "sym", "Nope", "--repo", fixtureRepo)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("图未覆盖")) {
+		t.Fatalf("sym 未命中错误: err=%v out=%s", err, out)
+	}
+}
+
+func TestGraphEntity(t *testing.T) {
+	out, err := runGraph(t, "entity", "Task", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("entity 应通过: %v\n%s", err, out)
+	}
+	var r struct {
+		Model    map[string]any   `json:"model"`
+		Typed    []map[string]any `json:"typed"`
+		Handroll []map[string]any `json:"handroll"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, out)
+	}
+	if r.Model["id"] != "m_task" || len(r.Typed) == 0 || len(r.Handroll) == 0 {
+		t.Fatalf("entity 输出形状: %s", out)
+	}
+}
+
+func TestGraphResolveDoc(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	doc := filepath.Join(repo, "doc.md")
+	if err := os.WriteFile(doc, []byte("`svc/server.go#Do` `svc/server.go#Gone`"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runGraph(t, "resolve", "--doc", doc, "--repo", repo)
+	if err == nil || !bytes.Contains([]byte(out), []byte(`"anchor"`)) || !bytes.Contains([]byte(out), []byte(`"vanished"`)) {
+		t.Fatalf("坏文档锚点应非零并输出结果: err=%v out=%s", err, out)
+	}
+}
+
+func TestGraphResolveSingle(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "resolve", "svc/server.go#Do", "--repo", repo)
+	if err != nil {
+		t.Fatalf("图内单锚应通过: %v\n%s", err, out)
+	}
+	var graphAnchor codegraph.AnchorResult
+	if err := json.Unmarshal([]byte(out), &graphAnchor); err != nil {
+		t.Fatalf("单锚 JSON: %v\n%s", err, out)
+	}
+	if graphAnchor.NodeID != "n_do" || graphAnchor.Anchor != "ok" {
+		t.Fatalf("图内单锚: %+v", graphAnchor)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "outside.go"), []byte("package outside\n\nfunc Moved() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runGraph(t, "resolve", "outside.go#Moved", "--repo", repo)
+	if err != nil {
+		t.Fatalf("图外单锚应通过: %v\n%s", err, out)
+	}
+	graphAnchor = codegraph.AnchorResult{}
+	if err := json.Unmarshal([]byte(out), &graphAnchor); err != nil {
+		t.Fatalf("图外单锚 JSON: %v\n%s", err, out)
+	}
+	if graphAnchor.Anchor != "moved" || graphAnchor.Line != 3 || graphAnchor.NodeID != "" {
+		t.Fatalf("图外单锚: %+v", graphAnchor)
+	}
+}
+
+func TestGraphContractSet(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--entries", "svc.Server", "--budget", "3", "--repo", repo)
+	if err != nil {
+		t.Fatalf("contract set 应通过: %v\n%s", err, out)
+	}
+	if !bytes.Contains([]byte(out), []byte(`"before"`)) || !bytes.Contains([]byte(out), []byte(`"after"`)) {
+		t.Fatalf("应输出前后对照: %s", out)
+	}
+	target, err := codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(target.Contracts) != 1 || target.Contracts[0].LegacyBudget != 3 || len(target.Contracts[0].Entries) != 1 {
+		t.Fatalf("contract set 写回: %+v", target.Contracts)
+	}
+	_, err = runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--entries", "svc.Other", "--repo", repo)
+	if err != nil {
+		t.Fatalf("未传 budget 的 contract set 应通过: %v", err)
+	}
+	target, err = codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Contracts[0].LegacyBudget != 3 || len(target.Contracts[0].Entries) != 1 || target.Contracts[0].Entries[0] != "svc.Other" {
+		t.Fatalf("未传 budget 不应覆盖旧值: %+v", target.Contracts)
+	}
+	_, err = runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--budget", "0", "--repo", repo)
+	if err != nil {
+		t.Fatalf("显式 budget=0 的 contract set 应通过: %v", err)
+	}
+	target, err = codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Contracts[0].LegacyBudget != 0 || len(target.Contracts[0].Entries) != 1 || target.Contracts[0].Entries[0] != "svc.Other" {
+		t.Fatalf("显式 budget=0 或清单写回不对: %+v", target.Contracts)
+	}
+}
+
+func TestGraphSummary(t *testing.T) {
+	out, err := runGraph(t, "summary", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("summary 应通过: %v\n%s", err, out)
+	}
+	if !bytes.Contains([]byte(out), []byte("节点")) || !bytes.Contains([]byte(out), []byte("graph sym")) {
+		t.Fatalf("summary 内容: %s", out)
 	}
 }
 

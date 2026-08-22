@@ -35,7 +35,7 @@ func TestDomainTreeStatsAndInterfaces(t *testing.T) {
 		t.Fatalf("d_svc/api: funcs=%d ifaces=%v", api.Funcs, api.Interfaces)
 	}
 	store := byID["d_svc/store"]
-	if store.Models != 1 || !reflect.DeepEqual(store.Interfaces, []string{"m_task"}) {
+	if store.Models != 2 || !reflect.DeepEqual(store.Interfaces, []string{"m_task"}) {
 		t.Fatalf("d_svc/store: models=%d ifaces=%v", store.Models, store.Interfaces)
 	}
 }

@@ -25,12 +25,18 @@ import (
 )
 
 var (
-	graphRepo    = "."
-	graphDepth   = 2
-	graphView    string
-	graphStale   bool
-	absorbCommit string
-	absorbBranch string
+	graphRepo               = "."
+	graphDepth              = 2
+	graphView               string
+	graphStale              bool
+	absorbCommit            string
+	absorbBranch            string
+	graphResolveDoc         string
+	graphContractFrom       string
+	graphContractTo         string
+	graphContractEntries    []string
+	graphContractInterfaces []string
+	graphContractBudget     int
 )
 
 var graphCmd = &cobra.Command{
@@ -73,6 +79,12 @@ func graphResetState() {
 	graphStale = false
 	absorbCommit = ""
 	absorbBranch = ""
+	graphResolveDoc = ""
+	graphContractFrom = ""
+	graphContractTo = ""
+	graphContractEntries = nil
+	graphContractInterfaces = nil
+	graphContractBudget = 0
 }
 
 var graphValidateCmd = &cobra.Command{
@@ -323,6 +335,150 @@ var graphDomainsCmd = &cobra.Command{
 	},
 }
 
+// graphSymCmd 单点符号查询：agent 探索「X 在哪 / 什么形状」的第一跳，
+// 输出行号已做查询时再锚定（图数据允许陈旧，输出必须当下可用）。
+var graphSymCmd = &cobra.Command{
+	Use:   "sym <符号名或节点 id>",
+	Short: "单点符号查询：位置（已再锚定）、签名、字段、摘要、归属",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		r, err := codegraph.SymLookup(v, graphRepo, args[0])
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, r)
+	},
+}
+
+// graphEntityCmd 查询数据实体的投影链：typed/handroll 投影点与跨语言孪生侧。
+var graphEntityCmd = &cobra.Command{
+	Use:   "entity <model 名或节点 id>",
+	Short: "数据实体的投影链：typed/handroll 投影点 + 跨语言孪生（序列化边界四查入口）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		r, err := codegraph.EntityLookup(v, graphRepo, args[0])
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, r)
+	},
+}
+
+var graphResolveCmd = &cobra.Command{
+	Use:   "resolve [file#Symbol]",
+	Short: "校验 file#Symbol 符号锚，或批量检查文档（坏锚即非零退出）",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			graphResetState()
+			cmd.Flags().Lookup("doc").Changed = false
+		}()
+		if len(args) > 1 {
+			return fmt.Errorf("resolve 只接受一个 file#Symbol 位置参数")
+		}
+		if graphResolveDoc != "" && len(args) > 0 {
+			return fmt.Errorf("resolve 的 --doc 与 file#Symbol 位置参数互斥")
+		}
+		if graphResolveDoc == "" && len(args) == 0 {
+			return fmt.Errorf("resolve 必须指定 --doc 或 file#Symbol")
+		}
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		if len(args) == 1 {
+			anchor, err := codegraph.ResolveAnchor(v, graphRepo, args[0])
+			if err != nil {
+				return err
+			}
+			return graphPrintJSON(cmd, anchor)
+		}
+		anchors, err := codegraph.CheckDocAnchors(v, graphRepo, graphResolveDoc)
+		if err != nil {
+			return err
+		}
+		if anchors == nil {
+			anchors = []codegraph.AnchorResult{}
+		}
+		if err := graphPrintJSON(cmd, map[string]any{"anchors": anchors}); err != nil {
+			return err
+		}
+		for _, a := range anchors {
+			if a.Anchor == "vanished" || a.Anchor == "file_missing" {
+				return fmt.Errorf("文档锚点检查失败: %s (%s)", a.Ref, a.Anchor)
+			}
+		}
+		return nil
+	},
+}
+
+var graphContractCmd = &cobra.Command{
+	Use:   "contract",
+	Short: "维护目标图中的跨领域契约",
+}
+
+var graphContractSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "创建或更新 From→To 契约",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			graphResetState()
+			for _, name := range []string{"from", "to", "entries", "interfaces", "budget"} {
+				cmd.Flags().Lookup(name).Changed = false
+			}
+		}()
+		if graphContractFrom == "" || graphContractTo == "" {
+			return fmt.Errorf("contract set 必须指定 --from 与 --to")
+		}
+		c := codegraph.Contract{From: graphContractFrom, To: graphContractTo}
+		entriesSet := cmd.Flags().Changed("entries")
+		interfacesSet := cmd.Flags().Changed("interfaces")
+		budgetSet := cmd.Flags().Changed("budget")
+		if entriesSet {
+			c.Entries = append([]string(nil), graphContractEntries...)
+		}
+		if interfacesSet {
+			c.Interfaces = append([]string(nil), graphContractInterfaces...)
+		}
+		if budgetSet {
+			c.LegacyBudget = graphContractBudget
+		}
+		before, after, err := codegraph.SetContractWithPresence(graphRepo, c, entriesSet, interfacesSet, budgetSet)
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, map[string]any{"before": before, "after": after})
+	},
+}
+
+// graphSummaryCmd 输出一段图存在性摘要，供 SessionStart hook 注入会话上下文：
+// 让 agent 开局就知道图存在、先查图再 grep。
+var graphSummaryCmd = &cobra.Command{
+	Use:   "summary",
+	Short: "图摘要（供会话开局注入：规模、领域数、查询子命令菜单）",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		g, err := codegraph.LoadGraph(graphRepo)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"本仓库有代码图：%d 节点 / %d 边 / %d 领域（codegraph/）。探索已有代码先查图：handoff graph sym <符号>（定位+签名+字段，行号已再锚定）、who-calls <符号>（上游影响面）、chain <符号>（下游链）、domains（领域树）；图未命中再 grep，并把未命中符号记入产出物的「图覆盖债」小节。\n",
+			len(g.Nodes), len(g.Edges), len(g.Domains))
+		return nil
+	},
+}
+
 func init() {
 	graphCmd.PersistentFlags().StringVar(&graphRepo, "repo", ".", "目标仓库根目录")
 	graphCmd.PersistentFlags().IntVar(&graphDepth, "depth", 2, "查询深度（0 = 不限）")
@@ -330,6 +486,13 @@ func init() {
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
 	graphAbsorbCmd.Flags().StringVar(&absorbCommit, "commit", "", "写入基线 meta 的提交号（缺省从 git HEAD 读取）")
 	graphAbsorbCmd.Flags().StringVar(&absorbBranch, "branch", "", "写入基线 meta 的分支名（缺省从 git 读取）")
-	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
+	graphResolveCmd.Flags().StringVar(&graphResolveDoc, "doc", "", "要检查的 Markdown 文档路径")
+	graphContractSetCmd.Flags().StringVar(&graphContractFrom, "from", "", "契约来源域 id")
+	graphContractSetCmd.Flags().StringVar(&graphContractTo, "to", "", "契约目标域 id")
+	graphContractSetCmd.Flags().StringSliceVar(&graphContractEntries, "entries", nil, "允许进入目标域的入口清单")
+	graphContractSetCmd.Flags().StringSliceVar(&graphContractInterfaces, "interfaces", nil, "允许的跨域接口清单")
+	graphContractSetCmd.Flags().IntVar(&graphContractBudget, "budget", 0, "存量直调预算")
+	graphContractCmd.AddCommand(graphContractSetCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphEntityCmd, graphResolveCmd, graphContractCmd, graphSummaryCmd)
 	rootCmd.AddCommand(graphCmd)
 }

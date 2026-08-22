@@ -68,10 +68,16 @@ type Node struct {
 	Tests        []TestRef  `json:"tests,omitempty"`
 	Fields       [][]string `json:"fields,omitempty"` // model 专用: [名, 类型, 说明]
 	Unscanned    bool       `json:"unscanned,omitempty"`
+	ProjScanned  bool       `json:"projScanned,omitempty"`
 }
 
 // Edge 是一条调用关系 [caller, callee]。
 type Edge [2]string
+
+// Projection 是一条数据实体投影关系 [投影点节点 id, model 节点 id, kind]。
+// kind=typed 表示类型可见的投影；handroll 表示手搭 map/字面量拼装（类型系统不可见）；
+// twin 表示跨语言孪生的 model↔model 关系。独立顶层列表保持与 implements 一致，旧基线无需迁移。
+type Projection [3]string
 
 // Graph 是 codegraph/baseline.json 的顶层结构。
 // 顶层 "diffs" 字段是早期原型的兼容残留，一期忽略：视图一律来自 diffs/目录。
@@ -85,19 +91,22 @@ type Graph struct {
 	Edges      []Edge               `json:"edges"`
 	// Implements 是接口满足边 [实现, 接口]。与 Edges 分列是 wire 兼容决策
 	//（Edge 是二元组塞不进 kind 字段，spec §3）；语义上它们是 kind=implements 的边。
-	Implements []Edge `json:"implements,omitempty"`
+	Implements  []Edge       `json:"implements,omitempty"`
+	Projections []Projection `json:"projections,omitempty"`
 }
 
 // Diff 是 codegraph/diffs/<view>.json：某分支/plan 相对基准的差异声明。
 type Diff struct {
-	View              string          `json:"view"`
-	Base              string          `json:"base,omitempty"`
-	Summary           string          `json:"summary,omitempty"`
-	NodesAdded        map[string]Node `json:"nodesAdded,omitempty"`
-	NodesModified     map[string]Node `json:"nodesModified,omitempty"`
-	NodesDeleted      []string        `json:"nodesDeleted,omitempty"`
-	EdgesAdded        []Edge          `json:"edgesAdded,omitempty"`
-	EdgesDeleted      []Edge          `json:"edgesDeleted,omitempty"`
-	ImplementsAdded   []Edge          `json:"implementsAdded,omitempty"`
-	ImplementsDeleted []Edge          `json:"implementsDeleted,omitempty"`
+	View               string          `json:"view"`
+	Base               string          `json:"base,omitempty"`
+	Summary            string          `json:"summary,omitempty"`
+	NodesAdded         map[string]Node `json:"nodesAdded,omitempty"`
+	NodesModified      map[string]Node `json:"nodesModified,omitempty"`
+	NodesDeleted       []string        `json:"nodesDeleted,omitempty"`
+	EdgesAdded         []Edge          `json:"edgesAdded,omitempty"`
+	EdgesDeleted       []Edge          `json:"edgesDeleted,omitempty"`
+	ImplementsAdded    []Edge          `json:"implementsAdded,omitempty"`
+	ImplementsDeleted  []Edge          `json:"implementsDeleted,omitempty"`
+	ProjectionsAdded   []Projection    `json:"projectionsAdded,omitempty"`
+	ProjectionsDeleted []Projection    `json:"projectionsDeleted,omitempty"`
 }
