@@ -1,7 +1,7 @@
 # B186 ptyhost 测试临时目录执行 ledger
 
-任务：d6052258-5177-4509-8c96-dc833e9f78fb  
-分支：cards/B186-charter  
+任务：d6052258-5177-4509-8c96-dc833e9f78fb
+分支：cards/B186-charter
 基线：408cd912
 
 ## 进度
@@ -11,3 +11,4 @@
 - Task 1 / 实际验证：沙箱内首次 `go test ./internal/ptyhost/ -count=1` 失败原文为 `mkdir /tmp/ph-1958940822: read-only file system`（同类错误发生于 10 个用例）；在获准可写 `/tmp` 环境重跑通过：`ok  github.com/Xsxdot/handoff/internal/ptyhost  10.489s`。`go test ./internal/ptyhost/ -run TestClient -count=3` 通过：`ok  github.com/Xsxdot/handoff/internal/ptyhost  2.759s`。
 - Task 1 / 静态验证：`go build ./...`、`go vet ./...`、`gofmt -l .` 均无输出。提交前 `git status --porcelain internal/ptyhost/` 实际输出 ` M internal/ptyhost/client_test.go`（预期源改动）；`ls internal/ptyhost/ | grep -c '^pc-'` 实际输出 `0`。
 - Task 1 / 提交后污染复核：`go test ./internal/ptyhost/ -count=1` 通过：`ok  github.com/Xsxdot/handoff/internal/ptyhost  0.933s`；紧接执行 `git status --porcelain internal/ptyhost/` 无输出；`ls internal/ptyhost/ | grep -c '^pc-'` 实际输出 `0`（命令因 grep 无匹配退出码为 1，但计数为 0）。
+- 整分支终审 / 修复轮 1：`git diff --check 408cd912..HEAD` 发现本 ledger 第 3、4 行的 Markdown 行尾空格；已移除，代码范围未变。提交范围：`HEAD^..HEAD`。
