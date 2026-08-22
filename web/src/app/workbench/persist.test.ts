@@ -90,6 +90,16 @@ describe('encodeBase / decodeBase', () => {
     expect(out!.wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
   })
 
+  it('启动项终端经过真实 encode→decode 后仍保留 launcher 名字', () => {
+    const wb: Workbench = {
+      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, launcher: '跑测试' } }], activeId: 't1' }],
+      active: 0,
+      sizes: [1],
+    }
+    const out = decodeBase(base.key, encodeBase(base, wb))
+    expect(out!.wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, launcher: '跑测试' })
+  })
+
   it.each([
     ['不是 JSON', 'not json at all'],
     ['版本号不认识', JSON.stringify({ v: 99, base: {}, wb: EMPTY_WORKBENCH })],
@@ -129,6 +139,17 @@ describe('pruneDeadSessions', () => {
     expect(out.groups[0].tabs[1].content).toEqual({ kind: 'file', rel: 'src/a.ts' })
     expect(out.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'TASK-1' })
     expect(out.groups[1].tabs[1].content).toEqual({ kind: 'blank' })
+  })
+
+  it('抹掉死会话时保留启动项名字', () => {
+    const wb: Workbench = {
+      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, sessionId: 'dead', launcher: '跑测试' } }], activeId: 't1' }],
+      active: 0,
+      sizes: [1],
+    }
+    expect(pruneDeadSessions(wb, new Set()).groups[0].tabs[0].content).toEqual({
+      kind: 'terminal', seq: 1, launcher: '跑测试',
+    })
   })
 })
 

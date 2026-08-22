@@ -23,7 +23,7 @@ import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
 import { DRAG_BASE_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, type DropZone } from './paneDrop'
 import { createUntitledFile } from './newFile'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
 import { cn } from '@/lib/utils'
 import { errorMessage } from '../lib/format'
@@ -48,6 +48,8 @@ export interface WorkbenchPageProps {
   // onFileCreated 在新建文件成功后触发，让右栏文件树把新文件显示出来。
   // 可选：没有右栏时（home 基准）不需要它
   onFileCreated?: () => void
+  // 完整启动项只在这里用于把名字换算成 TabContent；展示态由 BlankTab 消费。
+  launchers?: Launcher[]
 }
 
 // END_INDEX 表示「插到末尾」：跨基准拖放时中央区不知道目标基准有几栏
@@ -64,6 +66,7 @@ export function WorkbenchPage({
   tree,
   tasks,
   onFileCreated,
+  launchers = [],
 }: WorkbenchPageProps) {
   const { base, wb } = api
   // picking 记「谁正在选任务」。null = 弹层关闭。
@@ -78,6 +81,13 @@ export function WorkbenchPage({
   const [dragOver, setDragOver] = useState<{ group: number; zone: DropZone } | null>(null)
 
   if (!base) return <EmptyWorkbench onAddProject={onAddProject} />
+
+  const launcherItems = launchers.map((l) => ({ name: l.name, envMissing: l.env_missing }))
+
+  const pickLauncher = (group: number, tabId: string, name: string) => {
+    if (terminalUnavailable) return
+    api.setContent(group, tabId, { kind: 'terminal', seq: nextTerminalSeq(wb), launcher: name })
+  }
 
   const pick = (group: number, tabId: string, kind: PickKind) => {
     if (kind === 'terminal') {
@@ -140,6 +150,16 @@ export function WorkbenchPage({
       return
     }
     api.open({ kind: 'blank' }, undefined, group)
+  }
+
+  const newLauncherIn = (group: number, name: string) => {
+    if (terminalUnavailable) return
+    api.open({ kind: 'terminal', seq: nextTerminalSeq(wb), launcher: name }, undefined, group)
+  }
+
+  const startLauncherFromEmpty = (group: number, name: string) => {
+    if (terminalUnavailable) return
+    api.open({ kind: 'terminal', seq: nextTerminalSeq(wb), launcher: name }, undefined, group)
   }
 
   // onDropTask 处理一次任务拖放。
@@ -271,6 +291,8 @@ export function WorkbenchPage({
                   api.close(g, id)
                 }}
                 onNew={newIn}
+                launchers={launcherItems}
+                onNewLauncher={newLauncherIn}
                 onSplit={(g) => api.splitAt(g + 1)}
                 canSplit={wb.groups.length < MAX_GROUPS}
               />
@@ -286,6 +308,8 @@ export function WorkbenchPage({
                     key={`empty-${gi}`}
                     base={base}
                     onPick={(k) => startFromEmpty(gi, k)}
+                    launchers={launcherItems}
+                    onPickLauncher={(name) => startLauncherFromEmpty(gi, name)}
                     terminalUnavailable={terminalUnavailable}
                   />
                 ) : activeTab.content.kind === 'blank' ? (
@@ -293,6 +317,8 @@ export function WorkbenchPage({
                     key={activeTab.id}
                     base={base}
                     onPick={(k) => pick(gi, activeTab.id, k)}
+                    launchers={launcherItems}
+                    onPickLauncher={(name) => pickLauncher(gi, activeTab.id, name)}
                     terminalUnavailable={terminalUnavailable}
                   />
                 ) : (

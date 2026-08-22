@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
@@ -47,6 +48,15 @@ func (s *Server) sessionEnv() []string {
 		names = ptyhost.DefaultEnvForward()
 	}
 	return ptyhost.ResolveEnvForward(names, base, s.log)
+}
+
+// launcherEnv 解析启动项指定的 env 文件，返回要追加在 sessionEnv() 之后的变量。
+// 文件不存在或名字非法一律返回错误，由调用方答 400，不降级。
+func (s *Server) launcherEnv(name string) ([]string, error) {
+	if name == "" {
+		return nil, nil
+	}
+	return envfile.LoadFile(envfile.Dir(s.conf().DataDir), name, s.log)
 }
 
 // resolvePtyBase 把请求里的 base_kind/base_path/rel 归一化成实际 cwd。
@@ -108,12 +118,19 @@ func (s *Server) handleCreatePtySession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.log.Info("建终端会话请求", "base_kind", req.BaseKind, "base_path", req.BasePath,
-		"rel", req.Rel, "size", req.Cols, "rows", req.Rows)
+		"rel", req.Rel, "size", req.Cols, "rows", req.Rows,
+		"env_file", req.EnvFile, "with_init_command", req.InitCommand != "")
 
 	base, kind, err := s.resolvePtyBase(r, req)
 	if err != nil {
 		s.log.Warn("建终端会话：基准目录不合法", "base_kind", req.BaseKind,
 			"base_path", req.BasePath, "rel", req.Rel, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	extraEnv, err := s.launcherEnv(req.EnvFile)
+	if err != nil {
+		s.log.Warn("建终端会话：env 文件不可用", "env_file", req.EnvFile, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -124,7 +141,8 @@ func (s *Server) handleCreatePtySession(w http.ResponseWriter, r *http.Request) 
 	}
 	sess, err := s.pty.Open(ptyhost.OpenOptions{
 		BasePath: base, BaseKind: kind, Shell: shell,
-		Env: s.sessionEnv(), Cols: req.Cols, Rows: req.Rows,
+		Env: append(s.sessionEnv(), extraEnv...), Cols: req.Cols, Rows: req.Rows,
+		InitCommand: req.InitCommand,
 	})
 	if errors.Is(err, ptyhost.ErrNotSupported) {
 		s.log.Warn("建终端会话：本平台不支持 PTY")

@@ -323,6 +323,10 @@ describe('tabTitle', () => {
     expect(tabTitle({ kind: 'tui', taskId: '7ec762e7-3bd2-412c-a39c-e4cf8b4057ad' }, 'b2-b3')).toBe('TUI · 7ec762e7')
     expect(tabTitle({ kind: 'blank' }, 'b2-b3')).toBe('新建标签页')
   })
+
+  it('启动项终端标题使用启动项名字', () => {
+    expect(tabTitle({ kind: 'terminal', seq: 3, launcher: '跑测试' }, 'main')).toBe('跑测试')
+  })
 })
 
 // 不可变性：所有写入函数都必须返回新对象，否则 React 不会重渲染

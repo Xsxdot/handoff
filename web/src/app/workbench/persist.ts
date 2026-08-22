@@ -57,16 +57,17 @@ function stripTab(t: Tab): Tab {
   if (t.content.kind === 'file') {
     return { id: t.id, content: { kind: 'file', rel: t.content.rel } }
   }
-  if (t.content.kind === 'terminal' && t.content.incompatible !== undefined) {
+  if (t.content.kind === 'terminal') {
     // incompatible 是**服务端此刻**的结论，不是布局的一部分：换回兼容版本之后
-    // 它就该消失，存下来会让那个 tab 一直显示成不可用。落盘的形状也因此保持稳定，
-    // 不会因为这个标记翻转而白白多一次 PUT
-    const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string } = {
+    // 它就该消失，存下来会让那个 tab 一直显示成不可用。其余字段逐项重建，避免
+    // 将本次新增的可选状态或未来的运行时字段顺手落盘。
+    const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; launcher?: string } = {
       kind: 'terminal',
       seq: t.content.seq,
     }
     if (t.content.sessionId !== undefined) out.sessionId = t.content.sessionId
     if (t.content.rel !== undefined) out.rel = t.content.rel
+    if (t.content.launcher !== undefined) out.launcher = t.content.launcher
     return { id: t.id, content: out }
   }
   return { id: t.id, content: t.content }
@@ -143,7 +144,7 @@ function parseContent(raw: unknown): TabContent | null {
       return { kind: 'blank' }
     case 'terminal': {
       if (typeof raw.seq !== 'number' || !Number.isFinite(raw.seq)) return null
-      const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string } = {
+      const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; launcher?: string } = {
         kind: 'terminal',
         seq: raw.seq,
       }
@@ -154,6 +155,10 @@ function parseContent(raw: unknown): TabContent | null {
       if (raw.rel !== undefined) {
         if (!isStr(raw.rel)) return null
         out.rel = raw.rel
+      }
+      if (raw.launcher !== undefined) {
+        if (!isStr(raw.launcher)) return null
+        out.launcher = raw.launcher
       }
       return out
     }
@@ -204,8 +209,9 @@ export function pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbenc
         if (t.content.kind !== 'terminal') return t
         const id = t.content.sessionId
         if (id === undefined || liveIds.has(id)) return t
-        const next: { kind: 'terminal'; seq: number; rel?: string } = { kind: 'terminal', seq: t.content.seq }
+        const next: { kind: 'terminal'; seq: number; rel?: string; launcher?: string } = { kind: 'terminal', seq: t.content.seq }
         if (t.content.rel !== undefined) next.rel = t.content.rel
+        if (t.content.launcher !== undefined) next.launcher = t.content.launcher
         return { id: t.id, content: next }
       }),
     })),

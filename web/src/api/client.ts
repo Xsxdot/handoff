@@ -41,6 +41,8 @@ import type {
   MachineUpgradeResp,
   DownloadState,
   LatestResp,
+  Launcher,
+  LaunchersResp,
   PatchProjectReq,
   ProjectLocation,
   ProjectBranchesResp,
@@ -364,6 +366,18 @@ export function saveDisciplineMapping(
 // 目录、该机文件列表、每个 executor 的档位（两档）。
 export function fetchEnv(machine: string): Promise<EnvResp> {
   return request<EnvResp>(`/api/env${machineQuery(machine)}`)
+}
+
+// fetchLaunchers 取某台机器的工作台启动项（GET /api/launchers）。
+// env_missing 是服务端每次读盘现算的派生字段，不在前端缓存为真相。
+export function fetchLaunchers(machine: string): Promise<LaunchersResp> {
+  return request<LaunchersResp>(`/api/launchers${machineQuery(machine)}`)
+}
+
+// putLaunchers 整段替换某台机器的工作台启动项（PUT /api/launchers）。
+// 返回保存后的最新列表，界面直接用它刷新，不做本地乐观更新。
+export function putLaunchers(machine: string, launchers: Launcher[]): Promise<LaunchersResp> {
+  return putJSON<LaunchersResp>(`/api/launchers${machineQuery(machine)}`, { launchers })
 }
 
 // fetchEnvKeys 取一个 env 文件的变量清单（GET /api/env/file/keys）。

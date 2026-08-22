@@ -62,4 +62,18 @@ describe('useMachineCaps', () => {
     expect(result.current.reveal('devbox')).toBeNull()
     expect(fetchMachines).toHaveBeenCalledTimes(1)
   })
+
+  it('启动项能力位保留 true / false / 缺席三态', async () => {
+    fetchMachines.mockResolvedValue({
+      machines: [
+        { name: 'new', launchers_supported: true },
+        { name: 'old', launchers_supported: false },
+        { name: 'unknown' },
+      ],
+    })
+    const { result } = renderHook(() => useMachineCaps())
+    await waitFor(() => expect(result.current.launchers('new')).toBe(true))
+    expect(result.current.launchers('old')).toBe(false)
+    expect(result.current.launchers('unknown')).toBeNull()
+  })
 })

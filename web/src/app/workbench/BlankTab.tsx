@@ -25,9 +25,23 @@ export const PICK_ITEMS: { kind: PickKind; label: string; hotkey: string; icon: 
   { kind: 'tui', label: '打开任务', hotkey: '⌘⇧A', icon: Bot },
 ]
 
+// LauncherItem 是面板上的一条启动项。
+//
+// 与 PICK_ITEMS 的内置项刻意不合并成一个数组：内置种类是闭集（PickKind），
+// 启动项是一张会长的列表，两个轴正交。合并会让 PickKind 变成开集，快捷键
+// 穷举与种类过滤都得开始解析字符串前缀。
+export interface LauncherItem {
+  name: string
+  envMissing: boolean
+}
+
 export interface BlankTabProps {
   base: BaseDir
   onPick: (k: PickKind) => void
+  // launchers 是当前基准目录所在机器的启动项。空数组也表示这台机器没有可展示的项，
+  // 能力位的判断由 Shell 做，面板只消费已经过滤好的展示态。
+  launchers?: LauncherItem[]
+  onPickLauncher?: (name: string) => void
   // terminalUnavailable 非空 = 这台机器不能开终端，附带原因原文。
   // 此时**不渲染**终端项，改在面板底部说一句实话——置灰控件承诺「以后能用」，
   // 用户会反复点它（W3b §0 既有纪律）。
@@ -62,8 +76,19 @@ export function pickItemsFor(base: BaseDir, terminalUnavailable?: string) {
   )
 }
 
-export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
+// launchersFor 过滤出某个基准目录下能展示的启动项。
+//
+// 启动项开出来的就是终端，所以终端不可用时一条都不展示，不置灰。
+// 与 pickItemsFor 不同，这里不按 base.kind 过滤：home 下的启动项与终端同类，照留。
+// 导出让 + 菜单与空白面板共用同一份判断。
+export function launchersFor(launchers: LauncherItem[] | undefined, terminalUnavailable?: string): LauncherItem[] {
+  if (terminalUnavailable) return []
+  return launchers ?? []
+}
+
+export function BlankTab({ base, onPick, launchers, onPickLauncher, terminalUnavailable }: BlankTabProps) {
   const items = pickItemsFor(base, terminalUnavailable)
+  const launcherItems = launchersFor(launchers, terminalUnavailable)
 
   // 挂载即聚焦。**不能用 `autoFocus`**：React 只对表单元素实现它，写在普通 div 上
   // 只会落成一个 `autofocus` 属性，而该属性对动态插入的非表单元素不生效——走查里
@@ -116,6 +141,26 @@ export function BlankTab({ base, onPick, terminalUnavailable }: BlankTabProps) {
           </li>
         ))}
       </ul>
+      {launcherItems.length > 0 && (
+        <ul aria-label="自定义启动项" className="flex w-full max-w-xs flex-col gap-1 border-t pt-3">
+          {launcherItems.map((item) => (
+            <li key={item.name}>
+              <button
+                type="button"
+                onClick={() => onPickLauncher?.(item.name)}
+                className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
+              >
+                <TerminalSquare className="size-4 shrink-0 text-muted-foreground" />
+                <span className="flex-1">{item.name}</span>
+                {item.envMissing && (
+                  <span className="text-[11px] text-destructive">env 文件缺失</span>
+                )}
+                {/* 启动项不分配快捷键：数量不定，印在面板上却按不动的快捷键会变成一句 UI 说了不算的话。 */}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {terminalUnavailable && (
         <p className="max-w-xs text-center text-xs text-muted-foreground">{terminalUnavailable}</p>
       )}
