@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -18,16 +19,9 @@ import (
 // TestOpencodeToolTimingPaired 钉住「工具 part 的两端都喂给了段切分器」，
 // 并钉住 opencode 特有的两条：running 重复到达只算一次、只有终态产结果帧。
 func TestOpencodeToolTimingPaired(t *testing.T) {
-	a := New(nil)
-	r := a.newRun("timing-paired", t.TempDir(), t.TempDir())
-	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
-		t.Fatalf("BeginTurn: %v", err)
-	}
-	// ⚠ opencode 的 emit 是阻塞的、evCh 只有 16：不排空就会死锁（见计划 §1.4）
-	timings := make(chan proto.TimingEntry, 256)
-	done := collectTimings(r, timings)
-
-	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
+	a, _ := startFakeRun(t, newFakeServer(t), "timing-paired", t.TempDir(), t.TempDir())
+	r := a.lookup("timing-paired")
+	events, done := collectEvents(r)
 	const base = `"id":"prt_1","messageID":"msg_1","type":"tool","tool":"bash","callID":"call_1"`
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"pending","input":{}}}}`)
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"running","input":{"command":"echo hi"}}}}`)
@@ -38,20 +32,22 @@ func TestOpencodeToolTimingPaired(t *testing.T) {
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}`)
 	// 终态重复到达也不许再产一条
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}`)
-	a.reportTiming(r, r.seg.EndTurn())
-
-	closeEventsForTest(r)
+	finishIdleForTimingTest(a, r)
+	timings := waitForResultEvents(t, events)
+	_ = a.Stop(r.taskID)
 	<-done
-	close(timings)
 
 	var tools []proto.TimingEntry
-	for e := range timings {
+	for _, e := range timings {
 		if e.Kind == proto.TimingKindTool {
 			tools = append(tools, e)
 		}
 	}
 	if len(tools) != 1 {
 		t.Fatalf("一次工具调用应恰好产一条 tool 条目，实得 %d 条", len(tools))
+	}
+	if got := countTimingKind(timings, proto.TimingKindAPI); got != 2 {
+		t.Errorf("真实 BeginTurn 与 mapIdle EndTurn 都应收尾模型段，实得 %d 个 api 条目", got)
 	}
 	if tools[0].Label != "bash" {
 		t.Errorf("Label 应取 part.tool，实得 %q", tools[0].Label)
@@ -94,21 +90,19 @@ func TestOpencodeToolTextDeltaStillSkipped(t *testing.T) {
 // TestOpencodeErrorToolStatus 钉住被拒终止留下的 error 状态 tool part
 // 产的是 error 结果帧（adapter.go mapIdle 的注释描述的正是这个现场）。
 func TestOpencodeErrorToolStatus(t *testing.T) {
-	a := New(nil)
-	r := a.newRun("timing-error", t.TempDir(), t.TempDir())
-	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
-		t.Fatalf("BeginTurn: %v", err)
-	}
-	done := collectTimings(r, nil) // 排空 goroutine 不是可选的，理由见 §1.4
-
-	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
+	a, _ := startFakeRun(t, newFakeServer(t), "timing-error", t.TempDir(), t.TempDir())
+	r := a.lookup("timing-error")
+	events, done := collectEvents(r) // 排空 goroutine 不是可选的，理由见 §1.4
 	const base = `"id":"prt_2","messageID":"msg_2","type":"tool","tool":"bash","callID":"call_2"`
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"running","input":{"command":"rm -rf /"}}}}`)
 	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"error","input":{"command":"rm -rf /"},"output":"权限被拒"}}}`)
-	a.reportTiming(r, r.seg.EndTurn())
-
-	closeEventsForTest(r)
+	finishIdleForTimingTest(a, r)
+	timings := waitForResultEvents(t, events)
+	_ = a.Stop(r.taskID)
 	<-done
+	if got := countTimingKind(timings, proto.TimingKindAPI); got != 2 {
+		t.Errorf("真实 BeginTurn 与 mapIdle EndTurn 都应收尾模型段，实得 %d 个 api 条目", got)
+	}
 
 	var results []proto.Frame
 	for _, f := range readFrames(t, r) {
@@ -132,31 +126,59 @@ func feedPart(t *testing.T, a *Adapter, r *runState, js string) {
 	a.mapPartUpdated(r, json.RawMessage(js))
 }
 
-// collectTimings 起一个 goroutine 持续排空 evCh，把耗时条目转投 out
-// （out 为 nil 时只排空）。返回的通道在通道关闭、排空结束后关闭。
-//
-// **排空不是可选的**：opencode 的 emit 阻塞在 evCh 上、缓冲只有 16，
-// 不排空的测试会死锁（见计划 §1.4）。
-func collectTimings(r *runState, out chan<- proto.TimingEntry) <-chan struct{} {
+// finishIdleForTimingTest 走真实 mapIdle 收尾路径，而不是直接替测试调用 Segmenter。
+func finishIdleForTimingTest(a *Adapter, r *runState) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	a.mapIdle(r, json.RawMessage(`{"sessionID":"sess-1"}`))
+}
+
+// collectEvents 起一个 goroutine 持续排空 evCh。opencode 的 emit 是阻塞的，
+// 所以测试不能只在末尾读取耗时事件，否则生产路径可能先卡在 16 条缓冲上。
+func collectEvents(r *runState) (<-chan executor.AdapterEvent, <-chan struct{}) {
+	events := make(chan executor.AdapterEvent, 64)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer close(events)
 		for ev := range r.evCh {
-			if out != nil && ev.Type == "usage" && ev.Timing != nil {
-				out <- *ev.Timing
-			}
+			events <- ev
 		}
 	}()
-	return done
+	return events, done
 }
 
-// closeEventsForTest 关掉事件通道让排空 goroutine 退出。
-//
-// 走 closeOnce 而不是直接调 closeEvents：adapter.go 的注释写明关闭权唯一
-// 归 subscribeLoop 的 defer（adapter.go:967），而本测试没起订阅循环。
-// 用 closeOnce.Do 与生产路径（adapter.go:780）同款，重复调用也安全。
-func closeEventsForTest(r *runState) {
-	r.closeOnce.Do(r.closeEvents)
+// waitForResultEvents 消费到 mapIdle 的分类结果，并保留此前所有耗时事件。
+func waitForResultEvents(t *testing.T, events <-chan executor.AdapterEvent) []proto.TimingEntry {
+	t.Helper()
+	var timings []proto.TimingEntry
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("事件通道在 mapIdle 结果前关闭")
+			}
+			if ev.Type == "usage" && ev.Timing != nil {
+				timings = append(timings, *ev.Timing)
+			}
+			if ev.Type == "result" || ev.Type == "question" {
+				return timings
+			}
+		case <-deadline:
+			t.Fatal("等待真实 mapIdle 结果超时")
+		}
+	}
+}
+
+func countTimingKind(es []proto.TimingEntry, kind proto.TimingKind) int {
+	var n int
+	for _, e := range es {
+		if e.Kind == kind {
+			n++
+		}
+	}
+	return n
 }
 
 // readFrames 读回本任务已落盘的帧。
