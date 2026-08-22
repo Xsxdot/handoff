@@ -352,3 +352,16 @@ stderr 同次命令实测仍有：
 - 代码质量：通过。无源码逻辑改动；go.mod/go.sum 与迁移产物为最小变更；ledger 固化了前后原始 JSON 和环境偏差。
 - 修复轮：无。
 - commit 范围：`4d908dd9..HEAD`（本 task）。
+
+## Task 2：扫描配方扩展
+
+- 变更：`docs/codegraph-scan-recipe.md` 第 20 行附近改为 `subsystems[].paths`；baseline 顶层表新增 `lifecycle: LifecycleRef[]` 及 `who/model/kind/field` 字段说明；diff 表新增 `lifecycleAdded` 与 `lifecycleDeleted`。
+- 变更：新增 creator/writer 产出纪律，明确 creator 必须是返回该 model 类型的真构造点、writer 必须是对状态类字段的真写入，并沿既有反裸名撞库规则要求按类型/字段归属确认，定不出宁缺毋滥。
+- 验证：`git diff --check` exit 0；`rg` 实测命中 `subsystems[].paths`、两个 lifecycle diff 字段、creator/writer 规则及“宁缺毋滥”。
+
+### 双裁决
+
+- spec 符合性：通过。计划要求的路径术语、baseline 生命周期段、diff 两个生命周期字段和 creator/writer 纪律均逐项落文档；未新增扫描数据或源码范围。
+- 代码质量：通过。字段说明与 charter v0.3.0 `LifecycleRef` 对齐，规则集中在独立章节并补充硬校验提示，表格和现有 schema 结构保持一致。
+- 修复轮：无。
+- commit 范围：`f55c9b88..HEAD`（本 task）。

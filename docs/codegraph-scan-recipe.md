@@ -17,7 +17,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 
 ## 扫描范围与完整性
 
-全量基线以项目根 `codegraph/target.json` 的 `domains[].paths` 为准：匹配这些路径
+全量基线以项目根 `codegraph/target.json` 的 `subsystems[].paths` 为准：匹配这些路径
 的源码文件必须逐文件盘点，不能只扫描从 CLI/HTTP/WS 入口静态可达的符号，也不能
 因为包被适配器、注册表或测试间接调用就跳过。target 中没有覆盖的源码目录可以
 不入图，但必须在交付说明中列出。增量扫描同样要覆盖视图触及路径下的完整文件集。
@@ -44,6 +44,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 | nodes | Record<string, Node> | 节点，key 是节点 ID |
 | edges | [string, string][] | 调用关系 [caller, callee] |
 | implements | [string, string][] | 接口满足关系 [实现节点 id, 接口节点 id] |
+| lifecycle | LifecycleRef[] | 生命周期关系 [creator/writer 节点对 model 的创建或状态写入] |
 
 meta 字段：
 
@@ -101,6 +102,15 @@ tests 中每个 TestRef 字段：
 | file | string | 否 | 测试文件和测试函数的声明行号（func 行），如 pkg/x_test.go:41 |
 | snippet | string | 是 | 测试片段 |
 
+lifecycle 中每个 LifecycleRef 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| who | string | 否 | 真实创建点或状态写入点的节点 ID |
+| model | string | 否 | 被创建或被写入的 model 节点 ID |
+| kind | "creator" \| "writer" | 否 | 生命周期关系类型 |
+| field | string | 是 | writer 真正写入的状态类字段名；creator 不填 |
+
 ### codegraph/diffs/<视图名>.json
 
 顶层对象字段：
@@ -117,6 +127,8 @@ tests 中每个 TestRef 字段：
 | edgesDeleted | [string, string][] | 是 | 删除调用关系 |
 | implementsAdded | [string, string][] | 是 | 新增接口满足关系 [实现节点 id, 接口节点 id] |
 | implementsDeleted | [string, string][] | 是 | 删除接口满足关系 [实现节点 id, 接口节点 id] |
+| lifecycleAdded | LifecycleRef[] | 是 | 新增生命周期关系 |
+| lifecycleDeleted | LifecycleRef[] | 是 | 删除生命周期关系 |
 
 未发生变化的字段可以省略（消费方按空 map/空数组处理）。nodesModified 中必须
 提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
@@ -156,6 +168,21 @@ tests 中每个 TestRef 字段：
   为每个实现产一条 implements 边；接口节点归**使用方**的容器/域，实现节点归提供方
   （消费者侧接口惯例，spec §3）。
 
+## 生命周期产出纪律
+
+生命周期关系单独放在 baseline 顶层 `lifecycle` 段，不能塞进 `edges` 或把普通调用边
+改写成生命周期边。`who` 与 `model` 必须是图中已定义的节点，`model` 必须是 model 节点；
+增量只在 diff 的 `lifecycleAdded` / `lifecycleDeleted` 中声明关系变化。
+
+- **creator** 必须是“返回该 model 类型”的真实构造点：从函数返回类型、方法签名或明确的
+  类型构造结果能证明它产出该 model，才记录 `kind: "creator"`。仅因函数名含
+  `new`/`create`/`parse`、分配内存、填充 map，或调用链上看起来像初始化，就不能裸名撞库。
+- **writer** 必须是对状态类字段的真实写入点：能在源码中确认对该 model 的状态字段发生赋值、
+  更新或持久化写入，才记录 `kind: "writer"` 并填写实际 `field`。读取、比较、校验、广播
+  事件或普通业务调用不是 writer。
+- 必须先按 receiver 类型、返回类型和字段归属确认 `who`/`model` 对应的节点；同名函数、
+  同名字段不是证据。定不出就宁缺毋滥，不产出该条关系。
+
 ## 硬纪律（历次扫描验证过的坑）
 
 - **连边前必须确认 callee 就是被调的那个符号**（B173 假边事故后新增；08-22 全量重扫
@@ -183,6 +210,8 @@ tests 中每个 TestRef 字段：
 - 每个容器必须带 domain 且必须挂叶子领域；domains 段与容器归属要么全有、要么全无
   （半套数据会让消费方一半降级一半不降级）。
 - 领域的 parent 必须指向已定义领域，且父链不能成环。
+- lifecycle 的 `who`、`model` 必须引用已定义节点；`model` 必须为 model kind，`kind` 只能是
+  creator 或 writer，writer 的 `field` 必须是被实际写入的状态类字段。定不出证据时不填关系。
 - 收尾自检：python3 -m json.tool 验证 JSON 合法性 + 引用完整性脚本（或直接
   handoff graph validate --repo .（零 issues），再 handoff graph domains --repo . 目视领域树是否符合真实架构，
   并抽查 5 个节点的 file:line。
