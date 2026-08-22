@@ -109,6 +109,12 @@ type Server struct {
 	// sessionRecheck 是 WS 连接上会话复验的周期（defaultSessionRecheck 的实例副本），
 	// 供测试注入毫秒级值验证「吊销后被踢」（生产恒为默认值）。
 	sessionRecheck time.Duration
+	// onTruncationDiagnosed 是**测试专用**的诊断完成钩子：截断诊断跑完后带着
+	// 判定结果调用一次。生产上恒为 nil。
+	//
+	// why 存在：诊断在事件写出之后才跑，用例拿不到「诊断完成」这个时刻，
+	// 只能拿挂钟猜（曾经是 3 秒），机器越忙越容易假红（B162）。
+	onTruncationDiagnosed func(verdict string)
 	// upd 是换版接口的外部依赖，NewServer 填生产实现，测试整体替换
 	upd UpdateDeps
 	// latestFetch 查 GitHub latest release；更新提示与下载共用 selfupdate 缓存。
@@ -2084,13 +2090,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case cerr != nil:
 			s.log.Error("WS 截断缺口核对失败", "task", taskID, "cause", cerr)
+			s.noteTruncationDiagnosed("error")
 		case gapTotal > deliveredInGap:
 			s.log.Warn("WS 补发窗口截断且缺口未由实时流补齐", "task", taskID, "from_seq", fromSeq,
 				"replayed", len(replays), "gap_total", gapTotal, "gap_delivered", deliveredInGap,
 				"store_max", storeMax)
+			s.noteTruncationDiagnosed("warned")
 		default:
 			s.log.Debug("WS 补发窗口截断但缺口已由实时流补齐", "task", taskID,
 				"replayed", len(replays), "gap_total", gapTotal, "store_max", storeMax)
+			s.noteTruncationDiagnosed("covered")
 		}
 	}
 
@@ -2128,6 +2137,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return // 客户端已断开，退出并释放订阅（defer cancel 关闭通道，排空器随之退出）
 		}
+	}
+}
+
+// noteTruncationDiagnosed 通知测试截断诊断已完成；生产路径不设置钩子。
+func (s *Server) noteTruncationDiagnosed(verdict string) {
+	if s.onTruncationDiagnosed != nil {
+		s.onTruncationDiagnosed(verdict)
 	}
 }
 
