@@ -47,6 +47,19 @@
     {"who":"n_engine_Engine_Open","model":"m_ptyhost_Session","kind":"creator"},
     {"who":"n_engine_Engine_reap","model":"m_engine_session","kind":"writer","field":"exitCode"},
     {"who":"n_engine_newRing","model":"m_engine_ring","kind":"creator"},
-    {"who":"n_engine_ring_write","model":"m_engine_ring","kind":"writer","field":"n"}
+    {"who":"n_engine_ring_write","model":"m_engine_ring","kind":"writer","field":"n"},
+    {"who":"n_claudecode_StartProc","model":"m_claudecode_Proc","kind":"creator"},
+    {"who":"n_codex_StartServe","model":"m_codex_Proc","kind":"creator"},
+    {"who":"n_grok_StartServe","model":"m_grok_Proc","kind":"creator"},
+    {"who":"n_opencode_StartServe","model":"m_opencode_Proc","kind":"creator"},
+    {"who":"n_claudecode_Adapter_newRun","model":"m_claudecode_runState","kind":"creator"},
+    {"who":"n_codex_Adapter_newRunState","model":"m_codex_runState","kind":"creator"},
+    {"who":"n_grok_Adapter_newRun","model":"m_grok_runState","kind":"creator"},
+    {"who":"n_opencode_Adapter_newRun","model":"m_opencode_runState","kind":"creator"},
+    {"who":"n_turn_NewFrameWriter","model":"m_turn_FrameWriter","kind":"creator"},
+    {"who":"n_turn_FrameWriter_BeginTurn","model":"m_turn_FrameWriter","kind":"writer","field":"turn"},
+    {"who":"n_turn_FrameWriter_NextPart","model":"m_turn_FrameWriter","kind":"writer","field":"nextPart"},
+    {"who":"n_turn_FrameWriter_appendLocked","model":"m_turn_FrameWriter","kind":"writer","field":"seq"},
+    {"who":"n_turn_ParseTrailer","model":"m_turn_Trailer","kind":"creator"}
   ]
 }
