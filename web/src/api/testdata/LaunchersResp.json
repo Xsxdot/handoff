@@ -1,0 +1,20 @@
+{
+  "launchers": [
+    {
+      "name": "claude 生产",
+      "env_file": "prod.env",
+      "env_missing": true
+    },
+    {
+      "name": "跑测试",
+      "command": "go test ./...",
+      "env_missing": false
+    },
+    {
+      "name": "带代理跑前端",
+      "env_file": "proxy.env",
+      "command": "cd web \u0026\u0026 npm run dev",
+      "env_missing": false
+    }
+  ]
+}

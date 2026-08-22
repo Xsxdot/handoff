@@ -1,0 +1,9 @@
+{
+  "base_path": "/home/dev/handoff",
+  "base_kind": "workspace",
+  "rel": "web",
+  "cols": 120,
+  "rows": 40,
+  "env_file": "proxy.env",
+  "init_command": "npm run dev"
+}

@@ -199,6 +199,24 @@ type StatusResp struct {
 	// 前端据此决定画真终端、画「这台机器不支持」还是画「对端版本过旧，未上报」。
 	PtySupported *bool `json:"pty_supported,omitempty"`
 
+	// LaunchersSupported 报告本机 agentd 是否认识启动项（CreatePtySessionReq
+	// 的 env_file / init_command 两个字段）。
+	//
+	// **三态的处置与 PtySupported / RevealSupported 刻意相反，别照抄邻居**：
+	//   缺席(nil) = 对端 agentd 太老 → **按不支持处置**（不送这两个字段、
+	//               界面不展示该机的启动项）
+	//   false     = 不支持
+	//   true      = 支持
+	//
+	// 为什么反着来：那两个能力位缺席时「放行」的代价只是一次必然失败的请求，
+	// 用户当场看得见；而这里放行的代价是**静默起一个没有环境变量的终端**
+	// （请求 200、终端正常出现、变量悄悄不在）。未知时的保守方向由「失败可不
+	// 可见」决定，不由邻居的写法决定。
+	//
+	// 能力位与实现同生同死：上报 true 就必须真的实现这两个字段，不允许
+	// 「先上报、下一版补实现」。
+	LaunchersSupported *bool `json:"launchers_supported,omitempty"`
+
 	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
 	//
 	// 三态与 PtySupported 逐字相同：

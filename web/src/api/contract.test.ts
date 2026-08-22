@@ -41,6 +41,8 @@ import frameFixture from './testdata/Frame.json'
 import envRespFixture from './testdata/EnvResp.json'
 import envKeysFixture from './testdata/EnvKeysResp.json'
 import envMappingReqFixture from './testdata/EnvMappingReq.json'
+import launchersRespFixture from './testdata/LaunchersResp.json'
+import createPtySessionReqFixture from './testdata/CreatePtySessionReq.json'
 import workbenchBaseFixture from './testdata/WorkbenchBase.json'
 import workbenchStateFixture from './testdata/WorkbenchStateResp.json'
 import newCardReqFixture from './testdata/NewCardReq.json'
@@ -61,6 +63,7 @@ import {
   type DisciplineResp,
   type Event,
   type EnvKeysResp,
+  type CreatePtySessionReq,
   type EnvMappingReq,
   type EnvResp,
   type ExecutorDefaultReq,
@@ -72,6 +75,7 @@ import {
   type Frame,
   type MachinesResp,
   type ProjectLocation,
+  type LaunchersResp,
   type ProjectTreeResp,
   type PtySession,
   type PtySessionsResp,
@@ -283,6 +287,34 @@ describe('Env 文件契约', () => {
   it('EnvMappingReq：整段替换，两条 binding', () => {
     const req = envMappingReqFixture as EnvMappingReq
     expect(req.bindings).toHaveLength(2)
+  })
+})
+
+describe('需求 B 启动项契约', () => {
+  it('LaunchersResp：三种合法形态，env_missing 是必有键不是 omitempty', () => {
+    const resp: LaunchersResp = launchersRespFixture
+    expect(resp.launchers).toHaveLength(3)
+    // 三种合法形态：只带 env / 只带命令 / 两者都带。**没有第四种**——
+    // 两者都空与「新终端」完全等价，服务端会 400 拒掉
+    expect(resp.launchers[0].command).toBeUndefined()
+    expect(resp.launchers[1].env_file).toBeUndefined()
+    expect(resp.launchers[2].env_file).toBeDefined()
+    expect(resp.launchers[2].command).toBeDefined()
+    // env_missing 不带 omitempty：false 也必须在线格式里出现。
+    // 前端靠「缺键」与「false」的区别判断服务端认不认识这个字段——
+    // 这条断言用 in 而不是取值，取值分不出 false 与 undefined
+    for (const l of resp.launchers) expect('env_missing' in l).toBe(true)
+    expect(resp.launchers[0].env_missing).toBe(true)
+    expect(resp.launchers[1].env_missing).toBe(false)
+  })
+
+  it('CreatePtySessionReq：rel 与两个新字段都在线格式里', () => {
+    const req: CreatePtySessionReq = createPtySessionReqFixture
+    // rel 是这次补进 TS 声明的字段：Go 侧一直有，TS 侧一直漏，
+    // 因为调用点用对象展开写法绕过了超额属性检查。这条断言是它的看守
+    expect(req.rel).toBe('web')
+    expect(req.env_file).toBe('proxy.env')
+    expect(req.init_command).toBe('npm run dev')
   })
 })
 

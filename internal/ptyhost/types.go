@@ -44,6 +44,12 @@ type OpenOptions struct {
 	Env      []string
 	Cols     int
 	Rows     int
+	// InitCommand 是 shell 就绪后写进 PTY **输入**的命令原文（不含换行，实现补）。
+	// 空 = 不写。
+	//
+	// **它不进 argv**：走 argv 会把 login shell 变成非交互 shell，命令退出即
+	// 会话结束，与「命令跑完人还能接着用这个终端」相悖。
+	InitCommand string
 }
 
 // Supported 报告本平台是否支持 PTY，供 /api/status 的 pty_supported 上报。

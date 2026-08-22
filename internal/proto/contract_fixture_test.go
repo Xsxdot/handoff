@@ -91,6 +91,8 @@ func TestContractFixtures(t *testing.T) {
 		{"EnvResp", envRespSample()},
 		{"EnvKeysResp", envKeysRespSample()},
 		{"EnvMappingReq", envMappingReqSample()},
+		{"LaunchersResp", launchersRespSample()},
+		{"CreatePtySessionReq", createPtySessionReqSample()},
 		{"ExecutorDefaultResp", executorDefaultRespSample()},
 		{"ExecutorDefaultReq", executorDefaultReqSample()},
 		{"WorkbenchBase", workbenchBaseSample()},
@@ -650,6 +652,32 @@ func envMappingReqSample() EnvMappingReq {
 		{Executor: "codex", Mode: "file", File: "proxy.env"},
 		{Executor: "opencode", Mode: "off"},
 	}}
+}
+
+// launchersRespSample 返回 LaunchersResp 的代表性样本。
+//
+// 三条覆盖三种合法形态：只带 env / 只带命令 / 两者都带；第一条同时把
+// env_missing=true 钉进夹具——它是**不带 omitempty** 的字段，前端要靠
+// 「缺键」与「false」的区别判断服务端认不认识它，夹具必须把两种取值都出现过。
+func launchersRespSample() LaunchersResp {
+	return LaunchersResp{Launchers: []Launcher{
+		{Name: "claude 生产", EnvFile: "prod.env", EnvMissing: true},
+		{Name: "跑测试", Command: "go test ./..."},
+		{Name: "带代理跑前端", EnvFile: "proxy.env", Command: "cd web && npm run dev"},
+	}}
+}
+
+// createPtySessionReqSample 返回 CreatePtySessionReq 的代表性样本。
+//
+// 它进夹具的直接理由：TS 侧的同名接口此前**漏声明了 rel**，而调用点用对象展开
+// 写法绕过了超额属性检查，于是这处漂移在两侧测试各自绿的情况下活了下来
+// （2026-08-22 需求 B 契约 §1.2）。夹具逐字节比对是唯一能当场发现它的机制。
+func createPtySessionReqSample() CreatePtySessionReq {
+	return CreatePtySessionReq{
+		BasePath: "/home/dev/handoff", BaseKind: "workspace", Rel: "web",
+		Cols: 120, Rows: 40,
+		EnvFile: "proxy.env", InitCommand: "npm run dev",
+	}
 }
 
 // executorDefaultRespSample 返回 ExecutorDefaultResp 的代表性样本。

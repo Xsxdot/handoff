@@ -51,6 +51,17 @@ type CreatePtySessionReq struct {
 	Rel  string `json:"rel"`
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
+	// EnvFile 是要额外注入的 env 文件名（该机 <DataDir>/env 下的纯文件名）。
+	// 空 = 不注入。**文件不存在时创建会话直接 400 失败，不降级成无变量终端**：
+	// 降级的症状是「请求 200、终端正常出现、变量悄悄不在」，用户可能半小时后
+	// 才发现（2026-08-22 需求 B 契约 §3.1）。
+	EnvFile string `json:"env_file,omitempty"`
+	// InitCommand 是 shell 就绪后送进终端**输入**的命令原文（不含换行，服务端补）。
+	// 空 = 不送。
+	//
+	// 它在交互 shell 内部执行，命令退出后会话继续存在。**不进 argv**——走 argv
+	// 会把 login shell 变成非交互 shell，命令一退会话就没了。
+	InitCommand string `json:"init_command,omitempty"`
 }
 
 // /ws/pty 的 text 帧类型。binary 帧恒为 PTY 原始字节，不走 JSON。

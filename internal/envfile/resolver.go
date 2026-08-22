@@ -80,25 +80,52 @@ func (r *Resolver) For(agent string) ([]string, error) {
 		r.log.Debug("agent 未配置 env 文件，跳过注入", "agent", agent)
 		return nil, nil
 	}
-	path, err := resolvePath(r.dir, name)
+	return LoadFile(r.dir, name, r.log)
+}
+
+// LoadFile 按**文件名**加载一份 env 文件，返回可注入的 KEY=VALUE 列表。
+//
+// 参数：
+//   - dir: env 文件目录（通常取 Dir(cfg.DataDir)）
+//   - name: 纯文件名，含路径分隔符即拒
+//   - log: 日志入口；nil 时退回 slog.Default()
+//
+// 返回：
+//   - 变量列表；文件名非法 / 打不开 / 解析失败时返回错误，错误文本带完整路径
+//   - **不把「文件不存在」特殊化成 (nil,nil)**：调用方明确点名了一份文件，
+//     它不在就是一个要说出来的失败。「没配」那一档由调用方判断（见 For）
+//
+// 注意：
+//   - 每次调用都重新读盘，不缓存（理由见 For）
+//   - 展开用 os.LookupEnv：同一份文件在「作为 executor env」与「作为终端 env」
+//     时必须展开出相同的值，所以查的是 agentd 自身环境，不查调用方拼好的环境
+//   - **日志只打 key 名，绝不打值**：环境类变量里 HTTPS_PROXY=http://user:pass@host
+//     是正常写法，值里带凭据的概率不低。这条纪律是本函数存在的主要理由——
+//     调用方各写各的三行加载，第二个实现漏掉它时不报错、不变红，只是日志里
+//     多了一行带 token 的字符串
+func LoadFile(dir, name string, log *slog.Logger) ([]string, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	path, err := resolvePath(dir, name)
 	if err != nil {
-		r.log.Error("env 文件名非法", "agent", agent, "name", name, "cause", err)
+		log.Error("env 文件名非法", "name", name, "cause", err)
 		return nil, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		r.log.Error("打开 env 文件失败", "agent", agent, "path", path, "cause", err)
+		log.Error("打开 env 文件失败", "path", path, "cause", err)
 		return nil, fmt.Errorf("打开 env 文件 %s: %w", path, err)
 	}
 	defer f.Close()
 
 	kvs, dups, err := Parse(f, os.LookupEnv)
 	if err != nil {
-		r.log.Error("解析 env 文件失败", "agent", agent, "path", path, "cause", err)
+		log.Error("解析 env 文件失败", "path", path, "cause", err)
 		return nil, fmt.Errorf("解析 env 文件 %s: %w", path, err)
 	}
 	for _, k := range dups {
-		r.log.Warn("env 文件存在重复键，后者覆盖前者", "path", path, "key", k)
+		log.Warn("env 文件存在重复键，后者覆盖前者", "path", path, "key", k)
 	}
 	out := make([]string, 0, len(kvs))
 	keys := make([]string, 0, len(kvs))
@@ -106,7 +133,7 @@ func (r *Resolver) For(agent string) ([]string, error) {
 		out = append(out, kv.Key+"="+kv.Value)
 		keys = append(keys, kv.Key)
 	}
-	r.log.Info("已加载 env 文件", "agent", agent, "path", path, "keys", keys, "count", len(keys))
+	log.Info("已加载 env 文件", "path", path, "keys", keys, "count", len(keys))
 	return out, nil
 }
 

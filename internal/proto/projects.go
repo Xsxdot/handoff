@@ -137,6 +137,18 @@ type Machine struct {
 	// 那会让老版本 agentd 上的终端入口凭空消失，而它其实可能是能用的。
 	PtySupported *bool `json:"pty_supported,omitempty"`
 
+	// LaunchersSupported 是这台机器的启动项能力位，探活时从它的 StatusResp
+	// 投影而来。
+	//
+	// **三态的处置与上面那条刻意相反，别照抄**：nil = **按不支持处置**
+	//（不展示该机的启动项、不送 env_file / init_command）。理由见
+	// StatusResp.LaunchersSupported 的注释——那两个能力位缺席时放行的代价是
+	// 一次当场可见的失败，这里放行的代价是「终端起来了、变量悄悄不在」。
+	//
+	// 探活还没投影它时它就是 nil，也就是「不支持」——**保守方向即缺省**，
+	// 这是刻意的：投影漏写不会变成一个静默错误的功能，只会变成功能不出现。
+	LaunchersSupported *bool `json:"launchers_supported,omitempty"`
+
 	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`

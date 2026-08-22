@@ -57,6 +57,7 @@
         "internal/toolchain/**",
         "internal/pathenv/**",
         "internal/envfile/**",
+        "internal/launcher/**",
         "internal/permgate/**",
         "internal/initflow/**",
         "internal/localsync/**",

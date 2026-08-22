@@ -224,6 +224,13 @@ export interface Machine {
   // pty_supported 三态：缺席/null = 对端没上报（**不是**不支持），
   // false = 平台明确不支持，true = 支持。
   pty_supported?: boolean | null
+  // launchers_supported 三态的**处置与 pty_supported 相反**，别照抄上面那条：
+  //   缺席/null = 对端 agentd 太老 → **按不支持处置**（不送 env_file /
+  //               init_command，不展示该机的启动项）
+  // 为什么反着来：pty_supported 缺席时放行的代价是一次必然失败、当场可见的
+  // 请求；这里放行的代价是请求 200、终端正常出现、变量悄悄不在——用户可能
+  // 半小时后才发现。未知时的保守方向由「失败可不可见」决定。
+  launchers_supported?: boolean | null
   // reveal_supported 三态同 pty_supported：缺席/null = 对端没上报（**不是**不支持）。
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
@@ -363,6 +370,9 @@ export interface StatusResp {
   scratch_root?: string
   // 缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。
   pty_supported?: boolean
+  // launchers_supported 的缺席**按不支持处置**，与上面那条相反。
+  // 理由见 Machine.launchers_supported 的注释。
+  launchers_supported?: boolean
   reveal_supported?: boolean
 }
 
@@ -703,8 +713,42 @@ export interface PtySessionsResp {
 export interface CreatePtySessionReq {
   base_path: string
   base_kind: string
+  // rel 是相对 base_path 的子目录；缺席/空串 = 工作树根，base_kind='home' 时忽略。
+  //
+  // **本字段 Go 侧一直有、TS 侧一直漏**（2026-08-22 需求 B 契约 §1.2）：调用点用
+  // 的是展开写法 `{ ...ptyBase(base, rel), cols, rows }`，而对象展开不触发超额
+  // 属性检查，于是 tsc 一直没拦下来。补上它是为了不让新加的两个字段踩着
+  // 「这个接口本来就不声明全部字段」的先例继续漂。
+  rel?: string
   cols: number
   rows: number
+  // env_file 是要额外注入的 env 文件名（目标机 env 目录下的纯文件名）。
+  // 文件不存在时服务端 **400 拒绝**，不会降级成一个没有变量的终端。
+  env_file?: string
+  // init_command 是 shell 就绪后送进终端输入的命令原文（不含换行）。
+  // 它在交互 shell 内部执行，命令退出后会话继续存在。
+  init_command?: string
+}
+
+// Launcher 是一条工作台自定义启动项（机器级配置）。
+//
+// 不变式：env_file 与 command **至少一个非空**（服务端保证）。
+export interface Launcher {
+  // name 是启动项的身份，机器内唯一。刻意没有 id 字段——列表键用它即可。
+  name: string
+  env_file?: string
+  command?: string
+  // env_missing 为真表示 env_file 在那台机器上已经不存在了。
+  // **不可选**：false 是明确结论（引用是好的），缺键才是「服务端不认识这个字段」。
+  env_missing: boolean
+}
+
+export interface LaunchersResp {
+  launchers: Launcher[]
+}
+
+export interface LaunchersReq {
+  launchers: Launcher[]
 }
 
 // PtyControl 是 /ws/pty 上的 text 帧。二进制帧是 PTY 原始字节，不经过这里。
