@@ -29,7 +29,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 
 ## Schema（必须严格遵守）
 
-字段名、JSON 类型和可选性必须与仓库 internal/codegraph/types.go 一致。不得增加
+字段名、JSON 类型和可选性必须与 codegraph canonical 家 charter 仓 `graph/codegraph/types.go`（github.com/Xsxdot/charter/graph，本仓 go.mod 钉版）一致。不得增加
 未在下表出现的业务字段，也不得把源码正文塞进节点。
 
 ### codegraph/baseline.json
