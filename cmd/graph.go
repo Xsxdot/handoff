@@ -323,6 +323,44 @@ var graphDomainsCmd = &cobra.Command{
 	},
 }
 
+// graphSymCmd 单点符号查询：agent 探索「X 在哪 / 什么形状」的第一跳，
+// 输出行号已做查询时再锚定（图数据允许陈旧，输出必须当下可用）。
+var graphSymCmd = &cobra.Command{
+	Use:   "sym <符号名或节点 id>",
+	Short: "单点符号查询：位置（已再锚定）、签名、字段、摘要、归属",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		r, err := codegraph.SymLookup(v, graphRepo, args[0])
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, r)
+	},
+}
+
+// graphSummaryCmd 输出一段图存在性摘要，供 SessionStart hook 注入会话上下文：
+// 让 agent 开局就知道图存在、先查图再 grep。
+var graphSummaryCmd = &cobra.Command{
+	Use:   "summary",
+	Short: "图摘要（供会话开局注入：规模、领域数、查询子命令菜单）",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		g, err := codegraph.LoadGraph(graphRepo)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"本仓库有代码图：%d 节点 / %d 边 / %d 领域（codegraph/）。探索已有代码先查图：handoff graph sym <符号>（定位+签名+字段，行号已再锚定）、who-calls <符号>（上游影响面）、chain <符号>（下游链）、domains（领域树）；图未命中再 grep，并把未命中符号记入产出物的「图覆盖债」小节。\n",
+			len(g.Nodes), len(g.Edges), len(g.Domains))
+		return nil
+	},
+}
+
 func init() {
 	graphCmd.PersistentFlags().StringVar(&graphRepo, "repo", ".", "目标仓库根目录")
 	graphCmd.PersistentFlags().IntVar(&graphDepth, "depth", 2, "查询深度（0 = 不限）")
@@ -330,6 +368,6 @@ func init() {
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
 	graphAbsorbCmd.Flags().StringVar(&absorbCommit, "commit", "", "写入基线 meta 的提交号（缺省从 git HEAD 读取）")
 	graphAbsorbCmd.Flags().StringVar(&absorbBranch, "branch", "", "写入基线 meta 的分支名（缺省从 git 读取）")
-	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphSummaryCmd)
 	rootCmd.AddCommand(graphCmd)
 }

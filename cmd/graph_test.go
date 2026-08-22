@@ -177,6 +177,45 @@ func TestGraphAbsorb(t *testing.T) {
 	}
 }
 
+func TestGraphSym(t *testing.T) {
+	out, err := runGraph(t, "sym", "Do", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("sym 应通过: %v\n%s", err, out)
+	}
+	var r struct {
+		Matches []struct {
+			ID        string `json:"id"`
+			Anchor    string `json:"anchor"`
+			Line      int    `json:"line"`
+			Signature string `json:"signature"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, out)
+	}
+	if len(r.Matches) != 1 || r.Matches[0].ID != "n_do" || r.Matches[0].Anchor != "ok" ||
+		r.Matches[0].Line != 4 || r.Matches[0].Signature == "" {
+		t.Fatalf("sym 结果: %s", out)
+	}
+}
+
+func TestGraphSymMiss(t *testing.T) {
+	out, err := runGraph(t, "sym", "Nope", "--repo", fixtureRepo)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("图未覆盖")) {
+		t.Fatalf("sym 未命中错误: err=%v out=%s", err, out)
+	}
+}
+
+func TestGraphSummary(t *testing.T) {
+	out, err := runGraph(t, "summary", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("summary 应通过: %v\n%s", err, out)
+	}
+	if !bytes.Contains([]byte(out), []byte("节点")) || !bytes.Contains([]byte(out), []byte("graph sym")) {
+		t.Fatalf("summary 内容: %s", out)
+	}
+}
+
 func copyFixtureRepo(t *testing.T, src, dst string) {
 	t.Helper()
 	entries, err := os.ReadDir(src)
