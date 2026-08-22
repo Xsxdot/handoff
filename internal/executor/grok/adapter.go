@@ -1143,6 +1143,15 @@ func (h *acpHandler) OnPermission(reqID, params json.RawMessage) {
 		h.a.log.Info("grok 权限请求已结构化", "task", h.r.taskID,
 			"perm", p.ToolCall.ToolCallID, "tool", req.Tool, "paths", len(req.Paths))
 	}
+	h.a.log.Info("grok 权限等待开始", "task", h.r.taskID,
+		"perm", p.ToolCall.ToolCallID, "request_id", string(reqID))
+	entries := h.r.seg.PauseWaiting(p.ToolCall.ToolCallID)
+	if len(entries) == 0 {
+		h.a.log.Warn("grok 权限请求未找到对应工具等待窗口",
+			"task", h.r.taskID, "perm", p.ToolCall.ToolCallID)
+	} else {
+		h.a.reportTiming(h.r, entries)
+	}
 	h.a.emit(h.r, executor.AdapterEvent{Type: "permission",
 		PermissionID: p.ToolCall.ToolCallID, SessionID: h.r.sessionID,
 		Text: text, Perm: req})

@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +132,115 @@ func TestClaudeToolTimingPaired(t *testing.T) {
 	}
 	if !hasResult {
 		t.Fatal("夹具应产出 tool_result 帧")
+	}
+}
+
+func TestClaudePermissionWaitNotToolTime(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := New(log)
+	r := &runState{
+		taskID: "permission-timing",
+		evCh:   make(chan executor.AdapterEvent, 32),
+		stopCh: make(chan struct{}),
+		seg:    turn.NewSegmenter(clock),
+	}
+	a.mu.Lock()
+	a.runs[r.taskID] = r
+	a.mu.Unlock()
+
+	testRoot := t.TempDir()
+	shortRoot := filepath.Dir(filepath.Dir(testRoot))
+	sock := filepath.Join(shortRoot, "b171-perm.sock")
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	srv, err := newPermServer(sock, log, func(ask permAsk) { a.onPermissionAsk(r, ask) })
+	if err != nil {
+		t.Fatalf("newPermServer: %v", err)
+	}
+	r.perm = srv
+	t.Cleanup(func() { _ = srv.Close() })
+
+	a.reportTiming(r, r.seg.BeginTurn(1))
+	now = now.Add(2 * time.Second)
+	a.reportTiming(r, r.seg.ToolStart("toolu-wait-1", "Bash", "go test ./..."))
+	now = now.Add(3 * time.Second)
+	conn := dialAsk(t, sock, "toolu-wait-1", "Bash", `{"command":"git add && git commit"}`)
+	defer conn.Close()
+
+	var timings []proto.TimingEntry
+	var sawPermission bool
+	deadline := time.After(2 * time.Second)
+	for !sawPermission {
+		select {
+		case ev := <-r.evCh:
+			if ev.Type == "usage" && ev.Timing != nil {
+				timings = append(timings, *ev.Timing)
+			}
+			if ev.Type == "permission" {
+				sawPermission = true
+			}
+		case <-deadline:
+			t.Fatal("等待权限事件超时")
+		}
+	}
+	now = now.Add(60 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "toolu-wait-1", "once", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	var response permDecision
+	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&response); err != nil {
+		t.Fatalf("读取权限应答: %v", err)
+	}
+	if response.Behavior != "allow" {
+		t.Fatalf("权限应答 behavior=%q，期望 allow", response.Behavior)
+	}
+
+	select {
+	case ev := <-r.evCh:
+		if ev.Type != "usage" || ev.Timing == nil || ev.Timing.Kind != proto.TimingKindTurn || ev.Timing.DurMS != 65000 {
+			t.Fatalf("权限应答后应收到 65s Resume 标记，实得 %+v", ev)
+		}
+		timings = append(timings, *ev.Timing)
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待权限恢复耗时条目超时")
+	}
+
+	now = now.Add(5 * time.Second)
+	_, entries := r.seg.ToolEnd("toolu-wait-1")
+	a.reportTiming(r, entries)
+	now = now.Add(2 * time.Second)
+	a.reportTiming(r, r.seg.EndTurn())
+	for {
+		select {
+		case ev := <-r.evCh:
+			if ev.Type == "usage" && ev.Timing != nil {
+				timings = append(timings, *ev.Timing)
+			}
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	var tool, api, total int64
+	for _, e := range timings {
+		switch e.Kind {
+		case proto.TimingKindTool:
+			tool += e.DurMS
+		case proto.TimingKindAPI:
+			api += e.DurMS
+		case proto.TimingKindTurn:
+			if e.DurMS > total {
+				total = e.DurMS
+			}
+		}
+	}
+	if tool != 8000 || api != 4000 || total != 72000 {
+		t.Fatalf("权限等待不应进入工具段，实得 total=%d api=%d tool=%d", total, api, tool)
+	}
+	if other := total - api - tool; other != 60000 {
+		t.Fatalf("权限等待应进入 other，实得 %dms", other)
 	}
 }
 

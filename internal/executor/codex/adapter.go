@@ -1046,6 +1046,13 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 		a.log.Info("codex 权限请求", "task", r.taskID, "perm", ap.ItemID, "tool", executor.PermToolBash)
 		r.appendRenderDelta("【权限门】" + desc)
 		a.flushRender(r)
+		entries := r.seg.PauseWaiting(ap.ItemID)
+		if len(entries) == 0 {
+			a.log.Warn("codex 命令审批未找到对应工具等待窗口",
+				"task", r.taskID, "perm", ap.ItemID, "method", method)
+		} else {
+			a.reportTiming(r, entries)
+		}
 		a.emit(r, executor.AdapterEvent{Type: "permission", PermissionID: ap.ItemID,
 			SessionID: r.threadID, Text: desc, Perm: perm})
 		return true
@@ -1073,6 +1080,13 @@ func (h *handler) OnServerRequest(reqID json.RawMessage, method string, params j
 		a.log.Info("codex 权限请求", "task", r.taskID, "perm", p.ItemID, "indexed", found)
 		r.appendRenderDelta("【权限门】" + desc)
 		a.flushRender(r)
+		entries := r.seg.PauseWaiting(p.ItemID)
+		if len(entries) == 0 {
+			a.log.Warn("codex 文件审批未找到对应工具等待窗口",
+				"task", r.taskID, "perm", p.ItemID, "method", method)
+		} else {
+			a.reportTiming(r, entries)
+		}
 		a.emit(r, executor.AdapterEvent{Type: "permission", PermissionID: p.ItemID,
 			SessionID: r.threadID, Text: desc, Perm: perm})
 		return true

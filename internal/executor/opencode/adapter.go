@@ -253,7 +253,18 @@ type runState struct {
 	sessMu        sync.RWMutex
 	childSessions map[string]string
 	permSession   map[string]string
-	lastEventAt   atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+	// permTiming maps a permission id to the existing tool-call key. It is
+	// session-scoped and protected by sessMu so a permission response can finish
+	// the waiting window without holding turnMu during HTTP I/O.
+	permTiming  map[string]permissionTiming
+	lastEventAt atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+}
+
+// permissionTiming records whether a permission request still owns a paused
+// tool window. The mapping is in-memory only; no wire or store shape changes.
+type permissionTiming struct {
+	part   string
+	paused bool
 }
 
 // newRun 创建并登记一个任务的运行态。
@@ -273,6 +284,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		permText:        make(map[string]string),
 		childSessions:   map[string]string{},
 		permSession:     map[string]string{},
+		permTiming:      map[string]permissionTiming{},
 		seenQuestionIDs: map[string]bool{},
 		toolStages:      map[string]toolStage{},
 	}
@@ -626,6 +638,31 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		"session", sess, "from_map", known)
 	if err := r.api.RespondPermission(ctx, sess, permID, decision); err != nil {
 		return err
+	}
+	r.sessMu.Lock()
+	timing, knownTiming := r.permTiming[permID]
+	shouldResume := knownTiming && timing.paused
+	if shouldResume {
+		timing.paused = false
+		r.permTiming[permID] = timing
+	}
+	r.sessMu.Unlock()
+	if !knownTiming {
+		a.log.Warn("opencode 权限应答成功但缺少工具等待映射",
+			"task", taskID, "perm", permID)
+	} else if !shouldResume {
+		a.log.Warn("opencode 权限应答重复恢复被忽略",
+			"task", taskID, "perm", permID, "part", timing.part)
+	} else {
+		a.log.Info("opencode 权限等待结束", "task", taskID, "perm", permID,
+			"part", timing.part)
+		entries := r.seg.Resume(timing.part)
+		if len(entries) == 0 {
+			a.log.Warn("opencode 权限应答成功但未找到工具等待窗口",
+				"task", taskID, "perm", permID, "part", timing.part)
+		} else {
+			a.reportTiming(r, entries)
+		}
 	}
 	// 拒绝登记必须在转发成功之后：没送达的拒绝不会终止 executor 的回合，
 	// 提前登记会让下一次空回合 idle 谎报「因权限被拒终止」。
@@ -1247,7 +1284,10 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		SessionID  string   `json:"sessionID"`
 		Permission string   `json:"permission"`
 		Patterns   []string `json:"patterns"`
-		Metadata   struct {
+		Tool       struct {
+			CallID string `json:"callID"`
+		} `json:"tool"`
+		Metadata struct {
 			Command string `json:"command"`
 			// filepath 是小写 p——真机样本如此（testdata/perm_edit.json）。
 			// 写成 filePath 会静默取到空串，然后整条请求退化成「提取不出
@@ -1310,6 +1350,34 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 	// 记下描述供「被拒终止回合」的诊断文本引用（本函数在 turnMu 下执行，见
 	// mapEvent 的 switch 契约）；permID 全局唯一，表不随回合清空
 	r.permText[pa.ID] = text
+	if pa.Tool.CallID == "" {
+		a.log.Warn("opencode 权限请求缺少 tool.callID，不暂停未知工具",
+			"task", r.taskID, "perm", pa.ID, "session", permSess)
+	} else {
+		r.sessMu.Lock()
+		if r.permTiming == nil {
+			r.permTiming = map[string]permissionTiming{}
+		}
+		_, duplicate := r.permTiming[pa.ID]
+		if !duplicate {
+			r.permTiming[pa.ID] = permissionTiming{part: pa.Tool.CallID, paused: true}
+		}
+		r.sessMu.Unlock()
+		if duplicate {
+			a.log.Debug("重复 permission.asked 不重复暂停工具窗口",
+				"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
+		} else {
+			a.log.Info("opencode 权限等待开始", "task", r.taskID,
+				"perm", pa.ID, "part", pa.Tool.CallID, "session", permSess)
+			entries := r.seg.PauseWaiting(pa.Tool.CallID)
+			if len(entries) == 0 {
+				a.log.Warn("opencode 权限请求未找到对应工具等待窗口",
+					"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
+			} else {
+				a.reportTiming(r, entries)
+			}
+		}
+	}
 
 	// 结构化载荷（B23/B27）：permission 字段就是 opencode 的工具类别原文，
 	// 真机实测取值有 bash / edit / external_directory，直接作归一化来源。

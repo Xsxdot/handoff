@@ -124,6 +124,57 @@ func TestGrokUnknownToolStatusIsNotTerminal(t *testing.T) {
 	}
 }
 
+func TestGrokPermissionWaitNotToolTime(t *testing.T) {
+	a, r := newACPTestRun(t, "permission-timing", nil)
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	r.seg = turn.NewSegmenter(func() time.Time { return now })
+	h := &acpHandler{a: a, r: r}
+
+	a.reportTiming(r, r.seg.BeginTurn(1))
+	now = now.Add(2 * time.Second)
+	a.mapToolUpdate(r, toolUpdate{
+		Kind: "tool_call", ID: "call-wait-1", Title: "run_terminal_command",
+		RawInput: json.RawMessage(`{"command":"git add && git commit"}`),
+	})
+	now = now.Add(3 * time.Second)
+	h.OnPermission(json.RawMessage("9"), json.RawMessage(`{
+		"toolCall":{"toolCallId":"call-wait-1","kind":"execute",
+		"title":"run_terminal_command","rawInput":{"command":"git add && git commit"}}
+	}`))
+
+	now = now.Add(60 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "call-wait-1", "once", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	now = now.Add(5 * time.Second)
+	a.mapToolUpdate(r, toolUpdate{
+		Kind: "tool_call_update", ID: "call-wait-1", Status: "completed", Output: "ok",
+	})
+	now = now.Add(2 * time.Second)
+	a.reportTiming(r, r.seg.EndTurn())
+
+	entries := drainTimings(r)
+	var tool, api, total int64
+	for _, e := range entries {
+		switch e.Kind {
+		case proto.TimingKindTool:
+			tool += e.DurMS
+		case proto.TimingKindAPI:
+			api += e.DurMS
+		case proto.TimingKindTurn:
+			if e.DurMS > total {
+				total = e.DurMS
+			}
+		}
+	}
+	if tool != 8000 || api != 4000 || total != 72000 {
+		t.Fatalf("grok 权限等待不应进入工具段，实得 total=%d api=%d tool=%d", total, api, tool)
+	}
+	if other := total - api - tool; other != 60000 {
+		t.Fatalf("grok 权限等待应进入 other，实得 %dms", other)
+	}
+}
+
 // newACPTestRun 通过真实 Send 路径造一个带 ACP 连接的运行态。
 // 测试不直接调用 Segmenter 的回合边界，BeginTurn/EndTurn 必须由 adapter 自己喂入。
 func newACPTestRun(t *testing.T, id string, updates []string) (*Adapter, *runState) {

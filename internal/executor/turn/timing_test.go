@@ -258,3 +258,106 @@ func TestSegmenterNilSafe(t *testing.T) {
 		t.Error("nil.EndTurn 应为空操作")
 	}
 }
+
+func TestSegmenterPauseWaitingMovesWindowToOther(t *testing.T) {
+	c := newTestClock()
+	s := NewSegmenter(c.now)
+
+	all := runSeq(s, c,
+		func(s *Segmenter, _ *fakeClock) []proto.TimingEntry { return s.BeginTurn(1) },
+		func(s *Segmenter, c *fakeClock) []proto.TimingEntry {
+			c.add(2 * time.Second)
+			return s.ToolStart("t1", "Bash", "go test ./...")
+		},
+		func(s *Segmenter, c *fakeClock) []proto.TimingEntry {
+			c.add(3 * time.Second)
+			return s.PauseWaiting("t1")
+		},
+		func(s *Segmenter, c *fakeClock) []proto.TimingEntry {
+			c.add(60 * time.Second)
+			return s.Resume("t1")
+		},
+		func(s *Segmenter, c *fakeClock) []proto.TimingEntry {
+			c.add(5 * time.Second)
+			_, entries := s.ToolEnd("t1")
+			return entries
+		},
+		func(s *Segmenter, c *fakeClock) []proto.TimingEntry {
+			c.add(2 * time.Second)
+			return s.EndTurn()
+		},
+	)
+
+	tools := pick(all, proto.TimingKindTool)
+	if len(tools) != 1 {
+		t.Fatalf("应恰好有一条工具段，实得 %d", len(tools))
+	}
+	if tools[0].DurMS != 8000 || tools[0].OffsetMS != 2000 {
+		t.Fatalf("工具段应只含暂停前 3s 与恢复后 5s，dur=%d offset=%d",
+			tools[0].DurMS, tools[0].OffsetMS)
+	}
+	var total, api, tool int64
+	for _, e := range all {
+		switch e.Kind {
+		case proto.TimingKindTurn:
+			if e.DurMS > total {
+				total = e.DurMS
+			}
+		case proto.TimingKindAPI:
+			api += e.DurMS
+		case proto.TimingKindTool:
+			tool += e.DurMS
+		}
+	}
+	if total != 72000 || api != 4000 || tool != 8000 {
+		t.Fatalf("总账应为 total=72000 api=4000 tool=8000，实得 %d/%d/%d",
+			total, api, tool)
+	}
+	if other := total - api - tool; other != 60000 {
+		t.Fatalf("审批等待应进入 other，实得 %dms", other)
+	}
+}
+
+func TestSegmenterWaitingLifecycleIsNilSafe(t *testing.T) {
+	var nilSegmenter *Segmenter
+	if got := nilSegmenter.PauseWaiting("t1"); got != nil {
+		t.Fatalf("nil PauseWaiting 应为空，实得 %v", got)
+	}
+	if got := nilSegmenter.Resume("t1"); got != nil {
+		t.Fatalf("nil Resume 应为空，实得 %v", got)
+	}
+
+	c := newTestClock()
+	s := NewSegmenter(c.now)
+	s.BeginTurn(1)
+	c.add(time.Second)
+	s.ToolStart("t1", "Bash", "echo hi")
+	if got := s.PauseWaiting("missing"); got != nil {
+		t.Fatalf("未知 part 不应产生条目：%v", got)
+	}
+	s.PauseWaiting("t1")
+	c.add(2 * time.Second)
+	if got := s.PauseWaiting("t1"); got != nil {
+		t.Fatalf("重复 Pause 不应重复打开窗口：%v", got)
+	}
+	s.Resume("t1")
+	c.add(3 * time.Second)
+	if got := s.Resume("t1"); got != nil {
+		t.Fatalf("重复 Resume 不应重复扣时：%v", got)
+	}
+	c.add(time.Second)
+	dur, _ := s.ToolEnd("t1")
+	if dur != 4*time.Second {
+		t.Fatalf("连续多次信号后的工具耗时应为 1s+3s，实得 %s", dur)
+	}
+
+	s.BeginTurn(2)
+	s.ToolStart("t2", "Bash", "echo pending")
+	c.add(time.Second)
+	s.PauseWaiting("t2")
+	c.add(30 * time.Second)
+	s.EndTurn()
+	if dur, entries := s.ToolEnd("t2"); dur != -1 || entries != nil {
+		t.Fatalf("回合终止应收口未闭窗口且丢弃未结束工具，dur=%s entries=%v", dur, entries)
+	}
+}

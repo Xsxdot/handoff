@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -196,5 +197,133 @@ func TestCodexTimingShapeMatchesClaude(t *testing.T) {
 	if api != 2 || tool != 1 || turnCount < 1 {
 		t.Fatalf("codex 与 claude 的段结构应为 api=2 tool=1 turn>=1，实得 api=%d tool=%d turn=%d",
 			api, tool, turnCount)
+	}
+}
+
+func TestCodexPermissionWaitNotToolTime(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		item   *threadItem
+		params string
+	}{
+		{
+			name:   "command",
+			method: reqCommandApproval,
+			item:   &threadItem{Type: "commandExecution", ID: "item-command", Command: "go test ./..."},
+			params: `{"itemId":"item-command","command":"go test ./...","cwd":"/repo"}`,
+		},
+		{
+			name:   "file-change",
+			method: reqFileChangeApproval,
+			item: &threadItem{Type: "fileChange", ID: "item-file", Changes: []fileUpdateChange{{
+				Path: "/repo/main.go", Kind: changeKind{Type: "update"},
+			}}},
+			params: `{"itemId":"item-file","threadId":"thread-timing","turnId":"turn-timing"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a, r, c := newTimingTestRun(t)
+			r.cli.replyHook = func(json.RawMessage, any) error { return nil }
+			if tc.method == reqFileChangeApproval {
+				r.items.put(tc.item)
+			}
+			a.appendItemFrame(r, ntfItemStarted, tc.item)
+			c.add(3 * time.Second)
+			h := &handler{a: a, r: r}
+			if !h.OnServerRequest(json.RawMessage("7"), tc.method, json.RawMessage(tc.params)) {
+				t.Fatal("权限请求应由 adapter 接管")
+			}
+			c.add(60 * time.Second)
+			if err := a.RespondPermission(context.Background(), r.taskID, tc.item.ID, "once", ""); err != nil {
+				t.Fatalf("RespondPermission: %v", err)
+			}
+			c.add(5 * time.Second)
+			a.appendItemFrame(r, ntfItemCompleted, tc.item)
+			c.add(500 * time.Millisecond)
+			a.finishTurn(r, "completed", "", `{"ask":"下一步？"}`)
+
+			entries := collectTimingTestEntries(r)
+			var tool, api, total int64
+			for _, e := range entries {
+				switch e.Kind {
+				case proto.TimingKindTool:
+					tool += e.DurMS
+				case proto.TimingKindAPI:
+					api += e.DurMS
+				case proto.TimingKindTurn:
+					if e.DurMS > total {
+						total = e.DurMS
+					}
+				}
+			}
+			if tool != 8000 || api != 500 || total != 68500 {
+				t.Fatalf("%s 权限等待不应进入工具段，实得 total=%d api=%d tool=%d",
+					tc.name, total, api, tool)
+			}
+			if other := total - api - tool; other != 60000 {
+				t.Fatalf("%s 权限等待应进入 other，实得 %dms", tc.name, other)
+			}
+		})
+	}
+}
+
+func TestCodexPermissionReplyFailureKeepsWaitingWindow(t *testing.T) {
+	a, r, c := newTimingTestRun(t)
+	item := &threadItem{Type: "commandExecution", ID: "item-retry", Command: "go test ./..."}
+	a.appendItemFrame(r, ntfItemStarted, item)
+	attempts := 0
+	r.cli.replyHook = func(json.RawMessage, any) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("暂时无法回发权限裁决")
+		}
+		return nil
+	}
+	c.add(3 * time.Second)
+	h := &handler{a: a, r: r}
+	if !h.OnServerRequest(json.RawMessage("8"), reqCommandApproval,
+		json.RawMessage(`{"itemId":"item-retry","command":"go test ./..."}`)) {
+		t.Fatal("权限请求应由 adapter 接管")
+	}
+	c.add(60 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "item-retry", "once", ""); err == nil {
+		t.Fatal("第一次回发失败必须向协调者报错")
+	}
+	// 失败期间仍在等人；这 5 秒也必须计入 other，而不是被错误的 Resume
+	// 提前切到工具段。
+	c.add(5 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "item-retry", "once", ""); err != nil {
+		t.Fatalf("重试回发: %v", err)
+	}
+	c.add(5 * time.Second)
+	a.appendItemFrame(r, ntfItemCompleted, item)
+	c.add(2 * time.Second)
+	a.finishTurn(r, "completed", "", `{"ask":"下一步？"}`)
+
+	entries := collectTimingTestEntries(r)
+	var total, api, tool int64
+	for _, e := range entries {
+		switch e.Kind {
+		case proto.TimingKindTurn:
+			if e.DurMS > total {
+				total = e.DurMS
+			}
+		case proto.TimingKindAPI:
+			api += e.DurMS
+		case proto.TimingKindTool:
+			tool += e.DurMS
+		}
+	}
+	if attempts != 2 {
+		t.Fatalf("权限回发应恰好尝试两次，实得 %d", attempts)
+	}
+	if total != 75_000 || api != 2_000 || tool != 8_000 {
+		t.Fatalf("失败重试不应提前恢复，实得 total=%d api=%d tool=%d", total, api, tool)
+	}
+	if other := total - api - tool; other != 65_000 {
+		t.Fatalf("失败期间的等待也应进入 other，实得 %dms", other)
 	}
 }
