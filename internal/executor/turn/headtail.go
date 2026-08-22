@@ -73,3 +73,26 @@ func tailToRuneBoundary(s string, n int) int {
 	}
 	return n
 }
+
+// HeadTailRunes 按 **rune** 预算做头尾截断，中间以省略标记相连。
+//
+// 参数：head / tail 为头尾各保留的 rune 数；两者之和 >= 总长时原样返回。
+// 返回：截断后的串（未截断时即原串）。
+//
+// 为什么不复用 HeadTail：那个函数的预算单位是**字节**（headtail.go:38），
+// 用在中文命令上会从一个多字节字符中间切开，落进 SQLite 的就是半个字符。
+// 帧字段用字节预算是对的（它防的是行长失控），Detail 用 rune 预算也是对的
+// （它防的是凭据面扩大），两个单位服务两个目的，不该互相迁就。
+func HeadTailRunes(s string, head, tail int) string {
+	r := []rune(s)
+	if head < 0 {
+		head = 0
+	}
+	if tail < 0 {
+		tail = 0
+	}
+	if len(r) <= head+tail {
+		return s
+	}
+	return string(r[:head]) + executor.TruncationMarker + string(r[len(r)-tail:])
+}

@@ -164,6 +164,21 @@ func (w *FrameWriter) NextPart() string {
 	return fmt.Sprintf("p%02d", w.nextPart)
 }
 
+// Turn 返回当前回合号（还没开过回合时为 0）。
+//
+// 存在的唯一理由：段切分器（Segmenter）必须与帧共用同一个回合号。
+// **不要在别处自建回合计数器**——FrameWriter 的 turn 在进程重启后从
+// frames.jsonl 尾部恢复（见 resumeFrameState），自建的计数器会从 0 重来，
+// 于是第二次运行的 "turn/1" 键会覆盖掉第一次运行的真数据，且账面无异常。
+func (w *FrameWriter) Turn() int {
+	if w == nil {
+		return 0
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.turn
+}
+
 // Text 写一条模型正文增量帧。
 func (w *FrameWriter) Text(part, delta string) error {
 	if w == nil || delta == "" {
