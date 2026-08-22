@@ -44,10 +44,6 @@ type Contract struct {
 	Entries      []string `json:"entries,omitempty"`
 	Interfaces   []string `json:"interfaces,omitempty"`
 	LegacyBudget int      `json:"legacyBudget,omitempty"`
-	// The Set markers are CLI/API presence metadata, never persisted in target.json.
-	EntriesSet      bool `json:"-"`
-	InterfacesSet   bool `json:"-"`
-	LegacyBudgetSet bool `json:"-"`
 }
 
 // Target 是 codegraph/target.json 的顶层结构：事前基准。

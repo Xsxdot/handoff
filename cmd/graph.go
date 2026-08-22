@@ -429,19 +429,19 @@ var graphContractSetCmd = &cobra.Command{
 			return fmt.Errorf("contract set 必须指定 --from 与 --to")
 		}
 		c := codegraph.Contract{From: graphContractFrom, To: graphContractTo}
-		if cmd.Flags().Changed("entries") {
+		entriesSet := cmd.Flags().Changed("entries")
+		interfacesSet := cmd.Flags().Changed("interfaces")
+		budgetSet := cmd.Flags().Changed("budget")
+		if entriesSet {
 			c.Entries = append([]string(nil), graphContractEntries...)
-			c.EntriesSet = true
 		}
-		if cmd.Flags().Changed("interfaces") {
+		if interfacesSet {
 			c.Interfaces = append([]string(nil), graphContractInterfaces...)
-			c.InterfacesSet = true
 		}
-		if cmd.Flags().Changed("budget") {
+		if budgetSet {
 			c.LegacyBudget = graphContractBudget
-			c.LegacyBudgetSet = true
 		}
-		before, after, err := codegraph.SetContract(graphRepo, c)
+		before, after, err := codegraph.SetContractWithPresence(graphRepo, c, entriesSet, interfacesSet, budgetSet)
 		if err != nil {
 			return err
 		}

@@ -8,11 +8,21 @@ import (
 )
 
 // SetContract creates or patches the From→To contract. Nil slices and zero budget
-// mean that the corresponding caller field was omitted; the explicit Set markers
-// let the CLI distinguish --budget 0. Validation always runs before writing.
+// mean that the corresponding caller field was omitted. Validation always runs before writing.
 // The whole target is rewritten with json.MarshalIndent: the first set may create
 // a one-time formatting diff, and subsequent writes are stable by design.
 func SetContract(repoRoot string, c Contract) (before, after *Contract, err error) {
+	return setContract(repoRoot, c, c.Entries != nil, c.Interfaces != nil, c.LegacyBudget != 0)
+}
+
+// SetContractWithPresence is the CLI bridge for flags whose zero value is meaningful.
+// The presence booleans are not part of Contract because they are invocation metadata,
+// not target.json data.
+func SetContractWithPresence(repoRoot string, c Contract, entriesSet, interfacesSet, budgetSet bool) (before, after *Contract, err error) {
+	return setContract(repoRoot, c, entriesSet, interfacesSet, budgetSet)
+}
+
+func setContract(repoRoot string, c Contract, entriesSet, interfacesSet, budgetSet bool) (before, after *Contract, err error) {
 	t, err := LoadTarget(repoRoot)
 	if err != nil {
 		return nil, nil, err
@@ -28,25 +38,25 @@ func SetContract(repoRoot string, c Contract) (before, after *Contract, err erro
 		old := cleanContract(t.Contracts[idx])
 		before = &old
 		updated := old
-		if c.EntriesSet || c.Entries != nil {
+		if entriesSet {
 			updated.Entries = append([]string(nil), c.Entries...)
 		}
-		if c.InterfacesSet || c.Interfaces != nil {
+		if interfacesSet {
 			updated.Interfaces = append([]string(nil), c.Interfaces...)
 		}
-		if c.LegacyBudgetSet || c.LegacyBudget != 0 {
+		if budgetSet {
 			updated.LegacyBudget = c.LegacyBudget
 		}
 		t.Contracts[idx] = updated
 	} else {
 		created := Contract{From: c.From, To: c.To}
-		if c.EntriesSet || c.Entries != nil {
+		if entriesSet {
 			created.Entries = append([]string(nil), c.Entries...)
 		}
-		if c.InterfacesSet || c.Interfaces != nil {
+		if interfacesSet {
 			created.Interfaces = append([]string(nil), c.Interfaces...)
 		}
-		if c.LegacyBudgetSet || c.LegacyBudget != 0 {
+		if budgetSet {
 			created.LegacyBudget = c.LegacyBudget
 		}
 		t.Contracts = append(t.Contracts, created)
@@ -69,8 +79,5 @@ func SetContract(repoRoot string, c Contract) (before, after *Contract, err erro
 }
 
 func cleanContract(c Contract) Contract {
-	c.EntriesSet = false
-	c.InterfacesSet = false
-	c.LegacyBudgetSet = false
 	return c
 }
