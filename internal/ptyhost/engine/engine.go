@@ -38,6 +38,12 @@ const (
 	subscriberBuffer = 256
 	// termGrace 是 SIGTERM 到 SIGKILL 的宽限期。
 	termGrace = 2 * time.Second
+	// initCommandReadyWait 是等 shell 出第一个字节的上限。
+	//
+	// 到点仍没动静就照写不误：内核的 PTY 输入缓冲一直在，字节不会丢，
+	// 最坏情况只是命令排在 shell 的 rc 链之后被读到。**超时不是失败**——
+	// 把它当失败就意味着「rc 链慢的机器上启动项静默不工作」。
+	initCommandReadyWait = 3 * time.Second
 	// readChunk 是单次从 PTY 主端读取的上限。
 	readChunk = 32 << 10
 )
@@ -72,6 +78,11 @@ type session struct {
 	subs     map[*subscriber]struct{}
 	exited   bool
 	exitCode *int
+	// firstOut 在 shell 吐出第一个字节时关闭，是「shell 就绪」的唯一观测点。
+	// 只有带 InitCommand 的会话才有人等它；不带的会话也照常关，代价是一次
+	// sync.Once（比在 pump 的热路径上加一个 if 判空更简单）。
+	firstOut     chan struct{}
+	firstOutOnce sync.Once
 }
 
 // Open 起一个新会话。失败时不留残骸。
@@ -99,6 +110,7 @@ func (h *Engine) Open(opt ptyhost.OpenOptions) (ptyhost.Session, error) {
 			Cols: opt.Cols, Rows: opt.Rows, PID: cmd.Process.Pid,
 		},
 		f: f, cmd: cmd, buf: newRing(ringSize), subs: map[*subscriber]struct{}{},
+		firstOut: make(chan struct{}),
 	}
 	h.mu.Lock()
 	h.sess[s.meta.ID] = s
@@ -107,6 +119,14 @@ func (h *Engine) Open(opt ptyhost.OpenOptions) (ptyhost.Session, error) {
 
 	go h.pump(s)
 	go h.reap(s)
+	// 启动命令走 PTY **输入**，不进 argv：argv 会把 login shell 变成非交互
+	// shell，命令退出即会话结束（见 OpenOptions.InitCommand 的注释）。
+	// 另起 goroutine 是因为它要等 shell 就绪，而 Open 不能为此阻塞——
+	// 阻塞会让建会话的 HTTP 请求挂最多 3 秒，一个 3 秒的空白 tab 比
+	// 极小概率的输入交错更糟（拆解 §6.1 的处置）。
+	if opt.InitCommand != "" {
+		go h.writeInitCommand(s, opt.InitCommand)
+	}
 
 	h.log.Info("终端会话已创建", "session", s.meta.ID, "pid", s.meta.PID,
 		"shell", opt.Shell, "base_kind", opt.BaseKind, "cwd", opt.BasePath,
@@ -126,12 +146,46 @@ func (h *Engine) pump(s *session) {
 		n, err := s.f.Read(b)
 		if n > 0 {
 			s.broadcast(b[:n])
+			// 首字节即「shell 就绪」。放在 broadcast 之后：订阅者先看到输出，
+			// 启动命令再写进去，顺序与人肉眼看到提示符再敲字一致
+			s.firstOutOnce.Do(func() { close(s.firstOut) })
 		}
 		if err != nil {
 			h.log.Debug("终端会话输出流结束", "session", s.meta.ID, "err", err)
 			return
 		}
 	}
+}
+
+// writeInitCommand 等 shell 就绪后把启动命令写进 PTY 输入。
+//
+// 参数：s 为已入表的会话；cmd 为命令原文（不含换行，本函数补）。
+//
+// 就绪判据：**首字节输出 或 initCommandReadyWait 到点，以先到者为准**。
+// 前者是真实就绪信号，后者保证「rc 链一直不出声」的 shell 也不会永远等下去。
+//
+// 注意：
+//   - 写入内容恰好是 `cmd + "\n"`，**不加任何前缀标记**（Q4 拍板 (a)：
+//     用户要的是「像人亲手敲进去一样」，多一行 handoff 自己的标记既破坏
+//     这个错觉，那行文本还会混进滚动历史被 Ctrl-R 搜到）
+//   - **命令原文绝不进日志**：启动项的命令可能含凭据（`API_KEY=xxx cmd`
+//     是常见写法）。失败只记会话 id 与错误
+//   - 会话在这 0~3 秒内被关掉是正常的：Write 会返回「会话不存在/已退出」，
+//     按 Debug 记，不是告警
+func (h *Engine) writeInitCommand(s *session, cmd string) {
+	select {
+	case <-s.firstOut:
+	case <-time.After(initCommandReadyWait):
+		h.log.Debug("等 shell 首字节超时，按兜底路径写入启动命令",
+			"session", s.meta.ID, "wait", initCommandReadyWait)
+	}
+	if err := h.Write(s.meta.ID, []byte(cmd+"\n")); err != nil {
+		// 不带 cmd：命令原文可能含凭据
+		h.log.Debug("写入启动命令未成功（会话可能已关闭），终端不受影响",
+			"session", s.meta.ID, "cause", err)
+		return
+	}
+	h.log.Info("启动命令已写入终端", "session", s.meta.ID, "bytes", len(cmd)+1)
 }
 
 // reap 等待 shell 退出，落 exit_code 并关闭所有订阅通道。
