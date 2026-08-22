@@ -25,6 +25,9 @@ import (
 type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
 	NewWorktree                                                                                           bool
+	// ResolveDefaultBase 标记卡链没有显式基线，需由知道目标仓库路径的 agentd
+	// 解析项目默认分支；false 时保持普通派发的 Base/HEAD 语义。
+	ResolveDefaultBase bool
 }
 
 // Transport 是注入的派发传输。返回 agentd 生成的 task id；实现不关心传输协议。
@@ -145,6 +148,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if reviewBase != "" {
 		base = reviewBase // 审阅分支从工作分支的当前提交开，不是从基线开
 	}
+	resolveDefaultBase := base == ""
 	// 三段拼装要用到有效基线，所以必须排在 base 算完之后。审阅轮的 base 被
 	// 换成了工作分支，但卡上下文里要写的是**卡的**基线（合并目标），两者不同，
 	// 因此这里重新取一次而不是复用上面的 base。
@@ -177,6 +181,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"card", c.ID, "template", req.Template, "target", target,
 		"executor", executor, "discipline", disciplineName,
 		"branch", branch, "base", base,
+		"resolve_default_base", resolveDefaultBase,
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
 		"prompt_bytes", len(prompt))
 	taskID, err := d.Transport(ctx, DispatchOpts{
@@ -184,6 +189,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Executor: executor, Model: model, PlanB64: planB64,
 		PlanName: planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
+		ResolveDefaultBase: resolveDefaultBase,
 	})
 	if err != nil {
 		return zero, fmt.Errorf("派发: %w", err)

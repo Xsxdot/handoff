@@ -104,7 +104,8 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
 		Discipline: opts.Discipline,
 		PlanB64:    opts.PlanB64, PlanName: opts.PlanName, Base: opts.Base,
-		NewWorktree: opts.NewWorktree,
+		ResolveDefaultBase: opts.ResolveDefaultBase,
+		NewWorktree:        opts.NewWorktree,
 	})
 	if err != nil {
 		return "", err

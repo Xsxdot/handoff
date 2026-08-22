@@ -1091,10 +1091,13 @@ type dispatchRequest struct {
 	Model      string `json:"model"`
 	Branch     string `json:"branch"`
 	// NewBranch/NewWorktree 用 snake_case 新键，与 CLI flag 语义一一对应。
-	NewBranch   string `json:"new_branch"`
-	Base        string `json:"base"`
-	Worktree    string `json:"worktree"`
-	NewWorktree bool   `json:"new_worktree"`
+	NewBranch string `json:"new_branch"`
+	Base      string `json:"base"`
+	// ResolveDefaultBase 仅由 card dispatch 传入；普通 CLI 派发保持 Base
+	// 为空时退回任务仓库 HEAD 的既有语义。
+	ResolveDefaultBase bool   `json:"resolve_default_base"`
+	Worktree           string `json:"worktree"`
+	NewWorktree        bool   `json:"new_worktree"`
 	// BaseCommit 是协调者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
 }
@@ -1120,7 +1123,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: req.Base,
-		Worktree: req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
+		ResolveDefaultBase: req.ResolveDefaultBase,
+		Worktree:           req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.ProjectID, err)

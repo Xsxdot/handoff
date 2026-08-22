@@ -50,6 +50,62 @@ func TestViaTemplateSendsDisciplineName(t *testing.T) {
 	}
 }
 
+// TestViaTemplateMarksEmptyBaseForTargetResolution 钉住空卡基线的跨机决议边界：
+// ledgerstep 不知道目标仓库路径，故只标记「请目标 agentd 解析默认分支」；
+// 显式基线仍把原文传下去，不得被这个标记改写。
+func TestViaTemplateMarksEmptyBaseForTargetResolution(t *testing.T) {
+	t.Run("空基线标记目标侧解析", func(t *testing.T) {
+		st, card := dispatchTestCard(t)
+		var got DispatchOpts
+		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			got = opts
+			return "T-default-base", nil
+		}}
+		if _, err := d.ViaTemplate(context.Background(), card,
+			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+			t.Fatalf("ViaTemplate: %v", err)
+		}
+		if got.Base != "" {
+			t.Fatalf("空卡基线不应在 ledgerstep 猜分支名，实得 %q", got.Base)
+		}
+		if !got.ResolveDefaultBase {
+			t.Fatal("空卡基线必须要求目标 agentd 解析项目默认分支")
+		}
+	})
+
+	t.Run("显式基线保持原语义", func(t *testing.T) {
+		st, err := ledger.Open(t.TempDir() + "/ledger.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if err := st.EnsureDefaultWorkflows(); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.EnsureDefaultTemplates(); err != nil {
+			t.Fatal(err)
+		}
+		card, err := st.CreateCard(ledger.NewCard{
+			Title: "显式基线卡", Project: "demo", Workflow: "bug", BaseBranch: "release", Actor: "test",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got DispatchOpts
+		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			got = opts
+			return "T-explicit-base", nil
+		}}
+		if _, err := d.ViaTemplate(context.Background(), card,
+			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+			t.Fatalf("ViaTemplate: %v", err)
+		}
+		if got.Base != "release" || got.ResolveDefaultBase {
+			t.Fatalf("显式基线必须原样传递且不触发默认解析：base=%q resolve=%v", got.Base, got.ResolveDefaultBase)
+		}
+	})
+}
+
 // TestViaTemplateNoDisciplineInPrompt prompt 里不许再出现纪律块正文。
 // 这是本次重构的核心判据：两份纪律块同时在场时，审阅那次的「只读，不写」
 // 会被实现块的「每个 task 完成即 commit」推翻。

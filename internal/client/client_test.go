@@ -586,6 +586,32 @@ func TestDispatchErrorBodyNotTruncated(t *testing.T) {
 	}
 }
 
+// TestDispatchSerializesCardDefaultBaseMarker 守住卡派发标记穿过 JSON 边界：
+// 只在请求体中明确写入 resolve_default_base=true，目标 agentd 才能把它与
+// 普通 Base 为空的 CLI/--no-sync-check 请求区分开。
+func TestDispatchSerializesCardDefaultBaseMarker(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("解析 dispatch 请求: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"T-card-default"}`))
+	}))
+	defer ts.Close()
+	if _, err := client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+		ProjectID: "deadbeefdeadbeef", Prompt: "card", ResolveDefaultBase: true,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if got["resolve_default_base"] != true {
+		t.Fatalf("请求必须带 resolve_default_base=true，实得 %#v", got["resolve_default_base"])
+	}
+	if got["base"] != "" {
+		t.Fatalf("卡空基线的 base 必须保持空串，实得 %#v", got["base"])
+	}
+}
+
 // TestDoneNoteSavedTrue 断言新 agentd 回传 true 时如实返回。
 func TestDoneNoteSavedTrue(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

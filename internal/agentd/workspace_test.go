@@ -1172,6 +1172,31 @@ func TestResolveBaseBranchAlwaysFetches(t *testing.T) {
 	}
 }
 
+// TestResolveDefaultBaseBranchUsesOriginHead 钉住卡派发的默认基线来源：
+// 必须取 origin/HEAD 指向的分支名，让后续 D2 从该远端分支补拉尖端；不能
+// 直接把执行机当前 HEAD 当成卡派发的起点。
+func TestResolveDefaultBaseBranchUsesOriginHead(t *testing.T) {
+	_, clone := newOriginAndClone(t)
+	got, err := resolveDefaultBaseBranch(context.Background(), clone)
+	if err != nil {
+		t.Fatalf("解析 origin/HEAD: %v", err)
+	}
+	if got != "main" {
+		t.Fatalf("默认分支=%q，期望 origin/HEAD 指向的 main", got)
+	}
+}
+
+// TestResolveDefaultBaseBranchRejectsMissingOriginHead 钉住失败闭环：没有
+// origin/HEAD 时必须拒发并带真因，不能静默退回本地 main/master 或 HEAD。
+func TestResolveDefaultBaseBranchRejectsMissingOriginHead(t *testing.T) {
+	repo := initTestRepo(t)
+	if _, err := resolveDefaultBaseBranch(context.Background(), repo); err == nil {
+		t.Fatal("没有 origin/HEAD 时必须拒绝解析默认分支")
+	} else if !strings.Contains(err.Error(), "origin/HEAD") {
+		t.Fatalf("错误必须说明 origin/HEAD 缺失真因：%v", err)
+	}
+}
+
 // TestResolveDispatchBaseLocalBranchUsesConfiguredRemote 本地 heads 存在时，D2 应取
 // branch.<name>.remote，而不是无条件猜 origin。
 func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {

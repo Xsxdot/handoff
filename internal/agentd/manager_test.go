@@ -1599,6 +1599,74 @@ func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
 	}
 }
 
+// TestDispatchCardEmptyBaseStartsAtOriginDefaultTip 是 B175 的全链回归：
+// 卡派发没有显式基线时，先从项目仓库的 origin/HEAD 得到 main，再经 D2
+// 补拉 origin 的尖端；新 worktree 不能退回执行机陈旧的本地 HEAD。
+func TestDispatchCardEmptyBaseStartsAtOriginDefaultTip(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	origin, clone := newOriginAndClone(t)
+	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: clone})
+	if err != nil {
+		t.Fatalf("登记项目: %v", err)
+	}
+	localHead := gitOut(t, clone, "rev-parse", "HEAD")
+	remoteTip := commitOnOrigin(t, origin, "remote-tip.txt", "remote tip")
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: loc.ProjectID, Prompt: "卡派发空基线回归", Executor: "fake",
+		NewWorktree: true, ResolveDefaultBase: true,
+	})
+	if err != nil {
+		t.Fatalf("卡派发应成功: %v", err)
+	}
+	if localHead == remoteTip {
+		t.Fatal("夹具必须让执行机本地 HEAD 落后 origin 尖端")
+	}
+	if got := gitOut(t, task.Workdir(), "rev-parse", "HEAD"); got != remoteTip {
+		t.Fatalf("卡派发 worktree 应从 origin 默认分支尖端开出：got=%s want=%s", got, remoteTip)
+	}
+	if task.BaseCommit != remoteTip {
+		t.Fatalf("任务落库 BaseCommit 应是 D2 解析后的远端尖端：got=%s want=%s", task.BaseCommit, remoteTip)
+	}
+}
+
+// TestDispatchWithoutCardDefaultMarkerKeepsEmptyBaseHead 钉住普通 CLI
+// 空基线语义：没有卡派发标记时 ResolveBaseline 仍把起点留在任务仓库 HEAD，
+// 不能因新增的卡派发协议字段而被全局改写。
+func TestDispatchWithoutCardDefaultMarkerKeepsEmptyBaseHead(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	want := gitOut(t, repo, "rev-parse", "HEAD")
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "普通 CLI 空基线回归", Executor: "fake", NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("普通空基线派发应成功: %v", err)
+	}
+	if got := gitOut(t, task.Workdir(), "rev-parse", "HEAD"); got != want {
+		t.Fatalf("普通空基线应从本地 HEAD 开出：got=%s want=%s", got, want)
+	}
+}
+
+// TestDispatchCardDefaultBaseRejectsMissingOriginHead 钉住卡派发的拒发边界：
+// 默认分支解析失败时返回 origin/HEAD 真因，绝不静默使用本地 main/master。
+func TestDispatchCardDefaultBaseRejectsMissingOriginHead(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	_, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "缺少默认分支回归", Executor: "fake", NewWorktree: true,
+		ResolveDefaultBase: true,
+	})
+	if err == nil {
+		t.Fatal("没有 origin/HEAD 时卡派发必须拒绝")
+	}
+	if !strings.Contains(err.Error(), "origin/HEAD") {
+		t.Fatalf("拒发错误必须带默认分支解析真因: %v", err)
+	}
+}
+
 // compensateFixture 造一个「PrepareWorkspace 之后必失败」的 Manager：
 // DataDir 下预置名为 tasks 的普通文件，使 MkdirAll(DataDir/tasks/<id>) 失败。
 func compensateFixture(t *testing.T) (*Manager, string) {
