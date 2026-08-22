@@ -89,6 +89,17 @@ go test ./internal/agentd/ -run TestApproverApprovesPermissionWithoutWaking -cou
 ok  	github.com/Xsxdot/handoff/internal/agentd	7.422s
 ```
 
+## Task 2 同族自查
+
+`rg -n "waitTaskState\\(" internal/agentd/*_test.go` 共发现 11 个调用点（另含 helper 定义）。
+`TestApproverApprovesPermissionWithoutWaking` 是唯一在任务状态门后直接读取工单、事件和 fake
+的 `LastDecision` 的用例，三条断言统一位于 `waitTicketDelivered` 之后；其余调用点仅断言任务
+状态/工作树归档，或已有 `waitEvent` 作为事件就绪门，或是状态本身的前置条件，无需迁移。
+截断权限用例的 `calls.Load()==0` 也无需迁移：该路径的 `waiting_answer` 是同步升级路径在
+`judgePermission` 返回 Escalate 后才落定；若走审批者 Consult，状态门只会在审批调用已经发生后
+由升级路径落定，因此不会用任务状态代理审批调用完成。
+
 ## 裁决与提交记录
 
 - Task 1 双裁决：spec 符合（送达门取 `DeliveredAt`、保留 `waitTaskState`、断言不改、无生产改动）；代码质量通过（轮询有超时、错误可诊断、helper 与既有测试 helper 同处）。commit 范围：`408cd912..HEAD`（Task 1 提交）。
+- Task 2 双裁决：同族自查完成，无额外迁移项；结论与 spec 一致，记录说明覆盖 11 个调用点及截断权限的调用计数判据。commit 范围：`a9c8fe0d..HEAD`（Task 2 ledger 提交）。
