@@ -40,3 +40,9 @@
 - 双裁决第 1 轮：spec 符合，`NodeEditor` 显式接收 `index`，控件 id 统一使用 `flow-node-${index}-${suffix}`，`FlowsPage` 传入 map 下标，并加入两个中文列名节点的 id/label 回归用例；没有改布局、字段集合、保存逻辑或移动按钮。代码质量通过，注释说明了列名不能作为稳定键及 `checked` 与 label 关联的边界；无修复轮次。
 - 验证：`cd web && npx vitest run src/app/flows/NodeEditor.labels.test.tsx`：1 个文件、1 个用例通过；`git diff --check` 无输出。
 - 提交范围：`HEAD^..HEAD`（Task 1 提交）。
+
+## Task 2：既有测试补 prop
+
+- 双裁决第 1 轮：spec 符合，`NodeEditor.test.tsx` 的 4 个实例与 `NodeEditor.childrengate.test.tsx` 的 2 个实例均补 `index={0}`；`NodeEditor.purpose.test.tsx` 不在本分支，未新增或修改其它断言。代码质量通过，改动仅为所需 prop，无修复轮次。
+- 验证：`cd web && npx vitest run src/app/flows/NodeEditor.test.tsx src/app/flows/NodeEditor.childrengate.test.tsx`：2 个文件、5 个用例通过；`git diff --check` 无输出。
+- 提交范围：`HEAD^..HEAD`（Task 2 提交）。
