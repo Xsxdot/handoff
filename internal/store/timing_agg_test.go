@@ -257,6 +257,16 @@ func TestTaskTimingWiring(t *testing.T) {
 	if got.Timing.TotalMS != 1000 || got.Timing.APIMS != 700 || got.Timing.OtherMS != 100 {
 		t.Fatalf("接线后的聚合值不对: %+v", got.Timing)
 	}
+	// 纯函数层也锁住同回合重复 turn 行的覆盖语义；真实账本通过主键 upsert
+	// 通常只会留下最终行，但读侧不能因重复/迁移数据把一次回合算成两次。
+	duplicate := aggregateTiming([]timingRow{
+		tr("turn", 1, 1000, 0, "", ""),
+		tr("turn", 1, 2000, 0, "", ""),
+		tr("api", 1, 700, 0, "", ""),
+	})
+	if duplicate.TotalMS != 2000 {
+		t.Fatalf("同回合重复 turn 行应取最终值 2000，实际 %d", duplicate.TotalMS)
+	}
 
 	list, err := s.ListTasks()
 	if err != nil {
