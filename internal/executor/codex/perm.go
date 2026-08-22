@@ -192,6 +192,17 @@ func (t *permTable) take(itemID string) (pendingPerm, bool) {
 	return pp, ok
 }
 
+// restore puts a failed-to-send permission response back into the pending table.
+// The executor is still waiting when Reply fails, so the coordinator must be
+// able to retry without creating a second timing window.
+func (t *permTable) restore(itemID string, pp pendingPerm) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, exists := t.pending[itemID]; !exists {
+		t.pending[itemID] = pp
+	}
+}
+
 // voidAll 作废全部挂起项，返回作废数量（连接死亡时调用）。
 func (t *permTable) voidAll() int {
 	t.mu.Lock()
@@ -295,6 +306,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	d := decisionFor(decision)
 	a.log.Info("回发权限裁决", "task", taskID, "perm", permID, "decision", decision, "mapped", d)
 	if err := r.cli.Reply(pp.reqID, map[string]any{"decision": d}); err != nil {
+		r.restore(permID, pp)
 		a.log.Error("回发权限裁决失败", "task", taskID, "perm", permID, "cause", err)
 		return fmt.Errorf("回发权限裁决: %w", err)
 	}
@@ -306,6 +318,13 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	}
 	r.appendRenderDelta("【裁决】" + decision + " → " + d + "：" + pp.desc)
 	a.flushRender(r)
+	entries := r.seg.Resume(permID)
+	if len(entries) == 0 {
+		a.log.Warn("codex 权限裁决已送达但未找到等待窗口",
+			"task", taskID, "perm", permID)
+	} else {
+		a.reportTiming(r, entries)
+	}
 	a.log.Info("权限裁决已送达 executor", "task", taskID, "perm", permID)
 	return nil
 }

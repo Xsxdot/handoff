@@ -4,7 +4,10 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,12 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+type timingRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f timingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestOpencodeToolTimingPaired 钉住「工具 part 的两端都喂给了段切分器」，
 // 并钉住 opencode 特有的两条：running 重复到达只算一次、只有终态产结果帧。
@@ -162,6 +171,168 @@ func TestOpencodeErrorToolStatus(t *testing.T) {
 	}
 	if results[0].Status != "error" {
 		t.Errorf("error 状态应映射为 error，实得 %q", results[0].Status)
+	}
+}
+
+func TestOpencodePermissionWaitNotToolTime(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskDir := t.TempDir()
+	a, _ := startFakeRun(t, fs, "permission-timing", t.TempDir(), taskDir)
+	r := a.lookup("permission-timing")
+	events, done := collectEvents(r)
+
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	r.seg = turn.NewSegmenter(func() time.Time { return now })
+	a.reportTiming(r, r.seg.BeginTurn(1))
+	now = now.Add(2 * time.Second)
+	r.turnMu.Lock()
+	a.mapToolPart(r, "bash", "call-1", "running", json.RawMessage(`{"command":"git add && git commit"}`), "")
+	r.turnMu.Unlock()
+	now = now.Add(3 * time.Second)
+	permission := json.RawMessage(`{
+		"id":"perm-1","sessionID":"sess-1","permission":"bash",
+		"metadata":{"command":"git add && git commit"},
+		"tool":{"callID":"call-1"}
+	}`)
+	r.turnMu.Lock()
+	a.mapPermissionAsked(r, permission)
+	// SSE 重放同一 permission.asked 不得重新打开等待窗口。
+	a.mapPermissionAsked(r, permission)
+	r.turnMu.Unlock()
+
+	now = now.Add(60 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "perm-1", "once", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	now = now.Add(5 * time.Second)
+	r.turnMu.Lock()
+	a.mapToolPart(r, "bash", "call-1", "completed", json.RawMessage(`{"command":"git add && git commit"}`), "ok")
+	r.turnMu.Unlock()
+	now = now.Add(2 * time.Second)
+	a.reportTiming(r, r.seg.EndTurn())
+
+	if err := a.Stop(r.taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	<-done
+
+	var timings []proto.TimingEntry
+	for ev := range events {
+		if ev.Type == "usage" && ev.Timing != nil {
+			timings = append(timings, *ev.Timing)
+		}
+	}
+	var tool, api, total int64
+	for _, e := range timings {
+		switch e.Kind {
+		case proto.TimingKindTool:
+			tool += e.DurMS
+		case proto.TimingKindAPI:
+			api += e.DurMS
+		case proto.TimingKindTurn:
+			if e.DurMS > total {
+				total = e.DurMS
+			}
+		}
+	}
+	if tool != 8000 || api != 4000 || total != 72000 {
+		t.Fatalf("opencode 权限等待不应进入工具段，实得 total=%d api=%d tool=%d", total, api, tool)
+	}
+	if other := total - api - tool; other != 60000 {
+		t.Fatalf("opencode 权限等待应进入 other，实得 %dms", other)
+	}
+	perms := fs.perms()
+	if len(perms) != 1 || !strings.Contains(perms[0].body, `"response":"once"`) {
+		t.Fatalf("权限应答应恰好成功发出一次，实得 %+v", perms)
+	}
+}
+
+func TestOpencodePermissionReplyFailureKeepsWaitingWindow(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	a, _ := startFakeRun(t, fs, "permission-retry", t.TempDir(), t.TempDir())
+	r := a.lookup("permission-retry")
+	events, done := collectEvents(r)
+
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	r.seg = turn.NewSegmenter(func() time.Time { return now })
+	baseTransport := r.api.httpClient.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	attempts := 0
+	r.api.httpClient.Transport = timingRoundTripper(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("暂时无法回发权限裁决")
+		}
+		return baseTransport.RoundTrip(req)
+	})
+
+	a.reportTiming(r, r.seg.BeginTurn(1))
+	now = now.Add(2 * time.Second)
+	r.turnMu.Lock()
+	a.mapToolPart(r, "bash", "call-retry", "running", json.RawMessage(`{"command":"git add && git commit"}`), "")
+	r.turnMu.Unlock()
+	now = now.Add(3 * time.Second)
+	permission := json.RawMessage(`{
+		"id":"perm-retry","sessionID":"sess-1","permission":"bash",
+		"metadata":{"command":"git add && git commit"},
+		"tool":{"callID":"call-retry"}
+	}`)
+	r.turnMu.Lock()
+	a.mapPermissionAsked(r, permission)
+	r.turnMu.Unlock()
+
+	now = now.Add(60 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "perm-retry", "once", ""); err == nil {
+		t.Fatal("第一次权限回发失败必须向协调者报错")
+	}
+	now = now.Add(5 * time.Second)
+	if err := a.RespondPermission(context.Background(), r.taskID, "perm-retry", "once", ""); err != nil {
+		t.Fatalf("重试权限回发: %v", err)
+	}
+	now = now.Add(5 * time.Second)
+	r.turnMu.Lock()
+	a.mapToolPart(r, "bash", "call-retry", "completed", json.RawMessage(`{"command":"git add && git commit"}`), "ok")
+	r.turnMu.Unlock()
+	now = now.Add(2 * time.Second)
+	a.reportTiming(r, r.seg.EndTurn())
+
+	if err := a.Stop(r.taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	<-done
+
+	var total, api, tool int64
+	for ev := range events {
+		if ev.Type != "usage" || ev.Timing == nil {
+			continue
+		}
+		switch ev.Timing.Kind {
+		case proto.TimingKindTurn:
+			if ev.Timing.DurMS > total {
+				total = ev.Timing.DurMS
+			}
+		case proto.TimingKindAPI:
+			api += ev.Timing.DurMS
+		case proto.TimingKindTool:
+			tool += ev.Timing.DurMS
+		}
+	}
+	if attempts != 2 {
+		t.Fatalf("权限回发应恰好尝试两次，实得 %d", attempts)
+	}
+	if total != 77_000 || api != 4_000 || tool != 8_000 {
+		t.Fatalf("失败重试不应提前恢复，实得 total=%d api=%d tool=%d", total, api, tool)
+	}
+	if other := total - api - tool; other != 65_000 {
+		t.Fatalf("失败期间的等待也应进入 other，实得 %dms", other)
+	}
+	perms := fs.perms()
+	if len(perms) != 1 {
+		t.Fatalf("只有成功重试应到达 fake server，实得 %+v", perms)
 	}
 }
 

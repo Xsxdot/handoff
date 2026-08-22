@@ -418,7 +418,19 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		a.log.Info("claude 回发拒绝裁决", "task", taskID, "perm", permID,
 			"with_reason", withReason)
 	}
-	return r.perm.Respond(permID, behavior, msg)
+	if err := r.perm.Respond(permID, behavior, msg); err != nil {
+		return err
+	}
+	// Only a successful socket write ends the person's waiting window. A failed
+	// write must remain paused so a later retry does not lose that interval.
+	a.log.Info("claude 权限等待结束", "task", taskID, "perm", permID)
+	entries := r.seg.Resume(permID)
+	if len(entries) == 0 {
+		a.log.Warn("claude 权限应答成功但未找到等待窗口", "task", taskID, "perm", permID)
+	} else {
+		a.reportTiming(r, entries)
+	}
+	return nil
 }
 
 // DenyReasonInBand 表明本 adapter 把拒绝理由与裁决同帧送达模型。
@@ -885,6 +897,19 @@ func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
 		// 「为什么这个请求没走审批者」在日志里无从查起
 		a.log.Warn("claude 权限请求提取不出结构化载荷，将由 manager 升级人工",
 			"task", r.taskID, "perm", ask.ToolUseID, "tool", ask.ToolName)
+	}
+	if ask.ToolUseID == "" {
+		a.log.Warn("claude 权限请求缺少工具配对键，不暂停耗时窗口",
+			"task", r.taskID, "tool", ask.ToolName)
+	} else {
+		a.log.Info("claude 权限等待开始", "task", r.taskID, "perm", ask.ToolUseID)
+		entries := r.seg.PauseWaiting(ask.ToolUseID)
+		if len(entries) == 0 {
+			a.log.Warn("claude 权限请求未找到对应工具等待窗口",
+				"task", r.taskID, "perm", ask.ToolUseID, "tool", ask.ToolName)
+		} else {
+			a.reportTiming(r, entries)
+		}
 	}
 	a.emit(r, executor.AdapterEvent{
 		Type: "permission", PermissionID: ask.ToolUseID,

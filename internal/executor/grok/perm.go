@@ -59,6 +59,17 @@ func (r *runState) takePending(toolCallID string) (pendingPerm, bool) {
 	return pp, ok
 }
 
+// restorePending keeps a failed-to-send permission request available for retry.
+// The ACP peer is still waiting when Reply fails, so its waiting window must
+// remain open until a later successful response.
+func (r *runState) restorePending(toolCallID string, pp pendingPerm) {
+	r.pendMu.Lock()
+	defer r.pendMu.Unlock()
+	if _, exists := r.pending[toolCallID]; !exists {
+		r.pending[toolCallID] = pp
+	}
+}
+
 // voidAllPending 作废全部挂起项，返回作废数量。
 func (r *runState) voidAllPending() int {
 	r.pendMu.Lock()
@@ -131,6 +142,7 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	if err := r.cli.Reply(pp.reqID, map[string]any{
 		"outcome": map[string]any{"outcome": "selected", "optionId": opt},
 	}); err != nil {
+		r.restorePending(permID, pp)
 		a.log.Error("回发权限裁决失败", "task", taskID, "perm", permID, "cause", err)
 		return fmt.Errorf("回发权限裁决: %w", err)
 	}
@@ -140,6 +152,13 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 		// rejectedTurnQuestion）。desc 用完整文本，长度收口由回合收尾处的
 		// turn.ClampQuestion 负责，不在本处截短。
 		r.noteRejected(pp.desc)
+	}
+	entries := r.seg.Resume(permID)
+	if len(entries) == 0 {
+		a.log.Warn("grok 权限裁决已送达但未找到等待窗口",
+			"task", taskID, "perm", permID)
+	} else {
+		a.reportTiming(r, entries)
 	}
 	a.log.Info("权限裁决已送达 executor", "task", taskID, "perm", permID)
 	return nil

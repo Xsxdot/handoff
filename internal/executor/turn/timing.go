@@ -35,6 +35,11 @@ type openTool struct {
 	tool   string
 	detail string
 	start  time.Time
+	// waiting tracks an external person's response window. Keeping it here lets
+	// ToolEnd subtract that window without changing the wire timing shape.
+	waiting      bool
+	waitingSince time.Time
+	waitingMS    time.Duration
 }
 
 // Segmenter 把一个回合切成模型段与工具段。
@@ -146,7 +151,11 @@ func (s *Segmenter) ToolEnd(part string) (time.Duration, []proto.TimingEntry) {
 	delete(s.open, part)
 	s.live--
 	now := s.now()
-	dur := now.Sub(ot.start)
+	finishWaitingLocked(ot, now)
+	dur := now.Sub(ot.start) - ot.waitingMS
+	if dur < 0 {
+		dur = 0
+	}
 	out := []proto.TimingEntry{{
 		Key:      fmt.Sprintf("tool/%d/%s", s.turn, part),
 		Kind:     proto.TimingKindTool,
@@ -163,6 +172,55 @@ func (s *Segmenter) ToolEnd(part string) (time.Duration, []proto.TimingEntry) {
 		s.apiStart = now
 	}
 	return dur, append(out, s.turnEntryLocked(now))
+}
+
+// PauseWaiting pauses an open tool while waiting for an external person.
+//
+// Parameters: part is the existing tool-call pairing key. Returns a current
+// turn marker on success, nil for a nil receiver, an unknown part, a closed
+// turn, an empty part, or an already-paused tool. The waiting interval is
+// subtracted when ToolEnd closes the tool; no new wire timing kind is emitted.
+func (s *Segmenter) PauseWaiting(part string) []proto.TimingEntry {
+	if s == nil || part == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == 0 {
+		return nil
+	}
+	ot, ok := s.open[part]
+	if !ok || ot.waiting {
+		return nil
+	}
+	now := s.now()
+	ot.waiting = true
+	ot.waitingSince = now
+	return []proto.TimingEntry{s.turnEntryLocked(now)}
+}
+
+// Resume ends an external person's response window for an open tool.
+//
+// Parameters: part is the existing tool-call pairing key. Returns a current
+// turn marker on success, nil for a nil receiver, an unknown part, a closed
+// turn, an empty part, or a tool that is not paused. A clock moving backwards
+// contributes no negative waiting duration.
+func (s *Segmenter) Resume(part string) []proto.TimingEntry {
+	if s == nil || part == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == 0 {
+		return nil
+	}
+	ot, ok := s.open[part]
+	if !ok || !ot.waiting {
+		return nil
+	}
+	now := s.now()
+	finishWaitingLocked(ot, now)
+	return []proto.TimingEntry{s.turnEntryLocked(now)}
 }
 
 // EndTurn 收尾当前回合：关掉还开着的模型段，刷最后一条 turn 条目。
@@ -186,6 +244,9 @@ func (s *Segmenter) closeTurnLocked() []proto.TimingEntry {
 		return nil
 	}
 	now := s.now()
+	for _, ot := range s.open {
+		finishWaitingLocked(ot, now)
+	}
 	var out []proto.TimingEntry
 	if e, ok := s.closeAPILocked(now); ok {
 		out = append(out, e)
@@ -195,6 +256,20 @@ func (s *Segmenter) closeTurnLocked() []proto.TimingEntry {
 	s.live = 0
 	s.turn = 0
 	return out
+}
+
+// finishWaitingLocked closes an active waiting window. Callers must hold mu.
+// A backwards clock is treated as zero elapsed time so a delayed permission
+// response cannot create a negative tool duration.
+func finishWaitingLocked(ot *openTool, now time.Time) {
+	if ot == nil || !ot.waiting {
+		return
+	}
+	if elapsed := now.Sub(ot.waitingSince); elapsed > 0 {
+		ot.waitingMS += elapsed
+	}
+	ot.waiting = false
+	ot.waitingSince = time.Time{}
 }
 
 // closeAPILocked 关掉当前模型段。没有开着的模型段时返回 (零值,false)。
